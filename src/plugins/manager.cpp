@@ -227,5 +227,6 @@ void Manager::Drain() { impl_->Drain(); }
 bool Manager::Stop() { return Boundary([&] { return impl_->Stop() ? MMS_OK : MMS_E_BUSY; }) == MMS_OK; }
 void Manager::Event(uint32_t kind) { impl_->Event(kind); }
 UiRegistry& Manager::Ui() { return impl_->registry; }
+bool Manager::InCallback() const { return impl_->active != 0 || impl_->registry.InCallback(); }
 std::vector<PluginStatus> Manager::Status() const { auto result = impl_->failed; for (const auto& i : impl_->instances) result.push_back(i->status); return result; }
 }

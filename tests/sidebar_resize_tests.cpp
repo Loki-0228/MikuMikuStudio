@@ -4,6 +4,7 @@
 #include "mikudancestudio/globals.hpp"
 #include "mikudancestudio/ported_funcs.hpp"
 #include "mikudancestudio/frame_presentation.hpp"
+#include "mikudancestudio/frame_sampling.hpp"
 #include "mikudancestudio/viewport_render_scale.hpp"
 #include "mikudancestudio/force_paste.hpp"
 #include "mikudancestudio/recent_projects.hpp"
@@ -13,8 +14,15 @@
 #include "mikudancestudio/bottom_panel_resize.hpp"
 #include "mikudancestudio/panel_controls.hpp"
 #include "mikudancestudio/adaptive_shadow.hpp"
+#include "mikudancestudio/update_coordinator.hpp"
+#include "mikudancestudio/ui_metrics.hpp"
+#include "mikudancestudio/scene_ownership.hpp"
+#include "mikudancestudio/bake_ui_lock.hpp"
+#include "mikudancestudio/physics_scene.hpp"
+#include <btBulletDynamicsCommon.h>
 #include "mikudancestudio/model.hpp"
 #include <MinHook.h>
+#include <commctrl.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cwchar>
@@ -150,11 +158,14 @@ void SaveForcePasteRow(MMDApp* app, const char* filename) {
 
 
 HDC previewDC=nullptr;
+const RECT* forcedPaintRect=nullptr;
 decltype(&BeginPaint) realBeginPaint=nullptr;
 decltype(&EndPaint) realEndPaint=nullptr;
 HDC WINAPI PreviewBeginPaint(HWND h,LPPAINTSTRUCT ps) {
     if(!previewDC)return realBeginPaint(h,ps);
-    *ps={};ps->hdc=previewDC;GetClientRect(h,&ps->rcPaint);return previewDC;
+    *ps={};ps->hdc=previewDC;GetClientRect(h,&ps->rcPaint);
+    if(forcedPaintRect)ps->rcPaint=*forcedPaintRect;
+    return previewDC;
 }
 BOOL WINAPI PreviewEndPaint(HWND h,const PAINTSTRUCT* ps) {
     return previewDC?TRUE:realEndPaint(h,ps);
@@ -605,7 +616,11 @@ void CheckShadowFilter(MMDApp* app) {
 }
 }
 
+#include "plugins/scheduler_checks.inc"
+
 int main(int argc, char** argv) {
+    const bool schedulerOnly=argc==2 && std::string(argv[1])=="--scheduler-only";
+    if(schedulerOnly) SetEnvironmentVariableW(L"MMS_UI_METRICS",L"scheduler-test.metrics.jsonl");
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     SetProcessDPIAware();
     Check(MH_Initialize() == MH_OK, "initialize hidden-window guards");
@@ -618,6 +633,13 @@ int main(int argc, char** argv) {
     SetWindowPos(window, nullptr, 0, 0, 1200,820, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
     HandleWindowSize(app);
     Check(!IsWindowVisible(window), "production host stays hidden");
+    if(schedulerOnly) {
+        Hook(&BeginPaint,&PreviewBeginPaint,&realBeginPaint);
+        Hook(&EndPaint,&PreviewEndPaint,&realEndPaint);
+        scheduler_checks::Run(app);
+        ShutdownCleanup(app);g_Block=nullptr;delete app;
+        std::puts("Production scheduler checks passed");return 0;
+    }
     if (argc == 2 && (std::string(argv[1]) == "--recent-menu-only" || std::string(argv[1]) == "--accessory-only")) {
         if (std::string(argv[1]) == "--recent-menu-only") CheckRecentProjects(app);
         else CheckAccessoryMenu(app);
@@ -632,6 +654,10 @@ int main(int argc, char** argv) {
     Hook(&BeginPaint,&PreviewBeginPaint,&realBeginPaint);
     Hook(&EndPaint,&PreviewEndPaint,&realEndPaint);
     CheckBottomPanelResize(app);
+    Hook(&IsWindowVisible,&scheduler_checks::Visible,&scheduler_checks::realVisible);
+    scheduler_checks::available=true;app->FpsLimit()=1000;
+    Check(updates::Initialize(app),"initialize coordinator for resize regression");
+    scheduler_checks::Tick(app);
     Hook(&RedrawWindow, &ObserveRedraw, &originalRedraw);
     auto** vtable = *reinterpret_cast<void***>(app->Renderer()->device);
     Hook(reinterpret_cast<PresentFunction>(vtable[17]), &ObservePresent, &originalPresent);
@@ -664,6 +690,8 @@ int main(int argc, char** argv) {
             Check(app->WindowLayoutReady() != 0, "ordinary painting remains available during drag");
         }
         SendMessageW(window, WM_LBUTTONUP, 0, MAKELPARAM(target,100));
+        Check(presents == 0,"release paint queues presentation without entering the frame driver");
+        scheduler_checks::Tick(app);
         Check(app->SidebarWidth() == target, "release uses the final pointer position");
         Check(redraws == 1 && presents == 1, "release performs one complete repaint and scene presentation");
         Check(app->SidebarResizeDragging() == 0 && GetCapture() != window, "release ends resize and mouse capture");
@@ -676,7 +704,7 @@ int main(int argc, char** argv) {
         Check(app->SidebarWidth()==width && app->SidebarResizeDragging()==0, "cancel or lost capture discards pending width");
     }
     Check(app->CurrentFrame()==frame && app->SceneModified()==modified, "resizing preserves frame and animation data");
-    Check(!IsWindowVisible(window), "test never shows the production window");
+    Check(!scheduler_checks::realVisible(window), "test never shows the production window");
     observe=false;
     cursor_checks::Run(app);
     ShutdownCleanup(app); g_Block=nullptr; delete app;

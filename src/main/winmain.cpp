@@ -33,6 +33,8 @@
 #include "mikudancestudio/processor_settings.hpp"
 #include "mikudancestudio/runtime_log.hpp"
 #include "mikudancestudio/ui_metrics.hpp"
+#include "mikudancestudio/update_coordinator.hpp"
+#include "mikudancestudio/build_profile.hpp"
 #include "mikudancestudio/d3d12_native.hpp"
 
 // Ask hybrid graphics drivers to prefer the high-performance adapter.
@@ -128,6 +130,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     runtime_log::Write("INIT complete; entering message loop");
 
     autosave::Initialize(app);
+    if (!updates::Initialize(app)) runtime_log::Fatal("update coordinator initialization failed");
     MSG msg{};
     std::uint32_t timeHigh = 0;         // v7/ebp - high 32 bits of last tick
     DWORD timeLow = timeGetTime();      // Time/ebx
@@ -148,6 +151,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     double statsSleepMs = 0.0, statsPumpMs = 0.0;
     while (msg.message != WM_QUIT) {       // 18
         runtime_log::SetPhase("message loop");
+        // One dispatch between safe points bounds message-producer starvation.
+        // The timer uses this same entry during the native move/size loop.
+        if (!build_profile::original) updates::SafePoint(app);
         if (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
             runtime_log::SetPhase("dispatch window message");
             if (msg.message == WM_CLOSE || msg.message == WM_QUIT)
@@ -170,6 +176,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
             DispatchMessageW(&msg);
             if (pumpStats != nullptr) ++statsMsgs;
         } else {
+            if (!build_profile::original) {
+                MsgWaitForMultipleObjectsEx(0, nullptr, updates::WaitMilliseconds(app), QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+                continue;
+            }
             autosave::Tick(app, GetTickCount64());
             std::uint32_t nowLow = timeGetTime();           // v9
             std::uint32_t nowHigh = 0;                       // v10
@@ -242,6 +252,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         }
     }
     if (pumpStats != nullptr) std::fclose(pumpStats);
+    updates::Shutdown(app);
 
     if (g_Block != nullptr) {
         // The message loop is over: from here on a fault is a teardown fault

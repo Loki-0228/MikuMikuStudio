@@ -132,7 +132,7 @@ void CheckTemporalImageSequence(MMDApp* app) {
         TemporalSequenceProbe probe;probe.rejectMotion=rejectMotion;temporalSequenceProbe=&probe;
         Start(app,options);
         unsigned steps=0;
-        while(seq::Active(app) && steps++<20){app->state.messageSeen=1;FrameDriver(app);}
+        while(seq::Active(app) && steps++<20){app->state.messageSeen=1;coordinator_fixture::Drive(app);}
         temporalSequenceProbe=nullptr;
         Check(!seq::Active(app) && !app->RecordingWindow(),"temporal image export completes normally");
         const auto expected=unsigned(seq::FrameCount(options));

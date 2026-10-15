@@ -6,6 +6,7 @@
 #include "mikudancestudio/globals.hpp"
 #include "mikudancestudio/ported_funcs.hpp"
 #include "mikudancestudio/default_effect.hpp"
+#include "mikudancestudio/update_coordinator.hpp"
 #include <MinHook.h>
 #include <vfw.h>
 #include <dbghelp.h>
@@ -33,6 +34,7 @@ IDirect3DDevice9* device = nullptr;
 WNDPROC originalWindow = nullptr;
 DWORD testThread = 0;
 bool armed = false, actionDone = false, resetFailed = false;
+bool coordinator = false;
 unsigned presents = 0, cooperatives = 0, resets = 0, beginScenes = 0;
 unsigned readbacks = 0, copies = 0, invalidCopies = 0, staleCalls = 0;
 unsigned workBeforeRecovery = 0, nestedCalls = 0;
@@ -59,6 +61,8 @@ int WINAPI UnexpectedW(HWND, LPCWSTR text, LPCWSTR, UINT) {
 }
 decltype(&ShowWindow) originalShow = nullptr;
 BOOL WINAPI KeepHidden(HWND window, int) { return originalShow(window, SW_HIDE); }
+decltype(&IsWindowVisible) originalVisible = nullptr;
+BOOL WINAPI Available(HWND window) { return app && window == app->MainWindow() ? TRUE : originalVisible(window); }
 bool InFrameCase() { return scenario.rfind("in-frame-", 0) == 0; }
 bool InputObserved() { return armed && GetCurrentThreadId() == testThread; }
 bool EscPressed() {
@@ -366,6 +370,9 @@ bool Invoke() {
     app->DeltaTime() = 1.f / 30;
     app->state.messageSeen = 1;
     if (entry == "readback") return RecordingReadbackPass(app);
+    if (coordinator) {
+        updates::RequestViewport(app); Sleep(3); updates::SafePoint(app); return true;
+    }
     FrameDriver(app);
     return true; // FrameDriver is void; counters validate its actual work.
 }
@@ -422,6 +429,7 @@ int main(int argc, char** argv) {
         if (std::strcmp(argv[i], "--entry") == 0) entry = argv[i + 1];
         else if (std::strcmp(argv[i], "--case") == 0) scenario = argv[i + 1];
         else if (std::strcmp(argv[i], "--mode") == 0) mode = argv[i + 1];
+        else if (std::strcmp(argv[i], "--coordinator") == 0) coordinator = std::strcmp(argv[i + 1], "1") == 0;
         else Require(false, "unknown option");
     }
     Require(Known(entry, {"frame", "readback", "record-frame"}), "entry is frame, readback, or record-frame");
@@ -460,6 +468,11 @@ int main(int argc, char** argv) {
     app->InitDefaults();
     Require(InitMainWindowAndD3D(app, GetModuleHandleW(nullptr), SW_HIDE), "initialize actual production host");
     Require(!IsWindowVisible(app->MainWindow()), "host stays hidden");
+    if (const auto* model = _wgetenv(L"MMS_DEVICE_TEST_MODEL")) {
+        LoadModelFile(app, model, false);
+        Require(app->ModelSlot(0) != nullptr, "load deterministic effect-bearing model fixture");
+        app->state.selfShadowEnabled = 1; app->SelfShadowMode() = 2;
+    }
     app->DeltaTime() = 1.f / 30;
     app->state.messageSeen = 1;
     FrameDriver(app);
@@ -477,6 +490,12 @@ int main(int argc, char** argv) {
     }
     Require(renderer->effect != nullptr, "default effect is ready before recovery counters are armed");
     device = renderer->device;
+    if(coordinator) {
+        Require(entry != "readback", "coordinator owns complete frames, not a readback-only entry");
+        Hook(&IsWindowVisible,&Available,&originalVisible);
+        app->FpsLimit()=1000;
+        Require(updates::Initialize(app), "initialize real coordinator for recovery scenario");
+    }
     // Only the device is retained; DEFAULT-pool surfaces must remain releasable
     // by the real PostDeviceReset. No stub replaces FrameDriver or Reset flow.
     device->AddRef();

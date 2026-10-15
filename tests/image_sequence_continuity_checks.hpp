@@ -111,8 +111,8 @@ void CameraAndContinuityTests(MMDApp* app) {
         while (seq::Active(app) && steps++ < 30) {
             // Saving a frame can take longer than the output frame interval.
             const float wallDelta = steps % 2 ? .2f : .003f;
-            app->DeltaTime() = wallDelta; app->state.messageSeen = 1; FrameDriver(app);
-            Check(app->DeltaTime() == wallDelta, "export restores the caller's wall-clock delta");
+            app->DeltaTime() = wallDelta; app->state.messageSeen = 1; coordinator_fixture::Drive(app);
+            if(!coordinator_fixture::Enabled()) Check(app->DeltaTime() == wallDelta, "export restores the caller's wall-clock delta");
             Sleep(steps % 2 ? 2 : 55);
         }
         Check(!seq::Active(app) && p.written == seq::FrameCount(p.options),

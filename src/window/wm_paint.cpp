@@ -30,6 +30,7 @@
 #include "mikudancestudio/frame_presentation.hpp"
 #include "mikudancestudio/mmd_app.hpp"
 #include "mikudancestudio/ui_metrics.hpp"
+#include "mikudancestudio/update_coordinator.hpp"
 #include "mikudancestudio/bottom_panel_resize.hpp"
 #include "mikudancestudio/model.hpp"
 #include "mikudancestudio/ported_funcs.hpp"
@@ -94,6 +95,7 @@ void HandleWindowPaint(MMDApp* app) {
     if (app->FullscreenMode() != 0 || app->SceneMutationInProgress()) {
         BeginPaint(hwnd, &ps);
         EndPaint(hwnd, &ps);
+        if (!build_profile::original) updates::Exposed(app, hwnd, ps.rcPaint);
         return;
     }
 
@@ -429,12 +431,14 @@ void HandleWindowPaint(MMDApp* app) {
            app->CurveDC(), 0, 0, SRCCOPY);
     EndPaint(hwnd, &ps);
 
-    app->state.messageSeen = 1;
+    if (!build_profile::original) updates::Exposed(app, hwnd, ps.rcPaint);
     // Modal dialogs disable their owner. Repainting that disabled owner must
     // not reenter MMV or present frames behind save/driver notifications.
     // Keep the normal enabled-window refresh for scene-load control painting.
-    if (app->WindowLayoutReady() != 0 && IsWindowEnabled(hwnd))
-        FrameDriver(app);
+    if (build_profile::original) {
+        app->state.messageSeen = 1;
+        if (app->WindowLayoutReady() != 0 && IsWindowEnabled(hwnd)) FrameDriver(app);
+    }
 
     // bone-list scrollbar refresh (SCROLLINFO embedded at this+2372)
     app->state.scrollCbSize = 28;

@@ -1,3 +1,4 @@
+#include "mikudancestudio/update_coordinator.hpp"
 #include "mikudancestudio/build_profile.hpp"
 #include "mikudancestudio/window_dpi_scope.hpp"
 #include "mikudancestudio/plugin_runtime.hpp"
@@ -102,6 +103,7 @@ void LayoutViewportPanels(MMDApp* app);   // VA 0x0040CAC0, was Sub40CAC0
                                           // (ui_viewport_layout.cpp)
 
 void HandleWindowSize(MMDApp* app) {
+    updates::RequestViewport(app, true);
     ui_metrics::Add(ui_metrics::Layout);
     auto& s = *app;
     const HWND hwnd = static_cast<HWND>(app->Hwnd());  // 657080 (0xA06B8)

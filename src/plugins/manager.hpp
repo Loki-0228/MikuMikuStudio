@@ -17,6 +17,7 @@ public:
     bool Stop();
     void Event(uint32_t kind);
     UiRegistry& Ui();
+    bool InCallback() const;
     std::vector<PluginStatus> Status() const;
 };
 }

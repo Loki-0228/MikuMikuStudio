@@ -1,3 +1,4 @@
+#include "mikudancestudio/update_coordinator.hpp"
 #include "mikudancestudio/ui_translation.hpp"
 // ===========================================================================
 // VA 0x00461E00 / 0x00461FA0 - separate ("Mic") window create / destroy pair
@@ -77,7 +78,9 @@ int FilterSeparateWindowMouseMove(MMDApp* app, unsigned short x, unsigned short 
 // VA 0x00466A10 - separate ("Mic") window procedure.
 LRESULT CALLBACK MicWndProc(HWND hwnd, UINT msg, WPARAM wParam,
                             LPARAM lParam) {
+    updates::MessageScope dispatchScope;
     MMDApp* app = g_Block;
+    updates::ObserveMessage(app, msg, wParam, lParam);
     auto& s = *app;
     if (msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP ||
         msg == WM_LBUTTONDBLCLK || msg == WM_MOUSEMOVE) {
@@ -122,6 +125,7 @@ LRESULT CALLBACK MicWndProc(HWND hwnd, UINT msg, WPARAM wParam,
                rc.right, rc.bottom, 0, 0, 0, 0x42);
         HandlePaletteChanged2(hdc);                                // 0x466B60
         EndPaint(hwnd, &ps);
+        if (!build_profile::original) updates::Exposed(app, hwnd, ps.rcPaint);
         return 0;
     }
     case WM_MOVE:                                                  // 0x466A96

@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <memory>
 #include <MinHook.h>
+#include "plugins/coordinator_fixture.hpp"
 namespace mikudancestudio { void DispatchLetterHotkeys(MMDApp*,HWND); }
 using namespace mikudancestudio;
 using Microsoft::WRL::ComPtr;
@@ -246,7 +247,8 @@ int wmain(int argc,wchar_t** argv) {
     Check(argc==2 || argc==3 || argc==4 || argc==6,"fixture directory required"); std::setvbuf(stdout,nullptr,_IONBF,0);
     const fs::path directory=fs::absolute(argv[1]);
     const bool playbackOnly = argc>=4 && std::wcscmp(argv[2],L"--video-playback")==0;
-    const bool backgroundOnly = argc==3 && std::wcscmp(argv[2],L"--background")==0;
+    const bool coordinatorOnly = argc==3 && std::wcscmp(argv[2],L"--stopped-coordinator")==0;
+    const bool backgroundOnly = coordinatorOnly || (argc==3 && std::wcscmp(argv[2],L"--background")==0);
     const bool mediaOnly = argc==3 && std::wcscmp(argv[2],L"--media-only")==0;
     const bool benchmark = argc==3 && !backgroundOnly && !mediaOnly;
     const auto initialized=MH_Initialize(); Check(initialized==MH_OK || initialized==MH_ERROR_ALREADY_INITIALIZED,"dialog guard init");
@@ -299,6 +301,7 @@ int wmain(int argc,wchar_t** argv) {
         return 0;
     }
     for (bool playing : {false, true}) {
+        if(coordinatorOnly && playing) break;
         app->PlaybackActive() = playing;
         CommandDispatch(0, MAKEWPARAM(216, 0));
         Check(!app->AviBackgroundEnabled() && media::HasVideo(app), "hiding MP4 preserves its reader");
@@ -312,7 +315,7 @@ int wmain(int argc,wchar_t** argv) {
         do {
             // The normal frame driver must publish a completed seek even when
             // playback is stopped and there is no new mouse/keyboard message.
-            FrameDriver(app);
+            if(coordinatorOnly) coordinator_fixture::Poll(app);else FrameDriver(app);
             auto displayed = Read(app->Renderer()->device, app->AviBackgroundSurface());
             current = displayed[pixel+1] > 235 && displayed[pixel+2] < 20;
             if (!current) Sleep(5);

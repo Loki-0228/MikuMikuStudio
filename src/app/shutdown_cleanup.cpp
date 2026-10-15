@@ -1,3 +1,4 @@
+#include "mikudancestudio/update_coordinator.hpp"
 #include "mikudancestudio/key_pool.hpp"
 #include "mikudancestudio/autosave.hpp"
 #include "mikudancestudio/shadow_filter.hpp"
@@ -442,6 +443,7 @@ void TeardownDShowGraphCoUninit(DShowRecorder* rec) {
 // VA 0x00462C40 - ShutdownCleanup  (original: sub_462C40, __thiscall, app)
 // =========================================================================//
 void ShutdownCleanup(MMDApp* app) {
+    updates::Shutdown(app);
     viewport_render_scale::Release(app);
     antialias::Release(app);
     autosave::Shutdown();

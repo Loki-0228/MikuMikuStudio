@@ -1,3 +1,4 @@
+#include "mikudancestudio/ui_metrics.hpp"
 #include "mikudancestudio/physics_scale.hpp"
 #include "mikudancestudio/bone_scale.hpp"
 #include "mikudancestudio/perf_timing.hpp"
@@ -995,6 +996,7 @@ void PhysicsFrame(MMDApp* app, unsigned char selActive) {
     // already holds the counter open.)
     if (s.state.messageSeen == 0)
         return;                       // 0x7FF7CB44B8E7 -> 0x7FF7CB44C8D6
+    ui_metrics::Add(ui_metrics::Physics);
     PhysicsScene* scene = s.Physics();
     if (scene == nullptr)
         return;

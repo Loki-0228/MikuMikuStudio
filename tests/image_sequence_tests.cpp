@@ -22,6 +22,7 @@
 #include "mikudancestudio/frame_limits.hpp"
 #include "../src/window/image_sequence_dialog.hpp"
 #include <MinHook.h>
+#include "plugins/coordinator_fixture.hpp"
 #include <ShObjIdl.h>
 #include <wrl/client.h>
 #include <filesystem>
@@ -186,11 +187,17 @@ void RunExport(MMDApp* app, seq::Options o, bool cancel = false) {
     const int oldW = app->RenderWidth(), oldH = app->RenderHeight();
     const int oldScreenW = app->Renderer()->screenWidth, oldScreenH = app->Renderer()->screenHeight;
     Start(app, o);
+    const auto firstFrame=coordinator_fixture::frames, firstPoll=coordinator_fixture::polls;
+    const auto started=GetTickCount64();
     unsigned steps = 0;
     while (seq::Active(app) && steps++ < 150) {
-        app->state.messageSeen = 1; FrameDriver(app);
+        app->state.messageSeen = 1; coordinator_fixture::Drive(app);
         if (cancel && steps == 5) FinishAviRecord(app);
     }
+    std::printf("TRACE export fps=%.3f steps=%u frames=%llu polls=%llu elapsed_ms=%llu active=%d recorded=%u\n",
+        o.fps,steps,static_cast<unsigned long long>(coordinator_fixture::frames-firstFrame),
+        static_cast<unsigned long long>(coordinator_fixture::polls-firstPoll),
+        static_cast<unsigned long long>(GetTickCount64()-started),seq::Active(app),app->state.recordedFrameCount);
     Check(!seq::Active(app) && !app->RecordingWindow() && !app->FrameStepPlayback(), "export releases recording state");
     Check(app->RenderWidth() == oldW && app->RenderHeight() == oldH, "render resolution restored");
     Check(app->Renderer()->screenWidth == oldScreenW && app->Renderer()->screenHeight == oldScreenH, "device preview resolution restored");
@@ -269,7 +276,7 @@ void MenuEntryTests(MMDApp* app) {
         Check(folderPickers == 1 && settingsDialogs == 1 && seq::Active(app) && app->RecordingWindow(),
             "image sequence menu starts export in model and camera/accessory modes");
         unsigned steps = 0;
-        while (seq::Active(app) && steps++ < 150) { app->state.messageSeen = 1; FrameDriver(app); }
+        while (seq::Active(app) && steps++ < 150) { app->state.messageSeen = 1; coordinator_fixture::Drive(app); }
         Check(!seq::Active(app) && !app->RecordingWindow(), "menu export finishes recording");
         for (int frame : {1, 2})
             Check(fs::file_size(output / (menuPrefix + std::to_wstring(frame) + L".png")) > 0,
@@ -331,7 +338,7 @@ void StillImageLanguageTests(MMDApp* app) {
             Check(std::wcscmp(actual, unicode) == 0, "export window caption updates preserve Unicode");
             SetWindowTextW(window, expected);
             for (unsigned step = 0; app->RecordingWindow() && step < 12; ++step) {
-                app->state.messageSeen = 1; FrameDriver(app);
+                app->state.messageSeen = 1; coordinator_fixture::Drive(app);
             }
             Check(!app->RecordingWindow() && fs::is_regular_file(stillPath) && fs::file_size(stillPath) > 0,
                 "localized still-image export completes and writes a PNG");

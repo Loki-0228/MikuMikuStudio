@@ -1,6 +1,8 @@
 #include "mikudancestudio/autosave.hpp"
 #include "mikudancestudio/plugin_menu.hpp"
 #include "mikudancestudio/plugin_runtime.hpp"
+#include "mikudancestudio/build_profile.hpp"
+#include "mikudancestudio/update_coordinator.hpp"
 #include "mikudancestudio/nvidia_antialias_menu.hpp"
 // ===========================================================================
 // VA 0x004C3A10 - MainWndProc  (original: sub_4C3A10, 0x8A6 bytes)
@@ -116,6 +118,7 @@ static const char kMsgQuitModifiedJp[] =                 // x64 0x7FF7CB552798
 static const char kCaptionQuitJp[] = "\x8F\x49\x97\xB9";  // x64 0x7FF7CB5526F8 "終了"
 
 LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    updates::MessageScope dispatchScope;
     MMDApp* app = g_Block;
     auto& s = *app;
     // EnableWindow prevents new user input; queued commands and accelerators
@@ -161,7 +164,8 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         autosave::PaintMenuWarning(app, reinterpret_cast<HDC>(wParam));
         return result;
     }
-    s.MessageSeen() = 1;                                           // 658796
+    if (build_profile::original) s.MessageSeen() = 1;
+    else updates::ObserveMessage(app, msg, wParam, lParam);
     if (msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP ||
         msg == WM_LBUTTONDBLCLK || msg == WM_MOUSEMOVE) {
         // Mouse messages carry the modifiers for this gesture; frame-loop
@@ -212,6 +216,7 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             return 0;
 
         case WM_DESTROY: {
+            updates::Shutdown(app);
             plugins::Shutdown();
             autosave::Shutdown();
             runtime_log::Write("WM_DESTROY begin (window is closing)");

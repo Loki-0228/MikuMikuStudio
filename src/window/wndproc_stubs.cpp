@@ -1,3 +1,4 @@
+#include "mikudancestudio/update_coordinator.hpp"
 #include "mikudancestudio/frame_limits.hpp"
 // ===========================================================================
 // Window procedures (separate/recording windows)
@@ -48,6 +49,7 @@ static const char kJpRecStopCaption[] =
 // recording epilogue 0x464A00 on IDYES; everything else DefWindowProc.
 // ---------------------------------------------------------------------------
 LRESULT CALLBACK RecWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    updates::MessageScope dispatchScope;
     MMDApp* app = g_Block;
     if (app && (GetWindowLongPtrW(hwnd, GWL_STYLE) & WS_THICKFRAME)) {
         const int width = app->AviOutputWidth(), height = app->AviOutputHeight();

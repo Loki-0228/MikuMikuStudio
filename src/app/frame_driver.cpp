@@ -60,6 +60,7 @@
 #include "mikudancestudio/panel_controls.hpp"
 #include "mikudancestudio/runtime_log.hpp"
 #include "mikudancestudio/ui_metrics.hpp"
+#include "mikudancestudio/update_coordinator.hpp"
 #include "frame_state_dump.hpp"
 
 // key_ladder.cpp (registered in CMakeLists next to frame_modes_bone.cpp):
@@ -457,7 +458,73 @@ void TraceFrameViewpoint(MMDApp* app) {
         position[2], angles[0], angles[1], angles[2]);
 }
 
+namespace {
+struct PresentResult { bool presented; HRESULT hr; };
+PresentResult PresentScene(MMDApp* app) {
+    auto& s = *app;
+    // ---- 9. Present + device-lost recovery (0x479B23..0x479CB9) ----------
+    // NOT a Reset dance (phase-A misread): the vtable call is slot +0x44 =
+    // 17 = Present (Reset is slot 16 - adjacent, hence the confusion).
+    // Gate: A0D6C != 0 && A0D61 == 0 (the skip path reuses a stale local
+    // hr in the original; the port keeps last frame's value).
+    //   A0274 != 0                 -> Present(NULL, NULL, NULL, NULL)
+    //   else A0D24 != 0            -> Present(&r{0,0,A08D4,A08D8}, NULL,
+    //                                   hwnd A0D24, NULL)
+    //   else A0D38 != 0            -> Present(&RECT@A0D40, same, A0D38, NULL)
+    //   else                       -> Present(&RECT@A0D40, same, A06B8, NULL)
+    // Device loss waits with a shared message pump, including windowed mode.
+    if (device_lost_wait::Pending(app)) return {false, D3DERR_DEVICELOST};
+    IDirect3DDevice9* device = nullptr;
+    if (s.Renderer() != nullptr)
+        device = s.Renderer()->device;                     // +0x1D4E0
+    static HRESULT hr = D3D_OK;         // stale-local equivalent
+    bool presented = false;
+    if (device != nullptr) {
+        if (s.state.messageSeen != 0 &&
+            s.AviStereoOutput() == 0) {
+            MMD_PERF_SCOPE(Present);
+            presented = true;
+            if (s.FullscreenMode() != 0) {
+                hr = device->Present(nullptr, nullptr, nullptr, nullptr);
+            } else if (s.RecordingWindow() != nullptr) {          // 0xA0D24
+                RECT r;
+                r.left = 0;
+                r.top = 0;
+                // 0xA08D4/0xA08D8 = render size (literals were decimal
+                // slips landing inside the dirModel path buffer)
+                r.right = static_cast<LONG>(s.RenderWidth());
+                r.bottom = static_cast<LONG>(s.RenderHeight());
+                // The recording preview may be smaller than the capture.
+                // A null destination fits the entire source to its client area.
+                hr = device->Present(&r, nullptr,
+                                     s.RecordingWindow(), nullptr);
+            } else if (s.FloatingWindow() != nullptr) {
+                RECT r = FramePresentationRect(app);
+                hr = device->Present(&r, &r,
+                                     s.state.floatingWindow,
+                                     nullptr);
+            } else {
+                RECT r = FramePresentationRect(app);
+                hr = device->Present(&r, &r,
+                                     static_cast<HWND>(s.Hwnd()),
+                                     nullptr);
+            }
+            frame_rate::Presented(app, SUCCEEDED(hr));
+            if (SUCCEEDED(hr)) ui_metrics::Add(ui_metrics::Present);
+            if (hr == D3DERR_DEVICELOST) {
+                device_lost_wait::Wait(app, device, false);
+                // A dispatched message may have destroyed the renderer.
+                return {presented, hr};
+            }
+        }
+    }
+    return {presented, hr};
+}
+}
+
 void FrameDriver(MMDApp* app) {
+    updates::FrameScope scope;
+    if (!scope) return;
     ui_metrics::Add(ui_metrics::FrameDriver);
     if (device_lost_wait::Active() ||
         !device_lost_wait::Resume(app, app->state.frameStepPlayback != 0)) return;
@@ -486,6 +553,22 @@ void FrameDriver(MMDApp* app) {
     }
     if (app->SceneMutationInProgress())
         return;
+    if (updates::RepaintOnly()) {
+        // Reconstruct a discarded backbuffer from the current pose. Exposure
+        // does not consume input, advance playback, step physics or read back
+        // an output sample. Effects see zero elapsed time for this repaint.
+        const float delta = app->DeltaTime();
+        app->DeltaTime() = 0;
+        app->MessageSeen() = 3;
+        app->frameRate.Begin();
+        RenderFrameSceneForOutput(app);
+        // A failed render leaves no valid DISCARD backbuffer to present.
+        // Native DX12 has already presented and consumed ready itself.
+        if (app->frameRate.ready) PresentScene(app);
+        if (app->MessageSeen() == 3) app->MessageSeen() = 0;
+        app->DeltaTime() = delta;
+        return;
+    }
 #ifdef MIKUDANCESTUDIO_DIAG
     // DIAGNOSTIC ONLY: append a tick per pass to prove liveness of the
     // frame driver in real-time runs (stderr is unavailable in the GUI
@@ -839,62 +922,7 @@ void FrameDriver(MMDApp* app) {
         s.state.modelReloadPending = 0;
     }
 
-    // ---- 9. Present + device-lost recovery (0x479B23..0x479CB9) ----------
-    // NOT a Reset dance (phase-A misread): the vtable call is slot +0x44 =
-    // 17 = Present (Reset is slot 16 - adjacent, hence the confusion).
-    // Gate: A0D6C != 0 && A0D61 == 0 (the skip path reuses a stale local
-    // hr in the original; the port keeps last frame's value).
-    //   A0274 != 0                 -> Present(NULL, NULL, NULL, NULL)
-    //   else A0D24 != 0            -> Present(&r{0,0,A08D4,A08D8}, NULL,
-    //                                   hwnd A0D24, NULL)
-    //   else A0D38 != 0            -> Present(&RECT@A0D40, same, A0D38, NULL)
-    //   else                       -> Present(&RECT@A0D40, same, A06B8, NULL)
-    // Device loss waits with a shared message pump, including windowed mode.
-    if (device_lost_wait::Pending(app)) return;
-    IDirect3DDevice9* device = nullptr;
-    if (s.Renderer() != nullptr)
-        device = s.Renderer()->device;                     // +0x1D4E0
-    static HRESULT hr = D3D_OK;         // stale-local equivalent
-    bool presented = false;
-    if (device != nullptr) {
-        if (s.state.messageSeen != 0 &&
-            s.AviStereoOutput() == 0) {
-            MMD_PERF_SCOPE(Present);
-            presented = true;
-            if (s.FullscreenMode() != 0) {
-                hr = device->Present(nullptr, nullptr, nullptr, nullptr);
-            } else if (s.RecordingWindow() != nullptr) {          // 0xA0D24
-                RECT r;
-                r.left = 0;
-                r.top = 0;
-                // 0xA08D4/0xA08D8 = render size (literals were decimal
-                // slips landing inside the dirModel path buffer)
-                r.right = static_cast<LONG>(s.RenderWidth());
-                r.bottom = static_cast<LONG>(s.RenderHeight());
-                // The recording preview may be smaller than the capture.
-                // A null destination fits the entire source to its client area.
-                hr = device->Present(&r, nullptr,
-                                     s.RecordingWindow(), nullptr);
-            } else if (s.FloatingWindow() != nullptr) {
-                RECT r = FramePresentationRect(app);
-                hr = device->Present(&r, &r,
-                                     s.state.floatingWindow,
-                                     nullptr);
-            } else {
-                RECT r = FramePresentationRect(app);
-                hr = device->Present(&r, &r,
-                                     static_cast<HWND>(s.Hwnd()),
-                                     nullptr);
-            }
-            frame_rate::Presented(app, SUCCEEDED(hr));
-            if (SUCCEEDED(hr)) ui_metrics::Add(ui_metrics::Present);
-            if (hr == D3DERR_DEVICELOST) {
-                device_lost_wait::Wait(app, device, false);
-                // A dispatched message may have destroyed the renderer.
-                return;
-            }
-        }
-    }
+    const auto [presented, hr] = PresentScene(app);
 #ifdef MIKUDANCESTUDIO_DIAG
     if (presented && SUCCEEDED(hr)) {
         if (requireLineEnabled && lineModeRequested != 0)

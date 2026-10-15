@@ -11,5 +11,6 @@ int ToolbarHeight(MMDApp*);
 bool HandleCommand(unsigned id);
 bool HandleShortcut(unsigned key, bool viewportFocused);
 bool HandleDialogMessage(tagMSG*);
+bool InCallback();
 }
 }

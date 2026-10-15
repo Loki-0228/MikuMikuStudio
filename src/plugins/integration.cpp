@@ -18,7 +18,7 @@ bool refreshing = false, closing = false;
 constexpr UINT kRefresh = WM_APP + 0x6a;
 void LogMessage(const std::string& s) { runtime_log::Write("PLUGIN_ABI %s", s.c_str()); }
 LRESULT CALLBACK Subclass(HWND hwnd, UINT message, WPARAM wp, LPARAM lp, UINT_PTR id, DWORD_PTR) {
-    if (message == WM_CLOSE && manager && manager->Ui().InCallback()) { PostMessageW(hwnd, WM_CLOSE, wp, lp); return 0; }
+    if (message == WM_CLOSE && manager && manager->InCallback()) { PostMessageW(hwnd, WM_CLOSE, wp, lp); return 0; }
     if (message == kRefresh) { if (!closing && owner) Refresh(owner); return 0; }
     if (message == WM_NCDESTROY) { RemoveWindowSubclass(hwnd, Subclass, id); Shutdown(); }
     return DefSubclassProc(hwnd, message, wp, lp);
@@ -44,7 +44,7 @@ void Initialize(MMDApp* app) {
     }
 }
 void Shutdown() {
-    if (manager && manager->Ui().InCallback()) return;
+    if (manager && manager->InCallback()) return;
     if (closing) return; closing = true;
     if (manager) manager->Stop();
     ui.reset(); manager.reset(); toolbarHeight = 0; owner = nullptr;
@@ -71,4 +71,5 @@ bool HandleShortcut(unsigned key, bool viewportFocused) {
     bool handled = false; Boundary([&] { if (ui) handled = ui->Shortcut(key, modifiers, viewportFocused); return MMS_OK; }); return handled;
 }
 bool HandleDialogMessage(MSG* message) { return ui && !closing && ui->DialogMessage(message); }
+bool InCallback() { return manager && manager->InCallback(); }
 }

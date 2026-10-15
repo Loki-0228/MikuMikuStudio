@@ -494,7 +494,6 @@ void DrawFrameOverlayBatches(MMDApp* app) {
 }
 
 void RenderFrameScene(MMDApp* app) {
-    ui_metrics::Add(ui_metrics::Scene);
     frame_rate::BeginScene(app);
     MMD_PERF_SCOPE(Scene);
     shadow_filter::Invalidate(app);
@@ -523,6 +522,7 @@ void RenderFrameScene(MMDApp* app) {
     // (messageSeen) != 0; frames without a message leave both untouched.
     if (app->state.messageSeen == 0)
         return;
+    ui_metrics::Add(ui_metrics::Scene);
     // The optional native preview bypasses DX9/MME.
     native_mesh::Initialize(app);
     mmv4mms::Initialize(app);
