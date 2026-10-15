@@ -1,0 +1,12 @@
+{
+    "version": "0.5",
+    "requires": [
+        "minhook/1.3.4#1ae65f6b5793b097a606940bb1774119%1743409512.312",
+        "imath/3.2.2#d5203a84ee631ae6ab2da7c3a6b16787%1775543416.311",
+        "bullet275/2.75#b1f525c50ae139d422748c95626b34ef%1788627441.1445777",
+        "alembic/1.8.8#1eb7f96673ab004a34f1085147fac5f2%1754654828.543"
+    ],
+    "build_requires": [],
+    "python_requires": [],
+    "config_requires": []
+}

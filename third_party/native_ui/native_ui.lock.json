@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "version": "0.1.0-dev",
+  "source": "MMS repository original implementation",
+  "baselineCommit": "42d4a71",
+  "sourceTreeSha256": "6ce6596ec0db6293aa481fd361ce6da4ffc00591c1ae010ea4c2fd33dc66e8e4",
+  "license": "../../LICENSE",
+  "patches": [],
+  "files": {
+    "CMakeLists.txt": "1b60832225a5903ed491231f3e9bceac3b52881b420d28b0497681e308634b7e",
+    "include/native_ui/layout.hpp": "f128bedf261ef65b4a6911eae4aaa63ee699dcf9940c6a10023101d9e270d886",
+    "README.md": "f0ee013dc763ea55f549482cb12e6b63bf245b78c1febbdbd2eaef4572d1514b",
+    "src/layout.cpp": "ee2e514ae4b345c53fd2df9c5fab6d53a436b6bbd0e5f75fd1fc26e08adfc462",
+    "src/tree_layout.cpp": "50ee36481c6018161bf67aa3739d69df99a823f6698e8f90b21399b758c325bd"
+  }
+}

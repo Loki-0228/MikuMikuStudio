@@ -1,5 +1,6 @@
 #include "mikudancestudio/mmv4mms.hpp"
 #include "mikudancestudio/plugin_menu.hpp"
+#include "mikudancestudio/plugin_runtime.hpp"
 #include "mikudancestudio/ui_translation.hpp"
 #include "mikudancestudio/native_mesh.hpp"
 #include "mikudancestudio/skinning_backend.hpp"
@@ -403,6 +404,8 @@ bool InitMainWindowAndD3D(MMDApp* app, void* hInstanceIn, int nShowCmd) {
     mmv4mms::Initialize(app);
     // ---- phase 7: UI language pass + startup file dispatch + placement --
     LocalizeUI(app);                                            // 0x441AD0
+
+    plugins::Initialize(app);
 
     skinning::InitializeAutomatic(app, app->Renderer()->device);
 

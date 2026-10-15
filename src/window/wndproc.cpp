@@ -1,5 +1,6 @@
 #include "mikudancestudio/autosave.hpp"
 #include "mikudancestudio/plugin_menu.hpp"
+#include "mikudancestudio/plugin_runtime.hpp"
 #include "mikudancestudio/nvidia_antialias_menu.hpp"
 // ===========================================================================
 // VA 0x004C3A10 - MainWndProc  (original: sub_4C3A10, 0x8A6 bytes)
@@ -131,7 +132,7 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
     if (antialias::HandleMessage(app, msg, wParam, lParam)) return 0;
     if (nvidia_antialias_menu::HandleMessage(app, msg, wParam, lParam)) return 0;
     if (HandleBottomPanelResize(app, msg, wParam, lParam)) return msg == WM_SETCURSOR ? TRUE : 0;
-    if (msg == WM_INITMENU) plugin_menu::Refresh(app);
+    if (msg == WM_INITMENU) { plugin_menu::Refresh(app); plugins::Refresh(app); }
     if (msg == WM_INITMENUPOPUP) {
         // Menu state can survive a programmatic model/panel change. Resolve
         // availability from the current selection whenever a popup opens.
@@ -211,6 +212,7 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             return 0;
 
         case WM_DESTROY: {
+            plugins::Shutdown();
             autosave::Shutdown();
             runtime_log::Write("WM_DESTROY begin (window is closing)");
             WINDOWPLACEMENT wndpl;

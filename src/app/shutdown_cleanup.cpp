@@ -6,6 +6,7 @@
 #include "mikudancestudio/default_effect.hpp"
 #include "mikudancestudio/mmv4mms.hpp"
 #include "mikudancestudio/plugin_menu.hpp"
+#include "mikudancestudio/plugin_runtime.hpp"
 #include "mikudancestudio/transparent_capture.hpp"
 #include "mikudancestudio/wic_mov_recorder.hpp"
 #include "mikudancestudio/native_media.hpp"
@@ -449,6 +450,7 @@ void ShutdownCleanup(MMDApp* app) {
     image_sequence::Abort(app);
     ReleaseTransparentCapture(app);
     mmv4mms::Shutdown();
+    plugins::Shutdown();
     plugin_menu::Shutdown(app);
     native_mesh::Shutdown();
     ShutdownD3D12Native();

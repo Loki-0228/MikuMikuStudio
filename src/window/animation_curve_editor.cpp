@@ -135,7 +135,7 @@
 #include <CommCtrl.h>
 #include <windowsx.h>
 #include <objidl.h>
-#include <gdiplus.h>
+#include "mikudancestudio/gdiplus_compat.hpp"
 
 #ifdef min
 #undef min

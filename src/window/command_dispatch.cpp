@@ -4,6 +4,7 @@
 #include "mikudancestudio/force_paste.hpp"
 #include "mikudancestudio/image_sequence_export.hpp"
 #include "mikudancestudio/plugin_menu.hpp"
+#include "mikudancestudio/plugin_runtime.hpp"
 #include "mikudancestudio/ui_translation.hpp"
 #include "mikudancestudio/native_mesh.hpp"
 #include "mikudancestudio/animation_curve_editor.hpp"
@@ -411,6 +412,7 @@ void CommandDispatch(HWND ctrl, WPARAM wParam) {
     const std::uint16_t notification = HIWORD(wParam);
     if (ctrl == nullptr && notification <= 1 && image_sequence::HandleCommand(app, id)) return;
     if (ctrl == nullptr && notification <= 1 && plugin_menu::HandleCommand(app, id)) return;
+    if (ctrl == nullptr && notification <= 1 && plugins::HandleCommand(id)) return;
     if (ctrl == nullptr && notification == 0 && bake::HandleCommand(app, id)) return;
     if (ctrl == nullptr && notification == 0 && frame_rate_correction::HandleCommand(app, id)) return;
     if (ctrl == nullptr && notification == 0 && sequence_scatter::HandleCommand(app, id)) return;

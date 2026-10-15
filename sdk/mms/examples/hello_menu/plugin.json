@@ -1,0 +1,16 @@
+{
+	"schemaVersion": 1,
+	"id": "org.example.hello",
+	"name": "菜单开发示例",
+	"version": "0.1.0",
+	"kind": "native",
+	"abi": { "major": 1, "minMinor": 0 },
+	"entry": "hello_menu.dll",
+	"architecture": "x64",
+	"minWindows": "6.1.7601",
+	"capabilities": ["ui.command", "ui.element"],
+	"requiresServices": [{ "id": "mms.ui", "major": 1, "minMinor": 0 }],
+	"dependencies": [],
+	"nativeDependencies": [],
+	"reloadPolicy": "restart"
+}

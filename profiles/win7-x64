@@ -1,0 +1,14 @@
+# Dependencies must be rebuilt with this profile; do not mix /MD and /MT.
+[settings]
+os=Windows
+arch=x86_64
+build_type=Release
+compiler=msvc
+compiler.version=194
+compiler.cppstd=17
+compiler.runtime=dynamic
+compiler.runtime_type=Release
+
+[conf]
+tools.cmake.cmaketoolchain:generator=Visual Studio 17 2022
+tools.cmake.cmaketoolchain:user_presets=

@@ -10,6 +10,7 @@
 #include <mferror.h>
 #include <mfidl.h>
 #include <mfreadwrite.h>
+#include "mikudancestudio/mf_optional.hpp"
 #include <wmcodecdsp.h>
 
 #include <algorithm>
@@ -334,9 +335,24 @@ bool ResolveSinkWriterEncoder(IMFSinkWriter* writer, DWORD stream,
     target.Reset();
     if (writer == nullptr)
         return false;
-    IMFSinkWriterEx* extended = nullptr;
-    if (FAILED(writer->QueryInterface(IID_PPV_ARGS(&extended))))
-        return false;
+    mikudancestudio::media_compat::SinkWriterExtended* extended = nullptr;
+    if (FAILED(writer->QueryInterface(IID_PPV_ARGS(&extended)))) {
+        // Win7 exposes the stream encoder through the original Sink Writer.
+        // Query the actual writer, not an unrelated encoder from the registry.
+        IMFTransform* transform = nullptr;
+        if (FAILED(writer->GetServiceForStream(stream, GUID_NULL, IID_PPV_ARGS(&transform))))
+            return false;
+        ICodecAPI* codec = nullptr;
+        if (FAILED(transform->QueryInterface(IID_PPV_ARGS(&codec)))) {
+            transform->Release();
+            return false;
+        }
+        target.transform = transform;
+        target.codec = codec;
+        target.transformCount = 1;
+        target.surfaceHash = HashEncoderSurface(codec, 0, 1);
+        return true;
+    }
 
     struct Candidate {
         IMFTransform* transform = nullptr;

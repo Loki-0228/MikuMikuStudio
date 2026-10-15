@@ -277,10 +277,15 @@ void CheckAccessoryMenu(MMDApp* app) {
     auto first = std::make_unique<mdl::AccessoryRecord>();
     auto second = std::make_unique<mdl::AccessoryRecord>();
     const auto savedPrecision = app->TransparentMaterialSortPrecision();
+    const auto savedSelection = app->SelectedAccessorySlot();
     for (auto precision : {TransparentSortPrecision::Off, TransparentSortPrecision::Standard}) {
         app->TransparentMaterialSortPrecision() = precision;
         app->AccessorySlot(17) = first.get();
         app->AccessorySlot(93) = second.get();
+        // Reordering preserves the selected slot. Cover a selection that ends
+        // up first and one that ends up second, without assuming startup state.
+        const auto selected = precision == TransparentSortPrecision::Off ? 17 : 93;
+        app->SelectedAccessorySlot() = selected;
         EnableMenuItem(menu, 249, MF_GRAYED);
         SendMessageW(host, WM_INITMENUPOPUP, 0, 0);
         Check((GetMenuState(menu,249,MF_BYCOMMAND) & (MF_DISABLED|MF_GRAYED)) == 0,
@@ -299,8 +304,8 @@ void CheckAccessoryMenu(MMDApp* app) {
         SendMessageW(list,LB_ADDSTRING,0,reinterpret_cast<LPARAM>(L"first"));
         app->AccessoryRenderSplitOrder() = 1;
         ApplyAccessorySettingsDialog(app,2,dialog);
-        Check(second->order == 0 && first->order == 1 && app->SelectedAccessorySlot() == 93,
-              "accessory dialog commits new order and selects correct slot with sorting on/off");
+        Check(second->order == 0 && first->order == 1 && app->SelectedAccessorySlot() == selected,
+              "accessory dialog commits order and preserves selected slot with sorting on/off");
         Check(app->AccessoryRenderSplitOrder() == 1,
               "manual model-before/after boundary survives transparent sorting");
         app->AccessoryOrderArray() = nullptr;
@@ -317,6 +322,7 @@ void CheckAccessoryMenu(MMDApp* app) {
               "accessory availability preserves sorting selection");
     }
     app->TransparentMaterialSortPrecision() = savedPrecision;
+    app->SelectedAccessorySlot() = savedSelection;
 }
 
 struct MenuPluginFixture {

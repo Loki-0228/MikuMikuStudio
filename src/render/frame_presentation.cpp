@@ -12,6 +12,7 @@
 #include "mikudancestudio/mmd_app.hpp"
 #include "mikudancestudio/ported_funcs.hpp"
 #include "mikudancestudio/window_dpi_scope.hpp"
+#include "mikudancestudio/plugin_runtime.hpp"
 
 namespace mikudancestudio {
 namespace { thread_local bool nativeBakePreview=false; }
@@ -61,7 +62,7 @@ static RECT BasePresentationRect(MMDApp* app) {
     result.left = std::max<LONG>(0, floating ? 0 : app->SidebarWidth() + 9);
     result.right = std::max(result.left, client.right);
     if (!build_profile::original) {
-        result.top = std::min<LONG>(25, client.bottom);
+        result.top = std::min<LONG>(25 + plugins::ToolbarHeight(app), client.bottom);
         result.bottom = std::max(result.top, client.bottom - (floating ? 32 : 192));
     }
     return result;

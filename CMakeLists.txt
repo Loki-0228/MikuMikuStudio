@@ -28,14 +28,35 @@ option(MIKUDANCESTUDIO_ENABLE_DX12
     "Build optional DX12 skinning/native preview; OFF keeps the DX9/MME renderer with CPU skinning"
     ON)
 
+option(MIKUDANCESTUDIO_DEBUG_SYMBOLS "Generate separate Release PDB files" ON)
+option(MIKUDANCESTUDIO_WIN7_BASELINE "Require the pinned Windows 7 x64 CPU baseline" OFF)
+if(MIKUDANCESTUDIO_WIN7_BASELINE)
+    if(NOT MSVC OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8 OR
+       NOT CMAKE_CXX_COMPILER_VERSION VERSION_EQUAL "19.44.35229.0")
+        message(FATAL_ERROR "Win7 baseline requires x64 MSVC 19.44.35229 (VS 2022 14.44.35207 toolset directory)")
+    endif()
+    if(NOT CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION STREQUAL "10.0.19041.0")
+        message(FATAL_ERROR "Win7 baseline requires Windows SDK 10.0.19041.0")
+    endif()
+    if(CMAKE_CXX_FLAGS MATCHES "/arch:(AVX|AVX2|AVX512)" OR CMAKE_CXX_FLAGS_RELEASE MATCHES "/arch:(AVX|AVX2|AVX512)")
+        message(FATAL_ERROR "Win7 CPU baseline cannot require AVX instructions")
+    endif()
+    set(MIKUDANCESTUDIO_ENABLE_DX12 OFF CACHE BOOL "Win7 baseline uses DX9 and CPU skinning" FORCE)
+    add_compile_definitions(_WIN32_WINNT=0x0601 WINVER=0x0601)
+endif()
+
 if (MSVC)
     # Sources contain UTF-8 comments and literals; do not use the host code page.
     add_compile_options(/W3 /permissive- /utf-8)
     # Keep symbols for crash dumps without disabling Release optimization.
     # Embed compiler symbols in objects to avoid shared-PDB C1902 failures.
     add_compile_options($<$<CONFIG:Release>:/Z7>)
-    add_link_options($<$<CONFIG:Release>:/DEBUG:FULL>
-                     $<$<CONFIG:Release>:/OPT:REF>
+    if(MIKUDANCESTUDIO_DEBUG_SYMBOLS)
+        add_link_options($<$<CONFIG:Release>:/DEBUG:FULL>)
+    else()
+        add_link_options($<$<CONFIG:Release>:/DEBUG:NONE>)
+    endif()
+    add_link_options($<$<CONFIG:Release>:/OPT:REF>
                      $<$<CONFIG:Release>:/OPT:ICF>)
     add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
     # The original binary tolerates implicit narrowing everywhere; keep the
@@ -1348,9 +1369,14 @@ endif()
 # MMD installation and are not part of this source tree.
 # ---------------------------------------------------------------------------
 install(TARGETS MikuDanceStudio RUNTIME DESTINATION .)
+if(MIKUDANCESTUDIO_WIN7_BASELINE)
+    target_link_options(MikuDanceStudio PRIVATE /SUBSYSTEM:WINDOWS,6.01)
+endif()
 # The NVIDIA driver-setting helper is an explicit, separate download/install.
 install(TARGETS MMSNvidiaAAFix RUNTIME DESTINATION . COMPONENT NvidiaAAFix EXCLUDE_FROM_ALL)
 install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/licenses/" DESTINATION licenses)
+
+include(cmake/plugin_abi.cmake)
 
 if(Python3_Interpreter_FOUND)
     add_test(NAME optional_graphics_imports

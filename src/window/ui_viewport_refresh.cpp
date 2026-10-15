@@ -15,6 +15,7 @@
 #include "mikudancestudio/mmd_app.hpp"
 #include "mikudancestudio/ported_funcs.hpp"
 #include "mikudancestudio/window_dpi_scope.hpp"
+#include "mikudancestudio/plugin_runtime.hpp"
 
 namespace mikudancestudio {
 void PicBgOverlayRefresh(MMDApp* app);  // VA 0x00417130
@@ -207,13 +208,14 @@ void RefreshMainWindowViewport(MMDApp* app) {  // was Sub42C810
     if (renderWidth <= 0 || renderHeight <= 0)
         return;
 
-    const int availableHeight = view.bottom - 217;
+    const int pluginHeight = plugins::ToolbarHeight(app);
+    const int availableHeight = std::max(1L, view.bottom - 217 - pluginHeight);
     const int sidebar = s.SidebarWidth();
     const int availableWidth = view.right - sidebar - 9;
     const int fittedWidth = availableHeight * renderWidth / renderHeight;
 
     if (availableWidth >= fittedWidth) {                // 0x42C8DD
-        view.top += 25;
+        view.top += 25 + pluginHeight;
         view.bottom -= 192;
         const int center = availableWidth / 2 + sidebar + 9;
         view.left = center - fittedWidth / 2;
@@ -222,8 +224,8 @@ void RefreshMainWindowViewport(MMDApp* app) {  // was Sub42C810
         const int fittedHeight =
             availableWidth * renderHeight / renderWidth;
         view.left = sidebar + 9;
-        view.top = availableHeight / 2 - fittedHeight / 2 + 25;
-        view.bottom = fittedHeight / 2 + availableHeight / 2 + 25;
+        view.top = availableHeight / 2 - fittedHeight / 2 + 25 + pluginHeight;
+        view.bottom = fittedHeight / 2 + availableHeight / 2 + 25 + pluginHeight;
     }
 
     if (view.left < 0)

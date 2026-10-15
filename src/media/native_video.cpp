@@ -4,6 +4,7 @@
 #include <mfapi.h>
 #include <mfidl.h>
 #include <mfreadwrite.h>
+#include "mikudancestudio/mf_optional.hpp"
 #include <mferror.h>
 #include <wrl/client.h>
 #include <algorithm>
@@ -217,10 +218,13 @@ struct Decoder {
         path = source;
         ComPtr<IMFAttributes> attributes;
         Check(MFCreateAttributes(&attributes, 2), L"Video reader attributes");
-        attributes->SetUINT32(MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING, TRUE);
+        attributes->SetUINT32(media_compat::advancedVideoProcessing, TRUE);
         HRESULT opened = MFCreateSourceReaderFromURL(path.c_str(), attributes.Get(), &reader);
+        bool basicReader = false;
         if (FAILED(opened)) {
-            attributes->DeleteItem(MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING);
+            basicReader = true;
+            reader.Reset();
+            attributes->DeleteItem(media_compat::advancedVideoProcessing);
             attributes->SetUINT32(MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, TRUE);
             opened = MFCreateSourceReaderFromURL(path.c_str(), attributes.Get(), &reader);
         }
@@ -245,7 +249,7 @@ struct Decoder {
             const double ratio = double(maxDimension) / std::max(width, height);
             width = std::max(2u, UINT(width * ratio) & ~1u); height = std::max(2u, UINT(height * ratio) & ~1u);
         }
-        try {
+        const auto configure = [&] {
             ComPtr<IMFMediaType> type;
             Check(MFCreateMediaType(&type), L"Video media type");
             type->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video); type->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32);
@@ -257,6 +261,22 @@ struct Decoder {
             }
             Check(format, L"Decode RGB32 video");
             ReadFormat(); Decode(0);
+        };
+        try {
+            try { configure(); }
+            catch (const Failure&) {
+                // An older reader may accept the unknown advanced attribute
+                // but fail RGB32 negotiation. Retry its basic CPU processor
+                // before requiring an external codec fallback.
+                if (basicReader) throw;
+                reader.Reset(); frame.reset(); origin = 0; originKnown = false;
+                attributes->DeleteItem(media_compat::advancedVideoProcessing);
+                attributes->SetUINT32(MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, TRUE);
+                Check(MFCreateSourceReaderFromURL(path.c_str(), attributes.Get(), &reader), L"Open basic video reader");
+                Check(reader->SetStreamSelection(MF_SOURCE_READER_ALL_STREAMS, FALSE), L"Select video");
+                Check(reader->SetStreamSelection(MF_SOURCE_READER_FIRST_VIDEO_STREAM, TRUE), L"Select video");
+                configure();
+            }
         } catch (const Failure&) {
             // In particular Windows' H.264 MFT does not decode High 10. Keep
             // the native metadata and use a bounded, disk-free pipe fallback.

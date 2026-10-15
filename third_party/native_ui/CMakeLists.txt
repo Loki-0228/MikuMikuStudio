@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.21)
+project(native_ui LANGUAGES CXX)
+add_library(native_ui_layout STATIC src/layout.cpp src/tree_layout.cpp)
+add_library(native_ui::layout ALIAS native_ui_layout)
+target_include_directories(native_ui_layout PUBLIC include)
+target_compile_features(native_ui_layout PUBLIC cxx_std_17)

@@ -1,0 +1,27 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 21, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "win7-x64",
+      "displayName": "Win7 SP1 x64 CPU baseline",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/build/win7-x64/build",
+      "toolchainFile": "${sourceDir}/build/win7-x64/build/generators/conan_toolchain.cmake",
+      "cacheVariables": {
+        "CMAKE_SYSTEM_VERSION": "10.0.19041.0",
+        "CMAKE_TRY_COMPILE_CONFIGURATION": "Release",
+        "MIKUDANCESTUDIO_WIN7_BASELINE": "ON",
+        "MIKUDANCESTUDIO_ENABLE_DX12": "OFF",
+        "MIKUDANCESTUDIO_PROFILE": "full"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "win7-x64-release", "configurePreset": "win7-x64", "configuration": "Release", "jobs": 1 }
+  ],
+  "testPresets": [
+    { "name": "win7-x64-release", "configurePreset": "win7-x64", "configuration": "Release", "output": { "outputOnFailure": true } }
+  ]
+}

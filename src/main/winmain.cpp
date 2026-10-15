@@ -1,5 +1,6 @@
 #include "mikudancestudio/autosave.hpp"
 #include "mikudancestudio/plugin_menu.hpp"
+#include "mikudancestudio/plugin_runtime.hpp"
 #include "mikudancestudio/bake_ui_lock.hpp"
 // ===========================================================================
 // VA 0x004C4460 - WinMain  (original: _WinMain@16)
@@ -153,7 +154,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
                     static_cast<unsigned long long>(msg.wParam));
             if (!bake::UiLocked() && msg.message==WM_KEYDOWN && !(msg.lParam&(1LL<<30)) &&
                 (msg.hwnd==app->MainWindow()||IsChild(app->MainWindow(),msg.hwnd)) &&
-                plugin_menu::HandleShortcut(app,unsigned(msg.wParam))) continue;
+                (plugin_menu::HandleShortcut(app,unsigned(msg.wParam)) ||
+                 plugins::HandleShortcut(unsigned(msg.wParam), msg.hwnd == app->MainWindow()))) continue;
             // Forward system shortcuts from focused child/floating controls.
             if (msg.message == WM_SYSKEYDOWN && msg.wParam == VK_RETURN &&
                 (msg.lParam & (LPARAM(1) << 29)) != 0 &&
@@ -162,6 +164,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
                 SendMessageW(app->MainWindow(), msg.message, msg.wParam, msg.lParam);
                 continue;
             }
+            if (plugins::HandleDialogMessage(&msg)) continue;
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
             if (pumpStats != nullptr) ++statsMsgs;

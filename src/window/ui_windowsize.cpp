@@ -1,5 +1,6 @@
 #include "mikudancestudio/build_profile.hpp"
 #include "mikudancestudio/window_dpi_scope.hpp"
+#include "mikudancestudio/plugin_runtime.hpp"
 // ===========================================================================
 // VA 0x00443300 - HandleWindowSize  (original: sub_443300, ~0x19B1 bytes)
 // ===========================================================================
@@ -105,6 +106,7 @@ void HandleWindowSize(MMDApp* app) {
     const WindowDpiScope dpi(hwnd);
 
     if (s.FullscreenMode() != 0) {
+        plugins::Layout(app);
         RefreshSeparateWindowViewport(app);
         return;
     }
@@ -137,6 +139,7 @@ void HandleWindowSize(MMDApp* app) {
         if (grew) PanelPaint(app);                             // 0x4433EC
     }
     const std::int32_t side = sidebar;
+    plugins::Layout(app);
     RECT cb;                                                   // var_30
     GetClientRect(hwnd, &cb);                                  // 0x443563
     const std::int32_t bottom = cb.bottom;
