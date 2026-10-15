@@ -1,5 +1,6 @@
 #include "native_ui.hpp"
 #include <native_ui/layout.hpp>
+#include <native_ui/win32_host.hpp>
 #include <cmath>
 #include <set>
 #include <commctrl.h>
@@ -23,6 +24,7 @@ struct NativeUi::Impl {
     std::string activePanel;
     std::map<std::string, MmsResult> panelErrors;
     uint32_t dpi = 96;
+    native_ui::PanelBuffer toolbarBuffer, workspaceBuffer, bodyBuffer;
     int workspaceHeight = 0, panelScrollX = 0, panelScrollY = 0, panelWidth = 0, panelHeight = 0;
     Impl(UiRegistry& r, HWND window, Log output): registry(r), client{&r, "mms"}, log(std::move(output)), main(window) {
         WNDCLASSW wc{}; wc.hInstance = GetModuleHandleW(nullptr); wc.lpszClassName = L"MMS.PluginAbi.Toolbar.V1"; wc.lpfnWndProc = Window; wc.hCursor = LoadCursor(nullptr, IDC_ARROW); wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
@@ -66,7 +68,15 @@ struct NativeUi::Impl {
             self->scroll = std::clamp(to, 0, std::max(0, self->contentHeight - self->height));
             Boundary([&] { self->Layout(); return MMS_OK; }); return 0;
         }
-        if (msg == WM_PAINT) { PAINTSTRUCT ps{}; HDC dc = BeginPaint(hwnd, &ps); FillRect(dc, &ps.rcPaint, reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1)); EndPaint(hwnd, &ps); return 0; }
+        if (msg == WM_PAINT) {
+            PAINTSTRUCT ps{}; HDC dc = BeginPaint(hwnd, &ps); RECT rect{}; GetClientRect(hwnd, &rect);
+            auto& buffer = hwnd == self->toolbar ? self->toolbarBuffer : hwnd == self->body ? self->bodyBuffer : self->workspaceBuffer;
+            const auto color = GetSysColor(COLOR_BTNFACE); uint64_t key = (uint64_t(self->dpi) << 32) | color;
+            HDC memory = buffer.Begin(dc, rect.right, rect.bottom, key, color);
+            if (memory) { FillRect(memory, &ps.rcPaint, reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1)); if (!buffer.Copy(dc, ps.rcPaint)) FillRect(dc, &ps.rcPaint, reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1)); }
+            else FillRect(dc, &ps.rcPaint, reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1));
+            EndPaint(hwnd, &ps); return 0;
+        }
         return DefWindowProcW(hwnd, msg, wp, lp);
     }
     int Position() const {
@@ -240,16 +250,18 @@ struct NativeUi::Impl {
         scroll = std::clamp(scroll, 0, std::max(0, contentHeight - height));
         applied = MoveWindow(toolbar, x, 0, std::max(0, width), height, TRUE) && applied;
         SCROLLINFO info{sizeof(info), SIF_RANGE | SIF_PAGE | SIF_POS}; info.nMin = 0; info.nMax = std::max(0, contentHeight - 1); info.nPage = height; info.nPos = scroll; SetScrollInfo(toolbar, SB_VERT, &info, TRUE);
+        std::vector<native_ui::WindowMove> moves;
         for (const auto& item : flow.items) {
             auto rect = item.rect; auto control = controls.find(item.id);
             int left = int(std::lround(rect.x * dpi / 96)), top = int(std::lround(rect.y * dpi / 96)) - scroll;
             int right = int(std::lround((rect.x + rect.width) * dpi / 96)), bottom = int(std::lround((rect.y + rect.height) * dpi / 96)) - scroll;
             if (control != controls.end()) {
-                applied = MoveWindow(control->second, left, top, right - left, bottom - top, TRUE) && applied;
+                moves.push_back({control->second, {left, top, right, bottom}});
                 ShowWindow(control->second, item.visible ? SW_SHOWNA : SW_HIDE);
             }
             geometry[item.id] = {(x + left) * 96.0f / dpi, top * 96.0f / dpi, (right - left) * 96.0f / dpi, (bottom - top) * 96.0f / dpi, item.visible && height > 0, item.overflowed || top < 0 || bottom > height};
         }
+        applied = native_ui::ApplyWindows(moves) == native_ui::ApplyResult::Applied && applied;
         ShowWindow(toolbar, height ? SW_SHOWNA : SW_HIDE);
         workspaceHeight = panelWidth = panelHeight = 0;
         if (visible && width > 0 && !activePanel.empty() && registry.elements.count(activePanel)) {

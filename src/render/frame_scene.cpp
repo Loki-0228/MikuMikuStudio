@@ -26,6 +26,7 @@
 #include <cstring>
 
 #include "mikudancestudio/mmd_app.hpp"
+#include "mikudancestudio/ui_metrics.hpp"
 #include "mikudancestudio/frame_presentation.hpp"
 #include "mikudancestudio/frame_rate.hpp"
 #include "mikudancestudio/d3d_object_guard.hpp"
@@ -493,6 +494,7 @@ void DrawFrameOverlayBatches(MMDApp* app) {
 }
 
 void RenderFrameScene(MMDApp* app) {
+    ui_metrics::Add(ui_metrics::Scene);
     frame_rate::BeginScene(app);
     MMD_PERF_SCOPE(Scene);
     shadow_filter::Invalidate(app);
@@ -583,6 +585,7 @@ void RenderFrameScene(MMDApp* app) {
 
     {
         MMD_PERF_SCOPE(BeginScene);
+        ui_metrics::Add(ui_metrics::EffectBegin);
         if (FAILED(device->BeginScene())) return;
     }
     InstallEffectMenuCompatibility(app);

@@ -1,6 +1,9 @@
 #include "manager.hpp"
 #include "native_ui.hpp"
 #include <native_ui/layout.hpp>
+#include <native_ui/update.hpp>
+#include <native_ui/win32_host.hpp>
+#include <commctrl.h>
 #include <fstream>
 #include <iostream>
 #include <thread>
@@ -13,6 +16,8 @@ template<class F> static bool Throws(F f) { try { f(); return false; } catch (..
 static MmsString S(const char* s) { return {s, std::strlen(s)}; }
 #include "surface_checks.inc"
 #include "layout_checks.inc"
+#include "update_checks.inc"
+#include "win32_checks.inc"
 static void Write(const fs::path& path, const std::string& bytes) { fs::create_directories(path.parent_path()); std::ofstream f(path, std::ios::binary); f << bytes; if (!f) throw std::runtime_error("fixture write failed"); }
 static std::string ManifestText(std::string id = "org.example.hello", std::string entry = "hello_menu.dll") {
     return "{\"schemaVersion\":1,\"id\":\"" + id + "\",\"name\":\"测试\",\"version\":\"1.0.0\",\"kind\":\"native\",\"abi\":{\"major\":1,\"minMinor\":0},\"entry\":\"" + entry + "\",\"architecture\":\"x64\",\"minWindows\":\"6.1.7601\",\"capabilities\":[\"ui.command\"],\"requiresServices\":[{\"id\":\"mms.ui\",\"major\":1,\"minMinor\":0}],\"dependencies\":[],\"nativeDependencies\":[],\"reloadPolicy\":\"restart\"}";
@@ -175,7 +180,7 @@ int wmain(int argc, wchar_t** argv) {
     const fs::path root = fs::temp_directory_path() / (L"mms-abi-contract-" + std::to_wstring(GetCurrentProcessId()));
     try {
         CHECK(argc == 3); CHECK(!fs::exists(root)); fs::create_directories(root);
-        JsonChecks(); DiscoveryChecks(root); UiChecks(); LayoutChecks(); TreeLayoutChecks(); LayoutServiceChecks(); SurfaceChecks(); LoaderChecks(root, fs::absolute(argv[1]));
+        JsonChecks(); DiscoveryChecks(root); UiChecks(); LayoutChecks(); TreeLayoutChecks(); LayoutServiceChecks(); UpdateChecks(); Win32HostChecks(); SurfaceChecks(); LoaderChecks(root, fs::absolute(argv[1]));
         LifecycleChecks(root, fs::absolute(argv[2]));
         std::cout << "PASS checks=" << checks << "\n"; fs::remove_all(root); return 0;
     } catch (const std::exception& e) { std::cerr << "FAIL after " << checks << ": " << e.what() << "\nfixtures=" << Utf8(root.native()) << "\n"; return 1; }

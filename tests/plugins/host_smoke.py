@@ -88,6 +88,7 @@ def run(executable, fixture, directory, filename, mode="gui"):
     environment = os.environ.copy()
     environment["LOCALAPPDATA"] = str(directory / "userdata")
     environment["MMS_ABI_PROBE_LOG"] = str(directory / "probe.log")
+    environment["MMS_UI_METRICS"] = str(directory / "ui-metrics.jsonl")
     startup = subprocess.STARTUPINFO()
     startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
     startup.wShowWindow = 0
@@ -154,6 +155,8 @@ def run(executable, fixture, directory, filename, mode="gui"):
         assert "UI_CLOSING" in log and log.splitlines().count("STOP_OK") == 1 and log.splitlines().count("DESTROY") == 1, log
         if "panel" in mode:
             assert log.count("SURFACE_DESTROY") == 2 and log.index("SURFACE_DESTROY") < log.index("STOP_OK"), log
+        metrics = json.loads((directory / "ui-metrics.jsonl").read_text().splitlines()[-1])
+        assert metrics["layout"] > 0 and all(isinstance(v, int) and v >= 0 for v in metrics.values()), metrics
         print(f"PASS {filename}: hidden production startup, menu, toolbar, close; toolbar height={rect.bottom - rect.top}", flush=True)
     except Exception:
         print(f"FAILED {filename}; windows={windows(process.pid)}", flush=True)

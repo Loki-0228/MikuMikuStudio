@@ -9,7 +9,7 @@ add_library(mms_plugin_runtime STATIC
     src/plugins/manager.cpp
     src/plugins/native_ui.cpp)
 target_include_directories(mms_plugin_runtime PUBLIC sdk/mms/include PRIVATE src/plugins)
-target_link_libraries(mms_plugin_runtime PUBLIC native_ui::layout user32 gdi32 comctl32 bcrypt)
+target_link_libraries(mms_plugin_runtime PUBLIC native_ui::win32 user32 gdi32 comctl32 bcrypt)
 target_compile_definitions(mms_plugin_runtime PRIVATE _WIN32_WINNT=0x0601 WINVER=0x0601)
 # Host-side static libraries inherit the host/Conan runtime. Only independent
 # plugin DLLs select /MT; ownership never crosses the public C ABI.
@@ -33,7 +33,7 @@ target_include_directories(mms_abi_c_check PRIVATE sdk/mms/include)
 set_target_properties(mms_abi_c_check PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
 add_dependencies(plugin_abi_tests mms_abi_c_check)
 target_include_directories(plugin_abi_tests PRIVATE src/plugins)
-target_link_libraries(plugin_abi_tests PRIVATE mms_plugin_runtime)
+target_link_libraries(plugin_abi_tests PRIVATE mms_plugin_runtime native_ui::update)
 target_compile_options(plugin_abi_tests PRIVATE /UNDEBUG)
 target_link_options(plugin_abi_tests PRIVATE /SUBSYSTEM:CONSOLE,6.01 /DEBUG:NONE)
 set_target_properties(plugin_abi_tests PROPERTIES

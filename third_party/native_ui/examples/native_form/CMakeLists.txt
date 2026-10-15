@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.21)
+project(native_form LANGUAGES CXX)
+add_subdirectory(../.. native_ui)
+add_executable(native_form WIN32 ../form.cpp)
+target_link_libraries(native_form PRIVATE native_ui::win32)
+target_compile_options(native_form PRIVATE /utf-8)
+target_compile_definitions(native_form PRIVATE _WIN32_WINNT=0x0601 WINVER=0x0601)
+target_link_options(native_form PRIVATE /SUBSYSTEM:WINDOWS,6.01 /DEBUG:NONE)

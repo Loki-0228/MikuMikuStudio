@@ -3,14 +3,21 @@
   "version": "0.1.0-dev",
   "source": "MMS repository original implementation",
   "baselineCommit": "42d4a71",
-  "sourceTreeSha256": "6ce6596ec0db6293aa481fd361ce6da4ffc00591c1ae010ea4c2fd33dc66e8e4",
+  "sourceTreeSha256": "79a6728cf3091cd146ce62c141e22d2f0b669b039b7ada85557506ded1f21022",
   "license": "../../LICENSE",
   "patches": [],
   "files": {
-    "CMakeLists.txt": "1b60832225a5903ed491231f3e9bceac3b52881b420d28b0497681e308634b7e",
+    "CMakeLists.txt": "1f36dff037cc118c43c9e25f6d27fdb7483652142e9e34a06369fd620661fb2f",
+    "examples/form.cpp": "21fa4bc8d7c908da2970abf6354cf52c828c3f5a2b97d08bc8afa8ac787f68fc",
+    "examples/native_form/CMakeLists.txt": "d97e3cdab733ac0c166a1cf2421ed8e2bbf9a2777e2a924d532ae3cd21ce3be7",
+    "examples/viewport_host/CMakeLists.txt": "8f729636f74287db6aa76a2470126eaffda951f1d28464297c5e0450a4262883",
     "include/native_ui/layout.hpp": "f128bedf261ef65b4a6911eae4aaa63ee699dcf9940c6a10023101d9e270d886",
-    "README.md": "f0ee013dc763ea55f549482cb12e6b63bf245b78c1febbdbd2eaef4572d1514b",
+    "include/native_ui/update.hpp": "aeed3fb906e00b6d82ddffad980a172becb41bbd8f73bdfab5b0346c0f1609ea",
+    "include/native_ui/win32_host.hpp": "2c6cfcd749db32880402aef4c090f325d98531ae2f54b23944635a90451094cf",
+    "README.md": "c16438bc374fddc6798abaae0d9ad87107b049a5e2b644f36c47b06ca28a414b",
     "src/layout.cpp": "ee2e514ae4b345c53fd2df9c5fab6d53a436b6bbd0e5f75fd1fc26e08adfc462",
-    "src/tree_layout.cpp": "50ee36481c6018161bf67aa3739d69df99a823f6698e8f90b21399b758c325bd"
+    "src/tree_layout.cpp": "50ee36481c6018161bf67aa3739d69df99a823f6698e8f90b21399b758c325bd",
+    "src/update.cpp": "87a7963e1f8dfba8ddf8f358596d5f165788ddebf967489765301ddee9778ef7",
+    "src/win32_host.cpp": "28de4ff217e4d603d3124b11d4c9c87f752916a5490e9e906c7947ef2cf23315"
   }
 }

@@ -29,6 +29,7 @@
 #include "mikudancestudio/bottom_panel_layout.hpp"
 #include "mikudancestudio/frame_presentation.hpp"
 #include "mikudancestudio/mmd_app.hpp"
+#include "mikudancestudio/ui_metrics.hpp"
 #include "mikudancestudio/bottom_panel_resize.hpp"
 #include "mikudancestudio/model.hpp"
 #include "mikudancestudio/ported_funcs.hpp"
@@ -86,6 +87,7 @@ void PanelTitle(MMDApp* app, HDC hdc, const char* english, const char* japanese,
 }  // namespace
 
 void HandleWindowPaint(MMDApp* app) {
+    ui_metrics::Add(ui_metrics::Paint);
     HWND hwnd = static_cast<HWND>(app->Hwnd());
     PAINTSTRUCT ps;
 
@@ -98,6 +100,7 @@ void HandleWindowPaint(MMDApp* app) {
     RECT rc;
     GetClientRect(hwnd, &rc);
     HDC hdc = BeginPaint(hwnd, &ps);
+    ui_metrics::Add(ui_metrics::PaintPixels, uint64_t(std::max(0L, ps.rcPaint.right - ps.rcPaint.left)) * std::max(0L, ps.rcPaint.bottom - ps.rcPaint.top));
     // The display-resolution scene composite owns its black margins and HUD.
     // A modal dialog disables the owner, so no FrameDriver follows this paint
     // to repair GDI blackouts over those pixels.

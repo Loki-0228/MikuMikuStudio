@@ -32,6 +32,7 @@
 #include "mikudancestudio/ported_funcs.hpp"
 #include "mikudancestudio/processor_settings.hpp"
 #include "mikudancestudio/runtime_log.hpp"
+#include "mikudancestudio/ui_metrics.hpp"
 #include "mikudancestudio/d3d12_native.hpp"
 
 // Ask hybrid graphics drivers to prefer the high-performance adapter.
@@ -255,6 +256,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         delete victim;
         g_Block = nullptr;
     }
+    ui_metrics::Write();
     runtime_log::NormalExit(static_cast<int>(msg.wParam));
     return static_cast<int>(msg.wParam);
 }

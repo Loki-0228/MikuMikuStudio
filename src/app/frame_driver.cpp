@@ -59,6 +59,7 @@
 #include "mikudancestudio/ported_funcs.hpp"
 #include "mikudancestudio/panel_controls.hpp"
 #include "mikudancestudio/runtime_log.hpp"
+#include "mikudancestudio/ui_metrics.hpp"
 #include "frame_state_dump.hpp"
 
 // key_ladder.cpp (registered in CMakeLists next to frame_modes_bone.cpp):
@@ -457,6 +458,7 @@ void TraceFrameViewpoint(MMDApp* app) {
 }
 
 void FrameDriver(MMDApp* app) {
+    ui_metrics::Add(ui_metrics::FrameDriver);
     if (device_lost_wait::Active() ||
         !device_lost_wait::Resume(app, app->state.frameStepPlayback != 0)) return;
     MMD_PERF_SCOPE(Frame);
@@ -885,6 +887,7 @@ void FrameDriver(MMDApp* app) {
                                      nullptr);
             }
             frame_rate::Presented(app, SUCCEEDED(hr));
+            if (SUCCEEDED(hr)) ui_metrics::Add(ui_metrics::Present);
             if (hr == D3DERR_DEVICELOST) {
                 device_lost_wait::Wait(app, device, false);
                 // A dispatched message may have destroyed the renderer.

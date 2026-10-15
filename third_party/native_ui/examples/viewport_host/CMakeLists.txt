@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.21)
+project(viewport_host LANGUAGES CXX)
+add_subdirectory(../.. native_ui)
+add_executable(viewport_host WIN32 ../form.cpp)
+target_link_libraries(viewport_host PRIVATE native_ui::win32)
+target_compile_options(viewport_host PRIVATE /utf-8)
+target_compile_definitions(viewport_host PRIVATE _WIN32_WINNT=0x0601 WINVER=0x0601 NATIVE_UI_SIMULATED_VIEWPORT=1)
+target_link_options(viewport_host PRIVATE /SUBSYSTEM:WINDOWS,6.01 /DEBUG:NONE)

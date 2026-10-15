@@ -31,6 +31,7 @@
 #define NOMINMAX
 #include <Windows.h>
 #include <d3d9.h>
+#include "mikudancestudio/ui_metrics.hpp"
 
 #include <cstdint>
 
@@ -94,6 +95,7 @@ bool PostDeviceReset(MMDApp* app) {
     IDirect3DDevice9* device = r->device;
     if (device == nullptr)
         return false;
+    ui_metrics::Add(ui_metrics::Reset);
     const HRESULT reset = device->Reset(&r->presentParameters);    // 0x440F57
     runtime_log::Write("DEVICE_RESET size=%ux%u hr=0x%08lX",
         r->presentParameters.BackBufferWidth, r->presentParameters.BackBufferHeight,
