@@ -2,6 +2,7 @@
 #include "mikudancestudio/build_profile.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "shared_history.hpp"
+#include "mikudancestudio/bone_scale.hpp"
 namespace mikudancestudio { class MMDApp; }
 namespace mikudancestudio::plugins {
 class DisplayKeyDeletion;
@@ -44,6 +45,17 @@ MmsResult PlanBoneRangeScale(MMDApp&, unsigned modelSlot, const BoneRangeScaleOp
 // Prepare target display-window sampling without deleting marked bone keys.
 MmsResult PlanBoneDisplayEvaluation(MMDApp&, unsigned modelSlot,
     std::shared_ptr<DisplayKeyDeletion>, std::shared_ptr<HistoryChange>&) noexcept;
+struct BoneInterpolationOptions {
+    // Bits 0..3 select native X/Y/Z/rotation; bit 4 selects scale. Values
+    // contain x1/y1/x2/y2 in 0..127. A zero mask is a no-op.
+    std::uint8_t channels = 0;
+    std::array<bone_scale::Curve, 5> values{};
+};
+// Edits marked existing keys, including marked frame-zero heads. Does not
+// retime, change marks/metadata, seek, or overwrite the current authored pose
+// on commit, undo or redo. Scale changes invalidate only derived transforms.
+MmsResult PlanBoneInterpolationEdit(MMDApp&, unsigned modelSlot,
+    const BoneInterpolationOptions&, std::shared_ptr<HistoryChange>&) noexcept;
 // Production register-button route under the explicit migration binding only.
 // True also covers rejection/no-op: never fall through to the old ring.
 bool TryRegisterBoundBones(MMDApp*) noexcept;

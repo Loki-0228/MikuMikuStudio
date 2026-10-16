@@ -89,6 +89,7 @@ struct RegistrationChange final : HistoryChange, std::enable_shared_from_this<Re
     bool scaleChanged = false, curvesChanged = false;
     bool observeAuthoring = false;
     bool publishMetadata = true;
+    bool preserveKeyMarks = false;
     unsigned char rulePhysicsMode = 0;
     RegistrationChange(MMDApp& a, unsigned s)
         : app(a), slot(s), model(a.ModelSlot(s)), lifetime(RetainSceneObject(a, MMS_OBJECT_MODEL, s)),
@@ -185,7 +186,11 @@ struct RegistrationChange final : HistoryChange, std::enable_shared_from_this<Re
             auto& m = *mdl::Mdl(source->model);
             for (const auto& patch : source->keys) {
                 const auto& target = forward ? patch.after : patch.before;
-                if (patch.data) std::memcpy(&m.boneKeys[patch.slot], &target, sizeof(target));
+                if (patch.data) {
+                    const auto mark = m.boneKeys[patch.slot].allocated;
+                    std::memcpy(&m.boneKeys[patch.slot], &target, sizeof(target));
+                    if (source->preserveKeyMarks) m.boneKeys[patch.slot].allocated = mark;
+                }
                 else m.boneKeys[patch.slot].allocated = target.allocated;
             }
             for (const auto& patch : source->poses) {
@@ -546,6 +551,43 @@ void InsertRangeCopy(KeyPlan& plan, const RangeKeyCopy& copy, unsigned start, un
     // insert-before branches retain the original raw-offset maximum quirk.
     change.maxAfter = (std::max)(change.maxAfter, appended ? copy.frame : start);
 }
+}
+MmsResult PlanBoneInterpolationEdit(MMDApp& app, unsigned slot, const BoneInterpolationOptions& options,
+    std::shared_ptr<HistoryChange>& out) noexcept {
+    out.reset();
+    if (options.channels & ~31u) return MMS_E_ARGUMENT;
+    for (unsigned channel = 0; channel < options.values.size(); ++channel)
+        if (options.channels & (1u << channel))
+            for (auto value : options.values[channel]) if (value > 127) return MMS_E_ARGUMENT;
+    return Boundary([&]() -> MmsResult {
+        if (!ReadyForKeyPlan(app, slot)) return MMS_E_NOT_READY;
+        const auto& model = *mdl::Mdl(app.ModelSlot(slot));
+        if (!options.channels || !AnyMarks(model.boneKeys, mdl::BoneKeyCapacity(model.boneKeys))) return MMS_OK;
+        KeyPlan plan(model, true);
+        const auto owners = ValidateOwners(plan);
+        auto change = NewKeyChange(app, slot);
+        for (std::size_t index = 0; index < plan.capacity; ++index) {
+            if (!model.boneKeys[index].allocated) continue;
+            if (!owners.count(unsigned(index))) return MMS_E_ARGUMENT;
+            // Even a scale-only edit must enter this sparse view: FinishKeyPlan
+            // uses touched slots to invalidate their actual free-curve owner.
+            auto& key = plan.Write(unsigned(index));
+            for (unsigned channel = 0; channel < 4; ++channel)
+                if (options.channels & (1u << channel))
+                    for (unsigned point = 0; point < 4; ++point)
+                        key.interpolation[point * 4 + channel] = options.values[channel][point];
+            if ((options.channels & 16u) && !change->scaleAfter.SetKeyCurve(int(index), options.values[4]))
+                return MMS_E_ARGUMENT;
+        }
+        const bool changed = FinishKeyPlan(plan, *change, owners);
+        // The old apply/reset buttons only repaint the interpolation panel.
+        // Keep their no-seek semantics in both history directions as well.
+        change->evaluationBones.clear();
+        change->publishMetadata = false;
+        change->preserveKeyMarks = true;
+        if (changed) out = std::move(change);
+        return MMS_OK;
+    });
 }
 MmsResult PlanBoneKeyDeletion(MMDApp& app, unsigned slot, bool automaticInterpolation,
     std::shared_ptr<HistoryChange>& out, bool selectedAtCurrentFrame,

@@ -337,6 +337,7 @@ void CrossModelJournal(){
 #include "bone_key_pool_growth_checks.inc"
 #include "native_bone_registration_checks.inc"
 #include "native_bone_transform_checks.inc"
+#include "native_bone_interpolation_checks.inc"
 #include "native_bone_evaluation_checks.inc"
 #include "native_display_key_checks.inc"
 #include "native_morph_key_checks.inc"
@@ -357,6 +358,7 @@ int main(){
     run("BoneKeyPoolGrowthChecks",BoneKeyPoolGrowthChecks);
     run("NativeBoneRegistrationChecks",NativeBoneRegistrationChecks);
     run("NativeBoneTransformChecks",NativeBoneTransformChecks);
+    run("NativeBoneInterpolationChecks",NativeBoneInterpolationChecks);
     run("NativeBoneEvaluationChecks",NativeBoneEvaluationChecks);
     run("NativeDisplayKeyChecks",NativeDisplayKeyChecks);
     run("NativeMorphKeyChecks",NativeMorphKeyChecks);

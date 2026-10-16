@@ -2574,6 +2574,9 @@ static void Cmd400_CurveCopyFromFrame(MMDApp* app, HWND hwnd) {
 // the model+0x26E0 table; ends SelectionReeval + SetFocus.
 // ------------------------------------------------------------------
 static void Cmd400_CurvePasteToFrames(MMDApp* app, HWND hwnd) {
+#if !MMD_ORIGINAL_PROFILE
+    if (plugins::TryApplyBoundBoneInterpolation(app, hwnd, false)) return;
+#endif
     app->SceneModified() = 1;
     const LRESULT sel =
         SendMessageA(GetDlgItem(hwnd, panel::kInterpCurveCombo), CB_GETCURSEL, 0, 0);
@@ -2631,6 +2634,9 @@ static void Cmd400_CurvePasteToFrames(MMDApp* app, HWND hwnd) {
 // +0x18; 0x2F8!=0 uses app+0x374 with +0x28/+0x2E/+0x34/+0x3A).
 // ------------------------------------------------------------------
 static void Cmd400_CurveResetRows(MMDApp* app, HWND hwnd) {
+#if !MMD_ORIGINAL_PROFILE
+    if (plugins::TryApplyBoundBoneInterpolation(app, hwnd, true)) return;
+#endif
     app->SceneModified() = 1;
     const LRESULT sel =
         SendMessageA(GetDlgItem(hwnd, panel::kInterpCurveCombo), CB_GETCURSEL, 0, 0);

@@ -8,5 +8,6 @@ namespace mikudancestudio::plugins {
 // rejection and no-op. Call before any old-ring write or selection fallback.
 bool TryDeleteBoundKeys(MMDApp*, bool selectedAtCurrentFrame = false) noexcept;
 bool TryScaleBoundBoneRange(MMDApp*, HWND dialog) noexcept;
+bool TryApplyBoundBoneInterpolation(MMDApp*, HWND window, bool reset) noexcept;
 }
 #endif

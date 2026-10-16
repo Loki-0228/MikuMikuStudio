@@ -9,6 +9,7 @@
 #include "mikudancestudio/mmd_app.hpp"
 #include "mikudancestudio/model.hpp"
 #include "mikudancestudio/panel_controls.hpp"
+#include "mikudancestudio/ported_funcs.hpp"
 #include <cerrno>
 #include <cctype>
 #include <cmath>
@@ -34,16 +35,46 @@ bool ReadNumber(HWND dialog, int id, double& value) noexcept {
     return !*end;
 }
 MmsResult CommitKeyChange(MMDApp& app, SharedHistory& history,
-    std::shared_ptr<HistoryChange> change, const char* label, bool morphs = false) {
+    std::shared_ptr<HistoryChange> change, const char* label, bool morphs = false, bool physicsReset = true) {
     if (!change) return MMS_OK;
     std::unique_ptr<SharedHistory::NativeTransaction> transaction;
     if (auto result = history.PrepareNative(label, std::move(change), transaction)) return result;
     if (auto result = history.CommitNative(std::move(transaction))) return result;
-    PublishBoundPoseEdit(app, history, true);
+    PublishBoundPoseEdit(app, history, physicsReset);
     curve_host::NotifyModelRegistered(&app, false);
     if (morphs) curve_host::NotifyModelRegistered(&app, true);
     return MMS_OK;
 }
+}
+bool TryApplyBoundBoneInterpolation(MMDApp* app, HWND window, bool reset) noexcept {
+    if (!app) return false;
+    auto* history = BoundNativePoseHistory(app);
+    if (!history) return false;
+    if (!ModelReady(*app) || history->Enter() != MMS_OK) return true;
+    history->Leave();
+    Boundary([&]() -> MmsResult {
+        const auto combo = GetDlgItem(window, panel::kInterpCurveCombo);
+        if (!combo) return MMS_E_ARGUMENT;
+        const auto channel = SendMessageW(combo, CB_GETCURSEL, 0, 0);
+        if (channel < 0 || channel > bone_scale::kInterpBoneAll) return MMS_E_ARGUMENT;
+        BoneInterpolationOptions options;
+        options.channels = channel == bone_scale::kInterpBoneAll ? 31u : std::uint8_t(1u << channel);
+        for (unsigned lane = 0; lane < options.values.size(); ++lane) {
+            if (!(options.channels & (1u << lane))) continue;
+            options.values[lane] = reset ? bone_scale::LinearCurve() : bone_scale::Curve{
+                app->state.lightA[lane], app->state.lightB[lane], app->state.lightC[lane], app->state.lightD[lane]};
+        }
+        std::shared_ptr<HistoryChange> change;
+        if (auto result = PlanBoneInterpolationEdit(*app, app->SelectedModelSlot(), options, change)) return result;
+        if (!change) return MMS_OK;
+        if (auto result = CommitKeyChange(*app, *history, std::move(change),
+            reset ? "Reset bone interpolation" : "Apply bone interpolation", false, false)) return result;
+        // Win32 messages and optional editor callbacks run after publication.
+        SelectionReeval(app);
+        SetFocus(window);
+        return MMS_OK;
+    });
+    return true;
 }
 bool TryDeleteBoundKeys(MMDApp* app, bool selectedAtCurrentFrame) noexcept {
     if (!app) return false;

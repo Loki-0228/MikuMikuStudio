@@ -120,6 +120,40 @@ void MixedModelRange(MMDApp* app, plugins::SharedHistory& history) {
     Check(history.Reset() == MMS_OK, "clear isolated range setup history");
     app->CurrentFrame() = 0;
 }
+void ModelInterpolation(MMDApp* app, plugins::SharedHistory& history) {
+    auto& model = *mdl::Mdl(app->ModelSlot(0));
+    auto& key = model.boneKeys[model.boneKeys[0].next];
+    const auto combo = GetDlgItem(app->MainWindow(), panel::kInterpCurveCombo);
+    Check(combo && SendMessageW(combo, CB_GETCOUNT, 0, 0) >= 6, "real model interpolation selector has five channels and all");
+    const auto selection = SendMessageW(combo, CB_GETCURSEL, 0, 0);
+    const std::array<unsigned char, 4> original{key.interpolation[0], key.interpolation[4], key.interpolation[8], key.interpolation[12]};
+    const auto a = app->state.lightA[0], b = app->state.lightB[0], c = app->state.lightC[0], d = app->state.lightD[0];
+    const auto matches = [&](const std::array<unsigned char, 4>& curve) {
+        return key.interpolation[0] == curve[0] && key.interpolation[4] == curve[1] &&
+               key.interpolation[8] == curve[2] && key.interpolation[12] == curve[3];
+    };
+    SendMessageW(combo, CB_SETCURSEL, 0, 0);
+    app->state.lightA[0] = 25; app->state.lightB[0] = 30; app->state.lightC[0] = 80; app->state.lightD[0] = 100;
+    SendMessageW(app->MainWindow(), WM_COMMAND, 431, 0);
+    Check(history.UndoCount() == 1 && matches({25, 30, 80, 100}) && model.boneTable[0].trans[1] == 4.f && model.bonePhysicsState[0],
+          "actual interpolation paste creates one node and preserves the unregistered pose");
+    SendMessageW(app->MainWindow(), WM_COMMAND, 431, 0);
+    Check(history.UndoCount() == 1, "repeating an identical interpolation paste creates no history");
+    app->CurrentFrame() = 17; Menu(app, L"Edit probe undo");
+    Check(matches(original) && model.boneTable[0].trans[1] == 4.f && history.RedoCount() == 1,
+          "plugin undo restores the original interpolation without seeking the changed playhead");
+    SendMessageW(app->MainWindow(), WM_COMMAND, 401, 0);
+    Check(matches({25, 30, 80, 100}) && model.boneTable[0].trans[1] == 4.f,
+          "native redo restores interpolation while preserving the current pose");
+    SendMessageW(app->MainWindow(), WM_COMMAND, 432, 0);
+    Check(history.UndoCount() == 2 && matches({20, 20, 107, 107}), "actual interpolation reset joins the same journal");
+    Menu(app, L"Edit probe undo");
+    Check(matches({25, 30, 80, 100}), "plugin undo restores the curve before reset");
+    Menu(app, L"Edit probe undo");
+    Check(matches(original) && history.Reset() == MMS_OK, "restore the original curve and clear isolated interpolation history");
+    app->state.lightA[0] = a; app->state.lightB[0] = b; app->state.lightC[0] = c; app->state.lightD[0] = d;
+    SendMessageW(combo, CB_SETCURSEL, selection, 0); app->CurrentFrame() = 0;
+}
 void Run(MMDApp* app) {
     using namespace plugins;
     const auto initial = GetModuleHandleW(L"manager_edit_probe.dll");
@@ -156,6 +190,7 @@ void Run(MMDApp* app) {
     };
     MixedModelDeletion(app, *history);
     MixedModelRange(app, *history);
+    ModelInterpolation(app, *history);
     revisionMatches(); app->SceneModified() = 0;
     app->PlaybackActive() = 1; Menu(app, L"Edit probe once"); app->PlaybackActive() = 0;
     app->FrameStepPlayback() = 1; Menu(app, L"Edit probe once"); app->FrameStepPlayback() = 0;

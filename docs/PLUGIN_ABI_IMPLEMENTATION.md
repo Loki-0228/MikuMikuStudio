@@ -66,6 +66,7 @@
 | P3 | 独立缩放及自由曲线作者快照 | 本机已验证 | 捕获、克隆、私有修改及无分配交换；保留旧 30 槽环。缩放不覆盖姿态；自由曲线保留 nativeHash。含空存储取消、过期拒绝和同值双交换保护。 |
 | P3 | 当前帧选中骨骼登记 | 本机已验证 | 按钮 500 显式绑定下支持插入、覆写、自动插值、缩放和跨模型共同撤销；私有计划与原子发布不写旧环。物理开关变化拒绝；普通宿主仍用旧路径。 |
 | P3 | 模型三族删键与混合范围缩放 | 本机已验证 | 显式绑定下将骨骼、表情、显示／IK／外亲键合为一条历史；范围对话框支持 7 种勾选组合，保留旧槽序覆盖、名称匹配与插值规则，共享最大帧、游标和标记只发布一次。空操作和整笔失败保留 redo。 |
+| P3 | 模型插值粘贴及重置 | 本机已验证 | 显式绑定下接入按钮 431／432，支持 X、Y、Z、旋转、缩放及全部通道。一次操作一条历史，恢复原生及自由曲线作者数据；往返保留当前姿态、播放头和后来调整的选中标记，无变化保留 redo。 |
 | P3 | 删键及范围操作后的局部姿态求值 | 本机已验证 | 每个方向按当前帧采样受影响的干净骨骼，保留未登记姿态；真实 Seek 位级对照、自由曲线、换帧跨模型撤销和无分配发布通过。物理模式切换和 IK 启动仍拒绝。 |
 | P3 | 显示、IK 及外亲键删除与当前帧求值 | 本机已验证 | 深拷贝键数据，保持嵌套缓冲区所有权；每个方向重建可见性、IK 状态和外亲窗口。关联骨骼使用目标窗口重新求值，未登记姿态保留。旧 Seek 对照、实际按钮与插件撤销、扩容及失败检查通过。 |
 | P3 | 表情键删除及原始曲线保留 | 本机已验证 | 私有目标键链与作者快照采样，不清除原始曲线及切线；受影响权重按当前帧重算。旧函数位级对照、曲线恢复、跨模型历史、池扩容及分配失败通过。 |
@@ -142,6 +143,7 @@
 | 模型三族原子删键 | 原生历史累计 24,147 项通过；三族旧删除对照、当前帧及外亲窗口求值、表情曲线恢复、整笔失败、逐分配故障、保护页池替换、关联集合过期及无分配提交 | `plugin-abi-model-delete-native-1.log` |
 | 模型三族混合范围缩放 | 原生历史累计 28,066 项通过；7 种勾选组合、42 组旧注册器对照、同帧覆盖、后序空族、无骨骼模型、目标外亲窗口、逐分配失败、过期拒绝、无分配发布和真实对话框路由 | `plugin-abi-model-range-native-final.log` |
 | 混合范围缩放回归与真实 DLL | 十组 CTest 通过；PMX 原名及 PMD 中文 EXE 通过三族缩放调用、插件跨帧撤销和原生重做，工程切换及关闭仍通过 | `plugin-abi-model-range-regressions-1.log`、`plugin-abi-model-range-host-1.log`、`abi-model-range-host-1/report.json` |
+| 模型插值按钮与真实插件历史 | 原生历史累计 30,321 项通过，包含 24 组旧按钮对照、当前姿态及后来选中标记保留、无变化、过期和分配失败。PMX 原名及 PMD 中文 EXE 通过真实按钮、重复粘贴、插件跨帧撤销、原生重做和工程边界；普通启动及插件 UI 探针也通过 | `plugin-abi-resource-interpolation-native-1.log`、`plugin-abi-resource-interpolation-host-1.log`、`abi-resource-interpolation-host-1/report.json`、`plugin-abi-resource-smoke-1.log` |
 | 文本容量与物理目标计量 | 新增检查随原生历史累计 30,321 项通过；实际分配容量、早 NUL、失败清理、名称替换、去重、候选目标快照、世界增长和分配失败均有覆盖。11 组相关 CTest 通过，其中 PMX 文本包含 98 个畸形输入及失败重试 | `plugin-abi-resource-interpolation-native-1.log`、`plugin-abi-resource-interpolation-regressions-1.log` |
 | 真实文本寿命与物理编辑窗口 | PMX/PMD 的活动及已删除模型均能测量全部自有文本；对象恢复、批量历史与 DX9 重置通过。独立桌面的物理编辑窗口在实际 ACP 936 下完成 816 项检查、12 次窗口操作，无失败 | `plugin-abi-resource-object-1.log`、`abi-resource-object-1/report.json`、`abi-text-physics-editor-final/report.json`、`abi-text-physics-editor-final/result.log` |
 | 工程文本替换与设置回归 | 不带可选模型的完整设置测试通过，覆盖 Unicode 元数据、保存重开、另存、未知及损坏扩展。带模型版本被兼容副本提示中断，未计为通过；PMX/PMD 工程往返另由真实编辑及对象探针覆盖 | `plugin-abi-text-project-empty.log`、`abi-text-project-empty/report.json`、`abi-text-project-final/result.log` |
