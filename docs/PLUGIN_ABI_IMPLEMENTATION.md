@@ -51,8 +51,10 @@
 | P3 | edit 两阶段事务内核 | 本机已验证 | prepare/join/commit/cancel、修订检查、serializer 代次、撤销字节深复制、失败取消和历史预留。测试使用宿主夹具，见[原生接入边界](PLUGIN_EDIT_INTEGRATION.md)。 |
 | P3 | 原生模型历史准备与发布 | 本机已验证 | 类型 1–7、链式操作和回绕，缩放、自由曲线及 Morph 层；准备失败不写状态，发布不分配。按钮、快捷键及直接撤销入口已接入。 |
 | P3 | 共同历史内核与插件撤销粒度 | 本机已验证 | `SharedHistory` 实现 `EditHost`；原生和插件同队列、同事务，按提交分步或合并撤销，失败保留游标及重做分支、资源延后回收。 |
-| P3 | 对象存在身份与删除绑定恢复 | 本机已验证 | 稳定 ID、恢复后新代次；原生相机、附件、外部亲骨骼及显示顺序的字段恢复。资源生命周期尚未接入；内核所有权夹具不能代替真实模型导入/删除验收。 |
-| P3 | 原生统一撤销及可写属性 | 未实现 | 共同历史内核和模型恢复辅助已完成；主窗口、全局编辑、模型/附件资源保留与恢复、各写入入口仍未接入。`mms.edit` 仍返回 NOT_FOUND，可写属性仍为 NOT_READY。 |
+| P3 | 对象存在身份与删除绑定恢复 | 本机已验证 | 稳定 ID、恢复后新代次；相机、附件、外部亲骨骼及显示顺序恢复。相关池重新分配仍会返回 STALE。 |
+| P3 | 模型及附件资源保留组件 | 本机已验证 | `RetainedSceneObject` 保留原生对象、关键帧、附件曲线、COM 资源及 Bullet 对象。真实隐藏宿主覆盖源文件离线、DX9 重置、导入与删除往返；调用内部共同历史，菜单入口尚未接入。 |
+| P3 | Bullet 移出和恢复候选 | 本机已验证 | 保留刚体、约束及代理句柄；移出后不参与模拟、碰撞和射线查询。恢复重建静止重叠，保留其他碰撞算法；发布不分配，旧接触在解锁前清理。外部 action、碰撞回调及未保留的关联约束拒绝准备。 |
+| P3 | 原生统一撤销及可写属性 | 未实现 | 主窗口、全局编辑、各原生写入入口、完整资源计量和对象恢复后的 UI 刷新仍待接入。`mms.edit` 仍返回 NOT_FOUND，可写属性仍为 NOT_READY。 |
 | P3 | animation 轨道/键、层、片段、变速、烘焙和选择 | 未实现 | 服务返回 NOT_FOUND。 |
 | P3 | storage serializer、工程数据和成对保存 | 本机已验证 | C ABI、两阶段加载、保存数据租约、缺失插件保留；PMM 与 JSON 配套哈希、恢复记录、旧对回退、自动备份轮换；真实 DLL 原名/中文 EXE 往返通过。 |
 | P3 | 显式导入和扩展文件重新关联 | 未实现 | EMM/EMD 保持显式导入；不匹配的 sidecar 拒绝自动应用，保留原件。 |
@@ -99,11 +101,20 @@
 | 共同历史、撤销粒度与对象存在身份 | ABI 累计 700 项通过；原生/插件交错、同事务发布、多次提交、取消保留 redo、缺失 serializer、陈旧及违规 commit、对象保留与代次、预算淘汰和延后释放。对象所有权使用内核夹具，尚非实际导入/删除入口 | `plugin-abi-shared-history-tests-final.log` |
 | 原生删除绑定及跨模型恢复 | 累计 10,671 项通过；真实原生姿势跨模型顺序；相机、附件、外部亲骨骼、显示顺序往返；逐分配故障、失效池拒绝、共同历史发布无分配 | `plugin-abi-shared-history-tests-final.log` |
 | 共同历史代码加入后的宿主 | Win7 目标完整构建；原名和中文名隐藏宿主的场景查询、面板、菜单、工具栏及正常退出通过；x64 子系统 6.1，无新增必需可选后端导入 | `plugin-abi-shared-history-final-build-2.log`、`plugin-abi-shared-history-smoke-1.log`、`plugin-abi-shared-history-pe.json` |
+| 对象资源、Bullet 保留及共同历史回归 | 原生历史 10,938 项、ABI 契约 700 项及曲线宿主测试均通过；包含同槽位先删后导入、候选保活、附件切线、刚体与碰撞恢复、失败及超预算回收、发布不分配 | `plugin-abi-object-history-batch-final-tests.log` |
+| 真实对象导入、删除和设备恢复 | PMX 原名 EXE 与 PMD 中文名 EXE 均 exit 0，两组均包含 X 附件；源文件离线、DX9 重置后的撤销及重做通过。探针直接调用内部共同历史，尚非菜单验收 | `plugin-abi-object-history-batch-host-1.log`、`abi-object-history-batch-host-1/report.json` |
+| 对象资源加入后的几何及工程回归 | PMX 与 PMD 两组通过，包含附件、稳定身份、PMM 往返和旧快照寿命 | `plugin-abi-object-history-batch-geometry-1.log`、`abi-object-history-batch-geometry-1/report.json` |
+| 对象资源整合后的构建与启动 | 宿主、原生历史、ABI、曲线宿主及侧栏探针五个目标构建成功；原名及中文名隐藏宿主的启动、菜单、工具栏、场景、面板和退出通过 | `plugin-abi-object-history-batch-final-build.log`、`plugin-abi-object-history-batch-smoke-1.log` |
+| 对象资源代码的 PE 导入清单 | 宿主为 x64、子系统 6.1；宿主及两个测试 EXE 未新增必需的可选图形或厂商后端直接导入 | `plugin-abi-object-history-batch-pe.json` |
 | 定义接入后的 PE 导入清单 | 四文件均无可选图形/厂商后端的直接导入 | `plugin-abi-definitions-pe-inventory.json` |
 | PE 导入/导出清单 | 四文件通过可选后端直接导入检查 | `plugin-abi-win7-pe-inventory.json` |
 | 处理器策略 | 99 项通过，P2 新增前 | `plugin-abi-processor.log` |
 | 侧栏/底部松手提交、取消、浮动和媒体 | 通过，P2 新增前 | `plugin-abi-sidebar.log` |
 | 视口缩放、菜单语言、可选图形导入、旧插件菜单 | 5 个目标通过，P2 新增前 | `plugin-abi-regressions.log` |
+
+对象资源这一轮最初的曲线宿主测试在缩放文字重绘断言失败。夹具将标签放在固定坐标，已不在当前底栏范围内；现按 `FramePanelLayout.bottomBand` 定位。新增嵌套夹具随后暴露测试栈溢出：`MMDAppState{}` 赋值生成约 680 KB 的临时对象。改为原地初始化后，曲线宿主及整组最终回归通过，未修改生产绘制逻辑。
+
+早期多目标构建因本机未配置 `physics_pose_tests.vcxproj` 失败，不能作为整组成功证据。最终构建使用已配置的五个目标，见 `plugin-abi-object-history-batch-final-build.log`。ABI 测试的临时文件曾因沙箱临时目录写入被拒绝而失败；将该进程的 `TEMP` 和 `TMP` 设为仓库内 `build/abi-tmp` 后，700 项通过，最终整组复验也通过。
 
 侧栏测试的附件排序用例缺少初始选中项。关闭新 ABI 初始化时也复现同一失败，见 `plugin-abi-accessory-without-abi.log`。测试已明确初始选择并验证排序后保持选择；附件业务逻辑未修改。
 
@@ -128,6 +139,6 @@ python tests/plugins/host_smoke.py build/win7-x64/build/Release/MikuMikuDance.ex
 
 本机 PDB 工具版本不匹配，验证构建显式设 `MIKUDANCESTUDIO_DEBUG_SYMBOLS=OFF`，默认配置仍生成符号。资源编译临时目录设为仓库内 `build/abi-tmp`，未修改系统环境。
 
-原生历史这一轮的 D3DX 效果预编译停在 `CompileEffect`，因此重建复用了前一轮已生成的资源。资源输入未修改，缓存时间晚于全部输入；另对两份资源各 80 个记录重新核对类型、语言和非着色器内容，并检查缓存哈希及编译后效果标识。记录见 `plugin-abi-native-history-resource-cache.json` 和 `plugin-abi-native-history-resource-verify.log`。本轮 C++ 代码及测试已重编译、重链接，不将缓存复用列为新的着色器编译验证。仅生成目录使用了临时校验命令，完成后恢复正常构建命令。
+原生历史阶段的 D3DX 效果预编译停在 `CompileEffect`，原生历史及后续对象资源验证继续使用已校验的资源缓存。资源输入未修改，缓存时间晚于全部输入；另对两份资源各 80 个记录重新核对类型、语言和非着色器内容，并检查缓存哈希及编译后效果标识。记录见 `plugin-abi-native-history-resource-cache.json` 和 `plugin-abi-native-history-resource-verify.log`。C++ 代码及测试重新编译、链接，缓存复用不计为新的着色器编译验证。临时校验命令只用于本机生成目录；对象资源整合验证后，36 个生成工程已恢复正常资源构建命令，见 `plugin-abi-object-history-batch-resource-restored.log`。
 
 Win7 回退依据：[GetTransformForStream](https://learn.microsoft.com/windows/win32/api/mfreadwrite/nf-mfreadwrite-imfsinkwriterex-gettransformforstream) 要求 Win8；[GetServiceForStream](https://learn.microsoft.com/windows/win32/api/mfreadwrite/nf-mfreadwrite-imfsinkwriter-getserviceforstream) 支持 Win7。代码保持 Win7 目标宏，仅查询可选 COM 能力；编译通过不替代媒体功能验证。
