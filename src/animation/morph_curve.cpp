@@ -1818,6 +1818,59 @@ bool LayersUnchanged(const unsigned char* model, const AuthoredLayers& layers) {
     return LayersDigest(found->second) == LayersDigest(layers.impl_->state);
 }
 
+bool SampleLayersTarget(const AuthoredLayers& layers,const NativeKeyView& view,
+    int morph,int frame,float& out,std::string& error) {
+    error.clear();
+    if(!layers.impl_||!layers.impl_->model||!view.key||view.capacity>std::size_t(INT32_MAX)||
+        morph<0||frame<0||frame>kMaximumFrame) {error="invalid morph target view";return false;}
+    const auto& model=*mdl::Mdl(layers.impl_->model);
+    if(!model.morphs||unsigned(morph)>=model.morphCount||model.morphCount>view.capacity||
+        (layers.impl_->present&&!Matches(layers.impl_->state.identity,layers.impl_->model))) {
+        error="morph target identity changed";return false;
+    }
+    std::vector<NativeKey> native;
+    unsigned slot=unsigned(morph),previous=0,previousFrame=0;bool ended=false;
+    for(std::size_t hop=0;hop<view.capacity;++hop) {
+        if(slot>=view.capacity||(hop&&slot<model.morphCount)){error="morph target leaves its track";return false;}
+        const auto* key=view.key(view.context,slot);
+        if(!key||key->previous>=view.capacity||key->frame>unsigned(kMaximumFrame)||!std::isfinite(key->value)||
+            (!hop&&key->frame)||(hop&&(key->previous!=previous||key->frame<=previousFrame))) {
+            error="invalid morph target chain";return false;
+        }
+        native.push_back({int(key->frame),double(key->value),key->allocated!=0});
+        if(!key->next){ended=true;break;}
+        previous=slot;previousFrame=key->frame;slot=key->next;
+    }
+    if(!ended||native.empty()){error="unterminated morph target chain";return false;}
+    const auto& state=layers.impl_->state;
+    const auto authored=state.authored.find(morph);
+    float result=0;
+    if(layers.impl_->present&&authored!=state.authored.end()) {
+        const auto mirror=state.mirror.find(morph),observed=state.observed.find(morph);
+        ac::Track effective;
+        // RebuildLayers may leave baselines absent until first evaluation.
+        // Preserve Sync's convention: that first chain installs the baseline.
+        if(mirror==state.mirror.end()||observed==state.observed.end())effective=authored->second;
+        else Derive(authored->second,mirror->second,native,effective);
+        result=float(ac::Evaluate(effective,frame).value);
+    } else {
+        const auto upper=std::upper_bound(native.begin(),native.end(),frame,
+            [](int value,const NativeKey& key){return value<key.frame;});
+        const auto lower=upper==native.begin()?upper:upper-1;
+        if(upper==native.end()||lower->frame==frame)result=float(lower->value);
+        else {
+            // SeekModelFrame's native morph branch rounds t and delta to float
+            // before the double multiply/add. Curve Evaluate uses a different
+            // operation order and is deliberately reserved for authored data.
+            const float time=float(double(frame-lower->frame)/double(unsigned(upper->frame-lower->frame)));
+            const float delta=float(upper->value)-float(lower->value);
+            result=float(double(time)*double(delta)+lower->value);
+        }
+    }
+    if(!std::isfinite(result)){error="nonfinite morph target sample";return false;}
+    out=result;return true;
+}
+
 }  // namespace mikudancestudio::morph_curve
 
 #include "../plugins/scene_resource_budget.hpp"

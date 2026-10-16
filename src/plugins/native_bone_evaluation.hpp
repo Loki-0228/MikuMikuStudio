@@ -8,7 +8,7 @@
 
 namespace mikudancestudio {
 class MMDApp;
-namespace mdl { struct BoneKey; }
+namespace mdl { struct BoneKey; struct BoneOrderEntry; }
 namespace bone_scale { class AuthoringState; }
 namespace bone_curve { class AuthoringState; }
 }
@@ -23,6 +23,10 @@ struct BoneEvaluationView {
     std::size_t keyCapacity = 0;
     const bone_scale::AuthoringState* scale = nullptr;
     const bone_curve::AuthoringState* curves = nullptr;
+    // Optional target external-parent windows for a combined display edit.
+    // Evaluation guards the live source selectors, but samples these targets.
+    const mdl::BoneOrderEntry* selectors = nullptr;
+    std::size_t selectorCount = 0;
 };
 // Evaluate affected, clean bones at app.CurrentFrame() each time an edit, undo
 // or redo is prepared. A nonzero bonePhysicsState byte preserves that bone's
@@ -33,7 +37,8 @@ struct BoneEvaluationView {
 // and side-table inputs. Prepare the scale AuthoringRestore first: its storage
 // lease must cover this participant if a target scale needs new pose storage.
 // After validating ALL participants, publish native keys and side authoring
-// before this participant. IsCurrent checks frame, pose and selector metadata,
+// before this participant. Publish this participant BEFORE target selectors.
+// IsCurrent checks frame, pose and source selector metadata,
 // never the key pool or authoring revision that those earlier writes change.
 // Publish is one-shot, allocation-free and must follow successful validation.
 // Physics mode changes and mode-3 IK arming return MMS_E_NOT_READY; no solver

@@ -116,6 +116,7 @@ struct BoneSample {
     int selector = -1;
     bool window = false, writePose = false;
     unsigned windowStart = 0, windowEnd = 0;
+    mdl::BoneOrderEntry sourceWindow{};
     Pose before, after;
 };
 MmsResult SampleNative(BoneSample& result, const Interval& interval, unsigned frame, int physicsMode) noexcept {
@@ -186,7 +187,7 @@ public:
                 bone.physicsDisabled != sample.physics || bone.slotIndex != sample.selector || !SamePose(ReadPose(bone), sample.before)) return false;
             if (sample.window) {
                 const auto& window = static_cast<const mdl::BoneOrderEntry*>(order)[sample.selector];
-                if (window.windowStart != sample.windowStart || window.windowEnd != sample.windowEnd) return false;
+                if (std::memcmp(&window, &sample.sourceWindow, sizeof(window))) return false;
             }
         }
         return true;
@@ -229,7 +230,9 @@ MmsResult PrepareBoneEvaluation(MMDApp& app, unsigned slot, const std::vector<un
                 if (NativeType(bone.type)) {
                     if (sample.selector >= 0) {
                         if (!candidate->order || unsigned(sample.selector) >= candidate->orderCount) return MMS_E_ARGUMENT;
-                        const auto& window = static_cast<const mdl::BoneOrderEntry*>(candidate->order)[sample.selector];
+                        sample.sourceWindow = static_cast<const mdl::BoneOrderEntry*>(candidate->order)[sample.selector];
+                        if (view.selectors && view.selectorCount != candidate->orderCount) return MMS_E_ARGUMENT;
+                        const auto& window = view.selectors ? view.selectors[sample.selector] : sample.sourceWindow;
                         sample.window = true; sample.windowStart = window.windowStart; sample.windowEnd = window.windowEnd;
                     }
                     const auto status = SampleNative(sample, interval, unsigned(candidate->frame), candidate->physicsMode);

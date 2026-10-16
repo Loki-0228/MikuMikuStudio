@@ -86,6 +86,7 @@
 
 namespace mikudancestudio {
 class MMDApp;
+namespace mdl { struct MorphKey; }
 
 namespace morph_curve {
 
@@ -228,6 +229,11 @@ void CopyState(const unsigned char* source, unsigned char* destination);
 // whatever the holder currently carries.  Installing is one swap and rolling a
 // commit back is the same swap called a second time, so a rejected commit
 // restores the previous authoring without allocating.
+struct NativeKeyView {
+    const void* context = nullptr;
+    const mdl::MorphKey* (*key)(const void*, std::uint32_t) noexcept = nullptr;
+    std::size_t capacity = 0;
+};
 class AuthoredLayers {
 public:
     AuthoredLayers();
@@ -247,6 +253,8 @@ private:
                               AuthoredLayers&, std::string&);
     friend void SwapLayers(unsigned char*, AuthoredLayers&) noexcept;
     friend bool LayersUnchanged(const unsigned char*, const AuthoredLayers&);
+    friend bool SampleLayersTarget(const AuthoredLayers&, const NativeKeyView&,
+                                   int, int, float&, std::string&);
 };
 
 // Copies the authoring of one model.  Returns true with an empty layer set when
@@ -270,6 +278,14 @@ bool HasLayerStorage(const unsigned char* model) noexcept;
 // True while the live layers still carry exactly what `layers` was captured
 // from and the model still has the same morph tables.
 bool LayersUnchanged(const unsigned char* model, const AuthoredLayers& layers);
+// Prepare-time sampling against a private target pool. Reuses the pristine
+// authoring/mirror derivation without Sync, cache writes, or live key payload reads.
+// The target must be a complete, strictly ordered track with a frame-zero root.
+// Without an authored curve it uses native seek float arithmetic. False leaves out
+// untouched; malformed views report error. Private derivation may allocate and
+// throw bad_alloc. The captured model and its morph table must remain alive.
+bool SampleLayersTarget(const AuthoredLayers&, const NativeKeyView&, int morph,
+                        int frame, float& out, std::string& error);
 
 // Applies the authored exact curves to the live morph weights.  It is called
 // after the native morph tracks have been evaluated, right where the model

@@ -1,6 +1,7 @@
 #include "native_bone_registration.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "native_bone_evaluation.hpp"
+#include "native_display_keys.hpp"
 #include "native_pose_scope.hpp"
 #include "native_history_commands.hpp"
 #include "scene_object_history.hpp"
@@ -75,6 +76,8 @@ struct RegistrationChange final : HistoryChange, std::enable_shared_from_this<Re
     std::vector<KeyPatch> keys;
     std::vector<unsigned> keyDependencies;
     std::vector<unsigned> evaluationBones;
+    std::shared_ptr<DisplayKeyDeletion> display;
+    std::vector<int> displaySelectors;
     std::vector<BoneRule> rules;
     std::vector<PosePatch> poses;
     std::vector<FlagPatch> morphFlags, displayFlags;
@@ -103,6 +106,8 @@ struct RegistrationChange final : HistoryChange, std::enable_shared_from_this<Re
         const auto& m = *mdl::Mdl(model);
         if (m.boneTable != bones || m.boneCount != count || !m.bonePhysicsState ||
             mdl::BoneKeyPoolIdentity(m.boneKeys) != poolIdentity) return false;
+        for (std::size_t index = 0; index < displaySelectors.size(); ++index)
+            if (bones[index].slotIndex != displaySelectors[index]) return false;
         if (!rules.empty() && m.physicsMode != rulePhysicsMode) return false;
         for (const auto& rule : rules) {
             const auto& bone = bones[rule.bone];
@@ -252,6 +257,11 @@ struct RegistrationChange final : HistoryChange, std::enable_shared_from_this<Re
                 };
                 view.scale = forward ? &scaleAfter : &scaleBefore;
                 view.curves = forward ? curveAfter.get() : curveBefore.get();
+                std::vector<mdl::BoneOrderEntry> selectors;
+                if (display) {
+                    if (auto result = display->TargetSelectors(forward, selectors)) return result;
+                    view.selectors = selectors.data(); view.selectorCount = selectors.size();
+                }
                 if (auto result = PrepareBoneEvaluation(app, slot, evaluationBones, view, candidate->evaluation)) return result;
             }
             if (!candidate->IsCurrent()) return MMS_E_STALE;
@@ -263,6 +273,7 @@ struct RegistrationChange final : HistoryChange, std::enable_shared_from_this<Re
         AddBytes(result, keys.capacity() * sizeof(KeyPatch)); AddBytes(result, poses.capacity() * sizeof(PosePatch));
         AddBytes(result, keyDependencies.capacity() * sizeof(unsigned)); AddBytes(result, rules.capacity() * sizeof(BoneRule));
         AddBytes(result, evaluationBones.capacity() * sizeof(unsigned));
+        AddBytes(result, displaySelectors.capacity() * sizeof(int));
         AddBytes(result, morphFlags.capacity() * sizeof(FlagPatch)); AddBytes(result, displayFlags.capacity() * sizeof(FlagPatch));
         AddBytes(result, scaleBefore.RetainedBytes()); AddBytes(result, scaleAfter.RetainedBytes());
         if (curveBefore) AddBytes(result, curveBefore->RetainedBytes());
@@ -523,20 +534,22 @@ void InsertRangeCopy(KeyPlan& plan, const RangeKeyCopy& copy, unsigned start, un
 }
 }
 MmsResult PlanBoneKeyDeletion(MMDApp& app, unsigned slot, bool automaticInterpolation,
-    std::shared_ptr<HistoryChange>& out, bool selectedAtCurrentFrame) noexcept {
+    std::shared_ptr<HistoryChange>& out, bool selectedAtCurrentFrame,
+    bool allowOtherMarks, std::shared_ptr<DisplayKeyDeletion> display) noexcept {
     out.reset();
     return Boundary([&]() -> MmsResult {
         if (!ReadyForKeyPlan(app, slot)) return MMS_E_NOT_READY;
         const auto& model = *mdl::Mdl(app.ModelSlot(slot));
-        if (AnyMarks(model.morphKeys, mdl::MorphKeyCapacity(model.morphKeys)) ||
-            AnyMarks(model.displayKeys, mdl::KeyPoolCapacity(model.displayKeys))) return MMS_E_NOT_READY;
+        const bool otherMarks = AnyMarks(model.morphKeys, mdl::MorphKeyCapacity(model.morphKeys)) ||
+            AnyMarks(model.displayKeys, mdl::KeyPoolCapacity(model.displayKeys));
+        if (otherMarks && !allowOtherMarks) return MMS_E_NOT_READY;
         const auto capacity = mdl::BoneKeyCapacity(model.boneKeys);
         const bool explicitMarks = AnyMarks(model.boneKeys, capacity);
-        if (!explicitMarks && !selectedAtCurrentFrame) return MMS_OK;
-        if (!explicitMarks) {
+        const bool fallback = !explicitMarks && !otherMarks && selectedAtCurrentFrame && app.CurrentFrame() != 0;
+        if (!explicitMarks && !fallback && !display) return MMS_OK;
+        if (fallback) {
             if (!model.boneSelection) return MMS_E_NOT_READY;
             if (app.CurrentFrame() < 0 || app.CurrentFrame() > frame_limits::maximum) return MMS_E_ARGUMENT;
-            if (!app.CurrentFrame()) return MMS_OK;
         }
         KeyPlan plan(model, true);
         const auto owners = ValidateOwners(plan);
@@ -547,18 +560,30 @@ MmsResult PlanBoneKeyDeletion(MMDApp& app, unsigned slot, bool automaticInterpol
         for (std::size_t index = 0; index < capacity; ++index) {
             const auto& key = model.boneKeys[index];
             const auto owner = owners.find(unsigned(index));
-            const bool wanted = explicitMarks ? key.allocated != 0 :
+            const bool wanted = explicitMarks ? key.allocated != 0 : fallback &&
                 owner != owners.end() && model.boneSelection[owner->second] && key.frame == unsigned(app.CurrentFrame());
             if (!wanted) continue;
             if (owner == owners.end()) return MMS_E_ARGUMENT;
             selected.push_back(unsigned(index));
             if (index < model.boneCount) rules.insert(unsigned(index));
         }
-        if (selected.empty()) return MMS_OK;
+        if (selected.empty() && !display) return MMS_OK;
         auto change = NewKeyChange(app, slot);
         DeletePlannedKeys(plan, selected, change->scaleAfter, automaticInterpolation);
         CaptureRules(*change, rules);
-        if (FinishKeyPlan(plan, *change, owners)) out = std::move(change);
+        const bool changed = FinishKeyPlan(plan, *change, owners);
+        change->display = std::move(display);
+        if (change->display) {
+            // Display edits can move the sampling window even when no bone key
+            // is marked. Use the union with key-edited bones, once per frame.
+            for (unsigned index = 0; index < model.boneCount; ++index) {
+                change->displaySelectors.push_back(model.boneTable[index].slotIndex);
+                if (model.boneTable[index].slotIndex >= 0) change->evaluationBones.push_back(index);
+            }
+            std::sort(change->evaluationBones.begin(), change->evaluationBones.end());
+            change->evaluationBones.erase(std::unique(change->evaluationBones.begin(), change->evaluationBones.end()), change->evaluationBones.end());
+        }
+        if (changed || change->display) out = std::move(change);
         return MMS_OK;
     });
 }

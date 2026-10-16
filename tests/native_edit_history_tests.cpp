@@ -339,6 +339,8 @@ void CrossModelJournal(){
 #include "native_bone_transform_checks.inc"
 #include "native_bone_evaluation_checks.inc"
 #include "native_display_key_checks.inc"
+#include "native_morph_key_checks.inc"
+#include "native_model_key_checks.inc"
 int main(){
     std::setvbuf(stdout,nullptr,_IONBF,0);
     const auto run=[](const char* name,void(*test)()){std::printf("RUN %s\n",name);test();};
@@ -356,6 +358,8 @@ int main(){
     run("NativeBoneTransformChecks",NativeBoneTransformChecks);
     run("NativeBoneEvaluationChecks",NativeBoneEvaluationChecks);
     run("NativeDisplayKeyChecks",NativeDisplayKeyChecks);
+    run("NativeMorphKeyChecks",NativeMorphKeyChecks);
+    run("NativeModelKeyChecks",NativeModelKeyChecks);
     run("PoseAndStale",PoseAndStale);run("KeysAndChain",KeysAndChain);run("Bake",Bake);
     run("Deletion",Deletion);run("EmptyAndCycle",EmptyAndCycle);run("FreeCurves",FreeCurves);
     run("Scatter",Scatter);run("FailedNativeCommands",FailedNativeCommands);run("RemovalBindings",RemovalBindings);

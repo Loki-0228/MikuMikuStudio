@@ -1,6 +1,7 @@
 #include "native_key_commands.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "native_bone_registration.hpp"
+#include "native_model_keys.hpp"
 #include "native_history_commands.hpp"
 #include "native_pose_scope.hpp"
 #include "mikudancestudio/animation_curve_host.hpp"
@@ -33,13 +34,14 @@ bool ReadNumber(HWND dialog, int id, double& value) noexcept {
     return !*end;
 }
 MmsResult CommitKeyChange(MMDApp& app, SharedHistory& history,
-    std::shared_ptr<HistoryChange> change, const char* label) {
+    std::shared_ptr<HistoryChange> change, const char* label, bool morphs = false) {
     if (!change) return MMS_OK;
     std::unique_ptr<SharedHistory::NativeTransaction> transaction;
     if (auto result = history.PrepareNative(label, std::move(change), transaction)) return result;
     if (auto result = history.CommitNative(std::move(transaction))) return result;
     PublishBoundPoseEdit(app, history, true);
     curve_host::NotifyModelRegistered(&app, false);
+    if (morphs) curve_host::NotifyModelRegistered(&app, true);
     return MMS_OK;
 }
 }
@@ -52,9 +54,9 @@ bool TryDeleteBoundKeys(MMDApp* app, bool selectedAtCurrentFrame) noexcept {
     Boundary([&]() -> MmsResult {
         const bool automatic = IsDlgButtonChecked(app->MainWindow(), panel::kPhysicsFrameCheckbox) == BST_CHECKED;
         std::shared_ptr<HistoryChange> change;
-        if (auto result = PlanBoneKeyDeletion(*app, app->SelectedModelSlot(), automatic,
+        if (auto result = PlanModelKeyDeletion(*app, app->SelectedModelSlot(), automatic,
                                               change, selectedAtCurrentFrame)) return result;
-        return CommitKeyChange(*app, *history, std::move(change), "Delete bone keys");
+        return CommitKeyChange(*app, *history, std::move(change), "Delete model keys", true);
     });
     return true;
 }

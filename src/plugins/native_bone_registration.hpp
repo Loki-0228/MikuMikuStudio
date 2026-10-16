@@ -4,6 +4,7 @@
 #include "shared_history.hpp"
 namespace mikudancestudio { class MMDApp; }
 namespace mikudancestudio::plugins {
+class DisplayKeyDeletion;
 struct BoneRegistrationOptions {
     int frame = 0;
     int physicsMode = 2;
@@ -18,11 +19,14 @@ struct BoneRegistrationOptions {
 // undo/redo prepares validate the retained record against the current scene.
 MmsResult PlanBoneRegistration(MMDApp&, unsigned modelSlot,
     const BoneRegistrationOptions&, std::shared_ptr<HistoryChange>&) noexcept;
-// Bone-only deletion. Auxiliary family marks reject the whole plan. The
+// Bone deletion. Auxiliary marks reject unless a model-key aggregate explicitly
+// owns the other families. An optional display record provides target parent
+// windows; publish this bone participant before that display participant. The
 // optional keyboard fallback selects current-frame keys privately only when
 // none of the three families has an explicit mark; frame zero is not implied.
 MmsResult PlanBoneKeyDeletion(MMDApp&, unsigned modelSlot, bool automaticInterpolation,
-    std::shared_ptr<HistoryChange>&, bool selectedAtCurrentFrame = false) noexcept;
+    std::shared_ptr<HistoryChange>&, bool selectedAtCurrentFrame = false,
+    bool allowOtherMarks = false, std::shared_ptr<DisplayKeyDeletion> display = {}) noexcept;
 struct BoneRangeScaleOptions {
     std::uint32_t start = 0, end = 0;
     double scale = 1;
