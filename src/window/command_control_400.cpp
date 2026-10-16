@@ -2579,7 +2579,7 @@ static void Cmd400_CurveCopyFromFrame(MMDApp* app, HWND hwnd) {
 // ------------------------------------------------------------------
 static void Cmd400_CurvePasteToFrames(MMDApp* app, HWND hwnd) {
 #if !MMD_ORIGINAL_PROFILE
-    if (plugins::TryApplyBoundBoneInterpolation(app, hwnd, false)) return;
+    if (plugins::TryApplyBoundInterpolation(app, hwnd, false)) return;
 #endif
     app->SceneModified() = 1;
     const LRESULT sel =
@@ -2639,7 +2639,7 @@ static void Cmd400_CurvePasteToFrames(MMDApp* app, HWND hwnd) {
 // ------------------------------------------------------------------
 static void Cmd400_CurveResetRows(MMDApp* app, HWND hwnd) {
 #if !MMD_ORIGINAL_PROFILE
-    if (plugins::TryApplyBoundBoneInterpolation(app, hwnd, true)) return;
+    if (plugins::TryApplyBoundInterpolation(app, hwnd, true)) return;
 #endif
     app->SceneModified() = 1;
     const LRESULT sel =

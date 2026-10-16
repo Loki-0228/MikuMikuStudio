@@ -645,6 +645,7 @@ void CheckShadowFilter(MMDApp* app) {
 #include "plugins/private_import_host_checks.inc"
 #include "plugins/native_registration_host_checks.inc"
 #include "plugins/global_registration_host_checks.inc"
+#include "plugins/camera_interpolation_host_checks.inc"
 #endif
 
 int main(int argc, char** argv) {
@@ -663,6 +664,9 @@ int main(int argc, char** argv) {
     HandleWindowSize(app);
     Check(!IsWindowVisible(window), "production host stays hidden");
 #if !MMD_ORIGINAL_PROFILE
+    if(argc==2 && std::string(argv[1])=="--camera-interpolation-only") {
+        camera_interpolation_host_checks::Run(app);ShutdownCleanup(app);g_Block=nullptr;delete app;return 0;
+    }
     if(argc==2 && std::string(argv[1])=="--global-registration-only") {
         global_registration_host_checks::Run(app);ShutdownCleanup(app);g_Block=nullptr;delete app;return 0;
     }

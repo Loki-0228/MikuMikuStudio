@@ -97,7 +97,7 @@ void InterpolationLegacyAndRoutes() {
         const auto scales = bone_scale::AuthoringState::Capture(f.first.raw());
         const InterpolationPoseState pose(f.first);
         const auto maximum = f.first.m->maxFrame; const auto cursor = f.first.m->searchCursor;
-        Check(!plugins::TryApplyBoundBoneInterpolation(f.app.get(), f.app->MainWindow(), reset),
+        Check(!plugins::TryApplyBoundInterpolation(f.app.get(), f.app->MainWindow(), reset),
               "unbound interpolation helper preserves the legacy command owner");
         f.app->SelectedModelSlot() = 1; f.Command(reset); f.app->SelectedModelSlot() = 0;
         Check(f.second.m->undoState[0] == 2 && f.history.UndoCount() == 0,

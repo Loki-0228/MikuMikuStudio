@@ -25,7 +25,7 @@ target_sources(mikudancestudio_core PRIVATE src/plugins/integration.cpp src/app/
 if(MIKUDANCESTUDIO_PROFILE STREQUAL "full")
     target_sources(mikudancestudio_core PRIVATE src/model/model_import.cpp src/model/import_texture_cache.cpp)
     target_sources(mikudancestudio_core PRIVATE src/plugins/native_object_commands.cpp)
-    target_sources(mikudancestudio_core PRIVATE src/plugins/native_global_registration.cpp src/plugins/native_accessory_registration.cpp src/plugins/native_global_commands.cpp)
+    target_sources(mikudancestudio_core PRIVATE src/plugins/native_global_registration.cpp src/plugins/native_accessory_registration.cpp src/plugins/native_global_commands.cpp src/plugins/native_camera_interpolation.cpp)
     target_sources(mikudancestudio_core PRIVATE src/physics/history_physics.cpp src/plugins/scene_object_history.cpp src/plugins/scene_resource_budget.cpp src/plugins/native_pose_scope.cpp src/plugins/native_history_commands.cpp src/plugins/native_pose_axis.cpp src/plugins/native_bone_registration.cpp src/plugins/native_key_commands.cpp src/plugins/native_bone_evaluation.cpp src/plugins/native_display_keys.cpp src/plugins/native_morph_keys.cpp src/plugins/native_model_keys.cpp)
 endif()
 

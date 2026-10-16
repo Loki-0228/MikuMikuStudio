@@ -240,6 +240,10 @@ struct State {
     // Such writes need not change the native pool or the authored key values.
     std::uint64_t revision = NextAuthoringRevision();
 #if !MMD_ORIGINAL_PROFILE
+    // The allocation may move while a registered pool keeps its identity.
+    // Borrowed pools have no such guarantee and retain the address guard.
+    std::uint64_t poolIdentity = 0;
+    void* poolAllocation = nullptr;
     // Native reconciliation changes the effective layer, not its author.
     std::uint64_t author = revision;
 #endif
@@ -263,6 +267,58 @@ uint64_t Fingerprint(MMDApp&app,Kind k,int slot){
 void* Identity(MMDApp&app,Kind kind,int slot){
     if(kind==Kind::Accessory)return slot>=0&&slot<255?app.AccessorySlot(slot):nullptr;
     switch(kind){case Kind::Camera:return app.CameraKeys();case Kind::Light:return app.LightKeys();case Kind::Shadow:return app.ShadowKeys();default:return app.GravityKeys();}
+}
+#if !MMD_ORIGINAL_PROFILE
+void* TrackPoolAllocation(MMDApp& app, Kind kind, int slot) noexcept {
+    switch(kind) {
+    case Kind::Camera:return app.CameraKeys();
+    case Kind::Light:return app.LightKeys();
+    case Kind::Shadow:return app.ShadowKeys();
+    case Kind::Gravity:return app.GravityKeys();
+    default:return slot>=0&&slot<255?app.AccessoryKeys(slot):nullptr;
+    }
+}
+std::uint64_t PoolIdentity(Kind kind, const void* pool) {
+    switch(kind) {
+    case Kind::Camera:return mdl::KeyPoolIdentity(static_cast<const mdl::CameraKey*>(pool));
+    case Kind::Light:return mdl::KeyPoolIdentity(static_cast<const mdl::LightKey*>(pool));
+    case Kind::Shadow:return mdl::KeyPoolIdentity(static_cast<const mdl::SelfShadowKey*>(pool));
+    case Kind::Gravity:return mdl::KeyPoolIdentity(static_cast<const mdl::GravityKey*>(pool));
+    default:return mdl::KeyPoolIdentity(static_cast<const mdl::AccessoryKey*>(pool));
+    }
+}
+std::uint64_t TrackPoolIdentity(MMDApp& app, Kind kind, int slot) {
+    return PoolIdentity(kind, TrackPoolAllocation(app, kind, slot));
+}
+#endif
+void CaptureStateIdentity(State& state, MMDApp& app, Kind kind, int slot) {
+    state.identity=Identity(app,kind,slot);
+#if !MMD_ORIGINAL_PROFILE
+    state.poolAllocation=TrackPoolAllocation(app,kind,slot);
+    state.poolIdentity=PoolIdentity(kind,state.poolAllocation);
+#endif
+}
+bool StateIdentityCurrent(const State& state, MMDApp& app, Kind kind, int slot) {
+#if !MMD_ORIGINAL_PROFILE
+    const auto identity=Identity(app,kind,slot);
+    if(!identity||(kind==Kind::Accessory&&state.identity!=identity))return false;
+    const auto* pool=TrackPoolAllocation(app,kind,slot);
+    const auto poolIdentity=PoolIdentity(kind,pool);
+    if(state.poolIdentity)return state.poolIdentity==poolIdentity;
+    return !poolIdentity&&state.poolAllocation==pool&&state.identity==identity;
+#else
+    return state.identity==Identity(app,kind,slot);
+#endif
+}
+bool SameStateIdentity(const State& left, const State& right, Kind kind) noexcept {
+#if !MMD_ORIGINAL_PROFILE
+    if(kind==Kind::Accessory&&left.identity!=right.identity)return false;
+    if(left.poolIdentity||right.poolIdentity)return left.poolIdentity==right.poolIdentity;
+    return left.poolAllocation==right.poolAllocation&&left.identity==right.identity;
+#else
+    (void)kind;
+    return left.identity==right.identity;
+#endif
 }
 // Detect edits made by the existing registration/delete/paste/undo commands.
 // Only changed native keys replace authored keys; unrelated tangents survive.
@@ -308,7 +364,7 @@ void Reconcile(State&s,const std::vector<Channel>&native){
 }
 State* Current(MMDApp&app,Kind k,int slot){
     auto it=states.find({&app,k,slot});if(it==states.end())return nullptr;
-    if(it->second.identity!=Identity(app,k,slot)){states.erase(it);return nullptr;}
+    if(!StateIdentityCurrent(it->second,app,k,slot)){states.erase(it);return nullptr;}
     const uint64_t fingerprint=Fingerprint(app,k,slot);
     if(fingerprint&&it->second.fingerprint==fingerprint)return &it->second;
     // The authored extension is the authority for custom curves. A legacy
@@ -419,6 +475,12 @@ bool Write(MMDApp&app,Kind kind,int slot,const std::vector<Channel>&input,std::w
     case Kind::Accessory:transaction.Begin(app.AccessoryKeys(slot));Mirror(app.AccessoryKeys(slot),input,frames);transaction.Updated(app.AccessoryKeys(slot));break;
     }
     next.identity=kind==Kind::Accessory ? app.AccessorySlot(slot) : transaction.FinalIdentity();
+#if !MMD_ORIGINAL_PROFILE
+    // A same-capacity write copies back into the old pool on destruction;
+    // only a larger write publishes the staged allocation.
+    next.poolAllocation=transaction.FinalIdentity();
+    next.poolIdentity=PoolIdentity(kind,next.poolAllocation);
+#endif
     if (!NativeRead(app,kind,slot,next.baseline)) throw std::runtime_error("Invalid mirrored key track");
     next.fingerprint=Fingerprint(app,kind,slot);
     stateSlot.first->second=std::move(next);
@@ -475,7 +537,7 @@ void Capture(MMDApp&app,pmm_extension::Document&doc){
     std::vector<ac::NamedTrack> tracks;
     for(auto&entry:states){if(std::get<0>(entry.first)!=&app)continue;
         Kind k=std::get<1>(entry.first);int slot=std::get<2>(entry.first);
-        if(entry.second.identity!=Identity(app,k,slot))continue;
+        if(!StateIdentityCurrent(entry.second,app,k,slot))continue;
         const auto* current=Current(app,k,slot);
         if(!current)continue; // Identity was checked above; no deleted object is saved.
         for(const auto&c:current->channels)tracks.push_back({std::to_string(int(k))+"/"+std::to_string(slot)+"/"+c.id,c.track});
@@ -515,7 +577,7 @@ void Load(MMDApp&app,const pmm_extension::Document&doc){
             for(const auto&key:t->track.keys)if(key.frame>mikudancestudio::frame_limits::maximum||key.value<field.minimum||key.value>field.maximum||
                 (field.discrete&&std::floor(key.value)!=key.value)){valid=false;break;}
             if(!valid)break;c.track=t->track;}
-        if(valid){next.identity=Identity(app,k,slot);next.fingerprint=nativeAvailable?Fingerprint(app,k,slot):0;states[{&app,k,slot}]=std::move(next);}
+        if(valid){CaptureStateIdentity(next,app,k,slot);next.fingerprint=nativeAvailable?Fingerprint(app,k,slot):0;states[{&app,k,slot}]=std::move(next);}
     }
 }
 
@@ -588,7 +650,7 @@ bool CaptureAuthoring(MMDApp& app, AuthoringTable& out, std::wstring& error) {
         const Kind kind = std::get<1>(entry.first);
         const int slot = std::get<2>(entry.first);
         // A track whose object is gone is not this app's authoring any more.
-        if (entry.second.identity != Identity(app, kind, slot)) continue;
+        if (!StateIdentityCurrent(entry.second, app, kind, slot)) continue;
         out.impl_->entries.insert(entry);
     }
     return true;
@@ -646,7 +708,7 @@ bool RebuildAuthoring(MMDApp& app, const std::vector<AuthoringEntry>& entries,
         if (Identity(app, item.kind, item.slot) == nullptr) continue;
         if (item.channels.size() != Fields(item.kind).size()) continue;
         State next;
-        next.identity = Identity(app, item.kind, item.slot);
+        CaptureStateIdentity(next, app, item.kind, item.slot);
         next.channels = item.channels;
         std::vector<Channel> baseline;
         if (!NativeRead(app, item.kind, item.slot, baseline)) continue;
@@ -765,7 +827,7 @@ bool AuthoringUnchanged(MMDApp& app, const AuthoringTable& table) {
     std::map<Address, State> live;
     for (const auto& entry : states) {
         if (std::get<0>(entry.first) == &app &&
-            entry.second.identity == Identity(app, std::get<1>(entry.first), std::get<2>(entry.first)))
+            StateIdentityCurrent(entry.second, app, std::get<1>(entry.first), std::get<2>(entry.first)))
             live.insert(entry);
     }
     if (live.size() != table.impl_->entries.size()) return false;
@@ -773,7 +835,7 @@ bool AuthoringUnchanged(MMDApp& app, const AuthoringTable& table) {
     auto right = table.impl_->entries.begin();
     for (; left != live.end(); ++left, ++right) {
         if (left->first != right->first) return false;
-        if (left->second.identity != right->second.identity) return false;
+        if (!SameStateIdentity(left->second, right->second, std::get<1>(left->first))) return false;
         if (left->second.fingerprint != right->second.fingerprint) return false;
         if (AuthoringDigest(left->second) != AuthoringDigest(right->second)) return false;
     }
@@ -782,15 +844,6 @@ bool AuthoringUnchanged(MMDApp& app, const AuthoringTable& table) {
 
 #if !MMD_ORIGINAL_PROFILE
 namespace {
-std::uint64_t TrackPoolIdentity(MMDApp& app, Kind kind, int slot) {
-    switch(kind) {
-    case Kind::Camera:return mdl::KeyPoolIdentity(app.CameraKeys());
-    case Kind::Light:return mdl::KeyPoolIdentity(app.LightKeys());
-    case Kind::Shadow:return mdl::KeyPoolIdentity(app.ShadowKeys());
-    case Kind::Gravity:return mdl::KeyPoolIdentity(app.GravityKeys());
-    default:return slot>=0&&slot<255?mdl::KeyPoolIdentity(app.AccessoryKeys(slot)):0;
-    }
-}
 template<class K> std::vector<Channel> TargetChannels(const NativeKeyView& view, Kind kind) {
     if(!view.key||!view.capacity)throw std::invalid_argument("target native track");
     const auto& fields=Fields(kind);std::vector<Channel> result(fields.size());
@@ -860,24 +913,30 @@ struct TrackAuthoring::Impl {
         objectIdentity(k==Kind::Accessory?Identity(a,k,s):nullptr){
         if(!poolIdentity||!Identity(a,k,s))throw std::invalid_argument("unowned authoring track");
         const auto found=states.find(address);
-        if(found!=states.end()&&found->second.identity==Identity(a,k,s)){seed=found->second;authored=true;}
+        if(found!=states.end()&&StateIdentityCurrent(found->second,a,k,s)){seed=found->second;authored=true;}
     }
     bool Current() const noexcept {
         if(TrackPoolIdentity(app,kind,slot)!=poolIdentity||(kind==Kind::Accessory&&Identity(app,kind,slot)!=objectIdentity))return false;
         const auto found=states.find(address);
-        const State* live=found!=states.end()&&found->second.identity==Identity(app,kind,slot)?&found->second:nullptr;
-        return authored?live&&live->author==seed.author:!live;
+        // Identity-preserving pool growth may precede the next curve target's
+        // publication. Its old allocation address does not end the captured
+        // author lineage; a different author (or pool identity) still does.
+        // An unauthored record accepts only absence, never an arbitrary stale
+        // state whose allocation happens not to match the current pool.
+        return authored?found!=states.end()&&StateIdentityCurrent(found->second,app,kind,slot)&&
+            found->second.author==seed.author:found==states.end();
     }
 };
 struct TrackAuthoring::Target::Impl {
     std::shared_ptr<TrackAuthoring::Impl> source;
     const State* before=nullptr;std::uint64_t revision=0,digest=0;
-    void* identity=nullptr;bool published=false;
+    void* identity=nullptr;void* poolAllocation=nullptr;bool published=false;
     std::vector<Channel> native;
     decltype(states)::node_type target,retired;
     explicit Impl(std::shared_ptr<TrackAuthoring::Impl> s):source(std::move(s)){}
     bool Current() const noexcept {
-        if(published||!source->Current()||Identity(source->app,source->kind,source->slot)!=identity)return false;
+        if(published||!source->Current()||Identity(source->app,source->kind,source->slot)!=identity||
+            TrackPoolAllocation(source->app,source->kind,source->slot)!=poolAllocation)return false;
         const auto found=states.find(source->address);const auto* live=found==states.end()?nullptr:&found->second;
         return live==before&&(!live||(live->revision==revision&&AuthoringDigest(*live)==digest));
     }
@@ -890,6 +949,7 @@ TrackAuthoring::Target::~Target()=default;
 std::unique_ptr<TrackAuthoring::Target> TrackAuthoring::Prepare(const NativeKeyView& view) const {
     if(!impl_->Current())throw std::invalid_argument("changed authoring track");
     auto candidate=std::make_unique<Target::Impl>(impl_);candidate->identity=Identity(impl_->app,impl_->kind,impl_->slot);
+    candidate->poolAllocation=TrackPoolAllocation(impl_->app,impl_->kind,impl_->slot);
     const auto found=states.find(impl_->address);
     if(found!=states.end()){candidate->before=&found->second;candidate->revision=found->second.revision;candidate->digest=AuthoringDigest(found->second);}
     candidate->native=TargetChannels(view,impl_->kind);
@@ -920,6 +980,8 @@ void TrackAuthoring::Target::Publish(void* identity) noexcept {
     auto& p=*impl_;if(p.published)std::terminate();
     if(!p.target.empty()){
         p.target.mapped().identity=identity;
+        p.target.mapped().poolAllocation=TrackPoolAllocation(p.source->app,p.source->kind,p.source->slot);
+        p.target.mapped().poolIdentity=PoolIdentity(p.source->kind,p.target.mapped().poolAllocation);
         p.retired=states.extract(p.source->address);
         states.insert(std::move(p.target));
     }

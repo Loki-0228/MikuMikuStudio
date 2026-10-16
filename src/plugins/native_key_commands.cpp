@@ -1,12 +1,15 @@
 #include "native_key_commands.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "native_bone_registration.hpp"
+#include "native_camera_interpolation.hpp"
 #include "native_model_keys.hpp"
 #include "native_morph_keys.hpp"
 #include "native_display_keys.hpp"
 #include "native_history_commands.hpp"
 #include "native_pose_scope.hpp"
 #include "mikudancestudio/animation_curve_host.hpp"
+#include "mikudancestudio/autosave.hpp"
+#include "mikudancestudio/bake_ui_lock.hpp"
 #include "mikudancestudio/frame_limits.hpp"
 #include "mikudancestudio/mmd_app.hpp"
 #include "mikudancestudio/model.hpp"
@@ -24,6 +27,14 @@ bool ModelReady(const MMDApp& app) noexcept {
         app.ModelSlot(app.SelectedModelSlot()) && !app.PlaybackActive() &&
         !app.FrameStepPlayback() && !app.state.recordPlaybackStartPending &&
         !app.SceneMutationInProgress();
+}
+bool CameraInterpolationReady(MMDApp& app) noexcept {
+    return !app.PlaybackActive() && !app.FrameStepPlayback() &&
+        !app.state.recordPlaybackStartPending && !app.SceneMutationInProgress() &&
+        !bake::UiLocked() && !SceneSaveInProgress() && !GetCapture() &&
+        !app.FrameRangeDialog() && !app.state.frameCopyDialog && !app.RecordingWindow() &&
+        !app.GravitySettingDialog() && !app.GroundShadowColorDialog() && !app.AccessoryOrderArray() &&
+        !app.state.accessoryEditDialogOpen && !app.state.edgeThicknessDialog;
 }
 bool ReadNumber(HWND dialog, int id, double& value) noexcept {
     const auto edit = GetDlgItem(dialog, id);
@@ -76,16 +87,40 @@ bool TryRegister(MMDApp* app, bool morph, unsigned lane) noexcept {
 }
 bool TryRegisterBoundMorph(MMDApp* app, unsigned lane) noexcept { return TryRegister(app, true, lane); }
 bool TryRegisterBoundDisplay(MMDApp* app) noexcept { return TryRegister(app, false, 0); }
-bool TryApplyBoundBoneInterpolation(MMDApp* app, HWND window, bool reset) noexcept {
+bool TryApplyBoundInterpolation(MMDApp* app, HWND window, bool reset) noexcept {
     if (!app) return false;
     auto* history = BoundNativePoseHistory(app);
     if (!history) return false;
-    if (!ModelReady(*app) || history->Enter() != MMS_OK) return true;
+    const bool camera = app->state.optflag[0] != 0;
+    if (!(camera ? CameraInterpolationReady(*app) : ModelReady(*app)) || history->Enter() != MMS_OK) return true;
     history->Leave();
     Boundary([&]() -> MmsResult {
         const auto combo = GetDlgItem(window, panel::kInterpCurveCombo);
         if (!combo) return MMS_E_ARGUMENT;
         const auto channel = SendMessageW(combo, CB_GETCURSEL, 0, 0);
+        if (camera) {
+            if (channel < 0 || channel > 6) return MMS_E_ARGUMENT;
+            CameraInterpolationOptions options;
+            options.channels = channel == 6 ? 63u : std::uint8_t(1u << channel);
+            for (unsigned lane = 0; lane < options.values.size(); ++lane) {
+                if (!(options.channels & (1u << lane))) continue;
+                options.values[lane] = reset ? std::array<std::uint8_t, 4>{20, 20, 107, 107} :
+                    std::array<std::uint8_t, 4>{app->state.lightA[lane], app->state.lightB[lane],
+                        app->state.lightC[lane], app->state.lightD[lane]};
+            }
+            std::shared_ptr<HistoryChange> change;
+            if (auto result = PlanCameraInterpolationEdit(*app, options, change)) return result;
+            if (!change) return MMS_OK;
+            std::unique_ptr<SharedHistory::NativeTransaction> transaction;
+            if (auto result = history->PrepareNative(reset ? "Reset camera interpolation" : "Apply camera interpolation",
+                std::move(change), transaction)) return result;
+            if (auto result = history->CommitNative(std::move(transaction))) return result;
+            PublishBoundPoseEdit(*app, *history, false);
+            curve_host::NotifyRegistered(app, curve_host::Kind::Camera);
+            SelectionReeval(app);
+            SetFocus(window);
+            return MMS_OK;
+        }
         if (channel < 0 || channel > bone_scale::kInterpBoneAll) return MMS_E_ARGUMENT;
         BoneInterpolationOptions options;
         options.channels = channel == bone_scale::kInterpBoneAll ? 31u : std::uint8_t(1u << channel);
