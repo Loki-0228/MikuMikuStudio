@@ -18,6 +18,8 @@ namespace {
 struct Entry {
     std::size_t capacity = 0;
     std::uint64_t identity = 0;
+    bool visible = true;
+    const void* token = nullptr;
     // One byte per slot, allocated by growth only.  Empty while the capacity is
     // the original one, because ModelRecord::keyVisitMap already covers that.
     std::vector<unsigned char> visit;
@@ -89,7 +91,7 @@ void BoneKeyPoolDestroy(BoneKey*& pool) {
     {
         std::lock_guard<std::mutex> lock(RegistryMutex());
         const auto found = Registry().find(released);
-        if (found != Registry().end()) {
+        if (found != Registry().end() && found->second.visible) {
             Registry().erase(found);
             owned = true;
         }
@@ -105,14 +107,15 @@ std::size_t BoneKeyCapacity(const BoneKey* pool) {
     if (pool == nullptr) return 0;
     std::lock_guard<std::mutex> lock(RegistryMutex());
     const auto found = Registry().find(pool);
-    return found == Registry().end() ? kBoneKeyCapacity : found->second.capacity;
+    return found == Registry().end() ? kBoneKeyCapacity :
+        found->second.visible ? found->second.capacity : 0;
 }
 
 std::uint64_t BoneKeyPoolIdentity(const BoneKey* pool) {
     if (pool == nullptr) return 0;
     std::lock_guard<std::mutex> lock(RegistryMutex());
     const auto found = Registry().find(pool);
-    return found == Registry().end() ? 0 : found->second.identity;
+    return found == Registry().end() || !found->second.visible ? 0 : found->second.identity;
 }
 
 std::size_t BoneKeyCapacity(const ModelRecord& model) {
@@ -147,77 +150,233 @@ std::size_t BoneKeyPlanCapacity(const ModelRecord& model,
     return BoneKeyPlanCapacity(BoneKeyCapacity(model.boneKeys), slotsNeeded);
 }
 
-bool BoneKeyPoolEnsure(ModelRecord& model, std::uint64_t slotsNeeded) {
-    BoneKey* const current = model.boneKeys;
-    const std::uint64_t identity = BoneKeyPoolIdentity(current);
-    const bool owned = identity != 0;
-    const std::size_t capacity = BoneKeyCapacity(current);
-    if (slotsNeeded <= capacity) return true;
+struct BoneKeyPoolGrowth::Impl {
+    enum class Phase { Prepared, Published, Done };
+    ModelRecord* model = nullptr;
+    BoneKey* source = nullptr;
+    BoneKey* candidate = nullptr;
+    std::size_t sourceCapacity = 0, candidateCapacity = 0;
+    std::uint64_t sourceIdentity = 0, candidateIdentity = 0;
+    bool grows = false, registered = false;
+    Phase phase = Phase::Prepared;
+    std::vector<unsigned char> beforeVisit;
 
-    const std::size_t target = BoneKeyPlanCapacity(capacity, slotsNeeded);
-    if (target == 0 || target <= capacity) return false;  // over the ceiling
-
-    BoneKey* const grown =
-        static_cast<BoneKey*>(std::calloc(target, sizeof(BoneKey)));
-    if (grown == nullptr) return false;
-    if (current != nullptr && capacity != 0)
-        std::memcpy(grown, current, capacity * sizeof(BoneKey));
-
-    Entry entry;
-    entry.capacity = target;
-    entry.identity = identity;
-    if (target > kBoneKeyCapacity) {
+    bool SourceCurrent(bool published) const noexcept {
+        const auto found = Registry().find(source);
+        if (!sourceIdentity)
+            return found == Registry().end() && sourceCapacity == (source ? kBoneKeyCapacity : 0);
+        return found != Registry().end() && found->second.capacity == sourceCapacity &&
+            found->second.identity == sourceIdentity &&
+            found->second.visible == !(published && grows) &&
+            found->second.token == (published ? this : nullptr);
+    }
+    bool CandidateCurrent(bool published) const noexcept {
+        if (!grows) return true;
+        const auto found = Registry().find(candidate);
+        return registered && found != Registry().end() && found->second.token == this &&
+            found->second.identity == candidateIdentity && found->second.capacity == candidateCapacity &&
+            found->second.visible == published;
+    }
+    unsigned char* SourceVisit() const noexcept {
+        if (sourceCapacity <= kBoneKeyCapacity) return model->keyVisitMap;
+        const auto found = Registry().find(source);
+        return found != Registry().end() && found->second.visit.size() >= sourceCapacity
+            ? found->second.visit.data() : nullptr;
+    }
+    bool Current() const noexcept { // RegistryMutex held.
+        if (!model || phase == Phase::Done) return false;
+        const bool published = phase == Phase::Published;
+        if (model->boneKeys != (published ? candidate : source) ||
+            !SourceCurrent(published) || !CandidateCurrent(published)) return false;
+        if (published || beforeVisit.empty()) return true;
+        const auto* visit = SourceVisit();
+        return visit && !std::memcmp(visit, beforeVisit.data(), beforeVisit.size());
+    }
+    void RestoreVisit() noexcept {
+        if (!beforeVisit.empty())
+            std::memcpy(SourceVisit(), beforeVisit.data(), beforeVisit.size());
+    }
+    // Never overwrite a replacement model pointer. If a caller made one of our
+    // allocations current directly, leave its ownership with that model.
+    void Abandon() noexcept {
+        if (phase == Phase::Done) return;
+        BoneKey* releaseSource = nullptr;
+        BoneKey* releaseCandidate = nullptr;
         try {
-            entry.visit.assign(target, 0);
-        } catch (...) {
-            std::free(grown);
-            return false;
-        }
-        // Carry the visited marks of every existing slot over: a growth in the
-        // middle of a batch registration or an undo transaction must not lose
-        // them, or the same slot could be appended twice.  Slots the growth adds
-        // start unvisited, which is what assign(..., 0) left for them.  The
-        // previous map is the inline array while the previous capacity was the
-        // original one, and the side buffer above it.
-        if (capacity != 0) {
-            const unsigned char* previous = nullptr;
-            if (capacity <= kBoneKeyCapacity) {
-                previous = model.keyVisitMap;
-            } else {
-                std::lock_guard<std::mutex> lock(RegistryMutex());
-                const auto found = Registry().find(current);
-                if (found != Registry().end() &&
-                    found->second.visit.size() >= capacity)
-                    previous = found->second.visit.data();
+            std::lock_guard<std::mutex> lock(RegistryMutex());
+            const auto retainOrRelease = [&](BoneKey* pool, std::uint64_t identity, BoneKey*& release) {
+                const auto found = Registry().find(pool);
+                if (found == Registry().end() || found->second.token != this || found->second.identity != identity) return;
+                if (model && model->boneKeys == pool) {
+                    found->second.visible = true; found->second.token = nullptr;
+                } else { Registry().erase(found); release = pool; }
+            };
+            if (grows && candidate) {
+                if (registered) retainOrRelease(candidate, candidateIdentity, releaseCandidate);
+                else releaseCandidate = candidate;
             }
-            if (previous != nullptr)
-                std::memcpy(entry.visit.data(), previous, capacity);
-        }
+            if (phase == Phase::Published && sourceIdentity) {
+                if (grows) retainOrRelease(source, sourceIdentity, releaseSource);
+                else {
+                    const auto found = Registry().find(source);
+                    if (found != Registry().end() && found->second.token == this)
+                        found->second.token = nullptr;
+                }
+            }
+            phase = Phase::Done;
+        } catch (...) { return; }
+        std::free(releaseCandidate); std::free(releaseSource);
     }
+    bool Rollback() noexcept {
+        if (phase == Phase::Done) return false;
+        if (phase == Phase::Prepared) { Abandon(); return phase == Phase::Done; }
+        BoneKey* release = nullptr;
+        try {
+            std::lock_guard<std::mutex> lock(RegistryMutex());
+            if (!Current()) return false;
+            RestoreVisit();
+            if (sourceIdentity) {
+                auto& entry = Registry().find(source)->second;
+                entry.visible = true; entry.token = nullptr;
+            }
+            model->boneKeys = source;
+            if (grows) { Registry().erase(candidate); release = candidate; }
+            phase = Phase::Done;
+        } catch (...) { return false; }
+        std::free(release); return true;
+    }
+    ~Impl() { if (phase != Phase::Done && !Rollback()) Abandon(); }
+};
 
-    // Commit: publish the new block and its capacity.  Everything above may
-    // fail, everything below cannot, so a failure never touches the model.
+BoneKeyPoolGrowth::BoneKeyPoolGrowth(std::unique_ptr<Impl> impl) noexcept : impl_(std::move(impl)) {}
+BoneKeyPoolGrowth::~BoneKeyPoolGrowth() = default;
+
+bool BoneKeyPoolGrowth::Prepare(ModelRecord& model, std::uint64_t needed,
+                               std::unique_ptr<BoneKeyPoolGrowth>& out) noexcept {
+    if (out) return false;
     try {
-        std::lock_guard<std::mutex> lock(RegistryMutex());
-        RegisterEntry(grown, std::move(entry));
-        Registry().erase(current);
-    } catch (...) {
-        std::free(grown);
-        return false;
-    }
-    model.boneKeys = grown;
-    if (owned) std::free(current);
-    return true;
+        auto next = std::make_unique<Impl>();
+        next->model = &model; next->source = model.boneKeys;
+        {
+            std::lock_guard<std::mutex> lock(RegistryMutex());
+            const auto found = Registry().find(next->source);
+            if (found != Registry().end()) {
+                if (!found->second.visible || found->second.token) return false;
+                next->sourceCapacity = found->second.capacity;
+                next->sourceIdentity = found->second.identity;
+            } else next->sourceCapacity = next->source ? kBoneKeyCapacity : 0;
+        }
+        next->candidateCapacity = BoneKeyPlanCapacity(next->sourceCapacity, needed);
+        if (needed && !next->candidateCapacity) return false;
+        next->grows = next->candidateCapacity > next->sourceCapacity;
+        next->candidate = next->grows ? nullptr : next->source;
+        next->candidateIdentity = next->sourceIdentity;
+        // Preserve the newly exposed inline range too, so rollback restores
+        // every visit byte that publication can touch.
+        const auto visitSize = next->candidateCapacity <= kBoneKeyCapacity
+            ? next->candidateCapacity : next->sourceCapacity;
+        {
+            std::lock_guard<std::mutex> lock(RegistryMutex());
+            if (!next->SourceCurrent(false)) return false;
+            const auto* visit = next->SourceVisit();
+            if (visitSize && !visit) return false;
+            if (visitSize) next->beforeVisit.assign(visit, visit + visitSize);
+        }
+        if (next->grows) {
+            next->candidate = static_cast<BoneKey*>(std::calloc(next->candidateCapacity, sizeof(BoneKey)));
+            if (!next->candidate) return false;
+            if (next->sourceCapacity)
+                std::memcpy(next->candidate, next->source, next->sourceCapacity * sizeof(BoneKey));
+            Entry entry; entry.capacity = next->candidateCapacity; entry.identity = next->sourceIdentity;
+            entry.visible = false; entry.token = next.get();
+            if (entry.capacity > kBoneKeyCapacity) {
+                entry.visit.assign(entry.capacity, 0);
+                if (next->sourceCapacity)
+                    std::memcpy(entry.visit.data(), next->beforeVisit.data(), next->sourceCapacity);
+            }
+            {
+                std::lock_guard<std::mutex> lock(RegistryMutex());
+                RegisterEntry(next->candidate, std::move(entry));
+                next->registered = true;
+                next->candidateIdentity = Registry().find(next->candidate)->second.identity;
+            }
+        }
+        auto token = std::unique_ptr<BoneKeyPoolGrowth>(new BoneKeyPoolGrowth(std::move(next)));
+        if (!token->IsCurrent()) return false;
+        out = std::move(token); return true;
+    } catch (...) { return false; }
 }
 
+BoneKey* BoneKeyPoolGrowth::CandidatePool() const noexcept {
+    return impl_->phase == Impl::Phase::Done ? nullptr : impl_->candidate;
+}
+std::size_t BoneKeyPoolGrowth::CandidateCapacity() const noexcept {
+    return impl_->phase == Impl::Phase::Done ? 0 : impl_->candidateCapacity;
+}
+std::uint64_t BoneKeyPoolGrowth::CandidateIdentity() const noexcept {
+    return impl_->phase == Impl::Phase::Done ? 0 : impl_->candidateIdentity;
+}
+bool BoneKeyPoolGrowth::Grows() const noexcept { return impl_->grows; }
+bool BoneKeyPoolGrowth::IsCurrent() const noexcept {
+    try { std::lock_guard<std::mutex> lock(RegistryMutex()); return impl_->Current(); }
+    catch (...) { return false; }
+}
+bool BoneKeyPoolGrowth::Publish() noexcept {
+    try {
+        std::lock_guard<std::mutex> lock(RegistryMutex());
+        auto& p = *impl_;
+        if (p.phase != Impl::Phase::Prepared || !p.Current()) return false;
+        if (p.grows) {
+            if (p.sourceCapacity) std::memcpy(p.candidate, p.source, p.sourceCapacity * sizeof(BoneKey));
+            if (p.candidateCapacity <= kBoneKeyCapacity)
+                std::memset(p.model->keyVisitMap + p.sourceCapacity, 0, p.candidateCapacity - p.sourceCapacity);
+            Registry().find(p.candidate)->second.visible = true;
+        }
+        if (p.sourceIdentity) {
+            auto& source = Registry().find(p.source)->second;
+            source.visible = !p.grows; source.token = &p;
+        }
+        p.model->boneKeys = p.candidate; p.phase = Impl::Phase::Published;
+        return true;
+    } catch (...) { return false; }
+}
+bool BoneKeyPoolGrowth::Rollback() noexcept { return impl_->Rollback(); }
+bool BoneKeyPoolGrowth::Accept() noexcept {
+    BoneKey* release = nullptr;
+    try {
+        std::lock_guard<std::mutex> lock(RegistryMutex());
+        auto& p = *impl_;
+        if (p.phase != Impl::Phase::Published || !p.Current()) return false;
+        if (p.grows && p.sourceIdentity) { Registry().erase(p.source); release = p.source; }
+        const auto candidate = Registry().find(p.candidate);
+        if (candidate != Registry().end()) candidate->second.token = nullptr;
+        p.phase = Impl::Phase::Done;
+    } catch (...) { return false; }
+    std::free(release); return true;
+}
+
+bool BoneKeyPoolEnsure(ModelRecord& model, std::uint64_t slotsNeeded) {
+    // Preserve the allocation-free no-op used by native registration loops.
+    {
+        std::lock_guard<std::mutex> lock(RegistryMutex());
+        const auto found = Registry().find(model.boneKeys);
+        if (found != Registry().end() && !found->second.visible) return false;
+        const auto capacity = found == Registry().end()
+            ? (model.boneKeys ? kBoneKeyCapacity : 0) : found->second.capacity;
+        if (slotsNeeded <= capacity) return true;
+    }
+    std::unique_ptr<BoneKeyPoolGrowth> token;
+    return BoneKeyPoolGrowth::Prepare(model, slotsNeeded, token) && token->Publish() && token->Accept();
+}
 BoneKeyVisit BoneKeyVisitMapOf(ModelRecord& model) {
     return BoneKeyVisitMapOf(model, BoneKeyCapacity(model.boneKeys));
 }
 
 BoneKeyVisit BoneKeyVisitMapOf(ModelRecord& model, std::size_t capacity) {
-    if (capacity <= kBoneKeyCapacity) return {model.keyVisitMap, capacity};
     std::lock_guard<std::mutex> lock(RegistryMutex());
     const auto found = Registry().find(model.boneKeys);
+    if (found != Registry().end() && !found->second.visible) return {nullptr, 0};
+    if (capacity <= kBoneKeyCapacity) return {model.keyVisitMap, capacity};
     if (found == Registry().end() ||
         found->second.capacity != capacity ||
         found->second.visit.size() < capacity) {

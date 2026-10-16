@@ -17,7 +17,7 @@
 // per-record loop.  Hoist the value once per operation, as in
 // `const std::size_t capacity = mdl::BoneKeyCapacity(*mdl::Mdl(model));`.
 //
-// Growth is one-way: a pool never shrinks.  Slot indices are stored in the key
+// Accepted growth is one-way: a committed pool never shrinks. Slot indices are stored in the key
 // records themselves (BoneKey::previous / BoneKey::next are absolute slot
 // numbers), so a stable index space keeps every chain, undo snapshot and scale
 // side table valid across a growth.
@@ -26,6 +26,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
 
 #include "mikudancestudio/model.hpp"
 
@@ -63,14 +64,15 @@ BoneKey* BoneKeyPoolCreate(std::size_t capacity);
 // the free keeps a recycled address from matching a stale entry.
 void BoneKeyPoolDestroy(BoneKey*& pool);
 
-// Capacity of a pool.  A null pool reports 0; a pool the registry does not know
-// reports kBoneKeyCapacity, the original allocation size.
+// Capacity of a public pool. Null and staged/dormant allocations report zero;
+// an unknown borrowed pool reports kBoneKeyCapacity, the original size.
 std::size_t BoneKeyCapacity(const BoneKey* pool);
 std::size_t BoneKeyCapacity(const ModelRecord& model);
 
 // An owned pool keeps this nonzero identity across allocation growth. Destroy
 // retires it permanently, even if a later allocation reuses the same address.
-// Null and unregistered borrowed arrays return zero; callers must guard those
+// Null, private staged/dormant allocations and unregistered borrowed arrays
+// return zero; callers must guard borrowed arrays
 // with their pointer and capacity rather than treating zero as an identity.
 // Registry access is synchronized, but callers still serialize mutations and
 // keep the pool alive for their whole operation, as with BoneKeyCapacity.
@@ -84,6 +86,43 @@ std::size_t BoneKeyPlanCapacity(std::size_t currentCapacity,
                                 std::uint64_t slotsNeeded);
 std::size_t BoneKeyPlanCapacity(const ModelRecord& model,
                                 std::uint64_t slotsNeeded);
+
+// Cancellable allocation growth. The model and any borrowed source storage
+// must outlive this token. Serialize all changes to the model until the token
+// is accepted or destroyed; do not release/reassign its pools through aliases.
+// This token restores allocation and visit state, not authored key values when
+// no growth was needed. The edit's own capture restores those key values.
+class BoneKeyPoolGrowth {
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+    explicit BoneKeyPoolGrowth(std::unique_ptr<Impl>) noexcept;
+public:
+    ~BoneKeyPoolGrowth();
+    BoneKeyPoolGrowth(const BoneKeyPoolGrowth&) = delete;
+    BoneKeyPoolGrowth& operator=(const BoneKeyPoolGrowth&) = delete;
+    // out must be empty. Failure leaves out, the model and its pool unchanged.
+    // Preparation allocates and registers private storage but does not publish.
+    static bool Prepare(ModelRecord&, std::uint64_t slotsNeeded,
+                        std::unique_ptr<BoneKeyPoolGrowth>& out) noexcept;
+    // Read only until Publish. Publish refreshes a grown pool from the live
+    // source, so staged writes would be lost. No-growth returns the live pool.
+    BoneKey* CandidatePool() const noexcept;
+    std::size_t CandidateCapacity() const noexcept;
+    std::uint64_t CandidateIdentity() const noexcept;
+    bool Grows() const noexcept;
+    // Before publication: allocation guards and the captured visit bytes.
+    // After publication: allocation guards; editing keys/visit bytes is allowed.
+    bool IsCurrent() const noexcept;
+    bool Publish() noexcept;
+    // Also cancels an unpublished token. A stale published token returns false
+    // without writing the model. A successful rollback consumes the token.
+    bool Rollback() noexcept;
+    // Accept only after the edit succeeds; releases the old owned allocation.
+    bool Accept() noexcept;
+    // Publish/Rollback/Accept never allocate. Destruction cancels or rolls back
+    // while current. If the model switched pools, it leaves that pointer alone,
+    // releasing only this token's allocations that the model no longer uses.
+};
 
 // Transactional growth.  Returns true when the pool already holds `slotsNeeded`
 // slots.  Otherwise allocates the new block, copies the old contents, prepares
