@@ -19,6 +19,7 @@ void TransformSeed(Fixture& f) {
     for(unsigned bone=0;bone<2;++bone) {
         f.m->boneKeys[bone].rotation[3]=1;f.m->boneKeys[bone].position[0]=float(bone+2);
         f.bones[bone].type=mdl::BoneType::RotateMove;f.bones[bone].trans[0]=float(bone+8);
+        f.bones[bone].slotIndex=-1; // This fixture has no external-parent selector table.
         f.selected[bone]=1;f.dirty[bone]=1;
         std::snprintf(f.bones[bone].name,sizeof(f.bones[bone].name),"transform%u",bone);
     }
@@ -175,6 +176,10 @@ void TransformRangeParity() {
 void TransformFreeCurveAndRing() {
     for(bool range:{false,true}) {
         BoneRegistrationFixture f;std::string error;auto tracks=RegistrationFreeTracks();
+        // Unlike TransformSeed, this path starts with clean pose bytes and
+        // therefore samples its keys. A bone without an external parent uses
+        // -1 in production; the generic zeroed fixture has no selector table.
+        for(auto& bone:f.first.bones)bone.slotIndex=-1;
         tracks[6].keys.back().value=2;
         Check(bone_curve::Write(f.first.raw(),0,tracks,error)&&bone_curve::Write(f.first.raw(),1,RegistrationFreeTracks(),error),
             "two authored free-curve bones seeded for native transform");

@@ -7,6 +7,7 @@
 
 namespace mikudancestudio {
 class MMDApp;
+namespace bone_scale { struct Matrix; }
 namespace bone_curve {
 // Explicit free-curve mode: translation, Y-X-Z Euler angles in degrees, scale.
 // Native MMD interpolation remains available until a free curve is committed.
@@ -54,6 +55,13 @@ public:
     bool Equals(const AuthoringState&) const noexcept;
     // Remove one bone from this private snapshot when planning native edits.
     bool Invalidate(int bone) noexcept;
+    // Samples this private snapshot without reading or pruning live state.
+    // Only a matching target native-track hash enables the free curve. The
+    // incoming scale supplies the native track's matrix basis; matching
+    // curves replace position/rotation and its three scale magnitudes.
+    // False leaves outputs untouched. No allocation or native-key lookup.
+    bool Sample(int bone, double frame, std::uint64_t targetNativeHash,
+        float position[3], float rotation[4], bone_scale::Matrix& scale) const noexcept;
     // Checked charge using actual key-vector capacities and map node counts;
     // includes a conservative node/link allowance, not CRT heap bookkeeping.
     std::uint64_t RetainedBytes() const noexcept;

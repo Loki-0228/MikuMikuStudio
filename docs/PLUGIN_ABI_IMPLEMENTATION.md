@@ -64,9 +64,13 @@
 | P3 | 受控共同历史命令 | 本机已验证 | 撤销按钮及 Ctrl+Z、重做按钮及 Ctrl+X 不依赖当前模型或相机模式。空历史、BUSY、准备失败不回退旧环；文本焦点及播放录制检查保持。仅内部绑定启用。 |
 | P3 | 骨骼关键帧池身份及可取消扩容 | 本机已验证 | 扩容保持身份，销毁重建取得新身份；准备不改当前分配，发布保留旧块，回滚恢复指针/容量/访问标记，接受后才释放旧自有块。借用池不释放原数组。 |
 | P3 | 独立缩放及自由曲线作者快照 | 本机已验证 | 捕获、克隆、私有修改及无分配交换；保留旧 30 槽环。缩放不覆盖姿态；自由曲线保留 nativeHash。含空存储取消、过期拒绝和同值双交换保护。 |
-| P3 | 当前帧选中骨骼登记 | 本机已验证 | 按钮 500 显式绑定下支持插入、覆写、自动插值、缩放和跨模型共同撤销；私有计划与原子发布不写旧环。物理开关变化拒绝；普通宿主仍用旧路径。范围缩放、删除及其他注册入口尚未迁入。 |
+| P3 | 当前帧选中骨骼登记 | 本机已验证 | 按钮 500 显式绑定下支持插入、覆写、自动插值、缩放和跨模型共同撤销；私有计划与原子发布不写旧环。物理开关变化拒绝；普通宿主仍用旧路径。 |
+| P3 | 骨骼删键与单族范围缩放 | 本机已验证 | 按钮 423、删除快捷键及范围对话框显式绑定下使用独立计划；槽序压缩覆盖、邻居插值、缩放和自由曲线恢复与旧写入对照。失败或空操作保留 redo。混合族操作仍拒绝。 |
+| P3 | 删键及范围操作后的局部姿态求值 | 本机已验证 | 每个方向按当前帧采样受影响的干净骨骼，保留未登记姿态；真实 Seek 位级对照、自由曲线、换帧跨模型撤销和无分配发布通过。物理模式切换和 IK 启动仍拒绝。 |
+| P3 | 显示、IK 及外亲键独立删除计划 | 本机已验证 | 标量和嵌套数据深拷贝，保持活跃缓冲区所有权；旧函数对照、扩容、跨模型、100 次旧环覆盖及分配失败通过。当前帧重求值及 UI 路由尚未接入。 |
+| P3 | Manager 显式编辑服务与真实插件混合历史 | 本机已验证 | 受控宿主附加同一 SharedHistory，sceneRevision 与 begin 校验一致；顶层命令及队列编辑、失败取消、发布通知、缓存表分离、模态泵刷新重试、PMM 往返及关闭通过。普通启动不启用。 |
 | P3 | 对象列表与历史按钮刷新 | 本机已验证 | 967 项隐藏控件检查覆盖原生顺序、父骨骼、选择回退、语言、姿态不变及故障重试。实际导入、删除菜单接入仍待完成。 |
-| P3 | 原生统一撤销及可写属性 | 未开放 | 部分姿态命令、骨骼登记及共同撤销已受控接入；其余原生写入、全局编辑、完整资源计量和对象提交后的 UI 刷新仍待迁移。`mms.edit` 仍返回 NOT_FOUND，可写属性仍为 NOT_READY。 |
+| P3 | 原生统一撤销及可写属性 | 未开放 | 部分姿态命令、骨骼登记、删键、范围缩放及真实插件共同撤销已受控接入；其余原生写入、全局编辑、完整资源计量和对象刷新仍待迁移。普通启动查询 `mms.edit` 仍返回 NOT_FOUND，可写属性仍为 NOT_READY。 |
 | P3 | animation 轨道/键、层、片段、变速、烘焙和选择 | 未实现 | 服务返回 NOT_FOUND。 |
 | P3 | storage serializer、工程数据和成对保存 | 本机已验证 | C ABI、两阶段加载、保存数据租约、缺失插件保留；PMM 与 JSON 配套哈希、恢复记录、旧对回退、自动备份轮换；真实 DLL 原名/中文 EXE 往返通过。 |
 | P3 | 显式导入和扩展文件重新关联 | 未实现 | EMM/EMD 保持显式导入；不匹配的 sidecar 拒绝自动应用，保留原件。 |
@@ -132,6 +136,11 @@
 | 姿态命令整合后的回归 | 七组 CTest 全部通过；含 ABI 1,019 项、对象列表 967 项、加载 UI 22 项、键池身份、快捷键及曲线宿主。骨骼旋转 D3DX 子项实际执行 | `plugin-abi-pose-commands-tests-final.log` |
 | 姿态命令整合后的隐藏宿主 | PMX 原名、PMD 中文改名通过对象恢复、设备重置和工程边界；两种 EXE 名称通过启动、菜单、工具栏、面板和场景查询 | `plugin-abi-pose-commands-object-final.log`、`abi-pose-commands-object-final/report.json`、`plugin-abi-pose-commands-smoke-final.log` |
 | 姿态命令构建与兼容性清单 | 九项目标构建通过；宿主仍为 x64、子系统 6.1，五文件无所列可选后端直接导入。资源校验后复用原编译缓存，未重新编译效果着色器 | `plugin-abi-pose-commands-build-final.log`、`plugin-abi-pose-commands-pe.json` |
+| 删键、范围缩放、局部求值与显示键计划 | 原生历史 21,536 项通过；旧实现对照、当前帧求值、保留未登记姿态、自由曲线、跨模型、100 次环覆盖、池增长、嵌套缓冲区、过期拒绝和分配失败 | `plugin-abi-history-phase2-native-2.log` |
+| Manager 编辑接入后的回归 | 另十组 CTest 全通过，含 ABI 1,173 项、对象列表 967 项、模型加载 UI 22 项、曲线宿主、旧登记、缩放、曲线、键池及快捷键 | `plugin-abi-history-phase2-regressions.log` |
+| 真实插件与原生命令共同历史 | PMX 原名及 PMD 中文名通过；菜单操作、单次/多次撤销、原生与插件交错、修订号、新建/PMM 重开/关闭、回调泵后的控件刷新、播放与录制期间拒绝 | `plugin-abi-edit-history-host-final.log`、`abi-edit-history-host-final/report.json` |
+| 本轮对象寿命及普通启动回归 | 两种 EXE 名称均通过对象批量恢复、DX9 重置、工程边界；普通启动、菜单、工具栏、面板和场景查询通过 | `plugin-abi-history-phase2-object-final.log`、`plugin-abi-history-phase2-smoke-final.log` |
+| 本轮构建与兼容性清单 | 十三个目标及新增编辑探针 DLL 构建成功；补充播放限制后宿主和隐藏宿主再次构建。宿主 x64、子系统 6.1；六文件无所列可选后端或厂商 DLL 直接导入。资源复用已校验缓存，生成目录已恢复正常命令 | `plugin-abi-history-phase2-build-final.log`、`plugin-abi-history-host-gate-build.log`、`plugin-abi-history-phase2-pe.json`、`plugin-abi-history-phase2-resource-restored.log` |
 | 骨骼登记及独立作者数据 | 原生历史 17,660 项通过；单骨骼和多骨骼登记与旧函数的 16 组插入/覆写/自动插值对照、跨模型姿态混合、100 次旧环覆盖、缩放与自由曲线恢复、无分配发布、扩容与逐分配失败、过期拒绝及 redo 保留 | `plugin-abi-bone-registration-native-final.log` |
 | 骨骼登记整合后的回归 | 另十组 CTest 全通过：ABI 1,019 项、对象列表 967 项、加载 UI 22 项，以及原登记、曲线、缩放、键池、快捷键及曲线宿主 | `plugin-abi-bone-registration-regressions-1.log` |
 | 骨骼登记整合后的隐藏宿主 | PMX 原名、PMD 中文改名通过对象恢复、设备重置及工程边界；原名和中文 EXE 通过启动、菜单、工具栏、面板和场景查询。测试使用隔离副本 | `plugin-abi-bone-registration-object-final.log`、`abi-bone-registration-object-final/report.json`、`plugin-abi-bone-registration-smoke-final.log` |

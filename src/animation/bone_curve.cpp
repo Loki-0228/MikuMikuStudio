@@ -320,6 +320,16 @@ bool AuthoringState::Invalidate(int bone) noexcept {
     if(!impl_||bone<0||std::uint32_t(bone)>=impl_->boneCount)return false;
     return impl_->curves.erase(bone)!=0;
 }
+bool AuthoringState::Sample(int bone,double frame,std::uint64_t targetNativeHash,
+    float position[3],float rotation[4],bone_scale::Matrix& scale) const noexcept {
+    if(!impl_||bone<0||std::uint32_t(bone)>=impl_->boneCount||!std::isfinite(frame)||
+        !position||!rotation||!targetNativeHash||impl_->storedIdentity!=impl_->bones)return false;
+    const auto found=impl_->curves.find(bone);
+    if(found==impl_->curves.end()||found->second.nativeHash!=targetNativeHash)return false;
+    const auto& tracks=found->second.tracks;
+    for(int channel=0;channel<3;++channel)position[channel]=float(ac::Evaluate(tracks[channel],frame).value);
+    Quaternion(tracks,frame,rotation);scale=Scale(tracks,frame,scale);return true;
+}
 std::uint64_t AuthoringState::RetainedBytes() const noexcept {
     std::uint64_t bytes=sizeof(*this);if(!impl_)return bytes;
     const auto add=[&](std::uint64_t count,std::uint64_t stride) {

@@ -1,5 +1,6 @@
 #include "native_bone_registration.hpp"
 #if !MMD_ORIGINAL_PROFILE
+#include "native_bone_evaluation.hpp"
 #include "native_pose_scope.hpp"
 #include "native_history_commands.hpp"
 #include "scene_object_history.hpp"
@@ -73,6 +74,7 @@ struct RegistrationChange final : HistoryChange, std::enable_shared_from_this<Re
     std::size_t morphCapacity, displayCapacity;
     std::vector<KeyPatch> keys;
     std::vector<unsigned> keyDependencies;
+    std::vector<unsigned> evaluationBones;
     std::vector<BoneRule> rules;
     std::vector<PosePatch> poses;
     std::vector<FlagPatch> morphFlags, displayFlags;
@@ -123,6 +125,7 @@ struct RegistrationChange final : HistoryChange, std::enable_shared_from_this<Re
         std::unique_ptr<mdl::BoneKeyPoolGrowth> growth;
         std::unique_ptr<bone_scale::AuthoringRestore> scale;
         std::unique_ptr<bone_curve::AuthoringRestore> curves;
+        std::unique_ptr<PreparedHistoryChange> evaluation;
         std::vector<mdl::BoneKey> currentKeys;
         std::vector<mdl::BoneKey> dependencyKeys;
         std::vector<PoseValue> currentPoses;
@@ -165,7 +168,8 @@ struct RegistrationChange final : HistoryChange, std::enable_shared_from_this<Re
                 if (morphs[source->morphFlags[n].slot].allocated != currentMorph[n]) return false;
             for (std::size_t n = 0; n < source->displayFlags.size(); ++n)
                 if (displays[source->displayFlags[n].slot].allocated != currentDisplay[n]) return false;
-            return (!scale || scale->IsCurrent()) && (!curves || curves->IsCurrent());
+            return (!scale || scale->IsCurrent()) && (!curves || curves->IsCurrent()) &&
+                (!evaluation || evaluation->IsCurrent());
         }
         void Publish() noexcept override {
             // SharedHistory validates the complete aggregate before this call.
@@ -192,6 +196,7 @@ struct RegistrationChange final : HistoryChange, std::enable_shared_from_this<Re
             source->app.state.lastRegisteredFrame = forward ? source->lastAfter : source->lastBefore;
             if (scale && !scale->Publish()) std::terminate();
             if (curves && !curves->Publish()) std::terminate();
+            if (evaluation) evaluation->Publish();
             if (!growth->Accept()) std::terminate();
         }
     };
@@ -231,6 +236,24 @@ struct RegistrationChange final : HistoryChange, std::enable_shared_from_this<Re
             if (scaleChanged || observeAuthoring) candidate->scale = bone_scale::AuthoringRestore::Prepare(model,
                 forward ? scaleAfter : scaleBefore, candidate->growth->CandidateCapacity());
             if (curvesChanged || observeAuthoring) candidate->curves = bone_curve::AuthoringRestore::Prepare(model, forward ? *curveAfter : *curveBefore);
+            if (!evaluationBones.empty()) {
+                struct Target { const RegistrationChange& change; bool forward; } target{*this, forward};
+                BoneEvaluationView view;
+                view.context = &target; view.keyCapacity = candidate->growth->CandidateCapacity();
+                view.key = [](const void* context, std::uint32_t index) noexcept -> const mdl::BoneKey* {
+                    const auto& target = *static_cast<const Target*>(context);
+                    const auto& patches = target.change.keys;
+                    const auto found = std::lower_bound(patches.begin(), patches.end(), index,
+                        [](const KeyPatch& patch, unsigned slot) { return patch.slot < slot; });
+                    if (found != patches.end() && found->slot == index && found->data)
+                        return target.forward ? &found->after : &found->before;
+                    const auto* pool = mdl::Mdl(target.change.model)->boneKeys;
+                    return index < mdl::BoneKeyCapacity(pool) ? &pool[index] : nullptr;
+                };
+                view.scale = forward ? &scaleAfter : &scaleBefore;
+                view.curves = forward ? curveAfter.get() : curveBefore.get();
+                if (auto result = PrepareBoneEvaluation(app, slot, evaluationBones, view, candidate->evaluation)) return result;
+            }
             if (!candidate->IsCurrent()) return MMS_E_STALE;
             out = std::move(candidate); return MMS_OK;
         });
@@ -239,6 +262,7 @@ struct RegistrationChange final : HistoryChange, std::enable_shared_from_this<Re
         std::uint64_t result = sizeof(*this) + 4 * sizeof(void*);
         AddBytes(result, keys.capacity() * sizeof(KeyPatch)); AddBytes(result, poses.capacity() * sizeof(PosePatch));
         AddBytes(result, keyDependencies.capacity() * sizeof(unsigned)); AddBytes(result, rules.capacity() * sizeof(BoneRule));
+        AddBytes(result, evaluationBones.capacity() * sizeof(unsigned));
         AddBytes(result, morphFlags.capacity() * sizeof(FlagPatch)); AddBytes(result, displayFlags.capacity() * sizeof(FlagPatch));
         AddBytes(result, scaleBefore.RetainedBytes()); AddBytes(result, scaleAfter.RetainedBytes());
         if (curveBefore) AddBytes(result, curveBefore->RetainedBytes());
@@ -390,9 +414,10 @@ void DeletePlannedKeys(KeyPlan& plan, const std::vector<unsigned>& selected,
 }
 bool FinishKeyPlan(KeyPlan& plan, RegistrationChange& change, const KeyOwners& originalOwners) {
     const auto owners = ValidateOwners(plan);
+    std::set<unsigned> affected;
     const auto invalidate = [&](const KeyOwners& source, unsigned index) {
         const auto found = source.find(index);
-        if (found != source.end()) change.curveAfter->Invalidate(int(found->second));
+        if (found != source.end()) { change.curveAfter->Invalidate(int(found->second)); affected.insert(found->second); }
     };
     for (const auto& item : plan.patches) {
         const auto& patch = item.second;
@@ -409,6 +434,7 @@ bool FinishKeyPlan(KeyPlan& plan, RegistrationChange& change, const KeyOwners& o
     change.scaleChanged = !change.scaleBefore.Equals(change.scaleAfter);
     change.curvesChanged = !change.curveBefore->Equals(*change.curveAfter);
     change.keyDependencies.assign(plan.reads.begin(), plan.reads.end());
+    change.evaluationBones.assign(affected.begin(), affected.end());
     return !change.keys.empty() || !change.morphFlags.empty() || !change.displayFlags.empty() ||
         change.scaleChanged || change.curvesChanged;
 }

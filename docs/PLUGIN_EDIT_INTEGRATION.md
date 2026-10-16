@@ -1,6 +1,6 @@
 # 编辑事务内核与原生撤销接入
 
-`src/plugins/edit_store.cpp` 已实现 `edit.h` 对应的两阶段事务内核。`src/plugins/shared_history.cpp` 实现原生与插件共用的历史队列，`src/plugins/scene_object_history.cpp` 提供模型及附件资源的保留与恢复。真实隐藏宿主已验证资源恢复，部分姿态命令和骨骼登记已在显式绑定下接入；普通宿主尚未整体切换共同历史。因此 `queryService("mms.edit", ...)` 仍返回 NOT_FOUND，可写 UI 属性仍返回 NOT_READY。
+`src/plugins/edit_store.cpp` 已实现 `edit.h` 对应的两阶段事务内核。`src/plugins/shared_history.cpp` 实现原生与插件共用的历史队列，`src/plugins/scene_object_history.cpp` 提供模型及附件资源的保留与恢复。部分姿态命令、骨骼登记、删键与范围缩放已在显式绑定下接入。隔离隐藏宿主可显式启用 `mms.edit`，已验证真实插件与原生命令交错撤销。普通宿主尚未整体切换，查询该服务仍返回 NOT_FOUND，可写 UI 属性仍返回 NOT_READY。
 
 ## 共同历史的范围
 
@@ -40,13 +40,13 @@ token 到析构才解除排他锁，因此提交成功后仍可先清理候选�
 
 ## 工程切换与关闭
 
-`integration.cpp` 为当前 `MMDApp` 创建一个 `SharedHistory`，与插件管理器共用 `StorageStore`。内部 `NativeHistory(app)` 返回该队列，公共 `mms.edit` 仍未开放。
+`integration.cpp` 为当前 `MMDApp` 创建一个 `SharedHistory`，与插件管理器共用 `StorageStore`。内部 `NativeHistory(app)` 返回该队列。普通启动不附加编辑服务，隔离探针通过 `InitializeHistoryTestRuntime` 显式附加同一队列。
 
 `PrepareReset` 在插件准备新工程数据前取得排他 token。此时不清历史，取消加载只释放 token。PMM v1、v2 加载器在 `pmm_settings::Reset` 前调用 `BeginProjectSceneReplacement`，提交历史清理并回收退出场景的对象，随后才清身份、曲线、模型和物理资源。token 保持到插件工程提交或取消完成，避免过程中重新写入历史。
 
 `EditStore` 向历史登记自身。只要存在未完成编辑事务，Reset 和 PrepareReset 就返回 BUSY；宿主须先调用 `CancelPending`。该函数按原取消规则释放插件上下文、混合候选和原生资源。取消回调异常会冻结历史并返回 FAILED，不遗留剩余事务。取得工程切换 token 后，新的编辑 begin 也返回 BUSY。
 
-新建工程采用同一顺序。关闭路径区分正在执行的回调与已准备但尚未提交的数据：前者禁止重入；后者先取消工程准备，再释放历史，最后销毁管理器。局部测试或后续编辑服务自行持有的 `HistoryChange` 仍须在场景释放前交还，不能靠修订失效延长原生世界寿命。
+新建工程采用同一顺序，当前宿主拒绝尚未结束的插件编辑，不隐式丢弃事务。关闭时先取消工程准备，停止插件并取消其编辑，再分离 `EditStore`、释放历史和管理器。取消回调异常后允许对已清空的 store 重试分离；只有分离成功才能释放外部 host。仍无法分离时保留相关对象至进程结束。局部调用方持有的 `HistoryChange` 仍须在场景释放前交还。
 
 ## 不依赖循环缓存的姿态记录
 
@@ -96,8 +96,8 @@ Prepare 每次解析当前模型，形成短期 `ModelEdit` 候选。发布保�
 接下来仍需迁移：
 
 1. 物理开关变化及对应求解器候选，不能在发布中直接调用可能失败的 `NotifyBonePhysicsMode`。
-2. type 4 范围缩放：将 `DeleteMarkedKeyframes`、`BeginRangeScaleBoneUndo` 和多次 `RegisterBoneKey` 改为同一个私有计划、一次原子发布和一个历史节点。
-3. 混合 Morph、显示键删除及其他注册入口。删除重建插值时须收集所有被修改的邻居，不能固定按每个键三个槽估算。
+2. Morph、显示及全局轨道的范围缩放，合并成一个候选和一个历史节点；骨骼单族范围缩放已迁移。
+3. 混合族删除及其他注册入口。显示键的独立删除计划已实现，当前帧 IK、外亲和显示重求值及 UI 路由仍待接入。
 
 ## 历史发布后的对象列表刷新
 
@@ -181,11 +181,27 @@ Prepare 每次解析当前模型，形成短期 `ModelEdit` 候选。发布保�
 
 `PlanBoneKeyDeletion` 和 `PlanBoneRangeScale` 生成独立历史记录。删键保留旧实现的链接修改和自动插值邻居写入；范围缩放按原槽位顺序重插，压缩到同帧时保留旧覆盖顺序。记录包含缩放及自由曲线作者数据，不依赖旧 30 槽环。准备、取消和无变化操作均保留当前选择及 redo。
 
-内部绑定下，按钮 423、删除快捷键及范围缩放对话框已接入。快捷键补选当前帧骨骼键在私有计划中完成，失败不改变活跃标记。本阶段拒绝混合 Morph/显示键删除及混合族范围缩放。普通宿主仍走原路径。当前帧派生姿态刷新另行迁移，不能据此宣称正式宿主迁移完成。
+内部绑定下，按钮 423、删除快捷键及范围缩放对话框已接入。快捷键补选当前帧骨骼键在私有计划中完成，失败不改变活跃标记。本阶段拒绝混合 Morph/显示键删除及混合族范围缩放。普通宿主仍走原路径。
+
+`PrepareBoneEvaluation` 在每次提交、撤销和重做准备时，用该方向的目标键及作者快照重新采样当前帧。只更新受影响且没有未登记编辑的骨骼，保留其他骨骼、Morph、显示/IK 状态及播放头。切换模型或帧号后撤销仍按当前帧求值。物理开关变化及物理模式 3 的 IK 启动暂返回 NOT_READY，不能在发布时调用旧全模型 `SeekModelFrame`。
+
+`PlanDisplayKeyDeletion` 保存显示键标量、IK 字节及外亲引用，按槽位恢复到当前池。记录深拷贝数据，发布保留当前嵌套缓冲区的所有权；正常扩容后重新定位，替换池身份或缓冲区别名使候选失效。该组件尚未接入按钮或快捷键，避免键数据已变而当前显示/IK/外亲状态未同步。
 
 `tests/native_bone_transform_checks.inc` 直接调用旧 `DeleteMarkedModelKeys`，并复现旧范围缩放的低层写入次序作为对照。第一批原生历史共 20,794 项通过，构建及测试记录为 `build/plugin-abi-key-transform-build-1.log` 和 `build/plugin-abi-key-transform-native-1.log`。
 
 ## 已实现的事务规则
+
+### Manager 的显式附加与回调边界
+
+`Manager::AttachEditHost` 仅在首次加载插件前调用。Manager 拥有 `EditStore`，外部应用拥有 `SharedHistory`；转发器的 `AttachStore/DetachStore` 连接同一队列。插件持有的函数表上下文属于实例，分离服务后调用返回 NOT_READY，不解引用已释放的 store。
+
+只有顶层命令调用和本插件的 UI 队列执行回调可发起编辑。getState、属性读取、嵌套调用、事件、serializer、participant、取消及停止回调均不能重入编辑。失败命令或异常队列回调仅取消由本插件发起的未完成事务，不取消本插件只是参与者的其他所有者事务。
+
+受控宿主的场景快照 `sceneRevision` 来自同一 `SharedHistory`，插件不必猜测原生命令后的修订号；绑定几何的 `structureRevision` 仍独立。普通宿主的只读快照不因此获得编辑权限。
+
+成功 commit、undo 或 redo 解锁后触发 `SetEditPublished` 通知。应用立即标记工程变化，延后刷新撤销按钮、读数和曲线编辑器；插件自己的消息循环提前消费通知时，通过定时器重试。通知异常不改变已经提交的结果，历史资源只在插件回调外回收。
+
+`run_edit_history_probe.py` 在原创 PMX/PMD、原名及中文 EXE 下验证真实 DLL、菜单分派、原生重置与插件编辑交错撤销、一次命令多次提交、准备失败、新建、PMM 重开及关闭取消。该入口只用于隔离测试，不能作为普通宿主全部写入已经迁移的证据。
 
 begin 校验非零场景修订号，并复制标签。事务创建者负责 prepare、commit、cancel；其他插件可通过自己的上下文 join 该事务，但只能交付本插件的 participant。每个插件在同一事务中最多加入一次，并须已注册 serializer。
 
@@ -242,7 +258,7 @@ MSVC 的某些容器移动构造会分配内存，因此包含 `std::map` 的状
 | 入口 | 当前内容及接入要求 |
 | --- | --- |
 | `bone_edit_undo.cpp::PushBoneEditUndo` | 未注册骨骼姿势；分配及捕获须先完成，再登记共同历史。 |
-| `model_keyframe_edit.cpp::AdvanceUndo`、注册/删除 | 旧环类型 1–4、7 的恢复已整体准备；选中骨骼当前帧登记已通过独立计划受控接入。范围缩放、删除及其他注册入口待迁移，见[骨骼关键帧迁移顺序](#骨骼关键帧迁移顺序)。 |
+| `model_keyframe_edit.cpp::AdvanceUndo`、注册/删除 | 旧环类型 1–4、7 的恢复已整体准备；骨骼当前帧登记、删键和单族范围缩放已通过独立计划受控接入。其他族和注册入口待迁移，见[骨骼关键帧迁移顺序](#骨骼关键帧迁移顺序)。 |
 | `model_keyframe_edit.cpp` 物理烘焙 | 类型 5，同时含关键帧、姿势、容量及搜索游标。须与骨骼缩放和曲线侧表一起恢复。 |
 | `sequence_scatter.cpp` | 类型 6，持有完整 Morph 池及曲线状态的 before/after。不得退化为只恢复当前值。 |
 | `vmd_load.cpp` | 动作导入；一次导入及其缩放、曲线数据应形成共同历史节点。 |
