@@ -344,14 +344,7 @@ bool DisplayKeyPoolEnsure(ModelRecord& model, std::uint64_t required) noexcept {
         return false;
     }
     if (capacity) std::memcpy(grown, pool, capacity * sizeof(DisplayKey));
-    bool owned = false;
-    {
-        std::lock_guard<std::mutex> lock(KeyPoolStorage<DisplayKey>::mutex);
-        owned = KeyPoolStorage<DisplayKey>::capacities.erase(pool) != 0;
-    }
-    auto* previous = pool;
-    pool = grown;
-    if (owned) ::operator delete(previous);
+    KeyPoolCommitGrowth(pool, grown);
     return true;
 }
 

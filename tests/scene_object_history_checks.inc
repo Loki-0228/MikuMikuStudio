@@ -6,7 +6,7 @@ struct CountedShape : btSphereShape {
 };
 void ObjectRetention() {
     {
-        auto app = std::make_unique<MMDApp>(); app->state = MMDAppState{};
+        auto app = std::make_unique<MMDApp>(); ::new (static_cast<void*>(&app->state)) MMDAppState{};
         btDefaultCollisionConfiguration config;
         btCollisionDispatcher dispatcher(&config);
         history_physics::Broadphase broadphase(btVector3(-100,-100,-100), btVector3(100,100,100), 64);
@@ -60,7 +60,7 @@ void ObjectRetention() {
         Check(destroyed == 2 && broadphase.getNumHandles() == 0 && world.getNumCollisionObjects() == 0, "idle collection releases parked model bodies and handles");
     }
     {
-        auto app = std::make_unique<MMDApp>(); app->state = MMDAppState{}; app->EnglishUI() = 2;
+        auto app = std::make_unique<MMDApp>(); ::new (static_cast<void*>(&app->state)) MMDAppState{}; app->EnglishUI() = 2;
         auto* accessory = new mdl::AccessoryRecord{}; accessory->scale = accessory->opacity = 1; accessory->parentModel = -1;
         app->AccessorySlot(3) = accessory; app->AccessoryKeys(3) = mdl::KeyPoolCreate<mdl::AccessoryKey>(8);
         app->AccessoryKeys(3)[0].scale = app->AccessoryKeys(3)[0].opacity = 1; app->AccessoryKeys(3)[0].parentModel = -1;
@@ -102,7 +102,7 @@ void ObjectRetention() {
     {
         // Import, delete, then reuse the same slot. Each object keeps its own
         // track and authored tangents through both directions of the journal.
-        auto app = std::make_unique<MMDApp>(); app->state = MMDAppState{}; app->EnglishUI() = 2;
+        auto app = std::make_unique<MMDApp>(); ::new (static_cast<void*>(&app->state)) MMDAppState{}; app->EnglishUI() = 2;
         app->AccessoryKeys(3) = mdl::KeyPoolCreate<mdl::AccessoryKey>(8);
         plugins::StorageStore storage; plugins::SharedHistory journal(storage);
         const auto import = [&](float value) {
@@ -155,6 +155,46 @@ void ObjectRetention() {
             Check(journal.History(true) == MMS_OK && restored(b, bKeys, 5), "redo new occupant import preserves exact track");
             Check(journal.History(true) == MMS_OK && !app->AccessorySlot(3), "redo later deletion empties slot");
         }
+        auto* vacantKeys = app->AccessoryKeys(3);
+        auto unchanged = first->PreparePresence(true);
+        bool rejectedBatch = false;
+        try { plugins::RetainedSceneObject::PreparePresenceBatch({first, second}, true); }
+        catch (const std::invalid_argument&) { rejectedBatch = true; }
+        Check(rejectedBatch && unchanged->IsCurrent() && !first->Present() && !second->Present() &&
+              !app->AccessorySlot(3) && app->AccessoryKeys(3) == vacantKeys && app->AccessoryRenderSplitOrder() == 0 &&
+              !curve_host::Has(app.get(), curve_host::Kind::Accessory, 3) && journal.UndoCount() == 4,
+              "two absent accessory owners cannot restore into one slot or change retained state");
+        unchanged.reset();
+        const auto parkedModel = [&] {
+            auto* raw = static_cast<unsigned char*>(std::calloc(1, sizeof(mdl::ModelRecord)));
+            app->ModelSlot(3) = raw;
+            auto object = plugins::RetainSceneObject(*app, MMS_OBJECT_MODEL, 3);
+            auto park = object->PreparePresence(false);
+            Check(park->IsCurrent(), "prepare model for same-slot batch validation");
+            park->Publish(); park.reset();
+            return object;
+        };
+        auto firstModel = parkedModel();
+        auto secondModel = parkedModel();
+        rejectedBatch = false;
+        try { plugins::RetainedSceneObject::PreparePresenceBatch({firstModel, secondModel}, true); }
+        catch (const std::invalid_argument&) { rejectedBatch = true; }
+        Check(rejectedBatch && !firstModel->Present() && !secondModel->Present() && !app->ModelSlot(3),
+              "two absent model owners cannot restore into one model slot");
+        auto mixed = plugins::RetainedSceneObject::PreparePresenceBatch({firstModel, first}, true);
+        Check(mixed->IsCurrent(), "model and accessory may share the numeric slot in a batch");
+        failAfter = 0; mixed->Publish(); failAfter = -1; mixed.reset();
+        std::vector<curve_editor::Channel> mixedChannels; std::wstring mixedError;
+        Check(firstModel->Present() && first->Present() && !secondModel->Present() && !second->Present() &&
+              app->ModelSlot(3) && app->AccessorySlot(3) == a && app->AccessoryKeys(3) == aKeys &&
+              curve_host::Read(*app, curve_host::Kind::Accessory, 3, mixedChannels, mixedError) &&
+              mixedChannels[0].track.keys.back().inSlope == 2,
+              "same numeric slot restores both kinds and the correct accessory curve without allocation");
+        mixed = plugins::RetainedSceneObject::PreparePresenceBatch({first, firstModel}, false);
+        Check(mixed->IsCurrent(), "prepare same numeric slot removal across kinds");
+        mixed->Publish(); mixed.reset(); firstModel.reset(); secondModel.reset();
+        Check(!app->ModelSlot(3) && !app->AccessorySlot(3) && app->AccessoryKeys(3) == vacantKeys && !first->Present(),
+              "same numeric slot removal restores the vacant accessory track");
         auto pending = first->PreparePresence(true); std::weak_ptr<plugins::RetainedSceneObject> weak = first;
         first.reset(); second.reset();
         Check(journal.Reset() == MMS_OK, "retire both slot occupants"); journal.Collect();
@@ -164,7 +204,7 @@ void ObjectRetention() {
         mdl::KeyPoolDestroy(app->AccessoryKeys(3)); curve_host::Reset(app.get());
     }
     {
-        auto app = std::make_unique<MMDApp>(); app->state = MMDAppState{};
+        auto app = std::make_unique<MMDApp>(); ::new (static_cast<void*>(&app->state)) MMDAppState{};
         auto* accessory = new mdl::AccessoryRecord{};
         accessory->scale = accessory->opacity = 1; accessory->parentModel = -1;
         app->AccessorySlot(3) = accessory; app->AccessoryKeys(3) = mdl::KeyPoolCreate<mdl::AccessoryKey>(8);
@@ -198,6 +238,82 @@ void ObjectRetention() {
         std::weak_ptr<plugins::RetainedSceneObject> weak = object; object.reset(); change.reset();
         Check(weak.expired(), "rejected import releases retained resource owner");
         mdl::KeyPoolDestroy(app->AccessoryKeys(3)); curve_host::Reset(app.get());
+    }
+    {
+        auto app = std::make_unique<MMDApp>(); ::new (static_cast<void*>(&app->state)) MMDAppState{};
+        btDefaultCollisionConfiguration config; btCollisionDispatcher dispatcher(&config);
+        history_physics::Broadphase broadphase(btVector3(-100,-100,-100), btVector3(100,100,100), 64);
+        btSequentialImpulseConstraintSolver solver; DynamicsWorld world(&dispatcher, &broadphase, &solver, &config);
+        PhysicsScene scene{}; scene.world = &world; int destroyed = 0;
+        std::array<mdl::ModelRecord*, 3> models{}; std::array<mdl::AccessoryRecord*, 3> accessories{};
+        for (unsigned i = 0; i < 3; ++i) {
+            auto* m = models[i] = static_cast<mdl::ModelRecord*>(std::calloc(1, sizeof(mdl::ModelRecord)));
+            m->scenePtr = &scene; m->rigidCount = 1; m->comboSelIndex = m->comboSelIndex2 = uint8_t(i);
+            m->rigidTable = static_cast<mdl::RigidRecord*>(std::calloc(1, sizeof(mdl::RigidRecord)));
+            auto* shape = new CountedShape(destroyed); btVector3 inertia; shape->calculateLocalInertia(1, inertia);
+            auto* body = new btRigidBody(1, new btDefaultMotionState(btTransform::getIdentity()), shape, inertia);
+            m->rigidTable[0].body = body; world.addRigidBody(body, 1, -1);
+            app->ModelSlot(i) = reinterpret_cast<unsigned char*>(m);
+            auto* a = accessories[i] = new mdl::AccessoryRecord{};
+            a->scale = a->opacity = 1;
+            a->order = uint8_t(i); a->parentModel = int32_t(i % 2); a->parentBone = int32_t(i + 5);
+            app->AccessorySlot(i) = a; app->AccessoryKeys(i) = mdl::KeyPoolCreate<mdl::AccessoryKey>(8);
+            app->AccessoryKeys(i)[0].parentModel = a->parentModel;
+            app->AccessoryKeys(i)[0].parentBone = a->parentBone;
+            app->AccessoryKeys(i)[0].visible = 1;
+        }
+        app->AccessoryRenderSplitOrder() = 3; app->CameraParentModel() = 1; app->CameraParentBone() = 9;
+        plugins::RetainedSceneObject::Objects objects{
+            plugins::RetainSceneObject(*app, MMS_OBJECT_MODEL, 0), plugins::RetainSceneObject(*app, MMS_OBJECT_ACCESSORY, 1),
+            plugins::RetainSceneObject(*app, MMS_OBJECT_MODEL, 1), plugins::RetainSceneObject(*app, MMS_OBJECT_ACCESSORY, 0)};
+        plugins::StorageStore storage; plugins::SharedHistory journal(storage);
+        std::shared_ptr<plugins::HistoryChange> insertion;
+        std::unique_ptr<plugins::PreparedHistoryChange> stage;
+        Check(plugins::RetainedSceneObject::PrepareInsertionBatch(objects, 4 * 1024 * 1024, insertion, stage) == MMS_OK && stage->IsCurrent(),
+              "prepare two models and two accessories in one import");
+        stage->Publish(); stage.reset();
+        std::unique_ptr<plugins::SharedHistory::NativeTransaction> tx;
+        Check(journal.PrepareNative("import objects", std::move(insertion), tx) == MMS_OK && journal.CommitNative(std::move(tx)) == MMS_OK &&
+              journal.UndoCount() == 1 && world.getNumCollisionObjects() == 3, "batch import occupies one common history node");
+        auto change = plugins::RetainedSceneObject::CaptureRemovalBatch(objects, 4 * 1024 * 1024);
+        Check(journal.PrepareNative("delete objects", change, tx) == MMS_OK, "prepare atomic multi-object deletion");
+        world.performDiscreteCollisionDetection();
+        Check(journal.CommitNative(std::move(tx)) == MMS_E_STALE && journal.UndoCount() == 1 && world.getNumCollisionObjects() == 3 &&
+              app->ModelSlot(0) && app->ModelSlot(1) && app->AccessorySlot(0) && app->AccessorySlot(1), "stale batch changes no membership or cursor");
+        bool prepared = false;
+        for (long limit = 0; limit < 1024; ++limit) {
+            failAfter = limit; const auto result = journal.PrepareNative("delete objects", change, tx); failAfter = -1;
+            Check(journal.UndoCount() == 1 && world.getNumCollisionObjects() == 3 && app->CameraParentModel() == 1 &&
+                  app->ModelSlot(0) && app->ModelSlot(1) && app->AccessorySlot(0) && app->AccessorySlot(1), "batch preparation failure preserves every member");
+            if (result == MMS_OK) { prepared = true; break; }
+            Check(result == MMS_E_MEMORY, "batch failure sweep reports memory");
+        }
+        Check(prepared, "batch allocation sweep terminates");
+        failAfter = 0; const auto result = journal.CommitNative(std::move(tx)); failAfter = -1;
+        Check(result == MMS_OK && journal.UndoCount() == 2 && world.getNumCollisionObjects() == 1 && destroyed == 0,
+              "batch deletion publishes one node without allocation or resource disposal");
+        Check(!app->ModelSlot(0) && !app->ModelSlot(1) && !app->AccessorySlot(0) && !app->AccessorySlot(1) &&
+              models[2]->comboSelIndex == 0 && accessories[2]->order == 0 && app->AccessoryRenderSplitOrder() == 1 &&
+              app->CameraParentModel() == -1 && accessories[2]->parentModel == -1, "batch deletion adjusts surviving bindings and ordering once");
+        for (int cycle = 0; cycle < 3; ++cycle) {
+            Check(journal.History(false) == MMS_OK && world.getNumCollisionObjects() == 3 &&
+                  models[2]->comboSelIndex == 2 && accessories[2]->order == 2 && app->AccessoryRenderSplitOrder() == 3 &&
+                  app->CameraParentModel() == 1 && accessories[0]->parentModel == 0 && accessories[1]->parentModel == 1 && accessories[2]->parentModel == 0,
+                  "one undo restores all objects with their own and incoming bindings");
+            for (int i = 0; i < 3; ++i) Check(world.getCollisionObjectArray()[i] == models[i]->rigidTable[0].body, "batch restore preserves shared-world ordering");
+            Check(journal.History(false) == MMS_OK && world.getNumCollisionObjects() == 1 && journal.UndoCount() == 0, "one undo removes all earlier imports");
+            Check(journal.History(true) == MMS_OK && world.getNumCollisionObjects() == 3, "one redo restores grouped import");
+            Check(journal.History(true) == MMS_OK && world.getNumCollisionObjects() == 1, "one redo removes grouped objects");
+        }
+        objects.clear(); change.reset(); Check(journal.Reset() == MMS_OK, "reset batch object history"); journal.Collect();
+        Check(destroyed == 2 && broadphase.getNumHandles() == 1, "collection releases both parked models without the surviving model");
+        objects = {plugins::RetainSceneObject(*app, MMS_OBJECT_MODEL, 2), plugins::RetainSceneObject(*app, MMS_OBJECT_ACCESSORY, 2)};
+        Check(journal.PrepareNative("delete survivors", plugins::RetainedSceneObject::CaptureRemovalBatch(objects, 2 * 1024 * 1024), tx) == MMS_OK &&
+              journal.CommitNative(std::move(tx)) == MMS_OK, "surviving objects remain editable after collection");
+        objects.clear(); journal.Reset(); journal.Collect();
+        for (unsigned i = 0; i < 3; ++i) mdl::KeyPoolDestroy(app->AccessoryKeys(i));
+        curve_host::Reset(app.get());
+        Check(destroyed == 3 && broadphase.getNumHandles() == 0, "batch fixture fully releases retained resources");
     }
 }
 }

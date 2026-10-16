@@ -20,6 +20,8 @@ class Broadphase final : public bt32BitAxisSweep3 {
 public:
     Broadphase(const btVector3&, const btVector3&, unsigned maxHandles);
     ~Broadphase() override;
+    btBroadphaseProxy* createProxy(const btVector3&, const btVector3&, int shapeType, void* object,
+        short group, short mask, btDispatcher*, void* multiSapProxy) override;
     PairCache* Cache() const noexcept;
     PairCache* Exchange(PairCache*) noexcept;
     static btBroadphaseProxy* RayProxy(btBroadphaseProxy*) noexcept;
@@ -53,6 +55,12 @@ public:
     Retained& operator=(const Retained&) = delete;
     bool Present() const noexcept;
     std::unique_ptr<Transition> Prepare(bool present);
+    // One world publication for all objects, never a chain of single-object
+    // publications. Objects must be distinct, share a world and all change to
+    // the requested presence. Body/constraint ownership must not overlap.
+    // The input order does not affect restored simulation order. Conflicting
+    // historical/current order, including an external reorder, is rejected.
+    static std::unique_ptr<Transition> PrepareBatch(const std::vector<Retained*>& objects, bool present);
 };
 }
 }

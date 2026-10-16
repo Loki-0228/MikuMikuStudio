@@ -1,4 +1,5 @@
 #include "BulletDynamics/Dynamics/btActionInterface.h"
+#include <limits>
 #include <stdexcept>
 
 namespace {
@@ -18,7 +19,7 @@ struct PhysicsFixture {
     btSphereShape shape{btScalar(0.5)};
     std::vector<std::unique_ptr<btRigidBody>> bodies;
     std::unique_ptr<btGeneric6DofConstraint> joint;
-    PhysicsFixture() {
+    explicit PhysicsFixture(bool detectCollisions = true) {
         world.setGravity(btVector3(0, -10, 0));
         for (const auto& pos : {btVector3(0, 5, 0), btVector3(0, 7, 0), btVector3(0, 5.8f, 0),
                               btVector3(10, 5, 0), btVector3(10, 5.8f, 0)}) {
@@ -32,7 +33,7 @@ struct PhysicsFixture {
         auto frameA = btTransform::getIdentity(); frameA.setOrigin(btVector3(0, 2, 0));
         joint = std::make_unique<btGeneric6DofConstraint>(*bodies[0], *bodies[1], frameA, btTransform::getIdentity(), true);
         world.addConstraint(joint.get(), false);
-        world.performDiscreteCollisionDetection();
+        if (detectCollisions) world.performDiscreteCollisionDetection();
     }
     ~PhysicsFixture() {
         world.removeConstraint(joint.get());
@@ -83,6 +84,229 @@ bool RejectPhysicsPrepare(history_physics::Retained& retained, bool present) {
     try { auto candidate = retained.Prepare(present); }
     catch (const std::invalid_argument&) { return true; }
     return false;
+}
+bool RejectPhysicsBatch(const std::vector<history_physics::Retained*>& retained, bool present) {
+    try { auto candidate = history_physics::Retained::PrepareBatch(retained, present); }
+    catch (const std::invalid_argument&) { return true; }
+    return false;
+}
+void CheckPhysicsOrder(PhysicsFixture& f, const std::vector<unsigned>& indices) {
+    Check(f.world.getNumCollisionObjects() == static_cast<int>(indices.size()) &&
+          f.world.HistoryBodies().size() == static_cast<int>(indices.size()), "batch physics array counts");
+    for (size_t i = 0; i < indices.size(); ++i) {
+        Check(f.world.getCollisionObjectArray()[static_cast<int>(i)] == f.bodies[indices[i]].get(), "batch collision order");
+        Check(f.world.HistoryBodies()[static_cast<int>(i)] == f.bodies[indices[i]].get(), "batch moving-body order");
+    }
+}
+void PublishPhysicsBatch(std::unique_ptr<history_physics::Retained::Transition> candidate) {
+    bulletAllocations = 0; trackBulletAlloc = true; failAfter = 0;
+    const bool published = candidate->Publish();
+    failAfter = -1; trackBulletAlloc = false;
+    Check(published && bulletAllocations == 0, "batch publishes without C++ or Bullet allocation");
+    Check(!candidate->IsCurrent() && !candidate->Publish(), "batch publication consumes the entire candidate");
+}
+void PhysicsGuardCoordinates() {
+    const auto nan = std::numeric_limits<btScalar>::quiet_NaN();
+    const auto sameCoordinates = [](const btVector3& a, const btVector3& b) {
+        return a.x() == b.x() && a.y() == b.y() && a.z() == b.z();
+    };
+    {
+        PhysicsFixture f(false);
+        for (const auto& body : f.bodies) {
+            btVector3 lo, hi; f.shape.getAabb(body->getWorldTransform(), lo, hi);
+            auto* proxy = body->getBroadphaseHandle();
+            Check(sameCoordinates(proxy->m_aabbMin, lo) && sameCoordinates(proxy->m_aabbMax, hi),
+                  "new sweep proxy has initialized AABB before the first collision pass");
+            Check(proxy->m_aabbMin.w() == 0 && proxy->m_aabbMax.w() == 0, "new sweep proxy initializes unused AABB components");
+        }
+        auto* body = f.bodies[0].get(); auto* oldProxy = body->getBroadphaseHandle();
+        f.world.removeConstraint(f.joint.get()); f.world.removeRigidBody(body);
+        // The sweep handle pool keeps this object alive and reuses it first.
+        // Poison all coordinates, not only W, to reproduce the Bullet 2.75
+        // createProxy gap independently of allocator or stack contents.
+        oldProxy->m_aabbMin.setValue(nan, nan, nan); oldProxy->m_aabbMax.setValue(nan, nan, nan);
+        f.world.addRigidBody(body, 1, -1); f.world.addConstraint(f.joint.get(), false);
+        btVector3 lo, hi; f.shape.getAabb(body->getWorldTransform(), lo, hi);
+        Check(body->getBroadphaseHandle() == oldProxy && sameCoordinates(oldProxy->m_aabbMin, lo) && sameCoordinates(oldProxy->m_aabbMax, hi),
+              "reused sweep handle replaces poisoned bounds immediately");
+        Check(oldProxy->m_aabbMin.w() == 0 && oldProxy->m_aabbMax.w() == 0, "reused sweep handle initializes unused AABB components");
+        auto retained = f.Capture();
+        PublishPhysicsBatch(retained->Prepare(false));
+        PublishPhysicsBatch(retained->Prepare(true));
+        Check(retained->Present() && f.world.getNumCollisionObjects() == 5,
+              "physics history works before any simulation or collision pass");
+    }
+    {
+        PhysicsFixture f; auto retained = f.Capture();
+        auto* body = f.bodies[0].get(); auto* proxy = body->getBroadphaseHandle();
+        const auto unused = [&](btScalar value) {
+            auto transform = body->getWorldTransform(); transform.getOrigin()[3] = value;
+            auto interpolation = body->getInterpolationWorldTransform(); interpolation.getOrigin()[3] = value;
+            for (int i = 0; i < 3; ++i) {
+                transform.getBasis()[i][3] = value; interpolation.getBasis()[i][3] = value;
+            }
+            body->setWorldTransform(transform); body->setInterpolationWorldTransform(interpolation);
+            auto velocity = body->getLinearVelocity(); velocity[3] = value; body->setLinearVelocity(velocity);
+            auto spin = body->getAngularVelocity(); spin[3] = value; body->setAngularVelocity(spin);
+            const_cast<btVector3&>(body->getTotalForce())[3] = value;
+            const_cast<btVector3&>(body->getTotalTorque())[3] = value;
+            proxy->m_aabbMin[3] = value; proxy->m_aabbMax[3] = value;
+            f.bodies[2]->getBroadphaseHandle()->m_aabbMin[3] = value;
+            f.bodies[2]->getBroadphaseHandle()->m_aabbMax[3] = value;
+        };
+        unused(nan);
+        auto candidate = retained->Prepare(false);
+        Check(candidate->IsCurrent(), "NaN in unused vector and transform components does not stale physics history");
+        unused(btScalar(17));
+        Check(candidate->IsCurrent(), "changes to unused W components do not stale physics history");
+        const auto loX = proxy->m_aabbMin.x(); proxy->m_aabbMin[0] += btScalar(1);
+        Check(!candidate->IsCurrent(), "physical AABB coordinate mutation still invalidates history");
+        proxy->m_aabbMin[0] = loX;
+        auto transform = body->getWorldTransform(); transform.getBasis()[0][0] += btScalar(1);
+        body->setWorldTransform(transform);
+        Check(!candidate->IsCurrent(), "physical basis coordinate mutation still invalidates history");
+        transform.getBasis()[0][0] -= btScalar(1); body->setWorldTransform(transform);
+        auto interpolation = body->getInterpolationWorldTransform(); interpolation.getOrigin()[0] += btScalar(1);
+        body->setInterpolationWorldTransform(interpolation);
+        Check(!candidate->IsCurrent(), "physical interpolation coordinate mutation still invalidates history");
+        interpolation.getOrigin()[0] -= btScalar(1); body->setInterpolationWorldTransform(interpolation);
+        PublishPhysicsBatch(std::move(candidate));
+        unused(nan);
+        PublishPhysicsBatch(retained->Prepare(true));
+        Check(retained->Present(), "parked-state validation also ignores unused components");
+    }
+}
+void PhysicsBatchRetention() {
+    using Retained = history_physics::Retained;
+    {
+        PhysicsFixture f;
+        auto a = f.Capture();
+        auto b = std::make_unique<Retained>(f.world, std::vector<btRigidBody*>{f.bodies[2].get()}, std::vector<btTypedConstraint*>{});
+        auto* cache = f.broadphase.Cache();
+        auto* unrelated = cache->findPair(f.bodies[3]->getBroadphaseHandle(), f.bodies[4]->getBroadphaseHandle())->m_algorithm;
+        auto cancel = Retained::PrepareBatch({b.get(), a.get()}, false);
+        Check(cancel->IsCurrent() && a->Present() && b->Present() && f.broadphase.Cache() == cache,
+              "batch preparation leaves every owner and the live cache unchanged");
+        cancel.reset();
+        Check(f.ContactsFirst() && f.RayHitsFirst(), "batch cancellation retains contact and ray state");
+        auto oldSingle = a->Prepare(false);
+        PublishPhysicsBatch(Retained::PrepareBatch({b.get(), a.get()}, false));
+        Check(!a->Present() && !b->Present() && !f.ContactsFirst() && !f.RayHitsFirst() && f.world.getNumConstraints() == 0,
+              "one batch removes both owners and their joint");
+        Check(!oldSingle->IsCurrent() && !oldSingle->Publish(), "batch invalidates outstanding single-owner candidate");
+        oldSingle.reset();
+        CheckPhysicsOrder(f, {3, 4});
+        Check(f.broadphase.Cache()->findPair(f.bodies[3]->getBroadphaseHandle(), f.bodies[4]->getBroadphaseHandle())->m_algorithm == unrelated,
+              "batch preserves unrelated contact algorithm ownership");
+        PublishPhysicsBatch(Retained::PrepareBatch({a.get(), b.get()}, true));
+        Check(a->Present() && b->Present() && f.world.getConstraint(0) == f.joint.get(), "batch restores both owners and exact joint");
+        CheckPhysicsOrder(f, {0, 1, 2, 3, 4});
+        f.world.performDiscreteCollisionDetection();
+        Check(f.ContactsFirst(), "batch restoration regenerates contacts between restored owners");
+        // Independent old deletion histories can be restored together in either
+        // caller order, despite having captured different live array indices.
+        PublishPhysicsBatch(a->Prepare(false));
+        PublishPhysicsBatch(b->Prepare(false));
+        PublishPhysicsBatch(Retained::PrepareBatch({b.get(), a.get()}, true));
+        CheckPhysicsOrder(f, {0, 1, 2, 3, 4});
+        // Owners from one batch remain independently usable. Restoring the
+        // later-positioned owner first must still place it before live peers.
+        PublishPhysicsBatch(Retained::PrepareBatch({a.get(), b.get()}, false));
+        PublishPhysicsBatch(b->Prepare(true));
+        CheckPhysicsOrder(f, {2, 3, 4});
+        PublishPhysicsBatch(a->Prepare(true));
+        CheckPhysicsOrder(f, {0, 1, 2, 3, 4});
+        for (unsigned i = 0; i < 12; ++i) {
+            PublishPhysicsBatch(Retained::PrepareBatch({b.get(), a.get()}, false));
+            PublishPhysicsBatch(Retained::PrepareBatch({a.get(), b.get()}, true));
+            CheckPhysicsOrder(f, {0, 1, 2, 3, 4});
+        }
+        auto stale = Retained::PrepareBatch({a.get(), b.get()}, false);
+        f.bodies[2]->setLinearVelocity(btVector3(1, 2, 3));
+        Check(!stale->IsCurrent() && !stale->Publish() && a->Present() && b->Present(),
+              "one owner mutation rejects the whole batch before any publication");
+        stale.reset(); f.bodies[2]->setLinearVelocity(btVector3(0, 0, 0));
+        stale = Retained::PrepareBatch({a.get(), b.get()}, false);
+        history_physics::Broadphase replacement(btVector3(-100, -100, -100), btVector3(100, 100, 100), 256);
+        f.world.setBroadphase(&replacement);
+        Check(!stale->IsCurrent() && !stale->Publish() && RejectPhysicsBatch({a.get(), b.get()}, false) && a->Present() && b->Present(),
+              "replaced world broadphase rejects batch preparation and publication");
+        f.world.setBroadphase(&f.broadphase); stale.reset();
+        CheckPhysicsOrder(f, {0, 1, 2, 3, 4});
+        Check(RejectPhysicsBatch({}, false) && RejectPhysicsBatch({nullptr}, false) &&
+              RejectPhysicsBatch({a.get(), a.get()}, false), "empty null and duplicate-owner batches are rejected");
+        Retained overlap(f.world, {f.bodies[0].get()}, {});
+        Check(RejectPhysicsBatch({a.get(), &overlap}, false), "overlapping body ownership rejects the whole batch");
+        auto cross = std::make_unique<btPoint2PointConstraint>(*f.bodies[0], *f.bodies[2], btVector3(0,0,0), btVector3(0,0,0));
+        f.world.addConstraint(cross.get(), false);
+        Check(RejectPhysicsBatch({a.get(), b.get()}, false) && a->Present() && b->Present(),
+              "cross-owner joint is explicitly rejected even when both owners are requested");
+        f.world.removeConstraint(cross.get());
+        Retained empty(f.world, {}, {});
+        PublishPhysicsBatch(Retained::PrepareBatch({a.get(), &empty}, false));
+        Check(!a->Present() && !empty.Present(), "batch includes an empty retained object");
+        Check(RejectPhysicsBatch({a.get(), b.get()}, true), "mixed initial presence rejects the whole batch");
+        PublishPhysicsBatch(Retained::PrepareBatch({&empty, a.get()}, true));
+        CheckPhysicsOrder(f, {0, 1, 2, 3, 4});
+        PhysicsFixture second;
+        auto differentWorld = second.Capture();
+        Check(RejectPhysicsBatch({a.get(), differentWorld.get()}, false) && a->Present() && differentWorld->Present(),
+              "mixed worlds are rejected without changing either world");
+    }
+    {
+        PhysicsFixture f;
+        auto a = f.Capture();
+        auto b = std::make_unique<Retained>(f.world, std::vector<btRigidBody*>{f.bodies[2].get()}, std::vector<btTypedConstraint*>{});
+        for (const bool restore : {false, true}) {
+            bool reached = false; unsigned failures = 0;
+            auto* cache = f.broadphase.Cache();
+            for (long fail = 0; fail < 512; ++fail) {
+                failAfter = fail;
+                try { auto candidate = Retained::PrepareBatch({b.get(), a.get()}, restore); failAfter = -1; reached = true; }
+                catch (const std::bad_alloc&) { failAfter = -1; ++failures; }
+                Check(a->Present() == !restore && b->Present() == !restore && f.broadphase.Cache() == cache &&
+                      f.world.getNumCollisionObjects() == (restore ? 2 : 5) && f.world.getNumConstraints() == (restore ? 0 : 1),
+                      "every batch preparation allocation failure preserves all owners and live membership");
+                if (reached) break;
+            }
+            Check(reached && failures > 15, "batch allocation failure sweep reaches full preparation");
+            PublishPhysicsBatch(Retained::PrepareBatch({a.get(), b.get()}, restore));
+        }
+        CheckPhysicsOrder(f, {0, 1, 2, 3, 4});
+        auto batch = Retained::PrepareBatch({a.get(), b.get()}, false);
+        a.reset(); b.reset();
+        Check(batch->IsCurrent(), "batch keeps all owner internals alive");
+        PublishPhysicsBatch(std::move(batch));
+        CheckPhysicsOrder(f, {3, 4});
+        Check(!f.ContactsFirst(), "batch owner release still retires removed contact algorithms");
+    }
+    {
+        PhysicsFixture f;
+        auto a = f.Capture();
+        PublishPhysicsBatch(a->Prepare(false));
+        // An unmanaged reorder that contradicts the historical order must be
+        // rejected during preparation, rather than silently changing live peers.
+        std::swap(f.world.getCollisionObjectArray()[0], f.world.getCollisionObjectArray()[1]);
+        Check(RejectPhysicsPrepare(*a, true) && !a->Present() && f.world.getNumCollisionObjects() == 3,
+              "conflicting live and historical order rejects restoration atomically");
+        std::swap(f.world.getCollisionObjectArray()[0], f.world.getCollisionObjectArray()[1]);
+        PublishPhysicsBatch(a->Prepare(true));
+        CheckPhysicsOrder(f, {0, 1, 2, 3, 4});
+    }
+    {
+        PhysicsFixture f;
+        auto a = f.Capture();
+        auto joint = std::make_unique<btPoint2PointConstraint>(*f.bodies[3], *f.bodies[4], btVector3(0,0,0), btVector3(0,0,0));
+        f.world.addConstraint(joint.get(), false);
+        Retained b(f.world, {f.bodies[3].get(), f.bodies[4].get()}, {joint.get()});
+        PublishPhysicsBatch(a->Prepare(false));
+        PublishPhysicsBatch(b.Prepare(false));
+        PublishPhysicsBatch(Retained::PrepareBatch({&b, a.get()}, true));
+        CheckPhysicsOrder(f, {0, 1, 2, 3, 4});
+        Check(f.world.getNumConstraints() == 2 && f.world.getConstraint(0) == f.joint.get() && f.world.getConstraint(1) == joint.get(),
+              "independent joint histories restore exact constraint order in one batch");
+        f.world.removeConstraint(joint.get());
+    }
 }
 void PhysicsRetention() {
     btAlignedAllocSetCustomAligned(HistoryAlignedAlloc, HistoryAlignedFree);
@@ -253,6 +477,8 @@ void PhysicsRetention() {
         Check(rejected && retained->Present() && f.world.getNumConstraints() == 1,
               "joint cannot retain an independently owned body through a raw pointer");
     }
+    PhysicsGuardCoordinates();
+    PhysicsBatchRetention();
     btAlignedAllocSetCustomAligned(nullptr, nullptr);
 }
 }

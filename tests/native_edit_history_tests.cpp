@@ -180,7 +180,7 @@ void Scatter(){
     const auto id=morph_curve::StableId(0,f.morphs[0].name);
     Check(morph_curve::Write(f.raw(),{{id,source}},error),"real morph writer creates scatter source");
     const auto oldPool=std::vector<mdl::MorphKey>(f.m->morphKeys,f.m->morphKeys+16);
-    auto app=std::make_unique<MMDApp>();app->state=MMDAppState{};app->ModelSlot(0)=f.raw();app->SelectedModelSlot()=0;
+    auto app=std::make_unique<MMDApp>();::new (static_cast<void*>(&app->state)) MMDAppState{};app->ModelSlot(0)=f.raw();app->SelectedModelSlot()=0;
     app->MainWindow()=CreateWindowExW(0,L"STATIC",L"history test",WS_OVERLAPPED,0,0,1,1,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
     Check(app->MainWindow()!=nullptr,"hidden scatter owner");
     sequence_scatter::Source selected;sequence_scatter::Plan plan;sequence_scatter::Settings settings;
@@ -200,7 +200,7 @@ void Scatter(){
     DestroyWindow(app->MainWindow());app->MainWindow()=nullptr;app->ModelSlot(0)=nullptr;
 }
 void FailedNativeCommands(){
-    Fixture f;auto app=std::make_unique<MMDApp>();app->state=MMDAppState{};
+    Fixture f;auto app=std::make_unique<MMDApp>();::new (static_cast<void*>(&app->state)) MMDAppState{};
     app->ModelSlot(0)=f.raw();app->SelectedModelSlot()=0;app->CurrentFrame()=9;
     app->MainWindow()=CreateWindowExW(0,L"STATIC",L"history commands",WS_OVERLAPPED,0,0,1,1,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
     Check(app->MainWindow()!=nullptr,"hidden native command owner");
@@ -213,9 +213,10 @@ void FailedNativeCommands(){
     Check(f.Digest()==before&&app->SceneModified()==0&&app->CurrentFrame()==9,"allocation failure in real undo command leaves scene unmodified");
     DestroyWindow(app->MainWindow());app->MainWindow()=nullptr;app->ModelSlot(0)=nullptr;
 }
+#include "scene_binding_history_checks.inc"
 void RemovalBindings(){
     using namespace plugins;
-    Fixture deleted,peer; auto app=std::make_unique<MMDApp>();app->state=MMDAppState{};
+    Fixture deleted,peer; auto app=std::make_unique<MMDApp>();::new (static_cast<void*>(&app->state)) MMDAppState{};
     app->ModelSlot(3)=deleted.raw();app->ModelSlot(7)=peer.raw();
     deleted.m->comboSelIndex=1;deleted.m->comboSelIndex2=1;
     peer.m->comboSelIndex=2;peer.m->comboSelIndex2=2;
@@ -287,6 +288,7 @@ void RemovalBindings(){
     ForgetSceneObject(&accessory);ForgetSceneObject(&later);ForgetSceneObject(deleted.raw());
     mdl::KeyPoolDestroy(app->CameraKeys());mdl::KeyPoolDestroy(app->AccessoryKeys(11));
     app->ModelSlot(3)=app->ModelSlot(7)=nullptr;app->AccessorySlot(11)=app->AccessorySlot(12)=nullptr;peer.m->boneOrderTable=nullptr;
+    RemovalBindingsGrowth();RemovalBindingsBorrowedPool();RemovalBindingsBatch();
 }
 struct NativeRingChange : plugins::HistoryChange {
     unsigned char* model;int& frame;
@@ -322,4 +324,12 @@ void CrossModelJournal(){
 }
 #include "history_physics_checks.inc"
 #include "scene_object_history_checks.inc"
-int main(){std::setvbuf(stdout,nullptr,_IONBF,0);PoseAndStale();KeysAndChain();Bake();Deletion();EmptyAndCycle();FreeCurves();Scatter();FailedNativeCommands();RemovalBindings();CrossModelJournal();PhysicsRetention();ObjectRetention();std::printf("PASS native history: %u checks\n",checks);}
+int main(){
+    std::setvbuf(stdout,nullptr,_IONBF,0);
+    const auto run=[](const char* name,void(*test)()){std::printf("RUN %s\n",name);test();};
+    run("PoseAndStale",PoseAndStale);run("KeysAndChain",KeysAndChain);run("Bake",Bake);
+    run("Deletion",Deletion);run("EmptyAndCycle",EmptyAndCycle);run("FreeCurves",FreeCurves);
+    run("Scatter",Scatter);run("FailedNativeCommands",FailedNativeCommands);run("RemovalBindings",RemovalBindings);
+    run("CrossModelJournal",CrossModelJournal);run("PhysicsRetention",PhysicsRetention);run("ObjectRetention",ObjectRetention);
+    std::printf("PASS native history: %u checks\n",checks);
+}

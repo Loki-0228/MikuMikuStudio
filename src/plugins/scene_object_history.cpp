@@ -99,11 +99,11 @@ struct RetainedSceneObject::Impl {
         std::unique_ptr<curve_host::AccessoryAuthoring::Exchange> curves;
         mdl::AccessoryKey* keys;
         size_t keyCapacity;
-        Candidate(std::shared_ptr<RetainedSceneObject> value, bool p)
+        Candidate(std::shared_ptr<RetainedSceneObject> value, bool p, bool preparePhysics = true)
             : lifetime(std::move(value)), owner(*lifetime->impl_), present(p), keys(nullptr), keyCapacity(0) {
             if (owner.present == p || !owner.MembershipCurrent()) throw std::invalid_argument("scene object membership");
             identity = PrepareObjectPresence(owner.object, owner.id, p);
-            if (owner.physics) physics = owner.physics->Prepare(p);
+            if (preparePhysics && owner.physics) physics = owner.physics->Prepare(p);
             if (owner.curves) {
                 curves = owner.curves->Prepare(p); keys = owner.app.AccessoryKeys(owner.slot);
                 keyCapacity = mdl::KeyPoolCapacity(keys);
@@ -137,6 +137,46 @@ MmsId RetainedSceneObject::Id() const noexcept { return impl_->id; }
 std::unique_ptr<PreparedHistoryChange> RetainedSceneObject::PreparePresence(bool present) {
     return std::make_unique<Impl::Candidate>(shared_from_this(), present);
 }
+std::unique_ptr<PreparedHistoryChange> RetainedSceneObject::PreparePresenceBatch(const Objects& objects, bool present) {
+    if (objects.empty()) throw std::invalid_argument("empty object batch");
+    struct Candidate final : PreparedHistoryChange {
+        // Destroy physics contacts before releasing the native resource owners.
+        std::vector<std::unique_ptr<PreparedHistoryChange>> members;
+        std::unique_ptr<history_physics::Retained::Transition> physics;
+        bool IsCurrent() const noexcept override {
+            if (physics && !physics->IsCurrent()) return false;
+            for (const auto& member : members) if (!member->IsCurrent()) return false;
+            return true;
+        }
+        void Publish() noexcept override {
+            if (physics) physics->Publish();
+            for (const auto& member : members) member->Publish();
+        }
+    };
+    auto next = std::make_unique<Candidate>();
+    std::vector<history_physics::Retained*> physics;
+    MMDApp* app = nullptr;
+    bool modelSlots[255]{}, accessorySlots[255]{};
+    for (size_t i = 0; i < objects.size(); ++i) {
+        if (!objects[i] || std::find(objects.begin(), objects.begin() + i, objects[i]) != objects.begin() + i)
+            throw std::invalid_argument("duplicate/null object batch member");
+        auto& owner = *objects[i]->impl_;
+        if (app && app != &owner.app) throw std::invalid_argument("object batch spans applications");
+        app = &owner.app;
+        auto& occupied = owner.kind == MMS_OBJECT_MODEL ? modelSlots[owner.slot] : accessorySlots[owner.slot];
+        if (occupied) throw std::invalid_argument("object batch repeats a kind/slot");
+        occupied = true;
+    }
+    // Validate the complete destination set before reserving identity tickets
+    // or preparing curves: separate absent owners can have reused one slot.
+    for (const auto& object : objects) {
+        auto& owner = *object->impl_;
+        if (owner.physics) physics.push_back(owner.physics.get());
+        next->members.push_back(std::make_unique<Impl::Candidate>(object, present, false));
+    }
+    if (!physics.empty()) next->physics = history_physics::Retained::PrepareBatch(physics, present);
+    return next;
+}
 std::shared_ptr<RetainedSceneObject> RetainSceneObject(MMDApp& app, uint32_t kind, unsigned slot) {
     if (slot >= 255 || (kind != MMS_OBJECT_MODEL && kind != MMS_OBJECT_ACCESSORY)) throw std::invalid_argument("retained object slot/kind");
     void* object = kind == MMS_OBJECT_MODEL ? static_cast<void*>(app.ModelSlot(slot)) : app.AccessorySlot(slot);
@@ -152,9 +192,12 @@ std::shared_ptr<RetainedSceneObject> RetainSceneObject(MMDApp& app, uint32_t kin
     retainedObjects[key] = result; return result;
 }
 std::shared_ptr<HistoryChange> RetainedSceneObject::CaptureRemoval(uint64_t resourceBytes) {
-    if (!impl_->present || !impl_->MembershipCurrent()) throw std::invalid_argument("removed scene object");
+    return CaptureRemovalBatch({shared_from_this()}, resourceBytes);
+}
+std::shared_ptr<HistoryChange> RetainedSceneObject::CaptureRemovalBatch(const Objects& objects, uint64_t resourceBytes) {
+    if (objects.empty()) throw std::invalid_argument("empty object removal batch");
     struct Change final : HistoryChange {
-        std::shared_ptr<RetainedSceneObject> object;
+        Objects objects;
         std::shared_ptr<HistoryChange> bindings;
         uint64_t bytes;
         struct Candidate final : PreparedHistoryChange {
@@ -165,7 +208,7 @@ std::shared_ptr<HistoryChange> RetainedSceneObject::CaptureRemoval(uint64_t reso
         MmsResult Prepare(bool forward, std::unique_ptr<PreparedHistoryChange>& out) override {
             return Boundary([&]() -> MmsResult {
                 auto next = std::make_unique<Candidate>();
-                next->presence = object->PreparePresence(!forward);
+                next->presence = RetainedSceneObject::PreparePresenceBatch(objects, !forward);
                 if (auto r = bindings->Prepare(forward, next->bindings)) return r;
                 out = std::move(next); return MMS_OK;
             });
@@ -173,13 +216,28 @@ std::shared_ptr<HistoryChange> RetainedSceneObject::CaptureRemoval(uint64_t reso
         uint64_t RetainedBytes() const noexcept override { return bytes; }
     };
     auto next = std::make_shared<Change>();
-    next->object = shared_from_this();
-    next->bindings = impl_->kind == MMS_OBJECT_MODEL ? CaptureModelRemovalBindings(impl_->app, impl_->slot) : CaptureAccessoryRemovalOrder(impl_->app, impl_->slot);
-    const auto overhead = uint64_t(sizeof(Change) + sizeof(Impl)) + next->bindings->RetainedBytes();
+    MMDApp* app = nullptr; std::vector<unsigned> models, accessories;
+    for (size_t i = 0; i < objects.size(); ++i) {
+        if (!objects[i] || std::find(objects.begin(), objects.begin() + i, objects[i]) != objects.begin() + i)
+            throw std::invalid_argument("duplicate/null object removal batch member");
+        auto& owner = *objects[i]->impl_;
+        if (!owner.present || !owner.MembershipCurrent() || (app && app != &owner.app))
+            throw std::invalid_argument("removed/foreign scene object");
+        app = &owner.app;
+        (owner.kind == MMS_OBJECT_MODEL ? models : accessories).push_back(owner.slot);
+    }
+    next->objects = objects;
+    next->bindings = CaptureObjectsRemovalBindings(*app, models, accessories);
+    const auto overhead = uint64_t(sizeof(Change)) + next->objects.capacity() * sizeof(Objects::value_type) +
+        objects.size() * sizeof(Impl) + next->bindings->RetainedBytes();
     if (resourceBytes > UINT64_MAX - overhead) throw std::overflow_error("object history resource budget");
     next->bytes = resourceBytes + overhead; return next;
 }
 MmsResult RetainedSceneObject::PrepareInsertion(uint64_t resourceBytes,
+    std::shared_ptr<HistoryChange>& insertion, std::unique_ptr<PreparedHistoryChange>& staging) {
+    return Boundary([&] { return PrepareInsertionBatch({shared_from_this()}, resourceBytes, insertion, staging); });
+}
+MmsResult RetainedSceneObject::PrepareInsertionBatch(const Objects& objects, uint64_t resourceBytes,
     std::shared_ptr<HistoryChange>& insertion, std::unique_ptr<PreparedHistoryChange>& staging) {
     return Boundary([&]() -> MmsResult {
         struct Insertion final : HistoryChange {
@@ -191,7 +249,7 @@ MmsResult RetainedSceneObject::PrepareInsertion(uint64_t resourceBytes,
             uint64_t RetainedBytes() const noexcept override { return removal->RetainedBytes() + sizeof(*this); }
         };
         if (resourceBytes > UINT64_MAX - sizeof(Insertion)) return MMS_E_MEMORY;
-        auto removal = CaptureRemoval(resourceBytes);
+        auto removal = CaptureRemovalBatch(objects, resourceBytes);
         if (removal->RetainedBytes() > UINT64_MAX - sizeof(Insertion)) return MMS_E_MEMORY;
         auto next = std::make_shared<Insertion>(removal);
         std::unique_ptr<PreparedHistoryChange> prepared;

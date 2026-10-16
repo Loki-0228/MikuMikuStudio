@@ -1,4 +1,50 @@
 namespace object_history_checks {
+void RunBatch(MMDApp* app, const wchar_t* modelPath, const wchar_t* accessoryPath) {
+    using namespace plugins;
+    LoadModelFile(app,modelPath,false);LoadModelFile(app,modelPath,false);
+    LoadAccessoryFile(accessoryPath);LoadAccessoryFile(accessoryPath);
+    auto* model0=app->ModelSlot(0);auto* model1=app->ModelSlot(1);
+    auto* accessory0=app->AccessorySlot(0);auto* accessory1=app->AccessorySlot(1);
+    Check(model0 && model1 && accessory0 && accessory1,"load two models and two accessories for atomic batch");
+    auto* world=app->Physics()->world;
+    std::vector<btCollisionObject*> originalBodies;
+    for(int i=0;i<world->getNumCollisionObjects();++i)originalBodies.push_back(world->getCollisionObjectArray()[i]);
+    const auto originalJoints=world->getNumConstraints();
+    accessory0->parentModel=1;accessory0->parentBone=0;app->AccessoryKeys(0)[0].parentModel=1;
+    accessory1->parentModel=0;accessory1->parentBone=0;app->AccessoryKeys(1)[0].parentModel=0;
+    RetainedSceneObject::Objects owners{
+        RetainSceneObject(*app,MMS_OBJECT_ACCESSORY,1),RetainSceneObject(*app,MMS_OBJECT_MODEL,0),
+        RetainSceneObject(*app,MMS_OBJECT_ACCESSORY,0),RetainSceneObject(*app,MMS_OBJECT_MODEL,1)};
+    StorageStore storage;SharedHistory journal(storage,{},128,1024ull*1024*1024);
+    std::shared_ptr<HistoryChange> insertion;std::unique_ptr<PreparedHistoryChange> staging;
+    Check(RetainedSceneObject::PrepareInsertionBatch(owners,256ull*1024*1024,insertion,staging)==MMS_OK && staging->IsCurrent(),"prepare complete loader batch");
+    staging->Publish();staging.reset();
+    std::unique_ptr<SharedHistory::NativeTransaction> tx;
+    Check(journal.PrepareNative("import four objects",insertion,tx)==MMS_OK && journal.CommitNative(std::move(tx))==MMS_OK,"one journal node imports all four resources");
+    auto removal=RetainedSceneObject::CaptureRemovalBatch(owners,256ull*1024*1024);
+    Check(journal.PrepareNative("delete four objects",removal,tx)==MMS_OK && journal.CommitNative(std::move(tx))==MMS_OK,"one journal node deletes all four resources");
+    const auto absent=[&] { return !app->ModelSlot(0) && !app->ModelSlot(1) && !app->AccessorySlot(0) && !app->AccessorySlot(1) && world->getNumCollisionObjects()==1 && world->getNumConstraints()==0; };
+    Check(absent(),"batch removes every object and leaves only ground");
+    const auto modelOffline=std::filesystem::path(modelPath).wstring()+L".batch-offline";
+    const auto accessoryOffline=std::filesystem::path(accessoryPath).wstring()+L".batch-offline";
+    std::filesystem::rename(modelPath,modelOffline);std::filesystem::rename(accessoryPath,accessoryOffline);
+    app->CameraMode()=1;Check(PostDeviceReset(app),"device reset with entire batch retained");
+    for(int cycle=0;cycle<3;++cycle) {
+        Check(journal.History(false)==MMS_OK,"single undo restores all four deleted objects");
+        Check(app->ModelSlot(0)==model0 && app->ModelSlot(1)==model1 && app->AccessorySlot(0)==accessory0 && app->AccessorySlot(1)==accessory1,"batch undo reuses original resource owners");
+        Check(world->getNumCollisionObjects()==int(originalBodies.size()) && world->getNumConstraints()==originalJoints,"batch restores live bodies and joints");
+        for(size_t i=0;i<originalBodies.size();++i)Check(world->getCollisionObjectArray()[int(i)]==originalBodies[i],"batch retains physical ordering");
+        Check(accessory0->parentModel==1 && accessory1->parentModel==0 && app->AccessoryKeys(0)[0].parentModel==1 && app->AccessoryKeys(1)[0].parentModel==0,"bindings internal to removed batch survive");
+        RenderFrameSceneForOutput(app);
+        Check(journal.History(false)==MMS_OK && absent(),"single undo reverses complete import");
+        Check(journal.History(true)==MMS_OK && app->ModelSlot(0)==model0 && app->ModelSlot(1)==model1 && app->AccessorySlot(0)==accessory0 && app->AccessorySlot(1)==accessory1,"single redo repeats complete import offline");
+        Check(journal.History(true)==MMS_OK && absent(),"single redo repeats complete deletion");
+    }
+    insertion.reset();removal.reset();owners.clear();Check(journal.Reset()==MMS_OK,"reset batch resource journal");journal.Collect();
+    std::filesystem::rename(modelOffline,modelPath);std::filesystem::rename(accessoryOffline,accessoryPath);
+    app->SceneModified()=0;
+    std::puts("PASS production four-object atomic resource history");
+}
 void Run(MMDApp* app) {
     using namespace plugins;
     wchar_t modelPath[32768]{}, accessoryPath[32768]{};
@@ -76,5 +122,6 @@ void Run(MMDApp* app) {
     std::filesystem::rename(modelOffline,modelPath);std::filesystem::rename(accessoryOffline,accessoryPath);
     app->SceneModified()=0;
     std::puts("PASS production object resource history");
+    RunBatch(app,modelPath,accessoryPath);
 }
 }

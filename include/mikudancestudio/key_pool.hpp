@@ -17,8 +17,10 @@ struct DisplayKey;
 // the allocation, so copied scene records resolve the same bounds. Unregistered
 // arrays are borrowed legacy-sized fixtures and are never freed by growth.
 template<class Key> struct KeyPoolStorage {
+    struct Entry { std::size_t capacity; std::uint64_t identity; };
     inline static std::mutex mutex;
-    inline static std::unordered_map<const Key*, std::size_t> capacities;
+    inline static std::unordered_map<const Key*, Entry> capacities;
+    inline static std::uint64_t nextIdentity = 1;
     inline static constexpr std::size_t initial =
         std::is_same_v<Key, DisplayKey> ? 1000 : 10000;
 };
@@ -33,7 +35,17 @@ template<class Key> std::size_t KeyPoolCapacity(const Key* pool) {
     std::lock_guard<std::mutex> lock(KeyPoolStorage<Key>::mutex);
     const auto& map = KeyPoolStorage<Key>::capacities;
     const auto found = map.find(pool);
-    return found == map.end() ? KeyPoolStorage<Key>::initial : found->second;
+    return found == map.end() ? KeyPoolStorage<Key>::initial : found->second.capacity;
+}
+
+// Registered pools keep their identity when their allocation grows. Zero is a
+// borrowed pool; callers must retain pointer/capacity guards for that case.
+template<class Key> std::uint64_t KeyPoolIdentity(const Key* pool) {
+    if (!pool) return 0;
+    std::lock_guard<std::mutex> lock(KeyPoolStorage<Key>::mutex);
+    const auto& map = KeyPoolStorage<Key>::capacities;
+    const auto found = map.find(pool);
+    return found == map.end() ? 0 : found->second.identity;
 }
 
 template<class Key> Key* KeyPoolCreate(std::size_t count = KeyPoolStorage<Key>::initial) {
@@ -44,9 +56,32 @@ template<class Key> Key* KeyPoolCreate(std::size_t count = KeyPoolStorage<Key>::
     std::memset(pool, 0, sizeof(Key) * count);
     try {
         std::lock_guard<std::mutex> lock(KeyPoolStorage<Key>::mutex);
-        KeyPoolStorage<Key>::capacities.emplace(pool, count);
+        auto& identity = KeyPoolStorage<Key>::nextIdentity;
+        if (!identity) throw std::bad_alloc();
+        KeyPoolStorage<Key>::capacities.emplace(pool, typename KeyPoolStorage<Key>::Entry{count, identity});
+        ++identity;
     } catch (...) { ::operator delete(pool); throw; }
     return pool;
+}
+
+// Commit a fully initialized registered replacement. This transfers the old
+// registered identity without allocating. Borrowed pools are left to their
+// owner and the replacement retains its newly allocated identity.
+template<class Key> void KeyPoolCommitGrowth(Key*& pool, Key* grown) noexcept {
+    bool owned = false;
+    {
+        std::lock_guard<std::mutex> lock(KeyPoolStorage<Key>::mutex);
+        auto& map = KeyPoolStorage<Key>::capacities;
+        const auto old = map.find(pool);
+        if (old != map.end()) {
+            map.find(grown)->second.identity = old->second.identity;
+            map.erase(old);
+            owned = true;
+        }
+    }
+    Key* previous = pool;
+    pool = grown;
+    if (owned) ::operator delete(previous);
 }
 
 // Payloads owned by DisplayKey must be released by the caller before this call.
@@ -71,14 +106,7 @@ template<class Key> bool KeyPoolEnsure(Key*& pool, std::uint64_t required) noexc
     try { grown = KeyPoolCreate<Key>(target); }
     catch (...) { return false; }
     if (capacity) std::memcpy(grown, pool, sizeof(Key) * capacity);
-    bool owned = false;
-    {
-        std::lock_guard<std::mutex> lock(KeyPoolStorage<Key>::mutex);
-        owned = KeyPoolStorage<Key>::capacities.erase(pool) != 0;
-    }
-    Key* previous = pool;
-    pool = grown;
-    if (owned) ::operator delete(previous);
+    KeyPoolCommitGrowth(pool, grown);
     return true;
 }
 
