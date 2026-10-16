@@ -2,6 +2,8 @@
 // Exercise the real mapping dialog without displaying or activating a window.
 #define NOMINMAX
 #include "mikudancestudio/mmd_app.hpp"
+#include "mikudancestudio/animation_curve_host.hpp"
+#include "mikudancestudio/panel_controls.hpp"
 #include "mikudancestudio/viewport_render_scale.hpp"
 #include "mikudancestudio/shadow_filter.hpp"
 #include "mikudancestudio/perf_timing.hpp"
@@ -83,7 +85,10 @@ LRESULT CALLBACK HideCreated(int code, WPARAM wp, LPARAM lp) {
     if (code == HCBT_ACTIVATE) return 1;
     return CallNextHookEx(nullptr, code, wp, lp);
 }
-int WINAPI Unexpected(HWND, LPCWSTR text, LPCWSTR, UINT) {
+int WINAPI Unexpected(HWND, LPCWSTR text, LPCWSTR, UINT type) {
+    if (std::getenv("MMS_CAMERA_FIXTURE") && (type & MB_ICONMASK) == MB_ICONINFORMATION) {
+        std::puts("CAMERA acknowledged project compatibility information"); return IDOK;
+    }
     std::fwprintf(stderr, L"FAIL unexpected dialog: %ls\n", text); std::exit(2);
 }
 int WINAPI UnexpectedAnsi(HWND, LPCSTR text, LPCSTR, UINT) {
@@ -498,6 +503,7 @@ void CALLBACK Probe(HWND, UINT, UINT_PTR timer, DWORD) {
 #include "outline_coverage_scene_checks.hpp"
 #include "mme_ground_shadow_checks.hpp"
 #include "effect_file_watch_checks.hpp"
+#include "camera_motion_scene_checks.hpp"
 ULONGLONG startupClock = 0;
 void StartupLog(const char* format, ...) noexcept {
     std::printf("STARTUP %llu ", GetTickCount64() - startupClock);
@@ -584,6 +590,10 @@ int wmain(int argc, wchar_t** argv) {
         if (const wchar_t* effects = _wgetenv(L"MMS_AA_EMM")) NotifyEffectFileOpen(effects);
     } else LoadModelFile(app, argv[1], false);
     Check(app->SelectedModel() != nullptr, "load textured PMX");
+    if (argc == 4 && std::wcscmp(argv[2], L"--camera-motion") == 0) {
+        CheckCameraMotionScene(app, argv[3]);
+        ShutdownCleanup(app); delete app; g_Block = nullptr; UnhookWindowsHookEx(guard); return 0;
+    }
     for (int i = 0; i < 3; ++i) { app->DeltaTime() = 1.f / 30; app->state.messageSeen = 10; FrameDriver(app); }
     if (sequenceClock) {
         CheckMmeSequenceClock(app, argv[3]);

@@ -1439,7 +1439,10 @@ void CheckStartupView(MMDApp* app) {
 
 
 // Run only in an isolated output directory: this creates fresh PMM/EMM fixtures.
-static void CheckEffectAutoSave(MMDApp* app, const wchar_t* prefix, bool initiallyEnabled, const wchar_t* fixture) {
+static void CheckEffectAutoSave(MMDApp* app, const wchar_t* prefix, bool initiallyEnabled,
+                                const wchar_t* fixture, bool checkStartup = false) {
+    HHOOK guard = SetWindowsHookExW(WH_CBT, GuardCameraLoadProbe, nullptr, GetCurrentThreadId());
+    Check(guard != nullptr, "install hidden EMM save dialog guard");
     const HWND window = app->MainWindow();
     const auto enabled = [&]() {
         const UINT state = GetMenuState(GetMenu(window), 40022, MF_BYCOMMAND);
@@ -1469,10 +1472,20 @@ static void CheckEffectAutoSave(MMDApp* app, const wchar_t* prefix, bool initial
         Check(GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES,
               "PMM save succeeds");
     };
-    toggle(initiallyEnabled);
+    frames(); // MME creates its menu on the first rendered frames.
+    if (checkStartup) {
+        Check(enabled() == initiallyEnabled, "MME startup checkbox follows the default or saved user preference");
+        std::puts("PASS startup EMM auto-save checkbox before any toggle");
+    } else toggle(initiallyEnabled);
     if (fixture) {
-        wcscpy_s(app->EnvFileName(), 256, fixture);
-        LoadSceneFile();
+        if (const auto* model = _wgetenv(L"MMS_EMM_FIXTURE_MODEL")) {
+            LoadModelFile(app, model, false);
+            frames(); // Register the real model before loading its MME mapping.
+            NotifyEffectFileOpen(fixture); // The mapping PMM may be a notification-only stub.
+        } else {
+            wcscpy_s(app->EnvFileName(), 256, fixture);
+            LoadSceneFile();
+        }
         frames();
         Check(app->ModelSlot(0) != nullptr, "effect fixture loads a real model");
     }
@@ -1484,6 +1497,12 @@ static void CheckEffectAutoSave(MMDApp* app, const wchar_t* prefix, bool initial
     wcscpy_s(app->EnvFileName(), 256, pmm.c_str());
     LoadSceneFile();
     frames();
+    if (!initiallyEnabled && fixture) {
+        // With auto-save off the first PMM intentionally has no EMM. Reassign
+        // the effects explicitly after reopening before testing the on toggle.
+        NotifyEffectFileOpen(fixture);
+        frames();
+    }
     toggle(true);
     save(pmm);
     Check(GetFileAttributesW(emm.c_str()) != INVALID_FILE_ATTRIBUTES,
@@ -1527,6 +1546,8 @@ static void CheckEffectAutoSave(MMDApp* app, const wchar_t* prefix, bool initial
     Check(readEmm(renamed + L".emm") == mapping,
           "save-as preserves effect assignments");
     std::puts("PASS save-as creates matching Unicode EMM and preserves assignments");
+    if (checkStartup) toggle(initiallyEnabled);
+    UnhookWindowsHookEx(guard);
 }
 
 namespace {
@@ -1872,9 +1893,13 @@ int wmain(int argc, wchar_t** argv) {
     std::puts("MME loaded");
 #endif
     if (argc > 3 && (std::wcscmp(argv[3], L"--emm-save-off") == 0 ||
-                     std::wcscmp(argv[3], L"--emm-save-on") == 0)) {
-        CheckEffectAutoSave(app, scenePath, std::wcscmp(argv[3], L"--emm-save-on") == 0,
-                            argc > 4 ? argv[4] : nullptr);
+                     std::wcscmp(argv[3], L"--emm-save-on") == 0 ||
+                     std::wcscmp(argv[3], L"--emm-default-on") == 0 ||
+                     std::wcscmp(argv[3], L"--emm-default-off") == 0)) {
+        const bool defaultOn = std::wcscmp(argv[3], L"--emm-default-on") == 0;
+        const bool defaultOff = std::wcscmp(argv[3], L"--emm-default-off") == 0;
+        CheckEffectAutoSave(app, scenePath, defaultOn || std::wcscmp(argv[3], L"--emm-save-on") == 0,
+                            argc > 4 ? argv[4] : nullptr, defaultOn || defaultOff);
         ShutdownCleanup(app); delete app; g_Block = nullptr;
         return 0;
     }

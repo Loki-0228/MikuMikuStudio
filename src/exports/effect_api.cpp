@@ -491,8 +491,8 @@ void RefreshEffectMenuLanguage(MMDApp* app) {
         LocalizeEffectMenu(menu, app->EnglishUI());
 }
 
-// MME reads [System] SkipValidation from MMEffect.ini during initialization.
-// Seed only an absent setting before the D3D proxy initializes MME. Its own
+// MME reads these [System] settings from MMEffect.ini during initialization.
+// Seed only absent settings before the D3D proxy initializes MME. Its own
 // menu command remains responsible for subsequent user changes and persistence.
 void PrepareEffectDefaults() {
     wchar_t path[32768]{};
@@ -503,11 +503,12 @@ void PrepareEffectDefaults() {
     if (GetFileAttributesW((directory + L"MMEffect.dll").c_str()) == INVALID_FILE_ATTRIBUTES)
         return;
     const std::wstring ini = directory + L"MMEffect.ini";
-    wchar_t value[32]{};
-    GetPrivateProfileStringW(L"System", L"SkipValidation", L"__missing__",
-        value, 32, ini.c_str());
-    if (std::wcscmp(value, L"__missing__") == 0)
-        WritePrivateProfileStringW(L"System", L"SkipValidation", L"true", ini.c_str());
+    for (const auto* key : {L"SkipValidation", L"EMMAutoSave"}) {
+        wchar_t value[32]{};
+        GetPrivateProfileStringW(L"System", key, L"__missing__", value, 32, ini.c_str());
+        if (std::wcscmp(value, L"__missing__") == 0)
+            WritePrivateProfileStringW(L"System", key, L"true", ini.c_str());
+    }
 }
 
 void InstallEffectMenuCompatibility(MMDApp* app) {

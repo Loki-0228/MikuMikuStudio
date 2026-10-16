@@ -4,10 +4,10 @@
 
 namespace mikudancestudio::runtime_log {
 // Runtime diagnostics for the shipped build.  Always enabled, independently
-// of the porting-era DIAG probes, and deliberately file-free: diagnostics
-// creates no files. Project recovery uses its own callback. The newest messages are kept in a
-// bounded in-memory ring; a fatal fault renders that ring into a modal
-// "last error" window and the process only ends after the user presses OK.
+// of the porting-era DIAG probes. The newest messages stay in a bounded
+// in-memory ring. A fatal fault saves error-*.log in backups beside the actual
+// executable and shows a modal report. Project recovery has its own callback.
+// The process only ends after the user presses OK.
 void Initialize() noexcept;
 // Optional application-owned, best-effort recovery before showing a fatal error.
 // Diagnostics itself remains independent of project serialization.

@@ -17,7 +17,7 @@ struct Settings {
     unsigned intervalMinutes = 1;
     unsigned maxBackups = 100;
     bool overwriteOldest = false;
-    std::wstring directory;
+    std::wstring directory; // Periodic copies only. Crash copies use EXE/backups.
 };
 enum class Result { Saved, Disabled, Busy, Full, Failed };
 Settings LoadSettings(const std::filesystem::path&);
@@ -28,8 +28,10 @@ bool Configure(MMDApp*, const Settings&, std::wstring& error);
 void Initialize(MMDApp*);
 void Shutdown() noexcept;
 // Invoked only by the outer main loop, never from a nested dialog message loop.
-void Tick(MMDApp*, ULONGLONG now);
-Result BackupNow(MMDApp*, bool crash = false);
+// Optional backup work must not propagate C++ failures into the message loop
+// or the fatal-error callback. A failed attempt can be retried later.
+void Tick(MMDApp*, ULONGLONG now) noexcept;
+Result BackupNow(MMDApp*, bool crash = false) noexcept;
 void TryCrashBackup(unsigned long exceptionCode) noexcept;
 std::vector<std::filesystem::path> Backups(const std::filesystem::path&);
 bool FolderFull() noexcept;

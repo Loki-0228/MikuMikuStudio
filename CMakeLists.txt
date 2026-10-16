@@ -958,6 +958,13 @@ if (MIKUDANCESTUDIO_BUILD_UI_TESTS)
     target_link_options(autosave_tests PRIVATE "/MANIFEST:NO" "${MIKUDANCESTUDIO_GEN_RES}")
     set_target_properties(autosave_tests PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+    add_executable(runtime_log_tests EXCLUDE_FROM_ALL
+        tests/runtime_log_tests.cpp src/main/runtime_log.cpp)
+    target_compile_definitions(runtime_log_tests PRIVATE MMS_RUNTIME_LOG_TESTS=1)
+    target_include_directories(runtime_log_tests PRIVATE include)
+    target_link_libraries(runtime_log_tests PRIVATE minhook::minhook user32)
+    set_target_properties(runtime_log_tests PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
     add_executable(image_sequence_tests EXCLUDE_FROM_ALL
         tests/image_sequence_tests.cpp res/MMD.rc ${MIKUDANCESTUDIO_GEN_RES})
     target_link_libraries(image_sequence_tests PRIVATE mikudancestudio_core minhook::minhook winmm dsound)
@@ -1377,7 +1384,7 @@ endif()
 # The Windows WIC PNG encoder creates transparent MOV files without a separate codec.
 # The regression executables are EXCLUDE_FROM_ALL
 # and carry no install rule, static/import libraries and PDBs live under
-# build\lib and build\symbols, and no log or dump is produced at runtime.
+# build\lib and build\symbols. Fatal error logs go to backups beside the EXE.
 # The runtime assets (Data\toon*.bmp, mmconfig.ini) come from the reference
 # MMD installation and are not part of this source tree.
 # ---------------------------------------------------------------------------

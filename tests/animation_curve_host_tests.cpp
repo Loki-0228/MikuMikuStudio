@@ -175,12 +175,21 @@ static void CheckAccessoryAuthoringRetention() {
     Check(!curve_host::Has(&app, curve_host::Kind::Accessory, 2), "empty authoring remains empty");
 }
 static void CheckScaleLabelRepaint(MMDApp& app,HWND parent){
-    const auto previousViewport = app.ViewportRect();
-    app.ViewportRect().bottom = 700;
-    const auto panels = FramePanelLayout(&app);
-    const HWND label=CreateWindowExW(0,L"STATIC",L"Scale",WS_CHILD,640,panels.bottomBand.top+4,60,18,parent,
+    const auto panels=FramePanelLayout(&app);
+    // Use the same bottom-row coordinates as LayoutViewportPanels. The enhanced
+    // profile derives this band from the client area, not ViewportRect.bottom.
+    const int x=panels.BottomX(640), y=panels.BottomY(640,17)-9;
+    const HWND label=CreateWindowExW(0,L"STATIC",L"Scale",WS_CHILD,x,y,60,18,parent,
         reinterpret_cast<HMENU>(570),GetModuleHandleW(nullptr),nullptr);
     Check(label!=nullptr,"hidden scale caption");
+    RECT position{},client{};
+    Check(GetWindowRect(label,&position)!=FALSE&&GetClientRect(parent,&client)!=FALSE,"scale caption coordinates");
+    MapWindowPoints(nullptr,parent,reinterpret_cast<POINT*>(&position),2);
+    Check(position.left==x&&position.top==y&&position.right==x+60&&position.bottom==y+18,
+        "scale caption uses the actual parent client coordinates");
+    Check(position.left>=panels.bottomBand.left&&position.right<=panels.bottomBand.right&&
+        position.top>=panels.bottomBand.top&&position.bottom<=panels.bottomBand.bottom&&
+        position.bottom<=client.bottom,"scale repaint fixture lies wholly inside the production bottom band");
     HDC dc=CreateCompatibleDC(nullptr);
     BITMAPINFO bitmap{};bitmap.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);
     bitmap.bmiHeader.biWidth=60;bitmap.bmiHeader.biHeight=-18;
@@ -194,10 +203,103 @@ static void CheckScaleLabelRepaint(MMDApp& app,HWND parent){
     std::vector<unsigned char> repeated(60*18*4);std::memcpy(repeated.data(),pixels,repeated.size());
     std::memset(pixels,0xA0,60*18*4);paint(L"\u7f29\u653e");
     Check(std::memcmp(repeated.data(),pixels,repeated.size())==0,"scale caption clears old glyphs on repaint");
-    g_Block=previousApp;app.ViewportRect()=previousViewport;SelectObject(dc,oldFont);SelectObject(dc,oldImage);
+    g_Block=previousApp;SelectObject(dc,oldFont);SelectObject(dc,oldImage);
     DeleteObject(image);DeleteDC(dc);DestroyWindow(label);
 }
+static void CheckCrossedCameraEndpoints() {
+    auto app = std::make_unique<MMDApp>();
+    ::new (static_cast<void*>(&app->state)) MMDAppState{};
+    auto camera = std::make_unique<mdl::CameraKey[]>(mdl::kTimelineKeyCapacity);
+    app->CameraKeys() = camera.get();
+    for (unsigned i = 0; i < 3; ++i) {
+        auto& key = app->CameraKeys()[i];
+        key.frame = i == 0 ? 0 : i == 1 ? 44 : 61;
+        key.previous = i ? i - 1 : 0; key.next = i < 2 ? i + 1 : 0;
+        key.parentModel = -1; key.fov = 15; key.distance = -38.4f;
+        key.eye[0] = i == 2 ? -1.2559141f : 0.f;
+        for (unsigned lane = 0; lane < 6; ++lane) {
+            key.interpolation[0][lane] = i == 2 ? 57 : 20;
+            key.interpolation[1][lane] = i == 2 ? 0 : 20;
+            key.interpolation[2][lane] = i == 2 ? 44 : 107;
+            key.interpolation[3][lane] = i == 2 ? 127 : 107;
+        }
+    }
+    std::vector<curve_editor::Channel> channels; std::wstring error;
+    Check(curve_host::Read(*app, curve_host::Kind::Camera, 0, channels, error), "read crossed-X camera fixture");
+    const auto value = channels[0].sample(channels[0], 44).value;
+    std::printf("camera exact key expected=0 actual=%.17g\n", value);
+    Check(value == 0.0, "native camera sampling returns the exact interior key value");
+    const auto before = channels[0].sample(channels[0], 50).value;
+    Check(curve_host::Write(*app, curve_host::Kind::Camera, 0, channels, error), "write unchanged crossed-X camera fixture");
+    Check(app->CameraKeys()[1].eye[0] == 0.f, "unchanged editor commit does not perturb a key value");
+    Check(app->CameraKeys()[2].interpolation[0][0] == 57 &&
+          app->CameraKeys()[2].interpolation[2][0] == 44, "unchanged editor commit preserves crossed-X controls");
+    pmm_extension::Document document;
+    curve_host::Capture(*app, document); curve_host::Reset(app.get()); curve_host::Load(*app, document);
+    Check(curve_host::Read(*app, curve_host::Kind::Camera, 0, channels, error), "reload crossed-X camera authoring");
+    Check(channels[0].sample(channels[0], 44).value == 0.0 &&
+          channels[0].sample(channels[0], 50).value == before, "PMM curve extension preserves native camera evaluation");
+    curve_host::Reset(app.get()); app->CameraKeys() = nullptr;
+}
+static void CheckCameraHoldSamples() {
+    auto app = std::make_unique<MMDApp>();
+    ::new (static_cast<void*>(&app->state)) MMDAppState{};
+    auto camera = std::make_unique<mdl::CameraKey[]>(mdl::kTimelineKeyCapacity);
+    app->CameraKeys() = camera.get();
+    const unsigned frames[] = {0, 12, 13, 30};
+    const float positions[] = {2.f, 5.f, 11.f, 17.f};
+    for (unsigned i = 0; i < 4; ++i) {
+        auto& key = app->CameraKeys()[i];
+        key.frame = frames[i]; key.previous = i ? i - 1 : 0; key.next = i < 3 ? i + 1 : 0;
+        key.parentModel = -1; key.fov = 40 + int(i) * 5; key.distance = -30.f - float(i);
+        for (unsigned axis = 0; axis < 3; ++axis) {
+            key.eye[axis] = positions[i] + float(axis);
+            key.target[axis] = float(i + axis) * .125f;
+        }
+        for (unsigned lane = 0; lane < 6; ++lane) {
+            key.interpolation[0][lane] = 57; key.interpolation[1][lane] = 0;
+            key.interpolation[2][lane] = 44; key.interpolation[3][lane] = 127;
+        }
+    }
+    std::vector<curve_editor::Channel> channels; std::wstring error;
+    Check(curve_host::Read(*app, curve_host::Kind::Camera, 0, channels, error), "read one-frame camera hold fixture");
+    const auto check = [&]() {
+        for (unsigned c = 0; c < 8; ++c) {
+            const auto& channel = channels[c];
+            for (unsigned i = 0; i < 4; ++i)
+                Check(channel.sample(channel, frames[i]).value == channel.track.keys[i].value,
+                    "all native camera lanes return exact first interior and terminal keys");
+            for (double frame : {12.0, 12.25, 12.5, 12.999})
+                Check(channel.sample(channel, frame).value == channel.track.keys[1].value,
+                    "native one-frame camera interval holds the earlier value until the next key");
+            Check(channel.sample(channel, 12.5).derivative == 0.0,
+                "native one-frame hold has zero derivative away from its jump");
+        }
+        Check(channels[0].sample(channels[0], 13).value == 11.0 &&
+              channels[0].sample(channels[0], 13.5).value > 11.0,
+            "the one-frame cut jumps at its key then resumes the following native curve");
+    };
+    check();
+    Check(curve_host::Write(*app, curve_host::Kind::Camera, 0, channels, error), "write one-frame camera hold fixture");
+    for (unsigned i = 0; i < 4; ++i)
+        Check(app->CameraKeys()[i].frame == frames[i] && app->CameraKeys()[i].eye[0] == positions[i],
+            "unchanged curve write preserves both sides of the native camera cut");
+    pmm_extension::Document document;
+    curve_host::Capture(*app, document); curve_host::Reset(app.get()); curve_host::Load(*app, document);
+    Check(curve_host::Read(*app, curve_host::Kind::Camera, 0, channels, error), "reload one-frame camera hold authoring");
+    check();
+    // An edited Step interval uses the authored evaluator, independently of
+    // native one-frame holds and of the exact native-key shortcut.
+    auto step = channels[0];
+    step.track.keys[3].interpolation = animation_curve::Interpolation::Step;
+    for (double frame : {13.0, 13.5, 29.999})
+        Check(step.sample(step, frame).value == 11.0, "authored camera Step retains its discontinuous hold");
+    Check(step.sample(step, 30).value == 17.0, "authored camera Step reaches the terminal key exactly");
+    curve_host::Reset(app.get()); app->CameraKeys() = nullptr;
+}
 int main(){
+    CheckCrossedCameraEndpoints();
+    CheckCameraHoldSamples();
     auto app=std::make_unique<MMDApp>();
     ::new (static_cast<void*>(&app->state)) MMDAppState{};
     auto cam=std::make_unique<mdl::CameraKey[]>(mdl::kTimelineKeyCapacity);

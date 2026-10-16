@@ -17,6 +17,9 @@ namespace fs = std::filesystem;
 namespace {
 Settings settings;
 bool loaded = false, full = false;
+// Process-local: neither changing settings nor reopening a project resets this.
+bool fullWarningShown = false;
+std::wstring fullFolders;
 std::atomic<bool> saving{false};
 std::atomic<MMDApp*> activeApp{nullptr};
 DWORD mainThread = 0;
@@ -68,13 +71,67 @@ void SetFull(MMDApp* app, bool value) {
         PaintMenuWarning(app);
     }
 }
+void RefreshCapacity(MMDApp* app) noexcept {
+    try {
+        // Publish the complete scan only. Allocation failure must not erase a
+        // known-full folder or leave a partially constructed warning behind.
+        std::wstring folders;
+        const fs::path crashDirectory = Defaults().directory;
+        const fs::path periodicDirectory = settings.directory;
+        const auto inspect = [&](const fs::path& directory) {
+            if (directory.empty()) return;
+            try {
+                if (Backups(directory).size() >= settings.maxBackups) {
+                    if (!folders.empty()) folders += L"\n";
+                    folders += directory.native();
+                }
+            } catch (const fs::filesystem_error&) {
+                // Missing or unreadable folders do not suppress the other scan.
+            }
+        };
+        inspect(periodicDirectory);
+        std::error_code ec;
+        if (_wcsicmp(periodicDirectory.c_str(), crashDirectory.c_str()) != 0 &&
+            !fs::equivalent(periodicDirectory, crashDirectory, ec)) inspect(crashDirectory);
+        fullFolders.swap(folders);
+        SetFull(app, !fullFolders.empty());
+    } catch (...) {
+        runtime_log::Write("AUTOSAVE capacity scan failed; retaining previous status");
+    }
+}
 bool Ready(MMDApp* app, bool crash) {
     return app && GetCurrentThreadId() == mainThread && IsWindow(app->MainWindow()) &&
         !app->SceneMutationInProgress() && !SceneSaveInProgress() && !bake::UiLocked() &&
         (crash || (IsWindowEnabled(app->MainWindow()) && !app->RecordingWindow() &&
             !app->PlaybackActive() && !app->FrameStepPlayback() && !GetCapture()));
 }
-fs::path NewName(MMDApp* app, bool crash) {
+void WarnIfFull(MMDApp* app) noexcept {
+    if (!full || fullWarningShown || saving.load() || !Ready(app, false)) return;
+    try {
+        const std::wstring message = std::wstring(Text(app,
+            L"以下备份文件夹已达到数量上限（", L"These backup folders have reached the limit (",
+            L"次のバックアップフォルダーが保存数の上限（")) + std::to_wstring(settings.maxBackups) +
+            Text(app, L" 份）：\n\n", L" files):\n\n", L" 件）に達しました：\n\n") + fullFolders + L"\n\n" +
+            (settings.overwriteOldest ? Text(app,
+                L"已开启覆盖旧备份，后续备份将尝试替换最旧的备份。",
+                L"Overwrite oldest is enabled. Future backups will try to replace the oldest backup.",
+                L"古いバックアップの上書きが有効です。次回は最も古いバックアップの置き換えを試みます。") : Text(app,
+                L"已关闭覆盖旧备份，这些文件夹暂时无法保存新备份。请清理不再需要的备份，或在“自动保存设置”中增加上限、开启覆盖旧备份。",
+                L"Overwrite oldest is disabled, so new backups cannot be saved in these folders. Remove unneeded backups, or raise the limit or enable overwriting in Autosave settings.",
+                L"古いバックアップの上書きが無効なため、これらのフォルダーには新しく保存できません。不要なバックアップを削除するか、「自動保存の設定」で上限を増やすか上書きを有効にしてください。")) +
+            Text(app, L"\n\n本次启动不再提示。", L"\n\nThis warning will not appear again until you restart MMS.",
+                L"\n\nMMS を再起動するまで、この警告は再表示されません。");
+        // Set before entering the modal loop, including any reentrant idle work.
+        fullWarningShown = true;
+        if (!MessageBoxW(app->MainWindow(), message.c_str(), Text(app,
+            L"备份文件夹已满", L"Backup folder is full", L"バックアップフォルダーがいっぱいです"), MB_OK | MB_ICONWARNING))
+            fullWarningShown = false; // A box that could not be created was not shown.
+    } catch (...) {
+        fullWarningShown = false;
+        runtime_log::Write("AUTOSAVE capacity warning deferred");
+    }
+}
+fs::path NewName(MMDApp* app, bool crash, const fs::path& directory) {
     std::wstring stem = fs::path(app->EnvFileName()).stem().wstring();
     // A recovered backup continues the original name instead of nesting timestamps.
     const auto suffix = stem.rfind(L"_autosave_");
@@ -85,7 +142,6 @@ fs::path NewName(MMDApp* app, bool crash) {
     swprintf_s(stamp, L"_autosave_%04u%02u%02u_%02u%02u%02u_%03u%s",
         now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond,
         now.wMilliseconds, crash ? L"_crash" : L"");
-    const fs::path directory(settings.directory);
     for (unsigned collision = 0; collision < 10000; ++collision) {
         const auto path = directory / (stem + stamp + (collision ? L"_" + std::to_wstring(collision) : L"") + L".pmm");
         if (path.wstring().size() >= 256) return {};
@@ -96,8 +152,15 @@ fs::path NewName(MMDApp* app, bool crash) {
 }
 // Windows SEH is deliberately isolated from C++ stack-unwinding objects.
 void CrashAttempt() noexcept {
-    __try { BackupNow(activeApp.load(), true); }
-    __except (EXCEPTION_EXECUTE_HANDLER) { }
+    __try {
+        const auto result = BackupNow(activeApp.load(), true);
+        const char* status = result == Result::Saved ? "saved" : result == Result::Full ? "folder full" :
+            result == Result::Busy ? "scene busy or folder locked" : "save failed";
+        runtime_log::Write("CRASH_BACKUP %s", status);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        runtime_log::Write("CRASH_BACKUP failed with exception=0x%08lX", GetExceptionCode());
+    }
 }
 }
 
@@ -156,8 +219,7 @@ bool Configure(MMDApp* app, const Settings& value, std::wstring& error) {
         std::error_code ec;
         fs::create_directories(value.directory, ec);
         if (ec) { error = L"无法创建备份文件夹，请检查路径和权限。 / Cannot create backup folder."; return false; }
-        // The folder serves both periodic and always-on crash backups. Validate
-        // folder changes even with periodic saving off, but still allow turning
+        // Validate folder changes even with periodic saving off, but allow turning
         // periodic saving off after the existing folder becomes unavailable.
         wchar_t probe[MAX_PATH]{};
         if (!GetTempFileNameW(value.directory.c_str(), L"mms", 0, probe)) {
@@ -171,8 +233,7 @@ bool Configure(MMDApp* app, const Settings& value, std::wstring& error) {
     settings = value; loaded = true;
     nextSave = GetTickCount64() + ULONGLONG(settings.intervalMinutes) * 60000;
     nextScan = 0;
-    try { SetFull(app, Backups(settings.directory).size() >= settings.maxBackups); }
-    catch (...) { SetFull(app, false); }
+    RefreshCapacity(app);
     RefreshMenu(app);
     return true;
 }
@@ -195,24 +256,26 @@ std::vector<fs::path> Backups(const fs::path& directory) {
     return result;
 }
 bool FolderFull() noexcept { return full; }
-Result BackupNow(MMDApp* app, bool crash) {
-    if (!Current().enabled && !crash) return Result::Disabled;
-    if (!Ready(app, crash) || saving.exchange(true)) return Result::Busy;
-    struct Release { ~Release() { saving.store(false); } } release;
+Result BackupNow(MMDApp* app, bool crash) noexcept {
     try {
-        fs::create_directories(settings.directory);
+        if (!Current().enabled && !crash) return Result::Disabled;
+        if (!Ready(app, crash) || saving.exchange(true)) return Result::Busy;
+        struct Release { ~Release() { saving.store(false); } } release;
+        const fs::path directory = crash ? Defaults().directory : settings.directory;
+        if (directory.empty()) return Result::Failed;
+        fs::create_directories(directory);
         // Serialize instances sharing one folder; never wait inside a crash handler.
-        const auto lockPath = fs::path(settings.directory) / L".mms-autosave.lock";
+        const auto lockPath = directory / L".mms-autosave.lock";
         HANDLE lock = CreateFileW(lockPath.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
             OPEN_ALWAYS, FILE_ATTRIBUTE_HIDDEN | FILE_FLAG_DELETE_ON_CLOSE, nullptr);
         if (lock == INVALID_HANDLE_VALUE) return Result::Busy;
         struct Unlock { HANDLE h; ~Unlock() { CloseHandle(h); } } unlock{lock};
-        auto old = Backups(settings.directory);
+        auto old = Backups(directory);
         if (old.size() >= settings.maxBackups && !settings.overwriteOldest) {
-            if (!crash) SetFull(app, true);
+            if (!crash) RefreshCapacity(app);
             return Result::Full;
         }
-        const auto destination = NewName(app, crash);
+        const auto destination = NewName(app, crash, directory);
         if (destination.empty() || !SaveSceneCopy(app, destination.c_str())) return Result::Failed;
         // Commit the new backup first. A failed save must never cost an old backup.
         // Also protect the currently opened project even if it is a recovery file.
@@ -226,16 +289,19 @@ Result BackupNow(MMDApp* app, bool crash) {
             });
             if (victim == old.end() || !Owned(*victim) || !plugins::DeletePluginBackup(victim->c_str())) {
                 plugins::DeletePluginBackup(destination.c_str());
-                if (!crash) SetFull(app, true);
+                if (!crash) RefreshCapacity(app);
                 return Result::Full;
             }
             old.erase(victim);
         }
-        if (!crash) SetFull(app, old.size() + 1 >= settings.maxBackups);
+        if (!crash) RefreshCapacity(app);
         runtime_log::WritePath(crash ? "crash_backup" : "autosave", destination.c_str());
         return Result::Saved;
     } catch (const std::exception& error) {
         runtime_log::Write("AUTOSAVE failed: %s", error.what());
+        return Result::Failed;
+    } catch (...) {
+        runtime_log::Write("AUTOSAVE failed with an unknown exception");
         return Result::Failed;
     }
 }
@@ -250,23 +316,31 @@ void Shutdown() noexcept {
     runtime_log::SetCrashBackup(nullptr);
     activeApp.store(nullptr);
 }
-void Tick(MMDApp* app, ULONGLONG now) {
-    Current();
-    if (now >= nextScan) {
-        nextScan = now + 5000;
-        try { SetFull(app, Backups(settings.directory).size() >= settings.maxBackups); }
-        catch (...) { SetFull(app, false); }
+void Tick(MMDApp* app, ULONGLONG now) noexcept {
+    try {
+        Current();
+        if (now >= nextScan) {
+            nextScan = now + 5000;
+            RefreshCapacity(app);
+        }
+        WarnIfFull(app);
+        if (!settings.enabled || now < nextSave || !Ready(app, false)) return;
+        nextSave = now + ULONGLONG(settings.intervalMinutes) * 60000;
+        const auto result = BackupNow(app);
+        if (result == Result::Failed) runtime_log::Write("AUTOSAVE could not save backup");
+        WarnIfFull(app);
+    } catch (...) {
+        runtime_log::Write("AUTOSAVE idle work deferred after an exception");
     }
-    if (!settings.enabled || now < nextSave || !Ready(app, false)) return;
-    nextSave = now + ULONGLONG(settings.intervalMinutes) * 60000;
-    const auto result = BackupNow(app);
-    if (result == Result::Failed) runtime_log::Write("AUTOSAVE could not save backup");
 }
 void TryCrashBackup(unsigned long code) noexcept {
     // Stack/heap corruption, another thread, or a half-mutated scene cannot be
     // safely serialized. Completed periodic backups remain available in all cases.
     if (code == EXCEPTION_STACK_OVERFLOW || code == 0xC0000374UL || code == 0xC0000409UL ||
-        GetCurrentThreadId() != mainThread || !activeApp.load() || saving.load()) return;
+        GetCurrentThreadId() != mainThread || !activeApp.load() || saving.load()) {
+        runtime_log::Write("CRASH_BACKUP skipped: unsafe exception, foreign thread, or unavailable scene");
+        return;
+    }
     CrashAttempt();
 }
 }

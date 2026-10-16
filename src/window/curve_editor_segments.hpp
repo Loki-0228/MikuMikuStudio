@@ -1,7 +1,8 @@
 // Segmented presentation of the existing combo selections.
-// Keep CB_* values and CBN_SELCHANGE routes, including the explicit Apply step.
+// Keep CB_* and CBN_SELCHANGE routes. Interpolation and handle choices commit
+// immediately; handle modes are followed by four non-sticky preset actions.
 namespace curve_editor_segments {
-struct State { HWND tips=nullptr; int hover=-1; std::vector<std::wstring> labels; };
+struct State { HWND tips=nullptr; int hover=-1, focus=-1; std::vector<std::wstring> labels; };
 inline bool Target(int id){return id==1007||id==1009||id==1045||id==1047;}
 inline int Gap(HWND hwnd){return GetDlgCtrlID(hwnd)==1047?6:0;}
 inline RECT Cell(HWND hwnd,int index) {
@@ -10,7 +11,7 @@ inline RECT Cell(HWND hwnd,int index) {
     if(count<=0)return r;
     int width=r.right-Gap(hwnd);
     r.left=width*index/count;r.right=width*(index+1)/count;
-    if(GetDlgCtrlID(hwnd)==1047&&index>=5){r.left+=Gap(hwnd);r.right+=Gap(hwnd);}
+    if(GetDlgCtrlID(hwnd)==1047&&index>=3){r.left+=Gap(hwnd);r.right+=Gap(hwnd);}
     return r;
 }
 inline int Hit(HWND hwnd,LPARAM lp) {
@@ -40,7 +41,8 @@ inline void Icon(HDC dc,int id,int index,float x,float y,COLORREF color) {
         if(index==2)g.DrawBezier(&p,2.f,15.f,12.f,15.f,7.f,3.f,17.f,3.f);
         dot(2,15);dot(17,3);
     }else {
-        switch(index){
+        const int iconIndex = index==2?4:index==3?2:index==4?3:index;
+        switch(iconIndex){
         case 0:line(2,3,9,10);line(9,10,17,6);dot(2,3);dot(9,10);dot(17,6);break;
         case 1:line(2,15,16,3);dot(2,15);dot(9,9);dot(16,3);break;
         case 2:line(1,9,17,9);dot(2,9);dot(9,9);dot(16,9);break;
@@ -57,12 +59,24 @@ inline void Tips(HWND hwnd,State& state) {
         hwnd,nullptr,GetModuleHandleW(nullptr),nullptr);
     for(std::size_t i=0;i<state.labels.size();++i){TOOLINFOW t{sizeof(t)};t.hwnd=hwnd;t.uId=i+1;SendMessageW(state.tips,TTM_DELTOOLW,0,reinterpret_cast<LPARAM>(&t));}
     int count=int(SendMessageW(hwnd,CB_GETCOUNT,0,0));state.labels.clear();
-    for(int i=0;i<count;++i){wchar_t label[256]{};SendMessageW(hwnd,CB_GETLBTEXT,i,reinterpret_cast<LPARAM>(label));state.labels.push_back(label);}
+    for(int i=0;i<count;++i){
+        wchar_t label[256]{};SendMessageW(hwnd,CB_GETLBTEXT,i,reinterpret_cast<LPARAM>(label));
+        std::wstring description=label;
+        if(GetDlgCtrlID(hwnd)==1047){
+            const auto language=reinterpret_cast<ULONG_PTR>(GetPropW(hwnd,L"CurveLanguage"));
+            const wchar_t* zh[]={L"手柄模式：独立调整两侧。点击立即应用。",L"手柄模式：调整一侧时，两侧保持同一斜率。点击立即应用。",L"手柄模式：根据相邻关键帧自动计算斜率。点击立即应用。",L"预设：将两侧手柄设为水平，只应用一次。",L"预设：将前后两个区间拉直，只应用一次。",L"预设：进入侧水平弯曲，离开侧拉直，只应用一次。",L"预设：离开侧水平弯曲，进入侧拉直，只应用一次。"};
+            const wchar_t* en[]={L"Mode: edit each side independently. Applies immediately.",L"Mode: editing either side keeps both slopes aligned. Applies immediately.",L"Mode: calculate slopes from neighbouring keys. Applies immediately.",L"Preset: flatten both handles once.",L"Preset: straighten both adjacent intervals once.",L"Preset: flatten the incoming side and straighten the outgoing side once.",L"Preset: flatten the outgoing side and straighten the incoming side once."};
+            const wchar_t* ja[]={L"モード：両側を独立して編集します。即時適用。",L"モード：片側を編集すると両側の傾きを揃えます。即時適用。",L"モード：隣接キーから傾きを自動計算します。即時適用。",L"プリセット：両側のハンドルを一度だけ水平にします。",L"プリセット：前後の区間を一度だけ直線化します。",L"プリセット：入る側を水平に曲げ、出る側を直線化します。",L"プリセット：出る側を水平に曲げ、入る側を直線化します。"};
+            if(i<7)description=language==2?zh[i]:language==1?en[i]:ja[i];
+        }
+        state.labels.push_back(std::move(description));
+    }
     for(int i=0;i<count;++i){
         TOOLINFOW t{sizeof(t)};t.hwnd=hwnd;t.uId=i+1;t.uFlags=TTF_SUBCLASS;t.rect=Cell(hwnd,i);
         t.lpszText=state.labels[i].data();SendMessageW(state.tips,TTM_ADDTOOLW,0,reinterpret_cast<LPARAM>(&t));
     }
     SendMessageW(state.tips,TTM_SETDELAYTIME,TTDT_INITIAL,350);
+    SendMessageW(state.tips,TTM_SETMAXTIPWIDTH,0,400);
 }
 inline void Paint(HWND hwnd,HDC dc,State& state) {
     using namespace curve_editor_theme;
@@ -74,7 +88,7 @@ inline void Paint(HWND hwnd,HDC dc,State& state) {
     SetBkMode(dc,TRANSPARENT);
     bool enabled=IsWindowEnabled(hwnd)!=FALSE;
     for(int i=0;i<count;++i){
-        RECT r=Cell(hwnd,i);bool active=i==selected;
+        RECT r=Cell(hwnd,i);bool active=i==selected && (id!=1047 || i<3);
         Fill(dc,r,active?selection:(i==state.hover?Mix(control,paper,0.6):paper));
         Frame(dc,r,active?accent:border);
         if(active){RECT line{r.left+1,r.bottom-3,r.right-1,r.bottom-1};Fill(dc,line,accent);}
@@ -87,7 +101,7 @@ inline void Paint(HWND hwnd,HDC dc,State& state) {
         COLORREF ink=enabled?text:muted;
         Icon(dc,id,i,float(x),float(y),ink);
         if(showLabel){RECT textRect{x+iconSize+gap,r.top,r.right-2,r.bottom-1};SetTextColor(dc,ink);DrawTextW(dc,label,-1,&textRect,DT_SINGLELINE|DT_VCENTER|DT_NOPREFIX);}
-        if(GetFocus()==hwnd&&active){RECT focus=r;InflateRect(&focus,-4,-4);DrawFocusRect(dc,&focus);}
+        if(GetFocus()==hwnd&&i==(state.focus<0?selected:state.focus)){RECT focus=r;InflateRect(&focus,-4,-4);DrawFocusRect(dc,&focus);}
     }
     RestoreDC(dc,saved);
 }
@@ -103,17 +117,24 @@ inline LRESULT CALLBACK Proc(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp,UINT_PTR id,
     if(msg==WM_PAINT){PAINTSTRUCT ps{};HDC dc=BeginPaint(hwnd,&ps);Paint(hwnd,dc,state);EndPaint(hwnd,&ps);return 0;}
     if(msg==WM_PRINTCLIENT){Paint(hwnd,reinterpret_cast<HDC>(wp),state);return 0;}
     if(msg==WM_ERASEBKGND)return 1;
-    if(msg==WM_LBUTTONDOWN){SetFocus(hwnd);Choose(hwnd,Hit(hwnd,lp));return 0;}
+    if(msg==WM_LBUTTONDOWN){SetFocus(hwnd);state.focus=Hit(hwnd,lp);Choose(hwnd,state.focus);return 0;}
     if(msg==WM_LBUTTONUP||msg==WM_LBUTTONDBLCLK)return 0;
+    // Activation is handled on key-down; do not let the native combo perform
+    // a second action when TranslateMessage delivers its character message.
+    if(msg==WM_CHAR&&(wp==L'\r'||wp==L' '))return 0;
     if(msg==CB_SHOWDROPDOWN)return 0;
     if(msg==WM_MOUSEMOVE){int hover=Hit(hwnd,lp);if(hover!=state.hover){state.hover=hover;InvalidateRect(hwnd,nullptr,FALSE);}TRACKMOUSEEVENT t{sizeof(t),TME_LEAVE,hwnd,0};TrackMouseEvent(&t);return 0;}
     if(msg==WM_MOUSELEAVE){state.hover=-1;InvalidateRect(hwnd,nullptr,FALSE);return 0;}
     if(msg==WM_KEYDOWN){
-        int current=int(SendMessageW(hwnd,CB_GETCURSEL,0,0)),count=int(SendMessageW(hwnd,CB_GETCOUNT,0,0));
-        if(wp==VK_LEFT||wp==VK_UP){Choose(hwnd,std::max(0,current-1));return 0;}
-        if(wp==VK_RIGHT||wp==VK_DOWN){Choose(hwnd,std::min(count-1,current+1));return 0;}
-        if(wp==VK_HOME){Choose(hwnd,0);return 0;}if(wp==VK_END){Choose(hwnd,count-1);return 0;}
-        if(wp==VK_SPACE||wp==VK_RETURN||wp==VK_F4){Choose(hwnd,current);return 0;}
+        int current=state.focus<0?int(SendMessageW(hwnd,CB_GETCURSEL,0,0)):state.focus;
+        int count=int(SendMessageW(hwnd,CB_GETCOUNT,0,0));
+        if(wp==VK_LEFT||wp==VK_UP)state.focus=std::max(0,current-1);
+        else if(wp==VK_RIGHT||wp==VK_DOWN)state.focus=std::min(count-1,current+1);
+        else if(wp==VK_HOME)state.focus=0;
+        else if(wp==VK_END)state.focus=count-1;
+        else if(wp==VK_SPACE||wp==VK_RETURN||wp==VK_F4)state.focus=current;
+        else return DefSubclassProc(hwnd,msg,wp,lp);
+        Choose(hwnd,state.focus);return 0;
     }
     if(msg==WM_SYSKEYDOWN&&wp==VK_DOWN)return 0;
     LRESULT result=DefSubclassProc(hwnd,msg,wp,lp);

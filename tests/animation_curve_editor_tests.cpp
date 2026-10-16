@@ -304,32 +304,91 @@ const ac::Key *FindKey(const std::vector<ce::Channel> &channels, std::size_t cha
 }
 
 // ---------------------------------------------------------------------------
-// Channel list and hint helpers.  The list is driven through real Win32 mouse
+// Channel tree and hint helpers.  The tree is driven through real Win32 mouse
 // and key messages; the state comes back through the WM_APP hooks.
 // ---------------------------------------------------------------------------
-POINT ChannelRowPoint(HWND window, int index) {
-    HWND list = GetDlgItem(window, kIdChannelList);
-    Check(list != nullptr, "the channel list exists");
+int ChannelItemIndex(HWND tree, HTREEITEM item) {
+    TVITEMW value = {};
+    value.mask = TVIF_PARAM;
+    value.hItem = item;
+    return item && SendMessageW(tree, TVM_GETITEMW, 0, reinterpret_cast<LPARAM>(&value)) && value.lParam > 0
+               ? static_cast<int>(value.lParam - 1) : -1;
+}
+
+HTREEITEM FindChannelItem(HWND tree, HTREEITEM item, int index) {
+    for (; item; item = TreeView_GetNextSibling(tree, item)) {
+        if (ChannelItemIndex(tree, item) == index) return item;
+        if (HTREEITEM child = FindChannelItem(tree, TreeView_GetChild(tree, item), index)) return child;
+    }
+    return nullptr;
+}
+
+HTREEITEM ChannelItem(HWND window, int index) {
+    HWND tree = GetDlgItem(window, kIdChannelList);
+    Check(tree != nullptr, "the channel tree exists");
+    HTREEITEM item = FindChannelItem(tree, TreeView_GetRoot(tree), index);
+    Check(item != nullptr, "the channel has a tree leaf");
+    return item;
+}
+
+int ChannelCaretIndex(HWND window) {
+    HWND tree = GetDlgItem(window, kIdChannelList);
+    return ChannelItemIndex(tree, TreeView_GetSelection(tree));
+}
+
+int RenderInk(HWND child);
+
+POINT ChannelRowPoint(HWND window, int index, bool checkbox) {
+    HWND tree = GetDlgItem(window, kIdChannelList);
+    HTREEITEM item = ChannelItem(window, index);
+    TreeView_EnsureVisible(tree, item);
+    if (checkbox && !TreeView_GetImageList(tree, TVSIL_STATE)) {
+        // Native checkbox images are created on the first paint. Hidden test
+        // windows have not had one yet; initialize them into a memory DC.
+        RenderInk(tree);
+        Check(TreeView_GetImageList(tree, TVSIL_STATE) != nullptr,
+              "a memory paint initializes the hidden tree's checkbox images");
+    }
     RECT row = {};
-    Check(SendMessageW(list, LB_GETITEMRECT, static_cast<WPARAM>(index), reinterpret_cast<LPARAM>(&row)) != LB_ERR,
-          "the channel row has a rectangle");
-    return POINT{(row.left + row.right) / 2, (row.top + row.bottom) / 2};
+    Check(TreeView_GetItemRect(tree, item, &row, TRUE) != FALSE, "the channel leaf has a text rectangle");
+    const int y = (row.top + row.bottom) / 2;
+    // A tree's checkbox and label have separate actions. Verify the hit zone
+    // instead of guessing an indent or sending the former list-box messages.
+    const UINT wanted = checkbox ? TVHT_ONITEMSTATEICON : TVHT_ONITEMLABEL;
+    for (int x = 0; x < row.right; ++x) {
+        TVHITTESTINFO hit = {};
+        hit.pt = POINT{x, y};
+        if (TreeView_HitTest(tree, &hit) == item && (hit.flags & wanted)) return hit.pt;
+    }
+    RECT client = {}; GetClientRect(tree, &client);
+    std::fprintf(stderr, "CHANNEL miss index=%d checkbox=%d row=%ld,%ld,%ld,%ld client=%ld,%ld image=%p state=%u\n",
+                 index, int(checkbox), row.left, row.top, row.right, row.bottom, client.right, client.bottom,
+                 TreeView_GetImageList(tree, TVSIL_STATE), TreeView_GetItemState(tree, item, TVIS_STATEIMAGEMASK));
+    Check(false, "the channel exposes the requested checkbox or label hit zone");
+    return POINT{};
 }
 
 void ClickChannelOnce(HWND window, int index) {
     HWND list = GetDlgItem(window, kIdChannelList);
-    const POINT point = ChannelRowPoint(window, index);
+    const POINT point = ChannelRowPoint(window, index, true);
     const LPARAM position = MAKELPARAM(point.x, point.y);
     SendMessageW(list, WM_LBUTTONDOWN, MK_LBUTTON, position);
     SendMessageW(list, WM_LBUTTONUP, 0, position);
 }
 
-// The exact message sequence Windows delivers for a double click: down, up,
-// double-click, up.  The single click in front of it is what the editor has to
-// survive without ending up with a hidden curve.
+void ClickChannelLabel(HWND window, int index) {
+    HWND tree = GetDlgItem(window, kIdChannelList);
+    const POINT point = ChannelRowPoint(window, index, false);
+    const LPARAM position = MAKELPARAM(point.x, point.y);
+    SendMessageW(tree, WM_LBUTTONDOWN, MK_LBUTTON, position);
+    SendMessageW(tree, WM_LBUTTONUP, 0, position);
+}
+
+// The exact message sequence Windows delivers for a double click on the label:
+// down, up, double-click, up. The checkbox is a separate visibility target.
 void DoubleClickChannel(HWND window, int index) {
     HWND list = GetDlgItem(window, kIdChannelList);
-    const POINT point = ChannelRowPoint(window, index);
+    const POINT point = ChannelRowPoint(window, index, false);
     const LPARAM position = MAKELPARAM(point.x, point.y);
     SendMessageW(list, WM_LBUTTONDOWN, MK_LBUTTON, position);
     SendMessageW(list, WM_LBUTTONUP, 0, position);
@@ -362,9 +421,15 @@ void LeaveControl(HWND window, int id) {
 }
 
 std::wstring ChannelRowText(HWND window, int index) {
-    HWND list = GetDlgItem(window, kIdChannelList);
+    HWND tree = GetDlgItem(window, kIdChannelList);
     wchar_t text[256] = {};
-    SendMessageW(list, LB_GETTEXT, static_cast<WPARAM>(index), reinterpret_cast<LPARAM>(text));
+    TVITEMW value = {};
+    value.mask = TVIF_TEXT;
+    value.hItem = ChannelItem(window, index);
+    value.pszText = text;
+    value.cchTextMax = static_cast<int>(sizeof(text) / sizeof(text[0]));
+    Check(SendMessageW(tree, TVM_GETITEMW, 0, reinterpret_cast<LPARAM>(&value)) != FALSE,
+          "the channel leaf text is readable");
     return text;
 }
 ce::Session MakeSession(HostSource &host, unsigned language = 2) {
@@ -668,9 +733,9 @@ IconGeometry LauncherIconRect(HDC dc, int x, int y, int width, int height, bool 
         inset = (std::max)(1, (buttonSide + 5) / 11);
     const int offset = pressed ? (std::max)(1, MulDiv(1, dpi, 96)) : 0;
     IconGeometry geometry;
-    geometry.left = x + (width - buttonSide) / 2 + offset;
-    geometry.top = y + (height - buttonSide) / 2 + offset;
     geometry.side = buttonSide - 2 * inset;
+    geometry.left = x + (width - geometry.side) / 2 + offset;
+    geometry.top = y + (height - geometry.side) / 2 + offset;
     geometry.regular = regular;
     geometry.scale = geometry.side / (regular ? 20.0 : 14.0);
     return geometry;
@@ -1093,7 +1158,7 @@ void CanvasPainting() {
 
     HWND list = GetDlgItem(window, kIdChannelList);
     DoubleClickChannel(window, 1);
-    Check(static_cast<int>(SendMessageW(list, LB_GETCARETINDEX, 0, 0)) == 1,
+    Check(ChannelCaretIndex(window) == 1,
           "a list double click moves the caret to that row");
     Check(KeyCount(window) == 2, "the double click made the second channel the active one");
     Check(RenderInk(canvas) > 20, "a discrete channel in the speed view paints its notice instead of a curve");
@@ -1330,7 +1395,9 @@ void PlayheadTimer() {
 // ---------------------------------------------------------------------------
 void RangeBarKeyboard() {
     HostSource host;
-    host.data.push_back(MakeChannel("pos.x", L"Position X", {MakeKey(0, 0.0), MakeKey(20, 9.0)}));
+    // Leave room on both sides for directional assertions. Zero is tested
+    // separately below; the editor intentionally never pans to negative time.
+    host.data.push_back(MakeChannel("pos.x", L"Position X", {MakeKey(20, 0.0), MakeKey(40, 9.0)}));
     ce::Session session = MakeSession(host);
     HWND window = static_cast<HWND>(ce::Open(nullptr, session, false));
     double view[4] = {};
@@ -1363,6 +1430,16 @@ void RangeBarKeyboard() {
     ReadView(window, view);
     Check(std::fabs(view[0] - (panStart)) < 1e-9 && std::fabs(view[1] - fixedEnd) < 1e-9,
           "the low grip moves only the left edge");
+    ClickBar(window, 1, 2);
+    PressKey(window, VK_RIGHT);
+    ReadView(window, view);
+    Check(std::fabs(view[0] - panStart) < 1e-9 && std::fabs(view[1] - (fixedEnd + 1.0)) < 1e-9,
+          "the high grip moves only the right edge outward");
+    PressKey(window, VK_LEFT);
+    ReadView(window, view);
+    Check(std::fabs(view[0] - panStart) < 1e-9 && std::fabs(view[1] - fixedEnd) < 1e-9,
+          "the high grip moves only the right edge inward");
+    ClickBar(window, 1, 1);
     for (int step = 0; step < 200; ++step) PressKey(window, VK_RIGHT);
     ReadView(window, view);
     Check(std::fabs((view[1] - view[0]) - kMinimumTimeSpan) < 1e-9,
@@ -1397,6 +1474,23 @@ void RangeBarKeyboard() {
     ReadView(window, view);
     Check(view[3] == keptHigh && view[2] > keptLow, "the value bar low grip moves only the lower edge");
 
+    // Test the centre while it is distinct from the endpoint hit zones.
+    // At the minimum span the overview thumb can be less than one pixel tall,
+    // so its geometric midpoint belongs to an endpoint, not a pan segment.
+    ClickBar(window, 2, 0);
+    ReadView(window, view);
+    const double lowBefore = view[2], highBefore = view[3];
+    const double valueStep = (highBefore - lowBefore) * 0.02;
+    PressKey(window, VK_DOWN);
+    ReadView(window, view);
+    Check(std::fabs(view[2] - (lowBefore - valueStep)) < 1e-9 &&
+          std::fabs(view[3] - (highBefore - valueStep)) < 1e-9,
+          "the value bar centre pans both edges down by the same step");
+    PressKey(window, VK_UP);
+    ReadView(window, view);
+    Check(std::fabs(view[2] - lowBefore) < 1e-9 && std::fabs(view[3] - highBefore) < 1e-9,
+          "the value bar centre pans both edges back without changing the span");
+
     // Each press removes 2% of the current span; the span stops at the view
     // minimum, one thousandth of the data scale (never below 0.001 units).
     ClickBar(window, 2, 2);
@@ -1410,13 +1504,25 @@ void RangeBarKeyboard() {
     Check(host.applyCalls == 0, "range-bar keys never write channel data");
     Check(KeyCount(window) == 2, "range-bar keys leave the keyframes alone");
 
-    // Value bar centre pans both edges.
-    ClickBar(window, 2, 0);
+    Click(window, kIdFitAll);
+    ClickBar(window, 1, 0);
     ReadView(window, view);
-    const double lowBefore = view[2], highBefore = view[3];
-    PressKey(window, VK_DOWN);
+    const double boundarySpan = view[1] - view[0];
+    for (int step = 0; step < 60; ++step) PressKey(window, VK_LEFT);
     ReadView(window, view);
-    Check(view[2] < lowBefore && view[3] < highBefore, "the value bar centre pans the value range");
+    Check(view[0] == 0.0 && std::fabs(view[1] - boundarySpan) < 1e-9,
+          "time panning clamps at zero while preserving the view span");
+    PressKey(window, VK_LEFT);
+    ReadView(window, view);
+    Check(view[0] == 0.0 && std::fabs(view[1] - boundarySpan) < 1e-9,
+          "another left pan at zero leaves both time edges unchanged");
+    ClickBar(window, 1, 1);
+    PressKey(window, VK_LEFT);
+    ReadView(window, view);
+    Check(view[0] == 0.0 && std::fabs(view[1] - boundarySpan) < 1e-9,
+          "the low time grip also clamps at zero without moving the high edge");
+    Check(host.applyCalls == 0 && KeyCount(window) == 2,
+          "range boundaries leave the authored keys unchanged");
     ce::CloseOwned(nullptr);
     Note("range-bar segments pan and zoom with the arrow keys");
 }
@@ -1585,15 +1691,15 @@ bool ReadCompareSpan(HWND window, double span[3]) {
     return SendMessageW(window, kHookCompareRange, 0, reinterpret_cast<LPARAM>(span)) != 0;
 }
 
-// Counts pixels of one exact colour in a hidden WM_PRINTCLIENT render, so the
-// background comparison curve can be told apart from the main curve without
-// touching the desktop.
-int CountPixels(HWND child, COLORREF colour) {
+// Reads a hidden WM_PRINTCLIENT render into memory, without desktop pixels.
+// Comparison strokes are translucent and antialiased, so their source colour
+// is not an exact output pixel value.
+std::vector<unsigned> RenderPixels(HWND child) {
     RECT client = {};
     GetClientRect(child, &client);
     const int width = client.right - client.left;
     const int height = client.bottom - client.top;
-    if (width <= 0 || height <= 0) return -1;
+    if (width <= 0 || height <= 0) return {};
     HDC screen = GetDC(nullptr);
     HDC dc = CreateCompatibleDC(screen);
     BITMAPINFO info = {};
@@ -1609,26 +1715,36 @@ int CountPixels(HWND child, COLORREF colour) {
         if (bitmap) DeleteObject(bitmap);
         DeleteDC(dc);
         ReleaseDC(nullptr, screen);
-        return -1;
+        return {};
     }
     HGDIOBJ previous = SelectObject(dc, bitmap);
     RECT all = {0, 0, width, height};
     FillRect(dc, &all, static_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
     SendMessageW(child, WM_PRINTCLIENT, reinterpret_cast<WPARAM>(dc), PRF_CLIENT);
+    GdiFlush();
     const auto *pixels = static_cast<const unsigned *>(bits);
     // A BI_RGB 32 bit DIB keeps its bytes as B, G, R, unused.
-    const unsigned wanted = static_cast<unsigned>(GetBValue(colour)) |
-                            (static_cast<unsigned>(GetGValue(colour)) << 8) |
-                            (static_cast<unsigned>(GetRValue(colour)) << 16);
-    int count = 0;
+    std::vector<unsigned> image;
     const int total = width * height;
+    image.reserve(total);
     for (int index = 0; index < total; ++index) {
-        if ((pixels[index] & 0x00FFFFFFu) == wanted) ++count;
+        image.push_back(pixels[index] & 0x00FFFFFFu);
     }
     SelectObject(dc, previous);
     DeleteObject(bitmap);
     DeleteDC(dc);
     ReleaseDC(nullptr, screen);
+    return image;
+}
+
+int CountRedCurvePixels(const std::vector<unsigned> &image) {
+    int count = 0;
+    for (const unsigned pixel : image) {
+        const int red = (pixel >> 16) & 255;
+        const int green = (pixel >> 8) & 255;
+        const int blue = pixel & 255;
+        if (red > green + 20 && red > blue + 20) ++count;
+    }
     return count;
 }
 
@@ -1888,28 +2004,42 @@ void ComparisonPainting() {
     HostSource host;
     host.compareEnabled = true;
     host.hasModeCallbacks = true;
-    host.storedMode = ce::kCompareSameGroup;
-    host.initialMain = "m_a";
-    host.data.push_back(MakeGroupChannel("m_a", L"A", 0, {MakeKey(0, 0.0), MakeKey(10, 1.0)}));
-    host.data.push_back(MakeGroupChannel("m_b", L"B", 0, {MakeKey(0, 0.0), MakeKey(10, 0.2)}));
+    host.storedMode = ce::kCompareFree;
+    // Fixed axis colours distinguish the green main curve from the translucent
+    // red comparison curve without depending on hashed channel IDs or the old
+    // opaque-grey rendering. The surrounding grid is neutral or blue.
+    host.initialMain = "y";
+    host.data.push_back(MakeGroupChannel("y", L"Y", 0, {MakeKey(0, 0.0), MakeKey(10, 1.0)}));
+    host.data.push_back(MakeGroupChannel("x", L"X", 0, {MakeKey(0, 0.0), MakeKey(10, 0.2)}));
+    host.data[1].selected = false;
     ce::Session session = MakeSession(host);
     HWND window = static_cast<HWND>(ce::Open(nullptr, session, false));
     HWND canvas = GetDlgItem(window, kIdCanvas);
-    const COLORREF backgroundCurve = RGB(150, 150, 150);
-    Check(CountPixels(canvas, backgroundCurve) > 0, "the background comparison curve is painted in its own colour");
+    const auto mainOnly = RenderPixels(canvas);
+    Check(!mainOnly.empty() && ChannelVisible(window, 0) == 1 && ChannelVisible(window, 1) == 0,
+          "the comparison paint fixture starts with only the green main curve");
+    ClickCompareMode(window, ce::kCompareSameGroup);
+    const auto visible = RenderPixels(canvas);
+    Check(visible.size() == mainOnly.size() && visible != mainOnly &&
+              CountRedCurvePixels(visible) > CountRedCurvePixels(mainOnly),
+          "the background comparison curve is painted in its own colour");
 
     // A mode button repaints without losing the background curve.
     ClickCompareMode(window, ce::kCompareFree);
-    Check(CountPixels(canvas, backgroundCurve) > 0, "the free mode still paints the ticked curve");
+    Check(RenderPixels(canvas) == visible, "the free mode still paints the same main and ticked comparison curves");
     ClickCompareMode(window, ce::kCompareSameGroup);
-    Check(CountPixels(canvas, backgroundCurve) > 0, "the same-group mode paints it again");
+    Check(RenderPixels(canvas) == visible, "the same-group mode paints the same curves again");
 
     // Hiding it in the list takes it off the canvas; the main curve stays.
     ClickChannelOnce(window, 1);
-    Check(CountPixels(canvas, backgroundCurve) == 0, "hiding the curve removes the background from the canvas");
+    Check(ChannelVisible(window, 1) == 0 && ActiveChannelIndex(window) == 0,
+          "hiding the comparison curve preserves the main curve's active channel");
+    const auto hidden = RenderPixels(canvas);
+    Check(hidden == mainOnly && hidden != visible,
+          "hiding the curve restores exactly the main-only canvas");
     Check(RenderInk(canvas) > 100, "the main curve is still painted");
     ClickChannelOnce(window, 1);
-    Check(CountPixels(canvas, backgroundCurve) > 0, "showing it again paints the background curve");
+    Check(RenderPixels(canvas) == visible, "showing it again restores the complete original curve rendering");
     ce::CloseOwned(nullptr);
     Note("comparison curves paint behind the main curve through WM_PRINTCLIENT");
 }
@@ -2013,8 +2143,8 @@ void ComparisonLayout() {
 }
 
 // ---------------------------------------------------------------------------
-// 24. The channel list is a display list: one click shows or hides, a double
-// click (or Enter) activates, and neither touches the other rows.
+// 24. The channel tree separates visibility checkboxes from activation labels;
+// keyboard navigation and activation must follow the actual clicked leaf.
 // ---------------------------------------------------------------------------
 void ChannelListInteraction() {
     HostSource host;
@@ -2033,27 +2163,46 @@ void ChannelListInteraction() {
     Check(ChannelRowText(window, 1).find(L"\u25CF") == std::wstring::npos,
           "an inactive row carries no active marker");
 
-    // One click: show or hide only, never a change of the active curve.
+    ClickChannelLabel(window, 1);
+    Check(ChannelCaretIndex(window) == 1 && ActiveChannelIndex(window) == 1 && KeyCount(window) == 3,
+          "a label click activates the leaf and moves the keyboard caret to it");
+    SendMessageW(list, WM_KEYDOWN, VK_SPACE, 0);
+    Check(ChannelVisible(window, 1) == 0 && ChannelVisible(window, 0) == 1 && ChannelVisible(window, 2) == 1 &&
+              ActiveChannelIndex(window) == 1,
+          "Space after a label click toggles only that leaf without changing the active channel");
+    SendMessageW(list, WM_KEYDOWN, VK_RETURN, 0);
+    Check(ChannelCaretIndex(window) == 1 && ActiveChannelIndex(window) == 1 && ChannelVisible(window, 1) == 1,
+          "Enter after a label click reactivates and shows the same leaf");
+    ClickChannelLabel(window, 0);
+    Check(ChannelCaretIndex(window) == 0 && ActiveChannelIndex(window) == 0 && KeyCount(window) == 2 &&
+              host.applyCalls == 0,
+          "clicking another label moves both caret and active channel without writing authored keys");
+
+    // One checkbox click: show or hide only, never a change of the active curve.
     ClickChannelOnce(window, 1);
     Check(ChannelVisible(window, 1) == 0, "a single click hides the clicked curve");
     Check(ActiveChannelIndex(window) == 0, "a single click never changes the active curve");
     Check(ChannelVisible(window, 0) == 1 && ChannelVisible(window, 2) == 1,
           "a single click leaves the other curves alone");
     Check(KeyCount(window) == 2, "the key fields still describe the first curve");
-    Check(static_cast<int>(SendMessageW(list, LB_GETCARETINDEX, 0, 0)) == 1,
+    Check(ChannelCaretIndex(window) == 1,
           "the caret follows the clicked row");
-    // A source without comparison support keeps the plain display list: the click
-    // toggles the tick and nothing else, and no comparison mode appears.
+    // Plain sources still overlay their other visible tracks, but never gain
+    // the expression comparison modes or invoke their persistence callbacks.
     int plainInfo[12] = {};
     SendMessageW(window, kHookCompare, 0, reinterpret_cast<LPARAM>(plainInfo));
-    Check(plainInfo[0] == ce::kCompareOff && plainInfo[2] == 0,
+    Check(plainInfo[0] == ce::kCompareOff && host.modeReads == 0 && host.modeWrites == 0 &&
+              !StyleVisible(window, kIdCompareSameGroup) && !StyleVisible(window, kIdCompareAllGroups) &&
+              !StyleVisible(window, kIdCompareFree),
           "a plain source never gains a comparison mode from the list");
+    Check(plainInfo[2] == 1 && plainInfo[3] == 2,
+          "a plain source continues to draw exactly the untouched visible background channel");
     ClickChannelOnce(window, 1);
     Check(ChannelVisible(window, 1) == 1, "a second single click shows the curve again");
     Check(ActiveChannelIndex(window) == 0, "the active curve is still the first one");
 
-    // A double click delivers the single click first: the row must end up
-    // visible and active whatever that first click did.
+    // A label double click includes a single click first; both activate the
+    // same leaf without toggling its visibility checkbox.
     DoubleClickChannel(window, 2);
     Check(ActiveChannelIndex(window) == 2, "a double click makes that curve the active one");
     Check(ChannelVisible(window, 2) == 1, "a double click leaves the curve shown after its first click");
@@ -2063,7 +2212,7 @@ void ChannelListInteraction() {
     Check(ChannelRowText(window, 2).find(L"\u25CF") == 0, "the active marker moved to the new row");
     Check(ChannelRowText(window, 0).find(L"\u25CF") == std::wstring::npos, "the old row lost the marker");
 
-    // The case the first click hides: a double click must still end visible.
+    // Activating a previously hidden leaf makes it visible again.
     ClickChannelOnce(window, 1);
     Check(ChannelVisible(window, 1) == 0, "the row is hidden before the double click");
     DoubleClickChannel(window, 1);
@@ -2073,9 +2222,9 @@ void ChannelListInteraction() {
 
     // Keyboard parity: arrows move the caret only, Space toggles, Enter
     // activates.
-    SendMessageW(list, LB_SETCARETINDEX, 0, FALSE);
+    TreeView_SelectItem(list, ChannelItem(window, 0));
     SendMessageW(list, WM_KEYDOWN, VK_DOWN, 0);
-    Check(static_cast<int>(SendMessageW(list, LB_GETCARETINDEX, 0, 0)) == 1, "the down arrow moves the caret");
+    Check(ChannelCaretIndex(window) == 1, "the down arrow moves the caret");
     Check(ActiveChannelIndex(window) == 1, "the down arrow does not change the active curve");
     const int beforeSpace = ActiveChannelIndex(window);
     SendMessageW(list, WM_KEYDOWN, VK_SPACE, 0);
@@ -2088,7 +2237,7 @@ void ChannelListInteraction() {
     Check(ActiveChannelIndex(window) == 0, "Enter activates the caret row");
     Check(KeyCount(window) == 2, "the key fields follow the keyboard activation");
     SendMessageW(list, WM_KEYDOWN, VK_END, 0);
-    Check(static_cast<int>(SendMessageW(list, LB_GETCARETINDEX, 0, 0)) == 2, "End reaches the last row");
+    Check(ChannelCaretIndex(window) == 2, "End reaches the last row");
     SendMessageW(list, WM_KEYDOWN, VK_SPACE, 0);
     SendMessageW(list, WM_KEYDOWN, VK_RETURN, 0);
     Check(ActiveChannelIndex(window) == 2 && ChannelVisible(window, 2) == 1,
@@ -2265,7 +2414,11 @@ void AdjacentHandleLinking() {
     const auto read=[&](int end){std::array<double,4> controls{};Check(ce::ReadChannelControls(host.data[0],end,controls),"read linked controls");return controls;};
     const auto drag=[&](int handle,int x,int y){
         double current[4]{};Check(SendMessageW(window,kHookMmdControls,0,reinterpret_cast<LPARAM>(current))!=0,"linked panel is editable");
-        RECT client{};GetClientRect(panel,&client);const int margin=MulDiv(6,GetDpiForWindow(panel),96);
+        const auto getDpi=reinterpret_cast<UINT(WINAPI*)(HWND)>(
+            GetProcAddress(GetModuleHandleW(L"user32.dll"),"GetDpiForWindow"));
+        UINT dpi=getDpi?getDpi(panel):0;
+        if(!dpi){HDC dc=GetDC(panel);dpi=dc?UINT(GetDeviceCaps(dc,LOGPIXELSX)):96;if(dc)ReleaseDC(panel,dc);}
+        RECT client{};GetClientRect(panel,&client);const int margin=MulDiv(6,dpi?dpi:96,96);
         const int side=std::min(int(client.right),int(client.bottom))-2*margin;
         const auto point=[&](double a,double b){return MAKELPARAM(margin+int(std::lround(a*side/127.0)),margin+side-int(std::lround(b*side/127.0)));};
         SendMessageW(panel,WM_LBUTTONDOWN,MK_LBUTTON,point(current[handle*2],current[handle*2+1]));
@@ -2368,9 +2521,227 @@ void AlignedValueHandles() {
     Note("explicit aligned value handles");
 }
 
+void CurveModeButtons() {
+    HostSource host;
+    host.data.push_back(MakeChannel("pos.x", L"Position X", {
+        MakeKey(0, 0, ac::Interpolation::Linear, ac::Tangent::Linear),
+        MakeKey(20, 5, ac::Interpolation::Linear, ac::Tangent::Linear),
+        MakeKey(40, 10, ac::Interpolation::Linear, ac::Tangent::Linear)}));
+    HWND window = static_cast<HWND>(ce::Open(nullptr, MakeSession(host), false));
+    ClickKey(window, 1);
+    const auto choose = [&](int id, int index) {
+        HWND control = GetDlgItem(window, id);
+        RECT rect{}; GetClientRect(control, &rect);
+        const int count = int(SendMessageW(control, CB_GETCOUNT, 0, 0));
+        const int gap = id == kIdTangentCombo ? 6 : 0;
+        const int x = (rect.right-gap)*(2*index+1)/(2*count) +
+                      (id == kIdTangentCombo && index >= 3 ? gap : 0);
+        SendMessageW(control, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(x, rect.bottom/2));
+        SendMessageW(control, WM_LBUTTONUP, 0, MAKELPARAM(x, rect.bottom/2));
+    };
+    choose(kIdTangentCombo, 3); // Flat preset, after Free / Aligned / Automatic.
+    Check(host.applyCalls == 1, "clicking a tangent preset commits immediately without Apply");
+    Check(host.data[0].track.keys[1].interpolation == ac::Interpolation::Bezier &&
+          host.data[0].track.keys[2].interpolation == ac::Interpolation::Bezier,
+          "flat handles activate Bezier on both former linear intervals");
+    Check(std::fabs(ac::Evaluate(host.data[0].track, 10).value - 2.5) > 0.1,
+          "the tangent preset changes the evaluated animation, not only the button highlight");
+    Check(host.data[0].track.keys[1].tangent == ac::Tangent::Free,
+          "a one-shot flat preset leaves editable free handles");
+    const auto flat = host.data[0].track;
+    Click(window, kIdUndo);
+    Check(ac::Evaluate(host.data[0].track, 10).value == 2.5, "undo restores the original linear interval");
+    int unchangedApplies = host.applyCalls;
+    choose(kIdInterpolationCombo, 1);
+    Check(host.applyCalls == unchangedApplies,
+          "reselecting Linear writes nothing");
+    Click(window, kIdUndo);
+    Check(host.applyCalls == unchangedApplies,
+          "an unchanged interpolation choice does not append an undo entry");
+    Click(window, kIdRedo);
+    Check(host.applyCalls == unchangedApplies + 1 &&
+          ac::Evaluate(host.data[0].track, 10).value == ac::Evaluate(flat, 10).value,
+          "redo restores the evaluated preset after an unchanged interpolation choice");
+    unchangedApplies = host.applyCalls;
+    choose(kIdTangentCombo, 3);
+    Check(host.applyCalls == unchangedApplies,
+          "reapplying the same flat preset by mouse does not write unchanged curves");
+    SetText(window, kIdValueEdit, L"999");
+    SendMessageW(GetDlgItem(window, kIdTangentCombo), WM_KEYDOWN, VK_RETURN, 0);
+    SendMessageW(GetDlgItem(window, kIdTangentCombo), WM_CHAR, L'\r', 0);
+    Check(host.applyCalls == unchangedApplies && host.data[0].track.keys[1].value == 5,
+          "Enter on the unchanged preset neither writes curves nor applies unrelated numeric text");
+
+    choose(kIdInterpolationCombo, 0);
+    Check(host.data[0].track.keys[1].interpolation == ac::Interpolation::Step &&
+          ac::Evaluate(host.data[0].track, 10).value == 0,
+          "step interpolation applies immediately to the interval ending at the selected key");
+    Check(host.data[0].track.keys[2].interpolation == ac::Interpolation::Bezier,
+          "interpolation changes only the incoming interval");
+    choose(kIdInterpolationCombo, 1);
+    Check(ac::Evaluate(host.data[0].track, 10).value == 2.5,
+          "linear interpolation uses the chord even with flat tangent slopes");
+    choose(kIdInterpolationCombo, 2);
+    Check(ac::Evaluate(host.data[0].track, 10).value == ac::Evaluate(flat, 10).value,
+          "Bezier interpolation restores the stored curved handles");
+
+    choose(kIdTangentCombo, 1);
+    Check(host.data[0].track.keys[1].tangent == ac::Tangent::Aligned, "aligned is a persistent handle mode");
+    SetText(window, kIdOutSlopeEdit, L"0.2"); Click(window, kIdApplyKey);
+    Check(host.data[0].track.keys[1].inSlope == 0.2 && host.data[0].track.keys[1].outSlope == 0.2,
+          "numeric editing preserves the chosen aligned slope instead of averaging with the old field");
+    choose(kIdTangentCombo, 2);
+    Check(host.data[0].track.keys[1].tangent == ac::Tangent::Automatic,
+          "automatic mode is applied immediately");
+    SetText(window, kIdOutSlopeEdit, L"0.1"); Click(window, kIdApplyKey);
+    Check(host.data[0].track.keys[1].tangent == ac::Tangent::Free &&
+          host.data[0].track.keys[1].outSlope == 0.1,
+          "manual slope input leaves automatic mode and keeps the typed slope");
+    choose(kIdTangentCombo, 4);
+    Check(host.data[0].track.keys[1].interpolation == ac::Interpolation::Linear &&
+          host.data[0].track.keys[2].interpolation == ac::Interpolation::Linear,
+          "straighten preset makes both adjacent intervals linear");
+    choose(kIdTangentCombo, 5);
+    Check(host.data[0].track.keys[1].interpolation == ac::Interpolation::Bezier &&
+          host.data[0].track.keys[1].inSlope == 0 && ac::SideIsStraight(host.data[0].track,1,true),
+          "ease in bends only the incoming side");
+    choose(kIdTangentCombo, 6);
+    Check(host.data[0].track.keys[1].outSlope == 0 && ac::SideIsStraight(host.data[0].track,1,false),
+          "ease out bends only the outgoing side");
+    std::vector<std::uint8_t> bytes; std::vector<ac::NamedTrack> decoded; std::string error;
+    Check(ac::Encode({{"pos.x",host.data[0].track}}, bytes, error) &&
+          ac::Decode(bytes.data(),bytes.size(),decoded,error), "edited modes survive the existing curve codec");
+    for (int frame=0;frame<=40;++frame)
+        Check(ac::Evaluate(decoded[0].track,frame).value == ac::Evaluate(host.data[0].track,frame).value,
+              "curve serialization preserves the evaluated animation");
+    host.failApply = true;
+    const auto before = host.data[0].track;
+    choose(kIdInterpolationCombo, 0);
+    Check(host.data[0].track.keys[1].interpolation == before.keys[1].interpolation &&
+          SendMessageW(GetDlgItem(window,kIdInterpolationCombo),CB_GETCURSEL,0,0) ==
+              static_cast<int>(before.keys[1].interpolation),
+          "a rejected mode write restores both data and button state");
+    host.failApply = false;
+    ce::CloseOwned(nullptr);
+    window = static_cast<HWND>(ce::Open(nullptr,MakeSession(host),false));
+    ClickKey(window,1);
+    Check(SendMessageW(GetDlgItem(window,kIdTangentCombo),CB_GETCURSEL,0,0)==0,
+          "reopening shows free mode, not a sticky one-shot preset");
+    ClickKey(window,0);
+    Check(!IsWindowEnabled(GetDlgItem(window,kIdInterpolationCombo)),
+          "the first key has no incoming interval to edit");
+    ce::CloseOwned(nullptr);
+    host.data[0].track.discrete=true;
+    window=static_cast<HWND>(ce::Open(nullptr,MakeSession(host),false)); ClickKey(window,1);
+    Check(!IsWindowEnabled(GetDlgItem(window,kIdTangentCombo)) &&
+          !IsWindowEnabled(GetDlgItem(window,kIdInterpolationCombo)),
+          "discrete channels disable unsupported interpolation and tangent operations");
+    ce::CloseOwned(nullptr);
+    Note("immediate curve modes and one-shot tangent presets, evaluated samples, history and serialization");
+
+    // Endpoint keys have only one handle; multi-selection is one transaction.
+    for (unsigned language=0; language<3; ++language) {
+        host = HostSource{};
+        host.data.push_back(MakeChannel("pos.x", L"Position X", {
+            MakeKey(0,0,ac::Interpolation::Linear,ac::Tangent::Linear),
+            MakeKey(20,5,ac::Interpolation::Linear,ac::Tangent::Linear),
+            MakeKey(40,20,ac::Interpolation::Linear,ac::Tangent::Linear)}));
+        window=static_cast<HWND>(ce::Open(nullptr,MakeSession(host,language),false));
+        Check(!IsWindowEnabled(GetDlgItem(window,kIdTangentCombo)), "handle controls require a selected key");
+        ClickKey(window,2); choose(kIdTangentCombo,3);
+        Check(host.data[0].track.keys[2].inSlope==0 &&
+              std::fabs(ac::Evaluate(host.data[0].track,30).value-12.5)>0.1,
+              "flat preset works on the final key's incoming interval");
+        ClickKey(window,0); choose(kIdTangentCombo,3);
+        Check(host.data[0].track.keys[0].outSlope==0 &&
+              std::fabs(ac::Evaluate(host.data[0].track,10).value-2.5)>0.1,
+              "flat preset works on the first key's outgoing interval");
+        Click(window,kIdFitAll);
+        const POINT a=AskPoint(window,kHookPointForKey,1), b=AskPoint(window,kHookPointForKey,2);
+        HWND canvas=GetDlgItem(window,kIdCanvas);
+        SendMessageW(canvas,WM_LBUTTONDOWN,MK_LBUTTON,MAKELPARAM(a.x-20,std::min(a.y,b.y)-20));
+        SendMessageW(canvas,WM_MOUSEMOVE,MK_LBUTTON,MAKELPARAM(b.x+20,std::max(a.y,b.y)+20));
+        SendMessageW(canvas,WM_LBUTTONUP,0,MAKELPARAM(b.x+20,std::max(a.y,b.y)+20));
+        int applies=host.applyCalls;
+        choose(kIdInterpolationCombo,0);
+        Check(host.applyCalls==applies+1 && host.data[0].track.keys[1].interpolation==ac::Interpolation::Step &&
+              host.data[0].track.keys[2].interpolation==ac::Interpolation::Step,
+              "multi-selection changes both incoming intervals in one transaction");
+        Check(ac::Evaluate(host.data[0].track,10).value==0 && ac::Evaluate(host.data[0].track,30).value==5,
+              "both selected step intervals evaluate correctly");
+        Click(window,kIdUndo);
+        Check(host.data[0].track.keys[1].interpolation==ac::Interpolation::Bezier &&
+              host.data[0].track.keys[2].interpolation==ac::Interpolation::Bezier,
+              "one undo restores the complete multi-selection operation");
+        applies=host.applyCalls;
+        choose(kIdInterpolationCombo,2);
+        Check(host.applyCalls==applies,
+              "unchanged multi-selection interpolation makes no host write");
+        Click(window,kIdRedo);
+        Check(host.applyCalls==applies+1 && host.data[0].track.keys[1].interpolation==ac::Interpolation::Step &&
+              host.data[0].track.keys[2].interpolation==ac::Interpolation::Step,
+              "unchanged multi-selection interpolation preserves the complete redo operation");
+        Click(window,kIdUndo);
+        choose(kIdTangentCombo,2);
+        Check(host.data[0].track.keys[1].tangent==ac::Tangent::Automatic &&
+              host.data[0].track.keys[2].tangent==ac::Tangent::Automatic,
+              "automatic mode applies to every selected key");
+        ClickKey(window,0); ClickKey(window,2);
+        const double oldSlope=host.data[0].track.keys[1].outSlope;
+        SetText(window,kIdValueEdit,L"30"); Click(window,kIdApplyKey);
+        Check(host.data[0].track.keys[1].outSlope!=oldSlope,
+              "automatic slopes follow changes to a neighbouring key");
+        HWND tangent=GetDlgItem(window,kIdTangentCombo);
+        SendMessageW(tangent,WM_KEYDOWN,VK_HOME,0); // Free mode.
+        Check(host.data[0].track.keys[2].tangent==ac::Tangent::Free,
+              "keyboard selection applies free mode");
+        SendMessageW(tangent,WM_KEYDOWN,VK_RIGHT,0); // Aligned.
+        SendMessageW(tangent,WM_KEYDOWN,VK_RIGHT,0); // Automatic.
+        SendMessageW(tangent,WM_KEYDOWN,VK_RIGHT,0); // Flat preset; highlight returns to Free.
+        SendMessageW(tangent,WM_KEYDOWN,VK_RIGHT,0); // Straighten, not Aligned.
+        Check(host.data[0].track.keys[2].interpolation==ac::Interpolation::Linear,
+              "keyboard focus continues across presets after their mode highlight resets");
+        ClickKey(window,1); HoverControl(window,kIdTangentCombo);
+        Check(HoverHint(window)==12, "the tangent strip explains mode and preset semantics");
+        HoverControl(window,kIdInterpolationCombo);
+        Check(HoverHint(window)==11, "the interpolation strip explains incoming interval semantics");
+        ce::CloseOwned(nullptr);
+    }
+    Note("endpoint keys, multi-selection, neighbour updates and keyboard presets in all three languages");
+
+    host=HostSource{};
+    host.data.push_back(MakeChannel("pos.x",L"Position X",{
+        MakeKey(0,0,ac::Interpolation::Linear,ac::Tangent::Free),
+        MakeKey(20,5,ac::Interpolation::Linear,ac::Tangent::Free),
+        MakeKey(40,10,ac::Interpolation::Step,ac::Tangent::Free)}));
+    window=static_cast<HWND>(ce::Open(nullptr,MakeSession(host),false));
+    ClickKey(window,1);ClickKeyAdditive(window,2);
+    Check(SendMessageW(GetDlgItem(window,kIdInterpolationCombo),CB_GETCURSEL,0,0)==-1,
+          "mixed interpolation selection has no misleading active button");
+    choose(kIdInterpolationCombo,1);
+    Check(host.applyCalls==1 && host.data[0].track.keys[1].interpolation==ac::Interpolation::Linear &&
+          host.data[0].track.keys[2].interpolation==ac::Interpolation::Linear,
+          "choosing a mode already used by one selected key still updates the other key once");
+    Click(window,kIdUndo);
+    Check(host.data[0].track.keys[1].interpolation==ac::Interpolation::Linear &&
+          host.data[0].track.keys[2].interpolation==ac::Interpolation::Step,
+          "one undo restores a mixed interpolation selection");
+    ce::CloseOwned(nullptr);
+}
+
 }  // namespace
 
 int main(int argc,char** argv) {
+    if(argc>1 && std::string(argv[1])=="--curve-modes") {
+        CurveModeButtons();
+        std::printf("curve mode regressions: %d checks\n",g_checks); return 0;
+    }
+    if(argc>1 && std::string(argv[1])=="--curve-ui-compat") {
+        IndependentValueHandles(); AlignedValueHandles(); AdjacentHandleLinking();
+        LayoutThreeLanguages(); ComparisonLayout(); HoverHints(); TabNavigation();
+        std::printf("curve UI compatibility regressions: %d checks\n",g_checks); return 0;
+    }
+    CurveModeButtons();
     if(argc>1 && std::string(argv[1])=="--editor-input") {
         IndependentValueHandles(); AlignedValueHandles(); AdjacentHandleLinking(); BakeSelectedChannels();
         std::printf("editor input regressions: %d checks\n",g_checks);

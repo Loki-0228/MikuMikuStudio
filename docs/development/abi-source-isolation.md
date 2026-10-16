@@ -6,13 +6,15 @@ ABI 开发使用独立 Git 工作目录。构建目录和源码目录都必须�
 
 | 用途 | 路径及状态 |
 | --- | --- |
-| 后续 ABI 开发 | `D:/MMD-Next/MMS-abi-dev`，分支 `codex/plugin-abi`，从 `eb7f711` 完整迁移。临时分支名 `codex/plugin-abi-isolated` 已删除。 |
+| 后续 ABI 开发 | `D:/MMD-Next/MMS-abi-dev`，分支 `codex/plugin-abi`，从 `eb7f711` 完整迁移。现从 ABI 基线 `8cb6c1d` 合入 main 提交 `04d3dec` 的已验证功能，合并后验证单独记录。临时分支名 `codex/plugin-abi-isolated` 已删除。 |
 | ABI 构建输出 | `D:/MMD-Next/MMS-abi-dev/build/win7-x64/build`。 |
-| 稳定版工作目录 | `D:/MMD-Next/MMS`，已切回现有 `main`。分离时基线为 `42d4a71`（`v2026.10.15.2`），稳定版相关未提交修改另行恢复、审查和验证。 |
+| 稳定版工作目录 | `D:/MMD-Next/MMS`，分支 `main`，当前提交 `04d3dec`。分离时基线为 `42d4a71`（`v2026.10.15.2`）；恢复的稳定版修改已完成审查、本机验证和提交。 |
 | 稳定版验证输出 | `D:/MMD-Next/MMS/build/main-review/build`，独立于现有稳定版产物。 |
 | 现有稳定版产物 | `D:/MMD-Next/MMS/build/Release`。本次开发不向该目录安装或复制程序。 |
 
 分离前，原目录的两套构建都读取同一份 ABI 开发源码。分离后，ABI 构建只读取独立目录；原目录恢复为 `main` 源码。旧构建缓存没有作为新验证构建的起点。
+
+main 的已验证功能通过 Git 合并进入 ABI 分支，两份源码和构建目录继续分离。合并基线、冲突处理及本轮结果见 [ABI 分支合入 main 功能记录](../records/abi-main-merge-2026-10-17.md)。普通宿主的 `mms.edit` 门禁保持关闭，内部受控验证不等于正式开放。
 
 ## 构建开发版本
 
@@ -38,6 +40,8 @@ ABI 开发需要修改公共文件时，只修改 ABI 工作目录中的文件�
 分离前的 24 个已修改或未跟踪文件已逐个复制并核对 SHA-256，同时保留 Git stash。备份位于 ABI 工作目录的 `build/source-migration-before/`，其中记录原提交、stash ID 和文件清单。恢复到 `main` 的修改排除 ABI 文档；自动保存的分支差异按 `main` 现有接口解决，不能把 ABI 的插件备份函数带入稳定版。
 
 旧发布元数据与现有 EXE 不一致，不能据此声称现有 EXE 精确对应 `42d4a71`。`main` 的源码基线和本次验证记录与现有程序文件分开记录。
+
+`04d3dec` 的本机验收记录见 [main 源码审查与本地验收记录](../records/main-source-review-2026-10-17.md)。该提交未替换现有稳定版 EXE，也未发布新程序；ABI 合并后的结果另行验收。
 
 ## 每批审查与验证
 

@@ -212,7 +212,10 @@ constexpr double kMinimumValueSpan = 1.0e-5;
 constexpr double kFramesPerSecond = 30.0;
 constexpr double kHandleHitRadius = 5.0;
 constexpr int kHandleSize = 7;      // key square, logical pixels
-// Tangent combo rows past the stored Tangent values: one-shot ease actions.
+// Three persistent handle modes, followed by four one-shot slope presets.
+constexpr int kTangentAutomatic = 2;
+constexpr int kTangentFlat = 3;
+constexpr int kTangentStraight = 4;
 constexpr int kTangentEaseIn = 5;
 constexpr int kTangentEaseOut = 6;
 constexpr int kGripSize = 9;        // range bar end grip, logical pixels
@@ -308,7 +311,7 @@ enum Str {
     StrHiddenCurve,
     StrChannelShown, StrChannelHidden, StrActiveCurve,
     StrHintChannelList, StrHintCompareMode, StrHintCompareFilter,
-    StrHintAddKey, StrHintDeleteKey, StrHintApplyKey,
+    StrHintAddKey, StrHintDeleteKey, StrHintApplyKey, StrHintInterpolation, StrHintTangent,
     StrHintCanvas, StrHintMmdHandles, StrHintTimeBar, StrHintValueBar, StrHintNavigation
 };
 
@@ -359,7 +362,7 @@ const wchar_t *T(unsigned language, Str id) {
     case StrTanFree: return zh ? L"自由" : en ? L"Free" : L"フリー";
     case StrTanAligned: return zh ? L"对齐" : en ? L"Aligned" : L"整列";
     case StrTanFlat: return zh ? L"水平" : en ? L"Flat" : L"水平";
-    case StrTanLinear: return zh ? L"线性" : en ? L"Linear" : L"リニア";
+    case StrTanLinear: return zh ? L"拉直" : en ? L"Straighten" : L"直線化";
     case StrTanAutomatic: return zh ? L"自动" : en ? L"Automatic" : L"自動";
     case StrTanEaseIn: return zh ? L"缓入" : en ? L"Ease in" : L"イーズイン";
     case StrTanEaseOut: return zh ? L"缓出" : en ? L"Ease out" : L"イーズアウト";
@@ -465,9 +468,17 @@ const wchar_t *T(unsigned language, Str id) {
                   : en ? L"Delete key: removes the selected keys; undo restores them."
                        : L"キー削除：選択中のキーを削除します。元に戻すで復元できます。";
     case StrHintApplyKey:
-        return zh ? L"应用（Enter，同主页关键帧注册）：把帧号、数值、插值、切线和权重写入选中的关键帧，可撤销。"
-                  : en ? L"Apply (Enter, like keyframe registration): writes the parameters onto the selected key; undo restores the previous state."
-                       : L"適用（Enter、キー登録と共通）：選択キーにパラメーターを書き込みます。元に戻すで復元できます。";
+        return zh ? L"应用（Enter，同主页关键帧注册）：把帧号、数值、斜率和权重写入选中的关键帧，可撤销。插值与切线按钮点击后立即生效。"
+                  : en ? L"Apply (Enter): writes frame, value, slopes and weights to the selected key. Interpolation and tangent buttons apply immediately. Undo is available."
+                       : L"適用（Enter）：フレーム・値・傾き・重みを選択キーに書き込みます。補間と接線のボタンは即時適用します。元に戻せます。";
+    case StrHintInterpolation:
+        return zh ? L"插值立即应用到所选关键帧之前的区间，可撤销。阶跃和线性不读取手柄斜率；贝塞尔读取斜率与权重。"
+                  : en ? L"Applies immediately to the interval before each selected key. Step and Linear ignore handles; Bezier uses slopes and weights. Undo is available."
+                       : L"選択キーの前の区間へ即時適用します。ステップと線形はハンドルを使わず、ベジェは傾きと重みを使います。元に戻せます。";
+    case StrHintTangent:
+        return zh ? L"自由、对齐、自动是手柄模式；右侧水平、拉直、缓入、缓出是一次性预设。点击立即应用于所选关键帧两侧；需要手柄时会切换为贝塞尔，可撤销。"
+                  : en ? L"Free, Aligned and Auto are handle modes. Flat, Straighten, Ease in and Ease out are one-shot presets. Applies to both sides immediately, enabling Bezier where needed. Undo is available."
+                       : L"自由・整列・自動はハンドルモードです。水平・直線化・イーズイン・イーズアウトは一度だけ適用するプリセットです。両側へ即時適用し、必要な区間をベジェに切り替えます。元に戻せます。";
     case StrHintCanvas:
         return zh ? L"画布：单击选中关键帧，拖动移动，空白拖动框选；选中关键帧的圆形手柄可拖动调整曲线；Alt+单击关键帧在线性与双侧贝塞尔之间切换，Alt+单击手柄拉直该侧。滚轮纵移，Shift 横移，Alt 横缩，Ctrl 纵缩，Home 全部显示，F 区间显示，H/V 切换平移与选择。"
                   : en ? L"Canvas: click a key to select it, drag to move it, drag empty space to box-select; drag the round handles of selected keys to shape the curve; Alt-click a key to toggle linear / two-sided Bezier, Alt-click a handle to straighten that side. Wheel pans, Shift pans sideways, Alt zooms time, Ctrl zooms value, Home fits all, F fits the range, H and V pick the pan or select tool."
@@ -866,6 +877,8 @@ int HintForControl(int id) {
     case kIdAddKey: return StrHintAddKey;
     case kIdDeleteKey: return StrHintDeleteKey;
     case kIdApplyKey: return StrHintApplyKey;
+    case kIdInterpolationCombo: return StrHintInterpolation;
+    case kIdTangentCombo: return StrHintTangent;
     case kIdMmdX1: case kIdMmdY1: case kIdMmdX2: case kIdMmdY2: return StrHintMmdHandles;
     case kIdPreviousKey: case kIdPreviousFrame: case kIdNextFrame: case kIdNextKey: return StrHintNavigation;
     default: return -1;
@@ -885,6 +898,8 @@ int HoverHintCode(int hint) {
     case StrHintMmdHandles: return 8;
     case StrHintTimeBar: return 9;
     case StrHintValueBar: return 10;
+    case StrHintInterpolation: return 11;
+    case StrHintTangent: return 12;
     default: return 0;
     }
 }
@@ -2291,17 +2306,24 @@ void UpdateKeyFields(Editor &editor) {
         SetControlText(editor.window, kIdOutSlopeEdit, FormatNumber(key.outSlope));
         SetControlText(editor.window, kIdInWeightEdit, FormatNumber(key.inWeight));
         SetControlText(editor.window, kIdOutWeightEdit, FormatNumber(key.outWeight));
-        if (HWND combo = GetDlgItem(editor.window, kIdInterpolationCombo))
-            SendMessageW(combo, CB_SETCURSEL, static_cast<WPARAM>(key.interpolation), 0);
+        if (HWND combo = GetDlgItem(editor.window, kIdInterpolationCombo)) {
+            int row = static_cast<int>(key.interpolation);
+            for (const auto selected : state.selection)
+                if (selected < track->keys.size() && track->keys[selected].interpolation != key.interpolation) row = -1;
+            SendMessageW(combo, CB_SETCURSEL, row, 0);
+        }
         if (HWND combo = GetDlgItem(editor.window, kIdTangentCombo)) {
-            // A key curved on one side only and flat there reads as an ease.
-            int row = static_cast<int>(key.tangent);
-            const bool inStraight = animation_curve::SideIsStraight(*track, index, false);
-            const bool outStraight = animation_curve::SideIsStraight(*track, index, true);
-            if (!inStraight && outStraight && key.inSlope == 0.0) row = kTangentEaseIn;
-            else if (inStraight && !outStraight && key.outSlope == 0.0) row = kTangentEaseOut;
+            const auto modeRow = [](Tangent mode) {
+                return mode == Tangent::Automatic ? kTangentAutomatic : mode == Tangent::Aligned ? 1 : 0;
+            };
+            int row = modeRow(key.tangent);
+            for (const auto selected : state.selection)
+                if (selected < track->keys.size() && modeRow(track->keys[selected].tangent) != row) row = -1;
             SendMessageW(combo, CB_SETCURSEL, static_cast<WPARAM>(row), 0);
         }
+    } else {
+        for (int id : {kIdInterpolationCombo, kIdTangentCombo})
+            SendMessageW(GetDlgItem(editor.window, id), CB_SETCURSEL, WPARAM(-1), 0);
     }
     (void)state;
 }
@@ -2465,6 +2487,12 @@ void UpdateEnabledState(Editor &editor) {
     }
     EnableWindow(GetDlgItem(editor.window, kIdDeleteKey), (writable && hasSelection) ? TRUE : FALSE);
     EnableWindow(GetDlgItem(editor.window, kIdApplyKey), (writable && hasSelection) ? TRUE : FALSE);
+    const Track* track = ActiveTrack(editor);
+    const bool handles = writable && hasSelection && track && !track->discrete;
+    const bool hasInterval = handles && std::any_of(state.selection.begin(), state.selection.end(),
+        [track](std::size_t index) { return index > 0 && index < track->keys.size(); });
+    EnableWindow(GetDlgItem(editor.window, kIdInterpolationCombo), hasInterval);
+    EnableWindow(GetDlgItem(editor.window, kIdTangentCombo), handles && track->keys.size() > 1);
     EnableWindow(GetDlgItem(editor.window, kIdBakeRun), writable ? TRUE : FALSE);
     EnableWindow(GetDlgItem(editor.window, kIdReadMotion), (valid && source.readMotion) ? TRUE : FALSE);
     EnableWindow(GetDlgItem(editor.window, kIdWriteMotion), (valid && source.writeMotion) ? TRUE : FALSE);
@@ -2986,6 +3014,76 @@ void DeleteSelectedKeys(Editor &editor) {
     }
 }
 
+// Handle editing must not leave Linear/Step intervals ignoring the new slopes.
+// Seed newly enabled Bezier intervals with their chord, preserving the other
+// handle of a neighbouring key before changing the requested key's mode.
+void EnableBezierHandles(Track& track, std::size_t key) {
+    if (track.discrete || key >= track.keys.size()) return;
+    for (const std::size_t end : {key, key + 1}) {
+        if (end == 0 || end >= track.keys.size() || track.keys[end].interpolation == Interpolation::Bezier) continue;
+        std::string error;
+        for (const auto index : {end - 1, end}) {
+            if (track.keys[index].tangent == Tangent::Automatic)
+                animation_curve::SetTangent(track, index, Tangent::Free, error);
+            track.keys[index].tangent = Tangent::Free;
+        }
+        const double slope = (track.keys[end].value - track.keys[end - 1].value) /
+            (double(track.keys[end].frame) - track.keys[end - 1].frame);
+        track.keys[end - 1].outSlope = track.keys[end].inSlope = slope;
+        track.keys[end].interpolation = Interpolation::Bezier;
+    }
+}
+
+void ApplyCurveChoice(Editor& editor, int id) {
+    SourceState& state = CurrentState(editor);
+    Track* track = ActiveTrack(editor);
+    const int row = int(SendMessageW(GetDlgItem(editor.window, id), CB_GETCURSEL, 0, 0));
+    if (!track || track->discrete || state.selection.empty() ||
+        !IsWindowEnabled(GetDlgItem(editor.window, id)) || row < 0) {
+        UpdateKeyFields(editor);
+        return;
+    }
+    auto next = CopyChannels(editor);
+    Track& working = next[state.active].track;
+    std::string error;
+    for (const auto key : state.selection) {
+        if (key >= working.keys.size()) continue;
+        if (id == kIdInterpolationCombo) {
+            if (key > 0 && row <= int(Interpolation::Bezier))
+                working.keys[key].interpolation = static_cast<Interpolation>(row);
+            continue;
+        }
+        if (row > kTangentEaseOut) continue;
+        EnableBezierHandles(working, key);
+        if (row == kTangentEaseIn || row == kTangentEaseOut) {
+            animation_curve::ApplyEase(working, key, row == kTangentEaseIn);
+        } else {
+            const Tangent tangent = row == 0 ? Tangent::Free : row == 1 ? Tangent::Aligned :
+                row == kTangentAutomatic ? Tangent::Automatic : row == kTangentFlat ? Tangent::Flat : Tangent::Linear;
+            if (!animation_curve::SetTangent(working, key, tangent, error)) {
+                SetStatus(editor, Widen(error), true);
+                UpdateKeyFields(editor);
+                return;
+            }
+            if (row == kTangentStraight) {
+                if (key > 0) working.keys[key].interpolation = Interpolation::Linear;
+                if (key + 1 < working.keys.size()) working.keys[key + 1].interpolation = Interpolation::Linear;
+            }
+            if (row >= kTangentFlat) working.keys[key].tangent = Tangent::Free;
+        }
+    }
+    animation_curve::UpdateAutomatic(working);
+    // Re-selecting a mode (or reapplying an unchanged preset) must not create
+    // an undo entry or discard redo. Compare every selected key's result, not
+    // just the highlighted row, because a multi-selection can contain different modes.
+    if (!SameTrack(*track, working))
+        CommitChannels(editor, std::move(next), T(editor.session.language, StrReady));
+    // A refusal must restore the highlight too; presets never stay selected.
+    UpdateKeyFields(editor);
+    UpdateMmdPanel(editor);
+    UpdateEnabledState(editor);
+}
+
 void ApplyKeyFields(Editor &editor) {
     SourceState &state = CurrentState(editor);
     Track *track = ActiveTrack(editor);
@@ -3024,25 +3122,20 @@ void ApplyKeyFields(Editor &editor) {
         }
     }
     Key moved = working.keys[index];
+    const bool inChanged = ControlText(editor.window, kIdInSlopeEdit) != FormatNumber(moved.inSlope);
+    const bool outChanged = ControlText(editor.window, kIdOutSlopeEdit) != FormatNumber(moved.outSlope);
     moved.frame = static_cast<std::int32_t>(frame);
     moved.value = value;
-    moved.inSlope = inSlope;
-    moved.outSlope = outSlope;
+    if (inChanged) moved.inSlope = inSlope;
+    if (outChanged) moved.outSlope = outSlope;
     moved.inWeight = inWeight;
     moved.outWeight = outWeight;
-    const auto interpolation = static_cast<Interpolation>(
-        SendMessageW(GetDlgItem(editor.window, kIdInterpolationCombo), CB_GETCURSEL, 0, 0));
-    const int tangentRow = static_cast<int>(
-        SendMessageW(GetDlgItem(editor.window, kIdTangentCombo), CB_GETCURSEL, 0, 0));
-    const bool ease = tangentRow == kTangentEaseIn || tangentRow == kTangentEaseOut;
-    // An ease row keeps the key's stored mode; ApplyEase sets the slopes below.
-    const auto tangent = ease ? Tangent::Free : static_cast<Tangent>(tangentRow);
-    if (interpolation == static_cast<Interpolation>(-1) || tangentRow < 0) {
-        SetStatus(editor, T(editor.session.language, StrInvalidNumber), true);
-        return;
+    if (inChanged || outChanged) {
+        if (moved.tangent == Tangent::Aligned) {
+            const double slope = inChanged && outChanged ? 0.5 * (inSlope + outSlope) : inChanged ? inSlope : outSlope;
+            moved.inSlope = moved.outSlope = slope;
+        } else moved.tangent = Tangent::Free;
     }
-    moved.interpolation = interpolation;
-    moved.tangent = tangent;
 
     // Rebuild the key vector so the frame order stays strictly increasing.
     std::vector<Key> rebuilt;
@@ -3061,16 +3154,13 @@ void ApplyKeyFields(Editor &editor) {
     rebuilt.insert(rebuilt.begin() + static_cast<std::ptrdiff_t>(insertion), moved);
     working.keys = std::move(rebuilt);
 
-    if (ease) {
-        animation_curve::ApplyEase(working, insertion, tangentRow == kTangentEaseIn);
-    } else if (tangent != Tangent::Free) {
-        std::string error;
-        if (!animation_curve::SetTangent(working, insertion, tangent, error)) {
-            SetStatus(editor, std::wstring(T(editor.session.language, StrInvalidTrack)) + Widen(error), true);
-            return;
-        }
-        if (tangent != Tangent::Automatic) working.keys[insertion].value = value;
+    if (inChanged || outChanged) {
+        EnableBezierHandles(working, insertion);
+        working.keys[insertion].inSlope = moved.inSlope;
+        working.keys[insertion].outSlope = moved.outSlope;
+        working.keys[insertion].tangent = moved.tangent;
     }
+    animation_curve::UpdateAutomatic(working);
     if (CommitChannels(editor, std::move(next), T(editor.session.language, StrReady))) {
         state.selection.clear();
         state.selection.insert(insertion);
@@ -4010,7 +4100,9 @@ bool HandleChildMessage(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam, L
         result=0;return true;
     }
     if(coordinate && message==WM_CHAR && wparam==L'\r'){result=0;return true;}
-    const bool parameter=id==kIdFrameEdit||id==kIdValueEdit||id==kIdInterpolationCombo||id==kIdTangentCombo||
+    // The mode strips handle Enter themselves. Routing them through numeric
+    // Apply would submit unrelated text fields instead of the focused choice.
+    const bool parameter=id==kIdFrameEdit||id==kIdValueEdit||
         id==kIdInSlopeEdit||id==kIdOutSlopeEdit||id==kIdInWeightEdit||id==kIdOutWeightEdit;
     if(parameter && message==WM_KEYDOWN && wparam==VK_RETURN){
         if(auto* editor=EditorForChild(hwnd))ApplyFromRegisterShortcut(*editor,lparam);
@@ -4166,7 +4258,7 @@ LRESULT CALLBACK ChannelListSubclassProc(HWND hwnd, UINT message, WPARAM wparam,
             }
             if(item&&(flags&(TVHT_ONITEMLABEL|TVHT_ONITEMICON))){
                 const int channel=TreeChannel(hwnd,item);
-                if(channel>=0){SetFocus(hwnd);ActivateChannel(*editor,channel);return 0;}
+                if(channel>=0){SetFocus(hwnd);TreeView_SelectItem(hwnd,item);ActivateChannel(*editor,channel);return 0;}
             }
         }
         if(message==WM_KEYDOWN&&ChannelListKey(*editor,hwnd,wparam))return 0;
@@ -4614,17 +4706,17 @@ void FillCombos(Editor &editor) {
         SendMessageW(combo, CB_SETCURSEL, previous < 0 ? 2 : static_cast<WPARAM>(previous), 0);
     }
     if (HWND combo = GetDlgItem(editor.window, kIdTangentCombo)) {
+        SetPropW(combo, L"CurveLanguage", reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(language)));
         const int previous = static_cast<int>(SendMessageW(combo, CB_GETCURSEL, 0, 0));
         SendMessageW(combo, CB_RESETCONTENT, 0, 0);
         SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(T(language, StrTanFree)));
         SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(T(language, StrTanAligned)));
+        SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(T(language, StrTanAutomatic)));
         SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(T(language, StrTanFlat)));
         SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(T(language, StrTanLinear)));
-        SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(T(language, StrTanAutomatic)));
-        // Entries 5 and 6 are actions rather than stored modes (kTangentEase*).
         SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(T(language, StrTanEaseIn)));
         SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(T(language, StrTanEaseOut)));
-        SendMessageW(combo, CB_SETCURSEL, previous < 0 ? 4 : static_cast<WPARAM>(previous), 0);
+        SendMessageW(combo, CB_SETCURSEL, previous < 0 ? kTangentAutomatic : static_cast<WPARAM>(previous), 0);
     }
     FillSourceCombo(editor);
 }
@@ -4841,6 +4933,7 @@ void HandleCommand(Editor &editor, WPARAM wparam) {
         return;
     case kIdInterpolationCombo:
     case kIdTangentCombo:
+        if (code == CBN_SELCHANGE) ApplyCurveChoice(editor, id);
         return;
     case kIdChannelList:
         // The list never reaches WM_COMMAND: ChannelListSubclassProc answers its

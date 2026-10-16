@@ -1,16 +1,16 @@
 // ===========================================================================
-// MikuDanceStudio - runtime diagnostics (in-memory only, no files)
+// MikuDanceStudio - runtime diagnostics and crash reports
 // ===========================================================================
-// The process never creates a log file, a log directory or a dump: the most
-// recent messages live in a bounded in-memory ring, and anything that would
+// Normal diagnostics stay in a bounded in-memory ring. Anything that would
 // kill the process (unhandled exception, std::terminate, abort, invalid
-// parameter, failed startup) turns that ring into a modal "last error" window.
+// parameter, failed startup) saves an error log beside the EXE in backups
+// and turns that ring into a modal "last error" window.
 // MessageBoxW blocks the failing thread, so the process stays alive until the
 // user presses OK - a silent flash-exit becomes a readable error report.
 //
-// Constraints kept from the file-based version:
-//   * diagnostics must not allocate, take a user-space lock or dereference
-//     application state, so the ring uses one sequence-stamped slot per line
+// Fault-handler constraints:
+//   * diagnostics must not allocate, wait for a user-space lock or dereference
+//     application state; a busy ring slot is skipped after one atomic attempt,
 //     and every buffer is static or on the stack;
 //   * the phase is a string literal only (see runtime_log.hpp);
 //   * a faulting thread that already reported is not reported twice.
@@ -36,16 +36,17 @@ namespace mikudancestudio::runtime_log {
 namespace {
 
 // ---- in-memory record -----------------------------------------------------
-constexpr int kRingLines = 192;    // ~60 KiB of history, never on disk
+constexpr int kRingLines = 192;    // ~60 KiB of history
 constexpr int kLineBytes = 320;
 constexpr int kDialogLines = 48;   // newest entries rendered into the dialog
 constexpr int kDialogChars = 12000;
 
 struct RingLine {
-    // sequence is stored last, so a reader that observes a sequence owns the
-    // matching length and text; a torn concurrent write is skipped instead.
-    std::atomic<unsigned long long> sequence{0};
-    std::atomic<unsigned int> length{0};
+    // Both writers and snapshot readers claim once, without waiting. A fault
+    // while owning a slot loses that slot; it cannot stall the crash handler.
+    std::atomic_flag occupied = ATOMIC_FLAG_INIT;
+    unsigned long long sequence = 0;
+    unsigned int length = 0;
     char text[kLineBytes];
 };
 
@@ -57,6 +58,30 @@ std::atomic<bool> shuttingDown{false};
 std::atomic<CrashBackup> crashBackup{nullptr};
 ULONGLONG lastHeartbeat = 0;
 wchar_t dialogText[kDialogChars];
+wchar_t crashDirectory[32768];
+wchar_t errorLogPath[32768];
+char reportUtf8[kDialogChars * 3];
+DWORD errorLogFailure = ERROR_SUCCESS;
+unsigned long long savedSequence = 1;
+#if defined(MMS_RUNTIME_LOG_TESTS)
+using WriteClaimProbe = void (*)() noexcept;
+std::atomic<WriteClaimProbe> writeClaimProbe{nullptr};
+#endif
+
+void PrepareCrashDirectory() noexcept {
+    const DWORD length = GetModuleFileNameW(nullptr, crashDirectory, _countof(crashDirectory));
+    if (!length || length >= _countof(crashDirectory)) {
+        crashDirectory[0] = L'\0';
+        errorLogFailure = ERROR_FILENAME_EXCED_RANGE;
+        return;
+    }
+    wchar_t* separator = std::wcsrchr(crashDirectory, L'\\');
+    if (!separator || wcscpy_s(separator + 1,
+        _countof(crashDirectory) - (separator + 1 - crashDirectory), L"backups")) {
+        crashDirectory[0] = L'\0';
+        errorLogFailure = ERROR_BAD_PATHNAME;
+    }
+}
 
 void Append(const char* text, size_t size) noexcept {
     if (text == nullptr || size == 0) return;
@@ -64,13 +89,37 @@ void Append(const char* text, size_t size) noexcept {
     const unsigned long long sequence =
         nextSequence.fetch_add(1, std::memory_order_relaxed);
     RingLine& line = ring[sequence % kRingLines];
+    if (line.occupied.test_and_set(std::memory_order_acquire)) return;
+    if (line.sequence >= sequence) {
+        line.occupied.clear(std::memory_order_release);
+        return; // A delayed writer must not replace a newer completed wrap.
+    }
+#if defined(MMS_RUNTIME_LOG_TESTS)
+    if (auto probe = writeClaimProbe.exchange(nullptr)) probe();
+#endif
     std::memcpy(line.text, text, size);
     line.text[size] = '\0';
-    line.length.store(static_cast<unsigned int>(size), std::memory_order_release);
-    line.sequence.store(sequence, std::memory_order_release);
+    line.length = static_cast<unsigned int>(size);
+    line.sequence = sequence;
+    line.occupied.clear(std::memory_order_release);
 }
 
-// "HH:MM:SS.mmm [tid=N] message" - the shape the log file used to carry.
+// Copy while owning the slot, then release it before formatting or disk I/O.
+// Sequence checks alone would not make concurrent reads of plain text legal.
+unsigned CopyLine(unsigned long long sequence, char (&copy)[kLineBytes]) noexcept {
+    RingLine& line = ring[sequence % kRingLines];
+    if (line.occupied.test_and_set(std::memory_order_acquire)) return 0;
+    unsigned length = 0;
+    if (line.sequence == sequence && line.length > 0 && line.length < kLineBytes) {
+        length = line.length;
+        std::memcpy(copy, line.text, length);
+        copy[length] = '\0';
+    }
+    line.occupied.clear(std::memory_order_release);
+    return length;
+}
+
+// UTC "HH:MM:SS.mmm [tid=N] message".
 void Format(char* buffer, size_t capacity, const char* format, va_list args) noexcept {
     SYSTEMTIME now{};
     GetSystemTime(&now);
@@ -158,11 +207,10 @@ void AppendRecentLines(int& used) noexcept {
             ? next - static_cast<unsigned long long>(kDialogLines)
             : 1ULL;
     for (unsigned long long sequence = first; sequence < next; ++sequence) {
-        RingLine& line = ring[sequence % kRingLines];
-        if (line.sequence.load(std::memory_order_acquire) != sequence) continue;
-        const unsigned int length = line.length.load(std::memory_order_acquire);
-        if (length == 0 || length >= static_cast<unsigned int>(kLineBytes)) continue;
-        const int converted = MultiByteToWideChar(CP_UTF8, 0, line.text,
+        char copy[kLineBytes];
+        const unsigned length = CopyLine(sequence, copy);
+        if (!length) continue;
+        const int converted = MultiByteToWideChar(CP_UTF8, 0, copy,
             static_cast<int>(length), wide, kLineBytes - 1);
         if (converted <= 0) continue;
         wide[converted] = L'\0';
@@ -213,6 +261,11 @@ void CaptureBacktrace(const CONTEXT* context) noexcept {
 #endif
 }
 
+void CaptureBacktraceSafely(const CONTEXT* context) noexcept {
+    __try { CaptureBacktrace(context); }
+    __except (EXCEPTION_EXECUTE_HANDLER) { Write("BACKTRACE stopped at an unreadable frame"); }
+}
+
 // "module.dll+0x1234" for an address inside a mapped image, else the address.
 void FormatFrame(wchar_t* buffer, int capacity, const void* address) noexcept {
     buffer[0] = L'\0';
@@ -238,9 +291,7 @@ void FormatFrame(wchar_t* buffer, int capacity, const void* address) noexcept {
                  address);
 }
 
-// The one visible artefact of a fatal fault: a modal window that stays up
-// until the user acknowledges it.
-void ShowLastError(const char* reason, const EXCEPTION_RECORD* record) noexcept {
+int BuildReport(const char* reason, const EXCEPTION_RECORD* record) noexcept {
     wchar_t narrow[512];
     int used = 0;
     dialogText[0] = L'\0';
@@ -275,6 +326,9 @@ void ShowLastError(const char* reason, const EXCEPTION_RECORD* record) noexcept 
     AppendText(used, L"阶段 / phase: %ls\r\n",
                Widen(phase.load(), narrow, _countof(narrow)));
     AppendText(used, L"线程 / thread: %lu\r\n", GetCurrentThreadId());
+    AppendText(used, L"进程 / process: %lu  arch=%u build=%hs %hs image_base=%p\r\n",
+        GetCurrentProcessId(), static_cast<unsigned>(sizeof(void*) * 8),
+        __DATE__, __TIME__, GetModuleHandleW(nullptr));
     if (backtraceCount > 0) {
         AppendText(used, L"调用栈 / backtrace (module+offset):\r\n");
         for (int i = 0; i < backtraceCount; ++i) {
@@ -283,7 +337,82 @@ void ShowLastError(const char* reason, const EXCEPTION_RECORD* record) noexcept 
             AppendText(used, L"  #%d %ls\r\n", i, frame);
         }
     }
-    AppendText(used, L"\r\n");
+    return used;
+}
+
+bool WriteBytes(HANDLE file, const char* bytes, DWORD size) noexcept {
+    DWORD written = 0;
+    if (!WriteFile(file, bytes, size, &written, nullptr) || written != size) {
+        errorLogFailure = GetLastError();
+        if (!errorLogFailure) errorLogFailure = ERROR_WRITE_FAULT;
+        return false;
+    }
+    return true;
+}
+
+bool WriteHistory(HANDLE file, unsigned long long first) noexcept {
+    const auto next = nextSequence.load(std::memory_order_acquire);
+    const auto oldest = next > kRingLines ? next - kRingLines : 1ULL;
+    if (first < oldest) first = oldest;
+    for (auto sequence = first; sequence < next; ++sequence) {
+        char copy[kLineBytes];
+        const unsigned length = CopyLine(sequence, copy);
+        if (!length) continue;
+        if (!WriteBytes(file, copy, length) || !WriteBytes(file, "\r\n", 2)) return false;
+    }
+    savedSequence = next;
+    return true;
+}
+
+void SaveErrorLog(const char* reason, const EXCEPTION_RECORD* record) noexcept {
+    if (!*crashDirectory) return;
+    if (!CreateDirectoryW(crashDirectory, nullptr) && GetLastError() != ERROR_ALREADY_EXISTS) {
+        errorLogFailure = GetLastError();
+        return;
+    }
+    SYSTEMTIME now{}; GetLocalTime(&now);
+    HANDLE file = INVALID_HANDLE_VALUE;
+    for (unsigned collision = 0; collision < 32; ++collision) {
+        if (_snwprintf_s(errorLogPath, _countof(errorLogPath), _TRUNCATE,
+            L"%ls\\error-%04u%02u%02u-%02u%02u%02u-%03u-%lu-%u.log", crashDirectory,
+            now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond,
+            now.wMilliseconds, GetCurrentProcessId(), collision) < 0) {
+            errorLogFailure = ERROR_FILENAME_EXCED_RANGE;
+            break;
+        }
+        file = CreateFileW(errorLogPath, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_NEW,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
+        if (file != INVALID_HANDLE_VALUE) break;
+        errorLogFailure = GetLastError();
+        if (errorLogFailure != ERROR_FILE_EXISTS && errorLogFailure != ERROR_ALREADY_EXISTS) break;
+    }
+    if (file == INVALID_HANDLE_VALUE) { errorLogPath[0] = L'\0'; return; }
+    errorLogFailure = ERROR_SUCCESS;
+    const int used = BuildReport(reason, record);
+    const int bytes = WideCharToMultiByte(CP_UTF8, 0, dialogText, used,
+        reportUtf8, sizeof(reportUtf8), nullptr, nullptr);
+    bool ok = bytes > 0 && WriteBytes(file, reportUtf8, bytes) &&
+        WriteBytes(file, "\r\nLast messages (UTC):\r\n", sizeof("\r\nLast messages (UTC):\r\n") - 1) && WriteHistory(file, 1);
+    if (!FlushFileBuffers(file) && !errorLogFailure) errorLogFailure = GetLastError();
+    CloseHandle(file);
+    if (!ok && !errorLogFailure) errorLogFailure = ERROR_WRITE_FAULT;
+}
+
+void SaveRecoveryResult() noexcept {
+    if (!*errorLogPath || errorLogFailure) return;
+    HANDLE file = CreateFileW(errorLogPath, FILE_APPEND_DATA, FILE_SHARE_READ, nullptr,
+        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
+    if (file == INVALID_HANDLE_VALUE) { errorLogFailure = GetLastError(); return; }
+    WriteHistory(file, savedSequence);
+    if (!FlushFileBuffers(file) && !errorLogFailure) errorLogFailure = GetLastError();
+    CloseHandle(file);
+}
+
+void ShowLastError(const char* reason, const EXCEPTION_RECORD* record) noexcept {
+    int used = BuildReport(reason, record);
+    if (*errorLogPath && !errorLogFailure)
+        AppendText(used, L"\r\n错误日志 / error log: %ls\r\n", errorLogPath);
+    else AppendText(used, L"\r\n无法保存错误日志 / could not save error log (Win32=%lu)\r\n", errorLogFailure);
     AppendText(used, L"最后记录 / last messages:\r\n");
     AppendRecentLines(used);
     AppendText(used, L"\r\n(Ctrl+C 复制以上信息 / Ctrl+C copies this text)\r\n");
@@ -308,8 +437,10 @@ void ShowLastError(const char* reason, const EXCEPTION_RECORD* record) noexcept 
         EXCEPTION_RECORD record{};
         record.ExceptionCode = code;
         record.ExceptionAddress = address;
+        SaveErrorLog(reason, &record);
         if (!shuttingDown.load(std::memory_order_relaxed))
             if (auto backup = crashBackup.load()) backup(code);
+        SaveRecoveryResult();
         // Teardown faults (after the close was confirmed) stay silent: the
         // settings are saved and the window is gone, so a modal error box
         // would only look like the program failed to close.
@@ -352,9 +483,11 @@ LONG WINAPI OnCrash(EXCEPTION_POINTERS* pointers) noexcept {
     // Same teardown rule as Fail(): a fault while the program is already
     // closing is recorded, not reported.
     if (pointers != nullptr && pointers->ContextRecord != nullptr)
-        CaptureBacktrace(pointers->ContextRecord);
+        CaptureBacktraceSafely(pointers->ContextRecord);
+    SaveErrorLog(nullptr, &record);
     if (!shuttingDown.load(std::memory_order_relaxed))
         if (auto backup = crashBackup.load()) backup(record.ExceptionCode);
+    SaveRecoveryResult();
     if (!shuttingDown.load(std::memory_order_relaxed))
         ShowLastError(nullptr, &record);
     // Returning EXCEPTION_EXECUTE_HANDLER lets the system finish the process
@@ -363,10 +496,18 @@ LONG WINAPI OnCrash(EXCEPTION_POINTERS* pointers) noexcept {
 }
 }  // namespace
 
+#if defined(MMS_RUNTIME_LOG_TESTS)
+namespace testing {
+// Test-target-only seam. It is absent from the application and public header.
+void OnNextWriteClaimed(void (*probe)() noexcept) noexcept { writeClaimProbe.store(probe); }
+}
+#endif
+
 void SetCrashBackup(CrashBackup callback) noexcept { crashBackup.store(callback); }
 
 void Initialize() noexcept {
-    // Diagnostics initialization creates no directory, file or dump.
+    // Resolve the real EXE before a crash, without creating a directory or file.
+    PrepareCrashDirectory();
     ULONG reserve = 64 * 1024;
     SetThreadStackGuarantee(&reserve);
     SetUnhandledExceptionFilter(OnCrash);
@@ -374,7 +515,7 @@ void Initialize() noexcept {
     _set_invalid_parameter_handler(OnInvalidParameter);
     std::signal(SIGABRT, OnAbort);
     lastHeartbeat = GetTickCount64();
-    Write("START pid=%lu arch=%u build=%s %s image_base=%p (no-log build)",
+    Write("START pid=%lu arch=%u build=%s %s image_base=%p",
           GetCurrentProcessId(), static_cast<unsigned>(sizeof(void*) * 8),
           __DATE__, __TIME__, GetModuleHandleW(nullptr));
     wchar_t executable[32768]{};
@@ -402,7 +543,7 @@ void WritePath(const char* label, const wchar_t* path) noexcept {
 void SetPhase(const char* value) noexcept { phase.store(value, std::memory_order_relaxed); }
 
 void TraceV(const char* format, va_list args) noexcept {
-    // Opt-in only: the shipped program never opens a file.  The guards call
+    // Opt-in outside fatal errors. The guards call
     // this so a field session can see what they rejected without a crash.
     const char* path = std::getenv("MIKUDANCESTUDIO_TRACE_FILE");
     if (path == nullptr || path[0] == '\0')

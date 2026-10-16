@@ -156,6 +156,9 @@ ac::Sample CameraSample(const Channel& channel,double frame){
         const auto end=std::size_t(bound-keys.begin());
         if(!NativeGeometry(channel,end))return ac::Evaluate(channel.track,at).value;
         const auto&a=keys[end-1];const auto&b=keys[end];
+        // Match the native player's exact-key branch. The fixed-step Bezier
+        // inverse only approximates t=0 and must not perturb keys on commit.
+        if(at==a.frame)return a.value;
         const double span=double(b.frame)-a.frame;
         if(span==1.0)return a.value;
         return a.value+(b.value-a.value)*CameraCurveTime(channel.nativeControls[end],float((at-a.frame)/span));

@@ -2,6 +2,16 @@
 
 核对日期：2026-09-20。所有测试源文件均在首行用 `MAINTENANCE:` 标记。测试源码不进入发布目录，目标使用 `EXCLUDE_FROM_ALL`；编译后的测试程序位于 `build/tests/`。不要因为测试不随正式程序发布就删除源码。
 
+## 曲线、备份及崩溃日志回归
+
+`animation_curve_editor_tests` 全量测试包含插值和切线按钮立即生效、多选一次撤销、重复操作保留重做、手柄模式和一次性预设。可用 `--curve-modes` 单独运行按钮回归，用 `--curve-ui-compat` 运行手柄、布局、提示及键盘导航。`animation_curve_host_tests` 验证原生相机精确键值、单帧保持和阶跃，以及 PMM 往返。
+
+`autosave_tests <独立输出目录>` 需要位于全新的独立 EXE 目录，避免误用已有 `backups`。它覆盖实际 PMM 备份、轮换、未登记姿态恢复和故障路径。追加 `--full-zh`、`--full-en`、`--full-ja`、`--full-rotate` 或 `--full-crash` 检查容量告警；每种模式在同一测试目录启动两次，核对重启后再次提示、进程内仅一次、两种备份目录、分配失败和弹窗创建失败后重试。测试窗口须隐藏或放在专用桌面。
+
+`runtime_log_tests <尚不存在的输出目录>` 只在独立子进程触发故障，拦截交互弹窗并核对退出码、UTF-8 日志及恢复结果。覆盖正常退出、SEH、Fatal、terminate、abort、关闭期异常、无法创建日志、多线程写入和持有日志槽位时故障。最后两类逐条核对日志内容；单槽竞争只能丢弃记录，不能等待故障线程。`MMS_RUNTIME_LOG_TESTS` 仅为此测试目标定义，不进入正式程序。
+
+共同代码分别在 `full` 和 `mmd932` 构建档验证。静态导入检查和本机运行不能代替 Win7、AMD 真机验收。
+
 ## 附件顺序与选中项回归
 
 `scene_lifecycle_tests <输出目录> 1 --accessory-feedback all` 在隐藏的生产窗口生成并导入 X 文件，通过实际「附件编辑」和删除确认对话框检查中英日三种界面。也可将 `all` 换为 `split`、`selection` 或 `delete` 单独运行。
@@ -120,9 +130,15 @@ MikuMikuDance.exe <测试输出绝对路径> varying
 ```text
 MikuMikuDance.exe <尚不存在的输出绝对路径前缀> 1 --emm-save-off [素材PMM绝对路径]
 MikuMikuDance.exe <另一个新输出前缀> 1 --emm-save-on [素材PMM绝对路径]
+MikuMikuDance.exe <另一个新输出前缀> 1 --emm-default-on [素材PMM绝对路径]
+MikuMikuDance.exe <另一个新输出前缀> 1 --emm-default-off [素材PMM绝对路径]
 ```
 
-两种模式在隐藏窗口内用真实保存菜单测试初始开关、关闭状态下打开工程后再开启、关闭时保留旧 EMM、再次开启时更新，以及中日文路径另存为。提供素材时须包含模型及可加载的效果；测试核对效果分配内容在重复保存与另存为后保持一致。测试只向新输出前缀写文件，不保存输入素材。每次运行须更换输出前缀。详细证据见 [EMM 自动保存修复记录](../docs/records/effects/compatibility.md#record-emm-autosave)。
+前两种模式在隐藏窗口内用真实保存菜单测试初始开关、关闭状态下打开工程后再开启、关闭时保留旧 EMM、再次开启时更新，以及中日文路径另存为。提供素材时须包含模型及可加载的效果；测试核对效果分配内容在重复保存与另存为后保持一致。测试只向新输出前缀写文件，不保存输入素材。每次运行须更换输出前缀。详细证据见 [EMM 自动保存修复记录](../docs/records/effects/compatibility.md#record-emm-autosave)。
+
+`--emm-default-on` 在切换菜单前检查启动时默认勾选，适用于隔离运行目录中没有 `MMEffect.ini` 或缺少 `[System] EMMAutoSave` 的情况。`--emm-default-off` 用于已有 `EMMAutoSave=false` 的运行目录，确认启动时保留用户关闭状态。两种模式随后执行同一套保存、重开、切换和另存为检查。
+
+如果素材 PMM 仅供 MME 读取同名 EMM 映射，设置 `MMS_EMM_FIXTURE_MODEL` 为对应模型的绝对路径。测试先载入模型，再通知 MME 读取映射，不把这种占位文件交给 PMM 加载器。初始关闭自动保存时，首次保存没有 EMM；测试重开工程后显式恢复素材映射，再验证开启后的保存。
 
 ## 骨骼缩放物理回归
 

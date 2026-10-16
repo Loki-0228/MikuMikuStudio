@@ -3,6 +3,7 @@
 本页按功能归并实现、诊断与验收资料。各记录中的「当前」「已完成」只适用于其注明的源码、构建和测试条件；当前使用入口见[文档导航](../README.md)。
 
 ## 记录索引
+- [v2026.10.17.1 发布说明](#release-v2026-10-17-1)
 - [v2026.10.15.2 发布说明](#release-v2026-10-15-2)
 - [v2026.10.15.1 发布说明](#release-v2026-10-15-1)
 - [MikuDanceStudio v2026.10.14.6 release notes / 发布说明 / リリースノート](#release-v2026-10-14-6)
@@ -12,6 +13,96 @@
 - [v2026.10.11.3 构建与发布记录](#record-release-3)
 - [v2026.10.11.2 构建与发布记录](#record-release-2)
 - [MMS 原生媒体导入与导出](#record-native-media)
+
+<a id="release-v2026-10-17-1"></a>
+
+本节为待发布说明；本次仅审查源码和隔离验证，不表示已打包或替换正式程序。
+
+<!-- release-notes:v2026.10.17.1:begin -->
+## MikuMikuStudio v2026.10.17.1
+
+Windows x64
+
+[English](#release-v2026-10-17-1-en) | [中文](#release-v2026-10-17-1-zh) | [日本語](#release-v2026-10-17-1-ja)
+
+<a id="release-v2026-10-17-1-en"></a>
+
+### English
+
+This release includes the changes since `v2026.10.15.2`.
+
+#### What's new
+
+- Fixed interpolation and tangent buttons failing to apply changes immediately in the curve editor. Choosing Step, Linear, Bezier, or a tangent setting applies it directly. Changes to multiple selected keys can be undone together.
+- Clicking a channel name now keeps subsequent Space and Enter actions on that channel instead of the previously focused row.
+- Separated persistent handle modes from one-time curve presets. Free, Aligned, and Automatic control handle editing. Flat, Straighten, Ease in, and Ease out apply once when clicked. Intervals that need handles switch to Bezier. Later numeric edits no longer reapply the preset.
+- Fixed small sampling errors at native camera Bezier keyframes. Writing unchanged camera curves back through the editor and saving a PMM no longer introduces these keyframe value offsets.
+- Fatal errors now produce timestamped `error-*.log` files in `backups` beside the EXE. Logs include the exception, call stack, recent runtime messages, and backup result. When the scene can be saved safely, MMS also attempts a crash backup there. Disabling periodic autosave leaves crash recovery enabled.
+- Added a popup when a backup folder reaches its file limit. It lists full folders and the current overwrite policy. The popup appears once per launch and returns after a restart if a folder is still full. Existing settings still apply: overwrite mode replaces old backups; otherwise, new backups stop in full folders. Playback, export, and other dialogs defer the popup.
+- With MME installed, Auto Save Mapping File is checked by default when no preference has been saved. Saving a PMM also saves its effect assignments to the matching `.emm` file. An existing choice to disable this option is preserved.
+
+#### Download and use
+
+Choose the full package for the features above. The minimal package retains the original MMD feature set and encoding limits, without the full build's extended editing and export features. Extract each package into a separate folder and run `MikuMikuDance.exe`. Models, personal settings, MME, MMV, and FFmpeg are not included.
+
+Keep the matching `.emm` file with the PMM when moving or sharing a project that uses MME effects. Crash backups and error logs are stored in `backups` beside the EXE. Periodic autosave continues to use the folder selected in its settings.
+
+#### Optional NVIDIA fix
+
+Neither application package includes the NVIDIA fix. If needed, download `MMSNvidiaAAFix.dll` separately and place it beside the full build's EXE. Install it from Help, then restart MMS. Use Help to uninstall. Deleting the DLL does not remove an installed setting.
+
+<a id="release-v2026-10-17-1-zh"></a>
+
+### 中文
+
+本版本包含自 `v2026.10.15.2` 以来的更新。
+
+#### 更新内容
+
+- 修复曲线编辑器点击插值类型或切线按钮后未立即生效的问题。选择「阶跃」「线性」「贝塞尔」或切线设置后直接应用，多选关键帧可批量修改并整体撤销。
+- 修复点击通道名称后，空格和回车仍可能作用于旧通道的问题。
+- 区分持续生效的手柄模式与一次性曲线预设。「自由」「对齐」「自动」控制手柄编辑方式；「水平」「拉直」「缓入」「缓出」仅在点击时应用。需要手柄的区间自动切换为贝塞尔，后续数值修改不再重复套用预设。
+- 修复原生镜头贝塞尔曲线在关键帧处采样产生微小偏差的问题，避免未修改镜头曲线时，经编辑器写回和 PMM 保存后关键帧数值发生偏移。
+- 致命错误日志保存到 EXE 所在目录的 `backups` 文件夹，文件名为带时间戳的 `error-*.log`，记录异常、调用栈、最近运行信息及备份结果。场景状态允许安全保存时，程序还会尝试在该目录生成崩溃备份；关闭定时自动保存后仍保留此功能。
+- 备份文件夹达到数量上限时弹窗提醒，并显示已满目录和当前覆盖策略。每次启动仅提示一次，重启后仍满会再次提示。弹窗沿用现有设置：允许覆盖时继续替换旧备份，禁止覆盖时停止向已满目录新增备份。播放、导出或其他对话框占用期间延后提示。
+- 安装 MME 后，未配置过的「自动保存效果分配文件」默认勾选。保存 PMM 时同步保存同名 `.emm` 特效分配文件；已有的手动关闭设置继续保留。
+
+#### 下载与使用
+
+通常选择完整包。最小包保留原版 MMD 的功能范围及编码限制，不包含完整包的扩展编辑与导出功能。分别解压到独立目录后运行 `MikuMikuDance.exe`。模型、个人设置、MME、MMV 和 FFmpeg 需自行准备。
+
+移动或分享使用 MME 特效的工程时，需将同名 `.emm` 与 PMM 一并保留。崩溃后可在程序目录的 `backups` 文件夹查找备份和错误日志；定时自动保存仍使用设置中指定的目录。
+
+#### NVIDIA 修复安装（可选）
+
+两个主程序包均不附带 NVIDIA 修复插件。需要时单独下载 `MMSNvidiaAAFix.dll`，放到完整版 EXE 同目录，在「帮助」菜单选择安装并重启 MMS。卸载也通过该菜单操作，删除 DLL 不会撤销已安装的设置。
+
+<a id="release-v2026-10-17-1-ja"></a>
+
+### 日本語
+
+`v2026.10.15.2` 以降の変更を含みます。
+
+#### 更新内容
+
+- カーブエディターで補間方式や接線のボタンをクリックしても、変更がすぐに反映されない問題を修正しました。ステップ・線形・ベジェや接線設定を選ぶと直接適用されます。複数の選択キーへの変更はまとめて元に戻せます。
+- チャンネル名をクリックした後、スペースキーと Enter キーが以前の行に作用する問題を修正しました。
+- 継続して使うハンドルモードと、一度だけ適用するプリセットを分けました。「フリー」「整列」「自動」はハンドルの編集方法を指定します。「水平」「直線化」「イーズイン」「イーズアウト」はクリック時だけ適用されます。ハンドルが必要な区間はベジェに切り替わり、その後の数値変更でプリセットを再適用しません。
+- 原版形式のカメラのベジェ曲線で、キーフレームの値に微小なサンプリング誤差が生じる問題を修正しました。変更していないカメラ曲線をエディターから書き戻して PMM に保存する際、この誤差によってキーの値がずれることを防ぎます。
+- 致命的なエラーのログを EXE と同じ場所の `backups` フォルダーに保存します。日時を含む `error-*.log` に例外、呼び出し履歴、直近の動作記録、バックアップ結果を記録します。シーンを安全に保存できる場合は、同じフォルダーへのクラッシュ時バックアップも試みます。定期的な自動保存を無効にしても、この機能は有効です。
+- バックアップフォルダーが保存数の上限に達すると、対象フォルダーと現在の上書き設定をポップアップで知らせます。起動ごとに一度だけ表示し、再起動後も上限に達している場合は再表示します。上書きが有効なら古いバックアップを置き換え、無効なら満杯のフォルダーへの新規保存を停止します。再生、出力、ほかのダイアログの操作中は表示を延期します。
+- MME を導入した環境では、設定が保存されていない場合に「割当ファイル自動保存」を初期状態で有効にします。PMM の保存時に同名の `.emm` にエフェクトの割り当ても保存します。すでに無効にした設定は維持します。
+
+#### ダウンロードと使い方
+
+通常は完全版を選んでください。最小版は原版 MMD の機能範囲と文字コード制限を維持し、完全版の拡張編集・出力機能を含みません。各パッケージを別のフォルダーに展開し、`MikuMikuDance.exe` を実行します。モデル、個人設定、MME、MMV、FFmpeg は同梱しません。
+
+MME エフェクトを使うプロジェクトを移動・共有する際は、同名の `.emm` を PMM と一緒に保管してください。クラッシュ時のバックアップとエラーログは EXE と同じ場所の `backups` に保存します。定期的な自動保存は設定で指定したフォルダーを引き続き使います。
+
+#### NVIDIA 修正の導入（任意）
+
+NVIDIA 修正プラグインは両方のパッケージに含まれません。必要な場合のみ `MMSNvidiaAAFix.dll` を別途ダウンロードし、完全版の EXE と同じフォルダーに置きます。ヘルプからインストールして MMS を再起動してください。解除も同じメニューから行います。DLL の削除だけでは適用済みの設定は解除されません。
+<!-- release-notes:v2026.10.17.1:end -->
 
 <a id="release-v2026-10-15-2-pre-1"></a>
 <a id="release-v2026-10-15-2"></a>

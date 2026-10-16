@@ -62,9 +62,9 @@ INT_PTR CALLBACK DialogProc(HWND dialog, UINT msg, WPARAM wp, LPARAM lp) {
         label(IntervalLabel, L"保存间隔（分钟）", L"Interval (minutes)", L"保存間隔（分）");
         label(LimitLabel, L"备份数量上限（份）", L"Maximum backups", L"バックアップの上限（件）");
         label(Overwrite, L"达到上限时覆盖最旧的备份", L"Replace oldest backups when the limit is reached", L"上限に達したら最も古いバックアップを置き換える");
-        label(Explanation, L"崩溃备份始终启用，保存到上述文件夹。\r\n备份使用原工程名和时间戳，不影响手动保存。\r\n上限按 PMM 备份份数计算，其他文件不会被删除。",
-            L"Crash backups are always on and use this folder.\r\nBackups use the project name and timestamp; manual saves stay separate.\r\nThe limit counts PMM backups. Other files are kept.",
-            L"クラッシュ時のバックアップは常に有効で、このフォルダーを使用します。\r\n元のファイル名に日時を付けて保存します。手動保存したファイルは上書きしません。\r\n上限は PMM バックアップの件数です。他のファイルは削除しません。");
+        label(Explanation, L"崩溃备份和错误日志保存在程序旁的 backups 文件夹。\r\n备份保留原工程名和时间戳，不影响手动保存。\r\nPMM 数量上限按文件夹分别计算，其他文件保留。",
+            L"Crash copies and error logs go to backups beside the EXE.\r\nCopies keep the project name and timestamp; manual saves stay separate.\r\nThe PMM limit applies per folder. Other files are kept.",
+            L"クラッシュ時のコピーとログは EXE 横の backups に保存します。\r\n元の名前に日時を付け、手動保存したファイルは上書きしません。\r\nPMM の上限は各フォルダーに適用します。他のファイルは残します。");
         label(IDOK, L"确定", L"OK", L"OK"); label(IDCANCEL, L"取消", L"Cancel", L"キャンセル");
         SetDlgItemTextW(dialog, Folder, c->value.directory.c_str());
         SetDlgItemInt(dialog, Interval, c->value.intervalMinutes, FALSE);
@@ -139,7 +139,7 @@ void PaintMenuWarning(MMDApp* app, HDC dc) {
     if (font) SelectObject(dc, font);
     SetBkMode(dc, TRANSPARENT); SetTextColor(dc, RGB(210, 0, 0));
     IntersectClipRect(dc, rect.left, rect.top, rect.right, rect.bottom);
-    DrawTextW(dc, Text(app, L"自动保存文件夹已满", L"Autosave folder is full", L"自動保存フォルダーがいっぱいです"), -1,
+    DrawTextW(dc, Text(app, L"备份文件夹已满", L"Backup folder is full", L"バックアップフォルダーがいっぱいです"), -1,
         &rect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
     RestoreDC(dc, saved);
     if (font) DeleteObject(font);
