@@ -17,6 +17,13 @@
 #define MMS_CHANNEL_TEXTURES 256u
 #define MMS_OBJECT_MODEL 1u
 #define MMS_OBJECT_ACCESSORY 2u
+#define MMS_VERTEX_EDGE_DISABLED 1u
+#define MMS_WEIGHT_BDEF1 0u
+#define MMS_WEIGHT_BDEF2 1u
+#define MMS_WEIGHT_BDEF4 2u
+#define MMS_WEIGHT_SDEF 3u
+#define MMS_WEIGHT_QDEF 4u
+#define MMS_WEIGHT_NONE 0xffffffffu
 #pragma pack(push, 8)
 typedef struct MmsSceneQueryV1 {
 	MmsHeader h;
@@ -59,6 +66,9 @@ typedef struct MmsBoneV1 {
 	uint32_t flags, reserved;
 } MmsBoneV1;
 typedef struct MmsBindingV1 { MmsHeader h; MmsSpan bindVertices, morphVertices, weights, vertexBindings; } MmsBindingV1;
+/* vertexBindings contains uint32_t indices into bindVertices. At stage BIND,
+   morphVertices equals bindVertices. SDEF R0/R1 are offsets from the weighted
+   pivot, not the absolute R0/R1 stored in a PMX file. Unused fields are zero. */
 typedef struct MmsMorphV1 {
 	MmsHeader h;
 	MmsId id, sourceId;

@@ -1,4 +1,5 @@
 #include "scene_identity.hpp"
+#include "scene_geometry.hpp"
 #include "mikudancestudio/plugin_scene.hpp"
 #include "mikudancestudio/mmd_app.hpp"
 #include "mikudancestudio/model.hpp"
@@ -17,6 +18,7 @@ SceneIdentity identities;
 uint64_t revision = 1;
 std::vector<unsigned char> previous;
 bool opaqueIdentity = false;
+std::map<const void*, GeometryDigests> geometryDigests;
 void Identity(float* matrix) { std::fill(matrix, matrix + 16, 0.f); matrix[0] = matrix[5] = matrix[10] = matrix[15] = 1; }
 template<class T> void Append(std::vector<unsigned char>& bytes, const T& value) {
     static_assert(std::is_trivially_copyable<T>::value, "identity scalar");
@@ -47,9 +49,13 @@ MmsResult Capture(MMDApp* app, const MmsSceneQueryV1& query, std::shared_ptr<con
     if (!app || app->SceneMutationInProgress() || !app->WindowLayoutReady()) return MMS_E_NOT_READY;
     // Each additional stage is published separately after its actual pipeline
     // boundary is captured. Bind data never substitutes for an evaluated pose.
-    if (query.stage != MMS_STAGE_BIND || (query.channels & ~uint64_t(MMS_CHANNEL_BONES))) return MMS_E_UNSUPPORTED;
+    constexpr auto supported = bindGeometryChannels | MMS_CHANNEL_BONES;
+    if (query.stage != MMS_STAGE_BIND || (query.channels & ~supported)) return MMS_E_UNSUPPORTED;
     auto data = std::make_shared<SceneData>();
-    data->time = Normalize({app->CurrentFrame(), 30}); data->supported = MMS_CHANNEL_BONES;
+    data->time = Normalize({app->CurrentFrame(), 30}); data->supported = supported;
+    const auto requestedTime = Normalize(query.time);
+    if (requestedTime.numerator != data->time.numerator || requestedTime.denominator != data->time.denominator) return MMS_E_NOT_READY;
+    auto nextDigests = geometryDigests; bool geometryChanged = false;
     std::vector<unsigned char> fingerprint;
     for (uint32_t kind : {MMS_OBJECT_MODEL, MMS_OBJECT_ACCESSORY}) for (uint32_t slot = 0; slot < 255; ++slot) {
         const void* token = Token(*app, kind, slot); if (!token) continue;
@@ -89,9 +95,27 @@ MmsResult Capture(MMDApp* app, const MmsSceneQueryV1& query, std::shared_ptr<con
         Append(fingerprint, object.object); Append(fingerprint, kind); Append(fingerprint, object.visible);
         Append(fingerprint, object.name); Append(fingerprint, object.sourcePath);
         record.values.emplace(MMS_CHANNEL_BONES, data->Keep(std::move(bones)));
+        bool selected = query.objects.count == 0;
+        for (size_t i = 0; !selected && i < query.objects.count; ++i) {
+            MmsObjectRef requested;
+            std::memcpy(&requested, static_cast<const unsigned char*>(query.objects.data) + i * query.objects.stride, sizeof(requested));
+            selected = Same(requested, object.object);
+        }
+        if (selected) {
+            GeometryDigests current;
+            const auto geometry = CaptureBindGeometry(identities, *data, record, token, kind, query.channels, current);
+            if (geometry != MMS_OK) return geometry;
+            auto& baseline = nextDigests[token];
+            for (const auto& entry : current) {
+                const auto found = baseline.find(entry.first);
+                if (found != baseline.end() && found->second != entry.second) geometryChanged = true;
+                baseline[entry.first] = entry.second;
+            }
+        }
         data->objects.push_back(std::move(record));
     }
-    if (fingerprint != previous) { ++revision; previous = std::move(fingerprint); }
+    if (fingerprint != previous || geometryChanged) { ++revision; previous = std::move(fingerprint); }
+    geometryDigests.swap(nextDigests);
     data->revision = data->structure = revision; data->pose = 1;
     for (auto& record : data->objects) {
         record.object.structureRevision = revision; record.object.meshRevision = revision;
@@ -104,8 +128,8 @@ std::shared_ptr<SceneStore> CreateSceneStore(MMDApp* app) {
     return std::make_shared<SceneStore>([app](const auto& query, auto& out) { return Capture(app, query, out); },
         [](MmsId id) { return identities.Known(id); });
 }
-void ForgetSceneObject(const void* token) { if (!build_profile::original) { identities.Forget(token); ++revision; previous.clear(); } }
-void ResetSceneIdentity() { identities.Clear(); opaqueIdentity = false; previous.clear(); ++revision; }
+void ForgetSceneObject(const void* token) { if (!build_profile::original) { identities.Forget(token); geometryDigests.erase(token); ++revision; previous.clear(); } }
+void ResetSceneIdentity() { identities.Clear(); opaqueIdentity = false; previous.clear(); geometryDigests.clear(); ++revision; }
 void SaveSceneIdentity(const MMDApp& app, pmm_extension::Document& document) {
     if (build_profile::original || opaqueIdentity) return;
     std::vector<uint8_t> bytes;
@@ -124,7 +148,6 @@ void LoadSceneIdentity(MMDApp& app, const pmm_extension::Document& document) {
     if (build_profile::original) return;
     const auto* record = pmm_extension::Find(document, identityKey); if (!record) return;
     auto result = Boundary([&]() -> MmsResult {
-        if (record->value.size() > 64 * 1024 * 1024) return MMS_E_ARGUMENT;
         Reader reader{record->value}; if (reader.Get<uint32_t>() != 1) return MMS_E_VERSION;
         const auto count = reader.Get<uint32_t>(); if (count > 510) return MMS_E_ARGUMENT;
         std::vector<SceneIdentity::Restore> restored; std::set<uint64_t> slots; std::set<MmsId, IdLess> ids;
@@ -135,7 +158,10 @@ void LoadSceneIdentity(MMDApp& app, const pmm_extension::Document& document) {
             SceneIdentity::Entry entry;
             entry.object.id = {reader.Get<uint64_t>(), reader.Get<uint64_t>()};
             if (Empty(entry.object.id) || !ids.insert(entry.object.id).second) return MMS_E_ARGUMENT;
-            const auto elements = reader.Get<uint32_t>(); if (elements > 1024 * 1024) return MMS_E_ARGUMENT;
+            const auto elements = reader.Get<uint32_t>();
+            // Bound by the already decoded record, not a fixed vertex limit.
+            // Dense imported meshes must not save identities we cannot reopen.
+            if (elements > (record->value.size() - reader.offset) / 24) return MMS_E_ARGUMENT;
             for (uint32_t n = 0; n < elements; ++n) {
                 auto key = reader.Get<uint64_t>(); MmsId id{reader.Get<uint64_t>(), reader.Get<uint64_t>()};
                 if (Empty(id) || !ids.insert(id).second || !entry.elements.emplace(key, id).second) return MMS_E_ARGUMENT;
@@ -143,7 +169,7 @@ void LoadSceneIdentity(MMDApp& app, const pmm_extension::Document& document) {
             if (token) restored.push_back({token, std::move(entry)});
         }
         if (reader.offset != record->value.size()) return MMS_E_ARGUMENT;
-        identities.Replace(restored); previous.clear(); ++revision; return MMS_OK;
+        identities.Replace(restored); previous.clear(); geometryDigests.clear(); ++revision; return MMS_OK;
     });
     if (result) { opaqueIdentity = true; runtime_log::Write("PLUGIN_ABI identity record retained without applying: %d", result); }
 }

@@ -1455,6 +1455,14 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
                     rec.offset[1] = vertex.uv[1];
                     rec.offset[2] = vertex.uvMorphBaseZW[0];
                     rec.offset[3] = vertex.uvMorphBaseZW[1];
+#if !MMD_ORIGINAL_PROFILE
+                    // Each additional-UV family restores its own float4.
+                    // Using the base UV here overwrites the loaded additional
+                    // UV even when every morph weight is zero.
+                    if (fam > 0 && fam <= model.pmxAdditionalUvCount)
+                        for (int component = 0; component < 4; ++component)
+                            rec.offset[component] = vertex.additionalUvByComponent[component][fam - 1];
+#endif
                 }
                 ++w;
             }

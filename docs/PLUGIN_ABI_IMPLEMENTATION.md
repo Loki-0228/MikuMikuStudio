@@ -44,7 +44,8 @@
 | P2f | 两个示例的真实输入法、多 DPI、视觉交互 | 已实现未验证 | 自检不替代实际桌面交互验收。 |
 | P2 | 输入法组合态、Tab、辅助功能和真实多 DPI | 已实现未验证 | 保留原生控件；隐藏窗口测试不替代完整交互验收。 |
 | P3 | scene 对象及绑定骨骼快照、稳定身份 | 本机已验证 | `mms.scene` 已发布：阶段 0 的对象与骨骼。独立 ID、运行时代次、任意线程读取/释放、不可变租约；真实 PMM 保存重开保留对象和骨骼 ID，旧引用返回 STALE。 |
-| P3 | scene 其余通道与阶段 | 未实现 | 网格、绑定、物理、Morph、材质、纹理及阶段 1–4 返回 UNSUPPORTED。当前服务不表示全通道完成。 |
+| P3 | 绑定网格、权重、材质、纹理路径 | 本机已验证 | PMX 2.0、PMD、原始 X 附件；稳定元素 ID、嵌套租约、对象筛选、无效拓扑拒绝、内容变化修订及真实 PMM 往返。纹理尺寸/格式未知，运行时 QDEF 记录通过不等于 PMX 2.1 文件导入通过。 |
+| P3 | scene 其余通道与阶段 | 未实现 | 物理、Morph 及阶段 1–4 返回 UNSUPPORTED。当前服务不表示全通道完成。 |
 | P3 | edit 两阶段事务、可写属性和统一撤销 | 未实现 | edit.h 布局已固定，服务尚未发布。 |
 | P3 | animation 轨道/键、层、片段、变速、烘焙和选择 | 未实现 | 服务返回 NOT_FOUND。 |
 | P3 | storage serializer、工程数据和显式导入 | 未实现 | 保持 EMM/EMD 显式导入要求。 |
@@ -73,6 +74,8 @@
 | 场景租约、线程、代次、加载器停止契约 | 累计 333 项通过 | `plugin-abi-scene-contract.log` |
 | 实际模型与 PMM 保存重开 | 绑定矩阵、ID 保留、代次变化、旧租约及删除后 STALE 通过 | `plugin-abi-scene-host-1.log`、`abi-scene-host-1/report.json` |
 | 独立插件查询真实 scene 服务 | 原名/中文改名宿主，菜单和按钮各查询一次通过 | `plugin-abi-scene-plugin-1.log` |
+| 绑定几何、材质、身份及坏数据 | PMX/PMD 两组均 exit 0，均包含附件；原始夹具在测试脚本中生成 | `plugin-abi-geometry-host-4.log`、`abi-geometry-host-4/report.json` |
+| 几何接入后的插件及 Morph 回归 | 原名/中文名插件通过；ABI 契约和现有 Morph 测试通过 | `plugin-abi-geometry-plugin-1.log`、`plugin-abi-geometry-contract-final.log` |
 | PE 导入/导出清单 | 四文件通过可选后端直接导入检查 | `plugin-abi-win7-pe-inventory.json` |
 | 处理器策略 | 99 项通过，P2 新增前 | `plugin-abi-processor.log` |
 | 侧栏/底部松手提交、取消、浮动和媒体 | 通过，P2 新增前 | `plugin-abi-sidebar.log` |
@@ -81,6 +84,8 @@
 侧栏测试的附件排序用例缺少初始选中项。关闭新 ABI 初始化时也复现同一失败，见 `plugin-abi-accessory-without-abi.log`。测试已明确初始选择并验证排序后保持选择；附件业务逻辑未修改。
 
 首次双面板测试把 SURFACE_DESTROY 计入 DESTROY 子串数量。已改按完整事件行计数并复跑，保留视图先销毁、插件随后停止和销毁的顺序检查。
+
+几何测试发现 PMX 加载器为附加 UV Morph 保存基准时复制了普通 UV。增强构建现按各附加 UV 通道保存 float4，原始兼容构建保持旧路径。测试从原创 PMX 文件加载后核对原始值，再修改工作数组，验证绑定快照恢复原值且不改写当前 Morph 状态；现有 Morph 并行计算回归也通过。最初 PMX 2.1 夹具被现有导入器拒绝，因此文件测试改用实际支持的 PMX 2.0，QDEF 在运行时记录上单独测试。
 
 统一调度测试启动隔离的隐藏窗口，只替换该测试窗口的可见性查询及绘制损伤矩形。场景、物理、GPU、编码器及输出仍走 MMS 实现。测试覆盖多次 UI 绘制零场景增量、视口暴露合并、绘制失败重试、动态刚体保持、实际窗口尺寸变更、模态与编辑锁、播放推进、设备丢失与取消。侧栏和底部默认仍在松手时提交布局。
 

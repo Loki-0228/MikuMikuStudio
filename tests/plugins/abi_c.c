@@ -36,3 +36,7 @@ _Static_assert(offsetof(MmsCommandDescV1, context) == 104, "private callbacks of
 _Static_assert(offsetof(MmsUiElementV1, surfaceId) == 104, "surface offset");
 _Static_assert(offsetof(MmsPluginApiV1, create) == 8, "entry offset");
 int mms_abi_c_probe(void) { return 0; }
+_Static_assert(sizeof(MmsVertexV1) == 128 && offsetof(MmsVertexV1, sourceVertex) == 104, "vertex layout");
+_Static_assert(sizeof(MmsTriangleV1) == 32 && sizeof(MmsMeshV1) == 80, "mesh layout");
+_Static_assert(sizeof(MmsWeightV1) == 120 && sizeof(MmsBindingV1) == 104, "binding layout");
+_Static_assert(sizeof(MmsMaterialV1) == 272 && sizeof(MmsTextureV1) == 64, "material layout");
