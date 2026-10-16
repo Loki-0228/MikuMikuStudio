@@ -24,6 +24,9 @@
 #include "mikudancestudio/autosave.hpp"
 #include "../src/plugins/scene_store.hpp"
 #include "../src/plugins/scene_object_history.hpp"
+#include "../src/plugins/history_runtime.hpp"
+#include "mikudancestudio/plugin_runtime.hpp"
+#include "mikudancestudio/plugin_storage.hpp"
 #include <thread>
 #include <btBulletDynamicsCommon.h>
 #include "mikudancestudio/model.hpp"

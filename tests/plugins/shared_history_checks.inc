@@ -56,7 +56,63 @@ struct HistoryPresence : HistoryChange {
     }
     uint64_t RetainedBytes() const noexcept override { return sizeof(HistoryObject); }
 };
+static void SharedHistoryResetChecks() {
+    StorageStore storage; SharedHistory history(storage);
+    int value = 0, destroyed = 0;
+    std::unique_ptr<SharedHistory::NativeTransaction> pending;
+    const auto add = [&](int before, int after) {
+        auto change = std::make_shared<HistoryValue>(value, before, after);
+        change->destroyed = &destroyed;
+        CHECK(history.PrepareNative("old scene", change, pending) == MMS_OK);
+        CHECK(history.CommitNative(std::move(pending)) == MMS_OK);
+    };
+    add(0, 1); add(1, 2);
+    CHECK(history.History(false) == MMS_OK && value == 1);
+    uint64_t revision = 0, unchanged = 0;
+    CHECK(history.Revision(revision) == MMS_OK);
+    {
+        std::unique_ptr<SharedHistory::ResetTransaction> reset;
+        CHECK(history.PrepareReset(reset) == MMS_OK);
+        CHECK(storage.Prepare({}) == MMS_OK);
+        CHECK(history.Reset() == MMS_E_BUSY && history.History(false) == MMS_E_BUSY);
+        storage.Cancel();
+    }
+    CHECK(history.Revision(unchanged) == MMS_OK && unchanged == revision);
+    CHECK(history.UndoCount() == 1 && history.RedoCount() == 1 && destroyed == 0);
+    {
+        auto change = std::make_shared<HistoryValue>(value, 1, 3);
+        change->destroyed = &destroyed;
+        CHECK(history.PrepareNative("pending old scene", change, pending) == MMS_OK);
+    }
+    std::unique_ptr<SharedHistory::ResetTransaction> reset;
+    CHECK(history.PrepareReset(reset) == MMS_OK && storage.Prepare({}) == MMS_OK);
+    MmsResult fromWorker = MMS_OK;
+    std::thread worker([&] { fromWorker = reset->Commit(); }); worker.join();
+    CHECK(fromWorker == MMS_E_THREAD && history.UndoCount() == 1 && destroyed == 0);
+    CHECK(reset->Commit() == MMS_OK && destroyed == 3);
+    CHECK(!history.UndoCount() && !history.RedoCount() && !history.RetainedBytes());
+    CHECK(history.Revision(unchanged) == MMS_OK && unchanged == revision + 1);
+    CHECK(reset->Commit() == MMS_E_ARGUMENT && history.History(false) == MMS_E_BUSY);
+    CHECK(storage.Commit()); reset.reset();
+    CHECK(history.CommitNative(std::move(pending)) == MMS_E_STALE && value == 1);
+    CHECK(history.History(false) == MMS_E_NOT_FOUND);
+    // Native tokens may outlive the journal itself, but none of their scene
+    // candidates or resource owners may do so.
+    std::unique_ptr<SharedHistory::ResetTransaction> orphanReset;
+    {
+        auto shortLived = std::make_unique<SharedHistory>(storage);
+        auto change = std::make_shared<HistoryValue>(value, 1, 4); change->destroyed = &destroyed;
+        CHECK(shortLived->PrepareNative("orphan", change, pending) == MMS_OK);
+        change.reset();
+        CHECK(shortLived->PrepareReset(orphanReset) == MMS_OK);
+    }
+    CHECK(destroyed == 4 && orphanReset->Commit() == MMS_E_STALE);
+    pending.reset(); orphanReset.reset();
+}
+static void SharedHistoryEditBoundaryChecks();
 static void SharedHistoryChecks() {
+    SharedHistoryEditBoundaryChecks();
+    SharedHistoryResetChecks();
     StorageStore storage; SharedHistory history(storage); EditStore edit(history, storage);
     StorageClient sc; sc.id = "example.shared"; storage.Api(sc);
     SerializerFixture state; auto serializer = state.Api(); MmsHandle provider = 0;
@@ -202,4 +258,69 @@ static void SharedHistoryChecks() {
     CHECK(history.History(false) == MMS_E_NOT_READY && history.Reset() == MMS_E_NOT_READY && !history.UndoCount());
     CHECK(history.PrepareNative("after poison", std::make_shared<HistoryValue>(a, 11, 12), tx) == MMS_E_NOT_READY);
     std::cout << "shared history journal and transaction granularity PASS (native scene lifecycle integration pending)\n";
+}
+static void SharedHistoryEditBoundaryChecks() {
+    StorageStore storage;SharedHistory history(storage);
+    StorageClient sc;sc.id="example.boundary";storage.Api(sc);
+    SerializerFixture state;auto serializer=state.Api();MmsHandle provider=0;
+    CHECK(storage.Register(sc,S("example.boundary"),&serializer,sizeof(serializer),&provider)==MMS_OK);
+    int a=0,b=0,destroyed=0;
+    const auto revision=[&]{uint64_t r=0;CHECK(history.Revision(r)==MMS_OK);return r;};
+    const auto initial=revision();
+    {
+        EditStore edit(history,storage);EditClient client;client.id=sc.id;auto api=edit.Api(client);
+        CHECK(Throws([&]{EditStore duplicate(history,storage);}));
+        EditParticipantFixture unprepared{&state,0,11},prepared{&state,0,22};
+        auto u=unprepared.Api("example.boundary"),p=prepared.Api("example.boundary");
+        MmsHandle first=0,second=0;
+        auto nativeA=std::make_shared<HistoryValue>(a,0,1),nativeB=std::make_shared<HistoryValue>(b,0,2);
+        nativeA->destroyed=&destroyed;nativeB->destroyed=&destroyed;
+        std::weak_ptr<HistoryChange> weakA=nativeA,weakB=nativeB;
+        CHECK(api.begin(api.context,S("unprepared mixed"),initial,&first)==MMS_OK);
+        CHECK(api.join(api.context,first,&u)==MMS_OK && edit.JoinNative(client,first,nativeA)==MMS_OK);
+        nativeA.reset();
+        std::unique_ptr<SharedHistory::ResetTransaction> reset;
+        CHECK(edit.HasPending() && history.Reset()==MMS_E_BUSY && history.PrepareReset(reset)==MMS_E_BUSY && !reset);
+        CHECK(api.begin(api.context,S("prepared mixed"),initial,&second)==MMS_OK);
+        CHECK(api.join(api.context,second,&p)==MMS_OK && edit.JoinNative(client,second,nativeB)==MMS_OK);
+        nativeB.reset();
+        CHECK(api.prepare(api.context,second)==MMS_OK);
+        CHECK(history.Reset()==MMS_E_BUSY && history.PrepareReset(reset)==MMS_E_BUSY && !reset);
+        CHECK(revision()==initial && !history.UndoCount() && !weakA.expired() && !weakB.expired() && !destroyed);
+        prepared.onCancel=[&]{
+            CHECK(edit.InCallback() && edit.CancelPending()==MMS_E_BUSY);
+            CHECK(history.Reset()==MMS_E_BUSY && history.PrepareReset(reset)==MMS_E_BUSY && !reset);
+        };
+        CHECK(edit.CancelPending()==MMS_OK && !edit.HasPending());
+        CHECK(unprepared.cancels==1 && prepared.cancels==1 && !unprepared.commits && !prepared.commits);
+        CHECK(weakA.expired() && weakB.expired() && destroyed==2 && a==0 && b==0 && state.value==0);
+        CHECK(api.prepare(api.context,first)==MMS_E_STALE && api.commit(api.context,second)==MMS_E_STALE);
+        CHECK(edit.CancelPending()==MMS_OK && unprepared.cancels==1 && prepared.cancels==1);
+        CHECK(history.PrepareReset(reset)==MMS_OK);
+        MmsHandle unchanged=733;
+        CHECK(api.begin(api.context,S("during reset"),initial,&unchanged)==MMS_E_BUSY && unchanged==733 && !edit.HasPending());
+        CHECK(reset->Commit()==MMS_OK);
+        CHECK(api.begin(api.context,S("after reset publication"),revision(),&unchanged)==MMS_E_BUSY && unchanged==733);
+        reset.reset();
+        // Commit removes its transaction from the map before callbacks. Reset
+        // must also reject this interval, when InCallback is the only edit flag.
+        EditParticipantFixture committing{&state,0,33};auto c=committing.Api("example.boundary");
+        committing.onCommit=[&]{
+            CHECK(!edit.HasPending() && edit.InCallback());
+            CHECK(history.Reset()==MMS_E_BUSY && history.PrepareReset(reset)==MMS_E_BUSY && !reset);
+        };
+        CHECK(api.begin(api.context,S("commit callback boundary"),revision(),&first)==MMS_OK);
+        CHECK(api.join(api.context,first,&c)==MMS_OK && api.prepare(api.context,first)==MMS_OK);
+        CHECK(api.commit(api.context,first)==MMS_OK && committing.commits==1 && !committing.cancels && state.value==33);
+        CHECK(history.Reset()==MMS_OK);history.Collect();
+    }
+    // Destruction unregisters the first store; a replacement can bind safely.
+    {
+        EditStore replacement(history,storage);
+        CHECK(!replacement.HasPending() && history.Reset()==MMS_OK);
+    }
+    std::unique_ptr<SharedHistory::ResetTransaction> reset;
+    CHECK(history.PrepareReset(reset)==MMS_OK);
+    CHECK(Throws([&]{EditStore duringReset(history,storage);}));
+    reset.reset();
 }

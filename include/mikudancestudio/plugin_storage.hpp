@@ -12,6 +12,8 @@ public:
     bool Publish(const wchar_t* staged, const wchar_t* destination, bool copy);
 };
 bool PrepareProjectLoad(MMDApp*, const wchar_t*);
+// Called at the first destructive step, before releasing any old scene data.
+bool BeginProjectSceneReplacement(MMDApp*);
 void CommitProjectLoad(MMDApp*);
 void CancelProjectLoad(MMDApp*);
 bool ResetPluginProject(MMDApp*);

@@ -1,5 +1,6 @@
 #pragma once
 #include "scene_history.hpp"
+#include "scene_resource_budget.hpp"
 
 namespace mikudancestudio::plugins {
 // One shared owner per native object. The active scene owns the live object;
@@ -15,6 +16,12 @@ public:
     ~RetainedSceneObject();
     bool Present() const noexcept;
     MmsId Id() const noexcept;
+    // Measure native allocations using this owner's object identity, including
+    // parked accessory keys/curves. The scene mutation gate must be held.
+    // Report::missing distinguishes incomplete measurements; no fixed fallback
+    // charge is invented. Wrapper/binding charges remain CaptureRemoval's job.
+    MmsResult MeasureResources(resource_budget::Report&) const noexcept;
+    static MmsResult MeasureResourcesBatch(const Objects&, resource_budget::Report&) noexcept;
     // Prepared candidates retain this holder until publication cleanup or
     // cancellation. The app/world must outlive both holders and candidates.
     std::unique_ptr<PreparedHistoryChange> PreparePresence(bool present);

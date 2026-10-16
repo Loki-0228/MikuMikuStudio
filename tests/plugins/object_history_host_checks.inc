@@ -1,4 +1,60 @@
 namespace object_history_checks {
+void ProjectBoundary(MMDApp* app, const wchar_t* modelPath, const wchar_t* accessoryPath) {
+    using namespace plugins;
+    Initialize(app);
+    auto* journal = NativeHistory(app);
+    Check(journal != nullptr, "application owns a native history journal");
+    // Earlier component probes intentionally bypassed UI publication. The
+    // legacy PMM writer reads combo counts, so start this host-boundary probe
+    // from a complete native reset before creating its project fixture.
+    ResetAppState(app);
+    LoadModelFile(app,modelPath,false); LoadAccessoryFile(accessoryPath);
+    Check(SendDlgItemMessageW(app->MainWindow(),panel::kMainComboModel,CB_GETCOUNT,0,0)==2 &&
+          SendDlgItemMessageW(app->MainWindow(),panel::kAccessoryCombo,CB_GETCOUNT,0,0)==1,
+          "project fixture controls match native object counts");
+    const auto project = std::filesystem::absolute(L"history-boundary.pmm");
+    Check(SaveSceneCopy(app,project.c_str()), "save native resources before history removal");
+    for (bool reopen : {true, false}) {
+        RetainedSceneObject::Objects owners{
+            RetainSceneObject(*app,MMS_OBJECT_MODEL,0), RetainSceneObject(*app,MMS_OBJECT_ACCESSORY,0)};
+        const std::weak_ptr<RetainedSceneObject> modelOwner = owners[0], accessoryOwner = owners[1];
+        std::unique_ptr<SharedHistory::NativeTransaction> tx;
+        Check(journal->PrepareNative("project boundary removal",
+            RetainedSceneObject::CaptureRemovalBatch(owners,128ull*1024*1024),tx)==MMS_OK &&
+            journal->CommitNative(std::move(tx))==MMS_OK, "application journal retains removed native resources");
+        owners.clear();
+        Check(!modelOwner.expired() && !accessoryOwner.expired(), "history is the final retained object owner");
+        Check(PrepareProjectLoad(app,project.c_str()), "prepare project serializers with existing history");
+        Check(journal->UndoCount()==1 && !modelOwner.expired() && !accessoryOwner.expired(),
+              "project preparation does not release old history");
+        CancelProjectLoad(app);
+        Check(journal->UndoCount()==1 && !modelOwner.expired() && !accessoryOwner.expired(),
+              "cancelled project load preserves old history and resources");
+        if (reopen) {
+            wcscpy_s(app->state.envFileName,project.c_str()); LoadSceneFile();
+            Check(app->ModelSlot(0) && app->AccessorySlot(0), "actual PMM loader replaces the scene");
+        } else ResetAppState(app);
+        Check(modelOwner.expired() && accessoryOwner.expired() && !journal->UndoCount() && !journal->RedoCount(),
+              "project boundary reclaims absent objects before native scene reset");
+        Check(journal->History(false)==MMS_E_NOT_FOUND, "project boundary releases the journal lock");
+    }
+    Check(app->Physics()->world->getNumCollisionObjects()==1 && app->Physics()->world->getNumConstraints()==0,
+          "new scene leaves no retained bodies or constraints");
+    LoadModelFile(app,modelPath,false);
+    auto holder = RetainSceneObject(*app,MMS_OBJECT_MODEL,0);
+    const std::weak_ptr<RetainedSceneObject> shutdownOwner = holder;
+    std::unique_ptr<SharedHistory::NativeTransaction> pending;
+    Check(journal->PrepareNative("pending at shutdown",holder->CaptureRemoval(64ull*1024*1024),pending)==MMS_OK,
+          "prepare native candidate before closing");
+    holder.reset();
+    Check(PrepareProjectLoad(app,project.c_str()), "prepare serializers before closing");
+    Shutdown();
+    Check(NativeHistory(app)==nullptr && shutdownOwner.expired(),
+          "shutdown cancels prepared project and releases native candidates while world lives");
+    pending.reset();
+    ResetAppState(app);
+    std::puts("PASS application history project boundaries");
+}
 void RunBatch(MMDApp* app, const wchar_t* modelPath, const wchar_t* accessoryPath) {
     using namespace plugins;
     LoadModelFile(app,modelPath,false);LoadModelFile(app,modelPath,false);
@@ -64,6 +120,17 @@ void Run(MMDApp* app) {
     auto* world=app->Physics()->world;
     const int bodyCount=world->getNumCollisionObjects(), jointCount=world->getNumConstraints();
     auto modelOwner=RetainSceneObject(*app,MMS_OBJECT_MODEL,0);
+    resource_budget::Report modelBudget{};
+    Check(modelOwner->MeasureResources(modelBudget)==MMS_OK && modelBudget.cpuBytes>=sizeof(mdl::ModelRecord) &&
+          modelBudget.d3d9Bytes>=descriptor.Size && modelBudget.totalBytes==modelBudget.cpuBytes+modelBudget.d3d9Bytes,
+          "measure live native model allocations and real DX9 buffer sizes");
+    Check(!model.rigidCount || (!modelBudget.Complete() && (modelBudget.missing & resource_budget::PhysicsStorage)),
+          "opaque Bullet allocation capacity is reported as incomplete");
+    resource_budget::Collector buffers;
+    buffers.VertexBuffer(vertexBuffer); const auto bufferBytes=buffers.Result().d3d9Bytes;
+    buffers.VertexBuffer(vertexBuffer);
+    Check(bufferBytes>=descriptor.Size && buffers.Result().d3d9Bytes==bufferBytes,
+          "shared DX9 COM identity is charged once");
     StorageStore storage;SharedHistory journal(storage,{},128,512ull*1024*1024);
     // Fixture resource charges are conservative. The public host still needs
     // its complete live resource accounting before enabling these commands.
@@ -78,6 +145,12 @@ void Run(MMDApp* app) {
     LoadAccessoryFile(accessoryPath);auto* accessory=app->AccessorySlot(0);
     Check(accessory && accessory->mesh,"load production X mesh");auto* mesh=accessory->mesh;
     auto accessoryOwner=RetainSceneObject(*app,MMS_OBJECT_ACCESSORY,0);insert(accessoryOwner,"import accessory");
+    resource_budget::Report accessoryBudget{}, duplicateBudget{};
+    Check(accessoryOwner->MeasureResources(accessoryBudget)==MMS_OK && accessoryBudget.d3d9Bytes>0,
+          "measure real X mesh buffers and retained accessory track");
+    Check(RetainedSceneObject::MeasureResourcesBatch({accessoryOwner,accessoryOwner},duplicateBudget)==MMS_OK &&
+          duplicateBudget.totalBytes==accessoryBudget.totalBytes && duplicateBudget.missing==accessoryBudget.missing,
+          "duplicate owner in a measurement batch is charged once");
     accessory->parentModel=0;accessory->parentBone=0;
     app->AccessoryKeys(0)[0].parentModel=0;app->AccessoryKeys(0)[0].parentBone=0;
     auto store=CreateSceneStore(app);SceneClient client;auto api=store->Api(client);
@@ -91,6 +164,11 @@ void Run(MMDApp* app) {
         Check(journal.PrepareNative(label,object->CaptureRemoval(64ull*1024*1024),tx)==MMS_OK && journal.CommitNative(std::move(tx))==MMS_OK,"publish real object deletion");
     };
     remove(modelOwner,"delete model");remove(accessoryOwner,"delete accessory");
+    resource_budget::Report parkedModel{}, parkedAccessory{};
+    Check(modelOwner->MeasureResources(parkedModel)==MMS_OK && accessoryOwner->MeasureResources(parkedAccessory)==MMS_OK &&
+          parkedModel.d3d9Bytes==modelBudget.d3d9Bytes && parkedAccessory.d3d9Bytes==accessoryBudget.d3d9Bytes &&
+          parkedAccessory.cpuBytes>=sizeof(mdl::AccessoryRecord),
+          "measure removed objects through retained owners without live scene slots");
     Check(!app->ModelSlot(0) && !app->AccessorySlot(0) && world->getNumCollisionObjects()==1 && world->getNumConstraints()==0,
           "only ground physics remains after both deletions");
     Check(api.objects(api.context,snapshot.handle,&objects)==MMS_OK && objects.count==2,"old ABI snapshot survives real object deletion");
@@ -123,5 +201,6 @@ void Run(MMDApp* app) {
     app->SceneModified()=0;
     std::puts("PASS production object resource history");
     RunBatch(app,modelPath,accessoryPath);
+    ProjectBoundary(app,modelPath,accessoryPath);
 }
 }

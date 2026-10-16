@@ -1,4 +1,5 @@
 #include "mikudancestudio/sequence_scatter.hpp"
+#include "../plugins/scene_resource_budget.hpp"
 #include "mikudancestudio/native_edit_history.hpp"
 #include "mikudancestudio/mmd_app.hpp"
 #include "mikudancestudio/morph_curve.hpp"
@@ -170,6 +171,14 @@ bool Prepare(const Source& source, const Settings& settings, Plan& out, std::str
     } catch (...) { error = "Not enough memory to prepare the placements."; return false; }
 }
 
+#if !MMD_ORIGINAL_PROFILE
+void MeasureSnapshot(const void* snapshot, plugins::resource_budget::Collector& out) {
+    if (!snapshot) return;
+    SnapshotHeader h{}; std::memcpy(&h, snapshot, sizeof(h));
+    using C = plugins::resource_budget::Collector;
+    out.Add(snapshot, 1, C::Sum(sizeof(h), C::Sum(C::Product(h.capacity, sizeof(mdl::MorphKey)), h.curveBytes)));
+}
+#endif
 bool Restore(unsigned char* model, const void* snapshot) noexcept {
     if (!model || !snapshot) return false;
     try {

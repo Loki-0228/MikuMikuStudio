@@ -1,10 +1,12 @@
 #pragma once
+#include "mikudancestudio/build_profile.hpp"
 #include "mikudancestudio/animation_curve_editor.hpp"
 #include "mikudancestudio/pmm_extension.hpp"
 #include <memory>
 #include <string>
 #include <vector>
 namespace mikudancestudio { class MMDApp; }
+namespace mikudancestudio::plugins::resource_budget { class Collector; }
 namespace mikudancestudio::curve_host {
 enum class Kind { Camera, Light, Shadow, Gravity, Accessory };
 bool Read(MMDApp&, Kind, int slot, std::vector<curve_editor::Channel>&, std::wstring&);
@@ -36,6 +38,9 @@ public:
     AccessoryAuthoring(const AccessoryAuthoring&) = delete;
     AccessoryAuthoring& operator=(const AccessoryAuthoring&) = delete;
     std::unique_ptr<Exchange> Prepare(bool present);
+#if !MMD_ORIGINAL_PROFILE
+    void MeasureResources(plugins::resource_budget::Collector&) const;
+#endif
 };
 void Capture(MMDApp&, pmm_extension::Document&);
 void Load(MMDApp&, const pmm_extension::Document&);

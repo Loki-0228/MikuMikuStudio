@@ -167,6 +167,12 @@ void RestoreTransforms(unsigned char* model);
 void ApplyTransforms(unsigned char* model);
 bool HasPose(const unsigned char* model);
 Values PoseValues(const unsigned char* model);
+// Owned pose history exchanges only current pose, leaving key scales, curves,
+// legacy undo rings and render caches owned by this module. A missing storage
+// entry can represent only an empty pose; publication never allocates one.
+bool PoseValuesEqual(const unsigned char* model, const Values&) noexcept;
+bool HasPoseStorage(const unsigned char* model) noexcept;
+bool ExchangePoseValues(unsigned char* model, Values&) noexcept;
 // Child pivots follow the parent's deformation. Inherited scale acts in the
 // unposed model basis before each child's rotation, preserving its shape.
 void BuildTransforms(const unsigned char* model, const Values& pose, std::vector<Transform>& out,

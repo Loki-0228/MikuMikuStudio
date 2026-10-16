@@ -2192,6 +2192,7 @@ static void LoadSceneV1_SuccessTail(PmmV1LoadContext& ctx) {
 void LoadSceneV1(MMDApp* app, int fd) {
     auto* s = app;
     PmmV1LoadContext ctx(app);
+    if (!plugins::BeginProjectSceneReplacement(app)) throw std::runtime_error("history scene replacement refused");
     pmm_settings::Reset(*app);
 
     LoadSceneV1_DisposeAndHeader(ctx, fd);            // 0x45916D..0x459630

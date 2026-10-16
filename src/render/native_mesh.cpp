@@ -14,6 +14,7 @@
 #include <set>
 #include <unordered_map>
 #include "mikudancestudio/native_mesh.hpp"
+#include "../plugins/scene_resource_budget.hpp"
 #include "mikudancestudio/mmd_app.hpp"
 #include "mikudancestudio/model.hpp"
 #include "mikudancestudio/ported_funcs.hpp"
@@ -247,6 +248,40 @@ void FinishRegistration(IDirect3DDevice9* device,const std::filesystem::path& sa
 }
 
 void Initialize(MMDApp* app){host=app;}
+#if !MMD_ORIGINAL_PROFILE
+void MeasureResources(const void* object, plugins::resource_budget::Collector& out) {
+    mesh_bake_cache::MeasureResources(object, out);
+    const auto generation = generations.find(object);
+    if (generation != generations.end()) out.Add(&*generation, 1, sizeof(*generation) + 4 * sizeof(void*));
+    const auto found = proxies.find(object); if (found == proxies.end()) return;
+    out.Add(&*found, 1, sizeof(*found) + 4 * sizeof(void*));
+    const auto& p = *found->second; out.Array(&p, 1);
+    // Proxy records borrow their arrays from the vectors below. Walking them
+    // as native owning models would count unrelated pointers or dereference
+    // legacy pools that the proxy never allocated.
+    out.Array(p.model.get(), 1); out.Array(p.acs.get(), 1);
+    out.Vector(p.retiredModels); out.Vector(p.retiredAccessories);
+    for (const auto& m : p.retiredModels) out.Array(m.get(), 1);
+    for (const auto& a : p.retiredAccessories) out.Array(a.get(), 1);
+    out.Vector(p.materials); out.Vector(p.morphBase); out.Vector(p.morphAdd); out.Vector(p.morphMul);
+    out.Vector(p.acsMaterials); out.Vector(p.acsPaths); out.Vector(p.acsTypes); out.Vector(p.indices);
+    out.Vector(p.names); out.Vector(p.namesEn); out.Vector(p.keys); out.Nodes(p.texturePaths);
+    for (const auto& s : p.names) out.String(s);
+    for (const auto& s : p.namesEn) out.String(s);
+    for (const auto& s : p.keys) out.String(s);
+    for (const auto& s : p.texturePaths) out.String(s);
+    out.VertexBuffer(p.vb.Get()); out.VertexBuffer(p.edge.Get()); out.IndexBuffer(p.ib.Get()); out.Mesh(p.mesh);
+    out.Vector(p.registrationAnchors);
+    for (const auto& anchor : p.registrationAnchors) {
+        if (p.accessory) out.Mesh(anchor.Get());
+        else {
+            ComPtr<IDirect3DIndexBuffer9> buffer;
+            if (FAILED(anchor.As(&buffer))) out.MissingResource(plugins::resource_budget::RenderQuery);
+            else out.IndexBuffer(buffer.Get());
+        }
+    }
+}
+#endif
 void ClearScene(){mesh_bake_cache::Clear();proxies.clear();generations.clear();restoreBakedEffects=false;bakedPlaybackBlocked=false;}
 void Shutdown(){ClearScene();host=nullptr;}
 void Forget(const void* object){mesh_bake_cache::Forget(object);proxies.erase(object);generations.erase(object);}

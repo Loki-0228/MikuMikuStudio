@@ -1,4 +1,5 @@
 #include "mikudancestudio/key_pool.hpp"
+#include "../plugins/scene_resource_budget.hpp"
 // ===========================================================================
 // Model keyframe edit helpers used by the left frame editor.
 //   0x0049D410  append one touched bone-key record to the undo slot

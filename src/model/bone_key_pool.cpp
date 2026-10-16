@@ -1,4 +1,5 @@
 #include "mikudancestudio/bone_key_pool.hpp"
+#include "../plugins/scene_resource_budget.hpp"
 #include "mikudancestudio/key_pool.hpp"
 
 #include <cassert>
@@ -357,4 +358,16 @@ bool DisplayKeyFreeSlot(ModelRecord& model, std::uint32_t& slot) noexcept {
     return true;
 }
 
+#if !MMD_ORIGINAL_PROFILE
+void MeasureBoneKeyStorage(const ModelRecord& model, plugins::resource_budget::Collector& out) {
+    std::lock_guard<std::mutex> lock(RegistryMutex());
+    const auto found = Registry().find(model.boneKeys);
+    if (found != Registry().end()) {
+        out.Add(&*found, 1, sizeof(*found) + 4 * sizeof(void*));
+        out.Vector(found->second.visit);
+    }
+    const auto morph = MorphRegistry().find(model.morphKeys);
+    if (morph != MorphRegistry().end()) out.Add(&*morph, 1, sizeof(*morph) + 4 * sizeof(void*));
+}
+#endif
 }  // namespace mikudancestudio::mdl

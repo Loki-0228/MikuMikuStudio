@@ -8,6 +8,7 @@
 class btRigidBody;
 class btTypedConstraint;
 namespace mikudancestudio {
+namespace plugins::resource_budget { class Collector; }
 class DynamicsWorld;
 namespace history_physics {
 // These classes are internal to MMS. They do not change Bullet or plugin ABI.
@@ -54,6 +55,7 @@ public:
     Retained(const Retained&) = delete;
     Retained& operator=(const Retained&) = delete;
     bool Present() const noexcept;
+    void MeasureResources(plugins::resource_budget::Collector&) const;
     std::unique_ptr<Transition> Prepare(bool present);
     // One world publication for all objects, never a chain of single-object
     // publications. Objects must be distinct, share a world and all change to

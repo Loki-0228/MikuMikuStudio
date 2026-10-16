@@ -3142,7 +3142,12 @@ void CmdControl400(MMDApp* app, HWND hwnd, std::uint16_t id,
     // 439 (0x0047F3AF): checkbox 0x1B7 -> model byte 0x2D8D (1/0).
     // ------------------------------------------------------------------
     case 439: {
-        mdl::Mdl(ActiveModel(app))->loadComplete =
+        // Object-history removal can leave the old model selection visible
+        // until the scene/UI reset finishes. A checkbox notification during
+        // that interval has no active model to edit.
+        auto* model = ActiveModel(app);
+        if (!model) break;
+        mdl::Mdl(model)->loadComplete =
             IsDlgButtonChecked(hwnd, panel::kModelVisibleCheckbox) == 1 ? 1
                                                                         : 0;
         break;

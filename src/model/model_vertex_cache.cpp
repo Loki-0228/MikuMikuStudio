@@ -1,4 +1,5 @@
 #include "mikudancestudio/model_vertex_cache.hpp"
+#include "../plugins/scene_resource_budget.hpp"
 #include "mikudancestudio/mmd_app.hpp"
 #include "mikudancestudio/model.hpp"
 #include "mikudancestudio/geometry_workers.hpp"
@@ -128,6 +129,19 @@ void DropCpuBody(Entry& entry) {
 }
 }
 
+#if !MMD_ORIGINAL_PROFILE
+void MeasureResources(const unsigned char* model, plugins::resource_budget::Collector& out) {
+    const auto found = entries.find(const_cast<unsigned char*>(model));
+    if (found != entries.end()) {
+        const auto& s = found->second;
+        out.Add(&*found, 1, sizeof(*found) + 4 * sizeof(void*));
+        out.Vector(s.key); out.Vector(s.outlineKey); out.Vector(s.cpuBody); out.Vector(s.ranges);
+        for (const auto& range : s.ranges) out.Vector(range.bytes);
+    }
+    const auto loaded = loadedModels.find(const_cast<unsigned char*>(model));
+    if (loaded != loadedModels.end()) out.Add(&*loaded, 1, sizeof(*loaded) + 4 * sizeof(void*));
+}
+#endif
 void Forget(unsigned char* model) noexcept {
     const auto found = entries.find(model);
     if (found != entries.end()) {

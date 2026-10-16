@@ -2,6 +2,7 @@
 #define NOMINMAX
 #include <Windows.h>
 #include "mikudancestudio/text_encoding.hpp"
+#include "../plugins/scene_resource_budget.hpp"
 #include "mikudancestudio/model.hpp"
 #include <cstring>
 #include <cwchar>
@@ -57,6 +58,20 @@ std::wstring LegacyNamePair(const char* preferred, const char* alternate,
 }
 }
 void SetMaterialNames(const mdl::ModelRecord& model,MaterialNames names){materialNames[&model]=std::move(names);}
+#if !MMD_ORIGINAL_PROFILE
+void MeasureResources(const mdl::ModelRecord& model, plugins::resource_budget::Collector& out) {
+    const auto found = materialNames.find(&model);
+    if (found != materialNames.end()) {
+        out.Add(&*found, 1, sizeof(*found) + 4 * sizeof(void*)); out.Vector(found->second);
+        for (const auto& names : found->second) for (const auto& name : names) out.String(name);
+    }
+    for (const auto& entry : displayGroupNames) if (entry.second.owner == &model) {
+        out.Add(&entry, 1, sizeof(entry) + 4 * sizeof(void*));
+        for (const auto& text : entry.second.names) out.String(text);
+        for (const auto& text : entry.second.legacy) out.String(text);
+    }
+}
+#endif
 void ForgetMaterialNames(const mdl::ModelRecord& model){materialNames.erase(&model);}
 std::wstring MaterialName(const mdl::ModelRecord& model,std::size_t index,bool english){
     const auto found=materialNames.find(&model);

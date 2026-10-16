@@ -134,6 +134,33 @@ RetainedSceneObject::RetainedSceneObject(std::unique_ptr<Impl> impl) : impl_(std
 RetainedSceneObject::~RetainedSceneObject() = default;
 bool RetainedSceneObject::Present() const noexcept { return impl_->present; }
 MmsId RetainedSceneObject::Id() const noexcept { return impl_->id; }
+MmsResult RetainedSceneObject::MeasureResources(resource_budget::Report& report) const noexcept {
+    return Boundary([&] { return MeasureResourcesBatch({const_cast<RetainedSceneObject*>(this)->shared_from_this()}, report); });
+}
+MmsResult RetainedSceneObject::MeasureResourcesBatch(const Objects& objects, resource_budget::Report& report) noexcept {
+    return Boundary([&]() -> MmsResult {
+        if (objects.empty()) return MMS_E_ARGUMENT;
+        resource_budget::Collector measured;
+        for (const auto& retained : objects) {
+            if (!retained) return MMS_E_ARGUMENT;
+            const auto& owner = *retained->impl_;
+            if (owner.present && !owner.MembershipCurrent()) return MMS_E_STALE;
+            if (owner.kind == MMS_OBJECT_MODEL)
+                resource_budget::Model(*mdl::Mdl(static_cast<const unsigned char*>(owner.object)), measured);
+            else {
+                const auto* keys = owner.present ? owner.app.AccessoryKeys(owner.slot) : owner.inactiveKeys;
+                resource_budget::Accessory(*static_cast<const mdl::AccessoryRecord*>(owner.object), keys, measured);
+                // While active the holder owns the blank exchange pool too.
+                if (owner.present) measured.Array(owner.inactiveKeys, mdl::KeyPoolCapacity(owner.inactiveKeys));
+            }
+            measured.Vector(owner.joints);
+            for (auto* joint : owner.joints) resource_budget::Joint(joint, measured);
+            if (owner.physics) owner.physics->MeasureResources(measured);
+            if (owner.curves) owner.curves->MeasureResources(measured);
+        }
+        report = measured.Result(); return MMS_OK;
+    });
+}
 std::unique_ptr<PreparedHistoryChange> RetainedSceneObject::PreparePresence(bool present) {
     return std::make_unique<Impl::Candidate>(shared_from_this(), present);
 }

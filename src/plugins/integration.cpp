@@ -1,6 +1,7 @@
 #include "manager.hpp"
 #include "native_ui.hpp"
 #include "project_storage.hpp"
+#include "history_runtime.hpp"
 #include "mikudancestudio/plugin_storage.hpp"
 #include "mikudancestudio/plugin_runtime.hpp"
 #include "mikudancestudio/plugin_scene.hpp"
@@ -15,16 +16,29 @@ namespace mikudancestudio::plugins {
 namespace {
 std::unique_ptr<Manager> manager;
 std::unique_ptr<NativeUi> ui;
+std::unique_ptr<SharedHistory> history;
+std::unique_ptr<SharedHistory::ResetTransaction> projectHistoryReset;
 MMDApp* owner = nullptr;
 int toolbarHeight = 0;
 bool refreshing = false, closing = false;
 PluginProject currentProject, pendingProject;
 bool loadingProject = false;
+bool replacingHistory = false, historySceneReplaced = false;
 HANDLE loadingMain = INVALID_HANDLE_VALUE;
 struct ProjectNotification { uint32_t kind; MmsId id; std::string path; };
 std::deque<ProjectNotification> projectEvents;
 constexpr UINT kProjectEvent = WM_APP + 0x6b;
 constexpr UINT_PTR kProjectRetry = 0x4d4d536b;
+MmsResult PrepareHistoryReset(std::unique_ptr<SharedHistory::ResetTransaction>& out) {
+    if (!history) return MMS_OK;
+    // ResetAppState is also used to recover a partially read PMM while the
+    // native loader owns ScopedSceneMutation. Only this internal boundary may
+    // bypass that gate; serializer and plugin callback checks still apply.
+    replacingHistory = true;
+    const auto result = history->PrepareReset(out);
+    replacingHistory = false;
+    return result;
+}
 void QueueProjectEvent(MMDApp* app, uint32_t kind, const wchar_t* path) {
     if (!manager || owner != app) return;
     Boundary([&] {
@@ -71,6 +85,11 @@ void Initialize(MMDApp* app) {
         std::wstring module(32768, 0); auto n = GetModuleFileNameW(nullptr, module.data(), DWORD(module.size())); if (!n || n >= module.size()) throw std::runtime_error("process path unavailable"); module.resize(n);
         manager = std::make_unique<Manager>(fs::path(data) / L"MMS" / L"plugins", LogMessage, [window = app->MainWindow()] { PostMessageW(window, kRefresh, 0, 0); }, false, CreateSceneStore(app));
         if (manager->Storage().Prepare(currentProject.records) != MMS_OK || !manager->Storage().Commit()) throw std::runtime_error("initialize plugin project data");
+        history = std::make_unique<SharedHistory>(manager->Storage(), [app] {
+            if (closing || owner != app) return MMS_E_NOT_READY;
+            if (manager->InCallback() || (app->SceneMutationInProgress() && !replacingHistory)) return MMS_E_BUSY;
+            return MMS_OK;
+        });
         ui = std::make_unique<NativeUi>(manager->Ui(), app->MainWindow(), LogMessage);
         if (!SetWindowSubclass(app->MainWindow(), Subclass, 0x4d4d5301, 0)) throw std::runtime_error("plugin lifetime hook failed");
         manager->Load(fs::path(module).parent_path() / L"PLUGINS"); Refresh(app); return MMS_OK;
@@ -81,11 +100,13 @@ void Initialize(MMDApp* app) {
     }
 }
 void Shutdown() {
-    if (manager && manager->InCallback()) return;
+    if (manager && manager->ExecutingCallback()) return;
     if (closing) return; closing = true;
+    CancelProjectLoad(owner);
     if (manager) manager->Stop();
-    ui.reset(); manager.reset(); projectEvents.clear(); toolbarHeight = 0; owner = nullptr;
+    ui.reset(); history.reset(); manager.reset(); projectEvents.clear(); toolbarHeight = 0; owner = nullptr;
 }
+SharedHistory* NativeHistory(MMDApp* app) noexcept { return app == owner && !closing ? history.get() : nullptr; }
 void Layout(MMDApp* app) {
     if (!ui || app != owner) return;
     Boundary([&] {
@@ -100,7 +121,8 @@ void Refresh(MMDApp* app) {
     if (!ui || app != owner || refreshing || closing) return;
     refreshing = true; auto old = toolbarHeight;
     Boundary([&] { ui->Refresh(); Layout(app); if (toolbarHeight != old) HandleWindowSize(app);
-        if (manager && !manager->InCallback()) manager->SaveUiPreferences(); return MMS_OK; });
+        if (manager && !manager->InCallback()) manager->SaveUiPreferences();
+        if (history && !app->SceneMutationInProgress()) history->Collect(); return MMS_OK; });
     refreshing = false;
 }
 bool HandleCommand(unsigned id) { bool handled = false; Boundary([&] { if (ui) handled = ui->Command(id); return MMS_OK; }); return handled; }
@@ -147,11 +169,14 @@ bool PrepareProjectLoad(MMDApp* app, const wchar_t* path) {
         if(loadingMain==INVALID_HANDLE_VALUE)throw std::runtime_error("cannot lock PMM for loading");
         if(!data.mainHash.empty() && FileHash(path)!=data.mainHash)throw std::runtime_error("PMM changed before loading");
         if (manager && owner == app) {
+            if (auto r=PrepareHistoryReset(projectHistoryReset))
+                throw std::runtime_error("history project preparation returned "+std::to_string(r));
             auto r=manager->Storage().Prepare(data.records);
             if(r)throw std::runtime_error("plugin serializer prepareLoad returned "+std::to_string(r));
         }
-        pendingProject=std::move(data);loadingProject=true;return true;
+        pendingProject=std::move(data);loadingProject=true;historySceneReplaced=false;return true;
     } catch(const std::exception& e) {
+        projectHistoryReset.reset();
         if(loadingMain!=INVALID_HANDLE_VALUE){CloseHandle(loadingMain);loadingMain=INVALID_HANDLE_VALUE;}
         LogMessage(std::string("project load refused: ")+e.what());
         const wchar_t* messages[]={L"プラグインのプロジェクトデータを読み込めません。PMM と付随ファイルの対応、およびプラグインのバージョンを確認してください。",L"Cannot load plugin project data. Check the PMM/sidecar pair and plugin versions.",L"无法读取插件工程数据。请检查 PMM 与扩展文件是否配套，以及插件版本是否匹配。"};
@@ -159,17 +184,27 @@ bool PrepareProjectLoad(MMDApp* app, const wchar_t* path) {
         return false;
     }
 }
+bool BeginProjectSceneReplacement(MMDApp* app) {
+    if (build_profile::original || !history || owner != app) return true;
+    if (!loadingProject || !projectHistoryReset || historySceneReplaced) return false;
+    const auto result = projectHistoryReset->Commit();
+    if (result != MMS_OK) { LogMessage("history scene replacement refused: "+std::to_string(result)); return false; }
+    historySceneReplaced = true;
+    return true;
+}
 void CommitProjectLoad(MMDApp* app) {
     if (!loadingProject) return;
     if (manager && owner == app && !manager->Storage().Commit()) { LogMessage("serializer commitLoad violated its no-fail contract");return; }
-    currentProject=std::move(pendingProject);loadingProject=false;
+    currentProject=std::move(pendingProject);loadingProject=false;historySceneReplaced=false;
+    projectHistoryReset.reset();
     if(loadingMain!=INVALID_HANDLE_VALUE){CloseHandle(loadingMain);loadingMain=INVALID_HANDLE_VALUE;}
     QueueProjectEvent(app,MMS_EVENT_PROJECT_OPENED,app->EnvFileName());
 }
 void CancelProjectLoad(MMDApp* app) {
     if(!loadingProject)return;
     if(manager && owner==app)manager->Storage().Cancel();
-    pendingProject={};loadingProject=false;
+    pendingProject={};loadingProject=false;historySceneReplaced=false;
+    projectHistoryReset.reset();
     if(loadingMain!=INVALID_HANDLE_VALUE){CloseHandle(loadingMain);loadingMain=INVALID_HANDLE_VALUE;}
 }
 bool ResetPluginProject(MMDApp* app) {
@@ -177,9 +212,13 @@ bool ResetPluginProject(MMDApp* app) {
     if(manager && owner==app && manager->Storage().InCallback())return false;
     if(manager && owner==app && manager->InCallback() && !loadingProject)return false;
     CancelProjectLoad(app);
+    std::unique_ptr<SharedHistory::ResetTransaction> reset;
     if(manager && owner==app){
+        if (PrepareHistoryReset(reset) != MMS_OK) { LogMessage("history project reset refused"); return false; }
         const auto r=manager->Storage().Prepare({});
-        if(r || !manager->Storage().Commit()){LogMessage("plugin project reset refused");return false;}
+        if(r){LogMessage("plugin project reset refused");return false;}
+        if (reset && reset->Commit()!=MMS_OK) { manager->Storage().Cancel(); LogMessage("history project reset refused"); return false; }
+        if(!manager->Storage().Commit()){LogMessage("plugin project reset refused");return false;}
     }
     currentProject={};QueueProjectEvent(app,MMS_EVENT_SCENE_RESET,L"");return true;
 }

@@ -40,9 +40,12 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <exception>
+#include <stdexcept>
 
 #include "mikudancestudio/mmd_app.hpp"
 #include "mikudancestudio/model.hpp"
+#include "mikudancestudio/model_load_ui.hpp"
 #include "mikudancestudio/text_encoding.hpp"
 #include "mikudancestudio/ui_language.hpp"
 #include "mikudancestudio/frame_scope.hpp"
@@ -217,5 +220,36 @@ void PostLoadInit(unsigned char* m) {
     SendMessageA(frameCombo, CB_SETCURSEL,
                  model->frameRegistrationSelection, 0);
 }
+
+namespace model_load_ui {
+namespace {
+thread_local DeferredRefresh* active = nullptr;
+}
+
+DeferredRefresh::DeferredRefresh(HWND owner)
+    : owner_(owner), thread_(GetCurrentThreadId()), previous_(nullptr) {
+    if (!owner || !IsWindow(owner) || GetWindowThreadProcessId(owner, nullptr) != thread_)
+        throw std::invalid_argument("model load UI scope requires its window thread");
+    previous_ = active;
+    active = this;
+}
+
+DeferredRefresh::~DeferredRefresh() noexcept {
+    // Silently unlinking the wrong thread/stack would leave a dangling scope
+    // and let a later load skip its required UI publication.
+    if (GetCurrentThreadId() != thread_ || active != this) std::terminate();
+    active = previous_;
+}
+
+bool Deferred(HWND owner) noexcept {
+    for (const auto* scope = active; scope; scope = scope->previous_)
+        if (scope->owner_ == owner) return true;
+    return false;
+}
+
+void PostLoadInitOrDefer(unsigned char* model) {
+    if (!Deferred(static_cast<HWND>(mdl::Mdl(model)->hwnd))) PostLoadInit(model);
+}
+}  // namespace model_load_ui
 
 }  // namespace mikudancestudio

@@ -23,6 +23,8 @@ public:
     MmsResult SaveUiPreferences();
     StorageStore& Storage();
     bool InCallback() const;
+    // Excludes an idle prepared project load, which shutdown must cancel.
+    bool ExecutingCallback() const;
     std::vector<PluginStatus> Status() const;
 };
 }

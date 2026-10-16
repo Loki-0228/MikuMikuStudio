@@ -4,6 +4,7 @@
 
 namespace mikudancestudio::plugins {
 class HistoryChange;
+class EditStore;
 struct EditRecord {
     std::string label;
     StoredRecords before, after;
@@ -21,6 +22,8 @@ public:
 class EditHost {
 public:
     virtual ~EditHost() = default;
+    virtual void AttachStore(EditStore*) {}
+    virtual void DetachStore(EditStore*) noexcept {}
     virtual MmsResult Revision(uint64_t&) = 0;
     virtual MmsResult Enter() = 0;
     virtual void Leave() noexcept = 0;
@@ -30,7 +33,6 @@ public:
     // too, because the scene can now contain a partly published operation.
     virtual void Poison() noexcept {}
 };
-class EditStore;
 struct EditClient { EditStore* store=nullptr; std::string id; bool stopping=false; };
 class EditStore {
     struct Participant { std::string id; MmsTransactionParticipantV1 table; MmsHandle serializer; };
@@ -55,10 +57,10 @@ class EditStore {
     MmsResult Prepare(EditClient&,MmsHandle);
     MmsResult Commit(EditClient&,MmsHandle);
     void Cancel(EditClient&,MmsHandle);
-    void CancelAll(Transaction&) noexcept;
+    MmsResult CancelAll(Transaction&) noexcept;
     MmsResult History(EditClient&,bool);
 public:
-    EditStore(EditHost& host,StorageStore& storage):host_(host),storage_(storage){}
+    EditStore(EditHost& host,StorageStore& storage):host_(host),storage_(storage){host_.AttachStore(this);}
     ~EditStore();
     MmsEditApiV1 Api(EditClient&);
     // Internal scene/UI services attach their aggregate native candidate to
@@ -66,5 +68,9 @@ public:
     MmsResult JoinNative(EditClient&, MmsHandle, std::shared_ptr<HistoryChange>);
     bool Retire(EditClient&);
     bool InCallback() const { return busy_; }
+    bool HasPending() const noexcept { return !transactions_.empty(); }
+    // UI-thread lifecycle boundary only. Does not acquire the host gate: the
+    // caller may already own it. Cancel before replacing the scene or world.
+    MmsResult CancelPending();
 };
 }

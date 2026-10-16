@@ -22,9 +22,11 @@ public:
     virtual void Publish() noexcept = 0;
 };
 enum class Result { Ready, Empty, Invalid, Memory };
+class OwnedPoseEdit;
 class ModelEdit {
     struct Impl;
     std::unique_ptr<Impl> impl_;
+    friend class OwnedPoseEdit;
 public:
     ModelEdit();
     ~ModelEdit();
@@ -41,6 +43,46 @@ public:
     bool Publish(std::int32_t& frame) noexcept;
     // Post-publication UI/physics refresh, kept outside the atomic exchange.
     void Refresh(int physicsMode);
+};
+// A type-1 pose edit owns both directions independently of the legacy ring.
+// The host retains the model and verifies its scene identity before Prepare.
+// This first implementation covers position, rotation, unregistered-pose flags
+// and scale pose only. It never restores keyframes, curve tracks or ring state.
+// Position components and dirty flags are individual deltas; the quaternion is
+// one rotation value. Fields untouched by the edit retain their live values.
+class OwnedPoseEdit {
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+    friend class PoseEditCapture;
+public:
+    OwnedPoseEdit();
+    ~OwnedPoseEdit();
+    OwnedPoseEdit(OwnedPoseEdit&&) noexcept;
+    OwnedPoseEdit& operator=(OwnedPoseEdit&&) noexcept;
+    OwnedPoseEdit(const OwnedPoseEdit&) = delete;
+    OwnedPoseEdit& operator=(const OwnedPoseEdit&) = delete;
+    Result Prepare(unsigned char*, std::int32_t frame, bool forward, ModelEdit&) const noexcept;
+    std::uint64_t RetainedBytes() const noexcept;
+};
+class PoseEditCapture {
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+public:
+    PoseEditCapture();
+    ~PoseEditCapture();
+    PoseEditCapture(PoseEditCapture&&) noexcept;
+    PoseEditCapture& operator=(PoseEditCapture&&) noexcept;
+    PoseEditCapture(const PoseEditCapture&) = delete;
+    PoseEditCapture& operator=(const PoseEditCapture&) = delete;
+    Result Begin(unsigned char*) noexcept;
+    // Only operation 1 is supported. Finish leaves the capture available for
+    // Rollback if the host cannot adopt the edit. Empty means no authored change.
+    Result Finish(int operation, std::unique_ptr<OwnedPoseEdit>&) noexcept;
+    // Restores captured type-1 pose authoring without allocation. Use only while
+    // the same edit scope excludes other authored edits. A changed physical mode
+    // is unsupported and rejects the entire rollback. Ring/UI/journal metadata
+    // belongs to the host. Destruction itself never changes the model.
+    bool Rollback() noexcept;
 };
 }
 namespace bone_scale {

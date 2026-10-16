@@ -4,6 +4,7 @@
 #include <d3d9.h>
 #include <wrl/client.h>
 #include "mikudancestudio/skinning_backend.hpp"
+#include "../plugins/scene_resource_budget.hpp"
 #include "mikudancestudio/model_vertex_cache.hpp"
 #include "mikudancestudio/gpu_model.hpp"
 #include "mikudancestudio/model.hpp"
@@ -546,6 +547,14 @@ void InitializeAutomatic(MMDApp* app, IDirect3DDevice9* device) {
 }
 const std::vector<StartupMeasurement>& GetStartupMeasurements() { return startupMeasurements; }
 
+#if !MMD_ORIGINAL_PROFILE
+void MeasureResources(const unsigned char* model, plugins::resource_budget::Collector& out) {
+    const auto found = automaticEntries.find(const_cast<unsigned char*>(model));
+    if (found == automaticEntries.end()) return;
+    out.Add(&*found, 1, sizeof(*found) + 4 * sizeof(void*));
+    out.Vector(found->second.report.measurements);
+}
+#endif
 void ForgetModel(unsigned char* model) {
     model_vertex_cache::Forget(model);
     automaticEntries.erase(model);

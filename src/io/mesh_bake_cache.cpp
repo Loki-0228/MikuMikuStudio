@@ -4,6 +4,7 @@
 #define NOMINMAX
 
 #include "mikudancestudio/mesh_bake_cache.hpp"
+#include "../plugins/scene_resource_budget.hpp"
 
 #include "mikudancestudio/mmd_app.hpp"
 
@@ -989,6 +990,23 @@ bool Install(MMDApp& app, const std::filesystem::path& abc, std::string& error,
     return true;
 }
 
+#if !MMD_ORIGINAL_PROFILE
+void MeasureResources(const void* object, plugins::resource_budget::Collector& out) {
+    auto& store = GetStore(); std::lock_guard<std::mutex> lock(store.mutex);
+    const auto found = store.objects.find(object);
+    if (found == store.objects.end() || !found->second) return;
+    out.Add(&*found, 1, sizeof(*found) + 4 * sizeof(void*));
+    const auto& entry = *found->second; out.Array(&entry, 1); out.Vector(entry.children);
+    for (const auto& child : entry.children) { out.String(child.name); out.Vector(child.times); }
+    if (entry.source) {
+        const auto& archive = *entry.source; out.Array(&archive, 1);
+        out.String(archive.file.native()); out.String(archive.ownerDirectory.native());
+        out.Array(archive.stream.get(), 1); out.Array(archive.archive.get(), 1);
+        // Stream buffering and Alembic's private caches have no size query.
+        out.MissingResource(plugins::resource_budget::MeshSidecar);
+    }
+}
+#endif
 bool Has(const void* object) {
     if (!object) return false;
     auto& store = GetStore();

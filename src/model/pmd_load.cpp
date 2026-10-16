@@ -51,6 +51,7 @@
 #include "mikudancestudio/d3dx_dyn.hpp"
 #include "mikudancestudio/d3d_wrapper.hpp"
 #include "mikudancestudio/model.hpp"
+#include "mikudancestudio/model_load_ui.hpp"
 #include "mikudancestudio/path_workspace.hpp"
 #include "mikudancestudio/ported_funcs.hpp"
 #include "mikudancestudio/effect_api.hpp"
@@ -999,7 +1000,7 @@ bool ModelLoadPMD(unsigned char* m, HWND hwnd, const wchar_t* path,
     }
 #endif
     model.loadComplete = 1;
-    PostLoadInit(m);                                          // 0x49C850
+    model_load_ui::PostLoadInitOrDefer(m);                    // 0x49C850
     model_vertex_cache::RegisterLoaded(m);
     return true;
 }

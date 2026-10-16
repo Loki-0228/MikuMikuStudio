@@ -47,7 +47,19 @@ SharedHistory::SharedHistory(StorageStore& storage, std::function<MmsResult()> g
     : storage_(storage), gate_(std::move(gate)), maxBytes_(bytes), maxEntries_(entries) {
     if (!entries || !bytes) throw std::invalid_argument("history limits");
 }
-SharedHistory::~SharedHistory() = default;
+SharedHistory::~SharedHistory() {
+    entered_ = true;
+    InvalidatePending();
+    if (reset_) { reset_->owner_ = nullptr; reset_ = nullptr; }
+}
+void SharedHistory::AttachStore(EditStore* store) {
+    if (!store || edits_ || entered_ || GetCurrentThreadId()!=thread_)
+        throw std::invalid_argument("history edit store ownership");
+    edits_ = store;
+}
+void SharedHistory::DetachStore(EditStore* store) noexcept {
+    if (edits_ == store) edits_ = nullptr;
+}
 MmsResult SharedHistory::Ready() const {
     if (GetCurrentThreadId() != thread_) return MMS_E_THREAD;
     if (poisoned_ || storage_.Poisoned() || revision_ == std::numeric_limits<uint64_t>::max()) return MMS_E_NOT_READY;
@@ -133,8 +145,27 @@ MmsResult SharedHistory::History(bool redo) {
 }
 SharedHistory::NativeTransaction::NativeTransaction(SharedHistory& owner,
     std::unique_ptr<Publication> p)
-    : owner_(&owner), revision_(owner.revision_), publication_(std::move(p)) {}
-SharedHistory::NativeTransaction::~NativeTransaction() = default;
+    : owner_(&owner), next_(owner.pending_), revision_(owner.revision_), publication_(std::move(p)) {
+    if (next_) next_->previous_ = this;
+    owner.pending_ = this;
+}
+SharedHistory::NativeTransaction::~NativeTransaction() {
+    if (!owner_) return;
+    if (previous_) previous_->next_ = next_; else owner_->pending_ = next_;
+    if (next_) next_->previous_ = previous_;
+}
+void SharedHistory::InvalidatePending() noexcept {
+    while (pending_) {
+        auto* transaction = pending_;
+        pending_ = transaction->next_;
+        if (pending_) pending_->previous_ = nullptr;
+        transaction->owner_ = nullptr;
+        transaction->previous_ = transaction->next_ = nullptr;
+        // Release candidates too: they can retain physics caches and objects
+        // even when the caller keeps its cancelled token across a scene reset.
+        transaction->publication_.reset();
+    }
+}
 MmsResult SharedHistory::PrepareNative(std::string label, std::shared_ptr<HistoryChange> change,
     std::unique_ptr<NativeTransaction>& out) {
     if (auto r = Enter()) return r;
@@ -151,7 +182,9 @@ MmsResult SharedHistory::PrepareNative(std::string label, std::shared_ptr<Histor
 MmsResult SharedHistory::CommitNative(std::unique_ptr<NativeTransaction> t) {
     if (auto r = Enter()) return r;
     Unlock unlock{*this};
-    if (!t || t->owner_ != this) return MMS_E_ARGUMENT;
+    if (!t) return MMS_E_ARGUMENT;
+    if (!t->owner_) return MMS_E_STALE;
+    if (t->owner_ != this) return MMS_E_ARGUMENT;
     if (t->revision_ != revision_ || !t->publication_->IsCurrent()) return MMS_E_STALE;
     t->publication_->Publish();
     // Finalize retired physics contacts while Enter still excludes reentry.
@@ -159,10 +192,42 @@ MmsResult SharedHistory::CommitNative(std::unique_ptr<NativeTransaction> t) {
     t.reset(); return MMS_OK;
 }
 MmsResult SharedHistory::Reset() {
+    if (auto r = Ready()) return r;
+    if (edits_ && (edits_->InCallback() || edits_->HasPending())) return MMS_E_BUSY;
     if (auto r = Enter()) return r;
     Unlock unlock{*this};
+    ResetLocked(); return MMS_OK;
+}
+void SharedHistory::ResetLocked() noexcept {
+    InvalidatePending();
     retired_.splice(retired_.end(), undo_); retired_.splice(retired_.end(), redo_);
-    bytes_ = 0; ++revision_; return MMS_OK;
+    bytes_ = 0; ++revision_;
+}
+SharedHistory::ResetTransaction::ResetTransaction(SharedHistory& owner) : owner_(&owner) {
+    owner.reset_ = this;
+}
+SharedHistory::ResetTransaction::~ResetTransaction() {
+    if (owner_) { owner_->reset_ = nullptr; owner_->Leave(); }
+}
+MmsResult SharedHistory::ResetTransaction::Commit() noexcept {
+    if (!owner_) return MMS_E_STALE;
+    if (GetCurrentThreadId() != owner_->thread_) return MMS_E_THREAD;
+    if (committed_) return MMS_E_ARGUMENT;
+    if (owner_->storage_.InCallback()) return MMS_E_BUSY;
+    owner_->ResetLocked();
+    owner_->retired_.clear();
+    committed_ = true;
+    return MMS_OK;
+}
+MmsResult SharedHistory::PrepareReset(std::unique_ptr<ResetTransaction>& out) {
+    if (auto r = Ready()) return r;
+    if (edits_ && (edits_->InCallback() || edits_->HasPending())) return MMS_E_BUSY;
+    if (auto r = Enter()) return r;
+    const auto result = Boundary([&] {
+        out.reset(new ResetTransaction(*this)); return MMS_OK;
+    });
+    if (result) Leave();
+    return result;
 }
 void SharedHistory::Collect() noexcept {
     if (GetCurrentThreadId() != thread_ || entered_ || storage_.InCallback() || storage_.Prepared()) return;

@@ -1,4 +1,5 @@
 #include "mikudancestudio/physics_scale.hpp"
+#include "../plugins/scene_resource_budget.hpp"
 #include "mikudancestudio/affine_collision_shape.hpp"
 #include "mikudancestudio/affine_skinning.hpp"
 #include "mikudancestudio/bone_scale.hpp"
@@ -367,6 +368,24 @@ void FinishReadback(unsigned char *model) {
     if (it != states.end())
         it->second.pose = bone_scale::PoseValues(model);
 }
+#if !MMD_ORIGINAL_PROFILE
+void MeasureResources(const unsigned char* model, plugins::resource_budget::Collector& out) {
+    const auto found = states.find(model); if (found == states.end()) return;
+    const auto& s = found->second;
+    out.Add(&*found, 1, sizeof(*found) + 4 * sizeof(void*));
+    out.Vector(s.rigids); out.Vector(s.joints); out.Vector(s.geometryBaseline);
+    out.Nodes(s.pose); out.Nodes(s.authoredPose);
+    for (const auto& r : s.rigids) {
+        plugins::resource_budget::Shape(r.base, out); plugins::resource_budget::Shape(r.shape.get(), out);
+        const auto entry = bodies.find(r.body);
+        if (entry != bodies.end()) out.Add(&*entry, 1, sizeof(*entry) + 4 * sizeof(void*));
+    }
+    for (const auto& j : s.joints) {
+        const auto entry = constraints.find(j.joint);
+        if (entry != constraints.end()) out.Add(&*entry, 1, sizeof(*entry) + 4 * sizeof(void*));
+    }
+}
+#endif
 void Forget(unsigned char *model) {
     const auto it = states.find(model);
     if (it == states.end())

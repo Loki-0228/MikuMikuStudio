@@ -71,6 +71,7 @@
 #include "mikudancestudio/d3d_wrapper.hpp"
 #include "mikudancestudio/bone_key_pool.hpp"
 #include "mikudancestudio/model.hpp"
+#include "mikudancestudio/model_load_ui.hpp"
 #include "mikudancestudio/text_encoding.hpp"
 #include "mikudancestudio/ported_funcs.hpp"
 
@@ -1989,7 +1990,7 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
     }
 #endif
     model.loadComplete = 1;
-    PostLoadInit(m);                                        // 0x49C850
+    model_load_ui::PostLoadInitOrDefer(m);                   // 0x49C850
     model_vertex_cache::RegisterLoaded(m);
     // Report once per model, including PMM loads whose showInfo flag is off.
     // Headless importers have no owner window and can inspect the same text

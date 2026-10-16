@@ -255,6 +255,7 @@ void Manager::Event(uint32_t kind, MmsBytes payload, uint32_t version) { impl_->
 UiRegistry& Manager::Ui() { return impl_->registry; }
 MmsResult Manager::SaveUiPreferences() { return impl_->SavePreferences(); }
 StorageStore& Manager::Storage() { return impl_->storage; }
-bool Manager::InCallback() const { return impl_->active != 0 || impl_->registry.InCallback() || impl_->storage.InCallback() || impl_->storage.Prepared(); }
+bool Manager::ExecutingCallback() const { return impl_->active != 0 || impl_->registry.InCallback() || impl_->storage.InCallback(); }
+bool Manager::InCallback() const { return ExecutingCallback() || impl_->storage.Prepared(); }
 std::vector<PluginStatus> Manager::Status() const { auto result = impl_->failed; for (const auto& i : impl_->instances) result.push_back(i->status); return result; }
 }

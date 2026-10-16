@@ -19,6 +19,9 @@ MmsResult EditStore::Begin(EditClient& c,MmsString label,uint64_t expected,MmsHa
     if(auto r=Ready(c))return r;
     if(!out||!expected||!ValidId(c.id))return MMS_E_ARGUMENT;
     if(transactions_.size()>=1024)return MMS_E_BUSY;
+    Busy guard(busy_);
+    if(auto r=host_.Enter())return r;
+    HostLock lock{host_};
     uint64_t revision=0;if(auto r=host_.Revision(revision))return r;if(revision!=expected)return MMS_E_STALE;
     auto transaction=std::make_unique<Transaction>();transaction->owner=&c;transaction->expected=expected;transaction->label=String(label);
     if(transaction->label.empty())return MMS_E_ARGUMENT;
@@ -34,11 +37,15 @@ MmsResult EditStore::Join(EditClient& c,MmsHandle h,const MmsTransactionParticip
     for(const auto& item:t.participants)if(item.id==c.id)return MMS_E_CONFLICT;
     t.participants.push_back({c.id,*p,serializer});return MMS_OK;
 }
-void EditStore::CancelAll(Transaction& t) noexcept {
+MmsResult EditStore::CancelAll(Transaction& t) noexcept {
+    MmsResult result=MMS_OK;
     for(auto it=t.participants.rbegin();it!=t.participants.rend();++it){
-        if(Boundary([&]{it->table.cancel(it->table.context);return MMS_OK;})){poisoned_=true;host_.Poison();}
+        if(it->table.cancel && Boundary([&]{it->table.cancel(it->table.context);return MMS_OK;})){
+            result=MMS_E_FAILED;poisoned_=true;host_.Poison();
+        }
     }
-    t.participants.clear();t.publication.reset();
+    t.participants.clear();t.publication.reset();t.native.reset();
+    return result;
 }
 MmsResult EditStore::JoinNative(EditClient& c, MmsHandle h, std::shared_ptr<HistoryChange> change) {
     if (auto r=Ready(c)) return r;
@@ -128,7 +135,21 @@ bool EditStore::Retire(EditClient& c){
     }
     return !poisoned_;
 }
-EditStore::~EditStore(){busy_=true;for(auto& [h,t]:transactions_)CancelAll(*t);}
+MmsResult EditStore::CancelPending(){
+    if(GetCurrentThreadId()!=thread_)return MMS_E_THREAD;
+    if(busy_)return MMS_E_BUSY;
+    Busy guard(busy_);
+    MmsResult result=MMS_OK;
+    for(auto& [h,t]:transactions_)if(CancelAll(*t))result=MMS_E_FAILED;
+    transactions_.clear();
+    return result;
+}
+EditStore::~EditStore(){
+    busy_=true;
+    for(auto& [h,t]:transactions_)CancelAll(*t);
+    transactions_.clear();
+    host_.DetachStore(this);
+}
 MmsEditApiV1 EditStore::Api(EditClient& c){
     c.store=this;MmsEditApiV1 api{Header<MmsEditApiV1>(),&c};
     api.begin=[](void* p,MmsString l,uint64_t r,MmsHandle* h){return Boundary([&]{auto& c=*static_cast<EditClient*>(p);return c.store->Begin(c,l,r,h);});};

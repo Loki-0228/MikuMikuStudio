@@ -17,6 +17,7 @@
 #include "btBulletDynamicsCommon.h"
 #include "mikudancestudio/mmv4mms.hpp"
 #include "mikudancestudio/native_mesh.hpp"
+#include "../plugins/scene_resource_budget.hpp"
 #include "mikudancestudio/mmd_app.hpp"
 #include "mikudancestudio/model.hpp"
 #include "mikudancestudio/d3dx_dyn.hpp"
@@ -295,5 +296,26 @@ std::unique_ptr<Snapshot> AccessorySnapshot(mdl::AccessoryRecord* a,uint32_t ins
 #include "lifecycle.inl"
 }
 #include "menu.inl"
+#if !MMD_ORIGINAL_PROFILE
+void MeasureResources(const void* object, plugins::resource_budget::Collector& out) {
+    const auto generation = generations.find(object);
+    if (generation != generations.end()) {
+        out.Add(&*generation, 1, sizeof(*generation) + 4 * sizeof(void*));
+        // The optional renderer can keep its own model resources. Its current
+        // ABI has no resource-size query; do not invoke it during measurement.
+        if (plugin) out.MissingResource(plugins::resource_budget::ExternalRenderer);
+    }
+    const auto found = physicsSnapshots.find(reinterpret_cast<std::uintptr_t>(object));
+    if (found == physicsSnapshots.end()) return;
+    out.Add(&*found, 1, sizeof(*found) + 4 * sizeof(void*));
+    for (const auto& bank : found->second.banks) {
+        out.Vector(bank.slots);
+        for (const auto& snapshot : bank.slots) if (snapshot) {
+            out.Array(snapshot.get(), 1); out.Vector(snapshot->vertices);
+            out.Vector(snapshot->bindings); out.Vector(snapshot->joints);
+        }
+    }
+}
+#endif
 #include "renderer.inl"
 }

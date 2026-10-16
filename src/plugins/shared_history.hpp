@@ -23,6 +23,10 @@ public:
 // scene-mutation gate. It must route ALL editing paths here before exposing
 // mms.edit; creating a separate instance for plugins is not supported.
 class SharedHistory final : public EditHost {
+public:
+    class NativeTransaction;
+    class ResetTransaction;
+private:
     struct Node;
     struct Publication;
     using Nodes = std::list<std::shared_ptr<const Node>>;
@@ -33,12 +37,16 @@ class SharedHistory final : public EditHost {
     uint64_t revision_ = 1, bytes_ = 0, maxBytes_;
     size_t maxEntries_;
     bool entered_ = false, poisoned_ = false;
+    NativeTransaction* pending_ = nullptr;
+    ResetTransaction* reset_ = nullptr;
+    EditStore* edits_ = nullptr;
     MmsResult Ready() const;
     MmsResult ReserveNode(std::shared_ptr<const EditRecord>, std::shared_ptr<HistoryChange>,
                          std::unique_ptr<Publication>&);
     void Publish(Publication&) noexcept;
+    void InvalidatePending() noexcept;
+    void ResetLocked() noexcept;
 public:
-    class NativeTransaction;
     explicit SharedHistory(StorageStore&, std::function<MmsResult()> gate = {},
                            size_t maxEntries = 128, uint64_t maxBytes = 256ull * 1024 * 1024);
     ~SharedHistory();
@@ -47,6 +55,8 @@ public:
     void Leave() noexcept override;
     MmsResult Reserve(std::shared_ptr<const EditRecord>, std::unique_ptr<EditPublication>&) override;
     MmsResult History(bool redo) override;
+    void AttachStore(EditStore*) override;
+    void DetachStore(EditStore*) noexcept override;
     void Poison() noexcept override { poisoned_ = true; }
     // Prepare a native operation before changing live state. Cancellation is
     // destruction. Commit rechecks revision and source state, then consumes it.
@@ -56,6 +66,11 @@ public:
     // Project boundaries invalidate prepared transactions without reusing a
     // revision. Retired resources are reclaimed outside the no-fail publication.
     MmsResult Reset();
+    // Acquire before StorageStore::Prepare for a project replacement. Commit
+    // only at the first destructive native step; cancellation preserves the
+    // old journal. The token excludes edits until it is destroyed. Commit may
+    // run with prepared serializers, but never from a serializer callback.
+    MmsResult PrepareReset(std::unique_ptr<ResetTransaction>&);
     void Collect() noexcept;
     size_t UndoCount() const noexcept { return undo_.size(); }
     size_t RedoCount() const noexcept { return redo_.size(); }
@@ -65,6 +80,8 @@ public:
 class SharedHistory::NativeTransaction {
     friend class SharedHistory;
     SharedHistory* owner_;
+    NativeTransaction* previous_ = nullptr;
+    NativeTransaction* next_ = nullptr;
     uint64_t revision_;
     std::unique_ptr<Publication> publication_;
     NativeTransaction(SharedHistory&, std::unique_ptr<Publication>);
@@ -72,5 +89,18 @@ public:
     ~NativeTransaction();
     NativeTransaction(const NativeTransaction&) = delete;
     NativeTransaction& operator=(const NativeTransaction&) = delete;
+};
+class SharedHistory::ResetTransaction {
+    friend class SharedHistory;
+    SharedHistory* owner_;
+    bool committed_ = false;
+    explicit ResetTransaction(SharedHistory&);
+public:
+    ~ResetTransaction();
+    ResetTransaction(const ResetTransaction&) = delete;
+    ResetTransaction& operator=(const ResetTransaction&) = delete;
+    // Reclaims native owners before the caller frees the old scene/world.
+    // No allocations. Keeps the journal locked through serializer commit.
+    MmsResult Commit() noexcept;
 };
 }

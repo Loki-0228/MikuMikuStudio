@@ -1,4 +1,5 @@
 #include "mikudancestudio/history_physics.hpp"
+#include "../plugins/scene_resource_budget.hpp"
 #include "mikudancestudio/dynamics_world.hpp"
 #include "BulletDynamics/Dynamics/btRigidBody.h"
 #include "BulletDynamics/ConstraintSolver/btTypedConstraint.h"
@@ -426,6 +427,19 @@ Retained::Retained(DynamicsWorld& world, std::vector<btRigidBody*> bodies, std::
     : impl_(std::make_shared<Impl>(world, std::move(bodies), std::move(constraints))) {}
 Retained::~Retained() = default;
 bool Retained::Present() const noexcept { return impl_->present; }
+void Retained::MeasureResources(plugins::resource_budget::Collector& out) const {
+    out.Array(this, 1); out.Array(impl_.get(), 1);
+    out.Vector(impl_->bodies); out.Vector(impl_->constraints);
+    if (!impl_->saved) return;
+    const auto& s = *impl_->saved; out.Array(&s, 1);
+    out.Vector(s.objects.values); out.Vector(s.objects.positions);
+    out.Vector(s.moving.values); out.Vector(s.moving.positions);
+    out.Vector(s.constraints.values); out.Vector(s.constraints.positions); out.Vector(s.bodies);
+    if (s.order) {
+        out.Array(s.order.get(), 1); out.Vector(s.order->objects);
+        out.Vector(s.order->moving); out.Vector(s.order->constraints);
+    }
+}
 std::unique_ptr<Retained::Transition> Retained::Prepare(bool present) {
     return PrepareBatch({this}, present);
 }

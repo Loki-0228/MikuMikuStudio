@@ -56,6 +56,10 @@
 | P3 | 模型及附件资源保留组件 | 本机已验证 | `RetainedSceneObject` 保留原生对象、关键帧、附件曲线、COM 资源及 Bullet 对象。真实隐藏宿主覆盖源文件离线、DX9 重置、导入与删除往返；调用内部共同历史，菜单入口尚未接入。 |
 | P3 | 整批对象导入与删除候选 | 本机已验证 | 多对象共用一份物理候选及绑定记录；两模型与两附件作为一条记录往返，恢复原资源及顺序。同种对象槽位冲突拒绝，跨物理 owner 关节仍不支持。 |
 | P3 | Bullet 移出和恢复候选 | 本机已验证 | 保留刚体、约束及代理句柄；移出后不参与模拟、碰撞和射线查询。恢复重建静止重叠，保留其他碰撞算法；发布不分配，旧接触在解锁前清理。外部 action、碰撞回调及未保留的关联约束拒绝准备。 |
+| P3 | 应用历史寿命与工程切换 | 本机已验证 | 应用持有共同日志；准备工程可取消，PMM 替换前释放旧历史及原生候选；新建和关闭时在世界销毁前回收。混合编辑未取消时拒绝重置。 |
+| P3 | 独立 type 1 姿态记录 | 本机已验证 | 100 次覆盖旧环后往返；按平移分量、旋转、dirty 与缩放差异恢复，保留未改字段和播放头。其他类型的独立记录仍待实现。 |
+| P3 | 原生保留资源计量 | 部分实现 | 实际池容量、嵌套数组、侧表与 DX9 查询；批内分配地址和 COM 身份去重。文本、旧撤销、物理及外部后端缺项显式标记，尚未用于自动准入预算。 |
+| P3 | 模型加载后的 UI 延后机制 | 本机已验证 | PMD、PMX 成功尾部支持按窗口嵌套延后；取消或异常不刷新，提交成功后由调用方显式刷新。实际导入菜单尚未启用。 |
 | P3 | 原生统一撤销及可写属性 | 未实现 | 主窗口、全局编辑、各原生写入入口、完整资源计量和对象恢复后的 UI 刷新仍待接入。`mms.edit` 仍返回 NOT_FOUND，可写属性仍为 NOT_READY。 |
 | P3 | animation 轨道/键、层、片段、变速、烘焙和选择 | 未实现 | 服务返回 NOT_FOUND。 |
 | P3 | storage serializer、工程数据和成对保存 | 本机已验证 | C ABI、两阶段加载、保存数据租约、缺失插件保留；PMM 与 JSON 配套哈希、恢复记录、旧对回退、自动备份轮换；真实 DLL 原名/中文 EXE 往返通过。 |
@@ -109,6 +113,9 @@
 | 对象资源整合后的构建与启动 | 宿主、原生历史、ABI、曲线宿主及侧栏探针五个目标构建成功；原名及中文名隐藏宿主的启动、菜单、工具栏、场景、面板和退出通过 | `plugin-abi-object-history-batch-final-build.log`、`plugin-abi-object-history-batch-smoke-1.log` |
 | 对象资源代码的 PE 导入清单 | 宿主为 x64、子系统 6.1；宿主及两个测试 EXE 未新增必需的可选图形或厂商后端直接导入 | `plugin-abi-object-history-batch-pe.json` |
 | 批量历史、池扩容与布局持久化 | 原生历史 11,821 项、ABI 契约 900 项通过；曲线宿主、原生变速和关键帧池回归通过 | `plugin-abi-batch-layout-final-tests.log` |
+| 工程边界、独立姿态与资源计量 | 原生历史 12,724 项、ABI 契约 996 项、模型加载 UI 22 项及曲线宿主回归通过 | `plugin-abi-history-lifecycle-final-tests.log` |
+| 应用共同历史的真实场景寿命 | PMX 原名、PMD 中文名均通过；真实资源计量、取消加载、PMM 重开、新建、准备期间关闭及遗留 token 释放。修复空模型显示复选框通知导致的重置崩溃 | `plugin-abi-history-lifecycle-host-3.log`、`abi-history-lifecycle-host-3/report.json` |
+| 工程边界后的插件工程回归 | 原名和中文 EXE 下真实 serializer、PMM 保存与恢复、缺失插件数据保留、失败不发布及卸载通过 | `plugin-abi-history-lifecycle-storage-2.log`、`abi-history-lifecycle-storage-2/report.json` |
 | 四对象批量恢复 | PMX 与 PMD 两组均包含两个模型、两个 X 附件；整批导入和删除各占一条记录，源文件离线及 DX9 重置后连续往返通过 | `plugin-abi-multi-object-host-final.log`、`abi-multi-object-host-final/report.json` |
 | 布局文件与真实重启 | 正常命令提交及关闭事件提交两组通过；每组覆盖插件暂时缺失、恢复注册和中文 EXE 改名；文件测试覆盖独占锁、外部修改冲突、替换失败清理及坏文件保留 | `plugin-abi-ui-preferences-host-final.log`、`plugin-abi-ui-preferences-close-final.log`、`plugin-abi-batch-layout-final-tests.log` |
 | 批量与布局整合后的宿主回归 | 完整构建、PMX/PMD 几何和 PMM 往返、原名及中文名下的菜单、工具栏、双面板与场景查询通过 | `plugin-abi-batch-layout-final-build.log`、`plugin-abi-batch-layout-geometry-final.log`、`plugin-abi-batch-layout-smoke-final.log` |

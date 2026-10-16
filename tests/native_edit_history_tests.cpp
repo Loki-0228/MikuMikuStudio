@@ -324,9 +324,13 @@ void CrossModelJournal(){
 }
 #include "history_physics_checks.inc"
 #include "scene_object_history_checks.inc"
+#include "native_pose_history_checks.inc"
+#include "scene_resource_budget_checks.inc"
 int main(){
     std::setvbuf(stdout,nullptr,_IONBF,0);
     const auto run=[](const char* name,void(*test)()){std::printf("RUN %s\n",name);test();};
+    run("NativePoseHistoryChecks",NativePoseHistoryChecks);
+    run("SceneResourceBudgetChecks",SceneResourceBudgetChecks);
     run("PoseAndStale",PoseAndStale);run("KeysAndChain",KeysAndChain);run("Bake",Bake);
     run("Deletion",Deletion);run("EmptyAndCycle",EmptyAndCycle);run("FreeCurves",FreeCurves);
     run("Scatter",Scatter);run("FailedNativeCommands",FailedNativeCommands);run("RemovalBindings",RemovalBindings);

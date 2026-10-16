@@ -1819,3 +1819,19 @@ bool LayersUnchanged(const unsigned char* model, const AuthoredLayers& layers) {
 }
 
 }  // namespace mikudancestudio::morph_curve
+
+#include "../plugins/scene_resource_budget.hpp"
+#if !MMD_ORIGINAL_PROFILE
+namespace mikudancestudio::morph_curve {
+void MeasureResources(const unsigned char* model, plugins::resource_budget::Collector& out) {
+    const auto found = States().find(model); if (found == States().end()) return;
+    const auto& s = found->second;
+    out.Add(&*found, 1, sizeof(*found) + 4 * sizeof(void*));
+    out.Nodes(s.authored); out.Nodes(s.effective); out.Nodes(s.mirror); out.Nodes(s.observed);
+    for (const auto& e : s.authored) out.Vector(e.second.keys);
+    for (const auto& e : s.effective) out.Vector(e.second.keys);
+    for (const auto& e : s.mirror) out.Vector(e.second);
+    for (const auto& e : s.observed) out.Vector(e.second);
+}
+}
+#endif

@@ -4,6 +4,7 @@
 #define NOMINMAX
 #include "mikudancestudio/bone_curve.hpp"
 #include "mikudancestudio/native_edit_history.hpp"
+#include "../plugins/scene_resource_budget.hpp"
 #include "mikudancestudio/bone_key_pool.hpp"
 #include "mikudancestudio/bone_scale.hpp"
 #include "mikudancestudio/mmd_app.hpp"
@@ -268,6 +269,14 @@ public:
 std::unique_ptr<native_history::SideState> PrepareHistory(unsigned char* model,const std::vector<native_history::RingStep>& steps) {
     return std::make_unique<HistoryState>(model,steps);
 }
+#if !MMD_ORIGINAL_PROFILE
+void MeasureResources(const unsigned char* model,plugins::resource_budget::Collector& out) {
+    const auto it=states.find(model);if(it==states.end())return;
+    const auto& state=it->second;out.Array(&state,1);
+    const auto curves=[&](const Curves& values){out.Nodes(values);for(const auto& entry:values)for(const auto& track:entry.second.tracks)out.Vector(track.keys);};
+    curves(state.curves);for(const auto& value:state.undo)curves(value);for(const auto& value:state.redo)curves(value);
+}
+#endif
 void CopyState(const unsigned char* source,unsigned char* destination){
     Forget(destination);auto* s=Current(source);if(!s||!destination)return;
     State copy;copy.identity=mdl::Mdl(destination)->boneTable;copy.curves=s->curves;

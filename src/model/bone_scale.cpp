@@ -1,5 +1,6 @@
 #include "mikudancestudio/bone_curve.hpp"
 #include "mikudancestudio/native_edit_history.hpp"
+#include "../plugins/scene_resource_budget.hpp"
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
@@ -526,6 +527,28 @@ bool HasPose(const unsigned char* model) {
 Values PoseValues(const unsigned char* model) {
     const auto it=states.find(model);return it==states.end()?Values{}:it->second.current.pose;
 }
+bool PoseValuesEqual(const unsigned char* model,const Values& pose) noexcept {
+    const auto it=states.find(model);
+    return it==states.end()?pose.empty():it->second.current.pose==pose;
+}
+bool HasPoseStorage(const unsigned char* model) noexcept { return states.find(model)!=states.end(); }
+bool ExchangePoseValues(unsigned char* model,Values& pose) noexcept {
+    const auto it=states.find(model);
+    if(it==states.end())return pose.empty();
+    auto& state=it->second;
+    if(state.current.pose==pose)return true;
+    RestoreTransforms(model);
+    state.current.pose.swap(pose);++state.revision;
+    return true;
+}
+#if !MMD_ORIGINAL_PROFILE
+void MeasureResources(const unsigned char* model,plugins::resource_budget::Collector& out) {
+    const auto it=states.find(model);if(it==states.end())return;
+    const auto& state=it->second;out.Array(&state,1);out.Vector(state.rigid);
+    const auto snapshot=[&](const Snapshot& value){out.Nodes(value.pose);out.Nodes(value.keys);out.Nodes(value.curves);};
+    snapshot(state.current);for(const auto& value:state.undo)snapshot(value);for(const auto& value:state.redo)snapshot(value);
+}
+#endif
 static Transform Pivot(const mdl::BoneRecord& bone,const Matrix& scale) {
     Transform pivot=Affine(scale);
     for(int c=0;c<3;++c) {

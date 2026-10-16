@@ -1,4 +1,5 @@
 #include "mikudancestudio/frame_limits.hpp"
+#include "../plugins/scene_resource_budget.hpp"
 #include "mikudancestudio/key_pool.hpp"
 #define NOMINMAX
 #include "mikudancestudio/animation_curve_host.hpp"
@@ -702,6 +703,28 @@ AccessoryAuthoring::AccessoryAuthoring(MMDApp& app, int slot) : impl_(std::make_
     if (slot < 0 || slot >= 255) throw std::invalid_argument("accessory authoring slot");
 }
 AccessoryAuthoring::~AccessoryAuthoring() = default;
+#if !MMD_ORIGINAL_PROFILE
+void AccessoryAuthoring::MeasureResources(plugins::resource_budget::Collector& out) const {
+    out.Array(this, 1); out.Array(impl_.get(), 1);
+    const State* state = nullptr;
+    if (impl_->present) {
+        const auto found = states.find(impl_->key);
+        if (found != states.end()) state = &found->second;
+    } else if (!impl_->node.empty()) state = &impl_->node.mapped();
+    if (!state) return;
+    out.Add(state, 1, sizeof(State) + sizeof(Address) + 4 * sizeof(void*));
+    for (const auto* channels : {&state->channels, &state->baseline}) {
+        out.Vector(*channels);
+        for (const auto& c : *channels) {
+            out.String(c.id); out.String(c.label); out.String(c.unit); out.String(c.interpolationGroup);
+            out.Vector(c.track.keys); out.Vector(c.nativeControls); out.Vector(c.controlGeometry);
+            out.Vector(c.collections);
+            for (const auto& group : c.collections) { out.String(group.id); out.String(group.label); }
+            if (c.sample) out.MissingResource(plugins::resource_budget::CurveCallback);
+        }
+    }
+}
+#endif
 std::unique_ptr<AccessoryAuthoring::Exchange> AccessoryAuthoring::Prepare(bool present) {
     return std::unique_ptr<Exchange>(new Exchange(std::make_unique<Exchange::Impl>(impl_, present)));
 }
