@@ -6,6 +6,7 @@ add_library(mms_plugin_runtime STATIC
     src/plugins/manifest.cpp
     src/plugins/loader_win32.cpp
     src/plugins/ui_registry.cpp
+    src/plugins/ui_preferences_file.cpp
     src/plugins/manager.cpp
     src/plugins/scene_store.cpp
     src/plugins/scene_identity.cpp

@@ -7,6 +7,7 @@
 #include <deque>
 
 namespace mikudancestudio::plugins {
+struct Json;
 class UiRegistry;
 struct UiClient { UiRegistry* registry; std::string id; bool stopping = false, unsafeToUnload = false; };
 struct Arena {
@@ -28,6 +29,7 @@ struct ElementRecord {
     float width = 0, height = 0;
     uint32_t key = 0, modifiers = 0, scope = 0;
     uint64_t order = 0;
+    bool userOrder = false;
     bool layoutGroup = false;
     MmsUiLayoutHintsV1 defaultHints{}, effectiveHints{};
     bool userHints = false;
@@ -42,12 +44,15 @@ class UiRegistry {
     struct Lease;
     struct Layout;
     struct View;
+    struct Preferences;
     DWORD thread_ = GetCurrentThreadId();
     uint64_t revision_ = 1, next_ = 1, generation_ = 1;
     unsigned callbackDepth_ = 0;
     std::map<MmsHandle, std::unique_ptr<Lease>> leases_;
     std::map<MmsHandle, std::unique_ptr<Layout>> layouts_;
     std::map<std::string, std::unique_ptr<View>> views_;
+    std::unique_ptr<Preferences> preferences_;
+    uint64_t preferencesRevision_ = 1;
     std::function<void()> changed_;
     uint64_t geometryRevision_ = 0, geometryUiRevision_ = 0;
     std::map<std::string, MmsUiLayoutItemV1> geometry_;
@@ -73,6 +78,10 @@ class UiRegistry {
     MmsResult Commit(UiClient&, MmsHandle);
     void Release(UiClient&, MmsHandle, unsigned kind);
     bool Allowed(const MmsUiElementV1&, const std::map<std::string, ElementRecord>&) const;
+    MmsResult MergePreferences(std::map<std::string, ElementRecord>&,
+        const std::map<std::string, Json>&, uint64_t& next, bool strict) const;
+    std::unique_ptr<Preferences> CapturePreferences(const std::map<std::string, ElementRecord>&,
+        const std::map<std::string, Json>&) const;
 public:
     std::map<std::string, std::shared_ptr<CommandRecord>> commands;
     std::map<std::string, std::shared_ptr<PropertyRecord>> properties;
@@ -87,6 +96,11 @@ public:
     void Retire(UiClient&);
     bool HasLeases(const UiClient&) const;
     uint64_t Revision() const { return revision_; }
+    // Internal host persistence. Import publishes only after full validation;
+    // missing plugins remain in the document and are applied on registration.
+    std::string ExportPreferences() const;
+    MmsResult ImportPreferences(std::string_view);
+    uint64_t PreferencesRevision() const { return preferencesRevision_; }
     bool InCallback() const { return callbackDepth_ != 0; }
     MmsResult ShowSurface(const std::string& element, HWND parent, const MmsUiRectV1&, uint32_t dpi, bool visible);
     MmsResult FocusSurface(const std::string& element);

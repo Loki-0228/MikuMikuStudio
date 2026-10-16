@@ -20,6 +20,7 @@ public:
     bool Stop();
     void Event(uint32_t kind, MmsBytes payload = {}, uint32_t version = 0);
     UiRegistry& Ui();
+    MmsResult SaveUiPreferences();
     StorageStore& Storage();
     bool InCallback() const;
     std::vector<PluginStatus> Status() const;

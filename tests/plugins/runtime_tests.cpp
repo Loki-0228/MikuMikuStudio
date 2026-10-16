@@ -24,6 +24,7 @@ static MmsString S(const char* s) { return {s, std::strlen(s)}; }
 #include "win32_checks.inc"
 #include "scene_checks.inc"
 static void Write(const fs::path& path, const std::string& bytes) { fs::create_directories(path.parent_path()); std::ofstream f(path, std::ios::binary); f << bytes; if (!f) throw std::runtime_error("fixture write failed"); }
+#include "ui_preferences_file_checks.inc"
 #include "storage_checks.inc"
 #include "edit_checks.inc"
 #include "shared_history_checks.inc"
@@ -117,6 +118,146 @@ static void UiChecks() {
     CHECK(api.unregisterItem(api.context, button) == MMS_OK); CHECK(api.unregisterItem(api.context, h) == MMS_OK);
     CHECK(!registry.HasLeases(c));
 }
+static void UiPreferenceChecks() {
+    struct Fixture {
+        unsigned changed = 0, callbacks = 0;
+        UiRegistry registry{[this] { ++changed; }};
+        UiClient plugin{&registry, "example.preferences"}, editor{&registry, "example.editor"};
+        MmsUiApiV1 api = registry.Api(plugin), edit = registry.Api(editor);
+        MmsUiLayoutApiV1 layout = registry.LayoutApi(plugin);
+        void Register(bool reverse = false, float preferredWidth = 100, float preferredHeight = 24) {
+            MmsCommandDescV1 command{}; command.info.h = Header<MmsCommandDescV1>();
+            command.info.id = S("example.preferences.run"); command.info.ownerPlugin = S("example.preferences"); command.context = this;
+            command.getState = [](void* p, MmsObjectRef, MmsCommandStateV1* state) -> MmsResult {
+                ++static_cast<Fixture*>(p)->callbacks; *state = {Header<MmsCommandStateV1>(), 1, 0, 1, 0, {}}; return MMS_OK;
+            };
+            command.invoke = [](void* p, MmsObjectRef, MmsSpan, MmsHandle) -> MmsResult { ++static_cast<Fixture*>(p)->callbacks; return MMS_OK; };
+            MmsHandle handle; CHECK(api.registerCommand(api.context, &command, &handle) == MMS_OK);
+            const char* ids[] = {"example.preferences.a", "example.preferences.b"};
+            if (reverse) std::swap(ids[0], ids[1]);
+            for (const char* id : ids) {
+                MmsUiElementV1 e{}; e.h = Header<MmsUiElementV1>(); e.id = S(id); e.ownerPlugin = command.info.ownerPlugin;
+                e.label = S("原生标签"); e.kind = MMS_UI_BUTTON; e.parentId = S("mms.toolbar.main.extensions"); e.commandId = command.info.id;
+                e.capabilities = MMS_UI_MOVE | MMS_UI_HIDE | MMS_UI_RESIZE | MMS_UI_SHORTCUT | MMS_UI_LAYOUT;
+                CHECK(api.registerElement(api.context, &e, &handle) == MMS_OK);
+                MmsUiLayoutHintsV1 hints{}; hints.h = Header<MmsUiLayoutHintsV1>();
+                hints.minimum[0] = 60; hints.preferred[0] = preferredWidth; hints.preferred[1] = preferredHeight;
+                hints.order = std::string(id).back() == 'a' ? 10 : 20;
+                CHECK(layout.setDefaultHints(layout.context, e.id, &hints) == MMS_OK);
+            }
+        }
+        void Commit(MmsLayoutOpV1 op) {
+            op.h = Header<MmsLayoutOpV1>();
+            if (op.operation != MMS_LAYOUT_CREATE_GROUP && op.elementId.bytes)
+                op.expectedGeneration = registry.elements.at(String(op.elementId)).desc.generation;
+            MmsHandle tx; CHECK(edit.beginLayout(edit.context, registry.Revision(), &tx) == MMS_OK);
+            CHECK(edit.applyLayout(edit.context, tx, &op) == MMS_OK); CHECK(edit.commitLayout(edit.context, tx) == MMS_OK);
+        }
+    } source;
+    const auto empty = source.registry.ExportPreferences(); const auto pristine = source.registry.PreferencesRevision();
+    source.Register(); CHECK(source.registry.ExportPreferences() == empty && source.registry.PreferencesRevision() == pristine);
+    MmsLayoutOpV1 op{}; op.operation = MMS_LAYOUT_CREATE_GROUP; op.elementId = S("example.editor.group");
+    op.parentId = S("mms.toolbar.main.extensions"); op.value.groupLabel = S("分组\"\\\n"); source.Commit(op);
+    op = {}; op.operation = MMS_LAYOUT_MOVE; op.elementId = S("example.preferences.a"); op.parentId = S("example.editor.group"); source.Commit(op);
+    op = {}; op.operation = MMS_LAYOUT_MOVE; op.elementId = S("example.preferences.b"); op.parentId = S("mms.toolbar.main.extensions"); op.beforeId = S("example.editor.group"); source.Commit(op);
+    op = {}; op.operation = MMS_LAYOUT_VISIBLE; op.elementId = S("example.preferences.b"); op.value.visible = 0; source.Commit(op);
+    op = {}; op.operation = MMS_LAYOUT_SIZE; op.elementId = S("example.preferences.a"); op.value.size = {210, 32}; source.Commit(op);
+    op = {}; op.operation = MMS_LAYOUT_SHORTCUT; op.elementId = S("example.preferences.a"); op.value.shortcut = {75, 2, 1, 0}; source.Commit(op);
+    MmsHandle tx; CHECK(source.edit.beginLayout(source.edit.context, source.registry.Revision(), &tx) == MMS_OK);
+    auto hints = source.registry.elements.at("example.preferences.a").effectiveHints; hints.preferred[0] = 180;
+    auto editorLayout = source.registry.LayoutApi(source.editor);
+    CHECK(editorLayout.stageHints(editorLayout.context, tx, S("example.preferences.a"), source.registry.elements.at("example.preferences.a").desc.generation, &hints) == MMS_OK);
+    CHECK(source.edit.commitLayout(source.edit.context, tx) == MMS_OK);
+    const auto saved = source.registry.ExportPreferences(); CHECK(saved != empty && source.registry.PreferencesRevision() > pristine);
+    const auto json = Json::Parse(saved); CHECK(json.At("schemaVersion").UInt() == 1 && json.At("elements").Items().size() == 3);
+    for (const char* forbidden : {"handle", "generation", "HWND", "callback", "context", "defaultHints"}) CHECK(saved.find(forbidden) == std::string::npos);
+    CHECK(saved.find("preferredHeight") == std::string::npos && saved.find("minimumWidth") == std::string::npos);
+    Fixture loaded; loaded.Register(true, 120, 30);
+    MmsUiSnapshotV1 snapshot{}; snapshot.h = Header<MmsUiSnapshotV1>(); CHECK(loaded.api.acquireSnapshot(loaded.api.context, 0, &snapshot) == MMS_OK);
+    const auto beforeChanged = loaded.changed;
+    CHECK(loaded.registry.ImportPreferences(saved) == MMS_OK && loaded.changed == beforeChanged + 1 && loaded.callbacks == 0);
+    CHECK(loaded.registry.ExportPreferences() == saved);
+    const auto& a = loaded.registry.elements.at("example.preferences.a");
+    CHECK(String(a.desc.parentId) == "example.editor.group" && a.width == 210 && a.height == 32 && a.key == 75 && a.modifiers == 2 && a.scope == 1);
+    CHECK(a.effectiveHints.preferred[0] == 180 && a.effectiveHints.preferred[1] == 30 && a.effectiveHints.minimum[0] == 60);
+    CHECK(!loaded.registry.elements.at("example.preferences.b").visible);
+    CHECK(loaded.registry.elements.at("example.preferences.b").effectiveHints.order < loaded.registry.elements.at("example.editor.group").effectiveHints.order);
+    CHECK(String(loaded.registry.elements.at("example.editor.group").desc.label) == "分组\"\\\n");
+    const auto* previousElements = static_cast<const MmsUiElementV1*>(snapshot.elements.data);
+    bool oldParentPreserved = false;
+    for (size_t i = 0; i < snapshot.elements.count; ++i) if (String(previousElements[i].id) == "example.preferences.a") oldParentPreserved = String(previousElements[i].parentId) == "mms.toolbar.main.extensions";
+    CHECK(oldParentPreserved); loaded.api.releaseSnapshot(loaded.api.context, snapshot.handle);
+    const auto savedRevision = loaded.registry.PreferencesRevision(); hints = a.defaultHints; hints.preferred[0] = 140; hints.preferred[1] = 42;
+    CHECK(loaded.layout.setDefaultHints(loaded.layout.context, S("example.preferences.a"), &hints) == MMS_OK);
+    CHECK(loaded.registry.elements.at("example.preferences.a").effectiveHints.preferred[0] == 180 && loaded.registry.elements.at("example.preferences.a").effectiveHints.preferred[1] == 42);
+    CHECK(loaded.registry.ExportPreferences() == saved && loaded.registry.PreferencesRevision() == savedRevision);
+    const auto reject = [&](const std::string& value, MmsResult expected) {
+        const auto revision = loaded.registry.Revision(), preferenceRevision = loaded.registry.PreferencesRevision(); const auto notifications = loaded.changed;
+        CHECK(loaded.registry.ImportPreferences(value) == expected);
+        CHECK(loaded.registry.Revision() == revision && loaded.registry.PreferencesRevision() == preferenceRevision && loaded.changed == notifications && loaded.callbacks == 0);
+        CHECK(loaded.registry.ExportPreferences() == saved && String(loaded.registry.elements.at("example.preferences.a").desc.parentId) == "example.editor.group");
+    };
+    reject("{broken", MMS_E_ARGUMENT);
+    reject("{\"schemaVersion\":2,\"elements\":[]}", MMS_E_VERSION);
+    reject("{\"schemaVersion\":1,\"elements\":[],\"generation\":123}", MMS_E_ARGUMENT);
+    reject("{\"schemaVersion\":1,\"elements\":[{\"id\":\"example.preferences.a\",\"owner\":\"forged\",\"kind\":4,\"visible\":false}]}", MMS_E_ARGUMENT);
+    const auto record = [](const std::string& fields) { return "{\"schemaVersion\":1,\"elements\":[{\"id\":\"example.preferences.a\",\"owner\":\"example.preferences\",\"kind\":" + std::to_string(MMS_UI_BUTTON) + fields + "}]}"; };
+    reject(record(",\"size\":[32769,20]"), MMS_E_ARGUMENT);
+    reject(record(",\"size\":[1e999,20]"), MMS_E_ARGUMENT);
+    reject(record(",\"shortcut\":[256,0,0]"), MMS_E_ARGUMENT);
+    reject(record(",\"hints\":{\"overflow\":3}"), MMS_E_UNSUPPORTED);
+    reject(record(",\"parent\":\"mms.menu.plugins\""), MMS_E_ARGUMENT);
+    reject("{\"schemaVersion\":1,\"elements\":[{\"id\":\"missing.a\",\"owner\":\"missing\",\"kind\":7,\"parent\":\"missing.b\"},{\"id\":\"missing.b\",\"owner\":\"missing\",\"kind\":7,\"parent\":\"missing.a\"}]}", MMS_E_ARGUMENT);
+    MmsResult threadResult = MMS_OK; std::thread wrongThread([&] { threadResult = loaded.registry.ImportPreferences(saved); }); wrongThread.join(); CHECK(threadResult == MMS_E_THREAD);
+    Fixture late; CHECK(late.registry.ImportPreferences(saved) == MMS_OK && late.registry.ExportPreferences() == saved);
+    CHECK(late.registry.elements.count("example.preferences.a") == 0 && late.registry.elements.count("example.editor.group") == 1);
+    late.Register(true, 130, 36); CHECK(String(late.registry.elements.at("example.preferences.a").desc.parentId) == "example.editor.group");
+    CHECK(late.registry.elements.at("example.preferences.a").effectiveHints.preferred[0] == 180 && late.registry.elements.at("example.preferences.a").effectiveHints.preferred[1] == 36);
+    const auto retiredRevision = late.registry.PreferencesRevision(); late.registry.Retire(late.plugin);
+    CHECK(late.registry.ExportPreferences() == saved && late.registry.PreferencesRevision() == retiredRevision && late.registry.elements.count("example.preferences.a") == 0);
+    late.Register(false, 150, 40); CHECK(!late.registry.elements.at("example.preferences.b").visible && late.registry.ExportPreferences() == saved);
+    Fixture missingParent; missingParent.Register();
+    const auto waiting = record(",\"parent\":\"example.missing.container\",\"visible\":false");
+    CHECK(missingParent.registry.ImportPreferences(waiting) == MMS_OK);
+    CHECK(String(missingParent.registry.elements.at("example.preferences.a").desc.parentId) == "mms.toolbar.main.extensions");
+    op = {}; op.operation = MMS_LAYOUT_VISIBLE; op.elementId = S("example.preferences.b"); op.value.visible = 0; missingParent.Commit(op);
+    CHECK(missingParent.registry.ExportPreferences().find("example.missing.container") != std::string::npos);
+    UiClient missing{&missingParent.registry, "example.missing"}; auto missingApi = missingParent.registry.Api(missing);
+    MmsUiElementV1 container{}; container.h = Header<MmsUiElementV1>(); container.id = S("example.missing.container");
+    container.ownerPlugin = S("example.missing"); container.parentId = S("mms.toolbar.main.extensions"); container.kind = MMS_UI_GROUP;
+    container.capabilities = MMS_UI_CONTAINER | MMS_UI_MOVE | MMS_UI_LAYOUT;
+    MmsHandle containerHandle; CHECK(missingApi.registerElement(missingApi.context, &container, &containerHandle) == MMS_OK);
+    CHECK(String(missingParent.registry.elements.at("example.preferences.a").desc.parentId) == "example.missing.container" && !missingParent.registry.elements.at("example.preferences.a").visible);
+    op = {}; op.operation = MMS_LAYOUT_RESTORE; op.elementId = S("example.preferences.a"); loaded.Commit(op);
+    const auto& reset = loaded.registry.elements.at("example.preferences.a");
+    CHECK(String(reset.desc.parentId) == "mms.toolbar.main.extensions" && reset.width == 0 && reset.key == 0 && reset.effectiveHints.preferred[0] == 140 && reset.effectiveHints.preferred[1] == 42);
+    CHECK(loaded.registry.ExportPreferences().find("example.preferences.a") == std::string::npos);
+    op = {}; op.operation = MMS_LAYOUT_RESTORE; loaded.Commit(op); CHECK(loaded.registry.ExportPreferences() == empty && loaded.registry.elements.count("example.editor.group") == 0);
+    Fixture dormant; CHECK(dormant.registry.ImportPreferences(saved) == MMS_OK); dormant.Commit(op);
+    CHECK(dormant.registry.ExportPreferences() == empty && dormant.registry.elements.size() == 3);
+    Fixture constrained; constrained.Register();
+    op = {}; op.operation = MMS_LAYOUT_SIZE; op.elementId = S("example.preferences.a"); op.value.size = {100, 40}; constrained.Commit(op);
+    const auto sizeSaved = constrained.registry.ExportPreferences();
+    const auto sizeRevision = constrained.registry.Revision(), sizePreferenceRevision = constrained.registry.PreferencesRevision();
+    const auto sizeNotifications = constrained.changed;
+    auto tooLarge = constrained.registry.elements.at("example.preferences.a").defaultHints; tooLarge.minimum[0] = 200;
+    CHECK(constrained.layout.setDefaultHints(constrained.layout.context, S("example.preferences.a"), &tooLarge) == MMS_E_ARGUMENT);
+    CHECK(constrained.registry.Revision() == sizeRevision && constrained.registry.PreferencesRevision() == sizePreferenceRevision && constrained.changed == sizeNotifications);
+    CHECK(constrained.registry.elements.at("example.preferences.a").defaultHints.minimum[0] == 60 && constrained.registry.elements.at("example.preferences.a").width == 100);
+    CHECK(constrained.registry.ExportPreferences() == sizeSaved);
+    auto constrainedEditor = constrained.registry.LayoutApi(constrained.editor);
+    CHECK(constrained.edit.beginLayout(constrained.edit.context, constrained.registry.Revision(), &tx) == MMS_OK);
+    CHECK(constrainedEditor.stageHints(constrainedEditor.context, tx, S("example.preferences.a"), constrained.registry.elements.at("example.preferences.a").desc.generation, &tooLarge) == MMS_OK);
+    CHECK(constrained.edit.commitLayout(constrained.edit.context, tx) == MMS_E_ARGUMENT);
+    CHECK(constrained.registry.Revision() == sizeRevision && constrained.registry.PreferencesRevision() == sizePreferenceRevision && constrained.changed == sizeNotifications);
+    CHECK(constrained.registry.ExportPreferences() == sizeSaved && constrained.registry.elements.at("example.preferences.a").effectiveHints.minimum[0] == 60);
+    auto valid = tooLarge; valid.minimum[0] = 80;
+    CHECK(constrained.edit.beginLayout(constrained.edit.context, constrained.registry.Revision(), &tx) == MMS_OK);
+    CHECK(constrainedEditor.stageHints(constrainedEditor.context, tx, S("example.preferences.a"), constrained.registry.elements.at("example.preferences.a").desc.generation, &valid) == MMS_OK);
+    CHECK(constrained.edit.commitLayout(constrained.edit.context, tx) == MMS_OK);
+    Fixture sizeReloaded; sizeReloaded.Register(); CHECK(sizeReloaded.registry.ImportPreferences(constrained.registry.ExportPreferences()) == MMS_OK);
+    CHECK(sizeReloaded.registry.elements.at("example.preferences.a").width == 100 && sizeReloaded.registry.elements.at("example.preferences.a").effectiveHints.minimum[0] == 80);
+}
 static void LayoutChecks() {
     std::vector<native_ui::Item> items{{{60,24},{80,24}}, {{60,24},{100,24}}, {{60,24},{80,24}}};
     auto a = native_ui::Wrap(items, 300); CHECK(a.height == 32 && a.rects[1].y == a.rects[0].y);
@@ -193,7 +334,7 @@ int wmain(int argc, wchar_t** argv) {
     const fs::path root = fs::temp_directory_path() / (L"mms-abi-contract-" + std::to_wstring(GetCurrentProcessId()));
     try {
         CHECK(argc == 3); CHECK(!fs::exists(root)); fs::create_directories(root);
-        JsonChecks(); DiscoveryChecks(root); UiChecks(); LayoutChecks(); TreeLayoutChecks(); LayoutServiceChecks(); UpdateChecks(); Win32HostChecks(); SurfaceChecks(); LoaderChecks(root, fs::absolute(argv[1]));
+        JsonChecks(); DiscoveryChecks(root); UiChecks(); UiPreferenceChecks(); UiPreferencesFileChecks(root); LayoutChecks(); TreeLayoutChecks(); LayoutServiceChecks(); UpdateChecks(); Win32HostChecks(); SurfaceChecks(); LoaderChecks(root, fs::absolute(argv[1]));
         LifecycleChecks(root, fs::absolute(argv[2])); SceneChecks(); StorageChecks(root); EditChecks(); SharedHistoryChecks();
         std::cout << "PASS checks=" << checks << "\n"; fs::remove_all(root); return 0;
     } catch (const std::exception& e) { std::cerr << "FAIL after " << checks << ": " << e.what() << "\nfixtures=" << Utf8(root.native()) << "\n"; return 1; }

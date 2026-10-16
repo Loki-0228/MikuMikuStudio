@@ -51,8 +51,30 @@ static MmsResult ReadScene(Plugin* p, bool retain) {
     if(retain && !r) p->snapshot=snapshot.handle;else p->scene.release(p->scene.context,snapshot.handle);
     if(!r) Log(p,"SCENE_READ_PASS");return r;
 }
+static MmsResult HideLayout(Plugin* p) {
+        MmsUiSnapshotV1 snapshot{};snapshot.h=H<MmsUiSnapshotV1>();
+        auto result=p->ui.acquireSnapshot(p->ui.context,0,&snapshot);if(result)return result;
+        const auto id=p->id+".button";uint64_t generation=0;const auto revision=snapshot.revision;
+        const auto* elements=static_cast<const MmsUiElementV1*>(snapshot.elements.data);
+        for(size_t i=0;i<snapshot.elements.count;++i)if(std::string(elements[i].id.data,size_t(elements[i].id.bytes))==id)generation=elements[i].generation;
+        p->ui.releaseSnapshot(p->ui.context,snapshot.handle);if(!generation)return MMS_E_NOT_FOUND;
+        MmsHandle tx=0;result=p->ui.beginLayout(p->ui.context,revision,&tx);if(result)return result;
+        MmsLayoutOpV1 op{};op.h=H<MmsLayoutOpV1>();op.operation=MMS_LAYOUT_VISIBLE;
+        op.elementId={id.data(),id.size()};op.expectedGeneration=generation;op.value.visible=0;
+        result=p->ui.applyLayout(p->ui.context,tx,&op);
+        if(result){p->ui.cancelLayout(p->ui.context,tx);return result;}
+        result=p->ui.commitLayout(p->ui.context,tx);if(!result)Log(p,"LAYOUT_HIDDEN");return result;
+}
+static void MMS_CALL ApplyLayout(void* context) {
+    auto* p=static_cast<Plugin*>(context);
+    if(HideLayout(p)!=MMS_OK)Log(p,"LAYOUT_FAILED");
+}
+static void MMS_CALL CancelLayout(void*) {}
 static MmsResult MMS_CALL Invoke(void* context, MmsObjectRef, MmsSpan, MmsHandle) {
     auto* p=static_cast<Plugin*>(context);Log(p,"COMMAND_INVOKED");
+    if(p->id.find("gui-layout")!=std::string::npos) {
+        MmsHandle task=0;return p->host.enqueueUi(p->host.context,ApplyLayout,CancelLayout,p,&task);
+    }
     if(p->serializer)++p->projectValue;
     return p->id.find("scene")!=std::string::npos?ReadScene(p,false):MMS_OK;
 }
@@ -131,6 +153,10 @@ static MmsResult MMS_CALL Start(void* context) {
 static void MMS_CALL Event(void* context, const MmsEventV1* event) {
     auto* p=static_cast<Plugin*>(context);
     if(event->kind==MMS_EVENT_UI_CLOSING)Log(p,"UI_CLOSING");
+    if(event->kind==MMS_EVENT_UI_CLOSING && p->id.find("gui-layout")!=std::string::npos) {
+        wchar_t enabled[8]{};
+        if(GetEnvironmentVariableW(L"MMS_UI_LAYOUT_ON_CLOSE",enabled,8) && HideLayout(p)!=MMS_OK)Log(p,"LAYOUT_CLOSE_FAILED");
+    }
     if(p->serializer && (event->kind==MMS_EVENT_PROJECT_OPENED || event->kind==MMS_EVENT_PROJECT_SAVED)){
         if(event->payloadVersion!=1 || event->payload.bytes!=sizeof(MmsProjectEventV1)){Log(p,"PROJECT_PAYLOAD_FAIL");return;}
         auto& project=*static_cast<const MmsProjectEventV1*>(event->payload.data);

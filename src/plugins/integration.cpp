@@ -99,7 +99,8 @@ int ToolbarHeight(MMDApp* app) { return app == owner && !app->FullscreenMode() &
 void Refresh(MMDApp* app) {
     if (!ui || app != owner || refreshing || closing) return;
     refreshing = true; auto old = toolbarHeight;
-    Boundary([&] { ui->Refresh(); Layout(app); if (toolbarHeight != old) HandleWindowSize(app); return MMS_OK; });
+    Boundary([&] { ui->Refresh(); Layout(app); if (toolbarHeight != old) HandleWindowSize(app);
+        if (manager && !manager->InCallback()) manager->SaveUiPreferences(); return MMS_OK; });
     refreshing = false;
 }
 bool HandleCommand(unsigned id) { bool handled = false; Boundary([&] { if (ui) handled = ui->Command(id); return MMS_OK; }); return handled; }

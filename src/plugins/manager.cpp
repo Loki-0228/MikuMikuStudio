@@ -1,4 +1,5 @@
 #include "manager.hpp"
+#include "ui_preferences_file.hpp"
 #include <atomic>
 #include <mutex>
 
@@ -30,6 +31,8 @@ struct Manager::Impl {
     fs::path userRoot;
     Log log;
     UiRegistry registry;
+    UiPreferencesFile preferences;
+    MmsResult preferencesError = MMS_OK;
     StorageStore storage;
     std::shared_ptr<SceneStore> scene;
     NativeLoader loader;
@@ -44,7 +47,8 @@ struct Manager::Impl {
     static constexpr UINT kDrain = WM_APP + 1;
 
     Impl(fs::path user, Log output, std::function<void()> changed, bool fallback, std::shared_ptr<SceneStore> sceneStore):
-        userRoot(std::move(user)), log(std::move(output)), registry(std::move(changed)), scene(std::move(sceneStore)), loader(fallback) {
+        userRoot(std::move(user)), log(std::move(output)), registry(std::move(changed)),
+        preferences(userRoot / L"ui-layout.json"), scene(std::move(sceneStore)), loader(fallback) {
         WNDCLASSW wc{}; wc.hInstance = GetModuleHandleW(nullptr); wc.lpfnWndProc = Window; wc.lpszClassName = L"MMS.PluginAbi.Dispatch.V1";
         if (!RegisterClassW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) throw std::runtime_error("plugin dispatcher class");
         wake = CreateWindowExW(0, wc.lpszClassName, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, wc.hInstance, this);
@@ -58,6 +62,13 @@ struct Manager::Impl {
         return DefWindowProcW(hwnd, message, wp, lp);
     }
     void Write(const std::string& text) noexcept { try { if (log) log(text); } catch (...) {} }
+    MmsResult SavePreferences() {
+        if (GetCurrentThreadId() != thread) return MMS_E_THREAD;
+        if (active || registry.InCallback() || closing) return MMS_E_BUSY;
+        const auto result = preferences.Save(registry);
+        if (result && result != preferencesError) Write("UI preferences save refused result=" + std::to_string(result));
+        preferencesError = result; return result;
+    }
     MmsResult Query(Instance& i, MmsString name, uint32_t major, uint32_t minor, uint32_t bytes, void* out) {
         if (GetCurrentThreadId() != thread) return MMS_E_THREAD;
         const auto id = String(name);
@@ -162,7 +173,7 @@ struct Manager::Impl {
     }
     bool Stop() {
         if (GetCurrentThreadId() != thread || active || registry.InCallback() || storage.InCallback() || storage.Prepared()) return false;
-        if (!closing) { Event(MMS_EVENT_UI_CLOSING); closing = true; }
+        if (!closing) { Event(MMS_EVENT_UI_CLOSING); SavePreferences(); closing = true; }
         for (const auto& i : instances) { i->stopping = true; i->ui.stopping = true; i->scene.stopping = true; }
         bool complete = true; std::set<std::string> keep;
         for (auto it = instances.rbegin(); it != instances.rend(); ++it) {
@@ -220,6 +231,8 @@ struct Manager::Impl {
                 instances.push_back(std::move(instance));
             }
         }
+        const auto preferencesResult = preferences.Load(registry);
+        if (preferencesResult) Write("UI preferences load refused; original file preserved result=" + std::to_string(preferencesResult));
         Event(MMS_EVENT_UI_READY);
         PostMessageW(wake, kDrain, 0, 0);
     }
@@ -240,6 +253,7 @@ void Manager::Drain() { impl_->Drain(); }
 bool Manager::Stop() { return Boundary([&] { return impl_->Stop() ? MMS_OK : MMS_E_BUSY; }) == MMS_OK; }
 void Manager::Event(uint32_t kind, MmsBytes payload, uint32_t version) { impl_->Event(kind,payload,version); }
 UiRegistry& Manager::Ui() { return impl_->registry; }
+MmsResult Manager::SaveUiPreferences() { return impl_->SavePreferences(); }
 StorageStore& Manager::Storage() { return impl_->storage; }
 bool Manager::InCallback() const { return impl_->active != 0 || impl_->registry.InCallback() || impl_->storage.InCallback() || impl_->storage.Prepared(); }
 std::vector<PluginStatus> Manager::Status() const { auto result = impl_->failed; for (const auto& i : impl_->instances) result.push_back(i->status); return result; }

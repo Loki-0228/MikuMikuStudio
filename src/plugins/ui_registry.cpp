@@ -1,5 +1,9 @@
 #include "ui_registry.hpp"
+#include "json.hpp"
+#include <array>
+#include <charconv>
 #include <cmath>
+#include <limits>
 #include <set>
 
 namespace mikudancestudio::plugins {
@@ -31,6 +35,118 @@ MmsResult ValidateHints(const MmsUiLayoutHintsV1* h) {
         for (int axis = 0; axis < 2; ++axis) if (!std::isfinite(values[axis]) || values[axis] < 0 || values[axis] > 32768) return MMS_E_ARGUMENT;
     for (float value : h->padding) if (!std::isfinite(value) || value < 0 || value > 32768) return MMS_E_ARGUMENT;
     for (int axis = 0; axis < 2; ++axis) if (h->maximum[axis] && h->maximum[axis] < h->minimum[axis]) return MMS_E_ARGUMENT;
+    return MMS_OK;
+}
+void CloneElement(ElementRecord& e) {
+    auto arena = std::make_shared<Arena>(); auto& d = e.desc;
+    d.id = arena->Copy(d.id); d.ownerPlugin = arena->Copy(d.ownerPlugin); d.label = arena->Copy(d.label);
+    d.parentId = arena->Copy(d.parentId); d.commandId = arena->Copy(d.commandId);
+    d.propertyId = arena->Copy(d.propertyId); d.surfaceId = arena->Copy(d.surfaceId);
+    e.arena = std::move(arena);
+}
+void ResetElement(ElementRecord& e) {
+    CloneElement(e); e.desc.parentId = e.arena->Copy(Text(e.defaultParent));
+    e.visible = true; e.width = e.height = 0; e.key = e.modifiers = e.scope = 0;
+    e.order = e.handle; e.userOrder = e.userHints = false; e.effectiveHints = e.defaultHints;
+}
+constexpr const char* hintNames[] = {"flow", "columns", "order", "flags", "minimumWidth", "minimumHeight",
+    "preferredWidth", "preferredHeight", "maximumWidth", "maximumHeight", "growWidth", "growHeight",
+    "shrinkWidth", "shrinkHeight", "gapX", "gapY", "paddingLeft", "paddingTop", "paddingRight", "paddingBottom", "align", "overflow"};
+std::array<double, 22> HintValues(const MmsUiLayoutHintsV1& h) {
+    return {double(h.flow), double(h.columns), double(h.order), double(h.flags), h.minimum[0], h.minimum[1],
+        h.preferred[0], h.preferred[1], h.maximum[0], h.maximum[1], h.grow[0], h.grow[1], h.shrink[0], h.shrink[1],
+        h.gap[0], h.gap[1], h.padding[0], h.padding[1], h.padding[2], h.padding[3], double(h.align), double(h.overflow)};
+}
+void SetHint(MmsUiLayoutHintsV1& h, size_t n, double value) {
+    if (!std::isfinite(value) || (n < 4 || n >= 20 ? std::floor(value) != value : false))
+        throw std::invalid_argument("layout hint number");
+    double maximum = n == 0 ? 4 : n == 1 ? 4096 : n == 2 ? INT32_MAX : n == 3 ? 7 : n >= 20 ? 3 : 32768;
+    if (value < (n == 2 ? double(INT32_MIN) : 0) || value > maximum) throw std::invalid_argument("layout hint range");
+    switch (n) {
+    case 0: h.flow = uint32_t(value); break; case 1: h.columns = uint32_t(value); break;
+    case 2: h.order = int32_t(value); break; case 3: h.flags = uint32_t(value); break;
+    case 20: h.align = uint32_t(value); break; case 21: h.overflow = uint32_t(value); break;
+    default:
+        if (n < 6) h.minimum[n - 4] = float(value); else if (n < 8) h.preferred[n - 6] = float(value);
+        else if (n < 10) h.maximum[n - 8] = float(value); else if (n < 12) h.grow[n - 10] = float(value);
+        else if (n < 14) h.shrink[n - 12] = float(value); else if (n < 16) h.gap[n - 14] = float(value);
+        else h.padding[n - 16] = float(value);
+    }
+}
+Json Object() { Json j; j.kind = Json::Object; return j; }
+Json TextJson(std::string value) { Json j; j.kind = Json::StringValue; j.text = std::move(value); return j; }
+Json NumberJson(double value) {
+    char buffer[64]; const auto result = std::to_chars(buffer, buffer + sizeof(buffer), value, std::chars_format::general, std::numeric_limits<double>::max_digits10);
+    if (result.ec != std::errc{}) throw std::invalid_argument("layout number");
+    Json j; j.kind = Json::Number; j.text.assign(buffer, result.ptr); return j;
+}
+double Number(const Json& j) {
+    if (j.kind != Json::Number) throw std::invalid_argument("layout number");
+    double value = 0; const auto result = std::from_chars(j.text.data(), j.text.data() + j.text.size(), value);
+    if (result.ec != std::errc{} || result.ptr != j.text.data() + j.text.size() || !std::isfinite(value)) throw std::invalid_argument("layout number");
+    return value;
+}
+const Json* Member(const Json& object, const char* key) {
+    if (object.kind != Json::Object) throw std::invalid_argument("layout object");
+    const auto found = object.object.find(key); return found == object.object.end() ? nullptr : &found->second;
+}
+void FieldsOnly(const Json& object, std::initializer_list<const char*> fields) {
+    if (object.kind != Json::Object) throw std::invalid_argument("layout object");
+    for (const auto& [key, value] : object.object)
+        if (std::none_of(fields.begin(), fields.end(), [&](const char* field) { return key == field; })) throw std::invalid_argument("unknown layout field");
+}
+void WriteJson(std::string& out, const Json& j) {
+    if (j.kind == Json::StringValue) {
+        out += '"';
+        for (unsigned char c : j.text) {
+            if (c == '"' || c == '\\') { out += '\\'; out += char(c); }
+            else if (c < 32) { constexpr char hex[] = "0123456789abcdef"; out += "\\u00"; out += hex[c >> 4]; out += hex[c & 15]; }
+            else out += char(c);
+        }
+        out += '"';
+    } else if (j.kind == Json::Object) {
+        out += '{'; bool first = true;
+        for (const auto& [key, value] : j.object) { if (!first) out += ','; first = false; WriteJson(out, TextJson(key)); out += ':'; WriteJson(out, value); }
+        out += '}';
+    } else if (j.kind == Json::Array) {
+        out += '['; bool first = true;
+        for (const auto& value : j.array) { if (!first) out += ','; first = false; WriteJson(out, value); } out += ']';
+    } else out += j.kind == Json::Null ? "null" : j.text;
+}
+Json HintOverrides(const MmsUiLayoutHintsV1& effective, const MmsUiLayoutHintsV1& defaults, bool order) {
+    auto result = Object(); const auto a = HintValues(effective), b = HintValues(defaults);
+    for (size_t n = 0; n < a.size(); ++n) if (a[n] != b[n] && (n != 2 || !order)) result.object.emplace(hintNames[n], NumberJson(a[n]));
+    return result;
+}
+MmsResult ApplyHintOverrides(MmsUiLayoutHintsV1& hints, const Json& overrides) {
+    if (overrides.kind != Json::Object) return MMS_E_ARGUMENT;
+    for (const auto& [key, value] : overrides.object) {
+        const auto at = std::find(std::begin(hintNames), std::end(hintNames), key);
+        if (at == std::end(hintNames)) return MMS_E_ARGUMENT;
+        SetHint(hints, size_t(at - std::begin(hintNames)), Number(value));
+    }
+    return ValidateHints(&hints);
+}
+std::string PreferencesJson(const std::map<std::string, Json>& entries) {
+    if (entries.size() > 4096) throw std::invalid_argument("layout preference count");
+    Json root = Object(), list; list.kind = Json::Array;
+    for (const auto& [id, entry] : entries) list.array.push_back(entry);
+    root.object.emplace("schemaVersion", NumberJson(1)); root.object.emplace("elements", std::move(list));
+    std::string result; WriteJson(result, root);
+    // Keep writer output within the reader's byte, node and nesting bounds.
+    Json::Parse(result); return result;
+}
+MmsResult PreferenceGraph(const std::map<std::string, Json>& entries) {
+    std::set<std::tuple<uint32_t, uint32_t, uint32_t>> shortcuts;
+    for (const auto& [id, p] : entries) {
+        if (const auto* value = Member(p, "shortcut"))
+            if (value->array[0].UInt() && !shortcuts.emplace(value->array[0].UInt(), value->array[1].UInt(), value->array[2].UInt()).second) return MMS_E_CONFLICT;
+        std::set<std::string> visited{id}; auto at = &p;
+        while (const auto* parent = Member(*at, "parent")) {
+            const auto name = parent->String(); if (!visited.insert(name).second) return MMS_E_ARGUMENT;
+            const auto next = entries.find(name); if (next == entries.end()) break; at = &next->second;
+        }
+    }
     return MMS_OK;
 }
 bool EqualValue(const MmsValue& a, const MmsValue& b) {
@@ -141,7 +257,11 @@ struct UiRegistry::View {
     uint32_t dpi = 0;
     bool visible = false;
 };
-UiRegistry::UiRegistry(std::function<void()> change): changed_(std::move(change)) {
+struct UiRegistry::Preferences {
+    std::map<std::string, Json> entries;
+    std::string json = PreferencesJson(entries);
+};
+UiRegistry::UiRegistry(std::function<void()> change): preferences_(std::make_unique<Preferences>()), changed_(std::move(change)) {
     for (const auto& [id, label, kind] : {std::tuple<const char*, const char*, uint32_t>{"mms.menu.plugins", "插件", MMS_UI_MENU}, {"mms.toolbar.main.extensions", "插件工具栏", MMS_UI_TOOLBAR}, {"mms.workspace.tabs.extensions", "插件工作区", MMS_UI_GROUP}}) {
         ElementRecord e; e.handle = next_++; e.arena = std::make_shared<Arena>(); e.desc.h = Header<MmsUiElementV1>();
         e.desc.id = e.arena->Copy(Text(id)); e.desc.ownerPlugin = e.arena->Copy(Text("mms")); e.desc.label = e.arena->Copy(Text(label));
@@ -150,6 +270,168 @@ UiRegistry::UiRegistry(std::function<void()> change): changed_(std::move(change)
     }
 }
 UiRegistry::~UiRegistry() = default;
+std::string UiRegistry::ExportPreferences() const {
+    if (GetCurrentThreadId() != thread_) throw std::invalid_argument("layout preferences thread");
+    return preferences_->json;
+}
+MmsResult UiRegistry::MergePreferences(std::map<std::string, ElementRecord>& tree,
+    const std::map<std::string, Json>& entries, uint64_t& next, bool strict) const {
+    for (auto it = tree.begin(); it != tree.end();) {
+        if (it->second.layoutGroup) it = tree.erase(it);
+        else { if (String(it->second.desc.ownerPlugin) != "mms") ResetElement(it->second); ++it; }
+    }
+    // Groups carry no plugin pointers. Their UI remains usable even if the
+    // layout editor that created them is not installed in this session.
+    std::set<std::string> pending;
+    for (const auto& [id, entry] : entries) if (Member(entry, "groupLabel")) pending.insert(id);
+    for (size_t pass = 0; pass <= entries.size() && !pending.empty(); ++pass) {
+        bool progress = false;
+        for (auto it = pending.begin(); it != pending.end();) {
+            const auto& p = entries.at(*it); const auto parent = p.At("parent").String();
+            if (!tree.count(parent)) { ++it; continue; }
+            if (tree.count(*it) || commands.count(*it) || properties.count(*it) || surfaces.count(*it)) {
+                if (strict) return MMS_E_CONFLICT; it = pending.erase(it); continue;
+            }
+            ElementRecord e; auto old = elements.find(*it);
+            e.handle = old != elements.end() && old->second.layoutGroup ? old->second.handle : next++;
+            e.arena = std::make_shared<Arena>(); e.layoutGroup = true;
+            e.desc.h = Header<MmsUiElementV1>(); e.desc.kind = MMS_UI_GROUP;
+            e.desc.capabilities = MMS_UI_MOVE | MMS_UI_HIDE | MMS_UI_RESIZE | MMS_UI_CONTAINER | MMS_UI_LAYOUT;
+            e.desc.id = e.arena->Copy(Text(*it)); e.desc.ownerPlugin = e.arena->Copy(Text(p.At("owner").String()));
+            e.desc.parentId = e.arena->Copy(Text(parent)); e.desc.label = e.arena->Copy(Text(p.At("groupLabel").String()));
+            e.defaultParent = parent; e.defaultHints = e.effectiveHints = InitialHints(); e.order = e.handle;
+            if (!Allowed(e.desc, tree)) { if (strict) return MMS_E_ARGUMENT; it = pending.erase(it); continue; }
+            tree.emplace(*it, std::move(e)); it = pending.erase(it); progress = true;
+        }
+        if (!progress) break;
+    }
+    for (auto& [id, e] : tree) if (String(e.desc.ownerPlugin) != "mms" && !tree.count(String(e.desc.parentId))) {
+        const char* anchor = IsMenu(e.desc.kind) ? "mms.menu.plugins" : e.desc.kind == MMS_UI_PANEL ? "mms.workspace.tabs.extensions" : "mms.toolbar.main.extensions";
+        e.desc.parentId = e.arena->Copy(Text(anchor));
+    }
+    for (const auto& [id, p] : entries) {
+        auto found = tree.find(id); if (found == tree.end()) continue;
+        auto& e = found->second;
+        if (String(e.desc.ownerPlugin) != p.At("owner").String() || e.desc.kind != p.At("kind").UInt()) {
+            if (strict) return MMS_E_ARGUMENT; continue;
+        }
+        auto candidate = e; CloneElement(candidate);
+        const auto apply = [&]() -> MmsResult {
+            auto& d = candidate.desc;
+            if (const auto* value = Member(p, "parent")) {
+                if (!(d.capabilities & MMS_UI_MOVE)) return MMS_E_UNSUPPORTED;
+                const auto parent = value->String();
+                if (tree.count(parent)) d.parentId = candidate.arena->Copy(Text(parent));
+            }
+            if (const auto* value = Member(p, "order")) {
+                // MOVE reindexes every sibling, including siblings without
+                // MOVE. This ordinal records that relative placement; only
+                // an explicit parent change needs the target's MOVE flag.
+                candidate.order = value->UInt(); candidate.userOrder = true;
+                candidate.effectiveHints.order = int32_t(candidate.order);
+            }
+            if (const auto* value = Member(p, "visible")) {
+                if (!(d.capabilities & MMS_UI_HIDE)) return MMS_E_UNSUPPORTED;
+                candidate.visible = value->text == "true";
+            }
+            if (const auto* value = Member(p, "hints")) {
+                if (!(d.capabilities & MMS_UI_LAYOUT)) return MMS_E_UNSUPPORTED;
+                const auto result = ApplyHintOverrides(candidate.effectiveHints, *value); if (result) return result;
+                candidate.userHints = !value->object.empty();
+            }
+            if (const auto* value = Member(p, "size")) {
+                if (!(d.capabilities & MMS_UI_RESIZE)) return MMS_E_UNSUPPORTED;
+                candidate.width = float(Number(value->array[0])); candidate.height = float(Number(value->array[1]));
+                if (candidate.width < candidate.effectiveHints.minimum[0] || candidate.height < candidate.effectiveHints.minimum[1]) return MMS_E_ARGUMENT;
+            }
+            if (const auto* value = Member(p, "shortcut")) {
+                if (!(d.capabilities & MMS_UI_SHORTCUT) || !d.commandId.bytes) return MMS_E_UNSUPPORTED;
+                candidate.key = value->array[0].UInt(); candidate.modifiers = value->array[1].UInt(); candidate.scope = value->array[2].UInt();
+            }
+            return MMS_OK;
+        };
+        const auto result = apply(); if (result) { if (strict) return result; continue; }
+        e = std::move(candidate);
+    }
+    std::set<std::tuple<uint32_t, uint32_t, uint32_t>> shortcuts;
+    for (auto& [id, e] : tree) {
+        if ((String(e.desc.ownerPlugin) != "mms" || e.layoutGroup) && !Allowed(e.desc, tree)) {
+            if (strict) return MMS_E_ARGUMENT;
+            CloneElement(e); e.desc.parentId = e.arena->Copy(Text(e.defaultParent));
+            if (!Allowed(e.desc, tree)) e.desc.parentId = e.arena->Copy(Text(IsMenu(e.desc.kind) ? "mms.menu.plugins" : e.desc.kind == MMS_UI_PANEL ? "mms.workspace.tabs.extensions" : "mms.toolbar.main.extensions"));
+        }
+        if (e.key && !shortcuts.emplace(e.key, e.modifiers, e.scope).second) {
+            if (strict) return MMS_E_CONFLICT; e.key = e.modifiers = e.scope = 0;
+        }
+    }
+    return MMS_OK;
+}
+std::unique_ptr<UiRegistry::Preferences> UiRegistry::CapturePreferences(
+    const std::map<std::string, ElementRecord>& tree, const std::map<std::string, Json>& retained) const {
+    auto result = std::make_unique<Preferences>(); result->entries = retained;
+    for (const auto& [id, e] : tree) {
+        if (String(e.desc.ownerPlugin) == "mms" && !e.layoutGroup) continue;
+        const auto previous = retained.find(id);
+        if (previous != retained.end() && (previous->second.At("kind").UInt() != e.desc.kind || previous->second.At("owner").String() != String(e.desc.ownerPlugin))) continue;
+        Json p = Object(); p.object.emplace("id", TextJson(id)); p.object.emplace("owner", TextJson(String(e.desc.ownerPlugin)));
+        p.object.emplace("kind", NumberJson(e.desc.kind));
+        if (e.layoutGroup) p.object.emplace("groupLabel", TextJson(String(e.desc.label)));
+        if (e.layoutGroup || String(e.desc.parentId) != e.defaultParent) p.object.emplace("parent", TextJson(String(e.desc.parentId)));
+        if (!Member(p, "parent") && previous != retained.end())
+            if (const auto* parent = Member(previous->second, "parent"))
+                if (!tree.count(parent->String())) p.object.emplace("parent", *parent);
+        if (e.userOrder) p.object.emplace("order", NumberJson(double(e.order)));
+        if (!e.visible) { Json visible; visible.kind = Json::Boolean; visible.text = "false"; p.object.emplace("visible", std::move(visible)); }
+        if (e.width || e.height) { Json size; size.kind = Json::Array; size.array = {NumberJson(e.width), NumberJson(e.height)}; p.object.emplace("size", std::move(size)); }
+        if (e.key || e.modifiers || e.scope) { Json shortcut; shortcut.kind = Json::Array; shortcut.array = {NumberJson(e.key), NumberJson(e.modifiers), NumberJson(e.scope)}; p.object.emplace("shortcut", std::move(shortcut)); }
+        if (e.userHints) { auto hints = HintOverrides(e.effectiveHints, e.defaultHints, e.userOrder); if (!hints.object.empty()) p.object.emplace("hints", std::move(hints)); }
+        if (p.object.size() > 3) result->entries[id] = std::move(p); else result->entries.erase(id);
+    }
+    result->json = PreferencesJson(result->entries); return result;
+}
+MmsResult UiRegistry::ImportPreferences(std::string_view source) {
+    return Boundary([&]() -> MmsResult {
+        if (GetCurrentThreadId() != thread_) return MMS_E_THREAD;
+        if (callbackDepth_) return MMS_E_BUSY;
+        auto document = Json::Parse(source); FieldsOnly(document, {"schemaVersion", "elements"});
+        if (document.At("schemaVersion").UInt() != 1) return MMS_E_VERSION;
+        auto candidate = std::make_unique<Preferences>();
+        const auto& list = document.At("elements").Items(); if (list.size() > 4096) return MMS_E_ARGUMENT;
+        std::set<std::tuple<uint32_t, uint32_t, uint32_t>> shortcuts;
+        for (auto p : list) {
+            FieldsOnly(p, {"id", "owner", "kind", "groupLabel", "parent", "order", "visible", "size", "shortcut", "hints"});
+            const auto id = p.At("id").String(), owner = p.At("owner").String(); const auto kind = p.At("kind").UInt();
+            const bool group = Member(p, "groupLabel") != nullptr;
+            if (!ValidId(id) || !ValidId(owner) || id.rfind(owner + ".", 0) != 0 || (owner == "mms" && !group) || kind < MMS_UI_MENU || kind > MMS_UI_GROUP) return MMS_E_ARGUMENT;
+            if (group && (kind != MMS_UI_GROUP || p.At("groupLabel").String().size() > 4096 || !Member(p, "parent"))) return MMS_E_ARGUMENT;
+            if (const auto* v = Member(p, "parent")) if (!ValidId(v->String()) || v->String() == id) return MMS_E_ARGUMENT;
+            if (const auto* v = Member(p, "order")) if (!v->UInt() || v->UInt() > INT32_MAX) return MMS_E_ARGUMENT;
+            if (const auto* v = Member(p, "visible")) if (v->kind != Json::Boolean) return MMS_E_ARGUMENT;
+            if (const auto* v = Member(p, "size")) {
+                if (v->Items().size() != 2) return MMS_E_ARGUMENT;
+                for (const auto& number : v->array) if (Number(number) <= 0 || Number(number) > 32768) return MMS_E_ARGUMENT;
+            }
+            if (const auto* v = Member(p, "shortcut")) {
+                if (v->Items().size() != 3 || v->array[0].UInt() > 255 || v->array[1].UInt() > 7 || v->array[2].UInt() > 1) return MMS_E_ARGUMENT;
+                if (v->array[0].UInt() && !shortcuts.emplace(v->array[0].UInt(), v->array[1].UInt(), v->array[2].UInt()).second) return MMS_E_CONFLICT;
+            }
+            if (const auto* v = Member(p, "hints")) {
+                auto hints = InitialHints(); const auto result = ApplyHintOverrides(hints, *v); if (result) return result;
+                if (Member(p, "order") && Member(*v, "order")) return MMS_E_ARGUMENT;
+            }
+            if (!candidate->entries.emplace(id, std::move(p)).second) return MMS_E_CONFLICT;
+        }
+        // Validate dormant parent graphs too, before any of those plugins load.
+        if (const auto result = PreferenceGraph(candidate->entries)) return result;
+        auto tree = elements; auto next = next_; const auto result = MergePreferences(tree, candidate->entries, next, true); if (result) return result;
+        candidate->json = PreferencesJson(candidate->entries);
+        const bool changed = candidate->json != preferences_->json;
+        for (auto& [id, e] : tree) e.desc.generation = generation_++;
+        elements.swap(tree); preferences_.swap(candidate); next_ = next;
+        if (changed) ++preferencesRevision_;
+        Changed(); return MMS_OK;
+    });
+}
 MmsResult UiRegistry::Check(UiClient& c, bool mutate) const {
     if (GetCurrentThreadId() != thread_) return MMS_E_THREAD;
     if (mutate && (callbackDepth_ || c.stopping)) return c.stopping ? MMS_E_NOT_READY : MMS_E_BUSY;
@@ -210,8 +492,11 @@ MmsResult UiRegistry::Element(UiClient& c, const MmsUiElementV1* input, MmsHandl
     auto& d = r.desc; d.id = r.arena->Copy(d.id); d.ownerPlugin = r.arena->Copy(d.ownerPlugin); d.parentId = r.arena->Copy(d.parentId); d.label = r.arena->Copy(d.label);
     d.commandId = r.arena->Copy(d.commandId); d.propertyId = r.arena->Copy(d.propertyId); d.surfaceId = r.arena->Copy(d.surfaceId); d.generation = generation_++;
     r.defaultParent = String(d.parentId); if (!replace) { r.order = r.handle; r.defaultHints = InitialHints(); r.defaultHints.order = int32_t(r.order); r.effectiveHints = r.defaultHints; }
+    auto tree = elements; tree[id] = std::move(r); auto next = next_;
+    auto merged = MergePreferences(tree, preferences_->entries, next, false); if (merged) return merged;
+    for (auto& [key, element] : tree) element.desc.generation = generation_++;
     if (replace) DestroyView(id);
-    elements[id] = std::move(r); *out = elements[id].handle; Changed(); return MMS_OK;
+    elements.swap(tree); next_ = next; *out = elements[id].handle; Changed(); return MMS_OK;
 }
 MmsResult UiRegistry::Property(UiClient& c, const MmsPropertyDescV1* input, MmsHandle* out, MmsHandle replace) {
     auto check = Check(c, true); if (check) return check;
@@ -333,27 +618,22 @@ MmsResult UiRegistry::Commit(UiClient& c, MmsHandle h) {
     if (found == layouts_.end() || found->second->owner != c.id) return MMS_E_NOT_FOUND;
     auto transaction = std::move(found->second); layouts_.erase(found); if (transaction->revision != revision_) return MMS_E_STALE;
     auto tree = elements;
-    auto clone = [](ElementRecord& e) {
-        auto arena = std::make_shared<Arena>(); auto& d = e.desc;
-        d.id = arena->Copy(d.id); d.ownerPlugin = arena->Copy(d.ownerPlugin); d.label = arena->Copy(d.label);
-        d.parentId = arena->Copy(d.parentId); d.commandId = arena->Copy(d.commandId); d.propertyId = arena->Copy(d.propertyId); d.surfaceId = arena->Copy(d.surfaceId);
-        e.arena = std::move(arena);
-    };
-    auto reset = [&](ElementRecord& e) { clone(e); e.desc.parentId = e.arena->Copy(Text(e.defaultParent)); e.visible = true; e.width = e.height = 0; e.key = e.modifiers = e.scope = 0; e.order = e.handle; e.userHints = false; e.effectiveHints = e.defaultHints; };
+    auto retained = preferences_->entries;
     auto insertBefore = [&](const std::string& id, MmsString before) -> MmsResult {
         auto& e = tree.at(id); const auto parent = String(e.desc.parentId), sibling = String(before);
         if (!sibling.empty()) { auto at = tree.find(sibling); if (at == tree.end() || sibling == id || String(at->second.desc.parentId) != parent) return MMS_E_ARGUMENT; }
         std::vector<std::string> children;
         for (const auto& [key, item] : tree) if (key != id && String(item.desc.parentId) == parent) children.push_back(key);
-        std::stable_sort(children.begin(), children.end(), [&](const auto& a, const auto& b) { return tree.at(a).order < tree.at(b).order; });
+        std::stable_sort(children.begin(), children.end(), [&](const auto& a, const auto& b) { return tree.at(a).effectiveHints.order < tree.at(b).effectiveHints.order; });
         children.insert(sibling.empty() ? children.end() : std::find(children.begin(), children.end(), sibling), id);
-        uint64_t order = 0; for (const auto& key : children) { auto& item = tree.at(key); item.order = ++order; item.effectiveHints.order = int32_t(order); item.userHints = true; }
+        uint64_t order = 0; for (const auto& key : children) { auto& item = tree.at(key); item.order = ++order; item.effectiveHints.order = int32_t(order); item.userOrder = true; }
         return MMS_OK;
     };
     for (const auto& op : transaction->operations) {
         const auto id = String(op.elementId);
         if (op.operation == MMS_LAYOUT_CREATE_GROUP) {
             if (op.expectedGeneration || !Own(c, op.elementId, Text(c.id))) return MMS_E_ARGUMENT;
+            if (String(op.value.groupLabel).size() > 4096) return MMS_E_ARGUMENT;
             if (Exists(id) || tree.count(id)) return MMS_E_CONFLICT;
             ElementRecord e; e.handle = next_++; e.arena = std::make_shared<Arena>(); e.layoutGroup = true;
             e.desc.h = Header<MmsUiElementV1>(); e.desc.kind = MMS_UI_GROUP;
@@ -366,11 +646,21 @@ MmsResult UiRegistry::Commit(UiClient& c, MmsHandle h) {
             tree.emplace(id, std::move(e)); auto result = insertBefore(id, op.beforeId); if (result) return result;
             continue;
         }
-        if (op.operation == MMS_LAYOUT_RESTORE && id.empty()) { if (op.expectedGeneration) return MMS_E_ARGUMENT; for (auto& [key, e] : tree) if (String(e.desc.ownerPlugin) != "mms") reset(e); continue; }
+        if (op.operation == MMS_LAYOUT_RESTORE && id.empty()) {
+            if (op.expectedGeneration) return MMS_E_ARGUMENT;
+            retained.clear();
+            for (auto it = tree.begin(); it != tree.end();) {
+                if (it->second.layoutGroup) it = tree.erase(it);
+                else { if (String(it->second.desc.ownerPlugin) != "mms") ResetElement(it->second); ++it; }
+            }
+            for (auto& [key, e] : tree) if (String(e.desc.ownerPlugin) != "mms" && !tree.count(String(e.desc.parentId)))
+                e.desc.parentId = e.arena->Copy(Text(IsMenu(e.desc.kind) ? "mms.menu.plugins" : e.desc.kind == MMS_UI_PANEL ? "mms.workspace.tabs.extensions" : "mms.toolbar.main.extensions"));
+            continue;
+        }
         auto it = tree.find(id); if (it == tree.end()) return MMS_E_NOT_FOUND;
         auto original = elements.find(id); if (original == elements.end() || original->second.desc.generation != op.expectedGeneration) return MMS_E_STALE;
         auto& e = it->second;
-        if (String(e.desc.ownerPlugin) == "mms") return MMS_E_UNSUPPORTED;
+        if (String(e.desc.ownerPlugin) == "mms" && !e.layoutGroup) return MMS_E_UNSUPPORTED;
         switch (op.operation) {
         case MMS_LAYOUT_MOVE: {
             if (!(e.desc.capabilities & MMS_UI_MOVE)) return MMS_E_UNSUPPORTED;
@@ -382,11 +672,17 @@ MmsResult UiRegistry::Commit(UiClient& c, MmsHandle h) {
             e.desc.id = arena->Copy(e.desc.id); e.desc.ownerPlugin = arena->Copy(e.desc.ownerPlugin); e.desc.label = arena->Copy(e.desc.label);
             e.desc.commandId = arena->Copy(e.desc.commandId); e.desc.propertyId = arena->Copy(e.desc.propertyId); e.desc.surfaceId = arena->Copy(e.desc.surfaceId); e.arena = arena;
             if (!Allowed(e.desc, tree)) return MMS_E_ARGUMENT;
+            if (auto prior = retained.find(id); prior != retained.end()) prior->second.object.erase("parent");
             auto result = insertBefore(id, op.beforeId); if (result) return result; break;
         }
         case MMS_LAYOUT_REMOVE_GROUP:
             if (!e.layoutGroup || String(e.desc.ownerPlugin) != c.id) return MMS_E_ARGUMENT;
             for (const auto& [key, child] : tree) if (String(child.desc.parentId) == id) return MMS_E_BUSY;
+            retained.erase(id);
+            for (auto& [key, p] : retained) if (const auto* parent = Member(p, "parent")) if (parent->String() == id) {
+                if (Member(p, "groupLabel")) p.object["parent"] = TextJson("mms.toolbar.main.extensions");
+                else p.object.erase("parent");
+            }
             tree.erase(it); break;
         case MMS_LAYOUT_VISIBLE: if (!(e.desc.capabilities & MMS_UI_HIDE)) return MMS_E_UNSUPPORTED; if (op.value.visible > 1) return MMS_E_ARGUMENT; e.visible = op.value.visible != 0; break;
         case MMS_LAYOUT_SIZE:
@@ -398,7 +694,7 @@ MmsResult UiRegistry::Commit(UiClient& c, MmsHandle h) {
             if (!(e.desc.capabilities & MMS_UI_SHORTCUT) || !e.desc.commandId.bytes) return MMS_E_UNSUPPORTED;
             if (op.value.shortcut.virtualKey > 255 || op.value.shortcut.modifiers > 7 || op.value.shortcut.scope > 1 || op.value.shortcut.reserved) return MMS_E_ARGUMENT;
             e.key = op.value.shortcut.virtualKey; e.modifiers = op.value.shortcut.modifiers; e.scope = op.value.shortcut.scope; break;
-        case MMS_LAYOUT_RESTORE: reset(e); break;
+        case MMS_LAYOUT_RESTORE: retained.erase(id); ResetElement(e); break;
         default: return MMS_E_UNSUPPORTED;
         }
     }
@@ -406,20 +702,28 @@ MmsResult UiRegistry::Commit(UiClient& c, MmsHandle h) {
         auto original = elements.find(hint.id), it = tree.find(hint.id);
         if (original == elements.end() || it == tree.end() || original->second.desc.generation != hint.generation) return MMS_E_STALE;
         if (!(it->second.desc.capabilities & MMS_UI_LAYOUT)) return MMS_E_UNSUPPORTED;
-        it->second.effectiveHints = hint.value; it->second.userHints = true;
+        it->second.effectiveHints = hint.value; it->second.userHints = true; it->second.userOrder = false;
     }
     std::set<std::tuple<uint32_t, uint32_t, uint32_t>> shortcuts;
     for (const auto& [id, e] : tree) {
-        if (String(e.desc.ownerPlugin) != "mms" && !Allowed(e.desc, tree)) return MMS_E_ARGUMENT;
+        if ((String(e.desc.ownerPlugin) != "mms" || e.layoutGroup) && !Allowed(e.desc, tree)) return MMS_E_ARGUMENT;
+        // Hints are staged after SIZE operations. Validate their final state
+        // together so every committed preference document can be imported.
+        if ((e.width || e.height) &&
+            (e.width < e.effectiveHints.minimum[0] || e.height < e.effectiveHints.minimum[1])) return MMS_E_ARGUMENT;
         if (e.key && !shortcuts.emplace(e.key, e.modifiers, e.scope).second) return MMS_E_CONFLICT;
     }
+    auto preferences = CapturePreferences(tree, retained);
+    if (const auto result = PreferenceGraph(preferences->entries)) return result;
+    const bool preferenceChange = preferences->json != preferences_->json;
     for (auto& [id, e] : tree) e.desc.generation = generation_++;
-    elements.swap(tree); Changed(); return MMS_OK;
+    elements.swap(tree); preferences_.swap(preferences); if (preferenceChange) ++preferencesRevision_;
+    Changed(); return MMS_OK;
 }
 bool UiRegistry::HasLeases(const UiClient& c) const { if (c.unsafeToUnload) return true; for (const auto& [h, lease] : leases_) if (lease->owner == c.id) return true; return false; }
 void UiRegistry::Retire(UiClient& c) {
     for (auto it = layouts_.begin(); it != layouts_.end();) if (it->second->owner == c.id) it = layouts_.erase(it); else ++it;
-    for (auto it = elements.begin(); it != elements.end();) if (String(it->second.desc.ownerPlugin) == c.id) { DestroyView(it->first); it = elements.erase(it); } else ++it;
+    for (auto it = elements.begin(); it != elements.end();) if (String(it->second.desc.ownerPlugin) == c.id && !it->second.layoutGroup) { DestroyView(it->first); it = elements.erase(it); } else ++it;
     for (auto it = commands.begin(); it != commands.end();) if (String(it->second->desc.info.ownerPlugin) == c.id) it = commands.erase(it); else ++it;
     for (auto it = properties.begin(); it != properties.end();) if (String(it->second->desc.info.ownerPlugin) == c.id) it = properties.erase(it); else ++it;
     for (auto it = surfaces.begin(); it != surfaces.end();) if (it->second->owner == &c) it = surfaces.erase(it); else ++it;
@@ -456,9 +760,25 @@ MmsResult UiRegistry::DefaultHints(UiClient& c, MmsString id, const MmsUiLayoutH
     auto it = elements.find(String(id)); if (it == elements.end()) return MMS_E_NOT_FOUND;
     if (String(it->second.desc.ownerPlugin) != c.id) return MMS_E_ARGUMENT;
     if (!(it->second.desc.capabilities & MMS_UI_LAYOUT)) return MMS_E_UNSUPPORTED;
-    it->second.defaultHints = *hints; it->second.defaultHints.h = Header<MmsUiLayoutHintsV1>();
-    if (!it->second.userHints) it->second.effectiveHints = it->second.defaultHints;
-    it->second.desc.generation = generation_++; Changed(); return MMS_OK;
+    // A plugin can replace its defaults, but cannot silently drop an existing
+    // user override when the new minimum makes that override invalid.
+    auto effective = *hints;
+    float width = it->second.width, height = it->second.height;
+    if (const auto preference = preferences_->entries.find(String(id)); preference != preferences_->entries.end() &&
+        preference->second.At("owner").String() == c.id && preference->second.At("kind").UInt() == it->second.desc.kind) {
+        if (const auto* overrides = Member(preference->second, "hints")) {
+            check = ApplyHintOverrides(effective, *overrides); if (check) return check;
+        }
+        if (const auto* size = Member(preference->second, "size")) {
+            width = float(Number(size->array[0])); height = float(Number(size->array[1]));
+        }
+    }
+    if ((width || height) && (width < effective.minimum[0] || height < effective.minimum[1])) return MMS_E_ARGUMENT;
+    auto tree = elements; auto& element = tree.at(String(id));
+    element.defaultHints = *hints; element.defaultHints.h = Header<MmsUiLayoutHintsV1>();
+    auto next = next_; check = MergePreferences(tree, preferences_->entries, next, false); if (check) return check;
+    for (auto& [key, e] : tree) e.desc.generation = generation_++;
+    elements.swap(tree); next_ = next; Changed(); return MMS_OK;
 }
 MmsResult UiRegistry::StageHints(UiClient& c, MmsHandle h, MmsString id, uint64_t generation, const MmsUiLayoutHintsV1* hints) {
     auto check = Check(c, true); if (check) return check; check = ValidateHints(hints); if (check) return check;
