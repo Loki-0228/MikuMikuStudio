@@ -67,12 +67,10 @@ bool TryScaleBoundBoneRange(MMDApp* app, HWND dialog) noexcept {
     if (!ModelReady(*app) || history->Enter() != MMS_OK) return true;
     history->Leave();
     Boundary([&]() -> MmsResult {
-        // A mixed-family operation must become one atomic history node. Until
-        // its participants exist, reject the whole request before any marks.
-        if (IsDlgButtonChecked(dialog, panel::kScaleBoneCheckbox) != BST_CHECKED ||
-            IsDlgButtonChecked(dialog, panel::kScaleMorphCheckbox) == BST_CHECKED ||
-            IsDlgButtonChecked(dialog, panel::kScaleDispIkCheckbox) == BST_CHECKED) return MMS_E_NOT_READY;
-        BoneRangeScaleOptions options; double start, end;
+        ModelRangeScaleOptions options; double start, end;
+        options.bones = IsDlgButtonChecked(dialog, panel::kScaleBoneCheckbox) == BST_CHECKED;
+        options.morphs = IsDlgButtonChecked(dialog, panel::kScaleMorphCheckbox) == BST_CHECKED;
+        options.display = IsDlgButtonChecked(dialog, panel::kScaleDispIkCheckbox) == BST_CHECKED;
         if (!ReadNumber(dialog, panel::kScaleFromEdit, start) ||
             !ReadNumber(dialog, panel::kScaleToEdit, end) ||
             !ReadNumber(dialog, panel::kScaleRateEdit, options.scale) ||
@@ -82,9 +80,9 @@ bool TryScaleBoundBoneRange(MMDApp* app, HWND dialog) noexcept {
         options.end = static_cast<std::uint32_t>(end);
         options.automaticInterpolation = IsDlgButtonChecked(app->MainWindow(), panel::kPhysicsFrameCheckbox) == BST_CHECKED;
         std::shared_ptr<HistoryChange> change;
-        if (auto result = PlanBoneRangeScale(*app, app->SelectedModelSlot(), options, change)) return result;
+        if (auto result = PlanModelRangeScale(*app, app->SelectedModelSlot(), options, change)) return result;
         const bool changed = bool(change);
-        if (auto result = CommitKeyChange(*app, *history, std::move(change), "Scale bone key range")) return result;
+        if (auto result = CommitKeyChange(*app, *history, std::move(change), "Scale model key range", options.morphs)) return result;
         if (changed) app->FrameRangeStartFrame() = static_cast<std::int32_t>(options.start);
         return MMS_OK;
     });

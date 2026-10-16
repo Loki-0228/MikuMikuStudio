@@ -1,7 +1,10 @@
 // Include after native_bone_registration_checks.inc. Run NativeDisplayKeyChecks().
 // Uses the actual legacy DeleteMarkedModelKeys as the independent byte oracle.
 #include "../src/plugins/native_display_keys.hpp"
+#include "../src/plugins/native_range_scale.hpp"
+#include "mikudancestudio/extended_names.hpp"
 #include "../src/model/keyframe_common.hpp"
+#include <limits>
 namespace {
 struct DisplayFixture : BoneRegistrationFixture {
     std::array<mdl::IkChain,2> firstIk{},secondIk{};
@@ -419,6 +422,166 @@ void DisplayEvaluationFailureChecks() {
         f.first.m->displayKeys[2].selectorStates[2]=parent;f.app->ModelSlot(1)=other;f.first.m->ikChains=ik;f.first.m->boneOrderTable=order;
     }
 }
+void DisplayRangeSeed(DisplayFixture& f) {
+    DisplayEvaluationSeed(f);
+    for(auto* fixture:{&f.first,&f.second}) {
+        auto& m=*fixture->m;std::memcpy(fixture->bones[0].name,"first",6);std::memcpy(fixture->bones[1].name,"second",7);
+        m.ikChains[0].boneIndex=0;m.ikChains[1].boneIndex=1;
+        auto* order=static_cast<mdl::BoneOrderEntry*>(m.boneOrderTable);
+        order[0].boneIndex=-1;order[1].boneIndex=0;order[2].boneIndex=1;
+        m.maxFrame=17;m.searchCursor=9;
+        m.boneKeys[0].allocated=6;m.morphKeys[0].allocated=7;m.displayKeys[0].allocated=8;
+        for(unsigned slot=0;slot<4;++slot) {
+            m.displayKeys[slot].ikStates[0]=static_cast<unsigned char>(slot+2);
+            m.displayKeys[slot].ikStates[1]=static_cast<unsigned char>(slot+12);
+            m.displayKeys[slot].selectorStates[0]={-1,0};
+            m.displayKeys[slot].selectorStates[1]={1,0};m.displayKeys[slot].selectorStates[2]={1,1};
+        }
+    }
+    f.app->CurrentFrame()=15;
+}
+// Reproduce ScaleDisplayKeys's encoder, then call the real low-level deletion,
+// reset and registrar. No range dialog, renderer or live-app seek is involved.
+void DisplayRangeLegacy(Fixture& f,const plugins::BoneRangeScaleOptions& options) {
+    struct Copy { unsigned relative;unsigned char visible;std::vector<unsigned char> ik,parents; };
+    std::vector<Copy> copies;auto& m=*f.m;
+    for(std::size_t slot=0;slot<mdl::KeyPoolCapacity(m.displayKeys);++slot) {
+        auto& key=m.displayKeys[slot];key.allocated=key.frame&&key.frame>=options.start?1:0;
+        if(!key.allocated)continue;
+        const auto span=unsigned(double(key.frame<=options.end?key.frame-options.start:options.end-options.start)*options.scale);
+        Copy copy{key.frame<=options.end?span:key.frame+span-options.end,key.visible,{},{}};
+        copy.ik.resize(std::size_t(m.ikChainCount)*21);copy.parents.resize(std::size_t(m.boneOrderCount)*28);
+        for(unsigned index=0;index<m.ikChainCount;++index) {
+            auto* entry=copy.ik.data()+21*index;
+            strcpy_s(reinterpret_cast<char*>(entry),20,m.boneTable[m.ikChains[index].boneIndex].name);entry[20]=key.ikStates[index];
+        }
+        const auto* order=static_cast<const mdl::BoneOrderEntry*>(m.boneOrderTable);
+        for(unsigned index=0;index<m.boneOrderCount;++index) {
+            auto* entry=copy.parents.data()+28*index;
+            if(index)strcpy_s(reinterpret_cast<char*>(entry),20,m.boneTable[order[index].boneIndex].name);
+            std::memcpy(entry+20,&key.selectorStates[index],sizeof(mdl::BoneReference));
+        }
+        copies.push_back(std::move(copy));
+    }
+    if(copies.empty())return;
+    for(std::size_t index=0;index<mdl::BoneKeyCapacity(m.boneKeys);++index)m.boneKeys[index].allocated=0;
+    for(std::size_t index=0;index<mdl::MorphKeyCapacity(m.morphKeys);++index)m.morphKeys[index].allocated=0;
+    DeleteMarkedModelKeys(f.raw(),15);ResetDisplayKeyCursor(f.raw());
+    for(const auto& copy:copies)Check(RegisterDisplayKeyFromRecord(f.raw(),int(copy.relative),copy.visible,int(m.ikChainCount),
+        copy.ik.data(),int(m.boneOrderCount),copy.parents.data(),int(options.start)),"legacy display registrar range oracle succeeds");
+}
+plugins::RangeScaleResult DisplayRangePlan(DisplayFixture& f,const plugins::BoneRangeScaleOptions& options) {
+    plugins::RangeScaleResult result;
+    Check(plugins::PlanDisplayRangeScale(*f.app,0,options,result)==MMS_OK,"display range plan succeeds");return result;
+}
+void DisplayRangeParityChecks() {
+    const std::vector<plugins::BoneRangeScaleOptions> cases={{0,30,1.5,false},{0,30,.01,false},{10,20,1.25,false},
+        {10,30,.01,false},{5,18,.65,false},{20,25,2.3,false},{10,30,1,false},{10,30,1.001,false},{80,90,2,false}};
+    for(const auto& options:cases) {
+        DisplayFixture f;DisplayRangeSeed(f);
+        const auto digest=f.first.Digest(),ring=PoseRingDigest(f.first);const auto originalBones=RegistrationKeys(f.first);
+        const DisplayTestState before(f.first);
+        auto result=DisplayRangePlan(f,options);
+        Check(f.first.Digest()==digest&&f.first.m->maxFrame==17&&f.first.m->searchCursor==9,
+            "display range preparation preserves all live bytes and shared scalar metadata");
+        DisplayRangeLegacy(f.second,options);
+        if(!result.hasKeys) {
+            Check(!result.change&&!result.moved&&result.markedSlots.empty()&&result.maxFrame==17&&result.searchCursor==9,
+                "empty display family reports no keys and leaves cursor and maximum unchanged");continue;
+        }
+        Check(bool(result.change)&&result.maxFrame==f.second.m->maxFrame&&result.searchCursor==f.second.m->searchCursor,
+            "display result reports real native max-frame and post-delete cursor without publishing them");
+        std::vector<unsigned> marked;
+        for(unsigned slot=0;slot<4;++slot)if(f.second.m->displayKeys[slot].allocated)marked.push_back(slot);
+        Check(result.markedSlots==marked,"display range reports final native selected slots including collision overwrite");
+        auto display=std::dynamic_pointer_cast<plugins::DisplayKeyDeletion>(result.change);
+        std::vector<mdl::BoneOrderEntry> selectors;
+        Check(display&&display->TargetSelectors(true,selectors)==MMS_OK,"display range exposes target parent windows to aggregate bone participant");
+        DisplayLegacyFrame(f.second,unsigned(f.app->CurrentFrame()));
+        Check(selectors.size()==3&&!std::memcmp(selectors.data(),f.second.m->boneOrderTable,selectors.size()*sizeof(selectors[0])),
+            "display range target windows match native reinserted track evaluation");
+        const auto pose=f.first.bones;const auto poseScale=bone_scale::PoseValues(f.first.raw());
+        DisplayTestCommit(f,result.change);
+        Check(DisplayTestState(f.second).Matches(f.first)&&DisplayFrameEqual(f.first,f.second),
+            "private display range matches native slot-order copy delete reset reinsert with fractional and tail frames");
+        Check(SameRegistrationKeys(f.first,originalBones)&&f.first.m->morphKeys[0].allocated==7&&
+            !std::memcmp(pose.data(),f.first.bones.data(),sizeof(pose))&&bone_scale::PoseValuesEqual(f.first.raw(),poseScale)&&
+            f.first.m->maxFrame==17&&f.first.m->searchCursor==9&&PoseRingDigest(f.first)==ring,
+            "display range participant writes no other family pose scale shared scalar or old-ring state");
+        const DisplayTestState after(f.first);
+        Check(f.history.History(false)==MMS_OK&&before.Matches(f.first),"display range undo restores every original slot nested byte and mark");
+        Check(f.history.History(true)==MMS_OK&&after.Matches(f.first),"display range redo independently restores target collisions and marks");
+        if(options.scale==1||options.scale==1.001)Check(!result.moved,
+            "identity or rounded identity mapping remains available to a moved mixed-family aggregate");
+    }
+}
+void DisplayRangeNameChecks() {
+    for(int mode=0;mode<3;++mode) {
+        DisplayFixture f;DisplayRangeSeed(f);
+        for(auto* fixture:{&f.first,&f.second}) {
+            if(mode==0)std::memcpy(fixture->bones[1].name,fixture->bones[0].name,20);
+            if(mode==1)std::memset(fixture->bones[1].name,0,20);
+            if(mode==2)fixture->m->ikChains[1].boneIndex=0;
+        }
+        const plugins::BoneRangeScaleOptions options{10,30,.01,false};auto result=DisplayRangePlan(f,options);
+        DisplayRangeLegacy(f.second,options);DisplayTestCommit(f,result.change);
+        Check(DisplayTestState(f.second).Matches(f.first),"duplicate and empty bone names preserve old first-match IK and parent mapping");
+        const auto& key=f.first.m->displayKeys[f.first.m->displayKeys[0].next];
+        if(mode==0||mode==2)Check(key.ikStates[1]==key.ikStates[0],"duplicate IK names take the first serialized IK switch");
+        if(mode==1)Check(key.selectorStates[2].modelIndex==key.selectorStates[0].modelIndex&&
+            key.selectorStates[2].boneIndex==key.selectorStates[0].boneIndex,"empty parent bone name maps to model-parent entry zero");
+        if(mode==0)Check(key.selectorStates[2].boneIndex==key.selectorStates[1].boneIndex,
+            "duplicate parent bone names take first named entry rather than source slot identity");
+    }
+    DisplayFixture f;DisplayRangeSeed(f);const plugins::BoneRangeScaleOptions options{10,30,2,false};
+    for(int kind=0;kind<3;++kind) {
+        const auto bone=f.firstIk[0].boneIndex;
+        std::array<char,20> original;std::memcpy(original.data(),f.first.bones[0].name,20);
+        const std::vector<int> imports{0,1};
+        if(kind==0)std::memset(f.first.bones[0].name,'x',20);
+        if(kind==1)f.firstIk[0].boneIndex=99;if(kind==2)extended_names::importedIkTargets=&imports;
+        plugins::RangeScaleResult result;result.maxFrame=777;result.markedSlots={91};
+        const auto status=plugins::PlanDisplayRangeScale(*f.app,0,options,result);
+        Check((status==MMS_E_NOT_READY||status==MMS_E_ARGUMENT)&&!result.change&&result.maxFrame==777&&result.markedSlots==std::vector<unsigned>{91},
+            "unsafe legacy name encoding invalid bone mapping and importer context reject without overwriting output");
+        std::memcpy(f.first.bones[0].name,original.data(),20);f.firstIk[0].boneIndex=bone;extended_names::importedIkTargets=nullptr;
+    }
+}
+void DisplayRangeFailureChecks() {
+    DisplayFixture f;DisplayRangeSeed(f);const plugins::BoneRangeScaleOptions options{10,30,1.4,false};
+    const auto digest=f.first.Digest();bool completed=false;unsigned failures=0;
+    plugins::RangeScaleResult result;
+    for(long allowance=0;allowance<512;++allowance) {
+        plugins::RangeScaleResult attempted;attempted.maxFrame=777;
+        failAfter=allowance;const auto status=plugins::PlanDisplayRangeScale(*f.app,0,options,attempted);failAfter=-1;
+        Check(f.first.Digest()==digest,"every display range planning failure preserves original native bytes");
+        if(status==MMS_OK){result=std::move(attempted);completed=true;break;}
+        Check(status==MMS_E_MEMORY&&!attempted.change&&attempted.maxFrame==777,
+            "display range plan OOM preserves old output and has no partial result");++failures;
+    }
+    Check(completed&&failures>20,"display range OOM sweep reaches copies mappings sparse patches and target sampling");
+    for(int kind=0;kind<4;++kind) {
+        std::unique_ptr<plugins::PreparedHistoryChange> candidate;
+        Check(result.change->Prepare(true,candidate)==MMS_OK&&candidate->IsCurrent(),"display range mapping freshness candidate prepares");
+        if(kind==0)f.first.bones[0].name[0]='z';if(kind==1)f.firstIk[0].boneIndex=1;
+        if(kind==2)f.firstOrder[1].boneIndex=1;if(kind==3)f.firstOrder[0].boneIndex=0;
+        Check(!candidate->IsCurrent(),"bone names IK targets and selector source identities invalidate range mapping");candidate.reset();
+        if(kind==0)f.first.bones[0].name[0]='f';if(kind==1)f.firstIk[0].boneIndex=0;
+        if(kind==2)f.firstOrder[1].boneIndex=0;if(kind==3)f.firstOrder[0].boneIndex=-1;
+    }
+    const auto before=DisplayTestState(f.first);std::unique_ptr<plugins::PreparedHistoryChange> candidate;
+    Check(result.change->Prepare(true,candidate)==MMS_OK&&candidate->IsCurrent(),"display range final publication candidate prepares");
+    failAfter=0;candidate->Publish();candidate.reset();failAfter=-1;
+    Check(result.change->Prepare(false,candidate)==MMS_OK&&candidate->IsCurrent(),"display range inverse retains both private payload directions");
+    failAfter=0;candidate->Publish();candidate.reset();failAfter=-1;
+    Check(before.Matches(f.first),"display range forward and inverse publication allocate nothing");
+    for(auto invalid:std::vector<plugins::BoneRangeScaleOptions>{{10,10,2,false},{10,20,0,false},
+        {10,20,(std::numeric_limits<double>::infinity)(),false},{10,30,double(frame_limits::maximum),false}}) {
+        plugins::RangeScaleResult rejected;rejected.searchCursor=888;
+        Check(plugins::PlanDisplayRangeScale(*f.app,0,invalid,rejected)==MMS_E_ARGUMENT&&!rejected.change&&rejected.searchCursor==888,
+            "invalid range rate and mapped-frame overflow reject without changing output");
+    }
+}
 }
 void NativeDisplayKeyChecks() {
     std::puts("  display keys: native parity");DisplayDeletionParityChecks();
@@ -430,4 +593,7 @@ void NativeDisplayKeyChecks() {
     std::puts("  display keys: current frame evaluation");DisplayCurrentFrameChecks();
     std::puts("  display keys: combined deletion and dirty pose");DisplayCombinationAndDirtyChecks();
     std::puts("  display keys: evaluation failures");DisplayEvaluationFailureChecks();
+    std::puts("  display keys: range parity");DisplayRangeParityChecks();
+    std::puts("  display keys: range name mapping");DisplayRangeNameChecks();
+    std::puts("  display keys: range failure");DisplayRangeFailureChecks();
 }

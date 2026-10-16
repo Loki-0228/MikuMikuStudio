@@ -2,15 +2,20 @@
 #if !MMD_ORIGINAL_PROFILE
 #include "scene_object_history.hpp"
 #include "native_bone_evaluation.hpp"
+#include "native_bone_registration.hpp"
+#include "native_range_scale.hpp"
 #include "mikudancestudio/bone_curve.hpp"
 #include "mikudancestudio/bone_scale.hpp"
 #include "mikudancestudio/bone_key_pool.hpp"
 #include "mikudancestudio/frame_limits.hpp"
+#include "mikudancestudio/extended_names.hpp"
 #include "mikudancestudio/key_pool.hpp"
 #include "mikudancestudio/mmd_app.hpp"
 #include "mikudancestudio/plugin_scene.hpp"
 #include <map>
 #include <set>
+#include <array>
+#include <cmath>
 
 namespace mikudancestudio::plugins {
 namespace {
@@ -120,6 +125,11 @@ struct DisplayDeletion final : DisplayKeyDeletion,std::enable_shared_from_this<D
     unsigned ikCount,parentCount;
     const void* ikTable;const void* parentTable;
     bool evaluateBones;
+    struct NameRule { unsigned bone;std::array<char,20> name; };
+    std::vector<NameRule> names;
+    std::vector<int> ikBones,parentBones;
+    const mdl::BoneRecord* nameTable=nullptr;
+    unsigned nameCount=0;
     std::vector<Patch> patches;
     DisplayDeletion(MMDApp& a,unsigned slot,bool evaluate):app(a),modelSlot(slot),model(a.ModelSlot(slot)),
         lifetime(RetainSceneObject(a,MMS_OBJECT_MODEL,slot)),identity(mdl::KeyPoolIdentity(mdl::Mdl(model)->displayKeys)),
@@ -128,8 +138,16 @@ struct DisplayDeletion final : DisplayKeyDeletion,std::enable_shared_from_this<D
     bool Structure() const noexcept {
         if(!lifetime||!lifetime->Present()||app.ModelSlot(modelSlot)!=model||!SceneObjectPresent(model,lifetime->Id()))return false;
         const auto& m=*mdl::Mdl(model);
-        return mdl::KeyPoolIdentity(m.displayKeys)==identity&&mdl::KeyPoolCapacity(m.displayKeys)>=capacity&&
-            m.ikChainCount==ikCount&&m.boneOrderCount==parentCount&&m.ikChains==ikTable&&m.boneOrderTable==parentTable;
+        if(mdl::KeyPoolIdentity(m.displayKeys)!=identity||mdl::KeyPoolCapacity(m.displayKeys)<capacity||
+            m.ikChainCount!=ikCount||m.boneOrderCount!=parentCount||m.ikChains!=ikTable||m.boneOrderTable!=parentTable)return false;
+        if(nameTable) {
+            if(m.boneTable!=nameTable||m.boneCount!=nameCount)return false;
+            for(const auto& name:names)if(std::memcmp(m.boneTable[name.bone].name,name.name.data(),name.name.size()))return false;
+            for(unsigned index=0;index<ikBones.size();++index)if(m.ikChains[index].boneIndex!=ikBones[index])return false;
+            const auto* order=static_cast<const mdl::BoneOrderEntry*>(m.boneOrderTable);
+            for(unsigned index=0;index<parentBones.size();++index)if(order[index].boneIndex!=parentBones[index])return false;
+        }
+        return true;
     }
     struct FrameState {
         unsigned char visible=0;
@@ -333,6 +351,7 @@ struct DisplayDeletion final : DisplayKeyDeletion,std::enable_shared_from_this<D
     }
     std::uint64_t RetainedBytes() const noexcept override {
         std::uint64_t bytes=sizeof(*this)+4*sizeof(void*);AddBytes(bytes,patches.capacity(),sizeof(Patch));
+        AddBytes(bytes,names.capacity(),sizeof(NameRule));AddBytes(bytes,ikBones.capacity(),sizeof(int));AddBytes(bytes,parentBones.capacity(),sizeof(int));
         for(const auto& patch:patches)for(const auto* payload:{&patch.before,&patch.after}) {
             AddBytes(bytes,payload->ik.capacity(),sizeof(unsigned char));
             AddBytes(bytes,payload->parents.capacity(),sizeof(mdl::BoneReference));
@@ -380,6 +399,134 @@ MmsResult PlanDisplayKeyDeletion(MMDApp& app,unsigned slot,std::shared_ptr<Histo
         change->patches.reserve(planned.size());
         for(auto& pair:planned)change->patches.push_back(std::move(pair.second));
         out=std::move(change);return MMS_OK;
+    });
+}
+MmsResult PlanDisplayRangeScale(MMDApp& app,unsigned slot,const BoneRangeScaleOptions& options,RangeScaleResult& out) noexcept {
+    if(options.start>=options.end||options.end>unsigned(frame_limits::maximum)||!std::isfinite(options.scale)||options.scale<=0)
+        return MMS_E_ARGUMENT;
+    if(slot>=kModelSlotCount||!app.ModelSlot(slot)||app.PlaybackActive()||app.FrameStepPlayback()||
+        app.state.recordPlaybackStartPending||app.SceneMutationInProgress())return MMS_E_NOT_READY;
+    return Boundary([&]()->MmsResult {
+        const auto& model=*mdl::Mdl(app.ModelSlot(slot));
+        if(!mdl::KeyPoolIdentity(model.displayKeys)||
+            (model.boneKeys&&!mdl::BoneKeyPoolIdentity(model.boneKeys))||
+            (model.morphKeys&&!mdl::MorphKeyPoolIdentity(model.morphKeys)))return MMS_E_NOT_READY;
+        RangeScaleResult result;result.maxFrame=model.maxFrame;result.searchCursor=model.searchCursor;
+        const auto chain=Chain(model);CheckPayloadStorage(model);
+        const auto capacity=mdl::KeyPoolCapacity(model.displayKeys);
+        std::set<unsigned> reachable;for(const auto& entry:chain)reachable.insert(entry.slot);
+        struct Copy { unsigned frame;Payload payload; };
+        std::vector<Copy> copies;
+        const auto mapped=[&](unsigned frame) {
+            const auto span=double(frame<=options.end?frame-options.start:options.end-options.start)*options.scale;
+            if(!std::isfinite(span)||span<0||span>double(frame_limits::maximum))throw std::invalid_argument("display range overflow");
+            const auto target=std::uint64_t(options.start)+std::uint64_t(span)+
+                (frame>options.end?std::uint64_t(frame-options.end):0);
+            if(target>std::uint64_t(frame_limits::maximum))throw std::invalid_argument("display range overflow");
+            return unsigned(target);
+        };
+        for(std::size_t index=0;index<capacity;++index) {
+            const auto& key=model.displayKeys[index];if(!key.frame||key.frame<options.start)continue;
+            if(!reachable.count(unsigned(index)))return MMS_E_ARGUMENT;
+            const auto frame=mapped(key.frame);result.moved|=frame!=key.frame;
+            copies.push_back({frame,Payload::Capture(key,model.ikChainCount,model.boneOrderCount)});
+        }
+        result.hasKeys=!copies.empty();
+        if(!result.hasKeys){out=std::move(result);return MMS_OK;}
+        if(extended_names::importedIkTargets)return MMS_E_NOT_READY;
+        if((model.ikChainCount&&!model.ikChains)||(model.boneOrderCount&&!model.boneOrderTable))return MMS_E_NOT_READY;
+        auto change=std::make_shared<DisplayDeletion>(app,slot,false);
+        std::vector<unsigned> ikMapping,parentMapping;
+        std::vector<const char*> ikNames,parentNames;
+        std::set<unsigned> named;
+        const auto name=[&](int bone)->const char* {
+            if(bone<0||unsigned(bone)>=model.boneCount)throw std::invalid_argument("display mapping bone outside model");
+            if(!model.boneTable)return nullptr;
+            const char* text=model.boneTable[bone].name;
+            // The legacy range producer uses strcpy_s(...,20), so a full
+            // nonterminated name has no defined transferable representation.
+            if(!std::memchr(text,0,sizeof(model.boneTable[bone].name)))return nullptr;
+            if(named.insert(unsigned(bone)).second) {
+                DisplayDeletion::NameRule rule{unsigned(bone),{}};std::memcpy(rule.name.data(),text,rule.name.size());
+                change->names.push_back(rule);
+            }
+            return text;
+        };
+        for(unsigned index=0;index<model.ikChainCount;++index) {
+            const auto bone=model.ikChains[index].boneIndex;const auto* text=name(bone);if(!text)return MMS_E_NOT_READY;
+            change->ikBones.push_back(bone);ikNames.push_back(text);
+        }
+        const auto* selectors=static_cast<const mdl::BoneOrderEntry*>(model.boneOrderTable);
+        for(unsigned index=0;index<model.boneOrderCount;++index) {
+            change->parentBones.push_back(selectors[index].boneIndex);
+            const auto* text=index?name(selectors[index].boneIndex):"";if(!text)return MMS_E_NOT_READY;
+            parentNames.push_back(text);
+        }
+        if(!change->names.empty()){change->nameTable=model.boneTable;change->nameCount=model.boneCount;}
+        // The registrar searches from the first encoded entry. Duplicate IK
+        // names therefore share its first flag; unnamed parent bones match
+        // the model-wide slot-zero record, whose encoded name is empty.
+        for(const auto* text:ikNames) {
+            unsigned first=0;while(std::strcmp(text,ikNames[first]))++first;ikMapping.push_back(first);
+        }
+        for(unsigned index=0;index<parentNames.size();++index) {
+            unsigned first=0;if(index)while(std::strcmp(parentNames[index],parentNames[first]))++first;
+            parentMapping.push_back(first);
+        }
+        std::map<unsigned,Patch> planned;
+        const auto write=[&](unsigned index)->Payload& {
+            if(index>=capacity)throw std::invalid_argument("display range slot outside pool");
+            auto found=planned.find(index);
+            if(found==planned.end()) {
+                Patch patch;patch.slot=index;patch.before=Payload::Capture(model.displayKeys[index],model.ikChainCount,model.boneOrderCount);
+                patch.after=patch.before;found=planned.emplace(index,std::move(patch)).first;
+            }
+            return found->second.after;
+        };
+        const auto read=[&](unsigned index) {
+            if(index>=capacity)throw std::invalid_argument("display range link outside pool");
+            const auto found=planned.find(index);return found==planned.end()?Read(model.displayKeys[index]):found->second.after.value;
+        };
+        for(std::size_t index=0;index<capacity;++index)if(model.displayKeys[index].allocated)write(unsigned(index)).value.allocated=0;
+        for(std::size_t index=1;index<capacity;++index) {
+            const auto& original=model.displayKeys[index];if(!original.frame||original.frame<options.start)continue;
+            auto& payload=write(unsigned(index));auto& key=payload.value;const auto previous=key.previous,next=key.next;
+            key.frame=0;write(previous).value.next=next;write(next).value.previous=previous;
+            key.allocated=0;key.visible=1;key.next=0;key.previous=0;
+            std::fill(payload.ik.begin(),payload.ik.end(),1);
+            for(auto& parent:payload.parents){parent.modelIndex=-1;parent.boneIndex=0;}
+        }
+        unsigned cursor=1;while(cursor<capacity&&read(cursor).frame)++cursor;
+        result.searchCursor=int(cursor); // DisplayKeyFreeSlot never advances this field.
+        for(const auto& copy:copies) {
+            unsigned current=0;std::size_t hops=0;
+            while(read(current).frame<copy.frame&&read(current).next) {
+                if(++hops>=capacity)return MMS_E_ARGUMENT;current=read(current).next;
+            }
+            const auto currentValue=read(current);unsigned destination=current;
+            if(currentValue.frame!=copy.frame) {
+                destination=1;while(destination<capacity&&read(destination).frame)++destination;
+                if(destination>=capacity)return MMS_E_NOT_READY;
+                auto& target=write(destination).value;
+                if(currentValue.frame<copy.frame) {
+                    write(current).value.next=destination;target.previous=current;
+                } else {
+                    write(currentValue.previous).value.next=destination;target.previous=currentValue.previous;
+                    write(current).value.previous=destination;target.next=current;
+                }
+                target.frame=copy.frame;result.maxFrame=(std::max)(result.maxFrame,copy.frame);
+            }
+            auto& target=write(destination);target.value.visible=copy.payload.value.visible;target.value.allocated=1;
+            for(unsigned index=0;index<ikMapping.size();++index)target.ik[index]=copy.payload.ik[ikMapping[index]];
+            for(unsigned index=0;index<parentMapping.size();++index)target.parents[index]=copy.payload.parents[parentMapping[index]];
+        }
+        for(std::size_t index=0;index<capacity;++index)if(read(unsigned(index)).allocated)result.markedSlots.push_back(unsigned(index));
+        change->patches.reserve(planned.size());
+        for(auto& entry:planned)if(!entry.second.after.Equals(model.displayKeys[entry.first],true))change->patches.push_back(std::move(entry.second));
+        // Validate the target track and external references before returning a
+        // usable record; this does not publish its derived state or selectors.
+        DisplayDeletion::FrameState target;if(auto status=change->Sample(true,target))return status;
+        result.change=std::move(change);out=std::move(result);return MMS_OK;
     });
 }
 }

@@ -432,13 +432,14 @@ void TransformCommandRoutes() {
                 f.app->FrameRangeStartFrame()==123&&f.app->SceneModified()==0&&f.app->RecordedFrameCountByte1()==0,
                 "range parsing no-op and overflow rejection preserve redo authoring and UI metadata");
         }
-        dialog.Text("10","30","2");
+        dialog.Text("10","30","1");
         for(int family:{panel::kScaleMorphCheckbox,panel::kScaleDispIkCheckbox}) {
             CheckDlgButton(dialog.window,family,BST_CHECKED);ApplyFrameRangeScale(dialog.window);
             CheckDlgButton(dialog.window,family,BST_UNCHECKED);
             Check(f.first.Digest()==before&&f.history.RedoCount()==1&&f.app->SceneModified()==0,
-                "mixed-family range refuses the whole request before clearing any marks");
+                "mixed-family identity range preserves redo and all selection marks");
         }
+        dialog.Text("10","30","2");
         Check(f.history.Enter()==MMS_OK,"reserve journal before bound range busy check");
         ApplyFrameRangeScale(dialog.window);f.history.Leave();
         Check(f.first.Digest()==before&&f.history.RedoCount()==1,"busy range route never falls through to legacy mutation");

@@ -1,5 +1,7 @@
 #include "native_morph_keys.hpp"
 #if !MMD_ORIGINAL_PROFILE
+#include "native_bone_registration.hpp"
+#include "native_range_scale.hpp"
 #include "scene_object_history.hpp"
 #include "mikudancestudio/bone_key_pool.hpp"
 #include "mikudancestudio/frame_limits.hpp"
@@ -36,17 +38,14 @@ template<class Key> bool Marked(const Key* keys, std::size_t capacity) noexcept 
 // Follow every root so shared slots and malformed unrelated tracks cannot
 // make a deletion silently unlink somebody else's key. Frame-zero heads may
 // carry a nonzero previous sentinel after the legacy last-key deletion.
-std::vector<Dependency> Chains(const mdl::ModelRecord& model, Owners& owners) {
-    const auto capacity = mdl::MorphKeyCapacity(model.morphKeys);
-    if (!model.morphs || !model.morphKeys || model.morphCount > capacity)
-        throw std::invalid_argument("missing morph tracks");
+template<class Read> std::vector<Dependency> TrackChains(unsigned count, std::size_t capacity, Read read, Owners& owners) {
     owners.clear(); std::vector<Dependency> dependencies;
-    for (unsigned morph = 0; morph < model.morphCount; ++morph) {
+    for (unsigned morph = 0; morph < count; ++morph) {
         unsigned slot = morph, previous = 0, frame = 0; bool ended = false;
         for (std::size_t hop = 0; hop < capacity; ++hop) {
-            if (slot >= capacity || (hop && slot < model.morphCount) || !owners.emplace(slot, morph).second)
+            if (slot >= capacity || (hop && slot < count) || !owners.emplace(slot, morph).second)
                 throw std::invalid_argument("shared or invalid morph key slot");
-            const auto key = model.morphKeys[slot];
+            const auto key = read(slot);
             if (key.previous >= capacity || key.next >= capacity || key.frame > unsigned(frame_limits::maximum) ||
                 !std::isfinite(key.value) || (!hop && key.frame) || (hop && (key.previous != previous || key.frame <= frame)))
                 throw std::invalid_argument("invalid morph key link frame or value");
@@ -57,6 +56,12 @@ std::vector<Dependency> Chains(const mdl::ModelRecord& model, Owners& owners) {
         if (!ended) throw std::invalid_argument("unterminated morph key track");
     }
     return dependencies;
+}
+std::vector<Dependency> Chains(const mdl::ModelRecord& model, Owners& owners) {
+    const auto capacity = mdl::MorphKeyCapacity(model.morphKeys);
+    if (!model.morphs || !model.morphKeys || model.morphCount > capacity)
+        throw std::invalid_argument("missing morph tracks");
+    return TrackChains(model.morphCount, capacity, [&](unsigned slot) { return model.morphKeys[slot]; }, owners);
 }
 void AddBytes(std::uint64_t& bytes, std::size_t count, std::size_t stride) noexcept {
     if (count > (UINT64_MAX - bytes) / stride) bytes = UINT64_MAX;
@@ -206,6 +211,116 @@ MmsResult PlanMorphKeyDeletion(MMDApp& app, unsigned slot, std::shared_ptr<Histo
             std::memcpy(rule.name.data(), record.name, rule.name.size()); change->rules.push_back(rule);
         }
         out = std::move(change); return MMS_OK;
+    });
+}
+MmsResult PlanMorphRangeScale(MMDApp& app, unsigned slot, const BoneRangeScaleOptions& options,
+    RangeScaleResult& out) noexcept {
+    out = {};
+    if (options.start >= options.end || options.end > unsigned(frame_limits::maximum) ||
+        !std::isfinite(options.scale) || options.scale <= 0) return MMS_E_ARGUMENT;
+    if (slot >= kModelSlotCount || !app.ModelSlot(slot) || app.PlaybackActive() || app.FrameStepPlayback() ||
+        app.state.recordPlaybackStartPending || app.SceneMutationInProgress()) return MMS_E_NOT_READY;
+    return Boundary([&]() -> MmsResult {
+        const auto& model = *mdl::Mdl(app.ModelSlot(slot));
+        if (!mdl::MorphKeyPoolIdentity(model.morphKeys)) return MMS_E_NOT_READY;
+        const auto capacity = mdl::MorphKeyCapacity(model.morphKeys);
+        RangeScaleResult result; result.maxFrame = model.maxFrame; result.searchCursor = model.searchCursor;
+        if (!model.morphCount) {
+            for (std::size_t index = 0; index < capacity; ++index)
+                if (model.morphKeys[index].frame) return MMS_E_ARGUMENT;
+            out = std::move(result); return MMS_OK;
+        }
+        Owners owners; Chains(model, owners);
+        struct Copy { unsigned slot, owner, frame; float value; };
+        std::vector<Copy> copies; std::set<unsigned> affected;
+        for (std::size_t index = 0; index < capacity; ++index) {
+            const auto& key = model.morphKeys[index];
+            if ((!key.frame && index >= model.morphCount) || key.frame < options.start) continue;
+            const auto owner = owners.find(unsigned(index)); if (owner == owners.end()) return MMS_E_ARGUMENT;
+            const double scaled = double(key.frame <= options.end ? key.frame - options.start : options.end - options.start) * options.scale;
+            // Truncate only after the bound check, without legacy uint32 wrap.
+            if (!std::isfinite(scaled) || scaled < 0 || scaled > double(frame_limits::maximum)) return MMS_E_ARGUMENT;
+            const auto target = std::uint64_t(options.start) + std::uint64_t(scaled) +
+                (key.frame > options.end ? std::uint64_t(key.frame - options.end) : 0);
+            if (target > std::uint64_t(frame_limits::maximum)) return MMS_E_ARGUMENT;
+            result.moved |= target != key.frame;
+            copies.push_back({unsigned(index), owner->second, unsigned(target), key.value}); affected.insert(owner->second);
+        }
+        result.hasKeys = !copies.empty();
+        if (!result.hasKeys) { out = std::move(result); return MMS_OK; }
+        std::map<unsigned, Patch> planned;
+        const auto read = [&](unsigned index) -> const mdl::MorphKey& {
+            if (index >= capacity) throw std::invalid_argument("morph range read outside pool");
+            const auto found = planned.find(index);
+            return found == planned.end() ? model.morphKeys[index] : found->second.after;
+        };
+        const auto write = [&](unsigned index) -> mdl::MorphKey& {
+            if (index >= capacity) throw std::invalid_argument("morph range write outside pool");
+            auto found = planned.find(index);
+            if (found == planned.end()) {
+                const auto key = model.morphKeys[index]; found = planned.emplace(index, Patch{index, key, key}).first;
+            }
+            return found->second.after;
+        };
+        for (std::size_t index = 0; index < capacity; ++index)
+            if (model.morphKeys[index].allocated) write(unsigned(index)).allocated = 0;
+        // Deletion follows the ascending original pool slots. Adjacent removals
+        // use links changed by previous removals, including root-zero sentinel.
+        for (const auto& copy : copies) {
+            auto& key = write(copy.slot); const auto previous = key.previous, next = key.next;
+            key.frame = 0;
+            if (copy.slot >= model.morphCount) { write(previous).next = next; write(next).previous = previous; }
+            key.allocated = 0; key.value = 0;
+            if (copy.slot >= model.morphCount) key.next = 0;
+            key.previous = 0;
+        }
+        unsigned cursor = model.morphCount;
+        while (cursor < capacity && read(cursor).frame) ++cursor;
+        const auto allocate = [&]() -> unsigned {
+            if (cursor < model.morphCount || cursor >= capacity) cursor = model.morphCount;
+            while (cursor < capacity && read(cursor).frame) ++cursor;
+            return cursor;
+        };
+        for (const auto& copy : copies) {
+            unsigned current = copy.owner; std::size_t hops = 0;
+            while (read(current).frame < copy.frame && read(current).next) {
+                if (++hops >= capacity) throw std::invalid_argument("cyclic private morph range track");
+                current = read(current).next;
+            }
+            if (read(current).frame == copy.frame) {
+                auto& key = write(current); key.value = copy.value; key.allocated = 1;
+                continue; // The native overwrite branch does not raise maxFrame.
+            }
+            const auto fresh = allocate();
+            // Retime cannot require more live non-root keys than it removed.
+            // Reject corrupt/full storage rather than allocate during publish.
+            if (fresh >= capacity) return MMS_E_NOT_READY;
+            auto& key = write(fresh);
+            if (read(current).frame < copy.frame) {
+                write(current).next = fresh; key.previous = current;
+                // Preserve the old registrar's append behavior and reserved bytes.
+            } else {
+                const auto previous = read(current).previous;
+                write(previous).next = fresh; key.previous = previous;
+                write(current).previous = fresh; key.next = current;
+            }
+            key.frame = copy.frame; key.value = copy.value; key.allocated = 1;
+            result.maxFrame = (std::max)(result.maxFrame, copy.frame);
+        }
+        Owners targetOwners; TrackChains(model.morphCount, capacity, read, targetOwners);
+        auto change = std::make_shared<MorphDeletion>(app, slot); change->patches.reserve(planned.size());
+        for (const auto& patch : planned) {
+            if (!SameKey(patch.second.before, patch.second.after, true)) change->patches.push_back(patch.second);
+        }
+        change->rules.reserve(affected.size());
+        for (auto morph : affected) {
+            const auto& record = model.morphs[morph]; Rule rule{morph, {}, record.panel, record.type};
+            std::memcpy(rule.name.data(), record.name, rule.name.size()); change->rules.push_back(rule);
+        }
+        for (std::size_t index = 0; index < capacity; ++index)
+            if (read(unsigned(index)).allocated) result.markedSlots.push_back(unsigned(index));
+        result.searchCursor = int(cursor); result.change = std::move(change);
+        out = std::move(result); return MMS_OK;
     });
 }
 }

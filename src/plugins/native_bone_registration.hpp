@@ -5,6 +5,7 @@
 namespace mikudancestudio { class MMDApp; }
 namespace mikudancestudio::plugins {
 class DisplayKeyDeletion;
+struct RangeScaleResult;
 struct BoneRegistrationOptions {
     int frame = 0;
     int physicsMode = 2;
@@ -38,7 +39,11 @@ struct BoneRangeScaleOptions {
 // the whole plan; an identity mapping after truncation preserves all selection.
 // Fixed-axis correction needs the same optional D3DX math as the old registrar.
 MmsResult PlanBoneRangeScale(MMDApp&, unsigned modelSlot, const BoneRangeScaleOptions&,
-    std::shared_ptr<HistoryChange>&) noexcept;
+    std::shared_ptr<HistoryChange>&, RangeScaleResult* aggregate = nullptr,
+    std::shared_ptr<DisplayKeyDeletion> display = {}) noexcept;
+// Prepare target display-window sampling without deleting marked bone keys.
+MmsResult PlanBoneDisplayEvaluation(MMDApp&, unsigned modelSlot,
+    std::shared_ptr<DisplayKeyDeletion>, std::shared_ptr<HistoryChange>&) noexcept;
 // Production register-button route under the explicit migration binding only.
 // True also covers rejection/no-op: never fall through to the old ring.
 bool TryRegisterBoundBones(MMDApp*) noexcept;

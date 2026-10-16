@@ -5,6 +5,8 @@
 #include "mikudancestudio/model.hpp"
 namespace mikudancestudio { class MMDApp; }
 namespace mikudancestudio::plugins {
+struct BoneRangeScaleOptions;
+struct RangeScaleResult;
 class DisplayKeyDeletion : public HistoryChange {
 public:
     // Re-evaluate at the current playhead without writing live selectors.
@@ -25,5 +27,12 @@ public:
 MmsResult PlanDisplayKeyDeletion(MMDApp&, unsigned modelSlot,
     std::shared_ptr<HistoryChange>& out, bool allowOtherMarks = false,
     bool evaluateBones = true) noexcept;
+// Private display-family range plan. The aggregate owns final selection marks
+// and shared cursor/max-frame publication and supplies bone reevaluation.
+// Name mapping matches the native registrar, including duplicate/empty names
+// and the model-parent slot zero. Nonterminated legacy names and import-name
+// scopes are rejected. No live pool growth is performed; failure preserves out.
+MmsResult PlanDisplayRangeScale(MMDApp&, unsigned modelSlot,
+    const BoneRangeScaleOptions&, RangeScaleResult& out) noexcept;
 }
 #endif

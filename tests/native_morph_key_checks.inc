@@ -1,6 +1,8 @@
 // Include after native_bone_registration_checks.inc. Call NativeMorphKeyChecks().
 // The actual legacy deletion and seek functions supply independent oracles.
 #include "../src/plugins/native_morph_keys.hpp"
+#include "../src/plugins/native_range_scale.hpp"
+#include "mikudancestudio/frame_limits.hpp"
 #include <limits>
 namespace {
 struct MorphKeyFixture : BoneRegistrationFixture {
@@ -254,6 +256,171 @@ void MorphDeletionStaleAndFailures() {
     mdl::MorphKeyPoolDestroy(f.first.m->morphKeys);f.first.m->morphKeys=mdl::MorphKeyPoolCreate(16);MorphKeySeed(f.first);
     Check(change->Prepare(true,candidate)==MMS_E_STALE&&!candidate,"different pool ownership cannot resurrect a morph history record at a recycled address");
 }
+// Independent low-level oracle: the old window implementation's slot sweep,
+// DeleteMarkedModelKeys, ResetMorphKeyCursor and real native registrar. No UI.
+void MorphRangeLegacy(Fixture& f,const plugins::BoneRangeScaleOptions& options,int frame) {
+    struct Copy { unsigned owner,frame;float value; };
+    std::vector<Copy> copies;
+    const auto count=f.m->morphCount;const auto capacity=mdl::MorphKeyCapacity(f.m->morphKeys);
+    for(std::size_t index=0;index<capacity;++index) {
+        auto& key=f.m->morphKeys[index];key.allocated=0;
+        if((key.frame||index<count)&&key.frame>=options.start) {
+            key.allocated=1;unsigned owner=unsigned(index);
+            while(owner>=count)owner=f.m->morphKeys[owner].previous;
+            const auto relative=key.frame<=options.end?
+                unsigned(std::int64_t(double(key.frame-options.start)*options.scale)):
+                key.frame+unsigned(std::int64_t(double(options.end-options.start)*options.scale))-options.end;
+            copies.push_back({owner,options.start+relative,key.value});
+        }
+    }
+    if(copies.empty())return;
+    for(std::size_t index=0;index<mdl::BoneKeyCapacity(f.m->boneKeys);++index)f.m->boneKeys[index].allocated=0;
+    for(std::size_t index=0;index<mdl::KeyPoolCapacity(f.m->displayKeys);++index)f.m->displayKeys[index].allocated=0;
+    DeleteMarkedModelKeys(f.raw(),frame);ResetMorphKeyCursor(f.raw());
+    for(const auto& copy:copies)Check(RegisterMorphKeyAtIndex(f.raw(),int(copy.owner),copy.frame,copy.value),
+        "legacy morph range oracle reinserts copied slots through the real registrar");
+    SeekModelFrame(f.raw(),frame,0);
+}
+std::vector<unsigned> MorphMarkedSlots(const Fixture& f) {
+    std::vector<unsigned> result;
+    for(std::size_t index=0;index<mdl::MorphKeyCapacity(f.m->morphKeys);++index)
+        if(f.m->morphKeys[index].allocated)result.push_back(unsigned(index));
+    return result;
+}
+void MorphRangeParity() {
+    const plugins::BoneRangeScaleOptions cases[]={
+        {10,40,2,false},{10,40,4,false},{10,40,.5,false},{10,60,.001,false},{0,60,.001,false},
+        {0,30,2,false},{25,50,1.5,false},{50,60,.2,false},{10,40,1,false}
+    };
+    for(const auto& options:cases) {
+        MorphKeyFixture f;MorphKeySeed(f.first);MorphKeySeed(f.second);f.app->CurrentFrame()=23;
+        for(auto* fixture:{&f.first,&f.second}) {
+            fixture->m->morphKeys[2].allocated=7;fixture->m->morphKeys[15].allocated=6;
+            fixture->m->morphKeys[7].allocated=3;
+            fixture->m->boneKeys[0].allocated=4;fixture->m->displayKeys[0].allocated=5;
+        }
+        const auto before=MorphKeysCopy(f.first);const auto boneKeys=RegistrationKeys(f.first);
+        const auto weights=f.firstMorphs;const auto ring=PoseRingDigest(f.first),digest=f.first.Digest();
+        const auto* pool=f.first.m->morphKeys;const auto last=f.app->state.lastRegisteredFrame;
+        plugins::RangeScaleResult result;
+        Check(plugins::PlanMorphRangeScale(*f.app,0,options,result)==MMS_OK&&result.hasKeys&&result.change&&
+            result.moved==(options.scale!=1),"morph range plans complete slot-order reinsertion including identity mapping");
+        Check(f.first.Digest()==digest&&MorphKeysMatch(f.first,before)&&
+            !std::memcmp(f.firstMorphs.data(),weights.data(),sizeof(weights)),"morph range planning changes neither native keys nor current weights");
+        MorphRangeLegacy(f.second,options,23);
+        Check(result.maxFrame==f.second.m->maxFrame&&result.searchCursor==f.second.m->searchCursor&&
+            result.markedSlots==MorphMarkedSlots(f.second),"morph range returns exact native maximum cursor and target marked slots");
+        MorphDeleteCommit(f,result.change);
+        Check(!std::memcmp(f.first.m->morphKeys,f.second.m->morphKeys,16*sizeof(mdl::MorphKey)),
+            "morph range expansion compression tail shift roots and collisions match real registrar bytes");
+        Check(f.first.m->morphKeys==pool&&f.first.m->maxFrame==99&&f.first.m->searchCursor==5&&
+            f.app->state.lastRegisteredFrame==last&&PoseRingDigest(f.first)==ring&&SameRegistrationKeys(f.first,boneKeys)&&
+            f.first.m->displayKeys[0].allocated==5&&f.SelectionUnchanged(),
+            "morph range participant leaves shared scalar fields pool storage old ring and foreign selection untouched");
+        for(unsigned morph=0;morph<3;++morph)Check(MorphSameFloat(f.firstMorphs[morph].value,
+            morph==2&&options.start?weights[morph].value:f.secondMorphs[morph].value),
+            "morph range evaluates only affected owners at the current frame");
+        const auto after=MorphKeysCopy(f.first);f.app->CurrentFrame()=7;
+        Check(f.history.History(false)==MMS_OK&&MorphKeysMatch(f.first,before),"morph range undo restores original payloads reserved bytes and selection");
+        std::memcpy(f.second.m->morphKeys,before.data(),before.size()*sizeof(mdl::MorphKey));SeekModelFrame(f.second.raw(),7,0);
+        Check(MorphSameFloat(f.firstMorphs[0].value,f.secondMorphs[0].value)&&MorphSameFloat(f.firstMorphs[1].value,f.secondMorphs[1].value),
+            "morph range undo samples the current playhead");
+        f.app->CurrentFrame()=31;
+        Check(f.history.History(true)==MMS_OK&&MorphKeysMatch(f.first,after),"morph range redo publishes its owned sparse target");
+        if(options.scale==.001&&options.start==10) {
+            const auto first=f.first.m->morphKeys[0].next,second=f.first.m->morphKeys[1].next;
+            Check(f.first.m->morphKeys[first].frame==10&&f.first.m->morphKeys[first].value==1.3f&&
+                f.first.m->morphKeys[second].frame==10&&f.first.m->morphKeys[second].value==.94f,
+                "non-time slot collisions use the final original slot value rather than frame-sorted order");
+        }
+        if(options.scale==.001&&options.start==0)Check(f.first.m->morphKeys[0].value==1.3f&&
+            f.first.m->morphKeys[1].value==.94f&&f.first.m->morphKeys[2].value==before[2].value,
+            "compression to frame zero overwrites existing morph roots and preserves the untouched root value");
+    }
+}
+void MorphRangeAuthoringAndFailures() {
+    MorphKeyFixture f;MorphKeySeed(f.first);MorphKeySeed(f.second);std::string error;
+    const auto track=MorphAuthoredTrack(f.firstMorphs[0],0);
+    Check(morph_curve::Write(f.first.raw(),{track},error)&&morph_curve::Write(f.second.raw(),{track},error),
+        "morph range begins with pristine authored tangents");
+    f.app->CurrentFrame()=17;const auto before=MorphKeysCopy(f.first);const auto weights=f.firstMorphs;
+    morph_curve::AuthoredLayers layers;Check(morph_curve::CaptureLayers(f.first.raw(),layers,error),"capture morph range author layers");
+    const plugins::BoneRangeScaleOptions options{10,50,.5,false};plugins::RangeScaleResult result;
+    bool planned=false;unsigned failures=0;
+    for(long limit=0;limit<512;++limit) {
+        plugins::RangeScaleResult attempt;failAfter=limit;
+        const auto status=plugins::PlanMorphRangeScale(*f.app,0,options,attempt);failAfter=-1;
+        Check(MorphKeysMatch(f.first,before)&&!std::memcmp(f.firstMorphs.data(),weights.data(),sizeof(weights))&&
+            morph_curve::LayersUnchanged(f.first.raw(),layers),"morph range allocation failures leave live keys weights and pristine authoring untouched");
+        if(status==MMS_OK){result=std::move(attempt);planned=true;break;}
+        Check(status==MMS_E_MEMORY&&!attempt.change&&!attempt.hasKeys&&attempt.markedSlots.empty(),
+            "morph range failure returns no partially published participant or metadata");++failures;
+    }
+    Check(planned&&failures>15&&result.change,"morph range allocation sweep reaches private copies patches ownership and result flags");
+    std::unique_ptr<plugins::PreparedHistoryChange> candidate;
+    Check(result.change->Prepare(true,candidate)==MMS_OK&&candidate->IsCurrent(),"prepare morph range weighted evaluation");
+    ++f.app->CurrentFrame();Check(!candidate->IsCurrent(),"range evaluation rejects a moved playhead");--f.app->CurrentFrame();
+    const float weight=f.firstMorphs[0].value;f.firstMorphs[0].value=weight+1;
+    Check(!candidate->IsCurrent(),"range evaluation rejects changed affected unregistered weights");f.firstMorphs[0].value=weight;
+    failAfter=0;candidate->Publish();candidate.reset();failAfter=-1;
+    MorphRangeLegacy(f.second,options,17);
+    Check(MorphSameFloat(f.firstMorphs[0].value,f.secondMorphs[0].value)&&morph_curve::LayersUnchanged(f.first.raw(),layers),
+        "range samples native-derived curves without changing pristine curve layers");
+    for(unsigned n=0;n<100;++n)PushBoneEditUndo(f.app.get());const auto ring=PoseRingDigest(f.first);
+    f.app->CurrentFrame()=6;
+    Check(result.change->Prepare(false,candidate)==MMS_OK,"range record survives overwritten legacy history");
+    failAfter=0;candidate->Publish();candidate.reset();failAfter=-1;
+    Check(MorphKeysMatch(f.first,before)&&PoseRingDigest(f.first)==ring&&
+        MorphSameFloat(f.firstMorphs[0].value,float(animation_curve::Evaluate(track.track,6).value)),
+        "range inverse publishes without allocation and revives pristine tangent evaluation");
+}
+void MorphRangeGuards() {
+    MorphKeyFixture f;MorphKeySeed(f.first);f.first.m->morphKeys[7].allocated=1;
+    MorphDeleteCommit(f,MorphDeletePlan(f));Check(f.history.History(false)==MMS_OK,"seed redo for morph range rejection");
+    const auto before=MorphKeysCopy(f.first);const auto redo=f.history.RedoCount();
+    plugins::RangeScaleResult result;
+    Check(plugins::PlanMorphRangeScale(*f.app,0,{100,200,2,false},result)==MMS_OK&&!result.hasKeys&&!result.moved&&
+        !result.change&&result.maxFrame==99&&result.searchCursor==5&&MorphKeysMatch(f.first,before)&&f.history.RedoCount()==redo,
+        "empty morph range preserves live marks redo and reports original scalar metadata");
+    const plugins::BoneRangeScaleOptions invalid[]={
+        {10,10,2,false},{20,10,2,false},{0,10,0,false},{0,10,-1,false},
+        {0,10,(std::numeric_limits<double>::infinity)(),false},{0,10,(std::numeric_limits<double>::quiet_NaN)(),false},
+        {0,50,double(frame_limits::maximum),false},{10,50,double(frame_limits::maximum)/40,false}
+    };
+    for(const auto& options:invalid)Check(plugins::PlanMorphRangeScale(*f.app,0,options,result)==MMS_E_ARGUMENT&&
+        !result.change&&MorphKeysMatch(f.first,before)&&f.history.RedoCount()==redo,
+        "invalid ranges scales and mapped overflow reject without keys metadata or redo changes");
+    Check(plugins::PlanMorphRangeScale(*f.app,0,{10,40,2,false},result)==MMS_OK&&result.change,"prepare morph range journal failure fixture");
+    std::unique_ptr<plugins::SharedHistory::NativeTransaction> transaction;std::string label="morph range reservation failure";
+    failAfter=0;const auto status=f.history.PrepareNative(std::move(label),result.change,transaction);failAfter=-1;
+    Check(status==MMS_E_MEMORY&&!transaction&&MorphKeysMatch(f.first,before)&&f.history.RedoCount()==redo,
+        "morph range journal reservation failure preserves existing redo");
+    f.first.m->morphKeys[7].next=7;const auto broken=MorphKeysCopy(f.first);
+    Check(plugins::PlanMorphRangeScale(*f.app,0,{10,40,2,false},result)==MMS_E_ARGUMENT&&!result.change&&MorphKeysMatch(f.first,broken),
+        "morph range rejects corrupt chains before simulating deletion");
+    std::memcpy(f.first.m->morphKeys,before.data(),before.size()*sizeof(mdl::MorphKey));
+    for(unsigned next:{3u,99u}) {
+        std::memcpy(f.first.m->morphKeys,before.data(),before.size()*sizeof(mdl::MorphKey));
+        f.first.m->morphKeys[6].next=9;f.first.m->morphKeys[9].previous=6;
+        f.first.m->morphKeys[3]={};f.first.m->morphKeys[3].next=next;
+        const auto malformed=MorphKeysCopy(f.first);
+        Check(plugins::PlanMorphRangeScale(*f.app,0,{25,50,2,false},result)==MMS_E_ARGUMENT&&!result.change&&
+            MorphKeysMatch(f.first,malformed)&&f.history.RedoCount()==redo,
+            "later reinsertion rejects a reused hole cycle or invalid next before final target validation");
+    }
+    std::memcpy(f.first.m->morphKeys,before.data(),before.size()*sizeof(mdl::MorphKey));
+    // Only frame-zero roots remain: the family must still simulate and report
+    // hasKeys, leaving the mixed aggregate to decide whether anything moved.
+    std::memset(f.first.m->morphKeys,0,16*sizeof(mdl::MorphKey));f.first.m->morphKeys[2].value=.3f;
+    const auto roots=MorphKeysCopy(f.first);
+    Check(plugins::PlanMorphRangeScale(*f.app,0,{0,10,.01,false},result)==MMS_OK&&result.hasKeys&&!result.moved&&
+        result.change&&result.markedSlots==std::vector<unsigned>({0,1,2})&&result.searchCursor==3&&MorphKeysMatch(f.first,roots),
+        "zero-frame roots remain a simulated family even when integer frame mapping makes no movement");
+    f.first.m->morphCount=0;f.first.m->morphs=nullptr;
+    Check(plugins::PlanMorphRangeScale(*f.app,0,{0,10,2,false},result)==MMS_OK&&!result.hasKeys&&!result.change&&
+        result.maxFrame==99&&result.searchCursor==5,"model without morph records contributes an empty range result");
+    f.first.m->morphCount=3;f.first.m->morphs=f.firstMorphs.data();
+}
 }
 void NativeMorphKeyChecks() {
     std::puts("  morph deletion: legacy parity");MorphDeletionParity();
@@ -261,4 +428,7 @@ void NativeMorphKeyChecks() {
     std::puts("  morph deletion: lifetime and pool growth");MorphDeletionLifetimeAndGrowth();
     std::puts("  morph deletion: no-op mixed marks and malformed tracks");MorphDeletionGuards();
     std::puts("  morph deletion: stale candidates and allocation failures");MorphDeletionStaleAndFailures();
+    std::puts("  morph range: native registrar parity and scalar outputs");MorphRangeParity();
+    std::puts("  morph range: pristine curves and allocation failures");MorphRangeAuthoringAndFailures();
+    std::puts("  morph range: no-op guards and redo preservation");MorphRangeGuards();
 }

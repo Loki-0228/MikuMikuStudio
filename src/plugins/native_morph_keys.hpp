@@ -19,5 +19,14 @@ namespace mikudancestudio::plugins {
 // A successful null result is a no-op and must not discard redo.
 MmsResult PlanMorphKeyDeletion(MMDApp&, unsigned modelSlot,
     std::shared_ptr<HistoryChange>& out, bool allowOtherMarks = false) noexcept;
+struct BoneRangeScaleOptions;
+struct RangeScaleResult;
+// Internal aggregate participant. Simulates the native slot-order deletion /
+// reinsertion even when every mapped frame is identical; the caller decides
+// whether the complete multi-family operation is a no-op. The result carries
+// cursor/maximum/marks for the aggregate, never writes shared scalar fields or
+// another family's marks, and never grows the live key pool.
+MmsResult PlanMorphRangeScale(MMDApp&, unsigned modelSlot,
+    const BoneRangeScaleOptions&, RangeScaleResult&) noexcept;
 }
 #endif

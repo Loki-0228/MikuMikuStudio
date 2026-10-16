@@ -10,5 +10,13 @@ namespace mikudancestudio::plugins {
 // scope and budgets retained model resources separately from these records.
 MmsResult PlanModelKeyDeletion(MMDApp&, unsigned modelSlot, bool automaticInterpolation,
     std::shared_ptr<HistoryChange>&, bool selectedAtCurrentFrame = false) noexcept;
+struct ModelRangeScaleOptions {
+    std::uint32_t start = 0, end = 0;
+    double scale = 1;
+    bool bones = false, morphs = false, display = false;
+    bool automaticInterpolation = false;
+};
+MmsResult PlanModelRangeScale(MMDApp&, unsigned modelSlot, const ModelRangeScaleOptions&,
+    std::shared_ptr<HistoryChange>&) noexcept;
 }
 #endif

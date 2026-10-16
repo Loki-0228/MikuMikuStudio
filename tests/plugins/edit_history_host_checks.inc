@@ -3,6 +3,7 @@
 #include "mikudancestudio/bone_key_pool.hpp"
 #include "mikudancestudio/key_pool.hpp"
 #include "mikudancestudio/animation_curve_editor.hpp"
+#include "../src/plugins/native_key_commands.hpp"
 namespace edit_history_host_checks {
 UINT FindMenuCommand(HMENU menu, const wchar_t* label) {
     for (int index = 0; menu && index < GetMenuItemCount(menu); ++index) {
@@ -87,6 +88,38 @@ void MixedModelDeletion(MMDApp* app, plugins::SharedHistory& history) {
     curve_editor::CloseOwned(app->MainWindow());
     app->CurrentFrame() = 0; app->CameraMode() = 0;
 }
+void MixedModelRange(MMDApp* app, plugins::SharedHistory& history) {
+    auto& model = *mdl::Mdl(app->ModelSlot(0));
+    const auto dialog = CreateWindowExW(0, L"STATIC", L"Range probe", WS_CHILD, 0, 0, 200, 100,
+        app->MainWindow(), nullptr, GetModuleHandleW(nullptr), nullptr);
+    Check(dialog != nullptr, "hidden range dialog created");
+    for (const auto& entry : std::array<std::pair<int, const wchar_t*>, 3>{{
+        {panel::kScaleFromEdit, L"0"}, {panel::kScaleToEdit, L"20"}, {panel::kScaleRateEdit, L"2"}}})
+        Check(CreateWindowExW(0, L"EDIT", entry.second, WS_CHILD, 0, 0, 40, 20, dialog,
+            reinterpret_cast<HMENU>(INT_PTR(entry.first)), GetModuleHandleW(nullptr), nullptr) != nullptr, "range number field created");
+    for (int id : {panel::kScaleBoneCheckbox, panel::kScaleMorphCheckbox, panel::kScaleDispIkCheckbox}) {
+        Check(CreateWindowExW(0, L"BUTTON", L"family", WS_CHILD | BS_CHECKBOX, 0, 0, 40, 20, dialog,
+            reinterpret_cast<HMENU>(INT_PTR(id)), GetModuleHandleW(nullptr), nullptr) != nullptr, "range family checkbox created");
+        CheckDlgButton(dialog, id, BST_CHECKED);
+    }
+    Check(plugins::TryScaleBoundBoneRange(app, dialog), "controlled range route consumes the three-family dialog");
+    DestroyWindow(dialog);
+    const auto frames = [&](unsigned frame) {
+        return model.boneKeys[model.boneKeys[0].next].frame == frame &&
+            model.morphKeys[model.morphKeys[0].next].frame == frame && model.displayKeys[model.displayKeys[0].next].frame == frame;
+    };
+    Check(history.UndoCount() == 1 && frames(20) && model.maxFrame >= 20 && app->LastRegisteredFrame() >= 20,
+          "three-family range publishes one record and one shared timeline maximum");
+    app->CurrentFrame() = 15; Menu(app, L"Edit probe undo");
+    Check(!history.UndoCount() && frames(10) && model.morphs[0].value == .75f && model.loadComplete == 0,
+          "plugin undo restores every range track and current-frame values");
+    SendMessageW(app->MainWindow(), WM_COMMAND, 401, 0);
+    Check(history.UndoCount() == 1 && frames(20) && model.morphs[0].value == .625f && model.loadComplete == 1,
+          "native redo applies the mixed range with current-frame morph and display sampling");
+    Menu(app, L"Edit probe undo");
+    Check(history.Reset() == MMS_OK, "clear isolated range setup history");
+    app->CurrentFrame() = 0;
+}
 void Run(MMDApp* app) {
     using namespace plugins;
     const auto initial = GetModuleHandleW(L"manager_edit_probe.dll");
@@ -122,6 +155,7 @@ void Run(MMDApp* app) {
         Check(same, "scene revision equals the journal revision after mixed edits");
     };
     MixedModelDeletion(app, *history);
+    MixedModelRange(app, *history);
     revisionMatches(); app->SceneModified() = 0;
     app->PlaybackActive() = 1; Menu(app, L"Edit probe once"); app->PlaybackActive() = 0;
     app->FrameStepPlayback() = 1; Menu(app, L"Edit probe once"); app->FrameStepPlayback() = 0;

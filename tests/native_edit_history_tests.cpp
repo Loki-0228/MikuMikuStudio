@@ -341,6 +341,7 @@ void CrossModelJournal(){
 #include "native_display_key_checks.inc"
 #include "native_morph_key_checks.inc"
 #include "native_model_key_checks.inc"
+#include "native_model_range_checks.inc"
 int main(){
     std::setvbuf(stdout,nullptr,_IONBF,0);
     const auto run=[](const char* name,void(*test)()){std::printf("RUN %s\n",name);test();};
@@ -360,6 +361,7 @@ int main(){
     run("NativeDisplayKeyChecks",NativeDisplayKeyChecks);
     run("NativeMorphKeyChecks",NativeMorphKeyChecks);
     run("NativeModelKeyChecks",NativeModelKeyChecks);
+    run("NativeModelRangeChecks",NativeModelRangeChecks);
     run("PoseAndStale",PoseAndStale);run("KeysAndChain",KeysAndChain);run("Bake",Bake);
     run("Deletion",Deletion);run("EmptyAndCycle",EmptyAndCycle);run("FreeCurves",FreeCurves);
     run("Scatter",Scatter);run("FailedNativeCommands",FailedNativeCommands);run("RemovalBindings",RemovalBindings);
