@@ -1,6 +1,6 @@
 # 编辑事务内核与原生撤销接入
 
-`src/plugins/edit_store.cpp` 已实现 `edit.h` 对应的两阶段事务内核。`src/plugins/shared_history.cpp` 实现原生与插件共用的历史队列，`src/plugins/scene_object_history.cpp` 提供模型及附件资源的保留与恢复。真实隐藏宿主已验证资源恢复，但主窗口和各原生写入入口尚未接入共同历史。因此 `queryService("mms.edit", ...)` 仍返回 NOT_FOUND，可写 UI 属性仍返回 NOT_READY。
+`src/plugins/edit_store.cpp` 已实现 `edit.h` 对应的两阶段事务内核。`src/plugins/shared_history.cpp` 实现原生与插件共用的历史队列，`src/plugins/scene_object_history.cpp` 提供模型及附件资源的保留与恢复。真实隐藏宿主已验证资源恢复，部分姿态命令和骨骼登记已在显式绑定下接入；普通宿主尚未整体切换共同历史。因此 `queryService("mms.edit", ...)` 仍返回 NOT_FOUND，可写 UI 属性仍返回 NOT_READY。
 
 ## 共同历史的范围
 
@@ -71,42 +71,33 @@ Prepare 每次解析当前模型，形成短期 `ModelEdit` 候选。发布保�
 
 这些路径不写旧 30 槽环。成功提交后，`PublishBoundPoseEdit` 更新 dirty、历史按钮和读数，不跳帧、不改变全局轨道或附件选择。无匹配、无实际变化及失败都保留重做分支。撤销入口在空历史、BUSY 或准备失败时也不回落旧环，播放和录制期间拒绝执行。
 
-其他姿态写入、type 2–7 独立记录和全局编辑尚未迁入，不能凭 `NativeHistory(app)` 非空就整体切换旧撤销入口。`mms.edit` 尚未开放。
+其他姿态写入、其余关键帧操作和全局编辑尚未迁入，不能凭 `NativeHistory(app)` 非空就整体切换旧撤销入口。`mms.edit` 尚未开放。
 
 ## 骨骼关键帧迁移顺序
 
-本节描述 type 2、type 4 独立记录的待实现方案。目前只完成 `BoneKeyPoolIdentity`。
-注册池正常扩容保留身份，销毁后重新分配取得新身份，借用数组返回 0。身份耗尽时拒绝新建，模型二进制布局不变。
-关键帧捕获、独立记录、侧表快照接口和纯数据修改函数均未实现，注册及范围缩放入口尚未迁入共同历史。
+选中骨骼在当前帧的登记已拆出独立计划 `PlanBoneRegistration`，生产按钮 `500` 在显式 `NativePoseTestBinding` 下使用它。范围包含插入、覆写、自动插值、姿态修复、缩放键和三类键选中标记清理。普通宿主尚未启用绑定。物理开关变化、播放、录制及场景变更中明确拒绝；绑定后的相机模式、失败和无变化不回落旧环。
 
-首个接入范围限定为选中骨骼在当前帧的注册，包含插入、覆写、自动插值和缩放键，但不切换骨骼物理开关。
-现有 `RegisterSelectedBoneKeys` 会写旧环、提前更新按钮，并清除骨骼、Morph、显示键的选中标记，不能直接套用姿态捕获。
+内部接口及职责如下，均不属于已公开的插件 C ABI：
 
-后续实现按以下顺序拆分：
+| 组件 | 接口与行为 |
+| --- | --- |
+| 稳定键池身份 | `BoneKeyPoolIdentity`：扩容保持身份；销毁重建取得新身份；借用池为 0。独立登记当前仅接受自有池。 |
+| 可取消扩容 | `BoneKeyPoolGrowth::Prepare/Publish/Rollback/Accept`：Prepare 保持当前分配；Publish 保留旧块；Rollback 恢复指针、容量、访问标记及身份；Accept 才释放旧自有块。候选新块只读，无扩容时的作者数据回滚由调用方负责。 |
+| 缩放作者快照 | `bone_scale::AuthoringState`：`Capture/Clone/Equals/RegisterKey`，只保存缩放键及插值曲线；新槽清理残留曲线，覆写保留原曲线。`AuthoringRestore::Prepare` 接收目标容量，准备可取消存储并提供 `IsCurrent/Publish`。不替换姿态或旧环。 |
+| 自由曲线作者快照 | `bone_curve::AuthoringState`：`Capture/Clone/Equals/Invalidate`，保存九轨道、切线及原有 `nativeHash`；捕获不触发惰性失效。`AuthoringRestore::Prepare/IsCurrent/Publish` 只交换作者数据，保留旧环。 |
+| 登记计划 | `PlanBoneRegistration(app, slot, options, out)`：接受帧号、物理求值模式、自动插值和物理复选框状态。成功且无变化时输出为空；有变化时返回持有模型资源的 `HistoryChange`。 |
 
-1. 在修改前形成注册计划，确定骨骼、目标帧、复选框参数、新槽位及全部受影响的键。
-   变更集合须闭合于实际写入的邻居：插入与覆写涉及当前槽、`previous`、`next`，自动插值还会改邻居的插值值。
-   删除后重建邻居插值时须继续加入该邻居的前后键，不能固定按每个删除键三个槽估算。
-2. 拟定 `BoneKeyEditCapture` 与 `OwnedBoneKeyEdit`，保存各槽完整 `BoneKey` 的 before、after，以及姿态差异、`maxFrame` 和 `searchCursor`。
-   捕获接口提供 `Begin`、`MaximumRetainedBytes`、`Finish` 和 `Rollback`，记录通过 `Prepare` 生成恢复候选。
-   长期记录保存池身份和槽号，正常扩容后重新解析地址。短期候选绑定本次指针与容量，准备后再扩容须重新准备。
-   借用池仍要求原地址和容量不变，借用池转为自有池不能视为同一身份。
-3. 为缩放与自由曲线增加独立的作者数据快照，不复制或交换原有 30 槽撤销环。
-   缩放键与曲线可基于 `bone_scale::CurveTableState`，另补不存在侧表时的预建存储和无分配交换。
-   自由曲线须保存每个骨骼的九条轨道、切线及 `nativeHash`，新增只读捕获、校验和交换接口。
-   原生注册使旧自由曲线失效时，在此次修改中明确记录失效结果，不能等后续 `Evaluate` 才删除旧曲线。
-4. 在修改前计算记录上界并预留共同历史，提交时按实际保留容量计费。
-   预算包含槽位差异数组、姿态差异、缩放及曲线映射节点、各轨道键数组，所有乘加检查 `uint64_t` 溢出。
-   完整键池可作为临时捕获手段，但持久记录应保存变更槽，不能为每次注册永久保留两份完整池。
-5. 明确扩容失败回滚的边界，再接入无分配回滚。
-   当前 `BoneKeyPoolEnsure` 成功后已释放旧自有分配。若要求恢复原指针和容量，须新增保留新旧分配的扩容候选。
-   若允许取消后保留新增容量，契约须写明只恢复作者数据并清空新增键，不能声称恢复原分配。
-6. 从原注册函数分离纯数据修改，移除其中的 `AdvanceUndo`、窗口消息和失败弹窗。
-   `NotifyBonePhysicsMode` 须与原子发布隔离。首个范围在修改前拒绝物理开关变化，后续再准备独立的物理状态候选。
-   三类键选中标记清理也须纳入捕获或延后处理。dirty、按钮、曲线编辑器通知只在提交成功后更新。
-7. 将 type 4 的删除与重新插入作为一次组事务迁移。
-   `ScaleBoneKeys` 当前经过 `DeleteMarkedKeyframes`、`BeginRangeScaleBoneUndo` 和多次 `RegisterBoneKey`，任一步失败都须回滚整组。
-   组事务只产生一个共同历史节点，不能依次提交删除与插入来代替原子操作。混合 Morph、显示键删除仍需各自的准备组件。
+计划在私有稀疏视图中计算，记录实际写入的键槽及自动插值邻居、姿态字段差异、选中标记、`maxFrame`、`searchCursor` 和应用的最大登记帧。缩放与自由曲线保存前后作者快照，不依赖 30 槽环。记录按实际保留容量计费，模型驻留资源仍由调用方另行计量。
+
+调用方须在同一串行编辑范围内连续执行计划和首次 `PrepareNative`，期间不得修改作者数据或派发窗口消息。短期候选校验本次指针、容量和源数据；长期记录保存池身份和槽号，后续正常扩容后可重新定位。计划不支持作为可任意延迟提交的编辑任务使用。
+
+完整候选校验成功后，发布依次执行池切换、原生键与姿态写入、缩放交换、自由曲线交换、接受扩容。发布不分配、不调用窗口或物理回调；dirty、按钮、读数与曲线编辑器通知在共同历史提交并解锁后更新。准备失败保持原分配；成功登记之后再撤销只恢复作者数据，保留已扩大的容量。
+
+接下来仍需迁移：
+
+1. 物理开关变化及对应求解器候选，不能在发布中直接调用可能失败的 `NotifyBonePhysicsMode`。
+2. type 4 范围缩放：将 `DeleteMarkedKeyframes`、`BeginRangeScaleBoneUndo` 和多次 `RegisterBoneKey` 改为同一个私有计划、一次原子发布和一个历史节点。
+3. 混合 Morph、显示键删除及其他注册入口。删除重建插值时须收集所有被修改的邻居，不能固定按每个键三个槽估算。
 
 ## 历史发布后的对象列表刷新
 
@@ -243,7 +234,7 @@ MSVC 的某些容器移动构造会分配内存，因此包含 `std::map` 的状
 | 入口 | 当前内容及接入要求 |
 | --- | --- |
 | `bone_edit_undo.cpp::PushBoneEditUndo` | 未注册骨骼姿势；分配及捕获须先完成，再登记共同历史。 |
-| `model_keyframe_edit.cpp::AdvanceUndo`、注册/删除 | 旧环类型 1–4、7 的恢复已整体准备；type 2、type 4 独立记录仅完成键池身份，捕获、侧表接口和纯数据修改尚未实现，见[骨骼关键帧迁移顺序](#骨骼关键帧迁移顺序)。 |
+| `model_keyframe_edit.cpp::AdvanceUndo`、注册/删除 | 旧环类型 1–4、7 的恢复已整体准备；选中骨骼当前帧登记已通过独立计划受控接入。范围缩放、删除及其他注册入口待迁移，见[骨骼关键帧迁移顺序](#骨骼关键帧迁移顺序)。 |
 | `model_keyframe_edit.cpp` 物理烘焙 | 类型 5，同时含关键帧、姿势、容量及搜索游标。须与骨骼缩放和曲线侧表一起恢复。 |
 | `sequence_scatter.cpp` | 类型 6，持有完整 Morph 池及曲线状态的 before/after。不得退化为只恢复当前值。 |
 | `vmd_load.cpp` | 动作导入；一次导入及其缩放、曲线数据应形成共同历史节点。 |

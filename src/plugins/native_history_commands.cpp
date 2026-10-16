@@ -1,6 +1,7 @@
 #include "native_history_commands.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "native_pose_scope.hpp"
+#include "mikudancestudio/animation_curve_host.hpp"
 #include "mikudancestudio/mmd_app.hpp"
 #include "mikudancestudio/model.hpp"
 #include "mikudancestudio/panel_controls.hpp"
@@ -35,7 +36,15 @@ bool TryBoundHistoryCommand(MMDApp* app, bool redo) noexcept {
     if (!history) return false;
     if (app->PlaybackActive() || app->FrameStepPlayback() ||
         app->state.recordPlaybackStartPending || app->SceneMutationInProgress()) return true;
-    if (history->History(redo) == MMS_OK) PublishBoundPoseEdit(*app, *history, true);
+    if (history->History(redo) == MMS_OK) {
+        PublishBoundPoseEdit(*app, *history, true);
+        if (!app->CameraMode() && app->SelectedModelSlot() < kModelSlotCount) {
+            const auto* model = mdl::Mdl(app->SelectedModel());
+            if (model && model->selectedBone >= 0 &&
+                static_cast<std::uint32_t>(model->selectedBone) < model->boneCount)
+                Boundary([&]() -> MmsResult { curve_host::NotifyModelRegistered(app, false); return MMS_OK; });
+        }
+    }
     return true;
 }
 }

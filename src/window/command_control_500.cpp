@@ -166,6 +166,7 @@
 #include "mikudancestudio/build_profile.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "../plugins/native_pose_axis.hpp"
+#include "../plugins/native_bone_registration.hpp"
 #endif
 
 namespace mikudancestudio {
@@ -405,6 +406,9 @@ void CmdControl500(MMDApp* app, HWND hwnd, std::uint16_t id, std::uint16_t notif
 
     // ---- 500: register-frame button 0x1F4 -------------------------------
     case 500: {
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::TryRegisterBoundBones(app)) break;
+#endif
         // The Enter shortcut re-dispatches 0x1F4 from the frame loop even
         // with no loaded model (pump_edit_keys.cpp G3); RegisterSelectedBoneKeys
         // tolerates a null model but the maxFrame read below does not.
