@@ -6,6 +6,7 @@
 #define MMS_STAGE_ANIMATED 2u
 #define MMS_STAGE_PHYSICS 3u
 #define MMS_STAGE_LAYER 4u
+#define MMS_SCENE_CURRENT_TIME 1u
 #define MMS_CHANNEL_MESH 1u
 #define MMS_CHANNEL_BONES 2u
 #define MMS_CHANNEL_BINDING 4u
@@ -24,6 +25,24 @@
 #define MMS_WEIGHT_SDEF 3u
 #define MMS_WEIGHT_QDEF 4u
 #define MMS_WEIGHT_NONE 0xffffffffu
+#define MMS_MORPH_GROUP 0u
+#define MMS_MORPH_VERTEX 1u
+#define MMS_MORPH_BONE 2u
+#define MMS_MORPH_UV 3u
+#define MMS_MORPH_UV1 4u
+#define MMS_MORPH_UV2 5u
+#define MMS_MORPH_UV3 6u
+#define MMS_MORPH_UV4 7u
+#define MMS_MORPH_MATERIAL 8u
+#define MMS_MORPH_BASE 1u
+#define MMS_MORPH_PANEL_SHIFT 8u
+#define MMS_MORPH_PANEL_MASK 0x700u
+#define MMS_MORPH_MULTIPLY 0u
+#define MMS_MORPH_ADD 1u
+#define MMS_SHAPE_SPHERE 0u
+#define MMS_SHAPE_BOX 1u
+#define MMS_SHAPE_CAPSULE 2u
+#define MMS_JOINT_SPRING6DOF 0u
 #pragma pack(push, 8)
 typedef struct MmsSceneQueryV1 {
 	MmsHeader h;
@@ -78,6 +97,17 @@ typedef struct MmsMorphV1 {
 	uint32_t reserved;
 	MmsSpan elements;
 } MmsMorphV1;
+typedef struct MmsMorphGroupElementV1 { MmsId morph; float weight; uint32_t reserved; } MmsMorphGroupElementV1;
+typedef struct MmsMorphVertexElementV1 { MmsId vertex; float offset[3]; uint32_t reserved; } MmsMorphVertexElementV1;
+typedef struct MmsMorphBoneElementV1 { MmsId bone; float translation[3], rotation[4]; uint32_t reserved; } MmsMorphBoneElementV1;
+typedef struct MmsMorphUvElementV1 { MmsId vertex; float offset[4]; } MmsMorphUvElementV1;
+/* A zero material ID means all materials. rotation uses x,y,z,w. */
+typedef struct MmsMorphMaterialElementV1 {
+	MmsId material;
+	uint32_t operation, reserved;
+	float diffuse[4], specular[3], power, ambient[3], edgeColor[4], edgeSize;
+	float texture[4], sphere[4], toon[4];
+} MmsMorphMaterialElementV1;
 typedef struct MmsRigidV1 {
 	MmsHeader h;
 	MmsId id, sourceId, boneId, shapeId;

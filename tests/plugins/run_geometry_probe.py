@@ -40,12 +40,38 @@ def pmx():
     for i in range(4):
         data += text("骨骼" + str(i)) + text("bone" + str(i))
         data += p("<3fbiH3f", 0, i, 0, i - 1, 0, 26, 0, 1, 0)
-    data += p("<i", 4)
+    data += p("<i", 6)
     data += text("vertex") + text("") + p("<BBiB3f", 4, 1, 1, 0, 1, 0, 0)
     data += text("uv") + text("") + p("<BBiB4f", 4, 3, 1, 0, .1, .2, 0, 0)
     data += text("uv1") + text("") + p("<BBiB4f", 4, 4, 1, 0, .1, .2, .3, .4)
     data += text("material") + text("") + p("<BBibB28f", 4, 8, 1, 0, 1, *([.1] * 28))
-    data += p("<3i", 0, 0, 0)
+    data += text("bone") + text("") + p("<BBib7f", 4, 2, 1, 1, 1, 2, 3, 0, 0, 0, 1)
+    data += text("group") + text("") + p("<BBibf", 4, 0, 1, 0, .5)
+    data += p("<ii", 0, 3)
+    for i in range(3):
+        data += text("rigid" + str(i)) + text("")
+        data += p("<bBHB14fB", i, i, 0xffff, i, .5, 1, 1.5,
+                  i, i + 4, 0, .1 * i, .2 * i, .3 * i, 2, .1, .2, .3, .4, i)
+    data += p("<i", 1) + text("joint") + text("") + p("<Bbb24f", 0, 0, 1,
+        .5, 4.5, 0, .05, .1, .15, -1, -2, -3, 1, 2, 3, -.1, -.2, -.3, .1, .2, .3, 2, 3, 4, 5, 6, 7)
+    return data
+
+def pmd():
+    fixed = lambda value, size: value.encode("ascii").ljust(size, b"\0")
+    data = bytearray(b"Pmd" + p("<f", 1.) + fixed("ABI PMD", 20) + bytes(256))
+    positions = [(-6, 4, 0), (-6, 16, 0), (6, 4, 0), (6, 16, 0)]
+    data += p("<I", 4)
+    for pos in positions:
+        data += p("<8fHHBB", *pos, 0, 0, -1, 0, 0, 0, 0, 100, 0)
+    data += p("<I6HI", 6, 0, 1, 2, 2, 1, 3, 1)
+    data += p("<11fBBI", .8, .8, .8, 1, 1, 0, 0, 0, .4, .4, .4, 255, 0, 6) + fixed("color.bmp", 20)
+    data += p("<H", 1) + fixed("root", 20) + p("<HHBH3f", 65535, 0, 0, 0, 0, 0, 0)
+    data += p("<HH", 0, 2)
+    data += fixed("base", 20) + p("<IB", 4, 0)
+    for i, pos in enumerate(positions):
+        data += p("<I3f", i, *pos)
+    data += fixed("smile", 20) + p("<IBI3f", 1, 4, 0, 1, 2, 3)
+    data += p("<BH BIB", 1, 1, 0, 0, 0) + bytes(1000) + p("<II", 0, 0)
     return data
 
 def accessory():
@@ -68,6 +94,7 @@ report = {"binary": str(binary), "sha256": hashlib.sha256(binary.read_bytes()).h
 for kind in ("pmx", "pmd"):
     folder = output / kind
     make_fixture(folder, 255, [""] * 10)
+    (folder / "fixture.pmd").write_bytes(pmd())
     (folder / "model.pmx").write_bytes(pmx())
     (folder / "triangle.x").write_text(accessory(), encoding="ascii")
     (folder / "Data").mkdir()

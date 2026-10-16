@@ -5,6 +5,7 @@ template<class T> const T& Channel(const MmsSceneApiV1& api,MmsHandle handle,Mms
     MmsSpan span{};Check(api.readChannel(api.context,handle,object,channel,&span)==MMS_OK && span.count && span.stride==sizeof(T),"typed geometry channel");
     return *static_cast<const T*>(span.data);
 }
+#include "definition_host_checks.inc"
 void Run(MMDApp* app) {
     wchar_t path[32768]{};GetEnvironmentVariableW(L"MMS_SCENE_TEST_MODEL",path,32768);LoadModelFile(app,path,false);
     Check(app->ModelSlot(0)!=nullptr,"load original geometry model");
@@ -13,7 +14,7 @@ void Run(MMDApp* app) {
     Check(app->AccessorySlot(0)!=nullptr,"load original accessory geometry");
     auto store=CreateSceneStore(app);SceneClient client;auto api=store->Api(client);
     MmsSceneQueryV1 query{};query.h=Header<MmsSceneQueryV1>();query.time={0,1};
-    query.channels=MMS_CHANNEL_MESH|MMS_CHANNEL_BONES|MMS_CHANNEL_BINDING|MMS_CHANNEL_MATERIALS|MMS_CHANNEL_TEXTURES;
+    query.channels=511;
     MmsSnapshotV1 snapshot{};Check(api.acquire(api.context,&query,&snapshot)==MMS_OK,"acquire bind geometry and materials");
     MmsSpan objects{};api.objects(api.context,snapshot.handle,&objects);Check(objects.count==2,"enumerate model and accessory");
     const auto object=static_cast<const MmsObjectV1*>(objects.data)[0];
@@ -35,6 +36,10 @@ void Run(MMDApp* app) {
     MmsSpan bones{};api.readChannel(api.context,snapshot.handle,object.object,MMS_CHANNEL_BONES,&bones);
     const auto* bone=static_cast<const MmsBoneV1*>(bones.data);
     Check(Same(weights[0].bones[0],bone[0].id),"weights use bone IDs from the same scene");
+    const auto definitionIds=Definitions(app,api,snapshot.handle,object.object,pmx);
+    app->CurrentFrame()=17;auto current=query;current.flags=MMS_SCENE_CURRENT_TIME;current.time={};MmsSnapshotV1 currentSnapshot{};
+    Check(api.acquire(api.context,&current,&currentSnapshot)==MMS_OK && app->CurrentFrame()==17,"current-time query works away from frame zero without seeking");
+    api.release(api.context,currentSnapshot.handle);app->CurrentFrame()=0;
     if(pmx) {
         Check(Near(vertices[0].position[0],0) && Near(vertices[4].position[1],8) && Near(mesh.boundsMax[0],4),"PMX source positions and bounds");
         for(unsigned i=0;i<4;++i)Check(weights[i].type==i,"PMX weight type retained");
@@ -75,7 +80,7 @@ void Run(MMDApp* app) {
     query.channels=MMS_CHANNEL_BONES;MmsSnapshotV1 minimal{};
     Check(api.acquire(api.context,&query,&minimal)==MMS_OK && minimal.sceneRevision==settled.sceneRevision,"channel selection does not change scene revision");
     api.release(api.context,settled.handle);
-    api.release(api.context,minimal.handle);query.channels=1|2|4|128|256;
+    api.release(api.context,minimal.handle);query.channels=511;
     const auto oldCount=model.indexCount;model.indexCount=1;
     query.objects={&accessory.object,1,sizeof(MmsObjectRef),1};MmsSnapshotV1 filtered{};
     Check(api.acquire(api.context,&query,&filtered)==MMS_OK,"object filter avoids unrelated unavailable geometry");
@@ -83,6 +88,14 @@ void Run(MMDApp* app) {
     api.release(api.context,filtered.handle);query.objects={};MmsSnapshotV1 rejected{};rejected.handle=12345;
     Check(api.acquire(api.context,&query,&rejected)==MMS_E_FAILED && rejected.handle==12345,"invalid topology cannot publish a partial snapshot");
     model.indexCount=oldCount;
+    if(pmx) {
+        const auto type=model.morphs[0].type;model.morphs[0].type=9;
+        Check(api.acquire(api.context,&query,&rejected)==MMS_E_UNSUPPORTED && rejected.handle==12345,"unsupported morph kinds cannot masquerade as empty data");
+        model.morphs[0].type=type;
+        const auto index=model.jointTable[0].rigidB;model.jointTable[0].rigidB=-1;
+        Check(api.acquire(api.context,&query,&rejected)==MMS_E_NOT_READY && rejected.handle==12345,"unresolved joint cannot publish dangling body references");
+        model.jointTable[0].rigidB=index;
+    }
     const auto project=std::filesystem::absolute(L"geometry-identity.pmm");
     Check(SaveSceneCopy(app,project.c_str()),"save geometry element identities in real PMM");
     ResetAppState(app);wcscpy_s(app->state.envFileName,project.c_str());LoadSceneFile();
@@ -90,6 +103,8 @@ void Run(MMDApp* app) {
     api.objects(api.context,reopened.handle,&objects);Check(objects.count==2,"reopened objects");
     const auto restored=static_cast<const MmsObjectV1*>(objects.data)[0];
     const auto restoredAcs=static_cast<const MmsObjectV1*>(objects.data)[1];
+    const auto restoredDefinitions=Definitions(app,api,reopened.handle,restored.object,pmx);
+    Check(Same(definitionIds.morph,restoredDefinitions.morph) && Same(definitionIds.rigid,restoredDefinitions.rigid) && Same(definitionIds.shape,restoredDefinitions.shape) && Same(definitionIds.joint,restoredDefinitions.joint),"morph and physics definition IDs survive PMM reopen");
     const auto& newMesh=Channel<MmsMeshV1>(api,reopened.handle,restored.object,MMS_CHANNEL_MESH);
     const auto& newMaterial=Channel<MmsMaterialV1>(api,reopened.handle,restored.object,MMS_CHANNEL_MATERIALS);
     const auto& newTexture=Channel<MmsTextureV1>(api,reopened.handle,restored.object,MMS_CHANNEL_TEXTURES);

@@ -1,5 +1,6 @@
 #include "scene_identity.hpp"
 #include "scene_geometry.hpp"
+#include "scene_definitions.hpp"
 #include "mikudancestudio/plugin_scene.hpp"
 #include "mikudancestudio/mmd_app.hpp"
 #include "mikudancestudio/model.hpp"
@@ -49,12 +50,14 @@ MmsResult Capture(MMDApp* app, const MmsSceneQueryV1& query, std::shared_ptr<con
     if (!app || app->SceneMutationInProgress() || !app->WindowLayoutReady()) return MMS_E_NOT_READY;
     // Each additional stage is published separately after its actual pipeline
     // boundary is captured. Bind data never substitutes for an evaluated pose.
-    constexpr auto supported = bindGeometryChannels | MMS_CHANNEL_BONES;
+    constexpr auto supported = bindGeometryChannels | bindDefinitionChannels | MMS_CHANNEL_BONES;
     if (query.stage != MMS_STAGE_BIND || (query.channels & ~supported)) return MMS_E_UNSUPPORTED;
     auto data = std::make_shared<SceneData>();
     data->time = Normalize({app->CurrentFrame(), 30}); data->supported = supported;
-    const auto requestedTime = Normalize(query.time);
-    if (requestedTime.numerator != data->time.numerator || requestedTime.denominator != data->time.denominator) return MMS_E_NOT_READY;
+    if (!(query.flags & MMS_SCENE_CURRENT_TIME)) {
+        const auto requestedTime = Normalize(query.time);
+        if (requestedTime.numerator != data->time.numerator || requestedTime.denominator != data->time.denominator) return MMS_E_NOT_READY;
+    }
     auto nextDigests = geometryDigests; bool geometryChanged = false;
     std::vector<unsigned char> fingerprint;
     for (uint32_t kind : {MMS_OBJECT_MODEL, MMS_OBJECT_ACCESSORY}) for (uint32_t slot = 0; slot < 255; ++slot) {
@@ -105,6 +108,8 @@ MmsResult Capture(MMDApp* app, const MmsSceneQueryV1& query, std::shared_ptr<con
             GeometryDigests current;
             const auto geometry = CaptureBindGeometry(identities, *data, record, token, kind, query.channels, current);
             if (geometry != MMS_OK) return geometry;
+            const auto definitions = CaptureBindDefinitions(identities, *data, record, token, kind, query.channels, current);
+            if (definitions != MMS_OK) return definitions;
             auto& baseline = nextDigests[token];
             for (const auto& entry : current) {
                 const auto found = baseline.find(entry.first);

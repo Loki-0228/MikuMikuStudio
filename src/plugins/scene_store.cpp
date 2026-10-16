@@ -26,9 +26,10 @@ MmsResult SceneStore::Acquire(SceneClient& client, const MmsSceneQueryV1* query,
     if (GetCurrentThreadId() != thread_) return MMS_E_THREAD;
     if (client.stopping) return MMS_E_NOT_READY;
     if (acquiring_) return MMS_E_BUSY;
-    if (!Valid(query) || !out || query->flags || query->stage > MMS_STAGE_LAYER ||
+    if (!Valid(query) || !out || (query->flags & ~MMS_SCENE_CURRENT_TIME) || query->stage > MMS_STAGE_LAYER ||
         (query->channels & ~uint64_t(511)) || (query->stage == MMS_STAGE_LAYER ? Empty(query->layerId) : !Empty(query->layerId))) return MMS_E_ARGUMENT;
-    const auto time = Normalize(query->time);
+    const bool currentTime = (query->flags & MMS_SCENE_CURRENT_TIME) != 0;
+    const auto time = currentTime ? MmsTime{} : Normalize(query->time);
     const auto& span = query->objects;
     if (span.count && (!span.data || span.count > 65536 || span.recordVersion != 1 ||
         span.stride < sizeof(MmsObjectRef) || span.stride > 65536 || span.count > SIZE_MAX / span.stride)) return MMS_E_ARGUMENT;
@@ -39,7 +40,7 @@ MmsResult SceneStore::Acquire(SceneClient& client, const MmsSceneQueryV1* query,
     if (result != MMS_OK) return result;
     if (!data || data->stage != query->stage || !Same(data->layer, query->layerId)) return MMS_E_FAILED;
     const auto publishedTime = Normalize(data->time);
-    if (time.numerator != publishedTime.numerator || time.denominator != publishedTime.denominator) return MMS_E_NOT_READY;
+    if (!currentTime && (time.numerator != publishedTime.numerator || time.denominator != publishedTime.denominator)) return MMS_E_NOT_READY;
     if ((query->channels & data->supported) != query->channels) return MMS_E_UNSUPPORTED;
     auto lease = std::make_shared<Lease>(); lease->owner = &client; lease->data = std::move(data); lease->channels = query->channels;
     std::set<MmsId, IdLess> requested;

@@ -45,7 +45,9 @@
 | P2 | 输入法组合态、Tab、辅助功能和真实多 DPI | 已实现未验证 | 保留原生控件；隐藏窗口测试不替代完整交互验收。 |
 | P3 | scene 对象及绑定骨骼快照、稳定身份 | 本机已验证 | `mms.scene` 已发布：阶段 0 的对象与骨骼。独立 ID、运行时代次、任意线程读取/释放、不可变租约；真实 PMM 保存重开保留对象和骨骼 ID，旧引用返回 STALE。 |
 | P3 | 绑定网格、权重、材质、纹理路径 | 本机已验证 | PMX 2.0、PMD、原始 X 附件；稳定元素 ID、嵌套租约、对象筛选、无效拓扑拒绝、内容变化修订及真实 PMM 往返。纹理尺寸/格式未知，运行时 QDEF 记录通过不等于 PMX 2.1 文件导入通过。 |
-| P3 | scene 其余通道与阶段 | 未实现 | 物理、Morph 及阶段 1–4 返回 UNSUPPORTED。当前服务不表示全通道完成。 |
+| P3 | 绑定刚体、形状、关节及 Morph 定义 | 本机已验证 | 球/盒/胶囊、六自由度弹簧、组/顶点/骨骼/UV/材质 Morph；刚体和关节矩阵与原生加载器、Bullet 约束独立比较，身份经真实 PMM 往返保留。 |
+| P3 | 当前场景查询 | 本机已验证 | CURRENT_TIME 标志支持非零编辑帧查询，忽略 time，不移动播放头；仍可用 flags=0 检查指定时间。 |
+| P3 | 求值阶段及未支持的定义类型 | 未实现 | 阶段 1–4、翻转/冲量 Morph、其他关节、复合形状及软体。绑定配置不能替代物理后状态。 |
 | P3 | edit 两阶段事务、可写属性和统一撤销 | 未实现 | edit.h 布局已固定，服务尚未发布。 |
 | P3 | animation 轨道/键、层、片段、变速、烘焙和选择 | 未实现 | 服务返回 NOT_FOUND。 |
 | P3 | storage serializer、工程数据和显式导入 | 未实现 | 保持 EMM/EMD 显式导入要求。 |
@@ -76,6 +78,10 @@
 | 独立插件查询真实 scene 服务 | 原名/中文改名宿主，菜单和按钮各查询一次通过 | `plugin-abi-scene-plugin-1.log` |
 | 绑定几何、材质、身份及坏数据 | PMX/PMD 两组均 exit 0，均包含附件；原始夹具在测试脚本中生成 | `plugin-abi-geometry-host-4.log`、`abi-geometry-host-4/report.json` |
 | 几何接入后的插件及 Morph 回归 | 原名/中文名插件通过；ABI 契约和现有 Morph 测试通过 | `plugin-abi-geometry-plugin-1.log`、`plugin-abi-geometry-contract-final.log` |
+| 绑定物理和 Morph 定义 | PMX 145 项、PMD 73 项 PASS；包括隐藏宿主初始化、附件、身份往返、无效引用及当前帧查询 | `plugin-abi-definitions-host-2.log`、`abi-definitions-host-2/report.json` |
+| 定义接入后的 ABI、Morph、改名及旧骨骼探针 | ABI 累计 335 项通过；现有 Morph、两种 EXE 名称、原骨骼快照探针均通过 | `plugin-abi-definitions-contract.log`、`plugin-abi-definitions-plugin-1.log`、`plugin-abi-definitions-bind-1.log` |
+| 当前 SDK 独立示例构建 | 按开发文档固定工具链构建成功，入口版本/长度/空输出检查通过 | `plugin-abi-sdk-configure.log`、`plugin-abi-sdk-build.log`、`plugin-abi-sdk-entry.log` |
+| 定义接入后的 PE 导入清单 | 四文件均无可选图形/厂商后端的直接导入 | `plugin-abi-definitions-pe-inventory.json` |
 | PE 导入/导出清单 | 四文件通过可选后端直接导入检查 | `plugin-abi-win7-pe-inventory.json` |
 | 处理器策略 | 99 项通过，P2 新增前 | `plugin-abi-processor.log` |
 | 侧栏/底部松手提交、取消、浮动和媒体 | 通过，P2 新增前 | `plugin-abi-sidebar.log` |

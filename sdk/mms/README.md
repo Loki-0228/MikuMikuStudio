@@ -36,7 +36,7 @@ cmake --build build/hello-menu --config Release
 | `mms.ui` 1.0 | 命令、菜单项、工具栏按钮和组；元数据更新；只读属性；快照租约；命令参数、范围与选项校验；布局修订检查、指定顺序移动、创建与删除空组、显示、首选尺寸、快捷键及恢复。 |
 | `mms.ui.surface` 1.0 | 菜单、工具栏和工作区页签挂载位置；原生子窗口工厂、多个视图、尺寸、隐藏、焦点与销毁。 |
 | `mms.ui.layout` 1.0 | 默认布局提示、事务内用户覆盖、实际几何快照；行、列、换行和网格；伸缩、上下限、隐藏占位。 |
-| `mms.scene` 1.0 | 阶段 0 的对象、骨骼、网格、绑定、材质和纹理路径；独立 ID、运行时代次、不可变快照及 PMM 身份保存。其他阶段和通道返回 UNSUPPORTED。 |
+| `mms.scene` 1.0 | 阶段 0 的对象、骨骼、网格、绑定、刚体、关节、形状、Morph、材质和纹理路径；独立 ID、运行时代次、不可变快照及 PMM 身份保存。阶段 1–4 返回 UNSUPPORTED。 |
 | 其他服务 | 尚未接入，`queryService` 返回 NOT_FOUND。 |
 
 可写属性和工程编辑命令等待编辑事务服务，当前返回 NOT_READY。停靠和命令溢出菜单暂返回 UNSUPPORTED。INPUT、侧栏、属性区、时间线和状态栏挂载点尚未开放。布局文件持久化和布局撤销历史尚未接入。未支持的操作不会返回成功。
@@ -51,17 +51,33 @@ cmake --build build/hello-menu --config Release
 
 ## 场景读取
 
-`scene.h` 定义通道记录和 `MmsSceneApiV1`。在 UI 线程调用 `acquire`，当前阶段填 `MMS_STAGE_BIND`，`layerId` 与 `flags` 填零。`channels` 可为 0，或组合 `MMS_CHANNEL_MESH`、`BONES`、`BINDING`、`MATERIALS`、`TEXTURES`。当前绑定快照的采样时间为已提交编辑帧数除以 30；请求其他时间返回 NOT_READY，不移动播放头。全对象查询的 objects.count 为 0；筛选数组使用 `MmsObjectRef`、recordVersion=1 和实际 stride。
+`scene.h` 定义通道记录和 `MmsSceneApiV1`。在 UI 线程调用 `acquire`，当前阶段填 `MMS_STAGE_BIND`，`layerId` 填零。`channels` 可为 0，或组合九个 `MMS_CHANNEL_*` 位。`flags=MMS_SCENE_CURRENT_TIME` 表示读取当前已提交数据，此时忽略 time；插件无需预先知道当前帧。flags=0 时 time 必须等于已提交编辑帧数除以 30；请求其他时间返回 NOT_READY，不移动播放头。全对象查询的 objects.count 为 0；筛选数组使用 `MmsObjectRef`、recordVersion=1 和实际 stride。
 
 `objects` 与 `readChannel` 返回快照持有的只读数组，可在工作线程读取。`release` 允许任意线程；调用者必须保证释放某句柄时，所有读取该句柄所得指针的作业都已结束。readChannel 的 channel 是单个通道位，不是位序号。未申请的通道返回 NOT_READY，未实现的通道返回 UNSUPPORTED。
 
-对象 ID 不使用内存地址。保存为包含 MMS 扩展的 PMM 后重开，已发布的对象、骨骼、顶点、材质和纹理 ID 保留，运行时代次变化。已删除对象和旧代次引用返回 STALE；尚未释放的旧快照及其嵌套数组仍可读取。插件持有快照时，宿主保留其服务上下文和 DLL，直到租约释放。绑定骨骼矩阵来自源骨骼原点，不能作为物理后姿态使用。
+对象 ID 不使用内存地址。保存为包含 MMS 扩展的 PMM 后重开，已发布的对象及场景元素 ID 保留，运行时代次变化。已删除对象和旧代次引用返回 STALE；尚未释放的旧快照及其嵌套数组仍可读取。插件持有快照时，宿主保留其服务上下文和 DLL，直到租约释放。绑定骨骼矩阵来自源骨骼原点，不能作为物理后姿态使用。
 
 网格通道返回一个 `MmsMeshV1`。模型顶点来自 CPU 原始记录，位置、普通 UV、附加 UV 和材质参数在副本中恢复 Morph 基准值；附件读取加载器保留的原始 D3DX 网格，锁定结束前复制数据。快照不暴露 GPU 指针。三角形用稳定材质 ID，权重用同一对象的骨骼 ID。额外 UV 按 float4 连续排列，未声明的 UV、未使用的权重和 SDEF 字段为零。
 
 绑定通道返回一个 `MmsBindingV1`。`vertexBindings` 是 `uint32_t` 数组，逐个显示顶点指向 `bindVertices` 的索引。阶段 0 的 `morphVertices` 与 `bindVertices` 相同。SDEF 的 `sdefR0`、`sdefR1` 是相对于加权中心的偏移；附件的权重类型为 `MMS_WEIGHT_NONE`，骨骼 ID 和权重均为零。ABI 可表达 QDEF，当前 MMS 文件导入器仍只接受 PMX 2.0；运行时 QDEF 记录测试不代表 PMX 2.1 文件导入已经实现。
 
 纹理记录提供 MMS 加载器保留的路径。宽、高、格式和色彩空间为零，表示尚未查询；这不代表资源尺寸为零。材质的纹理 ID 指向同一对象的纹理通道，空 ID 表示没有关联。网格、绑定和材质内容按已观察的通道检测变化，更新场景修订号；仅改变查询通道不产生新修订。工程编辑事务尚未发布，后续写入必须统一提交修订和撤销记录。
+
+物理记录是原始绑定配置。刚体 world 为初始世界矩阵，bodyToBone 将刚体世界矩阵还原为绑定骨骼世界矩阵。速度为零；inertia 是刚体局部坐标的 3×3 惯性矩阵，mode=0 的有效惯性为零，mass 保留源配置。mode 的 0、1、2 分别对应跟随骨骼、动态、动态并保留骨骼位置的原生模式。group 是碰撞组编号，collisionMask 保留宿主的碰撞掩码。
+
+形状 kind 的 0、1、2 对应球、盒、Y 轴胶囊。size 分别为半径、三个半尺寸、半径与圆柱段高度。关节当前为六自由度弹簧，frameA/frameB 位于各自刚体局部坐标。限位、弹簧、连接体碰撞策略和阻尼遵循原生配置；当前原生弹簧阻尼参数为 Bullet 2.75 的 1。缺失连接刚体的关节返回 NOT_READY。复合形状、软体、其他关节及实时物理后状态尚未发布。
+
+Morph 的 value 在绑定阶段为零。kind 决定 elements 的类型，所有目标引用均为稳定 ID；不能把 elements 强制解释成同一种数组。
+
+| kind | 元素记录 | 含义 |
+| --- | --- | --- |
+| 0 | `MmsMorphGroupElementV1` | 子 Morph ID 和权重。 |
+| 1 | `MmsMorphVertexElementV1` | 顶点 ID 和位移。PMD 的第一个 base Morph 带 `MMS_MORPH_BASE`，其 offset 是绝对基准坐标。 |
+| 2 | `MmsMorphBoneElementV1` | 骨骼 ID、位移和 xyzw 四元数。 |
+| 3–7 | `MmsMorphUvElementV1` | 普通 UV 及四组附加 UV，各含目标顶点 ID 和 float4 偏移。 |
+| 8 | `MmsMorphMaterialElementV1` | 材质 ID、operation=0 乘法或 1 加法，以及颜色、边缘和纹理系数。空材质 ID 表示全部材质。 |
+
+flags 中 `MMS_MORPH_PANEL_MASK` 对应原生面板分类，右移 `MMS_MORPH_PANEL_SHIFT` 后得到 0–4。翻转和冲量 Morph 尚未发布，遇到这些种类返回 UNSUPPORTED。附件的骨骼、Morph 和物理数组为空，这是已实现通道没有对应元素。
 
 ## 验证
 

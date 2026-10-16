@@ -32,6 +32,9 @@ static void SceneChecks() {
     MmsSceneQueryV1 query{}; query.h = Header<MmsSceneQueryV1>(); query.time = {2,60}; query.channels = MMS_CHANNEL_BONES;
     MmsSnapshotV1 old{};
     CHECK(api.acquire(api.context,&query,&old)==MMS_OK && store.HasLeases(client));
+    auto now=query;now.flags=MMS_SCENE_CURRENT_TIME;now.time={};MmsSnapshotV1 latest{};
+    CHECK(api.acquire(api.context,&now,&latest)==MMS_OK);api.release(api.context,latest.handle);
+    now.flags=2;CHECK(api.acquire(api.context,&now,&latest)==MMS_E_ARGUMENT);
     MmsSpan objects{}, bones{};
     CHECK(api.objects(api.context,old.handle,&objects)==MMS_OK && objects.count==1);
     const auto* oldObject = static_cast<const MmsObjectV1*>(objects.data);

@@ -35,8 +35,8 @@ void Run(MMDApp* app) {
     Check(api.readChannel(api.context,reopened.handle,restored.object,MMS_CHANNEL_BONES,&bones)==MMS_OK && Same(static_cast<const MmsBoneV1*>(bones.data)->id,bone.id),"bone identity survives real PMM reopen");
     query.objects={&object.object,1,sizeof(MmsObjectRef),1};
     Check(api.acquire(api.context,&query,&ignored)==MMS_E_STALE,"pre-open reference cannot address reopened model");
-    query.objects={};query.channels=MMS_CHANNEL_RIGIDS;
-    Check(api.acquire(api.context,&query,&ignored)==MMS_E_UNSUPPORTED,"unimplemented channel is not advertised as empty success");
+    query.objects={};query.channels=512;
+    Check(api.acquire(api.context,&query,&ignored)==MMS_E_ARGUMENT,"unknown channel bit is rejected");
     query.channels=MMS_CHANNEL_BONES;query.stage=MMS_STAGE_PHYSICS;
     Check(api.acquire(api.context,&query,&ignored)==MMS_E_UNSUPPORTED,"bind pose cannot masquerade as physics output");
     query.stage=MMS_STAGE_BIND;query.time={1,30};

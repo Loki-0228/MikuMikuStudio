@@ -44,7 +44,7 @@ static void MMS_CALL Cancel(void* context) { auto* task = static_cast<Task*>(con
 static MmsResult MMS_CALL State(void*, MmsObjectRef, MmsCommandStateV1* out) { *out = {H<MmsCommandStateV1>(), 1, 0, 1, 0, {}}; return MMS_OK; }
 static MmsResult ReadScene(Plugin* p, bool retain) {
     auto r=p->host.queryService(p->host.context,S("mms.scene"),1,0,sizeof(p->scene),&p->scene); if(r) return r;
-    MmsSceneQueryV1 query{};query.h=H<MmsSceneQueryV1>();query.time={0,1};query.channels=MMS_CHANNEL_BONES;
+    MmsSceneQueryV1 query{};query.h=H<MmsSceneQueryV1>();query.flags=MMS_SCENE_CURRENT_TIME;query.channels=MMS_CHANNEL_BONES;
     MmsSnapshotV1 snapshot{};r=p->scene.acquire(p->scene.context,&query,&snapshot);if(r) return r;
     MmsSpan objects{};r=p->scene.objects(p->scene.context,snapshot.handle,&objects);
     if(retain && !r) p->snapshot=snapshot.handle;else p->scene.release(p->scene.context,snapshot.handle);
