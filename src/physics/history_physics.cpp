@@ -1,6 +1,13 @@
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include "mikudancestudio/history_physics.hpp"
 #include "../plugins/scene_resource_budget.hpp"
 #include "mikudancestudio/dynamics_world.hpp"
+#include "mikudancestudio/physics_scene.hpp"
+#include "bullet_import_storage.hpp"
+#include "btBulletDynamicsCommon.h"
+#include "BulletCollision/CollisionDispatch/btManifoldResult.h"
 #include "BulletDynamics/Dynamics/btRigidBody.h"
 #include "BulletDynamics/ConstraintSolver/btTypedConstraint.h"
 #include <algorithm>
@@ -13,12 +20,16 @@
 #include <unordered_set>
 #include <utility>
 
+// Bullet 2.75 defines this callback beside the other two contact callbacks, but
+// omits its extern declaration from btPersistentManifold.h.
+extern ContactProcessedCallback gContactProcessedCallback;
+
 namespace mikudancestudio::history_physics {
 Broadphase::Broadphase(const btVector3& lo, const btVector3& hi, unsigned handles)
     : Broadphase(lo, hi, handles, std::make_unique<PairCache>()) {}
 Broadphase::Broadphase(const btVector3& lo, const btVector3& hi, unsigned handles,
-                       std::unique_ptr<PairCache> cache)
-    : bt32BitAxisSweep3(lo, hi, handles, cache.get()) { cache.release(); }
+                       std::unique_ptr<PairCache> cache, bool disableRaycast)
+    : bt32BitAxisSweep3(lo, hi, handles, cache.get(), disableRaycast) { cache.release(); }
 Broadphase::~Broadphase() { delete m_pairCache; m_pairCache = nullptr; }
 btBroadphaseProxy* Broadphase::createProxy(const btVector3& lo, const btVector3& hi, int shapeType,
     void* object, short group, short mask, btDispatcher* dispatcher, void* multiSapProxy) {
@@ -120,7 +131,7 @@ BodyState Read(btRigidBody* body) {
         PhysicalVector(body->getLinearVelocity()), PhysicalVector(body->getAngularVelocity()), PhysicalVector(body->getTotalForce()), PhysicalVector(body->getTotalTorque()),
         body->getCollisionShape(), body->getDeactivationTime(), PhysicalVector(proxy->m_aabbMin), PhysicalVector(proxy->m_aabbMax)};
 }
-bool Current(const BodyState& s, bool parked = false) noexcept {
+bool Current(const BodyState& s, bool parked = false, bool checkRay = true) noexcept {
     const auto mask = parked ? short(0) : s.mask;
     if (s.body->getBroadphaseHandle() != s.proxy || s.body->getActivationState() != (parked ? DISABLE_SIMULATION : s.activation) ||
         s.body->getCollisionFlags() != s.flags || s.proxy->m_collisionFilterGroup != s.group ||
@@ -130,6 +141,7 @@ bool Current(const BodyState& s, bool parked = false) noexcept {
         !EqualVector(s.body->getTotalForce(), s.force) || !EqualVector(s.body->getTotalTorque(), s.torque) ||
         s.body->getCollisionShape() != s.shape || s.body->getDeactivationTime() != s.deactivation ||
         !EqualVector(s.proxy->m_aabbMin, s.aabbLo) || !EqualVector(s.proxy->m_aabbMax, s.aabbHi)) return false;
+    if (!checkRay) return true;
     auto* ray = Broadphase::RayProxy(s.proxy);
     return !ray || (ray->m_collisionFilterGroup == s.group && ray->m_collisionFilterMask == mask);
 }
@@ -228,7 +240,7 @@ struct Retained::Impl {
     std::vector<btRigidBody*> bodies;
     std::vector<btTypedConstraint*> constraints;
     std::unique_ptr<Saved> saved;
-    bool present = true;
+    bool present = true, importPending = false;
     std::uint64_t generation = 1;
     Impl(DynamicsWorld& w, std::vector<btRigidBody*> b, std::vector<btTypedConstraint*> c)
         : world(w), broadphase(dynamic_cast<Broadphase&>(*w.getBroadphase())), bodies(std::move(b)), constraints(std::move(c)) {
@@ -295,7 +307,7 @@ struct Retained::Transition::Impl {
         std::unordered_set<btTypedConstraint*> ownedConstraints;
         entries.reserve(retained.size());
         for (auto& owner : retained) {
-            if (&owner->world != &world || owner->present == p || !owners.insert(owner.get()).second)
+            if (&owner->world != &world || owner->importPending || owner->present == p || !owners.insert(owner.get()).second)
                 throw std::invalid_argument("incompatible physics membership batch");
             for (auto* body : owner->bodies)
                 if (!ownedBodies.insert(body).second) throw std::invalid_argument("overlapping retained bodies");
@@ -472,4 +484,351 @@ bool Retained::Transition::MeasureTargetResources(plugins::resource_budget::Coll
     return true;
 }
 bool Retained::Transition::Publish() noexcept { return impl_->Publish(); }
+
+namespace {
+bool ImportCallbacks(const DynamicsWorld& world, const btCollisionDispatcher& dispatcher) noexcept {
+    return world.HasActions() || import_storage::HasTickCallbacks(world) ||
+        dispatcher.getNearCallback() != btCollisionDispatcher::defaultNearCallback ||
+        gContactAddedCallback || gContactDestroyedCallback || gContactProcessedCallback;
+}
+bool SamePairs(PairCache* cache, const std::vector<btBroadphasePair>& pairs) noexcept {
+    if (cache->getNumOverlappingPairs() != static_cast<int>(pairs.size())) return false;
+    for (std::size_t i = 0; i < pairs.size(); ++i) {
+        const auto& a = cache->getOverlappingPairArray()[static_cast<int>(i)]; const auto& b = pairs[i];
+        if (a.m_pProxy0 != b.m_pProxy0 || a.m_pProxy1 != b.m_pProxy1 ||
+            a.m_algorithm != b.m_algorithm || a.m_internalInfo1 != b.m_internalInfo1) return false;
+    }
+    return true;
+}
+struct KeepPair final : btOverlapFilterCallback {
+    bool needBroadphaseCollision(btBroadphaseProxy*, btBroadphaseProxy*) const override { return true; }
+};
+}
+
+// Prepare compact sweep/ray structures, then copy edge indices back into the
+// fixed live handle pool. Existing handles never move, including parked ones.
+// The shadow is sized by occupied handles, not the scene's 1.5M handle limit.
+struct ImportBroadphaseState {
+    using Handle = Broadphase::Handle;
+    using Edge = Broadphase::Edge;
+    struct Entry {
+        unsigned id;
+        Handle* target;
+        Handle* shadow = nullptr;
+        BodyState before;
+        btBroadphaseProxy* oldRay;
+        bool added;
+    };
+    Broadphase& live;
+    btDispatcher* dispatcher;
+    unsigned oldCount, firstFree, nextFree = 0;
+    PairCache* source;
+    std::unique_ptr<Broadphase> shadow;
+    std::unique_ptr<PairCache> cache;
+    std::vector<Entry> entries;
+    std::vector<std::pair<unsigned, unsigned>> reserved;
+    std::vector<Edge> beforeEdges[3], targetEdges[3];
+    std::vector<btBroadphasePair> pairs;
+    std::vector<std::pair<int, int>> transfers;
+    bool published = false;
+
+    ImportBroadphaseState(Broadphase& bp, btDispatcher* d, const std::vector<btRigidBody*>& added)
+        : live(bp), dispatcher(d), oldCount(bp.m_numHandles), firstFree(bp.m_firstFreeHandle), source(bp.Cache()) {
+        if (!bp.m_raycastAccelerator || !bp.m_nullPairCache || bp.m_invalidPair ||
+            source->getOverlapFilterCallback() || source->HasGhostCallback() || bp.m_userPairCallback ||
+            added.size() > bp.m_maxHandles - 1 - oldCount)
+            throw std::invalid_argument("unsupported import broadphase");
+        entries.reserve(oldCount + added.size());
+        std::unordered_set<unsigned> used;
+        for (unsigned i = 1; i < oldCount * 2 + 1; ++i) {
+            const auto& edge = bp.m_pEdges[0][i];
+            if (!edge.IsMax()) continue;
+            const unsigned id = edge.m_handle;
+            if (!id || id >= bp.m_maxHandles || !used.insert(id).second)
+                throw std::invalid_argument("invalid live physics handle");
+            auto* handle = bp.getHandle(id);
+            auto* object = static_cast<btCollisionObject*>(handle->m_clientObject);
+            auto* body = object ? btRigidBody::upcast(object) : nullptr;
+            if (!body || body->getBroadphaseHandle() != handle || handle->m_uniqueId != static_cast<int>(id) ||
+                handle->m_multiSapParentProxy || body->getNumConstraintRefs() || !handle->m_dbvtProxy ||
+                handle->m_dbvtProxy->m_clientObject != body ||
+                handle->m_dbvtProxy->m_collisionFilterGroup != handle->m_collisionFilterGroup ||
+                handle->m_dbvtProxy->m_collisionFilterMask != handle->m_collisionFilterMask)
+                throw std::invalid_argument("unsupported live physics proxy");
+            entries.push_back({id, handle, nullptr, Read(body), handle->m_dbvtProxy, false});
+        }
+        if (entries.size() != oldCount) throw std::invalid_argument("invalid live handle count");
+        auto next = firstFree;
+        for (auto* body : added) {
+            if (!next || next >= bp.m_maxHandles || !used.insert(next).second || !body ||
+                !body->getBroadphaseHandle() || body->getNumConstraintRefs())
+                throw std::invalid_argument("invalid import physics handle");
+            auto* handle = bp.getHandle(next);
+            const auto following = handle->GetNextFree();
+            reserved.emplace_back(next, following);
+            entries.push_back({next, handle, nullptr, Read(body), nullptr, true});
+            next = following;
+        }
+        nextFree = next;
+        // The stock constructor allocates ray structures before new Handle[].
+        // If that C++ allocation throws, its incomplete base cannot release
+        // those structures. Build the shadow's ray tree only after its sweep.
+        shadow.reset(new Broadphase(bp.m_worldAabbMin, bp.m_worldAabbMax,
+            (std::max)(1u, static_cast<unsigned>(entries.size())), std::make_unique<PairCache>(), true));
+        void* nullStorage = btAlignedAlloc(sizeof(btNullPairCache), 16);
+        if (!nullStorage) throw std::bad_alloc();
+        auto* nullCache = new(nullStorage) btNullPairCache();
+        void* rayStorage = nullptr;
+        try { rayStorage = btAlignedAlloc(sizeof(btDbvtBroadphase), 16); }
+        catch (...) { nullCache->~btNullPairCache(); btAlignedFree(nullStorage); throw; }
+        if (!rayStorage) { nullCache->~btNullPairCache(); btAlignedFree(nullStorage); throw std::bad_alloc(); }
+        shadow->m_nullPairCache = nullCache;
+        shadow->m_raycastAccelerator = new(rayStorage) btDbvtBroadphase(nullCache);
+        shadow->m_raycastAccelerator->m_deferedcollide = true;
+        // From this point failures must clean the shadow's separately allocated
+        // DBVT proxies: Bullet's broadphase destructor only destroys the trees.
+        try {
+            std::vector<btBroadphaseProxy> keys; keys.reserve(entries.size());
+            std::unordered_map<btBroadphaseProxy*, std::size_t> oldIndex;
+            for (std::size_t i = 0; i < entries.size(); ++i) {
+                auto& entry = entries[i]; const auto& b = entry.before;
+                entry.shadow = static_cast<Handle*>(shadow->createProxy(b.aabbLo, b.aabbHi,
+                    b.shape->getShapeType(), b.body, b.group, b.mask, d, nullptr));
+                keys.push_back(*entry.shadow); keys.back().m_uniqueId = static_cast<int>(entry.id);
+                if (!entry.added) oldIndex.emplace(entry.target, i);
+            }
+            for (int axis = 0; axis < 3; ++axis) {
+                beforeEdges[axis].assign(bp.m_pEdges[axis], bp.m_pEdges[axis] + oldCount * 2 + 2);
+                targetEdges[axis].assign(shadow->m_pEdges[axis], shadow->m_pEdges[axis] + entries.size() * 2 + 2);
+                for (auto& edge : targetEdges[axis]) if (edge.m_handle)
+                    edge.m_handle = entries[edge.m_handle - 1].id;
+            }
+            pairs = Copy(source->getOverlappingPairArray()); cache = std::make_unique<PairCache>();
+            KeepPair keep;
+            cache->setOverlapFilterCallback(&keep);
+            for (const auto& pair : pairs) {
+                const auto a = oldIndex.find(pair.m_pProxy0), b = oldIndex.find(pair.m_pProxy1);
+                if (a == oldIndex.end() || b == oldIndex.end()) throw std::invalid_argument("foreign live pair");
+                cache->addOverlappingPair(&keys[a->second], &keys[b->second]);
+            }
+            // Retain every old pair and algorithm. Only import-related pairs
+            // come from the newly prepared sweep; no collision algorithms run.
+            const auto& newPairs = shadow->Cache()->getOverlappingPairArray();
+            for (int i = 0; i < newPairs.size(); ++i) {
+                const auto a = static_cast<std::size_t>(newPairs[i].m_pProxy0->m_uniqueId - 1);
+                const auto b = static_cast<std::size_t>(newPairs[i].m_pProxy1->m_uniqueId - 1);
+                if (entries[a].added || entries[b].added) cache->addOverlappingPair(&keys[a], &keys[b]);
+            }
+            cache->setOverlapFilterCallback(nullptr);
+            for (std::size_t i = 0; i < pairs.size(); ++i) {
+                auto* target = cache->findPair(pairs[i].m_pProxy0, pairs[i].m_pProxy1);
+                if (!target) throw std::invalid_argument("missing retained import pair");
+                transfers.emplace_back(static_cast<int>(i), static_cast<int>(target - cache->getOverlappingPairArrayPtr()));
+            }
+            // Hashes use the final UIDs already stored in keys. Replacing the
+            // pointers preserves hash buckets without reading free live slots.
+            auto& finalPairs = cache->getOverlappingPairArray();
+            for (int i = 0; i < finalPairs.size(); ++i) {
+                finalPairs[i].m_pProxy0 = entries[finalPairs[i].m_pProxy0 - keys.data()].target;
+                finalPairs[i].m_pProxy1 = entries[finalPairs[i].m_pProxy1 - keys.data()].target;
+            }
+        } catch (...) { ClearShadowRays(); throw; }
+    }
+    void ClearShadowRays() noexcept {
+        if (!shadow) return;
+        for (auto& entry : entries) {
+            auto* ray = published ? entry.oldRay : (entry.shadow ? entry.shadow->m_dbvtProxy : nullptr);
+            if (ray) shadow->m_raycastAccelerator->destroyProxy(ray, dispatcher);
+            if (!published && entry.shadow) entry.shadow->m_dbvtProxy = nullptr;
+        }
+    }
+    ~ImportBroadphaseState() { ClearShadowRays(); }
+    bool Current() const noexcept {
+        if (published || live.m_numHandles != oldCount || live.m_firstFreeHandle != firstFree ||
+            live.Cache() != source || source->getOverlapFilterCallback() || source->HasGhostCallback() ||
+            live.m_userPairCallback || !SamePairs(source, pairs)) return false;
+        for (const auto& item : reserved) if (live.getHandle(item.first)->GetNextFree() != item.second) return false;
+        for (int axis = 0; axis < 3; ++axis) for (std::size_t i = 0; i < beforeEdges[axis].size(); ++i) {
+            const auto& a = live.m_pEdges[axis][i]; const auto& b = beforeEdges[axis][i];
+            if (a.m_pos != b.m_pos || a.m_handle != b.m_handle) return false;
+        }
+        for (const auto& entry : entries) {
+            if (!history_physics::Current(entry.before, false, !entry.added)) return false;
+            if (!entry.added && (entry.target->m_dbvtProxy != entry.oldRay ||
+                entry.target->m_uniqueId != static_cast<int>(entry.id))) return false;
+        }
+        return true;
+    }
+    void Publish() noexcept {
+        for (const auto& transfer : transfers) {
+            auto& from = source->getOverlappingPairArray()[transfer.first];
+            auto& to = cache->getOverlappingPairArray()[transfer.second];
+            to.m_algorithm = from.m_algorithm; to.m_internalInfo1 = from.m_internalInfo1;
+            from.m_algorithm = nullptr; from.m_internalInfo1 = nullptr;
+        }
+        for (auto& entry : entries) {
+            auto& target = *entry.target; const auto& from = *entry.shadow;
+            if (entry.added) {
+                static_cast<btBroadphaseProxy&>(target) = from;
+                target.m_uniqueId = static_cast<int>(entry.id);
+                entry.before.body->setBroadphaseHandle(&target);
+            }
+            for (int axis = 0; axis < 3; ++axis) {
+                target.m_minEdges[axis] = from.m_minEdges[axis]; target.m_maxEdges[axis] = from.m_maxEdges[axis];
+            }
+            target.m_dbvtProxy = from.m_dbvtProxy;
+        }
+        for (int axis = 0; axis < 3; ++axis) {
+            std::copy(targetEdges[axis].begin(), targetEdges[axis].end(), live.m_pEdges[axis]);
+            live.m_pHandles[0].m_minEdges[axis] = 0;
+            live.m_pHandles[0].m_maxEdges[axis] = static_cast<unsigned>(entries.size() * 2 + 1);
+        }
+        live.m_numHandles = static_cast<unsigned>(entries.size()); live.m_firstFreeHandle = nextFree;
+        std::swap(live.m_raycastAccelerator, shadow->m_raycastAccelerator);
+        std::swap(live.m_nullPairCache, shadow->m_nullPairCache);
+        cache.reset(live.Exchange(cache.release()));
+        published = true;
+    }
+};
+
+struct ImportScene::Impl {
+    PhysicsScene& live;
+    DynamicsWorld& target;
+    Broadphase& broadphase;
+    const int baseId;
+    btDefaultCollisionConfiguration config;
+    btCollisionDispatcher dispatcher{&config};
+    PairCache privateCache;
+    btDbvtBroadphase privateBroadphase{&privateCache};
+    btSequentialImpulseConstraintSolver solver;
+    DynamicsWorld world{&dispatcher, &privateBroadphase, &solver, &config};
+    PhysicsScene scene{};
+    bool published = false;
+    explicit Impl(PhysicsScene& source)
+        : live(source), target(dynamic_cast<DynamicsWorld&>(*source.world)),
+          broadphase(dynamic_cast<Broadphase&>(*target.getBroadphase())), baseId(source.constraintId) {
+        if (baseId < 0 || source.dispatcher != target.getDispatcher() ||
+            ImportCallbacks(target, *source.dispatcher)) throw std::invalid_argument("unsupported import world");
+        world.setGravity(target.getGravity()); world.getSolverInfo() = target.getSolverInfo();
+        scene.owner = source.owner; scene.collisionConfig = &config; scene.dispatcher = &dispatcher;
+        scene.constraintId = baseId; scene.solver = &solver; scene.world = &world;
+    }
+};
+
+struct ImportScene::Publication::Impl {
+    std::shared_ptr<ImportScene::Impl> owner;
+    std::shared_ptr<Retained> retained;
+    std::uint64_t step, privateStep;
+    int endId;
+    btVector3 gravity;
+    std::vector<btCollisionObject*> beforeObjects, privateObjects;
+    std::vector<btRigidBody*> beforeMoving, privateMoving, imported;
+    std::vector<btTypedConstraint*> beforeConstraints, privateConstraints;
+    std::vector<int> constraintIds;
+    btAlignedObjectArray<btCollisionObject*> afterObjects, emptyObjects;
+    btAlignedObjectArray<btRigidBody*> afterMoving, emptyMoving;
+    btAlignedObjectArray<btTypedConstraint*> afterConstraints, emptyConstraints;
+    std::unique_ptr<ImportBroadphaseState> broadphase;
+    bool published = false;
+    explicit Impl(std::shared_ptr<ImportScene::Impl> o) : owner(std::move(o)), step(owner->target.StepSerial()),
+        privateStep(owner->world.StepSerial()), endId(owner->scene.constraintId), gravity(owner->target.getGravity()) {
+        auto& state = *owner;
+        if (state.published || privateStep || endId < state.baseId ||
+            state.live.constraintId != state.baseId || ImportCallbacks(state.target, *state.live.dispatcher) ||
+            ImportCallbacks(state.world, state.dispatcher) || state.privateCache.getOverlapFilterCallback() ||
+            state.privateCache.HasGhostCallback() || state.dispatcher.getNumManifolds() ||
+            !EqualVector(state.world.getGravity(), state.target.getGravity()))
+            throw std::invalid_argument("changed import world");
+        beforeObjects = Copy(state.target.getCollisionObjectArray()); privateObjects = Copy(state.world.getCollisionObjectArray());
+        beforeMoving = Copy(state.target.HistoryBodies()); privateMoving = Copy(state.world.HistoryBodies());
+        beforeConstraints = Copy(state.target.HistoryConstraints()); privateConstraints = Copy(state.world.HistoryConstraints());
+        if (static_cast<std::uint64_t>(endId - state.baseId) != privateConstraints.size())
+            throw std::invalid_argument("noncontiguous import constraint IDs");
+        std::unordered_set<btRigidBody*> bodies;
+        for (auto* object : privateObjects) {
+            auto* body = object ? btRigidBody::upcast(object) : nullptr;
+            if (!body || typeid(*body) != typeid(btRigidBody) || !body->getCollisionShape() ||
+                !body->getBroadphaseHandle() || body->getNumConstraintRefs() || !bodies.insert(body).second ||
+                Contains(beforeObjects, object)) throw std::invalid_argument("invalid import body");
+            imported.push_back(body);
+        }
+        for (auto* body : privateMoving) if (!bodies.count(body)) throw std::invalid_argument("foreign import moving body");
+        for (std::size_t i = 0; i < privateConstraints.size(); ++i) {
+            auto* joint = privateConstraints[i];
+            if (!joint || !bodies.count(&joint->getRigidBodyA()) || !bodies.count(&joint->getRigidBodyB()) ||
+                joint->getUid() != state.baseId + static_cast<int>(i) || Contains(beforeConstraints, joint))
+                throw std::invalid_argument("invalid import constraint");
+            constraintIds.push_back(joint->getUid());
+        }
+        for (auto* joint : beforeConstraints) if (!joint || bodies.count(&joint->getRigidBodyA()) ||
+            bodies.count(&joint->getRigidBodyB()) || (joint->getUid() >= state.baseId && joint->getUid() < endId))
+            throw std::invalid_argument("external import constraint or reused ID");
+        auto objects = beforeObjects; objects.insert(objects.end(), privateObjects.begin(), privateObjects.end());
+        auto moving = beforeMoving; moving.insert(moving.end(), privateMoving.begin(), privateMoving.end());
+        auto constraints = beforeConstraints; constraints.insert(constraints.end(), privateConstraints.begin(), privateConstraints.end());
+        import_storage::Prepare(afterObjects, objects); import_storage::Prepare(afterMoving, moving);
+        import_storage::Prepare(afterConstraints, constraints);
+        broadphase = std::make_unique<ImportBroadphaseState>(state.broadphase, state.target.getDispatcher(), imported);
+        retained = std::make_shared<Retained>(state.target, imported, privateConstraints);
+        retained->impl_->present = false; retained->impl_->importPending = true;
+    }
+    ~Impl() {
+        if (published) for (const auto& entry : broadphase->entries) if (entry.added)
+            owner->privateBroadphase.destroyProxy(entry.before.proxy, &owner->dispatcher);
+    }
+    bool Current() const noexcept {
+        auto& state = *owner;
+        if (published || state.published || state.target.StepSerial() != step || state.world.StepSerial() != privateStep ||
+            state.live.world != &state.target || state.target.getBroadphase() != &state.broadphase ||
+            state.live.dispatcher != state.target.getDispatcher() || state.live.constraintId != state.baseId ||
+            state.scene.world != &state.world || state.scene.constraintId != endId ||
+            state.world.getBroadphase() != &state.privateBroadphase ||
+            !EqualVector(state.target.getGravity(), gravity) || !EqualVector(state.world.getGravity(), gravity) ||
+            ImportCallbacks(state.target, *state.live.dispatcher) || ImportCallbacks(state.world, state.dispatcher) ||
+            state.privateCache.getOverlapFilterCallback() || state.privateCache.HasGhostCallback() ||
+            state.dispatcher.getNumManifolds() || !Equal(state.target.getCollisionObjectArray(), beforeObjects) ||
+            !Equal(state.target.HistoryBodies(), beforeMoving) || !Equal(state.target.HistoryConstraints(), beforeConstraints) ||
+            !Equal(state.world.getCollisionObjectArray(), privateObjects) || !Equal(state.world.HistoryBodies(), privateMoving) ||
+            !Equal(state.world.HistoryConstraints(), privateConstraints) || !broadphase->Current()) return false;
+        for (std::size_t i = 0; i < privateConstraints.size(); ++i)
+            if (privateConstraints[i]->getUid() != constraintIds[i] ||
+                !Contains(imported, &privateConstraints[i]->getRigidBodyA()) ||
+                !Contains(imported, &privateConstraints[i]->getRigidBodyB())) return false;
+        return true;
+    }
+    bool Publish() noexcept {
+        if (!Current()) return false;
+        auto& state = *owner;
+        broadphase->Publish();
+        import_storage::Exchange(state.target.getCollisionObjectArray(), afterObjects);
+        import_storage::Exchange(state.target.HistoryBodies(), afterMoving);
+        import_storage::Exchange(state.target.HistoryConstraints(), afterConstraints);
+        import_storage::Exchange(state.world.getCollisionObjectArray(), emptyObjects);
+        import_storage::Exchange(state.world.HistoryBodies(), emptyMoving);
+        import_storage::Exchange(state.world.HistoryConstraints(), emptyConstraints);
+        state.live.constraintId = endId;
+        retained->impl_->importPending = false; retained->impl_->present = true; ++retained->impl_->generation;
+        state.published = true; published = true;
+        return true;
+    }
+};
+
+ImportScene::ImportScene(PhysicsScene& live) {
+    if (!live.world || !live.dispatcher) throw std::invalid_argument("missing live import world");
+    impl_ = std::make_shared<Impl>(live);
+}
+ImportScene::~ImportScene() = default;
+PhysicsScene& ImportScene::Scene() noexcept { return impl_->scene; }
+std::unique_ptr<ImportScene::Publication> ImportScene::Prepare() {
+    return std::unique_ptr<Publication>(new Publication(std::make_unique<Publication::Impl>(impl_)));
+}
+ImportScene::Publication::Publication(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
+ImportScene::Publication::~Publication() = default;
+bool ImportScene::Publication::IsCurrent() const noexcept { return impl_->Current(); }
+std::shared_ptr<Retained> ImportScene::Publication::RetainedOwner() const noexcept { return impl_->retained; }
+bool ImportScene::Publication::MeasureTargetResources(plugins::resource_budget::Collector& out) const {
+    if (!impl_->Current()) return false;
+    impl_->retained->MeasureResources(out); return true;
+}
+bool ImportScene::Publication::Publish() noexcept { return impl_->Publish(); }
 }

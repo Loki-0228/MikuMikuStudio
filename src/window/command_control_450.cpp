@@ -122,6 +122,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <new>
+#include <memory>
 #if !MMD_ORIGINAL_PROFILE
 #include <cmath>
 #include <string_view>
@@ -552,7 +553,11 @@ void CmdControl450(MMDApp* app, HWND hwnd, std::uint16_t id,
     // LoadAccessoryFile(app, path).
     // ------------------------------------------------------------------
     case 472: {
-        SetCurrentDirectoryW(app->ExeDir());  // 0xA06CE
+        bool controlled = false;
+#if !MMD_ORIGINAL_PROFILE
+        controlled = plugins::BoundNativePoseHistory(app) != nullptr;
+#endif
+        if (!controlled) SetCurrentDirectoryW(app->ExeDir());  // 0xA06CE
         wchar_t fileBuf[0x100];
         swprintf_s(fileBuf, 0x100, kFmt529688, L"", L"");
         OPENFILENAMEW ofn;
@@ -581,10 +586,41 @@ void CmdControl450(MMDApp* app, HWND hwnd, std::uint16_t id,
         ofn.lpstrFileTitle = fileTitle;
         ofn.nMaxFileTitle = 0x100;
         ofn.Flags = OFN_FILEMUSTEXIST;
-        if (!GetUiOpenFileNameW(&ofn)) {
+        wchar_t privateInitial[512]{};
+        if (controlled) {
+            const auto absolute = [](const wchar_t* value) {
+                return (value[0] == L'\\' && value[1] == L'\\') ||
+                    (value[0] && value[1] == L':' && (value[2] == L'\\' || value[2] == L'/'));
+            };
+            wchar_t joined[514]{};
+            const wchar_t* initial = ofn.lpstrInitialDir;
+            if (!absolute(initial)) {
+                if (!absolute(app->ExeDir()) || initial[0] == L'\\' || wcschr(initial, L':')) break;
+                const auto size = wcslen(app->ExeDir());
+                if (swprintf_s(joined, L"%s%s%s", app->ExeDir(),
+                        size && (app->ExeDir()[size - 1] == L'\\' || app->ExeDir()[size - 1] == L'/') ? L"" : L"\\", initial) < 0) break;
+                initial = joined;
+            }
+            const auto length = GetFullPathNameW(initial, 512, privateInitial, nullptr);
+            if (!length || length >= 512) break;
+            ofn.lpstrInitialDir = privateInitial;
+            ofn.Flags |= OFN_NOCHANGEDIR;
+        }
+        std::unique_ptr<wchar_t[]> savedDirectory;
+        if (controlled) {
+            const auto capacity = GetCurrentDirectoryW(0, nullptr);
+            if (!capacity) break;
+            savedDirectory.reset(new (std::nothrow) wchar_t[capacity]);
+            if (!savedDirectory) break;
+            const auto copied = GetCurrentDirectoryW(capacity, savedDirectory.get());
+            if (!copied || copied >= capacity) break;
+        }
+        const BOOL selected = GetUiOpenFileNameW(&ofn);
+        if (controlled && !SetCurrentDirectoryW(savedDirectory.get())) break;
+        if (!selected) {
             break;
         }
-        if ((GetMenuState(GetMenu(hwnd), 0x12D, 0) & 8) != 0) {
+        if (!controlled && (GetMenuState(GetMenu(hwnd), 0x12D, 0) & 8) != 0) {
             // ExtractDirFromPath(app+0x9F338, fileBuf) then copy into DirAccs
             wchar_t* dir =
                 ExtractDirFromPath(app->PathWorkspace().projectDirectory,

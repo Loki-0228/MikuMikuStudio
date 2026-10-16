@@ -1,3 +1,4 @@
+#include "mikudancestudio/model_import.hpp"
 #include "mikudancestudio/display_capacity.hpp"
 #include "mikudancestudio/plugin_scene.hpp"
 #include "mikudancestudio/key_pool.hpp"
@@ -133,7 +134,7 @@ void ReleasePhysRigid(void* scene, void* bodyPointer) {
 }  // namespace
 
 // VA 0x0048F830
-void ModelDispose(unsigned char* m) {
+static void DisposeModelResources(unsigned char* m, bool published) {
     plugins::ForgetSceneObject(m);
     text_encoding::ForgetMaterialNames(*mdl::Mdl(m));
     mdl::ForgetDisplayCapacity(*mdl::Mdl(m));
@@ -144,12 +145,12 @@ void ModelDispose(unsigned char* m) {
     bone_scale::Forget(m);
     morph_curve::Forget(m);
     skinning::ForgetModel(m);
-    ShutdownD3D12Native();
+    if (published) ShutdownD3D12Native();
     mdl::ModelRecord& model = *mdl::Mdl(m);
     void* scene = model.scenePtr;
 
     // ---- joints -----------------------------------------------------------
-    if (model.jointCount > 0) {
+    if (model.jointTable && model.jointCount > 0) {
         for (std::uint32_t i = 0; i < model.jointCount; ++i) {
             mdl::JointRecord* jt = &model.jointTable[i];
             ReleasePhysConstraint(
@@ -162,7 +163,7 @@ void ModelDispose(unsigned char* m) {
     FreeOwned(model.jointTable);
 
     // ---- rigid bodies -----------------------------------------------------
-    if (model.rigidCount > 0) {
+    if (model.rigidTable && model.rigidCount > 0) {
         for (std::uint32_t i = 0; i < model.rigidCount; ++i) {
             mdl::RigidRecord* rb = &model.rigidTable[i];
             ReleasePhysRigid(scene, rb->body);
@@ -258,7 +259,7 @@ void ModelDispose(unsigned char* m) {
     FreeOwned(mdl::Mdl(m)->boneTrackActive);
 
     // ---- bones -------------------------------------------------------------
-    if (mikudancestudio::mdl::Mdl(m)->boneCount > 0) {
+    if (model.boneTable && model.boneCount > 0) {
         mikudancestudio::mdl::BoneRecord* bones = mdl::Mdl(m)->boneTable;
         for (std::uint32_t i = 0; i < mikudancestudio::mdl::Mdl(m)->boneCount; ++i) {
             mikudancestudio::mdl::BoneRecord* bone = &bones[i];
@@ -285,6 +286,11 @@ void ModelDispose(unsigned char* m) {
     FreeOwned(mdl::PmxTextBuffer(m, mdl::PmxTextBufferSlot::japaneseComment));
     FreeOwned(mdl::PmxTextBuffer(m, mdl::PmxTextBufferSlot::englishComment));
 }
+
+void ModelDispose(unsigned char* m) { DisposeModelResources(m, true); }
+#if !MMD_ORIGINAL_PROFILE
+void model_import::DisposePrivate(unsigned char* m) noexcept { DisposeModelResources(m, false); }
+#endif
 
 // ---------------------------------------------------------------------------
 // VA 0x0040A710 - DeleteModel (was Sub40A710)(model, freeFlag): the

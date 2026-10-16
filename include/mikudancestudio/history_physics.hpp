@@ -10,14 +10,18 @@ class btTypedConstraint;
 namespace mikudancestudio {
 namespace plugins::resource_budget { class Collector; }
 class DynamicsWorld;
+class PhysicsScene;
 namespace history_physics {
+class ImportScene;
+struct ImportBroadphaseState;
 // These classes are internal to MMS. They do not change Bullet or plugin ABI.
 class PairCache final : public btHashedOverlappingPairCache {
 public:
     bool HasGhostCallback() const noexcept { return m_ghostPairCallback != nullptr; }
 };
 class Broadphase final : public bt32BitAxisSweep3 {
-    Broadphase(const btVector3&, const btVector3&, unsigned, std::unique_ptr<PairCache>);
+    friend struct ImportBroadphaseState;
+    Broadphase(const btVector3&, const btVector3&, unsigned, std::unique_ptr<PairCache>, bool disableRaycast = false);
 public:
     Broadphase(const btVector3&, const btVector3&, unsigned maxHandles);
     ~Broadphase() override;
@@ -35,6 +39,7 @@ public:
 // A transition keeps this object's internal state alive, not the world or bodies.
 // Destroy every published transition before stepping or destroying the world.
 class Retained {
+    friend class ImportScene;
     struct Impl;
     std::shared_ptr<Impl> impl_;
 public:
@@ -73,6 +78,45 @@ public:
     // The input order does not affect restored simulation order. Conflicting
     // historical/current order, including an external reorder, is rejected.
     static std::unique_ptr<Transition> PrepareBatch(const std::vector<Retained*>& objects, bool present);
+};
+
+// Loading uses an isolated world, with no ground, renderer resources or steps.
+// Scene().broadphase is null: the private world uses its own growable DBVT.
+// The loader and ModelDispose must use Scene() until publication succeeds.
+// Native bodies/joints remain caller-owned; dispose them before releasing this
+// scene on failure. The live scene must outlive this object and its candidates.
+class ImportScene {
+    struct Impl;
+    std::shared_ptr<Impl> impl_;
+public:
+    class Publication {
+        struct Impl;
+        std::unique_ptr<Impl> impl_;
+        friend class ImportScene;
+        explicit Publication(std::unique_ptr<Impl>);
+    public:
+        ~Publication();
+        bool IsCurrent() const noexcept;
+        // Pending owner can be measured before publication, but cannot prepare
+        // ordinary presence changes. Success makes it a normal present owner.
+        std::shared_ptr<Retained> RetainedOwner() const noexcept;
+        // Published present owners have no Saved/order allocation. This is the
+        // same bookkeeping charge as RetainedOwner()->MeasureResources().
+        // Native bodies/joints are measured by the enclosing model resource pass.
+        bool MeasureTargetResources(plugins::resource_budget::Collector&) const;
+        // No allocation, resource destruction or callbacks. Rebind the loaded
+        // model's scenePtr to the live scene in the same enclosing commit.
+        // Destroy published candidates before stepping or destroying the world.
+        bool Publish() noexcept;
+    };
+    explicit ImportScene(PhysicsScene& live);
+    ~ImportScene();
+    ImportScene(const ImportScene&) = delete;
+    ImportScene& operator=(const ImportScene&) = delete;
+    PhysicsScene& Scene() noexcept;
+    // A candidate freezes both worlds. Cancellation changes neither world.
+    // Repeated preparation is allowed until one candidate publishes.
+    std::unique_ptr<Publication> Prepare();
 };
 }
 }

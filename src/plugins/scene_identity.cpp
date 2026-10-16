@@ -6,7 +6,7 @@ MmsId SceneIdentity::NewId() {
     do {
         if (BCryptGenRandom(nullptr, reinterpret_cast<PUCHAR>(&id), sizeof(id), BCRYPT_USE_SYSTEM_PREFERRED_RNG) < 0)
             throw std::runtime_error("scene identity entropy unavailable");
-    } while (Empty(id));
+    } while (Empty(id) || known_.count(id));
     return id;
 }
 const SceneIdentity::Entry& SceneIdentity::Get(const void* token) {
@@ -24,6 +24,15 @@ const SceneIdentity::Entry& SceneIdentity::Get(const void* token) {
 const SceneIdentity::Entry* SceneIdentity::Retained(const void* token) const noexcept {
     const auto found = entries_.find(token);
     return found == entries_.end() ? nullptr : &found->second;
+}
+const SceneIdentity::Entry& SceneIdentity::CreateAbsent(const void* token) {
+    if (!token || entries_.count(token)) throw std::invalid_argument("import identity already registered");
+    if (!nextGeneration_) throw std::overflow_error("scene generation exhausted");
+    Entry entry; entry.object = {NewId(), nextGeneration_++}; entry.present = entry.published = false;
+    const auto id = entry.object.id;
+    known_.insert(id);
+    try { return entries_.emplace(token, std::move(entry)).first->second; }
+    catch (...) { known_.erase(id); throw; }
 }
 SceneIdentity::Presence SceneIdentity::PreparePresence(const void* token, bool present) {
     const auto* entry = Retained(token);
@@ -45,7 +54,8 @@ bool SceneIdentity::Presence::Publish() noexcept {
     if (!IsCurrent()) return false;
     auto& entry = owner_->entries_.find(token_)->second;
     entry.object.generation = next_;
-    entry.present = afterPresent_; owner_ = nullptr; return true;
+    entry.present = afterPresent_; entry.published = entry.published || afterPresent_;
+    owner_ = nullptr; return true;
 }
 MmsId SceneIdentity::Element(const void* token, uint32_t kind, uint32_t index) {
     Get(token); auto& values = entries_.at(token).elements;
@@ -60,7 +70,7 @@ void SceneIdentity::Replace(const std::vector<Restore>& objects) {
     for (const auto& object : objects) {
         if (!object.token || Empty(object.entry.object.id) || !ids.insert(object.entry.object.id).second || !generation)
             throw std::invalid_argument("invalid restored object identity");
-        auto entry = object.entry; entry.object.generation = generation++; entry.present = true;
+        auto entry = object.entry; entry.object.generation = generation++; entry.present = entry.published = true;
         for (const auto& value : entry.elements)
             if (Empty(value.second) || !ids.insert(value.second).second) throw std::invalid_argument("duplicate element identity");
         if (!replacement.emplace(object.token, std::move(entry)).second) throw std::invalid_argument("duplicate restored object");

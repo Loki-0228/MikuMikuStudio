@@ -33,7 +33,7 @@ public:
         bool IsCurrent() const noexcept;
         bool Publish() noexcept;
     };
-    AccessoryAuthoring(MMDApp&, int slot);
+    AccessoryAuthoring(MMDApp&, int slot, bool initiallyPresent = true);
     ~AccessoryAuthoring();
     AccessoryAuthoring(const AccessoryAuthoring&) = delete;
     AccessoryAuthoring& operator=(const AccessoryAuthoring&) = delete;

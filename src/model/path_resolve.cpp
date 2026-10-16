@@ -48,6 +48,7 @@
 #include "mikudancestudio/text_encoding.hpp"
 
 #include "mikudancestudio/texture_lookup.hpp"
+#include "mikudancestudio/import_texture_cache.hpp"
 
 namespace mikudancestudio {
 namespace {
@@ -217,6 +218,10 @@ int LoadTextureShared(unsigned char* sub, wchar_t* path) {     // 0x407490
     if (path[0] == L'\0')
         return 0;
     D3DRenderer* r = reinterpret_cast<D3DRenderer*>(sub);
+#if !MMD_ORIGINAL_PROFILE
+    int capturedResult = 0;
+    if (import_texture_cache::TryLoadCaptured(r, path, capturedResult)) return capturedResult;
+#endif
     IDirect3DDevice9* dev = r->device;
     // Cache is the wrapper's 10000-entry resourcePool (stride 12 on x86, 24 on
     // x64; the original write base is sub+0 at 0x40750A): heapBuffer holds the name*,

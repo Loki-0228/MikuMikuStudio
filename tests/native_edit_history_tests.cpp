@@ -325,6 +325,10 @@ void CrossModelJournal(){
 }
 }
 #include "history_physics_checks.inc"
+#include "physics_import_checks.inc"
+#include "import_texture_cache_checks.inc"
+#include "accessory_import_checks.inc"
+#include "private_import_history_checks.inc"
 #include "scene_object_history_checks.inc"
 #include "scene_object_budget_checks.inc"
 #include "scene_object_insertion_checks.inc"
@@ -351,6 +355,10 @@ void CrossModelJournal(){
 int main(){
     std::setvbuf(stdout,nullptr,_IONBF,0);
     const auto run=[](const char* name,void(*test)()){std::printf("RUN %s\n",name);test();};
+    run("PhysicsImportChecks",PhysicsImportChecks);
+    run("ImportTextureCacheChecks",ImportTextureCacheChecks);
+    run("AccessoryImportChecks",AccessoryImportChecks);
+    run("PrivateImportHistoryChecks",PrivateImportHistoryChecks);
     run("NativePoseHistoryChecks",NativePoseHistoryChecks);
     run("SceneResourceBudgetChecks",SceneResourceBudgetChecks);
     run("UndoStorageChecks",UndoStorageChecks);

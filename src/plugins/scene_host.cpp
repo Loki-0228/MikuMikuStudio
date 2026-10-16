@@ -144,8 +144,15 @@ std::shared_ptr<SceneStore> CreateSceneStore(MMDApp* app) {
     return std::make_shared<SceneStore>([app](const auto& query, auto& out) { return Capture(app, query, out); },
         [](MmsId id) { return identities.Known(id); });
 }
-void ForgetSceneObject(const void* token) { if (!build_profile::original) { identities.Forget(token); geometryDigests.erase(token); ++revision; previous.clear(); } }
+void ForgetSceneObject(const void* token) {
+    if (build_profile::original) return;
+    const auto* entry = identities.Retained(token);
+    const bool visible = (entry && entry->present) || geometryDigests.count(token) != 0;
+    identities.Forget(token); geometryDigests.erase(token);
+    if (visible) { ++revision; previous.clear(); }
+}
 MmsObjectRef SceneObjectIdentity(const void* token) { return identities.Get(token).object; }
+MmsObjectRef CreateAbsentSceneObject(const void* token) { return identities.CreateAbsent(token).object; }
 bool SceneObjectPresent(const void* token, MmsId id) noexcept {
     const auto* entry = identities.Retained(token);
     return entry && entry->present && Same(entry->object.id, id);

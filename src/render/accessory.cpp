@@ -1,6 +1,11 @@
 #include "mikudancestudio/original_import.hpp"
 #include "mikudancestudio/plugin_scene.hpp"
 #include "mikudancestudio/key_pool.hpp"
+#include "mikudancestudio/accessory_import.hpp"
+#if !MMD_ORIGINAL_PROFILE
+#include "mikudancestudio/import_texture_cache.hpp"
+#include "../plugins/native_object_commands.hpp"
+#endif
 #include "mikudancestudio/native_mesh.hpp"
 #include "mikudancestudio/deformed_mesh_capture.hpp"
 // ===========================================================================
@@ -24,7 +29,14 @@
 #include <cstdint>
 #include <cstring>
 #include <cwchar>
+#include <cmath>
+#include <cerrno>
+#include <cctype>
+#include <limits>
+#include <memory>
 #include <new>
+#include <string>
+#include <utility>
 
 #include "mikudancestudio/text_encoding.hpp"
 #include "mikudancestudio/ui_translation.hpp"
@@ -64,6 +76,17 @@ struct D3dxMaterialRecord {
 static_assert(offsetof(D3dxMaterialRecord, textureFileName) ==
                   (sizeof(void*) == 8 ? 72 : sizeof(D3DMATERIAL9)),
               "D3DX material filename placement");
+
+void CopyAccessoryMaterial(D3DMATERIAL9& destination, const D3DMATERIAL9& source) {
+    destination = source;
+    destination.Ambient = destination.Diffuse;
+    destination.Diffuse.r *= 0.1f;
+    destination.Diffuse.g *= 0.1f;
+    destination.Diffuse.b *= 0.1f;
+    destination.Specular.r *= 0.1f;
+    destination.Specular.g *= 0.1f;
+    destination.Specular.b *= 0.1f;
+}
 
 void FxTechnique(void* effect, const char* name) {
     d3dx::FxSetTechnique(effect, name);
@@ -767,15 +790,7 @@ bool LoadAccessoryObject(MMDApp* app, void* accessory, const wchar_t* path) {   
             auto* destination = static_cast<D3DMATERIAL9*>(
                 mdl::Accessory(accessory)->materials) + i;
             const D3dxMaterialRecord& source = sourceMaterials[i];
-            *destination = source.material;
-            auto* material = destination;
-            material->Ambient = material->Diffuse;
-            material->Diffuse.r *= 0.1f;
-            material->Diffuse.g *= 0.1f;
-            material->Diffuse.b *= 0.1f;
-            material->Specular.r *= 0.1f;
-            material->Specular.g *= 0.1f;
-            material->Specular.b *= 0.1f;
+            CopyAccessoryMaterial(*destination, source.material);
             char* texture = source.textureFileName;
             if (texture == nullptr || texture[0] == '\0')
                 continue;
@@ -875,6 +890,9 @@ void LoadAccessoryFile(const wchar_t* path) {                   // 0x460B30
     MMDApp* app = g_Block;
     if (app == nullptr || path == nullptr)
         return;
+#if !MMD_ORIGINAL_PROFILE
+    if (plugins::TryImportBoundAccessory(app, path)) return;
+#endif
     int slot = 0;
     while (slot < 255 && app->AccessorySlot(slot) != nullptr)
         ++slot;
@@ -965,6 +983,271 @@ void LoadAccessoryFile(const wchar_t* path) {                   // 0x460B30
     RefreshRequest(app->SelectedAccessorySlot());
     PostLanguageSweep2(app);
 }
+
+#if !MMD_ORIGINAL_PROFILE
+namespace accessory_import {
+namespace {
+thread_local const testing::MeshApi* privateMeshApi = nullptr;
+struct OwnedCom {
+    void* value = nullptr;
+    ~OwnedCom() { ReleaseCom(value); }
+};
+using File = std::unique_ptr<FILE, decltype(&fclose)>;
+
+bool AbsolutePath(const wchar_t* path) noexcept {
+    return path && ((path[0] == L'\\' && path[1] == L'\\') ||
+        (path[0] && path[1] == L':' && (path[2] == L'\\' || path[2] == L'/')));
+}
+bool CanonicalPath(const std::wstring& input, std::size_t capacity, std::wstring& output) {
+    if (input.empty() || input.size() >= capacity || !AbsolutePath(input.c_str())) return false;
+    wchar_t full[512]{};
+    const DWORD count = GetFullPathNameW(input.c_str(), 512, full, nullptr);
+    if (!count || count >= capacity || count >= 512) return false;
+    output.assign(full, count);
+    std::replace(output.begin(), output.end(), L'/', L'\\');
+    return true;
+}
+bool ExistingFile(const std::wstring& path) noexcept {
+    const DWORD attributes = GetFileAttributesW(path.c_str());
+    return attributes != INVALID_FILE_ATTRIBUTES && !(attributes & FILE_ATTRIBUTE_DIRECTORY);
+}
+std::wstring Directory(const std::wstring& path) {
+    return path.substr(0, path.find_last_of(L'\\') + 1);
+}
+// Decode in the same code-page order as ResolveAnsiUserFile, but anchor every
+// relative path explicitly. No probe depends on the process working directory.
+bool ResolvePrivateName(const char* name, const std::wstring& directory,
+                        std::size_t capacity, std::wstring& output) {
+    output.clear();
+    if (!name || !*name) return false;
+    const bool utf8 = text_encoding::HasUtf8Bom(name);
+    for (UINT cp : {GetACP(), 932u, 936u, 950u, 949u, 65001u}) {
+        std::wstring decoded, absolute;
+        if (text_encoding::Decode(utf8 ? name + 3 : name, utf8 ? CP_UTF8 : cp, decoded) &&
+            !decoded.empty()) {
+            std::replace(decoded.begin(), decoded.end(), L'/', L'\\');
+            // Drive-relative and root-relative references need ambient process
+            // state, so this private loader does not accept those forms.
+            const bool rooted = decoded[0] == L'\\' || decoded.find(L':') != std::wstring::npos;
+            if ((!rooted || AbsolutePath(decoded.c_str())) &&
+                CanonicalPath(AbsolutePath(decoded.c_str()) ? decoded : directory + decoded,
+                              capacity, absolute)) {
+                if (output.empty()) output = absolute;
+                if (ExistingFile(absolute)) { output = std::move(absolute); return true; }
+            }
+        }
+        if (utf8) break;
+    }
+    return false;
+}
+bool ReadVacLine(FILE* file, char (&line)[1024]) noexcept {
+    if (!fgets(line, sizeof line, file)) return false;
+    const auto count = std::strlen(line);
+    if (count == sizeof line - 1 && line[count - 1] != '\n' && !feof(file)) return false;
+    auto end = count;
+    while (end && (line[end - 1] == '\r' || line[end - 1] == '\n')) line[--end] = 0;
+    return true;
+}
+bool ReadFloats(const char* text, float* values, unsigned count) noexcept {
+    for (unsigned i = 0; i < count; ++i) {
+        char* end = nullptr;
+        errno = 0;
+        const float value = std::strtof(text, &end);
+        if (end == text || errno == ERANGE || !std::isfinite(value)) return false;
+        while (*end && std::isspace(static_cast<unsigned char>(*end))) ++end;
+        values[i] = value;
+        if (i + 1 == count) return *end == 0;
+        if (*end != ',') return false;
+        text = end + 1;
+    }
+    return false;
+}
+Result ReadPrivateVac(const std::wstring& source, mdl::AccessoryRecord& record, std::wstring& meshPath) {
+    FILE* raw = nullptr;
+    if (_wfopen_s(&raw, source.c_str(), L"rb") || !raw) return Result::NotFound;
+    File file(raw, fclose);
+    char line[1024]{};
+    if (!ReadVacLine(raw, line) || !ReadVacLine(raw, line)) return Result::InvalidVac;
+    const bool found = ResolvePrivateName(line, Directory(source), 256, meshPath);
+    if (meshPath.empty()) return Result::InvalidVac;
+    if (!found) return Result::NotFound;
+    if (!ReadVacLine(raw, line) || !ReadFloats(line, &record.scale, 1) ||
+        !ReadVacLine(raw, line) || !ReadFloats(line, record.position, 3) ||
+        !ReadVacLine(raw, line) || !ReadFloats(line, record.rotation, 3)) return Result::InvalidVac;
+    // The legacy standalone importer does not bind the optional bone name.
+    // Older VAC files omit the shadow line; their default is shadow enabled.
+    record.shadowEnabled = 1;
+    if (ReadVacLine(raw, line) && ReadVacLine(raw, line)) {
+        const char* text = line;
+        while (*text && std::isspace(static_cast<unsigned char>(*text))) ++text;
+        if (*text && std::strncmp(text, "//", 2) != 0) {
+            char* end = nullptr; errno = 0;
+            const long disabled = std::strtol(text, &end, 10);
+            if (end == text || errno == ERANGE) return Result::InvalidVac;
+            while (*end && std::isspace(static_cast<unsigned char>(*end))) ++end;
+            if (*end) return Result::InvalidVac;
+            record.shadowEnabled = disabled == 0;
+        }
+    }
+    return Result::Ready;
+}
+void* MaterialAllocation(std::size_t count, std::size_t size) {
+    if (count > (std::numeric_limits<std::size_t>::max)() / size) throw std::bad_alloc();
+    auto* result = std::malloc(count * size);
+    if (!result && count) throw std::bad_alloc();
+    return result;
+}
+Result LoadPrivateTexture(import_texture_cache::Preparation& textures, mdl::AccessoryRecord& record,
+                          const std::wstring& meshPath, DWORD material, const char* name, unsigned half) {
+    std::wstring path;
+    ResolvePrivateName(name, record.directory, 512, path);
+    if (path.empty()) return Result::InvalidPath;
+    auto* destination = reinterpret_cast<wchar_t*>(record.texturePaths[material] + half * 1024);
+    wcscpy_s(destination, 512, path.c_str());
+    if (textures.Load(destination)) return Result::Ready;
+    if (textures.Status() != MMS_OK) return Result::TextureFailure;
+    // Retain the existing text-X fallback for filenames returned incorrectly
+    // by D3DX, but inspect the actual mesh rather than the VAC descriptor.
+    char fallback[256]{};
+    if (ExtractXTexture(meshPath.c_str(), static_cast<int>(material), fallback)) {
+        ResolvePrivateName(fallback, record.directory, 512, path);
+        if (path.empty()) return Result::InvalidPath;
+        wcscpy_s(destination, 512, path.c_str());
+        textures.Load(destination);
+    }
+    return textures.Status() == MMS_OK ? Result::Ready : Result::TextureFailure;
+}
+}
+
+void Prepared::Reset() noexcept {
+    // Unlike DisposeAccessory this unpublished owner has no scene identity,
+    // render replacement or effect association to unregister.
+    if (object_) {
+        ReleaseCom(object_->mesh);
+        std::free(object_->materials); std::free(object_->texturePaths); std::free(object_->textureTypes);
+        delete object_; object_ = nullptr;
+    }
+    mdl::KeyPoolDestroy(keys_);
+}
+Prepared::~Prepared() noexcept { Reset(); }
+Prepared::Prepared(Prepared&& other) noexcept
+    : object_(std::exchange(other.object_, nullptr)), keys_(std::exchange(other.keys_, nullptr)) {}
+Prepared& Prepared::operator=(Prepared&& other) noexcept {
+    if (this != &other) {
+        Reset(); object_ = std::exchange(other.object_, nullptr); keys_ = std::exchange(other.keys_, nullptr);
+    }
+    return *this;
+}
+void Prepared::Release(mdl::AccessoryRecord*& object, mdl::AccessoryKey*& keys) noexcept {
+    if (object || keys) return;
+    object = std::exchange(object_, nullptr); keys = std::exchange(keys_, nullptr);
+}
+testing::ScopedMeshApi::ScopedMeshApi(MeshApi api) noexcept : api_(api), previous_(privateMeshApi) {
+    privateMeshApi = &api_;
+}
+testing::ScopedMeshApi::~ScopedMeshApi() noexcept { privateMeshApi = previous_; }
+
+Result Prepare(MMDApp& app, const wchar_t* path, import_texture_cache::Preparation& textures,
+               Prepared& out) noexcept {
+    if (out.Object() || out.Keys()) return Result::NotReady;
+    // Legacy IAT hooks can create external mesh/file associations before this
+    // private operation commits. They have no cancellation protocol yet.
+    if (GetModuleHandleW(L"MMEffect.dll") || GetModuleHandleW(L"MMHack.dll")) return Result::NotReady;
+    auto* renderer = app.Renderer();
+    if (!renderer || !renderer->device) return Result::NotReady;
+    if (textures.Status() != MMS_OK) return Result::TextureFailure;
+    if (!textures.IsFor(*renderer)) return Result::NotReady;
+    if (!path || wcsnlen_s(path, 256) >= 256 || !AbsolutePath(path)) return Result::InvalidPath;
+    try {
+        std::wstring source;
+        if (!CanonicalPath(path, 256, source)) return Result::InvalidPath;
+        if (!ExistingFile(source)) return Result::NotFound;
+        Prepared candidate;
+        candidate.object_ = new mdl::AccessoryRecord{};
+        Sub04B0Init(candidate.object_);
+        auto& record = *candidate.object_;
+        std::wstring meshPath = source;
+        const auto dot = source.find_last_of(L'.');
+        if (dot != std::wstring::npos && _wcsicmp(source.c_str() + dot, L".vac") == 0) {
+            const auto result = ReadPrivateVac(source, record, meshPath);
+            if (result != Result::Ready) return result;
+        }
+        const auto directory = Directory(meshPath);
+        if (!text_encoding::EncodeDisplay(record.name, sizeof record.name,
+                meshPath.c_str() + directory.size())) return Result::InvalidPath;
+        wcscpy_s(record.sourcePath, source.c_str());
+        wcscpy_s(record.directory, directory.c_str());
+        testing::MeshApi meshApi;
+        if (privateMeshApi) meshApi = *privateMeshApi;
+        else {
+            auto& api = d3dx::Get();
+            if (!api.Load()) return Result::NotReady;
+            meshApi = {api.loadMeshFromXW, NormalizeAccessoryMeshFvf};
+        }
+        if (!meshApi.load || !meshApi.normalize) return Result::NotReady;
+        OwnedCom materialBuffer;
+        DWORD materialCount = 0;
+        const HRESULT loaded = meshApi.load(meshPath.c_str(), 544, renderer->device, nullptr,
+            &materialBuffer.value, nullptr, &materialCount, &record.mesh);
+        if (loaded == E_OUTOFMEMORY || loaded == D3DERR_OUTOFVIDEOMEMORY) return Result::Memory;
+        if (loaded == D3DERR_DEVICELOST || loaded == D3DERR_DEVICENOTRESET) return Result::NotReady;
+        if (FAILED(loaded) || !record.mesh) return Result::InvalidMesh;
+        record.materialCount = materialCount;
+        D3dxMaterialRecord* sourceMaterials = nullptr;
+        if (materialCount) {
+            if (!materialBuffer.value) return Result::InvalidMesh;
+            using Size = DWORD(WINAPI*)(void*);
+            using Data = void*(WINAPI*)(void*);
+            const auto vtable = *reinterpret_cast<void***>(materialBuffer.value);
+            const auto bytes = reinterpret_cast<Size>(vtable[4])(materialBuffer.value);
+            if (materialCount > bytes / sizeof(D3dxMaterialRecord)) return Result::InvalidMesh;
+            sourceMaterials = static_cast<D3dxMaterialRecord*>(reinterpret_cast<Data>(vtable[3])(materialBuffer.value));
+            if (!sourceMaterials) return Result::InvalidMesh;
+            record.materials = MaterialAllocation(materialCount, sizeof(D3DMATERIAL9));
+            record.texturePaths = static_cast<char (*)[2048]>(MaterialAllocation(materialCount, 2048));
+            record.textureTypes = static_cast<std::uint8_t*>(MaterialAllocation(materialCount, 1));
+            std::memset(record.texturePaths, 0, 2048 * std::size_t(materialCount));
+            std::memset(record.textureTypes, 0, materialCount);
+        }
+        for (DWORD i = 0; i < materialCount; ++i) {
+            CopyAccessoryMaterial(static_cast<D3DMATERIAL9*>(record.materials)[i], sourceMaterials[i].material);
+            const char* rawName = sourceMaterials[i].textureFileName;
+            if (!rawName || !*rawName) continue;
+            if (strnlen_s(rawName, 2048) == 2048) return Result::InvalidMesh;
+            std::string name(rawName);
+            const auto star = name.find('*');
+            if (star != std::string::npos) {
+                name[star] = 0;
+                auto result = LoadPrivateTexture(textures, record, meshPath, i, name.c_str(), 0);
+                if (result != Result::Ready) return result;
+                const char* sphere = name.c_str() + star + 1;
+                record.textureTypes[i] = std::strstr(sphere, ".sph") ? 4 : std::strstr(sphere, ".spa") ? 5 : 0;
+                result = LoadPrivateTexture(textures, record, meshPath, i, sphere, 1);
+                if (result != Result::Ready) return result;
+            } else {
+                record.textureTypes[i] = std::strstr(rawName, "screen.bmp") ? 3 :
+                    std::strstr(rawName, ".sph") ? 1 : std::strstr(rawName, ".spa") ? 2 : 0;
+                if (record.textureTypes[i] != 3) {
+                    const auto result = LoadPrivateTexture(textures, record, meshPath, i, rawName, 0);
+                    if (result != Result::Ready) return result;
+                }
+            }
+        }
+        if (!meshApi.normalize(record.mesh, renderer->device)) return Result::InvalidMesh;
+        candidate.keys_ = mdl::KeyPoolCreate<mdl::AccessoryKey>();
+        auto& first = candidate.keys_[0];
+        first.visible = record.visible; first.shadowEnabled = record.shadowEnabled;
+        first.parentModel = record.parentModel; first.parentBone = record.parentBone;
+        std::memcpy(first.position, record.position, sizeof first.position);
+        std::memcpy(first.rotation, record.rotation, sizeof first.rotation);
+        first.scale = record.scale; first.opacity = record.opacity;
+        out = std::move(candidate);
+        return Result::Ready;
+    } catch (const std::bad_alloc&) { return Result::Memory; }
+    catch (...) { return Result::InvalidMesh; }
+}
+}
+#endif
 
 // was Sub413CB0, VA 0x00413CB0 - register the accessory's current state at
 // one frame into its 10000-record key list (visible/shadow/parent fields +

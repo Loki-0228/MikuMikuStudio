@@ -10,6 +10,8 @@ class SharedHistory;
 // the caller must never continue into the legacy immediate-free deletion.
 bool TryDeleteBoundModel(MMDApp*, HWND) noexcept;
 bool TryDeleteBoundAccessory(MMDApp*, HWND) noexcept;
+bool TryImportBoundModel(MMDApp*, const wchar_t*, bool showInfo) noexcept;
+bool TryImportBoundAccessory(MMDApp*, const wchar_t*) noexcept;
 // deferUi is only for the Manager's already-authorized top-level edit call.
 // The caller queues the normal deferred publication notification afterwards.
 MmsResult RunBoundObjectHistory(MMDApp&, SharedHistory&, bool redo, bool deferUi = false) noexcept;

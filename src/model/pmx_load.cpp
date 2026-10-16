@@ -1,3 +1,4 @@
+#include "mikudancestudio/model_import.hpp"
 #include "mikudancestudio/original_import.hpp"
 #include <memory>
 #include "mikudancestudio/display_capacity.hpp"
@@ -413,7 +414,7 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
                       "PMX files version is different from 2.0.");
         else
             sprintf_s(text, 0x100, kMsgPmxVersionJp);
-        MessageBoxA(hwnd, text,
+        model_import::MessageA(hwnd, text,
                     enData ? "open file" : kTitleOpenFailJp, 0);
         reader.Close();
         return false;
@@ -433,7 +434,7 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
             ? "MMD can't read UTF8 encorded PMX.\nPlease exchange it to "
               "UTF16."
             : kMsgPmxUtf8Jp);
-        MessageBoxA(hwnd, text,
+        model_import::MessageA(hwnd, text,
                     enData ? "open file" : kTitleOpenFailJp, 0);
         reader.Close();
         return false;
@@ -493,7 +494,7 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
         WideToSjis(sjisMirrors[i], buf, kSjisSizes[i]);
     }
     if (showInfo) {                                         // 0x4B7A56
-        const int r = MessageBoxW(
+        const int r = model_import::MessageW(
             hwnd,
             mdl::PmxTextBuffer(
                 m, enData ? mdl::PmxTextBufferSlot::englishComment
@@ -537,7 +538,7 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
                 ? "The performance of the graphics card doesn't suffice."
                 : "\x83\x74\x83\x40\x83\x43\x83\x8B\x82\xAA\x91\xAB\x82\xE8"
                   "\x82\xDC\x82\xB9\x82\xF1");
-            MessageBoxA(hwnd, text, "D3DXCreateVertexBuffer", 0);
+            model_import::MessageA(hwnd, text, "D3DXCreateVertexBuffer", 0);
             reader.Close();
             return false;
         }
@@ -551,7 +552,7 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
                 ? "The performance of the graphics card doesn't suffice."
                 : "\x83\x74\x83\x40\x83\x43\x83\x8B\x82\xAA\x91\xAB\x82\xE8"
                   "\x82\xDC\x82\xB9\x82\xF1");
-            MessageBoxA(hwnd, text, "D3DXCreateVertexBuffer", 0);
+            model_import::MessageA(hwnd, text, "D3DXCreateVertexBuffer", 0);
             reader.Close();
             return false;
         }
@@ -564,7 +565,7 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
                 ? "The performance of the graphics card doesn't suffice."
                 : "\x83\x74\x83\x40\x83\x43\x83\x8B\x82\xAA\x91\xAB\x82\xE8"
                   "\x82\xDC\x82\xB9\x82\xF1");
-            MessageBoxA(hwnd, text, "D3DXCreateVertexBuffer", 0);
+            model_import::MessageA(hwnd, text, "D3DXCreateVertexBuffer", 0);
             reader.Close();
             return false;
         }
@@ -658,8 +659,9 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
             if (SUCCEEDED(vb->Lock(0, 0,
                                    reinterpret_cast<void**>(&output), 0))) {
                 InitializePmxMainVertices(verts, vertCount, output);
-                vb->Unlock();
-            }
+                const HRESULT unlocked = vb->Unlock();
+                if (model_import::Preparing() && FAILED(unlocked)) return false;
+            } else if (model_import::Preparing()) return false;
             break;
         }
         case 1: {
@@ -667,8 +669,9 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
             if (SUCCEEDED(vb->Lock(0, 0,
                                    reinterpret_cast<void**>(&output), 0))) {
                 InitializePmxMainVertices(verts, vertCount, output);
-                vb->Unlock();
-            }
+                const HRESULT unlocked = vb->Unlock();
+                if (model_import::Preparing() && FAILED(unlocked)) return false;
+            } else if (model_import::Preparing()) return false;
             break;
         }
         case 2: {
@@ -676,8 +679,9 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
             if (SUCCEEDED(vb->Lock(0, 0,
                                    reinterpret_cast<void**>(&output), 0))) {
                 InitializePmxMainVertices(verts, vertCount, output);
-                vb->Unlock();
-            }
+                const HRESULT unlocked = vb->Unlock();
+                if (model_import::Preparing() && FAILED(unlocked)) return false;
+            } else if (model_import::Preparing()) return false;
             break;
         }
         case 3: {
@@ -685,8 +689,9 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
             if (SUCCEEDED(vb->Lock(0, 0,
                                    reinterpret_cast<void**>(&output), 0))) {
                 InitializePmxMainVertices(verts, vertCount, output);
-                vb->Unlock();
-            }
+                const HRESULT unlocked = vb->Unlock();
+                if (model_import::Preparing() && FAILED(unlocked)) return false;
+            } else if (model_import::Preparing()) return false;
             break;
         }
         case 4: {
@@ -694,8 +699,9 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
             if (SUCCEEDED(vb->Lock(0, 0,
                                    reinterpret_cast<void**>(&output), 0))) {
                 InitializePmxMainVertices(verts, vertCount, output);
-                vb->Unlock();
-            }
+                const HRESULT unlocked = vb->Unlock();
+                if (model_import::Preparing() && FAILED(unlocked)) return false;
+            } else if (model_import::Preparing()) return false;
             break;
         }
         default:
@@ -707,8 +713,9 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
         if (SUCCEEDED(vb2->Lock(0, 0,
                                 reinterpret_cast<void**>(&edgeVertices), 0))) {
             InitializePmxEdgeVertices(verts, vertCount, edgeVertices);
-            vb2->Unlock();
-        }
+            const HRESULT unlocked = vb2->Unlock();
+            if (model_import::Preparing() && FAILED(unlocked)) return false;
+        } else if (model_import::Preparing()) return false;
     }
 
     // ---- faces ---------------------------------------------------------------
@@ -728,7 +735,7 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
                 ? "The performance of the graphics card doesn't suffice."
                 : "\x83\x74\x83\x40\x83\x43\x83\x8B\x82\xAA\x91\xAB\x82\xE8"
                   "\x82\xDC\x82\xB9\x82\xF1");
-            MessageBoxA(hwnd, text, "CreateIndexBuffer", 0);
+            model_import::MessageA(hwnd, text, "CreateIndexBuffer", 0);
             reader.Close();
             return false;
         }
@@ -754,8 +761,9 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
                     indices[i] = value;
                     gpuIndices[i] = static_cast<std::uint32_t>(value);
                 }
-                ib->Unlock();
-            }
+                const HRESULT unlocked = ib->Unlock();
+                if (model_import::Preparing() && FAILED(unlocked)) return false;
+            } else if (model_import::Preparing()) return false;
         } else {
             std::uint16_t* gpuIndices = nullptr;
             if (SUCCEEDED(ib->Lock(0, 0,
@@ -765,8 +773,9 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
                     indices[i] = value;
                     gpuIndices[i] = static_cast<std::uint16_t>(value);
                 }
-                ib->Unlock();
-            }
+                const HRESULT unlocked = ib->Unlock();
+                if (model_import::Preparing() && FAILED(unlocked)) return false;
+            } else if (model_import::Preparing()) return false;
         }
     }
 
@@ -905,6 +914,8 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
                 mat.toonReference = 0xFE;
                 const std::int32_t idx = readTexIdx();
                 if (idx >= 0) {
+                    if (model_import::Preparing() &&
+                        static_cast<std::uint32_t>(idx) >= texCount) return false;
                     swprintf_s(mat.toonPath, 0x200, L"%s%s",
                                model.modelDirectory,
                                texPaths[idx]);
@@ -925,10 +936,10 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
             reader.Read(&mat.faceVertexCount, sizeof(mat.faceVertexCount));
         }
         // per-vertex material assignment by smallest edge size
-        float* edgeKey = static_cast<float*>(
-            operator new(sizeof(*edgeKey) * vertCount));
-        std::int32_t* vertMat = static_cast<std::int32_t*>(
-            operator new(sizeof(*vertMat) * vertCount));
+        auto edgeOwner = std::make_unique<float[]>(vertCount);
+        auto materialOwner = std::make_unique<std::int32_t[]>(vertCount);
+        float* edgeKey = edgeOwner.get();
+        std::int32_t* vertMat = materialOwner.get();
         std::memset(vertMat, 0, sizeof(*vertMat) * vertCount);
         for (std::int32_t v = 0; v < vertCount; ++v)
             edgeKey[v] = 999.79999f;
@@ -958,8 +969,6 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
         }
         for (std::int32_t v = 0; v < vertCount; ++v)
             model.pmxVertices[v].materialIndex = vertMat[v];
-        operator delete(edgeKey);
-        operator delete(vertMat);
     }
     releaseTexturePaths(texPaths, texCount);
 
@@ -1217,11 +1226,8 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
     InitBoneSortOrder(m);                                   // 0x490070
 
     // ---- morphs -----------------------------------------------------------
-    std::uint8_t* vmap = static_cast<std::uint8_t*>(vertCount
-                                                        ? operator new(
-                                                              vertCount)
-                                                        : nullptr);
-    std::memset(vmap, 0, vertCount);
+    auto vertexMap = vertCount ? std::make_unique<std::uint8_t[]>(vertCount) : nullptr;
+    auto* vmap = vertexMap.get();
     reader.Read(&model.morphCount, sizeof(model.morphCount));
     const std::int32_t morphCount = static_cast<std::int32_t>(model.morphCount);
     TracePmxOffset(reader, "morphs-begin", morphCount, 0);
@@ -1315,7 +1321,7 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
                                            m, mdl::PmxTextBufferSlot::japaneseName),
                                        reinterpret_cast<LPCWSTR>(
                                            morph.jpText));
-                        MessageBoxW(hwnd, wbuf, L"load pmx model", 0);
+                        model_import::MessageW(hwnd, wbuf, L"load pmx model", 0);
                         entry.morphIndex = 0;
                     }
                     reader.Read(&entry.weight, 4);
@@ -1366,7 +1372,7 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
                                            m, mdl::PmxTextBufferSlot::japaneseName),
                                        reinterpret_cast<LPCWSTR>(
                                            morph.jpText));
-                        MessageBoxW(hwnd, wbuf, L"load pmx model", 0);
+                        model_import::MessageW(hwnd, wbuf, L"load pmx model", 0);
                         entry.boneIndex = 0;
                     }
                     reader.Read(entry.translation, sizeof(entry.translation));
@@ -1467,8 +1473,7 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
             ++w;
         }
     }
-    if (vmap)
-        operator delete(vmap);
+    vertexMap.reset();
 
     InitializeBoneMorphOffsets(m);
 
@@ -1669,6 +1674,7 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
             operator new(sizeof(*displayGroups) * groupCapacity));
         std::memset(displayGroups, 0, sizeof(*displayGroups) * groupCapacity);
         mdl::SetDisplayCapacity(model, groupCapacity, facialCount);
+        if (model_import::Preparing() && model.displayRootBone >= model.boneCount) return false;
         const mdl::BoneRecord& rootBone =
             mdl::Bones(m)[model.displayRootBone];
         strcpy_s(displayGroups[0].name, sizeof(displayGroups[0].name),
@@ -2041,7 +2047,7 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
     }
 #endif
     model.loadComplete = 1;
-    model_load_ui::PostLoadInitOrDefer(m);                   // 0x49C850
+    if (!model_import::Preparing()) model_load_ui::PostLoadInitOrDefer(m);                   // 0x49C850
     model_vertex_cache::RegisterLoaded(m);
     // Report once per model, including PMM loads whose showInfo flag is off.
     // Headless importers have no owner window and can inspect the same text
@@ -2049,7 +2055,7 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
     if (hwnd) {
         const std::wstring warning = PmxJointWarnings(model, englishUI);
         if (!warning.empty())
-            MessageBoxW(hwnd, warning.c_str(), PmxJointWarningTitle(englishUI),
+            model_import::MessageW(hwnd, warning.c_str(), PmxJointWarningTitle(englishUI),
                         MB_OK | MB_ICONWARNING);
     }
 #if !MMD_ORIGINAL_PROFILE

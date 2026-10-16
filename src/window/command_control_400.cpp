@@ -3,6 +3,7 @@
 #include <set>
 #include <array>
 #include <string>
+#include <memory>
 #include "mikudancestudio/display_capacity.hpp"
 #include "mikudancestudio/key_pool.hpp"
 #include "mikudancestudio/ui_translation.hpp"
@@ -208,6 +209,7 @@
 #include "mikudancestudio/frame_scope.hpp"
 #include "../plugins/native_history_commands.hpp"
 #include "../plugins/native_object_commands.hpp"
+#include "../plugins/native_pose_scope.hpp"
 #include "../plugins/native_key_commands.hpp"
 
 namespace mikudancestudio {
@@ -2698,8 +2700,14 @@ static void Cmd400_CurveResetRows(MMDApp* app, HWND hwnd) {
 // always RefreshRequest(-1) (also when cancelled).
 // ------------------------------------------------------------------
 static void Cmd400_LoadModel(MMDApp* app, HWND hwnd) {
-    SetCurrentDirectoryW(app->ExeDir());
-    app->state.enterKeyState = 1;
+    bool controlled = false;
+#if !MMD_ORIGINAL_PROFILE
+    controlled = plugins::BoundNativePoseHistory(app) != nullptr;
+#endif
+    if (!controlled) {
+        SetCurrentDirectoryW(app->ExeDir());
+        app->state.enterKeyState = 1;
+    }
     wchar_t fileBuf[0x100];
     memset(fileBuf, 0, sizeof(fileBuf));
     OPENFILENAMEW ofn;
@@ -2717,14 +2725,50 @@ static void Cmd400_LoadModel(MMDApp* app, HWND hwnd) {
         (GetMenuState(GetMenu(hwnd), 0x12D, 0) & 8) != 0
             ? app->DirModel()
             : kInitDirModel;
+    wchar_t privateInitial[512]{};
+    if (controlled) {
+        const auto absolute = [](const wchar_t* value) {
+            return (value[0] == L'\\' && value[1] == L'\\') ||
+                (value[0] && value[1] == L':' && (value[2] == L'\\' || value[2] == L'/'));
+        };
+        wchar_t joined[514]{};
+        const wchar_t* initial = ofn.lpstrInitialDir;
+        if (!absolute(initial)) {
+            // Resolve the legacy relative hint against the executable, never
+            // by changing the process cwd before a cancelable file picker.
+            if (!absolute(app->ExeDir()) || initial[0] == L'\\' || wcschr(initial, L':')) return;
+            const auto size = wcslen(app->ExeDir());
+            if (swprintf_s(joined, L"%s%s%s", app->ExeDir(),
+                    size && (app->ExeDir()[size - 1] == L'\\' || app->ExeDir()[size - 1] == L'/') ? L"" : L"\\", initial) < 0) return;
+            initial = joined;
+        }
+        const auto length = GetFullPathNameW(initial, 512, privateInitial, nullptr);
+        if (!length || length >= 512) return;
+        ofn.lpstrInitialDir = privateInitial;
+        ofn.Flags |= OFN_NOCHANGEDIR;
+    }
     ofn.lpstrDefExt = kDefExtPmd;
     ofn.nMaxFileTitle = 0x100;
     ofn.lpstrFileTitle = nullptr;
     ofn.lpstrTitle = app->state.englishUI != 0
                          ? kTitleLoadModel
                          : kTitleOpenFileJp;
-    if (GetUiOpenFileNameW(&ofn) != 0) {
-        if ((GetMenuState(GetMenu(hwnd), 0x12D, 0) & 8) != 0) {
+    std::unique_ptr<wchar_t[]> savedDirectory;
+    if (controlled) {
+        const auto capacity = GetCurrentDirectoryW(0, nullptr);
+        if (!capacity) return;
+        savedDirectory.reset(new (std::nothrow) wchar_t[capacity]);
+        if (!savedDirectory) return;
+        const auto copied = GetCurrentDirectoryW(capacity, savedDirectory.get());
+        if (!copied || copied >= capacity) return;
+    }
+    const BOOL selected = GetUiOpenFileNameW(&ofn);
+    // Older common-dialog implementations do not consistently honor the flag.
+    // Restore before loading, including cancellation; a failed restore refuses
+    // the import instead of resolving anything in a changed directory.
+    if (controlled && !SetCurrentDirectoryW(savedDirectory.get())) return;
+    if (selected != 0) {
+        if (!controlled && (GetMenuState(GetMenu(hwnd), 0x12D, 0) & 8) != 0) {
             wchar_t* dir = ExtractDirFromPath(
                 app->PathWorkspace().projectDirectory,
                 fileBuf, kPathFieldCapacity);
@@ -2732,7 +2776,7 @@ static void Cmd400_LoadModel(MMDApp* app, HWND hwnd) {
         }
         LoadModelFile(app, fileBuf);
     }
-    RefreshRequest(-1);
+    if (!controlled) RefreshRequest(-1);
 }
 // ------------------------------------------------------------------
 // 437 (0x0047FCF5): delete model selected in combo 0x1B4.  Gate

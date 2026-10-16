@@ -29,6 +29,7 @@
 #include "mikudancestudio/panel_controls.hpp"
 #include "mikudancestudio/runtime_log.hpp"
 #include "mikudancestudio/ui_language.hpp"
+#include "../plugins/native_object_commands.hpp"
 
 namespace mikudancestudio {
 namespace {
@@ -56,6 +57,9 @@ HMENU HelpMenuFromBar(HMENU menu) {
 }  // namespace
 
 void LoadModelFile(MMDApp* app, const wchar_t* path, bool showModelInfo) { // 0x460430
+#if !MMD_ORIGINAL_PROFILE
+    if (plugins::TryImportBoundModel(app, path, showModelInfo)) return;
+#endif
     runtime_log::WritePath("LOAD_MODEL", path);
     HWND hwnd = static_cast<HWND>(app->Hwnd());
     int slot = 0;

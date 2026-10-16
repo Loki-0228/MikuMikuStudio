@@ -1,0 +1,375 @@
+#include "mikudancestudio/import_texture_cache.hpp"
+#include "mikudancestudio/d3d_wrapper.hpp"
+#include "mikudancestudio/model_alpha_pass.hpp"
+#include "mikudancestudio/texture_lookup.hpp"
+#include <limits>
+#include <stdexcept>
+
+namespace {
+struct ImportTextureTestState { unsigned calls = 0, live = 0, destroyed = 0; };
+thread_local ImportTextureTestState* importTextureTestState = nullptr;
+class ImportTestTexture final : public IDirect3DTexture9 {
+    ULONG references_ = 1;
+    ImportTextureTestState& state_;
+    bool badDescription_, badFormat_;
+    DWORD pixels_[16]{};
+public:
+    UINT width = 4, height = 4, levels = 2;
+    DWORD usage = 0;
+    D3DFORMAT format = D3DFMT_A8R8G8B8;
+    ImportTestTexture(ImportTextureTestState& state, bool badDescription = false, bool badFormat = false)
+        : state_(state), badDescription_(badDescription), badFormat_(badFormat) {
+        ++state_.live;
+        for (auto& pixel : pixels_) pixel = 0xFF112233;
+        pixels_[12] = 0x7F112233;
+    }
+    ~ImportTestTexture() { --state_.live; ++state_.destroyed; }
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id, void** out) override {
+        if (!out) return E_POINTER;
+        *out = nullptr;
+        if (id != IID_IUnknown && id != __uuidof(IDirect3DTexture9) &&
+            id != __uuidof(IDirect3DBaseTexture9) && id != __uuidof(IDirect3DResource9)) return E_NOINTERFACE;
+        *out = static_cast<IDirect3DTexture9*>(this); AddRef(); return S_OK;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override { return ++references_; }
+    ULONG STDMETHODCALLTYPE Release() override { const auto count = --references_; if (!count) delete this; return count; }
+    HRESULT STDMETHODCALLTYPE GetDevice(IDirect3DDevice9**) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE SetPrivateData(REFGUID, const void*, DWORD, DWORD) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID, void*, DWORD*) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE FreePrivateData(REFGUID) override { return E_NOTIMPL; }
+    DWORD STDMETHODCALLTYPE SetPriority(DWORD) override { return 0; }
+    DWORD STDMETHODCALLTYPE GetPriority() override { return 0; }
+    void STDMETHODCALLTYPE PreLoad() override {}
+    D3DRESOURCETYPE STDMETHODCALLTYPE GetType() override { return D3DRTYPE_TEXTURE; }
+    DWORD STDMETHODCALLTYPE SetLOD(DWORD) override { return 0; }
+    DWORD STDMETHODCALLTYPE GetLOD() override { return 0; }
+    DWORD STDMETHODCALLTYPE GetLevelCount() override { return levels; }
+    HRESULT STDMETHODCALLTYPE SetAutoGenFilterType(D3DTEXTUREFILTERTYPE) override { return E_NOTIMPL; }
+    D3DTEXTUREFILTERTYPE STDMETHODCALLTYPE GetAutoGenFilterType() override { return D3DTEXF_NONE; }
+    void STDMETHODCALLTYPE GenerateMipSubLevels() override {}
+    HRESULT STDMETHODCALLTYPE GetLevelDesc(UINT level, D3DSURFACE_DESC* out) override {
+        if (badDescription_ || level >= levels || level >= 32 || !out) return E_FAIL;
+        *out = {}; out->Width = (std::max)(UINT(1), width >> level);
+        out->Height = (std::max)(UINT(1), height >> level); out->Usage = usage;
+        out->Format = badFormat_ ? D3DFMT_UNKNOWN : format;
+        out->Type = D3DRTYPE_SURFACE; out->Pool = D3DPOOL_MANAGED; return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE GetSurfaceLevel(UINT, IDirect3DSurface9**) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE LockRect(UINT level, D3DLOCKED_RECT* out, const RECT*, DWORD) override {
+        if (level || !out || width != 4 || height != 4) return E_NOTIMPL;
+        out->Pitch = 16; out->pBits = pixels_; return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE UnlockRect(UINT) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE AddDirtyRect(const RECT*) override { return E_NOTIMPL; }
+};
+class ImportUnknownTexture final : public IUnknown {
+    ULONG references_ = 1;
+    ImportTextureTestState& state_;
+public:
+    explicit ImportUnknownTexture(ImportTextureTestState& state) : state_(state) { ++state_.live; }
+    ~ImportUnknownTexture() { --state_.live; ++state_.destroyed; }
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id, void** out) override {
+        *out = nullptr; if (id != IID_IUnknown) return E_NOINTERFACE;
+        *out = this; AddRef(); return S_OK;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override { return ++references_; }
+    ULONG STDMETHODCALLTYPE Release() override { const auto count = --references_; if (!count) delete this; return count; }
+};
+HRESULT ImportTestTextureLoader(IDirect3DDevice9*, const wchar_t* path, IDirect3DTexture9** out) {
+    auto& state = *importTextureTestState; ++state.calls; *out = nullptr;
+    if (std::wcsstr(path, L"missing")) return HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
+    if (std::wcsstr(path, L"device-lost")) return D3DERR_DEVICELOST;
+    *out = new ImportTestTexture(state, std::wcsstr(path, L"bad-query") != nullptr,
+        std::wcsstr(path, L"bad-format") != nullptr);
+    if (std::wcsstr(path, L"failure-out")) return HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
+    if (std::wcsstr(path, L"throw-oom")) throw std::bad_alloc();
+    if (std::wcsstr(path, L"throw-error")) throw std::runtime_error("texture loader failure");
+    if (std::wcsstr(path, L"memory-out")) return E_OUTOFMEMORY;
+    return S_OK;
+}
+struct ImportTextureFixture {
+    std::unique_ptr<D3DRenderer> renderer = std::make_unique<D3DRenderer>();
+    ImportTextureTestState state;
+    ImportTextureTestState* previous = importTextureTestState;
+    ImportTextureFixture() {
+        renderer->device = reinterpret_cast<IDirect3DDevice9*>(std::uintptr_t(1));
+        importTextureTestState = &state; InvalidateTextureLookup();
+    }
+    void Clear() {
+        InvalidateTextureLookup();
+        for (auto& entry : renderer->resourcePool) {
+            std::free(entry.heapBuffer); if (entry.comObject) entry.comObject->Release(); entry = {};
+        }
+    }
+    ~ImportTextureFixture() { Clear(); importTextureTestState = previous; }
+    void External(const wchar_t* path, IUnknown* texture) {
+        auto& entry = renderer->resourcePool[0]; const auto bytes = (std::wcslen(path) + 1) * sizeof(wchar_t);
+        entry.heapBuffer = std::malloc(bytes); Check(entry.heapBuffer != nullptr, "allocate external texture name fixture");
+        std::memcpy(entry.heapBuffer, path, bytes); entry.comObject = texture; InvalidateTextureLookup();
+    }
+};
+
+void ImportTexturePrivateChecks() {
+    using namespace import_texture_cache;
+    ImportTextureFixture f;
+    const auto generation = texture_lookup_detail::generation.load();
+    auto preparation = std::make_unique<Preparation>(*f.renderer, ImportTestTextureLoader);
+    Check(preparation->IsFor(*f.renderer), "texture batch belongs to its renderer and device");
+    Check(preparation->Load(L"D:\\private\\one.png") == 1 && preparation->Load(L"D:\\private\\one.png") == 1 &&
+        f.state.calls == 1 && f.state.live == 1 && !f.renderer->resourcePool[0].heapBuffer,
+        "private duplicate texture loads once without publishing a cache slot");
+    Check(preparation->Load(L"D:\\private\\missing.png") == 0 && preparation->Status() == MMS_OK,
+        "normal missing optional texture is not a fatal batch error");
+    Check(preparation->Load(L"D:\\private\\failure-out.png") == 0 && preparation->Status() == MMS_OK && f.state.live == 1,
+        "failed optional texture releases a nonnull COM result");
+    std::shared_ptr<Retained> retained; std::unique_ptr<Publication> publication;
+    Check(preparation->Finish(retained, publication) == MMS_OK && publication->IsCurrent() && retained->IsCurrent() &&
+        !preparation->IsFor(*f.renderer), "freeze private texture batch without publishing");
+    plugins::resource_budget::Collector measured; retained->MeasureResources(measured);
+    Check(measured.Result().Complete() && measured.Result().d3d9Bytes == (4 * 4 + 2 * 2) * 4 * 2 &&
+        measured.Result().cpuBytes >= 2 * sizeof(L"D:\\private\\one.png"),
+        "texture budget measures every real mip and owned path allocations");
+    const auto total = measured.Result().totalBytes; retained->MeasureResources(measured);
+    Check(measured.Result().totalBytes == total, "repeated texture measurement deduplicates allocation identities");
+    Check(texture_lookup_detail::generation.load() == generation && !f.renderer->resourcePool[0].heapBuffer,
+        "texture prepare and measurement leave live lookup generation unchanged");
+    preparation.reset(); publication.reset();
+    Check(f.state.live == 1, "retained texture owner alone keeps a cancelled batch valid");
+    retained.reset();
+    Check(f.state.live == 0 && !f.renderer->resourcePool[0].heapBuffer,
+        "cancelling all batch holders releases private textures and leaves cache untouched");
+}
+
+void ImportTexturePublicationChecks() {
+    using namespace import_texture_cache;
+    ImportTextureFixture f;
+    std::shared_ptr<Retained> first, second, reuse;
+    std::unique_ptr<Publication> publishFirst, publishSecond, publishReuse;
+    {
+        Preparation p(*f.renderer, ImportTestTextureLoader);
+        Check(p.Load(L"D:\\private\\first.png") == 1 && p.Finish(first, publishFirst) == MMS_OK,
+            "prepare first retained texture publication");
+    }
+    failAfter = 0; const bool ready = publishFirst->IsCurrent(); if (ready) publishFirst->Publish(); failAfter = -1;
+    Check(ready && first->IsCurrent() && !publishFirst->IsCurrent() && f.renderer->resourcePool[0].comObject &&
+        std::wcscmp(static_cast<const wchar_t*>(f.renderer->resourcePool[0].heapBuffer), L"D:\\private\\first.png") == 0,
+        "texture publication transfers cache ownership without allocation");
+    const auto* tag = reinterpret_cast<const unsigned char*>(&f.renderer->resourcePool[0].tag);
+    Check(tag[0] == 0x11 && tag[1] == 0x22 && tag[2] == 0x33 &&
+        tag[3] == (kTextureAlphaKnown | kTextureUsesAlpha), "private loader preserves colour and alpha metadata");
+    publishFirst.reset();
+    {
+        Preparation p(*f.renderer, ImportTestTextureLoader);
+        Check(p.Load(L"D:\\private\\second.png") == 1 && p.Finish(second, publishSecond) == MMS_OK,
+            "prepare unrelated cache append");
+    }
+    publishSecond->Publish(); publishSecond.reset();
+    Check(first->IsCurrent() && second->IsCurrent(), "unrelated successful append does not invalidate earlier import history");
+    const auto calls = f.state.calls;
+    {
+        Preparation p(*f.renderer, ImportTestTextureLoader);
+        Check(p.Load(L"D:\\private\\first.png") == 1 && p.Finish(reuse, publishReuse) == MMS_OK && f.state.calls == calls,
+            "existing cache is reused without loading source again");
+    }
+    plugins::resource_budget::Collector combined;
+    first->MeasureResources(combined); reuse->MeasureResources(combined);
+    Check(combined.Result().Complete() && combined.Result().d3d9Bytes == 160,
+        "two import owners charge one shared texture only once in a combined budget");
+    const auto generation = texture_lookup_detail::generation.load();
+    failAfter = 0; publishReuse->Publish(); failAfter = -1; publishReuse.reset();
+    Check(generation == texture_lookup_detail::generation.load() && first->IsCurrent() && reuse->IsCurrent(),
+        "publishing reuse-only batch does not rewrite cache or invalidate lookup");
+    f.Clear();
+    Check(!first->IsCurrent() && !second->IsCurrent() && !reuse->IsCurrent() && f.state.live == 2,
+        "renderer cache clear invalidates history references while retained owners keep COM resources alive");
+    plugins::resource_budget::Collector stale; first->MeasureResources(stale);
+    Check(!stale.Result().Complete(), "removed cache entry cannot be reported as a complete import dependency");
+    first.reset(); Check(f.state.live == 2, "another import owner retains shared texture after cache clear");
+    reuse.reset(); Check(f.state.live == 1, "last shared import owner releases the first texture");
+    second.reset(); Check(f.state.live == 0, "last retained import owner releases second texture");
+}
+
+void ImportTextureRejectionChecks() {
+    using namespace import_texture_cache;
+    {
+        ImportTextureFixture f;
+        Preparation first(*f.renderer, ImportTestTextureLoader), second(*f.renderer, ImportTestTextureLoader);
+        std::shared_ptr<Retained> a, b; std::unique_ptr<Publication> pa, pb;
+        Check(first.Load(L"D:\\private\\first.png") == 1 && first.Finish(a, pa) == MMS_OK &&
+            second.Load(L"D:\\private\\second.png") == 1 && second.Finish(b, pb) == MMS_OK,
+            "two private candidates can prepare against the same empty cache tail");
+        f.renderer->resourcePool[0].tag = 12;
+        Check(!pa->IsCurrent(), "cache tail metadata mutation invalidates private publication");
+        f.renderer->resourcePool[0].tag = 0;
+        f.renderer->device = reinterpret_cast<IDirect3DDevice9*>(std::uintptr_t(2));
+        Check(!pa->IsCurrent(), "renderer device replacement invalidates prepared texture publication");
+        f.renderer->device = reinterpret_cast<IDirect3DDevice9*>(std::uintptr_t(1));
+        Check(pb->IsCurrent(), "restore fixture before competing cache publication"); pb->Publish();
+        Check(!pa->IsCurrent() && b->IsCurrent() &&
+            std::wcscmp(static_cast<const wchar_t*>(f.renderer->resourcePool[0].heapBuffer), L"D:\\private\\second.png") == 0,
+            "competing append makes stale candidate reject instead of overwriting cache");
+    }
+    {
+        ImportTextureFixture f;
+        wchar_t borrowed[] = L"full-cache-existing.png";
+        for (auto& entry : f.renderer->resourcePool) entry.heapBuffer = borrowed;
+        {
+            Preparation full(*f.renderer, ImportTestTextureLoader);
+            Check(full.Load(borrowed) == 1 && full.Load(L"new-at-capacity.png") == 0 &&
+                full.Status() == MMS_E_MEMORY && !f.state.calls,
+                "full cache still reuses existing names but rejects additions as fatal capacity failure");
+        }
+        for (auto& entry : f.renderer->resourcePool) entry.heapBuffer = nullptr;
+    }
+    {
+        ImportTextureFixture f;
+        auto* texture = new ImportTestTexture(f.state);
+        texture->levels = 1; texture->usage = D3DUSAGE_AUTOGENMIPMAP;
+        f.External(L"existing-autogen.png", texture);
+        Preparation p(*f.renderer, ImportTestTextureLoader);
+        std::shared_ptr<Retained> retained; std::unique_ptr<Publication> publication;
+        Check(p.Load(L"existing-autogen.png") == 1 && p.Finish(retained, publication) == MMS_OK,
+            "retain auto-mip texture reporting only one accessible level");
+        plugins::resource_budget::Collector report; retained->MeasureResources(report);
+        Check(report.Result().Complete() && report.Result().d3d9Bytes == (4 * 4 + 2 * 2 + 1) * 4 * 2,
+            "AUTOGEN reserves full derived mip payload despite GetLevelCount equal to one");
+        texture->width = texture->height = (std::numeric_limits<UINT>::max)();
+        bool overflow = false;
+        try { plugins::resource_budget::Collector large; retained->MeasureResources(large); }
+        catch (const std::bad_alloc&) { overflow = true; }
+        Check(overflow, "texture width height and format multiplication rejects payload overflow");
+        texture->width = texture->height = 4;
+    }
+    {
+        ImportTextureFixture f;
+        auto* texture = new ImportTestTexture(f.state);
+        texture->width = 7; texture->height = 5; texture->levels = 1; texture->format = D3DFMT_DXT1;
+        f.External(L"existing-blocks.dds", texture);
+        Preparation p(*f.renderer, ImportTestTextureLoader);
+        std::shared_ptr<Retained> retained; std::unique_ptr<Publication> publication;
+        Check(p.Load(L"existing-blocks.dds") == 1 && p.Finish(retained, publication) == MMS_OK,
+            "retain odd-sized block compressed texture");
+        plugins::resource_budget::Collector report; retained->MeasureResources(report);
+        Check(report.Result().Complete() && report.Result().d3d9Bytes == 2 * 2 * 8 * 2,
+            "compressed texture budget rounds each dimension to complete blocks");
+    }
+    {
+        ImportTextureFixture f;
+        f.External(L"hidden-tail.png", new ImportTestTexture(f.state));
+        f.renderer->resourcePool[2] = f.renderer->resourcePool[0]; f.renderer->resourcePool[0] = {};
+        Preparation p(*f.renderer, ImportTestTextureLoader);
+        Check(p.Status() == MMS_E_NOT_READY && !p.Load(L"new.png") && !f.state.calls,
+            "malformed cache hole refuses to expose hidden external tail entries");
+    }
+    {
+        ImportTextureFixture f;
+        f.External(L"external-unknown.png", new ImportUnknownTexture(f.state));
+        Preparation p(*f.renderer, ImportTestTextureLoader);
+        std::shared_ptr<Retained> retained; std::unique_ptr<Publication> publication;
+        Check(p.Load(L"external-unknown.png") == 1 && p.Finish(retained, publication) == MMS_OK && !f.state.calls,
+            "existing external cache object is reused without speculative casts or reload");
+        plugins::resource_budget::Collector report; retained->MeasureResources(report);
+        Check((report.Result().missing & plugins::resource_budget::ExternalRenderer) != 0,
+            "unknown external COM texture remains explicitly incomplete");
+    }
+    for (const auto* path : {L"bad-query.png", L"bad-format.png"}) {
+        ImportTextureFixture f; Preparation p(*f.renderer, ImportTestTextureLoader);
+        std::shared_ptr<Retained> retained; std::unique_ptr<Publication> publication;
+        Check(p.Load(path) == 1 && p.Finish(retained, publication) == MMS_OK, "prepare unmeasurable texture fixture");
+        plugins::resource_budget::Collector report; retained->MeasureResources(report);
+        Check(!report.Result().Complete() && !report.Result().d3d9Bytes,
+            "failed descriptor or unsupported texture format never receives invented payload size");
+    }
+    for (const auto* path : {L"throw-oom.png", L"memory-out.png", L"throw-error.png", L"device-lost.png"}) {
+        ImportTextureFixture f; Preparation p(*f.renderer, ImportTestTextureLoader);
+        const auto expected = std::wcsstr(path, L"oom") || std::wcsstr(path, L"memory") ? MMS_E_MEMORY :
+            std::wcsstr(path, L"device") ? MMS_E_NOT_READY : MMS_E_FAILED;
+        Check(!p.Load(path) && p.Status() == expected && !f.state.live && !p.Load(L"later.png") && f.state.calls == 1,
+            "fatal texture failures release returned references and remain sticky");
+    }
+}
+
+void ImportTextureAllocationChecks() {
+    using namespace import_texture_cache;
+    ImportTextureFixture f;
+    const auto* path = L"D:\\private\\a-long-path-to-exercise-owned-name-allocations.png";
+    const long counter = (std::numeric_limits<long>::max)();
+    long allocations = 0;
+    {
+        Preparation p(*f.renderer, ImportTestTextureLoader);
+        failAfter = counter; const auto result = p.Load(path); allocations = counter - failAfter; failAfter = -1;
+        Check(result == 1 && p.Status() == MMS_OK && allocations > 0, "calibrate private texture load allocations");
+    }
+    for (long limit = 0; limit <= allocations; ++limit) {
+        {
+            Preparation p(*f.renderer, ImportTestTextureLoader);
+            failAfter = limit; const auto loaded = p.Load(path); failAfter = -1;
+            Check((loaded == 1 && p.Status() == MMS_OK) || (!loaded && p.Status() == MMS_E_MEMORY),
+                "private texture allocation failure reports memory instead of optional missing image");
+            Check(!f.renderer->resourcePool[0].heapBuffer && !f.renderer->resourcePool[0].comObject,
+                "every private texture allocation stage leaves renderer cache untouched");
+        }
+        Check(!f.state.live, "cancelled allocation attempt releases all texture references");
+    }
+    {
+        Preparation p(*f.renderer, ImportTestTextureLoader);
+        Check(p.Load(path) == 1, "prepare texture for freeze allocation calibration");
+        std::shared_ptr<Retained> retained; std::unique_ptr<Publication> publication;
+        failAfter = counter; const auto result = p.Finish(retained, publication); allocations = counter - failAfter; failAfter = -1;
+        Check(result == MMS_OK && allocations > 0, "calibrate texture freeze allocations");
+    }
+    for (long limit = 0; limit <= allocations; ++limit) {
+        {
+            Preparation baseline(*f.renderer, ImportTestTextureLoader);
+            std::shared_ptr<Retained> retained; std::unique_ptr<Publication> publication;
+            Check(baseline.Finish(retained, publication) == MMS_OK, "create freeze output sentinels");
+            auto* priorRetained = retained.get(); auto* priorPublication = publication.get();
+            Preparation p(*f.renderer, ImportTestTextureLoader); Check(p.Load(path) == 1, "prepare texture freeze failure fixture");
+            failAfter = limit; const auto result = p.Finish(retained, publication); failAfter = -1;
+            Check(result == MMS_OK || (result == MMS_E_MEMORY && retained.get() == priorRetained &&
+                publication.get() == priorPublication && publication->IsCurrent()),
+                "freeze allocation failures preserve both outputs and earlier candidate");
+            Check(!f.renderer->resourcePool[0].heapBuffer, "freeze allocation sweep never publishes a cache slot");
+        }
+        Check(!f.state.live, "failed or cancelled freeze releases private texture batch");
+    }
+}
+
+void ImportTextureCaptureChecks() {
+    using namespace import_texture_cache;
+    ImportTextureFixture f;
+    {
+        Preparation p(*f.renderer, ImportTestTextureLoader); wchar_t path[] = L"captured-texture.png";
+        { ScopedCapture capture(p);
+          Check(LoadTextureShared(reinterpret_cast<unsigned char*>(f.renderer.get()), path) == 1 &&
+              !f.renderer->resourcePool[0].heapBuffer, "real legacy texture entry routes explicit capture into private batch"); }
+        int result = 5;
+        Check(!TryLoadCaptured(f.renderer.get(), path, result) && result == 5,
+            "leaving capture restores unbound legacy dispatch without loading anything");
+    }
+    {
+        Preparation p(*f.renderer, ImportTestTextureLoader); auto other = std::make_unique<D3DRenderer>();
+        ScopedCapture capture(p); wchar_t path[] = L"wrong-renderer.png";
+        Check(!LoadTextureShared(reinterpret_cast<unsigned char*>(other.get()), path) && p.Status() == MMS_E_ARGUMENT &&
+            !other->resourcePool[0].heapBuffer, "capture rejects another renderer instead of falling through to legacy loader");
+    }
+    {
+        Preparation first(*f.renderer, ImportTestTextureLoader), second(*f.renderer, ImportTestTextureLoader);
+        ScopedCapture outer(first);
+        { ScopedCapture inner(second);
+          Check(first.Status() == MMS_E_BUSY && second.Status() == MMS_E_BUSY,
+              "nested import texture captures are explicit fatal failures"); }
+        int result = 1;
+        Check(TryLoadCaptured(f.renderer.get(), L"nested.png", result) && !result,
+            "rejected nested capture preserves outer interception until its guard ends");
+    }
+}
+
+void ImportTextureCacheChecks() {
+    ImportTexturePrivateChecks();
+    ImportTexturePublicationChecks();
+    ImportTextureRejectionChecks();
+    ImportTextureAllocationChecks();
+    ImportTextureCaptureChecks();
+}
+}

@@ -1,3 +1,4 @@
+#include "mikudancestudio/model_import.hpp"
 #include "mikudancestudio/original_import.hpp"
 #include "mikudancestudio/display_capacity.hpp"
 #include "mikudancestudio/model_vertex_cache.hpp"
@@ -72,10 +73,10 @@ bool FailBox(HWND hwnd, bool en, bool enData, const char* enMsg,
     char text[256];
     if (enData) {
         sprintf_s(text, 0x100, "%s", enMsg);
-        MessageBoxA(hwnd, text, enTitle, 0);
+        model_import::MessageA(hwnd, text, enTitle, 0);
     } else {
         sprintf_s(text, 0x100, "%s", jpMsg);
-        MessageBoxA(hwnd, text, jpTitle, 0);
+        model_import::MessageA(hwnd, text, jpTitle, 0);
     }
     return false;
 }
@@ -138,7 +139,7 @@ bool ModelLoadPMD(unsigned char* m, HWND hwnd, const wchar_t* path,
 
     // MME records this wide path when associating the index-buffer output
     // slot with the model ID (the PMX parser shares this open path).
-    NotifyEffectFileOpen(model.path);
+    if (!model_import::Preparing()) NotifyEffectFileOpen(model.path);
     int fh = -1;
     errno_t err = _wsopen_s(&fh,
         model.path,
@@ -152,14 +153,20 @@ bool ModelLoadPMD(unsigned char* m, HWND hwnd, const wchar_t* path,
                           "If Japanese font is included in the filename"
                           "(*.pmd),please rewrite it in English font.",
                           err),
-                MessageBoxA(hwnd, text, "open file", 0);
+                model_import::MessageA(hwnd, text, "open file", 0);
             else
                 sprintf_s(text, 0x100, "%s:%d", kMsgOpenFailJp, err),
-                MessageBoxA(hwnd, text, kTitleOpenFailJp, 0);
+                model_import::MessageA(hwnd, text, kTitleOpenFailJp, 0);
         }
         return false;
     }
 
+    struct FileGuard {
+        int value;
+        ~FileGuard() { Close(); }
+        void Close() noexcept { if (value >= 0) { _close(value); value = -1; } }
+        int Release() noexcept { const int result = value; value = -1; return result; }
+    } file{fh};
     bool textFits = true;
     const auto readName = [&](char* destination, unsigned capacity, unsigned maximum) {
         const int count = _read(fh, destination, capacity);
@@ -181,7 +188,7 @@ bool ModelLoadPMD(unsigned char* m, HWND hwnd, const wchar_t* path,
             } while (p != model.modelDirectory &&
                      *p != L'\\');
         p[1] = L'\0';
-        SetCurrentDirectoryW(model.modelDirectory);
+        if (!model_import::Preparing()) SetCurrentDirectoryW(model.modelDirectory);
     }
 
     // ---- header -----------------------------------------------------------
@@ -189,14 +196,14 @@ bool ModelLoadPMD(unsigned char* m, HWND hwnd, const wchar_t* path,
     if (text[0] != 'P' || text[1] != 'm' || text[2] != 'd') {
         if (text[0] == 'P' && text[1] == 'M' && text[2] == 'X')
             return LoadPMX(m, sub, boxGate, englishUi, paths,
-                           fh);                              // 0x4B77E0
-    _close(fh);
+                           file.Release());                              // 0x4B77E0
+    file.Close();
         if (enData) {
             sprintf_s(text, 0x100, "This file is not for Ploygon Movie Maker !!");
-            MessageBoxA(hwnd, text, "open file", 0);
+            model_import::MessageA(hwnd, text, "open file", 0);
         } else {
             sprintf_s(text, 0x100, "%s", kMsgNotPmdJp);
-            MessageBoxA(hwnd, text, kTitleOpenFailJp, 0);
+            model_import::MessageA(hwnd, text, kTitleOpenFailJp, 0);
         }
         return false;
     }
@@ -204,9 +211,9 @@ bool ModelLoadPMD(unsigned char* m, HWND hwnd, const wchar_t* path,
     readName(model.name, sizeof(model.name), 19);
     readName(model.comment, sizeof(model.comment), 255);
     if (!enData && boxGate &&
-        MessageBoxA(hwnd, model.comment,
+        model_import::MessageA(hwnd, model.comment,
                     kTitleModelInfoJp, 0x40001u) != 1) {
-        _close(fh);
+        file.Close();
         return false;
     }
 
@@ -231,7 +238,7 @@ bool ModelLoadPMD(unsigned char* m, HWND hwnd, const wchar_t* path,
             FailBox(hwnd, true, enData,
                     "The performance of the graphics card doesn't suffice.",
                     kMsgNoPerfJp, "open file", kTitleOpenFailJp);
-            _close(fh);
+            file.Close();
             return false;
         }
         if (FAILED(dev->CreateVertexBuffer(16 * vertCount, 8, 66 /*FVF*/,
@@ -242,7 +249,7 @@ bool ModelLoadPMD(unsigned char* m, HWND hwnd, const wchar_t* path,
             FailBox(hwnd, true, enData,
                     "The performance of the graphics card doesn't suffice.",
                     kMsgNoPerfJp, "open file", kTitleLoad2Jp);
-            _close(fh);
+            file.Close();
             return false;
         }
         mdl::PmdVertex* recs = static_cast<mdl::PmdVertex*>(
@@ -262,9 +269,10 @@ bool ModelLoadPMD(unsigned char* m, HWND hwnd, const wchar_t* path,
                     reinterpret_cast<unsigned char*>(p1) + 32 * i);
                 std::memcpy(dst, &recs[i], 32);
             }
-            mdl::ResourceAs<IDirect3DVertexBuffer9>(
+            const HRESULT unlocked = mdl::ResourceAs<IDirect3DVertexBuffer9>(
                 mdl::Mdl(m)->vertexBuffer)->Unlock();
-        }
+            if (model_import::Preparing() && FAILED(unlocked)) return false;
+        } else if (model_import::Preparing()) return false;
         float* p2 = nullptr;
         if (SUCCEEDED(mdl::ResourceAs<IDirect3DVertexBuffer9>(
                           mdl::Mdl(m)->vertexBuffer2)->Lock(
@@ -276,9 +284,10 @@ bool ModelLoadPMD(unsigned char* m, HWND hwnd, const wchar_t* path,
                 std::memcpy(dst, recs[i].position, 12);
                 *reinterpret_cast<std::uint32_t*>(dst + 12) = 0xFF000000u;
             }
-            mdl::ResourceAs<IDirect3DVertexBuffer9>(
+            const HRESULT unlocked = mdl::ResourceAs<IDirect3DVertexBuffer9>(
                 mdl::Mdl(m)->vertexBuffer2)->Unlock();
-        }
+            if (model_import::Preparing() && FAILED(unlocked)) return false;
+        } else if (model_import::Preparing()) return false;
     }
 
     // ---- indices ----------------------------------------------------------
@@ -306,7 +315,7 @@ bool ModelLoadPMD(unsigned char* m, HWND hwnd, const wchar_t* path,
             FailBox(hwnd, true, enData,
                     "The performance of the graphics card doesn't suffice.",
                     kMsgNoPerfJp, "CreateIndexBuffer", "CreateIndexBuffer");
-            _close(fh);
+            file.Close();
             return false;
         }
         std::uint16_t*& idx = mdl::Indices(m);
@@ -319,15 +328,16 @@ bool ModelLoadPMD(unsigned char* m, HWND hwnd, const wchar_t* path,
             FailBox(hwnd, true, enData,
                     "The performance of the graphics card doesn't suffice.",
                     kMsgNoPerfJp, "pIndBuf->Lock", "pIndBuf->Lock");
-            _close(fh);
+            file.Close();
             return false;
         }
         for (std::uint32_t j = 0; j < idxCount; ++j) {
             _read(fh, idx + 2 * j, 2);
             static_cast<std::uint16_t*>(ib)[j] = idx[2 * j];
         }
-        mdl::ResourceAs<IDirect3DIndexBuffer9>(
+        const HRESULT unlocked = mdl::ResourceAs<IDirect3DIndexBuffer9>(
             mdl::Mdl(m)->indexBuffer)->Unlock();
+        if (model_import::Preparing() && FAILED(unlocked)) return false;
     }
 
     // ---- materials --------------------------------------------------------
@@ -468,6 +478,8 @@ bool ModelLoadPMD(unsigned char* m, HWND hwnd, const wchar_t* path,
         bone->hasFlag = 0;
         const std::int32_t parent = bone->parent;
         const std::int32_t tail = bone->tailIdx;
+        if (model_import::Preparing() && parent >= 0 &&
+            static_cast<std::uint32_t>(parent) >= boneCount) return false;
         // Deliberate hardening: the original code sign-extends tailIdx and reads
         // bones[tailIdx].type at 0x1400B377D without a range check, while the parent
         // index in the same pass is checked at 0x1400B371B/0x1400B371D, so a
@@ -628,6 +640,8 @@ bool ModelLoadPMD(unsigned char* m, HWND hwnd, const wchar_t* path,
         ++rb.groupIndex;
         if (model.facialFrameCount != 0)
             ++rb.groupIndex;
+        if (model_import::Preparing() &&
+            static_cast<std::uint32_t>(rb.targetIndex) >= boneCount) return false;
         strcpy_s(rb.name, sizeof(rb.name), bones[rb.targetIndex].name);
     }
 
@@ -636,7 +650,7 @@ bool ModelLoadPMD(unsigned char* m, HWND hwnd, const wchar_t* path,
     const int enRead = _read(fh, &hasEn, 1);
     if (hasEn == 0 || enRead == 0) {
         if ((boxGate & model.physicsFlags) != 0)
-            MessageBoxA(hwnd,
+            model_import::MessageA(hwnd,
                         "For this model, there is no English data.\n"
                         "\n"
                         "The model name is expressed in Japanese.\n"
@@ -666,9 +680,9 @@ bool ModelLoadPMD(unsigned char* m, HWND hwnd, const wchar_t* path,
         readName(model.commentEn, sizeof(model.commentEn), 255);
         model.commentEn[255] = 0;
         if (model.physicsFlags != 0 && boxGate &&
-            MessageBoxA(hwnd, model.commentEn,
+            model_import::MessageA(hwnd, model.commentEn,
                         "model infomation", 0x40001u) != 1) {
-            _close(fh);
+            file.Close();
             return false;
         }
         for (std::uint32_t i = 0; i < boneCount; ++i) {
@@ -859,6 +873,9 @@ bool ModelLoadPMD(unsigned char* m, HWND hwnd, const wchar_t* path,
         mdl::Joints(m) = joints;
         std::memset(joints, 0, sizeof(mdl::JointRecord) *
                                   (jointCount ? jointCount : 1));
+#if !MMD_ORIGINAL_PROFILE
+        for (std::uint32_t i = 0; i < jointCount; ++i) joints[i].constraint = -1;
+#endif
         for (std::uint32_t i = 0; i < jointCount; ++i) {
             mdl::JointRecord& joint = joints[i];
             readName(joint.name, sizeof(joint.name), 19);
@@ -882,6 +899,11 @@ bool ModelLoadPMD(unsigned char* m, HWND hwnd, const wchar_t* path,
                 mdl::RigidRecord* rigids2 = mdl::Rigids(m);
                 const std::int32_t a = joint.rigidA;
                 const std::int32_t b = joint.rigidB;
+#if !MMD_ORIGINAL_PROFILE
+                if (a < 0 || b < 0 || std::uint32_t(a) >= model.rigidCount ||
+                    std::uint32_t(b) >= model.rigidCount || !rigids2 || !rigids2[a].body || !rigids2[b].body)
+                    return false;
+#endif
                 mdl::RigidRecord& rigidA = rigids2[a];
                 mdl::RigidRecord& rigidB = rigids2[b];
                 D3DXMATRIXF ma, mb, rot;
@@ -944,7 +966,7 @@ bool ModelLoadPMD(unsigned char* m, HWND hwnd, const wchar_t* path,
         }
     }
 
-    _close(fh);
+    file.Close();
 
     // ---- animation pools --------------------------------------------------
     {
@@ -1000,7 +1022,7 @@ bool ModelLoadPMD(unsigned char* m, HWND hwnd, const wchar_t* path,
     }
 #endif
     model.loadComplete = 1;
-    model_load_ui::PostLoadInitOrDefer(m);                    // 0x49C850
+    if (!model_import::Preparing()) model_load_ui::PostLoadInitOrDefer(m);                    // 0x49C850
     model_vertex_cache::RegisterLoaded(m);
     return true;
 }

@@ -9,6 +9,7 @@ class SceneStore;
 std::shared_ptr<SceneStore> CreateSceneStore(MMDApp*);
 void ForgetSceneObject(const void*);
 MmsObjectRef SceneObjectIdentity(const void*);
+MmsObjectRef CreateAbsentSceneObject(const void*);
 bool SceneObjectPresent(const void*, MmsId) noexcept;
 void ResetSceneIdentity();
 void SaveSceneIdentity(const MMDApp&, pmm_extension::Document&);

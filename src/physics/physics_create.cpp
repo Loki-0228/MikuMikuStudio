@@ -41,6 +41,10 @@
 #include <cstdio>
 #include <string>
 #include <cstring>
+#include <memory>
+#include <limits>
+#include <stdexcept>
+#include "mikudancestudio/build_profile.hpp"
 
 #include "btBulletDynamicsCommon.h"
 #include "BulletDynamics/ConstraintSolver/btGeneric6DofSpringConstraint.h"
@@ -465,6 +469,15 @@ void CreateRigidBody(PhysicsScene* scene, void** out, int shape, float sx, float
                      float sz, const float* mat16, int mode, float mass,
                      float dampLin, float dampAng, float restitution,
                      float friction, char grp, std::uint16_t mask) {
+#if !MMD_ORIGINAL_PROFILE
+    // File data can contain any byte. Reject before the group bit shift, using
+    // the same empty output as an unsupported collision shape.
+    if (static_cast<unsigned char>(grp) > 15) {
+        out[0] = reinterpret_cast<void*>(static_cast<std::intptr_t>(-1));
+        out[1] = nullptr;
+        return;
+    }
+#endif
     btDiscreteDynamicsWorld* world = scene->world;
     btCollisionShape* colShape = nullptr;
     if (shape == 0) {
@@ -479,6 +492,9 @@ void CreateRigidBody(PhysicsScene* scene, void** out, int shape, float sx, float
         out[1] = nullptr;
         return;
     }
+#if !MMD_ORIGINAL_PROFILE
+    std::unique_ptr<btCollisionShape> shapeOwner(colShape);
+#endif
 
     // 0x406607..0x40676D: start transform = matrix translation + basis
     // rebuilt through the D3DX quaternion round-trip (sub_401000 =
@@ -498,9 +514,18 @@ void CreateRigidBody(PhysicsScene* scene, void** out, int shape, float sx, float
 
     btDefaultMotionState* motionState =
         new btDefaultMotionState(startTrans);                  // 0x4067B5
+#if !MMD_ORIGINAL_PROFILE
+    std::unique_ptr<btDefaultMotionState> motionOwner(motionState);
+#endif
     btRigidBody::btRigidBodyConstructionInfo ci(               // 0x4067EF
         useMass, motionState, colShape, inertia);
     btRigidBody* body = new btRigidBody(ci);                   // 0x406803
+#if !MMD_ORIGINAL_PROFILE
+    const auto removeBody = [world](btRigidBody* value) noexcept {
+        world->removeRigidBody(value); delete value;
+    };
+    std::unique_ptr<btRigidBody, decltype(removeBody)> bodyOwner(body, removeBody);
+#endif
 
     world->addRigidBody(body, 1 << grp, mask);                 // 0x406857
     body->setDamping(dampLin, dampAng);                        // 0x40686B
@@ -517,6 +542,9 @@ void CreateRigidBody(PhysicsScene* scene, void** out, int shape, float sx, float
     out[0] = reinterpret_cast<void*>(                           // 0x406899
         static_cast<std::intptr_t>(body->m_debugBodyId));
     out[1] = body;
+#if !MMD_ORIGINAL_PROFILE
+    bodyOwner.release(); motionOwner.release(); shapeOwner.release();
+#endif
 }
 
 #ifdef MIKUDANCESTUDIO_DIAG
@@ -551,6 +579,11 @@ int CreatePhysJoint(PhysicsScene* scene, void* rbA, void* rbB,
                     float spring0, float spring1, float spring2,
                     float spring3, float spring4, float spring5) {
     btDiscreteDynamicsWorld* world = scene->world;
+#if !MMD_ORIGINAL_PROFILE
+    if (scene->constraintId < 0 || scene->constraintId == (std::numeric_limits<int>::max)())
+        throw std::overflow_error("physics constraint ID exhausted");
+    if (!rbA || !rbB) throw std::invalid_argument("missing physics joint body");
+#endif
 #ifdef MIKUDANCESTUDIO_DIAG
     // Env-gated (MIKUDANCESTUDIO_DUMP_JOINTARGS=<path>) creation-argument trace -
     // the original receives the very same 32 floats on the stack at
@@ -594,6 +627,12 @@ int CreatePhysJoint(PhysicsScene* scene, void* rbA, void* rbB,
     auto* con = new btGeneric6DofSpringConstraint(             // 0x406048
         *static_cast<btRigidBody*>(rbA),
         *static_cast<btRigidBody*>(rbB), frameA, frameB, true);
+#if !MMD_ORIGINAL_PROFILE
+    const auto removeJoint = [world](btGeneric6DofSpringConstraint* value) noexcept {
+        world->removeConstraint(value); delete value;
+    };
+    std::unique_ptr<btGeneric6DofSpringConstraint, decltype(removeJoint)> jointOwner(con, removeJoint);
+#endif
 
     con->setLinearLowerLimit(                                  // 0x4062xx
         btVector3(linLower0, linLower1, linLower2));
@@ -634,6 +673,9 @@ int CreatePhysJoint(PhysicsScene* scene, void* rbA, void* rbB,
     // there to keep joint lookup/removal consistent with the linked library.
     SetConstraintUid(con, counter, 0);
     DumpConstraintCreateState(counter, con);
+#if !MMD_ORIGINAL_PROFILE
+    jointOwner.release();
+#endif
     return counter++;
 }
 

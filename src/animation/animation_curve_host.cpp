@@ -699,8 +699,11 @@ struct AccessoryAuthoring::Exchange::Impl {
         return true;
     }
 };
-AccessoryAuthoring::AccessoryAuthoring(MMDApp& app, int slot) : impl_(std::make_shared<Impl>(app, slot)) {
+AccessoryAuthoring::AccessoryAuthoring(MMDApp& app, int slot, bool initiallyPresent) : impl_(std::make_shared<Impl>(app, slot)) {
     if (slot < 0 || slot >= 255) throw std::invalid_argument("accessory authoring slot");
+    if (!initiallyPresent && (app.AccessorySlot(slot) || states.count(impl_->key)))
+        throw std::invalid_argument("import accessory authoring slot occupied");
+    impl_->present = initiallyPresent;
 }
 AccessoryAuthoring::~AccessoryAuthoring() = default;
 #if !MMD_ORIGINAL_PROFILE

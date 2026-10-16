@@ -1,6 +1,10 @@
 #pragma once
 #include "scene_history.hpp"
 #include "scene_resource_budget.hpp"
+#include "mikudancestudio/accessory_import.hpp"
+#include "mikudancestudio/model_import.hpp"
+#include "mikudancestudio/import_texture_cache.hpp"
+#include "mikudancestudio/history_physics.hpp"
 
 namespace mikudancestudio::plugins {
 // One shared owner per native object. The active scene owns the live object;
@@ -18,6 +22,9 @@ class RetainedSceneObject : public std::enable_shared_from_this<RetainedSceneObj
         const std::vector<std::shared_ptr<RetainedSceneObject>>&, uint64_t, bool,
         std::shared_ptr<HistoryChange>&, std::unique_ptr<PreparedHistoryChange>&);
     friend std::shared_ptr<RetainedSceneObject> RetainSceneObject(MMDApp&, uint32_t, unsigned);
+    static std::shared_ptr<HistoryChange> MakeImport(std::shared_ptr<RetainedSceneObject>,
+        std::shared_ptr<import_texture_cache::Retained>, std::unique_ptr<import_texture_cache::Publication>,
+        std::unique_ptr<history_physics::ImportScene::Publication>);
 public:
     using Objects = std::vector<std::shared_ptr<RetainedSceneObject>>;
     ~RetainedSceneObject();
@@ -63,6 +70,14 @@ public:
                                std::unique_ptr<PreparedHistoryChange>& staging);
     static MmsResult PrepareInsertionBatch(const Objects&,
         std::shared_ptr<HistoryChange>& insertion, std::unique_ptr<PreparedHistoryChange>& staging);
+    // Adopt private parser output without ever parking an already-live object.
+    // On failure the parser output keeps ownership. On success the returned
+    // record owns it, including cancellation before its first publication.
+    static std::shared_ptr<HistoryChange> ImportAccessory(MMDApp&, unsigned, accessory_import::Prepared&,
+        std::shared_ptr<import_texture_cache::Retained>, std::unique_ptr<import_texture_cache::Publication>);
+    static std::shared_ptr<HistoryChange> ImportModel(MMDApp&, unsigned, model_import::Prepared&,
+        const std::shared_ptr<history_physics::ImportScene>&, std::unique_ptr<history_physics::ImportScene::Publication>,
+        std::shared_ptr<import_texture_cache::Retained>, std::unique_ptr<import_texture_cache::Publication>);
 };
 std::shared_ptr<RetainedSceneObject> RetainSceneObject(MMDApp&, uint32_t kind, unsigned slot);
 }

@@ -28,7 +28,9 @@ struct RetainedSceneObject::Impl {
     void* object;
     MmsId id;
     bool present = true;
-    std::unique_ptr<history_physics::Retained> physics;
+    std::shared_ptr<history_physics::Retained> physics;
+    std::shared_ptr<history_physics::ImportScene> importScene;
+    bool owned = true, publishedOnce = true;
     std::vector<btTypedConstraint*> joints;
     std::unique_ptr<curve_host::AccessoryAuthoring> curves;
     mdl::AccessoryKey* inactiveKeys = nullptr;
@@ -37,6 +39,28 @@ struct RetainedSceneObject::Impl {
     const mdl::RigidRecord* rigidTable = nullptr;
     const mdl::JointRecord* jointTable = nullptr;
     uint32_t rigidCount = 0, jointCount = 0;
+    Impl(MMDApp& a, uint32_t k, unsigned s, void* p, mdl::AccessoryKey* keys,
+         std::shared_ptr<history_physics::ImportScene> scene, std::shared_ptr<history_physics::Retained> retained)
+        : app(a), kind(k), slot(s), object(p), present(false), physics(std::move(retained)),
+          importScene(std::move(scene)), owned(false), publishedOnce(false) {
+        if (!p || s >= 255 || (k != MMS_OBJECT_MODEL && k != MMS_OBJECT_ACCESSORY) ||
+            (k == MMS_OBJECT_MODEL ? static_cast<void*>(app.ModelSlot(s)) : app.AccessorySlot(s)))
+            throw std::invalid_argument("import destination occupied");
+        if (kind == MMS_OBJECT_ACCESSORY) {
+            if (!keys || !mdl::KeyPoolIdentity(keys)) throw std::invalid_argument("import accessory keys");
+            curves = std::make_unique<curve_host::AccessoryAuthoring>(app, slot, false);
+            inactiveKeys = keys;
+        } else {
+            const auto& model = *mdl::Mdl(static_cast<unsigned char*>(object));
+            if (!importScene || !physics || model.scenePtr != &importScene->Scene())
+                throw std::invalid_argument("import physics owner");
+            rigidTable = model.rigidTable; jointTable = model.jointTable;
+            rigidCount = model.rigidCount; jointCount = model.jointCount;
+            for (int i = 0; i < model.scenePtr->world->getNumConstraints(); ++i)
+                joints.push_back(model.scenePtr->world->getConstraint(i));
+        }
+        id = CreateAbsentSceneObject(p).id;
+    }
     Impl(MMDApp& a, uint32_t k, unsigned s, void* p) : app(a), kind(k), slot(s), object(p), id(SceneObjectIdentity(p).id) {
         if (kind == MMS_OBJECT_ACCESSORY) {
             curves = std::make_unique<curve_host::AccessoryAuthoring>(app, slot);
@@ -69,6 +93,7 @@ struct RetainedSceneObject::Impl {
     }
     ~Impl() {
         retainedObjects.erase({&app, object});
+        if (!owned) { ForgetSceneObject(object); return; }
         // The inactive track is always ours: either the blank replacement or
         // the deleted object's original key pool, including all grown slots.
         mdl::KeyPoolDestroy(inactiveKeys);
@@ -76,6 +101,7 @@ struct RetainedSceneObject::Impl {
         if (kind == MMS_OBJECT_ACCESSORY) DeleteAccessory(static_cast<mdl::AccessoryRecord*>(object), 1);
         else {
             auto* model = static_cast<unsigned char*>(object);
+            if (!publishedOnce) { model_import::DisposePrivate(model); std::free(model); return; }
             // Scale authoring holds joint pointers; forget it while the
             // retained joints are alive, before normal model disposal.
             physics_scale::Forget(model);
@@ -127,6 +153,7 @@ struct RetainedSceneObject::Impl {
                 owner.app.AccessorySlot(owner.slot) = present ? static_cast<mdl::AccessoryRecord*>(owner.object) : nullptr;
             }
             owner.present = present;
+            owner.publishedOnce = true;
         }
     };
 };
@@ -358,5 +385,118 @@ MmsResult RetainedSceneObject::PrepareInsertionImpl(const Objects& objects, uint
         if (auto r = removal->Prepare(true, prepared)) return r;
         insertion = std::move(next); staging = std::move(prepared); return MMS_OK;
     });
+}
+
+std::shared_ptr<HistoryChange> RetainedSceneObject::MakeImport(std::shared_ptr<RetainedSceneObject> object,
+    std::shared_ptr<import_texture_cache::Retained> textures,
+    std::unique_ptr<import_texture_cache::Publication> texturePublication,
+    std::unique_ptr<history_physics::ImportScene::Publication> physicsPublication) {
+    struct Import final : HistoryChange, std::enable_shared_from_this<Import> {
+        std::shared_ptr<RetainedSceneObject> object;
+        std::shared_ptr<import_texture_cache::Retained> textures;
+        std::unique_ptr<import_texture_cache::Publication> initialTextures;
+        std::unique_ptr<history_physics::ImportScene::Publication> initialPhysics;
+        std::shared_ptr<HistoryChange> removal;
+        bool published = false;
+        struct Candidate final : PreparedHistoryChange {
+            std::shared_ptr<Import> owner;
+            std::shared_ptr<resource_budget::Collector> resources;
+            Objects objects;
+            std::shared_ptr<HistoryChange> nextRemoval;
+            std::unique_ptr<PreparedHistoryChange> presence;
+            // Destruction is after the atomic publication. The private world
+            // infrastructure and displaced caches must never die in Publish.
+            std::shared_ptr<history_physics::ImportScene> cleanupScene;
+            std::unique_ptr<history_physics::ImportScene::Publication> cleanupPhysics;
+            std::unique_ptr<import_texture_cache::Publication> cleanupTextures;
+            bool first = false, forward = false, consumed = false;
+            uint64_t bytes = 0;
+            bool IsCurrent() const noexcept override {
+                if (consumed || !presence->IsCurrent() || first == owner->published) return false;
+                if (first && (!owner->initialTextures || !owner->initialTextures->IsCurrent() ||
+                    (owner->initialPhysics && !owner->initialPhysics->IsCurrent()))) return false;
+                if (!first && !owner->textures->IsCurrent()) return false;
+                return resources->Covers([&](resource_budget::Collector& out) {
+                    owner->textures->MeasureResources(out);
+                    if (first && RetainedSceneObject::MeasureNativeResources(objects, out, true) != MMS_OK)
+                        throw std::invalid_argument("import resources changed");
+                });
+            }
+            void Publish() noexcept override {
+                auto& native = *owner->object->impl_;
+                if (first) {
+                    if (owner->initialPhysics) owner->initialPhysics->Publish();
+                    owner->initialTextures->Publish();
+                    if (native.kind == MMS_OBJECT_MODEL)
+                        mdl::Mdl(static_cast<unsigned char*>(native.object))->scenePtr = native.app.Physics();
+                }
+                presence->Publish();
+                if (first) {
+                    owner->published = true;
+                    cleanupPhysics = std::move(owner->initialPhysics);
+                    cleanupTextures = std::move(owner->initialTextures);
+                    cleanupScene = std::move(native.importScene);
+                } else if (!forward) owner->removal.swap(nextRemoval);
+                consumed = true;
+            }
+            bool TargetRetainedBytes(uint64_t& out) const noexcept override { out = bytes; return true; }
+        };
+        MmsResult Prepare(bool forward, std::unique_ptr<PreparedHistoryChange>& out) override {
+            return Boundary([&]() -> MmsResult {
+                auto next = std::make_unique<Candidate>(); next->owner = shared_from_this();
+                next->first = !published; next->forward = forward;
+                next->resources = std::make_shared<resource_budget::Collector>();
+                textures->MeasureResources(*next->resources);
+                uint64_t nativeBytes = 0;
+                if (!published) {
+                    if (!forward || object->Present()) return MMS_E_STALE;
+                    next->objects.push_back(object);
+                    next->presence = std::make_unique<Impl::Candidate>(object, true, false);
+                    if (auto r = RetainedSceneObject::MeasureNativeResources(next->objects, *next->resources, true)) return r;
+                } else {
+                    // Capture incoming bindings immediately before undoing an
+                    // import. Redo uses those exact detached bindings and never
+                    // reopens the file or repeats loader callbacks.
+                    next->nextRemoval = forward ? removal : object->CaptureRemoval();
+                    if (!next->nextRemoval) return MMS_E_STALE;
+                    if (auto r = next->nextRemoval->Prepare(!forward, next->presence)) return r;
+                    if (!next->presence->TargetRetainedBytes(nativeBytes)) return MMS_E_NOT_READY;
+                }
+                const auto report = next->resources->Result();
+                if (!report.Complete()) return MMS_E_NOT_READY;
+                next->bytes = resource_budget::Collector::Sum(sizeof(Import),
+                    resource_budget::Collector::Sum(nativeBytes, report.totalBytes));
+                if (!next->IsCurrent()) return MMS_E_STALE;
+                out = std::move(next); return MMS_OK;
+            });
+        }
+        uint64_t RetainedBytes() const noexcept override { return sizeof(*this); }
+    };
+    if (!object || !textures || !texturePublication) throw std::invalid_argument("incomplete private import");
+    auto result = std::make_shared<Import>(); result->object = std::move(object); result->textures = std::move(textures);
+    result->initialTextures = std::move(texturePublication); result->initialPhysics = std::move(physicsPublication);
+    return result;
+}
+std::shared_ptr<HistoryChange> RetainedSceneObject::ImportAccessory(MMDApp& app, unsigned slot,
+    accessory_import::Prepared& prepared, std::shared_ptr<import_texture_cache::Retained> textures,
+    std::unique_ptr<import_texture_cache::Publication> publication) {
+    auto owner = std::shared_ptr<RetainedSceneObject>(new RetainedSceneObject(std::make_unique<Impl>(
+        app, MMS_OBJECT_ACCESSORY, slot, prepared.Object(), prepared.Keys(), nullptr, nullptr)));
+    auto result = MakeImport(owner, std::move(textures), std::move(publication), nullptr);
+    retainedObjects[{&app, prepared.Object()}] = owner;
+    mdl::AccessoryRecord* object = nullptr; mdl::AccessoryKey* keys = nullptr;
+    prepared.Release(object, keys); owner->impl_->owned = true; return result;
+}
+std::shared_ptr<HistoryChange> RetainedSceneObject::ImportModel(MMDApp& app, unsigned slot,
+    model_import::Prepared& prepared, const std::shared_ptr<history_physics::ImportScene>& scene,
+    std::unique_ptr<history_physics::ImportScene::Publication> physics,
+    std::shared_ptr<import_texture_cache::Retained> textures,
+    std::unique_ptr<import_texture_cache::Publication> publication) {
+    if (!physics) throw std::invalid_argument("missing import physics publication");
+    auto owner = std::shared_ptr<RetainedSceneObject>(new RetainedSceneObject(std::make_unique<Impl>(
+        app, MMS_OBJECT_MODEL, slot, prepared.Object(), nullptr, scene, physics->RetainedOwner())));
+    auto result = MakeImport(owner, std::move(textures), std::move(publication), std::move(physics));
+    retainedObjects[{&app, prepared.Object()}] = owner;
+    prepared.Release(); owner->impl_->owned = true; return result;
 }
 }

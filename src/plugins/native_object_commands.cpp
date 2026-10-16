@@ -9,6 +9,7 @@
 #include "mikudancestudio/bake_ui_lock.hpp"
 #include "mikudancestudio/mmd_app.hpp"
 #include "mikudancestudio/model.hpp"
+#include "mikudancestudio/physics_scene.hpp"
 #include "mikudancestudio/panel_controls.hpp"
 #include "mikudancestudio/plugin_runtime.hpp"
 #include "mikudancestudio/plugin_scene.hpp"
@@ -278,6 +279,74 @@ bool TryDelete(MMDApp* app, HWND window, bool model) noexcept {
     if (result != MMS_OK) runtime_log::Write("PLUGIN_ABI object deletion refused: %d", result);
     return true;
 }
+bool TryImport(MMDApp* app, const wchar_t* path, bool model, bool showInfo) noexcept {
+    if (!app) return false;
+    auto* history = BoundNativePoseHistory(app);
+    if (!history) return false;
+    if (!path || !Ready(*app) || EditorsOpen(*app) || NativeObjectUiPending(app)) return true;
+    if (history->Enter() != MMS_OK) return true;
+    history->Leave();
+    const auto result = Boundary([&]() -> MmsResult {
+        Operation scope(*app);
+        if (!ValidOrder(*app) || !app->Renderer()) return MMS_E_NOT_READY;
+        unsigned slot = kModelSlotCount, count = 0;
+        for (unsigned i = 0; i < kModelSlotCount; ++i) {
+            const void* object = model ? static_cast<void*>(app->ModelSlot(i)) : app->AccessorySlot(i);
+            if (object) ++count;
+            else if (slot == kModelSlotCount) slot = i;
+        }
+        if (slot == kModelSlotCount) return MMS_E_NOT_READY;
+        wchar_t absolute[256]{};
+        const auto length = GetFullPathNameW(path, 256, absolute, nullptr);
+        if (!length || length >= 256) return MMS_E_ARGUMENT;
+        import_texture_cache::Preparation texturePreparation(*app->Renderer());
+        std::shared_ptr<import_texture_cache::Retained> textures;
+        std::unique_ptr<import_texture_cache::Publication> texturePublication;
+        std::shared_ptr<HistoryChange> change;
+        void* pointer = nullptr;
+        if (model) {
+            if (!app->Physics()) return MMS_E_NOT_READY;
+            auto privateScene = std::make_shared<history_physics::ImportScene>(*app->Physics());
+            model_import::Prepared prepared;
+            const auto loaded = model_import::Prepare(*app, absolute, showInfo, privateScene->Scene(), texturePreparation, prepared);
+            if (loaded != model_import::Result::Ready)
+                return loaded == model_import::Result::Memory ? MMS_E_MEMORY : MMS_E_NOT_READY;
+            if (!model_import::ShowMessages(app->MainWindow(), prepared.Messages())) return MMS_OK;
+            auto& record = *mdl::Mdl(prepared.Object());
+            record.comboSelIndex = record.comboSelIndex2 = static_cast<uint8_t>(count + 1);
+            record.displayState = app->state.characterTransparentMode;
+            auto physics = privateScene->Prepare();
+            if (auto r = texturePreparation.Finish(textures, texturePublication)) return r;
+            pointer = prepared.Object();
+            change = RetainedSceneObject::ImportModel(*app, slot, prepared, privateScene,
+                std::move(physics), std::move(textures), std::move(texturePublication));
+        } else {
+            accessory_import::Prepared prepared;
+            const auto loaded = accessory_import::Prepare(*app, absolute, texturePreparation, prepared);
+            if (loaded != accessory_import::Result::Ready)
+                return loaded == accessory_import::Result::Memory ? MMS_E_MEMORY : MMS_E_NOT_READY;
+            prepared.Object()->order = static_cast<uint8_t>(count);
+            if (auto r = texturePreparation.Finish(textures, texturePublication)) return r;
+            pointer = prepared.Object();
+            change = RetainedSceneObject::ImportAccessory(*app, slot, prepared, std::move(textures), std::move(texturePublication));
+        }
+        auto selection = CaptureSelectionToken(*app);
+        {
+            Publication allow(scope);
+            std::unique_ptr<SharedHistory::NativeTransaction> transaction;
+            if (auto r = history->PrepareNative(model ? "Import model" : "Import accessory", std::move(change), transaction)) return r;
+            if (auto r = history->CommitNative(std::move(transaction))) return r;
+        }
+        const auto id = SceneObjectIdentity(pointer).id;
+        if (model) { selection.model = id; selection.cameraMode = false; app->EditMode() = ViewportEditMode::Bone; }
+        else selection.accessory = id;
+        app->SceneModified() = 1; app->RecordedFrameCountByte1() = 1; app->PhysicsResetPending() = 1;
+        RefreshPublishedUi(*app, *history, selection);
+        return MMS_OK;
+    });
+    if (result != MMS_OK) runtime_log::Write("PLUGIN_ABI object import refused: %d", result);
+    return true;
+}
 }
 bool NativeObjectOperationActive(const MMDApp* app) noexcept { return operation && &operation->app == app; }
 bool NativeObjectPublicationAuthorized(const MMDApp* app) noexcept {
@@ -289,6 +358,8 @@ void ForgetBoundObjectUi(const MMDApp* app) noexcept {
 }
 bool TryDeleteBoundModel(MMDApp* app, HWND window) noexcept { return TryDelete(app, window, true); }
 bool TryDeleteBoundAccessory(MMDApp* app, HWND window) noexcept { return TryDelete(app, window, false); }
+bool TryImportBoundModel(MMDApp* app, const wchar_t* path, bool showInfo) noexcept { return TryImport(app, path, true, showInfo); }
+bool TryImportBoundAccessory(MMDApp* app, const wchar_t* path) noexcept { return TryImport(app, path, false, false); }
 bool RefreshBoundObjectUi(MMDApp& app, SharedHistory& history) noexcept {
     if (!Ready(app)) return false;
     return Boundary([&]() -> MmsResult {
