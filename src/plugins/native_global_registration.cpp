@@ -149,13 +149,17 @@ struct Pose {
     std::array<float,9> values{};int parentModel=-1,parentBone=0,mode=0;
     bool operator==(const Pose& other) const noexcept{return values==other.values&&parentModel==other.parentModel&&parentBone==other.parentBone&&mode==other.mode;}
 };
-template<class K> Pose ReadPose(MMDApp& app) {
+bool FinitePose(const Pose& pose) noexcept {
+    for(float value:pose.values)if(!std::isfinite(value))return false;
+    return true;
+}
+template<class K> Pose ReadPose(MMDApp& app) noexcept {
     Pose p;
     if constexpr(std::is_same_v<K,mdl::CameraKey>){for(unsigned i=0;i<3;++i){p.values[i]=app.CameraPositionAxis(i);p.values[i+3]=app.CameraRotation()[i];}
         p.values[6]=app.CameraDistance();p.values[7]=app.CameraFov();p.mode=app.CameraPerspective();p.parentModel=app.CameraParentModel();p.parentBone=app.CameraParentBone();}
     else if constexpr(std::is_same_v<K,mdl::LightKey>){for(unsigned i=0;i<3;++i){p.values[i]=app.LightDirection()[i];p.values[i+3]=app.LightColor()[i];}}
     else{p.values[0]=app.ShadowDistance();p.mode=app.ShadowMode();}
-    for(float value:p.values)if(!std::isfinite(value))throw std::invalid_argument("global pose value");return p;
+    return p;
 }
 template<class K> void WritePose(MMDApp& app,const Pose& p) noexcept {
     if constexpr(std::is_same_v<K,mdl::CameraKey>){for(unsigned i=0;i<3;++i){app.CameraPositionAxis(i)=p.values[i];app.CameraRotation()[i]=p.values[i+3];}
@@ -281,6 +285,7 @@ template<class K> struct Registration final:HistoryChange,std::enable_shared_fro
         if(!published&&(!forward||app.CurrentFrame()!=playhead))return MMS_E_STALE;
         return Boundary([&]()->MmsResult{
             if(app.CurrentFrame()<0||app.CurrentFrame()>frame_limits::maximum)return MMS_E_ARGUMENT;
+            if(!FinitePose(ReadPose<K>(app)))return MMS_E_ARGUMENT;
             if(app.LastRegisteredFrame()!=(forward?beforeLast:afterLast)||(!published&&!(ReadPose<K>(app)==beforePose)))return MMS_E_STALE;
             auto candidate=std::make_unique<Candidate>(this->shared_from_this(),forward);
             candidate->dependencies=Chain<K>(candidate->capacity,[&](unsigned i){return candidate->pool[i];});
@@ -297,6 +302,9 @@ template<class K> struct Registration final:HistoryChange,std::enable_shared_fro
             if(!published)candidate->after=firstPose;
             else if(!candidate->curves->Authored())candidate->after=NativePose<K>(app.CurrentFrame(),[&](unsigned i){return candidate->Target(i);});
             else {std::array<double,12> values{};if(!candidate->curves->Sample(app.CurrentFrame(),values))return MMS_E_ARGUMENT;candidate->after=CurvePose<K>(values);}
+            // Finite keys do not guarantee a finite native sample: the light
+            // interpolator subtracts in float before its double multiply.
+            if(!FinitePose(candidate->after))return MMS_E_ARGUMENT;
             if constexpr(std::is_same_v<K,mdl::CameraKey>){
                 const auto parent=[&](int model,int bone){if(model<-1)throw std::invalid_argument("camera parent");if(model>=0)candidate->parents.emplace_back(app,model,bone);};
                 parent(candidate->before.parentModel,candidate->before.parentBone);parent(candidate->after.parentModel,candidate->after.parentBone);
@@ -317,6 +325,7 @@ template<class K,class Fill> MmsResult Plan(MMDApp& app,int frame,Fill fill,cons
     if(app.PlaybackActive()||app.FrameStepPlayback()||app.state.recordPlaybackStartPending||app.SceneMutationInProgress())return MMS_E_NOT_READY;
     if(!mdl::KeyPoolIdentity(Pool<K>(app)))return MMS_E_NOT_READY;
     return Boundary([&]()->MmsResult{
+        if(!FinitePose(ReadPose<K>(app)))return MMS_E_ARGUMENT;
         auto* keys=Pool<K>(app);const auto capacity=mdl::KeyPoolCapacity(keys);
         const auto chain=Chain<K>(capacity,[&](unsigned i){return keys[i];});
         std::uint32_t current=0;while(keys[current].frame<unsigned(frame)&&keys[current].next)current=keys[current].next;

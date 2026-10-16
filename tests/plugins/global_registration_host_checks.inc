@@ -3,6 +3,7 @@
 #include "mikudancestudio/animation_curve_host.hpp"
 #include "mikudancestudio/accessory_layout.hpp"
 #include "mikudancestudio/panel_controls.hpp"
+#include <algorithm>
 #include <array>
 #include <climits>
 #include <cmath>
@@ -185,17 +186,62 @@ void VerifyInput(Context& c,unsigned family,unsigned slot,bool second) {
         Check(k.mode==(second?1:2)&&k.distance==distance&&c.app.ShadowDistance()==distance,
             "shadow button truncates seven-character float input clamps range and commits live distance with the key");}
 }
+void VerifyHistoryReadout(Context& c) {
+    auto& a=c.app;char expected[96]{};
+    const auto slider=[&](int id,int value){
+        const auto control=GetDlgItem(a.MainWindow(),id);
+        Check(control!=nullptr,"history readout slider exists in real host");
+        const auto minimum=int(SendMessageW(control,TBM_GETRANGEMIN,0,0));
+        const auto maximum=int(SendMessageW(control,TBM_GETRANGEMAX,0,0));
+        Check(SendMessageW(control,TBM_GETPOS,0,0)==(std::clamp)(value,minimum,maximum),
+            "native history slider reflects restored live value within its control range");
+    };
+    sprintf_s(expected,"%.6g",double(a.CameraFov()));
+    Check(Text(a,panel::kFovEdit)==expected,"native history refreshes camera FOV text even in model view");
+    slider(panel::kFovSlider,int(std::lround((std::clamp)(a.CameraFov(),1.f,125.f))));
+    for(unsigned axis=0;axis<3;++axis){
+        const int color=int(double(a.LightColor()[axis])*256.0);
+        sprintf_s(expected,"%3d",color);
+        Check(Text(a,461+int(axis))==expected,"native history refreshes light colour text without resampling keys");
+        sprintf_s(expected,"%+.1f",double(a.LightDirection()[axis]));
+        Check(Text(a,464+int(axis))==expected,"native history refreshes light direction text without resampling keys");
+        slider(455+int(axis),color);slider(458+int(axis),int(double(a.LightDirection()[axis])*100.0));
+    }
+    const int shadow=int(std::lround(10000.0-double(a.ShadowDistance())*100000.0));
+    sprintf_s(expected,"%d",shadow);
+    Check(Text(a,panel::kSelfShadowRangeEdit)==expected,"native history refreshes shadow distance text");
+    slider(panel::kSelfShadowRangeSlider,shadow);
+    const int modeIds[]={panel::kEditOffCheckbox,panel::kEditMode1Checkbox,panel::kEditMode2Checkbox};
+    for(int mode=0;mode<3;++mode)Check(IsDlgButtonChecked(a.MainWindow(),modeIds[mode])==(a.ShadowMode()==mode?BST_CHECKED:BST_UNCHECKED),
+        "native history refreshes shadow mode without changing it");
+    const auto* accessory=a.AccessorySlot(a.SelectedAccessorySlot());
+    Check(accessory!=nullptr,"native history readout uses the user's selected accessory");
+    for(int id=478;id<=485;++id){
+        const double value=id<481?double(accessory->position[id-478]):id<484?double(accessory->rotation[id-481])/inputPi*180.0:
+            id==484?double(accessory->scale):double(accessory->opacity);
+        sprintf_s(expected,id==485?"%3.2f":"%3.4f",value);
+        Check(Text(a,id)==expected,"native history refreshes selected accessory pose opacity and scale text");
+    }
+}
 void RoundTrip(Context& c,unsigned family) {
     std::printf("RUN actual global registration family=%u command=%u\n",family,commands[family]);std::fflush(stdout);
     auto& a=c.app;const int pluginBefore=c.value();const Channels original=c.Read(kinds[family]);
-    a.CurrentFrame()=10;Input(c,family);MarkAll(a);a.SceneModified()=0;const auto revision=c.Revision();c.Command(commands[family]);
+    a.CurrentFrame()=10;Input(c,family);MarkAll(a);a.SceneModified()=0;
+    a.SelectGlobalTimelineTrack(family==0?GlobalTimelineTrack::Light:GlobalTimelineTrack::Camera);
+    a.AccessorySlot(0)->rowSelected=0;a.AccessorySlot(1)->rowSelected=1;
+    const auto revision=c.Revision();c.Command(commands[family]);
     const auto slot=c.Slot(family,10);Check(slot!=UINT_MAX&&slot&&c.history.UndoCount()==1&&!c.history.RedoCount()&&a.SceneModified()&&c.Revision()>revision,
         "actual global button inserts exactly one common-history node");VerifyInput(c,family,slot,false);OnlyMark(c,family,slot);
     bool rows=true;for(unsigned i=0;i<4;++i)rows &= a.state.globalTrackSelected[i]==
         (family!=2&&i==(family==0?0u:family==1?1u:2u));
     Check(rows&&a.AccessorySlot(0)->rowSelected==(family==2)&&!a.AccessorySlot(1)->rowSelected,
-        "first successful registration selects precisely its timeline row");
-    const Channels first=c.Read(kinds[family]);c.Plugin(L"Edit probe once");Input(c,family,true);c.Command(commands[family]);
+        "registration of an unselected target makes precisely its timeline row selected");
+    const Channels first=c.Read(kinds[family]);c.Plugin(L"Edit probe once");Input(c,family,true);
+    a.GlobalTrackSelected(GlobalTimelineTrack::Gravity)=1;a.AccessorySlot(1)->rowSelected=1;
+    const View registeredView(a);const auto registeredRow=a.AccessorySlot(0)->rowSelected;
+    c.Command(commands[family]);
+    Check(registeredView.Same(a)&&a.AccessorySlot(0)->rowSelected==registeredRow&&a.AccessorySlot(1)->rowSelected,
+        "registration of an already selected camera light shadow or accessory preserves the other selected rows");
     Check(c.Slot(family,10)==slot&&c.history.UndoCount()==3&&c.value()==pluginBefore+1,"global overwrite reuses its slot around a real plugin edit");
     VerifyInput(c,family,slot,true);const Channels second=c.Read(kinds[family]);
     a.CurrentFrame()=5;a.CameraMode()=0;a.SetSelectedModelSlot(1);a.SelectedAccessorySlot()=1;
@@ -203,6 +249,8 @@ void RoundTrip(Context& c,unsigned family) {
     c.Plugin(L"Edit probe undo");Check(view.Same(a)&&a.AccessorySlot(1)->rowSelected,"plugin undo preserves user's current timeline view selection");c.Sample(family,first,5);
     c.Command(400);Check(c.value()==pluginBefore&&c.history.UndoCount()==1,"native undo traverses only the intervening plugin edit");
     c.Command(400);Check(c.Slot(family,10)==UINT_MAX&&!c.history.UndoCount()&&c.history.RedoCount()==3,"native undo removes global insertion as one step");
+    VerifyHistoryReadout(c);
+    Check(view.Same(a)&&a.AccessorySlot(1)->rowSelected,"native history readout preserves the current model mode track and accessory selection");
     c.Sample(family,original,5);Check(a.CameraKeys()[0].selected&&a.LightKeys()[0].selected&&a.ShadowKeys()[0].selected&&
         a.GravityKeys()[0].selected&&a.AccessoryKeys(0)[0].selected&&a.AccessoryKeys(1)[0].selected,"undo restores all global and accessory marks captured at registration");
     a.CurrentFrame()=0;a.SelectedAccessorySlot()=0;RootInput(c,family);a.SceneModified()=0;const auto same=c.Snapshot();c.Command(commands[family]);
@@ -211,6 +259,13 @@ void RoundTrip(Context& c,unsigned family) {
     Check(redoView.Same(a)&&a.AccessorySlot(1)->rowSelected,"redo preserves timeline view selected after undo");
     c.Command(401);c.Plugin(L"Edit probe redo");c.Sample(family,second,15);
     Check(c.value()==pluginBefore+1&&c.history.UndoCount()==3,"mixed global/native plugin redo restores the complete sequence");
+    const View readoutView(a);const auto firstRow=a.AccessorySlot(0)->rowSelected,secondRow=a.AccessorySlot(1)->rowSelected;
+    c.Command(400);c.Sample(family,first,15);VerifyHistoryReadout(c);
+    Check(c.history.UndoCount()==2&&c.history.RedoCount()==1,"native undo refreshes global controls after exactly one committed change");
+    c.Command(401);c.Sample(family,second,15);VerifyHistoryReadout(c);
+    Check(c.history.UndoCount()==3&&!c.history.RedoCount()&&readoutView.Same(a)&&
+        a.AccessorySlot(0)->rowSelected==firstRow&&a.AccessorySlot(1)->rowSelected==secondRow,
+        "native redo refreshes all global readouts while preserving the user's view selection");
     // Existing nonzero successors must not turn a frame-zero overwrite into a
     // recycled second root; the first three records stay available afterwards.
     a.CurrentFrame()=0;Input(c,family);c.Command(commands[family]);

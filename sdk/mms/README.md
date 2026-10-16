@@ -2,6 +2,8 @@
 
 本 SDK 为 Windows x64 C ABI 1.0。宿主将 `MmsHostV1` 传给插件，插件只通过函数表访问服务。主 EXE 改名不影响入口解析。插件无需链接宿主、MMSAdapter 或 MMHack 的导入库。
 
+后续设计以[统一插件扩展架构](../../docs/PLUGIN_EXTENSION_ARCHITECTURE.md)为准：一套底层 C ABI，类型化、声明式及工具 SDK 均包装同一批对象，不维护两套实现。具体提案包括 [UI 与统一刷新](../../docs/PLUGIN_UI_PRESENTATION.md)、[多视口与洋葱皮](../../docs/PLUGIN_VIEWPORT_RENDERING.md)及[数据格式与编辑工具](../../docs/PLUGIN_DATA_EXTENSIONS.md)。这些新增服务和便利包装尚未实现；下文「当前服务」描述实际可调用范围。
+
 ## 开发环境
 
 使用 Visual Studio 2022 的 C++ 桌面开发工具、Windows SDK 和 CMake 3.21 以上版本。当前验证工具为 MSVC 19.44.35229、CMake 4.4.3。兼容构建固定 Windows SDK 10.0.19041.0，不使用 AVX2、CUDA 或 NVAPI 作为基础要求。C11 和 C++17 均有结构布局编译检查。

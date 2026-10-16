@@ -40,6 +40,13 @@ bool ReadLegacyNumber(HWND window, int id, double& value) noexcept {
     return end != text && errno != ERANGE && std::isfinite(value);
 }
 bool SelectTrack(MMDApp& app, curve_host::Kind kind, unsigned slot) noexcept {
+    // RefreshRequest preserves a multi-row selection when the target row is
+    // already active; only entering an unselected row makes it exclusive.
+    if (kind == curve_host::Kind::Accessory) {
+        const auto* object = app.AccessorySlot(slot);
+        if (object && object->rowSelected) return false;
+    } else if (app.GlobalTrackSelected(kind == curve_host::Kind::Camera ? GlobalTimelineTrack::Camera :
+        kind == curve_host::Kind::Light ? GlobalTimelineTrack::Light : GlobalTimelineTrack::SelfShadow)) return false;
     bool changed = false;
     for (unsigned index = 0; index < 4; ++index) {
         const auto selected = kind != curve_host::Kind::Accessory && index ==

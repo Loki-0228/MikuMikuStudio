@@ -394,7 +394,18 @@ MmsResult RunBoundObjectHistory(MMDApp& app, SharedHistory& history, bool redo, 
         } else {
             PublishBoundPoseEdit(app, history, true);
             if (changedObjects) RefreshPublishedUi(app, history, selection);
-            else curve_editor::NotifyOwnedChanged(app.MainWindow());
+            else {
+                // The journal already published its local track evaluation.
+                // Refresh values without seeking, while Operation still blocks
+                // control notifications from starting another scene edit.
+                RefreshBoundGlobalReadout(app);
+                const auto notified = Boundary([&]() -> MmsResult {
+                    curve_editor::NotifyOwnedChanged(app.MainWindow()); return MMS_OK;
+                });
+                // A pending-source allocation must not turn an applied undo
+                // into a failed command that a caller could repeat.
+                if (notified != MMS_OK) ScheduleUi(app, &selection);
+            }
         }
         return MMS_OK;
     });

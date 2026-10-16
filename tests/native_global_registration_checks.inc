@@ -251,11 +251,55 @@ void GlobalRegistrationLaterGrowthAndParents(){
         change.reset();plugins::ForgetSceneObject(parent.raw());f.app->ModelSlot(1)=nullptr;
     }
 }
+void GlobalRegistrationFiniteSampling(){
+    for(bool color:{false,true}){
+        GlobalRegistrationFixture f;
+        auto* keys=f.app->LightKeys();const float extreme=(std::numeric_limits<float>::max)();
+        (color?keys[0].color:keys[0].direction)[0]=-extreme;
+        (color?keys[1].color:keys[1].direction)[0]=extreme;
+        auto change=GlobalRegistrationPlan(f,1,20);GlobalRegistrationCommit(f,change);
+        // Every stored endpoint is finite. The native float subtraction at a
+        // middle frame nevertheless overflows before the double multiply.
+        f.app->CurrentFrame()=6;
+        const auto before=f.Digest();const auto undo=f.history.UndoCount(),redo=f.history.RedoCount();
+        Check(f.history.History(false)==MMS_E_ARGUMENT,
+            "nonfinite sampled light direction or color rejects undo before publication");
+        Check(f.Digest()==before&&f.history.UndoCount()==undo&&f.history.RedoCount()==redo,
+            "failed light sampling preserves native keys selections CPU light and history position");
+        f.app->CurrentFrame()=0;
+        Check(f.history.History(false)==MMS_OK,
+            "light undo remains available at a finite exact-key sample after rejected interpolation");
+        Check((color?f.app->LightColor():f.app->LightDirection())[0]==-extreme,
+            "finite native exact-key light value remains representable");
+        Check(f.history.History(true)==MMS_OK,
+            "light redo remains available after a safe exact-key undo");
+    }
+    for(unsigned kind=0;kind<3;++kind){
+        GlobalRegistrationFixture f;auto change=GlobalRegistrationPlan(f,kind,20);
+        std::unique_ptr<plugins::PreparedHistoryChange> candidate;
+        Check(change->Prepare(true,candidate)==MMS_OK&&candidate,
+            "prepare global candidate for allocation-free invalid-pose guard");
+        const float invalid=std::numeric_limits<float>::quiet_NaN();
+        if(kind==0)f.app->CameraPositionX()=invalid;
+        else if(kind==1)f.app->LightDirection()[0]=invalid;
+        else f.app->ShadowDistance()=invalid;
+        failAfter=1;const bool current=candidate->IsCurrent();const long remaining=failAfter;failAfter=-1;
+        Check(!current&&remaining==1,
+            "global stale guard rejects nonfinite current pose without allocating an exception");
+        std::shared_ptr<plugins::HistoryChange> rejected;
+        const auto status=kind==0?plugins::PlanCameraRegistration(*f.app,20,false,rejected):
+            kind==1?plugins::PlanLightRegistration(*f.app,20,rejected):
+                    plugins::PlanShadowRegistration(*f.app,20,.05f,rejected);
+        Check(status==MMS_E_ARGUMENT&&!rejected,
+            "global planning still rejects nonfinite current pose after separating pure pose reads");
+    }
+}
 void NativeGlobalRegistrationChecks(){
     std::puts("  global registration: native registrar and seek parity");GlobalRegistrationParity();
     std::puts("  global registration: root overwrite and no-op");GlobalRegistrationRootAndNoop();
     std::puts("  global registration: authored curves and target sampling");GlobalRegistrationCurves();
     std::puts("  global registration: private allocation failures and stale guards");GlobalRegistrationFailures();
     std::puts("  global registration: growth selection and persistent camera parents");GlobalRegistrationLaterGrowthAndParents();
+    std::puts("  global registration: finite target sampling and allocation-free guards");GlobalRegistrationFiniteSampling();
 }
 }

@@ -23,6 +23,179 @@ struct HistoryValue : HistoryChange {
     }
     uint64_t RetainedBytes() const noexcept override { return bytes; }
 };
+struct HistoryCleanupValue : HistoryValue {
+    std::function<void()> candidateDestroyed, ownerDestroyed;
+    using HistoryValue::HistoryValue;
+    ~HistoryCleanupValue() override { if (ownerDestroyed) ownerDestroyed(); }
+    struct Prepared final : HistoryValue::Candidate {
+        HistoryCleanupValue& value;
+        Prepared(HistoryCleanupValue& c, bool forward) : Candidate(c, forward), value(c) {}
+        ~Prepared() override { if (value.candidateDestroyed) value.candidateDestroyed(); }
+    };
+    MmsResult Prepare(bool forward, std::unique_ptr<PreparedHistoryChange>& out) override {
+        if (throwPrepare) throw std::bad_alloc();
+        if (fail) return MMS_E_NOT_READY;
+        auto candidate = std::make_unique<Prepared>(*this, forward);
+        if (!candidate->IsCurrent()) return MMS_E_STALE;
+        out = std::move(candidate); return MMS_OK;
+    }
+};
+static void SharedHistoryCleanupBoundaryChecks() {
+    // Native token cancellation and stale by-value commit both release their
+    // final resource owners after the normal prepare/commit gate has ended.
+    for (bool staleCommit : {false, true}) {
+        StorageStore storage; SharedHistory history(storage);
+        int value = 0, candidateCalls = 0, ownerCalls = 0;
+        std::unique_ptr<SharedHistory::NativeTransaction> token;
+        CHECK(history.PrepareNative("seed", std::make_shared<HistoryValue>(value, 0, 1), token) == MMS_OK);
+        CHECK(history.CommitNative(std::move(token)) == MMS_OK);
+        uint64_t revision = 0, after = 0;
+        CHECK(history.Revision(revision) == MMS_OK);
+        const auto bytes = history.RetainedBytes();
+        MmsResult candidateUndo = MMS_OK, candidateReset = MMS_OK, ownerUndo = MMS_OK, ownerReset = MMS_OK;
+        auto change = std::make_shared<HistoryCleanupValue>(value, 1, 2);
+        change->candidateDestroyed = [&] {
+            ++candidateCalls;
+            candidateUndo = history.History(false); candidateReset = history.Reset();
+        };
+        change->ownerDestroyed = [&] {
+            ++ownerCalls;
+            ownerUndo = history.History(false); ownerReset = history.Reset();
+        };
+        std::weak_ptr<HistoryChange> weak = change;
+        CHECK(history.PrepareNative("cancel cleanup", change, token) == MMS_OK);
+        change->stale = staleCommit; change.reset();
+        if (staleCommit) CHECK(history.CommitNative(std::move(token)) == MMS_E_STALE);
+        else token.reset();
+        CHECK(!token && weak.expired() && candidateCalls == 1 && ownerCalls == 1);
+        CHECK(candidateUndo == MMS_E_BUSY && candidateReset == MMS_E_BUSY &&
+            ownerUndo == MMS_E_BUSY && ownerReset == MMS_E_BUSY);
+        CHECK(history.Revision(after) == MMS_OK && after == revision && value == 1 &&
+            history.UndoCount() == 1 && !history.RedoCount() && history.RetainedBytes() == bytes);
+        CHECK(history.History(false) == MMS_OK && value == 0);
+    }
+
+    // A failed consumed edit is no longer in transactions_. Neither its
+    // cancel callback nor its last native owner may traverse/clear history.
+    for (unsigned failure = 0; failure != 4; ++failure) {
+        StorageStore storage;
+        MmsResult rejectEnter = MMS_OK; bool throwEnter = false;
+        SharedHistory history(storage, [&]() -> MmsResult {
+            if (throwEnter) { throwEnter = false; throw std::bad_alloc(); }
+            const auto result = rejectEnter; rejectEnter = MMS_OK; return result;
+        }, 2);
+        EditStore edit(history, storage);
+        StorageClient sc; sc.id = "example.cleanup"; storage.Api(sc);
+        SerializerFixture state; auto serializer = state.Api(); MmsHandle provider = 0;
+        CHECK(storage.Register(sc, S("example.cleanup"), &serializer, sizeof(serializer), &provider) == MMS_OK);
+        EditClient client; client.id = sc.id; auto api = edit.Api(client);
+        int value = 0, retired = 0;
+        std::unique_ptr<SharedHistory::NativeTransaction> token;
+        for (int next = 1; next <= 3; ++next) {
+            auto seed = std::make_shared<HistoryValue>(value, next - 1, next);
+            if (next == 1) seed->destroyed = &retired;
+            CHECK(history.PrepareNative("seed cleanup", seed, token) == MMS_OK);
+            CHECK(history.CommitNative(std::move(token)) == MMS_OK);
+        }
+        CHECK(history.History(false) == MMS_OK && value == 2 && retired == 0);
+        uint64_t revision = 0, after = 0;
+        CHECK(history.Revision(revision) == MMS_OK);
+        const auto bytes = history.RetainedBytes();
+        int calls[3]{}; bool busy[3]{};
+        MmsResult undo[3]{}, redo[3]{}, reset[3]{};
+        auto observe = [&](unsigned stage) {
+            ++calls[stage]; busy[stage] = edit.InCallback();
+            undo[stage] = history.History(false); redo[stage] = history.History(true);
+            reset[stage] = history.Reset(); history.Collect();
+        };
+        EditParticipantFixture participant{&state, 0, 7}; auto table = participant.Api("example.cleanup");
+        participant.onCancel = [&] { observe(0); };
+        auto change = std::make_shared<HistoryCleanupValue>(value, 2, 8);
+        change->candidateDestroyed = [&] { observe(1); };
+        change->ownerDestroyed = [&] { observe(2); };
+        std::weak_ptr<HistoryChange> weak = change;
+        MmsHandle transaction = 0;
+        CHECK(api.begin(api.context, S("rejected mixed cleanup"), revision, &transaction) == MMS_OK);
+        CHECK(api.join(api.context, transaction, &table) == MMS_OK && edit.JoinNative(client, transaction, change) == MMS_OK);
+        CHECK(api.prepare(api.context, transaction) == MMS_OK);
+        MmsResult expected = MMS_E_STALE;
+        if (failure == 0) change->stale = true;
+        else if (failure == 1) {
+            CHECK(storage.Unregister(sc, provider) == MMS_OK); expected = MMS_E_NOT_READY;
+        } else if (failure == 2) rejectEnter = expected = MMS_E_BUSY;
+        else { throwEnter = true; expected = MMS_E_MEMORY; }
+        change.reset();
+        CHECK(api.commit(api.context, transaction) == expected);
+        CHECK(!edit.HasPending() && !edit.InCallback() && weak.expired());
+        CHECK(participant.cancels == 1 && participant.commits == 0 && participant.releases == 1);
+        for (unsigned stage = 0; stage != 3; ++stage)
+            CHECK(calls[stage] == 1 && busy[stage] && undo[stage] == MMS_E_BUSY &&
+                redo[stage] == MMS_E_BUSY && reset[stage] == MMS_E_BUSY);
+        CHECK(retired == 0 && value == 2 && state.value == 0 && history.RetainedBytes() == bytes &&
+            history.UndoCount() == 1 && history.RedoCount() == 1);
+        CHECK(history.Revision(after) == MMS_OK && after == revision);
+        CHECK(api.commit(api.context, transaction) == MMS_E_STALE);
+        history.Collect(); CHECK(retired == 1);
+        CHECK(api.undo(api.context) == MMS_OK && value == 1);
+        CHECK(api.redo(api.context) == MMS_OK && value == 2);
+    }
+
+    // A forwarding host can perform post-traversal cleanup before returning
+    // to EditStore. It must not inherit a reusable "busy is allowed" flag.
+    struct Forwarder final : EditHost {
+        SharedHistory& target;
+        std::function<void()> after;
+        explicit Forwarder(SharedHistory& h) : target(h) {}
+        void AttachStore(EditStore* store) override { target.AttachStore(store); }
+        void DetachStore(EditStore* store) noexcept override { target.DetachStore(store); }
+        MmsResult Revision(uint64_t& r) override { return target.Revision(r); }
+        MmsResult Enter() override { return target.Enter(); }
+        void Leave() noexcept override { target.Leave(); }
+        MmsResult Reserve(std::shared_ptr<const EditRecord> r, std::unique_ptr<EditPublication>& p) override {
+            return target.Reserve(std::move(r), p);
+        }
+        MmsResult History(bool redo) override {
+            const auto result = target.History(redo); if (after) after(); return result;
+        }
+        void Poison() noexcept override { target.Poison(); }
+    };
+    StorageStore storage; SharedHistory history(storage); Forwarder host(history); EditStore edit(host, storage);
+    EditClient client; client.id = "example.forwarding"; auto api = edit.Api(client);
+    int value = 0;
+    std::unique_ptr<SharedHistory::NativeTransaction> token;
+    for (int next : {1, 2}) {
+        CHECK(history.PrepareNative("forwarded", std::make_shared<HistoryValue>(value, next - 1, next), token) == MMS_OK);
+        CHECK(history.CommitNative(std::move(token)) == MMS_OK);
+    }
+    MmsResult nested = MMS_OK;
+    host.after = [&] { CHECK(edit.InCallback()); nested = history.History(false); };
+    CHECK(api.undo(api.context) == MMS_OK && nested == MMS_E_BUSY && value == 1);
+    CHECK(history.UndoCount() == 1 && history.RedoCount() == 1);
+    CHECK(api.redo(api.context) == MMS_OK && nested == MMS_E_BUSY && value == 2);
+    host.after = {};
+
+    // The public EditStore boundary must enforce pending exclusion even for
+    // a host that does not inspect EditStore itself.
+    {
+        StorageStore isolatedStorage; EditHostFixture isolatedHost(isolatedStorage);
+        EditStore isolatedEdit(isolatedHost, isolatedStorage);
+        StorageClient sc; sc.id = "example.pending.host"; isolatedStorage.Api(sc);
+        SerializerFixture state; auto serializer = state.Api(); MmsHandle provider = 0;
+        CHECK(isolatedStorage.Register(sc, S("example.pending.host"), &serializer, sizeof(serializer), &provider) == MMS_OK);
+        EditClient owner; owner.id = sc.id; auto ownApi = isolatedEdit.Api(owner);
+        EditParticipantFixture participant{&state, 0, 5}; auto table = participant.Api("example.pending.host");
+        MmsHandle transaction = 0;
+        CHECK(ownApi.begin(ownApi.context, S("seed"), isolatedHost.revision, &transaction) == MMS_OK);
+        CHECK(ownApi.join(ownApi.context, transaction, &table) == MMS_OK &&
+            ownApi.prepare(ownApi.context, transaction) == MMS_OK && ownApi.commit(ownApi.context, transaction) == MMS_OK);
+        CHECK(ownApi.begin(ownApi.context, S("open but unprepared"), isolatedHost.revision, &transaction) == MMS_OK);
+        const auto revision = isolatedHost.revision;
+        CHECK(ownApi.undo(ownApi.context) == MMS_E_BUSY && ownApi.redo(ownApi.context) == MMS_E_BUSY &&
+            state.value == 5 && isolatedHost.cursor == 1 && isolatedHost.revision == revision);
+        ownApi.cancel(ownApi.context, transaction);
+        CHECK(ownApi.undo(ownApi.context) == MMS_OK && state.value == 0);
+    }
+}
 struct HistoryObject {
     int value = 0;
     int* destroyed;
@@ -281,6 +454,7 @@ static void SharedHistoryPendingPluginChecks() {
     }
 }
 static void SharedHistoryChecks() {
+    SharedHistoryCleanupBoundaryChecks();
     SharedHistoryPendingPluginChecks();
     SharedHistoryDynamicBudgetChecks();
     SharedHistoryEditBoundaryChecks();

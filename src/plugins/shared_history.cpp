@@ -130,9 +130,11 @@ void SharedHistory::Publish(Publication& p) noexcept {
 }
 MmsResult SharedHistory::History(bool redo) {
     if (auto r = Ready()) return r;
-    // EditStore::History holds its callback guard while forwarding here.
-    // Pending transactions block traversal; that forwarding guard must not.
+    // EditStore::History holds its callback guard while forwarding here. Only
+    // its one-shot request may pass: cancel/resource callbacks also run with
+    // that guard and may already have removed their pending transaction.
     if (edits_ && edits_->HasPending()) return MMS_E_BUSY;
+    if (edits_ && edits_->InCallback() && !edits_->ConsumeHistoryRequest()) return MMS_E_BUSY;
     if (auto r = Enter()) return r;
     Unlock unlock{*this};
     return Boundary([&]() -> MmsResult {
@@ -177,6 +179,13 @@ SharedHistory::NativeTransaction::~NativeTransaction() {
     if (!owner_) return;
     if (previous_) previous_->next_ = next_; else owner_->pending_ = next_;
     if (next_) next_->previous_ = previous_;
+    // Cancellation and a rejected by-value CommitNative can destroy this
+    // token after the caller's Enter scope has ended. Keep native/resource
+    // cleanup inside the same reentry exclusion as a successful commit.
+    const bool entered = owner_->entered_;
+    owner_->entered_ = true;
+    publication_.reset();
+    owner_->entered_ = entered;
 }
 void SharedHistory::InvalidatePending() noexcept {
     while (pending_) {
@@ -338,6 +347,7 @@ MmsResult SharedHistory::PrepareReset(std::unique_ptr<ResetTransaction>& out) {
 }
 void SharedHistory::Collect() noexcept {
     if (GetCurrentThreadId() != thread_ || entered_ || storage_.InCallback() || storage_.Prepared()) return;
+    if (edits_ && edits_->InCallback()) return;
     // Resource destructors are never called by publication. Guard callbacks
     // from destructors too; callers perform this at a safe idle point.
     entered_ = true; retired_.clear(); entered_ = false;

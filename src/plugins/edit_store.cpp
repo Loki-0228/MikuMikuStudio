@@ -90,7 +90,9 @@ MmsResult EditStore::Commit(EditClient& c,MmsHandle h){
     if(auto r=Ready(c))return r;
     auto found=transactions_.find(h);if(found==transactions_.end()||found->second->owner!=&c)return MMS_E_STALE;
     if(!found->second->prepared)return MMS_E_CONFLICT;
-    auto t=std::move(found->second);transactions_.erase(found);Busy guard(busy_);
+    // The guard must outlive the consumed transaction: candidate and native
+    // owner destruction is part of cleanup, not a new edit-safe boundary.
+    Busy guard(busy_);auto t=std::move(found->second);transactions_.erase(found);
     auto r=Boundary([&]() -> MmsResult {
         auto entered=host_.Enter();if(entered)return entered;HostLock lock{host_};
         uint64_t revision=0;if(auto result=host_.Revision(revision))return result;if(revision!=t->expected)return MMS_E_STALE;
@@ -108,10 +110,7 @@ MmsResult EditStore::Commit(EditClient& c,MmsHandle h){
         }
         t->publication->Publish();t->publication.reset();t->participants.clear();return MMS_OK;
     });
-    if(r){
-        for(auto it=t->participants.rbegin();it!=t->participants.rend();++it)if(it->table.cancel)
-            if(Boundary([&]{it->table.cancel(it->table.context);return MMS_OK;})){poisoned_=true;host_.Poison();}
-    }
+    if(r)CancelAll(*t);
     return r;
 }
 void EditStore::Cancel(EditClient& c,MmsHandle h){
@@ -121,8 +120,8 @@ void EditStore::Cancel(EditClient& c,MmsHandle h){
 }
 MmsResult EditStore::History(EditClient& c,bool redo){
     if(auto r=Ready(c))return r;
-    for(auto& [h,t]:transactions_)if(t->prepared)return MMS_E_BUSY;
-    Busy guard(busy_);const auto result=host_.History(redo);
+    if(HasPending())return MMS_E_BUSY;
+    Busy guard(busy_);Busy request(historyRequest_);const auto result=host_.History(redo);
     return result==MMS_E_VERSION?MMS_E_NOT_READY:result;
 }
 bool EditStore::Retire(EditClient& c){

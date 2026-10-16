@@ -5,6 +5,7 @@
 namespace mikudancestudio::plugins {
 class HistoryChange;
 class EditStore;
+class SharedHistory;
 struct EditRecord {
     std::string label;
     StoredRecords before, after;
@@ -35,6 +36,7 @@ public:
 };
 struct EditClient { EditStore* store=nullptr; std::string id; bool stopping=false; };
 class EditStore {
+    friend class SharedHistory;
     struct Participant { std::string id; MmsTransactionParticipantV1 table; MmsHandle serializer; };
     struct Transaction {
         EditClient* owner;
@@ -48,7 +50,7 @@ class EditStore {
     DWORD thread_=GetCurrentThreadId();
     EditHost& host_;
     StorageStore& storage_;
-    bool busy_=false,poisoned_=false;
+    bool busy_=false,poisoned_=false,historyRequest_=false;
     MmsHandle next_=1;
     std::map<MmsHandle,std::unique_ptr<Transaction>> transactions_;
     MmsResult Ready(EditClient&) const;
@@ -59,6 +61,12 @@ class EditStore {
     void Cancel(EditClient&,MmsHandle);
     MmsResult CancelAll(Transaction&) noexcept;
     MmsResult History(EditClient&,bool);
+    // Only the immediate EditStore::History forwarding may enter a journal
+    // while busy_. Consume once so cleanup and nested host callbacks cannot
+    // inherit permission after the journal's traversal has returned.
+    bool ConsumeHistoryRequest() noexcept {
+        const bool requested=historyRequest_;historyRequest_=false;return requested;
+    }
 public:
     EditStore(EditHost& host,StorageStore& storage):host_(host),storage_(storage){host_.AttachStore(this);}
     ~EditStore();

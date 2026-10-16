@@ -67,6 +67,7 @@
 | P3 | 当前帧选中骨骼登记 | 本机已验证 | 按钮 500 显式绑定下支持插入、覆写、自动插值、缩放和跨模型共同撤销；私有计划与原子发布不写旧环。物理开关变化拒绝；普通宿主仍用旧路径。 |
 | P3 | 当前帧表情登记 | 本机已验证 | 四个表情登记按钮接入私有计划，保存键和三族标记；原始曲线保留，首次提交不求值，往返只重采目标表情。私有扩容、选择回放、故障与真实 PMX／PMD 控件通过；普通宿主仍用旧路径。 |
 | P3 | 当前帧显示、IK 与外亲登记 | 本机已验证 | 按钮 438 接入私有计划，深层数组与键池扩容在发布前准备；首次提交不求值，往返按当前帧恢复关联状态。原生对照、故障与真实插件交错撤销通过；普通宿主仍用旧路径。 |
+| P3 | 相机、灯光、附件与自阴影登记 | 本机已验证 | 按钮 452／468／487／565 接入私有计划，附件七项输入和阴影距离与键共同提交。扩容、完整选择回放、父对象身份、原始曲线、跨帧局部求值及真实插件与导入交错历史通过；普通宿主仍用旧路径。 |
 | P3 | 模型三族删键与混合范围缩放 | 本机已验证 | 显式绑定下将骨骼、表情、显示／IK／外亲键合为一条历史；范围对话框支持 7 种勾选组合，保留旧槽序覆盖、名称匹配与插值规则，共享最大帧、游标和标记只发布一次。空操作和整笔失败保留 redo。 |
 | P3 | 模型插值粘贴及重置 | 本机已验证 | 显式绑定下接入按钮 431／432，支持 X、Y、Z、旋转、缩放及全部通道。一次操作一条历史，恢复原生及自由曲线作者数据；往返保留当前姿态、播放头和后来调整的选中标记，无变化保留 redo。 |
 | P3 | 删键及范围操作后的局部姿态求值 | 本机已验证 | 每个方向按当前帧采样受影响的干净骨骼，保留未登记姿态；真实 Seek 位级对照、自由曲线、换帧跨模型撤销和无分配发布通过。物理模式切换和 IK 启动仍拒绝。 |
@@ -78,7 +79,7 @@
 | P3 | 实测插入候选 | 本机已验证 | 无固定字节参数的单项及批量插入候选复用目标计量，并计入包装记录；精确预算边界、取消、往返、增长拒绝及失败保留 redo 通过。这些结果针对已加载对象的内部组件，不替代私有加载入口验证。 |
 | P3 | 模型及附件私有导入准备 | 本机已验证 | 独占对象及关键帧、局部路径、私有纹理增量和模型物理候选；准备失败或取消回收本次资源，不写活动槽位。VAC 保留源路径并按实际 X 目录解析纹理。已加载旧效果 hook 时保守拒绝；EMM、EMD 仍显式加载。分配失败、物理准备、纹理取消及六类真实 GPU 缓冲写入故障通过。 |
 | P3 | 受控导入及文件选择 `435`、`472` | 本机已验证 | 显式绑定后由 `ImportModel`、`ImportAccessory` 形成一个实测历史节点，提交后刷新选择及列表，往返复用保留资源。picker 使用绝对初始目录，返回后恢复 cwd；取消或失败不改记忆目录、路径工作区及当前姿态。PMX 原名、PMD 中文名宿主通过导入及离线撤销、重做。 |
-| P3 | 原生统一撤销及可写属性 | 未开放 | 部分姿态命令、骨骼／表情／显示登记、删键、范围缩放、插值、对象删除与私有导入已受控验证。其余原生写入、全局编辑和外部资源仍待迁移。普通启动查询 `mms.edit` 仍返回 NOT_FOUND，可写属性仍为 NOT_READY。 |
+| P3 | 原生统一撤销及可写属性 | 未开放 | 部分姿态命令、骨骼／表情／显示和四类全局登记、删键、范围缩放、插值、对象删除与私有导入已受控验证。其余原生写入、全局编辑和外部资源仍待迁移。普通启动查询 `mms.edit` 仍返回 NOT_FOUND，可写属性仍为 NOT_READY。 |
 | P3 | animation 轨道/键、层、片段、变速、烘焙和选择 | 未实现 | 服务返回 NOT_FOUND。 |
 | P3 | storage serializer、工程数据和成对保存 | 本机已验证 | C ABI、两阶段加载、保存数据租约、缺失插件保留；PMM 与 JSON 配套哈希、恢复记录、旧对回退、自动备份轮换；真实 DLL 原名/中文 EXE 往返通过。 |
 | P3 | 显式导入和扩展文件重新关联 | 未实现 | EMM/EMD 保持显式导入；不匹配的 sidecar 拒绝自动应用，保留原件。 |
@@ -92,12 +93,31 @@
 
 日志位于本地 `build/`，不作为发行内容。探针只启动独立目录的隐藏 MMS，并使用独立 LOCALAPPDATA。
 
-表情及显示登记整合后，原生历史累计 38,960 项、ABI 契约 1,382 项和 16 组相关 CTest 全部通过。登记专项覆盖 2,118 项；真实 PMX／PMD 控件覆盖四行表情、显示／IK／外亲、跨帧插件交错撤销、重复登记保留 redo，以及播放、相机模式、待提交插件事务和无效输入的拒绝。故障注入覆盖 C++ `operator new`，不包含系统 `malloc`／`calloc` 失败注入。普通启动仍不提供 `mms.edit`。
+相机、灯光、附件和自阴影登记整合后，原生历史累计 92,245 项检查、ABI 契约 1,382 项和 16 组相关 CTest 全部通过。真实 PMX／PMD 控件覆盖四类全局登记、既有表情与显示登记、跨帧插件交错撤销，以及全局登记与附件私有导入混合往返。故障注入覆盖 C++ `operator new`，不包含系统 `malloc`／`calloc` 失败注入。普通启动仍不提供 `mms.edit`。
+
+统一 C ABI 与分层 SDK 的依赖、对象身份及实施顺序见[扩展架构](PLUGIN_EXTENSION_ARCHITECTURE.md)。复杂美化、事件驱动动画和四类刷新见 [UI 绘制与交互方案](PLUGIN_UI_PRESENTATION.md)；多视口、不同渲染器及洋葱皮见[视口和渲染服务方案](PLUGIN_VIEWPORT_RENDERING.md)；格式、公共与专用数据、编辑器及原子历史见[数据扩展方案](PLUGIN_DATA_EXTENSIONS.md)。这些文档描述后续实现，不代表当前已提供相应服务。
+
+本轮已把 ABI 源码迁移到独立工作目录，保留 `codex/plugin-abi` 分支名；原目录回到 `main`。目录、备份及构建来源见[源码隔离说明](development/abi-source-isolation.md)。审查修复全局登记重复选择清空其他轨道、撤销后参数控件未同步、有限灯光键采样溢出，以及事务取消和析构阶段的历史重入。此次原生历史累计 **92,273** 项、ABI 契约 **1,523** 项通过；动画宿主测试、真实全局控件与插件历史往返及普通宿主启动也通过。此前 16 组 CTest 为上批结果，本轮仅重跑 ABI 契约和动画宿主两组 CTest，另执行下列独立宿主探针。普通宿主仍不提供 `mms.edit`。
+
+| 本轮验证 | 结果 | 独立 ABI 工作目录内日志 |
+| --- | --- | --- |
+| 原生历史 | 92,273 项；覆盖失败原子性、采样溢出及安全时间点往返 | `build/abi-review-native.log`、`build/abi-review-native/report.json` |
+| ABI 契约及动画宿主 | 1,523 项 ABI 检查，两组 CTest 通过；覆盖未准备事务阻止历史、取消和析构回调重入、正常转发 | `build/abi-review-ctest.log` |
+| 四类全局控件 | PMX 原名、PMD 中文改名；撤销/重做读数同步，多轨道选择保持和插件交错历史通过 | `build/abi-review-global-host.log` |
+| 插件编辑寿命 | 真实插件历史、工程重置、重开及关闭通过 | `build/abi-review-edit-host.log` |
+| 普通宿主 | 原名和中文改名；菜单、工具栏、面板与关闭通过 | `build/abi-review-smoke.log` |
+| 构建与导入检查 | 完整宿主及四个测试目标编译；五个二进制未直接或延迟导入所检查的 DX12、DXGI、d3dcompiler_47、CUDA、NVAPI 库 | `build/abi-review-build.log`、`build/abi-review-pe.json` |
+
+本轮本机结果不替代 Win7 或 AMD 真机验收。上述检查未发现的故障仍可能存在，不能据此声明所有原生写入或新设计已完成。
 
 私有导入最终记录为 `build/abi-private-import-native-3/report.json` 和 `build/abi-private-import-host-2/report.json`。原生历史累计 36,842 项通过；PMX 原名、PMD 中文名宿主均返回 0，包含主顶点、轮廓顶点及索引缓冲各自 Lock／Unlock 六类故障注入。四处新增解析索引检查经过静态复核，本批未新增其畸形输入运行用例，不能视为解析器的完整安全验证。新增纹理在同一 `Collector` 内去重，不同历史节点仍可保守重复收费；已发布缓存归渲染器管理并跨撤销保留，未实现全日志共享账本。
 
 | 验证 | 结果 | 日志 |
 | --- | --- | --- |
+| 全局及附件登记原生回归 | 完整历史累计 92,245 项通过；旧注册器和求值对照、扩容及尾部选择、父对象替换、原始曲线、跨附件往返、无分配发布和分配失败 | `plugin-abi-global-registration-native-final.log`、`abi-global-registration-native-final/report.json` |
+| 全局登记真实宿主 | PMX 原名、PMD 中文 EXE 均 exit 0；四按钮、真实 DLL、跨帧混合历史、七字符输入、零帧覆写、无变化与拒绝、附件导入后的池身份恢复 | `plugin-abi-global-registration-host-1.log`、`abi-global-registration-host-1/report.json` |
+| 全局登记整合回归 | ABI 1,382 项及 16 组 CTest、既有模型登记、私有导入、对象历史、原生／插件历史与普通启动均通过 | `plugin-abi-global-registration-ctest.log`、`plugin-abi-global-registration-model-host.log`、`plugin-abi-global-registration-import.log`、`plugin-abi-global-registration-object.log`、`plugin-abi-global-registration-edit.log`、`plugin-abi-global-registration-smoke.log` |
+| 全局登记构建与平台边界 | 18 个目标构建通过；宿主 x64、子系统 6.1，六文件无清单所列可选图形／厂商 DLL 直接或延迟导入。资源缓存复核后恢复 38 个工程的正常资源命令。Win7／AMD 真机未验收 | `plugin-abi-global-registration-build-2.log`、`plugin-abi-global-registration-build-3.log`、`plugin-abi-global-registration-build-checks.log`、`plugin-abi-global-registration-pe.json`、`plugin-abi-global-registration-restore.log` |
 | 表情及显示登记原生回归 | 专项 2,118 项、完整历史累计 38,960 项通过；旧函数对照、深层数组、扩容、跨模型与跨帧往返、完整选择回放、原始曲线、无分配发布及 C++ 分配失败 | `plugin-abi-registration-focused-1.log`、`plugin-abi-registration-native-final.log`、`abi-registration-native-final/report.json` |
 | 表情及显示登记真实宿主 | PMX 原名与 PMD 中文 EXE 均 exit 0；真实按钮、真实编辑 DLL、单次事务交错、未登记姿态保持、无变化及拒绝不回退旧环 | `plugin-abi-registration-host-probe-2.log`、`abi-registration-host-2/report.json` |
 | 插件待提交事务与相关回归 | ABI 1,382 项及 16 组 CTest 通过；打开和已准备插件事务均阻止独立原生 prepare、commit、undo／redo；取消后可重新提交，插件正常提交及混合事务保持可用 | `plugin-abi-registration-regressions-final.log` |
