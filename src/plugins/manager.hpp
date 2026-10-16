@@ -2,6 +2,7 @@
 #include "ui_registry.hpp"
 #include "loader_win32.hpp"
 #include "scene_store.hpp"
+#include "storage_store.hpp"
 
 namespace mikudancestudio::plugins {
 struct PluginStatus { std::string id, stage, error; fs::path package; };
@@ -17,8 +18,9 @@ public:
     void Load(const fs::path& pluginsRoot);
     void Drain();
     bool Stop();
-    void Event(uint32_t kind);
+    void Event(uint32_t kind, MmsBytes payload = {}, uint32_t version = 0);
     UiRegistry& Ui();
+    StorageStore& Storage();
     bool InCallback() const;
     std::vector<PluginStatus> Status() const;
 };

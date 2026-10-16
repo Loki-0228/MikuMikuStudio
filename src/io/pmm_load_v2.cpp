@@ -1,3 +1,4 @@
+#include "mikudancestudio/plugin_storage.hpp"
 #include "mikudancestudio/key_pool.hpp"
 #include "mikudancestudio/mmv4mms.hpp"
 #include "mikudancestudio/native_media.hpp"
@@ -3314,6 +3315,7 @@ void LoadSceneV2(MMDApp* app, int fd) {  // was Sub450000, VA 0x00450000
     native_mesh::ProjectOpened(app, app->EnvFileName());
     mmv4mms::ProjectOpened(app, app->EnvFileName());
     recent_projects::Record(app, app->EnvFileName());
+    plugins::CommitProjectLoad(app);
 }
 
 }  // namespace mikudancestudio

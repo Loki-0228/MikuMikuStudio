@@ -1,3 +1,4 @@
+#include "mikudancestudio/plugin_storage.hpp"
 #include "mikudancestudio/key_pool.hpp"
 #include "mikudancestudio/mmv4mms.hpp"
 #include "mikudancestudio/native_media.hpp"
@@ -2219,6 +2220,7 @@ void LoadSceneV1(MMDApp* app, int fd) {
     LoadSceneV1_SuccessTail(ctx);                     // 0x45E149..0x45E7F7
     native_mesh::ProjectOpened(app, app->EnvFileName());
     mmv4mms::ProjectOpened(app, app->EnvFileName());
+    plugins::CommitProjectLoad(app);
     recent_projects::Record(app, app->EnvFileName());
 }
 

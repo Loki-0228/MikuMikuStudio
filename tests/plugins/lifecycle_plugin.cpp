@@ -1,6 +1,7 @@
 #include <mms/ui.h>
 #include <mms/surface.h>
 #include <mms/scene.h>
+#include <mms/storage.h>
 #include <string>
 #include <cstring>
 #include <thread>
@@ -9,7 +10,7 @@
 #include <Windows.h>
 template<class T> static MmsHeader H() { return {sizeof(T), 1, 0}; }
 static MmsString S(const char* s) { return {s, std::strlen(s)}; }
-struct Plugin { MmsHostV1 host; MmsUiApiV1 ui{}; MmsUiSurfaceApiV1 surface{}; MmsSceneApiV1 scene{}; MmsHandle snapshot=0; std::string id; MmsHandle command = 0, menu = 0, button = 0, factory = 0, panel = 0, panel2 = 0; int stops = 0; };
+struct Plugin { MmsHostV1 host; MmsUiApiV1 ui{}; MmsUiSurfaceApiV1 surface{}; MmsSceneApiV1 scene{}; MmsHandle snapshot=0; std::string id; MmsHandle command = 0, menu = 0, button = 0, factory = 0, panel = 0, panel2 = 0, serializer = 0; int stops = 0, projectValue = 0, candidateValue = 0; };
 static void Log(Plugin* p, const char* s) {
     p->host.log(p->host.context, 1, S(s));
     wchar_t path[32768]{}; auto n = GetEnvironmentVariableW(L"MMS_ABI_PROBE_LOG", path, 32768);
@@ -52,7 +53,23 @@ static MmsResult ReadScene(Plugin* p, bool retain) {
 }
 static MmsResult MMS_CALL Invoke(void* context, MmsObjectRef, MmsSpan, MmsHandle) {
     auto* p=static_cast<Plugin*>(context);Log(p,"COMMAND_INVOKED");
+    if(p->serializer)++p->projectValue;
     return p->id.find("scene")!=std::string::npos?ReadScene(p,false):MMS_OK;
+}
+static MmsResult RegisterSerializer(Plugin* p){
+    MmsSerializerV1 s{H<MmsSerializerV1>(),p};
+    s.prepareLoad=[](void* context,MmsBytes bytes,uint32_t schema,MmsHandle* out)->MmsResult{
+        auto* p=static_cast<Plugin*>(context);if(schema && (schema!=1 || bytes.bytes!=sizeof(int)))return MMS_E_VERSION;
+        p->candidateValue=0;if(schema)std::memcpy(&p->candidateValue,bytes.data,sizeof(int));*out=1;Log(p,"SERIALIZER_PREPARE");return MMS_OK;
+    };
+    s.commitLoad=[](void* context,MmsHandle){auto* p=static_cast<Plugin*>(context);p->projectValue=p->candidateValue;Log(p,"SERIALIZER_COMMIT");};
+    s.cancelLoad=[](void* context,MmsHandle){Log(static_cast<Plugin*>(context),"SERIALIZER_CANCEL");};
+    s.save=[](void* context,MmsBytes* bytes,uint32_t* schema,MmsHandle* out)->MmsResult{
+        auto* p=static_cast<Plugin*>(context);wchar_t fail[8]{};if(GetEnvironmentVariableW(L"MMS_TEST_SERIALIZER_FAIL",fail,8))return MMS_E_FAILED;
+        *bytes={&p->projectValue,sizeof(int)};*schema=1;*out=2;Log(p,"SERIALIZER_SAVE");return MMS_OK;
+    };
+    s.releaseBytes=[](void* context,MmsHandle){Log(static_cast<Plugin*>(context),"SERIALIZER_RELEASE");};
+    return p->host.registerProvider(p->host.context,S("mms.serializer"),{p->id.data(),p->id.size()},&s,sizeof(s),&p->serializer);
 }
 static MmsResult MMS_CALL Create(const MmsHostV1* host, const MmsCreateInfoV1* info, void** out) {
     *out = nullptr; auto* p = new Plugin{*host}; p->id.assign(info->pluginId.data, size_t(info->pluginId.bytes));
@@ -76,6 +93,7 @@ static MmsResult MMS_CALL Start(void* context) {
     const auto id = p->id + ".command"; command.info.id = {id.data(), id.size()}; command.info.ownerPlugin = {p->id.data(), p->id.size()}; command.info.label = S("Lifecycle test");
     command.context = p; command.getState = State; command.invoke = Invoke;
     auto r = p->ui.registerCommand(p->ui.context, &command, &p->command); if (r) return r;
+    if(p->id.find("storage")!=std::string::npos){r=RegisterSerializer(p);if(r)return r;}
     if(p->id.find("scenelease")!=std::string::npos) {r=ReadScene(p,true);if(r)return r;}
     if (p->id.find("failstart") != std::string::npos) return MMS_E_FAILED;
     if (p->id.find("gui") != std::string::npos) {
@@ -110,7 +128,21 @@ static MmsResult MMS_CALL Start(void* context) {
     }
     return MMS_OK;
 }
-static void MMS_CALL Event(void* context, const MmsEventV1* event) { if (event->kind == MMS_EVENT_UI_CLOSING) Log(static_cast<Plugin*>(context), "UI_CLOSING"); }
+static void MMS_CALL Event(void* context, const MmsEventV1* event) {
+    auto* p=static_cast<Plugin*>(context);
+    if(event->kind==MMS_EVENT_UI_CLOSING)Log(p,"UI_CLOSING");
+    if(p->serializer && (event->kind==MMS_EVENT_PROJECT_OPENED || event->kind==MMS_EVENT_PROJECT_SAVED)){
+        if(event->payloadVersion!=1 || event->payload.bytes!=sizeof(MmsProjectEventV1)){Log(p,"PROJECT_PAYLOAD_FAIL");return;}
+        auto& project=*static_cast<const MmsProjectEventV1*>(event->payload.data);
+        if(!(project.projectId.lo||project.projectId.hi) || !project.path.bytes){Log(p,"PROJECT_PAYLOAD_FAIL");return;}
+        MmsStorageApiV1 api{};MmsBytes bytes{};uint32_t schema=0;MmsHandle lease=0;
+        if(p->host.queryService(p->host.context,S("mms.storage"),1,0,sizeof(api),&api) || api.readSaved(api.context,&bytes,&schema,&lease)){Log(p,"SAVED_READ_FAIL");return;}
+        const bool same=schema==1 && bytes.bytes==sizeof(int) && !std::memcmp(bytes.data,&p->projectValue,sizeof(int));
+        api.releaseSaved(api.context,lease);
+        Log(p,same?(event->kind==MMS_EVENT_PROJECT_OPENED?"PROJECT_OPENED_PASS":"PROJECT_SAVED_PASS"):"SAVED_BYTES_FAIL");
+        if(ReadScene(p,false))Log(p,"PROJECT_SCENE_FAIL");
+    }
+}
 static MmsResult MMS_CALL Stop(void* context) {
     auto* p = static_cast<Plugin*>(context); ++p->stops;
     if(p->snapshot && p->stops>1) {
@@ -120,6 +152,7 @@ static MmsResult MMS_CALL Stop(void* context) {
         });worker.join();
     }
     if (p->id.find("busy") != std::string::npos && p->stops < 3) { Log(p, "STOP_BUSY"); return MMS_E_BUSY; }
+    if(p->serializer){auto r=p->host.unregisterProvider(p->host.context,p->serializer);if(r)return r;p->serializer=0;}
     for (auto* item : {&p->panel, &p->panel2, &p->button, &p->menu}) if (*item) { auto r = p->ui.unregisterItem(p->ui.context, *item); if (r) return r; *item = 0; }
     if (p->factory) { auto r = p->surface.unregisterSurface(p->surface.context, p->factory); if (r) return r; p->factory = 0; }
     if (p->command) { auto r = p->ui.unregisterItem(p->ui.context, p->command); if (r) return r; p->command = 0; }

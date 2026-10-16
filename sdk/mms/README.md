@@ -37,6 +37,7 @@ cmake --build build/hello-menu --config Release
 | `mms.ui.surface` 1.0 | 菜单、工具栏和工作区页签挂载位置；原生子窗口工厂、多个视图、尺寸、隐藏、焦点与销毁。 |
 | `mms.ui.layout` 1.0 | 默认布局提示、事务内用户覆盖、实际几何快照；行、列、换行和网格；伸缩、上下限、隐藏占位。 |
 | `mms.scene` 1.0 | 阶段 0 的对象、骨骼、网格、绑定、刚体、关节、形状、Morph、材质和纹理路径；独立 ID、运行时代次、不可变快照及 PMM 身份保存。阶段 1–4 返回 UNSUPPORTED。 |
+| `mms.storage` 1.0 | 插件工程数据、两阶段加载、只读保存数据租约；PMM 与扩展文件成对保存和中断恢复。提供者名为 `mms.serializer`。 |
 | 其他服务 | 尚未接入，`queryService` 返回 NOT_FOUND。 |
 
 可写属性和工程编辑命令等待编辑事务服务，当前返回 NOT_READY。停靠和命令溢出菜单暂返回 UNSUPPORTED。INPUT、侧栏、属性区、时间线和状态栏挂载点尚未开放。布局文件持久化和布局撤销历史尚未接入。未支持的操作不会返回成功。
@@ -78,6 +79,14 @@ Morph 的 value 在绑定阶段为零。kind 决定 elements 的类型，所有�
 | 8 | `MmsMorphMaterialElementV1` | 材质 ID、operation=0 乘法或 1 加法，以及颜色、边缘和纹理系数。空材质 ID 表示全部材质。 |
 
 flags 中 `MMS_MORPH_PANEL_MASK` 对应原生面板分类，右移 `MMS_MORPH_PANEL_SHIFT` 后得到 0–4。翻转和冲量 Morph 尚未发布，遇到这些种类返回 UNSUPPORTED。附件的骨骼、Morph 和物理数组为空，这是已实现通道没有对应元素。
+
+## 工程数据
+
+完整接口见 [storage.h](include/mms/storage.h)，注册和回调约束见[工程序列化参考](storage.md)。插件通过 `registerProvider("mms.serializer", pluginId, &table, sizeof table, &handle)` 注册自己的 `MmsSerializerV1`，不直接写 PMM 或配套文件。每个插件 ID 只允许一个序列化器。
+
+`prepareLoad` 只准备候选数据，`commitLoad` 才替换当前状态。新建工程及没有该插件记录的工程传入 schema=0 和空数据，插件必须将其解释为默认状态。正常保存返回非零 schema 和原始字节；宿主复制后恰好调用一次 `releaseBytes`。所有回调和 storage 操作均在 UI 线程执行。
+
+`PROJECT_OPENED`、`PROJECT_SAVED` 在原生加载或保存成功后排队发送，payloadVersion=1，payload 指向 `MmsProjectEventV1`。路径为 UTF-8，projectId 为不透明 ID，revision=0 表示本事件尚不提供统一编辑修订号。插件需要保留路径时自行复制。自动备份不改变当前工程路径、保存状态或 dirty 标记，也不发送 `PROJECT_SAVED`。
 
 ## 验证
 

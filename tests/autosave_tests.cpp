@@ -234,6 +234,7 @@ int wmain(int argc, wchar_t** argv) {
     value.overwriteOldest = true; Configure(app, value);
     Check(as::BackupNow(app) == as::Result::Saved && as::Backups(value.directory).size() == 2, "opt-in rotation maintains capacity");
     Check(!fs::exists(first) && Bytes(sentinel) == "ordinary user file", "rotation deletes oldest backup and protects unrelated files");
+    Check(!fs::exists(first.native()+L".mms-plugins.json"),"rotation removes only the matching plugin sidecar");
     const auto beforeFailure = as::Backups(value.directory);
     std::wstring longName(220, L'a'); longName += L".pmm";
     wcscpy_s(app->EnvFileName(), 256, longName.c_str());

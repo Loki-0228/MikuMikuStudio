@@ -14,7 +14,7 @@ struct Json {
     std::string String() const;
     uint32_t UInt() const;
     const std::vector<Json>& Items() const;
-    static Json Parse(std::string_view text);
+    static Json Parse(std::string_view text, size_t maxBytes = 1024 * 1024);
 };
 std::string ReadFile(const fs::path&, size_t maxBytes = 1024 * 1024);
 }

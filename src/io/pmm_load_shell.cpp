@@ -1,4 +1,5 @@
 #include "mikudancestudio/build_profile.hpp"
+#include "mikudancestudio/plugin_storage.hpp"
 // ===========================================================================
 // VA 0x00408870 - PathToProjectDir  (original: sub_408870, 0xEF bytes)
 // VA 0x00458F80 - LoadSceneFile    (original: sub_458F80, 0x589B bytes,
@@ -110,6 +111,9 @@ static void KeyPoolLoadFailed(MMDApp* app, int fd) {
 void LoadSceneFile() {
 
     MMDApp* app = g_Block;
+
+    if (!plugins::PrepareProjectLoad(app, app->EnvFileName())) return;
+    struct PluginLoadScope { MMDApp* app; ~PluginLoadScope() { plugins::CancelProjectLoad(app); } } pluginLoadScope{app};
 
     ScopedSceneMutation mutation(*app);
 

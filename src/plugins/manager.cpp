@@ -8,6 +8,7 @@ struct Manager::Impl {
         Impl* host;
         UiClient ui;
         SceneClient scene;
+        StorageClient storage;
         std::atomic<bool> stopping{false};
         PluginStatus status;
         MmsHostV1 table{};
@@ -29,6 +30,7 @@ struct Manager::Impl {
     fs::path userRoot;
     Log log;
     UiRegistry registry;
+    StorageStore storage;
     std::shared_ptr<SceneStore> scene;
     NativeLoader loader;
     std::vector<std::unique_ptr<Instance>> instances;
@@ -63,6 +65,7 @@ struct Manager::Impl {
         if (id == "mms.ui.surface") return Table(major, minor, bytes, out, registry.SurfaceApi(i.ui));
         if (id == "mms.ui.layout") return Table(major, minor, bytes, out, registry.LayoutApi(i.ui));
         if (id == "mms.scene" && scene) return Table(major, minor, bytes, out, scene->Api(i.scene));
+        if (id == "mms.storage") return Table(major, minor, bytes, out, storage.Api(i.storage));
         return MMS_E_NOT_FOUND;
     }
     MmsHostV1 Host(Instance& i) {
@@ -70,11 +73,15 @@ struct Manager::Impl {
         h.queryService = [](void* p, MmsString name, uint32_t ma, uint32_t mi, uint32_t n, void* out) {
             return Boundary([&] { auto& i = *static_cast<Instance*>(p); return i.host->Query(i, name, ma, mi, n, out); });
         };
-        h.registerProvider = [](void* p, MmsString, MmsString, const void*, uint32_t, MmsHandle*) -> MmsResult {
-            auto& i = *static_cast<Instance*>(p); if (GetCurrentThreadId() != i.host->thread) return MMS_E_THREAD;
-            return i.stopping ? MMS_E_NOT_READY : MMS_E_UNSUPPORTED;
+        h.registerProvider = [](void* p, MmsString service, MmsString id, const void* table, uint32_t bytes, MmsHandle* out) -> MmsResult {
+            return Boundary([&]() -> MmsResult {
+                auto& i = *static_cast<Instance*>(p); if (GetCurrentThreadId() != i.host->thread) return MMS_E_THREAD;
+                if (i.stopping) return MMS_E_NOT_READY;
+                if (String(service) == "mms.serializer") return i.host->storage.Register(i.storage,id,table,bytes,out);
+                return MMS_E_UNSUPPORTED;
+            });
         };
-        h.unregisterProvider = [](void* p, MmsHandle) -> MmsResult { auto& i = *static_cast<Instance*>(p); return GetCurrentThreadId() == i.host->thread ? MMS_E_NOT_FOUND : MMS_E_THREAD; };
+        h.unregisterProvider = [](void* p, MmsHandle h) { return Boundary([&] { auto& i = *static_cast<Instance*>(p); return i.host->storage.Unregister(i.storage,h); }); };
         h.log = [](void* p, uint32_t severity, MmsString s) {
             Boundary([&] { auto& i = *static_cast<Instance*>(p); if (severity > 3) return MMS_E_ARGUMENT;
                 i.host->Write(i.ui.id + " [" + std::to_string(severity) + "] " + String(s)); return MMS_OK; });
@@ -102,7 +109,7 @@ struct Manager::Impl {
         return h;
     }
     void Drain() {
-        if (GetCurrentThreadId() != thread || draining || active || registry.InCallback()) return;
+        if (GetCurrentThreadId() != thread || draining || active || registry.InCallback() || storage.InCallback() || storage.Prepared()) return;
         draining = true;
         struct Guard { bool& b; ~Guard() { b = false; } } guard{draining};
         // Work scheduled by a callback remains queued for the next dispatch.
@@ -119,17 +126,18 @@ struct Manager::Impl {
         }
         std::lock_guard<std::mutex> lock(mutex); if (!tasks.empty()) PostMessageW(wake, kDrain, 0, 0);
     }
-    void Event(uint32_t kind) {
-        if (GetCurrentThreadId() != thread || sending || active) return;
+    void Event(uint32_t kind, MmsBytes payload = {}, uint32_t version = 0) {
+        if (GetCurrentThreadId() != thread || sending || active || storage.InCallback() || storage.Prepared()) return;
         sending = true; struct Guard { bool& v; ~Guard() { v = false; } } guard{sending};
         MmsEventV1 event{}; event.h = Header<MmsEventV1>(); event.kind = kind; event.sequence = sequence++;
+        event.payload = payload; event.payloadVersion = version;
         for (const auto& i : instances) if (i->started && !i->stopping) {
             ++active; auto r = Boundary([&] { i->api.onEvent(i->instance, &event); return MMS_OK; }); --active;
             if (r) Write(i->ui.id + ": event callback failed");
         }
     }
     bool StopOne(Instance& i) {
-        i.stopping = true; i.ui.stopping = true; i.scene.stopping = true; i.status.stage = "stopping";
+        i.stopping = true; i.ui.stopping = true; i.scene.stopping = true; i.storage.stopping = true; i.status.stage = "stopping";
         if (i.stopFailed) return false;
         { std::lock_guard<std::mutex> lock(mutex); for (auto& [id, task] : tasks) if (task->owner == &i) task->cancel = true; }
         Drain();
@@ -141,6 +149,7 @@ struct Manager::Impl {
         }
         { std::lock_guard<std::mutex> lock(mutex); for (const auto& [id, task] : tasks) if (task->owner == &i) return false; }
         if (registry.HasLeases(i.ui) || (scene && scene->HasLeases(i.scene))) return false;
+        if (!storage.Retire(i.storage)) return false;
         r = Boundary([&] { registry.Retire(i.ui); return MMS_OK; });
         if (r != MMS_OK || registry.HasLeases(i.ui)) {
             i.stopFailed = true; i.status.error = "UI retirement failed; code retained"; Write(i.ui.id + ": " + i.status.error); return false;
@@ -152,7 +161,7 @@ struct Manager::Impl {
         while (!i.code.modules.empty()) i.code.modules.pop_back(); i.code.entry = nullptr; return true;
     }
     bool Stop() {
-        if (GetCurrentThreadId() != thread || active || registry.InCallback()) return false;
+        if (GetCurrentThreadId() != thread || active || registry.InCallback() || storage.InCallback() || storage.Prepared()) return false;
         if (!closing) { Event(MMS_EVENT_UI_CLOSING); closing = true; }
         for (const auto& i : instances) { i->stopping = true; i->ui.stopping = true; i->scene.stopping = true; }
         bool complete = true; std::set<std::string> keep;
@@ -169,6 +178,7 @@ struct Manager::Impl {
         for (size_t index : order) {
             const auto& m = discovered.packages[index];
             auto instance = std::make_unique<Instance>(); auto& i = *instance; i.host = this; i.ui = {&registry, m.id}; i.status = {m.id, "validated", {}, m.package};
+            i.storage.store = &storage; i.storage.id = m.id;
             for (const auto& dep : m.dependencies) i.dependencies.push_back(dep.id);
             bool ready = std::all_of(i.dependencies.begin(), i.dependencies.end(), [&](const auto& d) { return started.count(d) != 0; });
             if (!ready) { i.status.stage = "failed"; i.status.error = "dependency failed to start"; failed.push_back(i.status); Write(m.id + ": " + i.status.error); continue; }
@@ -228,8 +238,9 @@ Manager::~Manager() {
 void Manager::Load(const fs::path& root) { impl_->Load(root); }
 void Manager::Drain() { impl_->Drain(); }
 bool Manager::Stop() { return Boundary([&] { return impl_->Stop() ? MMS_OK : MMS_E_BUSY; }) == MMS_OK; }
-void Manager::Event(uint32_t kind) { impl_->Event(kind); }
+void Manager::Event(uint32_t kind, MmsBytes payload, uint32_t version) { impl_->Event(kind,payload,version); }
 UiRegistry& Manager::Ui() { return impl_->registry; }
-bool Manager::InCallback() const { return impl_->active != 0 || impl_->registry.InCallback(); }
+StorageStore& Manager::Storage() { return impl_->storage; }
+bool Manager::InCallback() const { return impl_->active != 0 || impl_->registry.InCallback() || impl_->storage.InCallback() || impl_->storage.Prepared(); }
 std::vector<PluginStatus> Manager::Status() const { auto result = impl_->failed; for (const auto& i : impl_->instances) result.push_back(i->status); return result; }
 }

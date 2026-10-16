@@ -19,7 +19,7 @@
 | P1 | 生命周期、停止、UI 队列及失败取消 | 本机已验证 | create/start 失败、null 实例任务、BUSY、运行中取消；退休失败时保留实例和 DLL。 |
 | P1 | 菜单、工具栏、EXE 改名 | 本机已验证 | 隔离隐藏启动真实 MMS，原名和中文名下调用、关闭通过。 |
 | P1 | 命令、只读属性、更新、快照租约 | 本机已验证 | 所有权、参数范围/选项、上下文不可替换、旧快照及线程边界。 |
-| P1 | 全部业务事件通知 | 未实现 | 当前提供 UI_READY/UI_CLOSING；其他来源仍待接入。 |
+| P1 | 全部业务事件通知 | 部分实现 | UI_READY/UI_CLOSING；工程打开、手动保存、重置事件已接入。其他业务来源仍待接入。 |
 | P2 | Surface 工厂和生命周期 | 本机已验证 | 单/多视图、失败重试、错误父窗口、隐藏尺寸/DPI、换父重建、focus、停止和一次销毁。 |
 | P2 | 工作区双页签实际挂载 | 本机已验证 | 真实 MMS 原名/中文名，切换、隐藏复用、焦点回调、关闭各销毁一次。 |
 | P2 | 工具栏自动布局树 | 本机已验证 | 行列、换行、网格、伸缩、隐藏占位、嵌套高度及缩放往返。 |
@@ -50,7 +50,8 @@
 | P3 | 求值阶段及未支持的定义类型 | 未实现 | 阶段 1–4、翻转/冲量 Morph、其他关节、复合形状及软体。绑定配置不能替代物理后状态。 |
 | P3 | edit 两阶段事务、可写属性和统一撤销 | 未实现 | edit.h 布局已固定，服务尚未发布。 |
 | P3 | animation 轨道/键、层、片段、变速、烘焙和选择 | 未实现 | 服务返回 NOT_FOUND。 |
-| P3 | storage serializer、工程数据和显式导入 | 未实现 | 保持 EMM/EMD 显式导入要求。 |
+| P3 | storage serializer、工程数据和成对保存 | 本机已验证 | C ABI、两阶段加载、保存数据租约、缺失插件保留；PMM 与 JSON 配套哈希、恢复记录、旧对回退、自动备份轮换；真实 DLL 原名/中文 EXE 往返通过。 |
+| P3 | 显式导入和扩展文件重新关联 | 未实现 | EMM/EMD 保持显式导入；不匹配的 sidecar 拒绝自动应用，保留原件。 |
 | P4 | compute 两阶段求值、状态域及 CPU 协商 | 未实现 | 不以成功空表占位。 |
 | P4 | binding、cache、bake、MMV 等价清单 | 未实现 | 依赖 P3；旧 MMV 继续原路径。 |
 | P5 | render、post、DX9 帧/设备代次和资源租约 | 未实现 | 现有渲染路径通过不代表新 ABI 通过。 |
@@ -81,6 +82,10 @@
 | 绑定物理和 Morph 定义 | PMX 145 项、PMD 73 项 PASS；包括隐藏宿主初始化、附件、身份往返、无效引用及当前帧查询 | `plugin-abi-definitions-host-2.log`、`abi-definitions-host-2/report.json` |
 | 定义接入后的 ABI、Morph、改名及旧骨骼探针 | ABI 累计 335 项通过；现有 Morph、两种 EXE 名称、原骨骼快照探针均通过 | `plugin-abi-definitions-contract.log`、`plugin-abi-definitions-plugin-1.log`、`plugin-abi-definitions-bind-1.log` |
 | 当前 SDK 独立示例构建 | 按开发文档固定工具链构建成功，入口版本/长度/空输出检查通过 | `plugin-abi-sdk-configure.log`、`plugin-abi-sdk-build.log`、`plugin-abi-sdk-entry.log` |
+| storage 候选、租约、所有权和保存恢复 | ABI 累计 418 项通过；文件替换边界中断、旧对回退、外部哈希冲突及超过 1 MiB 的记录往返 | `plugin-abi-storage-contract-2.log` |
+| 真实插件数据和 PMM 往返 | 两种 EXE 名称、缺失插件数据、事件后场景可读、失败不发布、保存数据租约及退出卸载均通过 | `plugin-abi-storage-host-3.log`、`abi-storage-host-3/report.json` |
+| 自动备份与既有场景回归 | 自动备份 118 项通过，包括配套扩展轮换；PMX/PMD 几何、定义和身份往返通过 | `plugin-abi-storage-autosave-2.log`、`plugin-abi-storage-geometry-1.log` |
+| storage 完整构建与 PE 清单 | Win7 目标构建成功；宿主、新 serializer 测试 DLL 和 ABI 测试无新增可选图形/厂商直接导入 | `plugin-abi-storage-build-5.log`、`plugin-abi-storage-pe-inventory.json` |
 | 定义接入后的 PE 导入清单 | 四文件均无可选图形/厂商后端的直接导入 | `plugin-abi-definitions-pe-inventory.json` |
 | PE 导入/导出清单 | 四文件通过可选后端直接导入检查 | `plugin-abi-win7-pe-inventory.json` |
 | 处理器策略 | 99 项通过，P2 新增前 | `plugin-abi-processor.log` |

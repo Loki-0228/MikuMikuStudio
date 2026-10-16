@@ -23,7 +23,10 @@ struct Reader {
         if (!Take('"')) Fail(); std::string out;
         while (pos < source.size()) {
             unsigned char c = source[pos++];
-            if (c == '"') { plugins::String(Text(out)); return out; }
+            if (c == '"') {
+                if (out.find('\0') != std::string::npos || (!out.empty() && !MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, out.data(), int(out.size()), nullptr, 0))) Fail();
+                return out;
+            }
             if (c < 32) Fail();
             if (c != '\\') { out += char(c); continue; }
             if (pos == source.size()) Fail();
@@ -76,8 +79,8 @@ struct Reader {
     }
 };
 }
-Json Json::Parse(std::string_view s) {
-    if (s.size() > 1024 * 1024) throw std::invalid_argument("JSON exceeds 1 MiB");
+Json Json::Parse(std::string_view s, size_t maxBytes) {
+    if (s.size() > maxBytes) throw std::invalid_argument("JSON exceeds size limit");
     if (s.substr(0, 3) == "\xef\xbb\xbf") s.remove_prefix(3);
     Reader r{s}; auto out = r.Value(); r.Space(); if (r.pos != s.size()) r.Fail(); return out;
 }

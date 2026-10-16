@@ -1,3 +1,4 @@
+#include "mikudancestudio/plugin_storage.hpp"
 #include "mikudancestudio/key_pool.hpp"
 #include "mikudancestudio/mmv4mms.hpp"
 #include "mikudancestudio/native_media.hpp"
@@ -92,6 +93,7 @@ static void ReplaceEditText(HWND parent, int id, const char* text) {
 }
 
 void ResetAppState(MMDApp* app) {
+    if (!plugins::ResetPluginProject(app)) return;
     app->PlaybackStartSeconds() = app->PlaybackCursorSeconds() = app->PlaybackEndSeconds() = 0;
     app->SyncPlaybackTimeCompatibility();
     ClearWaveAudio(app);

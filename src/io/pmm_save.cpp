@@ -3,6 +3,7 @@
 #include "mikudancestudio/frame_limits.hpp"
 #include "mikudancestudio/key_pool.hpp"
 #include "mikudancestudio/autosave.hpp"
+#include "mikudancestudio/plugin_storage.hpp"
 #include <atomic>
 #include <filesystem>
 #include "mikudancestudio/mmv4mms.hpp"
@@ -1194,6 +1195,7 @@ static bool SaveSceneFileImpl(MMDApp* app, const wchar_t* target, bool backup) {
 #endif
     pmm_extension::Document extensions;
 #if !MMD_ORIGINAL_PROFILE
+    plugins::ProjectSave pluginSave(s);
     try { extensions = pmm_settings::Capture(*s); }
     catch(const std::exception& error) {
         if (backup) return false;
@@ -1265,6 +1267,8 @@ static bool SaveSceneFileImpl(MMDApp* app, const wchar_t* target, bool backup) {
         int& fd; const wchar_t* path;
         ~TemporaryFile() { if (fd >= 0) _close(fd); DeleteFileW(path); }
     } cleanup{fd, temporary};
+    const auto previousLayoutReady=s->state.windowLayoutReady;
+    struct LayoutReadyGuard { MMDApp* app; decltype(previousLayoutReady) value; ~LayoutReadyGuard(){app->state.windowLayoutReady=value;} } restoreLayout{s,previousLayoutReady};
     if (!backup) s->state.windowLayoutReady = 0;
     WritePmmFileHeader(fd, s, main, hdr, compatibility.needsNewPmm);                   // 1. 0x41B1B3..0x41B355
     WritePmmModelBlocks(fd, slots, text);                   // 2. 0x41B355..0x41C981
@@ -1289,8 +1293,12 @@ static bool SaveSceneFileImpl(MMDApp* app, const wchar_t* target, bool backup) {
         _commit(fd)==0;
     const bool closed = _close(fd) == 0;
     fd = -1;
-    const bool published=written&&closed&&MoveFileExW(temporary,destination,
-        (backup ? 0 : MOVEFILE_REPLACE_EXISTING)|MOVEFILE_WRITE_THROUGH)!=FALSE;
+    const bool published=written&&closed&&
+#if !MMD_ORIGINAL_PROFILE
+        pluginSave.Publish(temporary,destination,backup);
+#else
+        MoveFileExW(temporary,destination,(backup ? 0 : MOVEFILE_REPLACE_EXISTING)|MOVEFILE_WRITE_THROUGH)!=FALSE;
+#endif
     if (!published) {
         DeleteFileW(temporary);
         if (backup) return false;
@@ -1324,6 +1332,7 @@ static bool SaveSceneFileImpl(MMDApp* app, const wchar_t* target, bool backup) {
     s->SceneModified() = 0;
     MessageBeep(0x40);
     s->state.windowLayoutReady = 1;
+    plugins::PluginProjectSaved(s,target);
     return true;
 }
 

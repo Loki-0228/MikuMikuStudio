@@ -624,6 +624,8 @@ void CheckShadowFilter(MMDApp* app) {
 #include "plugins/scheduler_checks.inc"
 #include "plugins/scene_host_checks.inc"
 #include "plugins/geometry_host_checks.inc"
+#include "../src/plugins/project_storage.hpp"
+#include "plugins/storage_host_checks.inc"
 
 int main(int argc, char** argv) {
     const bool schedulerOnly=argc==2 && std::string(argv[1])=="--scheduler-only";
@@ -640,6 +642,9 @@ int main(int argc, char** argv) {
     SetWindowPos(window, nullptr, 0, 0, 1200,820, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
     HandleWindowSize(app);
     Check(!IsWindowVisible(window), "production host stays hidden");
+    if(argc==2 && std::string(argv[1])=="--storage-only") {
+        storage_host_checks::Run(app);ShutdownCleanup(app);g_Block=nullptr;delete app;return 0;
+    }
     if(argc==2 && std::string(argv[1])=="--geometry-only") {
         scene_geometry_checks::Run(app);ShutdownCleanup(app);g_Block=nullptr;delete app;return 0;
     }

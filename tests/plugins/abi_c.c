@@ -2,6 +2,9 @@
 #include <mms/edit.h>
 #include <mms/layout.h>
 #include <mms/scene.h>
+#include <mms/storage.h>
+_Static_assert(sizeof(MmsSerializerV1) == 56, "serializer");
+_Static_assert(sizeof(MmsStorageApiV1) == 32, "storage");
 _Static_assert(sizeof(MmsSceneQueryV1) == 80, "scene query");
 _Static_assert(sizeof(MmsSnapshotV1) == 40, "scene snapshot");
 _Static_assert(sizeof(MmsSceneApiV1) == 48, "scene service");

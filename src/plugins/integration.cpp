@@ -1,5 +1,7 @@
 #include "manager.hpp"
 #include "native_ui.hpp"
+#include "project_storage.hpp"
+#include "mikudancestudio/plugin_storage.hpp"
 #include "mikudancestudio/plugin_runtime.hpp"
 #include "mikudancestudio/plugin_scene.hpp"
 #include "mikudancestudio/mmd_app.hpp"
@@ -16,11 +18,44 @@ std::unique_ptr<NativeUi> ui;
 MMDApp* owner = nullptr;
 int toolbarHeight = 0;
 bool refreshing = false, closing = false;
+PluginProject currentProject, pendingProject;
+bool loadingProject = false;
+HANDLE loadingMain = INVALID_HANDLE_VALUE;
+struct ProjectNotification { uint32_t kind; MmsId id; std::string path; };
+std::deque<ProjectNotification> projectEvents;
+constexpr UINT kProjectEvent = WM_APP + 0x6b;
+constexpr UINT_PTR kProjectRetry = 0x4d4d536b;
+void QueueProjectEvent(MMDApp* app, uint32_t kind, const wchar_t* path) {
+    if (!manager || owner != app) return;
+    Boundary([&] {
+        MmsId id{}; unsigned char bytes[16]{};
+        if(currentProject.projectId.size()==32){
+            const auto digit=[](char c){return c<='9'?c-'0':c-'a'+10;};
+            for(size_t i=0;i<16;++i)bytes[i]=static_cast<unsigned char>((digit(currentProject.projectId[2*i])<<4)|digit(currentProject.projectId[2*i+1]));
+            std::memcpy(&id,bytes,sizeof(id));
+        }
+        projectEvents.push_back({kind,id,Utf8(path?path:L"")});
+        if(!PostMessageW(app->MainWindow(),kProjectEvent,0,0)){projectEvents.pop_back();return MMS_E_FAILED;}
+        return MMS_OK;
+    });
+}
 constexpr UINT kRefresh = WM_APP + 0x6a;
 void LogMessage(const std::string& s) { runtime_log::Write("PLUGIN_ABI %s", s.c_str()); }
 LRESULT CALLBACK Subclass(HWND hwnd, UINT message, WPARAM wp, LPARAM lp, UINT_PTR id, DWORD_PTR) {
     if (message == WM_CLOSE && manager && manager->InCallback()) { PostMessageW(hwnd, WM_CLOSE, wp, lp); return 0; }
     if (message == kRefresh) { if (!closing && owner) Refresh(owner); return 0; }
+    if (message == kProjectEvent || (message == WM_TIMER && wp == kProjectRetry)) {
+        KillTimer(hwnd,kProjectRetry);
+        if(manager && !closing && !manager->InCallback() && owner && owner->WindowLayoutReady() && !owner->SceneMutationInProgress()) {
+            auto remaining=projectEvents.size();
+            while(remaining-- && !projectEvents.empty()) {
+                auto event=std::move(projectEvents.front());projectEvents.pop_front();
+                MmsProjectEventV1 payload{Header<MmsProjectEventV1>(),event.id,0,Text(event.path)};
+                manager->Event(event.kind,{&payload,sizeof(payload)},1);
+            }
+        } else if(owner && !closing && !projectEvents.empty()) SetTimer(hwnd,kProjectRetry,16,nullptr);
+        return 0;
+    }
     if (message == WM_NCDESTROY) { RemoveWindowSubclass(hwnd, Subclass, id); Shutdown(); }
     return DefSubclassProc(hwnd, message, wp, lp);
 }
@@ -35,6 +70,7 @@ void Initialize(MMDApp* app) {
         }
         std::wstring module(32768, 0); auto n = GetModuleFileNameW(nullptr, module.data(), DWORD(module.size())); if (!n || n >= module.size()) throw std::runtime_error("process path unavailable"); module.resize(n);
         manager = std::make_unique<Manager>(fs::path(data) / L"MMS" / L"plugins", LogMessage, [window = app->MainWindow()] { PostMessageW(window, kRefresh, 0, 0); }, false, CreateSceneStore(app));
+        if (manager->Storage().Prepare(currentProject.records) != MMS_OK || !manager->Storage().Commit()) throw std::runtime_error("initialize plugin project data");
         ui = std::make_unique<NativeUi>(manager->Ui(), app->MainWindow(), LogMessage);
         if (!SetWindowSubclass(app->MainWindow(), Subclass, 0x4d4d5301, 0)) throw std::runtime_error("plugin lifetime hook failed");
         manager->Load(fs::path(module).parent_path() / L"PLUGINS"); Refresh(app); return MMS_OK;
@@ -48,7 +84,7 @@ void Shutdown() {
     if (manager && manager->InCallback()) return;
     if (closing) return; closing = true;
     if (manager) manager->Stop();
-    ui.reset(); manager.reset(); toolbarHeight = 0; owner = nullptr;
+    ui.reset(); manager.reset(); projectEvents.clear(); toolbarHeight = 0; owner = nullptr;
 }
 void Layout(MMDApp* app) {
     if (!ui || app != owner) return;
@@ -73,4 +109,89 @@ bool HandleShortcut(unsigned key, bool viewportFocused) {
 }
 bool HandleDialogMessage(MSG* message) { return ui && !closing && ui->DialogMessage(message); }
 bool InCallback() { return manager && manager->InCallback(); }
+
+struct ProjectSave::Impl { MMDApp* app; PluginProject data; StoredRecords storeRecords; };
+ProjectSave::ProjectSave(MMDApp* app) : impl_(std::make_unique<Impl>()) {
+    if(currentProject.projectId.empty())currentProject.projectId=StorageId();
+    impl_->app = app; impl_->data = currentProject;
+    if (manager && owner == app) {
+        const auto r = manager->Storage().Capture(impl_->data.records);
+        if (r) throw std::runtime_error("plugin serializer save returned " + std::to_string(r));
+        impl_->storeRecords=impl_->data.records;
+    }
+}
+ProjectSave::~ProjectSave() = default;
+bool ProjectSave::Publish(const wchar_t* staged, const wchar_t* destination, bool copy) {
+    try {
+        PublishProjectPair(fs::absolute(destination),fs::absolute(staged),impl_->data,copy);
+        if (!copy) {
+            if (manager && owner == impl_->app) manager->Storage().Saved(impl_->storeRecords);
+            currentProject=std::move(impl_->data);
+        }
+        return true;
+    } catch (const std::exception& e) {
+        LogMessage(std::string("project save failed: ")+e.what());
+        try { RecoverProjectPair(fs::absolute(destination)); }
+        catch (const std::exception& recovery) { LogMessage(std::string("project recovery pending: ")+recovery.what()); }
+        return false;
+    }
+}
+bool PrepareProjectLoad(MMDApp* app, const wchar_t* path) {
+    if (build_profile::original) return true;
+    if (loadingProject || (manager && manager->InCallback())) return false;
+    try {
+        auto data=ReadPluginProject(fs::absolute(path));
+        loadingMain=CreateFileW(path,GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
+        if(loadingMain==INVALID_HANDLE_VALUE)throw std::runtime_error("cannot lock PMM for loading");
+        if(!data.mainHash.empty() && FileHash(path)!=data.mainHash)throw std::runtime_error("PMM changed before loading");
+        if (manager && owner == app) {
+            auto r=manager->Storage().Prepare(data.records);
+            if(r)throw std::runtime_error("plugin serializer prepareLoad returned "+std::to_string(r));
+        }
+        pendingProject=std::move(data);loadingProject=true;return true;
+    } catch(const std::exception& e) {
+        if(loadingMain!=INVALID_HANDLE_VALUE){CloseHandle(loadingMain);loadingMain=INVALID_HANDLE_VALUE;}
+        LogMessage(std::string("project load refused: ")+e.what());
+        const wchar_t* messages[]={L"プラグインのプロジェクトデータを読み込めません。PMM と付随ファイルの対応、およびプラグインのバージョンを確認してください。",L"Cannot load plugin project data. Check the PMM/sidecar pair and plugin versions.",L"无法读取插件工程数据。请检查 PMM 与扩展文件是否配套，以及插件版本是否匹配。"};
+        if(app->MainWindow())MessageBoxW(app->MainWindow(),messages[app->EnglishUI()<=2?app->EnglishUI():1],L"MMS",MB_OK|MB_ICONERROR);
+        return false;
+    }
+}
+void CommitProjectLoad(MMDApp* app) {
+    if (!loadingProject) return;
+    if (manager && owner == app && !manager->Storage().Commit()) { LogMessage("serializer commitLoad violated its no-fail contract");return; }
+    currentProject=std::move(pendingProject);loadingProject=false;
+    if(loadingMain!=INVALID_HANDLE_VALUE){CloseHandle(loadingMain);loadingMain=INVALID_HANDLE_VALUE;}
+    QueueProjectEvent(app,MMS_EVENT_PROJECT_OPENED,app->EnvFileName());
+}
+void CancelProjectLoad(MMDApp* app) {
+    if(!loadingProject)return;
+    if(manager && owner==app)manager->Storage().Cancel();
+    pendingProject={};loadingProject=false;
+    if(loadingMain!=INVALID_HANDLE_VALUE){CloseHandle(loadingMain);loadingMain=INVALID_HANDLE_VALUE;}
+}
+bool ResetPluginProject(MMDApp* app) {
+    if(build_profile::original)return true;
+    if(manager && owner==app && manager->Storage().InCallback())return false;
+    CancelProjectLoad(app);
+    if(manager && owner==app){
+        const auto r=manager->Storage().Prepare({});
+        if(r || !manager->Storage().Commit()){LogMessage("plugin project reset refused");return false;}
+    }
+    currentProject={};QueueProjectEvent(app,MMS_EVENT_SCENE_RESET,L"");return true;
+}
+void PluginProjectSaved(MMDApp* app,const wchar_t* path){QueueProjectEvent(app,MMS_EVENT_PROJECT_SAVED,path);}
+bool DeletePluginBackup(const wchar_t* path) {
+    if(build_profile::original)return DeleteFileW(path)!=FALSE;
+    // Caller has already checked the native PMM ownership marker. Only remove
+    // an accompanying extension if its hash proves it belongs to this PMM.
+    return Boundary([&]() -> MmsResult {
+        const fs::path target(path); const auto side=PluginSidecar(target);
+        const bool hasSide=fs::exists(side);
+        if(hasSide) ReadPluginProject(target);
+        if(!DeleteFileW(path))return MMS_E_FAILED;
+        if(hasSide && !DeleteFileW(side.c_str()))LogMessage("obsolete autosave sidecar could not be removed");
+        return MMS_OK;
+    }) == MMS_OK;
+}
 }

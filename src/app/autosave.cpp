@@ -1,6 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include "mikudancestudio/autosave.hpp"
+#include "mikudancestudio/plugin_storage.hpp"
 #include "mikudancestudio/mmd_app.hpp"
 #include "mikudancestudio/pmm_extension.hpp"
 #include "mikudancestudio/runtime_log.hpp"
@@ -223,8 +224,8 @@ Result BackupNow(MMDApp* app, bool crash) {
                 return _wcsicmp(p.c_str(), active.c_str()) != 0 &&
                     (active.empty() || !fs::equivalent(p, active, sameError));
             });
-            if (victim == old.end() || !Owned(*victim) || !DeleteFileW(victim->c_str())) {
-                DeleteFileW(destination.c_str());
+            if (victim == old.end() || !Owned(*victim) || !plugins::DeletePluginBackup(victim->c_str())) {
+                plugins::DeletePluginBackup(destination.c_str());
                 if (!crash) SetFull(app, true);
                 return Result::Full;
             }
