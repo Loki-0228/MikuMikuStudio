@@ -7,6 +7,7 @@ struct Manager::Impl {
     struct Instance {
         Impl* host;
         UiClient ui;
+        SceneClient scene;
         std::atomic<bool> stopping{false};
         PluginStatus status;
         MmsHostV1 table{};
@@ -28,6 +29,7 @@ struct Manager::Impl {
     fs::path userRoot;
     Log log;
     UiRegistry registry;
+    std::shared_ptr<SceneStore> scene;
     NativeLoader loader;
     std::vector<std::unique_ptr<Instance>> instances;
     std::vector<PluginStatus> failed;
@@ -39,8 +41,8 @@ struct Manager::Impl {
     unsigned active = 0;
     static constexpr UINT kDrain = WM_APP + 1;
 
-    Impl(fs::path user, Log output, std::function<void()> changed, bool fallback):
-        userRoot(std::move(user)), log(std::move(output)), registry(std::move(changed)), loader(fallback) {
+    Impl(fs::path user, Log output, std::function<void()> changed, bool fallback, std::shared_ptr<SceneStore> sceneStore):
+        userRoot(std::move(user)), log(std::move(output)), registry(std::move(changed)), scene(std::move(sceneStore)), loader(fallback) {
         WNDCLASSW wc{}; wc.hInstance = GetModuleHandleW(nullptr); wc.lpfnWndProc = Window; wc.lpszClassName = L"MMS.PluginAbi.Dispatch.V1";
         if (!RegisterClassW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) throw std::runtime_error("plugin dispatcher class");
         wake = CreateWindowExW(0, wc.lpszClassName, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, wc.hInstance, this);
@@ -60,6 +62,7 @@ struct Manager::Impl {
         if (id == "mms.ui") return Table(major, minor, bytes, out, registry.Api(i.ui));
         if (id == "mms.ui.surface") return Table(major, minor, bytes, out, registry.SurfaceApi(i.ui));
         if (id == "mms.ui.layout") return Table(major, minor, bytes, out, registry.LayoutApi(i.ui));
+        if (id == "mms.scene" && scene) return Table(major, minor, bytes, out, scene->Api(i.scene));
         return MMS_E_NOT_FOUND;
     }
     MmsHostV1 Host(Instance& i) {
@@ -126,7 +129,7 @@ struct Manager::Impl {
         }
     }
     bool StopOne(Instance& i) {
-        i.stopping = true; i.ui.stopping = true; i.status.stage = "stopping";
+        i.stopping = true; i.ui.stopping = true; i.scene.stopping = true; i.status.stage = "stopping";
         if (i.stopFailed) return false;
         { std::lock_guard<std::mutex> lock(mutex); for (auto& [id, task] : tasks) if (task->owner == &i) task->cancel = true; }
         Drain();
@@ -137,7 +140,7 @@ struct Manager::Impl {
             return false;
         }
         { std::lock_guard<std::mutex> lock(mutex); for (const auto& [id, task] : tasks) if (task->owner == &i) return false; }
-        if (registry.HasLeases(i.ui)) return false;
+        if (registry.HasLeases(i.ui) || (scene && scene->HasLeases(i.scene))) return false;
         r = Boundary([&] { registry.Retire(i.ui); return MMS_OK; });
         if (r != MMS_OK || registry.HasLeases(i.ui)) {
             i.stopFailed = true; i.status.error = "UI retirement failed; code retained"; Write(i.ui.id + ": " + i.status.error); return false;
@@ -151,7 +154,7 @@ struct Manager::Impl {
     bool Stop() {
         if (GetCurrentThreadId() != thread || active || registry.InCallback()) return false;
         if (!closing) { Event(MMS_EVENT_UI_CLOSING); closing = true; }
-        for (const auto& i : instances) { i->stopping = true; i->ui.stopping = true; }
+        for (const auto& i : instances) { i->stopping = true; i->ui.stopping = true; i->scene.stopping = true; }
         bool complete = true; std::set<std::string> keep;
         for (auto it = instances.rbegin(); it != instances.rend(); ++it) {
             auto& i = **it;
@@ -211,7 +214,7 @@ struct Manager::Impl {
         PostMessageW(wake, kDrain, 0, 0);
     }
 };
-Manager::Manager(fs::path user, Log log, std::function<void()> changed, bool fallback): impl_(std::make_unique<Impl>(std::move(user), std::move(log), std::move(changed), fallback)) {}
+Manager::Manager(fs::path user, Log log, std::function<void()> changed, bool fallback, std::shared_ptr<SceneStore> scene): impl_(std::make_unique<Impl>(std::move(user), std::move(log), std::move(changed), fallback, std::move(scene))) {}
 Manager::~Manager() {
     if (!impl_) return;
     if (Boundary([&] { return impl_->Stop() ? MMS_OK : MMS_E_BUSY; }) != MMS_OK) {

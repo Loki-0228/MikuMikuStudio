@@ -1,4 +1,5 @@
 #include "manager.hpp"
+#include "scene_identity.hpp"
 #include "native_ui.hpp"
 #include <native_ui/layout.hpp>
 #include <native_ui/update.hpp>
@@ -18,6 +19,7 @@ static MmsString S(const char* s) { return {s, std::strlen(s)}; }
 #include "layout_checks.inc"
 #include "update_checks.inc"
 #include "win32_checks.inc"
+#include "scene_checks.inc"
 static void Write(const fs::path& path, const std::string& bytes) { fs::create_directories(path.parent_path()); std::ofstream f(path, std::ios::binary); f << bytes; if (!f) throw std::runtime_error("fixture write failed"); }
 static std::string ManifestText(std::string id = "org.example.hello", std::string entry = "hello_menu.dll") {
     return "{\"schemaVersion\":1,\"id\":\"" + id + "\",\"name\":\"测试\",\"version\":\"1.0.0\",\"kind\":\"native\",\"abi\":{\"major\":1,\"minMinor\":0},\"entry\":\"" + entry + "\",\"architecture\":\"x64\",\"minWindows\":\"6.1.7601\",\"capabilities\":[\"ui.command\"],\"requiresServices\":[{\"id\":\"mms.ui\",\"major\":1,\"minMinor\":0}],\"dependencies\":[],\"nativeDependencies\":[],\"reloadPolicy\":\"restart\"}";
@@ -150,13 +152,14 @@ static void LoaderChecks(const fs::path& root, const fs::path& sample) {
     }
 }
 static void LifecycleChecks(const fs::path& root, const fs::path& fixture) {
-    for (const std::string mode : {"failcreate", "failstart", "busy", "queue"}) {
+    for (const std::string mode : {"failcreate", "failstart", "busy", "queue", "scenelease"}) {
         const auto package = root / Wide(mode) / "PLUGINS" / "test"; fs::create_directories(package);
         fs::copy_file(fixture, package / "lifecycle.dll");
         const auto id = "org.example." + mode; Write(package / "plugin.json", ManifestText(id, "lifecycle.dll"));
         std::vector<std::string> logs;
         auto count = [&](const char* marker) { return std::count_if(logs.begin(), logs.end(), [&](const auto& s) { return s.find(marker) != std::string::npos; }); };
-        Manager manager(root / "userdata", [&](const auto& s) { logs.push_back(s); });
+        auto scene = std::make_shared<SceneStore>([](const auto&, auto& out) {auto data=std::make_shared<SceneData>();data->supported=MMS_CHANNEL_BONES;out=data;return MMS_OK;});
+        Manager manager(root / "userdata", [&](const auto& s) { logs.push_back(s); }, std::function<void()>{}, false, scene);
         manager.Load(package.parent_path()); CHECK(count("NEGOTIATION_PASS") == 1);
         if (mode == "failcreate") {
             CHECK(count("CREATE_TASK_ACCEPTED") == 1); CHECK(count("TASK_CANCEL") == 1); CHECK(count("TASK_RUN") == 0);
@@ -166,6 +169,10 @@ static void LifecycleChecks(const fs::path& root, const fs::path& fixture) {
         } else if (mode == "queue") {
             manager.Drain(); CHECK(count("TASK_RUN") == 1); CHECK(count("TASK_CANCEL") == 1); CHECK(count("RUNNING_CANCEL_BUSY") == 1);
             manager.Drain(); CHECK(count("TASK_RUN") == 1);
+        } else if(mode=="scenelease") {
+            CHECK(count("SCENE_READ_PASS")==1); CHECK(!manager.Stop());
+            CHECK(GetModuleHandleW(L"lifecycle.dll")!=nullptr && count("DESTROY")==0);
+            CHECK(manager.Stop()); CHECK(count("STOP_SCENE_READ_PASS")==1 && count("DESTROY")==1);
         } else {
             CHECK(!manager.Stop()); CHECK(GetModuleHandleW(L"lifecycle.dll") != nullptr);
             UiClient visitor{&manager.Ui(), "example.visitor"}; auto api = manager.Ui().Api(visitor); auto command = id + ".command";
@@ -181,7 +188,7 @@ int wmain(int argc, wchar_t** argv) {
     try {
         CHECK(argc == 3); CHECK(!fs::exists(root)); fs::create_directories(root);
         JsonChecks(); DiscoveryChecks(root); UiChecks(); LayoutChecks(); TreeLayoutChecks(); LayoutServiceChecks(); UpdateChecks(); Win32HostChecks(); SurfaceChecks(); LoaderChecks(root, fs::absolute(argv[1]));
-        LifecycleChecks(root, fs::absolute(argv[2]));
+        LifecycleChecks(root, fs::absolute(argv[2])); SceneChecks();
         std::cout << "PASS checks=" << checks << "\n"; fs::remove_all(root); return 0;
     } catch (const std::exception& e) { std::cerr << "FAIL after " << checks << ": " << e.what() << "\nfixtures=" << Utf8(root.native()) << "\n"; return 1; }
 }

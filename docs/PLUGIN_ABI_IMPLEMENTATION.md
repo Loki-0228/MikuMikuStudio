@@ -43,7 +43,8 @@
 | P2f | 独立表单及模拟视口宿主 | 本机已验证 | 两个独立 CMake 项目构建及隐藏自检 exit 0，无 MMS/图形设备依赖。 |
 | P2f | 两个示例的真实输入法、多 DPI、视觉交互 | 已实现未验证 | 自检不替代实际桌面交互验收。 |
 | P2 | 输入法组合态、Tab、辅助功能和真实多 DPI | 已实现未验证 | 保留原生控件；隐藏窗口测试不替代完整交互验收。 |
-| P3 | scene 全通道快照和稳定对象身份 | 未实现 | 服务返回 NOT_FOUND。 |
+| P3 | scene 对象及绑定骨骼快照、稳定身份 | 本机已验证 | `mms.scene` 已发布：阶段 0 的对象与骨骼。独立 ID、运行时代次、任意线程读取/释放、不可变租约；真实 PMM 保存重开保留对象和骨骼 ID，旧引用返回 STALE。 |
+| P3 | scene 其余通道与阶段 | 未实现 | 网格、绑定、物理、Morph、材质、纹理及阶段 1–4 返回 UNSUPPORTED。当前服务不表示全通道完成。 |
 | P3 | edit 两阶段事务、可写属性和统一撤销 | 未实现 | edit.h 布局已固定，服务尚未发布。 |
 | P3 | animation 轨道/键、层、片段、变速、烘焙和选择 | 未实现 | 服务返回 NOT_FOUND。 |
 | P3 | storage serializer、工程数据和显式导入 | 未实现 | 保持 EMM/EMD 显式导入要求。 |
@@ -69,6 +70,9 @@
 | 统一调度实际帧路径 | 16 组均 exit 0；序列累计 1072 项断言通过 | `plugin-abi-scheduler-full-3.log`、`abi-scheduler-full-3/report.json` |
 | 调度接入后的插件、双页签与改名 | 原名/中文名通过 | `plugin-abi-scheduler-host-smoke-2.log` |
 | 调度接入后的 ABI 契约 | 通过 | `plugin-abi-scheduler-contract.log` |
+| 场景租约、线程、代次、加载器停止契约 | 累计 333 项通过 | `plugin-abi-scene-contract.log` |
+| 实际模型与 PMM 保存重开 | 绑定矩阵、ID 保留、代次变化、旧租约及删除后 STALE 通过 | `plugin-abi-scene-host-1.log`、`abi-scene-host-1/report.json` |
+| 独立插件查询真实 scene 服务 | 原名/中文改名宿主，菜单和按钮各查询一次通过 | `plugin-abi-scene-plugin-1.log` |
 | PE 导入/导出清单 | 四文件通过可选后端直接导入检查 | `plugin-abi-win7-pe-inventory.json` |
 | 处理器策略 | 99 项通过，P2 新增前 | `plugin-abi-processor.log` |
 | 侧栏/底部松手提交、取消、浮动和媒体 | 通过，P2 新增前 | `plugin-abi-sidebar.log` |

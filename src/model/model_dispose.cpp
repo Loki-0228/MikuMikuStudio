@@ -1,4 +1,5 @@
 #include "mikudancestudio/display_capacity.hpp"
+#include "mikudancestudio/plugin_scene.hpp"
 #include "mikudancestudio/key_pool.hpp"
 #include "mikudancestudio/mmv4mms.hpp"
 #include "mikudancestudio/native_mesh.hpp"
@@ -126,6 +127,7 @@ void ReleasePhysRigid(void* scene, void* bodyPointer) {
 
 // VA 0x0048F830
 void ModelDispose(unsigned char* m) {
+    plugins::ForgetSceneObject(m);
     text_encoding::ForgetMaterialNames(*mdl::Mdl(m));
     mdl::ForgetDisplayCapacity(*mdl::Mdl(m));
     text_encoding::ForgetDisplayGroupNames(*mdl::Mdl(m));

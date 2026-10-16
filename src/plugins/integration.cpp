@@ -1,6 +1,7 @@
 #include "manager.hpp"
 #include "native_ui.hpp"
 #include "mikudancestudio/plugin_runtime.hpp"
+#include "mikudancestudio/plugin_scene.hpp"
 #include "mikudancestudio/mmd_app.hpp"
 #include "mikudancestudio/ported_funcs.hpp"
 #include "mikudancestudio/runtime_log.hpp"
@@ -33,7 +34,7 @@ void Initialize(MMDApp* app) {
             if (FAILED(SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA | CSIDL_FLAG_CREATE, nullptr, SHGFP_TYPE_CURRENT, data))) throw std::runtime_error("LOCALAPPDATA unavailable");
         }
         std::wstring module(32768, 0); auto n = GetModuleFileNameW(nullptr, module.data(), DWORD(module.size())); if (!n || n >= module.size()) throw std::runtime_error("process path unavailable"); module.resize(n);
-        manager = std::make_unique<Manager>(fs::path(data) / L"MMS" / L"plugins", LogMessage, [window = app->MainWindow()] { PostMessageW(window, kRefresh, 0, 0); });
+        manager = std::make_unique<Manager>(fs::path(data) / L"MMS" / L"plugins", LogMessage, [window = app->MainWindow()] { PostMessageW(window, kRefresh, 0, 0); }, false, CreateSceneStore(app));
         ui = std::make_unique<NativeUi>(manager->Ui(), app->MainWindow(), LogMessage);
         if (!SetWindowSubclass(app->MainWindow(), Subclass, 0x4d4d5301, 0)) throw std::runtime_error("plugin lifetime hook failed");
         manager->Load(fs::path(module).parent_path() / L"PLUGINS"); Refresh(app); return MMS_OK;

@@ -1,6 +1,10 @@
 #include <mms/surface.h>
 #include <mms/edit.h>
 #include <mms/layout.h>
+#include <mms/scene.h>
+static_assert(sizeof(MmsSceneQueryV1) == 80 && sizeof(MmsSnapshotV1) == 40 && sizeof(MmsSceneApiV1) == 48, "scene layout");
+static_assert(offsetof(MmsObjectV1, world) == 72 && sizeof(MmsObjectV1) == 168, "scene object layout");
+static_assert(offsetof(MmsBoneV1, local) == 72 && sizeof(MmsBoneV1) == 336, "scene bone layout");
 #include <type_traits>
 static_assert(std::is_standard_layout<MmsPluginApiV1>::value, "standard layout");
 static_assert(std::is_trivially_copyable<MmsUiApiV1>::value, "copyable ABI");

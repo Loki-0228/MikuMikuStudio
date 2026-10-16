@@ -1,6 +1,12 @@
 #include <mms/surface.h>
 #include <mms/edit.h>
 #include <mms/layout.h>
+#include <mms/scene.h>
+_Static_assert(sizeof(MmsSceneQueryV1) == 80, "scene query");
+_Static_assert(sizeof(MmsSnapshotV1) == 40, "scene snapshot");
+_Static_assert(sizeof(MmsSceneApiV1) == 48, "scene service");
+_Static_assert(sizeof(MmsObjectV1) == 168, "scene object");
+_Static_assert(sizeof(MmsBoneV1) == 336, "scene bone");
 _Static_assert(sizeof(MmsHeader) == 8, "header");
 _Static_assert(sizeof(MmsId) == 16, "id");
 _Static_assert(sizeof(MmsSpan) == 24, "span");

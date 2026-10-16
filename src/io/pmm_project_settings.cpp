@@ -1,4 +1,5 @@
 #include "mikudancestudio/extended_names.hpp"
+#include "mikudancestudio/plugin_scene.hpp"
 #include "mikudancestudio/bone_curve.hpp"
 #include "mikudancestudio/ui_translation.hpp"
 #include "mikudancestudio/build_profile.hpp"
@@ -96,6 +97,7 @@ skinning::Preference ResolveProcessor(Processor processor, const std::vector<gpu
 }
 
 void Reset(MMDApp& app) {
+    plugins::ResetSceneIdentity();
 #if !MMD_ORIGINAL_PROFILE
     curve_host::Reset(&app);
     morph_curve::Reset(&app);
@@ -168,6 +170,7 @@ void Load(MMDApp& app, int fd) {
     // linear interpolation from the next frame seek on.
     morph_curve::LoadPmm(app, loaded);
     bone_curve::LoadPmm(app, loaded);
+    plugins::LoadSceneIdentity(app, loaded);
     std::string meshError;
     if(!mesh_bake_cache::Load(app,app.EnvFileName(),loaded,meshError)){
         runtime_log::Write("Mesh cache load failed: %s",meshError.c_str());
@@ -220,6 +223,7 @@ pmm_extension::Document Capture(const MMDApp& app) {
     morph_curve::CapturePmm(app, document);
     bone_curve::CapturePmm(app, document);
     curve_host::Capture(const_cast<MMDApp&>(app), document);
+    plugins::SaveSceneIdentity(app, document);
     return document;
 #endif
 }

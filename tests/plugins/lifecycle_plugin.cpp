@@ -1,5 +1,6 @@
 #include <mms/ui.h>
 #include <mms/surface.h>
+#include <mms/scene.h>
 #include <string>
 #include <cstring>
 #include <thread>
@@ -8,7 +9,7 @@
 #include <Windows.h>
 template<class T> static MmsHeader H() { return {sizeof(T), 1, 0}; }
 static MmsString S(const char* s) { return {s, std::strlen(s)}; }
-struct Plugin { MmsHostV1 host; MmsUiApiV1 ui{}; MmsUiSurfaceApiV1 surface{}; std::string id; MmsHandle command = 0, menu = 0, button = 0, factory = 0, panel = 0, panel2 = 0; int stops = 0; };
+struct Plugin { MmsHostV1 host; MmsUiApiV1 ui{}; MmsUiSurfaceApiV1 surface{}; MmsSceneApiV1 scene{}; MmsHandle snapshot=0; std::string id; MmsHandle command = 0, menu = 0, button = 0, factory = 0, panel = 0, panel2 = 0; int stops = 0; };
 static void Log(Plugin* p, const char* s) {
     p->host.log(p->host.context, 1, S(s));
     wchar_t path[32768]{}; auto n = GetEnvironmentVariableW(L"MMS_ABI_PROBE_LOG", path, 32768);
@@ -41,7 +42,18 @@ static void MMS_CALL Run(void* context) {
 }
 static void MMS_CALL Cancel(void* context) { auto* task = static_cast<Task*>(context); Log(task->plugin, "TASK_CANCEL"); if (task->orphan) delete task->plugin; delete task; }
 static MmsResult MMS_CALL State(void*, MmsObjectRef, MmsCommandStateV1* out) { *out = {H<MmsCommandStateV1>(), 1, 0, 1, 0, {}}; return MMS_OK; }
-static MmsResult MMS_CALL Invoke(void* context, MmsObjectRef, MmsSpan, MmsHandle) { Log(static_cast<Plugin*>(context), "COMMAND_INVOKED"); return MMS_OK; }
+static MmsResult ReadScene(Plugin* p, bool retain) {
+    auto r=p->host.queryService(p->host.context,S("mms.scene"),1,0,sizeof(p->scene),&p->scene); if(r) return r;
+    MmsSceneQueryV1 query{};query.h=H<MmsSceneQueryV1>();query.time={0,1};query.channels=MMS_CHANNEL_BONES;
+    MmsSnapshotV1 snapshot{};r=p->scene.acquire(p->scene.context,&query,&snapshot);if(r) return r;
+    MmsSpan objects{};r=p->scene.objects(p->scene.context,snapshot.handle,&objects);
+    if(retain && !r) p->snapshot=snapshot.handle;else p->scene.release(p->scene.context,snapshot.handle);
+    if(!r) Log(p,"SCENE_READ_PASS");return r;
+}
+static MmsResult MMS_CALL Invoke(void* context, MmsObjectRef, MmsSpan, MmsHandle) {
+    auto* p=static_cast<Plugin*>(context);Log(p,"COMMAND_INVOKED");
+    return p->id.find("scene")!=std::string::npos?ReadScene(p,false):MMS_OK;
+}
 static MmsResult MMS_CALL Create(const MmsHostV1* host, const MmsCreateInfoV1* info, void** out) {
     *out = nullptr; auto* p = new Plugin{*host}; p->id.assign(info->pluginId.data, size_t(info->pluginId.bytes));
     auto r = host->queryService(host->context, S("mms.ui"), 1, 0, sizeof(p->ui), &p->ui); if (r) { delete p; return r; }
@@ -49,7 +61,7 @@ static MmsResult MMS_CALL Create(const MmsHostV1* host, const MmsCreateInfoV1* i
     if (host->queryService(host->context, S("mms.ui"), 2, 0, sizeof(buffer), buffer) != MMS_E_VERSION || std::memcmp(buffer, original, sizeof(buffer))) { delete p; return MMS_E_FAILED; }
     if (host->queryService(host->context, S("mms.ui"), 1, 1, sizeof(buffer), buffer) != MMS_E_VERSION || std::memcmp(buffer, original, sizeof(buffer))) { delete p; return MMS_E_FAILED; }
     if (host->queryService(host->context, S("mms.ui"), 1, 0, 8, buffer) != MMS_E_ARGUMENT || std::memcmp(buffer, original, sizeof(buffer))) { delete p; return MMS_E_FAILED; }
-    if (host->queryService(host->context, S("mms.scene"), 1, 0, sizeof(buffer), buffer) != MMS_E_NOT_FOUND || std::memcmp(buffer, original, sizeof(buffer))) { delete p; return MMS_E_FAILED; }
+    if (host->queryService(host->context, S("mms.test.unavailable"), 1, 0, sizeof(buffer), buffer) != MMS_E_NOT_FOUND || std::memcmp(buffer, original, sizeof(buffer))) { delete p; return MMS_E_FAILED; }
     if (host->queryService(host->context, S("mms.ui"), 1, 0, sizeof(buffer), buffer) != MMS_OK || std::memcmp(buffer + sizeof(MmsUiApiV1), original + sizeof(MmsUiApiV1), sizeof(buffer) - sizeof(MmsUiApiV1))) { delete p; return MMS_E_FAILED; }
     Log(p, "NEGOTIATION_PASS");
     if (p->id.find("failcreate") != std::string::npos) {
@@ -64,6 +76,7 @@ static MmsResult MMS_CALL Start(void* context) {
     const auto id = p->id + ".command"; command.info.id = {id.data(), id.size()}; command.info.ownerPlugin = {p->id.data(), p->id.size()}; command.info.label = S("Lifecycle test");
     command.context = p; command.getState = State; command.invoke = Invoke;
     auto r = p->ui.registerCommand(p->ui.context, &command, &p->command); if (r) return r;
+    if(p->id.find("scenelease")!=std::string::npos) {r=ReadScene(p,true);if(r)return r;}
     if (p->id.find("failstart") != std::string::npos) return MMS_E_FAILED;
     if (p->id.find("gui") != std::string::npos) {
         MmsUiElementV1 e{}; e.h = H<MmsUiElementV1>(); const auto itemId = p->id + ".menu";
@@ -100,6 +113,12 @@ static MmsResult MMS_CALL Start(void* context) {
 static void MMS_CALL Event(void* context, const MmsEventV1* event) { if (event->kind == MMS_EVENT_UI_CLOSING) Log(static_cast<Plugin*>(context), "UI_CLOSING"); }
 static MmsResult MMS_CALL Stop(void* context) {
     auto* p = static_cast<Plugin*>(context); ++p->stops;
+    if(p->snapshot && p->stops>1) {
+        std::thread worker([&] {MmsSpan objects{};
+            if(p->scene.objects(p->scene.context,p->snapshot,&objects)==MMS_OK)Log(p,"STOP_SCENE_READ_PASS");
+            p->scene.release(p->scene.context,p->snapshot);p->snapshot=0;
+        });worker.join();
+    }
     if (p->id.find("busy") != std::string::npos && p->stops < 3) { Log(p, "STOP_BUSY"); return MMS_E_BUSY; }
     for (auto* item : {&p->panel, &p->panel2, &p->button, &p->menu}) if (*item) { auto r = p->ui.unregisterItem(p->ui.context, *item); if (r) return r; *item = 0; }
     if (p->factory) { auto r = p->surface.unregisterSurface(p->surface.context, p->factory); if (r) return r; p->factory = 0; }

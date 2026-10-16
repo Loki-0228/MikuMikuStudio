@@ -135,6 +135,8 @@ def run(executable, fixture, directory, filename, mode="gui"):
         send(toolbar, 0x111, u.GetDlgCtrlID(buttons[0]), buttons[0])
         log = (directory / "probe.log").read_text()
         assert log.count("COMMAND_INVOKED") == 2, log
+        if "scene" in mode:
+            assert log.count("SCENE_READ_PASS") == 2, log
         rect = w.RECT()
         u.GetWindowRect(toolbar, c.byref(rect))
         assert rect.bottom > rect.top, "toolbar reserved no space"

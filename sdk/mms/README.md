@@ -36,6 +36,7 @@ cmake --build build/hello-menu --config Release
 | `mms.ui` 1.0 | 命令、菜单项、工具栏按钮和组；元数据更新；只读属性；快照租约；命令参数、范围与选项校验；布局修订检查、指定顺序移动、创建与删除空组、显示、首选尺寸、快捷键及恢复。 |
 | `mms.ui.surface` 1.0 | 菜单、工具栏和工作区页签挂载位置；原生子窗口工厂、多个视图、尺寸、隐藏、焦点与销毁。 |
 | `mms.ui.layout` 1.0 | 默认布局提示、事务内用户覆盖、实际几何快照；行、列、换行和网格；伸缩、上下限、隐藏占位。 |
+| `mms.scene` 1.0 | 阶段 0 的对象基本信息和绑定骨骼；独立 ID、运行时代次、不可变快照及 PMM 身份保存。其他阶段和通道返回 UNSUPPORTED。 |
 | 其他服务 | 尚未接入，`queryService` 返回 NOT_FOUND。 |
 
 可写属性和工程编辑命令等待编辑事务服务，当前返回 NOT_READY。停靠和命令溢出菜单暂返回 UNSUPPORTED。INPUT、侧栏、属性区、时间线和状态栏挂载点尚未开放。布局文件持久化和布局撤销历史尚未接入。未支持的操作不会返回成功。
@@ -47,6 +48,14 @@ cmake --build build/hello-menu --config Release
 插件 ID 和注册 ID 使用小写 ASCII 字母、数字、点、下划线和连字符，长度为 1–128。注册 ID 必须以 `pluginId + "."` 开头，`ownerPlugin` 必须等于调用者 ID。更新描述不能更换 ID、所有者、原参数类型或回调 context。注销后再注册会获得新句柄。
 
 注册描述中的文本、选项和参数数组会复制。快照只暴露信息记录，不包含回调或 context。读取属性后，宿主复制提供者数据并立即释放提供者租约；消费者负责释放自己的租约。快照和属性租约不得遗留到 `stop` 成功之后。
+
+## 场景读取
+
+`scene.h` 定义通道记录和 `MmsSceneApiV1`。在 UI 线程调用 `acquire`，当前阶段填 `MMS_STAGE_BIND`，`layerId` 与 `flags` 填零，`channels` 可为 0 或 `MMS_CHANNEL_BONES`。当前绑定快照的采样时间为已提交编辑帧数除以 30；请求其他时间返回 NOT_READY，不移动播放头。全对象查询的 objects.count 为 0；筛选数组使用 `MmsObjectRef`、recordVersion=1 和实际 stride。
+
+`objects` 与 `readChannel` 返回快照持有的只读数组，可在工作线程读取。`release` 允许任意线程；调用者必须保证释放某句柄时，所有读取该句柄所得指针的作业都已结束。readChannel 的 channel 是单个通道位，不是位序号。未申请的通道返回 NOT_READY，未实现的通道返回 UNSUPPORTED。
+
+对象 ID 不使用内存地址。保存为包含 MMS 扩展的 PMM 后重开，对象与骨骼 ID 保留，运行时代次变化。已删除对象和旧代次引用返回 STALE；尚未释放的旧快照仍可读取。插件持有快照时，宿主保留其服务上下文和 DLL，直到租约释放。绑定骨骼矩阵来自源骨骼原点，不能作为物理后姿态使用。
 
 ## 验证
 

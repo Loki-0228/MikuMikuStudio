@@ -1,4 +1,5 @@
 #include "mikudancestudio/original_import.hpp"
+#include "mikudancestudio/plugin_scene.hpp"
 #include "mikudancestudio/key_pool.hpp"
 #include "mikudancestudio/native_mesh.hpp"
 #include "mikudancestudio/deformed_mesh_capture.hpp"
@@ -632,6 +633,7 @@ bool NormalizeAccessoryMeshFvf(void*& mesh, IDirect3DDevice9* device);
 // (0x459221 / 0x4541D9) and the shutdown chain (0x462F9C / 0x46324D) bind to
 // this one definition instead of the old no-op stub (was Sub4C4700).
 void DisposeAccessory(void* accessory) {
+    plugins::ForgetSceneObject(accessory);
     native_mesh::Forget(accessory);
     if (accessory == nullptr)
         return;
