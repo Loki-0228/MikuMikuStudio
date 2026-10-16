@@ -1,3 +1,4 @@
+#include "mikudancestudio/undo_storage.hpp"
 #include "mikudancestudio/key_pool.hpp"
 #include "mikudancestudio/ui_translation.hpp"
 // ===========================================================================
@@ -127,6 +128,7 @@
 #include <vector>
 #include "../plugins/native_pose_scope.hpp"
 #include "../plugins/native_history_commands.hpp"
+#include "../plugins/native_object_commands.hpp"
 #endif
 
 #include "mikudancestudio/text_encoding.hpp"
@@ -603,6 +605,9 @@ void CmdControl450(MMDApp* app, HWND hwnd, std::uint16_t id,
     // EnableMenuItem 0xF9, RebuildCameraModePanel, Refresh(-1), PostLanguageSweep2.
     // ------------------------------------------------------------------
     case 473: {
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::TryDeleteBoundAccessory(app, hwnd)) break;
+#endif
         const LRESULT sel =
             SendMessageA(GetDlgItem(hwnd, panel::kAccessoryCombo), CB_GETCURSEL, 0, 0);
         std::int32_t found = -1;
@@ -1164,12 +1169,12 @@ void CmdControl450(MMDApp* app, HWND hwnd, std::uint16_t id,
         unsigned char* pasteBlob =
             reinterpret_cast<unsigned char*>(undo.bonePose);
         if (pasteBlob != nullptr) {
-            free(pasteBlob);
+            undo_storage::Free(pasteBlob);
             undo.bonePose = nullptr;
         }
         const std::int32_t count =
             app->state.copiedBoneCount;
-        pasteBlob = static_cast<unsigned char*>(::operator new(
+        pasteBlob = static_cast<unsigned char*>(undo_storage::Allocate(
             MulOrMax(static_cast<std::uint32_t>(count), 0x24u)));
         if (pasteBlob != nullptr) {
             ConstructArrayElements(pasteBlob, 0x24,
@@ -1265,12 +1270,12 @@ void CmdControl450(MMDApp* app, HWND hwnd, std::uint16_t id,
         unsigned char* pasteBlob =
             reinterpret_cast<unsigned char*>(undo.bonePose);
         if (pasteBlob != nullptr) {
-            free(pasteBlob);
+            undo_storage::Free(pasteBlob);
             undo.bonePose = nullptr;
         }
         const std::int32_t count =
             app->state.copiedBoneCount;
-        pasteBlob = static_cast<unsigned char*>(::operator new(
+        pasteBlob = static_cast<unsigned char*>(undo_storage::Allocate(
             MulOrMax(static_cast<std::uint32_t>(count), 0x24u)));
         if (pasteBlob != nullptr) {
             ConstructArrayElements(pasteBlob, 0x24,

@@ -10,7 +10,8 @@ enum class UiMessage {
     SelectBone, SelectAccessory, SavePoseSelection, DirectSoundError, OpenModelError,
     OpenProjectError, InvalidProjectFile, UnsupportedProjectVersion,
     IncompleteProjectFile, BrokenProjectKeyChain,
-    PasteMorph, NoMorphClipboard, SelectMorph, Count
+    PasteMorph, NoMorphClipboard, SelectMorph,
+    DeleteModelWithHistory, DeleteAccessoryWithHistory, Count
 };
 // Fixed application text only. A Unicode name may be appended verbatim.
 int ShowUiMessage(MMDApp* app, HWND owner, UiMessage message, UINT flags,

@@ -1,3 +1,4 @@
+#include "mikudancestudio/undo_storage.hpp"
 #include "mikudancestudio/key_pool.hpp"
 #include "mikudancestudio/bone_curve.hpp"
 // ===========================================================================
@@ -803,10 +804,10 @@ void ApplyPhysicsOnOff(int on) {  // was Sub4403C0, VA 0x004403C0
     undo.frame = static_cast<std::uint32_t>(app->state.currentFrame);
 
     if (undo.bonePose != nullptr) {
-        std::free(undo.bonePose);
+        undo_storage::Free(undo.bonePose);
         undo.bonePose = nullptr;
     }
-    auto* snapshot = static_cast<mdl::BonePoseSnapshot*>(::operator new(
+    auto* snapshot = static_cast<mdl::BonePoseSnapshot*>(undo_storage::Allocate(
         sizeof(mdl::BonePoseSnapshot) * boneCount));
     undo.bonePose = snapshot;
     std::memset(snapshot, 0,
@@ -828,10 +829,10 @@ void ApplyPhysicsOnOff(int on) {  // was Sub4403C0, VA 0x004403C0
     }
     undo.dirty = 0;
     if (undo.auxiliaryPose != nullptr) {
-        std::free(undo.auxiliaryPose);
+        undo_storage::Free(undo.auxiliaryPose);
         undo.auxiliaryPose = nullptr;
     }
-    undo.auxiliaryPose = ::operator new(
+    undo.auxiliaryPose = undo_storage::Allocate(
         static_cast<std::size_t>(marked) * sizeof(mdl::BoneKeySnapshot));
     std::memset(undo.auxiliaryPose, 0,
                 static_cast<std::size_t>(marked) * sizeof(mdl::BoneKeySnapshot));

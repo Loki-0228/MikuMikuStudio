@@ -1,3 +1,4 @@
+#include "mikudancestudio/undo_storage.hpp"
 #include "mikudancestudio/key_pool.hpp"
 // ===========================================================================
 // Gap ports: wave-context reset, physics-pose key registration and the
@@ -468,11 +469,11 @@ void RegisterPhysicsPose(unsigned char* m, std::uint32_t frame) {
     const int boneCnt = model.boneCount;
     auto*& pose = undo.bonePose;
     if (pose != nullptr) {                                         // 0x4A579C
-        ::operator delete(pose);
+        undo_storage::Delete(pose);
         pose = nullptr;
     }
     pose = static_cast<mikudancestudio::mdl::BonePoseSnapshot*>(
-        ::operator new(sizeof(*pose) * boneCnt));                    // 0x4A57F1
+        undo_storage::Allocate(sizeof(*pose) * boneCnt));                    // 0x4A57F1
     std::memset(pose, 0, sizeof(*pose) * static_cast<std::size_t>(boneCnt));
     if (boneCnt > 0) {                                             // 0x4A582C
         mikudancestudio::mdl::BoneRecord* const bones = model.boneTable;
@@ -490,11 +491,11 @@ void RegisterPhysicsPose(unsigned char* m, std::uint32_t frame) {
 
     auto*& poseSrc = undo.auxiliaryPose;
     if (poseSrc != nullptr) {                                      // 0x4A5939
-        ::operator delete(poseSrc);
+        undo_storage::Delete(poseSrc);
         poseSrc = nullptr;
     }
     poseSrc = static_cast<unsigned char*>(
-        ::operator new(3456 * static_cast<std::size_t>(model.matMisc))); // 0x4A5995
+        undo_storage::Allocate(3456 * static_cast<std::size_t>(model.matMisc))); // 0x4A5995
     std::memset(poseSrc, 0,
                 3456 * static_cast<std::size_t>(model.matMisc));   // 0x4A59C2
     mdl::BoneKeyVisitClear(*mdl::Mdl(m));               // 0x4A59D5

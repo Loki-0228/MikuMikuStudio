@@ -33,6 +33,7 @@
 
 #include "mikudancestudio/bone_scale_io.hpp"
 #include "mikudancestudio/model.hpp"
+#include "mikudancestudio/undo_storage.hpp"
 #include "mikudancestudio/mmd_app.hpp"
 #include "mikudancestudio/ported_funcs.hpp"
 #include "mikudancestudio/vpd_scale_io.hpp"
@@ -1104,8 +1105,8 @@ struct Fixture {
         bs::Forget(data());
         for (auto& ring : record->undoRings)
             for (auto& slot : ring.slots) {
-                std::free(slot.bonePose);
-                std::free(slot.auxiliaryPose);
+                mikudancestudio::undo_storage::Free(slot.bonePose);
+                mikudancestudio::undo_storage::Free(slot.auxiliaryPose);
             }
     }
 };

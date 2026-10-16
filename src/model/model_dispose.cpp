@@ -5,6 +5,7 @@
 #include "mikudancestudio/native_mesh.hpp"
 #include "mikudancestudio/text_encoding.hpp"
 #include "mikudancestudio/owned_text.hpp"
+#include "mikudancestudio/undo_storage.hpp"
 #include "mikudancestudio/physics_scale.hpp"
 // ===========================================================================
 // VA 0x0048F830 - ModelDispose  (original: sub_48F830, 2099 bytes)
@@ -176,11 +177,11 @@ void ModelDispose(unsigned char* m) {
     for (auto& ring : mikudancestudio::mdl::Mdl(m)->undoRings) {
         for (auto& undo : ring.slots) {
             if (undo.auxiliaryPose != nullptr) {
-                std::free(undo.auxiliaryPose);
+                undo_storage::Free(undo.auxiliaryPose);
                 undo.auxiliaryPose = nullptr;
             }
             if (undo.bonePose != nullptr) {
-                std::free(undo.bonePose);
+                undo_storage::Free(undo.bonePose);
                 undo.bonePose = nullptr;
             }
         }

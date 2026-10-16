@@ -6,6 +6,7 @@
 #include "mikudancestudio/ui_message.hpp"
 #include "mikudancestudio/mmd_app.hpp"
 #include "mikudancestudio/model.hpp"
+#include "mikudancestudio/undo_storage.hpp"
 #include "mikudancestudio/ported_funcs.hpp"
 #include "mikudancestudio/panel_controls.hpp"
 #include "mikudancestudio/text_encoding.hpp"
@@ -81,7 +82,7 @@ void NativeCurveLinkRegression(MMDApp* app, HWND owner) {
             Check(std::memcmp(bones[neighbor].interpolation,linked.interpolation,16)==0&&bone_scale::KeyCurve(raw,neighbor)==linkedScale,"native redo restores the complete linked edit");
         }
     }
-    for(auto& ring:model->undoRings)for(auto& slot:ring.slots){std::free(slot.bonePose);std::free(slot.auxiliaryPose);}
+    for(auto& ring:model->undoRings)for(auto& slot:ring.slots){mikudancestudio::undo_storage::Free(slot.bonePose);mikudancestudio::undo_storage::Free(slot.auxiliaryPose);}
     // The first incoming segment has no predecessor; the last has no successor.
     app->CameraMode()=1;SendMessageW(combo,CB_SETCURSEL,3,0);SendMessageW(automatic,BM_SETCHECK,BST_CHECKED,0);
     for(int mode : {1,2}){

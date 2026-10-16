@@ -1,6 +1,7 @@
 #include "native_history_commands.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "native_pose_scope.hpp"
+#include "native_object_commands.hpp"
 #include "mikudancestudio/animation_curve_editor.hpp"
 #include "mikudancestudio/mmd_app.hpp"
 #include "mikudancestudio/model.hpp"
@@ -34,14 +35,7 @@ bool TryBoundHistoryCommand(MMDApp* app, bool redo) noexcept {
     if (!app) return false;
     auto* history = BoundNativePoseHistory(app);
     if (!history) return false;
-    if (app->PlaybackActive() || app->FrameStepPlayback() ||
-        app->state.recordPlaybackStartPending || app->SceneMutationInProgress()) return true;
-    if (history->History(redo) == MMS_OK) {
-        PublishBoundPoseEdit(*app, *history, true);
-        // History may touch another model or the morph family while the main
-        // window is in camera mode. Let the open editor refresh its own source.
-        Boundary([&]() -> MmsResult { curve_editor::NotifyOwnedChanged(app->MainWindow()); return MMS_OK; });
-    }
+    RunBoundObjectHistory(*app, *history, redo);
     return true;
 }
 }

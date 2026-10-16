@@ -1,3 +1,4 @@
+#include "mikudancestudio/undo_storage.hpp"
 // ===========================================================================
 // VA 0x00418750 - SaveVpdFile  (0x2B2 bytes)
 // VA 0x00418A10 - LoadVpdFile  (0x95C bytes)
@@ -317,12 +318,12 @@ void LoadVpdFile(const wchar_t* path) {
     undo.operation = 1;
     undo.dirty = count;
     if (undo.bonePose != nullptr) {
-        free(undo.bonePose);
+        undo_storage::Free(undo.bonePose);
         undo.bonePose = nullptr;
     }
     mdl::BonePoseSnapshot* const snap =
         static_cast<mdl::BonePoseSnapshot*>(
-            operator new(sizeof(mdl::BonePoseSnapshot) * count));
+            undo_storage::Allocate(sizeof(mdl::BonePoseSnapshot) * count));
     undo.bonePose = snap;
     std::memset(snap, 0, sizeof(mdl::BonePoseSnapshot) * count);
     undo.dirty = count;

@@ -1,3 +1,4 @@
+#include "mikudancestudio/undo_storage.hpp"
 #include "mikudancestudio/key_pool.hpp"
 // ===========================================================================
 // x64 0x7FF7CB44C12E..0x7FF7CB44C656 - Kinect 骨架驱动泵块（行为级移植）
@@ -411,11 +412,11 @@ bool RegisterKinectPoseCapture(unsigned char* model, unsigned frame) {
         // (query_audio_gaps.cpp:440/462 at 0x4A57F1/0x4A5995, dialog_gaps.cpp
         // at 0x4B57B0), so this site allocates and releases them the same way
         // instead of new[]/delete[].
-        ::operator delete(undo.bonePose);
+        undo_storage::Delete(undo.bonePose);
         undo.bonePose = nullptr;
         const std::int32_t boneCount =
             static_cast<std::int32_t>(mdl::Mdl(model)->boneCount);
-        undo.bonePose = static_cast<mdl::BonePoseSnapshot*>(::operator new(
+        undo.bonePose = static_cast<mdl::BonePoseSnapshot*>(undo_storage::Allocate(
             sizeof(mdl::BonePoseSnapshot) *
             static_cast<std::size_t>(boneCount)));
         std::memset(undo.bonePose, 0,
@@ -435,10 +436,10 @@ bool RegisterKinectPoseCapture(unsigned char* model, unsigned frame) {
         // 0x7FF7CB4F319D..0x7FF7CB4F323D：64 字节/条的关键帧快照缓冲
         // （3456 = 54 条 x 64 字节/样本），计数字段清零；keyVisitMap 全清。
         undo.dirty = 0;
-        ::operator delete(undo.auxiliaryPose);
+        undo_storage::Delete(undo.auxiliaryPose);
         undo.auxiliaryPose = nullptr;
         undo.auxiliaryPose =
-            ::operator new(3456 * static_cast<std::size_t>(samples));
+            undo_storage::Allocate(3456 * static_cast<std::size_t>(samples));
         std::memset(undo.auxiliaryPose, 0,
                     3456 * static_cast<std::size_t>(samples));
         mdl::BoneKeyVisitClear(*mdl::Mdl(model));

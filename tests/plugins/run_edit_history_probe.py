@@ -6,7 +6,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
-from run_geometry_probe import pmd, pmx
+from run_geometry_probe import pmd, pmx, accessory
 
 binary, plugin, output = [Path(value).resolve() for value in sys.argv[1:]]
 output.mkdir(exist_ok=False)
@@ -20,6 +20,8 @@ for kind, filename in (("pmx", "MikuMikuDance.exe"), ("pmd", "自定义名称.ex
     make_fixture(root, 255, [""] * 10)
     model = root / ("model." + kind)
     model.write_bytes(pmx() if kind == "pmx" else pmd())
+    accessory_path = root / "triangle.x"
+    accessory_path.write_text(accessory(), encoding="ascii")
     (root / "Data").mkdir()
     (root / "local").mkdir()
     package = root / "PLUGINS" / "编辑" / "测试"
@@ -33,7 +35,8 @@ for kind, filename in (("pmx", "MikuMikuDance.exe"), ("pmd", "自定义名称.ex
     (package / "plugin.json").write_text(json.dumps(manifest), encoding="utf-8")
     shutil.copy2(binary, root / filename)
     env = os.environ.copy()
-    env.update(LOCALAPPDATA=str(root / "local"), MMS_SCENE_TEST_MODEL=str(model))
+    env.update(LOCALAPPDATA=str(root / "local"), MMS_SCENE_TEST_MODEL=str(model),
+               MMS_SCENE_TEST_ACCESSORY=str(accessory_path))
     startup = subprocess.STARTUPINFO()
     startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
     startup.wShowWindow = 0

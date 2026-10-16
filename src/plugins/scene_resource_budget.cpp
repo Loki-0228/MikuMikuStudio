@@ -3,6 +3,7 @@
 #include "mikudancestudio/affine_collision_shape.hpp"
 #include "mikudancestudio/accessory_layout.hpp"
 #include "mikudancestudio/bone_key_pool.hpp"
+#include "mikudancestudio/bullet275_storage.hpp"
 #include "mikudancestudio/d3dx_mesh.hpp"
 #include "mikudancestudio/display_capacity.hpp"
 #include "mikudancestudio/key_pool.hpp"
@@ -109,9 +110,10 @@ void Body(const btRigidBody* body, Collector& out) {
         else { out.Array(motion, 1); out.MissingResource(PhysicsStorage); }
     }
     Shape(body->getCollisionShape(), out);
-    // Bullet's private constraint-reference array exposes size, not retained
-    // capacity; removing constraints can leave its allocation alive.
-    out.MissingResource(PhysicsStorage);
+    bullet275_storage::Allocation references;
+    if (bullet275_storage::ConstraintReferences(*body, references))
+        out.Add(references.identity, references.capacity, sizeof(btTypedConstraint*));
+    else out.MissingResource(PhysicsStorage);
 }
 void Joint(const btTypedConstraint* joint, Collector& out) {
     if (!joint) return;

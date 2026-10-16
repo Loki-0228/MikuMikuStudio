@@ -2,6 +2,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include "mikudancestudio/native_edit_history.hpp"
+#include "mikudancestudio/undo_storage.hpp"
 #include "mikudancestudio/model.hpp"
 #include "mikudancestudio/bone_key_pool.hpp"
 #include "mikudancestudio/key_pool.hpp"
@@ -61,7 +62,7 @@ struct Fixture {
     }
     unsigned char* raw(){return reinterpret_cast<unsigned char*>(m.get());}
     ~Fixture(){bone_scale::Forget(raw());morph_curve::Forget(raw());
-        for(auto& ring:m->undoRings)for(auto& entry:ring.slots){std::free(entry.bonePose);std::free(entry.auxiliaryPose);}
+        for(auto& ring:m->undoRings)for(auto& entry:ring.slots){undo_storage::Free(entry.bonePose);undo_storage::Free(entry.auxiliaryPose);}
         for(unsigned i=0;i<4;++i){delete[] m->displayKeys[i].ikStates;delete[] m->displayKeys[i].selectorStates;}
         mdl::BoneKeyPoolDestroy(m->boneKeys);mdl::MorphKeyPoolDestroy(m->morphKeys);mdl::KeyPoolDestroy(m->displayKeys);
     }
@@ -163,7 +164,7 @@ void FreeCurves(){
         a.tangent=b.tangent=animation_curve::Tangent::Free;if(c==0){b.value=10;a.outSlope=2;}
         tracks[c].keys={a,b};}
     Check(bone_curve::Write(f.raw(),0,tracks,error),"real free curve writer prepares source");
-    f.Entry(1,2,0);auto& e=f.m->undoRings[0].slots[1];std::free(e.auxiliaryPose);e.dirty=32;
+    f.Entry(1,2,0);auto& e=f.m->undoRings[0].slots[1];undo_storage::Free(e.auxiliaryPose);e.dirty=32;
     auto* saved=static_cast<mdl::BoneKeySnapshot*>(std::calloc(32,sizeof(mdl::BoneKeySnapshot)));e.auxiliaryPose=saved;
     for(int i=0;i<32;++i)saved[i]={i,f.m->boneKeys[i]};
     bone_scale::CaptureUndo(f.raw());tracks[0].keys[1].value=18;
@@ -325,8 +326,11 @@ void CrossModelJournal(){
 }
 #include "history_physics_checks.inc"
 #include "scene_object_history_checks.inc"
+#include "scene_object_budget_checks.inc"
+#include "scene_object_insertion_checks.inc"
 #include "native_pose_history_checks.inc"
 #include "scene_resource_budget_checks.inc"
+#include "undo_storage_checks.inc"
 #include "shared_history_applied_checks.inc"
 #include "native_pose_scope_checks.inc"
 #include "native_history_command_checks.inc"
@@ -343,11 +347,15 @@ void CrossModelJournal(){
 #include "native_morph_key_checks.inc"
 #include "native_model_key_checks.inc"
 #include "native_model_range_checks.inc"
+#include "native_object_command_checks.inc"
 int main(){
     std::setvbuf(stdout,nullptr,_IONBF,0);
     const auto run=[](const char* name,void(*test)()){std::printf("RUN %s\n",name);test();};
     run("NativePoseHistoryChecks",NativePoseHistoryChecks);
     run("SceneResourceBudgetChecks",SceneResourceBudgetChecks);
+    run("UndoStorageChecks",UndoStorageChecks);
+    run("SceneObjectBudgetChecks",SceneObjectBudgetChecks);
+    run("SceneObjectInsertionChecks",SceneObjectInsertionChecks);
     run("SharedHistoryAppliedChecks",SharedHistoryAppliedChecks);
     run("NativePoseScopeChecks",NativePoseScopeChecks);
     run("NativeHistoryCommandChecks",NativeHistoryCommandChecks);
@@ -364,6 +372,7 @@ int main(){
     run("NativeMorphKeyChecks",NativeMorphKeyChecks);
     run("NativeModelKeyChecks",NativeModelKeyChecks);
     run("NativeModelRangeChecks",NativeModelRangeChecks);
+    run("NativeObjectCommandChecks",NativeObjectCommandChecks);
     run("PoseAndStale",PoseAndStale);run("KeysAndChain",KeysAndChain);run("Bake",Bake);
     run("Deletion",Deletion);run("EmptyAndCycle",EmptyAndCycle);run("FreeCurves",FreeCurves);
     run("Scatter",Scatter);run("FailedNativeCommands",FailedNativeCommands);run("RemovalBindings",RemovalBindings);

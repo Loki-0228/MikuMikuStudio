@@ -6,6 +6,7 @@ struct SharedHistory::Node {
     std::shared_ptr<const EditRecord> plugins;
     std::shared_ptr<HistoryChange> native;
     uint64_t bytes;
+    uint64_t pluginBytes;
 };
 struct SharedHistory::Publication final : EditPublication {
     SharedHistory& owner;
@@ -86,16 +87,21 @@ MmsResult SharedHistory::ReserveNode(std::shared_ptr<const EditRecord> record,
     std::shared_ptr<HistoryChange> native, std::unique_ptr<Publication>& out) {
     if (!entered_) return MMS_E_BUSY;
     if (!record || (!native && record->before.empty())) return MMS_E_ARGUMENT;
-    const auto pluginBytes = RecordBytes(*record), nativeBytes = native ? native->RetainedBytes() : 0;
-    if (pluginBytes > maxBytes_ || nativeBytes > maxBytes_ - pluginBytes) return MMS_E_MEMORY;
+    const auto pluginBytes = RecordBytes(*record);
+    if (pluginBytes > maxBytes_) return MMS_E_MEMORY;
     // Copy the record: a caller retaining a mutable shared_ptr cannot alter a
     // published history node after preparation.
     auto copy = std::make_shared<const EditRecord>(*record);
     auto publication = std::make_unique<Publication>(*this);
-    publication->node.push_back(std::make_shared<Node>(Node{std::move(copy), std::move(native), pluginBytes + nativeBytes}));
+    publication->node.push_back(std::make_shared<Node>(Node{std::move(copy), std::move(native), pluginBytes, pluginBytes}));
     if (const auto& change = publication->node.front()->native) {
         if (auto r = change->Prepare(true, publication->candidate)) return r;
         if (!publication->candidate) return MMS_E_FAILED;
+        uint64_t target = change->RetainedBytes();
+        uint64_t dynamicTarget = 0;
+        if (publication->candidate->TargetRetainedBytes(dynamicTarget)) target = dynamicTarget;
+        if (target > maxBytes_ - pluginBytes) return MMS_E_MEMORY;
+        publication->node.front()->bytes = pluginBytes + target;
     }
     out = std::move(publication); return MMS_OK;
 }
@@ -128,11 +134,20 @@ MmsResult SharedHistory::History(bool redo) {
     return Boundary([&]() -> MmsResult {
         auto& source = redo ? redo_ : undo_;
         if (source.empty()) return MMS_E_NOT_FOUND;
-        const auto& node = *source.back();
+        auto& node = *source.back();
         std::unique_ptr<PreparedHistoryChange> native;
         if (node.native) {
             if (auto r = node.native->Prepare(redo, native)) return r;
             if (!native) return MMS_E_FAILED;
+        }
+        auto targetBytes = node.bytes;
+        uint64_t targetNative = 0;
+        if (native && native->TargetRetainedBytes(targetNative)) {
+            if (targetNative > maxBytes_ - node.pluginBytes) return MMS_E_MEMORY;
+            targetBytes = node.pluginBytes + targetNative;
+            // Undo/redo must not silently discard a different history branch
+            // to pay for a grown resource snapshot. Reject before any restore.
+            if (bytes_ - node.bytes > maxBytes_ - targetBytes) return MMS_E_MEMORY;
         }
         if (auto r = storage_.PrepareRestore(redo ? node.plugins->after : node.plugins->before)) return r;
         CancelRestore cancel{storage_};
@@ -141,6 +156,8 @@ MmsResult SharedHistory::History(bool redo) {
         if (native && !native->IsCurrent()) return MMS_E_STALE;
         if (!storage_.Commit()) { poisoned_ = true; return MMS_E_FAILED; }
         if (native) native->Publish();
+        bytes_ = bytes_ - node.bytes + targetBytes;
+        node.bytes = targetBytes;
         auto& destination = redo ? undo_ : redo_;
         destination.splice(destination.end(), source, std::prev(source.end()));
         ++revision_; return MMS_OK;
@@ -219,7 +236,7 @@ MmsResult SharedHistory::ReserveAppliedNative(std::string label, uint64_t maximu
         auto record = std::make_shared<EditRecord>(); record->label = std::move(label);
         const auto bytes = RecordBytes(*record);
         if (bytes > maxBytes_ || maximumNativeBytes > maxBytes_ - bytes) return MMS_E_MEMORY;
-        auto node = std::make_shared<Node>(Node{std::move(record), {}, bytes});
+        auto node = std::make_shared<Node>(Node{std::move(record), {}, bytes, bytes});
         auto publication = std::make_unique<Publication>(*this);
         publication->node.push_back(node);
         out.reset(new AppliedTransaction(*this, maximumNativeBytes, std::move(node), std::move(publication)));
@@ -243,6 +260,10 @@ MmsResult SharedHistory::PrepareAppliedNative(AppliedTransaction& t, std::shared
         std::unique_ptr<PreparedHistoryChange> verification;
         if (auto r = change->Prepare(false, verification)) return r;
         if (!verification) return MMS_E_FAILED;
+        // This is an inverse verification, not the state being recorded.
+        // Dynamic resource owners must use the normal prepared publication.
+        uint64_t inverseBytes = 0;
+        if (verification->TargetRetainedBytes(inverseBytes)) return MMS_E_NOT_READY;
         if (!verification->IsCurrent() || !t.publication_->IsCurrent() || change->RetainedBytes() != bytes)
             return MMS_E_STALE;
         t.nativeBytes_ = bytes; t.node_->bytes += bytes;

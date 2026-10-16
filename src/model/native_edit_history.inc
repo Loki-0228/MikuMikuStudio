@@ -3,39 +3,24 @@
 #if !MMD_ORIGINAL_PROFILE
 namespace native_history {
 void MeasureResources(const mdl::ModelRecord& model, plugins::resource_budget::Collector& out) {
-    using C = plugins::resource_budget::Collector;
-    for (const auto& ring : model.undoRings) for (const auto& entry : ring.slots) {
-        // Pose operations can keep an all-bones allocation after compacting
-        // selected entries. Charging all bones is a conservative upper bound.
-        if (entry.bonePose) out.Array(entry.bonePose, (std::max)(std::uint64_t(model.boneCount),
-            entry.dirty > 0 ? std::uint64_t(entry.dirty) : 0));
-        if (!entry.auxiliaryPose) continue;
-        if (entry.operation == 6) { sequence_scatter::MeasureSnapshot(entry.auxiliaryPose, out); continue; }
-        if (entry.dirty < 0) { out.MissingResource(plugins::resource_budget::UndoCapacity); continue; }
-        std::uint64_t bytes = C::Product(std::uint64_t(entry.dirty), sizeof(mdl::BoneKeySnapshot));
-        if (entry.operation == 7 && entry.reserved0 >= 0) {
-            const auto offset = C::Product(C::Product(std::uint64_t(entry.reserved0), 3), sizeof(mdl::BoneKeySnapshot));
-            if (offset > SIZE_MAX || std::uint64_t(entry.reserved0) > mdl::BoneKeyCapacity(model)) {
-                out.MissingResource(plugins::resource_budget::UndoCapacity); continue;
-            }
-            DeleteAuxHeader h{};
-            std::memcpy(&h, static_cast<const unsigned char*>(entry.auxiliaryPose) + std::size_t(offset), sizeof(h));
-            const auto displayStride = C::Sum(sizeof(mdl::DisplayKey), C::Sum(h.ikCount, C::Product(h.selectorCount, sizeof(mdl::BoneReference))));
-            bytes = C::Sum(offset, C::Sum(sizeof(h), C::Sum(C::Product(h.morphCapacity, sizeof(mdl::MorphKey)), C::Product(h.displayCapacity, displayStride))));
-        } else if (entry.operation != 5) {
-            // Operations 2/4 reserve selectedCount*3 but retain only dirty.
-            // That reservation count was never stored. Old unrelated aux
-            // buffers can also survive a later pose-only operation.
-            out.MissingResource(plugins::resource_budget::UndoCapacity);
+    const auto buffer = [&out](const void* pointer) {
+        if (!pointer) return;
+        undo_storage::Allocation allocation;
+        if (!undo_storage::Find(pointer, allocation)) {
+            out.MissingResource(plugins::resource_budget::UndoCapacity); return;
         }
-        out.Add(entry.auxiliaryPose, 1, bytes);
+        out.Add(pointer, allocation.bytes, 1);
+        out.Add(allocation.registryIdentity, allocation.registryBytes, 1);
+    };
+    for (const auto& ring : model.undoRings) for (const auto& entry : ring.slots) {
+        buffer(entry.bonePose); buffer(entry.auxiliaryPose);
     }
 }
 namespace {
 using Bytes = std::vector<unsigned char>;
-using Buffer = std::unique_ptr<void, decltype(&std::free)>;
+using Buffer = std::unique_ptr<void, decltype(&undo_storage::Free)>;
 Buffer Allocate(std::size_t bytes) {
-    Buffer result(bytes ? ::operator new(bytes) : nullptr, &std::free);
+    Buffer result(bytes ? undo_storage::Allocate(bytes) : nullptr, &undo_storage::Free);
     if(bytes)std::memset(result.get(),0,bytes);
     return result;
 }
@@ -46,7 +31,7 @@ bool SameRecord(const mdl::UndoRecord& a, const mdl::UndoRecord& b) noexcept {
 struct Step {
     unsigned ring=0;
     mdl::UndoRecord undo{}, redo{}, replacement{};
-    Buffer pose{nullptr,&std::free}, aux{nullptr,&std::free};
+    Buffer pose{nullptr,&undo_storage::Free}, aux{nullptr,&undo_storage::Free};
     Bytes sourcePose, sourceAux;
 };
 struct KeyChange { mdl::BoneKey before, after; };
@@ -418,7 +403,7 @@ bool ModelEdit::Publish(std::int32_t& frame) noexcept {
     if(!p.afterDisplay.empty())ApplyDeleteAux(m,p.afterDisplay.data());
     if(p.morphLayers)p.morphLayers->Publish();
     if(!p.redo)for(auto& step:p.steps)if(step.undo.operation!=6){auto& entry=m.undoRings[1].slots[step.ring];
-        std::free(entry.bonePose);std::free(entry.auxiliaryPose);entry=step.replacement;
+        undo_storage::Free(entry.bonePose);undo_storage::Free(entry.auxiliaryPose);entry=step.replacement;
         entry.bonePose=static_cast<mdl::BonePoseSnapshot*>(step.pose.release());entry.auxiliaryPose=step.aux.release();
     }
     if(!p.ownedPose){m.maxFrame=p.newMax;m.searchCursor=p.newSearch;m.undoState[0]=p.nextCursor;frame=p.newFrame;}

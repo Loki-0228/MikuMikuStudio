@@ -80,7 +80,14 @@ void CheckMenuRegression(bool ok,const char* label) {
 int WINAPI UnexpectedA(HWND, LPCSTR text, LPCSTR, UINT) {
     std::printf("Unexpected dialog: %s\n", text); std::exit(2);
 }
-int WINAPI UnexpectedW(HWND, LPCWSTR text, LPCWSTR title, UINT flags) {
+// A probe may permit one precisely matched real message box while retaining
+// the normal fail-fast guard for every other dialog. The scoped probe still
+// hides/answers the actual dialog through WH_CBT; this never fabricates a result.
+decltype(&MessageBoxW) originalMessageBoxW = nullptr;
+bool (*expectedMessageBoxW)(HWND, LPCWSTR, LPCWSTR, UINT) = nullptr;
+int WINAPI UnexpectedW(HWND owner, LPCWSTR text, LPCWSTR title, UINT flags) {
+    if (expectedMessageBoxW && expectedMessageBoxW(owner, text, title, flags))
+        return originalMessageBoxW(owner, text, title, flags);
     if(cancelRecentOpen)return IDCANCEL;
     if (expectExpressionPaste && std::wcscmp(title, L"Force paste expression") == 0 &&
         (flags & 0xf) == MB_OKCANCEL) {
@@ -642,7 +649,7 @@ int main(int argc, char** argv) {
     SetProcessDPIAware();
     Check(MH_Initialize() == MH_OK, "initialize hidden-window guards");
     Hook(&ShowWindow, &KeepHidden, &originalShow);
-    Hook(&MessageBoxA, &UnexpectedA); Hook(&MessageBoxW, &UnexpectedW);
+    Hook(&MessageBoxA, &UnexpectedA); Hook(&MessageBoxW, &UnexpectedW, &originalMessageBoxW);
     auto* app = new MMDApp;
     g_Block = app; app->state = MMDAppState{}; app->InitDefaults();
     Check(InitMainWindowAndD3D(app, GetModuleHandleW(nullptr), SW_HIDE), "initialize production host");

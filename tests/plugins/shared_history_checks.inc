@@ -110,7 +110,103 @@ static void SharedHistoryResetChecks() {
     pending.reset(); orphanReset.reset();
 }
 static void SharedHistoryEditBoundaryChecks();
+static void SharedHistoryDynamicBudgetChecks() {
+    struct Dynamic final : HistoryValue {
+        uint64_t forwardBytes = 160, reverseBytes = 80;
+        bool dynamic = true;
+        using HistoryValue::HistoryValue;
+        struct Prepared final : HistoryValue::Candidate {
+            uint64_t targetBytes;
+            bool dynamic;
+            Prepared(Dynamic& c, bool forward) : Candidate(c, forward),
+                targetBytes(forward ? c.forwardBytes : c.reverseBytes), dynamic(c.dynamic) {}
+            bool TargetRetainedBytes(uint64_t& out) const noexcept override { out = targetBytes; return dynamic; }
+        };
+        MmsResult Prepare(bool forward, std::unique_ptr<PreparedHistoryChange>& out) override {
+            if (fail) return MMS_E_NOT_READY;
+            out = std::make_unique<Prepared>(*this, forward); return MMS_OK;
+        }
+    };
+    StorageStore storage; SharedHistory history(storage, {}, 8, 1000);
+    int value = 0;
+    auto change = std::make_shared<Dynamic>(value, 0, 1);
+    change->bytes = 1; // A static placeholder cannot authorize the larger target.
+    std::unique_ptr<SharedHistory::NativeTransaction> tx;
+    change->forwardBytes = UINT64_MAX;
+    CHECK(history.PrepareNative("dynamic", change, tx) == MMS_E_MEMORY && !tx && !history.RetainedBytes());
+    change->forwardBytes = 160;
+    change->bytes = UINT64_MAX;
+    CHECK(history.PrepareNative("dynamic", change, tx) == MMS_OK && !history.RetainedBytes());
+    tx.reset();
+    change->bytes = 1;
+    CHECK(value == 0 && !history.UndoCount() && !history.RetainedBytes());
+    CHECK(history.PrepareNative("dynamic", change, tx) == MMS_OK && history.CommitNative(std::move(tx)) == MMS_OK);
+    const auto full = history.RetainedBytes(), overhead = full - 160;
+    CHECK(full > 160 && value == 1);
+    CHECK(history.History(false) == MMS_OK && value == 0 && history.RetainedBytes() == overhead + 80);
+    change->forwardBytes = 320;
+    CHECK(history.History(true) == MMS_OK && value == 1 && history.RetainedBytes() == overhead + 320);
+    uint64_t revision = 0, current = 0;
+    CHECK(history.Revision(revision) == MMS_OK);
+    change->reverseBytes = UINT64_MAX;
+    CHECK(history.History(false) == MMS_E_MEMORY && value == 1 && history.RetainedBytes() == overhead + 320);
+    CHECK(history.Revision(current) == MMS_OK && current == revision && history.UndoCount() == 1 && !history.RedoCount());
+    change->reverseBytes = 80;
+    CHECK(history.History(false) == MMS_OK);
+    change->forwardBytes = 160;
+    CHECK(history.History(true) == MMS_OK);
+    int secondValue = 0;
+    auto second = std::make_shared<Dynamic>(secondValue, 0, 2);
+    second->bytes = 1;
+    CHECK(history.PrepareNative("second", second, tx) == MMS_OK && history.CommitNative(std::move(tx)) == MMS_OK);
+    const auto beforeGrowth = history.RetainedBytes();
+    // Individually below the cap, but it cannot evict the first node on undo.
+    second->reverseBytes = 1000 - overhead - 1;
+    CHECK(history.History(false) == MMS_E_MEMORY && secondValue == 2 && value == 1 &&
+        history.UndoCount() == 2 && history.RetainedBytes() == beforeGrowth);
+    second->reverseBytes = 80;
+    CHECK(history.History(false) == MMS_OK && secondValue == 0 && history.UndoCount() == 1 && history.RedoCount() == 1);
+    CHECK(history.Reset() == MMS_OK && !history.RetainedBytes()); history.Collect();
+
+    // An unavailable dynamic result may leave output unspecified. It cannot
+    // override the fixed charge, even if the getter writes zero before false.
+    value = 0; change->dynamic = false; change->forwardBytes = change->reverseBytes = 0;
+    change->bytes = UINT64_MAX;
+    CHECK(history.PrepareNative("dynamic", change, tx) == MMS_E_MEMORY && !tx && !history.RetainedBytes());
+    change->bytes = 160;
+    CHECK(history.PrepareNative("dynamic", change, tx) == MMS_OK && history.CommitNative(std::move(tx)) == MMS_OK);
+    CHECK(history.RetainedBytes() == overhead + 160 && value == 1);
+    CHECK(history.History(false) == MMS_OK && value == 0 && history.RetainedBytes() == overhead + 160);
+    CHECK(history.History(true) == MMS_OK && value == 1 && history.RetainedBytes() == overhead + 160);
+    CHECK(history.Reset() == MMS_OK); history.Collect();
+    change->dynamic = true; change->forwardBytes = 160; change->reverseBytes = 80;
+
+    // Serializer failures must not publish the budget or the native target.
+    StorageClient sc; sc.id = "example.dynamic"; storage.Api(sc);
+    SerializerFixture state; auto serializer = state.Api(); MmsHandle provider = 0;
+    CHECK(storage.Register(sc, S("example.dynamic"), &serializer, sizeof(serializer), &provider) == MMS_OK);
+    EditStore edit(history, storage); EditClient client; client.id = sc.id; auto api = edit.Api(client);
+    auto mixed = std::make_shared<Dynamic>(value, 1, 4);
+    MmsHandle handle = 0; EditParticipantFixture participant{&state, 0, 5}; auto p = participant.Api("example.dynamic");
+    CHECK(history.Revision(revision) == MMS_OK && api.begin(api.context, S("mixed"), revision, &handle) == MMS_OK);
+    CHECK(api.join(api.context, handle, &p) == MMS_OK && edit.JoinNative(client, handle, mixed) == MMS_OK);
+    CHECK(api.prepare(api.context, handle) == MMS_OK && api.commit(api.context, handle) == MMS_OK);
+    const auto mixedBytes = history.RetainedBytes(); state.fail = true;
+    CHECK(api.undo(api.context) == MMS_E_NOT_READY && value == 4 && state.value == 5 && history.RetainedBytes() == mixedBytes);
+    state.fail = false;
+    CHECK(api.undo(api.context) == MMS_OK && value == 1 && state.value == 0 && history.RetainedBytes() == mixedBytes - 80);
+    CHECK(api.redo(api.context) == MMS_OK && history.RetainedBytes() == mixedBytes);
+    CHECK(history.Reset() == MMS_OK); history.Collect();
+    // AppliedNative verifies the inverse without publishing it. Its charge
+    // cannot be mistaken for the live authored state being recorded.
+    std::unique_ptr<SharedHistory::AppliedTransaction> applied;
+    CHECK(history.ReserveAppliedNative("applied", 500, applied) == MMS_OK);
+    CHECK(history.PrepareAppliedNative(*applied, mixed) == MMS_E_NOT_READY);
+    applied.reset();
+    CHECK(!history.RetainedBytes() && !history.UndoCount());
+}
 static void SharedHistoryChecks() {
+    SharedHistoryDynamicBudgetChecks();
     SharedHistoryEditBoundaryChecks();
     SharedHistoryResetChecks();
     StorageStore storage; SharedHistory history(storage); EditStore edit(history, storage);

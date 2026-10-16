@@ -1,14 +1,37 @@
 #include "BulletDynamics/Dynamics/btActionInterface.h"
+#include "mikudancestudio/bullet275_storage.hpp"
 #include "../src/plugins/scene_resource_budget.hpp"
+#include <cstdlib>
+#include <cstdint>
 #include <limits>
 #include <stdexcept>
 
 namespace {
 bool trackBulletAlloc = false;
 unsigned bulletAllocations = 0;
+bool observeBulletStorage = false;
+unsigned observedStorageAllocations = 0;
+void* observedStoragePointer = nullptr;
+size_t observedStorageBytes = 0;
+bool observedStorageRaw = false;
+void* HistoryAlloc(size_t size) {
+    if (trackBulletAlloc) ++bulletAllocations;
+    void* const pointer = std::malloc(size);
+    if (observeBulletStorage) {
+        ++observedStorageAllocations; observedStoragePointer = pointer; observedStorageBytes = size;
+        observedStorageRaw = true;
+    }
+    return pointer;
+}
+void HistoryFree(void* p) { std::free(p); }
 void* HistoryAlignedAlloc(size_t size, int alignment) {
     if (trackBulletAlloc) ++bulletAllocations;
-    return _aligned_malloc(size, alignment);
+    void* const pointer = _aligned_malloc(size, alignment);
+    if (observeBulletStorage) {
+        ++observedStorageAllocations; observedStoragePointer = pointer; observedStorageBytes = size;
+        observedStorageRaw = false;
+    }
+    return pointer;
 }
 void HistoryAlignedFree(void* p) { _aligned_free(p); }
 struct PhysicsFixture {
@@ -313,6 +336,126 @@ bool SamePhysicsResources(const plugins::resource_budget::Report& a, const plugi
     return a.cpuBytes == b.cpuBytes && a.d3d9Bytes == b.d3d9Bytes &&
         a.totalBytes == b.totalBytes && a.missing == b.missing;
 }
+void PhysicsConstraintStorageChecks() {
+    namespace rb = plugins::resource_budget;
+    namespace storage = bullet275_storage;
+    PhysicsFixture f; auto* body = f.bodies[0].get();
+    const btRigidBody& readOnlyBody = *body;
+    storage::Allocation initial{body, 999};
+    failAfter = 0;
+    const bool empty = storage::ConstraintReferences(readOnlyBody, initial);
+    failAfter = -1;
+    Check(empty && !initial.identity && initial.capacity == 0,
+          "fresh rigid-body reference storage reads zero capacity without allocation or element access");
+    rb::Collector baseline; rb::Body(body, baseline);
+    Check(baseline.Result().missing == 0 && baseline.Result().cpuBytes == sizeof(btRigidBody) + sizeof(btSphereShape),
+          "exact supported rigid body with an empty reference array has a complete payload estimate");
+
+    std::vector<std::unique_ptr<btPoint2PointConstraint>> refs;
+    for (unsigned i = 0; i < 9; ++i)
+        refs.push_back(std::make_unique<btPoint2PointConstraint>(*body, *f.bodies[1], btVector3(0, 0, 0), btVector3(0, 0, 0)));
+    storage::Allocation previous;
+    for (unsigned i = 0; i < refs.size(); ++i) {
+        observedStorageAllocations = 0; observedStoragePointer = nullptr; observedStorageBytes = 0;
+        observeBulletStorage = true; body->addConstraintRef(refs[i].get()); observeBulletStorage = false;
+        storage::Allocation allocation;
+        Check(storage::ConstraintReferences(readOnlyBody, allocation) && allocation.capacity >= i + 1,
+              "reference-array measurement follows multiple actual growth operations");
+        if (allocation.capacity != previous.capacity) {
+            const auto payload = allocation.capacity * sizeof(btTypedConstraint*);
+            if (observedStorageRaw) {
+                // Bullet 2.75 without BT_HAS_ALIGNED_ALLOCATOR bypasses the
+                // aligned callback. Its ordinary allocator reserves a base
+                // pointer and 15 padding bytes for this array's alignment 16.
+                const auto base = reinterpret_cast<std::uintptr_t>(observedStoragePointer);
+                const auto aligned = (base + sizeof(void*) + 15) & ~std::uintptr_t(15);
+                Check(observedStorageAllocations == 1 && observedStoragePointer &&
+                      allocation.identity == reinterpret_cast<const void*>(aligned) &&
+                      observedStorageBytes == payload + sizeof(void*) + 15 &&
+                      static_cast<void* const*>(allocation.identity)[-1] == observedStoragePointer,
+                      "measured data identity and capacity match Bullet's exact raw allocation and alignment header");
+            } else {
+                Check(observedStorageAllocations == 1 && allocation.identity == observedStoragePointer &&
+                      payload == observedStorageBytes,
+                      "measured identity and capacity match the actual Bullet aligned allocation request");
+            }
+        } else {
+            Check(observedStorageAllocations == 0 && allocation.identity == previous.identity,
+                  "in-capacity append preserves allocation identity");
+        }
+        rb::Collector measured; rb::Body(body, measured);
+        const auto expectedBytes = baseline.Result().cpuBytes + allocation.capacity * sizeof(btTypedConstraint*);
+        Check(measured.Result().missing == 0 && measured.Result().cpuBytes == expectedBytes,
+              "body resource charge includes the complete reference capacity rather than only its size");
+        measured.Add(allocation.identity, allocation.capacity, sizeof(btTypedConstraint*)); rb::Body(body, measured);
+        Check(measured.Result().cpuBytes == expectedBytes,
+              "independent allocation observation and repeated body measurement share the real storage identity");
+        previous = allocation;
+    }
+    observedStorageAllocations = 0; observeBulletStorage = true;
+    body->addConstraintRef(refs.front().get()); observeBulletStorage = false;
+    Check(observedStorageAllocations == 0 && body->getNumConstraintRefs() == static_cast<int>(refs.size()),
+          "duplicate constraint reference changes neither storage nor count");
+    for (const auto& ref : refs) body->removeConstraintRef(ref.get());
+    storage::Allocation retained;
+    Check(body->getNumConstraintRefs() == 0 && storage::ConstraintReferences(readOnlyBody, retained) &&
+          retained.capacity == previous.capacity && retained.identity == previous.identity && retained.capacity > 0,
+          "removing every reference preserves and measures its nonempty retained allocation");
+    rb::Collector removed; rb::Body(body, removed);
+    Check(removed.Result().missing == 0 && removed.Result().cpuBytes == baseline.Result().cpuBytes +
+          retained.capacity * sizeof(btTypedConstraint*), "zero reference count does not erase the retained storage charge");
+
+    // Exercise the ordinary virtual world route as well as direct body calls.
+    f.world.addConstraint(refs.front().get(), true);
+    Check(body->getNumConstraintRefs() == 1 && f.bodies[1]->getNumConstraintRefs() == 1,
+          "world collision suppression populates both body reference arrays");
+    f.world.removeConstraint(refs.front().get());
+    rb::Collector worldPayload;
+    for (const auto& item : f.bodies) rb::Body(item.get(), worldPayload);
+    rb::Joint(f.joint.get(), worldPayload);
+    const auto worldBytes = worldPayload.Result();
+    rb::Body(body, worldPayload);
+    worldPayload.Add(retained.identity, retained.capacity, sizeof(btTypedConstraint*));
+    Check(SamePhysicsResources(worldBytes, worldPayload.Result()),
+          "world and object accounting deduplicate shared shapes and the body reference allocation");
+    auto owner = f.Capture(); auto candidate = owner->Prepare(false);
+    rb::Collector target; Check(candidate->MeasureTargetResources(target), "prepare history after references were removed");
+    Check(candidate->MeasureTargetResources(worldPayload) && worldPayload.Result().cpuBytes ==
+          worldBytes.cpuBytes + target.Result().cpuBytes, "world payload and target history bookkeeping are separate allocations");
+    const auto combined = worldPayload.Result(); owner->MeasureResources(worldPayload);
+    Check(candidate->MeasureTargetResources(worldPayload) && SamePhysicsResources(combined, worldPayload.Result()),
+          "body and retained-candidate accounting remain deduplicated in one batch collector");
+    PublishPhysicsBatch(std::move(candidate));
+    rb::Collector actual;
+    for (const auto& item : f.bodies) rb::Body(item.get(), actual);
+    rb::Joint(f.joint.get(), actual); owner->MeasureResources(actual);
+    Check(SamePhysicsResources(combined, actual.Result()),
+          "parked physics payload and target snapshot equal their pre-publication resource estimate");
+    PublishPhysicsBatch(owner->Prepare(true));
+
+    struct DerivedBody final : btRigidBody {
+        char extra[32]{};
+        explicit DerivedBody(btCollisionShape* shape) : btRigidBody(0, nullptr, shape) {}
+    } unknown(&f.shape);
+    rb::Collector incomplete; rb::Body(&unknown, incomplete);
+    Check(incomplete.Result().missing & rb::PhysicsStorage,
+          "reading known base storage never treats an unknown derived rigid body as fully measured");
+
+    // No side registry survives destruction: reconstructing at the same body
+    // address must read the new object's empty array, not the old high-water mark.
+    alignas(btRigidBody) unsigned char memory[sizeof(btRigidBody)];
+    auto* first = ::new(static_cast<void*>(memory)) btRigidBody(0, nullptr, &f.shape);
+    first->addConstraintRef(refs.front().get()); first->removeConstraintRef(refs.front().get());
+    storage::Allocation oldAllocation;
+    Check(storage::ConstraintReferences(*first, oldAllocation) && oldAllocation.capacity > 0,
+          "same-address lifetime fixture starts with retained reference storage");
+    first->~btRigidBody();
+    auto* second = ::new(static_cast<void*>(memory)) btRigidBody(0, nullptr, &f.shape);
+    storage::Allocation newAllocation{oldAllocation.identity, oldAllocation.capacity};
+    Check(storage::ConstraintReferences(*second, newAllocation) && !newAllocation.identity && !newAllocation.capacity,
+          "same-address reconstruction cannot inherit a stale storage identity or capacity");
+    second->~btRigidBody();
+}
 void PhysicsTargetResourceChecks() {
     namespace rb = plugins::resource_budget;
     using history_physics::Retained;
@@ -463,6 +606,7 @@ void PhysicsTargetResourceChecks() {
     }
 }
 void PhysicsRetention() {
+    btAlignedAllocSetCustom(HistoryAlloc, HistoryFree);
     btAlignedAllocSetCustomAligned(HistoryAlignedAlloc, HistoryAlignedFree);
     {
         PhysicsFixture f;
@@ -634,6 +778,8 @@ void PhysicsRetention() {
     PhysicsGuardCoordinates();
     PhysicsBatchRetention();
     PhysicsTargetResourceChecks();
+    PhysicsConstraintStorageChecks();
     btAlignedAllocSetCustomAligned(nullptr, nullptr);
+    btAlignedAllocSetCustom(nullptr, nullptr);
 }
 }

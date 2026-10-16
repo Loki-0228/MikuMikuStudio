@@ -1,3 +1,4 @@
+#include "mikudancestudio/undo_storage.hpp"
 #include "mikudancestudio/frame_limits.hpp"
 #include "mikudancestudio/key_pool.hpp"
 // ===========================================================================
@@ -91,11 +92,11 @@ void SnapshotPose(unsigned char* model) {
     auto& undo = CurrentUndo(model);
     auto*& slot = undo.bonePose;
     if (slot != nullptr) {
-        std::free(slot);
+        undo_storage::Free(slot);
         slot = nullptr;
     }
     const std::int32_t count = mdl::Mdl(model)->boneCount;
-    slot = static_cast<mikudancestudio::mdl::BonePoseSnapshot*>(std::malloc(
+    slot = static_cast<mikudancestudio::mdl::BonePoseSnapshot*>(undo_storage::MallocOrThrow(
         static_cast<std::size_t>(count) *
         sizeof(mikudancestudio::mdl::BonePoseSnapshot)));
     std::memset(slot, 0, static_cast<std::size_t>(count) * sizeof(*slot));
@@ -118,10 +119,10 @@ void AllocUndoKeys(unsigned char* model, std::size_t bytes) {
     undo.dirty = 0;
     void*& slot = undo.auxiliaryPose;
     if (slot != nullptr) {
-        std::free(slot);
+        undo_storage::Free(slot);
         slot = nullptr;
     }
-    slot = static_cast<unsigned char*>(std::malloc(bytes));
+    slot = static_cast<unsigned char*>(undo_storage::MallocOrThrow(bytes));
     std::memset(slot, 0, bytes);
 }
 

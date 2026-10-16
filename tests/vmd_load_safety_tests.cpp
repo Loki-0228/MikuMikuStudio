@@ -33,6 +33,7 @@
 #include "mikudancestudio/globals.hpp"
 #include "mikudancestudio/mmd_app.hpp"
 #include "mikudancestudio/model.hpp"
+#include "mikudancestudio/undo_storage.hpp"
 #include "mikudancestudio/morph_curve.hpp"
 #include "mikudancestudio/d3dx_dyn.hpp"
 #include "mikudancestudio/force_paste.hpp"
@@ -191,7 +192,7 @@ struct Fixture {
     unsigned char* Raw() { return reinterpret_cast<unsigned char*>(model.get()); }
     ~Fixture() {
         bone_scale::Forget(Raw()); morph_curve::Forget(Raw());
-        for (auto& ring : model->undoRings) for (auto& slot : ring.slots) { std::free(slot.bonePose); std::free(slot.auxiliaryPose); }
+        for (auto& ring : model->undoRings) for (auto& slot : ring.slots) { mikudancestudio::undo_storage::Free(slot.bonePose); mikudancestudio::undo_storage::Free(slot.auxiliaryPose); }
         for (auto& key : displayKeys) { std::free(key.ikStates); std::free(key.selectorStates); }
         g_Block = previous;
     }

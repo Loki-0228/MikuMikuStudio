@@ -1,4 +1,5 @@
 #include "mikudancestudio/sequence_scatter.hpp"
+#include "mikudancestudio/undo_storage.hpp"
 #include "../plugins/scene_resource_budget.hpp"
 #include "mikudancestudio/native_edit_history.hpp"
 #include "mikudancestudio/mmd_app.hpp"
@@ -26,7 +27,7 @@ struct SnapshotHeader {
     std::uint32_t maxFrame;
     std::int32_t cursor;
 };
-using Buffer = std::unique_ptr<void, decltype(&std::free)>;
+using Buffer = std::unique_ptr<void, decltype(&undo_storage::Free)>;
 Buffer Snapshot(unsigned char* model) {
     const auto& m = *mdl::Mdl(model);
     morph_curve::AuthoredLayers layers;
@@ -38,7 +39,7 @@ Buffer Snapshot(unsigned char* model) {
         !ac::Encode(tracks, encoded, error)) throw std::runtime_error(error);
     SnapshotHeader h{mdl::MorphKeyCapacity(m.morphKeys), encoded.size(), m.maxFrame, m.searchCursor};
     const auto poolBytes = h.capacity * sizeof(mdl::MorphKey);
-    Buffer result(std::malloc(sizeof(h) + poolBytes + encoded.size()), &std::free);
+    Buffer result(undo_storage::Malloc(sizeof(h) + poolBytes + encoded.size()), &undo_storage::Free);
     if (!result) throw std::bad_alloc();
     auto* bytes = static_cast<unsigned char*>(result.get());
     std::memcpy(bytes, &h, sizeof(h));
@@ -245,7 +246,7 @@ bool Apply(MMDApp& app, const Source& source, const Plan& plan, std::string& err
         morph_curve::AuthoredLayers originalLayers;
         if (!morph_curve::CaptureLayers(source.model, originalLayers, error)) return false;
         const auto maxFrame = m.maxFrame; const auto cursor = m.searchCursor;
-        Buffer after(nullptr, &std::free);
+        Buffer after(nullptr, &undo_storage::Free);
         try {
             if (!morph_curve::Write(source.model, plan.tracks, error)) throw std::runtime_error(error);
             // Preserve old marks, selecting only the new keys in addition to them.
@@ -267,7 +268,7 @@ bool Apply(MMDApp& app, const Source& source, const Plan& plan, std::string& err
         const unsigned ring = (m.undoState[0] + 1) % 30;
         for (int side = 0; side < 2; ++side) {
             auto& entry = m.undoRings[side].slots[ring];
-            std::free(entry.bonePose); std::free(entry.auxiliaryPose); entry = {};
+            undo_storage::Free(entry.bonePose); undo_storage::Free(entry.auxiliaryPose); entry = {};
             entry.operation = 6; entry.frame = app.CurrentFrame();
             entry.auxiliaryPose = side == 0 ? before.release() : after.release();
         }

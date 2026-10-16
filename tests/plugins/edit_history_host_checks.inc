@@ -4,6 +4,9 @@
 #include "mikudancestudio/key_pool.hpp"
 #include "mikudancestudio/animation_curve_editor.hpp"
 #include "../src/plugins/native_key_commands.hpp"
+#include "../src/plugins/native_object_commands.hpp"
+#include "mikudancestudio/text_encoding.hpp"
+#include "mikudancestudio/ui_language.hpp"
 namespace edit_history_host_checks {
 UINT FindMenuCommand(HMENU menu, const wchar_t* label) {
     for (int index = 0; menu && index < GetMenuItemCount(menu); ++index) {
@@ -154,6 +157,172 @@ void ModelInterpolation(MMDApp* app, plugins::SharedHistory& history) {
     app->state.lightA[0] = a; app->state.lightB[0] = b; app->state.lightC[0] = c; app->state.lightD[0] = d;
     SendMessageW(combo, CB_SETCURSEL, selection, 0); app->CurrentFrame() = 0;
 }
+struct DeleteConfirmation {
+    HHOOK hook = nullptr;
+    HWND owner = nullptr;
+    std::wstring expectedTitle, expectedText;
+    UINT expectedFlags = 0;
+    unsigned seen = 0, allowed = 0;
+    static thread_local DeleteConfirmation* active;
+    static bool AllowMessageBox(HWND owner, LPCWSTR text, LPCWSTR title, UINT flags) {
+        if (!active || active->allowed || owner != active->owner || !text || !title ||
+            flags != active->expectedFlags || title != active->expectedTitle || text != active->expectedText) return false;
+        ++active->allowed;
+        return true;
+    }
+    static LRESULT CALLBACK HideAndAccept(int code, WPARAM wp, LPARAM lp) {
+        if (code == HCBT_ACTIVATE && active) {
+            const auto window = reinterpret_cast<HWND>(wp);
+            wchar_t type[32]{}; GetClassNameW(window, type, 32);
+            wchar_t title[128]{}; GetWindowTextW(window, title, 128);
+            if (!wcscmp(type, L"#32770") && GetWindow(window, GW_OWNER) == active->owner && title == active->expectedTitle) {
+                ++active->seen; ShowWindow(window, SW_HIDE);
+                Check(GetDlgItem(window, IDOK) && GetDlgItem(window, IDCANCEL), "real object deletion uses an OK/cancel confirmation");
+                PostMessageW(window, WM_COMMAND, IDOK, 0);
+            }
+        }
+        return CallNextHookEx(nullptr, code, wp, lp);
+    }
+    DeleteConfirmation(MMDApp* app, bool model) : owner(app->MainWindow()),
+        expectedFlags(MB_OKCANCEL | (app->FloatingWindow() ? MB_TOPMOST : 0)) {
+        const auto language = app->EnglishUI() <= 2 ? app->EnglishUI() : 1;
+        const wchar_t* titles[2][3] = {{L"アクセサリ削除", L"Delete accessory", L"删除配件"},
+            {L"モデル削除", L"Delete model", L"删除模型"}};
+        const wchar_t* bodies[2][3] = {
+            {L"アクセサリと全フレームのデータを削除しますか？\nこの操作は元に戻せます。",
+             L"Delete the accessory and all its frame data?\nYou can undo this operation.", L"确定删除配件及其全部帧数据吗？\n此操作可以撤销。"},
+            {L"モデルと全フレームのデータを削除しますか？\nこの操作は元に戻せます。",
+             L"Delete the model and all its frame data?\nYou can undo this operation.", L"确定删除模型及其全部帧数据吗？\n此操作可以撤销。"}};
+        expectedTitle = titles[model][language]; expectedText = bodies[model][language];
+        const auto name = model ? text_encoding::ModelName(*mdl::Mdl(app->ModelSlot(0)), UiUsesEnglishNames(app->EnglishUI())) :
+            text_encoding::Display(app->AccessorySlot(0)->name);
+        if (!name.empty()) { expectedText += L"\n\n"; expectedText += name; }
+        Check(!active && !expectedMessageBoxW, "no nested host deletion confirmation"); active = this;
+        expectedMessageBoxW = AllowMessageBox;
+        Check(!AllowMessageBox(nullptr, expectedText.c_str(), expectedTitle.c_str(), expectedFlags) &&
+            !AllowMessageBox(owner, L"unexpected body", expectedTitle.c_str(), expectedFlags) &&
+            !AllowMessageBox(owner, expectedText.c_str(), L"unexpected title", expectedFlags) &&
+            !AllowMessageBox(owner, expectedText.c_str(), expectedTitle.c_str(), expectedFlags | MB_ICONWARNING),
+            "confirmation allowance rejects other owners, text, titles and flags");
+        hook = SetWindowsHookExW(WH_CBT, HideAndAccept, nullptr, GetCurrentThreadId());
+        Check(hook != nullptr, "install hidden host deletion confirmation hook");
+    }
+    ~DeleteConfirmation() { UnhookWindowsHookEx(hook); expectedMessageBoxW = nullptr; active = nullptr; }
+};
+thread_local DeleteConfirmation* DeleteConfirmation::active = nullptr;
+void FlushObjectUi(MMDApp* app) {
+    const auto until = GetTickCount64() + 2000;
+    while (plugins::NativeObjectUiPending(app) && GetTickCount64() < until) {
+        MSG message{}; unsigned remaining = 64;
+        while (remaining-- && PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+            TranslateMessage(&message); DispatchMessageW(&message);
+        }
+        if (plugins::NativeObjectUiPending(app)) Sleep(1);
+    }
+    Check(!plugins::NativeObjectUiPending(app), "real deferred host refresh completes after plugin invocation");
+}
+void ObjectMenuDeletion(MMDApp* app, plugins::SharedHistory& history, const MmsSceneApiV1& api,
+                        const wchar_t* modelPath, const wchar_t* accessoryPath) {
+    using namespace plugins;
+    std::puts("RUN actual model/accessory deletion menus and plugin history"); std::fflush(stdout);
+    auto* model = app->ModelSlot(0); auto* accessory = app->AccessorySlot(0);
+    Check(model && accessory && !history.UndoCount(), "real resource deletion begins with both loaded objects and an empty journal");
+    auto& record = *mdl::Mdl(model);
+    auto* vertexBuffer = record.vertexBuffer; auto* mesh = accessory->mesh; auto* keys = app->AccessoryKeys(0);
+    const auto poseY = record.boneTable[0].trans[1]; const auto dirty = record.bonePhysicsState[0];
+    const auto frame = app->CurrentFrame(); const auto selectedModel = app->SelectedModelSlot();
+    const auto originalModel = SceneObjectIdentity(model), originalAccessory = SceneObjectIdentity(accessory);
+    const auto modelSource = std::filesystem::absolute(modelPath), accessorySource = std::filesystem::absolute(accessoryPath);
+    Check(std::filesystem::equivalent(modelSource.parent_path(), std::filesystem::current_path()) &&
+        std::filesystem::equivalent(accessorySource.parent_path(), std::filesystem::current_path()), "offline source test stays inside its isolated fixture directory");
+    struct Offline {
+        std::filesystem::path source, moved;
+        bool active = true;
+        explicit Offline(std::filesystem::path value) : source(std::move(value)), moved(source.wstring() + L".history-offline") {
+            std::filesystem::rename(source, moved);
+        }
+        void Restore() {
+            std::filesystem::rename(moved, source); active = false;
+            Check(std::filesystem::exists(source), "restore isolated source file for later PMM reopen checks");
+        }
+        ~Offline() { if (active) { std::error_code error; std::filesystem::rename(moved, source, error); } }
+    } offlineModel(modelSource), offlineAccessory(accessorySource);
+    Check(!std::filesystem::exists(modelSource) && !std::filesystem::exists(accessorySource), "model and accessory source files are unavailable before deletion");
+    MmsSceneQueryV1 query{}; query.h = Header<MmsSceneQueryV1>(); query.flags = MMS_SCENE_CURRENT_TIME;
+    MmsSnapshotV1 retainedSnapshot{}; MmsSpan retainedObjects{};
+    Check(api.acquire(api.context, &query, &retainedSnapshot) == MMS_OK &&
+        api.objects(api.context, retainedSnapshot.handle, &retainedObjects) == MMS_OK && retainedObjects.count == 2,
+        "public scene snapshot sees both objects before actual menu deletion");
+    const auto counts = [&](unsigned models, unsigned accessories) {
+        return SendDlgItemMessageW(app->MainWindow(), 436, CB_GETCOUNT, 0, 0) == LRESULT(models + 1) &&
+            SendDlgItemMessageW(app->MainWindow(), 471, CB_GETCOUNT, 0, 0) == LRESULT(accessories);
+    };
+    const auto sceneCount = [&](unsigned expected) {
+        MmsSnapshotV1 snapshot{}; MmsSpan objects{};
+        Check(api.acquire(api.context, &query, &snapshot) == MMS_OK && api.objects(api.context, snapshot.handle, &objects) == MMS_OK &&
+            objects.count == expected, "public scene object count follows actual menu history publication");
+        api.release(api.context, snapshot.handle);
+    };
+    const auto stale = [&](MmsObjectRef object) {
+        auto selected = query; selected.objects = {&object, 1, sizeof(object), 1}; MmsSnapshotV1 snapshot{};
+        Check(api.acquire(api.context, &selected, &snapshot) == MMS_E_STALE,
+            "public scene rejects deleted or restored object's previous generation");
+    };
+    const auto samePose = [&] {
+        return record.boneTable[0].trans[1] == poseY && record.bonePhysicsState[0] == dirty &&
+            app->CurrentFrame() == frame && record.vertexBuffer == vertexBuffer && accessory->mesh == mesh;
+    };
+    app->CameraMode() = 0; app->SetSelectedModelSlot(0);
+    SendDlgItemMessageW(app->MainWindow(), 436, CB_SETCURSEL, record.comboSelIndex, 0);
+    { DeleteConfirmation confirmation(app, true); SendMessageW(app->MainWindow(), WM_COMMAND, 437, 0);
+      Check(confirmation.allowed == 1 && confirmation.seen == 1 &&
+          !DeleteConfirmation::AllowMessageBox(confirmation.owner, confirmation.expectedText.c_str(), confirmation.expectedTitle.c_str(), confirmation.expectedFlags),
+          "actual model-delete button presents exactly one strictly permitted real confirmation"); }
+    Check(!app->ModelSlot(0) && history.UndoCount() == 1 && app->CameraMode() && counts(0, 1),
+        "actual 437 deletes the measured real model and updates the PMM model list");
+    sceneCount(1); stale(originalModel);
+    Check(api.objects(api.context, retainedSnapshot.handle, &retainedObjects) == MMS_OK && retainedObjects.count == 2,
+        "old scene snapshot remains readable after real model deletion");
+    Menu(app, L"Edit probe undo");
+    Check(app->ModelSlot(0) == model && history.RedoCount() == 1 && NativeObjectUiPending(app),
+        "actual plugin undo restores retained model before deferred control refresh");
+    FlushObjectUi(app);
+    const auto restoredModel = SceneObjectIdentity(model);
+    Check(Same(originalModel.id, restoredModel.id) && originalModel.generation != restoredModel.generation &&
+        counts(1, 1) && samePose(), "plugin undo keeps model ID/resources/pose and renews generation without source IO or seek");
+    stale(originalModel); sceneCount(2);
+    Menu(app, L"Edit probe redo"); FlushObjectUi(app);
+    Check(!app->ModelSlot(0) && history.UndoCount() == 1 && counts(0, 1), "actual plugin redo removes model and refreshes native lists");
+    Menu(app, L"Edit probe undo"); FlushObjectUi(app);
+    Check(app->ModelSlot(0) == model && samePose() && history.Reset() == MMS_OK, "restore model and clear isolated model deletion history");
+
+    app->SelectedAccessorySlot() = 0;
+    SendDlgItemMessageW(app->MainWindow(), 471, CB_SETCURSEL, 0, 0);
+    { DeleteConfirmation confirmation(app, false); SendMessageW(app->MainWindow(), WM_COMMAND, 473, 0);
+      Check(confirmation.allowed == 1 && confirmation.seen == 1 &&
+          !DeleteConfirmation::AllowMessageBox(confirmation.owner, confirmation.expectedText.c_str(), confirmation.expectedTitle.c_str(), confirmation.expectedFlags),
+          "actual accessory-delete button presents exactly one strictly permitted real confirmation"); }
+    Check(!app->AccessorySlot(0) && history.UndoCount() == 1 && counts(1, 0), "actual 473 deletes the measured X mesh and updates the PMM accessory list");
+    stale(originalAccessory); sceneCount(1);
+    Menu(app, L"Edit probe undo"); FlushObjectUi(app);
+    const auto restoredAccessory = SceneObjectIdentity(accessory);
+    Check(app->AccessorySlot(0) == accessory && app->AccessoryKeys(0) == keys && accessory->mesh == mesh && counts(1, 1) &&
+        Same(originalAccessory.id, restoredAccessory.id) && originalAccessory.generation != restoredAccessory.generation,
+        "actual plugin undo restores original X mesh/key pool and stable ID while source file is offline");
+    Menu(app, L"Edit probe redo"); FlushObjectUi(app);
+    Check(!app->AccessorySlot(0) && counts(1, 0), "actual plugin redo removes X object without disk access");
+    Menu(app, L"Edit probe undo"); FlushObjectUi(app);
+    Check(app->AccessorySlot(0) == accessory && app->ModelSlot(0) == model && counts(1, 1) && samePose() &&
+        history.Reset() == MMS_OK, "restore both objects and clear isolated resource deletion history");
+    api.release(api.context, retainedSnapshot.handle);
+    app->CameraMode() = 0; app->SetSelectedModelSlot(selectedModel);
+    app->MainModelComboSelection() = record.comboSelIndex;
+    SendDlgItemMessageW(app->MainWindow(), 436, CB_SETCURSEL, record.comboSelIndex, 0);
+    PostModelReload2(app);
+    EnsureInterpChannelCombo(app);
+    offlineAccessory.Restore(); offlineModel.Restore();
+    std::puts("PASS actual 437/473, real plugin undo/redo, offline sources, stable scene IDs and deferred lists");
+}
 void Run(MMDApp* app) {
     using namespace plugins;
     const auto initial = GetModuleHandleW(L"manager_edit_probe.dll");
@@ -167,6 +336,10 @@ void Run(MMDApp* app) {
     auto* raw = app->ModelSlot(0); Check(raw != nullptr, "load real model before controlled history binding");
     auto& model = *mdl::Mdl(raw);
     Check(model.boneCount && model.bonePhysicsState && model.boneSelection, "model has editable bones");
+    wchar_t accessoryPath[32768]{};
+    Check(GetEnvironmentVariableW(L"MMS_SCENE_TEST_ACCESSORY", accessoryPath, 32768) > 0, "edit host accessory fixture supplied");
+    LoadAccessoryFile(accessoryPath);
+    Check(app->AccessorySlot(0) && app->AccessorySlot(0)->mesh, "load real X object before controlled history binding");
     app->CameraMode() = 0; app->SelectedModelSlot() = 0; model.selectedBone = 0;
     std::memset(model.boneSelection, 0, model.boneCount); model.boneSelection[0] = 1;
     model.boneTable[0].trans[1] = 4.f; model.bonePhysicsState[0] = 1;
@@ -191,6 +364,7 @@ void Run(MMDApp* app) {
     MixedModelDeletion(app, *history);
     MixedModelRange(app, *history);
     ModelInterpolation(app, *history);
+    ObjectMenuDeletion(app, *history, api, path, accessoryPath);
     revisionMatches(); app->SceneModified() = 0;
     app->PlaybackActive() = 1; Menu(app, L"Edit probe once"); app->PlaybackActive() = 0;
     app->FrameStepPlayback() = 1; Menu(app, L"Edit probe once"); app->FrameStepPlayback() = 0;

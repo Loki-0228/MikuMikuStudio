@@ -43,6 +43,8 @@ class Collector {
     };
     std::map<Key, std::uint64_t> allocations_;
     Report report_;
+    bool verifying_ = false, mismatch_ = false;
+    struct Changed {};
 public:
     static std::uint64_t Sum(std::uint64_t a, std::uint64_t b) {
         if (a > UINT64_MAX - b) throw std::bad_alloc();
@@ -52,11 +54,29 @@ public:
         if (stride && count > UINT64_MAX / stride) throw std::bad_alloc();
         return count * stride;
     }
-    void MissingResource(Missing reason) noexcept { report_.missing |= reason; }
+    void MissingResource(Missing reason) noexcept {
+        if (verifying_) mismatch_ = true;
+        else report_.missing |= reason;
+    }
     const Report& Result() const noexcept { return report_; }
+    // Reuse the prepared identity/capacity ledger without inserting nodes.
+    // Removed or smaller allocations remain conservatively charged. New or
+    // larger allocations and incomplete queries invalidate the candidate.
+    // This is validation before publication, never part of resource mutation.
+    template<class Measure> bool Covers(Measure&& measure) noexcept {
+        if (verifying_ || report_.missing) return false;
+        verifying_ = true; mismatch_ = false;
+        try { measure(*this); } catch (...) { mismatch_ = true; }
+        verifying_ = false; return !mismatch_;
+    }
     void Add(const void* identity, std::uint64_t count, std::uint64_t stride, bool d3d9 = false) {
         if (!identity) return;
         const auto bytes = Product(count, stride);
+        if (verifying_) {
+            const auto found = allocations_.find(Key{identity, d3d9 ? 1u : 0u});
+            if (found == allocations_.end() || found->second < bytes) throw Changed{};
+            return;
+        }
         auto found = allocations_.try_emplace(Key{identity, d3d9 ? 1u : 0u}, 0).first;
         if (found->second >= bytes) return;
         const auto delta = bytes - found->second;

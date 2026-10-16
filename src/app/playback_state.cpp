@@ -1,3 +1,4 @@
+#include "mikudancestudio/undo_storage.hpp"
 #include "mikudancestudio/frame_limits.hpp"
 #include <algorithm>
 // ===========================================================================
@@ -336,9 +337,10 @@ void SavePlaybackUndoSnapshot(MMDApp* app, unsigned char* model) {
     // the slot cannot be released twice.
     // Defect AB-06.
     auto*& buffer = undo.bonePose;
-    ::operator delete(buffer);
+    undo_storage::Delete(buffer);
+    buffer = nullptr;
     buffer = static_cast<mikudancestudio::mdl::BonePoseSnapshot*>(
-        ::operator new(sizeof(*buffer) * boneCount));
+        undo_storage::Allocate(sizeof(*buffer) * boneCount));
     std::memset(buffer, 0, static_cast<std::size_t>(36) * boneCount);
     auto* records = buffer;
     mikudancestudio::mdl::BoneRecord* bones = mikudancestudio::mdl::Bones(model);

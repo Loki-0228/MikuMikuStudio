@@ -1,4 +1,5 @@
 #include "mikudancestudio/physics_scale.hpp"
+#include "mikudancestudio/undo_storage.hpp"
 // MAINTENANCE: regression-keep; offline baking, transactional keys and native dialog translations.
 // Modes: no argument runs the unit/dialog suite; `--ui <dir>` adds screenshots;
 // `<model.pmx> <output-directory>` runs the full scene integration;
@@ -269,7 +270,7 @@ struct Fixture {
     std::vector<mdl::MorphKey> morphKeys{mdl::kMorphKeyCapacity};
     std::vector<mdl::DisplayKey> displayKeys{mdl::kDisplayKeyCapacity};
     Fixture(){model->boneTable=bones.data();model->boneCount=2;model->bonePhysicsState=physics.data();model->boneSelection=selection.data();model->boneKeys=keys.data();model->morphKeys=morphKeys.data();model->displayKeys=displayKeys.data();for(int i=0;i<2;++i)keys[i].rotation[3]=bones[i].rotQuat[3]=1;}
-    ~Fixture(){bone_scale::Forget(raw());for(auto& ring:model->undoRings)for(auto& slot:ring.slots){std::free(slot.bonePose);std::free(slot.auxiliaryPose);}}
+    ~Fixture(){bone_scale::Forget(raw());for(auto& ring:model->undoRings)for(auto& slot:ring.slots){mikudancestudio::undo_storage::Free(slot.bonePose);mikudancestudio::undo_storage::Free(slot.auxiliaryPose);}}
     unsigned char* raw(){return reinterpret_cast<unsigned char*>(model.get());}
 };
 void ScenePhysicsUnit(){
@@ -475,7 +476,7 @@ void PoolGrowthCommit(){
     Check(model->boneKeys[70].frame==9&&model->boneKeys[1].next==70,"redo restores the grown key");
     std::puts("pool growth commit: redo complete");
     bone_scale::Forget(raw);
-    for(auto& ring:model->undoRings)for(auto& slot:ring.slots){std::free(slot.bonePose);std::free(slot.auxiliaryPose);}
+    for(auto& ring:model->undoRings)for(auto& slot:ring.slots){mikudancestudio::undo_storage::Free(slot.bonePose);mikudancestudio::undo_storage::Free(slot.auxiliaryPose);}
     mdl::BoneKeyPoolDestroy(model->boneKeys);
     std::puts("runtime pool capacity: commit growth and undo complete");
 }
@@ -1444,7 +1445,7 @@ void CapacityMode(){
     {
         std::puts("capacity mode: registrar insert");
         auto& ring=f.model->undoRings[0].slots[f.model->undoState[0]];
-        std::free(ring.auxiliaryPose);
+        mikudancestudio::undo_storage::Free(ring.auxiliaryPose);
         ring.auxiliaryPose=std::malloc(4*sizeof(mdl::BoneKeySnapshot));
         ring.dirty=0;
         const unsigned insertSlot=bigSlot+1000;

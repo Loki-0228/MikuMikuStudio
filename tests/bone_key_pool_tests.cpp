@@ -1,4 +1,5 @@
 #include "mikudancestudio/display_capacity.hpp"
+#include "mikudancestudio/undo_storage.hpp"
 #include "mikudancestudio/frame_limits.hpp"
 // MAINTENANCE: regression-keep; runtime bone-key pool capacity
 // (mikudancestudio/bone_key_pool.hpp).
@@ -48,8 +49,8 @@ struct Fixture {
     ~Fixture() {
         for (auto& ring : model->undoRings)
             for (auto& slot : ring.slots) {
-                std::free(slot.bonePose);
-                std::free(slot.auxiliaryPose);
+                mikudancestudio::undo_storage::Free(slot.bonePose);
+                mikudancestudio::undo_storage::Free(slot.auxiliaryPose);
             }
         mikudancestudio::mdl::BoneKeyPoolDestroy(model->boneKeys);
     }

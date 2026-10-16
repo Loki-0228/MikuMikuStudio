@@ -1,3 +1,4 @@
+#include "mikudancestudio/undo_storage.hpp"
 #include "mikudancestudio/frame_limits.hpp"
 #include "mikudancestudio/extended_names.hpp"
 #include "mikudancestudio/key_pool.hpp"
@@ -496,9 +497,9 @@ static int LoadVmdMotionPath(MMDApp* app, const char* fileName, const wchar_t* w
     const bool sizesFit = vmd_read::Input::AllocationSize(record.boneCount,
         sizeof(mdl::BonePoseSnapshot), poseBytes) &&
         vmd_read::Input::AllocationSize(boneKeyCount, 192, undoBytes);
-    using Allocation = std::unique_ptr<unsigned char, decltype(&std::free)>;
-    Allocation preparedPose(sizesFit && poseBytes ? static_cast<unsigned char*>(std::malloc(poseBytes)) : nullptr, &std::free);
-    Allocation preparedKeys(sizesFit && undoBytes ? static_cast<unsigned char*>(std::malloc(undoBytes)) : nullptr, &std::free);
+    using Allocation = std::unique_ptr<unsigned char, decltype(&undo_storage::Free)>;
+    Allocation preparedPose(sizesFit && poseBytes ? static_cast<unsigned char*>(undo_storage::Malloc(poseBytes)) : nullptr, &undo_storage::Free);
+    Allocation preparedKeys(sizesFit && undoBytes ? static_cast<unsigned char*>(undo_storage::Malloc(undoBytes)) : nullptr, &undo_storage::Free);
     std::vector<unsigned char> ikEntries;
 #if MMD_ORIGINAL_PROFILE
     // Complete standard names can differ from the PMX loader's NUL-reserving
@@ -575,7 +576,7 @@ static int LoadVmdMotionPath(MMDApp* app, const char* fileName, const wchar_t* w
     undo.dirty = 0;
     undo.frame = s.state.currentFrame;
     if (undo.bonePose != nullptr)
-        free(undo.bonePose);
+        undo_storage::Free(undo.bonePose);
     const int boneCnt = static_cast<int>(record.boneCount);
     // x64 @0x7FF7CB48DE70..0x7FF7CB48E013: 每骨骼一个 36 字节槽位
     // (boneIndex / trans / rotQuat / 物理标志)，源端等价于按
@@ -597,7 +598,7 @@ static int LoadVmdMotionPath(MMDApp* app, const char* fileName, const wchar_t* w
         }
     }
     if (undo.auxiliaryPose != nullptr)
-        free(undo.auxiliaryPose);
+        undo_storage::Free(undo.auxiliaryPose);
     unsigned char* const rawKeys = preparedKeys.release();
     undo.auxiliaryPose = rawKeys;
     mdl::BoneKeyVisitClear(*mdl::Mdl(model));

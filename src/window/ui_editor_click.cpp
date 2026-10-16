@@ -1,3 +1,4 @@
+#include "mikudancestudio/undo_storage.hpp"
 #include "mikudancestudio/frame_limits.hpp"
 #include "mikudancestudio/display_capacity.hpp"
 #include "mikudancestudio/key_pool.hpp"
@@ -357,12 +358,12 @@ static void SelectionStats(MMDApp* app, int x, int y, HWND hwnd) {
                     undo.frame = app->state.currentFrame;
                     auto*& bufSlot = undo.bonePose;
                     if (bufSlot != nullptr) {
-                        free(bufSlot);
+                        undo_storage::Free(bufSlot);
                         bufSlot = nullptr;
                     }
                     const std::int32_t boneN = mikudancestudio::mdl::Mdl(m)->boneCount;
                     bufSlot = static_cast<mikudancestudio::mdl::BonePoseSnapshot*>(
-                        ::operator new(static_cast<std::size_t>(boneN) *
+                        undo_storage::Allocate(static_cast<std::size_t>(boneN) *
                                        sizeof(mikudancestudio::mdl::BonePoseSnapshot)));
                     memset(bufSlot, 0, static_cast<std::size_t>(boneN) *
                                            sizeof(mikudancestudio::mdl::BonePoseSnapshot));
@@ -379,10 +380,10 @@ static void SelectionStats(MMDApp* app, int x, int y, HWND hwnd) {
                     undo.dirty = 0;
                     void*& dataSlot = undo.auxiliaryPose;
                     if (dataSlot != nullptr) {
-                        free(dataSlot);
+                        undo_storage::Free(dataSlot);
                         dataSlot = nullptr;
                     }
-                    dataSlot = ::operator new(static_cast<std::size_t>(boneCnt) * sizeof(mdl::BoneKeySnapshot));
+                    dataSlot = undo_storage::Allocate(static_cast<std::size_t>(boneCnt) * sizeof(mdl::BoneKeySnapshot));
                     memset(dataSlot, 0, static_cast<std::size_t>(boneCnt) * sizeof(mdl::BoneKeySnapshot));
                     mikudancestudio::mdl::BoneKeyVisitClear(*mikudancestudio::mdl::Mdl(m));
                     // ... and the visit map the registrar dedups through, for

@@ -12,5 +12,8 @@ SharedHistory* NativeHistory(MMDApp*) noexcept;
 // This exposes mms.edit and binds only the migrated native commands; a probe
 // must not dispatch writers that have not joined the common journal yet.
 bool InitializeHistoryTestRuntime(MMDApp*) noexcept;
+// Retry a post-publication UI update on the host's normal message boundary.
+// No-op without this application's initialized runtime.
+void RequestBoundHistoryUiRefresh(MMDApp*) noexcept;
 }
 }

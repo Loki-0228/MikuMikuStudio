@@ -1,5 +1,6 @@
 // MAINTENANCE: regression-keep; invalid physics poses must not poison later frames.
 #include "mikudancestudio/model.hpp"
+#include "mikudancestudio/undo_storage.hpp"
 #include "mikudancestudio/physics_scene.hpp"
 #include "mikudancestudio/ported_funcs.hpp"
 #include "../src/io/pmm_io_common.hpp"
@@ -97,7 +98,7 @@ void RegisterPoses() {
     const auto& later = keys[keys[key].next];
     Check(std::memcmp(later.position, bone.ikBackup, 12) == 0, "small scientific physics position registers exactly");
     for (auto& ring : model->undoRings) for (auto& slot : ring.slots) {
-        ::operator delete(slot.bonePose); ::operator delete(slot.auxiliaryPose);
+        mikudancestudio::undo_storage::Delete(slot.bonePose); mikudancestudio::undo_storage::Delete(slot.auxiliaryPose);
     }
 }
 struct World {

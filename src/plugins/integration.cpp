@@ -4,6 +4,7 @@
 #include "history_runtime.hpp"
 #include "native_pose_scope.hpp"
 #include "native_history_commands.hpp"
+#include "native_object_commands.hpp"
 #include "mikudancestudio/panel_controls.hpp"
 #include "mikudancestudio/animation_curve_editor.hpp"
 #include "mikudancestudio/model.hpp"
@@ -23,6 +24,27 @@ std::unique_ptr<Manager> manager;
 std::unique_ptr<NativeUi> ui;
 std::unique_ptr<SharedHistory> history;
 #if !MMD_ORIGINAL_PROFILE
+class HistoryCommandHost final : public EditHost {
+    MMDApp& app_;
+    SharedHistory& target_;
+public:
+    HistoryCommandHost(MMDApp& app, SharedHistory& target) : app_(app), target_(target) {}
+    void AttachStore(EditStore* store) override { target_.AttachStore(store); }
+    void DetachStore(EditStore* store) noexcept override { target_.DetachStore(store); }
+    MmsResult Revision(uint64_t& value) override { return target_.Revision(value); }
+    MmsResult Enter() override { return target_.Enter(); }
+    void Leave() noexcept override { target_.Leave(); }
+    MmsResult Reserve(std::shared_ptr<const EditRecord> record, std::unique_ptr<EditPublication>& publication) override {
+        return target_.Reserve(std::move(record), publication);
+    }
+    MmsResult History(bool redo) override {
+        if (!manager || !manager->CanInvokeEdit()) return MMS_E_BUSY;
+        return RunBoundObjectHistory(app_, target_, redo, true);
+    }
+    void Poison() noexcept override { target_.Poison(); }
+};
+// Manager/EditStore must detach before this forwarding host or its target die.
+std::unique_ptr<HistoryCommandHost> historyCommandHost;
 std::unique_ptr<NativePoseTestBinding> migrationBinding;
 #endif
 std::unique_ptr<SharedHistory::ResetTransaction> projectHistoryReset;
@@ -41,6 +63,9 @@ constexpr UINT_PTR kProjectRetry = 0x4d4d536b;
 constexpr UINT_PTR kHistoryUiRetry = 0x4d4d536c;
 MmsResult PrepareHistoryReset(std::unique_ptr<SharedHistory::ResetTransaction>& out) {
     if (!history) return MMS_OK;
+#if !MMD_ORIGINAL_PROFILE
+    if (NativeObjectOperationActive(owner) || NativeObjectUiPending(owner)) return MMS_E_BUSY;
+#endif
     // ResetAppState is also used to recover a partially read PMM while the
     // native loader owns ScopedSceneMutation. Only this internal boundary may
     // bypass that gate; serializer and plugin callback checks still apply.
@@ -106,15 +131,21 @@ static void InitializeRuntime(MMDApp* app, bool migrationTest) {
         if (manager->Storage().Prepare(currentProject.records) != MMS_OK || !manager->Storage().Commit()) throw std::runtime_error("initialize plugin project data");
         history = std::make_unique<SharedHistory>(manager->Storage(), [app] {
             if (closing || owner != app) return MMS_E_NOT_READY;
+            bool objectPublication = false;
+#if !MMD_ORIGINAL_PROFILE
+            objectPublication = NativeObjectPublicationAuthorized(app);
+            if ((NativeObjectOperationActive(app) && !objectPublication) || NativeObjectUiPending(app)) return MMS_E_BUSY;
+#endif
             if ((manager->InCallback() && !manager->CanInvokeEdit()) ||
-                (app->SceneMutationInProgress() && !replacingHistory)) return MMS_E_BUSY;
+                (app->SceneMutationInProgress() && !replacingHistory && !objectPublication)) return MMS_E_BUSY;
             if (!replacingHistory && (app->PlaybackActive() || app->FrameStepPlayback() ||
                 app->state.recordPlaybackStartPending)) return MMS_E_BUSY;
             return MMS_OK;
         });
 #if !MMD_ORIGINAL_PROFILE
         if (migrationTest) {
-            if (manager->AttachEditHost(*history) != MMS_OK) throw std::runtime_error("attach common edit history");
+            historyCommandHost = std::make_unique<HistoryCommandHost>(*app, *history);
+            if (manager->AttachEditHost(*historyCommandHost) != MMS_OK) throw std::runtime_error("attach common edit history");
             migrationBinding = std::make_unique<NativePoseTestBinding>(*app, *history);
             manager->SetEditPublished([app] {
                 if (closing || owner != app) return;
@@ -141,6 +172,9 @@ bool InitializeHistoryTestRuntime(MMDApp* app) noexcept {
 }
 void Shutdown() {
     if (manager && manager->ExecutingCallback()) return;
+#if !MMD_ORIGINAL_PROFILE
+    if (NativeObjectOperationActive(owner)) return;
+#endif
     if (closing) return; closing = true;
     if (owner && owner->MainWindow()) KillTimer(owner->MainWindow(), kHistoryUiRetry);
     CancelProjectLoad(owner);
@@ -148,6 +182,7 @@ void Shutdown() {
     ui.reset();
 #if !MMD_ORIGINAL_PROFILE
     migrationBinding.reset();
+    ForgetBoundObjectUi(owner);
 #endif
     if (manager) {
         auto detached = manager->DetachEditHost();
@@ -159,11 +194,22 @@ void Shutdown() {
             // The retained manager still references this exact host/storage.
             // Closing rejects later calls before accessing the application.
             history.release(); manager.release();
+#if !MMD_ORIGINAL_PROFILE
+            historyCommandHost.release();
+#endif
         }
     }
+#if !MMD_ORIGINAL_PROFILE
+    historyCommandHost.reset();
+#endif
     history.reset(); manager.reset(); projectEvents.clear(); toolbarHeight = 0; owner = nullptr; historyUiPending = false;
 }
 SharedHistory* NativeHistory(MMDApp* app) noexcept { return app == owner && !closing ? history.get() : nullptr; }
+void RequestBoundHistoryUiRefresh(MMDApp* app) noexcept {
+    if (!app || app != owner || closing) return;
+    historyUiPending = true;
+    PostMessageW(app->MainWindow(), kRefresh, 0, 0);
+}
 void Layout(MMDApp* app) {
     if (!ui || app != owner) return;
     Boundary([&] {
@@ -180,11 +226,7 @@ void Refresh(MMDApp* app) {
     Boundary([&] { ui->Refresh(); Layout(app); if (toolbarHeight != old) HandleWindowSize(app);
 #if !MMD_ORIGINAL_PROFILE
         if (historyUiPending && history && manager && !manager->InCallback() && !app->SceneMutationInProgress()) {
-            historyUiPending = false;
-            EnableWindow(GetDlgItem(app->MainWindow(), panel::kUndoButton), history->UndoCount() != 0);
-            EnableWindow(GetDlgItem(app->MainWindow(), panel::kRedoButton), history->RedoCount() != 0);
-            InvalidateRect(app->MainWindow(), nullptr, FALSE); RefreshBoundPoseReadout(*app);
-            curve_editor::NotifyOwnedChanged(app->MainWindow());
+            historyUiPending = !RefreshBoundObjectUi(*app, *history);
         }
 #endif
         if (manager && !manager->InCallback()) manager->SaveUiPreferences();
@@ -202,6 +244,9 @@ bool InCallback() { return manager && manager->InCallback(); }
 struct ProjectSave::Impl { MMDApp* app; PluginProject data; StoredRecords storeRecords; };
 ProjectSave::ProjectSave(MMDApp* app) : impl_(std::make_unique<Impl>()) {
     if(app->SceneMutationInProgress() || (manager && owner==app && manager->InCallback()))throw std::runtime_error("project save during callback or scene mutation");
+#if !MMD_ORIGINAL_PROFILE
+    if (NativeObjectOperationActive(app) || NativeObjectUiPending(app)) throw std::runtime_error("object UI refresh pending");
+#endif
     if(currentProject.projectId.empty())currentProject.projectId=StorageId();
     impl_->app = app; impl_->data = currentProject;
     if (manager && owner == app) {
@@ -228,6 +273,9 @@ bool ProjectSave::Publish(const wchar_t* staged, const wchar_t* destination, boo
 }
 bool PrepareProjectLoad(MMDApp* app, const wchar_t* path) {
     if (build_profile::original) return true;
+#if !MMD_ORIGINAL_PROFILE
+    if (NativeObjectOperationActive(app) || NativeObjectUiPending(app)) return false;
+#endif
     if (loadingProject || (manager && manager->InCallback())) return false;
     try {
         auto data=ReadPluginProject(fs::absolute(path));
@@ -275,6 +323,9 @@ void CancelProjectLoad(MMDApp* app) {
 }
 bool ResetPluginProject(MMDApp* app) {
     if(build_profile::original)return true;
+#if !MMD_ORIGINAL_PROFILE
+    if (NativeObjectOperationActive(app) || NativeObjectUiPending(app)) return false;
+#endif
     if(manager && owner==app && manager->Storage().InCallback())return false;
     if(manager && owner==app && manager->InCallback() && !loadingProject)return false;
     CancelProjectLoad(app);

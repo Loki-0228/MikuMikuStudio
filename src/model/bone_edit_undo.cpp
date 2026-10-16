@@ -2,6 +2,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include "mikudancestudio/bone_scale.hpp"
+#include "mikudancestudio/undo_storage.hpp"
 #include <Windows.h>
 
 #include <cstdlib>
@@ -59,12 +60,12 @@ void PushBoneEditUndo(MMDApp* app) {  // was Sub42D6E0, VA 0x0042D6E0
     undo.dirty = selectedCount;
     auto*& oldSnapshot = undo.bonePose;
     if (oldSnapshot != nullptr) {
-        std::free(oldSnapshot);
+        undo_storage::Free(oldSnapshot);
         oldSnapshot = nullptr;
     }
 
     auto* snapshot = static_cast<mikudancestudio::mdl::BonePoseSnapshot*>(
-        ::operator new(sizeof(mikudancestudio::mdl::BonePoseSnapshot) * selectedCount));
+        undo_storage::Allocate(sizeof(mikudancestudio::mdl::BonePoseSnapshot) * selectedCount));
     oldSnapshot = snapshot;
     std::memset(snapshot, 0, static_cast<std::size_t>(36) * selectedCount);
 

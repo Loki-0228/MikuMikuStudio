@@ -89,6 +89,12 @@ constexpr Text messages[][3] = {
     {{L"表情へ強制貼付", L"貼り付け先の表情を一つ選択してください。"},
      {L"Force paste expression", L"Select one destination expression in the timeline or expression panel."},
      {L"强制粘贴表情", L"请在时间轴或表情面板中选择一个目标表情。"}},
+    {{L"モデル削除", L"モデルと全フレームのデータを削除しますか？\nこの操作は元に戻せます。"},
+     {L"Delete model", L"Delete the model and all its frame data?\nYou can undo this operation."},
+     {L"删除模型", L"确定删除模型及其全部帧数据吗？\n此操作可以撤销。"}},
+    {{L"アクセサリ削除", L"アクセサリと全フレームのデータを削除しますか？\nこの操作は元に戻せます。"},
+     {L"Delete accessory", L"Delete the accessory and all its frame data?\nYou can undo this operation."},
+     {L"删除配件", L"确定删除配件及其全部帧数据吗？\n此操作可以撤销。"}},
 };
 static_assert(std::size(messages) == static_cast<std::size_t>(UiMessage::Count));
 

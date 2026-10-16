@@ -1,3 +1,4 @@
+#include "mikudancestudio/undo_storage.hpp"
 #include "mikudancestudio/display_capacity.hpp"
 #include "mikudancestudio/key_pool.hpp"
 // ===========================================================================
@@ -2109,13 +2110,13 @@ void CmdFileMenu(MMDApp* app, HWND hwnd, std::uint16_t id, std::uint16_t notify)
             undo.operation = 2;
             undo.frame = app->state.currentFrame;
             if (undo.bonePose != nullptr) {
-                free(undo.bonePose);
+                undo_storage::Free(undo.bonePose);
                 undo.bonePose = nullptr;
             }
             const std::int32_t boneCount =
                 static_cast<std::int32_t>(mdl::Mdl(model)->boneCount);
             auto* blob = static_cast<mdl::BonePoseSnapshot*>(
-                ::operator new(MulOrMax(static_cast<std::uint32_t>(boneCount),
+                undo_storage::Allocate(MulOrMax(static_cast<std::uint32_t>(boneCount),
                                         sizeof(mdl::BonePoseSnapshot))));
             if (blob != nullptr) {
                 ConstructArrayElements(blob, sizeof(mdl::BonePoseSnapshot),
@@ -2139,13 +2140,13 @@ void CmdFileMenu(MMDApp* app, HWND hwnd, std::uint16_t id, std::uint16_t notify)
             model = ActiveModel(app);
             undo.dirty = 0;
             if (undo.auxiliaryPose != nullptr) {
-                free(undo.auxiliaryPose);
+                undo_storage::Free(undo.auxiliaryPose);
                 undo.auxiliaryPose = nullptr;
             }
             const std::int32_t recCount = static_cast<std::int32_t>(
                 app->ClipboardCounts().bones);
             unsigned char* blob2 = static_cast<unsigned char*>(
-                ::operator new(MulOrMax(static_cast<std::uint32_t>(3 * recCount),
+                undo_storage::Allocate(MulOrMax(static_cast<std::uint32_t>(3 * recCount),
                                         0x40u)));
             if (blob2 != nullptr) {
                 ConstructArrayElements(blob2, 0x40,

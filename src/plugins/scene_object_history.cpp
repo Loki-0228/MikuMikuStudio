@@ -139,8 +139,14 @@ MmsResult RetainedSceneObject::MeasureResources(resource_budget::Report& report)
 }
 MmsResult RetainedSceneObject::MeasureResourcesBatch(const Objects& objects, resource_budget::Report& report) noexcept {
     return Boundary([&]() -> MmsResult {
-        if (objects.empty()) return MMS_E_ARGUMENT;
         resource_budget::Collector measured;
+        if (auto r = MeasureNativeResources(objects, measured, true)) return r;
+        report = measured.Result(); return MMS_OK;
+    });
+}
+MmsResult RetainedSceneObject::MeasureNativeResources(const Objects& objects,
+    resource_budget::Collector& measured, bool includePhysics) {
+        if (objects.empty()) return MMS_E_ARGUMENT;
         for (const auto& retained : objects) {
             if (!retained) return MMS_E_ARGUMENT;
             const auto& owner = *retained->impl_;
@@ -150,30 +156,41 @@ MmsResult RetainedSceneObject::MeasureResourcesBatch(const Objects& objects, res
             else {
                 const auto* keys = owner.present ? owner.app.AccessoryKeys(owner.slot) : owner.inactiveKeys;
                 resource_budget::Accessory(*static_cast<const mdl::AccessoryRecord*>(owner.object), keys, measured);
-                // While active the holder owns the blank exchange pool too.
-                if (owner.present) measured.Array(owner.inactiveKeys, mdl::KeyPoolCapacity(owner.inactiveKeys));
+                // Both sides of the key exchange must remain available. Count
+                // the blank destination pool too, including registry storage.
+                const auto* exchange = owner.present ? owner.inactiveKeys : owner.app.AccessoryKeys(owner.slot);
+                resource_budget::Accessory(*static_cast<const mdl::AccessoryRecord*>(owner.object), exchange, measured);
             }
+            measured.Array(retained.get(), 1); measured.Array(&owner, 1);
+            const auto registry = retainedObjects.find({&owner.app, owner.object});
+            if (registry != retainedObjects.end()) measured.Add(&*registry, 1, sizeof(*registry) + 4 * sizeof(void*));
             measured.Vector(owner.joints);
             for (auto* joint : owner.joints) resource_budget::Joint(joint, measured);
-            if (owner.physics) owner.physics->MeasureResources(measured);
+            if (includePhysics && owner.physics) owner.physics->MeasureResources(measured);
             if (owner.curves) owner.curves->MeasureResources(measured);
         }
-        report = measured.Result(); return MMS_OK;
-    });
+        return MMS_OK;
 }
 std::unique_ptr<PreparedHistoryChange> RetainedSceneObject::PreparePresence(bool present) {
     return std::make_unique<Impl::Candidate>(shared_from_this(), present);
 }
-std::unique_ptr<PreparedHistoryChange> RetainedSceneObject::PreparePresenceBatch(const Objects& objects, bool present) {
+std::unique_ptr<PreparedHistoryChange> RetainedSceneObject::PreparePresenceBatch(const Objects& objects, bool present,
+    std::shared_ptr<resource_budget::Collector> targetResources) {
     if (objects.empty()) throw std::invalid_argument("empty object batch");
     struct Candidate final : PreparedHistoryChange {
         // Destroy physics contacts before releasing the native resource owners.
         std::vector<std::unique_ptr<PreparedHistoryChange>> members;
         std::unique_ptr<history_physics::Retained::Transition> physics;
+        Objects objects;
+        std::shared_ptr<resource_budget::Collector> resources;
         bool IsCurrent() const noexcept override {
             if (physics && !physics->IsCurrent()) return false;
             for (const auto& member : members) if (!member->IsCurrent()) return false;
-            return true;
+            return !resources || resources->Covers([&](resource_budget::Collector& out) {
+                if (RetainedSceneObject::MeasureNativeResources(objects, out, false) != MMS_OK ||
+                    (physics && !physics->MeasureTargetResources(out)))
+                    throw std::invalid_argument("stale object resource validation");
+            });
         }
         void Publish() noexcept override {
             if (physics) physics->Publish();
@@ -202,6 +219,12 @@ std::unique_ptr<PreparedHistoryChange> RetainedSceneObject::PreparePresenceBatch
         next->members.push_back(std::make_unique<Impl::Candidate>(object, present, false));
     }
     if (!physics.empty()) next->physics = history_physics::Retained::PrepareBatch(physics, present);
+    if (targetResources) {
+        if (MeasureNativeResources(objects, *targetResources, false) != MMS_OK ||
+            (next->physics && !next->physics->MeasureTargetResources(*targetResources)))
+            throw std::invalid_argument("stale object resource measurement");
+        next->objects = objects; next->resources = std::move(targetResources);
+    }
     return next;
 }
 std::shared_ptr<RetainedSceneObject> RetainSceneObject(MMDApp& app, uint32_t kind, unsigned slot) {
@@ -222,21 +245,42 @@ std::shared_ptr<HistoryChange> RetainedSceneObject::CaptureRemoval(uint64_t reso
     return CaptureRemovalBatch({shared_from_this()}, resourceBytes);
 }
 std::shared_ptr<HistoryChange> RetainedSceneObject::CaptureRemovalBatch(const Objects& objects, uint64_t resourceBytes) {
+    return CaptureRemovalImpl(objects, resourceBytes, false);
+}
+std::shared_ptr<HistoryChange> RetainedSceneObject::CaptureRemoval() {
+    return CaptureRemovalBatch({shared_from_this()});
+}
+std::shared_ptr<HistoryChange> RetainedSceneObject::CaptureRemovalBatch(const Objects& objects) {
+    return CaptureRemovalImpl(objects, 0, true);
+}
+std::shared_ptr<HistoryChange> RetainedSceneObject::CaptureRemovalImpl(const Objects& objects,
+    uint64_t resourceBytes, bool measured) {
     if (objects.empty()) throw std::invalid_argument("empty object removal batch");
     struct Change final : HistoryChange {
         Objects objects;
         std::shared_ptr<HistoryChange> bindings;
         uint64_t bytes;
+        bool measured = false;
         struct Candidate final : PreparedHistoryChange {
             std::unique_ptr<PreparedHistoryChange> presence, bindings;
+            bool measured = false;
+            uint64_t bytes = 0;
             bool IsCurrent() const noexcept override { return presence->IsCurrent() && bindings->IsCurrent(); }
             void Publish() noexcept override { bindings->Publish(); presence->Publish(); }
+            bool TargetRetainedBytes(uint64_t& out) const noexcept override {
+                if (!measured) return false;
+                out = bytes; return true;
+            }
         };
         MmsResult Prepare(bool forward, std::unique_ptr<PreparedHistoryChange>& out) override {
             return Boundary([&]() -> MmsResult {
                 auto next = std::make_unique<Candidate>();
-                next->presence = RetainedSceneObject::PreparePresenceBatch(objects, !forward);
+                auto resources = measured ? std::make_shared<resource_budget::Collector>() : nullptr;
+                next->presence = RetainedSceneObject::PreparePresenceBatch(objects, !forward, resources);
+                if (resources && !resources->Result().Complete()) return MMS_E_NOT_READY;
                 if (auto r = bindings->Prepare(forward, next->bindings)) return r;
+                next->measured = measured;
+                next->bytes = resource_budget::Collector::Sum(bytes, resources ? resources->Result().totalBytes : 0);
                 out = std::move(next); return MMS_OK;
             });
         }
@@ -256,9 +300,9 @@ std::shared_ptr<HistoryChange> RetainedSceneObject::CaptureRemovalBatch(const Ob
     next->objects = objects;
     next->bindings = CaptureObjectsRemovalBindings(*app, models, accessories);
     const auto overhead = uint64_t(sizeof(Change)) + next->objects.capacity() * sizeof(Objects::value_type) +
-        objects.size() * sizeof(Impl) + next->bindings->RetainedBytes();
+        (measured ? 0 : objects.size() * sizeof(Impl)) + next->bindings->RetainedBytes();
     if (resourceBytes > UINT64_MAX - overhead) throw std::overflow_error("object history resource budget");
-    next->bytes = resourceBytes + overhead; return next;
+    next->bytes = resourceBytes + overhead; next->measured = measured; return next;
 }
 MmsResult RetainedSceneObject::PrepareInsertion(uint64_t resourceBytes,
     std::shared_ptr<HistoryChange>& insertion, std::unique_ptr<PreparedHistoryChange>& staging) {
@@ -266,17 +310,48 @@ MmsResult RetainedSceneObject::PrepareInsertion(uint64_t resourceBytes,
 }
 MmsResult RetainedSceneObject::PrepareInsertionBatch(const Objects& objects, uint64_t resourceBytes,
     std::shared_ptr<HistoryChange>& insertion, std::unique_ptr<PreparedHistoryChange>& staging) {
+    return PrepareInsertionImpl(objects, resourceBytes, false, insertion, staging);
+}
+MmsResult RetainedSceneObject::PrepareInsertion(std::shared_ptr<HistoryChange>& insertion,
+    std::unique_ptr<PreparedHistoryChange>& staging) {
+    return Boundary([&] { return PrepareInsertionBatch({shared_from_this()}, insertion, staging); });
+}
+MmsResult RetainedSceneObject::PrepareInsertionBatch(const Objects& objects,
+    std::shared_ptr<HistoryChange>& insertion, std::unique_ptr<PreparedHistoryChange>& staging) {
+    return PrepareInsertionImpl(objects, 0, true, insertion, staging);
+}
+MmsResult RetainedSceneObject::PrepareInsertionImpl(const Objects& objects, uint64_t resourceBytes, bool measured,
+    std::shared_ptr<HistoryChange>& insertion, std::unique_ptr<PreparedHistoryChange>& staging) {
     return Boundary([&]() -> MmsResult {
         struct Insertion final : HistoryChange {
             std::shared_ptr<HistoryChange> removal;
             explicit Insertion(std::shared_ptr<HistoryChange> value) : removal(std::move(value)) {}
+            struct Candidate final : PreparedHistoryChange {
+                std::unique_ptr<PreparedHistoryChange> removal;
+                uint64_t bytes = 0;
+                bool IsCurrent() const noexcept override { return removal->IsCurrent(); }
+                void Publish() noexcept override { removal->Publish(); }
+                bool TargetRetainedBytes(uint64_t& out) const noexcept override { out = bytes; return true; }
+            };
             MmsResult Prepare(bool forward, std::unique_ptr<PreparedHistoryChange>& out) override {
-                return removal->Prepare(!forward, out);
+                return Boundary([&]() -> MmsResult {
+                    std::unique_ptr<PreparedHistoryChange> prepared;
+                    if (auto r = removal->Prepare(!forward, prepared)) return r;
+                    uint64_t bytes = 0;
+                    if (prepared->TargetRetainedBytes(bytes)) {
+                        // A dynamic target replaces RetainedBytes in the
+                        // journal, so it must include this wrapper as well.
+                        auto next = std::make_unique<Candidate>();
+                        next->bytes = resource_budget::Collector::Sum(bytes, sizeof(Insertion));
+                        next->removal = std::move(prepared); out = std::move(next);
+                    } else out = std::move(prepared);
+                    return MMS_OK;
+                });
             }
             uint64_t RetainedBytes() const noexcept override { return removal->RetainedBytes() + sizeof(*this); }
         };
         if (resourceBytes > UINT64_MAX - sizeof(Insertion)) return MMS_E_MEMORY;
-        auto removal = CaptureRemovalBatch(objects, resourceBytes);
+        auto removal = measured ? CaptureRemovalBatch(objects) : CaptureRemovalBatch(objects, resourceBytes);
         if (removal->RetainedBytes() > UINT64_MAX - sizeof(Insertion)) return MMS_E_MEMORY;
         auto next = std::make_shared<Insertion>(removal);
         std::unique_ptr<PreparedHistoryChange> prepared;

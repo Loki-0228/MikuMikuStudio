@@ -11,6 +11,11 @@ public:
     virtual ~PreparedHistoryChange() = default;
     virtual bool IsCurrent() const noexcept = 0;
     virtual void Publish() noexcept = 0;
+    // Optional complete native charge AFTER this candidate is published.
+    // Calculate it during Prepare, not here; this accessor must not allocate.
+    // False uses HistoryChange's fixed charge. Dynamic owners must include all
+    // retained record/resources and reject incomplete measurements in Prepare.
+    virtual bool TargetRetainedBytes(uint64_t&) const noexcept { return false; }
 };
 class HistoryChange {
 public:
@@ -30,7 +35,7 @@ public:
 private:
     struct Node;
     struct Publication;
-    using Nodes = std::list<std::shared_ptr<const Node>>;
+    using Nodes = std::list<std::shared_ptr<Node>>;
     StorageStore& storage_;
     DWORD thread_ = GetCurrentThreadId();
     std::function<MmsResult()> gate_;

@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "mikudancestudio/model.hpp"
+#include "mikudancestudio/undo_storage.hpp"
 #include "mikudancestudio/bone_scale.hpp"
 #include "mikudancestudio/bone_key_pool.hpp"
 #include "mikudancestudio/mmd_app.hpp"
@@ -77,8 +78,8 @@ struct Fixture {
     ~Fixture() {
         for (auto& ring : model->undoRings) {
             for (auto& slot : ring.slots) {
-                ::operator delete(slot.bonePose);
-                ::operator delete(slot.auxiliaryPose);
+                mikudancestudio::undo_storage::Delete(slot.bonePose);
+                mikudancestudio::undo_storage::Delete(slot.auxiliaryPose);
             }
         }
     }
@@ -321,8 +322,8 @@ void PoolGrowthRegistration() {
     bone_scale::Forget(raw);
     for (auto& ring : model->undoRings)
         for (auto& slot : ring.slots) {
-            std::free(slot.bonePose);
-            std::free(slot.auxiliaryPose);
+            mikudancestudio::undo_storage::Free(slot.bonePose);
+            mikudancestudio::undo_storage::Free(slot.auxiliaryPose);
         }
     mdl::BoneKeyPoolDestroy(model->boneKeys);
     std::puts("bone_registration_tests: runtime pool capacity growth");
@@ -853,8 +854,8 @@ struct PickFixture {
     ~PickFixture() {
         for (auto& ring : model->undoRings) {
             for (auto& slot : ring.slots) {
-                ::operator delete(slot.bonePose);
-                ::operator delete(slot.auxiliaryPose);
+                mikudancestudio::undo_storage::Delete(slot.bonePose);
+                mikudancestudio::undo_storage::Delete(slot.auxiliaryPose);
             }
         }
     }

@@ -1,4 +1,5 @@
 #include "mikudancestudio/key_pool.hpp"
+#include "mikudancestudio/undo_storage.hpp"
 #include "../plugins/scene_resource_budget.hpp"
 // ===========================================================================
 // Model keyframe edit helpers used by the left frame editor.
@@ -125,10 +126,10 @@ void AdvanceUndo(unsigned char* model) {
 
 void ReplaceBuffer(void*& slot, std::size_t bytes) {
     if (slot != nullptr) {
-        std::free(slot);
+        undo_storage::Free(slot);
         slot = nullptr;
     }
-    slot = ::operator new(bytes);
+    slot = undo_storage::Allocate(bytes);
     std::memset(slot, 0, bytes);
 }
 
@@ -808,7 +809,7 @@ struct PreparedBoneCommit {
     mdl::BoneKeySnapshot* oldKeys=nullptr;mdl::BonePoseSnapshot* oldPose=nullptr;
     bone_scale::StagedBakeState scale;
     PreparedBoneCommit(unsigned char* m,const Result& r):model(m),result(r){}
-    ~PreparedBoneCommit(){std::free(oldKeys);std::free(oldPose);}
+    ~PreparedBoneCommit(){undo_storage::Free(oldKeys);undo_storage::Free(oldPose);}
     bool Prepare(){
         if (!model || result.error != Error::None) return false;
         if (result.changes.empty()) return true;
@@ -840,8 +841,8 @@ struct PreparedBoneCommit {
             }
         } catch(const std::bad_alloc&) { return false; }
         // Allocate the entire undo entry before changing the timeline or undo cursor.
-        oldKeys = static_cast<mdl::BoneKeySnapshot*>(std::malloc(result.changes.size() * sizeof(mdl::BoneKeySnapshot)));
-        oldPose = static_cast<mdl::BonePoseSnapshot*>(std::calloc(m.boneCount, sizeof(mdl::BonePoseSnapshot)));
+        oldKeys = static_cast<mdl::BoneKeySnapshot*>(undo_storage::Malloc(result.changes.size() * sizeof(mdl::BoneKeySnapshot)));
+        oldPose = static_cast<mdl::BonePoseSnapshot*>(undo_storage::Calloc(m.boneCount, sizeof(mdl::BonePoseSnapshot)));
         if (!oldKeys || !oldPose) { return false; }
         for (std::size_t i=0;i<result.changes.size();++i) {
             const int index=result.changes[i].keyIndex;
@@ -865,7 +866,7 @@ struct PreparedBoneCommit {
         if(result.changes.empty())return;
         auto& m=*mdl::Mdl(model);
         m.undoState[0]=scale.ring;m.undoState[1]=scale.ring;m.undoDirty=1;m.redoDirty=0;
-        auto& undo=CurrentUndo(model);std::free(undo.bonePose);std::free(undo.auxiliaryPose);
+        auto& undo=CurrentUndo(model);undo_storage::Free(undo.bonePose);undo_storage::Free(undo.auxiliaryPose);
         undo={};undo.operation=5;undo.dirty=static_cast<int>(result.changes.size());undo.frame=undoFrame;
         undo.bonePose=oldPose;undo.auxiliaryPose=oldKeys;oldPose=nullptr;oldKeys=nullptr;
         undo.reserved0=static_cast<int>(m.maxFrame);undo.reserved1=m.searchCursor;

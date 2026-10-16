@@ -124,8 +124,8 @@ void Run(MMDApp* app) {
     Check(modelOwner->MeasureResources(modelBudget)==MMS_OK && modelBudget.cpuBytes>=sizeof(mdl::ModelRecord) &&
           modelBudget.d3d9Bytes>=descriptor.Size && modelBudget.totalBytes==modelBudget.cpuBytes+modelBudget.d3d9Bytes,
           "measure live native model allocations and real DX9 buffer sizes");
-    Check(!model.rigidCount || (!modelBudget.Complete() && (modelBudget.missing & resource_budget::PhysicsStorage)),
-          "opaque Bullet allocation capacity is reported as incomplete");
+    Check(!(modelBudget.missing & resource_budget::PhysicsStorage),
+          "supported Bullet private storage capacity is included in measurement");
     Check(!(modelBudget.missing & resource_budget::RawTextCapacity),
           "production PMX and PMD loaders account for every retained text allocation");
     resource_budget::Collector buffers;

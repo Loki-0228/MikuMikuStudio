@@ -76,6 +76,21 @@ void SceneResourceBudgetChecks() {
     namespace rb = plugins::resource_budget;
     OwnedTextResourceChecks();
     {
+        rb::Collector c;
+        int a = 0, b = 0; c.Add(&a, 128, 1);
+        const auto initial = c.Result();
+        failAfter = 0;
+        const auto covered = c.Covers([&](rb::Collector& out) { out.Add(&a, 64, 1); out.Add(&a, 128, 1); });
+        failAfter = -1;
+        Check(covered && SameResourceReport(initial, c.Result()), "resource ledger validates identities without allocation or changing its charge");
+        Check(!c.Covers([&](rb::Collector& out) { out.Add(&a, 129, 1); }) &&
+            !c.Covers([&](rb::Collector& out) { out.Add(&b, 1, 1); }) &&
+            !c.Covers([&](rb::Collector& out) { out.MissingResource(rb::RawTextCapacity); }),
+            "resource ledger rejects growth new identities and newly incomplete measurements");
+        Check(c.Covers([&](rb::Collector& out) { out.Add(&a, 128, 1); }) && SameResourceReport(initial, c.Result()),
+            "failed capacity validation preserves the prepared ledger for retry");
+    }
+    {
         int a = 0, b = 0;
         rb::Collector c;
         c.Add(&a, 8, 4); c.Add(&a, 4, 4); c.Add(&a, 16, 4);
@@ -113,8 +128,8 @@ void SceneResourceBudgetChecks() {
             "native resource charge follows grown key-pool capacity");
         f.Entry(1, 2, 3);
         rb::Collector undo; rb::Model(*f.m, undo);
-        Check((undo.Result().missing & rb::UndoCapacity) && undo.Result().cpuBytes > grown.Result().cpuBytes,
-            "legacy undo payload is charged and unknown reserved capacity stays explicit");
+        Check((undo.Result().missing & rb::UndoCapacity) && undo.Result().cpuBytes == grown.Result().cpuBytes,
+            "unregistered legacy undo reports unknown capacity without dereferencing or guessing size");
         wchar_t text[] = L"model"; f.m->pmxTextBuffers[0] = text;
         rb::Collector named; rb::Model(*f.m, named);
         Check((named.Result().missing & rb::RawTextCapacity) && named.Result().cpuBytes == undo.Result().cpuBytes,
