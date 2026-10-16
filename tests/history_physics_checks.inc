@@ -1,4 +1,5 @@
 #include "BulletDynamics/Dynamics/btActionInterface.h"
+#include "../src/plugins/scene_resource_budget.hpp"
 #include <limits>
 #include <stdexcept>
 
@@ -308,6 +309,159 @@ void PhysicsBatchRetention() {
         f.world.removeConstraint(joint.get());
     }
 }
+bool SamePhysicsResources(const plugins::resource_budget::Report& a, const plugins::resource_budget::Report& b) {
+    return a.cpuBytes == b.cpuBytes && a.d3d9Bytes == b.d3d9Bytes &&
+        a.totalBytes == b.totalBytes && a.missing == b.missing;
+}
+void PhysicsTargetResourceChecks() {
+    namespace rb = plugins::resource_budget;
+    using history_physics::Retained;
+    {
+        PhysicsFixture f; auto owner = f.Capture();
+        rb::Collector initial; owner->MeasureResources(initial);
+        auto candidate = owner->Prepare(false);
+        rb::Collector target;
+        Check(candidate->MeasureTargetResources(target) && target.Result().cpuBytes > initial.Result().cpuBytes &&
+              target.Result().d3d9Bytes == 0 && target.Result().missing == 0,
+              "prepared removal measures its future Saved state before the first publication");
+        const auto expected = target.Result();
+        owner->MeasureResources(target);
+        Check(candidate->MeasureTargetResources(target) && SamePhysicsResources(target.Result(), expected),
+              "owner and candidate share accounting identities and repeated measurement is deduplicated");
+        rb::Collector stillLive; owner->MeasureResources(stillLive);
+        Check(SamePhysicsResources(initial.Result(), stillLive.Result()) && candidate->IsCurrent() && owner->Present() &&
+              f.world.getNumCollisionObjects() == 5 && f.world.getNumConstraints() == 1 && f.ContactsFirst() && f.RayHitsFirst(),
+              "target measurement neither installs Saved storage nor changes simulation contacts or ray filtering");
+        candidate.reset();
+        rb::Collector canceled; owner->MeasureResources(canceled);
+        Check(SamePhysicsResources(initial.Result(), canceled.Result()) && owner->Present(),
+              "canceling a measured candidate releases its uncommitted storage");
+
+        candidate = owner->Prepare(false);
+        rb::Collector planned; Check(candidate->MeasureTargetResources(planned), "measure replacement removal candidate");
+        bulletAllocations = 0; trackBulletAlloc = true; failAfter = 0;
+        const bool published = candidate->Publish();
+        failAfter = -1; trackBulletAlloc = false;
+        Check(published && bulletAllocations == 0, "measurement preserves allocation-free publication");
+        rb::Collector consumed; int sentinel = 0; consumed.Add(&sentinel, 1, 19);
+        const auto unchanged = consumed.Result();
+        failAfter = 0;
+        const bool measuredConsumed = candidate->MeasureTargetResources(consumed);
+        failAfter = -1;
+        Check(!measuredConsumed && SamePhysicsResources(consumed.Result(), unchanged),
+              "consumed candidate rejects measurement without touching the collector");
+        rb::Collector parked; owner->MeasureResources(parked);
+        Check(SamePhysicsResources(planned.Result(), parked.Result()),
+              "published retained state exactly matches the prepared target charge without candidate scratch storage");
+        candidate.reset();
+
+        auto restore = owner->Prepare(true); rb::Collector restoredTarget;
+        Check(restore->MeasureTargetResources(restoredTarget) && SamePhysicsResources(parked.Result(), restoredTarget.Result()),
+              "restoration retains its existing Saved state and reports the same allocation charge");
+        owner->MeasureResources(restoredTarget);
+        Check(SamePhysicsResources(parked.Result(), restoredTarget.Result()),
+              "restoration and current-owner measurement do not duplicate the same saved snapshot");
+        PublishPhysicsBatch(std::move(restore));
+
+        // Grow unrelated world membership while the restored owner stays alive.
+        // Its next removal really retains a larger world-order vector.
+        for (unsigned i = 0; i < 7; ++i) {
+            btVector3 inertia; f.shape.calculateLocalInertia(1, inertia);
+            auto body = std::make_unique<btRigidBody>(1, nullptr, &f.shape, inertia);
+            btTransform t; t.setIdentity(); t.setOrigin(btVector3(20 + btScalar(i) * 2, 5, 0));
+            body->setWorldTransform(t); body->setInterpolationWorldTransform(t);
+            body->forceActivationState(DISABLE_DEACTIVATION);
+            f.world.addRigidBody(body.get(), 1, -1); f.bodies.push_back(std::move(body));
+        }
+        rb::Collector oldSaved; owner->MeasureResources(oldSaved);
+        Check(SamePhysicsResources(parked.Result(), oldSaved.Result()), "live world growth does not rewrite the old Saved charge");
+        auto removeAgain = owner->Prepare(false); rb::Collector grownTarget;
+        Check(removeAgain->MeasureTargetResources(grownTarget) && grownTarget.Result().cpuBytes > oldSaved.Result().cpuBytes,
+              "a later removal accounts for its newly enlarged world-order snapshot");
+        PublishPhysicsBatch(std::move(removeAgain));
+        rb::Collector grownActual; owner->MeasureResources(grownActual);
+        Check(SamePhysicsResources(grownTarget.Result(), grownActual.Result()),
+              "repeat removal measures the replacement Saved state rather than also charging the discarded old one");
+        PublishPhysicsBatch(owner->Prepare(true));
+    }
+    {
+        PhysicsFixture f; auto a = f.Capture();
+        Retained b(f.world, {f.bodies[3].get(), f.bodies[4].get()}, {});
+        auto candidate = Retained::PrepareBatch({a.get(), &b}, false);
+        rb::Collector target; Check(candidate->MeasureTargetResources(target), "measure a multi-owner prepared target");
+        PublishPhysicsBatch(std::move(candidate));
+        rb::Collector separateA, separateB, together;
+        a->MeasureResources(separateA); b.MeasureResources(separateB);
+        a->MeasureResources(together); b.MeasureResources(together);
+        Check(SamePhysicsResources(target.Result(), together.Result()) &&
+              together.Result().cpuBytes < separateA.Result().cpuBytes + separateB.Result().cpuBytes,
+              "batch target counts its shared full-world OrderSnapshot once by actual allocation identity");
+        auto restore = Retained::PrepareBatch({&b, a.get()}, true); rb::Collector reverse;
+        Check(restore->MeasureTargetResources(reverse) && SamePhysicsResources(reverse.Result(), together.Result()),
+              "batch restoration order does not change resource deduplication");
+        PublishPhysicsBatch(std::move(restore));
+    }
+    {
+        PhysicsFixture f; auto owner = f.Capture();
+        auto candidate = owner->Prepare(false);
+        rb::Collector target; Check(candidate->MeasureTargetResources(target), "measure a candidate before fault injection");
+        bool sawFailure = false, completed = false;
+        for (long failure = 0; failure < 64 && !completed; ++failure) {
+            rb::Collector output; bool oom = false, measured = false;
+            failAfter = failure;
+            try { measured = candidate->MeasureTargetResources(output); }
+            catch (const std::bad_alloc&) { oom = true; }
+            failAfter = -1;
+            sawFailure = sawFailure || oom;
+            Check(candidate->IsCurrent() && owner->Present() && f.world.getNumCollisionObjects() == 5 &&
+                  f.world.getNumConstraints() == 1 && f.ContactsFirst() && f.RayHitsFirst(),
+                  "every collector allocation failure leaves the prepared candidate and scene unchanged");
+            if (!oom) {
+                Check(measured && SamePhysicsResources(output.Result(), target.Result()),
+                      "measurement retries after allocation failure produce the complete target charge");
+                completed = true;
+            }
+        }
+        Check(sawFailure && completed, "target resource measurement exercises both allocation failure and success");
+        rb::Collector full; int overflowSentinel = 0; full.Add(&overflowSentinel, 1, UINT64_MAX);
+        const auto fullReport = full.Result(); bool overflow = false;
+        try { candidate->MeasureTargetResources(full); }
+        catch (const std::bad_alloc&) { overflow = true; }
+        Check(overflow && SamePhysicsResources(full.Result(), fullReport) && candidate->IsCurrent(),
+              "checked budget overflow preserves the candidate and the collector report");
+        rb::Collector stale; int sentinel = 0; stale.Add(&sentinel, 1, 23);
+        const auto unchanged = stale.Result();
+        const auto velocity = f.bodies[0]->getLinearVelocity(); f.bodies[0]->setLinearVelocity(btVector3(1, 2, 3));
+        failAfter = 0;
+        const bool measuredStale = candidate->MeasureTargetResources(stale);
+        failAfter = -1;
+        Check(!measuredStale && SamePhysicsResources(stale.Result(), unchanged) && owner->Present(),
+              "stale candidate rejects before any collector allocation or write");
+        f.bodies[0]->setLinearVelocity(velocity);
+        PublishPhysicsBatch(std::move(candidate));
+        PublishPhysicsBatch(owner->Prepare(true));
+        f.world.performDiscreteCollisionDetection();
+
+        bool failedPrepare = false;
+        failAfter = 0;
+        try { candidate = owner->Prepare(false); }
+        catch (const std::bad_alloc&) { failedPrepare = true; }
+        failAfter = -1;
+        Check(failedPrepare && !candidate && owner->Present() && f.world.getNumCollisionObjects() == 5 &&
+              f.world.getNumConstraints() == 1 && f.ContactsFirst() && f.RayHitsFirst(),
+              "failed preparation creates no measurable target and preserves the live scene");
+        Check(RejectPhysicsPrepare(*owner, true) && RejectPhysicsBatch({owner.get(), nullptr}, false),
+              "unsupported presence and unknown batch owners cannot create a measurement target");
+    }
+    {
+        PhysicsFixture f; auto owner = f.Capture(); auto candidate = owner->Prepare(false);
+        rb::Collector before; Check(candidate->MeasureTargetResources(before), "measure candidate with its wrapper alive");
+        owner.reset(); rb::Collector after;
+        Check(candidate->MeasureTargetResources(after) && SamePhysicsResources(before.Result(), after.Result()),
+              "target accounting remains valid when the candidate alone retains its owner Impl");
+        PublishPhysicsBatch(std::move(candidate));
+    }
+}
 void PhysicsRetention() {
     btAlignedAllocSetCustomAligned(HistoryAlignedAlloc, HistoryAlignedFree);
     {
@@ -479,6 +633,7 @@ void PhysicsRetention() {
     }
     PhysicsGuardCoordinates();
     PhysicsBatchRetention();
+    PhysicsTargetResourceChecks();
     btAlignedAllocSetCustomAligned(nullptr, nullptr);
 }
 }

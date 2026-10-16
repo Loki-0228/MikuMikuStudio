@@ -1,5 +1,6 @@
 #include "mikudancestudio/display_capacity.hpp"
 #include "mikudancestudio/text_encoding.hpp"
+#include "mikudancestudio/owned_text.hpp"
 // MAINTENANCE: regression-keep; malformed PMX text must fail before allocation
 // or string conversion, and partially constructed models must remain disposable.
 #include "mikudancestudio/model.hpp"
@@ -13,7 +14,19 @@
 #include <fcntl.h>
 #include <io.h>
 #include <memory>
+#include <new>
 #include <vector>
+namespace { thread_local std::size_t failAllocationSize = 0; }
+void* operator new(std::size_t size) {
+    if (failAllocationSize && size == failAllocationSize) throw std::bad_alloc();
+    if (auto* pointer = std::malloc(size ? size : 1)) return pointer;
+    throw std::bad_alloc();
+}
+void* operator new[](std::size_t size) { return ::operator new(size); }
+void operator delete(void* pointer) noexcept { std::free(pointer); }
+void operator delete[](void* pointer) noexcept { std::free(pointer); }
+void operator delete(void* pointer, std::size_t) noexcept { std::free(pointer); }
+void operator delete[](void* pointer, std::size_t) noexcept { std::free(pointer); }
 using namespace mikudancestudio;
 namespace {
 using Bytes = std::vector<unsigned char>;
@@ -52,6 +65,7 @@ Bytes AfterBone(const wchar_t* name = L"A", const wchar_t* english = L"") {
     return bytes;
 }
 void Reject(const Bytes& bytes, const wchar_t* boneName = nullptr) {
+    const auto baseline = owned_text::Count();
     wchar_t directory[MAX_PATH], path[MAX_PATH];
     Check(GetTempPathW(MAX_PATH, directory) != 0, "temp directory");
     Check(GetTempFileNameW(directory, L"pmx", 0, path) != 0, "temp name");
@@ -69,14 +83,22 @@ void Reject(const Bytes& bytes, const wchar_t* boneName = nullptr) {
     Check(!LoadPMX(raw, nullptr, 0, 0, paths, fd), "reject malformed text");
     if (boneName) {
         Check(model->boneTable != nullptr, "valid preceding bone retained");
+#if MMD_ORIGINAL_PROFILE
         Check(wcscmp(model->boneTable[0].jpText, boneName) == 0, "single code unit or empty-name fallback");
         Check(wcscmp(model->boneTable[0].enText, boneName) == 0, "empty English name uses Japanese fallback");
+#else
+        Check(!model->boneTable[0].jpText && !model->boneTable[0].enText,
+            "rejected load releases preceding owned names and leaves disposable null fields");
+#endif
     }
+    Check(owned_text::Count() == baseline, "malformed PMX leaves no registered text");
     ModelDispose(raw);
+    Check(owned_text::Count() == baseline, "disposing malformed PMX preserves registry baseline");
     Check(DeleteFileW(path) != FALSE, "loader closed rejected file");
 }
 }
 void ExpandedDisplay() {
+    const auto baseline = owned_text::Count();
     auto bytes=AfterBone(L"超过十四字符的完整骨骼名称_左侧_\U0001f31f");
     Put(bytes,1u);Text(bytes,L"完整的表情名称_\U0001f31f");Text(bytes,L"");
     Put(bytes,static_cast<unsigned char>(1));Put(bytes,static_cast<unsigned char>(1));Put(bytes,0u);
@@ -98,10 +120,97 @@ void ExpandedDisplay() {
     Check(mdl::DisplayGroupCount(*model)>=300&&mdl::FacialFrameCount(*model)==600,"all groups and facial display items survive PMX load");
     Check(mdl::FrameTargetIndex(model->displayFrames[599])==0,"last facial item retains its morph index");
     Check(text_encoding::BoneName(model->boneTable[0],false)==L"超过十四字符的完整骨骼名称_左侧_\U0001f31f","PMX preserves complete Unicode bone identity");
+#if !MMD_ORIGINAL_PROFILE
+    Check(owned_text::Count() == baseline + 8, "display frame temporary text registrations are released after load");
+#endif
     ModelDispose(raw);Check(DeleteFileW(path)!=FALSE,"expanded PMX is closed and disposable");
+    Check(owned_text::Count() == baseline, "successful PMX disposal releases all text registrations");
+}
+void TextCapacityAndRetry() {
+#if !MMD_ORIGINAL_PROFILE
+    const auto baseline = owned_text::Count();
+    auto open = [](const Bytes& bytes, wchar_t (&path)[MAX_PATH]) {
+        wchar_t directory[MAX_PATH]{};
+        Check(GetTempPathW(MAX_PATH, directory) && GetTempFileNameW(directory, L"pmx", 0, path), "create capacity fixture");
+        int fd = _wopen(path, _O_BINARY | _O_WRONLY | _O_TRUNC);
+        Check(fd >= 0 && _write(fd, bytes.data(), unsigned(bytes.size())) == bytes.size(), "write capacity fixture");
+        _close(fd); fd = _wopen(path, _O_BINARY | _O_RDONLY);
+        Check(fd >= 0 && _lseek(fd, 3, SEEK_SET) == 3, "open capacity fixture"); return fd;
+    };
+    auto rawText = [](Bytes& bytes, const wchar_t* value, unsigned units) {
+        Put(bytes, units * unsigned(sizeof(wchar_t)));
+        const auto* begin = reinterpret_cast<const unsigned char*>(value);
+        bytes.insert(bytes.end(), begin, begin + units * sizeof(wchar_t));
+    };
+    {
+        auto bytes = Header(0);
+        wchar_t title[64]{}; title[0] = L'P'; title[63] = L'X'; rawText(bytes, title, 64);
+        for (int i = 0; i < 3; ++i) Text(bytes, L"");
+        Put(bytes, 0u); Put(bytes, 0u); // no vertices or indices
+        Put(bytes, 1u); Text(bytes, L"unused-texture.png"); Put(bytes, 0u); // no materials
+        Put(bytes, 1u); const wchar_t bone[] = {L'B', 0, L'x', L'y'};
+        rawText(bytes, bone, 4); Text(bytes, L"");
+        for (int i = 0; i < 3; ++i) Put(bytes, 0.f);
+        Put(bytes, static_cast<unsigned char>(255)); Put(bytes, 0u); Put(bytes, static_cast<unsigned short>(0));
+        for (int i = 0; i < 3; ++i) Put(bytes, 0.f);
+        Put(bytes, 1u); Text(bytes, L""); Text(bytes, L"");
+        Put(bytes, static_cast<unsigned char>(1)); Put(bytes, static_cast<unsigned char>(1)); Put(bytes, 0u);
+        Put(bytes, 0u); Put(bytes, 0u); // no display frames or rigids
+        wchar_t path[MAX_PATH]{}; const int fd = open(bytes, path);
+        auto model = std::make_unique<mdl::ModelRecord>(); PathResolutionWorkspace paths{};
+        auto* raw = reinterpret_cast<unsigned char*>(model.get());
+        Check(LoadPMX(raw, nullptr, 0, 0, paths, fd), "load early NUL and generated PMX names");
+        auto capacity = [](const wchar_t* pointer, std::size_t bytes) {
+            owned_text::Allocation value;
+            return owned_text::Find(pointer, value) && value.bytes == bytes;
+        };
+        Check(capacity(model->pmxTextBuffers[0], 130) && wcscmp(model->pmxTextBuffers[0], L"P") == 0,
+            "PMX header tracks payload capacity beyond early NUL");
+        for (int i = 1; i < 4; ++i) Check(capacity(model->pmxTextBuffers[i], 40), "generated header text retains fixed allocation");
+        Check(capacity(model->boneTable[0].jpText, 10) && capacity(model->boneTable[0].enText, 4),
+            "bone payload and fallback record distinct actual capacities");
+        Check(capacity(model->morphs[0].jpText, 40) &&
+            capacity(model->morphs[0].enText, (wcslen(model->morphs[0].jpText) + 1) * sizeof(wchar_t)),
+            "empty morph placeholder and fallback record distinct capacities");
+        Check(owned_text::Count() == baseline + 8, "temporary texture capacity is released after successful load");
+        ModelDispose(raw); Check(DeleteFileW(path), "capacity fixture closes");
+        Check(owned_text::Count() == baseline, "early NUL model disposal releases complete allocation registry");
+    }
+    {
+        auto model = std::make_unique<mdl::ModelRecord>(); PathResolutionWorkspace paths{};
+        auto* raw = reinterpret_cast<unsigned char*>(model.get());
+        for (auto& pointer : model->pmxTextBuffers) { pointer = owned_text::AllocateBytes(40); wcscpy_s(pointer, 20, L"old"); }
+        model->boneTable = static_cast<mdl::BoneRecord*>(std::calloc(1, sizeof(mdl::BoneRecord))); model->boneCount = 1;
+        Check(model->boneTable != nullptr, "allocate prior retry table");
+        auto* oldBones = model->boneTable;
+        oldBones[0].jpText = owned_text::AllocateBytes(40); wcscpy_s(oldBones[0].jpText, 20, L"old bone");
+        auto* oldTitle = model->pmxTextBuffers[0]; auto* oldBoneName = oldBones[0].jpText;
+        for (int retry = 0; retry < 2; ++retry) {
+            auto bytes = Header(2); Put(bytes, 1u);
+            wchar_t path[MAX_PATH]{}; const int fd = open(bytes, path);
+            Check(!LoadPMX(raw, nullptr, 0, 0, paths, fd), "repeated malformed header fails safely");
+            Check(model->pmxTextBuffers[0] == oldTitle && model->boneTable == oldBones &&
+                oldBones[0].jpText == oldBoneName && model->boneCount == 1 && owned_text::Count() == baseline + 5,
+                "retry rollback preserves prior owning text and paired table bound");
+            Check(DeleteFileW(path), "malformed retry file closes");
+        }
+        auto bytes = Geometry(); Put(bytes, 0u); Put(bytes, 0u); Put(bytes, 7u);
+        wchar_t path[MAX_PATH]{}; const int fd = open(bytes, path);
+        bool memory = false; failAllocationSize = sizeof(mdl::BoneRecord) * 7;
+        try { (void)LoadPMX(raw, nullptr, 0, 0, paths, fd); } catch (const std::bad_alloc&) { memory = true; }
+        failAllocationSize = 0;
+        Check(memory && model->boneTable == oldBones && model->boneCount == 1 &&
+            oldBones[0].jpText == oldBoneName && model->pmxTextBuffers[0] == oldTitle &&
+            owned_text::Count() == baseline + 5, "failed table allocation restores prior count and releases only new text");
+        Check(DeleteFileW(path), "exception closes PMX reader");
+        ModelDispose(raw);
+        Check(owned_text::Count() == baseline, "malformed and exceptional retries remain safely disposable");
+    }
+#endif
 }
 int main() {
     ExpandedDisplay();
+    TextCapacityAndRetry();
     unsigned cases = 0;
     for (bool buffered : {false, true}) {
         fileio::bufferedReads = buffered;

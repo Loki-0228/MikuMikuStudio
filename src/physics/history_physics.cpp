@@ -244,6 +244,23 @@ struct Retained::Impl {
             if (!Contains(bodies, &constraint->getRigidBodyA()) || !Contains(bodies, &constraint->getRigidBodyB()))
                 throw std::invalid_argument("constraint outside retained bodies");
     }
+    void MeasureResources(plugins::resource_budget::Collector& out, const Saved* state) const {
+        // A transition retains this Impl even if its Retained wrapper has gone.
+        // Bundle the wrapper allowance here so both public measurements use the
+        // same stable identity without dereferencing a potentially dead wrapper.
+        out.Add(this, 1, plugins::resource_budget::Collector::Sum(sizeof(Retained), sizeof(*this)));
+        out.Vector(bodies); out.Vector(constraints);
+        if (!state) return;
+        out.Array(state, 1);
+        out.Vector(state->objects.values); out.Vector(state->objects.positions);
+        out.Vector(state->moving.values); out.Vector(state->moving.positions);
+        out.Vector(state->constraints.values); out.Vector(state->constraints.positions);
+        out.Vector(state->bodies);
+        if (state->order) {
+            out.Array(state->order.get(), 1); out.Vector(state->order->objects);
+            out.Vector(state->order->moving); out.Vector(state->order->constraints);
+        }
+    }
 };
 struct Retained::Transition::Impl {
     struct Entry {
@@ -428,17 +445,7 @@ Retained::Retained(DynamicsWorld& world, std::vector<btRigidBody*> bodies, std::
 Retained::~Retained() = default;
 bool Retained::Present() const noexcept { return impl_->present; }
 void Retained::MeasureResources(plugins::resource_budget::Collector& out) const {
-    out.Array(this, 1); out.Array(impl_.get(), 1);
-    out.Vector(impl_->bodies); out.Vector(impl_->constraints);
-    if (!impl_->saved) return;
-    const auto& s = *impl_->saved; out.Array(&s, 1);
-    out.Vector(s.objects.values); out.Vector(s.objects.positions);
-    out.Vector(s.moving.values); out.Vector(s.moving.positions);
-    out.Vector(s.constraints.values); out.Vector(s.constraints.positions); out.Vector(s.bodies);
-    if (s.order) {
-        out.Array(s.order.get(), 1); out.Vector(s.order->objects);
-        out.Vector(s.order->moving); out.Vector(s.order->constraints);
-    }
+    impl_->MeasureResources(out, impl_->saved.get());
 }
 std::unique_ptr<Retained::Transition> Retained::Prepare(bool present) {
     return PrepareBatch({this}, present);
@@ -455,5 +462,14 @@ std::unique_ptr<Retained::Transition> Retained::PrepareBatch(const std::vector<R
 Retained::Transition::Transition(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 Retained::Transition::~Transition() = default;
 bool Retained::Transition::IsCurrent() const noexcept { return impl_->Current(); }
+bool Retained::Transition::MeasureTargetResources(plugins::resource_budget::Collector& out) const {
+    if (!impl_->Current()) return false;
+    // Validate the complete target before the first Collector write.
+    for (const auto& entry : impl_->entries)
+        if (!(impl_->present ? entry.owner->saved : entry.saved)) return false;
+    for (const auto& entry : impl_->entries)
+        entry.owner->MeasureResources(out, &entry.State(impl_->present));
+    return true;
+}
 bool Retained::Transition::Publish() noexcept { return impl_->Publish(); }
 }

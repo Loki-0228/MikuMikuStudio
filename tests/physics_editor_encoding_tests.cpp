@@ -14,6 +14,7 @@
 #include "mikudancestudio/physics_scene.hpp"
 #include "mikudancestudio/ported_funcs.hpp"
 #include "mikudancestudio/text_encoding.hpp"
+#include "mikudancestudio/owned_text.hpp"
 #include "mikudancestudio/ui_language.hpp"
 #include <array>
 #include <cstdio>
@@ -170,8 +171,8 @@ struct World {
     World() { scene.world = &world; world.setGravity(btVector3(0,0,0)); }
 };
 template<class Record> void SetLegacyName(Record& record, const std::wstring& name) {
-    std::free(record.jpText); record.jpText = nullptr;
-    std::free(record.enText); record.enText = nullptr;
+    owned_text::Free(record.jpText); record.jpText = nullptr;
+    owned_text::Free(record.enText); record.enText = nullptr;
     std::string bytes;
     if (!Check(text_encoding::EncodeExact(name.c_str(), 932, bytes) && bytes.size() <= sizeof record.name,
                "fixture legacy name fits exact CP932 field")) return;

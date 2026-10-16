@@ -1,5 +1,6 @@
 #include "mikudancestudio/autosave.hpp"
 #include "mikudancestudio/extended_names.hpp"
+#include "mikudancestudio/owned_text.hpp"
 #include "mikudancestudio/display_capacity.hpp"
 #include "mikudancestudio/save_compatibility.hpp"
 #include "mikudancestudio/key_pool.hpp"
@@ -246,9 +247,9 @@ void AutomaticMetadata() {
     Check(save_compatibility::InspectPmm(*app).needsNewPmm,"only actual live count beyond old capacity selects new PMM");
     mdl::KeyPoolDestroy(camera);
     mdl::ForgetDisplayCapacity(*model);text_encoding::ForgetDisplayGroupNames(*model);
-    for(auto* p:model->pmxTextBuffers)std::free(p);
-    for(auto& bone:bones){std::free(bone.jpText);std::free(bone.enText);}
-    for(auto& morph:morphs){std::free(morph.jpText);std::free(morph.enText);}
+    for(auto* p:model->pmxTextBuffers)owned_text::Free(p);
+    for(auto& bone:bones){owned_text::Free(bone.jpText);owned_text::Free(bone.enText);}
+    for(auto& morph:morphs){owned_text::Free(morph.jpText);owned_text::Free(morph.enText);}
     std::puts("PASS automatic Unicode metadata, display counts and legacy-first format selection");
 }
 

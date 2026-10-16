@@ -1,5 +1,72 @@
 // Include after the shared Fixture/Check definitions in native_edit_history_tests.
+#include "mikudancestudio/owned_text.hpp"
+#include "mikudancestudio/extended_names.hpp"
 namespace {
+void OwnedTextResourceChecks() {
+    namespace rb = plugins::resource_budget;
+    const auto baseline = owned_text::Count();
+    {
+        owned_text::Buffer text(owned_text::AllocateBytes(100));
+        text.get()[0] = L'A'; text.get()[1] = 0;
+        owned_text::Allocation allocation;
+        Check(owned_text::Find(text.get(), allocation) && allocation.bytes == 100,
+            "owned text retains allocation capacity beyond early NUL");
+        rb::Collector c; c.RawText(text.get()); c.RawText(text.get());
+        Check(c.Result().Complete() && c.Result().cpuBytes == 100 + allocation.registryBytes,
+            "raw text counts capacity and registration node once");
+        rb::Collector unknown; unknown.RawText(reinterpret_cast<const wchar_t*>(std::uintptr_t(1)));
+        Check(unknown.Result().cpuBytes == 0 && (unknown.Result().missing & rb::RawTextCapacity),
+            "unknown text pointer is never dereferenced to invent capacity");
+        owned_text::Forget(text.get());
+        Check(!owned_text::Find(text.get(), allocation), "forgotten text capacity is inaccessible");
+        owned_text::Remember(text.get(), 40);
+        Check(owned_text::Find(text.get(), allocation) && allocation.bytes == 40,
+            "reused text address receives only its new capacity");
+        failAfter = 0; text.reset(); failAfter = -1;
+        Check(owned_text::Count() == baseline, "text release unregisters without allocation");
+    }
+    bool succeeded = false;
+    for (long limit = 0; limit < 8 && !succeeded; ++limit) {
+        wchar_t* text = nullptr; bool memory = false;
+        failAfter = limit;
+        try { text = owned_text::AllocateBytes(40); } catch (const std::bad_alloc&) { memory = true; }
+        failAfter = -1;
+        if (memory) Check(owned_text::Count() == baseline, "allocation or registration failure leaves no text entry");
+        else { succeeded = true; owned_text::Delete(text); }
+    }
+    Check(succeeded && owned_text::Count() == baseline, "text allocation succeeds after all allocation failures");
+    {
+        wchar_t* destination = nullptr;
+        Check(extended_names::Assign(destination, L"original"), "create tracked extended name");
+        auto* before = destination;
+        const std::wstring replacement(L"A\0rest", 6);
+        failAfter = 0; const bool assigned = extended_names::Assign(destination, replacement); failAfter = -1;
+        Check(!assigned && destination == before && wcscmp(destination, L"original") == 0 &&
+            owned_text::Count() == baseline + 1, "name registration failure preserves old owning field");
+        Check(extended_names::Assign(destination, replacement), "replace tracked extended name");
+        owned_text::Allocation allocation;
+        Check(owned_text::Find(destination, allocation) && allocation.bytes == 7 * sizeof(wchar_t) &&
+            !owned_text::Find(before, allocation), "name replacement tracks full input capacity and unregisters old pointer");
+        owned_text::Free(destination);
+    }
+    {
+        auto model = std::make_unique<mdl::ModelRecord>();
+        model->boneTable = static_cast<mdl::BoneRecord*>(std::calloc(1, sizeof(mdl::BoneRecord))); model->boneCount = 1;
+        model->morphs = static_cast<mdl::MorphRecord*>(std::calloc(1, sizeof(mdl::MorphRecord))); model->morphCount = 1;
+        model->rigidTable = static_cast<mdl::RigidRecord*>(std::calloc(1, sizeof(mdl::RigidRecord))); model->rigidCount = 1;
+        model->jointTable = static_cast<mdl::JointRecord*>(std::calloc(1, sizeof(mdl::JointRecord))); model->jointCount = 1;
+        Check(model->boneTable && model->morphs && model->rigidTable && model->jointTable, "allocate text ownership fixture");
+        wchar_t** fields[] = {&model->pmxTextBuffers[0], &model->pmxTextBuffers[1], &model->pmxTextBuffers[2],
+            &model->pmxTextBuffers[3], &model->boneTable[0].jpText, &model->boneTable[0].enText,
+            &model->morphs[0].jpText, &model->morphs[0].enText, &model->rigidTable[0].jpText,
+            &model->rigidTable[0].enText, &model->jointTable[0].jpText, &model->jointTable[0].enText};
+        for (auto field : fields) { *field = owned_text::AllocateBytes(40); **field = 0; }
+        Check(owned_text::Count() == baseline + 12, "all native owned text fields register capacity");
+        ModelDispose(reinterpret_cast<unsigned char*>(model.get()));
+        Check(owned_text::Count() == baseline, "native model disposal unregisters every owning text family");
+    }
+    Check(owned_text::Count() == baseline, "owned text resource checks leave registry unchanged");
+}
 bool SameResourceReport(const plugins::resource_budget::Report& a,
                         const plugins::resource_budget::Report& b) {
     return a.cpuBytes == b.cpuBytes && a.d3d9Bytes == b.d3d9Bytes &&
@@ -7,6 +74,7 @@ bool SameResourceReport(const plugins::resource_budget::Report& a,
 }
 void SceneResourceBudgetChecks() {
     namespace rb = plugins::resource_budget;
+    OwnedTextResourceChecks();
     {
         int a = 0, b = 0;
         rb::Collector c;
@@ -49,8 +117,8 @@ void SceneResourceBudgetChecks() {
             "legacy undo payload is charged and unknown reserved capacity stays explicit");
         wchar_t text[] = L"model"; f.m->pmxTextBuffers[0] = text;
         rb::Collector named; rb::Model(*f.m, named);
-        Check((named.Result().missing & rb::RawTextCapacity) && named.Result().cpuBytes > undo.Result().cpuBytes,
-            "raw text payload does not pretend visible string length is allocation capacity");
+        Check((named.Result().missing & rb::RawTextCapacity) && named.Result().cpuBytes == undo.Result().cpuBytes,
+            "unknown raw text reports missing capacity without inventing a payload size");
         f.m->pmxTextBuffers[0] = nullptr;
     }
     {

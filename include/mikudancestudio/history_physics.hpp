@@ -46,6 +46,14 @@ public:
     public:
         ~Transition();
         bool IsCurrent() const noexcept;
+        // Measure only these owners' history bookkeeping after publication.
+        // Includes the prepared Saved state and shared world-order snapshot;
+        // excludes temporary candidates/caches and the native Bullet resources
+        // (measured separately). Does not publish or change the world. A stale,
+        // consumed or unavailable target returns false without changing out.
+        // Collector allocation/overflow may throw; the candidate remains usable.
+        // This is not a future-transition bound or an admission decision.
+        bool MeasureTargetResources(plugins::resource_budget::Collector& out) const;
         // No allocation, resource destruction or callbacks. Old contacts are
         // disposed by this transition's destructor, before the next step.
         bool Publish() noexcept;
@@ -55,6 +63,8 @@ public:
     Retained(const Retained&) = delete;
     Retained& operator=(const Retained&) = delete;
     bool Present() const noexcept;
+    // The wrapper and Impl share one accounting identity. This conservatively
+    // includes the wrapper's size if only a transition still retains the Impl.
     void MeasureResources(plugins::resource_budget::Collector&) const;
     std::unique_ptr<Transition> Prepare(bool present);
     // One world publication for all objects, never a chain of single-object

@@ -58,7 +58,7 @@
 | P3 | Bullet 移出和恢复候选 | 本机已验证 | 保留刚体、约束及代理句柄；移出后不参与模拟、碰撞和射线查询。恢复重建静止重叠，保留其他碰撞算法；发布不分配，旧接触在解锁前清理。外部 action、碰撞回调及未保留的关联约束拒绝准备。 |
 | P3 | 应用历史寿命与工程切换 | 本机已验证 | 应用持有共同日志；准备工程可取消，PMM 替换前释放旧历史及原生候选；新建和关闭时在世界销毁前回收。混合编辑未取消时拒绝重置。 |
 | P3 | 独立 type 1 姿态记录 | 本机已验证 | 100 次覆盖旧环后往返；按平移分量、旋转、dirty 与缩放差异恢复，保留未改字段和播放头。其他类型的独立记录仍待实现。 |
-| P3 | 原生保留资源计量 | 部分实现 | 实际池容量、嵌套数组、侧表与 DX9 查询；批内分配地址和 COM 身份去重。文本、旧撤销、物理及外部后端缺项显式标记，尚未用于自动准入预算。 |
+| P3 | 原生保留资源计量 | 部分实现 | 实际池容量、嵌套数组、侧表、已登记文本容量与 DX9 查询；批内分配地址和 COM 身份去重。物理候选可在发布前统计目标保留快照。未知文本、旧撤销、Bullet 私有数组及外部后端缺项仍显式标记，尚未用于自动准入预算。 |
 | P3 | 模型加载后的 UI 延后机制 | 本机已验证 | PMD、PMX 成功尾部支持按窗口嵌套延后；取消或异常不刷新，提交成功后由调用方显式刷新。实际导入菜单尚未启用。 |
 | P3 | 已执行姿态的历史预留与采用 | 本机已验证 | 修改前预留节点和预算，修改后验证反向候选，提交只入历史；失败先回滚再解锁。数字输入、重置、粘贴、镜像粘贴及两窗口轴复位仅在内部绑定下接入，普通宿主保留旧路径。 |
 | P3 | 受控共同历史命令 | 本机已验证 | 撤销按钮及 Ctrl+Z、重做按钮及 Ctrl+X 不依赖当前模型或相机模式。空历史、BUSY、准备失败不回退旧环；文本焦点及播放录制检查保持。仅内部绑定启用。 |
@@ -142,6 +142,10 @@
 | 模型三族原子删键 | 原生历史累计 24,147 项通过；三族旧删除对照、当前帧及外亲窗口求值、表情曲线恢复、整笔失败、逐分配故障、保护页池替换、关联集合过期及无分配提交 | `plugin-abi-model-delete-native-1.log` |
 | 模型三族混合范围缩放 | 原生历史累计 28,066 项通过；7 种勾选组合、42 组旧注册器对照、同帧覆盖、后序空族、无骨骼模型、目标外亲窗口、逐分配失败、过期拒绝、无分配发布和真实对话框路由 | `plugin-abi-model-range-native-final.log` |
 | 混合范围缩放回归与真实 DLL | 十组 CTest 通过；PMX 原名及 PMD 中文 EXE 通过三族缩放调用、插件跨帧撤销和原生重做，工程切换及关闭仍通过 | `plugin-abi-model-range-regressions-1.log`、`plugin-abi-model-range-host-1.log`、`abi-model-range-host-1/report.json` |
+| 文本容量与物理目标计量 | 新增检查随原生历史累计 30,321 项通过；实际分配容量、早 NUL、失败清理、名称替换、去重、候选目标快照、世界增长和分配失败均有覆盖。11 组相关 CTest 通过，其中 PMX 文本包含 98 个畸形输入及失败重试 | `plugin-abi-resource-interpolation-native-1.log`、`plugin-abi-resource-interpolation-regressions-1.log` |
+| 真实文本寿命与物理编辑窗口 | PMX/PMD 的活动及已删除模型均能测量全部自有文本；对象恢复、批量历史与 DX9 重置通过。独立桌面的物理编辑窗口在实际 ACP 936 下完成 816 项检查、12 次窗口操作，无失败 | `plugin-abi-resource-object-1.log`、`abi-resource-object-1/report.json`、`abi-text-physics-editor-final/report.json`、`abi-text-physics-editor-final/result.log` |
+| 工程文本替换与设置回归 | 不带可选模型的完整设置测试通过，覆盖 Unicode 元数据、保存重开、另存、未知及损坏扩展。带模型版本被兼容副本提示中断，未计为通过；PMX/PMD 工程往返另由真实编辑及对象探针覆盖 | `plugin-abi-text-project-empty.log`、`abi-text-project-empty/report.json`、`abi-text-project-final/result.log` |
+| 本批构建与平台边界 | 16 个目标已构建；宿主仍为 x64、子系统 6.1，六文件无所列可选后端或厂商 DLL 直接导入。已核验资源缓存并恢复 38 个生成项目的正常资源命令。Win7 与 AMD 真机未验收 | `plugin-abi-resource-interpolation-build-1.log`、`plugin-abi-resource-tests-build-2.log`、`plugin-abi-resource-interpolation-pe.json`、`plugin-abi-resource-interpolation-resource-restored.log` |
 | 三族删键后的相关回归 | 另十组 CTest 全部通过，覆盖 ABI、对象列表、模型加载 UI、曲线宿主、旧骨骼登记、缩放、曲线、键池与键盘输入 | `plugin-abi-model-delete-regressions-1.log` |
 | 三族实际命令与插件历史 | PMX 原名、PMD 中文 EXE 均通过：按钮一次删除、一次撤销全部恢复、插件跨帧重做、相机模式及插件回调后的表情曲线刷新；工程重开和关闭仍通过 | `plugin-abi-model-delete-host-final.log`、`abi-model-delete-host-final/report.json` |
 | 三族接入后的宿主与资源回归 | 普通启动、菜单、工具栏、面板、场景查询通过；对象批量恢复、DX9 重置和工程边界通过 | `plugin-abi-model-delete-smoke-final.log`、`plugin-abi-model-delete-object-final.log` |

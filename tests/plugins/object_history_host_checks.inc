@@ -126,6 +126,8 @@ void Run(MMDApp* app) {
           "measure live native model allocations and real DX9 buffer sizes");
     Check(!model.rigidCount || (!modelBudget.Complete() && (modelBudget.missing & resource_budget::PhysicsStorage)),
           "opaque Bullet allocation capacity is reported as incomplete");
+    Check(!(modelBudget.missing & resource_budget::RawTextCapacity),
+          "production PMX and PMD loaders account for every retained text allocation");
     resource_budget::Collector buffers;
     buffers.VertexBuffer(vertexBuffer); const auto bufferBytes=buffers.Result().d3d9Bytes;
     buffers.VertexBuffer(vertexBuffer);
@@ -169,6 +171,8 @@ void Run(MMDApp* app) {
           parkedModel.d3d9Bytes==modelBudget.d3d9Bytes && parkedAccessory.d3d9Bytes==accessoryBudget.d3d9Bytes &&
           parkedAccessory.cpuBytes>=sizeof(mdl::AccessoryRecord),
           "measure removed objects through retained owners without live scene slots");
+    Check(!(parkedModel.missing & resource_budget::RawTextCapacity),
+          "removed model retains its registered text capacities for undo");
     Check(!app->ModelSlot(0) && !app->AccessorySlot(0) && world->getNumCollisionObjects()==1 && world->getNumConstraints()==0,
           "only ground physics remains after both deletions");
     Check(api.objects(api.context,snapshot.handle,&objects)==MMS_OK && objects.count==2,"old ABI snapshot survives real object deletion");

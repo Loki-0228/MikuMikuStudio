@@ -7,6 +7,7 @@
 #include "mikudancestudio/display_capacity.hpp"
 #include "mikudancestudio/key_pool.hpp"
 #include "mikudancestudio/model.hpp"
+#include "mikudancestudio/owned_text.hpp"
 #include <btBulletDynamicsCommon.h>
 #include <BulletDynamics/ConstraintSolver/btGeneric6DofSpringConstraint.h>
 #include <cwchar>
@@ -50,10 +51,14 @@ void DisplayRegistry(const mdl::ModelRecord& model, Collector& out) {
 }
 void Collector::RawText(const wchar_t* text) {
     if (!text) return;
-    // PMX source strings can contain an early NUL, and generated names have a
-    // fixed 40-byte allocation. Visible length alone is not its capacity.
-    Add(text, (std::max)(std::uint64_t(20), Sum(std::wcslen(text), 1)), sizeof(wchar_t));
-    MissingResource(RawTextCapacity);
+    owned_text::Allocation allocation;
+    if (!owned_text::Find(text, allocation)) {
+        // An external pointer is not permission to scan its contents, nor
+        // evidence of a minimum allocation. Keep the incomplete flag explicit.
+        MissingResource(RawTextCapacity); return;
+    }
+    Add(text, allocation.bytes, 1);
+    Add(allocation.registryIdentity, allocation.registryBytes, 1);
 }
 void Collector::VertexBuffer(void* value) {
     if (!value) return;

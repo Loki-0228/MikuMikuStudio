@@ -4,6 +4,7 @@
 #include "mikudancestudio/mmv4mms.hpp"
 #include "mikudancestudio/native_mesh.hpp"
 #include "mikudancestudio/text_encoding.hpp"
+#include "mikudancestudio/owned_text.hpp"
 #include "mikudancestudio/physics_scale.hpp"
 // ===========================================================================
 // VA 0x0048F830 - ModelDispose  (original: sub_48F830, 2099 bytes)
@@ -77,6 +78,11 @@
 
 namespace mikudancestudio {
 namespace {
+
+inline void FreeOwned(wchar_t*& pointer) {
+    owned_text::Free(pointer);
+    pointer = nullptr;
+}
 
 template <typename T>
 inline void FreeOwned(T*& pointer) {

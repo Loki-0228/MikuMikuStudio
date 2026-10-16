@@ -73,6 +73,7 @@
 #include "mikudancestudio/model.hpp"
 #include "mikudancestudio/model_load_ui.hpp"
 #include "mikudancestudio/text_encoding.hpp"
+#include "mikudancestudio/owned_text.hpp"
 #include "mikudancestudio/ported_funcs.hpp"
 
 namespace mikudancestudio {
@@ -235,7 +236,7 @@ bool ReadValidatedTextLength(fileio::SequentialFileReader& reader,
 // in the file cannot run the later string copies off the end.
 wchar_t* AllocateTextBuffer(std::uint32_t bytes) {
     const std::size_t size = static_cast<std::size_t>(bytes) + sizeof(wchar_t);
-    wchar_t* p = static_cast<wchar_t*>(operator new(size));
+    wchar_t* p = owned_text::AllocateBytes(size);
     std::memset(p, 0, size);
     return p;
 }
@@ -254,7 +255,7 @@ wchar_t* ReadTextBuf(fileio::SequentialFileReader& reader, int& nullIdx,
         wchar_t* p = AllocateTextBuffer(len);
         if (reader.Read(p, len) != static_cast<int>(len)) {
             context.failed = true;
-            operator delete(p);
+            owned_text::Delete(p);
             return nullptr;
         }
         return p;
@@ -262,11 +263,11 @@ wchar_t* ReadTextBuf(fileio::SequentialFileReader& reader, int& nullIdx,
     if (fallback && *fallback) {
         ++nullIdx; // Preserve subsequent generated names used by existing PMMs.
         const auto size = (std::wcslen(fallback) + 1) * sizeof(wchar_t);
-        auto* p = static_cast<wchar_t*>(operator new(size));
+        auto* p = owned_text::AllocateBytes(size);
         std::memcpy(p, fallback, size);
         return p;
     }
-    wchar_t* p = static_cast<wchar_t*>(operator new(0x28));
+    wchar_t* p = owned_text::AllocateBytes(0x28);
     swprintf_s(p, 0x14, L"Null_%02d", nullIdx++);
     return p;
 }
@@ -279,10 +280,9 @@ bool SkipTextBuf(fileio::SequentialFileReader& reader,
     if (!ReadValidatedTextLength(reader, context, len))
         return false;
     if (len != 0) {
-        wchar_t* p = AllocateTextBuffer(len);
-        const bool ok = reader.Read(p, len) == static_cast<int>(len);
-        if(ok&&preserved)preserved->assign(p,len/sizeof(wchar_t));
-        operator delete(p);
+        owned_text::Buffer p(AllocateTextBuffer(len));
+        const bool ok = reader.Read(p.get(), len) == static_cast<int>(len);
+        if(ok&&preserved)preserved->assign(p.get(),len/sizeof(wchar_t));
         if (!ok) {
             context.failed = true;
             return false;
@@ -305,12 +305,54 @@ bool AbortPmxLoad(fileio::SequentialFileReader& reader, unsigned char* m) {
     };
     for (const PmxTextBufferSlot slot : kSlots) {
         wchar_t*& buffer = mdl::PmxTextBuffer(m, slot);
-        operator delete(buffer);
+        owned_text::Delete(buffer);
         buffer = nullptr;
     }
     reader.Close();
     return false;
 }
+
+#if !MMD_ORIGINAL_PROFILE
+// All four record tables are zero-filled immediately after allocation, before
+// the first text read. A failed allocation leaves the previous table pointer
+// unchanged; never traverse that old table using a newly read count. PMM can
+// retry a failed load in the same model block before the caller disposes it.
+struct PmxTextRollback {
+    mdl::ModelRecord& model;
+    wchar_t* previous[4];
+    const mdl::BoneRecord* bones;
+    const mdl::MorphRecord* morphs;
+    const mdl::RigidRecord* rigids;
+    const mdl::JointRecord* joints;
+    std::uint32_t counts[4];
+    bool committed = false;
+    explicit PmxTextRollback(mdl::ModelRecord& value) noexcept : model(value),
+        previous{value.pmxTextBuffers[0], value.pmxTextBuffers[1], value.pmxTextBuffers[2], value.pmxTextBuffers[3]},
+        bones(value.boneTable), morphs(value.morphs), rigids(value.rigidTable), joints(value.jointTable),
+        counts{value.boneCount, value.morphCount, value.rigidCount, value.jointCount} {}
+    template<class Record> static void Clear(Record* table, const Record* before, std::uint32_t count) noexcept {
+        if (!table || table == before) return;
+        for (std::uint32_t index = 0; index < count; ++index) {
+            owned_text::Free(table[index].jpText); table[index].jpText = nullptr;
+            owned_text::Free(table[index].enText); table[index].enText = nullptr;
+        }
+    }
+    ~PmxTextRollback() noexcept {
+        if (committed) return;
+        for (unsigned index = 0; index < 4; ++index) if (model.pmxTextBuffers[index] != previous[index]) {
+            owned_text::Delete(model.pmxTextBuffers[index]); model.pmxTextBuffers[index] = previous[index];
+        }
+        Clear(model.boneTable, bones, model.boneCount); Clear(model.morphs, morphs, model.morphCount);
+        Clear(model.rigidTable, rigids, model.rigidCount); Clear(model.jointTable, joints, model.jointCount);
+        // Reading a new count precedes allocation. If allocation failed, the
+        // old table must retain its own bound for the caller's later disposal.
+        if (model.boneTable == bones) model.boneCount = counts[0];
+        if (model.morphs == morphs) model.morphCount = counts[1];
+        if (model.rigidTable == rigids) model.rigidCount = counts[2];
+        if (model.jointTable == joints) model.jointCount = counts[3];
+    }
+};
+#endif
 
 // Porting-era trace under MIKUDANCESTUDIO_PMX_TRACE_DIR (CMake option
 // MIKUDANCESTUDIO_DIAG, default OFF); the OFF stub keeps the call sites
@@ -342,6 +384,9 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
     fileio::SequentialFileReader reader(fh);
     (void)paths;
     mdl::ModelRecord& model = *mdl::Mdl(m);
+#if !MMD_ORIGINAL_PROFILE
+    PmxTextRollback textRollback(model);
+#endif
     const bool enData = model.physicsFlags != 0;
     HWND hwnd = static_cast<HWND>(model.hwnd);
     char text[256];
@@ -412,7 +457,7 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
             // in the model block so the caller is not left holding partial
             // names, then abandon the file.
             for (int j = 0; j < i; ++j) {
-                operator delete(mdl::PmxTextBuffer(m, kTextSlots[j]));
+                owned_text::Delete(mdl::PmxTextBuffer(m, kTextSlots[j]));
                 mdl::PmxTextBuffer(m, kTextSlots[j]) = nullptr;
             }
             reader.Close();
@@ -422,17 +467,17 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
             buf = AllocateTextBuffer(len);
             mdl::PmxTextBuffer(m, kTextSlots[i]) = buf;
             if (reader.Read(buf, len) != static_cast<int>(len)) {
-                operator delete(buf);
+                owned_text::Delete(buf);
                 mdl::PmxTextBuffer(m, kTextSlots[i]) = nullptr;
                 for (int j = 0; j < i; ++j) {
-                    operator delete(mdl::PmxTextBuffer(m, kTextSlots[j]));
+                    owned_text::Delete(mdl::PmxTextBuffer(m, kTextSlots[j]));
                     mdl::PmxTextBuffer(m, kTextSlots[j]) = nullptr;
                 }
                 reader.Close();
                 return false;
             }
         } else {
-            buf = static_cast<wchar_t*>(operator new(0x28));
+            buf = owned_text::AllocateBytes(0x28);
             mdl::PmxTextBuffer(m, kTextSlots[i]) = buf;
             if (i == 3)
                 swprintf_s(buf, 0x14, L"NoInfo");
@@ -728,12 +773,12 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
     // ---- textures (local path table) ----------------------------------------
     // The table is local and released once the materials have composed their
     // paths; every early return below must release it the same way.
-    auto releaseTexturePaths = [](wchar_t**& table, std::uint32_t count) {
+    auto releaseTexturePaths = [](wchar_t**& table, std::uint32_t count) noexcept {
+        if (!table) return;
         for (std::uint32_t i = 0; i < count; ++i)
             if (table[i])
-                operator delete(table[i]);
-        if (table)
-            operator delete(table);
+                owned_text::Delete(table[i]);
+        operator delete(table);
         table = nullptr;
     };
     std::uint32_t texCount = 0;
@@ -743,6 +788,12 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
     // Cleared up front so a failure on any entry can release the whole table.
     for (std::uint32_t t = 0; t < texCount; ++t)
         texPaths[t] = nullptr;
+    struct TexturePathsGuard {
+        wchar_t**& table;
+        std::uint32_t count;
+        void (*release)(wchar_t**&, std::uint32_t) noexcept;
+        ~TexturePathsGuard() { release(table, count); }
+    } texturePathsGuard{texPaths, texCount, releaseTexturePaths};
     for (std::uint32_t t = 0; t < texCount; ++t) {
         std::uint32_t len = 0;
         if (!ReadValidatedTextLength(reader, textCtx, len)) {
@@ -1515,7 +1566,7 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
         mdl::PmxDisplayFrameEntry* entries;
         wchar_t* name;
         wchar_t* nameEn;
-        ~FrameTmp() { operator delete(name); operator delete(nameEn); operator delete(entries); }
+        ~FrameTmp() { owned_text::Delete(name); owned_text::Delete(nameEn); operator delete(entries); }
     };
     auto frames = std::make_unique<FrameTmp[]>(frameCount);
     std::int32_t boneEntryTotal = 0, morphEntryTotal = 0;
@@ -2001,6 +2052,9 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
             MessageBoxW(hwnd, warning.c_str(), PmxJointWarningTitle(englishUI),
                         MB_OK | MB_ICONWARNING);
     }
+#if !MMD_ORIGINAL_PROFILE
+    textRollback.committed = true;
+#endif
     return true;
 }
 

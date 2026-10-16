@@ -87,6 +87,7 @@
 #include "mikudancestudio/ported_funcs.hpp"
 #include "mikudancestudio/panel_controls.hpp"
 #include "mikudancestudio/text_encoding.hpp"
+#include "mikudancestudio/owned_text.hpp"
 
 namespace mikudancestudio {
 
@@ -1201,8 +1202,8 @@ void CommitPhysicsEdits(HWND hDlg) {  // was Sub4220F0, VA 0x004220F0
         Joint& old = model->jointTable[i];
         RemovePhysJointByUid(scene, old.constraint);
         const bool retained = joints[i].constraint >= 0;
-        if (!retained || joints[i].jpText != old.jpText) std::free(old.jpText);
-        if (!retained || joints[i].enText != old.enText) std::free(old.enText);
+        if (!retained || joints[i].jpText != old.jpText) owned_text::Free(old.jpText);
+        if (!retained || joints[i].enText != old.enText) owned_text::Free(old.enText);
     }
     delete[] model->jointTable;
     model->jointTable = nullptr;
@@ -1210,8 +1211,8 @@ void CommitPhysicsEdits(HWND hDlg) {  // was Sub4220F0, VA 0x004220F0
         Rigid& old = model->rigidTable[i];
         RemovePhysRigidBody(scene, static_cast<btRigidBody*>(old.body));
         const bool retained = BodyComboIndex(bodies[i]) >= 0;
-        if (!retained || bodies[i].jpText != old.jpText) std::free(old.jpText);
-        if (!retained || bodies[i].enText != old.enText) std::free(old.enText);
+        if (!retained || bodies[i].jpText != old.jpText) owned_text::Free(old.jpText);
+        if (!retained || bodies[i].enText != old.enText) owned_text::Free(old.enText);
     }
     delete[] model->rigidTable;
     model->rigidTable = nullptr;

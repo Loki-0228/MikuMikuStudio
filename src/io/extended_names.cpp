@@ -3,6 +3,7 @@
 #include "mikudancestudio/mmd_app.hpp"
 #include "mikudancestudio/text_encoding.hpp"
 #include "mikudancestudio/original_file_encoding.hpp"
+#include "mikudancestudio/owned_text.hpp"
 #include <cstdlib>
 #include <cstring>
 #include <limits>
@@ -62,7 +63,9 @@ bool Assign(wchar_t*& destination,const std::wstring& value) noexcept {
     auto* copy=static_cast<wchar_t*>(std::malloc((value.size()+1)*sizeof(wchar_t)));
     if(!copy)return false;
     std::memcpy(copy,value.c_str(),(value.size()+1)*sizeof(wchar_t));
-    std::free(destination);destination=copy;return true;
+    try { owned_text::Remember(copy,(value.size()+1)*sizeof(wchar_t)); }
+    catch(...) { std::free(copy);return false; }
+    owned_text::Free(destination);destination=copy;return true;
 }
 bool LegacyNamesFit(const mdl::ModelRecord& m,bool motion) {
     if(!Exact(text_encoding::ModelName(m,false),20)||!Exact(text_encoding::ModelName(m,true),20))return false;
@@ -112,9 +115,9 @@ void LoadPmm(MMDApp& app,const pmm_extension::Document& doc) {
         // Allocate all owned strings before publishing any replacement.
         std::vector<wchar_t*> allocated(values.size(),nullptr);
         try {for(std::size_t i=0;i<values.size();++i)if(!Assign(allocated[i],values[i]))throw std::bad_alloc();}
-        catch(...){for(auto*p:allocated)std::free(p);throw;}
+        catch(...){for(auto*p:allocated)owned_text::Free(p);throw;}
         std::size_t at=0;
-        auto publish=[&](wchar_t*& p){std::free(p);p=allocated[at++];};
+        auto publish=[&](wchar_t*& p){owned_text::Free(p);p=allocated[at++];};
         for(int l=0;l<2;++l)publish(m.pmxTextBuffers[l]);
         for(std::uint32_t i=0;i<m.boneCount;++i){publish(m.boneTable[i].jpText);publish(m.boneTable[i].enText);}
         for(std::uint32_t i=0;i<m.morphCount;++i){publish(m.morphs[i].jpText);publish(m.morphs[i].enText);}
