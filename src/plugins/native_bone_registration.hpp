@@ -18,6 +18,23 @@ struct BoneRegistrationOptions {
 // undo/redo prepares validate the retained record against the current scene.
 MmsResult PlanBoneRegistration(MMDApp&, unsigned modelSlot,
     const BoneRegistrationOptions&, std::shared_ptr<HistoryChange>&) noexcept;
+// Bone-only deletion. Auxiliary family marks reject the whole plan. The
+// optional keyboard fallback selects current-frame keys privately only when
+// none of the three families has an explicit mark; frame zero is not implied.
+MmsResult PlanBoneKeyDeletion(MMDApp&, unsigned modelSlot, bool automaticInterpolation,
+    std::shared_ptr<HistoryChange>&, bool selectedAtCurrentFrame = false) noexcept;
+struct BoneRangeScaleOptions {
+    std::uint32_t start = 0, end = 0;
+    double scale = 1;
+    bool automaticInterpolation = false;
+};
+// Uses native slot-order reinsertion/collision rules. Successful edits include
+// clearing the other key families' selection flags, without changing payloads.
+// Requires start < end and a finite positive scale. Out-of-range frames reject
+// the whole plan; an identity mapping after truncation preserves all selection.
+// Fixed-axis correction needs the same optional D3DX math as the old registrar.
+MmsResult PlanBoneRangeScale(MMDApp&, unsigned modelSlot, const BoneRangeScaleOptions&,
+    std::shared_ptr<HistoryChange>&) noexcept;
 // Production register-button route under the explicit migration binding only.
 // True also covers rejection/no-op: never fall through to the old ring.
 bool TryRegisterBoundBones(MMDApp*) noexcept;

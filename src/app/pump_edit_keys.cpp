@@ -72,6 +72,7 @@
 #include "mikudancestudio/ported_funcs.hpp"
 #include "mikudancestudio/panel_controls.hpp"
 #include "device_lost_wait.hpp"
+#include "../plugins/native_key_commands.hpp"
 
 namespace mikudancestudio {
 
@@ -370,6 +371,9 @@ void PumpDeleteRebuild(MMDApp* app, HWND focus, bool focusNotInPanelEdit) {
     if (!DeleteShortcutAllowed(app, focusAcceptsKeys, inFrameEdit)) {
         return;
     }
+#if !MMD_ORIGINAL_PROFILE
+    if (plugins::TryDeleteBoundKeys(app, true)) return;
+#endif
     // Explicit timeline marks define the deletion. Only fall back to the
     // viewport's selected bones when no timeline keys are selected.
     if (unsigned char* model = app->SelectedModel(); model && app->CameraMode() == 0) {

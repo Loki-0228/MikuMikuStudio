@@ -29,6 +29,7 @@
 #include "mikudancestudio/bone_key_pool.hpp"
 #include "mikudancestudio/model.hpp"
 #include "mikudancestudio/panel_controls.hpp"
+#include "../plugins/native_key_commands.hpp"
 
 namespace mikudancestudio {
 namespace {
@@ -332,6 +333,9 @@ void ApplyFrameRangeScale(HWND hDlg) {
     MMDApp* const app = g_Block;
     if (app == nullptr)
         return;
+#if !MMD_ORIGINAL_PROFILE
+    if (plugins::TryScaleBoundBoneRange(app, hDlg)) return;
+#endif
     unsigned char* const model = app->SelectedModel();
     if (model == nullptr)
         return;

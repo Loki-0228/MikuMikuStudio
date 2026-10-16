@@ -206,6 +206,7 @@
 #include "mikudancestudio/ui_language.hpp"
 #include "mikudancestudio/frame_scope.hpp"
 #include "../plugins/native_history_commands.hpp"
+#include "../plugins/native_key_commands.hpp"
 
 namespace mikudancestudio {
 
@@ -3255,6 +3256,9 @@ void CmdControl400(MMDApp* app, HWND hwnd, std::uint16_t id,
     // 423 (0x004810F8): DeleteMarkedKeyframes(app) then dirty 0xA0B0D.
     // ------------------------------------------------------------------
     case 423:
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::TryDeleteBoundKeys(app)) break;
+#endif
         DeleteMarkedKeyframes(app);
         app->SceneModified() = 1;
         // Return focus to the main window like the sibling key commands do:

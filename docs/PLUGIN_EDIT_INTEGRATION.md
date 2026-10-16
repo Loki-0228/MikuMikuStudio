@@ -177,6 +177,14 @@ Prepare 每次解析当前模型，形成短期 `ModelEdit` 候选。发布保�
 
 `LoadModelFile`、`LoadAccessoryFile`、删除菜单和快捷键仍走原有流程。撤销按钮和快捷键已能在内部绑定下处理迁入的姿态记录，普通宿主尚未切换。其他原生写入入口、完整资源计量、对象提交后的选中项及控件刷新仍待接入。上述资源探针不等于界面已经支持撤销导入或删除。
 
+## 骨骼删键与范围缩放的受控接入
+
+`PlanBoneKeyDeletion` 和 `PlanBoneRangeScale` 生成独立历史记录。删键保留旧实现的链接修改和自动插值邻居写入；范围缩放按原槽位顺序重插，压缩到同帧时保留旧覆盖顺序。记录包含缩放及自由曲线作者数据，不依赖旧 30 槽环。准备、取消和无变化操作均保留当前选择及 redo。
+
+内部绑定下，按钮 423、删除快捷键及范围缩放对话框已接入。快捷键补选当前帧骨骼键在私有计划中完成，失败不改变活跃标记。本阶段拒绝混合 Morph/显示键删除及混合族范围缩放。普通宿主仍走原路径。当前帧派生姿态刷新另行迁移，不能据此宣称正式宿主迁移完成。
+
+`tests/native_bone_transform_checks.inc` 直接调用旧 `DeleteMarkedModelKeys`，并复现旧范围缩放的低层写入次序作为对照。第一批原生历史共 20,794 项通过，构建及测试记录为 `build/plugin-abi-key-transform-build-1.log` 和 `build/plugin-abi-key-transform-native-1.log`。
+
 ## 已实现的事务规则
 
 begin 校验非零场景修订号，并复制标签。事务创建者负责 prepare、commit、cancel；其他插件可通过自己的上下文 join 该事务，但只能交付本插件的 participant。每个插件在同一事务中最多加入一次，并须已注册 serializer。
