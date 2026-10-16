@@ -57,6 +57,14 @@ set_target_properties(mms_lifecycle_plugin PROPERTIES OUTPUT_NAME lifecycle
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/plugins/lifecycle/$<CONFIG>"
     MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 add_dependencies(plugin_abi_tests mms_lifecycle_plugin)
-add_test(NAME plugin_abi_contract COMMAND plugin_abi_tests "$<TARGET_FILE_DIR:mms_hello_plugin>" "$<TARGET_FILE:mms_lifecycle_plugin>")
+add_library(mms_plugin_edit_probe SHARED EXCLUDE_FROM_ALL tests/plugins/manager_edit_plugin.cpp tests/plugins/manager_edit_plugin.def)
+target_include_directories(mms_plugin_edit_probe PRIVATE sdk/mms/include)
+target_compile_definitions(mms_plugin_edit_probe PRIVATE _WIN32_WINNT=0x0601 WINVER=0x0601)
+target_link_options(mms_plugin_edit_probe PRIVATE /SUBSYSTEM:WINDOWS,6.01 /DEBUG:NONE)
+set_target_properties(mms_plugin_edit_probe PROPERTIES OUTPUT_NAME manager_edit_probe
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/plugins/edit/$<CONFIG>"
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+add_dependencies(plugin_abi_tests mms_plugin_edit_probe)
+add_test(NAME plugin_abi_contract COMMAND plugin_abi_tests "$<TARGET_FILE_DIR:mms_hello_plugin>" "$<TARGET_FILE:mms_lifecycle_plugin>" "$<TARGET_FILE:mms_plugin_edit_probe>")
 set_tests_properties(plugin_abi_contract PROPERTIES TIMEOUT 90)
 install(FILES PLUGINS/config.json DESTINATION PLUGINS)

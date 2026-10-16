@@ -7,5 +7,10 @@ namespace plugins {
 // Internal host journal. Public mms.edit remains unavailable until every
 // native editing command participates in this journal.
 SharedHistory* NativeHistory(MMDApp*) noexcept;
+// Isolated-host migration probe only. The ordinary Initialize path never
+// calls this. Requires no active plugin runtime and an initialized main window.
+// This exposes mms.edit and binds only the migrated native commands; a probe
+// must not dispatch writers that have not joined the common journal yet.
+bool InitializeHistoryTestRuntime(MMDApp*) noexcept;
 }
 }

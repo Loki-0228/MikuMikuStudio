@@ -2,6 +2,11 @@
 #include "native_ui.hpp"
 #include "project_storage.hpp"
 #include "history_runtime.hpp"
+#include "native_pose_scope.hpp"
+#include "native_history_commands.hpp"
+#include "mikudancestudio/panel_controls.hpp"
+#include "mikudancestudio/animation_curve_host.hpp"
+#include "mikudancestudio/model.hpp"
 #include "mikudancestudio/plugin_storage.hpp"
 #include "mikudancestudio/plugin_runtime.hpp"
 #include "mikudancestudio/plugin_scene.hpp"
@@ -17,10 +22,14 @@ namespace {
 std::unique_ptr<Manager> manager;
 std::unique_ptr<NativeUi> ui;
 std::unique_ptr<SharedHistory> history;
+#if !MMD_ORIGINAL_PROFILE
+std::unique_ptr<NativePoseTestBinding> migrationBinding;
+#endif
 std::unique_ptr<SharedHistory::ResetTransaction> projectHistoryReset;
 MMDApp* owner = nullptr;
 int toolbarHeight = 0;
 bool refreshing = false, closing = false;
+bool historyUiPending = false;
 PluginProject currentProject, pendingProject;
 bool loadingProject = false;
 bool replacingHistory = false, historySceneReplaced = false;
@@ -29,6 +38,7 @@ struct ProjectNotification { uint32_t kind; MmsId id; std::string path; };
 std::deque<ProjectNotification> projectEvents;
 constexpr UINT kProjectEvent = WM_APP + 0x6b;
 constexpr UINT_PTR kProjectRetry = 0x4d4d536b;
+constexpr UINT_PTR kHistoryUiRetry = 0x4d4d536c;
 MmsResult PrepareHistoryReset(std::unique_ptr<SharedHistory::ResetTransaction>& out) {
     if (!history) return MMS_OK;
     // ResetAppState is also used to recover a partially read PMM while the
@@ -57,7 +67,16 @@ constexpr UINT kRefresh = WM_APP + 0x6a;
 void LogMessage(const std::string& s) { runtime_log::Write("PLUGIN_ABI %s", s.c_str()); }
 LRESULT CALLBACK Subclass(HWND hwnd, UINT message, WPARAM wp, LPARAM lp, UINT_PTR id, DWORD_PTR) {
     if (message == WM_CLOSE && manager && manager->InCallback()) { PostMessageW(hwnd, WM_CLOSE, wp, lp); return 0; }
-    if (message == kRefresh) { if (!closing && owner) Refresh(owner); return 0; }
+    if (message == kRefresh || (message == WM_TIMER && wp == kHistoryUiRetry)) {
+        KillTimer(hwnd, kHistoryUiRetry);
+        if (!closing && owner) {
+            Refresh(owner);
+            // A modal plugin callback may consume the wake before it returns.
+            // Retry at a safe boundary without spinning its message loop.
+            if (historyUiPending) SetTimer(hwnd, kHistoryUiRetry, 16, nullptr);
+        }
+        return 0;
+    }
     if (message == kProjectEvent || (message == WM_TIMER && wp == kProjectRetry)) {
         KillTimer(hwnd,kProjectRetry);
         if(manager && !closing && !manager->InCallback() && owner && owner->WindowLayoutReady() && !owner->SceneMutationInProgress()) {
@@ -74,7 +93,7 @@ LRESULT CALLBACK Subclass(HWND hwnd, UINT message, WPARAM wp, LPARAM lp, UINT_PT
     return DefSubclassProc(hwnd, message, wp, lp);
 }
 }
-void Initialize(MMDApp* app) {
+static void InitializeRuntime(MMDApp* app, bool migrationTest) {
     if (build_profile::original || !app || manager) return;
     const auto initialized = Boundary([&] {
         owner = app; closing = false;
@@ -87,9 +106,24 @@ void Initialize(MMDApp* app) {
         if (manager->Storage().Prepare(currentProject.records) != MMS_OK || !manager->Storage().Commit()) throw std::runtime_error("initialize plugin project data");
         history = std::make_unique<SharedHistory>(manager->Storage(), [app] {
             if (closing || owner != app) return MMS_E_NOT_READY;
-            if (manager->InCallback() || (app->SceneMutationInProgress() && !replacingHistory)) return MMS_E_BUSY;
+            if ((manager->InCallback() && !manager->CanInvokeEdit()) ||
+                (app->SceneMutationInProgress() && !replacingHistory)) return MMS_E_BUSY;
+            if (!replacingHistory && (app->PlaybackActive() || app->FrameStepPlayback() ||
+                app->state.recordPlaybackStartPending)) return MMS_E_BUSY;
             return MMS_OK;
         });
+#if !MMD_ORIGINAL_PROFILE
+        if (migrationTest) {
+            if (manager->AttachEditHost(*history) != MMS_OK) throw std::runtime_error("attach common edit history");
+            migrationBinding = std::make_unique<NativePoseTestBinding>(*app, *history);
+            manager->SetEditPublished([app] {
+                if (closing || owner != app) return;
+                app->SceneModified() = 1; app->RecordedFrameCountByte1() = 1;
+                app->PhysicsResetPending() = 1; historyUiPending = true;
+                PostMessageW(app->MainWindow(), kRefresh, 0, 0);
+            });
+        }
+#endif
         ui = std::make_unique<NativeUi>(manager->Ui(), app->MainWindow(), LogMessage);
         if (!SetWindowSubclass(app->MainWindow(), Subclass, 0x4d4d5301, 0)) throw std::runtime_error("plugin lifetime hook failed");
         manager->Load(fs::path(module).parent_path() / L"PLUGINS"); Refresh(app); return MMS_OK;
@@ -99,12 +133,35 @@ void Initialize(MMDApp* app) {
         Shutdown();
     }
 }
+void Initialize(MMDApp* app) { InitializeRuntime(app, false); }
+bool InitializeHistoryTestRuntime(MMDApp* app) noexcept {
+    if (build_profile::original || !app || !app->MainWindow() || manager) return false;
+    InitializeRuntime(app, true);
+    return manager && owner == app && history;
+}
 void Shutdown() {
     if (manager && manager->ExecutingCallback()) return;
     if (closing) return; closing = true;
+    if (owner && owner->MainWindow()) KillTimer(owner->MainWindow(), kHistoryUiRetry);
     CancelProjectLoad(owner);
     if (manager) manager->Stop();
-    ui.reset(); history.reset(); manager.reset(); projectEvents.clear(); toolbarHeight = 0; owner = nullptr;
+    ui.reset();
+#if !MMD_ORIGINAL_PROFILE
+    migrationBinding.reset();
+#endif
+    if (manager) {
+        auto detached = manager->DetachEditHost();
+        // A failed cancel callback clears pending entries and poisons history.
+        // Retry only that completed cancellation; BUSY/THREAD remain attached.
+        if (detached == MMS_E_FAILED) detached = manager->DetachEditHost();
+        if (detached != MMS_OK) {
+            runtime_log::Write("PLUGIN_ABI edit detach failed: %d; retaining host until process exit", detached);
+            // The retained manager still references this exact host/storage.
+            // Closing rejects later calls before accessing the application.
+            history.release(); manager.release();
+        }
+    }
+    history.reset(); manager.reset(); projectEvents.clear(); toolbarHeight = 0; owner = nullptr; historyUiPending = false;
 }
 SharedHistory* NativeHistory(MMDApp* app) noexcept { return app == owner && !closing ? history.get() : nullptr; }
 void Layout(MMDApp* app) {
@@ -121,8 +178,21 @@ void Refresh(MMDApp* app) {
     if (!ui || app != owner || refreshing || closing) return;
     refreshing = true; auto old = toolbarHeight;
     Boundary([&] { ui->Refresh(); Layout(app); if (toolbarHeight != old) HandleWindowSize(app);
+#if !MMD_ORIGINAL_PROFILE
+        if (historyUiPending && history && manager && !manager->InCallback() && !app->SceneMutationInProgress()) {
+            historyUiPending = false;
+            EnableWindow(GetDlgItem(app->MainWindow(), panel::kUndoButton), history->UndoCount() != 0);
+            EnableWindow(GetDlgItem(app->MainWindow(), panel::kRedoButton), history->RedoCount() != 0);
+            InvalidateRect(app->MainWindow(), nullptr, FALSE); RefreshBoundPoseReadout(*app);
+            if (!app->CameraMode() && app->SelectedModelSlot() < kModelSlotCount) {
+                const auto* model = mdl::Mdl(app->SelectedModel());
+                if (model && model->selectedBone >= 0 && unsigned(model->selectedBone) < model->boneCount)
+                    curve_host::NotifyModelRegistered(app, false);
+            }
+        }
+#endif
         if (manager && !manager->InCallback()) manager->SaveUiPreferences();
-        if (history && !app->SceneMutationInProgress()) history->Collect(); return MMS_OK; });
+        if (history && manager && !manager->InCallback() && !app->SceneMutationInProgress()) history->Collect(); return MMS_OK; });
     refreshing = false;
 }
 bool HandleCommand(unsigned id) { bool handled = false; Boundary([&] { if (ui) handled = ui->Command(id); return MMS_OK; }); return handled; }

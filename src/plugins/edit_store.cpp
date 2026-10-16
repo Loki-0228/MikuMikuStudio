@@ -144,6 +144,16 @@ MmsResult EditStore::CancelPending(){
     transactions_.clear();
     return result;
 }
+MmsResult EditStore::CancelOwned(EditClient& c){
+    if(GetCurrentThreadId()!=thread_)return MMS_E_THREAD;
+    if(busy_)return MMS_E_BUSY;
+    Busy guard(busy_);MmsResult result=MMS_OK;
+    for(auto it=transactions_.begin();it!=transactions_.end();){
+        if(it->second->owner==&c){if(CancelAll(*it->second))result=MMS_E_FAILED;it=transactions_.erase(it);}
+        else ++it;
+    }
+    return result;
+}
 EditStore::~EditStore(){
     busy_=true;
     for(auto& [h,t]:transactions_)CancelAll(*t);

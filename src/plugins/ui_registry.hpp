@@ -48,6 +48,8 @@ class UiRegistry {
     DWORD thread_ = GetCurrentThreadId();
     uint64_t revision_ = 1, next_ = 1, generation_ = 1;
     unsigned callbackDepth_ = 0;
+    UiClient* invoking_ = nullptr;
+    std::function<void(UiClient&, MmsResult)> commandFinished_;
     std::map<MmsHandle, std::unique_ptr<Lease>> leases_;
     std::map<MmsHandle, std::unique_ptr<Layout>> layouts_;
     std::map<std::string, std::unique_ptr<View>> views_;
@@ -87,7 +89,8 @@ public:
     std::map<std::string, std::shared_ptr<PropertyRecord>> properties;
     std::map<std::string, ElementRecord> elements;
     std::map<std::string, std::shared_ptr<SurfaceRecord>> surfaces;
-    explicit UiRegistry(std::function<void()> changed = {});
+    explicit UiRegistry(std::function<void()> changed = {},
+        std::function<void(UiClient&, MmsResult)> commandFinished = {});
     ~UiRegistry();
     MmsUiApiV1 Api(UiClient&);
     MmsUiSurfaceApiV1 SurfaceApi(UiClient&);
@@ -102,6 +105,8 @@ public:
     MmsResult ImportPreferences(std::string_view);
     uint64_t PreferencesRevision() const { return preferencesRevision_; }
     bool InCallback() const { return callbackDepth_ != 0; }
+    // Read-only callbacks nested inside invoke never inherit its permission.
+    const UiClient* InvokingClient() const noexcept { return callbackDepth_ == 1 ? invoking_ : nullptr; }
     MmsResult ShowSurface(const std::string& element, HWND parent, const MmsUiRectV1&, uint32_t dpi, bool visible);
     MmsResult FocusSurface(const std::string& element);
     void DestroyViews();

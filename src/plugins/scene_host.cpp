@@ -11,6 +11,9 @@
 #include "mikudancestudio/pmm_extension.hpp"
 #include "mikudancestudio/runtime_log.hpp"
 #include "mikudancestudio/build_profile.hpp"
+#if !MMD_ORIGINAL_PROFILE
+#include "native_pose_scope.hpp"
+#endif
 #include <set>
 
 namespace mikudancestudio::plugins {
@@ -123,6 +126,13 @@ MmsResult Capture(MMDApp* app, const MmsSceneQueryV1& query, std::shared_ptr<con
     if (fingerprint != previous || geometryChanged) { ++revision; previous = std::move(fingerprint); }
     geometryDigests.swap(nextDigests);
     data->revision = data->structure = revision; data->pose = 1;
+#if !MMD_ORIGINAL_PROFILE
+    // A controlled editing host must publish the same revision that begin()
+    // validates. Bind-geometry revisions remain separate from edit history.
+    if (auto* history = BoundNativePoseHistory(app)) {
+        if (auto result = history->Revision(data->revision)) return result;
+    }
+#endif
     for (auto& record : data->objects) {
         record.object.structureRevision = revision; record.object.meshRevision = revision;
         record.object.materialRevision = revision; record.object.poseRevision = 1;

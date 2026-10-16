@@ -1,0 +1,6 @@
+EXPORTS
+    MMSPluginGetApi
+    GetProbeValue
+    GetProbeFlags
+    GetProbeCancels
+    GetProbePending

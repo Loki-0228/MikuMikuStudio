@@ -31,6 +31,7 @@ static void Write(const fs::path& path, const std::string& bytes) { fs::create_d
 static std::string ManifestText(std::string id = "org.example.hello", std::string entry = "hello_menu.dll") {
     return "{\"schemaVersion\":1,\"id\":\"" + id + "\",\"name\":\"测试\",\"version\":\"1.0.0\",\"kind\":\"native\",\"abi\":{\"major\":1,\"minMinor\":0},\"entry\":\"" + entry + "\",\"architecture\":\"x64\",\"minWindows\":\"6.1.7601\",\"capabilities\":[\"ui.command\"],\"requiresServices\":[{\"id\":\"mms.ui\",\"major\":1,\"minMinor\":0}],\"dependencies\":[],\"nativeDependencies\":[],\"reloadPolicy\":\"restart\"}";
 }
+#include "manager_edit_checks.inc"
 static void JsonChecks() {
     CHECK(Json::Parse("{\"a\":1}").At("a").UInt() == 1);
     CHECK(Throws([] { Json::Parse("{\"a\":1,\"a\":2}"); }));
@@ -333,9 +334,10 @@ static void LifecycleChecks(const fs::path& root, const fs::path& fixture) {
 int wmain(int argc, wchar_t** argv) {
     const fs::path root = fs::temp_directory_path() / (L"mms-abi-contract-" + std::to_wstring(GetCurrentProcessId()));
     try {
-        CHECK(argc == 3); CHECK(!fs::exists(root)); fs::create_directories(root);
+        CHECK(argc == 4); CHECK(!fs::exists(root)); fs::create_directories(root);
         JsonChecks(); DiscoveryChecks(root); UiChecks(); UiPreferenceChecks(); UiPreferencesFileChecks(root); LayoutChecks(); TreeLayoutChecks(); LayoutServiceChecks(); UpdateChecks(); Win32HostChecks(); SurfaceChecks(); LoaderChecks(root, fs::absolute(argv[1]));
         LifecycleChecks(root, fs::absolute(argv[2])); SceneChecks(); StorageChecks(root); EditChecks(); SharedHistoryChecks();
+        ManagerEditChecks(root, fs::absolute(argv[3]));
         std::cout << "PASS checks=" << checks << "\n"; fs::remove_all(root); return 0;
     } catch (const std::exception& e) { std::cerr << "FAIL after " << checks << ": " << e.what() << "\nfixtures=" << Utf8(root.native()) << "\n"; return 1; }
 }

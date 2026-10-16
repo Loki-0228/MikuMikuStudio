@@ -261,7 +261,8 @@ struct UiRegistry::Preferences {
     std::map<std::string, Json> entries;
     std::string json = PreferencesJson(entries);
 };
-UiRegistry::UiRegistry(std::function<void()> change): preferences_(std::make_unique<Preferences>()), changed_(std::move(change)) {
+UiRegistry::UiRegistry(std::function<void()> change, std::function<void(UiClient&, MmsResult)> finished):
+    commandFinished_(std::move(finished)), preferences_(std::make_unique<Preferences>()), changed_(std::move(change)) {
     for (const auto& [id, label, kind] : {std::tuple<const char*, const char*, uint32_t>{"mms.menu.plugins", "插件", MMS_UI_MENU}, {"mms.toolbar.main.extensions", "插件工具栏", MMS_UI_TOOLBAR}, {"mms.workspace.tabs.extensions", "插件工作区", MMS_UI_GROUP}}) {
         ElementRecord e; e.handle = next_++; e.arena = std::make_shared<Arena>(); e.desc.h = Header<MmsUiElementV1>();
         e.desc.id = e.arena->Copy(Text(id)); e.desc.ownerPlugin = e.arena->Copy(Text("mms")); e.desc.label = e.arena->Copy(Text(label));
@@ -584,8 +585,15 @@ MmsResult UiRegistry::Invoke(UiClient& c, MmsString id, MmsObjectRef target, Mms
     MmsCommandStateV1 state{}; state.h = Header<MmsCommandStateV1>(); MmsHandle lease = 0;
     auto result = State(c, id, target, &state, &lease); Release(c, lease, 2);
     if (result) return result; if (!state.enabled || !state.visible) return MMS_E_NOT_READY;
-    Callback guard(callbackDepth_);
-    return record->desc.invoke(record->desc.context, target, {values.data(), values.size(), sizeof(MmsNamedValue), 1}, 0);
+    {
+        Callback guard(callbackDepth_);
+        invoking_ = record->owner;
+        struct Clear { UiClient*& value; ~Clear() { value = nullptr; } } clear{invoking_};
+        result = Boundary([&] { return record->desc.invoke(record->desc.context, target,
+            {values.data(), values.size(), sizeof(MmsNamedValue), 1}, 0); });
+    }
+    if (commandFinished_) commandFinished_(*record->owner, result);
+    return result;
 }
 MmsResult UiRegistry::Read(UiClient& c, MmsString id, MmsObjectRef target, MmsValue* out, MmsHandle* handle) {
     auto check = Check(c); if (check) return check; if (!out || !handle || !Null(target)) return MMS_E_ARGUMENT;

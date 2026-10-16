@@ -1,0 +1,215 @@
+#include <mms/ui.h>
+#include <mms/edit.h>
+#include <mms/storage.h>
+#include <mms/scene.h>
+#include <cstring>
+#include <memory>
+#include <stdexcept>
+#include <string>
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <Windows.h>
+
+namespace {
+template<class T> MmsHeader H() { return {sizeof(T), 1, 0}; }
+MmsString S(const char* s) { return {s, std::strlen(s)}; }
+MmsString S(const std::string& s) { return {s.data(), s.size()}; }
+struct Plugin;
+struct Pending { Plugin* owner; int before, after; MmsHandle transaction; bool fail = false, cancelThrows = false; };
+struct Plugin {
+    MmsHostV1 host{}; MmsUiApiV1 ui{}; MmsEditApiV1 edit{}; MmsSceneApiV1 scene{};
+    std::string id; int value = 0, staged = 0, cancels = 0;
+    uint64_t revision = 1, flags = 0; MmsHandle pending = 0; bool explicitRevision = false;
+};
+Plugin* current = nullptr;
+uint64_t stoppedFlags = 0; int stoppedCancels = 0;
+bool Denied(MmsResult r) { return r == MMS_E_BUSY || r == MMS_E_NOT_READY; }
+void ProbeDenied(Plugin& p, uint64_t flag) {
+    if (!p.edit.begin) return;
+    MmsHandle untouched = 0x123456;
+    const auto r = p.edit.begin(p.edit.context, S("forbidden callback"), p.revision, &untouched);
+    if (Denied(r) && untouched == 0x123456) p.flags |= flag;
+}
+MmsResult MMS_CALL Prepare(void* context) {
+    auto& t = *static_cast<Pending*>(context); ProbeDenied(*t.owner, 32);
+    return t.fail ? MMS_E_FAILED : MMS_OK;
+}
+void MMS_CALL Commit(void* context) {
+    std::unique_ptr<Pending> t(static_cast<Pending*>(context)); ProbeDenied(*t->owner, 64); t->owner->value = t->after;
+    if (t->owner->pending == t->transaction) t->owner->pending = 0;
+}
+void MMS_CALL Cancel(void* context) {
+    std::unique_ptr<Pending> t(static_cast<Pending*>(context)); ++t->owner->cancels; ProbeDenied(*t->owner, 8192);
+    if (t->owner->pending == t->transaction) t->owner->pending = 0;
+    if (t->cancelThrows) throw std::runtime_error("cancel contract violation");
+}
+MmsResult MMS_CALL UndoState(void* context, MmsBytes* before, MmsBytes* after, uint32_t* schema, MmsHandle* lease) {
+    auto& t = *static_cast<Pending*>(context); ProbeDenied(*t.owner, 16384);
+    *before = {&t.before, sizeof(int)}; *after = {&t.after, sizeof(int)}; *schema = 1; *lease = 1; return MMS_OK;
+}
+void MMS_CALL ReleaseUndo(void* context, MmsHandle) { ProbeDenied(*static_cast<Pending*>(context)->owner, 32768); }
+MmsResult Join(Plugin& p, MmsHandle tx, bool fail = false, bool cancelThrows = false) {
+    auto pending = std::make_unique<Pending>(Pending{&p, p.value, p.value + 1, tx, fail, cancelThrows});
+    MmsTransactionParticipantV1 t{H<MmsTransactionParticipantV1>(), pending.get(), S(p.id)};
+    t.prepare = Prepare; t.commit = Commit; t.cancel = Cancel; t.getUndoState = UndoState; t.releaseUndoState = ReleaseUndo;
+    const auto r = p.edit.join(p.edit.context, tx, &t); if (!r) pending.release(); return r;
+}
+MmsResult Begin(Plugin& p, bool fail = false, bool cancelThrows = false) {
+    if (!p.explicitRevision && p.scene.acquire) {
+        MmsSceneQueryV1 query{}; query.h = H<MmsSceneQueryV1>(); query.flags = MMS_SCENE_CURRENT_TIME;
+        MmsSnapshotV1 snapshot{}; const auto r = p.scene.acquire(p.scene.context, &query, &snapshot);
+        if (r) return r;
+        p.revision = snapshot.sceneRevision; p.scene.release(p.scene.context, snapshot.handle);
+    }
+    auto r = p.edit.begin(p.edit.context, S("Edit probe"), p.revision, &p.pending);
+    if (!r) r = Join(p, p.pending, fail, cancelThrows); return r;
+}
+MmsResult Finish(Plugin& p) {
+    auto r = p.edit.prepare(p.edit.context, p.pending);
+    if (!r) r = p.edit.commit(p.edit.context, p.pending);
+    if (!r) ++p.revision;
+    p.pending = 0; return r;
+}
+MmsResult Once(Plugin& p) { auto r = Begin(p); return r ? r : Finish(p); }
+struct Task { Plugin* owner; bool fail, explicitRevision; uint64_t revision; };
+void MMS_CALL Run(void* context) {
+    std::unique_ptr<Task> task(static_cast<Task*>(context));
+    task->owner->explicitRevision = task->explicitRevision; task->owner->revision = task->revision;
+    if (task->fail) { if (Begin(*task->owner)) throw std::runtime_error("begin queued edit"); throw std::runtime_error("queued edit failure"); }
+    if (!Once(*task->owner)) task->owner->flags |= 512;
+}
+void MMS_CALL CancelTask(void* context) {
+    std::unique_ptr<Task> task(static_cast<Task*>(context)); ProbeDenied(*task->owner, 1024);
+}
+MmsResult Queue(Plugin& p, bool fail) {
+    auto task = std::make_unique<Task>(Task{&p, fail, p.explicitRevision, p.revision}); MmsHandle handle = 0;
+    auto r = p.host.enqueueUi(p.host.context, Run, CancelTask, task.get(), &handle);
+    if (!r) task.release(); return r;
+}
+MmsResult MMS_CALL State(void* context, MmsObjectRef, MmsCommandStateV1* out) {
+    ProbeDenied(*static_cast<Plugin*>(context), 8);
+    *out = {H<MmsCommandStateV1>(), 1, 0, 1, 0, {}}; return MMS_OK;
+}
+MmsResult MMS_CALL Read(void* context, MmsObjectRef, MmsValue* out, MmsHandle* lease) {
+    auto& p = *static_cast<Plugin*>(context); ProbeDenied(p, 16);
+    *out = {}; out->type = MMS_VALUE_INT; out->value.signedValue = p.value; *lease = 0; return MMS_OK;
+}
+void MMS_CALL ReleaseRead(void*, MmsHandle) {}
+struct Command { Plugin* owner; const char* name; };
+// Descriptors retain these contexts until the plugin has retired all UI items.
+struct OwnedPlugin : Plugin { std::unique_ptr<Command[]> commands; };
+MmsResult MMS_CALL Invoke(void* context, MmsObjectRef, MmsSpan args, MmsHandle) {
+    const auto& command = *static_cast<Command*>(context); auto& p = *command.owner;
+    uint64_t foreign = 0; p.explicitRevision = false;
+    for (uint64_t n = 0; n < args.count; ++n) {
+        const auto& a = *reinterpret_cast<const MmsNamedValue*>(static_cast<const unsigned char*>(args.data) + n * args.stride);
+        const std::string name(a.name.data, size_t(a.name.bytes));
+        if (name == "revision" && a.value.value.signedValue > 0) { p.revision = uint64_t(a.value.value.signedValue); p.explicitRevision = true; }
+        if (name == "transaction") foreign = uint64_t(a.value.value.signedValue);
+    }
+    if (!p.edit.begin) return MMS_E_NOT_READY;
+    const std::string name = command.name;
+    if (name == "once") return Once(p);
+    if (name == "pump-once") {
+        const auto result = Once(p); if (result) return result;
+        // Snapshot a bounded batch before dispatch: messages posted by these
+        // handlers wait for the outer host loop instead of spinning here.
+        MSG messages[64]{}; size_t count = 0;
+        while (count < 64 && PeekMessageW(&messages[count], nullptr, 0, 0, PM_REMOVE)) {
+            if (messages[count].message == WM_QUIT) { PostQuitMessage(int(messages[count].wParam)); break; }
+            ++count;
+        }
+        for (size_t index = 0; index < count; ++index) { TranslateMessage(&messages[index]); DispatchMessageW(&messages[index]); }
+        return MMS_OK;
+    }
+    if (name == "twice") { auto r = Once(p); return r ? r : Once(p); }
+    if (name == "pending") return Begin(p);
+    if (name == "cancel-throw-pending") return Begin(p, false, true);
+    if (name == "prepared") { auto r = Begin(p); return r ? r : p.edit.prepare(p.edit.context, p.pending); }
+    if (name == "prepare-fail") { auto r = Begin(p, true); return r ? r : Finish(p); }
+    if (name == "throw") { if (Begin(p)) return MMS_E_FAILED; throw std::runtime_error("invoke edit failure"); }
+    if (name == "join-fail") { const auto r = Join(p, foreign); return r ? r : MMS_E_FAILED; }
+    if (name == "finish") return Finish(p);
+    if (name == "cancel") { p.edit.cancel(p.edit.context, p.pending); p.pending = 0; return MMS_OK; }
+    if (name == "queue") return Queue(p, false);
+    if (name == "queue-throw") return Queue(p, true);
+    if (name == "undo" || name == "redo") {
+        const auto r = name == "undo" ? p.edit.undo(p.edit.context) : p.edit.redo(p.edit.context);
+        if (!r) ++p.revision; return r;
+    }
+    if (name == "nested") {
+        const auto id = p.id + ".value"; MmsValue value{}; MmsHandle lease = 0;
+        const auto r = p.ui.readProperty(p.ui.context, S(id), {}, &value, &lease);
+        if (lease) p.ui.releaseValue(p.ui.context, lease);
+        const auto nested = p.id + ".once";
+        if (Denied(p.ui.invoke(p.ui.context, S(nested), {}, {}))) p.flags |= 2048;
+        return r;
+    }
+    return MMS_E_ARGUMENT;
+}
+MmsResult MMS_CALL CommandState(void* context, MmsObjectRef target, MmsCommandStateV1* out) {
+    return State(static_cast<Command*>(context)->owner, target, out);
+}
+MmsResult MMS_CALL Create(const MmsHostV1* host, const MmsCreateInfoV1* info, void** out) {
+    auto p = std::make_unique<OwnedPlugin>(); p->host = *host; p->id.assign(info->pluginId.data, size_t(info->pluginId.bytes));
+    auto r = host->queryService(host->context, S("mms.ui"), 1, 0, sizeof(p->ui), &p->ui); if (r) return r;
+    r = host->queryService(host->context, S("mms.edit"), 1, 0, sizeof(p->edit), &p->edit);
+    if (!r) p->flags |= 1; else if (r == MMS_E_NOT_FOUND) p->flags |= 2; else return r;
+    r = host->queryService(host->context, S("mms.scene"), 1, 0, sizeof(p->scene), &p->scene);
+    if (r && r != MMS_E_NOT_FOUND) return r;
+    ProbeDenied(*p, 4); current = p.get(); stoppedFlags = 0; stoppedCancels = 0; *out = p.release(); return MMS_OK;
+}
+MmsResult MMS_CALL Start(void* context) {
+    auto& p = *static_cast<OwnedPlugin*>(context); ProbeDenied(p, 4);
+    MmsSerializerV1 serializer{H<MmsSerializerV1>(), &p};
+    serializer.prepareLoad = [](void* c, MmsBytes bytes, uint32_t schema, MmsHandle* out) -> MmsResult {
+        auto& p = *static_cast<Plugin*>(c); ProbeDenied(p, 128);
+        if (schema && (schema != 1 || bytes.bytes != sizeof(int))) return MMS_E_VERSION;
+        p.staged = 0; if (schema) std::memcpy(&p.staged, bytes.data, sizeof(int)); *out = 1; return MMS_OK;
+    };
+    serializer.commitLoad = [](void* c, MmsHandle) { auto& p = *static_cast<Plugin*>(c); ProbeDenied(p, 128); p.value = p.staged; };
+    serializer.cancelLoad = [](void* c, MmsHandle) { ProbeDenied(*static_cast<Plugin*>(c), 128); };
+    serializer.save = [](void* c, MmsBytes* bytes, uint32_t* schema, MmsHandle* lease) -> MmsResult {
+        auto& p = *static_cast<Plugin*>(c); ProbeDenied(p, 128); *bytes = {&p.value, sizeof(int)}; *schema = 1; *lease = 1; return MMS_OK;
+    };
+    serializer.releaseBytes = [](void* c, MmsHandle) { ProbeDenied(*static_cast<Plugin*>(c), 128); };
+    MmsHandle handle = 0;
+    auto r = p.host.registerProvider(p.host.context, S("mms.serializer"), S(p.id), &serializer, sizeof(serializer), &handle); if (r) return r;
+    static const char* names[] = {"once","pump-once","twice","prepare-fail","pending","prepared","throw","join-fail","finish","cancel","queue","queue-throw","undo","redo","nested","cancel-throw-pending"};
+    p.commands = std::make_unique<Command[]>(sizeof(names) / sizeof(names[0]));
+    MmsArgumentV1 arguments[2]{};
+    for (auto& a : arguments) { a.h = H<MmsArgumentV1>(); a.valueType = MMS_VALUE_INT; a.minimum.type = a.maximum.type = a.defaultValue.type = MMS_VALUE_INT; a.maximum.value.signedValue = INT64_MAX; }
+    arguments[0].name = S("revision"); arguments[1].name = S("transaction");
+    for (size_t n = 0; n < sizeof(names) / sizeof(names[0]); ++n) {
+        p.commands[n] = {&p, names[n]}; const auto id = p.id + "." + names[n];
+        const auto label = std::string("Edit probe ") + names[n];
+        MmsCommandDescV1 c{}; c.info.h = H<MmsCommandDescV1>(); c.info.id = S(id); c.info.ownerPlugin = S(p.id); c.info.label = S(label);
+        c.info.arguments = {arguments, 2, sizeof(MmsArgumentV1), 1}; c.context = &p.commands[n]; c.getState = CommandState; c.invoke = Invoke;
+        if ((r = p.ui.registerCommand(p.ui.context, &c, &handle))) return r;
+        const auto menuId = id + ".menu";
+        MmsUiElementV1 e{}; e.h = H<MmsUiElementV1>(); e.id = S(menuId); e.ownerPlugin = S(p.id); e.label = S(label);
+        e.kind = MMS_UI_MENU_ITEM; e.parentId = S("mms.menu.plugins"); e.commandId = S(id);
+        if ((r = p.ui.registerElement(p.ui.context, &e, &handle))) return r;
+    }
+    const auto propertyId = p.id + ".value";
+    MmsPropertyDescV1 property{}; property.info.h = H<MmsPropertyDescV1>(); property.info.id = S(propertyId);
+    property.info.ownerPlugin = S(p.id); property.info.label = S("Edit probe value"); property.info.flags = MMS_PROPERTY_READ_ONLY;
+    property.info.valueType = MMS_VALUE_INT; property.context = &p; property.read = Read; property.releaseValue = ReleaseRead;
+    r = p.ui.registerProperty(p.ui.context, &property, &handle);
+    return !r && p.id.find(".failstart") != std::string::npos ? MMS_E_FAILED : r;
+}
+void MMS_CALL Event(void* context, const MmsEventV1*) { ProbeDenied(*static_cast<Plugin*>(context), 4096); }
+MmsResult MMS_CALL Stop(void* context) { ProbeDenied(*static_cast<Plugin*>(context), 256); return MMS_OK; }
+void MMS_CALL Destroy(void* context) {
+    auto* p = static_cast<OwnedPlugin*>(context); stoppedFlags = p->flags; stoppedCancels = p->cancels;
+    if (current == p) current = nullptr; delete p;
+}
+}
+extern "C" MmsResult MMS_CALL MMSPluginGetApi(uint32_t major, uint32_t minor, uint32_t bytes, MmsPluginApiV1* out) {
+    if (!out || bytes < sizeof(*out) || major != 1 || minor) return MMS_E_VERSION;
+    *out = {H<MmsPluginApiV1>(), Create, Start, Event, Stop, Destroy}; return MMS_OK;
+}
+extern "C" int GetProbeValue() { return current ? current->value : -1; }
+extern "C" uint64_t GetProbeFlags() { return current ? current->flags : stoppedFlags; }
+extern "C" int GetProbeCancels() { return current ? current->cancels : stoppedCancels; }
+extern "C" uint64_t GetProbePending() { return current ? current->pending : 0; }

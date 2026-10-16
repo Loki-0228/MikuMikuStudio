@@ -1,5 +1,6 @@
 #include "manager.hpp"
 #include "ui_preferences_file.hpp"
+#include "edit_store.hpp"
 #include <atomic>
 #include <mutex>
 
@@ -10,6 +11,7 @@ struct Manager::Impl {
         UiClient ui;
         SceneClient scene;
         StorageClient storage;
+        EditClient edit;
         std::atomic<bool> stopping{false};
         PluginStatus status;
         MmsHostV1 table{};
@@ -37,6 +39,36 @@ struct Manager::Impl {
     std::shared_ptr<SceneStore> scene;
     NativeLoader loader;
     std::vector<std::unique_ptr<Instance>> instances;
+    struct EditBridge final : EditHost {
+        Impl& manager;
+        EditHost& target;
+        EditBridge(Impl& m, EditHost& h) : manager(m), target(h) {}
+        void AttachStore(EditStore* s) override { target.AttachStore(s); }
+        void DetachStore(EditStore* s) noexcept override { target.DetachStore(s); }
+        MmsResult Revision(uint64_t& r) override { return target.Revision(r); }
+        MmsResult Enter() override {
+            manager.forwardingEdit = true;
+            struct Reset { bool& value; ~Reset() { value = false; } } reset{manager.forwardingEdit};
+            return target.Enter();
+        }
+        void Leave() noexcept override { target.Leave(); }
+        MmsResult Reserve(std::shared_ptr<const EditRecord> r, std::unique_ptr<EditPublication>& p) override {
+            return target.Reserve(std::move(r), p);
+        }
+        MmsResult History(bool redo) override {
+            manager.forwardingEdit = true;
+            struct Reset { bool& value; ~Reset() { value = false; } } reset{manager.forwardingEdit};
+            return target.History(redo);
+        }
+        void Poison() noexcept override { target.Poison(); }
+    };
+    // Destroy the store before its forwarding host, clients and storage.
+    std::unique_ptr<EditBridge> editHost;
+    std::unique_ptr<EditStore> edits;
+    Instance* runningEditTask = nullptr;
+    Instance* editCallOwner = nullptr;
+    bool forwardingEdit = false, loadAttempted = false, notifyingEdit = false;
+    std::function<void()> editPublished;
     std::vector<PluginStatus> failed;
     std::mutex mutex;
     std::map<MmsHandle, std::shared_ptr<Task>> tasks;
@@ -47,7 +79,9 @@ struct Manager::Impl {
     static constexpr UINT kDrain = WM_APP + 1;
 
     Impl(fs::path user, Log output, std::function<void()> changed, bool fallback, std::shared_ptr<SceneStore> sceneStore):
-        userRoot(std::move(user)), log(std::move(output)), registry(std::move(changed)),
+        userRoot(std::move(user)), log(std::move(output)), registry(std::move(changed),
+            [this](UiClient& client, MmsResult result) { if (result) for (const auto& i : instances)
+                if (&i->ui == &client) { CancelFailedEdit(*i); break; } }),
         preferences(userRoot / L"ui-layout.json"), scene(std::move(sceneStore)), loader(fallback) {
         WNDCLASSW wc{}; wc.hInstance = GetModuleHandleW(nullptr); wc.lpfnWndProc = Window; wc.lpszClassName = L"MMS.PluginAbi.Dispatch.V1";
         if (!RegisterClassW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) throw std::runtime_error("plugin dispatcher class");
@@ -55,6 +89,84 @@ struct Manager::Impl {
         if (!wake) throw std::runtime_error("plugin dispatcher window");
     }
     ~Impl() { if (wake) DestroyWindow(wake); }
+    bool EditOrigin(const Instance& i) const noexcept {
+        if (GetCurrentThreadId() != thread || closing || i.stopping || notifyingEdit || storage.InCallback() || storage.Prepared()) return false;
+        return (active == 0 && registry.InvokingClient() == &i.ui) ||
+            (active == 1 && runningEditTask == &i && !registry.InCallback());
+    }
+    bool CanInvokeEdit() const noexcept {
+        return forwardingEdit && edits && editCallOwner && EditOrigin(*editCallOwner);
+    }
+    template<class F> MmsResult EditCall(Instance& i, F&& call) {
+        if (GetCurrentThreadId() != thread) return MMS_E_THREAD;
+        if (!edits || i.stopping || closing) return MMS_E_NOT_READY;
+        if (editCallOwner || edits->InCallback() || !EditOrigin(i)) return MMS_E_BUSY;
+        editCallOwner = &i;
+        struct Reset { Instance*& value; ~Reset() { value = nullptr; } } reset{editCallOwner};
+        auto api = edits->Api(i.edit);
+        return call(api);
+    }
+    void CancelFailedEdit(Instance& i) noexcept {
+        if (!edits) return;
+        const auto result = Boundary([&] { return edits->CancelOwned(i.edit); });
+        if (result) try { Write(i.ui.id + ": failed callback edit cancellation returned " + std::to_string(result)); } catch (...) {}
+    }
+    void EditPublished() noexcept {
+        if (!editPublished) return;
+        notifyingEdit = true;
+        struct Reset { bool& value; ~Reset() { value = false; } } reset{notifyingEdit};
+        if (Boundary([&] { editPublished(); return MMS_OK; }))
+            try { Write("edit publication observer failed; committed history retained"); } catch (...) {}
+    }
+    MmsEditApiV1 EditApi(Instance& i) {
+        MmsEditApiV1 api{Header<MmsEditApiV1>(), &i};
+        api.begin = [](void* p, MmsString label, uint64_t revision, MmsHandle* out) {
+            return Boundary([&] { auto& i = *static_cast<Instance*>(p); return i.host->EditCall(i,
+                [&](auto& a) { return a.begin(a.context, label, revision, out); }); });
+        };
+        api.join = [](void* p, MmsHandle tx, const MmsTransactionParticipantV1* participant) {
+            return Boundary([&] { auto& i = *static_cast<Instance*>(p); return i.host->EditCall(i,
+                [&](auto& a) { return a.join(a.context, tx, participant); }); });
+        };
+        api.prepare = [](void* p, MmsHandle tx) {
+            return Boundary([&] { auto& i = *static_cast<Instance*>(p); return i.host->EditCall(i,
+                [&](auto& a) { return a.prepare(a.context, tx); }); });
+        };
+        api.commit = [](void* p, MmsHandle tx) {
+            return Boundary([&] { auto& i = *static_cast<Instance*>(p); const auto result = i.host->EditCall(i,
+                [&](auto& a) { return a.commit(a.context, tx); });
+                if (!result) i.host->EditPublished(); return result; });
+        };
+        api.cancel = [](void* p, MmsHandle tx) {
+            Boundary([&] { auto& i = *static_cast<Instance*>(p); return i.host->EditCall(i,
+                [&](auto& a) { a.cancel(a.context, tx); return MMS_OK; }); });
+        };
+        api.undo = [](void* p) { return Boundary([&] { auto& i = *static_cast<Instance*>(p);
+            const auto result = i.host->EditCall(i, [&](auto& a) { return a.undo(a.context); });
+            if (!result) i.host->EditPublished(); return result; }); };
+        api.redo = [](void* p) { return Boundary([&] { auto& i = *static_cast<Instance*>(p);
+            const auto result = i.host->EditCall(i, [&](auto& a) { return a.redo(a.context); });
+            if (!result) i.host->EditPublished(); return result; }); };
+        return api;
+    }
+    MmsResult AttachEditHost(EditHost& host) {
+        if (GetCurrentThreadId() != thread) return MMS_E_THREAD;
+        if (active || registry.InCallback() || storage.InCallback() || storage.Prepared()) return MMS_E_BUSY;
+        if (loadAttempted || closing || edits) return MMS_E_CONFLICT;
+        auto bridge = std::make_unique<EditBridge>(*this, host);
+        auto store = std::make_unique<EditStore>(*bridge, storage);
+        editHost = std::move(bridge); edits = std::move(store); return MMS_OK;
+    }
+    MmsResult DetachEditHost() {
+        if (GetCurrentThreadId() != thread) return MMS_E_THREAD;
+        if (active || registry.InCallback() || storage.InCallback() || storage.Prepared() ||
+            editCallOwner || (edits && edits->InCallback())) return MMS_E_BUSY;
+        if (!edits) return MMS_OK;
+        const auto result = edits->CancelPending();
+        if (result) return result;
+        for (const auto& i : instances) { i->edit.stopping = true; i->edit.store = nullptr; }
+        edits.reset(); editHost.reset(); return result;
+    }
     static LRESULT CALLBACK Window(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
         auto* self = reinterpret_cast<Impl*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
         if (message == WM_NCCREATE) { self = static_cast<Impl*>(reinterpret_cast<CREATESTRUCTW*>(lp)->lpCreateParams); SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self)); }
@@ -77,6 +189,7 @@ struct Manager::Impl {
         if (id == "mms.ui.layout") return Table(major, minor, bytes, out, registry.LayoutApi(i.ui));
         if (id == "mms.scene" && scene) return Table(major, minor, bytes, out, scene->Api(i.scene));
         if (id == "mms.storage") return Table(major, minor, bytes, out, storage.Api(i.storage));
+        if (id == "mms.edit" && edits) return Table(major, minor, bytes, out, EditApi(i));
         return MMS_E_NOT_FOUND;
     }
     MmsHostV1 Host(Instance& i) {
@@ -120,7 +233,8 @@ struct Manager::Impl {
         return h;
     }
     void Drain() {
-        if (GetCurrentThreadId() != thread || draining || active || registry.InCallback() || storage.InCallback() || storage.Prepared()) return;
+        if (GetCurrentThreadId() != thread || draining || active || registry.InCallback() || storage.InCallback() || storage.Prepared() ||
+            (edits && edits->InCallback())) return;
         draining = true;
         struct Guard { bool& b; ~Guard() { b = false; } } guard{draining};
         // Work scheduled by a callback remains queued for the next dispatch.
@@ -131,14 +245,17 @@ struct Manager::Impl {
             bool cancel;
             { std::lock_guard<std::mutex> lock(mutex); t->running = true; cancel = t->cancel || t->owner->stopping; }
             ++active;
+            runningEditTask = cancel ? nullptr : t->owner;
             auto r = Boundary([&] { (cancel ? t->cancelled : t->run)(t->context); return MMS_OK; });
-            --active; if (r) Write(t->owner->ui.id + ": queued callback threw an exception");
+            runningEditTask = nullptr;
+            --active; if (r) { CancelFailedEdit(*t->owner); Write(t->owner->ui.id + ": queued callback threw an exception"); }
             { std::lock_guard<std::mutex> lock(mutex); tasks.erase(t->handle); }
         }
         std::lock_guard<std::mutex> lock(mutex); if (!tasks.empty()) PostMessageW(wake, kDrain, 0, 0);
     }
     void Event(uint32_t kind, MmsBytes payload = {}, uint32_t version = 0) {
-        if (GetCurrentThreadId() != thread || sending || active || storage.InCallback() || storage.Prepared()) return;
+        if (GetCurrentThreadId() != thread || sending || active || registry.InCallback() || storage.InCallback() || storage.Prepared() ||
+            (edits && edits->InCallback())) return;
         sending = true; struct Guard { bool& v; ~Guard() { v = false; } } guard{sending};
         MmsEventV1 event{}; event.h = Header<MmsEventV1>(); event.kind = kind; event.sequence = sequence++;
         event.payload = payload; event.payloadVersion = version;
@@ -148,7 +265,8 @@ struct Manager::Impl {
         }
     }
     bool StopOne(Instance& i) {
-        i.stopping = true; i.ui.stopping = true; i.scene.stopping = true; i.storage.stopping = true; i.status.stage = "stopping";
+        i.stopping = true; i.ui.stopping = true; i.scene.stopping = true; i.storage.stopping = true; i.edit.stopping = true; i.status.stage = "stopping";
+        if (edits && !edits->Retire(i.edit)) return false;
         if (i.stopFailed) return false;
         { std::lock_guard<std::mutex> lock(mutex); for (auto& [id, task] : tasks) if (task->owner == &i) task->cancel = true; }
         Drain();
@@ -172,7 +290,8 @@ struct Manager::Impl {
         while (!i.code.modules.empty()) i.code.modules.pop_back(); i.code.entry = nullptr; return true;
     }
     bool Stop() {
-        if (GetCurrentThreadId() != thread || active || registry.InCallback() || storage.InCallback() || storage.Prepared()) return false;
+        if (GetCurrentThreadId() != thread || active || registry.InCallback() || storage.InCallback() || storage.Prepared() ||
+            (edits && edits->InCallback())) return false;
         if (!closing) { Event(MMS_EVENT_UI_CLOSING); SavePreferences(); closing = true; }
         for (const auto& i : instances) { i->stopping = true; i->ui.stopping = true; i->scene.stopping = true; }
         bool complete = true; std::set<std::string> keep;
@@ -184,12 +303,14 @@ struct Manager::Impl {
     }
     void Load(const fs::path& root) {
         if (GetCurrentThreadId() != thread || closing || !instances.empty()) throw std::runtime_error("plugin manager already started or wrong thread");
+        loadAttempted = true;
         auto discovered = Discover(root); for (const auto& d : discovered.diagnostics) Write(d);
         auto order = Resolve(discovered, [&](const std::string& d) { Write(d); }); std::set<std::string> started;
         for (size_t index : order) {
             const auto& m = discovered.packages[index];
             auto instance = std::make_unique<Instance>(); auto& i = *instance; i.host = this; i.ui = {&registry, m.id}; i.status = {m.id, "validated", {}, m.package};
             i.storage.store = &storage; i.storage.id = m.id;
+            i.edit.store = edits.get(); i.edit.id = m.id;
             for (const auto& dep : m.dependencies) i.dependencies.push_back(dep.id);
             bool ready = std::all_of(i.dependencies.begin(), i.dependencies.end(), [&](const auto& d) { return started.count(d) != 0; });
             if (!ready) { i.status.stage = "failed"; i.status.error = "dependency failed to start"; failed.push_back(i.status); Write(m.id + ": " + i.status.error); continue; }
@@ -240,7 +361,9 @@ struct Manager::Impl {
 Manager::Manager(fs::path user, Log log, std::function<void()> changed, bool fallback, std::shared_ptr<SceneStore> scene): impl_(std::make_unique<Impl>(std::move(user), std::move(log), std::move(changed), fallback, std::move(scene))) {}
 Manager::~Manager() {
     if (!impl_) return;
-    if (Boundary([&] { return impl_->Stop() ? MMS_OK : MMS_E_BUSY; }) != MMS_OK) {
+    const auto stopped = Boundary([&] { return impl_->Stop() ? MMS_OK : MMS_E_BUSY; });
+    const auto detached = Boundary([&] { return impl_->DetachEditHost(); });
+    if (stopped != MMS_OK || detached != MMS_OK) {
         for (const auto& i : impl_->instances) i->code.Pin();
         impl_->Write("plugin stop is pending; retaining manager, instances and DLLs until process exit");
         // A busy worker may still use its host context. Keep that context and
@@ -249,13 +372,21 @@ Manager::~Manager() {
     }
 }
 void Manager::Load(const fs::path& root) { impl_->Load(root); }
+MmsResult Manager::AttachEditHost(EditHost& host) noexcept { return Boundary([&] { return impl_->AttachEditHost(host); }); }
+MmsResult Manager::DetachEditHost() noexcept { return Boundary([&] { return impl_->DetachEditHost(); }); }
+void Manager::SetEditPublished(std::function<void()> callback) {
+    if (GetCurrentThreadId() != impl_->thread || ExecutingCallback()) throw std::invalid_argument("edit observer configuration boundary");
+    impl_->editPublished = std::move(callback);
+}
+bool Manager::CanInvokeEdit() const noexcept { return impl_->CanInvokeEdit(); }
 void Manager::Drain() { impl_->Drain(); }
 bool Manager::Stop() { return Boundary([&] { return impl_->Stop() ? MMS_OK : MMS_E_BUSY; }) == MMS_OK; }
 void Manager::Event(uint32_t kind, MmsBytes payload, uint32_t version) { impl_->Event(kind,payload,version); }
 UiRegistry& Manager::Ui() { return impl_->registry; }
 MmsResult Manager::SaveUiPreferences() { return impl_->SavePreferences(); }
 StorageStore& Manager::Storage() { return impl_->storage; }
-bool Manager::ExecutingCallback() const { return impl_->active != 0 || impl_->registry.InCallback() || impl_->storage.InCallback(); }
+bool Manager::ExecutingCallback() const { return impl_->active != 0 || impl_->notifyingEdit || impl_->registry.InCallback() || impl_->storage.InCallback() ||
+    (impl_->edits && impl_->edits->InCallback()); }
 bool Manager::InCallback() const { return ExecutingCallback() || impl_->storage.Prepared(); }
 std::vector<PluginStatus> Manager::Status() const { auto result = impl_->failed; for (const auto& i : impl_->instances) result.push_back(i->status); return result; }
 }

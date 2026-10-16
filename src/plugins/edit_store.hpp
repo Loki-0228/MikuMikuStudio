@@ -67,6 +67,9 @@ public:
     // the same transaction; this pointer never crosses the public C ABI.
     MmsResult JoinNative(EditClient&, MmsHandle, std::shared_ptr<HistoryChange>);
     bool Retire(EditClient&);
+    // Failed initiating callbacks cancel their own transactions only. They
+    // cannot cancel another owner's transaction merely by joining it.
+    MmsResult CancelOwned(EditClient&);
     bool InCallback() const { return busy_; }
     bool HasPending() const noexcept { return !transactions_.empty(); }
     // UI-thread lifecycle boundary only. Does not acquire the host gate: the
