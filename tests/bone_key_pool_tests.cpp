@@ -57,6 +57,8 @@ struct Fixture {
         return mikudancestudio::mdl::BoneKeyCapacity(*model);
     }
 };
+#include "bone_key_pool_identity_checks.inc"
+
 void CapacityOfAHandBuiltPool() {
     // A pool the registry never saw keeps reporting the original capacity, which
     // is what keeps hand-built fixtures and any not-yet-migrated caller correct.
@@ -381,6 +383,7 @@ void ExpandedDisplayAndFrames() {
 }
 
 int main() {
+    BoneKeyPoolIdentityChecks();
     ExpandedDisplayAndFrames();
     GlobalAndDisplayGrowth();
     MorphPoolGrowth();

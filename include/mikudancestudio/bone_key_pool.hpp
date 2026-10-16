@@ -68,6 +68,14 @@ void BoneKeyPoolDestroy(BoneKey*& pool);
 std::size_t BoneKeyCapacity(const BoneKey* pool);
 std::size_t BoneKeyCapacity(const ModelRecord& model);
 
+// An owned pool keeps this nonzero identity across allocation growth. Destroy
+// retires it permanently, even if a later allocation reuses the same address.
+// Null and unregistered borrowed arrays return zero; callers must guard those
+// with their pointer and capacity rather than treating zero as an identity.
+// Registry access is synchronized, but callers still serialize mutations and
+// keep the pool alive for their whole operation, as with BoneKeyCapacity.
+std::uint64_t BoneKeyPoolIdentity(const BoneKey* pool);
+
 // Capacity to grow to so that `slotsNeeded` slots fit, or 0 when the request
 // exceeds kBoneKeyCapacityLimit or the arithmetic would overflow.  Grows
 // geometrically so that repeated interactive insertions stay amortised O(1),

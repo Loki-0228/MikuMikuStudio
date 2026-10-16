@@ -17,6 +17,7 @@ namespace {
 
 struct Entry {
     std::size_t capacity = 0;
+    std::uint64_t identity = 0;
     // One byte per slot, allocated by growth only.  Empty while the capacity is
     // the original one, because ModelRecord::keyVisitMap already covers that.
     std::vector<unsigned char> visit;
@@ -32,11 +33,19 @@ std::unordered_map<const BoneKey*, Entry>& Registry() {
     return registry;
 }
 
-// True when the registry owns this pool, i.e. BoneKeyPoolCreate allocated it.
-bool Registered(const BoneKey* pool) {
-    if (pool == nullptr) return false;
-    std::lock_guard<std::mutex> lock(RegistryMutex());
-    return Registry().find(pool) != Registry().end();
+// Called with RegistryMutex held. A fresh allocation consumes an identity only
+// after its entry is installed. Zero remains reserved for borrowed pools; after
+// exhaustion, new ownership is refused rather than recycling an old identity.
+void RegisterEntry(const BoneKey* pool, Entry entry) {
+    static std::uint64_t nextIdentity = 1;
+    const bool fresh = entry.identity == 0;
+    if (fresh) {
+        if (!nextIdentity) throw std::bad_alloc();
+        entry.identity = nextIdentity;
+    }
+    if (!Registry().emplace(pool, std::move(entry)).second)
+        throw std::bad_alloc();
+    if (fresh) ++nextIdentity;
 }
 
 }  // namespace
@@ -64,7 +73,7 @@ BoneKey* BoneKeyPoolCreate(std::size_t capacity) {
 
     try {
         std::lock_guard<std::mutex> lock(RegistryMutex());
-        Registry()[pool] = std::move(entry);
+        RegisterEntry(pool, std::move(entry));
     } catch (...) {
         std::free(pool);
         throw;
@@ -97,6 +106,13 @@ std::size_t BoneKeyCapacity(const BoneKey* pool) {
     std::lock_guard<std::mutex> lock(RegistryMutex());
     const auto found = Registry().find(pool);
     return found == Registry().end() ? kBoneKeyCapacity : found->second.capacity;
+}
+
+std::uint64_t BoneKeyPoolIdentity(const BoneKey* pool) {
+    if (pool == nullptr) return 0;
+    std::lock_guard<std::mutex> lock(RegistryMutex());
+    const auto found = Registry().find(pool);
+    return found == Registry().end() ? 0 : found->second.identity;
 }
 
 std::size_t BoneKeyCapacity(const ModelRecord& model) {
@@ -133,7 +149,8 @@ std::size_t BoneKeyPlanCapacity(const ModelRecord& model,
 
 bool BoneKeyPoolEnsure(ModelRecord& model, std::uint64_t slotsNeeded) {
     BoneKey* const current = model.boneKeys;
-    const bool owned = Registered(current);
+    const std::uint64_t identity = BoneKeyPoolIdentity(current);
+    const bool owned = identity != 0;
     const std::size_t capacity = BoneKeyCapacity(current);
     if (slotsNeeded <= capacity) return true;
 
@@ -148,6 +165,7 @@ bool BoneKeyPoolEnsure(ModelRecord& model, std::uint64_t slotsNeeded) {
 
     Entry entry;
     entry.capacity = target;
+    entry.identity = identity;
     if (target > kBoneKeyCapacity) {
         try {
             entry.visit.assign(target, 0);
@@ -181,7 +199,7 @@ bool BoneKeyPoolEnsure(ModelRecord& model, std::uint64_t slotsNeeded) {
     // fail, everything below cannot, so a failure never touches the model.
     try {
         std::lock_guard<std::mutex> lock(RegistryMutex());
-        Registry()[grown] = std::move(entry);
+        RegisterEntry(grown, std::move(entry));
         Registry().erase(current);
     } catch (...) {
         std::free(grown);
