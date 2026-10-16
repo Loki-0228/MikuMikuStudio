@@ -1,4 +1,5 @@
 #include "mikudancestudio/sequence_scatter.hpp"
+#include "mikudancestudio/native_edit_history.hpp"
 #include "mikudancestudio/mmd_app.hpp"
 #include "mikudancestudio/morph_curve.hpp"
 #include "mikudancestudio/frame_limits.hpp"
@@ -186,6 +187,38 @@ bool Restore(unsigned char* model, const void* snapshot) noexcept {
         morph_curve::SwapLayers(model, layers);
         return true;
     } catch (...) { return false; }
+}
+
+namespace {
+class HistoryLayers final:public native_history::SideState {
+    unsigned char* model_;
+    morph_curve::AuthoredLayers before_,after_;
+public:
+    HistoryLayers(unsigned char* model,const std::vector<ac::NamedTrack>& tracks):model_(model) {
+        std::string error;
+        if(!morph_curve::HasLayerStorage(model)||!morph_curve::CaptureLayers(model,before_,error)||
+           !morph_curve::RebuildLayers(model,tracks,after_,error))throw std::runtime_error("Invalid morph history layers");
+    }
+    bool IsCurrent() const noexcept override {
+        return morph_curve::HasLayerStorage(model_)&&morph_curve::LayersUnchanged(model_,before_);
+    }
+    void Publish() noexcept override { morph_curve::SwapLayers(model_,after_); }
+};
+}
+bool PrepareHistory(unsigned char* model,const void* snapshot,std::vector<mdl::MorphKey>& pool,
+                    std::unique_ptr<native_history::SideState>& layers,std::uint32_t& maxFrame,std::int32_t& cursor) {
+    if(!model||!snapshot)return false;
+    const auto* bytes=static_cast<const unsigned char*>(snapshot);
+    SnapshotHeader h;std::memcpy(&h,bytes,sizeof(h));
+    const auto capacity=mdl::MorphKeyCapacity(mdl::Mdl(model)->morphKeys);
+    if(!h.capacity||h.capacity>capacity||h.curveBytes>morph_curve::kMaximumPayloadBytes)return false;
+    std::string error;std::vector<ac::NamedTrack> tracks;
+    if(!ac::Decode(bytes+sizeof(h)+h.capacity*sizeof(mdl::MorphKey),h.curveBytes,tracks,error))return false;
+    auto prepared=std::make_unique<HistoryLayers>(model,tracks);
+    pool.resize(capacity);
+    std::memcpy(pool.data(),bytes+sizeof(h),h.capacity*sizeof(mdl::MorphKey));
+    maxFrame=h.maxFrame;cursor=h.cursor;layers=std::move(prepared);
+    return true;
 }
 
 bool Apply(MMDApp& app, const Source& source, const Plan& plan, std::string& error) {

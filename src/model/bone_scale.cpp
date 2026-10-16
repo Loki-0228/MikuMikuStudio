@@ -1,4 +1,5 @@
 #include "mikudancestudio/bone_curve.hpp"
+#include "mikudancestudio/native_edit_history.hpp"
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
@@ -394,6 +395,55 @@ void Redo(unsigned char* model,int ring) {
             s.current.curves!=s.redo[ring].curves) ++s.revision;
         s.current=s.redo[ring];
     }
+}
+namespace {
+bool SameSnapshot(const Snapshot& a,const Snapshot& b) noexcept {
+    return a.pose==b.pose&&a.keys==b.keys&&a.curves==b.curves;
+}
+bool SameState(const State& a,const State& b) noexcept {
+    if(a.revision!=b.revision||a.applied!=b.applied||a.rigid!=b.rigid||
+       a.undoValid!=b.undoValid||a.redoValid!=b.redoValid||!SameSnapshot(a.current,b.current))return false;
+    for(unsigned i=0;i<30;++i)
+        if(!SameSnapshot(a.undo[i],b.undo[i])||!SameSnapshot(a.redo[i],b.redo[i]))return false;
+    return true;
+}
+void SwapSnapshot(Snapshot& a,Snapshot& b) noexcept {
+    a.pose.swap(b.pose);a.keys.swap(b.keys);a.curves.swap(b.curves);
+}
+class HistoryState final:public native_history::SideState {
+    unsigned char* model_;
+    bool present_;
+    State before_,after_;
+public:
+    HistoryState(unsigned char* model,const std::vector<native_history::RingStep>& steps):model_(model),present_(states.find(model)!=states.end()) {
+        if(!present_)return;
+        before_=states.find(model)->second;after_=before_;
+        for(const auto& step:steps){
+            const auto ring=step.slot;
+            if(step.redo){if(!after_.redoValid[ring])continue;}
+            else {if(!after_.undoValid[ring])continue;after_.redo[ring]=after_.current;after_.redoValid[ring]=true;}
+            const auto& target=step.redo?after_.redo[ring]:after_.undo[ring];
+            if(!SameSnapshot(after_.current,target))++after_.revision;
+            after_.current=target;after_.applied=false;
+        }
+    }
+    bool IsCurrent() const noexcept override {
+        const auto it=states.find(model_);
+        return present_?it!=states.end()&&SameState(it->second,before_):it==states.end();
+    }
+    void Publish() noexcept override {
+        if(!present_)return;
+        if(!after_.applied)RestoreTransforms(model_);
+        auto& live=states.find(model_)->second;
+        SwapSnapshot(live.current,after_.current);
+        for(unsigned i=0;i<30;++i){SwapSnapshot(live.undo[i],after_.undo[i]);SwapSnapshot(live.redo[i],after_.redo[i]);}
+        live.undoValid.swap(after_.undoValid);live.redoValid.swap(after_.redoValid);live.rigid.swap(after_.rigid);
+        std::swap(live.applied,after_.applied);std::swap(live.revision,after_.revision);
+    }
+};
+}
+std::unique_ptr<native_history::SideState> PrepareHistory(unsigned char* model,const std::vector<native_history::RingStep>& steps) {
+    return std::make_unique<HistoryState>(model,steps);
 }
 static Matrix SampleInterval(const Values& values,const Curves& curves,const mdl::BoneKey* keys,
                              unsigned previous,unsigned next,double frame) {

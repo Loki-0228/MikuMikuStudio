@@ -1070,6 +1070,13 @@ if (MIKUDANCESTUDIO_BUILD_UI_TESTS)
     set_target_properties(bone_scale_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
     add_test(NAME bone_scale_tests COMMAND bone_scale_tests)
 
+    if(MIKUDANCESTUDIO_PROFILE STREQUAL "full")
+        add_executable(native_edit_history_tests EXCLUDE_FROM_ALL tests/native_edit_history_tests.cpp)
+        target_link_libraries(native_edit_history_tests PRIVATE mikudancestudio_core winmm dsound)
+        set_target_properties(native_edit_history_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+        add_test(NAME native_edit_history_regressions COMMAND native_edit_history_tests)
+    endif()
+
     # Viewport scale handles: hit testing, the merged mode button's cycle and
     # three-language captions, the panel grid and the handle drag paths.  CPU
     # only - no device, no window.

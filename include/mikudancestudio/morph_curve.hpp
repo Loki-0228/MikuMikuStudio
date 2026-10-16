@@ -265,6 +265,8 @@ bool RebuildLayers(const unsigned char* model, const std::vector<animation_curve
 // Exchanges the live layers of `model` with `layers`.  Never allocates, never
 // throws.
 void SwapLayers(unsigned char* model, AuthoredLayers& layers) noexcept;
+// Prepared history may only exchange an existing, live authoring slot.
+bool HasLayerStorage(const unsigned char* model) noexcept;
 // True while the live layers still carry exactly what `layers` was captured
 // from and the model still has the same morph tables.
 bool LayersUnchanged(const unsigned char* model, const AuthoredLayers& layers);

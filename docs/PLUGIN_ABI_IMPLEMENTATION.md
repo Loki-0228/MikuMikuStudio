@@ -49,7 +49,8 @@
 | P3 | 当前场景查询 | 本机已验证 | CURRENT_TIME 标志支持非零编辑帧查询，忽略 time，不移动播放头；仍可用 flags=0 检查指定时间。 |
 | P3 | 求值阶段及未支持的定义类型 | 未实现 | 阶段 1–4、翻转/冲量 Morph、其他关节、复合形状及软体。绑定配置不能替代物理后状态。 |
 | P3 | edit 两阶段事务内核 | 本机已验证 | prepare/join/commit/cancel、修订检查、serializer 代次、撤销字节深复制、失败取消和历史预留。测试使用宿主夹具，见[原生接入边界](PLUGIN_EDIT_INTEGRATION.md)。 |
-| P3 | 原生统一撤销及可写属性 | 未实现 | 生产 `EditHost` 尚未接入原生环和各曲线侧表；`mms.edit` 仍返回 NOT_FOUND，可写属性仍为 NOT_READY。 |
+| P3 | 原生模型历史准备与发布 | 本机已验证 | 类型 1–7、链式操作和回绕，缩放、自由曲线及 Morph 层；准备失败不写状态，发布不分配。按钮、快捷键及直接撤销入口已接入。 |
+| P3 | 原生统一撤销及可写属性 | 未实现 | 模型恢复辅助已完成；生产 `EditHost`、共同历史顺序、全局编辑及各写入入口仍未接入。`mms.edit` 仍返回 NOT_FOUND，可写属性仍为 NOT_READY。 |
 | P3 | animation 轨道/键、层、片段、变速、烘焙和选择 | 未实现 | 服务返回 NOT_FOUND。 |
 | P3 | storage serializer、工程数据和成对保存 | 本机已验证 | C ABI、两阶段加载、保存数据租约、缺失插件保留；PMM 与 JSON 配套哈希、恢复记录、旧对回退、自动备份轮换；真实 DLL 原名/中文 EXE 往返通过。 |
 | P3 | 显式导入和扩展文件重新关联 | 未实现 | EMM/EMD 保持显式导入；不匹配的 sidecar 拒绝自动应用，保留原件。 |
@@ -89,6 +90,10 @@
 | storage 完整构建与 PE 清单 | Win7 目标构建成功；宿主、新 serializer 测试 DLL 和 ABI 测试无新增可选图形/厂商直接导入 | `plugin-abi-storage-build-5.log`、`plugin-abi-storage-pe-inventory.json` |
 | 两阶段编辑事务内核 | ABI 累计 538 项通过；跨插件参与、陈旧修订、代次更换、历史预留失败、撤销 schema 拒绝、停止取消及违规 commit 保护。原生历史仍未接入 | `plugin-abi-edit-contract-2.log` |
 | 撤销恢复辅助及重入保护加入后的回归 | 真实插件、PMM 往返及原名/中文 EXE 均通过；自动备份 118 项通过 | `plugin-abi-edit-storage-host-2.log`、`plugin-abi-edit-autosave-1.log` |
+| 原生模型历史恢复 | 10,578 项通过；逐分配故障、无分配发布、陈旧拒绝、类型 1–7、链式回绕、真实删除和散布记录、原生键与自由曲线一起恢复、实际撤销命令失败不改 dirty | `plugin-abi-native-history-contract-5.log` |
+| 原生恢复接入后的既有回归 | 骨骼曲线、Morph 曲线、帧率转换、缩放及 VMD 往返、ABI 契约通过；物理烘焙、密集键播放和隐藏界面插值联动通过 | `plugin-abi-native-history-regressions-2.log`、`plugin-abi-native-history-physics-1.log`、`plugin-abi-native-history-ui-1.log` |
+| 原生恢复接入后的真实工程 | 插件数据、PMM 往返、缺失插件保留、失败不发布、原名/中文 EXE 通过 | `plugin-abi-native-history-storage-1.log`、`abi-native-history-storage-1/report.json` |
+| 原生恢复宿主构建及导入 | 宿主和相关测试重建成功，宿主仍为 x64、子系统 6.1，无新增必需的可选图形或厂商 DLL 导入；资源复用范围见下文 | `plugin-abi-native-history-build-10.log`、`plugin-abi-native-history-pe-inventory.json` |
 | 定义接入后的 PE 导入清单 | 四文件均无可选图形/厂商后端的直接导入 | `plugin-abi-definitions-pe-inventory.json` |
 | PE 导入/导出清单 | 四文件通过可选后端直接导入检查 | `plugin-abi-win7-pe-inventory.json` |
 | 处理器策略 | 99 项通过，P2 新增前 | `plugin-abi-processor.log` |
@@ -117,5 +122,7 @@ python tests/plugins/host_smoke.py build/win7-x64/build/Release/MikuMikuDance.ex
 ```
 
 本机 PDB 工具版本不匹配，验证构建显式设 `MIKUDANCESTUDIO_DEBUG_SYMBOLS=OFF`，默认配置仍生成符号。资源编译临时目录设为仓库内 `build/abi-tmp`，未修改系统环境。
+
+原生历史这一轮的 D3DX 效果预编译停在 `CompileEffect`，因此重建复用了前一轮已生成的资源。资源输入未修改，缓存时间晚于全部输入；另对两份资源各 80 个记录重新核对类型、语言和非着色器内容，并检查缓存哈希及编译后效果标识。记录见 `plugin-abi-native-history-resource-cache.json` 和 `plugin-abi-native-history-resource-verify.log`。本轮 C++ 代码及测试已重编译、重链接，不将缓存复用列为新的着色器编译验证。仅生成目录使用了临时校验命令，完成后恢复正常构建命令。
 
 Win7 回退依据：[GetTransformForStream](https://learn.microsoft.com/windows/win32/api/mfreadwrite/nf-mfreadwrite-imfsinkwriterex-gettransformforstream) 要求 Win8；[GetServiceForStream](https://learn.microsoft.com/windows/win32/api/mfreadwrite/nf-mfreadwrite-imfsinkwriter-getserviceforstream) 支持 Win7。代码保持 Win7 目标宏，仅查询可选 COM 能力；编译通过不替代媒体功能验证。

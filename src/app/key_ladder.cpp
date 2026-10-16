@@ -51,6 +51,7 @@
 #include <cstdlib>
 
 #include "mikudancestudio/mmd_app.hpp"
+#include "mikudancestudio/native_edit_history.hpp"
 #include "mikudancestudio/model.hpp"
 #include "mikudancestudio/ported_funcs.hpp"
 #include "mikudancestudio/panel_controls.hpp"
@@ -307,13 +308,13 @@ void DispatchLetterHotkeys(MMDApp* app, HWND focus) {
     if (focusOK && modelMode && !playing && !focusInEdit && pressed(kSlotX)) {
         unsigned char* model = app->SelectedModel();
         if (ctrl && model != nullptr &&
-            mdl::Mdl(model)->redoDirty != 0) {
+            mdl::Mdl(model)->redoDirty != 0 &&
+            TryRedoModelEdit(model, &app->CurrentFrame(), app->PlaybackPhysicsMode())) {
             // Redo one ring entry (0x4A2490), then enable the undo button
             // / disable redo exactly like the pump tail, and re-seek the
             // frame when the new ring head is not a pose-only record.
             // The original passes &app+0x980 so the redo can move the
             // current frame itself.
-            RedoModelEdit(model, &app->CurrentFrame(), app->PlaybackPhysicsMode());
             auto* record = mdl::Mdl(model);
             if (record->undoState[0] == record->undoState[1]) {
                 EnableWindow(GetDlgItem(main, panel::kRedoButton), FALSE);
@@ -342,11 +343,11 @@ void DispatchLetterHotkeys(MMDApp* app, HWND focus) {
     if (focusOK && modelMode && !playing && !focusInEdit && pressed(kSlotZ)) {
         unsigned char* model = app->SelectedModel();
         if (ctrl && model != nullptr &&
-            mdl::Mdl(model)->undoDirty != 0) {
+            mdl::Mdl(model)->undoDirty != 0 &&
+            TryUndoModelEdit(model, &app->CurrentFrame(), app->PlaybackPhysicsMode())) {
             // Undo one ring entry (0x4A1870), then the mirror-image button
             // tail of the X branch.  Like the redo, the frame pointer aims
             // straight at app+0x980.
-            UndoModelEdit(model, &app->CurrentFrame(), app->PlaybackPhysicsMode());
             auto* record = mdl::Mdl(model);
             if (record->undoRings[0].slots[record->undoState[0]].operation
                     == 0) {

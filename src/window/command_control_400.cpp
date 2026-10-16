@@ -182,6 +182,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include "mikudancestudio/bone_scale.hpp"
+#include "mikudancestudio/native_edit_history.hpp"
 #include <Windows.h>
 
 #include <commdlg.h>
@@ -1121,10 +1122,10 @@ static void Cmd400_Undo(MMDApp* app, HWND hwnd) {
     if (app->state.optflag[0] != 0) {
         return;  // was: break (switch exit)
     }
-    app->SceneModified() = 1;
     unsigned char* model = ActiveModel(app);
+    if(!TryUndoModelEdit(model, &app->state.currentFrame, app->PlaybackPhysicsMode()))return;
+    app->SceneModified() = 1;
     mdl::ModelRecord& record = *mdl::Mdl(model);
-    UndoModelEdit(model, &app->state.currentFrame, app->PlaybackPhysicsMode());
     const std::int32_t cnt = record.undoState[0];
     if (record.undoRings[0].slots[cnt].operation == 0) {
         EnableWindow(GetDlgItem(hwnd, panel::kUndoButton), FALSE);
@@ -1154,10 +1155,10 @@ static void Cmd400_Redo(MMDApp* app, HWND hwnd) {
     if (app->state.optflag[0] != 0) {
         return;  // was: break (switch exit)
     }
-    app->SceneModified() = 1;
     unsigned char* model = ActiveModel(app);
+    if(!TryRedoModelEdit(model, &app->state.currentFrame, app->PlaybackPhysicsMode()))return;
+    app->SceneModified() = 1;
     mdl::ModelRecord& record = *mdl::Mdl(model);
-    RedoModelEdit(model, &app->state.currentFrame, app->PlaybackPhysicsMode());
     if (record.undoState[0] == record.undoState[1]) {
         EnableWindow(GetDlgItem(hwnd, panel::kRedoButton), FALSE);
         record.redoDirty = 0;

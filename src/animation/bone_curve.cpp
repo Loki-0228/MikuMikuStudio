@@ -3,6 +3,7 @@
 #include "mikudancestudio/frame_limits.hpp"
 #define NOMINMAX
 #include "mikudancestudio/bone_curve.hpp"
+#include "mikudancestudio/native_edit_history.hpp"
 #include "mikudancestudio/bone_key_pool.hpp"
 #include "mikudancestudio/bone_scale.hpp"
 #include "mikudancestudio/mmd_app.hpp"
@@ -214,6 +215,59 @@ void CaptureUndo(unsigned char* model,unsigned ring){
 }
 void Undo(unsigned char* model,unsigned ring){auto* s=Current(model);if(s&&ring<30&&s->undoValid[ring]){s->redo[ring]=s->curves;s->redoValid[ring]=true;s->curves=s->undo[ring];}}
 void Redo(unsigned char* model,unsigned ring){auto* s=Current(model);if(s&&ring<30&&s->redoValid[ring])s->curves=s->redo[ring];}
+namespace {
+bool SameCurves(const Curves& a,const Curves& b) noexcept {
+    if(a.size()!=b.size())return false;
+    auto right=b.begin();
+    for(const auto& left:a){
+        if(left.first!=right->first||left.second.nativeHash!=right->second.nativeHash)return false;
+        for(unsigned c=0;c<9;++c){
+            const auto& x=left.second.tracks[c];const auto& y=right->second.tracks[c];
+            if(x.discrete!=y.discrete||x.keys.size()!=y.keys.size())return false;
+            for(std::size_t i=0;i<x.keys.size();++i){const auto& p=x.keys[i];const auto& q=y.keys[i];
+                if(p.frame!=q.frame||p.value!=q.value||p.inSlope!=q.inSlope||p.outSlope!=q.outSlope||
+                   p.inWeight!=q.inWeight||p.outWeight!=q.outWeight||p.interpolation!=q.interpolation||p.tangent!=q.tangent)return false;
+            }
+        }
+        ++right;
+    }
+    return true;
+}
+bool SameHistory(const State& a,const State& b) noexcept {
+    if(a.identity!=b.identity||a.undoValid!=b.undoValid||a.redoValid!=b.redoValid||!SameCurves(a.curves,b.curves))return false;
+    for(unsigned i=0;i<30;++i)if(!SameCurves(a.undo[i],b.undo[i])||!SameCurves(a.redo[i],b.redo[i]))return false;
+    return true;
+}
+class HistoryState final:public native_history::SideState {
+    unsigned char* model_;
+    bool present_;
+    State before_,after_;
+public:
+    HistoryState(unsigned char* model,const std::vector<native_history::RingStep>& steps):model_(model),present_(states.find(model)!=states.end()) {
+        if(!present_)return;
+        before_=states.find(model)->second;after_=before_;
+        if(after_.identity!=mdl::Mdl(model)->boneTable)return;
+        for(const auto& step:steps){const auto ring=step.slot;
+            if(step.redo){if(after_.redoValid[ring])after_.curves=after_.redo[ring];}
+            else if(after_.undoValid[ring]){after_.redo[ring]=after_.curves;after_.redoValid[ring]=true;after_.curves=after_.undo[ring];}
+        }
+    }
+    bool IsCurrent() const noexcept override {
+        const auto it=states.find(model_);
+        return present_?it!=states.end()&&SameHistory(it->second,before_):it==states.end();
+    }
+    void Publish() noexcept override {
+        if(!present_)return;
+        auto& live=states.find(model_)->second;
+        live.curves.swap(after_.curves);
+        for(unsigned i=0;i<30;++i){live.undo[i].swap(after_.undo[i]);live.redo[i].swap(after_.redo[i]);}
+        live.undoValid.swap(after_.undoValid);live.redoValid.swap(after_.redoValid);std::swap(live.identity,after_.identity);
+    }
+};
+}
+std::unique_ptr<native_history::SideState> PrepareHistory(unsigned char* model,const std::vector<native_history::RingStep>& steps) {
+    return std::make_unique<HistoryState>(model,steps);
+}
 void CopyState(const unsigned char* source,unsigned char* destination){
     Forget(destination);auto* s=Current(source);if(!s||!destination)return;
     State copy;copy.identity=mdl::Mdl(destination)->boneTable;copy.curves=s->curves;

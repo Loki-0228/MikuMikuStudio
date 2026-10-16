@@ -13,6 +13,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include "mikudancestudio/bone_scale.hpp"
+#include "mikudancestudio/native_edit_history.hpp"
 #include "mikudancestudio/sequence_scatter.hpp"
 #include <Windows.h>
 #include <CommCtrl.h>
@@ -23,6 +24,8 @@
 #include <cstring>
 #include <new>
 #include <memory>
+#include <map>
+#include <stdexcept>
 #include "mikudancestudio/mmd_app.hpp"
 #include <utility>
 
@@ -913,6 +916,8 @@ void RestoreKeys(unsigned char* model, const std::vector<mdl::BoneKeySnapshot>& 
     ResetBoneKeyCursor(model);
 }
 }
+#include "native_edit_history.inc"
+
 // VA 0x004A1870: undo one ring entry, capturing the displaced state into the
 // parallel redo ring at 0x2A34. Type 4 entries are chained recursively by MMD.
 void UndoModelEdit(unsigned char* model, std::int32_t* frame) {  // was Sub4A1870, VA 0x004A1870
@@ -920,6 +925,9 @@ void UndoModelEdit(unsigned char* model, std::int32_t* frame) {  // was Sub4A187
 }
 
 void UndoModelEdit(unsigned char* model, std::int32_t* frame, int physicsMode) {
+#if !MMD_ORIGINAL_PROFILE
+    TryUndoModelEdit(model,frame,physicsMode);return;
+#endif
     if (model == nullptr || frame == nullptr) return;
     int cursor = static_cast<int>(mdl::Mdl(model)->undoState[0]);
     auto& undo = UndoAt(model, cursor);
@@ -1015,6 +1023,9 @@ void RedoModelEdit(unsigned char* model, std::int32_t* frame) {  // was Sub4A249
 }
 
 void RedoModelEdit(unsigned char* model, std::int32_t* frame, int physicsMode) {
+#if !MMD_ORIGINAL_PROFILE
+    TryRedoModelEdit(model,frame,physicsMode);return;
+#endif
     if (model == nullptr || frame == nullptr) return;
     int cursor = static_cast<int>(mdl::Mdl(model)->undoState[0]) + 1;
     if (cursor >= 30) cursor = 0;

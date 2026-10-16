@@ -1791,8 +1791,18 @@ void SwapLayers(unsigned char* model, AuthoredLayers& layers) noexcept {
     // removes it while a plan is alive, so a miss leaves the module alone
     // instead of inserting (which would have to allocate).
     if (found == States().end()) return;
-    std::swap(found->second, layers.impl_->state);
+    // std::swap(State) moves std::map objects and MSVC may allocate a sentinel
+    // in their move constructors. Exchange the containers themselves instead.
+    auto& live=found->second;auto& prepared=layers.impl_->state;
+    std::swap(live.identity,prepared.identity);
+    live.authored.swap(prepared.authored);live.effective.swap(prepared.effective);
+    live.mirror.swap(prepared.mirror);live.observed.swap(prepared.observed);
     layers.impl_->model = model;
+}
+
+bool HasLayerStorage(const unsigned char* model) noexcept {
+    const auto found = States().find(model);
+    return found != States().end() && Matches(found->second.identity, model);
 }
 
 bool LayersUnchanged(const unsigned char* model, const AuthoredLayers& layers) {
