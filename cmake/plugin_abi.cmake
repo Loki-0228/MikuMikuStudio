@@ -10,6 +10,7 @@ add_library(mms_plugin_runtime STATIC
     src/plugins/scene_store.cpp
     src/plugins/scene_identity.cpp
     src/plugins/storage_store.cpp
+    src/plugins/edit_store.cpp
     src/plugins/project_storage.cpp
     src/plugins/native_ui.cpp)
 target_include_directories(mms_plugin_runtime PUBLIC sdk/mms/include PRIVATE src/plugins)

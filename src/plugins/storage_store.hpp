@@ -16,13 +16,14 @@ class StorageStore {
     struct Candidate { MmsSerializerV1 table; MmsHandle value; };
     DWORD thread_ = GetCurrentThreadId();
     MmsHandle next_ = 1;
-    bool busy_ = false, poisoned_ = false, prepared_ = false;
+    bool busy_ = false, poisoned_ = false, prepared_ = false, restoreOnly_ = false;
     StoredRecords records_, pending_;
     std::map<MmsHandle, Provider> providers_;
     std::map<MmsHandle, Lease> leases_;
     std::vector<Candidate> candidates_;
     MmsResult Ready() const;
     void CancelCandidates() noexcept;
+    MmsResult PrepareImpl(StoredRecords, bool restoreOnly);
 public:
     MmsStorageApiV1 Api(StorageClient&);
     MmsResult Register(StorageClient&, MmsString id, const void*, uint32_t, MmsHandle*);
@@ -31,9 +32,14 @@ public:
     bool Retire(StorageClient&);
     bool InCallback() const { return busy_; }
     bool Prepared() const { return prepared_; }
+    bool CanRestore(const std::string&) const;
+    MmsHandle RestoreToken(const std::string&) const;
     const StoredRecords& Records() const { return records_; }
     MmsResult Capture(StoredRecords&);
     MmsResult Prepare(StoredRecords);
+    // Undo/redo restores only the recorded participants. Every serializer must
+    // be available; the disk/last-saved record remains unchanged.
+    MmsResult PrepareRestore(StoredRecords);
     bool Commit() noexcept;
     void Cancel() noexcept;
     // The caller has already durably published the file pair. No allocation.

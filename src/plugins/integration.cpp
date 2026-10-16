@@ -112,6 +112,7 @@ bool InCallback() { return manager && manager->InCallback(); }
 
 struct ProjectSave::Impl { MMDApp* app; PluginProject data; StoredRecords storeRecords; };
 ProjectSave::ProjectSave(MMDApp* app) : impl_(std::make_unique<Impl>()) {
+    if(app->SceneMutationInProgress() || (manager && owner==app && manager->InCallback()))throw std::runtime_error("project save during callback or scene mutation");
     if(currentProject.projectId.empty())currentProject.projectId=StorageId();
     impl_->app = app; impl_->data = currentProject;
     if (manager && owner == app) {
@@ -173,6 +174,7 @@ void CancelProjectLoad(MMDApp* app) {
 bool ResetPluginProject(MMDApp* app) {
     if(build_profile::original)return true;
     if(manager && owner==app && manager->Storage().InCallback())return false;
+    if(manager && owner==app && manager->InCallback() && !loadingProject)return false;
     CancelProjectLoad(app);
     if(manager && owner==app){
         const auto r=manager->Storage().Prepare({});

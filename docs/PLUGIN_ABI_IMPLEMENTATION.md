@@ -48,7 +48,8 @@
 | P3 | 绑定刚体、形状、关节及 Morph 定义 | 本机已验证 | 球/盒/胶囊、六自由度弹簧、组/顶点/骨骼/UV/材质 Morph；刚体和关节矩阵与原生加载器、Bullet 约束独立比较，身份经真实 PMM 往返保留。 |
 | P3 | 当前场景查询 | 本机已验证 | CURRENT_TIME 标志支持非零编辑帧查询，忽略 time，不移动播放头；仍可用 flags=0 检查指定时间。 |
 | P3 | 求值阶段及未支持的定义类型 | 未实现 | 阶段 1–4、翻转/冲量 Morph、其他关节、复合形状及软体。绑定配置不能替代物理后状态。 |
-| P3 | edit 两阶段事务、可写属性和统一撤销 | 未实现 | edit.h 布局已固定，服务尚未发布。 |
+| P3 | edit 两阶段事务内核 | 本机已验证 | prepare/join/commit/cancel、修订检查、serializer 代次、撤销字节深复制、失败取消和历史预留。测试使用宿主夹具，见[原生接入边界](PLUGIN_EDIT_INTEGRATION.md)。 |
+| P3 | 原生统一撤销及可写属性 | 未实现 | 生产 `EditHost` 尚未接入原生环和各曲线侧表；`mms.edit` 仍返回 NOT_FOUND，可写属性仍为 NOT_READY。 |
 | P3 | animation 轨道/键、层、片段、变速、烘焙和选择 | 未实现 | 服务返回 NOT_FOUND。 |
 | P3 | storage serializer、工程数据和成对保存 | 本机已验证 | C ABI、两阶段加载、保存数据租约、缺失插件保留；PMM 与 JSON 配套哈希、恢复记录、旧对回退、自动备份轮换；真实 DLL 原名/中文 EXE 往返通过。 |
 | P3 | 显式导入和扩展文件重新关联 | 未实现 | EMM/EMD 保持显式导入；不匹配的 sidecar 拒绝自动应用，保留原件。 |
@@ -86,6 +87,8 @@
 | 真实插件数据和 PMM 往返 | 两种 EXE 名称、缺失插件数据、事件后场景可读、失败不发布、保存数据租约及退出卸载均通过 | `plugin-abi-storage-host-3.log`、`abi-storage-host-3/report.json` |
 | 自动备份与既有场景回归 | 自动备份 118 项通过，包括配套扩展轮换；PMX/PMD 几何、定义和身份往返通过 | `plugin-abi-storage-autosave-2.log`、`plugin-abi-storage-geometry-1.log` |
 | storage 完整构建与 PE 清单 | Win7 目标构建成功；宿主、新 serializer 测试 DLL 和 ABI 测试无新增可选图形/厂商直接导入 | `plugin-abi-storage-build-5.log`、`plugin-abi-storage-pe-inventory.json` |
+| 两阶段编辑事务内核 | ABI 累计 538 项通过；跨插件参与、陈旧修订、代次更换、历史预留失败、撤销 schema 拒绝、停止取消及违规 commit 保护。原生历史仍未接入 | `plugin-abi-edit-contract-2.log` |
+| 撤销恢复辅助及重入保护加入后的回归 | 真实插件、PMM 往返及原名/中文 EXE 均通过；自动备份 118 项通过 | `plugin-abi-edit-storage-host-2.log`、`plugin-abi-edit-autosave-1.log` |
 | 定义接入后的 PE 导入清单 | 四文件均无可选图形/厂商后端的直接导入 | `plugin-abi-definitions-pe-inventory.json` |
 | PE 导入/导出清单 | 四文件通过可选后端直接导入检查 | `plugin-abi-win7-pe-inventory.json` |
 | 处理器策略 | 99 项通过，P2 新增前 | `plugin-abi-processor.log` |

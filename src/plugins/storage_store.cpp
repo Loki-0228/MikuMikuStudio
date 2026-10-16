@@ -17,6 +17,14 @@ MmsResult StorageStore::Ready() const {
     if (poisoned_) return MMS_E_NOT_READY;
     return busy_ || prepared_ ? MMS_E_BUSY : MMS_OK;
 }
+bool StorageStore::CanRestore(const std::string& id) const {
+    return RestoreToken(id)!=0;
+}
+MmsHandle StorageStore::RestoreToken(const std::string& id) const {
+    if (GetCurrentThreadId()!=thread_ || poisoned_) return 0;
+    for(const auto& [h,p]:providers_)if(p.owner->id==id)return p.owner->stopping?0:h;
+    return 0;
+}
 MmsStorageApiV1 StorageStore::Api(StorageClient& client) {
     client.store = this; MmsStorageApiV1 api{Header<MmsStorageApiV1>(), &client};
     api.readSaved = [](void* context, MmsBytes* bytes, uint32_t* schema, MmsHandle* lease) {
@@ -97,12 +105,16 @@ void StorageStore::CancelCandidates() noexcept {
         if (Boundary([&] { it->table.cancelLoad(it->table.context, it->value); return MMS_OK; })) poisoned_ = true;
     candidates_.clear(); pending_.clear(); prepared_ = false;
 }
-MmsResult StorageStore::Prepare(StoredRecords data) {
+MmsResult StorageStore::Prepare(StoredRecords data) { return PrepareImpl(std::move(data),false); }
+MmsResult StorageStore::PrepareRestore(StoredRecords data) { return PrepareImpl(std::move(data),true); }
+MmsResult StorageStore::PrepareImpl(StoredRecords data, bool restoreOnly) {
     if (auto r = Ready()) return r;
     Busy guard(busy_);
     const auto r = Boundary([&]() -> MmsResult {
-        candidates_.reserve(providers_.size()); pending_ = std::move(data);
+        if(restoreOnly)for(const auto& [id,record]:data)if(!CanRestore(id))return MMS_E_NOT_READY;
+        candidates_.reserve(providers_.size()); pending_ = std::move(data); restoreOnly_=restoreOnly;
         for (const auto& [h, p] : providers_) {
+            if(restoreOnly && !pending_.count(p.owner->id))continue;
             if (p.owner->stopping) return MMS_E_NOT_READY;
             const auto it = pending_.find(p.owner->id); const StoredData empty{};
             const auto& saved = it == pending_.end() ? empty : it->second;
@@ -119,7 +131,7 @@ bool StorageStore::Commit() noexcept {
     if (GetCurrentThreadId() != thread_ || busy_ || !prepared_) return false;
     Busy guard(busy_); bool ok = true;
     for (auto& c : candidates_) if (Boundary([&] { c.table.commitLoad(c.table.context, c.value); return MMS_OK; })) { poisoned_ = true; ok = false; }
-    candidates_.clear(); records_.swap(pending_); pending_.clear(); prepared_ = false; return ok;
+    candidates_.clear(); if(!restoreOnly_)records_.swap(pending_); pending_.clear(); prepared_ = false; return ok;
 }
 void StorageStore::Cancel() noexcept {
     if (GetCurrentThreadId() != thread_ || busy_) return;
