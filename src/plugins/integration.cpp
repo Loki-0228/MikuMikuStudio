@@ -5,7 +5,7 @@
 #include "native_pose_scope.hpp"
 #include "native_history_commands.hpp"
 #include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/animation_curve_host.hpp"
+#include "mikudancestudio/animation_curve_editor.hpp"
 #include "mikudancestudio/model.hpp"
 #include "mikudancestudio/plugin_storage.hpp"
 #include "mikudancestudio/plugin_runtime.hpp"
@@ -184,11 +184,7 @@ void Refresh(MMDApp* app) {
             EnableWindow(GetDlgItem(app->MainWindow(), panel::kUndoButton), history->UndoCount() != 0);
             EnableWindow(GetDlgItem(app->MainWindow(), panel::kRedoButton), history->RedoCount() != 0);
             InvalidateRect(app->MainWindow(), nullptr, FALSE); RefreshBoundPoseReadout(*app);
-            if (!app->CameraMode() && app->SelectedModelSlot() < kModelSlotCount) {
-                const auto* model = mdl::Mdl(app->SelectedModel());
-                if (model && model->selectedBone >= 0 && unsigned(model->selectedBone) < model->boneCount)
-                    curve_host::NotifyModelRegistered(app, false);
-            }
+            curve_editor::NotifyOwnedChanged(app->MainWindow());
         }
 #endif
         if (manager && !manager->InCallback()) manager->SaveUiPreferences();

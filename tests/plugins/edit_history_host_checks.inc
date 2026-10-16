@@ -1,5 +1,8 @@
 // Actual hidden host, DLL service negotiation, menu dispatch and one journal.
 #include "../src/plugins/native_pose_scope.hpp"
+#include "mikudancestudio/bone_key_pool.hpp"
+#include "mikudancestudio/key_pool.hpp"
+#include "mikudancestudio/animation_curve_editor.hpp"
 namespace edit_history_host_checks {
 UINT FindMenuCommand(HMENU menu, const wchar_t* label) {
     for (int index = 0; menu && index < GetMenuItemCount(menu); ++index) {
@@ -15,6 +18,74 @@ void Menu(MMDApp* app, const wchar_t* label) {
     const auto id = FindMenuCommand(GetMenu(app->MainWindow()), label);
     Check(id && id != UINT(-1), "registered edit probe menu exists");
     SendMessageW(app->MainWindow(), WM_COMMAND, id, 0);
+}
+void MixedModelDeletion(MMDApp* app, plugins::SharedHistory& history) {
+    auto& model = *mdl::Mdl(app->ModelSlot(0));
+    Check(model.boneCount && model.morphCount && model.boneCount < mdl::BoneKeyCapacity(model.boneKeys) &&
+          model.morphCount < mdl::MorphKeyCapacity(model.morphKeys) && mdl::KeyPoolCapacity(model.displayKeys) > 1,
+          "real model has all three owned key families");
+    // Fixture setup precedes this journal's first operation. Keep the original
+    // unregistered pose so the subsequent native/plugin test has the same input.
+    for (std::size_t i = 0; i < mdl::BoneKeyCapacity(model.boneKeys); ++i) model.boneKeys[i].allocated = 0;
+    for (std::size_t i = 0; i < mdl::MorphKeyCapacity(model.morphKeys); ++i) model.morphKeys[i].allocated = 0;
+    for (std::size_t i = 0; i < mdl::KeyPoolCapacity(model.displayKeys); ++i) model.displayKeys[i].allocated = 0;
+    const auto boneSlot = model.boneCount, morphSlot = model.morphCount;
+    auto& bone = model.boneKeys[boneSlot]; bone = model.boneKeys[0];
+    bone.frame = 10; bone.previous = bone.next = 0; bone.allocated = 1;
+    model.boneKeys[0].next = boneSlot;
+    auto& morph = model.morphKeys[morphSlot]; morph = model.morphKeys[0];
+    morph.frame = 10; morph.previous = morph.next = 0; morph.value = .75f; morph.allocated = 1;
+    model.morphKeys[0].next = morphSlot; model.morphKeys[0].value = .25f; model.morphs[0].value = .75f;
+    auto& display = model.displayKeys[1]; display.frame = 10; display.previous = display.next = 0;
+    display.visible = 0; display.allocated = 1; model.displayKeys[0].next = 1; model.displayKeys[0].visible = 1;
+    if (model.ikChainCount) std::memcpy(display.ikStates, model.displayKeys[0].ikStates, model.ikChainCount);
+    if (model.boneOrderCount) std::memcpy(display.selectorStates, model.displayKeys[0].selectorStates,
+                                       model.boneOrderCount * sizeof(mdl::BoneReference));
+    model.loadComplete = 0; app->CurrentFrame() = 10;
+    unsigned reads = 0; float readValue = 0;
+    curve_editor::Session session; session.id = "model-key-refresh";
+    curve_editor::Source source; source.id = "morph"; source.label = L"Test morph";
+    source.read = [&](std::vector<curve_editor::Channel>& channels, std::wstring&) {
+        ++reads; readValue = model.morphs[0].value;
+        curve_editor::Channel channel; channel.id = "weight"; channel.label = L"Weight";
+        animation_curve::Key key; key.frame = 0; key.value = readValue; channel.track.keys.push_back(key);
+        channels = {channel}; return true;
+    };
+    session.sources.push_back(std::move(source));
+    Check(curve_editor::Open(app->MainWindow(), std::move(session), false) != nullptr && reads,
+          "hidden morph curve editor reads its initial source");
+    const auto refreshed = [&](unsigned before, float expected) {
+        const auto until = GetTickCount64() + 1000;
+        while (reads == before && GetTickCount64() < until) {
+            MSG message{};
+            while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) { TranslateMessage(&message); DispatchMessageW(&message); }
+            if (reads == before) Sleep(1);
+        }
+        Check(reads > before && readValue == expected, "model-key history refreshes the open morph curve source");
+    };
+    auto beforeRead = reads;
+    SendMessageW(app->MainWindow(), WM_COMMAND, 423, 0);
+    Check(history.UndoCount() == 1 && !bone.frame && !morph.frame && !display.frame &&
+          !model.boneKeys[0].next && !model.morphKeys[0].next && !model.displayKeys[0].next &&
+          model.morphs[0].value == .25f && model.loadComplete == 1,
+          "actual delete button atomically publishes bone morph display keys and current derived state");
+    refreshed(beforeRead, .25f); beforeRead = reads;
+    app->CameraMode() = 1;
+    SendMessageW(app->MainWindow(), WM_COMMAND, 400, 0);
+    Check(!history.UndoCount() && history.RedoCount() == 1 && bone.frame == 10 && morph.frame == 10 &&
+          display.frame == 10 && model.morphs[0].value == .75f && model.loadComplete == 0,
+          "one actual undo restores every model-key family");
+    refreshed(beforeRead, .75f); beforeRead = reads;
+    app->CurrentFrame() = 20; Menu(app, L"Edit probe redo");
+    Check(history.UndoCount() == 1 && !bone.frame && !morph.frame && !display.frame &&
+          model.morphs[0].value == .25f && model.loadComplete == 1,
+          "plugin redo replays native model-key deletion at the current frame");
+    refreshed(beforeRead, .25f);
+    Menu(app, L"Edit probe undo");
+    Check(bone.frame == 10 && morph.frame == 10 && display.frame == 10 && history.Reset() == MMS_OK,
+          "restore fixture tracks and clear isolated setup history");
+    curve_editor::CloseOwned(app->MainWindow());
+    app->CurrentFrame() = 0; app->CameraMode() = 0;
 }
 void Run(MMDApp* app) {
     using namespace plugins;
@@ -50,6 +121,7 @@ void Run(MMDApp* app) {
         const bool same = snapshot.sceneRevision == revision; api.release(api.context, snapshot.handle);
         Check(same, "scene revision equals the journal revision after mixed edits");
     };
+    MixedModelDeletion(app, *history);
     revisionMatches(); app->SceneModified() = 0;
     app->PlaybackActive() = 1; Menu(app, L"Edit probe once"); app->PlaybackActive() = 0;
     app->FrameStepPlayback() = 1; Menu(app, L"Edit probe once"); app->FrameStepPlayback() = 0;
