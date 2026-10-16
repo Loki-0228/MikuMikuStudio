@@ -75,6 +75,9 @@ public:
     PoseEditCapture(const PoseEditCapture&) = delete;
     PoseEditCapture& operator=(const PoseEditCapture&) = delete;
     Result Begin(unsigned char*) noexcept;
+    // Begin allocates the owned record and both delta capacities. This exact
+    // upper charge stays valid through Finish; zero means no active capture.
+    std::uint64_t MaximumRetainedBytes() const noexcept;
     // Only operation 1 is supported. Finish leaves the capture available for
     // Rollback if the host cannot adopt the edit. Empty means no authored change.
     Result Finish(int operation, std::unique_ptr<OwnedPoseEdit>&) noexcept;

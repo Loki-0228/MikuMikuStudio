@@ -145,6 +145,28 @@ static void SharedHistoryChecks() {
     CHECK(api.redo(api.context) == MMS_OK && a == 1);
     CHECK(api.redo(api.context) == MMS_OK && state.value == 10);
     CHECK(api.redo(api.context) == MMS_OK && b == 2);
+    // An authored native scope shares the same order with serializer-backed
+    // plugin steps and excludes both pending and newly begun plugin edits.
+    {
+        MmsHandle pending = 0;
+        std::unique_ptr<SharedHistory::AppliedTransaction> applied;
+        CHECK(api.begin(api.context, S("pending plugin"), revision(), &pending) == MMS_OK);
+        CHECK(history.ReserveAppliedNative("native scope", 1024, applied) == MMS_E_BUSY && !applied);
+        api.cancel(api.context, pending);
+        CHECK(history.ReserveAppliedNative("native scope", 1024, applied) == MMS_OK);
+        MmsHandle unchanged = 99;
+        CHECK(api.begin(api.context, S("during native scope"), revision(), &unchanged) == MMS_E_BUSY && unchanged == 99);
+        auto authored = std::make_shared<HistoryValue>(a, 1, 5); a = 5;
+        CHECK(history.PrepareAppliedNative(*applied, authored) == MMS_OK);
+        CHECK(history.CommitAppliedNative(*applied) == MMS_OK && a == 5);
+        applied.reset();
+        plugin(10, 20);
+        CHECK(api.undo(api.context) == MMS_OK && state.value == 10 && a == 5);
+        CHECK(api.undo(api.context) == MMS_OK && a == 1 && state.value == 10);
+        CHECK(api.redo(api.context) == MMS_OK && a == 5);
+        CHECK(api.redo(api.context) == MMS_OK && state.value == 20);
+        CHECK(api.undo(api.context) == MMS_OK && api.undo(api.context) == MMS_OK && a == 1 && state.value == 10);
+    }
     // One transaction combines native and plugin work in a single node.
     plugin(10, 30, std::make_shared<HistoryValue>(a, 1, 9));
     CHECK(history.UndoCount() == 4 && a == 9 && state.value == 30);

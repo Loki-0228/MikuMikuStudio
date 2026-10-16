@@ -410,6 +410,7 @@ add_library(mikudancestudio_core STATIC
     src/window/ui_panel_sweep.cpp
       src/window/ui_view_refresh.cpp
       src/window/ui_model_reload.cpp
+    src/window/scene_history_ui.cpp
       src/window/ui_selection_reeval.cpp
     src/window/ui_editor_click.cpp
     src/window/ui_frame_step.cpp
@@ -1071,6 +1072,7 @@ if (MIKUDANCESTUDIO_BUILD_UI_TESTS)
     add_test(NAME bone_scale_tests COMMAND bone_scale_tests)
 
     if(MIKUDANCESTUDIO_PROFILE STREQUAL "full")
+        include(cmake/scene_history_ui_tests.cmake)
         add_executable(model_load_ui_tests EXCLUDE_FROM_ALL tests/model_load_ui_tests.cpp)
         target_link_libraries(model_load_ui_tests PRIVATE mikudancestudio_core winmm dsound)
         set_target_properties(model_load_ui_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")

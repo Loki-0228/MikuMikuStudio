@@ -252,6 +252,8 @@ struct PoseEditCapture::Impl {
     const void* dirty=nullptr;
     std::vector<Pose> before;
     bone_scale::Values scale;
+    std::unique_ptr<OwnedPoseEdit> staged;
+    std::uint64_t maximumBytes=0;
     bool active=true,finished=false;
     bool SameModel() const noexcept {
         if(!active||!model)return false;
@@ -275,16 +277,21 @@ Result PoseEditCapture::Begin(unsigned char* model) noexcept {
         auto next=std::make_unique<Impl>();next->model=model;next->bones=live.boneTable;next->dirty=live.bonePhysicsState;
         next->before.reserve(live.boneCount);
         for(std::size_t i=0;i<live.boneCount;++i)next->before.push_back(ReadPose(live,i));
-        next->scale=bone_scale::PoseValues(model);impl_=std::move(next);return Result::Ready;
+        next->scale=bone_scale::PoseValues(model);
+        for(const auto& value:next->scale)if(value.first<0||std::size_t(value.first)>=live.boneCount)return Result::Invalid;
+        next->staged=std::make_unique<OwnedPoseEdit>();next->staged->impl_=std::make_unique<OwnedPoseEdit::Impl>();
+        auto& record=*next->staged->impl_;record.model=model;record.bones=live.boneTable;record.boneCount=live.boneCount;
+        record.changes.reserve(live.boneCount);record.scaleChanges.reserve(live.boneCount);
+        next->maximumBytes=next->staged->RetainedBytes();impl_=std::move(next);return Result::Ready;
     }catch(const std::bad_alloc&){return Result::Memory;}catch(...){return Result::Invalid;}
 }
+std::uint64_t PoseEditCapture::MaximumRetainedBytes() const noexcept { return impl_&&impl_->active?impl_->maximumBytes:0; }
 Result PoseEditCapture::Finish(int operation,std::unique_ptr<OwnedPoseEdit>& out) noexcept {
     out.reset();
     if(operation!=1||!impl_||impl_->finished||!impl_->SameModel())return Result::Invalid;
     try {
         const auto& live=*mdl::Mdl(impl_->model);
-        auto next=std::make_unique<OwnedPoseEdit>();next->impl_=std::make_unique<OwnedPoseEdit::Impl>();
-        auto& record=*next->impl_;record.model=impl_->model;record.bones=impl_->bones;record.boneCount=impl_->before.size();
+        auto& record=*impl_->staged->impl_;record.changes.clear();record.scaleChanges.clear();
         for(std::size_t i=0;i<record.boneCount;++i){const auto after=ReadPose(live,i);const auto& before=impl_->before[i];
             // Switching the physical bone mode is type 5, not a pose edit.
             if(before.physics!=after.physics)return Result::Invalid;
@@ -292,6 +299,7 @@ Result PoseEditCapture::Finish(int operation,std::unique_ptr<OwnedPoseEdit>& out
             if(fields)record.changes.push_back({i,fields,before,after});
         }
         const auto afterScale=bone_scale::PoseValues(impl_->model);
+        for(const auto& value:afterScale)if(value.first<0||std::size_t(value.first)>=record.boneCount)return Result::Invalid;
         auto before=impl_->scale.cbegin(),after=afterScale.cbegin();
         while(before!=impl_->scale.end()||after!=afterScale.end()) {
             if(after==afterScale.end()||(before!=impl_->scale.end()&&before->first<after->first)) {
@@ -304,7 +312,7 @@ Result PoseEditCapture::Finish(int operation,std::unique_ptr<OwnedPoseEdit>& out
             }
         }
         if(record.changes.empty()&&record.scaleChanges.empty()){impl_->finished=true;return Result::Empty;}
-        out=std::move(next);impl_->finished=true;return Result::Ready;
+        out=std::move(impl_->staged);impl_->finished=true;return Result::Ready;
     }catch(const std::bad_alloc&){return Result::Memory;}catch(...){return Result::Invalid;}
 }
 bool PoseEditCapture::Rollback() noexcept {

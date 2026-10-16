@@ -50,6 +50,9 @@ SharedHistory::SharedHistory(StorageStore& storage, std::function<MmsResult()> g
 SharedHistory::~SharedHistory() {
     entered_ = true;
     InvalidatePending();
+    if (applied_) {
+        applied_->Release(); applied_->owner_ = nullptr; applied_ = nullptr;
+    }
     if (reset_) { reset_->owner_ = nullptr; reset_ = nullptr; }
 }
 void SharedHistory::AttachStore(EditStore* store) {
@@ -190,6 +193,81 @@ MmsResult SharedHistory::CommitNative(std::unique_ptr<NativeTransaction> t) {
     // Finalize retired physics contacts while Enter still excludes reentry.
     // Resource cleanup is after publication, never part of Publish itself.
     t.reset(); return MMS_OK;
+}
+SharedHistory::AppliedTransaction::AppliedTransaction(SharedHistory& owner, uint64_t maximum,
+    std::shared_ptr<Node> node, std::unique_ptr<Publication> publication)
+    : owner_(&owner), maximumNativeBytes_(maximum), node_(std::move(node)), publication_(std::move(publication)) {
+    owner.applied_ = this;
+}
+void SharedHistory::AppliedTransaction::Release() noexcept {
+    // Candidates may refer to their HistoryChange. Release them first, while
+    // the gate still blocks reentry from resource destruction.
+    busy_ = true;
+    verification_.reset(); publication_.reset(); node_.reset();
+}
+SharedHistory::AppliedTransaction::~AppliedTransaction() {
+    Release();
+    if (owner_) { owner_->applied_ = nullptr; owner_->Leave(); }
+}
+MmsResult SharedHistory::ReserveAppliedNative(std::string label, uint64_t maximumNativeBytes,
+    std::unique_ptr<AppliedTransaction>& out) {
+    if (auto r = Ready()) return r;
+    if (edits_ && (edits_->InCallback() || edits_->HasPending())) return MMS_E_BUSY;
+    if (auto r = Enter()) return r;
+    const auto result = Boundary([&]() -> MmsResult {
+        if (out) return MMS_E_ARGUMENT;
+        auto record = std::make_shared<EditRecord>(); record->label = std::move(label);
+        const auto bytes = RecordBytes(*record);
+        if (bytes > maxBytes_ || maximumNativeBytes > maxBytes_ - bytes) return MMS_E_MEMORY;
+        auto node = std::make_shared<Node>(Node{std::move(record), {}, bytes});
+        auto publication = std::make_unique<Publication>(*this);
+        publication->node.push_back(node);
+        out.reset(new AppliedTransaction(*this, maximumNativeBytes, std::move(node), std::move(publication)));
+        return MMS_OK;
+    });
+    if (result) Leave();
+    return result;
+}
+MmsResult SharedHistory::PrepareAppliedNative(AppliedTransaction& t, std::shared_ptr<HistoryChange> change) {
+    if (auto r = Ready()) return r;
+    if (!t.owner_) return MMS_E_STALE;
+    if (t.owner_ != this) return MMS_E_ARGUMENT;
+    if (t.busy_ || storage_.InCallback() || storage_.Prepared()) return MMS_E_BUSY;
+    if (t.committed_ || t.verification_) return MMS_E_CONFLICT;
+    if (!change) return MMS_E_ARGUMENT;
+    if (!entered_ || applied_ != &t || !t.publication_->IsCurrent()) return MMS_E_STALE;
+    t.busy_ = true;
+    const auto result = Boundary([&]() -> MmsResult {
+        const auto bytes = change->RetainedBytes();
+        if (bytes > t.maximumNativeBytes_) return MMS_E_MEMORY;
+        std::unique_ptr<PreparedHistoryChange> verification;
+        if (auto r = change->Prepare(false, verification)) return r;
+        if (!verification) return MMS_E_FAILED;
+        if (!verification->IsCurrent() || !t.publication_->IsCurrent() || change->RetainedBytes() != bytes)
+            return MMS_E_STALE;
+        t.nativeBytes_ = bytes; t.node_->bytes += bytes;
+        t.node_->native = std::move(change); t.verification_ = std::move(verification);
+        return MMS_OK;
+    });
+    t.busy_ = false;
+    return result;
+}
+MmsResult SharedHistory::CommitAppliedNative(AppliedTransaction& t) noexcept {
+    if (auto r = Ready()) return r;
+    if (!t.owner_) return MMS_E_STALE;
+    if (t.owner_ != this) return MMS_E_ARGUMENT;
+    if (t.busy_ || storage_.InCallback() || storage_.Prepared()) return MMS_E_BUSY;
+    if (t.committed_ || !t.verification_) return MMS_E_CONFLICT;
+    if (!entered_ || applied_ != &t || !t.publication_->IsCurrent()) return MMS_E_STALE;
+    t.busy_ = true;
+    const bool current = t.verification_->IsCurrent() && t.node_->native->RetainedBytes() == t.nativeBytes_;
+    if (current) {
+        // The live state is already the after state. Never publish the inverse
+        // verification candidate. This splice does not allocate or call users.
+        Publish(*t.publication_); t.committed_ = true;
+    }
+    t.busy_ = false;
+    return current ? MMS_OK : MMS_E_STALE;
 }
 MmsResult SharedHistory::Reset() {
     if (auto r = Ready()) return r;

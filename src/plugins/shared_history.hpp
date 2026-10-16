@@ -25,6 +25,7 @@ public:
 class SharedHistory final : public EditHost {
 public:
     class NativeTransaction;
+    class AppliedTransaction;
     class ResetTransaction;
 private:
     struct Node;
@@ -38,6 +39,7 @@ private:
     size_t maxEntries_;
     bool entered_ = false, poisoned_ = false;
     NativeTransaction* pending_ = nullptr;
+    AppliedTransaction* applied_ = nullptr;
     ResetTransaction* reset_ = nullptr;
     EditStore* edits_ = nullptr;
     MmsResult Ready() const;
@@ -63,6 +65,16 @@ public:
     MmsResult PrepareNative(std::string label, std::shared_ptr<HistoryChange>,
                             std::unique_ptr<NativeTransaction>&);
     MmsResult CommitNative(std::unique_ptr<NativeTransaction>);
+    // Synchronous native authors reserve BEFORE changing live state. The token
+    // holds the journal gate until destruction; do not pump messages or invoke
+    // plugins during this scope. Prepare validates the already-authored after
+    // state using an inverse candidate. Commit only records it, without replay.
+    // On any failure the caller must restore its captured state BEFORE dropping
+    // the token. Token destruction cancels the reservation, not the live edit.
+    MmsResult ReserveAppliedNative(std::string label, uint64_t maximumNativeBytes,
+                                  std::unique_ptr<AppliedTransaction>&);
+    MmsResult PrepareAppliedNative(AppliedTransaction&, std::shared_ptr<HistoryChange>);
+    MmsResult CommitAppliedNative(AppliedTransaction&) noexcept;
     // Project boundaries invalidate prepared transactions without reusing a
     // revision. Retired resources are reclaimed outside the no-fail publication.
     MmsResult Reset();
@@ -102,5 +114,22 @@ public:
     // Reclaims native owners before the caller frees the old scene/world.
     // No allocations. Keeps the journal locked through serializer commit.
     MmsResult Commit() noexcept;
+};
+class SharedHistory::AppliedTransaction {
+    friend class SharedHistory;
+    SharedHistory* owner_;
+    uint64_t maximumNativeBytes_, nativeBytes_ = 0;
+    std::shared_ptr<Node> node_;
+    std::unique_ptr<Publication> publication_;
+    std::unique_ptr<PreparedHistoryChange> verification_;
+    bool busy_ = false, committed_ = false;
+    AppliedTransaction(SharedHistory&, uint64_t, std::shared_ptr<Node>, std::unique_ptr<Publication>);
+    void Release() noexcept;
+public:
+    // Main-thread only. The native capture must be rolled back first unless
+    // CommitAppliedNative succeeded. Captures must not outlive their scene.
+    ~AppliedTransaction();
+    AppliedTransaction(const AppliedTransaction&) = delete;
+    AppliedTransaction& operator=(const AppliedTransaction&) = delete;
 };
 }

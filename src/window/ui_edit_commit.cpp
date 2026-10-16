@@ -58,9 +58,11 @@
 #include <d3d9.h>
 
 #include <cstdint>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 #include "mikudancestudio/adaptive_shadow.hpp"
 #include "mikudancestudio/mmd_app.hpp"
@@ -71,6 +73,9 @@
 #include "mikudancestudio/d3dx_dyn.hpp"
 #include "mikudancestudio/panel_controls.hpp"
 #include "mikudancestudio/bone_scale.hpp"
+#if !MMD_ORIGINAL_PROFILE
+#include "../plugins/native_pose_scope.hpp"
+#endif
 
 namespace mikudancestudio {
 
@@ -119,6 +124,90 @@ void ComposeEulerToBone(MMDApp* app, unsigned char* model, int sel) {
     mikudancestudio::mdl::Mdl(model)->bonePhysicsState[sel] = 1;
 }
 
+#if !MMD_ORIGINAL_PROFILE
+// This route is enabled only by an explicit internal app/history binding.
+// Preparation and publication never call PushBoneEditUndo or window functions.
+MmsResult ApplyBoundPoseNumber(MMDApp& app,plugins::SharedHistory& history,int kind,int axis,float value,bool& changed) {
+    changed=false;
+    return plugins::Boundary([&]() -> MmsResult {
+        auto* model=app.SelectedModel();
+        if(!model||app.PlaybackActive()||app.SceneMutationInProgress())return MMS_E_NOT_READY;
+        auto& native=*mdl::Mdl(model);const int selected=native.selectedBone;
+        if(!native.boneTable||!native.bonePhysicsState||selected<0||std::uint32_t(selected)>=native.boneCount)return MMS_E_NOT_READY;
+        auto& bone=native.boneTable[selected];float position=0,rotation[4]{};
+        if(kind==0) {
+            position=value-BoneParentBindOffset(model,selected,axis);
+            if(!std::isfinite(position))return MMS_E_ARGUMENT;
+            if(position==bone.trans[axis])return MMS_OK;
+        } else if(kind==1) {
+            auto& api=d3dx::Get();
+            if(!api.Load()||!api.rotX||!api.rotY||!api.rotZ||!api.multiply||!api.quatFromMatrix)return MMS_E_NOT_READY;
+            const float x=static_cast<float>((axis==0?value:app.state.eulerX)*kPiLit/180.0);
+            const float y=static_cast<float>(-(axis==1?value:app.state.eulerY)*kPiLit/180.0);
+            const float z=static_cast<float>(-(axis==2?value:app.state.eulerZ)*kPiLit/180.0);
+            if(!std::isfinite(x)||!std::isfinite(y)||!std::isfinite(z))return MMS_E_ARGUMENT;
+            d3dx::D3DXMATRIXF target{},temporary{};
+            api.rotZ(&target,z);api.rotX(&temporary,x);api.multiply(&target,&target,&temporary);
+            api.rotY(&temporary,y);api.multiply(&target,&target,&temporary);api.quatFromMatrix(rotation,&target);
+            for(float component:rotation)if(!std::isfinite(component))return MMS_E_ARGUMENT;
+            if(!std::memcmp(rotation,bone.rotQuat,sizeof(rotation)))return MMS_OK;
+        } else {
+            if(value<=0||!bone_scale::Enabled(&app))return MMS_E_ARGUMENT;
+            float current[3]{};
+            if(!SelectedBoneScaleReadout(&app,current))return MMS_E_NOT_READY;
+            if(current[axis]==value)return MMS_OK;
+            // View-coordinate scale uses this API. Resolve any DLL loading
+            // before the capture; subsequent Load calls only reuse it.
+            d3dx::Get().Load();
+        }
+        plugins::NativePoseScope scope;
+        if(auto result=scope.Begin(app,history,app.SelectedModelSlot(),kind==0?"Bone position":kind==1?"Bone rotation":"Bone scale"))return result;
+        if(kind==0)bone.trans[axis]=position;
+        else if(kind==1)std::memcpy(bone.rotQuat,rotation,sizeof(rotation));
+        else if(!SetSelectedBoneScaleAxis(&app,axis,value))return MMS_E_ARGUMENT;
+        native.bonePhysicsState[selected]=1;
+        return scope.Commit(changed);
+    });
+}
+bool FindPoseNumber(HWND edit,HWND base,int& kind,int& axis) {
+    if(!edit)return false;
+    const int ids[3][3]={{panel::kReadoutPosXEdit,panel::kReadoutPosYEdit,panel::kReadoutPosZEdit},
+        {panel::kReadoutRotXEdit,panel::kReadoutRotYEdit,panel::kReadoutRotZEdit},
+        {panel::kReadoutScaleXEdit,panel::kReadoutScaleYEdit,panel::kReadoutScaleZEdit}};
+    kind=-1;axis=-1;
+    for(int group=0;group<3;++group)for(int component=0;component<3;++component)
+        if(edit==GetDlgItem(base,ids[group][component])){kind=group;axis=component;}
+    return kind>=0;
+}
+bool CommitBoundPoseNumber(MMDApp* app,HWND edit,HWND base) {
+    auto* history=plugins::BoundNativePoseHistory(app);
+    int kind=-1,axis=-1;
+    if(!history||app->CameraMode()||!FindPoseNumber(edit,base,kind,axis))return false;
+    // A readout is rounded for display. Focus changes must not write that
+    // rounded text back over the full-precision authored value.
+    if(!SendMessageA(edit,EM_GETMODIFY,0,0))return true;
+    SendMessageA(edit,EM_SETMODIFY,FALSE,0);
+    char text[256]{};GetWindowTextA(edit,text,sizeof(text));char* end=nullptr;
+    const double parsed=std::strtod(text,&end);
+    const bool consumed=end&&end!=text;
+    while(end&&std::isspace(static_cast<unsigned char>(*end)))++end;
+    bool changed=false;
+    MmsResult result=MMS_E_ARGUMENT;
+    if(consumed&&!*end&&GetWindowTextLengthA(edit)<sizeof(text)&&std::isfinite(parsed)&&std::isfinite(static_cast<float>(parsed)))
+        result=ApplyBoundPoseNumber(*app,*history,kind,axis,static_cast<float>(parsed),changed);
+    // The scope is now finished and its journal lock has been released. Only
+    // successful edits publish dirty/UI state; errors leave the old ring alone.
+    if(result==MMS_OK&&changed) {
+        app->SceneModified()=1;app->RecordedFrameCountByte1()=1;
+        EnableWindow(GetDlgItem(app->MainWindow(),panel::kUndoButton),history->UndoCount()!=0);
+        EnableWindow(GetDlgItem(app->MainWindow(),panel::kRedoButton),history->RedoCount()!=0);
+        InvalidateRect(app->MainWindow(),nullptr,FALSE);
+    }
+    if(app->SelectedModel())plugins::Boundary([&]() -> MmsResult {PostViewRefresh(app);return MMS_OK;});
+    return true;
+}
+#endif
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -129,6 +218,9 @@ void CommitEditControlTail(MMDApp* app, HWND edit) {  // was Sub44BEF0
     if (base == nullptr)
         base = app->MainWindow();
     const bool cameraMode = app->CameraMode() != 0;
+#if !MMD_ORIGINAL_PROFILE
+    if(CommitBoundPoseNumber(app,edit,base))return;
+#endif
 
     if (edit == GetDlgItem(base, panel::kReadoutPosXEdit)) {           // 0x44BF31
         char text[256];
@@ -517,12 +609,21 @@ LRESULT CALLBACK EditSubclassProc(HWND hWnd, UINT Msg, WPARAM wParam,
     } else if (Msg == WM_KILLFOCUS) {
         // wParam is the next focus window, not the field being edited.
         // The typing is being committed: let the view refresh echo it back.
-        SendMessageA(hWnd, EM_SETMODIFY, FALSE, 0);
+        bool boundPose=false;
+#if !MMD_ORIGINAL_PROFILE
+        HWND base=app->FloatingWindow()?app->FloatingWindow():app->MainWindow();
+        int kind=-1,axis=-1;
+        boundPose=plugins::BoundNativePoseHistory(app)&&!app->CameraMode()&&FindPoseNumber(hWnd,base,kind,axis);
+#endif
+        // The bound pose route consumes this flag itself, before changing any
+        // model state. Legacy controls retain their existing commit behavior.
+        if(!boundPose)SendMessageA(hWnd, EM_SETMODIFY, FALSE, 0);
         // Recording hides/restores the editor while its text may still show
         // the pre-export frame. Those focus changes are not user edits.
         if (app->FrameStepPlayback() == 0 &&
             app->state.recordPlaybackStartPending == 0)
             CommitEditControl(app, hWnd);
+        if(boundPose)SendMessageA(hWnd, EM_SETMODIFY, FALSE, 0);
     }
     return CallWindowProcA(
         app->OriginalEditProc(),

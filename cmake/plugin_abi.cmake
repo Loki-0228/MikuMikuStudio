@@ -23,7 +23,7 @@ target_compile_definitions(mms_plugin_runtime PRIVATE _WIN32_WINNT=0x0601 WINVER
 target_link_libraries(mikudancestudio_core PUBLIC mms_plugin_runtime)
 target_sources(mikudancestudio_core PRIVATE src/plugins/integration.cpp src/app/update_coordinator.cpp src/plugins/scene_host.cpp src/plugins/scene_geometry.cpp src/plugins/scene_definitions.cpp src/plugins/scene_history.cpp)
 if(MIKUDANCESTUDIO_PROFILE STREQUAL "full")
-    target_sources(mikudancestudio_core PRIVATE src/physics/history_physics.cpp src/plugins/scene_object_history.cpp src/plugins/scene_resource_budget.cpp)
+    target_sources(mikudancestudio_core PRIVATE src/physics/history_physics.cpp src/plugins/scene_object_history.cpp src/plugins/scene_resource_budget.cpp src/plugins/native_pose_scope.cpp)
 endif()
 
 add_library(mms_hello_plugin SHARED EXCLUDE_FROM_ALL
