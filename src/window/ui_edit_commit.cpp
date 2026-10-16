@@ -75,6 +75,7 @@
 #include "mikudancestudio/bone_scale.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "../plugins/native_pose_scope.hpp"
+#include "../plugins/native_history_commands.hpp"
 #endif
 
 namespace mikudancestudio {
@@ -130,8 +131,10 @@ void ComposeEulerToBone(MMDApp* app, unsigned char* model, int sel) {
 MmsResult ApplyBoundPoseNumber(MMDApp& app,plugins::SharedHistory& history,int kind,int axis,float value,bool& changed) {
     changed=false;
     return plugins::Boundary([&]() -> MmsResult {
+        if(app.SelectedModelSlot()>=kModelSlotCount||app.PlaybackActive()||app.FrameStepPlayback()||
+            app.state.recordPlaybackStartPending||app.SceneMutationInProgress())return MMS_E_NOT_READY;
         auto* model=app.SelectedModel();
-        if(!model||app.PlaybackActive()||app.SceneMutationInProgress())return MMS_E_NOT_READY;
+        if(!model)return MMS_E_NOT_READY;
         auto& native=*mdl::Mdl(model);const int selected=native.selectedBone;
         if(!native.boneTable||!native.bonePhysicsState||selected<0||std::uint32_t(selected)>=native.boneCount)return MMS_E_NOT_READY;
         auto& bone=native.boneTable[selected];float position=0,rotation[4]{};
@@ -198,12 +201,10 @@ bool CommitBoundPoseNumber(MMDApp* app,HWND edit,HWND base) {
     // The scope is now finished and its journal lock has been released. Only
     // successful edits publish dirty/UI state; errors leave the old ring alone.
     if(result==MMS_OK&&changed) {
-        app->SceneModified()=1;app->RecordedFrameCountByte1()=1;
-        EnableWindow(GetDlgItem(app->MainWindow(),panel::kUndoButton),history->UndoCount()!=0);
-        EnableWindow(GetDlgItem(app->MainWindow(),panel::kRedoButton),history->RedoCount()!=0);
-        InvalidateRect(app->MainWindow(),nullptr,FALSE);
+        plugins::PublishBoundPoseEdit(*app,*history);
+        return true;
     }
-    if(app->SelectedModel())plugins::Boundary([&]() -> MmsResult {PostViewRefresh(app);return MMS_OK;});
+    plugins::RefreshBoundPoseReadout(*app);
     return true;
 }
 #endif

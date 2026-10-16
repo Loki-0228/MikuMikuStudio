@@ -329,6 +329,9 @@ void CrossModelJournal(){
 #include "scene_resource_budget_checks.inc"
 #include "shared_history_applied_checks.inc"
 #include "native_pose_scope_checks.inc"
+#include "native_history_command_checks.inc"
+#include "native_pose_command_checks.inc"
+#include "native_pose_axis_checks.inc"
 int main(){
     std::setvbuf(stdout,nullptr,_IONBF,0);
     const auto run=[](const char* name,void(*test)()){std::printf("RUN %s\n",name);test();};
@@ -336,6 +339,9 @@ int main(){
     run("SceneResourceBudgetChecks",SceneResourceBudgetChecks);
     run("SharedHistoryAppliedChecks",SharedHistoryAppliedChecks);
     run("NativePoseScopeChecks",NativePoseScopeChecks);
+    run("NativeHistoryCommandChecks",NativeHistoryCommandChecks);
+    run("NativePoseCommandChecks",NativePoseCommandChecks);
+    run("NativePoseAxisChecks",NativePoseAxisChecks);
     run("PoseAndStale",PoseAndStale);run("KeysAndChain",KeysAndChain);run("Bake",Bake);
     run("Deletion",Deletion);run("EmptyAndCycle",EmptyAndCycle);run("FreeCurves",FreeCurves);
     run("Scatter",Scatter);run("FailedNativeCommands",FailedNativeCommands);run("RemovalBindings",RemovalBindings);

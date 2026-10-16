@@ -48,6 +48,9 @@
 #include "mikudancestudio/bottom_panel_resize.hpp"
 #include "mikudancestudio/accessory_layout.hpp"
 #include "mikudancestudio/bone_scale.hpp"
+#if !MMD_ORIGINAL_PROFILE
+#include "../plugins/native_pose_axis.hpp"
+#endif
 #include "mikudancestudio/ported_funcs.hpp"
 #include "mikudancestudio/ui_translation.hpp"
 #include "mikudancestudio/model.hpp"
@@ -306,6 +309,9 @@ void SyncBoneScaleEdits(MMDApp* app) {
 // MMS addition: the X / Y / Z buttons beside the 缩放 edits reset that one
 // axis of the selected bone's scale back to 1.00, as one undoable bone edit.
 void ResetSelectedBoneScaleAxis(MMDApp* app, int axis) {
+#if !MMD_ORIGINAL_PROFILE
+    if (plugins::TryResetBoundPoseAxis(app, plugins::NativePoseAxisKind::Scale, axis)) return;
+#endif
     if (!bone_scale::Enabled(app) || axis < 0 || axis > 2)
         return;
     float values[3] = {1.0f, 1.0f, 1.0f};

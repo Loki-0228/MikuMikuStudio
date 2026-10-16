@@ -56,6 +56,7 @@
 #include "mikudancestudio/ported_funcs.hpp"
 #include "mikudancestudio/panel_controls.hpp"
 #include "mikudancestudio/runtime_log.hpp"
+#include "../plugins/native_history_commands.hpp"
 
 namespace mikudancestudio {
 
@@ -305,7 +306,12 @@ void DispatchLetterHotkeys(MMDApp* app, HWND focus) {
     }
 
     // ---- 'X' (0x472D5C): redo / camera mode ------------------------------
-    if (focusOK && modelMode && !playing && !focusInEdit && pressed(kSlotX)) {
+    bool redoHandled = false;
+#if !MMD_ORIGINAL_PROFILE
+    if (focusOK && !playing && !focusInEdit && ctrl && pressed(kSlotX))
+        redoHandled = plugins::TryBoundHistoryCommand(app, true);
+#endif
+    if (!redoHandled && focusOK && modelMode && !playing && !focusInEdit && pressed(kSlotX)) {
         unsigned char* model = app->SelectedModel();
         if (ctrl && model != nullptr &&
             mdl::Mdl(model)->redoDirty != 0 &&
@@ -340,7 +346,12 @@ void DispatchLetterHotkeys(MMDApp* app, HWND focus) {
     }
 
     // ---- 'Z' (0x472ED7): undo / light mode -------------------------------
-    if (focusOK && modelMode && !playing && !focusInEdit && pressed(kSlotZ)) {
+    bool undoHandled = false;
+#if !MMD_ORIGINAL_PROFILE
+    if (focusOK && !playing && !focusInEdit && ctrl && pressed(kSlotZ))
+        undoHandled = plugins::TryBoundHistoryCommand(app, false);
+#endif
+    if (!undoHandled && focusOK && modelMode && !playing && !focusInEdit && pressed(kSlotZ)) {
         unsigned char* model = app->SelectedModel();
         if (ctrl && model != nullptr &&
             mdl::Mdl(model)->undoDirty != 0 &&

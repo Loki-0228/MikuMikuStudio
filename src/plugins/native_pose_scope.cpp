@@ -78,7 +78,8 @@ MmsResult NativePoseScope::Begin(MMDApp& app,SharedHistory& history,unsigned slo
     // callbacks or window messages between this probe and the final reserve.
     if(auto result=history.Enter())return result;
     history.Leave();
-    if(slot>=255||!app.ModelSlot(slot)||app.PlaybackActive()||app.SceneMutationInProgress())return MMS_E_NOT_READY;
+    if(slot>=kModelSlotCount||!app.ModelSlot(slot)||app.PlaybackActive()||app.FrameStepPlayback()||
+        app.state.recordPlaybackStartPending||app.SceneMutationInProgress())return MMS_E_NOT_READY;
     return Boundary([&]() -> MmsResult {
         auto next=std::make_unique<Impl>(history);next->change=std::make_shared<PoseChange>(app,slot);
         const auto captured=next->capture.Begin(next->change->model);

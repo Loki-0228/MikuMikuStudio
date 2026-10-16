@@ -164,6 +164,9 @@
 #include "mikudancestudio/adaptive_shadow.hpp"
 #include "mikudancestudio/shadow_filter.hpp"
 #include "mikudancestudio/build_profile.hpp"
+#if !MMD_ORIGINAL_PROFILE
+#include "../plugins/native_pose_axis.hpp"
+#endif
 
 namespace mikudancestudio {
 
@@ -295,6 +298,10 @@ void MorphStep(MMDApp* app, HWND hwnd, std::size_t lane, int comboId,
 // keyframe (sub_42D6E0), zeroes the selected bone's local position component
 // and marks its per-frame edit flag.
 void BonePosEdit(MMDApp* app, std::size_t axis) {
+#if !MMD_ORIGINAL_PROFILE
+    if (plugins::TryResetBoundPoseAxis(app, plugins::NativePoseAxisKind::Position,
+                                     static_cast<int>(axis))) return;
+#endif
     if (app->state.optflag[0] != 0) {
         app->CameraPositionAxis(axis) = 0.0f;
         RefreshRequest(-1);
@@ -321,6 +328,9 @@ void BonePosEdit(MMDApp* app, std::size_t axis) {
 // stores the rotation quaternion into the bone record (+0x14C) via
 // D3DXQuaternionRotationMatrix, marking the bone flag 0x2D98.
 void BoneRotEdit(MMDApp* app, float* vec, int axis) {
+#if !MMD_ORIGINAL_PROFILE
+    if (plugins::TryResetBoundPoseAxis(app, plugins::NativePoseAxisKind::Rotation, axis)) return;
+#endif
     if (app->state.optflag[0] != 0) {
         vec[axis] = 0.0f;
         RefreshRequest(-1);

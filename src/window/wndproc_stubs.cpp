@@ -13,6 +13,9 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include "mikudancestudio/build_profile.hpp"
+#if !MMD_ORIGINAL_PROFILE
+#include "../plugins/native_pose_axis.hpp"
+#endif
 #include <Windows.h>
 
 #include <cstdio>
@@ -152,6 +155,10 @@ void DispatchSeparateWindowCommand(MMDApp* app, unsigned short id) {  // was Sub
     case 0x21A:
     case 0x21B: {
         const std::size_t axis = id - 0x219;  // 0/1/2 -> +320/+324/+328
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::TryResetBoundPoseAxis(app, plugins::NativePoseAxisKind::Position,
+            static_cast<int>(axis), plugins::NativePoseAxisSource::FloatingWindow)) break;
+#endif
         if (s.CameraMode() != 0) {
             s.CameraPositionAxis(axis) = 0.0f;
             RefreshRequest(-1);                                  // 0x440AC0
@@ -178,6 +185,10 @@ void DispatchSeparateWindowCommand(MMDApp* app, unsigned short id) {  // was Sub
     case 0x21D:
     case 0x21E: {
         const int axis = id - 0x21C;  // which degree cache stays non-zero
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::TryResetBoundPoseAxis(app, plugins::NativePoseAxisKind::Rotation,
+            axis, plugins::NativePoseAxisSource::FloatingWindow)) break;
+#endif
         if (s.CameraMode() == 0) {
             unsigned char* model = s.SelectedModel();
             const std::int32_t bone = mikudancestudio::mdl::Mdl(model)->selectedBone;

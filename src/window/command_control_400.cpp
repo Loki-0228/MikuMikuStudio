@@ -205,6 +205,7 @@
 #include "mikudancestudio/panel_controls.hpp"
 #include "mikudancestudio/ui_language.hpp"
 #include "mikudancestudio/frame_scope.hpp"
+#include "../plugins/native_history_commands.hpp"
 
 namespace mikudancestudio {
 
@@ -1119,6 +1120,9 @@ static const wchar_t kTitleOpenFileJp[] =
 // def_47E903, a no-op for this id (control 0x190 != 0x1B4).
 // ------------------------------------------------------------------
 static void Cmd400_Undo(MMDApp* app, HWND hwnd) {
+#if !MMD_ORIGINAL_PROFILE
+    if (plugins::TryBoundHistoryCommand(app, false)) return;
+#endif
     if (app->state.optflag[0] != 0) {
         return;  // was: break (switch exit)
     }
@@ -1152,6 +1156,9 @@ static void Cmd400_Undo(MMDApp* app, HWND hwnd) {
 // app+0xA0CC4) - the stub only takes this + pos).
 // ------------------------------------------------------------------
 static void Cmd400_Redo(MMDApp* app, HWND hwnd) {
+#if !MMD_ORIGINAL_PROFILE
+    if (plugins::TryBoundHistoryCommand(app, true)) return;
+#endif
     if (app->state.optflag[0] != 0) {
         return;  // was: break (switch exit)
     }

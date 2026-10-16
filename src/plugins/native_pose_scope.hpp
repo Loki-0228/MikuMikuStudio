@@ -25,7 +25,8 @@ public:
     bool Cancel() noexcept;
 };
 
-// Explicit, thread-local test mode for the REAL numeric-control entrypoint.
+// Explicit, thread-local test mode for migrated production pose commands and
+// their undo/redo buttons and shortcuts.
 // No production initialization enables this: legacy writers are not all in
 // the journal yet. Binding never exposes mms.edit. App/history lifetimes cover
 // the binding, scopes and every retained node; the caller budgets models.

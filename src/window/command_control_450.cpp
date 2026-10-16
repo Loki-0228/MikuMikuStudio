@@ -121,6 +121,13 @@
 #include <cstdlib>
 #include <cstring>
 #include <new>
+#if !MMD_ORIGINAL_PROFILE
+#include <cmath>
+#include <string_view>
+#include <vector>
+#include "../plugins/native_pose_scope.hpp"
+#include "../plugins/native_history_commands.hpp"
+#endif
 
 #include "mikudancestudio/text_encoding.hpp"
 #include "mikudancestudio/d3dx_dyn.hpp"
@@ -240,6 +247,143 @@ void* ConstructArrayElements(void* block, std::uint32_t elementSize,
 // control 490, defined in localize_ui.cpp next to the caption table.
 ViewportEditMode NextBoneSelectMode(ViewportEditMode current);
 
+#if !MMD_ORIGINAL_PROFILE
+namespace {
+struct CommandPoseTarget {
+    float position[3]{},rotation[4]{};
+    bone_scale::Matrix scale;
+    bool matched=false,changed=false;
+};
+template<std::size_t N> std::string_view BoundedPoseName(const char (&name)[N]) {
+    std::size_t length=0;while(length<N&&name[length])++length;
+    return {name,length};
+}
+bool PoseTargetChanged(const CommandPoseTarget& target,const mdl::BoneRecord& bone,
+                       const bone_scale::Matrix& scale) {
+    for(int i=0;i<3;++i)if(target.position[i]!=bone.trans[i])return true;
+    for(int i=0;i<4;++i)if(target.rotation[i]!=bone.rotQuat[i])return true;
+    return target.scale!=scale;
+}
+bool ValidPoseTarget(const CommandPoseTarget& target) {
+    for(float value:target.position)if(!std::isfinite(value))return false;
+    for(float value:target.rotation)if(!std::isfinite(value))return false;
+    return bone_scale::Valid(target.scale);
+}
+// The result is a complete authored target. No selection, dirty/UI state or
+// legacy ring is written while names, mirror pairs and root rotations resolve.
+MmsResult ApplyBoundPoseCommand(MMDApp& app,plugins::SharedHistory& history,
+                               std::uint16_t command) {
+    return plugins::Boundary([&]() -> MmsResult {
+        if(app.CameraMode()||app.PlaybackActive()||app.FrameStepPlayback()||
+           app.state.recordPlaybackStartPending||app.SceneMutationInProgress())return MMS_E_NOT_READY;
+        auto* model=app.SelectedModel();if(!model)return MMS_E_NOT_READY;
+        auto& native=*mdl::Mdl(model);
+        if(!native.boneCount||native.boneCount>INT32_MAX||!native.boneTable||
+           !native.boneSelection||!native.bonePhysicsState)return MMS_E_NOT_READY;
+        const bool paste=command!=495,mirror=command==498;
+        if(paste&&app.state.copiedBoneCount<=0)return MMS_OK;
+        if(paste&&!app.BoneCopyRecords())return MMS_E_NOT_READY;
+        std::vector<CommandPoseTarget> targets(native.boneCount);
+        for(std::size_t i=0;i<targets.size();++i) {
+            std::memcpy(targets[i].position,native.boneTable[i].trans,sizeof(targets[i].position));
+            std::memcpy(targets[i].rotation,native.boneTable[i].rotQuat,sizeof(targets[i].rotation));
+            targets[i].scale=bone_scale::Pose(model,int(i));
+        }
+        int lastMatched=-1;
+        if(paste) {
+            std::vector<std::string_view> names;names.reserve(native.boneCount);
+            for(std::size_t i=0;i<targets.size();++i)names.push_back(BoundedPoseName(native.boneTable[i].name));
+            const auto* records=static_cast<const BoneCopyRecord*>(app.BoneCopyRecords());
+            for(int j=0;j<app.state.copiedBoneCount;++j) {
+                const auto& source=records[j];const auto name=BoundedPoseName(source.name);
+                int exact=-1;
+                for(std::size_t i=0;i<names.size();++i)if(names[i]==name){exact=int(i);break;}
+                if(exact<0)continue;
+                int destination=exact;
+                if(mirror) {
+                    int opposite=-1;
+                    for(int pass=0;pass<2&&opposite<0;++pass) {
+                        const auto from=std::string_view(pass?kNeedle530BF8:kNeedle530BFC);
+                        const auto to=std::string_view(pass?kNeedle530BFC:kNeedle530BF8);
+                        const auto tag=names[exact].find(from);if(tag==std::string_view::npos)continue;
+                        const auto suffix=names[exact].substr(tag+from.size());
+                        for(std::size_t i=0;i<names.size();++i) {
+                            const auto other=names[i].find(to);
+                            if(other!=std::string_view::npos&&names[i].substr(other+to.size())==suffix){opposite=int(i);break;}
+                        }
+                    }
+                    if(opposite>=0)destination=opposite;
+                }
+                auto& target=targets[destination];target.matched=true;lastMatched=destination;
+                std::memcpy(target.position,source.position,sizeof(target.position));
+                std::memcpy(target.rotation,source.rotation,sizeof(target.rotation));
+                if(mirror){target.position[0]=-target.position[0];target.rotation[1]=-target.rotation[1];target.rotation[2]=-target.rotation[2];}
+                target.scale=bone_scale::Clipboard(&app,j,true,mirror);
+            }
+        } else {
+            for(std::size_t i=0;i<targets.size();++i)if(native.boneSelection[i]) {
+                targets[i].matched=true;targets[i].scale={};
+            }
+            // Native reset keeps the root's X/Z offsets. Other parentless
+            // bones use this final root seed, whether or not it is selected.
+            if(targets[0].matched) {
+                targets[0].position[1]=0;
+                targets[0].rotation[0]=targets[0].rotation[1]=targets[0].rotation[2]=0;
+                targets[0].rotation[3]=1;
+            }
+            auto& api=d3dx::Get();bool mathReady=false;
+            for(std::size_t i=1;i<targets.size();++i)if(targets[i].matched) {
+                auto& target=targets[i];const auto& bone=native.boneTable[i];
+                if(bone.parent==-1) {
+                    if(!mathReady){if(!api.Load()||!api.matrixRotationQuaternion)return MMS_E_NOT_READY;mathReady=true;}
+                    d3dx::D3DXMATRIXF matrix{};api.matrixRotationQuaternion(&matrix,bone.rotQuat);
+                    for(int axis=0;axis<3;++axis) {
+                        double value=double(bone.position[1])*matrix.m[1][axis];
+                        value+=double(bone.position[0])*matrix.m[0][axis];
+                        value+=double(bone.position[2])*matrix.m[2][axis];
+                        value+=matrix.m[3][axis];value-=bone.position[axis];value+=targets[0].position[axis];
+                        target.position[axis]=static_cast<float>(value);
+                    }
+                    std::memcpy(target.rotation,targets[0].rotation,sizeof(target.rotation));
+                } else {
+                    target.position[0]=target.position[1]=target.position[2]=0;
+                    target.rotation[0]=target.rotation[1]=target.rotation[2]=0;target.rotation[3]=1;
+                }
+            }
+        }
+        bool anyChange=false;
+        for(std::size_t i=0;i<targets.size();++i)if(targets[i].matched) {
+            if(!ValidPoseTarget(targets[i]))return MMS_E_ARGUMENT;
+            targets[i].changed=PoseTargetChanged(targets[i],native.boneTable[i],bone_scale::Pose(model,int(i)));
+            anyChange|=targets[i].changed;
+        }
+        // A matching pose that is already present is not an edit. In
+        // particular it must not clear selection, mark bones or discard redo.
+        if(!anyChange)return MMS_OK;
+        plugins::NativePoseScope scope;
+        if(auto result=scope.Begin(app,history,app.SelectedModelSlot(),paste?(mirror?"Mirror bone pose":"Paste bone pose"):"Reset bone pose"))return result;
+        for(std::size_t i=0;i<targets.size();++i)if(targets[i].matched&&(paste||targets[i].changed)) {
+            const auto& target=targets[i];auto& bone=native.boneTable[i];
+            std::memcpy(bone.trans,target.position,sizeof(target.position));
+            std::memcpy(bone.rotQuat,target.rotation,sizeof(target.rotation));
+            if(!bone_scale::SetPose(model,int(i),target.scale))return MMS_E_ARGUMENT;
+            native.bonePhysicsState[i]=1;
+        }
+        bool changed=false;if(auto result=scope.Commit(changed))return result;
+        if(!changed)return MMS_OK;
+        // All fallible work is finished. Selection is editor state, and is
+        // published only after authored state and its journal node succeed.
+        if(paste) {
+            for(std::size_t i=0;i<targets.size();++i)native.boneSelection[i]=targets[i].matched?1:0;
+            native.selectedBone=lastMatched;
+        }
+        plugins::PublishBoundPoseEdit(app,history,paste);
+        return MMS_OK;
+    });
+}
+}
+#endif
+
 void CmdControl450(MMDApp* app, HWND hwnd, std::uint16_t id,
                    std::uint16_t notify) {
     // These bone operations may arrive from the frame-loop shortcut path,
@@ -248,6 +392,11 @@ void CmdControl450(MMDApp* app, HWND hwnd, std::uint16_t id,
     if (id >= 494 && id <= 498 &&
         (app->SelectedModelSlot() >= kModelSlotCount || ActiveModel(app) == nullptr))
         return;
+#if !MMD_ORIGINAL_PROFILE
+    if(id==495||id==497||id==498)if(auto* history=plugins::BoundNativePoseHistory(app)) {
+        ApplyBoundPoseCommand(*app,*history,id);return;
+    }
+#endif
     (void)notify;  // see header: the default handler's notify gate can never
                    // match any id of this family
     switch (id) {
