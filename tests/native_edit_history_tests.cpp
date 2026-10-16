@@ -351,12 +351,19 @@ void CrossModelJournal(){
 #include "native_morph_key_checks.inc"
 #include "native_morph_registration_checks.inc"
 #include "native_display_registration_checks.inc"
+#include "native_global_registration_checks.inc"
+#include "native_accessory_registration_checks.inc"
 #include "native_model_key_checks.inc"
 #include "native_model_range_checks.inc"
 #include "native_object_command_checks.inc"
 int main(int argc,char** argv){
     std::setvbuf(stdout,nullptr,_IONBF,0);
     const auto run=[](const char* name,void(*test)()){std::printf("RUN %s\n",name);test();};
+    if(argc==2&&!std::strcmp(argv[1],"--global-registration-only")) {
+        run("NativeGlobalRegistrationChecks",NativeGlobalRegistrationChecks);
+        run("NativeAccessoryRegistrationChecks",NativeAccessoryRegistrationChecks);
+        std::printf("PASS native global registration: %u checks\n",checks);return 0;
+    }
     if(argc==2&&!std::strcmp(argv[1],"--registration-only")) {
         run("NativeMorphRegistrationChecks",NativeMorphRegistrationChecks);
         run("NativeDisplayRegistrationChecks",NativeDisplayRegistrationChecks);
@@ -387,6 +394,8 @@ int main(int argc,char** argv){
     run("NativeMorphKeyChecks",NativeMorphKeyChecks);
     run("NativeMorphRegistrationChecks",NativeMorphRegistrationChecks);
     run("NativeDisplayRegistrationChecks",NativeDisplayRegistrationChecks);
+    run("NativeGlobalRegistrationChecks",NativeGlobalRegistrationChecks);
+    run("NativeAccessoryRegistrationChecks",NativeAccessoryRegistrationChecks);
     run("NativeModelKeyChecks",NativeModelKeyChecks);
     run("NativeModelRangeChecks",NativeModelRangeChecks);
     run("NativeObjectCommandChecks",NativeObjectCommandChecks);

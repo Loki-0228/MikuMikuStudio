@@ -168,6 +168,7 @@
 #include "../plugins/native_pose_axis.hpp"
 #include "../plugins/native_bone_registration.hpp"
 #include "../plugins/native_key_commands.hpp"
+#include "../plugins/native_global_commands.hpp"
 #endif
 
 namespace mikudancestudio {
@@ -876,6 +877,9 @@ void CmdControl500(MMDApp* app, HWND hwnd, std::uint16_t id, std::uint16_t notif
 
     // ---- 565: physics-interval edit box 0x235 ---------------------------
     case 565: {  // 0x48D9A5
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::TryRegisterBoundShadow(app, hwnd)) break;
+#endif
         // atof of the 0x231 text (max 8 chars); physics interval float
         // 0xA0D2C = (10000 - v) / 100000 (dbl_52B9F8 / dbl_52BA00); slider
         // 0x230 pos = (int)v; dirty flag; selection-bitmap clear; then the

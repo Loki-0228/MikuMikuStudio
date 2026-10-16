@@ -2,6 +2,7 @@
 #include "mikudancestudio/build_profile.hpp"
 #include "mikudancestudio/animation_curve_editor.hpp"
 #include "mikudancestudio/pmm_extension.hpp"
+#include <array>
 #include <memory>
 #include <string>
 #include <vector>
@@ -204,4 +205,42 @@ void SwapAuthoring(MMDApp& app, AuthoringTable& table) noexcept;
 // True while the live authoring still carries exactly what `table` holds and
 // the native pools it was captured against are unchanged.
 bool AuthoringUnchanged(MMDApp& app, const AuthoringTable& table);
+#if !MMD_ORIGINAL_PROFILE
+// Read-only access to a privately planned native track. Every returned record
+// has the layout of kind; pointers remain valid through target preparation.
+struct NativeKeyView {
+    const void* context = nullptr;
+    std::size_t capacity = 0;
+    const void* (*key)(const void*, std::uint32_t) noexcept = nullptr;
+};
+// Retains pristine authoring for one history record. Normal reads may reconcile
+// live curves; both history directions still derive from this original layer.
+class TrackAuthoring {
+    struct Impl;
+    std::shared_ptr<Impl> impl_;
+public:
+    TrackAuthoring(MMDApp&, Kind, int slot = 0);
+    ~TrackAuthoring();
+    bool IsCurrent() const noexcept;
+    class Target {
+        struct Impl;
+        std::unique_ptr<Impl> impl_;
+        explicit Target(std::unique_ptr<Impl>);
+        friend class TrackAuthoring;
+    public:
+        ~Target();
+        bool IsCurrent() const noexcept;
+        bool Authored() const noexcept;
+        // Pose values in Fields order, including discrete bindings. Detached
+        // output; no renderer, app writes, synchronization or callbacks in Publish.
+        bool Sample(double frame, std::array<double, 12>& out) const;
+        // Validate the entire transaction before any write. Pass the final
+        // pool pointer for global tracks, or object pointer for an accessory.
+        // Publication retains displaced curve storage until Target destruction.
+        void Publish(void* finalIdentity) noexcept;
+    };
+    std::unique_ptr<Target> Prepare(const NativeKeyView&) const;
+    std::uint64_t RetainedBytes() const noexcept;
+};
+#endif
 }

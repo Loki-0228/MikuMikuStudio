@@ -1,6 +1,7 @@
 #include "native_object_commands.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "native_history_commands.hpp"
+#include "native_global_commands.hpp"
 #include "native_pose_scope.hpp"
 #include "history_runtime.hpp"
 #include "scene_object_history.hpp"
@@ -220,6 +221,7 @@ bool RefreshUi(MMDApp& app, SharedHistory& history, const scene_history_ui::Sele
     if (app.CurveDC()) SelectionReeval(&app);
     InvalidateRect(main, nullptr, FALSE);
     RefreshBoundPoseReadout(app);
+    RefreshBoundGlobalReadout(app);
     curve_editor::NotifyOwnedChanged(main);
     if (pendingUi == &app) { pendingUi = nullptr; hasPendingSelection = false; }
     return true;

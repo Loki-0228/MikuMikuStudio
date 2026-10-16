@@ -236,6 +236,10 @@ struct State {
     // Also identifies writes that only change editor metadata or callbacks.
     // Such writes need not change the native pool or the authored key values.
     std::uint64_t revision = NextAuthoringRevision();
+#if !MMD_ORIGINAL_PROFILE
+    // Native reconciliation changes the effective layer, not its author.
+    std::uint64_t author = revision;
+#endif
 };
 using Address=std::tuple<MMDApp*,Kind,int>;
 std::map<Address,State> states;
@@ -772,4 +776,156 @@ bool AuthoringUnchanged(MMDApp& app, const AuthoringTable& table) {
     }
     return true;
 }
+
+#if !MMD_ORIGINAL_PROFILE
+namespace {
+std::uint64_t TrackPoolIdentity(MMDApp& app, Kind kind, int slot) {
+    switch(kind) {
+    case Kind::Camera:return mdl::KeyPoolIdentity(app.CameraKeys());
+    case Kind::Light:return mdl::KeyPoolIdentity(app.LightKeys());
+    case Kind::Shadow:return mdl::KeyPoolIdentity(app.ShadowKeys());
+    case Kind::Gravity:return mdl::KeyPoolIdentity(app.GravityKeys());
+    default:return slot>=0&&slot<255?mdl::KeyPoolIdentity(app.AccessoryKeys(slot)):0;
+    }
+}
+template<class K> std::vector<Channel> TargetChannels(const NativeKeyView& view, Kind kind) {
+    if(!view.key||!view.capacity)throw std::invalid_argument("target native track");
+    const auto& fields=Fields(kind);std::vector<Channel> result(fields.size());
+    for(std::size_t c=0;c<fields.size();++c){result[c].id=fields[c].id;result[c].track.discrete=fields[c].discrete;}
+    std::uint32_t index=0,previous=0,lastFrame=0;std::vector<K> keys;
+    for(std::size_t hops=0;;++hops) {
+        if(hops>=view.capacity||index>=view.capacity)throw std::invalid_argument("target native chain");
+        const auto* key=static_cast<const K*>(view.key(view.context,index));
+        if(!key||key->frame>frame_limits::maximum||(!hops&&key->frame)||
+           (hops&&(key->frame<=lastFrame||key->previous!=previous)))throw std::invalid_argument("target native order");
+        keys.push_back(*key);
+        for(std::size_t c=0;c<fields.size();++c){
+            ac::Key point;point.frame=int(key->frame);point.value=Value(*key,c);point.tangent=ac::Tangent::Free;
+            point.interpolation=fields[c].step?ac::Interpolation::Step:ac::Interpolation::Linear;
+            if(!std::isfinite(point.value))throw std::invalid_argument("target native value");
+            result[c].track.keys.push_back(point);
+        }
+        if(!key->next)break;previous=index;lastFrame=key->frame;index=key->next;
+    }
+    if constexpr(std::is_same_v<K,mdl::CameraKey>) {
+        for(std::size_t c=0;c<8;++c) {
+            auto& channel=result[c];channel.nativeControls.resize(keys.size());channel.controlGeometry.resize(keys.size());
+            channel.sample=CameraSample;if(c>=3&&c<6)channel.interpolationGroup="camera/rotation";
+            for(std::size_t end=1;end<keys.size();++end) {
+                const int lane=c<3?int(c):c<6?3:c==6?4:5;
+                auto& controls=channel.nativeControls[end];
+                for(int j=0;j<4;++j){if(keys[end].interpolation[j][lane]>127)throw std::invalid_argument("camera controls");controls[j]=keys[end].interpolation[j][lane];}
+                auto& a=channel.track.keys[end-1];auto& b=channel.track.keys[end];
+                const double x1=std::clamp(controls[0]/127.0,0.0002,0.9996);
+                const double x2=std::clamp(controls[2]/127.0,x1+0.0002,0.9998),rate=(b.value-a.value)/double(b.frame-a.frame);
+                a.outWeight=x1;b.inWeight=1.0-x2;a.outSlope=controls[1]/127.0*rate/x1;
+                b.inSlope=(1.0-controls[3]/127.0)*rate/(1.0-x2);b.interpolation=ac::Interpolation::Bezier;
+                channel.controlGeometry[end]={a.outWeight,a.outSlope,b.inWeight,b.inSlope};
+            }
+        }
+    }
+    return result;
+}
+std::vector<Channel> TargetChannels(const NativeKeyView& view,Kind kind) {
+    switch(kind){
+    case Kind::Camera:return TargetChannels<mdl::CameraKey>(view,kind);
+    case Kind::Light:return TargetChannels<mdl::LightKey>(view,kind);
+    case Kind::Shadow:return TargetChannels<mdl::SelfShadowKey>(view,kind);
+    case Kind::Gravity:return TargetChannels<mdl::GravityKey>(view,kind);
+    default:return TargetChannels<mdl::AccessoryKey>(view,kind);
+    }
+}
+std::uint64_t RetainedStateBytes(const State& state) noexcept {
+    std::uint64_t bytes=sizeof(State);
+    const auto add=[&](std::uint64_t n,std::uint64_t stride){bytes=stride&&n>(UINT64_MAX-bytes)/stride?UINT64_MAX:bytes+n*stride;};
+    const auto string=[&](const auto& s){add(s.capacity()+1,sizeof(typename std::decay_t<decltype(s)>::value_type));};
+    for(const auto* channels:{&state.channels,&state.baseline}){
+        add(channels->capacity(),sizeof(Channel));
+        for(const auto& c:*channels){string(c.id);string(c.label);string(c.unit);string(c.interpolationGroup);
+            add(c.track.keys.capacity(),sizeof(ac::Key));add(c.nativeControls.capacity(),sizeof(std::array<double,4>));
+            add(c.controlGeometry.capacity(),sizeof(std::array<double,4>));add(c.collections.capacity(),sizeof(curve_editor::Collection));
+            for(const auto& group:c.collections){string(group.id);string(group.label);}
+            if(c.sample){const auto p=c.sample.target<ac::Sample(*)(const Channel&,double)>();if(!p||*p!=CameraSample)return UINT64_MAX;}
+        }
+    }return bytes;
+}
+}
+struct TrackAuthoring::Impl {
+    MMDApp& app;Kind kind;int slot;Address address;std::uint64_t poolIdentity;
+    void* objectIdentity;bool authored=false;State seed;
+    Impl(MMDApp& a,Kind k,int s):app(a),kind(k),slot(s),address(&a,k,s),poolIdentity(TrackPoolIdentity(a,k,s)),
+        objectIdentity(k==Kind::Accessory?Identity(a,k,s):nullptr){
+        if(!poolIdentity||!Identity(a,k,s))throw std::invalid_argument("unowned authoring track");
+        const auto found=states.find(address);
+        if(found!=states.end()&&found->second.identity==Identity(a,k,s)){seed=found->second;authored=true;}
+    }
+    bool Current() const noexcept {
+        if(TrackPoolIdentity(app,kind,slot)!=poolIdentity||(kind==Kind::Accessory&&Identity(app,kind,slot)!=objectIdentity))return false;
+        const auto found=states.find(address);
+        const State* live=found!=states.end()&&found->second.identity==Identity(app,kind,slot)?&found->second:nullptr;
+        return authored?live&&live->author==seed.author:!live;
+    }
+};
+struct TrackAuthoring::Target::Impl {
+    std::shared_ptr<TrackAuthoring::Impl> source;
+    const State* before=nullptr;std::uint64_t revision=0,digest=0;
+    void* identity=nullptr;bool published=false;
+    std::vector<Channel> native;
+    decltype(states)::node_type target,retired;
+    explicit Impl(std::shared_ptr<TrackAuthoring::Impl> s):source(std::move(s)){}
+    bool Current() const noexcept {
+        if(published||!source->Current()||Identity(source->app,source->kind,source->slot)!=identity)return false;
+        const auto found=states.find(source->address);const auto* live=found==states.end()?nullptr:&found->second;
+        return live==before&&(!live||(live->revision==revision&&AuthoringDigest(*live)==digest));
+    }
+};
+TrackAuthoring::TrackAuthoring(MMDApp& app,Kind kind,int slot):impl_(std::make_shared<Impl>(app,kind,slot)){}
+TrackAuthoring::~TrackAuthoring()=default;
+bool TrackAuthoring::IsCurrent() const noexcept{return impl_->Current();}
+TrackAuthoring::Target::Target(std::unique_ptr<Impl> p):impl_(std::move(p)){}
+TrackAuthoring::Target::~Target()=default;
+std::unique_ptr<TrackAuthoring::Target> TrackAuthoring::Prepare(const NativeKeyView& view) const {
+    if(!impl_->Current())throw std::invalid_argument("changed authoring track");
+    auto candidate=std::make_unique<Target::Impl>(impl_);candidate->identity=Identity(impl_->app,impl_->kind,impl_->slot);
+    const auto found=states.find(impl_->address);
+    if(found!=states.end()){candidate->before=&found->second;candidate->revision=found->second.revision;candidate->digest=AuthoringDigest(found->second);}
+    candidate->native=TargetChannels(view,impl_->kind);
+    if(impl_->authored){
+        State target=impl_->seed;Reconcile(target,candidate->native);target.revision=NextAuthoringRevision();target.fingerprint=0;
+        decltype(states) pending;pending.emplace(impl_->address,std::move(target));candidate->target=pending.extract(pending.begin());
+    }
+    return std::unique_ptr<Target>(new Target(std::move(candidate)));
+}
+bool TrackAuthoring::Target::IsCurrent() const noexcept{return impl_->Current();}
+bool TrackAuthoring::Target::Authored() const noexcept{return impl_->source->authored;}
+bool TrackAuthoring::Target::Sample(double frame,std::array<double,12>& out) const {
+    if(!std::isfinite(frame))return false;
+    const auto& fields=Fields(impl_->source->kind);
+    const auto& channels=impl_->target.empty()?impl_->native:impl_->target.mapped().channels;
+    if(channels.size()!=fields.size())return false;
+    std::array<double,12> result{};
+    for(std::size_t c=0;c<channels.size();++c){
+        const auto& keys=channels[c].track.keys;
+        const auto exact=std::lower_bound(keys.begin(),keys.end(),frame,[](const ac::Key& key,double f){return key.frame<f;});
+        const double value=exact!=keys.end()&&exact->frame==frame?exact->value:SampleValue(channels[c],frame);
+        if(!std::isfinite(value))return false;
+        result[c]=impl_->target.empty()?value:std::clamp(value,fields[c].minimum,fields[c].maximum);
+    }
+    out=result;return true;
+}
+void TrackAuthoring::Target::Publish(void* identity) noexcept {
+    auto& p=*impl_;if(p.published)std::terminate();
+    if(!p.target.empty()){
+        p.target.mapped().identity=identity;
+        p.retired=states.extract(p.source->address);
+        states.insert(std::move(p.target));
+    }
+    p.published=true;
+}
+std::uint64_t TrackAuthoring::RetainedBytes() const noexcept {
+    const auto bytes=impl_->authored?RetainedStateBytes(impl_->seed):0;
+    const std::uint64_t overhead=sizeof(*this)+sizeof(Impl)+4*sizeof(void*);
+    return bytes>UINT64_MAX-overhead?UINT64_MAX:bytes+overhead;
+}
+#endif
 }

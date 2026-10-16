@@ -130,6 +130,7 @@
 #include "../plugins/native_pose_scope.hpp"
 #include "../plugins/native_history_commands.hpp"
 #include "../plugins/native_object_commands.hpp"
+#include "../plugins/native_global_commands.hpp"
 #endif
 
 #include "mikudancestudio/text_encoding.hpp"
@@ -465,6 +466,9 @@ void CmdControl450(MMDApp* app, HWND hwnd, std::uint16_t id,
     // RegisterCameraState(app, app+0x980), PanelPaint, SelectionReeval.
     // ------------------------------------------------------------------
     case 452: {
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::TryRegisterBoundCamera(app, hwnd)) break;
+#endif
         app->SceneModified() = 1;
         ClearGlobalFrameSelection(app);
         RefreshRequest(-1);
@@ -538,6 +542,9 @@ void CmdControl450(MMDApp* app, HWND hwnd, std::uint16_t id,
     // RegisterLightState(app, app+0x980), PanelPaint.
     // ------------------------------------------------------------------
     case 468: {
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::TryRegisterBoundLight(app, hwnd)) break;
+#endif
         app->SceneModified() = 1;
         ClearGlobalFrameSelection(app);
         RefreshRequest(-2);
@@ -813,6 +820,9 @@ void CmdControl450(MMDApp* app, HWND hwnd, std::uint16_t id,
     // + RegisterAccessoryKey(app, app+0x980, byte 0x9E170) + PanelPaint.
     // ------------------------------------------------------------------
     case 487: {
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::TryRegisterBoundAccessory(app, hwnd)) break;
+#endif
         for (int ctl = 0x1DE; ctl <= 0x1E4; ++ctl) {
             CommitEditControl(app, GetDlgItem(hwnd, ctl));
         }
