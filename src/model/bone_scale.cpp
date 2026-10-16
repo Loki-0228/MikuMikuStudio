@@ -14,12 +14,23 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <stdexcept>
 #include <unordered_map>
 
 namespace mikudancestudio {
 void ViewWorldAxis(MMDApp*, int, float[3]);
 namespace bone_scale {
 namespace {
+#if !MMD_ORIGINAL_PROFILE
+// The registry is owned by the model/UI thread, like the existing scale maps.
+// A fresh storage identity prevents an erased/recreated node at the same
+// address from satisfying a prepared candidate's optimistic check.
+std::uint64_t nextStorageIdentity = 1;
+std::uint64_t NewStorageIdentity() {
+    if (!nextStorageIdentity) throw std::overflow_error("bone scale storage identity exhausted");
+    return nextStorageIdentity++;
+}
+#endif
 struct State {
     Snapshot current;
     std::array<Snapshot, 30> undo, redo;
@@ -27,6 +38,9 @@ struct State {
     std::vector<Transform> rigid;
     bool applied = false;
     std::uint64_t revision = 0;
+#if !MMD_ORIGINAL_PROFILE
+    std::uint64_t identity = NewStorageIdentity();
+#endif
 };
 std::unordered_map<const unsigned char*, State> states;
 struct ClipboardState { Values pose, keys; Curves poseCurves, keyCurves; };
@@ -542,6 +556,169 @@ bool ExchangePoseValues(unsigned char* model,Values& pose) noexcept {
     return true;
 }
 #if !MMD_ORIGINAL_PROFILE
+struct AuthoringState::Impl {
+    Values keys;
+    Curves curves;
+};
+AuthoringState::AuthoringState() = default;
+AuthoringState::~AuthoringState() = default;
+AuthoringState::AuthoringState(AuthoringState&&) noexcept = default;
+AuthoringState& AuthoringState::operator=(AuthoringState&&) noexcept = default;
+AuthoringState AuthoringState::Capture(const unsigned char* model) {
+    AuthoringState result;
+    const auto found = states.find(model);
+    if (found != states.end() &&
+        (!found->second.current.keys.empty() || !found->second.current.curves.empty())) {
+        result.impl_ = std::make_unique<Impl>();
+        result.impl_->keys = found->second.current.keys;
+        result.impl_->curves = found->second.current.curves;
+    }
+    return result;
+}
+AuthoringState AuthoringState::Clone() const {
+    AuthoringState result;
+    if (impl_) result.impl_ = std::make_unique<Impl>(*impl_);
+    return result;
+}
+bool AuthoringState::Equals(const AuthoringState& other) const noexcept {
+    if (!impl_) return !other.impl_ || (other.impl_->keys.empty() && other.impl_->curves.empty());
+    if (!other.impl_) return impl_->keys.empty() && impl_->curves.empty();
+    return impl_->keys == other.impl_->keys && impl_->curves == other.impl_->curves;
+}
+std::uint64_t AuthoringState::RetainedBytes() const noexcept {
+    std::uint64_t bytes = sizeof(*this);
+    if (!impl_) return bytes;
+    bytes += sizeof(Impl);
+    const auto add = [&](std::uint64_t count, std::uint64_t stride) {
+        // Count actual tree nodes, plus the separately allocated sentinel used
+        // by the Windows STL. Four pointer widths conservatively cover links,
+        // color and alignment, matching the scene resource collector.
+        if (count == UINT64_MAX || count + 1 > (UINT64_MAX - bytes) / stride) bytes = UINT64_MAX;
+        else bytes += (count + 1) * stride;
+    };
+    add(impl_->keys.size(), sizeof(Values::value_type) + 4 * sizeof(void*));
+    add(impl_->curves.size(), sizeof(Curves::value_type) + 4 * sizeof(void*));
+    return bytes;
+}
+Matrix AuthoringState::Key(int index) const noexcept {
+    return impl_ ? Lookup(impl_->keys, index) : Matrix{};
+}
+Curve AuthoringState::KeyCurve(int index) const noexcept {
+    return impl_ ? LookupCurve(impl_->curves, index) : LinearCurve();
+}
+bool AuthoringState::SetKey(int index, const Matrix& value) {
+    if (index < 0 || !Valid(value)) return false;
+    if (Key(index) == value) return true;
+    if (!impl_) impl_ = std::make_unique<Impl>();
+    Store(impl_->keys, index, value);
+    return true;
+}
+bool AuthoringState::ClearKey(int index) {
+    if (index < 0) return false;
+    if (impl_) { impl_->keys.erase(index); impl_->curves.erase(index); }
+    return true;
+}
+bool AuthoringState::SetKeyCurve(int index, const Curve& curve) {
+    if (index < 0) return false;
+    if (!impl_ && Linear(curve)) return true;
+    if (!impl_) impl_ = std::make_unique<Impl>();
+    StoreCurve(impl_->curves, index, curve);
+    return true;
+}
+bool AuthoringState::RegisterKey(int index, const Matrix& value, bool fresh) {
+    // Write the allocating matrix first, so allocation failure cannot erase
+    // a curve from this private draft before the new key is available.
+    if (!SetKey(index, value)) return false;
+    if (fresh && impl_) impl_->curves.erase(index);
+    return true;
+}
+namespace {
+bool UnusedAuthoringLease(const State& state) noexcept {
+    if (state.revision || state.applied || state.rigid.capacity() ||
+        !state.current.pose.empty() || !state.current.keys.empty() || !state.current.curves.empty()) return false;
+    for (unsigned i = 0; i < 30; ++i) {
+        if (state.undoValid[i] || state.redoValid[i] ||
+            !state.undo[i].pose.empty() || !state.undo[i].keys.empty() || !state.undo[i].curves.empty() ||
+            !state.redo[i].pose.empty() || !state.redo[i].keys.empty() || !state.redo[i].curves.empty()) return false;
+    }
+    return true;
+}
+}
+struct AuthoringRestore::Impl {
+    unsigned char* model = nullptr;
+    std::uint64_t identity = 0, revision = 0;
+    Values beforeKeys, afterKeys;
+    Curves beforeCurves, afterCurves;
+    bool leased = false, published = false;
+    ~Impl() {
+        if (!leased) return;
+        const auto found = states.find(model);
+        if (found != states.end() && found->second.identity == identity && UnusedAuthoringLease(found->second))
+            states.erase(found);
+    }
+    bool IsCurrent() const noexcept {
+        if (published) return false;
+        const auto found = states.find(model);
+        if (!identity) return found == states.end();
+        return found != states.end() && found->second.identity == identity &&
+            found->second.revision == revision && found->second.current.keys == beforeKeys &&
+            found->second.current.curves == beforeCurves;
+    }
+};
+AuthoringRestore::AuthoringRestore() = default;
+AuthoringRestore::~AuthoringRestore() = default;
+AuthoringRestore::AuthoringRestore(AuthoringRestore&&) noexcept = default;
+AuthoringRestore& AuthoringRestore::operator=(AuthoringRestore&&) noexcept = default;
+std::unique_ptr<AuthoringRestore> AuthoringRestore::Prepare(unsigned char* model,
+    const AuthoringState& target, std::size_t targetKeyCapacity) {
+    if (!model) throw std::invalid_argument("bone scale authoring model missing");
+    if (target.impl_) {
+        for (const auto& key : target.impl_->keys)
+            if (key.first < 0 || static_cast<std::size_t>(key.first) >= targetKeyCapacity || !Valid(key.second))
+                throw std::invalid_argument("bone scale authoring key outside target pool");
+        for (const auto& curve : target.impl_->curves)
+            if (curve.first < 0 || static_cast<std::size_t>(curve.first) >= targetKeyCapacity)
+                throw std::invalid_argument("bone scale authoring curve outside target pool");
+    }
+    auto result = std::unique_ptr<AuthoringRestore>(new AuthoringRestore());
+    result->impl_ = std::make_unique<Impl>();
+    auto& next = *result->impl_;
+    next.model = model;
+    if (target.impl_) { next.afterKeys = target.impl_->keys; next.afterCurves = target.impl_->curves; }
+    auto found = states.find(model);
+    if (found != states.end()) {
+        next.beforeKeys = found->second.current.keys;
+        next.beforeCurves = found->second.current.curves;
+    } else if (!next.afterKeys.empty() || !next.afterCurves.empty()) {
+        // The lease reserves the actual registry node and all empty native
+        // ring sentinels here. No allocation or hash insertion remains for
+        // Publish. All other candidate allocations have already succeeded.
+        found = states.try_emplace(model).first;
+        next.leased = true;
+    }
+    if (found != states.end()) {
+        next.identity = found->second.identity;
+        next.revision = found->second.revision;
+    }
+    return result;
+}
+bool AuthoringRestore::IsCurrent() const noexcept { return impl_ && impl_->IsCurrent(); }
+bool AuthoringRestore::Publish() noexcept {
+    if (!IsCurrent()) return false;
+    auto& next = *impl_;
+    if (next.identity) {
+        auto& live = states.find(next.model)->second;
+        if (live.current.keys != next.afterKeys || live.current.curves != next.afterCurves) {
+            RestoreTransforms(next.model);
+            live.current.keys.swap(next.afterKeys);
+            live.current.curves.swap(next.afterCurves);
+            ++live.revision;
+        }
+    }
+    next.leased = false;
+    next.published = true;
+    return true;
+}
 void MeasureResources(const unsigned char* model,plugins::resource_budget::Collector& out) {
     const auto it=states.find(model);if(it==states.end())return;
     const auto& state=it->second;out.Array(&state,1);out.Vector(state.rigid);
@@ -617,7 +794,19 @@ void ApplyTransforms(unsigned char* model) {
     s.applied=true;
 }
 void ExchangeState(unsigned char* first,unsigned char* second) {
-    if(first&&second&&first!=second){std::swap(states[first],states[second]);bone_curve::ExchangeState(first,second);}
+    if(!first||!second||first==second)return;
+#if !MMD_ORIGINAL_PROFILE
+    auto& a=states[first];auto& b=states[second];
+    const auto firstIdentity=NewStorageIdentity(),secondIdentity=NewStorageIdentity();
+    // A whole-state exchange is a new storage incarnation for both owners.
+    // Refresh before swapping so neither a round trip nor a throwing legacy
+    // exchange can revive a candidate that captured either previous identity.
+    a.identity=firstIdentity;b.identity=secondIdentity;
+    std::swap(a,b);
+#else
+    std::swap(states[first],states[second]);
+#endif
+    bone_curve::ExchangeState(first,second);
 }
 void CopyState(const unsigned char* source,unsigned char* destination) {
     const auto it=states.find(source);

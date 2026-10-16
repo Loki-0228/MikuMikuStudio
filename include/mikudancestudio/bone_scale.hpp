@@ -1,8 +1,10 @@
 #pragma once
 #include "mikudancestudio/build_profile.hpp"
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <vector>
 
 namespace mikudancestudio {
@@ -173,6 +175,62 @@ Values PoseValues(const unsigned char* model);
 bool PoseValuesEqual(const unsigned char* model, const Values&) noexcept;
 bool HasPoseStorage(const unsigned char* model) noexcept;
 bool ExchangePoseValues(unsigned char* model, Values&) noexcept;
+#if !MMD_ORIGINAL_PROFILE
+// Independent key authoring snapshots: only scale keys and interpolation
+// curves are owned here. Pose, the legacy 30-entry rings and render caches stay
+// with the live model. Empty keys/curves equal an absent side-table entry.
+// Capture/Clone/mutators may allocate and throw. A moved-from value is empty.
+class AuthoringState {
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+    friend class AuthoringRestore;
+public:
+    AuthoringState();
+    ~AuthoringState();
+    AuthoringState(AuthoringState&&) noexcept;
+    AuthoringState& operator=(AuthoringState&&) noexcept;
+    AuthoringState(const AuthoringState&) = delete;
+    AuthoringState& operator=(const AuthoringState&) = delete;
+    static AuthoringState Capture(const unsigned char* model);
+    AuthoringState Clone() const;
+    bool Equals(const AuthoringState&) const noexcept;
+    // Includes owned map nodes with a conservative tree-node allowance; does
+    // not measure allocator bookkeeping or any live model/ring/cache storage.
+    std::uint64_t RetainedBytes() const noexcept;
+    Matrix Key(int index) const noexcept;
+    Curve KeyCurve(int index) const noexcept;
+    bool SetKey(int index, const Matrix&);
+    bool ClearKey(int index);
+    bool SetKeyCurve(int index, const Curve&);
+    // A fresh native key loses its previous curve. Ordinary overwrite keeps
+    // that curve and registers only the supplied matrix. Index capacity is
+    // checked later against the prepared native pool's target capacity.
+    bool RegisterKey(int index, const Matrix&, bool fresh);
+};
+class AuthoringRestore {
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+    AuthoringRestore();
+public:
+    ~AuthoringRestore();
+    AuthoringRestore(AuthoringRestore&&) noexcept;
+    AuthoringRestore& operator=(AuthoringRestore&&) noexcept;
+    AuthoringRestore(const AuthoringRestore&) = delete;
+    AuthoringRestore& operator=(const AuthoringRestore&) = delete;
+    // Throws bad_alloc/invalid_argument before authoring changes. A missing
+    // table may acquire a private empty-storage lease; cancellation removes
+    // that entry only if no live author/ring/cache has subsequently used it.
+    // Callers retain the model and serialize preparation/publication on its
+    // owner thread. This candidate does not validate native key pool identity.
+    static std::unique_ptr<AuthoringRestore> Prepare(unsigned char* model,
+        const AuthoringState& target, std::size_t targetKeyCapacity);
+    bool IsCurrent() const noexcept;
+    // Rechecks side-table identity, revision, keys and curves. On success only
+    // key authoring is swapped, revision advances if changed, and derived
+    // transforms are invalidated. Never allocates; false leaves state intact.
+    bool Publish() noexcept;
+};
+#endif
 // Child pivots follow the parent's deformation. Inherited scale acts in the
 // unposed model basis before each child's rotation, preserving its shape.
 void BuildTransforms(const unsigned char* model, const Values& pose, std::vector<Transform>& out,

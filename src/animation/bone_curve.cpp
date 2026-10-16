@@ -270,6 +270,115 @@ std::unique_ptr<native_history::SideState> PrepareHistory(unsigned char* model,c
     return std::make_unique<HistoryState>(model,steps);
 }
 #if !MMD_ORIGINAL_PROFILE
+struct AuthoringState::Impl {
+    const unsigned char* model=nullptr;
+    const void* bones=nullptr;
+    std::uint32_t boneCount=0;
+    const void* storedIdentity=nullptr;
+    Curves curves;
+    bool SameOwner(const unsigned char* value) const noexcept {
+        return value&&value==model&&mdl::Mdl(value)->boneTable==bones&&mdl::Mdl(value)->boneCount==boneCount;
+    }
+    bool MatchesLive() const noexcept {
+        if(!SameOwner(model))return false;
+        const auto found=states.find(model);
+        if(found==states.end())return curves.empty();
+        // An empty storage entry can have been created solely for legacy
+        // undo. Its identity does not constitute authored free-curve data.
+        if(curves.empty())return found->second.curves.empty();
+        return storedIdentity==found->second.identity&&SameCurves(curves,found->second.curves);
+    }
+};
+AuthoringState::AuthoringState()=default;
+AuthoringState::~AuthoringState()=default;
+AuthoringState::AuthoringState(AuthoringState&&) noexcept=default;
+AuthoringState& AuthoringState::operator=(AuthoringState&&) noexcept=default;
+std::unique_ptr<AuthoringState> AuthoringState::Capture(const unsigned char* model) {
+    if(!model)throw std::invalid_argument("bone curve authoring model");
+    auto result=std::unique_ptr<AuthoringState>(new AuthoringState);
+    result->impl_=std::make_unique<Impl>();auto& value=*result->impl_;
+    value.model=model;value.bones=mdl::Mdl(model)->boneTable;value.boneCount=mdl::Mdl(model)->boneCount;
+    if(value.boneCount&&!value.bones)throw std::invalid_argument("bone curve authoring bones");
+    const auto found=states.find(model);
+    if(found!=states.end()) {
+        value.curves=found->second.curves;
+        if(!value.curves.empty())value.storedIdentity=found->second.identity;
+    }
+    return result;
+}
+std::unique_ptr<AuthoringState> AuthoringState::Clone() const {
+    if(!impl_)throw std::invalid_argument("bone curve authoring state");
+    auto result=std::unique_ptr<AuthoringState>(new AuthoringState);
+    result->impl_=std::make_unique<Impl>(*impl_);return result;
+}
+bool AuthoringState::Equals(const AuthoringState& other) const noexcept {
+    if(!impl_||!other.impl_)return !impl_&&!other.impl_;
+    return impl_->model==other.impl_->model&&impl_->bones==other.impl_->bones&&impl_->boneCount==other.impl_->boneCount&&
+        (impl_->curves.empty()||impl_->storedIdentity==other.impl_->storedIdentity)&&SameCurves(impl_->curves,other.impl_->curves);
+}
+bool AuthoringState::Invalidate(int bone) noexcept {
+    if(!impl_||bone<0||std::uint32_t(bone)>=impl_->boneCount)return false;
+    return impl_->curves.erase(bone)!=0;
+}
+std::uint64_t AuthoringState::RetainedBytes() const noexcept {
+    std::uint64_t bytes=sizeof(*this);if(!impl_)return bytes;
+    const auto add=[&](std::uint64_t count,std::uint64_t stride) {
+        if(stride&&count>(UINT64_MAX-bytes)/stride)bytes=UINT64_MAX;
+        else bytes+=count*stride;
+    };
+    add(1,sizeof(Impl));
+    // The allowance covers tree links/alignment; the extra node accounts for
+    // the separately allocated sentinel used by the supported MSVC runtime.
+    constexpr std::uint64_t nodeBytes=sizeof(Curves::value_type)+4*sizeof(void*);
+    add(1,nodeBytes);add(impl_->curves.size(),nodeBytes);
+    for(const auto& entry:impl_->curves)for(const auto& track:entry.second.tracks)add(track.keys.capacity(),sizeof(ac::Key));
+    return bytes;
+}
+struct AuthoringRestore::Impl {
+    unsigned char* model=nullptr;
+    std::unique_ptr<AuthoringState> before,after;
+    decltype(states)::node_type storage;
+    bool published=false;
+};
+AuthoringRestore::AuthoringRestore()=default;
+AuthoringRestore::~AuthoringRestore()=default;
+AuthoringRestore::AuthoringRestore(AuthoringRestore&&) noexcept=default;
+AuthoringRestore& AuthoringRestore::operator=(AuthoringRestore&&) noexcept=default;
+std::unique_ptr<AuthoringRestore> AuthoringRestore::Prepare(unsigned char* model,const AuthoringState& target) {
+    if(!target.impl_||!target.impl_->SameOwner(model))throw std::invalid_argument("bone curve authoring owner");
+    auto result=std::unique_ptr<AuthoringRestore>(new AuthoringRestore);
+    result->impl_=std::make_unique<Impl>();auto& value=*result->impl_;value.model=model;
+    value.before=AuthoringState::Capture(model);value.after=target.Clone();
+    if(!value.after->impl_->curves.empty()) {
+        // std::map node transfer does not allocate or rehash. Stage a node even
+        // if live storage exists: an independently updated empty legacy ring
+        // may create/remove storage without changing logical authoring state.
+        decltype(states) privateStorage;
+        const auto inserted=privateStorage.try_emplace(model);
+        value.storage=privateStorage.extract(inserted.first);
+    }
+    return result;
+}
+bool AuthoringRestore::IsCurrent() const noexcept {
+    return impl_&&!impl_->published&&impl_->before->impl_->MatchesLive();
+}
+bool AuthoringRestore::Publish() noexcept {
+    if(!IsCurrent())return false;
+    auto& value=*impl_;auto& target=*value.after->impl_;
+    const auto found=states.find(value.model);
+    if(found!=states.end()) {
+        found->second.curves.swap(target.curves);
+        // Empty authoring has no stored identity of its own. Retain the live
+        // identity so existing legacy undo snapshots remain reachable.
+        if(!found->second.curves.empty())found->second.identity=target.storedIdentity;
+    } else if(!target.curves.empty()) {
+        auto& prepared=value.storage.mapped();prepared.identity=target.storedIdentity;
+        prepared.curves.swap(target.curves);
+        states.insert(std::move(value.storage));
+    }
+    value.published=true;return true;
+}
+
 void MeasureResources(const unsigned char* model,plugins::resource_budget::Collector& out) {
     const auto it=states.find(model);if(it==states.end())return;
     const auto& state=it->second;out.Array(&state,1);
