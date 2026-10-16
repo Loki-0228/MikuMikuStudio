@@ -1,17 +1,184 @@
 #define NOMINMAX
 #include "mikudancestudio/animation_curve_host.hpp"
 #include "mikudancestudio/accessory_layout.hpp"
+#include "mikudancestudio/frame_presentation.hpp"
+#include "mikudancestudio/key_pool.hpp"
 #include "mikudancestudio/mmd_app.hpp"
 #include "mikudancestudio/ported_funcs.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
 #include <cmath>
+#include <cstring>
+#include <new>
+#include <stdexcept>
 #include <commctrl.h>
+namespace { thread_local long failAfter = -1; }
+void* operator new(std::size_t size) {
+    if (failAfter == 0) throw std::bad_alloc();
+    if (failAfter > 0) --failAfter;
+    if (void* memory = std::malloc(size ? size : 1)) return memory;
+    throw std::bad_alloc();
+}
+void* operator new[](std::size_t size) { return ::operator new(size); }
+void operator delete(void* memory) noexcept { std::free(memory); }
+void operator delete[](void* memory) noexcept { std::free(memory); }
+void operator delete(void* memory, std::size_t) noexcept { std::free(memory); }
+void operator delete[](void* memory, std::size_t) noexcept { std::free(memory); }
 using namespace mikudancestudio;
 static void Check(bool b,const char*s){if(!b){std::fprintf(stderr,"FAIL: %s\n",s);std::exit(1);}}
+static bool PublishWithoutAllocation(curve_host::AccessoryAuthoring::Exchange& exchange) {
+    failAfter = 0;
+    const bool result = exchange.Publish();
+    failAfter = -1;
+    return result;
+}
+static void CheckAccessoryAuthoringRetention() {
+    struct Fixture {
+        std::unique_ptr<MMDApp> app = std::make_unique<MMDApp>();
+        mdl::AccessoryRecord objects[3]{};
+        Fixture() {
+            // Initialize in place: an assignment creates a ~680 KB temporary
+            // and nested fixtures exceed the executable's default stack.
+            ::new (static_cast<void*>(&app->state)) MMDAppState{};
+            app->EnglishUI() = 2;
+            app->CameraKeys() = mdl::KeyPoolCreate<mdl::CameraKey>(16);
+            app->CameraKeys()[0].parentModel = -1;
+            app->CameraKeys()[0].fov = 45;
+            for (int slot = 0; slot < 3; ++slot) {
+                app->AccessorySlot(slot) = &objects[slot];
+                auto*& keys = app->AccessoryKeys(slot);
+                keys = mdl::KeyPoolCreate<mdl::AccessoryKey>(16);
+                keys[0].parentModel = -1; keys[0].scale = keys[0].opacity = 1;
+            }
+        }
+        ~Fixture() {
+            curve_host::Reset(app.get());
+            mdl::KeyPoolDestroy(app->CameraKeys());
+            for (int slot = 0; slot < 3; ++slot) mdl::KeyPoolDestroy(app->AccessoryKeys(slot));
+        }
+    } fixture, other;
+    auto& app = *fixture.app;
+    const auto author = [](MMDApp& target, curve_host::Kind kind, int slot, double value) {
+        std::vector<curve_editor::Channel> channels; std::wstring error;
+        Check(curve_host::Read(target, kind, slot, channels, error), "read retention fixture");
+        auto& track = channels[0].track;
+        track.keys[0].tangent = animation_curve::Tangent::Free;
+        track.keys[0].outSlope = 0.75; track.keys[0].outWeight = 0.2;
+        auto key = track.keys[0]; key.frame = 20; key.value = value;
+        key.inSlope = -0.5; key.inWeight = 0.4; track.keys.push_back(key);
+        channels[0].selected = false;
+        channels[0].collections.push_back({"fixture", L"fixture"});
+        Check(curve_host::Write(target, kind, slot, channels, error), "author retention fixture");
+    };
+    author(app, curve_host::Kind::Accessory, 0, 10);
+    author(app, curve_host::Kind::Accessory, 1, 20);
+    author(app, curve_host::Kind::Camera, 0, 30);
+    author(*other.app, curve_host::Kind::Accessory, 0, 40);
+    curve_host::AuthoringTable baseline, foreign;
+    std::wstring error;
+    Check(curve_host::CaptureAuthoring(app, baseline, error) &&
+          curve_host::CaptureAuthoring(*other.app, foreign, error), "capture retention baseline");
+    auto retained = std::make_unique<curve_host::AccessoryAuthoring>(app, 0);
+    retained->Prepare(false).reset();
+    Check(curve_host::AuthoringUnchanged(app, baseline), "cancelled accessory removal preserves authoring");
+    bool rejected = false;
+    try { retained->Prepare(true); } catch (const std::invalid_argument&) { rejected = true; }
+    Check(rejected, "same accessory presence rejected");
+    unsigned failures = 0;
+    for (long limit = 0; limit < 16; ++limit) {
+        std::unique_ptr<curve_host::AccessoryAuthoring::Exchange> prepared;
+        failAfter = limit;
+        try { prepared = retained->Prepare(false); } catch (const std::bad_alloc&) { ++failures; }
+        failAfter = -1;
+        Check(curve_host::AuthoringUnchanged(app, baseline), "failed preparation preserves authored curves");
+        if (prepared) break;
+        Check(limit < 15, "accessory preparation failure sweep terminates");
+    }
+    Check(failures >= 2, "failure sweep covers exchange allocations");
+    auto remove = retained->Prepare(false);
+    auto superseded = retained->Prepare(false);
+    Check(PublishWithoutAllocation(*remove), "accessory authoring removal allocates nothing");
+    app.AccessorySlot(0) = nullptr;
+    Check(!remove->IsCurrent() && !superseded->IsCurrent() && !PublishWithoutAllocation(*remove),
+          "accessory exchanges are single use and invalidate competing preparation");
+    Check(!curve_host::Has(&app, curve_host::Kind::Accessory, 0) &&
+          curve_host::Has(&app, curve_host::Kind::Accessory, 1) &&
+          curve_host::Has(&app, curve_host::Kind::Camera), "removal only detaches one accessory");
+    Check(curve_host::AuthoringUnchanged(*other.app, foreign), "removal leaves another app unchanged");
+    std::vector<curve_editor::Channel> peerChannels;
+    Check(curve_host::Read(app, curve_host::Kind::Accessory, 1, peerChannels, error), "read peer while accessory is parked");
+    peerChannels[0].selected = true;
+    Check(curve_host::Write(app, curve_host::Kind::Accessory, 1, peerChannels, error), "edit peer while accessory is parked");
+    auto restore = retained->Prepare(true);
+    restore.reset();
+    Check(!curve_host::Has(&app, curve_host::Kind::Accessory, 0), "cancelled restore leaves authoring parked");
+    restore = retained->Prepare(true);
+    Check(PublishWithoutAllocation(*restore), "accessory authoring restoration allocates nothing");
+    app.AccessorySlot(0) = &fixture.objects[0];
+    Check(curve_host::AuthoringUnchanged(app, baseline), "restoration preserves tangents and native baseline");
+    Check(curve_host::Read(app, curve_host::Kind::Accessory, 1, peerChannels, error) && peerChannels[0].selected,
+          "restoration preserves peer edits made while accessory was parked");
+    std::vector<curve_editor::Channel> channels;
+    Check(curve_host::Read(app, curve_host::Kind::Accessory, 0, channels, error) &&
+          !channels[0].selected && channels[0].collections.size() == 1,
+          "restoration preserves editor metadata");
+    auto stale = retained->Prepare(false);
+    channels[0].selected = true; channels[0].collections[0].label = L"changed metadata";
+    Check(curve_host::Write(app, curve_host::Kind::Accessory, 0, channels, error), "metadata-only authoring write");
+    Check(!stale->IsCurrent() && !PublishWithoutAllocation(*stale), "metadata-only write invalidates pending removal");
+    stale = retained->Prepare(false);
+    const auto oldValue = app.AccessoryKeys(0)[1].position[0];
+    app.AccessoryKeys(0)[1].position[0] += 1;
+    Check(!stale->IsCurrent() && !PublishWithoutAllocation(*stale), "unreconciled native edit invalidates removal");
+    app.AccessoryKeys(0)[1].position[0] = oldValue;
+    auto* originalPool = app.AccessoryKeys(0);
+    app.AccessoryKeys(0) = app.AccessoryKeys(1);
+    Check(!stale->IsCurrent(), "native pool replacement invalidates removal before reading old storage");
+    app.AccessoryKeys(0) = originalPool;
+    app.AccessorySlot(0) = &fixture.objects[1];
+    Check(!stale->IsCurrent(), "native object replacement invalidates removal");
+    app.AccessorySlot(0) = &fixture.objects[0];
+    Check(curve_host::CaptureAuthoring(app, baseline, error), "capture edited retention baseline");
+    for (unsigned cycle = 0; cycle < 12; ++cycle) {
+        remove = retained->Prepare(false);
+        Check(PublishWithoutAllocation(*remove), "repeat accessory authoring removal");
+        app.AccessorySlot(0) = nullptr;
+        restore = retained->Prepare(true);
+        Check(PublishWithoutAllocation(*restore), "repeat accessory authoring restore");
+        app.AccessorySlot(0) = &fixture.objects[0];
+        Check(curve_host::AuthoringUnchanged(app, baseline), "repeat removal/restore is lossless");
+    }
+    remove = retained->Prepare(false); Check(PublishWithoutAllocation(*remove), "park before slot reuse");
+    app.AccessorySlot(0) = &fixture.objects[2];
+    // A newer object may occupy the same slot until its own import is undone.
+    Check(curve_host::Write(app, curve_host::Kind::Accessory, 0, channels, error), "new occupant authoring");
+    rejected = false;
+    try { retained->Prepare(true); } catch (const std::invalid_argument&) { rejected = true; }
+    Check(rejected && curve_host::Has(&app, curve_host::Kind::Accessory, 0), "restore does not overwrite another occupant");
+    curve_host::ForgetAccessory(&app, 0); app.AccessorySlot(0) = nullptr;
+    restore = retained->Prepare(true);
+    remove.reset(); superseded.reset(); stale.reset(); retained.reset();
+    Check(restore->IsCurrent() && PublishWithoutAllocation(*restore), "prepared restore retains its owner");
+    app.AccessorySlot(0) = &fixture.objects[0];
+    Check(curve_host::AuthoringUnchanged(app, baseline), "owner release preserves restored authoring");
+    Check(curve_host::Read(app, curve_host::Kind::Accessory, 0, channels, error) &&
+          channels[0].selected && channels[0].collections[0].label == L"changed metadata",
+          "latest editor metadata survives slot reuse and owner release");
+    curve_host::AccessoryAuthoring empty(app, 2);
+    remove = empty.Prepare(false);
+    Check(PublishWithoutAllocation(*remove), "accessory without authored curves can be removed");
+    app.AccessorySlot(2) = nullptr;
+    restore = empty.Prepare(true);
+    Check(PublishWithoutAllocation(*restore), "accessory without authored curves can be restored");
+    app.AccessorySlot(2) = &fixture.objects[2];
+    Check(!curve_host::Has(&app, curve_host::Kind::Accessory, 2), "empty authoring remains empty");
+}
 static void CheckScaleLabelRepaint(MMDApp& app,HWND parent){
-    const HWND label=CreateWindowExW(0,L"STATIC",L"Scale",WS_CHILD,640,708,60,18,parent,
+    const auto previousViewport = app.ViewportRect();
+    app.ViewportRect().bottom = 700;
+    const auto panels = FramePanelLayout(&app);
+    const HWND label=CreateWindowExW(0,L"STATIC",L"Scale",WS_CHILD,640,panels.bottomBand.top+4,60,18,parent,
         reinterpret_cast<HMENU>(570),GetModuleHandleW(nullptr),nullptr);
     Check(label!=nullptr,"hidden scale caption");
     HDC dc=CreateCompatibleDC(nullptr);
@@ -19,18 +186,20 @@ static void CheckScaleLabelRepaint(MMDApp& app,HWND parent){
     bitmap.bmiHeader.biWidth=60;bitmap.bmiHeader.biHeight=-18;
     bitmap.bmiHeader.biPlanes=1;bitmap.bmiHeader.biBitCount=32;
     void* pixels=nullptr;HBITMAP image=CreateDIBSection(dc,&bitmap,DIB_RGB_COLORS,&pixels,nullptr,0);
+    Check(dc && image && pixels, "scale caption repaint surface");
     auto oldImage=SelectObject(dc,image);auto oldFont=SelectObject(dc,GetStockObject(DEFAULT_GUI_FONT));
-    MMDApp* previousApp=g_Block;g_Block=&app;app.ViewportRect().bottom=700;
+    MMDApp* previousApp=g_Block;g_Block=&app;
     const auto paint=[&](const wchar_t* text){HandleCtlColor(label,dc);TextOutW(dc,0,0,text,lstrlenW(text));GdiFlush();};
     std::memset(pixels,0xA0,60*18*4);paint(L"Scale");paint(L"\u7f29\u653e");
     std::vector<unsigned char> repeated(60*18*4);std::memcpy(repeated.data(),pixels,repeated.size());
     std::memset(pixels,0xA0,60*18*4);paint(L"\u7f29\u653e");
     Check(std::memcmp(repeated.data(),pixels,repeated.size())==0,"scale caption clears old glyphs on repaint");
-    g_Block=previousApp;SelectObject(dc,oldFont);SelectObject(dc,oldImage);
+    g_Block=previousApp;app.ViewportRect()=previousViewport;SelectObject(dc,oldFont);SelectObject(dc,oldImage);
     DeleteObject(image);DeleteDC(dc);DestroyWindow(label);
 }
 int main(){
     auto app=std::make_unique<MMDApp>();
+    ::new (static_cast<void*>(&app->state)) MMDAppState{};
     auto cam=std::make_unique<mdl::CameraKey[]>(mdl::kTimelineKeyCapacity);
     auto light=std::make_unique<mdl::LightKey[]>(mdl::kTimelineKeyCapacity);
     auto shadow=std::make_unique<mdl::SelfShadowKey[]>(mdl::kTimelineKeyCapacity);
@@ -91,6 +260,7 @@ int main(){
           "custom tangent data survives PMM roundtrip");
     cam[1].interpolation[0][0]=originalControl;
     Check(curve_host::Read(*app,curve_host::Kind::Camera,0,channels,error),"native reconciliation resumes");
+    CheckAccessoryAuthoringRetention();
     // Hidden real parent/control integration: the launcher must be parented
     // during WM_CREATE even before MMDApp::Hwnd is assigned by window_init.
     INITCOMMONCONTROLSEX common{sizeof(common),ICC_STANDARD_CLASSES};InitCommonControlsEx(&common);

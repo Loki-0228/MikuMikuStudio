@@ -86,33 +86,38 @@ MeshMaterialList {1;1;0;;Material {1.0;1.0;1.0;1.0;;8.0;0.2;0.2;0.2;;0.0;0.0;0.0
 }
 """
 
-binary, output = [Path(value).resolve() for value in sys.argv[1:]]
-output.mkdir(exist_ok=False)
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from pmd_selection_fixtures import make_fixture
-report = {"binary": str(binary), "sha256": hashlib.sha256(binary.read_bytes()).hexdigest(), "cases": []}
-for kind in ("pmx", "pmd"):
-    folder = output / kind
-    make_fixture(folder, 255, [""] * 10)
-    (folder / "fixture.pmd").write_bytes(pmd())
-    (folder / "model.pmx").write_bytes(pmx())
-    (folder / "triangle.x").write_text(accessory(), encoding="ascii")
-    (folder / "Data").mkdir()
-    (folder / "local").mkdir()
-    shutil.copy2(binary, folder / "probe.exe")
-    model = folder / ("model.pmx" if kind == "pmx" else "fixture.pmd")
-    env = os.environ.copy()
-    env.update(LOCALAPPDATA=str(folder / "local"), MMS_SCENE_TEST_MODEL=str(model),
-               MMS_SCENE_TEST_ACCESSORY=str(folder / "triangle.x"))
-    startup = subprocess.STARTUPINFO()
-    startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-    startup.wShowWindow = 0
-    command = [str(folder / "probe.exe"), "--geometry-only"]
-    with (folder / "result.log").open("w", encoding="utf-8") as log:
-        result = subprocess.run(command, cwd=folder, env=env, startupinfo=startup,
-                                stdout=log, stderr=subprocess.STDOUT, timeout=120)
-    report["cases"].append({"kind": kind, "command": command, "exitCode": result.returncode,
-                             "modelSha256": hashlib.sha256(model.read_bytes()).hexdigest()})
-    print(kind, (folder / "result.log").read_text(encoding="utf-8", errors="replace"))
-(output / "report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
-sys.exit(any(case["exitCode"] for case in report["cases"]))
+def main():
+    binary, output = [Path(value).resolve() for value in sys.argv[1:]]
+    output.mkdir(exist_ok=False)
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from pmd_selection_fixtures import make_fixture
+    report = {"binary": str(binary), "sha256": hashlib.sha256(binary.read_bytes()).hexdigest(), "cases": []}
+    for kind in ("pmx", "pmd"):
+        folder = output / kind
+        make_fixture(folder, 255, [""] * 10)
+        (folder / "fixture.pmd").write_bytes(pmd())
+        (folder / "model.pmx").write_bytes(pmx())
+        (folder / "triangle.x").write_text(accessory(), encoding="ascii")
+        (folder / "Data").mkdir()
+        (folder / "local").mkdir()
+        shutil.copy2(binary, folder / "probe.exe")
+        model = folder / ("model.pmx" if kind == "pmx" else "fixture.pmd")
+        env = os.environ.copy()
+        env.update(LOCALAPPDATA=str(folder / "local"), MMS_SCENE_TEST_MODEL=str(model),
+                   MMS_SCENE_TEST_ACCESSORY=str(folder / "triangle.x"))
+        startup = subprocess.STARTUPINFO()
+        startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startup.wShowWindow = 0
+        command = [str(folder / "probe.exe"), "--geometry-only"]
+        with (folder / "result.log").open("w", encoding="utf-8") as log:
+            result = subprocess.run(command, cwd=folder, env=env, startupinfo=startup,
+                                    stdout=log, stderr=subprocess.STDOUT, timeout=120)
+        report["cases"].append({"kind": kind, "command": command, "exitCode": result.returncode,
+                                 "modelSha256": hashlib.sha256(model.read_bytes()).hexdigest()})
+        print(kind, (folder / "result.log").read_text(encoding="utf-8", errors="replace"))
+    (output / "report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+    sys.exit(any(case["exitCode"] for case in report["cases"]))
+
+
+if __name__ == '__main__':
+    main()

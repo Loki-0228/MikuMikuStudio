@@ -13,6 +13,30 @@ void Apply(MMDApp*, Kind, double frame, int slot = 0);
 bool Has(MMDApp*, Kind, int slot = 0);
 void Reset(MMDApp*);
 void ForgetAccessory(MMDApp*, int slot);
+// Keeps precisely one accessory's authored curves while its slot is empty.
+// Prepared exchanges require serialized edits and retain the owner until used.
+// The application and native pools must outlive every exchange. Publish before
+// replacing the native slot/pool, within the same scene mutation gate.
+class AccessoryAuthoring {
+    struct Impl;
+    std::shared_ptr<Impl> impl_;
+public:
+    class Exchange {
+        struct Impl;
+        std::unique_ptr<Impl> impl_;
+        friend class AccessoryAuthoring;
+        explicit Exchange(std::unique_ptr<Impl>);
+    public:
+        ~Exchange();
+        bool IsCurrent() const noexcept;
+        bool Publish() noexcept;
+    };
+    AccessoryAuthoring(MMDApp&, int slot);
+    ~AccessoryAuthoring();
+    AccessoryAuthoring(const AccessoryAuthoring&) = delete;
+    AccessoryAuthoring& operator=(const AccessoryAuthoring&) = delete;
+    std::unique_ptr<Exchange> Prepare(bool present);
+};
 void Capture(MMDApp&, pmm_extension::Document&);
 void Load(MMDApp&, const pmm_extension::Document&);
 void Open(MMDApp*, bool visible = true);

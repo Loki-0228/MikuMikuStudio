@@ -224,7 +224,18 @@ bool Same(const std::vector<Channel>&a,const std::vector<Channel>&b){
         for(size_t i=0;i<a[c].track.keys.size();++i)if(!Same(a[c].track.keys[i],b[c].track.keys[i]))return false;}
     return true;
 }
-struct State {std::vector<Channel> channels, baseline;void* identity=nullptr;uint64_t fingerprint=0;};
+std::uint64_t NextAuthoringRevision() noexcept {
+    static std::uint64_t revision = 0;
+    return ++revision;
+}
+struct State {
+    std::vector<Channel> channels, baseline;
+    void* identity = nullptr;
+    uint64_t fingerprint = 0;
+    // Also identifies writes that only change editor metadata or callbacks.
+    // Such writes need not change the native pool or the authored key values.
+    std::uint64_t revision = NextAuthoringRevision();
+};
 using Address=std::tuple<MMDApp*,Kind,int>;
 std::map<Address,State> states;
 template<class K> uint64_t Fingerprint(K*pool){
@@ -296,7 +307,8 @@ State* Current(MMDApp&app,Kind k,int slot){
     // proxy that cannot be decoded must not make valid authoring disappear.
     // Keep the old fingerprint so reconciliation retries after native repair.
     std::vector<Channel> native;if(!NativeRead(app,k,slot,native))return &it->second;
-    Reconcile(it->second,native);it->second.fingerprint=fingerprint;return &it->second;
+    Reconcile(it->second,native);it->second.fingerprint=fingerprint;
+    it->second.revision=NextAuthoringRevision();return &it->second;
 }
 struct PoolTransaction {
     void* address=nullptr;void* before=nullptr;void* after=nullptr;
@@ -638,6 +650,65 @@ bool RebuildAuthoring(MMDApp& app, const std::vector<AuthoringEntry>& entries,
     }
     return true;
 }
+
+struct AccessoryAuthoring::Impl {
+    Address key;
+    decltype(states)::node_type node;
+    bool present = true;
+    std::uint64_t generation = 1;
+    Impl(MMDApp& app, int slot) : key(&app, Kind::Accessory, slot) {}
+};
+struct AccessoryAuthoring::Exchange::Impl {
+    std::shared_ptr<AccessoryAuthoring::Impl> retainedOwner;
+    AccessoryAuthoring::Impl& owner;
+    const State* before;
+    void* identity;
+    mdl::AccessoryKey* keys;
+    std::uint64_t digest, revision, fingerprint, generation;
+    bool present, consumed = false;
+    Impl(std::shared_ptr<AccessoryAuthoring::Impl> value, bool direction)
+        : retainedOwner(std::move(value)), owner(*retainedOwner), present(direction), generation(owner.generation) {
+        if (present == owner.present) throw std::invalid_argument("accessory authoring presence");
+        const auto found = states.find(owner.key);
+        before = found == states.end() ? nullptr : &found->second;
+        if (present && before) throw std::invalid_argument("accessory slot authoring occupied");
+        digest = before ? AuthoringDigest(*before) : 0;
+        revision = before ? before->revision : 0;
+        auto& app = *std::get<0>(owner.key);
+        const auto slot = std::get<2>(owner.key);
+        identity = Identity(app, Kind::Accessory, slot);
+        keys = app.AccessoryKeys(slot);
+        fingerprint = Fingerprint(keys);
+    }
+    bool Current() const noexcept {
+        if (consumed || owner.generation != generation || present == owner.present) return false;
+        auto& app = *std::get<0>(owner.key);
+        const auto slot = std::get<2>(owner.key);
+        if (Identity(app, Kind::Accessory, slot) != identity || app.AccessoryKeys(slot) != keys ||
+            Fingerprint(keys) != fingerprint) return false;
+        const auto found = states.find(owner.key);
+        const auto* now = found == states.end() ? nullptr : &found->second;
+        return now == before && (!now || (now->revision == revision && AuthoringDigest(*now) == digest));
+    }
+    bool Publish() noexcept {
+        if (!Current()) return false;
+        if (present) { if (!owner.node.empty()) states.insert(std::move(owner.node)); }
+        else owner.node = states.extract(owner.key);
+        owner.present = present; ++owner.generation; consumed = true;
+        return true;
+    }
+};
+AccessoryAuthoring::AccessoryAuthoring(MMDApp& app, int slot) : impl_(std::make_shared<Impl>(app, slot)) {
+    if (slot < 0 || slot >= 255) throw std::invalid_argument("accessory authoring slot");
+}
+AccessoryAuthoring::~AccessoryAuthoring() = default;
+std::unique_ptr<AccessoryAuthoring::Exchange> AccessoryAuthoring::Prepare(bool present) {
+    return std::unique_ptr<Exchange>(new Exchange(std::make_unique<Exchange::Impl>(impl_, present)));
+}
+AccessoryAuthoring::Exchange::Exchange(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
+AccessoryAuthoring::Exchange::~Exchange() = default;
+bool AccessoryAuthoring::Exchange::IsCurrent() const noexcept { return impl_->Current(); }
+bool AccessoryAuthoring::Exchange::Publish() noexcept { return impl_->Publish(); }
 
 void SwapAuthoring(MMDApp& app, AuthoringTable& table) noexcept {
     if (!table.impl_) return;

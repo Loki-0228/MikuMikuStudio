@@ -153,7 +153,10 @@ MmsResult SharedHistory::CommitNative(std::unique_ptr<NativeTransaction> t) {
     Unlock unlock{*this};
     if (!t || t->owner_ != this) return MMS_E_ARGUMENT;
     if (t->revision_ != revision_ || !t->publication_->IsCurrent()) return MMS_E_STALE;
-    t->publication_->Publish(); return MMS_OK;
+    t->publication_->Publish();
+    // Finalize retired physics contacts while Enter still excludes reentry.
+    // Resource cleanup is after publication, never part of Publish itself.
+    t.reset(); return MMS_OK;
 }
 MmsResult SharedHistory::Reset() {
     if (auto r = Enter()) return r;

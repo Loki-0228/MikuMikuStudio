@@ -52,7 +52,7 @@ struct AccessoryGuard {
             app.AccessoryKeys(slot) == keys && mdl::KeyPoolCapacity(keys) == capacity;
     }
 };
-class BindingChange final : public HistoryChange {
+class BindingChange final : public HistoryChange, public std::enable_shared_from_this<BindingChange> {
 public:
     MMDApp& app;
     std::vector<Patch> patches;
@@ -71,14 +71,14 @@ public:
         return true;
     }
     struct Candidate final : PreparedHistoryChange {
-        BindingChange& owner; bool forward;
-        Candidate(BindingChange& value, bool direction) : owner(value), forward(direction) {}
-        bool IsCurrent() const noexcept override { return owner.Current(forward); }
-        void Publish() noexcept override { for (const auto& patch : owner.patches) patch.Publish(forward); }
+        std::shared_ptr<BindingChange> owner; bool forward;
+        Candidate(std::shared_ptr<BindingChange> value, bool direction) : owner(std::move(value)), forward(direction) {}
+        bool IsCurrent() const noexcept override { return owner->Current(forward); }
+        void Publish() noexcept override { for (const auto& patch : owner->patches) patch.Publish(forward); }
     };
     MmsResult Prepare(bool forward, std::unique_ptr<PreparedHistoryChange>& out) override {
         if (!Current(forward)) return MMS_E_STALE;
-        out = std::make_unique<Candidate>(*this, forward); return MMS_OK;
+        out = std::make_unique<Candidate>(shared_from_this(), forward); return MMS_OK;
     }
     uint64_t RetainedBytes() const noexcept override {
         uint64_t size = sizeof(*this) + patches.capacity() * sizeof(Patch) + models.capacity() * sizeof(ModelGuard) + accessories.capacity() * sizeof(AccessoryGuard);
@@ -152,6 +152,8 @@ std::shared_ptr<HistoryChange> CaptureModelRemovalBindings(MMDApp& app, unsigned
 std::shared_ptr<HistoryChange> CaptureAccessoryRemovalOrder(MMDApp& app, unsigned slot) {
     if (slot >= 255 || !app.AccessorySlot(slot)) throw std::invalid_argument("deleted accessory slot");
     auto change = std::make_shared<BindingChange>(app); const auto order = app.AccessorySlot(slot)->order;
+    if (order < app.AccessoryRenderSplitOrder())
+        change->Set(app.AccessoryRenderSplitOrder(), int32_t(app.AccessoryRenderSplitOrder() - 1));
     for (unsigned i = 0; i < 255; ++i) {
         auto* object = app.AccessorySlot(i); if (!object || i == slot || object->order <= order) continue;
         change->Set(object->order, uint8_t(object->order - 1));

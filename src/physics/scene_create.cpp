@@ -42,6 +42,7 @@
 #include "mikudancestudio/d3d_wrapper.hpp"
 #include "mikudancestudio/physics_scene.hpp"
 #include "mikudancestudio/dynamics_world.hpp"
+#include "mikudancestudio/history_physics.hpp"
 
 #include "scene_gizmo_data.inc"
 
@@ -114,7 +115,11 @@ bool SceneConstruct(PhysicsScene* scene, D3DRenderer* d3dSub) {
     scene->collisionConfig = new btDefaultCollisionConfiguration();  // 0x405D0B (0x58)
     scene->dispatcher =
         new btCollisionDispatcher(scene->collisionConfig);           // 0x405D4F (0x12F0)
-    scene->broadphase = new bt32BitAxisSweep3(                       // 0x405DE3
+#if MMD_ORIGINAL_PROFILE
+    scene->broadphase = new bt32BitAxisSweep3(
+#else
+    scene->broadphase = new history_physics::Broadphase(
+#endif
         btVector3(-10000.0f, -10000.0f, -10000.0f),
         btVector3(10000.0f, 10000.0f, 10000.0f), 1500000);
     scene->solver = new btSequentialImpulseConstraintSolver();       // 0x405E18

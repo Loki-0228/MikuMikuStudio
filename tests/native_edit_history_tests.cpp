@@ -13,6 +13,13 @@
 #include "mikudancestudio/ported_funcs.hpp"
 #include "mikudancestudio/plugin_scene.hpp"
 #include "../src/plugins/scene_history.hpp"
+#include "../src/plugins/scene_object_history.hpp"
+#include "mikudancestudio/animation_curve_host.hpp"
+#include "mikudancestudio/physics_scene.hpp"
+#include "mikudancestudio/history_physics.hpp"
+#include "mikudancestudio/dynamics_world.hpp"
+#include "btBulletDynamicsCommon.h"
+#include <malloc.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -231,6 +238,13 @@ void RemovalBindings(){
     const auto unchanged=[&]{return peer.Digest()==original&&order.linkedModel==3&&order.linkedBone==17&&
         camera[1].parentModel==3&&camera[1].parentBone==31&&app->CameraParentModel()==3&&app->CameraParentBone()==37&&
         accessory.parentModel==3&&accessory.parentBone==41&&keys[2].parentModel==3&&keys[2].parentBone==43&&keys[2].visible==1;};
+    {
+        auto change=CaptureModelRemovalBindings(*app,3);std::weak_ptr<HistoryChange> weak=change;
+        std::unique_ptr<PreparedHistoryChange> prepared;
+        Check(change->Prepare(true,prepared)==MMS_OK,"prepare separately owned binding candidate");change.reset();
+        Check(!weak.expired()&&prepared->IsCurrent()&&unchanged(),"binding candidate retains source change");
+        prepared.reset();Check(weak.expired()&&unchanged(),"canceling binding candidate releases source without publishing");
+    }
     // Capture and reservation fail before changing even a single binding.
     for(long limit=0;limit<4096;++limit){std::shared_ptr<HistoryChange> captured;bool memory=false;
         failAfter=limit;try{captured=CaptureModelRemovalBindings(*app,3);}catch(const std::bad_alloc&){memory=true;}failAfter=-1;
@@ -306,4 +320,6 @@ void CrossModelJournal(){
     Check(history.History(true)==MMS_OK&&b.bones[0].trans[0]==11,"second model redoes second");
 }
 }
-int main(){std::setvbuf(stdout,nullptr,_IONBF,0);PoseAndStale();KeysAndChain();Bake();Deletion();EmptyAndCycle();FreeCurves();Scatter();FailedNativeCommands();RemovalBindings();CrossModelJournal();std::printf("PASS native history: %u checks\n",checks);}
+#include "history_physics_checks.inc"
+#include "scene_object_history_checks.inc"
+int main(){std::setvbuf(stdout,nullptr,_IONBF,0);PoseAndStale();KeysAndChain();Bake();Deletion();EmptyAndCycle();FreeCurves();Scatter();FailedNativeCommands();RemovalBindings();CrossModelJournal();PhysicsRetention();ObjectRetention();std::printf("PASS native history: %u checks\n",checks);}

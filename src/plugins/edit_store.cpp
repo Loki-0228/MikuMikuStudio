@@ -99,7 +99,7 @@ MmsResult EditStore::Commit(EditClient& c,MmsHandle h){
             p.table.context=nullptr;p.table.cancel=nullptr;
             if(committed){poisoned_=true;host_.Poison();return committed;}
         }
-        t->publication->Publish();t->participants.clear();return MMS_OK;
+        t->publication->Publish();t->publication.reset();t->participants.clear();return MMS_OK;
     });
     if(r){
         for(auto it=t->participants.rbegin();it!=t->participants.rend();++it)if(it->table.cancel)

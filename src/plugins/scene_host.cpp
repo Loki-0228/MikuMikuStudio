@@ -1,6 +1,7 @@
 #include "scene_identity.hpp"
 #include "scene_geometry.hpp"
 #include "scene_definitions.hpp"
+#include "scene_history.hpp"
 #include "mikudancestudio/plugin_scene.hpp"
 #include "mikudancestudio/mmd_app.hpp"
 #include "mikudancestudio/model.hpp"
@@ -138,6 +139,17 @@ MmsObjectRef SceneObjectIdentity(const void* token) { return identities.Get(toke
 bool SceneObjectPresent(const void* token, MmsId id) noexcept {
     const auto* entry = identities.Retained(token);
     return entry && entry->present && Same(entry->object.id, id);
+}
+std::unique_ptr<PreparedHistoryChange> PrepareObjectPresence(const void* token, MmsId id, bool present) {
+    const auto* entry = identities.Retained(token);
+    if (!entry || !Same(entry->object.id, id)) throw std::invalid_argument("retained scene identity");
+    struct Candidate final : PreparedHistoryChange {
+        SceneIdentity::Presence presence;
+        explicit Candidate(SceneIdentity::Presence value) : presence(std::move(value)) {}
+        bool IsCurrent() const noexcept override { return presence.IsCurrent(); }
+        void Publish() noexcept override { presence.Publish(); }
+    };
+    return std::make_unique<Candidate>(identities.PreparePresence(token, present));
 }
 void ResetSceneIdentity() { identities.Clear(); opaqueIdentity = false; previous.clear(); geometryDigests.clear(); ++revision; }
 void SaveSceneIdentity(const MMDApp& app, pmm_extension::Document& document) {
