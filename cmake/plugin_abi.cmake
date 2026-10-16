@@ -11,6 +11,7 @@ add_library(mms_plugin_runtime STATIC
     src/plugins/scene_identity.cpp
     src/plugins/storage_store.cpp
     src/plugins/edit_store.cpp
+    src/plugins/shared_history.cpp
     src/plugins/project_storage.cpp
     src/plugins/native_ui.cpp)
 target_include_directories(mms_plugin_runtime PUBLIC sdk/mms/include PRIVATE src/plugins)
@@ -19,7 +20,7 @@ target_compile_definitions(mms_plugin_runtime PRIVATE _WIN32_WINNT=0x0601 WINVER
 # Host-side static libraries inherit the host/Conan runtime. Only independent
 # plugin DLLs select /MT; ownership never crosses the public C ABI.
 target_link_libraries(mikudancestudio_core PUBLIC mms_plugin_runtime)
-target_sources(mikudancestudio_core PRIVATE src/plugins/integration.cpp src/app/update_coordinator.cpp src/plugins/scene_host.cpp src/plugins/scene_geometry.cpp src/plugins/scene_definitions.cpp)
+target_sources(mikudancestudio_core PRIVATE src/plugins/integration.cpp src/app/update_coordinator.cpp src/plugins/scene_host.cpp src/plugins/scene_geometry.cpp src/plugins/scene_definitions.cpp src/plugins/scene_history.cpp)
 
 add_library(mms_hello_plugin SHARED EXCLUDE_FROM_ALL
     sdk/mms/examples/hello_menu/plugin.cpp sdk/mms/examples/hello_menu/plugin.def)

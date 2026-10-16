@@ -11,6 +11,8 @@
 #include "mikudancestudio/sequence_scatter.hpp"
 #include "mikudancestudio/mmd_app.hpp"
 #include "mikudancestudio/ported_funcs.hpp"
+#include "mikudancestudio/plugin_scene.hpp"
+#include "../src/plugins/scene_history.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -204,5 +206,104 @@ void FailedNativeCommands(){
     Check(f.Digest()==before&&app->SceneModified()==0&&app->CurrentFrame()==9,"allocation failure in real undo command leaves scene unmodified");
     DestroyWindow(app->MainWindow());app->MainWindow()=nullptr;app->ModelSlot(0)=nullptr;
 }
+void RemovalBindings(){
+    using namespace plugins;
+    Fixture deleted,peer; auto app=std::make_unique<MMDApp>();app->state=MMDAppState{};
+    app->ModelSlot(3)=deleted.raw();app->ModelSlot(7)=peer.raw();
+    deleted.m->comboSelIndex=1;deleted.m->comboSelIndex2=1;
+    peer.m->comboSelIndex=2;peer.m->comboSelIndex2=2;
+    mdl::BoneOrderEntry order{};order.linkedModel=3;order.linkedBone=17;
+    peer.m->boneOrderTable=&order;
+    for(int i=0;i<4;++i)peer.m->displayKeys[i].selectorStates[0]={-1,0};
+    peer.m->displayKeys[2].selectorStates[0]={3,23};
+    auto* camera=mdl::KeyPoolCreate<mdl::CameraKey>(4);app->CameraKeys()=camera;
+    for(int i=0;i<4;++i)camera[i].parentModel=-1;
+    camera[1].parentModel=3;camera[1].parentBone=31;
+    app->CameraParentModel()=3;app->CameraParentBone()=37;
+    mdl::AccessoryRecord accessory{},later{};accessory.order=2;later.order=3;
+    accessory.parentModel=3;accessory.parentBone=41;later.parentModel=-1;
+    app->AccessorySlot(11)=&accessory;app->AccessorySlot(12)=&later;
+    auto* keys=mdl::KeyPoolCreate<mdl::AccessoryKey>(4);app->AccessoryKeys(11)=keys;
+    for(int i=0;i<4;++i)keys[i].parentModel=-1;
+    keys[2].parentModel=3;keys[2].parentBone=43;keys[2].visible=1;keys[2].scale=4.5f;
+    auto binding=CaptureModelRemovalBindings(*app,3);
+    const auto original=peer.Digest();
+    const auto unchanged=[&]{return peer.Digest()==original&&order.linkedModel==3&&order.linkedBone==17&&
+        camera[1].parentModel==3&&camera[1].parentBone==31&&app->CameraParentModel()==3&&app->CameraParentBone()==37&&
+        accessory.parentModel==3&&accessory.parentBone==41&&keys[2].parentModel==3&&keys[2].parentBone==43&&keys[2].visible==1;};
+    // Capture and reservation fail before changing even a single binding.
+    for(long limit=0;limit<4096;++limit){std::shared_ptr<HistoryChange> captured;bool memory=false;
+        failAfter=limit;try{captured=CaptureModelRemovalBindings(*app,3);}catch(const std::bad_alloc&){memory=true;}failAfter=-1;
+        Check(unchanged(),"binding capture allocation failure preserves live scene");
+        if(captured){Check(limit>3,"binding capture reaches multiple allocations");break;}
+        Check(memory,"binding capture reports allocation failure");Check(limit<4095,"binding capture sweep terminates");
+    }
+    StorageStore storage;SharedHistory history(storage);std::unique_ptr<SharedHistory::NativeTransaction> tx;
+    uint64_t revision=0;history.Revision(revision);
+    for(long limit=0;limit<4096;++limit){failAfter=limit;const auto result=history.PrepareNative("delete bindings",binding,tx);failAfter=-1;
+        Check(unchanged()&&history.UndoCount()==0,"history prepare failure leaves bindings and cursor");
+        if(result==MMS_OK)break;Check(result==MMS_E_MEMORY&&limit<4095,"history preparation failure is bounded");
+    }
+    failAfter=0;const auto committed=history.CommitNative(std::move(tx));failAfter=-1;
+    Check(committed==MMS_OK,"binding publication and journal append allocate nothing");
+    Check(order.linkedModel==-1&&order.linkedBone==0&&peer.m->displayKeys[2].selectorStates[0].modelIndex==-1&&
+        camera[1].parentModel==-1&&app->CameraParentModel()==-1&&accessory.parentModel==-1&&
+        keys[2].parentModel==-1&&keys[2].parentBone==0&&!keys[2].visible,"remove clears all incoming native bindings");
+    Check(peer.m->comboSelIndex==1&&peer.m->comboSelIndex2==1&&keys[2].scale==4.5f,"remove fixes ordering and preserves unrelated accessory values");
+    // A pool/owner mismatch is rejected before old patch addresses are read.
+    app->CameraKeys()=nullptr;
+    Check(history.History(false)==MMS_E_STALE&&history.UndoCount()==1,"replaced camera pool refuses stale binding history");
+    app->CameraKeys()=camera;
+    auto* selectors=peer.m->displayKeys[2].selectorStates;peer.m->displayKeys[2].selectorStates=nullptr;
+    Check(history.History(false)==MMS_E_STALE,"replaced nested selector storage refuses history");peer.m->displayKeys[2].selectorStates=selectors;
+    app->AccessorySlot(11)=nullptr;Check(history.History(false)==MMS_E_STALE,"absent incoming attachment owner refuses history");app->AccessorySlot(11)=&accessory;
+    failAfter=0;const auto failedUndo=history.History(false);failAfter=-1;
+    Check(failedUndo==MMS_E_MEMORY&&history.UndoCount()==1&&order.linkedModel==-1,"undo allocation failure preserves bindings");
+    Check(history.History(false)==MMS_OK&&unchanged(),"undo restores all original incoming bindings and order");
+    Check(history.History(true)==MMS_OK&&order.linkedModel==-1,"redo clears native bindings again");
+    Check(history.History(false)==MMS_OK&&unchanged(),"second undo is lossless");
+    auto accessoryOrder=CaptureAccessoryRemovalOrder(*app,11);
+    Check(history.PrepareNative("delete accessory order",accessoryOrder,tx)==MMS_OK&&history.CommitNative(std::move(tx))==MMS_OK&&later.order==2,"accessory removal closes display-order gap");
+    Check(history.History(false)==MMS_OK&&later.order==3,"accessory deletion undo restores display order");
+    // Retiring an object invalidates even the same pointer/slot combination.
+    ForgetSceneObject(peer.raw());
+    std::unique_ptr<PreparedHistoryChange> candidate;
+    Check(binding->Prepare(true,candidate)==MMS_E_STALE,"retired owner identity prevents pointer reuse");
+    history.Reset();history.Collect();binding.reset();accessoryOrder.reset();
+    ForgetSceneObject(&accessory);ForgetSceneObject(&later);ForgetSceneObject(deleted.raw());
+    mdl::KeyPoolDestroy(app->CameraKeys());mdl::KeyPoolDestroy(app->AccessoryKeys(11));
+    app->ModelSlot(3)=app->ModelSlot(7)=nullptr;app->AccessorySlot(11)=app->AccessorySlot(12)=nullptr;peer.m->boneOrderTable=nullptr;
 }
-int main(){std::setvbuf(stdout,nullptr,_IONBF,0);PoseAndStale();KeysAndChain();Bake();Deletion();EmptyAndCycle();FreeCurves();Scatter();FailedNativeCommands();std::printf("PASS native history: %u checks\n",checks);}
+struct NativeRingChange : plugins::HistoryChange {
+    unsigned char* model;int& frame;
+    NativeRingChange(unsigned char* m,int& f):model(m),frame(f){}
+    struct Candidate:plugins::PreparedHistoryChange {
+        nh::ModelEdit edit;int& frame;
+        explicit Candidate(int& f):frame(f){}
+        bool IsCurrent()const noexcept override{return edit.IsCurrent(frame);}
+        void Publish()noexcept override{Check(edit.Publish(frame),"real native ring publishes inside shared journal");}
+    };
+    MmsResult Prepare(bool forward,std::unique_ptr<plugins::PreparedHistoryChange>& out)override{
+        auto next=std::make_unique<Candidate>(frame);const auto r=next->edit.Prepare(model,frame,forward);
+        if(r!=nh::Result::Ready)return r==nh::Result::Memory?MMS_E_MEMORY:MMS_E_STALE;
+        out=std::move(next);return MMS_OK;
+    }
+    uint64_t RetainedBytes()const noexcept override{return sizeof(*this);}
+};
+void CrossModelJournal(){
+    Fixture a,b;int frame=9;
+    a.Entry(1,1,2);a.bones[0].trans[0]=7;b.Entry(1,1,3);b.bones[0].trans[0]=11;
+    // Produce actual redo entries using the production native recovery path.
+    for(auto* f:{&a,&b}){nh::ModelEdit candidate;Check(candidate.Prepare(f->raw(),frame,false)==nh::Result::Ready&&candidate.Publish(frame),"native cross-model source before state");}
+    plugins::StorageStore storage;plugins::SharedHistory history(storage);
+    for(auto* f:{&a,&b}){std::unique_ptr<plugins::SharedHistory::NativeTransaction> tx;
+        Check(history.PrepareNative("model pose",std::make_shared<NativeRingChange>(f->raw(),frame),tx)==MMS_OK,"prepare real model in common journal");
+        failAfter=0;const auto r=history.CommitNative(std::move(tx));failAfter=-1;Check(r==MMS_OK,"real model plus journal publishes without allocation");}
+    Check(a.bones[0].trans[0]==7&&b.bones[0].trans[0]==11,"both real models edited");
+    Check(history.History(false)==MMS_OK&&b.bones[0].trans[0]==3&&a.bones[0].trans[0]==7,"last edited model undoes first");
+    Check(history.History(false)==MMS_OK&&a.bones[0].trans[0]==2,"earlier model undoes second");
+    Check(history.History(true)==MMS_OK&&a.bones[0].trans[0]==7,"first model redoes first");
+    Check(history.History(true)==MMS_OK&&b.bones[0].trans[0]==11,"second model redoes second");
+}
+}
+int main(){std::setvbuf(stdout,nullptr,_IONBF,0);PoseAndStale();KeysAndChain();Bake();Deletion();EmptyAndCycle();FreeCurves();Scatter();FailedNativeCommands();RemovalBindings();CrossModelJournal();std::printf("PASS native history: %u checks\n",checks);}

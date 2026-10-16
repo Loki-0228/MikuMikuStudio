@@ -82,6 +82,8 @@ flags 中 `MMS_MORPH_PANEL_MASK` 对应原生面板分类，右移 `MMS_MORPH_PA
 
 ## 工程数据
 
+编辑事务和插件可选择的单次/多次撤销规则见[编辑事务参考](edit.md)。该服务尚未向宿主插件开放；工程序列化服务已可使用。
+
 完整接口见 [storage.h](include/mms/storage.h)，注册和回调约束见[工程序列化参考](storage.md)。插件通过 `registerProvider("mms.serializer", pluginId, &table, sizeof table, &handle)` 注册自己的 `MmsSerializerV1`，不直接写 PMM 或配套文件。每个插件 ID 只允许一个序列化器。
 
 `prepareLoad` 只准备候选数据，`commitLoad` 才替换当前状态。新建工程及没有该插件记录的工程传入 schema=0 和空数据，插件必须将其解释为默认状态。正常保存返回非零 schema 和原始字节；宿主复制后恰好调用一次 `releaseBytes`。所有回调和 storage 操作均在 UI 线程执行。

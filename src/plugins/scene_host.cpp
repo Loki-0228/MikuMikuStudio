@@ -134,6 +134,11 @@ std::shared_ptr<SceneStore> CreateSceneStore(MMDApp* app) {
         [](MmsId id) { return identities.Known(id); });
 }
 void ForgetSceneObject(const void* token) { if (!build_profile::original) { identities.Forget(token); geometryDigests.erase(token); ++revision; previous.clear(); } }
+MmsObjectRef SceneObjectIdentity(const void* token) { return identities.Get(token).object; }
+bool SceneObjectPresent(const void* token, MmsId id) noexcept {
+    const auto* entry = identities.Retained(token);
+    return entry && entry->present && Same(entry->object.id, id);
+}
 void ResetSceneIdentity() { identities.Clear(); opaqueIdentity = false; previous.clear(); geometryDigests.clear(); ++revision; }
 void SaveSceneIdentity(const MMDApp& app, pmm_extension::Document& document) {
     if (build_profile::original || opaqueIdentity) return;

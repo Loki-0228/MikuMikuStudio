@@ -36,9 +36,18 @@ MmsResult EditStore::Join(EditClient& c,MmsHandle h,const MmsTransactionParticip
 }
 void EditStore::CancelAll(Transaction& t) noexcept {
     for(auto it=t.participants.rbegin();it!=t.participants.rend();++it){
-        if(Boundary([&]{it->table.cancel(it->table.context);return MMS_OK;}))poisoned_=true;
+        if(Boundary([&]{it->table.cancel(it->table.context);return MMS_OK;})){poisoned_=true;host_.Poison();}
     }
     t.participants.clear();t.publication.reset();
+}
+MmsResult EditStore::JoinNative(EditClient& c, MmsHandle h, std::shared_ptr<HistoryChange> change) {
+    if (auto r=Ready(c)) return r;
+    auto found=transactions_.find(h);
+    if (found==transactions_.end() || found->second->owner!=&c) return MMS_E_STALE;
+    auto& t=*found->second;
+    if (!change) return MMS_E_ARGUMENT;
+    if (t.prepared || t.native) return MMS_E_CONFLICT;
+    t.native=std::move(change); return MMS_OK;
 }
 MmsResult EditStore::Prepare(EditClient& c,MmsHandle h){
     if(auto r=Ready(c))return r;
@@ -48,8 +57,8 @@ MmsResult EditStore::Prepare(EditClient& c,MmsHandle h){
     auto r=Boundary([&]() -> MmsResult {
         auto entered=host_.Enter();if(entered)return entered;HostLock lock{host_};
         uint64_t revision=0;if(auto result=host_.Revision(revision))return result;if(revision!=t.expected)return MMS_E_STALE;
-        if(t.participants.empty())return MMS_E_ARGUMENT;
-        auto record=std::make_shared<EditRecord>();record->label=t.label;
+        if(t.participants.empty()&&!t.native)return MMS_E_ARGUMENT;
+        auto record=std::make_shared<EditRecord>();record->label=t.label;record->native=t.native;
         for(const auto& p:t.participants){
             const auto serializer=storage_.RestoreToken(p.id);if(!serializer)return MMS_E_NOT_READY;
             if(serializer!=p.serializer)return MMS_E_STALE;
@@ -62,7 +71,7 @@ MmsResult EditStore::Prepare(EditClient& c,MmsHandle h){
             auto result=Boundary([&]{return p.table.getUndoState(p.table.context,&before,&after,&schema,&lease);});if(result)return result;
             auto copied=Boundary([&]{record->before.emplace(p.id,CopyState(before,schema));record->after.emplace(p.id,CopyState(after,schema));return MMS_OK;});
             auto released=Boundary([&]{p.table.releaseUndoState(p.table.context,lease);return MMS_OK;});
-            if(released){poisoned_=true;return released;}if(copied)return copied;
+            if(released){poisoned_=true;host_.Poison();return released;}if(copied)return copied;
         }
         auto reserved=host_.Reserve(std::move(record),t.publication);if(reserved)return reserved;
         if(!t.publication)return MMS_E_FAILED;
@@ -82,18 +91,19 @@ MmsResult EditStore::Commit(EditClient& c,MmsHandle h){
             const auto serializer=storage_.RestoreToken(p.id);if(!serializer)return MMS_E_NOT_READY;
             if(serializer!=p.serializer)return MMS_E_STALE;
         }
+        if(!t->publication->IsCurrent())return MMS_E_STALE;
         // Commit consumes the context even for a nonconforming throwing plugin.
         // Never attempt cancel on such a consumed context. Further edits stop.
         for(auto& p:t->participants){
             const auto committed=Boundary([&]{p.table.commit(p.table.context);return MMS_OK;});
             p.table.context=nullptr;p.table.cancel=nullptr;
-            if(committed){poisoned_=true;return committed;}
+            if(committed){poisoned_=true;host_.Poison();return committed;}
         }
         t->publication->Publish();t->participants.clear();return MMS_OK;
     });
     if(r){
         for(auto it=t->participants.rbegin();it!=t->participants.rend();++it)if(it->table.cancel)
-            if(Boundary([&]{it->table.cancel(it->table.context);return MMS_OK;}))poisoned_=true;
+            if(Boundary([&]{it->table.cancel(it->table.context);return MMS_OK;})){poisoned_=true;host_.Poison();}
     }
     return r;
 }

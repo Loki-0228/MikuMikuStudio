@@ -9,17 +9,19 @@ typedef struct MmsTransactionParticipantV1 {
 	MmsResult (MMS_CALL *prepare)(void*);
 	void (MMS_CALL *commit)(void*);
 	void (MMS_CALL *cancel)(void*);
-	MmsResult (MMS_CALL *getUndoState)(void*, MmsBytes*, MmsBytes*, uint32_t*, MmsHandle*);
-	void (MMS_CALL *releaseUndoState)(void*, MmsHandle);
+	MmsResult (MMS_CALL *getUndoState)(void* context, MmsBytes* before, MmsBytes* after, uint32_t* schema, MmsHandle* lease);
+	void (MMS_CALL *releaseUndoState)(void* context, MmsHandle lease);
 } MmsTransactionParticipantV1;
 typedef struct MmsEditApiV1 {
 	MmsHeader h;
 	void* context;
-	MmsResult (MMS_CALL *begin)(void*, MmsString, uint64_t, MmsHandle*);
-	MmsResult (MMS_CALL *prepare)(void*, MmsHandle);
-	MmsResult (MMS_CALL *join)(void*, MmsHandle, const MmsTransactionParticipantV1*);
-	MmsResult (MMS_CALL *commit)(void*, MmsHandle);
-	void (MMS_CALL *cancel)(void*, MmsHandle);
+	/* One successful transaction is one undo step, including all participants.
+	   Separate successful transactions remain separate undo steps. */
+	MmsResult (MMS_CALL *begin)(void* context, MmsString label, uint64_t expectedSceneRevision, MmsHandle* transaction);
+	MmsResult (MMS_CALL *prepare)(void* context, MmsHandle transaction);
+	MmsResult (MMS_CALL *join)(void* context, MmsHandle transaction, const MmsTransactionParticipantV1* participant);
+	MmsResult (MMS_CALL *commit)(void* context, MmsHandle transaction);
+	void (MMS_CALL *cancel)(void* context, MmsHandle transaction);
 	MmsResult (MMS_CALL *undo)(void*);
 	MmsResult (MMS_CALL *redo)(void*);
 } MmsEditApiV1;

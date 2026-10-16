@@ -31,6 +31,7 @@ public:
     bool HasLeases(StorageClient&) const;
     bool Retire(StorageClient&);
     bool InCallback() const { return busy_; }
+    bool Poisoned() const noexcept { return poisoned_; }
     bool Prepared() const { return prepared_; }
     bool CanRestore(const std::string&) const;
     MmsHandle RestoreToken(const std::string&) const;

@@ -50,7 +50,9 @@
 | P3 | 求值阶段及未支持的定义类型 | 未实现 | 阶段 1–4、翻转/冲量 Morph、其他关节、复合形状及软体。绑定配置不能替代物理后状态。 |
 | P3 | edit 两阶段事务内核 | 本机已验证 | prepare/join/commit/cancel、修订检查、serializer 代次、撤销字节深复制、失败取消和历史预留。测试使用宿主夹具，见[原生接入边界](PLUGIN_EDIT_INTEGRATION.md)。 |
 | P3 | 原生模型历史准备与发布 | 本机已验证 | 类型 1–7、链式操作和回绕，缩放、自由曲线及 Morph 层；准备失败不写状态，发布不分配。按钮、快捷键及直接撤销入口已接入。 |
-| P3 | 原生统一撤销及可写属性 | 未实现 | 模型恢复辅助已完成；生产 `EditHost`、共同历史顺序、全局编辑及各写入入口仍未接入。`mms.edit` 仍返回 NOT_FOUND，可写属性仍为 NOT_READY。 |
+| P3 | 共同历史内核与插件撤销粒度 | 本机已验证 | `SharedHistory` 实现 `EditHost`；原生和插件同队列、同事务，按提交分步或合并撤销，失败保留游标及重做分支、资源延后回收。 |
+| P3 | 对象存在身份与删除绑定恢复 | 本机已验证 | 稳定 ID、恢复后新代次；原生相机、附件、外部亲骨骼及显示顺序的字段恢复。资源生命周期尚未接入；内核所有权夹具不能代替真实模型导入/删除验收。 |
+| P3 | 原生统一撤销及可写属性 | 未实现 | 共同历史内核和模型恢复辅助已完成；主窗口、全局编辑、模型/附件资源保留与恢复、各写入入口仍未接入。`mms.edit` 仍返回 NOT_FOUND，可写属性仍为 NOT_READY。 |
 | P3 | animation 轨道/键、层、片段、变速、烘焙和选择 | 未实现 | 服务返回 NOT_FOUND。 |
 | P3 | storage serializer、工程数据和成对保存 | 本机已验证 | C ABI、两阶段加载、保存数据租约、缺失插件保留；PMM 与 JSON 配套哈希、恢复记录、旧对回退、自动备份轮换；真实 DLL 原名/中文 EXE 往返通过。 |
 | P3 | 显式导入和扩展文件重新关联 | 未实现 | EMM/EMD 保持显式导入；不匹配的 sidecar 拒绝自动应用，保留原件。 |
@@ -94,6 +96,9 @@
 | 原生恢复接入后的既有回归 | 骨骼曲线、Morph 曲线、帧率转换、缩放及 VMD 往返、ABI 契约通过；物理烘焙、密集键播放和隐藏界面插值联动通过 | `plugin-abi-native-history-regressions-2.log`、`plugin-abi-native-history-physics-1.log`、`plugin-abi-native-history-ui-1.log` |
 | 原生恢复接入后的真实工程 | 插件数据、PMM 往返、缺失插件保留、失败不发布、原名/中文 EXE 通过 | `plugin-abi-native-history-storage-1.log`、`abi-native-history-storage-1/report.json` |
 | 原生恢复宿主构建及导入 | 宿主和相关测试重建成功，宿主仍为 x64、子系统 6.1，无新增必需的可选图形或厂商 DLL 导入；资源复用范围见下文 | `plugin-abi-native-history-build-10.log`、`plugin-abi-native-history-pe-inventory.json` |
+| 共同历史、撤销粒度与对象存在身份 | ABI 累计 700 项通过；原生/插件交错、同事务发布、多次提交、取消保留 redo、缺失 serializer、陈旧及违规 commit、对象保留与代次、预算淘汰和延后释放。对象所有权使用内核夹具，尚非实际导入/删除入口 | `plugin-abi-shared-history-tests-final.log` |
+| 原生删除绑定及跨模型恢复 | 累计 10,671 项通过；真实原生姿势跨模型顺序；相机、附件、外部亲骨骼、显示顺序往返；逐分配故障、失效池拒绝、共同历史发布无分配 | `plugin-abi-shared-history-tests-final.log` |
+| 共同历史代码加入后的宿主 | Win7 目标完整构建；原名和中文名隐藏宿主的场景查询、面板、菜单、工具栏及正常退出通过；x64 子系统 6.1，无新增必需可选后端导入 | `plugin-abi-shared-history-final-build-2.log`、`plugin-abi-shared-history-smoke-1.log`、`plugin-abi-shared-history-pe.json` |
 | 定义接入后的 PE 导入清单 | 四文件均无可选图形/厂商后端的直接导入 | `plugin-abi-definitions-pe-inventory.json` |
 | PE 导入/导出清单 | 四文件通过可选后端直接导入检查 | `plugin-abi-win7-pe-inventory.json` |
 | 处理器策略 | 99 项通过，P2 新增前 | `plugin-abi-processor.log` |
