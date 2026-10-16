@@ -167,6 +167,7 @@
 #if !MMD_ORIGINAL_PROFILE
 #include "../plugins/native_pose_axis.hpp"
 #include "../plugins/native_bone_registration.hpp"
+#include "../plugins/native_key_commands.hpp"
 #endif
 
 namespace mikudancestudio {
@@ -541,6 +542,9 @@ void CmdControl500(MMDApp* app, HWND hwnd, std::uint16_t id, std::uint16_t notif
         case 527: lane = 2; break;
         default: break;
         }
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::TryRegisterBoundMorph(app, static_cast<unsigned>(lane))) break;
+#endif
         app->SceneModified() = 1;
         {
             unsigned char* m = ActiveModel(app);

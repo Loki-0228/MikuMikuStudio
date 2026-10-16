@@ -124,6 +124,29 @@ public:
     // releasing only this token's allocations that the model no longer uses.
 };
 
+// Morph counterpart: private allocation is invisible to public capacity/identity
+// lookup until Publish. Cancellation restores the allocation, not key edits in
+// a no-growth pool. The model must outlive the token; serialize pool ownership.
+class MorphKeyPoolGrowth {
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+    explicit MorphKeyPoolGrowth(std::unique_ptr<Impl>) noexcept;
+public:
+    ~MorphKeyPoolGrowth();
+    MorphKeyPoolGrowth(const MorphKeyPoolGrowth&) = delete;
+    MorphKeyPoolGrowth& operator=(const MorphKeyPoolGrowth&) = delete;
+    static bool Prepare(ModelRecord&, std::uint64_t slotsNeeded,
+                        std::unique_ptr<MorphKeyPoolGrowth>& out) noexcept;
+    MorphKey* CandidatePool() const noexcept;
+    std::size_t CandidateCapacity() const noexcept;
+    std::uint64_t CandidateIdentity() const noexcept;
+    bool Grows() const noexcept;
+    bool IsCurrent() const noexcept;
+    bool Publish() noexcept;
+    bool Rollback() noexcept;
+    bool Accept() noexcept;
+};
+
 // Transactional growth.  Returns true when the pool already holds `slotsNeeded`
 // slots.  Otherwise allocates the new block, copies the old contents, prepares
 // the visit map (carrying the visited marks of every existing slot over, so a

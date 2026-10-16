@@ -413,7 +413,12 @@ void BoneKeyVisitClear(ModelRecord& model) {
 // Morph pools retain the model ABI and all slot indices across growth.
 // Borrowed test/SDK pools are copied but never released by this owner.
 namespace {
-struct MorphEntry { std::size_t capacity; std::uint64_t identity; };
+struct MorphEntry {
+    std::size_t capacity;
+    std::uint64_t identity;
+    bool visible = true;
+    const void* token = nullptr;
+};
 std::unordered_map<const MorphKey*, MorphEntry>& MorphRegistry() {
     static std::unordered_map<const MorphKey*, MorphEntry> registry;
     return registry;
@@ -437,7 +442,8 @@ std::size_t MorphKeyCapacity(const MorphKey* pool) {
     if (!pool) return 0;
     std::lock_guard<std::mutex> lock(RegistryMutex());
     const auto found = MorphRegistry().find(pool);
-    return found == MorphRegistry().end() ? kMorphKeyCapacity : found->second.capacity;
+    return found == MorphRegistry().end() ? kMorphKeyCapacity :
+        found->second.visible ? found->second.capacity : 0;
 }
 
 std::size_t MorphKeyCapacity(const ModelRecord& model) {
@@ -447,7 +453,7 @@ std::size_t MorphKeyCapacity(const ModelRecord& model) {
 std::uint64_t MorphKeyPoolIdentity(const MorphKey* pool) {
     std::lock_guard<std::mutex> lock(RegistryMutex());
     const auto found = MorphRegistry().find(pool);
-    return found == MorphRegistry().end() ? 0 : found->second.identity;
+    return found == MorphRegistry().end() || !found->second.visible ? 0 : found->second.identity;
 }
 
 void MorphKeyPoolDestroy(MorphKey*& pool) {
@@ -455,13 +461,197 @@ void MorphKeyPoolDestroy(MorphKey*& pool) {
     bool owned;
     {
         std::lock_guard<std::mutex> lock(RegistryMutex());
-        owned = MorphRegistry().erase(pool) != 0;
+        const auto found = MorphRegistry().find(pool);
+        owned = found != MorphRegistry().end() && found->second.visible;
+        if (owned) MorphRegistry().erase(found);
     }
     if (owned) std::free(pool);
     pool = nullptr;
 }
 
+struct MorphKeyPoolGrowth::Impl {
+    enum class Phase { Prepared, Published, Done };
+    ModelRecord* model = nullptr;
+    MorphKey* source = nullptr;
+    MorphKey* candidate = nullptr;
+    std::size_t sourceCapacity = 0, candidateCapacity = 0;
+    std::uint64_t sourceIdentity = 0, candidateIdentity = 0;
+    bool grows = false, registered = false;
+    Phase phase = Phase::Prepared;
+
+    bool SourceCurrent(bool published) const noexcept {
+        const auto found = MorphRegistry().find(source);
+        if (!sourceIdentity)
+            return found == MorphRegistry().end() && sourceCapacity == (source ? kMorphKeyCapacity : 0);
+        return found != MorphRegistry().end() && found->second.capacity == sourceCapacity &&
+            found->second.identity == sourceIdentity &&
+            found->second.visible == !(published && grows) &&
+            found->second.token == (published ? this : nullptr);
+    }
+    bool CandidateCurrent(bool published) const noexcept {
+        if (!grows) return true;
+        const auto found = MorphRegistry().find(candidate);
+        return registered && found != MorphRegistry().end() && found->second.token == this &&
+            found->second.identity == candidateIdentity && found->second.capacity == candidateCapacity &&
+            found->second.visible == published;
+    }
+    bool Current() const noexcept { // RegistryMutex held.
+        if (!model || phase == Phase::Done) return false;
+        const bool published = phase == Phase::Published;
+        if (model->morphKeys != (published ? candidate : source) ||
+            !SourceCurrent(published) || !CandidateCurrent(published)) return false;
+        return true;
+    }
+    // Never overwrite a replacement model pointer. If a caller made one of our
+    // allocations current directly, leave its ownership with that model.
+    void Abandon() noexcept {
+        if (phase == Phase::Done) return;
+        MorphKey* releaseSource = nullptr;
+        MorphKey* releaseCandidate = nullptr;
+        try {
+            std::lock_guard<std::mutex> lock(RegistryMutex());
+            const auto retainOrRelease = [&](MorphKey* pool, std::uint64_t identity, MorphKey*& release) {
+                const auto found = MorphRegistry().find(pool);
+                if (found == MorphRegistry().end() || found->second.token != this || found->second.identity != identity) return;
+                if (model && model->morphKeys == pool) {
+                    found->second.visible = true; found->second.token = nullptr;
+                } else { MorphRegistry().erase(found); release = pool; }
+            };
+            if (grows && candidate) {
+                if (registered) retainOrRelease(candidate, candidateIdentity, releaseCandidate);
+                else releaseCandidate = candidate;
+            }
+            if (phase == Phase::Published && sourceIdentity) {
+                if (grows) retainOrRelease(source, sourceIdentity, releaseSource);
+                else {
+                    const auto found = MorphRegistry().find(source);
+                    if (found != MorphRegistry().end() && found->second.token == this)
+                        found->second.token = nullptr;
+                }
+            }
+            phase = Phase::Done;
+        } catch (...) { return; }
+        std::free(releaseCandidate); std::free(releaseSource);
+    }
+    bool Rollback() noexcept {
+        if (phase == Phase::Done) return false;
+        if (phase == Phase::Prepared) { Abandon(); return phase == Phase::Done; }
+        MorphKey* release = nullptr;
+        try {
+            std::lock_guard<std::mutex> lock(RegistryMutex());
+            if (!Current()) return false;
+            if (sourceIdentity) {
+                auto& entry = MorphRegistry().find(source)->second;
+                entry.visible = true; entry.token = nullptr;
+            }
+            model->morphKeys = source;
+            if (grows) { MorphRegistry().erase(candidate); release = candidate; }
+            phase = Phase::Done;
+        } catch (...) { return false; }
+        std::free(release); return true;
+    }
+    ~Impl() { if (phase != Phase::Done && !Rollback()) Abandon(); }
+};
+
+MorphKeyPoolGrowth::MorphKeyPoolGrowth(std::unique_ptr<Impl> impl) noexcept : impl_(std::move(impl)) {}
+MorphKeyPoolGrowth::~MorphKeyPoolGrowth() = default;
+
+bool MorphKeyPoolGrowth::Prepare(ModelRecord& model, std::uint64_t needed,
+                               std::unique_ptr<MorphKeyPoolGrowth>& out) noexcept {
+    if (out) return false;
+    try {
+        auto next = std::make_unique<Impl>();
+        next->model = &model; next->source = model.morphKeys;
+        {
+            std::lock_guard<std::mutex> lock(RegistryMutex());
+            const auto found = MorphRegistry().find(next->source);
+            if (found != MorphRegistry().end()) {
+                if (!found->second.visible || found->second.token) return false;
+                next->sourceCapacity = found->second.capacity;
+                next->sourceIdentity = found->second.identity;
+            } else return false; // This token accepts owned morph pools only.
+        }
+        next->candidateCapacity = needed <= next->sourceCapacity ? next->sourceCapacity :
+            needed > kMorphKeyCapacityLimit ? 0 : static_cast<std::size_t>((std::min)(
+                std::uint64_t(kMorphKeyCapacityLimit), (std::max)(needed,
+                    std::uint64_t(next->sourceCapacity) + next->sourceCapacity / 2 + 4096)));
+        if (needed && !next->candidateCapacity) return false;
+        next->grows = next->candidateCapacity > next->sourceCapacity;
+        next->candidate = next->grows ? nullptr : next->source;
+        next->candidateIdentity = next->sourceIdentity;
+        if (next->grows) {
+            next->candidate = static_cast<MorphKey*>(std::calloc(next->candidateCapacity, sizeof(MorphKey)));
+            if (!next->candidate) return false;
+            if (next->sourceCapacity)
+                std::memcpy(next->candidate, next->source, next->sourceCapacity * sizeof(MorphKey));
+            MorphEntry entry{next->candidateCapacity, next->sourceIdentity};
+            entry.visible = false; entry.token = next.get();
+
+            {
+                std::lock_guard<std::mutex> lock(RegistryMutex());
+                if (!MorphRegistry().emplace(next->candidate, entry).second) return false;
+                next->registered = true;
+                next->candidateIdentity = MorphRegistry().find(next->candidate)->second.identity;
+            }
+        }
+        auto token = std::unique_ptr<MorphKeyPoolGrowth>(new MorphKeyPoolGrowth(std::move(next)));
+        if (!token->IsCurrent()) return false;
+        out = std::move(token); return true;
+    } catch (...) { return false; }
+}
+
+MorphKey* MorphKeyPoolGrowth::CandidatePool() const noexcept {
+    return impl_->phase == Impl::Phase::Done ? nullptr : impl_->candidate;
+}
+std::size_t MorphKeyPoolGrowth::CandidateCapacity() const noexcept {
+    return impl_->phase == Impl::Phase::Done ? 0 : impl_->candidateCapacity;
+}
+std::uint64_t MorphKeyPoolGrowth::CandidateIdentity() const noexcept {
+    return impl_->phase == Impl::Phase::Done ? 0 : impl_->candidateIdentity;
+}
+bool MorphKeyPoolGrowth::Grows() const noexcept { return impl_->grows; }
+bool MorphKeyPoolGrowth::IsCurrent() const noexcept {
+    try { std::lock_guard<std::mutex> lock(RegistryMutex()); return impl_->Current(); }
+    catch (...) { return false; }
+}
+bool MorphKeyPoolGrowth::Publish() noexcept {
+    try {
+        std::lock_guard<std::mutex> lock(RegistryMutex());
+        auto& p = *impl_;
+        if (p.phase != Impl::Phase::Prepared || !p.Current()) return false;
+        if (p.grows) {
+            if (p.sourceCapacity) std::memcpy(p.candidate, p.source, p.sourceCapacity * sizeof(MorphKey));
+            MorphRegistry().find(p.candidate)->second.visible = true;
+        }
+        if (p.sourceIdentity) {
+            auto& source = MorphRegistry().find(p.source)->second;
+            source.visible = !p.grows; source.token = &p;
+        }
+        p.model->morphKeys = p.candidate; p.phase = Impl::Phase::Published;
+        return true;
+    } catch (...) { return false; }
+}
+bool MorphKeyPoolGrowth::Rollback() noexcept { return impl_->Rollback(); }
+bool MorphKeyPoolGrowth::Accept() noexcept {
+    MorphKey* release = nullptr;
+    try {
+        std::lock_guard<std::mutex> lock(RegistryMutex());
+        auto& p = *impl_;
+        if (p.phase != Impl::Phase::Published || !p.Current()) return false;
+        if (p.grows && p.sourceIdentity) { MorphRegistry().erase(p.source); release = p.source; }
+        const auto candidate = MorphRegistry().find(p.candidate);
+        if (candidate != MorphRegistry().end()) candidate->second.token = nullptr;
+        p.phase = Impl::Phase::Done;
+    } catch (...) { return false; }
+    std::free(release); return true;
+}
+
 bool MorphKeyPoolEnsure(ModelRecord& model, std::uint64_t slotsNeeded) {
+    {
+        std::lock_guard<std::mutex> lock(RegistryMutex());
+        const auto found = MorphRegistry().find(model.morphKeys);
+        if (found != MorphRegistry().end() && (!found->second.visible || found->second.token)) return false;
+    }
     const std::size_t capacity = MorphKeyCapacity(model);
     if (slotsNeeded <= capacity) return true;
     if (slotsNeeded > kMorphKeyCapacityLimit) return false;

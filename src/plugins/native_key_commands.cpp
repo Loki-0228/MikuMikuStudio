@@ -2,6 +2,8 @@
 #if !MMD_ORIGINAL_PROFILE
 #include "native_bone_registration.hpp"
 #include "native_model_keys.hpp"
+#include "native_morph_keys.hpp"
+#include "native_display_keys.hpp"
 #include "native_history_commands.hpp"
 #include "native_pose_scope.hpp"
 #include "mikudancestudio/animation_curve_host.hpp"
@@ -45,7 +47,35 @@ MmsResult CommitKeyChange(MMDApp& app, SharedHistory& history,
     if (morphs) curve_host::NotifyModelRegistered(&app, true);
     return MMS_OK;
 }
+bool TryRegister(MMDApp* app, bool morph, unsigned lane) noexcept {
+    if (!app) return false;
+    auto* history = BoundNativePoseHistory(app);
+    if (!history) return false;
+    if (!ModelReady(*app) || (morph && lane >= 4) || history->Enter() != MMS_OK) return true;
+    history->Leave();
+    Boundary([&]() -> MmsResult {
+        const auto slot = app->SelectedModelSlot();
+        std::shared_ptr<HistoryChange> change;
+        const auto result = morph
+            ? PlanMorphRegistration(*app, slot, mdl::Mdl(app->ModelSlot(slot))->selectedMorphs[lane],
+                                    app->CurrentFrame(), change)
+            : PlanDisplayRegistration(*app, slot, app->CurrentFrame(), change);
+        if (result != MMS_OK || !change) return result;
+        std::unique_ptr<SharedHistory::NativeTransaction> transaction;
+        if (auto r = history->PrepareNative(morph ? "Register morph key" : "Register display key",
+                                           std::move(change), transaction)) return r;
+        if (auto r = history->CommitNative(std::move(transaction))) return r;
+        // Registration records the current authored state without seeking or
+        // resetting physics. Only the affected curve editor needs notification.
+        PublishBoundPoseEdit(*app, *history, false);
+        if (morph) curve_host::NotifyModelRegistered(app, true);
+        return MMS_OK;
+    });
+    return true;
 }
+}
+bool TryRegisterBoundMorph(MMDApp* app, unsigned lane) noexcept { return TryRegister(app, true, lane); }
+bool TryRegisterBoundDisplay(MMDApp* app) noexcept { return TryRegister(app, false, 0); }
 bool TryApplyBoundBoneInterpolation(MMDApp* app, HWND window, bool reset) noexcept {
     if (!app) return false;
     auto* history = BoundNativePoseHistory(app);

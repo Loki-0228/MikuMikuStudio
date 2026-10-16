@@ -3186,6 +3186,9 @@ void CmdControl400(MMDApp* app, HWND hwnd, std::uint16_t id,
     // 0x9E16C = max(0x9E16C, model+0x31B0); PanelPaint.  Dirty 0xA0B0D.
     // ------------------------------------------------------------------
     case 438: {
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::TryRegisterBoundDisplay(app)) break;
+#endif
         app->SceneModified() = 1;
         unsigned char* model = ActiveModel(app);
         ClearModelKeyMarks(mdl::BoneKeys(model),

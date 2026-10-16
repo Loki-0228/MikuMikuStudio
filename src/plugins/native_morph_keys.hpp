@@ -4,6 +4,17 @@
 #include "shared_history.hpp"
 namespace mikudancestudio { class MMDApp; }
 namespace mikudancestudio::plugins {
+// Register one morph's current weight at an absolute frame. Matches the native
+// current-value registrar (including its local free-slot scan and unchanged
+// searchCursor), then clears all three key families' selection marks. Only an
+// actual native key-data change creates a record; mark-only changes are no-ops.
+// Pristine morph curves survive and derive against the registered native keys.
+// First publication preserves the live weight; undo/redo sample only this morph
+// at the then-current playhead. Other weights/bone poses and old rings survive.
+// The app outlives the retained scene owner/journal. As for bone registration,
+// resident model/pool resources are budgeted separately from this record.
+MmsResult PlanMorphRegistration(MMDApp&, unsigned modelSlot, int morphIndex, int frame,
+    std::shared_ptr<HistoryChange>& out) noexcept;
 // Deletes only marked morph keys, with the native root/sentinel rules. Other
 // families' marks reject by default; allowOtherMarks is for a caller that
 // prepares and validates all families before publishing one aggregate change.

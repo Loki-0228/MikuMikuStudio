@@ -129,6 +129,10 @@ void SharedHistory::Publish(Publication& p) noexcept {
     undo_.splice(undo_.end(), p.node); ++revision_;
 }
 MmsResult SharedHistory::History(bool redo) {
+    if (auto r = Ready()) return r;
+    // EditStore::History holds its callback guard while forwarding here.
+    // Pending transactions block traversal; that forwarding guard must not.
+    if (edits_ && edits_->HasPending()) return MMS_E_BUSY;
     if (auto r = Enter()) return r;
     Unlock unlock{*this};
     return Boundary([&]() -> MmsResult {
@@ -188,6 +192,8 @@ void SharedHistory::InvalidatePending() noexcept {
 }
 MmsResult SharedHistory::PrepareNative(std::string label, std::shared_ptr<HistoryChange> change,
     std::unique_ptr<NativeTransaction>& out) {
+    if (auto r = Ready()) return r;
+    if (edits_ && (edits_->InCallback() || edits_->HasPending())) return MMS_E_BUSY;
     if (auto r = Enter()) return r;
     Unlock unlock{*this};
     return Boundary([&]() -> MmsResult {
@@ -200,6 +206,8 @@ MmsResult SharedHistory::PrepareNative(std::string label, std::shared_ptr<Histor
     });
 }
 MmsResult SharedHistory::CommitNative(std::unique_ptr<NativeTransaction> t) {
+    if (auto r = Ready()) return r;
+    if (edits_ && (edits_->InCallback() || edits_->HasPending())) return MMS_E_BUSY;
     if (auto r = Enter()) return r;
     Unlock unlock{*this};
     if (!t) return MMS_E_ARGUMENT;

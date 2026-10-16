@@ -34,5 +34,12 @@ MmsResult PlanDisplayKeyDeletion(MMDApp&, unsigned modelSlot,
 // scopes are rejected. No live pool growth is performed; failure preserves out.
 MmsResult PlanDisplayRangeScale(MMDApp&, unsigned modelSlot,
     const BoneRangeScaleOptions&, RangeScaleResult& out) noexcept;
+// Register current visibility/IK/external parents by index, matching command
+// 438. First publication only writes keys, selection marks and registration
+// metadata; undo/redo sample at the current playhead through the local evaluator.
+// Dirty authoring poses survive. Identical authoring data returns null success
+// without clearing marks or redo. Growth is prepared privately for owned pools.
+MmsResult PlanDisplayRegistration(MMDApp&, unsigned modelSlot, int frame,
+    std::shared_ptr<HistoryChange>& out) noexcept;
 }
 #endif

@@ -205,7 +205,83 @@ static void SharedHistoryDynamicBudgetChecks() {
     applied.reset();
     CHECK(!history.RetainedBytes() && !history.UndoCount());
 }
+static void SharedHistoryPendingPluginChecks() {
+    // Both an open edit and a prepared edit exclude independent native work.
+    // Also cover a native candidate created before the plugin transaction.
+    for (bool prepared : {false, true}) for (bool nativeFirst : {false, true}) {
+        StorageStore storage; SharedHistory history(storage); EditStore edit(history, storage);
+        StorageClient sc; sc.id = "example.pending"; storage.Api(sc);
+        SerializerFixture state; auto serializer = state.Api(); MmsHandle provider = 0;
+        CHECK(storage.Register(sc, S("example.pending"), &serializer, sizeof(serializer), &provider) == MMS_OK);
+        EditClient client; client.id = sc.id; auto api = edit.Api(client);
+        int value = 0;
+        std::unique_ptr<SharedHistory::NativeTransaction> native;
+        for (int next : {1, 2}) {
+            CHECK(history.PrepareNative("seed", std::make_shared<HistoryValue>(value, next - 1, next), native) == MMS_OK);
+            CHECK(history.CommitNative(std::move(native)) == MMS_OK);
+        }
+        CHECK(api.undo(api.context) == MMS_OK && value == 1);
+        uint64_t revision = 0;
+        CHECK(history.Revision(revision) == MMS_OK);
+        const auto bytes = history.RetainedBytes();
+        const auto unchanged = [&] {
+            uint64_t current = 0;
+            CHECK(history.Revision(current) == MMS_OK && current == revision);
+            CHECK(value == 1 && state.value == 0 && history.UndoCount() == 1 && history.RedoCount() == 1);
+            CHECK(history.RetainedBytes() == bytes);
+        };
+        auto change = std::make_shared<HistoryValue>(value, 1, 7);
+        if (nativeFirst) CHECK(history.PrepareNative("earlier native", change, native) == MMS_OK);
+        EditParticipantFixture participant{&state, 0, 9}; auto p = participant.Api("example.pending");
+        MmsHandle plugin = 0;
+        CHECK(api.begin(api.context, S("pending plugin"), revision, &plugin) == MMS_OK);
+        CHECK(api.join(api.context, plugin, &p) == MMS_OK);
+        if (prepared) CHECK(api.prepare(api.context, plugin) == MMS_OK);
+        CHECK(edit.HasPending());
+        std::unique_ptr<SharedHistory::NativeTransaction> blocked;
+        CHECK(history.PrepareNative("blocked native", change, blocked) == MMS_E_BUSY && !blocked);
+        CHECK(history.History(false) == MMS_E_BUSY && history.History(true) == MMS_E_BUSY);
+        CHECK(api.undo(api.context) == MMS_E_BUSY && api.redo(api.context) == MMS_E_BUSY);
+        if (nativeFirst) CHECK(history.CommitNative(std::move(native)) == MMS_E_BUSY && !native);
+        unchanged();
+
+        // Ready errors retain priority over the pending-edit check.
+        MmsResult wrongThread = MMS_OK;
+        std::thread worker([&] { wrongThread = history.History(false); }); worker.join();
+        CHECK(wrongThread == MMS_E_THREAD);
+        participant.onCancel = [&] {
+            CHECK(edit.InCallback());
+            CHECK(history.PrepareNative("cancel callback", change, blocked) == MMS_E_BUSY && !blocked);
+            CHECK(history.History(false) == MMS_E_BUSY);
+        };
+        api.cancel(api.context, plugin);
+        CHECK(!edit.HasPending() && participant.cancels == 1 && !participant.commits);
+        unchanged();
+
+        // A refused native commit consumes only that native token. After
+        // plugin cancellation, a fresh prepare may replace the redo branch.
+        CHECK(history.PrepareNative("after cancel", change, native) == MMS_OK);
+        CHECK(history.CommitNative(std::move(native)) == MMS_OK && value == 7 && state.value == 0);
+        CHECK(history.UndoCount() == 2 && !history.RedoCount());
+
+        // Plugin commit and its normal History forwarding must still work:
+        // both hold EditStore's callback guard without a pending native edit.
+        CHECK(history.Revision(revision) == MMS_OK);
+        participant.onCommit = [&] {
+            CHECK(edit.InCallback() && !edit.HasPending());
+            CHECK(history.PrepareNative("commit callback", change, blocked) == MMS_E_BUSY && !blocked);
+        };
+        CHECK(api.begin(api.context, S("successful plugin"), revision, &plugin) == MMS_OK);
+        CHECK(api.join(api.context, plugin, &p) == MMS_OK && api.prepare(api.context, plugin) == MMS_OK);
+        CHECK(api.commit(api.context, plugin) == MMS_OK && state.value == 9 && value == 7);
+        CHECK(api.undo(api.context) == MMS_OK && state.value == 0 && value == 7);
+        CHECK(api.undo(api.context) == MMS_OK && value == 1);
+        CHECK(api.redo(api.context) == MMS_OK && value == 7);
+        CHECK(api.redo(api.context) == MMS_OK && state.value == 9 && value == 7);
+    }
+}
 static void SharedHistoryChecks() {
+    SharedHistoryPendingPluginChecks();
     SharedHistoryDynamicBudgetChecks();
     SharedHistoryEditBoundaryChecks();
     SharedHistoryResetChecks();
