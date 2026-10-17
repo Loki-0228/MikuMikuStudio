@@ -856,6 +856,9 @@ INT_PTR __stdcall GroundShadowColorDlgProc(HWND hDlg, UINT msg, WPARAM wParam,
         break;
     case WM_HSCROLL: {
         app->state.messageSeen = 1;  // flag set first
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::TryCommitBoundProjectedShadowSlider(app, hDlg)) return 1;
+#endif
         const float v = static_cast<float>(
             static_cast<double>(SendMessageA(GetDlgItem(hDlg, panel::kGroundShadowSlider),
                                              TBM_GETPOS, 0, 0)) /
@@ -1214,6 +1217,12 @@ LRESULT __stdcall GroundShadowColorEditSubclassProc(HWND hWnd, UINT uMsg,
                                                     LPARAM lParam) {  // was Sub40F730, VA 0x0040F730
     auto* app = g_Block;
     if (uMsg == WM_KILLFOCUS || (uMsg == WM_KEYDOWN && wParam == VK_RETURN)) {
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::TryCommitBoundProjectedShadowText(app, hWnd)) {
+            if (uMsg == WM_KEYDOWN) return 0;
+            return CallWindowProcA(app->GroundShadowColorEditProc(), hWnd, uMsg, wParam, lParam);
+        }
+#endif
         char text[64]{};
         GetWindowTextA(hWnd, text, sizeof(text));
         char* end = nullptr;

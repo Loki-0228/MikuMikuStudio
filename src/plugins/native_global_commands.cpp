@@ -26,12 +26,15 @@
 
 namespace mikudancestudio::plugins {
 namespace {
-bool Ready(MMDApp& app) noexcept {
+bool Ready(MMDApp& app, HWND shadowDialog = nullptr) noexcept {
+    const bool ownShadow = shadowDialog && shadowDialog == app.GroundShadowColorDialog();
+    const auto capture = GetCapture();
     return !app.PlaybackActive() && !app.FrameStepPlayback() &&
         !app.state.recordPlaybackStartPending && !app.SceneMutationInProgress() &&
-        !bake::UiLocked() && !SceneSaveInProgress() && !GetCapture() &&
+        !bake::UiLocked() && !SceneSaveInProgress() &&
+        (!capture || (ownShadow && capture == GetDlgItem(shadowDialog, panel::kGroundShadowSlider))) &&
         !app.FrameRangeDialog() && !app.state.frameCopyDialog && !app.RecordingWindow() &&
-        !app.GravitySettingDialog() && !app.GroundShadowColorDialog() && !app.AccessoryOrderArray() &&
+        !app.GravitySettingDialog() && (!app.GroundShadowColorDialog() || ownShadow) && !app.AccessoryOrderArray() &&
         !app.state.accessoryEditDialogOpen && !app.state.edgeThicknessDialog;
 }
 std::uint8_t& ProjectDisplayField(MMDApp& app,unsigned field) noexcept {
@@ -85,6 +88,58 @@ struct ProjectDisplayChange final : HistoryChange, std::enable_shared_from_this<
     MmsResult Prepare(bool forward,std::unique_ptr<PreparedHistoryChange>& out) override {
         out.reset();return Boundary([&]() -> MmsResult {
             if(!pool || mdl::KeyPoolIdentity(app.CameraKeys())!=pool || forward==applied || (!published && ProjectDisplayValues(app)!=before))return MMS_E_STALE;
+            if(generation==UINT64_MAX)return MMS_E_NOT_READY;
+            out=std::make_unique<Candidate>(shared_from_this(),forward);return MMS_OK;
+        });
+    }
+    std::uint64_t RetainedBytes() const noexcept override {return sizeof(*this)+4*sizeof(void*);}
+};
+using AmbientValues = std::array<float,4>;
+AmbientValues ShadowAmbientValues(MMDApp& app) noexcept {
+    return {app.ProjectedShadowAmbientIntensity(),app.state.projectedShadowAmbientG,
+        app.state.projectedShadowAmbientB,app.state.projectedShadowAmbientA};
+}
+void WriteShadowAmbient(MMDApp& app,const AmbientValues& values) noexcept {
+    app.ProjectedShadowAmbientIntensity()=values[0];app.state.projectedShadowAmbientG=values[1];
+    app.state.projectedShadowAmbientB=values[2];app.state.projectedShadowAmbientA=values[3];
+}
+void RefreshShadowAmbientReadout(MMDApp& app,bool replacePending=false,int sliderPosition=-1) noexcept {
+    const auto dialog=app.GroundShadowColorDialog();if(!dialog)return;
+    const auto value=app.ProjectedShadowAmbientIntensity();if(!std::isfinite(value))return;
+    const auto edit=GetDlgItem(dialog,panel::kGroundShadowEdit);
+    if(edit && (replacePending || !SendMessageW(edit,EM_GETMODIFY,0,0))){
+        char text[64]{};sprintf_s(text,"%3.2f",double(value));SetWindowTextA(edit,text);SendMessageW(edit,EM_SETMODIFY,FALSE,0);
+    }
+    // Text commit used float multiplication in the old subclass. Do not
+    // replace it with double and move values such as 0.53 to another tick.
+    const auto slider=GetDlgItem(dialog,panel::kGroundShadowSlider);
+    if(slider){
+        const auto current=SendMessageW(slider,TBM_GETPOS,0,0);
+        const bool matchingTick=!replacePending && current>=0 && current<=200 && static_cast<float>(double(current)/100.0)==value;
+        const auto tick=sliderPosition>=0?sliderPosition:(matchingTick?current:static_cast<LPARAM>(std::clamp(value,0.f,2.f)*100.f));
+        if(current!=tick)SendMessageW(slider,TBM_SETPOS,TRUE,tick);
+    }
+}
+struct ShadowAmbientChange final : HistoryChange, std::enable_shared_from_this<ShadowAmbientChange> {
+    MMDApp& app;const std::uint64_t pool;const AmbientValues before,after;
+    std::uint64_t generation=1;bool applied=false,published=false;
+    ShadowAmbientChange(MMDApp& a,float value):app(a),pool(mdl::KeyPoolIdentity(a.CameraKeys())),before(ShadowAmbientValues(a)),after{value,value,value,value}{}
+    struct Candidate final : PreparedHistoryChange {
+        std::shared_ptr<ShadowAmbientChange> source;const bool forward;const std::uint64_t generation;const int frame;
+        const AmbientValues expected;bool consumed=false;
+        Candidate(std::shared_ptr<ShadowAmbientChange> s,bool f):source(std::move(s)),forward(f),generation(source->generation),frame(source->app.CurrentFrame()),expected(ShadowAmbientValues(source->app)){}
+        bool IsCurrent() const noexcept override {
+            return !consumed && generation==source->generation && forward!=source->applied &&
+                mdl::KeyPoolIdentity(source->app.CameraKeys())==source->pool && source->app.CurrentFrame()==frame && ShadowAmbientValues(source->app)==expected;
+        }
+        void Publish() noexcept override {
+            if(!IsCurrent())std::terminate();WriteShadowAmbient(source->app,forward?source->after:source->before);
+            source->published=true;source->applied=forward;++source->generation;consumed=true;
+        }
+    };
+    MmsResult Prepare(bool forward,std::unique_ptr<PreparedHistoryChange>& out) override {
+        out.reset();return Boundary([&]()->MmsResult{
+            if(!pool || mdl::KeyPoolIdentity(app.CameraKeys())!=pool || forward==applied || (!published && ShadowAmbientValues(app)!=before))return MMS_E_STALE;
             if(generation==UINT64_MAX)return MMS_E_NOT_READY;
             out=std::make_unique<Candidate>(shared_from_this(),forward);return MMS_OK;
         });
@@ -593,6 +648,48 @@ bool TryToggleBoundProjectedShadowFlag(MMDApp* app,unsigned field) noexcept {
     if(!changed)RefreshProjectDisplayReadout(*app);
     return true;
 }
+MmsResult ApplyBoundProjectedShadowAmbient(MMDApp& app,float value,bool& changed,HWND dialog) noexcept {
+    changed=false;return Boundary([&]()->MmsResult{
+        auto* history=BoundNativePoseHistory(&app);if(!history)return MMS_E_NOT_READY;
+        if(const auto result=history->CheckNativeEdit())return result;
+        if((dialog && dialog!=app.GroundShadowColorDialog()) || !Ready(app,dialog) || !mdl::KeyPoolIdentity(app.CameraKeys()))return MMS_E_NOT_READY;
+        if(!std::isfinite(value)||value<0||value>2)return MMS_E_ARGUMENT;
+        const auto before=ShadowAmbientValues(app);for(float part:before)if(!std::isfinite(part))return MMS_E_ARGUMENT;
+        if(before==AmbientValues{value,value,value,value})return MMS_OK;
+        auto change=std::make_shared<ShadowAmbientChange>(app,value);
+        std::unique_ptr<SharedHistory::NativeTransaction> transaction;
+        if(const auto result=history->PrepareNative("Projected shadow ambient",std::move(change),transaction))return result;
+        if(const auto result=history->CommitNative(std::move(transaction)))return result;
+        changed=true;
+        Boundary([&]()->MmsResult{PublishBoundPoseEdit(app,*history,false);if(!dialog)RefreshShadowAmbientReadout(app);return MMS_OK;});return MMS_OK;
+    });
+}
+bool TryCommitBoundProjectedShadowText(MMDApp* app,HWND edit) noexcept {
+    if(!app || !BoundNativePoseHistory(app))return false;
+    Boundary([&]()->MmsResult{
+        const auto dialog=GetParent(edit);
+        if(!dialog || dialog!=app->GroundShadowColorDialog() || GetDlgItem(dialog,panel::kGroundShadowEdit)!=edit)return MMS_E_NOT_READY;
+        if(SendMessageW(edit,EM_GETMODIFY,0,0)){
+            char text[64]{};GetWindowTextA(edit,text,sizeof text);char* end=nullptr;float value=std::strtof(text,&end);
+            if(end!=text && std::isfinite(value)){
+                value=std::clamp(value,0.f,2.f);app->state.messageSeen=1;bool changed=false;
+                ApplyBoundProjectedShadowAmbient(*app,value,changed,dialog);
+            }
+        }
+        RefreshShadowAmbientReadout(*app,true);return MMS_OK;
+    });return true;
+}
+bool TryCommitBoundProjectedShadowSlider(MMDApp* app,HWND dialog) noexcept {
+    if(!app || !BoundNativePoseHistory(app))return false;
+    Boundary([&]()->MmsResult{
+        if(!dialog || dialog!=app->GroundShadowColorDialog())return MMS_E_NOT_READY;
+        const auto position=SendDlgItemMessageW(dialog,panel::kGroundShadowSlider,TBM_GETPOS,0,0);
+        const float value=static_cast<float>(double(position)/100.0);bool changed=false;
+        const auto result=ApplyBoundProjectedShadowAmbient(*app,value,changed,dialog);
+        // Preserve the exact live thumb tick, including float round-trip boundaries.
+        RefreshShadowAmbientReadout(*app,true,result==MMS_OK?int(position):-1);return MMS_OK;
+    });return true;
+}
 MmsResult ApplyBoundCameraField(MMDApp& app, unsigned field, float value, bool& changed, bool activateCameraTrack) noexcept {
     changed = false;
     return Boundary([&]() -> MmsResult {
@@ -835,6 +932,7 @@ void RefreshBoundGlobalReadout(MMDApp& app) noexcept {
     if (!app.MainWindow()) return;
     Boundary([&]() -> MmsResult {
         RefreshProjectDisplayReadout(app);
+        RefreshShadowAmbientReadout(app);
         if (app.cameraProjectionRefreshPending && app.Renderer() && app.Renderer()->device) {
             // Consume current-state work at the UI boundary. A zero/tiny
             // orthographic distance must not install infinities on the device.

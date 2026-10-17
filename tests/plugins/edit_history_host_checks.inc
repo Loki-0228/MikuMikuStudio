@@ -391,6 +391,7 @@ void ObjectMenuDeletion(MMDApp* app, plugins::SharedHistory& history, const MmsS
 #include "grid_display_host_checks.inc"
 #include "projected_shadow_host_checks.inc"
 #include "vpd_import_host_checks.inc"
+#include "shadow_ambient_host_checks.inc"
 void Run(MMDApp* app) {
     using namespace plugins;
     const auto initial = GetModuleHandleW(L"manager_edit_probe.dll");
@@ -446,6 +447,7 @@ void Run(MMDApp* app) {
     GridDisplayCommands(app, *history, value);
     ProjectedShadowFlags(app, *history, value);
     vpd_import_host_checks::Run(app, *history, value);
+    shadow_ambient_host_checks::Run(app, *history, value);
     MixedModelRange(app, *history);
     ModelInterpolation(app, *history);
     ObjectMenuDeletion(app, *history, api, path, accessoryPath);

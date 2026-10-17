@@ -48,7 +48,7 @@ void ProjectedShadowGuardAndIdentityChecks(){
         f.app->PlaybackActive()=1;f.Toggle(field);f.app->PlaybackActive()=0;Check(ShadowDisplayValues(*f.app)==before&&!f.history.UndoCount()&&f.ShadowEcho(),"playback blocks both projected shadow menu writers");
         Check(f.history.Enter()==MMS_OK,"hold journal for shadow flags");f.Toggle(field);f.history.Leave();Check(ShadowDisplayValues(*f.app)==before&&!f.history.UndoCount(),"busy journal blocks shadow flags without legacy fallback");
         f.app->GroundShadowColorDialog()=reinterpret_cast<HWND>(INT_PTR(1));f.Toggle(field);f.app->GroundShadowColorDialog()=nullptr;
-        Check(ShadowDisplayValues(*f.app)==before&&!f.history.UndoCount(),"unmigrated shadow color dialog excludes concurrent shadow flag edit");
+        Check(ShadowDisplayValues(*f.app)==before&&!f.history.UndoCount(),"open shadow ambient editor excludes concurrent shadow flag edit");
         f.Toggle(field);const auto target=ShadowDisplayValues(*f.app);auto* grown=mdl::KeyPoolCreate<mdl::CameraKey>(12);
         std::memcpy(grown,f.app->CameraKeys(),mdl::KeyPoolCapacity(f.app->CameraKeys())*sizeof(mdl::CameraKey));mdl::KeyPoolCommitGrowth(f.app->CameraKeys(),grown);
         Check(f.history.History(false)==MMS_OK&&ShadowDisplayValues(*f.app)==before&&f.history.History(true)==MMS_OK,"projected shadow records survive normal scene key pool growth");

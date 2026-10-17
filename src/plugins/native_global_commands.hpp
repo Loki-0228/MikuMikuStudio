@@ -39,6 +39,11 @@ bool TryToggleBoundGridDisplay(MMDApp*) noexcept;
 // Projected shadow flags: visibility 0, alpha blending 1. Independent deltas.
 MmsResult ApplyBoundProjectedShadowFlag(MMDApp&, unsigned field, bool enabled, bool& changed) noexcept;
 bool TryToggleBoundProjectedShadowFlag(MMDApp*, unsigned field) noexcept;
+// Projected shadow ambient RGBA is one authored scalar edit with four mirrors.
+// Only the owning modeless dialog may use its own slider's mouse capture.
+MmsResult ApplyBoundProjectedShadowAmbient(MMDApp&, float value, bool& changed, HWND dialog = nullptr) noexcept;
+bool TryCommitBoundProjectedShadowText(MMDApp*, HWND edit) noexcept;
+bool TryCommitBoundProjectedShadowSlider(MMDApp*, HWND dialog) noexcept;
 // Fields 0..2 color (authored float), 3..5 direction. CPU mirror publication
 // is atomic; device and readout updates happen only after journal publication.
 MmsResult ApplyBoundLightField(MMDApp&, unsigned field, float value, bool& changed) noexcept;
