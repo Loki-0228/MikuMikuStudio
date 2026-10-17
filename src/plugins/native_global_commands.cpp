@@ -8,14 +8,17 @@
 #include "mikudancestudio/animation_curve_host.hpp"
 #include "mikudancestudio/autosave.hpp"
 #include "mikudancestudio/bake_ui_lock.hpp"
+#include "mikudancestudio/key_pool.hpp"
 #include "mikudancestudio/mmd_app.hpp"
 #include "mikudancestudio/model.hpp"
 #include "mikudancestudio/panel_controls.hpp"
 #include "mikudancestudio/ported_funcs.hpp"
 #include <CommCtrl.h>
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <cmath>
+#include <cstring>
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
@@ -30,6 +33,56 @@ bool Ready(MMDApp& app) noexcept {
         !app.GravitySettingDialog() && !app.GroundShadowColorDialog() && !app.AccessoryOrderArray() &&
         !app.state.accessoryEditDialogOpen && !app.state.edgeThicknessDialog;
 }
+struct CameraRotationReset final : HistoryChange, std::enable_shared_from_this<CameraRotationReset> {
+    MMDApp& app;
+    const std::uint64_t poolIdentity;
+    const std::array<float, 3> before;
+    const unsigned changed;
+    std::uint64_t generation = 1;
+    bool published = false, applied = false;
+    static std::array<float, 3> Read(MMDApp& app) noexcept {
+        return {app.CameraPitch(), app.CameraYaw(), app.CameraRoll()};
+    }
+    CameraRotationReset(MMDApp& value, std::array<float, 3> source, unsigned fields)
+        : app(value), poolIdentity(mdl::KeyPoolIdentity(value.CameraKeys())), before(source), changed(fields) {}
+    bool SameScene() const noexcept { return poolIdentity && mdl::KeyPoolIdentity(app.CameraKeys()) == poolIdentity; }
+    struct Candidate final : PreparedHistoryChange {
+        std::shared_ptr<CameraRotationReset> source;
+        const bool forward;
+        const std::uint64_t generation;
+        const int frame;
+        const std::array<float, 3> expected;
+        bool consumed = false;
+        Candidate(std::shared_ptr<CameraRotationReset> value, bool direction)
+            : source(std::move(value)), forward(direction), generation(source->generation),
+              frame(source->app.CurrentFrame()), expected(Read(source->app)) {}
+        bool IsCurrent() const noexcept override {
+            const auto live = Read(source->app);
+            return !consumed && source->generation == generation && forward != source->applied &&
+                source->SameScene() && source->app.CurrentFrame() == frame &&
+                !std::memcmp(live.data(), expected.data(), sizeof(expected));
+        }
+        void Publish() noexcept override {
+            if (!IsCurrent()) std::terminate();
+            for (unsigned axis = 0; axis < 3; ++axis) if (source->changed & (1u << axis))
+                source->app.CameraRotation()[axis] = forward ? 0.0f : source->before[axis];
+            source->applied = forward; source->published = true; ++source->generation;
+            consumed = true;
+        }
+    };
+    MmsResult Prepare(bool forward, std::unique_ptr<PreparedHistoryChange>& out) override {
+        out.reset();
+        return Boundary([&]() -> MmsResult {
+            if (!SameScene() || forward == applied) return MMS_E_STALE;
+            if (generation == UINT64_MAX) return MMS_E_NOT_READY;
+            const auto current = Read(app);
+            for (float value : current) if (!std::isfinite(value)) return MMS_E_ARGUMENT;
+            if (!published && std::memcmp(current.data(), before.data(), sizeof(before))) return MMS_E_STALE;
+            out = std::make_unique<Candidate>(shared_from_this(), forward); return MMS_OK;
+        });
+    }
+    std::uint64_t RetainedBytes() const noexcept override { return sizeof(*this) + 4 * sizeof(void*); }
+};
 bool ReadLegacyNumber(HWND window, int id, double& value) noexcept {
     const auto edit = GetDlgItem(window, id);
     if (!edit) return false;
@@ -99,6 +152,36 @@ bool Register(MMDApp* app, curve_host::Kind kind, Plan plan) noexcept {
     });
     return true;
 }
+}
+MmsResult PlanCameraRotationReset(MMDApp& app, std::shared_ptr<HistoryChange>& out) noexcept {
+    out.reset();
+    return Boundary([&]() -> MmsResult {
+        if (!Ready(app) || !mdl::KeyPoolIdentity(app.CameraKeys())) return MMS_E_NOT_READY;
+        const auto before = CameraRotationReset::Read(app); unsigned changed = 0;
+        for (unsigned axis = 0; axis < 3; ++axis) {
+            if (!std::isfinite(before[axis])) return MMS_E_ARGUMENT;
+            if (before[axis] != 0.0f) changed |= 1u << axis;
+        }
+        if (changed) out = std::make_shared<CameraRotationReset>(app, before, changed);
+        return MMS_OK;
+    });
+}
+bool TryResetBoundCameraRotation(MMDApp* app) noexcept {
+    if (!app || !app->CameraMode()) return false;
+    auto* history = BoundNativePoseHistory(app);
+    if (!history) return false;
+    Boundary([&]() -> MmsResult {
+        if (!Ready(*app)) return MMS_E_NOT_READY;
+        if (const auto result = history->CheckNativeEdit()) return result;
+        std::shared_ptr<HistoryChange> change;
+        if (const auto result = PlanCameraRotationReset(*app, change)) return result;
+        if (!change) return MMS_OK;
+        std::unique_ptr<SharedHistory::NativeTransaction> transaction;
+        if (const auto result = history->PrepareNative("Reset camera rotation", std::move(change), transaction)) return result;
+        if (const auto result = history->CommitNative(std::move(transaction))) return result;
+        PublishBoundPoseEdit(*app, *history, false); return MMS_OK;
+    });
+    return true;
 }
 bool TryRegisterBoundCamera(MMDApp* app, HWND window) noexcept {
     return Register(app, curve_host::Kind::Camera, [window](MMDApp& host, std::shared_ptr<HistoryChange>& out) {

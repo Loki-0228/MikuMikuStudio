@@ -257,6 +257,7 @@
 #if !MMD_ORIGINAL_PROFILE
 #include "../plugins/native_pose_axis.hpp"
 #include "../plugins/native_pose_scope.hpp"
+#include "../plugins/native_global_commands.hpp"
 #endif
 #include "mikudancestudio/ui_language.hpp"
 
@@ -2959,6 +2960,7 @@ void CmdViewMenu(MMDApp* app, HWND hwnd, std::uint16_t id,
     // ------------------------------------------------------------------
     case 302: {
 #if !MMD_ORIGINAL_PROFILE
+        if (plugins::TryResetBoundCameraRotation(app)) return;
         if (plugins::TryResetBoundBoneRotation(app)) return;
 #endif
         app->state.dialogFlags[1] = 1;

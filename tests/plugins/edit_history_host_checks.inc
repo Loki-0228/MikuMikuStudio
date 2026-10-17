@@ -72,6 +72,7 @@ void RotationReset(MMDApp* app, plugins::SharedHistory& history, int (*value)())
     model.bonePhysicsState[0] = dirty;
 }
 #include "bone_numeric_host_checks.inc"
+#include "camera_reset_host_checks.inc"
 void MixedModelDeletion(MMDApp* app, plugins::SharedHistory& history) {
     auto& model = *mdl::Mdl(app->ModelSlot(0));
     Check(model.boneCount && model.morphCount && model.boneCount < mdl::BoneKeyCapacity(model.boneKeys) &&
@@ -413,6 +414,7 @@ void Run(MMDApp* app) {
     MixedModelDeletion(app, *history);
     RotationReset(app, *history, value);
     NumericPose(app, *history, value);
+    CameraRotationReset(app, *history, value);
     MixedModelRange(app, *history);
     ModelInterpolation(app, *history);
     ObjectMenuDeletion(app, *history, api, path, accessoryPath);
