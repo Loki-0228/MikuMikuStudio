@@ -26,6 +26,9 @@ public:
 // A successful no-op leaves out empty. The app outlives the record/history.
 MmsResult PlanCameraRotationReset(MMDApp&, std::shared_ptr<HistoryChange>& out) noexcept;
 bool TryResetBoundCameraRotation(MMDApp*) noexcept;
+// Fields 0..2 position, 3..5 rotation, 6 distance. Main/floating panels share
+// this authoring route; true also consumes rejection and no-op while bound.
+bool TryResetBoundCameraField(MMDApp*, unsigned field, bool activateCameraTrack = true) noexcept;
 // True consumes the bound command, including busy/invalid/no-op outcomes.
 // These read controls before planning and never enter a legacy registrar.
 bool TryRegisterBoundCamera(MMDApp*, HWND) noexcept;

@@ -7,6 +7,7 @@
 #include "../src/plugins/native_object_commands.hpp"
 #include "mikudancestudio/text_encoding.hpp"
 #include "mikudancestudio/ui_language.hpp"
+namespace mikudancestudio { void DispatchSeparateWindowCommand(MMDApp*, unsigned short); }
 namespace edit_history_host_checks {
 UINT FindMenuCommand(HMENU menu, const wchar_t* label) {
     for (int index = 0; menu && index < GetMenuItemCount(menu); ++index) {
@@ -74,6 +75,7 @@ void RotationReset(MMDApp* app, plugins::SharedHistory& history, int (*value)())
 #include "bone_numeric_host_checks.inc"
 #include "camera_reset_host_checks.inc"
 #include "camera_numeric_host_checks.inc"
+#include "camera_axis_host_checks.inc"
 void MixedModelDeletion(MMDApp* app, plugins::SharedHistory& history) {
     auto& model = *mdl::Mdl(app->ModelSlot(0));
     Check(model.boneCount && model.morphCount && model.boneCount < mdl::BoneKeyCapacity(model.boneKeys) &&
@@ -417,6 +419,7 @@ void Run(MMDApp* app) {
     NumericPose(app, *history, value);
     CameraRotationReset(app, *history, value);
     CameraNumericPose(app, *history, value);
+    CameraAxisPose(app, *history, value);
     MixedModelRange(app, *history);
     ModelInterpolation(app, *history);
     ObjectMenuDeletion(app, *history, api, path, accessoryPath);

@@ -1,6 +1,7 @@
 #include "native_pose_axis.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "native_history_commands.hpp"
+#include "native_global_commands.hpp"
 #include "native_pose_scope.hpp"
 #include "mikudancestudio/bone_scale.hpp"
 #include "mikudancestudio/autosave.hpp"
@@ -282,7 +283,13 @@ MmsResult BoneNumericEdit::Apply(const std::array<float, 6>& values) noexcept {
 }
 bool TryResetBoundPoseAxis(MMDApp* app, NativePoseAxisKind kind, int axis,
                           NativePoseAxisSource source) noexcept {
-    if (!app || app->CameraMode() != 0) return false;
+    if (!app) return false;
+    if (app->CameraMode()) {
+        if (kind == NativePoseAxisKind::Position || kind == NativePoseAxisKind::Rotation)
+            return TryResetBoundCameraField(app, axis >= 0 && axis < 3 ?
+                unsigned(axis) + (kind == NativePoseAxisKind::Rotation ? 3u : 0u) : 7u);
+        return false;
+    }
     auto* history = BoundNativePoseHistory(app);
     if (!history) return false;
     bool changed = false;

@@ -15,6 +15,7 @@
 #include "mikudancestudio/build_profile.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "../plugins/native_pose_axis.hpp"
+#include "../plugins/native_global_commands.hpp"
 #endif
 #include <Windows.h>
 
@@ -241,6 +242,9 @@ void DispatchSeparateWindowCommand(MMDApp* app, unsigned short id) {  // was Sub
         break;
     }
     case 0x21F:                                                  // 0x46266B
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::TryResetBoundCameraField(app, 6, false)) break;
+#endif
         if (s.CameraMode() != 0)
             s.CameraDistance() = 0.0f;
         PostViewRefresh(app);

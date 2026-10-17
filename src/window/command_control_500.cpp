@@ -731,6 +731,9 @@ void CmdControl500(MMDApp* app, HWND hwnd, std::uint16_t id, std::uint16_t notif
 
     // ---- 543: camera-angle edit box 0x21F -------------------------------
     case 543: {  // 0x48C52F
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::TryResetBoundCameraField(app, 6)) break;
+#endif
         if (app->state.optflag[0] != 0) {
             app->CameraDistance() = 0.0f;
             RefreshRequest(-1);
