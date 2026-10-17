@@ -44,5 +44,10 @@ MmsResult PlanShadowKeyPastePart(MMDApp&, const GlobalPasteSource&, GlobalPasteF
 MmsResult PlanGravityKeyPastePart(MMDApp&, const GlobalPasteSource&, GlobalPasteFamilyResult&) noexcept;
 MmsResult PlanAccessoryKeyPastePart(MMDApp&, unsigned slot, const GlobalPasteSource&, GlobalPasteFamilyResult&) noexcept;
 MmsResult PlanGlobalKeyPaste(MMDApp&, std::shared_ptr<HistoryChange>&) noexcept;
+// Immutable decoded source, independent of application clipboard storage.
+// frameOffset locates source keys; planning and first preparation retain the
+// current real playhead, which is never moved to obtain the offset.
+MmsResult PlanGlobalKeyPaste(MMDApp&, const GlobalPasteSource&,
+    std::shared_ptr<HistoryChange>&) noexcept;
 }
 #endif

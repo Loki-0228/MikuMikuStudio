@@ -72,6 +72,17 @@ MmsResult PlanGlobalKeyPaste(MMDApp& app,std::shared_ptr<HistoryChange>& out) no
             !CopySource(app.ShadowClipboard(),counts.shadows,mdl::KeyPoolLimit<mdl::SelfShadowKey>(),source.shadows)||
             !CopySource(app.GravityClipboard(),counts.gravity,mdl::KeyPoolLimit<mdl::GravityKey>(),source.gravity)||
             !CopySource(app.AccessoryClipboard(),counts.accessories,mdl::KeyPoolLimit<mdl::AccessoryKey>(),source.accessories))return MMS_E_ARGUMENT;
+        return PlanGlobalKeyPaste(app,source,out);
+    });
+}
+MmsResult PlanGlobalKeyPaste(MMDApp& app,const GlobalPasteSource& source,std::shared_ptr<HistoryChange>& out) noexcept {
+    out.reset();
+    if(app.PlaybackActive()||app.FrameStepPlayback()||app.state.recordPlaybackStartPending||app.SceneMutationInProgress())return MMS_E_NOT_READY;
+    if(app.CurrentFrame()<0||app.CurrentFrame()>frame_limits::maximum||source.frameOffset>unsigned(frame_limits::maximum)||
+        source.cameras.size()>mdl::KeyPoolLimit<mdl::CameraKey>()||source.lights.size()>mdl::KeyPoolLimit<mdl::LightKey>()||
+        source.shadows.size()>mdl::KeyPoolLimit<mdl::SelfShadowKey>()||source.gravity.size()>mdl::KeyPoolLimit<mdl::GravityKey>()||
+        source.accessories.size()>mdl::KeyPoolLimit<mdl::AccessoryKey>())return MMS_E_ARGUMENT;
+    return Boundary([&]()->MmsResult {
         if(source.cameras.empty()&&source.lights.empty()&&source.shadows.empty()&&source.gravity.empty()&&source.accessories.empty())return MMS_OK;
         std::array<bool,255> accessorySlots{};
         for(const auto& key:source.accessories){

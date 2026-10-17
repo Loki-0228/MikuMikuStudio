@@ -166,7 +166,8 @@ const char kJpModelMismatch[] =  // 0x52CB48 "... %s ..."
 static int LoadVmdMotionPath(MMDApp* app, const char* fileName, const wchar_t* wideFileName) {
     if (app == nullptr || (!fileName && !wideFileName)) return 0;
 #if !MMD_ORIGINAL_PROFILE
-    if (plugins::RefuseBoundVmdImport(app)) return 0;
+    int controlledResult=0;
+    if (plugins::TryImportBoundVmd(app,fileName,wideFileName,controlledResult)) return controlledResult;
 #endif
     auto& s = *app;
     unsigned char* const model = app->SelectedModel();

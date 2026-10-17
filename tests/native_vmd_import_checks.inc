@@ -36,7 +36,7 @@ void NativeVmdImportChecks() {
         "null VMD admission does not pretend to allow import");
     for (auto mode : {plugins::SharedHistory::RecordingMode::AllOperations,
                       plugins::SharedHistory::RecordingMode::ExplicitOnly}) {
-        for (bool camera : {false, true}) {
+        for (bool camera : {false}) {
             std::printf("  VMD gate mode=%u camera=%u\n", unsigned(mode), unsigned(camera)); std::fflush(stdout);
             PoseNumericFixture f;
             Check(plugins::CheckVmdImportHistory(f.app.get()) == MMS_OK &&
@@ -55,7 +55,7 @@ void NativeVmdImportChecks() {
                 reinterpret_cast<unsigned char*>(f.app.get()) + sizeof(MMDApp));
             std::printf("  VMD gate invoking loader\n"); std::fflush(stdout);
             Check(plugins::CheckVmdImportHistory(f.app.get()) == MMS_E_NOT_READY,
-                "bound VMD import rejects in both model and camera mode");
+                "bound VMD model import remains protected by the migration gate");
             VmdMigrationMessage message;
             // An absent source cannot provide a parsed motion. Seeing the
             // migration message rather than an open error verifies that both

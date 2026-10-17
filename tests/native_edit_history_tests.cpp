@@ -391,9 +391,18 @@ void CrossModelJournal(){
 #include "native_morph_paste_part_checks.inc"
 #include "native_model_paste_family_checks.inc"
 #include "native_model_paste_checks.inc"
+#include "native_global_source_checks.inc"
+#include "native_vmd_decode_checks.inc"
+#include "native_vmd_global_checks.inc"
 int main(int argc,char** argv){
     std::setvbuf(stdout,nullptr,_IONBF,0);
     const auto run=[](const char* name,void(*test)()){std::printf("RUN %s\n",name);test();};
+    if(argc==2&&!std::strcmp(argv[1],"--global-vmd-only")) {
+        run("NativeGlobalSourceChecks",NativeGlobalSourceChecks);
+        run("NativeVmdDecodeChecks",NativeVmdDecodeChecks);
+        run("NativeVmdGlobalChecks",NativeVmdGlobalChecks);
+        std::printf("PASS native global VMD: %u checks\n",checks);return 0;
+    }
     if(argc==2&&!std::strcmp(argv[1],"--mixed-model-paste-only")) {
         run("NativeMorphPastePartChecks",NativeMorphPastePartChecks);
         run("NativeModelPasteFamilyChecks",NativeModelPasteFamilyChecks);
@@ -549,6 +558,9 @@ int main(int argc,char** argv){
     run("NativeMorphPastePartChecks",NativeMorphPastePartChecks);
     run("NativeModelPasteFamilyChecks",NativeModelPasteFamilyChecks);
     run("NativeModelPasteChecks",NativeModelPasteChecks);
+    run("NativeGlobalSourceChecks",NativeGlobalSourceChecks);
+    run("NativeVmdDecodeChecks",NativeVmdDecodeChecks);
+    run("NativeVmdGlobalChecks",NativeVmdGlobalChecks);
     run("PhysicsImportChecks",PhysicsImportChecks);
     run("ImportTextureCacheChecks",ImportTextureCacheChecks);
     run("AccessoryImportChecks",AccessoryImportChecks);
