@@ -23,6 +23,7 @@ static MmsString S(const char* s) { return {s, std::strlen(s)}; }
 #include "update_checks.inc"
 #include "win32_checks.inc"
 #include "scene_checks.inc"
+#include "cpp_sdk_checks.inc"
 static void Write(const fs::path& path, const std::string& bytes) { fs::create_directories(path.parent_path()); std::ofstream f(path, std::ios::binary); f << bytes; if (!f) throw std::runtime_error("fixture write failed"); }
 #include "ui_preferences_file_checks.inc"
 #include "storage_checks.inc"
@@ -335,7 +336,7 @@ int wmain(int argc, wchar_t** argv) {
     const fs::path root = fs::temp_directory_path() / (L"mms-abi-contract-" + std::to_wstring(GetCurrentProcessId()));
     try {
         CHECK(argc == 4); CHECK(!fs::exists(root)); fs::create_directories(root);
-        JsonChecks(); DiscoveryChecks(root); UiChecks(); UiPreferenceChecks(); UiPreferencesFileChecks(root); LayoutChecks(); TreeLayoutChecks(); LayoutServiceChecks(); UpdateChecks(); Win32HostChecks(); SurfaceChecks(); LoaderChecks(root, fs::absolute(argv[1]));
+        JsonChecks(); DiscoveryChecks(root); UiChecks(); UiPreferenceChecks(); UiPreferencesFileChecks(root); LayoutChecks(); TreeLayoutChecks(); LayoutServiceChecks(); UpdateChecks(); Win32HostChecks(); SurfaceChecks(); CppSdkChecks(); LoaderChecks(root, fs::absolute(argv[1]));
         LifecycleChecks(root, fs::absolute(argv[2])); SceneChecks(); StorageChecks(root); EditChecks(); SharedHistoryChecks();
         ManagerEditChecks(root, fs::absolute(argv[3]));
         std::cout << "PASS checks=" << checks << "\n"; fs::remove_all(root); return 0;

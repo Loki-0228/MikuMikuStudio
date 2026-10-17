@@ -1,0 +1,73 @@
+# C++17 界面注册 SDK
+
+`mms/cpp/ui.hpp` 是公共 C ABI 的头文件包装。它组合现有 `mms.ui`、`mms.ui.layout` 和 `mms.ui.surface`，不需要链接宿主库。插件内部可以使用 C++ 类型；跨 DLL 的调用仍使用原 C 函数表，不传递 STL 对象或异常。
+
+## 选择封装层
+
+| 类型 | 用途 |
+| --- | --- |
+| `UiServices` | 查询并验证服务。`mms.ui` 为必需服务，布局和 surface 按需查询。 |
+| `RegistrationBundle` | 管理命令、元素、属性及 surface 工厂的注册所有权；返回原始注册句柄。 |
+| `CommandUi` | 组合上述注册操作，为一个命令创建可选菜单项、按钮、工具栏分组及默认布局提示。 |
+
+这些类型不创建第二套控件树。便利层的 `command()`、`menu()`、`button()`、`group()` 都借用同一批底层注册引用。复杂插件可以取得原 C 表，再更新这些注册对象；宿主继续检查权限、代次和能力。
+
+服务查询只校验包装实际调用的函数。直接使用表内其他函数时，插件仍须检查对应函数指针和所需能力。
+
+## 编译示例
+
+完整入口与生命周期实现见 [hello_menu/plugin.cpp](examples/hello_menu/plugin.cpp)。该示例同时创建菜单和按钮，两者调用同一命令，启用和选中状态也来自同一状态回调。
+
+示例在 `create` 中查询服务并创建 `CommandUi`，在 `start` 中填写以下声明。`p`、`getState` 和 `invoke` 的完整定义见示例源文件。
+
+```cpp
+mms::sdk::CommandUiSpec spec;
+spec.id = "org.example.hello.say";
+spec.owner = "org.example.hello";
+spec.label = "示例：输出日志";
+spec.context = p;
+spec.getState = getState;
+spec.invoke = invoke;
+spec.menu.id = "org.example.hello.menu";
+spec.button.id = "org.example.hello.toolbar";
+return p->controls.Register(spec);
+```
+
+`menu.parent` 默认是 `mms.menu.plugins`，`button.parent` 默认是 `mms.toolbar.main.extensions`。填写 `group.id` 后，按钮默认放入该工具栏分组。`menu` 或 `button` 的 ID 留空表示不创建该元素。`button.hints`、`group.hints` 指向原 `MmsUiLayoutHintsV1`；描述只需在注册调用期间有效。`order` 为非零时覆盖按钮及分组提示中的顺序值，零时保留提示值。
+
+在 Windows x64 开发机上安装 Visual Studio 2022 的 C++ 桌面工具、Windows SDK 和 CMake 3.21 以上版本。当前兼容工具链固定 MSVC 19.44.35229 和 SDK 10.0.19041.0。在 SDK 目录执行：
+
+```powershell
+cmake -S examples/hello_menu -B build/hello -G "Visual Studio 17 2022" -A x64 -T "v143,version=14.44.35207,host=x64" "-DCMAKE_SYSTEM_VERSION=10.0.19041.0" "-DCMAKE_TRY_COMPILE_CONFIGURATION=Release"
+cmake --build build/hello --config Release
+```
+
+示例使用 C++17、独立插件 `/MT`、Win7 宏和子系统 6.01。声明中使用的服务也要写入 `plugin.json`。插件调用布局能力时应查询 `mms.ui.layout`，不能把宿主恰好提供该服务作为清单依赖的替代。
+
+## 句柄与清理
+
+`get` 和便利层的访问器只借用引用，不转移所有权。通过这些引用调用 C API 不创建副本。`detach` 才移交指定注册的所有权；移交后，调用者负责使用对应 C 表注销它，并处理它对命令、父容器或工厂的依赖。
+
+`RegistrationBundle` 和 `CommandUi` 不可复制。移动构造移交所有权，原对象变为空；移动赋值被禁用，避免覆盖目标中尚未注销的注册。
+
+插件应在 `stop` 中显式调用 `Close()`，并返回其错误码。关闭按依赖顺序删除元素，再注销命令、属性和工厂。布局重排后，包内父子关系可能与最初的注册顺序不同；关闭会在有进展时重试受依赖阻挡的元素。宿主返回 `BUSY` 或其他错误时，尚未注销的句柄继续保留，插件实例及回调上下文须继续存活，之后再重试。
+
+析构只尝试清理，无法把错误返回给宿主，不能代替 `stop` 的显式检查。不要在工作线程销毁含注册的对象，也不要在命令状态查询、绘制或宿主停止完成后继续访问函数表。
+
+描述中的字符串和数组只需在调用期间有效，宿主按原 ABI 复制它们。回调及 `context` 不因此取得独立副本。将上下文保存在插件实例中，并在 `destroy` 时释放；尚存的值或快照租约可能使宿主在注销注册后继续保留实例和 DLL。
+
+注册调用前，包装先为自己的记录预留容量。注册成功后记录句柄不再分配内存，避免宿主已创建对象、包装却因分配失败遗失句柄。底层各次注册仍是独立操作，整个组合不保证从未短暂显示部分元素。
+
+便利注册失败后，包装尝试回收本次注册。清理受阻时，它保留剩余句柄；插件仍须调用 `Close()`。注册错误和清理错误分别保留，不能把失败后的对象当成完整界面继续使用。
+
+## 布局和能力边界
+
+工具栏按钮和分组可以提供默认尺寸、伸缩、排列方向、间距及顺序。宿主使用现有布局服务处理这些提示，用户保存的布局覆盖仍优先。菜单项按实际登记顺序排列；本接口未增加菜单专用的排序字段。
+
+位置使用已有挂载点。更多挂载点应先通过 `mms.ui.surface.acquireAnchors` 查询；缺失位置必须返回错误或由插件明确选择备用位置。包装不会把不支持的位置静默替换成菜单。
+
+只读属性和原生面板工厂可以通过 `RegistrationBundle` 注册。快照、值和 anchor 租约仍调用原 C API 获取及释放；本批没有增加租约类。原生窗口及 view context 的创建、重建和销毁规则继续遵循 [SDK 参考](README.md)。
+
+可写属性、声明式 INPUT、命令溢出菜单、统一四类刷新、复杂动画和新视口服务仍按宿主当前状态处理。便利 SDK 不提前开放这些能力，也不启用普通宿主的 `mms.edit`。`updateElement` 保留底层 handle，但可能更新 generation 并重建 view；不能将其当成无副作用的重绘请求。
+
+Win7 SP1 x64、CPU 基础路径和 AMD 继续作为发布约束。当前构建与本机测试不替代 Win7 和 AMD 真机验收。

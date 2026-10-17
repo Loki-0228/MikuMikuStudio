@@ -9,7 +9,10 @@
 	"architecture": "x64",
 	"minWindows": "6.1.7601",
 	"capabilities": ["ui.command", "ui.element"],
-	"requiresServices": [{ "id": "mms.ui", "major": 1, "minMinor": 0 }],
+	"requiresServices": [
+		{ "id": "mms.ui", "major": 1, "minMinor": 0 },
+		{ "id": "mms.ui.layout", "major": 1, "minMinor": 0 }
+	],
 	"dependencies": [],
 	"nativeDependencies": [],
 	"reloadPolicy": "restart"
