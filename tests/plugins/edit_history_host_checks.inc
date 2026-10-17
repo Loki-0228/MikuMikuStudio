@@ -7,6 +7,7 @@
 #include <shlobj.h>
 #include "mikudancestudio/key_pool.hpp"
 #include "mikudancestudio/animation_curve_editor.hpp"
+#include "mikudancestudio/animation_curve_host.hpp"
 #include "../src/plugins/native_key_commands.hpp"
 #include "../src/plugins/native_object_commands.hpp"
 #include "../src/plugins/native_frame_lines.hpp"
@@ -416,8 +417,10 @@ void ObjectMenuDeletion(MMDApp* app, plugins::SharedHistory& history, const MmsS
 #include "global_paste_host_checks.inc"
 #include "model_paste_host_checks.inc"
 #include "vmd_global_host_checks.inc"
+#include "camera_crash_vmd_host_checks.inc"
 #include "vmd_accessory_host_checks.inc"
 #include "vmd_model_host_checks.inc"
+#include "vmd_model_scale_host_checks.inc"
 #include "viewport_history_host_checks.inc"
 void Run(MMDApp* app) {
     using namespace plugins;
@@ -459,8 +462,10 @@ void Run(MMDApp* app) {
     global_paste_host_checks::Run(app,*history,value);
     model_paste_host_checks::Run(app,*history,value);
     vmd_global_host_checks::Run(app,*history,value);
+    camera_crash_vmd_host_checks::Run(app,*history,value);
     vmd_accessory_host_checks::Run(app,*history,value);
     vmd_model_host_checks::Run(app,*history,value);
+    vmd_model_scale_host_checks::Run(app,*history,value);
     viewport_history_host_checks::Run(app,*history,value);
     {
         auto extra=RetainSceneObject(*app,MMS_OBJECT_ACCESSORY,1);

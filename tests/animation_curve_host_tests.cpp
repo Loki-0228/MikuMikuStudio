@@ -13,9 +13,9 @@
 #include <new>
 #include <stdexcept>
 #include <commctrl.h>
-namespace { thread_local long failAfter = -1; }
+namespace { thread_local long failAfter = -1; thread_local unsigned allocationFailures = 0; }
 void* operator new(std::size_t size) {
-    if (failAfter == 0) throw std::bad_alloc();
+    if (failAfter == 0) { ++allocationFailures; throw std::bad_alloc(); }
     if (failAfter > 0) --failAfter;
     if (void* memory = std::malloc(size ? size : 1)) return memory;
     throw std::bad_alloc();
@@ -385,6 +385,12 @@ int main(){
     }
     curve_host::Open(app.get(),false);
     Check(GetForegroundWindow()!=parent,"hidden integration does not activate host");
+    const auto failuresBefore=allocationFailures;
+    failAfter=0;
+    curve_editor::NotifyOwnedChanged(parent);
+    failAfter=-1;
+    Check(allocationFailures>failuresBefore&&IsWindow(parent),
+        "deferred curve notification allocation failure never escapes command completion");
     curve_editor::CloseOwned(parent);
     DestroyWindow(parent);app->Hwnd()=nullptr;
     curve_host::ForgetAccessory(app.get(),0);Check(!curve_host::Has(app.get(),curve_host::Kind::Accessory,0),"deleted object clears curves");

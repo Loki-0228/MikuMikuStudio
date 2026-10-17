@@ -747,6 +747,77 @@ void ExtensionCurveVersioning() {
           "a version 2 tail loads back through the file path");
 }
 
+void ExtensionImmutableSnapshot() {
+    TempMotion file;
+    Check(file.Write(kFakeVmd), "write immutable scale-extension prefix");
+    auto extension = ExtensionBlock();
+    extension.entries[1].curve = {7, 29, 91, 122};
+    bsio::PrefixFingerprint fingerprint;
+    fingerprint.Append(kFakeVmd.data(), kFakeVmd.size());
+    extension.prefixBytes = fingerprint.bytes();
+    extension.prefixCrc32 = fingerprint.crc32();
+    const int fd = file.Open(_O_WRONLY);
+    _lseeki64(fd, 0, SEEK_END);
+    Check(bsio::SaveVmdExtension(fd, extension) == bsio::ExtensionSave::Written,
+          "write actual encoded scale tail for immutable-reader equivalence");
+    Check(_close(fd) == 0, "close immutable scale extension fixture");
+    const auto complete = file.Read();
+    bsio::VmdExtension bytesResult, pathResult;
+    Check(bsio::LoadVmdExtensionBytes(complete.data(), complete.size(), bytesResult,
+                                     static_cast<std::int64_t>(kFakeVmd.size())) == bsio::ExtensionLoad::Loaded,
+          "immutable byte reader accepts an actual writer-produced tail");
+    Check(bsio::LoadVmdExtension(file.path(), pathResult,
+                                 static_cast<std::int64_t>(kFakeVmd.size())) == bsio::ExtensionLoad::Loaded &&
+              pathResult.entries.size() == bytesResult.entries.size() &&
+              bytesResult.entries.size() == 2 &&
+              bytesResult.entries[1].scale == pathResult.entries[1].scale &&
+              bytesResult.entries[1].curve == pathResult.entries[1].curve,
+          "byte reader and path wrapper share complete matrix/curve semantics");
+    // Every truncated prefix must agree, including absent footer and footer
+    // fragments. The byte reader preserves the destination; the legacy path
+    // reader deliberately retains its historical empty-output behavior.
+    for (std::size_t cut = 0; cut < complete.size(); ++cut) {
+        const std::vector<std::uint8_t> truncated(complete.begin(), complete.begin() + cut);
+        Check(file.Write(truncated), "write truncated immutable scale fixture");
+        auto preserved = extension;
+        auto cleared = extension;
+        const auto fromBytes = bsio::LoadVmdExtensionBytes(truncated.data(), truncated.size(), preserved,
+                                                          static_cast<std::int64_t>(kFakeVmd.size()));
+        const auto fromFile = bsio::LoadVmdExtension(file.path(), cleared,
+                                                   static_cast<std::int64_t>(kFakeVmd.size()));
+        Check(fromBytes == fromFile && fromBytes != bsio::ExtensionLoad::Loaded,
+              "byte/file framing decisions agree for every truncated file");
+        Check(preserved.entries.size() == extension.entries.size() &&
+                  preserved.prefixBytes == extension.prefixBytes && cleared.entries.empty(),
+              "immutable failure preserves output while legacy path clears output");
+    }
+    std::vector<std::vector<std::uint8_t>> corrupt;
+    auto changed = complete; changed[0] ^= 1; corrupt.push_back(changed);
+    changed = complete; changed[complete.size() - 17] ^= 1; corrupt.push_back(changed);
+    changed = complete; std::memset(changed.data() + complete.size() - 16, 0xff, 8); corrupt.push_back(changed);
+    changed = complete; changed[kFakeVmd.size()] = 'X'; corrupt.push_back(changed);
+    for (const auto& bytes : corrupt) {
+        Check(file.Write(bytes), "write corrupt scale framing or checksum fixture");
+        auto preserved = extension;
+        const auto fromBytes = bsio::LoadVmdExtensionBytes(bytes.data(), bytes.size(), preserved,
+                                                          static_cast<std::int64_t>(kFakeVmd.size()));
+        const auto fromFile = bsio::LoadVmdExtension(file.path(), pathResult,
+                                                   static_cast<std::int64_t>(kFakeVmd.size()));
+        Check(fromBytes == bsio::ExtensionLoad::Ignored && fromBytes == fromFile &&
+                  preserved.entries.size() == extension.entries.size() && pathResult.entries.empty(),
+              "byte/file CRC, size and payload failures use the same validation and distinct output guarantees");
+    }
+    auto preserved = extension;
+    Check(bsio::LoadVmdExtensionBytes(complete.data(), complete.size(), preserved,
+                                     static_cast<std::int64_t>(kFakeVmd.size() + 1)) == bsio::ExtensionLoad::Ignored &&
+              preserved.entries.size() == extension.entries.size(),
+          "immutable scale reader independently verifies the recognized prefix boundary");
+    Check(DeleteFileW(file.path().c_str()) != 0 &&
+              bsio::LoadVmdExtensionBytes(complete.data(), complete.size(), bytesResult,
+                                         static_cast<std::int64_t>(kFakeVmd.size())) == bsio::ExtensionLoad::Loaded,
+          "immutable scale reader never reopens the original source path");
+}
+
 void ExtensionMatchingAndOffset() {
     const bsio::VmdExtension extension = ExtensionBlock();
     std::vector<std::array<char, 20>> bones;
@@ -1234,6 +1305,7 @@ int main() {
     ExtensionCodecRoundTrip();
     ExtensionCodecRejects();
     ExtensionCurveVersioning();
+    ExtensionImmutableSnapshot();
     ExtensionMatchingAndOffset();
     CurveLossBoundary();
     ExtensionFileLifecycle();

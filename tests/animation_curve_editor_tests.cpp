@@ -1341,6 +1341,105 @@ void ReadKeepsSelectionAndHistory() {
 // ---------------------------------------------------------------------------
 // 14. The playhead timer does nothing while the window is hidden.
 // ---------------------------------------------------------------------------
+void PendingNativeChangesBeforeWrite(bool notify = true) {
+    HostSource host;
+    host.data.push_back(MakeChannel("x",L"Camera X",{MakeKey(0,0),MakeKey(30,1)}));
+    HWND window=static_cast<HWND>(ce::Open(nullptr,MakeSession(host),false));
+    SetText(window,kIdFrameEdit,L"15");SetText(window,kIdValueEdit,L"0.5");Click(window,kIdAddKey);
+    host.data[0].track.keys.push_back(MakeKey(60,2));
+    if(notify)ce::NotifySourceChanged(nullptr,"source");
+    const int applies=host.applyCalls;
+    SetText(window,kIdFrameEdit,L"45");SetText(window,kIdValueEdit,L"1.5");Click(window,kIdAddKey);
+    Check(FindKey(host.data,0,60)!=nullptr,"a queued native registration survives a curve-editor write");
+    Check(host.applyCalls==applies,"a stale curve draft is refreshed before it can overwrite native keys");
+    Click(window,kIdUndo);
+    Check(host.applyCalls==applies,"stale undo cannot remove a newly registered native key");
+    SetText(window,kIdFrameEdit,L"45");SetText(window,kIdValueEdit,L"1.5");Click(window,kIdAddKey);
+    Check(FindKey(host.data,0,45)&&FindKey(host.data,0,60),"retrying after refresh keeps both native and editor registrations");
+    ce::CloseOwned(nullptr);
+    Note("pending native changes cannot be overwritten by an editor draft or undo");
+}
+
+void NativeSelectionBeforeDelete(bool activate = true) {
+    HostSource host;
+    host.data.push_back(MakeChannel("x",L"Camera X",{MakeKey(0,0),MakeKey(10,1),MakeKey(20,2),MakeKey(30,3)}));
+    auto session=MakeSession(host);
+    std::vector<int> selected;
+    session.sources[0].readKeySelection=[&](const auto&){return selected;};
+    session.sources[0].writeKeySelection=[&](const auto&,const auto& frames){selected=frames;};
+    HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
+    ClickKey(window,1);
+    Check(selected==std::vector<int>({10}),"curve selection reaches the native timeline");
+    selected={20};
+    if(activate)SendMessageW(window,WM_ACTIVATE,WA_ACTIVE,0);
+    MSG change{};
+    while(PeekMessageW(&change,window,WM_APP+401,WM_APP+401,PM_REMOVE))DispatchMessageW(&change);
+    Click(window,kIdDeleteKey);
+    Check(FindKey(host.data,0,10)&&!FindKey(host.data,0,20),"delete immediately after native selection targets the native selection, without waiting for a timer");
+    ce::CloseOwned(nullptr);
+}
+
+void NativeEditsBeforeHistory() {
+    for(int change=0;change<4;++change){
+        HostSource host;
+        host.data.push_back(MakeChannel("x",L"Camera X",{MakeKey(0,0),MakeKey(10,1),MakeKey(20,2)}));
+        HWND window=static_cast<HWND>(ce::Open(nullptr,MakeSession(host),false));
+        SetText(window,kIdFrameEdit,L"15");SetText(window,kIdValueEdit,L"1.5");Click(window,kIdAddKey);
+        if(change==3)Click(window,kIdUndo);
+        if(change==0)host.data[0].track.keys.back().value=7;
+        if(change==1)host.data[0].track.keys.erase(host.data[0].track.keys.begin()+1);
+        if(change==2)host.data[0].track.keys.back().frame=21;
+        if(change==3)host.data[0].track.keys.push_back(MakeKey(40,4));
+        const int applies=host.applyCalls;
+        Click(window,change==3?kIdRedo:kIdUndo);
+        Check(host.applyCalls==applies,"native value/delete/move/registration changes invalidate stale editor history");
+        Check(KeyCount(window)==int(host.data[0].track.keys.size()),"history rejection refreshes the actual native keys");
+        SetText(window,kIdFrameEdit,L"45");SetText(window,kIdValueEdit,L"4.5");Click(window,kIdAddKey);
+        Check(host.applyCalls==applies+1&&FindKey(host.data,0,45),"editing resumes after adopting a native change");
+        if(change==0)Check(FindKey(host.data,0,20)->value==7,"retry keeps the native value change");
+        if(change==1)Check(!FindKey(host.data,0,10),"retry never resurrects a natively deleted key");
+        if(change==2)Check(FindKey(host.data,0,21)&&!FindKey(host.data,0,20),"retry keeps the native key move");
+        if(change==3)Check(FindKey(host.data,0,40)&&!FindKey(host.data,0,15),"redo never erases a newly registered native key");
+        ce::CloseOwned(nullptr);
+    }
+}
+
+void CanonicalWriteAndUndo() {
+    HostSource host;host.data.push_back(MakeChannel("x",L"Camera X",{MakeKey(0,0),MakeKey(10,1)}));
+    auto session=MakeSession(host);auto apply=session.sources[0].apply;
+    session.sources[0].apply=[apply](const auto& channels,auto& error){
+        auto quantized=channels;
+        for(auto& channel:quantized)for(auto& key:channel.track.keys)key.value=std::round(key.value*100)/100;
+        return apply(quantized,error);
+    };
+    HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
+    ClickKey(window,1);SetText(window,kIdValueEdit,L"0.333333");Click(window,kIdApplyKey);
+    Check(GetText(window,kIdValueEdit)==L"0.33","fields display the value actually accepted by the native source");
+    Click(window,kIdUndo);Check(FindKey(host.data,0,10)->value==1,"native rounding does not invalidate our own undo");
+    Click(window,kIdRedo);Check(FindKey(host.data,0,10)->value==0.33,"redo restores the accepted native value");
+    ce::CloseOwned(nullptr);
+}
+
+void NativeChangesDuringMmdDrag() {
+    HostSource host;host.data.push_back(MakeChannel("x",L"Camera X",{MakeKey(0,0),MakeKey(30,1)}));
+    std::string error;Check(ce::SetChannelControls(host.data[0],1,{20,20,107,107},error),"initialize native drag interval");
+    HWND window=static_cast<HWND>(ce::Open(nullptr,MakeSession(host),false));ClickKey(window,1);
+    HWND panel=GetDlgItem(window,kIdMmdPanel);double controls[4]{};
+    Check(SendMessageW(window,kHookMmdControls,0,reinterpret_cast<LPARAM>(controls))!=0,"native handles are editable");
+    const auto getDpi=reinterpret_cast<UINT(WINAPI*)(HWND)>(GetProcAddress(GetModuleHandleW(L"user32.dll"),"GetDpiForWindow"));
+    UINT dpi=getDpi?getDpi(panel):96;RECT client{};GetClientRect(panel,&client);
+    const int margin=MulDiv(6,dpi?dpi:96,96),side=std::min(int(client.right),int(client.bottom))-2*margin;
+    const LPARAM point=MAKELPARAM(margin+int(std::lround(controls[0]*side/127)),margin+side-int(std::lround(controls[1]*side/127)));
+    SendMessageW(panel,WM_LBUTTONDOWN,MK_LBUTTON,point);
+    const int reads=host.readCalls,applies=host.applyCalls;
+    host.data[0].track.keys.push_back(MakeKey(60,2));ce::NotifySourceChanged(nullptr,"source");
+    MSG change{};while(PeekMessageW(&change,window,WM_APP+401,WM_APP+401,PM_REMOVE))DispatchMessageW(&change);
+    Check(host.readCalls==reads,"native changes wait while an MMD handle drag owns the interval");
+    SendMessageW(panel,WM_LBUTTONUP,0,point);
+    Check(host.applyCalls==applies&&FindKey(host.data,0,60),"releasing a stale native handle cannot overwrite a registered key");
+    ce::CloseOwned(nullptr);
+}
+
 void PlayheadTimer() {
     HostSource host;
     host.data.push_back(MakeChannel("pos.x", L"Position X", {MakeKey(0, 0.0), MakeKey(10, 5.0)}));
@@ -2732,6 +2831,11 @@ void CurveModeButtons() {
 }  // namespace
 
 int main(int argc,char** argv) {
+    if(argc>1&&std::string(argv[1])=="--native-sync"){
+        PendingNativeChangesBeforeWrite(false);NativeSelectionBeforeDelete();NativeSelectionBeforeDelete(false);
+        NativeEditsBeforeHistory();CanonicalWriteAndUndo();NativeChangesDuringMmdDrag();
+        std::printf("native synchronization regressions: %d checks\n",g_checks);return 0;
+    }
     if(argc>1 && std::string(argv[1])=="--curve-modes") {
         CurveModeButtons();
         std::printf("curve mode regressions: %d checks\n",g_checks); return 0;
@@ -2764,6 +2868,13 @@ int main(int argc,char** argv) {
     FrameRangeRejected();
     LocalizedSourceLabel();
     ReadKeepsSelectionAndHistory();
+    PendingNativeChangesBeforeWrite();
+    PendingNativeChangesBeforeWrite(false);
+    NativeSelectionBeforeDelete();
+    NativeSelectionBeforeDelete(false);
+    NativeEditsBeforeHistory();
+    CanonicalWriteAndUndo();
+    NativeChangesDuringMmdDrag();
     PlayheadTimer();
     RangeBarKeyboard();
     TabNavigation();

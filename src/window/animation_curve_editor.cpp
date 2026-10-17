@@ -295,7 +295,7 @@ enum Str {
     StrBakeFirst, StrBakeLast, StrBakeStep, StrBakeRun,
     StrStep, StrLinear, StrBezier,
     StrTanFree, StrTanAligned, StrTanFlat, StrTanLinear, StrTanAutomatic, StrTanEaseIn, StrTanEaseOut,
-    StrReady, StrNoSource, StrNoRead, StrNoApply, StrReadFailed, StrApplyRejected,
+    StrReady, StrNoSource, StrNoRead, StrNoApply, StrReadFailed, StrApplyRejected, StrSourceChanged, StrSelectionChanged,
     StrInvalidTrack, StrNeedChannel, StrNoSelection, StrFrameExists, StrFrameSelected,
     StrInvalidFrame,
     StrInvalidNumber, StrDragConflict, StrAdded, StrDeleted, StrMoved, StrSelectedKeys,
@@ -372,6 +372,8 @@ const wchar_t *T(unsigned language, Str id) {
     case StrNoApply: return zh ? L"该源没有写入回调，编辑已禁用。" : en ? L"The source has no apply callback; editing is disabled." : L"このソースには書き込みコールバックがなく、編集できません。";
     case StrReadFailed: return zh ? L"读取失败：" : en ? L"Read failed: " : L"読み込みに失敗しました：";
     case StrApplyRejected: return zh ? L"写入被拒绝，编辑状态未更改：" : en ? L"The write was rejected; the editing state is unchanged: " : L"書き込みが拒否されました。編集状態は変更されていません：";
+    case StrSourceChanged: return zh ? L"主界面中的关键帧已更改，已刷新曲线。请重试本次编辑。" : en ? L"The main window changed the keys. Curves have been refreshed; retry this edit." : L"メイン画面でキーが変更されました。カーブを更新しました。編集をやり直してください。";
+    case StrSelectionChanged: return zh ? L"关键帧选区已更改，已刷新参数。请重试本次编辑。" : en ? L"The key selection changed. Fields have been refreshed; retry this edit." : L"キーの選択が変更されました。パラメーターを更新しました。編集をやり直してください。";
     case StrInvalidTrack: return zh ? L"修改无效：" : en ? L"Invalid change: " : L"変更が無効です：";
     case StrNeedChannel: return zh ? L"请先选择一个通道。" : en ? L"Select a channel first." : L"先にチャンネルを選択してください。";
     case StrNoSelection: return zh ? L"没有选中的关键帧。" : en ? L"No keyframe is selected." : L"選択されたキーがありません。";
@@ -468,7 +470,7 @@ const wchar_t *T(unsigned language, Str id) {
                   : en ? L"Delete key: removes the selected keys; undo restores them."
                        : L"キー削除：選択中のキーを削除します。元に戻すで復元できます。";
     case StrHintApplyKey:
-        return zh ? L"应用（Enter，同主页关键帧注册）：把帧号、数值、斜率和权重写入选中的关键帧，可撤销。插值与切线按钮点击后立即生效。"
+        return zh ? L"应用（Enter）：把帧号、数值、斜率和权重写入选中的关键帧，可撤销。插值与切线按钮点击后立即生效。"
                   : en ? L"Apply (Enter): writes frame, value, slopes and weights to the selected key. Interpolation and tangent buttons apply immediately. Undo is available."
                        : L"適用（Enter）：フレーム・値・傾き・重みを選択キーに書き込みます。補間と接線のボタンは即時適用します。元に戻せます。";
     case StrHintInterpolation:
@@ -860,6 +862,8 @@ void MaterializeCompareMask(Editor &editor);
 void UpdateKeyFields(Editor &editor);
 void UpdateBakeFields(Editor &editor);
 void UpdateEnabledState(Editor &editor);
+bool PullKeySelection(Editor &editor);
+void PublishKeySelection(Editor &editor);
 
 // ---------------------------------------------------------------------------
 // Hover help.  The hint line is a control of its own above the status line:
@@ -1106,8 +1110,51 @@ int HandleAtPoint(Editor &editor, POINT point, double radius, bool &outSide) {
 // ---------------------------------------------------------------------------
 // Editing transactions.
 // ---------------------------------------------------------------------------
+void ReadRegisteredSource(Editor &editor);
+
+bool CheckSourceCurrent(Editor &editor) {
+    Source &source = CurrentSource(editor);
+    std::vector<Channel> latest;
+    std::wstring error;
+    if (!source.read || !source.read(latest, error)) {
+        SetStatus(editor, std::wstring(T(editor.session.language, StrReadFailed)) + error, true);
+        return false;
+    }
+    editor.pendingSources.erase(source.id);
+    if (SameCurveData(CurrentState(editor).channels, latest)) return true;
+    // Native keyboard/mouse edits may bypass the menu notification. Compare
+    // with the host before every write, including undo and redo.
+    ReadRegisteredSource(editor);
+    SetStatus(editor, T(editor.session.language, StrSourceChanged), true);
+    return false;
+}
+
+void AdoptWrittenChannels(Editor &editor, std::vector<Channel> channels) {
+    SourceState &state = CurrentState(editor);
+    std::vector<Channel> canonical;
+    std::wstring error;
+    if (CurrentSource(editor).read(canonical, error)) {
+        std::map<std::string, bool> display;
+        for (const auto &channel : channels) display[channel.id] = channel.selected;
+        for (auto &channel : canonical) {
+            const auto found = display.find(channel.id);
+            if (found != display.end()) channel.selected = found->second;
+        }
+        channels = std::move(canonical);
+        state.valid = true;
+        state.reason.clear();
+    } else {
+        state.valid = false;
+        state.reason = std::wstring(T(editor.session.language, StrReadFailed)) + error;
+    }
+    // Native controls can be quantized on write. Keep the accepted data as
+    // the next comparison baseline, so our own write is not an external edit.
+    state.channels = std::move(channels);
+}
+
 bool CommitChannels(Editor &editor, std::vector<Channel> next, const std::wstring &success,
                     bool linkMmdHandles = false) {
+    if (!CheckSourceCurrent(editor)) return false;
     SourceState &state = CurrentState(editor);
     Source &source = CurrentSource(editor);
     // Value-curve tangents are governed by Free/Aligned, not the legacy
@@ -1190,16 +1237,18 @@ bool CommitChannels(Editor &editor, std::vector<Channel> next, const std::wstrin
     state.undo.push_back(Snapshot{state.channels, state.active, state.selection});
     if (state.undo.size() > static_cast<std::size_t>(kUndoDepth)) state.undo.erase(state.undo.begin());
     state.redo.clear();
-    state.channels = std::move(next);
+    AdoptWrittenChannels(editor, std::move(next));
     ClampState(state);
+    PublishKeySelection(editor);
     RefreshEditorsUi(editor);
-    SetStatus(editor, success, false);
+    SetStatus(editor, state.valid ? success : state.reason, !state.valid);
     return true;
 }
 
 std::vector<Channel> CopyChannels(Editor &editor) { return CurrentState(editor).channels; }
 
 bool ApplySnapshot(Editor &editor, Snapshot snapshot, Snapshot &previous) {
+    if (!CheckSourceCurrent(editor)) return false;
     SourceState &state = CurrentState(editor);
     Source &source = CurrentSource(editor);
     if (!source.apply) {
@@ -1214,14 +1263,16 @@ bool ApplySnapshot(Editor &editor, Snapshot snapshot, Snapshot &previous) {
         SetStatus(editor, message, true);
         return false;
     }
-    state.channels = std::move(snapshot.channels);
+    AdoptWrittenChannels(editor, std::move(snapshot.channels));
     state.active = snapshot.active;
     state.selection = snapshot.selection;
     ClampState(state);
+    PublishKeySelection(editor);
     return true;
 }
 
 void UndoOnce(Editor &editor) {
+    if (!CheckSourceCurrent(editor)) return;
     SourceState &state = CurrentState(editor);
     if (state.undo.empty()) {
         SetStatus(editor, T(editor.session.language, StrNothingUndo), true);
@@ -1237,6 +1288,7 @@ void UndoOnce(Editor &editor) {
 }
 
 void RedoOnce(Editor &editor) {
+    if (!CheckSourceCurrent(editor)) return;
     SourceState &state = CurrentState(editor);
     if (state.redo.empty()) {
         SetStatus(editor, T(editor.session.language, StrNothingRedo), true);
@@ -1348,6 +1400,7 @@ void ReadRegisteredSource(Editor &editor) {
         for (std::size_t index = 0; index < keys.size(); ++index)
             if (selectedFrames.count(keys[index].frame)) state.selection.insert(index);
     }
+    PullKeySelection(editor);
     RefreshEditorsUi(editor);
     UpdateWindowTitle(editor);
     FillSourceCombo(editor);
@@ -1357,7 +1410,7 @@ void ReadRegisteredSource(Editor &editor) {
 
 void ProcessSourceChanges(Editor &editor) {
     editor.sourceChangePosted = false;
-    if (editor.drag != Drag::None) {
+    if (editor.drag != Drag::None || editor.mmdDragHandle >= 0) {
         // Only poll while a drag delays an actual pending update.
         SetTimer(editor.window, kSourceChangedTimer, kPlayheadIntervalMs, nullptr);
         return;
@@ -2853,10 +2906,10 @@ void PublishKeySelection(Editor& editor){
         if(index<channel->track.keys.size())frames.push_back(channel->track.keys[index].frame);
     source.writeKeySelection(channel->id,frames);
 }
-void PullKeySelection(Editor& editor){
-    if(editor.drag!=Drag::None||editor.mmdDragHandle>=0)return;
+bool PullKeySelection(Editor& editor){
+    if(editor.drag!=Drag::None||editor.mmdDragHandle>=0)return false;
     auto* channel=ActiveChannel(editor);auto& source=CurrentSource(editor);
-    if(!channel||!source.readKeySelection)return;
+    if(!channel||!source.readKeySelection)return false;
     const auto frames=source.readKeySelection(channel->id);
     auto& state=CurrentState(editor);
     // The usual timer tick observes the same selection. Compare its frame
@@ -2866,15 +2919,16 @@ void PullKeySelection(Editor& editor){
         for(auto index:state.selection){
             if(index>=channel->track.keys.size()||channel->track.keys[index].frame!=*frame++){same=false;break;}
         }
-        if(same)return;
+        if(same)return false;
     }
     FrameSelectionCursor wanted(frames);
     std::set<std::size_t> selected;
     for(std::size_t index=0;index<channel->track.keys.size();++index)
         if(wanted.Contains(channel->track.keys[index].frame))selected.emplace_hint(selected.end(),index);
-    if(selected==state.selection)return;
+    if(selected==state.selection)return false;
     state.selection=std::move(selected);
     UpdateKeyFields(editor);UpdateMmdPanel(editor);UpdateEnabledState(editor);InvalidateCanvas(editor);
+    return true;
 }
 const wchar_t* PlayCaption(Editor& editor){
     const bool playing=editor.session.isPlaying&&editor.session.isPlaying();
@@ -2932,6 +2986,7 @@ void OnPlayheadTimer(Editor &editor) {
 // Editing commands.
 // ---------------------------------------------------------------------------
 void AddKey(Editor &editor) {
+    if (!CheckSourceCurrent(editor)) return;
     Track *track = ActiveTrack(editor);
     if (!track) {
         SetStatus(editor, T(editor.session.language, StrNeedChannel), true);
@@ -2986,6 +3041,8 @@ void AddKey(Editor &editor) {
 }
 
 void DeleteSelectedKeys(Editor &editor) {
+    if (!CheckSourceCurrent(editor)) return;
+    PullKeySelection(editor);
     SourceState &state = CurrentState(editor);
     Track *track = ActiveTrack(editor);
     if (!track || state.selection.empty()) {
@@ -3035,9 +3092,11 @@ void EnableBezierHandles(Track& track, std::size_t key) {
 }
 
 void ApplyCurveChoice(Editor& editor, int id) {
+    const int row = int(SendMessageW(GetDlgItem(editor.window, id), CB_GETCURSEL, 0, 0));
+    if (!CheckSourceCurrent(editor)) return;
+    PullKeySelection(editor);
     SourceState& state = CurrentState(editor);
     Track* track = ActiveTrack(editor);
-    const int row = int(SendMessageW(GetDlgItem(editor.window, id), CB_GETCURSEL, 0, 0));
     if (!track || track->discrete || state.selection.empty() ||
         !IsWindowEnabled(GetDlgItem(editor.window, id)) || row < 0) {
         UpdateKeyFields(editor);
@@ -3085,6 +3144,11 @@ void ApplyCurveChoice(Editor& editor, int id) {
 }
 
 void ApplyKeyFields(Editor &editor) {
+    if (!CheckSourceCurrent(editor)) return;
+    if (PullKeySelection(editor)) {
+        SetStatus(editor, T(editor.session.language, StrSelectionChanged), true);
+        return;
+    }
     SourceState &state = CurrentState(editor);
     Track *track = ActiveTrack(editor);
     if (!track) {
@@ -3244,6 +3308,7 @@ void RunReadMotion(Editor &editor) {
 }
 
 void RunWriteMotion(Editor &editor) {
+    if (!CheckSourceCurrent(editor)) return;
     Source &source = CurrentSource(editor);
     if (!source.writeMotion) return;
     SourceState &state = CurrentState(editor);
@@ -5816,6 +5881,13 @@ void SetLanguage(void *owner, unsigned language) {
     ApplyLanguage(*editor);
 }
 
+bool OwnsWindow(void* owner, void* window) {
+    Editor* editor = FindEditor(owner);
+    const HWND target = static_cast<HWND>(window);
+    return editor && target && IsWindow(editor->window) &&
+        (target == editor->window || IsChild(editor->window, target));
+}
+
 void NotifySourceChanged(void *owner, const std::string &sourceId) {
     Editor *editor = FindEditor(owner);
     if (!editor || !IsWindow(editor->window)) return;
@@ -5827,10 +5899,16 @@ void NotifySourceChanged(void *owner, const std::string &sourceId) {
     if (!editor->sourceChangePosted)
         editor->sourceChangePosted = PostMessageW(editor->window, kSourceChangedMessage, 0, 0) != FALSE;
 }
-void NotifyOwnedChanged(void *owner) {
-    Editor *editor = FindEditor(owner);
-    if (!editor) return;
-    for (const Source &source : editor->session.sources) NotifySourceChanged(owner, source.id);
+void NotifyOwnedChanged(void *owner) noexcept {
+    try {
+        Editor *editor = FindEditor(owner);
+        if (!editor) return;
+        for (const Source &source : editor->session.sources) NotifySourceChanged(owner, source.id);
+    } catch (...) {
+        // Native commands also notify from a destructor. A failed allocation
+        // may defer the redraw, but must not turn a completed edit into a crash.
+        // CheckSourceCurrent verifies the host again before any editor write.
+    }
 }
 
 void DrawLauncher(void *hdcPointer, int x, int y, int width, int height, bool pressed, bool disabled, bool focused) {

@@ -15,6 +15,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <io.h>
+#include <map>
 #include <share.h>
 #include <sys/stat.h>
 namespace mikudancestudio::plugins {
@@ -27,6 +28,40 @@ void ModelVmdName(char* destination,std::size_t capacity,const std::uint8_t* byt
 }
 bool ModelVmdFinite(const std::uint8_t* bytes,unsigned count){
     for(unsigned i=0;i<count;++i)if(!std::isfinite(ModelVmdValue<float>(bytes+4*i)))return false;return true;
+}
+MmsResult ResolveModelVmdScales(const mdl::ModelRecord& model,ModelVmdSource& source,
+                              const std::vector<int>* unicodeTargets){
+    if(source.scales.entries.empty())return MMS_OK;
+    for(auto& record:source.source.bones){record.scale={};record.scaleCurve=bone_scale::LinearCurve();}
+    // MatchImported uses destination names, with the exact index placeholders
+    // the legacy Unicode import installed. Several dictionary owners of one
+    // destination retain the legacy last-owner rule.
+    std::vector<std::array<char,20>> names(model.boneCount);
+    if(unicodeTargets){
+        for(std::size_t i=0;i<unicodeTargets->size();++i){const auto bone=(*unicodeTargets)[i];
+            if(bone<0||unsigned(bone)>=model.boneCount)continue;
+            const auto placeholder=extended_names::MotionIndexName(static_cast<std::uint32_t>(i));
+            std::memcpy(names[bone].data(),placeholder.data(),placeholder.size());}
+    }else for(unsigned i=0;i<model.boneCount;++i)std::memcpy(names[i].data(),model.boneTable[i].name,names[i].size());
+    std::map<std::string,int> nativeNames;
+    if(!unicodeTargets)for(unsigned i=0;i<model.boneCount;++i)
+        nativeNames.emplace(std::string(model.boneTable[i].name,strnlen_s(model.boneTable[i].name,sizeof(model.boneTable[i].name))),int(i));
+    // A standard motion may repeat one bone/frame. The registrar overwrites
+    // the same key, so only the final source record represents that imported
+    // slot. Preserve MatchImported's refusal of genuinely ambiguous names.
+    std::map<std::pair<int,unsigned>,int> finalRecords;
+    for(std::size_t i=0;i<source.source.bones.size();++i){const auto& record=source.source.bones[i];int bone=record.targetIndex;
+        if(!record.targetResolved){const auto found=nativeNames.find(std::string(record.key.name,strnlen_s(record.key.name,sizeof(record.key.name))));
+            bone=found==nativeNames.end()?-1:found->second;}
+        if(bone<0)continue;if(unsigned(bone)>=model.boneCount)return MMS_E_ARGUMENT;
+        unsigned frame;if(!frame_limits::Add(int(source.source.frameOffset),record.key.frame,frame))return MMS_E_ARGUMENT;
+        finalRecords[{bone,frame}]=int(i);
+    }
+    std::vector<bone_scale_io::ImportedKey> imported;imported.reserve(finalRecords.size());
+    for(const auto& item:finalRecords)imported.push_back({item.first.first,item.first.second,item.second});
+    const auto assignments=bone_scale_io::MatchImported(source.scales,imported,names,source.source.frameOffset);
+    for(const auto& assignment:assignments){auto& record=source.source.bones[assignment.slot];record.scale=assignment.scale;record.scaleCurve=assignment.curve;}
+    return MMS_OK;
 }
 template<class Record>struct VmdTargetName {
     std::array<char,sizeof(Record::name)> name{},english{};
@@ -127,17 +162,22 @@ MmsResult DecodeModelVmdSource(const char* ansi,const wchar_t* wide,std::uint32_
         // These authored tracks require private-state participants before they
         // can be imported atomically. Do not silently flatten a valid block.
         if(morph_curve::VmdBlockSize(input.Data(tail),input.Size()-tail)||bone_curve::VmdBlockSize(input.Data(tail),input.Size()-tail))return MMS_E_NOT_READY;
-        if(input.Size()>=16&&!std::memcmp(input.Data(input.Size()-8),"MDSXVMDX",8))return MMS_E_NOT_READY;
+        // The tail is checked against the same bytes used above, including a
+        // Unicode dictionary in the prefix. A damaged/stale scale extension
+        // follows the established loader policy: ignore it as a whole while
+        // retaining the standard motion. Allocation failure still aborts all.
+        bone_scale_io::LoadVmdExtensionBytes(input.Data(0),input.Size(),decoded.scales,std::int64_t(tail));
         if(auto status=ValidateModelPasteSource(decoded.source))return status;
         out=std::move(decoded);return MMS_OK;
     });
 }
 MmsResult ResolveModelVmdTargets(MMDApp& app,unsigned slot,ModelVmdSource& source)noexcept{
     if(slot>=kModelSlotCount||!app.ModelSlot(slot))return MMS_E_ARGUMENT;
-    if(!source.hasUnicodeNames)return MMS_OK;
+    if(!source.hasUnicodeNames&&source.scales.entries.empty())return MMS_OK;
     return Boundary([&]()->MmsResult{
         auto resolved=source;const auto& model=*mdl::Mdl(app.ModelSlot(slot));
         if((model.boneCount&&!model.boneTable)||(model.morphCount&&!model.morphs))return MMS_E_ARGUMENT;
+        if(!source.hasUnicodeNames){if(auto result=ResolveModelVmdScales(model,resolved,nullptr))return result;source=std::move(resolved);return MMS_OK;}
         std::vector<std::wstring> names;names.reserve(model.boneCount);
         for(unsigned i=0;i<model.boneCount;++i)names.push_back(text_encoding::BoneName(model.boneTable[i],false));
         const auto bones=extended_names::MatchNames(resolved.names.bones,names);names.clear();names.reserve(model.morphCount);
@@ -153,6 +193,7 @@ MmsResult ResolveModelVmdTargets(MMDApp& app,unsigned slot,ModelVmdSource& sourc
                 const auto owner=resolved.names.ikOwners[cursor++];if(owner!=UINT32_MAX&&owner>=bones.size())return MMS_E_ARGUMENT;
                 key.ikTargets.push_back(owner==UINT32_MAX?-1:bones[owner]);}key.ikTargetsResolved=true;}
         if(cursor!=resolved.names.ikOwners.size())return MMS_E_ARGUMENT;
+        if(auto result=ResolveModelVmdScales(model,resolved,&bones))return result;
         source=std::move(resolved);return MMS_OK;
     });
 }

@@ -397,10 +397,15 @@ struct PoolTransaction {
         restore(address,before);release(after);
     }
 };
-template<class K> void Mirror(K*& pool,const std::vector<Channel>&channels,const std::set<int>&frames){
+template<class K> void Mirror(K*& pool,const K* previous,const std::vector<Channel>&channels,const std::set<int>&frames){
+    // Curve values and native timeline selection are independent. Rebuilding
+    // the pool must not turn a handle edit into a selection of the whole track.
+    std::set<std::uint32_t> selected;
+    for(std::size_t i=0,capacity=mdl::KeyPoolCapacity(previous);i<capacity;++i)
+        if((i==0||previous[i].frame!=0)&&previous[i].selected)selected.insert(previous[i].frame);
     std::vector<K> records; records.reserve(frames.size());
     for(int frame:frames){
-        K key{};key.frame=uint32_t(frame);key.selected=1;
+        K key{};key.frame=uint32_t(frame);key.selected=selected.count(key.frame)!=0;
         for(size_t c=0;c<channels.size();++c)Put(key,c,SampleValue(channels[c],frame));
         records.push_back(key);
     }
@@ -446,7 +451,7 @@ bool Write(MMDApp&app,Kind kind,int slot,const std::vector<Channel>&input,std::w
     switch(kind){
     case Kind::Camera:
         transaction.Begin(app.CameraKeys());
-        Mirror(app.CameraKeys(),input,frames);transaction.Updated(app.CameraKeys());
+        Mirror(app.CameraKeys(),static_cast<const mdl::CameraKey*>(transaction.before),input,frames);transaction.Updated(app.CameraKeys());
         // The standard PMM body contains a linear proxy; full curves follow it.
         for(size_t i=0;i<frames.size();++i)for(int c=0;c<6;++c){
             app.CameraKeys()[i].interpolation[0][c]=20;app.CameraKeys()[i].interpolation[1][c]=20;
@@ -469,10 +474,10 @@ bool Write(MMDApp&app,Kind kind,int slot,const std::vector<Channel>&input,std::w
             }
         }
         break;
-    case Kind::Light:transaction.Begin(app.LightKeys());Mirror(app.LightKeys(),input,frames);transaction.Updated(app.LightKeys());break;
-    case Kind::Shadow:transaction.Begin(app.ShadowKeys());Mirror(app.ShadowKeys(),input,frames);transaction.Updated(app.ShadowKeys());break;
-    case Kind::Gravity:transaction.Begin(app.GravityKeys());Mirror(app.GravityKeys(),input,frames);transaction.Updated(app.GravityKeys());break;
-    case Kind::Accessory:transaction.Begin(app.AccessoryKeys(slot));Mirror(app.AccessoryKeys(slot),input,frames);transaction.Updated(app.AccessoryKeys(slot));break;
+    case Kind::Light:transaction.Begin(app.LightKeys());Mirror(app.LightKeys(),static_cast<const mdl::LightKey*>(transaction.before),input,frames);transaction.Updated(app.LightKeys());break;
+    case Kind::Shadow:transaction.Begin(app.ShadowKeys());Mirror(app.ShadowKeys(),static_cast<const mdl::SelfShadowKey*>(transaction.before),input,frames);transaction.Updated(app.ShadowKeys());break;
+    case Kind::Gravity:transaction.Begin(app.GravityKeys());Mirror(app.GravityKeys(),static_cast<const mdl::GravityKey*>(transaction.before),input,frames);transaction.Updated(app.GravityKeys());break;
+    case Kind::Accessory:transaction.Begin(app.AccessoryKeys(slot));Mirror(app.AccessoryKeys(slot),static_cast<const mdl::AccessoryKey*>(transaction.before),input,frames);transaction.Updated(app.AccessoryKeys(slot));break;
     }
     next.identity=kind==Kind::Accessory ? app.AccessorySlot(slot) : transaction.FinalIdentity();
 #if !MMD_ORIGINAL_PROFILE

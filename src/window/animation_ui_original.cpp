@@ -25,9 +25,10 @@ bool Command(MMDApp*, unsigned id) {
 namespace mikudancestudio::curve_editor {
 void* Open(void*, Session, bool) { return nullptr; }
 void CloseOwned(void*) {}
+bool OwnsWindow(void*, void*) { return false; }
 void SetLanguage(void*, unsigned) {}
 void NotifySourceChanged(void*, const std::string&) {}
-void NotifyOwnedChanged(void*) {}
+void NotifyOwnedChanged(void*) noexcept {}
 void DrawLauncher(void*, int, int, int, int, bool, bool, bool) {}
 }
 namespace mikudancestudio::frame_rate_correction {

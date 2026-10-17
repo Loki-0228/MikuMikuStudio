@@ -302,6 +302,13 @@ enum class ExtensionLoad {
 // on the tail alone.
 ExtensionLoad LoadVmdExtension(const std::wstring& vmdPath, VmdExtension& out,
                                std::int64_t expectedPrefixBytes = -1);
+// Same footer, boundary, payload and prefix-CRC checks on one immutable file
+// snapshot. No file is reopened. Only Loaded replaces out; absence, invalid
+// data and allocation exceptions preserve it. The path wrapper retains its
+// historical empty-output behavior on absence or an ignored extension.
+ExtensionLoad LoadVmdExtensionBytes(const std::uint8_t* data, std::size_t size,
+                                  VmdExtension& out,
+                                  std::int64_t expectedPrefixBytes = -1);
 
 // ---- imported-key matching (pure) ---------------------------------------
 

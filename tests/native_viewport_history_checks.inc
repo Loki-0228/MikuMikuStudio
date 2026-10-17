@@ -133,5 +133,143 @@ void ViewportPendingLifecycle(){
     }
     DestroyWindow(owner);
 }
-void NativeViewportHistoryChecks(){std::puts("  viewport: roundtrip");ViewportRoundTrip();std::puts("  viewport: cancellation");ViewportCancellation();std::puts("  viewport: preflight");ViewportPreflight();std::puts("  viewport: legacy math");ViewportLegacyMath();std::puts("  viewport: pending lifecycle");ViewportPendingLifecycle();}
+void ViewportWheelLegacyMath(){
+    const auto savedBlock=g_Block;
+    for(bool floating:{false,true})for(int parent:{-1,0})for(short delta:{short(-32768),short(-120),short(-37),short(-1),short(0),short(1),short(37),short(120),short(32767)}){
+        GlobalRegistrationFixture f,oracle;
+        f.app->CameraParentModel()=oracle.app->CameraParentModel()=parent;
+        f.app->MouseX()=oracle.app->MouseX()=1000;f.app->SidebarWidth()=oracle.app->SidebarWidth()=200;
+        oracle.app->SelectGlobalTimelineTrack(GlobalTimelineTrack::Camera);
+        const auto before=ViewportRead(*f.app);const auto keys=GlobalRegistrationKeys(f.app->CameraKeys());const auto frame=f.app->CurrentFrame();
+        g_Block=oracle.app.get();
+        if(floating)MicWndProc(nullptr,WM_MOUSEWHEEL,MAKEWPARAM(0,static_cast<WORD>(delta)),0);
+        else HandleMouseWheel(delta);
+        g_Block=savedBlock;
+        bool changed=false;
+        Check(plugins::AdjustViewportCameraWheel(*f.app,f.history,delta,floating,changed)==MMS_OK,
+            "wheel source prepares and publishes the legacy camera adjustment");
+        const auto after=ViewportRead(*f.app);
+        Check(ViewportEqual(after,ViewportRead(*oracle.app))&&changed==!ViewportEqual(before,after),
+            "main float target-Z/distance and floating double distance exactly match old wheel handlers");
+        Check(GlobalRegistrationSame(f.app->CameraKeys(),keys)&&f.app->CurrentFrame()==frame,
+            "wheel changes authored camera pose without touching camera keys or playhead");
+        if(changed){
+            Check(f.history.UndoCount()==1,"one wheel message is one adjustment node");
+            f.app->CameraMode()=0;f.app->CurrentFrame()=103;f.app->CameraYaw()+=.5f;
+            auto undoExpected=before;undoExpected[4]=f.app->CameraYaw();
+            auto redoExpected=after;redoExpected[4]=f.app->CameraYaw();
+            Check(f.history.History(false)==MMS_OK&&ViewportEqual(ViewportRead(*f.app),undoExpected),
+                "wheel undo crosses model mode and preserves unrelated later camera yaw");
+            Check(f.history.History(true)==MMS_OK&&ViewportEqual(ViewportRead(*f.app),redoExpected)&&f.app->CurrentFrame()==103&&
+                GlobalRegistrationSame(f.app->CameraKeys(),keys),"wheel redo owns exact result without seeking or touching keys");
+        }else Check(!f.history.UndoCount()&&!f.history.RetainedBytes(),"zero wheel delta does not reserve a journal node");
+    }
+    g_Block=savedBlock;
+}
+void ViewportWheelModesAndPreflight(){
+    GlobalRegistrationFixture f;const auto before=ViewportRead(*f.app);bool changed=false;
+    Check(plugins::AdjustViewportCameraWheel(*f.app,f.history,120,false,changed)==MMS_OK&&changed,"wheel redo fixture records first adjustment");
+    Check(f.history.History(false)==MMS_OK&&ViewportEqual(ViewportRead(*f.app),before)&&f.history.RedoCount()==1,"wheel redo fixture restores pose");
+    Check(plugins::AdjustViewportCameraWheel(*f.app,f.history,0,false,changed)==MMS_OK&&!changed&&f.history.RedoCount()==1,
+        "zero wheel delta preserves existing redo branch");
+    {
+        f.app->CameraPositionZ()=-0.0f;f.app->CameraDistance()=-0.0f;
+        const auto zeroBefore=ViewportRead(*f.app);const auto entries=f.history.UndoCount(),redo=f.history.RedoCount();
+        for(bool floating:{false,true})for(int parent:{-1,0}){
+            f.app->CameraParentModel()=parent;failAfter=0;
+            const auto result=plugins::AdjustViewportCameraWheel(*f.app,f.history,0,floating,changed);failAfter=-1;
+            Check(result==MMS_OK&&!changed&&ViewportEqual(ViewportRead(*f.app),zeroBefore)&&f.history.UndoCount()==entries&&f.history.RedoCount()==redo,
+                "zero wheel delta preserves negative zero bits and redo without allocating for main or detached cameras");
+        }
+        f.app->CameraParentModel()=-1;
+        f.app->CameraPositionZ()=before[2];f.app->CameraDistance()=before[6];
+    }
+    Check(f.history.SetMode(plugins::SharedHistory::RecordingMode::ExplicitOnly)==MMS_OK,"wheel explicit-only mode configured");
+    std::uint64_t revision=0,nextRevision=0;f.history.Revision(revision);
+    Check(plugins::AdjustViewportCameraWheel(*f.app,f.history,-120,false,changed)==MMS_OK&&changed&&!f.history.UndoCount()&&f.history.RedoCount()==1,
+        "explicit-only wheel publishes preview while preserving preceding redo branch");
+    Check(!f.history.Revision(nextRevision)&&nextRevision>revision,"wheel preview invalidates old native candidates through common revision");
+    Check(f.history.History(true)==MMS_OK&&f.history.UndoCount()==1,"explicit wheel preview leaves previous explicit redo usable");
+    Check(f.history.Reset()==MMS_OK,"wheel preflight clears fixture journal");f.history.Collect();
+    const auto stable=f.Digest();bool completed=false;unsigned failures=0;
+    for(long allowance=0;allowance<128;++allowance){
+        failAfter=allowance;const auto result=plugins::AdjustViewportCameraWheel(*f.app,f.history,120,false,changed);failAfter=-1;
+        if(result==MMS_OK){Check(changed,"wheel OOM sweep reaches complete preview");completed=true;break;}
+        ++failures;Check(result==MMS_E_MEMORY&&!changed&&f.Digest()==stable&&!f.history.UndoCount()&&!f.history.RetainedBytes(),
+            "wheel allocation failures precede every live mutation and history publication");
+    }
+    Check(completed&&failures>4,"wheel OOM sweep reaches all private preparation stages");
+    plugins::StorageStore storage;plugins::SharedHistory budget(storage,{},8,1);const auto budgetBefore=ViewportRead(*f.app);
+    Check(plugins::AdjustViewportCameraWheel(*f.app,budget,120,false,changed)==MMS_E_MEMORY&&!changed&&ViewportEqual(ViewportRead(*f.app),budgetBefore),
+        "wheel history budget fails before writing camera values");
+    Check(budget.SetMode(plugins::SharedHistory::RecordingMode::ExplicitOnly)==MMS_OK&&
+        plugins::AdjustViewportCameraWheel(*f.app,budget,120,false,changed)==MMS_OK&&changed&&!budget.RetainedBytes(),
+        "explicit-only preview needs no retained-node budget");
+    f.app->PlaybackActive()=1;
+    Check(plugins::AdjustViewportCameraWheel(*f.app,f.history,120,false,changed)==MMS_E_BUSY&&!changed,"playback rejects bound wheel without authoring");
+    f.app->PlaybackActive()=0;f.app->CameraMode()=0;
+    Check(plugins::AdjustViewportCameraWheel(*f.app,f.history,120,false,changed)==MMS_E_BUSY&&!changed,"model-follow wheel remains closed until separately migrated");
+    f.app->CameraMode()=1;
+    Check(plugins::BeginViewportCameraGesture(*f.app,f.history,nullptr,WM_MBUTTONDOWN)==MMS_OK,"wheel conflict fixture begins drag");
+    f.app->CameraPositionX()+=2;plugins::AcceptViewportCameraPreview(*f.app);const auto preview=ViewportRead(*f.app);
+    Check(plugins::AdjustViewportCameraWheel(*f.app,f.history,120,false,changed)==MMS_E_BUSY&&!changed&&ViewportEqual(ViewportRead(*f.app),preview),
+        "wheel cannot interleave into an unfinished drag");plugins::CancelViewportCameraGesture(*f.app);
+    f.app->CameraDistance()=std::numeric_limits<float>::infinity();
+    Check(plugins::AdjustViewportCameraWheel(*f.app,f.history,120,false,changed)==MMS_E_ARGUMENT&&!changed,"nonfinite source rejects wheel atomically");
+    unsigned calls=0;GlobalRegistrationFixture atomic;
+    plugins::SharedHistory noAllocation(storage,[&]{if(++calls==3)failAfter=0;return MMS_OK;});
+    const auto result=plugins::AdjustViewportCameraWheel(*atomic.app,noAllocation,120,false,changed);failAfter=-1;
+    Check(result==MMS_OK&&changed&&calls==3&&noAllocation.UndoCount()==1,"wheel final publication allocates nothing after journal reservation");
+}
+void ViewportWheelStaleSource(){
+    for(unsigned stage:{2u,3u})for(unsigned kind=0;kind<7;++kind){
+        GlobalRegistrationFixture f;const auto before=ViewportRead(*f.app);const auto frame=f.app->CurrentFrame();unsigned calls=0;
+        auto* const originalPool=f.app->CameraKeys();auto* replacement=mdl::KeyPoolCreate<mdl::CameraKey>(4);
+        std::unique_ptr<plugins::NativePoseTestBinding> binding;
+        plugins::StorageStore storage;
+        plugins::SharedHistory history(storage,[&]{
+            if(++calls==stage)switch(kind){
+            case 0:++f.app->CurrentFrame();break;
+            case 1:f.app->CameraParentModel()=0;break;
+            case 2:++f.app->CameraParentBone();break;
+            case 3:f.app->CameraYaw()+=1;break;
+            case 4:f.app->CameraKeys()=replacement;break;
+            case 5:binding=std::make_unique<plugins::NativePoseTestBinding>(*f.app,f.history);break;
+            case 6:f.app->PlaybackActive()=1;break;
+            }
+            return MMS_OK;
+        });
+        bool changed=true;const auto result=plugins::AdjustViewportCameraWheel(*f.app,history,120,false,changed);
+        auto expected=before;if(kind==3)expected[4]+=1;
+        Check(result==MMS_E_STALE&&!changed&&ViewportEqual(ViewportRead(*f.app),expected)&&!history.UndoCount()&&!history.RetainedBytes(),
+            "wheel rejects stale playhead, parent, pose, pool, binding or readiness before reserve/publication without undoing external changes");
+        binding.reset();f.app->CameraKeys()=originalPool;mdl::KeyPoolDestroy(replacement);f.app->CurrentFrame()=frame;
+    }
+}
+void ViewportWheelMessageAdmission(){
+    GlobalRegistrationFixture f;const auto before=ViewportRead(*f.app);f.app->MouseX()=500;f.app->SidebarWidth()=200;
+    Check(!plugins::HandleBoundViewportMessage(*f.app,nullptr,WM_MOUSEWHEEL,MAKEWPARAM(0,120),0)&&ViewportEqual(ViewportRead(*f.app),before),
+        "unbound wheel remains entirely in the legacy window procedure");
+    plugins::NativePoseTestBinding binding(*f.app,f.history);
+    f.app->MouseX()=200;
+    Check(!plugins::HandleBoundViewportMessage(*f.app,nullptr,WM_MOUSEWHEEL,MAKEWPARAM(0,120),0)&&!f.history.UndoCount(),
+        "main-window sidebar wheel stays a timeline scroll instead of a camera history edit");
+    f.app->MouseX()=500;f.app->CameraMode()=0;
+    Check(plugins::HandleBoundViewportMessage(*f.app,nullptr,WM_MOUSEWHEEL,MAKEWPARAM(0,120),0)&&ViewportEqual(ViewportRead(*f.app),before),
+        "bound unmigrated model-mode wheel is consumed without legacy fallback");
+    f.app->CameraMode()=1;
+    const auto owner=CreateWindowExW(0,L"STATIC",L"wheel capture fixture",WS_OVERLAPPED,0,0,200,100,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
+    Check(owner!=nullptr,"wheel capture fixture owns a hidden window");SetCapture(owner);
+    bool changed=true;
+    Check(GetCapture()==owner&&plugins::AdjustViewportCameraWheel(*f.app,f.history,120,false,changed)==MMS_E_BUSY&&!changed&&ViewportEqual(ViewportRead(*f.app),before),
+        "captured layout or control drag prevents wheel camera authoring");
+    ReleaseCapture();DestroyWindow(owner);
+}
+void NativeViewportHistoryChecks(){
+    std::puts("  viewport: roundtrip");ViewportRoundTrip();std::puts("  viewport: cancellation");ViewportCancellation();
+    std::puts("  viewport: preflight");ViewportPreflight();std::puts("  viewport: legacy math");ViewportLegacyMath();
+    std::puts("  viewport: pending lifecycle");ViewportPendingLifecycle();std::puts("  viewport: wheel legacy math");ViewportWheelLegacyMath();
+    std::puts("  viewport: wheel mode and preflight");ViewportWheelModesAndPreflight();std::puts("  viewport: wheel stale source");ViewportWheelStaleSource();
+    std::puts("  viewport: wheel message admission");ViewportWheelMessageAdmission();
+}
 }

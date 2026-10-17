@@ -66,9 +66,84 @@ void ModelVmdUnicodeChecks(){
     auto mismatched=names;mismatched.boneOwners.clear();file.Write(ModelVmdWithNames(standard,mismatched));
     Check(DecodeModelVmdSource(nullptr,file.path.c_str(),5,unchanged)!=MMS_OK&&unchanged.version==99,"Unicode dictionary owner count mismatch rejects complete standard payload atomically");
 }
+
+VmdDecodeBytes ModelVmdWithScale(VmdDecodeBytes prefix,bone_scale_io::VmdExtension extension){
+    bone_scale_io::PrefixFingerprint fingerprint;fingerprint.Append(prefix.data(),prefix.size());
+    extension.prefixBytes=fingerprint.bytes();extension.prefixCrc32=fingerprint.crc32();
+    const auto payload=bone_scale_io::EncodeExtension(extension);prefix.insert(prefix.end(),payload.begin(),payload.end());
+    VmdDecodePut(prefix,std::uint64_t(payload.size()));prefix.insert(prefix.end(),{'M','D','S','X','V','M','D','X'});return prefix;
+}
+void NativeModelVmdScaleChecks(){
+    using namespace plugins;
+    std::puts("  model VMD scale: immutable tail codec, offsets and atomic history");
+    for(bool curveOnly:{false,true})for(int version:{1,2}){
+        ModelPasteFixture fixture;auto bytes=ModelVmdFixtureBytes(version);const auto boneStart=std::size_t(version==1?44:54);
+        std::memset(bytes.data()+boneStart,0,15);std::memcpy(bytes.data()+boneStart,fixture.first.bones[0].name,15);
+        bone_scale_io::VmdExtension extension;bone_scale_io::VmdExtension::Entry entry;
+        std::memcpy(entry.name.data(),bytes.data()+boneStart,15);entry.frame=7;entry.scale=curveOnly?bone_scale::Matrix{}:Scale(2.25f);
+        entry.curve={7,29,88,119};extension.entries.push_back(entry);
+        auto unmatched=entry;unmatched.frame=999;unmatched.scale=Scale(13);extension.entries.push_back(unmatched);
+        unmatched=entry;unmatched.name={};std::memcpy(unmatched.name.data(),"absent",6);extension.entries.push_back(unmatched);
+        VmdDecodeFile file;file.Write(ModelVmdWithScale(bytes,extension));ModelVmdSource source;
+        Check(DecodeModelVmdSource(nullptr,file.path.c_str(),100,source)==MMS_OK&&source.scales.entries.size()==3,"encoded scale/curve tail decodes from original immutable file bytes");
+        const ModelKeyState before(fixture.first);const auto priorScale=bone_scale::Key(fixture.first.raw(),0);const auto priorCurve=bone_scale::KeyCurve(fixture.first.raw(),0);
+        const auto digest=fixture.first.Digest();std::shared_ptr<HistoryChange> change;
+        Check(PlanModelVmdImport(*fixture.app,0,source,change)==MMS_OK&&change&&fixture.first.Digest()==digest,"standard and scale records plan privately together at a separate insertion offset");
+        ModelPasteCommit(fixture,change);const auto* key=ModelVmdBoneAt(*fixture.first.m,0,107);
+        Check(key!=nullptr,"scaled VMD uses source frame plus explicit offset");const auto slot=int(key-fixture.first.m->boneKeys);
+        Check(bone_scale::Key(fixture.first.raw(),slot)==entry.scale&&bone_scale::KeyCurve(fixture.first.raw(),slot)==entry.curve,"scale and non-linear curve reach the same imported key including identity matrix");
+        Check(fixture.app->CurrentFrame()==5&&fixture.history.UndoCount()==1,"scaled VMD preserves playhead and creates only one common history node");
+        const ModelKeyState after(fixture.first);Check(PlanModelVmdImport(*fixture.app,0,source,change)==MMS_OK&&!change&&fixture.history.UndoCount()==1,"identical standard and scale import is a complete no-op");
+        source={};Check(DeleteFileW(file.path.c_str()),"remove scale source before history traversal");
+        Check(fixture.history.History(false)==MMS_OK&&before.Matches(fixture.first)&&bone_scale::Key(fixture.first.raw(),0)==priorScale&&bone_scale::KeyCurve(fixture.first.raw(),0)==priorCurve,"scale VMD undo restores standard and sidecar state in one step");
+        fixture.app->CurrentFrame()=31;fixture.app->CameraMode()=1;fixture.app->SelectedModelSlot()=1;
+        Check(fixture.history.History(true)==MMS_OK&&after.Matches(fixture.first)&&bone_scale::Key(fixture.first.raw(),slot)==entry.scale&&bone_scale::KeyCurve(fixture.first.raw(),slot)==entry.curve&&fixture.app->CurrentFrame()==31,"scale VMD redo retains all owned data after source deletion and UI target change");
+    }
+    {
+        ModelPasteFixture fixture;auto standard=ModelVmdFixtureBytes();std::memset(standard.data()+54,0,15);std::memcpy(standard.data()+54,fixture.first.bones[0].name,15);
+        VmdDecodeBytes repeated(standard.begin()+54,standard.begin()+165);standard.insert(standard.begin()+165,repeated.begin(),repeated.end());VmdDecodeSet(standard,50,2u);
+        bone_scale_io::VmdExtension extension;bone_scale_io::VmdExtension::Entry entry;std::memcpy(entry.name.data(),standard.data()+54,15);entry.frame=7;entry.scale=Scale(3);extension.entries.push_back(entry);
+        auto bytes=ModelVmdWithScale(standard,extension);VmdDecodeFile file;file.Write(bytes);ModelVmdSource source;
+        Check(DecodeModelVmdSource(nullptr,file.path.c_str(),5,source)==MMS_OK&&ResolveModelVmdTargets(*fixture.app,0,source)==MMS_OK&&source.source.bones[0].scale==bone_scale::Matrix{}&&source.source.bones[1].scale==entry.scale,"repeated standard bone/frame maps scale to final overwritten import record");
+        std::shared_ptr<HistoryChange> change;Check(PlanModelVmdImport(*fixture.app,0,source,change)==MMS_OK&&change,"duplicate standard source with unique final key plans");ModelPasteCommit(fixture,change);
+        const auto* key=ModelVmdBoneAt(*fixture.first.m,0,12);Check(key&&bone_scale::Key(fixture.first.raw(),int(key-fixture.first.m->boneKeys))==entry.scale,"duplicate standard records do not lose a valid final scale assignment");
+        auto damaged=bytes;damaged[damaged.size()-17]^=1;file.Write(damaged);
+        Check(DecodeModelVmdSource(nullptr,file.path.c_str(),5,source)==MMS_OK&&source.scales.entries.empty(),"damaged scale payload CRC follows legacy ignored-tail policy");
+        damaged=bytes;damaged[54+19]^=1;file.Write(damaged);
+        Check(DecodeModelVmdSource(nullptr,file.path.c_str(),5,source)==MMS_OK&&source.scales.entries.empty(),"changed standard prefix invalidates entire scale tail");
+        damaged=bytes;std::uint64_t wrong=UINT64_MAX;std::memcpy(damaged.data()+damaged.size()-16,&wrong,8);file.Write(damaged);
+        Check(DecodeModelVmdSource(nullptr,file.path.c_str(),5,source)==MMS_OK&&source.scales.entries.empty(),"impossible footer payload size is ignored without affecting standard data");
+        // An extra byte between standard data and scale is not a verified prefix boundary.
+        damaged=standard;damaged.push_back(0);damaged=ModelVmdWithScale(damaged,extension);file.Write(damaged);
+        Check(DecodeModelVmdSource(nullptr,file.path.c_str(),5,source)==MMS_OK&&source.scales.entries.empty(),"scale prefix must exactly end at standard plus recognized dictionary boundary");
+        file.Write(bytes);bool completed=false;
+        for(long limit=0;limit<256;++limit){ModelVmdSource untouched;untouched.version=99;failAfter=limit;const auto status=DecodeModelVmdSource(nullptr,file.path.c_str(),5,untouched);failAfter=-1;
+            if(status==MMS_OK){completed=true;break;}Check(status==MMS_E_MEMORY&&untouched.version==99,"scale decode allocation failure preserves caller destination");}
+        Check(completed,"scale decode allocation failure sweep reaches successful immutable decode");
+        Check(DecodeModelVmdSource(nullptr,file.path.c_str(),5,source)==MMS_OK,"restore complete scale source for prepare allocation failures");
+        completed=false;const auto digest=fixture.first.Digest();const auto count=fixture.history.UndoCount();
+        for(long limit=0;limit<1024;++limit){failAfter=limit;const auto status=PlanModelVmdImport(*fixture.app,0,source,change);failAfter=-1;
+            if(status==MMS_OK){completed=true;break;}Check(status==MMS_E_MEMORY&&!change&&fixture.first.Digest()==digest&&fixture.history.UndoCount()==count,"scale source mapping and planning allocation failures leave all native families and history untouched");}
+        Check(completed,"scale planning allocation sweep reaches success");
+    }
+    {
+        ModelPasteFixture fixture;const std::wstring target=L"\u7f29\u653e\u9aa8\u9abc\u957f\u540d";auto* old=fixture.first.bones[1].jpText;
+        struct Restore{ModelPasteFixture& f;wchar_t* old;~Restore(){f.history.Reset();f.history.Collect();f.first.bones[1].jpText=old;}}restore{fixture,old};fixture.first.bones[1].jpText=const_cast<wchar_t*>(target.c_str());
+        auto standard=ModelVmdFixtureBytes();const auto placeholder=extended_names::MotionIndexName(0);std::memcpy(standard.data()+54,placeholder.data(),15);
+        extended_names::MotionNames names;names.model=L"fixture";names.bones={target};names.morphs={L"face"};names.boneOwners={0};names.morphOwners={0};
+        bone_scale_io::VmdExtension extension;bone_scale_io::VmdExtension::Entry entry;entry.name=placeholder;entry.frame=7;entry.scale=Scale(4);entry.curve={9,31,90,123};extension.entries.push_back(entry);
+        VmdDecodeFile file;file.Write(ModelVmdWithScale(ModelVmdWithNames(standard,names),extension));ModelVmdSource source;
+        Check(DecodeModelVmdSource(nullptr,file.path.c_str(),5,source)==MMS_OK&&source.hasUnicodeNames&&source.scales.entries.size()==1,"scale prefix fingerprint includes the complete Unicode identity dictionary");
+        Check(ResolveModelVmdTargets(*fixture.app,0,source)==MMS_OK&&source.source.bones[0].targetIndex==1&&source.source.bones[0].scale==entry.scale&&source.source.bones[0].scaleCurve==entry.curve,"Unicode placeholder scale resolves through private target identities without thread-local state");
+        auto remapped=source;fixture.first.bones[1].jpText=old;Check(ResolveModelVmdTargets(*fixture.app,0,remapped)==MMS_OK&&remapped.source.bones[0].targetIndex==-1&&remapped.source.bones[0].scale==bone_scale::Matrix{},"repeat Unicode resolution clears a previously matched scale when target disappears");fixture.first.bones[1].jpText=const_cast<wchar_t*>(target.c_str());
+        std::shared_ptr<HistoryChange> change;Check(PlanModelVmdImport(*fixture.app,0,source,change)==MMS_OK&&change,"Unicode scale import plans atomically");ModelPasteCommit(fixture,change);
+        const auto* key=ModelVmdBoneAt(*fixture.first.m,1,12);Check(key&&bone_scale::Key(fixture.first.raw(),int(key-fixture.first.m->boneKeys))==entry.scale,"Unicode scale reaches its intended destination bone");
+    }
+}
+
 void NativeModelVmdChecks(){
     using namespace plugins;
-    ModelVmdDistinctCurveChecks();ModelVmdUnicodeChecks();
+    ModelVmdDistinctCurveChecks();ModelVmdUnicodeChecks();NativeModelVmdScaleChecks();
     for(bool displaySection:{false,true}){
         ModelPasteFixture fixture;auto bytes=ModelVmdFixtureBytes();const auto motion=VmdDecodeMotion();
         std::memset(bytes.data()+54,0,15);std::memcpy(bytes.data()+54,fixture.first.bones[0].name,15);
@@ -109,7 +184,7 @@ void NativeModelVmdChecks(){
         const auto curveAt=std::size_t(54+47);bytes[curveAt]=128;file.Write(bytes);
         Check(DecodeModelVmdSource(nullptr,file.path.c_str(),0,source)==MMS_E_ARGUMENT&&source.version==99,"invalid imported interpolation rejects before output publication");
         bytes=ModelVmdFixtureBytes();bytes.insert(bytes.end(),8,0);bytes.insert(bytes.end(),{'M','D','S','X','V','M','D','X'});file.Write(bytes);
-        Check(DecodeModelVmdSource(nullptr,file.path.c_str(),0,source)==MMS_E_NOT_READY,"scale extension cannot silently lose authored data");
+        Check(DecodeModelVmdSource(nullptr,file.path.c_str(),0,source)==MMS_OK&&source.scales.entries.empty(),"malformed scale footer retains legacy ignored-extension policy");
         file.Write(VmdDecodeMotion().bytes);Check(DecodeModelVmdSource(nullptr,file.path.c_str(),0,source)==MMS_E_ARGUMENT,"camera motion cannot enter model import");
     }
     {

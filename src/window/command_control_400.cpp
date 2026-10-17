@@ -382,14 +382,11 @@ static int InsertGlobalFrame(MMDApp* app, Key*& table,
     std::uint32_t frame;
     if(!frame_limits::Add(app->CurrentFrame(),relativeFrame,frame))return 0;
     std::uint32_t index = 0;
-    std::uint32_t next = table[0].next;
-    while (next != 0) {
-        index = next;
-        const Key& candidate = table[index];
-        if (candidate.frame >= frame) {
-            break;
-        }
-        next = candidate.next;
+    // Include the permanent frame-zero head in the equality check. Starting
+    // at head.next inserted a second zero record; the allocator later reused
+    // it as a free slot and disconnected every key between it and the new key.
+    while (table[index].frame < frame && table[index].next != 0) {
+        index = table[index].next;
     }
 
     if (table[index].frame == frame) {
@@ -743,6 +740,7 @@ void DeleteMarkedKeyframes(MMDApp* app) {
                       app->PlaybackPhysicsMode());
         }
     }
+    curve_editor::NotifyOwnedChanged(app->Hwnd());
 }
 
 // The view-reset shared tail loc_47EFF6: PostViewRefresh + RefreshRequest(-1)

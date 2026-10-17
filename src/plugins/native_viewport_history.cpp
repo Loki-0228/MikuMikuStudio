@@ -34,15 +34,26 @@ bool Ready(MMDApp& a) noexcept {
 }
 struct CameraGestureChange final:HistoryChange,std::enable_shared_from_this<CameraGestureChange>{
     MMDApp& app; const std::uint64_t pool; const Values before; Values after;
-    std::uint64_t generation=1; unsigned mask=127; bool preview=true,applied=false;
-    CameraGestureChange(MMDApp& a):app(a),pool(mdl::KeyPoolIdentity(a.CameraKeys())),before(Read(a)),after(before){}
+    const int initialFrame,initialParentModel,initialParentBone;
+    const std::uint64_t initialBinding;
+    std::uint64_t generation=1; unsigned mask=127; bool preview,applied=false;
+    explicit CameraGestureChange(MMDApp& a,bool livePreview=true):app(a),pool(mdl::KeyPoolIdentity(a.CameraKeys())),before(Read(a)),after(before),
+        initialFrame(a.CurrentFrame()),initialParentModel(a.CameraParentModel()),initialParentBone(a.CameraParentBone()),
+        initialBinding(BoundNativePoseGeneration(&a)),preview(livePreview){}
     bool SameScene() const noexcept {return pool && mdl::KeyPoolIdentity(app.CameraKeys())==pool;}
+    bool InitialCurrent() const noexcept {
+        // Wheel values are prepared privately. A gate may invalidate the
+        // source before reservation or publication; never rebase that edit.
+        return preview || generation!=1 || (Ready(app) && !GetCapture() &&
+            app.CurrentFrame()==initialFrame && app.CameraParentModel()==initialParentModel &&
+            app.CameraParentBone()==initialParentBone && BoundNativePoseGeneration(&app)==initialBinding && Equal(Read(app),before));
+    }
     struct Candidate final:PreparedHistoryChange {
         std::shared_ptr<CameraGestureChange> source;const bool forward,initial;
         const std::uint64_t generation;const int frame,parentModel,parentBone;const Values expected;bool consumed=false;
         Candidate(std::shared_ptr<CameraGestureChange> s,bool f):source(std::move(s)),forward(f),initial(source->preview),generation(source->generation),frame(source->app.CurrentFrame()),parentModel(source->app.CameraParentModel()),parentBone(source->app.CameraParentBone()),expected(Read(source->app)){}
         bool IsCurrent() const noexcept override {
-            return !consumed && generation==source->generation && forward!=source->applied && source->SameScene() &&
+            return !consumed && generation==source->generation && forward!=source->applied && source->SameScene() && source->InitialCurrent() &&
                 source->app.CurrentFrame()==frame && source->app.CameraParentModel()==parentModel && source->app.CameraParentBone()==parentBone && Equal(Read(source->app),initial?source->after:expected);
         }
         void Publish() noexcept override {
@@ -53,7 +64,7 @@ struct CameraGestureChange final:HistoryChange,std::enable_shared_from_this<Came
     };
     MmsResult Prepare(bool forward,std::unique_ptr<PreparedHistoryChange>& out) override {
         out.reset();return Boundary([&]()->MmsResult{
-            if(!SameScene() || forward==applied)return MMS_E_STALE;
+            if(!SameScene() || !InitialCurrent() || forward==applied)return MMS_E_STALE;
             if(generation==UINT64_MAX)return MMS_E_NOT_READY;
             if(!Finite(Read(app)))return MMS_E_ARGUMENT;
             out=std::make_unique<Candidate>(shared_from_this(),forward);return MMS_OK;
@@ -134,6 +145,26 @@ MmsResult EndViewportCameraGesture(MMDApp& a,bool& changed) noexcept {
     if(result){current->Rollback();return result;}
     changed=true;return MMS_OK;
 }
+MmsResult AdjustViewportCameraWheel(MMDApp& a,SharedHistory& h,std::int16_t delta,bool floating,bool& changed) noexcept {
+    changed=false;
+    // Validate thread/plugin admission before reading the native scene.
+    if(auto r=h.CheckNativeEdit())return r;
+    if(gesture || GetCapture() || !Ready(a))return MMS_E_BUSY;
+    const auto before=Read(a);if(!Finite(before))return MMS_E_ARGUMENT;
+    if(!delta)return MMS_OK;
+    auto after=before;const unsigned axis=!floating && a.CameraParentModel()>=0?2:6;
+    if(floating)after[axis]=static_cast<float>(static_cast<double>(delta)*0.05000000074505806+static_cast<double>(before[axis]));
+    else after[axis]=static_cast<float>(delta)*0.05f+before[axis];
+    if(!Finite(after))return MMS_E_ARGUMENT;
+    if(Equal(before,after))return MMS_OK;
+    return Boundary([&]()->MmsResult {
+        auto change=std::make_shared<CameraGestureChange>(a,false);change->after=after;change->mask=1u<<axis;
+        std::unique_ptr<SharedHistory::NativeTransaction> transaction;
+        if(auto r=h.PrepareNative("Wheel camera",change,transaction,SharedHistory::NativeIntent::Adjustment))return r;
+        if(auto r=h.CommitNative(std::move(transaction)))return r;
+        changed=true;return MMS_OK;
+    });
+}
 bool HandleBoundViewportMessage(MMDApp& a,HWND owner,UINT msg,WPARAM wp,LPARAM lp) noexcept {
     if(msg==WM_CANCELMODE || msg==WM_KILLFOCUS || msg==WM_NCDESTROY ||
         (msg==WM_ACTIVATEAPP && !wp) || (msg==WM_KEYDOWN && wp==VK_ESCAPE) ||
@@ -143,6 +174,14 @@ bool HandleBoundViewportMessage(MMDApp& a,HWND owner,UINT msg,WPARAM wp,LPARAM l
         return active && msg==WM_KEYDOWN;
     }
     auto* history=BoundNativePoseHistory(&a);if(!history)return false;
+    if(msg==WM_MOUSEWHEEL){
+        const bool floating=owner && owner==a.FloatingWindow();
+        if(!floating && a.MouseX()<=a.SidebarWidth())return false;
+        bool changed=false;
+        if(!AdjustViewportCameraWheel(a,*history,static_cast<std::int16_t>(HIWORD(wp)),floating,changed) && changed)
+            PublishBoundPoseEdit(a,*history,false);
+        return true;
+    }
     if(msg==WM_RBUTTONDOWN || msg==WM_MBUTTONDOWN){
         POINT p{static_cast<short>(LOWORD(lp)),static_cast<short>(HIWORD(lp))};
         if(!PtInRect(&a.ViewportRect(),p))return false;
@@ -152,10 +191,7 @@ bool HandleBoundViewportMessage(MMDApp& a,HWND owner,UINT msg,WPARAM wp,LPARAM l
         SetCapture(owner);if(GetCapture()!=owner)CancelViewportCameraGesture(a);
         return true;
     }
-    if(!gesture || gesture->app!=&a || gesture->owner!=owner){
-        // Wheel camera changes have not yet been migrated to a gesture record.
-        return msg==WM_MOUSEWHEEL && (owner==a.FloatingWindow() || a.MouseX()>a.SidebarWidth());
-    }
+    if(!gesture || gesture->app!=&a || gesture->owner!=owner)return false;
     if(msg==WM_MOUSEMOVE){SampleMessage(a,wp,lp);return true;}
     if((msg==WM_RBUTTONUP && gesture->button==WM_RBUTTONDOWN) || (msg==WM_MBUTTONUP && gesture->button==WM_MBUTTONDOWN)){
         SampleMessage(a,wp,lp);bool changed=false;

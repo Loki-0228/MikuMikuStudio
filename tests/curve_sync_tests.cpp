@@ -4,6 +4,9 @@
 #include "mikudancestudio/mmd_app.hpp"
 #include "mikudancestudio/model.hpp"
 #include "mikudancestudio/morph_curve.hpp"
+#include "mikudancestudio/global_key_layout.hpp"
+#include "mikudancestudio/key_pool.hpp"
+#include "mikudancestudio/clipboard_layout.hpp"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -16,6 +19,15 @@ using namespace mikudancestudio;
 namespace ac = animation_curve;
 namespace ce = curve_editor;
 namespace mc = morph_curve;
+namespace mikudancestudio {
+void PumpEnterRegisterFrame(MMDApp*, HWND, bool);
+void PumpDeleteRebuild(MMDApp*, HWND, bool);
+void RegisterCameraState(MMDApp*, int);
+int RegisterLightKey(MMDApp*, const void*);
+int RegisterSelfShadowKey(MMDApp*, const void*);
+int RegisterGravityKey(MMDApp*, const void*);
+void ReloadModels(MMDApp*);
+}
 namespace {
 void Check(bool ok, const char* reason) {
     if (!ok) { std::fprintf(stderr, "FAIL: %s\n", reason); std::exit(1); }
@@ -77,6 +89,10 @@ void MorphSync() {
     for(int m=0;m<count;++m)record->morphKeys[m].allocated=0;
     read();Check(Same(channels[0].track,authored[0].track),"selection changes preserve the curve");
     record->selectedMorphs[0]=0;
+    auto display=std::make_unique<mdl::DisplayKey[]>(mdl::kDisplayKeyCapacity);
+    display[0].visible=1;record->displayKeys=display.get();
+    auto owner=CreateWindowW(L"STATIC",L"morph sync",WS_OVERLAPPED,0,0,400,300,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
+    Check(owner!=nullptr,"create enabled hidden morph owner");app->Hwnd()=owner;
     curve_host::OpenMorph(app.get(),0,false);
     HWND editor=nullptr;
     EnumThreadWindows(GetCurrentThreadId(),[](HWND window,LPARAM parameter)->BOOL{
@@ -93,7 +109,15 @@ void MorphSync() {
         do {if(record->morphKeys[slot].allocated){++marks;Check(record->morphKeys[slot].frame==unsigned(frame),"editor writes the selected native frame");}slot=record->morphKeys[slot].next;} while(slot);
         Check(marks==1,"native selection clears old marks across the dense chain");
     }
-    ce::CloseOwned(nullptr);
+    auto interpolation=GetDlgItem(editor,1045);
+    SendMessageW(interpolation,CB_SETCURSEL,1,0);
+    SendMessageW(editor,WM_COMMAND,MAKEWPARAM(1045,CBN_SELCHANGE),reinterpret_cast<LPARAM>(interpolation));
+    Check(app->SceneModified()!=0,"morph interpolation edit reaches the real host write");
+    unsigned marks=0,slot=0;
+    do{if(record->morphKeys[slot].allocated){++marks;Check(record->morphKeys[slot].frame==250,"changing interpolation keeps the selected morph frame");}slot=record->morphKeys[slot].next;}while(slot);
+    Check(marks==1,"changing morph interpolation does not select the entire native track");
+    SendMessageW(editor,WM_COMMAND,MAKEWPARAM(1059,BN_CLICKED),0);
+    ce::CloseOwned(owner);DestroyWindow(owner);app->Hwnd()=nullptr;
     // The canonical fast path must fall back for a reordered but readable chain.
     auto* keys=record->morphKeys;const unsigned a=keys[0].next,b=keys[a].next;
     std::swap(keys[a].frame,keys[b].frame);read();
@@ -152,5 +176,102 @@ void SelectionSync() {
     SetWindowLongPtrW(window,GWL_STYLE,style);ce::CloseOwned(nullptr);
     std::printf("selection_sync keys=%d unchanged_tick_ms=%.6f changed_tick_ms=%.6f\n",count,unchangedMs,changedMs);
 }
+int mainRegistrations = 0;
+LRESULT CALLBACK InputHost(HWND window, UINT message, WPARAM wp, LPARAM lp) {
+    if (message == WM_COMMAND && LOWORD(wp) == 500) { ++mainRegistrations; return 0; }
+    return DefWindowProcW(window, message, wp, lp);
 }
-int main() {MorphSync();SelectionSync();std::puts("PASS: curve synchronization");}
+void CameraEditorCommands() {
+    WNDCLASSW type{};type.lpfnWndProc=InputHost;type.hInstance=GetModuleHandleW(nullptr);
+    type.lpszClassName=L"MmsCurveSyncInputTest";RegisterClassW(&type);
+    HWND owner=CreateWindowW(type.lpszClassName,L"",WS_OVERLAPPED,0,0,400,300,nullptr,nullptr,type.hInstance,nullptr);
+    Check(owner!=nullptr,"create hidden camera input owner");
+    auto app=std::make_unique<MMDApp>();std::memset(&app->state,0,sizeof app->state);app->Hwnd()=owner;
+    app->state.enterKeyState=1;app->ViewportInputActive()=1;
+    std::vector<ce::Channel> data(1);data[0].id="x";
+    data[0].track.keys={{0,0},{30,1}};
+    ce::Session session;session.id="camera-input";
+    ce::Source source;source.id="camera";source.read=[&](auto& out,auto&){out=data;return true;};
+    source.apply=[&](const auto& next,auto&){data=next;return true;};session.sources.push_back(std::move(source));
+    auto editor=static_cast<HWND>(ce::Open(owner,std::move(session),false));
+    Check(editor!=nullptr,"create hidden camera curve editor");
+    Check(ce::OwnsWindow(owner,editor)&&ce::OwnsWindow(owner,GetDlgItem(editor,1020))&&!ce::OwnsWindow(owner,owner),
+          "curve keyboard ownership includes its root and children, and excludes the main window");
+    PumpEnterRegisterFrame(app.get(),GetDlgItem(editor,1020),true);
+    Check(mainRegistrations==0,"Enter in the curve canvas never registers in the main window");
+    PumpEnterRegisterFrame(app.get(),GetDlgItem(editor,1041),true);
+    Check(mainRegistrations==0,"Enter in the curve frame field never registers in the main window");
+    app->state.deleteKeyState=1;
+    PumpDeleteRebuild(app.get(),GetDlgItem(editor,1020),true);
+    Check(data[0].track.keys.size()==2,"Delete in the curve canvas never enters the main deletion backend");
+    PumpEnterRegisterFrame(app.get(),owner,true);
+    Check(mainRegistrations==1,"Enter in the main window still registers once");
+    ce::CloseOwned(owner);DestroyWindow(owner);app->Hwnd()=nullptr;
+}
+void CameraSelectionAfterCurveWrite() {
+    auto app=std::make_unique<MMDApp>();std::memset(&app->state,0,sizeof app->state);app->EnglishUI()=2;
+    auto* keys=mdl::KeyPoolCreate<mdl::CameraKey>();app->CameraKeys()=keys;
+    const int frames[]={0,60,218,220};
+    for(int i=0;i<4;++i){
+        auto& key=keys[i];key.frame=frames[i];key.previous=i?i-1:0;key.next=i<3?i+1:0;
+        key.eye[1]=10.f+float(i);key.distance=33;key.fov=30;key.parentModel=-1;
+        std::memset(key.interpolation,20,12);std::memset(&key.interpolation[2][0],107,12);
+    }
+    keys[2].selected=1;
+    std::vector<ce::Channel> channels;std::wstring error;
+    Check(curve_host::Read(*app,curve_host::Kind::Camera,0,channels,error),"read camera before curve edit");
+    channels[1].track.keys[2].value=18.79;
+    Check(curve_host::Write(*app,curve_host::Kind::Camera,0,channels,error),"write one camera curve key");
+    keys=app->CameraKeys();
+    Check(!keys[0].selected&&!keys[1].selected&&keys[2].selected&&!keys[3].selected,
+          "editing one camera curve keeps the native selection instead of selecting the whole track");
+    app->CurrentFrame()=219;ReloadModels(app.get());RegisterCameraState(app.get(),219);
+    std::vector<int> actual;
+    for(unsigned i=0;;i=keys[i].next){actual.push_back(int(keys[i].frame));if(!keys[i].next)break;}
+    Check(actual==std::vector<int>({0,60,218,219,220}),"registering the next camera frame retains every earlier key");
+    for(int frame:{220,219,218,191,60,0}){
+        app->CurrentFrame()=frame;ReloadModels(app.get());
+        Check(std::isfinite(app->CameraPositionAxis(1))&&std::fabs(app->CameraPositionAxis(1))<100,
+              "backward camera seeks remain finite after a curve edit and native registration");
+    }
+    curve_host::Reset(app.get());mdl::KeyPoolDestroy(app->CameraKeys());
+}
+void CameraFrameZeroRegistration() {
+    auto app=std::make_unique<MMDApp>();std::memset(&app->state,0,sizeof app->state);
+    auto* keys=mdl::KeyPoolCreate<mdl::CameraKey>();app->CameraKeys()=keys;
+    const int frames[]={0,169,193,210,220};
+    for(int i=0;i<5;++i){
+        auto& key=keys[i];key.frame=frames[i];key.previous=i?i-1:0;key.next=i<4?i+1:0;
+        key.eye[1]=i==4?18.92f:10.f;key.distance=33;key.fov=30;key.parentModel=-1;
+        std::memset(key.interpolation,20,12);std::memset(&key.interpolation[2][0],107,12);
+    }
+    app->CurrentFrame()=0;app->CameraPositionAxis(1)=10;RegisterCameraState(app.get(),0);
+    app->CurrentFrame()=222;app->CameraPositionAxis(1)=19;RegisterCameraState(app.get(),222);
+    std::vector<int> actual;
+    for(unsigned i=0,hops=0;hops<10;++hops){actual.push_back(int(keys[i].frame));if(!keys[i].next)break;i=keys[i].next;}
+    app->CurrentFrame()=191;ReloadModels(app.get());
+    std::printf("camera_zero_register reachable=%zu y_at_191=%.9g\n",actual.size(),app->CameraPositionAxis(1));
+    Check(actual==std::vector<int>({0,169,193,210,220,222}),
+          "re-registering frame zero then the next camera key preserves the entire chain");
+    Check(std::isfinite(app->CameraPositionAxis(1))&&std::fabs(app->CameraPositionAxis(1))<100,
+          "camera interpolation never underflows after updating the frame-zero anchor");
+    mdl::KeyPoolDestroy(app->CameraKeys());
+}
+template<class Key,class Record,class Register>
+void GlobalFrameZeroRegistration(MMDApp& app,Key*& pool,Record record,Register add) {
+    pool=mdl::KeyPoolCreate<Key>();pool[0].next=1;pool[1].frame=30;
+    app.CurrentFrame()=0;record.frame=0;Check(add(&app,&record)!=0,"update global frame-zero anchor");
+    Check(pool[0].next==1&&pool[1].previous==0,"updating frame zero does not allocate a second anchor");
+    record.frame=60;Check(add(&app,&record)!=0,"append global frame after updating zero");
+    Check(pool[0].frame==0&&pool[0].next==1&&pool[1].frame==30&&pool[1].next==2&&
+          pool[2].frame==60&&pool[2].previous==1&&pool[2].next==0,"global registration keeps both neighbours and all earlier keys");
+    mdl::KeyPoolDestroy(pool);
+}
+void GlobalFrameZeroRegistrations() {
+    auto app=std::make_unique<MMDApp>();std::memset(&app->state,0,sizeof app->state);
+    GlobalFrameZeroRegistration(*app,app->LightKeys(),mdl::LightClipboardRecord{},RegisterLightKey);
+    GlobalFrameZeroRegistration(*app,app->ShadowKeys(),mdl::ShadowClipboardRecord{},RegisterSelfShadowKey);
+    GlobalFrameZeroRegistration(*app,app->GravityKeys(),mdl::GravityClipboardRecord{},RegisterGravityKey);
+}
+}
+int main() {CameraEditorCommands();CameraSelectionAfterCurveWrite();CameraFrameZeroRegistration();GlobalFrameZeroRegistrations();MorphSync();SelectionSync();std::puts("PASS: curve synchronization");}

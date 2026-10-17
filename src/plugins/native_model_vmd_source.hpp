@@ -2,6 +2,7 @@
 #include "native_model_paste.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "mikudancestudio/extended_names.hpp"
+#include "mikudancestudio/bone_scale_io.hpp"
 #include <string>
 namespace mikudancestudio::plugins {
 struct ModelVmdSource {
@@ -10,6 +11,7 @@ struct ModelVmdSource {
     std::string modelName;
     bool hasUnicodeNames=false;
     extended_names::MotionNames names;
+    bone_scale_io::VmdExtension scales;
 };
 // Reads once into private storage. Failure preserves out and all live state.
 MmsResult DecodeModelVmdSource(const char* ansiPath,const wchar_t* widePath,

@@ -1,4 +1,5 @@
 #include "mikudancestudio/key_pool.hpp"
+#include "mikudancestudio/animation_curve_editor.hpp"
 // ===========================================================================
 // VA 0x00444CC0 - HandleMouseMove  (original: sub_444CC0)
 // ===========================================================================
@@ -479,6 +480,7 @@ void HandleMouseMove(std::uint32_t lParam, int mouseY) {
                 }
                 SyncAccessoryEditPanel(app);    // 0x44587D
             }
+            mikudancestudio::curve_editor::NotifyOwnedChanged(app->Hwnd());
         } else if (app->SelectionBoxDragging() != 0) {
             // ---- 5. hover highlight (0x44606F..0x446A2C) ------------------
             // hover row/column range from the anchor (this+0xA018C/0xA0190)

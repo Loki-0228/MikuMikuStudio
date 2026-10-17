@@ -115,13 +115,18 @@ struct Session {
 // Modeless Win32 window. Background tests may create it hidden.
 void* Open(void* owner, Session session, bool visible = true);
 void CloseOwned(void* owner);
+// Includes the modeless editor and its child controls. Its keyboard messages
+// must not also reach the owner's per-frame editing shortcuts.
+bool OwnsWindow(void* owner, void* window);
 void SetLanguage(void* owner, unsigned language);
 // Queues a read of a matching source in an already open editor. Call on the
 // owner's UI thread after native registration; this never writes key data.
 void NotifySourceChanged(void* owner, const std::string& sourceId);
 // Coalesces native command completion notifications on the same UI thread.
 // Active source data is read automatically; inactive sources read on entry.
-void NotifyOwnedChanged(void* owner);
+// Best effort: command completion and stack unwinding must never throw for
+// a deferred UI refresh; pre-write checks also read the source directly.
+void NotifyOwnedChanged(void* owner) noexcept;
 bool ReadChannelControls(const Channel&, std::size_t endKey, std::array<double, 4>&);
 bool SetChannelControls(Channel&, std::size_t endKey, const std::array<double, 4>&, std::string& error);
 // Uses the exact checked-in curve-launcher SVG geometry and system colours.

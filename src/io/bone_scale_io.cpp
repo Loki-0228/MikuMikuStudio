@@ -869,107 +869,108 @@ bool PrefixCrc32(int fd, std::uint64_t bytes, std::uint32_t& out) {
     return true;
 }
 
+namespace {
+struct ExtensionLocation {
+    std::uint64_t prefixBytes = 0, payloadBytes = 0;
+};
+// The file and immutable-byte readers share all framing and payload rules.
+ExtensionLoad LocateExtension(const std::uint8_t* footer, std::uint64_t length,
+                              std::int64_t expectedPrefixBytes,
+                              ExtensionLocation& location) {
+    if (std::memcmp(footer + 8, kFooterMagic, sizeof kFooterMagic) != 0)
+        return ExtensionLoad::Absent;
+    std::memcpy(&location.payloadBytes, footer, sizeof location.payloadBytes);
+    if (location.payloadBytes > kMaxExtensionBytes ||
+        location.payloadBytes > length - kFooterBytes) {
+        runtime_log::Write("bone scale: VMD extension ignored (payload size does not fit the file)");
+        return ExtensionLoad::Ignored;
+    }
+    location.prefixBytes = length - location.payloadBytes - kFooterBytes;
+    if (expectedPrefixBytes >= 0 &&
+        location.prefixBytes != static_cast<std::uint64_t>(expectedPrefixBytes)) {
+        runtime_log::Write("bone scale: VMD extension ignored (standard boundary does not match the loader)");
+        return ExtensionLoad::Ignored;
+    }
+    return ExtensionLoad::Loaded;
+}
+ExtensionLoad DecodeLocatedExtension(const std::uint8_t* payload,
+                                     const ExtensionLocation& location,
+                                     VmdExtension& decoded) {
+    const auto decode = DecodeExtension(payload, static_cast<std::size_t>(location.payloadBytes), decoded);
+    if (decode != ExtensionDecode::Ok || decoded.prefixBytes != location.prefixBytes) {
+        runtime_log::Write("bone scale: VMD extension ignored (payload or prefix length check failed, code %d)", static_cast<int>(decode));
+        return ExtensionLoad::Ignored;
+    }
+    return ExtensionLoad::Loaded;
+}
+bool ExtensionPrefixMatches(const VmdExtension& decoded, std::uint32_t prefixCrc) {
+    if (decoded.prefixCrc32 == prefixCrc) return true;
+    runtime_log::Write("bone scale: VMD extension ignored (the standard part no longer matches its recorded CRC)");
+    return false;
+}
+}
+
+ExtensionLoad LoadVmdExtensionBytes(const std::uint8_t* data, std::size_t size,
+                                  VmdExtension& out,
+                                  std::int64_t expectedPrefixBytes) {
+    if (!data || size < kFooterBytes) return ExtensionLoad::Absent;
+    ExtensionLocation location;
+    const auto status = LocateExtension(data + size - kFooterBytes, size, expectedPrefixBytes, location);
+    if (status != ExtensionLoad::Loaded) return status;
+    VmdExtension decoded;
+    if (DecodeLocatedExtension(data + static_cast<std::size_t>(location.prefixBytes), location, decoded) != ExtensionLoad::Loaded)
+        return ExtensionLoad::Ignored;
+    if (!ExtensionPrefixMatches(decoded, Crc32Of(data, static_cast<std::size_t>(location.prefixBytes))))
+        return ExtensionLoad::Ignored;
+    out = std::move(decoded);
+    return ExtensionLoad::Loaded;
+}
+
 ExtensionLoad LoadVmdExtension(const std::wstring& vmdPath, VmdExtension& out,
                                std::int64_t expectedPrefixBytes) {
     out = {};
-    int fd = -1;
-    if (_wsopen_s(&fd, vmdPath.c_str(), 0x8000 /*_O_BINARY*/,
+    struct Descriptor {
+        int value = -1;
+        ~Descriptor() { if (value >= 0) _close(value); }
+    } file;
+    if (_wsopen_s(&file.value, vmdPath.c_str(), 0x8000 /*_O_BINARY*/,
                   0x40 /*_O_RDONLY*/, 0x80 /*_S_IREAD*/) != 0)
         return ExtensionLoad::Absent;
-    const __int64 length = _filelengthi64(fd);
-    if (length < static_cast<__int64>(kFooterBytes)) {
-        _close(fd);
-        return ExtensionLoad::Absent;
-    }
-    // _lseeki64 returns the new offset on success and -1 on failure.
-    if (_lseeki64(fd, length - static_cast<__int64>(kFooterBytes),
-                  SEEK_SET) < 0) {
-        _close(fd);
+    const __int64 length = _filelengthi64(file.value);
+    if (length < static_cast<__int64>(kFooterBytes)) return ExtensionLoad::Absent;
+    if (_lseeki64(file.value, length - static_cast<__int64>(kFooterBytes), SEEK_SET) < 0)
         return ExtensionLoad::Ignored;
-    }
     std::uint8_t footer[kFooterBytes] = {};
-    if (_read(fd, footer, sizeof footer) != static_cast<int>(sizeof footer)) {
-        _close(fd);
-        runtime_log::Write(
-            "bone scale: VMD extension ignored (unreadable footer)");
+    if (_read(file.value, footer, sizeof footer) != static_cast<int>(sizeof footer)) {
+        runtime_log::Write("bone scale: VMD extension ignored (unreadable footer)");
         return ExtensionLoad::Ignored;
     }
-    std::uint64_t payloadBytes = 0;
-    std::memcpy(&payloadBytes, footer, sizeof payloadBytes);
-    if (std::memcmp(footer + 8, kFooterMagic, sizeof kFooterMagic) != 0) {
-        _close(fd);
-        return ExtensionLoad::Absent;  // an ordinary motion: no tail at all
-    }
-    // The footer is ours from here on: every failure is reported and the
-    // extension is refused as a whole, never half applied.
-    if (payloadBytes > kMaxExtensionBytes ||
-        payloadBytes + kFooterBytes > static_cast<std::uint64_t>(length)) {
-        _close(fd);
-        runtime_log::Write(
-            "bone scale: VMD extension ignored (payload size %llu does not fit "
-            "the file)",
-            static_cast<unsigned long long>(payloadBytes));
+    ExtensionLocation location;
+    const auto status = LocateExtension(footer, static_cast<std::uint64_t>(length), expectedPrefixBytes, location);
+    if (status != ExtensionLoad::Loaded) return status;
+    std::vector<std::uint8_t> payload(static_cast<std::size_t>(location.payloadBytes));
+    if (_lseeki64(file.value, static_cast<__int64>(location.prefixBytes), SEEK_SET) < 0)
         return ExtensionLoad::Ignored;
+    std::size_t done = 0;
+    while (done < payload.size()) {
+        const auto count = static_cast<unsigned>((std::min)(payload.size() - done, std::size_t(1024 * 1024)));
+        const int got = _read(file.value, payload.data() + done, count);
+        if (got != static_cast<int>(count)) {
+            runtime_log::Write("bone scale: VMD extension ignored (unreadable payload)");
+            return ExtensionLoad::Ignored;
+        }
+        done += count;
     }
-    const std::uint64_t prefixBytes =
-        static_cast<std::uint64_t>(length) - payloadBytes - kFooterBytes;
-    // The caller passes the end offset of the standard part as it read it
-    // (the _telli64 of the read descriptor), so the boundary is verified
-    // against more than the tail's own claim.
-    if (expectedPrefixBytes >= 0 &&
-        prefixBytes != static_cast<std::uint64_t>(expectedPrefixBytes)) {
-        out = {};
-        _close(fd);
-        runtime_log::Write(
-            "bone scale: VMD extension ignored (standard boundary %llu does "
-            "not match the %llu bytes the loader actually read)",
-            static_cast<unsigned long long>(prefixBytes),
-            static_cast<unsigned long long>(expectedPrefixBytes));
+    VmdExtension decoded;
+    if (DecodeLocatedExtension(payload.data(), location, decoded) != ExtensionLoad::Loaded)
         return ExtensionLoad::Ignored;
-    }
-    std::vector<std::uint8_t> payload(static_cast<std::size_t>(payloadBytes));
-    if (_lseeki64(fd, static_cast<__int64>(prefixBytes), SEEK_SET) < 0 ||
-        (!payload.empty() &&
-         _read(fd, payload.data(),
-               static_cast<unsigned int>(payload.size())) !=
-             static_cast<int>(payload.size()))) {
-        _close(fd);
-        runtime_log::Write(
-            "bone scale: VMD extension ignored (unreadable payload)");
-        return ExtensionLoad::Ignored;
-    }
-    const ExtensionDecode decode =
-        DecodeExtension(payload.data(), payload.size(), out);
-    if (decode != ExtensionDecode::Ok) {
-        out = {};
-        _close(fd);
-        runtime_log::Write(
-            "bone scale: VMD extension ignored (payload magic, version, CRC "
-            "or entry check failed, code %d)",
-            static_cast<int>(decode));
-        return ExtensionLoad::Ignored;
-    }
-    // The payload must sit exactly between the standard prefix and the
-    // footer, and the prefix must still be the bytes it was written with.
-    if (out.prefixBytes != prefixBytes) {
-        out = {};
-        _close(fd);
-        runtime_log::Write(
-            "bone scale: VMD extension ignored (prefix length does not align "
-            "with the file size)");
-        return ExtensionLoad::Ignored;
-    }
     std::uint32_t prefixCrc = 0;
-    if (!PrefixCrc32(fd, prefixBytes, prefixCrc) ||
-        prefixCrc != out.prefixCrc32) {
-        out = {};
-        _close(fd);
-        runtime_log::Write(
-            "bone scale: VMD extension ignored (the standard part of the "
-            "motion no longer matches its recorded CRC)");
+    if (!PrefixCrc32(file.value, location.prefixBytes, prefixCrc)) {
+        runtime_log::Write("bone scale: VMD extension ignored (unreadable standard prefix)");
         return ExtensionLoad::Ignored;
     }
-    _close(fd);
+    if (!ExtensionPrefixMatches(decoded, prefixCrc)) return ExtensionLoad::Ignored;
+    out = std::move(decoded);
     return ExtensionLoad::Loaded;
 }
 
