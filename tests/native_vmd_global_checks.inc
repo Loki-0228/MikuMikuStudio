@@ -67,7 +67,7 @@ void VmdGlobalFailureChecks() {
     std::puts("  VMD global unsupported tail malformed source and allocation failures");std::fflush(stdout);
     GlobalPasteFixture f;VmdGlobalFile input(f,2,true);f.ClearClipboard();const auto before=f.Digest();const GlobalPasteKeys keys(*f.app);
     std::shared_ptr<plugins::HistoryChange> change;input.AccessoryTail();
-    Check(plugins::PlanGlobalVmdImport(*f.app,nullptr,input.path.c_str(),change)!=MMS_OK&&!change&&f.Digest()==before&&keys.Same(*f.app),"valid nonempty accessory extension refuses whole VMD import without standard partial changes");
+    Check(plugins::PlanGlobalVmdImport(*f.app,nullptr,input.path.c_str(),change)==MMS_OK&&change&&f.Digest()==before&&keys.Same(*f.app),"unmatched accessory extension is ignored while standard VMD is privately planned");
     GlobalPasteFixture source;VmdGlobalFile motion(source,2,true);
     const auto full=motion.bytes;motion.bytes.pop_back();motion.Write();
     Check(plugins::PlanGlobalVmdImport(*f.app,nullptr,motion.path.c_str(),change)!=MMS_OK&&!change&&f.Digest()==before,"truncated optional section refuses global VMD atomically");

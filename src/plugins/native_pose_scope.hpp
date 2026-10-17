@@ -43,5 +43,9 @@ public:
     NativePoseTestBinding& operator=(const NativePoseTestBinding&) = delete;
 };
 SharedHistory* BoundNativePoseHistory(MMDApp*) noexcept;
+// Changes on every bind/unbind, including a temporary nested binding that
+// restores the same pointers. Modal callers must validate before dereferencing
+// a journal captured before dispatching messages.
+std::uint64_t BoundNativePoseGeneration(MMDApp*) noexcept;
 }
 #endif

@@ -56,6 +56,7 @@
 #include "mikudancestudio/physics_bake.hpp"
 #include "mikudancestudio/bake_ui_lock.hpp"
 #include "viewport_corner_menu.hpp"
+#include "../plugins/native_viewport_history.hpp"
 
 namespace mikudancestudio {
 
@@ -123,6 +124,9 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
     updates::MessageScope dispatchScope;
     MMDApp* app = g_Block;
     auto& s = *app;
+#if !MMD_ORIGINAL_PROFILE
+    if (plugins::HandleBoundViewportMessage(s, hwnd, msg, wParam, lParam)) return 0;
+#endif
     // EnableWindow prevents new user input; queued commands and accelerators
     // still need to be rejected while a bake's message loop is pumping.
     if (bake::UiLocked()) {

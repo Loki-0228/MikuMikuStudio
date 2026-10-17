@@ -8,6 +8,7 @@ namespace mikudancestudio::plugins {
 class DisplayKeyDeletion;
 struct RangeScaleResult;
 struct ModelPasteFamilyResult;
+struct ModelPasteSource;
 struct BoneRegistrationOptions {
     int frame = 0;
     int physicsMode = 2;
@@ -70,5 +71,8 @@ bool TryRegisterBoundBones(MMDApp*) noexcept;
 MmsResult PlanBoneKeyPaste(MMDApp&, unsigned modelSlot, bool mirror,
     std::shared_ptr<HistoryChange>&, ModelPasteFamilyResult* aggregate = nullptr,
     std::shared_ptr<DisplayKeyDeletion> display = {}) noexcept;
+MmsResult PlanBoneKeyPaste(MMDApp&,unsigned modelSlot,bool mirror,const ModelPasteSource&,
+    std::shared_ptr<HistoryChange>&,ModelPasteFamilyResult* aggregate=nullptr,
+    std::shared_ptr<DisplayKeyDeletion> display={}) noexcept;
 }
 #endif

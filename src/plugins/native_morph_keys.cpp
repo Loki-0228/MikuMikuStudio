@@ -11,6 +11,7 @@
 #include "mikudancestudio/morph_curve.hpp"
 #include "mikudancestudio/plugin_scene.hpp"
 #include <array>
+#include <algorithm>
 #include <cmath>
 #include <exception>
 #include <map>
@@ -662,26 +663,45 @@ MmsResult PlanMorphRegistration(MMDApp& app, unsigned slot, int morph, int frame
 }
 MmsResult PlanMorphKeyPaste(MMDApp& app,unsigned slot,std::shared_ptr<HistoryChange>& out, ModelPasteFamilyResult* aggregate) noexcept {
     out.reset();if(aggregate)*aggregate={};
+    if(slot>=kModelSlotCount||!app.ModelSlot(slot)||app.PlaybackActive()||app.FrameStepPlayback()||
+        app.state.recordPlaybackStartPending||app.SceneMutationInProgress())return MMS_E_NOT_READY;
+    const auto& counts=app.ClipboardCounts();
+    if(!aggregate&&(counts.bones||counts.displays))return MMS_E_NOT_READY;
+    ModelPasteSource source;
+    if(auto result=CaptureModelPasteSource(app,source,ModelPasteMorphs))return result;
+    return PlanMorphKeyPaste(app,slot,source,out,aggregate);
+}
+MmsResult PlanMorphKeyPaste(MMDApp& app,unsigned slot,const ModelPasteSource& input,
+    std::shared_ptr<HistoryChange>& out,ModelPasteFamilyResult* aggregate) noexcept {
+    out.reset();if(aggregate)*aggregate={};
     if (slot>=kModelSlotCount || !app.ModelSlot(slot) || app.PlaybackActive() || app.FrameStepPlayback() ||
         app.state.recordPlaybackStartPending || app.SceneMutationInProgress()) return MMS_E_NOT_READY;
     if (app.CurrentFrame()<0 || app.CurrentFrame()>frame_limits::maximum) return MMS_E_ARGUMENT;
-    const auto& counts=app.ClipboardCounts();
-    if (!aggregate && (counts.bones || counts.displays)) return MMS_E_NOT_READY;
-    if (!counts.morphs) return MMS_OK;
-    if (!app.MorphClipboard() || counts.morphs>mdl::kMorphKeyCapacityLimit) return MMS_E_ARGUMENT;
+    if(auto result=ValidateModelPasteSource(input,ModelPasteMorphs))return result;
+    if(!aggregate&&(!input.bones.empty()||!input.displays.empty()))return MMS_E_NOT_READY;
+    if(input.morphs.empty())return MMS_OK;
     return Boundary([&]() -> MmsResult {
         const auto& model=*mdl::Mdl(app.ModelSlot(slot));
-        if (!model.morphCount) return MMS_OK;
+        if (!model.morphCount) {
+            for(const auto& record:input.morphs)if(record.targetResolved&&record.targetIndex>=0)return MMS_E_ARGUMENT;
+            return MMS_OK;
+        }
         if (!mdl::MorphKeyPoolIdentity(model.morphKeys) || (model.boneKeys&&!mdl::BoneKeyPoolIdentity(model.boneKeys)) ||
             (model.displayKeys&&!mdl::KeyPoolIdentity(model.displayKeys))) return MMS_E_NOT_READY;
         Owners owners;Chains(model,owners);
+        const bool resolved=std::all_of(input.morphs.begin(),input.morphs.end(),[](const auto& record){return record.targetResolved;});
         std::set<std::string> names;
         for(unsigned morph=0;morph<model.morphCount;++morph)
-            if(!names.emplace(model.morphs[morph].name,strnlen_s(model.morphs[morph].name,sizeof(model.morphs[morph].name))).second) return MMS_E_ARGUMENT;
+            if(!names.emplace(model.morphs[morph].name,strnlen_s(model.morphs[morph].name,sizeof(model.morphs[morph].name))).second&&!resolved) return MMS_E_ARGUMENT;
         struct Copy {unsigned morph,frame;float value;};std::vector<Copy> copies;
-        for (unsigned i=0;i<counts.morphs;++i) {
-            const auto rec=app.MorphClipboard()[i];unsigned frame;
-            if (!frame_limits::Add(app.CurrentFrame(),rec.frame,frame) || !std::isfinite(rec.value)) return MMS_E_ARGUMENT;
+        for (const auto& record:input.morphs) {
+            const auto& rec=record.key;unsigned frame;
+            if (!frame_limits::Add(int(input.frameOffset),rec.frame,frame) || !std::isfinite(rec.value)) return MMS_E_ARGUMENT;
+            if(record.targetResolved) {
+                if(record.targetIndex>=int(model.morphCount))return MMS_E_ARGUMENT;
+                if(record.targetIndex>=0)copies.push_back({unsigned(record.targetIndex),frame,rec.value});
+                continue;
+            }
             for (unsigned morph=0;morph<model.morphCount;++morph) if (!std::strncmp(rec.name,model.morphs[morph].name,sizeof(model.morphs[morph].name))) {
                 copies.push_back({morph,frame,rec.value});break;
             }

@@ -574,8 +574,18 @@ unsigned InsertRangeCopy(KeyPlan& plan, const RangeKeyCopy& copy, unsigned start
 MmsResult PlanBoneKeyPaste(MMDApp& app, unsigned slot, bool mirror,
     std::shared_ptr<HistoryChange>& out, ModelPasteFamilyResult* aggregate,
     std::shared_ptr<DisplayKeyDeletion> display) noexcept {
+    out.reset();if(aggregate)*aggregate={};
+    if(!ReadyForKeyPlan(app,slot))return MMS_E_NOT_READY;
+    ModelPasteSource source;
+    if(auto result=CaptureModelPasteSource(app,source,ModelPasteBones))return result;
+    return PlanBoneKeyPaste(app,slot,mirror,source,out,aggregate,std::move(display));
+}
+MmsResult PlanBoneKeyPaste(MMDApp& app,unsigned slot,bool mirror,const ModelPasteSource& input,
+    std::shared_ptr<HistoryChange>& out,ModelPasteFamilyResult* aggregate,
+    std::shared_ptr<DisplayKeyDeletion> display) noexcept {
     out.reset();
     if(aggregate)*aggregate={};
+    if(auto result=ValidateModelPasteSource(input,ModelPasteBones))return result;
     return Boundary([&]() -> MmsResult {
         if (!ReadyForKeyPlan(app, slot)) return MMS_E_NOT_READY;
         const auto& model = *mdl::Mdl(app.ModelSlot(slot));
@@ -587,14 +597,15 @@ MmsResult PlanBoneKeyPaste(MMDApp& app, unsigned slot, bool mirror,
             }
             return MMS_OK;
         };
-        const auto count = app.ClipboardCounts().bones;
+        const auto count = input.bones.size();
         if (!count) return displayOnly();
-        if (!app.BoneClipboard() || count > mdl::kBoneKeyCapacityLimit || app.CurrentFrame() < 0)
+        if (count > mdl::kBoneKeyCapacityLimit || app.CurrentFrame() < 0)
             return MMS_E_ARGUMENT;
         KeyPlan plan(model, true);
         const auto owners = ValidateOwners(plan);
         std::vector<std::string> names;
         std::set<std::string> unique;
+        const bool resolved=std::all_of(input.bones.begin(),input.bones.end(),[](const auto& record){return record.targetResolved;});
         auto change = NewKeyChange(app, slot);
         change->publishMetadata=aggregate==nullptr;
         change->preserveKeyMarks=aggregate!=nullptr;
@@ -602,9 +613,9 @@ MmsResult PlanBoneKeyPaste(MMDApp& app, unsigned slot, bool mirror,
         // unmatched names and the native suffix-only left/right search.
         for (unsigned bone = 0; bone < model.boneCount; ++bone) {
             const auto length = strnlen_s(model.boneTable[bone].name, sizeof(model.boneTable[bone].name));
-            if (length == sizeof(model.boneTable[bone].name)) return MMS_E_ARGUMENT;
+            if (length == sizeof(model.boneTable[bone].name)&&!resolved) return MMS_E_ARGUMENT;
             names.emplace_back(model.boneTable[bone].name, length);
-            if (!unique.emplace(names.back()).second) return MMS_E_ARGUMENT;
+            if (!unique.emplace(names.back()).second&&!resolved) return MMS_E_ARGUMENT;
             std::array<char, 20> name{};
             std::memcpy(name.data(), model.boneTable[bone].name, name.size());
             change->pasteNames.push_back(name);
@@ -627,14 +638,15 @@ MmsResult PlanBoneKeyPaste(MMDApp& app, unsigned slot, bool mirror,
         std::vector<Copy> copies;
         std::set<unsigned> rules;
         for (unsigned index = 0; index < count; ++index) {
-            const auto& source = app.BoneClipboard()[index];
+            const auto& record=input.bones[index];const auto& source=record.key;
             const auto length = strnlen_s(source.name, sizeof(source.name));
             unsigned frame;
-            if (length == sizeof(source.name) || !frame_limits::Add(app.CurrentFrame(), source.frame, frame)) return MMS_E_ARGUMENT;
-            const int bone = find(std::string(source.name, length));
+            if ((!record.targetResolved&&length == sizeof(source.name)) || !frame_limits::Add(int(input.frameOffset), source.frame, frame)) return MMS_E_ARGUMENT;
+            const int bone=record.targetResolved?record.targetIndex:find(std::string(source.name,length));
             if (bone < 0) continue;
-            Copy copy{{unsigned(bone), frame, {}, bone_scale::Clipboard(&app, int(index), false, mirror)},
-                bone_scale::ClipboardCurve(&app, int(index), false)};
+            if(unsigned(bone)>=model.boneCount)return MMS_E_ARGUMENT;
+            Copy copy{{unsigned(bone),frame,{},record.scale},record.scaleCurve};
+            if(mirror)for(int axis:{1,2,3,6})copy.key.scale.v[axis]=-copy.key.scale.v[axis];
             std::memcpy(copy.key.key.position, source.position, sizeof(source.position));
             std::memcpy(copy.key.key.rotation, source.rotation, sizeof(source.rotation));
             std::memcpy(copy.key.key.interpolation, source.interpolation, sizeof(source.interpolation));
@@ -642,6 +654,7 @@ MmsResult PlanBoneKeyPaste(MMDApp& app, unsigned slot, bool mirror,
             for (float value : copy.key.key.position) if (!std::isfinite(value)) return MMS_E_ARGUMENT;
             for (float value : copy.key.key.rotation) if (!std::isfinite(value)) return MMS_E_ARGUMENT;
             for (auto value : copy.key.key.interpolation) if (value > 127) return MMS_E_ARGUMENT;
+            for(auto value:copy.curve)if(value>127)return MMS_E_ARGUMENT;
             if (!bone_scale::Valid(copy.key.scale)) return MMS_E_ARGUMENT;
             if (mirror) {
                 copy.key.key.position[0] = -copy.key.key.position[0];
@@ -667,7 +680,7 @@ MmsResult PlanBoneKeyPaste(MMDApp& app, unsigned slot, bool mirror,
         unsigned cursor = model.boneCount;
         while (cursor < plan.capacity && plan.Read(cursor).frame) ++cursor;
         for (const auto& copy : copies) {
-            const auto target = InsertRangeCopy(plan, copy.key, unsigned(app.CurrentFrame()), cursor, *change);
+            const auto target = InsertRangeCopy(plan, copy.key, input.frameOffset, cursor, *change);
             pastedSlots.insert(target);
             // Mirror registrar writes translation even for rotation-only bones.
             if (mirror) std::memcpy(plan.Write(target).position, copy.key.key.position, sizeof(copy.key.key.position));

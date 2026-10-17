@@ -69,7 +69,7 @@ void NativeVmdDecodeChecks(){
         Check(DecodeGlobalVmdSource(nullptr,file.path.c_str(),0,out)==MMS_OK,"valid empty accessory tail does not block standard motion");
         accessory_motion_io::Track track;track.name="fixture";track.keys.push_back({});const auto extension=accessory_motion_io::Encode({track});
         tail=motion.bytes;tail.insert(tail.end(),extension.begin(),extension.end());file.Write(tail);out.version=99;
-        Check(DecodeGlobalVmdSource(nullptr,file.path.c_str(),0,out)==MMS_E_NOT_READY&&out.version==99,"valid nonempty accessory tail rejects whole import instead of silently dropping accessories");
+        Check(DecodeGlobalVmdSource(nullptr,file.path.c_str(),0,out)==MMS_OK&&out.accessoryTracks.size()==1&&out.accessoryTracks[0].keys.size()==1,"valid nonempty accessory tail remains owned for scene matching");
         tail.back()^=1;file.Write(tail);Check(DecodeGlobalVmdSource(nullptr,file.path.c_str(),0,out)==MMS_OK,"damaged accessory CRC retains legacy ignored-tail policy");
         tail=motion.bytes;tail.insert(tail.end(),extension.begin(),extension.begin()+12);file.Write(tail);
         Check(DecodeGlobalVmdSource(nullptr,file.path.c_str(),0,out)==MMS_OK,"truncated optional accessory tail is ignored after valid standard sections");

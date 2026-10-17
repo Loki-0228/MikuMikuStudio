@@ -4,6 +4,7 @@
 #include "project_storage.hpp"
 #include "history_runtime.hpp"
 #include "native_pose_scope.hpp"
+#include "native_viewport_history.hpp"
 #include "native_history_commands.hpp"
 #include "native_object_commands.hpp"
 #include "mikudancestudio/panel_controls.hpp"
@@ -67,6 +68,7 @@ MmsResult PrepareHistoryReset(std::unique_ptr<SharedHistory::ResetTransaction>& 
     if (!history) return MMS_OK;
 #if !MMD_ORIGINAL_PROFILE
     if (NativeObjectOperationActive(owner) || NativeObjectUiPending(owner)) return MMS_E_BUSY;
+    if(owner)CancelViewportCameraGesture(*owner);
 #endif
     // ResetAppState is also used to recover a partially read PMM while the
     // native loader owns ScopedSceneMutation. Only this internal boundary may
@@ -181,6 +183,9 @@ void Shutdown() {
     if (NativeObjectOperationActive(owner)) return;
 #endif
     if (closing) return; closing = true;
+#if !MMD_ORIGINAL_PROFILE
+    if(owner)CancelViewportCameraGesture(*owner);
+#endif
     if (owner && owner->MainWindow()) KillTimer(owner->MainWindow(), kHistoryUiRetry);
     CancelProjectLoad(owner);
     if (manager) manager->Stop();
@@ -335,6 +340,9 @@ bool ResetPluginProject(MMDApp* app) {
 #endif
     if(manager && owner==app && manager->Storage().InCallback())return false;
     if(manager && owner==app && manager->InCallback() && !loadingProject)return false;
+#if !MMD_ORIGINAL_PROFILE
+    if(app)CancelViewportCameraGesture(*app);
+#endif
     CancelProjectLoad(app);
     std::unique_ptr<SharedHistory::ResetTransaction> reset;
     if(manager && owner==app){

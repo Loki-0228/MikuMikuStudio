@@ -2,13 +2,15 @@
 
 核对日期：2026-10-17。对象为 `D:/MMD-Next/MMS-abi-dev` 的 `codex/plugin-abi`。初次核对基准为 `db90893`，随后按滑杆、[历史设置](abi-history-settings-2026-10-17.md)、[帧线与骨骼粘贴](abi-frame-lines-paste-2026-10-17.md)、[表情与显示键粘贴](abi-model-paste-2026-10-17.md)、[五类全局粘贴](abi-global-paste-2026-10-17.md)、[模型三族混合粘贴](abi-mixed-model-paste-2026-10-17.md)及[标准全局 VMD](abi-vmd-global-2026-10-17.md)更新。具体测试结果见对应记录。
 
+本轮另按[模型与附件 VMD、视口迁移记录](abi-vmd-model-accessory-viewport-2026-10-17.md)更新实现范围。该批结果待统一验收，不沿用前批通过数。
+
 用户对 R3 反馈「均恢复」，侧栏与底部分隔线跟随、底部闪烁、插件区域随侧栏调整的问题已记为人工复验通过。该结果不扩展为其他系统、显卡或全部输入组合的验收。
 
 ## 部分实现，仍需补全
 
 | 工作 | 已有能力 | 剩余内容 |
 | --- | --- | --- |
-| 共同历史与插件编辑 | 内部受控宿主已验证导入、删除、多类登记、关键帧操作、部分姿态和参数编辑，以及插件单次或多次事务；滑杆、四类帧线插删、模型三族及五类全局轨道混合粘贴、标准全局 VMD 已迁移。帮助系统设置已支持两种记录模式、步数及内存上限。 | 其余原生写入及外部资源操作迁移后，才能安全开放普通宿主 `mms.edit` 和可写属性。模型 VMD、有效非空附件扩展及视口拖动仍未迁移，受控导入继续拒绝尚未支持的内容。帧线尚未统一移动自由曲线作者关键点。这些是已确认的例子，不是剩余入口的完整枚举。 |
+| 共同历史与插件编辑 | 内部受控宿主已验证导入、删除、多类登记、关键帧操作、部分姿态和参数编辑，以及插件单次或多次事务；滑杆、四类帧线插删、模型三族及五类全局轨道混合粘贴、标准全局 VMD 已迁移。帮助系统设置已支持两种记录模式、步数及内存上限。本批已实现模型标准 VMD 及 Unicode 名称、附件尾段多对象导入、相机视口右键及中键拖动，验收结果待补。 | 其余原生写入及外部资源操作迁移后，才能安全开放普通宿主 `mms.edit` 和可写属性。有效模型缩放与自由曲线尾段仍整次拒绝；视口滚轮、HUD、模型跟随、小键盘操作在绑定下拒绝旧写入。帧线尚未统一移动自由曲线作者关键点。这些是已确认的例子，不是剩余入口的完整枚举。 |
 | 统一刷新 | 同插件按钮和 surface 的 REPAINT + SELF；按钮启用、选中及保留槽位显隐的部分 STATE；C++ 包装。 | DATA、完整 STATE、LAYOUT，以及绑定、依赖与跨目标影响范围。空位收缩涉及重排，尚未支持。 |
 | UI 注册与自适应 | 命令、菜单、按钮、工具栏组、工作区页签、surface、布局提示和持久化。 | 声明式 INPUT、可写属性、左右侧栏、属性区、时间线和状态栏挂载；DOCK、空间不足的命令溢出菜单；完整属性与面板便利封装。 |
 | 本体 UI 开放 | 新 ABI 插件注册表及部分实际几何；R3 合并拖动布局、缓冲宿主绘制。 | 本体菜单、控件和业务命令的完整语义登记，全部区域统一几何、绘制及命中。当前不能枚举和操作所有原有控件。 |
@@ -48,4 +50,4 @@
 - [逐项实施状态](../PLUGIN_ABI_IMPLEMENTATION.md)、[当前 SDK](../../sdk/mms/README.md)。
 - [统一扩展架构](../PLUGIN_EXTENSION_ARCHITECTURE.md)、[UI 呈现](../PLUGIN_UI_PRESENTATION.md)、[多视口](../PLUGIN_VIEWPORT_RENDERING.md)、[数据扩展](../PLUGIN_DATA_EXTENSIONS.md)。
 - `src/plugins/manager.cpp::Impl::Query` 仅发布已接入的服务；`src/plugins/integration.cpp::InitializeRuntime` 仅在 `migrationTest` 下绑定共同编辑宿主。
-- `src/window/ui_hscroll.cpp` 中自阴影、视角、灯光与 Morph 滑杆均已接入受控迁移入口。`frame_line_edit.cpp` 的四类命令、`command_control_400.cpp` 的模型三族和五类全局混合粘贴、`vmd_load.cpp` 的标准全局导入已迁移，后续边界见[最新迁移记录](abi-vmd-global-2026-10-17.md#后续模型与扩展迁移)。
+- `src/window/ui_hscroll.cpp` 中自阴影、视角、灯光与 Morph 滑杆均已接入受控迁移入口。`frame_line_edit.cpp` 的四类命令、`command_control_400.cpp` 的模型三族和五类全局混合粘贴、`vmd_load.cpp` 的标准全局导入已迁移。本批 `native_model_vmd_source.cpp`、`native_vmd_import.cpp` 和 `native_viewport_history.cpp` 的实现及待验收边界见[最新迁移记录](abi-vmd-model-accessory-viewport-2026-10-17.md)。

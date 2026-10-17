@@ -5,11 +5,9 @@
 namespace mikudancestudio { class MMDApp; }
 namespace mikudancestudio::plugins {
 // MMS_OK means the unbound legacy route may continue. A bound journal always
-// owns this entry: global standard VMD uses a private plan, model VMD and valid
-// nonempty accessory extensions remain unavailable under that binding.
+// owns this entry: standard model/global and accessory VMD use private plans.
 MmsResult CheckVmdImportHistory(MMDApp*) noexcept;
-// Model-only migration limitation, outside any journal reservation. True
-// consumes the operation before opening a file or changing live scene state.
+// Compatibility helper: model imports now use TryImportBoundVmd. Returns false.
 bool RefuseBoundVmdImport(MMDApp*) noexcept;
 // Owns bound imports including rejection/no-op. Never falls through to the
 // legacy loader after a private plan or transaction has failed. Return value

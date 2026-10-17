@@ -15,6 +15,10 @@
 #include "../src/plugins/native_global_paste.hpp"
 #include "../src/plugins/native_model_paste.hpp"
 #include "../src/plugins/native_vmd_source.hpp"
+#include "../src/plugins/native_model_vmd_source.hpp"
+#include "../src/plugins/native_viewport_history.hpp"
+#include "../src/plugins/scene_object_history.hpp"
+#include "mikudancestudio/accessory_motion_io.hpp"
 #include "mikudancestudio/clipboard_layout.hpp"
 #include "mikudancestudio/text_encoding.hpp"
 #include "mikudancestudio/ui_language.hpp"
@@ -412,6 +416,9 @@ void ObjectMenuDeletion(MMDApp* app, plugins::SharedHistory& history, const MmsS
 #include "global_paste_host_checks.inc"
 #include "model_paste_host_checks.inc"
 #include "vmd_global_host_checks.inc"
+#include "vmd_accessory_host_checks.inc"
+#include "vmd_model_host_checks.inc"
+#include "viewport_history_host_checks.inc"
 void Run(MMDApp* app) {
     using namespace plugins;
     const auto initial = GetModuleHandleW(L"manager_edit_probe.dll");
@@ -428,6 +435,8 @@ void Run(MMDApp* app) {
     wchar_t accessoryPath[32768]{};
     Check(GetEnvironmentVariableW(L"MMS_SCENE_TEST_ACCESSORY", accessoryPath, 32768) > 0, "edit host accessory fixture supplied");
     LoadAccessoryFile(accessoryPath);
+    LoadAccessoryFile(accessoryPath);
+    Check(app->AccessorySlot(1),"second accessory for duplicate-name VMD matching");
     Check(app->AccessorySlot(0) && app->AccessorySlot(0)->mesh, "load real X object before controlled history binding");
     app->CameraMode() = 0; app->SelectedModelSlot() = 0; model.selectedBone = 0;
     std::memset(model.boneSelection, 0, model.boneCount); model.boneSelection[0] = 1;
@@ -450,6 +459,18 @@ void Run(MMDApp* app) {
     global_paste_host_checks::Run(app,*history,value);
     model_paste_host_checks::Run(app,*history,value);
     vmd_global_host_checks::Run(app,*history,value);
+    vmd_accessory_host_checks::Run(app,*history,value);
+    vmd_model_host_checks::Run(app,*history,value);
+    viewport_history_host_checks::Run(app,*history,value);
+    {
+        auto extra=RetainSceneObject(*app,MMS_OBJECT_ACCESSORY,1);
+        auto removal=extra->CaptureRemoval();std::unique_ptr<SharedHistory::NativeTransaction> token;
+        Check(history->PrepareNative("Remove duplicate-name test accessory",removal,token)==MMS_OK&&history->CommitNative(std::move(token))==MMS_OK,
+            "remove the additional VMD fixture through the normal retained-object transaction");
+        Check(!app->AccessorySlot(1)&&history->Reset()==MMS_OK,"restore the original two-object fixture for existing object-menu tests");
+        history->Collect();
+    }
+    Check(RefreshBoundObjectUi(*app,*history),"refresh original accessory list after the duplicate-name fixture");
     auto scene = CreateSceneStore(app); SceneClient client; auto api = scene->Api(client);
     const auto revisionMatches = [&] {
         MmsSceneQueryV1 query{}; query.h = Header<MmsSceneQueryV1>(); query.flags = MMS_SCENE_CURRENT_TIME;
@@ -537,6 +558,7 @@ void Run(MMDApp* app) {
     revisionMatches();
     Menu(app, L"Edit probe once");
     Check(value() == 5 && history->UndoCount() == 1, "editing continues from the reopened project revision");
+    vmd_accessory_host_checks::RunPersistence(app);
     const auto beforeClose = cancels(); Menu(app, L"Edit probe pending");
     wchar_t dllPath[32768]{}; Check(GetModuleFileNameW(library, dllPath, 32768) > 0, "loaded probe path available");
     const auto lease = LoadLibraryW(dllPath); Check(lease != nullptr, "retain read-only probe exports through shutdown");
@@ -544,6 +566,7 @@ void Run(MMDApp* app) {
     Check(NativeHistory(app) == nullptr && BoundNativePoseHistory(app) == nullptr && cancels() == beforeClose + 1 && value() == -1,
           "shutdown cancels pending edits before destroying the plugin and common host");
     FreeLibrary(lease);
+    viewport_history_host_checks::RunLifecycle(app);
     app->SceneModified() = 0;
     std::puts("PASS production plugin/native common history, revision, project and shutdown");
 }

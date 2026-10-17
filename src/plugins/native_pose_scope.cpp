@@ -1,4 +1,5 @@
 #include "native_pose_scope.hpp"
+#include "native_viewport_history.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "scene_object_history.hpp"
 #include "mikudancestudio/native_edit_history.hpp"
@@ -9,6 +10,8 @@
 namespace mikudancestudio::plugins {
 namespace {
 thread_local NativePoseTestBinding* binding=nullptr;
+thread_local std::uint64_t bindingGeneration=1;
+void AdvanceBindingGeneration() noexcept {if(bindingGeneration!=UINT64_MAX)++bindingGeneration;}
 MmsResult PoseResult(native_history::Result result) noexcept {
     return result==native_history::Result::Ready?MMS_OK:
         result==native_history::Result::Memory?MMS_E_MEMORY:MMS_E_STALE;
@@ -111,8 +114,14 @@ bool NativePoseScope::Cancel() noexcept {
     const bool result=impl_->Cancel();impl_.reset();return result;
 }
 NativePoseTestBinding::NativePoseTestBinding(MMDApp& app,SharedHistory& history) noexcept
-    :app_(&app),history_(&history),previous_(binding){binding=this;}
-NativePoseTestBinding::~NativePoseTestBinding(){binding=previous_;}
+    :app_(&app),history_(&history),previous_(binding){
+    // A gesture cannot continue against a different binding/journal. Cancel
+    // while the old app and journal are still guaranteed to be alive.
+    if(binding)CancelViewportCameraGesture(*binding->app_);
+    CancelViewportCameraGesture(app);binding=this;AdvanceBindingGeneration();
+}
+NativePoseTestBinding::~NativePoseTestBinding(){CancelViewportCameraGesture(*app_);binding=previous_;AdvanceBindingGeneration();}
 SharedHistory* BoundNativePoseHistory(MMDApp* app) noexcept { return binding&&binding->app_==app?binding->history_:nullptr; }
+std::uint64_t BoundNativePoseGeneration(MMDApp* app) noexcept {return BoundNativePoseHistory(app)?bindingGeneration:0;}
 }
 #endif

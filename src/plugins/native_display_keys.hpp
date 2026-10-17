@@ -8,6 +8,7 @@ namespace mikudancestudio::plugins {
 struct BoneRangeScaleOptions;
 struct RangeScaleResult;
 struct ModelPasteFamilyResult;
+struct ModelPasteSource;
 class DisplayKeyDeletion : public HistoryChange {
 public:
     // Re-evaluate at the current playhead without writing live selectors.
@@ -49,5 +50,7 @@ MmsResult PlanDisplayRegistration(MMDApp&, unsigned modelSlot, int frame,
 // evaluation to the model aggregate; its target selectors remain queryable.
 MmsResult PlanDisplayKeyPaste(MMDApp&, unsigned modelSlot,
     std::shared_ptr<HistoryChange>& out, ModelPasteFamilyResult* aggregate = nullptr) noexcept;
+MmsResult PlanDisplayKeyPaste(MMDApp&,unsigned modelSlot,const ModelPasteSource&,
+    std::shared_ptr<HistoryChange>&,ModelPasteFamilyResult* aggregate=nullptr) noexcept;
 }
 #endif

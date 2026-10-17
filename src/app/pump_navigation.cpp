@@ -75,6 +75,8 @@
 #include "mikudancestudio/d3dx_dyn.hpp"
 #include "mikudancestudio/mmd_app.hpp"
 #include "mikudancestudio/ported_funcs.hpp"
+#include "../plugins/native_pose_scope.hpp"
+#include "../plugins/native_viewport_history.hpp"
 
 namespace mikudancestudio {
 
@@ -350,6 +352,10 @@ void ConsumeArrowKeyNavigation(MMDApp* app) {
 // (0x9ED9C) sits on the accessory slot.
 // ---------------------------------------------------------------------------
 void ConsumeRightButtonDrag(MMDApp* app) {
+#if !MMD_ORIGINAL_PROFILE
+    if (plugins::BoundNativePoseHistory(app) &&
+        !plugins::AllowViewportCameraPreview(*app, WM_RBUTTONDOWN)) return;
+#endif
     auto& state = app->state;
     const bool inputActive = app->ViewportInputActive() != 0;   // 0x9EDD1
     const bool modelMode = state.optflag[0] == 0;               // 0x2F8/0x328
@@ -378,6 +384,10 @@ void ConsumeRightButtonDrag(MMDApp* app) {
             app->CameraPitch() = app->CameraPitch() -           // 0x310
                 static_cast<float>(dy) * kRotateScale;
         }
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::BoundNativePoseHistory(app) && !plugins::AcceptViewportCameraPreview(*app)) return;
+        if (plugins::BoundNativePoseHistory(app)) { PostViewRefresh(app); return; }
+#endif
         if (!modelMode && EffectiveCoordinateState(app) != 2)             // 0x470D3C
             RefreshRequest(-1);                                 // 0x440AC0
         PostViewRefresh(app);                                   // 0x40D130
@@ -402,6 +412,10 @@ void ConsumeRightButtonDrag(MMDApp* app) {
 // ends in PostViewRefresh (0x40D130).
 // ---------------------------------------------------------------------------
 void ConsumeMiddleButtonPan(MMDApp* app) {
+#if !MMD_ORIGINAL_PROFILE
+    if (plugins::BoundNativePoseHistory(app) &&
+        !plugins::AllowViewportCameraPreview(*app, WM_MBUTTONDOWN)) return;
+#endif
     auto& state = app->state;
     const bool inputActive = app->ViewportInputActive() != 0;   // 0x9EDD1
     const bool modelMode = state.optflag[0] == 0;               // 0x2F8/0x328
@@ -424,6 +438,9 @@ void ConsumeMiddleButtonPan(MMDApp* app) {
         } else {
             PanCameraPosition(app, dx, dy);                     // 0x44DCAC..
         }
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::BoundNativePoseHistory(app) && !plugins::AcceptViewportCameraPreview(*app)) return;
+#endif
         PostViewRefresh(app);                                   // 0x44DE66
         return;
     }
@@ -445,6 +462,10 @@ void ConsumeMiddleButtonPan(MMDApp* app) {
 // NUMPAD0's model path is the full reload reset instead.
 // ---------------------------------------------------------------------------
 void ConsumeNumpadViewPresets(MMDApp* app) {
+#if !MMD_ORIGINAL_PROFILE
+    // Presets and model-follow navigation need separate pose participants.
+    if (plugins::BoundNativePoseHistory(app)) return;
+#endif
     auto& state = app->state;
     const bool gate = app->ViewportInputActive() != 0 &&        // 0x9EDD1
                       app->PlaybackActive() == 0 &&             // 0x330

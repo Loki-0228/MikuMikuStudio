@@ -2,13 +2,15 @@
 #include "mikudancestudio/build_profile.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "native_global_paste.hpp"
+#include "mikudancestudio/accessory_motion_io.hpp"
 #include <string>
 namespace mikudancestudio::plugins {
 // Decodes one immutable file snapshot. Standard record values are owned by
-// source. A valid nonempty accessory extension is refused until privately
-// planned; it must never be silently dropped from a partial import.
+// source. Valid accessory extensions remain owned until scene matching and
+// private planning are complete; unknown or damaged tails remain ignorable.
 struct GlobalVmdSource {
     GlobalPasteSource source;
+    std::vector<accessory_motion_io::Track> accessoryTracks;
     int version=0;
     std::string modelName;
 };

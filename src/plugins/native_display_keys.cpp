@@ -608,16 +608,26 @@ MmsResult PlanDisplayRegistration(MMDApp& app,unsigned slot,int frame,std::share
     });
 }
 MmsResult PlanDisplayKeyPaste(MMDApp& app,unsigned slot,std::shared_ptr<HistoryChange>& out,ModelPasteFamilyResult* aggregate) noexcept {
+    out.reset();if(aggregate)*aggregate={};
+    if(slot>=kModelSlotCount||!app.ModelSlot(slot)||app.PlaybackActive()||app.FrameStepPlayback()||
+        app.state.recordPlaybackStartPending||app.SceneMutationInProgress())return MMS_E_NOT_READY;
+    ModelPasteSource source;
+    if(auto result=CaptureModelPasteSource(app,source,ModelPasteDisplays))return result;
+    return PlanDisplayKeyPaste(app,slot,source,out,aggregate);
+}
+MmsResult PlanDisplayKeyPaste(MMDApp& app,unsigned slot,const ModelPasteSource& input,
+    std::shared_ptr<HistoryChange>& out,ModelPasteFamilyResult* aggregate) noexcept {
     out.reset();
     if(aggregate)*aggregate={};
     if(slot>=kModelSlotCount||!app.ModelSlot(slot)||app.PlaybackActive()||app.FrameStepPlayback()||
         app.state.recordPlaybackStartPending||app.SceneMutationInProgress())return MMS_E_NOT_READY;
     return Boundary([&]()->MmsResult {
-        const auto count=app.ClipboardCounts().displays;
+        if(auto result=ValidateModelPasteSource(input,ModelPasteDisplays))return result;
+        const auto count=input.displays.size();
         const auto& model=*mdl::Mdl(app.ModelSlot(slot));
         if(aggregate){aggregate->maxFrame=model.maxFrame;aggregate->searchCursor=model.searchCursor;}
         if(!count)return MMS_OK;
-        if(!app.DisplayClipboard()||count>mdl::KeyPoolLimit<mdl::DisplayKey>()||
+        if(count>mdl::KeyPoolLimit<mdl::DisplayKey>()||
             app.CurrentFrame()<0||app.CurrentFrame()>frame_limits::maximum)return MMS_E_ARGUMENT;
         if(!mdl::KeyPoolIdentity(model.displayKeys)||
             (model.boneKeys&&!mdl::BoneKeyPoolIdentity(model.boneKeys))||
@@ -628,10 +638,12 @@ MmsResult PlanDisplayKeyPaste(MMDApp& app,unsigned slot,std::shared_ptr<HistoryC
         // family is pasted, including display-only records. Keep its bounded
         // name comparison; IK matching itself still accepts full-width names.
         if(model.boneCount&&!model.boneTable)return MMS_E_NOT_READY;
+        const bool resolved=std::all_of(input.displays.begin(),input.displays.end(),[](const auto& source){
+            return source.ikTargetsResolved&&source.selectors.empty();});
         std::set<std::string> uniqueNames;
         for(unsigned bone=0;bone<model.boneCount;++bone)
             if(!uniqueNames.emplace(model.boneTable[bone].name,
-                strnlen_s(model.boneTable[bone].name,sizeof(model.boneTable[bone].name))).second)return MMS_E_ARGUMENT;
+                strnlen_s(model.boneTable[bone].name,sizeof(model.boneTable[bone].name))).second&&!resolved)return MMS_E_ARGUMENT;
         Chain(model);CheckPayloadStorage(model);
         const auto capacity=mdl::KeyPoolCapacity(model.displayKeys);
         auto change=std::make_shared<DisplayDeletion>(app,slot,aggregate==nullptr);
@@ -660,9 +672,10 @@ MmsResult PlanDisplayKeyPaste(MMDApp& app,unsigned slot,std::shared_ptr<HistoryC
             ikNames.push_back(name(bone,false));change->ikBones.push_back(bone);
         }
         const auto* order=static_cast<const mdl::BoneOrderEntry*>(model.boneOrderTable);
+        const bool selectorNames=!resolved||std::any_of(input.displays.begin(),input.displays.end(),[](const auto& source){return !source.selectors.empty();});
         for(unsigned i=0;i<model.boneOrderCount;++i) {
             change->parentBones.push_back(order[i].boneIndex);
-            parentNames.push_back(i?name(order[i].boneIndex,true):"");
+            parentNames.push_back(i&&selectorNames?name(order[i].boneIndex,true):"");
         }
         if(!change->names.empty()){change->nameTable=model.boneTable;change->nameCount=model.boneCount;}
         std::map<unsigned,Patch> planned;
@@ -685,12 +698,12 @@ MmsResult PlanDisplayKeyPaste(MMDApp& app,unsigned slot,std::shared_ptr<HistoryC
         };
         std::set<unsigned> pastedSlots;
         for(unsigned index=0;index<count;++index) {
-            const auto& source=app.DisplayClipboard()[index];unsigned frame;
-            if(!frame_limits::Add(app.CurrentFrame(),source.frame,frame)||source.ikCount<0||source.selectorCount<0||
-                (source.ikCount&&!source.ikStates)||(source.selectorCount&&!source.selectorStates))return MMS_E_ARGUMENT;
+            const auto& source=input.displays[index];unsigned frame;
+            if(!frame_limits::Add(int(input.frameOffset),source.frame,frame))return MMS_E_ARGUMENT;
+            if(source.ikTargetsResolved)for(int target:source.ikTargets)
+                if(target>=int(model.boneCount))return MMS_E_ARGUMENT;
             std::vector<mdl::BoneReference> parents;
-            for(int parent=0;parent<source.selectorCount;++parent) {
-                const auto& entry=source.selectorStates[parent];
+            for(const auto& entry:source.selectors) {
                 if(!std::memchr(entry.boneName,0,sizeof(entry.boneName)))return MMS_E_ARGUMENT;
                 mdl::BoneReference pair{entry.modelIndex,entry.boneIndex};
                 if(pair.modelIndex< -1||pair.modelIndex>=int(kModelSlotCount))return MMS_E_ARGUMENT;
@@ -726,15 +739,16 @@ MmsResult PlanDisplayKeyPaste(MMDApp& app,unsigned slot,std::shared_ptr<HistoryC
             }
             auto& target=write(destination);target.value.visible=source.visible;target.value.allocated=1;
             pastedSlots.insert(destination);
-            for(unsigned i=0;i<ikNames.size();++i)for(int entry=0;entry<source.ikCount;++entry)
-                if(!std::strncmp(ikNames[i],source.ikStates[entry].boneName,sizeof(mdl::BoneRecord::name))) {
-                    target.ik[i]=source.ikStates[entry].enabled;break;
+            for(unsigned i=0;i<ikNames.size();++i)for(unsigned entry=0;entry<source.ik.size();++entry)
+                if(source.ikTargetsResolved?source.ikTargets[entry]==model.ikChains[i].boneIndex:
+                    !std::strncmp(ikNames[i],source.ik[entry].boneName,sizeof(mdl::BoneRecord::name))) {
+                    target.ik[i]=source.ik[entry].enabled;break;
                 }
             for(unsigned i=0;i<parentNames.size();++i) {
                 if(parents.empty())continue;
                 if(!i){target.parents[0]=parents[0];continue;}
-                for(int entry=0;entry<source.selectorCount;++entry)
-                    if(!std::strcmp(parentNames[i],source.selectorStates[entry].boneName)) {
+                for(unsigned entry=0;entry<source.selectors.size();++entry)
+                    if(!std::strcmp(parentNames[i],source.selectors[entry].boneName)) {
                         target.parents[i]=parents[entry];break;
                     }
             }

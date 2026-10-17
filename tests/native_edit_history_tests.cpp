@@ -394,9 +394,29 @@ void CrossModelJournal(){
 #include "native_global_source_checks.inc"
 #include "native_vmd_decode_checks.inc"
 #include "native_vmd_global_checks.inc"
+#include "native_model_vmd_checks.inc"
+#include "native_model_source_checks.inc"
+#include "native_vmd_accessory_checks.inc"
+#include "native_viewport_history_checks.inc"
 int main(int argc,char** argv){
     std::setvbuf(stdout,nullptr,_IONBF,0);
     const auto run=[](const char* name,void(*test)()){std::printf("RUN %s\n",name);test();};
+    if(argc==2&&!std::strcmp(argv[1],"--viewport-only")) {
+        run("NativeViewportHistoryChecks",NativeViewportHistoryChecks);
+        std::printf("PASS viewport history: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--model-source-only")) {
+        run("NativeModelSourceChecks",NativeModelSourceChecks);
+        std::printf("PASS model source: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--accessory-vmd-only")) {
+        run("NativeVmdAccessoryChecks",NativeVmdAccessoryChecks);
+        std::printf("PASS accessory VMD: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--model-vmd-only")) {
+        run("NativeModelVmdChecks",NativeModelVmdChecks);
+        std::printf("PASS model VMD: %u checks\n",checks);return 0;
+    }
     if(argc==2&&!std::strcmp(argv[1],"--global-vmd-only")) {
         run("NativeGlobalSourceChecks",NativeGlobalSourceChecks);
         run("NativeVmdDecodeChecks",NativeVmdDecodeChecks);
@@ -561,6 +581,10 @@ int main(int argc,char** argv){
     run("NativeGlobalSourceChecks",NativeGlobalSourceChecks);
     run("NativeVmdDecodeChecks",NativeVmdDecodeChecks);
     run("NativeVmdGlobalChecks",NativeVmdGlobalChecks);
+    run("NativeModelVmdChecks",NativeModelVmdChecks);
+    run("NativeModelSourceChecks",NativeModelSourceChecks);
+    run("NativeVmdAccessoryChecks",NativeVmdAccessoryChecks);
+    run("NativeViewportHistoryChecks",NativeViewportHistoryChecks);
     run("PhysicsImportChecks",PhysicsImportChecks);
     run("ImportTextureCacheChecks",ImportTextureCacheChecks);
     run("AccessoryImportChecks",AccessoryImportChecks);

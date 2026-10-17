@@ -29,8 +29,11 @@ MmsResult PlanMorphRegistration(MMDApp&, unsigned modelSlot, int morphIndex, int
 // separately from this record's payload. Planning/first Prepare are serialized.
 // A successful null result is a no-op and must not discard redo.
 struct ModelPasteFamilyResult;
+struct ModelPasteSource;
 MmsResult PlanMorphKeyPaste(MMDApp&, unsigned modelSlot, std::shared_ptr<HistoryChange>& out,
     ModelPasteFamilyResult* aggregate = nullptr) noexcept;
+MmsResult PlanMorphKeyPaste(MMDApp&,unsigned modelSlot,const ModelPasteSource&,
+    std::shared_ptr<HistoryChange>&,ModelPasteFamilyResult* aggregate=nullptr) noexcept;
 MmsResult PlanMorphKeyDeletion(MMDApp&, unsigned modelSlot,
     std::shared_ptr<HistoryChange>& out, bool allowOtherMarks = false) noexcept;
 MmsResult PlanMorphFrameLine(MMDApp&, unsigned modelSlot, int frame, bool insert,

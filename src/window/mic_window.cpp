@@ -20,6 +20,7 @@
 
 #include "mikudancestudio/mmd_app.hpp"
 #include "mikudancestudio/ported_funcs.hpp"
+#include "../plugins/native_viewport_history.hpp"
 
 namespace mikudancestudio {
 
@@ -82,6 +83,9 @@ LRESULT CALLBACK MicWndProc(HWND hwnd, UINT msg, WPARAM wParam,
     MMDApp* app = g_Block;
     updates::ObserveMessage(app, msg, wParam, lParam);
     auto& s = *app;
+#if !MMD_ORIGINAL_PROFILE
+    if (plugins::HandleBoundViewportMessage(s, hwnd, msg, wParam, lParam)) return 0;
+#endif
     if (msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP ||
         msg == WM_LBUTTONDBLCLK || msg == WM_MOUSEMOVE) {
         s.ShiftModifierState() = (wParam & MK_SHIFT) != 0 ? 3 : 0;

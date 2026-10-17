@@ -76,8 +76,7 @@ MmsResult DecodeGlobalVmdSource(const char* ansi,const wchar_t* wide,std::uint32
         }
         const auto tailBytes=input.Size()-input.standardEnd;
         if(tailBytes>=sizeof(accessory_motion_io::kMagic)&&!std::memcmp(input.Data(input.standardEnd),accessory_motion_io::kMagic,sizeof(accessory_motion_io::kMagic))){
-            std::vector<accessory_motion_io::Track> tracks;
-            if(accessory_motion_io::Decode(input.Data(input.standardEnd),tailBytes,tracks)&&!tracks.empty())return MMS_E_NOT_READY;
+            accessory_motion_io::Decode(input.Data(input.standardEnd),tailBytes,decoded.accessoryTracks);
         }
         out=std::move(decoded);return MMS_OK;
     });

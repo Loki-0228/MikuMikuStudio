@@ -294,14 +294,74 @@ MmsResult PlanModelKeyDeletion(MMDApp& app, unsigned slot, bool automatic,
         return MMS_OK;
     });
 }
+MmsResult ValidateModelPasteSource(const ModelPasteSource& source,unsigned families) noexcept {
+    if((families&~ModelPasteAll)||source.frameOffset>unsigned(frame_limits::maximum))return MMS_E_ARGUMENT;
+    if(((families&ModelPasteBones)&&source.bones.size()>mdl::kBoneKeyCapacityLimit)||
+        ((families&ModelPasteMorphs)&&source.morphs.size()>mdl::kMorphKeyCapacityLimit)||
+        ((families&ModelPasteDisplays)&&source.displays.size()>mdl::KeyPoolLimit<mdl::DisplayKey>()))return MMS_E_ARGUMENT;
+    unsigned frame;
+    if(families&ModelPasteBones)for(const auto& record:source.bones)
+        if(!frame_limits::Add(int(source.frameOffset),record.key.frame,frame)||(record.targetResolved&&record.targetIndex< -1))return MMS_E_ARGUMENT;
+    if(families&ModelPasteMorphs)for(const auto& record:source.morphs)
+        if(!frame_limits::Add(int(source.frameOffset),record.key.frame,frame)||(record.targetResolved&&record.targetIndex< -1))return MMS_E_ARGUMENT;
+    if(families&ModelPasteDisplays)for(const auto& record:source.displays) {
+        if(!frame_limits::Add(int(source.frameOffset),record.frame,frame)||record.ik.size()>mdl::kBoneKeyCapacityLimit||
+            record.selectors.size()>mdl::kBoneKeyCapacityLimit||record.ikTargets.size()>mdl::kBoneKeyCapacityLimit||
+            (record.ikTargetsResolved?record.ikTargets.size()!=record.ik.size():!record.ikTargets.empty()))return MMS_E_ARGUMENT;
+        if(record.ikTargetsResolved)for(int target:record.ikTargets)if(target< -1)return MMS_E_ARGUMENT;
+    }
+    return MMS_OK;
+}
+MmsResult CaptureModelPasteSource(MMDApp& app,ModelPasteSource& out,unsigned families) noexcept {
+    out={};
+    if((families&~ModelPasteAll)||app.CurrentFrame()<0||app.CurrentFrame()>frame_limits::maximum)return MMS_E_ARGUMENT;
+    return Boundary([&]()->MmsResult {
+        ModelPasteSource source;source.frameOffset=unsigned(app.CurrentFrame());const auto counts=app.ClipboardCounts();
+        if(families&ModelPasteBones) {
+            if(counts.bones>mdl::kBoneKeyCapacityLimit||(counts.bones&&!app.BoneClipboard()))return MMS_E_ARGUMENT;
+            source.bones.reserve(counts.bones);
+            for(unsigned i=0;i<counts.bones;++i)source.bones.push_back({app.BoneClipboard()[i],
+                bone_scale::Clipboard(&app,int(i),false),bone_scale::ClipboardCurve(&app,int(i),false)});
+        }
+        if(families&ModelPasteMorphs) {
+            if(counts.morphs>mdl::kMorphKeyCapacityLimit||(counts.morphs&&!app.MorphClipboard()))return MMS_E_ARGUMENT;
+            source.morphs.reserve(counts.morphs);
+            for(unsigned i=0;i<counts.morphs;++i)source.morphs.push_back({app.MorphClipboard()[i]});
+        }
+        if(families&ModelPasteDisplays) {
+            if(counts.displays>mdl::KeyPoolLimit<mdl::DisplayKey>()||(counts.displays&&!app.DisplayClipboard()))return MMS_E_ARGUMENT;
+            source.displays.reserve(counts.displays);
+            for(unsigned i=0;i<counts.displays;++i) {
+                const auto& record=app.DisplayClipboard()[i];
+                if(record.ikCount<0||record.selectorCount<0||unsigned(record.ikCount)>mdl::kBoneKeyCapacityLimit||
+                    unsigned(record.selectorCount)>mdl::kBoneKeyCapacityLimit||(record.ikCount&&!record.ikStates)||
+                    (record.selectorCount&&!record.selectorStates))return MMS_E_ARGUMENT;
+                ModelDisplayPasteRecord owned;owned.frame=record.frame;owned.visible=record.visible;
+                if(record.ikCount)owned.ik.assign(record.ikStates,record.ikStates+record.ikCount);
+                if(record.selectorCount)owned.selectors.assign(record.selectorStates,record.selectorStates+record.selectorCount);
+                source.displays.push_back(std::move(owned));
+            }
+        }
+        if(auto result=ValidateModelPasteSource(source,families))return result;
+        out=std::move(source);return MMS_OK;
+    });
+}
 MmsResult PlanModelKeyPaste(MMDApp& app,unsigned slot,std::shared_ptr<HistoryChange>& out) noexcept {
     out.reset();
     if(slot>=kModelSlotCount||!app.ModelSlot(slot)||app.PlaybackActive()||app.FrameStepPlayback()||
         app.state.recordPlaybackStartPending||app.SceneMutationInProgress())return MMS_E_NOT_READY;
+    ModelPasteSource source;
+    if(auto result=CaptureModelPasteSource(app,source))return result;
+    return PlanModelKeyPaste(app,slot,source,out);
+}
+MmsResult PlanModelKeyPaste(MMDApp& app,unsigned slot,const ModelPasteSource& source,std::shared_ptr<HistoryChange>& out) noexcept {
+    out.reset();
+    if(slot>=kModelSlotCount||!app.ModelSlot(slot)||app.PlaybackActive()||app.FrameStepPlayback()||
+        app.state.recordPlaybackStartPending||app.SceneMutationInProgress())return MMS_E_NOT_READY;
     if(app.CurrentFrame()<0||app.CurrentFrame()>frame_limits::maximum)return MMS_E_ARGUMENT;
+    if(auto result=ValidateModelPasteSource(source))return result;
     return Boundary([&]()->MmsResult {
-        const auto counts=app.ClipboardCounts();
-        if(!counts.bones&&!counts.morphs&&!counts.displays)return MMS_OK;
+        if(source.bones.empty()&&source.morphs.empty()&&source.displays.empty())return MMS_OK;
         const auto& model=*mdl::Mdl(app.ModelSlot(slot));
         if((model.boneKeys&&!mdl::BoneKeyPoolIdentity(model.boneKeys))||
             (model.morphKeys&&!mdl::MorphKeyPoolIdentity(model.morphKeys))||
@@ -309,23 +369,20 @@ MmsResult PlanModelKeyPaste(MMDApp& app,unsigned slot,std::shared_ptr<HistoryCha
         Layout check(model);
         std::array<ModelPasteFamilyResult,3> results;
         std::shared_ptr<DisplayKeyDeletion> display;
-        if(counts.displays){
+        if(!source.displays.empty()){
             std::shared_ptr<HistoryChange> part;
-            if(auto error=PlanDisplayKeyPaste(app,slot,part,&results[2]))return error;
+            if(auto error=PlanDisplayKeyPaste(app,slot,source,part,&results[2]))return error;
             display=std::static_pointer_cast<DisplayKeyDeletion>(results[2].change);
         }
-        if(!model.boneCount&&counts.bones){
-            if(!app.BoneClipboard()||counts.bones>mdl::kBoneKeyCapacityLimit)return MMS_E_ARGUMENT;
-            for(unsigned i=0;i<counts.bones;++i){unsigned frame;
-                if(!frame_limits::Add(app.CurrentFrame(),app.BoneClipboard()[i].frame,frame))return MMS_E_ARGUMENT;}
-        }
-        if(model.boneCount&&(counts.bones||display)){
+        if(!model.boneCount)for(const auto& record:source.bones)
+            if(record.targetResolved&&record.targetIndex>=0)return MMS_E_ARGUMENT;
+        if(model.boneCount&&(!source.bones.empty()||display)){
             std::shared_ptr<HistoryChange> part;
-            if(auto error=PlanBoneKeyPaste(app,slot,false,part,&results[0],display))return error;
+            if(auto error=PlanBoneKeyPaste(app,slot,false,source,part,&results[0],display))return error;
         }
-        if(counts.morphs){
+        if(!source.morphs.empty()){
             std::shared_ptr<HistoryChange> part;
-            if(auto error=PlanMorphKeyPaste(app,slot,part,&results[1]))return error;
+            if(auto error=PlanMorphKeyPaste(app,slot,source,part,&results[1]))return error;
         }
         if(!results[0].dataChanged&&!results[1].dataChanged&&!results[2].dataChanged)return MMS_OK;
         auto change=std::make_shared<ModelPasteChange>(app,slot);
@@ -333,7 +390,12 @@ MmsResult PlanModelKeyPaste(MMDApp& app,unsigned slot,std::shared_ptr<HistoryCha
         metadata->restoreGrownTail=true;metadata->requireInitialMarks=true;
         unsigned cursor=1;const auto capacity=mdl::KeyPoolCapacity(model.displayKeys);
         while(cursor<capacity&&model.displayKeys[cursor].frame)++cursor;
-        metadata->cursorAfter=counts.displays?results[2].searchCursor:int(cursor);
+        metadata->cursorAfter=!source.displays.empty()?results[2].searchCursor:int(cursor);
+        if(!source.resetDisplayCursor){
+            cursor=model.morphCount;const auto morphCapacity=mdl::MorphKeyCapacity(model.morphKeys);
+            while(cursor<morphCapacity&&model.morphKeys[cursor].frame)++cursor;
+            metadata->cursorAfter=results[1].hasKeys?results[1].searchCursor:int(cursor);
+        }
         for(unsigned family=0;family<results.size();++family){
             auto& result=results[family];change->parts[family]=std::move(result.change);
             if(result.hasKeys)metadata->maxAfter=(std::max)(metadata->maxAfter,result.maxFrame);
@@ -345,6 +407,7 @@ MmsResult PlanModelKeyPaste(MMDApp& app,unsigned slot,std::shared_ptr<HistoryCha
                 metadata->after[family][index]=1;
             }
         }
+        if(source.advanceLastRegisteredFrame)metadata->lastAfter=(std::max)(metadata->lastBefore,metadata->maxAfter);
         change->parts[3]=std::move(metadata);out=std::move(change);return MMS_OK;
     });
 }

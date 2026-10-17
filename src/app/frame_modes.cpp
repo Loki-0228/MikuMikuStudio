@@ -56,6 +56,7 @@
 #include "mikudancestudio/ported_funcs.hpp"
 #include "mikudancestudio/runtime_log.hpp"
 #include "frame_state_dump.hpp"
+#include "../plugins/native_pose_scope.hpp"
 
 namespace mikudancestudio {
 
@@ -637,6 +638,12 @@ void DragBackground(MMDApp* app, bool zoom, int dx, int dy) {
 }
 
 void BeginOrEndViewportToolDrag(MMDApp* app, int operation) {
+#if !MMD_ORIGINAL_PROFILE
+    // These legacy HUD writers do not yet own a common-history gesture.
+    // Keep the coordinate-space toggle, which is not an authoring operation.
+    if (plugins::BoundNativePoseHistory(app) && app->LeftMouseButtonState() == 1 &&
+        operation != 0 && operation != 21) return;
+#endif
     const int leftState = app->LeftMouseButtonState();
     if (leftState == 1) {
         // This press is now owned by the tool: whichever detector reports it first
