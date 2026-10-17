@@ -197,6 +197,11 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             }
             return DefWindowProcW(hwnd, msg, wParam, lParam);
         case WM_KEYDOWN:
+            if (wParam == VK_ESCAPE && s.SidebarResizeDragging()) {
+                HandleLButtonUp(app);
+                if (GetCapture() == hwnd) ReleaseCapture();
+                return 0;
+            }
             if (wParam == VK_ESCAPE && s.FullscreenMode() != 0 && s.FrameStepPlayback() == 0) {
                 s.state.escKeyState = 3;
                 s.FullscreenMode() = 0;

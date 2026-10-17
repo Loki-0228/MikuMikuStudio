@@ -125,7 +125,7 @@ void LayoutViewportPanels(MMDApp* app) {  // was Sub40CAC0, VA 0x0040CAC0
     const RECT viewport = panels.overlay;
     const int stripY = viewport.bottom;                           // 658764
     const int rowY = viewport.top;                                // 658756
-    const bool deferPaint = app->SidebarResizeDragging() != 0;
+    const bool deferPaint = app->SidebarResizeDragging() != 0 || app->bottomPanelSizing.relayout;
     auto move = [&](int id, int x, int y, int w, int h) {
         ui::MoveLayoutControl(base, id, x, y, w, h, deferPaint);
     };

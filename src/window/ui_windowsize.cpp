@@ -62,11 +62,6 @@ namespace mikudancestudio {
 
 namespace {
 
-// GetDlgItem + MoveWindow pair as in the original (0x44341E..0x443427 etc.).
-void MoveCtrl(HWND parent, int id, int x, int y, int w, int h) {
-    MoveWindow(GetDlgItem(parent, id), x, y, w, h, TRUE);
-}
-
 void LayoutForcePasteRow(HWND hwnd, int side, int bottom, bool deferPaint = false) {
     if (!GetDlgItem(hwnd, panel::kForcePasteButton)) return;
     const bool wrap = side < 328;
@@ -106,6 +101,10 @@ void HandleWindowSize(MMDApp* app) {
     updates::RequestViewport(app, true);
     ui_metrics::Add(ui_metrics::Layout);
     auto& s = *app;
+    const bool deferPaint = s.bottomPanelSizing.relayout;
+    const auto MoveCtrl = [deferPaint](HWND parent, int id, int x, int y, int w, int h) {
+        ui::MoveLayoutControl(parent, id, x, y, w, h, deferPaint);
+    };
     const HWND hwnd = static_cast<HWND>(app->Hwnd());  // 657080 (0xA06B8)
     const WindowDpiScope dpi(hwnd);
 
@@ -130,7 +129,10 @@ void HandleWindowSize(MMDApp* app) {
     RECT cr1;
     GetClientRect(hwnd, &cr1);  // var_10 - only .right feeds the sidebar
     std::int32_t& sidebar = s.SidebarWidth();
-    if (s.FloatingWindow() != nullptr) {
+    if (deferPaint) {
+        // A bottom splitter changes neither the client rectangle nor sidebar
+        // geometry. Avoid a lossy ratio-to-pixel round trip during this batch.
+    } else if (s.FloatingWindow() != nullptr) {
         sidebar = cr1.right - 3;                               // 0x4433B8
         PostLanguageSweep(app);                                // 0x4433BE
     } else {
@@ -143,7 +145,8 @@ void HandleWindowSize(MMDApp* app) {
         if (grew) PanelPaint(app);                             // 0x4433EC
     }
     const std::int32_t side = sidebar;
-    plugins::Layout(app);
+    // Plugin mounts depend on client/sidebar geometry, not bottom extra widths.
+    if (!deferPaint) plugins::Layout(app);
     RECT cb;                                                   // var_30
     GetClientRect(hwnd, &cb);                                  // 0x443563
     const std::int32_t bottom = cb.bottom;
@@ -168,7 +171,7 @@ void HandleWindowSize(MMDApp* app) {
     MoveCtrl(hwnd, 420, side / 2 - 119, bottom - 224, 40, 18);
     MoveCtrl(hwnd, 421, side / 2 - 76, bottom - 224, 40, 18);
     MoveCtrl(hwnd, 422, side / 2 - 33, bottom - 224, 40, 18);
-    LayoutForcePasteRow(hwnd, side, bottom);
+    LayoutForcePasteRow(hwnd, side, bottom, deferPaint);
     MoveCtrl(hwnd, 425, side / 2 - 3, bottom - 201, 50, 14);
     MoveCtrl(hwnd, 426, side / 2 + 69, bottom - 201, 50, 14);
     MoveCtrl(hwnd, 434, side / 2 - 118, bottom - 193, 100, 400);
@@ -360,11 +363,13 @@ void HandleWindowSize(MMDApp* app) {
     ResizeBottomPanelControls(app);
 
     // --- visibility re-toggle, five id ranges (0x444B3B..0x444C99) ---------
-    ToggleVisible(hwnd, 455, 469);
-    ToggleVisible(hwnd, 471, 488);
-    ToggleVisible(hwnd, 504, 528);
-    ToggleVisible(hwnd, 402, 414);
-    ToggleVisible(hwnd, 531, 535);
+    if (!deferPaint) {
+        ToggleVisible(hwnd, 455, 469);
+        ToggleVisible(hwnd, 471, 488);
+        ToggleVisible(hwnd, 504, 528);
+        ToggleVisible(hwnd, 402, 414);
+        ToggleVisible(hwnd, 531, 535);
+    }
 
     // --- refresh tail (0x444C9D..0x444CB0) ---------------------------------
     RefreshMainWindowViewport(app);
@@ -424,25 +429,47 @@ void RelayoutSidebarControls(MMDApp* app) {
     LayoutViewportPanels(app);
 }
 
-void CommitSidebarResize(MMDApp* app) {
-    if (!app || app->SidebarResizeDragging() == 0 || app->FullscreenMode() != 0 ||
-        app->FloatingWindow() != nullptr) return;
-    HWND hwnd = app->MainWindow();
-    RECT client{};
-    if (!GetClientRect(hwnd, &client) || client.right <= 5) return;
-    const int width = std::min(std::max(250, app->MouseX()), int(client.right) - 5);
-    if (width == app->SidebarWidth()) return;
-    app->WindowLayoutReady() = 0;
-    app->SidebarWidth() = width;
-    app->SidebarRatio() = float(double(width) / client.right);
-    RelayoutSidebarControls(app);
-    PanelPaint(app);
-    // Repaint the old and new control areas only after all geometry agrees.
-    // WM_PAINT may now present the scene, which clears the former controls
-    // from the expanded D3D viewport even with no idle-loop frame in between.
-    app->WindowLayoutReady() = 1;
-    RedrawWindow(hwnd, nullptr, nullptr,
+namespace {
+void ApplySidebarGeometry(MMDApp& app, int width, float ratio) {
+    if (width == app.SidebarWidth() && ratio == app.SidebarRatio()) return;
+    app.WindowLayoutReady() = 0;
+    app.SidebarWidth() = width;
+    app.SidebarRatio() = ratio;
+    // Keep SidebarResizeDragging set while moving children: deferPaint suppresses
+    // their intermediate paints. The one complete repaint sees coherent geometry.
+    RelayoutSidebarControls(&app);
+    PanelPaint(&app);
+    app.WindowLayoutReady() = 1;
+    RedrawWindow(app.MainWindow(), nullptr, nullptr,
         RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN | RDW_UPDATENOW);
+}
+}
+void UpdateSidebarResize(MMDApp* app) {
+    if (!app || !app->sidebarSizing.active || !app->SidebarResizeDragging() ||
+        app->FullscreenMode() || app->FloatingWindow()) return;
+    RECT client{};
+    if (!GetClientRect(app->MainWindow(), &client) || client.right <= 5) return;
+    const int width = std::min(std::max(250, app->MouseX()), int(client.right) - 5);
+    ApplySidebarGeometry(*app, width, float(double(width) / client.right));
+}
+void CommitSidebarResize(MMDApp* app) {
+    if (!app || !app->sidebarSizing.active) return;
+    UpdateSidebarResize(app);
+    // ReleaseCapture synchronously sends WM_CAPTURECHANGED. Retire the gesture
+    // first so that its cleanup cannot restore the committed starting geometry.
+    app->sidebarSizing = {};
+    app->SidebarResizeDragging() = 0;
+    app->WindowLayoutReady() = 1;
+}
+void CancelSidebarResize(MMDApp* app) {
+    if (!app || !app->sidebarSizing.active) return;
+    const auto start = app->sidebarSizing;
+    app->sidebarSizing = {};
+    // Retain the batching flag until the restored controls have been repainted.
+    app->SidebarResizeDragging() = 1;
+    ApplySidebarGeometry(*app, start.startWidth, start.startRatio);
+    app->SidebarResizeDragging() = 0;
+    app->WindowLayoutReady() = 1;
 }
 
 }  // namespace mikudancestudio

@@ -1527,7 +1527,13 @@ public:
     struct HudSpriteRange { unsigned first = 0, count = 0; } hudSprites;
 
     // Session-only UI geometry; never part of the PMM/legacy state blob.
+    struct SidebarSizing {
+        bool active = false;
+        int startWidth = 0;
+        float startRatio = 0;
+    } sidebarSizing;
     struct BottomPanelSizing {
+        bool relayout = false;
         int extra[9]{};
         int dragging = -1;
         int startX = 0;

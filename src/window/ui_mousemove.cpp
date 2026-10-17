@@ -315,6 +315,15 @@ void HandleMouseMove(std::uint32_t lParam, int mouseY) {
     const int X = static_cast<std::int16_t>(lParam & 0xFFFFu);
     const int Y = static_cast<std::int16_t>(mouseY);
 
+    // A captured sidebar gesture owns its pointer independently of auto-hide
+    // regions and timeline editing. Repeated/clamped positions are cheap no-ops.
+    if (app->SidebarResizeDragging() != 0) {
+        app->MouseX() = X; app->MouseY() = Y;
+        SetCursor(LoadCursorW(nullptr, reinterpret_cast<LPCWSTR>(IDC_SIZEWE)));
+        UpdateSidebarResize(app);
+        return;
+    }
+
     // --- 1. hide-rect gates (0x444CC6) -------------------------------------
     if (app->state.a06B5 != 0) {
         D3DRenderer* sub = app->Renderer();
@@ -368,13 +377,6 @@ void HandleMouseMove(std::uint32_t lParam, int mouseY) {
                                       static_cast<INT_PTR>(0x7F84))));  // IDC_SIZEWE
         }
 
-        // --- 3. sidebar drag ---------------------------------------------
-        // Keep the last pointer position, but leave every control and the
-        // viewport in place until WM_LBUTTONUP commits the new width.
-        if (app->SidebarResizeDragging() != 0) {
-            SetCursor(LoadCursorW(nullptr, reinterpret_cast<LPCWSTR>(IDC_SIZEWE)));
-            return;
-        }
         if (app->ViewportToolHovered() == 1) {
             SetCursor(LoadCursorA(nullptr,
                                   reinterpret_cast<LPCSTR>(

@@ -202,6 +202,9 @@ LRESULT HandleCtlColor(HWND control, HDC dc) {
 // Reference: ../translated/MikuMikuDance/fcn_0044a9a0.cpp
 // =========================================================================//
 void HandleLButtonUp(MMDApp* app) {
+    // Uncommitted capture loss/cancel restores live sidebar geometry. A normal
+    // release retires its session in CommitSidebarResize before reaching here.
+    CancelSidebarResize(app);
     HandleViewportToolRelease(app);
     const bool dragActive = app->SelectionBoxDragging() != 0;
     app->SidebarResizeDragging() = 0;

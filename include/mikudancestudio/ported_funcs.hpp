@@ -538,7 +538,9 @@ void RefreshSelfShadowPanel(MMDApp* app);        // was Sub411B90, VA 0x00411B90
 void RefreshLightPanel(MMDApp* app);             // was Sub411070, VA 0x00411070
 void TraceSceneLightState(MMDApp* app, const char* stage);
 void RelayoutSidebarControls(MMDApp* app);       // was Sub442EB0, VA 0x00442EB0
-void CommitSidebarResize(MMDApp* app);          // apply the staged pointer width on mouse-up
+void UpdateSidebarResize(MMDApp* app);          // apply one effective pointer position without scene evaluation
+void CommitSidebarResize(MMDApp* app);          // finish the live geometry gesture
+void CancelSidebarResize(MMDApp* app);          // restore the starting width and ratio
 void SetModelColor(MMDApp* model, int r, int g, int b);  // was Sub4A4850, VA 0x004A4850
 void SeekSelectedModelToCurrentFrame(MMDApp* app);  // was Sub4220C0,
                                                    // VA 0x004220C0 (model_frame_seek.cpp)

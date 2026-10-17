@@ -31,6 +31,14 @@ u.GetDlgCtrlID.argtypes = [w.HWND]
 u.SendMessageTimeoutW.argtypes = [w.HWND, w.UINT, w.WPARAM, w.LPARAM, w.UINT, w.UINT, c.POINTER(c.c_size_t)]
 u.SendMessageTimeoutW.restype = w.LPARAM
 u.GetWindowRect.argtypes = [w.HWND, c.POINTER(w.RECT)]
+u.GetClientRect.argtypes = [w.HWND, c.POINTER(w.RECT)]
+u.GetParent.argtypes = [w.HWND]
+u.GetParent.restype = w.HWND
+u.ClientToScreen.argtypes = [w.HWND, c.POINTER(w.POINT)]
+u.GetWindowTextLengthW.argtypes = [w.HWND]
+u.GetWindowTextW.argtypes = [w.HWND, w.LPWSTR, c.c_int]
+u.SetWindowPos.argtypes = [w.HWND, w.HWND, c.c_int, c.c_int, c.c_int, c.c_int, w.UINT]
+
 u.WaitForInputIdle.argtypes = [w.HANDLE, w.DWORD]
 
 
@@ -153,6 +161,26 @@ def run(executable, fixture, directory, filename, mode="gui"):
             assert log.count("SURFACE_CREATE") == 2 and "SURFACE_HIDE" in log and "SURFACE_FOCUS" in log, log
             send(tab, 0x1330, 0)
             assert (directory / "probe.log").read_text().count("SURFACE_CREATE") == 2, "switch recreated a live view"
+            widths = []
+            for host_width in (1200, 960, 1400):
+                assert u.SetWindowPos(main, None, 0, 0, host_width, 820, 0x16)
+                inputs = [h for h, cls in children(main) if cls.lower() == "edit" and u.GetDlgCtrlID(h) == 0x7101]
+                assert len(inputs) == 2, "both native panel inputs remain alive"
+                for edit in inputs:
+                    panel = u.GetParent(edit)
+                    assert u.GetWindowTextLengthW(panel) == 0, "panel container must not paint text underneath input"
+                    client, rect, origin = w.RECT(), w.RECT(), w.POINT()
+                    assert u.GetClientRect(panel, c.byref(client)) and u.GetWindowRect(edit, c.byref(rect))
+                    assert u.ClientToScreen(panel, c.byref(origin))
+                    assert rect.left - origin.x == 8 and rect.top - origin.y == 8
+                    assert rect.right - origin.x == client.right - 8, "input follows panel width without clipping"
+                    assert rect.bottom - rect.top == 24
+                    text = c.create_unicode_buffer(64)
+                    u.GetWindowTextW(edit, text, len(text))
+                    assert text.value == "中文输入测试", "resizing retains input contents"
+                widths.append(rect.right - rect.left)
+            assert widths[1] < widths[0] < widths[2], "input adapts when the production host shrinks and grows"
+
         send(main, 0x10)  # WM_CLOSE, no document was modified
         process.wait(timeout=15)
         assert process.returncode == 0, process.returncode

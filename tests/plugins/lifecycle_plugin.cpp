@@ -26,18 +26,31 @@ static void Log(Plugin* p, const char* s) {
 }
 struct Task { Plugin* plugin; MmsHandle handle = 0; bool orphan = false; };
 struct PanelView { Plugin* plugin; HWND window; };
+static constexpr int kPanelInputId = 0x7101;
+static void LayoutPanel(HWND window) {
+    RECT client{}; GetClientRect(window, &client);
+    // These are client coordinates in the host's DPI context; do not apply a
+    // second screen scale to a DPI-unaware MMS window.
+    const int width = client.right > 0 ? client.right : 0;
+    const int height = client.bottom > 0 ? client.bottom : 0;
+    const int x = width < 16 ? width / 2 : 8;
+    const int y = height < 16 ? height / 2 : 8;
+    const int inputHeight = height - y * 2 < 24 ? height - y * 2 : 24;
+    MoveWindow(GetDlgItem(window, kPanelInputId), x, y, width - x * 2, inputHeight, TRUE);
+}
 static MmsResult MMS_CALL CreatePanel(void* p, const MmsUiMountV1* m, void** view, uintptr_t* native) {
     *view = nullptr; *native = 0;
-    HWND window = CreateWindowExW(WS_EX_CONTROLPARENT, L"STATIC", L"ABI custom panel", WS_CHILD | WS_CLIPCHILDREN,
+    HWND window = CreateWindowExW(WS_EX_CONTROLPARENT, L"STATIC", L"", WS_CHILD | WS_CLIPCHILDREN,
         m->bounds.x, m->bounds.y, m->bounds.width, m->bounds.height, reinterpret_cast<HWND>(m->parentWindow), nullptr, GetModuleHandleW(nullptr), nullptr);
     if (!window) return MMS_E_FAILED;
-    HWND input = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"中文输入测试", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL, 8, 8, 180, 24, window, nullptr, GetModuleHandleW(nullptr), nullptr);
+    HWND input = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"中文输入测试", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL, 0, 0, 0, 0, window, reinterpret_cast<HMENU>(INT_PTR(kPanelInputId)), GetModuleHandleW(nullptr), nullptr);
     if (!input) { DestroyWindow(window); return MMS_E_FAILED; }
     auto* v = new(std::nothrow) PanelView{static_cast<Plugin*>(p), window}; if (!v) { DestroyWindow(window); return MMS_E_MEMORY; }
     SendMessageW(input, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), FALSE);
+    LayoutPanel(window);
     *view = v; *native = reinterpret_cast<uintptr_t>(window); Log(v->plugin, "SURFACE_CREATE"); return MMS_OK;
 }
-static void MMS_CALL ResizePanel(void* p, const MmsUiRectV1* b, uint32_t) { auto* v = static_cast<PanelView*>(p); MoveWindow(v->window, b->x, b->y, b->width, b->height, TRUE); Log(v->plugin, "SURFACE_RESIZE"); }
+static void MMS_CALL ResizePanel(void* p, const MmsUiRectV1* b, uint32_t) { auto* v = static_cast<PanelView*>(p); MoveWindow(v->window, b->x, b->y, b->width, b->height, TRUE); LayoutPanel(v->window); Log(v->plugin, "SURFACE_RESIZE"); }
 static void MMS_CALL ShowPanel(void* p, uint32_t show) { auto* v = static_cast<PanelView*>(p); ShowWindow(v->window, show ? SW_SHOWNA : SW_HIDE); Log(v->plugin, show ? "SURFACE_SHOW" : "SURFACE_HIDE"); }
 static MmsResult MMS_CALL FocusPanel(void* p) { auto* v = static_cast<PanelView*>(p); SetFocus(GetWindow(v->window, GW_CHILD)); Log(v->plugin, "SURFACE_FOCUS"); return MMS_OK; }
 static void MMS_CALL DestroyPanel(void* p) { auto* v = static_cast<PanelView*>(p); Log(v->plugin, "SURFACE_DESTROY"); DestroyWindow(v->window); delete v; }

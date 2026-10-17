@@ -49,7 +49,9 @@ inline void ResizeBottomPanelControls(MMDApp* app) {
             RECT drop{};SendMessageW(child,CB_GETDROPPEDCONTROLRECT,0,reinterpret_cast<LPARAM>(&drop));
             height=(std::max)(height,int(drop.bottom-drop.top));
         }
-        SetWindowPos(child,nullptr,left,r.top,right-left,height,SWP_NOZORDER|SWP_NOACTIVATE);
+        const UINT flags=SWP_NOZORDER|SWP_NOACTIVATE|
+            (app->bottomPanelSizing.relayout?(SWP_NOREDRAW|SWP_NOCOPYBITS):0);
+        SetWindowPos(child,nullptr,left,r.top,right-left,height,flags);
     }
 }
 inline int HitBottomPanelEdge(MMDApp* app,int x,int y) {
@@ -62,28 +64,57 @@ inline int HitBottomPanelEdge(MMDApp* app,int x,int y) {
 inline bool HandleBottomPanelResize(MMDApp* app,UINT msg,WPARAM key,LPARAM pos) {
     auto& s=app->bottomPanelSizing; HWND host=app->MainWindow();
     const int x=static_cast<short>(LOWORD(pos)),y=static_cast<short>(HIWORD(pos));
-    auto redraw=[&] { HandleWindowSize(app);RedrawWindow(host,nullptr,nullptr,RDW_INVALIDATE|RDW_ERASE|RDW_ALLCHILDREN); };
+    auto redraw=[&] {
+        {
+            struct LayoutScope {
+                MMDApp& app;bool previous;unsigned char ready;
+                explicit LayoutScope(MMDApp& value):app(value),previous(value.bottomPanelSizing.relayout),ready(value.WindowLayoutReady()){
+                    app.bottomPanelSizing.relayout=true;app.WindowLayoutReady()=0;
+                }
+                ~LayoutScope(){app.bottomPanelSizing.relayout=previous;app.WindowLayoutReady()=ready;}
+            } scope(*app);
+            HandleWindowSize(app);
+        }
+        RECT band{};GetClientRect(host,&band);band.top=(std::max)(0,int(band.bottom)-157);
+        RedrawWindow(host,&band,nullptr,RDW_INVALIDATE|RDW_ERASE|RDW_ALLCHILDREN|RDW_UPDATENOW);
+    };
+    auto update=[&] {
+        RECT r{};GetClientRect(host,&r);const auto spans=BottomPanelSpans(app);
+        const int total=(std::max)(0,int(r.right)-3-spans.back().right);
+        int available=total,reserved=0,current=0;
+        // Reserve siblings at the starting width, rather than at each live
+        // intermediate width: shrinking must not prevent dragging back right.
+        for(const auto& p:spans){
+            if(p.id==s.dragging)current=p.extra;
+            if(p.right-p.left<=20)continue;
+            const int extra=(std::min)(available,p.id==s.dragging?s.startExtra:s.extra[p.id]);
+            available-=extra;if(p.id!=s.dragging)reserved+=extra;
+        }
+        const int limit=total-reserved;
+        const int next=(std::clamp)(s.startExtra+x-s.startX,0,(std::max)(0,limit));
+        // A repeated notification (including release) needs no new layout.
+        if(next!=current){s.extra[s.dragging]=next;redraw();}
+    };
     if(msg==WM_LBUTTONDOWN) {
         const int id=HitBottomPanelEdge(app,x,y);if(id<0)return false;
-        s.dragging=id;s.startX=x;
-        for(const auto& p:BottomPanelSpans(app)) if(p.id==id)s.startExtra=p.extra;
-        SetCapture(host);SetCursor(LoadCursorW(nullptr,reinterpret_cast<LPCWSTR>(IDC_SIZEWE)));return true;
-    }
-    if(s.dragging>=0 && msg==WM_MOUSEMOVE) {
-        // Keep all panel geometry and painting unchanged until release.
+        s.dragging=id;s.startExtra=s.extra[id];s.startX=x;
+        // Keep the original requested width for cancellation, but anchor live
+        // movement at the effective width when the window has constrained it.
+        for(const auto& p:BottomPanelSpans(app))if(p.id==id)s.startX+=s.startExtra-p.extra;
+        SetCapture(host);if(GetCapture()!=host)s.dragging=-1;
         SetCursor(LoadCursorW(nullptr,reinterpret_cast<LPCWSTR>(IDC_SIZEWE)));return true;
     }
+    if(s.dragging>=0 && msg==WM_MOUSEMOVE) {
+        update();SetCursor(LoadCursorW(nullptr,reinterpret_cast<LPCWSTR>(IDC_SIZEWE)));return true;
+    }
     if(s.dragging>=0 && msg==WM_LBUTTONUP) {
-        RECT r{};GetClientRect(host,&r);auto spans=BottomPanelSpans(app);
-        int limit=(std::max)(0,int(r.right)-3-spans.back().right);
-        for(const auto& p:spans)if(p.id!=s.dragging)limit-=p.extra;
-        s.extra[s.dragging]=(std::clamp)(s.startExtra+x-s.startX,0,(std::max)(0,limit));
-        redraw();SetCursor(LoadCursorW(nullptr,reinterpret_cast<LPCWSTR>(IDC_SIZEWE)));
-        if(msg==WM_LBUTTONUP){s.dragging=-1;if(GetCapture()==host)ReleaseCapture();}
+        update();SetCursor(LoadCursorW(nullptr,reinterpret_cast<LPCWSTR>(IDC_SIZEWE)));
+        s.dragging=-1;if(GetCapture()==host)ReleaseCapture();
         return true;
     }
     if(s.dragging>=0 && (msg==WM_CANCELMODE || msg==WM_CAPTURECHANGED || (msg==WM_KEYDOWN && key==VK_ESCAPE))) {
-        s.dragging=-1;
+        const int id=s.dragging;s.dragging=-1;
+        if(s.extra[id]!=s.startExtra){s.extra[id]=s.startExtra;redraw();}
         if(GetCapture()==host)ReleaseCapture();return true;
     }
     if(msg==WM_MOUSEMOVE && HitBottomPanelEdge(app,x,y)>=0) {

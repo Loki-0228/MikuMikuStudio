@@ -108,7 +108,7 @@ BOOL WINAPI ObserveRedraw(HWND window, const RECT* rect, HRGN region, UINT flags
         ++redraws;
         const UINT required = RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN;
         Check(!rect && !region && (flags & required) == required,
-              "release repaints the whole parent and all child controls");
+              "live resize repaints the whole parent and all child controls");
         Check(g_Block->WindowLayoutReady() != 0, "paint occurs only after layout is complete");
         // Hidden hosts do not receive normal visible-window paints. Dispatch
         // that paint explicitly to exercise the real GDI + D3D paint path.
@@ -236,20 +236,31 @@ void CheckBottomPanelResize(MMDApp* app) {
     app->UiOptionFlag(2)=0;app->UiOptionFlag(6)=0;
     HandleWindowSize(app);
     RECT client{};GetClientRect(host,&client);
+    const int sideBeforeBottom=app->SidebarWidth();const float ratioBeforeBottom=app->SidebarRatio();
+    app->SidebarWidth()=601;app->SidebarRatio()=float(double(601)/client.right);RelayoutSidebarControls(app);
     const int y=client.bottom-150;
     auto drag=[&](int id,int delta,UINT ending=WM_LBUTTONUP) {
         int edge=0;
         for(auto p:BottomPanelSpans(app))if(p.id==id)edge=BottomPanelX(app,p.right);
         SendMessageW(host,WM_LBUTTONDOWN,MK_LBUTTON,MAKELPARAM(edge,y));
         Check(app->bottomPanelSizing.dragging==id,"right border captures the selected panel");
-        const auto beforeModel=ControlBounds(host,436),beforeAccessory=ControlBounds(host,471);
+        const int control=id==1?436:id==2?449:id==6?471:509;
+        const auto beforeControl=ControlBounds(host,control);
         const int beforeExtra=app->bottomPanelSizing.extra[id];
         SendMessageW(host,WM_MOUSEMOVE,MK_LBUTTON,MAKELPARAM(edge+delta,y));
-        const auto duringModel=ControlBounds(host,436),duringAccessory=ControlBounds(host,471);
-        Check(EqualRect(&beforeModel,&duringModel) && EqualRect(&beforeAccessory,&duringAccessory) &&
-              beforeExtra==app->bottomPanelSizing.extra[id],"panel geometry stays unchanged throughout dragging");
-        SendMessageW(host,ending,0,MAKELPARAM(edge+delta,y));
+        const auto duringControl=ControlBounds(host,control);
+        Check(app->SidebarWidth()==601&&!app->bottomPanelSizing.relayout,
+              "bottom-only relayout preserves exact sidebar pixels and clears its batching scope");
+        Check(!EqualRect(&beforeControl,&duringControl) && beforeExtra!=app->bottomPanelSizing.extra[id],
+              "panel controls follow effective pointer movement before release");
+        const auto layouts=ui_metrics::counts[ui_metrics::Layout].load();
+        SendMessageW(host,WM_MOUSEMOVE,MK_LBUTTON,MAKELPARAM(edge+delta,y));
+        Check(ui_metrics::counts[ui_metrics::Layout].load()==layouts,"repeated bottom drag position skips layout");
+        SendMessageW(host,ending,ending==WM_KEYDOWN?VK_ESCAPE:0,MAKELPARAM(edge+delta,y));
         Check(app->bottomPanelSizing.dragging<0 && GetCapture()!=host,"panel drag releases capture");
+        if(ending!=WM_LBUTTONUP){const auto restored=ControlBounds(host,control);
+            Check(EqualRect(&beforeControl,&restored)&&app->bottomPanelSizing.extra[id]==beforeExtra,
+                  "cancel lost capture and Escape restore live panel geometry");}
     };
     app->EnglishUI()=2;LocalizeUI(app);
     SaveBottomPreview(app,"bottom-before.bmp");
@@ -269,10 +280,22 @@ void CheckBottomPanelResize(MMDApp* app) {
     auto accWide=ControlBounds(host,471);
     Check(accWide.right-accWide.left>acc.right-acc.left,"accessory name selector expands");
     SaveBottomPreview(app,"bottom-after.bmp");
+    {
+        int edge=0;for(const auto& span:BottomPanelSpans(app))if(span.id==1)edge=BottomPanelX(app,span.right);
+        SendMessageW(host,WM_LBUTTONDOWN,MK_LBUTTON,MAKELPARAM(edge,y));
+        SendMessageW(host,WM_MOUSEMOVE,MK_LBUTTON,MAKELPARAM(edge+20,y));
+        Check(app->bottomPanelSizing.extra[1]==160,"bottom panel changes during movement");
+        SendMessageW(host,WM_LBUTTONUP,0,MAKELPARAM(edge+35,y));
+        Check(app->bottomPanelSizing.extra[1]==175,"bottom release uses a newer pointer position than the last move");
+        drag(1,-35);
+    }
+
     drag(1,50,WM_CANCELMODE);
     Check(app->bottomPanelSizing.extra[1]==140,"cancel restores previous panel width");
     drag(1,50,WM_CAPTURECHANGED);
     Check(app->bottomPanelSizing.extra[1]==140,"lost capture restores previous panel width");
+    drag(1,50,WM_KEYDOWN);
+    Check(app->bottomPanelSizing.extra[1]==140,"Escape restores previous panel width");
     drag(1,10000);
     auto volume=ControlBounds(host,534);
     Check(volume.right<=client.right,"maximum drag keeps volume inside the window");
@@ -292,7 +315,22 @@ void CheckBottomPanelResize(MMDApp* app) {
           "both expression columns expand their name selectors");
     if(oldModel)SaveBottomPreview(app,"bottom-morph-after.bmp");
     app->CameraMode()=1;app->ModelSlot(0)=oldModel;app->SetSelectedModelSlot(oldSlot);
+
+    {
+        app->bottomPanelSizing.extra[1]=2500;app->bottomPanelSizing.extra[2]=3000;HandleWindowSize(app);
+        int edge=0,effective=0;for(const auto& span:BottomPanelSpans(app))if(span.id==1){edge=BottomPanelX(app,span.right);effective=span.extra;}
+        Check(effective>40&&effective<2500,"seed a window-constrained requested bottom width");
+        SendMessageW(host,WM_LBUTTONDOWN,MK_LBUTTON,MAKELPARAM(edge,y));
+        SendMessageW(host,WM_MOUSEMOVE,MK_LBUTTON,MAKELPARAM(edge-40,y));
+        Check(app->bottomPanelSizing.extra[1]==effective-40,"constrained panel starts at its visible width without jumping");
+        SendMessageW(host,WM_MOUSEMOVE,MK_LBUTTON,MAKELPARAM(edge,y));
+        Check(app->bottomPanelSizing.extra[1]==effective,"shrinking panel can grow back despite sibling requested widths");
+        SendMessageW(host,WM_CANCELMODE,0,0);
+        Check(app->bottomPanelSizing.extra[1]==2500&&app->bottomPanelSizing.extra[2]==3000,
+              "cancel restores constrained requested widths rather than discarding user layout preferences");
+    }
     app->bottomPanelSizing={};
+    app->SidebarWidth()=sideBeforeBottom;app->SidebarRatio()=ratioBeforeBottom;
     SetWindowPos(host,nullptr,0,0,1200,820,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);HandleWindowSize(app);
 }
 
@@ -732,43 +770,59 @@ int main(int argc, char** argv) {
     };
     observe = true;
     for (int target : {600, 310, 800, 250}) {
-        const int width = app->SidebarWidth();
-        const float ratio = app->SidebarRatio();
-        const RECT viewport = app->ViewportRect();
-        std::vector<RECT> controls;
-        for (int id : ids) controls.push_back(Bounds(GetDlgItem(window,id)));
         redraws = presents = 0;
         begin();
         for (int x : {450,850,270}) {
+            const RECT previous=app->ViewportRect();
+            std::vector<RECT> controls;for(int id:ids)controls.push_back(Bounds(GetDlgItem(window,id)));
+            const auto beforeRedraw=redraws,beforePresent=presents;
             SendMessageW(window, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(x,100));
-            Check(app->SidebarWidth() == width && app->SidebarRatio() == ratio &&
-                  EqualRect(&viewport,&app->ViewportRect()), "drag leaves sidebar and viewport unchanged");
-            bool unchanged = true;
-            for (size_t i=0;i<controls.size();++i) {
-                const auto rect=Bounds(GetDlgItem(window,ids[i]));
-                unchanged &= EqualRect(&rect,&controls[i]) != FALSE;
-            }
-            Check(unchanged && redraws == 0 && presents == 0, "drag leaves native controls in place without resize repaints");
-            Check(app->WindowLayoutReady() != 0, "ordinary painting remains available during drag");
+            Check(app->SidebarWidth()==x&&!EqualRect(&previous,&app->ViewportRect()),
+                  "sidebar and viewport geometry follow each live pointer position");
+            bool moved=false;for(size_t i=0;i<controls.size();++i){const auto current=Bounds(GetDlgItem(window,ids[i]));moved|=!EqualRect(&current,&controls[i]);}
+            Check(moved&&redraws==beforeRedraw+1&&presents==beforePresent,
+                  "live controls move in one repaint without recursively presenting the scene");
+            Check(app->WindowLayoutReady()!=0,"live painting resumes after the complete layout batch");
+            SendMessageW(window,WM_MOUSEMOVE,MK_LBUTTON,MAKELPARAM(x,100));
+            Check(redraws==beforeRedraw+1,"duplicate sidebar position avoids another repaint");
+            scheduler_checks::Tick(app);
+            Check(presents==beforePresent+1,"safe coordinator boundary presents each resized viewport");
         }
+        const auto beforePresent=presents;
         SendMessageW(window, WM_LBUTTONUP, 0, MAKELPARAM(target,100));
-        Check(presents == 0,"release paint queues presentation without entering the frame driver");
+        Check(presents==beforePresent,"release queues presentation without entering the frame driver");
         scheduler_checks::Tick(app);
-        Check(app->SidebarWidth() == target, "release uses the final pointer position");
-        Check(redraws == 1 && presents == 1, "release performs one complete repaint and scene presentation");
-        Check(app->SidebarResizeDragging() == 0 && GetCapture() != window, "release ends resize and mouse capture");
+        Check(app->SidebarWidth()==target&&redraws==4&&presents==4,"release uses the final pointer position and one final repaint");
+        Check(app->SidebarResizeDragging()==0&&GetCapture()!=window&&!app->sidebarSizing.active,
+              "release ends resize and mouse capture without reverting the committed width");
     }
-    for (UINT cancel : {WM_CANCELMODE, WM_CAPTURECHANGED}) {
-        const int width=app->SidebarWidth();
-        begin(); SendMessageW(window,WM_MOUSEMOVE,MK_LBUTTON,MAKELPARAM(650,100));
-        SendMessageW(window,cancel,0,0);
+    for (UINT cancel : {WM_CANCELMODE, WM_CAPTURECHANGED, WM_KEYDOWN}) {
+        const int width=app->SidebarWidth();const float ratio=app->SidebarRatio();const auto viewport=app->ViewportRect();
+        begin();SendMessageW(window,WM_MOUSEMOVE,MK_LBUTTON,MAKELPARAM(650,100));
+        Check(app->SidebarWidth()==650,"cancel case first publishes live geometry");
+        SendMessageW(window,cancel,cancel==WM_KEYDOWN?VK_ESCAPE:0,0);
         SendMessageW(window,WM_LBUTTONUP,0,MAKELPARAM(650,100));
-        Check(app->SidebarWidth()==width && app->SidebarResizeDragging()==0, "cancel or lost capture discards pending width");
+        Check(app->SidebarWidth()==width&&app->SidebarRatio()==ratio&&EqualRect(&viewport,&app->ViewportRect())&&
+              !app->SidebarResizeDragging()&&!app->sidebarSizing.active&&GetCapture()!=window,
+              "cancel lost capture and Escape restore exact starting width ratio and viewport");
     }
+
+    const int beforeClampWidth=app->SidebarWidth();const float beforeClampRatio=app->SidebarRatio();
+    for(int pointer:{-100,30000}){
+        RECT client{};GetClientRect(window,&client);begin();
+        SendMessageW(window,WM_MOUSEMOVE,MK_LBUTTON,MAKELPARAM(pointer,100));
+        const int expected=pointer<0?250:int(client.right)-5;
+        Check(app->SidebarWidth()==expected,"live sidebar clamps movement beyond either window edge");
+        const auto painted=redraws;SendMessageW(window,WM_MOUSEMOVE,MK_LBUTTON,MAKELPARAM(pointer,100));
+        Check(redraws==painted,"repeated clamped sidebar position does not repaint");
+        SendMessageW(window,WM_LBUTTONUP,0,MAKELPARAM(pointer,100));
+        Check(app->SidebarWidth()==expected&&!app->SidebarResizeDragging(),"same-position boundary release retains live width");
+    }
+    app->SidebarWidth()=beforeClampWidth;app->SidebarRatio()=beforeClampRatio;HandleWindowSize(app);
     Check(app->CurrentFrame()==frame && app->SceneModified()==modified, "resizing preserves frame and animation data");
     Check(!scheduler_checks::realVisible(window), "test never shows the production window");
     observe=false;
     cursor_checks::Run(app);
     ShutdownCleanup(app); g_Block=nullptr; delete app;
-    std::puts("Sidebar release-only resize regressions passed");
+    std::puts("Sidebar live resize regressions passed");
 }

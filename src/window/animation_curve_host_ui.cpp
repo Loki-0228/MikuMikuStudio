@@ -27,6 +27,7 @@
 #include <memory>
 #include <cstdlib>
 #include "mikudancestudio/global_key_layout.hpp"
+#include "ui_control_layout.hpp"
 
 namespace mikudancestudio { void RefreshAfterFrameApply(MMDApp*); }
 
@@ -1046,6 +1047,8 @@ void LayoutMorphControls(MMDApp*app){
     if(app==nullptr)return;
     HWND hwnd=app->MainWindow();
     if(hwnd==nullptr)return;
+    const bool deferPaint=app->bottomPanelSizing.relayout;
+    const auto move=[&](int id,int x,int y,int w,int h){ui::MoveLayoutControl(hwnd,id,x,y,w,h,deferPaint);};
     for(int lane=0;lane<kMorphLaneCount;++lane){
         HWND button=GetDlgItem(hwnd,kMorphCurveLane[lane]);
         HWND combo=GetDlgItem(hwnd,kMorphComboIds[lane]);
@@ -1059,18 +1062,18 @@ void LayoutMorphControls(MMDApp*app){
         // this idempotent: a second relayout cannot narrow the selector again.
         const int left=arrowRect.left+kMorphComboArrowOffset;
         // The right edge is unchanged, so the forward arrow beside it stays put.
-        MoveWindow(combo,left+kMorphLauncherWidth,comboRect.top,kMorphComboNarrowWidth,
-                   kMorphComboHeight,TRUE);
+        move(kMorphComboIds[lane],left+kMorphLauncherWidth,comboRect.top,kMorphComboNarrowWidth,
+             kMorphComboHeight);
         // Native combo height follows its font/theme, not the requested popup
         // height. Align the entire row to its actual collapsed rectangle.
         const RECT aligned=Rect(hwnd,kMorphComboIds[lane]);
         const int rowHeight=static_cast<int>(aligned.bottom-aligned.top);
-        MoveWindow(button,left,aligned.top,kMorphLauncherWidth,rowHeight,TRUE);
-        MoveWindow(arrow,arrowRect.left,aligned.top,
-                   arrowRect.right-arrowRect.left,rowHeight,TRUE);
+        move(kMorphCurveLane[lane],left,aligned.top,kMorphLauncherWidth,rowHeight);
+        move(kMorphPrevArrowIds[lane],arrowRect.left,aligned.top,
+             arrowRect.right-arrowRect.left,rowHeight);
         const RECT next=Rect(hwnd,kMorphNextArrowIds[lane]);
-        MoveWindow(GetDlgItem(hwnd,kMorphNextArrowIds[lane]),next.left,aligned.top,
-                   next.right-next.left,rowHeight,TRUE);
+        move(kMorphNextArrowIds[lane],next.left,aligned.top,
+             next.right-next.left,rowHeight);
         // Font-dependent combo heights can extend into the legacy slider row.
         // Keep sibling windows disjoint; otherwise the slider paints across
         // the selector until the selector repaints on hover.
@@ -1079,13 +1082,13 @@ void LayoutMorphControls(MMDApp*app){
         const int sliderTop=static_cast<int>(aligned.bottom)+2;
         const int sliderHeight=std::max(1,std::min(25,
             static_cast<int>(comboRect.top)+48-sliderTop));
-        MoveWindow(slider,sliderRect.left,sliderTop,
-                   sliderRect.right-sliderRect.left,sliderHeight,TRUE);
+        move(kMorphSliderIds[lane],sliderRect.left,sliderTop,
+             sliderRect.right-sliderRect.left,sliderHeight);
         SendMessageW(combo,CB_SETDROPPEDWIDTH,240,0);
-        for(HWND control:{arrow,button,combo,GetDlgItem(hwnd,kMorphNextArrowIds[lane]),slider})
+        if(!deferPaint)for(HWND control:{arrow,button,combo,GetDlgItem(hwnd,kMorphNextArrowIds[lane]),slider})
             RedrawWindow(control,nullptr,nullptr,RDW_INVALIDATE|RDW_ERASE|RDW_FRAME);
     }
-    ShowMorphControls(app);
+    if(!deferPaint)ShowMorphControls(app);
 }
 void Localize(MMDApp*app){
     if(!app)return;const unsigned lang=app->EnglishUI();HWND hwnd=app->MainWindow();

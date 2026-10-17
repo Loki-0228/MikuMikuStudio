@@ -1217,12 +1217,13 @@ void HandleLButtonDown(MMDApp* app) {
     const std::int32_t x = app->MouseX();
     const std::int32_t sidebar = app->SidebarWidth();
 
-    // Start a deferred sidebar resize. The current layout remains valid
-    // until release, so normal paints need not be suspended. Gates as in the
+    // Start a live sidebar resize, retaining the exact geometry for cancellation.
+    // Controls move as one layout batch before each repaint. Gates as in the
     // original): y <= bottom-0x9E(158) && x <= sidebar+6 &&
     // [0xA0D38]==0 && sidebar <= x.
     if (y <= rc.bottom - 0x9E && x <= sidebar + 6 &&
         app->FloatingWindow() == nullptr && sidebar <= x) {
+        app->sidebarSizing = {true, app->SidebarWidth(), app->SidebarRatio()};
         app->SidebarResizeDragging() = 1;
         return;
     }
