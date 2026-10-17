@@ -6,6 +6,7 @@
 #include "mikudancestudio/frame_presentation.hpp"
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <vector>
 #include <utility>
 #include <MinHook.h>
@@ -25,6 +26,15 @@ static int WINAPI UnexpectedW(HWND, LPCWSTR text, LPCWSTR, UINT) {
 static bool VisibleStyle(HWND window) {
     return (GetWindowLongPtrW(window, GWL_STYLE) & WS_VISIBLE) != 0;
 }
+static UINT WindowDpi(HWND window) {
+    using GetDpi = UINT(WINAPI*)(HWND);
+    const auto getDpi = reinterpret_cast<GetDpi>(GetProcAddress(GetModuleHandleW(L"user32.dll"), "GetDpiForWindow"));
+    if (getDpi) return getDpi(window);
+    HDC dc = GetDC(window);
+    const UINT dpi = dc ? UINT(GetDeviceCaps(dc, LOGPIXELSX)) : 96;
+    if (dc) ReleaseDC(window, dc);
+    return dpi;
+}
 int main(int argc, char** argv) {
     if (argc > 3) SetProcessDPIAware();
     const int width = argc > 1 ? std::atoi(argv[1]) : 1000;
@@ -36,7 +46,8 @@ int main(int argc, char** argv) {
     MH_EnableHook(MH_ALL_HOOKS);
     auto* app = new MMDApp;
     g_Block = app;
-    app->state = MMDAppState{};
+    // Avoid the large state temporary on the default 1 MB test-thread stack.
+    std::memset(&app->state, 0, sizeof(app->state));
     app->InitDefaults();
     Check(InitMainWindowAndD3D(app, GetModuleHandleW(nullptr), SW_HIDE), "initialize hidden production host");
     HWND window = app->MainWindow();
@@ -60,7 +71,7 @@ int main(int argc, char** argv) {
     std::printf("NORMAL window=%ldx%ld viewport=%ldx%ld sidebar=%d dpi=%u children=%zu\n",
         before.right-before.left, before.bottom-before.top,
         beforeView.right-beforeView.left, beforeView.bottom-beforeView.top,
-        sidebar, GetDpiForWindow(window), children.size());
+        sidebar, WindowDpi(window), children.size());
     for (int cycle = 0; cycle < 2; ++cycle) {
         SendMessageW(window, WM_SYSKEYDOWN, VK_RETURN, LPARAM(1) << 29);
         Check(app->FullscreenMode() != 0, "Alt+Enter reaches fullscreen handler");
