@@ -795,7 +795,7 @@ void RegisterGravityKeyCurrent(MMDApp* app, std::int32_t frame) {  // VA 0x00412
         key.noise = app->state.gravityNoise;
         key.noiseEnabled = app->GravityNoiseEnabled();
         key.selected = 1;
-        curve_host::NotifyRegistered(app, curve_host::Kind::Gravity);
+        curve_host::NotifyLegacyRegistered(app, curve_host::Kind::Gravity, 0, frame);
         return;
     }
 
@@ -831,7 +831,7 @@ void RegisterGravityKeyCurrent(MMDApp* app, std::int32_t frame) {  // VA 0x00412
     added.selected = 1;
     if (target > app->state.lastRegisteredFrame)
         app->state.lastRegisteredFrame = target;
-    curve_host::NotifyRegistered(app, curve_host::Kind::Gravity);
+    curve_host::NotifyLegacyRegistered(app, curve_host::Kind::Gravity, 0, frame);
 }
 
 namespace {  // (resumed)

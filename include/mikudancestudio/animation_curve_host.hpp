@@ -14,6 +14,40 @@ bool Read(MMDApp&, Kind, int slot, std::vector<curve_editor::Channel>&, std::wst
 bool Write(MMDApp&, Kind, int slot, const std::vector<curve_editor::Channel>&, std::wstring&);
 void Apply(MMDApp*, Kind, double frame, int slot = 0);
 bool Has(MMDApp*, Kind, int slot = 0);
+// Legacy registration only: reconcile an explicit native frame on a detached
+// authoring copy, then publish it. May throw before authoring publication;
+// native key registration has already happened. Controlled history callers
+// must use TrackAuthoring::Prepare instead, never this post-write operation.
+void ReconcileRegisteredFrame(MMDApp&, Kind, int slot, int frame);
+// Same legacy-only operation for an entire import/paste. One detached track
+// copy and one reconciliation regardless of how many rows were registered.
+void ReconcileRegisteredFrames(MMDApp&, Kind, int slot, const std::vector<int>& frames);
+// Best-effort bridge for completed, unbound legacy native registration only.
+// It may update authoring and must never be used after a controlled commit.
+void NotifyLegacyRegistered(MMDApp*, Kind, int slot, int frame) noexcept;
+// Collects completed legacy registrations until the next curve read/evaluation
+// or scope exit. Nested scopes for one app share the outermost collector.
+// Construction does not allocate; live native keys remain owned by the app.
+class LegacyRegistrationBatch {
+    MMDApp* app_ = nullptr;
+    LegacyRegistrationBatch* previous_ = nullptr;
+    std::array<std::vector<int>, 259> frames_;
+    bool flushing_ = false;
+    static thread_local LegacyRegistrationBatch* active_;
+    void Flush() noexcept;
+    friend void NotifyLegacyRegistered(MMDApp*, Kind, int, int) noexcept;
+    friend void FlushLegacyRegistrations(MMDApp*) noexcept;
+public:
+    explicit LegacyRegistrationBatch(MMDApp*) noexcept;
+    ~LegacyRegistrationBatch() noexcept;
+    LegacyRegistrationBatch(const LegacyRegistrationBatch&) = delete;
+    LegacyRegistrationBatch& operator=(const LegacyRegistrationBatch&) = delete;
+    LegacyRegistrationBatch(LegacyRegistrationBatch&&) = delete;
+    LegacyRegistrationBatch& operator=(LegacyRegistrationBatch&&) = delete;
+};
+// Read/evaluation boundary: synchronizes queued frames once per affected track
+// without moving the playhead or writing native keys. Retains batch capacity.
+void FlushLegacyRegistrations(MMDApp*) noexcept;
 void Reset(MMDApp*);
 void ForgetAccessory(MMDApp*, int slot);
 // Keeps precisely one accessory's authored curves while its slot is empty.
@@ -240,6 +274,16 @@ public:
         void Publish(void* finalIdentity) noexcept;
     };
     std::unique_ptr<Target> Prepare(const NativeKeyView&) const;
+    // Borrowed frames are absolute, may be repeated or unsorted, and must be
+    // present in the forward native target. They are never retained by this
+    // object. The history record owns and budgets its input frame container.
+    // Undo derives from the original layer without forcing these insertions.
+    std::unique_ptr<Target> Prepare(const NativeKeyView&,
+        const std::vector<int>& explicitlyRegisteredFrames, bool forward = true) const;
+    // True when an original authored lane lacks any explicitly registered
+    // frame, even if the shared native row already has identical payload.
+    // No authoring means false. Invalid frames or a stale record throw.
+    bool HasRegistrationChanges(const std::vector<int>& explicitlyRegisteredFrames) const;
     std::uint64_t RetainedBytes() const noexcept;
 };
 #endif

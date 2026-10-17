@@ -322,6 +322,52 @@ bool SameStateIdentity(const State& left, const State& right, Kind kind) noexcep
 }
 // Detect edits made by the existing registration/delete/paste/undo commands.
 // Only changed native keys replace authored keys; unrelated tangents survive.
+void ValidateRegistrationFrames(const std::vector<int>& frames) {
+    for(const int frame:frames)
+        if(frame<0||frame>frame_limits::maximum)throw std::invalid_argument("explicit registration frame");
+}
+bool MissingRegistrationFrame(const State& state,const std::vector<int>& frames) {
+    for(const auto& channel:state.channels)for(const int frame:frames){
+        const auto& keys=channel.track.keys;
+        const auto found=std::lower_bound(keys.begin(),keys.end(),frame,[](const ac::Key& key,int at){return key.frame<at;});
+        if(found==keys.end()||found->frame!=frame)return true;
+    }
+    return false;
+}
+void ValidateTargetRegistrationFrames(const std::vector<Channel>& native,const std::vector<int>& frames) {
+    for(const auto& channel:native){
+        const auto& actual=channel.track.keys;
+        for(const int frame:frames){
+            const auto present=std::lower_bound(actual.begin(),actual.end(),frame,[](const ac::Key& key,int at){return key.frame<at;});
+            if(present==actual.end()||present->frame!=frame)throw std::invalid_argument("missing registered native frame");
+        }
+    }
+}
+void ForceRegistrationFrames(State& state,const std::vector<Channel>& native,const std::vector<int>& frames) {
+    if(frames.empty())return;
+    if(state.channels.size()!=native.size()||state.baseline.size()!=native.size())
+        throw std::invalid_argument("explicit registration channels");
+    ValidateTargetRegistrationFrames(native,frames);
+    std::vector<int> missing;missing.reserve(frames.size());
+    for(std::size_t c=0;c<native.size();++c){
+        // A native row belongs to all lanes. Removing only the absent authored
+        // lane's comparison entry makes normal reconciliation insert its key,
+        // even when the native row itself did not change at all.
+        const auto& authored=state.channels[c].track.keys;
+        auto& baseline=state.baseline[c].track.keys;
+        missing.clear();
+        for(const int frame:frames){
+            const auto found=std::lower_bound(authored.begin(),authored.end(),frame,[](const ac::Key& key,int at){return key.frame<at;});
+            if(found==authored.end()||found->frame!=frame)missing.push_back(frame);
+        }
+        // Remove a batch in one pass. Repeated vector erases here would make
+        // a large explicit motion import quadratic in the number of keys.
+        std::sort(missing.begin(),missing.end());missing.erase(std::unique(missing.begin(),missing.end()),missing.end());
+        baseline.erase(std::remove_if(baseline.begin(),baseline.end(),[&](const ac::Key& key){
+            return std::binary_search(missing.begin(),missing.end(),key.frame);
+        }),baseline.end());
+    }
+}
 void Reconcile(State&s,const std::vector<Channel>&native){
     if(Same(s.baseline,native))return;
     for(size_t c=0;c<s.channels.size();++c){
@@ -363,6 +409,7 @@ void Reconcile(State&s,const std::vector<Channel>&native){
     }s.baseline=native;
 }
 State* Current(MMDApp&app,Kind k,int slot){
+    FlushLegacyRegistrations(&app);
     auto it=states.find({&app,k,slot});if(it==states.end())return nullptr;
     if(!StateIdentityCurrent(it->second,app,k,slot)){states.erase(it);return nullptr;}
     const uint64_t fingerprint=Fingerprint(app,k,slot);
@@ -645,6 +692,22 @@ std::uint64_t AuthoringDigest(const State& state) {
 }
 
 }  // namespace
+
+void ReconcileRegisteredFrame(MMDApp& app,Kind kind,int slot,int frame) {
+    ReconcileRegisteredFrames(app,kind,slot,{frame});
+}
+void ReconcileRegisteredFrames(MMDApp& app,Kind kind,int slot,const std::vector<int>& frames) {
+    ValidateRegistrationFrames(frames);if(frames.empty())return;
+    const auto found=states.find({&app,kind,slot});
+    if(found==states.end()||!StateIdentityCurrent(found->second,app,kind,slot))return;
+    std::vector<Channel> native;
+    if(!NativeRead(app,kind,slot,native))throw std::invalid_argument("registered native track");
+    State next=found->second;
+    ForceRegistrationFrames(next,native,frames);Reconcile(next,native);
+    if(AuthoringDigest(next)==AuthoringDigest(found->second))return;
+    next.revision=NextAuthoringRevision();next.fingerprint=Fingerprint(app,kind,slot);
+    found->second=std::move(next);
+}
 
 bool CaptureAuthoring(MMDApp& app, AuthoringTable& out, std::wstring& error) {
     error.clear();
@@ -952,14 +1015,26 @@ bool TrackAuthoring::IsCurrent() const noexcept{return impl_->Current();}
 TrackAuthoring::Target::Target(std::unique_ptr<Impl> p):impl_(std::move(p)){}
 TrackAuthoring::Target::~Target()=default;
 std::unique_ptr<TrackAuthoring::Target> TrackAuthoring::Prepare(const NativeKeyView& view) const {
+    return Prepare(view,{},true);
+}
+bool TrackAuthoring::HasRegistrationChanges(const std::vector<int>& frames) const {
+    ValidateRegistrationFrames(frames);
+    if(!impl_->Current())throw std::invalid_argument("changed authoring track");
+    return impl_->authored&&MissingRegistrationFrame(impl_->seed,frames);
+}
+std::unique_ptr<TrackAuthoring::Target> TrackAuthoring::Prepare(const NativeKeyView& view,const std::vector<int>& frames,bool forward) const {
+    ValidateRegistrationFrames(frames);
     if(!impl_->Current())throw std::invalid_argument("changed authoring track");
     auto candidate=std::make_unique<Target::Impl>(impl_);candidate->identity=Identity(impl_->app,impl_->kind,impl_->slot);
     candidate->poolAllocation=TrackPoolAllocation(impl_->app,impl_->kind,impl_->slot);
     const auto found=states.find(impl_->address);
     if(found!=states.end()){candidate->before=&found->second;candidate->revision=found->second.revision;candidate->digest=AuthoringDigest(found->second);}
     candidate->native=TargetChannels(view,impl_->kind);
+    if(forward)ValidateTargetRegistrationFrames(candidate->native,frames);
     if(impl_->authored){
-        State target=impl_->seed;Reconcile(target,candidate->native);target.revision=NextAuthoringRevision();target.fingerprint=0;
+        State target=impl_->seed;
+        if(forward)ForceRegistrationFrames(target,candidate->native,frames);
+        Reconcile(target,candidate->native);target.revision=NextAuthoringRevision();target.fingerprint=0;
         decltype(states) pending;pending.emplace(impl_->address,std::move(target));candidate->target=pending.extract(pending.begin());
     }
     return std::unique_ptr<Target>(new Target(std::move(candidate)));

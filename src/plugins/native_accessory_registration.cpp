@@ -151,13 +151,14 @@ struct Registration final : HistoryChange, std::enable_shared_from_this<Registra
     std::vector<Patch> patches;
     std::vector<Dependency> original;
     std::vector<Parent> parents;
+    std::vector<int> registeredFrames;
     GlobalKeySelection selection;
     curve_host::TrackAuthoring curves;
     Registration(MMDApp& a, unsigned s, const Key& pose, std::vector<Dependency> chain)
         : app(a), slot(s), object(a.AccessorySlot(s)), owner(RetainSceneObject(a, MMS_OBJECT_ACCESSORY, s)),
           identity(mdl::KeyPoolIdentity(a.AccessoryKeys(s))), capacity(mdl::KeyPoolCapacity(a.AccessoryKeys(s))),
           frame(a.CurrentFrame()), beforePose(Pose(*object)), afterPose(pose), lastBefore(a.LastRegisteredFrame()), lastAfter(lastBefore),
-          original(std::move(chain)), selection(a), curves(a, curve_host::Kind::Accessory, int(s)) {
+          original(std::move(chain)), registeredFrames{a.CurrentFrame()}, selection(a), curves(a, curve_host::Kind::Accessory, int(s)) {
         CaptureParent(a, beforePose, parents); CaptureParent(a, afterPose, parents);
         for (const auto& entry : original) CaptureParent(a, entry.key, parents);
     }
@@ -240,7 +241,7 @@ struct Registration final : HistoryChange, std::enable_shared_from_this<Registra
             view.key = [](const void* context, std::uint32_t index) noexcept -> const void* {
                 const auto& keys = *static_cast<const std::vector<Key>*>(context); return index < keys.size() ? &keys[index] : nullptr;
             };
-            candidate->curves = curves.Prepare(view);
+            candidate->curves = curves.Prepare(view, registeredFrames, forward);
             if (!candidate->curves) return MMS_E_STALE;
             if (candidate->first) candidate->afterPose = afterPose;
             else if (candidate->curves->Authored()) {
@@ -257,6 +258,7 @@ struct Registration final : HistoryChange, std::enable_shared_from_this<Registra
     std::uint64_t RetainedBytes() const noexcept override {
         std::uint64_t bytes = sizeof(*this) + 4 * sizeof(void*);
         Add(bytes, patches.capacity(), sizeof(Patch)); Add(bytes, original.capacity(), sizeof(Dependency));
+        Add(bytes, registeredFrames.capacity(), sizeof(int));
         Add(bytes, parents.capacity(), sizeof(Parent)); Add(bytes, 1, selection.RetainedBytes()); Add(bytes, 1, curves.RetainedBytes());
         return bytes;
     }
@@ -268,6 +270,7 @@ struct AccessoryPaste final : GlobalPastePart, std::enable_shared_from_this<Acce
     int frame;Key initialPose;bool published=false;
     std::vector<Patch> patches;std::vector<Dependency> original;
     std::vector<Parent> parents;
+    std::vector<int> registeredFrames;
     curve_host::TrackAuthoring curves;
     AccessoryPaste(MMDApp& a,unsigned s,std::vector<Dependency> chain)
         :app(a),slot(s),object(a.AccessorySlot(s)),owner(RetainSceneObject(a,MMS_OBJECT_ACCESSORY,s)),
@@ -345,7 +348,7 @@ struct AccessoryPaste final : GlobalPastePart, std::enable_shared_from_this<Acce
             view.key=[](const void* context,std::uint32_t index)noexcept->const void* {
                 const auto& keys=*static_cast<const std::vector<Key>*>(context);return index<keys.size()?&keys[index]:nullptr;
             };
-            candidate->curves=curves.Prepare(view);if(!candidate->curves)return MMS_E_STALE;
+            candidate->curves=curves.Prepare(view,registeredFrames,forward);if(!candidate->curves)return MMS_E_STALE;
             if(candidate->curves->Authored()) {
                 std::array<double,12> values{};if(!candidate->curves->Sample(candidate->frame,values))return MMS_E_ARGUMENT;
                 candidate->afterPose=AuthoredPose(values);
@@ -359,6 +362,7 @@ struct AccessoryPaste final : GlobalPastePart, std::enable_shared_from_this<Acce
     std::uint64_t RetainedBytes()const noexcept override {
         std::uint64_t bytes=sizeof(*this)+4*sizeof(void*);
         Add(bytes,patches.capacity(),sizeof(Patch));Add(bytes,original.capacity(),sizeof(Dependency));
+        Add(bytes,registeredFrames.capacity(),sizeof(int));
         Add(bytes,parents.capacity(),sizeof(Parent));Add(bytes,1,curves.RetainedBytes());return bytes;
     }
 };
@@ -388,6 +392,7 @@ MmsResult PlanAccessoryKeyPastePart(MMDApp& app,unsigned slot,const GlobalPasteS
         for(const auto& record:source.accessories) {
             if(record.slot!=slot)continue;any=true;unsigned frame;
             if(!frame_limits::Add(int(source.frameOffset),record.frameOffset,frame))return MMS_E_ARGUMENT;
+            change->registeredFrames.push_back(int(frame));
             Key pose{};pose.visible=record.visible;pose.shadowEnabled=record.shadowEnabled;
             pose.parentModel=record.parentModel;pose.parentBone=record.parentBone;
             std::memcpy(pose.position,record.position,sizeof(pose.position));std::memcpy(pose.rotation,record.rotation,sizeof(pose.rotation));
@@ -413,6 +418,9 @@ MmsResult PlanAccessoryKeyPastePart(MMDApp& app,unsigned slot,const GlobalPasteS
             std::memset(destination.reservedSelection,0,sizeof(destination.reservedSelection));
         }
         if(!any)return MMS_OK;
+        std::sort(change->registeredFrames.begin(),change->registeredFrames.end());
+        change->registeredFrames.erase(std::unique(change->registeredFrames.begin(),change->registeredFrames.end()),change->registeredFrames.end());
+        result.dataChanged=change->curves.HasRegistrationChanges(change->registeredFrames);
         for(const auto& entry:patches) {
             result.dataChanged|=!Equal(entry.second.before,entry.second.after,false);
             change->patches.push_back(entry.second);
@@ -440,8 +448,9 @@ MmsResult PlanAccessoryRegistration(MMDApp& app, unsigned slot, const AccessoryR
             [](const Dependency& entry, unsigned value) { return entry.key.frame < value; });
         const auto current = found == chain.end() ? chain.back().slot : found->slot;
         Key filled = pool[current]; Fill(filled, pose);
-        if (pool[current].frame == frame && Equal(pool[current], filled, false) && Equal(before, pose)) return MMS_OK;
         auto change = std::make_shared<Registration>(app, slot, pose, std::move(chain));
+        if (pool[current].frame == frame && Equal(pool[current], filled, false) && Equal(before, pose) &&
+            !change->curves.HasRegistrationChanges(change->registeredFrames)) return MMS_OK;
         std::map<unsigned, Patch> patches;
         const auto write = [&](unsigned index) -> Key& {
             auto entry = patches.find(index);

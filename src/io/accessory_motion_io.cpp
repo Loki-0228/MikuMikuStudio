@@ -8,6 +8,7 @@
 #include <map>
 
 #include "mikudancestudio/accessory_layout.hpp"
+#include "mikudancestudio/animation_curve_host.hpp"
 #include "mikudancestudio/mmd_app.hpp"
 #include "mikudancestudio/ported_funcs.hpp"
 
@@ -212,6 +213,7 @@ bool AnySelected(MMDApp* app) {
 
 int Apply(MMDApp* app, const std::vector<Track>& tracks) {
     if (app == nullptr || tracks.empty()) return 0;
+    curve_host::LegacyRegistrationBatch registrationBatch(app);
     const std::vector<int> slots = SceneSlots(app);
     std::vector<std::string> names;
     names.reserve(slots.size());

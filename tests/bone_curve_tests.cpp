@@ -122,6 +122,29 @@ int main(){
         Check(display[0].visible==source,"display edit works with an authored bone in both sources");
         Check(bone_curve::Read(model.data(),0,read)&&read[0].keys.size()==2,"display edit preserves free curves");
     }
+    // Value-curve mode changes use the same native selection as the main row.
+    HWND tree=GetDlgItem(editor,1015);
+    std::function<HTREEITEM(HTREEITEM)> findX=[&](HTREEITEM item)->HTREEITEM{
+        for(;item;item=TreeView_GetNextSibling(tree,item)){TVITEMW data{};data.mask=TVIF_PARAM;data.hItem=item;SendMessageW(tree,TVM_GETITEMW,0,reinterpret_cast<LPARAM>(&data));
+            if(data.lParam==1)return item;if(auto hit=findX(TreeView_GetChild(tree,item)))return hit;}return nullptr;};
+    auto xItem=findX(TreeView_GetRoot(tree));Check(xItem!=nullptr,"free bone X curve exists");
+    for(unsigned slot=0;;slot=model.record->boneKeys[slot].next){model.record->boneKeys[slot].allocated=model.record->boneKeys[slot].frame==20;if(!model.record->boneKeys[slot].next)break;}
+    TreeView_SelectItem(tree,xItem);SendMessageW(tree,WM_KEYDOWN,VK_RETURN,0);
+    HWND canvas=GetDlgItem(editor,1020);auto point=SendMessageW(editor,WM_APP+300,1,0);
+    SendMessageW(canvas,WM_LBUTTONDOWN,MK_LBUTTON,point);SendMessageW(canvas,WM_LBUTTONUP,0,point);
+    app->SceneModified()=0;
+    SendMessageW(GetDlgItem(editor,1045),CB_SETCURSEL,1,0);
+    SendMessageW(editor,WM_COMMAND,MAKEWPARAM(1045,CBN_SELCHANGE),reinterpret_cast<LPARAM>(GetDlgItem(editor,1045)));
+    Check(app->SceneModified()!=0,"bone interpolation edit reaches the real host write");
+    unsigned marks=0;
+    for(unsigned slot=0;;slot=model.record->boneKeys[slot].next){
+        if(model.record->boneKeys[slot].allocated){++marks;Check(model.record->boneKeys[slot].frame==20,"bone interpolation keeps the selected native frame");}
+        if(!model.record->boneKeys[slot].next)break;
+    }
+    Check(marks==1,"bone interpolation does not select the entire native row");
+    SendMessageW(editor,WM_COMMAND,MAKEWPARAM(1059,BN_CLICKED),0);
+    Check(bone_curve::Read(model.data(),0,read)&&read[0].keys[1].interpolation==tracks[0].keys[1].interpolation,
+          "bone curve undo survives native canonicalization and selection synchronization");
     curve_editor::CloseOwned(parent);DestroyWindow(parent);app->Hwnd()=nullptr;model.record->displayKeys=nullptr;
     app->ModelSlot(0)=nullptr;
     std::puts("bone_curve_tests: playback, subdivision, timeline mirror, PMM/VMD, rejection, undo, current-interval preview and display editing passed");

@@ -67,6 +67,7 @@ struct GravityPart final:GlobalPastePart,std::enable_shared_from_this<GravityPar
     curve_host::TrackAuthoring authoring;
     struct Patch {unsigned slot;Key before,after;};std::vector<Patch> patches;
     std::vector<unsigned char> originalMarks;
+    std::vector<int> registrationFrames;
     explicit GravityPart(MMDApp& a):app(a),identity(mdl::KeyPoolIdentity(a.GravityKeys())),capacity(mdl::KeyPoolCapacity(a.GravityKeys())),
         authoring(a,curve_host::Kind::Gravity){for(std::size_t i=0;i<capacity;++i)originalMarks.push_back(a.GravityKeys()[i].selected);}
     struct Candidate final:PreparedGlobalPastePart {
@@ -135,7 +136,7 @@ struct GravityPart final:GlobalPastePart,std::enable_shared_from_this<GravityPar
                 std::memcpy(candidate->grown,candidate->pool,candidate->capacity*sizeof(Key));}
             curve_host::NativeKeyView view{candidate.get(),candidate->targetCapacity,[](const void* p,unsigned i) noexcept->const void*{
                 return static_cast<const Candidate*>(p)->Target(i);}};
-            candidate->curves=authoring.Prepare(view);
+            candidate->curves=authoring.Prepare(view,registrationFrames,forward);
             candidate->after=Sample(candidate->targetCapacity,unsigned(app.CurrentFrame()),[&](unsigned i){return candidate->SampleKey(i);});
             if(candidate->curves->Authored()){
                 std::array<double,12> values{};if(!candidate->curves->Sample(app.CurrentFrame(),values))return MMS_E_ARGUMENT;
@@ -150,7 +151,7 @@ struct GravityPart final:GlobalPastePart,std::enable_shared_from_this<GravityPar
     }
     std::uint64_t RetainedBytes() const noexcept override {
         auto bytes=std::uint64_t(sizeof(*this)+4*sizeof(void*));const auto add=[&](std::uint64_t n){bytes=n>UINT64_MAX-bytes?UINT64_MAX:bytes+n;};
-        add(patches.capacity()*sizeof(Patch));add(originalMarks.capacity());add(authoring.RetainedBytes());return bytes;
+        add(patches.capacity()*sizeof(Patch));add(originalMarks.capacity());add(registrationFrames.capacity()*sizeof(int));add(authoring.RetainedBytes());return bytes;
     }
 };
 }
@@ -168,6 +169,7 @@ MmsResult PlanGravityKeyPastePart(MMDApp& app,const GlobalPasteSource& source,Gl
         for(const auto& record:source.gravity){unsigned frame;
             if(!frame_limits::Add(source.frameOffset,record.frame,frame)||!std::isfinite(record.acceleration))return MMS_E_ARGUMENT;
             for(float v:record.direction)if(!std::isfinite(v))return MMS_E_ARGUMENT;
+            part->registrationFrames.push_back(int(frame));
             unsigned current=0;while(read(current).frame<frame&&read(current).next)current=read(current).next;
             const auto old=read(current);unsigned destination=current;
             if(old.frame!=frame){destination=1;while(std::size_t(destination)<targetCapacity&&read(destination).frame)++destination;
@@ -181,6 +183,9 @@ MmsResult PlanGravityKeyPastePart(MMDApp& app,const GlobalPasteSource& source,Gl
             added.noise=record.noise;added.noiseEnabled=record.noiseEnabled;added.selected=1;
         }
         Chain(targetCapacity,read);
+        std::sort(part->registrationFrames.begin(),part->registrationFrames.end());
+        part->registrationFrames.erase(std::unique(part->registrationFrames.begin(),part->registrationFrames.end()),part->registrationFrames.end());
+        result.dataChanged=part->authoring.HasRegistrationChanges(part->registrationFrames);
         for(const auto& p:planned){result.dataChanged|=!Same(p.second.before,p.second.after);part->patches.push_back(p.second);}
         result.part=std::move(part);out=std::move(result);return MMS_OK;
     });

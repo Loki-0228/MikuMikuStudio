@@ -27,6 +27,9 @@
 #include <memory>
 #include <cstdlib>
 #include "mikudancestudio/global_key_layout.hpp"
+#if !MMD_ORIGINAL_PROFILE
+#include "../plugins/native_pose_scope.hpp"
+#endif
 #include "ui_control_layout.hpp"
 #include "settings_json.hpp"
 #include "mikudancestudio/local_data_path.hpp"
@@ -976,6 +979,69 @@ void OpenInterpolation(MMDApp*app,bool visible){
 
 void NotifyRegistered(MMDApp*app,Kind kind,int slot){
     if(app)curve_editor::NotifySourceChanged(app->Hwnd(),std::to_string(int(kind))+"/"+std::to_string(slot));
+}
+thread_local LegacyRegistrationBatch* LegacyRegistrationBatch::active_=nullptr;
+LegacyRegistrationBatch::LegacyRegistrationBatch(MMDApp* app) noexcept:app_(app),previous_(active_){active_=this;}
+void LegacyRegistrationBatch::Flush() noexcept {
+    if(!app_||flushing_)return;
+    flushing_=true;
+    bool legacy=true;
+#if !MMD_ORIGINAL_PROFILE
+    legacy=plugins::BoundNativePoseHistory(app_)==nullptr;
+#endif
+    for(std::size_t index=0;index<frames_.size();++index){
+        auto& frames=frames_[index];if(frames.empty())continue;
+        const auto kind=index<4?static_cast<Kind>(index):Kind::Accessory;
+        const int slot=index<4?0:static_cast<int>(index-4);
+        if(legacy)try{
+            std::sort(frames.begin(),frames.end());frames.erase(std::unique(frames.begin(),frames.end()),frames.end());
+            ReconcileRegisteredFrames(*app_,kind,slot,frames);
+        }catch(...){}
+        // A failed best-effort reconciliation cannot be retried against a
+        // different native state. Keep storage for subsequent batch writes.
+        frames.clear();
+        try{NotifyRegistered(app_,kind,slot);}catch(...){}
+    }
+    flushing_=false;
+}
+LegacyRegistrationBatch::~LegacyRegistrationBatch() noexcept {
+    // Unlink before any reconciliation/notification can reenter a window.
+    auto** link=&active_;
+    while(*link&&*link!=this)link=&(*link)->previous_;
+    if(*link==this)*link=previous_;
+    Flush();
+}
+void FlushLegacyRegistrations(MMDApp* app) noexcept {
+    if(!app)return;
+    LegacyRegistrationBatch* outer=nullptr;
+    for(auto* batch=LegacyRegistrationBatch::active_;batch;batch=batch->previous_)if(batch->app_==app)outer=batch;
+    if(outer)outer->Flush();
+}
+void NotifyLegacyRegistered(MMDApp* app,Kind kind,int slot,int frame) noexcept {
+    if(!app)return;
+    // The unbound registrar has already written its key. A refresh failure
+    // cannot roll it back or cross the window-procedure exception boundary.
+    bool legacy=true;
+#if !MMD_ORIGINAL_PROFILE
+    legacy=plugins::BoundNativePoseHistory(app)==nullptr;
+#endif
+    if(legacy){
+        LegacyRegistrationBatch* outer=nullptr;
+        for(auto* batch=LegacyRegistrationBatch::active_;batch;batch=batch->previous_)if(batch->app_==app)outer=batch;
+        if(outer){
+            std::size_t index=0;bool valid=true;
+            switch(kind){
+            case Kind::Camera:index=0;break;case Kind::Light:index=1;break;
+            case Kind::Shadow:index=2;break;case Kind::Gravity:index=3;break;
+            case Kind::Accessory:valid=slot>=0&&slot<255;if(valid)index=std::size_t(slot)+4;break;
+            default:valid=false;break;
+            }
+            if(valid&&frame>=0&&frame<=frame_limits::maximum)try{outer->frames_[index].push_back(frame);}catch(...){}
+            return;
+        }
+        try{ReconcileRegisteredFrame(*app,kind,slot,frame);}catch(...){}
+    }
+    try{NotifyRegistered(app,kind,slot);}catch(...){}
 }
 void NotifyModelRegistered(MMDApp*app,bool morph){
     if(!app)return;

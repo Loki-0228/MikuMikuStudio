@@ -398,6 +398,10 @@ void CrossModelJournal(){
 #include "native_model_source_checks.inc"
 #include "native_vmd_accessory_checks.inc"
 #include "native_viewport_history_checks.inc"
+#include "native_track_registration_checks.inc"
+#include "native_global_sparse_registration_checks.inc"
+#include "native_accessory_sparse_registration_checks.inc"
+#include "native_gravity_sparse_registration_checks.inc"
 int main(int argc,char** argv){
     std::setvbuf(stdout,nullptr,_IONBF,0);
     const auto run=[](const char* name,void(*test)()){std::printf("RUN %s\n",name);test();};
@@ -549,6 +553,13 @@ int main(int argc,char** argv){
         run("NativeCameraInterpolationChecks",NativeCameraInterpolationChecks);
         std::printf("PASS native camera interpolation: %u checks\n",checks);return 0;
     }
+    if(argc==2&&!std::strcmp(argv[1],"--sparse-registration-only")) {
+        run("NativeTrackRegistrationChecks",NativeTrackRegistrationChecks);
+        run("NativeGlobalSparseRegistrationChecks",NativeGlobalSparseRegistrationChecks);
+        run("NativeAccessorySparseRegistrationChecks",NativeAccessorySparseRegistrationChecks);
+        run("NativeGravitySparseRegistrationChecks",NativeGravitySparseRegistrationChecks);
+        std::printf("PASS native sparse registration: %u checks\n",checks);return 0;
+    }
     if(argc==2&&!std::strcmp(argv[1],"--global-registration-only")) {
         run("NativeGlobalRegistrationChecks",NativeGlobalRegistrationChecks);
         run("NativeAccessoryRegistrationChecks",NativeAccessoryRegistrationChecks);
@@ -585,6 +596,10 @@ int main(int argc,char** argv){
     run("NativeModelSourceChecks",NativeModelSourceChecks);
     run("NativeVmdAccessoryChecks",NativeVmdAccessoryChecks);
     run("NativeViewportHistoryChecks",NativeViewportHistoryChecks);
+    run("NativeTrackRegistrationChecks",NativeTrackRegistrationChecks);
+    run("NativeGlobalSparseRegistrationChecks",NativeGlobalSparseRegistrationChecks);
+    run("NativeAccessorySparseRegistrationChecks",NativeAccessorySparseRegistrationChecks);
+    run("NativeGravitySparseRegistrationChecks",NativeGravitySparseRegistrationChecks);
     run("PhysicsImportChecks",PhysicsImportChecks);
     run("ImportTextureCacheChecks",ImportTextureCacheChecks);
     run("AccessoryImportChecks",AccessoryImportChecks);

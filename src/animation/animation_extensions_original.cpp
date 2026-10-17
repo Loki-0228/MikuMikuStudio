@@ -12,6 +12,8 @@ void Reset(MMDApp*) {}
 void ForgetAccessory(MMDApp*, int) {}
 void Capture(MMDApp&, pmm_extension::Document&) {}
 void Load(MMDApp&, const pmm_extension::Document&) {}
+void ReconcileRegisteredFrame(MMDApp&, Kind, int, int) {}
+void ReconcileRegisteredFrames(MMDApp&, Kind, int, const std::vector<int>&) {}
 struct AuthoringTable::Impl {};
 AuthoringTable::AuthoringTable() = default;
 AuthoringTable::~AuthoringTable() = default;

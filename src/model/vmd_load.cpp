@@ -2,6 +2,7 @@
 #include "mikudancestudio/frame_limits.hpp"
 #include "mikudancestudio/extended_names.hpp"
 #include "mikudancestudio/key_pool.hpp"
+#include "mikudancestudio/animation_curve_host.hpp"
 #include "mikudancestudio/bone_curve.hpp"
 // ===========================================================================
 // VA 0x00434B60 - VMD motion file loader  (0x147F bytes)
@@ -169,6 +170,7 @@ static int LoadVmdMotionPath(MMDApp* app, const char* fileName, const wchar_t* w
     int controlledResult=0;
     if (plugins::TryImportBoundVmd(app,fileName,wideFileName,controlledResult)) return controlledResult;
 #endif
+    curve_host::LegacyRegistrationBatch registrationBatch(app);
     auto& s = *app;
     unsigned char* const model = app->SelectedModel();
 

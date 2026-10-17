@@ -235,6 +235,7 @@ template<class K> struct Registration final:HistoryChange,std::enable_shared_fro
     std::uint32_t beforeLast,afterLast;bool published=false;std::uint64_t generation=1;
     Pose beforePose,firstPose;GlobalKeySelection selection;curve_host::TrackAuthoring authoring;
     struct Patch{std::uint32_t slot;K before,after;};std::vector<Patch> patches;
+    std::vector<int> registrationFrames;
     std::vector<Parent> parents;
     Registration(MMDApp& a):app(a),identity(mdl::KeyPoolIdentity(Pool<K>(a))),capacity(mdl::KeyPoolCapacity(Pool<K>(a))),playhead(a.CurrentFrame()),
         beforeLast(a.LastRegisteredFrame()),afterLast(beforeLast),beforePose(ReadPose<K>(a)),firstPose(beforePose),selection(a),authoring(a,TrackKind<K>()){}
@@ -299,7 +300,7 @@ template<class K> struct Registration final:HistoryChange,std::enable_shared_fro
             catch(const std::invalid_argument&){return MMS_E_STALE;}
             curve_host::NativeKeyView view{candidate.get(),candidate->growth->Capacity(),[](const void* p,std::uint32_t slot) noexcept ->const void*{
                 return static_cast<const Candidate*>(p)->Target(slot);}};
-            candidate->curves=authoring.Prepare(view);
+            candidate->curves=authoring.Prepare(view,registrationFrames,forward);
             if(!published)candidate->after=firstPose;
             else if(!candidate->curves->Authored())candidate->after=NativePose<K>(app.CurrentFrame(),[&](unsigned i){return candidate->Target(i);});
             else {std::array<double,12> values{};if(!candidate->curves->Sample(app.CurrentFrame(),values))return MMS_E_ARGUMENT;candidate->after=CurvePose<K>(values);}
@@ -318,6 +319,7 @@ template<class K> struct Registration final:HistoryChange,std::enable_shared_fro
     std::uint64_t RetainedBytes() const noexcept override {
         std::uint64_t bytes=sizeof(*this)+4*sizeof(void*);AddBytes(bytes,patches.capacity(),sizeof(Patch));
         AddBytes(bytes,parents.capacity(),sizeof(Parent));
+        AddBytes(bytes,registrationFrames.capacity(),sizeof(int));
         AddBytes(bytes,selection.RetainedBytes());AddBytes(bytes,authoring.RetainedBytes());return bytes;
     }
 };
@@ -328,6 +330,7 @@ template<class K> struct PastePart final:GlobalPastePart,std::enable_shared_from
     MMDApp& app;std::uint64_t identity,generation=1;std::size_t capacity;
     curve_host::TrackAuthoring authoring;
     struct Patch {unsigned slot;K before,after;};std::vector<Patch> patches;
+    std::vector<int> registrationFrames;
     std::vector<Parent> parents;
     explicit PastePart(MMDApp& a):app(a),identity(mdl::KeyPoolIdentity(Pool<K>(a))),capacity(mdl::KeyPoolCapacity(Pool<K>(a))),authoring(a,TrackKind<K>()){}
     bool Structure() const noexcept {
@@ -388,7 +391,7 @@ template<class K> struct PastePart final:GlobalPastePart,std::enable_shared_from
                 candidate->current.push_back(live);needed=(std::max)(needed,std::uint64_t(patch.slot)+1);}
             candidate->growth=std::make_unique<Growth<K>>(app,needed);
             curve_host::NativeKeyView target{candidate.get(),candidate->growth->Capacity(),[](const void* p,unsigned i) noexcept ->const void* {return static_cast<const Candidate*>(p)->Target(i);}};
-            candidate->curves=authoring.Prepare(target);
+            candidate->curves=authoring.Prepare(target,registrationFrames,forward);
             curve_host::NativeKeyView current{candidate->pool,candidate->capacity,[](const void* p,unsigned i) noexcept ->const void* {return static_cast<const K*>(p)+i;}};
             candidate->currentCurves=authoring.Prepare(current);
             const auto sample=[&](const auto& curves,auto read){
@@ -409,7 +412,8 @@ template<class K> struct PastePart final:GlobalPastePart,std::enable_shared_from
         });
     }
     std::uint64_t RetainedBytes() const noexcept override {
-        std::uint64_t bytes=sizeof(*this)+4*sizeof(void*);AddBytes(bytes,patches.capacity(),sizeof(Patch));AddBytes(bytes,parents.capacity(),sizeof(Parent));AddBytes(bytes,authoring.RetainedBytes());return bytes;
+        std::uint64_t bytes=sizeof(*this)+4*sizeof(void*);AddBytes(bytes,patches.capacity(),sizeof(Patch));AddBytes(bytes,parents.capacity(),sizeof(Parent));
+        AddBytes(bytes,registrationFrames.capacity(),sizeof(int));AddBytes(bytes,authoring.RetainedBytes());return bytes;
     }
 };
 template<class K,class S,class Fill> MmsResult PlanPastePart(MMDApp& app,const std::vector<S>& records,unsigned offset,Fill fill,GlobalPasteFamilyResult& out) noexcept {
@@ -422,12 +426,14 @@ template<class K,class S,class Fill> MmsResult PlanPastePart(MMDApp& app,const s
         auto* keys=Pool<K>(app);const auto capacity=mdl::KeyPoolCapacity(keys);
         const auto chain=Chain<K>(capacity,[&](unsigned i){return keys[i];});
         auto part=std::make_shared<PastePart<K>>(app);std::map<unsigned,typename PastePart<K>::Patch> planned;
+        part->registrationFrames.reserve(records.size());
         std::size_t targetCapacity=capacity;
         const auto read=[&](unsigned i) -> K {const auto found=planned.find(i);return found!=planned.end()?found->second.after:i<capacity?keys[i]:K{};};
         const auto write=[&](unsigned i) -> K& {auto found=planned.find(i);if(found==planned.end()){
             const auto before=i<capacity?keys[i]:K{};auto after=before;after.selected=0;found=planned.emplace(i,typename PastePart<K>::Patch{i,before,after}).first;}return found->second.after;};
         GlobalPasteFamilyResult result;
         for(const auto& record:records){unsigned frame;if(!frame_limits::Add(int(offset),record.frame,frame))return MMS_E_ARGUMENT;
+            part->registrationFrames.push_back(int(frame));
             unsigned current=0;
             // Frame zero belongs to the immutable root slot. The legacy paste
             // walk skips it when a next key exists and can create a second zero.
@@ -441,9 +447,14 @@ template<class K,class S,class Fill> MmsResult PlanPastePart(MMDApp& app,const s
             added.frame=frame;fill(added,record);result.maximumInsertedFrame=(std::max)(result.maximumInsertedFrame,frame);
         }
         Chain<K>(targetCapacity,read);
+        std::sort(part->registrationFrames.begin(),part->registrationFrames.end());
+        part->registrationFrames.erase(std::unique(part->registrationFrames.begin(),part->registrationFrames.end()),part->registrationFrames.end());
         // Keep source targets even when identical data only changes their mark:
         // another family may change data in the enclosing atomic transaction.
         for(const auto& item:planned){part->patches.push_back(item.second);result.dataChanged|=!SameKey(item.second.before,item.second.after);}
+        // Authoring can omit a channel key even when its union native key is
+        // byte-identical. An explicit paste still registers that frame.
+        result.dataChanged|=part->authoring.HasRegistrationChanges(part->registrationFrames);
         if constexpr(std::is_same_v<K,mdl::CameraKey>){
             const auto parent=[&](int model,int bone){if(model==-1)return;Parent dependency(app,model,bone);
                 if(std::none_of(part->parents.begin(),part->parents.end(),[&](const auto& old){return old.slot==dependency.slot;}))part->parents.push_back(std::move(dependency));};
@@ -465,8 +476,10 @@ template<class K,class Fill> MmsResult Plan(MMDApp& app,int frame,Fill fill,cons
         const auto chain=Chain<K>(capacity,[&](unsigned i){return keys[i];});
         std::uint32_t current=0;while(keys[current].frame<unsigned(frame)&&keys[current].next)current=keys[current].next;
         auto target=keys[current];fill(target,keys[current].frame==unsigned(frame));
-        if(keys[current].frame==unsigned(frame)&&SameKey(target,keys[current])&&(!firstPose||*firstPose==ReadPose<K>(app)))return MMS_OK;
-        auto change=std::make_shared<Registration<K>>(app);if(firstPose)change->firstPose=*firstPose;
+        auto change=std::make_shared<Registration<K>>(app);change->registrationFrames.push_back(frame);
+        if(keys[current].frame==unsigned(frame)&&SameKey(target,keys[current])&&(!firstPose||*firstPose==ReadPose<K>(app))&&
+            !change->authoring.HasRegistrationChanges(change->registrationFrames))return MMS_OK;
+        if(firstPose)change->firstPose=*firstPose;
         std::map<unsigned,typename Registration<K>::Patch> patches;
         const auto write=[&](unsigned slot)->K&{auto found=patches.find(slot);if(found==patches.end()){
             auto original=slot<capacity?keys[slot]:K{};auto after=original;after.selected=0;

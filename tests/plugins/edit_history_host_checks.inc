@@ -8,6 +8,7 @@
 #include "mikudancestudio/key_pool.hpp"
 #include "mikudancestudio/animation_curve_editor.hpp"
 #include "mikudancestudio/animation_curve_host.hpp"
+#include "mikudancestudio/panel_controls.hpp"
 #include "../src/plugins/native_key_commands.hpp"
 #include "../src/plugins/native_object_commands.hpp"
 #include "../src/plugins/native_frame_lines.hpp"
@@ -422,6 +423,7 @@ void ObjectMenuDeletion(MMDApp* app, plugins::SharedHistory& history, const MmsS
 #include "vmd_model_host_checks.inc"
 #include "vmd_model_scale_host_checks.inc"
 #include "viewport_history_host_checks.inc"
+#include "sparse_registration_host_checks.inc"
 void Run(MMDApp* app) {
     using namespace plugins;
     const auto initial = GetModuleHandleW(L"manager_edit_probe.dll");
@@ -467,6 +469,7 @@ void Run(MMDApp* app) {
     vmd_model_host_checks::Run(app,*history,value);
     vmd_model_scale_host_checks::Run(app,*history,value);
     viewport_history_host_checks::Run(app,*history,value);
+    sparse_registration_host_checks::Run(app,*history,value);
     {
         auto extra=RetainSceneObject(*app,MMS_OBJECT_ACCESSORY,1);
         auto removal=extra->CaptureRemoval();std::unique_ptr<SharedHistory::NativeTransaction> token;

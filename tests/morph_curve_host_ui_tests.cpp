@@ -17,9 +17,10 @@
 //     a changed panel, a changed resolved path, a changed bone count and a
 //     swapped morph table are each caught, which a bare pointer comparison
 //     would all pass,
-//   * the comparison mode: the INI round-trip, the same-group default for an
-//     absent or out-of-range value, and a refused write that keeps the stored
-//     value,
+//   * comparison mode: unified settings.json round-trip, missing-section-only
+//     legacy INI migration, invalid-value defaults, and rejected writes that
+//     keep the stored value. This runs from a copied EXE in an isolated folder,
+//     so the ordinary test runtime's settings remain untouched,
 //   * the lane selection: MorphLaneInitial answers only for a selector that
 //     names a morph of that very panel, and rejects an unset, out-of-range or
 //     foreign selection, so the launcher is disabled and OpenMorph refuses
@@ -42,6 +43,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <utility>
@@ -55,6 +57,9 @@
 #include "mikudancestudio/ported_funcs.hpp"
 #include "mikudancestudio/channel_bake.hpp"
 #include "mikudancestudio/bone_scale.hpp"
+#include "mikudancestudio/system_settings.hpp"
+#include "mikudancestudio/local_data_path.hpp"
+#include "../src/plugins/json.hpp"
 
 namespace mc = mikudancestudio::morph_curve;
 namespace ac = mikudancestudio::animation_curve;
@@ -263,28 +268,54 @@ void CreateLaneControls(HWND parent) {
 // the file name and the section key.
 // ---------------------------------------------------------------------------
 
-std::wstring ExeDirectory() {
-    wchar_t path[32768]{};
-    const DWORD count = GetModuleFileNameW(nullptr, path, 32768);
-    if (count == 0 || count >= 32768) return {};
-    std::wstring text(path, count);
-    const std::size_t slash = text.find_last_of(L"\\/");
-    return slash == std::wstring::npos ? std::wstring() : text.substr(0, slash + 1);
-}
-
-std::wstring SettingsPath() { return ExeDirectory() + L"Data\\curve_editor.ini"; }
-
 void WriteRawSetting(const std::wstring& path, const wchar_t* value) {
-    WritePrivateProfileStringW(L"CurveEditor", L"MorphComparison", value, path.c_str());
+    Check(WritePrivateProfileStringW(L"CurveEditor", L"MorphComparison", value, path.c_str()) != FALSE,
+          "write isolated legacy comparison fixture");
     WritePrivateProfileStringW(nullptr, nullptr, nullptr, path.c_str());
 }
 
-void ComparisonMode() {
-    const std::wstring path = SettingsPath();
-    Check(!path.empty(), "the settings path resolves");
-    CreateDirectoryW((ExeDirectory() + L"Data").c_str(), nullptr);
-    DeleteFileW(path.c_str());
-    WritePrivateProfileStringW(nullptr, nullptr, nullptr, path.c_str());
+std::string SettingsBytes(const std::filesystem::path& path) {
+    std::ifstream file(path, std::ios::binary);
+    return {std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+}
+bool PutSettingsBytes(const std::filesystem::path& path, const std::string& bytes) {
+    std::ofstream file(path, std::ios::binary | std::ios::trunc);
+    file.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    file.close();
+    return bool(file);
+}
+struct PreservedSettingsFile {
+    std::filesystem::path path;
+    bool existed;
+    std::string bytes;
+    explicit PreservedSettingsFile(std::filesystem::path value):path(std::move(value)),
+        existed(GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES), bytes(existed ? SettingsBytes(path) : std::string()) {}
+    ~PreservedSettingsFile() {
+        WritePrivateProfileStringW(nullptr, nullptr, nullptr, path.c_str());
+        if(existed)Check(PutSettingsBytes(path,bytes),"restore the original isolated settings file bytes");
+        else if(GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES)
+            Check(DeleteFileW(path.c_str()) != FALSE,"remove only the settings file created by this fixture");
+        WritePrivateProfileStringW(nullptr, nullptr, nullptr, path.c_str());
+    }
+};
+void ComparisonModeFixture() {
+    namespace settings = mikudancestudio::system_settings;
+    using Json = mikudancestudio::plugins::Json;
+    const auto directory=mikudancestudio::local_data::ExecutableDirectory();
+    // This entry point must never run against an ordinary test/runtime folder.
+    if(GetFileAttributesW((directory/L".morph-comparison-fixture").c_str()) == INVALID_FILE_ATTRIBUTES){
+        Check(false,"comparison settings fixture requires its isolated copied executable");return;
+    }
+    const auto path=settings::Path();const auto legacy=directory/L"data"/L"curve_editor.ini";
+    Check(path==directory/L"data"/L"settings.json","comparison mode resolves installation-local data/settings.json");
+    Check(CreateDirectoryW(path.parent_path().c_str(),nullptr) != FALSE||GetLastError()==ERROR_ALREADY_EXISTS,
+          "create only the isolated comparison fixture data folder");
+    PreservedSettingsFile savedJson(path),savedIni(legacy);
+    const auto root=[&](const std::string& sections){
+        Check(PutSettingsBytes(path,"{\"schemaVersion\":1,\"sections\":"+sections+"}"),"write isolated unified settings fixture");
+    };
+    const auto mode=[&](){return Json::Parse(SettingsBytes(path)).At("sections").At("curveEditor").At("morphComparisonMode").UInt();};
+    root("{}");
 
     Check(ch::ReadMorphComparisonMode() == ce::kCompareSameGroup,
           "an absent setting reads as the same-group default");
@@ -293,8 +324,8 @@ void ComparisonMode() {
     Check(ch::WriteMorphComparisonMode(2, ce::kCompareFree, error), "the free mode is stored");
     Check(error.empty(), "a stored mode reports no error");
     Check(ch::ReadMorphComparisonMode() == ce::kCompareFree, "the free mode round-trips");
-    Check(GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES,
-          "the setting lands in Data/curve_editor.ini");
+    Check(mode()==ce::kCompareFree&&GetFileAttributesW(legacy.c_str())==INVALID_FILE_ATTRIBUTES,
+          "comparison writes land in settings.json without creating a legacy INI");
 
     Check(ch::WriteMorphComparisonMode(1, ce::kCompareAllGroups, error), "four groups is stored");
     Check(ch::ReadMorphComparisonMode() == ce::kCompareAllGroups, "four groups round-trips");
@@ -308,15 +339,75 @@ void ComparisonMode() {
     Check(!ch::WriteMorphComparisonMode(2, ce::kCompareModeCount, error),
           "a mode above the range is refused");
 
-    WriteRawSetting(path, L"9");
+    const auto beforeRefusal=SettingsBytes(path);
+    Check(!ch::WriteMorphComparisonMode(2,-1,error)&&SettingsBytes(path)==beforeRefusal,
+          "an invalid comparison write preserves the complete unified settings document");
+    root("{\"curveEditor\":{\"morphComparisonMode\":9}}");
     Check(ch::ReadMorphComparisonMode() == ce::kCompareSameGroup,
-          "an out-of-range stored byte reads as the default");
-    WriteRawSetting(path, L"0");
+          "an out-of-range unified setting reads as the default");
+    root("{\"curveEditor\":{\"morphComparisonMode\":0}}");
     Check(ch::ReadMorphComparisonMode() == ce::kCompareSameGroup,
-          "a stored zero reads as the default");
-    WriteRawSetting(path, L"2");
+          "a stored unified zero reads as the default");
+    root("{\"curveEditor\":{\"morphComparisonMode\":\"invalid\"}}");
+    Check(ch::ReadMorphComparisonMode()==ce::kCompareSameGroup,"a noninteger unified setting reads as the default");
+    root("{\"curveEditor\":{\"morphComparisonMode\":2,\"future\":7},\"render\":{\"keep\":true}}");
     Check(ch::ReadMorphComparisonMode() == ce::kCompareAllGroups,
-          "a stored in-range byte is honoured");
+          "a stored in-range unified comparison value is honoured");
+    Check(ch::WriteMorphComparisonMode(2,ce::kCompareFree,error)&&
+          Json::Parse(SettingsBytes(path)).At("sections").At("curveEditor").At("future").UInt()==7&&
+          Json::Parse(SettingsBytes(path)).At("sections").At("render").At("keep").text=="true",
+          "comparison writes preserve unknown section members and unrelated settings");
+
+    root("{\"render\":{\"keep\":7}}");WriteRawSetting(legacy.native(),L"2");
+    Check(ch::ReadMorphComparisonMode()==ce::kCompareAllGroups&&mode()==ce::kCompareAllGroups&&
+          Json::Parse(SettingsBytes(path)).At("sections").At("render").At("keep").UInt()==7,
+          "a missing curveEditor section migrates the legacy INI and retains unrelated settings");
+    WriteRawSetting(legacy.native(),L"3");
+    Check(ch::ReadMorphComparisonMode()==ce::kCompareAllGroups&&mode()==ce::kCompareAllGroups,
+          "an existing unified section takes precedence over later legacy INI changes");
+    root("{\"curveEditor\":{}}");
+    Check(ch::ReadMorphComparisonMode()==ce::kCompareSameGroup,
+          "an existing empty unified section uses its default instead of migrating the INI");
+    root("{}");WriteRawSetting(legacy.native(),L"9");
+    Check(ch::ReadMorphComparisonMode()==ce::kCompareSameGroup&&mode()==ce::kCompareSameGroup,
+          "an invalid legacy value migrates as the supported default");
+    Check(DeleteFileW(path.c_str())!=FALSE,"remove only the isolated JSON fixture to test first migration");
+    WriteRawSetting(legacy.native(),L"3");
+    Check(ch::ReadMorphComparisonMode()==ce::kCompareFree&&mode()==ce::kCompareFree,
+          "a missing unified file migrates a valid legacy value into its curveEditor section");
+    WriteRawSetting(legacy.native(),L"2");
+    Check(PutSettingsBytes(path,"{\"schemaVersion\":2,\"sections\":{}}"),"write unsupported isolated settings version");
+    const auto unsupported=SettingsBytes(path);
+    Check(ch::ReadMorphComparisonMode()==ce::kCompareSameGroup&&SettingsBytes(path)==unsupported,
+          "unsupported unified settings are preserved without falling back to legacy migration");
+}
+
+void ComparisonMode() {
+    // Path() deliberately follows the loaded EXE and has no environment
+    // override. A child copy tests that real path without changing this
+    // process's settings or racing other test executables in its data folder.
+    wchar_t executable[32768]{};const auto length=GetModuleFileNameW(nullptr,executable,32768);
+    if(!length||length>=32768){Check(false,"resolve comparison test executable");return;}
+    const auto originalDirectory=std::filesystem::path(executable).parent_path();
+    const auto directory=originalDirectory/(L"morph-comparison-test-"+std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(GetTickCount64()));
+    if(!CreateDirectoryW(directory.c_str(),nullptr)){Check(false,"create unique isolated comparison runtime");return;}
+    const auto copied=directory/L"morph-comparison-settings.exe";const auto marker=directory/L".morph-comparison-fixture";
+    Check(PutSettingsBytes(marker,"isolated comparison settings fixture"),"mark the isolated comparison runtime");
+    if(CopyFileW(executable,copied.c_str(),TRUE)){
+        std::wstring command=L"\""+copied.native()+L"\" --comparison-settings-isolated";
+        STARTUPINFOW startup{};startup.cb=sizeof(startup);PROCESS_INFORMATION process{};
+        if(CreateProcessW(copied.c_str(),command.data(),nullptr,nullptr,TRUE,CREATE_NO_WINDOW,nullptr,
+                          originalDirectory.c_str(),&startup,&process)){
+            const auto waited=WaitForSingleObject(process.hProcess,30000);
+            if(waited!=WAIT_OBJECT_0)TerminateProcess(process.hProcess,3);
+            DWORD code=1;GetExitCodeProcess(process.hProcess,&code);
+            CloseHandle(process.hThread);CloseHandle(process.hProcess);
+            Check(waited==WAIT_OBJECT_0&&code==0,"isolated unified comparison settings and legacy migration regressions pass");
+        }else Check(false,"launch the isolated comparison settings executable");
+    }else Check(false,"copy the comparison test executable without changing its original");
+    // Only these explicitly owned files and empty directories are removed.
+    for(const auto& name:{L"settings.json",L"settings.json.lock",L"curve_editor.ini"})DeleteFileW((directory/L"data"/name).c_str());
+    RemoveDirectoryW((directory/L"data").c_str());DeleteFileW(copied.c_str());DeleteFileW(marker.c_str());RemoveDirectoryW(directory.c_str());
 }
 
 // ---------------------------------------------------------------------------
@@ -760,8 +851,8 @@ void LauncherButtons() {
         Check(combo.left == kLanes[lane].comboX + 22 && combo.right - combo.left == 70,
               "the selector keeps 70 px and starts after the launcher");
         Check(previous.left == kLanes[lane].arrowX && previous.right - previous.left == 16 &&
-                  previous.top == kLanes[lane].arrowY,
-              "the previous arrow is not moved");
+                  previous.top == combo.top && previous.bottom == combo.bottom,
+              "the previous arrow keeps its X position and aligns with the selector");
         Check(forward.left == kLanes[lane].arrowX + 108 && forward.right - forward.left == 16,
               "the forward arrow is not moved");
     }
@@ -942,7 +1033,7 @@ void BakedMorphKeepsBoneEditing() {
         Check(bone.rotQuat[0] == pose.rotQuat[0] && bone.trans[0] == pose.trans[0],
               "a selection flag without a timeline gesture cannot re-seek bones");
         app->SelectionBoxDragging() = 1;
-        mikudancestudio::HandleMouseMove(521, 272);
+        mikudancestudio::HandleMouseMove(540, 272); // Cross a frame cell; sub-cell motion is a no-op.
         Check(bone.rotQuat[0] == boneKey.rotation[0] && bone.trans[0] == boneKey.position[0],
               "a real timeline drag still applies the native frame");
         app->SelectionBoxDragging() = app->TimelineSelectionChanged() = 0;
@@ -957,6 +1048,16 @@ void BakedMorphKeepsBoneEditing() {
 }  // namespace
 
 int main(int argc, char** argv) {
+    if(argc>1&&std::string(argv[1])=="--comparison-settings"){
+        ComparisonMode();
+        std::printf("comparison settings isolation: %d checks, %d failures\n",g_checks,g_failures);
+        return g_failures ? 1 : 0;
+    }
+    if(argc>1&&std::string(argv[1])=="--comparison-settings-isolated"){
+        ComparisonModeFixture();
+        std::printf("isolated comparison settings: %d checks, %d failures\n",g_checks,g_failures);
+        return g_failures ? 1 : 0;
+    }
     if(argc>1 && std::string(argv[1])=="--morph-wheel") {
         LauncherWheel();
         std::printf("morph launcher wheel: %d checks, %d failures\n",g_checks,g_failures);

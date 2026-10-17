@@ -320,7 +320,7 @@ void RegisterSelfShadowState(MMDApp* app, int frameValue) {
         currentRecord->distance =
             app->state.physicsInterval;
         currentRecord->selected = 1;
-        curve_host::NotifyRegistered(app, curve_host::Kind::Shadow);
+        curve_host::NotifyLegacyRegistered(app, curve_host::Kind::Shadow, 0, frameValue);
         return;
     }
 
@@ -353,7 +353,7 @@ void RegisterSelfShadowState(MMDApp* app, int frameValue) {
     added->selected = 1;
     if (frame > app->state.lastRegisteredFrame)
         app->state.lastRegisteredFrame = frame;
-    curve_host::NotifyRegistered(app, curve_host::Kind::Shadow);
+    curve_host::NotifyLegacyRegistered(app, curve_host::Kind::Shadow, 0, frameValue);
 }
 
 }  // namespace mikudancestudio

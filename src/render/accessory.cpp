@@ -1289,7 +1289,7 @@ void RegisterAccessoryKey(MMDApp* app, int frameArg, int slot) {  // 0x413CB0
     }
     if (keys[current].frame == frame) {
         fill(current);
-        curve_host::NotifyRegistered(app, curve_host::Kind::Accessory, slot);
+        curve_host::NotifyLegacyRegistered(app, curve_host::Kind::Accessory, slot, frameArg);
         return;
     }
 
@@ -1317,7 +1317,7 @@ void RegisterAccessoryKey(MMDApp* app, int frameArg, int slot) {  // 0x413CB0
     fill(freeIndex);
     if (frame > app->LastRegisteredFrame())
         app->LastRegisteredFrame() = frame;
-    curve_host::NotifyRegistered(app, curve_host::Kind::Accessory, slot);
+    curve_host::NotifyLegacyRegistered(app, curve_host::Kind::Accessory, slot, frameArg);
 }
 
 void RenderAccessoriesFixed(MMDApp* app) {                      // 0x4C4A10

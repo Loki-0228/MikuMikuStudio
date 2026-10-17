@@ -235,6 +235,7 @@ int PasteAccessoryKeyRecord(MMDApp* app, void* recData, int useSelectedSlot) {
         // Exact hit: overwrite in place, no frame-number store, no
         // max-frame watermark update (0x4141B4..0x414210).
         FillAccKeyRecord(table[index], src, frame);
+        curve_host::NotifyLegacyRegistered(app,curve_host::Kind::Accessory,int(slot),int(frame));
         return 1;
     }
 
@@ -260,6 +261,7 @@ int PasteAccessoryKeyRecord(MMDApp* app, void* recData, int useSelectedSlot) {
     if (frame > app->state.lastRegisteredFrame) {
         app->state.lastRegisteredFrame = frame;
     }
+    curve_host::NotifyLegacyRegistered(app,curve_host::Kind::Accessory,int(slot),int(frame));
     return 1;
 }
 

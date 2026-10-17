@@ -10,6 +10,12 @@ void Open(MMDApp*, bool) {}
 void OpenInterpolation(MMDApp*, bool) {}
 void OpenMorph(MMDApp*, int, bool) {}
 void NotifyRegistered(MMDApp*, Kind, int) {}
+void NotifyLegacyRegistered(MMDApp*, Kind, int, int) noexcept {}
+thread_local LegacyRegistrationBatch* LegacyRegistrationBatch::active_=nullptr;
+LegacyRegistrationBatch::LegacyRegistrationBatch(MMDApp*) noexcept {}
+LegacyRegistrationBatch::~LegacyRegistrationBatch() noexcept = default;
+void LegacyRegistrationBatch::Flush() noexcept {}
+void FlushLegacyRegistrations(MMDApp*) noexcept {}
 void NotifyModelRegistered(MMDApp*, bool) {}
 void CreateControls(MMDApp*, void*) {}
 void LayoutControls(MMDApp*) {}

@@ -381,6 +381,12 @@ static int InsertGlobalFrame(MMDApp* app, Key*& table,
 
     std::uint32_t frame;
     if(!frame_limits::Add(app->CurrentFrame(),relativeFrame,frame))return 0;
+    const auto notify=[&] {
+        constexpr auto kind=std::is_same_v<Key,mdl::CameraKey>?curve_host::Kind::Camera:
+            std::is_same_v<Key,mdl::LightKey>?curve_host::Kind::Light:
+            std::is_same_v<Key,mdl::SelfShadowKey>?curve_host::Kind::Shadow:curve_host::Kind::Gravity;
+        curve_host::NotifyLegacyRegistered(app,kind,0,int(frame));
+    };
     std::uint32_t index = 0;
     // Include the permanent frame-zero head in the equality check. Starting
     // at head.next inserted a second zero record; the allocator later reused
@@ -391,6 +397,7 @@ static int InsertGlobalFrame(MMDApp* app, Key*& table,
 
     if (table[index].frame == frame) {
         fill(table[index], source);
+        notify();
         return 1;
     }
 
@@ -424,6 +431,7 @@ static int InsertGlobalFrame(MMDApp* app, Key*& table,
     if (frame > app->state.lastRegisteredFrame) {
         app->state.lastRegisteredFrame = frame;
     }
+    notify();
     return 1;
 }
 
@@ -3015,6 +3023,7 @@ static void Cmd400_AccessoryEditDialog(MMDApp* app, HWND hwnd) {
 
 void CmdControl400(MMDApp* app, HWND hwnd, std::uint16_t id,
                    std::uint16_t notify) {
+    curve_host::LegacyRegistrationBatch registrationBatch(app);
     switch (id) {
     case 400:  // undo (0x00482766) -> Cmd400_Undo
         Cmd400_Undo(app, hwnd);
