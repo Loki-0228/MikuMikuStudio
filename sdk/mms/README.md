@@ -4,7 +4,7 @@
 
 基础 UI 的类型化与声明式封装已提供，见 [C++17 界面注册 SDK](cpp-ui.md)。`UiServices`、`RegistrationBundle` 和 `CommandUi` 包装同一套 C ABI，复杂插件继续操作原始句柄。
 
-后续设计以[统一插件扩展架构](../../docs/PLUGIN_EXTENSION_ARCHITECTURE.md)为准。具体提案包括 [UI 与统一刷新](../../docs/PLUGIN_UI_PRESENTATION.md)、[多视口与洋葱皮](../../docs/PLUGIN_VIEWPORT_RENDERING.md)及[数据格式与编辑工具](../../docs/PLUGIN_DATA_EXTENSIONS.md)。这些新增服务及工具封装仍未实现；下文「当前服务」描述实际可调用范围。
+界面异步重绘已提供 [mms.ui.refresh 参考](refresh.md)，当前限定同插件按钮及原生面板的 `REPAINT + SELF`。后续设计以[统一插件扩展架构](../../docs/PLUGIN_EXTENSION_ARCHITECTURE.md)为准，另见 [UI 呈现与刷新扩展](../../docs/PLUGIN_UI_PRESENTATION.md)、[多视口与洋葱皮](../../docs/PLUGIN_VIEWPORT_RENDERING.md)及[数据格式与编辑工具](../../docs/PLUGIN_DATA_EXTENSIONS.md)。各页标明已实现范围，其余服务及工具封装仍为提案。
 
 ## 开发环境
 
@@ -40,6 +40,7 @@ cmake --build build/hello-menu --config Release
 | `mms.ui` 1.0 | 命令、菜单项、工具栏按钮和组；元数据更新；只读属性；快照租约；命令参数、范围与选项校验；布局修订检查、指定顺序移动、创建与删除空组、显示、首选尺寸、快捷键及恢复。 |
 | `mms.ui.surface` 1.0 | 菜单、工具栏和工作区页签挂载位置；原生子窗口工厂、多个视图、尺寸、隐藏、焦点与销毁。 |
 | `mms.ui.layout` 1.0 | 默认布局提示、事务内用户覆盖、实际几何快照；行、列、换行和网格；伸缩、上下限、隐藏占位。 |
+| `mms.ui.refresh` 1.0 | 本插件已有按钮和原生 surface 的 `REPAINT + SELF`；UI 线程查询能力和目标，后台请求、查询、取消及释放票据；实例、工程及几何修订校验。DATA、STATE、LAYOUT 和其他范围返回 UNSUPPORTED。 |
 | `mms.scene` 1.0 | 阶段 0 的对象、骨骼、网格、绑定、刚体、关节、形状、Morph、材质和纹理路径；独立 ID、运行时代次、不可变快照及 PMM 身份保存。阶段 1–4 返回 UNSUPPORTED。 |
 | `mms.storage` 1.0 | 插件工程数据、两阶段加载、只读保存数据租约；PMM 与扩展文件成对保存和中断恢复。提供者名为 `mms.serializer`。 |
 | 其他服务 | 尚未接入，`queryService` 返回 NOT_FOUND。 |
@@ -49,6 +50,8 @@ cmake --build build/hello-menu --config Release
 布局事务的用户覆盖由宿主保存，重启或 EXE 改名后按稳定 ID 恢复。缺失插件的配置继续保留。保存位置、默认值合并和失败行为见[界面布局保存](ui-preferences.md)。
 
 需要布局提示时，元素声明 `MMS_UI_LAYOUT`，使用 `layout.setDefaultHints`。用户通过 `stageHints` 设置的覆盖值不会被后续默认值覆盖。布局快照仅枚举有 LAYOUT 能力的元素；新 UI 修订的 HWND 几何尚未完成时返回 NOT_READY。旧快照不会被后续布局修改。
+
+重绘目标直接使用原元素 handle，按钮不要求 LAYOUT 能力。`getCapabilities`、`getTarget` 允许在 UI 线程的命令回调内纯读；只有 `request`、`query`、`cancel`、`release` 允许后台调用。局部矩形使用目标客户区 DIP，并带实际几何修订。`release` 不取消已接受的请求，未释放票据会阻止插件卸载。完整错误和停止规则见[界面重绘接口参考](refresh.md)。
 
 面板在 `mms.workspace.tabs.extensions` 注册 PANEL，并引用自己注册的 `surfaceId`。尺寸以 DIP 声明；回调使用父窗口坐标空间中的像素和 DPI。当前 MMS 保留 Windows 位图缩放，因此窗口 DPI 为 96；插件不要再乘显示器缩放比例。现代系统动态查询窗口 DPI，Win7 使用窗口 DC。跨原生父窗口移动先销毁后创建，业务数据应保留在插件实例中。
 
@@ -104,3 +107,5 @@ ctest --test-dir build -C Release -R '^plugin_abi_contract$' --output-on-failure
 ```
 
 契约测试覆盖清单、路径、依赖排序、版本协商、参数拒绝、只读快照、线程边界、UI 队列和停止过程。`tests/plugins/host_smoke.py` 在独立目录隐藏启动实际 MMS，验证原文件名及中文文件名下的菜单和工具栏调用。测试通过不代表完整 P0–P6 或 Win7、AMD 真机验收完成。
+
+刷新专项与普通 CTest 契约分开运行。[run_refresh_checks.py](../../tests/plugins/run_refresh_checks.py) 依赖 Windows 和 pywin32，参数依次为 `plugin_abi_tests.exe` 路径、`lifecycle.dll` 路径与尚不存在的输出目录。运行器在不激活的私有桌面执行 `--refresh-only`，验证队列与真实 Manager，写入 `result.log`、`plugin.log` 和 `report.json`。隐藏目标只验收失效操作完成及没有同步绘制，不要求 Windows 为隐藏窗口保留可查询区域。

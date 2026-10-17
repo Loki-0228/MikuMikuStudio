@@ -128,6 +128,7 @@ static void InitializeRuntime(MMDApp* app, bool migrationTest) {
         }
         std::wstring module(32768, 0); auto n = GetModuleFileNameW(nullptr, module.data(), DWORD(module.size())); if (!n || n >= module.size()) throw std::runtime_error("process path unavailable"); module.resize(n);
         manager = std::make_unique<Manager>(fs::path(data) / L"MMS" / L"plugins", LogMessage, [window = app->MainWindow()] { PostMessageW(window, kRefresh, 0, 0); }, false, CreateSceneStore(app));
+        manager->SetRefreshGuard([app] { return !closing && app->WindowLayoutReady() && !app->SceneMutationInProgress(); });
         if (manager->Storage().Prepare(currentProject.records) != MMS_OK || !manager->Storage().Commit()) throw std::runtime_error("initialize plugin project data");
         history = std::make_unique<SharedHistory>(manager->Storage(), [app] {
             if (closing || owner != app) return MMS_E_NOT_READY;
@@ -304,6 +305,7 @@ bool BeginProjectSceneReplacement(MMDApp* app) {
     const auto result = projectHistoryReset->Commit();
     if (result != MMS_OK) { LogMessage("history scene replacement refused: "+std::to_string(result)); return false; }
     historySceneReplaced = true;
+    if (manager) manager->AdvanceRefreshEpoch();
     return true;
 }
 void CommitProjectLoad(MMDApp* app) {
@@ -335,6 +337,7 @@ bool ResetPluginProject(MMDApp* app) {
         const auto r=manager->Storage().Prepare({});
         if(r){LogMessage("plugin project reset refused");return false;}
         if (reset && reset->Commit()!=MMS_OK) { manager->Storage().Cancel(); LogMessage("history project reset refused"); return false; }
+        manager->AdvanceRefreshEpoch();
         if(!manager->Storage().Commit()){LogMessage("plugin project reset refused");return false;}
     }
     currentProject={};QueueProjectEvent(app,MMS_EVENT_SCENE_RESET,L"");return true;

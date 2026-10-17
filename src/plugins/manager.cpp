@@ -12,6 +12,7 @@ struct Manager::Impl {
         SceneClient scene;
         StorageClient storage;
         EditClient edit;
+        RefreshClient refresh{nullptr, {}};
         std::atomic<bool> stopping{false};
         PluginStatus status;
         MmsHostV1 table{};
@@ -77,6 +78,9 @@ struct Manager::Impl {
     bool closing = false, draining = false, sending = false;
     unsigned active = 0;
     static constexpr UINT kDrain = WM_APP + 1;
+    static constexpr UINT kRefreshDrain = WM_APP + 2;
+    static constexpr UINT_PTR kRefreshRetry = 0x4d4d5372;
+    std::function<bool()> refreshGuard;
 
     Impl(fs::path user, Log output, std::function<void()> changed, bool fallback, std::shared_ptr<SceneStore> sceneStore):
         userRoot(std::move(user)), log(std::move(output)), registry(std::move(changed),
@@ -87,6 +91,7 @@ struct Manager::Impl {
         if (!RegisterClassW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) throw std::runtime_error("plugin dispatcher class");
         wake = CreateWindowExW(0, wc.lpszClassName, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, wc.hInstance, this);
         if (!wake) throw std::runtime_error("plugin dispatcher window");
+        registry.Refresh().SetWake([this] { return PostMessageW(wake, kRefreshDrain, 0, 0) != FALSE; });
     }
     ~Impl() { if (wake) DestroyWindow(wake); }
     bool EditOrigin(const Instance& i) const noexcept {
@@ -171,6 +176,14 @@ struct Manager::Impl {
         auto* self = reinterpret_cast<Impl*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
         if (message == WM_NCCREATE) { self = static_cast<Impl*>(reinterpret_cast<CREATESTRUCTW*>(lp)->lpCreateParams); SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self)); }
         if (self && message == kDrain) { Boundary([&] { self->Drain(); return MMS_OK; }); return 0; }
+        if (self && (message == kRefreshDrain || (message == WM_TIMER && wp == kRefreshRetry))) {
+            KillTimer(hwnd, kRefreshRetry);
+            const auto result = Boundary([&] { self->DrainRefresh(); return MMS_OK; });
+            if (result) self->registry.Refresh().FailPending(result);
+            if (!self->closing && self->registry.Refresh().Pending() && !SetTimer(hwnd, kRefreshRetry, 16, nullptr))
+                self->registry.Refresh().FailPending(MMS_E_FAILED);
+            return 0;
+        }
         return DefWindowProcW(hwnd, message, wp, lp);
     }
     void Write(const std::string& text) noexcept { try { if (log) log(text); } catch (...) {} }
@@ -187,6 +200,10 @@ struct Manager::Impl {
         if (id == "mms.ui") return Table(major, minor, bytes, out, registry.Api(i.ui));
         if (id == "mms.ui.surface") return Table(major, minor, bytes, out, registry.SurfaceApi(i.ui));
         if (id == "mms.ui.layout") return Table(major, minor, bytes, out, registry.LayoutApi(i.ui));
+        if (id == "mms.ui.refresh") {
+            if (closing || i.stopping.load()) return MMS_E_NOT_READY;
+            return Table(major, minor, bytes, out, registry.Refresh().Api(i.refresh));
+        }
         if (id == "mms.scene" && scene) return Table(major, minor, bytes, out, scene->Api(i.scene));
         if (id == "mms.storage") return Table(major, minor, bytes, out, storage.Api(i.storage));
         if (id == "mms.edit" && edits) return Table(major, minor, bytes, out, EditApi(i));
@@ -232,6 +249,11 @@ struct Manager::Impl {
         };
         return h;
     }
+    void DrainRefresh() {
+        if (GetCurrentThreadId() != thread || draining || closing || active || registry.InCallback() || storage.InCallback() || storage.Prepared() ||
+            (edits && edits->InCallback()) || (refreshGuard && !refreshGuard())) return;
+        registry.Refresh().Drain();
+    }
     void Drain() {
         if (GetCurrentThreadId() != thread || draining || active || registry.InCallback() || storage.InCallback() || storage.Prepared() ||
             (edits && edits->InCallback())) return;
@@ -266,6 +288,7 @@ struct Manager::Impl {
     }
     bool StopOne(Instance& i) {
         i.stopping = true; i.ui.stopping = true; i.scene.stopping = true; i.storage.stopping = true; i.edit.stopping = true; i.status.stage = "stopping";
+        registry.Refresh().Retire(i.refresh);
         if (edits && !edits->Retire(i.edit)) return false;
         if (i.stopFailed) return false;
         { std::lock_guard<std::mutex> lock(mutex); for (auto& [id, task] : tasks) if (task->owner == &i) task->cancel = true; }
@@ -277,7 +300,7 @@ struct Manager::Impl {
             return false;
         }
         { std::lock_guard<std::mutex> lock(mutex); for (const auto& [id, task] : tasks) if (task->owner == &i) return false; }
-        if (registry.HasLeases(i.ui) || (scene && scene->HasLeases(i.scene))) return false;
+        if (registry.HasLeases(i.ui) || registry.Refresh().HasLeases(i.refresh) || (scene && scene->HasLeases(i.scene))) return false;
         if (!storage.Retire(i.storage)) return false;
         r = Boundary([&] { registry.Retire(i.ui); return MMS_OK; });
         if (r != MMS_OK || registry.HasLeases(i.ui)) {
@@ -293,7 +316,8 @@ struct Manager::Impl {
         if (GetCurrentThreadId() != thread || active || registry.InCallback() || storage.InCallback() || storage.Prepared() ||
             (edits && edits->InCallback())) return false;
         if (!closing) { Event(MMS_EVENT_UI_CLOSING); SavePreferences(); closing = true; }
-        for (const auto& i : instances) { i->stopping = true; i->ui.stopping = true; i->scene.stopping = true; }
+        KillTimer(wake, kRefreshRetry);
+        for (const auto& i : instances) { i->stopping = true; i->ui.stopping = true; i->scene.stopping = true; registry.Refresh().Retire(i->refresh); }
         bool complete = true; std::set<std::string> keep;
         for (auto it = instances.rbegin(); it != instances.rend(); ++it) {
             auto& i = **it;
@@ -311,6 +335,7 @@ struct Manager::Impl {
             auto instance = std::make_unique<Instance>(); auto& i = *instance; i.host = this; i.ui = {&registry, m.id}; i.status = {m.id, "validated", {}, m.package};
             i.storage.store = &storage; i.storage.id = m.id;
             i.edit.store = edits.get(); i.edit.id = m.id;
+            i.refresh.queue = &registry.Refresh(); i.refresh.owner = m.id;
             for (const auto& dep : m.dependencies) i.dependencies.push_back(dep.id);
             bool ready = std::all_of(i.dependencies.begin(), i.dependencies.end(), [&](const auto& d) { return started.count(d) != 0; });
             if (!ready) { i.status.stage = "failed"; i.status.error = "dependency failed to start"; failed.push_back(i.status); Write(m.id + ": " + i.status.error); continue; }
@@ -372,6 +397,14 @@ Manager::~Manager() {
     }
 }
 void Manager::Load(const fs::path& root) { impl_->Load(root); }
+void Manager::SetRefreshGuard(std::function<bool()> guard) {
+    if (GetCurrentThreadId() != impl_->thread || ExecutingCallback()) throw std::invalid_argument("refresh configuration boundary");
+    impl_->refreshGuard = std::move(guard);
+}
+void Manager::AdvanceRefreshEpoch() {
+    if (GetCurrentThreadId() != impl_->thread) throw std::invalid_argument("refresh epoch thread");
+    impl_->registry.Refresh().AdvanceProjectEpoch();
+}
 MmsResult Manager::AttachEditHost(EditHost& host) noexcept { return Boundary([&] { return impl_->AttachEditHost(host); }); }
 MmsResult Manager::DetachEditHost() noexcept { return Boundary([&] { return impl_->DetachEditHost(); }); }
 void Manager::SetEditPublished(std::function<void()> callback) {

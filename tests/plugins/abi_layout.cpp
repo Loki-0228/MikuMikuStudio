@@ -1,4 +1,5 @@
 #include <mms/surface.h>
+#include <mms/refresh.h>
 #include <mms/edit.h>
 #include <mms/layout.h>
 #include <mms/scene.h>

@@ -1,6 +1,6 @@
 # 插件界面样式、绘制与动画接口方案
 
-本文固定界面需求和建议接口。「当前实现」及基础 C++17 包装以现有 SDK 为准，其余新增服务、类型和函数仍为待实现提案。
+本文固定界面需求和建议接口。基础 C++17 包装和 `mms.ui.refresh` 的 `REPAINT + SELF` 已接入，实际接口以 SDK 为准。其余新增服务、刷新绑定、绘制层和动画函数仍为提案。
 本方案不改变普通宿主的 `mms.edit` 开放状态，也不把界面动画记入场景撤销历史。
 跨 UI、视口和数据工具的分层封装以[统一扩展架构](PLUGIN_EXTENSION_ARCHITECTURE.md)为准；本页重点规定 UI 对象、刷新和交互。
 
@@ -23,17 +23,21 @@ Win7 SP1 x64、CPU 绘制和 AMD 兼容是基础约束；不以 CUDA、NVAPI、A
 
 ## 当前实现
 
-基础类型化和声明式注册已有 [C++17 SDK](../sdk/mms/cpp-ui.md)：`CommandUi` 用 `RegistrationBundle` 组合现有命令、菜单、按钮、分组和默认布局。原始 C 表、handle、权限及生命周期规则继续生效。失败回收受阻时保留引用，插件在 `stop` 中显式关闭并重试。本批不提供刷新绑定、租约类、溢出菜单或新挂载点。
+基础类型化和声明式注册已有 [C++17 SDK](../sdk/mms/cpp-ui.md)：`CommandUi` 用 `RegistrationBundle` 组合现有命令、菜单、按钮、分组和默认布局。原始 C 表、handle、权限及生命周期规则继续生效。失败回收受阻时保留引用，插件在 `stop` 中显式关闭并重试。当前包装不提供刷新绑定、租约类、溢出菜单或新挂载点。
+
+[界面重绘接口](../sdk/mms/refresh.md)直接使用这些原始元素句柄，当前仅覆盖同插件已有按钮和原生 surface 面板。请求完成表示损伤区域已交给窗口系统，不表示像素已绘制。此服务不重新查询命令状态或布局，也不触发场景求值。
 
 | 已有能力 | 实际范围与代码依据 |
 | --- | --- |
 | `mms.ui` 1.0 | 命令、元素、只读属性和布局事务。`sdk/mms/include/mms/ui.h:99–120` 没有样式、画笔、绘制回调或帧请求。 |
 | 元素 ID 和代次 | `ui.h:74–84` 提供 ID、generation 和注册表快照；不是完整的本体控件树。 |
-| 插件挂载 | `src/plugins/ui_registry.cpp:264–270,460–467` 只开放插件菜单、工具栏扩展区和工作区页签。 |
+| 插件挂载 | `src/plugins/ui_registry.cpp` 只开放插件菜单、工具栏扩展区和工作区页签。 |
 | `mms.ui.surface` 1.0 | `surface.h:22–40` 提供创建、尺寸、显示、焦点和销毁回调；返回插件拥有的原生子窗口。 |
-| 子窗口约束 | `ui_registry.cpp:878–907` 校验父窗口、`WS_CHILD` 和 UI 线程；换父窗口会销毁重建。插件可在自己的窗口内自行绘制。 |
-| 布局与实际几何 | `layout.h:24–44` 分开记录 UI 和几何修订；`ui_registry.cpp:798–823` 仅发布已应用的几何，未就绪返回 `NOT_READY`。 |
-| 局部缓冲 | `src/plugins/native_ui.cpp:71–78` 使用 GDI 背景缓冲；工具栏按钮仍为系统 `BUTTON`，见 `:156–166`。 |
+| 子窗口约束 | `UiRegistry::ShowSurface` 校验父窗口、`WS_CHILD` 和 UI 线程；换父窗口会销毁重建。插件可在自己的窗口内自行绘制。 |
+| 布局与实际几何 | `layout.h` 分开记录 UI 和几何修订；`UiRegistry::PublishGeometry` 仅发布已应用的几何，未就绪返回 `NOT_READY`。 |
+| `mms.ui.refresh` 1.0 | `refresh.h`、`src/plugins/ui_refresh.cpp` 提供能力和目标查询、四项跨线程票据操作。仅支持 `REPAINT + SELF`，执行时只标记目标窗口损伤。 |
+| 刷新目标 | `NativeUi` 发布原元素 handle、独立窗口实例和实际客户区几何。非 LAYOUT 按钮也支持；未创建 surface 不因查询或重绘而挂载。 |
+| 局部缓冲 | `src/plugins/native_ui.cpp` 使用 GDI 背景缓冲；工具栏按钮仍为系统 `BUTTON`。 |
 | 批量移动和损伤区域 | `third_party/native_ui/src/win32_host.cpp:16–57` 按父窗口移动、核对实际位置、失败尝试恢复，并重绘新旧矩形。 |
 | 通知和排队 | `plugin.h:69–125` 有 `onEvent` 和 `enqueueUi`；没有按主题订阅、目标坐标映射或按需动画帧服务。 |
 | 宿主更新调度 | `src/app/update_coordinator.cpp:28–44,143–186` 有单调时钟及安全点，但当前调度最终进入 `FrameDriver`，不是插件 UI 帧接口。 |
@@ -50,21 +54,21 @@ Win7 SP1 x64、CPU 绘制和 AMD 兼容是基础约束；不以 CUDA、NVAPI、A
 除已有 `enqueueUi`、下文明确允许跨线程的刷新入队和不可变租约读取外，UI 对象修改接口均限定 UI 线程。后台任务先排队，再发布事件或更新呈现。
 所有成功注册返回归属调用插件的句柄；停止插件时统一撤销。失败不修改输出参数或当前可见结果。
 
-建议新增 `MmsUiTargetRefV1 { h, id, instanceGeneration }`，其中 `id` 为宿主分配的不透明 `MmsId`。
-`resolve(elementId)` 把稳定字符串 ID 解析成运行时引用；注销重建改变 `instanceGeneration`，移动或换主题不改变它。
+已实现的 `MmsUiTargetRefV1` 为 `{ h, element, instanceGeneration, projectEpoch }`，其中 `element` 是原 `mms.ui` 注册句柄。
+`mms.ui.refresh.getTarget(element)` 返回本插件按钮或面板的运行时引用。注销、视图重建和目标失效会改变实例代次，正常移动只改变实际几何修订。工程替换或重置使旧 `projectEpoch` 失效。
 现有 `MmsUiElementV1.generation` 会随布局提交改变，不能直接充当长期动画的实例身份；旧布局校验规则保持不变。
-目标记录还包含 `elementId`、所属插件、坐标空间、能力位、布局修订、呈现修订和可见区域。
+刷新目标还返回能力位、ready、逻辑可见性、客户区 DIP 尺寸及几何修订。后续 geometry 服务可增加稳定字符串解析、坐标变换、呈现修订和裁剪区域，不另建元素身份。
 跨目标定位允许读取已公开目标。修改仍受目标能力和归属限制；宿主区域必须显式开放样式或装饰层权限。
 其他插件未开放的视图不能被换肤、截取内容、移动或覆盖；不会因知道 ID 就取得写权限。
 
-## 建议服务与函数
+## 服务现状与后续函数
 
-以下为函数语义，参数结构和数值枚举须在实现时形成 C 头文件并增加布局检查。
+表中刷新六项函数已形成 [refresh.h](../sdk/mms/include/mms/refresh.h)。其他函数为建议语义，尚待 C 头文件和能力实现。
 
-| 服务 ID | 建议函数 | 用途 |
+| 服务 ID | 当前或建议函数 | 用途 |
 | --- | --- | --- |
 | `mms.events` | `subscribe(filter, callback, context, outToken)`、`unsubscribe(token)`、`publish(topic, payload)` | 按主题和可选对象筛选事件，支持非控件触发。 |
-| `mms.ui.refresh` | `bind(desc, outBinding)`、`request(desc, outTicket)`、`query(ticket, outState)`、`cancel(ticket)`、`release(ticket)`、`unbind(binding)` | 区分数据、控件状态、布局和局部重绘，统一排队、合并及依赖执行。 |
+| `mms.ui.refresh` | 已实现 `getCapabilities`、`getTarget`、`request`、`query`、`cancel`、`release` | 当前只合并本插件目标自身的局部重绘。`bind`、`unbind` 及依赖刷新仍为后续扩展。 |
 | `mms.ui.geometry` | `resolve(elementId, outTarget)`、`acquire(targets, outSnapshot)`、`releaseSnapshot(lease)`、`mapPoints(snapshot, from, to, points, outPoints)` | 查询目标、不可变几何和跨区域坐标。 |
 | `mms.ui.style` | `getCapabilities(target, outCaps)`、`acquireComputed(target, outStyle)`、`releaseStyle(lease)`、`createOverride(desc, outHandle)`、`updateOverride(handle, desc)`、`removeOverride(handle)` | 查询和覆盖可用样式，不直接替换窗口过程。 |
 | `mms.ui.paint` | `getCapabilities(target, outCaps)`、`createLayer(desc, outLayer)`、`createResource(desc, outResource)`、`submitDisplayList(layer, list)`、`releaseResource(handle)`、`destroyLayer(layer)` | 创建受限绘制层并提交保留的绘制指令；提交产生的损伤交给统一刷新服务。 |
@@ -109,7 +113,7 @@ C 包装返回同一底层句柄的带类型引用，C++ 包装增加可移动 R
 移交所有权必须显式完成，借用引用不能再次销毁；原生 `MmsHandle` 兼容保留，由宿主校验对象类型和 owner。
 局部注册失败时按逆序撤回本组已注册项目；这只是统一对象的批量清理，不建立第二套生命周期。
 插件停止时宿主仍负责最终回收，不能仅依赖 C++ 析构。便利层不得偷偷创建后台线程或替插件运行重任务。
-当前注册和布局 ABI 可复用；自动溢出、INPUT、侧栏、属性区和状态栏仍未开放，见 `sdk/mms/README.md:43–49`。
+当前注册、布局及 REPAINT ABI 可用；自动溢出、INPUT、侧栏、属性区和状态栏仍未开放，见 [SDK 当前服务](../sdk/mms/README.md#当前服务)。
 新增功能必须先查询能力。没有溢出能力时明确选择受支持菜单，不返回一个实际不可见的「成功」按钮。
 上下文菜单依据目标身份和只读状态生成；异步结果到达后更新注册描述，不在菜单绘制或状态查询中等待计算。
 
@@ -122,76 +126,38 @@ C 包装返回同一底层句柄的带类型引用，C++ 包装增加可移动 R
 | 最小宽度、伸缩、换行、折叠 | 同一布局服务处理，用户保存的覆盖优先于插件默认值。 |
 | 快捷键、焦点及辅助信息 | 命令快捷键与原生或开放的输入能力；冲突返回诊断，不能私自安装全局钩子。 |
 | 属性类型、范围、面板 | 属性注册、读值绑定、面板 surface 和同一 UI 元素；写入须接共同事务。 |
-| 依赖及刷新偏好 | `mms.ui.refresh.bind` 建立数据到状态、布局及绘制的依赖；包装不运行另一个更新循环。 |
+| 依赖及刷新偏好 | 后续 `mms.ui.refresh.bind` 提案建立数据到状态、布局及绘制的依赖；当前只有显式 REPAINT 请求。 |
 
 宿主负责空间不足时的折叠与可达入口。暂不具备溢出能力时，SDK 必须回退到已声明的菜单位置或返回不支持；不能静默丢失命令。
 
 ## 统一刷新请求
 
-刷新服务接收变化范围并安排 UI 更新，不执行场景编辑。四种请求可以组合，但各自语义独立。
+当前 `mms.ui.refresh` 1.0 只实现表中的 REPAINT，且范围必须为 SELF。其他请求位及 SUBTREE、DEPENDENTS 返回 `UNSUPPORTED`，组合请求不会只执行其中已支持的部分。字段、配额及错误码以 [SDK 参考](../sdk/mms/refresh.md)为准。
 
-| 请求位 | 行为 | 不隐含的动作 |
+| 请求位 | 当前状态与语义 | 不隐含的动作 |
 | --- | --- | --- |
-| `REPAINT` | 重画指定目标的损伤区域，回放已准备内容。 | 不重新取数据、不求值场景、不推进时间。 |
-| `DATA` | 通过绑定读取已变化的数据快照，替换 UI 的只读显示模型。 | 不写工程，不同步读取大文件，不自动重新计算整个场景。 |
-| `STATE` | 重新计算内容、启用、选中、可见等控件状态。 | 不调用命令，不在查询中提交编辑。 |
-| `LAYOUT` | 重新测量并排列受影响的区域，发布完成的几何。 | 不保存一次新的用户布局，不自动增加历史。 |
+| `REPAINT` | 已实现：标记目标客户区的损伤区域，由窗口正常绘制。 | 不重新取数据、不求值场景、不推进时间。 |
+| `DATA` | 待实现：通过绑定读取变化的数据快照，替换 UI 的只读显示模型。 | 不写工程，不同步读取大文件，不自动计算整个场景。 |
+| `STATE` | 待实现：重新计算内容、启用、选中、可见等控件状态。 | 不调用命令，不在查询中提交编辑。 |
+| `LAYOUT` | 待实现：重新测量并排列受影响区域，发布完成的几何。 | 不保存一次新的用户布局，不自动增加历史。 |
 
-数据绑定声明来源身份、可观察 revision、目标与依赖。布局依赖由宿主建立；插件只能添加经过校验的依赖，注册时拒绝循环。
-一次更新按 `DATA`、`STATE`、测量与 `LAYOUT`、损伤合并与 `REPAINT` 的顺序执行。只有值或度量实际变化才向后传播；一次纯颜色变化不要求重新排列整个工作区。
-刷新不是读取最新任意时间姿态的求值入口。需要新场景结果时，插件先发显式求值任务，完成后再请求显示该结果。
+### 已实现的重绘与票据
 
-以下是建议的 C 请求结构，尚未加入 SDK。`MmsUiTargetRefV1` 沿用本页的实例身份；`MmsUiRefreshApiV1` 的完整 bind 描述和状态枚举在实现时冻结。
+`getCapabilities`、`getTarget` 限定 UI 线程，允许在命令回调内纯读。`request`、`query`、`cancel`、`release` 可从工作线程调用。后台调用只复制输入并访问队列，不读取 HWND 或注册表。服务使用独立的刷新消息和 UI 安全点，不调用旧 `Refresh`、`HandleWindowSize` 或 `FrameDriver`。
 
-```c
-typedef struct MmsUiDirtyRectV1 {
-	float x, y, width, height;
-} MmsUiDirtyRectV1;
+局部矩形使用目标客户区 DIP，并带取得矩形时的非零 `expectedGeometryRevision`。矩形经裁剪后向外取整为像素区域。无矩形表示整个目标客户区，此时允许零几何修订，但仍要求目标已就绪、实例和工程代次匹配。`binding`、`sourceRevision`、`flags`、`reserved` 当前均为 0。
 
-typedef struct MmsUiRefreshRequestV1 {
-	MmsHeader h;
-	MmsUiTargetRefV1 target;
-	MmsHandle binding;
-	uint32_t kinds, scope;
-	uint64_t sourceRevision;
-	uint64_t expectedGeometryRevision;
-	MmsSpan dirtyRects;
-	uint64_t coalesceKey;
-	uint32_t flags, reserved;
-} MmsUiRefreshRequestV1;
+布局移动前暂停目标，失败后保持未就绪。暂停不改变修订；重新发布时只有实际位置、尺寸、窗口 DPI 或逻辑可见性变化才改变几何修订。隐藏但已有窗口的目标可以合法重绘，请求不会显示它或创建新视图。
 
-typedef struct MmsUiRefreshStateV1 {
-	MmsHeader h;
-	uint32_t status, completedKinds;
-	MmsResult result;
-	uint32_t reserved;
-	uint64_t sourceRevision, geometryRevision;
-} MmsUiRefreshStateV1;
+相同 owner、目标引用和 `coalesceKey` 的待执行贡献可合并为一次区域失效。每个 ticket 仍独立完成、取消或失败。`COMPLETED` 表示损伤区域已交给 Windows，不保证已经收到 `WM_PAINT`。取消一个待执行贡献不撤回其余贡献；`release` 只放弃查询引用，不取消请求。
 
-typedef struct MmsUiRefreshQueueV1 {
-	MmsHeader h;
-	void* context;
-	MmsResult (MMS_CALL *request)(void*, const MmsUiRefreshRequestV1*, MmsHandle* ticket);
-	MmsResult (MMS_CALL *query)(void*, MmsHandle ticket, MmsUiRefreshStateV1*);
-	MmsResult (MMS_CALL *cancel)(void*, MmsHandle ticket);
-	MmsResult (MMS_CALL *release)(void*, MmsHandle ticket);
-} MmsUiRefreshQueueV1;
-```
+当前按插件限制 256 个保留票据、256 KiB 队列字节，每请求最多 32 个矩形，每次安全点最多处理 64 个贡献。运行期值由能力查询提供。未释放终态仍占用记录配额，立即释放待执行票据也不能绕过上限。停止会拒绝新请求并取消待执行贡献，已有引用仍需释放，未排空时宿主保留 DLL。
 
-`MmsUiRefreshQueueV1` 是 `MmsUiRefreshApiV1` 拟包含的跨线程子表，单独列出便于审查线程边界；不创建另一个刷新服务。注册绑定的 UI 线程函数仍属于同一服务。
+### 后续数据绑定与依赖刷新
 
-`scope` 分为 `SELF`、`SUBTREE`、`DEPENDENTS`，只能覆盖目标公开的范围。请求扩展到祖先布局容器时，宿主仅测量必需容器，不把子树范围直接扩成全窗口。
-`dirtyRects` 使用目标局部 DIP，要求非负有限尺寸和对应几何修订。没有矩形表示整个目标损伤，不表示整个工程重绘。
-几何尚未执行时可用零修订请求整个目标。带矩形但修订失效时，宿主拒绝为 `STALE`；不能把旧矩形直接套在新坐标上。
-`binding` 对 `DATA` 必需，对纯重绘可为零。`sourceRevision` 属于该 binding 的来源，不是布局修订或任意插件计数。提供者返回其实际消费的修订，宿主记录已经处理的位置。
-`coalesceKey` 只在调用插件及目标实例内有效。宿主仍检查来源、操作种类和空间，不能因为 key 相同就混合不同数据源。
-
-`request` 可从后台线程调用，复制请求及矩形后返回 ticket。只有 `request`、`query`、`cancel`、`release` 允许跨线程；`bind`、`unbind` 仍在 UI 线程执行。
-ticket 表示一个请求贡献，不是一次回调。多个 ticket 可以合并为一个更新批次；每个 ticket 独立完成、取消或失败。完成状态保留到 release，未释放记录计入插件配额。
-release 只放弃调用者的状态查询引用，不取消已接受的请求。待执行贡献仍计入配额，完成后才回收；需要取消时先调用 cancel。不能通过立即 release 绕过队列上限。
-后台只入队，不触碰 HWND、读取活动模型或同步等待 UI。当前 `enqueueUi` 与刷新服务使用同一个安全点调度器，不能另外启动相互递归的消息循环。
-
-### 合并、重入与限流
+以下规则约束尚未实现的 DATA、STATE、LAYOUT 扩展。数据绑定需要声明来源身份、可观察 revision、目标与依赖。布局依赖由宿主建立；插件添加的依赖须在注册时检查循环。
+完整更新按 DATA、STATE、测量与 LAYOUT、损伤合并与 REPAINT 的顺序执行。只有值或度量实际变化才向后传播。需要新场景结果时，插件先发显式求值任务，完成后再请求显示该结果。
+SUBTREE 和 DEPENDENTS 只能覆盖目标公开的范围。请求扩展到祖先布局容器时，仅测量必需容器，不能直接扩大到全窗口。DATA 需要非零 binding，其 sourceRevision 属于真实来源，不是布局修订或任意插件计数。
 
 队列键包含 owner、目标实例、binding、来源身份及合并键。同一来源 revision 可合并请求位和矩形；较新 revision 覆盖较旧的数据读取需求，但不能吞掉旧请求覆盖的额外区域。
 互不兼容的来源或空间分开排队。重复请求仅合并范围，不创建重复数据读取。矩形过多时折叠成目标裁剪内的包围矩形，不扩大到整场景。
@@ -207,7 +173,7 @@ release 只放弃调用者的状态查询引用，不取消已接受的请求。
 只读 UI 结果准备失败时保留上一份完整显示，并给出陈旧或失败状态。不能保留一半新属性和一半旧布局，伪装为完成。
 刷新服务不得设置工程 dirty、写入项目、移动播放头、覆盖当前编辑姿态或增加撤销记录。真实数据变更必须先通过共同事务发布，再由提交事件触发刷新。
 
-### 局部重绘与场景渲染
+### 后续绘制层与场景渲染
 
 绘制层提交内容后，将新旧边界和裁剪变化交给 `mms.ui.refresh`。旧的 `paint.invalidate` 便利写法若保留，只包装 `REPAINT`，不再维护第二条失效队列。
 宿主恢复损伤区背景并重画相交层；目标外像素保持不变。纯面板重绘不能调用完整 `FrameDriver` 或重新加载效果。
@@ -249,7 +215,7 @@ UI 安全点先校验，再更新界面。已取消、对象已重建或结果�
 布局声明继续使用 DIP。`mapPoints` 明确区分元素局部 DIP、宿主客户区 DIP 和窗口系统像素；首版无需公开屏幕空间。
 启用独立透明宿主的桌面范围时，另提供受能力控制的显示器工作区坐标空间及其代次；跨窗口映射仍由宿主完成。
 所有转换来自同一份快照。混用几何修订、失效目标或不可逆变换返回 `STALE` 或 `ARGUMENT`，不猜测坐标。
-当前宿主存在 DPI 虚拟化，不能再乘一次显示器缩放；依据是 `src/plugins/native_ui.cpp:236–243` 和 SDK README 的面板约定。
+当前宿主存在 DPI 虚拟化，不能再乘一次显示器缩放；依据是 `src/plugins/native_ui.cpp` 的 `WindowDpi` 和 SDK README 的面板约定。
 
 真实布局决定占位、原生 HWND 位置、裁剪和可访问性边界，继续由布局事务或宿主拖拽处理。
 临时呈现保存偏移、缩放、透明度和裁剪等视觉值，不改布局文件、对象数据、命令语义或窗口的真实位置。
@@ -370,10 +336,10 @@ Win7 SP1、AMD 真机、输入法、键盘导航、多 DPI 和桌面遮挡恢复
 
 ## 分批落地与验收
 
-先完成本体实时拖拽、损伤重绘和目标身份，再实现几何转换及事件订阅，最后接入样式、CPU 绘制层和按需帧请求。
+首阶段已有插件目标身份与 REPAINT 队列。后续继续本体实时拖拽、几何转换及事件订阅，再接入样式、CPU 绘制层和按需帧请求。
 便利 SDK 随相应底层能力分批提供；透明宿主、输入区域、可撤回布局会话及隔离三维视图分别验收，不捆绑成一次重写。
 首个示例用非 UI 事件同时驱动两个独立目标，展示插件自行编排时间线；移除插件后保留可操作的静态界面。
-刷新验收覆盖跨线程重复请求、来源修订合并、局部矩形过期、取消其中一个贡献、队列限额、绑定循环与回调自触发。每例核对播放头、工程 dirty、历史数量和场景求值计数不变。
+当前重绘的验收范围为跨线程请求、局部矩形过期、实例与工程代次、隐藏目标、取消单个贡献、队列限额及停止释放。来源修订合并、绑定循环和回调自触发属于后续依赖刷新验收。每例须核对播放头、工程 dirty、历史数量和场景求值计数不变。
 声明 SDK 的验收先注册普通按钮，再关闭默认刷新并向同一元素添加绘制层；核对命令、元素及目标身份没有被替换。
 契约测试覆盖错代次、几何变化、批量提交失败、资源租约、取消重入、停止和卸载、隐藏恢复以及预算耗尽。
 交互测试覆盖动画中开始拖拽、拖拽中布局变化、Esc、捕获丢失、快速缩放窗口和不同父窗口目标。

@@ -1,5 +1,6 @@
 #pragma once
 #include "common.hpp"
+#include "ui_refresh.hpp"
 #include <mms/ui.h>
 #include <mms/surface.h>
 #include <mms/layout.h>
@@ -46,13 +47,14 @@ class UiRegistry {
     struct View;
     struct Preferences;
     DWORD thread_ = GetCurrentThreadId();
-    uint64_t revision_ = 1, next_ = 1, generation_ = 1;
+    uint64_t revision_ = 1, next_ = 1, generation_ = 1, nextPresentation_ = 1;
     unsigned callbackDepth_ = 0;
     UiClient* invoking_ = nullptr;
     std::function<void(UiClient&, MmsResult)> commandFinished_;
     std::map<MmsHandle, std::unique_ptr<Lease>> leases_;
     std::map<MmsHandle, std::unique_ptr<Layout>> layouts_;
     std::map<std::string, std::unique_ptr<View>> views_;
+    UiRefreshQueue refresh_;
     std::unique_ptr<Preferences> preferences_;
     uint64_t preferencesRevision_ = 1;
     std::function<void()> changed_;
@@ -95,6 +97,7 @@ public:
     MmsUiApiV1 Api(UiClient&);
     MmsUiSurfaceApiV1 SurfaceApi(UiClient&);
     MmsUiLayoutApiV1 LayoutApi(UiClient&);
+    UiRefreshQueue& Refresh() noexcept { return refresh_; }
     MmsResult Invoke(UiClient&, MmsString, MmsObjectRef, MmsSpan);
     void Retire(UiClient&);
     bool HasLeases(const UiClient&) const;
@@ -110,6 +113,11 @@ public:
     MmsResult ShowSurface(const std::string& element, HWND parent, const MmsUiRectV1&, uint32_t dpi, bool visible);
     MmsResult FocusSurface(const std::string& element);
     void DestroyViews();
+    // UI-adapter identity. Never derived from description/layout generations.
+    uint64_t NewPresentationInstance();
+    struct SurfacePresentation { HWND window = nullptr; uint64_t instance = 0; bool visible = false; };
+    // UI-thread read only: does not create a view or invoke plugin callbacks.
+    bool ExistingSurface(const std::string& element, SurfacePresentation&) const noexcept;
     struct Geometry { float x, y, width, height; bool visible, overflowed; };
     bool PublishGeometry(const std::map<std::string, Geometry>&, uint64_t revision);
 };

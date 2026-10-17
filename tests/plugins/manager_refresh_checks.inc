@@ -1,0 +1,104 @@
+// Include after ManifestText/Write. Uses the separately built lifecycle DLL:
+// no direct queue client or forged refresh service stands in for Manager.
+#include <mms/refresh.h>
+
+namespace manager_refresh_checks {
+static void Pump(unsigned milliseconds) {
+    const auto until = GetTickCount64() + milliseconds;
+    do {
+        MSG message{};
+        for (unsigned i = 0; i < 128 && PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE); ++i) {
+            if (message.message != WM_QUIT) { TranslateMessage(&message); DispatchMessageW(&message); }
+        }
+        Sleep(1);
+    } while (GetTickCount64() < until);
+}
+struct Probe {
+    MmsResult (MMS_CALL *state)(MmsUiRefreshStateV1*) = nullptr;
+    MmsResult (MMS_CALL *release)() = nullptr;
+    explicit Probe(HMODULE module) {
+        CHECK(module != nullptr);
+        state = reinterpret_cast<decltype(state)>(GetProcAddress(module, "RefreshProbeState"));
+        release = reinterpret_cast<decltype(release)>(GetProcAddress(module, "RefreshProbeRelease"));
+        CHECK(state && release);
+    }
+    MmsUiRefreshStateV1 Read() const {
+        MmsUiRefreshStateV1 value{}; value.h = Header<MmsUiRefreshStateV1>(); CHECK(state(&value) == MMS_OK); return value;
+    }
+    void Complete() const {
+        const auto until = GetTickCount64() + 2000;
+        auto value = Read();
+        while (value.status == MMS_UI_REFRESH_PENDING && GetTickCount64() < until) { Pump(5); value = Read(); }
+        CHECK(value.status == MMS_UI_REFRESH_COMPLETED && value.result == MMS_OK && value.completedKinds == MMS_UI_REFRESH_REPAINT);
+    }
+    void ReleaseWorker() const {
+        MmsResult result = MMS_E_FAILED; std::thread worker([&] { result = release(); }); worker.join(); CHECK(result == MMS_OK);
+    }
+};
+struct Window {
+    HWND value = nullptr;
+    Window() {
+        value = CreateWindowExW(WS_EX_NOACTIVATE, L"STATIC", L"Manager refresh contract", WS_POPUP | WS_CLIPCHILDREN,
+            0, 0, 640, 400, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+        CHECK(value != nullptr); CHECK(SetMenu(value, CreateMenu())); ShowWindow(value, SW_SHOWNOACTIVATE);
+    }
+    ~Window() { if (value) { auto menu = GetMenu(value); SetMenu(value, nullptr); if (menu) DestroyMenu(menu); DestroyWindow(value); } }
+};
+static void Run(const fs::path& root, const fs::path& lifecycleDll, bool stopPending) {
+    const auto directory = root / (stopPending ? "refresh-manager-pending" : "refresh-manager-completed");
+    const auto package = directory / "PLUGINS" / "fixture";
+    const std::string id = "org.example.gui-refresh";
+    fs::create_directories(package); fs::copy_file(lifecycleDll, package / "refresh-lifecycle.dll");
+    Write(package / "plugin.json", ManifestText(id, "refresh-lifecycle.dll"));
+    std::vector<std::string> logs; bool allow = false; unsigned guardCalls = 0;
+    const auto log = [&](const std::string& value) { logs.push_back(value); };
+    const auto count = [&](const char* value) { return std::count_if(logs.begin(), logs.end(), [&](const auto& s) { return s.find(value) != std::string::npos; }); };
+    Manager manager(directory / "user", log); manager.SetRefreshGuard([&] { ++guardCalls; return allow; });
+    manager.Load(package.parent_path());
+    const auto statuses = manager.Status(); CHECK(statuses.size() == 1 && statuses[0].stage == "started");
+    CHECK(count("REFRESH_SERVICE_PASS") == 1);
+    const auto module = GetModuleHandleW(L"refresh-lifecycle.dll"); Probe probe(module);
+    Window window;
+    auto native = std::make_unique<NativeUi>(manager.Ui(), window.value, log);
+    native->Refresh(); CHECK(native->Layout(10, 500, 140, true) > 0);
+    HWND button = nullptr;
+    for (auto child = GetWindow(native->Toolbar(), GW_CHILD); child; child = GetWindow(child, GW_HWNDNEXT)) {
+        wchar_t name[32]{}; GetClassNameW(child, name, 32); if (!std::wcscmp(name, L"Button")) { button = child; break; }
+    }
+    CHECK(button != nullptr);
+    const auto click = [&] {
+        const auto before = count("REFRESH_WORKER_PENDING");
+        SendMessageW(native->Toolbar(), WM_COMMAND, MAKEWPARAM(GetDlgCtrlID(button), BN_CLICKED), reinterpret_cast<LPARAM>(button));
+        CHECK(count("REFRESH_TARGET_IN_COMMAND") == before + 1 && count("REFRESH_WORKER_PENDING") == before + 1);
+        CHECK(count("REFRESH_WORKER_FAILED") == 0 && probe.Read().status == MMS_UI_REFRESH_PENDING);
+    };
+    click();
+    // NativeUi::Command has already performed its ordinary Refresh/Layout.
+    // Unchanged geometry must not invalidate the callback's captured rectangle.
+    Pump(40); CHECK(guardCalls != 0 && probe.Read().status == MMS_UI_REFRESH_PENDING);
+    allow = true; probe.Complete(); probe.ReleaseWorker();
+    const auto revision = manager.Ui().Revision();
+    CHECK(manager.Storage().Prepare({}) == MMS_OK && manager.Storage().Prepared());
+    click(); Pump(40); CHECK(probe.Read().status == MMS_UI_REFRESH_PENDING);
+    manager.Storage().Cancel(); probe.Complete(); probe.ReleaseWorker();
+    CHECK(manager.Ui().Revision() == revision); // Repaint never re-registers UI.
+    allow = !stopPending; click();
+    if (!stopPending) probe.Complete();
+    CHECK(!manager.Stop());
+    CHECK(GetModuleHandleW(L"refresh-lifecycle.dll") == module && manager.Status()[0].stage == "stopping");
+    CHECK(count("STOP_REFRESH_TICKET_RETAINED") == 1 && count("DESTROY") == 0);
+    auto stopped = probe.Read();
+    CHECK(stopped.status == (stopPending ? MMS_UI_REFRESH_CANCELLED : MMS_UI_REFRESH_COMPLETED));
+    CHECK(stopped.result == (stopPending ? MMS_E_CANCELLED : MMS_OK));
+    probe.ReleaseWorker();
+    CHECK(manager.Stop() && manager.Status()[0].stage == "stopped" && count("DESTROY") == 1);
+    CHECK(GetModuleHandleW(L"refresh-lifecycle.dll") == nullptr);
+    CHECK(manager.Ui().commands.empty() && manager.Ui().elements.size() == 3);
+    native.reset(); CHECK(manager.Stop());
+}
+} // namespace manager_refresh_checks
+
+static void ManagerRefreshChecks(const fs::path& root, const fs::path& lifecycleDll) {
+    manager_refresh_checks::Run(root, lifecycleDll, false);
+    manager_refresh_checks::Run(root, lifecycleDll, true);
+}

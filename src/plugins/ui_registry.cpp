@@ -251,6 +251,8 @@ struct UiRegistry::Layout {
 };
 struct UiRegistry::View {
     std::shared_ptr<SurfaceRecord> surface;
+    MmsHandle element = 0;
+    uint64_t instance = 0;
     void* context = nullptr;
     HWND child = nullptr, parent = nullptr;
     MmsUiRectV1 bounds{};
@@ -262,7 +264,7 @@ struct UiRegistry::Preferences {
     std::string json = PreferencesJson(entries);
 };
 UiRegistry::UiRegistry(std::function<void()> change, std::function<void(UiClient&, MmsResult)> finished):
-    commandFinished_(std::move(finished)), preferences_(std::make_unique<Preferences>()), changed_(std::move(change)) {
+    commandFinished_(std::move(finished)), refresh_(*this), preferences_(std::make_unique<Preferences>()), changed_(std::move(change)) {
     for (const auto& [id, label, kind] : {std::tuple<const char*, const char*, uint32_t>{"mms.menu.plugins", "插件", MMS_UI_MENU}, {"mms.toolbar.main.extensions", "插件工具栏", MMS_UI_TOOLBAR}, {"mms.workspace.tabs.extensions", "插件工作区", MMS_UI_GROUP}}) {
         ElementRecord e; e.handle = next_++; e.arena = std::make_shared<Arena>(); e.desc.h = Header<MmsUiElementV1>();
         e.desc.id = e.arena->Copy(Text(id)); e.desc.ownerPlugin = e.arena->Copy(Text("mms")); e.desc.label = e.arena->Copy(Text(label));
@@ -496,7 +498,7 @@ MmsResult UiRegistry::Element(UiClient& c, const MmsUiElementV1* input, MmsHandl
     auto tree = elements; tree[id] = std::move(r); auto next = next_;
     auto merged = MergePreferences(tree, preferences_->entries, next, false); if (merged) return merged;
     for (auto& [key, element] : tree) element.desc.generation = generation_++;
-    if (replace) DestroyView(id);
+    if (replace) { refresh_.InvalidateTarget(replace); DestroyView(id); }
     elements.swap(tree); next_ = next; *out = elements[id].handle; Changed(); return MMS_OK;
 }
 MmsResult UiRegistry::Property(UiClient& c, const MmsPropertyDescV1* input, MmsHandle* out, MmsHandle replace) {
@@ -517,6 +519,7 @@ MmsResult UiRegistry::Remove(UiClient& c, MmsHandle handle) {
     for (auto it = elements.begin(); it != elements.end(); ++it) if (it->second.handle == handle) {
         if (String(it->second.desc.ownerPlugin) != c.id) return MMS_E_ARGUMENT;
         for (const auto& [id, e] : elements) if (String(e.desc.parentId) == it->first) return MMS_E_BUSY;
+        refresh_.InvalidateTarget(handle);
         DestroyView(it->first);
         elements.erase(it); Changed(); return MMS_OK;
     }
@@ -731,7 +734,7 @@ MmsResult UiRegistry::Commit(UiClient& c, MmsHandle h) {
 bool UiRegistry::HasLeases(const UiClient& c) const { if (c.unsafeToUnload) return true; for (const auto& [h, lease] : leases_) if (lease->owner == c.id) return true; return false; }
 void UiRegistry::Retire(UiClient& c) {
     for (auto it = layouts_.begin(); it != layouts_.end();) if (it->second->owner == c.id) it = layouts_.erase(it); else ++it;
-    for (auto it = elements.begin(); it != elements.end();) if (String(it->second.desc.ownerPlugin) == c.id && !it->second.layoutGroup) { DestroyView(it->first); it = elements.erase(it); } else ++it;
+    for (auto it = elements.begin(); it != elements.end();) if (String(it->second.desc.ownerPlugin) == c.id && !it->second.layoutGroup) { refresh_.InvalidateTarget(it->second.handle); DestroyView(it->first); it = elements.erase(it); } else ++it;
     for (auto it = commands.begin(); it != commands.end();) if (String(it->second->desc.info.ownerPlugin) == c.id) it = commands.erase(it); else ++it;
     for (auto it = properties.begin(); it != properties.end();) if (String(it->second->desc.info.ownerPlugin) == c.id) it = properties.erase(it); else ++it;
     for (auto it = surfaces.begin(); it != surfaces.end();) if (it->second->owner == &c) it = surfaces.erase(it); else ++it;
@@ -867,6 +870,7 @@ MmsResult UiRegistry::RemoveSurface(UiClient& c, MmsHandle h) {
 }
 void UiRegistry::DestroyView(const std::string& element) {
     auto found = views_.find(element); if (found == views_.end()) return;
+    refresh_.InvalidateTarget(found->second->element);
     auto view = std::move(found->second);
     views_.erase(found);
     Callback guard(callbackDepth_);
@@ -875,6 +879,24 @@ void UiRegistry::DestroyView(const std::string& element) {
     if (result != MMS_OK || IsWindow(view->child)) view->surface->owner->unsafeToUnload = true;
 }
 void UiRegistry::DestroyViews() { while (!views_.empty()) DestroyView(views_.begin()->first); }
+uint64_t UiRegistry::NewPresentationInstance() {
+    if (GetCurrentThreadId() != thread_) throw std::invalid_argument("UI presentation thread");
+    if (nextPresentation_ == std::numeric_limits<uint64_t>::max()) throw std::overflow_error("UI presentation identity exhausted");
+    return nextPresentation_++;
+}
+bool UiRegistry::ExistingSurface(const std::string& id, SurfacePresentation& out) const noexcept {
+    out = {};
+    if (GetCurrentThreadId() != thread_) return false;
+    const auto found = views_.find(id), end = views_.end();
+    if (found == end) return false;
+    const auto element = elements.find(id);
+    const auto& view = *found->second;
+    if (element == elements.end() || element->second.handle != view.element || element->second.desc.kind != MMS_UI_PANEL ||
+        view.surface->owner->stopping || !IsWindow(view.child) || GetParent(view.child) != view.parent ||
+        GetWindowThreadProcessId(view.child, nullptr) != thread_) return false;
+    out = {view.child, view.instance, view.visible};
+    return true;
+}
 MmsResult UiRegistry::ShowSurface(const std::string& id, HWND parent, const MmsUiRectV1& bounds, uint32_t dpi, bool visible) {
     return Boundary([&]() -> MmsResult {
         if (GetCurrentThreadId() != thread_) return MMS_E_THREAD;
@@ -887,6 +909,7 @@ MmsResult UiRegistry::ShowSurface(const std::string& id, HWND parent, const MmsU
         if (found == views_.end()) {
             if (!visible) return MMS_OK;
             auto v = std::make_unique<View>(); v->surface = surface->second; v->parent = parent; v->bounds = bounds; v->dpi = dpi;
+            v->element = element->second.handle; v->instance = NewPresentationInstance();
             MmsUiMountV1 mount{Header<MmsUiMountV1>(), Text(id), reinterpret_cast<uintptr_t>(parent), bounds, dpi, 0}; uintptr_t child = 0;
             // Allocate the map node before invoking plugin code. Once create
             // succeeds no allocation can strand a live view outside the map.

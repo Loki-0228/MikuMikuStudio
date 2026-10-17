@@ -1,9 +1,9 @@
 # 插件扩展统一架构方案
 
-本文是 UI、交互、视口、数据格式和编辑工具的设计约定。新增服务均为提案，尚未加入 SDK；当前可用接口以 [SDK README](../sdk/mms/README.md) 和[实施记录](PLUGIN_ABI_IMPLEMENTATION.md)为准。
+本文是 UI、交互、视口、数据格式和编辑工具的设计约定。基础 C++17 UI 包装和 `mms.ui.refresh` 的 `REPAINT + SELF` 已实现，其余新增能力按表中状态区分。当前可用接口以 [SDK README](../sdk/mms/README.md) 和[实施记录](PLUGIN_ABI_IMPLEMENTATION.md)为准。
 现有 `MmsHostV1`、各 V1 函数表和已发布结构保持兼容。本文不开放普通宿主的 `mms.edit`，也不把内部 C++ 计划器视为公共编辑接口。
 
-基础 UI 的类型化及声明式包装已实现，见 [C++17 界面注册 SDK](../sdk/mms/cpp-ui.md)。当前提供 `UiServices`、`RegistrationBundle`、`CommandUi`，均组合已有 C 服务。下文涉及新服务、刷新订阅和工具封装的部分仍为后续设计。
+基础 UI 的类型化及声明式包装见 [C++17 界面注册 SDK](../sdk/mms/cpp-ui.md)。`UiServices`、`RegistrationBundle`、`CommandUi` 均组合已有 C 服务。原元素 handle 可直接用于[界面重绘服务](../sdk/mms/refresh.md)；刷新订阅、输入、绘制层和工具封装仍为后续设计。
 
 ## 一套 C ABI，多层 SDK
 
@@ -43,7 +43,8 @@ auto event = events.subscribe(topic, [=] { updateLayer(layer); });
 | 服务组 | 职责与状态 | 详细方案 |
 | --- | --- | --- |
 | `mms.ui`、`mms.ui.surface`、`mms.ui.layout` | 已有注册、挂载、只读属性和部分布局能力；更多挂载点、输入控件和溢出仍待开放。 | [UI 呈现](PLUGIN_UI_PRESENTATION.md) |
-| `mms.ui.refresh`、`mms.events`、`mms.tasks` | 提案：合并刷新、主题订阅、受预算约束的工作任务。 | 本文及 UI 呈现 |
+| `mms.ui.refresh` 1.0 | 已实现本插件已有按钮及原生 surface 的 REPAINT + SELF、后台票据和 UI 安全点区域失效；数据、状态、布局及依赖刷新待实现。 | [重绘接口参考](../sdk/mms/refresh.md) |
+| `mms.events`、`mms.tasks` | 提案：主题订阅、受预算约束的工作任务。 | 本文及 UI 呈现 |
 | `mms.ui.geometry`、`style`、`paint`、`presentation`、`input`、`overlay`、`layout.session` | 提案：坐标、样式、辅助绘制、临时外观、输入和可撤回布局。 | UI 呈现 |
 | `mms.scene`、`mms.storage` | 已有绑定快照和插件工程序列化；不提供任意时间求值或模型拓扑写入。 | SDK 参考 |
 | `mms.scene.evaluate`、`mms.scene.clock`、`mms.render.*` | 提案：场景来源、独立求值、时钟、相机、渲染器及图像。 | [视口与洋葱皮](PLUGIN_VIEWPORT_RENDERING.md) |
@@ -57,7 +58,7 @@ auto event = events.subscribe(topic, [=] { updateLayer(layer); });
 ## 对象身份与权限
 
 持久身份与运行时句柄分开。工程对象以工程 ID、对象 ID、子元素 ID 寻址，运行时引用另带 generation。UI 使用稳定注册字符串和宿主不透明 ID，具体实例另带 generation。
-改变标签、布局或样式只更新对应 revision。注销重建、删除后恢复或重开工程使运行时代次变化。旧快照继续可读，旧写引用返回 `STALE`。
+后续通用对象服务应区分描述更新与实例重建。当前刷新目标直接使用原元素 handle，并分别携带 `instanceGeneration`、`projectEpoch` 和实际 `geometryRevision`。注销、视图重建或显式失效后重新发布改变实例代次；普通移动保持实例代次。工程替换或重置使旧 epoch 失效。旧快照继续可读，旧写引用返回 `STALE`。
 各服务不自行发明跨服务可互换的整数句柄。宿主统一校验类型、owner、代次和能力，图像句柄不能被当作数据对象或 UI 元素。
 
 插件只能修改自己的对象和宿主明确开放的目标。跨插件访问须有目标提供者公开的读取或修改能力。知道 ID 不授予覆盖控件、修改工程或操作其他应用的权限。
@@ -68,7 +69,7 @@ auto event = events.subscribe(topic, [=] { updateLayer(layer); });
 
 新增服务首版建议为独立 1.0 函数表。结构沿用 `MmsHeader`、固定宽度整数、`MMS_CALL`、8 字节对齐和明确的 reserved 字段。
 函数表只在尾部追加兼容字段。破坏语义或布局的改动使用新 major，不能修改旧字段含义。读取调用方提供的 size 前缀，未知必需能力返回 `UNSUPPORTED`，未知 flags 和非法输入返回 `ARGUMENT`。
-以下所有新结构和函数名均为建议名称。实现时必须同时提供 C11、C++17 布局断言和小容量输出检查，文档中的伪声明不能充当已发布头文件。
+除已链接 SDK 头文件中的接口外，下文新增结构和函数名均为建议名称。实现时必须同时提供 C11、C++17 布局断言和小容量输出检查，文档中的伪声明不能充当已发布头文件。
 
 字符串为带字节数的 UTF-8，不隐含结尾零。可变数组声明数量、stride 和记录版本，校验加法与乘法溢出。浮点数据显式检查有限值和单位。
 描述在成功调用时复制，回调输入仅在调用期间借用。长期读取使用租约；释放方与分配方一致，不跨 DLL 传 STL、异常或 CRT 所有权。
@@ -97,7 +98,8 @@ auto event = events.subscribe(topic, [=] { updateLayer(layer); });
 插件自建线程也必须使用宿主规定的停止和租约规则。SDK 不为一个普通菜单注册偷偷启动线程。
 后台结果带工程身份、来源修订、任务代次及目标代次。结果只能在匹配的上下文发布。当前工程变化时可以丢弃或重新计算，不能将旧结果应用到同名新对象。
 
-刷新采用独立的 `mms.ui.refresh` 服务，具体请求与合并规则见 UI 文档。局部重绘、数据刷新、状态更新和布局重算各有语义；刷新不等于场景求值或工程编辑。
+`mms.ui.refresh` 当前只接受本插件目标的 `REPAINT + SELF`。UI 线程的 `getCapabilities`、`getTarget` 可以在命令回调内纯读，工作线程可调用 `request`、`query`、`cancel`、`release`。宿主在独立安全点只标记原生窗口损伤，不调用旧刷新、布局或场景求值路径。局部 DIP 矩形须带几何修订；暂时布局失败使目标未就绪，实际几何不变的再次发布保留修订。
+票据的取消与释放分开，未释放引用阻止插件卸载。具体配额及错误见[重绘接口参考](../sdk/mms/refresh.md)。DATA、STATE、LAYOUT、绑定和依赖范围仍为提案，不能用一次 REPAINT 代替它们。
 持续动画使用单次帧请求按时间推进。数据变化通过刷新请求传播，不能在 paint 回调中反复发事件、重新读取文件或提交事务。
 
 ## 同一套接口支持不同工具
@@ -120,7 +122,7 @@ MMS 默认只提供即时响应的界面。复杂动画、皮肤、桌宠、无�
 | 阶段 | 前置条件和交付范围 | 必须验证的行为 |
 | --- | --- | --- |
 | 公共契约 | 实例身份、修订、预算和停止过程；保留现有 ABI | 旧插件加载、EXE 改名、错误代次与类型拒绝、未释放租约阻止 DLL 卸载。 |
-| UI 刷新与声明封装 | 原生实时拖拽、依赖刷新、声明式注册 | 重复和跨线程请求合并；无递归；局部刷新不求值场景、不写历史；简单包装返回同一底层对象。 |
+| UI 刷新与声明封装 | 已有声明式注册及 REPAINT + SELF；后续为原生实时拖拽和依赖刷新 | 当前验证目标为跨线程票据、几何及实例过期、取消与释放、局部重绘不求值场景或写历史；依赖循环在后续扩展中验证。 |
 | 样式与交互 | 目标几何、输入、CPU 绘制、临时呈现 | 后台触发另一控件；拖拽抢占；关闭插件撤回临时布局；无残影。 |
 | 公共数据编辑 | 原生写入完整接入共同历史，候选和资源保留 | 混合导入、改网格、删材质及私有数据一并撤销；任一准备失败零发布。 |
 | 格式与专用工具 | schema、格式诊断、选择和操纵器 | 缺失插件保存后仍保留未知数据；拓扑变化产生有效 remap；导出按具体损失方案执行。 |

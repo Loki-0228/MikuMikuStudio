@@ -24,6 +24,7 @@ static MmsString S(const char* s) { return {s, std::strlen(s)}; }
 #include "win32_checks.inc"
 #include "scene_checks.inc"
 #include "cpp_sdk_checks.inc"
+#include "refresh_checks.inc"
 static void Write(const fs::path& path, const std::string& bytes) { fs::create_directories(path.parent_path()); std::ofstream f(path, std::ios::binary); f << bytes; if (!f) throw std::runtime_error("fixture write failed"); }
 #include "ui_preferences_file_checks.inc"
 #include "storage_checks.inc"
@@ -33,6 +34,7 @@ static std::string ManifestText(std::string id = "org.example.hello", std::strin
     return "{\"schemaVersion\":1,\"id\":\"" + id + "\",\"name\":\"测试\",\"version\":\"1.0.0\",\"kind\":\"native\",\"abi\":{\"major\":1,\"minMinor\":0},\"entry\":\"" + entry + "\",\"architecture\":\"x64\",\"minWindows\":\"6.1.7601\",\"capabilities\":[\"ui.command\"],\"requiresServices\":[{\"id\":\"mms.ui\",\"major\":1,\"minMinor\":0}],\"dependencies\":[],\"nativeDependencies\":[],\"reloadPolicy\":\"restart\"}";
 }
 #include "manager_edit_checks.inc"
+#include "manager_refresh_checks.inc"
 static void JsonChecks() {
     CHECK(Json::Parse("{\"a\":1}").At("a").UInt() == 1);
     CHECK(Throws([] { Json::Parse("{\"a\":1,\"a\":2}"); }));
@@ -335,6 +337,12 @@ static void LifecycleChecks(const fs::path& root, const fs::path& fixture) {
 int wmain(int argc, wchar_t** argv) {
     const fs::path root = fs::temp_directory_path() / (L"mms-abi-contract-" + std::to_wstring(GetCurrentProcessId()));
     try {
+        if ((argc == 2 || argc == 3) && std::wstring(argv[1]) == L"--refresh-only") {
+            CHECK(!fs::exists(root)); fs::create_directories(root);
+            RefreshChecks();
+            if (argc == 3) ManagerRefreshChecks(root, fs::absolute(argv[2]));
+            std::cout << "PASS refresh checks=" << checks << "\n"; fs::remove_all(root); return 0;
+        }
         CHECK(argc == 4); CHECK(!fs::exists(root)); fs::create_directories(root);
         JsonChecks(); DiscoveryChecks(root); UiChecks(); UiPreferenceChecks(); UiPreferencesFileChecks(root); LayoutChecks(); TreeLayoutChecks(); LayoutServiceChecks(); UpdateChecks(); Win32HostChecks(); SurfaceChecks(); CppSdkChecks(); LoaderChecks(root, fs::absolute(argv[1]));
         LifecycleChecks(root, fs::absolute(argv[2])); SceneChecks(); StorageChecks(root); EditChecks(); SharedHistoryChecks();

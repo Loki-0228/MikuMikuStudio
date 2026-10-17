@@ -2,6 +2,7 @@
 #include <mms/surface.h>
 #include <mms/scene.h>
 #include <mms/storage.h>
+#include <mms/refresh.h>
 #include <string>
 #include <cstring>
 #include <thread>
@@ -10,7 +11,10 @@
 #include <Windows.h>
 template<class T> static MmsHeader H() { return {sizeof(T), 1, 0}; }
 static MmsString S(const char* s) { return {s, std::strlen(s)}; }
-struct Plugin { MmsHostV1 host; MmsUiApiV1 ui{}; MmsUiSurfaceApiV1 surface{}; MmsSceneApiV1 scene{}; MmsHandle snapshot=0; std::string id; MmsHandle command = 0, menu = 0, button = 0, factory = 0, panel = 0, panel2 = 0, serializer = 0; int stops = 0, projectValue = 0, candidateValue = 0; };
+struct Plugin { MmsHostV1 host; MmsUiApiV1 ui{}; MmsUiSurfaceApiV1 surface{}; MmsSceneApiV1 scene{};
+    MmsUiRefreshApiV1 refresh{}; MmsHandle refreshTicket = 0;
+    MmsHandle snapshot=0; std::string id; MmsHandle command = 0, menu = 0, button = 0, factory = 0, panel = 0, panel2 = 0, serializer = 0; int stops = 0, projectValue = 0, candidateValue = 0; };
+static Plugin* refreshProbe = nullptr;
 static void Log(Plugin* p, const char* s) {
     p->host.log(p->host.context, 1, S(s));
     wchar_t path[32768]{}; auto n = GetEnvironmentVariableW(L"MMS_ABI_PROBE_LOG", path, 32768);
@@ -70,8 +74,32 @@ static void MMS_CALL ApplyLayout(void* context) {
     if(HideLayout(p)!=MMS_OK)Log(p,"LAYOUT_FAILED");
 }
 static void MMS_CALL CancelLayout(void*) {}
+static MmsResult QueueRefresh(Plugin* p) {
+    if (p->refreshTicket) return MMS_E_BUSY;
+    MmsUiRefreshTargetV1 target{}; target.h = H<MmsUiRefreshTargetV1>();
+    auto result = p->refresh.getTarget(p->refresh.context, p->button, &target);
+    if (result) return result;
+    Log(p, "REFRESH_TARGET_IN_COMMAND");
+    std::thread worker([&] {
+        MmsUiDirtyRectV1 rect{3, 4, 11, 9};
+        MmsUiRefreshRequestV1 request{}; request.h = H<MmsUiRefreshRequestV1>(); request.target = target.target;
+        request.kinds = MMS_UI_REFRESH_REPAINT; request.scope = MMS_UI_REFRESH_SELF;
+        request.expectedGeometryRevision = target.geometryRevision; request.coalesceKey = 17;
+        request.dirtyRects = {&rect, 1, sizeof(rect), 1};
+        result = p->refresh.request(p->refresh.context, &request, &p->refreshTicket);
+        if (!result) {
+            MmsUiRefreshStateV1 state{}; state.h = H<MmsUiRefreshStateV1>();
+            result = p->refresh.query(p->refresh.context, p->refreshTicket, &state);
+            if (!result && state.status != MMS_UI_REFRESH_PENDING) result = MMS_E_FAILED;
+        }
+    });
+    worker.join();
+    Log(p, result ? "REFRESH_WORKER_FAILED" : "REFRESH_WORKER_PENDING");
+    return result;
+}
 static MmsResult MMS_CALL Invoke(void* context, MmsObjectRef, MmsSpan, MmsHandle) {
     auto* p=static_cast<Plugin*>(context);Log(p,"COMMAND_INVOKED");
+    if (p->id.find("gui-refresh") != std::string::npos) return QueueRefresh(p);
     if(p->id.find("gui-layout")!=std::string::npos) {
         MmsHandle task=0;return p->host.enqueueUi(p->host.context,ApplyLayout,CancelLayout,p,&task);
     }
@@ -103,6 +131,15 @@ static MmsResult MMS_CALL Create(const MmsHostV1* host, const MmsCreateInfoV1* i
     if (host->queryService(host->context, S("mms.test.unavailable"), 1, 0, sizeof(buffer), buffer) != MMS_E_NOT_FOUND || std::memcmp(buffer, original, sizeof(buffer))) { delete p; return MMS_E_FAILED; }
     if (host->queryService(host->context, S("mms.ui"), 1, 0, sizeof(buffer), buffer) != MMS_OK || std::memcmp(buffer + sizeof(MmsUiApiV1), original + sizeof(MmsUiApiV1), sizeof(buffer) - sizeof(MmsUiApiV1))) { delete p; return MMS_E_FAILED; }
     Log(p, "NEGOTIATION_PASS");
+    if (p->id.find("gui-refresh") != std::string::npos) {
+        r = host->queryService(host->context, S("mms.ui.refresh"), 1, 0, sizeof(p->refresh), &p->refresh);
+        if (r) { delete p; return r; }
+        MmsUiRefreshCapabilitiesV1 capabilities{}; capabilities.h = H<MmsUiRefreshCapabilitiesV1>();
+        r = p->refresh.getCapabilities(p->refresh.context, &capabilities);
+        if (r || capabilities.supportedKinds != MMS_UI_REFRESH_REPAINT || capabilities.supportedScopes != MMS_UI_REFRESH_SELF) { delete p; return r ? r : MMS_E_FAILED; }
+        if (host->queryService(host->context, S("mms.edit"), 1, 0, sizeof(buffer), buffer) != MMS_E_NOT_FOUND) { delete p; return MMS_E_FAILED; }
+        Log(p, "REFRESH_SERVICE_PASS");
+    }
     if (p->id.find("failcreate") != std::string::npos) {
         auto* task = new Task{p, 0, true}; r = host->enqueueUi(host->context, Run, Cancel, task, &task->handle);
         if (r) { delete task; delete p; return r; }
@@ -148,6 +185,7 @@ static MmsResult MMS_CALL Start(void* context) {
         r = p->ui.registerElement(p->ui.context, &e, &p->panel2); if (r) return r;
         Log(p, "PANELS_REGISTERED");
     }
+    if (p->id.find("gui-refresh") != std::string::npos) refreshProbe = p;
     return MMS_OK;
 }
 static void MMS_CALL Event(void* context, const MmsEventV1* event) {
@@ -171,6 +209,11 @@ static void MMS_CALL Event(void* context, const MmsEventV1* event) {
 }
 static MmsResult MMS_CALL Stop(void* context) {
     auto* p = static_cast<Plugin*>(context); ++p->stops;
+    if (p->refreshTicket) {
+        // Deliberately return success. The host's outstanding-ticket guard,
+        // rather than a plugin BUSY result, must retain this module/context.
+        Log(p, "STOP_REFRESH_TICKET_RETAINED"); return MMS_OK;
+    }
     if(p->snapshot && p->stops>1) {
         std::thread worker([&] {MmsSpan objects{};
             if(p->scene.objects(p->scene.context,p->snapshot,&objects)==MMS_OK)Log(p,"STOP_SCENE_READ_PASS");
@@ -184,7 +227,17 @@ static MmsResult MMS_CALL Stop(void* context) {
     if (p->command) { auto r = p->ui.unregisterItem(p->ui.context, p->command); if (r) return r; p->command = 0; }
     Log(p, "STOP_OK"); return MMS_OK;
 }
-static void MMS_CALL Destroy(void* context) { auto* p = static_cast<Plugin*>(context); Log(p, "DESTROY"); delete p; }
+static void MMS_CALL Destroy(void* context) { auto* p = static_cast<Plugin*>(context); Log(p, "DESTROY"); if (refreshProbe == p) refreshProbe = nullptr; delete p; }
+extern "C" __declspec(dllexport) MmsResult MMS_CALL RefreshProbeState(MmsUiRefreshStateV1* out) {
+    if (!refreshProbe || !refreshProbe->refreshTicket) return MMS_E_NOT_READY;
+    return refreshProbe->refresh.query(refreshProbe->refresh.context, refreshProbe->refreshTicket, out);
+}
+extern "C" __declspec(dllexport) MmsResult MMS_CALL RefreshProbeRelease() {
+    if (!refreshProbe || !refreshProbe->refreshTicket) return MMS_E_NOT_READY;
+    const auto result = refreshProbe->refresh.release(refreshProbe->refresh.context, refreshProbe->refreshTicket);
+    if (!result) refreshProbe->refreshTicket = 0;
+    return result;
+}
 extern "C" MmsResult MMS_CALL MMSPluginGetApi(uint32_t ma, uint32_t mi, uint32_t n, MmsPluginApiV1* out) {
     if (!out || n < sizeof(*out)) return MMS_E_ARGUMENT; if (ma != 1 || mi) return MMS_E_VERSION;
     *out = {H<MmsPluginApiV1>(), Create, Start, Event, Stop, Destroy}; return MMS_OK;

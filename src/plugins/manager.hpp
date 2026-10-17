@@ -35,6 +35,10 @@ public:
     // the edit gate, not arbitrary work from a plugin callback.
     bool CanInvokeEdit() const noexcept;
     void Drain();
+    // Pure host invalidation uses the same safe dispatch boundary, without
+    // entering the plugin task/edit origin or refreshing the complete UI.
+    void SetRefreshGuard(std::function<bool()>);
+    void AdvanceRefreshEpoch();
     bool Stop();
     void Event(uint32_t kind, MmsBytes payload = {}, uint32_t version = 0);
     UiRegistry& Ui();

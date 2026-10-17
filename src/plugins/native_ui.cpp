@@ -18,7 +18,8 @@ struct NativeUi::Impl {
     bool visible = true, refreshing = false;
     std::map<std::string, unsigned> ids;
     std::map<unsigned, std::pair<std::string, uint64_t>> dispatch;
-    std::map<std::string, HWND> controls;
+    struct Control { HWND window = nullptr; MmsHandle element = 0; uint64_t instance = 0; };
+    std::map<std::string, Control> controls;
     std::vector<std::string> toolbarOrder;
     std::vector<std::string> panelOrder;
     std::string activePanel;
@@ -42,7 +43,18 @@ struct NativeUi::Impl {
         SendMessageW(tabs, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), FALSE);
         SendMessageW(failure, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), FALSE);
     }
-    ~Impl() { Boundary([&] { registry.DestroyViews(); return MMS_OK; }); Detach(); if (IsWindow(workspace)) DestroyWindow(workspace); if (IsWindow(toolbar)) DestroyWindow(toolbar); }
+    ~Impl() {
+        registry.Refresh().SuspendTargets();
+        Boundary([&] { registry.Refresh().SyncTargets({}); return MMS_OK; });
+        Boundary([&] { registry.DestroyViews(); return MMS_OK; });
+        for (auto& [id, control] : controls) DestroyControl(control);
+        Detach(); if (IsWindow(workspace)) DestroyWindow(workspace); if (IsWindow(toolbar)) DestroyWindow(toolbar);
+    }
+    void DestroyControl(Control& control) noexcept {
+        registry.Refresh().InvalidateTarget(control.element);
+        if (control.window) DestroyWindow(control.window);
+        control = {};
+    }
     static LRESULT CALLBACK Window(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         auto* self = reinterpret_cast<Impl*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
         if (msg == WM_NCCREATE) { self = static_cast<Impl*>(reinterpret_cast<CREATESTRUCTW*>(lp)->lpCreateParams); SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self)); }
@@ -92,7 +104,7 @@ struct NativeUi::Impl {
         auto it = ids.find(id);
         if (it != ids.end()) {
             if (dispatch.at(it->second).second == e.handle) return it->second;
-            auto control = controls.find(id); if (control != controls.end()) { DestroyWindow(control->second); controls.erase(control); }
+            auto control = controls.find(id); if (control != controls.end()) { DestroyControl(control->second); controls.erase(control); }
             dispatch.erase(it->second); ids.erase(it);
         }
         HMENU menu = GetMenu(main);
@@ -144,26 +156,28 @@ struct NativeUi::Impl {
         if (changed) DrawMenuBar(main);
         std::vector<std::string> wanted; Gather("mms.toolbar.main.extensions", wanted);
         std::set<std::string> keep(wanted.begin(), wanted.end());
-        for (auto it = controls.begin(); it != controls.end();) if (!keep.count(it->first)) { DestroyWindow(it->second); it = controls.erase(it); } else ++it;
+        for (auto it = controls.begin(); it != controls.end();) if (!keep.count(it->first)) { DestroyControl(it->second); it = controls.erase(it); } else ++it;
         for (auto it = ids.begin(); it != ids.end();) {
             auto element = registry.elements.find(it->first);
             if (element == registry.elements.end() || dispatch.at(it->second).second != element->second.handle) {
                 auto control = controls.find(it->first);
-                if (control != controls.end()) { DestroyWindow(control->second); controls.erase(control); }
+                if (control != controls.end()) { DestroyControl(control->second); controls.erase(control); }
                 dispatch.erase(it->second); it = ids.erase(it);
             } else ++it;
         }
         for (const auto& id : wanted) {
             const auto& e = registry.elements.at(id); MmsCommandStateV1 state{}; bool show = State(e, state); auto caption = Wide(String(e.desc.label));
+            const auto commandId = Id(id, e);
             auto& control = controls[id];
-            if (!control) {
+            if (!control.window) {
                 const bool separator = e.desc.kind == MMS_UI_SEPARATOR;
-                control = CreateWindowExW(0, separator ? L"STATIC" : L"BUTTON", caption.c_str(), WS_CHILD | (separator ? SS_ETCHEDVERT : WS_TABSTOP | BS_PUSHBUTTON), 0, 0, 0, 0,
-                    toolbar, reinterpret_cast<HMENU>(UINT_PTR(Id(id, e))), GetModuleHandleW(nullptr), nullptr);
-                if (!control) throw std::runtime_error("cannot create plugin button");
-                SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), FALSE);
+                control.element = e.handle; control.instance = registry.NewPresentationInstance();
+                control.window = CreateWindowExW(0, separator ? L"STATIC" : L"BUTTON", caption.c_str(), WS_CHILD | (separator ? SS_ETCHEDVERT : WS_TABSTOP | BS_PUSHBUTTON), 0, 0, 0, 0,
+                    toolbar, reinterpret_cast<HMENU>(UINT_PTR(commandId)), GetModuleHandleW(nullptr), nullptr);
+                if (!control.window) throw std::runtime_error("cannot create plugin button");
+                SendMessageW(control.window, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), FALSE);
             }
-            SetWindowTextW(control, caption.c_str()); EnableWindow(control, state.enabled); ShowWindow(control, show ? SW_SHOWNA : SW_HIDE);
+            SetWindowTextW(control.window, caption.c_str()); EnableWindow(control.window, state.enabled); ShowWindow(control.window, show ? SW_SHOWNA : SW_HIDE);
         }
         toolbarOrder = std::move(wanted);
         if (revision != registry.Revision()) {
@@ -233,14 +247,48 @@ struct NativeUi::Impl {
         }
         return node;
     }
-    int Layout() {
+    static uint32_t WindowDpi(HWND window) noexcept {
         // GetDpiForWindow returns the window's coordinate-space DPI (96 for
         // the current DPI-unaware MMS). Never multiply virtualized pixels by
         // the monitor scale a second time. Win7 falls back to the window DC.
         using DpiFn = UINT(WINAPI*)(HWND);
         static auto getDpi = reinterpret_cast<DpiFn>(GetProcAddress(GetModuleHandleW(L"user32.dll"), "GetDpiForWindow"));
-        if (getDpi) dpi = getDpi(main); else { HDC dc = GetDC(main); dpi = dc ? GetDeviceCaps(dc, LOGPIXELSX) : 96; if (dc) ReleaseDC(main, dc); }
-        if (dpi < 48 || dpi > 960) dpi = 96;
+        uint32_t value = 96;
+        if (getDpi) value = getDpi(window); else { HDC dc = GetDC(window); value = dc ? GetDeviceCaps(dc, LOGPIXELSX) : 96; if (dc) ReleaseDC(window, dc); }
+        return value < 48 || value > 960 ? 96 : value;
+    }
+    bool Presentation(const ElementRecord& element, HWND window, uint64_t instance, bool shown,
+        std::vector<RefreshPresentation>& out) const {
+        RECT client{}; POINT origin{};
+        if (!window || !instance || !IsWindow(window) || !GetClientRect(window, &client)) return false;
+        SetLastError(ERROR_SUCCESS);
+        if (!MapWindowPoints(window, main, &origin, 1) && GetLastError() != ERROR_SUCCESS) return false;
+        RefreshPresentation item; item.element = element.handle; item.owner = String(element.desc.ownerPlugin);
+        item.instance = instance; item.window = window; item.dpi = WindowDpi(window);
+        item.x = origin.x * 96.0f / dpi; item.y = origin.y * 96.0f / dpi;
+        item.width = (client.right - client.left) * 96.0f / item.dpi;
+        item.height = (client.bottom - client.top) * 96.0f / item.dpi; item.visible = shown;
+        out.push_back(std::move(item)); return true;
+    }
+    bool Presentations(const std::map<std::string, UiRegistry::Geometry>& geometry,
+        std::vector<RefreshPresentation>& out) const {
+        for (const auto& [id, element] : registry.elements) {
+            const auto bounds = geometry.find(id);
+            if (bounds == geometry.end() || String(element.desc.ownerPlugin) == "mms") continue;
+            if (element.desc.kind == MMS_UI_BUTTON) {
+                const auto control = controls.find(id);
+                if (control == controls.end() || control->second.element != element.handle || !control->second.window) continue;
+                if (!Presentation(element, control->second.window, control->second.instance, bounds->second.visible, out)) return false;
+            } else if (element.desc.kind == MMS_UI_PANEL && !panelErrors.count(id)) {
+                UiRegistry::SurfacePresentation view;
+                if (!registry.ExistingSurface(id, view)) continue;
+                if (!Presentation(element, view.window, view.instance, view.visible && bounds->second.visible, out)) return false;
+            }
+        }
+        return true;
+    }
+    int Layout() {
+        dpi = WindowDpi(main);
         const uint64_t uiRevision = registry.Revision(); bool applied = true; std::map<std::string, UiRegistry::Geometry> geometry;
         HDC dc = GetDC(toolbar); HGDIOBJ old = dc ? SelectObject(dc, GetStockObject(DEFAULT_GUI_FONT)) : nullptr;
         auto tree = LayoutNode("mms.toolbar.main.extensions", dc);
@@ -248,6 +296,9 @@ struct NativeUi::Impl {
         auto flow = native_ui::Arrange(tree, {float(std::max(0, width - GetSystemMetrics(SM_CXVSCROLL))) * 96 / dpi, 0});
         contentHeight = int(std::ceil(flow.content.height * dpi / 96)); height = visible && width > 0 ? std::min(contentHeight, maximum) : 0;
         scroll = std::clamp(scroll, 0, std::max(0, contentHeight - height));
+        // A partial move or allocation failure must not leave old rectangles
+        // advertised as ready. Only the final successful snapshot resumes them.
+        registry.Refresh().SuspendTargets();
         applied = MoveWindow(toolbar, x, 0, std::max(0, width), height, TRUE) && applied;
         SCROLLINFO info{sizeof(info), SIF_RANGE | SIF_PAGE | SIF_POS}; info.nMin = 0; info.nMax = std::max(0, contentHeight - 1); info.nPage = height; info.nPos = scroll; SetScrollInfo(toolbar, SB_VERT, &info, TRUE);
         std::vector<native_ui::WindowMove> moves;
@@ -256,8 +307,8 @@ struct NativeUi::Impl {
             int left = int(std::lround(rect.x * dpi / 96)), top = int(std::lround(rect.y * dpi / 96)) - scroll;
             int right = int(std::lround((rect.x + rect.width) * dpi / 96)), bottom = int(std::lround((rect.y + rect.height) * dpi / 96)) - scroll;
             if (control != controls.end()) {
-                moves.push_back({control->second, {left, top, right, bottom}});
-                ShowWindow(control->second, item.visible ? SW_SHOWNA : SW_HIDE);
+                moves.push_back({control->second.window, {left, top, right, bottom}});
+                ShowWindow(control->second.window, item.visible ? SW_SHOWNA : SW_HIDE);
             }
             geometry[item.id] = {(x + left) * 96.0f / dpi, top * 96.0f / dpi, (right - left) * 96.0f / dpi, (bottom - top) * 96.0f / dpi, item.visible && height > 0, item.overflowed || top < 0 || bottom > height};
         }
@@ -277,7 +328,11 @@ struct NativeUi::Impl {
         geometry["mms.toolbar.main.extensions"] = {x * 96.0f / dpi, 0, width * 96.0f / dpi, height * 96.0f / dpi, height > 0, contentHeight > height};
         geometry["mms.workspace.tabs.extensions"] = {x * 96.0f / dpi, height * 96.0f / dpi, width * 96.0f / dpi, workspaceHeight * 96.0f / dpi, workspaceHeight > 0, false};
         LayoutPanels(geometry, applied);
-        if (applied) registry.PublishGeometry(geometry, uiRevision);
+        if (applied) {
+            std::vector<RefreshPresentation> presentations;
+            if (Presentations(geometry, presentations) && registry.PublishGeometry(geometry, uiRevision))
+                registry.Refresh().SyncTargets(presentations);
+        }
         return height + workspaceHeight;
     }
     bool Command(unsigned id) {

@@ -1,4 +1,12 @@
 #include <mms/surface.h>
+#include <mms/refresh.h>
+_Static_assert(sizeof(MmsUiDirtyRectV1) == 16, "refresh dirty rectangle");
+_Static_assert(sizeof(MmsUiTargetRefV1) == 32, "UI target reference");
+_Static_assert(sizeof(MmsUiRefreshCapabilitiesV1) == 40, "refresh capabilities");
+_Static_assert(sizeof(MmsUiRefreshTargetV1) == 72, "refresh target");
+_Static_assert(sizeof(MmsUiRefreshRequestV1) == 112, "refresh request");
+_Static_assert(sizeof(MmsUiRefreshStateV1) == 40, "refresh state");
+_Static_assert(sizeof(MmsUiRefreshApiV1) == 64, "refresh API");
 #include <mms/edit.h>
 #include <mms/layout.h>
 #include <mms/scene.h>
