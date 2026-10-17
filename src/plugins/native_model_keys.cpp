@@ -4,8 +4,10 @@
 #include "native_display_keys.hpp"
 #include "native_morph_keys.hpp"
 #include "native_range_scale.hpp"
+#include "native_model_paste.hpp"
 #include "scene_object_history.hpp"
 #include "mikudancestudio/bone_key_pool.hpp"
+#include "mikudancestudio/clipboard_layout.hpp"
 #include "mikudancestudio/frame_limits.hpp"
 #include "mikudancestudio/key_pool.hpp"
 #include "mikudancestudio/mmd_app.hpp"
@@ -123,6 +125,7 @@ struct RangeMetadata final : HistoryChange, std::enable_shared_from_this<RangeMe
     int cursorBefore, cursorAfter;
     std::array<std::uint64_t, 3> identities;
     std::array<std::vector<unsigned char>, 3> before, after;
+    bool restoreGrownTail = false, requireInitialMarks = false, publishedOnce = false;
     explicit RangeMetadata(MMDApp& a, unsigned s) : app(a), slot(s), model(a.ModelSlot(s)),
         owner(RetainSceneObject(a, MMS_OBJECT_MODEL, s)), maxBefore(mdl::Mdl(model)->maxFrame), maxAfter(maxBefore),
         lastBefore(a.state.lastRegisteredFrame), lastAfter(lastBefore),
@@ -180,9 +183,16 @@ struct RangeMetadata final : HistoryChange, std::enable_shared_from_this<RangeMe
                 for (std::size_t i = 0; i < marks.size(); ++i) keys[i].allocated = marks[i];
             };
             write(m.boneKeys, target[0]); write(m.morphKeys, target[1]); write(m.displayKeys, target[2]);
+            if(source->restoreGrownTail&&!forward){
+                const auto clear=[](auto* keys,std::size_t first,std::size_t end){for(auto i=first;i<end;++i)keys[i].allocated=0;};
+                clear(m.boneKeys,source->before[0].size(),source->after[0].size());
+                clear(m.morphKeys,source->before[1].size(),source->after[1].size());
+                clear(m.displayKeys,source->before[2].size(),source->after[2].size());
+            }
             m.maxFrame = forward ? source->maxAfter : source->maxBefore;
             m.searchCursor = forward ? source->cursorAfter : source->cursorBefore;
             source->app.state.lastRegisteredFrame = forward ? source->lastAfter : source->lastBefore;
+            source->publishedOnce = true;
             published = true;
         }
     };
@@ -190,6 +200,12 @@ struct RangeMetadata final : HistoryChange, std::enable_shared_from_this<RangeMe
         out.reset(); if (!Structure()) return MMS_E_STALE;
         return Boundary([&]() -> MmsResult {
             auto candidate = std::make_unique<Candidate>(shared_from_this(), forward);
+            if(requireInitialMarks&&!publishedOnce){
+                if(!forward)return MMS_E_STALE;
+                for(unsigned family=0;family<before.size();++family)
+                    for(std::size_t i=0;i<candidate->current[family].size();++i)
+                        if(candidate->current[family][i]!=(i<before[family].size()?before[family][i]:0))return MMS_E_STALE;
+            }
             if (!candidate->IsCurrent()) return MMS_E_STALE;
             out = std::move(candidate); return MMS_OK;
         });
@@ -200,6 +216,49 @@ struct RangeMetadata final : HistoryChange, std::enable_shared_from_this<RangeMe
             const auto bytes = marks.capacity(); total = bytes > UINT64_MAX - total ? UINT64_MAX : total + bytes;
         }
         return total;
+    }
+};
+
+struct ModelPasteChange final : HistoryChange, std::enable_shared_from_this<ModelPasteChange> {
+    MMDApp& app; unsigned slot; unsigned char* model; int playhead;
+    std::uint64_t generation=1;bool published=false;
+    std::array<std::shared_ptr<HistoryChange>,4> parts;
+    ModelPasteChange(MMDApp& a,unsigned s):app(a),slot(s),model(a.ModelSlot(s)),playhead(a.CurrentFrame()){}
+    struct Candidate final : PreparedHistoryChange {
+        std::shared_ptr<ModelPasteChange> source;std::uint64_t generation;int frame;bool consumed=false;
+        Layout layout;std::array<std::unique_ptr<PreparedHistoryChange>,4> parts;
+        explicit Candidate(std::shared_ptr<ModelPasteChange> s):source(std::move(s)),generation(source->generation),frame(source->app.CurrentFrame()),
+            layout(*mdl::Mdl(source->model)){}
+        bool IsCurrent()const noexcept override {
+            if(consumed||source->generation!=generation||source->app.ModelSlot(source->slot)!=source->model||source->app.CurrentFrame()!=frame)return false;
+            for(const auto& part:parts)if(part&&!part->IsCurrent())return false;
+            return layout.IsCurrent(*mdl::Mdl(source->model));
+        }
+        void Publish()noexcept override {
+            if(!IsCurrent())std::terminate();
+            // Bone target evaluation includes the pending display selectors.
+            // Other participants must not recheck shared fields after it runs.
+            for(auto& part:parts)if(part)part->Publish();
+            source->published=true;++source->generation;consumed=true;
+        }
+    };
+    MmsResult Prepare(bool forward,std::unique_ptr<PreparedHistoryChange>& out)override {
+        out.reset();if(generation==UINT64_MAX)return MMS_E_NOT_READY;
+        if(app.ModelSlot(slot)!=model||(!published&&(!forward||app.CurrentFrame()!=playhead)))return MMS_E_STALE;
+        const auto& m=*mdl::Mdl(model);
+        if((m.boneKeys&&!mdl::BoneKeyPoolIdentity(m.boneKeys))||(m.morphKeys&&!mdl::MorphKeyPoolIdentity(m.morphKeys))||
+            (m.displayKeys&&!mdl::KeyPoolIdentity(m.displayKeys)))return MMS_E_STALE;
+        return Boundary([&]()->MmsResult {
+            auto candidate=std::make_unique<Candidate>(shared_from_this());
+            for(unsigned i=0;i<parts.size();++i)if(parts[i])
+                if(auto result=parts[i]->Prepare(forward,candidate->parts[i]))return result;
+            if(!candidate->IsCurrent())return MMS_E_STALE;out=std::move(candidate);return MMS_OK;
+        });
+    }
+    std::uint64_t RetainedBytes()const noexcept override {
+        std::uint64_t bytes=sizeof(*this)+4*sizeof(void*);
+        for(const auto& part:parts)if(part){const auto amount=part->RetainedBytes();bytes=amount>UINT64_MAX-bytes?UINT64_MAX:bytes+amount;}
+        return bytes;
     }
 };
 template<class Key> bool Marked(const Key* keys, std::size_t count) noexcept {
@@ -233,6 +292,60 @@ MmsResult PlanModelKeyDeletion(MMDApp& app, unsigned slot, bool automatic,
         if (morphs) if (auto result = PlanMorphKeyDeletion(app, slot, change->parts[1], true)) return result;
         for (const auto& part : change->parts) if (part) { out = std::move(change); break; }
         return MMS_OK;
+    });
+}
+MmsResult PlanModelKeyPaste(MMDApp& app,unsigned slot,std::shared_ptr<HistoryChange>& out) noexcept {
+    out.reset();
+    if(slot>=kModelSlotCount||!app.ModelSlot(slot)||app.PlaybackActive()||app.FrameStepPlayback()||
+        app.state.recordPlaybackStartPending||app.SceneMutationInProgress())return MMS_E_NOT_READY;
+    if(app.CurrentFrame()<0||app.CurrentFrame()>frame_limits::maximum)return MMS_E_ARGUMENT;
+    return Boundary([&]()->MmsResult {
+        const auto counts=app.ClipboardCounts();
+        if(!counts.bones&&!counts.morphs&&!counts.displays)return MMS_OK;
+        const auto& model=*mdl::Mdl(app.ModelSlot(slot));
+        if((model.boneKeys&&!mdl::BoneKeyPoolIdentity(model.boneKeys))||
+            (model.morphKeys&&!mdl::MorphKeyPoolIdentity(model.morphKeys))||
+            (model.displayKeys&&!mdl::KeyPoolIdentity(model.displayKeys)))return MMS_E_NOT_READY;
+        Layout check(model);
+        std::array<ModelPasteFamilyResult,3> results;
+        std::shared_ptr<DisplayKeyDeletion> display;
+        if(counts.displays){
+            std::shared_ptr<HistoryChange> part;
+            if(auto error=PlanDisplayKeyPaste(app,slot,part,&results[2]))return error;
+            display=std::static_pointer_cast<DisplayKeyDeletion>(results[2].change);
+        }
+        if(!model.boneCount&&counts.bones){
+            if(!app.BoneClipboard()||counts.bones>mdl::kBoneKeyCapacityLimit)return MMS_E_ARGUMENT;
+            for(unsigned i=0;i<counts.bones;++i){unsigned frame;
+                if(!frame_limits::Add(app.CurrentFrame(),app.BoneClipboard()[i].frame,frame))return MMS_E_ARGUMENT;}
+        }
+        if(model.boneCount&&(counts.bones||display)){
+            std::shared_ptr<HistoryChange> part;
+            if(auto error=PlanBoneKeyPaste(app,slot,false,part,&results[0],display))return error;
+        }
+        if(counts.morphs){
+            std::shared_ptr<HistoryChange> part;
+            if(auto error=PlanMorphKeyPaste(app,slot,part,&results[1]))return error;
+        }
+        if(!results[0].dataChanged&&!results[1].dataChanged&&!results[2].dataChanged)return MMS_OK;
+        auto change=std::make_shared<ModelPasteChange>(app,slot);
+        auto metadata=std::make_shared<RangeMetadata>(app,slot);
+        metadata->restoreGrownTail=true;metadata->requireInitialMarks=true;
+        unsigned cursor=1;const auto capacity=mdl::KeyPoolCapacity(model.displayKeys);
+        while(cursor<capacity&&model.displayKeys[cursor].frame)++cursor;
+        metadata->cursorAfter=counts.displays?results[2].searchCursor:int(cursor);
+        for(unsigned family=0;family<results.size();++family){
+            auto& result=results[family];change->parts[family]=std::move(result.change);
+            if(result.hasKeys)metadata->maxAfter=(std::max)(metadata->maxAfter,result.maxFrame);
+            const auto limit=family==0?std::size_t(mdl::kBoneKeyCapacityLimit):family==1?
+                std::size_t(mdl::kMorphKeyCapacityLimit):mdl::KeyPoolLimit<mdl::DisplayKey>();
+            for(auto index:result.markedSlots){
+                if(index>=limit)return MMS_E_ARGUMENT;
+                if(index>=metadata->after[family].size())metadata->after[family].resize(std::size_t(index)+1,0);
+                metadata->after[family][index]=1;
+            }
+        }
+        change->parts[3]=std::move(metadata);out=std::move(change);return MMS_OK;
     });
 }
 MmsResult PlanModelRangeScale(MMDApp& app, unsigned slot, const ModelRangeScaleOptions& options,

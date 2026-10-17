@@ -3,6 +3,7 @@
 #include "native_bone_evaluation.hpp"
 #include "native_display_keys.hpp"
 #include "native_range_scale.hpp"
+#include "native_model_paste.hpp"
 #include "native_pose_scope.hpp"
 #include "native_history_commands.hpp"
 #include "scene_object_history.hpp"
@@ -571,20 +572,32 @@ unsigned InsertRangeCopy(KeyPlan& plan, const RangeKeyCopy& copy, unsigned start
 }
 }
 MmsResult PlanBoneKeyPaste(MMDApp& app, unsigned slot, bool mirror,
-    std::shared_ptr<HistoryChange>& out) noexcept {
+    std::shared_ptr<HistoryChange>& out, ModelPasteFamilyResult* aggregate,
+    std::shared_ptr<DisplayKeyDeletion> display) noexcept {
     out.reset();
+    if(aggregate)*aggregate={};
     return Boundary([&]() -> MmsResult {
         if (!ReadyForKeyPlan(app, slot)) return MMS_E_NOT_READY;
+        const auto& model = *mdl::Mdl(app.ModelSlot(slot));
+        if(aggregate){aggregate->maxFrame=model.maxFrame;aggregate->searchCursor=model.searchCursor;}
+        const auto displayOnly=[&]()->MmsResult {
+            if(aggregate&&display) {
+                if(auto result=PlanBoneDisplayEvaluation(app,slot,display,out))return result;
+                aggregate->change=out;
+            }
+            return MMS_OK;
+        };
         const auto count = app.ClipboardCounts().bones;
-        if (!count) return MMS_OK;
+        if (!count) return displayOnly();
         if (!app.BoneClipboard() || count > mdl::kBoneKeyCapacityLimit || app.CurrentFrame() < 0)
             return MMS_E_ARGUMENT;
-        const auto& model = *mdl::Mdl(app.ModelSlot(slot));
         KeyPlan plan(model, true);
         const auto owners = ValidateOwners(plan);
         std::vector<std::string> names;
         std::set<std::string> unique;
         auto change = NewKeyChange(app, slot);
+        change->publishMetadata=aggregate==nullptr;
+        change->preserveKeyMarks=aggregate!=nullptr;
         // Freeze the name table which selected the destination, including
         // unmatched names and the native suffix-only left/right search.
         for (unsigned bone = 0; bone < model.boneCount; ++bone) {
@@ -637,29 +650,50 @@ MmsResult PlanBoneKeyPaste(MMDApp& app, unsigned slot, bool mirror,
             if (!PrepareRangeRotation(model, copy.key, rules, mirror)) return MMS_E_NOT_READY;
             copies.push_back(copy);
         }
-        if (copies.empty()) return MMS_OK;
-        ClearAuxiliaryMarks(*change);
-        for (unsigned index = 0; index < plan.initialCapacity; ++index)
-            if (model.boneKeys[index].allocated) plan.Write(index, false).allocated = 0;
+        if (copies.empty()) {
+            if(aggregate&&!display) {
+                FinishKeyPlan(plan,*change,owners);
+                out=change;aggregate->change=std::move(change);
+                return MMS_OK;
+            }
+            return displayOnly();
+        }
+        if(!aggregate) {
+            ClearAuxiliaryMarks(*change);
+            for (unsigned index = 0; index < plan.initialCapacity; ++index)
+                if (model.boneKeys[index].allocated) plan.Write(index, false).allocated = 0;
+        }
+        std::set<unsigned> pastedSlots;
         unsigned cursor = model.boneCount;
         while (cursor < plan.capacity && plan.Read(cursor).frame) ++cursor;
         for (const auto& copy : copies) {
             const auto target = InsertRangeCopy(plan, copy.key, unsigned(app.CurrentFrame()), cursor, *change);
+            pastedSlots.insert(target);
             // Mirror registrar writes translation even for rotation-only bones.
             if (mirror) std::memcpy(plan.Write(target).position, copy.key.key.position, sizeof(copy.key.key.position));
             if (!change->scaleAfter.SetKeyCurve(int(target), copy.curve)) return MMS_E_ARGUMENT;
         }
         // Ordinary paste resets the shared cursor to the display pool even
         // when that clipboard is empty; mirror paste keeps the bone cursor.
-        if (!mirror) {
+        if (!mirror&&!aggregate) {
             cursor = 1;
             while (cursor < change->displayCapacity && model.displayKeys[cursor].frame) ++cursor;
         }
         change->searchAfter = int(cursor);
         // Pasting does not update the last-registration UI marker.
         CaptureRules(*change, rules);
-        if (FinishKeyPlan(plan, *change, owners) || change->searchBefore != change->searchAfter ||
-            change->maxBefore != change->maxAfter) out = std::move(change);
+        const bool changed=FinishKeyPlan(plan,*change,owners);
+        AttachDisplay(*change,std::move(display));
+        if(aggregate) {
+            aggregate->hasKeys=true;aggregate->maxFrame=change->maxAfter;aggregate->searchCursor=change->searchAfter;
+            aggregate->markedSlots.assign(pastedSlots.begin(),pastedSlots.end());
+            aggregate->dataChanged=change->scaleChanged||change->curvesChanged;
+            for(const auto& patch:change->keys)aggregate->dataChanged|=!SameKeyData(patch.before,patch.after);
+            // An unchanged source family still participates when another family
+            // changes, so its selection and target display sampling are retained.
+            out=change;aggregate->change=std::move(change);
+        } else if(changed||change->display||change->searchBefore!=change->searchAfter||change->maxBefore!=change->maxAfter)
+            out=std::move(change);
         return MMS_OK;
     });
 }

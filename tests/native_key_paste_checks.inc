@@ -94,7 +94,7 @@ void NativeKeyPasteChecks() {
         f.app->ClipboardCounts().morphs = 1;
         CmdControl400(f.app.get(), f.app->MainWindow(), 421, 0);
         Check(f.first.Digest() == before && f.history.RedoCount() == redo,
-            "unsupported mixed-family paste is rejected without fallback or lost redo");
+            "mixed-family paste with a missing morph clipboard is rejected without fallback or lost redo");
         f.app->ClipboardCounts().morphs = 0; f.app->CurrentFrame() = frame_limits::maximum;
         CmdControl400(f.app.get(), f.app->MainWindow(), 421, 0);
         Check(f.first.Digest() == before && f.history.RedoCount() == redo,

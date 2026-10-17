@@ -2,6 +2,7 @@
 #if !MMD_ORIGINAL_PROFILE
 #include "native_bone_registration.hpp"
 #include "native_range_scale.hpp"
+#include "native_model_paste.hpp"
 #include "scene_object_history.hpp"
 #include "mikudancestudio/bone_key_pool.hpp"
 #include "mikudancestudio/frame_limits.hpp"
@@ -388,6 +389,7 @@ struct MorphPaste final : HistoryChange, std::enable_shared_from_this<MorphPaste
     int search, searchAfter, playheadBefore;
     float value;
     bool published = false;
+    bool aggregate = false;
     std::uint64_t generation = 1;
     MorphPaste(MMDApp& a, unsigned slot, unsigned index, int frame)
         : app(a), modelSlot(slot), morph(index), model(a.ModelSlot(slot)),
@@ -417,8 +419,8 @@ struct MorphPaste final : HistoryChange, std::enable_shared_from_this<MorphPaste
         const auto& m = *mdl::Mdl(model);
         return m.morphs == morphs && m.morphCount == count && m.physicsMode == physicsMode &&
             mdl::MorphKeyPoolIdentity(m.morphKeys) == identity && mdl::MorphKeyCapacity(m.morphKeys) >= capacity &&
-            (boneIdentity ? mdl::BoneKeyPoolIdentity(m.boneKeys) == boneIdentity && mdl::BoneKeyCapacity(m.boneKeys) >= boneCapacity : !m.boneKeys) &&
-            (displayIdentity ? mdl::KeyPoolIdentity(m.displayKeys) == displayIdentity && mdl::KeyPoolCapacity(m.displayKeys) >= displayCapacity : !m.displayKeys) &&
+            (aggregate || ((boneIdentity ? mdl::BoneKeyPoolIdentity(m.boneKeys) == boneIdentity && mdl::BoneKeyCapacity(m.boneKeys) >= boneCapacity : !m.boneKeys) &&
+            (displayIdentity ? mdl::KeyPoolIdentity(m.displayKeys) == displayIdentity && mdl::KeyPoolCapacity(m.displayKeys) >= displayCapacity : !m.displayKeys))) &&
             morphs[morph].panel == rule.panel && morphs[morph].type == rule.type &&
             !std::memcmp(morphs[morph].name, rule.name.data(), rule.name.size());
     }
@@ -481,11 +483,11 @@ struct MorphPaste final : HistoryChange, std::enable_shared_from_this<MorphPaste
             for (std::size_t i=0;i<source->pasteRules.size();++i)
                 if (!SameFloat(beforeValues[i],source->morphs[source->pasteRules[i].morph].value)) return false;
             const auto& m = *mdl::Mdl(source->model);
-            if (m.morphKeys != pool || m.boneKeys != bones || m.displayKeys != displays ||
-                mdl::MorphKeyCapacity(pool) != capacity || mdl::BoneKeyCapacity(bones) != boneCapacity ||
+            if (m.morphKeys != pool || mdl::MorphKeyCapacity(pool) != capacity) return false;
+            if (!source->aggregate && (m.boneKeys != bones || m.displayKeys != displays || mdl::BoneKeyCapacity(bones) != boneCapacity ||
                 mdl::KeyPoolCapacity(displays) != displayCapacity || m.searchCursor != (forward ? source->search : source->searchAfter) ||
                 m.maxFrame != (forward ? source->maxBefore : source->maxAfter) ||
-                source->app.state.lastRegisteredFrame != (forward ? source->lastBefore : source->lastAfter)) return false;
+                source->app.state.lastRegisteredFrame != (forward ? source->lastBefore : source->lastAfter))) return false;
             for (std::size_t i = 0; i < source->patches.size(); ++i) {
                 const auto slot = source->patches[i].key.slot;
                 const auto live = slot < capacity ? pool[slot] : mdl::MorphKey{};
@@ -499,29 +501,36 @@ struct MorphPaste final : HistoryChange, std::enable_shared_from_this<MorphPaste
             return morph_curve::LayersUnchanged(source->model, layers);
         }
         void Publish() noexcept override {
-            if (!IsCurrent() || !growth->Publish()) std::terminate();
+            // Aggregate validated all participants before bone publication.
+            // A bone growth may have replaced other pools or their marks.
+            if (source->aggregate ? consumed || source->generation != generation : !IsCurrent()) std::terminate();
+            if (!growth->Publish()) std::terminate();
             auto& m = *mdl::Mdl(source->model);
             // Match display registration's complete selection snapshot over
             // the pools captured by this record. Sparse flags retain nonzero
             // values, but newly selected originally-zero slots must also clear.
             // Later unrelated growth tails remain outside this record; its own
             // newly inserted slot is restored by the data patch below.
-            for (std::size_t i = 0; i < source->capacity; ++i) m.morphKeys[i].allocated = 0;
-            for (std::size_t i = 0; i < source->boneCapacity; ++i) bones[i].allocated = 0;
-            for (std::size_t i = 0; i < source->displayCapacity; ++i) displays[i].allocated = 0;
+            if (!source->aggregate) {
+                for (std::size_t i = 0; i < source->capacity; ++i) m.morphKeys[i].allocated = 0;
+                for (std::size_t i = 0; i < source->boneCapacity; ++i) bones[i].allocated = 0;
+                for (std::size_t i = 0; i < source->displayCapacity; ++i) displays[i].allocated = 0;
+            }
             for (const auto& patch : source->patches) {
                 const auto& target = forward ? patch.key.after : patch.key.before;
                 if (patch.data) m.morphKeys[patch.key.slot] = target;
                 else m.morphKeys[patch.key.slot].allocated = target.allocated;
             }
-            for (const auto& flag : source->boneFlags) bones[flag.slot].allocated = forward ? 0 : flag.before;
-            for (const auto& flag : source->displayFlags) displays[flag.slot].allocated = forward ? 0 : flag.before;
-            m.maxFrame = forward ? source->maxAfter : source->maxBefore;
-            source->app.state.lastRegisteredFrame = forward ? source->lastAfter : source->lastBefore;
+            if (!source->aggregate) {
+                for (const auto& flag : source->boneFlags) bones[flag.slot].allocated = forward ? 0 : flag.before;
+                for (const auto& flag : source->displayFlags) displays[flag.slot].allocated = forward ? 0 : flag.before;
+                m.maxFrame = forward ? source->maxAfter : source->maxBefore;
+                source->app.state.lastRegisteredFrame = forward ? source->lastAfter : source->lastBefore;
+            }
             // The current-value registrar never seeks. Subsequent history
             // traversal evaluates only its own channel at the current frame.
             for (std::size_t i=0;i<source->pasteRules.size();++i) source->morphs[source->pasteRules[i].morph].value=afterValues[i];
-            m.searchCursor = forward ? source->searchAfter : source->search;
+            if (!source->aggregate) m.searchCursor = forward ? source->searchAfter : source->search;
             source->published = true; ++source->generation; consumed = true;
             if (!growth->Accept()) std::terminate();
         }
@@ -530,13 +539,13 @@ struct MorphPaste final : HistoryChange, std::enable_shared_from_this<MorphPaste
         out.reset();
         if (!Structure()) return MMS_E_STALE;
         if (generation == UINT64_MAX) return MMS_E_NOT_READY;
-        if (!published && (!forward || app.CurrentFrame() != playheadBefore || !SameFloat(value, morphs[morph].value) || !InitialMarksCurrent()))
+        if (!published && (!forward || app.CurrentFrame() != playheadBefore || !SameFloat(value, morphs[morph].value) || (!aggregate && !InitialMarksCurrent())))
             return MMS_E_STALE;
         if (app.CurrentFrame() < 0 || app.CurrentFrame() > frame_limits::maximum) return MMS_E_ARGUMENT;
         return Boundary([&]() -> MmsResult {
             auto& m = *mdl::Mdl(model);
-            if (m.maxFrame != (forward ? maxBefore : maxAfter) || m.searchCursor != (forward ? search : searchAfter) ||
-                app.state.lastRegisteredFrame != (forward ? lastBefore : lastAfter)) return MMS_E_STALE;
+            if (!aggregate && (m.maxFrame != (forward ? maxBefore : maxAfter) || m.searchCursor != (forward ? search : searchAfter) ||
+                app.state.lastRegisteredFrame != (forward ? lastBefore : lastAfter))) return MMS_E_STALE;
             auto candidate = std::make_unique<Candidate>(shared_from_this(), forward);
             Owners owners; candidate->dependencies = Chains(m, owners);
             std::uint64_t needed = count;
@@ -546,11 +555,15 @@ struct MorphPaste final : HistoryChange, std::enable_shared_from_this<MorphPaste
                 candidate->current.push_back(live); needed = (std::max)(needed, std::uint64_t(patch.key.slot) + 1);
             }
             candidate->morphMarks.reserve(candidate->capacity);
-            candidate->boneMarks.reserve(candidate->boneCapacity);
-            candidate->displayMarks.reserve(candidate->displayCapacity);
+            if (!aggregate) {
+                candidate->boneMarks.reserve(candidate->boneCapacity);
+                candidate->displayMarks.reserve(candidate->displayCapacity);
+            }
             for (std::size_t i = 0; i < candidate->capacity; ++i) candidate->morphMarks.push_back(m.morphKeys[i].allocated);
-            for (std::size_t i = 0; i < candidate->boneCapacity; ++i) candidate->boneMarks.push_back(m.boneKeys[i].allocated);
-            for (std::size_t i = 0; i < candidate->displayCapacity; ++i) candidate->displayMarks.push_back(m.displayKeys[i].allocated);
+            if (!aggregate) {
+                for (std::size_t i = 0; i < candidate->boneCapacity; ++i) candidate->boneMarks.push_back(m.boneKeys[i].allocated);
+                for (std::size_t i = 0; i < candidate->displayCapacity; ++i) candidate->displayMarks.push_back(m.displayKeys[i].allocated);
+            }
             if (!mdl::MorphKeyPoolGrowth::Prepare(m, needed, candidate->growth)) return MMS_E_MEMORY;
             std::string error;
             if (!morph_curve::CaptureLayers(model, candidate->layers, error)) return MMS_E_ARGUMENT;
@@ -647,13 +660,13 @@ MmsResult PlanMorphRegistration(MMDApp& app, unsigned slot, int morph, int frame
         out = std::move(change); return MMS_OK;
     });
 }
-MmsResult PlanMorphKeyPaste(MMDApp& app,unsigned slot,std::shared_ptr<HistoryChange>& out) noexcept {
-    out.reset();
+MmsResult PlanMorphKeyPaste(MMDApp& app,unsigned slot,std::shared_ptr<HistoryChange>& out, ModelPasteFamilyResult* aggregate) noexcept {
+    out.reset();if(aggregate)*aggregate={};
     if (slot>=kModelSlotCount || !app.ModelSlot(slot) || app.PlaybackActive() || app.FrameStepPlayback() ||
         app.state.recordPlaybackStartPending || app.SceneMutationInProgress()) return MMS_E_NOT_READY;
     if (app.CurrentFrame()<0 || app.CurrentFrame()>frame_limits::maximum) return MMS_E_ARGUMENT;
     const auto& counts=app.ClipboardCounts();
-    if (counts.bones || counts.displays) return MMS_E_NOT_READY;
+    if (!aggregate && (counts.bones || counts.displays)) return MMS_E_NOT_READY;
     if (!counts.morphs) return MMS_OK;
     if (!app.MorphClipboard() || counts.morphs>mdl::kMorphKeyCapacityLimit) return MMS_E_ARGUMENT;
     return Boundary([&]() -> MmsResult {
@@ -674,7 +687,7 @@ MmsResult PlanMorphKeyPaste(MMDApp& app,unsigned slot,std::shared_ptr<HistoryCha
             }
         }
         if (copies.empty()) return MMS_OK;
-        auto change=std::make_shared<MorphPaste>(app,slot,copies.front().morph,app.CurrentFrame());
+        auto change=std::make_shared<MorphPaste>(app,slot,copies.front().morph,app.CurrentFrame());change->aggregate=aggregate!=nullptr;
         const auto capacity=mdl::MorphKeyCapacity(model.morphKeys);auto targetCapacity=capacity;
         std::map<unsigned,RegistrationPatch> planned;
         const auto read=[&](unsigned index) -> mdl::MorphKey {
@@ -686,16 +699,16 @@ MmsResult PlanMorphKeyPaste(MMDApp& app,unsigned slot,std::shared_ptr<HistoryCha
             auto& patch=planned.emplace(index,RegistrationPatch{{index,key,key},data}).first->second;
             patch.data|=data;return patch.key.after;
         };
-        for (std::size_t i=0;i<capacity;++i) if(model.morphKeys[i].allocated) write(unsigned(i),false).allocated=0;
+        if(!aggregate)for (std::size_t i=0;i<capacity;++i) if(model.morphKeys[i].allocated) write(unsigned(i),false).allocated=0;
         unsigned cursor=model.morphCount;while(cursor<targetCapacity&&read(cursor).frame)++cursor;
-        std::set<unsigned> affected;
+        std::set<unsigned> affected,marked;
         for (const auto& copy:copies) {
             affected.insert(copy.morph);unsigned current=copy.morph;
             for (std::size_t hops=0;read(current).frame<copy.frame&&read(current).next;++hops) {
                 if(hops>=targetCapacity)return MMS_E_ARGUMENT;current=read(current).next;
             }
             const auto existing=read(current);
-            if(existing.frame==copy.frame) {auto& key=write(current,true);key.value=copy.value;key.allocated=1;continue;}
+            if(existing.frame==copy.frame) {auto& key=write(current,true);key.value=copy.value;key.allocated=1;marked.insert(current);continue;}
             if(cursor<model.morphCount||cursor>=targetCapacity)cursor=model.morphCount;
             while(cursor<targetCapacity&&read(cursor).frame)++cursor;
             if(cursor>=mdl::kMorphKeyCapacityLimit)return MMS_E_MEMORY;
@@ -703,23 +716,29 @@ MmsResult PlanMorphKeyPaste(MMDApp& app,unsigned slot,std::shared_ptr<HistoryCha
             auto& key=write(cursor,true);
             if(existing.frame<copy.frame) {write(current,true).next=cursor;key.previous=current;key.next=0;}
             else {write(existing.previous,true).next=cursor;key.previous=existing.previous;write(current,true).previous=cursor;key.next=current;}
-            key.frame=copy.frame;key.value=copy.value;key.allocated=1;
+            key.frame=copy.frame;key.value=copy.value;key.allocated=1;marked.insert(cursor);
             change->maxAfter=(std::max)(change->maxAfter,copy.frame);
         }
         Owners targets;TrackChains(model.morphCount,targetCapacity,read,targets);
         bool dataChanged=false;
         for(const auto& item:planned) if(item.second.data&&!SameKey(item.second.key.before,item.second.key.after,false)) {dataChanged=true;break;}
-        if(!dataChanged)return MMS_OK;
+        if(!dataChanged&&!aggregate)return MMS_OK;
         for(const auto& item:planned) if(!SameKey(item.second.key.before,item.second.key.after,true))change->patches.push_back(item.second);
         for(auto morph:affected) {
             const auto& value=model.morphs[morph];Rule rule{morph,{},value.panel,value.type};
             if(!std::isfinite(value.value))return MMS_E_ARGUMENT;
             std::memcpy(rule.name.data(),value.name,rule.name.size());change->pasteRules.push_back(rule);
         }
-        for(std::size_t i=0;i<change->boneCapacity;++i)if(model.boneKeys[i].allocated)change->boneFlags.push_back({unsigned(i),model.boneKeys[i].allocated});
-        for(std::size_t i=0;i<change->displayCapacity;++i)if(model.displayKeys[i].allocated)change->displayFlags.push_back({unsigned(i),model.displayKeys[i].allocated});
-        cursor=1;while(cursor<change->displayCapacity&&model.displayKeys[cursor].frame)++cursor;change->searchAfter=int(cursor);
-        if(change->patches.empty()&&change->boneFlags.empty()&&change->displayFlags.empty()&&change->search==change->searchAfter&&change->maxBefore==change->maxAfter)return MMS_OK;
+        if(aggregate) {
+            ModelPasteFamilyResult result;
+            result.change=change;result.hasKeys=true;result.dataChanged=dataChanged;result.maxFrame=change->maxAfter;result.searchCursor=int(cursor);
+            result.markedSlots.assign(marked.begin(),marked.end());*aggregate=std::move(result);
+        } else {
+            for(std::size_t i=0;i<change->boneCapacity;++i)if(model.boneKeys[i].allocated)change->boneFlags.push_back({unsigned(i),model.boneKeys[i].allocated});
+            for(std::size_t i=0;i<change->displayCapacity;++i)if(model.displayKeys[i].allocated)change->displayFlags.push_back({unsigned(i),model.displayKeys[i].allocated});
+            cursor=1;while(cursor<change->displayCapacity&&model.displayKeys[cursor].frame)++cursor;change->searchAfter=int(cursor);
+            if(change->patches.empty()&&change->boneFlags.empty()&&change->displayFlags.empty()&&change->search==change->searchAfter&&change->maxBefore==change->maxAfter)return MMS_OK;
+        }
         out=std::move(change);return MMS_OK;
     });
 }

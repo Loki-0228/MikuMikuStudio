@@ -28,7 +28,9 @@ MmsResult PlanMorphRegistration(MMDApp&, unsigned modelSlot, int morphIndex, int
 // object; the app must outlive the journal. Resident resources are budgeted
 // separately from this record's payload. Planning/first Prepare are serialized.
 // A successful null result is a no-op and must not discard redo.
-MmsResult PlanMorphKeyPaste(MMDApp&, unsigned modelSlot, std::shared_ptr<HistoryChange>& out) noexcept;
+struct ModelPasteFamilyResult;
+MmsResult PlanMorphKeyPaste(MMDApp&, unsigned modelSlot, std::shared_ptr<HistoryChange>& out,
+    ModelPasteFamilyResult* aggregate = nullptr) noexcept;
 MmsResult PlanMorphKeyDeletion(MMDApp&, unsigned modelSlot,
     std::shared_ptr<HistoryChange>& out, bool allowOtherMarks = false) noexcept;
 MmsResult PlanMorphFrameLine(MMDApp&, unsigned modelSlot, int frame, bool insert,

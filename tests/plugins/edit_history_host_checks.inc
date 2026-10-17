@@ -13,6 +13,7 @@
 #include "../src/plugins/native_morph_keys.hpp"
 #include "../src/plugins/native_display_keys.hpp"
 #include "../src/plugins/native_global_paste.hpp"
+#include "../src/plugins/native_model_paste.hpp"
 #include "mikudancestudio/clipboard_layout.hpp"
 #include "mikudancestudio/text_encoding.hpp"
 #include "mikudancestudio/ui_language.hpp"
@@ -408,6 +409,7 @@ void ObjectMenuDeletion(MMDApp* app, plugins::SharedHistory& history, const MmsS
 #include "morph_paste_host_checks.inc"
 #include "display_paste_host_checks.inc"
 #include "global_paste_host_checks.inc"
+#include "model_paste_host_checks.inc"
 void Run(MMDApp* app) {
     using namespace plugins;
     const auto initial = GetModuleHandleW(L"manager_edit_probe.dll");
@@ -444,6 +446,7 @@ void Run(MMDApp* app) {
     morph_paste_host_checks::Run(app,*history,value);
     display_paste_host_checks::Run(app,*history,value);
     global_paste_host_checks::Run(app,*history,value);
+    model_paste_host_checks::Run(app,*history,value);
     auto scene = CreateSceneStore(app); SceneClient client; auto api = scene->Api(client);
     const auto revisionMatches = [&] {
         MmsSceneQueryV1 query{}; query.h = Header<MmsSceneQueryV1>(); query.flags = MMS_SCENE_CURRENT_TIME;

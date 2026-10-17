@@ -7,6 +7,7 @@ namespace mikudancestudio { class MMDApp; }
 namespace mikudancestudio::plugins {
 class DisplayKeyDeletion;
 struct RangeScaleResult;
+struct ModelPasteFamilyResult;
 struct BoneRegistrationOptions {
     int frame = 0;
     int physicsMode = 2;
@@ -64,7 +65,10 @@ bool TryRegisterBoundBones(MMDApp*) noexcept;
 // Explicit model bone clipboard paste. Other copied model families are rejected
 // by the caller, not partially pasted. The plan owns both key directions and
 // scale/curve authoring; undo/redo never re-read the clipboard.
+// Aggregate mode delegates all marks/metadata to its caller and evaluates
+// associated bones against the supplied private target display selectors.
 MmsResult PlanBoneKeyPaste(MMDApp&, unsigned modelSlot, bool mirror,
-    std::shared_ptr<HistoryChange>&) noexcept;
+    std::shared_ptr<HistoryChange>&, ModelPasteFamilyResult* aggregate = nullptr,
+    std::shared_ptr<DisplayKeyDeletion> display = {}) noexcept;
 }
 #endif

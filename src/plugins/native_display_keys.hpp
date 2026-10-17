@@ -7,6 +7,7 @@ namespace mikudancestudio { class MMDApp; }
 namespace mikudancestudio::plugins {
 struct BoneRangeScaleOptions;
 struct RangeScaleResult;
+struct ModelPasteFamilyResult;
 class DisplayKeyDeletion : public HistoryChange {
 public:
     // Re-evaluate at the current playhead without writing live selectors.
@@ -44,7 +45,9 @@ MmsResult PlanDisplayRegistration(MMDApp&, unsigned modelSlot, int frame,
 // Display-only clipboard paste. Deep payloads and both directions are owned;
 // no clipboard/source file reads occur during undo or redo. First publication
 // samples the target track while preserving dirty authoring poses.
+// Aggregate mode retains private growth but delegates marks/metadata and bone
+// evaluation to the model aggregate; its target selectors remain queryable.
 MmsResult PlanDisplayKeyPaste(MMDApp&, unsigned modelSlot,
-    std::shared_ptr<HistoryChange>& out) noexcept;
+    std::shared_ptr<HistoryChange>& out, ModelPasteFamilyResult* aggregate = nullptr) noexcept;
 }
 #endif

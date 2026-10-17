@@ -388,9 +388,18 @@ void CrossModelJournal(){
 #include "native_accessory_paste_checks.inc"
 #include "native_global_paste_checks.inc"
 #include "native_gravity_paste_checks.inc"
+#include "native_morph_paste_part_checks.inc"
+#include "native_model_paste_family_checks.inc"
+#include "native_model_paste_checks.inc"
 int main(int argc,char** argv){
     std::setvbuf(stdout,nullptr,_IONBF,0);
     const auto run=[](const char* name,void(*test)()){std::printf("RUN %s\n",name);test();};
+    if(argc==2&&!std::strcmp(argv[1],"--mixed-model-paste-only")) {
+        run("NativeMorphPastePartChecks",NativeMorphPastePartChecks);
+        run("NativeModelPasteFamilyChecks",NativeModelPasteFamilyChecks);
+        run("NativeModelPasteChecks",NativeModelPasteChecks);
+        std::printf("PASS native mixed model paste: %u checks\n",checks);return 0;
+    }
     if(argc==2&&!std::strcmp(argv[1],"--gravity-paste-only")) {
         run("NativeGravityPasteChecks",NativeGravityPasteChecks);
         std::printf("PASS native gravity paste: %u checks\n",checks);return 0;
@@ -537,6 +546,9 @@ int main(int argc,char** argv){
     run("NativeAccessoryPasteChecks",NativeAccessoryPasteChecks);
     run("NativeGlobalPasteChecks",NativeGlobalPasteChecks);
     run("NativeGravityPasteChecks",NativeGravityPasteChecks);
+    run("NativeMorphPastePartChecks",NativeMorphPastePartChecks);
+    run("NativeModelPasteFamilyChecks",NativeModelPasteFamilyChecks);
+    run("NativeModelPasteChecks",NativeModelPasteChecks);
     run("PhysicsImportChecks",PhysicsImportChecks);
     run("ImportTextureCacheChecks",ImportTextureCacheChecks);
     run("AccessoryImportChecks",AccessoryImportChecks);

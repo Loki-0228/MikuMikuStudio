@@ -4,6 +4,7 @@
 #include "native_bone_evaluation.hpp"
 #include "native_bone_registration.hpp"
 #include "native_range_scale.hpp"
+#include "native_model_paste.hpp"
 #include "mikudancestudio/bone_curve.hpp"
 #include "mikudancestudio/bone_scale.hpp"
 #include "mikudancestudio/bone_key_pool.hpp"
@@ -186,7 +187,7 @@ struct DisplayDeletion final : DisplayKeyDeletion,std::enable_shared_from_this<D
     };
     std::vector<PasteReference> pasteReferences;
     std::vector<Patch> patches;
-    bool registration=false,paste=false,publishedOnce=false;std::uint64_t generation=1;
+    bool registration=false,paste=false,aggregatePaste=false,publishedOnce=false;std::uint64_t generation=1;
     unsigned registeredSlot=0;
     std::vector<unsigned char> boneMarks,morphMarks,displayMarks;
     std::uint64_t boneMarkIdentity=0,morphMarkIdentity=0;
@@ -286,7 +287,7 @@ struct DisplayDeletion final : DisplayKeyDeletion,std::enable_shared_from_this<D
         return Boundary([&]()->MmsResult {
             const auto& m=*mdl::Mdl(model);CheckPayloadStorage(m);
             for(const auto& patch:patches) {
-                if(patch.slot>=mdl::KeyPoolCapacity(m.displayKeys)) {if(!registration||!forward||publishedOnce)return MMS_E_STALE;continue;}
+                if(patch.slot>=mdl::KeyPoolCapacity(m.displayKeys)) {if((!registration&&!aggregatePaste)||!forward||publishedOnce)return MMS_E_STALE;continue;}
                 if(!(forward?patch.before:patch.after).Equals(m.displayKeys[patch.slot],false))return MMS_E_STALE;
             }
             FrameState state;if(auto status=Sample(forward,state))return status;
@@ -376,7 +377,11 @@ struct DisplayDeletion final : DisplayKeyDeletion,std::enable_shared_from_this<D
                 m.maxFrame=forward?source->maxAfter:source->maxBefore;m.searchCursor=forward?source->searchAfter:source->searchBefore;
                 source->app.state.lastRegisteredFrame=forward?source->lastAfter:source->lastBefore;
             }
-            for(const auto& patch:source->patches)(forward?patch.after:patch.before).Publish(m.displayKeys[patch.slot]);
+            for(const auto& patch:source->patches) {
+                const auto mark=m.displayKeys[patch.slot].allocated;
+                (forward?patch.after:patch.before).Publish(m.displayKeys[patch.slot]);
+                if(source->aggregatePaste)m.displayKeys[patch.slot].allocated=mark;
+            }
             m.loadComplete=after.visible;
             for(unsigned index=0;index<source->ikCount;++index)m.ikChains[index].enabled=after.ik[index];
             if(source->parentCount)std::memcpy(m.boneOrderTable,after.selectors.data(),source->parentCount*sizeof(mdl::BoneOrderEntry));
@@ -389,11 +394,14 @@ struct DisplayDeletion final : DisplayKeyDeletion,std::enable_shared_from_this<D
             auto& m=*mdl::Mdl(model);CheckPayloadStorage(m);
             auto candidate=std::make_unique<Candidate>(shared_from_this(),forward);
             candidate->initial=registration&&!paste&&!publishedOnce;
+            if(aggregatePaste&&!publishedOnce&&!forward)return MMS_E_STALE;
+            if(registration||aggregatePaste) {
+                const auto required=patches.empty()?capacity:std::size_t(patches.back().slot)+1;
+                candidate->growth=std::make_unique<DisplayGrowth>(m,required);
+            }
             if(registration) {
                 if((!publishedOnce&&!forward)||m.maxFrame!=(forward?maxBefore:maxAfter)||m.searchCursor!=(forward?searchBefore:searchAfter)||
                     app.state.lastRegisteredFrame!=(forward?lastBefore:lastAfter))return MMS_E_STALE;
-                const auto required=patches.empty()?capacity:std::size_t(patches.back().slot)+1;
-                candidate->growth=std::make_unique<DisplayGrowth>(m,required);
                 candidate->markedBones=m.boneKeys;candidate->markedMorphs=m.morphKeys;
                 candidate->markedBoneCapacity=mdl::BoneKeyCapacity(m.boneKeys);
                 candidate->markedMorphCapacity=mdl::MorphKeyCapacity(m.morphKeys);
@@ -599,16 +607,18 @@ MmsResult PlanDisplayRegistration(MMDApp& app,unsigned slot,int frame,std::share
         out=std::move(change);return MMS_OK;
     });
 }
-MmsResult PlanDisplayKeyPaste(MMDApp& app,unsigned slot,std::shared_ptr<HistoryChange>& out) noexcept {
+MmsResult PlanDisplayKeyPaste(MMDApp& app,unsigned slot,std::shared_ptr<HistoryChange>& out,ModelPasteFamilyResult* aggregate) noexcept {
     out.reset();
+    if(aggregate)*aggregate={};
     if(slot>=kModelSlotCount||!app.ModelSlot(slot)||app.PlaybackActive()||app.FrameStepPlayback()||
         app.state.recordPlaybackStartPending||app.SceneMutationInProgress())return MMS_E_NOT_READY;
     return Boundary([&]()->MmsResult {
         const auto count=app.ClipboardCounts().displays;
+        const auto& model=*mdl::Mdl(app.ModelSlot(slot));
+        if(aggregate){aggregate->maxFrame=model.maxFrame;aggregate->searchCursor=model.searchCursor;}
         if(!count)return MMS_OK;
         if(!app.DisplayClipboard()||count>mdl::KeyPoolLimit<mdl::DisplayKey>()||
             app.CurrentFrame()<0||app.CurrentFrame()>frame_limits::maximum)return MMS_E_ARGUMENT;
-        const auto& model=*mdl::Mdl(app.ModelSlot(slot));
         if(!mdl::KeyPoolIdentity(model.displayKeys)||
             (model.boneKeys&&!mdl::BoneKeyPoolIdentity(model.boneKeys))||
             (model.morphKeys&&!mdl::MorphKeyPoolIdentity(model.morphKeys))||
@@ -624,8 +634,8 @@ MmsResult PlanDisplayKeyPaste(MMDApp& app,unsigned slot,std::shared_ptr<HistoryC
                 strnlen_s(model.boneTable[bone].name,sizeof(model.boneTable[bone].name))).second)return MMS_E_ARGUMENT;
         Chain(model);CheckPayloadStorage(model);
         const auto capacity=mdl::KeyPoolCapacity(model.displayKeys);
-        auto change=std::make_shared<DisplayDeletion>(app,slot,true);
-        change->registration=true;change->paste=true;
+        auto change=std::make_shared<DisplayDeletion>(app,slot,aggregate==nullptr);
+        change->registration=aggregate==nullptr;change->paste=true;change->aggregatePaste=aggregate!=nullptr;
         change->maxBefore=change->maxAfter=model.maxFrame;
         change->lastBefore=change->lastAfter=app.state.lastRegisteredFrame;
         change->searchBefore=model.searchCursor;
@@ -673,6 +683,7 @@ MmsResult PlanDisplayKeyPaste(MMDApp& app,unsigned slot,std::shared_ptr<HistoryC
             return found!=planned.end()?found->second.after.value:
                 index<capacity?Read(model.displayKeys[index]):Payload::Empty(0,0).value;
         };
+        std::set<unsigned> pastedSlots;
         for(unsigned index=0;index<count;++index) {
             const auto& source=app.DisplayClipboard()[index];unsigned frame;
             if(!frame_limits::Add(app.CurrentFrame(),source.frame,frame)||source.ikCount<0||source.selectorCount<0||
@@ -714,6 +725,7 @@ MmsResult PlanDisplayKeyPaste(MMDApp& app,unsigned slot,std::shared_ptr<HistoryC
                 target.frame=frame;change->maxAfter=(std::max)(change->maxAfter,frame);
             }
             auto& target=write(destination);target.value.visible=source.visible;target.value.allocated=1;
+            pastedSlots.insert(destination);
             for(unsigned i=0;i<ikNames.size();++i)for(int entry=0;entry<source.ikCount;++entry)
                 if(!std::strncmp(ikNames[i],source.ikStates[entry].boneName,sizeof(mdl::BoneRecord::name))) {
                     target.ik[i]=source.ikStates[entry].enabled;break;
@@ -730,12 +742,14 @@ MmsResult PlanDisplayKeyPaste(MMDApp& app,unsigned slot,std::shared_ptr<HistoryC
         bool changed=false;
         for(const auto& entry:planned)
             changed|=entry.first>=capacity||!entry.second.after.Equals(model.displayKeys[entry.first],false);
-        if(!changed)return MMS_OK;
-        change->boneMarkIdentity=mdl::BoneKeyPoolIdentity(model.boneKeys);
-        change->morphMarkIdentity=mdl::MorphKeyPoolIdentity(model.morphKeys);
-        for(std::size_t i=0;i<mdl::BoneKeyCapacity(model.boneKeys);++i)change->boneMarks.push_back(model.boneKeys[i].allocated);
-        for(std::size_t i=0;i<mdl::MorphKeyCapacity(model.morphKeys);++i)change->morphMarks.push_back(model.morphKeys[i].allocated);
-        for(std::size_t i=0;i<capacity;++i)change->displayMarks.push_back(model.displayKeys[i].allocated);
+        if(!changed&&!aggregate)return MMS_OK;
+        if(!aggregate) {
+            change->boneMarkIdentity=mdl::BoneKeyPoolIdentity(model.boneKeys);
+            change->morphMarkIdentity=mdl::MorphKeyPoolIdentity(model.morphKeys);
+            for(std::size_t i=0;i<mdl::BoneKeyCapacity(model.boneKeys);++i)change->boneMarks.push_back(model.boneKeys[i].allocated);
+            for(std::size_t i=0;i<mdl::MorphKeyCapacity(model.morphKeys);++i)change->morphMarks.push_back(model.morphKeys[i].allocated);
+            for(std::size_t i=0;i<capacity;++i)change->displayMarks.push_back(model.displayKeys[i].allocated);
+        }
         for(auto& entry:planned)change->patches.push_back(std::move(entry.second));
         DisplayDeletion::FrameState sampled,original;
         if(auto result=change->Sample(true,sampled))return result;
@@ -746,6 +760,11 @@ MmsResult PlanDisplayKeyPaste(MMDApp& app,unsigned slot,std::shared_ptr<HistoryC
             auto* target=app.ModelSlot(reference);const auto& state=*mdl::Mdl(target);
             change->pasteReferences.push_back({reference,target,state.boneTable,state.boneCount,
                 RetainSceneObject(app,MMS_OBJECT_MODEL,reference)});
+        }
+        if(aggregate) {
+            aggregate->hasKeys=true;aggregate->dataChanged=changed;aggregate->maxFrame=change->maxAfter;
+            aggregate->searchCursor=change->searchAfter;aggregate->markedSlots.assign(pastedSlots.begin(),pastedSlots.end());
+            aggregate->change=change;
         }
         out=std::move(change);return MMS_OK;
     });
