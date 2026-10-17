@@ -77,7 +77,7 @@
 
 在「帮助」菜单的田字形选择器中点击对应格子，即可将位移、旋转、缩放与坐标系操作柄移到视窗四角。默认右下角。键盘选中该菜单项后按回车，按左上、右上、左下、右下循环切换。
 
-绘制、点击命中与拖动结束后的光标归位共用同一布局。左侧停靠时，等比缩放放在 XYZ 右侧；上方停靠时，坐标系设置放在缩放行下方。左上角同时应用两条规则，XYZ 轴向顺序保持不变。选择立即生效，保存在 `%LOCALAPPDATA%\MikuDanceStudio\viewport.ini`，不写入 PMM、VMM 或 VEM。
+绘制、点击命中与拖动结束后的光标归位共用同一布局。左侧停靠时，等比缩放放在 XYZ 右侧；上方停靠时，坐标系设置放在缩放行下方。左上角同时应用两条规则，XYZ 轴向顺序保持不变。选择立即生效，保存在 `data/viewport.ini`，不写入 PMM、VMM 或 VEM。
 
 <a id="record-viewport-handle-corners-实现与验证"></a>
 ### 实现与验证
@@ -271,7 +271,7 @@ VS 2022 x64 Release 主程序已编译到 `.local/releases/mms-help-menu-2026092
 <a id="record-help-popup-layout-同步到日常运行目录"></a>
 ### 同步到日常运行目录
 
-2026-09-28 按用户要求，将上述已验证运行包同步到 `main` 的 `build/Release/`。替换 EXE、MMV.dll、接口头文件和 Bullet3 FX，补齐 FX 同目录的 MMVBullet3.dll，以及 `editions/` 中的可选 MMV 版本。包内 34 个文件与目标相同，无需覆盖；现有 `MMEffect.ini`、`Data/` 和工程文件保留。
+2026-09-28 按用户要求，将上述已验证运行包同步到 `main` 的 `build/Release/`。替换 EXE、MMV.dll、接口头文件和 Bullet3 FX，补齐 FX 同目录的 MMVBullet3.dll，以及 `editions/` 中的可选 MMV 版本。包内 34 个文件与目标相同，无需覆盖；现有 `MMEffect.ini`、`data/` 和工程文件保留。
 
 同步前没有目标程序进程，所有待覆盖文件均通过独占打开检查。旧文件备份到 `.local/archives/help-layout-deploy-20260928-085857/`。覆盖后核对了每个写入文件及全部包内二进制的 SHA-256，均与已验证运行包一致。程序未自动启动；本次只同步相同构建产物，没有重新编译或重复渲染测试。明细见 `.local/artifacts/help-popup-layout-20260928/deployment.json`。
 

@@ -1,6 +1,6 @@
 # 界面布局保存
 
-宿主把通过 `mms.ui` 布局事务和 `mms.ui.layout.stageHints` 提交的用户覆盖保存到 `%LOCALAPPDATA%/MMS/plugins/ui-layout.json`。该路径不依赖 EXE 名称或当前工程。插件不需要自行读写此文件，也不需要新增服务调用。
+宿主把通过 `mms.ui` 布局事务和 `mms.ui.layout.stageHints` 提交的用户覆盖保存到 `data/plugins/ui-layout.json`。各程序目录独立保存；该路径不依赖 EXE 名称、工作目录或当前工程。插件不需要自行读写此文件，也不需要新增服务调用。
 
 ## 保存范围
 

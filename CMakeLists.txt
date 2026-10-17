@@ -952,6 +952,10 @@ if (MIKUDANCESTUDIO_BUILD_UI_TESTS)
         "${MIKUDANCESTUDIO_GEN_RES}")
     set_target_properties(video_export_range_tests PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+    add_executable(installation_settings_tests EXCLUDE_FROM_ALL tests/installation_settings_tests.cpp)
+    target_link_libraries(installation_settings_tests PRIVATE mikudancestudio_core winmm dsound)
+    set_target_properties(installation_settings_tests PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
     add_executable(autosave_tests EXCLUDE_FROM_ALL
         tests/autosave_tests.cpp res/MMD.rc ${MIKUDANCESTUDIO_GEN_RES})
     target_link_libraries(autosave_tests PRIVATE mikudancestudio_core minhook::minhook winmm dsound)

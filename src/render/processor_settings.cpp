@@ -2,19 +2,20 @@
 // processor_settings.cpp - global processor policy (host side)
 //
 // See include/mikudancestudio/processor_settings.hpp for the contract.  This
-// file owns: the per-user config file (%LOCALAPPDATA%\MikuDanceStudio\
-// processor.ini, atomically replaced), the Requested/Active split with a
+// file owns: the per-installation config file (data/processor.ini,
+// atomically replaced), the Requested/Active split with a
 // single startup freeze, adapter resolution by LUID then full hardware
 // identity (vendor/device/subsystem/revision) then unique name, and the
 // one-shot conversion of the resolved Vertices choice into
 // skinning::Preference (the native vertex auto strategy keeps its own
 // startup correctness/timing calibration).
 //
-// The legacy Data\skinning.ini is deliberately neither read nor migrated: an
+// The legacy data\skinning.ini is deliberately neither read nor migrated: an
 // old per-model skinning intent must never silently rewrite global settings.
 // ===========================================================================
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
+#include "mikudancestudio/local_data_path.hpp"
 #include <Windows.h>
 #include <d3d9.h>
 #include <dxgi1_6.h>
@@ -600,13 +601,7 @@ const Configuration& Active() { return active; }
 
 std::wstring ConfigPath() {
     if (!configOverride.empty()) return configOverride;
-    wchar_t buffer[1024]{};
-    const DWORD length =
-        ExpandEnvironmentStringsW(L"%LOCALAPPDATA%\\MikuDanceStudio\\processor.ini",
-                                  buffer, 1024);
-    if (length == 0 || length >= 1024 || wcschr(buffer, L'%') != nullptr)
-        return {};
-    return buffer;
+    return local_data::File(L"processor.ini").wstring();
 }
 
 bool SaveRequested(const Configuration& configuration, std::wstring& error) {
@@ -618,7 +613,7 @@ bool SaveRequested(const Configuration& configuration, std::wstring& error) {
     }
     const std::wstring path = ConfigPath();
     if (path.empty()) {
-        error = L"processor.ini path unavailable (%LOCALAPPDATA% not set)";
+        error = L"processor.ini path unavailable (executable directory unavailable)";
         return false;
     }
     if (!WriteAtomic(path, Serialize(configuration), error)) {
@@ -640,7 +635,7 @@ bool Initialize(std::wstring& error) {
     Configuration loaded;
     const std::wstring path = ConfigPath();
     if (path.empty()) {
-        error = L"processor.ini path unavailable (%LOCALAPPDATA% not set)";
+        error = L"processor.ini path unavailable (executable directory unavailable)";
         requested = loaded;
         active = loaded;
         frozen = true;

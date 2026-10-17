@@ -103,7 +103,7 @@
 
 主渲染可选自动或具体显卡；顶点计算可选自动、CPU 或具体显卡；MMV 可选跟随主渲染、CPU 或具体显卡。MMV 的 CPU 选项对应 DX12 WARP 和兼容路径的 DX9 REF 软件设备。该选项不会把 Bullet3 等原生 CPU 算法变为 GPU 算法。
 
-三项按本机当前 Windows 用户保存在 `%LOCALAPPDATA%\MikuDanceStudio\processor.ini`。修改只更新待生效配置，全部在下次启动生效；菜单区分本次运行设备和下次启动选择。新建、打开和保存工程不改变这些设置，PMM、VMM、VEM 不保存它们。
+三项按当前程序目录保存在 `data/processor.ini`。修改只更新待生效配置，全部在下次启动生效；菜单区分本次运行设备和下次启动选择。新建、打开和保存工程不改变这些设置，PMM、VMM、VEM 不保存它们。
 
 顶点自动选择保留逐模型正确性校验及完整阶段耗时比较，包括输入打包、上传、计算、同步回读和写入 D3D9 缓冲。计时只代表顶点阶段，不能据此判断整帧渲染性能。当前设备状态表示最近完成顶点处理的模型，多个模型可以采用不同设备。QDEF、未知权重或不满足 GPU 条件的模型沿用 CPU 分支。既有数学与测速验证见[自动选择原理](../performance/devices.md#record-skinning-autoselect)。
 
@@ -595,7 +595,7 @@ git diff --stat ba6b269 80bc305 -- src include res docs tests
 | --- | --- |
 | 入口 | 「显示 → 蒙皮运算器」，菜单 ID `32000`、自动项 `32001`、CPU 项 `32002`、适配器项从 `32100` 起（`include/mikudancestudio/skinning_menu.hpp:6-9`），只读状态项 `32003`（`src/window/skinning_menu.cpp:85`）。 |
 | 默认行为 | 「自动（优先高性能）」，逐模型实测 CPU 与全部可用 GPU 的完整蒙皮耗时，选择结果正确且中位数最低者。CPU 胜出属于正常结果。 |
-| 保存方式 | 本机偏好写 EXE 同级的 `Data/skinning.ini`；工程另存一份设备类型意图（自动、CPU、集成显卡、独立显卡），不保存品牌、型号或测速结果。 |
+| 保存方式 | 本机偏好写 EXE 同级的 `data/skinning.ini`；工程另存一份设备类型意图（自动、CPU、集成显卡、独立显卡），不保存品牌、型号或测速结果。 |
 | 兼容性 | QDEF、未知权重类型及不满足 GPU 输入条件的模型走 CPU 分支；手动显卡失败后回退 CPU；PMM 指定类型缺失时运行时回到自动，但再次保存仍保留原类型意图。 |
 | 证据 | `7523928`、`d3f2e59`、`cf09d31`；`src/model/skinning_backend.cpp`（`AutomaticEntry` 第 44 行、`Median` 第 255 行、`Calibrate` 第 268 行、`ForgetModel` 第 396 行）、`src/window/skinning_menu.cpp`、[GPU 蒙皮](../performance/devices.md#record-gpu-skinning)、[自动选择](../performance/devices.md#record-skinning-autoselect)。 |
 | 验证范围 | `skinning_backend_tests` 60 组 CPU/GPU 比较；真实角色 183698 顶点、969 骨骼三组姿态误差 0；MME CPU/GPU 完整渲染通过。 |

@@ -1,4 +1,5 @@
 #include "mikudancestudio/recent_projects.hpp"
+#include "mikudancestudio/local_data_path.hpp"
 #include "mikudancestudio/build_profile.hpp"
 #include "mikudancestudio/mmd_app.hpp"
 #include "mikudancestudio/ported_funcs.hpp"
@@ -22,8 +23,7 @@ std::filesystem::path StorePath() {
     wchar_t path[32768]{};
     DWORD n=GetEnvironmentVariableW(L"MMS_RECENT_PROJECTS_FILE",path,32768);
     if(n && n<32768)return path;
-    n=GetEnvironmentVariableW(L"LOCALAPPDATA",path,32768);
-    return n && n<32768 ? std::filesystem::path(path)/L"MikuDanceStudio"/L"recent-pmm.txt" : std::filesystem::path();
+    return local_data::File(L"recent-pmm.txt");
 }
 void Read() {
     paths.clear();std::ifstream input(StorePath(),std::ios::binary);

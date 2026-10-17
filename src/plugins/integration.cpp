@@ -1,3 +1,4 @@
+#include "mikudancestudio/local_data_path.hpp"
 #include "manager.hpp"
 #include "native_ui.hpp"
 #include "project_storage.hpp"
@@ -122,12 +123,10 @@ static void InitializeRuntime(MMDApp* app, bool migrationTest) {
     if (build_profile::original || !app || manager) return;
     const auto initialized = Boundary([&] {
         owner = app; closing = false;
-        wchar_t data[32768]{}; auto dataLength = GetEnvironmentVariableW(L"LOCALAPPDATA", data, 32768);
-        if (!dataLength || dataLength >= 32768 || !fs::path(data).is_absolute()) {
-            if (FAILED(SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA | CSIDL_FLAG_CREATE, nullptr, SHGFP_TYPE_CURRENT, data))) throw std::runtime_error("LOCALAPPDATA unavailable");
-        }
+        const auto data = local_data::File(L"plugins");
+        if (data.empty()) throw std::runtime_error("plugin data directory unavailable");
         std::wstring module(32768, 0); auto n = GetModuleFileNameW(nullptr, module.data(), DWORD(module.size())); if (!n || n >= module.size()) throw std::runtime_error("process path unavailable"); module.resize(n);
-        manager = std::make_unique<Manager>(fs::path(data) / L"MMS" / L"plugins", LogMessage, [window = app->MainWindow()] { PostMessageW(window, kRefresh, 0, 0); }, false, CreateSceneStore(app));
+        manager = std::make_unique<Manager>(data, LogMessage, [window = app->MainWindow()] { PostMessageW(window, kRefresh, 0, 0); }, false, CreateSceneStore(app));
         manager->SetRefreshGuard([app] { return !closing && app->WindowLayoutReady() && !app->SceneMutationInProgress(); });
         if (manager->Storage().Prepare(currentProject.records) != MMS_OK || !manager->Storage().Commit()) throw std::runtime_error("initialize plugin project data");
         history = std::make_unique<SharedHistory>(manager->Storage(), [app] {

@@ -45,7 +45,7 @@ MMV 的设备选项约束 MMV 自己创建的图形与计算设备。第三方�
 <a id="record-processor-settings-proposal-用户配置与工程隔离"></a>
 ### 用户配置与工程隔离
 
-保存到 `%LOCALAPPDATA%\MikuDanceStudio\processor.ini`，作用域为本机当前 Windows 用户。多个工程共用该配置。
+保存到 `data/processor.ini`，作用域为当前程序目录。多个工程共用该配置。
 
 PMM、VMM、VEM 和附件不保存运算器选择。打开、新建、另存或切换工程均不改变用户设置。旧 PMM 中的运算器字段不再影响运行，重新保存时移除该旧字段；其他项目设置继续按原规则处理。
 
@@ -112,7 +112,7 @@ PMM、VMM、VEM 和附件不保存运算器选择。打开、新建、另存或�
 - QDEF、未知权重类型及不满足现有 GPU 输入条件的模型继续走原有 CPU 分支。其他模型仍可用 GPU。
 - 「最近运算」显示最后一次模型更新的设备或 CPU 回退原因，不表示多模型场景的所有模型都使用同一设备。
 
-全局设置保存在 EXE 同级的 `Data/skinning.ini`，不改位置式 `mmconfig.ini`。启动读取设置，菜单选择即时生效并保存。缺失、损坏或无法匹配的全局设置使用自动模式。并行加入的 PMM v2 工程设置可覆盖全局偏好，按显卡类型恢复；具体格式及保留规则见 [PMM v2 扩展说明](../../reference/pmm-extensions.md)。
+全局设置保存在 EXE 同级的 `data/skinning.ini`，不改位置式 `mmconfig.ini`。启动读取设置，菜单选择即时生效并保存。缺失、损坏或无法匹配的全局设置使用自动模式。并行加入的 PMM v2 工程设置可覆盖全局偏好，按显卡类型恢复；具体格式及保留规则见 [PMM v2 扩展说明](../../reference/pmm-extensions.md)。
 
 系统重启后 GPU 的 LUID 可能改变，此时仅在名称唯一时恢复原设备；同名设备无法确认身份时回到自动模式。本机 Windows 返回一个 NVIDIA RTX 4070 Laptop GPU 适配器和四个不同 LUID 的 Intel UHD 适配器。这是逻辑适配器清单，不能解释成四块物理集显。
 
@@ -225,7 +225,7 @@ CPU 胜出属于正常选择，次数记入 `cpu_updates`，不计入 `cpu_fallb
 
 GPU 在运行中失败时，把该设备的测速结果标为无效，按剩余有效结果重新排名并重建设备，CPU 也参与这次排名。返回 `Unsupported` 的模型直接走 CPU，不再尝试其他 GPU。不满足 GPU 输入条件的模型保留原有 CPU 路径。
 
-全局 `Data/skinning.ini` 和 PMM 继续保存「自动」意图，不把本机测得的 CPU 或 GPU 写成手动选择。手动 CPU、指定显卡和 PMM 指定显卡类型的行为不变，格式见 [PMM v2 项目扩展格式](../../reference/pmm-extensions.md)。
+全局 `data/skinning.ini` 和 PMM 继续保存「自动」意图，不把本机测得的 CPU 或 GPU 写成手动选择。手动 CPU、指定显卡和 PMM 指定显卡类型的行为不变，格式见 [PMM v2 项目扩展格式](../../reference/pmm-extensions.md)。
 
 <a id="record-skinning-autoselect-中文文案"></a>
 ### 中文文案

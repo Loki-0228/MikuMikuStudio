@@ -1,6 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include "mikudancestudio/autosave.hpp"
+#include "mikudancestudio/local_data_path.hpp"
 #include "mikudancestudio/plugin_storage.hpp"
 #include "mikudancestudio/mmd_app.hpp"
 #include "mikudancestudio/pmm_extension.hpp"
@@ -25,25 +26,19 @@ std::atomic<MMDApp*> activeApp{nullptr};
 DWORD mainThread = 0;
 ULONGLONG nextSave = 0, nextScan = 0;
 
-fs::path UserDirectory() {
-    wchar_t directory[32768]{};
-    const auto n = GetEnvironmentVariableW(L"LOCALAPPDATA", directory, 32768);
-    return n && n < 32768 ? fs::path(directory) / L"MikuDanceStudio" : fs::path();
-}
 fs::path SettingsPath() {
     // Isolated integration tests use a disposable profile, never the user's.
     wchar_t overridePath[32768]{};
     const auto n = GetEnvironmentVariableW(L"MIKUDANCESTUDIO_AUTOSAVE_CONFIG", overridePath, 32768);
     if (n && n < 32768) return overridePath;
-    const auto directory = UserDirectory();
-    return directory.empty() ? fs::path() : directory / L"autosave.ini";
+    // Each installation owns its settings. Do not inherit the old shared
+    // LOCALAPPDATA profile, whose absolute backup path may belong to another EXE.
+    return local_data::File(L"autosave.ini");
 }
 Settings Defaults() {
     Settings value;
-    wchar_t executable[32768]{};
-    const auto length = GetModuleFileNameW(nullptr, executable, 32768);
-    if (length && length < 32768)
-        value.directory = (fs::path(executable).parent_path() / L"backups").wstring();
+    const auto directory = local_data::File(L"backups");
+    if (!directory.empty()) value.directory = directory.wstring();
     return value;
 }
 bool Regular(const fs::path& path) {
@@ -168,8 +163,12 @@ Settings LoadSettings(const fs::path& path) {
     Settings value = Defaults();
     if (path.empty()) return value;
     wchar_t directory[32768]{};
-    GetPrivateProfileStringW(L"autosave", L"directory", value.directory.c_str(), directory, 32768, path.c_str());
-    value.directory = directory;
+    wchar_t directoryMode[32]{};
+    GetPrivateProfileStringW(L"autosave", L"directoryMode", L"custom", directoryMode, 32, path.c_str());
+    if (wcscmp(directoryMode, L"executable") != 0) {
+        GetPrivateProfileStringW(L"autosave", L"directory", value.directory.c_str(), directory, 32768, path.c_str());
+        value.directory = directory;
+    }
     value.enabled = GetPrivateProfileIntW(L"autosave", L"enabled", 0, path.c_str()) == 1;
     value.intervalMinutes = GetPrivateProfileIntW(L"autosave", L"intervalMinutes", 1, path.c_str());
     value.maxBackups = GetPrivateProfileIntW(L"autosave", L"maxBackups", 100, path.c_str());
@@ -193,10 +192,16 @@ bool SaveSettings(const fs::path& path, const Settings& value) {
     fs::create_directories(path.parent_path(), ec);
     if (ec) return false;
     const auto temporary = path.wstring() + L"." + std::to_wstring(GetCurrentProcessId()) + L".tmp";
+    const auto defaultDirectory = Defaults().directory;
+    auto directoryPath = fs::path(value.directory).lexically_normal();
+    if (!directoryPath.has_filename()) directoryPath = directoryPath.parent_path();
+    const bool besideExecutable = !defaultDirectory.empty() && _wcsicmp(
+        directoryPath.c_str(), fs::path(defaultDirectory).lexically_normal().c_str()) == 0;
     const std::wstring body = L"\xfeff[autosave]\r\nenabled=" + std::to_wstring(value.enabled) +
         L"\r\nintervalMinutes=" + std::to_wstring(value.intervalMinutes) + L"\r\nmaxBackups=" +
         std::to_wstring(value.maxBackups) + L"\r\noverwriteOldest=" + std::to_wstring(value.overwriteOldest) +
-        L"\r\ndirectory=" + value.directory + L"\r\n";
+        L"\r\ndirectoryMode=" + (besideExecutable ? L"executable" : L"custom") +
+        L"\r\ndirectory=" + (besideExecutable ? std::wstring(L"data/backups") : value.directory) + L"\r\n";
     HANDLE file = CreateFileW(temporary.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file == INVALID_HANDLE_VALUE) return false;
     DWORD written = 0;

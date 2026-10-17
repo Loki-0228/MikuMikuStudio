@@ -17,9 +17,11 @@ struct Settings {
     unsigned intervalMinutes = 1;
     unsigned maxBackups = 100;
     bool overwriteOldest = false;
-    std::wstring directory; // Periodic copies only. Crash copies use EXE/backups.
+    std::wstring directory; // Periodic copies only. Crash copies use data/backups.
 };
 enum class Result { Saved, Disabled, Busy, Full, Failed };
+// Production settings live in data/autosave.ini; the default backup
+// directory is resolved in data beside the current EXE instead of persisting its path.
 Settings LoadSettings(const std::filesystem::path&);
 bool SaveSettings(const std::filesystem::path&, const Settings&);
 bool Validate(const Settings&, std::wstring& error);

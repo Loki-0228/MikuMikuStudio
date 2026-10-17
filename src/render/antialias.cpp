@@ -1,3 +1,4 @@
+#include "mikudancestudio/local_data_path.hpp"
 #include "mikudancestudio/antialias.hpp"
 #include "mikudancestudio/antialias_motion.hpp"
 #include "mikudancestudio/mmd_app.hpp"
@@ -63,8 +64,7 @@ std::filesystem::path StorePath() {
     wchar_t path[32768]{};
     DWORD n=GetEnvironmentVariableW(L"MMS_ANTIALIAS_CONFIG",path,32768);
     if(n && n<32768)return path;
-    n=GetEnvironmentVariableW(L"LOCALAPPDATA",path,32768);
-    return n && n<32768?std::filesystem::path(path)/L"MikuDanceStudio"/L"antialias.ini":std::filesystem::path();
+    return local_data::File(L"antialias.ini");
 }
 void Save(MMDApp* app) {
     auto path=StorePath();if(path.empty())return;

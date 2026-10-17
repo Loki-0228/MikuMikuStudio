@@ -62,9 +62,9 @@ INT_PTR CALLBACK DialogProc(HWND dialog, UINT msg, WPARAM wp, LPARAM lp) {
         label(IntervalLabel, L"保存间隔（分钟）", L"Interval (minutes)", L"保存間隔（分）");
         label(LimitLabel, L"备份数量上限（份）", L"Maximum backups", L"バックアップの上限（件）");
         label(Overwrite, L"达到上限时覆盖最旧的备份", L"Replace oldest backups when the limit is reached", L"上限に達したら最も古いバックアップを置き換える");
-        label(Explanation, L"崩溃备份和错误日志保存在程序旁的 backups 文件夹。\r\n备份保留原工程名和时间戳，不影响手动保存。\r\nPMM 数量上限按文件夹分别计算，其他文件保留。",
-            L"Crash copies and error logs go to backups beside the EXE.\r\nCopies keep the project name and timestamp; manual saves stay separate.\r\nThe PMM limit applies per folder. Other files are kept.",
-            L"クラッシュ時のコピーとログは EXE 横の backups に保存します。\r\n元の名前に日時を付け、手動保存したファイルは上書きしません。\r\nPMM の上限は各フォルダーに適用します。他のファイルは残します。");
+        label(Explanation, L"崩溃备份和错误日志保存在程序旁的 data/backups 文件夹。\r\n备份保留原工程名和时间戳，不影响手动保存。\r\nPMM 数量上限按文件夹分别计算，其他文件保留。",
+            L"Crash copies and error logs go to data/backups beside the EXE.\r\nCopies keep the project name and timestamp; manual saves stay separate.\r\nThe PMM limit applies per folder. Other files are kept.",
+            L"クラッシュ時のコピーとログは EXE 横の data/backups に保存します。\r\n元の名前に日時を付け、手動保存したファイルは上書きしません。\r\nPMM の上限は各フォルダーに適用します。他のファイルは残します。");
         label(IDOK, L"确定", L"OK", L"OK"); label(IDCANCEL, L"取消", L"Cancel", L"キャンセル");
         SetDlgItemTextW(dialog, Folder, c->value.directory.c_str());
         SetDlgItemInt(dialog, Interval, c->value.intervalMinutes, FALSE);

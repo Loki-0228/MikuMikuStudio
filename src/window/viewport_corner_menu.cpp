@@ -88,17 +88,17 @@ void ApplyCorner(MMDApp* app, Corner corner) {
                                                     : L"Handle position";
         const wchar_t* body =
             lang == kUiChinese
-                ? L"操作柄位置在本次运行已经生效，但写入本机用户设置失败。\n"
+                ? L"操作柄位置在本次运行已经生效，但写入本程序的设置失败。\n"
                   L"下次启动会回到之前保存的位置，请检查 "
-                  L"%LOCALAPPDATA%\\MikuDanceStudio 目录是否可写。"
+                  L"程序旁的 data 目录是否可写。"
                 : lang == kUiJapanese
                       ? L"操作ハンドル位置は今回の実行には反映されましたが、\n"
                         L"ユーザー設定への保存に失敗しました。\n"
                         L"次回起動時は以前に保存された位置に戻ります。"
                       : L"The handle position now applies to this run, but "
-                        L"saving it to the per-user settings failed.\n"
+                        L"saving it to this installation's settings failed.\n"
                         L"The next start returns to the previously saved "
-                        L"position; check that %LOCALAPPDATA%\\MikuDanceStudio "
+                        L"position; check that data beside the EXE "
                         L"is writable.";
         MessageBoxW(app->MainWindow(), body, title, MB_OK | MB_ICONWARNING);
     }

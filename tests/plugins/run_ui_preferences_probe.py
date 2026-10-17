@@ -13,7 +13,7 @@ def main():
     executable, fixture, root = (Path(value).resolve() for value in sys.argv[1:4])
     on_close = len(sys.argv) > 4 and sys.argv[4] == "on-close"
     root.mkdir(parents=True, exist_ok=False)
-    (root / "Data").mkdir()
+    (root / "data").mkdir()
     package = root / "PLUGINS" / "界面" / "布局"
     package.mkdir(parents=True)
     shutil.copy2(fixture, package / "lifecycle.dll")
@@ -23,7 +23,7 @@ def main():
         abi=dict(major=1, minMinor=0), entry="lifecycle.dll", architecture="x64", minWindows="6.1.7601",
         capabilities=["ui.command", "ui.element"], requiresServices=[dict(id="mms.ui", major=1, minMinor=0)],
         dependencies=[], nativeDependencies=[], reloadPolicy="restart")), encoding="utf-8")
-    preferences = root / "userdata" / "MMS" / "plugins" / "ui-layout.json"
+    preferences = root / "data" / "plugins" / "ui-layout.json"
     log = root / "probe.log"
     environment = os.environ.copy()
     environment.update(LOCALAPPDATA=str(root / "userdata"), MMS_ABI_PROBE_LOG=str(log))
@@ -95,6 +95,8 @@ def main():
             if process.poll() is None:
                 process.terminate()
                 process.wait(timeout=5)
+    assert preferences.with_suffix(".json.lock").is_file(), "layout lock must remain in data/plugins"
+    assert not (root / "userdata" / "MMS" / "plugins").exists(), "host must not create plugin state in a shared Windows profile"
     (root / "report.json").write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
 
 

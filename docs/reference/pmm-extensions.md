@@ -64,7 +64,7 @@ EMM 不承担本程序的项目扩展。已核查的 MME 0.37 会拒绝未知配
 
 `org.mikudancestudio.skinning.processor` 不再是项目设置。加载时忽略其内容，保存时移除该记录，包括未知取值；这是用户批准的运算器设置迁移规则。其他未知记录仍按下文规则保留。
 
-主渲染、顶点计算和 MMV 处理设备改为本机当前 Windows 用户的通用配置，保存在 `%LOCALAPPDATA%\MikuDanceStudio\processor.ini`，不写入 PMM、VMM 或 VEM。新建、打开或切换工程均不改变当前和待生效的设备选择。菜单修改在下次启动生效。实施状态与验收范围见[通用运算器方案](../records/performance/devices.md#record-processor-settings-proposal)。
+主渲染、顶点计算和 MMV 处理设备改为当前程序目录的通用配置，保存在 `data/processor.ini`，不写入 PMM、VMM 或 VEM。新建、打开或切换工程均不改变当前和待生效的设备选择。菜单修改在下次启动生效。实施状态与验收范围见[通用运算器方案](../records/performance/devices.md#record-processor-settings-proposal)。
 
 ### 透明排序上限
 

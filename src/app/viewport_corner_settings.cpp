@@ -1,5 +1,5 @@
 // ===========================================================================
-// 操作柄停靠角的本机用户设置。接口与约束见同名头文件。
+// 操作柄停靠角的程序目录设置。接口与约束见同名头文件。
 //
 // 文件读写自己做（CreateFileW/ReadFile + 临时文件 + MoveFileExW 原子替换）：
 // 内容固定两行，解析规则严格，测试能直接写坏值验证回退。
@@ -12,6 +12,7 @@
 // ===========================================================================
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
+#include "mikudancestudio/local_data_path.hpp"
 #include <Windows.h>
 
 #include <mutex>
@@ -125,21 +126,7 @@ bool LooksAbsolute(const std::wstring& dir) {
 }  // namespace
 
 std::wstring SettingsPath() {
-    // 不用 ExpandEnvironmentStringsW：变量缺失时它照样返回含 % 的字面量，
-    // 会在工作目录下凭空造出 %LOCALAPPDATA% 目录。变量缺失就当作没有设置。
-    wchar_t buffer[512]{};
-    const DWORD count = GetEnvironmentVariableW(
-        L"LOCALAPPDATA", buffer,
-        static_cast<DWORD>(sizeof(buffer) / sizeof(buffer[0])));
-    if (count == 0 || count >= sizeof(buffer) / sizeof(buffer[0]))
-        return std::wstring();
-    std::wstring path(buffer);
-    while (!path.empty() && (path.back() == L'\\' || path.back() == L'/'))
-        path.pop_back();
-    if (path.empty())
-        return std::wstring();
-    path += L"\\MikuDanceStudio\\viewport.ini";
-    return path;
+    return local_data::File(L"viewport.ini").wstring();
 }
 
 bool LoadFrom(const std::wstring& path, Corner* out) {

@@ -3,7 +3,7 @@
 // ===========================================================================
 // Normal diagnostics stay in a bounded in-memory ring. Anything that would
 // kill the process (unhandled exception, std::terminate, abort, invalid
-// parameter, failed startup) saves an error log beside the EXE in backups
+// parameter, failed startup) saves an error log in data/backups beside the EXE
 // and turns that ring into a modal "last error" window.
 // MessageBoxW blocks the failing thread, so the process stays alive until the
 // user presses OK - a silent flash-exit becomes a readable error report.
@@ -59,6 +59,7 @@ std::atomic<CrashBackup> crashBackup{nullptr};
 ULONGLONG lastHeartbeat = 0;
 wchar_t dialogText[kDialogChars];
 wchar_t crashDirectory[32768];
+wchar_t dataDirectory[32768];
 wchar_t errorLogPath[32768];
 char reportUtf8[kDialogChars * 3];
 DWORD errorLogFailure = ERROR_SUCCESS;
@@ -77,10 +78,13 @@ void PrepareCrashDirectory() noexcept {
     }
     wchar_t* separator = std::wcsrchr(crashDirectory, L'\\');
     if (!separator || wcscpy_s(separator + 1,
-        _countof(crashDirectory) - (separator + 1 - crashDirectory), L"backups")) {
+        _countof(crashDirectory) - (separator + 1 - crashDirectory), L"data\\backups")) {
         crashDirectory[0] = L'\0';
         errorLogFailure = ERROR_BAD_PATHNAME;
+        return;
     }
+    wcscpy_s(dataDirectory, crashDirectory);
+    *std::wcsrchr(dataDirectory, L'\\') = L'\0';
 }
 
 void Append(const char* text, size_t size) noexcept {
@@ -366,6 +370,10 @@ bool WriteHistory(HANDLE file, unsigned long long first) noexcept {
 
 void SaveErrorLog(const char* reason, const EXCEPTION_RECORD* record) noexcept {
     if (!*crashDirectory) return;
+    if (!CreateDirectoryW(dataDirectory, nullptr) && GetLastError() != ERROR_ALREADY_EXISTS) {
+        errorLogFailure = GetLastError();
+        return;
+    }
     if (!CreateDirectoryW(crashDirectory, nullptr) && GetLastError() != ERROR_ALREADY_EXISTS) {
         errorLogFailure = GetLastError();
         return;
