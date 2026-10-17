@@ -27,6 +27,7 @@
 #include "mikudancestudio/ui_language.hpp"
 #include "mikudancestudio/system_settings_ui.hpp"
 namespace mikudancestudio { void DispatchSeparateWindowCommand(MMDApp*, unsigned short); }
+namespace mikudancestudio { void ConsumeNumpadViewPresets(MMDApp*); }
 namespace edit_history_host_checks {
 UINT FindMenuCommand(HMENU menu, const wchar_t* label) {
     for (int index = 0; menu && index < GetMenuItemCount(menu); ++index) {
@@ -425,6 +426,7 @@ void ObjectMenuDeletion(MMDApp* app, plugins::SharedHistory& history, const MmsS
 #include "vmd_model_host_checks.inc"
 #include "vmd_model_scale_host_checks.inc"
 #include "viewport_history_host_checks.inc"
+#include "numpad_view_host_checks.inc"
 #include "sparse_registration_host_checks.inc"
 #include "bone_curve_sync_host_checks.inc"
 void Run(MMDApp* app) {
@@ -473,6 +475,7 @@ void Run(MMDApp* app) {
     vmd_model_host_checks::Run(app,*history,value);
     vmd_model_scale_host_checks::Run(app,*history,value);
     viewport_history_host_checks::Run(app,*history,value);
+    numpad_view_host_checks::Run(app,*history,value);
     sparse_registration_host_checks::Run(app,*history,value);
     bone_curve_sync_host_checks::Run(app,*history,value);
     {

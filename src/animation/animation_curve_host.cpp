@@ -1012,6 +1012,13 @@ struct TrackAuthoring::Target::Impl {
 TrackAuthoring::TrackAuthoring(MMDApp& app,Kind kind,int slot):impl_(std::make_shared<Impl>(app,kind,slot)){}
 TrackAuthoring::~TrackAuthoring()=default;
 bool TrackAuthoring::IsCurrent() const noexcept{return impl_->Current();}
+bool TrackAuthoring::CapturedCurrent() const noexcept {
+    if(impl_->retimingCaptured||!impl_->Current())return false;
+    if(!impl_->authored)return true;
+    const auto found=states.find(impl_->address);
+    return found!=states.end()&&found->second.revision==impl_->seed.revision&&
+        AuthoringDigest(found->second)==AuthoringDigest(impl_->seed);
+}
 TrackAuthoring::Target::Target(std::unique_ptr<Impl> p):impl_(std::move(p)){}
 TrackAuthoring::Target::~Target()=default;
 std::unique_ptr<TrackAuthoring::Target> TrackAuthoring::Prepare(const NativeKeyView& view) const {

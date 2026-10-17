@@ -77,6 +77,7 @@
 #include "mikudancestudio/ported_funcs.hpp"
 #include "../plugins/native_pose_scope.hpp"
 #include "../plugins/native_viewport_history.hpp"
+#include "../plugins/native_history_commands.hpp"
 
 namespace mikudancestudio {
 
@@ -93,15 +94,6 @@ void JumpNextKeyframe(MMDApp* app);   // VA 0x00441070 (app_gap_bodies.cpp)
 void JumpPrevKeyframe(MMDApp* app);   // VA 0x004414C0 (app_gap_bodies.cpp)
 
 namespace {
-
-// Angle presets bit-exact as stored by the original - deliberately NOT the
-// correctly rounded PI constants (float(PI) is 0x40490FDB, float(PI/2) is
-// 0x3FC90FDB; the image stores 3 ulps / 30 ulps off respectively).
-constexpr float kNumpadHalfPi = 1.5707999467849731f;  // 0x3FC90FF9
-constexpr float kNumpadPi = 3.1415920257568359f;      // 0x40490FD8
-constexpr float kNumpadDistance = -45.0f;         // 0xC2340000
-constexpr float kNumpadDistance1 = -30.0f;        // 0xC1F00000 (NUMPAD1)
-constexpr float kNumpadTargetY = 10.0f;           // 0x41200000
 
 // The 0x22A read and the edit-focus probe run on the floating viewport
 // window when one exists (x86 0x472731 / 0x471E67).  Same probe as
@@ -151,38 +143,22 @@ void EnterBoneEditRefresh(MMDApp* app, bool hold) {
 // 0x4501F4 / 0x45034F / 0x4504B8 / 0x450631 / 0x45079A / 0x4508F2 /
 // 0x4509A4): the rotation preset + fixed distance, then the target-panel
 // refresh.
-void ApplyNumpadCameraPreset(MMDApp* app, float pitch, float yaw) {
-    app->CameraPitch() = pitch;                         // 0x310 / x64 0x348
-    app->CameraYaw() = yaw;                             // 0x314 / x64 0x34C
-    app->CameraRoll() = 0.0f;                           // 0x318 / x64 0x350
-    app->CameraDistance() = kNumpadDistance;            // 0xA08DC / 0xA1900
-    RefreshRequest(-1);                                 // 0x440AC0
-}
-
-// Model-mode branch shared by NUMPAD 2/4/6/8/5/1 (x64 0x450224..): reset
-// the accessory transform block and the camera target/angles.  The skip
-// gate (bone-edit path) is checked by the caller.
-void ApplyNumpadModelPreset(MMDApp* app, float pitch, float yaw,
-                            float distance, bool targetFollowsReference) {
-    auto& state = app->state;
-    if (state.cameraParentModel >= 0 && state.followCameraEnabled != 0)
-        app->CameraAttachmentTransformSuppressed() = 1; // 0xA0478
-    app->ViewOffsetX() = 0.0f;                          // 0x308 / x64 0x340
-    app->CameraDistance() = distance;
-    app->ViewOffsetY() =                                // 0x30C / x64 0x344
-        targetFollowsReference &&
-        app->CameraReferenceMode() !=
-            CameraAttachmentReference::SelectedBone     // x86 0x340 != 2
-            ? kNumpadTargetY
-            : 0.0f;
-    app->CameraPitch() = pitch;
-    app->CameraYaw() = yaw;
-    app->CameraRoll() = 0.0f;
-    // 0xA0438..0xA0478 (x64 0xA140C..0xA144C): 4x4 identity basis.
-    D3DMATRIX& basis = app->CameraAttachmentBasis();
-    for (int row = 0; row < 4; ++row)
-        for (int col = 0; col < 4; ++col)
-            basis.m[row][col] = row == col ? 1.0f : 0.0f;
+void ApplyNumpadPreset(MMDApp* app,unsigned key,bool cameraStyle) {
+    plugins::ViewportPresetState before,target;
+    before.offsetX=app->ViewOffsetX();before.offsetY=app->ViewOffsetY();before.distance=app->CameraDistance();
+    for(unsigned i=0;i<3;++i)before.rotation[i]=app->CameraRotation()[i];
+    for(unsigned row=0;row<4;++row)for(unsigned col=0;col<4;++col)before.basis[row*4+col]=app->CameraAttachmentBasis().m[row][col];
+    before.suppressed=app->CameraAttachmentTransformSuppressed();
+    const plugins::ViewportPresetContext context{cameraStyle,
+        app->CameraReferenceMode()==CameraAttachmentReference::SelectedBone,
+        app->CameraParentModel()>=0&&app->state.followCameraEnabled!=0};
+    if(!plugins::ComputeNumpadViewPreset(context,key,before,target))return;
+    for(unsigned i=0;i<3;++i)app->CameraRotation()[i]=target.rotation[i];
+    app->CameraDistance()=target.distance;
+    if(cameraStyle){RefreshRequest(-1);return;}
+    app->ViewOffsetX()=target.offsetX;app->ViewOffsetY()=target.offsetY;
+    app->CameraAttachmentTransformSuppressed()=target.suppressed;
+    for(unsigned row=0;row<4;++row)for(unsigned col=0;col<4;++col)app->CameraAttachmentBasis().m[row][col]=target.basis[row*4+col];
 }
 
 // x64 0x44DCAC..0x44DE66 (x86 0x470DD5.. tail): free-camera MMB pan.  The
@@ -462,16 +438,23 @@ void ConsumeMiddleButtonPan(MMDApp* app) {
 // NUMPAD0's model path is the full reload reset instead.
 // ---------------------------------------------------------------------------
 void ConsumeNumpadViewPresets(MMDApp* app) {
-#if !MMD_ORIGINAL_PROFILE
-    // Presets and model-follow navigation need separate pose participants.
-    if (plugins::BoundNativePoseHistory(app)) return;
-#endif
     auto& state = app->state;
     const bool gate = app->ViewportInputActive() != 0 &&        // 0x9EDD1
                       app->PlaybackActive() == 0 &&             // 0x330
                       !FocusInPanelEdit(app);
     if (!gate)                                                  // 0x473145
         return;
+#if !MMD_ORIGINAL_PROFILE
+    if(auto* history=plugins::BoundNativePoseHistory(app)){
+        std::uint16_t keys=0;constexpr unsigned order[]={2,4,6,8,5,0,1};
+        for(const auto key:order)if(state.numpadKeyState[key]==1)keys|=std::uint16_t(1u<<key);
+        if(!keys)return;
+        bool changed=false;
+        if(!plugins::AdjustViewportNumpadPresets(*app,*history,keys,changed)&&changed)
+            plugins::PublishBoundPoseEdit(*app,*history,false);
+        return;
+    }
+#endif
 
     const bool cameraMode = state.optflag[0] != 0 ||
                             state.followCameraEnabled != 0;
@@ -479,57 +462,52 @@ void ConsumeNumpadViewPresets(MMDApp* app) {
     // ---- NUMPAD2 (x86 0x47314B / x64 0x4501DA): front view --------------
     if (state.numpadKeyState[2] == 1) {                         // 0x98/0x9C
         if (cameraMode)
-            ApplyNumpadCameraPreset(app, 0.0f, 0.0f);
+            ApplyNumpadPreset(app,2,true);
         else if (!BoneEditPathActive(app))                      // 0x47318F..
-            ApplyNumpadModelPreset(app, 0.0f, 0.0f, kNumpadDistance,
-                                    /*targetFollowsReference=*/true);
+            ApplyNumpadPreset(app,2,false);
         PostViewRefresh(app);                                   // 0x40D130
     }
 
     // ---- NUMPAD4 (x86 0x473282 / x64 0x450335): yaw +90 degrees ---------
     if (state.numpadKeyState[4] == 1) {                         // 0xA0/0xA4
         if (cameraMode)
-            ApplyNumpadCameraPreset(app, 0.0f, kNumpadHalfPi);
+            ApplyNumpadPreset(app,4,true);
         else if (!BoneEditPathActive(app))
-            ApplyNumpadModelPreset(app, 0.0f, kNumpadHalfPi, kNumpadDistance,
-                                    /*targetFollowsReference=*/true);
+            ApplyNumpadPreset(app,4,false);
         PostViewRefresh(app);
     }
 
     // ---- NUMPAD6 (x86 0x4733CC / x64 0x45049E): yaw -90 degrees ---------
     if (state.numpadKeyState[6] == 1) {                         // 0xA8/0xAC
         if (cameraMode)
-            ApplyNumpadCameraPreset(app, 0.0f, -kNumpadHalfPi);
+            ApplyNumpadPreset(app,6,true);
         else if (!BoneEditPathActive(app))
-            ApplyNumpadModelPreset(app, 0.0f, -kNumpadHalfPi, kNumpadDistance,
-                                    /*targetFollowsReference=*/true);
+            ApplyNumpadPreset(app,6,false);
         PostViewRefresh(app);
     }
 
     // ---- NUMPAD8 (x86 0x473520 / x64 0x450617): yaw 180 degrees ---------
     if (state.numpadKeyState[8] == 1) {                         // 0xB0/0xB4
         if (cameraMode)
-            ApplyNumpadCameraPreset(app, 0.0f, kNumpadPi);
+            ApplyNumpadPreset(app,8,true);
         else if (!BoneEditPathActive(app))
-            ApplyNumpadModelPreset(app, 0.0f, kNumpadPi, kNumpadDistance,
-                                    /*targetFollowsReference=*/true);
+            ApplyNumpadPreset(app,8,false);
         PostViewRefresh(app);
     }
 
     // ---- NUMPAD5 (x86 0x473670 / x64 0x450780): top view ----------------
     if (state.numpadKeyState[5] == 1) {                         // 0xA4/0xA8
         if (cameraMode)
-            ApplyNumpadCameraPreset(app, -kNumpadHalfPi, 0.0f);
+            ApplyNumpadPreset(app,5,true);
         else if (!BoneEditPathActive(app))
-            ApplyNumpadModelPreset(app, -kNumpadHalfPi, 0.0f, kNumpadDistance,
-                                    /*targetFollowsReference=*/false);
+            ApplyNumpadPreset(app,5,false);
         PostViewRefresh(app);
     }
 
     // ---- NUMPAD0 (x86 0x473799 / x64 0x4508D8): transform reload reset --
     if (state.numpadKeyState[0] == 1) {                         // 0x90/0x94
         if (cameraMode) {
-            ApplyNumpadCameraPreset(app, kNumpadHalfPi, 0.0f);
+            ApplyNumpadPreset(app,0,true);
         } else if (!BoneEditPathActive(app)) {                  // 0x4737DE..
             app->CameraAttachmentTransformSuppressed() = 0;     // 0xA0478
             app->ViewOffsetX() = 0.0f;                          // 0x308
@@ -543,10 +521,9 @@ void ConsumeNumpadViewPresets(MMDApp* app) {
     // ---- NUMPAD1 (x86 0x473848 / x64 0x45098A): near-ground view --------
     if (state.numpadKeyState[1] == 1) {                         // 0x94/0x98
         if (cameraMode)
-            ApplyNumpadCameraPreset(app, kNumpadHalfPi, 0.0f);
+            ApplyNumpadPreset(app,1,true);
         else if (!BoneEditPathActive(app))
-            ApplyNumpadModelPreset(app, kNumpadHalfPi, 0.0f, kNumpadDistance1,
-                                    /*targetFollowsReference=*/false);
+            ApplyNumpadPreset(app,1,false);
         PostViewRefresh(app);
     }
 }

@@ -257,6 +257,10 @@ public:
     TrackAuthoring(MMDApp&, Kind, int slot = 0);
     ~TrackAuthoring();
     bool IsCurrent() const noexcept;
+    // Read-only source plans can also reject changes within the same author
+    // lineage. Compares the pristine captured revision and curve contents;
+    // unavailable after RetimingFrames has replaced the private seed.
+    bool CapturedCurrent() const noexcept;
     class Target {
         struct Impl;
         std::unique_ptr<Impl> impl_;

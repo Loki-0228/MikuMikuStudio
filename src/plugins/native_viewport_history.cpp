@@ -2,7 +2,11 @@
 #if !MMD_ORIGINAL_PROFILE
 #include "native_pose_scope.hpp"
 #include "native_history_commands.hpp"
+#include "native_object_commands.hpp"
+#include "native_viewport_reset_camera.hpp"
+#include "scene_object_history.hpp"
 #include "mikudancestudio/mmd_app.hpp"
+#include "mikudancestudio/model.hpp"
 #include "mikudancestudio/key_pool.hpp"
 #include "mikudancestudio/bake_ui_lock.hpp"
 #include "mikudancestudio/plugin_scene.hpp"
@@ -10,6 +14,8 @@
 #include <array>
 #include <cmath>
 #include <cstring>
+#include <vector>
+#include <stdexcept>
 namespace mikudancestudio {
 void ConsumeRightButtonDrag(MMDApp*);
 void ConsumeMiddleButtonPan(MMDApp*);
@@ -25,13 +31,19 @@ void Write(MMDApp& a,const Values& v,unsigned mask=127) noexcept {
         if(i<3)a.CameraPositionAxis(i)=v[i];else if(i<6)a.CameraRotation()[i-3]=v[i];else a.CameraDistance()=v[i];
     }
 }
-bool Ready(MMDApp& a) noexcept {
-    return a.CameraMode()!=0 && !a.PlaybackActive() && !a.FrameStepPlayback() &&
-        !a.state.recordPlaybackStartPending && !a.SceneMutationInProgress() && !bake::UiLocked() &&
+// Real common undo/redo holds the object publication's scene and UI guards.
+// Only an already-published numpad record opts into that authorized scope;
+// initial edits, drags and wheel input retain the ordinary mutation gate.
+bool ViewportReady(MMDApp& a,bool allowAuthorizedHistory=false) noexcept {
+    const bool authorizedHistory=allowAuthorizedHistory&&NativeObjectPublicationAuthorized(&a);
+    return !a.PlaybackActive() && !a.FrameStepPlayback() &&
+        !a.state.recordPlaybackStartPending && (!a.SceneMutationInProgress()||authorizedHistory) &&
+        (!bake::UiLocked()||authorizedHistory) &&
         !SceneSaveInProgress() && !a.FrameRangeDialog() && !a.state.frameCopyDialog &&
         !a.RecordingWindow() && !a.GravitySettingDialog() && !a.GroundShadowColorDialog() &&
         !a.AccessoryOrderArray() && !a.state.accessoryEditDialogOpen && !a.state.edgeThicknessDialog;
 }
+bool Ready(MMDApp& a) noexcept {return a.CameraMode()!=0&&ViewportReady(a);}
 struct CameraGestureChange final:HistoryChange,std::enable_shared_from_this<CameraGestureChange>{
     MMDApp& app; const std::uint64_t pool; const Values before; Values after;
     const int initialFrame,initialParentModel,initialParentBone;
@@ -100,6 +112,129 @@ void SampleMessage(MMDApp& a,WPARAM wp,LPARAM lp) noexcept {
     a.ViewportInputActive()=active;
     a.PreviousMouseX()=a.MouseX();a.PreviousMouseY()=a.MouseY();
 }
+ViewportPresetState ReadPreset(MMDApp& app) noexcept {
+    ViewportPresetState value;
+    for(unsigned i=0;i<3;++i){value.cameraPosition[i]=app.CameraPositionAxis(i);value.rotation[i]=app.CameraRotation()[i];}
+    value.offsetX=app.ViewOffsetX();value.offsetY=app.ViewOffsetY();value.distance=app.CameraDistance();value.fov=app.CameraFov();
+    std::memcpy(value.basis.data(),&app.CameraAttachmentBasis(),sizeof(float)*16);
+    value.suppressed=app.CameraAttachmentTransformSuppressed();value.perspective=app.CameraPerspective();
+    value.parentModel=app.CameraParentModel();value.parentBone=app.CameraParentBone();return value;
+}
+std::array<float,26> PresetFloats(const ViewportPresetState& value) noexcept {
+    std::array<float,26> result{};
+    for(unsigned i=0;i<3;++i){result[i]=value.cameraPosition[i];result[i+3]=value.rotation[i];}
+    result[6]=value.offsetX;result[7]=value.offsetY;result[8]=value.distance;result[9]=value.fov;
+    for(unsigned i=0;i<16;++i)result[i+10]=value.basis[i];return result;
+}
+bool EqualPreset(const ViewportPresetState& a,const ViewportPresetState& b) noexcept {
+    const auto x=PresetFloats(a),y=PresetFloats(b);
+    return !std::memcmp(x.data(),y.data(),sizeof(x))&&a.suppressed==b.suppressed&&a.perspective==b.perspective&&
+        a.parentModel==b.parentModel&&a.parentBone==b.parentBone;
+}
+bool FinitePreset(const ViewportPresetState& value) noexcept {
+    for(const auto field:PresetFloats(value))if(!std::isfinite(field))return false;return true;
+}
+unsigned PresetMask(const ViewportPresetState& before,const ViewportPresetState& after) noexcept {
+    const auto a=PresetFloats(before),b=PresetFloats(after);unsigned mask=0;
+    for(unsigned i=0;i<a.size();++i)if(std::memcmp(&a[i],&b[i],sizeof(float)))mask|=1u<<i;
+    if(before.suppressed!=after.suppressed)mask|=1u<<26;
+    if(before.perspective!=after.perspective)mask|=1u<<27;
+    if(before.parentModel!=after.parentModel)mask|=1u<<28;
+    if(before.parentBone!=after.parentBone)mask|=1u<<29;return mask;
+}
+void WritePreset(MMDApp& app,const ViewportPresetState& value,unsigned mask) noexcept {
+    for(unsigned i=0;i<3;++i){if(mask&(1u<<i))app.CameraPositionAxis(i)=value.cameraPosition[i];
+        if(mask&(1u<<(i+3)))app.CameraRotation()[i]=value.rotation[i];}
+    if(mask&(1u<<6))app.ViewOffsetX()=value.offsetX;
+    if(mask&(1u<<7))app.ViewOffsetY()=value.offsetY;
+    if(mask&(1u<<8))app.CameraDistance()=value.distance;
+    if(mask&(1u<<9))app.CameraFov()=value.fov;
+    auto* basis=&app.CameraAttachmentBasis().m[0][0];
+    for(unsigned i=0;i<16;++i)if(mask&(1u<<(i+10)))basis[i]=value.basis[i];
+    if(mask&(1u<<26))app.CameraAttachmentTransformSuppressed()=value.suppressed;
+    if(mask&(1u<<27))app.CameraPerspective()=value.perspective;
+    if(mask&(1u<<28))app.CameraParentModel()=value.parentModel;
+    if(mask&(1u<<29))app.CameraParentBone()=value.parentBone;
+    if(mask&((1u<<8)|(1u<<9)|(1u<<27)))app.cameraProjectionRefreshPending=true;
+}
+struct PresetContext {
+    std::uint8_t cameraMode,follow,reference;unsigned slot;unsigned char* selected;int selectedBone;
+    explicit PresetContext(MMDApp& app):cameraMode(app.CameraMode()),follow(app.state.followCameraEnabled),
+        reference(static_cast<std::uint8_t>(app.CameraReferenceMode())),slot(app.SelectedModelSlot()),
+        selected(slot<kModelSlotCount?app.ModelSlot(slot):nullptr),selectedBone(selected?mdl::Mdl(selected)->selectedBone:-1){}
+    bool Current(MMDApp& app)const noexcept {
+        return app.CameraMode()==cameraMode&&app.state.followCameraEnabled==follow&&
+            static_cast<std::uint8_t>(app.CameraReferenceMode())==reference&&app.SelectedModelSlot()==slot&&
+            (slot>=kModelSlotCount||app.ModelSlot(slot)==selected)&&
+            (reference!=static_cast<std::uint8_t>(CameraAttachmentReference::SelectedBone)||!selected||mdl::Mdl(selected)->selectedBone==selectedBone);
+    }
+};
+struct PresetModel {
+    unsigned slot;unsigned char* model;mdl::BoneRecord* bones;std::uint32_t count;
+    std::shared_ptr<RetainedSceneObject> owner;
+    PresetModel(MMDApp& app,unsigned index):slot(index),model(app.ModelSlot(index)),
+        bones(mdl::Mdl(model)->boneTable),count(mdl::Mdl(model)->boneCount),owner(RetainSceneObject(app,MMS_OBJECT_MODEL,index)){}
+    bool Current(MMDApp& app)const noexcept {
+        return owner->Present()&&app.ModelSlot(slot)==model&&SceneObjectPresent(model,owner->Id())&&
+            mdl::Mdl(model)->boneTable==bones&&mdl::Mdl(model)->boneCount==count;
+    }
+};
+struct NumpadChange final:HistoryChange,std::enable_shared_from_this<NumpadChange> {
+    MMDApp& app;const std::uint64_t pool,binding;const int frame;const PresetContext context;
+    const ViewportPresetState before;ViewportPresetState after;unsigned mask=0;std::uint64_t generation=1;bool applied=false;
+    std::vector<PresetModel> models;std::shared_ptr<ViewportResetCameraSource> resetCamera;
+    explicit NumpadChange(MMDApp& a):app(a),pool(mdl::KeyPoolIdentity(a.CameraKeys())),binding(BoundNativePoseGeneration(&a)),
+        frame(a.CurrentFrame()),context(a),before(ReadPreset(a)),after(before){}
+    void AddModel(unsigned slot){
+        for(const auto& model:models)if(model.slot==slot)return;
+        if(slot>=kModelSlotCount||!app.ModelSlot(slot))throw std::invalid_argument("preset model identity");
+        models.emplace_back(app,slot);
+    }
+    void AddParent(int model,int bone){
+        if(model== -1)return;
+        if(model<0||unsigned(model)>=kModelSlotCount||!app.ModelSlot(unsigned(model)))throw std::invalid_argument("preset parent model");
+        const auto& parent=*mdl::Mdl(app.ModelSlot(unsigned(model)));
+        if(!parent.boneTable||bone<0||unsigned(bone)>=parent.boneCount)throw std::invalid_argument("preset parent bone");
+        AddModel(unsigned(model));
+    }
+    bool SameScene()const noexcept {
+        if(!pool||mdl::KeyPoolIdentity(app.CameraKeys())!=pool)return false;
+        for(const auto& model:models)if(!model.Current(app))return false;return true;
+    }
+    bool InitialCurrent()const noexcept {
+        return generation!=1||(ViewportReady(app)&&!GetCapture()&&frame==app.CurrentFrame()&&context.Current(app)&&
+            binding==BoundNativePoseGeneration(&app)&&EqualPreset(ReadPreset(app),before)&&(!resetCamera||resetCamera->IsCurrent()));
+    }
+    struct Candidate final:PreparedHistoryChange {
+        std::shared_ptr<NumpadChange> source;const bool forward;const std::uint64_t generation,binding;
+        const int frame;const PresetContext context;const ViewportPresetState expected;bool consumed=false;
+        Candidate(std::shared_ptr<NumpadChange> s,bool f):source(std::move(s)),forward(f),generation(source->generation),
+            binding(BoundNativePoseGeneration(&source->app)),frame(source->app.CurrentFrame()),context(source->app),expected(ReadPreset(source->app)){}
+        bool IsCurrent()const noexcept override {
+            return !consumed&&generation==source->generation&&forward!=source->applied&&source->SameScene()&&source->InitialCurrent()&&
+                ViewportReady(source->app,generation!=1)&&!GetCapture()&&binding==BoundNativePoseGeneration(&source->app)&&
+                frame==source->app.CurrentFrame()&&context.Current(source->app)&&EqualPreset(ReadPreset(source->app),expected);
+        }
+        void Publish()noexcept override {
+            if(!IsCurrent())std::terminate();WritePreset(source->app,forward?source->after:source->before,source->mask);
+            source->applied=forward;++source->generation;consumed=true;
+        }
+    };
+    MmsResult Prepare(bool forward,std::unique_ptr<PreparedHistoryChange>& out)override {
+        out.reset();return Boundary([&]()->MmsResult{
+            if(!SameScene()||!InitialCurrent()||forward==applied)return MMS_E_STALE;
+            if(generation==UINT64_MAX)return MMS_E_NOT_READY;
+            if(!ViewportReady(app,generation!=1)||GetCapture())return MMS_E_BUSY;
+            if(!FinitePreset(ReadPreset(app)))return MMS_E_ARGUMENT;
+            out=std::make_unique<Candidate>(shared_from_this(),forward);return MMS_OK;
+        });
+    }
+    std::uint64_t RetainedBytes()const noexcept override {
+        std::uint64_t bytes=sizeof(*this)+4*sizeof(void*);
+        const auto add=[&](std::uint64_t value){bytes=value>UINT64_MAX-bytes?UINT64_MAX:bytes+value;};
+        add(models.capacity()*sizeof(PresetModel));if(resetCamera)add(resetCamera->RetainedBytes());return bytes;
+    }
+};
 }
 MmsResult BeginViewportCameraGesture(MMDApp& a,SharedHistory& h,HWND owner,UINT button) noexcept {
     if(button!=WM_RBUTTONDOWN && button!=WM_MBUTTONDOWN)return MMS_E_ARGUMENT;
@@ -162,6 +297,49 @@ MmsResult AdjustViewportCameraWheel(MMDApp& a,SharedHistory& h,std::int16_t delt
         std::unique_ptr<SharedHistory::NativeTransaction> transaction;
         if(auto r=h.PrepareNative("Wheel camera",change,transaction,SharedHistory::NativeIntent::Adjustment))return r;
         if(auto r=h.CommitNative(std::move(transaction)))return r;
+        changed=true;return MMS_OK;
+    });
+}
+MmsResult PlanViewportNumpadPresets(MMDApp& app,std::uint16_t pressedKeys,std::shared_ptr<HistoryChange>& out) noexcept {
+    out.reset();constexpr unsigned supported=(1u<<2)|(1u<<4)|(1u<<6)|(1u<<8)|(1u<<5)|(1u<<0)|(1u<<1);
+    if(pressedKeys&~supported)return MMS_E_ARGUMENT;
+    if(!pressedKeys)return MMS_OK;
+    if(gesture||GetCapture()||!ViewportReady(app))return MMS_E_BUSY;
+    if(!mdl::KeyPoolIdentity(app.CameraKeys()))return MMS_E_NOT_READY;
+    if(!FinitePreset(ReadPreset(app)))return MMS_E_ARGUMENT;
+    return Boundary([&]()->MmsResult{
+        auto change=std::make_shared<NumpadChange>(app);
+        const bool cameraStyle=change->context.cameraMode||change->context.follow;
+        ViewportPresetContext context{cameraStyle,app.CameraReferenceMode()==CameraAttachmentReference::SelectedBone,
+            app.CameraParentModel()>=0&&app.state.followCameraEnabled!=0};
+        ViewportPresetState reset;
+        if(!cameraStyle&&(pressedKeys&1u)){
+            if(auto r=CaptureViewportResetCamera(app,change->resetCamera))return r;
+            if(!change->resetCamera||!change->resetCamera->Sample(reset))return MMS_E_ARGUMENT;
+        }
+        constexpr unsigned order[]={2,4,6,8,5,0,1};
+        for(const auto key:order)if(pressedKeys&(1u<<key)){
+            ViewportPresetState target;
+            if(!ComputeNumpadViewPreset(context,key,change->after,target,change->resetCamera?&reset:nullptr))return MMS_E_NOT_READY;
+            change->after=target;
+        }
+        if(!FinitePreset(change->after))return MMS_E_ARGUMENT;
+        change->mask=PresetMask(change->before,change->after);if(!change->mask)return MMS_OK;
+        if(change->context.selected)change->AddModel(change->context.slot);
+        change->AddParent(change->before.parentModel,change->before.parentBone);
+        change->AddParent(change->after.parentModel,change->after.parentBone);
+        if(!change->SameScene()||!change->InitialCurrent())return MMS_E_STALE;
+        out=std::move(change);return MMS_OK;
+    });
+}
+MmsResult AdjustViewportNumpadPresets(MMDApp& app,SharedHistory& history,std::uint16_t pressedKeys,bool& changed) noexcept {
+    changed=false;if(auto r=history.CheckNativeEdit())return r;
+    return Boundary([&]()->MmsResult{
+        std::shared_ptr<HistoryChange> change;if(auto r=PlanViewportNumpadPresets(app,pressedKeys,change))return r;
+        if(!change)return MMS_OK;
+        std::unique_ptr<SharedHistory::NativeTransaction> transaction;
+        if(auto r=history.PrepareNative("Preset view",change,transaction,SharedHistory::NativeIntent::Adjustment))return r;
+        if(auto r=history.CommitNative(std::move(transaction)))return r;
         changed=true;return MMS_OK;
     });
 }
