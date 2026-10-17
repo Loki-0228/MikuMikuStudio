@@ -254,6 +254,9 @@
 #include "mikudancestudio/pmm_extension.hpp"
 #include "mikudancestudio/pmm_project_settings.hpp"
 #include "mikudancestudio/view_options.hpp"
+#if !MMD_ORIGINAL_PROFILE
+#include "../plugins/native_pose_axis.hpp"
+#endif
 #include "mikudancestudio/ui_language.hpp"
 
 #include "dialog_scaffold.hpp"
@@ -2921,6 +2924,9 @@ void CmdViewMenu(MMDApp* app, HWND hwnd, std::uint16_t id,
     // tail (0x48A805), frameFlag[cur] = 1, dirty, PostViewRefresh.
     // ------------------------------------------------------------------
     case 302: {
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::TryResetBoundBoneRotation(app)) return;
+#endif
         app->state.dialogFlags[1] = 1;
         if (app->state.optflag[0] != 0) {
             app->CameraPitch() = 0.0f;

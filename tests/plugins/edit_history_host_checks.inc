@@ -23,6 +23,54 @@ void Menu(MMDApp* app, const wchar_t* label) {
     Check(id && id != UINT(-1), "registered edit probe menu exists");
     SendMessageW(app->MainWindow(), WM_COMMAND, id, 0);
 }
+void RotationReset(MMDApp* app, plugins::SharedHistory& history, int (*value)()) {
+    auto& model = *mdl::Mdl(app->ModelSlot(0));
+    std::array<float, 4> original{};
+    std::memcpy(original.data(), model.boneTable[0].rotQuat, sizeof(original));
+    const auto dirty = model.bonePhysicsState[0];
+    const auto position = model.boneTable[0].trans[1];
+    const auto ring = model.undoState[0];
+    const std::array<float, 4> rotated{0, 0, .6f, .8f}, identity{0, 0, 0, 1};
+    std::memcpy(model.boneTable[0].rotQuat, rotated.data(), sizeof(rotated));
+    model.bonePhysicsState[0] = 0;
+    Menu(app, L"Edit probe prepared"); app->SceneModified() = 0;
+    SendMessageW(app->MainWindow(), WM_COMMAND, 302, 0);
+    Check(value() == 0 && !history.UndoCount() && !app->SceneModified() &&
+        !std::memcmp(model.boneTable[0].rotQuat, rotated.data(), sizeof(rotated)) && model.undoState[0] == ring,
+        "pending real plugin transaction blocks rotation reset without old-ring fallback");
+    Menu(app, L"Edit probe cancel");
+    Menu(app, L"Edit probe once");
+    SendMessageW(app->MainWindow(), WM_COMMAND, 302, 0);
+    Check(value() == 1 && history.UndoCount() == 2 &&
+        !std::memcmp(model.boneTable[0].rotQuat, identity.data(), sizeof(identity)) &&
+        model.boneTable[0].trans[1] == position && model.undoState[0] == ring,
+        "actual view-menu rotation reset joins the plugin journal without old-ring or position changes");
+    Menu(app, L"Edit probe once"); Menu(app, L"Edit probe undo");
+    app->SceneModified() = 0; app->RecordedFrameCountByte1() = 0;
+    SendMessageW(app->MainWindow(), WM_COMMAND, 302, 0);
+    Check(value() == 1 && history.UndoCount() == 2 && history.RedoCount() == 1 &&
+        !app->SceneModified() && !app->RecordedFrameCountByte1(),
+        "production identity reset preserves the later plugin redo branch");
+    Menu(app, L"Edit probe redo");
+    Check(value() == 2 && history.UndoCount() == 3, "plugin redo remains usable after no-op rotation reset");
+    const auto saved = std::filesystem::absolute(L"rotation-reset.pmm");
+    Check(SaveSceneCopy(app, saved.c_str()) && history.UndoCount() == 3,
+        "PMM save accepts committed rotation reset without discarding common history");
+    Menu(app, L"Edit probe undo"); Menu(app, L"Edit probe undo");
+    Check(value() == 1 && !std::memcmp(model.boneTable[0].rotQuat, rotated.data(), sizeof(rotated)) &&
+        model.bonePhysicsState[0] == 0, "real plugin undo restores the exact quaternion and pending flag");
+    SendMessageW(app->MainWindow(), WM_COMMAND, 400, 0);
+    app->CameraMode() = 1;
+    Menu(app, L"Edit probe redo"); SendMessageW(app->MainWindow(), WM_COMMAND, 401, 0);
+    Menu(app, L"Edit probe redo");
+    Check(value() == 2 && !std::memcmp(model.boneTable[0].rotQuat, identity.data(), sizeof(identity)),
+        "camera-mode native and plugin redo preserve shared rotation-reset ordering");
+    Menu(app, L"Edit probe undo"); Menu(app, L"Edit probe undo"); Menu(app, L"Edit probe undo");
+    Check(value() == 0 && history.Reset() == MMS_OK, "rotation-reset probe restores plugin state and clears its setup history");
+    app->CameraMode() = 0;
+    std::memcpy(model.boneTable[0].rotQuat, original.data(), sizeof(original));
+    model.bonePhysicsState[0] = dirty;
+}
 void MixedModelDeletion(MMDApp* app, plugins::SharedHistory& history) {
     auto& model = *mdl::Mdl(app->ModelSlot(0));
     Check(model.boneCount && model.morphCount && model.boneCount < mdl::BoneKeyCapacity(model.boneKeys) &&
@@ -362,6 +410,7 @@ void Run(MMDApp* app) {
         Check(same, "scene revision equals the journal revision after mixed edits");
     };
     MixedModelDeletion(app, *history);
+    RotationReset(app, *history, value);
     MixedModelRange(app, *history);
     ModelInterpolation(app, *history);
     ObjectMenuDeletion(app, *history, api, path, accessoryPath);

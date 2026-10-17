@@ -3,6 +3,8 @@
 #include "native_history_commands.hpp"
 #include "native_pose_scope.hpp"
 #include "mikudancestudio/bone_scale.hpp"
+#include "mikudancestudio/autosave.hpp"
+#include "mikudancestudio/bake_ui_lock.hpp"
 #include "mikudancestudio/d3dx_dyn.hpp"
 #include "mikudancestudio/mmd_app.hpp"
 #include "mikudancestudio/model.hpp"
@@ -157,6 +159,39 @@ bool TryResetBoundPoseAxis(MMDApp* app, NativePoseAxisKind kind, int axis,
     bool changed = false;
     const auto result = Boundary([&] { return ResetAxis(*app, *history, kind, axis, source, changed); });
     if (result == MMS_OK && changed) PublishBoundPoseEdit(*app, *history);
+    return true;
+}
+bool TryResetBoundBoneRotation(MMDApp* app) noexcept {
+    if (!app || app->CameraMode() != 0) return false;
+    auto* history = BoundNativePoseHistory(app);
+    if (!history) return false;
+    Boundary([&]() -> MmsResult {
+        if (app->PlaybackActive() || app->FrameStepPlayback() ||
+            app->state.recordPlaybackStartPending || app->SceneMutationInProgress() ||
+            bake::UiLocked() || SceneSaveInProgress() || GetCapture() ||
+            app->FrameRangeDialog() || app->state.frameCopyDialog || app->RecordingWindow() ||
+            app->GravitySettingDialog() || app->GroundShadowColorDialog() || app->AccessoryOrderArray() ||
+            app->state.accessoryEditDialogOpen || app->state.edgeThicknessDialog ||
+            app->SelectedModelSlot() >= kModelSlotCount) return MMS_E_NOT_READY;
+        if (const auto result = history->Enter()) return result;
+        history->Leave();
+        auto* model = mdl::Mdl(app->SelectedModel());
+        if (!model || !model->boneTable || !model->bonePhysicsState || model->selectedBone < 0 ||
+            static_cast<unsigned>(model->selectedBone) >= model->boneCount) return MMS_E_NOT_READY;
+        const auto bone = model->selectedBone;
+        constexpr float identity[4]{0, 0, 0, 1};
+        // An identity pose is a no-op even when its unregistered flag is clear.
+        // Do not manufacture a history step just by changing that flag.
+        if (!std::memcmp(model->boneTable[bone].rotQuat, identity, sizeof(identity))) return MMS_OK;
+        NativePoseScope scope;
+        if (const auto result = scope.Begin(*app, *history, app->SelectedModelSlot(), "Reset bone rotation")) return result;
+        std::memcpy(model->boneTable[bone].rotQuat, identity, sizeof(identity));
+        model->bonePhysicsState[bone] = 1;
+        bool changed = false;
+        if (const auto result = scope.Commit(changed)) return result;
+        if (changed) PublishBoundPoseEdit(*app, *history);
+        return MMS_OK;
+    });
     return true;
 }
 }

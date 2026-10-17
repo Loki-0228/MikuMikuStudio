@@ -3,6 +3,9 @@
 #if !MMD_ORIGINAL_PROFILE
 namespace mikudancestudio { class MMDApp; }
 namespace mikudancestudio::plugins {
+// View-menu command 302 in model mode. Owns rejection and no-op while bound;
+// camera-mode authoring remains a separate migration task.
+bool TryResetBoundBoneRotation(MMDApp*) noexcept;
 enum class NativePoseAxisKind { Position, Rotation, Scale };
 enum class NativePoseAxisSource { MainWindow, FloatingWindow };
 // Internal migration route, enabled only by NativePoseTestBinding. True means

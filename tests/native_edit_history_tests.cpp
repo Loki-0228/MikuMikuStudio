@@ -340,6 +340,7 @@ void CrossModelJournal(){
 #include "native_history_command_checks.inc"
 #include "native_pose_command_checks.inc"
 #include "native_pose_axis_checks.inc"
+#include "native_rotation_reset_checks.inc"
 #include "bone_curve_authoring_checks.inc"
 #include "bone_scale_authoring_checks.inc"
 #include "bone_key_pool_growth_checks.inc"
@@ -360,6 +361,10 @@ void CrossModelJournal(){
 int main(int argc,char** argv){
     std::setvbuf(stdout,nullptr,_IONBF,0);
     const auto run=[](const char* name,void(*test)()){std::printf("RUN %s\n",name);test();};
+    if(argc==2&&!std::strcmp(argv[1],"--rotation-reset-only")) {
+        run("NativeRotationResetChecks",NativeRotationResetChecks);
+        std::printf("PASS native rotation reset: %u checks\n",checks);return 0;
+    }
     if(argc==2&&!std::strcmp(argv[1],"--camera-interpolation-only")) {
         run("NativeCameraInterpolationChecks",NativeCameraInterpolationChecks);
         std::printf("PASS native camera interpolation: %u checks\n",checks);return 0;
@@ -388,6 +393,7 @@ int main(int argc,char** argv){
     run("NativeHistoryCommandChecks",NativeHistoryCommandChecks);
     run("NativePoseCommandChecks",NativePoseCommandChecks);
     run("NativePoseAxisChecks",NativePoseAxisChecks);
+    run("NativeRotationResetChecks",NativeRotationResetChecks);
     run("BoneCurveAuthoringChecks",BoneCurveAuthoringChecks);
     run("BoneScaleAuthoringChecks",BoneScaleAuthoringChecks);
     run("BoneKeyPoolGrowthChecks",BoneKeyPoolGrowthChecks);
