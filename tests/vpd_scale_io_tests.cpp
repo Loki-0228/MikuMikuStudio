@@ -388,6 +388,8 @@ void OldFormatAndFileLifecycle() {
           "an ordinary save cannot revive old scales");
 
     const std::wstring missing = file.path + L".missing";
+    Check(vpd::LoadTail(missing, 2, loaded, true) == vpd::TailLoad::ReadError,
+          "strict tail read distinguishes missing input from absent optional tail");
     Check(vpd::LoadTail(missing, 2, loaded) == vpd::TailLoad::Absent,
           "an unreadable path behaves like a pose without a tail");
     std::printf("old-format: no-tail files stay stock, tail files keep the "

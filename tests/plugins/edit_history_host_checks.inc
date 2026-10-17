@@ -3,6 +3,8 @@
 #include "../src/plugins/native_global_commands.hpp"
 #include "../src/plugins/native_morph_commands.hpp"
 #include "mikudancestudio/bone_key_pool.hpp"
+#include "mikudancestudio/bone_scale.hpp"
+#include <shlobj.h>
 #include "mikudancestudio/key_pool.hpp"
 #include "mikudancestudio/animation_curve_editor.hpp"
 #include "../src/plugins/native_key_commands.hpp"
@@ -388,6 +390,7 @@ void ObjectMenuDeletion(MMDApp* app, plugins::SharedHistory& history, const MmsS
 #include "morph_text_host_checks.inc"
 #include "grid_display_host_checks.inc"
 #include "projected_shadow_host_checks.inc"
+#include "vpd_import_host_checks.inc"
 void Run(MMDApp* app) {
     using namespace plugins;
     const auto initial = GetModuleHandleW(L"manager_edit_probe.dll");
@@ -442,6 +445,7 @@ void Run(MMDApp* app) {
     MorphTextPose(app, *history, value);
     GridDisplayCommands(app, *history, value);
     ProjectedShadowFlags(app, *history, value);
+    vpd_import_host_checks::Run(app, *history, value);
     MixedModelRange(app, *history);
     ModelInterpolation(app, *history);
     ObjectMenuDeletion(app, *history, api, path, accessoryPath);

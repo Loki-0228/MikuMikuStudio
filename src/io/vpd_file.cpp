@@ -75,6 +75,9 @@
 #include "mikudancestudio/vpd_scale_io.hpp"
 #include "mikudancestudio/original_file_encoding.hpp"
 #include "mikudancestudio/original_import.hpp"
+#if !MMD_ORIGINAL_PROFILE
+#include "../plugins/native_vpd_import.hpp"
+#endif
 
 namespace mikudancestudio {
 namespace {
@@ -230,6 +233,9 @@ void SaveVpdFile(const wchar_t* path) {
 void LoadVpdFile(const wchar_t* path) {
     MMDApp* app = g_Block;
     if (app == nullptr) return;
+#if !MMD_ORIGINAL_PROFILE
+    if (plugins::TryLoadBoundVpd(app, path)) return;
+#endif
     unsigned char* const model = ActiveModel(app);
     if (model == nullptr) return;
 

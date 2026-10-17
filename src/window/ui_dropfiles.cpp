@@ -71,6 +71,9 @@
 #include <new>
 
 #include "mikudancestudio/mmd_app.hpp"
+#if !MMD_ORIGINAL_PROFILE
+#include "../plugins/native_vpd_import.hpp"
+#endif
 #include "mikudancestudio/ui_message.hpp"
 #include "mikudancestudio/text_encoding.hpp"
 #include "mikudancestudio/ported_funcs.hpp"
@@ -196,6 +199,9 @@ void HandleDropFiles(HDROP hDrop) {
                     LegacyUiMessageBoxA(MainHwnd(app), kJpPoseText, kJpPoseCaption,
                                 MB_OK);
             } else {
+#if !MMD_ORIGINAL_PROFILE
+                if (plugins::TryLoadBoundVpd(app, szFile, DirMenuChecked(app))) continue;
+#endif
                 if (DirMenuChecked(app)) {
                     wcscpy_s(app->DirPose(), 0x3E8, DirOf(app, szFile));  // 0xA2CB0
                 }

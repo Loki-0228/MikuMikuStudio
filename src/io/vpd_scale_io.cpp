@@ -376,38 +376,44 @@ TailSave AppendTail(const std::wstring& path, const std::vector<Entry>& entries)
 }
 
 TailLoad LoadTail(const std::wstring& path, std::int64_t expectedRecords,
-                  Extension& out) {
+                  Extension& out, bool strictRead) {
     out = {};
     int fd = -1;
     if (_wsopen_s(&fd, path.c_str(), 0x8000 /*_O_BINARY*/,
                   0x40 /*_O_RDONLY*/, 0x80 /*_S_IREAD*/) != 0 || fd < 0)
-        return TailLoad::Absent;
+        return strictRead ? TailLoad::ReadError : TailLoad::Absent;
+    struct ReadHandle {
+        int value;
+        void Close() noexcept {if(value>=0){_close(value);value=-1;}}
+        ~ReadHandle(){Close();}
+    } handle{fd};
     const __int64 length = _filelengthi64(fd);
+    if (length < 0) return strictRead ? TailLoad::ReadError : TailLoad::Absent;
     if (length < static_cast<__int64>(kFooterBytes)) {
-        _close(fd);
+        handle.Close();
         return TailLoad::Absent;
     }
     if (_lseeki64(fd, length - static_cast<__int64>(kFooterBytes),
                   SEEK_SET) < 0) {
-        _close(fd);
-        return TailLoad::IgnoredBadFooter;
+        handle.Close();
+        return strictRead ? TailLoad::ReadError : TailLoad::IgnoredBadFooter;
     }
     std::uint8_t footer[kFooterBytes] = {};
     if (_read(fd, footer, sizeof footer) != static_cast<int>(sizeof footer)) {
-        _close(fd);
-        return TailLoad::IgnoredBadFooter;
+        handle.Close();
+        return strictRead ? TailLoad::ReadError : TailLoad::IgnoredBadFooter;
     }
     std::uint64_t payloadBytes = 0;
     std::memcpy(&payloadBytes, footer, sizeof payloadBytes);
     if (std::memcmp(footer + 8, kFooterMagic, sizeof kFooterMagic) != 0) {
-        _close(fd);
+        handle.Close();
         return TailLoad::Absent;  // an ordinary pose file: no tail at all
     }
     // The footer is ours from here on: every failure refuses the tail as a
     // whole and the standard pose keeps its default identity scales.
     if (payloadBytes > kMaxTailBytes ||
         payloadBytes + kFooterBytes > static_cast<std::uint64_t>(length)) {
-        _close(fd);
+        handle.Close();
         return TailLoad::IgnoredBadFooter;
     }
     const std::uint64_t prefixBytes =
@@ -418,26 +424,26 @@ TailLoad LoadTail(const std::wstring& path, std::int64_t expectedRecords,
          _read(fd, payload.data(),
                static_cast<unsigned int>(payload.size())) !=
              static_cast<int>(payload.size()))) {
-        _close(fd);
-        return TailLoad::IgnoredBadPayload;
+        handle.Close();
+        return strictRead ? TailLoad::ReadError : TailLoad::IgnoredBadPayload;
     }
     Extension decoded;
     const Decode decode = DecodePayload(payload.data(), payload.size(), decoded);
     if (decode == Decode::BadVersion) {
-        _close(fd);
+        handle.Close();
         return TailLoad::IgnoredBadVersion;
     }
     if (decode == Decode::BadCrc) {
-        _close(fd);
+        handle.Close();
         return TailLoad::IgnoredBadCrc;
     }
     if (decode != Decode::Ok) {
-        _close(fd);
+        handle.Close();
         return TailLoad::IgnoredBadPayload;
     }
     // The payload must sit exactly between the standard text and the footer.
     if (decoded.prefixBytes != prefixBytes) {
-        _close(fd);
+        handle.Close();
         return TailLoad::IgnoredBadPayload;
     }
     // The standard text must still be the bytes it was written with, or the
@@ -447,8 +453,8 @@ TailLoad LoadTail(const std::wstring& path, std::int64_t expectedRecords,
     bool endsWithNewline = false;
     const bool fingerprinted =
         Fingerprint(fd, prefixBytes, prefixCrc, newlines, endsWithNewline);
-    _close(fd);
-    if (!fingerprinted) return TailLoad::IgnoredBadPayload;
+    handle.Close();
+    if (!fingerprinted) return strictRead ? TailLoad::ReadError : TailLoad::IgnoredBadPayload;
     if (prefixCrc != decoded.prefixCrc32) return TailLoad::IgnoredBadCrc;
     // The tail must sit exactly where the loader's own read of the standard
     // segment ended: 5 header lines plus 5 lines per pose record, the last
@@ -465,6 +471,8 @@ TailLoad LoadTail(const std::wstring& path, std::int64_t expectedRecords,
 
 const char* Describe(TailLoad status) {
     switch (status) {
+        case TailLoad::ReadError:
+            return "read failed (pose import cancelled)";
         case TailLoad::Loaded:
             return "loaded";
         case TailLoad::Absent:

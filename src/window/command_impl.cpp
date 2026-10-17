@@ -37,6 +37,9 @@
 #include "mikudancestudio/model.hpp"
 #include "mikudancestudio/ported_funcs.hpp"
 #include "mikudancestudio/bone_key_pool.hpp"
+#if !MMD_ORIGINAL_PROFILE
+#include "../plugins/native_vpd_import.hpp"
+#endif
 
 namespace mikudancestudio {
 namespace {
@@ -160,6 +163,9 @@ constexpr DWORD kDialogPathLen = 0x100;
 void CmdLoadPose(MMDApp* app) {
     app->state.dialogFlags[12] = 1;             // 0x46BCB5 [app+0x64]
     app->state.enterKeyState = 1;               // 0x46BCBC [app+0xC0]
+#if !MMD_ORIGINAL_PROFILE
+    if (plugins::TryPickBoundVpd(app)) return;
+#endif
     if (app->state.optflag[0] != 0) {           // 0x46BCC6 门：相机/配件模式不弹框
         return;
     }

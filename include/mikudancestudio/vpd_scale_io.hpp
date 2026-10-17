@@ -185,6 +185,7 @@ enum class TailLoad {
     IgnoredBadPayload,  // truncation, size/count mismatch, duplicates, matrix
     IgnoredBadVersion,  // the payload declares a version this reader lacks
     IgnoredBadCrc,      // payload or standard-text CRC mismatch (stale tail)
+    ReadError,          // strict read could not complete; do not apply the pose
 };
 // Reads and verifies the tail of `path`.  `expectedRecords` is the pose-record
 // count as the loader parsed it; when it is >= 0 the tail must sit exactly at
@@ -192,9 +193,10 @@ enum class TailLoad {
 // the loader's own read of the standard segment ended.  Pass -1 to rely on
 // the tail alone (tests and tools without a parse).  Everything Ignored* is
 // refused as a whole: `out` is left empty and the caller keeps the standard
-// pose with default identity scales.
+// pose with default identity scales.  strictRead reports actual file I/O
+// failures as ReadError; malformed optional tails retain the Ignored* policy.
 TailLoad LoadTail(const std::wstring& path, std::int64_t expectedRecords,
-                  Extension& out);
+                  Extension& out, bool strictRead = false);
 
 // One sentence per outcome, for the caller's runtime log.
 const char* Describe(TailLoad status);
