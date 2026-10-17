@@ -5,6 +5,8 @@
 
 基础 UI 的类型化及声明式包装见 [C++17 界面注册 SDK](../sdk/mms/cpp-ui.md)。`UiServices`、`RegistrationBundle`、`CommandUi` 均组合已有 C 服务。原元素 handle 可直接用于[界面重绘服务](../sdk/mms/refresh.md)；刷新订阅、输入、绘制层和工具封装仍为后续设计。
 
+[C++17 重绘 SDK](../sdk/mms/cpp-refresh.md)继续包装相同目标和票据，提供整目标、局部矩形、移动所有权与失败重试清理。后台请求与低层 C 使用同一服务 context，不创建独立队列。
+
 ## 一套 C ABI，多层 SDK
 
 分层封装是本方案的主要约束。简单插件和完整编辑器操作同一批宿主对象。SDK 不建立另一套控件树、事件队列、场景身份或撤销系统。

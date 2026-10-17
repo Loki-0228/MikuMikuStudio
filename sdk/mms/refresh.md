@@ -25,7 +25,7 @@
 
 后台调用只访问宿主保留的目标快照和队列，不读取 HWND 或注册表。函数表、服务 context 和插件实例必须保持有效，直到宿主完成停止。插件不能在 UI 线程同步等待票据完成。
 
-现有 C++17 SDK 继续返回同一注册句柄。例如，`CommandUi::button().handle` 可以直接传给 `getTarget`。当前 `UiServices` 不包装刷新服务，插件通过上述 C 表查询并调用；不创建第二个按钮或刷新注册。
+现有 C++17 SDK 继续返回同一注册句柄。例如，`CommandUi::button().handle` 可以直接传给 `getTarget`。[C++17 重绘封装](cpp-refresh.md)用 `RefreshServices` 和 `RefreshTicket` 包装上述 C 表及票据，不创建第二个按钮或刷新注册。`UiServices` 继续负责界面注册服务。
 
 ## 目标身份与几何
 

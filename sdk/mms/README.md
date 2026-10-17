@@ -4,6 +4,8 @@
 
 基础 UI 的类型化与声明式封装已提供，见 [C++17 界面注册 SDK](cpp-ui.md)。`UiServices`、`RegistrationBundle` 和 `CommandUi` 包装同一套 C ABI，复杂插件继续操作原始句柄。
 
+[C++17 重绘 SDK](cpp-refresh.md)提供 `RefreshServices` 和可移动的 `RefreshTicket`，封装目标查询、整目标或局部矩形重绘及取消、释放。票据仍为原 C 句柄，可以移交给低层代码。
+
 界面异步重绘已提供 [mms.ui.refresh 参考](refresh.md)，当前限定同插件按钮及原生面板的 `REPAINT + SELF`。后续设计以[统一插件扩展架构](../../docs/PLUGIN_EXTENSION_ARCHITECTURE.md)为准，另见 [UI 呈现与刷新扩展](../../docs/PLUGIN_UI_PRESENTATION.md)、[多视口与洋葱皮](../../docs/PLUGIN_VIEWPORT_RENDERING.md)及[数据格式与编辑工具](../../docs/PLUGIN_DATA_EXTENSIONS.md)。各页标明已实现范围，其余服务及工具封装仍为提案。
 
 ## 开发环境

@@ -25,6 +25,7 @@ static MmsString S(const char* s) { return {s, std::strlen(s)}; }
 #include "scene_checks.inc"
 #include "cpp_sdk_checks.inc"
 #include "refresh_checks.inc"
+#include "cpp_refresh_checks.inc"
 static void Write(const fs::path& path, const std::string& bytes) { fs::create_directories(path.parent_path()); std::ofstream f(path, std::ios::binary); f << bytes; if (!f) throw std::runtime_error("fixture write failed"); }
 #include "ui_preferences_file_checks.inc"
 #include "storage_checks.inc"
@@ -340,6 +341,7 @@ int wmain(int argc, wchar_t** argv) {
         if ((argc == 2 || argc == 3) && std::wstring(argv[1]) == L"--refresh-only") {
             CHECK(!fs::exists(root)); fs::create_directories(root);
             RefreshChecks();
+            CppRefreshChecks();
             if (argc == 3) ManagerRefreshChecks(root, fs::absolute(argv[2]));
             std::cout << "PASS refresh checks=" << checks << "\n"; fs::remove_all(root); return 0;
         }
