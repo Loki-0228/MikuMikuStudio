@@ -376,9 +376,19 @@ void CrossModelJournal(){
 #include "native_shadow_ambient_checks.inc"
 #include "native_shadow_slider_checks.inc"
 #include "native_fov_slider_checks.inc"
+#include "native_light_slider_checks.inc"
+#include "native_morph_slider_checks.inc"
 int main(int argc,char** argv){
     std::setvbuf(stdout,nullptr,_IONBF,0);
     const auto run=[](const char* name,void(*test)()){std::printf("RUN %s\n",name);test();};
+    if(argc==2&&!std::strcmp(argv[1],"--light-slider-only")) {
+        run("NativeLightSliderChecks",NativeLightSliderChecks);
+        std::printf("PASS native light slider: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--morph-slider-only")) {
+        run("NativeMorphSliderChecks",NativeMorphSliderChecks);
+        std::printf("PASS native morph slider: %u checks\n",checks);return 0;
+    }
     if(argc==2&&!std::strcmp(argv[1],"--fov-slider-only")) {
         run("NativeFovSliderChecks",NativeFovSliderChecks);
         std::printf("PASS native FOV slider: %u checks\n",checks);return 0;
@@ -473,6 +483,8 @@ int main(int argc,char** argv){
     run("NativeShadowAmbientChecks",NativeShadowAmbientChecks);
     run("NativeShadowSliderChecks",NativeShadowSliderChecks);
     run("NativeFovSliderChecks",NativeFovSliderChecks);
+    run("NativeLightSliderChecks",NativeLightSliderChecks);
+    run("NativeMorphSliderChecks",NativeMorphSliderChecks);
     run("PhysicsImportChecks",PhysicsImportChecks);
     run("ImportTextureCacheChecks",ImportTextureCacheChecks);
     run("AccessoryImportChecks",AccessoryImportChecks);

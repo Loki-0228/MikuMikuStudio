@@ -31,7 +31,9 @@ bool Ready(MMDApp& app, HWND shadowDialog = nullptr, HWND authorSlider = nullptr
     const auto capture = GetCapture();
     const bool ownAuthorSlider = authorSlider && app.MainWindow() &&
         (authorSlider == GetDlgItem(app.MainWindow(), panel::kSelfShadowRangeSlider) ||
-         authorSlider == GetDlgItem(app.MainWindow(), panel::kFovSlider));
+         authorSlider == GetDlgItem(app.MainWindow(), panel::kFovSlider) ||
+         (GetDlgCtrlID(authorSlider) >= 455 && GetDlgCtrlID(authorSlider) <= 460 &&
+          authorSlider == GetDlgItem(app.MainWindow(), GetDlgCtrlID(authorSlider))));
     return !app.PlaybackActive() && !app.FrameStepPlayback() &&
         !app.state.recordPlaybackStartPending && !app.SceneMutationInProgress() &&
         !bake::UiLocked() && !SceneSaveInProgress() &&
@@ -896,11 +898,12 @@ bool TryToggleBoundAccessoryFlag(MMDApp* app, unsigned field) noexcept {
     if (!changed) RefreshBoundGlobalReadout(*app);
     return true;
 }
-MmsResult ApplyBoundLightField(MMDApp& app, unsigned field, float value, bool& changed) noexcept {
+namespace {
+MmsResult ApplyBoundLightFieldImpl(MMDApp& app, unsigned field, float value, bool& changed, HWND slider = nullptr) noexcept {
     changed = false;
     return Boundary([&]() -> MmsResult {
         auto* history = BoundNativePoseHistory(&app);
-        if (!history || !Ready(app) || !mdl::KeyPoolIdentity(app.LightKeys())) return MMS_E_NOT_READY;
+        if (!history || !Ready(app, nullptr, slider) || !mdl::KeyPoolIdentity(app.LightKeys())) return MMS_E_NOT_READY;
         if (field >= 6 || !std::isfinite(value)) return MMS_E_ARGUMENT;
         if (const auto result = history->CheckNativeEdit()) return result;
         const auto before = LightPoseChange::Read(app);
@@ -921,6 +924,30 @@ MmsResult ApplyBoundLightField(MMDApp& app, unsigned field, float value, bool& c
         });
         return MMS_OK;
     });
+}
+}
+MmsResult ApplyBoundLightField(MMDApp& app, unsigned field, float value, bool& changed) noexcept {
+    return ApplyBoundLightFieldImpl(app, field, value, changed);
+}
+bool TryCommitBoundLightSlider(MMDApp* app, HWND slider) noexcept {
+    if (!app || !BoundNativePoseHistory(app)) return false;
+    Boundary([&]() -> MmsResult {
+        if (!slider || !app->MainWindow()) return MMS_E_ARGUMENT;
+        const auto id = GetDlgCtrlID(slider);
+        if (id < 455 || id > 460 || slider != GetDlgItem(app->MainWindow(), id)) return MMS_E_ARGUMENT;
+        const unsigned field = unsigned(id - 455);
+        const auto position = SendMessageW(slider, TBM_GETPOS, 0, 0);
+        // Preserve legacy double arithmetic before the authored float cast.
+        const float value = field < 3 ? static_cast<float>(double(position) * 0.00390625) :
+            static_cast<float>(double(position) / 100.0);
+        bool changed = false;
+        const auto result = ApplyBoundLightFieldImpl(*app, field, value, changed, slider);
+        // Native controls move before notification; rejection restores the
+        // authored value while an equal valid tick retains plugin redo.
+        if (!changed) RefreshBoundGlobalReadout(*app);
+        return result;
+    });
+    return true;
 }
 bool TryRegisterBoundCamera(MMDApp* app, HWND window) noexcept {
     return Register(app, curve_host::Kind::Camera, [window](MMDApp& host, std::shared_ptr<HistoryChange>& out) {
@@ -1002,7 +1029,16 @@ void RefreshBoundGlobalReadout(MMDApp& app) noexcept {
             std::snprintf(text, sizeof(text), "%+.1f", direction);
             SetDlgItemTextA(app.MainWindow(), 464 + int(axis), text);
             SendDlgItemMessageW(app.MainWindow(), 455 + int(axis), TBM_SETPOS, TRUE, bounded(color));
-            SendDlgItemMessageW(app.MainWindow(), 458 + int(axis), TBM_SETPOS, TRUE, bounded(direction * 100.0));
+            const auto directionSlider = GetDlgItem(app.MainWindow(), 458 + int(axis));
+            const auto currentTick = SendMessageW(directionSlider, TBM_GETPOS, 0, 0);
+            // The authored float may not multiply back to its original integer
+            // tick. Keep a matching live position rather than quantizing it.
+            if (static_cast<float>(double(currentTick) / 100.0) != app.LightDirection()[axis]) {
+                const int nearest=bounded(std::round(direction * 100.0));
+                const int restored=static_cast<float>(double(nearest)/100.0)==app.LightDirection()[axis]?
+                    nearest:bounded(direction * 100.0);
+                SendMessageW(directionSlider, TBM_SETPOS, TRUE, restored);
+            }
         }
         if (app.SelectedAccessorySlot() < kModelSlotCount) {
             const auto* object = app.AccessorySlot(app.SelectedAccessorySlot());

@@ -18,10 +18,22 @@
 
 namespace mikudancestudio::plugins {
 namespace {
-bool Ready(MMDApp& app) noexcept {
+int MorphSliderPosition(float value) noexcept {
+    const double scaled=(std::clamp)(double(value)*100.0,double((std::numeric_limits<int>::min)()),
+        double((std::numeric_limits<int>::max)()));
+    const int nearest=static_cast<int>(std::round(scaled));
+    // Recover a representable authored tick on rejection/undo as well as
+    // during live refresh. Keep legacy truncation for non-percent weights.
+    return static_cast<float>(double(nearest)/100.0)==value?nearest:static_cast<int>(scaled);
+}
+bool Ready(MMDApp& app, HWND slider = nullptr) noexcept {
+    bool ownSlider=false;
+    for(int lane=0;slider && app.MainWindow() && lane<4;++lane)
+        ownSlider=ownSlider || slider==GetDlgItem(app.MainWindow(),505+lane*5);
+    const auto capture=GetCapture();
     return !app.CameraMode() && !app.PlaybackActive() && !app.FrameStepPlayback() &&
         !app.state.recordPlaybackStartPending && !app.SceneMutationInProgress() &&
-        !bake::UiLocked() && !SceneSaveInProgress() && !GetCapture() &&
+        !bake::UiLocked() && !SceneSaveInProgress() && (!capture || (ownSlider && capture==slider)) &&
         !app.FrameRangeDialog() && !app.state.frameCopyDialog && !app.RecordingWindow() &&
         !app.GravitySettingDialog() && !app.GroundShadowColorDialog() && !app.AccessoryOrderArray() &&
         !app.state.accessoryEditDialogOpen && !app.state.edgeThicknessDialog;
@@ -84,10 +96,11 @@ struct MorphValueChange final : HistoryChange, std::enable_shared_from_this<Morp
     std::uint64_t RetainedBytes() const noexcept override {return sizeof(*this)+4*sizeof(void*);}
 };
 }
-MmsResult ApplyBoundMorphValue(MMDApp& app,unsigned slot,unsigned morph,float value,bool& changed) noexcept {
+namespace {
+MmsResult ApplyMorphValue(MMDApp& app,unsigned slot,unsigned morph,float value,bool& changed,HWND slider=nullptr) noexcept {
     changed=false;return Boundary([&]() -> MmsResult {
         auto* history=BoundNativePoseHistory(&app);
-        if(!history || !Ready(app))return MMS_E_NOT_READY;
+        if(!history || !Ready(app,slider))return MMS_E_NOT_READY;
         if(slot>=kModelSlotCount || !std::isfinite(value))return MMS_E_ARGUMENT;
         if(const auto result=history->CheckNativeEdit())return result;
         auto* raw=app.ModelSlot(slot);if(!raw)return MMS_E_NOT_READY;
@@ -105,6 +118,43 @@ MmsResult ApplyBoundMorphValue(MMDApp& app,unsigned slot,unsigned morph,float va
         return MMS_OK;
     });
 }
+}
+MmsResult ApplyBoundMorphValue(MMDApp& app,unsigned slot,unsigned morph,float value,bool& changed) noexcept {
+    return ApplyMorphValue(app,slot,morph,value,changed);
+}
+bool TryCommitBoundMorphSlider(MMDApp* app,HWND slider) noexcept {
+    if(!app || !BoundNativePoseHistory(app))return false;
+    Boundary([&]() -> MmsResult {
+        if(!slider || !app->MainWindow())return MMS_E_ARGUMENT;
+        unsigned lane=0;
+        while(lane<4 && slider!=GetDlgItem(app->MainWindow(),505+int(lane)*5))++lane;
+        if(lane==4 || app->SelectedModelSlot()>=kModelSlotCount)return MMS_E_ARGUMENT;
+        auto* raw=app->SelectedModel();if(!raw)return MMS_E_NOT_READY;
+        auto& model=*mdl::Mdl(raw);const int index=model.selectedMorphs[lane];
+        if(!model.morphs || index<0 || unsigned(index)>=model.morphCount)return MMS_E_ARGUMENT;
+        const float before=model.morphs[index].value;
+        if(!std::isfinite(before))return MMS_E_ARGUMENT;
+        const auto tick=SendMessageW(slider,TBM_GETPOS,0,0);
+        const double scaled=static_cast<double>(tick)/100.0;
+        bool changed=false;
+        // Preserve the legacy index-zero gate, independently of editor safety.
+        const auto result=(index==0 && model.physicsMode!=2)?MMS_E_NOT_READY:
+            ApplyMorphValue(*app,app->SelectedModelSlot(),unsigned(index),static_cast<float>(scaled),changed,slider);
+        const float current=model.morphs[index].value;
+        // The submitted tick is already range-clamped. Do not derive it from
+        // narrowed .53f (which would produce 52). Rejections restore the author
+        // value, even if the paired edit contains pending user text.
+        const auto position=result==MMS_OK?int(tick):MorphSliderPosition(current);
+        SendMessageW(slider,TBM_SETPOS,TRUE,position);
+        const auto edit=GetDlgItem(app->MainWindow(),506+int(lane)*5);
+        if(edit && !SendMessageW(edit,EM_GETMODIFY,0,0)) {
+            char text[64]{};std::snprintf(text,sizeof(text),"%5.4f",result==MMS_OK?scaled:double(current));
+            SetWindowTextA(edit,text);
+        }
+        return result;
+    });
+    return true;
+}
 void RefreshBoundMorphReadout(MMDApp& app) noexcept {
     if(!app.MainWindow() || app.CameraMode() || app.SelectedModelSlot()>=kModelSlotCount)return;
     const auto* model=mdl::Mdl(app.SelectedModel());if(!model || !model->morphs)return;
@@ -116,8 +166,14 @@ void RefreshBoundMorphReadout(MMDApp& app) noexcept {
         const float value=model->morphs[index].value;if(!std::isfinite(value))continue;
         char text[64]{},previous[64]{};std::snprintf(text,sizeof(text),"%5.4f",double(value));GetWindowTextA(edit,previous,sizeof(previous));
         if(std::strcmp(text,previous))SetWindowTextA(edit,text);
-        const auto position=static_cast<int>((std::clamp)(double(value)*100.0,double((std::numeric_limits<int>::min)()),double((std::numeric_limits<int>::max)())));
-        SendDlgItemMessageW(app.MainWindow(),editId-1,TBM_SETPOS,TRUE,position);
+        const auto position=MorphSliderPosition(value);
+        const auto slider=GetDlgItem(app.MainWindow(),editId-1);
+        const auto tick=SendMessageW(slider,TBM_GETPOS,0,0);
+        // Preserve an already matching authored tick (e.g. 53 -> .53f).
+        // Float multiplication can otherwise turn a later refresh into 52,
+        // making the following ENDTRACK author an unintended second edit.
+        if(static_cast<float>(double(tick)/100.0)!=value)
+            SendMessageW(slider,TBM_SETPOS,TRUE,position);
     }
 }
 }

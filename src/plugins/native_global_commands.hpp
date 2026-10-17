@@ -47,6 +47,8 @@ bool TryCommitBoundProjectedShadowSlider(MMDApp*, HWND dialog) noexcept;
 // Fields 0..2 color (authored float), 3..5 direction. CPU mirror publication
 // is atomic; device and readout updates happen only after journal publication.
 MmsResult ApplyBoundLightField(MMDApp&, unsigned field, float value, bool& changed) noexcept;
+// Main light trackbars 455..460; only the source control may own capture.
+bool TryCommitBoundLightSlider(MMDApp*, HWND slider) noexcept;
 // Accessory fields: position 0..2, radians 3..5, scale 6, opacity 7.
 MmsResult ApplyBoundAccessoryField(MMDApp&, unsigned slot, unsigned field, float value, bool& changed) noexcept;
 // Accessory flags: visibility 0, additive blend 1, projected shadow 2.

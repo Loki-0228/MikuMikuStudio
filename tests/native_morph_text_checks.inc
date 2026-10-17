@@ -36,8 +36,8 @@ void MorphTextRoutingChecks(){
         f.app->SceneModified()=0;f.CommitField(lane,".6543219");Check(f.history.UndoCount()==1&&!f.app->SceneModified(),"same morph weight is no-op");
         f.CommitField(lane,"0.53");Check(target.m->morphs[index].value==.53f&&SendDlgItemMessageW(f.app->MainWindow(),505+int(lane)*5,TBM_GETPOS,0,0)==53,
             "initial morph slider keeps parsed-double percent rather than narrowed-float off-by-one");
-        plugins::RefreshBoundMorphReadout(*f.app);Check(SendDlgItemMessageW(f.app->MainWindow(),505+int(lane)*5,TBM_GETPOS,0,0)==52,
-            "later morph readout follows exact stored float using native row conversion");
+        plugins::RefreshBoundMorphReadout(*f.app);Check(SendDlgItemMessageW(f.app->MainWindow(),505+int(lane)*5,TBM_GETPOS,0,0)==53,
+            "later morph readout preserves a tick matching the authored float without quantizing it again");
         f.app->SceneModified()=0;f.CommitField(lane,"0.53");Check(f.history.UndoCount()==2&&!f.app->SceneModified()&&SendDlgItemMessageW(f.app->MainWindow(),505+int(lane)*5,TBM_GETPOS,0,0)==53,
             "same-weight morph text preserves initial slider convention without another history step");
         f.CommitField(lane,"2.5");Check(target.m->morphs[index].value==2.5f&&SendDlgItemMessageW(f.app->MainWindow(),505+int(lane)*5,TBM_GETPOS,0,0)==100,"morph authoring above one is retained while slider clamps display");

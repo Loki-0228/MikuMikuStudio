@@ -394,6 +394,8 @@ void ObjectMenuDeletion(MMDApp* app, plugins::SharedHistory& history, const MmsS
 #include "shadow_ambient_host_checks.inc"
 #include "shadow_slider_host_checks.inc"
 #include "fov_slider_host_checks.inc"
+#include "light_slider_host_checks.inc"
+#include "morph_slider_host_checks.inc"
 void Run(MMDApp* app) {
     using namespace plugins;
     const auto initial = GetModuleHandleW(L"manager_edit_probe.dll");
@@ -440,6 +442,7 @@ void Run(MMDApp* app) {
     CameraAxisPose(app, *history, value);
     CameraTextPose(app, *history, value);
     LightTextPose(app, *history, value);
+    light_slider_host_checks::Run(app, *history, value);
     FovTextPose(app, *history, value);
     fov_slider_host_checks::Run(app, *history, value);
     CameraProjectionMode(app, *history, value);
@@ -447,6 +450,7 @@ void Run(MMDApp* app) {
     AccessoryFlagParameters(app, *history, value);
     ShadowParameters(app, *history, value);
     MorphTextPose(app, *history, value);
+    morph_slider_host_checks::Run(app, *history, value);
     GridDisplayCommands(app, *history, value);
     ProjectedShadowFlags(app, *history, value);
     vpd_import_host_checks::Run(app, *history, value);

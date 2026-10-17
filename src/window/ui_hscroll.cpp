@@ -93,6 +93,7 @@
 #include "mikudancestudio/adaptive_shadow.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "../plugins/native_global_commands.hpp"
+#include "../plugins/native_morph_commands.hpp"
 #endif
 
 namespace mikudancestudio {
@@ -104,6 +105,9 @@ namespace {
 // MorphRecord::value and only the echo label differs. Defect B1-08.
 void HandleMorphSlider(MMDApp* app, HWND hwnd, int sliderId,
                        std::size_t lane, int echoId) {
+#if !MMD_ORIGINAL_PROFILE
+    if (plugins::TryCommitBoundMorphSlider(app, GetDlgItem(hwnd, sliderId))) return;
+#endif
     unsigned char* model = app->SelectedModel();
     const std::int32_t boneIdx = mdl::Mdl(model)->selectedMorphs[lane];
     // Gate (0x44AF11): proceed iff (physics == 2 || boneIdx > 0) &&
@@ -171,6 +175,11 @@ void HandleHScroll(LPARAM lParam, WPARAM wParam) {
     HWND hwnd = static_cast<HWND>(app->Hwnd());               // 657080
     const HWND ctrl = reinterpret_cast<HWND>(lParam);         // a2
     const std::uint32_t code = LOWORD(wParam);                // a3 low 16
+#if !MMD_ORIGINAL_PROFILE
+    const int sliderId = ctrl ? GetDlgCtrlID(ctrl) : 0;
+    if (sliderId >= 455 && sliderId <= 460 && ctrl == GetDlgItem(hwnd, sliderId) &&
+        plugins::TryCommitBoundLightSlider(app, ctrl)) return;
+#endif
 
     // ---- 505/510/515/520: morph value sliders for lanes 0..3 ----------------
     if (ctrl == GetDlgItem(hwnd, panel::kMorphSlider0)) {
