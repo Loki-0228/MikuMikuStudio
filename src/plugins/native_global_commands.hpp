@@ -3,10 +3,25 @@
 #if !MMD_ORIGINAL_PROFILE
 #include <Windows.h>
 #include <memory>
+#include <array>
 #include <mms/plugin.h>
 namespace mikudancestudio { class MMDApp; }
 namespace mikudancestudio::plugins {
 class HistoryChange;
+class SharedHistory;
+// Internal modal session. The app outlives the session; no journal reservation
+// or scene resource ownership is held while a dialog pumps messages.
+class CameraNumericEdit {
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+public:
+    CameraNumericEdit();
+    ~CameraNumericEdit();
+    MmsResult Begin(MMDApp&, SharedHistory&) noexcept;
+    std::array<float, 7> Values() const noexcept;
+    // Consumes the session, including rejection and no-op.
+    MmsResult Apply(const std::array<float, 7>&) noexcept;
+};
 // Owned camera-pose delta, separate from camera keys and curve authoring.
 // A successful no-op leaves out empty. The app outlives the record/history.
 MmsResult PlanCameraRotationReset(MMDApp&, std::shared_ptr<HistoryChange>& out) noexcept;

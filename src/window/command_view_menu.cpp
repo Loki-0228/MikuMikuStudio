@@ -1821,28 +1821,36 @@ bool StoredLimitNeedsRewrite(const MMDApp& app,
 
 #if !MMD_ORIGINAL_PROFILE
 namespace plugins {
-bool TryEditBoundBoneNumeric(MMDApp* app, HWND owner) noexcept {
+bool TryEditBoundPoseNumeric(MMDApp* app, HWND owner) noexcept {
     // The existing dialog uses one application temp array. Refuse recursive
     // entry while its modal pump is active rather than overwriting that array.
     static thread_local bool active = false;
     if (active) return true;
-    if (!app || app->CameraMode() != 0) return false;
+    if (!app) return false;
     auto* history = BoundNativePoseHistory(app);
     if (!history) return false;
     Boundary([&]() -> MmsResult {
         if (g_Block != app) return MMS_E_NOT_READY;
-        BoneNumericEdit edit; if (const auto result = edit.Begin(*app, *history)) return result;
         struct Guard { bool& active; explicit Guard(bool& a) : active(a) { active = true; } ~Guard() { active = false; } } guard(active);
-        const auto values = edit.Values();
-        for (int i = 0; i < 6; ++i) app->RotationDialogTemp(i) = values[i];
-        app->state.enterKeyState = 1;
-        const auto result = UiDialogBoxParamA(static_cast<HINSTANCE>(app->HInstance()),
-            MAKEINTRESOURCEA(app->EnglishUI() ? 0x297 : 0x288), owner, BoneNumericInputDlgProc, 0);
-        if (result != IDOK) return MMS_E_CANCELLED;
-        if (g_Block != app) return MMS_E_STALE;
-        std::array<float, 6> input{};
-        for (int i = 0; i < 6; ++i) input[i] = app->RotationDialogTemp(i);
-        return edit.Apply(input);
+        const auto run = [&](auto& edit, int resource, DLGPROC procedure) -> MmsResult {
+            if (const auto result = edit.Begin(*app, *history)) return result;
+            const auto values = edit.Values();
+            for (unsigned i = 0; i < values.size(); ++i) app->RotationDialogTemp(i) = values[i];
+            app->state.enterKeyState = 1;
+            const auto result = UiDialogBoxParamA(static_cast<HINSTANCE>(app->HInstance()),
+                MAKEINTRESOURCEA(resource), owner, procedure, 0);
+            if (result != IDOK) return MMS_E_CANCELLED;
+            if (g_Block != app) return MMS_E_STALE;
+            auto input = values;
+            for (unsigned i = 0; i < input.size(); ++i) input[i] = app->RotationDialogTemp(i);
+            return edit.Apply(input);
+        };
+        if (app->CameraMode()) {
+            CameraNumericEdit edit;
+            return run(edit, app->EnglishUI() ? 0x298 : 0x289, CameraNumericInputDlgProc);
+        }
+        BoneNumericEdit edit;
+        return run(edit, app->EnglishUI() ? 0x297 : 0x288, BoneNumericInputDlgProc);
     });
     return true;
 }
@@ -2882,7 +2890,7 @@ void CmdViewMenu(MMDApp* app, HWND hwnd, std::uint16_t id,
     // ------------------------------------------------------------------
     case 300: {
 #if !MMD_ORIGINAL_PROFILE
-        if (plugins::TryEditBoundBoneNumeric(app, hwnd)) return;
+        if (plugins::TryEditBoundPoseNumeric(app, hwnd)) return;
 #endif
         constexpr float toDegrees=180.0f/3.14159265358979323846f;
         constexpr float toRadians=3.14159265358979323846f/180.0f;

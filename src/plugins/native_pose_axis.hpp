@@ -23,10 +23,10 @@ public:
     // Consumes the session on success, no-op or failure. No UI calls on failure.
     MmsResult Apply(const std::array<float, 6>&) noexcept;
 };
-// Command 300, bone mode only. Camera mode retains its existing path.
-bool TryEditBoundBoneNumeric(MMDApp*, HWND owner) noexcept;
+// Command 300, sharing the same recursion guard for bone and camera dialogs.
+bool TryEditBoundPoseNumeric(MMDApp*, HWND owner) noexcept;
 // View-menu command 302 in model mode. Owns rejection and no-op while bound;
-// camera-mode authoring remains a separate migration task.
+// Camera mode is routed through native_global_commands.
 bool TryResetBoundBoneRotation(MMDApp*) noexcept;
 enum class NativePoseAxisKind { Position, Rotation, Scale };
 enum class NativePoseAxisSource { MainWindow, FloatingWindow };

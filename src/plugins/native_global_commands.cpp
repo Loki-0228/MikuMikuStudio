@@ -13,6 +13,7 @@
 #include "mikudancestudio/model.hpp"
 #include "mikudancestudio/panel_controls.hpp"
 #include "mikudancestudio/ported_funcs.hpp"
+#include "mikudancestudio/plugin_scene.hpp"
 #include <CommCtrl.h>
 #include <algorithm>
 #include <array>
@@ -33,27 +34,28 @@ bool Ready(MMDApp& app) noexcept {
         !app.GravitySettingDialog() && !app.GroundShadowColorDialog() && !app.AccessoryOrderArray() &&
         !app.state.accessoryEditDialogOpen && !app.state.edgeThicknessDialog;
 }
-struct CameraRotationReset final : HistoryChange, std::enable_shared_from_this<CameraRotationReset> {
+struct CameraPoseChange final : HistoryChange, std::enable_shared_from_this<CameraPoseChange> {
     MMDApp& app;
     const std::uint64_t poolIdentity;
-    const std::array<float, 3> before;
+    const std::array<float, 7> before, after;
     const unsigned changed;
     std::uint64_t generation = 1;
     bool published = false, applied = false;
-    static std::array<float, 3> Read(MMDApp& app) noexcept {
-        return {app.CameraPitch(), app.CameraYaw(), app.CameraRoll()};
+    static std::array<float, 7> Read(MMDApp& app) noexcept {
+        return {app.CameraPositionX(), app.CameraPositionY(), app.CameraPositionZ(),
+            app.CameraPitch(), app.CameraYaw(), app.CameraRoll(), app.CameraDistance()};
     }
-    CameraRotationReset(MMDApp& value, std::array<float, 3> source, unsigned fields)
-        : app(value), poolIdentity(mdl::KeyPoolIdentity(value.CameraKeys())), before(source), changed(fields) {}
+    CameraPoseChange(MMDApp& value, std::array<float, 7> source, std::array<float, 7> target, unsigned fields)
+        : app(value), poolIdentity(mdl::KeyPoolIdentity(value.CameraKeys())), before(source), after(target), changed(fields) {}
     bool SameScene() const noexcept { return poolIdentity && mdl::KeyPoolIdentity(app.CameraKeys()) == poolIdentity; }
     struct Candidate final : PreparedHistoryChange {
-        std::shared_ptr<CameraRotationReset> source;
+        std::shared_ptr<CameraPoseChange> source;
         const bool forward;
         const std::uint64_t generation;
         const int frame;
-        const std::array<float, 3> expected;
+        const std::array<float, 7> expected;
         bool consumed = false;
-        Candidate(std::shared_ptr<CameraRotationReset> value, bool direction)
+        Candidate(std::shared_ptr<CameraPoseChange> value, bool direction)
             : source(std::move(value)), forward(direction), generation(source->generation),
               frame(source->app.CurrentFrame()), expected(Read(source->app)) {}
         bool IsCurrent() const noexcept override {
@@ -64,8 +66,12 @@ struct CameraRotationReset final : HistoryChange, std::enable_shared_from_this<C
         }
         void Publish() noexcept override {
             if (!IsCurrent()) std::terminate();
-            for (unsigned axis = 0; axis < 3; ++axis) if (source->changed & (1u << axis))
-                source->app.CameraRotation()[axis] = forward ? 0.0f : source->before[axis];
+            for (unsigned field = 0; field < 7; ++field) if (source->changed & (1u << field)) {
+                const auto value = forward ? source->after[field] : source->before[field];
+                if (field < 3) source->app.CameraPositionAxis(field) = value;
+                else if (field < 6) source->app.CameraRotation()[field - 3] = value;
+                else source->app.CameraDistance() = value;
+            }
             source->applied = forward; source->published = true; ++source->generation;
             consumed = true;
         }
@@ -153,16 +159,103 @@ bool Register(MMDApp* app, curve_host::Kind kind, Plan plan) noexcept {
     return true;
 }
 }
+struct CameraNumericEdit::Impl {
+    MMDApp& app;
+    SharedHistory* history;
+    std::uint64_t revision = 0, pool = 0;
+    int frame = 0, parentModel = -1, parentBone = 0;
+    float fov = 0;
+    unsigned perspective = 0;
+    unsigned char* parent = nullptr;
+    MmsObjectRef parentRef{};
+    mdl::BoneRecord* parentBones = nullptr;
+    unsigned parentCount = 0;
+    std::array<float, 7> before{}, values{};
+    Impl(MMDApp& a, SharedHistory& h) : app(a), history(&h) {}
+    bool Current() const {
+        if (BoundNativePoseHistory(&app) != history || !app.CameraMode() || !Ready(app) ||
+            app.CurrentFrame() != frame || mdl::KeyPoolIdentity(app.CameraKeys()) != pool ||
+            app.CameraParentModel() != parentModel || app.CameraParentBone() != parentBone ||
+            app.CameraFov() != fov || app.CameraPerspective() != perspective) return false;
+        std::uint64_t current = 0;
+        if (history->Revision(current) != MMS_OK || current != revision) return false;
+        if (parentModel != -1) {
+            if (app.ModelSlot(parentModel) != parent || !SceneObjectPresent(parent, parentRef.id) ||
+                SceneObjectIdentity(parent).generation != parentRef.generation) return false;
+            const auto* model = mdl::Mdl(parent);
+            if (model->boneTable != parentBones || model->boneCount != parentCount) return false;
+        }
+        const auto pose = CameraPoseChange::Read(app);
+        return !std::memcmp(pose.data(), before.data(), sizeof(before));
+    }
+};
+CameraNumericEdit::CameraNumericEdit() = default;
+CameraNumericEdit::~CameraNumericEdit() = default;
+std::array<float, 7> CameraNumericEdit::Values() const noexcept { return impl_ ? impl_->values : std::array<float, 7>{}; }
+MmsResult CameraNumericEdit::Begin(MMDApp& app, SharedHistory& history) noexcept {
+    if (impl_) return MMS_E_BUSY;
+    return Boundary([&]() -> MmsResult {
+        if (BoundNativePoseHistory(&app) != &history || !app.CameraMode() || !Ready(app) ||
+            !mdl::KeyPoolIdentity(app.CameraKeys())) return MMS_E_NOT_READY;
+        if (const auto result = history.CheckNativeEdit()) return result;
+        auto next = std::make_unique<Impl>(app, history);
+        if (const auto result = history.Revision(next->revision)) return result;
+        next->pool = mdl::KeyPoolIdentity(app.CameraKeys()); next->frame = app.CurrentFrame();
+        next->parentModel = app.CameraParentModel(); next->parentBone = app.CameraParentBone();
+        next->fov = app.CameraFov(); next->perspective = app.CameraPerspective();
+        if (next->parentModel != -1) {
+            if (next->parentModel < 0 || unsigned(next->parentModel) >= kModelSlotCount ||
+                !(next->parent = app.ModelSlot(next->parentModel))) return MMS_E_ARGUMENT;
+            const auto* parent = mdl::Mdl(next->parent);
+            if (!parent->boneTable || next->parentBone < 0 || unsigned(next->parentBone) >= parent->boneCount) return MMS_E_ARGUMENT;
+            next->parentRef = SceneObjectIdentity(next->parent); next->parentBones = parent->boneTable; next->parentCount = parent->boneCount;
+        }
+        next->before = CameraPoseChange::Read(app); next->values = next->before;
+        for (float value : next->before) if (!std::isfinite(value)) return MMS_E_ARGUMENT;
+        constexpr float degrees = 180.0f / 3.14159265358979323846f;
+        next->values[3] = -next->before[3] * degrees;
+        next->values[4] = next->before[4] * degrees; next->values[5] = next->before[5] * degrees;
+        next->values[6] = -next->before[6];
+        for (float value : next->values) if (!std::isfinite(value)) return MMS_E_ARGUMENT;
+        impl_ = std::move(next); return MMS_OK;
+    });
+}
+MmsResult CameraNumericEdit::Apply(const std::array<float, 7>& input) noexcept {
+    if (!impl_) return MMS_E_NOT_READY;
+    auto session = std::move(impl_);
+    return Boundary([&]() -> MmsResult {
+        if (BoundNativePoseHistory(&session->app) != session->history) return MMS_E_STALE;
+        if (const auto result = session->history->CheckNativeEdit()) return result;
+        if (!session->Current()) return MMS_E_STALE;
+        auto target = session->before; unsigned changed = 0;
+        constexpr float radians = 3.14159265358979323846f / 180.0f;
+        for (unsigned field = 0; field < 7; ++field) {
+            if (!std::isfinite(input[field])) return MMS_E_ARGUMENT;
+            if (input[field] != session->values[field]) {
+                target[field] = field < 3 ? input[field] : field == 6 ? -input[field] :
+                    (field == 3 ? -input[field] : input[field]) * radians;
+                if (!std::isfinite(target[field])) return MMS_E_ARGUMENT;
+                if (target[field] != session->before[field]) changed |= 1u << field;
+            }
+        }
+        if (!changed) return MMS_OK;
+        auto change = std::make_shared<CameraPoseChange>(session->app, session->before, target, changed);
+        std::unique_ptr<SharedHistory::NativeTransaction> transaction;
+        if (const auto result = session->history->PrepareNative("Edit camera numeric pose", std::move(change), transaction)) return result;
+        if (const auto result = session->history->CommitNative(std::move(transaction))) return result;
+        PublishBoundPoseEdit(session->app, *session->history, false); return MMS_OK;
+    });
+}
 MmsResult PlanCameraRotationReset(MMDApp& app, std::shared_ptr<HistoryChange>& out) noexcept {
     out.reset();
     return Boundary([&]() -> MmsResult {
         if (!Ready(app) || !mdl::KeyPoolIdentity(app.CameraKeys())) return MMS_E_NOT_READY;
-        const auto before = CameraRotationReset::Read(app); unsigned changed = 0;
-        for (unsigned axis = 0; axis < 3; ++axis) {
-            if (!std::isfinite(before[axis])) return MMS_E_ARGUMENT;
-            if (before[axis] != 0.0f) changed |= 1u << axis;
+        const auto before = CameraPoseChange::Read(app); auto after = before; unsigned changed = 0;
+        for (float value : before) if (!std::isfinite(value)) return MMS_E_ARGUMENT;
+        for (unsigned field = 3; field < 6; ++field) if (before[field] != 0.0f) {
+            changed |= 1u << field; after[field] = 0.0f;
         }
-        if (changed) out = std::make_shared<CameraRotationReset>(app, before, changed);
+        if (changed) out = std::make_shared<CameraPoseChange>(app, before, after, changed);
         return MMS_OK;
     });
 }

@@ -4,6 +4,7 @@ struct BoneNumericDialog {
     enum Action { Accept, Noop, Cancel, Invalid, ChangeFrame, PluginEdit, PluginPrepared, Recursive };
     MMDApp* app;
     Action action;
+    bool camera;
     HHOOK hide = nullptr, inspect = nullptr;
     unsigned seen = 0;
     static thread_local BoneNumericDialog* active;
@@ -31,7 +32,7 @@ struct BoneNumericDialog {
         if (code >= 0 && active) {
             const auto* call = reinterpret_cast<CWPRETSTRUCT*>(lp);
             if (call->message == WM_INITDIALOG && GetWindow(call->hwnd, GW_OWNER) == active->app->MainWindow() &&
-                GetDlgItem(call->hwnd, 637) && GetDlgItem(call->hwnd, 642) && !GetDlgItem(call->hwnd, 644)) {
+                GetDlgItem(call->hwnd, 637) && GetDlgItem(call->hwnd, 642) && bool(GetDlgItem(call->hwnd, 644)) == active->camera) {
                 auto& driver = *active; ++driver.seen;
                 Check(driver.seen == 1, "numeric entry refuses recursive modal dialogs");
                 if (driver.action != Noop) {
@@ -39,6 +40,7 @@ struct BoneNumericDialog {
                         driver.action == ChangeFrame || driver.action == PluginEdit || driver.action == PluginPrepared ? L"45.5" : L"12.5";
                     SetDlgItemTextW(call->hwnd, 637, x);
                     SetDlgItemTextW(call->hwnd, 642, L"90");
+                    if (driver.camera) SetDlgItemTextW(call->hwnd, 644, L"60");
                 }
                 if (driver.action == ChangeFrame) ++driver.app->CurrentFrame();
                 if (driver.action == PluginEdit) Menu(driver.app, L"Edit probe once");
@@ -46,9 +48,9 @@ struct BoneNumericDialog {
                 if (driver.action == Recursive) {
                     // Even a nested camera-mode command must not overwrite
                     // the outer bone dialog's shared temp values.
-                    driver.app->CameraMode() = 1;
+                    driver.app->CameraMode() = driver.camera ? 0 : 1;
                     SendMessageW(driver.app->MainWindow(), WM_COMMAND, 300, 0);
-                    driver.app->CameraMode() = 0;
+                    driver.app->CameraMode() = driver.camera ? 1 : 0;
                 }
                 PostMessageW(call->hwnd, WM_COMMAND, driver.action == Cancel ? IDCANCEL : IDOK, 0);
                 if (driver.action == Invalid) PostMessageW(call->hwnd, WM_COMMAND, IDCANCEL, 0);
@@ -56,7 +58,7 @@ struct BoneNumericDialog {
         }
         return CallNextHookEx(nullptr, code, wp, lp);
     }
-    BoneNumericDialog(MMDApp* value, Action operation) : app(value), action(operation) {
+    BoneNumericDialog(MMDApp* value, Action operation) : app(value), action(operation), camera(value->CameraMode() != 0) {
         Check(!active, "no nested numeric test driver"); active = this;
         hide = SetWindowsHookExW(WH_CBT, Creating, nullptr, GetCurrentThreadId());
         inspect = SetWindowsHookExW(WH_CALLWNDPROCRET, Initialized, nullptr, GetCurrentThreadId());
@@ -65,7 +67,7 @@ struct BoneNumericDialog {
     ~BoneNumericDialog() { UnhookWindowsHookEx(inspect); UnhookWindowsHookEx(hide); active = nullptr; }
     void Run() {
         SendMessageW(app->MainWindow(), WM_COMMAND, 300, 0);
-        Check(seen == 1, "actual menu opens and finishes exactly one real bone numeric dialog");
+        Check(seen == 1, "actual menu opens and finishes exactly one real numeric dialog");
     }
 };
 thread_local BoneNumericDialog* BoneNumericDialog::active = nullptr;
