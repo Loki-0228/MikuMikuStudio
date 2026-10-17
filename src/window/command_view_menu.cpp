@@ -34,9 +34,9 @@
 //                          default (no-op); else CreateDialogParamA
 //                          (0x296 EN / 0x285 JP, sub_44C7F0), store
 //                          app+0xA0B44, ShowWindow(5) + UpdateWindow
-//   254 0FE  0x0048A26A    toggle physics-display byte app+0x9ED9A with
-//                          CheckMenuItem(GetMenu(hwnd), 0xFE, 0/8) -
-//                          same flag as menu 0xD8
+//   254 0FE  0x0048A26A    transparent ground-shadow blend at app+0x9ED9A
+//                          with CheckMenuItem(GetMenu(hwnd), 0xFE, 0/8);
+//                          independent of background AVI menu 0xD8
 //   255 0FF  0x0048A883    0x54=1, sub_439E40(app), dirty 0xA0B0D=1
 //   256 100  0x0048A89B    0x5C=1, sub_43A650(app), dirty 0xA0B0D=1
 //   257 101  0x0048A8B3    0x64=1, sub_43B720(app), dirty 0xA0B0D=1
@@ -1931,10 +1931,13 @@ void CmdViewMenu(MMDApp* app, HWND hwnd, std::uint16_t id,
     }
 
     // ------------------------------------------------------------------
-    // 254 (0x0048A26A): toggle physics-display flag app+0x9ED9A and menu
-    // item 0xFE (same flag as menu 0xD8 / CmdTogglePhysicsDisplay).
+    // 254 (0x0048A26A): toggle transparent ground-shadow blending
+    // and menu item 0xFE. This flag is independent of background video.
     // ------------------------------------------------------------------
     case 254: {
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::TryToggleBoundProjectedShadowFlag(app, 1)) break;
+#endif
         if (app->state.projectedShadowBlendEnabled != 0) {
             app->state.projectedShadowBlendEnabled = 0;
             CheckMenuItem(GetMenu(hwnd), 0xFE, MF_UNCHECKED);

@@ -36,6 +36,9 @@ MmsResult ApplyBoundCameraField(MMDApp&, unsigned field, float value, bool& chan
 // Project coordinate-axis/grid visibility; all menu/main/floating entries share it.
 MmsResult ApplyBoundGridDisplay(MMDApp&, bool enabled, bool& changed) noexcept;
 bool TryToggleBoundGridDisplay(MMDApp*) noexcept;
+// Projected shadow flags: visibility 0, alpha blending 1. Independent deltas.
+MmsResult ApplyBoundProjectedShadowFlag(MMDApp&, unsigned field, bool enabled, bool& changed) noexcept;
+bool TryToggleBoundProjectedShadowFlag(MMDApp*, unsigned field) noexcept;
 // Fields 0..2 color (authored float), 3..5 direction. CPU mirror publication
 // is atomic; device and readout updates happen only after journal publication.
 MmsResult ApplyBoundLightField(MMDApp&, unsigned field, float value, bool& changed) noexcept;

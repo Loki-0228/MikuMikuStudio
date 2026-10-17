@@ -34,46 +34,57 @@ bool Ready(MMDApp& app) noexcept {
         !app.GravitySettingDialog() && !app.GroundShadowColorDialog() && !app.AccessoryOrderArray() &&
         !app.state.accessoryEditDialogOpen && !app.state.edgeThicknessDialog;
 }
-void RefreshGridReadout(MMDApp& app) noexcept {
-    const bool enabled=app.GroundGridEnabled()!=0;
+std::uint8_t& ProjectDisplayField(MMDApp& app,unsigned field) noexcept {
+    if(field==1)return app.GroundShadowEnabled();
+    if(field==2)return app.ProjectedShadowBlendEnabled();
+    return app.GroundGridEnabled();
+}
+std::array<std::uint8_t,3> ProjectDisplayValues(MMDApp& app) noexcept {
+    return {app.GroundGridEnabled(),app.GroundShadowEnabled(),app.ProjectedShadowBlendEnabled()};
+}
+void RefreshProjectDisplayReadout(MMDApp& app) noexcept {
+    const auto flags=ProjectDisplayValues(app);
     const auto main=app.MainWindow();if(!main)return;
-    CheckMenuItem(GetMenu(main),0xD7,MF_BYCOMMAND|(enabled?MF_CHECKED:MF_UNCHECKED));
+    const UINT menus[]={0xD7,0xDD,0xFE};
+    for(unsigned i=0;i<3;++i)CheckMenuItem(GetMenu(main),menus[i],MF_BYCOMMAND|(flags[i]?MF_CHECKED:MF_UNCHECKED));
     const HWND windows[]={main,app.FloatingWindow()};
     for(unsigned i=0;i<2;++i){
         if(!windows[i] || (i && windows[i]==main))continue;
         const auto button=GetDlgItem(windows[i],panel::kCoordAxisCheckbox);
-        const WPARAM checked=enabled?BST_CHECKED:BST_UNCHECKED;
+        const WPARAM checked=flags[0]?BST_CHECKED:BST_UNCHECKED;
         if(button && SendMessageW(button,BM_GETCHECK,0,0)!=checked){SendMessageW(button,BM_SETCHECK,checked,0);InvalidateRect(button,nullptr,FALSE);}
     }
 }
-struct GridDisplayChange final : HistoryChange, std::enable_shared_from_this<GridDisplayChange> {
+struct ProjectDisplayChange final : HistoryChange, std::enable_shared_from_this<ProjectDisplayChange> {
     MMDApp& app;
+    const unsigned field;
     const std::uint64_t pool;
-    const std::uint8_t before,after;
+    const std::array<std::uint8_t,3> before;
+    const std::uint8_t after;
     std::uint64_t generation=1;
     bool applied=false,published=false;
-    GridDisplayChange(MMDApp& a,bool enabled) : app(a),pool(mdl::KeyPoolIdentity(a.CameraKeys())),before(a.GroundGridEnabled()),after(enabled?1:0) {}
+    ProjectDisplayChange(MMDApp& a,unsigned component,bool enabled) : app(a),field(component),pool(mdl::KeyPoolIdentity(a.CameraKeys())),before(ProjectDisplayValues(a)),after(enabled?1:0) {}
     struct Candidate final : PreparedHistoryChange {
-        std::shared_ptr<GridDisplayChange> source;
+        std::shared_ptr<ProjectDisplayChange> source;
         const bool forward;
         const std::uint64_t generation;
         const int frame;
-        const std::uint8_t expected;
+        const std::array<std::uint8_t,3> expected;
         bool consumed=false;
-        Candidate(std::shared_ptr<GridDisplayChange> value,bool direction) : source(std::move(value)),forward(direction),generation(source->generation),frame(source->app.CurrentFrame()),expected(source->app.GroundGridEnabled()) {}
+        Candidate(std::shared_ptr<ProjectDisplayChange> value,bool direction) : source(std::move(value)),forward(direction),generation(source->generation),frame(source->app.CurrentFrame()),expected(ProjectDisplayValues(source->app)) {}
         bool IsCurrent() const noexcept override {
             return !consumed && source->generation==generation && forward!=source->applied &&
-                mdl::KeyPoolIdentity(source->app.CameraKeys())==source->pool && source->app.CurrentFrame()==frame && source->app.GroundGridEnabled()==expected;
+                mdl::KeyPoolIdentity(source->app.CameraKeys())==source->pool && source->app.CurrentFrame()==frame && ProjectDisplayValues(source->app)==expected;
         }
         void Publish() noexcept override {
             if(!IsCurrent())std::terminate();
-            source->app.GroundGridEnabled()=forward?source->after:source->before;
+            ProjectDisplayField(source->app,source->field)=forward?source->after:source->before[source->field];
             source->published=true;source->applied=forward;++source->generation;consumed=true;
         }
     };
     MmsResult Prepare(bool forward,std::unique_ptr<PreparedHistoryChange>& out) override {
         out.reset();return Boundary([&]() -> MmsResult {
-            if(!pool || mdl::KeyPoolIdentity(app.CameraKeys())!=pool || forward==applied || (!published && app.GroundGridEnabled()!=before))return MMS_E_STALE;
+            if(!pool || mdl::KeyPoolIdentity(app.CameraKeys())!=pool || forward==applied || (!published && ProjectDisplayValues(app)!=before))return MMS_E_STALE;
             if(generation==UINT64_MAX)return MMS_E_NOT_READY;
             out=std::make_unique<Candidate>(shared_from_this(),forward);return MMS_OK;
         });
@@ -543,25 +554,43 @@ bool TryResetBoundCameraRotation(MMDApp* app) noexcept {
     });
     return true;
 }
-MmsResult ApplyBoundGridDisplay(MMDApp& app,bool enabled,bool& changed) noexcept {
+namespace {
+MmsResult ApplyProjectDisplayFlag(MMDApp& app,unsigned field,bool enabled,bool& changed) noexcept {
     changed=false;return Boundary([&]() -> MmsResult {
         auto* history=BoundNativePoseHistory(&app);
         if(!history || !Ready(app) || !mdl::KeyPoolIdentity(app.CameraKeys()))return MMS_E_NOT_READY;
+        if(field>=3)return MMS_E_ARGUMENT;
         if(const auto result=history->CheckNativeEdit())return result;
-        if(app.GroundGridEnabled()==(enabled?1:0))return MMS_OK;
-        auto change=std::make_shared<GridDisplayChange>(app,enabled);
+        if(ProjectDisplayField(app,field)==(enabled?1:0))return MMS_OK;
+        auto change=std::make_shared<ProjectDisplayChange>(app,field,enabled);
+        const char* labels[]={"Coordinate axis display","Projected ground shadow","Transparent ground shadow"};
         std::unique_ptr<SharedHistory::NativeTransaction> transaction;
-        if(const auto result=history->PrepareNative("Coordinate axis display",std::move(change),transaction))return result;
+        if(const auto result=history->PrepareNative(labels[field],std::move(change),transaction))return result;
         if(const auto result=history->CommitNative(std::move(transaction)))return result;
         changed=true;
-        Boundary([&]() -> MmsResult {PublishBoundPoseEdit(app,*history,false);RefreshGridReadout(app);return MMS_OK;});
+        Boundary([&]() -> MmsResult {PublishBoundPoseEdit(app,*history,false);RefreshProjectDisplayReadout(app);return MMS_OK;});
         return MMS_OK;
     });
+}
+}
+MmsResult ApplyBoundGridDisplay(MMDApp& app,bool enabled,bool& changed) noexcept {
+    return ApplyProjectDisplayFlag(app,0,enabled,changed);
 }
 bool TryToggleBoundGridDisplay(MMDApp* app) noexcept {
     if(!app || !BoundNativePoseHistory(app))return false;
     bool changed=false;ApplyBoundGridDisplay(*app,app->GroundGridEnabled()==0,changed);
-    if(!changed)RefreshGridReadout(*app);
+    if(!changed)RefreshProjectDisplayReadout(*app);
+    return true;
+}
+MmsResult ApplyBoundProjectedShadowFlag(MMDApp& app,unsigned field,bool enabled,bool& changed) noexcept {
+    if(field>=2){changed=false;return MMS_E_ARGUMENT;}
+    return ApplyProjectDisplayFlag(app,field+1,enabled,changed);
+}
+bool TryToggleBoundProjectedShadowFlag(MMDApp* app,unsigned field) noexcept {
+    if(!app || !BoundNativePoseHistory(app))return false;
+    bool changed=false;
+    if(field<2)ApplyBoundProjectedShadowFlag(*app,field,ProjectDisplayField(*app,field+1)==0,changed);
+    if(!changed)RefreshProjectDisplayReadout(*app);
     return true;
 }
 MmsResult ApplyBoundCameraField(MMDApp& app, unsigned field, float value, bool& changed, bool activateCameraTrack) noexcept {
@@ -805,7 +834,7 @@ bool TryRegisterBoundAccessory(MMDApp* app, HWND window) noexcept {
 void RefreshBoundGlobalReadout(MMDApp& app) noexcept {
     if (!app.MainWindow()) return;
     Boundary([&]() -> MmsResult {
-        RefreshGridReadout(app);
+        RefreshProjectDisplayReadout(app);
         if (app.cameraProjectionRefreshPending && app.Renderer() && app.Renderer()->device) {
             // Consume current-state work at the UI boundary. A zero/tiny
             // orthographic distance must not install infinities on the device.

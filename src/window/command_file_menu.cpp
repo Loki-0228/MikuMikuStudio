@@ -129,6 +129,9 @@
 #include "mikudancestudio/text_encoding.hpp"
 #include "mikudancestudio/globals.hpp"
 #include "mikudancestudio/mmd_app.hpp"
+#if !MMD_ORIGINAL_PROFILE
+#include "../plugins/native_global_commands.hpp"
+#endif
 #include "mikudancestudio/ui_message.hpp"
 #include "mikudancestudio/ui_translation.hpp"
 #include <algorithm>
@@ -1403,11 +1406,14 @@ void CmdFileMenu(MMDApp* app, HWND hwnd, std::uint16_t id, std::uint16_t notify)
     }
 
     // ------------------------------------------------------------------
-    // 221 (0x0047FC97): model-panel display toggle.  Flips app+0x918 and
+    // 221 (0x0047FC97): projected ground-shadow toggle. Flips app+0x918 and
     // the 0xDD menu checkmark.
     // ------------------------------------------------------------------
     case 221: {
         app->state.dialogFlags[8] = 1;
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::TryToggleBoundProjectedShadowFlag(app, 0)) break;
+#endif
         if (app->state.groundShadowEnabled != 0) {
             app->state.groundShadowEnabled = 0;
             CheckMenuItem(GetMenu(MainHwnd(app)), 0xDD, MF_UNCHECKED);

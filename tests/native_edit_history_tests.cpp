@@ -368,12 +368,17 @@ void CrossModelJournal(){
 #include "native_accessory_flag_checks.inc"
 #include "native_shadow_parameter_checks.inc"
 #include "native_grid_display_checks.inc"
+#include "native_projected_shadow_checks.inc"
 #include "native_model_key_checks.inc"
 #include "native_model_range_checks.inc"
 #include "native_object_command_checks.inc"
 int main(int argc,char** argv){
     std::setvbuf(stdout,nullptr,_IONBF,0);
     const auto run=[](const char* name,void(*test)()){std::printf("RUN %s\n",name);test();};
+    if(argc==2&&!std::strcmp(argv[1],"--projected-shadow-only")) {
+        run("NativeProjectedShadowChecks",NativeProjectedShadowChecks);
+        std::printf("PASS native projected shadow: %u checks\n",checks);return 0;
+    }
     if(argc==2&&!std::strcmp(argv[1],"--grid-display-only")) {
         run("NativeGridDisplayChecks",NativeGridDisplayChecks);
         std::printf("PASS native grid display: %u checks\n",checks);return 0;
@@ -484,6 +489,7 @@ int main(int argc,char** argv){
     run("NativeAccessoryFlagChecks",NativeAccessoryFlagChecks);
     run("NativeShadowParameterChecks",NativeShadowParameterChecks);
     run("NativeGridDisplayChecks",NativeGridDisplayChecks);
+    run("NativeProjectedShadowChecks",NativeProjectedShadowChecks);
     run("NativeCameraInterpolationChecks",NativeCameraInterpolationChecks);
     run("NativeAccessoryRegistrationChecks",NativeAccessoryRegistrationChecks);
     run("NativeModelKeyChecks",NativeModelKeyChecks);
