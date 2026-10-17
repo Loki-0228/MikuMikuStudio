@@ -183,6 +183,48 @@ struct CameraFovChange final : HistoryChange, std::enable_shared_from_this<Camer
     }
     std::uint64_t RetainedBytes() const noexcept override { return sizeof(*this) + 4 * sizeof(void*); }
 };
+struct ShadowPoseChange final : HistoryChange, std::enable_shared_from_this<ShadowPoseChange> {
+    MMDApp& app;
+    const std::uint64_t pool;
+    const float beforeDistance, afterDistance;
+    const int beforeMode, afterMode;
+    const bool editMode;
+    std::uint64_t generation = 1;
+    bool applied = false, published = false;
+    ShadowPoseChange(MMDApp& a, float distance, int mode, bool modeField) : app(a), pool(mdl::KeyPoolIdentity(a.ShadowKeys())),
+        beforeDistance(a.ShadowDistance()), afterDistance(distance), beforeMode(a.SelfShadowMode()), afterMode(mode), editMode(modeField) {}
+    struct Candidate final : PreparedHistoryChange {
+        std::shared_ptr<ShadowPoseChange> source;
+        const bool forward;
+        const std::uint64_t generation;
+        const int frame, mode;
+        const float distance;
+        bool consumed = false;
+        Candidate(std::shared_ptr<ShadowPoseChange> value, bool direction) : source(std::move(value)), forward(direction),
+            generation(source->generation), frame(source->app.CurrentFrame()), mode(source->app.SelfShadowMode()), distance(source->app.ShadowDistance()) {}
+        bool IsCurrent() const noexcept override {
+            return !consumed && source->generation == generation && forward != source->applied &&
+                mdl::KeyPoolIdentity(source->app.ShadowKeys()) == source->pool && source->app.CurrentFrame() == frame &&
+                source->app.SelfShadowMode() == mode && source->app.ShadowDistance() == distance;
+        }
+        void Publish() noexcept override {
+            if (!IsCurrent()) std::terminate();
+            if (source->editMode) source->app.SelfShadowMode() = forward ? source->afterMode : source->beforeMode;
+            else source->app.ShadowDistance() = forward ? source->afterDistance : source->beforeDistance;
+            source->published = true; source->applied = forward; ++source->generation; consumed = true;
+        }
+    };
+    MmsResult Prepare(bool forward, std::unique_ptr<PreparedHistoryChange>& out) override {
+        out.reset(); return Boundary([&]() -> MmsResult {
+            if (!pool || mdl::KeyPoolIdentity(app.ShadowKeys()) != pool || forward == applied ||
+                (!published && (app.ShadowDistance() != beforeDistance || app.SelfShadowMode() != beforeMode))) return MMS_E_STALE;
+            if (generation == UINT64_MAX) return MMS_E_NOT_READY;
+            if (!std::isfinite(app.ShadowDistance())) return MMS_E_ARGUMENT;
+            out = std::make_unique<Candidate>(shared_from_this(), forward); return MMS_OK;
+        });
+    }
+    std::uint64_t RetainedBytes() const noexcept override { return sizeof(*this) + 4 * sizeof(void*); }
+};
 // Scalar records do not own mesh/key resources. Controlled import/delete records
 // retain those resources; chronological undo restores the object before its edit.
 struct AccessoryPoseChange final : HistoryChange, std::enable_shared_from_this<AccessoryPoseChange> {
@@ -486,6 +528,42 @@ MmsResult ApplyBoundCameraFov(MMDApp& app, float value, bool& changed) noexcept 
         });
         return MMS_OK;
     });
+}
+namespace {
+MmsResult ApplyBoundShadowField(MMDApp& app, float distance, int mode, bool editMode, bool& changed) noexcept {
+    changed = false;
+    return Boundary([&]() -> MmsResult {
+        auto* history = BoundNativePoseHistory(&app);
+        if (!history || !Ready(app) || !mdl::KeyPoolIdentity(app.ShadowKeys())) return MMS_E_NOT_READY;
+        if (!std::isfinite(distance) || !std::isfinite(app.ShadowDistance()) || (editMode && (mode < 0 || mode > 2))) return MMS_E_ARGUMENT;
+        if (const auto result = history->CheckNativeEdit()) return result;
+        if (editMode ? app.SelfShadowMode() == mode : app.ShadowDistance() == distance) return MMS_OK;
+        auto change = std::make_shared<ShadowPoseChange>(app, distance, mode, editMode);
+        std::unique_ptr<SharedHistory::NativeTransaction> transaction;
+        if (const auto result = history->PrepareNative(editMode ? "Edit self-shadow mode" : "Edit self-shadow distance", std::move(change), transaction)) return result;
+        if (const auto result = history->CommitNative(std::move(transaction))) return result;
+        changed = true;
+        Boundary([&]() -> MmsResult {
+            const bool selectionChanged = SelectTrack(app, curve_host::Kind::Shadow, 0);
+            PublishBoundPoseEdit(app, *history, false); RefreshBoundGlobalReadout(app);
+            if (selectionChanged && app.CameraMode() && app.MainWindow() && app.Renderer() && app.PanelDC()) PostLanguageSweep(&app);
+            return MMS_OK;
+        });
+        return MMS_OK;
+    });
+}
+}
+MmsResult ApplyBoundShadowDistance(MMDApp& app, float value, bool& changed) noexcept {
+    return ApplyBoundShadowField(app, value, app.SelfShadowMode(), false, changed);
+}
+bool TrySetBoundShadowMode(MMDApp* app, int mode) noexcept {
+    if (!app || !BoundNativePoseHistory(app)) return false;
+    bool changed = false;
+    ApplyBoundShadowField(*app, app->ShadowDistance(), mode, true, changed);
+    // A native button may have toggled before its command arrived. Restore the
+    // authored radio state on no-op or rejection without creating an edit.
+    if (!changed) RefreshBoundGlobalReadout(*app);
+    return true;
 }
 MmsResult ApplyBoundAccessoryField(MMDApp& app, unsigned slot, unsigned field, float value, bool& changed) noexcept {
     changed = false;

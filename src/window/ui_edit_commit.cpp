@@ -57,6 +57,7 @@
 #include <commctrl.h>
 #include <d3d9.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <cctype>
 #include <cmath>
@@ -253,6 +254,25 @@ bool CommitBoundAccessoryNumber(MMDApp* app, HWND edit) {
             input < 0 ? 0 : input > 1 ? 1 : input);
         bool changed = false;
         if (std::isfinite(value) && plugins::ApplyBoundAccessoryField(*app, app->SelectedAccessorySlot(), unsigned(field), value, changed) == MMS_OK && changed) return true;
+    }
+    plugins::RefreshBoundGlobalReadout(*app); return true;
+}
+bool IsShadowNumber(MMDApp* app, HWND edit) { return edit && app->MainWindow() && edit == GetDlgItem(app->MainWindow(), panel::kSelfShadowRangeEdit); }
+bool CommitBoundShadowNumber(MMDApp* app, HWND edit) {
+    if (!IsShadowNumber(app, edit) || !plugins::BoundNativePoseHistory(app)) return false;
+    if (!SendMessageA(edit, EM_GETMODIFY, 0, 0)) return true;
+    SendMessageA(edit, EM_SETMODIFY, FALSE, 0);
+    char full[256]{}; GetWindowTextA(edit, full, sizeof(full)); char* end = nullptr;
+    const double parsed = std::strtod(full, &end); const bool consumed = end && end != full;
+    while (end && std::isspace(static_cast<unsigned char>(*end))) ++end;
+    if (consumed && !*end && GetWindowTextLengthA(edit) < sizeof(full) && std::isfinite(parsed)) {
+        char legacy[8]{}; GetWindowTextA(edit, legacy, sizeof(legacy));
+        // Enhanced SetShadowSliderPosition truncates to integer then clamps.
+        // Bound before conversion to avoid undefined casts for large input.
+        const auto position = static_cast<int>((std::clamp)(std::strtod(legacy, nullptr), 0.0, 9999.0));
+        const float distance = static_cast<float>((10000.0 - position) / 100000.0);
+        bool changed = false;
+        if (plugins::ApplyBoundShadowDistance(*app, distance, changed) == MMS_OK && changed) return true;
     }
     plugins::RefreshBoundGlobalReadout(*app); return true;
 }
@@ -510,6 +530,7 @@ void CommitEditControl(MMDApp* app, HWND edit) {  // was Sub463640
     // a fresh press for the frame pump's key-registration path.
     s.state.enterKeyState = 3;
 #if !MMD_ORIGINAL_PROFILE
+    if (CommitBoundShadowNumber(app, edit)) return;
     if (CommitBoundAccessoryNumber(app, edit)) return;
     if (CommitBoundFovNumber(app, edit)) return;
     if (CommitBoundLightNumber(app, edit)) return;
@@ -713,6 +734,7 @@ LRESULT CALLBACK EditSubclassProc(HWND hWnd, UINT Msg, WPARAM wParam,
             FindCameraNumber(hWnd,base)>=0 : FindPoseNumber(hWnd,base,kind,axis));
         boundPose = boundPose || (plugins::BoundNativePoseHistory(app) && FindLightNumber(app,hWnd)>=0);
         boundPose = boundPose || (plugins::BoundNativePoseHistory(app) && IsFovNumber(app,hWnd));
+        boundPose = boundPose || (plugins::BoundNativePoseHistory(app) && IsShadowNumber(app,hWnd));
         boundPose = boundPose || (plugins::BoundNativePoseHistory(app) && FindAccessoryNumber(app,hWnd)>=0);
 #endif
         // The bound pose route consumes this flag itself, before changing any

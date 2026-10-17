@@ -38,6 +38,9 @@ MmsResult ApplyBoundCameraField(MMDApp&, unsigned field, float value, bool& chan
 MmsResult ApplyBoundLightField(MMDApp&, unsigned field, float value, bool& changed) noexcept;
 // Accessory fields: position 0..2, radians 3..5, scale 6, opacity 7.
 MmsResult ApplyBoundAccessoryField(MMDApp&, unsigned slot, unsigned field, float value, bool& changed) noexcept;
+// Self-shadow distance is authored float; mode is 0 (off), 1 or 2.
+MmsResult ApplyBoundShadowDistance(MMDApp&, float value, bool& changed) noexcept;
+bool TrySetBoundShadowMode(MMDApp*, int mode) noexcept;
 MmsResult ApplyBoundCameraFov(MMDApp&, float value, bool& changed) noexcept;
 // True consumes the bound command, including busy/invalid/no-op outcomes.
 // These read controls before planning and never enter a legacy registrar.

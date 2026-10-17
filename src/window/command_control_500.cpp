@@ -852,8 +852,11 @@ void CmdControl500(MMDApp* app, HWND hwnd, std::uint16_t id, std::uint16_t notif
         break;
     }
 
-    // ---- 562..564: coordinate-system radio group 0x232..0x234 -----------
+    // ---- 562..564: self-shadow mode radio group 0x232..0x234 ------------
     case 562: {  // 0x48D84F (0xA0D30 = 0)
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::TrySetBoundShadowMode(app, 0)) break;
+#endif
         SendMessageA(GetDlgItem(hwnd, panel::kEditOffCheckbox), BM_SETCHECK, 1, 0);
         SendMessageA(GetDlgItem(hwnd, panel::kEditMode1Checkbox), BM_SETCHECK, 0, 0);
         SendMessageA(GetDlgItem(hwnd, panel::kEditMode2Checkbox), BM_SETCHECK, 0, 0);
@@ -862,6 +865,9 @@ void CmdControl500(MMDApp* app, HWND hwnd, std::uint16_t id, std::uint16_t notif
         break;
     }
     case 563: {  // 0x48D8C1 (0xA0D30 = 1)
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::TrySetBoundShadowMode(app, 1)) break;
+#endif
         SendMessageA(GetDlgItem(hwnd, panel::kEditOffCheckbox), BM_SETCHECK, 0, 0);
         SendMessageA(GetDlgItem(hwnd, panel::kEditMode1Checkbox), BM_SETCHECK, 1, 0);
         SendMessageA(GetDlgItem(hwnd, panel::kEditMode2Checkbox), BM_SETCHECK, 0, 0);
@@ -870,6 +876,9 @@ void CmdControl500(MMDApp* app, HWND hwnd, std::uint16_t id, std::uint16_t notif
         break;
     }
     case 564: {  // 0x48D933 (0xA0D30 = 2)
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::TrySetBoundShadowMode(app, 2)) break;
+#endif
         SendMessageA(GetDlgItem(hwnd, panel::kEditOffCheckbox), BM_SETCHECK, 0, 0);
         SendMessageA(GetDlgItem(hwnd, panel::kEditMode1Checkbox), BM_SETCHECK, 0, 0);
         SendMessageA(GetDlgItem(hwnd, panel::kEditMode2Checkbox), BM_SETCHECK, 1, 0);
