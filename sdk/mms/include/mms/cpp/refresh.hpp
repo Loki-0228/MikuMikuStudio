@@ -128,6 +128,15 @@ public:
         request.coalesceKey = coalesceKey;
         return Request(request, out);
     }
+    // STATE has no coordinates. Keep instance/project checks while accepting
+    // the current layout, including a previous reserved-slot visibility change.
+    MmsResult RefreshStateCurrent(const MmsUiTargetRefV1& target, RefreshTicket& out,
+        std::uint64_t coalesceKey = 0) const noexcept {
+        MmsUiRefreshRequestV1 request{}; request.h = Header<MmsUiRefreshRequestV1>();
+        request.target = target; request.kinds = MMS_UI_REFRESH_STATE;
+        request.scope = MMS_UI_REFRESH_SELF; request.coalesceKey = coalesceKey;
+        return Request(request, out);
+    }
     // UI-only convenience for a simple command callback. Worker callers must
     // use an already captured target with Repaint/RepaintRects instead.
     MmsResult RepaintElement(MmsHandle element, RefreshTicket& out,

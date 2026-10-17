@@ -1,6 +1,6 @@
 # 插件界面样式、绘制与动画接口方案
 
-本文固定界面需求和建议接口。基础 C++17 包装、REPAINT + SELF 及按钮启用/选中的首阶段 STATE 已接入，实际接口以 SDK 为准。显隐依赖、其余新增服务、刷新绑定、绘制层和动画函数仍为提案。
+本文固定界面需求和建议接口。基础 C++17 包装、REPAINT + SELF 及按钮启用、选中及保留槽位显隐的 STATE 已接入，实际接口以 SDK 为准。收缩空位的显隐依赖、其余新增服务、刷新绑定、绘制层和动画函数仍为提案。
 本方案不改变普通宿主的 `mms.edit` 开放状态，也不把界面动画记入场景撤销历史。
 跨 UI、视口和数据工具的分层封装以[统一扩展架构](PLUGIN_EXTENSION_ARCHITECTURE.md)为准；本页重点规定 UI 对象、刷新和交互。
 
@@ -27,7 +27,7 @@ Win7 SP1 x64、CPU 绘制和 AMD 兼容是基础约束；不以 CUDA、NVAPI、A
 
 [重绘 SDK](../sdk/mms/cpp-refresh.md)用 `RefreshServices` 和 `RefreshTicket` 包装同一刷新 C 表，提供局部矩形便利方法、跨线程所有权移交及显式清理。原始票据可继续用于 C 接口，没有额外宿主实现。
 
-[界面刷新接口](../sdk/mms/refresh.md)直接使用这些原始元素句柄，当前覆盖同插件已有按钮和原生 surface 面板的重绘，以及按钮启用/选中状态。完成不表示像素已显示。纯重绘不查询命令状态；STATE 只读查询目标命令，两者均不重新布局或触发场景求值。
+[界面刷新接口](../sdk/mms/refresh.md)直接使用这些原始元素句柄，当前覆盖同插件已有按钮和原生 surface 面板的重绘，以及按钮启用、选中和保留槽位内显隐状态。完成不表示像素已显示。纯重绘不查询命令状态；STATE 只读查询目标命令，两者均不重新布局或触发场景求值。
 
 | 已有能力 | 实际范围与代码依据 |
 | --- | --- |
@@ -70,7 +70,7 @@ Win7 SP1 x64、CPU 绘制和 AMD 兼容是基础约束；不以 CUDA、NVAPI、A
 | 服务 ID | 当前或建议函数 | 用途 |
 | --- | --- | --- |
 | `mms.events` | `subscribe(filter, callback, context, outToken)`、`unsubscribe(token)`、`publish(topic, payload)` | 按主题和可选对象筛选事件，支持非控件触发。 |
-| `mms.ui.refresh` | 已实现 `getCapabilities`、`getTarget`、`request`、`query`、`cancel`、`release` | 当前只合并本插件目标自身的局部重绘。`bind`、`unbind` 及依赖刷新仍为后续扩展。 |
+| `mms.ui.refresh` | 已实现 `getCapabilities`、`getTarget`、`request`、`query`、`cancel`、`release` | 当前合并本插件目标自身的重绘及受支持的按钮状态刷新。`bind`、`unbind` 及依赖刷新仍为后续扩展。 |
 | `mms.ui.geometry` | `resolve(elementId, outTarget)`、`acquire(targets, outSnapshot)`、`releaseSnapshot(lease)`、`mapPoints(snapshot, from, to, points, outPoints)` | 查询目标、不可变几何和跨区域坐标。 |
 | `mms.ui.style` | `getCapabilities(target, outCaps)`、`acquireComputed(target, outStyle)`、`releaseStyle(lease)`、`createOverride(desc, outHandle)`、`updateOverride(handle, desc)`、`removeOverride(handle)` | 查询和覆盖可用样式，不直接替换窗口过程。 |
 | `mms.ui.paint` | `getCapabilities(target, outCaps)`、`createLayer(desc, outLayer)`、`createResource(desc, outResource)`、`submitDisplayList(layer, list)`、`releaseResource(handle)`、`destroyLayer(layer)` | 创建受限绘制层并提交保留的绘制指令；提交产生的损伤交给统一刷新服务。 |
@@ -128,7 +128,7 @@ C 包装返回同一底层句柄的带类型引用，C++ 包装增加可移动 R
 | 最小宽度、伸缩、换行、折叠 | 同一布局服务处理，用户保存的覆盖优先于插件默认值。 |
 | 快捷键、焦点及辅助信息 | 命令快捷键与原生或开放的输入能力；冲突返回诊断，不能私自安装全局钩子。 |
 | 属性类型、范围、面板 | 属性注册、读值绑定、面板 surface 和同一 UI 元素；写入须接共同事务。 |
-| 依赖及刷新偏好 | 后续 `mms.ui.refresh.bind` 提案建立数据到状态、布局及绘制的依赖；当前只有显式 REPAINT 请求。 |
+| 依赖及刷新偏好 | 后续 `mms.ui.refresh.bind` 提案建立数据到状态、布局及绘制的依赖；当前只有显式 REPAINT 和受限按钮 STATE 请求。 |
 
 宿主负责空间不足时的折叠与可达入口。暂不具备溢出能力时，SDK 必须回退到已声明的菜单位置或返回不支持；不能静默丢失命令。
 
@@ -140,7 +140,7 @@ C 包装返回同一底层句柄的带类型引用，C++ 包装增加可移动 R
 | --- | --- | --- |
 | `REPAINT` | 已实现：标记目标客户区的损伤区域，由窗口正常绘制。 | 不重新取数据、不求值场景、不推进时间。 |
 | `DATA` | 待实现：通过绑定读取变化的数据快照，替换 UI 的只读显示模型。 | 不写工程，不同步读取大文件，不自动计算整个场景。 |
-| `STATE` | 首阶段已实现按钮启用与选中；回调提出显隐变化时先拒绝。标签、属性内容、面板与显隐依赖待接入。 | 不调用命令，不在查询中提交编辑，不重排控件。 |
+| `STATE` | 已实现按钮启用、选中及保留槽位显隐；未保留槽位的显隐先拒绝。标签、属性内容、面板与重排依赖待接入。 | 不调用命令，不在查询中提交编辑，不重排控件。 |
 | `LAYOUT` | 待实现：重新测量并排列受影响区域，发布完成的几何。 | 不保存一次新的用户布局，不自动增加历史。 |
 
 ### 已实现的重绘与票据
@@ -151,9 +151,9 @@ C 包装返回同一底层句柄的带类型引用，C++ 包装增加可移动 R
 
 布局移动前暂停目标，失败后保持未就绪。暂停不改变修订；重新发布时只有实际位置、尺寸、窗口 DPI 或逻辑可见性变化才改变几何修订。隐藏但已有窗口的目标可以合法重绘，请求不会显示它或创建新视图。
 
-相同 owner、目标引用、kinds 和 coalesceKey 的待执行贡献可合并，同组 STATE 只查询一次。不同 kinds 独立执行，避免状态失败吞掉纯重绘。每个 ticket 独立完成、取消或失败。COMPLETED 表示请求的状态或区域失效操作完成，不保证已收到 WM_PAINT。release 不取消贡献。
+相同 owner、目标引用、kinds、coalesceKey 和几何约束策略的待执行贡献可合并，同组 STATE 只查询一次。不同 kinds 独立执行，避免状态失败吞掉纯重绘。每个 ticket 独立完成、取消或失败。COMPLETED 表示请求的状态或区域失效操作完成，不保证已收到 WM_PAINT。release 不取消贡献。
 
-STATE 回调和原生状态应用保持只读保护，不继承命令编辑来源。在该 UI 调用链中重新提交 STATE 返回 BUSY，后台请求仍通过队列。回调后及每组执行前重新校验目标；同值不重复修改原生状态。显隐变化在任何控件状态修改前返回 UNSUPPORTED，等待后续布局依赖实现。
+STATE 回调和原生状态应用保持只读保护，不继承命令编辑来源。在该 UI 调用链中重新提交 STATE 返回 BUSY，后台请求仍通过队列。回调后及每组执行前重新校验目标；同值不重复修改原生状态。显隐仅在有效 PRESERVE_HIDDEN_SLOT 槽位内执行；不移动相邻控件，不修改用户布局偏好。新目标及布局快照发布新的逻辑可见性和几何修订，旧租约保持原值。无保留槽位的变化在任何控件状态修改前返回 UNSUPPORTED；布局尚未重新发布时返回 NOT_READY。
 
 当前按插件限制 256 个保留票据、256 KiB 队列字节，每请求最多 32 个矩形，每次安全点最多处理 64 个贡献。运行期值由能力查询提供。未释放终态仍占用记录配额，立即释放待执行票据也不能绕过上限。停止会拒绝新请求并取消待执行贡献，已有引用仍需释放，未排空时宿主保留 DLL。
 

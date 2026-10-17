@@ -29,6 +29,7 @@
 | P2 | 统一刷新首阶段 REPAINT + SELF | 本机已验证 | `mms.ui.refresh` 支持本插件已有按钮与 surface 面板的后台局部重绘请求、合并、独立取消及票据保活；实例、工程代次与实际几何校验。刷新专项 7,229 次断言及真实 Manager DLL 路径通过，DATA/STATE/LAYOUT、绑定和依赖范围仍未实现，见[验证记录](records/abi-ui-refresh-2026-10-17.md)。 |
 | P2 | 同一刷新 C ABI 的 C++17 SDK | 本机已验证 | `RefreshServices` 提供单调用整目标与局部矩形请求；`RefreshTicket` 管理原句柄，支持移动、取消、释放失败重试及显式移交。刷新专项累计 7,349 次断言、既有 ABI 1,694 项与真实改名宿主通过；没有开放新的刷新种类，见[验证记录](records/abi-refresh-sdk-2026-10-17.md)。 |
 | P2 | 按钮启用/选中的 STATE 首阶段 | 本机已验证 | 同一票据支持后台 STATE 和 STATE/REPAINT 组合；只读查询目标命令，拒绝显隐变化，抑制 UI 回调中的 STATE 递归，旧刷新及布局延后到回调外。刷新专项累计 7,523 次断言、Enter/Space、真实 DLL 和混合历史回归通过。完整 STATE、DATA、LAYOUT 与依赖范围仍待实现，见[验证记录](records/abi-button-state-2026-10-17.md)。 |
+| P2 | 保留槽位按钮显隐与后台 STATE SDK | 本机已验证 | 在有效 PRESERVE_HIDDEN_SLOT 槽位内更新原按钮显隐、焦点及公开几何，不重排或写入布局偏好。RefreshStateCurrent 组合原 C 请求；固定几何与当前几何贡献分组。刷新专项累计 7,764 次断言、真实 DLL、改名宿主、混合历史及调度回归通过；完整 STATE、DATA 和 LAYOUT 仍待实现，见[验证记录](records/abi-slot-visibility-2026-10-17.md)。 |
 | P2 | 可写属性、声明式 INPUT | 未实现 | 依赖 P3 工程事务及撤销，当前返回 NOT_READY。 |
 | P2 | 左右侧栏、属性区、时间线、状态栏挂载 | 未实现 | 不枚举空壳挂载点。 |
 | P2 | DOCK、命令溢出菜单 | 未实现 | 返回 UNSUPPORTED。 |

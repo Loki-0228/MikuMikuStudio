@@ -165,7 +165,15 @@ static MmsResult MMS_CALL Start(void* context) {
         e.parentId = S("mms.menu.plugins"); e.commandId = command.info.id; e.kind = MMS_UI_MENU_ITEM;
         e.capabilities = MMS_UI_HIDE | MMS_UI_MOVE; r = p->ui.registerElement(p->ui.context, &e, &p->menu); if (r) return r;
         const auto buttonId = p->id + ".button"; e.id = {buttonId.data(), buttonId.size()}; e.parentId = S("mms.toolbar.main.extensions"); e.kind = MMS_UI_BUTTON;
+        if (p->id.find("reserved") != std::string::npos) e.capabilities |= MMS_UI_LAYOUT;
         r = p->ui.registerElement(p->ui.context, &e, &p->button); if (r) return r; Log(p, "GUI_REGISTERED");
+        if (p->id.find("reserved") != std::string::npos) {
+            MmsUiLayoutApiV1 layout{};
+            r = p->host.queryService(p->host.context, S("mms.ui.layout"), 1, 0, sizeof(layout), &layout); if (r) return r;
+            MmsUiLayoutHintsV1 hints{}; hints.h = H<MmsUiLayoutHintsV1>(); hints.flags = MMS_HINT_PRESERVE_HIDDEN_SLOT;
+            hints.preferred[0] = 100; hints.preferred[1] = 24;
+            r = layout.setDefaultHints(layout.context, {buttonId.data(), buttonId.size()}, &hints); if (r) return r;
+        }
     }
     if (p->id.find("queue") != std::string::npos) {
         auto* run = new Task{p}; auto* cancel = new Task{p};

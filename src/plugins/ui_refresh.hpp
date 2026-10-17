@@ -25,8 +25,9 @@ struct RefreshPresentation {
     std::uint32_t dpi = 96;
     float x = 0, y = 0, width = 0, height = 0;
     bool visible = false;
-    // Only host-owned buttons opt in. STATE does not yet change visibility.
+    // Host-owned buttons opt in. Visibility is mutable only in a reserved slot.
     bool stateRefresh = false, stateVisible = true;
+    bool stateVisibility = false, layoutVisible = true;
 };
 class UiRefreshQueue {
     struct Target;

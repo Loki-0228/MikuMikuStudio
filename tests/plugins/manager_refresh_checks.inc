@@ -46,10 +46,10 @@ struct Window {
     }
     ~Window() { if (value) { auto menu = GetMenu(value); SetMenu(value, nullptr); if (menu) DestroyMenu(menu); DestroyWindow(value); } }
 };
-static void Run(const fs::path& root, const fs::path& lifecycleDll, bool stopPending) {
-    const auto directory = root / (stopPending ? "refresh-manager-pending" : "refresh-manager-completed");
+static void Run(const fs::path& root, const fs::path& lifecycleDll, bool stopPending, bool reserved = false) {
+    const auto directory = root / (reserved ? "refresh-manager-reserved" : stopPending ? "refresh-manager-pending" : "refresh-manager-completed");
     const auto package = directory / "PLUGINS" / "fixture";
-    const std::string id = "org.example.gui-refresh";
+    const std::string id = reserved ? "org.example.gui-refresh-reserved" : "org.example.gui-refresh";
     fs::create_directories(package); fs::copy_file(lifecycleDll, package / "refresh-lifecycle.dll");
     Write(package / "plugin.json", ManifestText(id, "refresh-lifecycle.dll"));
     std::vector<std::string> logs; bool allow = false; unsigned guardCalls = 0;
@@ -100,6 +100,15 @@ static void Run(const fs::path& root, const fs::path& lifecycleDll, bool stopPen
     CHECK(manager.Ui().Revision() == revision && probe.Read().geometryRevision == geometry && !manager.CanInvokeEdit()); probe.ReleaseWorker();
     CHECK(probe.setState(1, 0, 1) == MMS_OK); probe.Complete(MMS_UI_REFRESH_STATE); probe.ReleaseWorker();
     CHECK(IsWindowEnabled(button) && SendMessageW(button, BM_GETCHECK, 0, 0) == BST_UNCHECKED);
+    if (reserved) {
+        RECT before{}, after{}; CHECK(GetWindowRect(button, &before));
+        const auto preferences = manager.Ui().PreferencesRevision();
+        CHECK(probe.setState(1, 1, 0) == MMS_OK); probe.Complete(MMS_UI_REFRESH_STATE);
+        CHECK(!IsWindowVisible(button)); probe.ReleaseWorker();
+        CHECK(probe.setState(1, 0, 1) == MMS_OK); probe.Complete(MMS_UI_REFRESH_STATE);
+        CHECK(IsWindowVisible(button) && GetWindowRect(button, &after) && EqualRect(&before, &after)); probe.ReleaseWorker();
+        CHECK(manager.Ui().Revision() == revision && manager.Ui().PreferencesRevision() == preferences);
+    }
     allow = !stopPending; click();
     if (!stopPending) probe.Complete();
     CHECK(!manager.Stop());
@@ -119,4 +128,5 @@ static void Run(const fs::path& root, const fs::path& lifecycleDll, bool stopPen
 static void ManagerRefreshChecks(const fs::path& root, const fs::path& lifecycleDll) {
     manager_refresh_checks::Run(root, lifecycleDll, false);
     manager_refresh_checks::Run(root, lifecycleDll, true);
+    manager_refresh_checks::Run(root, lifecycleDll, false, true);
 }

@@ -45,7 +45,8 @@ MmsResult result = refresh.RepaintRect(target, dirty, ticket, 17);
 | `Repaint(target, ticket, key=0)` | 整个目标客户区，几何修订为 0，允许执行时几何变化；仍检查实例、工程和就绪状态。 |
 | `RepaintElement(element, ticket, key=0)` | UI 线程便利入口，用原元素句柄查询目标后提交整目标请求；工作线程仍使用已捕获目标。 |
 | `RepaintRect(target, rect, ticket, key=0)` | 一个局部 DIP 矩形，自动填写捕获时的几何修订。 |
-| `RefreshState(target, ticket, key=0)` | 请求按钮启用与选中刷新，自动填写目标几何修订；面板及显隐变化不支持。 |
+| `RefreshState(target, ticket, key=0)` | 请求按钮状态刷新，严格匹配捕获的几何修订。支持启用、选中及保留槽位内的显隐。 |
+| `RefreshStateCurrent(ref, ticket, key=0)` | 使用原目标引用提交无坐标 STATE，接受执行时的有效几何。适合工作线程在显隐变化后继续使用同一实例及工程引用。 |
 | `RepaintRects(target, rects, count, ticket, key=0)` | 多个局部 DIP 矩形；count=0 等同整目标请求。 |
 | `Request(request, ticket)` | 原样提交完整 C 请求，调用者填写结构头和字段。 |
 
@@ -53,7 +54,18 @@ MmsResult result = refresh.RepaintRect(target, dirty, ticket, 17);
 
 输出票据必须为空。已有票据时返回 BUSY，不向宿主提交或覆盖旧句柄。接受后直接保存原句柄，不再分配内存。未挂载、暂停或停止仍返回 NOT_READY；数据、布局及超出当前按钮范围的状态仍返回 UNSUPPORTED。
 
-提交返回 OK 只代表入队。RefreshState 的显隐不支持、回调失败或执行时过期由 Query 返回的终态和 result 表达，不能只检查提交结果。
+提交返回 OK 只代表入队。不支持的显隐、回调失败或执行时过期由 Query 返回的终态和 result 表达，不能只检查提交结果。`RefreshStateCurrent` 不绕过实例、工程、ready 或有效布局提示检查；工程切换或实例重建后仍须重新取得目标。
+
+需要动态显隐且保留空位的声明式按钮，可在注册时指定现有布局提示：
+
+```cpp
+MmsUiLayoutHintsV1 hints{};
+hints.h = mms::sdk::Header<MmsUiLayoutHintsV1>();
+hints.flags = MMS_HINT_PRESERVE_HIDDEN_SLOT;
+spec.button.hints = &hints; // spec 是 CommandUiSpec；注册调用复制提示。
+```
+
+用户布局覆盖仍可改变有效提示。隐藏保留槽位，不触发重新排版；恢复不显示隐藏的父区域。显隐改变几何修订，使用严格 `RefreshState` 或局部矩形前应重新捕获目标；无坐标后台状态请求可用 `RefreshStateCurrent(target.target, ticket)`。
 
 ## 查询和清理
 

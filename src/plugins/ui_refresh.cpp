@@ -243,10 +243,11 @@ void UiRefreshQueue::Drain() {
                 continue;
             }
             auto group = std::find_if(groups.begin(), groups.end(), [&](const auto& g) {
-                return g.owner == ticket.owner && SameRef(g.ref, ticket.target) && g.key == ticket.key && g.kinds == ticket.kinds;
+                return g.owner == ticket.owner && SameRef(g.ref, ticket.target) && g.key == ticket.key && g.kinds == ticket.kinds &&
+                    g.fixedGeometry == (ticket.expectedGeometry != 0);
             });
             if (group == groups.end()) {
-                groups.push_back({target->second, ticket.owner, ticket.target, ticket.key, ticket.kinds, {}, {}, false, false}); group = std::prev(groups.end());
+                groups.push_back({target->second, ticket.owner, ticket.target, ticket.key, ticket.kinds, {}, {}, false, ticket.expectedGeometry != 0}); group = std::prev(groups.end());
             }
             group->tickets.push_back(it->first); group->whole |= ticket.whole;
             group->fixedGeometry |= ticket.expectedGeometry != 0;
@@ -280,9 +281,11 @@ void UiRefreshQueue::Drain() {
                 } } guard{*this};
                 const auto r = registry_.WithElementState(group.ref.element, [&](const MmsCommandStateV1& state) -> MmsResult {
                     if (const auto check = validate(true)) return check;
-                    // Visibility requires a layout dependency. Reject before any
-                    // native change until that dependency can be committed safely.
-                    if (bool(state.visible) != group.target.presentation.stateVisible) return MMS_E_UNSUPPORTED;
+                    const bool visibilityChanged = bool(state.visible) != group.target.presentation.stateVisible;
+                    // Only an existing reserved slot can change visibility without
+                    // measurement, sibling reflow or viewport changes.
+                    if (visibilityChanged && !group.target.presentation.stateVisibility) return MMS_E_UNSUPPORTED;
+                    if (visibilityChanged) if (const auto check = registry_.CheckVisibilityPublication(group.ref.element)) return check;
                     HWND window = group.target.presentation.window;
                     if (!IsWindow(window)) return MMS_E_STALE;
                     if (bool(IsWindowEnabled(window)) != bool(state.enabled)) EnableWindow(window, state.enabled);
@@ -292,7 +295,34 @@ void UiRefreshQueue::Drain() {
                     if (SendMessageW(window, BM_GETCHECK, 0, 0) != checked) SendMessageW(window, BM_SETCHECK, checked, 0);
                     if (const auto check = validate(true)) return check;
                     if (!IsWindow(window)) return MMS_E_STALE;
-                    return bool(IsWindowEnabled(window)) == bool(state.enabled) && SendMessageW(window, BM_GETCHECK, 0, 0) == checked ? MMS_OK : MMS_E_FAILED;
+                    if (visibilityChanged) {
+                        const bool shown = state.visible && group.target.presentation.layoutVisible;
+                        if (bool(GetWindowLongPtrW(window, GWL_STYLE) & WS_VISIBLE) != shown) ShowWindow(window, shown ? SW_SHOWNA : SW_HIDE);
+                        if (!shown && GetFocus() == window) {
+                            HWND parent = GetParent(window), next = GetNextDlgTabItem(parent, window, FALSE);
+                            if (next && next != window && IsWindowVisible(next) && IsWindowEnabled(next)) SetFocus(next);
+                            else if (parent) SetFocus(parent);
+                        }
+                        if (const auto check = validate(true)) {
+                            std::lock_guard<std::mutex> lock(mutex_);
+                            auto target = targets_.find(group.ref.element);
+                            if (target != targets_.end() && target->second.generation == group.ref.instanceGeneration) target->second.suspended = true;
+                            return check;
+                        }
+                        if (!IsWindow(window)) return MMS_E_STALE;
+                        if (bool(GetWindowLongPtrW(window, GWL_STYLE) & WS_VISIBLE) != shown) return MMS_E_FAILED;
+                        std::lock_guard<std::mutex> lock(mutex_);
+                        auto& target = targets_.at(group.ref.element);
+                        const auto result = registry_.PublishVisibility(group.ref.element, shown);
+                        if (result) { target.suspended = true; return result; }
+                        if (target.presentation.visible != shown) target.geometry = nextGeometry_++;
+                        target.presentation.visible = shown; target.presentation.stateVisible = state.visible != 0;
+                        group.target.geometry = target.geometry;
+                        group.target.presentation.visible = shown; group.target.presentation.stateVisible = state.visible != 0;
+                    }
+                    const bool applied = bool(IsWindowEnabled(window)) == bool(state.enabled) && SendMessageW(window, BM_GETCHECK, 0, 0) == checked;
+                    if (const auto check = validate(true)) return check;
+                    return IsWindow(window) ? (applied ? MMS_OK : MMS_E_FAILED) : MMS_E_STALE;
                 });
                 if (r) return r;
                 completed |= MMS_UI_REFRESH_STATE;

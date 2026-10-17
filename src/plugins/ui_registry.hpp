@@ -124,5 +124,7 @@ public:
     bool ExistingSurface(const std::string& element, SurfacePresentation&) const noexcept;
     struct Geometry { float x, y, width, height; bool visible, overflowed; };
     bool PublishGeometry(const std::map<std::string, Geometry>&, uint64_t revision);
+    MmsResult CheckVisibilityPublication(MmsHandle) const noexcept;
+    MmsResult PublishVisibility(MmsHandle, bool visible) noexcept;
 };
 }

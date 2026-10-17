@@ -18,7 +18,7 @@ struct NativeUi::Impl {
     bool visible = true, refreshing = false, presentationPending = false;
     std::map<std::string, unsigned> ids;
     std::map<unsigned, std::pair<std::string, uint64_t>> dispatch;
-    struct Control { HWND window = nullptr; MmsHandle element = 0; uint64_t instance = 0; bool stateVisible = true; };
+    struct Control { HWND window = nullptr; MmsHandle element = 0; uint64_t instance = 0; bool stateVisible = true, layoutVisible = true; };
     std::map<std::string, Control> controls;
     std::vector<std::string> toolbarOrder;
     std::vector<std::string> panelOrder;
@@ -233,10 +233,13 @@ struct NativeUi::Impl {
         return {std::clamp(w, minimumWidth, std::max(minimumWidth, h.maximum[0] ? h.maximum[0] : 32768)),
                 std::clamp(v, minimumHeight, std::max(minimumHeight, h.maximum[1] ? h.maximum[1] : 32768))};
     }
-    native_ui::Node LayoutNode(const std::string& id, HDC dc) {
+    native_ui::Node LayoutNode(const std::string& id, HDC dc, bool ancestorsVisible = true) {
         const auto& e = registry.elements.at(id); const auto& hints = e.effectiveHints;
         native_ui::Node node; node.id = id; MmsCommandStateV1 state{}; node.visible = State(e, state);
-        if (auto control = controls.find(id); control != controls.end()) control->second.stateVisible = state.visible != 0;
+        if (auto control = controls.find(id); control != controls.end()) {
+            control->second.stateVisible = state.visible != 0;
+            control->second.layoutVisible = ancestorsVisible && e.visible;
+        }
         auto& h = node.hints; h.flow = native_ui::Flow(hints.flow); h.columns = hints.columns; h.align = hints.align;
         h.minimum = {hints.minimum[0], hints.minimum[1]}; h.preferred = {hints.preferred[0], hints.preferred[1]}; h.maximum = {hints.maximum[0], hints.maximum[1]};
         h.grow = {hints.grow[0], hints.grow[1]}; h.shrink = {hints.shrink[0], hints.shrink[1]};
@@ -244,7 +247,7 @@ struct NativeUi::Impl {
         if (hints.flags & MMS_HINT_EXPLICIT_SPACING) { std::copy_n(hints.gap, 2, h.gap); std::copy_n(hints.padding, 4, h.padding); }
         if (hints.overflow == 1) h.flow = native_ui::Flow::Wrap;
         if (e.width) h.preferred.width = e.width; if (e.height) h.preferred.height = e.height;
-        if (e.desc.capabilities & MMS_UI_CONTAINER) for (const auto& child : Children(id)) node.children.push_back(LayoutNode(child, dc));
+        if (e.desc.capabilities & MMS_UI_CONTAINER) for (const auto& child : Children(id)) node.children.push_back(LayoutNode(child, dc, ancestorsVisible && node.visible));
         else {
             const bool separator = e.desc.kind == MMS_UI_SEPARATOR; auto label = Wide(String(e.desc.label)); SIZE size{};
             if (dc) GetTextExtentPoint32W(dc, label.c_str(), int(label.size()), &size);
@@ -285,6 +288,8 @@ struct NativeUi::Impl {
                 if (control == controls.end() || control->second.element != element.handle || !control->second.window) continue;
                 if (!Presentation(element, control->second.window, control->second.instance, bounds->second.visible, out)) return false;
                 out.back().stateRefresh = true; out.back().stateVisible = control->second.stateVisible;
+                out.back().stateVisibility = (element.effectiveHints.flags & MMS_HINT_PRESERVE_HIDDEN_SLOT) != 0;
+                out.back().layoutVisible = control->second.layoutVisible && visible && height > 0;
             } else if (element.desc.kind == MMS_UI_PANEL && !panelErrors.count(id)) {
                 UiRegistry::SurfacePresentation view;
                 if (!registry.ExistingSurface(id, view)) continue;

@@ -835,6 +835,23 @@ bool UiRegistry::PublishGeometry(const std::map<std::string, Geometry>& input, u
     }
     geometry_.swap(candidate); geometryUiRevision_ = revision; if (changed) ++geometryRevision_; return true;
 }
+MmsResult UiRegistry::CheckVisibilityPublication(MmsHandle handle) const noexcept {
+    if (GetCurrentThreadId() != thread_) return MMS_E_THREAD;
+    for (const auto& [id, e] : elements) if (e.handle == handle) {
+        if (!(e.desc.capabilities & MMS_UI_LAYOUT)) return MMS_OK;
+        return geometryUiRevision_ == revision_ && geometry_.count(id) ? MMS_OK : MMS_E_NOT_READY;
+    }
+    return MMS_E_STALE;
+}
+MmsResult UiRegistry::PublishVisibility(MmsHandle handle, bool visible) noexcept {
+    if (const auto result = CheckVisibilityPublication(handle)) return result;
+    for (const auto& [id, e] : elements) if (e.handle == handle && (e.desc.capabilities & MMS_UI_LAYOUT)) {
+        auto& item = geometry_.find(id)->second;
+        if (bool(item.visible) != visible) { item.visible = visible; ++geometryRevision_; }
+        break;
+    }
+    return MMS_OK;
+}
 MmsResult UiRegistry::LayoutSnapshot(UiClient& c, MmsUiLayoutSnapshotV1* out) {
     auto check = Check(c); if (check) return check; if (!Valid(out)) return MMS_E_ARGUMENT;
     if (geometryUiRevision_ != revision_) return MMS_E_NOT_READY;

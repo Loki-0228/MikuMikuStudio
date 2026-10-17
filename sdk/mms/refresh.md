@@ -2,7 +2,7 @@
 
 `mms.ui.refresh` 1.0 为插件自己的工具栏按钮和原生 surface 面板安排异步重绘。接口定义见 [refresh.h](include/mms/refresh.h)。结构使用 `MmsHeader`、`MMS_CALL` 和 8 字节对齐，调用失败不修改输出参数。
 
-当前支持 `REPAINT + SELF`，以及已创建宿主按钮的首阶段 `STATE + SELF`。STATE 仅更新启用与选中，要求命令回调的 visible 与最近成功布局一致；显隐变化在修改控件前使票据以 FAILED/UNSUPPORTED 结束。面板不报告 STATE。DATA、LAYOUT、SUBTREE、DEPENDENTS、绑定、来源订阅和动画帧尚未提供。
+当前支持 `REPAINT + SELF`，以及已创建宿主按钮的 `STATE + SELF`。STATE 更新启用与选中；有效布局提示包含 `MMS_HINT_PRESERVE_HIDDEN_SLOT` 时，也可在现有槽位隐藏或恢复按钮。面板不报告 STATE。DATA、LAYOUT、SUBTREE、DEPENDENTS、绑定、来源订阅和动画帧尚未提供。
 
 REPAINT 在 UI 安全点调用 `InvalidateRect` 或 `InvalidateRgn`，不查询命令状态或直接执行绘制。STATE 在相同安全点只读调用该按钮的 getState，再更新原生启用与选中状态。两者均不重新布局、不调用 `FrameDriver`，不修改播放头、工程 dirty 或撤销历史。插件窗口后续的正常 `WM_PAINT` 仍由插件处理。
 
@@ -87,19 +87,25 @@ REPAINT 在 UI 安全点调用 `InvalidateRect` 或 `InvalidateRgn`，不查询�
 
 完成不表示像素已显示，也不等待 WM_PAINT。隐藏或被遮挡的窗口遵循 Windows 的正常绘制时机，服务不保证隐藏窗口保留可查询的更新区域。sourceRevision 当前始终为 0；geometryRevision 记录处理时的目标几何，执行前即失败的票据可为 0。
 
-合并只处理本批待执行贡献，要求相同插件、目标、coalesceKey 和 kinds。同组 STATE 只计算一次；任一整目标重绘贡献会覆盖同组局部矩形。不同 kinds 独立处理，STATE 失败不会吞掉另一张纯 REPAINT 票据。取消一个 PENDING 票据仅撤回自身贡献。cancel 对终态票据返回成功，不改变既有结果。
+合并只处理本批待执行贡献，要求相同插件、目标、coalesceKey、kinds 和几何约束策略。固定修订请求与接受当前几何的请求分组处理，避免过期局部请求使合法整目标请求失败。同组 STATE 只计算一次；任一整目标重绘贡献会覆盖同组局部矩形。不同 kinds 独立处理，STATE 失败不会吞掉另一张纯 REPAINT 票据。取消一个 PENDING 票据仅撤回自身贡献。cancel 对终态票据返回成功，不改变既有结果。
 
-STATE 与 REPAINT 组合时先更新状态，再提交损伤。状态回调失败或提出显隐变化时，该组合不会继续重绘；状态已成功而后续重绘失败时，FAILED 票据的 completedKinds 保留 STATE 位。UI 状态不属于工程事务，不承诺对已发生的原生窗口变化执行事务回滚。
+STATE 与 REPAINT 组合时先更新状态，再提交损伤。状态回调失败或提出不支持的显隐变化时，该组合不会继续重绘；状态已成功而后续重绘失败时，FAILED 票据的 completedKinds 保留 STATE 位。UI 状态不属于工程事务，不承诺对已发生的原生窗口变化执行事务回滚。
 
 ## 按钮状态刷新
 
-STATE 只重新查询目标按钮的命令，更新原 HWND 的 enabled 和 checked。不调用命令，不刷新共享同一命令的菜单，不读取属性或改变标签、尺寸和布局。按钮以手动选中、推按钮外观呈现；点击不会自行切换选中来源，命令 getState 仍是唯一来源。Enter 和普通命令激活保留。
+STATE 只重新查询目标按钮的命令，更新原 HWND 的 enabled、checked 和受支持的 visible。不调用命令，不刷新共享同一命令的菜单，不读取属性或改变标签、尺寸和布局。按钮以手动选中、推按钮外观呈现；点击不会自行切换选中来源，命令 getState 仍是唯一来源。Enter 和普通命令激活保留。
+
+显隐要求最近成功布局已为按钮保留正尺寸槽位，且有效布局提示包含 `MMS_HINT_PRESERVE_HIDDEN_SLOT`。用户覆盖可能移除此提示，因此目标支持 STATE 不代表支持任意显隐。缺少提示时，变化以 FAILED/UNSUPPORTED 结束；布局提示修改后尚未重新发布有效布局时，以 FAILED/NOT_READY 结束，均在修改启用和选中前拒绝。隐藏保留原位置、尺寸及相邻控件位置，不测量、不收缩空位、不触发 LAYOUT，也不修改用户布局偏好。
+
+恢复显示遵守最近布局的祖先可见性，不会显示隐藏的父区域。父区域隐藏时，按钮命令状态仍可更新，但目标逻辑 visible 保持 0。隐藏后若焦点仍在该按钮，宿主将焦点移至可用的相邻控件或父窗口；恢复不抢回焦点。
+
+逻辑可见性变化增加目标 geometryRevision，并更新 `mms.ui.layout` 新快照中的可见性和几何修订；已取得的快照租约保持原值。元素身份、实例代次、UI 修订与偏好修订保持不变。严格匹配旧几何的后续请求会过期；不含坐标的 STATE 可填 expectedGeometryRevision=0，C++ SDK 提供 `RefreshStateCurrent`。实例、工程代次及 ready 仍须有效。
 
 request 返回 OK 只表示成功入队，不在后台调用 getState。面板能力不支持时直接拒绝入队；回调输出、显隐及执行时过期错误在 UI 处理后写入票据，调用者必须用 query 检查结果。
 
 回调运行在 UI 线程，并保持只读回调保护直到状态应用结束。回调内的注册、注销及命令执行返回 BUSY，不继承编辑权限；在此 UI 调用链中再次请求 STATE 也返回 BUSY，避免刷新递归。回调必须快速返回已准备状态，不能等待需要 UI 的后台作业。
 
-宿主在回调之后、每组实际执行前重新检查实例、工程、几何和就绪状态。回调泵消息导致目标过期时，请求失败，不使用旧坐标。启用和选中未变化时，不重复发送原生状态修改。STATE 不显示隐藏窗口；未挂载或尺寸为零的目标仍为 NOT_READY。
+宿主在回调之后、每组实际执行前及原生状态应用后重新检查实例、工程、几何和就绪状态。回调泵消息导致目标过期时，请求失败，不使用旧坐标。原生显隐回调中取得的是上次发布的目标；显隐发布后，基于旧几何的局部请求会过期。显隐过程中工程切换会暂停原目标，等待正常布局重新发布。状态未变化时不重复修改原生状态。未挂载或尺寸为零的目标仍为 NOT_READY。
 
 `release` 成功后，该句柄再用于 `query`、`cancel` 或 `release` 返回 `NOT_FOUND`。已释放的待执行贡献继续运行并占用配额，终止后才回收。需要撤回贡献时先 `cancel`，再 `release`。
 
@@ -126,8 +132,8 @@ request 返回 OK 只表示成功入队，不在后台调用 getState。面板�
 | --- | --- |
 | `THREAD` | 在工作线程调用 `getCapabilities` 或 `getTarget`。 |
 | `ARGUMENT` | 非法结构、未知标志、非法矩形、非零 binding 或 sourceRevision、访问其他插件目标。 |
-| `UNSUPPORTED` | 请求 DATA、LAYOUT、SUBTREE、DEPENDENTS；目标不支持 STATE；STATE 回调提出显隐变化；或查询按钮和面板以外的元素。 |
-| `NOT_READY` | 停止中、目标未挂载、布局暂停或客户区尺寸为零。 |
+| `UNSUPPORTED` | 请求 DATA、LAYOUT、SUBTREE、DEPENDENTS；目标不支持 STATE；没有保留槽位提示的显隐变化；或查询按钮和面板以外的元素。 |
+| `NOT_READY` | 停止中、目标未挂载、布局暂停、客户区尺寸为零，或显隐需要的布局尚未重新发布。 |
 | `STALE` | 元素已注销、实例重建、工程代次或要求的几何修订不匹配。 |
 | `NOT_FOUND` | 票据不存在、已释放或属于其他插件。 |
 | `BUSY` | 配额已满、取消执行中的贡献，或在 STATE 的 UI 回调链中再次提交 STATE。 |
