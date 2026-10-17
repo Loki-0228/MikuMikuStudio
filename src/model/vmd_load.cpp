@@ -67,6 +67,9 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include "mikudancestudio/build_profile.hpp"
+#if !MMD_ORIGINAL_PROFILE
+#include "../plugins/native_vmd_import.hpp"
+#endif
 #include "mikudancestudio/bone_key_pool.hpp"
 #include "mikudancestudio/accessory_motion_io.hpp"
 #include "mikudancestudio/bone_scale.hpp"
@@ -162,6 +165,9 @@ const char kJpModelMismatch[] =  // 0x52CB48 "... %s ..."
 // ---- VA 0x00434B60 --------------------------------------------------------
 static int LoadVmdMotionPath(MMDApp* app, const char* fileName, const wchar_t* wideFileName) {
     if (app == nullptr || (!fileName && !wideFileName)) return 0;
+#if !MMD_ORIGINAL_PROFILE
+    if (plugins::RefuseBoundVmdImport(app)) return 0;
+#endif
     auto& s = *app;
     unsigned char* const model = app->SelectedModel();
 

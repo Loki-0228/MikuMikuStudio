@@ -1,3 +1,4 @@
+#include "../plugins/native_frame_lines.hpp"
 #include "mikudancestudio/undo_storage.hpp"
 #include "mikudancestudio/frame_limits.hpp"
 #include "mikudancestudio/key_pool.hpp"
@@ -218,6 +219,195 @@ void RefreshFrameLineViews(MMDApp* app) {
     InvalidateRect(hwnd, &strip, FALSE);
 }
 
+// Pure global table surgery shared by the legacy UI route and headless
+// regression oracle. UI, seeking and common-history routing remain outside.
+int ShiftGlobalKeysForFrameLine(MMDApp* app, bool camera, bool insert) {
+    if (!app) return 0;
+    const auto cur = static_cast<std::uint32_t>(app->CurrentFrame());
+    if (camera && insert) {
+        auto* keys = app->CameraKeys();
+        if(!CanInsertFrame(keys,mdl::KeyPoolCapacity(keys),1,cur))return 0;
+        int moved = 0;
+        for (std::size_t r = 0, capacity = mdl::KeyPoolCapacity(keys); r < capacity; ++r) {
+            mdl::CameraKey& key = keys[r];
+            const std::uint32_t f = key.frame;
+            if (f != 0 && f >= cur) {
+                key.frame = f + 1;
+                ++moved;
+                if (app->LastRegisteredFrame() < static_cast<std::int32_t>(f + 1))
+                app->LastRegisteredFrame() = static_cast<std::int32_t>(f + 1);
+            }
+        }
+        return moved;
+    }
+    if (camera) {
+        auto* keys = app->CameraKeys();
+        int changed = 0;
+        for (std::size_t r = 0, capacity = mdl::KeyPoolCapacity(keys); r < capacity; ++r) {
+            mdl::CameraKey& key = keys[r];
+            const std::uint32_t f = key.frame;
+
+            if (f != 0 && f == cur) {
+                // Unlink and clear (no undo for the camera table).
+                const std::int32_t prev = key.previous;
+                const std::int32_t next = key.next;
+                keys[prev].next = next;
+                keys[next].previous = prev;
+                ClearCameraKeyRecord(key);
+                ++changed;
+                continue;
+            }
+
+            const std::uint32_t f2 = key.frame;
+            if (f2 != 0 && cur < f2) {
+                const std::uint32_t nf = f2 - 1;
+                key.frame = nf;
+                ++changed;
+                if (nf == 0) {
+                    // Merge into the predecessor slot; the emptied record is
+                    // left as-is apart from its frame number.
+                    const std::int32_t prev = key.previous;
+                    mdl::CameraKey& dst = keys[prev];
+                    dst.next = key.next;
+                    CopyCameraKeyPayload(dst, key);
+                    const std::int32_t next = key.next;
+                    if (next != 0)
+                    keys[next].previous = prev;
+                }
+            }
+        }
+        return changed;
+    }
+    if (insert) {
+        int changed = 0;
+        auto* keys = app->LightKeys();
+        if(!CanInsertFrame(keys,mdl::KeyPoolCapacity(keys),1,cur))return 0;
+        for (std::size_t r = 0, capacity = mdl::KeyPoolCapacity(keys); r < capacity; ++r) {
+            mdl::LightKey& key = keys[r];
+            const std::uint32_t f = key.frame;
+            if (f != 0 && f >= cur) {
+                key.frame = f + 1;
+                ++changed;
+                if (app->LastRegisteredFrame() < static_cast<std::int32_t>(f + 1))
+                app->LastRegisteredFrame() = static_cast<std::int32_t>(f + 1);
+            }
+        }
+        return changed;
+    }
+    int changed = 0;
+    auto* keys = app->LightKeys();
+    for (std::size_t r = 0, capacity = mdl::KeyPoolCapacity(keys); r < capacity; ++r) {
+        mdl::LightKey& key = keys[r];
+        const std::uint32_t f = key.frame;
+
+        if (f != 0 && f == cur) {
+            ++changed;
+            const std::int32_t prev = key.previous;
+            const std::int32_t next = key.next;
+            keys[prev].next = next;
+            keys[next].previous = prev;
+            key.next = 0;
+            key.previous = 0;
+            key.frame = 0;
+            key.selected = 0;
+            std::memset(key.reserved1, 0, sizeof(key.reserved1));
+            continue;
+        }
+
+        const std::uint32_t f2 = key.frame;
+        if (f2 != 0 && cur < f2) {
+            const std::uint32_t nf = f2 - 1;
+            key.frame = nf;
+            ++changed;
+            if (nf == 0) {
+                const std::int32_t prev = key.previous;
+                mdl::LightKey& dst = keys[prev];
+                dst.next = key.next;
+                std::memcpy(dst.direction, key.direction,
+                sizeof(dst.direction));
+                std::memcpy(dst.color, key.color, sizeof(dst.color));
+                const std::int32_t next = key.next;
+                if (next != 0)
+                keys[next].previous = prev;
+            }
+        }
+    }
+    return changed;
+}
+
+// Pure morph table surgery, used by the legacy route and its headless oracle.
+int ShiftMorphKeysForFrameLine(MMDApp* app, bool insert) {
+    if (!app || !ActiveModel(app)) return 0;
+    const auto cur = static_cast<std::uint32_t>(app->CurrentFrame());
+    int changed = 0;
+    if (insert) {
+        unsigned char* model = ActiveModel(app);
+        const std::int32_t morphCount = mdl::Mdl(model)->morphCount;
+        mdl::MorphKey* keys = mdl::MorphKeys(model);
+        const auto morphCapacity1 = mdl::MorphKeyCapacity(mdl::MorphKeys(model));
+        if(!CanInsertFrame(keys,morphCapacity1,morphCount,cur))return 0;
+        for (int i = 0; i < morphCapacity1; ++i) {
+            mdl::MorphKey& key = keys[i];
+            const std::uint32_t f = key.frame;
+            if (f != 0 && i >= morphCount && f >= cur) {
+                key.frame = f + 1;
+                ++changed;
+                if (static_cast<std::int32_t>(mdl::Mdl(model)->maxFrame) <
+                static_cast<std::int32_t>(f) + 1)
+                mdl::Mdl(model)->maxFrame =
+                static_cast<std::int32_t>(f) + 1;
+            }
+        }
+        return changed;
+    }
+    unsigned char* model = ActiveModel(app);
+    const std::int32_t morphCount = mdl::Mdl(model)->morphCount;
+    mdl::MorphKey* keys = mdl::MorphKeys(model);
+    const auto morphCapacity2 = mdl::MorphKeyCapacity(mdl::MorphKeys(model));
+    for (int i = 0; i < morphCapacity2; ++i) {
+        mdl::MorphKey& key = keys[i];
+        const std::uint32_t f = key.frame;
+
+        if (f != 0 && i >= morphCount && f == cur) {
+            // Unlink and clear (0x43BB44..0x43BBB6); no undo.
+            ++changed;
+            const std::int32_t prev = key.previous;
+            const std::int32_t next = key.next;
+            keys[prev].next = next;
+            keys[next].previous = prev;
+            key.frame = 0;
+            key.allocated = 0;
+            key.value = 0.0f;
+            key.next = 0;
+            key.previous = 0;
+            continue;
+        }
+
+        if (f != 0 && i >= morphCount && cur < f) {
+            const std::uint32_t nf = f - 1;
+            key.frame = nf;
+            ++changed;
+            if (nf == 0) {
+                // Merge the payload (+0xC value, +0x10 used flag)
+                // into the predecessor slot (0x43BC0E..0x43BC5F);
+                // the emptied record keeps only frame 0.
+                const std::int32_t prev = key.previous;
+                mdl::MorphKey& dst = keys[prev];
+                dst.next = key.next;
+                dst.allocated = key.allocated;
+                std::memcpy(dst.reserved, key.reserved,
+                sizeof(dst.reserved));
+                dst.value = key.value;
+                const std::int32_t next = key.next;
+                if (next != 0)
+                keys[next].previous = prev;
+            }
+        }
+    }
+    return changed;
+}
+
+
 // ---- VA 0x00439E40 (was Sub439E40): insert frame line (bone / camera) ----
 // Returns the number of key records moved right by one frame (0 = no key at or
 // after the current frame, i.e. nothing to insert; the undo ring is untouched).
@@ -278,6 +468,10 @@ int ShiftBoneKeysForFrameLineInsert(MMDApp* app, std::uint32_t cur) {
 }
 
 int InsertBoneCameraFrameLine(MMDApp* app) {
+#if !MMD_ORIGINAL_PROFILE
+    int affected = 0;
+    if (plugins::TryBoundFrameLineCommand(app, 255, affected)) return affected;
+#endif
     const std::uint32_t cur = static_cast<std::uint32_t>(app->CurrentFrame());
 
     if (app->state.optflag[0] == 0) {
@@ -298,19 +492,8 @@ int InsertBoneCameraFrameLine(MMDApp* app) {
 
     // ---- camera mode: shift every camera key at frame >= cur up one
     // (0x439FBB..0x439FAA; only the 0x374 table moves)
-    auto* keys = app->CameraKeys();
-    if(!CanInsertFrame(keys,mdl::KeyPoolCapacity(keys),1,cur))return 0;
-    int moved = 0;
-    for (std::size_t r = 0, capacity = mdl::KeyPoolCapacity(keys); r < capacity; ++r) {
-        mdl::CameraKey& key = keys[r];
-        const std::uint32_t f = key.frame;
-        if (f != 0 && f >= cur) {
-            key.frame = f + 1;
-            ++moved;
-            if (app->LastRegisteredFrame() < static_cast<std::int32_t>(f + 1))
-                app->LastRegisteredFrame() = static_cast<std::int32_t>(f + 1);
-        }
-    }
+    if(!CanInsertFrame(app->CameraKeys(),mdl::KeyPoolCapacity(app->CameraKeys()),1,cur))return 0;
+    const int moved = ShiftGlobalKeysForFrameLine(app, true, true);
     ReloadModels(app);   // VA 0x0042E640 (camera key seek/evaluate)
     PanelPaint(app);
     app->SceneModified() = 1;
@@ -436,6 +619,10 @@ int ShiftBoneKeysForFrameLineDelete(MMDApp* app, std::uint32_t cur,
 }
 
 int DeleteBoneCameraFrameLine(MMDApp* app) {
+#if !MMD_ORIGINAL_PROFILE
+    int affected = 0;
+    if (plugins::TryBoundFrameLineCommand(app, 256, affected)) return affected;
+#endif
     const std::uint32_t cur = static_cast<std::uint32_t>(app->CurrentFrame());
 
     if (app->state.optflag[0] == 0) {
@@ -460,41 +647,7 @@ int DeleteBoneCameraFrameLine(MMDApp* app) {
     }
 
     // ---- camera mode (0x43A905..0x43A9B6)
-    auto* keys = app->CameraKeys();
-    int changed = 0;
-    for (std::size_t r = 0, capacity = mdl::KeyPoolCapacity(keys); r < capacity; ++r) {
-        mdl::CameraKey& key = keys[r];
-        const std::uint32_t f = key.frame;
-
-        if (f != 0 && f == cur) {
-            // Unlink and clear (no undo for the camera table).
-            const std::int32_t prev = key.previous;
-            const std::int32_t next = key.next;
-            keys[prev].next = next;
-            keys[next].previous = prev;
-            ClearCameraKeyRecord(key);
-            ++changed;
-            continue;
-        }
-
-        const std::uint32_t f2 = key.frame;
-        if (f2 != 0 && cur < f2) {
-            const std::uint32_t nf = f2 - 1;
-            key.frame = nf;
-            ++changed;
-            if (nf == 0) {
-                // Merge into the predecessor slot; the emptied record is
-                // left as-is apart from its frame number.
-                const std::int32_t prev = key.previous;
-                mdl::CameraKey& dst = keys[prev];
-                dst.next = key.next;
-                CopyCameraKeyPayload(dst, key);
-                const std::int32_t next = key.next;
-                if (next != 0)
-                    keys[next].previous = prev;
-            }
-        }
-    }
+    const int changed = ShiftGlobalKeysForFrameLine(app, true, false);
     ReloadModels(app);
     PanelPaint(app);
     app->SceneModified() = 1;
@@ -505,24 +658,18 @@ int DeleteBoneCameraFrameLine(MMDApp* app) {
 // ---- VA 0x0043B720 (was Sub43B720): insert frame line (facial / light) ---
 // Returns the number of morph/light key records moved right by one frame.
 int InsertFacialLightFrameLine(MMDApp* app) {
+#if !MMD_ORIGINAL_PROFILE
+    int affected = 0;
+    if (plugins::TryBoundFrameLineCommand(app, 257, affected)) return affected;
+#endif
     const std::uint32_t cur = static_cast<std::uint32_t>(app->CurrentFrame());
     int changed = 0;
 
     if (app->state.optflag[0] != 0) {
         // ---- light mode: shift every light key at frame >= cur up one
         // (0x43B72D..0x43B878; only the 0x378 table moves; no undo)
-        auto* keys = app->LightKeys();
-        if(!CanInsertFrame(keys,mdl::KeyPoolCapacity(keys),1,cur))return 0;
-        for (std::size_t r = 0, capacity = mdl::KeyPoolCapacity(keys); r < capacity; ++r) {
-            mdl::LightKey& key = keys[r];
-            const std::uint32_t f = key.frame;
-            if (f != 0 && f >= cur) {
-                key.frame = f + 1;
-                ++changed;
-                if (app->LastRegisteredFrame() < static_cast<std::int32_t>(f + 1))
-                    app->LastRegisteredFrame() = static_cast<std::int32_t>(f + 1);
-            }
-        }
+        if(!CanInsertFrame(app->LightKeys(),mdl::KeyPoolCapacity(app->LightKeys()),1,cur))return 0;
+        changed = ShiftGlobalKeysForFrameLine(app, false, true);
         RefreshLightPanel(app);
         PanelPaint(app);
         app->SceneModified() = 1;
@@ -532,22 +679,8 @@ int InsertFacialLightFrameLine(MMDApp* app) {
 
     // ---- facial mode: morph keys, 0x14 stride x 20000 (no undo)
     unsigned char* model = ActiveModel(app);
-    const std::int32_t morphCount = mdl::Mdl(model)->morphCount;
-    mdl::MorphKey* keys = mdl::MorphKeys(model);
-    const auto morphCapacity1 = mdl::MorphKeyCapacity(mdl::MorphKeys(model));
-    if(!CanInsertFrame(keys,morphCapacity1,morphCount,cur))return 0;
-    for (int i = 0; i < morphCapacity1; ++i) {
-        mdl::MorphKey& key = keys[i];
-        const std::uint32_t f = key.frame;
-        if (f != 0 && i >= morphCount && f >= cur) {
-            key.frame = f + 1;
-            ++changed;
-            if (static_cast<std::int32_t>(mdl::Mdl(model)->maxFrame) <
-                static_cast<std::int32_t>(f) + 1)
-                mdl::Mdl(model)->maxFrame =
-                    static_cast<std::int32_t>(f) + 1;
-        }
-    }
+    if(!CanInsertFrame(mdl::MorphKeys(model),mdl::MorphKeyCapacity(mdl::MorphKeys(model)),mdl::Mdl(model)->morphCount,cur))return 0;
+    changed = ShiftMorphKeysForFrameLine(app, true);
     SeekModelFrame(model, static_cast<int>(cur),
               app->PlaybackPhysicsMode());
     PanelPaint(app);
@@ -561,55 +694,17 @@ int InsertFacialLightFrameLine(MMDApp* app) {
 // Returns the number of morph/light key records the command changed (removed
 // from the frame line, or pulled down by one frame).
 int DeleteFacialLightFrameLine(MMDApp* app) {
+#if !MMD_ORIGINAL_PROFILE
+    int affected = 0;
+    if (plugins::TryBoundFrameLineCommand(app, 258, affected)) return affected;
+#endif
     const std::uint32_t cur = static_cast<std::uint32_t>(app->CurrentFrame());
     int changed = 0;
 
     if (app->state.optflag[0] == 0) {
         // ---- facial mode: morph keys, 0x14 stride x 20000
         unsigned char* model = ActiveModel(app);
-        const std::int32_t morphCount = mdl::Mdl(model)->morphCount;
-        mdl::MorphKey* keys = mdl::MorphKeys(model);
-        const auto morphCapacity2 = mdl::MorphKeyCapacity(mdl::MorphKeys(model));
-        for (int i = 0; i < morphCapacity2; ++i) {
-            mdl::MorphKey& key = keys[i];
-            const std::uint32_t f = key.frame;
-
-            if (f != 0 && i >= morphCount && f == cur) {
-                // Unlink and clear (0x43BB44..0x43BBB6); no undo.
-                ++changed;
-                const std::int32_t prev = key.previous;
-                const std::int32_t next = key.next;
-                keys[prev].next = next;
-                keys[next].previous = prev;
-                key.frame = 0;
-                key.allocated = 0;
-                key.value = 0.0f;
-                key.next = 0;
-                key.previous = 0;
-                continue;
-            }
-
-            if (f != 0 && i >= morphCount && cur < f) {
-                const std::uint32_t nf = f - 1;
-                key.frame = nf;
-                ++changed;
-                if (nf == 0) {
-                    // Merge the payload (+0xC value, +0x10 used flag)
-                    // into the predecessor slot (0x43BC0E..0x43BC5F);
-                    // the emptied record keeps only frame 0.
-                    const std::int32_t prev = key.previous;
-                    mdl::MorphKey& dst = keys[prev];
-                    dst.next = key.next;
-                    dst.allocated = key.allocated;
-                    std::memcpy(dst.reserved, key.reserved,
-                                sizeof(dst.reserved));
-                    dst.value = key.value;
-                    const std::int32_t next = key.next;
-                    if (next != 0)
-                        keys[next].previous = prev;
-                }
-            }
-        }
+        changed = ShiftMorphKeysForFrameLine(app, false);
         SeekModelFrame(model, static_cast<int>(cur),
                   app->PlaybackPhysicsMode());
         PanelPaint(app);
@@ -620,43 +715,7 @@ int DeleteFacialLightFrameLine(MMDApp* app) {
     }
 
     // ---- light mode: 40B records x 10000 (0x43BC64..0x43BC88)
-    auto* keys = app->LightKeys();
-    for (std::size_t r = 0, capacity = mdl::KeyPoolCapacity(keys); r < capacity; ++r) {
-        mdl::LightKey& key = keys[r];
-        const std::uint32_t f = key.frame;
-
-        if (f != 0 && f == cur) {
-            ++changed;
-            const std::int32_t prev = key.previous;
-            const std::int32_t next = key.next;
-            keys[prev].next = next;
-            keys[next].previous = prev;
-            key.next = 0;
-            key.previous = 0;
-            key.frame = 0;
-            key.selected = 0;
-            std::memset(key.reserved1, 0, sizeof(key.reserved1));
-            continue;
-        }
-
-        const std::uint32_t f2 = key.frame;
-        if (f2 != 0 && cur < f2) {
-            const std::uint32_t nf = f2 - 1;
-            key.frame = nf;
-            ++changed;
-            if (nf == 0) {
-                const std::int32_t prev = key.previous;
-                mdl::LightKey& dst = keys[prev];
-                dst.next = key.next;
-                std::memcpy(dst.direction, key.direction,
-                            sizeof(dst.direction));
-                std::memcpy(dst.color, key.color, sizeof(dst.color));
-                const std::int32_t next = key.next;
-                if (next != 0)
-                    keys[next].previous = prev;
-            }
-        }
-    }
+    changed = ShiftGlobalKeysForFrameLine(app, false, false);
     RefreshLightPanel(app);
     PanelPaint(app);
     app->SceneModified() = 1;

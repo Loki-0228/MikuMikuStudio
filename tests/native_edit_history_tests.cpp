@@ -373,15 +373,30 @@ void CrossModelJournal(){
 #include "native_model_range_checks.inc"
 #include "native_object_command_checks.inc"
 #include "native_vpd_import_checks.inc"
+#include "native_vmd_import_checks.inc"
 #include "native_shadow_ambient_checks.inc"
 #include "native_shadow_slider_checks.inc"
 #include "native_fov_slider_checks.inc"
 #include "native_light_slider_checks.inc"
 #include "native_morph_slider_checks.inc"
 #include "native_history_mode_checks.inc"
+#include "native_frame_line_checks.inc"
+#include "native_key_paste_checks.inc"
 int main(int argc,char** argv){
     std::setvbuf(stdout,nullptr,_IONBF,0);
     const auto run=[](const char* name,void(*test)()){std::printf("RUN %s\n",name);test();};
+    if(argc==2&&!std::strcmp(argv[1],"--vmd-import-only")) {
+        run("NativeVmdImportChecks",NativeVmdImportChecks);
+        std::printf("PASS native VMD import admission: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--frame-lines-only")) {
+        run("NativeFrameLineChecks",NativeFrameLineChecks);
+        std::printf("PASS native frame lines: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--key-paste-only")) {
+        run("NativeKeyPasteChecks",NativeKeyPasteChecks);
+        std::printf("PASS native key paste: %u checks\n",checks);return 0;
+    }
     if(argc==2&&!std::strcmp(argv[1],"--history-mode-only")) {
         run("NativeHistoryModeChecks",NativeHistoryModeChecks);
         std::printf("PASS native history modes: %u checks\n",checks);return 0;
@@ -491,6 +506,9 @@ int main(int argc,char** argv){
     run("NativeLightSliderChecks",NativeLightSliderChecks);
     run("NativeMorphSliderChecks",NativeMorphSliderChecks);
     run("NativeHistoryModeChecks",NativeHistoryModeChecks);
+    run("NativeVmdImportChecks",NativeVmdImportChecks);
+    run("NativeFrameLineChecks",NativeFrameLineChecks);
+    run("NativeKeyPasteChecks",NativeKeyPasteChecks);
     run("PhysicsImportChecks",PhysicsImportChecks);
     run("ImportTextureCacheChecks",ImportTextureCacheChecks);
     run("AccessoryImportChecks",AccessoryImportChecks);

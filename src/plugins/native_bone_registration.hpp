@@ -29,6 +29,8 @@ MmsResult PlanBoneRegistration(MMDApp&, unsigned modelSlot,
 MmsResult PlanBoneKeyDeletion(MMDApp&, unsigned modelSlot, bool automaticInterpolation,
     std::shared_ptr<HistoryChange>&, bool selectedAtCurrentFrame = false,
     bool allowOtherMarks = false, std::shared_ptr<DisplayKeyDeletion> display = {}) noexcept;
+MmsResult PlanBoneFrameLine(MMDApp&, unsigned modelSlot, int frame, bool insert, bool automaticInterpolation,
+    std::shared_ptr<HistoryChange>& out) noexcept;
 struct BoneRangeScaleOptions {
     std::uint32_t start = 0, end = 0;
     double scale = 1;
@@ -59,5 +61,10 @@ MmsResult PlanBoneInterpolationEdit(MMDApp&, unsigned modelSlot,
 // Production register-button route under the explicit migration binding only.
 // True also covers rejection/no-op: never fall through to the old ring.
 bool TryRegisterBoundBones(MMDApp*) noexcept;
+// Explicit model bone clipboard paste. Other copied model families are rejected
+// by the caller, not partially pasted. The plan owns both key directions and
+// scale/curve authoring; undo/redo never re-read the clipboard.
+MmsResult PlanBoneKeyPaste(MMDApp&, unsigned modelSlot, bool mirror,
+    std::shared_ptr<HistoryChange>&) noexcept;
 }
 #endif

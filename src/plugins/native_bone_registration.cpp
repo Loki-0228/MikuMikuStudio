@@ -23,6 +23,7 @@
 #include <map>
 #include <set>
 #include <stdexcept>
+#include <string>
 
 namespace mikudancestudio::plugins {
 namespace {
@@ -80,6 +81,7 @@ struct RegistrationChange final : HistoryChange, std::enable_shared_from_this<Re
     std::shared_ptr<DisplayKeyDeletion> display;
     std::vector<int> displaySelectors;
     std::vector<BoneRule> rules;
+    std::vector<std::array<char, 20>> pasteNames;
     std::vector<PosePatch> poses;
     std::vector<FlagPatch> morphFlags, displayFlags;
     std::unique_ptr<bone_curve::AuthoringState> curveBefore, curveAfter;
@@ -112,6 +114,8 @@ struct RegistrationChange final : HistoryChange, std::enable_shared_from_this<Re
         for (std::size_t index = 0; index < displaySelectors.size(); ++index)
             if (bones[index].slotIndex != displaySelectors[index]) return false;
         if (!rules.empty() && m.physicsMode != rulePhysicsMode) return false;
+        for (std::size_t index = 0; index < pasteNames.size(); ++index)
+            if (std::memcmp(bones[index].name, pasteNames[index].data(), pasteNames[index].size())) return false;
         for (const auto& rule : rules) {
             const auto& bone = bones[rule.bone];
             if (bone.type != rule.type || bone.flags != rule.flags || bone.hasRigidBody != rule.hasRigidBody ||
@@ -282,6 +286,7 @@ struct RegistrationChange final : HistoryChange, std::enable_shared_from_this<Re
         AddBytes(result, keys.capacity() * sizeof(KeyPatch)); AddBytes(result, poses.capacity() * sizeof(PosePatch));
         AddBytes(result, keyDependencies.capacity() * sizeof(unsigned)); AddBytes(result, rules.capacity() * sizeof(BoneRule));
         AddBytes(result, evaluationBones.capacity() * sizeof(unsigned));
+        AddBytes(result, pasteNames.capacity() * sizeof(std::array<char, 20>));
         AddBytes(result, displaySelectors.capacity() * sizeof(int));
         AddBytes(result, morphFlags.capacity() * sizeof(FlagPatch)); AddBytes(result, displayFlags.capacity() * sizeof(FlagPatch));
         AddBytes(result, scaleBefore.RetainedBytes()); AddBytes(result, scaleAfter.RetainedBytes());
@@ -296,20 +301,21 @@ struct RegistrationChange final : HistoryChange, std::enable_shared_from_this<Re
 struct KeyPlan {
     const mdl::ModelRecord& model;
     std::size_t capacity;
+    const std::size_t initialCapacity;
     std::map<unsigned, KeyPatch> patches;
     bool trackReads;
     mutable std::set<unsigned> reads;
     explicit KeyPlan(const mdl::ModelRecord& m, bool track = false)
-        : model(m), capacity(mdl::BoneKeyCapacity(m.boneKeys)), trackReads(track) {}
+        : model(m), capacity(mdl::BoneKeyCapacity(m.boneKeys)), initialCapacity(capacity), trackReads(track) {}
     mdl::BoneKey Read(unsigned slot) const {
-        if (trackReads && slot < capacity) reads.insert(slot);
+        if (trackReads && slot < initialCapacity) reads.insert(slot);
         const auto it = patches.find(slot); if (it != patches.end()) return it->second.after;
-        return slot < capacity ? model.boneKeys[slot] : mdl::BoneKey{};
+        return slot < initialCapacity ? model.boneKeys[slot] : mdl::BoneKey{};
     }
     mdl::BoneKey& Write(unsigned slot, bool data = true) {
         auto found = patches.find(slot);
         if (found == patches.end()) {
-            const auto original = slot < capacity ? model.boneKeys[slot] : mdl::BoneKey{};
+            const auto original = slot < initialCapacity ? model.boneKeys[slot] : mdl::BoneKey{};
             found = patches.emplace(slot, KeyPatch{slot, original, original, data}).first;
         }
         found->second.data |= data; return found->second.after;
@@ -484,10 +490,14 @@ unsigned ScaledBoneFrame(unsigned frame, const BoneRangeScaleOptions& options) {
     if (target > std::uint64_t(frame_limits::maximum)) throw std::invalid_argument("scaled bone frame overflow");
     return unsigned(target);
 }
-bool PrepareRangeRotation(const mdl::ModelRecord& model, RangeKeyCopy& copy, std::set<unsigned>& rules) {
+bool PrepareRangeRotation(const mdl::ModelRecord& model, RangeKeyCopy& copy, std::set<unsigned>& rules,
+    bool mirror = false) {
     const auto& bone = model.boneTable[copy.owner];
     if (bone.type != mdl::BoneType::FixedAxis &&
-        !(bone.type == mdl::BoneType::UnderIk && (bone.flags & mdl::kBoneFlagFixedAxis))) return true;
+        !(bone.type == mdl::BoneType::UnderIk && (bone.flags & mdl::kBoneFlagFixedAxis))) {
+        if (mirror) { copy.key.rotation[1] = -copy.key.rotation[1]; copy.key.rotation[2] = -copy.key.rotation[2]; }
+        return true;
+    }
     auto& math = d3dx::Get();
     if (!math.Load() || !math.quatToAxisAngle || !math.quatNormalize || !math.vec3Normalize) return false;
     float axis[3];
@@ -507,16 +517,22 @@ bool PrepareRangeRotation(const mdl::ModelRecord& model, RangeKeyCopy& copy, std
     const float square = rotation[3] * rotation[3];
     float sine = square <= 1 ? std::sqrt(1 - square) : 0;
     if (square > 1) rotation[3] = 1;
+    // Follow the mirrored registrar's exact comparison order. Reflecting the
+    // input quaternion first differs when the projection dot is exactly zero.
+    if (mirror) { sourceAxis[0] = -sourceAxis[0]; sine = -sine; }
     const float dot = axis[0] * sourceAxis[0] + axis[1] * sourceAxis[1] + axis[2] * sourceAxis[2];
     const float lengthA = std::sqrt(axis[0]*axis[0] + axis[1]*axis[1] + axis[2]*axis[2]);
     const float lengthB = std::sqrt(sourceAxis[0]*sourceAxis[0] + sourceAxis[1]*sourceAxis[1] + sourceAxis[2]*sourceAxis[2]);
     if (dot / (lengthA * lengthB) < 0) sine = -sine;
     for (int coordinate = 0; coordinate < 3; ++coordinate) rotation[coordinate] = sine * axis[coordinate];
+    if (mirror) { rotation[1] = -rotation[1]; rotation[2] = -rotation[2]; }
     math.quatNormalize(rotation, rotation);
+    // FillMirroredBoneRecord reflects the corrected native payload once more.
+    if (mirror) { rotation[1] = -rotation[1]; rotation[2] = -rotation[2]; }
     for (auto value : copy.key.rotation) if (!std::isfinite(value)) throw std::invalid_argument("invalid fixed-axis rotation");
     return true;
 }
-void InsertRangeCopy(KeyPlan& plan, const RangeKeyCopy& copy, unsigned start, unsigned& cursor,
+unsigned InsertRangeCopy(KeyPlan& plan, const RangeKeyCopy& copy, unsigned start, unsigned& cursor,
                      RegistrationChange& change) {
     unsigned current = copy.owner;
     for (std::size_t hops = 0; plan.Read(current).frame < copy.frame && plan.Read(current).next; ++hops) {
@@ -531,8 +547,9 @@ void InsertRangeCopy(KeyPlan& plan, const RangeKeyCopy& copy, unsigned start, un
         while (std::uint64_t(cursor) < mdl::kBoneKeyCapacityLimit && plan.Read(cursor).frame) ++cursor;
         if (std::uint64_t(cursor) >= mdl::kBoneKeyCapacityLimit) throw std::bad_alloc();
         target = cursor;
+        plan.capacity = (std::max)(plan.capacity, std::size_t(target) + 1);
         auto& key = plan.Write(target);
-        if (appended) { plan.Write(current).next = target; key.previous = current; }
+        if (appended) { plan.Write(current).next = target; key.previous = current; key.next = 0; }
         else {
             plan.Write(existing.previous).next = target; key.previous = existing.previous;
             plan.Write(current).previous = target; key.next = current;
@@ -550,7 +567,101 @@ void InsertRangeCopy(KeyPlan& plan, const RangeKeyCopy& copy, unsigned start, un
     // RegisterBoneKey bumps by target frame only on append. Its overwrite and
     // insert-before branches retain the original raw-offset maximum quirk.
     change.maxAfter = (std::max)(change.maxAfter, appended ? copy.frame : start);
+    return target;
 }
+}
+MmsResult PlanBoneKeyPaste(MMDApp& app, unsigned slot, bool mirror,
+    std::shared_ptr<HistoryChange>& out) noexcept {
+    out.reset();
+    return Boundary([&]() -> MmsResult {
+        if (!ReadyForKeyPlan(app, slot)) return MMS_E_NOT_READY;
+        const auto count = app.ClipboardCounts().bones;
+        if (!count) return MMS_OK;
+        if (!app.BoneClipboard() || count > mdl::kBoneKeyCapacityLimit || app.CurrentFrame() < 0)
+            return MMS_E_ARGUMENT;
+        const auto& model = *mdl::Mdl(app.ModelSlot(slot));
+        KeyPlan plan(model, true);
+        const auto owners = ValidateOwners(plan);
+        std::vector<std::string> names;
+        std::set<std::string> unique;
+        auto change = NewKeyChange(app, slot);
+        // Freeze the name table which selected the destination, including
+        // unmatched names and the native suffix-only left/right search.
+        for (unsigned bone = 0; bone < model.boneCount; ++bone) {
+            const auto length = strnlen_s(model.boneTable[bone].name, sizeof(model.boneTable[bone].name));
+            if (length == sizeof(model.boneTable[bone].name)) return MMS_E_ARGUMENT;
+            names.emplace_back(model.boneTable[bone].name, length);
+            if (!unique.emplace(names.back()).second) return MMS_E_ARGUMENT;
+            std::array<char, 20> name{};
+            std::memcpy(name.data(), model.boneTable[bone].name, name.size());
+            change->pasteNames.push_back(name);
+        }
+        const auto find = [&](const std::string& source) -> int {
+            if (mirror) for (const auto& markers : {std::pair<const char*, const char*>{"\x8d\xb6", "\x89\x45"},
+                                                   {"\x89\x45", "\x8d\xb6"}}) {
+                const auto hit = source.find(markers.first);
+                if (hit == std::string::npos) continue;
+                for (unsigned bone = 0; bone < names.size(); ++bone) {
+                    const auto other = names[bone].find(markers.second);
+                    if (other != std::string::npos && source.substr(hit + 2) == names[bone].substr(other + 2))
+                        return int(bone);
+                }
+            }
+            for (unsigned bone = 0; bone < names.size(); ++bone) if (names[bone] == source) return int(bone);
+            return -1;
+        };
+        struct Copy { RangeKeyCopy key; bone_scale::Curve curve; };
+        std::vector<Copy> copies;
+        std::set<unsigned> rules;
+        for (unsigned index = 0; index < count; ++index) {
+            const auto& source = app.BoneClipboard()[index];
+            const auto length = strnlen_s(source.name, sizeof(source.name));
+            unsigned frame;
+            if (length == sizeof(source.name) || !frame_limits::Add(app.CurrentFrame(), source.frame, frame)) return MMS_E_ARGUMENT;
+            const int bone = find(std::string(source.name, length));
+            if (bone < 0) continue;
+            Copy copy{{unsigned(bone), frame, {}, bone_scale::Clipboard(&app, int(index), false, mirror)},
+                bone_scale::ClipboardCurve(&app, int(index), false)};
+            std::memcpy(copy.key.key.position, source.position, sizeof(source.position));
+            std::memcpy(copy.key.key.rotation, source.rotation, sizeof(source.rotation));
+            std::memcpy(copy.key.key.interpolation, source.interpolation, sizeof(source.interpolation));
+            copy.key.key.physicsDisabled = source.physicsDisabled;
+            for (float value : copy.key.key.position) if (!std::isfinite(value)) return MMS_E_ARGUMENT;
+            for (float value : copy.key.key.rotation) if (!std::isfinite(value)) return MMS_E_ARGUMENT;
+            for (auto value : copy.key.key.interpolation) if (value > 127) return MMS_E_ARGUMENT;
+            if (!bone_scale::Valid(copy.key.scale)) return MMS_E_ARGUMENT;
+            if (mirror) {
+                copy.key.key.position[0] = -copy.key.key.position[0];
+            }
+            rules.insert(unsigned(bone));
+            if (!PrepareRangeRotation(model, copy.key, rules, mirror)) return MMS_E_NOT_READY;
+            copies.push_back(copy);
+        }
+        if (copies.empty()) return MMS_OK;
+        ClearAuxiliaryMarks(*change);
+        for (unsigned index = 0; index < plan.initialCapacity; ++index)
+            if (model.boneKeys[index].allocated) plan.Write(index, false).allocated = 0;
+        unsigned cursor = model.boneCount;
+        while (cursor < plan.capacity && plan.Read(cursor).frame) ++cursor;
+        for (const auto& copy : copies) {
+            const auto target = InsertRangeCopy(plan, copy.key, unsigned(app.CurrentFrame()), cursor, *change);
+            // Mirror registrar writes translation even for rotation-only bones.
+            if (mirror) std::memcpy(plan.Write(target).position, copy.key.key.position, sizeof(copy.key.key.position));
+            if (!change->scaleAfter.SetKeyCurve(int(target), copy.curve)) return MMS_E_ARGUMENT;
+        }
+        // Ordinary paste resets the shared cursor to the display pool even
+        // when that clipboard is empty; mirror paste keeps the bone cursor.
+        if (!mirror) {
+            cursor = 1;
+            while (cursor < change->displayCapacity && model.displayKeys[cursor].frame) ++cursor;
+        }
+        change->searchAfter = int(cursor);
+        // Pasting does not update the last-registration UI marker.
+        CaptureRules(*change, rules);
+        if (FinishKeyPlan(plan, *change, owners) || change->searchBefore != change->searchAfter ||
+            change->maxBefore != change->maxAfter) out = std::move(change);
+        return MMS_OK;
+    });
 }
 MmsResult PlanBoneInterpolationEdit(MMDApp& app, unsigned slot, const BoneInterpolationOptions& options,
     std::shared_ptr<HistoryChange>& out) noexcept {
@@ -589,6 +700,57 @@ MmsResult PlanBoneInterpolationEdit(MMDApp& app, unsigned slot, const BoneInterp
         return MMS_OK;
     });
 }
+MmsResult PlanBoneFrameLine(MMDApp& app, unsigned slot, int frame, bool insert, bool automaticInterpolation,
+    std::shared_ptr<HistoryChange>& out) noexcept {
+    out.reset();
+    if (frame < 0 || frame > frame_limits::maximum) return MMS_E_ARGUMENT;
+    return Boundary([&]() -> MmsResult {
+        if (!ReadyForKeyPlan(app, slot)) return MMS_E_NOT_READY;
+        const auto& model = *mdl::Mdl(app.ModelSlot(slot));
+        KeyPlan plan(model, true); const auto owners = ValidateOwners(plan);
+        auto change = NewKeyChange(app, slot);
+        const auto clear = [](mdl::BoneKey& key) {
+            key.frame = 0; key.allocated = 0;
+            std::memset(key.position, 0, sizeof(key.position));
+            key.rotation[0] = key.rotation[1] = key.rotation[2] = 0; key.rotation[3] = 1;
+        };
+        for (std::size_t index=model.boneCount;index<plan.capacity;++index) {
+            const auto key = plan.Read(unsigned(index));
+            if (!key.frame || key.frame < unsigned(frame)) continue;
+            if (owners.find(unsigned(index)) == owners.end()) return MMS_E_ARGUMENT;
+            if (insert) {
+                if (key.frame >= unsigned(frame_limits::maximum)) return MMS_E_ARGUMENT;
+                plan.Write(unsigned(index)).frame = key.frame + 1;
+                change->maxAfter = (std::max)(change->maxAfter, key.frame + 1);
+                continue;
+            }
+            if (key.frame == unsigned(frame)) {
+                plan.Write(key.previous).next = key.next; plan.Write(key.next).previous = key.previous;
+                change->scaleAfter.ClearKey(int(index)); clear(plan.Write(unsigned(index)));
+                if (automaticInterpolation) for (int lane=0;lane<4;++lane) plan.Smooth(key.next ? key.next : key.previous,lane);
+                plan.Write(unsigned(index)).next = plan.Write(unsigned(index)).previous = 0;
+            } else {
+                auto& target = plan.Write(unsigned(index)); target.frame = key.frame - 1;
+                if (!target.frame) {
+                    auto& previous = plan.Write(key.previous); previous.next = key.next;
+                    std::memcpy(previous.interpolation,key.interpolation,sizeof(key.interpolation));
+                    std::memcpy(previous.position,key.position,sizeof(key.position));
+                    std::memcpy(previous.rotation,key.rotation,sizeof(key.rotation));
+                    previous.allocated = key.allocated; previous.physicsDisabled = key.physicsDisabled;
+                    std::memcpy(previous.reserved,key.reserved,sizeof(key.reserved));
+                    if (!change->scaleAfter.SetKey(int(key.previous),change->scaleAfter.Key(int(index))) ||
+                        !change->scaleAfter.SetKeyCurve(int(key.previous),change->scaleAfter.KeyCurve(int(index)))) return MMS_E_ARGUMENT;
+                    if (key.next) plan.Write(key.next).previous = key.previous;
+                    if (automaticInterpolation) for (int lane=0;lane<4;++lane) plan.Smooth(key.next ? key.next : key.previous,lane);
+                    change->scaleAfter.ClearKey(int(index)); clear(target);
+                }
+            }
+        }
+        if (FinishKeyPlan(plan,*change,owners)) out = std::move(change);
+        return MMS_OK;
+    });
+}
+
 MmsResult PlanBoneKeyDeletion(MMDApp& app, unsigned slot, bool automaticInterpolation,
     std::shared_ptr<HistoryChange>& out, bool selectedAtCurrentFrame,
     bool allowOtherMarks, std::shared_ptr<DisplayKeyDeletion> display) noexcept {

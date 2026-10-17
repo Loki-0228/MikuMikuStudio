@@ -30,6 +30,8 @@ MmsResult PlanMorphRegistration(MMDApp&, unsigned modelSlot, int morphIndex, int
 // A successful null result is a no-op and must not discard redo.
 MmsResult PlanMorphKeyDeletion(MMDApp&, unsigned modelSlot,
     std::shared_ptr<HistoryChange>& out, bool allowOtherMarks = false) noexcept;
+MmsResult PlanMorphFrameLine(MMDApp&, unsigned modelSlot, int frame, bool insert,
+    std::shared_ptr<HistoryChange>& out) noexcept;
 struct BoneRangeScaleOptions;
 struct RangeScaleResult;
 // Internal aggregate participant. Simulates the native slot-order deletion /

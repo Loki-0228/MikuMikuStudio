@@ -9,6 +9,8 @@
 #include "mikudancestudio/animation_curve_editor.hpp"
 #include "../src/plugins/native_key_commands.hpp"
 #include "../src/plugins/native_object_commands.hpp"
+#include "../src/plugins/native_frame_lines.hpp"
+#include "mikudancestudio/clipboard_layout.hpp"
 #include "mikudancestudio/text_encoding.hpp"
 #include "mikudancestudio/ui_language.hpp"
 #include "mikudancestudio/system_settings_ui.hpp"
@@ -398,6 +400,8 @@ void ObjectMenuDeletion(MMDApp* app, plugins::SharedHistory& history, const MmsS
 #include "light_slider_host_checks.inc"
 #include "morph_slider_host_checks.inc"
 #include "system_settings_host_checks.inc"
+#include "frame_line_host_checks.inc"
+#include "key_paste_host_checks.inc"
 void Run(MMDApp* app) {
     using namespace plugins;
     const auto initial = GetModuleHandleW(L"manager_edit_probe.dll");
@@ -429,6 +433,8 @@ void Run(MMDApp* app) {
     auto cancels = reinterpret_cast<int(*)()>(GetProcAddress(library, "GetProbeCancels"));
     Check(value && flags && cancels && (flags() & 1) && !(flags() & 2), "controlled host negotiates edit service");
     system_settings_host_checks::Run(app,*history,value);
+    frame_line_host_checks::Run(app,*history,value);
+    key_paste_host_checks::Run(app,*history,value);
     auto scene = CreateSceneStore(app); SceneClient client; auto api = scene->Api(client);
     const auto revisionMatches = [&] {
         MmsSceneQueryV1 query{}; query.h = Header<MmsSceneQueryV1>(); query.flags = MMS_SCENE_CURRENT_TIME;

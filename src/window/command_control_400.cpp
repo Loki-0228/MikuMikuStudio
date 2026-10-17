@@ -212,6 +212,7 @@
 #include "../plugins/native_object_commands.hpp"
 #include "../plugins/native_pose_scope.hpp"
 #include "../plugins/native_key_commands.hpp"
+#include "../plugins/native_key_paste.hpp"
 
 namespace mikudancestudio {
 
@@ -2108,6 +2109,9 @@ static bool PrepareFramePaste(MMDApp* app) {
     } catch(const std::exception&) {return false;}
 }
 static void Cmd400_FramePaste(MMDApp* app, HWND hwnd) {
+#if !MMD_ORIGINAL_PROFILE
+    if (plugins::TryPasteBoundKeys(app, hwnd, false)) return;
+#endif
     if(!PrepareFramePaste(app)){
         const wchar_t* messages[]={L"メモリ、フレーム範囲または名前の重複により貼り付けできません。元のキーは保持されています。",L"Paste cannot proceed because of storage, frame range or ambiguous names. Existing keys were preserved.",L"存储空间、帧号范围或名称冲突导致无法粘贴，原关键帧已保留。"};
         MessageBoxW(hwnd,messages[app->EnglishUI()<=2?app->EnglishUI():1],L"MMS",MB_OK|MB_ICONWARNING);return;
@@ -2409,6 +2413,9 @@ static void Cmd400_FramePaste(MMDApp* app, HWND hwnd) {
 // mode branch at all).
 // ------------------------------------------------------------------
 static void Cmd400_FrameReversePaste(MMDApp* app, HWND hwnd) {
+#if !MMD_ORIGINAL_PROFILE
+    if (plugins::TryPasteBoundKeys(app, hwnd, true)) return;
+#endif
     if (app->state.optflag[0] != 0) {
         return;  // was: break (switch exit)
     }
