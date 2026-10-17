@@ -233,13 +233,18 @@ struct AccessoryPoseChange final : HistoryChange, std::enable_shared_from_this<A
     mdl::AccessoryRecord* const object;
     const MmsId id;
     const std::uint64_t pool;
-    const std::array<float, 8> before, after;
+    struct Values { std::array<float, 8> numeric; std::array<std::uint8_t, 3> flags; };
+    const Values before, after;
     std::uint64_t generation = 1;
     bool applied = false, published = false;
-    static std::array<float, 8> Read(const mdl::AccessoryRecord& a) noexcept {
-        return {a.position[0], a.position[1], a.position[2], a.rotation[0], a.rotation[1], a.rotation[2], a.scale, a.opacity};
+    static Values Read(const mdl::AccessoryRecord& a) noexcept {
+        return {{a.position[0], a.position[1], a.position[2], a.rotation[0], a.rotation[1], a.rotation[2], a.scale, a.opacity},
+            {a.visible, a.additiveBlend, a.shadowEnabled}};
     }
-    AccessoryPoseChange(MMDApp& a, unsigned index, unsigned component, std::array<float, 8> source, std::array<float, 8> target)
+    static bool Same(const Values& a, const Values& b) noexcept {
+        return !std::memcmp(a.numeric.data(), b.numeric.data(), sizeof(a.numeric)) && a.flags == b.flags;
+    }
+    AccessoryPoseChange(MMDApp& a, unsigned index, unsigned component, Values source, Values target)
         : app(a), slot(index), field(component), object(a.AccessorySlot(index)), id(SceneObjectIdentity(object).id),
           pool(mdl::KeyPoolIdentity(a.AccessoryKeys(index))), before(source), after(target) {}
     bool SameScene() const noexcept {
@@ -252,7 +257,7 @@ struct AccessoryPoseChange final : HistoryChange, std::enable_shared_from_this<A
         const bool forward;
         const std::uint64_t generation, objectGeneration;
         const int frame, parentModel, parentBone;
-        const std::array<float, 8> expected;
+        const Values expected;
         bool consumed = false;
         Candidate(std::shared_ptr<AccessoryPoseChange> value, bool direction) : source(std::move(value)), forward(direction),
             generation(source->generation), objectGeneration(SceneObjectIdentity(source->object).generation),
@@ -263,15 +268,24 @@ struct AccessoryPoseChange final : HistoryChange, std::enable_shared_from_this<A
             const auto live = Read(*source->object);
             return SceneObjectIdentity(source->object).generation == objectGeneration && source->app.CurrentFrame() == frame &&
                 source->object->parentModel == parentModel && source->object->parentBone == parentBone &&
-                !std::memcmp(live.data(), expected.data(), sizeof(expected));
+                Same(live, expected);
         }
         void Publish() noexcept override {
             if (!IsCurrent()) std::terminate();
-            auto& a = *source->object; const auto value = (forward ? source->after : source->before)[source->field];
-            if (source->field < 3) a.position[source->field] = value;
-            else if (source->field < 6) a.rotation[source->field - 3] = value;
-            else if (source->field == 6) a.scale = value;
-            else a.opacity = value;
+            auto& a = *source->object;
+            const auto& values = forward ? source->after : source->before;
+            if (source->field >= 8) {
+                const auto flag = values.flags[source->field - 8];
+                if (source->field == 8) a.visible = flag;
+                else if (source->field == 9) a.additiveBlend = flag;
+                else a.shadowEnabled = flag;
+            } else {
+                const auto value = values.numeric[source->field];
+                if (source->field < 3) a.position[source->field] = value;
+                else if (source->field < 6) a.rotation[source->field - 3] = value;
+                else if (source->field == 6) a.scale = value;
+                else a.opacity = value;
+            }
             source->applied = forward; source->published = true; ++source->generation; consumed = true;
         }
     };
@@ -280,8 +294,8 @@ struct AccessoryPoseChange final : HistoryChange, std::enable_shared_from_this<A
             if (!SameScene() || forward == applied) return MMS_E_STALE;
             if (generation == UINT64_MAX) return MMS_E_NOT_READY;
             const auto current = Read(*object);
-            for (float value : current) if (!std::isfinite(value)) return MMS_E_ARGUMENT;
-            if (!published && std::memcmp(current.data(), before.data(), sizeof(before))) return MMS_E_STALE;
+            for (float value : current.numeric) if (!std::isfinite(value)) return MMS_E_ARGUMENT;
+            if (!published && !Same(current, before)) return MMS_E_STALE;
             out = std::make_unique<Candidate>(shared_from_this(), forward); return MMS_OK;
         });
     }
@@ -575,9 +589,9 @@ MmsResult ApplyBoundAccessoryField(MMDApp& app, unsigned slot, unsigned field, f
         auto* object = app.AccessorySlot(slot);
         if (!object || !mdl::KeyPoolIdentity(app.AccessoryKeys(slot))) return MMS_E_NOT_READY;
         const auto before = AccessoryPoseChange::Read(*object); auto after = before;
-        for (float source : before) if (!std::isfinite(source)) return MMS_E_ARGUMENT;
-        if (before[field] == value) return MMS_OK;
-        after[field] = value;
+        for (float source : before.numeric) if (!std::isfinite(source)) return MMS_E_ARGUMENT;
+        if (before.numeric[field] == value) return MMS_OK;
+        after.numeric[field] = value;
         auto change = std::make_shared<AccessoryPoseChange>(app, slot, field, before, after);
         std::unique_ptr<SharedHistory::NativeTransaction> transaction;
         if (const auto result = history->PrepareNative("Edit accessory field", std::move(change), transaction)) return result;
@@ -591,6 +605,47 @@ MmsResult ApplyBoundAccessoryField(MMDApp& app, unsigned slot, unsigned field, f
         });
         return MMS_OK;
     });
+}
+MmsResult ApplyBoundAccessoryFlag(MMDApp& app, unsigned slot, unsigned field, bool enabled, bool& changed) noexcept {
+    changed = false;
+    return Boundary([&]() -> MmsResult {
+        auto* history = BoundNativePoseHistory(&app);
+        if (!history || !Ready(app)) return MMS_E_NOT_READY;
+        if (slot >= kModelSlotCount || field >= 3) return MMS_E_ARGUMENT;
+        if (const auto result = history->CheckNativeEdit()) return result;
+        auto* object = app.AccessorySlot(slot);
+        if (!object || !mdl::KeyPoolIdentity(app.AccessoryKeys(slot))) return MMS_E_NOT_READY;
+        const auto before = AccessoryPoseChange::Read(*object); auto after = before;
+        const std::uint8_t target = enabled ? 1 : 0;
+        if (before.flags[field] == target) return MMS_OK;
+        after.flags[field] = target;
+        auto change = std::make_shared<AccessoryPoseChange>(app, slot, 8 + field, before, after);
+        const char* labels[] = {"Accessory visibility", "Accessory additive blend", "Accessory shadow"};
+        std::unique_ptr<SharedHistory::NativeTransaction> transaction;
+        if (const auto result = history->PrepareNative(labels[field], std::move(change), transaction)) return result;
+        if (const auto result = history->CommitNative(std::move(transaction))) return result;
+        changed = true;
+        Boundary([&]() -> MmsResult {
+            // The original additive toggle does not activate the accessory row.
+            const bool selectionChanged = field != 1 && SelectTrack(app, curve_host::Kind::Accessory, slot);
+            PublishBoundPoseEdit(app, *history, false); RefreshBoundGlobalReadout(app);
+            if (selectionChanged && app.CameraMode() && app.MainWindow() && app.Renderer() && app.PanelDC()) PostLanguageSweep(&app);
+            return MMS_OK;
+        });
+        return MMS_OK;
+    });
+}
+bool TryToggleBoundAccessoryFlag(MMDApp* app, unsigned field) noexcept {
+    if (!app || !BoundNativePoseHistory(app)) return false;
+    bool changed = false;
+    const auto slot = unsigned(app->SelectedAccessorySlot());
+    if (field < 3 && slot < kModelSlotCount) if (const auto* object = app->AccessorySlot(slot)) {
+        const auto before = AccessoryPoseChange::Read(*object);
+        ApplyBoundAccessoryFlag(*app, slot, field, before.flags[field] == 0, changed);
+    }
+    // Checkbox appearance may change before WM_COMMAND; rejection restores it.
+    if (!changed) RefreshBoundGlobalReadout(*app);
+    return true;
 }
 MmsResult ApplyBoundLightField(MMDApp& app, unsigned field, float value, bool& changed) noexcept {
     changed = false;

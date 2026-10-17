@@ -382,6 +382,7 @@ void ObjectMenuDeletion(MMDApp* app, plugins::SharedHistory& history, const MmsS
     std::puts("PASS actual 437/473, real plugin undo/redo, offline sources, stable scene IDs and deferred lists");
 }
 #include "accessory_text_host_checks.inc"
+#include "accessory_flag_host_checks.inc"
 void Run(MMDApp* app) {
     using namespace plugins;
     const auto initial = GetModuleHandleW(L"manager_edit_probe.dll");
@@ -430,6 +431,7 @@ void Run(MMDApp* app) {
     LightTextPose(app, *history, value);
     FovTextPose(app, *history, value);
     AccessoryTextPose(app, *history, value);
+    AccessoryFlagParameters(app, *history, value);
     ShadowParameters(app, *history, value);
     MixedModelRange(app, *history);
     ModelInterpolation(app, *history);

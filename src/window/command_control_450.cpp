@@ -762,6 +762,9 @@ void CmdControl450(MMDApp* app, HWND hwnd, std::uint16_t id,
     // BM_SETCHECK into checkbox 0x1DC, Refresh(byte 0x9E170).
     // ------------------------------------------------------------------
     case 476: {
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::TryToggleBoundAccessoryFlag(app, 0)) break;
+#endif
         const std::uint8_t idx = app->state.selectedObjectSlot;
         mdl::AccessoryRecord* acc = app->AccessorySlot(idx);
         if (acc == nullptr) {
@@ -784,6 +787,9 @@ void CmdControl450(MMDApp* app, HWND hwnd, std::uint16_t id,
     // default note) - equivalent to break here.
     // ------------------------------------------------------------------
     case 477: {
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::TryToggleBoundAccessoryFlag(app, 1)) break;
+#endif
         const std::uint8_t idx = app->state.selectedObjectSlot;
         mdl::AccessoryRecord* acc = app->AccessorySlot(idx);
         if (acc == nullptr) {
@@ -798,6 +804,9 @@ void CmdControl450(MMDApp* app, HWND hwnd, std::uint16_t id,
     // BM_SETCHECK into checkbox 0x1E6, Refresh(byte 0x9E170).
     // ------------------------------------------------------------------
     case 486: {
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::TryToggleBoundAccessoryFlag(app, 2)) break;
+#endif
         const std::uint8_t idx = app->state.selectedObjectSlot;
         mdl::AccessoryRecord* acc = app->AccessorySlot(idx);
         if (acc == nullptr) {

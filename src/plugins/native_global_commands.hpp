@@ -38,6 +38,9 @@ MmsResult ApplyBoundCameraField(MMDApp&, unsigned field, float value, bool& chan
 MmsResult ApplyBoundLightField(MMDApp&, unsigned field, float value, bool& changed) noexcept;
 // Accessory fields: position 0..2, radians 3..5, scale 6, opacity 7.
 MmsResult ApplyBoundAccessoryField(MMDApp&, unsigned slot, unsigned field, float value, bool& changed) noexcept;
+// Accessory flags: visibility 0, additive blend 1, projected shadow 2.
+MmsResult ApplyBoundAccessoryFlag(MMDApp&, unsigned slot, unsigned field, bool enabled, bool& changed) noexcept;
+bool TryToggleBoundAccessoryFlag(MMDApp*, unsigned field) noexcept;
 // Self-shadow distance is authored float; mode is 0 (off), 1 or 2.
 MmsResult ApplyBoundShadowDistance(MMDApp&, float value, bool& changed) noexcept;
 bool TrySetBoundShadowMode(MMDApp*, int mode) noexcept;
