@@ -29,6 +29,10 @@ bool TryResetBoundCameraRotation(MMDApp*) noexcept;
 // Fields 0..2 position, 3..5 rotation, 6 distance. Main/floating panels share
 // this authoring route; true also consumes rejection and no-op while bound.
 bool TryResetBoundCameraField(MMDApp*, unsigned field, bool activateCameraTrack = true) noexcept;
+// Authored units: position, radians, signed camera distance. Reports committed
+// changes separately from no-op; notifications cannot turn a commit into failure.
+MmsResult ApplyBoundCameraField(MMDApp&, unsigned field, float value, bool& changed,
+    bool activateCameraTrack = true) noexcept;
 // True consumes the bound command, including busy/invalid/no-op outcomes.
 // These read controls before planning and never enter a legacy registrar.
 bool TryRegisterBoundCamera(MMDApp*, HWND) noexcept;

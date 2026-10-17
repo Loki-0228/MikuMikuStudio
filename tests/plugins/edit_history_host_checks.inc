@@ -76,6 +76,7 @@ void RotationReset(MMDApp* app, plugins::SharedHistory& history, int (*value)())
 #include "camera_reset_host_checks.inc"
 #include "camera_numeric_host_checks.inc"
 #include "camera_axis_host_checks.inc"
+#include "camera_text_host_checks.inc"
 void MixedModelDeletion(MMDApp* app, plugins::SharedHistory& history) {
     auto& model = *mdl::Mdl(app->ModelSlot(0));
     Check(model.boneCount && model.morphCount && model.boneCount < mdl::BoneKeyCapacity(model.boneKeys) &&
@@ -420,6 +421,7 @@ void Run(MMDApp* app) {
     CameraRotationReset(app, *history, value);
     CameraNumericPose(app, *history, value);
     CameraAxisPose(app, *history, value);
+    CameraTextPose(app, *history, value);
     MixedModelRange(app, *history);
     ModelInterpolation(app, *history);
     ObjectMenuDeletion(app, *history, api, path, accessoryPath);

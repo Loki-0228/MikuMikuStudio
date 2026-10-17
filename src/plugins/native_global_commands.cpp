@@ -276,27 +276,37 @@ bool TryResetBoundCameraRotation(MMDApp* app) noexcept {
     });
     return true;
 }
-bool TryResetBoundCameraField(MMDApp* app, unsigned field, bool activateCameraTrack) noexcept {
-    if (!app || !app->CameraMode()) return false;
-    auto* history = BoundNativePoseHistory(app);
-    if (!history) return false;
-    Boundary([&]() -> MmsResult {
-        if (field >= 7) return MMS_E_ARGUMENT;
-        if (!Ready(*app) || !mdl::KeyPoolIdentity(app->CameraKeys())) return MMS_E_NOT_READY;
+MmsResult ApplyBoundCameraField(MMDApp& app, unsigned field, float value, bool& changed, bool activateCameraTrack) noexcept {
+    changed = false;
+    return Boundary([&]() -> MmsResult {
+        auto* history = BoundNativePoseHistory(&app);
+        if (!history || !app.CameraMode() || !Ready(app) || !mdl::KeyPoolIdentity(app.CameraKeys())) return MMS_E_NOT_READY;
+        if (field >= 7 || !std::isfinite(value)) return MMS_E_ARGUMENT;
         if (const auto result = history->CheckNativeEdit()) return result;
-        const auto before = CameraPoseChange::Read(*app);
-        for (float value : before) if (!std::isfinite(value)) return MMS_E_ARGUMENT;
-        if (before[field] == 0.0f) return MMS_OK;
-        auto after = before; after[field] = 0.0f;
-        auto change = std::make_shared<CameraPoseChange>(*app, before, after, 1u << field);
+        const auto before = CameraPoseChange::Read(app);
+        for (float source : before) if (!std::isfinite(source)) return MMS_E_ARGUMENT;
+        if (before[field] == value) return MMS_OK;
+        auto after = before; after[field] = value;
+        auto change = std::make_shared<CameraPoseChange>(app, before, after, 1u << field);
         std::unique_ptr<SharedHistory::NativeTransaction> transaction;
-        if (const auto result = history->PrepareNative("Reset camera pose component", std::move(change), transaction)) return result;
+        if (const auto result = history->PrepareNative("Edit camera pose component", std::move(change), transaction)) return result;
         if (const auto result = history->CommitNative(std::move(transaction))) return result;
-        const bool selectionChanged = activateCameraTrack && SelectTrack(*app, curve_host::Kind::Camera, 0);
-        PublishBoundPoseEdit(*app, *history, false);
-        if (selectionChanged && app->MainWindow() && app->Renderer() && app->PanelDC()) PostLanguageSweep(app);
+        changed = true;
+        // A completed publication is not a failed edit if a later optional UI
+        // notification cannot allocate. Do not invite callers to repeat it.
+        Boundary([&]() -> MmsResult {
+            const bool selectionChanged = activateCameraTrack && SelectTrack(app, curve_host::Kind::Camera, 0);
+            PublishBoundPoseEdit(app, *history, false);
+            if (selectionChanged && app.MainWindow() && app.Renderer() && app.PanelDC()) PostLanguageSweep(&app);
+            return MMS_OK;
+        });
         return MMS_OK;
     });
+}
+bool TryResetBoundCameraField(MMDApp* app, unsigned field, bool activateCameraTrack) noexcept {
+    if (!app || !app->CameraMode() || !BoundNativePoseHistory(app)) return false;
+    bool changed = false;
+    ApplyBoundCameraField(*app, field, 0.0f, changed, activateCameraTrack);
     return true;
 }
 bool TryRegisterBoundCamera(MMDApp* app, HWND window) noexcept {

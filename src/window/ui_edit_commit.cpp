@@ -76,6 +76,7 @@
 #if !MMD_ORIGINAL_PROFILE
 #include "../plugins/native_pose_scope.hpp"
 #include "../plugins/native_history_commands.hpp"
+#include "../plugins/native_global_commands.hpp"
 #endif
 
 namespace mikudancestudio {
@@ -182,6 +183,33 @@ bool FindPoseNumber(HWND edit,HWND base,int& kind,int& axis) {
         if(edit==GetDlgItem(base,ids[group][component])){kind=group;axis=component;}
     return kind>=0;
 }
+int FindCameraNumber(HWND edit, HWND base) {
+    if (!edit || !base) return -1;
+    for (int field = 0; field < 7; ++field)
+        if (edit == GetDlgItem(base, panel::kReadoutPosXEdit + field)) return field;
+    return -1;
+}
+bool CommitBoundCameraNumber(MMDApp* app, HWND edit, HWND base) {
+    const int field = FindCameraNumber(edit, base);
+    if (!app->CameraMode() || field < 0 || !plugins::BoundNativePoseHistory(app)) return false;
+    if (!SendMessageA(edit, EM_GETMODIFY, 0, 0)) return true;
+    SendMessageA(edit, EM_SETMODIFY, FALSE, 0);
+    char text[256]{}; GetWindowTextA(edit, text, sizeof(text)); char* end = nullptr;
+    const double parsed = std::strtod(text, &end);
+    const bool consumed = end && end != text;
+    while (end && std::isspace(static_cast<unsigned char>(*end))) ++end;
+    bool changed = false;
+    if (consumed && !*end && GetWindowTextLengthA(edit) < sizeof(text) && std::isfinite(parsed)) {
+        // Match the old double intermediates and truncated pi; the modal
+        // camera dialog uses a different float conversion and is not reused.
+        const auto value = static_cast<float>(field < 3 ? parsed : field == 6 ? -parsed :
+            (field == 3 ? -parsed : parsed) * kPiLit / 180.0);
+        if (std::isfinite(value) && plugins::ApplyBoundCameraField(*app, unsigned(field), value, changed) == MMS_OK && changed)
+            return true;
+    }
+    plugins::RefreshBoundPoseReadout(*app);
+    return true;
+}
 bool CommitBoundPoseNumber(MMDApp* app,HWND edit,HWND base) {
     auto* history=plugins::BoundNativePoseHistory(app);
     int kind=-1,axis=-1;
@@ -220,6 +248,7 @@ void CommitEditControlTail(MMDApp* app, HWND edit) {  // was Sub44BEF0
         base = app->MainWindow();
     const bool cameraMode = app->CameraMode() != 0;
 #if !MMD_ORIGINAL_PROFILE
+    if(CommitBoundCameraNumber(app,edit,base))return;
     if(CommitBoundPoseNumber(app,edit,base))return;
 #endif
 
@@ -614,7 +643,8 @@ LRESULT CALLBACK EditSubclassProc(HWND hWnd, UINT Msg, WPARAM wParam,
 #if !MMD_ORIGINAL_PROFILE
         HWND base=app->FloatingWindow()?app->FloatingWindow():app->MainWindow();
         int kind=-1,axis=-1;
-        boundPose=plugins::BoundNativePoseHistory(app)&&!app->CameraMode()&&FindPoseNumber(hWnd,base,kind,axis);
+        boundPose=plugins::BoundNativePoseHistory(app) && (app->CameraMode() ?
+            FindCameraNumber(hWnd,base)>=0 : FindPoseNumber(hWnd,base,kind,axis));
 #endif
         // The bound pose route consumes this flag itself, before changing any
         // model state. Legacy controls retain their existing commit behavior.

@@ -357,6 +357,7 @@ void CrossModelJournal(){
 #include "native_camera_reset_checks.inc"
 #include "native_camera_numeric_checks.inc"
 #include "native_camera_axis_checks.inc"
+#include "native_camera_text_checks.inc"
 #include "native_camera_interpolation_checks.inc"
 #include "native_accessory_registration_checks.inc"
 #include "native_model_key_checks.inc"
@@ -365,6 +366,10 @@ void CrossModelJournal(){
 int main(int argc,char** argv){
     std::setvbuf(stdout,nullptr,_IONBF,0);
     const auto run=[](const char* name,void(*test)()){std::printf("RUN %s\n",name);test();};
+    if(argc==2&&!std::strcmp(argv[1],"--camera-text-only")) {
+        run("NativeCameraTextChecks",NativeCameraTextChecks);
+        std::printf("PASS native camera text: %u checks\n",checks);return 0;
+    }
     if(argc==2&&!std::strcmp(argv[1],"--camera-axis-only")) {
         run("NativeCameraAxisChecks",NativeCameraAxisChecks);
         std::printf("PASS native camera axes: %u checks\n",checks);return 0;
@@ -430,6 +435,7 @@ int main(int argc,char** argv){
     run("NativeCameraResetChecks",NativeCameraResetChecks);
     run("NativeCameraNumericChecks",NativeCameraNumericChecks);
     run("NativeCameraAxisChecks",NativeCameraAxisChecks);
+    run("NativeCameraTextChecks",NativeCameraTextChecks);
     run("NativeCameraInterpolationChecks",NativeCameraInterpolationChecks);
     run("NativeAccessoryRegistrationChecks",NativeAccessoryRegistrationChecks);
     run("NativeModelKeyChecks",NativeModelKeyChecks);
