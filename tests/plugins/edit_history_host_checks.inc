@@ -10,6 +10,8 @@
 #include "../src/plugins/native_key_commands.hpp"
 #include "../src/plugins/native_object_commands.hpp"
 #include "../src/plugins/native_frame_lines.hpp"
+#include "../src/plugins/native_morph_keys.hpp"
+#include "../src/plugins/native_display_keys.hpp"
 #include "mikudancestudio/clipboard_layout.hpp"
 #include "mikudancestudio/text_encoding.hpp"
 #include "mikudancestudio/ui_language.hpp"
@@ -402,6 +404,8 @@ void ObjectMenuDeletion(MMDApp* app, plugins::SharedHistory& history, const MmsS
 #include "system_settings_host_checks.inc"
 #include "frame_line_host_checks.inc"
 #include "key_paste_host_checks.inc"
+#include "morph_paste_host_checks.inc"
+#include "display_paste_host_checks.inc"
 void Run(MMDApp* app) {
     using namespace plugins;
     const auto initial = GetModuleHandleW(L"manager_edit_probe.dll");
@@ -435,6 +439,8 @@ void Run(MMDApp* app) {
     system_settings_host_checks::Run(app,*history,value);
     frame_line_host_checks::Run(app,*history,value);
     key_paste_host_checks::Run(app,*history,value);
+    morph_paste_host_checks::Run(app,*history,value);
+    display_paste_host_checks::Run(app,*history,value);
     auto scene = CreateSceneStore(app); SceneClient client; auto api = scene->Api(client);
     const auto revisionMatches = [&] {
         MmsSceneQueryV1 query{}; query.h = Header<MmsSceneQueryV1>(); query.flags = MMS_SCENE_CURRENT_TIME;

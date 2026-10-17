@@ -16,6 +16,7 @@
 #include <set>
 #include <array>
 #include <cmath>
+#include <string>
 
 namespace mikudancestudio::plugins {
 namespace {
@@ -179,13 +180,18 @@ struct DisplayDeletion final : DisplayKeyDeletion,std::enable_shared_from_this<D
     std::vector<int> ikBones,parentBones;
     const mdl::BoneRecord* nameTable=nullptr;
     unsigned nameCount=0;
+    struct PasteReference {
+        unsigned slot;unsigned char* model;const mdl::BoneRecord* bones;unsigned count;
+        std::shared_ptr<RetainedSceneObject> owner;
+    };
+    std::vector<PasteReference> pasteReferences;
     std::vector<Patch> patches;
-    bool registration=false,publishedOnce=false;std::uint64_t generation=1;
+    bool registration=false,paste=false,publishedOnce=false;std::uint64_t generation=1;
     unsigned registeredSlot=0;
     std::vector<unsigned char> boneMarks,morphMarks,displayMarks;
     std::uint64_t boneMarkIdentity=0,morphMarkIdentity=0;
     std::uint32_t maxBefore=0,maxAfter=0,lastBefore=0,lastAfter=0;
-    int searchBefore=0;
+    int searchBefore=0,searchAfter=0;
     DisplayDeletion(MMDApp& a,unsigned slot,bool evaluate):app(a),modelSlot(slot),model(a.ModelSlot(slot)),
         lifetime(RetainSceneObject(a,MMS_OBJECT_MODEL,slot)),identity(mdl::KeyPoolIdentity(mdl::Mdl(model)->displayKeys)),
         capacity(mdl::KeyPoolCapacity(mdl::Mdl(model)->displayKeys)),ikCount(mdl::Mdl(model)->ikChainCount),
@@ -203,6 +209,12 @@ struct DisplayDeletion final : DisplayKeyDeletion,std::enable_shared_from_this<D
             for(unsigned index=0;index<ikBones.size();++index)if(m.ikChains[index].boneIndex!=ikBones[index])return false;
             const auto* order=static_cast<const mdl::BoneOrderEntry*>(m.boneOrderTable);
             for(unsigned index=0;index<parentBones.size();++index)if(order[index].boneIndex!=parentBones[index])return false;
+        }
+        for(const auto& reference:pasteReferences) {
+            if(!reference.owner->Present()||app.ModelSlot(reference.slot)!=reference.model||
+                !SceneObjectPresent(reference.model,reference.owner->Id()))return false;
+            const auto& target=*mdl::Mdl(reference.model);
+            if(target.boneTable!=reference.bones||target.boneCount!=reference.count)return false;
         }
         return true;
     }
@@ -361,7 +373,7 @@ struct DisplayDeletion final : DisplayKeyDeletion,std::enable_shared_from_this<D
                 for(std::size_t i=0;i<source->boneMarks.size();++i)m.boneKeys[i].allocated=forward?0:source->boneMarks[i];
                 for(std::size_t i=0;i<source->morphMarks.size();++i)m.morphKeys[i].allocated=forward?0:source->morphMarks[i];
                 for(std::size_t i=0;i<source->displayMarks.size();++i)m.displayKeys[i].allocated=forward?0:source->displayMarks[i];
-                m.maxFrame=forward?source->maxAfter:source->maxBefore;m.searchCursor=source->searchBefore;
+                m.maxFrame=forward?source->maxAfter:source->maxBefore;m.searchCursor=forward?source->searchAfter:source->searchBefore;
                 source->app.state.lastRegisteredFrame=forward?source->lastAfter:source->lastBefore;
             }
             for(const auto& patch:source->patches)(forward?patch.after:patch.before).Publish(m.displayKeys[patch.slot]);
@@ -376,9 +388,9 @@ struct DisplayDeletion final : DisplayKeyDeletion,std::enable_shared_from_this<D
         return Boundary([&]()->MmsResult {
             auto& m=*mdl::Mdl(model);CheckPayloadStorage(m);
             auto candidate=std::make_unique<Candidate>(shared_from_this(),forward);
-            candidate->initial=registration&&!publishedOnce;
+            candidate->initial=registration&&!paste&&!publishedOnce;
             if(registration) {
-                if((candidate->initial&&!forward)||m.maxFrame!=(forward?maxBefore:maxAfter)||m.searchCursor!=searchBefore||
+                if((!publishedOnce&&!forward)||m.maxFrame!=(forward?maxBefore:maxAfter)||m.searchCursor!=(forward?searchBefore:searchAfter)||
                     app.state.lastRegisteredFrame!=(forward?lastBefore:lastAfter))return MMS_E_STALE;
                 const auto required=patches.empty()?capacity:std::size_t(patches.back().slot)+1;
                 candidate->growth=std::make_unique<DisplayGrowth>(m,required);
@@ -389,8 +401,10 @@ struct DisplayDeletion final : DisplayKeyDeletion,std::enable_shared_from_this<D
                 for(std::size_t i=0;i<boneMarks.size();++i)candidate->currentBoneMarks.push_back(m.boneKeys[i].allocated);
                 for(std::size_t i=0;i<morphMarks.size();++i)candidate->currentMorphMarks.push_back(m.morphKeys[i].allocated);
                 for(std::size_t i=0;i<displayMarks.size();++i)candidate->currentDisplayMarks.push_back(m.displayKeys[i].allocated);
-                if(candidate->initial) {
+                if(!publishedOnce) {
                     if(candidate->currentBoneMarks!=boneMarks||candidate->currentMorphMarks!=morphMarks||candidate->currentDisplayMarks!=displayMarks)return MMS_E_STALE;
+                }
+                if(candidate->initial) {
                     const auto found=std::lower_bound(patches.begin(),patches.end(),registeredSlot,
                         [](const Patch& patch,unsigned index){return patch.slot<index;});
                     if(found==patches.end()||found->slot!=registeredSlot||m.loadComplete!=found->after.value.visible)return MMS_E_STALE;
@@ -466,6 +480,7 @@ struct DisplayDeletion final : DisplayKeyDeletion,std::enable_shared_from_this<D
     std::uint64_t RetainedBytes() const noexcept override {
         std::uint64_t bytes=sizeof(*this)+4*sizeof(void*);AddBytes(bytes,patches.capacity(),sizeof(Patch));
         AddBytes(bytes,names.capacity(),sizeof(NameRule));AddBytes(bytes,ikBones.capacity(),sizeof(int));AddBytes(bytes,parentBones.capacity(),sizeof(int));
+        AddBytes(bytes,pasteReferences.capacity(),sizeof(PasteReference));
         AddBytes(bytes,boneMarks.capacity(),1);AddBytes(bytes,morphMarks.capacity(),1);AddBytes(bytes,displayMarks.capacity(),1);
         for(const auto& patch:patches)for(const auto* payload:{&patch.before,&patch.after}) {
             AddBytes(bytes,payload->ik.capacity(),sizeof(unsigned char));
@@ -571,7 +586,7 @@ MmsResult PlanDisplayRegistration(MMDApp& app,unsigned slot,int frame,std::share
         auto change=std::make_shared<DisplayDeletion>(app,slot,true);change->registration=true;
         change->registeredSlot=destination;change->maxBefore=model.maxFrame;
         change->maxAfter=inserting?(std::max)(model.maxFrame,unsigned(frame)):model.maxFrame;
-        change->searchBefore=model.searchCursor;change->lastBefore=app.state.lastRegisteredFrame;
+        change->searchBefore=change->searchAfter=model.searchCursor;change->lastBefore=app.state.lastRegisteredFrame;
         change->lastAfter=(std::max)(change->lastBefore,change->maxAfter);
         change->boneMarkIdentity=mdl::BoneKeyPoolIdentity(model.boneKeys);
         change->morphMarkIdentity=mdl::MorphKeyPoolIdentity(model.morphKeys);
@@ -581,6 +596,157 @@ MmsResult PlanDisplayRegistration(MMDApp& app,unsigned slot,int frame,std::share
         change->patches.reserve(planned.size());
         for(auto& entry:planned)change->patches.push_back(std::move(entry.second));
         DisplayDeletion::FrameState sampled;if(auto result=change->Sample(true,sampled))return result;
+        out=std::move(change);return MMS_OK;
+    });
+}
+MmsResult PlanDisplayKeyPaste(MMDApp& app,unsigned slot,std::shared_ptr<HistoryChange>& out) noexcept {
+    out.reset();
+    if(slot>=kModelSlotCount||!app.ModelSlot(slot)||app.PlaybackActive()||app.FrameStepPlayback()||
+        app.state.recordPlaybackStartPending||app.SceneMutationInProgress())return MMS_E_NOT_READY;
+    return Boundary([&]()->MmsResult {
+        const auto count=app.ClipboardCounts().displays;
+        if(!count)return MMS_OK;
+        if(!app.DisplayClipboard()||count>mdl::KeyPoolLimit<mdl::DisplayKey>()||
+            app.CurrentFrame()<0||app.CurrentFrame()>frame_limits::maximum)return MMS_E_ARGUMENT;
+        const auto& model=*mdl::Mdl(app.ModelSlot(slot));
+        if(!mdl::KeyPoolIdentity(model.displayKeys)||
+            (model.boneKeys&&!mdl::BoneKeyPoolIdentity(model.boneKeys))||
+            (model.morphKeys&&!mdl::MorphKeyPoolIdentity(model.morphKeys))||
+            (model.ikChainCount&&!model.ikChains)||(model.boneOrderCount&&!model.boneOrderTable)||
+            extended_names::importedIkTargets)return MMS_E_NOT_READY;
+        // Command 421 rejects ambiguous destination bone names before any
+        // family is pasted, including display-only records. Keep its bounded
+        // name comparison; IK matching itself still accepts full-width names.
+        if(model.boneCount&&!model.boneTable)return MMS_E_NOT_READY;
+        std::set<std::string> uniqueNames;
+        for(unsigned bone=0;bone<model.boneCount;++bone)
+            if(!uniqueNames.emplace(model.boneTable[bone].name,
+                strnlen_s(model.boneTable[bone].name,sizeof(model.boneTable[bone].name))).second)return MMS_E_ARGUMENT;
+        Chain(model);CheckPayloadStorage(model);
+        const auto capacity=mdl::KeyPoolCapacity(model.displayKeys);
+        auto change=std::make_shared<DisplayDeletion>(app,slot,true);
+        change->registration=true;change->paste=true;
+        change->maxBefore=change->maxAfter=model.maxFrame;
+        change->lastBefore=change->lastAfter=app.state.lastRegisteredFrame;
+        change->searchBefore=model.searchCursor;
+        unsigned free=1;while(free<capacity&&model.displayKeys[free].frame)++free;
+        change->searchAfter=int(free);
+        std::set<unsigned> named;
+        const auto name=[&](int bone,bool terminated)->const char* {
+            if(!model.boneTable||bone<0||unsigned(bone)>=model.boneCount)
+                throw std::invalid_argument("display paste mapping bone outside model");
+            const auto* text=model.boneTable[bone].name;
+            if(terminated&&!std::memchr(text,0,sizeof(model.boneTable[bone].name)))
+                throw std::invalid_argument("unterminated display paste parent name");
+            if(named.insert(unsigned(bone)).second) {
+                DisplayDeletion::NameRule rule{unsigned(bone),{}};
+                std::memcpy(rule.name.data(),text,rule.name.size());change->names.push_back(rule);
+            }
+            return text;
+        };
+        std::vector<const char*> ikNames,parentNames;
+        for(unsigned i=0;i<model.ikChainCount;++i) {
+            const auto bone=model.ikChains[i].boneIndex;
+            ikNames.push_back(name(bone,false));change->ikBones.push_back(bone);
+        }
+        const auto* order=static_cast<const mdl::BoneOrderEntry*>(model.boneOrderTable);
+        for(unsigned i=0;i<model.boneOrderCount;++i) {
+            change->parentBones.push_back(order[i].boneIndex);
+            parentNames.push_back(i?name(order[i].boneIndex,true):"");
+        }
+        if(!change->names.empty()){change->nameTable=model.boneTable;change->nameCount=model.boneCount;}
+        std::map<unsigned,Patch> planned;
+        const auto write=[&](unsigned index)->Payload& {
+            if(index>=mdl::KeyPoolLimit<mdl::DisplayKey>())throw std::bad_alloc();
+            auto found=planned.find(index);
+            if(found==planned.end()) {
+                Patch patch;patch.slot=index;
+                patch.before=index<capacity?Payload::Capture(model.displayKeys[index],model.ikChainCount,model.boneOrderCount):
+                    Payload::Empty(model.ikChainCount,model.boneOrderCount);
+                patch.after=patch.before;patch.after.value.allocated=0;
+                found=planned.emplace(index,std::move(patch)).first;
+            }
+            return found->second.after;
+        };
+        const auto read=[&](unsigned index) {
+            const auto found=planned.find(index);
+            return found!=planned.end()?found->second.after.value:
+                index<capacity?Read(model.displayKeys[index]):Payload::Empty(0,0).value;
+        };
+        for(unsigned index=0;index<count;++index) {
+            const auto& source=app.DisplayClipboard()[index];unsigned frame;
+            if(!frame_limits::Add(app.CurrentFrame(),source.frame,frame)||source.ikCount<0||source.selectorCount<0||
+                (source.ikCount&&!source.ikStates)||(source.selectorCount&&!source.selectorStates))return MMS_E_ARGUMENT;
+            std::vector<mdl::BoneReference> parents;
+            for(int parent=0;parent<source.selectorCount;++parent) {
+                const auto& entry=source.selectorStates[parent];
+                if(!std::memchr(entry.boneName,0,sizeof(entry.boneName)))return MMS_E_ARGUMENT;
+                mdl::BoneReference pair{entry.modelIndex,entry.boneIndex};
+                if(pair.modelIndex< -1||pair.modelIndex>=int(kModelSlotCount))return MMS_E_ARGUMENT;
+                if(pair.modelIndex>=0) {
+                    const auto* target=app.ModelSlot(unsigned(pair.modelIndex));
+                    if(!target){pair.modelIndex=-1;pair.boneIndex=0;}
+                    else if(pair.boneIndex<0)return MMS_E_ARGUMENT;
+                    else if(unsigned(pair.boneIndex)>=mdl::Mdl(target)->boneCount) {
+                        if(!mdl::Mdl(target)->boneCount)return MMS_E_ARGUMENT;
+                        pair.boneIndex=0;
+                    }
+                }
+                parents.push_back(pair);
+            }
+            unsigned current=0;std::size_t hops=0;
+            while(read(current).frame<frame&&read(current).next) {
+                if(++hops>=capacity+std::size_t(count))return MMS_E_ARGUMENT;
+                current=read(current).next;
+            }
+            const auto currentValue=read(current);unsigned destination=current;
+            if(currentValue.frame!=frame) {
+                destination=1;
+                while(std::size_t(destination)<mdl::KeyPoolLimit<mdl::DisplayKey>()&&read(destination).frame)++destination;
+                if(std::size_t(destination)>=mdl::KeyPoolLimit<mdl::DisplayKey>())return MMS_E_MEMORY;
+                auto& target=write(destination).value;
+                if(currentValue.frame<frame) {
+                    write(current).value.next=destination;target.previous=current;target.next=0;
+                } else {
+                    write(currentValue.previous).value.next=destination;target.previous=currentValue.previous;
+                    write(current).value.previous=destination;target.next=current;
+                }
+                target.frame=frame;change->maxAfter=(std::max)(change->maxAfter,frame);
+            }
+            auto& target=write(destination);target.value.visible=source.visible;target.value.allocated=1;
+            for(unsigned i=0;i<ikNames.size();++i)for(int entry=0;entry<source.ikCount;++entry)
+                if(!std::strncmp(ikNames[i],source.ikStates[entry].boneName,sizeof(mdl::BoneRecord::name))) {
+                    target.ik[i]=source.ikStates[entry].enabled;break;
+                }
+            for(unsigned i=0;i<parentNames.size();++i) {
+                if(parents.empty())continue;
+                if(!i){target.parents[0]=parents[0];continue;}
+                for(int entry=0;entry<source.selectorCount;++entry)
+                    if(!std::strcmp(parentNames[i],source.selectorStates[entry].boneName)) {
+                        target.parents[i]=parents[entry];break;
+                    }
+            }
+        }
+        bool changed=false;
+        for(const auto& entry:planned)
+            changed|=entry.first>=capacity||!entry.second.after.Equals(model.displayKeys[entry.first],false);
+        if(!changed)return MMS_OK;
+        change->boneMarkIdentity=mdl::BoneKeyPoolIdentity(model.boneKeys);
+        change->morphMarkIdentity=mdl::MorphKeyPoolIdentity(model.morphKeys);
+        for(std::size_t i=0;i<mdl::BoneKeyCapacity(model.boneKeys);++i)change->boneMarks.push_back(model.boneKeys[i].allocated);
+        for(std::size_t i=0;i<mdl::MorphKeyCapacity(model.morphKeys);++i)change->morphMarks.push_back(model.morphKeys[i].allocated);
+        for(std::size_t i=0;i<capacity;++i)change->displayMarks.push_back(model.displayKeys[i].allocated);
+        for(auto& entry:planned)change->patches.push_back(std::move(entry.second));
+        DisplayDeletion::FrameState sampled,original;
+        if(auto result=change->Sample(true,sampled))return result;
+        if(auto result=change->Sample(false,original))return result;
+        std::set<unsigned> references(sampled.references.begin(),sampled.references.end());
+        references.insert(original.references.begin(),original.references.end());
+        for(auto reference:references) {
+            auto* target=app.ModelSlot(reference);const auto& state=*mdl::Mdl(target);
+            change->pasteReferences.push_back({reference,target,state.boneTable,state.boneCount,
+                RetainSceneObject(app,MMS_OBJECT_MODEL,reference)});
+        }
         out=std::move(change);return MMS_OK;
     });
 }

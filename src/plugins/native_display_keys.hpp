@@ -41,5 +41,10 @@ MmsResult PlanDisplayRangeScale(MMDApp&, unsigned modelSlot,
 // without clearing marks or redo. Growth is prepared privately for owned pools.
 MmsResult PlanDisplayRegistration(MMDApp&, unsigned modelSlot, int frame,
     std::shared_ptr<HistoryChange>& out) noexcept;
+// Display-only clipboard paste. Deep payloads and both directions are owned;
+// no clipboard/source file reads occur during undo or redo. First publication
+// samples the target track while preserving dirty authoring poses.
+MmsResult PlanDisplayKeyPaste(MMDApp&, unsigned modelSlot,
+    std::shared_ptr<HistoryChange>& out) noexcept;
 }
 #endif

@@ -370,6 +370,217 @@ struct MorphRegistration final : HistoryChange, std::enable_shared_from_this<Mor
         AddBytes(bytes, displayFlags.capacity(), sizeof(RegistrationFlag)); return bytes;
     }
 };
+struct MorphPaste final : HistoryChange, std::enable_shared_from_this<MorphPaste> {
+    MMDApp& app;
+    unsigned modelSlot, morph;
+    unsigned char* model;
+    std::shared_ptr<RetainedSceneObject> lifetime;
+    mdl::MorphRecord* morphs;
+    unsigned count;
+    unsigned char physicsMode;
+    Rule rule;
+    std::vector<Rule> pasteRules;
+    std::uint64_t identity, boneIdentity, displayIdentity;
+    std::size_t capacity, boneCapacity, displayCapacity;
+    std::vector<RegistrationPatch> patches;
+    std::vector<RegistrationFlag> boneFlags, displayFlags;
+    std::uint32_t maxBefore, maxAfter, lastBefore, lastAfter;
+    int search, searchAfter, playheadBefore;
+    float value;
+    bool published = false;
+    std::uint64_t generation = 1;
+    MorphPaste(MMDApp& a, unsigned slot, unsigned index, int frame)
+        : app(a), modelSlot(slot), morph(index), model(a.ModelSlot(slot)),
+          lifetime(RetainSceneObject(a, MMS_OBJECT_MODEL, slot)), morphs(mdl::Mdl(model)->morphs),
+          count(mdl::Mdl(model)->morphCount), physicsMode(mdl::Mdl(model)->physicsMode),
+          rule{index, {}, morphs[index].panel, morphs[index].type},
+          identity(mdl::MorphKeyPoolIdentity(mdl::Mdl(model)->morphKeys)),
+          boneIdentity(mdl::BoneKeyPoolIdentity(mdl::Mdl(model)->boneKeys)),
+          displayIdentity(mdl::KeyPoolIdentity(mdl::Mdl(model)->displayKeys)),
+          capacity(mdl::MorphKeyCapacity(mdl::Mdl(model)->morphKeys)),
+          boneCapacity(mdl::BoneKeyCapacity(mdl::Mdl(model)->boneKeys)),
+          displayCapacity(mdl::KeyPoolCapacity(mdl::Mdl(model)->displayKeys)),
+          maxBefore(mdl::Mdl(model)->maxFrame), maxAfter(maxBefore),
+          lastBefore(a.state.lastRegisteredFrame), lastAfter(lastBefore),
+          search(mdl::Mdl(model)->searchCursor), searchAfter(search), playheadBefore(a.CurrentFrame()), value(morphs[index].value) {
+        (void)frame;
+        std::memcpy(rule.name.data(), morphs[index].name, rule.name.size());
+    }
+    bool Structure() const noexcept {
+        if (!lifetime->Present() || app.ModelSlot(modelSlot) != model || !SceneObjectPresent(model, lifetime->Id())) return false;
+        const auto& current=*mdl::Mdl(model);
+        if (current.morphs!=morphs || current.morphCount!=count) return false;
+        for (const auto& item : pasteRules) {
+            const auto& actual=morphs[item.morph];
+            if (actual.panel!=item.panel || actual.type!=item.type || std::memcmp(actual.name,item.name.data(),item.name.size())) return false;
+        }
+        const auto& m = *mdl::Mdl(model);
+        return m.morphs == morphs && m.morphCount == count && m.physicsMode == physicsMode &&
+            mdl::MorphKeyPoolIdentity(m.morphKeys) == identity && mdl::MorphKeyCapacity(m.morphKeys) >= capacity &&
+            (boneIdentity ? mdl::BoneKeyPoolIdentity(m.boneKeys) == boneIdentity && mdl::BoneKeyCapacity(m.boneKeys) >= boneCapacity : !m.boneKeys) &&
+            (displayIdentity ? mdl::KeyPoolIdentity(m.displayKeys) == displayIdentity && mdl::KeyPoolCapacity(m.displayKeys) >= displayCapacity : !m.displayKeys) &&
+            morphs[morph].panel == rule.panel && morphs[morph].type == rule.type &&
+            !std::memcmp(morphs[morph].name, rule.name.data(), rule.name.size());
+    }
+    bool InitialMarksCurrent() const noexcept {
+        const auto& m = *mdl::Mdl(model);
+        if (mdl::MorphKeyCapacity(m.morphKeys) < capacity || mdl::BoneKeyCapacity(m.boneKeys) < boneCapacity ||
+            mdl::KeyPoolCapacity(m.displayKeys) < displayCapacity) return false;
+        std::size_t patch = 0, bone = 0, display = 0;
+        for (std::size_t slot = 0; slot < capacity; ++slot) {
+            while (patch < patches.size() && patches[patch].key.slot < slot) ++patch;
+            const auto mark = patch < patches.size() && patches[patch].key.slot == slot ? patches[patch].key.before.allocated : 0;
+            if (m.morphKeys[slot].allocated != mark) return false;
+        }
+        for (std::size_t slot = 0; slot < boneCapacity; ++slot) {
+            const auto mark = bone < boneFlags.size() && boneFlags[bone].slot == slot ? boneFlags[bone++].before : 0;
+            if (m.boneKeys[slot].allocated != mark) return false;
+        }
+        for (std::size_t slot = 0; slot < displayCapacity; ++slot) {
+            const auto mark = display < displayFlags.size() && displayFlags[display].slot == slot ? displayFlags[display++].before : 0;
+            if (m.displayKeys[slot].allocated != mark) return false;
+        }
+        return true;
+    }
+    struct Candidate final : PreparedHistoryChange {
+        std::shared_ptr<MorphPaste> source;
+        bool forward, first, consumed = false;
+        std::uint64_t generation;
+        int frame;
+        mdl::MorphKey* pool;
+        mdl::BoneKey* bones;
+        mdl::DisplayKey* displays;
+        std::size_t capacity, boneCapacity, displayCapacity;
+        std::vector<mdl::MorphKey> current;
+        std::vector<Dependency> dependencies;
+        std::vector<unsigned char> morphMarks, boneMarks, displayMarks;
+        morph_curve::AuthoredLayers layers;
+        std::unique_ptr<mdl::MorphKeyPoolGrowth> growth;
+        float beforeValue, afterValue;
+        std::vector<float> beforeValues, afterValues;
+        Candidate(std::shared_ptr<MorphPaste> s, bool f)
+            : source(std::move(s)), forward(f), first(!source->published), generation(source->generation), frame(source->app.CurrentFrame()),
+              pool(mdl::Mdl(source->model)->morphKeys), bones(mdl::Mdl(source->model)->boneKeys),
+              displays(mdl::Mdl(source->model)->displayKeys), capacity(mdl::MorphKeyCapacity(pool)),
+              boneCapacity(mdl::BoneKeyCapacity(bones)), displayCapacity(mdl::KeyPoolCapacity(displays)),
+              beforeValue(source->morphs[source->morph].value), afterValue(beforeValue) {
+            for (const auto& item : source->pasteRules) beforeValues.push_back(source->morphs[item.morph].value);
+            afterValues=beforeValues;
+        }
+        const mdl::MorphKey* Target(unsigned slot) const noexcept {
+            const auto& patches = source->patches;
+            const auto found = std::lower_bound(patches.begin(), patches.end(), slot,
+                [](const RegistrationPatch& patch, unsigned index) { return patch.key.slot < index; });
+            if (found != patches.end() && found->key.slot == slot && found->data)
+                return forward ? &found->key.after : &found->key.before;
+            return slot < capacity ? &pool[slot] : nullptr;
+        }
+        bool IsCurrent() const noexcept override {
+            if (consumed || source->generation != generation || !source->Structure() || first == source->published || !growth || !growth->IsCurrent() ||
+                source->app.CurrentFrame() != frame || !SameFloat(beforeValue, source->morphs[source->morph].value)) return false;
+            for (std::size_t i=0;i<source->pasteRules.size();++i)
+                if (!SameFloat(beforeValues[i],source->morphs[source->pasteRules[i].morph].value)) return false;
+            const auto& m = *mdl::Mdl(source->model);
+            if (m.morphKeys != pool || m.boneKeys != bones || m.displayKeys != displays ||
+                mdl::MorphKeyCapacity(pool) != capacity || mdl::BoneKeyCapacity(bones) != boneCapacity ||
+                mdl::KeyPoolCapacity(displays) != displayCapacity || m.searchCursor != (forward ? source->search : source->searchAfter) ||
+                m.maxFrame != (forward ? source->maxBefore : source->maxAfter) ||
+                source->app.state.lastRegisteredFrame != (forward ? source->lastBefore : source->lastAfter)) return false;
+            for (std::size_t i = 0; i < source->patches.size(); ++i) {
+                const auto slot = source->patches[i].key.slot;
+                const auto live = slot < capacity ? pool[slot] : mdl::MorphKey{};
+                if (!SameKey(current[i], live, true)) return false;
+            }
+            for (const auto& dependency : dependencies)
+                if (!SameKey(dependency.key, pool[dependency.slot], true)) return false;
+            for (std::size_t i = 0; i < morphMarks.size(); ++i) if (pool[i].allocated != morphMarks[i]) return false;
+            for (std::size_t i = 0; i < boneMarks.size(); ++i) if (bones[i].allocated != boneMarks[i]) return false;
+            for (std::size_t i = 0; i < displayMarks.size(); ++i) if (displays[i].allocated != displayMarks[i]) return false;
+            return morph_curve::LayersUnchanged(source->model, layers);
+        }
+        void Publish() noexcept override {
+            if (!IsCurrent() || !growth->Publish()) std::terminate();
+            auto& m = *mdl::Mdl(source->model);
+            // Match display registration's complete selection snapshot over
+            // the pools captured by this record. Sparse flags retain nonzero
+            // values, but newly selected originally-zero slots must also clear.
+            // Later unrelated growth tails remain outside this record; its own
+            // newly inserted slot is restored by the data patch below.
+            for (std::size_t i = 0; i < source->capacity; ++i) m.morphKeys[i].allocated = 0;
+            for (std::size_t i = 0; i < source->boneCapacity; ++i) bones[i].allocated = 0;
+            for (std::size_t i = 0; i < source->displayCapacity; ++i) displays[i].allocated = 0;
+            for (const auto& patch : source->patches) {
+                const auto& target = forward ? patch.key.after : patch.key.before;
+                if (patch.data) m.morphKeys[patch.key.slot] = target;
+                else m.morphKeys[patch.key.slot].allocated = target.allocated;
+            }
+            for (const auto& flag : source->boneFlags) bones[flag.slot].allocated = forward ? 0 : flag.before;
+            for (const auto& flag : source->displayFlags) displays[flag.slot].allocated = forward ? 0 : flag.before;
+            m.maxFrame = forward ? source->maxAfter : source->maxBefore;
+            source->app.state.lastRegisteredFrame = forward ? source->lastAfter : source->lastBefore;
+            // The current-value registrar never seeks. Subsequent history
+            // traversal evaluates only its own channel at the current frame.
+            for (std::size_t i=0;i<source->pasteRules.size();++i) source->morphs[source->pasteRules[i].morph].value=afterValues[i];
+            m.searchCursor = forward ? source->searchAfter : source->search;
+            source->published = true; ++source->generation; consumed = true;
+            if (!growth->Accept()) std::terminate();
+        }
+    };
+    MmsResult Prepare(bool forward, std::unique_ptr<PreparedHistoryChange>& out) override {
+        out.reset();
+        if (!Structure()) return MMS_E_STALE;
+        if (generation == UINT64_MAX) return MMS_E_NOT_READY;
+        if (!published && (!forward || app.CurrentFrame() != playheadBefore || !SameFloat(value, morphs[morph].value) || !InitialMarksCurrent()))
+            return MMS_E_STALE;
+        if (app.CurrentFrame() < 0 || app.CurrentFrame() > frame_limits::maximum) return MMS_E_ARGUMENT;
+        return Boundary([&]() -> MmsResult {
+            auto& m = *mdl::Mdl(model);
+            if (m.maxFrame != (forward ? maxBefore : maxAfter) || m.searchCursor != (forward ? search : searchAfter) ||
+                app.state.lastRegisteredFrame != (forward ? lastBefore : lastAfter)) return MMS_E_STALE;
+            auto candidate = std::make_unique<Candidate>(shared_from_this(), forward);
+            Owners owners; candidate->dependencies = Chains(m, owners);
+            std::uint64_t needed = count;
+            for (const auto& patch : patches) {
+                const auto live = patch.key.slot < candidate->capacity ? m.morphKeys[patch.key.slot] : mdl::MorphKey{};
+                if (patch.data && !SameKey(live, forward ? patch.key.before : patch.key.after, false)) return MMS_E_STALE;
+                candidate->current.push_back(live); needed = (std::max)(needed, std::uint64_t(patch.key.slot) + 1);
+            }
+            candidate->morphMarks.reserve(candidate->capacity);
+            candidate->boneMarks.reserve(candidate->boneCapacity);
+            candidate->displayMarks.reserve(candidate->displayCapacity);
+            for (std::size_t i = 0; i < candidate->capacity; ++i) candidate->morphMarks.push_back(m.morphKeys[i].allocated);
+            for (std::size_t i = 0; i < candidate->boneCapacity; ++i) candidate->boneMarks.push_back(m.boneKeys[i].allocated);
+            for (std::size_t i = 0; i < candidate->displayCapacity; ++i) candidate->displayMarks.push_back(m.displayKeys[i].allocated);
+            if (!mdl::MorphKeyPoolGrowth::Prepare(m, needed, candidate->growth)) return MMS_E_MEMORY;
+            std::string error;
+            if (!morph_curve::CaptureLayers(model, candidate->layers, error)) return MMS_E_ARGUMENT;
+            morph_curve::NativeKeyView view;
+            view.context = candidate.get(); view.capacity = candidate->growth->CandidateCapacity();
+            view.key = [](const void* context, std::uint32_t slot) noexcept {
+                return static_cast<const Candidate*>(context)->Target(slot);
+            };
+            morph_curve::NativeKeyView currentView;
+            currentView.context=candidate->pool;currentView.capacity=candidate->capacity;
+            currentView.key=[](const void* context,std::uint32_t index) noexcept {return static_cast<const mdl::MorphKey*>(context)+index;};
+            for (std::size_t i=0;i<pasteRules.size();++i) {
+                float oldValue=0,targetValue=0;
+                const auto index=int(pasteRules[i].morph);
+                if (!morph_curve::SampleLayersTarget(candidate->layers,currentView,index,candidate->frame,oldValue,error) ||
+                    !morph_curve::SampleLayersTarget(candidate->layers,view,index,candidate->frame,targetValue,error)) return MMS_E_ARGUMENT;
+                if (SameFloat(oldValue,candidate->beforeValues[i])) candidate->afterValues[i]=targetValue;
+            }
+            if (!candidate->IsCurrent()) return MMS_E_STALE;
+            out = std::move(candidate); return MMS_OK;
+        });
+    }
+    std::uint64_t RetainedBytes() const noexcept override {
+        std::uint64_t bytes = sizeof(*this) + 4 * sizeof(void*);
+        AddBytes(bytes, patches.capacity(), sizeof(RegistrationPatch));
+        AddBytes(bytes, boneFlags.capacity(), sizeof(RegistrationFlag));
+        AddBytes(bytes, displayFlags.capacity(), sizeof(RegistrationFlag));
+        AddBytes(bytes,pasteRules.capacity(),sizeof(Rule));return bytes;
+    }
+};
 }
 MmsResult PlanMorphRegistration(MMDApp& app, unsigned slot, int morph, int frame,
     std::shared_ptr<HistoryChange>& out) noexcept {
@@ -436,6 +647,83 @@ MmsResult PlanMorphRegistration(MMDApp& app, unsigned slot, int morph, int frame
         out = std::move(change); return MMS_OK;
     });
 }
+MmsResult PlanMorphKeyPaste(MMDApp& app,unsigned slot,std::shared_ptr<HistoryChange>& out) noexcept {
+    out.reset();
+    if (slot>=kModelSlotCount || !app.ModelSlot(slot) || app.PlaybackActive() || app.FrameStepPlayback() ||
+        app.state.recordPlaybackStartPending || app.SceneMutationInProgress()) return MMS_E_NOT_READY;
+    if (app.CurrentFrame()<0 || app.CurrentFrame()>frame_limits::maximum) return MMS_E_ARGUMENT;
+    const auto& counts=app.ClipboardCounts();
+    if (counts.bones || counts.displays) return MMS_E_NOT_READY;
+    if (!counts.morphs) return MMS_OK;
+    if (!app.MorphClipboard() || counts.morphs>mdl::kMorphKeyCapacityLimit) return MMS_E_ARGUMENT;
+    return Boundary([&]() -> MmsResult {
+        const auto& model=*mdl::Mdl(app.ModelSlot(slot));
+        if (!model.morphCount) return MMS_OK;
+        if (!mdl::MorphKeyPoolIdentity(model.morphKeys) || (model.boneKeys&&!mdl::BoneKeyPoolIdentity(model.boneKeys)) ||
+            (model.displayKeys&&!mdl::KeyPoolIdentity(model.displayKeys))) return MMS_E_NOT_READY;
+        Owners owners;Chains(model,owners);
+        std::set<std::string> names;
+        for(unsigned morph=0;morph<model.morphCount;++morph)
+            if(!names.emplace(model.morphs[morph].name,strnlen_s(model.morphs[morph].name,sizeof(model.morphs[morph].name))).second) return MMS_E_ARGUMENT;
+        struct Copy {unsigned morph,frame;float value;};std::vector<Copy> copies;
+        for (unsigned i=0;i<counts.morphs;++i) {
+            const auto rec=app.MorphClipboard()[i];unsigned frame;
+            if (!frame_limits::Add(app.CurrentFrame(),rec.frame,frame) || !std::isfinite(rec.value)) return MMS_E_ARGUMENT;
+            for (unsigned morph=0;morph<model.morphCount;++morph) if (!std::strncmp(rec.name,model.morphs[morph].name,sizeof(model.morphs[morph].name))) {
+                copies.push_back({morph,frame,rec.value});break;
+            }
+        }
+        if (copies.empty()) return MMS_OK;
+        auto change=std::make_shared<MorphPaste>(app,slot,copies.front().morph,app.CurrentFrame());
+        const auto capacity=mdl::MorphKeyCapacity(model.morphKeys);auto targetCapacity=capacity;
+        std::map<unsigned,RegistrationPatch> planned;
+        const auto read=[&](unsigned index) -> mdl::MorphKey {
+            const auto found=planned.find(index);
+            return found!=planned.end()?found->second.key.after:index<capacity?model.morphKeys[index]:mdl::MorphKey{};
+        };
+        const auto write=[&](unsigned index,bool data) -> mdl::MorphKey& {
+            const auto key=index<capacity?model.morphKeys[index]:mdl::MorphKey{};
+            auto& patch=planned.emplace(index,RegistrationPatch{{index,key,key},data}).first->second;
+            patch.data|=data;return patch.key.after;
+        };
+        for (std::size_t i=0;i<capacity;++i) if(model.morphKeys[i].allocated) write(unsigned(i),false).allocated=0;
+        unsigned cursor=model.morphCount;while(cursor<targetCapacity&&read(cursor).frame)++cursor;
+        std::set<unsigned> affected;
+        for (const auto& copy:copies) {
+            affected.insert(copy.morph);unsigned current=copy.morph;
+            for (std::size_t hops=0;read(current).frame<copy.frame&&read(current).next;++hops) {
+                if(hops>=targetCapacity)return MMS_E_ARGUMENT;current=read(current).next;
+            }
+            const auto existing=read(current);
+            if(existing.frame==copy.frame) {auto& key=write(current,true);key.value=copy.value;key.allocated=1;continue;}
+            if(cursor<model.morphCount||cursor>=targetCapacity)cursor=model.morphCount;
+            while(cursor<targetCapacity&&read(cursor).frame)++cursor;
+            if(cursor>=mdl::kMorphKeyCapacityLimit)return MMS_E_MEMORY;
+            targetCapacity=(std::max)(targetCapacity,std::size_t(cursor)+1);
+            auto& key=write(cursor,true);
+            if(existing.frame<copy.frame) {write(current,true).next=cursor;key.previous=current;key.next=0;}
+            else {write(existing.previous,true).next=cursor;key.previous=existing.previous;write(current,true).previous=cursor;key.next=current;}
+            key.frame=copy.frame;key.value=copy.value;key.allocated=1;
+            change->maxAfter=(std::max)(change->maxAfter,copy.frame);
+        }
+        Owners targets;TrackChains(model.morphCount,targetCapacity,read,targets);
+        bool dataChanged=false;
+        for(const auto& item:planned) if(item.second.data&&!SameKey(item.second.key.before,item.second.key.after,false)) {dataChanged=true;break;}
+        if(!dataChanged)return MMS_OK;
+        for(const auto& item:planned) if(!SameKey(item.second.key.before,item.second.key.after,true))change->patches.push_back(item.second);
+        for(auto morph:affected) {
+            const auto& value=model.morphs[morph];Rule rule{morph,{},value.panel,value.type};
+            if(!std::isfinite(value.value))return MMS_E_ARGUMENT;
+            std::memcpy(rule.name.data(),value.name,rule.name.size());change->pasteRules.push_back(rule);
+        }
+        for(std::size_t i=0;i<change->boneCapacity;++i)if(model.boneKeys[i].allocated)change->boneFlags.push_back({unsigned(i),model.boneKeys[i].allocated});
+        for(std::size_t i=0;i<change->displayCapacity;++i)if(model.displayKeys[i].allocated)change->displayFlags.push_back({unsigned(i),model.displayKeys[i].allocated});
+        cursor=1;while(cursor<change->displayCapacity&&model.displayKeys[cursor].frame)++cursor;change->searchAfter=int(cursor);
+        if(change->patches.empty()&&change->boneFlags.empty()&&change->displayFlags.empty()&&change->search==change->searchAfter&&change->maxBefore==change->maxAfter)return MMS_OK;
+        out=std::move(change);return MMS_OK;
+    });
+}
+
 MmsResult PlanMorphKeyDeletion(MMDApp& app, unsigned slot, std::shared_ptr<HistoryChange>& out, bool allowOtherMarks) noexcept {
     out.reset();
     if (slot >= kModelSlotCount || !app.ModelSlot(slot) || app.PlaybackActive() || app.FrameStepPlayback() ||

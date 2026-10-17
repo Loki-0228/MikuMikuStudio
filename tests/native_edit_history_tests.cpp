@@ -382,9 +382,16 @@ void CrossModelJournal(){
 #include "native_history_mode_checks.inc"
 #include "native_frame_line_checks.inc"
 #include "native_key_paste_checks.inc"
+#include "native_morph_paste_checks.inc"
+#include "native_display_paste_checks.inc"
 int main(int argc,char** argv){
     std::setvbuf(stdout,nullptr,_IONBF,0);
     const auto run=[](const char* name,void(*test)()){std::printf("RUN %s\n",name);test();};
+    if(argc==2&&!std::strcmp(argv[1],"--model-paste-only")) {
+        run("NativeMorphPasteChecks",NativeMorphPasteChecks);
+        run("NativeDisplayPasteChecks",NativeDisplayPasteChecks);
+        std::printf("PASS native morph and display paste: %u checks\n",checks);return 0;
+    }
     if(argc==2&&!std::strcmp(argv[1],"--vmd-import-only")) {
         run("NativeVmdImportChecks",NativeVmdImportChecks);
         std::printf("PASS native VMD import admission: %u checks\n",checks);return 0;
@@ -509,6 +516,8 @@ int main(int argc,char** argv){
     run("NativeVmdImportChecks",NativeVmdImportChecks);
     run("NativeFrameLineChecks",NativeFrameLineChecks);
     run("NativeKeyPasteChecks",NativeKeyPasteChecks);
+    run("NativeMorphPasteChecks",NativeMorphPasteChecks);
+    run("NativeDisplayPasteChecks",NativeDisplayPasteChecks);
     run("PhysicsImportChecks",PhysicsImportChecks);
     run("ImportTextureCacheChecks",ImportTextureCacheChecks);
     run("AccessoryImportChecks",AccessoryImportChecks);
