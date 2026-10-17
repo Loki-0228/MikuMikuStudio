@@ -311,6 +311,9 @@ void DispatchSeparateWindowCommand(MMDApp* app, unsigned short id) {  // was Sub
         break;
     }
     case 0x22D: {                                                // 0x46269C
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::TryToggleBoundGridDisplay(app)) break;
+#endif
         if (s.GroundGridEnabled() != 0) {
             s.GroundGridEnabled() = 0;
             CheckMenuItem(GetMenu(main), 0xD7, MF_UNCHECKED);

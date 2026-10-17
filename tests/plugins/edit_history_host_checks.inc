@@ -386,6 +386,7 @@ void ObjectMenuDeletion(MMDApp* app, plugins::SharedHistory& history, const MmsS
 #include "accessory_text_host_checks.inc"
 #include "accessory_flag_host_checks.inc"
 #include "morph_text_host_checks.inc"
+#include "grid_display_host_checks.inc"
 void Run(MMDApp* app) {
     using namespace plugins;
     const auto initial = GetModuleHandleW(L"manager_edit_probe.dll");
@@ -438,6 +439,7 @@ void Run(MMDApp* app) {
     AccessoryFlagParameters(app, *history, value);
     ShadowParameters(app, *history, value);
     MorphTextPose(app, *history, value);
+    GridDisplayCommands(app, *history, value);
     MixedModelRange(app, *history);
     ModelInterpolation(app, *history);
     ObjectMenuDeletion(app, *history, api, path, accessoryPath);

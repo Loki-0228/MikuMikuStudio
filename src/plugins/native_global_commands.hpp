@@ -33,6 +33,9 @@ bool TryResetBoundCameraField(MMDApp*, unsigned field, bool activateCameraTrack 
 // changes separately from no-op; notifications cannot turn a commit into failure.
 MmsResult ApplyBoundCameraField(MMDApp&, unsigned field, float value, bool& changed,
     bool activateCameraTrack = true) noexcept;
+// Project coordinate-axis/grid visibility; all menu/main/floating entries share it.
+MmsResult ApplyBoundGridDisplay(MMDApp&, bool enabled, bool& changed) noexcept;
+bool TryToggleBoundGridDisplay(MMDApp*) noexcept;
 // Fields 0..2 color (authored float), 3..5 direction. CPU mirror publication
 // is atomic; device and readout updates happen only after journal publication.
 MmsResult ApplyBoundLightField(MMDApp&, unsigned field, float value, bool& changed) noexcept;

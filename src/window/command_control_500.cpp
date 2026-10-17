@@ -947,6 +947,9 @@ void CmdControl500(MMDApp* app, HWND hwnd, std::uint16_t id, std::uint16_t notif
 
     // ---- 557: morph-display checkbox 0x22D (byte 0x31D) -----------------
     case 557: {  // 0x48C557
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::TryToggleBoundGridDisplay(app)) break;
+#endif
         if (app->state.groundGridEnabled != 0) {
             app->state.groundGridEnabled = 0;
             CheckMenuItem(GetMenu(hwnd), 0xD7, MF_UNCHECKED);

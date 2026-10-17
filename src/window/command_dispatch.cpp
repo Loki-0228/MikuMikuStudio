@@ -61,6 +61,9 @@
 #include "mikudancestudio/physics_bake.hpp"
 #include "mikudancestudio/ui_language.hpp"
 #include "viewport_corner_menu.hpp"
+#if !MMD_ORIGINAL_PROFILE
+#include "../plugins/native_global_commands.hpp"
+#endif
 
 namespace mikudancestudio {
 
@@ -520,6 +523,9 @@ void CommandDispatch(HWND ctrl, WPARAM wParam) {
         break;
     }
     case 0xD7: {    // View: coordinate axis display (0x47FBF5)
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::TryToggleBoundGridDisplay(app)) break;
+#endif
         auto& flag = s.state.groundGridEnabled;
         flag = flag ? 0 : 1;
         CheckMenuItem(GetMenu(hwnd), 0xD7, flag ? MF_CHECKED : MF_UNCHECKED);

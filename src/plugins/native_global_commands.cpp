@@ -34,6 +34,52 @@ bool Ready(MMDApp& app) noexcept {
         !app.GravitySettingDialog() && !app.GroundShadowColorDialog() && !app.AccessoryOrderArray() &&
         !app.state.accessoryEditDialogOpen && !app.state.edgeThicknessDialog;
 }
+void RefreshGridReadout(MMDApp& app) noexcept {
+    const bool enabled=app.GroundGridEnabled()!=0;
+    const auto main=app.MainWindow();if(!main)return;
+    CheckMenuItem(GetMenu(main),0xD7,MF_BYCOMMAND|(enabled?MF_CHECKED:MF_UNCHECKED));
+    const HWND windows[]={main,app.FloatingWindow()};
+    for(unsigned i=0;i<2;++i){
+        if(!windows[i] || (i && windows[i]==main))continue;
+        const auto button=GetDlgItem(windows[i],panel::kCoordAxisCheckbox);
+        const WPARAM checked=enabled?BST_CHECKED:BST_UNCHECKED;
+        if(button && SendMessageW(button,BM_GETCHECK,0,0)!=checked){SendMessageW(button,BM_SETCHECK,checked,0);InvalidateRect(button,nullptr,FALSE);}
+    }
+}
+struct GridDisplayChange final : HistoryChange, std::enable_shared_from_this<GridDisplayChange> {
+    MMDApp& app;
+    const std::uint64_t pool;
+    const std::uint8_t before,after;
+    std::uint64_t generation=1;
+    bool applied=false,published=false;
+    GridDisplayChange(MMDApp& a,bool enabled) : app(a),pool(mdl::KeyPoolIdentity(a.CameraKeys())),before(a.GroundGridEnabled()),after(enabled?1:0) {}
+    struct Candidate final : PreparedHistoryChange {
+        std::shared_ptr<GridDisplayChange> source;
+        const bool forward;
+        const std::uint64_t generation;
+        const int frame;
+        const std::uint8_t expected;
+        bool consumed=false;
+        Candidate(std::shared_ptr<GridDisplayChange> value,bool direction) : source(std::move(value)),forward(direction),generation(source->generation),frame(source->app.CurrentFrame()),expected(source->app.GroundGridEnabled()) {}
+        bool IsCurrent() const noexcept override {
+            return !consumed && source->generation==generation && forward!=source->applied &&
+                mdl::KeyPoolIdentity(source->app.CameraKeys())==source->pool && source->app.CurrentFrame()==frame && source->app.GroundGridEnabled()==expected;
+        }
+        void Publish() noexcept override {
+            if(!IsCurrent())std::terminate();
+            source->app.GroundGridEnabled()=forward?source->after:source->before;
+            source->published=true;source->applied=forward;++source->generation;consumed=true;
+        }
+    };
+    MmsResult Prepare(bool forward,std::unique_ptr<PreparedHistoryChange>& out) override {
+        out.reset();return Boundary([&]() -> MmsResult {
+            if(!pool || mdl::KeyPoolIdentity(app.CameraKeys())!=pool || forward==applied || (!published && app.GroundGridEnabled()!=before))return MMS_E_STALE;
+            if(generation==UINT64_MAX)return MMS_E_NOT_READY;
+            out=std::make_unique<Candidate>(shared_from_this(),forward);return MMS_OK;
+        });
+    }
+    std::uint64_t RetainedBytes() const noexcept override {return sizeof(*this)+4*sizeof(void*);}
+};
 struct CameraPoseChange final : HistoryChange, std::enable_shared_from_this<CameraPoseChange> {
     MMDApp& app;
     const std::uint64_t poolIdentity;
@@ -497,6 +543,27 @@ bool TryResetBoundCameraRotation(MMDApp* app) noexcept {
     });
     return true;
 }
+MmsResult ApplyBoundGridDisplay(MMDApp& app,bool enabled,bool& changed) noexcept {
+    changed=false;return Boundary([&]() -> MmsResult {
+        auto* history=BoundNativePoseHistory(&app);
+        if(!history || !Ready(app) || !mdl::KeyPoolIdentity(app.CameraKeys()))return MMS_E_NOT_READY;
+        if(const auto result=history->CheckNativeEdit())return result;
+        if(app.GroundGridEnabled()==(enabled?1:0))return MMS_OK;
+        auto change=std::make_shared<GridDisplayChange>(app,enabled);
+        std::unique_ptr<SharedHistory::NativeTransaction> transaction;
+        if(const auto result=history->PrepareNative("Coordinate axis display",std::move(change),transaction))return result;
+        if(const auto result=history->CommitNative(std::move(transaction)))return result;
+        changed=true;
+        Boundary([&]() -> MmsResult {PublishBoundPoseEdit(app,*history,false);RefreshGridReadout(app);return MMS_OK;});
+        return MMS_OK;
+    });
+}
+bool TryToggleBoundGridDisplay(MMDApp* app) noexcept {
+    if(!app || !BoundNativePoseHistory(app))return false;
+    bool changed=false;ApplyBoundGridDisplay(*app,app->GroundGridEnabled()==0,changed);
+    if(!changed)RefreshGridReadout(*app);
+    return true;
+}
 MmsResult ApplyBoundCameraField(MMDApp& app, unsigned field, float value, bool& changed, bool activateCameraTrack) noexcept {
     changed = false;
     return Boundary([&]() -> MmsResult {
@@ -738,6 +805,7 @@ bool TryRegisterBoundAccessory(MMDApp* app, HWND window) noexcept {
 void RefreshBoundGlobalReadout(MMDApp& app) noexcept {
     if (!app.MainWindow()) return;
     Boundary([&]() -> MmsResult {
+        RefreshGridReadout(app);
         if (app.cameraProjectionRefreshPending && app.Renderer() && app.Renderer()->device) {
             // Consume current-state work at the UI boundary. A zero/tiny
             // orthographic distance must not install infinities on the device.
