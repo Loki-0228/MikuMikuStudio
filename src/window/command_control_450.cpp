@@ -365,7 +365,8 @@ MmsResult ApplyBoundPoseCommand(MMDApp& app,plugins::SharedHistory& history,
         // particular it must not clear selection, mark bones or discard redo.
         if(!anyChange)return MMS_OK;
         plugins::NativePoseScope scope;
-        if(auto result=scope.Begin(app,history,app.SelectedModelSlot(),paste?(mirror?"Mirror bone pose":"Paste bone pose"):"Reset bone pose"))return result;
+        if(auto result=scope.Begin(app,history,app.SelectedModelSlot(),paste?(mirror?"Mirror bone pose":"Paste bone pose"):"Reset bone pose",
+            plugins::SharedHistory::NativeIntent::ExplicitCommit))return result;
         for(std::size_t i=0;i<targets.size();++i)if(targets[i].matched&&(paste||targets[i].changed)) {
             const auto& target=targets[i];auto& bone=native.boneTable[i];
             std::memcpy(bone.trans,target.position,sizeof(target.position));

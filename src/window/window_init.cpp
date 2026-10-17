@@ -1,3 +1,5 @@
+#include "window_settings.hpp"
+#include "mikudancestudio/local_data_path.hpp"
 #include "mikudancestudio/mmv4mms.hpp"
 #include "mikudancestudio/plugin_menu.hpp"
 #include "mikudancestudio/plugin_runtime.hpp"
@@ -237,7 +239,11 @@ bool InitMainWindowAndD3D(MMDApp* app, void* hInstanceIn, int nShowCmd) {
     const LANGID userLanguage = GetUserDefaultUILanguage();
     s.EnglishUI() = ResolveStartupUiLanguage(-1, userLanguage);
     LoadModelInfoLanguagePreference();
-    if (fopen_s(&stream, "Data\\mmconfig.ini", "rt") != 0) {    // 0x47B642
+    settings_json::Json savedWindow; system_settings::Result settingsResult;
+    const bool hasSavedWindow = settings_json::Read("window", savedWindow, settingsResult);
+    const auto legacyConfigPath = local_data::File(L"mmconfig.ini");
+    if (settingsResult != system_settings::Result::Missing || legacyConfigPath.empty() ||
+        _wfopen_s(&stream, legacyConfigPath.c_str(), L"rt") != 0) {    // 0x47B642
         // no config: full-screen defaults
         nWidth = screenW;
         nHeight = screenH - 30;
@@ -311,6 +317,32 @@ bool InitMainWindowAndD3D(MMDApp* app, void* hInstanceIn, int nShowCmd) {
             }
         }
         fclose(stream);
+    }
+
+    if (hasSavedWindow) {
+        const auto& j = savedWindow;
+        auto integer = [&](const char* name, int value) { return settings_json::Integer(j,name,value); };
+        X=integer("x",X); Y=integer("y",Y); nWidth=integer("width",nWidth); nHeight=integer("height",nHeight);
+        startMaximized=integer("maximized",startMaximized)!=0;
+        s.RenderWidth()=integer("renderWidth",s.RenderWidth()); s.RenderHeight()=integer("renderHeight",s.RenderHeight());
+        s.SidebarWidth()=integer("sidebarWidth",s.SidebarWidth());
+        s.EnglishUI()=ResolveStartupUiLanguage(integer("uiLanguage",-1),userLanguage);
+        runFlagSubsystem=integer("floating",runFlagSubsystem)!=0;
+        s.SeparateWindowMaximized()=integer("floatingMaximized",s.SeparateWindowMaximized())!=0;
+        s.SeparateWindowX()=integer("floatingX",s.SeparateWindowX()); s.SeparateWindowY()=integer("floatingY",s.SeparateWindowY());
+        s.SeparateWindowWidth()=integer("floatingWidth",s.SeparateWindowWidth()); s.SeparateWindowHeight()=integer("floatingHeight",s.SeparateWindowHeight());
+        checkPhysicsFrame=integer("physicsFrame",checkPhysicsFrame)!=0;
+        s.FrameVolumeControlEnabled()=integer("frameVolume",s.FrameVolumeControlEnabled())!=0;
+        s.FrameNormalization()=integer("frameNormalization",s.FrameNormalization());
+        s.SidebarRatio()=settings_json::Float(j,"sidebarRatio",s.SidebarRatio());
+        checkMenu119=integer("menu119",checkMenu119)!=0; checkMenu12D=integer("menu12d",checkMenu12D)!=0;
+        window_settings::ReadPath(j,"modelDirectory",app->DirModel()); window_settings::ReadPath(j,"accessoryDirectory",app->DirAccs());
+        window_settings::ReadPath(j,"waveDirectory",app->DirWave()); window_settings::ReadPath(j,"poseDirectory",app->DirPose());
+        window_settings::ReadPath(j,"motionDirectory",app->DirMotion()); window_settings::ReadPath(j,"userDirectory",app->DirUser());
+        window_settings::ReadPath(j,"backgroundDirectory",app->DirBg());
+    } else if (settingsResult == system_settings::Result::Missing) {
+        system_settings::CompareExchangeSection("window", nullptr,
+            window_settings::Snapshot(s,X,Y,nWidth,nHeight,startMaximized,runFlagSubsystem,checkPhysicsFrame,checkMenu119,checkMenu12D));
     }
 
     if (!nWidth)  nWidth = screenW;                             // 0x47BB27

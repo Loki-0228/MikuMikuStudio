@@ -72,7 +72,7 @@ struct NativePoseScope::Impl {
 };
 NativePoseScope::NativePoseScope()=default;
 NativePoseScope::~NativePoseScope()=default;
-MmsResult NativePoseScope::Begin(MMDApp& app,SharedHistory& history,unsigned slot,std::string_view label) noexcept {
+MmsResult NativePoseScope::Begin(MMDApp& app,SharedHistory& history,unsigned slot,std::string_view label,SharedHistory::NativeIntent intent) noexcept {
     if(impl_)return MMS_E_BUSY;
     // Validate thread and the host gate before reading the model. There are no
     // callbacks or window messages between this probe and the final reserve.
@@ -87,7 +87,7 @@ MmsResult NativePoseScope::Begin(MMDApp& app,SharedHistory& history,unsigned slo
         const auto payload=next->capture.MaximumRetainedBytes();
         constexpr auto own=sizeof(PoseChange)+kSharedBlockAllowance;
         if(payload>UINT64_MAX-own)return MMS_E_MEMORY;
-        if(auto result=history.ReserveAppliedNative(std::string(label),payload+own,next->transaction))return result;
+        if(auto result=history.ReserveAppliedNative(std::string(label),payload+own,next->transaction,intent))return result;
         next->active=true;impl_=std::move(next);return MMS_OK;
     });
 }

@@ -20,8 +20,9 @@ struct Settings {
     std::wstring directory; // Periodic copies only. Crash copies use data/backups.
 };
 enum class Result { Saved, Disabled, Busy, Full, Failed };
-// Production settings live in data/autosave.ini; the default backup
-// directory is resolved in data beside the current EXE instead of persisting its path.
+// Production settings use the autosave section in data/settings.json.
+// These explicit INI helpers support tests and one-time legacy migration.
+// The default backup directory is resolved beside the current EXE.
 Settings LoadSettings(const std::filesystem::path&);
 bool SaveSettings(const std::filesystem::path&, const Settings&);
 bool Validate(const Settings&, std::wstring& error);

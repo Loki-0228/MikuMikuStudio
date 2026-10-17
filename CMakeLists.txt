@@ -372,6 +372,8 @@ add_library(mikudancestudio_core STATIC
     src/window/antialias_menu.cpp
     src/app/viewport_corner_settings.cpp
     src/window/viewport_corner_menu.cpp
+    src/window/system_settings_ui.cpp
+    src/window/ui_language_settings.cpp
     src/window/physics_bake_dialog.cpp
     src/model/pmx_load.cpp
     src/model/add_model.cpp

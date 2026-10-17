@@ -1,4 +1,5 @@
 #include "mikudancestudio/recent_projects.hpp"
+#include "settings_json.hpp"
 #include "mikudancestudio/local_data_path.hpp"
 #include "mikudancestudio/build_profile.hpp"
 #include "mikudancestudio/mmd_app.hpp"
@@ -25,15 +26,38 @@ std::filesystem::path StorePath() {
     if(n && n<32768)return path;
     return local_data::File(L"recent-pmm.txt");
 }
+bool ExplicitStore() { wchar_t value[2]{}; return GetEnvironmentVariableW(L"MMS_RECENT_PROJECTS_FILE",value,2)!=0; }
+std::string RecentJson() {
+    std::string out="{\"paths\":[";
+    for(const auto& path:paths){if(out.back()!='[')out+=',';out+=settings_json::Quote(std::wstring_view(path));}
+    return out+"]}";
+}
 void Read() {
-    paths.clear();std::ifstream input(StorePath(),std::ios::binary);
+    paths.clear();
+    system_settings::Result result=system_settings::Result::Missing;
+    if(!ExplicitStore()){
+        settings_json::Json json;
+        if(settings_json::Read("recentProjects",json,result)){
+            auto found=json.object.find("paths");
+            if(found!=json.object.end()&&found->second.kind==settings_json::Json::Array)
+                for(const auto& entry:found->second.array){
+                    if(entry.kind!=settings_json::Json::StringValue||paths.size()>=10)continue;
+                    try{auto path=plugins::Wide(entry.text);if(!path.empty()&&path.size()<32768&&path.find(L'\0')==std::wstring::npos)paths.push_back(std::move(path));}catch(...){}
+                }
+            return;
+        }
+        if(result!=system_settings::Result::Missing)return;
+    }
+    std::ifstream input(StorePath(),std::ios::binary);
     std::wstring line;wchar_t c=0;
     while(input.read(reinterpret_cast<char*>(&c),sizeof(c))) {
         if(c==L'\n') { if(!line.empty() && paths.size()<10)paths.push_back(line);line.clear(); }
         else if(c!=L'\r' && c!=0xfeff && line.size()<32767)line+=c;
     }
+    if(!ExplicitStore())system_settings::CompareExchangeSection("recentProjects",nullptr,RecentJson());
 }
 void Write() {
+    if(!ExplicitStore()){system_settings::WriteSection("recentProjects",RecentJson());return;}
     auto path=StorePath();if(path.empty())return;
     std::error_code error;std::filesystem::create_directories(path.parent_path(),error);
     auto temp=path;temp+=L".tmp";

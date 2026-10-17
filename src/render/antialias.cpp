@@ -1,4 +1,6 @@
 #include "mikudancestudio/local_data_path.hpp"
+#include "mikudancestudio/system_settings.hpp"
+#include "../app/settings_json.hpp"
 #include "mikudancestudio/antialias.hpp"
 #include "mikudancestudio/antialias_motion.hpp"
 #include "mikudancestudio/mmd_app.hpp"
@@ -66,7 +68,21 @@ std::filesystem::path StorePath() {
     if(n && n<32768)return path;
     return local_data::File(L"antialias.ini");
 }
+bool HasConfigOverride() {
+    wchar_t value[32768]{};
+    const auto n = GetEnvironmentVariableW(L"MMS_ANTIALIAS_CONFIG", value, 32768);
+    return n && n < 32768;
+}
+std::string PreferenceJson(const Settings& settings) {
+    return "{\"algorithm\":" + std::to_string(unsigned(settings.algorithm)) +
+        ",\"lastSmaaAlgorithm\":" + std::to_string(unsigned(settings.lastSmaaAlgorithm)) +
+        ",\"enabled\":" + settings_json::Bool(settings.enabled) + "}";
+}
 void Save(MMDApp* app) {
+    if (!HasConfigOverride()) {
+        system_settings::WriteSection("antialias", PreferenceJson(app->antialiasing));
+        return;
+    }
     auto path=StorePath();if(path.empty())return;
     std::error_code error;std::filesystem::create_directories(path.parent_path(),error);
     const auto& settings=app->antialiasing;
@@ -75,12 +91,36 @@ void Save(MMDApp* app) {
     WritePrivateProfileStringW(L"Antialias",L"Enabled",settings.enabled?L"1":L"0",path.c_str());
 }
 void ReadUserPreferences(Settings& settings) {
+    if (!HasConfigOverride()) {
+        std::string body;
+        const auto result = system_settings::ReadSection("antialias", body);
+        if (result != system_settings::Result::Missing) {
+            settings.algorithm = Algorithm::MmdOriginal;
+            settings.lastSmaaAlgorithm = Algorithm::Smaa;
+            settings.enabled = true;
+            if (result == system_settings::Result::Ok) try {
+                const auto object = settings_json::Object(body);
+                const auto algorithm = settings_json::UInt(object, "algorithm", 0);
+                const auto last = Algorithm(settings_json::UInt(object, "lastSmaaAlgorithm", unsigned(Algorithm::Smaa)));
+                const bool enabled = settings_json::Bool(object, "enabled", true);
+                settings.algorithm = algorithm < unsigned(Algorithm::Count) ? Algorithm(algorithm) : Algorithm::MmdOriginal;
+                settings.lastSmaaAlgorithm = Smaa(last) ? last : Algorithm::Smaa;
+                settings.enabled = enabled;
+            } catch (...) {
+                settings.algorithm = Algorithm::MmdOriginal;
+                settings.lastSmaaAlgorithm = Algorithm::Smaa;
+                settings.enabled = true;
+            }
+            return; // An unreadable central file must never be replaced by legacy values.
+        }
+    }
     const auto path=StorePath();
     const auto algorithm=GetPrivateProfileIntW(L"Antialias",L"Algorithm",0,path.c_str());
     settings.algorithm=algorithm<unsigned(Algorithm::Count)?Algorithm(algorithm):Algorithm::MmdOriginal;
     settings.enabled=GetPrivateProfileIntW(L"Antialias",L"Enabled",1,path.c_str())!=0;
     const auto last=Algorithm(GetPrivateProfileIntW(L"Antialias",L"LastSmaaAlgorithm",unsigned(Algorithm::Smaa),path.c_str()));
     settings.lastSmaaAlgorithm=Smaa(last)?last:Algorithm::Smaa;
+    if (!HasConfigOverride()) system_settings::CompareExchangeSection("antialias", nullptr, PreferenceJson(settings));
 }
 void ResolveUnsupported(MMDApp* app) {
     if(!app->Renderer() || !app->Renderer()->device)return;

@@ -580,7 +580,7 @@ MmsResult CameraNumericEdit::Apply(const std::array<float, 7>& input) noexcept {
         if (!changed) return MMS_OK;
         auto change = std::make_shared<CameraPoseChange>(session->app, session->before, target, changed);
         std::unique_ptr<SharedHistory::NativeTransaction> transaction;
-        if (const auto result = session->history->PrepareNative("Edit camera numeric pose", std::move(change), transaction)) return result;
+        if (const auto result = session->history->PrepareNative("Edit camera numeric pose", std::move(change), transaction, SharedHistory::NativeIntent::Adjustment)) return result;
         if (const auto result = session->history->CommitNative(std::move(transaction))) return result;
         PublishBoundPoseEdit(session->app, *session->history, false); return MMS_OK;
     });
@@ -609,7 +609,7 @@ bool TryResetBoundCameraRotation(MMDApp* app) noexcept {
         if (const auto result = PlanCameraRotationReset(*app, change)) return result;
         if (!change) return MMS_OK;
         std::unique_ptr<SharedHistory::NativeTransaction> transaction;
-        if (const auto result = history->PrepareNative("Reset camera rotation", std::move(change), transaction)) return result;
+        if (const auto result = history->PrepareNative("Reset camera rotation", std::move(change), transaction, SharedHistory::NativeIntent::Adjustment)) return result;
         if (const auto result = history->CommitNative(std::move(transaction))) return result;
         PublishBoundPoseEdit(*app, *history, false); return MMS_OK;
     });
@@ -626,7 +626,7 @@ MmsResult ApplyProjectDisplayFlag(MMDApp& app,unsigned field,bool enabled,bool& 
         auto change=std::make_shared<ProjectDisplayChange>(app,field,enabled);
         const char* labels[]={"Coordinate axis display","Projected ground shadow","Transparent ground shadow"};
         std::unique_ptr<SharedHistory::NativeTransaction> transaction;
-        if(const auto result=history->PrepareNative(labels[field],std::move(change),transaction))return result;
+        if(const auto result=history->PrepareNative(labels[field],std::move(change),transaction, SharedHistory::NativeIntent::Adjustment))return result;
         if(const auto result=history->CommitNative(std::move(transaction)))return result;
         changed=true;
         Boundary([&]() -> MmsResult {PublishBoundPoseEdit(app,*history,false);RefreshProjectDisplayReadout(app);return MMS_OK;});
@@ -664,7 +664,7 @@ MmsResult ApplyBoundProjectedShadowAmbient(MMDApp& app,float value,bool& changed
         if(before==AmbientValues{value,value,value,value})return MMS_OK;
         auto change=std::make_shared<ShadowAmbientChange>(app,value);
         std::unique_ptr<SharedHistory::NativeTransaction> transaction;
-        if(const auto result=history->PrepareNative("Projected shadow ambient",std::move(change),transaction))return result;
+        if(const auto result=history->PrepareNative("Projected shadow ambient",std::move(change),transaction, SharedHistory::NativeIntent::Adjustment))return result;
         if(const auto result=history->CommitNative(std::move(transaction)))return result;
         changed=true;
         Boundary([&]()->MmsResult{PublishBoundPoseEdit(app,*history,false);if(!dialog)RefreshShadowAmbientReadout(app);return MMS_OK;});return MMS_OK;
@@ -709,7 +709,7 @@ MmsResult ApplyBoundCameraField(MMDApp& app, unsigned field, float value, bool& 
         auto after = before; after[field] = value;
         auto change = std::make_shared<CameraPoseChange>(app, before, after, 1u << field);
         std::unique_ptr<SharedHistory::NativeTransaction> transaction;
-        if (const auto result = history->PrepareNative("Edit camera pose component", std::move(change), transaction)) return result;
+        if (const auto result = history->PrepareNative("Edit camera pose component", std::move(change), transaction, SharedHistory::NativeIntent::Adjustment)) return result;
         if (const auto result = history->CommitNative(std::move(transaction))) return result;
         changed = true;
         // A completed publication is not a failed edit if a later optional UI
@@ -740,7 +740,7 @@ MmsResult ApplyBoundCameraProjectionField(MMDApp& app, float fov, std::uint8_t p
         if (editPerspective ? app.CameraPerspective() == perspective : app.CameraFov() == fov) return MMS_OK;
         auto change = std::make_shared<CameraProjectionChange>(app, fov, perspective, editPerspective);
         std::unique_ptr<SharedHistory::NativeTransaction> transaction;
-        if (const auto result = history->PrepareNative(editPerspective ? "Change camera projection" : "Edit camera field of view", std::move(change), transaction)) return result;
+        if (const auto result = history->PrepareNative(editPerspective ? "Change camera projection" : "Edit camera field of view", std::move(change), transaction, SharedHistory::NativeIntent::Adjustment)) return result;
         if (const auto result = history->CommitNative(std::move(transaction))) return result;
         changed = true;
         Boundary([&]() -> MmsResult {
@@ -792,7 +792,7 @@ MmsResult ApplyBoundShadowField(MMDApp& app, float distance, int mode, bool edit
         if (editMode ? app.SelfShadowMode() == mode : app.ShadowDistance() == distance) return MMS_OK;
         auto change = std::make_shared<ShadowPoseChange>(app, distance, mode, editMode);
         std::unique_ptr<SharedHistory::NativeTransaction> transaction;
-        if (const auto result = history->PrepareNative(editMode ? "Edit self-shadow mode" : "Edit self-shadow distance", std::move(change), transaction)) return result;
+        if (const auto result = history->PrepareNative(editMode ? "Edit self-shadow mode" : "Edit self-shadow distance", std::move(change), transaction, SharedHistory::NativeIntent::Adjustment)) return result;
         if (const auto result = history->CommitNative(std::move(transaction))) return result;
         changed = true;
         Boundary([&]() -> MmsResult {
@@ -845,7 +845,7 @@ MmsResult ApplyBoundAccessoryField(MMDApp& app, unsigned slot, unsigned field, f
         after.numeric[field] = value;
         auto change = std::make_shared<AccessoryPoseChange>(app, slot, field, before, after);
         std::unique_ptr<SharedHistory::NativeTransaction> transaction;
-        if (const auto result = history->PrepareNative("Edit accessory field", std::move(change), transaction)) return result;
+        if (const auto result = history->PrepareNative("Edit accessory field", std::move(change), transaction, SharedHistory::NativeIntent::Adjustment)) return result;
         if (const auto result = history->CommitNative(std::move(transaction))) return result;
         changed = true;
         Boundary([&]() -> MmsResult {
@@ -873,7 +873,7 @@ MmsResult ApplyBoundAccessoryFlag(MMDApp& app, unsigned slot, unsigned field, bo
         auto change = std::make_shared<AccessoryPoseChange>(app, slot, 8 + field, before, after);
         const char* labels[] = {"Accessory visibility", "Accessory additive blend", "Accessory shadow"};
         std::unique_ptr<SharedHistory::NativeTransaction> transaction;
-        if (const auto result = history->PrepareNative(labels[field], std::move(change), transaction)) return result;
+        if (const auto result = history->PrepareNative(labels[field], std::move(change), transaction, SharedHistory::NativeIntent::Adjustment)) return result;
         if (const auto result = history->CommitNative(std::move(transaction))) return result;
         changed = true;
         Boundary([&]() -> MmsResult {
@@ -912,7 +912,7 @@ MmsResult ApplyBoundLightFieldImpl(MMDApp& app, unsigned field, float value, boo
         auto after = before; after[field] = value;
         auto change = std::make_shared<LightPoseChange>(app, before, after, 1u << field);
         std::unique_ptr<SharedHistory::NativeTransaction> transaction;
-        if (const auto result = history->PrepareNative("Edit light pose component", std::move(change), transaction)) return result;
+        if (const auto result = history->PrepareNative("Edit light pose component", std::move(change), transaction, SharedHistory::NativeIntent::Adjustment)) return result;
         if (const auto result = history->CommitNative(std::move(transaction))) return result;
         changed = true;
         Boundary([&]() -> MmsResult {

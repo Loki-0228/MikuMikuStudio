@@ -2,6 +2,8 @@
 #define NOMINMAX
 #include "mikudancestudio/autosave.hpp"
 #include "mikudancestudio/local_data_path.hpp"
+#include "mikudancestudio/system_settings.hpp"
+#include "settings_json.hpp"
 #include "mikudancestudio/plugin_storage.hpp"
 #include "mikudancestudio/mmd_app.hpp"
 #include "mikudancestudio/pmm_extension.hpp"
@@ -39,6 +41,54 @@ Settings Defaults() {
     Settings value;
     const auto directory = local_data::File(L"backups");
     if (!directory.empty()) value.directory = directory.wstring();
+    return value;
+}
+bool HasConfigOverride() {
+    wchar_t value[32768]{};
+    const auto n = GetEnvironmentVariableW(L"MIKUDANCESTUDIO_AUTOSAVE_CONFIG", value, 32768);
+    return n && n < 32768;
+}
+bool DefaultDirectory(const Settings& value) {
+    auto directory = fs::path(value.directory).lexically_normal();
+    if (!directory.has_filename()) directory = directory.parent_path();
+    const auto defaultDirectory = Defaults().directory;
+    return !defaultDirectory.empty() && _wcsicmp(directory.c_str(),
+        fs::path(defaultDirectory).lexically_normal().c_str()) == 0;
+}
+std::string SettingsJson(const Settings& value) {
+    const bool besideExecutable = DefaultDirectory(value);
+    return std::string("{\"enabled\":") + settings_json::Bool(value.enabled) +
+        ",\"intervalMinutes\":" + std::to_string(value.intervalMinutes) +
+        ",\"maxBackups\":" + std::to_string(value.maxBackups) +
+        ",\"overwriteOldest\":" + settings_json::Bool(value.overwriteOldest) +
+        ",\"directoryMode\":" + settings_json::Quote(besideExecutable ? "executable" : "custom") +
+        ",\"directory\":" + settings_json::Quote(besideExecutable ? std::wstring(L"data/backups") : value.directory) + "}";
+}
+bool SaveCurrentSettings(const Settings& value) {
+    return HasConfigOverride() ? SaveSettings(SettingsPath(), value) :
+        system_settings::WriteSection("autosave", SettingsJson(value)) == system_settings::Result::Ok;
+}
+Settings LoadCurrentSettings() {
+    if (HasConfigOverride()) return LoadSettings(SettingsPath());
+    std::string body;
+    const auto result = system_settings::ReadSection("autosave", body);
+    if (result == system_settings::Result::Missing) {
+        const auto value = LoadSettings(SettingsPath());
+        system_settings::CompareExchangeSection("autosave", nullptr, SettingsJson(value));
+        return value;
+    }
+    Settings value = Defaults();
+    if (result == system_settings::Result::Ok) try {
+        const auto object = settings_json::Object(body);
+        value.enabled = settings_json::Bool(object, "enabled", false);
+        value.intervalMinutes = settings_json::UInt(object, "intervalMinutes", 1);
+        value.maxBackups = settings_json::UInt(object, "maxBackups", 100);
+        value.overwriteOldest = settings_json::Bool(object, "overwriteOldest", false);
+        if (settings_json::String(object, "directoryMode", "executable") != "executable")
+            value.directory = plugins::Wide(settings_json::String(object, "directory"));
+        std::wstring error;
+        if (!Validate(value, error)) return Defaults();
+    } catch (...) { return Defaults(); }
     return value;
 }
 bool Regular(const fs::path& path) {
@@ -215,7 +265,7 @@ bool SaveSettings(const fs::path& path, const Settings& value) {
     return ok;
 }
 const Settings& Current() {
-    if (!loaded) { settings = LoadSettings(SettingsPath()); loaded = true; }
+    if (!loaded) { settings = LoadCurrentSettings(); loaded = true; }
     return settings;
 }
 bool Configure(MMDApp* app, const Settings& value, std::wstring& error) {
@@ -232,7 +282,7 @@ bool Configure(MMDApp* app, const Settings& value, std::wstring& error) {
         }
         DeleteFileW(probe);
     }
-    if (!SaveSettings(SettingsPath(), value)) {
+    if (!SaveCurrentSettings(value)) {
         error = L"无法保存自动保存设置。 / Cannot save autosave settings."; return false;
     }
     settings = value; loaded = true;

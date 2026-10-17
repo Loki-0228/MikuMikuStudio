@@ -1,5 +1,6 @@
 #include "ui_preferences_file.hpp"
 #include "ui_registry.hpp"
+#include "mikudancestudio/system_settings.hpp"
 #include <atomic>
 
 namespace mikudancestudio::plugins {
@@ -36,6 +37,22 @@ MmsResult UiPreferencesFile::Load(UiRegistry& registry) {
     if (loaded_) return MMS_E_CONFLICT;
     loaded_ = true;
     return Boundary([&]() -> MmsResult {
+        if (unified_) {
+            system_settings::Store settings(settingsPath_.empty() ? system_settings::Path() : settingsPath_);
+            auto result = settings.ReadSection("pluginUi", baseline_);
+            sectionExisted_ = result == system_settings::Result::Ok;
+            if (result != system_settings::Result::Missing && !sectionExisted_) return MMS_E_FAILED;
+            existed_ = sectionExisted_ || Read(path_, baseline_);
+            if (existed_) if (auto r = registry.ImportPreferences(baseline_)) return r;
+            if (!sectionExisted_ && existed_) {
+                result = settings.CompareExchangeSection("pluginUi", nullptr, baseline_);
+                if (result != system_settings::Result::Ok) return result == system_settings::Result::Conflict ? MMS_E_CONFLICT : MMS_E_FAILED;
+                sectionExisted_ = true;
+            }
+            revision_ = existed_ ? registry.PreferencesRevision() : 0;
+            writable_ = true;
+            return MMS_OK;
+        }
         existed_ = Read(path_, baseline_);
         if (existed_) if (auto r = registry.ImportPreferences(baseline_)) return r;
         // With no file, allow start-time user preferences to be saved once.
@@ -49,6 +66,18 @@ MmsResult UiPreferencesFile::Save(UiRegistry& registry) {
     return Boundary([&]() -> MmsResult {
         auto bytes = registry.ExportPreferences();
         if (bytes.size() > kMaxBytes) return MMS_E_MEMORY;
+        if (unified_) {
+            system_settings::Store settings(settingsPath_.empty() ? system_settings::Path() : settingsPath_);
+            const auto result = settings.CompareExchangeSection("pluginUi", sectionExisted_ ? &baseline_ : nullptr, bytes);
+            if (result != system_settings::Result::Ok) {
+                if (result == system_settings::Result::Conflict) return MMS_E_CONFLICT;
+                if (result == system_settings::Result::Busy) return MMS_E_BUSY;
+                return MMS_E_FAILED;
+            }
+            baseline_ = std::move(bytes); existed_ = sectionExisted_ = true;
+            revision_ = registry.PreferencesRevision();
+            return MMS_OK;
+        }
         fs::create_directories(path_.parent_path());
         auto lockPath = path_; lockPath += L".lock";
         File lock(CreateFileW(lockPath.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr));

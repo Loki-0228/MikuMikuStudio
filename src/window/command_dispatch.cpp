@@ -10,6 +10,7 @@
 #include "mikudancestudio/animation_curve_editor.hpp"
 #include "mikudancestudio/frame_rate_correction.hpp"
 #include "mikudancestudio/sequence_scatter.hpp"
+#include "mikudancestudio/system_settings_ui.hpp"
 #include "mikudancestudio/native_media.hpp"
 // ===========================================================================
 // VA 0x0047E8A0 - CommandDispatch  (original: sub_47E8A0, 0x10A6A = 68KB)
@@ -413,6 +414,7 @@ void CommandDispatch(HWND ctrl, WPARAM wParam) {
     } curveSync{hwnd};
     const std::uint16_t id = LOWORD(wParam);
     const std::uint16_t notification = HIWORD(wParam);
+    if (ctrl == nullptr && notification == 0 && system_settings_ui::HandleCommand(app, id)) return;
     if (ctrl == nullptr && notification <= 1 && image_sequence::HandleCommand(app, id)) return;
     if (ctrl == nullptr && notification <= 1 && plugin_menu::HandleCommand(app, id)) return;
     if (ctrl == nullptr && notification <= 1 && plugins::HandleCommand(id)) return;

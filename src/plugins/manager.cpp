@@ -82,11 +82,11 @@ struct Manager::Impl {
     static constexpr UINT_PTR kRefreshRetry = 0x4d4d5372;
     std::function<bool()> refreshGuard;
 
-    Impl(fs::path user, Log output, std::function<void()> changed, bool fallback, std::shared_ptr<SceneStore> sceneStore):
+    Impl(fs::path user, Log output, std::function<void()> changed, bool fallback, std::shared_ptr<SceneStore> sceneStore, bool unifiedSettings):
         userRoot(std::move(user)), log(std::move(output)), registry(std::move(changed),
             [this](UiClient& client, MmsResult result) { if (result) for (const auto& i : instances)
                 if (&i->ui == &client) { CancelFailedEdit(*i); break; } }),
-        preferences(userRoot / L"ui-layout.json"), scene(std::move(sceneStore)), loader(fallback) {
+        preferences(userRoot / L"ui-layout.json", unifiedSettings), scene(std::move(sceneStore)), loader(fallback) {
         WNDCLASSW wc{}; wc.hInstance = GetModuleHandleW(nullptr); wc.lpfnWndProc = Window; wc.lpszClassName = L"MMS.PluginAbi.Dispatch.V1";
         if (!RegisterClassW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) throw std::runtime_error("plugin dispatcher class");
         wake = CreateWindowExW(0, wc.lpszClassName, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, wc.hInstance, this);
@@ -383,7 +383,7 @@ struct Manager::Impl {
         PostMessageW(wake, kDrain, 0, 0);
     }
 };
-Manager::Manager(fs::path user, Log log, std::function<void()> changed, bool fallback, std::shared_ptr<SceneStore> scene): impl_(std::make_unique<Impl>(std::move(user), std::move(log), std::move(changed), fallback, std::move(scene))) {}
+Manager::Manager(fs::path user, Log log, std::function<void()> changed, bool fallback, std::shared_ptr<SceneStore> scene, bool unifiedSettings): impl_(std::make_unique<Impl>(std::move(user), std::move(log), std::move(changed), fallback, std::move(scene), unifiedSettings)) {}
 Manager::~Manager() {
     if (!impl_) return;
     const auto stopped = Boundary([&] { return impl_->Stop() ? MMS_OK : MMS_E_BUSY; });

@@ -1,3 +1,4 @@
+#include "../src/window/ui_language_settings.hpp"
 // MAINTENANCE: regression-keep; purpose and cleanup conditions in tests/README.md.
 // ===========================================================================
 // User-acceptance regressions for the UI language of model names (defect 3)
@@ -726,16 +727,17 @@ void ModelLanguagePreferenceRegression() {
     Check(CreateDirectoryW(directory.c_str(), nullptr) && CreateDirectoryW(dataDirectory.c_str(), nullptr),
           "create isolated preference directory");
     Check(SetCurrentDirectoryW(directory.c_str()), "enter isolated preference directory");
+    const auto central=dataDirectory+L"\\settings.json", legacy=dataDirectory+L"\\model_info_language.ini";
     const auto previousPreference = gModelInfoLanguagePreference;
     const bool previousTranslation = gModelNameAutoTranslation;
     for (unsigned char preference : {kModelInfoLanguageAuto, kModelInfoLanguageJapanese, kModelInfoLanguageEnglish}) {
         for (bool enabled : {false, true}) {
             SetModelInfoLanguagePreference(preference);
             SetModelNameAutoTranslation(enabled);
-            SaveModelInfoLanguagePreference();
+            language_preferences::SaveTo(central);
             SetModelInfoLanguagePreference(kModelInfoLanguageAuto);
             SetModelNameAutoTranslation(!enabled);
-            LoadModelInfoLanguagePreference();
+            language_preferences::LoadFrom(central,legacy);
             Check(gModelInfoLanguagePreference == preference && gModelNameAutoTranslation == enabled,
                   "language and translation setting survive save/reload");
         }
@@ -743,15 +745,20 @@ void ModelLanguagePreferenceRegression() {
     FILE* file = nullptr;
     Check(fopen_s(&file, "Data\\model_info_language.ini", "wt") == 0, "write old preference format");
     std::fputs("2\n", file); std::fclose(file);
-    LoadModelInfoLanguagePreference();
+    Check(DeleteFileW(central.c_str()),"remove central settings to test first legacy migration");
+    language_preferences::LoadFrom(central,legacy);
     Check(gModelInfoLanguagePreference == kModelInfoLanguageEnglish && !gModelNameAutoTranslation,
           "old one-value preferences retain language and default translation off");
     Check(DeleteFileW(L"Data\\model_info_language.ini"), "remove temporary preference file");
-    LoadModelInfoLanguagePreference();
+    language_preferences::LoadFrom(central,legacy);
+    Check(gModelInfoLanguagePreference==kModelInfoLanguageEnglish&&!gModelNameAutoTranslation,"migrated settings survive removal of legacy file");
+    Check(DeleteFileW(central.c_str()),"remove migrated central settings to test missing preferences");
+    language_preferences::LoadFrom(central,legacy);
     Check(gModelInfoLanguagePreference == kModelInfoLanguageAuto && !gModelNameAutoTranslation,
           "missing preference file restores Auto with translation off");
     SetModelInfoLanguagePreference(previousPreference);
     SetModelNameAutoTranslation(previousTranslation);
+    Check(DeleteFileW(central.c_str())&&DeleteFileW((central+L".lock").c_str()),"remove isolated central preference data and lock");
     Check(SetCurrentDirectoryW(previousDirectory), "restore preference-test working directory");
     Check(RemoveDirectoryW(dataDirectory.c_str()) && RemoveDirectoryW(directory.c_str()), "remove temporary preference directories");
 }

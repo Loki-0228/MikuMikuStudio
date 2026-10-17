@@ -11,7 +11,7 @@
 //             Adapter, Cpu.  Default: FollowRenderer.
 //
 // Scope: per installation directory, shared by every project in that installation
-// (data/processor.ini).  PMM/VMM/VEM never store
+// (the processor section in data/settings.json). PMM/VMM/VEM never store
 // these choices, and opening, creating or saving a project never changes
 // them.
 //
@@ -157,8 +157,8 @@ bool SaveRequested(const Configuration& configuration, std::wstring& error);
 // warnings for the menu to show.
 bool Initialize(std::wstring& error);
 
-// The config file in use: data/processor.ini, or a
-// test override.  Empty when the path cannot be resolved.
+// Production: data/settings.json; explicit test override: standalone legacy INI.
+// Empty when the installation path cannot be resolved.
 std::wstring ConfigPath();
 
 // Resolves `choice` to a D3D9 adapter ordinal for the main device.  The first

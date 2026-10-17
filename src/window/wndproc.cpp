@@ -1,9 +1,11 @@
+#include "window_settings.hpp"
 #include "mikudancestudio/autosave.hpp"
 #include "mikudancestudio/plugin_menu.hpp"
 #include "mikudancestudio/plugin_runtime.hpp"
 #include "mikudancestudio/build_profile.hpp"
 #include "mikudancestudio/update_coordinator.hpp"
 #include "mikudancestudio/nvidia_antialias_menu.hpp"
+#include "mikudancestudio/system_settings_ui.hpp"
 // ===========================================================================
 // VA 0x004C3A10 - MainWndProc  (original: sub_4C3A10, 0x8A6 bytes)
 // ===========================================================================
@@ -152,6 +154,7 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         frame_rate_correction::RefreshMenu(app);
         // Keep the Help menu's current dock-corner label and UI language fresh.
         viewport_corner_menu::EnsureItem(app);
+        system_settings_ui::EnsureItem(app);
     }
     if (msg == WM_INITMENUPOPUP) autosave::RefreshMenu(app);
     if (msg == WM_NCPAINT || msg == WM_NCACTIVATE || msg == WM_SETTEXT || msg == WM_EXITMENULOOP) {
@@ -238,56 +241,16 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
                 configMenu = s.state.savedMenu;
             }
             SetCurrentDirectoryW(app->ExeDir());                  // +657102
-            FILE* f = nullptr;
-            if (fopen_s(&f, "Data\\mmconfig.ini", "wt") == 0) {
-                fprintf(f, "%d\n", wndpl.rcNormalPosition.left);
-                fprintf(f, "%d\n", wndpl.rcNormalPosition.top);
-                fprintf(f, "%d\n", wndpl.rcNormalPosition.right - wndpl.rcNormalPosition.left);
-                fprintf(f, "%d\n", wndpl.rcNormalPosition.bottom - wndpl.rcNormalPosition.top);
-                fprintf(f, wndpl.showCmd == 3 ? "1\n" : "0\n");
-                fprintf(f, "%d\n", s.RenderWidth());
-                fprintf(f, "%d\n", s.RenderHeight());
-                // slot-visibility variant: 658744 ? 658748 : sidebar
-                if (s.FloatingWindow() != nullptr)
-                    fprintf(f, "%d\n", s.SeparateWindowSidebarWidth());
-                else
-                    fprintf(f, "%d\n", s.SidebarWidth());
-                fprintf(f, "%u\n", static_cast<unsigned int>(s.EnglishUI()));
-                if (s.FloatingWindow() != nullptr) {
-                    fprintf(f, "1\n");
-                    SaveFlagSubsystem(app);                       // 0x461FA0
-                } else {
-                    fprintf(f, "0\n");
-                }
-                fprintf(f, "%d\n", s.SeparateWindowMaximized());
-                fprintf(f, "%d\n", s.SeparateWindowX());
-                fprintf(f, "%d\n", s.SeparateWindowY());
-                fprintf(f, "%d\n", s.SeparateWindowWidth());
-                fprintf(f, "%d\n", s.SeparateWindowHeight());
-                HWND dlg530 = GetDlgItem(hwnd, panel::kPhysicsFrameCheckbox);
-                fprintf(f, SendMessageA(dlg530, BM_GETCHECK, 0, 0) == 1 ? "1\n" : "0\n");
-                fprintf(f, "1\n");
-                fwprintf(f, L"%s\n", app->DirModel());
-                fwprintf(f, L"%s\n", app->DirAccs());
-                fwprintf(f, L"%s\n", app->DirWave());
-                fwprintf(f, L"%s\n", app->DirPose());
-                fwprintf(f, L"%s\n", app->DirMotion());
-                fwprintf(f, L"%s\n", app->DirUser());
-                fprintf(f, "1\n");
-                fprintf(f, s.FrameVolumeControlEnabled() ? "1\n" : "0\n");
-                fprintf(f, "%d\n", s.FrameNormalization());
-                fprintf(f, "1\n");
-                fprintf(f, "%f\n", s.SidebarRatio());
-                fprintf(f, "1\n");
-                fwprintf(f, L"%s\n", app->DirBg());
-                fprintf(f, "1\n");
-                HMENU menu = configMenu;
-                fprintf(f, (GetMenuState(menu, 0x119, 0) & 8) ? "1\n" : "0\n");
-                fprintf(f, "1\n");
-                menu = configMenu;
-                fprintf(f, (GetMenuState(menu, 0x12D, 0) & 8) ? "1\n" : "0\n");
-                fclose(f);
-            }
+            if (s.FloatingWindow() != nullptr) SaveFlagSubsystem(app);
+            const HWND dlg530 = GetDlgItem(hwnd, panel::kPhysicsFrameCheckbox);
+            system_settings::WriteSection("window", window_settings::Snapshot(s,
+                wndpl.rcNormalPosition.left, wndpl.rcNormalPosition.top,
+                wndpl.rcNormalPosition.right-wndpl.rcNormalPosition.left,
+                wndpl.rcNormalPosition.bottom-wndpl.rcNormalPosition.top,
+                wndpl.showCmd==SW_SHOWMAXIMIZED, s.FloatingWindow()!=nullptr,
+                SendMessageA(dlg530,BM_GETCHECK,0,0)==BST_CHECKED,
+                (GetMenuState(configMenu,0x119,0)&MF_CHECKED)!=0,
+                (GetMenuState(configMenu,0x12D,0)&MF_CHECKED)!=0));
             PostQuitMessage(0);
             return 0;
         }

@@ -1,8 +1,20 @@
 # Native plugin ABI. This target has no renderer, CUDA, NVAPI or DX12 dependency.
 enable_language(C)
 add_subdirectory(third_party/native_ui)
+add_library(mms_system_settings STATIC
+    src/app/system_settings.cpp
+    src/plugins/json.cpp)
+target_include_directories(mms_system_settings PUBLIC include sdk/mms/include)
+target_compile_definitions(mms_system_settings PRIVATE _WIN32_WINNT=0x0601 WINVER=0x0601)
+target_link_libraries(mms_system_settings PUBLIC user32)
+add_executable(system_settings_tests EXCLUDE_FROM_ALL tests/system_settings_tests.cpp)
+target_link_libraries(system_settings_tests PRIVATE mms_system_settings)
+target_link_options(system_settings_tests PRIVATE /SUBSYSTEM:CONSOLE,6.01 /DEBUG:NONE)
+set_target_properties(system_settings_tests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_test(NAME system_settings_store COMMAND system_settings_tests)
+set_tests_properties(system_settings_store PROPERTIES TIMEOUT 60)
 add_library(mms_plugin_runtime STATIC
-    src/plugins/json.cpp
     src/plugins/manifest.cpp
     src/plugins/loader_win32.cpp
     src/plugins/ui_registry.cpp
@@ -16,8 +28,8 @@ add_library(mms_plugin_runtime STATIC
     src/plugins/shared_history.cpp
     src/plugins/project_storage.cpp
     src/plugins/native_ui.cpp)
-target_include_directories(mms_plugin_runtime PUBLIC sdk/mms/include PRIVATE src/plugins)
-target_link_libraries(mms_plugin_runtime PUBLIC native_ui::win32 user32 gdi32 comctl32 bcrypt)
+target_include_directories(mms_plugin_runtime PUBLIC sdk/mms/include include PRIVATE src/plugins)
+target_link_libraries(mms_plugin_runtime PUBLIC mms_system_settings native_ui::win32 user32 gdi32 comctl32 bcrypt)
 target_compile_definitions(mms_plugin_runtime PRIVATE _WIN32_WINNT=0x0601 WINVER=0x0601)
 # Host-side static libraries inherit the host/Conan runtime. Only independent
 # plugin DLLs select /MT; ownership never crosses the public C ABI.

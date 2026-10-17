@@ -1,4 +1,4 @@
-"""Exercise real processes sharing one profile but using independent EXE/Data folders."""
+"""Exercise real processes sharing one profile but using independent EXE/data folders."""
 import hashlib
 import json
 import os
@@ -46,6 +46,18 @@ def run(executable, folder, mode, *, override=False, no_profile=False):
     (output / f"case-{len(results):02}.log").write_text(log, encoding="utf-8")
     if result.returncode:
         raise RuntimeError(log)
+    if not override:
+        document = json.loads((folder / "data" / "settings.json").read_text(encoding="utf-8"))
+        assert document["schemaVersion"] == 1
+        saved = document["sections"]["autosave"]
+        assert isinstance(saved["enabled"], bool) and isinstance(saved["overwriteOldest"], bool)
+        if mode in ("--settings-fresh", "--settings-default"):
+            assert saved["directoryMode"] == "executable" and saved["directory"] == "data/backups"
+        if mode == "--settings-fresh":
+            assert document["sections"]["recentProjects"]["paths"] == [str(folder / "example.pmm")]
+            assert not (folder / "data" / "recent-pmm.txt").exists(), "production recent projects use central settings"
+        if mode != "--settings-migrate":
+            assert not (folder / "data" / "autosave.ini").exists(), "production must not recreate separate autosave INI"
 
 a, exe_a = install("stable")
 b, exe_b = install("abi")
@@ -64,12 +76,20 @@ d, exe_d = install("explicit-override")
 run(exe_d, d, "--settings-override", override=True)
 e, exe_e = install("no-system-profile")
 run(exe_e, e, "--settings-fresh", no_profile=True)
+f, exe_f = install("legacy-local-migration")
+run(exe_f, f, "--settings-migrate")
+central = json.loads((f / "data" / "settings.json").read_text(encoding="utf-8"))["sections"]
+assert central["autosave"]["intervalMinutes"] == 3 and central["autosave"]["maxBackups"] == 9
+assert central["antialias"]["algorithm"] == 4 and central["antialias"]["enabled"] is False
+assert central["processor"]["vertices"]["mode"] == "cpu"
+assert central["viewport"]["corner"] == "tl"
+assert central["shadow"]["adaptive"] is True and central["shadow"]["filterEnhanced"] is False
 assert legacy_aa.read_bytes() == legacy_aa_bytes, "shared antialias preferences must remain untouched"
 assert legacy.read_bytes() == legacy_bytes, "legacy global settings must remain untouched"
 assert not (output / "old-install").exists(), "stale backup address must never be created"
-assert not list((a / "data").glob("*.tmp")), "failed atomic replacement must remove its temporary file"
+assert not list((a / "data").glob("*.tmp*")), "failed atomic replacement must remove its temporary file"
 assert not (work / "data").exists(), "settings must not follow process cwd"
 report = dict(binary=str(binary), sha256=hashlib.sha256(binary.read_bytes()).hexdigest(), cases=results,
               legacyUnchanged=True, staleDirectoryNotCreated=True, cwdIndependent=True)
 (output / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-print(f"PASS {len(results)} real-process settings cases: independent installations, renamed EXE, relocated default, override and missing system profile")
+print(f"PASS {len(results)} real-process settings cases: independent installations, renamed EXE, relocated default, override, missing system profile and one-time local INI migration")

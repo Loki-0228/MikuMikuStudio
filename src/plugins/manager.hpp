@@ -12,7 +12,7 @@ class Manager {
     std::unique_ptr<Impl> impl_;
 public:
     Manager(fs::path userRoot, Log log, std::function<void()> uiChanged = {}, bool forceFallback = false,
-        std::shared_ptr<SceneStore> scene = {});
+        std::shared_ptr<SceneStore> scene = {}, bool unifiedSettings = false);
     ~Manager();
     Manager(const Manager&) = delete;
     Manager& operator=(const Manager&) = delete;

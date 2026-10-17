@@ -28,6 +28,8 @@
 #include <cstdlib>
 #include "mikudancestudio/global_key_layout.hpp"
 #include "ui_control_layout.hpp"
+#include "settings_json.hpp"
+#include "mikudancestudio/local_data_path.hpp"
 
 namespace mikudancestudio { void RefreshAfterFrameApply(MMDApp*); }
 
@@ -307,17 +309,6 @@ bool SameCurve(const animation_curve::Track& left,const animation_curve::Track& 
     return true;
 }
 
-std::wstring MorphSettingsPath(){
-    wchar_t executable[32768]{};
-    const DWORD count=GetModuleFileNameW(nullptr,executable,32768);
-    if(count==0||count>=32768)return {};
-    std::wstring path(executable,count);
-    const std::size_t slash=path.find_last_of(L"\\/");
-    if(slash==std::wstring::npos)return {};
-    path.resize(slash+1);
-    path+=L"Data\\curve_editor.ini";
-    return path;
-}
 
 struct MorphSourceState{MorphModelIdentity identity;std::vector<curve_editor::Channel> baseline;};
 
@@ -522,9 +513,16 @@ std::string MorphLaneInitial(MMDApp&app,int lane){
     return morph_curve::StableId(selected,morphs[selected].name);
 }
 int ReadMorphComparisonMode(){
-    const std::wstring path=MorphSettingsPath();
-    if(path.empty())return curve_editor::kCompareSameGroup;
-    const int stored=static_cast<int>(GetPrivateProfileIntW(kSettingsSection,kSettingsKey,-1,path.c_str()));
+    int stored=curve_editor::kCompareSameGroup;
+    settings_json::Json json;system_settings::Result result;
+    if(settings_json::Read("curveEditor",json,result))
+        stored=settings_json::Integer(json,"morphComparisonMode",stored);
+    else if(result==system_settings::Result::Missing){
+        const auto path=local_data::File(L"curve_editor.ini");
+        if(!path.empty())stored=static_cast<int>(GetPrivateProfileIntW(kSettingsSection,kSettingsKey,stored,path.c_str()));
+        if(stored<curve_editor::kCompareSameGroup||stored>curve_editor::kCompareFree)stored=curve_editor::kCompareSameGroup;
+        system_settings::CompareExchangeSection("curveEditor",nullptr,"{\"morphComparisonMode\":"+std::to_string(stored)+"}");
+    }
     return stored>=curve_editor::kCompareSameGroup&&stored<=curve_editor::kCompareFree
         ?stored:curve_editor::kCompareSameGroup;
 }
@@ -533,20 +531,13 @@ bool WriteMorphComparisonMode(unsigned language,int mode,std::wstring&error){
         error=Text(language,L"比較モードが不正です。",L"The comparison mode is not valid.",L"比较模式不合法。");
         return false;
     }
-    const std::wstring path=MorphSettingsPath();
-    if(path.empty()){
-        error=Text(language,L"設定ファイルの場所を特定できません。",L"The settings file cannot be located.",L"无法确定设置文件的位置。");
-        return false;
-    }
-    const std::wstring text=std::to_wstring(mode);
-    if(!WritePrivateProfileStringW(kSettingsSection,kSettingsKey,text.c_str(),path.c_str())){
+    if(system_settings::WriteSection("curveEditor","{\"morphComparisonMode\":"+std::to_string(mode)+"}")!=system_settings::Result::Ok){
         error=Text(language,L"設定を書き込めませんでした。",L"The setting could not be written.",L"无法写入设置。");
         return false;
     }
-    // Flush the profile cache so a later read in this process sees the file.
-    WritePrivateProfileStringW(nullptr,nullptr,nullptr,path.c_str());
     return true;
 }
+
 bool WriteMorphChannels(MMDApp&app,const MorphModelIdentity&identity,
                         const std::vector<curve_editor::Channel>&next,
                         const std::vector<curve_editor::Channel>&baseline,std::wstring&error){

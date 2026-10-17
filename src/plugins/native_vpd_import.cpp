@@ -150,7 +150,7 @@ MmsResult VpdImportSession::Apply(const wchar_t* path,bool& changed,bool resetPh
         if(!source->Current())return MMS_E_STALE;bool different=false;
         for(unsigned i=0;i<targets.size();++i)if(targets[i].touched)different|=targets[i].translation!=source->bones[i].translation||targets[i].rotation!=source->bones[i].rotation||targets[i].scale!=source->bones[i].scale;
         if(!different)return MMS_OK;
-        NativePoseScope scope;if(const auto result=scope.Begin(source->app,source->history,source->slot,"Import VPD pose"))return result;
+        NativePoseScope scope;if(const auto result=scope.Begin(source->app,source->history,source->slot,"Import VPD pose",SharedHistory::NativeIntent::ExplicitCommit))return result;
         for(unsigned i=0;i<targets.size();++i)if(targets[i].touched){
             const auto& t=targets[i];std::memcpy(source->table[i].trans,t.translation.data(),12);std::memcpy(source->table[i].rotQuat,t.rotation.data(),16);
             if(!bone_scale::SetPose(source->model,int(i),t.scale)){if(!scope.Cancel())return MMS_E_FAILED;return MMS_E_MEMORY;}source->dirty[i]=1;

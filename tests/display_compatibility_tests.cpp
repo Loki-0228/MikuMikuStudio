@@ -7,6 +7,7 @@
 #include "mikudancestudio/ui_language.hpp"
 #include "mikudancestudio/panel_controls.hpp"
 #include "mikudancestudio/adaptive_shadow.hpp"
+#include "mikudancestudio/system_settings.hpp"
 #include <commctrl.h>
 #include <cstring>
 #include <MinHook.h>
@@ -224,11 +225,11 @@ int main(int argc, char** argv) {
         Check(app->ShadowDistance() == .01234567f && !app->SceneModified(),
               "mode switches preserve fractional keyframe coverage without dirtying the project");
     }
-    const auto preference = std::filesystem::path(app->ExeDir()) / L"Data/adaptive_shadow.ini";
-    { std::ofstream old(preference); old << "1 0\n"; }
+    Check(system_settings::WriteSection("shadow", "{\"adaptive\":true,\"filterEnhanced\":false}") ==
+          system_settings::Result::Ok, "seed this run central shadow preferences");
     LoadShadowResolutionPreference(app);
     Check(app->AdaptiveShadowResolution() && app->ShadowDistance() == .01234567f,
-          "legacy independent precision cannot overwrite project coverage");
+          "central shadow mode preference cannot overwrite project coverage");
     SyncSelfShadowControls(app);
     checkPrecision(8765);
     const float nearSize = RequiredShadowMapSize(.01f, 1, 1000.f, 25.f, false);

@@ -1,4 +1,5 @@
 #include "ui_preferences_file.hpp"
+#include "mikudancestudio/system_settings.hpp"
 static void UiPreferencesFileChecks(const fs::path& root) {
     struct Fixture {
         UiRegistry registry;
@@ -62,4 +63,32 @@ static void UiPreferencesFileChecks(const fs::path& root) {
     Fixture oversized; const auto large = root / "layout-large" / "ui-layout.json";
     Write(large, std::string(1024 * 1024 + 1, ' ')); UiPreferencesFile huge(large);
     CHECK(huge.Load(oversized.registry) != MMS_OK && huge.Save(oversized.registry) == MMS_E_NOT_READY);
+    // Unified production mode migrates the old document once; later writers
+    // compare only their own section, preserving settings from other modules.
+    const auto unified = root / "unified-layout" / "settings.json";
+    const auto legacy = root / "unified-layout" / "plugins" / "ui-layout.json";
+    Write(legacy, initial);
+    const auto oldTime = fs::last_write_time(legacy);
+    Fixture unifiedFirst; UiPreferencesFile ua(legacy, true, unified);
+    CHECK(ua.Load(unifiedFirst.registry) == MMS_OK);
+    CHECK(!unifiedFirst.registry.elements.at("example.file.group").visible);
+    mikudancestudio::system_settings::Store settings(unified);
+    std::string section;
+    CHECK(settings.ReadSection("pluginUi", section) == mikudancestudio::system_settings::Result::Ok);
+    Fixture unifiedSecond; UiPreferencesFile ub(legacy, true, unified);
+    CHECK(ub.Load(unifiedSecond.registry) == MMS_OK);
+    CHECK(settings.WriteSection("history", "{\"recordAll\":1}") == mikudancestudio::system_settings::Result::Ok);
+    unifiedFirst.Size(180); CHECK(ua.Save(unifiedFirst.registry) == MMS_OK);
+    CHECK(settings.ReadSection("history", section) == mikudancestudio::system_settings::Result::Ok && Json::Parse(section).At("recordAll").UInt() == 1);
+    unifiedSecond.Size(240); CHECK(ub.Save(unifiedSecond.registry) == MMS_E_CONFLICT);
+    CHECK(ReadFile(legacy) == initial && fs::last_write_time(legacy) == oldTime);
+    Write(legacy, "{invalid");
+    Fixture unifiedThird; UiPreferencesFile uc(legacy, true, unified);
+    CHECK(uc.Load(unifiedThird.registry) == MMS_OK);
+    CHECK(unifiedThird.registry.elements.at("example.file.group").width == 180);
+    const auto corrupt = root / "unified-corrupt" / "settings.json";
+    Write(corrupt, "{invalid");
+    Fixture unifiedCorrupt; UiPreferencesFile ud(legacy, true, corrupt);
+    CHECK(ud.Load(unifiedCorrupt.registry) != MMS_OK && ud.Save(unifiedCorrupt.registry) == MMS_E_NOT_READY);
+    CHECK(ReadFile(corrupt) == "{invalid");
 }

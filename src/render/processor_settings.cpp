@@ -2,8 +2,8 @@
 // processor_settings.cpp - global processor policy (host side)
 //
 // See include/mikudancestudio/processor_settings.hpp for the contract.  This
-// file owns: the per-installation config file (data/processor.ini,
-// atomically replaced), the Requested/Active split with a
+// file owns: the per-installation settings.json processor section,
+// the Requested/Active split with a
 // single startup freeze, adapter resolution by LUID then full hardware
 // identity (vendor/device/subsystem/revision) then unique name, and the
 // one-shot conversion of the resolved Vertices choice into
@@ -16,6 +16,8 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include "mikudancestudio/local_data_path.hpp"
+#include "mikudancestudio/system_settings.hpp"
+#include "../app/settings_json.hpp"
 #include <Windows.h>
 #include <d3d9.h>
 #include <dxgi1_6.h>
@@ -236,6 +238,56 @@ std::wstring Serialize(const Configuration& configuration) {
     emit(Role::Vertices, configuration.vertices);
     emit(Role::Mmv, configuration.mmv);
     return text;
+}
+
+std::string SelectionJson(const Selection& selection) {
+    return "{\"mode\":" + settings_json::Quote(ModeNameA(selection.mode)) +
+        ",\"adapterId\":" + settings_json::Quote(HexId(selection.adapterId)) +
+        ",\"adapterName\":" + settings_json::Quote(SingleLine(selection.adapterName)) +
+        ",\"vendorId\":" + std::to_string(selection.identity.vendorId) +
+        ",\"deviceId\":" + std::to_string(selection.identity.deviceId) +
+        ",\"subSysId\":" + std::to_string(selection.identity.subSysId) +
+        ",\"revision\":" + std::to_string(selection.identity.revision) + "}";
+}
+std::string ConfigurationJson(const Configuration& configuration) {
+    return "{\"renderer\":" + SelectionJson(configuration.renderer) +
+        ",\"vertices\":" + SelectionJson(configuration.vertices) +
+        ",\"mmv\":" + SelectionJson(configuration.mmv) + "}";
+}
+Selection JsonSelection(const settings_json::Json& root, const char* name, Role role, std::wstring& warning) {
+    Selection selection = DefaultSelection(role);
+    const auto found = root.object.find(name);
+    if (found == root.object.end()) return selection;
+    try {
+        const auto& object = found->second;
+        if (object.kind != settings_json::Json::Object) throw std::invalid_argument("expected processor object");
+        const auto token = plugins::Wide(settings_json::String(object, "mode", ModeNameA(selection.mode)));
+        if (!ParseMode(token.c_str(), selection.mode)) throw std::invalid_argument("invalid processor mode");
+        const auto id = plugins::Wide(settings_json::String(object, "adapterId", "0000000000000000"));
+        if (!ParseHexId(id.c_str(), selection.adapterId)) throw std::invalid_argument("invalid adapter id");
+        selection.adapterName = plugins::Wide(settings_json::String(object, "adapterName"));
+        selection.identity.vendorId = settings_json::UInt(object, "vendorId", 0);
+        selection.identity.deviceId = settings_json::UInt(object, "deviceId", 0);
+        selection.identity.subSysId = settings_json::UInt(object, "subSysId", 0);
+        selection.identity.revision = settings_json::UInt(object, "revision", 0);
+        std::wstring reason;
+        if (!IsValid(role, selection, &reason)) {
+            AppendNote(warning, std::wstring(SectionName(role)) + L": " + reason + L" (kept default)");
+            return DefaultSelection(role);
+        }
+        return selection;
+    } catch (...) {
+        AppendNote(warning, std::wstring(SectionName(role)) + L": invalid saved selection (kept default)");
+        return DefaultSelection(role);
+    }
+}
+Configuration JsonConfiguration(const std::string& body, std::wstring& warning) {
+    const auto root = settings_json::Object(body);
+    Configuration configuration;
+    configuration.renderer = JsonSelection(root, "renderer", Role::Renderer, warning);
+    configuration.vertices = JsonSelection(root, "vertices", Role::Vertices, warning);
+    configuration.mmv = JsonSelection(root, "mmv", Role::Mmv, warning);
+    return configuration;
 }
 
 bool EnsureDirectory(const std::wstring& directory) {
@@ -601,7 +653,7 @@ const Configuration& Active() { return active; }
 
 std::wstring ConfigPath() {
     if (!configOverride.empty()) return configOverride;
-    return local_data::File(L"processor.ini").wstring();
+    return system_settings::Path().wstring();
 }
 
 bool SaveRequested(const Configuration& configuration, std::wstring& error) {
@@ -613,10 +665,14 @@ bool SaveRequested(const Configuration& configuration, std::wstring& error) {
     }
     const std::wstring path = ConfigPath();
     if (path.empty()) {
-        error = L"processor.ini path unavailable (executable directory unavailable)";
+        error = L"processor settings path unavailable (executable directory unavailable)";
         return false;
     }
-    if (!WriteAtomic(path, Serialize(configuration), error)) {
+    const bool saved = configOverride.empty() ?
+        system_settings::WriteSection("processor", ConfigurationJson(configuration)) == system_settings::Result::Ok :
+        WriteAtomic(path, Serialize(configuration), error);
+    if (!saved) {
+        if (error.empty()) error = L"cannot update data/settings.json processor settings";
         // The old file and the previous Requested value are both kept.
         runtime_log::Write("PROCESSOR settings save failed (kept previous file)");
         return false;
@@ -635,14 +691,28 @@ bool Initialize(std::wstring& error) {
     Configuration loaded;
     const std::wstring path = ConfigPath();
     if (path.empty()) {
-        error = L"processor.ini path unavailable (executable directory unavailable)";
+        error = L"processor settings path unavailable (executable directory unavailable)";
         requested = loaded;
         active = loaded;
         frozen = true;
         return false;
     }
-    if (GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES)
-        loaded = ReadConfiguration(path.c_str(), error);
+    if (!configOverride.empty()) {
+        if (GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES)
+            loaded = ReadConfiguration(path.c_str(), error);
+    } else {
+        std::string body;
+        const auto result = system_settings::ReadSection("processor", body);
+        if (result == system_settings::Result::Missing) {
+            const auto legacy = local_data::File(L"processor.ini");
+            if (!legacy.empty() && GetFileAttributesW(legacy.c_str()) != INVALID_FILE_ATTRIBUTES)
+                loaded = ReadConfiguration(legacy.c_str(), error);
+            system_settings::CompareExchangeSection("processor", nullptr, ConfigurationJson(loaded));
+        } else if (result == system_settings::Result::Ok) {
+            try { loaded = JsonConfiguration(body, error); }
+            catch (...) { error = L"invalid data/settings.json processor settings (kept defaults)"; }
+        } else error = L"cannot read data/settings.json processor settings (kept defaults)";
+    }
     requested = loaded;
     active = loaded;
     frozen = true;

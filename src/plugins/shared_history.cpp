@@ -13,6 +13,7 @@ struct SharedHistory::Publication final : EditPublication {
     uint64_t revision;
     Nodes node;
     std::unique_ptr<PreparedHistoryChange> candidate;
+    bool record = true;
     explicit Publication(SharedHistory& h) : owner(h), revision(h.revision_) {}
     bool IsCurrent() const noexcept override {
         return owner.revision_ == revision && !node.empty() && (!candidate || candidate->IsCurrent());
@@ -89,16 +90,39 @@ MmsResult SharedHistory::CheckNativeEdit() {
     if (auto r = Enter()) return r;
     Leave(); return MMS_OK;
 }
+MmsResult SharedHistory::SetMode(RecordingMode mode) {
+    return Configure(mode,maxEntries_,maxBytes_);
+}
+MmsResult SharedHistory::Configure(RecordingMode mode,size_t entries,uint64_t bytes,const std::function<MmsResult()>& persist) {
+    if (mode != RecordingMode::AllOperations && mode != RecordingMode::ExplicitOnly) return MMS_E_ARGUMENT;
+    if (!entries || !bytes) return MMS_E_ARGUMENT;
+    if (auto r = Ready()) return r;
+    if (edits_ && (edits_->InCallback() || edits_->HasPending())) return MMS_E_BUSY;
+    if (pending_ || applied_ || reset_) return MMS_E_BUSY;
+    if (auto r = Enter()) return r;
+    Unlock unlock{*this};
+    if (persist) { const auto result=Boundary(persist); if(result)return result; }
+    recordingMode_ = mode;
+    maxEntries_=entries;maxBytes_=bytes;
+    while(!undo_.empty() && (undo_.size()+redo_.size()>maxEntries_ || bytes_>maxBytes_)) {
+        bytes_-=undo_.front()->bytes;retired_.splice(retired_.end(),undo_,undo_.begin());
+    }
+    while(!redo_.empty() && (undo_.size()+redo_.size()>maxEntries_ || bytes_>maxBytes_)) {
+        bytes_-=redo_.front()->bytes;retired_.splice(retired_.end(),redo_,redo_.begin());
+    }
+    return MMS_OK;
+}
 MmsResult SharedHistory::ReserveNode(std::shared_ptr<const EditRecord> record,
-    std::shared_ptr<HistoryChange> native, std::unique_ptr<Publication>& out) {
+    std::shared_ptr<HistoryChange> native, std::unique_ptr<Publication>& out, bool retain) {
     if (!entered_) return MMS_E_BUSY;
     if (!record || (!native && record->before.empty())) return MMS_E_ARGUMENT;
     const auto pluginBytes = RecordBytes(*record);
-    if (pluginBytes > maxBytes_) return MMS_E_MEMORY;
+    if (retain && pluginBytes > maxBytes_) return MMS_E_MEMORY;
     // Copy the record: a caller retaining a mutable shared_ptr cannot alter a
     // published history node after preparation.
     auto copy = std::make_shared<const EditRecord>(*record);
     auto publication = std::make_unique<Publication>(*this);
+    publication->record=retain;
     publication->node.push_back(std::make_shared<Node>(Node{std::move(copy), std::move(native), pluginBytes, pluginBytes}));
     if (const auto& change = publication->node.front()->native) {
         if (auto r = change->Prepare(true, publication->candidate)) return r;
@@ -106,8 +130,8 @@ MmsResult SharedHistory::ReserveNode(std::shared_ptr<const EditRecord> record,
         uint64_t target = change->RetainedBytes();
         uint64_t dynamicTarget = 0;
         if (publication->candidate->TargetRetainedBytes(dynamicTarget)) target = dynamicTarget;
-        if (target > maxBytes_ - pluginBytes) return MMS_E_MEMORY;
-        publication->node.front()->bytes = pluginBytes + target;
+        if (retain && target > maxBytes_ - pluginBytes) return MMS_E_MEMORY;
+        publication->node.front()->bytes = retain ? pluginBytes + target : 0;
     }
     out = std::move(publication); return MMS_OK;
 }
@@ -123,6 +147,9 @@ MmsResult SharedHistory::Reserve(std::shared_ptr<const EditRecord> record,
     });
 }
 void SharedHistory::Publish(Publication& p) noexcept {
+    // Preview still changes the scene revision, so old candidates cannot
+    // publish against it. The journal and redo remain untouched.
+    if (!p.record) { ++revision_; return; }
     for (const auto& node : redo_) bytes_ -= node->bytes;
     retired_.splice(retired_.end(), redo_);
     const auto newBytes = p.node.front()->bytes;
@@ -206,7 +233,8 @@ void SharedHistory::InvalidatePending() noexcept {
     }
 }
 MmsResult SharedHistory::PrepareNative(std::string label, std::shared_ptr<HistoryChange> change,
-    std::unique_ptr<NativeTransaction>& out) {
+    std::unique_ptr<NativeTransaction>& out, NativeIntent intent) {
+    if (intent != NativeIntent::ExplicitCommit && intent != NativeIntent::Adjustment) return MMS_E_ARGUMENT;
     if (auto r = Ready()) return r;
     if (edits_ && (edits_->InCallback() || edits_->HasPending())) return MMS_E_BUSY;
     if (auto r = Enter()) return r;
@@ -215,7 +243,8 @@ MmsResult SharedHistory::PrepareNative(std::string label, std::shared_ptr<Histor
         if (!change) return MMS_E_ARGUMENT;
         auto record = std::make_shared<EditRecord>(); record->label = std::move(label);
         std::unique_ptr<Publication> publication;
-        if (auto r = ReserveNode(std::move(record), change, publication)) return r;
+        if (auto r = ReserveNode(std::move(record), change, publication,
+            intent == NativeIntent::ExplicitCommit || recordingMode_ == RecordingMode::AllOperations)) return r;
         out.reset(new NativeTransaction(*this, std::move(publication)));
         return MMS_OK;
     });
@@ -250,7 +279,8 @@ SharedHistory::AppliedTransaction::~AppliedTransaction() {
     if (owner_) { owner_->applied_ = nullptr; owner_->Leave(); }
 }
 MmsResult SharedHistory::ReserveAppliedNative(std::string label, uint64_t maximumNativeBytes,
-    std::unique_ptr<AppliedTransaction>& out) {
+    std::unique_ptr<AppliedTransaction>& out, NativeIntent intent) {
+    if (intent != NativeIntent::ExplicitCommit && intent != NativeIntent::Adjustment) return MMS_E_ARGUMENT;
     if (auto r = Ready()) return r;
     if (edits_ && (edits_->InCallback() || edits_->HasPending())) return MMS_E_BUSY;
     if (auto r = Enter()) return r;
@@ -258,9 +288,11 @@ MmsResult SharedHistory::ReserveAppliedNative(std::string label, uint64_t maximu
         if (out) return MMS_E_ARGUMENT;
         auto record = std::make_shared<EditRecord>(); record->label = std::move(label);
         const auto bytes = RecordBytes(*record);
-        if (bytes > maxBytes_ || maximumNativeBytes > maxBytes_ - bytes) return MMS_E_MEMORY;
+        const bool retain=intent == NativeIntent::ExplicitCommit || recordingMode_ == RecordingMode::AllOperations;
+        if (retain && (bytes > maxBytes_ || maximumNativeBytes > maxBytes_ - bytes)) return MMS_E_MEMORY;
         auto node = std::make_shared<Node>(Node{std::move(record), {}, bytes, bytes});
         auto publication = std::make_unique<Publication>(*this);
+        publication->record = retain;
         publication->node.push_back(node);
         out.reset(new AppliedTransaction(*this, maximumNativeBytes, std::move(node), std::move(publication)));
         return MMS_OK;

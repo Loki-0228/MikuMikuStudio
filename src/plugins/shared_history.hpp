@@ -29,6 +29,8 @@ public:
 // mms.edit; creating a separate instance for plugins is not supported.
 class SharedHistory final : public EditHost {
 public:
+    enum class RecordingMode { AllOperations, ExplicitOnly };
+    enum class NativeIntent { ExplicitCommit, Adjustment };
     class NativeTransaction;
     class AppliedTransaction;
     class ResetTransaction;
@@ -47,9 +49,10 @@ private:
     AppliedTransaction* applied_ = nullptr;
     ResetTransaction* reset_ = nullptr;
     EditStore* edits_ = nullptr;
+    RecordingMode recordingMode_ = RecordingMode::AllOperations;
     MmsResult Ready() const;
     MmsResult ReserveNode(std::shared_ptr<const EditRecord>, std::shared_ptr<HistoryChange>,
-                         std::unique_ptr<Publication>&);
+                         std::unique_ptr<Publication>&, bool record = true);
     void Publish(Publication&) noexcept;
     void InvalidatePending() noexcept;
     void ResetLocked() noexcept;
@@ -63,6 +66,14 @@ public:
     // Check standalone native-edit admission, including pending plugin edits,
     // without keeping a reservation across a modal UI loop. Recheck on apply.
     MmsResult CheckNativeEdit();
+    RecordingMode Mode() const noexcept { return recordingMode_; }
+    MmsResult SetMode(RecordingMode);
+    size_t MaxEntries() const noexcept { return maxEntries_; }
+    uint64_t MaxBytes() const noexcept { return maxBytes_; }
+    // Persist before any journal eviction. Failure leaves limits and nodes
+    // unchanged; callback executes under the normal history reentry gate.
+    MmsResult Configure(RecordingMode, size_t entries, uint64_t bytes,
+        const std::function<MmsResult()>& persist = {});
     MmsResult Reserve(std::shared_ptr<const EditRecord>, std::unique_ptr<EditPublication>&) override;
     MmsResult History(bool redo) override;
     void AttachStore(EditStore*) override;
@@ -71,7 +82,7 @@ public:
     // Prepare a native operation before changing live state. Cancellation is
     // destruction. Commit rechecks revision and source state, then consumes it.
     MmsResult PrepareNative(std::string label, std::shared_ptr<HistoryChange>,
-                            std::unique_ptr<NativeTransaction>&);
+                            std::unique_ptr<NativeTransaction>&, NativeIntent = NativeIntent::ExplicitCommit);
     MmsResult CommitNative(std::unique_ptr<NativeTransaction>);
     // Synchronous native authors reserve BEFORE changing live state. The token
     // holds the journal gate until destruction; do not pump messages or invoke
@@ -80,7 +91,7 @@ public:
     // On any failure the caller must restore its captured state BEFORE dropping
     // the token. Token destruction cancels the reservation, not the live edit.
     MmsResult ReserveAppliedNative(std::string label, uint64_t maximumNativeBytes,
-                                  std::unique_ptr<AppliedTransaction>&);
+                                  std::unique_ptr<AppliedTransaction>&, NativeIntent = NativeIntent::ExplicitCommit);
     MmsResult PrepareAppliedNative(AppliedTransaction&, std::shared_ptr<HistoryChange>);
     MmsResult CommitAppliedNative(AppliedTransaction&) noexcept;
     // Project boundaries invalidate prepared transactions without reusing a

@@ -3,6 +3,9 @@
 #define NOMINMAX
 #include "mikudancestudio/autosave.hpp"
 #include "mikudancestudio/local_data_path.hpp"
+#include "mikudancestudio/system_settings.hpp"
+#include "mikudancestudio/adaptive_shadow.hpp"
+#include "../src/app/settings_json.hpp"
 #include "mikudancestudio/antialias.hpp"
 #include "mikudancestudio/processor_settings.hpp"
 #include "mikudancestudio/viewport_corner_settings.hpp"
@@ -347,9 +350,16 @@ int wmain(int argc, wchar_t** argv) {
     }
     Check(!as::Current().enabled && as::Current().intervalMinutes == 1, "default off with one minute interval");
     std::wstring aaError;
-    Check(antialias::Select(app, antialias::Algorithm::MmdOriginal, aaError) &&
-        fs::is_regular_file(fs::path(executable).parent_path()/L"data"/L"antialias.ini"),
-        "actual antialias selection persists in this EXE Data folder");
+    SetEnvironmentVariableW(L"MMS_ANTIALIAS_CONFIG", nullptr);
+    Check(antialias::Select(app, antialias::Algorithm::MmdOriginal, aaError),
+        "select actual antialias preference through production settings path");
+    std::string aaBody;
+    Check(system_settings::ReadSection("antialias", aaBody) == system_settings::Result::Ok &&
+        fs::is_regular_file(fs::path(executable).parent_path()/L"data"/L"settings.json") &&
+        !fs::exists(fs::path(executable).parent_path()/L"data"/L"antialias.ini") &&
+        settings_json::UInt(settings_json::Object(aaBody), "algorithm", unsigned(antialias::Algorithm::Count)) ==
+            unsigned(antialias::Algorithm::MmdOriginal),
+        "actual antialias selection persists in central settings without recreating separate INI");
     as::Settings value; value.enabled = true; value.directory = (root / L"自动备份").wstring(); value.maxBackups = 2;
     if (!defaultCrash) Configure(app, value);
     else Check(!fs::exists(config) && as::Current().directory == (fs::path(app->ExeDir()) / L"data" / L"backups").wstring(),

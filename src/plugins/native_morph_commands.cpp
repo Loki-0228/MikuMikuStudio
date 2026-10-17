@@ -111,7 +111,7 @@ MmsResult ApplyMorphValue(MMDApp& app,unsigned slot,unsigned morph,float value,b
         if(model.morphs[morph].value==value)return MMS_OK;
         auto change=std::make_shared<MorphValueChange>(app,slot,morph,value);
         std::unique_ptr<SharedHistory::NativeTransaction> transaction;
-        if(const auto result=history->PrepareNative("Edit morph weight",std::move(change),transaction))return result;
+        if(const auto result=history->PrepareNative("Edit morph weight",std::move(change),transaction,SharedHistory::NativeIntent::Adjustment))return result;
         if(const auto result=history->CommitNative(std::move(transaction)))return result;
         changed=true;
         Boundary([&]() -> MmsResult {PublishBoundPoseEdit(app,*history,false);RefreshBoundMorphReadout(app);return MMS_OK;});

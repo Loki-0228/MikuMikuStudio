@@ -65,4 +65,6 @@ R2 之前的实时拖动及测试面板修复见[分隔线实时拖动修复记�
 
 ## 修复后复验入口
 
+R4 新增「帮助 → 系统设置」，含历史记录模式、步数、内存预算及建议值；宿主配置统一为 `data/settings.json`。入口为 `build/manual-ui-acceptance-2026-10-17-r4/MMS-UI-Acceptance.exe`。普通完整共同历史仍未开放，模式不能作为全原生操作已迁移的证明，见[实现边界](abi-history-settings-2026-10-17.md)。R4 的实际面板外观、输入与缩放仍待人工检查。
+
 最新副本是 `build/manual-ui-acceptance-2026-10-17-r3/MMS-UI-Acceptance.exe`；原副本不覆盖。本轮修复宿主整体布局与绘制，未修改临时插件。用户已确认本轮问题恢复，见[本轮修复记录](abi-drag-flicker-plugin-layout-2026-10-17.md)。其余实现缺项与环境验收分别列于[剩余工作核对](abi-remaining-work-2026-10-17.md)。

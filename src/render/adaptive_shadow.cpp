@@ -2,6 +2,8 @@
 #include "mikudancestudio/mmd_app.hpp"
 #include "mikudancestudio/build_profile.hpp"
 #include "mikudancestudio/viewport_render_scale.hpp"
+#include "mikudancestudio/system_settings.hpp"
+#include "../app/settings_json.hpp"
 
 #if MMD_ORIGINAL_PROFILE
 namespace mikudancestudio {
@@ -162,6 +164,20 @@ void IncludeMeshBounds(IDirect3DVertexBuffer9* buffer, UINT stride, UINT count,
 }
 
 void LoadShadowResolutionPreference(MMDApp* app) {
+    std::string body;
+    const auto result = system_settings::ReadSection("shadow", body);
+    if (result != system_settings::Result::Missing) {
+        app->AdaptiveShadowResolution() = false;
+        app->ShadowFilterEnhanced() = false;
+        if (result == system_settings::Result::Ok) try {
+            const auto object = settings_json::Object(body);
+            const bool adaptive = settings_json::Bool(object, "adaptive", false);
+            const bool enhanced = settings_json::Bool(object, "filterEnhanced", false);
+            app->AdaptiveShadowResolution() = adaptive;
+            app->ShadowFilterEnhanced() = enhanced;
+        } catch (...) {}
+        return;
+    }
     FILE* file = nullptr; int enabled = 0;
     app->ShadowFilterEnhanced() = false;
     if (_wfopen_s(&file, PreferencePath(app).c_str(), L"rt") == 0) {
@@ -177,15 +193,14 @@ void LoadShadowResolutionPreference(MMDApp* app) {
         fclose(file);
     }
     app->AdaptiveShadowResolution() = enabled == 1;
+    system_settings::CompareExchangeSection("shadow", nullptr, std::string("{\"adaptive\":") +
+        settings_json::Bool(app->AdaptiveShadowResolution()) + ",\"filterEnhanced\":" +
+        settings_json::Bool(app->ShadowFilterEnhanced()) + "}");
 }
 void SaveShadowResolutionPreference(MMDApp* app) {
-    CreateDirectoryW((std::wstring(app->ExeDir()) + L"\\Data").c_str(), nullptr);
-    FILE* file = nullptr;
-    if (_wfopen_s(&file, PreferencePath(app).c_str(), L"wt") == 0) {
-        fprintf(file, "%d\nfilter_enhanced=%d\n", app->AdaptiveShadowResolution() ? 1 : 0,
-            app->ShadowFilterEnhanced() ? 1 : 0);
-        fclose(file);
-    }
+    system_settings::WriteSection("shadow", std::string("{\"adaptive\":") +
+        settings_json::Bool(app->AdaptiveShadowResolution()) + ",\"filterEnhanced\":" +
+        settings_json::Bool(app->ShadowFilterEnhanced()) + "}");
 }
 
 int ShadowSliderPosition(MMDApp* app) {

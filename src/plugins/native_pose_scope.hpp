@@ -18,7 +18,8 @@ public:
     ~NativePoseScope();
     NativePoseScope(const NativePoseScope&) = delete;
     NativePoseScope& operator=(const NativePoseScope&) = delete;
-    MmsResult Begin(MMDApp&, SharedHistory&, unsigned modelSlot, std::string_view label) noexcept;
+    MmsResult Begin(MMDApp&, SharedHistory&, unsigned modelSlot, std::string_view label,
+        SharedHistory::NativeIntent = SharedHistory::NativeIntent::Adjustment) noexcept;
     // A no-op cancels its reservation and preserves redo. Every failure first
     // rolls back the native capture, then drops the journal reservation.
     MmsResult Commit(bool& changed) noexcept;

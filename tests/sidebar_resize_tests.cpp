@@ -14,6 +14,7 @@
 #include "mikudancestudio/bottom_panel_resize.hpp"
 #include "mikudancestudio/panel_controls.hpp"
 #include "mikudancestudio/adaptive_shadow.hpp"
+#include "mikudancestudio/system_settings.hpp"
 #include "mikudancestudio/update_coordinator.hpp"
 #include "mikudancestudio/ui_metrics.hpp"
 #include "mikudancestudio/scene_ownership.hpp"
@@ -650,20 +651,18 @@ void CheckForcePasteControls(MMDApp* app) {
 
 namespace {
 void CheckShadowFilter(MMDApp* app) {
-    const auto preference = std::filesystem::path(app->ExeDir()) / L"Data/adaptive_shadow.ini";
-    const bool existed = std::filesystem::exists(preference);
-    std::ifstream input(preference, std::ios::binary);
-    const std::string previous((std::istreambuf_iterator<char>(input)), {});
-    input.close();
+    std::string previous;
+    const bool existed = system_settings::ReadSection("shadow", previous) == system_settings::Result::Ok;
     const bool adaptive = app->AdaptiveShadowResolution(), filter = app->ShadowFilterEnhanced();
     const float range = app->ShadowDistance();
     const int modified = app->SceneModified(), language = app->EnglishUI();
     HWND host = app->MainWindow(), button = GetDlgItem(host, panel::kShadowFilterCheckbox);
     Check(button != nullptr && IsWindowEnabled(button), "full build offers the spline filter");
-    { std::ofstream out(preference); out << "1 9999\n"; }
+    Check(system_settings::WriteSection("shadow", "{\"adaptive\":true,\"filterEnhanced\":false}") ==
+          system_settings::Result::Ok, "seed central shadow preferences for this run");
     LoadShadowResolutionPreference(app);
     Check(app->AdaptiveShadowResolution() && !app->ShadowFilterEnhanced(),
-          "old numeric precision never opts into enhanced filtering");
+          "central shadow preferences load adaptive mode independently from filtering");
     for (bool enabled : {true, false, true}) {
         SendMessageW(button, BM_SETCHECK, enabled ? BST_CHECKED : BST_UNCHECKED, 0);
         SendMessageW(host, WM_COMMAND, MAKEWPARAM(panel::kShadowFilterCheckbox, BN_CLICKED), reinterpret_cast<LPARAM>(button));
@@ -693,8 +692,9 @@ void CheckShadowFilter(MMDApp* app) {
     app->EnglishUI() = language; LocalizeUI(app);
     app->AdaptiveShadowResolution() = adaptive; app->ShadowFilterEnhanced() = filter;
     SendMessageW(button, BM_SETCHECK, filter ? BST_CHECKED : BST_UNCHECKED, 0);
-    if (existed) { std::ofstream out(preference, std::ios::binary); out << previous; }
-    else std::filesystem::remove(preference);
+    if (existed) Check(system_settings::WriteSection("shadow", previous) == system_settings::Result::Ok,
+                       "restore prior central shadow preferences");
+    else SaveShadowResolutionPreference(app);
 }
 }
 

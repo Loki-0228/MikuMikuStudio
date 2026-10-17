@@ -11,6 +11,7 @@
 #include "../src/plugins/native_object_commands.hpp"
 #include "mikudancestudio/text_encoding.hpp"
 #include "mikudancestudio/ui_language.hpp"
+#include "mikudancestudio/system_settings_ui.hpp"
 namespace mikudancestudio { void DispatchSeparateWindowCommand(MMDApp*, unsigned short); }
 namespace edit_history_host_checks {
 UINT FindMenuCommand(HMENU menu, const wchar_t* label) {
@@ -396,6 +397,7 @@ void ObjectMenuDeletion(MMDApp* app, plugins::SharedHistory& history, const MmsS
 #include "fov_slider_host_checks.inc"
 #include "light_slider_host_checks.inc"
 #include "morph_slider_host_checks.inc"
+#include "system_settings_host_checks.inc"
 void Run(MMDApp* app) {
     using namespace plugins;
     const auto initial = GetModuleHandleW(L"manager_edit_probe.dll");
@@ -420,11 +422,13 @@ void Run(MMDApp* app) {
     Check(InitializeHistoryTestRuntime(app), "explicit host binding exposes the same common journal");
     auto* history = NativeHistory(app);
     Check(history && BoundNativePoseHistory(app) == history && !history->UndoCount(), "native and plugin history share ownership");
+    Check(history->SetMode(SharedHistory::RecordingMode::AllOperations)==MMS_OK,"explicitly opt migration probes into all-operation history");
     const auto library = GetModuleHandleW(L"manager_edit_probe.dll");
     auto value = reinterpret_cast<int(*)()>(GetProcAddress(library, "GetProbeValue"));
     auto flags = reinterpret_cast<uint64_t(*)()>(GetProcAddress(library, "GetProbeFlags"));
     auto cancels = reinterpret_cast<int(*)()>(GetProcAddress(library, "GetProbeCancels"));
     Check(value && flags && cancels && (flags() & 1) && !(flags() & 2), "controlled host negotiates edit service");
+    system_settings_host_checks::Run(app,*history,value);
     auto scene = CreateSceneStore(app); SceneClient client; auto api = scene->Api(client);
     const auto revisionMatches = [&] {
         MmsSceneQueryV1 query{}; query.h = Header<MmsSceneQueryV1>(); query.flags = MMS_SCENE_CURRENT_TIME;

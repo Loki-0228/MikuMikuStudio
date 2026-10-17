@@ -1,8 +1,8 @@
 // ===========================================================================
 // 操作柄停靠角的程序目录设置。接口与约束见同名头文件。
 //
-// 文件读写自己做（CreateFileW/ReadFile + 临时文件 + MoveFileExW 原子替换）：
-// 内容固定两行，解析规则严格，测试能直接写坏值验证回退。
+// 生产设置存于 data/settings.json 的 viewport 节。
+// 显式 LoadFrom/SaveTo 保留旧 INI 工具接口，供迁移与独立测试使用。
 //
 // 解析规则（严格）：
 //   * 只认 [viewport] 节内的 corner= 行；节名写在方括号里、单独成行。
@@ -13,6 +13,8 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include "mikudancestudio/local_data_path.hpp"
+#include "mikudancestudio/system_settings.hpp"
+#include "settings_json.hpp"
 #include <Windows.h>
 
 #include <mutex>
@@ -126,7 +128,7 @@ bool LooksAbsolute(const std::wstring& dir) {
 }  // namespace
 
 std::wstring SettingsPath() {
-    return local_data::File(L"viewport.ini").wstring();
+    return system_settings::Path().wstring();
 }
 
 bool LoadFrom(const std::wstring& path, Corner* out) {
@@ -187,7 +189,19 @@ Corner Current() {
     std::lock_guard<std::mutex> guard(g_mutex);
     if (!g_loaded) {
         g_loaded = true;
-        LoadFrom(SettingsPath(), &g_corner);
+        std::string body;
+        const auto result = system_settings::ReadSection("viewport", body);
+        if (result == system_settings::Result::Ok) try {
+            const auto object = settings_json::Object(body);
+            const auto token = settings_json::String(object, "corner", "br");
+            TokenToCorner(token.data(), token.size(), &g_corner);
+        } catch (...) { g_corner = viewport_tool_layout::kDefaultCorner; }
+        else if (result == system_settings::Result::Missing) {
+            LoadFrom(local_data::File(L"viewport.ini").wstring(), &g_corner);
+            std::string token;
+            for (const wchar_t* p = Token(g_corner); *p; ++p) token += char(*p);
+            system_settings::CompareExchangeSection("viewport", nullptr, "{\"corner\":" + settings_json::Quote(token) + "}");
+        }
     }
     return g_corner;
 }
@@ -198,7 +212,10 @@ bool Set(Corner corner) {
         std::lock_guard<std::mutex> guard(g_mutex);
         g_corner = corner;      // 本次运行立刻生效，与是否写盘无关
         g_loaded = true;
-        saved = SaveTo(SettingsPath(), corner);
+        std::string token;
+        for (const wchar_t* p = Token(corner); *p; ++p) token += char(*p);
+        saved = system_settings::WriteSection("viewport", "{\"corner\":" + settings_json::Quote(token) + "}") ==
+            system_settings::Result::Ok;
     }
     return saved;
 }
