@@ -98,7 +98,7 @@ void LayoutViewportPanels(MMDApp* app);   // VA 0x0040CAC0, was Sub40CAC0
                                           // (ui_viewport_layout.cpp)
 
 void HandleWindowSize(MMDApp* app) {
-    updates::RequestViewport(app, true);
+    if (!app->bottomPanelSizing.relayout) updates::RequestViewport(app, true);
     ui_metrics::Add(ui_metrics::Layout);
     auto& s = *app;
     const bool deferPaint = s.bottomPanelSizing.relayout;
@@ -435,13 +435,17 @@ void ApplySidebarGeometry(MMDApp& app, int width, float ratio) {
     app.WindowLayoutReady() = 0;
     app.SidebarWidth() = width;
     app.SidebarRatio() = ratio;
-    // Keep SidebarResizeDragging set while moving children: deferPaint suppresses
-    // their intermediate paints. The one complete repaint sees coherent geometry.
+    // Plugin mounts use the same current sidebar/client geometry as the scene.
+    // Their own layout applies before the viewport consumes its reserved height.
+    plugins::Layout(&app);
+    ui::LayoutBatch batch;
     RelayoutSidebarControls(&app);
+    batch.Commit();
     PanelPaint(&app);
     app.WindowLayoutReady() = 1;
-    RedrawWindow(app.MainWindow(), nullptr, nullptr,
-        RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN | RDW_UPDATENOW);
+    RECT damage{};GetClientRect(app.MainWindow(),&damage);
+    damage.bottom=std::max(0L,damage.bottom-157);
+    ui::RepaintLayout(app.MainWindow(),batch.Changes(),damage);
 }
 }
 void UpdateSidebarResize(MMDApp* app) {

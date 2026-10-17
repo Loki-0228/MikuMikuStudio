@@ -106,9 +106,9 @@ BOOL WINAPI ObserveRedraw(HWND window, const RECT* rect, HRGN region, UINT flags
     const BOOL result = originalRedraw(window, rect, region, flags);
     if (observe && window == g_Block->MainWindow() && (flags & RDW_UPDATENOW)) {
         ++redraws;
-        const UINT required = RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN;
-        Check(!rect && !region && (flags & required) == required,
-              "live resize repaints the whole parent and all child controls");
+        const UINT required = RDW_INVALIDATE | RDW_NOCHILDREN;
+        Check(rect && !region && (flags & required) == required && !(flags & (RDW_ERASE|RDW_FRAME|RDW_ALLCHILDREN)),
+              "live resize repaints exposed parent chrome without erasing every sibling");
         Check(g_Block->WindowLayoutReady() != 0, "paint occurs only after layout is complete");
         // Hidden hosts do not receive normal visible-window paints. Dispatch
         // that paint explicitly to exercise the real GDI + D3D paint path.
@@ -224,6 +224,28 @@ void SaveBottomPreview(MMDApp* app,const char* filename) {
     Check(bool(stream),"save bottom panel native preview");
     SelectObject(dc,previous);DeleteObject(bitmap);DeleteDC(dc);
 }
+struct GeometryProbe {
+    struct Entry { HWND window;unsigned changes=0;RECT last{}; };
+    std::vector<Entry> entries;
+    static LRESULT CALLBACK Observe(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp,UINT_PTR,DWORD_PTR ref){
+        auto& self=*reinterpret_cast<GeometryProbe*>(ref);
+        const auto result=DefSubclassProc(hwnd,msg,wp,lp);
+        if(msg==WM_WINDOWPOSCHANGED&&IsWindow(hwnd))for(auto& entry:self.entries)if(entry.window==hwnd){
+            RECT current{};GetWindowRect(hwnd,&current);
+            // ComboBox may recursively correct popup request height to its
+            // collapsed height. Count visible geometry after native processing.
+            if(!EqualRect(&entry.last,&current)){++entry.changes;entry.last=current;}break;}
+        return result;
+    }
+    explicit GeometryProbe(HWND host){
+        for(HWND child=GetWindow(host,GW_CHILD);child;child=GetWindow(child,GW_HWNDNEXT)){RECT current{};GetWindowRect(child,&current);entries.push_back({child,0,current});}
+        for(const auto& entry:entries)Check(SetWindowSubclass(entry.window,Observe,reinterpret_cast<UINT_PTR>(this),reinterpret_cast<DWORD_PTR>(this)),"observe native geometry notifications");
+    }
+    ~GeometryProbe(){for(const auto& entry:entries)if(IsWindow(entry.window))RemoveWindowSubclass(entry.window,Observe,reinterpret_cast<UINT_PTR>(this));}
+    unsigned Count(HWND window)const{for(const auto& entry:entries)if(entry.window==window)return entry.changes;return 0;}
+    void Reset(){for(auto& entry:entries)entry.changes=0;}
+    void Once()const{for(const auto& entry:entries)if(entry.changes>1){std::printf("control=%d changes=%u\n",GetDlgCtrlID(entry.window),entry.changes);Check(false,"each control receives only its final geometry once per layout");}}
+};
 void CheckBottomPanelResize(MMDApp* app) {
     if (const wchar_t* path=_wgetenv(L"MMS_PANEL_PREVIEW_MODEL")) {
         Check(std::filesystem::exists(path),"preview model exists");
@@ -247,7 +269,11 @@ void CheckBottomPanelResize(MMDApp* app) {
         const int control=id==1?436:id==2?449:id==6?471:509;
         const auto beforeControl=ControlBounds(host,control);
         const int beforeExtra=app->bottomPanelSizing.extra[id];
+        GeometryProbe geometry(host);
         SendMessageW(host,WM_MOUSEMOVE,MK_LBUTTON,MAKELPARAM(edge+delta,y));
+        geometry.Once();
+        for(int unrelated:{400,427,434,544,550,554})Check(geometry.Count(GetDlgItem(host,unrelated))==0,"bottom drag leaves unrelated sidebar and viewport windows in place");
+        geometry.Reset();
         const auto duringControl=ControlBounds(host,control);
         Check(app->SidebarWidth()==601&&!app->bottomPanelSizing.relayout,
               "bottom-only relayout preserves exact sidebar pixels and clears its batching scope");
@@ -256,6 +282,7 @@ void CheckBottomPanelResize(MMDApp* app) {
         const auto layouts=ui_metrics::counts[ui_metrics::Layout].load();
         SendMessageW(host,WM_MOUSEMOVE,MK_LBUTTON,MAKELPARAM(edge+delta,y));
         Check(ui_metrics::counts[ui_metrics::Layout].load()==layouts,"repeated bottom drag position skips layout");
+        for(const auto& entry:geometry.entries)Check(entry.changes==0,"duplicate bottom position does not notify native geometry");
         SendMessageW(host,ending,ending==WM_KEYDOWN?VK_ESCAPE:0,MAKELPARAM(edge+delta,y));
         Check(app->bottomPanelSizing.dragging<0 && GetCapture()!=host,"panel drag releases capture");
         if(ending!=WM_LBUTTONUP){const auto restored=ControlBounds(host,control);
@@ -754,6 +781,16 @@ int main(int argc, char** argv) {
     Hook(&BeginPaint,&PreviewBeginPaint,&realBeginPaint);
     Hook(&EndPaint,&PreviewEndPaint,&realEndPaint);
     CheckBottomPanelResize(app);
+    {
+        RECT band{};GetClientRect(window,&band);band.top=std::max(0L,band.bottom-160);
+        const auto paint=[&]{RedrawWindow(window,&band,nullptr,RDW_INVALIDATE|RDW_NOCHILDREN);SendMessageW(window,WM_PAINT,0,0);};
+        for(int i=0;i<4;++i)paint();
+        const DWORD before=GetGuiResources(GetCurrentProcess(),GR_GDIOBJECTS);
+        Check(before>0,"read process GDI resources for chrome buffer lifetime checks");
+        for(int i=0;i<32;++i)paint();
+        const DWORD after=GetGuiResources(GetCurrentProcess(),GR_GDIOBJECTS);
+        Check(after<=before+2,"repeated buffered bottom paints release their GDI resources");
+    }
     Hook(&IsWindowVisible,&scheduler_checks::Visible,&scheduler_checks::realVisible);
     scheduler_checks::available=true;app->FpsLimit()=1000;
     Check(updates::Initialize(app),"initialize coordinator for resize regression");

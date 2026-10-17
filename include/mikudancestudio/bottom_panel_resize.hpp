@@ -3,6 +3,7 @@
 #include "mikudancestudio/ported_funcs.hpp"
 #include <algorithm>
 #include <vector>
+#include "mikudancestudio/ui_control_layout.hpp"
 
 namespace mikudancestudio {
 struct ResizableBottomPanel { int id, left, right, extra; };
@@ -39,19 +40,16 @@ inline int BottomPanelX(MMDApp* app,int x) {
 inline void ResizeBottomPanelControls(MMDApp* app) {
     HWND host=app->MainWindow(); RECT client{};GetClientRect(host,&client);
     for(HWND child=GetWindow(host,GW_CHILD);child;child=GetWindow(child,GW_HWNDNEXT)) {
-        RECT r{};GetWindowRect(child,&r);MapWindowPoints(nullptr,host,reinterpret_cast<POINT*>(&r),2);
+        RECT r=ui::ReadLayoutRect(host,child);
         if(r.top<client.bottom-157 || r.top>=client.bottom) continue;
         const int left=BottomPanelX(app,r.left),right=BottomPanelX(app,r.right);
         if(left==r.left && right==r.right) continue;
         int height=r.bottom-r.top;
         wchar_t cls[32]{};GetClassNameW(child,cls,32);
         if(_wcsicmp(cls,L"COMBOBOX")==0) {
-            RECT drop{};SendMessageW(child,CB_GETDROPPEDCONTROLRECT,0,reinterpret_cast<LPARAM>(&drop));
-            height=(std::max)(height,int(drop.bottom-drop.top));
+            height=(std::max)(height,ui::ReadLayoutRequestedHeight(child));
         }
-        const UINT flags=SWP_NOZORDER|SWP_NOACTIVATE|
-            (app->bottomPanelSizing.relayout?(SWP_NOREDRAW|SWP_NOCOPYBITS):0);
-        SetWindowPos(child,nullptr,left,r.top,right-left,height,flags);
+        ui::MoveLayoutWindow(child,left,r.top,right-left,height,app->bottomPanelSizing.relayout);
     }
 }
 inline int HitBottomPanelEdge(MMDApp* app,int x,int y) {
@@ -65,6 +63,7 @@ inline bool HandleBottomPanelResize(MMDApp* app,UINT msg,WPARAM key,LPARAM pos) 
     auto& s=app->bottomPanelSizing; HWND host=app->MainWindow();
     const int x=static_cast<short>(LOWORD(pos)),y=static_cast<short>(HIWORD(pos));
     auto redraw=[&] {
+        ui::LayoutBatch batch;
         {
             struct LayoutScope {
                 MMDApp& app;bool previous;unsigned char ready;
@@ -74,9 +73,10 @@ inline bool HandleBottomPanelResize(MMDApp* app,UINT msg,WPARAM key,LPARAM pos) 
                 ~LayoutScope(){app.bottomPanelSizing.relayout=previous;app.WindowLayoutReady()=ready;}
             } scope(*app);
             HandleWindowSize(app);
+            batch.Commit();
         }
-        RECT band{};GetClientRect(host,&band);band.top=(std::max)(0,int(band.bottom)-157);
-        RedrawWindow(host,&band,nullptr,RDW_INVALIDATE|RDW_ERASE|RDW_ALLCHILDREN|RDW_UPDATENOW);
+        RECT band{};GetClientRect(host,&band);band.top=(std::max)(0,int(band.bottom)-160);
+        ui::RepaintLayout(host,batch.Changes(),band);
     };
     auto update=[&] {
         RECT r{};GetClientRect(host,&r);const auto spans=BottomPanelSpans(app);

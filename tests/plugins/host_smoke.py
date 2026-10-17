@@ -180,6 +180,21 @@ def run(executable, fixture, directory, filename, mode="gui"):
                     assert text.value == "中文输入测试", "resizing retains input contents"
                 widths.append(rect.right - rect.left)
             assert widths[1] < widths[0] < widths[2], "input adapts when the production host shrinks and grows"
+            client, origin, toolbar_rect = w.RECT(), w.POINT(), w.RECT()
+            u.GetClientRect(main, c.byref(client));u.ClientToScreen(main, c.byref(origin));u.GetWindowRect(toolbar,c.byref(toolbar_rect))
+            sidebar = toolbar_rect.left - origin.x - 9
+            send(main, 0x201, 1, ((100 & 0xffff) << 16) | ((sidebar+3) & 0xffff))
+            for target in (400, 600, 300):
+                send(main, 0x200, 1, (100 << 16) | target)
+                mounts = [h for h, cls in children(main) if cls in ("MMS.PluginAbi.Toolbar.V1", "MMS.PluginAbi.Workspace.V1") and u.GetParent(h) == main]
+                assert len(mounts) == 2
+                for mount in mounts:
+                    rect = w.RECT();u.GetWindowRect(mount,c.byref(rect))
+                    assert rect.left-origin.x == target+9, "plugin mount follows live sidebar before release"
+                    assert rect.right-origin.x == client.right, "plugin mount uses remaining client width"
+            send(main, 0x202, 0, (100 << 16) | 300)
+            print("PASS plugin toolbar and workspace follow each live sidebar position", flush=True)
+
 
         send(main, 0x10)  # WM_CLOSE, no document was modified
         process.wait(timeout=15)

@@ -40,7 +40,7 @@ std::wstring Title(unsigned l,Kind k){
     case Kind::Gravity:return Text(l,L"重力",L"Gravity",L"重力");default:return Text(l,L"アクセサリ",L"Accessory",L"附件");}
 }
 std::wstring Title(MMDApp&app,Kind k){return Title(app.EnglishUI(),k);}
-RECT Rect(HWND owner,int id){RECT r{};GetWindowRect(GetDlgItem(owner,id),&r);MapWindowPoints(nullptr,owner,reinterpret_cast<POINT*>(&r),2);return r;}
+RECT Rect(HWND owner,int id){return ui::ReadLayoutRect(owner,GetDlgItem(owner,id));}
 void Move(HWND owner,int id,int x,int y,int w,int h){MoveWindow(GetDlgItem(owner,id),x,y,w,h,TRUE);}
 void Refresh(MMDApp&app){
     if(app.Renderer())RefreshAfterFrameApply(&app);
@@ -1021,6 +1021,9 @@ void CreateControls(MMDApp*app,void*window){
 }
 void LayoutControls(MMDApp*app){
     if(!app)return;HWND hwnd=app->MainWindow();if(!GetDlgItem(hwnd,curve_editor::kAccessoryCurve))return;
+    const auto Move=[app](HWND owner,int id,int x,int y,int w,int h){
+        ui::MoveLayoutControl(owner,id,x,y,w,h,app->bottomPanelSizing.relayout);
+    };
     RECT anchor=Rect(hwnd,474),combo=Rect(hwnd,471);
     const int x=anchor.left;
     Move(hwnd,471,x,combo.top,99,150);
@@ -1041,7 +1044,8 @@ void LayoutControls(MMDApp*app){
         SendMessageW(GetDlgItem(hwnd,id),EM_SETMARGINS,EC_LEFTMARGIN|EC_RIGHTMARGIN,MAKELPARAM(4,4));
     }
     RECT last=Rect(hwnd,485);Move(hwnd,487,x+116,last.top-2,68,22);
-    ShowControls(app,app->state.optflag[0]!=0&&app->state.optflag[3]!=0);
+    if(!app->bottomPanelSizing.relayout)
+        ShowControls(app,app->state.optflag[0]!=0&&app->state.optflag[3]!=0);
 }
 void LayoutMorphControls(MMDApp*app){
     if(app==nullptr)return;
