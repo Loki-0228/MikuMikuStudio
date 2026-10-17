@@ -34,6 +34,7 @@
 #include <commctrl.h>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <cwchar>
 #include <fstream>
 #include <cmath>
@@ -657,7 +658,9 @@ int main(int argc, char** argv) {
     Hook(&ShowWindow, &KeepHidden, &originalShow);
     Hook(&MessageBoxA, &UnexpectedA); Hook(&MessageBoxW, &UnexpectedW, &originalMessageBoxW);
     auto* app = new MMDApp;
-    g_Block = app; app->state = MMDAppState{}; app->InitDefaults();
+    // Match the other hidden-window fixtures: avoid a 661 KB value-initialized
+    // temporary occupying the 1 MB test-thread stack during nested PMM loads.
+    g_Block = app; std::memset(&app->state, 0, sizeof(app->state)); app->InitDefaults();
     Check(InitMainWindowAndD3D(app, GetModuleHandleW(nullptr), SW_HIDE), "initialize production host");
     HWND window = app->MainWindow();
     SetWindowPos(window, nullptr, 0, 0, 1200,820, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);

@@ -26,13 +26,15 @@
 
 namespace mikudancestudio::plugins {
 namespace {
-bool Ready(MMDApp& app, HWND shadowDialog = nullptr) noexcept {
+bool Ready(MMDApp& app, HWND shadowDialog = nullptr, HWND shadowSlider = nullptr) noexcept {
     const bool ownShadow = shadowDialog && shadowDialog == app.GroundShadowColorDialog();
     const auto capture = GetCapture();
+    const bool ownRangeSlider = shadowSlider && app.MainWindow() && shadowSlider == GetDlgItem(app.MainWindow(), panel::kSelfShadowRangeSlider);
     return !app.PlaybackActive() && !app.FrameStepPlayback() &&
         !app.state.recordPlaybackStartPending && !app.SceneMutationInProgress() &&
         !bake::UiLocked() && !SceneSaveInProgress() &&
-        (!capture || (ownShadow && capture == GetDlgItem(shadowDialog, panel::kGroundShadowSlider))) &&
+        (!capture || (ownShadow && capture == GetDlgItem(shadowDialog, panel::kGroundShadowSlider)) ||
+            (ownRangeSlider && capture == shadowSlider)) &&
         !app.FrameRangeDialog() && !app.state.frameCopyDialog && !app.RecordingWindow() &&
         !app.GravitySettingDialog() && (!app.GroundShadowColorDialog() || ownShadow) && !app.AccessoryOrderArray() &&
         !app.state.accessoryEditDialogOpen && !app.state.edgeThicknessDialog;
@@ -761,13 +763,14 @@ bool TryToggleBoundCameraPerspective(MMDApp* app) noexcept {
     return true;
 }
 namespace {
-MmsResult ApplyBoundShadowField(MMDApp& app, float distance, int mode, bool editMode, bool& changed) noexcept {
+MmsResult ApplyBoundShadowField(MMDApp& app, float distance, int mode, bool editMode, bool& changed, HWND slider = nullptr) noexcept {
     changed = false;
     return Boundary([&]() -> MmsResult {
         auto* history = BoundNativePoseHistory(&app);
-        if (!history || !Ready(app) || !mdl::KeyPoolIdentity(app.ShadowKeys())) return MMS_E_NOT_READY;
-        if (!std::isfinite(distance) || !std::isfinite(app.ShadowDistance()) || (editMode && (mode < 0 || mode > 2))) return MMS_E_ARGUMENT;
+        if (!history) return MMS_E_NOT_READY;
         if (const auto result = history->CheckNativeEdit()) return result;
+        if (!Ready(app, nullptr, slider) || !mdl::KeyPoolIdentity(app.ShadowKeys())) return MMS_E_NOT_READY;
+        if (!std::isfinite(distance) || !std::isfinite(app.ShadowDistance()) || (editMode && (mode < 0 || mode > 2))) return MMS_E_ARGUMENT;
         if (editMode ? app.SelfShadowMode() == mode : app.ShadowDistance() == distance) return MMS_OK;
         auto change = std::make_shared<ShadowPoseChange>(app, distance, mode, editMode);
         std::unique_ptr<SharedHistory::NativeTransaction> transaction;
@@ -786,6 +789,19 @@ MmsResult ApplyBoundShadowField(MMDApp& app, float distance, int mode, bool edit
 }
 MmsResult ApplyBoundShadowDistance(MMDApp& app, float value, bool& changed) noexcept {
     return ApplyBoundShadowField(app, value, app.SelfShadowMode(), false, changed);
+}
+bool TryCommitBoundShadowSlider(MMDApp* app, HWND slider) noexcept {
+    if (!app || !BoundNativePoseHistory(app)) return false;
+    Boundary([&]() -> MmsResult {
+        if (!slider || !app->MainWindow() || slider != GetDlgItem(app->MainWindow(), panel::kSelfShadowRangeSlider)) return MMS_E_ARGUMENT;
+        const auto position = static_cast<int>(SendMessageW(slider, TBM_GETPOS, 0, 0));
+        const float distance = static_cast<float>((10000.0 - std::clamp(position, 0, 9999)) / 100000.0);
+        bool changed = false;
+        const auto result = ApplyBoundShadowField(*app, distance, app->SelfShadowMode(), false, changed, slider);
+        if (!changed) RefreshBoundGlobalReadout(*app);
+        return result;
+    });
+    return true;
 }
 bool TrySetBoundShadowMode(MMDApp* app, int mode) noexcept {
     if (!app || !BoundNativePoseHistory(app)) return false;

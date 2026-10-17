@@ -55,6 +55,8 @@ bool TryToggleBoundAccessoryFlag(MMDApp*, unsigned field) noexcept;
 // Self-shadow distance is authored float; mode is 0 (off), 1 or 2.
 MmsResult ApplyBoundShadowDistance(MMDApp&, float value, bool& changed) noexcept;
 bool TrySetBoundShadowMode(MMDApp*, int mode) noexcept;
+// Live range slider 560; permits only this control to own mouse capture.
+bool TryCommitBoundShadowSlider(MMDApp*, HWND slider) noexcept;
 MmsResult ApplyBoundCameraFov(MMDApp&, float value, bool& changed) noexcept;
 // true selects orthographic; false selects perspective (legacy byte is inverted).
 MmsResult ApplyBoundCameraProjection(MMDApp&, bool orthographic, bool& changed) noexcept;

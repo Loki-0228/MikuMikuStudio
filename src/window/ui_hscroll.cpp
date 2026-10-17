@@ -44,7 +44,7 @@
 //     On x86 +0xB0 is 4-byte slot 44 = SetTransform; on x64 (8-byte slots)
 //     it would be slot 22 = GetGammaRamp, so the port calls
 //     IDirect3DDevice9::SetTransform directly (like the 446/448 twins).
-//   560  physics-interval ratio slider (0x230)
+//   560  self-shadow distance/range slider (0x230)
 //     this+0xA0D2C (658732) = (double)(10000-pos)/100000.0 (dbl_52BA00);
 //     echo "%d" (raw pos) into 561 via SetWindowTextA; this+0xA0B0D
 //     (658189) = 1 (dirty); RefreshRequest(-3).
@@ -91,6 +91,9 @@
 #include "mikudancestudio/ported_funcs.hpp"
 #include "mikudancestudio/panel_controls.hpp"
 #include "mikudancestudio/adaptive_shadow.hpp"
+#if !MMD_ORIGINAL_PROFILE
+#include "../plugins/native_global_commands.hpp"
+#endif
 
 namespace mikudancestudio {
 namespace {
@@ -270,8 +273,11 @@ void HandleHScroll(LPARAM lParam, WPARAM wParam) {
         EchoEditText(hwnd, 448, buf);
         RefreshRequest(-1);
     }
-    // ---- 560: physics-interval ratio slider --------------------------------
+    // ---- 560: self-shadow distance/range slider --------------------------------
     else if (ctrl == GetDlgItem(hwnd, panel::kSelfShadowRangeSlider)) {
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::TryCommitBoundShadowSlider(app, ctrl)) return;
+#endif
         const LRESULT pos = SendMessageA(GetDlgItem(hwnd, panel::kSelfShadowRangeSlider),
                                          TBM_GETPOS, 0, 0);
         SetShadowSliderPosition(app, static_cast<int>(pos));
