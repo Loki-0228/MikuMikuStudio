@@ -15,10 +15,10 @@ struct NativeUi::Impl {
     unsigned nextId = 0xa000;
     uint64_t revision = 0;
     int x = 0, width = 0, maximum = 120, height = 0, scroll = 0, contentHeight = 0;
-    bool visible = true, refreshing = false;
+    bool visible = true, refreshing = false, presentationPending = false;
     std::map<std::string, unsigned> ids;
     std::map<unsigned, std::pair<std::string, uint64_t>> dispatch;
-    struct Control { HWND window = nullptr; MmsHandle element = 0; uint64_t instance = 0; };
+    struct Control { HWND window = nullptr; MmsHandle element = 0; uint64_t instance = 0; bool stateVisible = true; };
     std::map<std::string, Control> controls;
     std::vector<std::string> toolbarOrder;
     std::vector<std::string> panelOrder;
@@ -142,7 +142,9 @@ struct NativeUi::Impl {
             if (e.desc.kind == MMS_UI_GROUP) Gather(id, out, depth + 1); else out.push_back(id); }
     }
     void Refresh() {
+        if (registry.InCallback()) { DeferPresentation(); return; }
         if (refreshing || !IsWindow(main)) return;
+        presentationPending = false;
         refreshing = true; struct Guard { bool& v; ~Guard() { v = false; } } guard{refreshing};
         HMENU menu = GetMenu(main); bool changed = false;
         const bool hasMenu = !Children("mms.menu.plugins").empty();
@@ -172,12 +174,14 @@ struct NativeUi::Impl {
             if (!control.window) {
                 const bool separator = e.desc.kind == MMS_UI_SEPARATOR;
                 control.element = e.handle; control.instance = registry.NewPresentationInstance();
-                control.window = CreateWindowExW(0, separator ? L"STATIC" : L"BUTTON", caption.c_str(), WS_CHILD | (separator ? SS_ETCHEDVERT : WS_TABSTOP | BS_PUSHBUTTON), 0, 0, 0, 0,
+                control.window = CreateWindowExW(0, separator ? L"STATIC" : L"BUTTON", caption.c_str(), WS_CHILD | (separator ? SS_ETCHEDVERT : WS_TABSTOP | BS_CHECKBOX | BS_PUSHLIKE), 0, 0, 0, 0,
                     toolbar, reinterpret_cast<HMENU>(UINT_PTR(commandId)), GetModuleHandleW(nullptr), nullptr);
                 if (!control.window) throw std::runtime_error("cannot create plugin button");
                 SendMessageW(control.window, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), FALSE);
             }
             SetWindowTextW(control.window, caption.c_str()); EnableWindow(control.window, state.enabled); ShowWindow(control.window, show ? SW_SHOWNA : SW_HIDE);
+            if (e.desc.kind == MMS_UI_BUTTON) SendMessageW(control.window, BM_SETCHECK, state.checked ? BST_CHECKED : BST_UNCHECKED, 0);
+            control.stateVisible = state.visible != 0;
         }
         toolbarOrder = std::move(wanted);
         if (revision != registry.Revision()) {
@@ -232,6 +236,7 @@ struct NativeUi::Impl {
     native_ui::Node LayoutNode(const std::string& id, HDC dc) {
         const auto& e = registry.elements.at(id); const auto& hints = e.effectiveHints;
         native_ui::Node node; node.id = id; MmsCommandStateV1 state{}; node.visible = State(e, state);
+        if (auto control = controls.find(id); control != controls.end()) control->second.stateVisible = state.visible != 0;
         auto& h = node.hints; h.flow = native_ui::Flow(hints.flow); h.columns = hints.columns; h.align = hints.align;
         h.minimum = {hints.minimum[0], hints.minimum[1]}; h.preferred = {hints.preferred[0], hints.preferred[1]}; h.maximum = {hints.maximum[0], hints.maximum[1]};
         h.grow = {hints.grow[0], hints.grow[1]}; h.shrink = {hints.shrink[0], hints.shrink[1]};
@@ -279,6 +284,7 @@ struct NativeUi::Impl {
                 const auto control = controls.find(id);
                 if (control == controls.end() || control->second.element != element.handle || !control->second.window) continue;
                 if (!Presentation(element, control->second.window, control->second.instance, bounds->second.visible, out)) return false;
+                out.back().stateRefresh = true; out.back().stateVisible = control->second.stateVisible;
             } else if (element.desc.kind == MMS_UI_PANEL && !panelErrors.count(id)) {
                 UiRegistry::SurfacePresentation view;
                 if (!registry.ExistingSurface(id, view)) continue;
@@ -288,6 +294,8 @@ struct NativeUi::Impl {
         return true;
     }
     int Layout() {
+        if (registry.InCallback()) { DeferPresentation(); return height + workspaceHeight; }
+        presentationPending = false;
         dpi = WindowDpi(main);
         const uint64_t uiRevision = registry.Revision(); bool applied = true; std::map<std::string, UiRegistry::Geometry> geometry;
         HDC dc = GetDC(toolbar); HGDIOBJ old = dc ? SelectObject(dc, GetStockObject(DEFAULT_GUI_FONT)) : nullptr;
@@ -335,6 +343,10 @@ struct NativeUi::Impl {
         }
         return height + workspaceHeight;
     }
+    void DeferPresentation() noexcept {
+        if (presentationPending) return;
+        presentationPending = true; registry.RequestPresentation();
+    }
     bool Command(unsigned id) {
         auto item = dispatch.find(id); if (item == dispatch.end()) return false;
         auto it = registry.elements.find(item->second.first);
@@ -356,6 +368,17 @@ int NativeUi::Layout(int x, int width, int maximum, bool visible) { impl_->x = x
 HWND NativeUi::Toolbar() const { return impl_->toolbar; }
 bool NativeUi::DialogMessage(MSG* message) {
     if (!message || (message->message != WM_KEYDOWN && message->message != WM_CHAR)) return false;
+    // Push-like check buttons retain command activation with Enter; their
+    // checked state remains exclusively controlled by getState, not by clicks.
+    if (message->wParam == VK_RETURN && GetFocus() == message->hwnd) {
+        for (const auto& [id, control] : impl_->controls) if (control.window == message->hwnd) {
+            auto element = impl_->registry.elements.find(id);
+            if (element != impl_->registry.elements.end() && element->second.desc.kind == MMS_UI_BUTTON) {
+                if (IsWindowEnabled(control.window) && IsWindowVisible(control.window)) impl_->Command(GetDlgCtrlID(control.window));
+                return true;
+            }
+        }
+    }
     for (HWND window : {impl_->toolbar, impl_->workspace})
         if (message->hwnd == window || IsChild(window, message->hwnd)) return IsDialogMessageW(window, message) != FALSE;
     return false;

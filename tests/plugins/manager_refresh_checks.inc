@@ -16,20 +16,22 @@ static void Pump(unsigned milliseconds) {
 struct Probe {
     MmsResult (MMS_CALL *state)(MmsUiRefreshStateV1*) = nullptr;
     MmsResult (MMS_CALL *release)() = nullptr;
+    MmsResult (MMS_CALL *setState)(uint32_t, uint32_t, uint32_t) = nullptr;
     explicit Probe(HMODULE module) {
         CHECK(module != nullptr);
         state = reinterpret_cast<decltype(state)>(GetProcAddress(module, "RefreshProbeState"));
         release = reinterpret_cast<decltype(release)>(GetProcAddress(module, "RefreshProbeRelease"));
-        CHECK(state && release);
+        setState = reinterpret_cast<decltype(setState)>(GetProcAddress(module, "RefreshProbeSetState"));
+        CHECK(state && release && setState);
     }
     MmsUiRefreshStateV1 Read() const {
         MmsUiRefreshStateV1 value{}; value.h = Header<MmsUiRefreshStateV1>(); CHECK(state(&value) == MMS_OK); return value;
     }
-    void Complete() const {
+    void Complete(uint32_t kinds = MMS_UI_REFRESH_REPAINT) const {
         const auto until = GetTickCount64() + 2000;
         auto value = Read();
         while (value.status == MMS_UI_REFRESH_PENDING && GetTickCount64() < until) { Pump(5); value = Read(); }
-        CHECK(value.status == MMS_UI_REFRESH_COMPLETED && value.result == MMS_OK && value.completedKinds == MMS_UI_REFRESH_REPAINT);
+        CHECK(value.status == MMS_UI_REFRESH_COMPLETED && value.result == MMS_OK && value.completedKinds == kinds);
     }
     void ReleaseWorker() const {
         MmsResult result = MMS_E_FAILED; std::thread worker([&] { result = release(); }); worker.join(); CHECK(result == MMS_OK);
@@ -66,22 +68,38 @@ static void Run(const fs::path& root, const fs::path& lifecycleDll, bool stopPen
         wchar_t name[32]{}; GetClassNameW(child, name, 32); if (!std::wcscmp(name, L"Button")) { button = child; break; }
     }
     CHECK(button != nullptr);
-    const auto click = [&] {
+    const auto click = [&](unsigned keyboard = 0) {
         const auto before = count("REFRESH_WORKER_PENDING");
-        SendMessageW(native->Toolbar(), WM_COMMAND, MAKEWPARAM(GetDlgCtrlID(button), BN_CLICKED), reinterpret_cast<LPARAM>(button));
+        if (keyboard == 1) {
+            SetFocus(button); MSG message{}; message.hwnd = button; message.message = WM_KEYDOWN; message.wParam = VK_RETURN;
+            CHECK(GetFocus() == button && native->DialogMessage(&message));
+        } else if (keyboard == 2) {
+            SetFocus(button); CHECK(GetFocus() == button);
+            SendMessageW(button, WM_KEYDOWN, VK_SPACE, 1);
+            SendMessageW(button, WM_KEYUP, VK_SPACE, LPARAM(1) | (LPARAM(3) << 30));
+        } else SendMessageW(native->Toolbar(), WM_COMMAND, MAKEWPARAM(GetDlgCtrlID(button), BN_CLICKED), reinterpret_cast<LPARAM>(button));
         CHECK(count("REFRESH_TARGET_IN_COMMAND") == before + 1 && count("REFRESH_WORKER_PENDING") == before + 1);
         CHECK(count("REFRESH_WORKER_FAILED") == 0 && probe.Read().status == MMS_UI_REFRESH_PENDING);
     };
-    click();
+    click(true);
     // NativeUi::Command has already performed its ordinary Refresh/Layout.
     // Unchanged geometry must not invalidate the callback's captured rectangle.
     Pump(40); CHECK(guardCalls != 0 && probe.Read().status == MMS_UI_REFRESH_PENDING);
     allow = true; probe.Complete(); probe.ReleaseWorker();
     const auto revision = manager.Ui().Revision();
     CHECK(manager.Storage().Prepare({}) == MMS_OK && manager.Storage().Prepared());
-    click(); Pump(40); CHECK(probe.Read().status == MMS_UI_REFRESH_PENDING);
-    manager.Storage().Cancel(); probe.Complete(); probe.ReleaseWorker();
+    click(2); Pump(40); CHECK(probe.Read().status == MMS_UI_REFRESH_PENDING);
+    manager.Storage().Cancel(); probe.Complete(); const auto geometry = probe.Read().geometryRevision; probe.ReleaseWorker();
     CHECK(manager.Ui().Revision() == revision); // Repaint never re-registers UI.
+    // No command, Refresh or Layout between changing the provider's result and
+    // the pure refresh message: only STATE can update these native properties.
+    allow = false; CHECK(probe.setState(0, 1, 1) == MMS_OK);
+    Pump(40); CHECK(probe.Read().status == MMS_UI_REFRESH_PENDING && IsWindowEnabled(button));
+    allow = true; probe.Complete(MMS_UI_REFRESH_STATE);
+    CHECK(!IsWindowEnabled(button) && SendMessageW(button, BM_GETCHECK, 0, 0) == BST_CHECKED);
+    CHECK(manager.Ui().Revision() == revision && probe.Read().geometryRevision == geometry && !manager.CanInvokeEdit()); probe.ReleaseWorker();
+    CHECK(probe.setState(1, 0, 1) == MMS_OK); probe.Complete(MMS_UI_REFRESH_STATE); probe.ReleaseWorker();
+    CHECK(IsWindowEnabled(button) && SendMessageW(button, BM_GETCHECK, 0, 0) == BST_UNCHECKED);
     allow = !stopPending; click();
     if (!stopPending) probe.Complete();
     CHECK(!manager.Stop());

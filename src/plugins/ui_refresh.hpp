@@ -25,6 +25,8 @@ struct RefreshPresentation {
     std::uint32_t dpi = 96;
     float x = 0, y = 0, width = 0, height = 0;
     bool visible = false;
+    // Only host-owned buttons opt in. STATE does not yet change visibility.
+    bool stateRefresh = false, stateVisible = true;
 };
 class UiRefreshQueue {
     struct Target;
@@ -36,6 +38,7 @@ class UiRefreshQueue {
     std::map<MmsHandle, Ticket> tickets_;
     std::uint64_t next_ = 1, nextGeneration_ = 1, nextGeometry_ = 1, epoch_ = 1;
     bool draining_ = false;
+    bool evaluatingState_ = false;
     std::function<bool()> wake_;
     MmsResult Capabilities(RefreshClient&, MmsUiRefreshCapabilitiesV1*);
     MmsResult GetTarget(RefreshClient&, MmsHandle, MmsUiRefreshTargetV1*);
@@ -51,8 +54,8 @@ public:
     void SetWake(std::function<bool()>);
     void SyncTargets(const std::vector<RefreshPresentation>&);
     void InvalidateTarget(MmsHandle) noexcept;
-    // Discard geometry before attempting native moves; only successful
-    // publication may make a target ready again.
+    // Pause before native moves, retaining the last geometry revision. Only
+    // a successful publication may make a target ready again.
     void SuspendTargets() noexcept;
     void Drain();
     bool Pending() const;

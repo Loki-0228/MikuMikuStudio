@@ -223,6 +223,7 @@ void Layout(MMDApp* app) {
 int ToolbarHeight(MMDApp* app) { return app == owner && !app->FullscreenMode() && !app->FloatingWindow() ? toolbarHeight : 0; }
 void Refresh(MMDApp* app) {
     if (!ui || app != owner || refreshing || closing) return;
+    if (manager && manager->InCallback()) { SetTimer(app->MainWindow(), kHistoryUiRetry, 16, nullptr); return; }
     refreshing = true; auto old = toolbarHeight;
     Boundary([&] { ui->Refresh(); Layout(app); if (toolbarHeight != old) HandleWindowSize(app);
 #if !MMD_ORIGINAL_PROFILE

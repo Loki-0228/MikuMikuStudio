@@ -42,7 +42,7 @@ cmake --build build/hello-menu --config Release
 | `mms.ui` 1.0 | 命令、菜单项、工具栏按钮和组；元数据更新；只读属性；快照租约；命令参数、范围与选项校验；布局修订检查、指定顺序移动、创建与删除空组、显示、首选尺寸、快捷键及恢复。 |
 | `mms.ui.surface` 1.0 | 菜单、工具栏和工作区页签挂载位置；原生子窗口工厂、多个视图、尺寸、隐藏、焦点与销毁。 |
 | `mms.ui.layout` 1.0 | 默认布局提示、事务内用户覆盖、实际几何快照；行、列、换行和网格；伸缩、上下限、隐藏占位。 |
-| `mms.ui.refresh` 1.0 | 本插件已有按钮和原生 surface 的 `REPAINT + SELF`；UI 线程查询能力和目标，后台请求、查询、取消及释放票据；实例、工程及几何修订校验。DATA、STATE、LAYOUT 和其他范围返回 UNSUPPORTED。 |
+| `mms.ui.refresh` 1.0 | 本插件已有按钮和原生 surface 的 REPAINT + SELF；按钮额外支持启用及选中 STATE，显隐变化先拒绝。UI 线程查询能力和目标，后台使用同一票据；实例、工程及几何修订校验。DATA、LAYOUT 和其他范围返回 UNSUPPORTED。 |
 | `mms.scene` 1.0 | 阶段 0 的对象、骨骼、网格、绑定、刚体、关节、形状、Morph、材质和纹理路径；独立 ID、运行时代次、不可变快照及 PMM 身份保存。阶段 1–4 返回 UNSUPPORTED。 |
 | `mms.storage` 1.0 | 插件工程数据、两阶段加载、只读保存数据租约；PMM 与扩展文件成对保存和中断恢复。提供者名为 `mms.serializer`。 |
 | 其他服务 | 尚未接入，`queryService` 返回 NOT_FOUND。 |

@@ -445,6 +445,7 @@ bool UiRegistry::Own(UiClient& c, MmsString id, MmsString owner) const {
 }
 bool UiRegistry::Exists(const std::string& id) const { return commands.count(id) || elements.count(id) || properties.count(id) || surfaces.count(id); }
 void UiRegistry::Changed() { ++revision_; if (changed_) try { changed_(); } catch (...) {} }
+void UiRegistry::RequestPresentation() noexcept { if (changed_) try { changed_(); } catch (...) {} }
 MmsResult UiRegistry::Command(UiClient& c, const MmsCommandDescV1* input, MmsHandle* out, MmsHandle replace) {
     auto check = Check(c, true); if (check) return check;
     if (!input || input->info.h.size < sizeof(*input) || input->info.h.major != 1 || input->info.h.minor != 0 || !out || !Own(c, input->info.id, input->info.ownerPlugin) ||
@@ -562,6 +563,23 @@ MmsResult UiRegistry::State(UiClient& c, MmsString id, MmsObjectRef target, MmsC
     if (result) return result; if (!Valid(&state) || state.enabled > 1 || state.checked > 1 || state.visible > 1 || state.reserved) return MMS_E_FAILED;
     auto lease = std::make_unique<Lease>(); lease->kind = 2; lease->owner = c.id; state.disabledReason = lease->arena.Copy(state.disabledReason); state.h = Header<MmsCommandStateV1>();
     auto h = state.disabledReason.bytes ? next_++ : 0; if (h) leases_.emplace(h, std::move(lease)); *out = state; *handle = h; return MMS_OK;
+}
+MmsResult UiRegistry::WithElementState(MmsHandle handle, const std::function<MmsResult(const MmsCommandStateV1&)>& apply) {
+    if (GetCurrentThreadId() != thread_) return MMS_E_THREAD;
+    if (callbackDepth_) return MMS_E_BUSY;
+    auto element = std::find_if(elements.begin(), elements.end(), [&](const auto& e) { return e.second.handle == handle; });
+    if (element == elements.end()) return MMS_E_STALE;
+    if (element->second.desc.kind != MMS_UI_BUTTON) return MMS_E_UNSUPPORTED;
+    auto found = commands.find(String(element->second.desc.commandId));
+    if (found == commands.end()) return MMS_E_NOT_FOUND;
+    auto record = found->second;
+    if (record->owner->stopping) return MMS_E_NOT_READY;
+    Callback guard(callbackDepth_);
+    MmsCommandStateV1 state{}; state.h = Header<MmsCommandStateV1>();
+    const auto result = record->desc.getState(record->desc.context, {}, &state);
+    if (result) return result;
+    if (!Valid(&state) || state.enabled > 1 || state.checked > 1 || state.visible > 1 || state.reserved) return MMS_E_FAILED;
+    return apply(state);
 }
 MmsResult UiRegistry::Invoke(UiClient& c, MmsString id, MmsObjectRef target, MmsSpan args) {
     auto check = Check(c, true); if (check) return check; auto found = commands.find(String(id)); if (found == commands.end()) return MMS_E_NOT_FOUND;

@@ -34,6 +34,9 @@ struct Fixture {
     PaintProbe panelPaint;
     MmsHandle command = 0, element = 0, second = 0, factory = 0, panelElement = 0;
     unsigned stateReads = 0, invokes = 0, creates = 0, destroys = 0;
+    uint32_t stateEnabled = 1, stateChecked = 0, stateVisible = 1;
+    MmsResult stateResult = MMS_OK;
+    std::function<void()> onState;
     bool targetDuringInvoke = false;
     MmsResult invokeTargetResult = MMS_E_FAILED;
     std::atomic<unsigned> wakes{0};
@@ -57,7 +60,10 @@ struct Fixture {
         MmsCommandDescV1 d{}; d.info.h = Header<MmsCommandDescV1>(); d.info.id = S("example.refresh.command");
         d.info.ownerPlugin = S("example.refresh"); d.info.label = S("Refresh"); d.context = this;
         d.getState = [](void* p, MmsObjectRef, MmsCommandStateV1* s) -> MmsResult {
-            ++static_cast<Fixture*>(p)->stateReads; *s = {}; s->h = Header<MmsCommandStateV1>(); s->enabled = s->visible = 1; return MMS_OK;
+            auto& x = *static_cast<Fixture*>(p); ++x.stateReads;
+            if (x.onState) x.onState();
+            *s = {}; s->h = Header<MmsCommandStateV1>();
+            s->enabled = x.stateEnabled; s->checked = x.stateChecked; s->visible = x.stateVisible; return x.stateResult;
         };
         d.invoke = [](void* p, MmsObjectRef, MmsSpan, MmsHandle) -> MmsResult {
             auto& x = *static_cast<Fixture*>(p); ++x.invokes;
@@ -162,7 +168,7 @@ static void Region(HWND window, std::initializer_list<RECT> rectangles) {
 static void CapabilitiesAndValidation() {
     Fixture x; MmsUiRefreshCapabilitiesV1 caps{}; caps.h = Header<MmsUiRefreshCapabilitiesV1>();
     CHECK(x.api.getCapabilities(x.api.context, &caps) == MMS_OK);
-    CHECK(caps.supportedKinds == MMS_UI_REFRESH_REPAINT && caps.supportedScopes == MMS_UI_REFRESH_SELF);
+    CHECK(caps.supportedKinds == (MMS_UI_REFRESH_REPAINT | MMS_UI_REFRESH_STATE) && caps.supportedScopes == MMS_UI_REFRESH_SELF);
     CHECK(caps.maxTicketsPerPlugin == 256 && caps.maxRectsPerRequest == 32 && caps.maxPendingBytesPerPlugin == 256 * 1024 && caps.maxContributionsPerDrain == 64);
     auto target = x.Target(); CHECK(target.target.element == x.element && target.target.instanceGeneration && target.target.projectEpoch && target.geometryRevision);
     CHECK(target.ready && target.visible && target.width == 300 && target.height == 120);

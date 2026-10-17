@@ -7,6 +7,7 @@ namespace mikudancestudio::plugins {
 namespace {
 constexpr std::size_t kTickets = 256, kGlobalTickets = 4096, kRects = 32;
 constexpr std::size_t kBytes = 256 * 1024, kGlobalBytes = 4 * 1024 * 1024, kBatch = 64;
+constexpr std::uint32_t kSupported = MMS_UI_REFRESH_REPAINT | MMS_UI_REFRESH_STATE;
 bool SameRef(const MmsUiTargetRefV1& a, const MmsUiTargetRefV1& b) noexcept {
     return a.element == b.element && a.instanceGeneration == b.instanceGeneration && a.projectEpoch == b.projectEpoch;
 }
@@ -49,13 +50,14 @@ struct UiRefreshQueue::Ticket {
     RefreshClient* owner = nullptr;
     MmsUiTargetRefV1 target{};
     std::uint64_t expectedGeometry = 0, key = 0;
+    std::uint32_t kinds = MMS_UI_REFRESH_REPAINT;
     std::vector<MmsUiDirtyRectV1> rects;
     bool whole = false, released = false;
     MmsUiRefreshStateV1 state{Header<MmsUiRefreshStateV1>(), MMS_UI_REFRESH_PENDING, 0, MMS_OK, 0, 0, 0};
     std::size_t Bytes() const noexcept { return sizeof(Ticket) + rects.capacity() * sizeof(MmsUiDirtyRectV1); }
-    void Finish(std::uint32_t status, MmsResult result, std::uint64_t geometry = 0) noexcept {
+    void Finish(std::uint32_t status, MmsResult result, std::uint64_t geometry = 0, std::uint32_t completed = 0) noexcept {
         state.status = status; state.result = result; state.geometryRevision = geometry;
-        state.completedKinds = status == MMS_UI_REFRESH_COMPLETED ? MMS_UI_REFRESH_REPAINT : 0;
+        state.completedKinds = status == MMS_UI_REFRESH_COMPLETED ? kinds : completed;
         std::vector<MmsUiDirtyRectV1>().swap(rects);
     }
 };
@@ -78,7 +80,7 @@ MmsResult UiRefreshQueue::Capabilities(RefreshClient& client, MmsUiRefreshCapabi
     if (GetCurrentThreadId() != thread_) return MMS_E_THREAD;
     if (!Valid(out)) return MMS_E_ARGUMENT;
     if (client.stopping.load()) return MMS_E_NOT_READY;
-    *out = {Header<MmsUiRefreshCapabilitiesV1>(), MMS_UI_REFRESH_REPAINT, MMS_UI_REFRESH_SELF,
+    *out = {Header<MmsUiRefreshCapabilitiesV1>(), kSupported, MMS_UI_REFRESH_SELF,
         std::uint32_t(kTickets), std::uint32_t(kRects), kBytes, std::uint32_t(kBatch), 0};
     return MMS_OK;
 }
@@ -96,7 +98,7 @@ MmsResult UiRefreshQueue::GetTarget(RefreshClient& client, MmsHandle handle, Mms
     const auto& t = found->second;
     if (t.presentation.owner != client.owner) return MMS_E_STALE;
     *out = {Header<MmsUiRefreshTargetV1>(), {Header<MmsUiTargetRefV1>(), handle, t.generation, epoch_}, t.geometry,
-        MMS_UI_REFRESH_REPAINT, MMS_UI_REFRESH_SELF, std::uint32_t(t.Ready()), std::uint32_t(t.presentation.visible),
+        std::uint32_t(MMS_UI_REFRESH_REPAINT | (t.presentation.stateRefresh ? MMS_UI_REFRESH_STATE : 0)), MMS_UI_REFRESH_SELF, std::uint32_t(t.Ready()), std::uint32_t(t.presentation.visible),
         t.presentation.width, t.presentation.height};
     return MMS_OK;
 }
@@ -104,15 +106,17 @@ MmsResult UiRefreshQueue::Request(RefreshClient& client, const MmsUiRefreshReque
     if (!Valid(request) || !Valid(&request->target) || !out || !request->target.element ||
         !request->target.instanceGeneration || !request->target.projectEpoch || !request->kinds ||
         request->kinds & ~15u || request->flags || request->reserved) return MMS_E_ARGUMENT;
-    if (request->kinds != MMS_UI_REFRESH_REPAINT) return MMS_E_UNSUPPORTED;
+    if (request->kinds & ~kSupported) return MMS_E_UNSUPPORTED;
     if (request->scope != MMS_UI_REFRESH_SELF) return request->scope == MMS_UI_REFRESH_SUBTREE ||
         request->scope == MMS_UI_REFRESH_DEPENDENTS ? MMS_E_UNSUPPORTED : MMS_E_ARGUMENT;
     if (request->binding || request->sourceRevision) return MMS_E_ARGUMENT;
     const auto& span = request->dirtyRects;
+    if (!(request->kinds & MMS_UI_REFRESH_REPAINT) && span.count) return MMS_E_ARGUMENT;
     if (span.count > kRects) return MMS_E_BUSY;
     if (span.count && (!span.data || span.stride < sizeof(MmsUiDirtyRectV1) || span.recordVersion != 1 ||
         !request->expectedGeometryRevision)) return MMS_E_ARGUMENT;
     Ticket ticket; ticket.owner = &client; ticket.target = request->target;
+    ticket.kinds = request->kinds;
     ticket.expectedGeometry = request->expectedGeometryRevision; ticket.key = request->coalesceKey; ticket.whole = span.count == 0;
     ticket.rects.reserve(std::size_t(span.count));
     for (std::uint64_t index = 0; index < span.count; ++index) {
@@ -125,10 +129,12 @@ MmsResult UiRefreshQueue::Request(RefreshClient& client, const MmsUiRefreshReque
     }
     std::lock_guard<std::mutex> lock(mutex_);
     if (client.stopping.load()) return MMS_E_NOT_READY;
+    if ((ticket.kinds & MMS_UI_REFRESH_STATE) && evaluatingState_ && GetCurrentThreadId() == thread_) return MMS_E_BUSY;
     if (ticket.target.projectEpoch != epoch_) return MMS_E_STALE;
     const auto target = targets_.find(ticket.target.element);
     if (target == targets_.end() || target->second.generation != ticket.target.instanceGeneration) return MMS_E_STALE;
     if (target->second.presentation.owner != client.owner || client.owner == "mms") return MMS_E_ARGUMENT;
+    if ((ticket.kinds & MMS_UI_REFRESH_STATE) && !target->second.presentation.stateRefresh) return MMS_E_UNSUPPORTED;
     if (ticket.expectedGeometry && ticket.expectedGeometry != target->second.geometry) return MMS_E_STALE;
     if (!target->second.Ready()) return MMS_E_NOT_READY;
     std::size_t count = 0, bytes = 0, globalBytes = 0; bool pending = false;
@@ -215,9 +221,9 @@ void UiRefreshQueue::SuspendTargets() noexcept {
     for (auto& target : targets_) target.second.suspended = true;
 }
 void UiRefreshQueue::Drain() {
-    if (GetCurrentThreadId() != thread_) return;
-    struct Group { Target target; RefreshClient* owner; MmsUiTargetRefV1 ref; std::uint64_t key;
-        std::vector<MmsHandle> tickets; std::vector<MmsUiDirtyRectV1> rects; bool whole = false; };
+    if (GetCurrentThreadId() != thread_ || registry_.InCallback()) return;
+    struct Group { Target target; RefreshClient* owner; MmsUiTargetRefV1 ref; std::uint64_t key; std::uint32_t kinds;
+        std::vector<MmsHandle> tickets; std::vector<MmsUiDirtyRectV1> rects; bool whole = false, fixedGeometry = false; };
     std::vector<Group> groups;
     {
         std::lock_guard<std::mutex> lock(mutex_); if (draining_) return;
@@ -237,26 +243,72 @@ void UiRefreshQueue::Drain() {
                 continue;
             }
             auto group = std::find_if(groups.begin(), groups.end(), [&](const auto& g) {
-                return g.owner == ticket.owner && SameRef(g.ref, ticket.target) && g.key == ticket.key;
+                return g.owner == ticket.owner && SameRef(g.ref, ticket.target) && g.key == ticket.key && g.kinds == ticket.kinds;
             });
             if (group == groups.end()) {
-                groups.push_back({target->second, ticket.owner, ticket.target, ticket.key, {}, {}, false}); group = std::prev(groups.end());
+                groups.push_back({target->second, ticket.owner, ticket.target, ticket.key, ticket.kinds, {}, {}, false, false}); group = std::prev(groups.end());
             }
             group->tickets.push_back(it->first); group->whole |= ticket.whole;
+            group->fixedGeometry |= ticket.expectedGeometry != 0;
             group->rects.insert(group->rects.end(), ticket.rects.begin(), ticket.rects.end());
             ++it;
         }
         for (const auto& group : groups) for (auto handle : group.tickets) tickets_.at(handle).state.status = MMS_UI_REFRESH_RUNNING;
         draining_ = true;
     }
-    // Only asynchronous invalidation follows. No callbacks, message dispatch,
-    // geometry changes, model reads, frame driver or scene/history writes.
-    for (const auto& group : groups) {
-        const auto result = Boundary([&] { return Invalidate(group.target.presentation, group.whole, group.rects); });
+    // No queue lock crosses read-only plugin callbacks or native window calls.
+    // Every group is checked again: an earlier callback may have pumped messages.
+    for (auto& group : groups) {
+        std::uint32_t completed = 0;
+        const auto result = Boundary([&]() -> MmsResult {
+            const auto validate = [&](bool strict) -> MmsResult {
+                std::lock_guard<std::mutex> lock(mutex_);
+                if (group.owner->stopping.load()) return MMS_E_CANCELLED;
+                const auto target = targets_.find(group.ref.element);
+                if (group.ref.projectEpoch != epoch_ || target == targets_.end() || target->second.generation != group.ref.instanceGeneration ||
+                    (strict && target->second.geometry != group.target.geometry)) return MMS_E_STALE;
+                if (!target->second.Ready()) return MMS_E_NOT_READY;
+                if ((group.kinds & MMS_UI_REFRESH_STATE) && !target->second.presentation.stateRefresh) return MMS_E_UNSUPPORTED;
+                if (!strict) group.target = target->second;
+                return MMS_OK;
+            };
+            if (const auto r = validate(group.fixedGeometry)) return r;
+            if (group.kinds & MMS_UI_REFRESH_STATE) {
+                { std::lock_guard<std::mutex> lock(mutex_); evaluatingState_ = true; }
+                struct StateGuard { UiRefreshQueue& queue; ~StateGuard() {
+                    std::lock_guard<std::mutex> lock(queue.mutex_); queue.evaluatingState_ = false;
+                } } guard{*this};
+                const auto r = registry_.WithElementState(group.ref.element, [&](const MmsCommandStateV1& state) -> MmsResult {
+                    if (const auto check = validate(true)) return check;
+                    // Visibility requires a layout dependency. Reject before any
+                    // native change until that dependency can be committed safely.
+                    if (bool(state.visible) != group.target.presentation.stateVisible) return MMS_E_UNSUPPORTED;
+                    HWND window = group.target.presentation.window;
+                    if (!IsWindow(window)) return MMS_E_STALE;
+                    if (bool(IsWindowEnabled(window)) != bool(state.enabled)) EnableWindow(window, state.enabled);
+                    if (const auto check = validate(true)) return check;
+                    if (!IsWindow(window)) return MMS_E_STALE;
+                    const auto checked = state.checked ? BST_CHECKED : BST_UNCHECKED;
+                    if (SendMessageW(window, BM_GETCHECK, 0, 0) != checked) SendMessageW(window, BM_SETCHECK, checked, 0);
+                    if (const auto check = validate(true)) return check;
+                    if (!IsWindow(window)) return MMS_E_STALE;
+                    return bool(IsWindowEnabled(window)) == bool(state.enabled) && SendMessageW(window, BM_GETCHECK, 0, 0) == checked ? MMS_OK : MMS_E_FAILED;
+                });
+                if (r) return r;
+                completed |= MMS_UI_REFRESH_STATE;
+            }
+            if (group.kinds & MMS_UI_REFRESH_REPAINT) {
+                if (const auto r = validate(group.fixedGeometry || (group.kinds & MMS_UI_REFRESH_STATE))) return r;
+                const auto r = Invalidate(group.target.presentation, group.whole, group.rects);
+                if (!r) completed |= MMS_UI_REFRESH_REPAINT;
+                return r;
+            }
+            return MMS_OK;
+        });
         std::lock_guard<std::mutex> lock(mutex_);
         for (auto handle : group.tickets) {
             auto found = tickets_.find(handle); if (found == tickets_.end()) continue;
-            found->second.Finish(result ? MMS_UI_REFRESH_FAILED : MMS_UI_REFRESH_COMPLETED, result, group.target.geometry);
+            found->second.Finish(result == MMS_E_CANCELLED ? MMS_UI_REFRESH_CANCELLED : result ? MMS_UI_REFRESH_FAILED : MMS_UI_REFRESH_COMPLETED, result, group.target.geometry, completed);
             if (found->second.released) tickets_.erase(found);
         }
     }

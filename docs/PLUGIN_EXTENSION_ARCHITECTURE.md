@@ -1,6 +1,6 @@
 # 插件扩展统一架构方案
 
-本文是 UI、交互、视口、数据格式和编辑工具的设计约定。基础 C++17 UI 包装和 `mms.ui.refresh` 的 `REPAINT + SELF` 已实现，其余新增能力按表中状态区分。当前可用接口以 [SDK README](../sdk/mms/README.md) 和[实施记录](PLUGIN_ABI_IMPLEMENTATION.md)为准。
+本文是 UI、交互、视口、数据格式和编辑工具的设计约定。基础 C++17 UI 包装、REPAINT + SELF 及按钮启用/选中的首阶段 STATE 已实现，其余新增能力按表中状态区分。当前可用接口以 [SDK README](../sdk/mms/README.md) 和[实施记录](PLUGIN_ABI_IMPLEMENTATION.md)为准。
 现有 `MmsHostV1`、各 V1 函数表和已发布结构保持兼容。本文不开放普通宿主的 `mms.edit`，也不把内部 C++ 计划器视为公共编辑接口。
 
 基础 UI 的类型化及声明式包装见 [C++17 界面注册 SDK](../sdk/mms/cpp-ui.md)。`UiServices`、`RegistrationBundle`、`CommandUi` 均组合已有 C 服务。原元素 handle 可直接用于[界面重绘服务](../sdk/mms/refresh.md)；刷新订阅、输入、绘制层和工具封装仍为后续设计。
@@ -45,7 +45,7 @@ auto event = events.subscribe(topic, [=] { updateLayer(layer); });
 | 服务组 | 职责与状态 | 详细方案 |
 | --- | --- | --- |
 | `mms.ui`、`mms.ui.surface`、`mms.ui.layout` | 已有注册、挂载、只读属性和部分布局能力；更多挂载点、输入控件和溢出仍待开放。 | [UI 呈现](PLUGIN_UI_PRESENTATION.md) |
-| `mms.ui.refresh` 1.0 | 已实现本插件已有按钮及原生 surface 的 REPAINT + SELF、后台票据和 UI 安全点区域失效；数据、状态、布局及依赖刷新待实现。 | [重绘接口参考](../sdk/mms/refresh.md) |
+| `mms.ui.refresh` 1.0 | 已有按钮及 surface 的 REPAINT + SELF；按钮支持启用及选中 STATE，同一票据队列和安全点。显隐依赖、数据、布局及依赖范围待实现。 | [刷新接口参考](../sdk/mms/refresh.md) |
 | `mms.events`、`mms.tasks` | 提案：主题订阅、受预算约束的工作任务。 | 本文及 UI 呈现 |
 | `mms.ui.geometry`、`style`、`paint`、`presentation`、`input`、`overlay`、`layout.session` | 提案：坐标、样式、辅助绘制、临时外观、输入和可撤回布局。 | UI 呈现 |
 | `mms.scene`、`mms.storage` | 已有绑定快照和插件工程序列化；不提供任意时间求值或模型拓扑写入。 | SDK 参考 |
@@ -100,8 +100,8 @@ auto event = events.subscribe(topic, [=] { updateLayer(layer); });
 插件自建线程也必须使用宿主规定的停止和租约规则。SDK 不为一个普通菜单注册偷偷启动线程。
 后台结果带工程身份、来源修订、任务代次及目标代次。结果只能在匹配的上下文发布。当前工程变化时可以丢弃或重新计算，不能将旧结果应用到同名新对象。
 
-`mms.ui.refresh` 当前只接受本插件目标的 `REPAINT + SELF`。UI 线程的 `getCapabilities`、`getTarget` 可以在命令回调内纯读，工作线程可调用 `request`、`query`、`cancel`、`release`。宿主在独立安全点只标记原生窗口损伤，不调用旧刷新、布局或场景求值路径。局部 DIP 矩形须带几何修订；暂时布局失败使目标未就绪，实际几何不变的再次发布保留修订。
-票据的取消与释放分开，未释放引用阻止插件卸载。具体配额及错误见[重绘接口参考](../sdk/mms/refresh.md)。DATA、STATE、LAYOUT、绑定和依赖范围仍为提案，不能用一次 REPAINT 代替它们。
+`mms.ui.refresh` 支持本插件目标的 REPAINT，以及按钮启用/选中 STATE。UI 线程查询能力和目标，工作线程提交和管理同一票据。STATE 只读查询目标命令；不调用旧刷新、布局或场景求值。显隐变化先拒绝。局部 DIP 矩形须带几何修订，布局失败保持未就绪，实际几何不变时保留修订。
+票据的取消与释放分开，未释放引用阻止卸载。具体配额及错误见[刷新接口参考](../sdk/mms/refresh.md)。DATA、完整 STATE、LAYOUT、绑定和依赖范围仍待实现，不能用一次 REPAINT 代替。
 持续动画使用单次帧请求按时间推进。数据变化通过刷新请求传播，不能在 paint 回调中反复发事件、重新读取文件或提交事务。
 
 ## 同一套接口支持不同工具

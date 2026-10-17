@@ -1,6 +1,6 @@
 # C++17 界面重绘 SDK
 
-`mms/cpp/refresh.hpp` 包装已有 `mms.ui.refresh` C 表，复用原元素、目标和票据，无需链接宿主库。开发环境与[界面注册 SDK](cpp-ui.md)相同。当前支持 `REPAINT + SELF`，宿主行为见 [C 接口参考](refresh.md)。
+`mms/cpp/refresh.hpp` 包装已有 `mms.ui.refresh` C 表，复用原元素、目标和票据，无需链接宿主库。开发环境与[界面注册 SDK](cpp-ui.md)相同。当前支持 REPAINT 及按钮首阶段 STATE，宿主行为见 [C 接口参考](refresh.md)。
 
 ## 类型与线程
 
@@ -45,12 +45,15 @@ MmsResult result = refresh.RepaintRect(target, dirty, ticket, 17);
 | `Repaint(target, ticket, key=0)` | 整个目标客户区，几何修订为 0，允许执行时几何变化；仍检查实例、工程和就绪状态。 |
 | `RepaintElement(element, ticket, key=0)` | UI 线程便利入口，用原元素句柄查询目标后提交整目标请求；工作线程仍使用已捕获目标。 |
 | `RepaintRect(target, rect, ticket, key=0)` | 一个局部 DIP 矩形，自动填写捕获时的几何修订。 |
+| `RefreshState(target, ticket, key=0)` | 请求按钮启用与选中刷新，自动填写目标几何修订；面板及显隐变化不支持。 |
 | `RepaintRects(target, rects, count, ticket, key=0)` | 多个局部 DIP 矩形；count=0 等同整目标请求。 |
 | `Request(request, ticket)` | 原样提交完整 C 请求，调用者填写结构头和字段。 |
 
 `key` 为原 coalesceKey。SDK 不合并、不重试，不在 STALE 后自动扩大损伤范围。矩形只需在调用期间有效，宿主复制其内容。旧几何被拒绝时，在 UI 线程重新捕获并计算矩形，不能只改代次。
 
-输出票据必须为空。已有票据时返回 BUSY，不向宿主提交或覆盖旧句柄。接受后直接保存原句柄，不再分配内存。未挂载、暂停或停止仍返回 NOT_READY；数据、状态和布局仍返回 UNSUPPORTED。
+输出票据必须为空。已有票据时返回 BUSY，不向宿主提交或覆盖旧句柄。接受后直接保存原句柄，不再分配内存。未挂载、暂停或停止仍返回 NOT_READY；数据、布局及超出当前按钮范围的状态仍返回 UNSUPPORTED。
+
+提交返回 OK 只代表入队。RefreshState 的显隐不支持、回调失败或执行时过期由 Query 返回的终态和 result 表达，不能只检查提交结果。
 
 ## 查询和清理
 
@@ -71,10 +74,10 @@ if (result == MMS_OK && state.status == MMS_UI_REFRESH_COMPLETED) {
 }
 ```
 
-COMPLETED 表示已提交窗口失效区域，不保证像素已显示。释放 pending 票据后，贡献仍执行并占额度；撤回使用 `CancelAndRelease()`。
+COMPLETED 表示请求的状态或窗口失效操作已完成，不保证像素已显示。组合请求可用 Request 提交；失败时读取 completedKinds 判断已完成阶段。释放 pending 票据后，贡献仍执行并占额度；撤回使用 `CancelAndRelease()`。
 
 移动构造转移同一个句柄，原对象变空。票据保存服务表副本，原 `RefreshServices` 变量退出作用域不使票据失效，但宿主 context 仍须有效。通过 `get()` 借用原句柄读取状态；转移释放责任时用 `detach()`，避免两个所有者重复清理。
 
 析构仅尝试 `Release()`，不会取消或等待 UI。析构无法报告释放失败，也不能保留已销毁的 SDK 对象。在 `stop` 中先停止生产请求、结束自己的后台任务，再显式清理全部票据。失败时保留对象并返回 BUSY 或错误供宿主重试，不能仅依赖析构完成停止。
 
-本封装不创建后台线程、轮询器、默认订阅或动画时钟，不开放 DATA、STATE、LAYOUT，也不启用 `mms.edit`。包装捕获意外 C++ 异常并返回错误码；插件仍须遵守 C ABI，不让异常跨 DLL。
+本封装不创建后台线程、轮询器、默认订阅或动画时钟，不开放 DATA、LAYOUT 或完整显隐依赖，也不启用 `mms.edit`。包装捕获意外 C++ 异常并返回错误码；插件仍须遵守 C ABI，不让异常跨 DLL。

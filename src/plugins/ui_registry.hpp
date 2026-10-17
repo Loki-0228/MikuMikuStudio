@@ -98,7 +98,11 @@ public:
     MmsUiSurfaceApiV1 SurfaceApi(UiClient&);
     MmsUiLayoutApiV1 LayoutApi(UiClient&);
     UiRefreshQueue& Refresh() noexcept { return refresh_; }
+    // Request adapter work without editing registry/preferences revisions.
+    void RequestPresentation() noexcept;
     MmsResult Invoke(UiClient&, MmsString, MmsObjectRef, MmsSpan);
+    // Keep the read-only callback guard through native state application.
+    MmsResult WithElementState(MmsHandle, const std::function<MmsResult(const MmsCommandStateV1&)>&);
     void Retire(UiClient&);
     bool HasLeases(const UiClient&) const;
     uint64_t Revision() const { return revision_; }

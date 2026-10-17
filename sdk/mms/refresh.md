@@ -2,9 +2,9 @@
 
 `mms.ui.refresh` 1.0 为插件自己的工具栏按钮和原生 surface 面板安排异步重绘。接口定义见 [refresh.h](include/mms/refresh.h)。结构使用 `MmsHeader`、`MMS_CALL` 和 8 字节对齐，调用失败不修改输出参数。
 
-当前只支持 `MMS_UI_REFRESH_REPAINT` 与 `MMS_UI_REFRESH_SELF`。`DATA`、`STATE`、`LAYOUT`、`SUBTREE` 和 `DEPENDENTS` 返回 `MMS_E_UNSUPPORTED`。刷新绑定、来源数据订阅和动画帧回调尚未提供。
+当前支持 `REPAINT + SELF`，以及已创建宿主按钮的首阶段 `STATE + SELF`。STATE 仅更新启用与选中，要求命令回调的 visible 与最近成功布局一致；显隐变化在修改控件前使票据以 FAILED/UNSUPPORTED 结束。面板不报告 STATE。DATA、LAYOUT、SUBTREE、DEPENDENTS、绑定、来源订阅和动画帧尚未提供。
 
-重绘在 UI 安全点调用 `InvalidateRect` 或 `InvalidateRgn`，不直接执行绘制。此服务不查询命令状态、不重新布局、不调用 `FrameDriver`，也不修改播放头、工程 dirty 或撤销历史。插件窗口随后收到的正常 `WM_PAINT` 仍由插件处理。
+REPAINT 在 UI 安全点调用 `InvalidateRect` 或 `InvalidateRgn`，不查询命令状态或直接执行绘制。STATE 在相同安全点只读调用该按钮的 getState，再更新原生启用与选中状态。两者均不重新布局、不调用 `FrameDriver`，不修改播放头、工程 dirty 或撤销历史。插件窗口后续的正常 `WM_PAINT` 仍由插件处理。
 
 ## 服务查询与线程
 
@@ -39,7 +39,7 @@
 | `target.instanceGeneration` | 宿主分配的呈现实例代次。销毁、重建或失效后重新发布会改变该值。 |
 | `target.projectEpoch` | 当前工程上下文代次。场景替换或重置后旧值失效。 |
 | `geometryRevision` | 当前实际几何修订，包括位置、客户区尺寸、窗口坐标空间 DPI 和逻辑可见性。 |
-| `supportedKinds`、`supportedScopes` | 当前目标仅报告 `REPAINT` 和 `SELF`。 |
+| `supportedKinds`、`supportedScopes` | 宿主按钮报告 REPAINT、STATE；面板报告 REPAINT。范围均为 SELF。全局能力是并集，调用前还须检查目标能力。 |
 | `ready` | 已有可用窗口、布局发布成功且客户区宽高均大于零时为 1。 |
 | `visible` | 目标在插件布局中的逻辑可见性。此值不表示窗口无遮挡，也不要求宿主顶层窗口已显示。 |
 | `width`、`height` | 目标客户区的 DIP 尺寸。 |
@@ -60,10 +60,10 @@
 | --- | --- |
 | `target` | 完整复制 `getTarget` 返回的引用。 |
 | `binding`、`sourceRevision` | 必须为 0；当前没有刷新绑定和数据来源修订。 |
-| `kinds` | 必须为 `MMS_UI_REFRESH_REPAINT`；不能与其他请求位组合。 |
+| `kinds` | REPAINT、STATE 或两者组合；目标须支持所请求的全部种类。 |
 | `scope` | 必须为 `MMS_UI_REFRESH_SELF`。 |
 | `expectedGeometryRevision` | 局部矩形请求必须填写取得矩形时的非零几何修订。整目标请求可填 0，表示接受执行时的有效几何；填写非零值时仍严格检查。 |
-| `dirtyRects` | `MmsUiDirtyRectV1` 数组；非空时 `stride >= sizeof(MmsUiDirtyRectV1)`、`recordVersion=1`。count=0 表示整个目标客户区。 |
+| `dirtyRects` | REPAINT 的局部数组；非空时 stride 至少为结构大小、recordVersion=1。count=0 表示整个目标客户区。单独 STATE 必须 count=0。 |
 | `coalesceKey` | 插件自定的合并键。同一插件、目标实例及工程代次内，相同键的待执行贡献可以合并。0 也是有效键。 |
 | `flags`、`reserved` | 必须为 0。 |
 
@@ -81,13 +81,25 @@
 | --- | --- |
 | `PENDING` | 已接受，等待 UI 安全点处理。 |
 | `RUNNING` | 已进入本次处理批次，不能再取消。 |
-| `COMPLETED` | 损伤区域已提交给窗口系统，或裁剪后没有非空区域。`result=MMS_OK`，`completedKinds=REPAINT`。 |
+| `COMPLETED` | 请求的状态更新及区域失效操作均成功；`result=MMS_OK`，completedKinds 为请求种类。 |
 | `CANCELLED` | 在执行前取消，`result=MMS_E_CANCELLED`。 |
 | `FAILED` | 校验或窗口失效操作失败；`result` 保存错误码。 |
 
-完成不表示像素已显示，也不等待 `WM_PAINT`。隐藏或被遮挡的窗口遵循 Windows 的正常绘制时机，服务不保证隐藏窗口保留可查询的更新区域。`sourceRevision` 当前始终为 0；实际失效操作结束后的 `geometryRevision` 记录执行时几何，执行前即失败的票据可为 0。
+完成不表示像素已显示，也不等待 WM_PAINT。隐藏或被遮挡的窗口遵循 Windows 的正常绘制时机，服务不保证隐藏窗口保留可查询的更新区域。sourceRevision 当前始终为 0；geometryRevision 记录处理时的目标几何，执行前即失败的票据可为 0。
 
-合并只处理本批待执行贡献。任一整目标贡献会覆盖同组的局部矩形。取消一个 `PENDING` 票据仅撤回该票据，其余贡献仍执行。`cancel` 对终态票据返回成功，不改变既有结果。
+合并只处理本批待执行贡献，要求相同插件、目标、coalesceKey 和 kinds。同组 STATE 只计算一次；任一整目标重绘贡献会覆盖同组局部矩形。不同 kinds 独立处理，STATE 失败不会吞掉另一张纯 REPAINT 票据。取消一个 PENDING 票据仅撤回自身贡献。cancel 对终态票据返回成功，不改变既有结果。
+
+STATE 与 REPAINT 组合时先更新状态，再提交损伤。状态回调失败或提出显隐变化时，该组合不会继续重绘；状态已成功而后续重绘失败时，FAILED 票据的 completedKinds 保留 STATE 位。UI 状态不属于工程事务，不承诺对已发生的原生窗口变化执行事务回滚。
+
+## 按钮状态刷新
+
+STATE 只重新查询目标按钮的命令，更新原 HWND 的 enabled 和 checked。不调用命令，不刷新共享同一命令的菜单，不读取属性或改变标签、尺寸和布局。按钮以手动选中、推按钮外观呈现；点击不会自行切换选中来源，命令 getState 仍是唯一来源。Enter 和普通命令激活保留。
+
+request 返回 OK 只表示成功入队，不在后台调用 getState。面板能力不支持时直接拒绝入队；回调输出、显隐及执行时过期错误在 UI 处理后写入票据，调用者必须用 query 检查结果。
+
+回调运行在 UI 线程，并保持只读回调保护直到状态应用结束。回调内的注册、注销及命令执行返回 BUSY，不继承编辑权限；在此 UI 调用链中再次请求 STATE 也返回 BUSY，避免刷新递归。回调必须快速返回已准备状态，不能等待需要 UI 的后台作业。
+
+宿主在回调之后、每组实际执行前重新检查实例、工程、几何和就绪状态。回调泵消息导致目标过期时，请求失败，不使用旧坐标。启用和选中未变化时，不重复发送原生状态修改。STATE 不显示隐藏窗口；未挂载或尺寸为零的目标仍为 NOT_READY。
 
 `release` 成功后，该句柄再用于 `query`、`cancel` 或 `release` 返回 `NOT_FOUND`。已释放的待执行贡献继续运行并占用配额，终止后才回收。需要撤回贡献时先 `cancel`，再 `release`。
 
@@ -114,11 +126,11 @@
 | --- | --- |
 | `THREAD` | 在工作线程调用 `getCapabilities` 或 `getTarget`。 |
 | `ARGUMENT` | 非法结构、未知标志、非法矩形、非零 binding 或 sourceRevision、访问其他插件目标。 |
-| `UNSUPPORTED` | 请求 DATA、STATE、LAYOUT、SUBTREE、DEPENDENTS，或查询按钮和面板以外的元素。 |
+| `UNSUPPORTED` | 请求 DATA、LAYOUT、SUBTREE、DEPENDENTS；目标不支持 STATE；STATE 回调提出显隐变化；或查询按钮和面板以外的元素。 |
 | `NOT_READY` | 停止中、目标未挂载、布局暂停或客户区尺寸为零。 |
 | `STALE` | 元素已注销、实例重建、工程代次或要求的几何修订不匹配。 |
 | `NOT_FOUND` | 票据不存在、已释放或属于其他插件。 |
-| `BUSY` | 配额已满，或取消执行中的贡献。 |
+| `BUSY` | 配额已满、取消执行中的贡献，或在 STATE 的 UI 回调链中再次提交 STATE。 |
 | `MEMORY`、`FAILED` | 内存、GDI 区域、调度唤醒或窗口失效操作失败。 |
 
 实现仍保留 Win7 的窗口 DC DPI 回退，重绘依赖 GDI，不要求特定显卡。代码接入状态不代替 Win7、AMD、多 DPI 和真实桌面绘制验收。

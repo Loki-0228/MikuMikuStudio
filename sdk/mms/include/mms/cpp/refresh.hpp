@@ -120,6 +120,14 @@ public:
         std::uint64_t coalesceKey = 0) const noexcept {
         return RepaintRects(target, nullptr, 0, out, coalesceKey);
     }
+    MmsResult RefreshState(const MmsUiRefreshTargetV1& target, RefreshTicket& out,
+        std::uint64_t coalesceKey = 0) const noexcept {
+        MmsUiRefreshRequestV1 request{}; request.h = Header<MmsUiRefreshRequestV1>();
+        request.target = target.target; request.kinds = MMS_UI_REFRESH_STATE;
+        request.scope = MMS_UI_REFRESH_SELF; request.expectedGeometryRevision = target.geometryRevision;
+        request.coalesceKey = coalesceKey;
+        return Request(request, out);
+    }
     // UI-only convenience for a simple command callback. Worker callers must
     // use an already captured target with Repaint/RepaintRects instead.
     MmsResult RepaintElement(MmsHandle element, RefreshTicket& out,
