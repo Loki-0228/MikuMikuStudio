@@ -183,6 +183,68 @@ struct CameraFovChange final : HistoryChange, std::enable_shared_from_this<Camer
     }
     std::uint64_t RetainedBytes() const noexcept override { return sizeof(*this) + 4 * sizeof(void*); }
 };
+// Scalar records do not own mesh/key resources. Controlled import/delete records
+// retain those resources; chronological undo restores the object before its edit.
+struct AccessoryPoseChange final : HistoryChange, std::enable_shared_from_this<AccessoryPoseChange> {
+    MMDApp& app;
+    const unsigned slot, field;
+    mdl::AccessoryRecord* const object;
+    const MmsId id;
+    const std::uint64_t pool;
+    const std::array<float, 8> before, after;
+    std::uint64_t generation = 1;
+    bool applied = false, published = false;
+    static std::array<float, 8> Read(const mdl::AccessoryRecord& a) noexcept {
+        return {a.position[0], a.position[1], a.position[2], a.rotation[0], a.rotation[1], a.rotation[2], a.scale, a.opacity};
+    }
+    AccessoryPoseChange(MMDApp& a, unsigned index, unsigned component, std::array<float, 8> source, std::array<float, 8> target)
+        : app(a), slot(index), field(component), object(a.AccessorySlot(index)), id(SceneObjectIdentity(object).id),
+          pool(mdl::KeyPoolIdentity(a.AccessoryKeys(index))), before(source), after(target) {}
+    bool SameScene() const noexcept {
+        // Check membership before dereferencing a possibly removed object.
+        return app.AccessorySlot(slot) == object && SceneObjectPresent(object, id) && pool &&
+            mdl::KeyPoolIdentity(app.AccessoryKeys(slot)) == pool;
+    }
+    struct Candidate final : PreparedHistoryChange {
+        std::shared_ptr<AccessoryPoseChange> source;
+        const bool forward;
+        const std::uint64_t generation, objectGeneration;
+        const int frame, parentModel, parentBone;
+        const std::array<float, 8> expected;
+        bool consumed = false;
+        Candidate(std::shared_ptr<AccessoryPoseChange> value, bool direction) : source(std::move(value)), forward(direction),
+            generation(source->generation), objectGeneration(SceneObjectIdentity(source->object).generation),
+            frame(source->app.CurrentFrame()), parentModel(source->object->parentModel), parentBone(source->object->parentBone),
+            expected(Read(*source->object)) {}
+        bool IsCurrent() const noexcept override {
+            if (consumed || source->generation != generation || forward == source->applied || !source->SameScene()) return false;
+            const auto live = Read(*source->object);
+            return SceneObjectIdentity(source->object).generation == objectGeneration && source->app.CurrentFrame() == frame &&
+                source->object->parentModel == parentModel && source->object->parentBone == parentBone &&
+                !std::memcmp(live.data(), expected.data(), sizeof(expected));
+        }
+        void Publish() noexcept override {
+            if (!IsCurrent()) std::terminate();
+            auto& a = *source->object; const auto value = (forward ? source->after : source->before)[source->field];
+            if (source->field < 3) a.position[source->field] = value;
+            else if (source->field < 6) a.rotation[source->field - 3] = value;
+            else if (source->field == 6) a.scale = value;
+            else a.opacity = value;
+            source->applied = forward; source->published = true; ++source->generation; consumed = true;
+        }
+    };
+    MmsResult Prepare(bool forward, std::unique_ptr<PreparedHistoryChange>& out) override {
+        out.reset(); return Boundary([&]() -> MmsResult {
+            if (!SameScene() || forward == applied) return MMS_E_STALE;
+            if (generation == UINT64_MAX) return MMS_E_NOT_READY;
+            const auto current = Read(*object);
+            for (float value : current) if (!std::isfinite(value)) return MMS_E_ARGUMENT;
+            if (!published && std::memcmp(current.data(), before.data(), sizeof(before))) return MMS_E_STALE;
+            out = std::make_unique<Candidate>(shared_from_this(), forward); return MMS_OK;
+        });
+    }
+    std::uint64_t RetainedBytes() const noexcept override { return sizeof(*this) + 4 * sizeof(void*); }
+};
 bool ReadLegacyNumber(HWND window, int id, double& value) noexcept {
     const auto edit = GetDlgItem(window, id);
     if (!edit) return false;
@@ -418,6 +480,33 @@ MmsResult ApplyBoundCameraFov(MMDApp& app, float value, bool& changed) noexcept 
         changed = true;
         Boundary([&]() -> MmsResult {
             const bool selectionChanged = SelectTrack(app, curve_host::Kind::Camera, 0);
+            PublishBoundPoseEdit(app, *history, false); RefreshBoundGlobalReadout(app);
+            if (selectionChanged && app.CameraMode() && app.MainWindow() && app.Renderer() && app.PanelDC()) PostLanguageSweep(&app);
+            return MMS_OK;
+        });
+        return MMS_OK;
+    });
+}
+MmsResult ApplyBoundAccessoryField(MMDApp& app, unsigned slot, unsigned field, float value, bool& changed) noexcept {
+    changed = false;
+    return Boundary([&]() -> MmsResult {
+        auto* history = BoundNativePoseHistory(&app);
+        if (!history || !Ready(app)) return MMS_E_NOT_READY;
+        if (slot >= kModelSlotCount || field >= 8 || !std::isfinite(value) || (field == 7 && (value < 0 || value > 1))) return MMS_E_ARGUMENT;
+        if (const auto result = history->CheckNativeEdit()) return result;
+        auto* object = app.AccessorySlot(slot);
+        if (!object || !mdl::KeyPoolIdentity(app.AccessoryKeys(slot))) return MMS_E_NOT_READY;
+        const auto before = AccessoryPoseChange::Read(*object); auto after = before;
+        for (float source : before) if (!std::isfinite(source)) return MMS_E_ARGUMENT;
+        if (before[field] == value) return MMS_OK;
+        after[field] = value;
+        auto change = std::make_shared<AccessoryPoseChange>(app, slot, field, before, after);
+        std::unique_ptr<SharedHistory::NativeTransaction> transaction;
+        if (const auto result = history->PrepareNative("Edit accessory field", std::move(change), transaction)) return result;
+        if (const auto result = history->CommitNative(std::move(transaction))) return result;
+        changed = true;
+        Boundary([&]() -> MmsResult {
+            const bool selectionChanged = SelectTrack(app, curve_host::Kind::Accessory, slot);
             PublishBoundPoseEdit(app, *history, false); RefreshBoundGlobalReadout(app);
             if (selectionChanged && app.CameraMode() && app.MainWindow() && app.Renderer() && app.PanelDC()) PostLanguageSweep(&app);
             return MMS_OK;

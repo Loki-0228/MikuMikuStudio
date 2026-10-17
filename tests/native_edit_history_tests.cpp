@@ -362,12 +362,17 @@ void CrossModelJournal(){
 #include "native_fov_text_checks.inc"
 #include "native_camera_interpolation_checks.inc"
 #include "native_accessory_registration_checks.inc"
+#include "native_accessory_text_checks.inc"
 #include "native_model_key_checks.inc"
 #include "native_model_range_checks.inc"
 #include "native_object_command_checks.inc"
 int main(int argc,char** argv){
     std::setvbuf(stdout,nullptr,_IONBF,0);
     const auto run=[](const char* name,void(*test)()){std::printf("RUN %s\n",name);test();};
+    if(argc==2&&!std::strcmp(argv[1],"--accessory-text-only")) {
+        run("NativeAccessoryTextChecks",NativeAccessoryTextChecks);
+        std::printf("PASS native accessory text: %u checks\n",checks);return 0;
+    }
     if(argc==2&&!std::strcmp(argv[1],"--fov-text-only")) {
         run("NativeFovTextChecks",NativeFovTextChecks);
         std::printf("PASS native FOV text: %u checks\n",checks);return 0;
@@ -448,6 +453,7 @@ int main(int argc,char** argv){
     run("NativeCameraTextChecks",NativeCameraTextChecks);
     run("NativeLightTextChecks",NativeLightTextChecks);
     run("NativeFovTextChecks",NativeFovTextChecks);
+    run("NativeAccessoryTextChecks",NativeAccessoryTextChecks);
     run("NativeCameraInterpolationChecks",NativeCameraInterpolationChecks);
     run("NativeAccessoryRegistrationChecks",NativeAccessoryRegistrationChecks);
     run("NativeModelKeyChecks",NativeModelKeyChecks);
