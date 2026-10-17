@@ -1559,26 +1559,25 @@ void DrawBoneOperationAxis(MMDApp* app, const float frameMatrix[16]) {
     DrawAxisMesh(app->state.axisMeshObject, app->Renderer());
 }
 
-// The point around which SetupFrameWorldTransform rotates the world:
-//   1. tracking ("track") overrides everything below: the camera's
-//      attachment bone, or the camera position when it has no parent;
-//   2. the selected model reference (model root / selected bone) in the
-//      untracked model view, so the view buttons show that model or bone
-//      from a fixed angle;
-//   3. the attachment bone of a parented camera view;
-//   4. the camera position for the camera view;
-//   5. the world origin for the untracked free model view without a reference.
+namespace {
+bool CameraTrackView(MMDApp* app) {
+    // Video/image-sequence playback samples camera keys even in model mode.
+    // A single-image capture and manual stepping keep the editing viewpoint.
+    const bool recording = app->RecordingWindow() != nullptr &&
+        (app->FrameStepPlayback() != 0 || app->state.recordPlaybackStartPending != 0);
+    return recording || app->CameraMode() != 0 || app->state.followCameraEnabled != 0;
+}
+}
+
+// The world pivot comes from the camera track during recording, camera-panel
+// editing or tracking. Free model editing uses its selected model/bone
+// reference, or the world origin when no reference is selected.
 FrameFocusSource ResolveFrameFocus(MMDApp* app, int referenceMode,
                                    float focus[3]) {
     focus[0] = focus[1] = focus[2] = 0.0f;
-    const bool tracking = app->state.followCameraEnabled != 0;
-    // Camera view follows the camera key's parent bone (the original branches on
-    // cameraParentModel >= 0, app+0xa1404); the free model view only does so
-    // when the explicit tracking option is enabled.
-    const bool attachedView = tracking ||
-        (app->CameraParentModel() >= 0 && app->CameraMode() != 0);
-    const bool cameraView = tracking || app->CameraMode() != 0;
-    if (!tracking && app->CameraMode() == 0 && referenceMode != 0) {
+    const bool cameraView = CameraTrackView(app);
+    const bool attachedView = cameraView && app->CameraParentModel() >= 0;
+    if (!cameraView && referenceMode != 0) {
         const auto* model = mdl::Mdl(app->SelectedModel());
         if (model && model->boneTable && model->boneCount > 0) {
             const int bone = referenceMode == 1 ? 0 : model->selectedBone;
@@ -1639,10 +1638,6 @@ void SetupFrameWorldTransform(MMDApp* app) {
     Matrix attachment;
     Identity(&attachment);
 
-    // Resolve a camera track's parent bone only while tracking is enabled. The
-    // parent remains stored after switching modes; using it without tracking
-    // snaps the viewport to that bone and overwrites every pan/dolly gesture.
-    const bool tracking = app->state.followCameraEnabled != 0;
     // The camera panel owns the rendered viewpoint (measured on the reference
     // 9.26 x64 image at startup: cameraPos (0, 10, 0), distance -45, zero
     // angles, and the ground origin projecting `atan(10/45)` below the
@@ -1653,7 +1648,6 @@ void SetupFrameWorldTransform(MMDApp* app) {
     // do.  Gating the camera view on playback left those gestures writing
     // state that was not rendered, so panning and dollying the camera looked
     // dead while only the shared yaw/pitch still moved the image.
-    const bool parentedCamera = app->CameraParentModel() >= 0;
     // An explicitly parented camera applies its attachment, whether or not the
     // follow switch is on.  The original tests exactly this: the pan block at
     // 0x14002DAF0 branches on `cameraParentModel >= 0` (app+0xa1404) and then
@@ -1667,8 +1661,9 @@ void SetupFrameWorldTransform(MMDApp* app) {
     // parent: the parent stays stored after switching to model editing, and
     // using it there snaps the viewport to that bone and overwrites every
     // pan/dolly gesture.
-    const bool attachedView =
-        tracking || (parentedCamera && app->CameraMode() != 0);
+    // Export uses the sampled camera's parent regardless of the editor panel.
+    // The untracked model editing view still ignores a retained camera binding.
+    const bool attachedView = CameraTrackView(app) && app->CameraParentModel() >= 0;
     const int targetModel = attachedView ? app->CameraParentModel() : -1;
     const int targetBone = app->CameraParentBone();
     mdl::BoneRecord* target = nullptr;

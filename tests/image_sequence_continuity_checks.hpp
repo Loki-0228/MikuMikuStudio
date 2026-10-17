@@ -72,6 +72,11 @@ bool ObserveContinuousWrite(MMDApp* app, IDirect3DSurface9* surface, std::wstrin
     if (p.written == 0 && p.options.start == 0)
         Check(std::abs(eye - 2) < 1e-6 && std::abs(app->CameraDistance() + 45) < 1e-6,
             "frame zero uses the registered camera before the first image");
+    D3DMATRIX world{};
+    Check(SUCCEEDED(app->Renderer()->device->GetTransform(D3DTS_WORLD, &world)) &&
+        std::abs(world._41 + app->CameraPositionX()) < 1e-5f &&
+        std::abs(world._42 + app->CameraPositionY()) < 1e-5f,
+        "image sequence renders the sampled camera target in either editor mode");
     p.previousEye = eye;
     const bool result = continuityWrite(app, surface, error);
     if (result) ++p.written;
@@ -79,12 +84,18 @@ bool ObserveContinuousWrite(MMDApp* app, IDirect3DSurface9* surface, std::wstrin
 }
 void CameraAndContinuityTests(MMDApp* app) {
     wchar_t modelPath[32768]{};
-    if (GetEnvironmentVariableW(L"MMS_MENU_SEQUENCE_MODEL", modelPath, std::size(modelPath)))
+    const auto modelPathLength = GetEnvironmentVariableW(L"MMS_MENU_SEQUENCE_MODEL", modelPath, std::size(modelPath));
+    if (modelPathLength) {
+        Check(modelPathLength < std::size(modelPath) && fs::is_regular_file(modelPath),
+            "continuity model fixture path is complete and exists");
         LoadModelFile(app, modelPath, false);
+        Check(app->SelectedModel() != nullptr, "load continuity model fixture before testing model-mode output");
+    }
     auto* keys = app->CameraKeys();
     const auto zero = keys[0], next = keys[1];
     keys[0].next = 1; keys[0].eye[0] = 2; keys[0].eye[1] = 10;
     keys[0].distance = -45; keys[0].fov = 30; keys[0].parentModel = -1;
+    std::memset(keys[0].target, 0, sizeof keys[0].target);
     keys[1] = keys[0]; keys[1].frame = 30; keys[1].previous = 0; keys[1].next = 0;
     keys[1].eye[0] = 12;
     for (int channel = 0; channel < 6; ++channel) {

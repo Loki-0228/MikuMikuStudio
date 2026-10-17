@@ -9,7 +9,10 @@
 #include "mikudancestudio/frame_presentation.hpp"
 #include "mikudancestudio/window_dpi_scope.hpp"
 #include "mikudancestudio/antialias.hpp"
+#include "mikudancestudio/mf_h264_recorder.hpp"
+#include "mikudancestudio/native_media.hpp"
 #include <MinHook.h>
+#include "plugins/coordinator_fixture.hpp"
 #include <Windows.h>
 #include <wrl/client.h>
 #include <filesystem>
@@ -40,6 +43,26 @@ int failures=0, viewportFailures=0, resetFailures=0;
 unsigned resets=0;
 void Check(bool ok,const char* label){std::printf("%s %s\n",ok?"PASS":"FAIL",label);if(!ok)++failures;}
 void Need(bool ok,const char* label){Check(ok,label);if(!ok)std::exit(2);}
+// These probes require Windows 10+, while the product keeps its Win7 target.
+// Resolve modern DPI entry points without raising WINVER or importing them.
+using DpiForWindowProc=UINT(WINAPI*)(HWND);
+using ThreadDpiContextProc=DPI_AWARENESS_CONTEXT(WINAPI*)();
+using SetThreadDpiContextProc=DPI_AWARENESS_CONTEXT(WINAPI*)(DPI_AWARENESS_CONTEXT);
+using WindowDpiContextProc=DPI_AWARENESS_CONTEXT(WINAPI*)(HWND);
+using DpiContextsEqualProc=BOOL(WINAPI*)(DPI_AWARENESS_CONTEXT,DPI_AWARENESS_CONTEXT);
+DpiForWindowProc testDpiForWindow=nullptr;
+ThreadDpiContextProc testThreadDpiContext=nullptr;
+SetThreadDpiContextProc testSetThreadDpiContext=nullptr;
+WindowDpiContextProc testWindowDpiContext=nullptr;
+DpiContextsEqualProc testDpiContextsEqual=nullptr;
+void LoadDpiTestApis(){
+ const auto user32=GetModuleHandleW(L"user32.dll");if(!user32)return;
+ testDpiForWindow=reinterpret_cast<DpiForWindowProc>(GetProcAddress(user32,"GetDpiForWindow"));
+ testThreadDpiContext=reinterpret_cast<ThreadDpiContextProc>(GetProcAddress(user32,"GetThreadDpiAwarenessContext"));
+ testSetThreadDpiContext=reinterpret_cast<SetThreadDpiContextProc>(GetProcAddress(user32,"SetThreadDpiAwarenessContext"));
+ testWindowDpiContext=reinterpret_cast<WindowDpiContextProc>(GetProcAddress(user32,"GetWindowDpiAwarenessContext"));
+ testDpiContextsEqual=reinterpret_cast<DpiContextsEqualProc>(GetProcAddress(user32,"AreDpiAwarenessContextsEqual"));
+}
 decltype(&ShowWindow) realShow;
 BOOL WINAPI Hidden(HWND w,int){return realShow(w,SW_HIDE);}
 LRESULT CALLBACK HideCreated(int code,WPARAM wp,LPARAM lp){
@@ -77,7 +100,7 @@ State Snapshot(MMDApp*a,const char*label){
  std::printf("STATE %s back=%ux%u rt=%ux%u viewport=%u,%u,%u,%u rect=%ld,%ld,%ld,%ld render=%dx%d cache=%dx%d record=%d dpi=%u frame=%d rt_is_back=%d\n",label,
  s.back.Width,s.back.Height,s.target.Width,s.target.Height,s.viewport.X,s.viewport.Y,s.viewport.Width,s.viewport.Height,
  s.rect.left,s.rect.top,s.rect.right,s.rect.bottom,a->RenderWidth(),a->RenderHeight(),a->Renderer()->screenWidth,a->Renderer()->screenHeight,
- a->RecordingWindow()!=nullptr,GetDpiForWindow(a->MainWindow()),a->state.currentFrame,t.Get()==b.Get());return s;
+ a->RecordingWindow()!=nullptr,testDpiForWindow(a->MainWindow()),a->state.currentFrame,t.Get()==b.Get());return s;
 }
 std::vector<DWORD> Pixels(MMDApp*a,const char*name){
  auto*d=a->Renderer()->device;ComPtr<IDirect3DSurface9>b,resolved,cpu;
@@ -94,8 +117,66 @@ std::vector<DWORD> Pixels(MMDApp*a,const char*name){
  return pixels;
 }
 void Pump(){MSG m;for(int i=0;i<100&&PeekMessageW(&m,nullptr,0,0,PM_REMOVE);++i){TranslateMessage(&m);DispatchMessageW(&m);}}
-void Frame(MMDApp*a){Pump();a->DeltaTime()=1.f/30;a->state.messageSeen=1;FrameDriver(a);}
+void Frame(MMDApp*a){Pump();a->DeltaTime()=1.f/30;a->state.messageSeen=1;coordinator_fixture::Drive(a);}
 void Render(MMDApp*a){a->state.messageSeen=1;RenderFrameScene(a);}
+decltype(&WriteBuiltInH264Frame) realH264Write;
+std::vector<std::vector<unsigned char>> cameraFrames;
+unsigned cameraCase=0, cameraFrame=0;
+bool ObserveH264Write(DShowRecorder* recorder,const void* data,std::size_t size) {
+ const auto* pixels=static_cast<const unsigned char*>(data);
+ if(cameraCase==0)cameraFrames.emplace_back(pixels,pixels+size);
+ else Check(cameraFrame<cameraFrames.size()&&cameraFrames[cameraFrame].size()==size&&
+     std::memcmp(cameraFrames[cameraFrame].data(),pixels,size)==0,
+     "MP4 model-mode pixels match camera mode before encoding");
+ ++cameraFrame;return realH264Write(recorder,data,size);
+}
+void CameraModeExports(MMDApp* app) {
+ LoadModelFile(app,(output/L"model"/L"fixture.pmd").c_str(),false);
+ Need(app->SelectedModel()!=nullptr,"load model for production model-mode export");
+ Hook(&WriteBuiltInH264Frame,&ObserveH264Write,&realH264Write);
+ auto* keys=app->CameraKeys();
+ keys[0].next=1;keys[0].eye[0]=2.f;keys[0].eye[1]=10.f;keys[0].eye[2]=0.f;
+ keys[0].distance=-45.f;keys[0].fov=30;keys[0].parentModel=-1;
+ std::memset(keys[0].target,0,sizeof keys[0].target);
+ keys[1]=keys[0];keys[1].frame=30;keys[1].previous=0;keys[1].next=0;keys[1].eye[0]=5.f;
+ for(int channel=0;channel<6;++channel){keys[1].interpolation[0][channel]=keys[1].interpolation[1][channel]=20;
+   keys[1].interpolation[2][channel]=keys[1].interpolation[3][channel]=107;}
+ for(cameraCase=0;cameraCase<3;++cameraCase){
+   const int mode=cameraCase==0?1:0,follow=cameraCase==2?1:0;
+   app->CameraMode()=mode;app->state.followCameraEnabled=follow;
+   app->CameraReferenceMode()=CameraAttachmentReference::None;
+   app->CameraPositionY()=99.f;app->ViewOffsetX()=8.f;app->ViewOffsetY()=7.f;
+   const auto path=output/(L"camera-mode-"+std::to_wstring(cameraCase)+L".mp4");
+   wcscpy_s(app->AviOutputPath(),256,path.c_str());app->Recorder()->selectedCodec=kBuiltInH264Codec;
+   app->AviOutputWidth()=640;app->AviOutputHeight()=360;
+   app->AviRecordStartFrame()=0;app->AviRecordEndFrame()=5;app->AviRecordFps()=30;
+   app->AviIncludeWave()=0;app->AviCloseAfterExport()=0;cameraFrame=0;
+   StartAviRecordWindow(app);Need(app->RecordingWindow()!=nullptr,"start production H264 export");
+   for(int step=0;step<60&&app->RecordingWindow();++step)Frame(app);
+   Need(!app->RecordingWindow(),"MP4 export finishes normally");
+   Check(cameraFrame==6,"MP4 has all six output samples including frame zero");
+   if(cameraCase==0){
+     Need(cameraFrames.size()==6&&!cameraFrames.front().empty(),"capture the camera-mode reference frames");
+     bool colored=false;const auto&first=cameraFrames.front();
+     for(size_t pixel=0;pixel+3<first.size();pixel+=4)
+       colored|=first[pixel]!=first[pixel+1]||first[pixel+1]!=first[pixel+2];
+     Check(colored,"reference MP4 contains colored scene geometry");
+     Check(cameraFrames.front()!=cameraFrames.back(),"reference MP4 changes with its camera keys");
+   }
+   Check(app->CameraMode()==mode&&app->state.followCameraEnabled==follow,"MP4 preserves editor and track selection");
+   Need(fs::is_regular_file(path)&&fs::file_size(path)>0,"MP4 file is finalized");
+   std::wstring error;int width=0,height=0;double duration=0;
+   Need(media::OpenVideo(app,path.c_str(),width,height,duration,error,640),"decode finalized MP4");
+   Check(width==640&&height==360,"MP4 output dimensions are unchanged");
+   Need(media::VideoFrame(app,0,error)!=nullptr&&media::VideoFrame(app,5./30,error)!=nullptr,
+        "MP4 first and final frames decode");
+   media::ReleaseVideo(app);
+   std::printf("MP4 mode=%d follow=%d frames=%u bytes=%llu\n",mode,follow,cameraFrame,
+       static_cast<unsigned long long>(fs::file_size(path)));
+ }
+ MH_DisableHook(reinterpret_cast<void*>(&WriteBuiltInH264Frame));
+ MH_RemoveHook(reinterpret_cast<void*>(&WriteBuiltInH264Frame));
+}
 void SettleTemporal(MMDApp* app) {
  const char* aa=std::getenv("PROBE_AA");
  if(!aa||std::strcmp(aa,"taa")!=0)return;
@@ -109,10 +190,10 @@ void SettleTemporal(MMDApp* app) {
  Check(antialias::AccumulatedSamples(app)>=128,"TAA accumulated a complete stable comparison cycle");
 }
 void Compare(MMDApp*a,const State&before,const std::vector<DWORD>&pixels,const char*name){
- const auto callerDpi=GetThreadDpiAwarenessContext();
+ const auto callerDpi=testThreadDpiContext();
  SettleTemporal(a);
  Render(a);auto after=Snapshot(a,name);auto out=Pixels(a,name);
- Check(AreDpiAwarenessContextsEqual(callerDpi,GetThreadDpiAwarenessContext()),"preview preserves caller DPI context");
+ Check(testDpiContextsEqual(callerDpi,testThreadDpiContext()),"preview preserves caller DPI context");
  Check(EqualRect(&before.present,&after.present),"presentation rectangle restored");
  Check(after.viewport.X+after.viewport.Width<=after.target.Width&&after.viewport.Y+after.viewport.Height<=after.target.Height,"viewport fits actual render target");
  Check(after.back.Width==before.back.Width&&after.back.Height==before.back.Height,"actual backbuffer dimensions restored");
@@ -131,10 +212,12 @@ void Compare(MMDApp*a,const State&before,const std::vector<DWORD>&pixels,const c
 }
 int wmain(int argc,wchar_t**argv){
  std::setvbuf(stdout,nullptr,_IONBF,0);Need(argc>=5,"args: dpi large export-width export-height [effect...]");
+ LoadDpiTestApis();Need(testDpiForWindow&&testThreadDpiContext&&testSetThreadDpiContext&&testWindowDpiContext&&testDpiContextsEqual,
+     "Windows 10+ DPI APIs are available for the viewport probes");
  output=fs::current_path();
  SetErrorMode(SEM_FAILCRITICALERRORS|SEM_NOGPFAULTERRORBOX);
  AddVectoredExceptionHandler(1,Fault);
- SetThreadDpiAwarenessContext(std::wstring(argv[1])==L"aware"?DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2:DPI_AWARENESS_CONTEXT_UNAWARE);
+ testSetThreadDpiContext(std::wstring(argv[1])==L"aware"?DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2:DPI_AWARENESS_CONTEXT_UNAWARE);
  Need(MH_Initialize()==MH_OK,"initialize probes");Hook(&ShowWindow,&Hidden,&realShow);Hook(&MessageBoxA,&MessageA);Hook(&MessageBoxW,&MessageW);
  auto cbt=SetWindowsHookExW(WH_CBT,HideCreated,nullptr,GetCurrentThreadId());
  auto*a=new MMDApp;g_Block=a;a->state=MMDAppState{};a->InitDefaults();
@@ -152,6 +235,10 @@ int wmain(int argc,wchar_t**argv){
  }
  LoadAccessoryFile((output/L"fixture.x").c_str());Need(a->AccessorySlot(0)!=nullptr,"load static diagnostic geometry");
  for(int i=5;i<argc;++i){LoadAccessoryFile(argv[i]);Need(a->AccessorySlot(i-4)!=nullptr,"load real effect accessory");}
+ if(std::getenv("PROBE_CAMERA_MODES")){
+   CameraModeExports(a);ShutdownCleanup(a);g_Block=nullptr;delete a;UnhookWindowsHookEx(cbt);
+   return failures?1:0;
+ }
  if(const char*aa=std::getenv("PROBE_AA")){
    std::wstring error;
    const auto algorithm=std::strcmp(aa,"taa")==0?antialias::Algorithm::Taa:antialias::Algorithm::Fxaa;
@@ -167,20 +254,20 @@ int wmain(int argc,wchar_t**argv){
  RefreshMainWindowViewport(a);Render(a);
  auto before=Snapshot(a,"before");auto pixels=Pixels(a,"before");
  const int oldW=a->RenderWidth(),oldH=a->RenderHeight();
- const auto windowDpi=GetWindowDpiAwarenessContext(a->MainWindow());
+ const auto windowDpi=testWindowDpiContext(a->MainWindow());
  const auto foreignDpi=std::wstring(argv[1])==L"aware"?DPI_AWARENESS_CONTEXT_UNAWARE:DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2;
  for(int cycle=0;cycle<2;++cycle){
-  SetThreadDpiAwarenessContext(windowDpi);
+  testSetThreadDpiContext(windowDpi);
   phase=cycle==0?"complete-export":"cancel-export";
   auto path=output/(cycle==0?L"complete.avi":L"cancel.avi");wcscpy_s(a->AviOutputPath(),256,path.c_str());
   a->Recorder()->selectedCodec=-1;a->AviOutputWidth()=_wtoi(argv[3]);a->AviOutputHeight()=_wtoi(argv[4]);
   a->AviRecordStartFrame()=0;a->AviRecordEndFrame()=cycle==0?1:30;a->AviRecordFps()=30;a->AviIncludeWave()=0;a->AviCloseAfterExport()=0;
   StartAviRecordWindow(a);Need(a->RecordingWindow()!=nullptr,"production AVI recording started");Snapshot(a,"recording");
-  if(cycle==0&&std::getenv("PROBE_DPI_CHANGE")){SetThreadDpiAwarenessContext(foreignDpi);std::puts("INJECT thread DPI context changed before natural completion");}
+  if(cycle==0&&std::getenv("PROBE_DPI_CHANGE")){testSetThreadDpiContext(foreignDpi);std::puts("INJECT thread DPI context changed before natural completion");}
   for(int i=0;i<120&&a->RecordingWindow();++i){Frame(a);if(cycle==1&&i==1){
     ComPtr<IDirect3DVertexBuffer9>blocker;
     if(std::getenv("PROBE_RESET_BLOCKER"))Need(SUCCEEDED(d->CreateVertexBuffer(64,0,D3DFVF_XYZ,D3DPOOL_DEFAULT,&blocker,nullptr)),"retain actual reset-blocking resource");
-    if(std::getenv("PROBE_DPI_CHANGE")){SetThreadDpiAwarenessContext(foreignDpi);std::puts("INJECT thread DPI context changed during export");}
+    if(std::getenv("PROBE_DPI_CHANGE")){testSetThreadDpiContext(foreignDpi);std::puts("INJECT thread DPI context changed during export");}
     FinishAviRecord(a);
     blocker.Reset();
   }}
@@ -190,38 +277,38 @@ int wmain(int argc,wchar_t**argv){
  }
  phase="resize-after";HandleWindowSize(a);Compare(a,before,pixels,"after-layout");
  if(std::getenv("PROBE_DPI_CHANGE")){
-   phase="restore-dpi";SetThreadDpiAwarenessContext(windowDpi);HandleWindowSize(a);
+   phase="restore-dpi";testSetThreadDpiContext(windowDpi);HandleWindowSize(a);
    for(int i=0;i<(std::getenv("PROBE_AA")?32:4);++i)Frame(a);
    Compare(a,before,pixels,"after-dpi-restored");
  }
  // Exercise the geometry entry points even when called outside WndProc.
  // Windows temporarily corrects DPI inside WndProc, which can otherwise hide
  // this regression in ordinary resize-only tests.
- SetThreadDpiAwarenessContext(windowDpi);
+ testSetThreadDpiContext(windowDpi);
  HWND floating=CreateWindowExW(0,L"STATIC",L"DPI regression",WS_OVERLAPPEDWINDOW,
      10,10,800,600,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
  Need(floating!=nullptr,"create hidden floating viewport");
  for(int mode=0;mode<3;++mode){
    a->FullscreenMode()=mode==1;
    a->FloatingWindow()=mode==2?floating:nullptr;
-   SetThreadDpiAwarenessContext(windowDpi);
+   testSetThreadDpiContext(windowDpi);
    RefreshMainWindowViewport(a);
    const auto expected=Snapshot(a,"mode-baseline");
-   SetThreadDpiAwarenessContext(foreignDpi);
+   testSetThreadDpiContext(foreignDpi);
    RefreshMainWindowViewport(a);
    const auto actual=Snapshot(a,"mode-foreign-dpi");
    Check(EqualRect(&expected.rect,&actual.rect),"main/fullscreen/floating scene geometry ignores caller DPI");
    Check(EqualRect(&expected.present,&actual.present),"main/fullscreen/floating presentation ignores caller DPI");
    Check(std::memcmp(&expected.viewport,&actual.viewport,sizeof actual.viewport)==0,"main/fullscreen/floating GPU viewport ignores caller DPI");
-   Check(AreDpiAwarenessContextsEqual(foreignDpi,GetThreadDpiAwarenessContext()),"geometry scopes restore caller DPI");
+   Check(testDpiContextsEqual(foreignDpi,testThreadDpiContext()),"geometry scopes restore caller DPI");
  }
  a->FullscreenMode()=0;a->FloatingWindow()=nullptr;
- DestroyWindow(floating);SetThreadDpiAwarenessContext(windowDpi);HandleWindowSize(a);
+ DestroyWindow(floating);testSetThreadDpiContext(windowDpi);HandleWindowSize(a);
  RECT panelBefore{}, panelAfter{};
  const HWND panel=GetDlgItem(a->MainWindow(),557);
  Need(panel!=nullptr,"viewport toolbar exists");
  GetWindowRect(panel,&panelBefore);
- SetThreadDpiAwarenessContext(foreignDpi);
+ testSetThreadDpiContext(foreignDpi);
  LayoutViewportPanels(a);
  { const WindowDpiScope dpi(a->MainWindow()); GetWindowRect(panel,&panelAfter); }
  Check(EqualRect(&panelBefore,&panelAfter),"standalone toolbar layout ignores caller DPI");
@@ -238,8 +325,8 @@ int wmain(int argc,wchar_t**argv){
  Check(r->presentParameters.BackBufferWidth==savedParameters.BackBufferWidth&&
        r->presentParameters.BackBufferHeight==savedParameters.BackBufferHeight,
        "fullscreen exit restores buffer dimensions under foreign DPI");
- Check(AreDpiAwarenessContextsEqual(foreignDpi,GetThreadDpiAwarenessContext()),"fullscreen transition preserves caller DPI");
- SetThreadDpiAwarenessContext(windowDpi);
+ Check(testDpiContextsEqual(foreignDpi,testThreadDpiContext()),"fullscreen transition preserves caller DPI");
+ testSetThreadDpiContext(windowDpi);
  if(std::getenv("PROBE_RESET_BLOCKER"))Check(resetFailures>0,"reset failure injection actually reached the driver");
  Check(viewportFailures==0,"viewport API calls succeed");
  std::printf("SUMMARY failures=%d viewport_failures=%d reset_failures=%d resets=%u\n",failures,viewportFailures,resetFailures,resets);

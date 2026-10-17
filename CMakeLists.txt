@@ -1220,6 +1220,7 @@ if (MIKUDANCESTUDIO_BUILD_UI_TESTS)
     set_target_properties(camera_follow_tests PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
     add_test(NAME camera_follow_regressions COMMAND camera_follow_tests)
+    add_test(NAME camera_export_modes COMMAND camera_follow_tests --export-only)
     add_executable(deferred_effect_tests EXCLUDE_FROM_ALL tests/deferred_effect_tests.cpp
         res/MMD.rc ${MIKUDANCESTUDIO_GEN_RES})
     target_link_libraries(deferred_effect_tests PRIVATE mikudancestudio_core winmm dsound)

@@ -19,9 +19,10 @@ parser.add_argument('executable', type=Path)
 parser.add_argument('output', type=Path)
 parser.add_argument('--mme-dir', type=Path)
 parser.add_argument('--effect', type=Path, action='append', default=[])
-parser.add_argument('--case', action='append', choices=['ordinary', 'dpi-change', 'aware-dpi-change', 'scaled-dpi-change', 'reset-failure'])
+parser.add_argument('--case', action='append', choices=['ordinary', 'dpi-change', 'aware-dpi-change', 'scaled-dpi-change', 'reset-failure', 'camera-modes'])
 parser.add_argument('--aa', choices=['fxaa', 'taa'])
 parser.add_argument('--scale', type=int)
+parser.add_argument('--coordinator', action='store_true')
 args = parser.parse_args()
 executable = args.executable.resolve()
 effects = [str(path.absolute()) for path in args.effect]
@@ -53,9 +54,14 @@ cases = [
     ('aware-dpi-change', 'aware', {'PROBE_DPI_CHANGE': '1'}),
     ('scaled-dpi-change', 'unaware', {'PROBE_DPI_CHANGE': '1', 'PROBE_SCALE': '50'}),
     ('reset-failure', 'unaware', {'PROBE_RESET_BLOCKER': '1'}),
+    ('camera-modes', 'unaware', {'PROBE_CAMERA_MODES': '1'}),
 ]
 results = []
 for name, dpi, overrides in cases:
+    # H264 encoding is optional and unavailable in the original profile.
+    # Keep it opt-in so the existing viewport cases retain their requirements.
+    if name == 'camera-modes' and not args.case:
+        continue
     if args.case and name not in args.case:
         continue
     directory = root / name
@@ -67,6 +73,9 @@ for name, dpi, overrides in cases:
             shutil.copy2(args.mme_dir / dll, directory / dll)
     (directory / 'Data/mmconfig.ini').write_text('40\n40\n1200\n850\n0\n1920\n1080\n250\n2\n')
     (directory / 'fixture.x').write_text(fixture)
+    if name == 'camera-modes':
+        from pmd_selection_fixtures import make_fixture
+        make_fixture(directory / 'model', 255, [''] * 10)
     env = {key: value for key, value in os.environ.items() if not key.startswith('PROBE_')}
     env.update(LOCALAPPDATA=str(directory / 'Local'), APPDATA=str(directory / 'Roaming'),
                MIKUDANCESTUDIO_AUTOSAVE_CONFIG=str(directory / 'autosave.ini'),
@@ -77,6 +86,8 @@ for name, dpi, overrides in cases:
         env['PROBE_AA'] = args.aa
     if args.scale:
         env['PROBE_SCALE'] = str(args.scale)
+    if args.coordinator:
+        env['MMS_TEST_COORDINATOR'] = '1'
     command = [str(copy), dpi, 'normal', '1280', '720', *effects]
     with (directory / 'result.log').open('wb') as log:
         try:
