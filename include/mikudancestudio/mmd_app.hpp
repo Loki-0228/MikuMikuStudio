@@ -1664,6 +1664,11 @@ public:
         Target target = Target::Camera;
         double x = 0, y = 0;
     } backgroundGesture;
+#if !MMD_ORIGINAL_PROFILE
+    // Transient UI/device work, appended outside the PMM/compatibility state.
+    // A pending request always applies current camera data, never an old pose.
+    bool cameraProjectionRefreshPending = false;
+#endif
 };
 
 static_assert(sizeof(MMDApp) >= sizeof(MMDAppState),

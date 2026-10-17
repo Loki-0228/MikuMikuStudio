@@ -146,6 +146,43 @@ struct LightPoseChange final : HistoryChange, std::enable_shared_from_this<Light
     }
     std::uint64_t RetainedBytes() const noexcept override { return sizeof(*this) + 4 * sizeof(void*); }
 };
+struct CameraFovChange final : HistoryChange, std::enable_shared_from_this<CameraFovChange> {
+    MMDApp& app;
+    const std::uint64_t pool;
+    const float before, after;
+    std::uint64_t generation = 1;
+    bool applied = false, published = false;
+    CameraFovChange(MMDApp& a, float value) : app(a), pool(mdl::KeyPoolIdentity(a.CameraKeys())), before(a.CameraFov()), after(value) {}
+    struct Candidate final : PreparedHistoryChange {
+        std::shared_ptr<CameraFovChange> source;
+        bool forward, consumed = false;
+        std::uint64_t generation;
+        int frame;
+        float expected;
+        Candidate(std::shared_ptr<CameraFovChange> value, bool direction) : source(std::move(value)), forward(direction),
+            generation(source->generation), frame(source->app.CurrentFrame()), expected(source->app.CameraFov()) {}
+        bool IsCurrent() const noexcept override {
+            return !consumed && source->generation == generation && forward != source->applied &&
+                mdl::KeyPoolIdentity(source->app.CameraKeys()) == source->pool && source->app.CurrentFrame() == frame && source->app.CameraFov() == expected;
+        }
+        void Publish() noexcept override {
+            if (!IsCurrent()) std::terminate();
+            source->app.CameraFov() = forward ? source->after : source->before;
+            source->app.cameraProjectionRefreshPending = true;
+            source->published = true; source->applied = forward; ++source->generation; consumed = true;
+        }
+    };
+    MmsResult Prepare(bool forward, std::unique_ptr<PreparedHistoryChange>& out) override {
+        out.reset(); return Boundary([&]() -> MmsResult {
+            if (!pool || mdl::KeyPoolIdentity(app.CameraKeys()) != pool || forward == applied ||
+                (!published && app.CameraFov() != before)) return MMS_E_STALE;
+            if (generation == UINT64_MAX) return MMS_E_NOT_READY;
+            if (!std::isfinite(app.CameraFov())) return MMS_E_ARGUMENT;
+            out = std::make_unique<Candidate>(shared_from_this(), forward); return MMS_OK;
+        });
+    }
+    std::uint64_t RetainedBytes() const noexcept override { return sizeof(*this) + 4 * sizeof(void*); }
+};
 bool ReadLegacyNumber(HWND window, int id, double& value) noexcept {
     const auto edit = GetDlgItem(window, id);
     if (!edit) return false;
@@ -366,6 +403,28 @@ bool TryResetBoundCameraField(MMDApp* app, unsigned field, bool activateCameraTr
     ApplyBoundCameraField(*app, field, 0.0f, changed, activateCameraTrack);
     return true;
 }
+MmsResult ApplyBoundCameraFov(MMDApp& app, float value, bool& changed) noexcept {
+    changed = false;
+    return Boundary([&]() -> MmsResult {
+        auto* history = BoundNativePoseHistory(&app);
+        if (!history || !Ready(app) || !mdl::KeyPoolIdentity(app.CameraKeys())) return MMS_E_NOT_READY;
+        if (!std::isfinite(value) || !std::isfinite(app.CameraFov())) return MMS_E_ARGUMENT;
+        if (const auto result = history->CheckNativeEdit()) return result;
+        if (app.CameraFov() == value) return MMS_OK;
+        auto change = std::make_shared<CameraFovChange>(app, value);
+        std::unique_ptr<SharedHistory::NativeTransaction> transaction;
+        if (const auto result = history->PrepareNative("Edit camera field of view", std::move(change), transaction)) return result;
+        if (const auto result = history->CommitNative(std::move(transaction))) return result;
+        changed = true;
+        Boundary([&]() -> MmsResult {
+            const bool selectionChanged = SelectTrack(app, curve_host::Kind::Camera, 0);
+            PublishBoundPoseEdit(app, *history, false); RefreshBoundGlobalReadout(app);
+            if (selectionChanged && app.CameraMode() && app.MainWindow() && app.Renderer() && app.PanelDC()) PostLanguageSweep(&app);
+            return MMS_OK;
+        });
+        return MMS_OK;
+    });
+}
 MmsResult ApplyBoundLightField(MMDApp& app, unsigned field, float value, bool& changed) noexcept {
     changed = false;
     return Boundary([&]() -> MmsResult {
@@ -433,6 +492,17 @@ bool TryRegisterBoundAccessory(MMDApp* app, HWND window) noexcept {
 void RefreshBoundGlobalReadout(MMDApp& app) noexcept {
     if (!app.MainWindow()) return;
     Boundary([&]() -> MmsResult {
+        if (app.cameraProjectionRefreshPending && app.Renderer() && app.Renderer()->device) {
+            // Consume current-state work at the UI boundary. A zero/tiny
+            // orthographic distance must not install infinities on the device.
+            float aspect = app.Renderer()->aspectRatio; if (!(aspect > 0)) aspect = 4.0f / 3.0f;
+            const bool usableDistance = !app.CameraPerspective() || (std::isfinite(app.CameraDistance()) && app.CameraDistance() != 0);
+            const double scale = app.CameraPerspective() && usableDistance ? -2.0 / double(app.CameraDistance()) : 0;
+            if (usableDistance && std::isfinite(app.CameraFov()) && (!app.CameraPerspective() ||
+                (std::isfinite(scale) && std::fabs(scale) <= (std::numeric_limits<float>::max)() &&
+                 std::isfinite(aspect * scale) && std::fabs(aspect * scale) <= (std::numeric_limits<float>::max)()))) ApplyFrameCameraProjection(&app);
+            app.cameraProjectionRefreshPending = false;
+        }
         if (app.Renderer() && app.Renderer()->device) app.Renderer()->device->SetLight(0, &app.SceneLight());
         SyncCameraFovControls(&app);
         const double shadowPosition = 10000.0 - double(app.ShadowDistance()) * 100000.0;

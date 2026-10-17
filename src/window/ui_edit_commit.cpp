@@ -233,6 +233,21 @@ bool CommitBoundLightNumber(MMDApp* app, HWND edit) {
     }
     plugins::RefreshBoundGlobalReadout(*app); return true;
 }
+bool IsFovNumber(MMDApp* app, HWND edit) { return edit && app->MainWindow() && edit == GetDlgItem(app->MainWindow(), panel::kFovEdit); }
+bool CommitBoundFovNumber(MMDApp* app, HWND edit) {
+    if (!IsFovNumber(app,edit) || !plugins::BoundNativePoseHistory(app)) return false;
+    if (!SendMessageA(edit, EM_GETMODIFY, 0, 0)) return true;
+    SendMessageA(edit, EM_SETMODIFY, FALSE, 0);
+    char full[256]{}; GetWindowTextA(edit, full, sizeof(full)); char* end = nullptr;
+    const double parsed = std::strtod(full, &end); const bool consumed = end && end != full;
+    while (end && std::isspace(static_cast<unsigned char>(*end))) ++end;
+    if (consumed && !*end && GetWindowTextLengthA(edit) < sizeof(full) && std::isfinite(parsed)) {
+        char legacy[8]{}; GetWindowTextA(edit, legacy, sizeof(legacy));
+        bool changed = false;
+        if (plugins::ApplyBoundCameraFov(*app, static_cast<float>(std::strtol(legacy, nullptr, 10)), changed) == MMS_OK && changed) return true;
+    }
+    plugins::RefreshBoundGlobalReadout(*app); return true;
+}
 bool CommitBoundPoseNumber(MMDApp* app,HWND edit,HWND base) {
     auto* history=plugins::BoundNativePoseHistory(app);
     int kind=-1,axis=-1;
@@ -472,6 +487,7 @@ void CommitEditControl(MMDApp* app, HWND edit) {  // was Sub463640
     // a fresh press for the frame pump's key-registration path.
     s.state.enterKeyState = 3;
 #if !MMD_ORIGINAL_PROFILE
+    if (CommitBoundFovNumber(app, edit)) return;
     if (CommitBoundLightNumber(app, edit)) return;
 #endif
 
@@ -672,6 +688,7 @@ LRESULT CALLBACK EditSubclassProc(HWND hWnd, UINT Msg, WPARAM wParam,
         boundPose=plugins::BoundNativePoseHistory(app) && (app->CameraMode() ?
             FindCameraNumber(hWnd,base)>=0 : FindPoseNumber(hWnd,base,kind,axis));
         boundPose = boundPose || (plugins::BoundNativePoseHistory(app) && FindLightNumber(app,hWnd)>=0);
+        boundPose = boundPose || (plugins::BoundNativePoseHistory(app) && IsFovNumber(app,hWnd));
 #endif
         // The bound pose route consumes this flag itself, before changing any
         // model state. Legacy controls retain their existing commit behavior.
