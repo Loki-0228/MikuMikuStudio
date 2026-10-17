@@ -80,6 +80,7 @@ void RotationReset(MMDApp* app, plugins::SharedHistory& history, int (*value)())
 #include "camera_text_host_checks.inc"
 #include "light_text_host_checks.inc"
 #include "fov_text_host_checks.inc"
+#include "camera_projection_host_checks.inc"
 #include "shadow_parameter_host_checks.inc"
 void MixedModelDeletion(MMDApp* app, plugins::SharedHistory& history) {
     auto& model = *mdl::Mdl(app->ModelSlot(0));
@@ -430,6 +431,7 @@ void Run(MMDApp* app) {
     CameraTextPose(app, *history, value);
     LightTextPose(app, *history, value);
     FovTextPose(app, *history, value);
+    CameraProjectionMode(app, *history, value);
     AccessoryTextPose(app, *history, value);
     AccessoryFlagParameters(app, *history, value);
     ShadowParameters(app, *history, value);

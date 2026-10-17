@@ -146,28 +146,37 @@ struct LightPoseChange final : HistoryChange, std::enable_shared_from_this<Light
     }
     std::uint64_t RetainedBytes() const noexcept override { return sizeof(*this) + 4 * sizeof(void*); }
 };
-struct CameraFovChange final : HistoryChange, std::enable_shared_from_this<CameraFovChange> {
+struct CameraProjectionChange final : HistoryChange, std::enable_shared_from_this<CameraProjectionChange> {
     MMDApp& app;
     const std::uint64_t pool;
-    const float before, after;
+    const float beforeFov, afterFov;
+    const std::uint8_t beforePerspective, afterPerspective;
+    const bool editPerspective;
     std::uint64_t generation = 1;
     bool applied = false, published = false;
-    CameraFovChange(MMDApp& a, float value) : app(a), pool(mdl::KeyPoolIdentity(a.CameraKeys())), before(a.CameraFov()), after(value) {}
+    CameraProjectionChange(MMDApp& a, float fov, std::uint8_t perspective, bool modeField) : app(a), pool(mdl::KeyPoolIdentity(a.CameraKeys())),
+        beforeFov(a.CameraFov()), afterFov(fov), beforePerspective(a.CameraPerspective()), afterPerspective(perspective), editPerspective(modeField) {}
     struct Candidate final : PreparedHistoryChange {
-        std::shared_ptr<CameraFovChange> source;
+        std::shared_ptr<CameraProjectionChange> source;
         bool forward, consumed = false;
-        std::uint64_t generation;
-        int frame;
-        float expected;
-        Candidate(std::shared_ptr<CameraFovChange> value, bool direction) : source(std::move(value)), forward(direction),
-            generation(source->generation), frame(source->app.CurrentFrame()), expected(source->app.CameraFov()) {}
+        const std::uint64_t generation;
+        const int frame;
+        const float fov, distance;
+        const std::uint8_t perspective;
+        Candidate(std::shared_ptr<CameraProjectionChange> value, bool direction) : source(std::move(value)), forward(direction),
+            generation(source->generation), frame(source->app.CurrentFrame()), fov(source->app.CameraFov()),
+            distance(source->app.CameraDistance()), perspective(source->app.CameraPerspective()) {}
         bool IsCurrent() const noexcept override {
+            const float currentDistance = source->app.CameraDistance();
             return !consumed && source->generation == generation && forward != source->applied &&
-                mdl::KeyPoolIdentity(source->app.CameraKeys()) == source->pool && source->app.CurrentFrame() == frame && source->app.CameraFov() == expected;
+                mdl::KeyPoolIdentity(source->app.CameraKeys()) == source->pool && source->app.CurrentFrame() == frame &&
+                source->app.CameraFov() == fov && source->app.CameraPerspective() == perspective &&
+                !std::memcmp(&currentDistance, &distance, sizeof(distance));
         }
         void Publish() noexcept override {
             if (!IsCurrent()) std::terminate();
-            source->app.CameraFov() = forward ? source->after : source->before;
+            if (source->editPerspective) source->app.CameraPerspective() = forward ? source->afterPerspective : source->beforePerspective;
+            else source->app.CameraFov() = forward ? source->afterFov : source->beforeFov;
             source->app.cameraProjectionRefreshPending = true;
             source->published = true; source->applied = forward; ++source->generation; consumed = true;
         }
@@ -175,7 +184,7 @@ struct CameraFovChange final : HistoryChange, std::enable_shared_from_this<Camer
     MmsResult Prepare(bool forward, std::unique_ptr<PreparedHistoryChange>& out) override {
         out.reset(); return Boundary([&]() -> MmsResult {
             if (!pool || mdl::KeyPoolIdentity(app.CameraKeys()) != pool || forward == applied ||
-                (!published && app.CameraFov() != before)) return MMS_E_STALE;
+                (!published && (app.CameraFov() != beforeFov || app.CameraPerspective() != beforePerspective))) return MMS_E_STALE;
             if (generation == UINT64_MAX) return MMS_E_NOT_READY;
             if (!std::isfinite(app.CameraFov())) return MMS_E_ARGUMENT;
             out = std::make_unique<Candidate>(shared_from_this(), forward); return MMS_OK;
@@ -521,17 +530,18 @@ bool TryResetBoundCameraField(MMDApp* app, unsigned field, bool activateCameraTr
     ApplyBoundCameraField(*app, field, 0.0f, changed, activateCameraTrack);
     return true;
 }
-MmsResult ApplyBoundCameraFov(MMDApp& app, float value, bool& changed) noexcept {
+namespace {
+MmsResult ApplyBoundCameraProjectionField(MMDApp& app, float fov, std::uint8_t perspective, bool editPerspective, bool& changed) noexcept {
     changed = false;
     return Boundary([&]() -> MmsResult {
         auto* history = BoundNativePoseHistory(&app);
         if (!history || !Ready(app) || !mdl::KeyPoolIdentity(app.CameraKeys())) return MMS_E_NOT_READY;
-        if (!std::isfinite(value) || !std::isfinite(app.CameraFov())) return MMS_E_ARGUMENT;
+        if (!std::isfinite(fov) || !std::isfinite(app.CameraFov())) return MMS_E_ARGUMENT;
         if (const auto result = history->CheckNativeEdit()) return result;
-        if (app.CameraFov() == value) return MMS_OK;
-        auto change = std::make_shared<CameraFovChange>(app, value);
+        if (editPerspective ? app.CameraPerspective() == perspective : app.CameraFov() == fov) return MMS_OK;
+        auto change = std::make_shared<CameraProjectionChange>(app, fov, perspective, editPerspective);
         std::unique_ptr<SharedHistory::NativeTransaction> transaction;
-        if (const auto result = history->PrepareNative("Edit camera field of view", std::move(change), transaction)) return result;
+        if (const auto result = history->PrepareNative(editPerspective ? "Change camera projection" : "Edit camera field of view", std::move(change), transaction)) return result;
         if (const auto result = history->CommitNative(std::move(transaction))) return result;
         changed = true;
         Boundary([&]() -> MmsResult {
@@ -542,6 +552,20 @@ MmsResult ApplyBoundCameraFov(MMDApp& app, float value, bool& changed) noexcept 
         });
         return MMS_OK;
     });
+}
+}
+MmsResult ApplyBoundCameraFov(MMDApp& app, float value, bool& changed) noexcept {
+    return ApplyBoundCameraProjectionField(app, value, app.CameraPerspective(), false, changed);
+}
+MmsResult ApplyBoundCameraProjection(MMDApp& app, bool orthographic, bool& changed) noexcept {
+    return ApplyBoundCameraProjectionField(app, app.CameraFov(), orthographic ? 1 : 0, true, changed);
+}
+bool TryToggleBoundCameraPerspective(MMDApp* app) noexcept {
+    if (!app || !BoundNativePoseHistory(app)) return false;
+    bool changed = false;
+    ApplyBoundCameraProjection(*app, app->CameraPerspective() == 0, changed);
+    if (!changed) RefreshBoundGlobalReadout(*app);
+    return true;
 }
 namespace {
 MmsResult ApplyBoundShadowField(MMDApp& app, float distance, int mode, bool editMode, bool& changed) noexcept {
@@ -726,6 +750,12 @@ void RefreshBoundGlobalReadout(MMDApp& app) noexcept {
             app.cameraProjectionRefreshPending = false;
         }
         if (app.Renderer() && app.Renderer()->device) app.Renderer()->device->SetLight(0, &app.SceneLight());
+        const auto perspectiveButton = GetDlgItem(app.MainWindow(), panel::kPerspectiveCheckbox);
+        const WPARAM checked = app.CameraPerspective() == 0 ? BST_CHECKED : BST_UNCHECKED;
+        if (perspectiveButton && SendMessageW(perspectiveButton, BM_GETCHECK, 0, 0) != checked) {
+            SendMessageW(perspectiveButton, BM_SETCHECK, checked, 0);
+            InvalidateRect(perspectiveButton, nullptr, FALSE);
+        }
         SyncCameraFovControls(&app);
         const double shadowPosition = 10000.0 - double(app.ShadowDistance()) * 100000.0;
         if (std::isfinite(shadowPosition) && shadowPosition >= (std::numeric_limits<int>::min)() &&

@@ -208,6 +208,7 @@
 #include "mikudancestudio/ui_language.hpp"
 #include "mikudancestudio/frame_scope.hpp"
 #include "../plugins/native_history_commands.hpp"
+#include "../plugins/native_global_commands.hpp"
 #include "../plugins/native_object_commands.hpp"
 #include "../plugins/native_pose_scope.hpp"
 #include "../plugins/native_key_commands.hpp"
@@ -3286,6 +3287,9 @@ void CmdControl400(MMDApp* app, HWND hwnd, std::uint16_t id,
     // RefreshRequest(-1).
     // ------------------------------------------------------------------
     case 446: {
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::TryToggleBoundCameraPerspective(app)) break;
+#endif
         if (app->CameraPerspective() != 0) {
             app->CameraPerspective() = 0;
             d3dx::D3DXMATRIXF mat{};

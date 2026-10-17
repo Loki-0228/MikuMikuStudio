@@ -45,6 +45,9 @@ bool TryToggleBoundAccessoryFlag(MMDApp*, unsigned field) noexcept;
 MmsResult ApplyBoundShadowDistance(MMDApp&, float value, bool& changed) noexcept;
 bool TrySetBoundShadowMode(MMDApp*, int mode) noexcept;
 MmsResult ApplyBoundCameraFov(MMDApp&, float value, bool& changed) noexcept;
+// true selects orthographic; false selects perspective (legacy byte is inverted).
+MmsResult ApplyBoundCameraProjection(MMDApp&, bool orthographic, bool& changed) noexcept;
+bool TryToggleBoundCameraPerspective(MMDApp*) noexcept;
 // True consumes the bound command, including busy/invalid/no-op outcomes.
 // These read controls before planning and never enter a legacy registrar.
 bool TryRegisterBoundCamera(MMDApp*, HWND) noexcept;
