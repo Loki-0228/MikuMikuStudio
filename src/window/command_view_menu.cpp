@@ -256,6 +256,7 @@
 #include "mikudancestudio/view_options.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "../plugins/native_pose_axis.hpp"
+#include "../plugins/native_pose_scope.hpp"
 #endif
 #include "mikudancestudio/ui_language.hpp"
 
@@ -1817,6 +1818,36 @@ bool StoredLimitNeedsRewrite(const MMDApp& app,
 
 }  // namespace
 
+#if !MMD_ORIGINAL_PROFILE
+namespace plugins {
+bool TryEditBoundBoneNumeric(MMDApp* app, HWND owner) noexcept {
+    // The existing dialog uses one application temp array. Refuse recursive
+    // entry while its modal pump is active rather than overwriting that array.
+    static thread_local bool active = false;
+    if (active) return true;
+    if (!app || app->CameraMode() != 0) return false;
+    auto* history = BoundNativePoseHistory(app);
+    if (!history) return false;
+    Boundary([&]() -> MmsResult {
+        if (g_Block != app) return MMS_E_NOT_READY;
+        BoneNumericEdit edit; if (const auto result = edit.Begin(*app, *history)) return result;
+        struct Guard { bool& active; explicit Guard(bool& a) : active(a) { active = true; } ~Guard() { active = false; } } guard(active);
+        const auto values = edit.Values();
+        for (int i = 0; i < 6; ++i) app->RotationDialogTemp(i) = values[i];
+        app->state.enterKeyState = 1;
+        const auto result = UiDialogBoxParamA(static_cast<HINSTANCE>(app->HInstance()),
+            MAKEINTRESOURCEA(app->EnglishUI() ? 0x297 : 0x288), owner, BoneNumericInputDlgProc, 0);
+        if (result != IDOK) return MMS_E_CANCELLED;
+        if (g_Block != app) return MMS_E_STALE;
+        std::array<float, 6> input{};
+        for (int i = 0; i < 6; ++i) input[i] = app->RotationDialogTemp(i);
+        return edit.Apply(input);
+    });
+    return true;
+}
+}
+#endif
+
 void CmdViewMenu(MMDApp* app, HWND hwnd, std::uint16_t id,
                  std::uint16_t notify) {
     (void)notify;  // see header: the default handler's notify gate can never
@@ -2849,6 +2880,9 @@ void CmdViewMenu(MMDApp* app, HWND hwnd, std::uint16_t id,
     // shared with the dialog procs in the original.
     // ------------------------------------------------------------------
     case 300: {
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::TryEditBoundBoneNumeric(app, hwnd)) return;
+#endif
         constexpr float toDegrees=180.0f/3.14159265358979323846f;
         constexpr float toRadians=3.14159265358979323846f/180.0f;
         app->state.enterKeyState=1;

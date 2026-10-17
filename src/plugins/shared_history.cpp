@@ -83,6 +83,12 @@ MmsResult SharedHistory::Enter() {
     return result;
 }
 void SharedHistory::Leave() noexcept { entered_ = false; }
+MmsResult SharedHistory::CheckNativeEdit() {
+    if (auto r = Ready()) return r;
+    if (edits_ && (edits_->InCallback() || edits_->HasPending())) return MMS_E_BUSY;
+    if (auto r = Enter()) return r;
+    Leave(); return MMS_OK;
+}
 MmsResult SharedHistory::ReserveNode(std::shared_ptr<const EditRecord> record,
     std::shared_ptr<HistoryChange> native, std::unique_ptr<Publication>& out) {
     if (!entered_) return MMS_E_BUSY;

@@ -60,6 +60,9 @@ public:
     MmsResult Revision(uint64_t&) override;
     MmsResult Enter() override;
     void Leave() noexcept override;
+    // Check standalone native-edit admission, including pending plugin edits,
+    // without keeping a reservation across a modal UI loop. Recheck on apply.
+    MmsResult CheckNativeEdit();
     MmsResult Reserve(std::shared_ptr<const EditRecord>, std::unique_ptr<EditPublication>&) override;
     MmsResult History(bool redo) override;
     void AttachStore(EditStore*) override;
