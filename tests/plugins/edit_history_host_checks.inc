@@ -1,6 +1,7 @@
 // Actual hidden host, DLL service negotiation, menu dispatch and one journal.
 #include "../src/plugins/native_pose_scope.hpp"
 #include "../src/plugins/native_global_commands.hpp"
+#include "../src/plugins/native_morph_commands.hpp"
 #include "mikudancestudio/bone_key_pool.hpp"
 #include "mikudancestudio/key_pool.hpp"
 #include "mikudancestudio/animation_curve_editor.hpp"
@@ -384,6 +385,7 @@ void ObjectMenuDeletion(MMDApp* app, plugins::SharedHistory& history, const MmsS
 }
 #include "accessory_text_host_checks.inc"
 #include "accessory_flag_host_checks.inc"
+#include "morph_text_host_checks.inc"
 void Run(MMDApp* app) {
     using namespace plugins;
     const auto initial = GetModuleHandleW(L"manager_edit_probe.dll");
@@ -435,6 +437,7 @@ void Run(MMDApp* app) {
     AccessoryTextPose(app, *history, value);
     AccessoryFlagParameters(app, *history, value);
     ShadowParameters(app, *history, value);
+    MorphTextPose(app, *history, value);
     MixedModelRange(app, *history);
     ModelInterpolation(app, *history);
     ObjectMenuDeletion(app, *history, api, path, accessoryPath);

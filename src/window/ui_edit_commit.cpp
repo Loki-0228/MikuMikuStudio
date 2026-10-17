@@ -64,6 +64,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 
 #include "mikudancestudio/adaptive_shadow.hpp"
 #include "mikudancestudio/mmd_app.hpp"
@@ -78,6 +79,7 @@
 #include "../plugins/native_pose_scope.hpp"
 #include "../plugins/native_history_commands.hpp"
 #include "../plugins/native_global_commands.hpp"
+#include "../plugins/native_morph_commands.hpp"
 #endif
 
 namespace mikudancestudio {
@@ -256,6 +258,36 @@ bool CommitBoundAccessoryNumber(MMDApp* app, HWND edit) {
         if (std::isfinite(value) && plugins::ApplyBoundAccessoryField(*app, app->SelectedAccessorySlot(), unsigned(field), value, changed) == MMS_OK && changed) return true;
     }
     plugins::RefreshBoundGlobalReadout(*app); return true;
+}
+int FindMorphNumber(MMDApp* app,HWND edit) {
+    if(!edit || !app->MainWindow())return -1;
+    for(int lane=0;lane<4;++lane)if(edit==GetDlgItem(app->MainWindow(),506+lane*5))return lane;
+    return -1;
+}
+bool CommitBoundMorphNumber(MMDApp* app,HWND edit) {
+    const int lane=FindMorphNumber(app,edit);
+    if(lane<0 || !plugins::BoundNativePoseHistory(app))return false;
+    if(!SendMessageA(edit,EM_GETMODIFY,0,0))return true;
+    SendMessageA(edit,EM_SETMODIFY,FALSE,0);
+    char full[256]{};GetWindowTextA(edit,full,sizeof(full));char* end=nullptr;
+    const double parsed=std::strtod(full,&end);const bool consumed=end && end!=full;
+    while(end && std::isspace(static_cast<unsigned char>(*end)))++end;
+    if(consumed && !*end && GetWindowTextLengthA(edit)<sizeof(full) && std::isfinite(parsed) && app->SelectedModelSlot()<kModelSlotCount) {
+        char legacy[8]{};GetWindowTextA(edit,legacy,sizeof(legacy));const double raw=std::strtod(legacy,nullptr);const float value=static_cast<float>(raw);
+        const auto* model=mdl::Mdl(app->SelectedModel());
+        if(model && model->selectedMorphs[lane]>=0 && std::isfinite(value)) {
+            bool changed=false;
+            if(plugins::ApplyBoundMorphValue(*app,app->SelectedModelSlot(),unsigned(model->selectedMorphs[lane]),value,changed)==MMS_OK) {
+                if(!changed)plugins::RefreshBoundMorphReadout(*app);
+                // The original text path computes the slider from the parsed
+                // double before narrowing the authored weight to float.
+                const auto position=static_cast<int>((std::clamp)(raw*100.0,double((std::numeric_limits<int>::min)()),double((std::numeric_limits<int>::max)())));
+                SendDlgItemMessageW(app->MainWindow(),505+lane*5,TBM_SETPOS,TRUE,position);
+                return true;
+            }
+        }
+    }
+    plugins::RefreshBoundMorphReadout(*app);return true;
 }
 bool IsShadowNumber(MMDApp* app, HWND edit) { return edit && app->MainWindow() && edit == GetDlgItem(app->MainWindow(), panel::kSelfShadowRangeEdit); }
 bool CommitBoundShadowNumber(MMDApp* app, HWND edit) {
@@ -530,6 +562,7 @@ void CommitEditControl(MMDApp* app, HWND edit) {  // was Sub463640
     // a fresh press for the frame pump's key-registration path.
     s.state.enterKeyState = 3;
 #if !MMD_ORIGINAL_PROFILE
+    if (CommitBoundMorphNumber(app, edit)) return;
     if (CommitBoundShadowNumber(app, edit)) return;
     if (CommitBoundAccessoryNumber(app, edit)) return;
     if (CommitBoundFovNumber(app, edit)) return;
@@ -735,6 +768,7 @@ LRESULT CALLBACK EditSubclassProc(HWND hWnd, UINT Msg, WPARAM wParam,
         boundPose = boundPose || (plugins::BoundNativePoseHistory(app) && FindLightNumber(app,hWnd)>=0);
         boundPose = boundPose || (plugins::BoundNativePoseHistory(app) && IsFovNumber(app,hWnd));
         boundPose = boundPose || (plugins::BoundNativePoseHistory(app) && IsShadowNumber(app,hWnd));
+        boundPose = boundPose || (plugins::BoundNativePoseHistory(app) && FindMorphNumber(app,hWnd)>=0);
         boundPose = boundPose || (plugins::BoundNativePoseHistory(app) && FindAccessoryNumber(app,hWnd)>=0);
 #endif
         // The bound pose route consumes this flag itself, before changing any

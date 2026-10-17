@@ -352,6 +352,7 @@ void CrossModelJournal(){
 #include "native_display_key_checks.inc"
 #include "native_morph_key_checks.inc"
 #include "native_morph_registration_checks.inc"
+#include "native_morph_text_checks.inc"
 #include "native_display_registration_checks.inc"
 #include "native_global_registration_checks.inc"
 #include "native_camera_reset_checks.inc"
@@ -372,6 +373,10 @@ void CrossModelJournal(){
 int main(int argc,char** argv){
     std::setvbuf(stdout,nullptr,_IONBF,0);
     const auto run=[](const char* name,void(*test)()){std::printf("RUN %s\n",name);test();};
+    if(argc==2&&!std::strcmp(argv[1],"--morph-text-only")) {
+        run("NativeMorphTextChecks",NativeMorphTextChecks);
+        std::printf("PASS native morph text: %u checks\n",checks);return 0;
+    }
     if(argc==2&&!std::strcmp(argv[1],"--camera-projection-only")) {
         run("NativeCameraProjectionChecks",NativeCameraProjectionChecks);
         std::printf("PASS native camera projection: %u checks\n",checks);return 0;
@@ -460,6 +465,7 @@ int main(int argc,char** argv){
     run("NativeDisplayKeyChecks",NativeDisplayKeyChecks);
     run("NativeMorphKeyChecks",NativeMorphKeyChecks);
     run("NativeMorphRegistrationChecks",NativeMorphRegistrationChecks);
+    run("NativeMorphTextChecks",NativeMorphTextChecks);
     run("NativeDisplayRegistrationChecks",NativeDisplayRegistrationChecks);
     run("NativeGlobalRegistrationChecks",NativeGlobalRegistrationChecks);
     run("NativeCameraResetChecks",NativeCameraResetChecks);
