@@ -146,7 +146,10 @@ template<class K> struct FrameLine final : HistoryChange, std::enable_shared_fro
     std::uint32_t beforeLast, afterLast;
     curve_host::TrackAuthoring authoring;
     struct Patch { unsigned slot; K before, after; }; std::vector<Patch> patches;
+    std::vector<Dependency<K>> plannedSource;
+    std::vector<std::pair<int,int>> frameMap;
     std::vector<Parent> parents;
+    bool published=false;
     FrameLine(MMDApp& a) : app(a), identity(mdl::KeyPoolIdentity(Pool<K>(a))), capacity(mdl::KeyPoolCapacity(Pool<K>(a))),
         beforeLast(a.LastRegisteredFrame()), afterLast(beforeLast), authoring(a, TrackKind<K>()) {}
     bool Structure() const noexcept {
@@ -179,25 +182,30 @@ template<class K> struct FrameLine final : HistoryChange, std::enable_shared_fro
             if (!IsCurrent()) std::terminate();
             for (const auto& patch : source->patches) pool[patch.slot] = forward ? patch.after : patch.before;
             curves->Publish(pool); source->app.LastRegisteredFrame() = forward ? source->afterLast : source->beforeLast;
-            WritePose<K>(source->app, after); consumed = true; ++source->generation;
+            WritePose<K>(source->app, after);source->published=true;consumed = true; ++source->generation;
         }
     };
     MmsResult Prepare(bool forward, std::unique_ptr<PreparedHistoryChange>& out) override {
-        out.reset(); if (!Structure() || !authoring.IsCurrent()) return MMS_E_STALE;
+        out.reset(); if (!Structure() || !authoring.IsCurrent() || (!published&&!forward)) return MMS_E_STALE;
         if (generation == UINT64_MAX) return MMS_E_NOT_READY;
         return Boundary([&]() -> MmsResult {
             if (app.CurrentFrame() < 0 || app.CurrentFrame() > frame_limits::maximum || !FinitePose(ReadPose<K>(app))) return MMS_E_ARGUMENT;
             auto candidate = std::make_unique<Candidate>(this->shared_from_this(), forward);
             candidate->dependencies = Chain<K>(candidate->capacity, [&](unsigned i) { return candidate->pool[i]; });
+            if(!published){
+                if(candidate->dependencies.size()!=plannedSource.size())return MMS_E_STALE;
+                for(std::size_t i=0;i<plannedSource.size();++i)if(candidate->dependencies[i].slot!=plannedSource[i].slot||
+                    !SameKey(candidate->dependencies[i].key,plannedSource[i].key,false))return MMS_E_STALE;
+            }
             for (const auto& patch : patches) {
                 const auto live = candidate->pool[patch.slot];
                 if (!SameKey(live, forward ? patch.before : patch.after, false)) return MMS_E_STALE;
                 candidate->current.push_back(live);
             }
             curve_host::NativeKeyView target{candidate.get(),candidate->capacity,[](const void* p,unsigned i) noexcept -> const void* {return static_cast<const Candidate*>(p)->Target(i);}};
-            candidate->curves = authoring.Prepare(target);
+            candidate->curves = authoring.PrepareRetimed(target,frameMap,forward);
             curve_host::NativeKeyView current{candidate->pool,candidate->capacity,[](const void* p,unsigned i) noexcept -> const void* {return static_cast<const K*>(p)+i;}};
-            candidate->sourceCurves = authoring.Prepare(current);
+            candidate->sourceCurves = authoring.PrepareRetimed(current,frameMap,!forward);
             const auto sample = [&](const auto& curves, auto read) {
                 if (!curves->Authored()) return NativePose<K>(app.CurrentFrame(), read);
                 std::array<double,12> values{}; if (!curves->Sample(app.CurrentFrame(), values)) throw std::invalid_argument("frame line sample");
@@ -215,7 +223,8 @@ template<class K> struct FrameLine final : HistoryChange, std::enable_shared_fro
     std::uint64_t RetainedBytes() const noexcept override {
         auto bytes=std::uint64_t(sizeof(*this)+4*sizeof(void*));
         const auto add=[&](std::uint64_t n){bytes=n>UINT64_MAX-bytes?UINT64_MAX:bytes+n;};
-        add(patches.capacity()*sizeof(Patch)); add(parents.capacity()*sizeof(Parent)); add(authoring.RetainedBytes()); return bytes;
+        add(patches.capacity()*sizeof(Patch));add(plannedSource.capacity()*sizeof(Dependency<K>));
+        add(frameMap.capacity()*sizeof(frameMap[0]));add(parents.capacity()*sizeof(Parent));add(authoring.RetainedBytes());return bytes;
     }
 };
 template<class K> MmsResult PlanGlobal(MMDApp& app,int frame,bool insert,std::shared_ptr<HistoryChange>& out) noexcept {
@@ -227,6 +236,21 @@ template<class K> MmsResult PlanGlobal(MMDApp& app,int frame,bool insert,std::sh
         auto* keys=Pool<K>(app); const auto capacity=mdl::KeyPoolCapacity(keys);
         const auto chain=Chain<K>(capacity,[&](unsigned i){return keys[i];});
         auto change=std::make_shared<FrameLine<K>>(app);
+        change->plannedSource=chain;
+        std::vector<int> sourceFrames;change->authoring.RetimingFrames(sourceFrames);
+        for(const auto& entry:chain)sourceFrames.push_back(int(entry.key.frame));
+        std::sort(sourceFrames.begin(),sourceFrames.end());sourceFrames.erase(std::unique(sourceFrames.begin(),sourceFrames.end()),sourceFrames.end());
+        const bool rootOverwritten=!insert&&frame==0&&std::binary_search(sourceFrames.begin(),sourceFrames.end(),1);
+        bool authoredRetime=false;
+        for(const auto source:sourceFrames){int target=source;
+            if(!source){if(rootOverwritten)target=-1;}
+            else if(source>=frame){
+                if(insert){if(source>=frame_limits::maximum)return MMS_E_ARGUMENT;target=source+1;}
+                else if(source==frame)target=-1;
+                else{target=source-1;if(!target&&!rootOverwritten)target=-1;}
+            }
+            authoredRetime|=target!=source;change->frameMap.push_back({source,target});
+        }
         auto staged=std::vector<K>(keys,keys+capacity);
         for(std::size_t i=1;i<capacity;++i){auto& key=staged[i];const auto f=key.frame;
             if(!f||f<unsigned(frame))continue;
@@ -251,7 +275,7 @@ template<class K> MmsResult PlanGlobal(MMDApp& app,int frame,bool insert,std::sh
         }
         Chain<K>(capacity,[&](unsigned i){return staged[i];});
         for(std::size_t i=0;i<capacity;++i)if(!SameKey(keys[i],staged[i],true))change->patches.push_back({unsigned(i),keys[i],staged[i]});
-        if(change->patches.empty())return MMS_OK;
+        if(change->patches.empty()&&!authoredRetime)return MMS_OK;
         if constexpr(std::is_same_v<K,mdl::CameraKey>){
             const auto parent=[&](int model,int bone){if(model==-1)return;Parent p(app,model,bone);
                 if(std::none_of(change->parents.begin(),change->parents.end(),[&](const auto& old){return old.slot==p.slot;}))change->parents.push_back(std::move(p));};

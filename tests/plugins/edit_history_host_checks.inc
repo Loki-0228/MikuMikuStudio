@@ -413,6 +413,7 @@ void ObjectMenuDeletion(MMDApp* app, plugins::SharedHistory& history, const MmsS
 #include "morph_slider_host_checks.inc"
 #include "system_settings_host_checks.inc"
 #include "frame_line_host_checks.inc"
+#include "frame_line_curve_host_checks.inc"
 #include "key_paste_host_checks.inc"
 #include "morph_paste_host_checks.inc"
 #include "display_paste_host_checks.inc"
@@ -460,6 +461,7 @@ void Run(MMDApp* app) {
     Check(value && flags && cancels && (flags() & 1) && !(flags() & 2), "controlled host negotiates edit service");
     system_settings_host_checks::Run(app,*history,value);
     frame_line_host_checks::Run(app,*history,value);
+    frame_line_curve_host_checks::Run(app,*history,value);
     key_paste_host_checks::Run(app,*history,value);
     morph_paste_host_checks::Run(app,*history,value);
     display_paste_host_checks::Run(app,*history,value);

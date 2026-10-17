@@ -5,6 +5,7 @@
 #include <array>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 namespace mikudancestudio { class MMDApp; }
 namespace mikudancestudio::plugins::resource_budget { class Collector; }
@@ -280,6 +281,22 @@ public:
     // Undo derives from the original layer without forcing these insertions.
     std::unique_ptr<Target> Prepare(const NativeKeyView&,
         const std::vector<int>& explicitlyRegisteredFrames, bool forward = true) const;
+    // Freezes an effective, private source layer on first use; never writes
+    // live authoring. Returns the sorted union of authored and baseline frames,
+    // including authored-only frames absent from the native pool. Repeated
+    // calls keep the same source for exact undo/redo.
+    void RetimingFrames(std::vector<int>& out) const;
+    // Complete old->new mapping for RetimingFrames(), optionally including
+    // additional source native rows. -1 deletes a source frame. Surviving
+    // targets must be unique and strictly increasing in source-frame order;
+    // every target native row needs a surviving source. Frame zero may be
+    // replaced by another source frame. Authored-only targets need no native
+    // row. Retains independent lanes, normalized handles and valid interval
+    // metadata. Native destination controls must be preserved by the retime.
+    // forward=false restores the frozen source, without applying the map.
+    // The map is borrowed only during preparation and is budgeted by its owner.
+    std::unique_ptr<Target> PrepareRetimed(const NativeKeyView&,
+        const std::vector<std::pair<int,int>>& frameMap, bool forward = true) const;
     // True when an original authored lane lacks any explicitly registered
     // frame, even if the shared native row already has identical payload.
     // No authoring means false. Invalid frames or a stale record throw.

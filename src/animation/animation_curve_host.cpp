@@ -976,7 +976,7 @@ std::uint64_t RetainedStateBytes(const State& state) noexcept {
 }
 struct TrackAuthoring::Impl {
     MMDApp& app;Kind kind;int slot;Address address;std::uint64_t poolIdentity;
-    void* objectIdentity;bool authored=false;State seed;
+    void* objectIdentity;bool authored=false,retimingCaptured=false;State seed;
     Impl(MMDApp& a,Kind k,int s):app(a),kind(k),slot(s),address(&a,k,s),poolIdentity(TrackPoolIdentity(a,k,s)),
         objectIdentity(k==Kind::Accessory?Identity(a,k,s):nullptr){
         if(!poolIdentity||!Identity(a,k,s))throw std::invalid_argument("unowned authoring track");
@@ -1037,6 +1037,205 @@ std::unique_ptr<TrackAuthoring::Target> TrackAuthoring::Prepare(const NativeKeyV
         Reconcile(target,candidate->native);target.revision=NextAuthoringRevision();target.fingerprint=0;
         decltype(states) pending;pending.emplace(impl_->address,std::move(target));candidate->target=pending.extract(pending.begin());
     }
+    return std::unique_ptr<Target>(new Target(std::move(candidate)));
+}
+namespace {
+using RetimeMap=std::map<int,int>;
+RetimeMap ValidateRetimeMap(const std::vector<std::pair<int,int>>& frames,const State* seed,
+    const std::vector<Channel>& native) {
+    RetimeMap result;std::set<int> targets;
+    for(const auto& frame:frames){
+        if(frame.first<0||frame.first>frame_limits::maximum||frame.second< -1||frame.second>frame_limits::maximum||
+            !result.emplace(frame).second)throw std::invalid_argument("retime source frame");
+    }
+    int previous=-1;
+    for(const auto& frame:result)if(frame.second>=0){
+        if(frame.second<=previous||!targets.insert(frame.second).second)throw std::invalid_argument("retime target frame");
+        previous=frame.second;
+    }
+    if(!targets.count(0))throw std::invalid_argument("retime frame zero");
+    if(seed)for(const auto* channels:{&seed->channels,&seed->baseline})for(const auto& channel:*channels)
+        for(const auto& key:channel.track.keys)if(!result.count(key.frame))throw std::invalid_argument("incomplete retime map");
+    for(const auto& channel:native)for(const auto& key:channel.track.keys)
+        if(!targets.count(key.frame))throw std::invalid_argument("unmapped native target frame");
+    if(seed)for(std::size_t c=0;c<seed->baseline.size();++c)for(const auto& key:seed->baseline[c].track.keys){
+        const int mapped=result.at(key.frame);if(mapped<0)continue;
+        if(c>=native.size())throw std::invalid_argument("retime native channels");
+        const auto& keys=native[c].track.keys;
+        const auto found=std::lower_bound(keys.begin(),keys.end(),mapped,[](const ac::Key& k,int f){return k.frame<f;});
+        if(found==keys.end()||found->frame!=mapped)throw std::invalid_argument("missing retained native frame");
+    }
+    return result;
+}
+void RemapIntervals(const Channel& source,Channel& target,const std::vector<int>& oldFrames) {
+    const auto& original=source.track.keys;const auto& keys=target.track.keys;
+    target.nativeControls.clear();target.controlGeometry.clear();
+    if(!source.nativeControls.empty())target.nativeControls.resize(keys.size());
+    if(!source.controlGeometry.empty())target.controlGeometry.assign(keys.size(),{-1,0,-1,0});
+    for(std::size_t i=1;i<keys.size();++i){
+        const auto found=std::lower_bound(original.begin(),original.end(),oldFrames[i],[](const ac::Key& k,int f){return k.frame<f;});
+        const auto n=std::size_t(found-original.begin());
+        if(found==original.end()||!n||found->frame!=oldFrames[i]||original[n-1].frame!=oldFrames[i-1])continue;
+        if(n<source.nativeControls.size())target.nativeControls[i]=source.nativeControls[n];
+        if(n<source.controlGeometry.size()){
+            auto geometry=source.controlGeometry[n];
+            const double ratio=double(oldFrames[i]-oldFrames[i-1])/double(keys[i].frame-keys[i-1].frame);
+            geometry[1]*=ratio;geometry[3]*=ratio;target.controlGeometry[i]=geometry;
+        }
+    }
+}
+void ClipNativeCameraTail(const Channel& source,int rootSource,Channel& target,const std::vector<int>& oldFrames) {
+    const auto sampler=source.sample.target<ac::Sample(*)(const Channel&,double)>();
+    if(!sampler||*sampler!=CameraSample||target.track.keys.size()<2||oldFrames.front()!=rootSource)return;
+    const auto& keys=source.track.keys;
+    const auto end=std::upper_bound(keys.begin(),keys.end(),rootSource,[](int f,const ac::Key& k){return f<k.frame;});
+    const auto n=std::size_t(end-keys.begin());
+    if(end==keys.end()||!n||oldFrames[1]!=end->frame||!NativeGeometry(source,n))return;
+    struct Point{double x,y;};
+    const auto lerp=[](Point a,Point b,double t){return Point{a.x+(b.x-a.x)*t,a.y+(b.y-a.y)*t};};
+    const auto& raw=source.nativeControls[n];
+    const Point p0{0,0},p1{raw[0]/127.0,raw[1]/127.0},p2{raw[2]/127.0,raw[3]/127.0},p3{1,1};
+    const double cut=double(rootSource-keys[n-1].frame)/double(end->frame-keys[n-1].frame);
+    double low=0,high=1;
+    for(int i=0;i<64;++i){const double t=(low+high)*.5;
+        const auto q0=lerp(p0,p1,t),q1=lerp(p1,p2,t),q2=lerp(p2,p3,t);
+        const auto point=lerp(lerp(q0,q1,t),lerp(q1,q2,t),t);
+        if(point.x<cut)low=t;else high=t;
+    }
+    const double t=(low+high)*.5;
+    const auto q0=lerp(p0,p1,t),q1=lerp(p1,p2,t),q2=lerp(p2,p3,t);
+    const auto right=lerp(q1,q2,t),middle=lerp(lerp(q0,q1,t),right,t);
+    auto& a=target.track.keys[0];auto& b=target.track.keys[1];
+    // The new root keeps the player's sampled value. Its 12-step float
+    // inverse differs slightly from the analytic subdivision parameter.
+    // Keep the absolute tail control values while anchoring that sampled root.
+    const double delta=end->value-keys[n-1].value;
+    const double origin=delta?(a.value-keys[n-1].value)/delta:middle.y;
+    if(1-origin<=1e-12)return;
+    const auto control=[](double value){return std::clamp(value*127.0,0.0,127.0);};
+    const std::array<double,4> controls={control((right.x-cut)/(1-cut)),control((right.y-origin)/(1-origin)),
+        control((q2.x-cut)/(1-cut)),control((q2.y-origin)/(1-origin))};
+    const double x1=std::clamp(controls[0]/127.0,0.0002,0.9996);
+    const double x2=std::clamp(controls[2]/127.0,x1+0.0002,0.9998);
+    const double rate=(b.value-a.value)/double(b.frame-a.frame);
+    a.outWeight=x1;a.outSlope=controls[1]/127.0*rate/x1;
+    b.inWeight=1-x2;b.inSlope=(1-controls[3]/127.0)*rate/(1-x2);b.interpolation=ac::Interpolation::Bezier;
+    target.nativeControls[1]=controls;target.controlGeometry[1]={a.outWeight,a.outSlope,b.inWeight,b.inSlope};
+}
+Channel RetimedChannel(const Channel& source,const RetimeMap& frames,int rootSource) {
+    Channel target=source;auto working=source.track;
+    const auto root=std::lower_bound(working.keys.begin(),working.keys.end(),rootSource,[](const ac::Key& k,int f){return k.frame<f;});
+    const bool insertedRoot=root==working.keys.end()||root->frame!=rootSource;
+    if(insertedRoot){
+        const double value=SampleValue(source,rootSource);std::size_t at=0;std::string error;
+        if(!std::isfinite(value)||ac::InsertPreservingShape(working,rootSource,at,error)==ac::InsertResult::Rejected)
+            throw std::invalid_argument("retime source anchor");
+        // A native camera callback is authoritative at the new root as well.
+        // The clipped interval no longer carries an intact native control tuple.
+        working.keys[at].value=value;
+    }
+    target.track.keys.clear();std::vector<int> oldFrames;
+    for(std::size_t i=0;i<working.keys.size();++i){
+        const auto& original=working.keys[i];const auto moved=frames.find(original.frame);
+        if(moved==frames.end()||moved->second<0)continue;
+        auto key=original;key.frame=moved->second;
+        if(i){const auto previous=frames.find(working.keys[i-1].frame);
+            if(previous!=frames.end()&&previous->second>=0)key.inSlope*=double(original.frame-working.keys[i-1].frame)/(key.frame-previous->second);}
+        if(i+1<working.keys.size()){const auto next=frames.find(working.keys[i+1].frame);
+            if(next!=frames.end()&&next->second>=0)key.outSlope*=double(working.keys[i+1].frame-original.frame)/(next->second-key.frame);}
+        target.track.keys.push_back(key);oldFrames.push_back(original.frame);
+    }
+    if(target.track.keys.empty()||target.track.keys.front().frame!=0)throw std::invalid_argument("retime authored frame zero");
+    for(std::size_t i=1;i<target.track.keys.size();++i){auto& a=target.track.keys[i-1];auto& b=target.track.keys[i];
+        // Joined intervals may inherit opposing handles from different old
+        // intervals. Preserve slopes while fitting their normalized time span.
+        const double sum=a.outWeight+b.inWeight;if(sum>0.9999){
+            a.outWeight=std::clamp(a.outWeight*0.9998/sum,0.0001,0.9997);b.inWeight=0.9998-a.outWeight;}
+    }
+    RemapIntervals(source,target,oldFrames);
+    if(insertedRoot)ClipNativeCameraTail(source,rootSource,target,oldFrames);
+    std::string error;if(!ac::Validate(target.track,error))throw std::invalid_argument("invalid retimed authored track");
+    return target;
+}
+void ReconcileRetimed(State& target,const State& source,const std::vector<Channel>& native,const RetimeMap& frames) {
+    if(source.channels.size()!=native.size()||source.baseline.size()!=native.size())throw std::invalid_argument("retime channels");
+    std::map<int,int> sources;for(const auto& frame:frames)if(frame.second>=0)sources.emplace(frame.second,frame.first);
+    const int rootSource=sources.at(0);
+    for(std::size_t c=0;c<source.channels.size();++c){
+        auto channel=RetimedChannel(source.channels[c],frames,rootSource);
+        const auto& baseline=source.baseline[c];
+        for(std::size_t i=0;i<native[c].track.keys.size();++i){
+            const auto& fresh=native[c].track.keys[i];auto oldFrame=sources.at(fresh.frame);
+            // An authored-only frame can win the new root while the native
+            // frame-one row is absent. Native keeps its old root in that case;
+            // compare that unchanged proxy to its own baseline, not the new
+            // high-precision authored root.
+            if(!fresh.frame){const auto winner=std::lower_bound(baseline.track.keys.begin(),baseline.track.keys.end(),oldFrame,
+                    [](const ac::Key& k,int f){return k.frame<f;});
+                if(winner==baseline.track.keys.end()||winner->frame!=oldFrame)oldFrame=0;}
+            const auto old=std::lower_bound(baseline.track.keys.begin(),baseline.track.keys.end(),oldFrame,[](const ac::Key& k,int f){return k.frame<f;});
+            if(old==baseline.track.keys.end()||old->frame!=oldFrame)throw std::invalid_argument("missing retime native source");
+            const auto n=std::size_t(old-baseline.track.keys.begin());
+            if(i&&!native[c].nativeControls.empty()&&(n>=baseline.nativeControls.size()||native[c].nativeControls[i]!=baseline.nativeControls[n]))
+                throw std::invalid_argument("retime changes native controls");
+            if(fresh.value==old->value)continue;
+            // A root collision can copy only part of a native record. Compare
+            // each field to the actual winning source, never to the old root.
+            auto at=std::lower_bound(channel.track.keys.begin(),channel.track.keys.end(),fresh.frame,[](const ac::Key& k,int f){return k.frame<f;});
+            if(at==channel.track.keys.end()||at->frame!=fresh.frame){
+                const Channel before=channel;std::size_t index=0;std::string error;
+                if(ac::InsertPreservingShape(channel.track,fresh.frame,index,error)==ac::InsertResult::Rejected)
+                    throw std::invalid_argument("retime native value insertion");
+                std::vector<int> oldFrames;for(const auto& key:channel.track.keys)oldFrames.push_back(key.frame);
+                RemapIntervals(before,channel,oldFrames);at=channel.track.keys.begin()+index;
+            }
+            at->value=fresh.value;
+        }
+        auto automatic=channel.track;ac::UpdateAutomatic(automatic);
+        for(std::size_t i=0;i<channel.track.keys.size();++i){auto& key=channel.track.keys[i];
+            if(key.tangent!=ac::Tangent::Automatic)continue;
+            const auto& computed=automatic.keys[i];
+            const double tolerance=1e-9*std::max({1.0,std::abs(computed.inSlope),std::abs(computed.outSlope)});
+            if((i&&std::abs(key.inSlope-computed.inSlope)>tolerance)||
+                (i+1<channel.track.keys.size()&&std::abs(key.outSlope-computed.outSlope)>tolerance))key.tangent=ac::Tangent::Free;
+        }
+        std::string error;if(!ac::Validate(channel.track,error))throw std::invalid_argument("retime native values");
+        target.channels[c]=std::move(channel);
+    }
+    target.baseline=native;
+}
+}
+void TrackAuthoring::RetimingFrames(std::vector<int>& out) const {
+    if(!impl_->Current())throw std::invalid_argument("changed authoring track");
+    std::vector<int> frames;State effective;
+    const State* source=&impl_->seed;
+    if(impl_->authored&&!impl_->retimingCaptured){
+        effective=impl_->seed;std::vector<Channel> native;
+        if(!NativeRead(impl_->app,impl_->kind,impl_->slot,native))throw std::invalid_argument("retime source native track");
+        Reconcile(effective,native);source=&effective;
+    }
+    if(impl_->authored)for(const auto* channels:{&source->channels,&source->baseline})for(const auto& channel:*channels)
+        for(const auto& key:channel.track.keys)frames.push_back(key.frame);
+    std::sort(frames.begin(),frames.end());frames.erase(std::unique(frames.begin(),frames.end()),frames.end());
+    if(impl_->authored&&!impl_->retimingCaptured)std::swap(impl_->seed,effective);
+    impl_->retimingCaptured=true;out.swap(frames);
+}
+std::unique_ptr<TrackAuthoring::Target> TrackAuthoring::PrepareRetimed(const NativeKeyView& view,
+    const std::vector<std::pair<int,int>>& frameMap,bool forward) const {
+    if(!impl_->retimingCaptured){std::vector<int> frames;RetimingFrames(frames);}
+    if(!impl_->Current())throw std::invalid_argument("changed authoring track");
+    auto candidate=std::make_unique<Target::Impl>(impl_);candidate->identity=Identity(impl_->app,impl_->kind,impl_->slot);
+    candidate->poolAllocation=TrackPoolAllocation(impl_->app,impl_->kind,impl_->slot);
+    const auto found=states.find(impl_->address);
+    if(found!=states.end()){candidate->before=&found->second;candidate->revision=found->second.revision;candidate->digest=AuthoringDigest(found->second);}
+    candidate->native=TargetChannels(view,impl_->kind);
+    if(impl_->authored){
+        State target=impl_->seed;
+        if(forward){const auto frames=ValidateRetimeMap(frameMap,&impl_->seed,candidate->native);
+            ReconcileRetimed(target,impl_->seed,candidate->native,frames);}
+        target.revision=NextAuthoringRevision();target.fingerprint=0;
+        decltype(states) pending;pending.emplace(impl_->address,std::move(target));candidate->target=pending.extract(pending.begin());
+    }else if(forward)(void)ValidateRetimeMap(frameMap,nullptr,candidate->native);
     return std::unique_ptr<Target>(new Target(std::move(candidate)));
 }
 bool TrackAuthoring::Target::IsCurrent() const noexcept{return impl_->Current();}

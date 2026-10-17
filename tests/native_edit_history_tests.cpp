@@ -403,6 +403,9 @@ void CrossModelJournal(){
 #include "native_accessory_sparse_registration_checks.inc"
 #include "native_gravity_sparse_registration_checks.inc"
 #include "native_bone_curve_sync_checks.inc"
+#include "native_frame_line_curve_checks.inc"
+#include "native_frame_retime_edges_checks.inc"
+#include "native_legacy_global_retime_checks.inc"
 int main(int argc,char** argv){
     std::setvbuf(stdout,nullptr,_IONBF,0);
     const auto run=[](const char* name,void(*test)()){std::printf("RUN %s\n",name);test();};
@@ -456,7 +459,21 @@ int main(int argc,char** argv){
     }
     if(argc==2&&!std::strcmp(argv[1],"--frame-lines-only")) {
         run("NativeFrameLineChecks",NativeFrameLineChecks);
+        run("NativeFrameLineCurveChecks",NativeFrameLineCurveChecks);
+        run("NativeFrameRetimeEdgesChecks",NativeFrameRetimeEdgesChecks);
+        run("LegacyGlobalRetimeChecks",LegacyGlobalRetimeChecks);
         std::printf("PASS native frame lines: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--global-frame-retime-only")) {
+        run("NativeFrameLineCurveChecks",NativeFrameLineCurveChecks);
+        run("NativeFrameRetimeEdgesChecks",NativeFrameRetimeEdgesChecks);
+        run("LegacyGlobalRetimeChecks",LegacyGlobalRetimeChecks);
+        std::printf("PASS global frame retime: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--global-frame-retime-edges-only")) {
+        run("NativeFrameRetimeEdgesChecks",NativeFrameRetimeEdgesChecks);
+        run("LegacyGlobalRetimeChecks",LegacyGlobalRetimeChecks);
+        std::printf("PASS global frame retime edges: %u checks\n",checks);return 0;
     }
     if(argc==2&&!std::strcmp(argv[1],"--key-paste-only")) {
         run("NativeKeyPasteChecks",NativeKeyPasteChecks);
@@ -584,6 +601,9 @@ int main(int argc,char** argv){
     run("NativeHistoryModeChecks",NativeHistoryModeChecks);
     run("NativeVmdImportChecks",NativeVmdImportChecks);
     run("NativeFrameLineChecks",NativeFrameLineChecks);
+    run("NativeFrameLineCurveChecks",NativeFrameLineCurveChecks);
+    run("NativeFrameRetimeEdgesChecks",NativeFrameRetimeEdgesChecks);
+    run("LegacyGlobalRetimeChecks",LegacyGlobalRetimeChecks);
     run("NativeKeyPasteChecks",NativeKeyPasteChecks);
     run("NativeMorphPasteChecks",NativeMorphPasteChecks);
     run("NativeDisplayPasteChecks",NativeDisplayPasteChecks);

@@ -3,6 +3,7 @@
 #include "mikudancestudio/frame_limits.hpp"
 #include "mikudancestudio/key_pool.hpp"
 #include "mikudancestudio/animation_curve_editor.hpp"
+#include "mikudancestudio/animation_curve_host.hpp"
 // ===========================================================================
 // Edit-menu frame-line commands + select-all frame groups.
 //   VA 0x00439E40  insert frame line (bone / camera)    menu 0xFF,  key I
@@ -42,6 +43,7 @@
 #include <Windows.h>
 
 #include <cstdint>
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 
@@ -188,6 +190,44 @@ void ClearCameraKeyRecord(mdl::CameraKey& key) {
     key.selected = 0;
 }
 
+#if !MMD_ORIGINAL_PROFILE
+// The ordinary host still uses its original history policy. When a free curve
+// exists, share the detached frame-line plan so allocation failure cannot leave
+// native keys moved while the authored layer is still on its old frames.
+bool TryShiftAuthoredGlobalFrameLine(MMDApp& app, bool camera, bool insert, int& affected) noexcept {
+    affected = 0;
+    const auto kind = camera ? curve_host::Kind::Camera : curve_host::Kind::Light;
+    if (!curve_host::Has(&app, kind)) return false;
+    const auto identity = camera ? mdl::KeyPoolIdentity(app.CameraKeys()) : mdl::KeyPoolIdentity(app.LightKeys());
+    if (!identity) return false;
+    try {
+        curve_host::TrackAuthoring authoring(app, kind);
+        std::vector<int> frames;
+        authoring.RetimingFrames(frames);
+        if (frames.empty()) return false;
+        const auto count = [&](const auto* keys) {
+            int result = 0;
+            for (std::size_t i = 1, capacity = mdl::KeyPoolCapacity(keys); i < capacity; ++i)
+                if (keys[i].frame && keys[i].frame >= unsigned(app.CurrentFrame())) ++result;
+            return result;
+        };
+        const int moved = camera ? count(app.CameraKeys()) : count(app.LightKeys());
+        std::shared_ptr<plugins::HistoryChange> change;
+        const auto result = camera ? plugins::PlanCameraFrameLine(app, app.CurrentFrame(), insert, change)
+                                   : plugins::PlanLightFrameLine(app, app.CurrentFrame(), insert, change);
+        if (result != MMS_OK || !change) return true;
+        std::unique_ptr<plugins::PreparedHistoryChange> candidate;
+        if (change->Prepare(true, candidate) != MMS_OK || !candidate || !candidate->IsCurrent()) return true;
+        candidate->Publish();
+        // An authored-only key can move beyond the last shared native row.
+        affected = (std::max)(moved, 1);
+    } catch (...) {
+        // Do not fall back to a native-only write after a failed preparation.
+    }
+    return true;
+}
+#endif
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -221,10 +261,15 @@ void RefreshFrameLineViews(MMDApp* app) {
     InvalidateRect(hwnd, &strip, FALSE);
 }
 
-// Pure global table surgery shared by the legacy UI route and headless
-// regression oracle. UI, seeking and common-history routing remain outside.
+// Global table surgery shared by the legacy UI route and headless oracle.
+// Authored tracks prepare both layers privately; UI and history routing stay
+// outside this function.
 int ShiftGlobalKeysForFrameLine(MMDApp* app, bool camera, bool insert) {
     if (!app) return 0;
+#if !MMD_ORIGINAL_PROFILE
+    int authoredAffected = 0;
+    if (TryShiftAuthoredGlobalFrameLine(*app, camera, insert, authoredAffected)) return authoredAffected;
+#endif
     const auto cur = static_cast<std::uint32_t>(app->CurrentFrame());
     if (camera && insert) {
         auto* keys = app->CameraKeys();
@@ -496,6 +541,9 @@ int InsertBoneCameraFrameLine(MMDApp* app) {
     // (0x439FBB..0x439FAA; only the 0x374 table moves)
     if(!CanInsertFrame(app->CameraKeys(),mdl::KeyPoolCapacity(app->CameraKeys()),1,cur))return 0;
     const int moved = ShiftGlobalKeysForFrameLine(app, true, true);
+#if !MMD_ORIGINAL_PROFILE
+    if (!moved) return 0;
+#endif
     ReloadModels(app);   // VA 0x0042E640 (camera key seek/evaluate)
     PanelPaint(app);
     app->SceneModified() = 1;
@@ -650,6 +698,9 @@ int DeleteBoneCameraFrameLine(MMDApp* app) {
 
     // ---- camera mode (0x43A905..0x43A9B6)
     const int changed = ShiftGlobalKeysForFrameLine(app, true, false);
+#if !MMD_ORIGINAL_PROFILE
+    if (!changed) return 0;
+#endif
     ReloadModels(app);
     PanelPaint(app);
     app->SceneModified() = 1;
@@ -672,6 +723,9 @@ int InsertFacialLightFrameLine(MMDApp* app) {
         // (0x43B72D..0x43B878; only the 0x378 table moves; no undo)
         if(!CanInsertFrame(app->LightKeys(),mdl::KeyPoolCapacity(app->LightKeys()),1,cur))return 0;
         changed = ShiftGlobalKeysForFrameLine(app, false, true);
+#if !MMD_ORIGINAL_PROFILE
+        if (!changed) return 0;
+#endif
         RefreshLightPanel(app);
         PanelPaint(app);
         app->SceneModified() = 1;
@@ -718,6 +772,9 @@ int DeleteFacialLightFrameLine(MMDApp* app) {
 
     // ---- light mode: 40B records x 10000 (0x43BC64..0x43BC88)
     changed = ShiftGlobalKeysForFrameLine(app, false, false);
+#if !MMD_ORIGINAL_PROFILE
+    if (!changed) return 0;
+#endif
     RefreshLightPanel(app);
     PanelPaint(app);
     app->SceneModified() = 1;
