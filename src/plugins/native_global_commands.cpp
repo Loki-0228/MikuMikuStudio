@@ -26,15 +26,17 @@
 
 namespace mikudancestudio::plugins {
 namespace {
-bool Ready(MMDApp& app, HWND shadowDialog = nullptr, HWND shadowSlider = nullptr) noexcept {
+bool Ready(MMDApp& app, HWND shadowDialog = nullptr, HWND authorSlider = nullptr) noexcept {
     const bool ownShadow = shadowDialog && shadowDialog == app.GroundShadowColorDialog();
     const auto capture = GetCapture();
-    const bool ownRangeSlider = shadowSlider && app.MainWindow() && shadowSlider == GetDlgItem(app.MainWindow(), panel::kSelfShadowRangeSlider);
+    const bool ownAuthorSlider = authorSlider && app.MainWindow() &&
+        (authorSlider == GetDlgItem(app.MainWindow(), panel::kSelfShadowRangeSlider) ||
+         authorSlider == GetDlgItem(app.MainWindow(), panel::kFovSlider));
     return !app.PlaybackActive() && !app.FrameStepPlayback() &&
         !app.state.recordPlaybackStartPending && !app.SceneMutationInProgress() &&
         !bake::UiLocked() && !SceneSaveInProgress() &&
         (!capture || (ownShadow && capture == GetDlgItem(shadowDialog, panel::kGroundShadowSlider)) ||
-            (ownRangeSlider && capture == shadowSlider)) &&
+            (ownAuthorSlider && capture == authorSlider)) &&
         !app.FrameRangeDialog() && !app.state.frameCopyDialog && !app.RecordingWindow() &&
         !app.GravitySettingDialog() && (!app.GroundShadowColorDialog() || ownShadow) && !app.AccessoryOrderArray() &&
         !app.state.accessoryEditDialogOpen && !app.state.edgeThicknessDialog;
@@ -726,11 +728,11 @@ bool TryResetBoundCameraField(MMDApp* app, unsigned field, bool activateCameraTr
     return true;
 }
 namespace {
-MmsResult ApplyBoundCameraProjectionField(MMDApp& app, float fov, std::uint8_t perspective, bool editPerspective, bool& changed) noexcept {
+MmsResult ApplyBoundCameraProjectionField(MMDApp& app, float fov, std::uint8_t perspective, bool editPerspective, bool& changed, HWND slider = nullptr) noexcept {
     changed = false;
     return Boundary([&]() -> MmsResult {
         auto* history = BoundNativePoseHistory(&app);
-        if (!history || !Ready(app) || !mdl::KeyPoolIdentity(app.CameraKeys())) return MMS_E_NOT_READY;
+        if (!history || !Ready(app, nullptr, slider) || !mdl::KeyPoolIdentity(app.CameraKeys())) return MMS_E_NOT_READY;
         if (!std::isfinite(fov) || !std::isfinite(app.CameraFov())) return MMS_E_ARGUMENT;
         if (const auto result = history->CheckNativeEdit()) return result;
         if (editPerspective ? app.CameraPerspective() == perspective : app.CameraFov() == fov) return MMS_OK;
@@ -751,6 +753,20 @@ MmsResult ApplyBoundCameraProjectionField(MMDApp& app, float fov, std::uint8_t p
 }
 MmsResult ApplyBoundCameraFov(MMDApp& app, float value, bool& changed) noexcept {
     return ApplyBoundCameraProjectionField(app, value, app.CameraPerspective(), false, changed);
+}
+bool TryCommitBoundCameraFovSlider(MMDApp* app, HWND slider) noexcept {
+    if (!app || !BoundNativePoseHistory(app)) return false;
+    Boundary([&]() -> MmsResult {
+        if (!slider || !app->MainWindow() || slider != GetDlgItem(app->MainWindow(), panel::kFovSlider)) return MMS_E_ARGUMENT;
+        // Read the trackbar's actual position, including its native range
+        // clamping, exactly as the unbound WM_HSCROLL route does.
+        const float fov = static_cast<float>(static_cast<int>(SendMessageW(slider, TBM_GETPOS, 0, 0)));
+        bool changed = false;
+        const auto result = ApplyBoundCameraProjectionField(*app, fov, app->CameraPerspective(), false, changed, slider);
+        if (!changed) RefreshBoundGlobalReadout(*app);
+        return result;
+    });
+    return true;
 }
 MmsResult ApplyBoundCameraProjection(MMDApp& app, bool orthographic, bool& changed) noexcept {
     return ApplyBoundCameraProjectionField(app, app.CameraFov(), orthographic ? 1 : 0, true, changed);

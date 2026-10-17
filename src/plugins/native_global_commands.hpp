@@ -58,6 +58,8 @@ bool TrySetBoundShadowMode(MMDApp*, int mode) noexcept;
 // Live range slider 560; permits only this control to own mouse capture.
 bool TryCommitBoundShadowSlider(MMDApp*, HWND slider) noexcept;
 MmsResult ApplyBoundCameraFov(MMDApp&, float value, bool& changed) noexcept;
+// Main viewport FOV trackbar 447; only its own capture permits live edits.
+bool TryCommitBoundCameraFovSlider(MMDApp*, HWND slider) noexcept;
 // true selects orthographic; false selects perspective (legacy byte is inverted).
 MmsResult ApplyBoundCameraProjection(MMDApp&, bool orthographic, bool& changed) noexcept;
 bool TryToggleBoundCameraPerspective(MMDApp*) noexcept;

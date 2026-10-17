@@ -375,9 +375,14 @@ void CrossModelJournal(){
 #include "native_vpd_import_checks.inc"
 #include "native_shadow_ambient_checks.inc"
 #include "native_shadow_slider_checks.inc"
+#include "native_fov_slider_checks.inc"
 int main(int argc,char** argv){
     std::setvbuf(stdout,nullptr,_IONBF,0);
     const auto run=[](const char* name,void(*test)()){std::printf("RUN %s\n",name);test();};
+    if(argc==2&&!std::strcmp(argv[1],"--fov-slider-only")) {
+        run("NativeFovSliderChecks",NativeFovSliderChecks);
+        std::printf("PASS native FOV slider: %u checks\n",checks);return 0;
+    }
     if(argc==2&&!std::strcmp(argv[1],"--shadow-slider-only")) {
         run("NativeShadowSliderChecks",NativeShadowSliderChecks);
         std::printf("PASS native shadow slider: %u checks\n",checks);return 0;
@@ -467,6 +472,7 @@ int main(int argc,char** argv){
     run("NativeVpdImportChecks",NativeVpdImportChecks);
     run("NativeShadowAmbientChecks",NativeShadowAmbientChecks);
     run("NativeShadowSliderChecks",NativeShadowSliderChecks);
+    run("NativeFovSliderChecks",NativeFovSliderChecks);
     run("PhysicsImportChecks",PhysicsImportChecks);
     run("ImportTextureCacheChecks",ImportTextureCacheChecks);
     run("AccessoryImportChecks",AccessoryImportChecks);

@@ -260,6 +260,9 @@ void HandleHScroll(LPARAM lParam, WPARAM wParam) {
     }
     // ---- 447: FOV slider ---------------------------------------------------
     else if (ctrl == GetDlgItem(hwnd, panel::kFovSlider)) {
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::TryCommitBoundCameraFovSlider(app, ctrl)) return;
+#endif
         const LRESULT pos = SendMessageA(GetDlgItem(hwnd, panel::kFovSlider),
                                          TBM_GETPOS, 0, 0);
         // State write + projection install in one shared body
