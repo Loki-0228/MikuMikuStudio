@@ -384,9 +384,24 @@ void CrossModelJournal(){
 #include "native_key_paste_checks.inc"
 #include "native_morph_paste_checks.inc"
 #include "native_display_paste_checks.inc"
+#include "native_global_paste_tracks_checks.inc"
+#include "native_accessory_paste_checks.inc"
+#include "native_global_paste_checks.inc"
+#include "native_gravity_paste_checks.inc"
 int main(int argc,char** argv){
     std::setvbuf(stdout,nullptr,_IONBF,0);
     const auto run=[](const char* name,void(*test)()){std::printf("RUN %s\n",name);test();};
+    if(argc==2&&!std::strcmp(argv[1],"--gravity-paste-only")) {
+        run("NativeGravityPasteChecks",NativeGravityPasteChecks);
+        std::printf("PASS native gravity paste: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--global-paste-only")) {
+        run("NativeGlobalPasteTracksChecks",NativeGlobalPasteTracksChecks);
+        run("NativeAccessoryPasteChecks",NativeAccessoryPasteChecks);
+        run("NativeGlobalPasteChecks",NativeGlobalPasteChecks);
+        run("NativeGravityPasteChecks",NativeGravityPasteChecks);
+        std::printf("PASS native global paste: %u checks\n",checks);return 0;
+    }
     if(argc==2&&!std::strcmp(argv[1],"--model-paste-only")) {
         run("NativeMorphPasteChecks",NativeMorphPasteChecks);
         run("NativeDisplayPasteChecks",NativeDisplayPasteChecks);
@@ -518,6 +533,10 @@ int main(int argc,char** argv){
     run("NativeKeyPasteChecks",NativeKeyPasteChecks);
     run("NativeMorphPasteChecks",NativeMorphPasteChecks);
     run("NativeDisplayPasteChecks",NativeDisplayPasteChecks);
+    run("NativeGlobalPasteTracksChecks",NativeGlobalPasteTracksChecks);
+    run("NativeAccessoryPasteChecks",NativeAccessoryPasteChecks);
+    run("NativeGlobalPasteChecks",NativeGlobalPasteChecks);
+    run("NativeGravityPasteChecks",NativeGravityPasteChecks);
     run("PhysicsImportChecks",PhysicsImportChecks);
     run("ImportTextureCacheChecks",ImportTextureCacheChecks);
     run("AccessoryImportChecks",AccessoryImportChecks);

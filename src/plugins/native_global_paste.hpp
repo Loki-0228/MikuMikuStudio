@@ -1,0 +1,48 @@
+#pragma once
+#include "mikudancestudio/build_profile.hpp"
+#if !MMD_ORIGINAL_PROFILE
+#include "shared_history.hpp"
+#include "mikudancestudio/clipboard_layout.hpp"
+#include "mikudancestudio/accessory_layout.hpp"
+#include <vector>
+namespace mikudancestudio { class MMDApp; }
+namespace mikudancestudio::plugins {
+// Internal participants never own the shared selection snapshot or last frame.
+// The aggregate validates every participant before publishing any of them.
+class PreparedGlobalPastePart {
+public:
+    virtual ~PreparedGlobalPastePart() = default;
+    virtual bool IsCurrent() const noexcept = 0;
+    virtual void PublishOwned() noexcept = 0;
+    // Called after all pool growth and GlobalKeySelection::Publish. Restore
+    // only this participant's pasted/linked slots, preserving the snapshot's
+    // restored marks on undo within the originally captured pool extent.
+    virtual void PublishSelection() noexcept = 0;
+};
+class GlobalPastePart {
+public:
+    virtual ~GlobalPastePart() = default;
+    virtual MmsResult Prepare(bool forward, std::unique_ptr<PreparedGlobalPastePart>&) = 0;
+    virtual std::uint64_t RetainedBytes() const noexcept = 0;
+};
+struct GlobalPasteSource {
+    std::vector<mdl::CameraClipboardRecord> cameras;
+    std::vector<mdl::LightClipboardRecord> lights;
+    std::vector<mdl::ShadowClipboardRecord> shadows;
+    std::vector<mdl::GravityClipboardRecord> gravity;
+    std::vector<mdl::AccessoryClipboardKey> accessories;
+    std::uint32_t frameOffset = 0;
+};
+struct GlobalPasteFamilyResult {
+    std::shared_ptr<GlobalPastePart> part;
+    std::uint32_t maximumInsertedFrame = 0;
+    bool dataChanged = false;
+};
+MmsResult PlanCameraKeyPastePart(MMDApp&, const GlobalPasteSource&, GlobalPasteFamilyResult&) noexcept;
+MmsResult PlanLightKeyPastePart(MMDApp&, const GlobalPasteSource&, GlobalPasteFamilyResult&) noexcept;
+MmsResult PlanShadowKeyPastePart(MMDApp&, const GlobalPasteSource&, GlobalPasteFamilyResult&) noexcept;
+MmsResult PlanGravityKeyPastePart(MMDApp&, const GlobalPasteSource&, GlobalPasteFamilyResult&) noexcept;
+MmsResult PlanAccessoryKeyPastePart(MMDApp&, unsigned slot, const GlobalPasteSource&, GlobalPasteFamilyResult&) noexcept;
+MmsResult PlanGlobalKeyPaste(MMDApp&, std::shared_ptr<HistoryChange>&) noexcept;
+}
+#endif

@@ -1,4 +1,5 @@
 #include "native_global_registration.hpp"
+#include "native_global_paste.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "scene_object_history.hpp"
 #include "mikudancestudio/accessory_layout.hpp"
@@ -320,6 +321,140 @@ template<class K> struct Registration final:HistoryChange,std::enable_shared_fro
         AddBytes(bytes,selection.RetainedBytes());AddBytes(bytes,authoring.RetainedBytes());return bytes;
     }
 };
+
+// One track family in the global-paste aggregate. Shared marks and the last
+// registration frame belong to the aggregate, never to these participants.
+template<class K> struct PastePart final:GlobalPastePart,std::enable_shared_from_this<PastePart<K>> {
+    MMDApp& app;std::uint64_t identity,generation=1;std::size_t capacity;
+    curve_host::TrackAuthoring authoring;
+    struct Patch {unsigned slot;K before,after;};std::vector<Patch> patches;
+    std::vector<Parent> parents;
+    explicit PastePart(MMDApp& a):app(a),identity(mdl::KeyPoolIdentity(Pool<K>(a))),capacity(mdl::KeyPoolCapacity(Pool<K>(a))),authoring(a,TrackKind<K>()){}
+    bool Structure() const noexcept {
+        if(mdl::KeyPoolIdentity(Pool<K>(app))!=identity||mdl::KeyPoolCapacity(Pool<K>(app))<capacity)return false;
+        for(const auto& parent:parents)if(!parent.Current(app))return false;return true;
+    }
+    struct Candidate final:PreparedGlobalPastePart {
+        std::shared_ptr<PastePart> source;bool forward,owned=false,consumed=false;std::uint64_t generation;
+        int frame;K* pool;std::size_t capacity;Pose before,after;
+        std::vector<Dependency<K>> dependencies;std::vector<K> current;std::vector<Parent> parents;
+        std::unique_ptr<Growth<K>> growth;
+        std::unique_ptr<curve_host::TrackAuthoring::Target> curves,currentCurves;
+        Candidate(std::shared_ptr<PastePart> s,bool f):source(std::move(s)),forward(f),generation(source->generation),frame(source->app.CurrentFrame()),
+            pool(Pool<K>(source->app)),capacity(mdl::KeyPoolCapacity(pool)),before(ReadPose<K>(source->app)),after(before){}
+        const K* Target(unsigned slot) const noexcept {
+            const auto& patches=source->patches;const auto found=std::lower_bound(patches.begin(),patches.end(),slot,[](const auto& p,unsigned i){return p.slot<i;});
+            if(found!=patches.end()&&found->slot==slot)return forward?&found->after:&found->before;
+            return slot<capacity?&pool[slot]:nullptr;
+        }
+        bool IsCurrent() const noexcept override {
+            if(owned||consumed||source->generation!=generation||!source->Structure()||source->app.CurrentFrame()!=frame||
+                !(ReadPose<K>(source->app)==before)||Pool<K>(source->app)!=pool||mdl::KeyPoolCapacity(pool)!=capacity||
+                !growth||!growth->Current()||!curves||!curves->IsCurrent()||!currentCurves||!currentCurves->IsCurrent())return false;
+            for(const auto& entry:dependencies)if(!SameKey(entry.key,pool[entry.slot],true))return false;
+            for(std::size_t i=0;i<source->patches.size();++i){const auto index=source->patches[i].slot;
+                if(!SameKey(current[i],index<capacity?pool[index]:K{},true))return false;}
+            for(const auto& parent:parents)if(!parent.Current(source->app))return false;
+            return true;
+        }
+        void PublishOwned() noexcept override {
+            // The aggregate has validated every participant before its first
+            // write. Never recheck shared fields after another part publishes.
+            if(owned||consumed||source->generation!=generation)std::terminate();
+            growth->Publish();auto* keys=Pool<K>(source->app);
+            for(const auto& patch:source->patches){auto target=forward?patch.after:patch.before;target.selected=keys[patch.slot].selected;keys[patch.slot]=target;}
+            curves->Publish(keys);WritePose<K>(source->app,after);
+            ++source->generation;owned=true;
+        }
+        void PublishSelection() noexcept override {
+            if(!owned||consumed)std::terminate();auto* keys=Pool<K>(source->app);
+            for(const auto& patch:source->patches){
+                if(forward)keys[patch.slot].selected=patch.after.selected;
+                else if(patch.slot>=source->capacity)keys[patch.slot].selected=patch.before.selected;
+            }
+            consumed=true;
+        }
+    };
+    MmsResult Prepare(bool forward,std::unique_ptr<PreparedGlobalPastePart>& out) override {
+        out.reset();if(!Structure()||!authoring.IsCurrent())return MMS_E_STALE;
+        if(generation==UINT64_MAX)return MMS_E_NOT_READY;
+        return Boundary([&]() -> MmsResult {
+            if(app.CurrentFrame()<0||app.CurrentFrame()>frame_limits::maximum||!FinitePose(ReadPose<K>(app)))return MMS_E_ARGUMENT;
+            auto candidate=std::make_unique<Candidate>(this->shared_from_this(),forward);
+            candidate->dependencies=Chain<K>(candidate->capacity,[&](unsigned i){return candidate->pool[i];});
+            std::uint64_t needed=capacity;
+            for(const auto& patch:patches){const auto live=patch.slot<candidate->capacity?candidate->pool[patch.slot]:K{};
+                if(!SameKey(live,forward?patch.before:patch.after))return MMS_E_STALE;
+                candidate->current.push_back(live);needed=(std::max)(needed,std::uint64_t(patch.slot)+1);}
+            candidate->growth=std::make_unique<Growth<K>>(app,needed);
+            curve_host::NativeKeyView target{candidate.get(),candidate->growth->Capacity(),[](const void* p,unsigned i) noexcept ->const void* {return static_cast<const Candidate*>(p)->Target(i);}};
+            candidate->curves=authoring.Prepare(target);
+            curve_host::NativeKeyView current{candidate->pool,candidate->capacity,[](const void* p,unsigned i) noexcept ->const void* {return static_cast<const K*>(p)+i;}};
+            candidate->currentCurves=authoring.Prepare(current);
+            const auto sample=[&](const auto& curves,auto read){
+                if(!curves->Authored())return NativePose<K>(app.CurrentFrame(),read);
+                std::array<double,12> values{};if(!curves->Sample(app.CurrentFrame(),values))throw std::invalid_argument("global paste sample");return CurvePose<K>(values);
+            };
+            const auto evaluated=sample(candidate->currentCurves,[&](unsigned i){return candidate->pool+i;});
+            if(!FinitePose(evaluated))return MMS_E_ARGUMENT;
+            const auto targetValue=sample(candidate->curves,[&](unsigned i){return candidate->Target(i);});
+            if(!FinitePose(targetValue))return MMS_E_ARGUMENT;
+            if(evaluated==candidate->before)candidate->after=targetValue;
+            if(!FinitePose(candidate->after))return MMS_E_ARGUMENT;
+            if constexpr(std::is_same_v<K,mdl::CameraKey>){
+                const auto parent=[&](int model,int bone){if(model<-1)throw std::invalid_argument("camera parent");if(model>=0)candidate->parents.emplace_back(app,model,bone);};
+                parent(candidate->before.parentModel,candidate->before.parentBone);parent(candidate->after.parentModel,candidate->after.parentBone);
+            }
+            if(!candidate->IsCurrent())return MMS_E_STALE;out=std::move(candidate);return MMS_OK;
+        });
+    }
+    std::uint64_t RetainedBytes() const noexcept override {
+        std::uint64_t bytes=sizeof(*this)+4*sizeof(void*);AddBytes(bytes,patches.capacity(),sizeof(Patch));AddBytes(bytes,parents.capacity(),sizeof(Parent));AddBytes(bytes,authoring.RetainedBytes());return bytes;
+    }
+};
+template<class K,class S,class Fill> MmsResult PlanPastePart(MMDApp& app,const std::vector<S>& records,unsigned offset,Fill fill,GlobalPasteFamilyResult& out) noexcept {
+    out={};if(records.empty())return MMS_OK;
+    if(offset>unsigned(frame_limits::maximum))return MMS_E_ARGUMENT;
+    if(app.PlaybackActive()||app.FrameStepPlayback()||app.state.recordPlaybackStartPending||app.SceneMutationInProgress())return MMS_E_NOT_READY;
+    if(!mdl::KeyPoolIdentity(Pool<K>(app)))return MMS_E_NOT_READY;
+    return Boundary([&]() -> MmsResult {
+        if(!FinitePose(ReadPose<K>(app)))return MMS_E_ARGUMENT;
+        auto* keys=Pool<K>(app);const auto capacity=mdl::KeyPoolCapacity(keys);
+        const auto chain=Chain<K>(capacity,[&](unsigned i){return keys[i];});
+        auto part=std::make_shared<PastePart<K>>(app);std::map<unsigned,typename PastePart<K>::Patch> planned;
+        std::size_t targetCapacity=capacity;
+        const auto read=[&](unsigned i) -> K {const auto found=planned.find(i);return found!=planned.end()?found->second.after:i<capacity?keys[i]:K{};};
+        const auto write=[&](unsigned i) -> K& {auto found=planned.find(i);if(found==planned.end()){
+            const auto before=i<capacity?keys[i]:K{};auto after=before;after.selected=0;found=planned.emplace(i,typename PastePart<K>::Patch{i,before,after}).first;}return found->second.after;};
+        GlobalPasteFamilyResult result;
+        for(const auto& record:records){unsigned frame;if(!frame_limits::Add(int(offset),record.frame,frame))return MMS_E_ARGUMENT;
+            unsigned current=0;
+            // Frame zero belongs to the immutable root slot. The legacy paste
+            // walk skips it when a next key exists and can create a second zero.
+            if(frame)while(read(current).frame<frame&&read(current).next)current=read(current).next;
+            if(read(current).frame==frame){fill(write(current),record);continue;}
+            std::size_t free=1;while(free<targetCapacity&&read(unsigned(free)).frame)++free;
+            if(free>=mdl::KeyPoolLimit<K>())return MMS_E_MEMORY;
+            targetCapacity=(std::max)(targetCapacity,free+1);const auto existing=read(current);auto& added=write(unsigned(free));
+            if(existing.frame<frame){write(current).next=unsigned(free);added.previous=current;added.next=0;}
+            else{write(existing.previous).next=unsigned(free);added.previous=existing.previous;write(current).previous=unsigned(free);added.next=current;}
+            added.frame=frame;fill(added,record);result.maximumInsertedFrame=(std::max)(result.maximumInsertedFrame,frame);
+        }
+        Chain<K>(targetCapacity,read);
+        // Keep source targets even when identical data only changes their mark:
+        // another family may change data in the enclosing atomic transaction.
+        for(const auto& item:planned){part->patches.push_back(item.second);result.dataChanged|=!SameKey(item.second.before,item.second.after);}
+        if constexpr(std::is_same_v<K,mdl::CameraKey>){
+            const auto parent=[&](int model,int bone){if(model==-1)return;Parent dependency(app,model,bone);
+                if(std::none_of(part->parents.begin(),part->parents.end(),[&](const auto& old){return old.slot==dependency.slot;}))part->parents.push_back(std::move(dependency));};
+            const auto pose=ReadPose<K>(app);parent(pose.parentModel,pose.parentBone);
+            for(const auto& entry:chain)parent(entry.key.parentModel,entry.key.parentBone);
+            for(const auto& patch:part->patches)if(!patch.slot||patch.after.frame)parent(patch.after.parentModel,patch.after.parentBone);
+        }
+        result.part=std::move(part);out=std::move(result);return MMS_OK;
+    });
+}
+
 template<class K,class Fill> MmsResult Plan(MMDApp& app,int frame,Fill fill,const Pose* firstPose,std::shared_ptr<HistoryChange>& out) noexcept {
     out.reset();if(frame<0||frame>frame_limits::maximum)return MMS_E_ARGUMENT;
     if(app.PlaybackActive()||app.FrameStepPlayback()||app.state.recordPlaybackStartPending||app.SceneMutationInProgress())return MMS_E_NOT_READY;
@@ -366,6 +501,30 @@ template<class K,class Fill> MmsResult Plan(MMDApp& app,int frame,Fill fill,cons
     });
 }
 }
+
+MmsResult PlanCameraKeyPastePart(MMDApp& app,const GlobalPasteSource& source,GlobalPasteFamilyResult& out) noexcept {
+    return PlanPastePart<mdl::CameraKey>(app,source.cameras,source.frameOffset,[](mdl::CameraKey& key,const mdl::CameraClipboardRecord& value){
+        if(!std::isfinite(value.distance)||value.fov<1||value.fov>179||value.perspective>1||value.parentModel<-1)throw std::invalid_argument("camera paste value");
+        for(unsigned i=0;i<3;++i)if(!std::isfinite(value.eye[i])||!std::isfinite(value.target[i]))throw std::invalid_argument("camera paste pose");
+        for(auto byte:value.interpolation)if(byte>127)throw std::invalid_argument("camera paste interpolation");
+        key.distance=value.distance;std::memcpy(key.eye,value.eye,sizeof(key.eye));std::memcpy(key.target,value.target,sizeof(key.target));
+        std::memcpy(key.interpolation,value.interpolation,sizeof(key.interpolation));key.perspective=value.perspective;key.fov=value.fov;
+        key.parentModel=value.parentModel;key.parentBone=value.parentBone;key.selected=1;
+    },out);
+}
+MmsResult PlanLightKeyPastePart(MMDApp& app,const GlobalPasteSource& source,GlobalPasteFamilyResult& out) noexcept {
+    return PlanPastePart<mdl::LightKey>(app,source.lights,source.frameOffset,[](mdl::LightKey& key,const mdl::LightClipboardRecord& value){
+        for(unsigned i=0;i<3;++i)if(!std::isfinite(value.direction[i])||!std::isfinite(value.color[i]))throw std::invalid_argument("light paste value");
+        std::memcpy(key.direction,value.direction,sizeof(key.direction));std::memcpy(key.color,value.color,sizeof(key.color));key.selected=1;
+    },out);
+}
+MmsResult PlanShadowKeyPastePart(MMDApp& app,const GlobalPasteSource& source,GlobalPasteFamilyResult& out) noexcept {
+    return PlanPastePart<mdl::SelfShadowKey>(app,source.shadows,source.frameOffset,[](mdl::SelfShadowKey& key,const mdl::ShadowClipboardRecord& value){
+        if(value.mode>2||!std::isfinite(value.distance)||value.distance<0||value.distance>1)throw std::invalid_argument("shadow paste value");
+        key.mode=value.mode;key.distance=value.distance;key.selected=1;
+    },out);
+}
+
 MmsResult PlanCameraRegistration(MMDApp& app,int frame,bool reset,std::shared_ptr<HistoryChange>& out) noexcept {
     return Plan<mdl::CameraKey>(app,frame,[&](mdl::CameraKey& key,bool existing){
         const auto pose=ReadPose<mdl::CameraKey>(app);

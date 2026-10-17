@@ -1,6 +1,7 @@
 #include "native_accessory_registration.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "native_global_registration.hpp"
+#include "native_global_paste.hpp"
 #include "scene_object_history.hpp"
 #include "mikudancestudio/accessory_layout.hpp"
 #include "mikudancestudio/animation_curve_host.hpp"
@@ -260,6 +261,165 @@ struct Registration final : HistoryChange, std::enable_shared_from_this<Registra
         return bytes;
     }
 };
+struct AccessoryPaste final : GlobalPastePart, std::enable_shared_from_this<AccessoryPaste> {
+    MMDApp& app;unsigned slot;mdl::AccessoryRecord* object;
+    std::shared_ptr<RetainedSceneObject> owner;
+    std::uint64_t identity,generation=1;std::size_t capacity;
+    int frame;Key initialPose;bool published=false;
+    std::vector<Patch> patches;std::vector<Dependency> original;
+    std::vector<Parent> parents;
+    curve_host::TrackAuthoring curves;
+    AccessoryPaste(MMDApp& a,unsigned s,std::vector<Dependency> chain)
+        :app(a),slot(s),object(a.AccessorySlot(s)),owner(RetainSceneObject(a,MMS_OBJECT_ACCESSORY,s)),
+         identity(mdl::KeyPoolIdentity(a.AccessoryKeys(s))),capacity(mdl::KeyPoolCapacity(a.AccessoryKeys(s))),
+         frame(a.CurrentFrame()),initialPose(Pose(*object)),original(std::move(chain)),
+         curves(a,curve_host::Kind::Accessory,int(s)) {
+        CaptureParent(a,initialPose,parents);
+        for(const auto& entry:original)CaptureParent(a,entry.key,parents);
+    }
+    bool Structure()const noexcept {
+        if(!owner||!owner->Present()||app.AccessorySlot(slot)!=object||!SceneObjectPresent(object,owner->Id())||
+            mdl::KeyPoolIdentity(app.AccessoryKeys(slot))!=identity||mdl::KeyPoolCapacity(app.AccessoryKeys(slot))<capacity)return false;
+        for(const auto& parent:parents)if(!parent.Current(app))return false;
+        return true;
+    }
+    struct Candidate final : PreparedGlobalPastePart {
+        std::shared_ptr<AccessoryPaste> source;bool forward,owned=false,finished=false;
+        std::uint64_t generation;int frame;Key beforePose,afterPose;
+        Key* pool;std::size_t capacity;
+        std::vector<Key> current,target;std::vector<Parent> parents;
+        std::unique_ptr<Growth> growth;
+        std::unique_ptr<curve_host::TrackAuthoring::Target> curves;
+        Candidate(std::shared_ptr<AccessoryPaste> s,bool f)
+            :source(std::move(s)),forward(f),generation(source->generation),frame(source->app.CurrentFrame()),
+             beforePose(Pose(*source->object)),afterPose(beforePose),pool(source->app.AccessoryKeys(source->slot)),
+             capacity(mdl::KeyPoolCapacity(pool)),current(pool,pool+capacity),target(current) {}
+        bool IsCurrent()const noexcept override {
+            if(owned||finished||source->generation!=generation||!source->Structure()||source->app.CurrentFrame()!=frame||
+                !Equal(beforePose,Pose(*source->object))||source->app.AccessoryKeys(source->slot)!=pool||
+                mdl::KeyPoolCapacity(pool)!=capacity||std::memcmp(pool,current.data(),capacity*sizeof(Key))||
+                !growth||!growth->Current()||!curves||!curves->IsCurrent())return false;
+            for(const auto& parent:parents)if(!parent.Current(source->app))return false;
+            return true;
+        }
+        void PublishOwned()noexcept override {
+            // The aggregate validated every part before the first mutation.
+            // Never recheck shared selection or another participant here.
+            growth->Publish();auto* keys=source->app.AccessoryKeys(source->slot);
+            for(const auto& patch:source->patches) {
+                const auto selected=keys[patch.slot].selected;
+                keys[patch.slot]=forward?patch.after:patch.before;keys[patch.slot].selected=selected;
+            }
+            ApplyPose(*source->object,afterPose);curves->Publish(source->object);
+            source->published=true;++source->generation;owned=true;
+        }
+        void PublishSelection()noexcept override {
+            auto* keys=source->app.AccessoryKeys(source->slot);
+            for(const auto& patch:source->patches)
+                if(forward||patch.slot>=source->capacity)
+                    keys[patch.slot].selected=forward?patch.after.selected:patch.before.selected;
+            finished=true;
+        }
+    };
+    MmsResult Prepare(bool forward,std::unique_ptr<PreparedGlobalPastePart>& out)override {
+        out.reset();
+        if(!Structure()||!curves.IsCurrent())return MMS_E_STALE;
+        if(generation==UINT64_MAX)return MMS_E_NOT_READY;
+        if(!published&&(!forward||app.CurrentFrame()!=frame||!Equal(initialPose,Pose(*object))))return MMS_E_STALE;
+        if(app.CurrentFrame()<0||app.CurrentFrame()>frame_limits::maximum)return MMS_E_ARGUMENT;
+        return Boundary([&]()->MmsResult {
+            auto candidate=std::make_unique<Candidate>(shared_from_this(),forward);
+            if(!published)for(const auto& entry:original)
+                if(entry.slot>=candidate->capacity||!Equal(candidate->pool[entry.slot],entry.key,false))return MMS_E_STALE;
+            std::size_t required=candidate->capacity;
+            for(const auto& patch:patches) {
+                const auto live=patch.slot<candidate->capacity?candidate->pool[patch.slot]:Key{};
+                if(!Equal(live,forward?patch.before:patch.after,false))return MMS_E_STALE;
+                required=(std::max)(required,std::size_t(patch.slot)+1);
+            }
+            candidate->growth=std::make_unique<Growth>(app,slot,required);candidate->target.resize(required);
+            for(const auto& patch:patches)candidate->target[patch.slot]=forward?patch.after:patch.before;
+            const auto chain=Chain(required,[&](unsigned index){return candidate->target[index];});
+            for(const auto& entry:chain)CaptureParent(app,entry.key,candidate->parents);
+            curve_host::NativeKeyView view;view.context=&candidate->target;view.capacity=required;
+            view.key=[](const void* context,std::uint32_t index)noexcept->const void* {
+                const auto& keys=*static_cast<const std::vector<Key>*>(context);return index<keys.size()?&keys[index]:nullptr;
+            };
+            candidate->curves=curves.Prepare(view);if(!candidate->curves)return MMS_E_STALE;
+            if(candidate->curves->Authored()) {
+                std::array<double,12> values{};if(!candidate->curves->Sample(candidate->frame,values))return MMS_E_ARGUMENT;
+                candidate->afterPose=AuthoredPose(values);
+            } else candidate->afterPose=NativePose(chain,unsigned(candidate->frame));
+            if(!Finite(candidate->beforePose)||!Finite(candidate->afterPose))return MMS_E_ARGUMENT;
+            CaptureParent(app,candidate->afterPose,candidate->parents);
+            if(!candidate->IsCurrent())return MMS_E_STALE;
+            out=std::move(candidate);return MMS_OK;
+        });
+    }
+    std::uint64_t RetainedBytes()const noexcept override {
+        std::uint64_t bytes=sizeof(*this)+4*sizeof(void*);
+        Add(bytes,patches.capacity(),sizeof(Patch));Add(bytes,original.capacity(),sizeof(Dependency));
+        Add(bytes,parents.capacity(),sizeof(Parent));Add(bytes,1,curves.RetainedBytes());return bytes;
+    }
+};
+}
+MmsResult PlanAccessoryKeyPastePart(MMDApp& app,unsigned slot,const GlobalPasteSource& source,GlobalPasteFamilyResult& out)noexcept {
+    out={};
+    return Boundary([&]()->MmsResult {
+        if(slot>=255||!app.AccessorySlot(slot)||app.PlaybackActive()||app.FrameStepPlayback()||
+            app.state.recordPlaybackStartPending||app.SceneMutationInProgress())return MMS_E_NOT_READY;
+        if(source.frameOffset>unsigned(frame_limits::maximum)||app.CurrentFrame()<0||app.CurrentFrame()>frame_limits::maximum)return MMS_E_ARGUMENT;
+        auto* pool=app.AccessoryKeys(slot);const auto capacity=mdl::KeyPoolCapacity(pool);
+        if(!mdl::KeyPoolIdentity(pool))return MMS_E_NOT_READY;
+        auto chain=Chain(capacity,[&](unsigned index){return pool[index];});
+        if(!Finite(Pose(*app.AccessorySlot(slot))))return MMS_E_ARGUMENT;
+        auto change=std::make_shared<AccessoryPaste>(app,slot,std::move(chain));
+        std::map<unsigned,Patch> patches;
+        const auto read=[&](unsigned index) {
+            const auto entry=patches.find(index);return entry!=patches.end()?entry->second.after:index<capacity?pool[index]:Key{};
+        };
+        const auto write=[&](unsigned index)->Key& {
+            auto entry=patches.find(index);
+            if(entry==patches.end()) {const auto key=index<capacity?pool[index]:Key{};
+                entry=patches.emplace(index,Patch{index,key,key}).first;entry->second.after.selected=0;}
+            return entry->second.after;
+        };
+        GlobalPasteFamilyResult result;bool any=false;
+        for(const auto& record:source.accessories) {
+            if(record.slot!=slot)continue;any=true;unsigned frame;
+            if(!frame_limits::Add(int(source.frameOffset),record.frameOffset,frame))return MMS_E_ARGUMENT;
+            Key pose{};pose.visible=record.visible;pose.shadowEnabled=record.shadowEnabled;
+            pose.parentModel=record.parentModel;pose.parentBone=record.parentBone;
+            std::memcpy(pose.position,record.position,sizeof(pose.position));std::memcpy(pose.rotation,record.rotation,sizeof(pose.rotation));
+            pose.scale=record.scale;pose.opacity=record.opacity;
+            if(!Finite(pose))return MMS_E_ARGUMENT;CaptureParent(app,pose,change->parents);
+            unsigned current=0;std::size_t hops=0;
+            while(read(current).frame<frame&&read(current).next) {
+                if(++hops>=capacity+source.accessories.size())return MMS_E_ARGUMENT;current=read(current).next;
+            }
+            const auto old=read(current);unsigned target=current;
+            if(old.frame!=frame) {
+                std::size_t free=1;while(free<mdl::KeyPoolLimit<Key>()&&read(unsigned(free)).frame)++free;
+                if(free>=mdl::KeyPoolLimit<Key>())return MMS_E_MEMORY;target=unsigned(free);
+                auto& key=write(target);
+                if(old.frame<frame) {write(current).next=target;key.previous=current;key.next=0;}
+                else {write(old.previous).next=target;key.previous=old.previous;write(current).previous=target;key.next=current;}
+                key.frame=frame;result.maximumInsertedFrame=(std::max)(result.maximumInsertedFrame,frame);
+            }
+            auto& destination=write(target);Fill(destination,pose);
+            // Unlike ordinary registration, clipboard paste copies the full
+            // visible/shadow/reserved dword and clears selection padding.
+            std::memcpy(destination.reserved,record.reserved1,sizeof(destination.reserved));
+            std::memset(destination.reservedSelection,0,sizeof(destination.reservedSelection));
+        }
+        if(!any)return MMS_OK;
+        for(const auto& entry:patches) {
+            result.dataChanged|=!Equal(entry.second.before,entry.second.after,false);
+            change->patches.push_back(entry.second);
+        }
+        const auto required=patches.empty()?capacity:(std::max)(capacity,std::size_t(patches.rbegin()->first)+1);
+        Chain(required,read);result.part=std::move(change);out=std::move(result);return MMS_OK;
+    });
 }
 MmsResult PlanAccessoryRegistration(MMDApp& app, unsigned slot, const AccessoryRegistrationInput& input,
     std::shared_ptr<HistoryChange>& out) noexcept {
