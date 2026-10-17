@@ -210,6 +210,29 @@ bool CommitBoundCameraNumber(MMDApp* app, HWND edit, HWND base) {
     plugins::RefreshBoundPoseReadout(*app);
     return true;
 }
+int FindLightNumber(MMDApp* app, HWND edit) {
+    if (!edit || !app->MainWindow()) return -1;
+    for (int field = 0; field < 6; ++field) if (edit == GetDlgItem(app->MainWindow(), 461 + field)) return field;
+    return -1;
+}
+bool CommitBoundLightNumber(MMDApp* app, HWND edit) {
+    const int field = FindLightNumber(app, edit);
+    if (field < 0 || !plugins::BoundNativePoseHistory(app)) return false;
+    if (!SendMessageA(edit, EM_GETMODIFY, 0, 0)) return true;
+    SendMessageA(edit, EM_SETMODIFY, FALSE, 0);
+    char full[256]{}; GetWindowTextA(edit, full, sizeof(full)); char* end = nullptr;
+    const double parsed = std::strtod(full, &end); const bool consumed = end && end != full;
+    while (end && std::isspace(static_cast<unsigned char>(*end))) ++end;
+    if (consumed && !*end && GetWindowTextLengthA(edit) < sizeof(full) && std::isfinite(parsed)) {
+        // Preserve the original seven-character input window and integer RGB
+        // conversion, after validating the full user input as numeric.
+        char legacy[8]{}; GetWindowTextA(edit, legacy, sizeof(legacy));
+        const auto value = static_cast<float>(field < 3 ? double(std::strtol(legacy, nullptr, 10)) * .00390625 : std::strtod(legacy, nullptr));
+        bool changed = false;
+        if (std::isfinite(value) && plugins::ApplyBoundLightField(*app, unsigned(field), value, changed) == MMS_OK && changed) return true;
+    }
+    plugins::RefreshBoundGlobalReadout(*app); return true;
+}
 bool CommitBoundPoseNumber(MMDApp* app,HWND edit,HWND base) {
     auto* history=plugins::BoundNativePoseHistory(app);
     int kind=-1,axis=-1;
@@ -448,6 +471,9 @@ void CommitEditControl(MMDApp* app, HWND edit) {  // was Sub463640
     // Commit consumes the Enter press. A focus-change commit must not create
     // a fresh press for the frame pump's key-registration path.
     s.state.enterKeyState = 3;
+#if !MMD_ORIGINAL_PROFILE
+    if (CommitBoundLightNumber(app, edit)) return;
+#endif
 
     if (edit == GetDlgItem(main, panel::kCurrentFrameEdit)) {            // frame number
         char text[256];
@@ -645,6 +671,7 @@ LRESULT CALLBACK EditSubclassProc(HWND hWnd, UINT Msg, WPARAM wParam,
         int kind=-1,axis=-1;
         boundPose=plugins::BoundNativePoseHistory(app) && (app->CameraMode() ?
             FindCameraNumber(hWnd,base)>=0 : FindPoseNumber(hWnd,base,kind,axis));
+        boundPose = boundPose || (plugins::BoundNativePoseHistory(app) && FindLightNumber(app,hWnd)>=0);
 #endif
         // The bound pose route consumes this flag itself, before changing any
         // model state. Legacy controls retain their existing commit behavior.

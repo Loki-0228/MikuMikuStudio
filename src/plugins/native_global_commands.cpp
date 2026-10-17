@@ -89,6 +89,63 @@ struct CameraPoseChange final : HistoryChange, std::enable_shared_from_this<Came
     }
     std::uint64_t RetainedBytes() const noexcept override { return sizeof(*this) + 4 * sizeof(void*); }
 };
+struct LightPoseChange final : HistoryChange, std::enable_shared_from_this<LightPoseChange> {
+    MMDApp& app;
+    const std::uint64_t poolIdentity;
+    const std::array<float, 6> before, after;
+    const unsigned changed;
+    std::uint64_t generation = 1;
+    bool published = false, applied = false;
+    static std::array<float, 6> Read(MMDApp& app) noexcept {
+        return {app.LightColor()[0], app.LightColor()[1], app.LightColor()[2],
+            app.LightDirection()[0], app.LightDirection()[1], app.LightDirection()[2]};
+    }
+    LightPoseChange(MMDApp& value, std::array<float, 6> source, std::array<float, 6> target, unsigned fields)
+        : app(value), poolIdentity(mdl::KeyPoolIdentity(value.LightKeys())), before(source), after(target), changed(fields) {}
+    bool SameScene() const noexcept { return poolIdentity && mdl::KeyPoolIdentity(app.LightKeys()) == poolIdentity; }
+    struct Candidate final : PreparedHistoryChange {
+        std::shared_ptr<LightPoseChange> source;
+        const bool forward;
+        const std::uint64_t generation;
+        const int frame;
+        const std::array<float, 6> expected;
+        const D3DLIGHT9 expectedLight;
+        bool consumed = false;
+        Candidate(std::shared_ptr<LightPoseChange> value, bool direction)
+            : source(std::move(value)), forward(direction), generation(source->generation),
+              frame(source->app.CurrentFrame()), expected(Read(source->app)), expectedLight(source->app.SceneLight()) {}
+        bool IsCurrent() const noexcept override {
+            const auto live = Read(source->app);
+            return !consumed && source->generation == generation && forward != source->applied &&
+                source->SameScene() && source->app.CurrentFrame() == frame &&
+                !std::memcmp(live.data(), expected.data(), sizeof(expected)) &&
+                !std::memcmp(&source->app.SceneLight(), &expectedLight, sizeof(expectedLight));
+        }
+        void Publish() noexcept override {
+            if (!IsCurrent()) std::terminate();
+            for (unsigned field = 0; field < 6; ++field) if (source->changed & (1u << field)) {
+                const auto value = forward ? source->after[field] : source->before[field];
+                if (field < 3) source->app.LightColor()[field] = value;
+                else source->app.LightDirection()[field - 3] = value;
+            }
+            source->app.ApplyTimelineLightState();
+            source->applied = forward; source->published = true; ++source->generation;
+            consumed = true;
+        }
+    };
+    MmsResult Prepare(bool forward, std::unique_ptr<PreparedHistoryChange>& out) override {
+        out.reset();
+        return Boundary([&]() -> MmsResult {
+            if (!SameScene() || forward == applied) return MMS_E_STALE;
+            if (generation == UINT64_MAX) return MMS_E_NOT_READY;
+            const auto current = Read(app);
+            for (float value : current) if (!std::isfinite(value)) return MMS_E_ARGUMENT;
+            if (!published && std::memcmp(current.data(), before.data(), sizeof(before))) return MMS_E_STALE;
+            out = std::make_unique<Candidate>(shared_from_this(), forward); return MMS_OK;
+        });
+    }
+    std::uint64_t RetainedBytes() const noexcept override { return sizeof(*this) + 4 * sizeof(void*); }
+};
 bool ReadLegacyNumber(HWND window, int id, double& value) noexcept {
     const auto edit = GetDlgItem(window, id);
     if (!edit) return false;
@@ -309,6 +366,32 @@ bool TryResetBoundCameraField(MMDApp* app, unsigned field, bool activateCameraTr
     ApplyBoundCameraField(*app, field, 0.0f, changed, activateCameraTrack);
     return true;
 }
+MmsResult ApplyBoundLightField(MMDApp& app, unsigned field, float value, bool& changed) noexcept {
+    changed = false;
+    return Boundary([&]() -> MmsResult {
+        auto* history = BoundNativePoseHistory(&app);
+        if (!history || !Ready(app) || !mdl::KeyPoolIdentity(app.LightKeys())) return MMS_E_NOT_READY;
+        if (field >= 6 || !std::isfinite(value)) return MMS_E_ARGUMENT;
+        if (const auto result = history->CheckNativeEdit()) return result;
+        const auto before = LightPoseChange::Read(app);
+        for (float source : before) if (!std::isfinite(source)) return MMS_E_ARGUMENT;
+        if (before[field] == value) return MMS_OK;
+        auto after = before; after[field] = value;
+        auto change = std::make_shared<LightPoseChange>(app, before, after, 1u << field);
+        std::unique_ptr<SharedHistory::NativeTransaction> transaction;
+        if (const auto result = history->PrepareNative("Edit light pose component", std::move(change), transaction)) return result;
+        if (const auto result = history->CommitNative(std::move(transaction))) return result;
+        changed = true;
+        Boundary([&]() -> MmsResult {
+            const bool selectionChanged = SelectTrack(app, curve_host::Kind::Light, 0);
+            PublishBoundPoseEdit(app, *history, false);
+            RefreshBoundGlobalReadout(app);
+            if (selectionChanged && app.CameraMode() && app.MainWindow() && app.Renderer() && app.PanelDC()) PostLanguageSweep(&app);
+            return MMS_OK;
+        });
+        return MMS_OK;
+    });
+}
 bool TryRegisterBoundCamera(MMDApp* app, HWND window) noexcept {
     return Register(app, curve_host::Kind::Camera, [window](MMDApp& host, std::shared_ptr<HistoryChange>& out) {
         const bool reset = SendMessageW(GetDlgItem(window, panel::kPhysicsFrameCheckbox), BM_GETCHECK, 0, 0) == BST_CHECKED;
@@ -350,6 +433,7 @@ bool TryRegisterBoundAccessory(MMDApp* app, HWND window) noexcept {
 void RefreshBoundGlobalReadout(MMDApp& app) noexcept {
     if (!app.MainWindow()) return;
     Boundary([&]() -> MmsResult {
+        if (app.Renderer() && app.Renderer()->device) app.Renderer()->device->SetLight(0, &app.SceneLight());
         SyncCameraFovControls(&app);
         const double shadowPosition = 10000.0 - double(app.ShadowDistance()) * 100000.0;
         if (std::isfinite(shadowPosition) && shadowPosition >= (std::numeric_limits<int>::min)() &&

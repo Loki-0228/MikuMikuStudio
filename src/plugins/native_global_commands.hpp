@@ -33,6 +33,9 @@ bool TryResetBoundCameraField(MMDApp*, unsigned field, bool activateCameraTrack 
 // changes separately from no-op; notifications cannot turn a commit into failure.
 MmsResult ApplyBoundCameraField(MMDApp&, unsigned field, float value, bool& changed,
     bool activateCameraTrack = true) noexcept;
+// Fields 0..2 color (authored float), 3..5 direction. CPU mirror publication
+// is atomic; device and readout updates happen only after journal publication.
+MmsResult ApplyBoundLightField(MMDApp&, unsigned field, float value, bool& changed) noexcept;
 // True consumes the bound command, including busy/invalid/no-op outcomes.
 // These read controls before planning and never enter a legacy registrar.
 bool TryRegisterBoundCamera(MMDApp*, HWND) noexcept;
