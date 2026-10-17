@@ -166,6 +166,8 @@ void Forget(unsigned char* model);
 // Restore the rigid matrices before the next IK/physics evaluation. Apply once
 // after that evaluation and before skinning; repeated Apply calls are harmless.
 void RestoreTransforms(unsigned char* model);
+// Read-only cache status. Never applies a pending scale or allocates storage.
+bool TransformsApplied(const unsigned char* model) noexcept;
 void ApplyTransforms(unsigned char* model);
 bool HasPose(const unsigned char* model);
 Values PoseValues(const unsigned char* model);

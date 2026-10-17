@@ -783,6 +783,10 @@ void BuildTransforms(const unsigned char* model,const Values& pose,std::vector<T
         }
     }
 }
+bool TransformsApplied(const unsigned char* model) noexcept {
+    const auto it=states.find(model);
+    return it!=states.end()&&it->second.applied;
+}
 void ApplyTransforms(unsigned char* model) {
     const auto it=states.find(model);if(it==states.end())return;
     auto& s=it->second;if(s.applied||s.current.pose.empty())return;

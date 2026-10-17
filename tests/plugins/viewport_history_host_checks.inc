@@ -49,8 +49,20 @@ void RunWheel(MMDApp* app,plugins::SharedHistory& history,int(*value)()){
             "real pending plugin transaction blocks wheel without falling through to legacy authoring");Menu(app,L"Edit probe cancel");
         app->PlaybackActive()=1;SendMessageW(wheelOwner,WM_MOUSEWHEEL,MAKEWPARAM(0,120),0);app->PlaybackActive()=0;
         Check(Same(Read(*app),pendingBefore),"real playback blocks bound wheel camera mutation");
-        app->CameraMode()=0;SendMessageW(wheelOwner,WM_MOUSEWHEEL,MAKEWPARAM(0,120),0);app->CameraMode()=1;
-        Check(Same(Read(*app),pendingBefore),"real unmigrated model-mode wheel is consumed instead of old-path mutation");
+        const auto following=app->state.followCameraEnabled;app->state.followCameraEnabled=0;app->CameraMode()=0;
+        auto modelExpected=pendingBefore;
+        if(detached)modelExpected[6]=static_cast<float>(120.0*0.05000000074505806+static_cast<double>(modelExpected[6]));
+        else modelExpected[6]=120.0f*0.05f+modelExpected[6];
+        SendMessageW(wheelOwner,WM_MOUSEWHEEL,MAKEWPARAM(0,120),0);
+        Check(Same(Read(*app),modelExpected)&&history.UndoCount()==(mode==plugins::SharedHistory::RecordingMode::AllOperations?1:0),
+            "real migrated model-mode wheel adjusts distance with its main/detached legacy math and recording policy");
+        if(mode==plugins::SharedHistory::RecordingMode::AllOperations){
+            app->CameraMode()=1;Menu(app,L"Edit probe undo");
+            Check(Same(Read(*app),pendingBefore),"real model wheel undo restores distance after switching to camera mode");
+            Menu(app,L"Edit probe redo");Check(Same(Read(*app),modelExpected),"real model wheel redo keeps the exact detached/main result");
+            Menu(app,L"Edit probe undo");
+        }
+        app->CameraMode()=1;app->state.followCameraEnabled=following;
         Check(history.Reset()==MMS_OK,"real wheel fixture resets its journal");history.Collect();
     }
     app->FloatingWindow()=previousFloating;SetWindowLongPtrW(floating,GWLP_WNDPROC,reinterpret_cast<LONG_PTR>(previousProcedure));DestroyWindow(floating);

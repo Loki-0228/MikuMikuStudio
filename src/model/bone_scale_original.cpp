@@ -75,6 +75,7 @@ void Undo(unsigned char*, int) {}
 void Redo(unsigned char*, int) {}
 void Forget(unsigned char*) {}
 void RestoreTransforms(unsigned char*) {}
+bool TransformsApplied(const unsigned char*) noexcept { return false; }
 void ApplyTransforms(unsigned char*) {}
 bool HasPose(const unsigned char*) { return false; }
 Values PoseValues(const unsigned char*) { return {}; }

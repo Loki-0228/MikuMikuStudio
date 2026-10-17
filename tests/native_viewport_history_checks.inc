@@ -71,7 +71,7 @@ void ViewportPreflight(){
     plugins::StorageStore storage;plugins::SharedHistory budgetHistory(storage,{},8,1);
     Check(plugins::BeginViewportCameraGesture(*f.app,budgetHistory,nullptr,WM_RBUTTONDOWN)==MMS_E_MEMORY&&ViewportEqual(ViewportRead(*f.app),before),"budget rejected before first preview");
     f.app->PlaybackActive()=1;Check(plugins::BeginViewportCameraGesture(*f.app,f.history,nullptr,WM_RBUTTONDOWN)==MMS_E_BUSY,"playback rejects gesture");f.app->PlaybackActive()=0;
-    f.app->CameraMode()=0;Check(plugins::BeginViewportCameraGesture(*f.app,f.history,nullptr,WM_RBUTTONDOWN)==MMS_E_BUSY,"unmigrated model-follow camera gesture fails closed");f.app->CameraMode()=1;
+    f.app->CameraMode()=0;Check(plugins::BeginViewportCameraGesture(*f.app,f.history,nullptr,WM_RBUTTONDOWN)==MMS_E_BUSY,"camera-only gesture entry refuses model view which has its own guarded participant");f.app->CameraMode()=1;
     Check(plugins::BeginViewportCameraGesture(*f.app,f.history,nullptr,WM_RBUTTONDOWN)==MMS_OK,"stale revision fixture starts");
     f.app->CameraYaw()+=1;plugins::AcceptViewportCameraPreview(*f.app);
     Check(f.history.Reset()==MMS_OK,"scene reset invalidates pending camera transaction");bool changed=true;
@@ -208,7 +208,7 @@ void ViewportWheelModesAndPreflight(){
     f.app->PlaybackActive()=1;
     Check(plugins::AdjustViewportCameraWheel(*f.app,f.history,120,false,changed)==MMS_E_BUSY&&!changed,"playback rejects bound wheel without authoring");
     f.app->PlaybackActive()=0;f.app->CameraMode()=0;
-    Check(plugins::AdjustViewportCameraWheel(*f.app,f.history,120,false,changed)==MMS_E_BUSY&&!changed,"model-follow wheel remains closed until separately migrated");
+    Check(plugins::AdjustViewportCameraWheel(*f.app,f.history,120,false,changed)==MMS_E_BUSY&&!changed,"camera-only wheel entry refuses model view which has its own guarded participant");
     f.app->CameraMode()=1;
     Check(plugins::BeginViewportCameraGesture(*f.app,f.history,nullptr,WM_MBUTTONDOWN)==MMS_OK,"wheel conflict fixture begins drag");
     f.app->CameraPositionX()+=2;plugins::AcceptViewportCameraPreview(*f.app);const auto preview=ViewportRead(*f.app);
@@ -254,10 +254,10 @@ void ViewportWheelMessageAdmission(){
     f.app->MouseX()=200;
     Check(!plugins::HandleBoundViewportMessage(*f.app,nullptr,WM_MOUSEWHEEL,MAKEWPARAM(0,120),0)&&!f.history.UndoCount(),
         "main-window sidebar wheel stays a timeline scroll instead of a camera history edit");
-    f.app->MouseX()=500;f.app->CameraMode()=0;
+    f.app->MouseX()=500;f.app->CameraMode()=0;f.app->state.followCameraEnabled=1;f.app->CameraParentModel()=0;
     Check(plugins::HandleBoundViewportMessage(*f.app,nullptr,WM_MOUSEWHEEL,MAKEWPARAM(0,120),0)&&ViewportEqual(ViewportRead(*f.app),before),
-        "bound unmigrated model-mode wheel is consumed without legacy fallback");
-    f.app->CameraMode()=1;
+        "bound matched-follow model wheel is consumed without entering its pending hint path");
+    f.app->CameraMode()=1;f.app->state.followCameraEnabled=0;f.app->CameraParentModel()=-1;
     const auto owner=CreateWindowExW(0,L"STATIC",L"wheel capture fixture",WS_OVERLAPPED,0,0,200,100,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
     Check(owner!=nullptr,"wheel capture fixture owns a hidden window");SetCapture(owner);
     bool changed=true;

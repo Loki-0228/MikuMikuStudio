@@ -408,9 +408,14 @@ void CrossModelJournal(){
 #include "native_legacy_global_retime_checks.inc"
 #include "native_numpad_view_checks.inc"
 #include "native_numpad_dispatch_checks.inc"
+#include "native_model_viewport_history_checks.inc"
 int main(int argc,char** argv){
     std::setvbuf(stdout,nullptr,_IONBF,0);
     const auto run=[](const char* name,void(*test)()){std::printf("RUN %s\n",name);test();};
+    if(argc==2&&!std::strcmp(argv[1],"--model-viewport-only")) {
+        run("NativeModelViewportHistoryChecks",NativeModelViewportHistoryChecks);
+        std::printf("PASS native model viewport: %u checks\n",checks);return 0;
+    }
     if(argc==2&&!std::strcmp(argv[1],"--numpad-only")) {
         run("NativeNumpadViewChecks",NativeNumpadViewChecks);
         run("NativeNumpadDispatchChecks",NativeNumpadDispatchChecks);
@@ -418,6 +423,7 @@ int main(int argc,char** argv){
     }
     if(argc==2&&!std::strcmp(argv[1],"--viewport-only")) {
         run("NativeViewportHistoryChecks",NativeViewportHistoryChecks);
+        run("NativeModelViewportHistoryChecks",NativeModelViewportHistoryChecks);
         std::printf("PASS viewport history: %u checks\n",checks);return 0;
     }
     if(argc==2&&!std::strcmp(argv[1],"--model-source-only")) {
@@ -628,6 +634,7 @@ int main(int argc,char** argv){
     run("NativeModelSourceChecks",NativeModelSourceChecks);
     run("NativeVmdAccessoryChecks",NativeVmdAccessoryChecks);
     run("NativeViewportHistoryChecks",NativeViewportHistoryChecks);
+    run("NativeModelViewportHistoryChecks",NativeModelViewportHistoryChecks);
     run("NativeNumpadViewChecks",NativeNumpadViewChecks);
     run("NativeNumpadDispatchChecks",NativeNumpadDispatchChecks);
     run("NativeTrackRegistrationChecks",NativeTrackRegistrationChecks);

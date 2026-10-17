@@ -3,6 +3,7 @@
 #include "native_pose_scope.hpp"
 #include "native_object_commands.hpp"
 #include "mikudancestudio/animation_curve_editor.hpp"
+#include "mikudancestudio/bone_scale.hpp"
 #include "mikudancestudio/mmd_app.hpp"
 #include "mikudancestudio/model.hpp"
 #include "mikudancestudio/panel_controls.hpp"
@@ -17,6 +18,11 @@ void RefreshBoundPoseReadout(MMDApp& app) noexcept {
         const auto* model = mdl::Mdl(app.SelectedModel());
         canRead = model && (model->selectedBone < 0 || (model->boneTable &&
             static_cast<std::uint32_t>(model->selectedBone) < model->boneCount));
+        // Reading a nonidentity scale normally installs its pending bone
+        // transforms. History and cancellation refreshes must stay read-only.
+        if (canRead && model->selectedBone >= 0)
+            canRead = bone_scale::Identity(bone_scale::Pose(app.SelectedModel(), model->selectedBone)) ||
+                bone_scale::TransformsApplied(app.SelectedModel());
     }
     if (canRead) Boundary([&]() -> MmsResult { PostViewRefresh(&app); return MMS_OK; });
 }
