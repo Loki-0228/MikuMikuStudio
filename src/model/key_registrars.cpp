@@ -93,6 +93,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include "mikudancestudio/bone_scale.hpp"
+#include "mikudancestudio/bone_curve.hpp"
 #include <Windows.h>
 
 #include <cmath>
@@ -539,6 +540,7 @@ bool RegisterBoneKey(unsigned char* model, unsigned char* rec, int frameOffset,
             keys[free_].frame = frame;
             bone_scale::ApplyRegistration(model, free_, true);
             FillBoneRecord(keys[free_], rec, writePos);
+            bone_curve::ReconcileRegisteredFrame(model,boneIdx,int(frame));
             if (frame > mdl::Mdl(m)->maxFrame)
                 mdl::Mdl(m)->maxFrame = frame;
             return true;
@@ -577,6 +579,7 @@ bool RegisterBoneKey(unsigned char* model, unsigned char* rec, int frameOffset,
         FillBoneRecord(keys[free_], rec, writePos);
     }
     // max-frame bump uses the RAW frameOffset here (original quirk)
+    bone_curve::ReconcileRegisteredFrame(model,boneIdx,int(frame));
     if (static_cast<std::uint32_t>(frameOffset) > mdl::Mdl(m)->maxFrame)
         mdl::Mdl(m)->maxFrame = static_cast<std::uint32_t>(frameOffset);
     return true;
@@ -673,6 +676,7 @@ bool RegisterMirroredBoneKey(unsigned char* model, unsigned char* rec,
             keys[free_].frame = frame;
             bone_scale::ApplyRegistration(model, free_, true);
             FillMirroredBoneRecord(keys[free_], rec);
+            bone_curve::ReconcileRegisteredFrame(model,boneIdx,int(frame));
             if (frame > mdl::Mdl(m)->maxFrame)
                 mdl::Mdl(m)->maxFrame = frame;
             return true;
@@ -707,6 +711,7 @@ bool RegisterMirroredBoneKey(unsigned char* model, unsigned char* rec,
         bone_scale::ApplyRegistration(model, free_, true);
         FillMirroredBoneRecord(keys[free_], rec);
     }
+    bone_curve::ReconcileRegisteredFrame(model,boneIdx,int(frame));
     if (static_cast<std::uint32_t>(frameOffset) > mdl::Mdl(m)->maxFrame)
         mdl::Mdl(m)->maxFrame = static_cast<std::uint32_t>(frameOffset);
     return true;

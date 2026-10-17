@@ -1,3 +1,40 @@
+// Exercise the same default-directory classifier through both production JSON
+// and the explicit legacy-file seam. Never create backups in a volume root.
+void SettingsDirectoryNormalizationChecks(const fs::path& folder,const as::Settings& current,bool overrideMode){
+    std::wstring error;
+    if(!overrideMode)Check(system_settings::WriteSection("history","{\"recordAdjustments\":true,\"steps\":47,\"memoryMiB\":96}")==system_settings::Result::Ok,
+        "seed history mode and limits before autosave preference updates");
+    unsigned ordinal=0;
+    for(const wchar_t* suffix:{L"\\",L"/",L"\\\\",L"/./",L"\\.\\"}){
+        auto trailing=current;trailing.directory+=suffix;
+        const auto legacyTarget=root/(L"trailing-"+std::to_wstring(++ordinal)+L".ini");
+        Check(as::SaveSettings(legacyTarget,trailing),"save default backup path with trailing separator through legacy helper");
+        wchar_t mode[32]{},directory[64]{};
+        GetPrivateProfileStringW(L"autosave",L"directoryMode",L"",mode,32,legacyTarget.c_str());
+        GetPrivateProfileStringW(L"autosave",L"directory",L"",directory,64,legacyTarget.c_str());
+        Check(!wcscmp(mode,L"executable")&&!wcscmp(directory,L"data/backups")&&as::LoadSettings(legacyTarget).directory==(folder/L"data"/L"backups").wstring(),
+            "trailing separators preserve portable default mode and never persist an installation absolute address");
+        Check(as::Configure(nullptr,trailing,error),"configure trailing default directory through production persistence path");
+        if(!overrideMode){
+            std::string body;Check(system_settings::ReadSection("autosave",body)==system_settings::Result::Ok,"read normalized central autosave preferences");
+            const auto saved=settings_json::Object(body);
+            Check(settings_json::String(saved,"directoryMode")=="executable"&&settings_json::String(saved,"directory")=="data/backups",
+                "central JSON uses the same portable default path normalization as explicit INI");
+            Check(system_settings::ReadSection("history",body)==system_settings::Result::Ok,"history section survives autosave JSON updates");
+            const auto history=settings_json::Object(body);
+            Check(settings_json::Bool(history,"recordAdjustments",false)&&settings_json::UInt(history,"steps",0)==47&&settings_json::UInt(history,"memoryMiB",0)==96,
+                "autosave updates preserve history mode step limit and memory budget");
+        }else Check(!fs::exists(folder/L"data"/L"settings.json"),"legacy test override never creates central production settings");
+    }
+    Check(as::Configure(nullptr,current,error),"restore original cached autosave directory after separator checks");
+    auto custom=current;custom.directory=fs::path(current.directory).root_path().wstring();
+    const auto rootTarget=root/L"custom-volume-root.ini";
+    Check(as::SaveSettings(rootTarget,custom),"serialize an explicitly selected volume root only into a disposable INI");
+    wchar_t mode[32]{};GetPrivateProfileStringW(L"autosave",L"directoryMode",L"",mode,32,rootTarget.c_str());
+    Check(!wcscmp(mode,L"custom")&&as::LoadSettings(rootTarget).directory==custom.directory,
+        "directory normalization preserves a custom drive root instead of walking above it");
+}
+
 // Run before app initialization and before the ordinary suite's test override.
 void SettingsLocationChecks(const fs::path& executable,const std::wstring& mode) {
     const auto folder=executable.parent_path();const auto config=folder/L"data"/L"settings.json";
@@ -87,6 +124,7 @@ void SettingsLocationChecks(const fs::path& executable,const std::wstring& mode)
             Check(settings_json::String(saved,"directoryMode")=="executable","default directory persists as executable-relative mode");
             Check(settings_json::String(saved,"directory")=="data/backups","default backup stores no previous EXE absolute address");
         }
+        SettingsDirectoryNormalizationChecks(folder,current,overrideMode);
     }
     if(mode==L"--settings-custom"){
         auto custom=current;custom.directory=(root/L"custom").wstring();custom.enabled=true;custom.intervalMinutes=2;custom.maxBackups=7;

@@ -75,7 +75,7 @@ void TransformCheckScales(Fixture& actual,Fixture& expected) {
 }
 void TransformRangeOracle(BoneRegistrationFixture& f,const plugins::BoneRangeScaleOptions& o) {
     auto& fixture=f.second;auto& model=*fixture.m;auto* keys=model.boneKeys;
-    struct Copy { unsigned owner; std::array<unsigned char,84> data{}; bone_scale::Matrix scale; };
+    struct Copy { unsigned owner; std::array<unsigned char,84> data{}; bone_scale::Matrix scale; bone_scale::Curve curve; };
     std::vector<Copy> copies;const auto capacity=mdl::BoneKeyCapacity(keys);
     for(std::size_t slot=0;slot<capacity;++slot) {
         auto& key=keys[slot];key.allocated=0;
@@ -92,7 +92,7 @@ void TransformRangeOracle(BoneRegistrationFixture& f,const plugins::BoneRangeSca
         std::memcpy(copy.data.data()+52,key.position,sizeof(key.position));
         copy.data[64]=key.physicsDisabled;
         std::memcpy(copy.data.data()+65,key.interpolation,sizeof(key.interpolation));
-        copy.scale=bone_scale::Key(fixture.raw(),int(slot));copies.push_back(copy);
+        copy.scale=bone_scale::Key(fixture.raw(),int(slot));copy.curve=bone_scale::KeyCurve(fixture.raw(),int(slot));copies.push_back(copy);
     }
     if(copies.empty())return;
     for(std::size_t slot=0;slot<mdl::MorphKeyCapacity(model.morphKeys);++slot)model.morphKeys[slot].allocated=0;
@@ -101,7 +101,7 @@ void TransformRangeOracle(BoneRegistrationFixture& f,const plugins::BoneRangeSca
     BeginRangeScaleBoneUndo(fixture.raw(),f.app->CurrentFrame(),int(copies.size()));
     ResetBoneKeyCursor(fixture.raw());const auto selected=model.selectedBone;
     for(auto& copy:copies) {
-        model.selectedBone=int(copy.owner);bone_scale::Registration scale(copy.scale);
+        model.selectedBone=int(copy.owner);bone_scale::Registration scale(copy.scale,copy.curve);
         Check(RegisterBoneKey(fixture.raw(),copy.data.data(),int(o.start),1),"legacy range oracle reinserts saved bone key");
     }
     model.selectedBone=selected;
@@ -191,8 +191,12 @@ void TransformFreeCurveAndRing() {
         const auto curves=bone_curve::AuthoringState::Capture(f.first.raw());
         plugins::BoneRangeScaleOptions options;options.start=10;options.end=20;options.scale=2;
         auto change=TransformPlan(f,range,options);TransformCommit(f,change);
-        Check(!bone_curve::Has(f.first.raw(),0)&&(!range?bone_curve::Has(f.first.raw(),1):!bone_curve::Has(f.first.raw(),1)),
-            "native transform invalidates only the authored free tracks it changed");
+        bone_curve::Tracks changedCurve,otherCurve;
+        Check(bone_curve::Read(f.first.raw(),0,changedCurve)&&bone_curve::Read(f.first.raw(),1,otherCurve)&&
+            changedCurve[0].keys.back().frame==(range?30:0)&&otherCurve[0].keys.back().frame==(range?30:20)&&
+            (!range||(changedCurve[0].keys.front().outWeight==.2&&changedCurve[0].keys.back().value==12&&changedCurve[6].keys.back().value==2)),
+            "native deletion/retime keeps authored curves and surviving endpoints, including retimed free handles and scale values");
+        const auto transformedCurves=bone_curve::AuthoringState::Capture(f.first.raw());
         const auto transformed=RegistrationKeys(f.first);
         for(unsigned n=0;n<100;++n)PushBoneEditUndo(f.app.get());
         const auto overwritten=PoseRingDigest(f.first);
@@ -206,8 +210,9 @@ void TransformFreeCurveAndRing() {
         Check(bone_curve::Read(f.first.raw(),0,read)&&read[0].keys.front().outWeight==.2&&read[6].keys.back().value==2,
             "restored free-curve hash accepts restored native keys and scale");
         Check(f.history.History(true)==MMS_OK&&SameRegistrationKeys(f.first,transformed)&&
-            PoseRingDigest(f.first)==overwritten&&!bone_curve::Has(f.first.raw(),0),
-            "compound redo remains independent of the overwritten legacy ring");
+            PoseRingDigest(f.first)==overwritten&&bone_curve::Has(f.first.raw(),0)&&
+            bone_curve::AuthoringState::Capture(f.first.raw())->Equals(*transformedCurves),
+            "compound redo restores reconciled authoring independently of the overwritten legacy ring");
     }
 }
 void TransformRangeBoneTypes() {

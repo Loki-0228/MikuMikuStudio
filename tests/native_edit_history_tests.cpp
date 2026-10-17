@@ -402,6 +402,7 @@ void CrossModelJournal(){
 #include "native_global_sparse_registration_checks.inc"
 #include "native_accessory_sparse_registration_checks.inc"
 #include "native_gravity_sparse_registration_checks.inc"
+#include "native_bone_curve_sync_checks.inc"
 int main(int argc,char** argv){
     std::setvbuf(stdout,nullptr,_IONBF,0);
     const auto run=[](const char* name,void(*test)()){std::printf("RUN %s\n",name);test();};
@@ -553,6 +554,10 @@ int main(int argc,char** argv){
         run("NativeCameraInterpolationChecks",NativeCameraInterpolationChecks);
         std::printf("PASS native camera interpolation: %u checks\n",checks);return 0;
     }
+    if(argc==2&&!std::strcmp(argv[1],"--bone-curve-sync-only")) {
+        run("NativeBoneCurveSyncChecks",NativeBoneCurveSyncChecks);
+        std::printf("PASS native bone curve sync: %u checks\n",checks);return 0;
+    }
     if(argc==2&&!std::strcmp(argv[1],"--sparse-registration-only")) {
         run("NativeTrackRegistrationChecks",NativeTrackRegistrationChecks);
         run("NativeGlobalSparseRegistrationChecks",NativeGlobalSparseRegistrationChecks);
@@ -600,6 +605,7 @@ int main(int argc,char** argv){
     run("NativeGlobalSparseRegistrationChecks",NativeGlobalSparseRegistrationChecks);
     run("NativeAccessorySparseRegistrationChecks",NativeAccessorySparseRegistrationChecks);
     run("NativeGravitySparseRegistrationChecks",NativeGravitySparseRegistrationChecks);
+    run("NativeBoneCurveSyncChecks",NativeBoneCurveSyncChecks);
     run("PhysicsImportChecks",PhysicsImportChecks);
     run("ImportTextureCacheChecks",ImportTextureCacheChecks);
     run("AccessoryImportChecks",AccessoryImportChecks);

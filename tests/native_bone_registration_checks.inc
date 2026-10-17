@@ -106,8 +106,12 @@ void RegistrationCurveAndRingChecks() {
     f.first.bones[0].trans[0]=9;f.first.dirty[0]=1;bone_scale::SetPose(f.first.raw(),0,Scale(2));
     CommitRegistration(f,0,10);
     const unsigned inserted=f.first.m->boneKeys[0].next;
+    bone_curve::Tracks registeredTracks;Check(bone_curve::Read(f.first.raw(),0,registeredTracks),"registered native pose retains its free authoring");
+    const auto added=std::find_if(registeredTracks[0].keys.begin(),registeredTracks[0].keys.end(),[](const auto& key){return key.frame==10;});
     Check(f.first.m->boneKeys[inserted].frame==10&&bone_scale::Key(f.first.raw(),int(inserted))==Scale(2)&&
-        !bone_curve::Has(f.first.raw(),0),"registering native pose replaces free curve and stores the current nonuniform scale key");
+        added!=registeredTracks[0].keys.end()&&added->value==9&&registeredTracks[0].keys.back().frame==20&&registeredTracks[0].keys.back().value==12,
+        "registering native pose adds its explicit free-curve key and scale while preserving the other authored endpoint");
+    const auto registeredAuthoring=bone_curve::AuthoringState::Capture(f.first.raw());
     const auto registered=RegistrationKeys(f.first);
     // Exercise real ring capture, including scale and curve rings, over three
     // complete wraps. It must not supply any payload to this journal node.
@@ -120,8 +124,8 @@ void RegistrationCurveAndRingChecks() {
     bone_curve::Tracks read;Check(bone_curve::Read(f.first.raw(),0,read)&&read[0].keys.back().value==12&&
         read[0].keys.front().outWeight==.2,"restored free curve hash validates against restored native and scale keys");
     Check(PoseRingDigest(f.first)==overwrittenRing&&f.history.History(true)==MMS_OK&&
-        SameRegistrationKeys(f.first,registered)&&!bone_curve::Has(f.first.raw(),0),
-        "redo invalidates free curve again without replacing the newer legacy ring");
+        SameRegistrationKeys(f.first,registered)&&bone_curve::Has(f.first.raw(),0)&&bone_curve::AuthoringState::Capture(f.first.raw())->Equals(*registeredAuthoring),
+        "redo restores the complete reconciled free authoring without replacing the newer legacy ring");
 }
 void RegistrationCommandAndCrossModelChecks() {
     {

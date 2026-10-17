@@ -4,6 +4,7 @@
 #include "../src/plugins/native_morph_commands.hpp"
 #include "mikudancestudio/bone_key_pool.hpp"
 #include "mikudancestudio/bone_scale.hpp"
+#include "mikudancestudio/bone_curve.hpp"
 #include <shlobj.h>
 #include "mikudancestudio/key_pool.hpp"
 #include "mikudancestudio/animation_curve_editor.hpp"
@@ -424,6 +425,7 @@ void ObjectMenuDeletion(MMDApp* app, plugins::SharedHistory& history, const MmsS
 #include "vmd_model_scale_host_checks.inc"
 #include "viewport_history_host_checks.inc"
 #include "sparse_registration_host_checks.inc"
+#include "bone_curve_sync_host_checks.inc"
 void Run(MMDApp* app) {
     using namespace plugins;
     const auto initial = GetModuleHandleW(L"manager_edit_probe.dll");
@@ -470,6 +472,7 @@ void Run(MMDApp* app) {
     vmd_model_scale_host_checks::Run(app,*history,value);
     viewport_history_host_checks::Run(app,*history,value);
     sparse_registration_host_checks::Run(app,*history,value);
+    bone_curve_sync_host_checks::Run(app,*history,value);
     {
         auto extra=RetainSceneObject(*app,MMS_OBJECT_ACCESSORY,1);
         auto removal=extra->CaptureRemoval();std::unique_ptr<SharedHistory::NativeTransaction> token;

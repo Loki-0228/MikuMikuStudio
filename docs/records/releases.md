@@ -3,7 +3,8 @@
 本页按功能归并实现、诊断与验收资料。各记录中的「当前」「已完成」只适用于其注明的源码、构建和测试条件；当前使用入口见[文档导航](../README.md)。
 
 ## 记录索引
-- [v2026.10.17.1 发布说明](#release-v2026-10-17-1)
+- [v2026.10.17.1 正式发布说明](#release-v2026-10-17-1)
+- [v2026.10.17.1-pre.1 预发布说明](#release-v2026-10-17-1-pre-1)
 - [v2026.10.15.2 发布说明](#release-v2026-10-15-2)
 - [v2026.10.15.1 发布说明](#release-v2026-10-15-1)
 - [MikuDanceStudio v2026.10.14.6 release notes / 发布说明 / リリースノート](#release-v2026-10-14-6)
@@ -16,7 +17,7 @@
 
 <a id="release-v2026-10-17-1"></a>
 
-本节为待发布说明；本次仅审查源码和隔离验证，不表示已打包或替换正式程序。
+本节为正式发布说明。
 
 <!-- release-notes:v2026.10.17.1:begin -->
 ## MikuMikuStudio v2026.10.17.1
@@ -29,23 +30,26 @@ Windows x64
 
 ### English
 
-This release includes the changes since `v2026.10.15.2`.
+Changes since the last published release, `v2026.10.15.2`.
 
 #### What's new
 
-- Fixed interpolation and tangent buttons failing to apply changes immediately in the curve editor. Choosing Step, Linear, Bezier, or a tangent setting applies it directly. Changes to multiple selected keys can be undone together.
-- Clicking a channel name now keeps subsequent Space and Enter actions on that channel instead of the previously focused row.
-- Separated persistent handle modes from one-time curve presets. Free, Aligned, and Automatic control handle editing. Flat, Straighten, Ease in, and Ease out apply once when clicked. Intervals that need handles switch to Bezier. Later numeric edits no longer reapply the preset.
-- Fixed small sampling errors at native camera Bezier keyframes. Writing unchanged camera curves back through the editor and saving a PMM no longer introduces these keyframe value offsets.
-- Fatal errors now produce timestamped `error-*.log` files in `backups` beside the EXE. Logs include the exception, call stack, recent runtime messages, and backup result. When the scene can be saved safely, MMS also attempts a crash backup there. Disabling periodic autosave leaves crash recovery enabled.
-- Added a popup when a backup folder reaches its file limit. It lists full folders and the current overwrite policy. The popup appears once per launch and returns after a restart if a folder is still full. Existing settings still apply: overwrite mode replaces old backups; otherwise, new backups stop in full folders. Playback, export, and other dialogs defer the popup.
-- With MME installed, Auto Save Mapping File is checked by default when no preference has been saved. Saving a PMM also saves its effect assignments to the matching `.emm` file. An existing choice to disable this option is preserved.
+- Curve editor interpolation and tangent choices now apply immediately, including changes to multiple selected keys and undo.
+- Separated handle modes from presets. Free, Aligned, and Automatic remain active while editing. Flat, Straighten, Ease in, and Ease out apply once, switching the required intervals to Bezier without being reapplied by later numeric edits.
+- Synchronized key selection, registration, deletion, and timeline moves between the curve editor and the main window. Keyboard actions follow the selected channel and no longer trigger duplicate main-window operations. External edits refresh the curves before another write. Editing interpolation preserves the native key selection.
+- Native bone key registration, deletion, retiming, and value changes preserve unaffected free curves, handles, and independent channel keys. Undo, redo, and PMM/VMD save and reload retain these curves.
+- Fixed camera registration at frame 0 and later frames making earlier keys disappear or moving the camera unexpectedly. Exact camera keyframes now use their stored values, preventing small sampling errors from being written back during curve editing and PMM saving.
+- Fatal errors generate timestamped `error-*.log` files under `data/backups` beside the EXE, recording the exception, call stack, recent activity, and backup result. MMS attempts a crash backup when the scene can be saved safely, even with periodic autosave disabled.
+- Added a backup-capacity popup that appears once per launch and returns after a restart if the folder remains full. It reports the current overwrite policy; automatic replacement continues when enabled. Playback, export, and other dialogs defer the popup.
+- With MME installed, Auto Save Mapping File is checked by default when no preference has been saved. Saving a PMM also saves the matching `.emm` effect assignments. An existing choice to disable this option is preserved.
+- Autosave, antialiasing, processor and handle-position settings, and recent projects now use `data` beside the EXE. Separate installations keep separate settings. The default backup folder follows a moved installation; custom folders remain unchanged.
+- Native video loading retries basic processing when advanced processing fails. H.264 export can use the older encoder-control interface when the extended interface is unavailable.
 
 #### Download and use
 
 Choose the full package for the features above. The minimal package retains the original MMD feature set and encoding limits, without the full build's extended editing and export features. Extract each package into a separate folder and run `MikuMikuDance.exe`. Models, personal settings, MME, MMV, and FFmpeg are not included.
 
-Keep the matching `.emm` file with the PMM when moving or sharing a project that uses MME effects. Crash backups and error logs are stored in `backups` beside the EXE. Periodic autosave continues to use the folder selected in its settings.
+Keep the matching `.emm` file with the PMM when moving or sharing a project that uses MME effects. Crash backups and error logs are stored in `data/backups` beside the EXE. Periodic autosave continues to use the folder selected in its settings.
 
 #### Optional NVIDIA fix
 
@@ -55,23 +59,26 @@ Neither application package includes the NVIDIA fix. If needed, download `MMSNvi
 
 ### 中文
 
-本版本包含自 `v2026.10.15.2` 以来的更新。
+以下为相较上次正式发布 `v2026.10.15.2` 的更新。
 
 #### 更新内容
 
-- 修复曲线编辑器点击插值类型或切线按钮后未立即生效的问题。选择「阶跃」「线性」「贝塞尔」或切线设置后直接应用，多选关键帧可批量修改并整体撤销。
-- 修复点击通道名称后，空格和回车仍可能作用于旧通道的问题。
-- 区分持续生效的手柄模式与一次性曲线预设。「自由」「对齐」「自动」控制手柄编辑方式；「水平」「拉直」「缓入」「缓出」仅在点击时应用。需要手柄的区间自动切换为贝塞尔，后续数值修改不再重复套用预设。
-- 修复原生镜头贝塞尔曲线在关键帧处采样产生微小偏差的问题，避免未修改镜头曲线时，经编辑器写回和 PMM 保存后关键帧数值发生偏移。
-- 致命错误日志保存到 EXE 所在目录的 `backups` 文件夹，文件名为带时间戳的 `error-*.log`，记录异常、调用栈、最近运行信息及备份结果。场景状态允许安全保存时，程序还会尝试在该目录生成崩溃备份；关闭定时自动保存后仍保留此功能。
-- 备份文件夹达到数量上限时弹窗提醒，并显示已满目录和当前覆盖策略。每次启动仅提示一次，重启后仍满会再次提示。弹窗沿用现有设置：允许覆盖时继续替换旧备份，禁止覆盖时停止向已满目录新增备份。播放、导出或其他对话框占用期间延后提示。
-- 安装 MME 后，未配置过的「自动保存效果分配文件」默认勾选。保存 PMM 时同步保存同名 `.emm` 特效分配文件；已有的手动关闭设置继续保留。
+- 曲线编辑器的插值类型和切线设置点击后立即生效，支持多选关键帧批量修改和撤销。
+- 区分手柄模式与一次性预设。「自由」「对齐」「自动」持续控制手柄编辑；「水平」「拉直」「缓入」「缓出」仅在点击时应用，按需切换为贝塞尔，后续数值修改不再重复套用预设。
+- 同步曲线编辑器与主界面的关键帧选区、注册、删除和时间轴移动。键盘操作跟随当前通道，不再重复触发主界面操作；外部修改后先刷新曲线，防止旧数据覆盖新修改。调整插值时保留原始轨道选区。
+- 原始骨骼轨道注册、删除、移动关键帧或修改数值时，保留未改动的自由曲线、手柄及各通道独立的关键帧。撤销、重做及 PMM/VMD 保存重读均保留这些曲线。
+- 修复在第 0 帧及后续帧注册镜头后，前面的关键帧消失或镜头异常跳位的问题。精确落在镜头关键帧时直接使用已保存的原值，避免微小采样误差在曲线编辑和 PMM 保存时写回。
+- 致命错误会在 EXE 同级 `data/backups` 中生成带时间戳的 `error-*.log`，记录异常、调用栈、最近运行信息及备份结果。场景可安全保存时尝试生成崩溃备份，关闭定时自动保存后仍保留此功能。
+- 备份数量达到上限时弹窗提醒，每次启动只提示一次，重启后仍满会再次提示。提示显示当前覆盖策略，允许覆盖时继续自动替换旧备份。播放、导出或其他对话框占用期间延后提示。
+- 安装 MME 后，未配置过的「自动保存效果分配文件」默认勾选。保存 PMM 时同步保存同名 `.emm` 特效分配文件，保留已有的手动关闭设置。
+- 自动保存、抗锯齿、运算器、操作柄位置及最近工程记录统一存入 EXE 同级 `data` 文件夹，多份安装各自保留设置。整体移动安装目录后，默认备份目录随之迁移，自定义目录保持原设置。
+- 原生视频读取在高级处理失败时重试基础处理；H.264 导出在扩展接口不可用时兼容较旧的编码器控制接口。
 
 #### 下载与使用
 
 通常选择完整包。最小包保留原版 MMD 的功能范围及编码限制，不包含完整包的扩展编辑与导出功能。分别解压到独立目录后运行 `MikuMikuDance.exe`。模型、个人设置、MME、MMV 和 FFmpeg 需自行准备。
 
-移动或分享使用 MME 特效的工程时，需将同名 `.emm` 与 PMM 一并保留。崩溃后可在程序目录的 `backups` 文件夹查找备份和错误日志；定时自动保存仍使用设置中指定的目录。
+移动或分享使用 MME 特效的工程时，需将同名 `.emm` 与 PMM 一并保留。崩溃后可在 EXE 同级 `data/backups` 文件夹查找备份和错误日志；定时自动保存仍使用设置中指定的目录。
 
 #### NVIDIA 修复安装（可选）
 
@@ -81,28 +88,130 @@ Neither application package includes the NVIDIA fix. If needed, download `MMSNvi
 
 ### 日本語
 
-`v2026.10.15.2` 以降の変更を含みます。
+前回の正式リリース `v2026.10.15.2` からの変更です。
 
 #### 更新内容
 
-- カーブエディターで補間方式や接線のボタンをクリックしても、変更がすぐに反映されない問題を修正しました。ステップ・線形・ベジェや接線設定を選ぶと直接適用されます。複数の選択キーへの変更はまとめて元に戻せます。
-- チャンネル名をクリックした後、スペースキーと Enter キーが以前の行に作用する問題を修正しました。
-- 継続して使うハンドルモードと、一度だけ適用するプリセットを分けました。「フリー」「整列」「自動」はハンドルの編集方法を指定します。「水平」「直線化」「イーズイン」「イーズアウト」はクリック時だけ適用されます。ハンドルが必要な区間はベジェに切り替わり、その後の数値変更でプリセットを再適用しません。
-- 原版形式のカメラのベジェ曲線で、キーフレームの値に微小なサンプリング誤差が生じる問題を修正しました。変更していないカメラ曲線をエディターから書き戻して PMM に保存する際、この誤差によってキーの値がずれることを防ぎます。
-- 致命的なエラーのログを EXE と同じ場所の `backups` フォルダーに保存します。日時を含む `error-*.log` に例外、呼び出し履歴、直近の動作記録、バックアップ結果を記録します。シーンを安全に保存できる場合は、同じフォルダーへのクラッシュ時バックアップも試みます。定期的な自動保存を無効にしても、この機能は有効です。
-- バックアップフォルダーが保存数の上限に達すると、対象フォルダーと現在の上書き設定をポップアップで知らせます。起動ごとに一度だけ表示し、再起動後も上限に達している場合は再表示します。上書きが有効なら古いバックアップを置き換え、無効なら満杯のフォルダーへの新規保存を停止します。再生、出力、ほかのダイアログの操作中は表示を延期します。
-- MME を導入した環境では、設定が保存されていない場合に「割当ファイル自動保存」を初期状態で有効にします。PMM の保存時に同名の `.emm` にエフェクトの割り当ても保存します。すでに無効にした設定は維持します。
+- カーブエディターの補間方式と接線設定を、クリック後すぐに適用します。複数の選択キーへの一括変更と取り消しに対応します。
+- ハンドルモードと一度だけ使うプリセットを分けました。「フリー」「整列」「自動」は編集中も有効です。「水平」「直線化」「イーズイン」「イーズアウト」はクリック時だけ適用し、必要な区間をベジェに切り替えます。その後の数値変更では再適用しません。
+- カーブエディターとメイン画面のキー選択・登録・削除・タイムライン移動を同期しました。キーボード操作は現在のチャンネルに作用し、メイン画面での重複操作を防ぎます。外部編集後は書き込み前にカーブを更新し、補間を変更しても標準トラックの選択範囲を保持します。
+- 標準のボーントラックでキーの登録・削除・移動や値の変更を行っても、未変更の自由カーブ、ハンドル、チャンネルごとの独立したキーを保持します。元に戻す・やり直し、および PMM/VMD の保存と再読み込みでも保持します。
+- 0 フレームとその後のフレームにカメラキーを登録すると、以前のキーが消えたりカメラが異常な位置へ移動したりする問題を修正しました。カメラのキーフレームでは保存済みの値を直接使い、微小なサンプリング誤差がカーブ編集や PMM 保存で書き戻されることを防ぎます。
+- 致命的なエラー時に、EXE と同じ場所の `data/backups` に日時付きの `error-*.log` を生成します。例外、呼び出し履歴、直近の動作、バックアップ結果を記録し、安全に保存できる場合はクラッシュ時バックアップを試みます。定期保存を無効にしても有効です。
+- バックアップが上限に達すると、起動ごとに一度だけ通知します。再起動後も満杯なら再表示します。現在の上書き設定を表示し、上書きが有効なら古いバックアップの自動置き換えを続けます。再生・出力・ほかのダイアログの操作中は通知を延期します。
+- MME を導入した環境では、未設定の「割当ファイル自動保存」を初期状態で有効にします。PMM 保存時に同名の `.emm` も保存し、すでに無効にした設定は維持します。
+- 自動保存、AA、プロセッサー、操作ハンドル位置、最近使ったプロジェクトの設定を、EXE と同じ場所の `data` に保存します。インストールごとに設定を分け、移動後も標準バックアップ先が追従します。任意の保存先は変更しません。
+- 標準の動画読み込みで高度な処理が失敗した場合は基本処理を再試行します。H.264 出力では拡張インターフェースがない場合に旧形式のエンコーダー制御インターフェースを使います。
 
 #### ダウンロードと使い方
 
 通常は完全版を選んでください。最小版は原版 MMD の機能範囲と文字コード制限を維持し、完全版の拡張編集・出力機能を含みません。各パッケージを別のフォルダーに展開し、`MikuMikuDance.exe` を実行します。モデル、個人設定、MME、MMV、FFmpeg は同梱しません。
 
-MME エフェクトを使うプロジェクトを移動・共有する際は、同名の `.emm` を PMM と一緒に保管してください。クラッシュ時のバックアップとエラーログは EXE と同じ場所の `backups` に保存します。定期的な自動保存は設定で指定したフォルダーを引き続き使います。
+MME エフェクトを使うプロジェクトを移動・共有する際は、同名の `.emm` を PMM と一緒に保管してください。クラッシュ時のバックアップとエラーログは EXE と同じ場所の `data/backups` に保存します。定期的な自動保存は設定で指定したフォルダーを引き続き使います。
 
 #### NVIDIA 修正の導入（任意）
 
 NVIDIA 修正プラグインは両方のパッケージに含まれません。必要な場合のみ `MMSNvidiaAAFix.dll` を別途ダウンロードし、完全版の EXE と同じフォルダーに置きます。ヘルプからインストールして MMS を再起動してください。解除も同じメニューから行います。DLL の削除だけでは適用済みの設定は解除されません。
 <!-- release-notes:v2026.10.17.1:end -->
+
+<a id="release-v2026-10-17-1-pre-1"></a>
+
+本节为预发布说明。
+
+<!-- release-notes:v2026.10.17.1-pre.1:begin -->
+## MikuMikuStudio v2026.10.17.1-pre.1
+
+Windows x64
+
+[English](#release-v2026-10-17-1-pre-1-en) | [中文](#release-v2026-10-17-1-pre-1-zh) | [日本語](#release-v2026-10-17-1-pre-1-ja)
+
+<a id="release-v2026-10-17-1-pre-1-en"></a>
+
+### English
+
+Changes since the last published release, `v2026.10.15.2`.
+
+#### What's new
+
+- Curve editor interpolation and tangent choices now apply immediately, including changes to multiple selected keys and undo.
+- Separated handle modes from presets. Free, Aligned, and Automatic remain active while editing. Flat, Straighten, Ease in, and Ease out apply once, switching the required intervals to Bezier without being reapplied by later numeric edits.
+- Synchronized key selection, registration, deletion, and timeline moves between the curve editor and the main window. Keyboard actions follow the selected channel and no longer trigger duplicate main-window operations. External edits refresh the curves before another write. Editing interpolation preserves the native key selection.
+- Native bone key registration, deletion, retiming, and value changes preserve unaffected free curves, handles, and independent channel keys. Undo, redo, and PMM/VMD save and reload retain these curves.
+- Fixed camera registration at frame 0 and later frames making earlier keys disappear or moving the camera unexpectedly. Exact camera keyframes now use their stored values, preventing small sampling errors from being written back during curve editing and PMM saving.
+- Fatal errors generate timestamped `error-*.log` files under `data/backups` beside the EXE, recording the exception, call stack, recent activity, and backup result. MMS attempts a crash backup when the scene can be saved safely, even with periodic autosave disabled.
+- Added a backup-capacity popup that appears once per launch and returns after a restart if the folder remains full. It reports the current overwrite policy; automatic replacement continues when enabled. Playback, export, and other dialogs defer the popup.
+- With MME installed, Auto Save Mapping File is checked by default when no preference has been saved. Saving a PMM also saves the matching `.emm` effect assignments. An existing choice to disable this option is preserved.
+- Autosave, antialiasing, processor and handle-position settings, and recent projects now use `data` beside the EXE. Separate installations keep separate settings. The default backup folder follows a moved installation; custom folders remain unchanged.
+- Native video loading retries basic processing when advanced processing fails. H.264 export can use the older encoder-control interface when the extended interface is unavailable.
+
+#### Download and use
+
+Choose the full package for the features above. The minimal package retains the original MMD feature set and encoding limits, without the full build's extended editing and export features. Extract each package into a separate folder and run `MikuMikuDance.exe`. Models, personal settings, MME, MMV, and FFmpeg are not included.
+
+Keep the matching `.emm` file with the PMM when moving or sharing a project that uses MME effects. Crash backups and error logs are stored in `data/backups` beside the EXE. Periodic autosave continues to use the folder selected in its settings.
+
+#### Optional NVIDIA fix
+
+Neither application package includes the NVIDIA fix. If needed, download `MMSNvidiaAAFix.dll` separately and place it beside the full build's EXE. Install it from Help, then restart MMS. Use Help to uninstall. Deleting the DLL does not remove an installed setting.
+
+<a id="release-v2026-10-17-1-pre-1-zh"></a>
+
+### 中文
+
+以下为相较上次正式发布 `v2026.10.15.2` 的更新。
+
+#### 更新内容
+
+- 曲线编辑器的插值类型和切线设置点击后立即生效，支持多选关键帧批量修改和撤销。
+- 区分手柄模式与一次性预设。「自由」「对齐」「自动」持续控制手柄编辑；「水平」「拉直」「缓入」「缓出」仅在点击时应用，按需切换为贝塞尔，后续数值修改不再重复套用预设。
+- 同步曲线编辑器与主界面的关键帧选区、注册、删除和时间轴移动。键盘操作跟随当前通道，不再重复触发主界面操作；外部修改后先刷新曲线，防止旧数据覆盖新修改。调整插值时保留原始轨道选区。
+- 原始骨骼轨道注册、删除、移动关键帧或修改数值时，保留未改动的自由曲线、手柄及各通道独立的关键帧。撤销、重做及 PMM/VMD 保存重读均保留这些曲线。
+- 修复在第 0 帧及后续帧注册镜头后，前面的关键帧消失或镜头异常跳位的问题。精确落在镜头关键帧时直接使用已保存的原值，避免微小采样误差在曲线编辑和 PMM 保存时写回。
+- 致命错误会在 EXE 同级 `data/backups` 中生成带时间戳的 `error-*.log`，记录异常、调用栈、最近运行信息及备份结果。场景可安全保存时尝试生成崩溃备份，关闭定时自动保存后仍保留此功能。
+- 备份数量达到上限时弹窗提醒，每次启动只提示一次，重启后仍满会再次提示。提示显示当前覆盖策略，允许覆盖时继续自动替换旧备份。播放、导出或其他对话框占用期间延后提示。
+- 安装 MME 后，未配置过的「自动保存效果分配文件」默认勾选。保存 PMM 时同步保存同名 `.emm` 特效分配文件，保留已有的手动关闭设置。
+- 自动保存、抗锯齿、运算器、操作柄位置及最近工程记录统一存入 EXE 同级 `data` 文件夹，多份安装各自保留设置。整体移动安装目录后，默认备份目录随之迁移，自定义目录保持原设置。
+- 原生视频读取在高级处理失败时重试基础处理；H.264 导出在扩展接口不可用时兼容较旧的编码器控制接口。
+
+#### 下载与使用
+
+通常选择完整包。最小包保留原版 MMD 的功能范围及编码限制，不包含完整包的扩展编辑与导出功能。分别解压到独立目录后运行 `MikuMikuDance.exe`。模型、个人设置、MME、MMV 和 FFmpeg 需自行准备。
+
+移动或分享使用 MME 特效的工程时，需将同名 `.emm` 与 PMM 一并保留。崩溃后可在 EXE 同级 `data/backups` 文件夹查找备份和错误日志；定时自动保存仍使用设置中指定的目录。
+
+#### NVIDIA 修复安装（可选）
+
+两个主程序包均不附带 NVIDIA 修复插件。需要时单独下载 `MMSNvidiaAAFix.dll`，放到完整版 EXE 同目录，在「帮助」菜单选择安装并重启 MMS。卸载也通过该菜单操作，删除 DLL 不会撤销已安装的设置。
+
+<a id="release-v2026-10-17-1-pre-1-ja"></a>
+
+### 日本語
+
+前回の正式リリース `v2026.10.15.2` からの変更です。
+
+#### 更新内容
+
+- カーブエディターの補間方式と接線設定を、クリック後すぐに適用します。複数の選択キーへの一括変更と取り消しに対応します。
+- ハンドルモードと一度だけ使うプリセットを分けました。「フリー」「整列」「自動」は編集中も有効です。「水平」「直線化」「イーズイン」「イーズアウト」はクリック時だけ適用し、必要な区間をベジェに切り替えます。その後の数値変更では再適用しません。
+- カーブエディターとメイン画面のキー選択・登録・削除・タイムライン移動を同期しました。キーボード操作は現在のチャンネルに作用し、メイン画面での重複操作を防ぎます。外部編集後は書き込み前にカーブを更新し、補間を変更しても標準トラックの選択範囲を保持します。
+- 標準のボーントラックでキーの登録・削除・移動や値の変更を行っても、未変更の自由カーブ、ハンドル、チャンネルごとの独立したキーを保持します。元に戻す・やり直し、および PMM/VMD の保存と再読み込みでも保持します。
+- 0 フレームとその後のフレームにカメラキーを登録すると、以前のキーが消えたりカメラが異常な位置へ移動したりする問題を修正しました。カメラのキーフレームでは保存済みの値を直接使い、微小なサンプリング誤差がカーブ編集や PMM 保存で書き戻されることを防ぎます。
+- 致命的なエラー時に、EXE と同じ場所の `data/backups` に日時付きの `error-*.log` を生成します。例外、呼び出し履歴、直近の動作、バックアップ結果を記録し、安全に保存できる場合はクラッシュ時バックアップを試みます。定期保存を無効にしても有効です。
+- バックアップが上限に達すると、起動ごとに一度だけ通知します。再起動後も満杯なら再表示します。現在の上書き設定を表示し、上書きが有効なら古いバックアップの自動置き換えを続けます。再生・出力・ほかのダイアログの操作中は通知を延期します。
+- MME を導入した環境では、未設定の「割当ファイル自動保存」を初期状態で有効にします。PMM 保存時に同名の `.emm` も保存し、すでに無効にした設定は維持します。
+- 自動保存、AA、プロセッサー、操作ハンドル位置、最近使ったプロジェクトの設定を、EXE と同じ場所の `data` に保存します。インストールごとに設定を分け、移動後も標準バックアップ先が追従します。任意の保存先は変更しません。
+- 標準の動画読み込みで高度な処理が失敗した場合は基本処理を再試行します。H.264 出力では拡張インターフェースがない場合に旧形式のエンコーダー制御インターフェースを使います。
+
+#### ダウンロードと使い方
+
+通常は完全版を選んでください。最小版は原版 MMD の機能範囲と文字コード制限を維持し、完全版の拡張編集・出力機能を含みません。各パッケージを別のフォルダーに展開し、`MikuMikuDance.exe` を実行します。モデル、個人設定、MME、MMV、FFmpeg は同梱しません。
+
+MME エフェクトを使うプロジェクトを移動・共有する際は、同名の `.emm` を PMM と一緒に保管してください。クラッシュ時のバックアップとエラーログは EXE と同じ場所の `data/backups` に保存します。定期的な自動保存は設定で指定したフォルダーを引き続き使います。
+
+#### NVIDIA 修正の導入（任意）
+
+NVIDIA 修正プラグインは両方のパッケージに含まれません。必要な場合のみ `MMSNvidiaAAFix.dll` を別途ダウンロードし、完全版の EXE と同じフォルダーに置きます。ヘルプからインストールして MMS を再起動してください。解除も同じメニューから行います。DLL の削除だけでは適用済みの設定は解除されません。
+<!-- release-notes:v2026.10.17.1-pre.1:end -->
 
 <a id="release-v2026-10-15-2-pre-1"></a>
 <a id="release-v2026-10-15-2"></a>

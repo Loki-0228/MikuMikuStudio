@@ -3,6 +3,9 @@
 #define NOMINMAX
 #include "mikudancestudio/autosave.hpp"
 #include "mikudancestudio/local_data_path.hpp"
+#include "mikudancestudio/system_settings.hpp"
+#include "mikudancestudio/adaptive_shadow.hpp"
+#include "../src/app/settings_json.hpp"
 #include "mikudancestudio/antialias.hpp"
 #include "mikudancestudio/processor_settings.hpp"
 #include "mikudancestudio/viewport_corner_settings.hpp"
@@ -11,6 +14,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
+#include <fstream>
 namespace fs=std::filesystem;
 namespace as=mikudancestudio::autosave;
 using namespace mikudancestudio;
@@ -25,6 +29,7 @@ int wmain(int argc,wchar_t** argv){
     root=fs::absolute(argv[1]);wchar_t executable[32768]{};Check(GetModuleFileNameW(nullptr,executable,32768)!=0,"resolve actual test EXE");
     const std::wstring mode=argv[2];
     Check(mode==L"--settings-fresh" || mode==L"--settings-default" || mode==L"--settings-custom" ||
-        mode==L"--settings-check-custom" || mode==L"--settings-readonly" || mode==L"--settings-override","known settings probe mode");
+        mode==L"--settings-check-custom" || mode==L"--settings-readonly" || mode==L"--settings-override" ||
+        mode==L"--settings-migrate","known settings probe mode");
     SettingsLocationChecks(executable,mode);return 0;
 }

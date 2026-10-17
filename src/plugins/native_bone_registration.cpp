@@ -31,7 +31,7 @@ namespace {
 struct KeyPatch { unsigned slot; mdl::BoneKey before{}, after{}; bool data = false; };
 struct FlagPatch { unsigned slot; unsigned char before; };
 struct PoseValue { float position[3], rotation[4]; unsigned char dirty; };
-struct PosePatch { unsigned bone; PoseValue before{}, after{}; unsigned fields = 0; unsigned char physics; };
+struct PosePatch { unsigned bone; PoseValue before{}, after{}; bone_scale::Matrix sourceScale; unsigned fields = 0; unsigned char physics; };
 struct BoneRule {
     unsigned bone;
     mdl::BoneType type;
@@ -78,6 +78,7 @@ struct RegistrationChange final : HistoryChange, std::enable_shared_from_this<Re
     std::size_t morphCapacity, displayCapacity;
     std::vector<KeyPatch> keys;
     std::vector<unsigned> keyDependencies;
+    std::vector<mdl::BoneKey> planningDependencies;
     std::vector<unsigned> evaluationBones;
     std::shared_ptr<DisplayKeyDeletion> display;
     std::vector<int> displaySelectors;
@@ -93,6 +94,7 @@ struct RegistrationChange final : HistoryChange, std::enable_shared_from_this<Re
     bool observeAuthoring = false;
     bool publishMetadata = true;
     bool preserveKeyMarks = false;
+    bool published = false;
     unsigned char rulePhysicsMode = 0;
     RegistrationChange(MMDApp& a, unsigned s)
         : app(a), slot(s), model(a.ModelSlot(s)), lifetime(RetainSceneObject(a, MMS_OBJECT_MODEL, s)),
@@ -217,12 +219,14 @@ struct RegistrationChange final : HistoryChange, std::enable_shared_from_this<Re
             if (curves && !curves->Publish()) std::terminate();
             if (evaluation) evaluation->Publish();
             if (!growth->Accept()) std::terminate();
+            source->published=true;
         }
     };
     MmsResult Prepare(bool forward, std::unique_ptr<PreparedHistoryChange>& out) override {
         out.reset(); if (!Structure()) return MMS_E_STALE;
         return Boundary([&]() -> MmsResult {
             auto& m = *mdl::Mdl(model);
+            if(!published&&!forward)return MMS_E_STALE;
             if (publishMetadata && (m.maxFrame != (forward ? maxBefore : maxAfter) ||
                 m.searchCursor != (forward ? searchBefore : searchAfter) ||
                 app.state.lastRegisteredFrame != (forward ? lastBefore : lastAfter))) return MMS_E_STALE;
@@ -239,11 +243,14 @@ struct RegistrationChange final : HistoryChange, std::enable_shared_from_this<Re
                 candidate->currentKeys.push_back(live);
                 needed = (std::max)(needed, std::uint64_t(patch.slot) + 1);
             }
-            for (auto index : keyDependencies) {
+            for (std::size_t n=0;n<keyDependencies.size();++n) {const auto index=keyDependencies[n];
                 if (index >= capacity) return MMS_E_STALE;
+                if(!published&&(n>=planningDependencies.size()||!SameCurveKeyData(m.boneKeys[index],planningDependencies[n])))return MMS_E_STALE;
                 candidate->dependencyKeys.push_back(m.boneKeys[index]);
             }
             for (const auto& patch : poses) {
+                if(!published&&(!SamePose(ReadPose(m,patch.bone),patch.before,7|Rotation|Dirty)||
+                    bone_scale::Pose(model,int(patch.bone))!=patch.sourceScale))return MMS_E_STALE;
                 candidate->currentPoses.push_back(ReadPose(m, patch.bone));
                 candidate->currentScales.push_back(bone_scale::Pose(model, int(patch.bone)));
             }
@@ -286,6 +293,7 @@ struct RegistrationChange final : HistoryChange, std::enable_shared_from_this<Re
         std::uint64_t result = sizeof(*this) + 4 * sizeof(void*);
         AddBytes(result, keys.capacity() * sizeof(KeyPatch)); AddBytes(result, poses.capacity() * sizeof(PosePatch));
         AddBytes(result, keyDependencies.capacity() * sizeof(unsigned)); AddBytes(result, rules.capacity() * sizeof(BoneRule));
+        AddBytes(result,planningDependencies.capacity()*sizeof(mdl::BoneKey));
         AddBytes(result, evaluationBones.capacity() * sizeof(unsigned));
         AddBytes(result, pasteNames.capacity() * sizeof(std::array<char, 20>));
         AddBytes(result, displaySelectors.capacity() * sizeof(int));
@@ -439,28 +447,63 @@ void DeletePlannedKeys(KeyPlan& plan, const std::vector<unsigned>& selected,
         if (index < plan.model.boneCount && plan.model.boneTable[index].hasRigidBody) key.physicsDisabled = 0;
     }
 }
-bool FinishKeyPlan(KeyPlan& plan, RegistrationChange& change, const KeyOwners& originalOwners) {
+using CurveRegistrations = std::map<unsigned, std::vector<int>>;
+using CurveFrameMaps = std::map<unsigned, std::vector<std::pair<int,int>>>;
+void ReconcilePlannedCurves(const KeyPlan& plan, RegistrationChange& change, std::set<unsigned>& affected,
+    const CurveRegistrations& registrations, const CurveFrameMaps* frameMaps = nullptr) {
+    struct Context { const KeyPlan& plan; const bone_scale::AuthoringState& scale; } context{plan,change.scaleAfter};
+    bone_curve::NativeKeyView view;view.context=&context;view.capacity=plan.capacity;
+    view.key=[](const void* pointer,std::uint32_t slot) noexcept ->const mdl::BoneKey* {
+        const auto& plan=static_cast<const Context*>(pointer)->plan;
+        if(slot>=plan.capacity)return nullptr;
+        const auto found=plan.patches.find(slot);if(found!=plan.patches.end())return &found->second.after;
+        if(slot<plan.initialCapacity)return plan.model.boneKeys+slot;
+        static const mdl::BoneKey empty{};return &empty;
+    };
+    view.scale=[](const void* pointer,std::uint32_t slot,bone_scale::Matrix& matrix,bone_scale::Curve& curve) noexcept {
+        const auto& context=*static_cast<const Context*>(pointer);if(slot>=context.plan.capacity)return false;
+        matrix=context.scale.Key(int(slot));curve=context.scale.KeyCurve(int(slot));return true;
+    };
+    auto targets=affected;for(const auto& entry:registrations)targets.insert(entry.first);
+    const std::vector<int> none;
+    const std::vector<std::pair<int,int>> emptyMap;
+    for(const auto bone:targets){
+        const auto registered=registrations.find(bone);
+        const auto mapped=frameMaps?frameMaps->find(bone):CurveFrameMaps::const_iterator{};
+        const auto* map=frameMaps?(mapped==frameMaps->end()?&emptyMap:&mapped->second):nullptr;
+        if(change.curveAfter->ReconcileTarget(int(bone),view,registered==registrations.end()?none:registered->second,map))affected.insert(bone);
+    }
+}
+CurveFrameMaps RetainedFrameMaps(const std::map<std::pair<unsigned,unsigned>,unsigned>& winners) {
+    CurveFrameMaps result;
+    for(const auto& winner:winners)result[winner.first.first].push_back({int(winner.second),int(winner.first.second)});
+    return result;
+}
+bool FinishKeyPlan(KeyPlan& plan, RegistrationChange& change, const KeyOwners& originalOwners,
+    const CurveRegistrations& registrations = {}, const CurveFrameMaps* frameMaps = nullptr) {
     const auto owners = ValidateOwners(plan);
     std::set<unsigned> affected;
-    const auto invalidate = [&](const KeyOwners& source, unsigned index) {
+    const auto affect = [&](const KeyOwners& source, unsigned index) {
         const auto found = source.find(index);
-        if (found != source.end()) { change.curveAfter->Invalidate(int(found->second)); affected.insert(found->second); }
+        if (found != source.end()) affected.insert(found->second);
     };
     for (const auto& item : plan.patches) {
         const auto& patch = item.second;
         // Native curve hashes exclude marks/reserved bytes, and include scale
-        // matrices and scale interpolation. Invalidate only affected authors,
+        // matrices and scale interpolation. Rebuild only affected authors,
         // including both owners when a freed slot was reused by another bone.
         if (!SameCurveKeyData(patch.before, patch.after) ||
             change.scaleBefore.Key(int(patch.slot)) != change.scaleAfter.Key(int(patch.slot)) ||
             change.scaleBefore.KeyCurve(int(patch.slot)) != change.scaleAfter.KeyCurve(int(patch.slot))) {
-            invalidate(originalOwners, patch.slot); invalidate(owners, patch.slot);
+            affect(originalOwners, patch.slot); affect(owners, patch.slot);
         }
         if (std::memcmp(&patch.before, &patch.after, sizeof(mdl::BoneKey))) change.keys.push_back(patch);
     }
+    ReconcilePlannedCurves(plan,change,affected,registrations,frameMaps);
     change.scaleChanged = !change.scaleBefore.Equals(change.scaleAfter);
     change.curvesChanged = !change.curveBefore->Equals(*change.curveAfter);
     change.keyDependencies.assign(plan.reads.begin(), plan.reads.end());
+    for(const auto index:change.keyDependencies)change.planningDependencies.push_back(plan.model.boneKeys[index]);
     change.evaluationBones.assign(affected.begin(), affected.end());
     return !change.keys.empty() || !change.morphFlags.empty() || !change.displayFlags.empty() ||
         change.scaleChanged || change.curvesChanged;
@@ -479,6 +522,7 @@ struct RangeKeyCopy {
     unsigned owner, frame;
     mdl::BoneKey key;
     bone_scale::Matrix scale;
+    bone_scale::Curve scaleCurve = bone_scale::LinearCurve();
 };
 unsigned ScaledBoneFrame(unsigned frame, const BoneRangeScaleOptions& options) {
     // Check in floating point before conversion. This preserves the legacy
@@ -558,6 +602,7 @@ unsigned InsertRangeCopy(KeyPlan& plan, const RangeKeyCopy& copy, unsigned start
         key.frame = copy.frame;
     }
     if (!change.scaleAfter.RegisterKey(int(target), copy.scale, fresh)) throw std::invalid_argument("invalid keyed bone scale");
+    if (!change.scaleAfter.SetKeyCurve(int(target), copy.scaleCurve)) throw std::invalid_argument("invalid keyed bone scale curve");
     auto& destination = plan.Write(target);
     const auto type = plan.model.boneTable[copy.owner].type;
     if (type == mdl::BoneType::RotateMove || type == mdl::BoneType::Move || type == mdl::BoneType::Ik)
@@ -677,11 +722,13 @@ MmsResult PlanBoneKeyPaste(MMDApp& app,unsigned slot,bool mirror,const ModelPast
                 if (model.boneKeys[index].allocated) plan.Write(index, false).allocated = 0;
         }
         std::set<unsigned> pastedSlots;
+        CurveRegistrations registrations;
         unsigned cursor = model.boneCount;
         while (cursor < plan.capacity && plan.Read(cursor).frame) ++cursor;
         for (const auto& copy : copies) {
             const auto target = InsertRangeCopy(plan, copy.key, input.frameOffset, cursor, *change);
             pastedSlots.insert(target);
+            registrations[copy.key.owner].push_back(int(copy.key.frame));
             // Mirror registrar writes translation even for rotation-only bones.
             if (mirror) std::memcpy(plan.Write(target).position, copy.key.key.position, sizeof(copy.key.key.position));
             if (!change->scaleAfter.SetKeyCurve(int(target), copy.curve)) return MMS_E_ARGUMENT;
@@ -695,7 +742,7 @@ MmsResult PlanBoneKeyPaste(MMDApp& app,unsigned slot,bool mirror,const ModelPast
         change->searchAfter = int(cursor);
         // Pasting does not update the last-registration UI marker.
         CaptureRules(*change, rules);
-        const bool changed=FinishKeyPlan(plan,*change,owners);
+        const bool changed=FinishKeyPlan(plan,*change,owners,registrations);
         AttachDisplay(*change,std::move(display));
         if(aggregate) {
             aggregate->hasKeys=true;aggregate->maxFrame=change->maxAfter;aggregate->searchCursor=change->searchAfter;
@@ -728,7 +775,7 @@ MmsResult PlanBoneInterpolationEdit(MMDApp& app, unsigned slot, const BoneInterp
             if (!model.boneKeys[index].allocated) continue;
             if (!owners.count(unsigned(index))) return MMS_E_ARGUMENT;
             // Even a scale-only edit must enter this sparse view: FinishKeyPlan
-            // uses touched slots to invalidate their actual free-curve owner.
+            // uses touched slots to reconcile their actual free-curve owner.
             auto& key = plan.Write(unsigned(index));
             for (unsigned channel = 0; channel < 4; ++channel)
                 if (options.channels & (1u << channel))
@@ -756,6 +803,16 @@ MmsResult PlanBoneFrameLine(MMDApp& app, unsigned slot, int frame, bool insert, 
         const auto& model = *mdl::Mdl(app.ModelSlot(slot));
         KeyPlan plan(model, true); const auto owners = ValidateOwners(plan);
         auto change = NewKeyChange(app, slot);
+        std::map<std::pair<unsigned,unsigned>,unsigned> retained;
+        for(const auto& owner:owners){const auto& key=model.boneKeys[owner.first];unsigned target=key.frame;
+            if(owner.first>=model.boneCount&&key.frame>=unsigned(frame)){
+                if(insert){if(key.frame>=unsigned(frame_limits::maximum))return MMS_E_ARGUMENT;target=key.frame+1;}
+                else {if(key.frame==unsigned(frame))continue;target=key.frame-1;}
+            }
+            // Removing line zero may merge the former frame-one row into its
+            // root. That source row owns the retained authored endpoint too.
+            retained[{owner.second,target}]=key.frame;
+        }
         const auto clear = [](mdl::BoneKey& key) {
             key.frame = 0; key.allocated = 0;
             std::memset(key.position, 0, sizeof(key.position));
@@ -793,7 +850,8 @@ MmsResult PlanBoneFrameLine(MMDApp& app, unsigned slot, int frame, bool insert, 
                 }
             }
         }
-        if (FinishKeyPlan(plan,*change,owners)) out = std::move(change);
+        const auto frameMaps=RetainedFrameMaps(retained);
+        if (FinishKeyPlan(plan,*change,owners,{},&frameMaps)) out = std::move(change);
         return MMS_OK;
     });
 }
@@ -868,13 +926,19 @@ MmsResult PlanBoneRangeScale(MMDApp& app, unsigned slot, const BoneRangeScaleOpt
             const auto frame = ScaledBoneFrame(key.frame, options);
             moved |= frame != key.frame;
             selected.push_back(unsigned(index));
-            copies.push_back({owner->second, frame, key, bone_scale::Key(app.ModelSlot(slot), int(index))});
+            copies.push_back({owner->second, frame, key, bone_scale::Key(app.ModelSlot(slot), int(index)),
+                bone_scale::KeyCurve(app.ModelSlot(slot),int(index))});
             rules.insert(owner->second);
         }
         // Identity after integer truncation leaves selection and redo intact.
         if (!moved && !aggregate) return MMS_OK;
         for (auto& copy : copies) if (!PrepareRangeRotation(model, copy, rules)) return MMS_E_NOT_READY;
         auto change = NewKeyChange(app, slot);
+        std::map<std::pair<unsigned,unsigned>,unsigned> retained;
+        for(const auto& owner:owners){const auto& key=model.boneKeys[owner.first];
+            if(key.frame<options.start)retained[{owner.second,key.frame}]=key.frame;}
+        for(const auto& copy:copies)retained[{copy.owner,copy.frame}]=copy.key.frame;
+        const auto frameMaps=RetainedFrameMaps(retained);
         change->publishMetadata = aggregate == nullptr;
         if (!aggregate) ClearAuxiliaryMarks(*change);
         unsigned cursor = unsigned(model.searchCursor);
@@ -891,7 +955,7 @@ MmsResult PlanBoneRangeScale(MMDApp& app, unsigned slot, const BoneRangeScaleOpt
         change->searchAfter = int(cursor);
         change->lastAfter = (std::max)(change->lastBefore, change->maxAfter);
         CaptureRules(*change, rules);
-        const bool changed = FinishKeyPlan(plan, *change, owners);
+        const bool changed = FinishKeyPlan(plan, *change, owners,{},&frameMaps);
         AttachDisplay(*change, std::move(display));
         if (aggregate) {
             aggregate->maxFrame = change->maxAfter; aggregate->searchCursor = change->searchAfter;
@@ -934,11 +998,12 @@ MmsResult PlanBoneRegistration(MMDApp& app, unsigned slot, const BoneRegistratio
             selected.push_back(bone);
         }
         if (selected.empty()) return MMS_OK;
-        KeyPlan plan(model);
+        KeyPlan plan(model,true);
         for (auto bone : selected) plan.ValidateChain(bone);
         auto change = std::make_shared<RegistrationChange>(app, slot);
         change->scaleBefore = bone_scale::AuthoringState::Capture(raw); change->scaleAfter = change->scaleBefore.Clone();
         change->curveBefore = bone_curve::AuthoringState::Capture(raw); change->curveAfter = change->curveBefore->Clone();
+        change->observeAuthoring=true;
         for (std::size_t n = 0; n < plan.capacity; ++n) if (model.boneKeys[n].allocated) plan.Write(unsigned(n), false).allocated = 0;
         for (std::size_t n = 0; n < change->morphCapacity; ++n)
             if (model.morphKeys[n].allocated) change->morphFlags.push_back({unsigned(n), model.morphKeys[n].allocated});
@@ -955,6 +1020,7 @@ MmsResult PlanBoneRegistration(MMDApp& app, unsigned slot, const BoneRegistratio
             if (fresh) {
                 while (std::uint64_t(cursor) < mdl::kBoneKeyCapacityLimit && plan.Read(cursor).frame) ++cursor;
                 if (std::uint64_t(cursor) >= mdl::kBoneKeyCapacityLimit) return MMS_E_MEMORY;
+                plan.capacity=(std::max)(plan.capacity,std::size_t(cursor)+1);
                 target = cursor; auto& key = plan.Write(target); key = {};
                 if (plan.Read(current).frame < unsigned(options.frame)) {
                     plan.Write(current).next = target; key.previous = current;
@@ -967,6 +1033,7 @@ MmsResult PlanBoneRegistration(MMDApp& app, unsigned slot, const BoneRegistratio
             }
             PosePatch pose{}; pose.bone = boneIndex; pose.physics = bone.physicsDisabled;
             pose.before = pose.after = ReadPose(model, boneIndex);
+            pose.sourceScale=bone_scale::Pose(raw,int(boneIndex));
             const bool physicsPose = bone.hasRigidBody && (options.physicsMode == 1 ||
                 (options.physicsMode >= 2 && !bone.physicsDisabled));
             if (physicsPose) {
@@ -989,11 +1056,15 @@ MmsResult PlanBoneRegistration(MMDApp& app, unsigned slot, const BoneRegistratio
                 else { key.interpolation[lane] = key.interpolation[lane + 4] = 20;
                     key.interpolation[lane + 8] = key.interpolation[lane + 12] = 107; }
             }
-            if (!change->scaleAfter.RegisterKey(int(target), bone_scale::Pose(raw, int(boneIndex)), fresh)) return MMS_E_ARGUMENT;
-            change->curveAfter->Invalidate(int(boneIndex)); key.allocated = 1;
+            if (!change->scaleAfter.RegisterKey(int(target), pose.sourceScale, fresh)) return MMS_E_ARGUMENT;
+            key.allocated = 1;
         }
+        CurveRegistrations registrations;for(const auto bone:selected)registrations[bone].push_back(options.frame);
+        std::set<unsigned> affected(selected.begin(),selected.end());ReconcilePlannedCurves(plan,*change,affected,registrations);
         change->scaleChanged = !change->scaleBefore.Equals(change->scaleAfter);
         change->curvesChanged = !change->curveBefore->Equals(*change->curveAfter);
+        change->keyDependencies.assign(plan.reads.begin(),plan.reads.end());
+        for(const auto index:change->keyDependencies)change->planningDependencies.push_back(model.boneKeys[index]);
         for (auto& pair : plan.patches) if (std::memcmp(&pair.second.before, &pair.second.after, sizeof(mdl::BoneKey)))
             change->keys.push_back(pair.second);
         bool poseChanged = false; for (const auto& pose : change->poses) poseChanged |= pose.fields != 0;

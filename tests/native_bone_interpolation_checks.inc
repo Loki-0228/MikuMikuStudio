@@ -158,13 +158,18 @@ void InterpolationFreeCurvesAndGrowth() {
         Check(SameRegistrationKeys(f.first, keys) && bone_curve::Has(f.first.raw(), 0) && bone_curve::Has(f.first.raw(), 1),
               "scale-only interpolation planning does not invalidate live free curves");
         InterpolationCommit(f, change);
-        Check(SameRegistrationKeys(f.first, keys) && !bone_curve::Has(f.first.raw(), 0) && bone_curve::Has(f.first.raw(), 1) && pose.Matches(f.first),
-              "scale-only interpolation invalidates its actual owner while preserving the other authored track and current pose");
+        bone_curve::Tracks preserved,other;
+        Check(SameRegistrationKeys(f.first, keys) && bone_curve::Read(f.first.raw(),0,preserved) && bone_curve::Read(f.first.raw(),1,other) && pose.Matches(f.first)&&
+              preserved[0].keys.front().outWeight==.2&&preserved[0].keys.back().inWeight==.4&&other[0].keys.front().outWeight==.2&&
+              std::abs(preserved[6].keys.front().outWeight-11.0/127)<1e-12&&std::abs(preserved[6].keys.back().inWeight-(1-91.0/127))<1e-12,
+              "scale-only interpolation rebuilds its scale handles while preserving translation handles, other authored bone and current pose");
+        const auto reconciled=bone_curve::AuthoringState::Capture(f.first.raw());
         Check(f.history.History(false) == MMS_OK && bone_scale::AuthoringState::Capture(f.first.raw()).Equals(scale) &&
               bone_curve::AuthoringState::Capture(f.first.raw())->Equals(*authored) && bone_curve::Has(f.first.raw(), 0),
               "scale-only undo restores the free curve and its matching native hash");
-        Check(f.history.History(true) == MMS_OK && !bone_curve::Has(f.first.raw(), 0) && bone_curve::Has(f.first.raw(), 1),
-              "scale-only redo again affects precisely its authored owner");
+        Check(f.history.History(true) == MMS_OK && bone_curve::Has(f.first.raw(), 0) && bone_curve::Has(f.first.raw(), 1)&&
+              bone_curve::AuthoringState::Capture(f.first.raw())->Equals(*reconciled),
+              "scale-only redo restores the exact rebuilt authoring while retaining both free-curve owners");
     }
     {
         BoneInterpolationFixture f; const auto before = RegistrationKeys(f.first);

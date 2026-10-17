@@ -273,5 +273,21 @@ void GlobalFrameZeroRegistrations() {
     GlobalFrameZeroRegistration(*app,app->ShadowKeys(),mdl::ShadowClipboardRecord{},RegisterSelfShadowKey);
     GlobalFrameZeroRegistration(*app,app->GravityKeys(),mdl::GravityClipboardRecord{},RegisterGravityKey);
 }
+void CameraSparseRegistration() {
+    auto app=std::make_unique<MMDApp>();std::memset(&app->state,0,sizeof app->state);
+    app->CameraKeys()=mdl::KeyPoolCreate<mdl::CameraKey>();
+    app->CameraKeys()[0].fov=45;app->CameraKeys()[0].parentModel=-1;
+    std::vector<ce::Channel> channels;std::wstring error;
+    Check(curve_host::Read(*app,curve_host::Kind::Camera,0,channels,error),"read sparse camera fixture");
+    for(auto& channel:channels){auto key=channel.track.keys[0];key.frame=20;channel.track.keys.push_back(key);}
+    Check(curve_host::Write(*app,curve_host::Kind::Camera,0,channels,error),"create shared camera frame");
+    channels[0].track.keys.pop_back();
+    Check(curve_host::Write(*app,curve_host::Kind::Camera,0,channels,error),"remove one authored camera lane key");
+    app->CurrentFrame()=20;ReloadModels(app.get());RegisterCameraState(app.get(),20);
+    Check(curve_host::Read(*app,curve_host::Kind::Camera,0,channels,error),"read camera after explicit native registration");
+    Check(channels[0].track.keys.size()==2&&channels[0].track.keys.back().frame==20,
+          "native camera registration creates a key in every lane even when the native row payload is unchanged");
+    curve_host::Reset(app.get());mdl::KeyPoolDestroy(app->CameraKeys());
 }
-int main() {CameraEditorCommands();CameraSelectionAfterCurveWrite();CameraFrameZeroRegistration();GlobalFrameZeroRegistrations();MorphSync();SelectionSync();std::puts("PASS: curve synchronization");}
+}
+int main() {CameraSparseRegistration();CameraEditorCommands();CameraSelectionAfterCurveWrite();CameraFrameZeroRegistration();GlobalFrameZeroRegistrations();MorphSync();SelectionSync();std::puts("PASS: curve synchronization");}

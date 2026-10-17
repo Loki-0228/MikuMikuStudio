@@ -143,6 +143,8 @@ void ScaleBoneKeys(MMDApp* app, unsigned char* model, HWND hDlg,
     std::vector<int> owners; owners.reserve(count);
     std::vector<bone_scale::Matrix> scaleCopies;
     scaleCopies.reserve(count);
+    std::vector<bone_scale::Curve> scaleCurves;
+    scaleCurves.reserve(count);
     std::vector<std::array<unsigned char, 84>> copies(
         static_cast<std::size_t>(count));
     int outIndex = 0;
@@ -151,6 +153,7 @@ void ScaleBoneKeys(MMDApp* app, unsigned char* model, HWND hDlg,
         if (key.allocated == 0)
             continue;
         scaleCopies.push_back(bone_scale::Key(model, i));
+        scaleCurves.push_back(bone_scale::KeyCurve(model, i));
         auto& out = copies[static_cast<std::size_t>(outIndex++)];
         const int owner = TrackOwner(keys, i, boneCount);
         owners.push_back(owner);
@@ -177,7 +180,8 @@ void ScaleBoneKeys(MMDApp* app, unsigned char* model, HWND hDlg,
     std::size_t scaleIndex=0;
     for (auto& copy : copies) {
         mdl::Mdl(model)->selectedBone = owners[scaleIndex];
-        bone_scale::Registration scaleRegistration(scaleCopies[scaleIndex++]);
+        bone_scale::Registration scaleRegistration(scaleCopies[scaleIndex],scaleCurves[scaleIndex]);
+        ++scaleIndex;
         if (!RegisterBoneKey(model, copy.data(), static_cast<int>(start), 1)) break;
     }
     mdl::Mdl(model)->selectedBone = selected;

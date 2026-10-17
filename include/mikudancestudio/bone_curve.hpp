@@ -2,11 +2,13 @@
 #include "mikudancestudio/animation_curve.hpp"
 #include "mikudancestudio/pmm_extension.hpp"
 #include "mikudancestudio/build_profile.hpp"
+#include "mikudancestudio/bone_scale.hpp"
 #include <array>
 #include <memory>
 
 namespace mikudancestudio {
 class MMDApp;
+namespace mdl { struct BoneKey; }
 namespace bone_scale { struct Matrix; }
 namespace bone_curve {
 // Explicit free-curve mode: translation, Y-X-Z Euler angles in degrees, scale.
@@ -15,6 +17,10 @@ using Tracks = std::array<animation_curve::Track, 9>;
 bool Read(const unsigned char* model, int bone, Tracks& out);
 bool Has(const unsigned char* model, int bone);
 bool Write(unsigned char* model, int bone, const Tracks&, std::string& error);
+// Merge native edits into authored tracks without discarding unrelated curves.
+void Synchronize(const unsigned char* model);
+// A native registration also creates missing lane keys at a shared mirror frame.
+void ReconcileRegisteredFrame(const unsigned char* model, int bone, int frame) noexcept;
 void Evaluate(unsigned char* model, double frame);
 void Forget(unsigned char* model);
 void CopyState(const unsigned char* source, unsigned char* destination);
@@ -33,6 +39,14 @@ bool ApplyVmd(unsigned char* model, const std::uint8_t*, std::size_t, int offset
 bool DrawPreview(MMDApp&);
 #if !MMD_ORIGINAL_PROFILE
 class AuthoringRestore;
+// Borrowed, immutable view of one planned native pool. Scale and its native
+// interpolation are supplied from the same private target as the key records.
+struct NativeKeyView {
+    const void* context = nullptr;
+    std::size_t capacity = 0;
+    const mdl::BoneKey* (*key)(const void*, std::uint32_t) noexcept = nullptr;
+    bool (*scale)(const void*, std::uint32_t, bone_scale::Matrix&, bone_scale::Curve&) noexcept = nullptr;
+};
 // Owned free-curve authoring only: tracks, stored native hashes and identity.
 // Capture does not call Read/Has, prune stale curves, or copy the 30-slot rings.
 // Empty curves and missing storage are equivalent; restoring empty curves
@@ -55,6 +69,17 @@ public:
     bool Equals(const AuthoringState&) const noexcept;
     // Remove one bone from this private snapshot when planning native edits.
     bool Invalidate(int bone) noexcept;
+    // Rebuild one bone in this private snapshot with the same reconciliation
+    // rules as native edits. Explicit absolute frames insert missing lane keys
+    // even when a shared native row is unchanged. No live native-key lookup or
+    // publication. An optional map lists every retained old->new native frame;
+    // omitted old frames are deleted/collision losers. A nonzero original
+    // frame may become the target frame-zero anchor when it wins a collision.
+    // Returns whether retained authoring/baseline changed; no author is false.
+    // Invalid ownership/view/frames throw; failure leaves this snapshot intact.
+    bool ReconcileTarget(int bone, const NativeKeyView&,
+        const std::vector<int>& explicitlyRegisteredFrames = {},
+        const std::vector<std::pair<int,int>>* frameMap = nullptr);
     // Samples this private snapshot without reading or pruning live state.
     // Only a matching target native-track hash enables the free curve. The
     // incoming scale supplies the native track's matrix basis; matching

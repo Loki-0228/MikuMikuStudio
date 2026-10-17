@@ -1,8 +1,13 @@
 #include "mikudancestudio/build_profile.hpp"
 #include "mikudancestudio/animation_curve_host.hpp"
 #include "mikudancestudio/morph_curve.hpp"
+#include "mikudancestudio/bone_curve.hpp"
 
 static_assert(MMD_ORIGINAL_PROFILE, "Original profile provider must not enter the full build");
+namespace mikudancestudio::bone_curve {
+void Synchronize(const unsigned char*) {}
+void ReconcileRegisteredFrame(const unsigned char*,int,int) noexcept {}
+}
 namespace mikudancestudio::curve_host {
 bool Read(MMDApp&, Kind, int, std::vector<curve_editor::Channel>&, std::wstring&) { return false; }
 bool Write(MMDApp&, Kind, int, const std::vector<curve_editor::Channel>&, std::wstring&) { return false; }

@@ -54,6 +54,7 @@ def run(executable, folder, mode, *, override=False, no_profile=False):
         if mode in ("--settings-fresh", "--settings-default"):
             assert saved["directoryMode"] == "executable" and saved["directory"] == "data/backups"
         if mode == "--settings-fresh":
+            assert document["sections"]["history"] == {"recordAdjustments": True, "steps": 47, "memoryMiB": 96}
             assert document["sections"]["recentProjects"]["paths"] == [str(folder / "example.pmm")]
             assert not (folder / "data" / "recent-pmm.txt").exists(), "production recent projects use central settings"
         if mode != "--settings-migrate":
