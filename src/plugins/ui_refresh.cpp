@@ -279,6 +279,10 @@ void UiRefreshQueue::Drain() {
                 struct StateGuard { UiRefreshQueue& queue; ~StateGuard() {
                     std::lock_guard<std::mutex> lock(queue.mutex_); queue.evaluatingState_ = false;
                 } } guard{*this};
+                // A provider may disable its own HWND while answering getState.
+                // Remember ownership before that callback: USER32 may clear focus
+                // as soon as the HWND becomes disabled.
+                const HWND focusedBeforeState = GetFocus();
                 const auto r = registry_.WithElementState(group.ref.element, [&](const MmsCommandStateV1& state) -> MmsResult {
                     if (const auto check = validate(true)) return check;
                     const bool visibilityChanged = bool(state.visible) != group.target.presentation.stateVisible;
@@ -288,6 +292,47 @@ void UiRefreshQueue::Drain() {
                     if (visibilityChanged) if (const auto check = registry_.CheckVisibilityPublication(group.ref.element)) return check;
                     HWND window = group.target.presentation.window;
                     if (!IsWindow(window)) return MMS_E_STALE;
+                    const bool losingAvailability = !state.enabled || !(state.visible && group.target.presentation.layoutVisible);
+                    const auto relocateFocus = [&]() -> MmsResult {
+                        const HWND focus = GetFocus();
+                        // Keep an explicit new focus chosen by a provider/native
+                        // callback, but recover focus that USER32 cleared itself.
+                        if ((focus != window && (focus || focusedBeforeState != window)) ||
+                            (!losingAvailability && IsWindowEnabled(window) && IsWindowVisible(window))) return MMS_OK;
+                        const HWND parent = GetParent(window);
+                        const auto eligible = [&](HWND candidate) {
+                            return candidate && candidate != window && IsWindow(candidate) &&
+                                IsWindowVisible(candidate) && IsWindowEnabled(candidate) &&
+                                (GetWindowLongPtrW(candidate, GWL_STYLE) & WS_TABSTOP);
+                        };
+                        HWND next = parent ? GetNextDlgTabItem(parent, window, FALSE) : nullptr;
+                        if (!eligible(next)) {
+                            // Custom control-parent containers are not dialogs.
+                            // Fall back to their actual sibling tab order if the
+                            // dialog helper returns the container or no tab stop.
+                            const HWND first = parent ? GetWindow(parent, GW_CHILD) : nullptr;
+                            HWND child = GetWindow(window, GW_HWNDNEXT);
+                            if (!child) child = first;
+                            for (unsigned visited = 0; child && child != window && visited < 8192; ++visited) {
+                                if (eligible(child)) { next = child; break; }
+                                child = GetWindow(child, GW_HWNDNEXT); if (!child) child = first;
+                            }
+                        }
+                        if (!eligible(next)) {
+                            next = parent;
+                            while (next && (!IsWindowVisible(next) || !IsWindowEnabled(next))) next = GetParent(next);
+                        }
+                        if (const auto check = validate(true)) return check;
+                        if (!IsWindow(window)) return MMS_E_STALE;
+                        if (GetFocus() == window || (!GetFocus() && focusedBeforeState == window)) SetFocus(next);
+                        if (const auto check = validate(true)) return check;
+                        if (!IsWindow(window)) return MMS_E_STALE;
+                        return GetFocus() == window || (next && !GetFocus()) ? MMS_E_FAILED : MMS_OK;
+                    };
+                    // Choose a valid keyboard target while the old HWND is still
+                    // enabled. EnableWindow/ShowWindow are allowed to clear its
+                    // focus; their callbacks may subsequently choose another one.
+                    if (losingAvailability) if (const auto check = relocateFocus()) return check;
                     if (bool(IsWindowEnabled(window)) != bool(state.enabled)) EnableWindow(window, state.enabled);
                     if (const auto check = validate(true)) return check;
                     if (!IsWindow(window)) return MMS_E_STALE;
@@ -298,12 +343,8 @@ void UiRefreshQueue::Drain() {
                     if (visibilityChanged) {
                         const bool shown = state.visible && group.target.presentation.layoutVisible;
                         if (bool(GetWindowLongPtrW(window, GWL_STYLE) & WS_VISIBLE) != shown) ShowWindow(window, shown ? SW_SHOWNA : SW_HIDE);
-                        if (!shown && GetFocus() == window) {
-                            HWND parent = GetParent(window), next = GetNextDlgTabItem(parent, window, FALSE);
-                            if (next && next != window && IsWindowVisible(next) && IsWindowEnabled(next)) SetFocus(next);
-                            else if (parent) SetFocus(parent);
-                        }
-                        if (const auto check = validate(true)) {
+                        const auto focusResult = relocateFocus();
+                        if (const auto check = focusResult ? focusResult : validate(true)) {
                             std::lock_guard<std::mutex> lock(mutex_);
                             auto target = targets_.find(group.ref.element);
                             if (target != targets_.end() && target->second.generation == group.ref.instanceGeneration) target->second.suspended = true;
@@ -320,6 +361,7 @@ void UiRefreshQueue::Drain() {
                         group.target.geometry = target.geometry;
                         group.target.presentation.visible = shown; group.target.presentation.stateVisible = state.visible != 0;
                     }
+                    if (const auto check = relocateFocus()) return check;
                     const bool applied = bool(IsWindowEnabled(window)) == bool(state.enabled) && SendMessageW(window, BM_GETCHECK, 0, 0) == checked;
                     if (const auto check = validate(true)) return check;
                     return IsWindow(window) ? (applied ? MMS_OK : MMS_E_FAILED) : MMS_E_STALE;
