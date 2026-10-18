@@ -2923,7 +2923,12 @@ void CurveModeButtons() {
 }  // namespace
 
 #include "curve_native_editor_checks.inc"
+#include "animation_curve_external_history_checks.inc"
 int main(int argc,char** argv) {
+    if(argc>1&&std::string(argv[1])=="--external-history"){
+        ExternalHistoryChecks();std::printf("external curve history: %d checks\n",g_checks);return 0;
+    }
+
     if(argc>1&&std::string(argv[1])=="--native-subdivision"){
         NativeSubdivisionRoute();NativeSampleBake();
         std::printf("native editor subdivision/bake: %d checks\n",g_checks);return 0;
@@ -2946,6 +2951,7 @@ int main(int argc,char** argv) {
         LayoutThreeLanguages(); ComparisonLayout(); HoverHints(); TabNavigation();
         std::printf("curve UI compatibility regressions: %d checks\n",g_checks); return 0;
     }
+    ExternalHistoryChecks();
     CurveModeButtons();
     if(argc>1 && std::string(argv[1])=="--editor-input") {
         IndependentValueHandles(); AlignedValueHandles(); AdjacentHandleLinking(); BakeSelectedChannels();

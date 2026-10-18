@@ -7,6 +7,10 @@
 #include "mikudancestudio/accessory_layout.hpp"
 #include "mikudancestudio/mmd_app.hpp"
 #include "mikudancestudio/runtime_log.hpp"
+#if !MMD_ORIGINAL_PROFILE
+#include "../plugins/native_curve_commands.hpp"
+#include "../plugins/native_pose_scope.hpp"
+#endif
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -484,7 +488,7 @@ struct PoolTransaction {
         restore(address,before);release(after);
     }
 };
-template<class K> void Mirror(K*& pool,const K* previous,const std::vector<Channel>&channels,const std::set<int>&frames){
+template<class K> std::vector<K> MirroredRecords(const K* previous,const std::vector<Channel>&channels,const std::set<int>&frames){
     // Curve values and native timeline selection are independent. Rebuilding
     // the pool must not turn a handle edit into a selection of the whole track.
     std::set<std::uint32_t> selected;
@@ -497,17 +501,52 @@ template<class K> void Mirror(K*& pool,const K* previous,const std::vector<Chann
         records.push_back(key);
     }
     for(size_t i=0;i<records.size();++i){records[i].previous=uint32_t(i?i-1:0);records[i].next=uint32_t(i+1<records.size()?i+1:0);}
+    return records;
+}
+template<class K> void Mirror(K*& pool,const K* previous,const std::vector<Channel>&channels,const std::set<int>&frames){
+    const auto records=MirroredRecords(previous,channels,frames);
     if(!mdl::KeyPoolEnsure(pool,records.size()))throw std::bad_alloc();
     std::memset(pool,0,sizeof(K)*mdl::KeyPoolCapacity(pool));
     std::copy(records.begin(),records.end(),pool);
 }
+void MirrorCameraControls(mdl::CameraKey* keys,std::size_t count,const std::vector<Channel>& input){
+    for(std::size_t i=0;i<count;++i)for(int c=0;c<6;++c){keys[i].interpolation[0][c]=20;keys[i].interpolation[1][c]=20;
+        keys[i].interpolation[2][c]=107;keys[i].interpolation[3][c]=107;}
+    for(std::size_t i=1;i<count;++i){auto& key=keys[i];const int start=int(keys[i-1].frame),end=int(key.frame);
+        constexpr std::size_t lanes[6]={0,1,2,3,6,7};
+        for(std::size_t lane=0;lane<6;++lane){std::array<double,4> controls{};
+            if(!CameraIntervalControls(input[lanes[lane]],start,end,controls))continue;
+            if(lane==3){std::array<double,4> y{},z{};
+                if(!CameraIntervalControls(input[4],start,end,y)||!CameraIntervalControls(input[5],start,end,z)||controls!=y||controls!=z)continue;}
+            for(std::size_t component=0;component<4;++component)key.interpolation[component][lane]=std::uint8_t(std::lround(controls[component]));
+        }
+    }
+}
 }
 
 bool Read(MMDApp& app,Kind kind,int slot,std::vector<Channel>&out,std::wstring&error){
+#if !MMD_ORIGINAL_PROFILE
+    if(plugins::BoundNativePoseHistory(&app)){
+        const auto found=states.find({&app,kind,slot});
+        std::vector<Channel> native;
+        if(found!=states.end()&&StateIdentityCurrent(found->second,app,kind,slot)){
+            State detached=found->second;
+            if(!NativeRead(app,kind,slot,native)){
+                error=Error(app,L"トラックが無効です。",L"Track unavailable.",L"轨道不可用。");return false;
+            }
+            Reconcile(detached,native);
+            out=std::move(detached.channels);
+        }else if(!NativeRead(app,kind,slot,out)){
+            error=Error(app,L"トラックが無効です。",L"Track unavailable.",L"轨道不可用。");return false;
+        }
+    }else
+#endif
+    {
     auto* state=Current(app,kind,slot);
     if(state)out=state->channels;
     else if(!NativeRead(app,kind,slot,out)){
         error=Error(app,L"トラックが無効、または既存の補間を表示できません。",L"Track unavailable or existing interpolation cannot be represented.",L"轨道不可用，或现有插值无法表示。");return false;}
+    }
     const auto&f=Fields(kind);
     for(size_t c=0;c<out.size();++c){out[c].label=Error(app,f[c].ja,f[c].en,f[c].zh);
         out[c].minimum=f[c].minimum;out[c].maximum=f[c].maximum;
@@ -665,6 +704,9 @@ bool RetimePreservedChannel(const Channel& source,Channel& transformed,std::wstr
     }catch(const std::exception&){return CurvePreparationFailure(error,L"无法映射精确保形相机区间，请先显式烘焙后再转换。");}
 }
 bool Write(MMDApp&app,Kind kind,int slot,const std::vector<Channel>&input,std::wstring&error){
+#if !MMD_ORIGINAL_PROFILE
+    if(plugins::BoundNativePoseHistory(&app))return plugins::WriteBoundGlobalCurves(app,kind,slot,input,error);
+#endif
     if(!Identity(app,kind,slot))return false;
     const auto&f=Fields(kind);
     if(input.size()!=f.size())return false;
@@ -689,27 +731,7 @@ bool Write(MMDApp&app,Kind kind,int slot,const std::vector<Channel>&input,std::w
     case Kind::Camera:
         transaction.Begin(app.CameraKeys());
         Mirror(app.CameraKeys(),static_cast<const mdl::CameraKey*>(transaction.before),input,frames);transaction.Updated(app.CameraKeys());
-        // The standard PMM body contains a linear proxy; full curves follow it.
-        for(size_t i=0;i<frames.size();++i)for(int c=0;c<6;++c){
-            app.CameraKeys()[i].interpolation[0][c]=20;app.CameraKeys()[i].interpolation[1][c]=20;
-            app.CameraKeys()[i].interpolation[2][c]=107;app.CameraKeys()[i].interpolation[3][c]=107;
-        }
-        // Preserve native easing whenever this interval is representable in
-        // PMM, including endpoint/crossed-X controls retained during import.
-        for(size_t i=1;i<frames.size();++i){
-            auto&key=app.CameraKeys()[i];
-            const int start=int(app.CameraKeys()[i-1].frame),end=int(key.frame);
-            const size_t channels[6]={0,1,2,3,6,7};
-            for(size_t lane=0;lane<6;++lane){
-                std::array<double,4> controls{};
-                if(!CameraIntervalControls(input[channels[lane]],start,end,controls))continue;
-                if(lane==3){
-                    std::array<double,4> y{},z{};
-                    if(!CameraIntervalControls(input[4],start,end,y)||!CameraIntervalControls(input[5],start,end,z)||controls!=y||controls!=z)continue;
-                }
-                for(size_t component=0;component<4;++component)key.interpolation[component][lane]=uint8_t(std::lround(controls[component]));
-            }
-        }
+        MirrorCameraControls(app.CameraKeys(),frames.size(),input);
         break;
     case Kind::Light:transaction.Begin(app.LightKeys());Mirror(app.LightKeys(),static_cast<const mdl::LightKey*>(transaction.before),input,frames);transaction.Updated(app.LightKeys());break;
     case Kind::Shadow:transaction.Begin(app.ShadowKeys());Mirror(app.ShadowKeys(),static_cast<const mdl::SelfShadowKey*>(transaction.before),input,frames);transaction.Updated(app.ShadowKeys());break;
@@ -873,6 +895,19 @@ std::uint64_t AuthoringDigest(const State& state) {
         for (const Channel& channel : channels) {
             for (const char character : channel.id) mix(static_cast<std::uint64_t>(static_cast<std::uint8_t>(character)));
             mix(channel.track.discrete ? 1u : 0u);
+#if !MMD_ORIGINAL_PROFILE
+            // These change evaluation/linking without necessarily changing any
+            // native field. Keep them in history's semantic source fingerprint.
+            mix(channel.interpolationGroup.size());
+            for(const unsigned char character:channel.interpolationGroup)mix(character);
+            const auto sampler=channel.sample.target<ac::Sample(*)(const Channel&,double)>();
+            mix(!channel.sample?0u:sampler&&*sampler==CameraSample?1u:2u);
+            mix(std::uint32_t(channel.group));mix(channel.collections.size());
+            for(const auto& collection:channel.collections){
+                mix(collection.id.size());for(const unsigned char character:collection.id)mix(character);
+                mix(collection.label.size());for(const wchar_t character:collection.label)mix(std::uint32_t(character));
+            }
+#endif
             for(const auto&controls:channel.nativeControls)for(double value:controls){
                 std::uint64_t bits=0;std::memcpy(&bits,&value,sizeof(bits));mix(bits);
             }
@@ -1177,21 +1212,166 @@ std::vector<Channel> TargetChannels(const NativeKeyView& view,Kind kind) {
     default:return TargetChannels<mdl::AccessoryKey>(view,kind);
     }
 }
-std::uint64_t RetainedStateBytes(const State& state) noexcept {
-    std::uint64_t bytes=sizeof(State);
+std::uint64_t RetainedChannelsBytes(const std::vector<Channel>& channels) noexcept {
+    std::uint64_t bytes=0;
     const auto add=[&](std::uint64_t n,std::uint64_t stride){bytes=stride&&n>(UINT64_MAX-bytes)/stride?UINT64_MAX:bytes+n*stride;};
     const auto string=[&](const auto& s){add(s.capacity()+1,sizeof(typename std::decay_t<decltype(s)>::value_type));};
-    for(const auto* channels:{&state.channels,&state.baseline}){
-        add(channels->capacity(),sizeof(Channel));
-        for(const auto& c:*channels){string(c.id);string(c.label);string(c.unit);string(c.interpolationGroup);
+        add(channels.capacity(),sizeof(Channel));
+        for(const auto& c:channels){string(c.id);string(c.label);string(c.unit);string(c.interpolationGroup);
             add(c.track.keys.capacity(),sizeof(ac::Key));add(c.nativeControls.capacity(),sizeof(std::array<double,4>));
             add(c.controlGeometry.capacity(),sizeof(std::array<double,4>));add(c.collections.capacity(),sizeof(curve_editor::Collection));
             add(c.preservedCameraIntervals.capacity(),sizeof(PreservedCameraInterval));
             for(const auto& group:c.collections){string(group.id);string(group.label);}
             if(c.sample){const auto p=c.sample.target<ac::Sample(*)(const Channel&,double)>();if(!p||*p!=CameraSample)return UINT64_MAX;}
         }
+    return bytes;
+}
+std::uint64_t RetainedStateBytes(const State& state) noexcept {
+    std::uint64_t bytes=sizeof(State);
+    for(const auto* channels:{&state.channels,&state.baseline}){
+        const auto amount=RetainedChannelsBytes(*channels);bytes=amount>UINT64_MAX-bytes?UINT64_MAX:bytes+amount;
     }return bytes;
 }
+}
+struct AuthoredReplacement::Impl {
+    MMDApp& app;Kind kind;int slot;Address address;std::uint64_t poolIdentity,generation=1;
+    void* object;bool beforePresent=false,changed=false,published=false,forwardState=false;
+    State before,after;std::uint64_t initialRevision=0,initialDigest=0;
+    std::vector<Channel> effectiveBefore;
+    std::vector<mdl::CameraKey> camera;
+    std::vector<mdl::LightKey> light;
+    std::vector<mdl::SelfShadowKey> shadow;
+    std::vector<mdl::GravityKey> gravity;
+    std::vector<mdl::AccessoryKey> accessory;
+    NativeKeyView View() const noexcept {
+        switch(kind){
+        case Kind::Camera:return {&camera,camera.size(),[](const void* p,unsigned i)noexcept->const void*{const auto& v=*static_cast<const std::vector<mdl::CameraKey>*>(p);return i<v.size()?&v[i]:nullptr;}};
+        case Kind::Light:return {&light,light.size(),[](const void* p,unsigned i)noexcept->const void*{const auto& v=*static_cast<const std::vector<mdl::LightKey>*>(p);return i<v.size()?&v[i]:nullptr;}};
+        case Kind::Shadow:return {&shadow,shadow.size(),[](const void* p,unsigned i)noexcept->const void*{const auto& v=*static_cast<const std::vector<mdl::SelfShadowKey>*>(p);return i<v.size()?&v[i]:nullptr;}};
+        case Kind::Gravity:return {&gravity,gravity.size(),[](const void* p,unsigned i)noexcept->const void*{const auto& v=*static_cast<const std::vector<mdl::GravityKey>*>(p);return i<v.size()?&v[i]:nullptr;}};
+        default:return {&accessory,accessory.size(),[](const void* p,unsigned i)noexcept->const void*{const auto& v=*static_cast<const std::vector<mdl::AccessoryKey>*>(p);return i<v.size()?&v[i]:nullptr;}};
+        }
+    }
+    Impl(MMDApp& a,Kind k,int s,const std::vector<Channel>& input):app(a),kind(k),slot(s),address(&a,k,s),
+        poolIdentity(TrackPoolIdentity(a,k,s)),object(k==Kind::Accessory?Identity(a,k,s):nullptr){
+        if(int(k)<0||int(k)>4||!poolIdentity||!Identity(a,k,s))throw std::invalid_argument("unowned curve replacement");
+        const auto& fields=Fields(k);if(input.size()!=fields.size())throw std::invalid_argument("curve replacement channels");
+        std::set<int> frames{0};std::string error;
+        after.channels=input;
+        for(std::size_t c=0;c<input.size();++c){const auto& channel=input[c];const auto& track=channel.track;
+            if(channel.id!=fields[c].id||track.discrete!=fields[c].discrete||track.keys.empty()||track.keys.front().frame!=0||
+               !ac::Validate(track,error))throw std::invalid_argument("curve replacement data");
+            for(const auto& key:track.keys){if(key.frame>frame_limits::maximum||key.value<fields[c].minimum||key.value>fields[c].maximum||
+                (fields[c].discrete&&std::floor(key.value)!=key.value))throw std::invalid_argument("curve replacement value");frames.insert(key.frame);}
+            PrunePreserved(after.channels[c]);
+        }
+        std::vector<Channel> native;if(!NativeRead(a,k,s,native))throw std::invalid_argument("curve replacement native source");
+        const auto found=states.find(address);
+        if(found!=states.end()){
+            if(!StateIdentityCurrent(found->second,a,k,s))throw std::invalid_argument("stale curve replacement author");
+            beforePresent=true;before=found->second;initialRevision=found->second.revision;initialDigest=AuthoringDigest(found->second);
+            State detached=before;Reconcile(detached,native);effectiveBefore=std::move(detached.channels);after.author=before.author;
+        }else effectiveBefore=native;
+        const auto& previous=effectiveBefore;
+        changed=!Same(previous,after.channels);
+        if(!changed)for(std::size_t c=0;c<previous.size()&&!changed;++c){
+            changed=previous[c].sample.target_type()!=after.channels[c].sample.target_type()||
+                previous[c].interpolationGroup!=after.channels[c].interpolationGroup||
+                previous[c].controlGeometry!=after.channels[c].controlGeometry||previous[c].group!=after.channels[c].group||
+                previous[c].collections.size()!=after.channels[c].collections.size();
+            for(std::size_t i=0;i<previous[c].collections.size()&&!changed;++i)
+                changed=previous[c].collections[i].id!=after.channels[c].collections[i].id||previous[c].collections[i].label!=after.channels[c].collections[i].label;
+            for(std::size_t i=0;i<previous[c].track.keys.size()&&!changed;++i)
+                changed=previous[c].track.keys[i].tangent!=after.channels[c].track.keys[i].tangent;
+        }
+        switch(k){
+        case Kind::Camera:camera=MirroredRecords(a.CameraKeys(),after.channels,frames);MirrorCameraControls(camera.data(),camera.size(),after.channels);break;
+        case Kind::Light:light=MirroredRecords(a.LightKeys(),after.channels,frames);break;
+        case Kind::Shadow:shadow=MirroredRecords(a.ShadowKeys(),after.channels,frames);break;
+        case Kind::Gravity:gravity=MirroredRecords(a.GravityKeys(),after.channels,frames);break;
+        case Kind::Accessory:accessory=MirroredRecords(a.AccessoryKeys(s),after.channels,frames);break;
+        }
+        after.baseline=TargetChannels(View(),k);
+        if(RetainedStateBytes(after)==UINT64_MAX||(beforePresent&&RetainedStateBytes(before)==UINT64_MAX))
+            throw std::invalid_argument("unmeasurable curve replacement callback");
+    }
+    bool Structure() const noexcept {
+        return TrackPoolIdentity(app,kind,slot)==poolIdentity&&
+            (kind!=Kind::Accessory||Identity(app,kind,slot)==object);
+    }
+    bool Matches(bool forward) const noexcept {
+        if(!Structure())return false;
+        const auto found=states.find(address);const bool present=forward?beforePresent:true;
+        if(!present)return found==states.end();
+        if(found==states.end()||!StateIdentityCurrent(found->second,app,kind,slot))return false;
+        if(!published)return found->second.revision==initialRevision&&AuthoringDigest(found->second)==initialDigest;
+        const auto& expected=forward?before:after;
+        return found->second.author==expected.author&&AuthoringDigest(found->second)==AuthoringDigest(expected);
+    }
+};
+struct AuthoredReplacement::Target::Impl {
+    std::shared_ptr<AuthoredReplacement::Impl> source;bool forward,published=false;std::uint64_t generation;
+    const State* previous=nullptr;std::uint64_t revision=0,digest=0;void* allocation;void* identity;
+    std::vector<Channel> native;decltype(states)::node_type target,retired;
+    Impl(std::shared_ptr<AuthoredReplacement::Impl> s,const NativeKeyView& view,bool f):source(std::move(s)),forward(f),generation(source->generation),
+        allocation(TrackPoolAllocation(source->app,source->kind,source->slot)),identity(Identity(source->app,source->kind,source->slot)){
+        if(!source->Matches(f)||(!source->published&&!f)||source->generation==UINT64_MAX)throw std::invalid_argument("changed curve replacement source");
+        const auto found=states.find(source->address);if(found!=states.end()){previous=&found->second;revision=previous->revision;digest=AuthoringDigest(*previous);}
+        native=TargetChannels(view,source->kind);
+        if(f||source->beforePresent){State state=f?source->after:source->before;
+            if(f){state.baseline=native;state.fingerprint=0;}
+            state.revision=NextAuthoringRevision();
+            decltype(states) staged;staged.emplace(source->address,std::move(state));target=staged.extract(staged.begin());}
+    }
+    bool Current() const noexcept {
+        if(published||source->generation!=generation||!source->Matches(forward)||
+           TrackPoolAllocation(source->app,source->kind,source->slot)!=allocation||Identity(source->app,source->kind,source->slot)!=identity)return false;
+        const auto found=states.find(source->address);const auto* current=found==states.end()?nullptr:&found->second;
+        return current==previous&&(!current||(current->revision==revision&&AuthoringDigest(*current)==digest));
+    }
+};
+AuthoredReplacement::AuthoredReplacement(MMDApp& app,Kind kind,int slot,const std::vector<Channel>& channels):impl_(std::make_shared<Impl>(app,kind,slot,channels)){}
+AuthoredReplacement::~AuthoredReplacement()=default;
+bool AuthoredReplacement::Changed() const noexcept{return impl_->changed;}
+bool AuthoredReplacement::IsCurrent() const noexcept{return impl_->Matches(!impl_->forwardState);}
+NativeKeyView AuthoredReplacement::TargetKeys() const noexcept{return impl_->View();}
+const std::vector<Channel>& AuthoredReplacement::BeforeChannels()const noexcept{return impl_->effectiveBefore;}
+AuthoredReplacement::Target::Target(std::unique_ptr<Impl> p):impl_(std::move(p)){}
+AuthoredReplacement::Target::~Target()=default;
+std::unique_ptr<AuthoredReplacement::Target> AuthoredReplacement::Prepare(const NativeKeyView& view,bool forward)const{
+    return std::unique_ptr<Target>(new Target(std::make_unique<Target::Impl>(impl_,view,forward)));
+}
+bool AuthoredReplacement::Target::IsCurrent() const noexcept{return impl_->Current();}
+bool AuthoredReplacement::Target::Authored() const noexcept{return !impl_->target.empty();}
+bool AuthoredReplacement::Target::Sample(double frame,std::array<double,12>& out)const{
+    if(!std::isfinite(frame))return false;const auto& fields=Fields(impl_->source->kind);
+    // Undo republishes the original raw author node. Evaluation must still
+    // follow current native authority without modifying that retained node.
+    State effective;
+    if(!impl_->forward&&!impl_->target.empty()){
+        effective=impl_->target.mapped();Reconcile(effective,impl_->native);
+    }
+    const auto& channels=!effective.channels.empty()?effective.channels:impl_->target.empty()?impl_->native:impl_->target.mapped().channels;
+    std::array<double,12> values{};if(channels.size()!=fields.size())return false;
+    for(std::size_t c=0;c<channels.size();++c){const double value=SampleValue(channels[c],frame);if(!std::isfinite(value))return false;
+        values[c]=impl_->target.empty()?value:std::clamp(value,fields[c].minimum,fields[c].maximum);}
+    out=values;return true;
+}
+void AuthoredReplacement::Target::Publish(void* finalIdentity)noexcept{
+    auto& p=*impl_;if(p.published||p.source->generation!=p.generation)std::terminate();
+    if(!p.target.empty()){auto& state=p.target.mapped();state.identity=finalIdentity;
+        state.poolAllocation=TrackPoolAllocation(p.source->app,p.source->kind,p.source->slot);
+        state.poolIdentity=PoolIdentity(p.source->kind,state.poolAllocation);}
+    p.retired=states.extract(p.source->address);if(!p.target.empty())states.insert(std::move(p.target));
+    p.source->published=true;p.source->forwardState=p.forward;++p.source->generation;p.published=true;
+}
+std::uint64_t AuthoredReplacement::RetainedBytes()const noexcept{
+    auto bytes=std::uint64_t(sizeof(*this)+sizeof(Impl)+4*sizeof(void*));
+    const auto add=[&](std::uint64_t n,std::uint64_t stride){bytes=stride&&n>(UINT64_MAX-bytes)/stride?UINT64_MAX:bytes+n*stride;};
+    add(impl_->camera.capacity(),sizeof(mdl::CameraKey));add(impl_->light.capacity(),sizeof(mdl::LightKey));
+    add(impl_->shadow.capacity(),sizeof(mdl::SelfShadowKey));add(impl_->gravity.capacity(),sizeof(mdl::GravityKey));add(impl_->accessory.capacity(),sizeof(mdl::AccessoryKey));
+    add(1,RetainedStateBytes(impl_->before));add(1,RetainedStateBytes(impl_->after));
+    add(1,RetainedChannelsBytes(impl_->effectiveBefore));return bytes;
 }
 struct TrackAuthoring::Impl {
     MMDApp& app;Kind kind;int slot;Address address;std::uint64_t poolIdentity;

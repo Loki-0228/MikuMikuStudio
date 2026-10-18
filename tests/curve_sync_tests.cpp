@@ -383,4 +383,8 @@ void SceneRulerSynchronization() {
     app->CameraKeys()=nullptr;app->LightKeys()=nullptr;app->ShadowKeys()=nullptr;app->GravityKeys()=nullptr;
     DestroyWindow(owner);app->Hwnd()=nullptr;
 }
-int main() {SceneRulerSynchronization();CameraSparseRegistration();CameraEditorCommands();CameraSelectionAfterCurveWrite();CameraFrameZeroRegistration();GlobalFrameZeroRegistrations();MorphSync();SelectionSync();std::puts("PASS: curve synchronization");}
+#include "bound_curve_history_checks.hpp"
+int main(int argc,char** argv) {
+    if(argc==2&&std::strcmp(argv[1],"--bound-history")==0){bound_curve_history_checks::Run();std::puts("PASS: bound curve history");return 0;}
+    SceneRulerSynchronization();bound_curve_history_checks::Run();CameraSparseRegistration();CameraEditorCommands();CameraSelectionAfterCurveWrite();CameraFrameZeroRegistration();GlobalFrameZeroRegistrations();MorphSync();SelectionSync();std::puts("PASS: curve synchronization");
+}

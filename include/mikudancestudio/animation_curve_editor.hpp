@@ -112,12 +112,28 @@ struct Source {
     // Optional native subdivision. Works on a detached channel set; the
     // normal apply callback remains the only publication/history boundary.
     std::function<bool(std::vector<Channel>&, std::size_t, int, std::size_t&, std::wstring&)> subdivide;
+    // Opt in to Session::history. All opted-in sources share the host journal;
+    // no local undo snapshots are retained. Missing callbacks disable editing.
+    bool externalHistory = false;
 };
 struct Theme {
     // COLORREF values in MMD's in-memory order, already parsed by the host.
     std::array<std::uint32_t,35> colors{};
     std::uint32_t text=0;
     bool enabled=false;
+};
+struct HistoryState {
+    std::uint64_t revision = 0;
+    bool canUndo = false, canRedo = false;
+};
+struct ExternalHistory {
+    // Read-only, including during temporary edit locks. A false result means
+    // the current binding is unavailable, not that its history is empty.
+    std::function<bool(HistoryState&, std::wstring&)> query;
+    // True means exactly one traversal committed. The editor only re-reads
+    // afterwards; refresh failure never repeats the traversal. False/throw
+    // must leave the journal unchanged. The host enforces its mutation gate.
+    std::function<bool(bool redo, std::wstring&)> traverse;
 };
 struct Session {
     std::string id;
@@ -129,6 +145,7 @@ struct Session {
     std::function<bool()> isPlaying;
     std::function<void(bool)> setPlaying;
     Theme theme;
+    ExternalHistory history;
 };
 // Modeless Win32 window. Background tests may create it hidden.
 void* Open(void* owner, Session session, bool visible = true);

@@ -8,8 +8,9 @@
 // * Every mutation of the channel data goes through Source::apply.  A failed
 //   apply leaves the editor state exactly as it was and only writes an error
 //   line into the status control, so background tests never see a message box.
-// * Undo/redo are local snapshot stacks; each step is still committed with the
-//   same apply callback, so the source stays the single writer of its data.
+// * Sources may use the host's common journal, with read-only canonical
+//   refresh after traversal. Other sources keep local snapshot stacks and
+//   commit each step with the same apply callback.
 // * Switching source and re-activating the window re-read the source.  The
 //   freshly read channels are adopted unchanged; the local undo stacks are only
 //   dropped when the read data actually differs, which is what keeps an
@@ -312,12 +313,17 @@ enum Str {
     StrChannelShown, StrChannelHidden, StrActiveCurve,
     StrHintChannelList, StrHintCompareMode, StrHintCompareFilter,
     StrHintAddKey, StrHintDeleteKey, StrHintApplyKey, StrHintInterpolation, StrHintTangent,
-    StrHintCanvas, StrHintMmdHandles, StrHintTimeBar, StrHintValueBar, StrHintNavigation
+    StrHintCanvas, StrHintMmdHandles, StrHintTimeBar, StrHintValueBar, StrHintNavigation,
+    StrHistoryUnavailable,StrHistoryFailed,StrHistoryRefreshPending,StrHistoryRefreshChanged
 };
 
 const wchar_t *T(unsigned language, Str id) {
     const bool zh = language == 2, en = language == 1;
     switch (id) {
+    case StrHistoryUnavailable:return zh?L"宿主共同历史暂不可用。":en?L"The host history is unavailable.":L"ホストの共通履歴を利用できません。";
+    case StrHistoryFailed:return zh?L"宿主拒绝了该编辑操作。":en?L"The host refused the editing operation.":L"ホストが編集操作を拒否しました。";
+    case StrHistoryRefreshPending:return zh?L"操作已提交，正在等待重新读取数据。":en?L"The operation committed; data refresh is pending.":L"操作は確定済みです。データの再読込を待っています。";
+    case StrHistoryRefreshChanged:return zh?L"刷新期间共同历史已变化，正在等待重新读取数据。":en?L"History changed during refresh; a new read is pending.":L"再読込中に共通履歴が変化しました。再読込を待っています。";
     case StrTitle: return zh ? L"曲线编辑器" : en ? L"Curve editor" : L"カーブエディター";
     case StrInvertSelection: return zh ? L"反选" : en ? L"Invert" : L"反転";
     case StrSource: return zh ? L"源" : en ? L"Source" : L"ソース";
@@ -646,6 +652,9 @@ struct SourceState {
     std::vector<Snapshot> redo;
     std::wstring status;
     bool statusError = false;
+    HistoryState externalState{};
+    std::uint64_t observedHistoryRevision = 0;
+    bool externalReady = false, externalObserved = false, externalReadPending = false;
     // Comparison display.  compareMode is the choice the host remembers for
     // this source; kCompareOff means the source offers no comparison at all,
     // which is the only place that state is used.
@@ -686,6 +695,7 @@ struct Editor {
     std::vector<SourceState> states;
     std::set<std::string> pendingSources;
     bool sourceChangePosted = false;
+    bool externalCallbackActive = false, externalOperationActive = false;
     std::vector<HTREEITEM> channelItems;
     std::map<HTREEITEM, std::string> collectionItems;
     bool rebuildingChannels = false;
@@ -1111,13 +1121,45 @@ int HandleAtPoint(Editor &editor, POINT point, double radius, bool &outSide) {
 // ---------------------------------------------------------------------------
 // Editing transactions.
 // ---------------------------------------------------------------------------
-void ReadRegisteredSource(Editor &editor);
+bool ReadRegisteredSource(Editor &editor, bool publishUi = true);
+bool RefreshExternalSource(Editor& editor, bool report = true);
+void PollExternalHistory(Editor& editor);
+
+struct ExternalOperation {
+    bool& active;
+    explicit ExternalOperation(bool& value) : active(value) { active=true; }
+    ~ExternalOperation(){active=false;}
+};
+bool QueryExternalHistory(Editor& editor, bool report) {
+    auto& state=CurrentState(editor);
+    if(editor.externalCallbackActive)return false;
+    std::wstring error;HistoryState current{};bool accepted=false;
+    if(editor.session.history.query&&editor.session.history.traverse){
+        ExternalOperation callback(editor.externalCallbackActive);
+        try{accepted=editor.session.history.query(current,error);}catch(...){error=T(editor.session.language,StrHistoryUnavailable);}
+    }else error=T(editor.session.language,StrHistoryUnavailable);
+    state.externalReady=accepted;
+    if(accepted)state.externalState=current;
+    else if(report)SetStatus(editor,error.empty()?T(editor.session.language,StrHistoryUnavailable):error,true);
+    return accepted;
+}
 
 bool CheckSourceCurrent(Editor &editor) {
     Source &source = CurrentSource(editor);
+    if(source.externalHistory){
+        if(editor.externalOperationActive||editor.externalCallbackActive)return false;
+        if(!QueryExternalHistory(editor,true)){UpdateEnabledState(editor);return false;}
+        if(CurrentState(editor).externalReadPending){
+            RefreshExternalSource(editor);return false;
+        }
+    }
     std::vector<Channel> latest;
     std::wstring error;
     if (!source.read || !source.read(latest, error)) {
+        if(source.externalHistory){
+            auto& state=CurrentState(editor);state.valid=false;state.externalReadPending=true;
+            state.reason=std::wstring(T(editor.session.language,StrReadFailed))+error;UpdateEnabledState(editor);
+        }
         SetStatus(editor, std::wstring(T(editor.session.language, StrReadFailed)) + error, true);
         return false;
     }
@@ -1125,7 +1167,7 @@ bool CheckSourceCurrent(Editor &editor) {
     if (SameCurveData(CurrentState(editor).channels, latest)) return true;
     // Native keyboard/mouse edits may bypass the menu notification. Compare
     // with the host before every write, including undo and redo.
-    ReadRegisteredSource(editor);
+    if(source.externalHistory)RefreshExternalSource(editor);else ReadRegisteredSource(editor);
     SetStatus(editor, T(editor.session.language, StrSourceChanged), true);
     return false;
 }
@@ -1234,20 +1276,36 @@ bool CommitChannels(Editor &editor, std::vector<Channel> next, const std::wstrin
         SetStatus(editor, T(editor.session.language, StrNoApply), true);
         return false;
     }
+    if(source.externalHistory&&SameCurveData(state.channels,next)){
+        SetStatus(editor,success,false);return true;
+    }
     std::wstring error;
-    if (!source.apply(next, error)) {
+    if(source.externalHistory)editor.externalOperationActive=true;
+    struct FinishExternal { Editor& editor; ~FinishExternal(){editor.externalOperationActive=false;} } finish{editor};
+    bool accepted=false;
+    try{accepted=source.apply(next,error);}catch(...){error=T(editor.session.language,StrHistoryFailed);}
+    if (!accepted) {
         std::wstring message = T(editor.session.language, StrApplyRejected);
         if (!error.empty()) message += error;
         else if (state.reason.empty()) message += T(editor.session.language, StrReady);
         SetStatus(editor, message, true);
         return false;
     }
-    state.undo.push_back(Snapshot{state.channels, state.active, state.selection});
-    if (state.undo.size() > static_cast<std::size_t>(kUndoDepth)) state.undo.erase(state.undo.begin());
-    state.redo.clear();
-    AdoptWrittenChannels(editor, std::move(next));
+    if(!source.externalHistory){
+        state.undo.push_back(Snapshot{state.channels, state.active, state.selection});
+        if (state.undo.size() > static_cast<std::size_t>(kUndoDepth)) state.undo.erase(state.undo.begin());
+        state.redo.clear();
+        AdoptWrittenChannels(editor, std::move(next));
+    }else{
+        // A successful host write is already committed. Canonical refresh is
+        // read-only and may be retried; never retain a second undo snapshot.
+        state.valid=false;state.externalReadPending=true;
+        editor.externalOperationActive=false;
+        RefreshExternalSource(editor);
+        editor.externalOperationActive=true;
+    }
     ClampState(state);
-    PublishKeySelection(editor);
+    if(state.valid)PublishKeySelection(editor);
     RefreshEditorsUi(editor);
     SetStatus(editor, state.valid ? success : state.reason, !state.valid);
     return true;
@@ -1279,7 +1337,31 @@ bool ApplySnapshot(Editor &editor, Snapshot snapshot, Snapshot &previous) {
     return true;
 }
 
+void TraverseExternalHistory(Editor& editor,bool redo){
+    auto& state=CurrentState(editor);
+    if(editor.externalOperationActive||editor.externalCallbackActive)return;
+    if(!QueryExternalHistory(editor,true)){UpdateEnabledState(editor);return;}
+    if(state.externalReadPending){RefreshExternalSource(editor);return;}
+    if(!(redo?state.externalState.canRedo:state.externalState.canUndo)){
+        SetStatus(editor,T(editor.session.language,redo?StrNothingRedo:StrNothingUndo),true);UpdateEnabledState(editor);return;
+    }
+    bool committed=false;std::wstring error;
+    {
+        ExternalOperation operation(editor.externalOperationActive);
+        ExternalOperation callback(editor.externalCallbackActive);
+        try{committed=editor.session.history.traverse(redo,error);}catch(...){error=T(editor.session.language,StrHistoryFailed);}
+    }
+    if(!committed){
+        QueryExternalHistory(editor,false);UpdateEnabledState(editor);
+        SetStatus(editor,error.empty()?T(editor.session.language,StrHistoryFailed):error,true);return;
+    }
+    // The operation has succeeded even if the following read fails. Disable
+    // further edits until a timer/Refresh canonical read succeeds.
+    state.valid=false;state.externalReadPending=true;
+    if(RefreshExternalSource(editor))SetStatus(editor,T(editor.session.language,redo?StrRedone:StrUndone),false);
+}
 void UndoOnce(Editor &editor) {
+    if(CurrentSource(editor).externalHistory){TraverseExternalHistory(editor,false);return;}
     if (!CheckSourceCurrent(editor)) return;
     SourceState &state = CurrentState(editor);
     if (state.undo.empty()) {
@@ -1296,6 +1378,7 @@ void UndoOnce(Editor &editor) {
 }
 
 void RedoOnce(Editor &editor) {
+    if(CurrentSource(editor).externalHistory){TraverseExternalHistory(editor,true);return;}
     if (!CheckSourceCurrent(editor)) return;
     SourceState &state = CurrentState(editor);
     if (state.redo.empty()) {
@@ -1346,6 +1429,9 @@ bool ReadCurrentSource(Editor &editor, bool *adopted) {
 }
 
 void ReadAndAdopt(Editor &editor, bool dropHistoryOnChange) {
+    if(CurrentSource(editor).externalHistory){
+        if(RefreshExternalSource(editor))FitAll(editor);return;
+    }
     SourceState &state = CurrentState(editor);
     bool changed = false;
     const bool ok = ReadCurrentSource(editor, &changed);
@@ -1373,7 +1459,7 @@ void ReadAndAdopt(Editor &editor, bool dropHistoryOnChange) {
 
 // External registration changes data, while the editor's view remains local.
 // Match selection by frame because insertion can change every following index.
-void ReadRegisteredSource(Editor &editor) {
+bool ReadRegisteredSource(Editor &editor, bool publishUi) {
     SourceState &state = CurrentState(editor);
     std::map<std::string, bool> display;
     std::string activeId;
@@ -1387,10 +1473,12 @@ void ReadRegisteredSource(Editor &editor) {
     }
     bool changed = false;
     if (!ReadCurrentSource(editor, &changed)) {
-        RefreshEditorsUi(editor);
-        InvalidateCanvas(editor);
-        SetStatus(editor, state.reason, true);
-        return;
+        if (publishUi) {
+            RefreshEditorsUi(editor);
+            InvalidateCanvas(editor);
+            SetStatus(editor, state.reason, true);
+        }
+        return false;
     }
     for (std::size_t index = 0; index < state.channels.size(); ++index) {
         Channel &channel = state.channels[index];
@@ -1409,17 +1497,58 @@ void ReadRegisteredSource(Editor &editor) {
             if (selectedFrames.count(keys[index].frame)) state.selection.insert(index);
     }
     PullKeySelection(editor);
+    if (publishUi) {
+        RefreshEditorsUi(editor);
+        UpdateWindowTitle(editor);
+        FillSourceCombo(editor);
+        InvalidateCanvas(editor);
+        if (changed || state.statusError) SetStatus(editor, T(editor.session.language, StrReady), false);
+    }
+    return changed;
+}
+
+bool RefreshExternalSource(Editor& editor,bool report){
+    auto& state=CurrentState(editor);
+    if(editor.externalOperationActive||editor.externalCallbackActive)return false;
+    if(!QueryExternalHistory(editor,report)){UpdateEnabledState(editor);return false;}
+    const auto revision=state.externalState.revision;
+    bool changed=false;
+    {
+        ExternalOperation operation(editor.externalOperationActive);
+        // Publish the controls only after the canonical read and its revision
+        // have both been validated. A successful write is pending during this
+        // read; disabling then re-enabling its focused edit would lose focus.
+        try{changed=ReadRegisteredSource(editor,false);}catch(...){
+            state.valid=false;state.reason=T(editor.session.language,StrHistoryRefreshPending);
+        }
+    }
+    const bool queried=QueryExternalHistory(editor,report);
+    if(state.valid&&queried&&state.externalState.revision==revision){
+        state.observedHistoryRevision=revision;state.externalObserved=true;state.externalReadPending=false;
+        if(changed||state.statusError)SetStatus(editor,T(editor.session.language,StrReady),false);
+    }else{
+        state.externalReadPending=true;
+        if(state.valid){state.valid=false;state.reason=T(editor.session.language,StrHistoryRefreshChanged);}
+        if(report)SetStatus(editor,state.reason.empty()?T(editor.session.language,StrHistoryRefreshPending):state.reason,true);
+    }
     RefreshEditorsUi(editor);
     UpdateWindowTitle(editor);
     FillSourceCombo(editor);
-    InvalidateCanvas(editor);
-    if (changed || state.statusError) SetStatus(editor, T(editor.session.language, StrReady), false);
+    return state.valid&&queried&&!state.externalReadPending;
 }
-
+void PollExternalHistory(Editor& editor){
+    if(!CurrentSource(editor).externalHistory||editor.externalOperationActive||editor.externalCallbackActive)return;
+    auto& state=CurrentState(editor);
+    if(!QueryExternalHistory(editor,false)){UpdateEnabledState(editor);return;}
+    if(editor.drag!=Drag::None||editor.mmdDragHandle>=0){UpdateEnabledState(editor);return;}
+    if(state.externalReadPending||!state.externalObserved||state.observedHistoryRevision!=state.externalState.revision)
+        RefreshExternalSource(editor,false);
+    else UpdateEnabledState(editor); // Limits can remove undo/redo without changing revision.
+}
 void ProcessSourceChanges(Editor &editor) {
     editor.sourceChangePosted = false;
-    if (editor.drag != Drag::None || editor.mmdDragHandle >= 0) {
-        // Only poll while a drag delays an actual pending update.
+    if (editor.drag != Drag::None || editor.mmdDragHandle >= 0 || editor.externalOperationActive || editor.externalCallbackActive) {
+        // Only poll while a drag or host callback delays an actual pending update.
         SetTimer(editor.window, kSourceChangedTimer, kPlayheadIntervalMs, nullptr);
         return;
     }
@@ -1428,7 +1557,9 @@ void ProcessSourceChanges(Editor &editor) {
     pending.swap(editor.pendingSources);
     for (std::size_t index = 0; index < editor.session.sources.size(); ++index) {
         if (!pending.count(editor.session.sources[index].id)) continue;
-        if (index == editor.sourceIndex) ReadRegisteredSource(editor);
+        if (index == editor.sourceIndex) {
+            if(CurrentSource(editor).externalHistory)RefreshExternalSource(editor);else ReadRegisteredSource(editor);
+        }
         // SwitchSource reads inactive sources on entry and only drops history
         // when their native data actually changed.
     }
@@ -2530,7 +2661,8 @@ void UpdateEnabledState(Editor &editor) {
     SourceState &state = CurrentState(editor);
     Source &source = CurrentSource(editor);
     const bool valid = state.valid;
-    const bool writable = valid && source.apply != nullptr;
+    const bool historyReady=!source.externalHistory||(state.externalReady&&!state.externalReadPending);
+    const bool writable = valid && source.apply != nullptr && historyReady;
     const bool hasChannel = !state.channels.empty();
     const bool hasSelection = !state.selection.empty();
 
@@ -2540,6 +2672,10 @@ void UpdateEnabledState(Editor &editor) {
                    kIdOutSlopeEdit, kIdInWeightEdit, kIdOutWeightEdit, kIdApplyKey, kIdAddKey, kIdDeleteKey,
                    kIdUndo, kIdRedo, kIdBakeFirstEdit, kIdBakeLastEdit, kIdBakeStepEdit, kIdBakeRun}) {
         EnableWindow(GetDlgItem(editor.window, id), (writable && hasChannel) ? TRUE : FALSE);
+    }
+    if(source.externalHistory){
+        EnableWindow(GetDlgItem(editor.window,kIdUndo),state.externalReady&&!state.externalReadPending&&state.externalState.canUndo);
+        EnableWindow(GetDlgItem(editor.window,kIdRedo),state.externalReady&&!state.externalReadPending&&state.externalState.canRedo);
     }
     // Navigation and view selection only change what is on screen, so they stay
     // available for a source that can be read but not written.
@@ -2555,7 +2691,7 @@ void UpdateEnabledState(Editor &editor) {
     EnableWindow(GetDlgItem(editor.window, kIdInterpolationCombo), hasInterval);
     EnableWindow(GetDlgItem(editor.window, kIdTangentCombo), handles && track->keys.size() > 1);
     EnableWindow(GetDlgItem(editor.window, kIdBakeRun), writable ? TRUE : FALSE);
-    EnableWindow(GetDlgItem(editor.window, kIdReadMotion), (valid && source.readMotion) ? TRUE : FALSE);
+    EnableWindow(GetDlgItem(editor.window, kIdReadMotion), (valid && historyReady && source.readMotion) ? TRUE : FALSE);
     EnableWindow(GetDlgItem(editor.window, kIdWriteMotion), (valid && source.writeMotion) ? TRUE : FALSE);
     if (editor.mmd) {
         EnableWindow(editor.mmd, editor.mmdEnabled && writable ? TRUE : FALSE);
@@ -2895,7 +3031,7 @@ void InvalidatePlayhead(Editor &editor) {
 // The playhead timer exists only while the window is on screen and the session
 // reports a current frame: a hidden editor costs nothing and never repaints.
 void UpdatePlayheadTimer(Editor &editor) {
-    const bool wanted = editor.window && editor.session.currentFrame &&
+    const bool wanted = editor.window && (editor.session.currentFrame || editor.session.history.query) &&
                         IsWindowVisible(editor.window) != FALSE;
     if (wanted && !editor.playheadTimerRunning) {
         if (SetTimer(editor.window, kPlayheadTimer, kPlayheadIntervalMs, nullptr) != 0)
@@ -2975,6 +3111,7 @@ void SeekAdjacentKey(Editor& editor,bool next){
 void OnPlayheadTimer(Editor &editor) {
     // A hidden editor does no work at all: no frame query, no repaint.
     if (!editor.window || IsWindowVisible(editor.window) == FALSE) return;
+    PollExternalHistory(editor);
     if (!editor.session.currentFrame) return;
     PullKeySelection(editor);
     SetControlText(editor.window,kIdPlay,PlayCaption(editor));
@@ -3198,11 +3335,13 @@ void ApplyKeyFields(Editor &editor) {
     const bool inChanged = ControlText(editor.window, kIdInSlopeEdit) != FormatNumber(moved.inSlope);
     const bool outChanged = ControlText(editor.window, kIdOutSlopeEdit) != FormatNumber(moved.outSlope);
     moved.frame = static_cast<std::int32_t>(frame);
-    moved.value = value;
+    // Display text uses six significant digits. Untouched fields must not
+    // quantize the authored value/weights and create a phantom host edit.
+    if(ControlText(editor.window,kIdValueEdit)!=FormatNumber(moved.value))moved.value=value;
     if (inChanged) moved.inSlope = inSlope;
     if (outChanged) moved.outSlope = outSlope;
-    moved.inWeight = inWeight;
-    moved.outWeight = outWeight;
+    if(ControlText(editor.window,kIdInWeightEdit)!=FormatNumber(moved.inWeight))moved.inWeight=inWeight;
+    if(ControlText(editor.window,kIdOutWeightEdit)!=FormatNumber(moved.outWeight))moved.outWeight=outWeight;
     if (inChanged || outChanged) {
         if (moved.tangent == Tangent::Aligned) {
             const double slope = inChanged && outChanged ? 0.5 * (inSlope + outSlope) : inChanged ? inSlope : outSlope;
@@ -3324,13 +3463,21 @@ void RunBake(Editor &editor) {
 void RunReadMotion(Editor &editor) {
     Source &source = CurrentSource(editor);
     if (!source.readMotion) return;
-    std::wstring error;
-    if (!source.readMotion(editor.window, error)) {
+    if(source.externalHistory&&!CheckSourceCurrent(editor))return;
+    std::wstring error;bool accepted=false;
+    {
+        const bool previous=editor.externalOperationActive;
+        if(source.externalHistory)editor.externalOperationActive=true;
+        struct Restore { bool& value;bool old;~Restore(){value=old;} } restore{editor.externalOperationActive,previous};
+        try{accepted=source.readMotion(editor.window,error);}catch(...){error=T(editor.session.language,StrHistoryFailed);}
+    }
+    if (!accepted) {
         SetStatus(editor, std::wstring(T(editor.session.language, StrMotionFailed)) + error, true);
         return;
     }
+    if(source.externalHistory){CurrentState(editor).valid=false;CurrentState(editor).externalReadPending=true;}
     ReadAndAdopt(editor, true);
-    SetStatus(editor, T(editor.session.language, StrMotionReadDone), false);
+    if(CurrentState(editor).valid)SetStatus(editor, T(editor.session.language, StrMotionReadDone), false);
 }
 
 void RunWriteMotion(Editor &editor) {
@@ -3356,6 +3503,9 @@ void SwitchSource(Editor &editor, std::size_t index) {
         CurrentState(editor).expandedCollections[entry.second]=(TreeView_GetItemState(tree,entry.first,TVIS_EXPANDED)&TVIS_EXPANDED)!=0;
     editor.sourceIndex = index;
     SourceState &state = CurrentState(editor);
+    if(CurrentSource(editor).externalHistory){
+        ReadAndAdopt(editor,false);EnterSource(editor);return;
+    }
     if (!state.loaded) {
         ReadAndAdopt(editor, false);
         // Entering a source is where its initial main channel and its
@@ -3658,6 +3808,7 @@ bool CenterBarAtPoint(Editor& editor,POINT point) {
 }
 
 void CanvasMouseDown(Editor &editor, UINT flags, POINT point) {
+    if(editor.externalOperationActive||editor.externalCallbackActive)return;
     SetFocus(editor.canvas);
     CanvasMetrics(editor);
     editor.hoverKey = -1;
@@ -3964,6 +4115,11 @@ void CanvasMouseMove(Editor &editor, POINT point) {
 
 void CanvasMouseUp(Editor &editor, POINT point) {
     const Drag drag = editor.drag;
+    // A native host rejects publications while a mouse gesture owns capture.
+    // Finish ownership first, but keep its detached preview/base/deltas until
+    // the single commit below. WM_CAPTURECHANGED must not cancel that preview.
+    editor.drag=Drag::None;
+    if(GetCapture()==editor.canvas)ReleaseCapture();
     if (drag == Drag::Seek) {
         SeekAtPoint(editor,point);
     } else if (drag == Drag::Rubber) {
@@ -4439,6 +4595,7 @@ POINT MmdHandlePoint(const Editor &editor, int index) {
 }
 
 void MmdMouseDown(Editor &editor, POINT point) {
+    if(editor.externalOperationActive||editor.externalCallbackActive)return;
     SetFocus(editor.mmd);
     if (!editor.mmdEnabled) return;
     const int radius = Scale(7, editor.dpi);
@@ -5018,6 +5175,7 @@ void CreateControls(Editor &editor) {
 // Command dispatch.
 // ---------------------------------------------------------------------------
 void HandleCommand(Editor &editor, WPARAM wparam) {
+    if(editor.externalOperationActive||editor.externalCallbackActive)return;
     const int id = LOWORD(wparam);
     const int code = HIWORD(wparam);
     switch (id) {
@@ -5407,6 +5565,12 @@ LRESULT CALLBACK MmdProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) 
 
 LRESULT HandleHook(Editor &editor, UINT message, WPARAM wparam, LPARAM lparam) {
     switch (message) {
+    case WM_APP+397: {
+        if(!lparam)return FALSE;
+        auto* values=reinterpret_cast<std::uint64_t*>(lparam);const auto& state=CurrentState(editor);
+        values[0]=state.undo.size();values[1]=state.redo.size();values[2]=state.externalReadPending;
+        values[3]=state.externalReady;values[4]=state.observedHistoryRevision;return TRUE;
+    }
     case WM_APP+396: {
         // Read-only sampling evidence for native-host speed regressions.
         if(!lparam)return FALSE;

@@ -261,6 +261,36 @@ struct NativeKeyView {
     std::size_t capacity = 0;
     const void* (*key)(const void*, std::uint32_t) noexcept = nullptr;
 };
+// Fully detached replacement for an authored global/accessory curve source.
+// Construction validates and mirrors the input into private native records.
+// Neither construction nor preparation calls Write or changes a live pool.
+class AuthoredReplacement {
+    struct Impl;
+    std::shared_ptr<Impl> impl_;
+public:
+    AuthoredReplacement(MMDApp&,Kind,int slot,const std::vector<curve_editor::Channel>&);
+    ~AuthoredReplacement();
+    bool Changed() const noexcept;
+    bool IsCurrent() const noexcept;
+    NativeKeyView TargetKeys() const noexcept;
+    const std::vector<curve_editor::Channel>& BeforeChannels() const noexcept;
+    class Target {
+        struct Impl;
+        std::unique_ptr<Impl> impl_;
+        explicit Target(std::unique_ptr<Impl>);
+        friend class AuthoredReplacement;
+    public:
+        ~Target();
+        bool IsCurrent() const noexcept;
+        bool Authored() const noexcept;
+        bool Sample(double frame,std::array<double,12>&) const;
+        // Caller validates all participants first. Map-node exchange only;
+        // pass the final native pool, or accessory object, after publication.
+        void Publish(void* finalIdentity) noexcept;
+    };
+    std::unique_ptr<Target> Prepare(const NativeKeyView&,bool forward) const;
+    std::uint64_t RetainedBytes() const noexcept;
+};
 // Retains pristine authoring for one history record. Normal reads may reconcile
 // live curves; both history directions still derive from this original layer.
 class TrackAuthoring {

@@ -23,6 +23,7 @@
 #include "mikudancestudio/morph_curve.hpp"
 #include "mikudancestudio/panel_controls.hpp"
 #include "mikudancestudio/ported_funcs.hpp"
+#include "mikudancestudio/runtime_log.hpp"
 #include "mikudancestudio/text_encoding.hpp"
 #include <algorithm>
 #include <cmath>
@@ -33,6 +34,8 @@
 #if !MMD_ORIGINAL_PROFILE
 #include "../plugins/native_pose_scope.hpp"
 #include "../plugins/native_object_commands.hpp"
+#include "../plugins/shared_history.hpp"
+#include "mikudancestudio/plugin_scene.hpp"
 #include "mikudancestudio/plugin_runtime.hpp"
 #endif
 #include "ui_control_layout.hpp"
@@ -69,6 +72,38 @@ void Refresh(MMDApp&app){
 // tables, so a caller without a live main window (the background regression)
 // must not run it.
 void RefreshMain(MMDApp&app){if(IsWindow(app.MainWindow()))Refresh(app);}
+bool CommonCurveHistory(MMDApp& app) {
+#if !MMD_ORIGINAL_PROFILE
+    return plugins::BoundNativePoseHistory(&app)!=nullptr;
+#else
+    (void)app;return false;
+#endif
+}
+void BindCommonCurveHistory(curve_editor::Session& session,MMDApp* app){
+#if !MMD_ORIGINAL_PROFILE
+    auto* history=plugins::BoundNativePoseHistory(app);if(!history)return;
+    const auto binding=plugins::BoundNativePoseGeneration(app);
+    const auto current=[app,history,binding]{return IsWindow(app->MainWindow())&&
+        plugins::BoundNativePoseGeneration(app)==binding&&plugins::BoundNativePoseHistory(app)==history;};
+    session.history.query=[app,history,current](curve_editor::HistoryState& out,std::wstring& error){
+        if(!current()){error=Text(app->EnglishUI(),L"共通履歴の接続が変更されました。カーブウィンドウを開き直してください。",L"The history binding changed. Reopen the curve window.",L"共同历史绑定已改变，请重新打开曲线窗口。");return false;}
+        std::uint64_t revision=0;
+        if(history->Revision(revision)!=MMS_OK){error=Text(app->EnglishUI(),L"共通履歴を一時的に利用できません。",L"The shared history is temporarily unavailable.",L"共同历史暂不可用。");return false;}
+        out={revision,history->UndoCount()!=0,history->RedoCount()!=0};return true;
+    };
+    session.history.traverse=[app,history,current](bool redo,std::wstring& error){
+        if(!current()){error=Text(app->EnglishUI(),L"共通履歴の接続が変更されました。カーブウィンドウを開き直してください。",L"The history binding changed. Reopen the curve window.",L"共同历史绑定已改变，请重新打开曲线窗口。");return false;}
+        const auto result=plugins::RunBoundObjectHistory(*app,*history,redo);
+        if(result!=MMS_OK){
+            runtime_log::Trace("PLUGIN_ABI curve history refused redo=%d result=%d",int(redo),result);
+            error=Text(app->EnglishUI(),L"現在、共通履歴を操作できません。",L"Shared history is currently busy.",L"当前无法执行共同历史操作。");return false;
+        }
+        return true;
+    };
+#else
+    (void)session;(void)app;
+#endif
+}
 // Transport changes are navigation, but still must respect scene publication,
 // save and modal operation locks while those operations dispatch messages.
 bool TransportReady(MMDApp& app){
@@ -189,7 +224,8 @@ bool Motion(MMDApp&app,Kind kind,int slot,HWND owner,bool save,const std::vector
         if(c.track.keys.front().frame>0){auto base=c.track.keys.front();base.frame=0;c.track.keys.insert(c.track.keys.begin(),base);}
     }
     if(!matched){error=Text(app.EnglishUI(),L"一致するトラックがありません。",L"No matching tracks.",L"没有可匹配的轨道。");return false;}
-    if(!Write(app,kind,slot,channels,error))return false;Refresh(app);return true;
+    if(!Write(app,kind,slot,channels,error))return false;
+    if(!CommonCurveHistory(app))Refresh(app);return true;
 }
 // ---------------------------------------------------------------------------
 // Expression (morph) sources.
@@ -415,14 +451,32 @@ LRESULT CALLBACK Parent(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp,UINT_PTR,DWORD_PT
 static void OpenScene(MMDApp*app,bool visible,const std::string&cameraChannel){
     if(!app)return;
     curve_editor::Session session;session.id="mms.scene";session.language=app->EnglishUI();
+    BindCommonCurveHistory(session,app);
     session.currentFrame=[app]{return double(app->CurrentFrame());};
     session.seek=[app](int f){SeekMain(*app,f);};
     auto append=[&](Kind kind,int slot){
         auto*identity=kind==Kind::Accessory?app->AccessorySlot(slot):nullptr;
         curve_editor::Source source;source.id=std::to_string(int(kind))+"/"+std::to_string(slot);source.label=Title(*app,kind);
+        source.externalHistory=bool(session.history.query);
         source.linkAdjacentControls=[app]{return IsDlgButtonChecked(app->MainWindow(),panel::kPhysicsFrameCheckbox)==BST_CHECKED;};
         if(identity)source.label+=L" · "+text_encoding::Display(identity->name);
-        auto alive=[app,slot,kind,identity]{return IsWindow(app->MainWindow())&&(kind!=Kind::Accessory||app->AccessorySlot(slot)==identity);};
+        const auto historyCurrent=session.history.query;
+#if !MMD_ORIGINAL_PROFILE
+        const MmsId stableAccessory=historyCurrent&&identity?plugins::SceneObjectIdentity(identity).id:MmsId{};
+#endif
+        auto alive=[app,slot,kind,identity,historyCurrent
+#if !MMD_ORIGINAL_PROFILE
+            ,stableAccessory
+#endif
+        ]{
+            if(!IsWindow(app->MainWindow())||(kind==Kind::Accessory&&app->AccessorySlot(slot)!=identity))return false;
+            if(CommonCurveHistory(*app)!=bool(historyCurrent))return false;
+#if !MMD_ORIGINAL_PROFILE
+            if(historyCurrent&&identity&&!plugins::SceneObjectPresent(identity,stableAccessory))return false;
+#endif
+            if(historyCurrent){curve_editor::HistoryState state;std::wstring error;if(!historyCurrent(state,error))return false;}
+            return true;
+        };
         BindSelection(source,app,[app,kind,slot,alive](const std::string&,const std::vector<int>* frames)->std::vector<int>{
             if(!alive())return {};
             switch(kind){
@@ -455,7 +509,8 @@ static void OpenScene(MMDApp*app,bool visible,const std::string&cameraChannel){
         source.apply=[app,kind,slot,alive](const auto&channels,auto&error){
             if(!alive()){error=L"The source has been removed.";return false;}
             if(!IsWindowEnabled(app->MainWindow())){error=Text(app->EnglishUI(),L"処理の終了を待ってください。",L"Wait for the active operation to finish.",L"请等待当前操作完成。");return false;}
-            if(!Write(*app,kind,slot,channels,error))return false;Refresh(*app);return true;};
+            if(!Write(*app,kind,slot,channels,error))return false;
+            if(!CommonCurveHistory(*app))Refresh(*app);return true;};
         source.subdivide=[alive](auto&channels,std::size_t channel,int frame,std::size_t&index,std::wstring&error){
             if(!alive()){error=L"The source has been removed.";return false;}
             return InsertPreservingShape(channels,channel,frame,index,error);
@@ -591,6 +646,7 @@ bool WriteMorphChannels(MMDApp&app,const MorphModelIdentity&identity,
     // Nothing to write: returning here is what keeps a plain look at the window
     // from registering every native track as an authored curve.
     if(changed.empty())return true;
+    if(CommonCurveHistory(app)){error=Text(app.EnglishUI(),L"モーフカーブは共通履歴に未接続のため読み取り専用です。",L"Morph curves are read-only until shared history is connected.",L"表情曲线尚未接入共同历史，此受控入口暂为只读。");return false;}
     // The identity check above proves the selected model is the captured one,
     // which is exactly the model the backend's MMDApp overload writes to.
     if(!morph_curve::Write(app,changed,error))return false;
@@ -664,6 +720,7 @@ void OpenMorph(MMDApp*app,int lane,bool visible){
     source.initialMainChannel=initial;
     source.readComparisonMode=[]{return ReadMorphComparisonMode();};
     source.writeComparisonMode=[app](int mode,std::wstring&error){return WriteMorphComparisonMode(app->EnglishUI(),mode,error);};
+    if(CommonCurveHistory(*app))source.apply={};
     session.sources.push_back(std::move(source));
     session.initialSource=0;
     BindTransport(session,app);curve_editor::Open(app->Hwnd(),std::move(session),visible);
@@ -839,6 +896,7 @@ static curve_editor::Source BoneSource(MMDApp*app,const MorphModelIdentity&ident
         *graph=std::move(fresh);return true;
     };
     source.apply=[app,identity,bone,alive,graph,discrete,freeCurves](const std::vector<curve_editor::Channel>&channels,std::wstring&error){
+        if(CommonCurveHistory(*app)){error=Text(app->EnglishUI(),L"ボーンカーブは共通履歴に未接続のため読み取り専用です。",L"Bone curves are read-only until shared history is connected.",L"骨骼曲线尚未接入共同历史，此受控入口暂为只读。");return false;}
         if(!alive()||!IsWindowEnabled(app->MainWindow())){error=L"当前模型或骨骼已改变，或仍在处理操作。";return false;}
         if(channels.size()!=9+discrete->size()){error=L"骨骼通道不匹配。";return false;}
         // Discrete keys are edited as 0/1 values, retaining their native frame positions.
@@ -986,7 +1044,8 @@ void OpenInterpolation(MMDApp*app,bool visible){
         }
         return true;
     };
-    source.apply=[entries](const std::vector<curve_editor::Channel>&channels,std::wstring&error){
+    source.apply=[app,entries](const std::vector<curve_editor::Channel>&channels,std::wstring&error){
+        if(CommonCurveHistory(*app)){error=Text(app->EnglishUI(),L"ボーンカーブは共通履歴に未接続のため読み取り専用です。",L"Bone curves are read-only until shared history is connected.",L"骨骼曲线尚未接入共同历史，此受控入口暂为只读。");return false;}
         std::size_t offset=0;int changed=-1;std::vector<curve_editor::Channel> target;
         const auto same=[](const curve_editor::Channel&a,const curve_editor::Channel&b){
             if(a.id!=b.id||a.nativeControls!=b.nativeControls||a.track.keys.size()!=b.track.keys.size())return false;
@@ -1028,6 +1087,7 @@ void OpenInterpolation(MMDApp*app,bool visible){
             return NativeSelection(mdl::DisplayKeys(identity.model), mdl::KeyPoolCapacity(mdl::DisplayKeys(identity.model)),0,frames);
         return NativeSelection(mdl::BoneKeys(identity.model),mdl::BoneKeyCapacity(record),std::size_t(bone),frames);
     });
+    if(CommonCurveHistory(*app))source.apply={};
     session.sources.push_back(std::move(source));
     }
     BindTransport(session,app);curve_editor::Open(app->Hwnd(),std::move(session),visible);

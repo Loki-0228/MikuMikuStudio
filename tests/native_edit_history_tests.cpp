@@ -410,9 +410,14 @@ void CrossModelJournal(){
 #include "native_numpad_view_checks.inc"
 #include "native_numpad_dispatch_checks.inc"
 #include "native_model_viewport_history_checks.inc"
+#include "native_curve_write_checks.inc"
 int main(int argc,char** argv){
     std::setvbuf(stdout,nullptr,_IONBF,0);
     const auto run=[](const char* name,void(*test)()){std::printf("RUN %s\n",name);test();};
+    if(argc==2&&!std::strcmp(argv[1],"--curve-write-only")) {
+        run("NativeCurveWriteChecks",NativeCurveWriteChecks);
+        std::printf("PASS native curve write: %u checks\n",checks);return 0;
+    }
     if(argc==2&&!std::strcmp(argv[1],"--accessory-settings-only")) {
         run("NativeAccessorySettingsChecks",NativeAccessorySettingsChecks);
         std::printf("PASS accessory settings: %u checks\n",checks);return 0;
@@ -694,6 +699,7 @@ int main(int argc,char** argv){
     run("NativeModelRangeChecks",NativeModelRangeChecks);
     run("NativeObjectCommandChecks",NativeObjectCommandChecks);
     run("NativeAccessorySettingsChecks",NativeAccessorySettingsChecks);
+    run("NativeCurveWriteChecks",NativeCurveWriteChecks);
     run("PoseAndStale",PoseAndStale);run("KeysAndChain",KeysAndChain);run("Bake",Bake);
     run("Deletion",Deletion);run("EmptyAndCycle",EmptyAndCycle);run("FreeCurves",FreeCurves);
     run("Scatter",Scatter);run("FailedNativeCommands",FailedNativeCommands);run("RemovalBindings",RemovalBindings);

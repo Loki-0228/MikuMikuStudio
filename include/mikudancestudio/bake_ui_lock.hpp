@@ -34,6 +34,17 @@ inline bool UiLocked() {
     return detail::UiLockDepth() > 0;
 }
 
+// Short synchronous readout publication. Native message handlers share the
+// same reentry gate, without changing focus or enabling/disabling windows.
+// This scope must not pump the message queue or outlive the current callback.
+class ScopedUiInputGate {
+public:
+    ScopedUiInputGate() noexcept { ++detail::UiLockDepth(); }
+    ~ScopedUiInputGate() { --detail::UiLockDepth(); }
+    ScopedUiInputGate(const ScopedUiInputGate&) = delete;
+    ScopedUiInputGate& operator=(const ScopedUiInputGate&) = delete;
+};
+
 class ScopedUiLock {
 public:
     // `progressDialog` is the window that owns the running bake and stays

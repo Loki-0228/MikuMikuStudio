@@ -12,6 +12,16 @@
 
 插件作者通过事务边界决定撤销粒度。多步算法先在私有候选中完成计算，再提交一个事务，用户只需撤销一次。需要逐步撤销时，每一步分别 begin、prepare、commit。多次已完成的提交不会事后合并，也不能跨越其他编辑合并。取消只丢弃当前未提交事务，不隐式撤销前面已经提交的步骤。公共接口规范见 [SDK 编辑事务参考](../sdk/mms/edit.md)。
 
+## 全局曲线窗口
+
+显式绑定共同历史时，相机、灯光、自阴影、重力和附件的曲线写入，以及该窗口读取 VMD，统一经过 `PlanGlobalCurveWrite` 和一次 `ExplicitCommit`。私有目标保留原生键、原始作者数据、稀疏通道、控制柄及原生相机精确片段；取消、失败及无变化不追加节点。撤销按当前播放帧只采样本次修改的姿态分量，不移动播放头，不覆盖其他未登记姿态。
+
+共享编辑器通过 `Source.externalHistory` 和 `Session.history` 接入同一队列。窗口的撤销与重做直接遍历宿主历史，随后只读刷新曲线，不把旧局部快照再次提交。插件或其他曲线来源的上一项操作也按同一顺序恢复。已经发布但刷新失败时暂为只读，重试刷新不重复编辑或撤销。成功刷新不临时禁用正在输入的文本框。
+
+原生选区按帧号识别。后续改变选区不使长期曲线历史过期，原生键槽压紧或恢复不会把选择移到另一帧；短期候选仍校验准备期间的全部数据。准备、发布与窗口接线见[曲线共同历史记录](records/abi-curve-external-history-2026-10-18.md)。
+
+模型骨骼与表情的独立曲线编辑尚未迁移，受控绑定下暂为只读。普通未绑定宿主与 MMV 的局部撤销路径保留，公共 `mms.edit` 继续关闭。
+
 ## 地面阴影浓度窗口
 
 菜单 `248` 保持原生无模式窗口。文本 Enter／失焦与滑杆 `WM_HSCROLL` 在绑定下分别由 `TryCommitBoundProjectedShadowText`、`TryCommitBoundProjectedShadowSlider` 接管，统一调用 `ApplyBoundProjectedShadowAmbient`。未绑定及原始兼容 profile 保留旧路径。
@@ -465,7 +475,7 @@ MSVC 的某些容器移动构造会分配内存，因此包含 `std::map` 的状
 | `command_control_400.cpp`、`command_control_450.cpp`、`command_file_menu.cpp` | 存在直接写环的注册、粘贴或清理路径；仅接管 `AdvanceUndo` 无法覆盖。 |
 | `frame_line_edit.cpp`、`ui_editor_click.cpp`、`misc_dialogs.cpp` | 时间线和对话框直接写环；须先准备快照与内存。 |
 | `playback_state.cpp`、`oni_skeleton_pump.cpp` | 播放和捕获相关姿势/键记录；需明确一次操作边界，避免按帧无限追加。 |
-| `bone_scale.cpp`、骨骼/Morph/全局曲线侧表 | 模型环关联的缩放、骨骼曲线和 Morph 散布恢复已准备后交换；全局曲线及独立编辑器历史仍待接入。 |
+| `bone_scale.cpp`、骨骼/Morph/全局曲线侧表 | 模型环关联的缩放、骨骼曲线和 Morph 散布恢复已准备后交换；五类全局曲线及其窗口历史已接入，独立骨骼与表情编辑器写入仍待迁移。 |
 | `command_control_400.cpp::DeleteMarkedKeyframes` 的全局模式 | 相机、灯光、自阴影、重力、附件的选中键删除尚未迁移；须聚合为一条原子历史，不能只记录相机或忽略第 0 帧重置。当前受控删键只接入模型三族。 |
 | `command_control_400.cpp`、`key_ladder.cpp`、`UndoModelEdit/RedoModelEdit` | 已统一调用新的模型恢复过程并识别失败；按钮和快捷键在显式绑定下选择共同历史，普通宿主尚未切换。原始兼容构建保留旧路径。 |
 
