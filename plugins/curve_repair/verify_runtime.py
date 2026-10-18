@@ -1,10 +1,13 @@
 """Exercise the shipped DLL in an isolated copy of an unchanged MMS executable."""
 import argparse
+import base64
 import ctypes as C
 from ctypes import wintypes as W
+from decimal import Decimal
 import hashlib
 import json
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import time
@@ -13,6 +16,8 @@ import time
 u = C.WinDLL("user32", use_last_error=True)
 k = C.WinDLL("kernel32", use_last_error=True)
 p = C.WinDLL("psapi", use_last_error=True)
+# Match screen coordinates to PrintWindow pixels on scaled Windows desktops.
+u.SetProcessDPIAware()
 CALLBACK = C.WINFUNCTYPE(W.BOOL, W.HWND, W.LPARAM)
 u.EnumWindows.argtypes = [CALLBACK, W.LPARAM]
 u.GetWindowThreadProcessId.argtypes = [W.HWND, C.POINTER(W.DWORD)]
@@ -33,6 +38,9 @@ u.GetDlgItem.restype = W.HWND
 u.IsWindowEnabled.argtypes = [W.HWND]
 u.IsWindowVisible.argtypes = [W.HWND]
 u.GetWindowRect.argtypes = [W.HWND, C.POINTER(W.RECT)]
+u.GetClientRect.argtypes = [W.HWND, C.POINTER(W.RECT)]
+u.ClientToScreen.argtypes = [W.HWND, C.POINTER(W.POINT)]
+u.GetMenuItemRect.argtypes = [W.HWND, W.HMENU, W.UINT, C.POINTER(W.RECT)]
 k.OpenProcess.argtypes = [W.DWORD, W.BOOL, W.DWORD]
 k.OpenProcess.restype = W.HANDLE
 k.CloseHandle.argtypes = [W.HANDLE]
@@ -46,6 +54,7 @@ p.PROCESSENTRY32W = type("PROCESSENTRY32W", (C.Structure,), {"_fields_": [
 k.Process32FirstW.argtypes = [W.HANDLE, C.POINTER(p.PROCESSENTRY32W)]
 k.Process32NextW.argtypes = [W.HANDLE, C.POINTER(p.PROCESSENTRY32W)]
 k.GetExitCodeProcess.argtypes = [W.HANDLE, C.POINTER(W.DWORD)]
+k.WaitForSingleObject.argtypes = [W.HANDLE, W.DWORD]
 k.TerminateProcess.argtypes = [W.HANDLE, W.UINT]
 p.EnumProcessModules.argtypes = [W.HANDLE, C.POINTER(W.HMODULE), W.DWORD, C.POINTER(W.DWORD)]
 p.GetModuleFileNameExW.argtypes = [W.HANDLE, W.HMODULE, W.LPWSTR, W.DWORD]
@@ -134,18 +143,106 @@ def text(window):
     return buf.value
 
 
-def menu_command(main):
+def menu_item(main):
     menu = u.GetMenu(main)
     for i in range(u.GetMenuItemCount(menu)):
         label = C.create_unicode_buffer(256)
         u.GetMenuStringW(menu, i, label, len(label), 0x400)
         if label.value in ("数值修复", "Value repair", "数値修復"):
-            return u.GetMenuItemID(u.GetSubMenu(menu, i), 0)
+            popup = u.GetSubMenu(menu, i)
+            item = C.create_unicode_buffer(256)
+            u.GetMenuStringW(popup, 0, item, len(item), 0x400)
+            rect = W.RECT()
+            assert u.GetMenuItemRect(main, menu, i, C.byref(rect))
+            return {"command": u.GetMenuItemID(popup, 0), "title": label.value,
+                    "item": item.value, "rect": [rect.left, rect.top, rect.right, rect.bottom]}
     return None
+
+
+def verify_launcher(window):
+    expected = {300: "MMS executable", 302: "Browse...", 303: "Start MMS", 2: "Close"}
+    assert text(window) == "MMS Curve Repair Launcher", text(window)
+    rects = {}
+    client = W.RECT()
+    assert u.GetClientRect(window, C.byref(client))
+    origin = W.POINT()
+    assert u.ClientToScreen(window, C.byref(origin))
+    for control_id in (300, 301, 302, 303, 304, 2):
+        control = u.GetDlgItem(window, control_id)
+        if control_id in expected:
+            assert text(control) == expected[control_id], (control_id, text(control))
+        rect = W.RECT()
+        assert u.GetWindowRect(control, C.byref(rect))
+        box = [rect.left - origin.x, rect.top - origin.y, rect.right - origin.x, rect.bottom - origin.y]
+        assert 0 <= box[0] < box[2] <= client.right, (control_id, box, client.right)
+        assert 0 <= box[1] < box[3] <= client.bottom, (control_id, box, client.bottom)
+        rects[control_id] = box
+    assert rects[303][2] < rects[2][0], rects
+    assert rects[304][3] < rects[303][1], rects
+    assert text(u.GetDlgItem(window, 304)) == "The launcher loads the plug-in into MMS before starting it. The MMS executable stays intact."
+    return {"language": "English", "client": [client.right, client.bottom], "controls": rects}
 
 
 def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def sidecar_document(data):
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            assert key not in result, ("duplicate sidecar field", key)
+            result[key] = value
+        return result
+
+    def invalid_constant(value):
+        raise AssertionError(("non-JSON sidecar number", value))
+
+    document = json.loads(data, parse_float=Decimal, parse_int=Decimal,
+                          object_pairs_hook=unique_object, parse_constant=invalid_constant)
+    assert isinstance(document, dict), "sidecar root must be an object"
+    assert type(document["schemaVersion"]) is Decimal and document["schemaVersion"] == 1
+    for field, length in (("projectId", 32), ("saveId", 32), ("mainSha256", 64)):
+        assert isinstance(document[field], str) and re.fullmatch(r"[0-9a-fA-F]{%d}" % length, document[field]), field
+    assert isinstance(document["plugins"], dict), "sidecar plugins must be an object"
+    return document
+
+
+def same_json(left, right):
+    # Decimal preserves unknown long integers and decimal tokens exactly.
+    # Check scalar types too: JSON true must not compare equal to number 1.
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, dict):
+        return left.keys() == right.keys() and all(same_json(left[key], right[key]) for key in left)
+    if isinstance(left, list):
+        return len(left) == len(right) and all(same_json(a, b) for a, b in zip(left, right))
+    return left == right
+
+
+def verify_repaired_sidecar(fixture, repaired, original_bytes, original_document, report):
+    source = Path(str(fixture) + ".mms-plugins.json")
+    destination = Path(str(repaired) + ".mms-plugins.json")
+    if original_bytes is None:
+        assert not source.exists(), "repair unexpectedly created an original sidecar"
+        assert not destination.exists(), "repair created a sidecar for a project without one"
+        report["sidecar"].update(copy_absent=True, original_absent=True)
+        return
+    assert source.read_bytes() == original_bytes, "repair changed the original sidecar bytes"
+    assert destination.is_file(), "repair omitted the existing sidecar"
+    document = sidecar_document(destination.read_bytes())
+    assert document["mainSha256"].lower() == sha(repaired), "repaired PMM and sidecar hashes differ"
+    assert document["saveId"].lower() != original_document["saveId"].lower(), "repair reused the original save identity"
+    assert document["projectId"] == original_document["projectId"], "repair changed the project identity"
+    assert same_json(document["schemaVersion"], original_document["schemaVersion"])
+    assert same_json(document["plugins"], original_document["plugins"]), "repair changed plugin records or unknown nested fields"
+    unchanged = lambda value: {key: item for key, item in value.items() if key not in ("mainSha256", "saveId")}
+    assert same_json(unchanged(document), unchanged(original_document)), "repair changed unknown root fields"
+    report["sidecar"].update(copy=str(destination), copy_sha256=sha(destination),
+                             paired_main_sha256=document["mainSha256"], save_id=document["saveId"],
+                             original_preserved=True, project_id_preserved=True,
+                             schema_preserved=True, plugin_records_preserved=True,
+                             unknown_fields_preserved=True, save_id_changed=True)
 
 
 def capture_window(window, path):
@@ -194,6 +291,10 @@ def main():
     ap.add_argument("--language", type=int, choices=(0, 1, 2), default=2)
     ap.add_argument("--reopen", action="store_true")
     args = ap.parse_args()
+    for name in ("host", "launcher", "dll", "fixture", "output", "data"):
+        value = getattr(args, name)
+        if value is not None:
+            setattr(args, name, value.resolve())
     args.output.mkdir(parents=True, exist_ok=True)
     runtime = args.output / "runtime"
     runtime.mkdir(exist_ok=False)
@@ -207,19 +308,46 @@ def main():
     config.write_bytes(b"\r\n".join(lines) + b"\r\n")
     fixture_hash = sha(args.fixture)
     report = {"host_sha256": sha(args.host), "launcher_sha256": sha(args.launcher),
-              "dll_sha256": sha(args.dll)}
+              "dll_sha256": sha(args.dll), "fixture_sha256": fixture_hash}
+    original_sidecar = Path(str(args.fixture) + ".mms-plugins.json")
+    original_sidecar_bytes = original_sidecar.read_bytes() if original_sidecar.exists() else None
+    original_sidecar_document = None
+    report["sidecar"] = {"original": str(original_sidecar), "present": original_sidecar_bytes is not None}
+    if original_sidecar_bytes is not None:
+        original_sidecar_document = sidecar_document(original_sidecar_bytes)
+        assert original_sidecar_document["mainSha256"].lower() == fixture_hash, "fixture sidecar does not match its PMM"
+        report["sidecar"].update(original_sha256=hashlib.sha256(original_sidecar_bytes).hexdigest(),
+                                 original_bytes_base64=base64.b64encode(original_sidecar_bytes).decode("ascii"),
+                                 original_json=original_sidecar_bytes.decode("utf-8-sig"),
+                                 project_id=original_sidecar_document["projectId"],
+                                 original_save_id=original_sidecar_document["saveId"],
+                                 plugin_count=len(original_sidecar_document["plugins"]))
     launcher = subprocess.Popen([str(runtime / "MMSCurveRepairLauncher.exe")], cwd=runtime)
     host_pid = None
     try:
         launcher_window = until(lambda: next((h for h, cls, _ in windows(launcher.pid)
                                             if cls == "MMS.CurveRepair.Launcher"), None))
+        # Exercise the requested host even when its EXE has a custom name.
+        # The launcher's default path exists only for MikuMikuDance.exe.
+        selected_host = str(runtime / args.host.name)
+        host_buffer = C.create_unicode_buffer(selected_host)
+        path_control = u.GetDlgItem(launcher_window, 301)
+        assert u.SendMessageW(path_control, 12, 0, C.addressof(host_buffer))
+        assert text(path_control) == selected_host
+        report["selected_host"] = selected_host
+        report["launcher_ui"] = verify_launcher(launcher_window)
+        capture_window(launcher_window, args.output / "launcher-window.png")
         u.PostMessageW(launcher_window, 0x111, 303, 0)
         host_pid = until(lambda: child_process(launcher.pid), 50)
         main_window = until(lambda: next((h for h, cls, _ in windows(host_pid)
                                         if cls == "Polygon Movie Maker" and u.IsWindowVisible(h)), None), 50)
-        loaded = modules(host_pid)
-        assert str(runtime / "MMSCurveRepair.dll").lower() in [s.lower() for s in loaded]
-        command = until(lambda: menu_command(main_window))
+        until(lambda: str(runtime / "MMSCurveRepair.dll").lower() in [s.lower() for s in modules(host_pid)])
+        item = until(lambda: menu_item(main_window))
+        assert item["title"] == ("数値修復", "Value repair", "数值修复")[args.language], item
+        assert item["item"] == ("保存済みカメラ数値を修復…", "Repair saved camera values…", "修复已保存的镜头数值…")[args.language], item
+        report["menu"] = item
+        capture_window(main_window, args.output / "host-menu.png")
+        command = item["command"]
         report["loaded_plugin"] = str(runtime / "MMSCurveRepair.dll")
         report["menu_command"] = command
         u.PostMessageW(main_window, 0x111, command, 0)
@@ -243,6 +371,7 @@ def main():
         assert repaired.with_suffix(".emm").read_bytes() == args.fixture.with_suffix(".emm").read_bytes()
         assert sha(args.fixture) == fixture_hash
         assert (Path(str(repaired) + ".repair.txt")).is_file()
+        verify_repaired_sidecar(args.fixture, repaired, original_sidecar_bytes, original_sidecar_document, report)
         report.update(repaired=str(repaired), original_preserved=True, emm_copied=True)
         u.PostMessageW(modal, 0x111, 1, 0)
         u.PostMessageW(dialog, 0x10, 0, 0)
@@ -264,6 +393,8 @@ def main():
             u.PostMessageW(reopened, 0x10, 0, 0)
             report["reopened_exit"] = process.wait(timeout=20)
             assert report["reopened_exit"] == 0
+            verify_repaired_sidecar(args.fixture, repaired, original_sidecar_bytes, original_sidecar_document, report)
+            report["sidecar"]["reopened_with_host"] = True
     except Exception:
         report["windows_on_failure"] = windows(host_pid or launcher.pid)
         raise

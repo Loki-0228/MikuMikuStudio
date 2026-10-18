@@ -1,4 +1,5 @@
 #include "repair_core.hpp"
+#include "sidecar_copy.hpp"
 #include "mikudancestudio/animation_curve.hpp"
 #include <Windows.h>
 #include <algorithm>
@@ -276,6 +277,7 @@ std::filesystem::path SaveCopy(const Analysis& a,const std::filesystem::path& so
     Handle input(CreateFileW(source.c_str(),GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr));
     if(ReadHandle(input.h)!=a.original) Fail("The source project changed. Scan it again before saving.");
     const auto copy=Apply(a);
+    const auto sidecar=PrepareSidecarCopy(source,a.original,copy);
     SYSTEMTIME time{}; GetLocalTime(&time); wchar_t suffix[80];
     swprintf_s(suffix,L"_repaired_%04u%02u%02u_%02u%02u%02u_%03u",time.wYear,time.wMonth,time.wDay,time.wHour,time.wMinute,time.wSecond,time.wMilliseconds);
     auto output=source.parent_path()/(source.stem().wstring()+suffix+L".pmm");
@@ -284,8 +286,7 @@ std::filesystem::path SaveCopy(const Analysis& a,const std::filesystem::path& so
         NewFile(output,copy,created);
         auto from=source; from.replace_extension(L".emm"); auto to=output; to.replace_extension(L".emm");
         if(std::filesystem::exists(from)) NewFile(to,ReadFile(from),created);
-        from=source.wstring()+L".mms-plugins.json"; to=output.wstring()+L".mms-plugins.json";
-        if(std::filesystem::exists(from)) NewFile(to,ReadFile(from),created);
+        if(sidecar) NewFile(output.wstring()+L".mms-plugins.json",*sidecar,created);
         const int size=WideCharToMultiByte(CP_UTF8,0,report.c_str(),static_cast<int>(report.size()),nullptr,0,nullptr,nullptr);
         if(size<=0) Fail("Cannot encode the repair report.");
         Bytes utf8(static_cast<std::size_t>(size)+3); utf8[0]=0xef;utf8[1]=0xbb;utf8[2]=0xbf;

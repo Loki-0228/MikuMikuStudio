@@ -2,6 +2,7 @@
 #include "mikudancestudio/build_profile.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "../src/plugins/project_storage.hpp"
+#include <MinHook.h>
 #endif
 #include "mikudancestudio/extended_names.hpp"
 #include "mikudancestudio/owned_text.hpp"
@@ -394,11 +395,23 @@ void FormatTriggerBoundaries(MMDApp& app) {
     std::puts("PASS PMM format and invalid-data boundaries for all eight key pools, frames, counts and reference paths");
 }
 
+#include "pmm_invalid_save_checks.hpp"
+
 void InvalidFormatEscalation(MMDApp& app, const std::filesystem::path& directory) {
     auto* keys = app.CameraKeys();
     const auto head = keys[0];
     const auto dirty = app.SceneModified();
     const auto language = app.EnglishUI();
+    const std::wstring savedName = app.EnvFileName();
+#if !MMD_ORIGINAL_PROFILE
+    InvalidSaveCaptureProbe captureProbe;
+    const auto valid = directory / L"invalid-save-serializer-positive-control.pmm";
+    Check(SaveSceneCopy(&app, valid.c_str()) && captureProbe.Calls() == 1,
+        "valid project save reaches the observed production serializer capture boundary once");
+    Check(std::filesystem::is_regular_file(plugins::PluginSidecar(valid)),
+        "valid serializer control publishes the actual plugin sidecar");
+    captureProbe.Reset();
+#endif
     keys[0].next = static_cast<std::uint32_t>(mdl::KeyPoolCapacity(keys));
     const auto path = directory / L"invalid-links-must-not-become-v3.pmm";
     Check(!SaveSceneCopy(&app, path.c_str()), "corrupt links are refused rather than saved as PMM v3");
@@ -419,12 +432,7 @@ void InvalidFormatEscalation(MMDApp& app, const std::filesystem::path& directory
         "create existing plugin sidecar preservation fixture");
     _close(fd);
 #endif
-    // Exercise the same refusal before serializer capture and publication,
-    // without opening modal error dialogs on the private test desktop.
-    for (unsigned lang = 0; lang < 3; ++lang) {
-        app.EnglishUI() = lang;
-        Check(!SaveSceneCopy(&app, existing.c_str()), "invalid backup refuses existing PMM and sidecar publication");
-        Check(app.SceneModified() == dirty, "invalid backup preserves the original dirty state");
+    const auto preservedFiles = [&] {
         fd = Open(existing, _O_RDONLY);
         char actual[sizeof marker]{};
         Check(_read(fd, actual, sizeof actual) == sizeof marker &&
@@ -440,10 +448,41 @@ void InvalidFormatEscalation(MMDApp& app, const std::filesystem::path& directory
             "invalid save preserves the existing plugin sidecar byte for byte");
         _close(fd);
 #endif
+    };
+    // Backup saves remain silent; normal saves exercise the actual localized
+    // MessageBox. Both routes must refuse before any serializer is captured.
+    for (unsigned lang = 0; lang < 3; ++lang) {
+        app.EnglishUI() = lang;
+        Check(!SaveSceneCopy(&app, existing.c_str()), "invalid backup refuses existing PMM and sidecar publication");
+        Check(app.SceneModified() == dirty, "invalid backup preserves the original dirty state");
+        preservedFiles();
+#if !MMD_ORIGINAL_PROFILE
+        Check(captureProbe.Calls() == 0, "invalid backup is rejected before plugin serializers are captured");
+#endif
     }
+    wcscpy_s(app.EnvFileName(), 256, existing.c_str());
+    for (unsigned lang = 0; lang < 3; ++lang) {
+        app.EnglishUI() = lang;
+        app.SceneModified() = 1;
+        {
+            ExpectedInvalidSaveDialog dialog(app.MainWindow(), lang);
+            SaveSceneFile(&app);
+            Check(dialog.Handled(), "normal save reports exactly one actual invalid-data dialog in the requested language");
+        }
+        Check(app.SceneModified() == 1 && std::wstring(app.EnvFileName()) == existing.native() &&
+            keys[0].next == static_cast<std::uint32_t>(mdl::KeyPoolCapacity(keys)),
+            "invalid normal save preserves its filename, modified state and original invalid data");
+        preservedFiles();
+#if !MMD_ORIGINAL_PROFILE
+        Check(captureProbe.Calls() == 0, "invalid normal save is rejected before plugin serializers are captured");
+#endif
+        std::printf("PASS normal invalid-save language=%u localized dialog and unchanged project pair\n", lang);
+    }
+    wcscpy_s(app.EnvFileName(), 256, savedName.c_str());
     app.EnglishUI() = language;
+    app.SceneModified() = dirty;
     keys[0] = head;
-    std::puts("PASS invalid links refuse PMM publication and preserve existing project and plugin sidecar bytes");
+    std::puts("PASS invalid backup and three-language normal saves refuse serializer capture and preserve project and plugin sidecar bytes");
 }
 
 void AutomaticCameraRoundtrip(MMDApp& app, const std::filesystem::path& directory) {
@@ -508,7 +547,8 @@ int wmain(int argc, wchar_t** argv) {
     SetWindowsHookExW(WH_CBT,[](int code,WPARAM wp,LPARAM lp)->LRESULT {
         if(code==HCBT_ACTIVATE){
             auto window=reinterpret_cast<HWND>(wp);wchar_t cls[32]{};GetClassNameW(window,cls,32);
-            if(!wcscmp(cls,L"#32770") && GetDlgItem(window,IDOK)){
+            if(!wcscmp(cls,L"#32770")){
+                if (InvalidSaveDialogActivation(window)) return 1;
                 EnumChildWindows(window,[](HWND child,LPARAM)->BOOL {
                     wchar_t text[1024]{};GetWindowTextW(child,text,1024);
                     if(*text)std::fwprintf(stderr,L"PMM unexpected dialog: %ls\n",text);

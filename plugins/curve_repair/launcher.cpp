@@ -13,14 +13,10 @@ namespace {
 constexpr wchar_t kClass[]=L"MMS.CurveRepair.Launcher";
 constexpr int kPath=301,kBrowse=302,kLaunch=303,kStatus=304;
 HWND windowHandle=nullptr;HFONT fontHandle=nullptr;int dpi=96;
-const wchar_t* Text(const wchar_t* zh,const wchar_t* en,const wchar_t* ja) {
-    const auto lang=GetUserDefaultUILanguage()&0x3ff;
-    return lang==0x04?zh:lang==0x11?ja:en;
-}
 std::wstring Error(DWORD code) {
     wchar_t* buffer=nullptr;
     const auto length=FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER|FORMAT_MESSAGE_FROM_SYSTEM|FORMAT_MESSAGE_IGNORE_INSERTS,
-        nullptr,code,0,reinterpret_cast<wchar_t*>(&buffer),0,nullptr);
+        nullptr,code,MAKELANGID(LANG_ENGLISH,SUBLANG_ENGLISH_US),reinterpret_cast<wchar_t*>(&buffer),0,nullptr);
     std::wstring result=length&&buffer?std::wstring(buffer,length):L"Windows error "+std::to_wstring(code);
     if(buffer)LocalFree(buffer);while(!result.empty()&&(result.back()==L'\r'||result.back()==L'\n'))result.pop_back();return result;
 }
@@ -41,11 +37,23 @@ bool IsTarget(const std::filesystem::path& wanted,const wchar_t* actual) {
     return !error&&_wcsicmp(target.c_str(),found.c_str())==0;
 }
 MODULEENTRY32W Module(HANDLE process,const wchar_t* name) {
-    const DWORD pid=GetProcessId(process);HANDLE snapshot=CreateToolhelp32Snapshot(TH32CS_SNAPMODULE|TH32CS_SNAPMODULE32,pid);
-    if(snapshot==INVALID_HANDLE_VALUE)WinFail(L"Cannot inspect MMS modules");
-    MODULEENTRY32W entry{};entry.dwSize=sizeof(entry);bool found=false;
-    if(Module32FirstW(snapshot,&entry))do{if(_wcsicmp(entry.szModule,name)==0){found=true;break;}entry.dwSize=sizeof(entry);}while(Module32NextW(snapshot,&entry));
-    CloseHandle(snapshot);if(!found)throw std::runtime_error("Cannot locate system module in MMS.");return entry;
+    // A newly created process has no loader module list while its primary
+    // thread is suspended. Even after resuming, snapshots can be transiently
+    // incomplete while Windows initializes the process or loads a DLL.
+    const DWORD pid=GetProcessId(process);
+    for(int attempt=0;attempt<100;++attempt) {
+        HANDLE snapshot=CreateToolhelp32Snapshot(TH32CS_SNAPMODULE|TH32CS_SNAPMODULE32,pid);
+        if(snapshot!=INVALID_HANDLE_VALUE) {
+            MODULEENTRY32W entry{};entry.dwSize=sizeof(entry);bool found=false;
+            if(Module32FirstW(snapshot,&entry))do{if(_wcsicmp(entry.szModule,name)==0){found=true;break;}entry.dwSize=sizeof(entry);}while(Module32NextW(snapshot,&entry));
+            CloseHandle(snapshot);if(found)return entry;
+        } else {
+            const DWORD error=GetLastError();
+            if(error!=ERROR_BAD_LENGTH&&error!=ERROR_PARTIAL_COPY) {SetLastError(error);WinFail(L"Cannot inspect MMS modules");}
+        }
+        if(WaitForSingleObject(process,50)!=WAIT_TIMEOUT)throw std::runtime_error("MMS exited before the plug-in could be loaded.");
+    }
+    throw std::runtime_error("Cannot locate system module in MMS.");
 }
 HMODULE LocalModuleContaining(const void* address) {
     MODULEENTRY32W entry{};entry.dwSize=sizeof(entry);HANDLE snapshot=CreateToolhelp32Snapshot(TH32CS_SNAPMODULE|TH32CS_SNAPMODULE32,GetCurrentProcessId());
@@ -116,8 +124,10 @@ void Launch() {
     if(!CreateProcessW(hostPath.c_str(),nullptr,nullptr,nullptr,FALSE,CREATE_SUSPENDED|CREATE_UNICODE_ENVIRONMENT,
         nullptr,std::filesystem::path(hostPath).parent_path().c_str(),&startup,&pi))WinFail(L"Cannot start MMS");
     try {
-        Inject(pi.hProcess,dll);
+        // Let Windows initialize the child's loader before looking up the
+        // remote LoadLibraryW address. The DLL waits for the MMS menu itself.
         if(ResumeThread(pi.hThread)==static_cast<DWORD>(-1))WinFail(L"Cannot resume MMS");
+        Inject(pi.hProcess,dll);
     }catch(...) {TerminateProcess(pi.hProcess,1);CloseHandle(pi.hThread);CloseHandle(pi.hProcess);throw;}
     CloseHandle(pi.hThread);CloseHandle(pi.hProcess);DestroyWindow(windowHandle);
 }
@@ -125,7 +135,7 @@ void Browse() {
     wchar_t path[32768]{};const auto current=EditText(kPath);wcsncpy_s(path,current.c_str(),_TRUNCATE);
     OPENFILENAMEW ofn{};ofn.lStructSize=sizeof(ofn);ofn.hwndOwner=windowHandle;ofn.lpstrFile=path;ofn.nMaxFile=32768;
     ofn.lpstrFilter=L"MikuDanceStudio (*.exe)\0MikuMikuDance.exe\0All executable files (*.exe)\0*.exe\0\0";
-    ofn.lpstrTitle=Text(L"选择当前 MMS 主程序",L"Select the current MMS executable",L"現在の MMS 実行ファイルを選択");
+    ofn.lpstrTitle=L"Select the current MMS executable";
     ofn.Flags=OFN_FILEMUSTEXIST|OFN_PATHMUSTEXIST|OFN_NOCHANGEDIR|OFN_EXPLORER;
     if(GetOpenFileNameW(&ofn))SetDlgItemTextW(windowHandle,kPath,path);
 }
@@ -135,7 +145,7 @@ void Layout(HWND hwnd) {
     MoveWindow(GetDlgItem(hwnd,kPath),px(126),px(14),r.right-px(234),px(27),TRUE);
     MoveWindow(GetDlgItem(hwnd,kBrowse),r.right-px(96),px(14),px(80),px(27),TRUE);
     MoveWindow(GetDlgItem(hwnd,kStatus),px(16),px(53),r.right-px(32),px(50),TRUE);
-    MoveWindow(GetDlgItem(hwnd,kLaunch),r.right-px(212),r.bottom-px(45),px(196),px(30),TRUE);
+    MoveWindow(GetDlgItem(hwnd,kLaunch),r.right-px(212),r.bottom-px(45),px(104),px(30),TRUE);
     MoveWindow(GetDlgItem(hwnd,IDCANCEL),r.right-px(96),r.bottom-px(45),px(80),px(30),TRUE);
 }
 LRESULT CALLBACK WindowProc(HWND hwnd,UINT message,WPARAM w,LPARAM l) {
@@ -149,12 +159,12 @@ LRESULT CALLBACK WindowProc(HWND hwnd,UINT message,WPARAM w,LPARAM l) {
                 0,0,1,1,hwnd,reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),GetModuleHandleW(nullptr),nullptr);
             SendMessageW(child,WM_SETFONT,reinterpret_cast<WPARAM>(fontHandle),FALSE);return child;
         };
-        add(L"STATIC",Text(L"MMS 主程序",L"MMS executable",L"MMS 実行ファイル"),300,0);
+        add(L"STATIC",L"MMS executable",300,0);
         auto path=add(L"EDIT",L"",kPath,WS_TABSTOP|ES_AUTOHSCROLL);
-        add(L"BUTTON",Text(L"浏览…",L"Browse…",L"参照…"),kBrowse,WS_TABSTOP);
-        add(L"STATIC",Text(L"启动前会把本插件加载到选定的 MMS 进程。MMS 主程序文件保持原样。",L"The launcher loads the plug-in into the selected MMS process before starting it. The MMS executable stays intact.",L"本ランチャーは起動前にプラグインを MMS プロセスへ読み込みます。MMS 実行ファイルは変更しません。"),kStatus,0);
-        add(L"BUTTON",Text(L"启动 MMS",L"Start MMS",L"MMS を起動"),kLaunch,WS_TABSTOP|BS_DEFPUSHBUTTON);
-        add(L"BUTTON",Text(L"关闭",L"Close",L"閉じる"),IDCANCEL,WS_TABSTOP);
+        add(L"BUTTON",L"Browse...",kBrowse,WS_TABSTOP);
+        add(L"STATIC",L"The launcher loads the plug-in into MMS before starting it. The MMS executable stays intact.",kStatus,0);
+        add(L"BUTTON",L"Start MMS",kLaunch,WS_TABSTOP|BS_DEFPUSHBUTTON);
+        add(L"BUTTON",L"Close",IDCANCEL,WS_TABSTOP);
         const auto candidate=PluginPath().parent_path()/L"MikuMikuDance.exe";
         if(std::filesystem::exists(candidate))SetWindowTextW(path,candidate.c_str());
         Layout(hwnd);return 0;
@@ -165,14 +175,14 @@ LRESULT CALLBACK WindowProc(HWND hwnd,UINT message,WPARAM w,LPARAM l) {
         if(LOWORD(w)==kBrowse){Browse();return 0;}
         if(LOWORD(w)==kLaunch) {
             EnableWindow(GetDlgItem(hwnd,kLaunch),FALSE);
-            SetWindowTextW(GetDlgItem(hwnd,kStatus),Text(L"正在启动并加载插件…",L"Starting MMS and loading the plug-in…",L"MMS を起動してプラグインを読み込んでいます…"));UpdateWindow(hwnd);
+            SetWindowTextW(GetDlgItem(hwnd,kStatus),L"Starting MMS and loading the plug-in...");UpdateWindow(hwnd);
             try {Launch();}catch(const std::exception& e){
                 const int count=MultiByteToWideChar(CP_UTF8,0,e.what(),-1,nullptr,0);
                 std::wstring detail(count>0?static_cast<std::size_t>(count):8,L'\0');
                 if(count>0){MultiByteToWideChar(CP_UTF8,0,e.what(),-1,detail.data(),count);detail.pop_back();}
                 else detail=L"Plug-in loading failed.";
                 SetWindowTextW(GetDlgItem(hwnd,kStatus),detail.c_str());
-                MessageBoxW(hwnd,detail.c_str(),Text(L"插件未能加载",L"Plug-in was not loaded",L"プラグインを読み込めませんでした"),MB_OK|MB_ICONERROR);
+                MessageBoxW(hwnd,detail.c_str(),L"Plug-in was not loaded",MB_OK|MB_ICONERROR);
                 EnableWindow(GetDlgItem(hwnd,kLaunch),TRUE);
             }
             return 0;
@@ -186,12 +196,18 @@ LRESULT CALLBACK WindowProc(HWND hwnd,UINT message,WPARAM w,LPARAM l) {
 }
 
 int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int show) {
+    SetProcessDPIAware();
+    ULONG languages=0;SetThreadPreferredUILanguages(MUI_LANGUAGE_NAME,L"en-US\0",&languages);
+    HDC dc=GetDC(nullptr);dpi=GetDeviceCaps(dc,LOGPIXELSX);ReleaseDC(nullptr,dc);
     INITCOMMONCONTROLSEX controls{sizeof(controls),ICC_STANDARD_CLASSES};InitCommonControlsEx(&controls);
     WNDCLASSEXW cls{sizeof(cls)};cls.lpfnWndProc=WindowProc;cls.hInstance=instance;cls.lpszClassName=kClass;
     cls.hCursor=LoadCursorW(nullptr,IDC_ARROW);cls.hbrBackground=reinterpret_cast<HBRUSH>(COLOR_BTNFACE+1);
     if(!RegisterClassExW(&cls))return 2;
-    windowHandle=CreateWindowExW(WS_EX_CONTROLPARENT,kClass,Text(L"MMS 镜头修复插件",L"MMS Camera Repair Plug-in",L"MMS カメラ修復プラグイン"),
-        WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_MINIMIZEBOX,CW_USEDEFAULT,CW_USEDEFAULT,640,178,nullptr,nullptr,instance,nullptr);
+    constexpr DWORD style=WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_MINIMIZEBOX;
+    RECT bounds{0,0,MulDiv(640,dpi,96),MulDiv(164,dpi,96)};
+    AdjustWindowRectEx(&bounds,style,FALSE,WS_EX_CONTROLPARENT);
+    windowHandle=CreateWindowExW(WS_EX_CONTROLPARENT,kClass,L"MMS Curve Repair Launcher",
+        style,CW_USEDEFAULT,CW_USEDEFAULT,bounds.right-bounds.left,bounds.bottom-bounds.top,nullptr,nullptr,instance,nullptr);
     if(!windowHandle)return 3;
     ShowWindow(windowHandle,show);UpdateWindow(windowHandle);MSG msg{};
     while(GetMessageW(&msg,nullptr,0,0)>0){if(!IsDialogMessageW(windowHandle,&msg)){TranslateMessage(&msg);DispatchMessageW(&msg);}}

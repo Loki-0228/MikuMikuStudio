@@ -1,4 +1,7 @@
 #include "repair_core.hpp"
+#include "sidecar_copy.hpp"
+#include "project_storage.hpp"
+#include "json.hpp"
 #include "mikudancestudio/animation_curve.hpp"
 #include <Windows.h>
 #include <algorithm>
@@ -9,6 +12,7 @@
 #include <cstdlib>
 #include <cwchar>
 #include <new>
+#include <map>
 
 // Only the test thread injects C++ allocation failure. The failure snapshot
 // uses Win32 enumeration exclusively, so observing partially-created outputs
@@ -48,6 +52,7 @@ void operator delete[](void* pointer,std::size_t)noexcept{std::free(pointer);}
 
 using namespace repair;
 namespace ac=mikudancestudio::animation_curve;
+namespace host=mikudancestudio::plugins;
 namespace {
 int checks=0;
 void Check(bool ok,const char* text) {++checks;if(!ok)throw std::runtime_error(text);}
@@ -102,6 +107,138 @@ std::vector<CameraKey> Damage(std::vector<CameraKey> keys){const auto original=k
     for(unsigned c=0;c<8;++c)for(std::size_t i=1;i+1<keys.size();++i)if(keys[i+1].frame-keys[i].frame>1){const auto lane=c<3?c:c<6?3:c==6?4:5;
         const double a=Value(original[i].raw[c],c),b=Value(original[i+1].raw[c],c);keys[i].raw[c]=Stored(a+(b-a)*LegacyEndpoint(keys[i+1].controls[lane]),c);}return keys;}
 void Write(const std::filesystem::path& path,const Bytes& bytes){std::ofstream f(path,std::ios::binary|std::ios::trunc);f.write(reinterpret_cast<const char*>(bytes.data()),static_cast<std::streamsize>(bytes.size()));if(!f)throw std::runtime_error("write fixture");}
+Bytes ByteString(const std::string& text) { return Bytes(text.begin(),text.end()); }
+std::string TextBytes(const Bytes& bytes) { return std::string(bytes.begin(),bytes.end()); }
+Bytes PluginFixture(const std::string& hash) {
+    host::PluginProject data;
+    data.projectId="0123456789abcdef0123456789abcdef";
+    data.saveId="fedcba9876543210fedcba9876543210";
+    data.mainHash=hash;
+    data.records["org.example.present"]={7,{0,1,255,0,127,42}};
+    data.records["org.example.missing"]={UINT32_MAX,{17,0,233,81}};
+    auto text=host::EncodeProject(data);
+    const auto plugin=text.find("\"schemaVersion\":7");
+    Check(plugin!=std::string::npos,"locate existing host-codec plugin fixture");
+    text.insert(plugin,"\"futurePlugin\":{\"integer\":987654321098765432109876543210987654321,\"caption\":\"\\u4e2d\\u6587\\ud83c\\udf1f\",\"nested\":[null,true,false,{\"escape\":\"quote\\\" slash\\\\ newline\\n\\u001f\"}]},");
+    text.insert(text.size()-1,",\"futureRoot\":{\"integer\":12345678901234567890123456789012345678901234567890,\"exponent\":-1.2300E+400,\"caption\":\"\\u65e5\\u672c\\u8a9e\\ud83c\\udf1f\"}");
+    Check(host::DecodeProject(text).records.size()==2,"independent host codec accepts complete sidecar fixture");
+    return ByteString(text);
+}
+bool JsonEqual(const host::Json& first,const host::Json& second) {
+    if(first.kind!=second.kind||first.text!=second.text||first.array.size()!=second.array.size()||first.object.size()!=second.object.size())return false;
+    for(std::size_t i=0;i<first.array.size();++i)if(!JsonEqual(first.array[i],second.array[i]))return false;
+    for(const auto& [key,value]:first.object) {
+        const auto found=second.object.find(key);
+        if(found==second.object.end()||!JsonEqual(value,found->second))return false;
+    }
+    return true;
+}
+void VerifyPluginPair(const Bytes& sourceSidecar,const std::filesystem::path& output) {
+    const auto original=host::DecodeProject(TextBytes(sourceSidecar));
+    // This is the actual host's file-pair reader, not the new repair helper.
+    const auto result=host::ReadPluginProject(output);
+    Check(result.projectId==original.projectId&&result.saveId!=original.saveId,"repair preserves project identity and assigns a distinct save identity");
+    Check(result.mainHash==host::FileHash(output)&&result.mainHash!=original.mainHash,"host independently verifies repaired PMM and sidecar SHA256 pairing");
+    Check(result.records.size()==original.records.size(),"repair preserves all registered and missing-plugin records");
+    for(const auto& [id,record]:original.records) {
+        const auto found=result.records.find(id);
+        Check(found!=result.records.end()&&found->second.schema==record.schema&&found->second.bytes==record.bytes,"host codec reads unchanged plugin schema and binary payload");
+    }
+    auto before=host::Json::Parse(TextBytes(sourceSidecar));
+    auto after=host::Json::Parse(TextBytes(ReadFile(host::PluginSidecar(output))));
+    Check(after.At("futureRoot").At("integer").text=="12345678901234567890123456789012345678901234567890"&&
+        after.At("futureRoot").At("exponent").text=="-1.2300E+400","unknown large integer and exponent retain exact numeric spelling");
+    Check(after.At("plugins").At("org.example.present").At("futurePlugin").At("caption").String()==u8"\u4e2d\u6587\U0001f31f","unknown plugin Unicode text survives rewriting");
+    before.object.erase("saveId");before.object.erase("mainSha256");
+    after.object.erase("saveId");after.object.erase("mainSha256");
+    Check(JsonEqual(before,after),"all JSON fields except repaired hash and new saveId preserve their complete values");
+}
+struct SidecarTestDirectory {
+    std::filesystem::path path;
+    SidecarTestDirectory() {
+        wchar_t parent[MAX_PATH]{},unique[MAX_PATH]{};
+        Check(GetTempPathW(MAX_PATH,parent)&&GetTempFileNameW(parent,L"mcs",0,unique),"reserve unique sidecar test directory");
+        path=unique;
+        Check(DeleteFileW(unique)&&CreateDirectoryW(unique,nullptr),"create only the reserved sidecar test directory");
+    }
+    ~SidecarTestDirectory(){std::error_code ignored;std::filesystem::remove_all(path,ignored);}
+};
+std::map<std::wstring,Bytes> DirectoryBytes(const std::filesystem::path& directory) {
+    std::map<std::wstring,Bytes> files;
+    for(const auto& entry:std::filesystem::directory_iterator(directory)) {
+        Check(entry.is_regular_file(),"sidecar fixture contains only owned regular files");
+        files.emplace(entry.path().filename().wstring(),ReadFile(entry.path()));
+    }
+    return files;
+}
+void SidecarCopies(const Analysis& analysis,const Bytes& expected) {
+    SidecarTestDirectory known;
+    const auto abc=known.path/L"known-abc.pmm",empty=known.path/L"known-empty.pmm";
+    const Bytes source{'a','b','c'};
+    constexpr char abcHash[]="ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    constexpr char emptyHash[]="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    Write(abc,source);Write(empty,{});
+    Check(host::FileHash(abc)==abcHash&&host::FileHash(empty)==emptyHash,"host SHA256 matches independent standard abc and empty test vectors");
+    const auto originalPlugin=PluginFixture(abcHash);
+    Write(host::PluginSidecar(abc),originalPlugin);
+    const auto prepared=PrepareSidecarCopy(abc,source,{});
+    Check(prepared&&host::DecodeProject(TextBytes(*prepared)).mainHash==emptyHash,"repair hashing uses raw bytes and matches the independent empty SHA256 vector");
+    Write(host::PluginSidecar(empty),*prepared);
+    VerifyPluginPair(originalPlugin,empty);
+    Check(ReadFile(abc)==source&&ReadFile(host::PluginSidecar(abc))==originalPlugin,"sidecar preparation never changes its source pair");
+
+    SidecarTestDirectory paired;
+    const auto pairedInput=paired.path/L"paired.pmm";
+    Write(pairedInput,analysis.original);
+    const auto plugin=PluginFixture(host::FileHash(pairedInput));
+    Write(host::PluginSidecar(pairedInput),plugin);
+    const auto output=SaveCopy(analysis,pairedInput,L"paired repair");
+    Check(ReadFile(output)==expected,"paired repair retains the existing curve correction");
+    VerifyPluginPair(plugin,output);
+    Check(ReadFile(pairedInput)==analysis.original&&ReadFile(host::PluginSidecar(pairedInput))==plugin,"successful repair leaves source PMM and sidecar intact");
+
+    for(unsigned kind=0;kind<7;++kind) {
+        SidecarTestDirectory refused;
+        const auto input=refused.path/L"refused.pmm";
+        Write(input,analysis.original);
+        auto invalid=TextBytes(PluginFixture(host::FileHash(input)));
+        const auto replace=[&](const std::string& token,std::size_t count,const std::string& value) {
+            const auto at=invalid.find(token);Check(at!=std::string::npos,"locate intended invalid sidecar field");
+            invalid.replace(at+token.size(),count,value);
+        };
+        if(kind==0)replace("\"schemaVersion\":",1,"2");
+        if(kind==1)replace("\"mainSha256\":\"",64,std::string(64,'0'));
+        if(kind==2) {
+            const std::string token="\"data\":\"";
+            const auto at=invalid.find(token);Check(at!=std::string::npos,"locate payload for canonical-base64 rejection");
+            const auto payload=at+token.size();
+            const auto end=invalid.find('"',payload);
+            invalid.replace(payload,end-payload,"Zh=="); // Nonzero unused base64 bits.
+        }
+        if(kind==3)replace("\"saveId\":\"",32,"not-a-valid-save-id");
+        if(kind==4)invalid="{}";
+        if(kind==0||kind==2||kind==3||kind==4)
+            Reject([&]{host::DecodeProject(invalid);},"independent host codec rejects malformed schema metadata or payload fixture");
+        if(kind==1)Check(host::DecodeProject(invalid).mainHash!=host::FileHash(input),"mismatched fixture is valid JSON with a genuinely wrong PMM hash");
+        if(kind!=6)Write(host::PluginSidecar(input),ByteString(invalid));
+        if(kind>=5) {
+            const auto mainHash=host::FileHash(input);
+            const auto sideHash=kind==5?host::FileHash(host::PluginSidecar(input)):std::string(64,'0');
+            const auto oldSide=kind==5?sideHash:std::string();
+            const auto journal="{\"schemaVersion\":1,\"saveId\":\"0123456789abcdef0123456789abcdef\",\"newMain\":\""+mainHash+
+                "\",\"newSide\":\""+sideHash+"\",\"oldMain\":\""+mainHash+"\",\"oldSide\":\""+oldSide+"\"}";
+            Write(input.native()+L".mms-save.json",ByteString(journal));
+        }
+        const auto before=DirectoryBytes(refused.path);
+        Reject([&]{SaveCopy(analysis,input,L"must refuse");},"invalid metadata payload hash schema or pending source recovery refuses repair");
+        Check(DirectoryBytes(refused.path)==before,"refused repair creates no output and preserves source files and pending journal byte for byte");
+    }
+    SidecarTestDirectory absent;
+    const auto input=absent.path/L"without-sidecar.pmm";
+    Write(input,analysis.original);
+    const auto saved=SaveCopy(analysis,input,L"no plugin data");
+    Check(ReadFile(saved)==expected&&!std::filesystem::exists(host::PluginSidecar(saved)),"source without plugin sidecar remains without one after repair");
+}
 void SaveCopyAllocationFailures(const Analysis& analysis,const Bytes& expected){
     namespace fs=std::filesystem;
     struct OwnedFolder {
@@ -114,15 +251,16 @@ void SaveCopyAllocationFailures(const Analysis& analysis,const Bytes& expected){
         }
         ~OwnedFolder(){std::error_code ignored;fs::remove_all(path,ignored);}
     } owned;
-    const Bytes emm{1,9,3,0,255},plugin{'{','"','t','e','s','t','"',':','1','}'},notes{7,8,9};
+    const Bytes emm{1,9,3,0,255},notes{7,8,9};
     const std::wstring report=L"SaveCopy allocation failure probe";
     Bytes expectedReport{0xef,0xbb,0xbf};for(const auto ch:report)expectedReport.push_back(static_cast<std::uint8_t>(ch));
     unsigned failures=0;bool complete=false;repair_allocation_fault::Created observed;
-    for(long allowance=0;allowance<512;++allowance){
+    for(long allowance=0;allowance<2048;++allowance){
         const auto folder=owned.path/(L"attempt-"+std::to_wstring(allowance));fs::create_directory(folder);
         const auto input=folder/L"source-original.pmm",emmInput=folder/L"source-original.emm";
         const fs::path pluginInput(input.wstring()+L".mms-plugins.json"),noteInput=folder/L"unrelated.txt";
-        Write(input,analysis.original);Write(emmInput,emm);Write(pluginInput,plugin);Write(noteInput,notes);
+        Write(input,analysis.original);const auto plugin=PluginFixture(host::FileHash(input));
+        Write(emmInput,emm);Write(pluginInput,plugin);Write(noteInput,notes);
         const auto pattern=(folder/L"source-original_repaired_*").wstring();fs::path output;bool memory=false;
         repair_allocation_fault::atFailure={};repair_allocation_fault::outputPattern=pattern.c_str();repair_allocation_fault::remaining=allowance;
         try{output=SaveCopy(analysis,input,report);}
@@ -144,8 +282,9 @@ void SaveCopyAllocationFailures(const Analysis& analysis,const Bytes& expected){
         }else{
             Check(!output.empty()&&files==8&&ReadFile(output)==expected,"successful SaveCopy creates exactly one repaired PMM alongside the preserved inputs");
             auto savedEmm=output;savedEmm.replace_extension(L".emm");
-            Check(ReadFile(savedEmm)==emm&&ReadFile(output.wstring()+L".mms-plugins.json")==plugin&&ReadFile(output.wstring()+L".repair.txt")==expectedReport,
+            Check(ReadFile(savedEmm)==emm&&ReadFile(output.wstring()+L".repair.txt")==expectedReport,
                 "successful allocation sweep retains complete EMM plugin sidecar and UTF8 report copies");
+            VerifyPluginPair(plugin,output);
             complete=true;break;
         }
     }
@@ -158,6 +297,7 @@ void Tests(){
     const auto a=Analyze(pmm);Check(a.patches.size()==1,"exact endpoint recovered");Check(a.patches[0].frame==44&&a.patches[0].after==Stored(0,0),"frame 44 zero restored");
     Check(a.patches[0].before==Stored(-5.587480700341985e-8,0),"independent frame 44 regression value");
     const auto fixed=Apply(a);Check(Analyze(fixed).patches.empty(),"repair is idempotent");
+    SidecarCopies(a,fixed);
     SaveCopyAllocationFailures(a,fixed);
     for(std::size_t i=0;i<pmm.size();++i)if(i<a.patches[0].offset||i>=a.patches[0].offset+4)Check(pmm[i]==fixed[i],"unrelated byte preserved");
     auto clean=Pmm(keys);Extension(clean,tracks);Check(Analyze(clean).patches.empty(),"clean project unchanged");
@@ -198,10 +338,11 @@ void Tests(){
         Check(scan.patches[0].after==sample[1].raw[0],"different original tiny values restored exactly");
         Check(Analyze(Apply(scan)).patches.empty(),"different combinations idempotent");}
     const auto folder=std::filesystem::temp_directory_path()/(L"MMS曲线修复_日本語_"+std::to_wstring(GetCurrentProcessId()));std::filesystem::create_directories(folder);
-    const auto path=folder/L"原工程.pmm";Write(path,pmm);Write(folder/L"原工程.emm",{1,2,3});Write(path.wstring()+L".mms-plugins.json",{'{','}'});
+    const auto path=folder/L"原工程.pmm";Write(path,pmm);Write(folder/L"原工程.emm",{1,2,3});
+    const auto plugin=PluginFixture(host::FileHash(path));Write(host::PluginSidecar(path),plugin);
     const auto output=SaveCopy(a,path,Report(a,2));Check(ReadFile(path)==pmm,"source preserved");Check(ReadFile(output)==fixed,"copy saved");
     auto emm=output;emm.replace_extension(L".emm");Check(ReadFile(emm)==Bytes({1,2,3}),"EMM copied");
-    Check(ReadFile(output.wstring()+L".mms-plugins.json")==Bytes({'{','}'}),"plugin data copied");Check(!ReadFile(output.wstring()+L".repair.txt").empty(),"report saved");
+    VerifyPluginPair(plugin,output);Check(ReadFile(host::PluginSidecar(path))==plugin,"original sidecar preserved");Check(!ReadFile(output.wstring()+L".repair.txt").empty(),"report saved");
     Write(path,clean);Reject([&]{SaveCopy(a,path,L"test");},"changed source rejected");Check(ReadFile(path)==clean,"changed source preserved");
     std::filesystem::remove_all(folder);
 }
