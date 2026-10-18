@@ -412,6 +412,7 @@ void CrossModelJournal(){
 #include "native_numpad_view_checks.inc"
 #include "native_camera_hud_history_checks.inc"
 #include "native_accessory_hud_history_checks.inc"
+#include "native_model_hud_history_checks.inc"
 #include "native_numpad_dispatch_checks.inc"
 #include "native_model_viewport_history_checks.inc"
 #include "native_same_model_follow_checks.inc"
@@ -666,6 +667,10 @@ int main(int argc,char** argv){
         run("NativeAccessoryHudHistoryChecks",NativeAccessoryHudHistoryChecks);
         std::printf("PASS native accessory HUD: %u checks\n",checks);return 0;
     }
+    if(argc==2&&!std::strcmp(argv[1],"--model-hud-only")) {
+        run("NativeModelHudHistoryChecks",NativeModelHudHistoryChecks);
+        std::printf("PASS native model HUD: %u checks\n",checks);return 0;
+    }
     if(argc==2&&!std::strcmp(argv[1],"--same-model-follow-only")) {
         run("NativeSameModelFollowChecks",NativeSameModelFollowChecks);
         std::printf("PASS native same-model follow: %u checks\n",checks);return 0;
@@ -780,6 +785,7 @@ int main(int argc,char** argv){
     run("NativeCameraFollowChecks",NativeCameraFollowChecks);
     run("NativeCameraHudHistoryChecks",NativeCameraHudHistoryChecks);
     run("NativeAccessoryHudHistoryChecks",NativeAccessoryHudHistoryChecks);
+    run("NativeModelHudHistoryChecks",NativeModelHudHistoryChecks);
     run("NativeSameModelFollowChecks",NativeSameModelFollowChecks);
     run("PoseAndStale",PoseAndStale);run("KeysAndChain",KeysAndChain);run("Bake",Bake);
     run("Deletion",Deletion);run("EmptyAndCycle",EmptyAndCycle);run("FreeCurves",FreeCurves);

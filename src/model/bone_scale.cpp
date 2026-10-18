@@ -248,6 +248,10 @@ Matrix Interpolate(const Matrix& a,const Matrix& b,float t) {
 Matrix Pose(const unsigned char* model,int bone) {
     const auto it=states.find(model); return it==states.end()?Matrix{}:Lookup(it->second.current.pose,bone);
 }
+bool HasPoseValue(const unsigned char* model,int bone) noexcept {
+    const auto found=states.find(model);
+    return found!=states.end()&&found->second.current.pose.find(bone)!=found->second.current.pose.end();
+}
 Matrix Key(const unsigned char* model,int index) {
     const auto it=states.find(model); return it==states.end()?Matrix{}:Lookup(it->second.current.keys,index);
 }
@@ -680,6 +684,53 @@ bool UnusedAuthoringLease(const State& state) noexcept {
     }
     return true;
 }
+}
+struct PoseStorageLease::Impl {
+    unsigned char* model=nullptr;
+    std::uint64_t identity=0;
+    std::uint64_t poseNodes=0;
+    bool leased=false;
+    ~Impl(){
+        if(!leased)return;
+        const auto found=states.find(model);
+        if(found!=states.end()&&found->second.identity==identity&&UnusedAuthoringLease(found->second))states.erase(found);
+    }
+};
+PoseStorageLease::PoseStorageLease()=default;
+PoseStorageLease::~PoseStorageLease()=default;
+std::uint64_t PoseStorageLease::RetainedBytes() const noexcept {
+    std::uint64_t bytes=sizeof(*this)+(impl_?sizeof(Impl):0);
+    if(!impl_||!impl_->leased)return bytes;
+    // A new registry entry owns State and 61 empty Snapshot map triplets.
+    // MSVC allocates a sentinel even for each empty map. Existing shared
+    // runtime entries are not owned or charged by a new lease.
+    bytes+=sizeof(decltype(states)::value_type)+4*sizeof(void*);
+    constexpr auto matrixNode=sizeof(Values::value_type)+4*sizeof(void*);
+    constexpr auto curveNode=sizeof(Curves::value_type)+4*sizeof(void*);
+    bytes+=61ull*(2*matrixNode+curveNode);
+    // Reserve the newly created pose table's largest possible node set before
+    // preview publication. Live keys/curves remain scene-owned and untouched.
+    const auto count=impl_->poseNodes;
+    if(count>(UINT64_MAX-bytes)/matrixNode)return UINT64_MAX;
+    return bytes+count*matrixNode;
+}
+std::unique_ptr<PoseStorageLease> PoseStorageLease::Prepare(unsigned char* model){
+    if(!model)throw std::invalid_argument("bone pose storage model missing");
+    auto next=std::unique_ptr<PoseStorageLease>(new PoseStorageLease());next->impl_=std::make_unique<Impl>();
+    next->impl_->model=model;
+    next->impl_->poseNodes=mdl::Mdl(model)->boneCount;
+    const auto inserted=states.try_emplace(model);
+    next->impl_->identity=inserted.first->second.identity;next->impl_->leased=inserted.second;
+    return next;
+}
+void CopyPoseRuntime(const unsigned char* source,unsigned char* destination){
+    if(!source||!destination||source==destination)throw std::invalid_argument("bone pose draft identity");
+    const auto found=states.find(source);
+    if(found==states.end()){states.erase(destination);return;}
+    if(mdl::Mdl(source)->boneCount!=mdl::Mdl(destination)->boneCount)throw std::invalid_argument("bone pose draft count");
+    State draft;draft.current.pose=found->second.current.pose;draft.rigid=found->second.rigid;
+    draft.applied=found->second.applied;draft.revision=found->second.revision;
+    states.insert_or_assign(destination,std::move(draft));
 }
 struct AuthoringRestore::Impl {
     unsigned char* model = nullptr;
@@ -1187,6 +1238,7 @@ const ScreenGeometry& Published(const MMDApp* app) {
     const auto it=published.find(app);
     return it==published.end()?none:it->second;
 }
+void Forget(const MMDApp* app) noexcept { published.erase(app); }
 
 bool Active(MMDApp* app) {
     if (app==nullptr||app->EditMode()!=ViewportEditMode::Scale) return false;

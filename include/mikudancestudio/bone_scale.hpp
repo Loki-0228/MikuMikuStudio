@@ -184,6 +184,19 @@ bool PoseValuesEqual(const unsigned char* model, const Values&) noexcept;
 bool HasPoseStorage(const unsigned char* model) noexcept;
 bool ExchangePoseValues(unsigned char* model, Values&) noexcept;
 #if !MMD_ORIGINAL_PROFILE
+// Internal gesture drafts copy only current pose and its derived matrix
+// baseline. Keys, curves and legacy undo state are neither read nor changed.
+void CopyPoseRuntime(const unsigned char* source, unsigned char* destination);
+bool HasPoseValue(const unsigned char* model, int bone) noexcept;
+class PoseStorageLease {
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+    PoseStorageLease();
+public:
+    ~PoseStorageLease();
+    static std::unique_ptr<PoseStorageLease> Prepare(unsigned char* model);
+    std::uint64_t RetainedBytes() const noexcept;
+};
 // Independent key authoring snapshots: only scale keys and interpolation
 // curves are owned here. Pose, the legacy 30-entry rings and render caches stay
 // with the live model. Empty keys/curves equal an absent side-table entry.

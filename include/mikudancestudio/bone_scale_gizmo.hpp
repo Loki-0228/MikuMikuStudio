@@ -128,6 +128,8 @@ Handle HitTest(MMDApp* app, float x, float y);
 // Render pass -> input path hand-off, keyed by the application instance.
 void Publish(MMDApp* app, const ScreenGeometry& geometry);
 const ScreenGeometry& Published(const MMDApp* app);
+// Internal isolated gesture drafts own their projected geometry entry.
+void Forget(const MMDApp* app) noexcept;
 
 }  // namespace gizmo
 }  // namespace bone_scale

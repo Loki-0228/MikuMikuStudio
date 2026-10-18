@@ -59,6 +59,7 @@
 #include "../plugins/native_pose_scope.hpp"
 #include "../plugins/native_camera_hud_history.hpp"
 #include "../plugins/native_accessory_hud_history.hpp"
+#include "../plugins/native_model_hud_history.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "../plugins/native_history_commands.hpp"
 #include "../plugins/native_global_commands.hpp"
@@ -76,6 +77,9 @@ float g_MouseScaleD = 0.0020000000949949f;        // VA 0x0052E8C0 (true
                                                   // PI/360 guess was wrong)
 
 static void ViewRefreshGate(MMDApp* s) {
+#if !MMD_ORIGINAL_PROFILE
+    const auto modelSource=plugins::ModelHudPreviewSource(*s);
+#endif
     // Original dword gates (Ghidra: this+0x9ED98 select-state gate,
     // this+0xA0430 frame cursor).  The old literals 650136/657456 were
     // decimal slips - 650136 landed inside aviOutputPath and 657456 inside
@@ -94,8 +98,18 @@ static void ViewRefreshGate(MMDApp* s) {
         // decimal slip that landed on the frame-range dialog HWND's byte 1)
         s->state.viewDirty = 1;                                   // 0xA05D1
         s->state.windowLayoutReady = 0;
+#if !MMD_ORIGINAL_PROFILE
+        if(modelSource)plugins::RecordModelHudRefreshHint(*s);
+#endif
         PostLanguageSweep2(s);                                    // 0x40D070
+#if !MMD_ORIGINAL_PROFILE
+        if(modelSource&&(plugins::ModelHudPreviewSource(*s)!=modelSource||
+            !plugins::AllowModelHudPreview(*s,plugins::ModelHudOperationForMode(int(s->InteractionDragMode())))))return;
+#endif
         s->state.windowLayoutReady = 1;
+#if !MMD_ORIGINAL_PROFILE
+        if(modelSource)plugins::RecordModelHudRefreshHint(*s);
+#endif
     }
     PostViewRefresh(s);                                           // 0x40D130
 }
@@ -646,12 +660,13 @@ void DragBackground(MMDApp* app, bool zoom, int dx, int dy) {
 void BeginOrEndViewportToolDrag(MMDApp* app, int operation) {
 #if !MMD_ORIGINAL_PROFILE
     try {
-    // Only the six camera/accessory pose axes own common-history HUD gestures.
-    // Other native HUD writers stay behind their migration gates.
+    // Native pose axes and scale use one complete prepared HUD gesture.
     if (plugins::BoundNativePoseHistory(app) && app->LeftMouseButtonState() == 1 &&
         operation != 0 && operation != 21) {
         auto* history = plugins::BoundNativePoseHistory(app);
-        if (plugins::AccessoryHudOperation(*app, operation)) {
+        if (plugins::ModelHudOperation(*app,operation)) {
+            if(plugins::BeginModelHudGesture(*app,*history,ViewportWindow(app),operation)!=MMS_OK)return;
+        } else if (plugins::AccessoryHudOperation(*app, operation)) {
             if (plugins::BeginAccessoryHudGesture(*app, *history, ViewportWindow(app), operation) != MMS_OK) return;
         } else if (!plugins::CameraHudOperation(*app, operation) ||
             plugins::BeginCameraHudGesture(*app, *history, ViewportWindow(app), operation) != MMS_OK) return;
@@ -696,6 +711,9 @@ void BeginOrEndViewportToolDrag(MMDApp* app, int operation) {
                         bone < count)
                         record->boneSelection[bone] = 1;
                 }
+#if !MMD_ORIGINAL_PROFILE
+                if(!plugins::BoundNativePoseHistory(app))
+#endif
                 PushBoneEditUndo(app);
                 app->state.a06B5 = 1;
             }
@@ -712,8 +730,14 @@ void BeginOrEndViewportToolDrag(MMDApp* app, int operation) {
             }
             if (operation <= 8) {
                 app->EditMode() = ViewportEditMode::ToolDrag;
+#if !MMD_ORIGINAL_PROFILE
+                if(!plugins::BoundNativePoseHistory(app))
+#endif
                 PushBoneEditUndo(app);
             } else if (operation <= 14) {
+#if !MMD_ORIGINAL_PROFILE
+                if(!plugins::BoundNativePoseHistory(app))
+#endif
                 PushBoneEditUndo(app);
                 app->state.a06B5 = 1;
             } else if (operation <= 20) {
@@ -756,11 +780,17 @@ void BeginOrEndViewportToolDrag(MMDApp* app, int operation) {
         }
     } else if (leftState == 2) {
 #if !MMD_ORIGINAL_PROFILE
+        if(plugins::ModelHudGestureActive(*app)){
+            const WPARAM modifiers=(app->ShiftModifierActive()?MK_SHIFT:0)|(app->CtrlModifierActive()?MK_CONTROL:0);
+            plugins::HandleModelHudMessage(*app,ViewportWindow(app),WM_LBUTTONUP,modifiers,0);
+            return;
+        }
         auto* hudHistory = plugins::BoundNativePoseHistory(app);
+        const bool modelHud = plugins::ModelHudGestureActive(*app);
         const bool accessoryHud = plugins::AccessoryHudGestureActive(*app);
-        const bool hud = accessoryHud || plugins::CameraHudGestureActive(*app);
+        const bool hud = modelHud || accessoryHud || plugins::CameraHudGestureActive(*app);
         bool hudChanged = false;
-        const auto hudResult = accessoryHud ? plugins::EndAccessoryHudGesture(*app, hudChanged) :
+        const auto hudResult = modelHud ? plugins::EndModelHudGesture(*app,hudChanged) : accessoryHud ? plugins::EndAccessoryHudGesture(*app, hudChanged) :
             hud ? plugins::EndCameraHudGesture(*app, hudChanged) : MMS_OK;
 #endif
         app->PendingTimelineSelectionRow() = TimelineSelectionRow::None;;
@@ -815,6 +845,9 @@ void BeginOrEndViewportToolDrag(MMDApp* app, int operation) {
             plugins::RefreshBoundGlobalReadout(*app);
             return;
         }
+        if(plugins::ModelHudGestureActive(*app)){
+            plugins::CancelModelHudGesture(*app);plugins::RefreshBoundPoseReadout(*app);return;
+        }
         throw;
     }
 #endif
@@ -831,6 +864,14 @@ void FinishCameraHudInteraction(MMDApp* app) noexcept {
     app->state.a06B5 = 0;
     app->LeftMouseButtonState() = LeftButtonPhysicallyDown(app) ? 3 : 0;
     g_viewportPressHandled = false;
+}
+void FinishModelHudInteraction(MMDApp* app,int operation,int editMode) noexcept {
+    if(static_cast<int>(app->ViewToolDragOperation())==operation&&
+        ((operation>=9&&operation<=14)||(operation>=22&&operation<=25)))RestoreViewportToolCursor(app,operation);
+    if(app->EditMode()==ViewportEditMode::ToolDrag)app->EditMode()=static_cast<ViewportEditMode>(editMode);
+    if(static_cast<int>(app->ViewToolDragOperation())==operation)app->ViewToolDragOperation()=ViewportToolAction::None;
+    if(plugins::ModelHudOperationForMode(int(app->InteractionDragMode()))==operation)app->InteractionDragMode()=ViewportDragMode::None;
+    app->state.a06B5=0;app->LeftMouseButtonState()=LeftButtonPhysicallyDown(app)?3:0;g_viewportPressHandled=false;
 }
 #endif
 
@@ -954,6 +995,9 @@ bool HandleCoordinateStripPress(MMDApp* app) {
 }
 
 void ReleaseLeftButtonState(MMDApp* app, bool physicallyHeld) {
+#if !MMD_ORIGINAL_PROFILE
+    const auto modelSource=plugins::ModelHudPreviewSource(*app);
+#endif
     // The gesture has ended: the next press, regardless of the tracked state, is a
     // new gesture and may run the tools again.
     g_viewportPressHandled = false;
@@ -961,6 +1005,10 @@ void ReleaseLeftButtonState(MMDApp* app, bool physicallyHeld) {
     // for everything else.
     app->LeftMouseButtonState() = 2;
     BeginOrEndViewportToolDrag(app, 0);
+#if !MMD_ORIGINAL_PROFILE
+    if(modelSource&&plugins::ModelHudPreviewSource(*app)!=modelSource&&
+        (plugins::ModelHudGestureActive(*app)||plugins::CameraHudGestureActive(*app)||plugins::AccessoryHudGestureActive(*app)))return;
+#endif
     // WM_CAPTURECHANGED and WM_CANCELMODE end a gesture through the same
     // mouse-up path even while the button may still be held. Writing 0 there
     // made the frame driver's PollKey read the same physical press as a *new*
@@ -1369,30 +1417,60 @@ void ModeAngleAdjust(MMDApp* app, int axis) {
 }
 
 void ModeRotate(MMDApp* app, int /*axis*/) {
+#if !MMD_ORIGINAL_PROFILE
+    if(plugins::BoundNativePoseHistory(app)){
+        if(!plugins::ApplyModelHudSample(*app,plugins::ModelHudOperationForMode(int(app->InteractionDragMode()))))ViewRefreshGate(app);
+        return;
+    }
+#endif
     // app+0x34C modes 1..3: view-axis bone rotation.
     BoneEditModes(app);
     ViewRefreshGate(app);
 }
 
 void ModeTranslate(MMDApp* app, int /*axis*/) {
+#if !MMD_ORIGINAL_PROFILE
+    if(plugins::BoundNativePoseHistory(app)){
+        if(!plugins::ApplyModelHudSample(*app,plugins::ModelHudOperationForMode(int(app->InteractionDragMode()))))ViewRefreshGate(app);
+        return;
+    }
+#endif
     // app+0x34C modes 4..6: selected-bone local-axis rotation.
     BoneEditModes(app);
     ViewRefreshGate(app);
 }
 
 void ModeScale(MMDApp* app) {
+#if !MMD_ORIGINAL_PROFILE
+    if(plugins::BoundNativePoseHistory(app)){
+        if(!plugins::ApplyModelHudSample(*app,plugins::ModelHudOperationForMode(int(app->InteractionDragMode()))))ViewRefreshGate(app);
+        return;
+    }
+#endif
     // app+0x34C mode 7 is horizontal selected-root translation, not scaling.
     BoneEditModes(app);
     ViewRefreshGate(app);
 }
 
 void ModeBoneRotate(MMDApp* app, int) {
+#if !MMD_ORIGINAL_PROFILE
+    if(plugins::BoundNativePoseHistory(app)){
+        if(!plugins::ApplyModelHudSample(*app,plugins::ModelHudOperationForMode(int(app->InteractionDragMode()))))ViewRefreshGate(app);
+        return;
+    }
+#endif
     // app+0x34C modes 8/9 add vertical or combined screen-plane movement.
     BoneEditModes(app);
     ViewRefreshGate(app);
 }
 
 void ModePhysicsBody(MMDApp* app, int) {
+#if !MMD_ORIGINAL_PROFILE
+    if(plugins::BoundNativePoseHistory(app)){
+        if(!plugins::ApplyModelHudSample(*app,plugins::ModelHudOperationForMode(int(app->InteractionDragMode()))))ViewRefreshGate(app);
+        return;
+    }
+#endif
     // app+0x34C modes 10..12: local-axis translation or active record edits.
     BoneEditModes(app);
     ViewRefreshGate(app);

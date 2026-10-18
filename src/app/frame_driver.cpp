@@ -65,6 +65,8 @@
 #include "mikudancestudio/ui_metrics.hpp"
 #include "mikudancestudio/update_coordinator.hpp"
 #include "frame_state_dump.hpp"
+#include "../plugins/native_pose_scope.hpp"
+#include "../plugins/native_model_hud_history.hpp"
 
 // key_ladder.cpp (registered in CMakeLists next to frame_modes_bone.cpp):
 // main-pump letter hotkey consumption ladder (x86 0x46FF35..0x4739E2).
@@ -729,6 +731,10 @@ void FrameDriver(MMDApp* app) {
 
     // ---- 2. interaction-mode dispatch --------------------------------------
     const ViewportDragMode mode = s.InteractionDragMode();
+#if !MMD_ORIGINAL_PROFILE
+    const auto modelHudSource=plugins::ModelHudPreviewSource(*app);
+    bool modelHudReplaced=false;
+#endif
     if (mode != ViewportDragMode::None && s.LeftMouseButtonHeld()) {
         switch (mode) {
         case ViewportDragMode::ViewAxisRotateX:
@@ -767,6 +773,9 @@ void FrameDriver(MMDApp* app) {
         case ViewportDragMode::ScaleX:
         case ViewportDragMode::ScaleY:
         case ViewportDragMode::ScaleZ:
+#if !MMD_ORIGINAL_PROFILE
+            if(plugins::BoundNativePoseHistory(app)){plugins::ApplyModelHudSample(*app,plugins::ModelHudOperationForMode(int(mode)));break;}
+#endif
             // Bone-scale HUD row.  axis -1 is uniform, 0/1/2 are X/Y/Z; the
             // transform, save and undo live in the bone-scale runtime.
             bone_scale::Drag(app,
@@ -778,6 +787,9 @@ void FrameDriver(MMDApp* app) {
         case ViewportDragMode::ScaleGizmoX:
         case ViewportDragMode::ScaleGizmoY:
         case ViewportDragMode::ScaleGizmoZ:
+#if !MMD_ORIGINAL_PROFILE
+            if(plugins::BoundNativePoseHistory(app)){plugins::ApplyModelHudSample(*app,plugins::ModelHudOperationForMode(int(mode)));break;}
+#endif
             // MMS addition: the viewport scale handles.  The amount is this
             // frame's pointer delta measured along the handle's projected screen
             // direction, so a horizontal axis is driven by a horizontal drag;
@@ -788,6 +800,9 @@ void FrameDriver(MMDApp* app) {
                     static_cast<int>(ViewportDragMode::ScaleGizmoX));
             break;
         case ViewportDragMode::ScaleGizmoPlane:
+#if !MMD_ORIGINAL_PROFILE
+            if(plugins::BoundNativePoseHistory(app)){plugins::ApplyModelHudSample(*app,plugins::ModelHudOperationForMode(int(mode)));break;}
+#endif
             // MMS addition: the white square of the viewport gizmo scales both
             // view-plane axes in one increment, driven along its projected
             // diagonal so horizontal and vertical drags both work.
@@ -799,6 +814,10 @@ void FrameDriver(MMDApp* app) {
         // The drag that owns the gesture re-centres the pointer once the
         // movement has been applied, which is what gives it an unlimited
         // range (the original does this at the end of every drag body).
+#if !MMD_ORIGINAL_PROFILE
+        modelHudReplaced=modelHudSource&&plugins::ModelHudPreviewSource(*app)!=modelHudSource;
+        if(!modelHudReplaced)
+#endif
         RecentreCenteredDragCursor(app);
     }
 #ifdef MIKUDANCESTUDIO_DIAG
@@ -806,6 +825,9 @@ void FrameDriver(MMDApp* app) {
 #endif
 
     // ---- 3. mouse position update ------------------------------------------
+#if !MMD_ORIGINAL_PROFILE
+    if(!modelHudReplaced)
+#endif
     MouseInteractionEnd(app);
     // MMS: keep the 缩放 X/Y/Z edits in step with scale drags, undo and frame
     // steps without waiting for a view refresh.

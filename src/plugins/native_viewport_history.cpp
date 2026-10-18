@@ -3,6 +3,7 @@
 #include "native_pose_scope.hpp"
 #include "native_camera_hud_history.hpp"
 #include "native_accessory_hud_history.hpp"
+#include "native_model_hud_history.hpp"
 #include "native_history_commands.hpp"
 #include "native_object_commands.hpp"
 #include "native_viewport_reset_camera.hpp"
@@ -348,14 +349,15 @@ MmsResult BeginViewportCameraGesture(MMDApp& a,SharedHistory& h,HWND owner,UINT 
     });
 }
 bool CancelViewportCameraGesture(MMDApp& a) noexcept {
+    const bool boneHudRestored=CancelModelHudGesture(a);
     const bool hudRestored=CancelCameraHudGesture(a);
     const bool accessoryRestored=CancelAccessoryHudGesture(a);
     const bool modelRestored=CancelViewportModelGesture(a);
-    if(!gesture || gesture->app!=&a)return modelRestored||hudRestored||accessoryRestored;
+    if(!gesture || gesture->app!=&a)return modelRestored||hudRestored||accessoryRestored||boneHudRestored;
     auto current=std::move(gesture);const bool restored=current->Rollback();current->transaction.reset();
     a.state.rightMouseButtonState=0;a.state.middleMouseButtonState=0;
     if(current->owner && GetCapture()==current->owner)ReleaseCapture();
-    return restored||modelRestored||hudRestored||accessoryRestored;
+    return restored||modelRestored||hudRestored||accessoryRestored||boneHudRestored;
 }
 bool AllowViewportCameraPreview(MMDApp& a,UINT button) noexcept {
     if(modelGesture&&modelGesture->app==&a)return AllowViewportModelPreview(a,button);
@@ -563,6 +565,7 @@ MmsResult AdjustViewportNumpadPresets(MMDApp& app,SharedHistory& history,std::ui
     });
 }
 bool HandleBoundViewportMessage(MMDApp& a,HWND owner,UINT msg,WPARAM wp,LPARAM lp) noexcept {
+    if(HandleModelHudMessage(a,owner,msg,wp,lp))return true;
     if(HandleCameraHudMessage(a,owner,msg,wp,lp))return true;
     if(HandleAccessoryHudMessage(a,owner,msg,wp,lp))return true;
     if(msg==WM_CANCELMODE || msg==WM_KILLFOCUS || msg==WM_NCDESTROY ||

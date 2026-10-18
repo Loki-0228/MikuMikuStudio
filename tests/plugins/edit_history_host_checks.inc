@@ -28,6 +28,7 @@
 #include "../src/plugins/native_model_vmd_source.hpp"
 #include "../src/plugins/native_viewport_history.hpp"
 #include "../src/plugins/native_camera_hud_history.hpp"
+#include "../src/plugins/native_model_hud_history.hpp"
 #include "../src/plugins/scene_object_history.hpp"
 #include "mikudancestudio/accessory_motion_io.hpp"
 #include "mikudancestudio/clipboard_layout.hpp"
@@ -442,6 +443,7 @@ void ObjectMenuDeletion(MMDApp* app, plugins::SharedHistory& history, const MmsS
 #include "model_viewport_host_checks.inc"
 #include "camera_hud_host_checks.inc"
 #include "accessory_hud_host_checks.inc"
+#include "model_hud_host_checks.inc"
 #include "numpad_view_host_checks.inc"
 #include "curve_motion_import_host_checks.inc"
 #include "native_camera_sampling_host_checks.inc"
@@ -500,6 +502,7 @@ void Run(MMDApp* app) {
     model_viewport_host_checks::Run(app,*history,value);
     camera_hud_host_checks::Run(app,*history);
     accessory_hud_host_checks::Run(app,*history,value);
+    model_hud_host_checks::Run(app,*history,value);
     numpad_view_host_checks::Run(app,*history,value);
     curve_motion_import_host_checks::Run(app,*history);
     native_camera_sampling_host_checks::Run(app,*history,value);
