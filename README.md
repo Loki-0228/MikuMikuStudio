@@ -2,22 +2,22 @@
 
 [English](#english) | [中文](#中文) | [日本語](#日本語)
 
-[Release notes / 发布日志 / リリースノート](https://github.com/Loki-0228/MikuMikuStudio/releases/tag/v2026.10.18.2)
+[Release notes / 发布日志 / リリースノート](https://github.com/Loki-0228/MikuMikuStudio/releases/tag/v2026.10.19.1)
 
 [Documentation / 文档导航 / ドキュメント](docs/README.md)
 
-[v2026.10.18.2 正式版 / Release / 正式版](docs/records/releases.md#release-v2026-10-18-2)
+[v2026.10.19.1 Release / 正式版 / 正式版](docs/records/releases.md#release-v2026-10-19-1)
 
 ## Downloads and package differences
 
-[GitHub Releases](https://github.com/Loki-0228/MikuMikuStudio/releases/tag/v2026.10.18.2) provides Windows x64 packages with `full` or `minimal` in the filename and lists their contents in the release notes. The table below describes the current source profiles, including changes that have not been released. The minimal build uses the `mmd932` build profile:
+[GitHub Releases](https://github.com/Loki-0228/MikuMikuStudio/releases/tag/v2026.10.19.1) provides Windows x64 packages with `full` or `minimal` in the filename and lists their contents in the release notes. The table below describes the released build profiles. The minimal build uses the `mmd932` build profile:
 
 | Area | Full `full` | Minimal `minimal` |
 | --- | --- | --- |
 | PMD and PMX loading, original animation tools, rigid-body physics, language fixes, MME interface | Included | Included |
 | Image sequences, periodic backups, crash backup attempts, and morph force paste | Included | Included |
-| Equivalent skinning and morph optimizations, unchanged-model reuse, and camera-only outline updates with CPU skinning | Included in unreleased source | Included in unreleased source |
-| MME auto-reload using file-change notifications | Included in unreleased source | Included in unreleased source |
+| Equivalent skinning and morph optimizations, unchanged-model reuse, and camera-only outline updates with CPU skinning | Included | Included |
+| MME auto-reload using file-change notifications | Included | Included |
 | Preview shadow resolution | Scales the built-in renderer's shadow map; MME-owned targets follow their FX declarations | No preview scaling |
 | Recent projects, timeline force-paste button, and viewport render scaling | Included | Omitted |
 | FXAA, TAA, SMAA | Included; NVIDIA fix DLL is a separate optional download | Original anti-aliasing switch only |
@@ -40,7 +40,7 @@ PMM saves a project, including model and media references, scene settings, and k
 
 PMM `0002` extensions preserve bone curves, project settings, and scene and accessory curve records without changing the standard file header. VMD tail extensions store supported curves and bone-scale data while retaining the standard VMD sections. Re-saving an extended project in original MMD may discard MMS-only data. See [curve editor](docs/guides/animation-curves.md) and [PMM v2 extensions](docs/reference/pmm-extensions.md).
 
-The current full-build source also provides the following extended-save behavior, which has not yet been released.
+The full build also provides the following extended-save behavior.
 
 PMM saving prefers the original `0002` header. Unused reserved space does not force a new format, and sparse high key slots are compacted when their live contents still fit. Only content outside the original limits or legacy path encoding selects the MMS `0003` format. Original MMD and the minimal build cannot open that format.
 
@@ -51,15 +51,15 @@ startup. They are not stored in project files.
 
 ## 下载与版本区别
 
-[GitHub Releases](https://github.com/Loki-0228/MikuMikuStudio/releases/tag/v2026.10.18.2) 同时提供 Windows x64 完整包和最小包，实际收录内容见发布页面的日志。需要 MMS 新增功能时选择文件名含 `full` 的 ZIP；主要使用 MMD 原有功能时选择含 `minimal` 的 ZIP。下表描述当前源码的两种构建档，包含尚未发布的改动。两档均保留 `MikuMikuDance.exe` 文件名。
+[GitHub Releases](https://github.com/Loki-0228/MikuMikuStudio/releases/tag/v2026.10.19.1) 同时提供 Windows x64 完整包和最小包，实际收录内容见发布页面的日志。需要 MMS 新增功能时选择文件名含 `full` 的 ZIP；主要使用 MMD 原有功能时选择含 `minimal` 的 ZIP。下表描述已发布的两种构建档，两档均保留 `MikuMikuDance.exe` 文件名。
 
 | 项目 | 完整包 `full` | 最小包 `minimal`（构建档 `mmd932`） |
 | --- | --- | --- |
 | PMD、PMX 载入，原有骨骼、表情、相机、灯光和刚体物理 | 保留 | 保留 |
 | 原生功能、输入、编码及 MME 兼容修复 | 保留 | 保留 |
 | 图片序列、周期备份、崩溃备份尝试、表情强制粘贴 | 保留 | 保留 |
-| 蒙皮与表情的等价计算优化、未变化模型缓存、CPU 蒙皮下相机移动时仅更新描边 | 当前源码已包含，尚未发布 | 当前源码已包含，尚未发布 |
-| MME 自动重载使用文件变更通知 | 当前源码已包含，尚未发布 | 当前源码已包含，尚未发布 |
+| 蒙皮与表情的等价计算优化、未变化模型缓存、CPU 蒙皮下相机移动时仅更新描边 | 保留 | 保留 |
+| MME 自动重载使用文件变更通知 | 保留 | 保留 |
 | 预览阴影分辨率 | 只调整默认渲染的阴影贴图；MME 自建目标遵循 FX 声明 | 不包含预览缩放 |
 | 最近工程、时间轴强制粘贴按钮、视口渲染比例 | 保留 | 不包含 |
 | FXAA、TAA、SMAA | 保留；NVIDIA 补丁 DLL 另行按需下载 | 仅保留原抗锯齿开关 |
@@ -85,7 +85,7 @@ PMM 保存完整工程，包括模型与媒体引用、场景设置和关键帧�
 
 PMM `0002` 在保留标准文件头的前提下，通过扩展保存骨骼曲线、工程设置及场景、附件曲线记录。支持的曲线和骨骼缩放也可写入 VMD 尾部扩展，标准数据段保持不变。原版 MMD 重新保存扩展工程时可能丢弃 MMS 专有数据。详见[曲线编辑器](docs/guides/animation-curves.md)和[PMM v2 扩展](docs/reference/pmm-extensions.md)。
 
-当前完整档源码还支持以下扩展保存行为，这部分尚未发布。
+完整包还支持以下扩展保存行为。
 
 保存 PMM 时优先采用旧版 `0002`。未使用的预留空间不会触发新版格式；高位关键帧槽位存在空洞时，保存器会压紧槽位。只有实际内容超出旧版能力或引用路径无法用旧编码表示时，才采用 MMS `0003`。原版 MMD 和最小包不能打开该格式。
 
@@ -95,14 +95,14 @@ PMM `0002` 在保留标准文件头的前提下，通过扩展保存骨骼曲线
 
 ## ダウンロードとパッケージの違い
 
-[GitHub Releases](https://github.com/Loki-0228/MikuMikuStudio/releases/tag/v2026.10.18.2) では、ファイル名に `full` または `minimal` を含む Windows x64 パッケージを配布しています。収録内容は公開ページのリリースノートを参照してください。下表は現在のソースの構成で、未公開の変更も含みます。最小版は `mmd932` ビルドプロファイルを使用します。
+[GitHub Releases](https://github.com/Loki-0228/MikuMikuStudio/releases/tag/v2026.10.19.1) では、ファイル名に `full` または `minimal` を含む Windows x64 パッケージを配布しています。収録内容は公開ページのリリースノートを参照してください。下表は公開済みのビルド構成です。最小版は `mmd932` ビルドプロファイルを使用します。
 
 | 項目 | 完全版 `full` | 最小版 `minimal` |
 | --- | --- | --- |
 | PMD・PMX 読み込み、従来のアニメーション編集、剛体物理、言語関連の修正、MME インターフェース | 含む | 含む |
 | 連番画像、定期バックアップ、クラッシュ時のバックアップ試行、モーフの強制貼り付け | 含む | 含む |
-| スキニング・モーフの等価な計算最適化、変化のないモデルの再利用、CPU スキニングでのカメラ移動時の輪郭のみの更新 | 未公開のソースに含む | 未公開のソースに含む |
-| ファイル変更通知による MME 自動再読み込み | 未公開のソースに含む | 未公開のソースに含む |
+| スキニング・モーフの等価な計算最適化、変化のないモデルの再利用、CPU スキニングでのカメラ移動時の輪郭のみの更新 | 含む | 含む |
+| ファイル変更通知による MME 自動再読み込み | 含む | 含む |
 | プレビューのシャドウ解像度 | 標準レンダラーのシャドウマップのみ調整。MME 独自のターゲットは FX の宣言に従う | プレビュー縮小なし |
 | 最近使ったプロジェクト、タイムラインの強制貼り付けボタン、ビューポート描画倍率 | 含む | 含まない |
 | FXAA、TAA、SMAA | 含む。NVIDIA 修正 DLL は任意の別ダウンロード | 従来のアンチエイリアス切り替えのみ |
@@ -125,7 +125,7 @@ PMM はモデルとメディアの参照、シーン設定、キーフレーム�
 
 PMM `0002` は標準ヘッダーを維持し、拡張データとしてボーン曲線、プロジェクト設定、シーンとアクセサリの曲線を保存します。対応する曲線とボーンスケールは VMD の末尾拡張にも保存でき、標準データ部分は保持します。オリジナル MMD で再保存すると MMS 固有データが失われることがあります。[曲線エディタ](docs/guides/animation-curves.md)と[PMM v2 拡張](docs/reference/pmm-extensions.md)を参照してください。
 
-現在の完全版ソースには、次の拡張保存機能もあります。この部分は未公開です。
+完全版には、次の拡張保存機能もあります。
 
 PMM は従来の `0002` 形式を優先します。未使用の予約領域では新形式に切り替わりません。高い番号に残ったキーは、保存時に空きスロットを詰めます。実際の内容が従来の範囲を超える場合、または参照パスを旧文字コードで表現できない場合にだけ、MMS `0003` 形式を使います。オリジナル MMD と最小版はこの形式を開けません。
 
@@ -169,7 +169,7 @@ MikuMikuStudio (MMS) is a Windows desktop application for creating and editing M
 - **UI and compatibility**: English/Chinese/Japanese interface, Unicode file
   paths, timeline, accessory editing, undo/redo
 
-#### Automatic editing capacity (unreleased source feature)
+#### Automatic editing capacity
 
 Names retain their complete Unicode text. Bone, morph, display, camera, light, shadow, gravity, and accessory key pools grow as needed. Display groups and facial display lists also retain counts beyond the original byte fields. No capacity settings are required.
 
@@ -375,7 +375,7 @@ MikuMikuStudio（MMS）是用于制作和编辑 MMD 舞蹈动画的 Windows 桌�
 - **多媒体**：通过 Windows Media Foundation 导入多种音频格式和 MP4/MOV 视频，具体格式取决于系统媒体组件。支持 Wave 音频播放、DirectShow AVI（使用已安装的传统编码器）、Media Foundation MP4/H.264 录制，以及透明 MOV 录制。导出页列出系统已注册的 H.264 编码器并支持等比例修改分辨率。另支持 VSQ 乐谱导入和 Kinect 骨骼输入
 - **UI 与兼容**：英中日三语界面、Unicode 文件路径、时间轴、附件编辑、撤销/重做
 
-#### 编辑容量自动扩展（当前源码，尚未发布）
+#### 编辑容量自动扩展
 
 名称保留完整 Unicode 文本。骨骼、表情、显示、镜头、灯光、自阴影、重力和附件关键帧按需扩容；显示分组和表情显示项也不再受原有单字节计数限制，无需手动填写容量。
 
@@ -591,7 +591,7 @@ MikuMikuStudio（MMS）は、MMD のダンスアニメーションを制作・�
 - **UI**：英語・中国語・日本語 UI、タイムライン、
   Unicode ファイルパス、アクセサリ編集、元に戻す／やり直し
 
-#### 編集容量の自動拡張（ソース版・未公開）
+#### 編集容量の自動拡張
 
 名前は完全な Unicode 文字列を保持します。ボーン、モーフ、表示、カメラ、照明、セルフシャドウ、重力、アクセサリのキーフレーム容量は必要に応じて拡張します。表示グループとモーフ表示項目も、従来の 1 バイトの件数制限を超えて保持します。容量の手動設定は不要です。
 

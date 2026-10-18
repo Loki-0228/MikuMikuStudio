@@ -2744,6 +2744,9 @@ static bool RenderShadowMapImpl(MMDApp* app, const float frameMatrix[16], bool c
         return false;
 
     D3DVIEWPORT9 oldViewport;
+    Microsoft::WRL::ComPtr<IDirect3DSurface9> sceneTarget, sceneDepth;
+    if (FAILED(device->GetRenderTarget(0, &sceneTarget))) return false;
+    device->GetDepthStencilSurface(&sceneDepth);
     Matrix view;
     Matrix projection;
     Matrix worldView;
@@ -2941,19 +2944,12 @@ static bool RenderShadowMapImpl(MMDApp* app, const float frameMatrix[16], bool c
     app->ActiveRenderPass() = AccessoryRenderPass::None;
     device->SetVertexShader(nullptr);
     device->SetPixelShader(nullptr);
-    // During recording, this pass renders to the separate capture target, and
-    // a device reset released that target without anything recreating it.
-    // Recreate it here (the first point in the frame that needs it) and fall
-    // back to the back buffer if that fails, instead of binding a released
-    // surface to render target 0.
-    // Defect RB-04.
-    IDirect3DSurface9* targetSurface = sub->backbufferSurface;
-    if (sub->multisampleAvailable == 0 &&
-        app->RecordingWindow() != nullptr &&
-        EnsureCaptureRenderTarget(app))
-        targetSurface = sub->captureSurface;
-    device->SetRenderTarget(0, targetSurface);
-    device->SetDepthStencilSurface(sub->depthStencilSurface);
+    // The frame may belong to an alpha export, AA, or scaled preview target.
+    // Returning to the cached window backbuffer loses that frame: PNG capture
+    // then reads the untouched transparent target instead of the model image.
+    device->SetDepthStencilSurface(nullptr);
+    device->SetRenderTarget(0, sceneTarget.Get());
+    device->SetDepthStencilSurface(sceneDepth.Get());
     device->SetViewport(&oldViewport);
     device->SetTransform(D3DTS_PROJECTION,
                          reinterpret_cast<const D3DMATRIX*>(&projection));

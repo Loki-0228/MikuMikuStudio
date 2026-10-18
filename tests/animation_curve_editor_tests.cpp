@@ -2830,7 +2830,14 @@ void CurveModeButtons() {
 
 }  // namespace
 
+// The checks use the same message paths as the modeless editor.
+#include "curve_transport_input_checks.hpp"
 int main(int argc,char** argv) {
+    if(argc>1&&std::string(argv[1])=="--transport-input"){
+        CurveTransportAndShortcuts();SpeedViewShortIntervals();std::printf("transport/input: %d checks\n",g_checks);return 0;
+    }
+    CurveTransportAndShortcuts();
+    SpeedViewShortIntervals();
     if(argc>1&&std::string(argv[1])=="--native-sync"){
         PendingNativeChangesBeforeWrite(false);NativeSelectionBeforeDelete();NativeSelectionBeforeDelete(false);
         NativeEditsBeforeHistory();CanonicalWriteAndUndo();NativeChangesDuringMmdDrag();

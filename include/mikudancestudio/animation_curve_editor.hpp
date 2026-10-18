@@ -50,7 +50,15 @@ struct Channel {
     // Ordered tree ancestors. IDs are stable within each source; labels may
     // change with the UI language. Empty paths remain root-level channels.
     std::vector<Collection> collections;
+    // Native camera cuts hold on a one-frame interval. Subdivision of a longer
+    // curve must not accidentally turn its new one-frame half into a cut.
+    std::vector<bool> nativeOneFrameHolds;
 };
+// Every consumer must sample the actual channel, including native MMD easing
+// and transform samplers, rather than its editable scalar proxy alone.
+inline animation_curve::Sample EvaluateChannel(const Channel& channel, double frame) {
+    return channel.sample ? channel.sample(channel, frame) : animation_curve::Evaluate(channel.track, frame);
+}
 struct Source {
     std::string id;
     std::wstring label;
@@ -94,6 +102,9 @@ struct Source {
     // Native selection is addressed by frame, never by mutable pool slot.
     std::function<std::vector<int>(const std::string&)> readKeySelection;
     std::function<void(const std::string&, const std::vector<int>&)> writeKeySelection;
+    // Optional transactional subdivision of native/linked channels. Only edits
+    // the supplied snapshot; Source::apply remains the single host writer.
+    std::function<bool(std::vector<Channel>&, std::size_t, int, std::wstring&)> insertPreservingShape;
 };
 struct Theme {
     // COLORREF values in MMD's in-memory order, already parsed by the host.

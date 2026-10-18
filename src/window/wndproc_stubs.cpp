@@ -1,4 +1,5 @@
 #include "mikudancestudio/frame_limits.hpp"
+#include "mikudancestudio/recording_state.hpp"
 // ===========================================================================
 // Window procedures (separate/recording windows)
 // ===========================================================================
@@ -83,6 +84,7 @@ LRESULT CALLBACK RecWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return DefWindowProcW(hwnd, msg, wp, lp);
     if (msg == WM_KEYDOWN && wp != 27 /*VK_ESCAPE*/)
         return 0;
+    if (recording_state::Stopping(app)) return 0;
     const int choice = ShowUiMessage(app, hwnd, UiMessage::StopRecording,
                                      MB_YESNO | MB_ICONQUESTION);
     if (choice == 6 /*IDYES*/) {

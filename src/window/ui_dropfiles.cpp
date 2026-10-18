@@ -166,10 +166,11 @@ void HandleDropFiles(HDROP hDrop) {
                     return;  // 0x4613F9: original returns, DragFinish skipped
             }
             if (DirMenuChecked(app)) {  // 0x46140D
-                wcscpy_s(app->DirUser(), 0x3E8, DirOf(app, szFile));  // 0xA1540
+                wchar_t directory[kPathFieldCapacity]{};
+                wcscpy_s(app->DirUser(), 0x3E8,
+                         ExtractDirFromPath(directory, szFile, kPathFieldCapacity));
             }
-            wcscpy_s(app->EnvFileName(), 0x100, szFile);              // 0xA0900
-            LoadSceneFile();                                          // 0x458F80
+            LoadSceneFile(szFile);
             continue;
         }
 

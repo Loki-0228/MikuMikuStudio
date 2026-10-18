@@ -99,6 +99,13 @@ void ResetAppState(MMDApp* app) {
     mmv4mms::ClearScene();
     native_mesh::ClearScene();
     ScopedSceneMutation mutation(*app);
+    const bool rebuildCameraPanel = app->state.optflag[0] == 0;
+    // A failed import may already have released its models and global tracks.
+    // RebuildCameraModePanel evaluates those tracks, so let the refresh tail
+    // evaluate the replacement scene. A model-visibility click is unsafe
+    // here and unnecessary for models that are about to be discarded.
+    app->state.optflag[0] = 1;
+    app->SetSelectedModelSlot(0);
     HWND hwnd = app->MainWindow();
     app->SceneModified() = 0;
     pmm_settings::Reset(*app);
@@ -188,17 +195,6 @@ void ResetAppState(MMDApp* app) {
     if (app->AviBackgroundTexture() != nullptr) {
         app->AviBackgroundTexture()->Release();
         app->AviBackgroundTexture() = nullptr;
-    }
-
-    if (app->state.optflag[0] == 0) {
-        SendMessageA(GetDlgItem(hwnd, panel::kIkChainCombo), CB_RESETCONTENT, 0, 0);
-        SendMessageA(GetDlgItem(hwnd, panel::kRegisterScopeCombo), CB_RESETCONTENT, 0, 0);
-        SendMessageA(GetDlgItem(hwnd, panel::kModelVisibleCheckbox), BM_CLICK, 0, 0);
-        RebuildCameraModePanel(app);                                          // 0x44E88F
-        app->state.optflag[0] = 1;
-        PostModelReload2(app);                                   // 0x40D940
-        HandleWindowSize(app);                                   // 0x443300
-        InvalidateRect(hwnd, nullptr, FALSE);
     }
 
     // ---- camera/accessory edit state --------------------------------------
@@ -550,6 +546,7 @@ void ResetAppState(MMDApp* app) {
     DrawMenuBar(hwnd);
 
     // ---- refresh tail -------------------------------------------------------
+    if (rebuildCameraPanel) HandleWindowSize(app);
     PostLanguageSweep(app);                                      // 0x42F1E0
     PanelPaint(app);                                             // 0x414610
     SelectionReeval(app);                                        // 0x430510

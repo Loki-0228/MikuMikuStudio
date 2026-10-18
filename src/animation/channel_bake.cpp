@@ -300,7 +300,7 @@ Error RestoreRightBoundary(MMDApp& app, ac::Track& out, const ac::Track& source,
 }  // namespace
 
 Error Resample(MMDApp& app, const ac::Track& source, int first, int last, int step, ac::Track& out,
-               std::wstring& message) {
+               std::wstring& message, const Channel* channel = nullptr) {
     out = ac::Track{};
     if (source.keys.empty()) {
         message = L"The track has no keys to resample.";
@@ -319,7 +319,8 @@ Error Resample(MMDApp& app, const ac::Track& source, int first, int last, int st
     const auto sample = [&](int frame) {
         ac::Key key;
         key.frame = frame;
-        key.value = ac::Evaluate(source, static_cast<double>(frame)).value;
+        key.value = channel ? curve_editor::EvaluateChannel(*channel, double(frame)).value :
+            ac::Evaluate(source, static_cast<double>(frame)).value;
         key.interpolation = stepKeys ? ac::Interpolation::Step : ac::Interpolation::Linear;
         key.tangent = stepKeys ? ac::Tangent::Flat : ac::Tangent::Linear;
         // Linear and Step intervals read values only, so the handles of a sampled
@@ -1023,13 +1024,36 @@ Error PrepareScene(Plan::Impl& impl, MMDApp& app, const std::vector<Group>& grou
                            L"轨道存储不可用。");
             return Error::Unavailable;
         }
+        auto boundaries = target.original;
+        if (choice.kind == Kind::Camera) for (std::size_t c=0;c<boundaries.size();++c) {
+            if (!FieldOn(choice,c)) continue;
+            for (int frame : {impl.request.firstFrame,impl.request.lastFrame})
+                if (!curve_host::InsertCameraKey(boundaries,c,frame,message)) return Error::Unrepresentable;
+        }
         target.baked = target.original;
         for (std::size_t c = 0; c < target.baked.size(); ++c) {
             if (!FieldOn(choice, c)) continue;
             const Error sampled =
-                Resample(app, target.original[c].track, impl.request.firstFrame,
-                         impl.request.lastFrame, impl.request.step, target.baked[c].track, message);
+                Resample(app, boundaries[c].track, impl.request.firstFrame,
+                         impl.request.lastFrame, impl.request.step, target.baked[c].track, message, &target.original[c]);
             if (sampled != Error::None) return sampled;
+            auto& baked=target.baked[c];
+            const auto& original=boundaries[c];
+            baked.nativeControls.assign(baked.track.keys.size(),{});
+            baked.controlGeometry.assign(baked.track.keys.size(),{});
+            baked.nativeOneFrameHolds.assign(baked.track.keys.size(),true);
+            for(std::size_t end=1;end<baked.track.keys.size();++end){
+                const auto& a=baked.track.keys[end-1];const auto& b=baked.track.keys[end];
+                auto at=std::lower_bound(original.track.keys.begin(),original.track.keys.end(),b.frame,
+                    [](const auto& key,int frame){return key.frame<frame;});
+                const auto n=std::size_t(at-original.track.keys.begin());
+                if(at==original.track.keys.end()||!n||at->frame!=b.frame||original.track.keys[n-1].frame!=a.frame||
+                    n>=original.nativeControls.size()||n>=original.controlGeometry.size())continue;
+                const std::array<double,4> geometry={a.outWeight,a.outSlope,b.inWeight,b.inSlope};
+                if(geometry!=original.controlGeometry[n]||b.interpolation!=ac::Interpolation::Bezier)continue;
+                baked.nativeControls[end]=original.nativeControls[n];baked.controlGeometry[end]=geometry;
+                if(n<original.nativeOneFrameHolds.size())baked.nativeOneFrameHolds[end]=original.nativeOneFrameHolds[n];
+            }
         }
         const Error valid = ValidChannels(target.baked, group->fields, message);
         if (valid != Error::None) {

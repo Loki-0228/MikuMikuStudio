@@ -69,15 +69,15 @@ foreach ($build in $builds) {
     $readme = @"
 # MikuMikuStudio $Version ($($build.Name))
 
-Windows x64 ${releaseLabelZh}。解压到独立目录后运行 MikuMikuDance.exe。
-完整包与最小包请分别解压。已有设置、模型和插件的安装目录请保留。
-两个主程序包均不含英伟达修复插件。需要时单独下载 MMSNvidiaAAFix.dll，安装方法见 RELEASE_NOTES.md。
-更新内容、使用限制与安装方法见 RELEASE_NOTES.md，源码提交和文件校验值见 RELEASE_BUILD.json。
-
 Windows x64 ${releaseLabelEn}. Extract full and minimal into separate directories.
 Run MikuMikuDance.exe. Keep existing installations that contain settings, models, or plugins.
 Neither application package includes the NVIDIA fix. Download MMSNvidiaAAFix.dll separately if needed; see RELEASE_NOTES.md for installation.
 See RELEASE_NOTES.md for changes, usage limits, and installation instructions.
+
+Windows x64 ${releaseLabelZh}。解压到独立目录后运行 MikuMikuDance.exe。
+完整包与最小包请分别解压。已有设置、模型和插件的安装目录请保留。
+两个主程序包均不含英伟达修复插件。需要时单独下载 MMSNvidiaAAFix.dll，安装方法见 RELEASE_NOTES.md。
+更新内容、使用限制与安装方法见 RELEASE_NOTES.md，源码提交和文件校验值见 RELEASE_BUILD.json。
 
 Windows x64 ${releaseLabelJa}。完全版と最小版は別々のフォルダーに展開してください。
 MikuMikuDance.exe を実行します。設定やモデル、プラグインを含む既存の環境は残してください。

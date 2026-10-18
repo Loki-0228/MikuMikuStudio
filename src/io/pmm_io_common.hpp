@@ -31,6 +31,7 @@
 #include <io.h>
 #include <string>
 #include <stdexcept>
+#include <cstring>
 
 #include "mikudancestudio/accessory_layout.hpp"
 #include "mikudancestudio/global_key_layout.hpp"
@@ -49,6 +50,18 @@ enum class PmmStream { V1, V2 };
 // v2 0x450208-region call pattern); the result is only tested by the v1
 // read-gated tail and the load shell.
 inline thread_local int checkedDescriptor = -1;
+inline thread_local int* ownedDescriptor = nullptr;
+inline void Close(int fd) {
+    if (fd < 0) return;
+    _close(fd);
+    if (ownedDescriptor && *ownedDescriptor == fd) *ownedDescriptor = -1;
+}
+struct ScopedDescriptor {
+    int& descriptor;
+    int* previous;
+    explicit ScopedDescriptor(int& fd) : descriptor(fd), previous(ownedDescriptor) { ownedDescriptor = &fd; }
+    ~ScopedDescriptor() { Close(descriptor); ownedDescriptor = previous; }
+};
 struct ShortRead : std::runtime_error {
     __int64 offset;
     unsigned int expected;
@@ -69,6 +82,40 @@ inline int Rd(int fd, void* buf, unsigned int count) {
     return received;
 }
 
+// V1 extensions may be absent at EOF, but a partially present field is corrupt.
+inline int OptionalRd(int fd, void* buf, unsigned int count) {
+    const auto offset = _telli64(fd);
+    const int received = _read(fd, buf, count);
+    if (received != 0 && received != static_cast<int>(count))
+        throw ShortRead(offset, count, received);
+    return received;
+}
+
+inline void ReadCount(int fd, std::int32_t& count, unsigned minimumBytes = 1) {
+    Rd(fd, &count, 4);
+    const auto position = _telli64(fd), size = _filelengthi64(fd);
+    if (count < 0 || position < 0 || size < position ||
+        std::uint64_t(count) > std::uint64_t(size - position) / minimumBytes)
+        throw std::runtime_error("Invalid PMM record count");
+}
+
+template<class Key>
+inline void CheckKeyChains(const Key* keys, std::size_t capacity, std::size_t heads = 1) {
+    if (heads > capacity) throw std::runtime_error("Invalid PMM track heads");
+    for (std::size_t head = 0; head < heads; ++head) {
+        std::size_t previous = head;
+        auto next = keys[head].next;
+        while (next != 0) {
+            // Increasing frames also reject cycles and links into an empty slot.
+            if (next < heads || next >= capacity || keys[next].previous != previous ||
+                keys[next].frame <= keys[previous].frame)
+                throw std::runtime_error("Invalid PMM keyframe links");
+            previous = next;
+            next = keys[next].next;
+        }
+    }
+}
+
 struct UnsupportedText : std::runtime_error {
     UnsupportedText() : std::runtime_error("PMM text exceeds the original CP932 fields") {}
 };
@@ -78,6 +125,12 @@ inline int ReadText(int fd, char* buf, unsigned count, unsigned maximum) {
     if (received != static_cast<int>(count) || !original_import::Legacy(buf, count, maximum))
         throw UnsupportedText();
 #endif
+    return received;
+}
+inline int ReadFixedText(int fd, char* buf, unsigned count, unsigned maximum) {
+    const int received = ReadText(fd, buf, count, maximum);
+    if (count && std::memchr(buf, 0, count) == nullptr)
+        throw std::runtime_error("Unterminated PMM text field");
     return received;
 }
 

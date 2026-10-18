@@ -91,6 +91,7 @@ void InitFlagSubsystem(MMDApp* app);       // VA 0x00461E00
 
 // ---- file loaders reached from startup dispatch ---------------------------
 void LoadSceneFile();                      // VA 0x00458F80 (.pmm)
+void LoadSceneFile(const wchar_t* candidate);
 void LoadModelFile(MMDApp* app, const wchar_t* path,
                    bool showModelInfo = true);  // VA 0x00460430 (.pmd/.pmx)
 void LoadAccessoryFile(const wchar_t* path);  // VA 0x00460B30 (.x)
@@ -481,6 +482,8 @@ void RegisterSelectedBoneKeys(unsigned char* model, int frame, int mode);
 void ResetDisplayKeyCursor(unsigned char* model); // VA 0x004A4A00, was Sub4A4A00
 void DeleteMarkedModelKeys(unsigned char* model, int frame);
                                                   // VA 0x004A09E0, was Sub4A09E0
+void BeginModelFramePasteUndo(unsigned char* model, int frame,
+                             std::uint32_t bonePasteCount, bool morph, bool display);
 void UndoModelEdit(unsigned char* model, std::int32_t* frame);
                                                   // VA 0x004A1870, was Sub4A1870
 void RedoModelEdit(unsigned char* model, std::int32_t* frame);

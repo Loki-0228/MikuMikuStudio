@@ -402,8 +402,7 @@ CPushPinDIBSq::CPushPinDIBSq(HRESULT* phr, CSource* pParent)
 //   sub_10001DC0()                    // ~CSourceStream chain (implicit)
 CPushPinDIBSq::~CPushPinDIBSq()
 {
-    m_bStreamEnded = 1;                    // pin+0x5B3 / x64 +0x653 (one WORD
-    m_bFrameReady  = 1;                    // pin+0x5B2 / x64 +0x652  store)
+    EndStreaming();
     if (PushBIH(this))
     {
         ::operator delete((void*)PushBIH(this)); // scalar delete (??3)
@@ -502,7 +501,7 @@ HRESULT CPushPinDIBSq::FillBuffer(IMediaSample* pSample)
     if (pSample == NULL)
         return E_POINTER;                          // 0x80004003
 
-    if (m_bStreamEnded)                            // pin+0x5B3
+    if (ReadFlag(m_bStreamEnded))
         return 1;                                  // S_FALSE
 
     if (!m_bBitmapSet)                             // pin+0x5B0
@@ -518,18 +517,18 @@ HRESULT CPushPinDIBSq::FillBuffer(IMediaSample* pSample)
     // only its +0x44 dword (biSizeImage) is used, after the wait.
     MMDXTrace("FillBuffer enter ended=%d ready=%d\n",
               (int)m_bStreamEnded, (int)m_bFrameReady);
-    while (!m_bFrameReady && !m_bStreamEnded)
+    while (!ReadFlag(m_bFrameReady) && !ReadFlag(m_bStreamEnded))
         ::Sleep(1);
     MMDXTrace("FillBuffer wait done ended=%d ready=%d\n",
               (int)m_bStreamEnded, (int)m_bFrameReady);
 
-    if (m_bStreamEnded)                            // pin+0x5B3
+    if (ReadFlag(m_bStreamEnded))
     {
         ::LeaveCriticalSection(&m_csRender);
         return 1;                                  // S_FALSE
     }
 
-    m_bFrameReady = 0;                             // pin+0x5B2
+    WriteFlag(m_bFrameReady, 0);
 
     LONG cbCopy = (LONG)PushBIH(this)->biSizeImage; // *(VIH+0x44)
     if ((ULONG)cbCopy >= (ULONG)cbSample)           // cmp/jb (unsigned)
@@ -537,7 +536,7 @@ HRESULT CPushPinDIBSq::FillBuffer(IMediaSample* pSample)
 
     memcpy(pDst, m_pFrameBits, (size_t)cbCopy);     // src = pin+0x5B4
 
-    m_bFrameAck = (m_bStreamEnded == 0);            // pin+0x5B1
+    WriteFlag(m_bFrameAck, ReadFlag(m_bStreamEnded) == 0);
 
     // rtStart = frameNumber * AvgTimePerFrame (64-bit, count sign-extended)
     REFERENCE_TIME rtStart =

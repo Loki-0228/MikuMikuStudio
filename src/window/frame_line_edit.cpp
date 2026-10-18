@@ -153,18 +153,16 @@ void CopyBoneKeyPayload(mdl::BoneKey& dst, const mdl::BoneKey& src) {
     std::memcpy(dst.reserved, src.reserved, sizeof(dst.reserved));
 }
 
-// Copy every payload field of an 84B camera record into another slot
-// (0x43AA6A..0x43ABF5): the frame-value dwords and the 16 interpolation
-// bytes - 4 per curve at +0x28..+0x2B/+0x2E..+0x31/+0x34..+0x37/+0x3A..+0x3D
-// (x64 0x7FF7CB4AA3BD..0x7FF7CB4AA4BC；行间 2 字节 padding 不拷).
+// Merge the complete camera payload while retaining the destination's place
+// in the timeline. Attachment and all six timing channels belong to the key.
 void CopyCameraKeyPayload(mdl::CameraKey& dst, const mdl::CameraKey& src) {
-    dst.distance = src.distance;
-    std::memcpy(dst.eye, src.eye, sizeof(dst.eye));
-    std::memcpy(dst.target, src.target, sizeof(dst.target));
-    for (int c = 0; c < 4; ++c)
-        std::memcpy(dst.interpolation[c], src.interpolation[c], 4);
-    dst.perspective = src.perspective;
-    dst.fov = src.fov;
+    const auto frame = dst.frame;
+    const auto previous = dst.previous;
+    const auto next = dst.next;
+    dst = src;
+    dst.frame = frame;
+    dst.previous = previous;
+    dst.next = next;
 }
 
 // Zero a removed camera record (0x43A939..0x43A96F): the exact dword/byte

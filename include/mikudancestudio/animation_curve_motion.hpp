@@ -1,5 +1,6 @@
 #pragma once
 #include "mikudancestudio/animation_curve.hpp"
+#include "mikudancestudio/animation_curve_editor.hpp"
 namespace mikudancestudio::curve_motion {
 enum class Kind : uint32_t { Camera, Light, Shadow, Gravity, Accessory, Effect, Morph };
 // One motion source.  Track ids follow the curve editor's channel ids:
@@ -10,7 +11,29 @@ enum class Kind : uint32_t { Camera, Light, Shadow, Gravity, Accessory, Effect, 
 //   Accessory x, y, z, rx, ry, rz (degrees), scale, opacity, visible, shadow,
 //             parentModel, parentBone
 //   Effect / Morph  arbitrary parameter ids, stored verbatim in the tail
-struct Motion { Kind kind=Kind::Accessory; std::vector<animation_curve::NamedTrack> tracks; };
+struct NativeTiming {
+    std::string id;
+    std::int32_t endFrame = 0;
+    std::array<double, 4> controls{};
+    bool oneFrameHold = true;
+};
+struct Motion {
+    Kind kind=Kind::Accessory;
+    std::vector<animation_curve::NamedTrack> tracks;
+    // Raw camera timing is authoritative; tracks retain the editable canvas
+    // proxy, which cannot express crossed X handles or vertical endpoints.
+    std::vector<NativeTiming> nativeTiming;
+    std::function<double(const std::string&, double)> sample;
+};
+// Shared with the native host: fixed-step playback values and smooth graph
+// derivatives, with exact key values and native one-frame camera cuts.
+animation_curve::Sample SampleCameraChannel(const curve_editor::Channel&, double frame);
+// Copy only valid native handle geometry, preserving the actual sampler for
+// standard VMD proxies. Restore replaces stale channel metadata on import.
+Motion CaptureChannels(Kind, const std::vector<curve_editor::Channel>&);
+bool RestoreChannels(const Motion&, std::vector<curve_editor::Channel>&, std::string& error);
+// Evaluate the authoritative motion; raw scalar tracks are canvas proxies.
+animation_curve::Sample Evaluate(const Motion&, const std::string& id, double frame);
 // All six standard VMD sections precede the optional, checksummed tail.
 // Exports bake a per-frame proxy so readers unaware of the curve extension
 // still reproduce the motion at integer frames; the tail holds the exact curve

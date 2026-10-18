@@ -36,6 +36,7 @@
 // =============================================================================
 
 #pragma once
+#include <intrin.h>
 
 #ifndef _MMDXSHOW_H_
 #define _MMDXSHOW_H_
@@ -810,6 +811,19 @@ public:
     // CSourceStream leaves the slot pure, exactly like strmbase's
     // CBaseOutputPin::DecideBufferSize PURE.
     virtual HRESULT DecideBufferSize(IMemAllocator* pAlloc, ALLOCATOR_PROPERTIES* pProps) override; // primary +0x3C 0x10001310
+
+    static BYTE ReadFlag(const unsigned char& flag) noexcept {
+        return static_cast<BYTE>(_InterlockedCompareExchange8(
+            reinterpret_cast<volatile char*>(const_cast<unsigned char*>(&flag)), 0, 0));
+    }
+    static void WriteFlag(unsigned char& flag, BYTE value) noexcept {
+        _InterlockedExchange8(reinterpret_cast<volatile char*>(&flag), static_cast<char>(value));
+    }
+    void EndStreaming() noexcept {
+        WriteFlag(m_bStreamEnded, 1);
+        WriteFlag(m_bFrameAck, 0);
+        WriteFlag(m_bFrameReady, 0);
+    }
 
     // ---- data members (absolute pin-object offsets; 0x48 CAMThread head,
     //      0xA8 CBasePin subobject ends at 0xF0) ----

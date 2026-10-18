@@ -91,6 +91,8 @@
 #include "mikudancestudio/skinning_backend.hpp"
 #include "mikudancestudio/ported_funcs.hpp"
 #include "mikudancestudio/dshow_recorder.hpp"
+#include "mikudancestudio/recording_state.hpp"
+#include <wrl/client.h>
 
 #include "mikudancestudio/texture_lookup.hpp"
 
@@ -363,35 +365,46 @@ void DisposeRenderSubsystem(D3DRenderer* sub) {
 // path exactly like the original.
 // =========================================================================//
 bool TeardownDShowGraph(DShowRecorder* rec, bool* completed) {
+    if (completed) *completed = false;
+    recording_state::Guard stopping(rec, recording_state::Operation::GraphTeardown);
+    if (!stopping) return false;
     AbortPngMovRecording(rec);
     bool didComplete = false;
     // 0x409327: MMDxShow frame-push interface, vtable slot +24
-    if (IPushSource* push = static_cast<IPushSource*>(rec->framePush))  // this[26]
-        push->BeginStreaming();
+    bool awaitEnd = false;
+    if (IPushSource* push = static_cast<IPushSource*>(rec->framePush))
+        awaitEnd = SUCCEEDED(push->BeginStreaming());
 
-    IMediaEvent* mediaEvent = rec->mediaEvent;                // this[23]
-    if (mediaEvent != nullptr) {
+    Microsoft::WRL::ComPtr<IMediaEvent> mediaEvent = rec->mediaEvent;
+    Microsoft::WRL::ComPtr<IMediaControl> mediaControl = rec->mediaControl;
+    if (mediaEvent && awaitEnd) {
         // 0x40936C: GetEvent(&code,&p1,&p2,0) / 0x409386: FreeEventParams
         long code = 0;
         LONG_PTR param1 = 0;
         LONG_PTR param2 = 0;
-        char done = 0;
+        bool done = false;
+        const auto began = GetTickCount64();
         do {
-            mediaEvent->GetEvent(&code, &param1, &param2, 0);          // +32
-            mediaEvent->FreeEventParams(code, param1, param2);         // +48
-            if (code > 0 && code <= 3) {
-                done = 1;                                      // 0x409395
-                didComplete = code == 1;  // EC_COMPLETE only
+            if (SUCCEEDED(mediaEvent->GetEvent(&code, &param1, &param2, 0))) {
+                mediaEvent->FreeEventParams(code, param1, param2);
+                if (code > 0 && code <= 3) {
+                    done = true;
+                    didComplete = code == EC_COMPLETE;
+                }
             }
             MSG msg;                                           // 0x4093A4
-            while (PeekMessageA(&msg, nullptr, 0, 0, PM_REMOVE)) {
+            for (unsigned count = 0; count < 64 && PeekMessageA(&msg, nullptr, 0, 0, PM_REMOVE); ++count) {
+                if (msg.message == WM_QUIT) {
+                    PostQuitMessage(static_cast<int>(msg.wParam)); done = true; break;
+                }
                 TranslateMessage(&msg);
                 DispatchMessageA(&msg);
             }
+            if (!done && GetTickCount64() - began >= 120000) done = true;
+            if (!done) MsgWaitForMultipleObjectsEx(0, nullptr, 1, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
         } while (!done);
-        // 0x4093E5: IMediaControl (this[17]) vtable+36 (Stop)
-        rec->mediaControl->Stop();
     }
+    if (mediaControl) mediaControl->Stop();
 
     // 0x4093E9..0x4095BC: release run (Release() = vtable+8, then null).
     // this[17] appears twice like the original (the second pass sees the

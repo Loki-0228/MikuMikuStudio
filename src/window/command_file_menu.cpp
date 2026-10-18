@@ -1,4 +1,5 @@
 #include "mikudancestudio/display_capacity.hpp"
+#include "mikudancestudio/recording_state.hpp"
 #include "mikudancestudio/key_pool.hpp"
 // ===========================================================================
 // CommandDispatch family: File/Play/Edit/View menu cases (0x47E8A0)
@@ -685,7 +686,14 @@ INT_PTR __stdcall AviOutDlgProc(HWND hDlg, UINT msg, WPARAM wParam,
                 return TRUE;
             }
 #endif
-            if (app->AviRecordEndFrame() >= app->AviRecordStartFrame() && dimensionsValid) {
+            if (!recording_state::ValidFps(app->AviRecordFps())) {
+                const wchar_t* messages[] = {
+                    L"フレームレートは 0.001 から 240 の範囲で指定してください。",
+                    L"Frame rate must be between 0.001 and 240 FPS.",
+                    L"帧率必须在 0.001 到 240 FPS 之间。"};
+                MessageBoxW(hDlg, messages[app->EnglishUI() <= 2 ? app->EnglishUI() : 1],
+                    L"FPS", MB_OK | MB_ICONWARNING);
+            } else if (app->AviRecordEndFrame() >= app->AviRecordStartFrame() && dimensionsValid) {
                 EndDialog(hDlg, 1);
             } else if (!dimensionsValid) {
 #if MMD_ORIGINAL_PROFILE

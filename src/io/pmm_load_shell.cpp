@@ -43,6 +43,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cwchar>
+#include <string>
 #include <io.h>
 #include <cstdlib>
 #include <new>
@@ -96,7 +97,7 @@ void FontSubInit(MMDApp* app, const wchar_t* directory) {
 // VA 0x00458F80 - PMM load shell (phase A).
 static void KeyPoolLoadFailed(MMDApp* app, int fd) {
     const unsigned language = app->EnglishUI();
-    _close(fd);
+    pmm_io::Close(fd);
     ResetAppState(app);
     app->EnglishUI() = language;
     const wchar_t* text[] = {
@@ -107,17 +108,32 @@ static void KeyPoolLoadFailed(MMDApp* app, int fd) {
                 L"PMM", MB_OK | MB_ICONERROR);
 }
 
-void LoadSceneFile() {
+void LoadSceneFile(const wchar_t* candidate) {
 
     MMDApp* app = g_Block;
+    if (!app || !candidate || !*candidate) return;
+    // Dialog, recent-file and drop paths are tentative until their header is
+    // accepted. A rejected file must never become the old scene's save target.
+    const std::wstring path(candidate);
+    const std::wstring previousFile(app->EnvFileName());
+    const std::wstring previousDirectory(app->PathWorkspace().projectDirectory);
+    bool accepted = false;
+    struct RestoreIdentity {
+        MMDApp* app; const std::wstring& file; const std::wstring& directory;
+        const bool& accepted;
+        ~RestoreIdentity() {
+            if (!accepted) {
+                wcscpy_s(app->EnvFileName(), 0x100, file.c_str());
+                wcscpy_s(app->PathWorkspace().projectDirectory, 0x100, directory.c_str());
+            }
+        }
+    } restore{app, previousFile, previousDirectory, accepted};
+    if (wcscpy_s(app->EnvFileName(), 0x100, path.c_str()) != 0) return;
 
     ScopedSceneMutation mutation(*app);
 
     runtime_log::WritePath("LOAD_SCENE", app->EnvFileName());
 
-    NotifyEffectFileOpen(app->EnvFileName());
-
-    app->SceneModified() = 0;                                  // 0x458FE6
     int fd = -1;
     const errno_t err =
         _wsopen_s(&fd, app->EnvFileName(), 0x8000, 0x40, 0x80);
@@ -132,68 +148,65 @@ void LoadSceneFile() {
         return;
     }
 
-    app->state.windowLayoutReady = 0;              // 0x459055
-    PathToProjectDir(app->PathWorkspace().projectDirectory,     // 0x45905C
-                      app->EnvFileName());
+    pmm_io::ScopedDescriptor descriptor(fd);
 
     char hdr[0x1E]{};
     const int read = _read(fd, hdr, sizeof(hdr));                                       // 0x459070
     if (read != sizeof(hdr) || std::memcmp(hdr, "Polygon Movie maker", 19) != 0) {
         ShowUiMessage(app, app->MainWindow(), UiMessage::InvalidProjectFile, MB_OK, app->EnvFileName());
-        _close(fd);                                             // 0x4590C1
+        pmm_io::Close(fd);                                             // 0x4590C1
         return;
     }
 
-    // version field at hdr+0x14 (5-byte compare incl. NUL as the original).
-    if (strncmp(hdr + 0x14, "0001", 5) == 0) {
-        // The inline v1 loader body (0x45916D..0x45E7F7) owns the fd and
-        // closes it on every path itself (pmm_load_v1.cpp).
-        try { LoadSceneV1(app, fd); }
-        catch (const pmm_io::UnsupportedText&) {
-            const auto language = app->EnglishUI();
-            _close(fd); ResetAppState(app); app->EnglishUI() = language;
-            original_import::Refuse(app->MainWindow(), language);
-        }
-        catch (const std::bad_alloc&) { KeyPoolLoadFailed(app, fd); }
-        catch (const std::runtime_error&) { _close(fd); ResetAppState(app); ShowUiMessage(app, app->MainWindow(), UiMessage::InvalidProjectFile, MB_OK | MB_ICONERROR); }
-        LocalizeUI(app);
-        return;
-    }
-    if (strncmp(hdr + 0x14, "0002", 5) == 0
+    const bool version1 = strncmp(hdr + 0x14, "0001", 5) == 0;
+    const bool supported = version1 || strncmp(hdr + 0x14, "0002", 5) == 0
 #if !MMD_ORIGINAL_PROFILE
         || strncmp(hdr + 0x14, "0003", 5) == 0
 #endif
-    ) {
-        try {
-            pmm_io::CheckedReads checked(fd);
-            LoadSceneV2(app, fd);
-        } catch (const pmm_io::UnsupportedText&) {
-            const auto language = app->EnglishUI();
-            _close(fd); ResetAppState(app); app->EnglishUI() = language;
-            original_import::Refuse(app->MainWindow(), language);
-        } catch (const std::bad_alloc&) {
-            KeyPoolLoadFailed(app, fd);
-        } catch(const pmm_io::ShortRead& error) {
-            const auto language=app->EnglishUI();
-            const wchar_t* formats[]={L"%ls\n位置：%lld、必要なバイト数：%u、読み取ったバイト数：%d",
-                L"%ls\nByte offset: %lld; expected bytes: %u; received bytes: %d",
-                L"%ls\n文件偏移：%lld；应读取：%u 字节；实际读取：%d 字节"};
-            wchar_t detail[512]{};
-            swprintf_s(detail,formats[language<=2?language:1],app->EnvFileName(),error.offset,error.expected,error.received);
-            _close(fd);
-            ResetAppState(app);
-            app->EnglishUI()=language;
-            ShowUiMessage(app,app->MainWindow(),UiMessage::IncompleteProjectFile,MB_OK|MB_ICONERROR,detail);
-        } catch (const std::runtime_error&) {
-            const auto language = app->EnglishUI();
-            _close(fd); ResetAppState(app); app->EnglishUI() = language;
-            ShowUiMessage(app, app->MainWindow(), UiMessage::InvalidProjectFile, MB_OK | MB_ICONERROR);
-        }
-        LocalizeUI(app);                                     // 0x459106
-        return;                                                 // 0x45E7F7
+        ;
+    if (!supported) {
+        ShowUiMessage(app, app->MainWindow(), UiMessage::UnsupportedProjectVersion, MB_OK, app->EnvFileName());
+        return;
     }
-    ShowUiMessage(app, app->MainWindow(), UiMessage::UnsupportedProjectVersion, MB_OK, app->EnvFileName());
-    _close(fd);                                                 // 0x459149
+    // An unreadable or unsupported file must not change the current scene's
+    // dirty state, path base or MME assignments.
+    accepted = true;
+    NotifyEffectFileOpen(app->EnvFileName());
+    app->SceneModified() = 0;
+    PathToProjectDir(app->PathWorkspace().projectDirectory, app->EnvFileName());
+    try {
+        pmm_io::CheckedReads checked(fd);
+        if (version1) LoadSceneV1(app, fd);
+        else LoadSceneV2(app, fd);
+    } catch (const pmm_io::UnsupportedText&) {
+        const auto language = app->EnglishUI();
+        pmm_io::Close(fd); ResetAppState(app); app->EnglishUI() = language;
+        original_import::Refuse(app->MainWindow(), language);
+    } catch (const std::bad_alloc&) {
+        KeyPoolLoadFailed(app, fd);
+    } catch(const pmm_io::ShortRead& error) {
+        const auto language=app->EnglishUI();
+        const wchar_t* formats[]={L"%ls\n位置：%lld、必要なバイト数：%u、読み取ったバイト数：%d",
+            L"%ls\nByte offset: %lld; expected bytes: %u; received bytes: %d",
+            L"%ls\n文件偏移：%lld；应读取：%u 字节；实际读取：%d 字节"};
+        wchar_t detail[512]{};
+        swprintf_s(detail,formats[language<=2?language:1],app->EnvFileName(),error.offset,error.expected,error.received);
+        pmm_io::Close(fd);
+        ResetAppState(app);
+        app->EnglishUI()=language;
+        ShowUiMessage(app,app->MainWindow(),UiMessage::IncompleteProjectFile,MB_OK|MB_ICONERROR,detail);
+    } catch (const std::runtime_error& error) {
+        runtime_log::Write("PMM_LOAD_REJECTED %s", error.what());
+        const auto language = app->EnglishUI();
+        pmm_io::Close(fd); ResetAppState(app); app->EnglishUI() = language;
+        ShowUiMessage(app, app->MainWindow(), UiMessage::InvalidProjectFile, MB_OK | MB_ICONERROR);
+    }
+    LocalizeUI(app);                                     // 0x459106
+    return;                                                 // 0x45E7F7
+}
+
+void LoadSceneFile() {
+    if (g_Block) LoadSceneFile(g_Block->EnvFileName());
 }
 
 }  // namespace mikudancestudio

@@ -324,12 +324,11 @@ void CmdOpenScene(MMDApp* app) {
         return;
     }
     if (RememberFileDialogDirs(app)) {
-        wchar_t* dir = ExtractDirFromPath(
-            app->PathWorkspace().projectDirectory, path, kPathFieldCapacity);
+        wchar_t directory[kPathFieldCapacity]{};
+        wchar_t* dir = ExtractDirFromPath(directory, path, kPathFieldCapacity);
         CopyDirPathW(app->DirUser(), dir);
     }
-    wcscpy_s(app->EnvFileName(), kDialogPathLen, path);  // 0x46E01B
-    LoadSceneFile();                            // 0x46E037 -> 0x4A2C10，无标志写
+    LoadSceneFile(path);
 }
 
 // ---------------------------------------------------------------------------

@@ -2,6 +2,7 @@
 #include "mikudancestudio/animation_curve.hpp"
 #include "mikudancestudio/pmm_extension.hpp"
 #include <array>
+#include <memory>
 
 namespace mikudancestudio {
 class MMDApp;
@@ -14,6 +15,20 @@ bool Has(const unsigned char* model, int bone);
 bool Write(unsigned char* model, int bone, const Tracks&, std::string& error);
 // Merge native edits into authored tracks without discarding unrelated curves.
 void Synchronize(const unsigned char* model);
+// Keep authoring intact while the native range tool deletes and recreates keys.
+// Complete installs the explicitly retimed curves against the finished pool.
+class RangeRetime {
+public:
+    RangeRetime(unsigned char* model, int first, int last, double scale);
+    ~RangeRetime();
+    bool Ready() const;
+    bool Complete();
+    RangeRetime(const RangeRetime&) = delete;
+    RangeRetime& operator=(const RangeRetime&) = delete;
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
 // A native registration also creates missing lane keys at a shared mirror frame.
 void ReconcileRegisteredFrame(const unsigned char* model, int bone, int frame);
 void Evaluate(unsigned char* model, double frame);

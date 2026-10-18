@@ -3,6 +3,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
+#include <cerrno>
 #include <array>
 #include <cstdio>
 #include <cstdlib>
@@ -12,6 +13,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <io.h>
 #include "mikudancestudio/mmd_app.hpp"
 #include "mikudancestudio/model.hpp"
 #include "mikudancestudio/ported_funcs.hpp"
@@ -64,6 +66,100 @@ struct Fixture {
         std::strcpy(bones[0].name, "bone"); model->groupCount = 2;
     }
 };
+
+// Fault the real writer's CRT import in this test process only. Both build
+// profiles use this same production save boundary, so failed and short writes
+// must leave the previous destination and model path intact in each profile.
+struct WriteFault {
+    using Write = int (__cdecl*)(int, const void*, unsigned);
+    static inline Write realWrite = nullptr;
+    static inline bool shortWrite = false;
+    static inline int calls = 0;
+    ULONG_PTR* slot = nullptr;
+    ULONG_PTR previous = 0;
+    static int __cdecl Fail(int fd, const void* data, unsigned count) {
+        ++calls;
+        if (shortWrite && count > 1) return realWrite(fd, data, count - 1);
+        errno = ENOSPC;
+        return -1;
+    }
+    explicit WriteFault(bool shortened) {
+        auto* base = reinterpret_cast<unsigned char*>(GetModuleHandleW(nullptr));
+        auto* dos = reinterpret_cast<IMAGE_DOS_HEADER*>(base);
+        auto* nt = reinterpret_cast<IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
+        const auto imports = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+        for (auto* entry = reinterpret_cast<IMAGE_IMPORT_DESCRIPTOR*>(base + imports.VirtualAddress);
+             imports.VirtualAddress && entry->Name && !slot; ++entry) {
+            if (!entry->OriginalFirstThunk) continue;
+            auto* names = reinterpret_cast<IMAGE_THUNK_DATA*>(base + entry->OriginalFirstThunk);
+            auto* addresses = reinterpret_cast<IMAGE_THUNK_DATA*>(base + entry->FirstThunk);
+            for (; names->u1.AddressOfData; ++names, ++addresses) {
+                if (IMAGE_SNAP_BY_ORDINAL(names->u1.Ordinal)) continue;
+                const auto* name = reinterpret_cast<IMAGE_IMPORT_BY_NAME*>(base + names->u1.AddressOfData);
+                if (std::strcmp(reinterpret_cast<const char*>(name->Name), "_write")) continue;
+                slot = reinterpret_cast<ULONG_PTR*>(&addresses->u1.Function);
+                break;
+            }
+        }
+        if (!slot) return;
+        DWORD oldProtection = 0;
+        if (!VirtualProtect(slot, sizeof *slot, PAGE_READWRITE, &oldProtection)) { slot = nullptr; return; }
+        previous = *slot;
+        realWrite = reinterpret_cast<Write>(previous);
+        shortWrite = shortened; calls = 0;
+        *slot = reinterpret_cast<ULONG_PTR>(&Fail);
+        DWORD ignored = 0;
+        VirtualProtect(slot, sizeof *slot, oldProtection, &ignored);
+    }
+    ~WriteFault() {
+        if (!slot) return;
+        DWORD oldProtection = 0, ignored = 0;
+        if (VirtualProtect(slot, sizeof *slot, PAGE_READWRITE, &oldProtection)) {
+            *slot = previous;
+            VirtualProtect(slot, sizeof *slot, oldProtection, &ignored);
+        }
+    }
+};
+void FailedSave(Files& files, Fixture& fixture) {
+    const auto previous = Read(files.path);
+    std::wcscpy(fixture.model->path, L"previous.pmd");
+    const auto unchanged = [&] (const char* label) {
+        Check(Read(files.path) == previous && std::wstring(fixture.model->path) == L"previous.pmd", label);
+        Check(std::distance(fs::directory_iterator(files.directory), fs::directory_iterator{}) == 1,
+              "failed save removes its partial temporary file");
+    };
+    for (const bool shortWrite : {false, true}) {
+        DWORD error = ERROR_SUCCESS;
+        {
+            WriteFault fault(shortWrite);
+            Check(fault.slot != nullptr, "install a scoped fault on the production CRT write import");
+            if (!fault.slot) continue;
+            SetLastError(ERROR_SUCCESS);
+            SaveEnhancedModel(fixture.app.get(), files.path.c_str());
+            error = GetLastError();
+            Check(WriteFault::calls == 1, "writer stops issuing writes after its first failure");
+        }
+        Check(error == ERROR_WRITE_FAULT, "write failure is reported instead of recording a successful save");
+        unchanged(shortWrite ? "short write preserves existing PMD and prior model path" :
+                               "disk write failure preserves existing PMD and prior model path");
+    }
+    // Allow ordinary writes but deny rename/delete. The former full writer
+    // would truncate this file successfully; atomic publication must fail.
+    HANDLE locked = CreateFileW(files.path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    Check(locked != INVALID_HANDLE_VALUE, "lock existing PMD against replacement only");
+    if (locked != INVALID_HANDLE_VALUE) {
+        SetLastError(ERROR_SUCCESS);
+        SaveEnhancedModel(fixture.app.get(), files.path.c_str());
+        const DWORD error = GetLastError();
+        CloseHandle(locked);
+        Check(error == ERROR_WRITE_FAULT, "failed publication reports write failure");
+        unchanged("denied replacement preserves existing PMD and prior model path");
+    }
+    SaveEnhancedModel(fixture.app.get(), files.path.c_str());
+    Check(Read(files.path) == previous && std::wstring(fixture.model->path) == files.path.wstring(),
+          "save succeeds again after releasing the write fault and replacement lock");
+}
 }
 
 int main() {
@@ -96,6 +192,7 @@ int main() {
         Check(valid && twiceArea == 1, "re-read triangle keeps its winding and nonzero area");
     }
     Check(std::wstring(fixture.model->path) == files.path.wstring(), "successful save records the output path");
+    FailedSave(files, fixture);
     std::printf("pmd_index_save_tests: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

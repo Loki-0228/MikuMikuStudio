@@ -1262,7 +1262,12 @@ int RunDisplayFramePaste() {
 }
 }
 
+#include "review_editing_checks.hpp"
+#include "curve_compatibility_review_checks.hpp"
+
 int main(int argc, char** argv) {
+    if (argc > 1 && std::strcmp(argv[1], "--review-editing") == 0) {ReviewEditingChecks();return 0;}
+    if (argc > 1 && std::strcmp(argv[1], "--review-curves") == 0) {ReviewCurveEditingChecks();return 0;}
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     if (argc > 1 && std::strcmp(argv[1], "--pick-cycle") == 0) {
         ViewportOverlappingBoneCycle();

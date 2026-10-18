@@ -116,6 +116,49 @@ FnQuatRotationAxisLocal LocalQuatRotationAxis() {
     return fn;
 }
 
+float* IdentityQuaternion(float out[4]) {
+    out[0] = out[1] = out[2] = 0.0f;
+    out[3] = 1.0f;
+    return out;
+}
+float ClampUnit(float value) {
+    return value < -1.0f ? -1.0f : value > 1.0f ? 1.0f : value;
+}
+bool NormalizeDirection(float direction[3]) {
+    const double length = std::sqrt(double(direction[0]) * direction[0] +
+        double(direction[1]) * direction[1] + double(direction[2]) * direction[2]);
+    if (!std::isfinite(length) || length == 0.0) {
+        direction[0] = direction[1] = direction[2] = 0.0f;
+        return false;
+    }
+    for (int i = 0; i < 3; ++i) direction[i] = static_cast<float>(direction[i] / length);
+    return true;
+}
+void NormalizeCoordinates(float& x, float& y, float& z) {
+    // Independent local floats are not a float[3], regardless of stack layout.
+    float direction[3] = {x, y, z};
+    NormalizeDirection(direction);
+    x = direction[0]; y = direction[1]; z = direction[2];
+}
+void RotationAxisFromDot(float out[4], float axis[3], float dot,
+                         float fromX, float fromY, float fromZ) {
+    if (!std::isfinite(dot)) { IdentityQuaternion(out); return; }
+    if (!NormalizeDirection(axis)) {
+        if (dot >= 0.0f) { IdentityQuaternion(out); return; }
+        // Opposite vectors have no unique cross-product axis. Choose a
+        // deterministic perpendicular axis for their half turn.
+        if (std::fabs(fromX) <= std::fabs(fromY) && std::fabs(fromX) <= std::fabs(fromZ)) {
+            axis[0] = 0.0f; axis[1] = fromZ; axis[2] = -fromY;
+        } else if (std::fabs(fromY) <= std::fabs(fromZ)) {
+            axis[0] = -fromZ; axis[1] = 0.0f; axis[2] = fromX;
+        } else {
+            axis[0] = fromY; axis[1] = -fromX; axis[2] = 0.0f;
+        }
+        if (!NormalizeDirection(axis)) { IdentityQuaternion(out); return; }
+    }
+    LocalQuatRotationAxis()(out, axis, std::acos(ClampUnit(dot)));
+}
+
 // .rdata float constants (bit-exact; Hex-Rays decimal renderings do not
 // round-trip, e.g. flt_52B738 = 0x40490FD8 prints as "3.141592" but the
 // float nearest 3.141592 is 0x40490FD7):
@@ -613,7 +656,12 @@ float* BuildLookAtQuaternion(float out[4], const float quat[4], float ax,
         d3->matrixRotationQuaternion == nullptr || d3->rotY == nullptr ||
         d3->multiply == nullptr || d3->vec3Transform == nullptr ||
         d3->vec3Normalize == nullptr || d3->quatFromMatrix == nullptr)
-        return out;
+        return IdentityQuaternion(out);
+
+    const double quaternionLength = double(quat[0]) * quat[0] + double(quat[1]) * quat[1] +
+        double(quat[2]) * quat[2] + double(quat[3]) * quat[3];
+    if (!std::isfinite(quaternionLength) || quaternionLength == 0.0)
+        return IdentityQuaternion(out);
 
     float qInv[4];
     quatInverse(qInv, quat);                                       // 0x4A6109
@@ -629,14 +677,19 @@ float* BuildLookAtQuaternion(float out[4], const float quat[4], float ax,
     d3->vec3Transform(t, dir, &m3);                                // 0x4A61C3
 
     float n[3] = {t[0], mode == 5 ? 0.0f : t[1], t[2]};            // 0x4A61D9..
-    d3->vec3Normalize(n, n);                                       // 0x4A6201
+    if (!NormalizeDirection(n)) return IdentityQuaternion(out);    // 0x4A6201
 
     const float len = sqrtf(n[2] * n[2] + n[0] * n[0]);            // 0x4A6216 (v46)
     float c;   // v40
     float s;   // v44
     float ang = 0.0f;  // v42
 
-    if (mode == 5) {
+    if (len <= 1.0e-7f) {
+        // A vertical direction has no yaw. Keep a deterministic zero yaw,
+        // while the following pitch matrix still uses its vertical component.
+        c = 1.0f;
+        s = 0.0f;
+    } else if (mode == 5) {
         c = -n[2] / len;                                           // 0x4A6244
         s = n[0] / len;                                            // 0x4A624C
     } else {
@@ -644,20 +697,20 @@ float* BuildLookAtQuaternion(float out[4], const float quat[4], float ax,
         s = n[2] / len;                                            // 0x4A6270
     }
     if (mode == 1) {                                           // 0x4A6274
-        const float a = acosf(c);                              // 0x4A6285
+        const float a = acosf(ClampUnit(c));                   // 0x4A6285
         ang = s < 0.0f ? -a : a;   // v15 = 0, v14 = v46 kept
     } else if (mode >= 2) {        // mode 0: v15 = 0         // 0x4A6316
         // modes 2/3/4/5: two-term angle decomposition with the x87
         // flag-sensitive sign selection (fnstsw parity + C0/C3 tests at
         // 0x4A633F..0x4A6349 map to ordered "< 0" tests; NaN falls to the
         // ">= 0" arm).
-        const float ang0 = acosf(c);                               // 0x4A6323
+        const float ang0 = acosf(ClampUnit(c));                    // 0x4A6323
         float r;
         if (s < 0.0f) {
-            r = !(c < 0.0f) ? -acosf(-s) : acosf(-s);              // 0x4A634D/5C
+            r = !(c < 0.0f) ? -acosf(ClampUnit(-s)) : acosf(ClampUnit(-s)); // 0x4A634D/5C
             ang = -ang0 - r * len;                                 // 0x4A6385
         } else {
-            r = !(c < 0.0f) ? -acosf(s) : acosf(s);                // 0x4A6395/A4
+            r = !(c < 0.0f) ? -acosf(ClampUnit(s)) : acosf(ClampUnit(s)); // 0x4A6395/A4
             ang = ang0 - r * len;                                  // 0x4A63C9
         }
     }
@@ -737,9 +790,9 @@ void InitStandardSkeletonQuats(unsigned char* m, unsigned char flag) {
     float qA[4], qB[4], t1[4], t2[4];
 
     // q150/q155/q159 persist across blocks; the original leaves them as
-    // uninitialized stack when producer blocks are skipped - zeroed here
-    // (deterministic deviation, consumed only on data-dependent paths).
-    float q150[4] = {}, q155[4] = {}, q159[4] = {};
+    // uninitialized stack when producer blocks are skipped. An unavailable
+    // direction contributes no rotation to the subsequent quaternion product.
+    float q150[4] = {0,0,0,1}, q155[4] = {0,0,0,1}, q159[4] = {0,0,0,1};
 
     // ---- leg length cache (0x4A6543..0x4A6814) ---------------------------
     if (model.lightDir[0] == -1.0f) {
@@ -774,16 +827,14 @@ void InitStandardSkeletonQuats(unsigned char* m, unsigned char flag) {
         float dx = model.standardBonePositions[2][0] - model.standardBonePositions[1][0];                            // 0x4A68AB
         float dy = model.standardBonePositions[2][1] - model.standardBonePositions[1][1];                            // 0x4A68C8
         float dz = model.standardBonePositions[2][2] - model.standardBonePositions[1][2];                            // 0x4A68E3
-        d3->vec3Normalize(&dx, &dx);                               // 0x4A68EF
+        NormalizeCoordinates(dx, dy, dz);                               // 0x4A68EF
         float cx = dz * 1.0f - dy * 0.0f;                          // 0x4A6914
         float cy = dx * 0.0f - dz * 0.0f;                          // 0x4A6935
         float cz = dy * 0.0f - dx * 1.0f;                          // 0x4A6950
         const float dot =
             1.0f * dy + dx * 0.0f + 0.0f * dz;                     // 0x4A696C
         float axis[3] = {cx, cy, cz};
-        d3->vec3Normalize(axis, axis);                             // 0x4A6970
-        const float ang = acosf(dot);                              // 0x4A697E
-        quatRotationAxis(qA, axis, ang);                           // 0x4A6994
+        RotationAxisFromDot(qA, axis, dot, 0.0f, 1.0f, 0.0f);       // 0x4A6994
         std::memcpy(qByVal, model.localTransforms + 0, sizeof(qByVal));
         BuildLookAtQuaternion(q150, qByVal, model.standardBonePositions[8][0], model.standardBonePositions[8][1], model.standardBonePositions[8][2],
                   model.standardBonePositions[4][0], model.standardBonePositions[4][1], model.standardBonePositions[4][2], 4);                // 0x4A6A06
@@ -829,15 +880,14 @@ void InitStandardSkeletonQuats(unsigned char* m, unsigned char flag) {
               az = model.standardBonePositions[4][2] - mz;                                  // 0x4A6D0F..
         float bx = model.standardBonePositions[20][0] - mx, by = model.standardBonePositions[20][1] - my,
               bz = model.standardBonePositions[20][2] - mz;                                  // 0x4A6D5D..
-        d3->vec3Normalize(&ax, &ax);                               // 0x4A6D95
-        d3->vec3Normalize(&bx, &bx);                               // 0x4A6DA2
+        NormalizeCoordinates(ax, ay, az);                               // 0x4A6D95
+        NormalizeCoordinates(bx, by, bz);                               // 0x4A6DA2
         float cx = bz * ay - by * az;                              // 0x4A6DC7
         float cy = bx * az - bz * ax;                              // 0x4A6DE8
         float cz = by * ax - bx * ay;                              // 0x4A6E03
         const float dot = ay * by + bx * ax + az * bz;             // 0x4A6E1F
         float axis[3] = {cx, cy, cz};
-        d3->vec3Normalize(axis, axis);                             // 0x4A6E23
-        quatRotationAxis((model.localTransforms + 64), axis, acosf(dot));             // 0x4A6E49
+        RotationAxisFromDot((model.localTransforms + 64), axis, dot, ax, ay, az);             // 0x4A6E49
     } else {
         model.localTransforms[67] = 1.0f;                                      // 0x4A6E64
         model.localTransforms[64] = 0.0f;                                      // 0x4A6E6C
@@ -919,15 +969,14 @@ void InitStandardSkeletonQuats(unsigned char* m, unsigned char flag) {
               az = model.standardBonePositions[8][2] - mz;                                  // 0x4A74E8..
         float bx = model.standardBonePositions[21][0] - mx, by = model.standardBonePositions[21][1] - my,
               bz = model.standardBonePositions[21][2] - mz;                                  // 0x4A7536..
-        d3->vec3Normalize(&ax, &ax);                               // 0x4A756E
-        d3->vec3Normalize(&bx, &bx);                               // 0x4A757B
+        NormalizeCoordinates(ax, ay, az);                               // 0x4A756E
+        NormalizeCoordinates(bx, by, bz);                               // 0x4A757B
         float cx = bz * ay - by * az;                              // 0x4A75A0
         float cy = bx * az - bz * ax;                              // 0x4A75C1
         float cz = by * ax - bx * ay;                              // 0x4A75DC
         const float dot = ay * by + bx * ax + az * bz;             // 0x4A75F8
         float axis[3] = {cx, cy, cz};
-        d3->vec3Normalize(axis, axis);                             // 0x4A75FC
-        quatRotationAxis((model.localTransforms + 60), axis, acosf(dot));             // 0x4A7622
+        RotationAxisFromDot((model.localTransforms + 60), axis, dot, ax, ay, az);             // 0x4A7622
     } else {
         model.localTransforms[63] = 1.0f;                                      // 0x4A765F
         model.localTransforms[60] = 0.0f;                                      // 0x4A7667
@@ -1007,15 +1056,13 @@ void InitStandardSkeletonQuats(unsigned char* m, unsigned char flag) {
         model.standardBonePositions[16][1] != kSentinel && lmy != kSentinel) {               // 0x4A7C16
         float ax = model.standardBonePositions[1][0] - lmx, ay = model.standardBonePositions[1][1] - lmy,
               az = model.standardBonePositions[1][2] - lmz;                                 // 0x4A7CAA..
-        d3->vec3Normalize(&ax, &ax);                               // 0x4A7CE6
+        NormalizeCoordinates(ax, ay, az);                               // 0x4A7CE6
         float cx = az * 1.0f - ay * 0.0f;                          // 0x4A7D0B
         float cy = ax * 0.0f - az * 0.0f;                          // 0x4A7D2C
         float cz = ay * 0.0f - ax * 1.0f;                          // 0x4A7D47
         const float dot = 1.0f * ay + ax * 0.0f + 0.0f * az;       // 0x4A7D63
         float axis[3] = {cx, cy, cz};
-        d3->vec3Normalize(axis, axis);                              // 0x4A7D67
-        const float ang = acosf(dot);                              // 0x4A7D75
-        quatRotationAxis(qA, axis, ang);                           // 0x4A7D8B
+        RotationAxisFromDot(qA, axis, dot, 0.0f, 1.0f, 0.0f);       // 0x4A7D8B
         BuildLookAtQuaternion(t1, qA, model.standardBonePositions[16][0], model.standardBonePositions[16][1], model.standardBonePositions[16][2],
                   model.standardBonePositions[12][0], model.standardBonePositions[12][1], model.standardBonePositions[12][2], 4);                // 0x4A7DFD
         std::memcpy((model.localTransforms + 32), t1, 16);                            // 0x4A7E04..
@@ -1088,10 +1135,10 @@ void InitStandardSkeletonQuats(unsigned char* m, unsigned char flag) {
     if (model.standardBonePositions[15][1] != kSentinel && model.standardBonePositions[14][1] != kSentinel) {
         float ax = model.standardBonePositions[14][0] - model.standardBonePositions[13][0], ay = model.standardBonePositions[14][1] - model.standardBonePositions[13][1],
               az = model.standardBonePositions[14][2] - model.standardBonePositions[13][2];                            // 0x4A8365..
-        d3->vec3Normalize(&ax, &ax);                               // 0x4A83A9
+        NormalizeCoordinates(ax, ay, az);                               // 0x4A83A9
         float bx = model.standardBonePositions[15][0] - model.standardBonePositions[14][0], by = model.standardBonePositions[15][1] - model.standardBonePositions[14][1],
               bz = model.standardBonePositions[15][2] - model.standardBonePositions[14][2];                            // 0x4A83BA..
-        d3->vec3Normalize(&bx, &bx);                               // 0x4A83FE
+        NormalizeCoordinates(bx, by, bz);                               // 0x4A83FE
         const float dot = by * ay + bx * ax + bz * az;             // 0x4A841F
         bool straight = false;                                     // 0x4A849B
         if (model.standardBonePositions[15][2] - model.standardBonePositions[14][2] > 0.0f) {                          // 0x4A8458
@@ -1104,14 +1151,13 @@ void InitStandardSkeletonQuats(unsigned char* m, unsigned char flag) {
             std::memcpy((model.localTransforms + 56), t2, 16);                        // 0x4A84E1..
         } else {
             float ex = 0.0f, ey = kNeg0d7, ez = -1.0f;             // 0x4A8508..
-            d3->vec3Normalize(&ex, &ex);                           // 0x4A8524
+            NormalizeCoordinates(ex, ey, ez);                           // 0x4A8524
             float cx = bz * ey - by * ez;                          // 0x4A8549
             float cy = bx * ez - bz * ex;                          // 0x4A856A
             float cz = by * ex - bx * ey;                          // 0x4A8585
             const float dot2 = ey * by + bx * ex + ez * bz;        // 0x4A85A1
             float axis[3] = {cx, cy, cz};
-            d3->vec3Normalize(axis, axis);                         // 0x4A85A5
-            quatRotationAxis((model.localTransforms + 56), axis, acosf(dot2));        // 0x4A85C9
+            RotationAxisFromDot((model.localTransforms + 56), axis, dot2, ex, ey, ez);        // 0x4A85C9
         }
     } else {
         d3->quatMultiply(t1, (model.localTransforms + 52), (model.localTransforms + 48));                // 0x4A860E
@@ -1123,10 +1169,10 @@ void InitStandardSkeletonQuats(unsigned char* m, unsigned char flag) {
     if (model.standardBonePositions[19][1] != kSentinel && model.standardBonePositions[18][1] != kSentinel) {
         float ax = model.standardBonePositions[18][0] - model.standardBonePositions[17][0], ay = model.standardBonePositions[18][1] - model.standardBonePositions[17][1],
               az = model.standardBonePositions[18][2] - model.standardBonePositions[17][2];                            // 0x4A86A0..
-        d3->vec3Normalize(&ax, &ax);                               // 0x4A86E4
+        NormalizeCoordinates(ax, ay, az);                               // 0x4A86E4
         float bx = model.standardBonePositions[19][0] - model.standardBonePositions[18][0], by = model.standardBonePositions[19][1] - model.standardBonePositions[18][1],
               bz = model.standardBonePositions[19][2] - model.standardBonePositions[18][2];                            // 0x4A86F5..
-        d3->vec3Normalize(&bx, &bx);                               // 0x4A8739
+        NormalizeCoordinates(bx, by, bz);                               // 0x4A8739
         const float dot = by * ay + bx * ax + bz * az;             // 0x4A875A
         bool straight = false;                                     // 0x4A87D6
         if (model.standardBonePositions[19][2] - model.standardBonePositions[18][2] > 0.0f) {                          // 0x4A8793
@@ -1139,14 +1185,13 @@ void InitStandardSkeletonQuats(unsigned char* m, unsigned char flag) {
             std::memcpy((model.localTransforms + 44), t2, 16);                        // 0x4A881C..
         } else {
             float ex = 0.0f, ey = kNeg0d7, ez = -1.0f;             // 0x4A884B..
-            d3->vec3Normalize(&ex, &ex);                           // 0x4A8867
+            NormalizeCoordinates(ex, ey, ez);                           // 0x4A8867
             float cx = bz * ey - by * ez;                          // 0x4A888C
             float cy = bx * ez - bz * ex;                          // 0x4A88AD
             float cz = by * ex - bx * ey;                          // 0x4A88C8
             const float dot2 = ey * by + bx * ex + ez * bz;        // 0x4A88E4
             float axis[3] = {cx, cy, cz};
-            d3->vec3Normalize(axis, axis);                         // 0x4A88E8
-            quatRotationAxis((model.localTransforms + 44), axis, acosf(dot2));        // 0x4A890C
+            RotationAxisFromDot((model.localTransforms + 44), axis, dot2, ex, ey, ez);        // 0x4A890C
         }
     } else {
         d3->quatMultiply(t1, (model.localTransforms + 40), (model.localTransforms + 36));                // 0x4A895C

@@ -125,6 +125,7 @@
 #include "mikudancestudio/panel_controls.hpp"
 #include "mikudancestudio/ui_language.hpp"
 #include "mikudancestudio/ui_message.hpp"
+#include "mikudancestudio/runtime_log.hpp"
 
 // Shared PMM record readers, the Rd helper and the byte-identical halves of
 // the loader string tables live here (see the header comment for the
@@ -392,7 +393,7 @@ static void FreeRecordArrays(PmmModelLoadWorkspace* workspaces,
 static void AbortV2Load(MMDApp* s, int fd,
                         PmmModelLoadWorkspace* workspaces,
                         unsigned char modelCount) {
-    _close(fd);
+    pmm_io::Close(fd);
     FreeRecordArrays(workspaces, modelCount);
     delete[] workspaces;
     ResetAppState(s);                                       // 0x44E540
@@ -506,24 +507,24 @@ static void LoadSceneV2_SkipRecordConsumption(
                 // variant starts at 0x452363 with the counts/names and
                 // the &workspace.displayOrder byte already consumed) ----------------------
                 if (!skipFrom4) {
-                Rd(fd, &workspace.displayCount, 4);                         // 0x450951
+                pmm_io::ReadCount(fd, workspace.displayCount);                         // 0x450951
                 for (std::int32_t i = 0; i < workspace.displayCount; ++i) {
                     unsigned char len = 0;
                     Rd(fd, &len, 1);
                     pmm_io::ReadText(fd, text, len, 20);
                 }
-                Rd(fd, &workspace.morphCount, 4);                         // 0x4509B1
+                pmm_io::ReadCount(fd, workspace.morphCount);                         // 0x4509B1
                 for (std::int32_t i = 0; i < workspace.morphCount; ++i) {
                     unsigned char len = 0;
                     Rd(fd, &len, 1);
                     pmm_io::ReadText(fd, text, len, 20);
                 }
-                Rd(fd, &workspace.ikCount, 4);                         // 0x450A11
+                pmm_io::ReadCount(fd, workspace.ikCount);                         // 0x450A11
                 for (std::int32_t i = 0; i < workspace.ikCount; ++i) {
                     std::int32_t v = 0;
                     Rd(fd, &v, 4);
                 }
-                Rd(fd, &workspace.rigidBodyCount, 4);                         // 0x450A5D
+                pmm_io::ReadCount(fd, workspace.rigidBodyCount);                         // 0x450A5D
                 for (std::int32_t i = 0; i < workspace.rigidBodyCount; ++i) {
                     std::int32_t v = 0;
                     Rd(fd, &v, 4);
@@ -549,7 +550,7 @@ static void LoadSceneV2_SkipRecordConsumption(
                 }
                 {
                     std::int32_t cnt = 0;
-                    Rd(fd, &cnt, 4);                            // 0x450C6A
+                    pmm_io::ReadCount(fd, cnt);                            // 0x450C6A
                     for (std::int32_t i = 0; i < cnt; ++i) {
                         std::int32_t discardedKeyIndex = 0;
                         Rd(fd, &discardedKeyIndex, 4);
@@ -561,7 +562,7 @@ static void LoadSceneV2_SkipRecordConsumption(
                 }
                 {
                     std::int32_t cnt = 0;
-                    Rd(fd, &cnt, 4);                            // 0x450E02
+                    pmm_io::ReadCount(fd, cnt);                            // 0x450E02
                     for (std::int32_t i = 0; i < cnt; ++i) {
                         std::int32_t discardedKeyIndex = 0;
                         Rd(fd, &discardedKeyIndex, 4);
@@ -575,7 +576,7 @@ static void LoadSceneV2_SkipRecordConsumption(
                     // Reading those separately here shifts every later model.
                     DiscardPmmDisplayKey(fd, workspace.ikCount,
                                          workspace.rigidBodyCount);
-                    Rd(fd, &cnt, 4);                            // 0x450F50
+                    pmm_io::ReadCount(fd, cnt);                            // 0x450F50
                     for (std::int32_t i = 0; i < cnt; ++i) {
                         std::int32_t discardedKeyIndex = 0;
                         Rd(fd, &discardedKeyIndex, 4);
@@ -677,7 +678,8 @@ static void LoadSceneV2_ModelStateLoad(PmmV2LoadContext& ctx, int fd,
                      mdl::Mdl(model)->selectedMorphs) {
                     std::int32_t v = 0;
                     Rd(fd, &v, 4);                              // 0x452B6F
-                    if (workspace.morphsMatch != 0) selectedMorph = v;
+                    if (workspace.morphsMatch != 0)
+                        selectedMorph = v >= 0 && std::uint32_t(v) < modelRecord->morphCount ? v : -1;
                 }
                 {
                     unsigned char b = 0;
@@ -734,7 +736,7 @@ static void LoadSceneV2_ModelStateLoad(PmmV2LoadContext& ctx, int fd,
                 // sparse display-frame keys (0x453087..0x453265)
                 {
                     std::int32_t cnt = 0;
-                    Rd(fd, &cnt, 4);
+                    pmm_io::ReadCount(fd, cnt);
                     // This section carries explicit slot indices, so it is the
                     // one load path that can name a slot past the original pool:
                     // the pool grows on demand instead of dropping such a
@@ -810,6 +812,7 @@ static void LoadSceneV2_ModelStateLoad(PmmV2LoadContext& ctx, int fd,
                                  static_cast<std::size_t>(j) <
                                      boneKeyCapacity;) {
                                 const std::int32_t next = keys[j].next;
+                                keys[j].next = 0;
                                 keys[j].frame = 0;
                                 keys[j].previous = 0;
                                 keys[j].allocated = 0;
@@ -859,7 +862,7 @@ static void LoadSceneV2_ModelStateLoad(PmmV2LoadContext& ctx, int fd,
                 }
                 {
                     std::int32_t cnt = 0;
-                    Rd(fd, &cnt, 4);                            // 0x4535C2
+                    pmm_io::ReadCount(fd, cnt);                            // 0x4535C2
                     LogPmmModelStage(fd, "sparse-morph-count", cnt,
                                      workspace.morphCount, mdl::MorphKeys(model));
                     for (std::int32_t i = 0; i < cnt; ++i) {
@@ -902,6 +905,7 @@ static void LoadSceneV2_ModelStateLoad(PmmV2LoadContext& ctx, int fd,
                                  static_cast<std::size_t>(j) <
                                      morphCapacity1;) {
                                 const std::int32_t next = keys[j].next;
+                                keys[j].next = 0;
                                 keys[j].frame = 0;
                                 keys[j].previous = 0;
                                 keys[j].allocated = 0;
@@ -971,7 +975,7 @@ static void LoadSceneV2_ModelStateLoad(PmmV2LoadContext& ctx, int fd,
                         keys[0].allocated = b == 1;
                     }
                     std::int32_t cnt = 0;
-                    Rd(fd, &cnt, 4);                            // 0x453927
+                    pmm_io::ReadCount(fd, cnt);                            // 0x453927
                     LogPmmModelStage(fd, "sparse-physics-count", cnt,
                                      workspace.rigidBodyCount, keys);
                     for (std::int32_t i = 0; i < cnt; ++i) {
@@ -1173,12 +1177,14 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, int fd,
                 pmm_io::ReadText(fd, text, skippedLen, 20);
                 Rd(fd, &skippedLen, 1);
                 pmm_io::ReadText(fd, text, skippedLen, 20);
-                pmm_io::ReadText(fd, text, 0x100, 255);
+                pmm_io::ReadFixedText(fd, text, 0x100, 255);
                 Rd(fd, &skippedWorkspace.boneGroupCount, 1);
                 LoadSceneV2_SkipRecordConsumption(fd, skippedWorkspace, text,
                                                   false);
                 return true;
             }
+            if (slots[slotByte] != nullptr)
+                throw std::runtime_error("Duplicate PMM model slot");
             unsigned char* nm =
                 static_cast<unsigned char*>(operator new(mdl::kSize));
             if (nm != nullptr) IdentityCtor(nm);                   // 0x4504E9
@@ -1202,7 +1208,7 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, int fd,
                 text[len] = 0;
                 strcpy_s(workspace.sourceName, 0x100, text);
             }
-            pmm_io::ReadText(fd, text, 0x100, 255);                                // 0x4505EF
+            pmm_io::ReadFixedText(fd, text, 0x100, 255);                                // 0x4505EF
             ResolveAnsiUserFile(reinterpret_cast<unsigned char*>(wrap),
                                 text, widePath, 0x100,
                                 paths);
@@ -1304,12 +1310,12 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, int fd,
 
             // ---- reconciliation + state load ------------------------------
             if (!doSkip) {
-                mdl::ModelRecord* const loadedModel = mdl::Mdl(model);
                 bool firstPass = true;  // counts/names are read only once;
                 for (;;) {              // ring retries only re-map
+                    const auto* loadedModel = mdl::Mdl(model);
                     if (firstPass) {
                     // disp count + translation array (0x4511F5..0x4514B9)
-                    Rd(fd, &workspace.displayCount, 4);
+                    pmm_io::ReadCount(fd, workspace.displayCount);
                     LogPmmModelStage(fd, "display-count", workspace.displayCount,
                                      loadedModel->boneCount,
                                      loadedModel->boneTable);
@@ -1373,7 +1379,7 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, int fd,
                         }
                     }
                     // morph count + translation array (0x4514C5..0x451789)
-                    Rd(fd, &workspace.morphCount, 4);
+                    pmm_io::ReadCount(fd, workspace.morphCount);
                     LogPmmModelStage(fd, "morph-count", workspace.morphCount,
                                      loadedModel->morphCount,
                                      loadedModel->morphs);
@@ -1433,7 +1439,7 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, int fd,
                         }
                     }
                     // IK remap array (0x451795..0x451886)
-                    Rd(fd, &workspace.ikCount, 4);
+                    pmm_io::ReadCount(fd, workspace.ikCount);
                     LogPmmModelStage(fd, "ik-count", workspace.ikCount,
                                      loadedModel->ikChainCount,
                                      loadedModel->ikChains);
@@ -1468,7 +1474,7 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, int fd,
                             }
                     }
                     // rigid remap array, 1-based (0x451892..0x45199E)
-                    Rd(fd, &workspace.rigidBodyCount, 4);
+                    pmm_io::ReadCount(fd, workspace.rigidBodyCount);
                     LogPmmModelStage(fd, "rigid-count", workspace.rigidBodyCount,
                                      loadedModel->boneOrderCount,
                                      loadedModel->boneOrderTable);
@@ -1531,8 +1537,13 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, int fd,
                     if (workspace.morphsMatch != 0 && workspace.displaysMatch != 0) break;
 
                     const auto label = text_encoding::ModelLabel(*mdl::Mdl(model), UiUsesEnglishNames(s->EnglishUI()));
+                    runtime_log::WritePath("PMM_MODEL_MISMATCH", mdl::Mdl(model)->path);
+                    runtime_log::Write("PMM_MODEL_MISMATCH slot=%u bones=%d/%u morphs=%d/%u",
+                        unsigned(slotByte), workspace.displayCount, loadedModel->boneCount,
+                        workspace.morphCount, loadedModel->morphCount);
                     const INT_PTR r = ShowProjectModelDialog(s, hInst, main,
                         ProjectModelIssue::StructureMismatch, label.c_str());
+                    runtime_log::Write("PMM_MODEL_MISMATCH choice=%lld", static_cast<long long>(r));
                     // x64 分派表（0x7FF7CB49AA72..0x7FF7CB49BB78）：
                     //   r==2/r==5 -> 中止装载（0x49AA88 jnz 0x49D73F）
                     //   r==3      -> 丢弃当前模型、弹文件对话框重载（0x49AA8E）
@@ -1972,7 +1983,7 @@ static void LoadSceneV2_CameraTrack(PmmV2LoadContext& ctx, int fd) {
         // lives in pmm_io_common.hpp ReadPmmCameraKey.
         ReadPmmCameraKey<PmmStream::V2>(fd, cameraKeys[0]);
         std::int32_t cnt = 0;
-        Rd(fd, &cnt, 4);                                        // 0x454F23
+        pmm_io::ReadCount(fd, cnt);                                        // 0x454F23
         for (std::int32_t i = 0; i < cnt; ++i) {
             std::int32_t frame = 0;
             Rd(fd, &frame, 4);
@@ -2036,7 +2047,7 @@ static void LoadSceneV2_LightTrack(PmmV2LoadContext& ctx, int fd) {
         // ReadPmmLightKey - byte-identical to the v1 reader.
         ReadPmmLightKey(fd, lightKeys[0]);
         std::int32_t cnt = 0;
-        Rd(fd, &cnt, 4);                                        // 0x455353
+        pmm_io::ReadCount(fd, cnt);                                        // 0x455353
         for (std::int32_t i = 0; i < cnt; ++i) {
             std::int32_t frame = 0;
             Rd(fd, &frame, 4);
@@ -2116,7 +2127,7 @@ static bool LoadSceneV2_AccessoryBlock(PmmV2LoadContext& ctx, int fd) {
     LogPmmModelStage(fd, "accessory-count", accCount, 0,
                      s->OverlayVertices());
     for (unsigned char i = 0; i < accCount; ++i) {
-        pmm_io::ReadText(fd, text, 0x64, 99);                                     // 0x4559EB
+        pmm_io::ReadFixedText(fd, text, 0x64, 99);                                     // 0x4559EB
         SendMessageA(GetDlgItem(main, panel::kAccessoryCombo), CB_ADDSTRING, 0,
                      reinterpret_cast<LPARAM>(text));
     }
@@ -2124,43 +2135,19 @@ static bool LoadSceneV2_AccessoryBlock(PmmV2LoadContext& ctx, int fd) {
     for (unsigned char i = 0; i < accCount; ++i) {
         unsigned char accSlot = 0;
         Rd(fd, &accSlot, 1);                                    // 0x455A3F
-        // Deliberate hardening: the original code writes the allocated record to
-        // accs[accSlot] and its 10000-entry key table to accTracks[accSlot]
-        // (verified at 0x14007EFF2 and 0x14007F663) without any range check,
-        // so a slot beyond 254 corrupts the state that follows those two arrays
-        // (accs[255] is lastRegisteredFrame). The port consumes the record's
-        // bytes exactly as the body below does, then discards the record,
-        // leaving the stream position unchanged.
-        // Defect B3-10.
-        if (static_cast<int>(accSlot) >= kModelSlotCount) {
-            char discardedAccName[0x64];
-            char discardedAccPath[0x100];
-            Rd(fd, discardedAccName, 0x64);
-            Rd(fd, discardedAccPath, 0x100);
-            mdl::AccessoryKey discardedAccKey{};
-            ReadPmmAccessoryKey(fd, discardedAccKey);
-            std::int32_t discardedKeyCount = 0;
-            Rd(fd, &discardedKeyCount, 4);
-            for (std::int32_t k = 0; k < discardedKeyCount; ++k) {
-                std::int32_t discardedFrame = 0;
-                Rd(fd, &discardedFrame, 4);
-                ReadPmmAccessoryKey(fd, discardedAccKey);
-            }
-            unsigned char discardedAccByte = 0;
-            std::int32_t discardedAccValue = 0;
-            Rd(fd, &discardedAccByte, 1);
-            for (int f = 0; f < 9; ++f) Rd(fd, &discardedAccValue, 4);
-            Rd(fd, &discardedAccByte, 1);
-            Rd(fd, &discardedAccByte, 1);
-            continue;
-        }
+        // An invalid slot has no object to pair with the shadow-list entry.
+        // Continuing would preserve a phantom count and save an unreadable PMM.
+        if (accSlot >= kModelSlotCount)
+            throw std::runtime_error("Invalid PMM accessory slot");
+        if (accs[accSlot] != nullptr)
+            throw std::runtime_error("Duplicate PMM accessory slot");
         auto* acc = static_cast<mdl::AccessoryRecord*>(operator new(
             sizeof(mdl::AccessoryRecord)));
         if (acc != nullptr) IdentityCtor(acc);
         accs[accSlot] = acc;
         std::memset(accs[accSlot], 0, sizeof(mdl::AccessoryRecord));
         Sub04B0Init(accs[accSlot]);                             // 0x4C4760
-        pmm_io::ReadText(fd, accName, 0x64, 99);                                  // 0x455ABE
+        pmm_io::ReadFixedText(fd, accName, 0x64, 99);                                  // 0x455ABE
         // The fixed-length name field above is read in full, all 0x64 bytes, and
         // is then used as a C string by the %s conversions of the open-file
         // dialog below; a name that fills the field has no terminator, so %s
@@ -2170,7 +2157,7 @@ static bool LoadSceneV2_AccessoryBlock(PmmV2LoadContext& ctx, int fd) {
         // position, is unchanged.
         // Defect B3-22.
         accName[sizeof accName - 1] = '\0';
-        pmm_io::ReadText(fd, mbPath, 0x100, 255);                                  // 0x455AD1
+        pmm_io::ReadFixedText(fd, mbPath, 0x100, 255);                                  // 0x455AD1
         ResolveAnsiUserFile(reinterpret_cast<unsigned char*>(wrap),
                             mbPath, wideTmp, 0x100,
                             paths);
@@ -2226,7 +2213,7 @@ static bool LoadSceneV2_AccessoryBlock(PmmV2LoadContext& ctx, int fd) {
                          0x3E8, d);                  // 0x7FF7CB49F33C
             }
             if (!LoadAccessoryObject(s, accs[accSlot], ofnFile)) {
-                _close(fd);                                     // 0x456764
+                pmm_io::Close(fd);                                     // 0x456764
                 ResetAppState(s);
                 return false;
             }
@@ -2250,7 +2237,7 @@ static bool LoadSceneV2_AccessoryBlock(PmmV2LoadContext& ctx, int fd) {
         ReadPmmAccessoryKey(fd, accessoryKeys[0]);
         {
             std::int32_t cnt = 0;
-            Rd(fd, &cnt, 4);                                    // 0x455FC6
+            pmm_io::ReadCount(fd, cnt);                                    // 0x455FC6
             for (std::int32_t k = 0; k < cnt; ++k) {
                 std::int32_t frame = 0;
                 Rd(fd, &frame, 4);
@@ -2410,7 +2397,7 @@ static void LoadSceneV2_ConfigBlock(PmmV2LoadContext& ctx, int fd) {
         ClearTimelineAndCurveDCs(s);                                           // 0x456C09
         Rd(fd, &b, 1);                                          // 0x456C16
         s->state.waveEnabled = b ? 1 : 0;
-        pmm_io::ReadText(fd, mbPath, 0x100, 255);                                  // 0x456C43
+        pmm_io::ReadFixedText(fd, mbPath, 0x100, 255);                                  // 0x456C43
         ResolveAnsiUserFile(reinterpret_cast<unsigned char*>(wrap),
                             mbPath,
                             reinterpret_cast<wchar_t*>(s->state.wavPath),
@@ -2421,7 +2408,7 @@ static void LoadSceneV2_ConfigBlock(PmmV2LoadContext& ctx, int fd) {
         Rd(fd, &w1, 4);                                         // 0x456C8C
         Rd(fd, &w2, 4);
         Rd(fd, &w3, 4);
-        pmm_io::ReadText(fd, mbPath, 0x100, 255);                                  // 0x456CBF
+        pmm_io::ReadFixedText(fd, mbPath, 0x100, 255);                                  // 0x456CBF
         ResolveAnsiUserFile(reinterpret_cast<unsigned char*>(wrap),
                             mbPath,
                             s->AviBackgroundPath(),
@@ -2461,7 +2448,7 @@ static void LoadSceneV2_ConfigBlock(PmmV2LoadContext& ctx, int fd) {
         Rd(fd, &p1, 4);                                         // 0x456E25
         Rd(fd, &p2, 4);
         Rd(fd, &p3, 4);
-        pmm_io::ReadText(fd, mbPath, 0x100, 255);                                  // 0x456E58
+        pmm_io::ReadFixedText(fd, mbPath, 0x100, 255);                                  // 0x456E58
         ResolveAnsiUserFile(reinterpret_cast<unsigned char*>(wrap),
                             mbPath,
                             s->PictureBackgroundPath(),
@@ -2685,7 +2672,7 @@ static void LoadSceneV2_PhysicsTracksAndClose(PmmV2LoadContext& ctx, int fd,
         // ReadPmmGravityKey (v2-only track).
         ReadPmmGravityKey(fd, gravityKeys[0]);
         std::int32_t cnt = 0;
-        Rd(fd, &cnt, 4);                                        // 0x457861
+        pmm_io::ReadCount(fd, cnt);                                        // 0x457861
         LogPmmModelStage(fd, "selection-count", cnt, 0, gravityKeys);
         for (std::int32_t i = 0; i < cnt; ++i) {
             std::int32_t frame = 0;
@@ -2720,7 +2707,7 @@ static void LoadSceneV2_PhysicsTracksAndClose(PmmV2LoadContext& ctx, int fd,
     {
         ReadPmmSelfShadowKey(fd, selfShadowKeys[0]);
         std::int32_t cnt = 0;
-        Rd(fd, &cnt, 4);                                        // 0x457AD4
+        pmm_io::ReadCount(fd, cnt);                                        // 0x457AD4
         for (std::int32_t i = 0; i < cnt; ++i) {
             std::int32_t frame = 0;
             Rd(fd, &frame, 4);
@@ -2767,7 +2754,8 @@ static void LoadSceneV2_PhysicsTracksAndClose(PmmV2LoadContext& ctx, int fd,
     // parent and leaves both the combo and the register list untouched, so the
     // stream position does not change.
     // Defect B3-08.
-    if (s->state.cameraParentModel >= kModelSlotCount)
+    if (s->state.cameraParentModel >= kModelSlotCount ||
+        (s->state.cameraParentModel >= 0 && !slots[s->state.cameraParentModel]))
         s->state.cameraParentModel = -1;
     if (s->state.cameraParentModel >= 0) {
         SendMessageA(GetDlgItem(main, panel::kMainComboNormal), CB_SETCURSEL,
@@ -2836,7 +2824,7 @@ static void LoadSceneV2_PhysicsTracksAndClose(PmmV2LoadContext& ctx, int fd,
         }
     }
     pmm_settings::Load(*s, fd);
-    _close(fd);                                                 // 0x458112
+    pmm_io::Close(fd);                                                 // 0x458112
 
 }
 
@@ -3229,9 +3217,7 @@ static void LoadSceneV2_SuccessTail(PmmV2LoadContext& ctx,
         RefreshLightPanel(s);                                           // 0x411070
         PanelPaint(s);                                          // 0x414610
     }
-    // record array free (0x458EB2..0x458F25)
-    FreeRecordArrays(workspaces, modelCount);
-    delete[] workspaces;
+    // The load owner releases workspaces after the entire success tail.
     InvalidateRect(main, nullptr, FALSE);                       // 0x458F36
     RelayoutSidebarControls(s);                                               // 0x442EB0
     s->PhysicsResetPending() = 1;                               // 0x458F43
@@ -3262,6 +3248,7 @@ void LoadSceneV2(MMDApp* app, int fd) {  // was Sub450000, VA 0x00450000
     // ---- model count / record array (0x45044E..0x4504B4) ----------------
     s->state.projectedShadowBlendEnabled = 0;                 // 0x450458
     Rd(fd, &s->SelectedModelSlot(), 1);                         // 0x45045F
+    if (s->SelectedModelSlot() >= kModelSlotCount) s->SetSelectedModelSlot(0);
     unsigned char modelCount = 0;
     Rd(fd, &modelCount, 1);                                     // 0x45046C
     auto* const workspaces = new PmmModelLoadWorkspace[modelCount];
@@ -3282,6 +3269,14 @@ void LoadSceneV2(MMDApp* app, int fd) {  // was Sub450000, VA 0x00450000
         }
     }
 
+    for (int slot = 0; slot < kModelSlotCount; ++slot) {
+        if (auto* bytes = s->ModelSlot(slot)) {
+            const auto& model = *mdl::Mdl(bytes);
+            pmm_io::CheckKeyChains(model.boneKeys, mdl::BoneKeyCapacity(model), model.boneCount);
+            pmm_io::CheckKeyChains(model.morphKeys, mdl::MorphKeyCapacity(model.morphKeys), model.morphCount);
+            pmm_io::CheckKeyChains(mdl::DisplayKeys(bytes), mdl::KeyPoolCapacity(mdl::DisplayKeys(bytes)));
+        }
+    }
     LoadSceneV2_ReleaseTracks(ctx, fd, workspaces, modelIdx, modelCount);  // 0x454127..0x454213
     LoadSceneV2_ResetCombos(ctx);                       // 0x454230..0x454C8A
     LoadSceneV2_ReallocateTracks(ctx);                  // 0x454C9A..0x454DFB
@@ -3303,14 +3298,23 @@ void LoadSceneV2(MMDApp* app, int fd) {  // was Sub450000, VA 0x00450000
         delete[] workspaces;
         return;
     }
+    pmm_io::CheckKeyChains(s->CameraKeys(), mdl::KeyPoolCapacity(s->CameraKeys()));
+    pmm_io::CheckKeyChains(s->LightKeys(), mdl::KeyPoolCapacity(s->LightKeys()));
+    for (int slot = 0; slot < kModelSlotCount; ++slot)
+        if (s->AccessorySlot(slot))
+            pmm_io::CheckKeyChains(s->AccessoryKeys(slot), mdl::KeyPoolCapacity(s->AccessoryKeys(slot)));
     LoadSceneV2_ConfigBlock(ctx, fd);                   // 0x456617..0x45776E
     LoadSceneV2_PhysicsTracksAndClose(ctx, fd, modelCount);  // 0x45777C..0x458112
+    pmm_io::CheckKeyChains(s->ShadowKeys(), mdl::KeyPoolCapacity(s->ShadowKeys()));
+    pmm_io::CheckKeyChains(s->GravityKeys(), mdl::KeyPoolCapacity(s->GravityKeys()));
+    LoadSceneV2_SuccessTail(ctx, workspaces, modelCount);
     } catch(...) {
         FreeRecordArrays(workspaces,modelCount);
         delete[] workspaces;
         throw;
     }
-    LoadSceneV2_SuccessTail(ctx, workspaces, modelCount);    // 0x458120..0x458F53
+    FreeRecordArrays(workspaces, modelCount);
+    delete[] workspaces;
     native_mesh::ProjectOpened(app, app->EnvFileName());
     mmv4mms::ProjectOpened(app, app->EnvFileName());
     recent_projects::Record(app, app->EnvFileName());

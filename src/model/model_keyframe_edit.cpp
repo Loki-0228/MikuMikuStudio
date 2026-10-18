@@ -407,6 +407,14 @@ int RegisterBonePoseAtFrame(unsigned char* model, int boneIndex,  // was Sub4B38
     const unsigned currentSlot = static_cast<unsigned>(current);
     if (keys[currentSlot].frame == frame) {
         AppendBoneKeyToUndo(model, current);
+        // Automatic interpolation writes both neighbours as well as this key.
+        // Capture them before fill so Undo/Redo restore the complete interval.
+        if (autoInterpolation) {
+            if (keys[current].frame != 0)
+                AppendBoneKeyToUndo(model, static_cast<int>(keys[current].previous));
+            if (keys[current].next != 0)
+                AppendBoneKeyToUndo(model, static_cast<int>(keys[current].next));
+        }
         fill(current);
     } else {
         // x64 sub_7FF7CB4E9DB0 @0x7FF7CB4EA46F：空闲槽扫描从持久游标
@@ -507,6 +515,31 @@ void RegisterSelectedBoneKeys(unsigned char* model, int frame, int mode) {  // w
         RegisterBonePoseAtFrame(model, i, static_cast<std::uint32_t>(frame), mode);
         secondary[i] = 0;
     }
+}
+
+// A frame paste is one transaction across bone, morph and display/IK lanes.
+// Reserve three bone records per inserted/overwritten pose for its neighbours.
+void BeginModelFramePasteUndo(unsigned char* model, int frame,
+                             std::uint32_t bonePasteCount, bool morph, bool display) {
+    if (!model || (!bonePasteCount && !morph && !display)) return;
+    const HWND hwnd = *reinterpret_cast<HWND*>(model);
+    EnableWindow(GetDlgItem(hwnd, panel::kUndoButton), TRUE);
+    EnableWindow(GetDlgItem(hwnd, panel::kRedoButton), FALSE);
+    AdvanceUndo(model);
+    auto& undo = CurrentUndo(model);
+    const bool auxiliary = morph || display;
+    undo.operation = auxiliary ? 7 : 2;
+    undo.dirty = 0;
+    undo.frame = frame;
+    undo.reserved0 = bonePasteCount;
+    SnapshotPose(model, undo);
+    const std::size_t boneBytes = std::size_t(bonePasteCount) * 3 * sizeof(mdl::BoneKeySnapshot);
+    const auto layout = DeleteAuxLayout(*mdl::Mdl(model), morph, display);
+    ReplaceBuffer(undo.auxiliaryPose, boneBytes + (auxiliary ? DeleteAuxSize(layout) : 0));
+    if (auxiliary)
+        CaptureDeleteAux(*mdl::Mdl(model), layout,
+            static_cast<unsigned char*>(undo.auxiliaryPose) + boneBytes);
+    mdl::BoneKeyVisitClear(*mdl::Mdl(model));
 }
 
 void SnapshotPoseBeforeFrameChange(unsigned char* model, int frame) {  // was Sub4A0080

@@ -311,7 +311,7 @@ struct PmmV1LoadContext {
 // close + ResetAppState + HandleWindowSize + return; the split-out twin
 // of the abortLoad lambda the inline body carried.
 static void AbortV1Load(MMDApp* s, int fd) {
-    _close(fd);                                              // 0x45A7CA
+    pmm_io::Close(fd);                                              // 0x45A7CA
     ResetAppState(s);                                        // 0x45A7D4
     HandleWindowSize(s);                                     // 0x45A7DB
 }
@@ -457,7 +457,8 @@ static unsigned char LoadSceneV1_ModelPrePass(PmmV1LoadContext& ctx,
 
     // per-model 20-byte name pre-pass (0x4597C6..0x459841)
     for (unsigned char i = 0; i < modelCount; ++i) {
-        pmm_io::ReadText(fd, text, 0x14, 20);                                      // 0x4597C6
+        pmm_io::ReadText(fd, text, 0x14, 20);
+        text[20] = 0;                                      // 0x4597C6
         SendMessageA(GetDlgItem(main, panel::kMainComboModel), CB_ADDSTRING, 0,
                      reinterpret_cast<LPARAM>(text));
         SendMessageA(GetDlgItem(main, panel::kMainComboGround), CB_ADDSTRING, 0,
@@ -487,6 +488,8 @@ static bool LoadSceneV1_ModelBlock(PmmV1LoadContext& ctx, int fd) {
 
             unsigned char slotByte = 0;
             Rd(fd, &slotByte, 1);                                // 0x459861
+            if (slotByte >= kModelSlotCount || slots[slotByte] != nullptr)
+                throw std::runtime_error("Invalid or duplicate PMM model slot");
             unsigned char* nm =
                 static_cast<unsigned char*>(operator new(mdl::kSize));
             if (nm != nullptr) IdentityCtor(nm);                    // 0x459888
@@ -507,7 +510,7 @@ static bool LoadSceneV1_ModelBlock(PmmV1LoadContext& ctx, int fd) {
 
             char name20[0x14];
             pmm_io::ReadText(fd, name20, 0x14, 20);                                // 0x4598E4
-            pmm_io::ReadText(fd, mbPath, 0x100, 255);                               // 0x4598FB
+            pmm_io::ReadFixedText(fd, mbPath, 0x100, 255);                               // 0x4598FB
             ResolveAnsiUserFile(reinterpret_cast<unsigned char*>(wrap),
                                 mbPath, widePath, 0x100,
                                 paths);                           // 0x459925
@@ -607,6 +610,10 @@ static bool LoadSceneV1_ModelBlock(PmmV1LoadContext& ctx, int fd) {
             for (std::int32_t& selectedMorph :
                  mdl::Mdl(model)->selectedMorphs)
                 Rd(fd, &selectedMorph, sizeof(selectedMorph));   // 0x459CAB
+            if (record->selectedBone < 0 || std::uint32_t(record->selectedBone) >= record->boneCount)
+                record->selectedBone = -1;
+            for (auto& morph : record->selectedMorphs)
+                if (morph < 0 || std::uint32_t(morph) >= record->morphCount) morph = -1;
             // The PMM stores one visibility byte per display group.  In the
             // original x86 object these lived at model+0x26D0/0x26D4.  Those
             // are pointer-sized fields, so using the literal offsets on x64
@@ -644,7 +651,7 @@ static bool LoadSceneV1_ModelBlock(PmmV1LoadContext& ctx, int fd) {
                 // frame.  The first boneCount entries are the dense heads.
                 // (0x459F18..0x45A0D6)
                 std::int32_t cnt = 0;
-                Rd(fd, &cnt, 4);
+                pmm_io::ReadCount(fd, cnt);
                 // This section carries explicit slot indices, so it is the one
                 // load path that can name a slot past the original pool: the
                 // pool grows on demand instead of dropping such a record.  The
@@ -690,7 +697,7 @@ static bool LoadSceneV1_ModelBlock(PmmV1LoadContext& ctx, int fd) {
                 for (std::int32_t i = 0; i < morphCnt; ++i)      // 0x45A0D7
                     ReadPmmMorphKey(fd, keys[i]);
                 std::int32_t cnt = 0;
-                Rd(fd, &cnt, 4);                                 // 0x45A107
+                pmm_io::ReadCount(fd, cnt);                                 // 0x45A107
                 for (std::int32_t i = 0; i < cnt; ++i) {
                     std::int32_t keyIndex = 0;
                     Rd(fd, &keyIndex, 4);
@@ -729,7 +736,7 @@ static bool LoadSceneV1_ModelBlock(PmmV1LoadContext& ctx, int fd) {
                     keys[0].allocated = b == 1;
                 }
                 std::int32_t cnt = 0;
-                Rd(fd, &cnt, 4);                                 // 0x45A23E
+                pmm_io::ReadCount(fd, cnt);                                 // 0x45A23E
                 for (std::int32_t i = 0; i < cnt; ++i) {
                     std::int32_t keyIndex = 0;
                     Rd(fd, &keyIndex, 4);
@@ -823,6 +830,9 @@ static void LoadSceneV1_RegisterCombo(PmmV1LoadContext& ctx) {
     auto* const s = ctx.s;
     HWND const main = ctx.main;
     unsigned char** const slots = ctx.slots;
+
+    if (s->SelectedModelSlot() >= kModelSlotCount) s->SetSelectedModelSlot(0);
+    if (!slots[s->SelectedModelSlot()]) s->state.optflag[0] = 1;
 
     // ---- register-combo 0x1B1 (0x45A6D3..0x45AA89) -----------------------
     SendMessageA(GetDlgItem(main, panel::kInterpCurveCombo), CB_RESETCONTENT, 0, 0); // 0x45A6D3
@@ -956,7 +966,7 @@ static void LoadSceneV1_CameraTrack(PmmV1LoadContext& ctx, int fd) {
         // pmm_io_common.hpp ReadPmmCameraKey.
         ReadPmmCameraKey<PmmStream::V1>(fd, cameraKeys[0]);
         std::int32_t cnt = 0;
-        Rd(fd, &cnt, 4);                                         // 0x45AD51
+        pmm_io::ReadCount(fd, cnt);                                         // 0x45AD51
         for (std::int32_t i = 0; i < cnt; ++i) {
             std::int32_t timelineFrame = 0;
             Rd(fd, &timelineFrame, 4);
@@ -1028,7 +1038,7 @@ static void LoadSceneV1_LightTrack(PmmV1LoadContext& ctx, int fd) {
         // ReadPmmLightKey - byte-identical to the v2 reader.
         ReadPmmLightKey(fd, lightKeys[0]);
         std::int32_t cnt = 0;
-        Rd(fd, &cnt, 4);                                         // 0x45B185
+        pmm_io::ReadCount(fd, cnt);                                         // 0x45B185
         for (std::int32_t i = 0; i < cnt; ++i) {
             std::int32_t timelineFrame = 0;
             Rd(fd, &timelineFrame, 4);
@@ -1111,7 +1121,7 @@ static bool LoadSceneV1_AccessoryBlock(PmmV1LoadContext& ctx, int fd) {
     EnableMenuItem(GetMenu(main), 0xF9, accCount == 0 ? 1 : 0);  // 0x45B7EA
     // shadow name list (0x45B814..0x45B837)
     for (unsigned char i = 0; i < accCount; ++i) {
-        pmm_io::ReadText(fd, text, 100, 99);
+        pmm_io::ReadFixedText(fd, text, 100, 99);
         SendMessageA(GetDlgItem(main, panel::kAccessoryCombo), CB_ADDSTRING, 0,
                      reinterpret_cast<LPARAM>(text));
     }
@@ -1120,49 +1130,20 @@ static bool LoadSceneV1_AccessoryBlock(PmmV1LoadContext& ctx, int fd) {
     for (unsigned char i = 0; i < accCount; ++i) {
         unsigned char accSlot = 0;
         Rd(fd, &accSlot, 1);                                     // 0x45B867
-        // Deliberate hardening: the original writes this file-supplied
-        // accessory slot byte directly into the 255-entry accessory array
-        // without comparing it to the array length (the loader region
-        // 0x140082D00..0x140085000 contains no capacity comparison; index 255 is
-        // lastRegisteredFrame), so an out-of-range slot overwrites adjacent
-        // application state.  The port consumes the accessory record's bytes
-        // and discards it, leaving the stream position unchanged.
-        // Defect B3-10.
-        if (static_cast<int>(accSlot) >= 255) {
-            unsigned char discardedByte = 0;
-            std::int32_t discardedWord = 0;
-            mdl::AccessoryKey discardedKey{};
-            pmm_io::ReadText(fd, accName, 100, 99);
-            pmm_io::ReadText(fd, mbPath, 0x100, 255);
-            Rd(fd, &discardedByte, 1);                  // accessory.order
-            ReadPmmAccessoryKey(fd, discardedKey);
-            std::int32_t discardedCount = 0;
-            Rd(fd, &discardedCount, 4);
-            for (std::int32_t k = 0; k < discardedCount; ++k) {
-                Rd(fd, &discardedWord, 4);
-                ReadPmmAccessoryKey(fd, discardedKey);
-            }
-            Rd(fd, &discardedByte, 1);                  // visible/opacity
-            Rd(fd, &discardedWord, 4);                  // parentModel
-            Rd(fd, &discardedWord, 4);                  // parentBone
-            Rd(fd, &discardedWord, 4);                  // rotation[0]
-            Rd(fd, &discardedWord, 4);                  // rotation[1]
-            Rd(fd, &discardedWord, 4);                  // rotation[2]
-            Rd(fd, &discardedWord, 4);                  // scale
-            Rd(fd, &discardedWord, 4);                  // position[0]
-            Rd(fd, &discardedWord, 4);                  // position[1]
-            Rd(fd, &discardedWord, 4);                  // position[2]
-            Rd(fd, &discardedByte, 1);                  // shadowEnabled
-            continue;
-        }
+        // An invalid slot has no object to pair with the shadow-list entry.
+        // Continuing would preserve a phantom count and save an unreadable PMM.
+        if (accSlot >= kModelSlotCount)
+            throw std::runtime_error("Invalid PMM accessory slot");
+        if (accs[accSlot] != nullptr)
+            throw std::runtime_error("Duplicate PMM accessory slot");
         auto* acc = static_cast<mdl::AccessoryRecord*>(operator new(
             sizeof(mdl::AccessoryRecord)));                     // 0x45B871
         if (acc != nullptr) IdentityCtor(acc);                      // 0x45B88E
         accs[accSlot] = acc;
         std::memset(accs[accSlot], 0, sizeof(mdl::AccessoryRecord));
         Sub04B0Init(accs[accSlot]);                              // 0x45B8D6
-        pmm_io::ReadText(fd, accName, 100, 99);                                    // 0x45B8EA
-        pmm_io::ReadText(fd, mbPath, 0x100, 255);                                   // 0x45B901
+        pmm_io::ReadFixedText(fd, accName, 100, 99);                                    // 0x45B8EA
+        pmm_io::ReadFixedText(fd, mbPath, 0x100, 255);                                   // 0x45B901
         ResolveAnsiUserFile(reinterpret_cast<unsigned char*>(wrap),
                             mbPath, wideTmp, 0x100,
                             paths);                               // 0x45B92B
@@ -1218,7 +1199,7 @@ static bool LoadSceneV1_AccessoryBlock(PmmV1LoadContext& ctx, int fd) {
                          0x3E8, ofnTitle);                       // 0x45BB59
             }
             if (!LoadAccessoryObject(s, accs[accSlot], ofnFile)) {
-                _close(fd);                                      // 0x45C5D5
+                pmm_io::Close(fd);                                      // 0x45C5D5
                 ResetAppState(s);                                // 0x45C5DF
                 // NOTE: no HandleWindowSize on this path (unlike 0x45A7C5).
                 return false;
@@ -1244,7 +1225,7 @@ static bool LoadSceneV1_AccessoryBlock(PmmV1LoadContext& ctx, int fd) {
         ReadPmmAccessoryKey(fd, accessoryKeys[0]);
         {
             std::int32_t cnt = 0;
-            Rd(fd, &cnt, 4);                                     // 0x45BE2B
+            pmm_io::ReadCount(fd, cnt);                                     // 0x45BE2B
             for (std::int32_t k = 0; k < cnt; ++k) {
                 std::int32_t timelineFrame = 0;
                 Rd(fd, &timelineFrame, 4);
@@ -1394,7 +1375,7 @@ static void LoadSceneV1_ConfigBlock(PmmV1LoadContext& ctx, int fd) {
         ClearTimelineAndCurveDCs(s);                                            // 0x45CA2F
         Rd(fd, &b, 1);                                           // 0x45CA40
         s->state.waveEnabled = b ? 1 : 0;
-        pmm_io::ReadText(fd, mbPath, 0x100, 255);                                   // 0x45CA71
+        pmm_io::ReadFixedText(fd, mbPath, 0x100, 255);                                   // 0x45CA71
         ResolveAnsiUserFile(reinterpret_cast<unsigned char*>(wrap),
                             mbPath,
                             reinterpret_cast<wchar_t*>(s->state.wavPath),
@@ -1405,7 +1386,7 @@ static void LoadSceneV1_ConfigBlock(PmmV1LoadContext& ctx, int fd) {
         Rd(fd, &w1, 4);                                          // 0x45CABE
         Rd(fd, &w2, 4);                                          // 0x45CACF
         Rd(fd, &w3, 4);                                          // 0x45CAE3
-        pmm_io::ReadText(fd, mbPath, 0x100, 255);                                   // 0x45CAFA
+        pmm_io::ReadFixedText(fd, mbPath, 0x100, 255);                                   // 0x45CAFA
         ResolveAnsiUserFile(reinterpret_cast<unsigned char*>(wrap),
                             mbPath,
                             s->AviBackgroundPath(),
@@ -1451,7 +1432,7 @@ static void LoadSceneV1_ConfigBlock(PmmV1LoadContext& ctx, int fd) {
         Rd(fd, &p1, 4);                                          // 0x45CC5F
         Rd(fd, &p2, 4);                                          // 0x45CC70
         Rd(fd, &p3, 4);                                          // 0x45CC84
-        pmm_io::ReadText(fd, mbPath, 0x100, 255);                                   // 0x45CC9B
+        pmm_io::ReadFixedText(fd, mbPath, 0x100, 255);                                   // 0x45CC9B
         ResolveAnsiUserFile(reinterpret_cast<unsigned char*>(wrap),
                             mbPath,
                             s->PictureBackgroundPath(),
@@ -1593,7 +1574,7 @@ static void LoadSceneV1_ReadGatedTail(PmmV1LoadContext& ctx, int fd) {
     // Unlike the rest of the body, this chain tests the _read results and
     // unwinds early at end-of-stream.
     // [read-gate 1] end-of-stream unwinds here
-    if (Rd(fd, &s->state.accessoryRenderSplitOrder, 4) > 0) {  // 0x45D278
+    if (pmm_io::OptionalRd(fd, &s->state.accessoryRenderSplitOrder, 4) > 0) {  // 0x45D278
         Rd(fd, &s->ProjectedShadowAmbientIntensity(), 4);       // 0x45D296
         s->SetProjectedShadowAmbient(s->ProjectedShadowAmbientIntensity());
         // x64 load twin sub_7FF7CB498E30: every post-read slot walk runs to
@@ -1635,7 +1616,7 @@ static void LoadSceneV1_ReadGatedTail(PmmV1LoadContext& ctx, int fd) {
         }
         std::int32_t v31C0 = 0;
         // [read-gate 2] end-of-stream unwinds here
-        if (Rd(fd, &v31C0, 4) > 0) {                             // 0x45D40F
+        if (pmm_io::OptionalRd(fd, &v31C0, 4) > 0) {                             // 0x45D40F
             float edgeScaleBits;
             std::memcpy(&edgeScaleBits, &v31C0, sizeof edgeScaleBits);
             for (int i = 0; i < kModelSlotCount; ++i)
@@ -1650,7 +1631,7 @@ static void LoadSceneV1_ReadGatedTail(PmmV1LoadContext& ctx, int fd) {
             } else {
                 s->state.projectedShadowBlendEnabled = 0;
             }
-            const int got48F = Rd(fd, &b, 1);                    // 0x45D48F
+            const int got48F = pmm_io::OptionalRd(fd, &b, 1);                    // 0x45D48F
             // [read-gate 3] end-of-stream unwinds here
             if (b == 1 && got48F > 0) {
                 // per-model 0x31C0 re-read pass (0x45D4B0..0x45D4FB):
@@ -1665,7 +1646,7 @@ static void LoadSceneV1_ReadGatedTail(PmmV1LoadContext& ctx, int fd) {
                     }
                 }
                 unsigned char b509 = 0;
-                const int got509 = Rd(fd, &b509, 1);             // 0x45D509
+                const int got509 = pmm_io::OptionalRd(fd, &b509, 1);             // 0x45D509
                 // [read-gate 4] end-of-stream unwinds here
                 if (b509 == 1 && got509 > 0) {
                 Rd(fd, reinterpret_cast<unsigned char*>(
@@ -1708,7 +1689,7 @@ static void LoadSceneV1_ReadGatedTail(PmmV1LoadContext& ctx, int fd) {
                     (bc == 1) ? 1 : 0;
                 {
                     unsigned char bd = 0;
-                    const int got716 = Rd(fd, &bd, 1);           // 0x45D716
+                    const int got716 = pmm_io::OptionalRd(fd, &bd, 1);           // 0x45D716
                     // [read-gate 5] end-of-stream unwinds here
                     if (bd == 1 && got716 > 0) {
                         unsigned char be = 0;
@@ -1732,7 +1713,7 @@ static void LoadSceneV1_ReadGatedTail(PmmV1LoadContext& ctx, int fd) {
                             }
                         }
                         unsigned char bs = 0;
-                        const int got7FE = Rd(fd, &bs, 1);       // 0x45D7FE
+                        const int got7FE = pmm_io::OptionalRd(fd, &bs, 1);       // 0x45D7FE
                         // [read-gate 6] end-of-stream unwinds here
                         if (bs == 1 && got7FE > 0) {
                             // selection/self-shadow track on app+0x37C
@@ -1740,7 +1721,7 @@ static void LoadSceneV1_ReadGatedTail(PmmV1LoadContext& ctx, int fd) {
                             // pmm_io_common.hpp ReadPmmSelfShadowKey.
                             ReadPmmSelfShadowKey(fd, selfShadowKeys[0]);
                             std::int32_t cnt = 0;
-                            Rd(fd, &cnt, 4);                     // 0x45D8C7
+                            pmm_io::ReadCount(fd, cnt);                     // 0x45D8C7
                             for (std::int32_t i = 0; i < cnt; ++i) {
                                 std::int32_t timelineFrame = 0;
                                 Rd(fd, &timelineFrame, 4);
@@ -1763,7 +1744,7 @@ static void LoadSceneV1_ReadGatedTail(PmmV1LoadContext& ctx, int fd) {
                                                          timelineFrame]);
                             }
                             unsigned char bq = 0;
-                            const int got9EC = Rd(fd, &bq, 1);   // 0x45D9EC
+                            const int got9EC = pmm_io::OptionalRd(fd, &bq, 1);   // 0x45D9EC
                             // [read-gate 7] end-of-stream unwinds here
                             if (bq == 1 && got9EC > 0) {
                                 // model color sweep (0x45DA1B..0x45DA91)
@@ -1787,7 +1768,7 @@ static void LoadSceneV1_ReadGatedTail(PmmV1LoadContext& ctx, int fd) {
                                 }
 
                                 unsigned char br = 0;
-                                const int gotAB4 = Rd(fd, &br, 1); // 0x45DAB4
+                                const int gotAB4 = pmm_io::OptionalRd(fd, &br, 1); // 0x45DAB4
                                 // [read-gate 8] end-of-stream unwinds here
                                 if (br == 1 && gotAB4 > 0) {
                                     unsigned char b194 = 0;
@@ -1797,7 +1778,7 @@ static void LoadSceneV1_ReadGatedTail(PmmV1LoadContext& ctx, int fd) {
                                                   b194 ? 8 : 0);
                                     unsigned char bcam = 0;
                                     const int gotB35 =
-                                        Rd(fd, &bcam, 1);        // 0x45DB35
+                                        pmm_io::OptionalRd(fd, &bcam, 1);        // 0x45DB35
                                     // [read-gate 9] end-of-stream unwinds here
                                     if (bcam == 1 && gotB35 > 0) {
                                         // camera parent reregister
@@ -1814,7 +1795,7 @@ static void LoadSceneV1_ReadGatedTail(PmmV1LoadContext& ctx, int fd) {
                                             nParent < 1000) {
 
                                             std::int32_t cnt = 0;
-                                            Rd(fd, &cnt, 4);     // 0x45DBD3
+                                            pmm_io::ReadCount(fd, cnt);     // 0x45DBD3
                                             for (std::int32_t i = 0;
                                                  i < cnt; ++i) {
                                                 std::int32_t timelineFrame = 0;
@@ -1874,7 +1855,7 @@ static void LoadSceneV1_ReadGatedTail(PmmV1LoadContext& ctx, int fd) {
                                         }
                                         unsigned char bdd = 0;
                                         const int gotDDFC =
-                                            Rd(fd, &bdd, 1);    // 0x45DDFC
+                                            pmm_io::OptionalRd(fd, &bdd, 1);    // 0x45DDFC
                                         // [read-gate 10] end-of-stream unwinds here
                                         if (bdd == 1 && gotDDFC > 0) {
                                         // 16 config dwords
@@ -1907,7 +1888,7 @@ static void LoadSceneV1_ReadGatedTail(PmmV1LoadContext& ctx, int fd) {
                                             (b478 == 1) ? 1 : 0;
                                         unsigned char b11d = 0;
                                         const int got00E =
-                                            Rd(fd, &b11d, 1);    // 0x45E00E
+                                            pmm_io::OptionalRd(fd, &b11d, 1);    // 0x45E00E
                                         // [read-gate 11] end-of-stream unwinds here
                                         if (b11d == 1 && got00E > 0) {
                                             unsigned char bd2 = 0;
@@ -1929,7 +1910,7 @@ static void LoadSceneV1_ReadGatedTail(PmmV1LoadContext& ctx, int fd) {
                                             }
                                             unsigned char bfin = 0;
                                             const int got0BC =
-                                                Rd(fd, &bfin, 1); // 0x45E0BC
+                                                pmm_io::OptionalRd(fd, &bfin, 1); // 0x45E0BC
                                             // [read-gate 12] end-of-stream unwinds here
                                             if (bfin == 1 && got0BC > 0) {
                                                 for (int i = 0;
@@ -2205,6 +2186,14 @@ void LoadSceneV1(MMDApp* app, int fd) {
         }
     }
 
+    for (int slot = 0; slot < kModelSlotCount; ++slot) {
+        if (auto* bytes = s->ModelSlot(slot)) {
+            const auto& model = *mdl::Mdl(bytes);
+            pmm_io::CheckKeyChains(model.boneKeys, mdl::BoneKeyCapacity(model), model.boneCount);
+            pmm_io::CheckKeyChains(model.morphKeys, mdl::MorphKeyCapacity(model.morphKeys), model.morphCount);
+            pmm_io::CheckKeyChains(mdl::DisplayKeys(bytes), mdl::KeyPoolCapacity(mdl::DisplayKeys(bytes)));
+        }
+    }
     LoadSceneV1_RegisterCombo(ctx);                   // 0x45A6D3..0x45AA89
     LoadSceneV1_ReallocateTracks(ctx);                // 0x45AA93..0x45ABCC
     LogV1Stage("regcombo-done", _tell(fd));
@@ -2212,10 +2201,16 @@ void LoadSceneV1(MMDApp* app, int fd) {
     LoadSceneV1_LightTrack(ctx, fd);                  // 0x45B090..0x45B761
     if (!LoadSceneV1_AccessoryBlock(ctx, fd)) return; // 0x45B761..0x45C479
     LogV1Stage("accessories-done", _tell(fd));
+    pmm_io::CheckKeyChains(s->CameraKeys(), mdl::KeyPoolCapacity(s->CameraKeys()));
+    pmm_io::CheckKeyChains(s->LightKeys(), mdl::KeyPoolCapacity(s->LightKeys()));
+    for (int slot = 0; slot < kModelSlotCount; ++slot)
+        if (s->AccessorySlot(slot))
+            pmm_io::CheckKeyChains(s->AccessoryKeys(slot), mdl::KeyPoolCapacity(s->AccessoryKeys(slot)));
     LoadSceneV1_ConfigBlock(ctx, fd);                 // 0x45C48C..0x45D278
     LoadSceneV1_ReadGatedTail(ctx, fd);               // 0x45D278..0x45E117
+    pmm_io::CheckKeyChains(s->ShadowKeys(), mdl::KeyPoolCapacity(s->ShadowKeys()));
     LogV1Stage("gated-tail-done", _tell(fd));
-    _close(fd);                                       // 0x45E11D
+    pmm_io::Close(fd);                                       // 0x45E11D
     LoadSceneV1_SuccessTail(ctx);                     // 0x45E149..0x45E7F7
     native_mesh::ProjectOpened(app, app->EnvFileName());
     mmv4mms::ProjectOpened(app, app->EnvFileName());

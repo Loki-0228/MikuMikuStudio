@@ -34,6 +34,15 @@ def main():
         ('absolute-cp936', '中文效果', 'cp936', False),
         ('absolute-utf8', '中文效果', 'utf-8', False),
         ('missing-absolute', 'エフェクト', 'cp932', False),
+        ('exe-relative-backup', 'effects', 'ascii', True),
+        ('exe-relative-backup-cp936', '中文效果', 'cp936', True),
+        ('exe-relative-parent', 'effects', 'ascii', True),
+        ('exe-relative-other-cwd', 'effects', 'ascii', True),
+        ('project-relative-other-cwd', 'effects', 'ascii', True),
+        ('project-relative-priority', 'effect files', 'ascii', True),
+        ('project-relative-cp936', '中文效果', 'cp936', True),
+        ('project-relative-utf8', '中文效果', 'utf-8', True),
+        ('project-relative-cp932', 'ソフト', 'cp932', True),
     ]
     selected = set(sys.argv[4:])
     results = []
@@ -50,14 +59,26 @@ def main():
             '40\n40\n1000\n740\n0\n640\n480\n250\n1\n', encoding='ascii')
         model = directory / 'model.pmx'
         model.write_bytes(fixture())
-        effects = directory / folder
+        project_base = directory / 'projects' if name.startswith('project-relative') else directory
+        project_base.mkdir(exist_ok=True)
+        effects = project_base / folder
         effects.mkdir()
         effect = effects / 'assigned.fx'
         effect.write_text(EFFECT, encoding='ascii')
-        project = directory / 'scene.pmm'
+        if name == 'project-relative-priority':
+            legacy = directory / folder
+            legacy.mkdir()
+            (legacy / 'assigned.fx').write_text(EFFECT.replace('float4(1, 0, 1, 1)', 'float4(0, 1, 0, 1)'), encoding='ascii')
+        project = project_base / 'scene.pmm'
+        if name.startswith('exe-relative'):
+            project = directory / ('data/scene.pmm' if name == 'exe-relative-parent' else 'data/backups/scene.pmm')
+            project.parent.mkdir(parents=True, exist_ok=True)
         project.write_bytes(b'EMM notification fixture\n')
         assignment = project.with_suffix('.emm')
-        effect_path = str(effect.relative_to(directory) if relative else effect)
+        effect_path = str(effect.relative_to(project_base) if relative else effect)
+        if name == 'exe-relative-parent':
+            # A project-relative spelling written before the backup was moved.
+            effect_path = '..\\' + effect_path
         text = (f'[Info]\nVersion = 3\n\n[Object]\nPmd1 = {model}\n\n'
                 f'[Effect]\nDefault = none\nPmd1 = {effect_path}\nPmd1.show = true\n')
         assignment.write_bytes(text.replace('\n', '\r\n').encode(encoding))
@@ -70,6 +91,9 @@ def main():
         env['LOCALAPPDATA'] = str(directory / 'Local')
         env['APPDATA'] = str(directory / 'Roaming')
         env['MIKUDANCESTUDIO_AUTOSAVE_CONFIG'] = str(directory / 'autosave.ini')
+        if name.endswith('other-cwd'):
+            (directory / 'browse').mkdir()
+            env['MMS_EMM_WORKING_DIRECTORY'] = str(directory / 'browse')
         with (directory / 'result.log').open('wb') as log:
             try:
                 completed = subprocess.run(

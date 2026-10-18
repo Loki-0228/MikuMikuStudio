@@ -25,7 +25,7 @@ namespace diagnostics = mikudancestudio::runtime_log;
 namespace {
 unsigned checks = 0;
 bool blocked = false;
-bool stress = false, writerFault = false;
+bool stress = false, writerFault = false, nullExecute = false;
 constexpr unsigned kStressWriters = 6;
 std::atomic<bool> stopWriters{false};
 std::atomic<bool> hotWriters{false};
@@ -111,6 +111,9 @@ int WINAPI HiddenMessage(HWND, LPCWSTR text, LPCWSTR, UINT) {
     const bool ok = text && (blocked ? wcsstr(text, L"could not save error log") :
         wcsstr(text, L"error log:") && wcsstr(text, L"\\data\\backups\\error-"));
     if (!ok) TerminateProcess(GetCurrentProcess(), 251);
+    if (nullExecute && (!wcsstr(text, L"fault context registers:") ||
+        !wcsstr(text, L"null execute callsite:") || !wcsstr(text, L"bytes[-16,+8)")))
+        TerminateProcess(GetCurrentProcess(), 247);
     if (stress || writerFault) {
         char snapshot[36000]{};
         unsigned count = 0;
@@ -146,6 +149,7 @@ int Child(const std::wstring& mode) {
     blocked = mode == L"blocked";
     stress = mode.find(L"stress-") == 0;
     writerFault = mode == L"writer-fault";
+    nullExecute = mode == L"execute-null" || mode == L"execute-null-boundary";
     Check(MH_Initialize() == MH_OK &&
         MH_CreateHook(reinterpret_cast<void*>(&MessageBoxW), reinterpret_cast<void*>(&HiddenMessage), nullptr) == MH_OK &&
         MH_EnableHook(MH_ALL_HOOKS) == MH_OK, "hide disposable child crash dialogs");
@@ -167,6 +171,28 @@ int Child(const std::wstring& mode) {
     if (mode == L"terminate") std::terminate();
     if (mode == L"abort") std::abort();
     if (mode == L"shutdown") diagnostics::BeginShutdown();
+    if (mode == L"execute-null") {
+        auto missing = reinterpret_cast<void(*)()>(GetProcAddress(GetModuleHandleW(nullptr), "MissingCrashTestFunction"));
+        missing();
+        diagnostics::Write("unreachable after null call"); // Keep a real CALL, not a tail JMP.
+    }
+    if (mode == L"execute-null-boundary") {
+        SYSTEM_INFO system{}; GetSystemInfo(&system);
+        auto* memory = static_cast<unsigned char*>(VirtualAlloc(nullptr, system.dwPageSize * 2,
+            MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
+        Check(memory != nullptr, "allocate isolated null-call code page");
+        DWORD previous = 0;
+        Check(VirtualProtect(memory, system.dwPageSize, PAGE_NOACCESS, &previous) != FALSE,
+            "protect preceding code page from diagnostic reads");
+        auto* code = memory + system.dwPageSize;
+        const unsigned char instructions[] = {0x31, 0xC0, 0xFF, 0xD0, 0xC3}; // xor eax,eax; call rax/eax; ret
+        std::memcpy(code, instructions, sizeof(instructions));
+        Check(VirtualProtect(code, system.dwPageSize, PAGE_EXECUTE_READ, &previous) != FALSE &&
+            FlushInstructionCache(GetCurrentProcess(), code, sizeof(instructions)) != FALSE,
+            "publish isolated null-call code");
+        reinterpret_cast<void(*)()>(code)();
+        diagnostics::Write("unreachable after boundary null call");
+    }
     const ULONG_PTR details[] = {1, 0x1234};
     RaiseException(EXCEPTION_ACCESS_VIOLATION, EXCEPTION_NONCONTINUABLE, 2, details);
     return 252;
@@ -181,7 +207,7 @@ int wmain(int argc, wchar_t** argv) {
     wchar_t executable[32768]{};
     Check(GetModuleFileNameW(nullptr, executable, 32768) != 0, "resolve test executable");
     for (const wchar_t* mode : {L"normal", L"seh", L"fatal", L"terminate", L"abort", L"shutdown", L"blocked",
-        L"stress-0", L"stress-1", L"stress-2", L"writer-fault"}) {
+        L"stress-0", L"stress-1", L"stress-2", L"writer-fault", L"execute-null", L"execute-null-boundary"}) {
         const auto directory = root / L"中文程序" / mode;
         const auto cwd = root / L"different-working-folder" / mode;
         fs::create_directories(directory); fs::create_directories(cwd);
@@ -201,8 +227,9 @@ int wmain(int argc, wchar_t** argv) {
         const std::wstring value(mode);
         const bool concurrent = value.find(L"stress-") == 0;
         const bool insideWrite = value == L"writer-fault";
+        const bool nullCall = value == L"execute-null" || value == L"execute-null-boundary";
         const DWORD expected = value == L"normal" ? 0 :
-            value == L"seh" || value == L"shutdown" || insideWrite ? EXCEPTION_ACCESS_VIOLATION : 0xE0000004;
+            value == L"seh" || value == L"shutdown" || insideWrite || nullCall ? EXCEPTION_ACCESS_VIOLATION : 0xE0000004;
         Check(code == expected, "child exits through expected production fatal path");
         Check(!fs::exists(cwd / L"data" / L"backups"), "working directory never receives crash files");
         if (value == L"normal") { Check(!fs::exists(directory / L"data" / L"backups"), "normal run creates no crash folder"); continue; }
@@ -215,7 +242,7 @@ int wmain(int argc, wchar_t** argv) {
             Check(entry.path().extension() == L".log" && entry.path().filename().wstring().find(L"error-") == 0,
                 "crash file uses timestamped error name");
             const auto data = Bytes(entry.path());
-            Check(data.find(value == L"seh" || value == L"shutdown" || insideWrite ? "0xC0000005" : "0xE0000004") != std::string::npos,
+            Check(data.find(value == L"seh" || value == L"shutdown" || insideWrite || nullCall ? "0xC0000005" : "0xE0000004") != std::string::npos,
                 "error log includes exception code");
             if (concurrent || insideWrite) {
                 unsigned count = 0;
@@ -231,11 +258,46 @@ int wmain(int argc, wchar_t** argv) {
             }
             Check(data.find("build=") != std::string::npos && data.find("image_base=") != std::string::npos,
                 "report includes build and loaded image address after ring wraps");
+            Check(data.find("loaded graphics modules:") != std::string::npos &&
+                data.find("image_size=0x") != std::string::npos && data.find("timestamp=0x") != std::string::npos,
+                "report retains loaded module identity independently of ring history");
             if (value != L"shutdown") Check(data.find("TEST_RECOVERY completed") != std::string::npos &&
                 data.find("test crash phase") != std::string::npos, "backup result appended to flushed crash report");
             else Check(data.find("TEST_RECOVERY") == std::string::npos, "shutdown fault skips unsafe project recovery");
             if (value == L"seh" || value == L"shutdown") Check(data.find("target=0x1234") != std::string::npos &&
                 data.find("#0 ") != std::string::npos, "SEH report includes memory access and module backtrace");
+            if (nullCall) {
+                Check(data.find("target=0x0") != std::string::npos &&
+                    data.find("fault context registers:") != std::string::npos &&
+#if defined(_M_X64)
+                    data.find("RIP=0000000000000000") != std::string::npos &&
+                    data.find("RAX=") != std::string::npos && data.find("RCX=") != std::string::npos &&
+                    data.find("R15=") != std::string::npos,
+#else
+                    data.find("EIP=00000000") != std::string::npos &&
+                    data.find("EAX=") != std::string::npos && data.find("ECX=") != std::string::npos,
+#endif
+                    "null execute logs retain the original instruction pointer and register context");
+                const auto callsite = data.find("null execute callsite: stack_return=");
+                const auto bytes = data.find("bytes[-16,+8) (| = return address; ?? = unreadable): ", callsite);
+                Check(callsite != std::string::npos && bytes != std::string::npos,
+                    "null execute logs retain bounded raw bytes at the stack return candidate");
+                const auto payload = data.substr(bytes + std::strlen(
+                    "bytes[-16,+8) (| = return address; ?? = unreadable): "), 74);
+                Check(payload.size() == 74 && payload.substr(48, 2) == "| ",
+                    "callsite bytes contain exactly sixteen bytes before and eight after the marked return");
+                if (value == L"execute-null") {
+                    Check(data.find("runtime_log_tests.exe+", callsite) < bytes &&
+                        payload.find("??") == std::string::npos,
+                        "readable real callsite includes its module offset and all twenty-four raw bytes");
+#if defined(_M_X64)
+                    Check(data.find("#1 runtime_log_tests.exe+") != std::string::npos,
+                        "null execute reports preserve the caller's module and offset");
+#endif
+                } else Check(payload.substr(0, 36) == "?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? " &&
+                    payload.substr(36, 12) == "31 C0 FF D0 ",
+                    "unreadable bytes before the executable page are marked without losing readable call bytes");
+            }
         }
         Check(logs == 1, "each fatal event creates one error report");
         std::printf("PASS case=%ls\n", mode);

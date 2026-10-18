@@ -121,12 +121,10 @@ const wchar_t* ResolveUserFilePath(PathResolutionWorkspace& workspace,
         return out;
     }
     // walk back to the last path separator (fail if none)
-    while (*scan != L'\\') {
-        --scan;
-        if (scan == path) {
-            out[0] = L'\0';
-            return out;
-        }
+    while (scan > path && *scan != L'\\') --scan;
+    if (*scan != L'\\') {
+        out[0] = L'\0';
+        return out;
     }
     swprintf_s(tmp, 0x100, L"%s%s%s", dirBase, sub, scan);
     if (WsOpenOk(tmp)) {

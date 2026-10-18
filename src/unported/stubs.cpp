@@ -36,6 +36,7 @@
 #include "mikudancestudio/ported_funcs.hpp"
 #include "mikudancestudio/mf_h264_recorder.hpp"
 #include "mikudancestudio/panel_controls.hpp"
+#include "mikudancestudio/recording_state.hpp"
 #include "../app/device_lost_wait.hpp"
 
 #include "mikudancestudio/texture_lookup.hpp"
@@ -78,6 +79,8 @@ void RefreshAfterFrameApply(MMDApp* app);      // VA 0x432FA0 (ui_frame_step.cpp
 //   it zero and the two ShowWindow calls always run. Defect FB-15.
 // ---------------------------------------------------------------------------
 void FinishAviRecord(MMDApp* app, bool reachedRequestedEnd) {  // was Sub464A00
+    recording_state::Guard finishing(app, recording_state::Operation::Finish);
+    if (!finishing) return;
     auto& s = *app;
     timeEndPeriod(1);                                       // 0x464A07
     s.state.playbackActive = 0;             // 0x464A11
@@ -85,9 +88,8 @@ void FinishAviRecord(MMDApp* app, bool reachedRequestedEnd) {  // was Sub464A00
     unsigned char* flag = s.RecordingCompletionFlag();      // 0x464A1C
     if (flag != nullptr)
         *flag = 1;                                          // 0x464A28
-    const std::uint64_t expectedFrames = s.AviRecordEndFrame() >= s.AviRecordStartFrame()
-        ? static_cast<std::uint64_t>(s.AviRecordEndFrame() - s.AviRecordStartFrame()) + 1
-        : 0;
+    const auto expectedFrames = recording_state::OutputFrameCount(
+        s.AviRecordStartFrame(), s.AviRecordEndFrame(), s.AviRecordFps());
     const bool mfRecording = IsBuiltInH264Recording(s.Recorder());
     std::wstring sequenceError;
     const bool sequenceComplete = image_sequence::Finish(app, reachedRequestedEnd, sequenceError);
@@ -97,9 +99,7 @@ void FinishAviRecord(MMDApp* app, bool reachedRequestedEnd) {  // was Sub464A00
     std::wstring movError;
     bool movComplete = false;
     if (movRecording) {
-        const auto outputFrames = static_cast<std::uint64_t>(
-            std::ceil(expectedFrames * static_cast<double>(s.AviRecordFps()) / 30.0));
-        if (reachedRequestedEnd) movComplete = FinishPngMovRecording(s.Recorder(), outputFrames, movError);
+        if (reachedRequestedEnd) movComplete = FinishPngMovRecording(s.Recorder(), expectedFrames, movError);
         else AbortPngMovRecording(s.Recorder());
     }
     ReleaseTransparentCapture(app);

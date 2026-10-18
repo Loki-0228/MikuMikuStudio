@@ -852,7 +852,7 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
             if (!sharedToon) {                              // own toon file
                 mat.toonReference = 0xFE;
                 const std::int32_t idx = readTexIdx();
-                if (idx >= 0) {
+                if (idx >= 0 && static_cast<std::uint32_t>(idx) < texCount && texPaths[idx]) {
                     swprintf_s(mat.toonPath, 0x200, L"%s%s",
                                model.modelDirectory,
                                texPaths[idx]);
@@ -863,6 +863,7 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
                         mat.toonReference = 0xFF;
                     }
                 } else {
+                    wcscpy_s(mat.toonPath, 0x200, emptyPath);
                     mat.toonReference = 0xFF;
                 }
             } else {

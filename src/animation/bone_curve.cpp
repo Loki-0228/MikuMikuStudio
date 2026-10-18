@@ -34,6 +34,7 @@ using Curves = std::map<int, Entry>;
 struct State {
     const void* identity = nullptr;
     Curves curves;
+    unsigned deferredEdits = 0;
     std::array<Curves, 30> undo, redo;
     std::array<bool, 30> undoValid{}, redoValid{};
 };
@@ -168,6 +169,7 @@ bool FindOrInsert(ac::Track& track,int frame,std::size_t& index,std::string& err
     return ac::InsertPreservingShape(track,frame,index,error)!=ac::InsertResult::Rejected;
 }
 bool Reconcile(const unsigned char* model,int bone,Entry& entry) {
+    if (auto* state = Current(model); state && state->deferredEdits) return true;
     const auto hash=Hash(model,bone);
     if(!hash)return false;
     if(hash==entry.nativeHash&&entry.registrations.empty())return true;
@@ -254,6 +256,81 @@ std::string StableId(const unsigned char* model, int bone, int channel) {
     return id;
 }
 std::string PmmKey(int slot) { return "org.mikudancestudio.model." + std::to_string(slot) + ".boneCurve.v1"; }
+}
+struct RangeRetime::Impl {
+    unsigned char* model = nullptr;
+    Curves curves;
+    bool ready = false, active = false;
+};
+RangeRetime::RangeRetime(unsigned char* model, int first, int last, double scale)
+    : impl_(std::make_unique<Impl>()) {
+    impl_->model = model;
+    if (!model || first < 0 || last < first || !std::isfinite(scale) || scale <= 0) return;
+    Synchronize(model);
+    auto* state = Current(model);
+    if (!state) { impl_->ready = true; return; }
+    impl_->curves = state->curves;
+    const auto mapped = [=](int frame) {
+        if (frame < first) return frame;
+        if (frame <= last) return first + int(double(frame - first) * scale);
+        return frame + int(double(last - first) * scale) - (last - first);
+    };
+    std::string error;
+    for (auto& pair : impl_->curves) for (auto& track : pair.second.tracks) {
+        const auto original = track.keys;
+        std::vector<std::size_t> chosen;
+        track.keys.clear();
+        for (std::size_t i = 0; i < original.size(); ++i) {
+            auto key = original[i]; key.frame = mapped(key.frame);
+            if (key.frame < 0 || key.frame > frame_limits::maximum) return;
+            // Match native overwrite semantics, retaining the mandatory root.
+            if (!track.keys.empty() && track.keys.back().frame == key.frame) {
+                if (key.frame != 0) { track.keys.back() = key; chosen.back() = i; }
+            } else { track.keys.push_back(key); chosen.push_back(i); }
+        }
+        for (std::size_t i = 0; i < track.keys.size(); ++i) {
+            auto& key = track.keys[i];
+            if (i) key.inSlope *= double(original[chosen[i]].frame-original[chosen[i-1]].frame) /
+                double(key.frame-track.keys[i-1].frame);
+            if (i+1 < track.keys.size()) key.outSlope *= double(original[chosen[i+1]].frame-original[chosen[i]].frame) /
+                double(track.keys[i+1].frame-key.frame);
+            if (scale != 1 && key.tangent == ac::Tangent::Automatic) key.tangent = ac::Tangent::Free;
+            if (i) {
+                auto& previous = track.keys[i-1];
+                const double sum = previous.outWeight + key.inWeight;
+                if (sum > 0.9999) {
+                    previous.outWeight = std::clamp(previous.outWeight * 0.9998 / sum, 0.0001, 0.9997);
+                    key.inWeight = 0.9998 - previous.outWeight;
+                }
+            }
+        }
+        if (!ac::Validate(track, error)) return;
+    }
+    ++state->deferredEdits; impl_->active = true; impl_->ready = true;
+}
+RangeRetime::~RangeRetime() {
+    if (impl_ && impl_->active) if (auto* state = Current(impl_->model)) {
+        --state->deferredEdits;
+        // A partially failed native operation is reconciled against its actual
+        // pool; never publish a prepared curve for keys that were not written.
+        Synchronize(impl_->model);
+    }
+}
+bool RangeRetime::Ready() const { return impl_->ready; }
+bool RangeRetime::Complete() {
+    if (!impl_->ready) return false;
+    if (!impl_->active) return true;
+    auto* state = Current(impl_->model); if (!state) return false;
+    for (auto& pair : impl_->curves) {
+        pair.second.baseline.clear();
+        if (!Snapshot(impl_->model, pair.first, pair.second.baseline)) return false;
+        pair.second.nativeHash = Hash(impl_->model, pair.first);
+        if (!pair.second.nativeHash) return false;
+        pair.second.registrations.clear();
+    }
+    state->curves = std::move(impl_->curves);
+    --state->deferredEdits; impl_->active = false;
+    return true;
 }
 bool Read(const unsigned char* model, int bone, Tracks& out) {
     auto* entry = Current(model, bone); if (!entry) return false;

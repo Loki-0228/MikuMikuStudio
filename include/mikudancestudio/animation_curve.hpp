@@ -28,6 +28,10 @@ constexpr std::size_t kMaximumKeys =
 bool Validate(const Track&, std::string& error);
 // Clamps outside the first/last frame; Bezier time is inverted, not assumed linear.
 Sample Evaluate(const Track&, double frame);
+// Smooth display/subdivision of MMD timing controls (in 0..127 units).
+// Subdivision may need full precision MMS-only controls outside that range.
+// Derivative is with respect to normalized time. Native playback stays unchanged.
+Sample EvaluateMmdTiming(const std::array<double,4>& controls, double time);
 void UpdateAutomatic(Track&);
 enum class InsertResult { Inserted, Existing, Rejected };
 // Splits the time/value Bezier at an integer frame without changing its shape.

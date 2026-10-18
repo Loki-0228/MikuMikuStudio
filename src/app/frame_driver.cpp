@@ -96,6 +96,31 @@ void AdvanceFrameRenderGate(MMDApp* app) {
         state = 0;
 }
 
+void PrepareUninitializedImageModels(MMDApp* app) {
+    if (!image_sequence::Active(app)) return;
+    bool uninitialized[kModelSlotCount]{};
+    for (int slot = 0; slot < kModelSlotCount; ++slot) {
+        auto* model = app->ModelSlot(slot);
+        if (!model || !mdl::Mdl(model)->boneCount || !mdl::Bones(model)) continue;
+        // Freshly loaded models can reach frame-zero capture before the first
+        // physics/pose pass. An affine bone matrix can never be entirely zero.
+        bool zero = true;
+        for (float value : mdl::Bones(model)[0].matInit) zero = zero && value == 0;
+        uninitialized[slot] = zero;
+    }
+    // Prepare the authored pose in native dependency order. Do not run the
+    // physics world or advance the output clock; the usual frame tail owns it.
+    for (int phase : {0, 1})
+        for (int order = 0; order < kModelSlotCount; ++order)
+            for (int slot = 0; slot < kModelSlotCount; ++slot) {
+                auto* model = app->ModelSlot(slot);
+                if (uninitialized[slot] && mdl::Mdl(model)->comboSelIndex2 == order) {
+                    ModelApplyMorphs(model);
+                    SetPhysicsMode(model, phase, app->ModelSlots(), 0);
+                }
+            }
+}
+
 #ifdef MIKUDANCESTUDIO_DIAG
 // ---- A/B capture tooling (see frame_state_dump.hpp for the gate) ---------
 
@@ -523,6 +548,7 @@ void FrameDriver(MMDApp* app) {
         // Initialize the first output sample even when the editing playhead
         // already equals the export start (including frame zero).
         PlaybackPoseAdvance(app, 0);
+        PrepareUninitializedImageModels(app);
         s.state.timelineAdvanceDue = 0;
         s.state.timelineAdvanceRequested = 0;
         s.state.recordedFrameCount = 0;

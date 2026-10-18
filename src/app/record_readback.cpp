@@ -79,6 +79,10 @@
 #include "mikudancestudio/ported_funcs.hpp"
 #include "mikudancestudio/mf_h264_recorder.hpp"
 #include "device_lost_wait.hpp"
+#include "recording_ack_wait.hpp"
+#include "mikudancestudio/recording_state.hpp"
+#include "mikudancestudio/runtime_log.hpp"
+#include <wrl/client.h>
 
 namespace mikudancestudio {
 
@@ -87,8 +91,6 @@ namespace mikudancestudio {
 int StereoActivationToggle(unsigned char* wrapper, std::uint8_t enable);
 
 namespace {
-
-constexpr long kEFail = static_cast<long>(0x80004005);
 
 // MIKUDANCESTUDIO_TRACE_REC diagnostic (CMake option MIKUDANCESTUDIO_DIAG,
 // default OFF): one line per pass (throttled), plus one line per early-out
@@ -118,12 +120,6 @@ inline void TraceRec(const char*, ...) {}
 // stack argument (the ABI the original binary's push-style call sites
 // use).  A cdecl cast here drifts the stack 8 bytes per call and corrupts
 // the caller's locals.
-long CallStreamingState(IPushSource* push, void* flagPtr) {
-    // GetStreamingState = 槽 4：x64 原版 call [vt+0x20] @0x7FF7CB44B1EF
-    // （轮询循环头 0x7FF7CB44B217，返回值与 0x80004005 比较即流结束）。
-    return push->GetStreamingState(flagPtr);
-}
-
 }  // namespace
 
 // Returns false when the original aborts the whole FrameDriver pass
@@ -192,18 +188,41 @@ bool RecordingReadbackPass(MMDApp* app) {
         Sleep(atoi(pace));
 #endif
     DShowRecorder* recorder = s.Recorder();
-    IPushSource* push = recorder != nullptr
+    Microsoft::WRL::ComPtr<IPushSource> pushOwner = recorder != nullptr
         ? static_cast<IPushSource*>(recorder->framePush)
         : nullptr;
+    IPushSource* push = pushOwner.Get();
     unsigned char* flagPtr = s.RecordingCompletionFlag();
-    if (push != nullptr)
-        CallStreamingState(push, flagPtr);                       // 0x46E8D9
-    while (flagPtr != nullptr && *flagPtr == 0) {                // 0x46E8F5
-        if (push == nullptr)
-            break;
-        if (CallStreamingState(push, flagPtr) == kEFail)
-            break;  // streaming ended
-        Sleep(1);
+    if (push) {
+        const auto window = s.RecordingWindow();
+        const auto frameStep = s.FrameStepPlayback();
+        const auto* target = s.CaptureRenderTarget();
+        const auto* system = s.CaptureSystemSurface();
+        const auto* pixels = s.CaptureReadbackPixels();
+        const auto current = [&] {
+            return !recording_state::Stopping(app) && s.Recorder() == recorder &&
+                s.RecordingWindow() == window && s.FrameStepPlayback() == frameStep &&
+                s.Renderer() == wrapper && wrapper->device == device &&
+                s.CaptureRenderTarget() == target && s.CaptureSystemSurface() == system &&
+                s.CaptureReadbackPixels() == pixels;
+        };
+        const auto pump = [&] {
+            MSG message{};
+            for (unsigned count = 0; count < 64 && PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE); ++count) {
+                if (message.message == WM_QUIT) { PostQuitMessage(static_cast<int>(message.wParam)); return false; }
+                TranslateMessage(&message); DispatchMessageW(&message);
+                if (!current()) return false;
+            }
+            return true;
+        };
+        const auto result = recording_state::WaitForAck(push, flagPtr, current, pump);
+        if (result != recording_state::AckResult::Ready) {
+            if (result != recording_state::AckResult::Cancelled && current()) {
+                runtime_log::Write("RECORDING frame acknowledgement failed result=%d", static_cast<int>(result));
+                FinishAviRecord(app);
+            }
+            return false;
+        }
     }
 
     // ---- Present + device-lost recovery (0x46E92C) ---------------------
@@ -336,8 +355,11 @@ bool RecordingReadbackPass(MMDApp* app) {
     if (push != nullptr) {                                       // 0x46EEB0
         // 帧推送 = 槽 5：x64 原版 call [vt+0x28] @0x7FF7CB44B836，
         // rdx = 像素缓冲（[r12+0xA0298]），返回值不检查。
-        push->StartStreaming(
-            reinterpret_cast<DWORD_PTR>(s.CaptureReadbackPixels()));
+        if (FAILED(push->StartStreaming(reinterpret_cast<DWORD_PTR>(s.CaptureReadbackPixels())))) {
+            (*sysSlot)->UnlockRect();
+            FinishAviRecord(app);
+            return false;
+        }
     } else if (IsPngMovRecording(recorder) &&
                !WritePngMovFrame(recorder, s.CaptureReadbackPixels(), static_cast<std::size_t>(capW) * capH * 4)) {
         (*sysSlot)->UnlockRect();

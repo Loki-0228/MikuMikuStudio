@@ -284,7 +284,7 @@ void CameraBake() {
     Check(frames == std::vector<int>({0, 5, 15, 25, 40}),
           "the selected range is resampled and every key outside it is kept");
     bool xValues = true;
-    for (const auto& key : channels[0].track.keys) xValues = xValues && Near(key.value, animation_curve::Evaluate(source[0].track, key.frame).value);
+    for (const auto& key : channels[0].track.keys) xValues = xValues && Near(key.value, curve_editor::EvaluateChannel(source[0], key.frame).value);
     bool yValues = true;
     for (const auto& key : channels[1].track.keys) yValues = yValues && Near(key.value, 0);
     Check(xValues, "camera X is resampled from the source curve");
@@ -301,6 +301,38 @@ void CameraBake() {
           "the native camera pool holds the union of the channel frames");
     Check(scene->app->SceneModified() == 1, "a committed bake marks the scene modified");
     std::puts("camera bake complete");
+}
+
+void NativeCameraBakeCompatibility() {
+    for(const std::array<double,4> controls:{std::array<double,4>{100,10,20,115},{0,127,127,0}}) {
+        auto scene=std::make_unique<Scene>();
+        for(int i=0;i<2;++i) {
+            auto& key=scene->camera[i];key.frame=i*100;key.previous=0;key.next=i?0:1;key.eye[0]=float(i*10);
+            for(int lane=0;lane<6;++lane)for(int c=0;c<4;++c)key.interpolation[c][lane]=static_cast<unsigned char>(controls[c]);
+        }
+        scene->camera[2]={};
+        std::vector<curve_editor::Channel> before,after;std::wstring message;
+        Check(curve_host::Read(*scene->app,curve_host::Kind::Camera,0,before,message),"read native camera bake timing");
+        channel_bake::Request request;request.scope=channel_bake::Scope::Scene;
+        request.firstFrame=0;request.lastFrame=100;request.step=1;
+        auto& choice=request.selection.Touch(channel_bake::Kind::Camera,0,before.size());
+        choice.fields.assign(before.size(),false);choice.fields[0]=true;
+        channel_bake::Plan plan;
+        Check(channel_bake::Prepare(*scene->app,request,plan,message)==channel_bake::Error::None &&
+              channel_bake::Commit(*scene->app,plan,message)==channel_bake::Error::None,"bake native crossed/endpoint camera timing");
+        Check(curve_host::Read(*scene->app,curve_host::Kind::Camera,0,after,message),"read native camera bake result");
+        for(int frame=0;frame<=100;++frame)
+            Check(Near(curve_editor::EvaluateChannel(before[0],frame).value,
+                       curve_editor::EvaluateChannel(after[0],frame).value),"native camera bake samples the actual player at every frame");
+        // Preparing a selected rotation lane splits its linked group locally;
+        // only the requested lane is allowed into the committed bake result.
+        request.firstFrame=25;request.lastFrame=75;choice.fields[0]=false;choice.fields[3]=true;
+        const auto untouched=after[4].track.keys.size();channel_bake::Plan rotation;
+        Check(channel_bake::Prepare(*scene->app,request,rotation,message)==channel_bake::Error::None &&
+              channel_bake::Commit(*scene->app,rotation,message)==channel_bake::Error::None,"bake one selected native rotation lane");
+        Check(curve_host::Read(*scene->app,curve_host::Kind::Camera,0,after,message) &&
+              after[4].track.keys.size()==untouched,"bake keeps unselected linked rotation author keys unchanged");
+    }
 }
 
 // ---- a prepared or refused bake writes nothing ------------------------------
@@ -1010,6 +1042,14 @@ void BakeCameraField(Scene& scene, std::size_t field, int first, int last, int s
           "commit a boundary bake");
 }
 
+bool SameChannelSamples(const curve_editor::Channel& before,const curve_editor::Channel& after,
+                        double first,double last,double step,double tolerance=1e-6) {
+    for(double frame=first;frame<=last;frame+=step)
+        if(std::abs(curve_editor::EvaluateChannel(before,frame).value-
+                    curve_editor::EvaluateChannel(after,frame).value)>tolerance)return false;
+    return true;
+}
+
 void BoundarySplit() {
     // A cubic from frame 0 to 20, baked over 6..12 only.
     {
@@ -1055,10 +1095,10 @@ void BoundarySplit() {
         Check(before.size() == 11 && before[0].track.keys.size() == 3, "the linear lane has three keys");
         BakeCameraField(*scene, 0, 6, 12, 2);
         const auto after = CameraChannels(*scene);
-        Check(SameSamples(before[0].track, after[0].track, 0, 6, 0.25) &&
-                  SameSamples(before[0].track, after[0].track, 12, 20, 0.25),
+        Check(SameChannelSamples(before[0], after[0], 0, 6, 0.25) &&
+                  SameChannelSamples(before[0], after[0], 12, 20, 0.25),
               "a Linear lane keeps its exact shape outside the range");
-        Check(SameSamples(before[0].track, after[0].track, 6, 12, 2),
+        Check(SameChannelSamples(before[0], after[0], 6, 12, 2),
               "a Linear lane keeps its step samples");
     }
     // A discrete lane holds its value on both sides of the range.
@@ -1520,6 +1560,7 @@ int main(int argc, char** argv) {
     SceneEnumeration();
     Stage("CameraBake()");
     CameraBake();
+    NativeCameraBakeCompatibility();
     Stage("BoundarySplit()");
     BoundarySplit();
     Stage("BoundaryUnrepresentable()");

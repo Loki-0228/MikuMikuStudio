@@ -36,6 +36,7 @@
 #include <memory>
 
 extern "C" float ExpGetFrameTime();
+namespace mikudancestudio { void RegisterCameraState(MMDApp*, int); }
 
 using namespace mikudancestudio;
 namespace seq = mikudancestudio::image_sequence;
@@ -400,6 +401,7 @@ void TransparentImages(MMDApp* app) {
 }
 #include "antialias_image_sequence_checks.hpp"
 #include "image_sequence_continuity_checks.hpp"
+#include "image_visibility_checks.hpp"
 }
 int wmain(int argc, wchar_t** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
@@ -432,6 +434,11 @@ int wmain(int argc, wchar_t** argv) {
     }
     Check(InitMainWindowAndD3D(app, GetModuleHandleW(nullptr), SW_HIDE), "initialize production renderer");
     Check(!IsWindowVisible(app->MainWindow()), "production host remains hidden");
+    if (const auto* model = _wgetenv(L"MMS_IMAGE_VISIBILITY_MODEL")) {
+        LoadModelFile(app, model, false);
+        CheckImageVisibility(app, output);
+        ShutdownCleanup(app); g_Block = nullptr; delete app; UnhookWindowsHookEx(hide); return 0;
+    }
     if(argc==3 && wcscmp(argv[2],L"--still-only")==0) {
         StillImageLanguageTests(app);
         const auto pixels=ImagePixels(output/L"单张_0_0.png");

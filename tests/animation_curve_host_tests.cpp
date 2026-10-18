@@ -133,7 +133,9 @@ static void CheckCameraHoldSamples() {
     Check(step.sample(step, 30).value == 17.0, "authored camera Step reaches the terminal key exactly");
     curve_host::Reset(app.get()); app->CameraKeys() = nullptr;
 }
+#include "camera_subdivision_checks.hpp"
 int main(){
+    CheckCameraSubdivision();
     CheckCrossedCameraEndpoints();
     CheckCameraHoldSamples();
     auto app=std::make_unique<MMDApp>();
@@ -177,6 +179,18 @@ int main(){
     Check(app->LightDirection()[0]==5,"light curve evaluation");
     Check(std::fabs(app->ShadowDistance()-0.025)<1.e-6,"shadow curve evaluation");
     Check(app->GravityMagnitude()==5,"gravity curve evaluation");
+    for(auto kind:{curve_host::Kind::Camera,curve_host::Kind::Light,curve_host::Kind::Shadow,curve_host::Kind::Gravity,curve_host::Kind::Accessory}){
+        Check(curve_host::Read(*app,kind,0,channels,error),"read non-bone insertion fixture");
+        const std::size_t lane=kind==curve_host::Kind::Shadow?1:0;
+        const auto before=channels[lane].track;
+        if(kind==curve_host::Kind::Camera)Check(curve_host::InsertCameraKey(channels,lane,15,error),"insert native camera authored key");
+        else {std::size_t index=0;std::string detail;
+            Check(animation_curve::InsertPreservingShape(channels[lane].track,15,index,detail)==animation_curve::InsertResult::Inserted,"insert non-bone key preserving shape");
+        }
+        Check(curve_host::Write(*app,kind,0,channels,error),"commit non-bone inserted key");
+        for(int frame=0;frame<=30;++frame)
+            Check(std::fabs(animation_curve::Evaluate(channels[lane].track,frame).value-animation_curve::Evaluate(before,frame).value)<1e-9,"non-bone insertion keeps the evaluated curve");
+    }
     // Authored curves are PMM extension data, independent of whether the
     // legacy camera interpolation can currently be decoded by the editor.
     Check(curve_host::Read(*app,curve_host::Kind::Camera,0,channels,error),"read authored camera");

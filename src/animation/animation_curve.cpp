@@ -81,8 +81,8 @@ double SecantSlope(const Key &start, const Key &end) {
 }
 
 // Root of the normalised-time cubic with control abscissae 0, x1, x2, 1.
-// The caller guarantees 0 < x1 < x2 < 1, so the polynomial is strictly
-// increasing and the root in [0,1] is unique.  Newton steps fall back to
+// The time polynomial must be monotone. Scalar handles are ordered, while
+// native MMD handles and their subdivisions may cross. Newton steps fall back to
 // bisection whenever they would leave the bracket.
 double SolveBezierTime(double x1, double x2, double u) {
     const double cubic = 1.0 - 3.0 * x2 + 3.0 * x1;
@@ -369,6 +369,25 @@ bool Validate(const Track &track, std::string &error) {
         }
     }
     return true;
+}
+
+Sample EvaluateMmdTiming(const std::array<double,4>& controls, double time) {
+    const double x=std::clamp(time,0.0,1.0);
+    if(controls[0]==controls[1] && controls[2]==controls[3])return {x,1};
+    const double x1=controls[0]/127.0,y1=controls[1]/127.0;
+    const double x2=controls[2]/127.0,y2=controls[3]/127.0;
+    const double t=x<=0?0:x>=1?1:SolveBezierTime(x1,x2,x);
+    const double v=1-t;
+    const double value=v*v*3*t*y1+v*3*t*t*y2+t*t*t;
+    const auto slope=[&](double u){
+        const double a=1-u;
+        const double dx=a*a*x1+2*a*u*(x2-x1)+u*u*(1-x2);
+        const double dy=a*a*y1+2*a*u*(y2-y1)+u*u*(1-y2);
+        return std::abs(dx)>1e-15?dy/dx:0.0;
+    };
+    // A vertical endpoint handle has an unbounded mathematical slope. Use
+    // the one-sided display limit rather than producing non-finite pixels.
+    return {value,slope(std::clamp(t,1e-7,1-1e-7))};
 }
 
 Sample Evaluate(const Track &track, double frame) {

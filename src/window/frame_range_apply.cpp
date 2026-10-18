@@ -14,6 +14,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include "mikudancestudio/bone_scale.hpp"
+#include "mikudancestudio/bone_curve.hpp"
 #include <Windows.h>
 
 #include <array>
@@ -140,6 +141,7 @@ void ScaleBoneKeys(MMDApp* app, unsigned char* model, HWND hDlg,
     ClearDisplayMarks(displayKeys);
 
     std::vector<int> owners; owners.reserve(count);
+    std::vector<bone_scale::Curve> scaleCurves; scaleCurves.reserve(count);
     std::vector<bone_scale::Matrix> scaleCopies;
     scaleCopies.reserve(count);
     std::vector<std::array<unsigned char, 84>> copies(
@@ -150,6 +152,7 @@ void ScaleBoneKeys(MMDApp* app, unsigned char* model, HWND hDlg,
         if (key.allocated == 0)
             continue;
         scaleCopies.push_back(bone_scale::Key(model, i));
+        scaleCurves.push_back(bone_scale::KeyCurve(model, i));
         auto& out = copies[static_cast<std::size_t>(outIndex++)];
         const int owner = TrackOwner(keys, i, boneCount);
         owners.push_back(owner);
@@ -167,6 +170,10 @@ void ScaleBoneKeys(MMDApp* app, unsigned char* model, HWND hDlg,
     // Deleting the marked originals creates the first type-2 snapshot.
     // The inline block turns it into type 4 and opens the paired insertion
     // snapshot before the registrar starts touching the new records.
+#if !MMD_ORIGINAL_PROFILE
+    bone_curve::RangeRetime authored(model, int(start), int(end), scale);
+    if (!authored.Ready()) return;
+#endif
     DeleteMarkedKeyframes(app);
     TraceRange("bone.deleted");
     BeginRangeScaleBoneUndo(model, app->CurrentFrame(), count);
@@ -176,10 +183,17 @@ void ScaleBoneKeys(MMDApp* app, unsigned char* model, HWND hDlg,
     std::size_t scaleIndex=0;
     for (auto& copy : copies) {
         mdl::Mdl(model)->selectedBone = owners[scaleIndex];
-        bone_scale::Registration scaleRegistration(scaleCopies[scaleIndex++]);
-        if (!RegisterBoneKey(model, copy.data(), static_cast<int>(start), 1)) break;
+        bone_scale::Registration scaleRegistration(scaleCopies[scaleIndex], scaleCurves[scaleIndex]);
+        ++scaleIndex;
+        if (!RegisterBoneKey(model, copy.data(), static_cast<int>(start), 1)) {
+            mdl::Mdl(model)->selectedBone = selected;
+            return;
+        }
     }
     mdl::Mdl(model)->selectedBone = selected;
+#if !MMD_ORIGINAL_PROFILE
+    authored.Complete();
+#endif
     TraceRange("bone.inserted");
 }
 

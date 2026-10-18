@@ -100,8 +100,41 @@ void ExpandedDisplay() {
     Check(text_encoding::BoneName(model->boneTable[0],false)==L"超过十四字符的完整骨骼名称_左侧_\U0001f31f","PMX preserves complete Unicode bone identity");
     ModelDispose(raw);Check(DeleteFileW(path)!=FALSE,"expanded PMX is closed and disposable");
 }
+void OwnToonBoundaries() {
+    for (const unsigned textures : {0u, 1u}) for (const unsigned char toon : {0, 1, 127, 255}) {
+        auto bytes = Geometry();
+        Put(bytes, textures);
+        if (textures) Text(bytes, L"");
+        Put(bytes, 1u); Text(bytes); Text(bytes);
+        for (int i = 0; i < 11; ++i) Put(bytes, 0.0f);
+        Put(bytes, static_cast<unsigned char>(0));
+        for (int i = 0; i < 5; ++i) Put(bytes, 0.0f);
+        for (const unsigned char value : {255, 255, 0, 0}) Put(bytes, value);
+        Put(bytes, toon); Text(bytes, L""); Put(bytes, 0u);
+        Put(bytes, 1u); Text(bytes); Text(bytes);
+        for (int i = 0; i < 3; ++i) Put(bytes, 0.0f);
+        Put(bytes, static_cast<unsigned char>(255)); Put(bytes, 0u);
+        Put(bytes, static_cast<unsigned short>(0));
+        for (int i = 0; i < 3; ++i) Put(bytes, 0.0f);
+        for (int i = 0; i < 4; ++i) Put(bytes, 0u);
+        wchar_t directory[MAX_PATH]{}, path[MAX_PATH]{};
+        Check(GetTempPathW(MAX_PATH,directory) && GetTempFileNameW(directory,L"toon",0,path),"create own-toon fixture");
+        int fd = _wopen(path,_O_BINARY|_O_WRONLY|_O_TRUNC);
+        Check(fd >= 0 && _write(fd,bytes.data(),unsigned(bytes.size())) == bytes.size(),"write own-toon fixture");
+        _close(fd); fd = _wopen(path,_O_BINARY|_O_RDONLY); _lseek(fd,3,SEEK_SET);
+        auto model = std::make_unique<mdl::ModelRecord>(); PathResolutionWorkspace paths{};
+        auto* raw = reinterpret_cast<unsigned char*>(model.get());
+        Check(LoadPMX(raw,nullptr,0,0,paths,fd),"load model with absent, empty or out-of-range own toon");
+        const auto* material = mdl::Materials(raw);
+        Check(model->materialCount == 1 && material[0].toonReference == 0xFF &&
+              material[0].toonPath[0] == L'\0',
+              "missing own toon clears its path without indexing beyond the texture table");
+        ModelDispose(raw); Check(DeleteFileW(path) != FALSE,"own-toon fixture remains disposable");
+    }
+}
 int main() {
     ExpandedDisplay();
+    OwnToonBoundaries();
     unsigned cases = 0;
     for (bool buffered : {false, true}) {
         fileio::bufferedReads = buffered;

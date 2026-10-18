@@ -312,7 +312,7 @@ enum Str {
     StrChannelShown, StrChannelHidden, StrActiveCurve,
     StrHintChannelList, StrHintCompareMode, StrHintCompareFilter,
     StrHintAddKey, StrHintDeleteKey, StrHintApplyKey, StrHintInterpolation, StrHintTangent,
-    StrHintCanvas, StrHintMmdHandles, StrHintTimeBar, StrHintValueBar, StrHintNavigation
+    StrHintCanvas, StrHintMmdHandles, StrHintTimeBar, StrHintValueBar, StrHintNavigation, StrHintHistory
 };
 
 const wchar_t *T(unsigned language, Str id) {
@@ -351,6 +351,10 @@ const wchar_t *T(unsigned language, Str id) {
     case StrDeleteKey: return zh ? L"删除关键帧" : en ? L"Delete key" : L"キー削除";
     case StrApply: return zh ? L"应用" : en ? L"Apply" : L"適用";
     case StrUndo: return zh ? L"撤销" : en ? L"Undo" : L"元に戻す";
+    case StrHintHistory:
+        return zh?L"Ctrl+Z 撤销，Ctrl+Y 或 Ctrl+Shift+Z 重做。Enter 或 Insert 在当前帧插入关键帧，Delete 删除所选关键帧。输入框保留文字编辑快捷键。":
+            en?L"Ctrl+Z: undo. Ctrl+Y / Ctrl+Shift+Z: redo. Enter / Insert: insert at the current frame. Delete: delete selected keys. Text fields keep their text-editing shortcuts.":
+            L"Ctrl+Z：元に戻す。Ctrl+Y / Ctrl+Shift+Z：やり直す。Enter / Insert：現在フレームにキー挿入。Delete：選択キーを削除。入力欄では文字編集を優先します。";
     case StrRedo: return zh ? L"重做" : en ? L"Redo" : L"やり直し";
     case StrBakeFirst: return zh ? L"起始帧" : en ? L"Start" : L"開始";
     case StrBakeLast: return zh ? L"结束帧" : en ? L"End" : L"終了";
@@ -605,7 +609,9 @@ bool SameCurveData(const std::vector<Channel> &left, const std::vector<Channel> 
         if (left[index].minimum != right[index].minimum) return false;
         if (left[index].maximum != right[index].maximum) return false;
         if (!SameTrack(left[index].track, right[index].track) ||
-            left[index].nativeControls != right[index].nativeControls) return false;
+            left[index].nativeControls != right[index].nativeControls ||
+            left[index].controlGeometry != right[index].controlGeometry ||
+            left[index].nativeOneFrameHolds != right[index].nativeOneFrameHolds) return false;
     }
     return true;
 }
@@ -885,6 +891,7 @@ int HintForControl(int id) {
     case kIdTangentCombo: return StrHintTangent;
     case kIdMmdX1: case kIdMmdY1: case kIdMmdX2: case kIdMmdY2: return StrHintMmdHandles;
     case kIdPreviousKey: case kIdPreviousFrame: case kIdNextFrame: case kIdNextKey: return StrHintNavigation;
+    case kIdUndo:case kIdRedo:return StrHintHistory;
     default: return -1;
     }
 }
@@ -1473,9 +1480,10 @@ TrackExtent ExtentOf(const Track &track, const Channel *channel = nullptr) {
         }
     }
     // Sample interior points so an overshooting automatic curve still fits.
-    const double span = extent.last - extent.first;
-    for (int step = 0; step <= 32; ++step) {
-        const double frame = extent.first + span * step / 32.0;
+    for(std::size_t end=1;end<track.keys.size();++end)for(int step=1;step<16;++step){
+        // Whole-track sampling misses short intervals between distant keys,
+        // especially their speed peaks. Fit each actual interval instead.
+        const double frame=track.keys[end-1].frame+double(track.keys[end].frame-track.keys[end-1].frame)*step/16;
         const Sample sample = channel && channel->sample ? channel->sample(*channel, frame)
                                                         : animation_curve::Evaluate(track, frame);
         low = std::min(low, sample.value);
@@ -2178,6 +2186,9 @@ void ComputeMmdControls(Editor &editor) {
     if (!channel.nativeControls.empty()) {
         std::array<double,4> native{};
         if (ReadChannelControls(channel, endKey, native)) {
+            if(!std::all_of(native.begin(),native.end(),[](double v){return std::isfinite(v)&&v>=0&&v<=127;})){
+                editor.mmdReason=T(editor.session.language,StrMmdOvershoot);return;
+            }
             editor.mmdControls = native;
             editor.mmdEnabled = true;
             return;
@@ -2868,8 +2879,12 @@ void InvalidatePlayhead(Editor &editor) {
         if (!std::isfinite(frame)) continue;
         double x = 0;
         if (!TimeToX(editor, frame, x)) continue;
-        RECT piece = {static_cast<LONG>(std::lround(x)) - 2, editor.plot.top,
-                      static_cast<LONG>(std::lround(x)) + 3, editor.plot.bottom};
+        // Include both the old and new frame flags in the ruler as well as
+        // their plot columns. The caption can be wider than the playhead line.
+        const auto caption=FormatInteger(static_cast<long long>(std::llround(frame)));
+        const int flagWidth=Scale(8+10*int(caption.size()),editor.dpi);
+        RECT piece = {static_cast<LONG>(std::lround(x)) - flagWidth, 0,
+                      static_cast<LONG>(std::lround(x)) + flagWidth, editor.plot.bottom};
         if (piece.left < editor.plot.left) piece.left = editor.plot.left;
         if (piece.right > editor.plot.right) piece.right = editor.plot.right;
         if (piece.right <= piece.left) continue;  // the column is off screen
@@ -2937,8 +2952,12 @@ const wchar_t* PlayCaption(Editor& editor){
 void SeekTimeline(Editor& editor,int frame){
     frame=std::clamp(frame,0,int(kMaximumFrame));
     const bool playing=editor.session.isPlaying&&editor.session.isPlaying();
-    if(!playing&&editor.session.currentFrame&&editor.session.currentFrame()==frame)return;
-    if(editor.session.seek)editor.session.seek(frame);
+    if((playing||!editor.session.currentFrame||editor.session.currentFrame()!=frame)&&editor.session.seek)editor.session.seek(frame);
+    const double current=editor.session.currentFrame?editor.session.currentFrame():frame;
+    if(!std::isfinite(current))return;
+    SetControlText(editor.window,kIdTimelineFrame,FormatInteger(static_cast<long long>(std::llround(current))));
+    editor.lastPlayheadFrame=editor.playheadFrame;editor.playheadFrame=current;
+    InvalidatePlayhead(editor);
     editor.mmdFollowPlayhead=true;
     UpdateMmdPanel(editor);
 }
@@ -3641,7 +3660,8 @@ void CanvasMouseDown(Editor &editor, UINT flags, POINT point) {
     if (editor.mmdDragHandle >= 0) editor.mmdDragHandle = -1;
 
     if(editor.session.seek&&point.x>=editor.plot.left&&point.x<=editor.plot.right&&
-       point.y>=editor.plot.bottom-Scale(18,editor.dpi)&&point.y<editor.plot.bottom){
+       ((point.y>=0&&point.y<editor.plot.top)||
+        (point.y>=editor.plot.bottom-Scale(18,editor.dpi)&&point.y<editor.plot.bottom))){
         editor.drag=Drag::Seek;SetCapture(editor.canvas);SeekAtPoint(editor,point);return;
     }
     const int timeZone = TimeBarZone(editor, point);
@@ -3938,6 +3958,7 @@ void CanvasMouseMove(Editor &editor, POINT point) {
 
 void CanvasMouseUp(Editor &editor, POINT point) {
     const Drag drag = editor.drag;
+    if(drag==Drag::Seek)SeekAtPoint(editor,point);
     if (drag == Drag::Rubber) {
         const bool trivial = std::abs(point.x - editor.dragOrigin.x) < 4 && std::abs(point.y - editor.dragOrigin.y) < 4;
         if (trivial) {
@@ -4130,6 +4151,12 @@ Editor *EditorForChild(HWND hwnd) {
     return parent ? reinterpret_cast<Editor *>(GetWindowLongPtrW(parent, GWLP_USERDATA)) : nullptr;
 }
 
+void InsertAtPlayhead(Editor& editor);
+void RegisterFromShortcut(Editor& editor,LPARAM keyData){
+    if((keyData&(LPARAM(1)<<30))||(keyData&(LPARAM(1)<<29))||
+       (GetKeyState(VK_MENU)&0x8000)||editor.drag!=Drag::None||editor.mmdDragHandle>=0)return;
+    if(IsWindowEnabled(GetDlgItem(editor.window,kIdAddKey)))InsertAtPlayhead(editor);
+}
 void ApplyFromRegisterShortcut(Editor& editor,LPARAM keyData) {
     // MMS PumpEnterRegisterFrame uses Enter, excludes Alt+Enter and held-key
     // repeats. Keep this local to the curve editor's existing Apply operation.
@@ -4146,11 +4173,32 @@ void DeleteFromShortcut(Editor& editor,LPARAM keyData) {
         SendMessageW(editor.window,WM_COMMAND,MAKEWPARAM(kIdDeleteKey,BN_CLICKED),0);
 }
 
+bool HandleEditorShortcut(Editor& editor,HWND target,WPARAM key,LPARAM keyData){
+    wchar_t className[64]{};GetClassNameW(target,className,64);
+    if(_wcsicmp(className,L"EDIT")==0)return false;
+    const bool control=(GetKeyState(VK_CONTROL)&0x8000)!=0;
+    const bool shift=(GetKeyState(VK_SHIFT)&0x8000)!=0;
+    int command=0;
+    if(control&&key=='Z')command=shift?kIdRedo:kIdUndo;
+    else if(control&&key=='Y')command=kIdRedo;
+    else if(!control&&!shift&&key==VK_INSERT)command=kIdAddKey;
+    else return false;
+    if((keyData&(LPARAM(1)<<30))||(keyData&(LPARAM(1)<<29))||
+       (GetKeyState(VK_MENU)&0x8000)||editor.drag!=Drag::None||editor.mmdDragHandle>=0)return true;
+    if(IsWindowEnabled(GetDlgItem(editor.window,command))){
+        if(command==kIdAddKey)InsertAtPlayhead(editor);
+        else SendMessageW(editor.window,WM_COMMAND,MAKEWPARAM(command,BN_CLICKED),0);
+    }
+    return true;
+}
+
 // Shared by every subclassed control: Tab keeps moving the focus, hovering
 // explains the control in the hint line, and destruction drops the bookkeeping
 // entry.  Returns true when the message is fully answered by `result`.
 bool HandleChildMessage(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam, LRESULT &result) {
     const int id=GetDlgCtrlID(hwnd);
+    if(message==WM_KEYDOWN)
+        if(auto* editor=EditorForChild(hwnd);editor&&HandleEditorShortcut(*editor,hwnd,wparam,lparam)){result=0;return true;}
     if(message==WM_KEYDOWN && wparam==VK_DELETE){
         wchar_t className[64]{};GetClassNameW(hwnd,className,64);
         if(_wcsicmp(className,L"EDIT")!=0){
@@ -5071,6 +5119,48 @@ void BufferedPaint(Editor& editor,HWND hwnd,HDC dc,const RECT& dirty,bool miniat
     RestoreDC(surface.dc,saved);
     BitBlt(dc,dirty.left,dirty.top,dirty.right-dirty.left,dirty.bottom-dirty.top,surface.dc,dirty.left,dirty.top,SRCCOPY);
 }
+void InsertCurveKey(Editor& editor,std::size_t hit,int frame){
+    if(!CheckSourceCurrent(editor))return;
+    auto& state=CurrentState(editor);
+    if(!state.valid||!CurrentSource(editor).apply||hit>=state.channels.size())return;
+    const auto& keys=state.channels[hit].track.keys;
+    const auto existing=std::lower_bound(keys.begin(),keys.end(),frame,
+        [](const Key& key,int f){return key.frame<f;});
+    std::size_t index=std::size_t(existing-keys.begin());
+    if(existing==keys.end() || existing->frame!=frame){
+        std::vector<Channel> next=CopyChannels(editor);
+        auto& source=CurrentSource(editor);
+        if(source.insertPreservingShape){
+            std::wstring error;
+            if(!source.insertPreservingShape(next,hit,frame,error)){
+                SetStatus(editor,error.empty()?T(editor.session.language,StrInvalidFrame):error,true);return;
+            }
+        }else{
+            const auto& channel=next[hit];
+            if(channel.sample||!channel.nativeControls.empty()||!channel.interpolationGroup.empty()){
+                SetStatus(editor,editor.session.language==0?L"このネイティブトラックではキー挿入に対応していません。":
+                    editor.session.language==1?L"Key insertion is unavailable in this native track.":L"此原生通道暂不支持保形插帧。",true);return;
+            }
+            std::string error;
+            if(animation_curve::InsertPreservingShape(next[hit].track,frame,index,error)!=animation_curve::InsertResult::Inserted){
+                SetStatus(editor,Widen(error),true);return;
+            }
+        }
+        const auto& inserted=next[hit].track.keys;
+        const auto key=std::lower_bound(inserted.begin(),inserted.end(),frame,[](const Key& k,int f){return k.frame<f;});
+        if(key==inserted.end()||key->frame!=frame)return;
+        index=std::size_t(key-inserted.begin());
+        if(!CommitChannels(editor,std::move(next),T(editor.session.language,StrReady)))return;
+    }else SetStatus(editor,T(editor.session.language,StrFrameSelected)+FormatInteger(frame),false);
+    state.active=hit;state.selection={index};
+    RefreshEditorsUi(editor);PublishKeySelection(editor);SeekTimeline(editor,frame);
+}
+void InsertAtPlayhead(Editor& editor){
+    if(!editor.session.currentFrame)return;
+    const double frame=editor.session.currentFrame();
+    if(std::isfinite(frame))InsertCurveKey(editor,CurrentState(editor).active,
+        int(std::clamp(std::round(frame),0.0,double(kMaximumFrame))));
+}
 void InsertCurveKeyAtPoint(Editor& editor,POINT point,UINT flags) {
     CanvasMetrics(editor);
     if(!PtInRect(&editor.plot,point) || editor.tool==1 ||
@@ -5106,23 +5196,7 @@ void InsertCurveKeyAtPoint(Editor& editor,POINT point,UINT flags) {
         if(TimeToX(editor,key.frame,x)&&ValueToY(editor,editor.viewMode?sample.derivative*kFramesPerSecond:key.value,y)&&
            std::hypot(x-point.x,y-point.y)<=radius){frame=key.frame;break;}
     }
-    const auto existing=std::lower_bound(channel.track.keys.begin(),channel.track.keys.end(),frame,
-        [](const Key& key,int f){return key.frame<f;});
-    std::size_t index=std::size_t(existing-channel.track.keys.begin());
-    if(existing==channel.track.keys.end() || existing->frame!=frame){
-        // Native nonlinear samplers/linked lanes need a host subdivision API;
-        // never substitute a scalar approximation and call it shape preserving.
-        if(channel.sample || !channel.nativeControls.empty() || !channel.interpolationGroup.empty()){
-            SetStatus(editor,L"此原生通道暂不支持保持原形状插帧。骨骼可切换到自由曲线。",true);return;
-        }
-        std::vector<Channel> next=CopyChannels(editor);std::string error;
-        if(animation_curve::InsertPreservingShape(next[hit].track,frame,index,error)!=animation_curve::InsertResult::Inserted){
-            SetStatus(editor,L"此位置无法在当前权重限制内保持原曲线，请选择其他帧。",true);return;
-        }
-        if(!CommitChannels(editor,std::move(next),L"已添加关键帧，原曲线形状保持不变。"))return;
-    }else SetStatus(editor,T(editor.session.language,StrFrameSelected)+FormatInteger(frame),false);
-    state.active=hit;state.selection={index};
-    RefreshEditorsUi(editor);PublishKeySelection(editor);SeekTimeline(editor,frame);OnPlayheadTimer(editor);
+    InsertCurveKey(editor,hit,frame);
 }
 
 LRESULT CALLBACK CanvasProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
@@ -5209,9 +5283,10 @@ LRESULT CALLBACK CanvasProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpara
     }
     case WM_KEYDOWN:
     case WM_SYSKEYDOWN:
+        if(message==WM_KEYDOWN&&HandleEditorShortcut(*editor,hwnd,wparam,lparam))return 0;
         switch (wparam) {
         case VK_RETURN:
-            if(message==WM_KEYDOWN)ApplyFromRegisterShortcut(*editor,lparam);
+            if(message==WM_KEYDOWN)RegisterFromShortcut(*editor,lparam);
             return 0;
         case VK_DELETE:
             if(message==WM_KEYDOWN)DeleteFromShortcut(*editor,lparam);
@@ -5303,7 +5378,8 @@ LRESULT CALLBACK MmdProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) 
     if (!editor) return DefWindowProcW(hwnd, message, wparam, lparam);
     switch (message) {
     case WM_KEYDOWN:
-        if(wparam==VK_RETURN){ApplyFromRegisterShortcut(*editor,lparam);return 0;}
+        if(HandleEditorShortcut(*editor,hwnd,wparam,lparam))return 0;
+        if(wparam==VK_RETURN){RegisterFromShortcut(*editor,lparam);return 0;}
         if(wparam==VK_DELETE){DeleteFromShortcut(*editor,lparam);return 0;}
         if(wparam==VK_ESCAPE && editor->mmdDragHandle>=0){
             editor->mmdDragHandle=-1;
@@ -5380,8 +5456,10 @@ LRESULT HandleHook(Editor &editor, UINT message, WPARAM wparam, LPARAM lparam) {
     case kHookPointForFrame: {
         CanvasMetrics(editor);
         double value = 0;
-        if (Track *track = ActiveTrack(editor))
-            value = SampleTrack(editor, *track, static_cast<double>(static_cast<long long>(wparam))).value;
+        if (Track *track = ActiveTrack(editor)){
+            const auto sample=SampleTrack(editor,*track,static_cast<double>(static_cast<long long>(wparam)));
+            value=editor.viewMode?sample.derivative*kFramesPerSecond:sample.value;
+        }
         double x = 0, y = 0;
         if (!TimeToX(editor, static_cast<double>(static_cast<long long>(wparam)), x) || !ValueToY(editor, value, y))
             return MAKELPARAM(-1, -1);
@@ -5563,7 +5641,8 @@ LRESULT CALLBACK EditorProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpara
         break;
     }
     case WM_KEYDOWN:
-        if(wparam==VK_RETURN){ApplyFromRegisterShortcut(*editor,lparam);return 0;}
+        if(HandleEditorShortcut(*editor,hwnd,wparam,lparam))return 0;
+        if(wparam==VK_RETURN){RegisterFromShortcut(*editor,lparam);return 0;}
         if(wparam==VK_DELETE){DeleteFromShortcut(*editor,lparam);return 0;}
         break;
     case WM_APP+393: {

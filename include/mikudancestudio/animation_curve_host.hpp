@@ -9,6 +9,7 @@ namespace mikudancestudio::curve_host {
 enum class Kind { Camera, Light, Shadow, Gravity, Accessory };
 bool Read(MMDApp&, Kind, int slot, std::vector<curve_editor::Channel>&, std::wstring&);
 bool Write(MMDApp&, Kind, int slot, const std::vector<curve_editor::Channel>&, std::wstring&);
+bool InsertCameraKey(std::vector<curve_editor::Channel>&, std::size_t channel, int frame, std::wstring& error);
 void Apply(MMDApp*, Kind, double frame, int slot = 0);
 bool Has(MMDApp*, Kind, int slot = 0);
 void Reset(MMDApp*);

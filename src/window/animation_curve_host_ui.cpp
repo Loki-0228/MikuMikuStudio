@@ -52,6 +52,8 @@ void Refresh(MMDApp&app){
             bone_curve::Evaluate(app.SelectedModel(),app.CurrentFrame());
         }
     }
+    const auto text=std::to_wstring(app.CurrentFrame());
+    SetDlgItemTextW(app.MainWindow(),panel::kCurrentFrameEdit,text.c_str());
     InvalidateRect(app.MainWindow(),nullptr,FALSE);
 }
 // The frame-apply chain needs the renderer and the model's display and bone
@@ -135,17 +137,23 @@ bool Motion(MMDApp&app,Kind kind,int slot,HWND owner,bool save,const std::vector
     if(!(save?GetUiSaveFileNameW(&dialog):GetUiOpenFileNameW(&dialog)))return false;
     curve_motion::Motion motion;motion.kind=static_cast<curve_motion::Kind>(kind);std::string detail;
     if(save){
-        for(const auto&c:channels)if(c.selected)motion.tracks.push_back({c.id,c.track});
+        motion=curve_motion::CaptureChannels(motion.kind,channels);
         if(!curve_motion::Save(path,motion,detail)){error=Wide(detail);return false;}return true;
     }
     if(!curve_motion::Load(path,motion.kind,motion,detail)){error=Wide(detail);return false;}
     // Read into the explicit source, never infer the recipient from VMD names.
     // Matching channels replace this source's tracks; other channels survive.
     bool matched=false;
-    for(auto&c:channels){auto found=std::find_if(motion.tracks.begin(),motion.tracks.end(),[&](const auto&t){return t.id==c.id;});
-        if(found==motion.tracks.end())continue;matched=true;c.track=found->track;
+    for(const auto&c:channels)if(std::any_of(motion.tracks.begin(),motion.tracks.end(),[&](const auto&t){return t.id==c.id;}))matched=true;
+    if(!curve_motion::RestoreChannels(motion,channels,detail)){error=Wide(detail);return false;}
+    for(auto&c:channels){
         if(c.track.keys.empty())continue;
-        if(c.track.keys.front().frame>0){auto base=c.track.keys.front();base.frame=0;c.track.keys.insert(c.track.keys.begin(),base);}
+        if(c.track.keys.front().frame>0){
+            auto base=c.track.keys.front();base.frame=0;c.track.keys.insert(c.track.keys.begin(),base);
+            if(!c.nativeControls.empty())c.nativeControls.insert(c.nativeControls.begin(),{});
+            if(!c.controlGeometry.empty())c.controlGeometry.insert(c.controlGeometry.begin(),{});
+            if(!c.nativeOneFrameHolds.empty())c.nativeOneFrameHolds.insert(c.nativeOneFrameHolds.begin(),true);
+        }
     }
     if(!matched){error=Text(app.EnglishUI(),L"一致するトラックがありません。",L"No matching tracks.",L"没有可匹配的轨道。");return false;}
     if(!Write(app,kind,slot,channels,error))return false;Refresh(app);return true;
@@ -426,7 +434,10 @@ static void OpenScene(MMDApp*app,bool visible,const std::string&cameraChannel){
             if(!alive()){error=L"The source has been removed.";return false;}
             if(!IsWindowEnabled(app->MainWindow())){error=Text(app->EnglishUI(),L"処理の終了を待ってください。",L"Wait for the active operation to finish.",L"请等待当前操作完成。");return false;}
             if(!Write(*app,kind,slot,channels,error))return false;Refresh(*app);return true;};
-        if(kind==Kind::Camera)source.initialMainChannel=cameraChannel;
+        if(kind==Kind::Camera){
+            source.initialMainChannel=cameraChannel;
+            source.insertPreservingShape=InsertCameraKey;
+        }
         source.readMotion=[app,kind,slot,alive](void*owner,std::wstring&error){return alive()&&Motion(*app,kind,slot,static_cast<HWND>(owner),false,nullptr,error);};
         source.writeMotion=[app,kind,slot,alive](void*owner,const auto&channels,std::wstring&error){return alive()&&Motion(*app,kind,slot,static_cast<HWND>(owner),true,&channels,error);};
         if(kind==Kind::Accessory&&slot==app->SelectedAccessorySlot())session.initialSource=session.sources.size();
@@ -668,7 +679,7 @@ double GraphScale(const bone_scale::Matrix&m,int axis){
 }
 double NearAngle(double angle,double reference){return angle+360.0*std::round((reference-angle)/360.0);}
 int GraphLane(int channel){return channel<3?channel:channel<6?3:4;}
-double GraphValue(const BoneGraph&keys,const curve_editor::Channel&channel,int axis,double frame){
+double GraphValue(const BoneGraph&keys,const curve_editor::Channel&channel,int axis,double frame,bool smooth=false){
     if(keys.empty())return 0;
     if(frame<=keys.front().frame)return keys.front().values[axis];
     if(frame>=keys.back().frame)return keys.back().values[axis];
@@ -681,7 +692,7 @@ double GraphValue(const BoneGraph&keys,const curve_editor::Channel&channel,int a
     if(!curve_editor::ReadChannelControls(channel,end,controls))
         for(int c=0;c<4;++c)controls[c]=b.controls[GraphLane(axis)][c];
     bone_scale::Curve native{};for(int c=0;c<4;++c)native[c]=static_cast<std::uint8_t>(controls[c]);
-    const double eased=bone_scale::CurveTime(native,static_cast<float>(raw));
+    const double eased=smooth?animation_curve::EvaluateMmdTiming(controls,raw).value:bone_scale::CurveTime(native,static_cast<float>(raw));
     if(axis<3)return a.values[axis]+(b.values[axis]-a.values[axis])*eased;
     if(axis>=6)return GraphScale(bone_scale::Interpolate(a.scale,b.scale,static_cast<float>(eased)),axis-6);
     auto qb=b.rotation;double dot=0;for(int c=0;c<4;++c)dot+=a.rotation[c]*qb[c];
@@ -752,7 +763,7 @@ static curve_editor::Source BoneSource(MMDApp*app,const MorphModelIdentity&ident
             channel.sample=[snapshot,c](const curve_editor::Channel&current,double frame){
                 const double value=GraphValue(*snapshot,current,c,frame);
                 const double low=std::max(double(snapshot->front().frame),frame-0.001),high=std::min(double(snapshot->back().frame),frame+0.001);
-                return animation_curve::Sample{value,high>low?(GraphValue(*snapshot,current,c,high)-GraphValue(*snapshot,current,c,low))/(high-low):0};
+                return animation_curve::Sample{value,high>low?(GraphValue(*snapshot,current,c,high,true)-GraphValue(*snapshot,current,c,low,true))/(high-low):0};
             };
             channels.push_back(std::move(channel));
         }

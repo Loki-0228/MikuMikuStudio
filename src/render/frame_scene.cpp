@@ -531,6 +531,10 @@ void RenderFrameScene(MMDApp* app) {
         frame_rate::Presented(app, true);
         return;
     }
+    // Device reset can release the legacy recording target. Establish it
+    // before the shadow pass snapshots the active scene target.
+    if (!transparent && app->RecordingWindow() && sub->multisampleAvailable == 0)
+        EnsureCaptureRenderTarget(app);
     TransparentFrameScope transparentFrame(app);
     if (!transparentFrame.Ready()) {
         FinishAviRecord(app);

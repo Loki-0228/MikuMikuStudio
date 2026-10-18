@@ -738,6 +738,64 @@ void TestCameraLaneOrder() {
     CheckNear(y->keys[1].value, 5.0, 1e-9, "an unchanged camera channel keeps its value");
 }
 
+void TestNativeCameraTimingRoundTrip() {
+    for (const std::array<double,4> controls : {std::array<double,4>{100,10,20,115}, {0,127,127,0}}) {
+        double lanes[6][4]{};
+        for(int lane=0;lane<6;++lane)for(int c=0;c<4;++c)lanes[lane][c]=controls[c];
+        VmdFile file;CameraInput first,last;
+        first.frame=0;first.fov=45;first.block=CameraBlock(lanes);
+        last=first;last.frame=100;last.eye={10,0,0};file.cameras={first,last};
+        auto bytes=Build(file);cm::Motion imported;std::string error;
+        Check(cm::Decode(bytes.data(),bytes.size(),cm::Kind::Camera,imported,error),"native camera imports: "+error);
+        Check(imported.nativeTiming.size()==8,"all native camera lanes retain original timing");
+        std::vector<mikudancestudio::curve_editor::Channel> channels;
+        for(const auto& named:imported.tracks){mikudancestudio::curve_editor::Channel channel;channel.id=named.id;channels.push_back(std::move(channel));}
+        Check(cm::RestoreChannels(imported,channels,error),"restore native camera editor channels: "+error);
+        auto captured=cm::CaptureChannels(cm::Kind::Camera,channels);
+        Check(cm::Encode(captured,bytes,error),"native timing VMD encodes: "+error);
+        Check(std::memcmp(bytes.data()+bytes.size()-40,"MMVCURV2",8)==0,"raw native timing uses the versioned optional tail");
+        cm::Motion roundtrip;
+        Check(cm::Decode(bytes.data(),bytes.size(),cm::Kind::Camera,roundtrip,error),"native timing tail decodes: "+error);
+        Check(roundtrip.nativeTiming.size()==imported.nativeTiming.size(),"native timing count survives transport");
+        for(std::size_t i=0;i<roundtrip.nativeTiming.size();++i)
+            Check(roundtrip.nativeTiming[i].controls==imported.nativeTiming[i].controls,"crossed or endpoint controls round-trip exactly");
+        for(double frame=0;frame<=100;frame+=0.25)
+            CheckNear(cm::Evaluate(roundtrip,"x",frame).value,cm::Evaluate(imported,"x",frame).value,0,
+                "fractional native camera motion survives the author tail");
+        const auto prefix=TailPrefix(bytes);
+        std::vector<std::uint8_t> body(bytes.begin(),bytes.begin()+std::ptrdiff_t(prefix));
+        cm::Motion compatible;
+        Check(cm::Decode(body.data(),body.size(),cm::Kind::Camera,compatible,error),"standard camera proxy remains a complete VMD");
+        for(int frame=0;frame<=100;++frame)
+            CheckNear(cm::Evaluate(compatible,"x",frame).value,cm::Evaluate(imported,"x",frame).value,1e-6,
+                "standard VMD proxy samples actual native camera values");
+        auto damaged=bytes;damaged.resize(damaged.size()-40);
+        Check(!cm::Decode(damaged.data(),damaged.size(),cm::Kind::Camera,roundtrip,error),"a missing native timing footer is refused");
+        damaged=bytes;damaged[prefix+15]^=0x40;
+        Check(!cm::Decode(damaged.data(),damaged.size(),cm::Kind::Camera,roundtrip,error),"a corrupt native timing envelope is refused");
+        double boneLanes[4][4]{};
+        for(int lane=0;lane<4;++lane)for(int c=0;c<4;++c)boneLanes[lane][c]=controls[c];
+        VmdFile accessoryFile;BoneInput begin,end;begin.name=end.name="Accessory";
+        begin.block=end.block=BoneBlock(boneLanes);end.frame=100;end.position[0]=10;
+        accessoryFile.bones={begin,end};auto accessoryBytes=Build(accessoryFile);cm::Motion accessory;
+        Check(cm::Decode(accessoryBytes.data(),accessoryBytes.size(),cm::Kind::Accessory,accessory,error),
+            "accessory VMD imports crossed and endpoint native controls");
+        const auto* x=Find(accessory,"x");
+        for(int frame=0;frame<=100;++frame)
+            CheckNear(ac::Evaluate(*x,frame).value,frame==0?0:frame==100?10:10*EaseFraction(controls[0],controls[1],controls[2],controls[3],frame/100.0),
+                1e-10,"accessory import samples raw native timing rather than dropping it");
+    }
+    // A native one-frame camera cut must not turn into interpolated movement.
+    cm::Motion cut;cut.kind=cm::Kind::Camera;
+    ac::Track track;ac::Key a,b;a.frame=0;a.value=0;b.frame=1;b.value=10;
+    a.tangent=b.tangent=ac::Tangent::Free;b.interpolation=ac::Interpolation::Bezier;
+    track.keys={a,b};cut.tracks.push_back({"x",track});
+    cut.nativeTiming.push_back({"x",1,{20,20,107,107},true});
+    CheckNear(cm::Evaluate(cut,"x",0.5).value,0,0,"one-frame native camera cut holds the source value");
+    cut.nativeTiming[0].oneFrameHold=false;
+    CheckNear(cm::Evaluate(cut,"x",0.5).value,5,1e-6,"subdivided one-frame camera interval keeps continuous motion");
+}
+
 void TestStandardBodyOptionalSections() {
     // After the morph section the rest may be missing: old VMD 0001 files and
     // writers that stop early must still load.
@@ -1118,6 +1176,7 @@ int main() {
     TestAccessoryBezierImportVersusExpected();
     TestAccessoryUnwrap();
     TestCameraLaneOrder();
+    TestNativeCameraTimingRoundTrip();
     TestStandardBodyOptionalSections();
     TestForeignTailIgnored();
     TestMultipleBoneTracksRejected();

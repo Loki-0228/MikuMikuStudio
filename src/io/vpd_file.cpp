@@ -315,19 +315,19 @@ void LoadVpdFile(const wchar_t* path) {
 
     mdl::UndoRecord& undo = mdl::Mdl(model)->undoRings[0].slots[ring];
     undo.operation = 1;
-    undo.dirty = count;
+    undo.dirty = 0;
     if (undo.bonePose != nullptr) {
         free(undo.bonePose);
         undo.bonePose = nullptr;
     }
     mdl::BonePoseSnapshot* const snap =
         static_cast<mdl::BonePoseSnapshot*>(
-            operator new(sizeof(mdl::BonePoseSnapshot) * count));
+            operator new(sizeof(mdl::BonePoseSnapshot) * modelRecord.boneCount));
     undo.bonePose = snap;
-    std::memset(snap, 0, sizeof(mdl::BonePoseSnapshot) * count);
-    undo.dirty = count;
+    std::memset(snap, 0, sizeof(mdl::BonePoseSnapshot) * modelRecord.boneCount);
 
     const int boneCnt = modelRecord.boneCount;
+    std::vector<unsigned char> captured(static_cast<std::size_t>(boneCnt), 0);
     mikudancestudio::mdl::BoneRecord* const bones = mikudancestudio::mdl::Bones(model);
     unsigned char* const selBits = modelRecord.boneSelection;
     unsigned char* const regBits = modelRecord.bonePhysicsState;
@@ -379,11 +379,14 @@ void LoadVpdFile(const wchar_t* path) {
                 continue;
 
             // snapshot the pre-load pose into the undo record (0x418E2D..)
-            mdl::BonePoseSnapshot& rec = snap[k];
-            rec.boneIndex = i;
-            std::memcpy(rec.position, bone->trans, sizeof rec.position);
-            std::memcpy(rec.rotation, bone->rotQuat, sizeof rec.rotation);
-            rec.physicsDisabled = regBits[i];
+            if (!captured[i]) {
+                captured[i] = 1;
+                auto& rec = snap[undo.dirty++];
+                rec.boneIndex = i;
+                std::memcpy(rec.position, bone->trans, sizeof rec.position);
+                std::memcpy(rec.rotation, bone->rotQuat, sizeof rec.rotation);
+                rec.physicsDisabled = regBits[i];
+            }
 
             // twist correction - same algorithm as registrar 0x49D880
             // (0x418F5C): ((u16@&bone->flags & 0x400) && type==4) || type==8

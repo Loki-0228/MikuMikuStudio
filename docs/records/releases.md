@@ -4,6 +4,7 @@
 
 ## 记录索引
 
+- [v2026.10.19.1 正式发布说明](#release-v2026-10-19-1)
 - [v2026.10.18.2 正式发布说明](#release-v2026-10-18-2)
 
 - [v2026.10.18.2-pre.1 预发布说明](#release-v2026-10-18-2-pre-1)
@@ -20,6 +21,127 @@
 - [v2026.10.11.3 构建与发布记录](#record-release-3)
 - [v2026.10.11.2 构建与发布记录](#record-release-2)
 - [MMS 原生媒体导入与导出](#record-native-media)
+
+<a id="release-v2026-10-19-1"></a>
+
+本节为正式发布说明，合并 v2026.10.18.2 与本次更新。
+
+<!-- release-notes:v2026.10.19.1:begin -->
+## MikuMikuStudio v2026.10.19.1
+
+Windows x64
+
+[English](#release-v2026-10-19-1-en) | [中文](#release-v2026-10-19-1-zh) | [日本語](#release-v2026-10-19-1-ja)
+
+<a id="release-v2026-10-19-1-en"></a>
+
+### English
+
+Combined changes since `v2026.10.18.1`, including the updates previously published as `v2026.10.18.2`.
+
+#### What's new
+
+- The curve editor's top ruler supports clicking and dragging to seek. The main timeline, current-frame field, and viewport follow the selected frame.
+- Added shortcuts while the curve editor is active: `Ctrl+Z` to undo, `Ctrl+Y` or `Ctrl+Shift+Z` to redo, `Enter` or `Insert` to register a key at the current frame, and `Delete` to delete selected keys. Text fields retain their text-editing shortcuts.
+- Added shape-preserving camera key insertion, including linked rotation channels and continuous one-frame intervals. Scalar channels can insert keys along the existing curve. MMS project extensions preserve native handles and authoring precision.
+- Corrected velocity-view sampling and display ranges, including peaks in short intervals. Native Bezier curves no longer show false velocity fluctuations caused by quantized inversion; native playback behavior is unchanged.
+- Corrected native sampling in curve-editor VMD import, export, and baking, preserving valid crossed and endpoint handles. Standard VMD sections retain their layout and integer handle limits; additional MMS curve data uses an optional tail extension.
+- Fixed authored bone and scale curves being lost during range retiming. Undo now restores affected neighboring keys after automatic interpolation overwrites an existing key.
+- Single-image and image-sequence exports choose transparency from the image format: PNG and DDS retain transparent backgrounds, while other formats use opaque backgrounds. Corrected semitransparent edge colors and fixed exports becoming entirely transparent after model loading or shadow rendering.
+- Fixed the single-image save dialog's format list and default extensions. Format detection uses the final extension, accepts uppercase extensions and `.jpeg`, and ignores format-like text in folder names.
+- Keyframe paste checks duplicate names only on participating destination tracks. Mixed bone, morph, display, and IK pastes undo and redo together. VPD, regular pose, and mirrored pose pastes no longer include unmatched bones in undo records.
+- Deleting frame 0 on light, self-shadow, or gravity tracks preserves later unselected keys. Camera timeline merges retain parent bindings and all interpolation channels.
+- Reduced unnecessary PMM compatibility warnings for English display labels, display groups, and model captions that fit PMM fields. Complete names remain in MMS extension data.
+- Corrected PMM v2/v3 selection, including saved timeline limits. Sparse expanded pools compact into v2 when their live keys fit; deleting excess keys can return a project to v2. Invalid references or unsupported frame ranges stop saving and preserve the existing file.
+- Strengthened PMM v1/v2/v3 loading checks for truncated data, invalid counts, broken keyframe links, object references, and fixed-length text. Corrected cleanup during model adaptation. If a file cannot be opened or its header or version is rejected before reading the project body, the current project's save path, base directory, and modified state are preserved.
+- Added drag-and-drop draw-order sorting in the Accessory dialog, with OK, Cancel, Move up, and Move down. Selection, registration scope, the model draw-order split, and same-named accessories remain consistent. PMM save and reload retain the order.
+- EMM loading tries project-relative effect paths first and retains MME's original path fallbacks, including direct loading through the MME menu. Periodic backups request a paired EMM save according to MME's auto-save setting; backup rotation removes the corresponding old EMM files.
+- Fixed rigid-body deletion and joint references in the physics editor, and validated objects before applying changes. PMD saving writes and checks a temporary file before replacing the original, preserving the existing file if writing fails.
+- Fixed short-path fallback and out-of-range PMX individual toon indices. Corrected Kinect pose initialization for coincident and vertical directions to avoid invalid rotations.
+- Recording preserves fractional frame rates and rejects invalid values. Encoder rejection, cancellation, and stopping end frame waits, and recording shutdown guards against reentry. Corrected expected H.264 and MOV frame counts at rates other than 30 FPS.
+- Expanded fatal-error logs with module identities, registers, and available return-address instructions for execution at address zero. MME effect-creation logs now include device and effect-pool dispatch details to help investigate crashes.
+
+#### Download and use
+
+Choose the full package for MMS's extended editing, antialiasing, and modern media features. The minimal package retains the original MMD feature range and encoding limits. Extract each package into a separate folder and run `MikuMikuDance.exe`. Models, personal settings, MME, MMV, and FFmpeg are not included.
+
+#### Optional NVIDIA fix
+
+Neither application package includes the NVIDIA fix. If needed, download `MMSNvidiaAAFix.dll` separately and place it beside the full build's EXE. Install it from Help, then restart MMS. Use Help to uninstall. Deleting the DLL does not remove an installed setting.
+
+<a id="release-v2026-10-19-1-zh"></a>
+
+### 中文
+
+以下合并相较 `v2026.10.18.1` 的更新，包含此前 `v2026.10.18.2` 的内容。
+
+#### 更新内容
+
+- 曲线编辑器顶部时间尺支持点击、拖动定位，主时间轴、当前帧输入框及视图同步响应。
+- 曲线编辑器激活时支持快捷键：`Ctrl+Z` 撤销，`Ctrl+Y` 或 `Ctrl+Shift+Z` 重做，`Enter` 或 `Insert` 在当前帧注册关键帧，`Delete` 删除所选关键帧。文字输入框保留文字编辑快捷键。
+- 增加相机保形插帧，联动处理旋转通道，保持细分后一帧区间的连续性。标量通道可沿原曲线插入关键帧，MMS 工程扩展保留原生控制柄与编辑精度。
+- 修正速度视图的采样与显示范围，短区间的速度峰值可正常显示。消除原生贝塞尔反解量化造成的错误速度波动，保持原生播放行为。
+- 修正曲线编辑器 VMD 导入、导出及烘焙的原生采样，保留合法的交叉、端点控制柄。标准 VMD 数据段的布局与整数控制柄范围保持不变，额外的 MMS 曲线信息通过可选尾部扩展保存。
+- 修复范围伸缩丢失编辑过的骨骼、缩放曲线，以及自动插值覆盖已有关键帧后，撤销未能完整恢复相邻关键帧的问题。
+- 单张图片和图片序列按格式自动选择背景：PNG、DDS 保留透明背景，其他格式使用不透明背景。修正半透明边缘颜色，并修复载入模型或阴影渲染后导出整张透明空图的问题。
+- 修复单张图片保存窗口的格式列表与默认扩展名。按文件末尾的扩展名识别格式，支持大写扩展名和 `.jpeg`，文件夹名称中的格式文字不再干扰判断。
+- 关键帧粘贴仅检查本次涉及的目标轨道是否重名；骨骼、表情、显示与 IK 混合粘贴可统一撤销、重做。VPD、普通姿态和镜像姿态粘贴不再把未匹配骨骼写入撤销记录。
+- 删除照明、自阴影或重力第 0 帧时保留后续未选关键帧。相机时间轴合并保留父级绑定及全部插值通道。
+- 减少英文显示名称、显示组名称及可由 PMM 字段完整表示的模型名称触发的不必要兼容性提示，完整名称仍通过 MMS 扩展数据保留。
+- 修正 PMM v2/v3 的选择及保存的时间轴上限检查。已扩容但有效关键帧较少的轨道可压紧为 v2，删除超限关键帧后可重新保存为 v2。引用或帧范围无效时停止保存，保留已有文件。
+- 加强 PMM v1/v2/v3 读取检查，处理截断数据、无效数量、断裂关键帧链接、无效对象引用及固定长度文本。修正模型结构适配时的清理顺序；无法打开文件、文件头无效或版本不支持而在读取正文前拒绝时，保留当前工程的保存路径、目录和修改状态。
+- 配件窗口支持拖拽调整绘制顺序，点击「确定」应用，「取消」放弃，保留「上移」「下移」。排序保持选中配件、注册范围及模型绘制分界，同名配件按各自对象处理，PMM 保存重开后保留顺序。
+- EMM 优先读取工程目录中的相对效果路径，保留 MME 原有路径回退方式，覆盖从 MME 菜单直接打开的情况。周期备份按 MME 自动保存设置通知保存配套 EMM，轮换时清理对应旧 EMM 文件。
+- 修复物理编辑器删除刚体后的关节引用，应用修改前校验对象。PMD 先完整写入并检查临时文件，再替换原文件，写入失败时保留已有文件。
+- 修复短路径回退和 PMX 独立 toon 纹理索引越界。修正 Kinect 姿态初始化，避免重合或竖直方向产生无效旋转。
+- 视频录制保留小数帧率并拒绝无效值。编码器拒收、取消或停止时退出帧等待，防止收尾重入；修正非 30 FPS 下 H.264、MOV 的预期输出帧数。
+- 致命错误日志补充模块信息、寄存器及零地址执行时可读取的返回地址指令。MME 效果创建日志补充设备与效果池调用信息，便于继续定位崩溃。
+
+#### 下载与使用
+
+完整包提供 MMS 的扩展编辑、抗锯齿及现代媒体功能。最小包保留原版 MMD 的功能范围及编码限制。分别解压到独立目录后运行 `MikuMikuDance.exe`。模型、个人设置、MME、MMV 和 FFmpeg 需自行准备。
+
+#### NVIDIA 修复安装（可选）
+
+两个主程序包均不附带 NVIDIA 修复插件。需要时单独下载 `MMSNvidiaAAFix.dll`，放到完整版 EXE 同目录，在「帮助」菜单选择安装并重启 MMS。卸载也通过该菜单操作，删除 DLL 不会撤销已安装的设置。
+
+<a id="release-v2026-10-19-1-ja"></a>
+
+### 日本語
+
+`v2026.10.18.1` 以降の変更をまとめています。以前の `v2026.10.18.2` の更新も含みます。
+
+#### 更新内容
+
+- 曲線エディタ上部の時間目盛りをクリック、ドラッグしてフレームを移動できます。メインのタイムライン、現在フレーム欄、ビューポートも同期します。
+- 曲線エディタがアクティブなときのショートカットを追加しました。`Ctrl+Z` で元に戻す、`Ctrl+Y` または `Ctrl+Shift+Z` でやり直す、`Enter` または `Insert` で現在フレームにキーを登録、`Delete` で選択キーを削除できます。テキスト欄では文字編集のショートカットを維持します。
+- カメラ曲線の形状を保持するキー挿入を追加しました。連動する回転チャンネルと、分割後の 1 フレーム区間の連続性に対応します。スカラーチャンネルも既存の曲線に沿ってキーを挿入でき、元のハンドルと編集精度は MMS のプロジェクト拡張に保持します。
+- 速度表示のサンプリングと表示範囲を修正し、短い区間の速度ピークも表示します。標準 Bezier 曲線の逆算時の量子化による誤った速度変動を解消し、標準の再生動作は維持します。
+- 曲線エディタの VMD 読み込み、書き出し、ベイクで標準のサンプリングとの互換性を修正しました。有効な交差ハンドルと端点ハンドルを保持します。標準 VMD 部分の構造と整数ハンドルの範囲は変更せず、追加の MMS 曲線情報は任意の末尾拡張に保存します。
+- 範囲の伸縮で編集済みのボーン曲線やスケール曲線が失われる問題を修正しました。自動補間で既存キーを上書きした後、元に戻す操作で隣接キーも復元します。
+- 静止画と画像連番は形式に応じて背景を自動選択します。PNG と DDS は透明、それ以外は不透明な背景を使います。半透明の輪郭の色を修正し、モデル読み込みや影の描画後に出力全体が透明になる問題も修正しました。
+- 静止画の保存ダイアログの形式一覧と既定の拡張子を修正しました。ファイル末尾の拡張子で判定し、大文字の拡張子と `.jpeg` に対応します。フォルダー名に含まれる形式名は判定に影響しません。
+- キーの貼り付けでは、対象トラックに関係する名前の重複だけを確認します。ボーン、モーフ、表示、IK の混合貼り付けを一度の操作で元に戻し、やり直せます。VPD、通常ポーズ、反転ポーズの貼り付けで、未対応のボーンを取り消し記録に含めないよう修正しました。
+- 照明、セルフシャドウ、重力の 0 フレームを削除しても、後の未選択キーを保持します。カメラのタイムライン統合では親の関連付けとすべての補間チャンネルを保持します。
+- 英語の表示名、表示グループ名、PMM のフィールドに収まるモデル名について、不要な互換性メッセージを減らしました。完全な名前は引き続き MMS 拡張に保持します。
+- PMM v2/v3 の選択と保存するタイムライン上限の確認を修正しました。拡張済みでも有効なキーが少ない場合は v2 に詰めて保存し、超過キーの削除後は v2 に戻せます。無効な参照やフレーム範囲では保存を停止し、既存のファイルを保持します。
+- PMM v1/v2/v3 の読み込み時に、途中で切れたデータ、無効な個数、壊れたキーのリンク、無効なオブジェクト参照、固定長テキストの確認を強化しました。モデル構造の適合処理での後始末を修正しました。ファイルを開けない場合、またはヘッダーやバージョンを本文の読み込み前に拒否した場合は、現在の保存先、基準フォルダー、変更状態を保持します。
+- アクセサリ設定で描画順をドラッグして変更できます。OK で適用し、キャンセルで破棄します。上へ・下へボタンも使えます。選択、登録対象、モデル描画の区切りを保持し、同名のアクセサリも別のオブジェクトとして扱います。PMM の保存と再読み込み後も順序を保持します。
+- EMM の読み込みでは、プロジェクトのフォルダーを基準とした相対エフェクトパスを優先し、MME 本来のパス処理も維持します。MME メニューから直接開く場合にも対応します。定期バックアップは MME の自動保存設定に従って対応する EMM の保存を通知し、世代交代時には古い EMM も削除します。
+- 物理編集で剛体を削除した後のジョイント参照を修正し、変更適用前にオブジェクトを確認します。PMD は一時ファイルへの書き込みと確認が完了してから元のファイルを置換し、書き込み失敗時は既存ファイルを保持します。
+- 短いパスの代替処理と PMX の個別 toon テクスチャ番号の範囲外アクセスを修正しました。Kinect の姿勢初期化を修正し、重なる方向や垂直方向で無効な回転が生じるのを防ぎます。
+- 動画出力で小数のフレームレートを保持し、無効な値を拒否します。エンコーダーの受信拒否、キャンセル、停止でフレーム待機を終了し、終了処理の再入を防ぎます。30 FPS 以外の H.264・MOV 出力の予定フレーム数も修正しました。
+- 致命的エラーのログに、モジュール情報、レジスター、アドレス 0 の実行時に取得可能な戻り先の命令を追加しました。MME のエフェクト作成ログにもデバイスとエフェクトプールの呼び出し情報を追加し、クラッシュの調査に使えるようにしました。
+
+#### ダウンロードと使用方法
+
+MMS の拡張編集、アンチエイリアス、各種メディア機能には完全版を選んでください。最小版は元の MMD の機能範囲と文字コードの制限を維持します。それぞれ別のフォルダーに展開して `MikuMikuDance.exe` を実行してください。モデル、個人設定、MME、MMV、FFmpeg は含まれません。
+
+#### NVIDIA 修正の導入（任意）
+
+NVIDIA 修正 DLL は両パッケージに含まれません。必要な場合だけ `MMSNvidiaAAFix.dll` を別途ダウンロードし、完全版の EXE と同じ場所に置いてください。ヘルプからインストールして MMS を再起動します。アンインストールもヘルプから行います。DLL を削除しても適用済みの設定は解除されません。
+
+<!-- release-notes:v2026.10.19.1:end -->
 
 <a id="release-v2026-10-18-2"></a>
 

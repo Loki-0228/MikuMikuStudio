@@ -10,7 +10,9 @@
 //   5. light section       : u32 count, count *  28 bytes
 //   6. self-shadow section : u32 count, count *   9 bytes
 //   7. display/IK section  : u32 count, count * (9 bytes + 21 per IK entry)
-//   8. optional curve tail : MMVCURV1 footer (40 bytes) + animation_curve payload
+//   8. optional curve payload followed by a 40-byte MMVCURV1 / MMVCURV2 footer
+//      V1 holds the scalar codec; V2 wraps it in MDSN with exact camera timing.
+//      Both preserve the standard VMD body and checksum the prefix/payload.
 //
 // Every standard section is written, in that order, before the tail, so a
 // reader that knows nothing about the curve extension still sees a complete
@@ -84,6 +86,7 @@ constexpr std::size_t kShadowRecordBytes = 9;
 constexpr std::size_t kIkMasterBytes = 9;
 constexpr std::size_t kIkEntryBytes = 21;
 constexpr char kFooterMagic[8] = {'M', 'M', 'V', 'C', 'U', 'R', 'V', '1'};
+constexpr char kNativeFooterMagic[8] = {'M', 'M', 'V', 'C', 'U', 'R', 'V', '2'};
 constexpr char kVmd2Signature[] = "Vocaloid Motion Data 0002";
 constexpr char kVmd1Signature[] = "Vocaloid Motion Data file";
 // "カメラ・照明" in Shift-JIS: the marker the original camera/light/shadow
@@ -114,6 +117,10 @@ struct Writer {
     void u64(std::uint64_t value) {
         u32(std::uint32_t(value));
         u32(std::uint32_t(value >> 32));
+    }
+
+    void f64(double value) {
+        std::uint64_t bits = 0; std::memcpy(&bits, &value, sizeof(bits)); u64(bits);
     }
 
     // The original stores every motion value as a 32-bit float.
@@ -172,6 +179,12 @@ struct Reader {
         std::memcpy(&value, &bits, sizeof(value));
         if (!std::isfinite(value)) throw std::runtime_error("a VMD value is not finite");
         return double(value);
+    }
+
+    double f64() {
+        const auto bits = u64(); double value = 0; std::memcpy(&value, &bits, sizeof(value));
+        if (!std::isfinite(value)) throw std::runtime_error("a native timing value is not finite");
+        return value;
     }
 
     std::string text(std::size_t bytes) {
@@ -364,32 +377,6 @@ void NormalizeTracks(Tracks& tracks) {
     }
 }
 
-// Applies one MMD control lane to the interval that ends at `index`.  A lane
-// the curve core cannot express (a byte above 127, crossed handles, or the
-// 3939 physics marker overwriting x1) leaves the interval linear instead of
-// inventing a curve.
-void ApplyLane(ac::Track& track, std::size_t index, const std::array<double, 4>& controls) {
-    if (index == 0 || index >= track.keys.size()) return;
-    if (track.keys[index].value == track.keys[index - 1].value) return;
-    if (controls[0] == controls[1] && controls[2] == controls[3]) return;  // diagonal is linear
-    std::string reason;
-    ac::SetMmdControls(track, index, controls, reason);
-}
-
-// A track whose keys hold 0, 1, 2, ... with the channel's lanes applied.  The
-// eased fraction of interval i is therefore value(frame) - i, which is how the
-// rotation channel drives the quaternion slerp.
-ac::Track FractionTrack(const std::vector<std::uint32_t>& frames,
-                        const std::vector<std::array<double, 4>>& lanes) {
-    ac::Track track;
-    track.keys.reserve(frames.size());
-    for (std::size_t index = 0; index < frames.size(); ++index) {
-        track.keys.push_back(MakeLinearKey(CheckedFrame(frames[index]), double(index)));
-    }
-    for (std::size_t index = 1; index < track.keys.size(); ++index) ApplyLane(track, index, lanes[index]);
-    return track;
-}
-
 bool IsAccessoryBoneChannel(const std::string& id) {
     return id == "x" || id == "y" || id == "z" || id == "rx" || id == "ry" || id == "rz";
 }
@@ -517,23 +504,13 @@ std::vector<ac::NamedTrack> BuildAccessory(std::vector<BoneFrame> bones) {
         return out;
     }
 
-    // Position: one value track per axis, each carrying its own MMD lane.
-    ac::Track positions[3];
-    for (int axis = 0; axis < 3; ++axis) {
-        positions[axis].keys.reserve(bones.size());
-        for (const BoneFrame& bone : bones) {
-            positions[axis].keys.push_back(
-                MakeLinearKey(CheckedFrame(bone.frame), bone.position[std::size_t(axis)]));
-        }
-        for (std::size_t index = 1; index < positions[axis].keys.size(); ++index) {
-            ApplyLane(positions[axis], index, bones[index].controls[std::size_t(axis)]);
-        }
-    }
-    std::vector<std::array<double, 4>> rotationLanes;
-    rotationLanes.reserve(bones.size());
-    for (const BoneFrame& bone : bones) rotationLanes.push_back(bone.controls[3]);
-    const ac::Track fractions = FractionTrack(boneFrames, rotationLanes);
-
+    // Accessory VMD import already emits every integer frame. Sample raw
+    // MMD timing directly, so crossed/endpoint controls never pass through a
+    // scalar-handle approximation. Preserve the legacy physics-marker fallback.
+    const auto eased=[](const std::array<double,4>& controls,double time) {
+        const bool valid=std::all_of(controls.begin(),controls.end(),[](double value){return value>=0&&value<=127;});
+        return valid?ac::EvaluateMmdTiming(controls,time).value:std::clamp(time,0.0,1.0);
+    };
     const std::uint64_t count = std::uint64_t(last) - std::uint64_t(first) + 1;
     std::size_t segment = 0;
     std::array<double, 3> previous{};
@@ -543,8 +520,8 @@ std::vector<ac::NamedTrack> BuildAccessory(std::vector<BoneFrame> bones) {
         while (segment + 1 < bones.size() && bones[segment + 1].frame <= frame) ++segment;
         const std::size_t lower = std::min(segment, bones.size() - 2);
         const std::size_t upper = lower + 1;
-        const double fraction =
-            std::clamp(ac::Evaluate(fractions, double(frame)).value - double(lower), 0.0, 1.0);
+        const double time=double(frame-bones[lower].frame)/double(bones[upper].frame-bones[lower].frame);
+        const double fraction=std::clamp(eased(bones[upper].controls[3],time),0.0,1.0);
         const std::array<double, 4> quaternion =
             Slerp(bones[lower].quaternion, bones[upper].quaternion, fraction);
         std::array<double, 3> euler = EulerDegrees(quaternion);
@@ -558,14 +535,14 @@ std::vector<ac::NamedTrack> BuildAccessory(std::vector<BoneFrame> bones) {
         const std::int32_t checked = CheckedFrame(frame);
         for (int axis = 0; axis < 3; ++axis) {
             out[std::size_t(axis)].track.keys.push_back(
-                MakeLinearKey(checked, ac::Evaluate(positions[axis], double(frame)).value));
+                MakeLinearKey(checked, bones[lower].position[axis]+(bones[upper].position[axis]-bones[lower].position[axis])*eased(bones[upper].controls[axis],time)));
             out[std::size_t(3 + axis)].track.keys.push_back(MakeLinearKey(checked, euler[std::size_t(axis)]));
         }
     }
     return out;
 }
 
-std::vector<ac::NamedTrack> BuildCamera(std::vector<CameraFrame> cameras) {
+std::vector<ac::NamedTrack> BuildCamera(std::vector<CameraFrame> cameras, std::vector<NativeTiming>& timing) {
     if (cameras.empty()) throw std::runtime_error("the file has no camera keys");
     SortByFrame(cameras);
     const std::string ids[9] = {"x", "y", "z", "rx", "ry", "rz", "distance", "fov", "perspective"};
@@ -589,7 +566,23 @@ std::vector<ac::NamedTrack> BuildCamera(std::vector<CameraFrame> cameras) {
         if (lanes[index] < 0) continue;
         ac::Track& track = tracks[ids[index]];
         for (std::size_t key = 1; key < track.keys.size(); ++key) {
-            ApplyLane(track, key, cameras[key].controls[std::size_t(lanes[index])]);
+            const auto& controls = cameras[key].controls[std::size_t(lanes[index])];
+            for (double value : controls) if (value < 0 || value > 127)
+                throw std::runtime_error("a camera interpolation control is outside 0..127");
+            timing.push_back({ids[index], track.keys[key].frame, controls, true});
+            auto& a = track.keys[key-1]; auto& b = track.keys[key];
+            std::string reason;
+            if (!ac::SetMmdControls(track, key, controls, reason)) {
+                const double x1=std::clamp(controls[0]/127.0,0.0002,0.9996);
+                const double x2=std::clamp(controls[2]/127.0,x1+0.0002,0.9998);
+                const double rate=(b.value-a.value)/double(b.frame-a.frame);
+                a.outWeight=x1; b.inWeight=1-x2;
+                a.outSlope=controls[1]/127.0*rate/x1;
+                b.inSlope=(1-controls[3]/127.0)*rate/(1-x2);
+                b.interpolation=ac::Interpolation::Bezier;
+            }
+            // Raw metadata also owns diagonal lanes (including camera cuts).
+            b.interpolation=ac::Interpolation::Bezier;
         }
     }
     std::vector<ac::NamedTrack> out;
@@ -649,6 +642,128 @@ std::vector<ac::NamedTrack> BuildParameterProxies(std::vector<MorphFrame> morphs
 
 }  // namespace
 
+namespace {
+bool NativeGeometry(const curve_editor::Channel& channel, std::size_t end) {
+    if (!end || end>=channel.track.keys.size() || end>=channel.nativeControls.size() ||
+        end>=channel.controlGeometry.size()) return false;
+    const auto& a=channel.track.keys[end-1]; const auto& b=channel.track.keys[end];
+    return b.interpolation==ac::Interpolation::Bezier &&
+        channel.controlGeometry[end]==std::array<double,4>{a.outWeight,a.outSlope,b.inWeight,b.inSlope};
+}
+float CameraCurveTime(const std::array<double,4>& control,float t) {
+    // De Casteljau subdivision can introduce a few double-precision ulps
+    // into an exactly diagonal native lane. Keep its original straight path.
+    if(std::abs(control[0]-control[1])<=1e-12 && std::abs(control[2]-control[3])<=1e-12)return t;
+    const float x1=float(control[0])/127.0f,x2=float(control[2])/127.0f;
+    float u=0.5f,half=0.25f;
+    for(int i=0;i<12;++i){
+        const float v=1.0f-u,v3=v*3.0f;
+        const float x=(v3*v*u)*x1+(v3*u*u)*x2+u*u*u;
+        if(x==t)break;
+        u=x>=t?u-half:u+half;half*=0.5f;
+    }
+    const float v=1.0f-u,v3=v*3.0f;
+    return (v3*v*u)*float(control[1])/127.0f+(v3*u*u)*float(control[3])/127.0f+u*u*u;
+}
+}
+ac::Sample SampleCameraChannel(const curve_editor::Channel& channel,double frame) {
+    const auto& keys=channel.track.keys;
+    if(keys.size()<2 || !std::isfinite(frame))return ac::Evaluate(channel.track,frame);
+    const auto value=[&](double at){
+        if(at<=keys.front().frame)return keys.front().value;
+        if(at>=keys.back().frame)return keys.back().value;
+        const auto bound=std::upper_bound(keys.begin(),keys.end(),at,[](double f,const ac::Key&k){return f<k.frame;});
+        const auto end=std::size_t(bound-keys.begin());
+        if(!NativeGeometry(channel,end))return ac::Evaluate(channel.track,at).value;
+        const auto&a=keys[end-1];const auto&b=keys[end];
+        if(at==a.frame)return a.value;
+        const double span=double(b.frame)-a.frame;
+        if(span==1.0&&(end>=channel.nativeOneFrameHolds.size()||channel.nativeOneFrameHolds[end]))return a.value;
+        return a.value+(b.value-a.value)*CameraCurveTime(channel.nativeControls[end],float((at-a.frame)/span));
+    };
+    double speed=0;
+    if(frame>=keys.front().frame && frame<=keys.back().frame){
+        auto at=std::upper_bound(keys.begin(),keys.end(),frame,[](double f,const ac::Key&k){return f<k.frame;});
+        const auto end=at==keys.end()?keys.size()-1:std::size_t(at-keys.begin());
+        const auto&a=keys[end-1];const auto&b=keys[end];
+        const double span=double(b.frame)-a.frame;
+        if(NativeGeometry(channel,end)){
+            if(span>1||(end<channel.nativeOneFrameHolds.size()&&!channel.nativeOneFrameHolds[end]))
+                speed=(b.value-a.value)/span*ac::EvaluateMmdTiming(channel.nativeControls[end],(frame-a.frame)/span).derivative;
+        }else speed=ac::Evaluate(channel.track,frame).derivative;
+    }
+    return {value(frame),speed};
+}
+Motion CaptureChannels(Kind kind,const std::vector<curve_editor::Channel>& channels) {
+    Motion motion; motion.kind=kind;
+    for (const auto& channel:channels) if (channel.selected) {
+        motion.tracks.push_back({channel.id,channel.track});
+        if (kind==Kind::Camera) for (std::size_t end=1;end<channel.track.keys.size();++end)
+            if (NativeGeometry(channel,end)) motion.nativeTiming.push_back({channel.id,channel.track.keys[end].frame,
+                channel.nativeControls[end],end>=channel.nativeOneFrameHolds.size()||channel.nativeOneFrameHolds[end]});
+    }
+    motion.sample=[channels](const std::string& id,double frame) {
+        const auto found=std::find_if(channels.begin(),channels.end(),[&](const auto& channel){return channel.id==id;});
+        return found==channels.end()?0.0:curve_editor::EvaluateChannel(*found,frame).value;
+    };
+    return motion;
+}
+bool RestoreChannels(const Motion& motion,std::vector<curve_editor::Channel>& channels,std::string& error) {
+    error.clear();
+    if (!motion.nativeTiming.empty() && motion.kind!=Kind::Camera) { error="Native timing requires a camera motion."; return false; }
+    auto candidate=channels;
+    std::set<std::pair<std::string,int>> seen;
+    for (auto& channel:candidate) {
+        const auto track=std::find_if(motion.tracks.begin(),motion.tracks.end(),[&](const auto& item){return item.id==channel.id;});
+        if (track==motion.tracks.end()) continue;
+        channel.track=track->track; channel.sample={}; channel.nativeControls.clear();
+        channel.controlGeometry.clear(); channel.nativeOneFrameHolds.clear(); channel.interpolationGroup.clear();
+        for (const auto& timing:motion.nativeTiming) if (timing.id==channel.id) {
+            const auto at=std::lower_bound(channel.track.keys.begin(),channel.track.keys.end(),timing.endFrame,
+                [](const auto& key,int frame){return key.frame<frame;});
+            if (at==channel.track.keys.end() || at==channel.track.keys.begin() || at->frame!=timing.endFrame ||
+                at->interpolation!=ac::Interpolation::Bezier || !seen.emplace(timing.id,timing.endFrame).second ||
+                !std::all_of(timing.controls.begin(),timing.controls.end(),[](double value){return std::isfinite(value);})) {
+                error="Native camera timing does not match a unique Bezier interval."; return false;
+            }
+            const auto end=std::size_t(at-channel.track.keys.begin());
+            channel.nativeControls.resize(channel.track.keys.size());
+            channel.controlGeometry.resize(channel.track.keys.size());
+            channel.nativeOneFrameHolds.resize(channel.track.keys.size(),true);
+            const auto& a=channel.track.keys[end-1];
+            channel.nativeControls[end]=timing.controls;
+            channel.controlGeometry[end]={a.outWeight,a.outSlope,at->inWeight,at->inSlope};
+            channel.nativeOneFrameHolds[end]=timing.oneFrameHold;
+            channel.sample=SampleCameraChannel;
+        }
+        if (motion.kind==Kind::Camera && (channel.id=="rx"||channel.id=="ry"||channel.id=="rz"))
+            channel.interpolationGroup="camera/rotation";
+    }
+    // Metadata for channels omitted by this recipient is allowed, but every
+    // metadata record must refer to a real source track and interval.
+    for (const auto& timing:motion.nativeTiming) {
+        const auto track=std::find_if(motion.tracks.begin(),motion.tracks.end(),[&](const auto& item){return item.id==timing.id;});
+        if (track==motion.tracks.end()) { error="Native timing refers to a missing channel."; return false; }
+        if (std::none_of(candidate.begin(),candidate.end(),[&](const auto& c){return c.id==timing.id;})) {
+            curve_editor::Channel channel; channel.id=timing.id;
+            std::vector<curve_editor::Channel> one{channel};
+            Motion subset;subset.kind=motion.kind;subset.tracks.push_back(*track);
+            for (const auto& value:motion.nativeTiming) if(value.id==timing.id) subset.nativeTiming.push_back(value);
+            if (!RestoreChannels(subset,one,error)) return false;
+        }
+    }
+    channels.swap(candidate);return true;
+}
+ac::Sample Evaluate(const Motion& motion,const std::string& id,double frame) {
+    const auto track=std::find_if(motion.tracks.begin(),motion.tracks.end(),[&](const auto& item){return item.id==id;});
+    if (track==motion.tracks.end()) return {};
+    if (motion.sample) return {motion.sample(id,frame),0};
+    curve_editor::Channel channel;channel.id=id;
+    std::vector<curve_editor::Channel> channels{channel};std::string error;
+    if (!RestoreChannels(motion,channels,error)) return {};
+    return curve_editor::EvaluateChannel(channels.front(),frame);
+}
+
 bool Encode(const Motion& motion, std::vector<std::uint8_t>& out, std::string& error) {
     try {
         if (std::uint32_t(motion.kind) > std::uint32_t(Kind::Morph)) {
@@ -658,6 +773,22 @@ bool Encode(const Motion& motion, std::vector<std::uint8_t>& out, std::string& e
         // is built (and validated) before anything is written.
         std::vector<std::uint8_t> payload;
         if (!ac::Encode(motion.tracks, payload, error)) return false;
+        if (!motion.nativeTiming.empty()) {
+            if (motion.kind != Kind::Camera) throw std::runtime_error("native timing requires a camera motion");
+            std::vector<curve_editor::Channel> checked;
+            for (const auto& track : motion.tracks) { curve_editor::Channel channel; channel.id=track.id; checked.push_back(std::move(channel)); }
+            if (!RestoreChannels(motion, checked, error)) return false;
+            if (motion.nativeTiming.size() > kMaximumRecords) throw std::runtime_error("too many native timing records");
+            Writer envelope;
+            envelope.raw("MDSN",4); envelope.u64(payload.size()); envelope.raw(payload.data(),payload.size());
+            envelope.u32(std::uint32_t(motion.nativeTiming.size()));
+            for (const auto& timing : motion.nativeTiming) {
+                envelope.u32(std::uint32_t(timing.id.size())); envelope.raw(timing.id.data(),timing.id.size());
+                envelope.u32(std::uint32_t(timing.endFrame)); envelope.u32(timing.oneFrameHold?1:0);
+                for (double value : timing.controls) envelope.f64(value);
+            }
+            payload.swap(envelope.bytes);
+        }
 
         std::map<std::string, const ac::Track*> lookup;
         for (const ac::NamedTrack& named : motion.tracks) lookup[named.id] = &named.track;
@@ -722,13 +853,21 @@ bool Encode(const Motion& motion, std::vector<std::uint8_t>& out, std::string& e
                                      std::to_string(kMaximumBytes));
         }
 
-        const auto value = [&lookup](const char* id, std::int32_t frame, double fallback) {
+        std::vector<curve_editor::Channel> nativeChannels;
+        if (!motion.sample && !motion.nativeTiming.empty()) {
+            for (const auto& named:motion.tracks) { curve_editor::Channel channel;channel.id=named.id;nativeChannels.push_back(std::move(channel)); }
+            if (!RestoreChannels(motion,nativeChannels,error)) return false;
+        }
+        const auto value = [&lookup,&motion,&nativeChannels](const char* id, std::int32_t frame, double fallback) {
             const auto found = lookup.find(id);
             if (found == lookup.end() || found->second->keys.empty()) return fallback;
-            return ac::Evaluate(*found->second, double(frame)).value;
+            if (motion.sample) return motion.sample(id,double(frame));
+            const auto channel=std::find_if(nativeChannels.begin(),nativeChannels.end(),[&](const auto& c){return c.id==id;});
+            return channel==nativeChannels.end()?ac::Evaluate(*found->second,double(frame)).value:
+                curve_editor::EvaluateChannel(*channel,double(frame)).value;
         };
-        const auto tracked = [&lookup](const std::string& id, std::int32_t frame) {
-            return ac::Evaluate(*lookup[id], double(frame)).value;
+        const auto tracked = [&value](const std::string& id, std::int32_t frame) {
+            return value(id.c_str(), frame, 0.0);
         };
 
         Writer writer;
@@ -810,7 +949,7 @@ bool Encode(const Motion& motion, std::vector<std::uint8_t>& out, std::string& e
 
         const std::size_t prefixBytes = writer.bytes.size();
         writer.raw(payload.data(), payload.size());
-        writer.raw(kFooterMagic, sizeof(kFooterMagic));
+        writer.raw(motion.nativeTiming.empty()?kFooterMagic:kNativeFooterMagic, sizeof(kFooterMagic));
         writer.u64(std::uint64_t(prefixBytes));
         writer.u64(std::uint64_t(payload.size()));
         writer.u32(Crc32(writer.bytes.data(), prefixBytes));
@@ -848,8 +987,9 @@ bool Decode(const std::uint8_t* data, std::size_t size, Kind requested, Motion& 
 
         // A valid curve tail makes the standard proxy redundant, so the proxy
         // records are only materialised when they will actually be used.
-        const bool hasTail =
-            size >= kFooterBytes && std::memcmp(data + size - kFooterBytes, kFooterMagic, 8) == 0;
+        const bool nativeTail = size >= kFooterBytes && std::memcmp(data + size - kFooterBytes, kNativeFooterMagic, 8) == 0;
+        const bool hasTail = nativeTail ||
+            (size >= kFooterBytes && std::memcmp(data + size - kFooterBytes, kFooterMagic, 8) == 0);
         const bool store = !hasTail;
         const bool wantBones = store && requested == Kind::Accessory;
         const bool wantParameters = store && (requested == Kind::Accessory || requested == Kind::Effect ||
@@ -974,7 +1114,34 @@ bool Decode(const std::uint8_t* data, std::size_t size, Kind requested, Motion& 
             }
             Motion candidate;
             candidate.kind = requested;
-            if (!ac::Decode(data + standardEnd, std::size_t(curveBytes), candidate.tracks, error)) return false;
+            const auto* curveData = data + standardEnd;
+            std::size_t scalarBytes = std::size_t(curveBytes);
+            Reader envelope{curveData,scalarBytes};
+            if (nativeTail) {
+                if (envelope.text(4)!="MDSN") throw std::runtime_error("the native timing envelope marker is invalid");
+                const auto length = envelope.u64();
+                if (length > envelope.remaining()) throw std::runtime_error("the native timing scalar length is invalid");
+                curveData += envelope.pos; scalarBytes = std::size_t(length); envelope.skip(scalarBytes);
+            }
+            if (!ac::Decode(curveData, scalarBytes, candidate.tracks, error)) return false;
+            if (nativeTail) {
+                const auto count = envelope.u32();
+                if (count > envelope.remaining()/45) throw std::runtime_error("the native timing count is invalid");
+                for (std::uint32_t i=0;i<count;++i) {
+                    const auto length = envelope.u32();
+                    if (!length || length>1024) throw std::runtime_error("the native timing id is invalid");
+                    NativeTiming timing; timing.id=envelope.text(length); timing.endFrame=CheckedFrame(envelope.u32());
+                    const auto hold=envelope.u32();
+                    if (hold>1) throw std::runtime_error("the native camera hold flag is invalid");
+                    timing.oneFrameHold=hold!=0;
+                    for (auto& value:timing.controls) value=envelope.f64();
+                    candidate.nativeTiming.push_back(std::move(timing));
+                }
+                if (envelope.remaining()) throw std::runtime_error("the native timing payload has trailing bytes");
+                std::vector<curve_editor::Channel> checked;
+                for (const auto& track:candidate.tracks) { curve_editor::Channel channel;channel.id=track.id;checked.push_back(std::move(channel)); }
+                if (!RestoreChannels(candidate,checked,error)) return false;
+            }
             out = std::move(candidate);
             return true;
         }
@@ -984,11 +1151,13 @@ bool Decode(const std::uint8_t* data, std::size_t size, Kind requested, Motion& 
         // appear in the trailing region: a shifted footer, or a curve payload
         // whose footer was cut off, means the tail is damaged and the standard
         // proxy must not silently take its place.
-        if (size - standardEnd >= 4 && std::memcmp(data + standardEnd, "MDSC", 4) == 0) {
+        if (size - standardEnd >= 4 && (std::memcmp(data + standardEnd, "MDSC", 4) == 0 ||
+            std::memcmp(data + standardEnd, "MDSN", 4) == 0)) {
             throw std::runtime_error("the curve payload is present but its footer is missing or damaged");
         }
         for (std::size_t at = standardEnd; at + sizeof(kFooterMagic) <= size; ++at) {
-            if (std::memcmp(data + at, kFooterMagic, sizeof(kFooterMagic)) == 0) {
+            if (std::memcmp(data + at, kFooterMagic, sizeof(kFooterMagic)) == 0 ||
+                std::memcmp(data + at, kNativeFooterMagic, sizeof(kNativeFooterMagic)) == 0) {
                 throw std::runtime_error("the curve tail is damaged or misplaced");
             }
         }
@@ -1000,7 +1169,7 @@ bool Decode(const std::uint8_t* data, std::size_t size, Kind requested, Motion& 
             candidate.tracks = BuildAccessory(std::move(bones));
             break;
         case Kind::Camera:
-            candidate.tracks = BuildCamera(std::move(cameras));
+            candidate.tracks = BuildCamera(std::move(cameras), candidate.nativeTiming);
             break;
         case Kind::Light:
             candidate.tracks = BuildLight(std::move(lights));

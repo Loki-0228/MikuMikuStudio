@@ -8,6 +8,7 @@
 #include "mikudancestudio/bone_key_pool.hpp"
 #include "mikudancestudio/key_pool.hpp"
 #include "mikudancestudio/bone_scale.hpp"
+#include "mikudancestudio/animation_curve_host.hpp"
 #include "mikudancestudio/sequence_scatter.hpp"
 #include "mikudancestudio/morph_curve.hpp"
 #include "mikudancestudio/panel_controls.hpp"
@@ -26,6 +27,7 @@
 #include <string>
 #include <vector>
 #include <filesystem>
+#include "mikudancestudio/autosave.hpp"
 #include <fstream>
 #include <wrl/client.h>
 
@@ -137,6 +139,7 @@ void CheckCoordinateReset(MMDApp* app, const std::filesystem::path& output) {
 #include "editor_feedback_checks.hpp"
 #include "sequence_scatter_checks.hpp"
 #include "accessory_feedback_checks.hpp"
+#include "curve_transport_feedback_checks.hpp"
 
 int multiplyAction = 0;
 int multiplyDialogs = 0;
@@ -1493,6 +1496,32 @@ static void CheckEffectAutoSave(MMDApp* app, const wchar_t* prefix, bool initial
     Check((GetFileAttributesW(emm.c_str()) != INVALID_FILE_ATTRIBUTES) == initiallyEnabled,
           "first save follows initial auto-save setting");
     std::puts("PASS first save follows initial auto-save setting");
+    {
+        autosave::Initialize(app);
+        auto settings = autosave::Current();
+        settings.enabled = true; settings.overwriteOldest = true; settings.maxBackups = 1;
+        settings.directory = stem + L"-backups";
+        std::wstring error;
+        Check(autosave::Configure(app, settings, error), "configure isolated paired backup");
+        Check(autosave::BackupNow(app) == autosave::Result::Saved, "create native MME backup");
+        frames();
+        auto backups = autosave::Backups(settings.directory);
+        Check(backups.size() == 1, "one owned backup was created");
+        auto sidecar = backups[0]; sidecar.replace_extension(L".emm");
+        Check(std::filesystem::is_regular_file(sidecar) == initiallyEnabled,
+              "automatic backup follows the live MME EMM save setting");
+        const auto oldSidecar = sidecar;
+        Sleep(2);
+        Check(autosave::BackupNow(app) == autosave::Result::Saved, "rotate native MME backup");
+        frames();
+        backups = autosave::Backups(settings.directory);
+        Check(backups.size() == 1 && !std::filesystem::exists(oldSidecar),
+              "rotation removes the old owned EMM with its PMM");
+        sidecar = backups[0]; sidecar.replace_extension(L".emm");
+        Check(std::filesystem::is_regular_file(sidecar) == initiallyEnabled,
+              "rotated backup keeps the new PMM/EMM pair");
+        autosave::Shutdown();
+    }
     ResetAppState(app);
     wcscpy_s(app->EnvFileName(), 256, pmm.c_str());
     LoadSceneFile();
@@ -1788,6 +1817,10 @@ int wmain(int argc, wchar_t** argv) {
     if (cameraStartup) wcscpy_s(app->EnvFileName(), 256, scenePath);
     if (!InitMainWindowAndD3D(app, GetModuleHandleW(nullptr), SW_HIDE)) return 3;
     ShowWindow(app->MainWindow(), SW_HIDE);
+    if(argc>3&&std::wcscmp(argv[3],L"--curve-transport")==0){
+        CheckCurveTransportFeedback(app,scenePath);
+        ShutdownCleanup(app);delete app;g_Block=nullptr;return 0;
+    }
     if (argc > 3 && std::wcscmp(argv[3], L"--accessory-feedback") == 0) {
         CheckAccessoryFeedback(app, scenePath, argc > 4 ? argv[4] : L"all");
         ShutdownCleanup(app); delete app; g_Block = nullptr; return 0;

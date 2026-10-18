@@ -1,14 +1,124 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
+#include <d3d9.h>
 
 #include "mikudancestudio/effect_api.hpp"
 #include "mikudancestudio/text_encoding.hpp"
+#include "mikudancestudio/runtime_log.hpp"
+#include <atomic>
 #include <cstring>
 #include <string>
+#include <filesystem>
+#include <mutex>
+#include <vector>
+#include <algorithm>
 
 namespace mikudancestudio {
 namespace {
+namespace fs = std::filesystem;
+struct RelativeAssignment {
+    fs::path legacy; // MME expands relative entries against its installation.
+    fs::path local;
+};
+std::mutex assignmentMutex;
+std::vector<RelativeAssignment> assignments;
+
+bool RegularFile(const fs::path& path) {
+    const DWORD attributes = GetFileAttributesW(path.c_str());
+    return attributes != INVALID_FILE_ATTRIBUTES && !(attributes & FILE_ATTRIBUTE_DIRECTORY);
+}
+fs::path ExecutableDirectory() {
+    wchar_t path[32768]{};
+    const DWORD count = GetModuleFileNameW(nullptr, path, 32768);
+    return count && count < 32768 ? fs::path(path).parent_path() : fs::path{};
+}
+std::string Trim(std::string text) {
+    const auto first = text.find_first_not_of(" \t\r");
+    if (first == std::string::npos) return {};
+    text = text.substr(first, text.find_last_not_of(" \t\r") - first + 1);
+    if (text.size() >= 2 && text.front() == '"' && text.back() == '"')
+        text = text.substr(1, text.size() - 2);
+    return text;
+}
+
+void ReadAssignments(const fs::path& emm) {
+    std::vector<RelativeAssignment> next;
+    const auto executable = ExecutableDirectory();
+    HANDLE file = CreateFileW(emm.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                             nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file != INVALID_HANDLE_VALUE) {
+        struct Close { HANDLE file; ~Close() { CloseHandle(file); } } close{file};
+        LARGE_INTEGER size{};
+        // Bound the compatibility parser; MME retains ownership of its format.
+        if (GetFileSizeEx(file, &size) && size.QuadPart >= 0 && size.QuadPart <= 16 * 1024 * 1024) {
+            std::string bytes(static_cast<std::size_t>(size.QuadPart), '\0');
+            DWORD read = 0;
+            if (ReadFile(file, bytes.data(), static_cast<DWORD>(bytes.size()), &read, nullptr) && read == bytes.size()) {
+                for (std::size_t offset = 0; offset < bytes.size();) {
+                    const auto end = bytes.find('\n', offset);
+                    auto line = Trim(bytes.substr(offset, end == std::string::npos ? end : end - offset));
+                    offset = end == std::string::npos ? bytes.size() : end + 1;
+                    if (line.empty() || line.front() == ';' || line.front() == '#') continue;
+                    const auto equal = line.find('=');
+                    if (equal == std::string::npos) continue;
+                    const auto value = Trim(line.substr(equal + 1));
+                    if (value.empty() || value.find('\0') != std::string::npos) continue;
+                    // Decode before looking for separators: CP932 can contain
+                    // 0x5c inside a character, not just as a directory separator.
+                    for (UINT cp : {GetACP(), 932u, 936u, 950u, 949u, 65001u}) {
+                        std::wstring decoded;
+                        if (!text_encoding::Decode(value.c_str(), cp, decoded)) continue;
+                        const fs::path relative(decoded);
+                        if (relative.empty() || relative.has_root_path() || !relative.has_extension()) continue;
+                        const auto legacy = (executable / relative).lexically_normal();
+                        const auto local = (emm.parent_path() / relative).lexically_normal();
+                        const auto same = [&](const RelativeAssignment& entry) {
+                            return entry.legacy == legacy && entry.local == local;
+                        };
+                        if (std::none_of(next.begin(), next.end(), same)) next.push_back({legacy, local});
+                    }
+                }
+            }
+        }
+    }
+    std::lock_guard<std::mutex> lock(assignmentMutex);
+    assignments.swap(next); // A project without EMM must not retain old aliases.
+}
+
+bool RelativePath(const wchar_t* filename, std::wstring& resolved) {
+    if (!filename || !*filename) return false;
+    auto path = fs::path(filename).lexically_normal();
+    if (!path.has_root_path()) path = (ExecutableDirectory() / path).lexically_normal();
+    std::lock_guard<std::mutex> lock(assignmentMutex);
+    // All project-relative candidates precede MME's expanded absolute path.
+    for (const auto& entry : assignments) {
+        if (_wcsicmp(path.c_str(), entry.legacy.c_str()) == 0 && RegularFile(entry.local)) {
+            resolved = entry.local.native();
+            return true;
+        }
+    }
+    return false;
+}
+
+HANDLE TrackAssignmentRead(HANDLE file, bool readOnly) noexcept {
+    if (file == INVALID_HANDLE_VALUE || !readOnly) return file;
+    const DWORD error = GetLastError();
+    try {
+        // Also cover EMM files opened directly through MME's own Load menu.
+        // The handle names the exact file chosen by Windows, independent of ACP.
+        wchar_t filename[32768]{};
+        const DWORD size = GetFinalPathNameByHandleW(file, filename, 32768, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+        if (size && size < 32768) {
+            std::wstring path(filename, size);
+            if (path.compare(0, 8, L"\\\\?\\UNC\\") == 0) path = L"\\\\" + path.substr(8);
+            else if (path.compare(0, 4, L"\\\\?\\") == 0) path.erase(0, 4);
+            if (_wcsicmp(fs::path(path).extension().c_str(), L".emm") == 0) ReadAssignments(path);
+        }
+    } catch (...) { /* Preserve the native file operation on compatibility failure. */ }
+    SetLastError(error);
+    return file;
+}
 
 // MME keeps EMM paths as bytes and calls ANSI Win32 APIs. A file saved on
 // Japanese Windows can therefore point at an existing, different Unicode
@@ -16,6 +126,13 @@ namespace {
 // another encoding when that exact decoded file really exists.
 bool ExistingPath(const char* bytes, std::wstring& path, UINT& codePage) {
     if (!bytes || !*bytes) return false;
+    for (UINT cp : {GetACP(), 932u, 936u, 950u, 949u, 65001u}) {
+        std::wstring decoded;
+        if (text_encoding::Decode(bytes, cp, decoded) && RelativePath(decoded.c_str(), path)) {
+            codePage = cp;
+            return true;
+        }
+    }
     bool nonAscii = false;
     for (const unsigned char* p = reinterpret_cast<const unsigned char*>(bytes); *p; ++p)
         nonAscii |= *p >= 0x80;
@@ -38,6 +155,10 @@ bool MissingPath(DWORD error) {
 }
 
 DWORD WINAPI EffectFileAttributes(LPCSTR filename) {
+    std::wstring preferred;
+    UINT preferredCp = 0;
+    if (ExistingPath(filename, preferred, preferredCp))
+        return GetFileAttributesW(preferred.c_str());
     const DWORD attributes = GetFileAttributesA(filename);
     if (attributes != INVALID_FILE_ATTRIBUTES) return attributes;
     const DWORD error = GetLastError();
@@ -52,17 +173,24 @@ DWORD WINAPI EffectFileAttributes(LPCSTR filename) {
 HANDLE WINAPI OpenEffectFile(LPCSTR filename, DWORD access, DWORD share,
                             LPSECURITY_ATTRIBUTES security, DWORD creation,
                             DWORD attributes, HANDLE templateFile) {
+    const bool readOnly = creation == OPEN_EXISTING && (access == GENERIC_READ || access == 0);
+    std::wstring preferred;
+    UINT preferredCp = 0;
+    if (readOnly && ExistingPath(filename, preferred, preferredCp)) {
+        HANDLE file = CreateFileW(preferred.c_str(), access, share, security, creation, attributes, templateFile);
+        if (file != INVALID_HANDLE_VALUE) return TrackAssignmentRead(file, readOnly);
+    }
     HANDLE file = CreateFileA(filename, access, share, security, creation,
                               attributes, templateFile);
-    if (file != INVALID_HANDLE_VALUE) return file;
+    if (file != INVALID_HANDLE_VALUE) return TrackAssignmentRead(file, readOnly);
     const DWORD error = GetLastError();
     std::wstring path;
     UINT cp = 0;
     // A compatibility lookup must never redirect writes or create a new file.
     if (creation == OPEN_EXISTING && (access == GENERIC_READ || access == 0) &&
         MissingPath(error) && ExistingPath(filename, path, cp))
-        return CreateFileW(path.c_str(), access, share, security, creation,
-                           attributes, templateFile);
+        return TrackAssignmentRead(CreateFileW(path.c_str(), access, share, security, creation,
+                           attributes, templateFile), readOnly);
     SetLastError(error);
     return file;
 }
@@ -79,8 +207,7 @@ int WINAPI DecodeEffectPath(UINT codePage, DWORD flags, LPCCH bytes, int byteCou
         std::wstring path;
         UINT resolvedCodePage = 0;
         if (bounded.find('\0') == std::string::npos &&
-            ExistingPath(bounded.c_str(), path, resolvedCodePage) &&
-            resolvedCodePage != GetACP()) {
+            ExistingPath(bounded.c_str(), path, resolvedCodePage)) {
             const int needed = static_cast<int>(path.size()) + (terminated ? 1 : 0);
             if (capacity == 0) return needed;
             if (!output || capacity < 0) {
@@ -98,9 +225,64 @@ int WINAPI DecodeEffectPath(UINT codePage, DWORD flags, LPCCH bytes, int byteCou
     return MultiByteToWideChar(codePage, flags, bytes, byteCount, output, capacity);
 }
 
+using CreateEffectFile = HRESULT(WINAPI*)(IDirect3DDevice9*, LPCWSTR, const void*, const void*,
+    DWORD, void*, void**, void**);
+std::atomic<CreateEffectFile> originalEffectFile{nullptr};
+
+// Read COM dispatch addresses without calling the object. A non-null device or
+// pool alone does not establish that its vtable is still valid at FX creation.
+bool ReadDispatchPointer(const void* address, void*& value) noexcept {
+    value = nullptr;
+    SIZE_T read = 0;
+    return address && ReadProcessMemory(GetCurrentProcess(), address, &value,
+        sizeof(value), &read) && read == sizeof(value);
+}
+void TraceEffectDispatch(const char* label, const void* object, bool device) noexcept {
+    if (!object) {
+        runtime_log::Write("MME_EFFECT_DISPATCH %s object=null", label);
+        return;
+    }
+    void* table = nullptr;
+    if (!ReadDispatchPointer(object, table) || !table) {
+        runtime_log::Write("MME_EFFECT_DISPATCH %s object=%p vtable=unreadable", label, object);
+        return;
+    }
+    // IDirect3DDevice9 shader creation is used by the FX compiler; the effect
+    // pool exposes IUnknown. Log targets only, retaining the normal call path.
+    const unsigned indices[] = {0, 1, 2, 7, 23, 86, 91, 106};
+    for (unsigned i = 0; i < (device ? _countof(indices) : 3); ++i) {
+        const auto slot = reinterpret_cast<ULONG_PTR>(table) + indices[i] * sizeof(void*);
+        void* target = nullptr;
+        const bool readable = ReadDispatchPointer(reinterpret_cast<void*>(slot), target);
+        MEMORY_BASIC_INFORMATION region{};
+        const bool mapped = readable && target && VirtualQuery(target, &region, sizeof(region));
+        runtime_log::Write("MME_EFFECT_DISPATCH %s vtable=%p slot=%u target=%p readable=%u base=%p protection=0x%lX",
+            label, table, indices[i], target, unsigned(readable), mapped ? region.AllocationBase : nullptr,
+            mapped ? region.Protect : 0);
+    }
+}
+HRESULT WINAPI TraceEffectFile(IDirect3DDevice9* device, LPCWSTR filename, const void* macros,
+        const void* include, DWORD flags, void* pool, void** effect, void** errors) {
+    const DWORD incomingError = GetLastError();
+    const auto create = originalEffectFile.load(std::memory_order_acquire);
+    runtime_log::WritePath("MME_EFFECT_FILE", filename);
+    runtime_log::Write("MME_EFFECT_CREATE function=%p device=%p include=%p pool=%p macros=%p flags=0x%08lX",
+        create, device, include, pool, macros, flags);
+    TraceEffectDispatch("device", device, true);
+    TraceEffectDispatch("pool", pool, false);
+    SetLastError(incomingError);
+    const auto result = create ? create(device, filename, macros, include, flags, pool, effect, errors)
+                               : E_NOINTERFACE;
+    const auto error = GetLastError();
+    runtime_log::Write("MME_EFFECT_RESULT hr=0x%08lX effect=%p", static_cast<unsigned long>(result),
+        effect ? *effect : nullptr);
+    SetLastError(error);
+    return result;
+}
+
 struct ImportReplacement { const char* name; void* original; void* replacement; };
 
-// Restrict the compatibility calls to MMEffect's declared kernel32 imports.
+// Restrict compatibility and effect diagnostics to MMEffect's own imports.
 // Other plugins and the host keep their normal ANSI API behavior.
 void PatchImports(HMODULE module) {
     auto* base = reinterpret_cast<unsigned char*>(module);
@@ -128,9 +310,14 @@ void PatchImports(HMODULE module) {
         if (!descriptor.Name) break;
         if (descriptor.Name >= size ||
             strnlen_s(reinterpret_cast<const char*>(base + descriptor.Name), size - descriptor.Name) == size - descriptor.Name ||
-            _stricmp(reinterpret_cast<const char*>(base + descriptor.Name), "kernel32.dll") != 0 ||
             !descriptor.OriginalFirstThunk || descriptor.OriginalFirstThunk >= size ||
             !descriptor.FirstThunk || descriptor.FirstThunk >= size) continue;
+        const char* library = reinterpret_cast<const char*>(base + descriptor.Name);
+        const bool kernel = _stricmp(library, "kernel32.dll") == 0;
+        const auto compiler = _strnicmp(library, "d3dx9_", 6) == 0
+            ? reinterpret_cast<CreateEffectFile>(GetProcAddress(GetModuleHandleA(library), "D3DXCreateEffectFromFileW"))
+            : nullptr;
+        if (!kernel && !compiler) continue;
         const auto* names = reinterpret_cast<const IMAGE_THUNK_DATA*>(base + descriptor.OriginalFirstThunk);
         auto* slots = reinterpret_cast<IMAGE_THUNK_DATA*>(base + descriptor.FirstThunk);
         const auto nameCount = (size - descriptor.OriginalFirstThunk) / sizeof(*names);
@@ -141,6 +328,18 @@ void PatchImports(HMODULE module) {
             if (rva >= size || size - rva <= sizeof(WORD)) continue;
             const char* name = reinterpret_cast<const char*>(base + rva + sizeof(WORD));
             if (strnlen_s(name, size - rva - sizeof(WORD)) == size - rva - sizeof(WORD)) continue;
+            if (compiler && std::strcmp(name, "D3DXCreateEffectFromFileW") == 0 &&
+                slots[j].u1.Function == reinterpret_cast<ULONG_PTR>(compiler)) {
+                DWORD protection = 0;
+                auto* slot = &slots[j].u1.Function;
+                if (VirtualProtect(slot, sizeof(void*), PAGE_READWRITE, &protection)) {
+                    originalEffectFile.store(compiler, std::memory_order_release);
+                    InterlockedCompareExchangePointer(reinterpret_cast<void* volatile*>(slot),
+                        reinterpret_cast<void*>(&TraceEffectFile), reinterpret_cast<void*>(compiler));
+                    DWORD ignored = 0; VirtualProtect(slot, sizeof(void*), protection, &ignored);
+                }
+            }
+            if (!kernel) continue;
             for (const auto& entry : replacements) {
                 if (std::strcmp(name, entry.name) != 0 ||
                     slots[j].u1.Function != reinterpret_cast<ULONG_PTR>(entry.original)) continue;
@@ -160,5 +359,17 @@ void PatchImports(HMODULE module) {
 void InstallEffectPathCompatibility() {
     const HMODULE effect = GetModuleHandleW(L"MMEffect.dll");
     if (effect) PatchImports(effect);
+}
+
+void PrepareEffectProjectPaths(const wchar_t* project) {
+    if (!project || !*project) return;
+    try {
+        auto emm = fs::absolute(project);
+        emm.replace_extension(L".emm");
+        ReadAssignments(emm);
+    } catch (...) {
+        std::lock_guard<std::mutex> lock(assignmentMutex);
+        assignments.clear();
+    }
 }
 }  // namespace mikudancestudio

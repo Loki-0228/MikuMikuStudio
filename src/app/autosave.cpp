@@ -6,6 +6,7 @@
 #include "mikudancestudio/pmm_extension.hpp"
 #include "mikudancestudio/runtime_log.hpp"
 #include "mikudancestudio/bake_ui_lock.hpp"
+#include "mikudancestudio/effect_api.hpp"
 #include <algorithm>
 #include <atomic>
 #include <fcntl.h>
@@ -304,11 +305,16 @@ Result BackupNow(MMDApp* app, bool crash) noexcept {
             });
             if (victim == old.end() || !Owned(*victim) || !DeleteFileW(victim->c_str())) {
                 DeleteFileW(destination.c_str());
+                auto sidecar = destination; sidecar.replace_extension(L".emm");
+                DeleteFileW(sidecar.c_str());
                 if (!crash) RefreshCapacity(app);
                 return Result::Full;
             }
+            auto sidecar = *victim; sidecar.replace_extension(L".emm");
+            DeleteFileW(sidecar.c_str());
             old.erase(victim);
         }
+        NotifyEffectFileSave(destination.c_str());
         if (!crash) RefreshCapacity(app);
         runtime_log::WritePath(crash ? "crash_backup" : "autosave", destination.c_str());
         return Result::Saved;

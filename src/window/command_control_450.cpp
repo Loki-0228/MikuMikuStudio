@@ -112,6 +112,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include "mikudancestudio/bone_scale.hpp"
+#include <vector>
 #include <Windows.h>
 #include <commctrl.h>
 
@@ -1011,7 +1012,7 @@ void CmdControl450(MMDApp* app, HWND hwnd, std::uint16_t id,
         auto& undo = modelRecord->undoRings[0].slots[pasteIdx];
         undo.operation = 1;
         // count stored 28*(pasteIdx+0x164) dwords past the undo-table base
-        undo.dirty = app->state.copiedBoneCount;
+        undo.dirty = 0;
         unsigned char* pasteBlob =
             reinterpret_cast<unsigned char*>(undo.bonePose);
         if (pasteBlob != nullptr) {
@@ -1030,6 +1031,7 @@ void CmdControl450(MMDApp* app, HWND hwnd, std::uint16_t id,
         undo.bonePose = reinterpret_cast<mikudancestudio::mdl::BonePoseSnapshot*>(
             pasteBlob);
         memset(pasteBlob, 0, static_cast<std::size_t>(count) * 0x24u);
+        std::vector<unsigned char> captured(static_cast<std::size_t>(boneCount), 0);
 
         auto& records =
             reinterpret_cast<BoneCopyRecord*&>(app->BoneCopyRecords());
@@ -1053,21 +1055,21 @@ void CmdControl450(MMDApp* app, HWND hwnd, std::uint16_t id,
             if (found < 0) {
                 continue;
             }
-            pasteBlob = reinterpret_cast<unsigned char*>(undo.bonePose);
-            auto& rec = reinterpret_cast<mikudancestudio::mdl::BonePoseSnapshot*>(
-                pasteBlob)[j];
             mikudancestudio::mdl::BoneRecord* bone = &bones[found];
-            rec.boneIndex = found;
             sel[found] = 1;
-            // old pos into the undo record
-            memcpy(rec.position, bone->trans, sizeof rec.position);
+            if (!captured[found]) {
+                captured[found] = 1;
+                auto& rec = undo.bonePose[undo.dirty++];
+                rec.boneIndex = found;
+                memcpy(rec.position, bone->trans, sizeof rec.position);
+                memcpy(rec.rotation, bone->rotQuat, sizeof rec.rotation);
+                rec.physicsDisabled = frameFlag[found];
+            }
             // new pos from the copy record
             memcpy(bone->trans, src.position, sizeof bone->trans);
             // old quat into the undo record, new quat into the bone
-            memcpy(rec.rotation, bone->rotQuat, sizeof rec.rotation);
             memcpy(bone->rotQuat, src.rotation, sizeof bone->rotQuat);
             bone_scale::SetPose(model, found, bone_scale::Clipboard(app, j, true));
-            rec.physicsDisabled = frameFlag[found];
             frameFlag[found] = 1;
             modelRecord->selectedBone = found;
             PostLanguageSweep(app);
@@ -1112,7 +1114,7 @@ void CmdControl450(MMDApp* app, HWND hwnd, std::uint16_t id,
         bone_scale::CaptureUndo(model);
         auto& undo = modelRecord->undoRings[0].slots[pasteIdx];
         undo.operation = 1;
-        undo.dirty = app->state.copiedBoneCount;
+        undo.dirty = 0;
         unsigned char* pasteBlob =
             reinterpret_cast<unsigned char*>(undo.bonePose);
         if (pasteBlob != nullptr) {
@@ -1131,6 +1133,7 @@ void CmdControl450(MMDApp* app, HWND hwnd, std::uint16_t id,
         undo.bonePose = reinterpret_cast<mikudancestudio::mdl::BonePoseSnapshot*>(
             pasteBlob);
         memset(pasteBlob, 0, static_cast<std::size_t>(count) * 0x24u);
+        std::vector<unsigned char> captured(static_cast<std::size_t>(boneCount), 0);
 
         auto& records =
             reinterpret_cast<BoneCopyRecord*&>(app->BoneCopyRecords());
@@ -1187,27 +1190,26 @@ void CmdControl450(MMDApp* app, HWND hwnd, std::uint16_t id,
             if (target < 0) {
                 target = k1;  // fallback to the exact-name match
             }
-            pasteBlob = reinterpret_cast<unsigned char*>(undo.bonePose);
-            auto& rec = reinterpret_cast<mikudancestudio::mdl::BonePoseSnapshot*>(
-                pasteBlob)[j];
             mikudancestudio::mdl::BoneRecord* bone = &bones[target];
-            rec.boneIndex = target;
             sel[target] = 1;
-            // old pos into the undo record
-            memcpy(rec.position, bone->trans, sizeof rec.position);
+            if (!captured[target]) {
+                captured[target] = 1;
+                auto& rec = undo.bonePose[undo.dirty++];
+                rec.boneIndex = target;
+                memcpy(rec.position, bone->trans, sizeof rec.position);
+                memcpy(rec.rotation, bone->rotQuat, sizeof rec.rotation);
+                rec.physicsDisabled = frameFlag[target];
+            }
             // new pos from the copy record - X negated (fchs)
             bone->trans[0] = -src.position[0];
             bone->trans[1] = src.position[1];
             bone->trans[2] = src.position[2];
-            // old quat into the undo record
-            memcpy(rec.rotation, bone->rotQuat, sizeof rec.rotation);
             // new quat from the copy record - Y and Z negated (fchs)
             bone->rotQuat[0] = src.rotation[0];
             bone->rotQuat[1] = -src.rotation[1];
             bone->rotQuat[2] = -src.rotation[2];
             bone->rotQuat[3] = src.rotation[3];
             bone_scale::SetPose(model, static_cast<int>(bone - bones), bone_scale::Clipboard(app, j, true, true));
-            rec.physicsDisabled = frameFlag[target];
             frameFlag[target] = 1;
             modelRecord->selectedBone = target;
             PostLanguageSweep(app);

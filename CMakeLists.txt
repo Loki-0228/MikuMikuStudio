@@ -839,6 +839,12 @@ if (MIKUDANCESTUDIO_BUILD_UI_TESTS)
     set_target_properties(bone_key_pool_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
     add_test(NAME bone_key_pool COMMAND bone_key_pool_tests)
     set_tests_properties(bone_registration_tests PROPERTIES TIMEOUT 20)
+    add_test(NAME review_editing_regressions COMMAND bone_registration_tests --review-editing)
+    set_tests_properties(review_editing_regressions PROPERTIES TIMEOUT 20)
+    if(NOT MIKUDANCESTUDIO_PROFILE STREQUAL "mmd932")
+        add_test(NAME review_curve_editing_regressions COMMAND bone_registration_tests --review-curves)
+        set_tests_properties(review_curve_editing_regressions PROPERTIES TIMEOUT 20)
+    endif()
 endif()
 
 # ---------------------------------------------------------------------------
@@ -974,6 +980,12 @@ if (MIKUDANCESTUDIO_BUILD_UI_TESTS)
     target_link_options(image_sequence_tests PRIVATE "/MANIFEST:NO" "${MIKUDANCESTUDIO_GEN_RES}")
     set_target_properties(image_sequence_tests PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+    foreach(review_test kinect_pose_math_tests path_resolve_tests)
+        add_executable(${review_test} EXCLUDE_FROM_ALL tests/${review_test}.cpp)
+        target_link_libraries(${review_test} PRIVATE mikudancestudio_core winmm dsound)
+        set_target_properties(${review_test} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+        add_test(NAME ${review_test} COMMAND ${review_test})
+    endforeach()
     # Run explicitly on a private desktop; no device or video output is needed.
     add_executable(physics_editor_encoding_tests EXCLUDE_FROM_ALL
         tests/physics_editor_encoding_tests.cpp res/MMD.rc ${MIKUDANCESTUDIO_GEN_RES})
@@ -1358,6 +1370,10 @@ set_target_properties(MMDxShow PROPERTIES
 
 if (MIKUDANCESTUDIO_BUILD_UI_TESTS)
     add_executable(mmdxshow_interface_tests EXCLUDE_FROM_ALL tests/mmdxshow_interface_tests.cpp)
+    add_executable(recording_state_tests EXCLUDE_FROM_ALL tests/recording_state_tests.cpp)
+    target_include_directories(recording_state_tests PRIVATE include)
+    target_link_libraries(recording_state_tests PRIVATE user32)
+    add_test(NAME recording_state_tests COMMAND recording_state_tests)
     target_link_libraries(mmdxshow_interface_tests PRIVATE ole32 strmiids)
     add_dependencies(mmdxshow_interface_tests MMDxShow)
     set_target_properties(mmdxshow_interface_tests PROPERTIES

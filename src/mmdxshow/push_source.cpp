@@ -88,6 +88,7 @@
 #include <string.h>
 
 #include "mmdxshow.hpp"
+#include "../../include/mikudancestudio/recording_state.hpp"
 
 // --- GUID references (instantiated in dll_main.cpp under <initguid.h>) ------
 // CLSID_FilterMapper   .rdata 0x10008680   (values pinned in dll_main.cpp)
@@ -146,7 +147,9 @@ ULONG STDMETHODCALLTYPE CPushSourceDIBSq::Release()
 HRESULT CPushSourceDIBSq::SetBitmapInfo(const void* pBitmapInfo,
                                         int n, float fps)
 {
-    if (m_pPin->m_bStreamEnded != 0)      // streaming-begun latch
+    if (!pBitmapInfo) return E_POINTER;
+    if (!mikudancestudio::recording_state::ValidFps(fps)) return E_INVALIDARG;
+    if (CPushPinDIBSq::ReadFlag(m_pPin->m_bStreamEnded) != 0)
         return E_FAIL;                     // 0x80004005
 
     // 0x2C allocated, 0x28 copied — the trailing 4 bytes are never written.
@@ -158,24 +161,17 @@ HRESULT CPushSourceDIBSq::SetBitmapInfo(const void* pBitmapInfo,
         ::operator delete(m_pPin->m_pPushCfg);
         m_pPin->m_pPushCfg = NULL;
     }
-    // operator new(0x2C) — this DLL's VC8 CRT new returns NULL on
-    // exhaustion, and the original then memcpys into NULL; keep the unchecked
-    // shape (faithful).
     void* p = operator new(0x2C, std::nothrow);
+    if (!p) return E_OUTOFMEMORY;
     m_pPin->m_pPushCfg = p;
     memcpy(p, pBitmapInfo, 0x28);          // 40 bytes = BITMAPINFOHEADER
     // Defect FB-03.
     m_pPin->m_nPushExtra = n;
 
-    // AvgTimePerFrame.  The x86 binary converts fps straight to unsigned
-    // __int64 (x87 path); the VC10 x64 rebuild truncates to 32-bit first and
-    // zero-extends — identical results for any fps below 2^31, so the x86
-    // shape is kept for both flavours.
-    m_pPin->m_rtAvgPerFrame =
-        10000000 / (LONGLONG)(unsigned __int64)fps;
+    m_pPin->m_rtAvgPerFrame = mikudancestudio::recording_state::FrameDuration(fps);
 
     m_pPin->m_bBitmapSet = 1;
-    m_pPin->m_bFrameAck  = 1;             // state byte -> 1
+    CPushPinDIBSq::WriteFlag(m_pPin->m_bFrameAck, 1);
     return S_OK;                           // 0
 }
 
@@ -184,9 +180,10 @@ HRESULT CPushSourceDIBSq::SetBitmapInfo(const void* pBitmapInfo,
 // Binary ABI: __stdcall(this, BYTE* pState), retn 8; pState is NOT checked.
 HRESULT CPushSourceDIBSq::GetStreamingState(void* pState)
 {
-    if (m_pPin->m_bStreamEnded != 0)      // streaming begun
+    if (!pState) return E_POINTER;
+    if (CPushPinDIBSq::ReadFlag(m_pPin->m_bStreamEnded) != 0)
         return E_FAIL;
-    *reinterpret_cast<BYTE*>(pState) = m_pPin->m_bFrameAck;   // one byte
+    *reinterpret_cast<BYTE*>(pState) = CPushPinDIBSq::ReadFlag(m_pPin->m_bFrameAck);
     return S_OK;
 }
 
@@ -198,11 +195,12 @@ HRESULT CPushSourceDIBSq::GetStreamingState(void* pState)
 // (0x180001730: mov [rbx+658h], rdx) — DWORD_PTR keeps both shapes.
 HRESULT CPushSourceDIBSq::StartStreaming(DWORD_PTR dwBits)
 {
-    if (m_pPin->m_bStreamEnded != 0)      // streaming begun
+    if (CPushPinDIBSq::ReadFlag(m_pPin->m_bStreamEnded) != 0)
         return E_FAIL;
-    m_pPin->m_bFrameAck = 0;
+    if (!dwBits) return E_POINTER;
+    CPushPinDIBSq::WriteFlag(m_pPin->m_bFrameAck, 0);
     m_pPin->m_pFrameBits = reinterpret_cast<void*>(dwBits);
-    m_pPin->m_bFrameReady = 1;
+    CPushPinDIBSq::WriteFlag(m_pPin->m_bFrameReady, 1);
     MMDXTrace("StartStreaming bits=%x ready->1\n", (unsigned)dwBits);
     return S_OK;
 }
@@ -213,11 +211,9 @@ HRESULT CPushSourceDIBSq::StartStreaming(DWORD_PTR dwBits)
 // returns E_FAIL until the object is destroyed.
 HRESULT CPushSourceDIBSq::BeginStreaming(void)
 {
-    if (m_pPin->m_bStreamEnded != 0)      // streaming begun
+    if (CPushPinDIBSq::ReadFlag(m_pPin->m_bStreamEnded) != 0)
         return E_FAIL;
-    m_pPin->m_bStreamEnded = 1;
-    m_pPin->m_bFrameAck   = 0;
-    m_pPin->m_bFrameReady = 0;
+    m_pPin->EndStreaming();
     return S_OK;
 }
 
@@ -228,7 +224,7 @@ HRESULT CPushSourceDIBSq::BeginStreaming(void)
 // (requires >= 1.01f).
 HRESULT CPushSourceDIBSq::GetRate(float* pRate)
 {
-    if (m_pPin->m_bStreamEnded != 0)      // streaming begun
+    if (CPushPinDIBSq::ReadFlag(m_pPin->m_bStreamEnded) != 0)
         return E_FAIL;
     *pRate = 1.02f;
     return S_OK;
@@ -285,8 +281,7 @@ CPushSourceDIBSq::CPushSourceDIBSq(LPUNKNOWN pUnkOuter, HRESULT* phr)
 CPushSourceDIBSq::~CPushSourceDIBSq()
 {
     if (m_pPin != nullptr) {
-        m_pPin->m_bStreamEnded = 1;
-        m_pPin->m_bFrameReady = 1;
+        m_pPin->EndStreaming();
         delete m_pPin;
     }
 }

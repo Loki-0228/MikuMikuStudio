@@ -2,6 +2,7 @@
 #include "mikudancestudio/key_pool.hpp"
 #define NOMINMAX
 #include "mikudancestudio/animation_curve_host.hpp"
+#include "mikudancestudio/animation_curve_motion.hpp"
 #include "mikudancestudio/accessory_layout.hpp"
 #include "mikudancestudio/mmd_app.hpp"
 #include "mikudancestudio/runtime_log.hpp"
@@ -125,20 +126,6 @@ template<class K> bool Native(K* pool,Kind kind,std::vector<Channel>& out){
         i=pool[i].next;
     }return false;
 }
-// Match the native camera's single-precision, 12-step time inversion.
-float CameraCurveTime(const std::array<double,4>& control,float t){
-    if(control[0]==control[1]&&control[2]==control[3])return t;
-    const float x1=float(control[0])/127.0f,x2=float(control[2])/127.0f;
-    float u=0.5f,half=0.25f;
-    for(int i=0;i<12;++i){
-        const float v=1.0f-u,v3=v*3.0f;
-        const float x=(v3*v*u)*x1+(v3*u*u)*x2+u*u*u;
-        if(x==t)break;
-        u=x>=t?u-half:u+half;half*=0.5f;
-    }
-    const float v=1.0f-u,v3=v*3.0f;
-    return (v3*v*u)*float(control[1])/127.0f+(v3*u*u)*float(control[3])/127.0f+u*u*u;
-}
 bool NativeGeometry(const Channel& channel,std::size_t end){
     if(end==0||end>=channel.track.keys.size()||end>=channel.nativeControls.size()||end>=channel.controlGeometry.size())return false;
     const auto&a=channel.track.keys[end-1];const auto&b=channel.track.keys[end];
@@ -146,35 +133,22 @@ bool NativeGeometry(const Channel& channel,std::size_t end){
         channel.controlGeometry[end]==std::array<double,4>{a.outWeight,a.outSlope,b.inWeight,b.inSlope};
 }
 ac::Sample CameraSample(const Channel& channel,double frame){
-    const auto&keys=channel.track.keys;
-    if(keys.size()<2)return ac::Evaluate(channel.track,frame);
-    const auto value=[&](double at){
-        if(at<=keys.front().frame)return keys.front().value;
-        if(at>=keys.back().frame)return keys.back().value;
-        const auto bound=std::upper_bound(keys.begin(),keys.end(),at,[](double f,const ac::Key&k){return f<k.frame;});
-        const auto end=std::size_t(bound-keys.begin());
-        if(!NativeGeometry(channel,end))return ac::Evaluate(channel.track,at).value;
-        const auto&a=keys[end-1];const auto&b=keys[end];
-        // Match the native player's exact-key branch. The fixed-step Bezier
-        // inverse only approximates t=0 and must not perturb keys on commit.
-        if(at==a.frame)return a.value;
-        const double span=double(b.frame)-a.frame;
-        if(span==1.0)return a.value;
-        return a.value+(b.value-a.value)*CameraCurveTime(channel.nativeControls[end],float((at-a.frame)/span));
-    };
-    const double low=std::max(double(keys.front().frame),frame-0.001);
-    const double high=std::min(double(keys.back().frame),frame+0.001);
-    return {value(frame),high>low?(value(high)-value(low))/(high-low):0.0};
+    return curve_motion::SampleCameraChannel(channel,frame);
 }
 double SampleValue(const Channel&channel,double frame){
-    return channel.sample?channel.sample(channel,frame).value:ac::Evaluate(channel.track,frame).value;
+    return curve_editor::EvaluateChannel(channel,frame).value;
 }
 bool CameraIntervalControls(const Channel&channel,int start,int end,std::array<double,4>&out){
     const auto&keys=channel.track.keys;
     const auto at=std::lower_bound(keys.begin(),keys.end(),end,[](const auto&key,int f){return key.frame<f;});
     const auto n=size_t(at-keys.begin());
     if(at==keys.end()||n==0||at->frame!=end||keys[n-1].frame!=start)return false;
-    if(NativeGeometry(channel,n)){out=channel.nativeControls[n];return true;}
+    if(NativeGeometry(channel,n)){
+        out=channel.nativeControls[n];
+        // Subdivision of crossed-X controls can need handles outside 0..127.
+        // Those stay in MMS authoring; never wrap them into native VMD bytes.
+        return std::all_of(out.begin(),out.end(),[](double v){return std::isfinite(v)&&v>=0&&v<=127;});
+    }
     if(at->interpolation==ac::Interpolation::Linear){out={20,20,107,107};return true;}
     return ac::GetMmdControls(channel.track,n,out);
 }
@@ -192,6 +166,7 @@ bool NativeRead(MMDApp& app,Kind kind,int slot,std::vector<Channel>& out){
         for(size_t c=0;c<8;++c){
             out[c].nativeControls.resize(out[c].track.keys.size());
             out[c].controlGeometry.resize(out[c].track.keys.size());
+            out[c].nativeOneFrameHolds.resize(out[c].track.keys.size(),true);
             out[c].sample=CameraSample;
             if(c>=3&&c<6)out[c].interpolationGroup="camera/rotation";
         }
@@ -268,6 +243,8 @@ void Reconcile(State&s,const std::vector<Channel>&native){
     for(size_t c=0;c<s.channels.size();++c){
         auto& keys=s.channels[c].track.keys;const auto& old=s.baseline[c].track.keys;
         const auto& fresh=native[c].track.keys;
+        if(old.size()==fresh.size()&&s.baseline[c].nativeControls==native[c].nativeControls&&
+           std::equal(old.begin(),old.end(),fresh.begin(),[](const auto&a,const auto&b){return Same(a,b);}))continue;
         keys.erase(std::remove_if(keys.begin(),keys.end(),[&](const auto&k){
             auto before=std::lower_bound(old.begin(),old.end(),k.frame,[](const auto&a,int f){return a.frame<f;});
             auto after=std::lower_bound(fresh.begin(),fresh.end(),k.frame,[](const auto&a,int f){return a.frame<f;});
@@ -290,6 +267,7 @@ void Reconcile(State&s,const std::vector<Channel>&native){
         auto&channel=s.channels[c];
         channel.nativeControls.assign(keys.size(),{});
         channel.controlGeometry.assign(keys.size(),{});
+        channel.nativeOneFrameHolds.assign(keys.size(),true);
         if(native[c].nativeControls.empty()){
             channel.nativeControls.clear();channel.controlGeometry.clear();
         }else for(size_t end=1;end<keys.size();++end){
@@ -298,6 +276,7 @@ void Reconcile(State&s,const std::vector<Channel>&native){
             if(at==fresh.end()||n==0||at->frame!=keys[end].frame||fresh[n-1].frame!=keys[end-1].frame)continue;
             channel.nativeControls[end]=native[c].nativeControls[n];
             channel.controlGeometry[end]=native[c].controlGeometry[n];
+            channel.nativeOneFrameHolds[end]=native[c].nativeOneFrameHolds[n];
         }
         channel.sample=native[c].sample;
         channel.interpolationGroup=native[c].interpolationGroup;
@@ -354,6 +333,66 @@ template<class K> void Mirror(K*& pool,const K* previous,const std::vector<Chann
     std::memset(pool,0,sizeof(K)*mdl::KeyPoolCapacity(pool));
     std::copy(records.begin(),records.end(),pool);
 }
+}
+
+bool InsertCameraKey(std::vector<Channel>&channels,std::size_t active,int frame,std::wstring&error){
+    if(active>=channels.size()||frame<0||frame>frame_limits::maximum)return false;
+    auto next=channels;
+    const std::string group=next[active].interpolationGroup;
+    for(std::size_t c=0;c<next.size();++c){
+        if(c!=active&&(group.empty()||next[c].interpolationGroup!=group))continue;
+        auto&channel=next[c];auto&keys=channel.track.keys;
+        auto at=std::lower_bound(keys.begin(),keys.end(),frame,[](const auto&k,int f){return k.frame<f;});
+        const auto index=std::size_t(at-keys.begin());
+        if(at!=keys.end()&&at->frame==frame)continue;
+        if(keys.empty())return false;
+        if(index>0&&index<keys.size()&&NativeGeometry(channel,index)){
+            const auto controls=channel.nativeControls[index];
+            const double u=double(frame-keys[index-1].frame)/(keys[index].frame-keys[index-1].frame);
+            struct Point{double x,y;};
+            const auto lerp=[](Point a,Point b,double t){return Point{a.x+(b.x-a.x)*t,a.y+(b.y-a.y)*t};};
+            const Point p0{0,0},p1{controls[0]/127,controls[1]/127},p2{controls[2]/127,controls[3]/127},p3{1,1};
+            double low=0,high=1;
+            for(int step=0;step<64;++step){
+                const double t=(low+high)/2;
+                if(lerp(lerp(lerp(p0,p1,t),lerp(p1,p2,t),t),lerp(lerp(p1,p2,t),lerp(p2,p3,t),t),t).x<u)low=t;else high=t;
+            }
+            const double t=(low+high)/2;
+            const auto q0=lerp(p0,p1,t),q1=lerp(p1,p2,t),q2=lerp(p2,p3,t);
+            const auto left=lerp(q0,q1,t),right=lerp(q1,q2,t),middle=lerp(left,right,t);
+            const std::array<double,4> first={q0.x/u*127,q0.y/middle.y*127,left.x/u*127,left.y/middle.y*127};
+            const std::array<double,4> second={(right.x-u)/(1-u)*127,(right.y-middle.y)/(1-middle.y)*127,
+                (q2.x-u)/(1-u)*127,(q2.y-middle.y)/(1-middle.y)*127};
+            ac::Key key;key.frame=frame;key.value=keys[index-1].value+(keys[index].value-keys[index-1].value)*middle.y;
+            key.tangent=ac::Tangent::Free;key.interpolation=ac::Interpolation::Bezier;
+            keys.insert(keys.begin()+index,key);
+            channel.nativeControls.resize(keys.size()-1);channel.controlGeometry.resize(keys.size()-1);
+            channel.nativeControls.insert(channel.nativeControls.begin()+index,std::array<double,4>{});
+            channel.controlGeometry.insert(channel.controlGeometry.begin()+index,std::array<double,4>{});
+            channel.nativeOneFrameHolds.resize(keys.size()-1,true);
+            channel.nativeOneFrameHolds.insert(channel.nativeOneFrameHolds.begin()+index,false);
+            channel.nativeOneFrameHolds[index+1]=false;
+            const auto set=[&](std::size_t end,const std::array<double,4>&ctrl){
+                auto&a=keys[end-1];auto&b=keys[end];const double rate=(b.value-a.value)/double(b.frame-a.frame);
+                const double x1=std::clamp(ctrl[0]/127,0.0002,0.9996),x2=std::clamp(ctrl[2]/127,x1+0.0002,0.9998);
+                a.outWeight=x1;b.inWeight=1-x2;a.outSlope=ctrl[1]/127*rate/x1;b.inSlope=(1-ctrl[3]/127)*rate/(1-x2);
+                a.tangent=b.tangent=ac::Tangent::Free;b.interpolation=ac::Interpolation::Bezier;
+                channel.nativeControls[end]=ctrl;channel.controlGeometry[end]={a.outWeight,a.outSlope,b.inWeight,b.inSlope};
+            };
+            set(index,first);set(index+1,second);
+        }else{
+            std::string detail;std::size_t inserted=0;
+            if(ac::InsertPreservingShape(channel.track,frame,inserted,detail)==ac::InsertResult::Rejected){error.assign(detail.begin(),detail.end());return false;}
+            if(!channel.nativeControls.empty()){
+                channel.nativeControls.resize(keys.size()-1);channel.controlGeometry.resize(keys.size()-1);
+                channel.nativeControls.insert(channel.nativeControls.begin()+index,std::array<double,4>{});
+                channel.controlGeometry.insert(channel.controlGeometry.begin()+index,std::array<double,4>{});
+                channel.nativeOneFrameHolds.resize(keys.size()-1,true);
+                channel.nativeOneFrameHolds.insert(channel.nativeOneFrameHolds.begin()+index,false);
+            }
+        }
+    }
+    channels=std::move(next);return true;
 }
 
 bool Read(MMDApp& app,Kind kind,int slot,std::vector<Channel>&out,std::wstring&error){
@@ -479,16 +518,32 @@ void Reset(MMDApp*app){
 void ForgetAccessory(MMDApp*app,int slot){states.erase({app,Kind::Accessory,slot});if(app)curve_editor::CloseOwned(app->Hwnd());}
 void Capture(MMDApp&app,pmm_extension::Document&doc){
     std::vector<ac::NamedTrack> tracks;
+    std::vector<uint8_t> native(4,0);std::uint32_t intervals=0;
+    const auto append=[&](std::uint64_t value,int bytes){for(int n=0;n<bytes;++n)native.push_back(std::uint8_t(value>>(n*8)));};
     for(auto&entry:states){if(std::get<0>(entry.first)!=&app)continue;
         Kind k=std::get<1>(entry.first);int slot=std::get<2>(entry.first);
         if(entry.second.identity!=Identity(app,k,slot))continue;
         const auto* current=Current(app,k,slot);
         if(!current)continue; // Identity was checked above; no deleted object is saved.
         for(const auto&c:current->channels)tracks.push_back({std::to_string(int(k))+"/"+std::to_string(slot)+"/"+c.id,c.track});
+        if(k==Kind::Camera)for(std::size_t c=0;c<current->channels.size();++c){
+            const auto&channel=current->channels[c];
+            for(std::size_t end=1;end<channel.track.keys.size();++end)if(NativeGeometry(channel,end)){
+                if(intervals==UINT32_MAX)throw std::runtime_error("Too many camera timing intervals");
+                ++intervals;append(c,4);append(channel.track.keys[end-1].frame,4);append(channel.track.keys[end].frame,4);
+                for(double control:channel.nativeControls[end]){std::uint64_t bits;std::memcpy(&bits,&control,8);append(bits,8);}
+                append(end>=channel.nativeOneFrameHolds.size()||channel.nativeOneFrameHolds[end],1);
+            }
+        }
     }
     std::vector<uint8_t> bytes;std::string error;
     if(ac::Encode(tracks,bytes,error))pmm_extension::Set(doc,"org.mikudancestudio.animation_curves.v1",std::move(bytes));
     else throw std::runtime_error("Curve serialization failed: "+error);
+    for(int n=0;n<4;++n)native[n]=std::uint8_t(intervals>>(n*8));
+    // Full precision timing is MMS-only authoring data. The legacy PMM body
+    // and VMD exporter retain their original integer control representation.
+    if(intervals)pmm_extension::Set(doc,"org.mikudancestudio.camera_controls.v1",std::move(native));
+    else pmm_extension::Erase(doc,"org.mikudancestudio.camera_controls.v1");
 }
 void Load(MMDApp&app,const pmm_extension::Document&doc){
     Reset(&app);const auto*r=pmm_extension::Find(doc,"org.mikudancestudio.animation_curves.v1");if(!r)return;
@@ -520,8 +575,54 @@ void Load(MMDApp&app,const pmm_extension::Document&doc){
             const auto index=size_t(&c-next.channels.data());const auto&field=Fields(k)[index];
             for(const auto&key:t->track.keys)if(key.frame>mikudancestudio::frame_limits::maximum||key.value<field.minimum||key.value>field.maximum||
                 (field.discrete&&std::floor(key.value)!=key.value)){valid=false;break;}
-            if(!valid)break;c.track=t->track;}
+            if(!valid)break;
+            const Channel original=c;c.track=t->track;
+            if(!original.nativeControls.empty()){
+                c.nativeControls.assign(c.track.keys.size(),{});c.controlGeometry.assign(c.track.keys.size(),{});
+                c.nativeOneFrameHolds.assign(c.track.keys.size(),true);
+                for(std::size_t end=1;end<c.track.keys.size();++end){
+                    const auto&keys=original.track.keys;
+                    const auto at=std::lower_bound(keys.begin(),keys.end(),c.track.keys[end].frame,[](const auto&key,int f){return key.frame<f;});
+                    const auto n=std::size_t(at-keys.begin());
+                    if(at==keys.end()||!n||at->frame!=c.track.keys[end].frame||keys[n-1].frame!=c.track.keys[end-1].frame)continue;
+                    c.nativeControls[end]=original.nativeControls[n];c.controlGeometry[end]=original.controlGeometry[n];
+                    c.nativeOneFrameHolds[end]=original.nativeOneFrameHolds[n];
+                }
+            }
+        }
         if(valid){next.identity=Identity(app,k,slot);next.fingerprint=nativeAvailable?Fingerprint(app,k,slot):0;states[{&app,k,slot}]=std::move(next);}
+    }
+    if(const auto*record=pmm_extension::Find(doc,"org.mikudancestudio.camera_controls.v1")){
+        const auto state=states.find({&app,Kind::Camera,0});const auto&bytes=record->value;
+        if(state!=states.end()&&bytes.size()>=4){
+            std::size_t offset=0;
+            const auto read=[&](int size){std::uint64_t value=0;for(int n=0;n<size;++n)value|=std::uint64_t(bytes[offset++])<<(n*8);return value;};
+            const auto count=read(4);bool valid=count==(bytes.size()-4)/45&&(bytes.size()-4)%45==0;
+            auto channels=state->second.channels;
+            for(std::uint64_t i=0;i<count&&valid;++i){
+                const auto c=read(4),start=read(4),end=read(4);std::array<double,4> controls{};
+                for(auto&control:controls){const auto bits=read(8);std::memcpy(&control,&bits,8);valid=valid&&std::isfinite(control)&&std::abs(control)<=1e12;}
+                const auto hold=read(1);valid=valid&&hold<=1;
+                const auto monotone=[](double p,double q){
+                    const double a=1+3*p-3*q,b=2*(q-2*p);
+                    double minimum=std::min(p,1-q);
+                    if(a>0){const double t=-b/(2*a);if(t>0&&t<1)minimum=std::min(minimum,(a*t+b)*t+p);}
+                    return minimum>=-1e-12;
+                };
+                valid=valid&&monotone(controls[0]/127,controls[2]/127)&&monotone(controls[1]/127,controls[3]/127);
+                if(!valid||c>=channels.size()){valid=false;break;}
+                auto&channel=channels[c];const auto&keys=channel.track.keys;
+                const auto at=std::lower_bound(keys.begin(),keys.end(),end,[](const auto&key,std::uint64_t f){return std::uint64_t(key.frame)<f;});
+                const auto index=std::size_t(at-keys.begin());
+                if(at==keys.end()||index==0||std::uint64_t(at->frame)!=end||std::uint64_t(keys[index-1].frame)!=start){valid=false;break;}
+                channel.nativeControls.resize(keys.size());channel.controlGeometry.resize(keys.size());
+                channel.nativeControls[index]=controls;
+                channel.controlGeometry[index]={keys[index-1].outWeight,keys[index-1].outSlope,at->inWeight,at->inSlope};
+                channel.nativeOneFrameHolds.resize(keys.size(),true);channel.nativeOneFrameHolds[index]=hold!=0;
+            }
+            if(valid)state->second.channels=std::move(channels);
+            else runtime_log::Write("Invalid PMM camera timing metadata");
+        }
     }
 }
 

@@ -40,10 +40,12 @@
 #include <fstream>
 #include <wrl/client.h>
 #include <set>
+#include <wincodec.h>
+#include "mikudancestudio/image_sequence_export.hpp"
 #include <cwctype>
 
 using namespace mikudancestudio;
-namespace mikudancestudio { void LayoutViewportPanels(MMDApp*); int ViewportToolAtPointForTest(MMDApp*); }
+namespace mikudancestudio { void RegisterCameraState(MMDApp*, int); void RefreshAfterFrameApply(MMDApp*); void LayoutViewportPanels(MMDApp*); int ViewportToolAtPointForTest(MMDApp*); }
 extern "C" char* ExpGetPmdFilename(int);
 namespace {
 void Check(bool ok, const char* label) {
@@ -52,6 +54,14 @@ void Check(bool ok, const char* label) {
 }
 
 unsigned emdEffectCompiles = 0;
+bool projectImportAudit = false;
+unsigned projectImportWarnings = 0;
+unsigned effectPathDiagnostics = 0;
+decltype(&runtime_log::WritePath) originalWritePath = nullptr;
+void ObserveEffectPath(const char* label, const wchar_t* path) noexcept {
+    if (std::strcmp(label, "MME_EFFECT_FILE") == 0 && path && *path) ++effectPathDiagnostics;
+    originalWritePath(label, path);
+}
 struct ShaderMacro { const char* name; const char* definition; };
 using CreateEffectFile = HRESULT(WINAPI*)(IDirect3DDevice9*, LPCWSTR,
     const ShaderMacro*, void*, DWORD, void*, void**, void**);
@@ -86,6 +96,11 @@ LRESULT CALLBACK HideCreated(int code, WPARAM wp, LPARAM lp) {
     return CallNextHookEx(nullptr, code, wp, lp);
 }
 int WINAPI Unexpected(HWND, LPCWSTR text, LPCWSTR, UINT type) {
+    if (projectImportAudit) {
+        ++projectImportWarnings;
+        std::fwprintf(stderr, L"IMPORT warning: %ls\n", text);
+        return IDOK;
+    }
     if (std::getenv("MMS_CAMERA_FIXTURE") && (type & MB_ICONMASK) == MB_ICONINFORMATION) {
         std::puts("CAMERA acknowledged project compatibility information"); return IDOK;
     }
@@ -504,6 +519,9 @@ void CALLBACK Probe(HWND, UINT, UINT_PTR timer, DWORD) {
 #include "mme_ground_shadow_checks.hpp"
 #include "effect_file_watch_checks.hpp"
 #include "camera_motion_scene_checks.hpp"
+#include "mme_model_adapt_checks.hpp"
+#include "project_import_checks.hpp"
+#include "image_visibility_checks.hpp"
 ULONGLONG startupClock = 0;
 void StartupLog(const char* format, ...) noexcept {
     std::printf("STARTUP %llu ", GetTickCount64() - startupClock);
@@ -527,6 +545,9 @@ int wmain(int argc, wchar_t** argv) {
     Check(MH_CreateHook(&ShowWindow, &Hide, reinterpret_cast<void**>(&originalShow)) == MH_OK, "hook ShowWindow");
     Check(MH_CreateHook(&MessageBoxW, &Unexpected, nullptr) == MH_OK, "guard unexpected dialogs");
     Check(MH_CreateHook(&MessageBoxA, &UnexpectedAnsi, nullptr) == MH_OK, "guard legacy dialogs");
+    if (argc == 4 && std::wcscmp(argv[2], L"--emm-load") == 0)
+        Check(MH_CreateHook(&runtime_log::WritePath, &ObserveEffectPath,
+            reinterpret_cast<void**>(&originalWritePath)) == MH_OK, "observe native effect path diagnostics");
     if(std::getenv("MMS_SURFACE_MISSING_DX12"))Check(MH_CreateHook(&LoadLibraryW,&SurfaceLoadLibrary,reinterpret_cast<void**>(&surfaceLoadLibrary))==MH_OK,"simulate missing DX12 in test process");
     Check(MH_EnableHook(MH_ALL_HOOKS) == MH_OK, "enable hidden-window guards");
     if(std::getenv("MMS_VIEWPORT_PERF"))runtime_log::Initialize();
@@ -535,6 +556,30 @@ int wmain(int argc, wchar_t** argv) {
     auto* app = new MMDApp; g_Block = app;
     app->state = MMDAppState{}; app->InitDefaults();
     Check(InitMainWindowAndD3D(app, GetModuleHandleW(nullptr), SW_HIDE), "start production host");
+    if (argc == 4 && std::wcscmp(argv[2], L"--project-import") == 0) {
+        CheckProjectImport(app, argv[1], argv[3]);
+        ShutdownCleanup(app); delete app; g_Block = nullptr; UnhookWindowsHookEx(guard); return 0;
+    }
+    if (argc == 4 && std::wcscmp(argv[2], L"--import-template") == 0) {
+        const auto directory = std::filesystem::path(argv[3]);
+        auto path = directory / L"empty.pmm";
+        wcscpy_s(app->EnvFileName(), kPathFieldCapacity, path.c_str()); SaveSceneFile(app);
+        LoadModelFile(app, argv[1], false);
+        Check(app->SelectedModel() != nullptr, "load import fixture model");
+        path = directory / L"model-cold.pmm";
+        wcscpy_s(app->EnvFileName(), kPathFieldCapacity, path.c_str()); SaveSceneFile(app);
+        for (int i = 0; i < 3; ++i) { app->state.messageSeen = 10; FrameDriver(app); }
+        path = directory / L"model.pmm";
+        wcscpy_s(app->EnvFileName(), kPathFieldCapacity, path.c_str()); SaveSceneFile(app);
+        app->state.messageSeen = 10; FrameDriver(app);
+        ResetAppState(app);
+        LoadAccessoryFile((directory / L"fixture.x").c_str());
+        Check(app->AccessorySlot(0) != nullptr, "load real accessory import fixture");
+        for (int i = 0; i < 3; ++i) { app->state.messageSeen = 10; FrameDriver(app); }
+        path = directory / L"accessory.pmm";
+        wcscpy_s(app->EnvFileName(), kPathFieldCapacity, path.c_str()); SaveSceneFile(app);
+        ShutdownCleanup(app); delete app; g_Block = nullptr; UnhookWindowsHookEx(guard); return 0;
+    }
     if(shaderStartup) {
         CheckAntialiasStartup(app);
         ShutdownCleanup(app);delete app;g_Block=nullptr;UnhookWindowsHookEx(guard);return 0;
@@ -590,11 +635,29 @@ int wmain(int argc, wchar_t** argv) {
         if (const wchar_t* effects = _wgetenv(L"MMS_AA_EMM")) NotifyEffectFileOpen(effects);
     } else LoadModelFile(app, argv[1], false);
     Check(app->SelectedModel() != nullptr, "load textured PMX");
+    if (argc == 4 && std::wcscmp(argv[2], L"--image-visibility") == 0) {
+        if (const auto* project = _wgetenv(L"MMS_IMAGE_EFFECT_PROJECT")) {
+            wcscpy_s(app->EnvFileName(), kPathFieldCapacity, project);
+            SaveSceneFile(app);
+            for (int i = 0; i < 3; ++i) { app->state.messageSeen = 1; FrameDriver(app); }
+            auto fixture = std::filesystem::path(project); fixture.replace_extension(L".fixture.emm");
+            auto emm = std::filesystem::path(project); emm.replace_extension(L".emm");
+            std::filesystem::copy_file(fixture, emm, std::filesystem::copy_options::overwrite_existing);
+            NotifyEffectFileOpen(project);
+            for (int i = 0; i < 3; ++i) { app->state.messageSeen = 1; FrameDriver(app); }
+        }
+        CheckImageVisibility(app, argv[3]);
+        ShutdownCleanup(app); delete app; g_Block = nullptr; UnhookWindowsHookEx(guard); return 0;
+    }
     if (argc == 4 && std::wcscmp(argv[2], L"--camera-motion") == 0) {
         CheckCameraMotionScene(app, argv[3]);
         ShutdownCleanup(app); delete app; g_Block = nullptr; UnhookWindowsHookEx(guard); return 0;
     }
     for (int i = 0; i < 3; ++i) { app->DeltaTime() = 1.f / 30; app->state.messageSeen = 10; FrameDriver(app); }
+    if (argc == 4 && std::wcscmp(argv[2], L"--model-adapt") == 0) {
+        CheckMmeModelAdapt(app, argv[3]);
+        ShutdownCleanup(app); delete app; g_Block = nullptr; UnhookWindowsHookEx(guard); return 0;
+    }
     if (sequenceClock) {
         CheckMmeSequenceClock(app, argv[3]);
         for (auto* effect : sequenceClockEffects) effect->Release();
@@ -620,6 +683,8 @@ int wmain(int argc, wchar_t** argv) {
     if (emmLoad) {
         Check(std::filesystem::is_regular_file(argv[3]), "EMM project notification target exists");
         NotifyEffectFileOpen(argv[3]);
+        if (const auto* working = _wgetenv(L"MMS_EMM_WORKING_DIRECTORY"))
+            Check(SetCurrentDirectoryW(working) != FALSE, "simulate a file picker changing the working directory");
         for (int i = 0; i < 4; ++i) {
             app->DeltaTime() = 1.f / 30;
             app->state.messageSeen = 10;
@@ -633,6 +698,7 @@ int wmain(int argc, wchar_t** argv) {
         app->DeltaTime() = 1.f / 30; app->state.messageSeen = 10; FrameDriver(app);
         Check(!captureRequested && std::count(capturedPixels.begin(), capturedPixels.end(), 0xFF00FFu) > 50,
               "assigned EMM effect renders magenta pixels on the real model");
+        Check(effectPathDiagnostics > 0, "effect file is recorded before entering native D3DX compilation");
         MH_DisableHook(vtable[17]);
         Check(!IsWindowVisible(app->MainWindow()), "host stays hidden");
         ShutdownCleanup(app); delete app; g_Block = nullptr; UnhookWindowsHookEx(guard); return 0;
