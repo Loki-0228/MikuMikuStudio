@@ -57,6 +57,10 @@
 #include "mikudancestudio/runtime_log.hpp"
 #include "frame_state_dump.hpp"
 #include "../plugins/native_pose_scope.hpp"
+#include "../plugins/native_camera_hud_history.hpp"
+#if !MMD_ORIGINAL_PROFILE
+#include "../plugins/native_history_commands.hpp"
+#endif
 
 namespace mikudancestudio {
 
@@ -639,10 +643,15 @@ void DragBackground(MMDApp* app, bool zoom, int dx, int dy) {
 
 void BeginOrEndViewportToolDrag(MMDApp* app, int operation) {
 #if !MMD_ORIGINAL_PROFILE
-    // These legacy HUD writers do not yet own a common-history gesture.
-    // Keep the coordinate-space toggle, which is not an authoring operation.
+    try {
+    // Only the six camera pose axes own a common-history HUD gesture yet.
+    // Other native writers and the accessory coordinate target stay closed.
     if (plugins::BoundNativePoseHistory(app) && app->LeftMouseButtonState() == 1 &&
-        operation != 0 && operation != 21) return;
+        operation != 0 && operation != 21) {
+        if (!plugins::CameraHudOperation(*app, operation) ||
+            plugins::BeginCameraHudGesture(*app, *plugins::BoundNativePoseHistory(app),
+                ViewportWindow(app), operation) != MMS_OK) return;
+    }
 #endif
     const int leftState = app->LeftMouseButtonState();
     if (leftState == 1) {
@@ -742,6 +751,12 @@ void BeginOrEndViewportToolDrag(MMDApp* app, int operation) {
             }
         }
     } else if (leftState == 2) {
+#if !MMD_ORIGINAL_PROFILE
+        auto* hudHistory = plugins::BoundNativePoseHistory(app);
+        const bool hud = plugins::CameraHudGestureActive(*app);
+        bool hudChanged = false;
+        const auto hudResult = hud ? plugins::EndCameraHudGesture(*app, hudChanged) : MMS_OK;
+#endif
         app->PendingTimelineSelectionRow() = TimelineSelectionRow::None;;
         const int viewOperation =
             static_cast<int>(app->ViewToolDragOperation());
@@ -770,10 +785,41 @@ void BeginOrEndViewportToolDrag(MMDApp* app, int operation) {
             app->state.a06B5 = 0;
         }
         app->BoneBoxSelectionActive() = 0;
+#if !MMD_ORIGINAL_PROFILE
+        if (hud) {
+            if (!hudResult && hudChanged && hudHistory) plugins::PublishBoundPoseEdit(*app, *hudHistory, false);
+            else plugins::RefreshBoundPoseReadout(*app);
+        }
+#endif
     }
+#if !MMD_ORIGINAL_PROFILE
+    } catch (...) {
+        // A legacy selection-panel refresh can allocate after the gesture's
+        // journal reservation. Its failure must retire the hidden cursor and
+        // reservation rather than leave a half-started camera HUD session.
+        if (plugins::CameraHudGestureActive(*app)) {
+            plugins::CancelCameraHudGesture(*app);
+            plugins::RefreshBoundPoseReadout(*app);
+            return;
+        }
+        throw;
+    }
+#endif
 }
 
 }  // namespace
+
+#if !MMD_ORIGINAL_PROFILE
+void FinishCameraHudInteraction(MMDApp* app) noexcept {
+    const int operation = static_cast<int>(app->ViewToolDragOperation());
+    if (operation >= 15 && operation <= 20) RestoreViewportToolCursor(app, operation);
+    app->ViewToolDragOperation() = ViewportToolAction::None;
+    app->InteractionDragMode() = ViewportDragMode::None;
+    app->state.a06B5 = 0;
+    app->LeftMouseButtonState() = LeftButtonPhysicallyDown(app) ? 3 : 0;
+    g_viewportPressHandled = false;
+}
+#endif
 
 bool OwnsCenteredViewportDrag(MMDApp* app) {
     const int operation = static_cast<int>(app->ViewToolDragOperation());
@@ -1183,6 +1229,9 @@ void NormalizeCoordinateState(MMDApp* app) {
 }
 
 void ModeCameraAdjust(MMDApp* app, int axis) {
+#if !MMD_ORIGINAL_PROFILE
+    if (plugins::BoundNativePoseHistory(app) && !plugins::AllowCameraHudPreview(*app, 15 + axis)) return;
+#endif
     // 0x4786FB..0x4790DF, modes 13..15.  The same operation widgets edit
     // either the camera target or the selected accessory position.
     static const int kEdit[3] = {0x1DE, 0x1DF, 0x1E0};
@@ -1233,10 +1282,16 @@ void ModeCameraAdjust(MMDApp* app, int axis) {
                 static_cast<double>(dy) * scale);
         }
     }
+#if !MMD_ORIGINAL_PROFILE
+    if (plugins::BoundNativePoseHistory(app) && !plugins::AcceptCameraHudPreview(*app)) return;
+#endif
     ViewRefreshGate(app);
 }
 
 void ModeAngleAdjust(MMDApp* app, int axis) {
+#if !MMD_ORIGINAL_PROFILE
+    if (plugins::BoundNativePoseHistory(app) && !plugins::AllowCameraHudPreview(*app, 18 + axis)) return;
+#endif
     // 0x4790E0..0x4798xx, modes 16..18.  Stored angles are radians;
     // accessory edit controls display degrees.
     static const int kEdit[3] = {0x1E1, 0x1E2, 0x1E3};
@@ -1265,6 +1320,9 @@ void ModeAngleAdjust(MMDApp* app, int axis) {
             static_cast<double>(app->CameraRotation()[axis]) +
             static_cast<double>(dy) * scale);
     }
+#if !MMD_ORIGINAL_PROFILE
+    if (plugins::BoundNativePoseHistory(app) && !plugins::AcceptCameraHudPreview(*app)) return;
+#endif
     ViewRefreshGate(app);
 }
 

@@ -175,7 +175,10 @@ LRESULT CALLBACK MicWndProc(HWND hwnd, UINT msg, WPARAM wParam,
             s.MouseY() = static_cast<std::int16_t>(HIWORD(lParam));
         }
         HandleViewportToolRelease(app);
-        ReleaseCapture();
+        // Capture may already belong to another window after cancellation.
+        // A queued release from this viewport must not release that owner.
+        if (GetCapture() == hwnd)
+            ReleaseCapture();
         return 0;
     case WM_MOUSEWHEEL:                                            // 0x466C8C
         // x87 double math then float store: angle += wheel * 0.05.

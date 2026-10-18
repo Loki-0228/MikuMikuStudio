@@ -6,7 +6,7 @@
 
 [C++17 重绘 SDK](cpp-refresh.md)提供 `RefreshServices` 和可移动的 `RefreshTicket`，封装目标查询、整目标或局部矩形重绘及取消、释放。票据仍为原 C 句柄，可以移交给低层代码。
 
-界面异步重绘已提供 [mms.ui.refresh 参考](refresh.md)，当前支持同插件按钮及原生面板的 `REPAINT + SELF`，以及按钮启用、选中和保留槽位显隐的 `STATE + SELF`。后续设计以[统一插件扩展架构](../../docs/PLUGIN_EXTENSION_ARCHITECTURE.md)为准，另见 [UI 呈现与刷新扩展](../../docs/PLUGIN_UI_PRESENTATION.md)、[多视口与洋葱皮](../../docs/PLUGIN_VIEWPORT_RENDERING.md)及[数据格式与编辑工具](../../docs/PLUGIN_DATA_EXTENSIONS.md)。各页标明已实现范围，其余服务及工具封装仍为提案。
+界面异步重绘已提供 [mms.ui.refresh 参考](refresh.md)，当前支持同插件按钮及原生面板的 `REPAINT + SELF`，以及按钮启用、选中和保留槽位显隐的 `STATE + SELF`。有效绑定目标支持 [DATA + SELF 及分层 SDK](data-refresh.md)，复用同一刷新票据。后续设计以[统一插件扩展架构](../../docs/PLUGIN_EXTENSION_ARCHITECTURE.md)为准，另见 [UI 呈现与刷新扩展](../../docs/PLUGIN_UI_PRESENTATION.md)、[多视口与洋葱皮](../../docs/PLUGIN_VIEWPORT_RENDERING.md)及[数据格式与编辑工具](../../docs/PLUGIN_DATA_EXTENSIONS.md)。各页标明已实现范围，其余服务及工具封装仍为提案。
 
 ## 开发环境
 
@@ -37,14 +37,15 @@ cmake --build build/hello-menu --config Release
 
 ## 当前服务
 
-此表只描述本分支已经接入的能力。完整工作包及未验收项见[实现记录](../../docs/PLUGIN_ABI_IMPLEMENTATION.md)。
+此表描述本分支完整增强配置已经接入的能力。原始 `mmd932` 兼容 profile 继续禁用产品内 ABI 运行时，独立契约测试通过不表示该 profile 加载插件。完整工作包及未验收项见[实现记录](../../docs/PLUGIN_ABI_IMPLEMENTATION.md)。
 
 | 服务 | 当前范围 |
 | --- | --- |
 | `mms.ui` 1.0 | 命令、菜单项、工具栏按钮和组；元数据更新；只读属性；快照租约；命令参数、范围与选项校验；布局修订检查、指定顺序移动、创建与删除空组、显示、首选尺寸、快捷键及恢复。 |
 | `mms.ui.surface` 1.0 | 菜单、工具栏和工作区页签挂载位置；原生子窗口工厂、多个视图、尺寸、隐藏、焦点与销毁。 |
 | `mms.ui.layout` 1.0 | 默认布局提示、事务内用户覆盖、实际几何快照；行、列、换行和网格；伸缩、上下限、隐藏占位。 |
-| `mms.ui.refresh` 1.0 | 本插件已有按钮和原生 surface 的 REPAINT + SELF；按钮额外支持启用、选中及保留槽位内显隐的 STATE。UI 线程查询能力和目标，后台使用同一票据；实例、工程及几何修订校验。DATA、LAYOUT 和其他范围返回 UNSUPPORTED。 |
+| `mms.ui.refresh` 1.0 | 本插件已有按钮和原生 surface 的 REPAINT + SELF；按钮额外支持启用、选中及保留槽位内显隐的 STATE。UI 线程查询能力和目标，后台使用同一票据；实例、工程及几何修订校验。有效绑定目标支持 DATA，组合按 DATA→STATE→REPAINT 执行。LAYOUT 和其他范围返回 UNSUPPORTED。 |
+| `mms.ui.refresh.bind` 1.0 | 本插件不可变来源、来源版本、目标绑定、只读显示准备及显示租约；工作线程发布，原刷新队列消费。 |
 | `mms.scene` 1.0 | 阶段 0 的对象、骨骼、网格、绑定、刚体、关节、形状、Morph、材质和纹理路径；独立 ID、运行时代次、不可变快照及 PMM 身份保存。阶段 1–4 返回 UNSUPPORTED。 |
 | `mms.storage` 1.0 | 插件工程数据、两阶段加载、只读保存数据租约；PMM 与扩展文件成对保存和中断恢复。提供者名为 `mms.serializer`。 |
 | 其他服务 | 尚未接入，`queryService` 返回 NOT_FOUND。 |

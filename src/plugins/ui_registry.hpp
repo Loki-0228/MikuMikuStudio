@@ -101,6 +101,9 @@ public:
     // Request adapter work without editing registry/preferences revisions.
     void RequestPresentation() noexcept;
     MmsResult Invoke(UiClient&, MmsString, MmsObjectRef, MmsSpan);
+    // DATA preparation is a read-only UI callback too. Keep the same mutation,
+    // dispatch and unload gates as command/property state queries.
+    MmsResult WithReadOnlyCallback(const std::function<MmsResult()>&);
     // Keep the read-only callback guard through native state application.
     MmsResult WithElementState(MmsHandle, const std::function<MmsResult(const MmsCommandStateV1&)>&);
     void Retire(UiClient&);

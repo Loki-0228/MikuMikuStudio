@@ -1,0 +1,12 @@
+EXPORTS
+    MMSPluginGetApi
+    ProbeBegin
+    ProbePublish
+    ProbeRequest
+    ProbeQuery
+    ProbeReleaseTicket
+    ProbeAcquireHold
+    ProbeReleaseHold
+    ProbeRemoveTarget
+    ProbeSetPrepareHook
+    ProbeEnqueueNormal

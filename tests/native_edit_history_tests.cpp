@@ -355,6 +355,7 @@ void CrossModelJournal(){
 #include "native_morph_text_checks.inc"
 #include "native_display_registration_checks.inc"
 #include "native_global_registration_checks.inc"
+#include "native_global_key_delete_checks.hpp"
 #include "native_camera_reset_checks.inc"
 #include "native_camera_numeric_checks.inc"
 #include "native_camera_axis_checks.inc"
@@ -409,6 +410,7 @@ void CrossModelJournal(){
 #include "native_frame_retime_edges_checks.inc"
 #include "native_legacy_global_retime_checks.inc"
 #include "native_numpad_view_checks.inc"
+#include "native_camera_hud_history_checks.inc"
 #include "native_numpad_dispatch_checks.inc"
 #include "native_model_viewport_history_checks.inc"
 #include "native_curve_write_checks.inc"
@@ -654,6 +656,14 @@ int main(int argc,char** argv){
         run("NativeGravitySparseRegistrationChecks",NativeGravitySparseRegistrationChecks);
         std::printf("PASS native sparse registration: %u checks\n",checks);return 0;
     }
+    if(argc==2&&!std::strcmp(argv[1],"--camera-hud-only")) {
+        run("NativeCameraHudHistoryChecks",NativeCameraHudHistoryChecks);
+        std::printf("PASS native camera HUD: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--global-key-delete-only")) {
+        run("NativeGlobalKeyDeleteChecks",NativeGlobalKeyDeleteChecks);
+        std::printf("PASS native global key deletion: %u checks\n",checks);return 0;
+    }
     if(argc==2&&!std::strcmp(argv[1],"--global-registration-only")) {
         run("NativeGlobalRegistrationChecks",NativeGlobalRegistrationChecks);
         run("NativeAccessoryRegistrationChecks",NativeAccessoryRegistrationChecks);
@@ -732,6 +742,7 @@ int main(int argc,char** argv){
     run("NativeMorphTextChecks",NativeMorphTextChecks);
     run("NativeDisplayRegistrationChecks",NativeDisplayRegistrationChecks);
     run("NativeGlobalRegistrationChecks",NativeGlobalRegistrationChecks);
+    run("NativeGlobalKeyDeleteChecks",NativeGlobalKeyDeleteChecks);
     run("NativeCameraResetChecks",NativeCameraResetChecks);
     run("NativeCameraNumericChecks",NativeCameraNumericChecks);
     run("NativeCameraAxisChecks",NativeCameraAxisChecks);
@@ -757,6 +768,7 @@ int main(int argc,char** argv){
     run("NativeBoneVmdCurvesChecks",NativeBoneVmdCurvesChecks);
     run("NativeModelVmdCurvesChecks",NativeModelVmdCurvesChecks);
     run("NativeCameraFollowChecks",NativeCameraFollowChecks);
+    run("NativeCameraHudHistoryChecks",NativeCameraHudHistoryChecks);
     run("PoseAndStale",PoseAndStale);run("KeysAndChain",KeysAndChain);run("Bake",Bake);
     run("Deletion",Deletion);run("EmptyAndCycle",EmptyAndCycle);run("FreeCurves",FreeCurves);
     run("Scatter",Scatter);run("FailedNativeCommands",FailedNativeCommands);run("RemovalBindings",RemovalBindings);

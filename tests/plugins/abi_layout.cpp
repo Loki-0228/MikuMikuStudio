@@ -1,5 +1,10 @@
 #include <mms/surface.h>
+#include <type_traits>
 #include <mms/refresh.h>
+#include <mms/refresh_binding.h>
+static_assert(offsetof(MmsUiDataBindingDescV1, prepare) == 56, "DATA callback offset");
+static_assert(offsetof(MmsUiDataDisplayV1, bytes) == 56, "DATA bytes offset");
+static_assert(std::is_standard_layout<MmsUiRefreshBindingApiV1>::value, "DATA standard layout");
 #include <mms/edit.h>
 #include <mms/layout.h>
 #include <mms/scene.h>

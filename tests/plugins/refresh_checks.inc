@@ -168,7 +168,7 @@ static void Region(HWND window, std::initializer_list<RECT> rectangles) {
 static void CapabilitiesAndValidation() {
     Fixture x; MmsUiRefreshCapabilitiesV1 caps{}; caps.h = Header<MmsUiRefreshCapabilitiesV1>();
     CHECK(x.api.getCapabilities(x.api.context, &caps) == MMS_OK);
-    CHECK(caps.supportedKinds == (MMS_UI_REFRESH_REPAINT | MMS_UI_REFRESH_STATE) && caps.supportedScopes == MMS_UI_REFRESH_SELF);
+    CHECK(caps.supportedKinds == (MMS_UI_REFRESH_REPAINT | MMS_UI_REFRESH_STATE | MMS_UI_REFRESH_DATA) && caps.supportedScopes == MMS_UI_REFRESH_SELF);
     CHECK(caps.maxTicketsPerPlugin == 256 && caps.maxRectsPerRequest == 32 && caps.maxPendingBytesPerPlugin == 256 * 1024 && caps.maxContributionsPerDrain == 64);
     auto target = x.Target(); CHECK(target.target.element == x.element && target.target.instanceGeneration && target.target.projectEpoch && target.geometryRevision);
     CHECK(target.ready && target.visible && target.width == 300 && target.height == 120);
@@ -186,8 +186,11 @@ static void CapabilitiesAndValidation() {
     CHECK(x.api.getTarget(x.api.context, x.registry.elements.at("mms.toolbar.main.extensions").handle, &wrong) == MMS_E_ARGUMENT);
     auto request = x.Request(target); MmsHandle handle = 0;
     CHECK(x.otherApi.request(x.otherApi.context, &request, &handle) != MMS_OK && handle == 0);
-    for (uint32_t kinds : {MMS_UI_REFRESH_DATA, MMS_UI_REFRESH_STATE, MMS_UI_REFRESH_LAYOUT, MMS_UI_REFRESH_REPAINT | MMS_UI_REFRESH_DATA}) {
+    for (uint32_t kinds : {MMS_UI_REFRESH_STATE, MMS_UI_REFRESH_LAYOUT}) {
         auto r = request; r.kinds = kinds; CHECK(x.api.request(x.api.context, &r, &handle) == MMS_E_UNSUPPORTED && handle == 0);
+    }
+    for (uint32_t kinds : {MMS_UI_REFRESH_DATA, MMS_UI_REFRESH_REPAINT | MMS_UI_REFRESH_DATA}) {
+        auto r = request; r.kinds = kinds; CHECK(x.api.request(x.api.context, &r, &handle) == MMS_E_ARGUMENT && handle == 0);
     }
     for (uint32_t scope : {MMS_UI_REFRESH_SUBTREE, MMS_UI_REFRESH_DEPENDENTS}) {
         auto r = request; r.scope = scope; CHECK(x.api.request(x.api.context, &r, &handle) == MMS_E_UNSUPPORTED && handle == 0);

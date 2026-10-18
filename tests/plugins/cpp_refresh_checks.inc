@@ -86,7 +86,7 @@ static void Negotiation() {
         CHECK(sdk::RefreshServices::Query(x.host, service) == MMS_E_UNSUPPORTED && service.api().context == original);
     }
     CHECK(service.Target(x.fixture.element, target) == MMS_OK && target.target.element == x.fixture.element);
-    CHECK(service.Capabilities(caps) == MMS_OK && caps.supportedKinds == (MMS_UI_REFRESH_REPAINT | MMS_UI_REFRESH_STATE));
+    CHECK(service.Capabilities(caps) == MMS_OK && caps.supportedKinds == (MMS_UI_REFRESH_REPAINT | MMS_UI_REFRESH_STATE | MMS_UI_REFRESH_DATA));
     MmsResult threadCheck = MMS_OK, threadTarget = MMS_OK, threadCaps = MMS_OK, threadSimple = MMS_OK;
     std::thread worker([&] {
         threadCheck = service.CheckThread(); threadTarget = service.Target(x.fixture.element, target);

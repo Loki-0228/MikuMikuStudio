@@ -19,6 +19,7 @@ add_library(mms_plugin_runtime STATIC
     src/plugins/loader_win32.cpp
     src/plugins/ui_registry.cpp
     src/plugins/ui_refresh.cpp
+    src/plugins/ui_refresh_binding.cpp
     src/plugins/ui_preferences_file.cpp
     src/plugins/manager.cpp
     src/plugins/scene_store.cpp
@@ -45,6 +46,7 @@ if(MIKUDANCESTUDIO_PROFILE STREQUAL "full")
     target_sources(mikudancestudio_core PRIVATE src/plugins/native_global_paste.cpp src/plugins/native_gravity_paste.cpp)
     target_sources(mikudancestudio_core PRIVATE src/plugins/native_vmd_source.cpp src/plugins/native_model_vmd_source.cpp src/plugins/native_viewport_history.cpp)
     target_sources(mikudancestudio_core PRIVATE src/plugins/native_viewport_reset_camera.cpp)
+    target_sources(mikudancestudio_core PRIVATE src/plugins/native_camera_hud_history.cpp src/plugins/native_global_key_delete.cpp)
     target_sources(mikudancestudio_core PRIVATE src/plugins/native_camera_follow.cpp src/plugins/native_camera_follow_sample.cpp src/plugins/native_camera_follow_ui.cpp)
     target_sources(mikudancestudio_core PRIVATE src/plugins/native_global_registration.cpp src/plugins/native_accessory_registration.cpp src/plugins/native_global_commands.cpp src/plugins/native_camera_interpolation.cpp)
     target_sources(mikudancestudio_core PRIVATE src/physics/history_physics.cpp src/plugins/scene_object_history.cpp src/plugins/scene_resource_budget.cpp src/plugins/native_pose_scope.cpp src/plugins/native_history_commands.cpp src/plugins/native_pose_axis.cpp src/plugins/native_bone_registration.cpp src/plugins/native_key_commands.cpp src/plugins/native_bone_evaluation.cpp src/plugins/native_display_keys.cpp src/plugins/native_morph_keys.cpp src/plugins/native_morph_commands.cpp src/plugins/native_vpd_import.cpp src/plugins/native_model_keys.cpp)
@@ -62,6 +64,14 @@ add_custom_command(TARGET mms_hello_plugin POST_BUILD COMMAND ${CMAKE_COMMAND} -
     "${CMAKE_CURRENT_SOURCE_DIR}/sdk/mms/examples/hello_menu/plugin.json" "$<TARGET_FILE_DIR:mms_hello_plugin>/plugin.json")
 
 add_executable(plugin_abi_tests EXCLUDE_FROM_ALL tests/plugins/runtime_tests.cpp tests/plugins/abi_layout.cpp)
+add_executable(ui_refresh_binding_tests EXCLUDE_FROM_ALL tests/plugins/ui_refresh_binding_tests.cpp)
+target_include_directories(ui_refresh_binding_tests PRIVATE src/plugins sdk/mms/include)
+target_compile_features(ui_refresh_binding_tests PRIVATE cxx_std_17)
+target_compile_definitions(ui_refresh_binding_tests PRIVATE _WIN32_WINNT=0x0601 WINVER=0x0601)
+target_link_options(ui_refresh_binding_tests PRIVATE /SUBSYSTEM:CONSOLE,6.01 /DEBUG:NONE)
+set_target_properties(ui_refresh_binding_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_test(NAME ui_refresh_binding_contract COMMAND ui_refresh_binding_tests)
+set_tests_properties(ui_refresh_binding_contract PROPERTIES TIMEOUT 60)
 add_library(mms_abi_c_check OBJECT EXCLUDE_FROM_ALL tests/plugins/abi_c.c)
 target_include_directories(mms_abi_c_check PRIVATE sdk/mms/include)
 set_target_properties(mms_abi_c_check PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
@@ -81,6 +91,19 @@ set_target_properties(mms_lifecycle_plugin PROPERTIES OUTPUT_NAME lifecycle
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/plugins/lifecycle/$<CONFIG>"
     MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 add_dependencies(plugin_abi_tests mms_lifecycle_plugin)
+add_library(mms_data_refresh_probe MODULE EXCLUDE_FROM_ALL tests/plugins/data_refresh_plugin.cpp tests/plugins/data_refresh_plugin.def)
+target_include_directories(mms_data_refresh_probe PRIVATE sdk/mms/include)
+target_compile_features(mms_data_refresh_probe PRIVATE cxx_std_17)
+target_compile_definitions(mms_data_refresh_probe PRIVATE _WIN32_WINNT=0x0601 WINVER=0x0601)
+target_link_libraries(mms_data_refresh_probe PRIVATE user32 gdi32)
+target_link_options(mms_data_refresh_probe PRIVATE /SUBSYSTEM:WINDOWS,6.01 /DEBUG:NONE)
+set_target_properties(mms_data_refresh_probe PROPERTIES OUTPUT_NAME data_refresh_probe
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/plugins/data_refresh/$<CONFIG>"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/plugins/data_refresh/$<CONFIG>"
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+add_dependencies(plugin_abi_tests mms_data_refresh_probe)
+add_test(NAME ui_data_refresh_runtime COMMAND plugin_abi_tests --data-only "$<TARGET_FILE:mms_data_refresh_probe>")
+set_tests_properties(ui_data_refresh_runtime PROPERTIES TIMEOUT 120)
 add_library(mms_plugin_edit_probe SHARED EXCLUDE_FROM_ALL tests/plugins/manager_edit_plugin.cpp tests/plugins/manager_edit_plugin.def)
 target_include_directories(mms_plugin_edit_probe PRIVATE sdk/mms/include)
 target_compile_definitions(mms_plugin_edit_probe PRIVATE _WIN32_WINNT=0x0601 WINVER=0x0601)

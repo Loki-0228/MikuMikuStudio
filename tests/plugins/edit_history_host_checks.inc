@@ -27,14 +27,19 @@
 #include "../src/plugins/native_vmd_source.hpp"
 #include "../src/plugins/native_model_vmd_source.hpp"
 #include "../src/plugins/native_viewport_history.hpp"
+#include "../src/plugins/native_camera_hud_history.hpp"
 #include "../src/plugins/scene_object_history.hpp"
 #include "mikudancestudio/accessory_motion_io.hpp"
 #include "mikudancestudio/clipboard_layout.hpp"
 #include "mikudancestudio/text_encoding.hpp"
 #include "mikudancestudio/ui_language.hpp"
 #include "mikudancestudio/system_settings_ui.hpp"
+#include "mikudancestudio/frame_presentation.hpp"
+#include "mikudancestudio/viewport_tool_layout.hpp"
+#include "mikudancestudio/viewport_corner_settings.hpp"
 namespace mikudancestudio { void DispatchSeparateWindowCommand(MMDApp*, unsigned short); }
 namespace mikudancestudio { void ConsumeNumpadViewPresets(MMDApp*); }
+namespace mikudancestudio { int ViewportToolAtPointForTest(MMDApp*); }
 namespace edit_history_host_checks {
 UINT FindMenuCommand(HMENU menu, const wchar_t* label) {
     for (int index = 0; menu && index < GetMenuItemCount(menu); ++index) {
@@ -426,6 +431,7 @@ void ObjectMenuDeletion(MMDApp* app, plugins::SharedHistory& history, const MmsS
 #include "morph_paste_host_checks.inc"
 #include "display_paste_host_checks.inc"
 #include "global_paste_host_checks.inc"
+#include "global_key_delete_host_checks.inc"
 #include "model_paste_host_checks.inc"
 #include "vmd_global_host_checks.inc"
 #include "camera_crash_vmd_host_checks.inc"
@@ -434,6 +440,7 @@ void ObjectMenuDeletion(MMDApp* app, plugins::SharedHistory& history, const MmsS
 #include "vmd_model_scale_host_checks.inc"
 #include "viewport_history_host_checks.inc"
 #include "model_viewport_host_checks.inc"
+#include "camera_hud_host_checks.inc"
 #include "numpad_view_host_checks.inc"
 #include "curve_motion_import_host_checks.inc"
 #include "native_camera_sampling_host_checks.inc"
@@ -481,6 +488,7 @@ void Run(MMDApp* app) {
     morph_paste_host_checks::Run(app,*history,value);
     display_paste_host_checks::Run(app,*history,value);
     global_paste_host_checks::Run(app,*history,value);
+    global_key_delete_host_checks::Run(app,*history,value);
     model_paste_host_checks::Run(app,*history,value);
     vmd_global_host_checks::Run(app,*history,value);
     camera_crash_vmd_host_checks::Run(app,*history,value);
@@ -489,6 +497,7 @@ void Run(MMDApp* app) {
     vmd_model_scale_host_checks::Run(app,*history,value);
     viewport_history_host_checks::Run(app,*history,value);
     model_viewport_host_checks::Run(app,*history,value);
+    camera_hud_host_checks::Run(app,*history);
     numpad_view_host_checks::Run(app,*history,value);
     curve_motion_import_host_checks::Run(app,*history);
     native_camera_sampling_host_checks::Run(app,*history,value);

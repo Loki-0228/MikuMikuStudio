@@ -28,6 +28,8 @@ static MmsString S(const char* s) { return {s, std::strlen(s)}; }
 #include "state_refresh_checks.inc"
 #include "visibility_refresh_checks.inc"
 #include "cpp_refresh_checks.inc"
+#include "data_refresh_checks.inc"
+#include "cpp_data_refresh_checks.inc"
 static void Write(const fs::path& path, const std::string& bytes) { fs::create_directories(path.parent_path()); std::ofstream f(path, std::ios::binary); f << bytes; if (!f) throw std::runtime_error("fixture write failed"); }
 #include "ui_preferences_file_checks.inc"
 #include "storage_checks.inc"
@@ -38,6 +40,8 @@ static std::string ManifestText(std::string id = "org.example.hello", std::strin
 }
 #include "manager_edit_checks.inc"
 #include "manager_refresh_checks.inc"
+#include "manager_data_refresh_checks.inc"
+#include "manager_data_refresh_concurrency_checks.inc"
 #include "task_dispatch_checks.inc"
 static void JsonChecks() {
     CHECK(Json::Parse("{\"a\":1}").At("a").UInt() == 1);
@@ -341,12 +345,22 @@ static void LifecycleChecks(const fs::path& root, const fs::path& fixture) {
 int wmain(int argc, wchar_t** argv) {
     const fs::path root = fs::temp_directory_path() / (L"mms-abi-contract-" + std::to_wstring(GetCurrentProcessId()));
     try {
+        if ((argc == 2 || argc == 3) && std::wstring(argv[1]) == L"--data-only") {
+            CHECK(!fs::exists(root)); fs::create_directories(root);
+            DataRefreshChecks(); CppDataRefreshChecks();
+            if (argc == 3) {
+                ManagerDataRefreshChecks(root, fs::absolute(argv[2]));
+                ManagerDataRefreshConcurrencyChecks(root, fs::absolute(argv[2]));
+            }
+            std::cout << "PASS DATA refresh checks=" << checks << "\n"; fs::remove_all(root); return 0;
+        }
         if ((argc == 2 || argc == 3) && std::wstring(argv[1]) == L"--refresh-only") {
             CHECK(!fs::exists(root)); fs::create_directories(root);
             RefreshChecks();
             StateRefreshChecks();
             VisibilityRefreshChecks();
             CppRefreshChecks();
+            DataRefreshChecks(); CppDataRefreshChecks();
             if (argc == 3) ManagerRefreshChecks(root, fs::absolute(argv[2]));
             std::cout << "PASS refresh checks=" << checks << "\n"; fs::remove_all(root); return 0;
         }

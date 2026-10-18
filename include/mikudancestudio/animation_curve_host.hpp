@@ -3,6 +3,7 @@
 #include "mikudancestudio/animation_curve_editor.hpp"
 #include "mikudancestudio/pmm_extension.hpp"
 #include <array>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <utility>
@@ -356,8 +357,15 @@ public:
     // metadata. Native destination controls must be preserved by the retime.
     // forward=false restores the frozen source, without applying the map.
     // The map is borrowed only during preparation and is budgeted by its owner.
+    // Explicit deletion of frame zero can also replace the authored values in
+    // resetRootChannels (one bit per field), even when their rounded native
+    // baseline was already the default. Unowned fields retain exact authoring;
+    // only a changed root's preserved interval is invalidated. Undo uses seed.
+    // deleteKeys permits intentional joins caused by deleted keys, releasing
+    // only their affected exact native slices. Ordinary retiming stays strict.
     std::unique_ptr<Target> PrepareRetimed(const NativeKeyView&,
-        const std::vector<std::pair<int,int>>& frameMap, bool forward = true) const;
+        const std::vector<std::pair<int,int>>& frameMap, bool forward = true,
+        std::uint32_t resetRootChannels = 0, bool deleteKeys = false) const;
     // True when an original authored lane lacks any explicitly registered
     // frame, even if the shared native row already has identical payload.
     // No authoring means false. Invalid frames or a stale record throw.

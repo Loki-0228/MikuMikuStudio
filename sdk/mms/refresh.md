@@ -2,9 +2,9 @@
 
 `mms.ui.refresh` 1.0 为插件自己的工具栏按钮和原生 surface 面板安排异步重绘。接口定义见 [refresh.h](include/mms/refresh.h)。结构使用 `MmsHeader`、`MMS_CALL` 和 8 字节对齐，调用失败不修改输出参数。
 
-当前支持 `REPAINT + SELF`，以及已创建宿主按钮的 `STATE + SELF`。STATE 更新启用与选中；有效布局提示包含 `MMS_HINT_PRESERVE_HIDDEN_SLOT` 时，也可在现有槽位隐藏或恢复按钮。面板不报告 STATE。DATA、LAYOUT、SUBTREE、DEPENDENTS、绑定、来源订阅和动画帧尚未提供。
+当前支持 `REPAINT + SELF`，以及已创建宿主按钮的 `STATE + SELF`。STATE 更新启用与选中；有效布局提示包含 `MMS_HINT_PRESERVE_HIDDEN_SLOT` 时，也可在现有槽位隐藏或恢复按钮。面板不报告 STATE。已绑定目标还支持 `DATA + SELF`，见[数据绑定接口](data-refresh.md)。LAYOUT、SUBTREE、DEPENDENTS、来源订阅和动画帧尚未提供。
 
-REPAINT 在 UI 安全点调用 `InvalidateRect` 或 `InvalidateRgn`，不查询命令状态或直接执行绘制。STATE 在相同安全点只读调用该按钮的 getState，再更新原生启用与选中状态。两者均不重新布局、不调用 `FrameDriver`，不修改播放头、工程 dirty 或撤销历史。插件窗口后续的正常 `WM_PAINT` 仍由插件处理。
+REPAINT 在 UI 安全点调用 `InvalidateRect` 或 `InvalidateRgn`，不查询命令状态或直接执行绘制。STATE 在相同安全点只读调用该按钮的 getState，再更新原生启用与选中状态。DATA 先准备并交换不可变显示模型，组合请求按 DATA、STATE、REPAINT 执行。这些阶段均不重新布局、不调用 `FrameDriver`，不修改播放头、工程 dirty 或撤销历史。插件窗口后续的正常 `WM_PAINT` 仍由插件处理。
 
 ## 服务查询与线程
 
@@ -39,7 +39,7 @@ REPAINT 在 UI 安全点调用 `InvalidateRect` 或 `InvalidateRgn`，不查询�
 | `target.instanceGeneration` | 宿主分配的呈现实例代次。销毁、重建或失效后重新发布会改变该值。 |
 | `target.projectEpoch` | 当前工程上下文代次。场景替换或重置后旧值失效。 |
 | `geometryRevision` | 当前实际几何修订，包括位置、客户区尺寸、窗口坐标空间 DPI 和逻辑可见性。 |
-| `supportedKinds`、`supportedScopes` | 宿主按钮报告 REPAINT、STATE；面板报告 REPAINT。范围均为 SELF。全局能力是并集，调用前还须检查目标能力。 |
+| `supportedKinds`、`supportedScopes` | 宿主按钮报告 REPAINT、STATE；面板报告 REPAINT。已有有效绑定时额外报告 DATA。范围均为 SELF。全局能力是并集，调用前还须检查目标能力。 |
 | `ready` | 已有可用窗口、布局发布成功且客户区宽高均大于零时为 1。 |
 | `visible` | 目标在插件布局中的逻辑可见性。此值不表示窗口无遮挡，也不要求宿主顶层窗口已显示。 |
 | `width`、`height` | 目标客户区的 DIP 尺寸。 |
@@ -59,11 +59,11 @@ REPAINT 在 UI 安全点调用 `InvalidateRect` 或 `InvalidateRgn`，不查询�
 | 字段 | 当前要求 |
 | --- | --- |
 | `target` | 完整复制 `getTarget` 返回的引用。 |
-| `binding`、`sourceRevision` | 必须为 0；当前没有刷新绑定和数据来源修订。 |
-| `kinds` | REPAINT、STATE 或两者组合；目标须支持所请求的全部种类。 |
+| `binding`、`sourceRevision` | 含 DATA 时填写有效绑定与当前非零来源版本；不含 DATA 时必须为 0，见[绑定规则](data-refresh.md)。 |
+| `kinds` | REPAINT、STATE、DATA 或其组合；目标须支持所请求的全部种类。 |
 | `scope` | 必须为 `MMS_UI_REFRESH_SELF`。 |
 | `expectedGeometryRevision` | 局部矩形请求必须填写取得矩形时的非零几何修订。整目标请求可填 0，表示接受执行时的有效几何；填写非零值时仍严格检查。 |
-| `dirtyRects` | REPAINT 的局部数组；非空时 stride 至少为结构大小、recordVersion=1。count=0 表示整个目标客户区。单独 STATE 必须 count=0。 |
+| `dirtyRects` | REPAINT 的局部数组；非空时 stride 至少为结构大小、recordVersion=1。count=0 表示整个目标客户区。不含 REPAINT 时必须 count=0。 |
 | `coalesceKey` | 插件自定的合并键。同一插件、目标实例及工程代次内，相同键的待执行贡献可以合并。0 也是有效键。 |
 | `flags`、`reserved` | 必须为 0。 |
 
@@ -85,9 +85,9 @@ REPAINT 在 UI 安全点调用 `InvalidateRect` 或 `InvalidateRgn`，不查询�
 | `CANCELLED` | 在执行前取消，`result=MMS_E_CANCELLED`。 |
 | `FAILED` | 校验或窗口失效操作失败；`result` 保存错误码。 |
 
-完成不表示像素已显示，也不等待 WM_PAINT。隐藏或被遮挡的窗口遵循 Windows 的正常绘制时机，服务不保证隐藏窗口保留可查询的更新区域。sourceRevision 当前始终为 0；geometryRevision 记录处理时的目标几何，执行前即失败的票据可为 0。
+完成不表示像素已显示，也不等待 WM_PAINT。隐藏或被遮挡的窗口遵循 Windows 的正常绘制时机，服务不保证隐藏窗口保留可查询的更新区域。sourceRevision 在 DATA 成功时记录实际消费版本，否则为 0；geometryRevision 记录处理时的目标几何，执行前即失败的票据可为 0。
 
-合并只处理本批待执行贡献，要求相同插件、目标、coalesceKey、kinds 和几何约束策略。固定修订请求与接受当前几何的请求分组处理，避免过期局部请求使合法整目标请求失败。同组 STATE 只计算一次；任一整目标重绘贡献会覆盖同组局部矩形。不同 kinds 独立处理，STATE 失败不会吞掉另一张纯 REPAINT 票据。取消一个 PENDING 票据仅撤回自身贡献。cancel 对终态票据返回成功，不改变既有结果。
+合并只处理本批待执行贡献，要求相同插件、目标、coalesceKey、kinds、binding、sourceRevision 和几何约束策略。固定修订请求与接受当前几何的请求分组处理，避免过期局部请求使合法整目标请求失败。同组 STATE 只计算一次；任一整目标重绘贡献会覆盖同组局部矩形。不同 kinds 独立处理，STATE 失败不会吞掉另一张纯 REPAINT 票据。取消一个 PENDING 票据仅撤回自身贡献。cancel 对终态票据返回成功，不改变既有结果。
 
 STATE 与 REPAINT 组合时先更新状态，再提交损伤。状态回调失败或提出不支持的显隐变化时，该组合不会继续重绘；状态已成功而后续重绘失败时，FAILED 票据的 completedKinds 保留 STATE 位。UI 状态不属于工程事务，不承诺对已发生的原生窗口变化执行事务回滚。
 
@@ -105,7 +105,7 @@ STATE 只重新查询目标按钮的命令，更新原 HWND 的 enabled、checke
 
 request 返回 OK 只表示成功入队，不在后台调用 getState。面板能力不支持时直接拒绝入队；回调输出、显隐及执行时过期错误在 UI 处理后写入票据，调用者必须用 query 检查结果。
 
-回调运行在 UI 线程，并保持只读回调保护直到状态应用结束。回调内的注册、注销及命令执行返回 BUSY，不继承编辑权限；在此 UI 调用链中再次请求 STATE 也返回 BUSY，避免刷新递归。回调必须快速返回已准备状态，不能等待需要 UI 的后台作业。
+回调运行在 UI 线程，并保持只读回调保护直到状态应用结束。回调内的注册、注销及命令执行返回 BUSY，不继承编辑权限；在同插件的 DATA/STATE 因果链中再次请求 DATA 或 STATE 返回 BUSY，限制也传播到该链安排的 UI 任务、取消回调及后代任务，避免递归刷新。回调必须快速返回已准备状态，不能等待需要 UI 的后台作业。
 
 宿主在回调之后、每组实际执行前及原生状态应用后重新检查实例、工程、几何和就绪状态。回调泵消息导致目标过期时，请求失败，不使用旧坐标。原生显隐回调中取得的是上次发布的目标；显隐发布后，基于旧几何的局部请求会过期。显隐过程中工程切换会暂停原目标，等待正常布局重新发布。状态未变化时不重复修改原生状态。未挂载或尺寸为零的目标仍为 NOT_READY。
 
@@ -124,7 +124,7 @@ request 返回 OK 只表示成功入队，不在后台调用 getState。面板�
 
 进程还有 4,096 个票据、4,194,304 字节的总队列上限。达到票据、矩形或队列字节配额返回 `BUSY`；分配失败返回 `MEMORY`。终态票据会释放矩形数组，但记录本身仍计费，直到 `release`。这些配额约束服务保留的数据，不是对整个 CRT 或插件内存的测量。
 
-停止开始后，能力查询、目标查询和新请求返回 `NOT_READY`。宿主取消待执行贡献；已有票据仍可查询、取消和释放。正在调用服务或仍有票据引用时，宿主保留插件实例、服务 context 和 DLL。
+停止开始后，数据绑定停止接收新发布和显示租约，已有显示租约仍需释放；能力查询、目标查询和新请求返回 `NOT_READY`。宿主取消待执行贡献；已有票据仍可查询、取消和释放。正在调用服务或仍有票据引用时，宿主保留插件实例、服务 context 和 DLL。
 
 插件的 `stop` 必须停止产生新请求、结束自己的工作线程并释放票据。线程尚未退出或清理尚未完成时返回 `BUSY`，不能阻塞 UI 等待它们。刷新票据没有插件完成回调。
 
@@ -133,12 +133,12 @@ request 返回 OK 只表示成功入队，不在后台调用 getState。面板�
 | 错误 | 典型原因 |
 | --- | --- |
 | `THREAD` | 在工作线程调用 `getCapabilities` 或 `getTarget`。 |
-| `ARGUMENT` | 非法结构、未知标志、非法矩形、非零 binding 或 sourceRevision、访问其他插件目标。 |
-| `UNSUPPORTED` | 请求 DATA、LAYOUT、SUBTREE、DEPENDENTS；目标不支持 STATE；没有保留槽位提示的显隐变化；或查询按钮和面板以外的元素。 |
+| `ARGUMENT` | 非法结构、未知标志、非法矩形、缺少 DATA 绑定及版本、非 DATA 请求的非零 binding 或 sourceRevision、访问其他插件目标。 |
+| `UNSUPPORTED` | 请求 LAYOUT、SUBTREE、DEPENDENTS；目标不支持 STATE；没有保留槽位提示的显隐变化；或查询按钮和面板以外的元素。 |
 | `NOT_READY` | 停止中、目标未挂载、布局暂停、客户区尺寸为零，或显隐需要的布局尚未重新发布。 |
 | `STALE` | 元素已注销、实例重建、工程代次或要求的几何修订不匹配。 |
 | `NOT_FOUND` | 票据不存在、已释放或属于其他插件。 |
-| `BUSY` | 配额已满、取消执行中的贡献，或在 STATE 的 UI 回调链中再次提交 STATE。 |
+| `BUSY` | 配额已满、取消执行中的贡献，或在同插件的 DATA/STATE 只读因果链中再次提交 DATA/STATE。 |
 | `MEMORY`、`FAILED` | 内存、GDI 区域、调度唤醒或窗口失效操作失败。 |
 
 实现仍保留 Win7 的窗口 DC DPI 回退，重绘依赖 GDI，不要求特定显卡。代码接入状态不代替 Win7、AMD、多 DPI 和真实桌面绘制验收。

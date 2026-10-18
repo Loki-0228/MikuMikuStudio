@@ -54,7 +54,7 @@ bool SamplePreservedInterval(const Channel& channel,double frame,ac::Sample& out
 // Split/retime by the old visible frame range, retaining the original native
 // time domain. Deleted keys that would join different native slices are refused
 // by retiming; intentional value/handle edits invalidate only their own slice.
-void RemapPreserved(const Channel& source,Channel& target,const std::vector<int>& oldFrames,bool strict) {
+void RemapPreserved(const Channel& source,Channel& target,const std::vector<int>& oldFrames,bool strict,bool deleteKeys=false) {
     target.preservedCameraIntervals.clear();
     const auto& keys=target.track.keys;
     for(std::size_t i=1;i<keys.size();++i) {
@@ -64,7 +64,7 @@ void RemapPreserved(const Channel& source,Channel& target,const std::vector<int>
         if(found!=intervals.end()) {const auto& original=*found;
             if(!PreservedCurrent(source,original)||last<=original.first||first>=original.last)continue;
             if(first<original.first||last>original.last) {
-                if(strict)throw std::invalid_argument("retime would join exact native camera slices; bake before deleting their boundary");
+                if(strict&&!deleteKeys)throw std::invalid_argument("retime would join exact native camera slices; bake before deleting their boundary");
                 continue;
             }
             auto next=original;next.first=keys[i-1].frame;next.last=keys[i].frame;

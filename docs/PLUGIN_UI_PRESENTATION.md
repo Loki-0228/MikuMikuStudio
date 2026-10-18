@@ -1,6 +1,6 @@
 # 插件界面样式、绘制与动画接口方案
 
-本文固定界面需求和建议接口。基础 C++17 包装、REPAINT + SELF 及按钮启用、选中及保留槽位显隐的 STATE 已接入，实际接口以 SDK 为准。收缩空位的显隐依赖、其余新增服务、刷新绑定、绘制层和动画函数仍为提案。
+本文固定界面需求和建议接口。基础 C++17 包装、REPAINT + SELF、按钮部分 STATE，以及 SELF DATA 来源绑定与显示租约已接入，实际接口以 SDK 为准。收缩空位的显隐依赖、完整 STATE、LAYOUT、绘制层和动画函数仍为提案。
 本方案不改变普通宿主的 `mms.edit` 开放状态，也不把界面动画记入场景撤销历史。
 跨 UI、视口和数据工具的分层封装以[统一扩展架构](PLUGIN_EXTENSION_ARCHITECTURE.md)为准；本页重点规定 UI 对象、刷新和交互。
 
@@ -23,11 +23,11 @@ Win7 SP1 x64、CPU 绘制和 AMD 兼容是基础约束；不以 CUDA、NVAPI、A
 
 ## 当前实现
 
-基础类型化和声明式注册已有 [C++17 SDK](../sdk/mms/cpp-ui.md)：`CommandUi` 用 `RegistrationBundle` 组合现有命令、菜单、按钮、分组和默认布局。原始 C 表、handle、权限及生命周期规则继续生效。失败回收受阻时保留引用，插件在 `stop` 中显式关闭并重试。当前包装不提供刷新绑定、租约类、溢出菜单或新挂载点。
+基础类型化和声明式注册已有 [C++17 SDK](../sdk/mms/cpp-ui.md)：`CommandUi` 用 `RegistrationBundle` 组合现有命令、菜单、按钮、分组和默认布局。原始 C 表、handle、权限及生命周期规则继续生效。失败回收受阻时保留引用，插件在 `stop` 中显式关闭并重试。数据刷新另由同层的 `data_refresh.hpp` 包装原来源、绑定和显示租约；溢出菜单和更多挂载点仍未提供。
 
 [重绘 SDK](../sdk/mms/cpp-refresh.md)用 `RefreshServices` 和 `RefreshTicket` 包装同一刷新 C 表，提供局部矩形便利方法、跨线程所有权移交及显式清理。原始票据可继续用于 C 接口，没有额外宿主实现。
 
-[界面刷新接口](../sdk/mms/refresh.md)直接使用这些原始元素句柄，当前覆盖同插件已有按钮和原生 surface 面板的重绘，以及按钮启用、选中和保留槽位内显隐状态。完成不表示像素已显示。纯重绘不查询命令状态；STATE 只读查询目标命令，两者均不重新布局或触发场景求值。
+[界面刷新接口](../sdk/mms/refresh.md)直接使用这些原始元素句柄，当前覆盖同插件已有按钮和原生 surface 面板的重绘，以及按钮启用、选中和保留槽位内显隐状态。完成不表示像素已显示。纯重绘不查询命令状态；STATE 只读查询目标命令；DATA 先准备完整显示候选再交换模型。这些阶段均不重新布局或触发场景求值。
 
 | 已有能力 | 实际范围与代码依据 |
 | --- | --- |
@@ -37,15 +37,15 @@ Win7 SP1 x64、CPU 绘制和 AMD 兼容是基础约束；不以 CUDA、NVAPI、A
 | `mms.ui.surface` 1.0 | `surface.h:22–40` 提供创建、尺寸、显示、焦点和销毁回调；返回插件拥有的原生子窗口。 |
 | 子窗口约束 | `UiRegistry::ShowSurface` 校验父窗口、`WS_CHILD` 和 UI 线程；换父窗口会销毁重建。插件可在自己的窗口内自行绘制。 |
 | 布局与实际几何 | `layout.h` 分开记录 UI 和几何修订；`UiRegistry::PublishGeometry` 仅发布已应用的几何，未就绪返回 `NOT_READY`。 |
-| `mms.ui.refresh` 1.0 | `refresh.h`、`src/plugins/ui_refresh.cpp` 提供能力和目标查询、四项跨线程票据操作。仅支持 `REPAINT + SELF`，执行时只标记目标窗口损伤。 |
+| `mms.ui.refresh` 1.0 | `refresh.h`、`src/plugins/ui_refresh.cpp` 提供能力和目标查询、四项跨线程票据操作。支持 REPAINT、按钮部分 STATE 及有效绑定目标的 DATA，范围为 SELF。 |
+| `mms.ui.refresh.bind` 1.0 | `refresh_binding.h` 提供来源、精确版本、单目标绑定、只读 prepare、完整显示交换及不可变显示租约；复用原票据。 |
 | 刷新目标 | `NativeUi` 发布原元素 handle、独立窗口实例和实际客户区几何。非 LAYOUT 按钮也支持；未创建 surface 不因查询或重绘而挂载。 |
 | 局部缓冲 | `src/plugins/native_ui.cpp` 使用 GDI 背景缓冲；工具栏按钮仍为系统 `BUTTON`。 |
 | 批量移动和损伤区域 | `third_party/native_ui/src/win32_host.cpp:16–57` 按父窗口移动、核对实际位置、失败尝试恢复，并重绘新旧矩形。 |
 | 通知和排队 | `plugin.h:69–125` 有 `onEvent` 和 `enqueueUi`；没有按主题订阅、目标坐标映射或按需动画帧服务。 |
 | 宿主更新调度 | `src/app/update_coordinator.cpp:28–44,143–186` 有单调时钟及安全点，但当前调度最终进入 `FrameDriver`，不是插件 UI 帧接口。 |
 
-当前侧栏和底栏仍在松手后应用尺寸，见 `src/window/ui_mousemove.cpp:371–376`、`include/mikudancestudio/bottom_panel_resize.hpp:72–81`。
-实时无残影拖拽、统一样式、绘制层和下述呈现服务均未完成。已有局部缓冲不代表全界面统一绘制。
+侧栏和底栏已由 R3 接入实时拖动，底部闪烁和插件区域跟随问题经用户复验恢复，见[当前验收记录](records/abi-remaining-work-2026-10-17.md)。统一样式、绘制层和下述呈现服务仍未完成。已有局部缓冲不代表全界面统一绘制，也不保证每个原生子控件内部无闪烁。
 现有 `MMS_PROPERTY_ANIMATABLE` 标志也不等于已经支持界面过渡动画。
 
 ## ABI 共通约定
@@ -54,7 +54,7 @@ Win7 SP1 x64、CPU 绘制和 AMD 兼容是基础约束；不以 CUDA、NVAPI、A
 沿用 `MmsHeader`、`MmsResult`、`MmsHandle`、`MmsString`、`MmsSpan`、`MMS_CALL` 和 8 字节对齐。
 跨 DLL 不传 STL、异常、分配器、长期有效的 HDC 或图形设备指针。描述、字符串和绘制指令由宿主校验后复制。
 除已有 `enqueueUi`、下文明确允许跨线程的刷新入队和不可变租约读取外，UI 对象修改接口均限定 UI 线程。后台任务先排队，再发布事件或更新呈现。
-所有成功注册返回归属调用插件的句柄；停止插件时统一撤销。失败不修改输出参数或当前可见结果。
+所有成功注册返回归属调用插件的句柄；停止插件时统一撤销。失败不修改输出参数；DATA 候选准备失败保留旧模型。组合请求不承诺撤回已成功的阶段，应读取 completedKinds。
 
 已实现的 `MmsUiTargetRefV1` 为 `{ h, element, instanceGeneration, projectEpoch }`，其中 `element` 是原 `mms.ui` 注册句柄。
 `mms.ui.refresh.getTarget(element)` 返回本插件按钮或面板的运行时引用。注销、视图重建和目标失效会改变实例代次，正常移动只改变实际几何修订。工程替换或重置使旧 `projectEpoch` 失效。
@@ -65,12 +65,13 @@ Win7 SP1 x64、CPU 绘制和 AMD 兼容是基础约束；不以 CUDA、NVAPI、A
 
 ## 服务现状与后续函数
 
-表中刷新六项函数已形成 [refresh.h](../sdk/mms/include/mms/refresh.h)。其他函数为建议语义，尚待 C 头文件和能力实现。
+表中刷新六项函数已形成 [refresh.h](../sdk/mms/include/mms/refresh.h)，来源绑定十项函数见 [refresh_binding.h](../sdk/mms/include/mms/refresh_binding.h)。其余函数为建议语义。
 
 | 服务 ID | 当前或建议函数 | 用途 |
 | --- | --- | --- |
 | `mms.events` | `subscribe(filter, callback, context, outToken)`、`unsubscribe(token)`、`publish(topic, payload)` | 按主题和可选对象筛选事件，支持非控件触发。 |
-| `mms.ui.refresh` | 已实现 `getCapabilities`、`getTarget`、`request`、`query`、`cancel`、`release` | 当前合并本插件目标自身的重绘及受支持的按钮状态刷新。`bind`、`unbind` 及依赖刷新仍为后续扩展。 |
+| `mms.ui.refresh` | 已实现 `getCapabilities`、`getTarget`、`request`、`query`、`cancel`、`release` | 当前合并本插件目标自身的重绘、受支持的按钮状态和有效绑定的 DATA；自动依赖刷新仍待实现。 |
+| `mms.ui.refresh.bind` | 已实现 `getCapabilities`、`registerSource`、`publishSource`、`getSource`、`unregisterSource`、`bind`、`unbind`、`writePrepared`、`acquireDisplay`、`releaseDisplay` | 本插件来源和单目标显示模型；线程、配额与失效规则见[SDK](../sdk/mms/data-refresh.md)。 |
 | `mms.ui.geometry` | `resolve(elementId, outTarget)`、`acquire(targets, outSnapshot)`、`releaseSnapshot(lease)`、`mapPoints(snapshot, from, to, points, outPoints)` | 查询目标、不可变几何和跨区域坐标。 |
 | `mms.ui.style` | `getCapabilities(target, outCaps)`、`acquireComputed(target, outStyle)`、`releaseStyle(lease)`、`createOverride(desc, outHandle)`、`updateOverride(handle, desc)`、`removeOverride(handle)` | 查询和覆盖可用样式，不直接替换窗口过程。 |
 | `mms.ui.paint` | `getCapabilities(target, outCaps)`、`createLayer(desc, outLayer)`、`createResource(desc, outResource)`、`submitDisplayList(layer, list)`、`releaseResource(handle)`、`destroyLayer(layer)` | 创建受限绘制层并提交保留的绘制指令；提交产生的损伤交给统一刷新服务。 |
@@ -128,18 +129,18 @@ C 包装返回同一底层句柄的带类型引用，C++ 包装增加可移动 R
 | 最小宽度、伸缩、换行、折叠 | 同一布局服务处理，用户保存的覆盖优先于插件默认值。 |
 | 快捷键、焦点及辅助信息 | 命令快捷键与原生或开放的输入能力；冲突返回诊断，不能私自安装全局钩子。 |
 | 属性类型、范围、面板 | 属性注册、读值绑定、面板 surface 和同一 UI 元素；写入须接共同事务。 |
-| 依赖及刷新偏好 | 后续 `mms.ui.refresh.bind` 提案建立数据到状态、布局及绘制的依赖；当前只有显式 REPAINT 和受限按钮 STATE 请求。 |
+| 依赖及刷新偏好 | `mms.ui.refresh.bind` 已实现来源到单目标显示模型的绑定，显式组合 DATA、STATE 和 REPAINT；自动依赖传播及 LAYOUT 待实现。 |
 
 宿主负责空间不足时的折叠与可达入口。暂不具备溢出能力时，SDK 必须回退到已声明的菜单位置或返回不支持；不能静默丢失命令。
 
 ## 统一刷新请求
 
-当前 `mms.ui.refresh` 1.0 实现 REPAINT 和按钮首阶段 STATE，范围均为 SELF。DATA、LAYOUT、SUBTREE、DEPENDENTS 返回 UNSUPPORTED。提交时要求目标支持组合中的全部种类；执行时 completedKinds 记录已完成阶段。字段、配额及错误码以 [SDK 参考](../sdk/mms/refresh.md)为准。
+当前 `mms.ui.refresh` 1.0 实现 REPAINT、按钮首阶段 STATE 及有效绑定目标的 DATA，范围均为 SELF。绑定见[数据刷新 SDK](../sdk/mms/data-refresh.md)。LAYOUT、SUBTREE、DEPENDENTS 返回 UNSUPPORTED。提交时要求目标支持组合中的全部种类；执行时 completedKinds 记录已完成阶段。字段、配额及错误码以 [SDK 参考](../sdk/mms/refresh.md)为准。
 
 | 请求位 | 当前状态与语义 | 不隐含的动作 |
 | --- | --- | --- |
 | `REPAINT` | 已实现：标记目标客户区的损伤区域，由窗口正常绘制。 | 不重新取数据、不求值场景、不推进时间。 |
-| `DATA` | 待实现：通过绑定读取变化的数据快照，替换 UI 的只读显示模型。 | 不写工程，不同步读取大文件，不自动计算整个场景。 |
+| `DATA` | 已实现 SELF：捕获来源精确版本，准备完整候选后交换不可变显示模型；失败保留旧结果。 | 不写工程，不同步读取大文件，不自动计算整个场景。 |
 | `STATE` | 已实现按钮启用、选中及保留槽位显隐；未保留槽位的显隐先拒绝。标签、属性内容、面板与重排依赖待接入。 | 不调用命令，不在查询中提交编辑，不重排控件。 |
 | `LAYOUT` | 待实现：重新测量并排列受影响区域，发布完成的几何。 | 不保存一次新的用户布局，不自动增加历史。 |
 
@@ -147,23 +148,23 @@ C 包装返回同一底层句柄的带类型引用，C++ 包装增加可移动 R
 
 `getCapabilities`、`getTarget` 限定 UI 线程，允许在命令回调内纯读。`request`、`query`、`cancel`、`release` 可从工作线程调用。后台调用只复制输入并访问队列，不读取 HWND 或注册表。服务使用独立的刷新消息和 UI 安全点，不调用旧 `Refresh`、`HandleWindowSize` 或 `FrameDriver`。
 
-局部矩形使用目标客户区 DIP，并带取得矩形时的非零 `expectedGeometryRevision`。矩形经裁剪后向外取整为像素区域。无矩形表示整个目标客户区，此时允许零几何修订，但仍要求目标已就绪、实例和工程代次匹配。`binding`、`sourceRevision`、`flags`、`reserved` 当前均为 0。
+局部矩形使用目标客户区 DIP，并带取得矩形时的非零 `expectedGeometryRevision`。矩形经裁剪后向外取整为像素区域。无矩形表示整个目标客户区，此时允许零几何修订，但仍要求目标已就绪、实例和工程代次匹配。DATA 必须填写有效 `binding` 及非零 `sourceRevision`；其他请求两者为 0。`flags`、`reserved` 为 0。
 
 布局移动前暂停目标，失败后保持未就绪。暂停不改变修订；重新发布时只有实际位置、尺寸、窗口 DPI 或逻辑可见性变化才改变几何修订。隐藏但已有窗口的目标可以合法重绘，请求不会显示它或创建新视图。
 
-相同 owner、目标引用、kinds、coalesceKey 和几何约束策略的待执行贡献可合并，同组 STATE 只查询一次。不同 kinds 独立执行，避免状态失败吞掉纯重绘。每个 ticket 独立完成、取消或失败。COMPLETED 表示请求的状态或区域失效操作完成，不保证已收到 WM_PAINT。release 不取消贡献。
+相同 owner、目标引用、kinds、binding、sourceRevision、coalesceKey 和几何约束策略的待执行贡献可合并，同组 STATE 只查询一次。不同 kinds 独立执行，避免状态失败吞掉纯重绘。每个 ticket 独立完成、取消或失败。COMPLETED 表示请求的状态或区域失效操作完成，不保证已收到 WM_PAINT。release 不取消贡献。
 
-STATE 回调和原生状态应用保持只读保护，不继承命令编辑来源。在该 UI 调用链中重新提交 STATE 返回 BUSY，后台请求仍通过队列。回调后及每组执行前重新校验目标；同值不重复修改原生状态。显隐仅在有效 PRESERVE_HIDDEN_SLOT 槽位内执行；不移动相邻控件，不修改用户布局偏好。新目标及布局快照发布新的逻辑可见性和几何修订，旧租约保持原值。无保留槽位的变化在任何控件状态修改前返回 UNSUPPORTED；布局尚未重新发布时返回 NOT_READY。
+STATE 回调和原生状态应用保持只读保护，不继承命令编辑来源。在同插件的只读因果链中重新提交 DATA/STATE 返回 BUSY，包括由该链安排的 UI run、cancel 及后代任务；其他插件的独立后台任务不继承该限制。回调后及每组执行前重新校验目标；同值不重复修改原生状态。显隐仅在有效 PRESERVE_HIDDEN_SLOT 槽位内执行；不移动相邻控件，不修改用户布局偏好。新目标及布局快照发布新的逻辑可见性和几何修订，旧租约保持原值。无保留槽位的变化在任何控件状态修改前返回 UNSUPPORTED；布局尚未重新发布时返回 NOT_READY。
 
 当前按插件限制 256 个保留票据、256 KiB 队列字节，每请求最多 32 个矩形，每次安全点最多处理 64 个贡献。运行期值由能力查询提供。未释放终态仍占用记录配额，立即释放待执行票据也不能绕过上限。停止会拒绝新请求并取消待执行贡献，已有引用仍需释放，未排空时宿主保留 DLL。
 
 ### 后续数据绑定与依赖刷新
 
-以下规则约束尚未实现的 DATA、完整 STATE 和 LAYOUT 依赖扩展。数据绑定需要声明来源身份、可观察 revision、目标与依赖。布局依赖由宿主建立；插件添加的依赖须在注册时检查循环。
+SELF DATA 已实现来源复制、版本捕获、显示交换及租约；不自动订阅或传播。以下规则约束尚未实现的完整 STATE、LAYOUT 和依赖扩展。数据绑定需要声明来源身份、可观察 revision、目标与依赖。布局依赖由宿主建立；插件添加的依赖须在注册时检查循环。
 完整更新按 DATA、STATE、测量与 LAYOUT、损伤合并与 REPAINT 的顺序执行。只有值或度量实际变化才向后传播。需要新场景结果时，插件先发显式求值任务，完成后再请求显示该结果。
 SUBTREE 和 DEPENDENTS 只能覆盖目标公开的范围。请求扩展到祖先布局容器时，仅测量必需容器，不能直接扩大到全窗口。DATA 需要非零 binding，其 sourceRevision 属于真实来源，不是布局修订或任意插件计数。
 
-队列键包含 owner、目标实例、binding、来源身份及合并键。同一来源 revision 可合并请求位和矩形；较新 revision 覆盖较旧的数据读取需求，但不能吞掉旧请求覆盖的额外区域。
+队列键包含 owner、目标实例、binding、来源身份及合并键。同一来源 revision 可合并请求位和矩形；后续依赖调度可考虑较新版本取代旧数据需求，但须保留旧请求额外区域。当前实现按精确版本分组，不以较新版本替换已接受的旧快照。
 互不兼容的来源或空间分开排队。重复请求仅合并范围，不创建重复数据读取。矩形过多时折叠成目标裁剪内的包围矩形，不扩大到整场景。
 安全点取出当前批次，再执行依赖图。回调期间的新请求进入下一批，禁止同步 flush 或递归派发。绘制只回放保留内容，不执行业务回调。
 同一 binding 已消费的 revision 再次请求 `DATA` 不重复读取。控件结果相等时不发送状态变化，不再触发布局。持续动画须通过帧服务按需安排下一次重绘，不能靠自发刷新维持无限循环。

@@ -1,6 +1,7 @@
 #include "manager.hpp"
 #include "ui_preferences_file.hpp"
 #include "edit_store.hpp"
+#include "ui_refresh_binding.hpp"
 #include <atomic>
 #include <mutex>
 
@@ -29,6 +30,7 @@ struct Manager::Impl {
         void (MMS_CALL *cancelled)(void*);
         void* context;
         bool cancel = false, running = false;
+        const RefreshClient* refreshCause = nullptr;
     };
     DWORD thread = GetCurrentThreadId();
     fs::path userRoot;
@@ -210,6 +212,10 @@ struct Manager::Impl {
             if (closing || i.stopping.load()) return MMS_E_NOT_READY;
             return Table(major, minor, bytes, out, registry.Refresh().Api(i.refresh));
         }
+        if (id == "mms.ui.refresh.bind") {
+            if (closing || i.stopping.load()) return MMS_E_NOT_READY;
+            return Table(major, minor, bytes, out, registry.Refresh().Bindings().Api(i.refresh));
+        }
         if (id == "mms.scene" && scene) return Table(major, minor, bytes, out, scene->Api(i.scene));
         if (id == "mms.storage") return Table(major, minor, bytes, out, storage.Api(i.storage));
         if (id == "mms.edit" && edits) return Table(major, minor, bytes, out, EditApi(i));
@@ -240,7 +246,9 @@ struct Manager::Impl {
                 std::lock_guard<std::mutex> lock(host.mutex);
                 if (i.stopping.load()) return MMS_E_NOT_READY;
                 if (host.tasks.size() >= 65536) return MMS_E_BUSY;
-                auto h = host.nextTask++; auto t = std::make_shared<Task>(Task{&i, h, run, cancel, context}); host.tasks.emplace(h, t);
+                auto h = host.nextTask++; auto t = std::make_shared<Task>(Task{&i, h, run, cancel, context});
+                if (host.registry.Refresh().ReadOnlyCause(i.refresh)) t->refreshCause = &i.refresh;
+                host.tasks.emplace(h, t);
                 if (!PostMessageW(host.wake, kDrain, 0, 0)) { host.tasks.erase(h); return MMS_E_FAILED; }
                 *out = h; return MMS_OK;
             });
@@ -286,7 +294,13 @@ struct Manager::Impl {
             { std::lock_guard<std::mutex> lock(mutex); t->running = true; cancel = t->cancel || t->owner->stopping; }
             ++active;
             runningEditTask = cancel ? nullptr : t->owner;
-            auto r = Boundary([&] { (cancel ? t->cancelled : t->run)(t->context); return MMS_OK; });
+            const auto inherited = registry.Refresh().ExchangeInheritedReadOnlyCause(t->refreshCause);
+            struct RefreshCauseGuard {
+                UiRefreshQueue& queue; const RefreshClient* previous;
+                ~RefreshCauseGuard() { queue.ExchangeInheritedReadOnlyCause(previous); }
+            } refreshCause{registry.Refresh(), inherited};
+            const auto call = [&] { return Boundary([&] { (cancel ? t->cancelled : t->run)(t->context); return MMS_OK; }); };
+            auto r = t->refreshCause ? registry.WithReadOnlyCallback(call) : call();
             runningEditTask = nullptr;
             --active; if (r) { CancelFailedEdit(*t->owner); Write(t->owner->ui.id + ": queued callback threw an exception"); }
             { std::lock_guard<std::mutex> lock(mutex); tasks.erase(t->handle); }

@@ -564,6 +564,12 @@ MmsResult UiRegistry::State(UiClient& c, MmsString id, MmsObjectRef target, MmsC
     auto lease = std::make_unique<Lease>(); lease->kind = 2; lease->owner = c.id; state.disabledReason = lease->arena.Copy(state.disabledReason); state.h = Header<MmsCommandStateV1>();
     auto h = state.disabledReason.bytes ? next_++ : 0; if (h) leases_.emplace(h, std::move(lease)); *out = state; *handle = h; return MMS_OK;
 }
+MmsResult UiRegistry::WithReadOnlyCallback(const std::function<MmsResult()>& callback) {
+    if (GetCurrentThreadId() != thread_) return MMS_E_THREAD;
+    if (!callback) return MMS_E_ARGUMENT;
+    Callback guard(callbackDepth_);
+    return Boundary(callback);
+}
 MmsResult UiRegistry::WithElementState(MmsHandle handle, const std::function<MmsResult(const MmsCommandStateV1&)>& apply) {
     if (GetCurrentThreadId() != thread_) return MMS_E_THREAD;
     if (callbackDepth_) return MMS_E_BUSY;

@@ -1613,13 +1613,19 @@ RetimeMap ValidateRetimeMap(const std::vector<std::pair<int,int>>& frames,const 
     }
     return result;
 }
-void RemapIntervals(const Channel& source,Channel& target,const std::vector<int>& oldFrames) {
+void RemapIntervals(const Channel& source,Channel& target,const std::vector<int>& oldFrames,bool deleteKeys=false) {
     const auto& original=source.track.keys;const auto& keys=target.track.keys;
     target.nativeControls.clear();target.controlGeometry.clear();
     if(!source.nativeControls.empty())target.nativeControls.resize(keys.size());
     if(!source.controlGeometry.empty())target.controlGeometry.assign(keys.size(),{-1,0,-1,0});
     if(!target.nativeControls.empty()&&!original.empty()&&!oldFrames.empty()&&oldFrames.front()==original.front().frame)
         target.nativeControls.front()=source.nativeControls.front();
+    // Root geometry has no incoming interval, but remains part of the exact
+    // authored snapshot. Deleting another lane's union key does not own that
+    // metadata. Keep it when the original root survives; ordinary retiming's
+    // existing placeholder behavior is unchanged.
+    if(deleteKeys&&!target.controlGeometry.empty()&&!original.empty()&&!oldFrames.empty()&&oldFrames.front()==original.front().frame)
+        target.controlGeometry.front()=source.controlGeometry.front();
     for(std::size_t i=1;i<keys.size();++i){
         const auto found=std::lower_bound(original.begin(),original.end(),oldFrames[i],[](const ac::Key& k,int f){return k.frame<f;});
         const auto n=std::size_t(found-original.begin());
@@ -1631,7 +1637,7 @@ void RemapIntervals(const Channel& source,Channel& target,const std::vector<int>
             geometry[1]*=ratio;geometry[3]*=ratio;target.controlGeometry[i]=geometry;
         }
     }
-    RemapPreserved(source,target,oldFrames,true);
+    RemapPreserved(source,target,oldFrames,true,deleteKeys);
 }
 void ClipNativeCameraTail(const Channel& source,int rootSource,Channel& target,const std::vector<int>& oldFrames) {
     if(target.track.keys.size()>1&&std::any_of(target.preservedCameraIntervals.begin(),target.preservedCameraIntervals.end(),
@@ -1673,7 +1679,7 @@ void ClipNativeCameraTail(const Channel& source,int rootSource,Channel& target,c
     b.inWeight=1-x2;b.inSlope=(1-controls[3]/127.0)*rate/(1-x2);b.interpolation=ac::Interpolation::Bezier;
     target.nativeControls[1]=controls;target.controlGeometry[1]={a.outWeight,a.outSlope,b.inWeight,b.inSlope};
 }
-Channel RetimedChannel(const Channel& source,const RetimeMap& frames,int rootSource) {
+Channel RetimedChannel(const Channel& source,const RetimeMap& frames,int rootSource,bool deleteKeys) {
     Channel target=source;auto working=source.track;
     const auto root=std::lower_bound(working.keys.begin(),working.keys.end(),rootSource,[](const ac::Key& k,int f){return k.frame<f;});
     const bool insertedRoot=root==working.keys.end()||root->frame!=rootSource;
@@ -1703,17 +1709,17 @@ Channel RetimedChannel(const Channel& source,const RetimeMap& frames,int rootSou
         const double sum=a.outWeight+b.inWeight;if(sum>0.9999){
             a.outWeight=std::clamp(a.outWeight*0.9998/sum,0.0001,0.9997);b.inWeight=0.9998-a.outWeight;}
     }
-    RemapIntervals(source,target,oldFrames);
+    RemapIntervals(source,target,oldFrames,deleteKeys);
     if(insertedRoot)ClipNativeCameraTail(source,rootSource,target,oldFrames);
     std::string error;if(!ac::Validate(target.track,error))throw std::invalid_argument("invalid retimed authored track");
     return target;
 }
-void ReconcileRetimed(State& target,const State& source,const std::vector<Channel>& native,const RetimeMap& frames) {
+void ReconcileRetimed(State& target,const State& source,const std::vector<Channel>& native,const RetimeMap& frames,bool deleteKeys) {
     if(source.channels.size()!=native.size()||source.baseline.size()!=native.size())throw std::invalid_argument("retime channels");
     std::map<int,int> sources;for(const auto& frame:frames)if(frame.second>=0)sources.emplace(frame.second,frame.first);
     const int rootSource=sources.at(0);
     for(std::size_t c=0;c<source.channels.size();++c){
-        auto channel=RetimedChannel(source.channels[c],frames,rootSource);
+        auto channel=RetimedChannel(source.channels[c],frames,rootSource,deleteKeys);
         const auto& baseline=source.baseline[c];
         for(std::size_t i=0;i<native[c].track.keys.size();++i){
             const auto& fresh=native[c].track.keys[i];auto oldFrame=sources.at(fresh.frame);
@@ -1738,7 +1744,7 @@ void ReconcileRetimed(State& target,const State& source,const std::vector<Channe
                 if(ac::InsertPreservingShape(channel.track,fresh.frame,index,error)==ac::InsertResult::Rejected)
                     throw std::invalid_argument("retime native value insertion");
                 std::vector<int> oldFrames;for(const auto& key:channel.track.keys)oldFrames.push_back(key.frame);
-                RemapIntervals(before,channel,oldFrames);at=channel.track.keys.begin()+index;
+                RemapIntervals(before,channel,oldFrames,deleteKeys);at=channel.track.keys.begin()+index;
             }
             at->value=fresh.value;
         }
@@ -1749,6 +1755,10 @@ void ReconcileRetimed(State& target,const State& source,const std::vector<Channe
             !channel.track.keys.empty()&&!native[c].track.keys.empty()&&
             channel.track.keys.front().frame==native[c].track.keys.front().frame)
             channel.nativeControls.front()=native[c].nativeControls.front();
+        // Deletion is an intentional topology/value edit. A joined interval
+        // loses its exact source above; changed native endpoints release only
+        // their own slice, leaving every still-current slice untouched.
+        if(deleteKeys)PrunePreserved(channel);
         auto automatic=channel.track;ac::UpdateAutomatic(automatic);
         for(std::size_t i=0;i<channel.track.keys.size();++i){auto& key=channel.track.keys[i];
             if(key.tangent!=ac::Tangent::Automatic)continue;
@@ -1779,7 +1789,7 @@ void TrackAuthoring::RetimingFrames(std::vector<int>& out) const {
     impl_->retimingCaptured=true;out.swap(frames);
 }
 std::unique_ptr<TrackAuthoring::Target> TrackAuthoring::PrepareRetimed(const NativeKeyView& view,
-    const std::vector<std::pair<int,int>>& frameMap,bool forward) const {
+    const std::vector<std::pair<int,int>>& frameMap,bool forward,std::uint32_t resetRootChannels,bool deleteKeys) const {
     if(!impl_->retimingCaptured){std::vector<int> frames;RetimingFrames(frames);}
     if(!impl_->Current())throw std::invalid_argument("changed authoring track");
     auto candidate=std::make_unique<Target::Impl>(impl_);candidate->identity=Identity(impl_->app,impl_->kind,impl_->slot);
@@ -1790,7 +1800,28 @@ std::unique_ptr<TrackAuthoring::Target> TrackAuthoring::PrepareRetimed(const Nat
     if(impl_->authored){
         State target=impl_->seed;
         if(forward){const auto frames=ValidateRetimeMap(frameMap,&impl_->seed,candidate->native);
-            ReconcileRetimed(target,impl_->seed,candidate->native,frames);}
+            ReconcileRetimed(target,impl_->seed,candidate->native,frames,deleteKeys);
+            for(std::size_t c=0;c<target.channels.size()&&c<32;++c){
+                if(!(resetRootChannels&(std::uint32_t(1)<<c)))continue;
+                auto& channel=target.channels[c];const auto& native=candidate->native[c].track.keys;
+                if(channel.track.keys.empty()||native.empty()||channel.track.keys.front().frame||native.front().frame)
+                    throw std::invalid_argument("reset authored frame zero");
+                auto& root=channel.track.keys.front();
+                if(root.value==native.front().value)continue;
+                root.value=native.front().value;
+                auto& intervals=channel.preservedCameraIntervals;
+                intervals.erase(std::remove_if(intervals.begin(),intervals.end(),[](const auto& value){return value.first==0;}),intervals.end());
+                // Free handles stay owned by the author. Only automatic
+                // tangents whose neighbourhood includes this root change.
+                auto automatic=channel.track;ac::UpdateAutomatic(automatic);
+                for(std::size_t i=0;i<(std::min)(std::size_t(2),channel.track.keys.size());++i)
+                    if(channel.track.keys[i].tangent==ac::Tangent::Automatic){
+                        channel.track.keys[i].inSlope=automatic.keys[i].inSlope;
+                        channel.track.keys[i].outSlope=automatic.keys[i].outSlope;
+                    }
+                std::string error;if(!ac::Validate(channel.track,error))throw std::invalid_argument("invalid reset root track");
+            }
+        }
         target.revision=NextAuthoringRevision();target.fingerprint=0;
         decltype(states) pending;pending.emplace(impl_->address,std::move(target));candidate->target=pending.extract(pending.begin());
     }else if(forward)(void)ValidateRetimeMap(frameMap,nullptr,candidate->native);

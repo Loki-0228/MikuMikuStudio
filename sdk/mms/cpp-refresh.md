@@ -1,6 +1,6 @@
 # C++17 界面重绘 SDK
 
-`mms/cpp/refresh.hpp` 包装已有 `mms.ui.refresh` C 表，复用原元素、目标和票据，无需链接宿主库。开发环境与[界面注册 SDK](cpp-ui.md)相同。当前支持 REPAINT 及按钮首阶段 STATE，宿主行为见 [C 接口参考](refresh.md)。
+`mms/cpp/refresh.hpp` 包装已有 `mms.ui.refresh` C 表，复用原元素、目标和票据，无需链接宿主库。开发环境与[界面注册 SDK](cpp-ui.md)相同。当前支持 REPAINT 及按钮首阶段 STATE；[数据刷新 SDK](data-refresh.md)通过同一 Request 和 RefreshTicket 提交 DATA，宿主行为见 [C 接口参考](refresh.md)。
 
 ## 类型与线程
 
@@ -52,7 +52,7 @@ MmsResult result = refresh.RepaintRect(target, dirty, ticket, 17);
 
 `key` 为原 coalesceKey。SDK 不合并、不重试，不在 STALE 后自动扩大损伤范围。矩形只需在调用期间有效，宿主复制其内容。旧几何被拒绝时，在 UI 线程重新捕获并计算矩形，不能只改代次。
 
-输出票据必须为空。已有票据时返回 BUSY，不向宿主提交或覆盖旧句柄。接受后直接保存原句柄，不再分配内存。未挂载、暂停或停止仍返回 NOT_READY；数据、布局及超出当前按钮范围的状态仍返回 UNSUPPORTED。
+输出票据必须为空。已有票据时返回 BUSY，不向宿主提交或覆盖旧句柄。接受后直接保存原句柄，不再分配内存。未挂载、暂停或停止仍返回 NOT_READY；布局及超出当前按钮范围的状态仍返回 UNSUPPORTED；DATA 须使用有效数据绑定及来源版本。
 
 提交返回 OK 只代表入队。不支持的显隐、回调失败或执行时过期由 Query 返回的终态和 result 表达，不能只检查提交结果。`RefreshStateCurrent` 不绕过实例、工程、ready 或有效布局提示检查；工程切换或实例重建后仍须重新取得目标。
 
@@ -92,4 +92,4 @@ COMPLETED 表示请求的状态或窗口失效操作已完成，不保证像素�
 
 析构仅尝试 `Release()`，不会取消或等待 UI。析构无法报告释放失败，也不能保留已销毁的 SDK 对象。在 `stop` 中先停止生产请求、结束自己的后台任务，再显式清理全部票据。失败时保留对象并返回 BUSY 或错误供宿主重试，不能仅依赖析构完成停止。
 
-本封装不创建后台线程、轮询器、默认订阅或动画时钟，不开放 DATA、LAYOUT 或完整显隐依赖，也不启用 `mms.edit`。包装捕获意外 C++ 异常并返回错误码；插件仍须遵守 C ABI，不让异常跨 DLL。
+本封装不创建后台线程、轮询器、默认订阅或动画时钟，DATA 便利入口由同层的 `data_refresh.hpp` 组合本封装实现；两者均不开放 LAYOUT 或完整显隐依赖，也不启用 `mms.edit`。包装捕获意外 C++ 异常并返回错误码；插件仍须遵守 C ABI，不让异常跨 DLL。

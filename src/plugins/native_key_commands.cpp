@@ -5,6 +5,8 @@
 #include "native_model_keys.hpp"
 #include "native_morph_keys.hpp"
 #include "native_display_keys.hpp"
+#include "native_global_key_delete.hpp"
+#include "native_global_commands.hpp"
 #include "native_history_commands.hpp"
 #include "native_pose_scope.hpp"
 #include "mikudancestudio/animation_curve_host.hpp"
@@ -145,9 +147,23 @@ bool TryDeleteBoundKeys(MMDApp* app, bool selectedAtCurrentFrame) noexcept {
     if (!app) return false;
     auto* history = BoundNativePoseHistory(app);
     if (!history) return false;
-    if (!ModelReady(*app) || history->Enter() != MMS_OK) return true;
+    const bool global=app->CameraMode()!=0;
+    if (!(global?CameraInterpolationReady(*app):ModelReady(*app)) || history->Enter() != MMS_OK) return true;
     history->Leave();
     Boundary([&]() -> MmsResult {
+        if(global){
+            std::shared_ptr<HistoryChange> change;
+            if(auto result=PlanGlobalKeyDeletion(*app,change,selectedAtCurrentFrame))return result;
+            if(!change)return MMS_OK;
+            std::unique_ptr<SharedHistory::NativeTransaction> transaction;
+            if(auto result=history->PrepareNative("Delete global keys",std::move(change),transaction,SharedHistory::NativeIntent::ExplicitCommit))return result;
+            if(auto result=history->CommitNative(std::move(transaction)))return result;
+            PublishBoundPoseEdit(*app,*history,true);
+            RefreshBoundGlobalReadout(*app);
+            curve_editor::NotifyOwnedChanged(app->Hwnd());
+            if(app->MainWindow())SetFocus(app->MainWindow());
+            return MMS_OK;
+        }
         const bool automatic = IsDlgButtonChecked(app->MainWindow(), panel::kPhysicsFrameCheckbox) == BST_CHECKED;
         std::shared_ptr<HistoryChange> change;
         if (auto result = PlanModelKeyDeletion(*app, app->SelectedModelSlot(), automatic,

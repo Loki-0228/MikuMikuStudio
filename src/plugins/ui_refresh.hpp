@@ -8,7 +8,9 @@
 
 namespace mikudancestudio::plugins {
 class UiRegistry;
+struct UiClient;
 class UiRefreshQueue;
+class UiRefreshBindings;
 struct RefreshClient {
     UiRefreshQueue* queue;
     std::string owner;
@@ -33,13 +35,17 @@ class UiRefreshQueue {
     struct Target;
     struct Ticket;
     UiRegistry& registry_;
+    std::unique_ptr<UiRefreshBindings> bindings_;
     DWORD thread_ = GetCurrentThreadId();
     mutable std::mutex mutex_;
     std::map<MmsHandle, Target> targets_;
     std::map<MmsHandle, Ticket> tickets_;
     std::uint64_t next_ = 1, nextGeneration_ = 1, nextGeometry_ = 1, epoch_ = 1;
     bool draining_ = false;
-    bool evaluatingState_ = false;
+    const RefreshClient* evaluatingStateOwner_ = nullptr;
+    const UiClient* evaluatingStateProvider_ = nullptr;
+    const RefreshClient* evaluatingDataOwner_ = nullptr;
+    const RefreshClient* inheritedReadOnlyCause_ = nullptr;
     std::function<bool()> wake_;
     MmsResult Capabilities(RefreshClient&, MmsUiRefreshCapabilitiesV1*);
     MmsResult GetTarget(RefreshClient&, MmsHandle, MmsUiRefreshTargetV1*);
@@ -47,10 +53,17 @@ class UiRefreshQueue {
     MmsResult Query(RefreshClient&, MmsHandle, MmsUiRefreshStateV1*);
     MmsResult Cancel(RefreshClient&, MmsHandle);
     MmsResult Release(RefreshClient&, MmsHandle);
+    bool ReadOnlyCauseLocked(const RefreshClient&) const noexcept;
 public:
     explicit UiRefreshQueue(UiRegistry&);
     ~UiRefreshQueue();
     MmsUiRefreshApiV1 Api(RefreshClient&);
+    UiRefreshBindings& Bindings() noexcept { return *bindings_; }
+    // Manager UI tasks inherit the read-only origin of a refresh callback.
+    // These tokens never enter public request structs or plugin-owned data.
+    bool ReadOnlyCause() const;
+    bool ReadOnlyCause(const RefreshClient&) const;
+    const RefreshClient* ExchangeInheritedReadOnlyCause(const RefreshClient*) noexcept;
     // Configure once before plugin loading; Wake must be a nonblocking signal.
     void SetWake(std::function<bool()>);
     void SyncTargets(const std::vector<RefreshPresentation>&);
