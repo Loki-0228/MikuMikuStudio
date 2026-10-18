@@ -361,6 +361,7 @@ void StillImageLanguageTests(MMDApp* app) {
 #include "transparent_capture_failure_checks.hpp"
 #include "antialias_image_sequence_checks.hpp"
 #include "image_sequence_continuity_checks.hpp"
+#include "image_export_render_state_checks.inc"
 }
 int wmain(int argc, wchar_t** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
@@ -405,6 +406,7 @@ int wmain(int argc, wchar_t** argv) {
     }
     NamesAndValidation(app); SceneRangeTests(app); DialogTests(app); app->EnglishUI() = 2;
     MenuEntryTests(app);
+    CheckImageExportRenderState(app);
     CameraAndContinuityTests(app);
     StillImageLanguageTests(app);
     TransparentImages(app);

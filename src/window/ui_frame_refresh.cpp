@@ -30,6 +30,8 @@
 #include <cstring>
 #include <cmath>
 #include <algorithm>
+#include <string>
+#include <vector>
 #include "mikudancestudio/ported_funcs.hpp"
 
 #include "mikudancestudio/adaptive_shadow.hpp"
@@ -103,6 +105,87 @@ void FormatLegacyOneDecimal(char* text, std::size_t size, float value) {
         static_cast<double>(value)) * 10.0 + 0.5) / 10.0;
     const double rounded = std::signbit(value) ? -magnitude : magnitude;
     sprintf_s(text, size, "%+3.1f", rounded);
+}
+
+// Compare the actual list as well as the parent row. Model slots and combo
+// rows have different identities, and labels/bone filtering can change while
+// the selected parent row stays the same. Avoid a process-wide window cache.
+bool AccessoryBoneComboMatches(HWND combo, const mdl::ModelRecord* model,
+                               bool english) {
+    if (combo == nullptr)
+        return true;
+    LRESULT row = 0;
+    const LRESULT count = SendMessageW(combo, CB_GETCOUNT, 0, 0);
+    if (count < 0)
+        return false;
+    if (model != nullptr && model->boneTable != nullptr) {
+        for (std::uint32_t bone = 0; bone < model->boneCount; ++bone) {
+            const auto& record = model->boneTable[bone];
+            if (record.type >= mdl::BoneType::InertTip &&
+                record.type != mdl::BoneType::FixedAxis)
+                continue;
+            if (row >= count ||
+                SendMessageW(combo, CB_GETITEMDATA, row, 0) != bone)
+                return false;
+            const auto label = text_encoding::BoneLabel(record, english);
+            if (SendMessageW(combo, CB_GETLBTEXTLEN, row, 0) !=
+                static_cast<LRESULT>(label.size()))
+                return false;
+            std::wstring actual(label.size() + 1, L'\0');
+            if (SendMessageW(combo, CB_GETLBTEXT, row,
+                    reinterpret_cast<LPARAM>(actual.data())) !=
+                    static_cast<LRESULT>(label.size()) ||
+                actual.compare(0, label.size(), label) != 0)
+                return false;
+            ++row;
+        }
+    }
+    return row == count;
+}
+
+bool RebuildAccessoryBoneCombo(HWND combo, const mdl::ModelRecord* model,
+                                bool english) {
+    if (combo == nullptr)
+        return true;
+    struct Row { std::wstring label; std::uint32_t bone; };
+    std::vector<Row> rows;
+    if (model != nullptr && model->boneTable != nullptr) {
+        rows.reserve(model->boneCount);
+        for (std::uint32_t bone = 0; bone < model->boneCount; ++bone) {
+            const auto& record = model->boneTable[bone];
+            if (record.type >= mdl::BoneType::InertTip &&
+                record.type != mdl::BoneType::FixedAxis)
+                continue;
+            rows.push_back({text_encoding::BoneLabel(record, english), bone});
+        }
+    }
+    // Complete all C++ allocation before retiring the displayed list. A native
+    // control can still run out of space while publishing; leave its selection
+    // empty and retry on the next content/parent mismatch in that case.
+    if (SendMessageW(combo, CB_RESETCONTENT, 0, 0) == CB_ERR)
+        return false;
+    for (const auto& row : rows) {
+        const LRESULT index = SendMessageW(combo, CB_ADDSTRING, 0,
+            reinterpret_cast<LPARAM>(row.label.c_str()));
+        if (index == CB_ERR || index == CB_ERRSPACE ||
+            SendMessageW(combo, CB_SETITEMDATA, index, row.bone) == CB_ERR)
+            return false;
+    }
+    return true;
+}
+
+void SelectAccessoryBoneIfChanged(HWND combo, int bone) {
+    const LRESULT current = SendMessageW(combo, CB_GETCURSEL, 0, 0);
+    const LRESULT count = SendMessageW(combo, CB_GETCOUNT, 0, 0);
+    LRESULT target = -1;
+    for (LRESULT row = 0; row < count; ++row) {
+        if (SendMessageW(combo, CB_GETITEMDATA, row, 0) == bone) {
+            target = row;
+            break;
+        }
+    }
+    if (current != target)
+        SendMessageW(combo, CB_SETCURSEL, target, 0);
 }
 
 template <typename Key>
@@ -244,8 +327,7 @@ void SyncSelfShadowControls(MMDApp* app) {
 
     const HWND main = app->state.hwnd;
     const HWND slider=GetDlgItem(main,panel::kSelfShadowRangeSlider);
-    if(SendMessageA(slider,TBM_GETPOS,0,0)!=range)
-        SendMessageA(slider,TBM_SETPOS,TRUE,range);
+    ui::SetTrackbarPositionIfChanged(slider, range);
     char text[0x34];
     sprintf_s(text, sizeof(text), "%d", range);
     const HWND edit=GetDlgItem(main,panel::kSelfShadowRangeEdit);
@@ -277,35 +359,38 @@ void SyncAccessoryEditPanel(MMDApp* app) {
     HWND modelCombo = GetDlgItem(main, panel::kMainComboGround);
     const LRESULT oldModel = SendMessageA(modelCombo, CB_GETCURSEL, 0, 0);
     const std::int32_t parentSlot = accessory->parentModel;
-    if (oldModel != parentSlot) {
-        HWND boneCombo = GetDlgItem(main, panel::kAttachBoneCombo);
-        SendMessageA(boneCombo, CB_RESETCONTENT, 0, 0);
-        if (parentSlot >= 0) {
-            unsigned char* model = app->ModelSlot(parentSlot);
-            if (model != nullptr) {
-                const mdl::ModelRecord& record = *mdl::Mdl(model);
-                FillBoneCombo(boneCombo, &record, UiUsesEnglishNames(app->EnglishUI()));
-                SendMessageA(modelCombo, CB_SETCURSEL,
-                             static_cast<WPARAM>(record.comboSelIndex), 0);
-            }
-        } else {
-            SendMessageA(modelCombo, CB_SETCURSEL, 0, 0);
+    const auto* model = parentSlot >= 0 && parentSlot < kModelSlotCount
+        ? mdl::Mdl(app->ModelSlot(parentSlot)) : nullptr;
+    const LRESULT parentRow = model != nullptr ? model->comboSelIndex
+        : parentSlot < 0 ? 0 : -1;
+    const HWND boneCombo = GetDlgItem(main, panel::kAttachBoneCombo);
+    const bool english = UiUsesEnglishNames(app->EnglishUI());
+    try {
+        const bool rebuild = oldModel != parentRow ||
+            !AccessoryBoneComboMatches(boneCombo, model, english);
+        bool listReady = !rebuild || RebuildAccessoryBoneCombo(boneCombo, model, english);
+        if (listReady && oldModel != parentRow && modelCombo != nullptr) {
+            const LRESULT selectedRow = SendMessageW(modelCombo, CB_SETCURSEL, parentRow, 0);
+            listReady = parentRow < 0 || selectedRow != CB_ERR;
         }
+        if (listReady && model != nullptr)
+            SelectAccessoryBoneIfChanged(boneCombo, accessory->parentBone);
+    } catch (...) {
+        // Readout restoration after a rejected/cancelled edit must continue
+        // even if a label comparison or private list preparation runs out of
+        // memory. Preparation has not changed either combo or its selection.
     }
 
-    if (parentSlot >= 0) {
-        unsigned char* model = app->ModelSlot(parentSlot);
-        if (model != nullptr) {
-            SelectBoneCombo(GetDlgItem(main, panel::kAttachBoneCombo), accessory->parentBone);
-        }
+    const int checkIds[] = {panel::kAccessoryVisibleCheckbox,
+        panel::kAccessoryAddBlendCheckbox, panel::kAccessoryShadowCheckbox};
+    const bool checkValues[] = {accessory->visible != 0,
+        accessory->additiveBlend != 0, accessory->shadowEnabled != 0};
+    for (int index = 0; index < 3; ++index) {
+        const HWND checkbox = GetDlgItem(main, checkIds[index]);
+        const WPARAM state = checkValues[index] ? BST_CHECKED : BST_UNCHECKED;
+        if (SendMessageW(checkbox, BM_GETCHECK, 0, 0) != state)
+            SendMessageW(checkbox, BM_SETCHECK, state, 0);
     }
-
-    SendMessageA(GetDlgItem(main, panel::kAccessoryVisibleCheckbox), BM_SETCHECK,
-                 accessory->visible != 0 ? BST_CHECKED : BST_UNCHECKED, 0);
-    SendMessageA(GetDlgItem(main, panel::kAccessoryAddBlendCheckbox), BM_SETCHECK,
-                 accessory->additiveBlend != 0 ? BST_CHECKED : BST_UNCHECKED, 0);
-    SendMessageA(GetDlgItem(main, panel::kAccessoryShadowCheckbox), BM_SETCHECK,
-                 accessory->shadowEnabled != 0 ? BST_CHECKED : BST_UNCHECKED, 0);
 
     char text[104];
     for (int lane = 0; lane < 3; ++lane) {

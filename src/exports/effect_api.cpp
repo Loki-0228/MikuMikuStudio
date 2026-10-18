@@ -549,6 +549,7 @@ void NotifyEffectFileOpen(const wchar_t* path) {
     if (path == nullptr || GetModuleHandleW(L"MMHack.dll") == nullptr)
         return;
     InstallEffectPathCompatibility();
+    PrepareEffectProjectPaths(path);
     HANDLE file = CreateFileW(path, GENERIC_READ,
                              FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
                              OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);

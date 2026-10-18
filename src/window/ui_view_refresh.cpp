@@ -46,6 +46,7 @@
 #include "mikudancestudio/model.hpp"
 #include "mikudancestudio/bone_parent_coordinates.hpp"
 #include "mikudancestudio/panel_controls.hpp"
+#include "mikudancestudio/ui_control_readout.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "../plugins/native_pose_scope.hpp"
 #endif
@@ -72,7 +73,7 @@ void SetReadoutText(MMDApp* app, HWND edit, const char* text) {
     if (edit != nullptr && preservePending &&
         SendMessageA(edit, EM_GETMODIFY, 0, 0) != 0)
         return;
-    SetWindowTextA(edit, text);
+    ui::SetReadoutTextIfChangedA(edit, text);
 }
 
 }  // namespace

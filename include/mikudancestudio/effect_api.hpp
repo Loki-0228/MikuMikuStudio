@@ -22,6 +22,10 @@ const wchar_t* EffectMaterialNameWithFallback(EffectMaterialNameQuery query,
 bool InstallEffectMaterialNameCompatibility();
 // Resolve legacy EMM path bytes against existing files in native MME only.
 void InstallEffectPathCompatibility();
+// Retain relative EMM entries before MME expands them against the EXE folder.
+// Reads the sidecar only; the user's assignment file is never rewritten.
+// A null/empty project retires aliases when the workspace is reset.
+void PrepareEffectProjectPaths(const wchar_t* project);
 
 // MME rebuilds its object/order table inside IDirect3DDevice9::BeginScene.
 void BeginEffectObjectRegistration();

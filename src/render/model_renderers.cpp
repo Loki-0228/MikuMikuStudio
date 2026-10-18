@@ -2743,29 +2743,59 @@ static bool RenderShadowMapImpl(MMDApp* app, const float frameMatrix[16], bool c
     if (surface == nullptr || depth == nullptr)
         return false;
 
-    D3DVIEWPORT9 oldViewport;
-    Matrix view;
-    Matrix projection;
+    D3DVIEWPORT9 oldViewport{};
+    Microsoft::WRL::ComPtr<IDirect3DSurface9> sceneTarget, sceneDepth;
+    Matrix view{};
+    Matrix projection{};
     Matrix worldView;
-    device->GetTransform(D3DTS_VIEW,
-                         reinterpret_cast<D3DMATRIX*>(&view));
-    device->GetViewport(&oldViewport);
-    device->GetTransform(D3DTS_PROJECTION,
-                         reinterpret_cast<D3DMATRIX*>(&projection));
+    if (FAILED(device->GetRenderTarget(0, &sceneTarget)) ||
+        FAILED(device->GetViewport(&oldViewport)) ||
+        FAILED(device->GetTransform(D3DTS_VIEW, reinterpret_cast<D3DMATRIX*>(&view))) ||
+        FAILED(device->GetTransform(D3DTS_PROJECTION, reinterpret_cast<D3DMATRIX*>(&projection))))
+        return false;
+    const HRESULT gotDepth = device->GetDepthStencilSurface(&sceneDepth);
+    if (FAILED(gotDepth) && gotDepth != D3DERR_NOTFOUND) return false;
+    // A frame can target transparent output, AA, or a scaled preview. Restore
+    // that exact target even when a checked shadow operation exits early.
+    struct RestoreSceneTarget {
+        IDirect3DDevice9* device;
+        IDirect3DSurface9* target;
+        IDirect3DSurface9* depth;
+        D3DVIEWPORT9 viewport;
+        Matrix projection;
+        bool restored = false;
+        bool Apply() {
+            if (restored) return true;
+            restored = true;
+            bool ok = true;
+            const auto check = [&](HRESULT result) { if (FAILED(result)) ok = false; };
+            check(device->SetDepthStencilSurface(nullptr));
+            check(device->SetRenderTarget(0, target));
+            check(device->SetDepthStencilSurface(depth));
+            check(device->SetViewport(&viewport));
+            check(device->SetTransform(D3DTS_PROJECTION,
+                reinterpret_cast<const D3DMATRIX*>(&projection)));
+            return ok;
+        }
+        ~RestoreSceneTarget() { Apply(); }
+    } restoreScene{device, sceneTarget.Get(), sceneDepth.Get(), oldViewport, projection};
     const HRESULT technique=FxSetTechnique(effect, "ZValuePlotTec");
     if(checked&&FAILED(technique))return false;
     device->SetTextureStageState(1, D3DTSS_TEXCOORDINDEX, 1);
     device->SetTextureStageState(2, D3DTSS_TEXCOORDINDEX, 2);
+    // The incoming depth surface can be multisampled while the shadow map is
+    // not. Detach it before changing RT0 so the intermediate binding is valid.
+    if (FAILED(device->SetDepthStencilSurface(nullptr))) return false;
     const HRESULT targetSet=device->SetRenderTarget(0, surface);
     const HRESULT depthSet=device->SetDepthStencilSurface(depth);
-    if(checked&&(FAILED(targetSet)||FAILED(depthSet)))return false;
+    if(FAILED(targetSet)||FAILED(depthSet))return false;
     const HRESULT cleared=device->Clear(0, nullptr, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER,
                   0xFFFFFFFFu, 1.0f, 0);
-    if(checked&&FAILED(cleared))return false;
+    if(FAILED(cleared))return false;
     device->SetTexture(0, nullptr);
     D3DVIEWPORT9 shadowViewport{0, 0, width, height, 0.0f, 1.0f};
     const HRESULT viewportSet=device->SetViewport(&shadowViewport);
-    if(checked&&FAILED(viewportSet))return false;
+    if(FAILED(viewportSet))return false;
 
 #if MMD_ORIGINAL_PROFILE
     // MMD v9.32 projection, retained from the pre-refactor renderer.
@@ -2941,22 +2971,7 @@ static bool RenderShadowMapImpl(MMDApp* app, const float frameMatrix[16], bool c
     app->ActiveRenderPass() = AccessoryRenderPass::None;
     device->SetVertexShader(nullptr);
     device->SetPixelShader(nullptr);
-    // During recording, this pass renders to the separate capture target, and
-    // a device reset released that target without anything recreating it.
-    // Recreate it here (the first point in the frame that needs it) and fall
-    // back to the back buffer if that fails, instead of binding a released
-    // surface to render target 0.
-    // Defect RB-04.
-    IDirect3DSurface9* targetSurface = sub->backbufferSurface;
-    if (sub->multisampleAvailable == 0 &&
-        app->RecordingWindow() != nullptr &&
-        EnsureCaptureRenderTarget(app))
-        targetSurface = sub->captureSurface;
-    device->SetRenderTarget(0, targetSurface);
-    device->SetDepthStencilSurface(sub->depthStencilSurface);
-    device->SetViewport(&oldViewport);
-    device->SetTransform(D3DTS_PROJECTION,
-                         reinterpret_cast<const D3DMATRIX*>(&projection));
+    if (!restoreScene.Apply()) succeeded = false;
     // x64 sub_7FF7CB4C1030 tail @0x7FF7CB4C1E1D/0x7FF7CB4C1E43:
     // ALPHABLENDENABLE(27)=TRUE, then CULLMODE(22)=CCW(3).
     device->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);

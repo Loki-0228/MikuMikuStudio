@@ -3,6 +3,7 @@
 #include "mikudancestudio/mmv4mms.hpp"
 #include "mikudancestudio/native_media.hpp"
 #include "mikudancestudio/native_mesh.hpp"
+#include "mikudancestudio/effect_api.hpp"
 // ===========================================================================
 // VA 0x0044E540 - ResetAppState  (original: sub_44E540, 0x2AA0 bytes)
 // ===========================================================================
@@ -101,6 +102,7 @@ void ResetAppState(MMDApp* app) {
     mmv4mms::ClearScene();
     native_mesh::ClearScene();
     ScopedSceneMutation mutation(*app);
+    PrepareEffectProjectPaths(nullptr);
     HWND hwnd = app->MainWindow();
     app->SceneModified() = 0;
     pmm_settings::Reset(*app);

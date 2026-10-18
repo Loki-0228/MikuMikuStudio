@@ -537,6 +537,22 @@ add_executable(legacy_mme_save_checks EXCLUDE_FROM_ALL tests/legacy_mme_save_che
 target_link_libraries(legacy_mme_save_checks PRIVATE mikudancestudio_core minhook::minhook winmm dsound)
 set_target_properties(legacy_mme_save_checks PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
 
+add_executable(slider_refresh_chain_tests EXCLUDE_FROM_ALL tests/slider_refresh_chain_tests.cpp)
+target_link_libraries(slider_refresh_chain_tests PRIVATE mikudancestudio_core winmm dsound)
+set_target_properties(slider_refresh_chain_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_test(NAME slider_refresh_chain_tests COMMAND slider_refresh_chain_tests)
+set_tests_properties(slider_refresh_chain_tests PROPERTIES TIMEOUT 30)
+
+# Compile the exact compatibility bodies with native file APIs and real text
+# decoding; the fixture supplies diagnostic sinks and never loads MME.
+add_executable(effect_path_compat_tests EXCLUDE_FROM_ALL tests/effect_path_compat_tests.cpp src/main/text_encoding.cpp)
+target_include_directories(effect_path_compat_tests PRIVATE include)
+target_compile_features(effect_path_compat_tests PRIVATE cxx_std_17)
+target_compile_definitions(effect_path_compat_tests PRIVATE _WIN32_WINNT=0x0601 WINVER=0x0601)
+target_compile_definitions(effect_path_compat_tests PRIVATE MMD_ORIGINAL_PROFILE=$<STREQUAL:${MIKUDANCESTUDIO_PROFILE},mmd932>)
+target_link_libraries(effect_path_compat_tests PRIVATE user32)
+set_target_properties(effect_path_compat_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+
 add_executable(pmm_input_host_tests EXCLUDE_FROM_ALL tests/pmm_input_host_tests.cpp)
 target_link_libraries(pmm_input_host_tests PRIVATE mikudancestudio_core minhook::minhook winmm dsound)
 set_target_properties(pmm_input_host_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
@@ -1495,6 +1511,10 @@ if(Python3_Interpreter_FOUND)
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/project_open_identity_runner.py"
                 "$<TARGET_FILE:legacy_mme_save_checks>" "${CMAKE_BINARY_DIR}/tests/legacy-mme-save-runs")
     set_tests_properties(legacy_mme_save_checks PROPERTIES TIMEOUT 150)
+    add_test(NAME effect_path_compat_tests
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/project_open_identity_runner.py"
+                "$<TARGET_FILE:effect_path_compat_tests>" "${CMAKE_BINARY_DIR}/tests/effect-path-compat-runs")
+    set_tests_properties(effect_path_compat_tests PROPERTIES TIMEOUT 150)
     add_test(NAME optional_graphics_imports
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/optional_graphics_imports.py"
                 "$<TARGET_FILE:MikuDanceStudio>")

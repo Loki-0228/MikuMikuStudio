@@ -52,6 +52,12 @@ void Check(bool ok, const char* label) {
 }
 
 unsigned emdEffectCompiles = 0;
+unsigned effectPathDiagnostics = 0;
+decltype(&runtime_log::WritePath) originalWritePath = nullptr;
+void ObserveEffectPath(const char* label, const wchar_t* path) noexcept {
+    if (std::strcmp(label, "MME_EFFECT_FILE") == 0 && path && *path) ++effectPathDiagnostics;
+    originalWritePath(label, path);
+}
 struct ShaderMacro { const char* name; const char* definition; };
 using CreateEffectFile = HRESULT(WINAPI*)(IDirect3DDevice9*, LPCWSTR,
     const ShaderMacro*, void*, DWORD, void*, void**, void**);
@@ -518,6 +524,8 @@ int wmain(int argc, wchar_t** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
     Check(MH_Initialize() == MH_OK, "initialize hidden-window hook");
+    Check(MH_CreateHook(&runtime_log::WritePath, &ObserveEffectPath, reinterpret_cast<void**>(&originalWritePath)) == MH_OK,
+        "observe paths before native effect compilation");
     const bool shaderStartup = argc == 3 && std::wcscmp(argv[2], L"--shader-startup") == 0;
     if(shaderStartup)InstallAntialiasCompilerGate();
     const bool startupProbe = argc == 3 && std::wcscmp(argv[2], L"--startup-probe") == 0;
@@ -620,6 +628,9 @@ int wmain(int argc, wchar_t** argv) {
     if (emmLoad) {
         Check(std::filesystem::is_regular_file(argv[3]), "EMM project notification target exists");
         NotifyEffectFileOpen(argv[3]);
+        if (_wgetenv(L"MMS_EMM_MODEL_NOTIFICATION")) NotifyEffectFileOpen(argv[1]);
+        if (const auto* working = _wgetenv(L"MMS_EMM_WORKING_DIRECTORY"))
+            Check(SetCurrentDirectoryW(working) != FALSE, "simulate a file picker changing the working directory");
         for (int i = 0; i < 4; ++i) {
             app->DeltaTime() = 1.f / 30;
             app->state.messageSeen = 10;
@@ -633,6 +644,7 @@ int wmain(int argc, wchar_t** argv) {
         app->DeltaTime() = 1.f / 30; app->state.messageSeen = 10; FrameDriver(app);
         Check(!captureRequested && std::count(capturedPixels.begin(), capturedPixels.end(), 0xFF00FFu) > 50,
               "assigned EMM effect renders magenta pixels on the real model");
+        Check(effectPathDiagnostics > 0, "effect file is recorded before native D3DX compilation");
         MH_DisableHook(vtable[17]);
         Check(!IsWindowVisible(app->MainWindow()), "host stays hidden");
         ShutdownCleanup(app); delete app; g_Block = nullptr; UnhookWindowsHookEx(guard); return 0;

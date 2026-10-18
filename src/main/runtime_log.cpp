@@ -56,7 +56,7 @@ std::atomic<const char*> phase{"startup"};
 std::atomic<bool> reporting{false};
 std::atomic<bool> shuttingDown{false};
 std::atomic<CrashBackup> crashBackup{nullptr};
-ULONGLONG lastHeartbeat = 0;
+std::atomic<ULONGLONG> lastHeartbeat{0};
 wchar_t dialogText[kDialogChars];
 wchar_t crashDirectory[32768];
 wchar_t dataDirectory[32768];
@@ -233,23 +233,100 @@ constexpr int kBacktraceFrames = 24;
 void* backtraceFrames[kBacktraceFrames];
 int backtraceCount = 0;
 
-void CaptureBacktrace(const CONTEXT* context) noexcept {
+constexpr unsigned kCallsiteBefore = 16;
+constexpr unsigned kCallsiteAfter = 8;
+struct FaultEvidence {
+    // The exception context is copied before recovery runs. Do not follow any
+    // application or graphics-object pointers found in these registers.
+    CONTEXT context;
+    bool contextAvailable;
+    bool nullExecute;
+    bool returnAvailable;
+    ULONG_PTR returnAddress;
+    unsigned char callsite[kCallsiteBefore + kCallsiteAfter];
+    bool readable[kCallsiteBefore + kCallsiteAfter];
+};
+
+// Only the winner of reporting.exchange(true) accesses these buffers. Keep
+// context copies and module paths off the failing thread's reserved stack.
+struct FaultScratch {
+    FaultEvidence evidence;
+    CONTEXT unwind;
+    wchar_t systemD3d[MAX_PATH];
+    wchar_t chainedD3d[MAX_PATH];
+    wchar_t modulePath[MAX_PATH];
+    HMODULE seenModules[10];
+};
+FaultScratch faultScratch{};
+
+bool ReadFaultMemory(void* destination, ULONG_PTR address, size_t size) noexcept {
+    if (!address || !size || address + size - 1 < address) return false;
+    MEMORY_BASIC_INFORMATION region{};
+    if (!VirtualQuery(reinterpret_cast<const void*>(address), &region, sizeof(region)) ||
+        region.State != MEM_COMMIT || (region.Protect & (PAGE_GUARD | PAGE_NOACCESS)))
+        return false;
+    constexpr DWORD readable = PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY |
+        PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
+    const auto base = reinterpret_cast<ULONG_PTR>(region.BaseAddress);
+    if (!(region.Protect & readable) || address - base >= region.RegionSize ||
+        size > region.RegionSize - (address - base)) return false;
+    __try {
+        std::memcpy(destination, reinterpret_cast<const void*>(address), size);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+void CaptureFaultEvidence(FaultEvidence& evidence, const EXCEPTION_RECORD& record,
+                          const CONTEXT* context) noexcept {
+    std::memset(&evidence, 0, sizeof(evidence));
+    evidence.contextAvailable = ReadFaultMemory(&evidence.context,
+        reinterpret_cast<ULONG_PTR>(context), sizeof(evidence.context));
+    evidence.nullExecute =
+        (record.ExceptionCode == EXCEPTION_ACCESS_VIOLATION ||
+         record.ExceptionCode == EXCEPTION_IN_PAGE_ERROR) &&
+        record.NumberParameters >= 2 && record.ExceptionInformation[0] == 8 &&
+        record.ExceptionInformation[1] == 0;
+    if (!evidence.contextAvailable || !evidence.nullExecute) return;
+    ULONG_PTR stack = 0;
 #if defined(_M_X64)
+    stack = static_cast<ULONG_PTR>(evidence.context.Rsp);
+#elif defined(_M_IX86)
+    stack = static_cast<ULONG_PTR>(evidence.context.Esp);
+#endif
+    // A null indirect CALL leaves its return address on the faulting stack.
+    // A JMP need not do so; keep the raw stack candidate rather than guessing
+    // an instruction or following a possibly corrupt object/vtable pointer.
+    evidence.returnAvailable = ReadFaultMemory(&evidence.returnAddress, stack,
+                                                sizeof(evidence.returnAddress));
+    if (!evidence.returnAvailable || evidence.returnAddress < kCallsiteBefore) return;
+    const auto start = evidence.returnAddress - kCallsiteBefore;
+    for (unsigned i = 0; i < _countof(evidence.callsite); ++i) {
+        if (start + i < start) break;
+        evidence.readable[i] = ReadFaultMemory(&evidence.callsite[i], start + i, 1);
+    }
+}
+
+void CaptureBacktrace(const CONTEXT* context) noexcept {
     backtraceCount = 0;
     if (context == nullptr) return;
-    CONTEXT current = *context;
+#if defined(_M_X64)
+    CONTEXT& current = faultScratch.unwind;
+    current = *context;
     backtraceFrames[backtraceCount++] = reinterpret_cast<void*>(current.Rip);
-    while (backtraceCount < kBacktraceFrames && current.Rip != 0) {
+    // A CALL through a null function pointer still pushes its return address.
+    // Unwind that first leaf frame too, otherwise execute-at-zero reports lose
+    // the caller and show nothing beyond '#0 0000000000000000'.
+    while (backtraceCount < kBacktraceFrames) {
         DWORD64 imageBase = 0;
         PRUNTIME_FUNCTION entry =
             RtlLookupFunctionEntry(current.Rip, &imageBase, nullptr);
         if (entry == nullptr) {
-            // Leaf function: no unwind data, the return address is on top of
-            // the stack.  The stack being walked is the one this handler is
-            // already running on, so the read stays inside a mapped page.
-            const DWORD64* stack = reinterpret_cast<const DWORD64*>(current.Rsp);
-            if (stack == nullptr) break;
-            current.Rip = *stack;
+            // The saved RSP can itself be corrupt. Never touch a guard page
+            // or rely on running on the same stack to make it readable.
+            DWORD64 caller = 0;
+            if (current.Rsp > ~DWORD64{0} - sizeof(DWORD64) ||
+                !ReadFaultMemory(&caller, current.Rsp, sizeof(caller))) break;
+            current.Rip = caller;
             current.Rsp += sizeof(DWORD64);
         } else {
             void* handlerData = nullptr;
@@ -261,6 +338,15 @@ void CaptureBacktrace(const CONTEXT* context) noexcept {
         if (current.Rip == 0) break;
         backtraceFrames[backtraceCount++] =
             reinterpret_cast<void*>(current.Rip);
+    }
+#elif defined(_M_IX86)
+    // x86 builds can omit frame pointers. Retain the fault address and, for a
+    // null CALL, the stack return candidate without guessing a frame chain.
+    backtraceFrames[backtraceCount++] = reinterpret_cast<void*>(context->Eip);
+    if (context->Eip == 0) {
+        ULONG_PTR caller = 0;
+        if (ReadFaultMemory(&caller, context->Esp, sizeof(caller)) && caller)
+            backtraceFrames[backtraceCount++] = reinterpret_cast<void*>(caller);
     }
 #endif
 }
@@ -295,7 +381,76 @@ void FormatFrame(wchar_t* buffer, int capacity, const void* address) noexcept {
                  address);
 }
 
-int BuildReport(const char* reason, const EXCEPTION_RECORD* record) noexcept {
+bool ModuleIdentity(HMODULE module, DWORD& timestamp, DWORD& imageSize) noexcept {
+    const auto base = reinterpret_cast<ULONG_PTR>(module);
+    MEMORY_BASIC_INFORMATION mapping{};
+    if (!VirtualQuery(module, &mapping, sizeof(mapping)) ||
+        mapping.Type != MEM_IMAGE || mapping.AllocationBase != module) return false;
+    IMAGE_DOS_HEADER dos{};
+    if (!ReadFaultMemory(&dos, base, sizeof(dos)) ||
+        dos.e_magic != IMAGE_DOS_SIGNATURE || dos.e_lfanew <= 0 ||
+        base + static_cast<ULONG_PTR>(dos.e_lfanew) < base) return false;
+    const auto header = base + static_cast<ULONG_PTR>(dos.e_lfanew);
+    if (!VirtualQuery(reinterpret_cast<void*>(header), &mapping, sizeof(mapping)) ||
+        mapping.Type != MEM_IMAGE || mapping.AllocationBase != module) return false;
+    IMAGE_NT_HEADERS nt{};
+    if (!ReadFaultMemory(&nt, header, sizeof(nt)) ||
+        nt.Signature != IMAGE_NT_SIGNATURE ||
+        nt.FileHeader.SizeOfOptionalHeader < sizeof(nt.OptionalHeader) ||
+        nt.OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR_MAGIC) return false;
+    timestamp = nt.FileHeader.TimeDateStamp;
+    imageSize = nt.OptionalHeader.SizeOfImage;
+    return true;
+}
+
+void AppendFaultEvidence(int& used, const FaultEvidence* evidence) noexcept {
+    if (!evidence) return;
+    if (!evidence->contextAvailable) {
+        AppendText(used, L"故障上下文 / fault context: unreadable\r\n");
+        return;
+    }
+    const auto& context = evidence->context;
+    AppendText(used, L"故障寄存器 / fault context registers:\r\n");
+#if defined(_M_X64)
+    AppendText(used, L"  RIP=%016llX RSP=%016llX RBP=%016llX EFLAGS=%08lX\r\n",
+        context.Rip, context.Rsp, context.Rbp, context.EFlags);
+    AppendText(used, L"  RAX=%016llX RBX=%016llX RCX=%016llX RDX=%016llX\r\n",
+        context.Rax, context.Rbx, context.Rcx, context.Rdx);
+    AppendText(used, L"  RSI=%016llX RDI=%016llX R8=%016llX R9=%016llX\r\n",
+        context.Rsi, context.Rdi, context.R8, context.R9);
+    AppendText(used, L"  R10=%016llX R11=%016llX R12=%016llX R13=%016llX\r\n",
+        context.R10, context.R11, context.R12, context.R13);
+    AppendText(used, L"  R14=%016llX R15=%016llX\r\n", context.R14, context.R15);
+#elif defined(_M_IX86)
+    AppendText(used, L"  EIP=%08lX ESP=%08lX EBP=%08lX EFLAGS=%08lX\r\n",
+        context.Eip, context.Esp, context.Ebp, context.EFlags);
+    AppendText(used, L"  EAX=%08lX EBX=%08lX ECX=%08lX EDX=%08lX\r\n",
+        context.Eax, context.Ebx, context.Ecx, context.Edx);
+    AppendText(used, L"  ESI=%08lX EDI=%08lX\r\n", context.Esi, context.Edi);
+#else
+    AppendText(used, L"  unsupported register layout\r\n");
+#endif
+    if (!evidence->nullExecute) return;
+    if (!evidence->returnAvailable) {
+        AppendText(used, L"空调用位置 / null execute callsite: stack return unreadable\r\n");
+        return;
+    }
+    wchar_t frame[320];
+    FormatFrame(frame, _countof(frame), reinterpret_cast<void*>(evidence->returnAddress));
+    AppendText(used, L"空调用位置 / null execute callsite: stack_return=%p (%ls)\r\n",
+        reinterpret_cast<void*>(evidence->returnAddress), frame);
+    AppendText(used, L"  bytes[-16,+8) (| = return address; ?? = unreadable): ");
+    for (unsigned i = 0; i < _countof(evidence->callsite); ++i) {
+        if (i == kCallsiteBefore) AppendText(used, L"| ");
+        if (evidence->readable[i]) AppendText(used, L"%02X ",
+            static_cast<unsigned>(evidence->callsite[i]));
+        else AppendText(used, L"?? ");
+    }
+    AppendText(used, L"\r\n");
+}
+
+int BuildReport(const char* reason, const EXCEPTION_RECORD* record,
+                const FaultEvidence* evidence = nullptr) noexcept {
     wchar_t narrow[512];
     int used = 0;
     dialogText[0] = L'\0';
@@ -333,6 +488,7 @@ int BuildReport(const char* reason, const EXCEPTION_RECORD* record) noexcept {
     AppendText(used, L"进程 / process: %lu  arch=%u build=%hs %hs image_base=%p\r\n",
         GetCurrentProcessId(), static_cast<unsigned>(sizeof(void*) * 8),
         __DATE__, __TIME__, GetModuleHandleW(nullptr));
+    AppendFaultEvidence(used, evidence);
     if (backtraceCount > 0) {
         AppendText(used, L"调用栈 / backtrace (module+offset):\r\n");
         for (int i = 0; i < backtraceCount; ++i) {
@@ -340,6 +496,50 @@ int BuildReport(const char* reason, const EXCEPTION_RECORD* record) noexcept {
             FormatFrame(frame, _countof(frame), backtraceFrames[i]);
             AppendText(used, L"  #%d %ls\r\n", i, frame);
         }
+    }
+    // Equal DLL names do not imply equal code offsets. Record mapped identities
+    // without loading libraries, allocating, or consulting the damaged scene.
+    AppendText(used, L"运行库 / loaded graphics modules:\r\n");
+    auto& systemD3d = faultScratch.systemD3d;
+    auto& chainedD3d = faultScratch.chainedD3d;
+    const auto systemLength = GetSystemDirectoryW(systemD3d, MAX_PATH);
+    if (systemLength && systemLength < MAX_PATH - 11)
+        wcscat_s(systemD3d, L"\\d3d9.dll");
+    else systemD3d[0] = 0;
+    const auto executableLength = GetModuleFileNameW(nullptr, chainedD3d, MAX_PATH);
+    if (executableLength && executableLength < MAX_PATH) {
+        if (auto* slash = std::wcsrchr(chainedD3d, L'\\')) {
+            slash[1] = 0;
+            if (std::wcslen(chainedD3d) < MAX_PATH - 15) wcscat_s(chainedD3d, L"x64\\d3d9.dll");
+            else chainedD3d[0] = 0;
+        }
+    } else chainedD3d[0] = 0;
+    const wchar_t* modules[] = {nullptr, L"d3d9.dll", L"d3dx9_43.dll", L"d3dx9_32.dll",
+        L"MMEffect.dll", L"MMHack.dll", L"d3dcompiler_43.dll", L"d3dcompiler_47.dll", systemD3d, chainedD3d};
+    auto& seen = faultScratch.seenModules;
+    static_assert(_countof(modules) == _countof(seen));
+    unsigned seenCount = 0;
+    for (const wchar_t* name : modules) {
+        const auto module = GetModuleHandleW(name);
+        if (!module) continue;
+        bool duplicate = false;
+        for (unsigned i = 0; i < seenCount; ++i) if (seen[i] == module) duplicate = true;
+        if (duplicate) continue;
+        seen[seenCount++] = module;
+        auto& path = faultScratch.modulePath;
+        path[0] = 0;
+        DWORD timestamp = 0, imageSize = 0;
+        const auto length = GetModuleFileNameW(module, path, MAX_PATH);
+        path[MAX_PATH - 1] = 0;
+        const wchar_t* identityName = length ? path :
+            name && *name ? name : L"<main image>";
+        if (ModuleIdentity(module, timestamp, imageSize))
+            AppendText(used, L"  %ls%ls base=%p image_size=0x%lX timestamp=0x%08lX\r\n",
+                identityName, length >= MAX_PATH ? L" [path truncated]" : L"",
+                module, imageSize, timestamp);
+        else
+            AppendText(used, L"  %ls%ls base=%p image_size=unavailable timestamp=unavailable\r\n",
+                identityName, length >= MAX_PATH ? L" [path truncated]" : L"", module);
     }
     return used;
 }
@@ -368,7 +568,8 @@ bool WriteHistory(HANDLE file, unsigned long long first) noexcept {
     return true;
 }
 
-void SaveErrorLog(const char* reason, const EXCEPTION_RECORD* record) noexcept {
+void SaveErrorLog(const char* reason, const EXCEPTION_RECORD* record,
+                  const FaultEvidence* evidence = nullptr) noexcept {
     if (!*crashDirectory) return;
     if (!CreateDirectoryW(dataDirectory, nullptr) && GetLastError() != ERROR_ALREADY_EXISTS) {
         errorLogFailure = GetLastError();
@@ -396,7 +597,7 @@ void SaveErrorLog(const char* reason, const EXCEPTION_RECORD* record) noexcept {
     }
     if (file == INVALID_HANDLE_VALUE) { errorLogPath[0] = L'\0'; return; }
     errorLogFailure = ERROR_SUCCESS;
-    const int used = BuildReport(reason, record);
+    const int used = BuildReport(reason, record, evidence);
     const int bytes = WideCharToMultiByte(CP_UTF8, 0, dialogText, used,
         reportUtf8, sizeof(reportUtf8), nullptr, nullptr);
     bool ok = bytes > 0 && WriteBytes(file, reportUtf8, bytes) &&
@@ -416,8 +617,9 @@ void SaveRecoveryResult() noexcept {
     CloseHandle(file);
 }
 
-void ShowLastError(const char* reason, const EXCEPTION_RECORD* record) noexcept {
-    int used = BuildReport(reason, record);
+void ShowLastError(const char* reason, const EXCEPTION_RECORD* record,
+                   const FaultEvidence* evidence = nullptr) noexcept {
+    int used = BuildReport(reason, record, evidence);
     if (*errorLogPath && !errorLogFailure)
         AppendText(used, L"\r\n错误日志 / error log: %ls\r\n", errorLogPath);
     else AppendText(used, L"\r\n无法保存错误日志 / could not save error log (Win32=%lu)\r\n", errorLogFailure);
@@ -474,8 +676,9 @@ void OnInvalidParameter(const wchar_t*, const wchar_t*, const wchar_t*, unsigned
 LONG WINAPI OnCrash(EXCEPTION_POINTERS* pointers) noexcept {
     if (reporting.exchange(true)) return EXCEPTION_EXECUTE_HANDLER;
     EXCEPTION_RECORD record{};
-    if (pointers != nullptr && pointers->ExceptionRecord != nullptr)
-        record = *pointers->ExceptionRecord;
+    EXCEPTION_POINTERS captured{};
+    if (ReadFaultMemory(&captured, reinterpret_cast<ULONG_PTR>(pointers), sizeof(captured)))
+        ReadFaultMemory(&record, reinterpret_cast<ULONG_PTR>(captured.ExceptionRecord), sizeof(record));
     record.ExceptionRecord = nullptr;
     Write("CRASH code=0x%08lX address=%p phase=%s thread=%lu",
           static_cast<unsigned long>(record.ExceptionCode),
@@ -490,14 +693,15 @@ LONG WINAPI OnCrash(EXCEPTION_POINTERS* pointers) noexcept {
     }
     // Same teardown rule as Fail(): a fault while the program is already
     // closing is recorded, not reported.
-    if (pointers != nullptr && pointers->ContextRecord != nullptr)
-        CaptureBacktraceSafely(pointers->ContextRecord);
-    SaveErrorLog(nullptr, &record);
+    auto& evidence = faultScratch.evidence;
+    CaptureFaultEvidence(evidence, record, captured.ContextRecord);
+    if (evidence.contextAvailable) CaptureBacktraceSafely(&evidence.context);
+    SaveErrorLog(nullptr, &record, &evidence);
     if (!shuttingDown.load(std::memory_order_relaxed))
         if (auto backup = crashBackup.load()) backup(record.ExceptionCode);
     SaveRecoveryResult();
     if (!shuttingDown.load(std::memory_order_relaxed))
-        ShowLastError(nullptr, &record);
+        ShowLastError(nullptr, &record, &evidence);
     // Returning EXCEPTION_EXECUTE_HANDLER lets the system finish the process
     // now that the user has seen (and can copy) the report.
     return EXCEPTION_EXECUTE_HANDLER;
@@ -508,6 +712,9 @@ LONG WINAPI OnCrash(EXCEPTION_POINTERS* pointers) noexcept {
 namespace testing {
 // Test-target-only seam. It is absent from the application and public header.
 void OnNextWriteClaimed(void (*probe)() noexcept) noexcept { writeClaimProbe.store(probe); }
+bool ReadMemory(void* destination, ULONG_PTR address, size_t size) noexcept {
+    return ReadFaultMemory(destination, address, size);
+}
 }
 #endif
 
@@ -522,7 +729,7 @@ void Initialize() noexcept {
     std::set_terminate(OnTerminate);
     _set_invalid_parameter_handler(OnInvalidParameter);
     std::signal(SIGABRT, OnAbort);
-    lastHeartbeat = GetTickCount64();
+    lastHeartbeat.store(GetTickCount64(), std::memory_order_relaxed);
     Write("START pid=%lu arch=%u build=%s %s image_base=%p",
           GetCurrentProcessId(), static_cast<unsigned>(sizeof(void*) * 8),
           __DATE__, __TIME__, GetModuleHandleW(nullptr));
@@ -577,9 +784,10 @@ void Trace(const char* format, ...) noexcept {
 }
 
 void Heartbeat(int frame) noexcept {
-    ULONGLONG now = GetTickCount64();
-    if (now - lastHeartbeat < 30000) return;
-    lastHeartbeat = now;
+    const ULONGLONG now = GetTickCount64();
+    auto previous = lastHeartbeat.load(std::memory_order_relaxed);
+    if (now < previous || now - previous < 30000 ||
+        !lastHeartbeat.compare_exchange_strong(previous, now, std::memory_order_relaxed)) return;
     Write("ALIVE frame=%d", frame);
 }
 
