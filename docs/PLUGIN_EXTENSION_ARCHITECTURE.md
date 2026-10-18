@@ -45,7 +45,7 @@ auto event = events.subscribe(topic, [=] { updateLayer(layer); });
 | 服务组 | 职责与状态 | 详细方案 |
 | --- | --- | --- |
 | `mms.ui`、`mms.ui.surface`、`mms.ui.layout` | 已有注册、挂载、只读属性和部分布局能力；更多挂载点、输入控件和溢出仍待开放。 | [UI 呈现](PLUGIN_UI_PRESENTATION.md) |
-| `mms.ui.refresh` 1.0 | 已有按钮及 surface 的 REPAINT + SELF；按钮支持启用、选中及保留槽位显隐的 STATE，同一票据队列和安全点。收缩空位的显隐依赖、数据、布局及依赖范围待实现。 | [刷新接口参考](../sdk/mms/refresh.md) |
+| `mms.ui.refresh`、`mms.ui.refresh.bind`、`mms.ui.refresh.state` 1.0 | 已有按钮及 surface 的 REPAINT + SELF；按钮部分 STATE、来源绑定的 SELF DATA、保留布局的 SELF LAYOUT。内容提供者在原 STATE 准备按钮文案、说明及禁用原因，同一对象、队列和票据。更多控件状态和依赖范围待实现。 | [刷新接口参考](../sdk/mms/refresh.md)、[状态内容](../sdk/mms/state-content.md) |
 | `mms.events`、`mms.tasks` | 提案：主题订阅、受预算约束的工作任务。 | 本文及 UI 呈现 |
 | `mms.ui.geometry`、`style`、`paint`、`presentation`、`input`、`overlay`、`layout.session` | 提案：坐标、样式、辅助绘制、临时外观、输入和可撤回布局。 | UI 呈现 |
 | `mms.scene`、`mms.storage` | 已有绑定快照和插件工程序列化；不提供任意时间求值或模型拓扑写入。 | SDK 参考 |
@@ -100,8 +100,8 @@ auto event = events.subscribe(topic, [=] { updateLayer(layer); });
 插件自建线程也必须使用宿主规定的停止和租约规则。SDK 不为一个普通菜单注册偷偷启动线程。
 后台结果带工程身份、来源修订、任务代次及目标代次。结果只能在匹配的上下文发布。当前工程变化时可以丢弃或重新计算，不能将旧结果应用到同名新对象。
 
-`mms.ui.refresh` 支持本插件目标的 REPAINT，以及按钮启用、选中及保留槽位显隐的 STATE。UI 线程查询能力和目标，工作线程提交和管理同一票据。STATE 只读查询目标命令；不调用旧刷新、布局或场景求值。显隐要求有效的 PRESERVE_HIDDEN_SLOT 提示和已有正尺寸槽位，不重新排版。局部 DIP 矩形须带几何修订，布局失败保持未就绪，实际几何不变时保留修订。
-票据的取消与释放分开，未释放引用阻止卸载。具体配额及错误见[刷新接口参考](../sdk/mms/refresh.md)。DATA、完整 STATE、LAYOUT、绑定和依赖范围仍待实现，不能用一次 REPAINT 代替。
+`mms.ui.refresh` 支持本插件目标的 REPAINT、按钮部分 STATE、绑定目标的 DATA 和保留布局的 SELF LAYOUT。UI 线程查询能力和目标，工作线程提交和管理同一票据。STATE 只读查询目标命令及可选内容提供者；纯 LAYOUT 使用缓存状态和已发布文案。单独显隐需要有效的 PRESERVE_HIDDEN_SLOT 正尺寸槽位；STATE 与 LAYOUT 组合支持收缩空位及同引用恢复。局部 DIP 矩形须带几何修订，布局失败保持未就绪，实际几何不变时保留修订。
+票据的取消与释放分开，未释放引用阻止卸载。具体配额及错误见[刷新接口参考](../sdk/mms/refresh.md)。更多控件的完整 STATE、自动订阅、SUBTREE、DEPENDENTS 及插件量测提供者仍待实现，不能用一次 REPAINT 代替。
 持续动画使用单次帧请求按时间推进。数据变化通过刷新请求传播，不能在 paint 回调中反复发事件、重新读取文件或提交事务。
 
 ## 同一套接口支持不同工具

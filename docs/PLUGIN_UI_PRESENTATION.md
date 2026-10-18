@@ -1,6 +1,6 @@
 # 插件界面样式、绘制与动画接口方案
 
-本文固定界面需求和建议接口。基础 C++17 包装、REPAINT + SELF、按钮部分 STATE，以及 SELF DATA 来源绑定与显示租约已接入，实际接口以 SDK 为准。收缩空位的显隐依赖、完整 STATE、LAYOUT、绘制层和动画函数仍为提案。
+本文固定界面需求和建议接口。基础 C++17 包装、REPAINT + SELF、按钮部分 STATE、SELF DATA 来源绑定与显示租约，以及保留布局的 SELF LAYOUT 已接入，实际接口以 SDK 为准。按钮状态内容服务提供文案、说明和禁用原因。属性、菜单及面板内容的完整 STATE、依赖范围、绘制层和动画函数仍为提案。
 本方案不改变普通宿主的 `mms.edit` 开放状态，也不把界面动画记入场景撤销历史。
 跨 UI、视口和数据工具的分层封装以[统一扩展架构](PLUGIN_EXTENSION_ARCHITECTURE.md)为准；本页重点规定 UI 对象、刷新和交互。
 
@@ -27,7 +27,7 @@ Win7 SP1 x64、CPU 绘制和 AMD 兼容是基础约束；不以 CUDA、NVAPI、A
 
 [重绘 SDK](../sdk/mms/cpp-refresh.md)用 `RefreshServices` 和 `RefreshTicket` 包装同一刷新 C 表，提供局部矩形便利方法、跨线程所有权移交及显式清理。原始票据可继续用于 C 接口，没有额外宿主实现。
 
-[界面刷新接口](../sdk/mms/refresh.md)直接使用这些原始元素句柄，当前覆盖同插件已有按钮和原生 surface 面板的重绘，以及按钮启用、选中和保留槽位内显隐状态。完成不表示像素已显示。纯重绘不查询命令状态；STATE 只读查询目标命令；DATA 先准备完整显示候选再交换模型。这些阶段均不重新布局或触发场景求值。
+[界面刷新接口](../sdk/mms/refresh.md)直接使用这些原始元素句柄，当前覆盖同插件已有按钮和原生 surface 面板的重绘、按钮部分 STATE、有效绑定目标的 DATA 及保留布局的 SELF LAYOUT。完成不表示像素已显示。纯重绘不查询命令状态；STATE 只读查询目标命令和可选[内容提供者](../sdk/mms/state-content.md)；DATA 先准备完整显示候选再交换模型。只有显式请求 LAYOUT 才重新排版，纯 LAYOUT 使用缓存状态和已发布文案，不回调提供者。这些阶段不触发整个场景求值。
 
 | 已有能力 | 实际范围与代码依据 |
 | --- | --- |
@@ -37,7 +37,7 @@ Win7 SP1 x64、CPU 绘制和 AMD 兼容是基础约束；不以 CUDA、NVAPI、A
 | `mms.ui.surface` 1.0 | `surface.h:22–40` 提供创建、尺寸、显示、焦点和销毁回调；返回插件拥有的原生子窗口。 |
 | 子窗口约束 | `UiRegistry::ShowSurface` 校验父窗口、`WS_CHILD` 和 UI 线程；换父窗口会销毁重建。插件可在自己的窗口内自行绘制。 |
 | 布局与实际几何 | `layout.h` 分开记录 UI 和几何修订；`UiRegistry::PublishGeometry` 仅发布已应用的几何，未就绪返回 `NOT_READY`。 |
-| `mms.ui.refresh` 1.0 | `refresh.h`、`src/plugins/ui_refresh.cpp` 提供能力和目标查询、四项跨线程票据操作。支持 REPAINT、按钮部分 STATE 及有效绑定目标的 DATA，范围为 SELF。 |
+| `mms.ui.refresh` 1.0 | `refresh.h`、`src/plugins/ui_refresh.cpp` 提供能力和目标查询、四项跨线程票据操作。支持 REPAINT、按钮部分 STATE、有效绑定目标的 DATA 和保留布局的 LAYOUT，范围为 SELF；状态内容通过附加表在原 STATE 阶段准备。 |
 | `mms.ui.refresh.bind` 1.0 | `refresh_binding.h` 提供来源、精确版本、单目标绑定、只读 prepare、完整显示交换及不可变显示租约；复用原票据。 |
 | 刷新目标 | `NativeUi` 发布原元素 handle、独立窗口实例和实际客户区几何。非 LAYOUT 按钮也支持；未创建 surface 不因查询或重绘而挂载。 |
 | 局部缓冲 | `src/plugins/native_ui.cpp` 使用 GDI 背景缓冲；工具栏按钮仍为系统 `BUTTON`。 |
