@@ -35,6 +35,8 @@
 #include "../plugins/native_pose_scope.hpp"
 #include "../plugins/native_object_commands.hpp"
 #include "../plugins/shared_history.hpp"
+#include "../plugins/native_curve_commands.hpp"
+#include "../plugins/native_bone_curve_write.hpp"
 #include "mikudancestudio/plugin_scene.hpp"
 #include "mikudancestudio/plugin_runtime.hpp"
 #endif
@@ -538,6 +540,11 @@ bool ReadMorphChannels(MMDApp&app,std::vector<curve_editor::Channel>&out,std::ws
     std::vector<int> indices;
     for(const auto&info:infos)if(morph_curve::PanelGroup(info.panel)>=0)indices.push_back(info.index);
     std::vector<animation_curve::Track> tracks;
+#if !MMD_ORIGINAL_PROFILE
+    if(CommonCurveHistory(app)){
+        if(!morph_curve::ReadManyDetached(app,indices,tracks,error))return false;
+    }else
+#endif
     if(!morph_curve::ReadMany(app,indices,tracks,error))return false;
     std::size_t next=0;
     for(const auto&info:infos){
@@ -595,6 +602,37 @@ bool MorphIdentityCurrent(const MMDApp&app,const MorphModelIdentity&identity){
     // it.  A live but unselected capture is refused rather than redirected.
     return app.SelectedModel()==identity.model;
 }
+void BindModelHistorySource(curve_editor::Source& source,const curve_editor::Session& session,
+                            MMDApp* app,const MorphModelIdentity& identity){
+    const auto historyCurrent=session.history.query;
+    source.externalHistory=bool(historyCurrent);
+#if !MMD_ORIGINAL_PROFILE
+    const MmsId stableModel=historyCurrent?plugins::SceneObjectIdentity(identity.model).id:MmsId{};
+#endif
+    const auto current=[app,identity,historyCurrent
+#if !MMD_ORIGINAL_PROFILE
+        ,stableModel
+#endif
+    ]{
+        if(!IsWindow(app->MainWindow())||CommonCurveHistory(*app)!=bool(historyCurrent))return false;
+#if !MMD_ORIGINAL_PROFILE
+        if(historyCurrent&&!plugins::SceneObjectPresent(identity.model,stableModel))return false;
+#endif
+        if(!MorphIdentityCurrent(*app,identity))return false;
+        if(historyCurrent){curve_editor::HistoryState state;std::wstring error;if(!historyCurrent(state,error))return false;}
+        return true;
+    };
+    const auto unavailable=[app](std::wstring& error){
+        error=Text(app->EnglishUI(),L"モデルまたは履歴の接続が変更されました。カーブウィンドウを開き直してください。",
+            L"The model or history binding changed. Reopen the curve window.",L"模型或历史绑定已改变，请重新打开曲线窗口。");return false;
+    };
+    if(source.read){auto read=std::move(source.read);source.read=[current,unavailable,read](auto& channels,auto& error){return current()?read(channels,error):unavailable(error);};}
+    if(source.apply){auto apply=std::move(source.apply);source.apply=[current,unavailable,apply](const auto& channels,auto& error){return current()?apply(channels,error):unavailable(error);};}
+    if(source.readKeySelection){auto read=std::move(source.readKeySelection);source.readKeySelection=[current,read](const auto& channel){return current()?read(channel):std::vector<int>{};};}
+    if(source.writeKeySelection){auto write=std::move(source.writeKeySelection);source.writeKeySelection=[current,write](const auto& channel,const auto& frames){if(current())write(channel,frames);};}
+    if(source.localizedLabel){auto label=std::move(source.localizedLabel);source.localizedLabel=[current,label](unsigned language){
+        return current()?label(language):std::wstring(Text(language,L"モデル",L"Model",L"模型"));};}
+}
 std::string MorphLaneInitial(MMDApp&app,int lane){
     if(lane<0||lane>=kMorphLaneCount)return {};
     unsigned char* model=app.SelectedModel();
@@ -642,11 +680,26 @@ bool WriteMorphChannels(MMDApp&app,const MorphModelIdentity&identity,
         error=ModelGoneMessage(app,identity);
         return false;
     }
+#if !MMD_ORIGINAL_PROFILE
+    if(CommonCurveHistory(app)){
+        if(next.size()!=baseline.size()){
+            error=L"表情通道集合已改变，请刷新后重试。";return false;
+        }
+        for(std::size_t i=0;i<next.size();++i){
+            if(next[i].id!=baseline[i].id||next[i].track.discrete||
+                next[i].nativeControls!=baseline[i].nativeControls){
+                error=L"表情通道不匹配，请刷新后重试。";return false;
+            }
+        }
+    }
+#endif
     const auto changed=ChangedMorphTracks(next,baseline);
     // Nothing to write: returning here is what keeps a plain look at the window
     // from registering every native track as an authored curve.
     if(changed.empty())return true;
-    if(CommonCurveHistory(app)){error=Text(app.EnglishUI(),L"モーフカーブは共通履歴に未接続のため読み取り専用です。",L"Morph curves are read-only until shared history is connected.",L"表情曲线尚未接入共同历史，此受控入口暂为只读。");return false;}
+#if !MMD_ORIGINAL_PROFILE
+    if(CommonCurveHistory(app))return plugins::WriteBoundMorphCurves(app,unsigned(app.SelectedModelSlot()),changed,error);
+#endif
     // The identity check above proves the selected model is the captured one,
     // which is exactly the model the backend's MMDApp overload writes to.
     if(!morph_curve::Write(app,changed,error))return false;
@@ -671,6 +724,7 @@ void OpenMorph(MMDApp*app,int lane,bool visible){
     if(initial.empty())return;
 
     curve_editor::Session session;session.id="mms.morph";session.language=app->EnglishUI();
+    BindCommonCurveHistory(session,app);
     session.currentFrame=[app]{return double(app->CurrentFrame());};
     session.seek=[app,identity](int f){
         if(!MorphIdentityCurrent(*app,identity))return;
@@ -720,7 +774,7 @@ void OpenMorph(MMDApp*app,int lane,bool visible){
     source.initialMainChannel=initial;
     source.readComparisonMode=[]{return ReadMorphComparisonMode();};
     source.writeComparisonMode=[app](int mode,std::wstring&error){return WriteMorphComparisonMode(app->EnglishUI(),mode,error);};
-    if(CommonCurveHistory(*app))source.apply={};
+    BindModelHistorySource(source,session,app,identity);
     session.sources.push_back(std::move(source));
     session.initialSource=0;
     BindTransport(session,app);curve_editor::Open(app->Hwnd(),std::move(session),visible);
@@ -788,7 +842,15 @@ double GraphValue(const BoneGraph&keys,const curve_editor::Channel&channel,int a
     return NearAngle(angle,a.values[axis]+(b.values[axis]-a.values[axis])*raw);
 }
 }
-static curve_editor::Source BoneSource(MMDApp*app,const MorphModelIdentity&identity,int bone,bool includeDisplay,bool freeCurves){
+#if !MMD_ORIGINAL_PROFILE
+using BoneCurveCollector=std::function<bool(const std::vector<curve_editor::Channel>&,
+    std::vector<plugins::BoneCurveEdit>&,plugins::DisplayCurveRows&,bool&,std::wstring&)>;
+#endif
+static curve_editor::Source BoneSource(MMDApp*app,const MorphModelIdentity&identity,int bone,bool includeDisplay,bool freeCurves
+#if !MMD_ORIGINAL_PROFILE
+    ,BoneCurveCollector* collect=nullptr
+#endif
+){
     const auto*record=mdl::Mdl(identity.model);
     const auto alive=[app,identity,bone]{return MorphIdentityCurrent(*app,identity)&&bone>=0&&std::uint32_t(bone)<mdl::Mdl(identity.model)->boneCount;};
     static const char*const ids[]={"x","y","z","rx","ry","rz","sx","sy","sz"};
@@ -797,10 +859,18 @@ static curve_editor::Source BoneSource(MMDApp*app,const MorphModelIdentity&ident
     static const wchar_t*const labelsJa[]={L"移動 X",L"移動 Y",L"移動 Z",L"回転 X",L"回転 Y",L"回転 Z",L"拡大 X",L"拡大 Y",L"拡大 Z"};
     auto graph=std::make_shared<BoneGraph>();
     auto discrete=std::make_shared<std::vector<curve_editor::Channel>>();
+#if !MMD_ORIGINAL_PROFILE
+    auto readBaseline=std::make_shared<std::vector<curve_editor::Channel>>();
+    auto authoredMode=std::make_shared<bool>(false);
+#endif
     curve_editor::Source source;source.id="bone/"+std::to_string(bone);
     source.linkAdjacentControls=[app]{return IsDlgButtonChecked(app->MainWindow(),panel::kPhysicsFrameCheckbox)==BST_CHECKED;};
     source.label=text_encoding::ModelLabel(*record,UiUsesEnglishNames(app->EnglishUI()))+L" · "+text_encoding::BoneLabel(record->boneTable[bone],UiUsesEnglishNames(app->EnglishUI()));
-    source.read=[app,identity,bone,alive,graph,discrete,includeDisplay,freeCurves](std::vector<curve_editor::Channel>&channels,std::wstring&error){
+    source.read=[app,identity,bone,alive,graph,discrete,includeDisplay,freeCurves
+#if !MMD_ORIGINAL_PROFILE
+        ,readBaseline,authoredMode
+#endif
+    ](std::vector<curve_editor::Channel>&channels,std::wstring&error){
         if(!alive()){error=Text(app->EnglishUI(),L"選択中のモデルまたはボーンが変わりました。",L"The selected model or bone has changed.",L"当前选中的模型或骨骼已改变。");return false;}
         const auto&modelRecord=*mdl::Mdl(identity.model);const auto*keys=mdl::BoneKeys(identity.model);
         const auto capacity=mdl::BoneKeyCapacity(modelRecord);BoneGraph fresh;
@@ -864,7 +934,12 @@ static curve_editor::Source BoneSource(MMDApp*app,const MorphModelIdentity&ident
             channels.push_back(std::move(channel));
         }
         bone_curve::Tracks authored;
-        const bool hasAuthored=bone_curve::Read(identity.model,bone,authored);
+        bool hasAuthored=false;
+#if !MMD_ORIGINAL_PROFILE
+        if(CommonCurveHistory(*app))hasAuthored=bone_curve::ReadDetached(identity.model,bone,authored);
+        else
+#endif
+        hasAuthored=bone_curve::Read(identity.model,bone,authored);
         if(freeCurves||hasAuthored)for(int c=0;c<9;++c){
             auto& channel=channels[c];
             if(hasAuthored)channel.track=authored[c];
@@ -893,10 +968,85 @@ static curve_editor::Source BoneSource(MMDApp*app,const MorphModelIdentity&ident
                 channel.base=channel.track.keys.front().value;discrete->push_back(channel);channels.push_back(std::move(channel));
             }
         }
-        *graph=std::move(fresh);return true;
+        *graph=std::move(fresh);
+#if !MMD_ORIGINAL_PROFILE
+        *readBaseline=channels;*authoredMode=freeCurves||hasAuthored;
+#endif
+        return true;
     };
-    source.apply=[app,identity,bone,alive,graph,discrete,freeCurves](const std::vector<curve_editor::Channel>&channels,std::wstring&error){
-        if(CommonCurveHistory(*app)){error=Text(app->EnglishUI(),L"ボーンカーブは共通履歴に未接続のため読み取り専用です。",L"Bone curves are read-only until shared history is connected.",L"骨骼曲线尚未接入共同历史，此受控入口暂为只读。");return false;}
+#if !MMD_ORIGINAL_PROFILE
+    BoneCurveCollector collector=[app,identity,bone,alive,graph,discrete,readBaseline,authoredMode](const auto& channels,
+        auto& edits,auto& displayRows,bool& hasDisplay,std::wstring& error){
+        if(!alive()||!IsWindowEnabled(app->MainWindow())){error=L"当前模型或骨骼已改变，或仍在处理操作。";return false;}
+        if(channels.size()!=9+discrete->size()||readBaseline->size()!=channels.size()||graph->empty()){
+            error=L"骨骼通道不匹配，请刷新后重试。";return false;}
+        bool boneChanged=false;
+        for(std::size_t c=0;c<9;++c){
+            if(channels[c].id!=ids[c]||channels[c].track.discrete||
+                (*authoredMode&&channels[c].nativeControls!=(*readBaseline)[c].nativeControls)){
+                error=L"骨骼通道不匹配。";return false;}
+            boneChanged=boneChanged||!SameCurve(channels[c].track,(*readBaseline)[c].track)||
+                channels[c].nativeControls!=(*readBaseline)[c].nativeControls;
+        }
+        plugins::BoneCurveEdit edit;edit.bone=unsigned(bone);edit.freeCurves=*authoredMode;
+        if(boneChanged){
+            if(edit.freeCurves){for(int c=0;c<9;++c)edit.tracks[c]=channels[c].track;}
+            else{
+                const auto* keys=mdl::BoneKeys(identity.model);const auto capacity=mdl::BoneKeyCapacity(*mdl::Mdl(identity.model));
+                if(!keys){error=L"骨骼关键帧不可用。";return false;}
+                std::uint32_t slot=unsigned(bone);edit.nativeControls.resize(graph->size());
+                for(std::size_t end=0;end<graph->size();++end){
+                    const auto& expected=(*graph)[end];auto& target=edit.nativeControls[end];target.frame=int(expected.frame);target.controls=expected.controls;
+                    if(slot>=capacity||slot!=expected.index||keys[slot].frame!=expected.frame){error=L"骨骼关键帧已改变，请等待同步。";return false;}
+                    for(int c=0;c<9;++c){
+                        if(channels[c].track.keys.size()!=graph->size()||channels[c].track.keys[end].frame!=int(expected.frame)||channels[c].track.keys[end].value!=expected.values[c]){
+                            error=L"此入口只编辑插值控制柄，关键帧位置和骨骼数值应在 MMS 中修改。";return false;}
+                        if(end){std::array<double,4> controls{};if(!curve_editor::ReadChannelControls(channels[c],end,controls)){error=L"插值控制点无法读取。";return false;}
+                            bone_scale::Curve native{};for(int k=0;k<4;++k){if(!std::isfinite(controls[k])||controls[k]<0||controls[k]>127){error=L"插值控制点超出范围。";return false;}native[k]=std::uint8_t(std::lround(controls[k]));}
+                            const int lane=GraphLane(c);
+                            if(c==4||c==5||c==7||c==8){if(target.controls[lane]!=native){error=L"旋转或缩放各轴必须使用同一插值控制点。";return false;}}
+                            else target.controls[lane]=native;
+                        }
+                    }
+                    if(end+1<graph->size()){if(!keys[slot].next){error=L"骨骼关键帧已改变。";return false;}slot=keys[slot].next;}
+                    else if(keys[slot].next){error=L"骨骼关键帧已改变。";return false;}
+                }
+            }
+        }
+        bool displayChanged=false;
+        for(std::size_t c=0;c<discrete->size();++c){const auto& next=channels[9+c];const auto& before=(*discrete)[c];
+            if(next.id!=before.id||!next.track.discrete||next.nativeControls!=before.nativeControls||next.track.keys.size()!=before.track.keys.size()){
+                error=L"IK 通道不匹配。";return false;}
+            for(std::size_t key=0;key<next.track.keys.size();++key){
+                if(next.track.keys[key].frame!=before.track.keys[key].frame||(next.track.keys[key].value!=0&&next.track.keys[key].value!=1)){
+                    error=L"IK 关键帧应保持原有帧号，状态只能为 0 或 1。";return false;}
+            }
+            displayChanged=displayChanged||!SameCurve(next.track,before.track);
+        }
+        if(displayChanged){
+            if(hasDisplay){error=L"一次事务包含重复的显示状态来源。";return false;}
+            displayRows.resize(channels[9].track.keys.size());
+            for(std::size_t key=0;key<displayRows.size();++key){auto& row=displayRows[key];
+                row.frame=channels[9].track.keys[key].frame;row.visible=std::uint8_t(channels[9].track.keys[key].value);
+                for(std::size_t c=1;c<discrete->size();++c)row.ik.push_back(std::uint8_t(channels[9+c].track.keys[key].value));
+            }
+            hasDisplay=true;
+        }
+        if(boneChanged)edits.push_back(std::move(edit));return true;
+    };
+    if(collect)*collect=collector;
+#endif
+    source.apply=[app,identity,bone,alive,graph,discrete,freeCurves
+#if !MMD_ORIGINAL_PROFILE
+        ,collector
+#endif
+    ](const std::vector<curve_editor::Channel>&channels,std::wstring&error){
+#if !MMD_ORIGINAL_PROFILE
+        if(CommonCurveHistory(*app)){
+            std::vector<plugins::BoneCurveEdit> edits;plugins::DisplayCurveRows display;bool hasDisplay=false;
+            return collector(channels,edits,display,hasDisplay,error)&&plugins::WriteBoundBoneCurves(*app,unsigned(app->SelectedModelSlot()),edits,hasDisplay?&display:nullptr,error);
+        }
+#endif
         if(!alive()||!IsWindowEnabled(app->MainWindow())){error=L"当前模型或骨骼已改变，或仍在处理操作。";return false;}
         if(channels.size()!=9+discrete->size()){error=L"骨骼通道不匹配。";return false;}
         // Discrete keys are edited as 0/1 values, retaining their native frame positions.
@@ -1003,15 +1153,31 @@ void OpenInterpolation(MMDApp*app,bool visible){
     if(!record||!record->boneTable||record->selectedBone<0||std::uint32_t(record->selectedBone)>=record->boneCount)return;
     const int initialBone=record->selectedBone;const auto identity=MorphIdentityOf(*app,model);
     curve_editor::Session session;session.id="mms.interpolation.bone";session.language=app->EnglishUI();
+    BindCommonCurveHistory(session,app);
     session.currentFrame=[app]{return double(app->CurrentFrame());};
     session.seek=[app,identity](int frame){
         if(MorphIdentityCurrent(*app,identity))SeekMain(*app,frame);};
-    session.initialSource=bone_curve::Has(model,initialBone)?1:0;
+    bool initiallyAuthored=false;
+#if !MMD_ORIGINAL_PROFILE
+    if(CommonCurveHistory(*app)){bone_curve::Tracks tracks;initiallyAuthored=bone_curve::ReadDetached(model,initialBone,tracks);}
+    else
+#endif
+    initiallyAuthored=bone_curve::Has(model,initialBone);
+    session.initialSource=initiallyAuthored?1:0;
     for(bool freeCurves : {false,true}) {
-    struct Entry{curve_editor::Source source;std::vector<curve_editor::Channel> baseline;};
+    struct Entry{curve_editor::Source source;std::vector<curve_editor::Channel> baseline;
+#if !MMD_ORIGINAL_PROFILE
+        BoneCurveCollector collect;
+#endif
+    };
     auto entries=std::make_shared<std::vector<Entry>>();
-    for(std::uint32_t bone=0;bone<record->boneCount;++bone)
-        entries->push_back({BoneSource(app,identity,int(bone),int(bone)==initialBone,freeCurves),{}});
+    for(std::uint32_t bone=0;bone<record->boneCount;++bone){
+        Entry entry;entry.source=BoneSource(app,identity,int(bone),int(bone)==initialBone,freeCurves
+#if !MMD_ORIGINAL_PROFILE
+            ,&entry.collect
+#endif
+        );entries->push_back(std::move(entry));
+    }
     curve_editor::Source source;source.id=freeCurves?"bones.free":"bones";
     source.label=text_encoding::ModelLabel(*record,UiUsesEnglishNames(app->EnglishUI()))+L" · "+
         Text(app->EnglishUI(),freeCurves?L"自由カーブ":L"標準補間",freeCurves?L"Free curves (Euler XYZ)":L"Native interpolation",freeCurves?L"自由曲线（XYZ 角度）":L"原生插值");
@@ -1045,8 +1211,23 @@ void OpenInterpolation(MMDApp*app,bool visible){
         return true;
     };
     source.apply=[app,entries](const std::vector<curve_editor::Channel>&channels,std::wstring&error){
-        if(CommonCurveHistory(*app)){error=Text(app->EnglishUI(),L"ボーンカーブは共通履歴に未接続のため読み取り専用です。",L"Bone curves are read-only until shared history is connected.",L"骨骼曲线尚未接入共同历史，此受控入口暂为只读。");return false;}
         std::size_t offset=0;int changed=-1;std::vector<curve_editor::Channel> target;
+#if !MMD_ORIGINAL_PROFILE
+        std::vector<plugins::BoneCurveEdit> edits;plugins::DisplayCurveRows display;bool hasDisplay=false;
+        if(CommonCurveHistory(*app)){
+            // Validate every channel before selecting the changed bones. An
+            // unchanged peer must not hide a malformed flag or foreign id.
+            std::size_t at=0;
+            for(const auto& entry:*entries)for(const auto& before:entry.baseline){
+                if(at>=channels.size()||channels[at].id!=before.id||
+                    channels[at].track.discrete!=before.track.discrete){
+                    error=L"骨骼集合通道不匹配，请刷新后重试。";return false;
+                }
+                ++at;
+            }
+            if(at!=channels.size()){error=L"骨骼集合通道数量不匹配。";return false;}
+        }
+#endif
         const auto same=[](const curve_editor::Channel&a,const curve_editor::Channel&b){
             if(a.id!=b.id||a.nativeControls!=b.nativeControls||a.track.keys.size()!=b.track.keys.size())return false;
             for(std::size_t i=0;i<a.track.keys.size();++i){const auto&x=a.track.keys[i];const auto&y=b.track.keys[i];
@@ -1059,12 +1240,24 @@ void OpenInterpolation(MMDApp*app,bool visible){
             bool different=false;
             for(std::size_t c=0;c<baseline.size();++c)different=different||!same(channels[offset+c],baseline[c]);
             if(different){
+#if !MMD_ORIGINAL_PROFILE
+                if(CommonCurveHistory(*app)){
+                    std::vector<curve_editor::Channel> native(channels.begin()+offset,channels.begin()+offset+baseline.size());
+                    const std::string prefix="bone"+std::to_string(bone)+"/";
+                    for(auto& channel:native){if(channel.id.rfind(prefix,0)!=0){error=L"骨骼集合目标不匹配。";return false;}channel.id.erase(0,prefix.size());}
+                    if(!(*entries)[bone].collect(native,edits,display,hasDisplay,error))return false;
+                    offset+=baseline.size();continue;
+                }
+#endif
                 if(changed>=0){error=L"一次操作只能编辑一根骨骼；跨骨骼集合用于对比查看。";return false;}
                 changed=int(bone);target.assign(channels.begin()+offset,channels.begin()+offset+baseline.size());
             }
             offset+=baseline.size();
         }
         if(offset!=channels.size()){error=L"骨骼集合通道不匹配。";return false;}
+#if !MMD_ORIGINAL_PROFILE
+        if(CommonCurveHistory(*app))return plugins::WriteBoundBoneCurves(*app,unsigned(app->SelectedModelSlot()),edits,hasDisplay?&display:nullptr,error);
+#endif
         if(changed<0)return true;
         auto native=target;
         const std::string prefix="bone"+std::to_string(changed)+"/";
@@ -1087,7 +1280,7 @@ void OpenInterpolation(MMDApp*app,bool visible){
             return NativeSelection(mdl::DisplayKeys(identity.model), mdl::KeyPoolCapacity(mdl::DisplayKeys(identity.model)),0,frames);
         return NativeSelection(mdl::BoneKeys(identity.model),mdl::BoneKeyCapacity(record),std::size_t(bone),frames);
     });
-    if(CommonCurveHistory(*app))source.apply={};
+    BindModelHistorySource(source,session,app,identity);
     session.sources.push_back(std::move(source));
     }
     BindTransport(session,app);curve_editor::Open(app->Hwnd(),std::move(session),visible);

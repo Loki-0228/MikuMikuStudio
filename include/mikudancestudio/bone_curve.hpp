@@ -39,6 +39,9 @@ bool ApplyVmd(unsigned char* model, const std::uint8_t*, std::size_t, int offset
 bool DrawPreview(MMDApp&);
 #if !MMD_ORIGINAL_PROFILE
 class AuthoringRestore;
+// Canonical read for a shared-history host. Reconciliation is performed on a
+// detached author snapshot, never on live authoring or legacy undo rings.
+bool ReadDetached(const unsigned char* model, int bone, Tracks& out);
 // Borrowed, immutable view of one planned native pool. Scale and its native
 // interpolation are supplied from the same private target as the key records.
 struct NativeKeyView {
@@ -69,6 +72,12 @@ public:
     bool Equals(const AuthoringState&) const noexcept;
     // Remove one bone from this private snapshot when planning native edits.
     bool Invalidate(int bone) noexcept;
+    // Read stored tracks from this detached snapshot without native lookup.
+    bool Read(int bone, Tracks& out) const;
+    // Replace one free-curve author against a fully private native mirror.
+    // Validates the same nine tracks and scale hull as Write. Failure throws
+    // before changing this snapshot; native/model state is never published.
+    bool Replace(int bone, const Tracks&, const NativeKeyView&);
     // Rebuild one bone in this private snapshot with the same reconciliation
     // rules as native edits. Explicit absolute frames insert missing lane keys
     // even when a shared native row is unchanged. No live native-key lookup or

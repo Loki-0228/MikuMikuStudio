@@ -561,6 +561,33 @@ bool AuthoringState::Invalidate(int bone) noexcept {
     if(!impl_||bone<0||std::uint32_t(bone)>=impl_->boneCount)return false;
     return impl_->curves.erase(bone)!=0;
 }
+bool AuthoringState::Read(int bone,Tracks& out) const {
+    if(!impl_||!impl_->SameOwner(impl_->model)||impl_->storedIdentity!=impl_->bones)return false;
+    const auto found=impl_->curves.find(bone);if(found==impl_->curves.end())return false;
+    out=found->second.tracks;return true;
+}
+bool AuthoringState::Replace(int bone,const Tracks& tracks,const NativeKeyView& view) {
+    if(!impl_||!impl_->SameOwner(impl_->model)||bone<0||unsigned(bone)>=impl_->boneCount||
+        (!impl_->curves.empty()&&impl_->storedIdentity!=impl_->bones))throw std::invalid_argument("bone curve replacement owner");
+    std::string error;
+    for(const auto& track:tracks){
+        if(!ac::Validate(track,error)||track.discrete||track.keys.empty()||track.keys.front().frame||
+            track.keys.back().frame>frame_limits::maximum)throw std::invalid_argument("bone curve replacement track");
+        for(const auto& key:track.keys)if(std::abs(key.value)>1e12||std::abs(key.inSlope)>1e12||std::abs(key.outSlope)>1e12)
+            throw std::invalid_argument("bone curve replacement limit");
+    }
+    const auto valid=[](double value){return std::isfinite(value)&&value>=0.001&&value<=1000;};
+    for(unsigned c=6;c<9;++c){const auto& keys=tracks[c].keys;
+        for(std::size_t i=0;i<keys.size();++i){if(!valid(keys[i].value))throw std::invalid_argument("bone curve replacement scale");
+            if(i&&keys[i].interpolation==ac::Interpolation::Bezier){const auto& a=keys[i-1];const auto& b=keys[i];const double span=double(b.frame)-a.frame;
+                if(!valid(a.value+a.outSlope*a.outWeight*span)||!valid(b.value-b.inSlope*b.inWeight*span))
+                    throw std::invalid_argument("bone curve replacement scale hull");}}
+    }
+    Entry next;next.tracks=tracks;next.baseline=SnapshotTarget(view,bone,impl_->boneCount);next.nativeHash=SnapshotHash(next.baseline);
+    const auto found=impl_->curves.find(bone);if(found!=impl_->curves.end()&&SameEntry(found->second,next))return false;
+    if(found==impl_->curves.end())impl_->curves.emplace(bone,std::move(next));else SwapEntry(found->second,next);
+    impl_->storedIdentity=impl_->bones;return true;
+}
 bool AuthoringState::ReconcileTarget(int bone,const NativeKeyView& view,const std::vector<int>& registrations,
     const std::vector<std::pair<int,int>>* frameMap) {
     if(!impl_||!impl_->SameOwner(impl_->model)||bone<0||unsigned(bone)>=impl_->boneCount)
@@ -576,6 +603,25 @@ bool AuthoringState::ReconcileTarget(int bone,const NativeKeyView& view,const st
     next.registrations.insert(registrations.begin(),registrations.end());
     if(!ReconcileSnapshot(next,hash,std::move(native),frameMap))throw std::invalid_argument("bone curve target reconciliation");
     const bool changed=!SameEntry(next,found->second);SwapEntry(found->second,next);return changed;
+}
+bool ReadDetached(const unsigned char* model,int bone,Tracks& out) {
+    if(!model||bone<0||unsigned(bone)>=mdl::Mdl(model)->boneCount)return false;
+    const auto state=states.find(model);if(state==states.end()||state->second.identity!=mdl::Mdl(model)->boneTable)return false;
+    const auto authored=state->second.curves.find(bone);if(authored==state->second.curves.end())return false;
+    // A model-wide editor reads every bone. Copy just this author's entry:
+    // capturing the complete map for each bone would make that read quadratic.
+    Entry next=authored->second;
+    struct View { const unsigned char* model;std::size_t capacity; } context{model,mdl::BoneKeyCapacity(mdl::Mdl(model)->boneKeys)};
+    NativeKeyView view;view.context=&context;view.capacity=context.capacity;
+    view.key=[](const void* p,std::uint32_t slot)noexcept->const mdl::BoneKey*{
+        const auto& source=*static_cast<const View*>(p);const auto* keys=mdl::Mdl(source.model)->boneKeys;
+        return slot<source.capacity?&keys[slot]:nullptr;};
+    view.scale=[](const void* p,std::uint32_t slot,bone_scale::Matrix& matrix,bone_scale::Curve& curve)noexcept{
+        const auto* model=static_cast<const View*>(p)->model;
+        matrix=bone_scale::Key(model,int(slot));curve=bone_scale::KeyCurve(model,int(slot));return true;};
+    auto native=SnapshotTarget(view,bone,mdl::Mdl(model)->boneCount);const auto hash=SnapshotHash(native);
+    if(!ReconcileSnapshot(next,hash,std::move(native)))throw std::invalid_argument("detached bone curve reconciliation");
+    out=std::move(next.tracks);return true;
 }
 bool AuthoringState::Sample(int bone,double frame,std::uint64_t targetNativeHash,
     float position[3],float rotation[4],bone_scale::Matrix& scale) const noexcept {

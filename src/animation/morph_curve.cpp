@@ -76,7 +76,9 @@
 #include <memory>
 #include <new>
 #include <set>
+#include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -812,6 +814,18 @@ bool ReadMany(const MMDApp& app, const std::vector<int>& morphs,
         tracks.push_back(std::move(track));
     }
     out = std::move(tracks);error.clear();return true;
+}
+bool ReadManyDetached(const MMDApp& app,const std::vector<int>& morphs,
+    std::vector<ac::Track>& out,std::wstring& error){
+    out.clear();const auto* model=app.SelectedModel();
+    if(!model){error=Localized(app,L"モデルが選択されていません。",L"No model is selected.",L"没有选中模型。");return false;}
+    State detached;const State* state=nullptr;const auto found=States().find(model);
+    if(found!=States().end()&&Matches(found->second.identity,model)){detached=found->second;Sync(model,detached);state=&detached;}
+    std::vector<ac::Track> tracks;tracks.reserve(morphs.size());
+    for(int morph:morphs){ac::Track track;std::string detail;
+        if(!ReadSynced(model,state,morph,track,detail)){error=Localized(app,L"表情トラックを読み込めませんでした。",L"The morph track could not be read.",L"无法读取表情轨道。")+L" "+Widened(detail);return false;}
+        tracks.push_back(std::move(track));}
+    out=std::move(tracks);error.clear();return true;
 }
 
 // These answer for the effective curve: a curve whose native keys were all
@@ -1870,6 +1884,162 @@ bool SampleLayersTarget(const AuthoredLayers& layers,const NativeKeyView& view,
     if(!std::isfinite(result)){error="nonfinite morph target sample";return false;}
     out=result;return true;
 }
+
+#if !MMD_ORIGINAL_PROFILE
+namespace {
+using MorphPool=std::vector<mdl::MorphKey>;
+NativeKeyView PoolView(const MorphPool& pool){return {&pool,[](const void* p,std::uint32_t i)noexcept{const auto& v=*static_cast<const MorphPool*>(p);return i<v.size()?&v[i]:nullptr;},pool.size()};}
+std::vector<std::vector<unsigned>> ValidatedChains(const MorphPool& keys,unsigned count){
+    if(!count||count>keys.size())throw std::invalid_argument("missing morph curve tracks");
+    std::vector<std::vector<unsigned>> chains(count);std::vector<unsigned char> owned(keys.size());
+    for(unsigned morph=0;morph<count;++morph){unsigned slot=morph,previous=0,frame=0;
+        for(;;){if(slot>=keys.size()||owned[slot]||(slot<count&&slot!=morph))throw std::invalid_argument("shared morph curve chain");
+            const auto& key=keys[slot];if(key.previous>=keys.size()||key.next>=keys.size()||key.frame>unsigned(kMaximumFrame)||!std::isfinite(key.value)||
+                (chains[morph].empty()?key.frame!=0:key.frame<=frame||key.previous!=previous))throw std::invalid_argument("invalid morph curve key");
+            owned[slot]=1;chains[morph].push_back(slot);if(!key.next)break;previous=slot;frame=key.frame;slot=key.next;}
+    }
+    for(std::size_t i=count;i<keys.size();++i)if(!owned[i]&&keys[i].frame)throw std::invalid_argument("orphan morph curve key");
+    return chains;
+}
+std::vector<NativeKey> ViewChain(const NativeKeyView& view,unsigned count,unsigned morph){
+    if(!view.key||morph>=count||count>view.capacity)throw std::invalid_argument("invalid morph author target view");
+    std::vector<NativeKey> result;unsigned slot=morph,previous=0,frame=0;
+    for(std::size_t hops=0;;++hops){if(slot>=view.capacity||hops>=view.capacity||(hops&&slot<count))throw std::invalid_argument("morph author target chain");
+        const auto* key=view.key(view.context,slot);
+        if(!key||key->previous>=view.capacity||key->next>=view.capacity||key->frame>unsigned(kMaximumFrame)||!std::isfinite(key->value)||
+            (!hops?key->frame!=0:key->previous!=previous||key->frame<=frame))throw std::invalid_argument("morph author target key");
+        result.push_back({int(key->frame),key->value,key->allocated!=0});if(!key->next)break;previous=slot;frame=key->frame;slot=key->next;
+    }return result;
+}
+bool EqualTrack(const ac::Track& a,const ac::Track& b)noexcept{
+    if(a.discrete!=b.discrete||a.keys.size()!=b.keys.size())return false;
+    for(std::size_t i=0;i<a.keys.size();++i){const auto& x=a.keys[i];const auto& y=b.keys[i];
+        if(x.frame!=y.frame||x.value!=y.value||x.inSlope!=y.inSlope||x.outSlope!=y.outSlope||x.inWeight!=y.inWeight||x.outWeight!=y.outWeight||
+            x.interpolation!=y.interpolation||x.tangent!=y.tangent)return false;}
+    return true;
+}
+void ValidateFloatTrack(const ac::Track& track){
+    for(const auto& key:track.keys)if(!std::isfinite(float(key.value)))throw std::invalid_argument("morph curve value exceeds native float");
+    for(std::size_t i=1;i<track.keys.size();++i){const auto& a=track.keys[i-1];const auto& b=track.keys[i];
+        if(!std::isfinite(float(b.value)-float(a.value)))throw std::invalid_argument("morph native mirror interpolation overflows");
+        if(b.interpolation==ac::Interpolation::Bezier){const double span=double(b.frame)-a.frame;
+            const double y1=a.value+a.outSlope*a.outWeight*span,y2=b.value-b.inSlope*b.inWeight*span;
+            if(!std::isfinite(float(y1))||!std::isfinite(float(y2)))throw std::invalid_argument("morph curve control value exceeds native float");}
+    }
+}
+bool OwnedAuthorEqual(const State& a,const State& b,unsigned morph)noexcept{
+    const auto x=a.authored.find(int(morph)),y=b.authored.find(int(morph));
+    if((x==a.authored.end())!=(y==b.authored.end()))return false;
+    if(x!=a.authored.end()&&!EqualTrack(x->second,y->second))return false;
+    const auto m=a.mirror.find(int(morph)),n=b.mirror.find(int(morph));
+    return (m==a.mirror.end())==(n==b.mirror.end())&&(m==a.mirror.end()||SameNative(m->second,n->second));
+}
+void LayerAdd(std::uint64_t& bytes,std::uint64_t n,std::uint64_t stride=1)noexcept{bytes=stride&&n>(UINT64_MAX-bytes)/stride?UINT64_MAX:bytes+n*stride;}
+std::uint64_t LayerBytes(const State& state)noexcept{
+    std::uint64_t bytes=sizeof(State);
+    const auto tracks=[&](const auto& entries){LayerAdd(bytes,entries.size()+1,sizeof(typename std::decay_t<decltype(entries)>::value_type)+4*sizeof(void*));
+        for(const auto& entry:entries)LayerAdd(bytes,entry.second.keys.capacity(),sizeof(ac::Key));};
+    const auto chains=[&](const auto& entries){LayerAdd(bytes,entries.size()+1,sizeof(typename std::decay_t<decltype(entries)>::value_type)+4*sizeof(void*));
+        for(const auto& entry:entries)LayerAdd(bytes,entry.second.capacity(),sizeof(NativeKey));};
+    tracks(state.authored);tracks(state.effective);chains(state.mirror);chains(state.observed);return bytes;
+}
+template<class Map>void CopyLayerEntry(Map& target,const Map& source,int morph){const auto at=source.find(morph);if(at==source.end())target.erase(morph);else target[morph]=at->second;}
+}
+struct AuthoredReplacement::Impl{
+    unsigned char* model;Identity identity;bool beforePresent=false,published=false,forwardState=false;std::uint64_t generation=1,initialDigest=0;
+    State before,after;MorphPool target;std::vector<unsigned> changed;
+    Impl(unsigned char* value,const std::vector<ac::NamedTrack>& input):model(value),identity(IdentityOf(value)){
+        if(!model||!identity.keyPoolIdentity||!identity.morphs||!identity.morphCount||input.empty())throw std::invalid_argument("unowned morph curve replacement");
+        const auto& record=*mdl::Mdl(model);const auto capacity=mdl::MorphKeyCapacity(record);
+        target.assign(record.morphKeys,record.morphKeys+capacity);const auto chains=ValidatedChains(target,record.morphCount);
+        const auto found=States().find(model);
+        if(found!=States().end()){
+            if(!Matches(found->second.identity,model))throw std::invalid_argument("stale morph curve layers");
+            beforePresent=true;before=found->second;initialDigest=LayersDigest(before);
+        }
+        after=before;after.identity=identity;std::set<int> seen;std::vector<std::pair<unsigned,const ac::Track*>> ordered;
+        const auto sourceView=PoolView(target);std::string error;
+        for(const auto& named:input){int morph=-1;if(!TrackMatchesModel(record,named,morph,error)||!TrackInvariants(named,error)||!seen.insert(morph).second)
+                throw std::invalid_argument("invalid morph curve replacement");
+            ValidateFloatTrack(named.track);
+            const auto native=ViewChain(sourceView,record.morphCount,unsigned(morph));ac::Track effective;
+            const auto author=before.authored.find(morph);const auto mirror=before.mirror.find(morph);
+            if(author!=before.authored.end()){
+                if(mirror==before.mirror.end()||before.observed.find(morph)==before.observed.end())effective=author->second;
+                else Derive(author->second,mirror->second,native,effective);
+            }else effective=CurveOf(native);
+            if(EqualTrack(effective,named.track))continue;
+            ValidateFloatTrack(effective);
+            for(std::size_t i=1;i<native.size();++i)if(!std::isfinite(float(native[i].value)-float(native[i-1].value)))throw std::invalid_argument("morph source interpolation overflows");
+            changed.push_back(unsigned(morph));ordered.push_back({unsigned(morph),&named.track});
+        }
+        std::size_t free=0,reused=0,needed=0;for(std::size_t i=record.morphCount;i<target.size();++i)if(!target[i].frame)++free;
+        for(const auto& item:ordered){reused+=chains[item.first].size()-1;if(item.second->keys.size()-1>SIZE_MAX-needed)throw std::bad_alloc();needed+=item.second->keys.size()-1;}
+        if(needed>free+reused){const auto required=std::uint64_t(capacity)+needed-free-reused;
+            if(required>mdl::kMorphKeyCapacityLimit)throw std::bad_alloc();
+            target.resize(std::size_t((std::min)(std::uint64_t(mdl::kMorphKeyCapacityLimit),(std::max)(required,std::uint64_t(capacity)+capacity/2+4096))));}
+        for(const auto& item:ordered)for(unsigned slot:chains[item.first])target[slot]={};
+        std::size_t cursor=record.morphCount;
+        for(const auto& item:ordered){unsigned previous=item.first;target[previous].value=float(item.second->keys.front().value);target[previous].allocated=1;
+            for(std::size_t i=1;i<item.second->keys.size();++i){while(cursor<target.size()&&target[cursor].frame)++cursor;if(cursor>=target.size())throw std::invalid_argument("private morph mirror exhausted");
+                const unsigned fresh=unsigned(cursor++);auto& key=target[fresh];key={};key.frame=unsigned(item.second->keys[i].frame);key.value=float(item.second->keys[i].value);key.allocated=1;
+                key.previous=previous;target[previous].next=fresh;previous=fresh;}
+            const auto native=ViewChain(PoolView(target),record.morphCount,item.first);SetInstalled(after,int(item.first),*item.second,native);}
+    }
+    bool Current(bool forward)const noexcept{
+        if(!Matches(identity,model))return false;const auto found=States().find(model);
+        if(!published)return beforePresent?found!=States().end()&&Matches(found->second.identity,model)&&LayersDigest(found->second)==initialDigest:found==States().end();
+        if(found!=States().end()&&!Matches(found->second.identity,model))return false;
+        const auto& expected=forward?before:after;
+        if(found==States().end()){for(unsigned morph:changed)if(expected.authored.count(int(morph))||expected.mirror.count(int(morph)))return false;return true;}
+        for(unsigned morph:changed)if(!OwnedAuthorEqual(found->second,expected,morph))return false;return true;
+    }
+};
+struct AuthoredReplacement::Target::Impl{
+    std::shared_ptr<AuthoredReplacement::Impl> source;bool forward,published=false;std::uint64_t generation,digest=0;const State* previous=nullptr;
+    const mdl::MorphKey* allocation;
+    std::map<const unsigned char*,State>::node_type target,retired;NativeKeyView view;
+    Impl(std::shared_ptr<AuthoredReplacement::Impl> owner,const NativeKeyView& keys,bool direction):source(std::move(owner)),forward(direction),generation(source->generation),allocation(mdl::Mdl(source->model)->morphKeys),view(keys){
+        if(!source->Current(forward)||(!source->published&&!forward)||source->generation==UINT64_MAX)throw std::invalid_argument("changed morph author source");
+        const auto found=States().find(source->model);State state;
+        if(found!=States().end()){previous=&found->second;digest=LayersDigest(*previous);state=*previous;}
+        const auto& desired=forward?source->after:source->before;
+        for(unsigned morph:source->changed){CopyLayerEntry(state.authored,desired.authored,int(morph));CopyLayerEntry(state.effective,desired.effective,int(morph));
+            CopyLayerEntry(state.mirror,desired.mirror,int(morph));CopyLayerEntry(state.observed,desired.observed,int(morph));}
+        if(!state.authored.empty()||(forward||source->beforePresent)){state.identity=source->identity;std::map<const unsigned char*,State> staged;staged.emplace(source->model,std::move(state));target=staged.extract(staged.begin());}
+    }
+    bool Current()const noexcept{if(published||source->generation!=generation||!source->Current(forward)||mdl::Mdl(source->model)->morphKeys!=allocation)return false;
+        const auto found=States().find(source->model);const auto* now=found==States().end()?nullptr:&found->second;return now==previous&&(!now||LayersDigest(*now)==digest);}
+};
+AuthoredReplacement::AuthoredReplacement(unsigned char* model,const std::vector<ac::NamedTrack>& tracks):impl_(std::make_shared<Impl>(model,tracks)){}
+AuthoredReplacement::~AuthoredReplacement()=default;
+bool AuthoredReplacement::Changed()const noexcept{return !impl_->changed.empty();}
+bool AuthoredReplacement::IsCurrent()const noexcept{return impl_->Current(!impl_->forwardState);}
+NativeKeyView AuthoredReplacement::TargetKeys()const noexcept{return PoolView(impl_->target);}
+const std::vector<unsigned>& AuthoredReplacement::ChangedMorphs()const noexcept{return impl_->changed;}
+std::uint64_t AuthoredReplacement::RetainedBytes()const noexcept{std::uint64_t bytes=sizeof(*this)+sizeof(Impl)+4*sizeof(void*);LayerAdd(bytes,impl_->target.capacity(),sizeof(mdl::MorphKey));
+    LayerAdd(bytes,impl_->changed.capacity(),sizeof(unsigned));LayerAdd(bytes,LayerBytes(impl_->before));LayerAdd(bytes,LayerBytes(impl_->after));return bytes;}
+AuthoredReplacement::Target::Target(std::unique_ptr<Impl> p):impl_(std::move(p)){}
+AuthoredReplacement::Target::~Target()=default;
+std::unique_ptr<AuthoredReplacement::Target> AuthoredReplacement::Prepare(const NativeKeyView& keys,bool forward)const{return std::unique_ptr<Target>(new Target(std::make_unique<Target::Impl>(impl_,keys,forward)));}
+bool AuthoredReplacement::Target::IsCurrent()const noexcept{return impl_->Current();}
+bool AuthoredReplacement::Target::Sample(int morph,int frame,float& out)const{
+    if(frame<0||frame>kMaximumFrame||morph<0||unsigned(morph)>=impl_->source->identity.morphCount)return false;
+    const auto native=ViewChain(impl_->view,impl_->source->identity.morphCount,unsigned(morph));const auto& state=impl_->target.empty()?impl_->source->before:impl_->target.mapped();
+    const auto at=state.authored.find(morph);float value=0;
+    if(at!=state.authored.end()){
+        ac::Track effective;const auto mirror=state.mirror.find(morph),observed=state.observed.find(morph);
+        if(mirror==state.mirror.end()||observed==state.observed.end())effective=at->second;else Derive(at->second,mirror->second,native,effective);
+        value=float(ac::Evaluate(effective,frame).value);
+    }else{const auto upper=std::upper_bound(native.begin(),native.end(),frame,[](int f,const auto& key){return f<key.frame;});const auto lower=upper==native.begin()?upper:upper-1;
+        if(upper==native.end()||lower->frame==frame)value=float(lower->value);else{const float t=float(double(frame-lower->frame)/double(upper->frame-lower->frame)),delta=float(upper->value)-float(lower->value);value=float(double(t)*double(delta)+lower->value);}}
+    if(!std::isfinite(value))return false;out=value;return true;
+}
+void AuthoredReplacement::Target::Publish()noexcept{auto& p=*impl_;if(p.published||p.source->generation!=p.generation)std::terminate();
+    if(!p.target.empty())p.target.mapped().identity=IdentityOf(p.source->model);
+    p.retired=States().extract(p.source->model);if(!p.target.empty())States().insert(std::move(p.target));
+    p.source->published=true;p.source->forwardState=p.forward;++p.source->generation;p.published=true;}
+#endif
 
 }  // namespace mikudancestudio::morph_curve
 

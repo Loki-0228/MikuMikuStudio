@@ -171,7 +171,11 @@ struct ExternalEditFocusProbe {
     ~ExternalEditFocusProbe(){RemoveWindowSubclass(field,Window,1);}
 };
 void ExternalHistoryFocus(){
-    ExternalCurveJournal journal;HWND window=journal.Open();
+    ExternalCurveJournal journal;auto session=journal.Session();
+    session.sources[0].readKeySelection=[&](const std::string&){
+        std::vector<int> frames;for(const auto& key:journal.sources[0].data[0].track.keys)frames.push_back(key.frame);return frames;
+    };
+    HWND window=journal.window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
     // Permit native focus without showing a window or reading desktop pixels,
     // as in the existing modeless tab-order regression.
     const auto style=GetWindowLongPtrW(window,GWL_STYLE);const HWND previous=GetFocus();
@@ -194,7 +198,22 @@ void ExternalHistoryFocus(){
         "canonical read recovery enables editing without stealing the user's new focus");
     SetWindowLongPtrW(window,GWL_STYLE,style);if(previous&&IsWindow(previous))SetFocus(previous);
 }
+void ExternalHistoryReadBoundary(){
+    ExternalCurveJournal journal;HWND window=journal.Open();journal.Add(20,3);
+    const auto cursor=journal.cursor;const auto applies=journal.applies;
+    journal.onRead=[]{throw std::bad_alloc();};
+    journal.Add(30,7);
+    Check(journal.cursor==cursor&&journal.applies==applies&&journal.traversals==0,
+        "a pre-write source read exception refuses the edit before host publication or history traversal");
+    journal.ReadOnly(true);journal.onRead={};journal.Tick();journal.ReadOnly(false);
+    Check(KeyCount(window)==3,"a failed pre-write read recovers canonical data without replaying the refused edit");
+    journal.onRead=[&]{SendMessageW(window,WM_COMMAND,MAKEWPARAM(kIdUndo,BN_CLICKED),0);};
+    journal.Add(30,7);journal.onRead={};
+    Check(journal.cursor==cursor+1&&journal.applies==applies+1&&journal.traversals==0,
+        "source read callbacks cannot recursively traverse the host journal during pre-write or canonical reads");
+    journal.NoLocalHistory();
+}
 void ExternalHistoryChecks(){
-    ExternalHistoryAcrossSources();ExternalHistoryRefreshFailures();ExternalHistoryGesturesAndReentry();ExternalHistoryOptIn();ExternalHistoryFocus();
+    ExternalHistoryAcrossSources();ExternalHistoryRefreshFailures();ExternalHistoryGesturesAndReentry();ExternalHistoryOptIn();ExternalHistoryFocus();ExternalHistoryReadBoundary();
     Note("external shared history, canonical recovery and local-host compatibility");
 }

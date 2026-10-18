@@ -76,6 +76,7 @@
 #pragma once
 
 #include "mikudancestudio/animation_curve.hpp"
+#include "mikudancestudio/build_profile.hpp"
 #include "mikudancestudio/pmm_extension.hpp"
 
 #include <cstddef>
@@ -168,6 +169,10 @@ bool Read(const MMDApp& app, int morph, animation_curve::Track& out, std::wstrin
 // on every call, including writes made without an editor notification.
 bool ReadMany(const MMDApp& app, const std::vector<int>& morphs,
               std::vector<animation_curve::Track>& out, std::wstring& error);
+// Canonical read for a bound history session. Derives only on a private copy;
+// the live pristine, effective, mirror and observed maps remain untouched.
+bool ReadManyDetached(const MMDApp& app, const std::vector<int>& morphs,
+                      std::vector<animation_curve::Track>& out, std::wstring& error);
 
 // Authored-state queries.  They check the model identity but do not derive
 // against the native pool, so they stay cheap enough for a UI refresh.  They
@@ -234,6 +239,32 @@ struct NativeKeyView {
     const mdl::MorphKey* (*key)(const void*, std::uint32_t) noexcept = nullptr;
     std::size_t capacity = 0;
 };
+#if !MMD_ORIGINAL_PROFILE
+class AuthoredReplacement {
+    struct Impl;
+    std::shared_ptr<Impl> impl_;
+public:
+    AuthoredReplacement(unsigned char*, const std::vector<animation_curve::NamedTrack>&);
+    ~AuthoredReplacement();
+    bool Changed() const noexcept;
+    bool IsCurrent() const noexcept;
+    NativeKeyView TargetKeys() const noexcept;
+    const std::vector<unsigned>& ChangedMorphs() const noexcept;
+    std::uint64_t RetainedBytes() const noexcept;
+    class Target {
+        struct Impl;
+        std::unique_ptr<Impl> impl_;
+        explicit Target(std::unique_ptr<Impl>);
+        friend class AuthoredReplacement;
+    public:
+        ~Target();
+        bool IsCurrent() const noexcept;
+        bool Sample(int morph, int frame, float& out) const;
+        void Publish() noexcept;
+    };
+    std::unique_ptr<Target> Prepare(const NativeKeyView&, bool forward) const;
+};
+#endif
 class AuthoredLayers {
 public:
     AuthoredLayers();

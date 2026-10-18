@@ -873,7 +873,7 @@ void MaterializeCompareMask(Editor &editor);
 void UpdateKeyFields(Editor &editor);
 void UpdateBakeFields(Editor &editor);
 void UpdateEnabledState(Editor &editor);
-bool PullKeySelection(Editor &editor);
+bool PullKeySelection(Editor &editor, bool publishUi = true);
 void PublishKeySelection(Editor &editor);
 
 // ---------------------------------------------------------------------------
@@ -1155,7 +1155,14 @@ bool CheckSourceCurrent(Editor &editor) {
     }
     std::vector<Channel> latest;
     std::wstring error;
-    if (!source.read || !source.read(latest, error)) {
+    bool accepted=false;
+    try{
+        if(source.externalHistory){
+            ExternalOperation callback(editor.externalCallbackActive);
+            accepted=source.read&&source.read(latest,error);
+        }else accepted=source.read&&source.read(latest,error);
+    }catch(...){error.clear();}
+    if (!accepted) {
         if(source.externalHistory){
             auto& state=CurrentState(editor);state.valid=false;state.externalReadPending=true;
             state.reason=std::wstring(T(editor.session.language,StrReadFailed))+error;UpdateEnabledState(editor);
@@ -1496,7 +1503,7 @@ bool ReadRegisteredSource(Editor &editor, bool publishUi) {
         for (std::size_t index = 0; index < keys.size(); ++index)
             if (selectedFrames.count(keys[index].frame)) state.selection.insert(index);
     }
-    PullKeySelection(editor);
+    PullKeySelection(editor,publishUi);
     if (publishUi) {
         RefreshEditorsUi(editor);
         UpdateWindowTitle(editor);
@@ -3050,7 +3057,7 @@ void PublishKeySelection(Editor& editor){
         if(index<channel->track.keys.size())frames.push_back(channel->track.keys[index].frame);
     source.writeKeySelection(channel->id,frames);
 }
-bool PullKeySelection(Editor& editor){
+bool PullKeySelection(Editor& editor,bool publishUi){
     if(editor.drag!=Drag::None||editor.mmdDragHandle>=0)return false;
     auto* channel=ActiveChannel(editor);auto& source=CurrentSource(editor);
     if(!channel||!source.readKeySelection)return false;
@@ -3071,7 +3078,7 @@ bool PullKeySelection(Editor& editor){
         if(wanted.Contains(channel->track.keys[index].frame))selected.emplace_hint(selected.end(),index);
     if(selected==state.selection)return false;
     state.selection=std::move(selected);
-    UpdateKeyFields(editor);UpdateMmdPanel(editor);UpdateEnabledState(editor);InvalidateCanvas(editor);
+    if(publishUi){UpdateKeyFields(editor);UpdateMmdPanel(editor);UpdateEnabledState(editor);InvalidateCanvas(editor);}
     return true;
 }
 const wchar_t* PlayCaption(Editor& editor){

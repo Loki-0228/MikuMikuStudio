@@ -411,9 +411,19 @@ void CrossModelJournal(){
 #include "native_numpad_dispatch_checks.inc"
 #include "native_model_viewport_history_checks.inc"
 #include "native_curve_write_checks.inc"
+#include "native_morph_curve_write_checks.inc"
+#include "native_bone_curve_write_checks.inc"
 int main(int argc,char** argv){
     std::setvbuf(stdout,nullptr,_IONBF,0);
     const auto run=[](const char* name,void(*test)()){std::printf("RUN %s\n",name);test();};
+    if(argc==2&&!std::strcmp(argv[1],"--bone-curve-write-only")) {
+        run("NativeBoneCurveWriteChecks",NativeBoneCurveWriteChecks);
+        std::printf("PASS native bone curve write: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--morph-curve-write-only")) {
+        run("NativeMorphCurveWriteChecks",NativeMorphCurveWriteChecks);
+        std::printf("PASS native morph curve write: %u checks\n",checks);return 0;
+    }
     if(argc==2&&!std::strcmp(argv[1],"--curve-write-only")) {
         run("NativeCurveWriteChecks",NativeCurveWriteChecks);
         std::printf("PASS native curve write: %u checks\n",checks);return 0;
@@ -700,6 +710,8 @@ int main(int argc,char** argv){
     run("NativeObjectCommandChecks",NativeObjectCommandChecks);
     run("NativeAccessorySettingsChecks",NativeAccessorySettingsChecks);
     run("NativeCurveWriteChecks",NativeCurveWriteChecks);
+    run("NativeMorphCurveWriteChecks",NativeMorphCurveWriteChecks);
+    run("NativeBoneCurveWriteChecks",NativeBoneCurveWriteChecks);
     run("PoseAndStale",PoseAndStale);run("KeysAndChain",KeysAndChain);run("Bake",Bake);
     run("Deletion",Deletion);run("EmptyAndCycle",EmptyAndCycle);run("FreeCurves",FreeCurves);
     run("Scatter",Scatter);run("FailedNativeCommands",FailedNativeCommands);run("RemovalBindings",RemovalBindings);
