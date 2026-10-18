@@ -56,6 +56,13 @@ struct Spy {
     LPARAM lastTrackPosition = 0;
     int failComboAddAfter = -1;
     bool failNextComboItemData = false;
+    MMDApp* reenterApp = nullptr;
+    UINT reenterMessage = 0;
+    unsigned reentries = 0;
+    bool destroyOnReset = false;
+    bool replaceOnTextRead = false;
+    LRESULT nestedDelete = 0, nestedInsert = 0;
+    mdl::BoneRecord* renameOnTextRead = nullptr;
     bool Watch(HWND control) {
         if (!control || !SetWindowSubclass(control, Observe,
                 reinterpret_cast<UINT_PTR>(this), reinterpret_cast<DWORD_PTR>(this)))
@@ -74,6 +81,30 @@ struct Spy {
     static LRESULT CALLBACK Observe(HWND window, UINT message, WPARAM wp, LPARAM lp,
                                      UINT_PTR, DWORD_PTR pointer) {
         auto& self = *reinterpret_cast<Spy*>(pointer);
+        if (message == CB_GETLBTEXT && wp == 1 && self.renameOnTextRead) {
+            strcpy_s(self.renameOnTextRead->name, "source_edited");
+            self.renameOnTextRead = nullptr;
+        }
+        if (message == CB_GETLBTEXT && self.replaceOnTextRead) {
+            self.replaceOnTextRead = false;
+            wchar_t longer[512];
+            for (auto& character : longer) character = L'x';
+            longer[511] = L'\0';
+            self.nestedDelete = SendMessageW(window, CB_DELETESTRING, wp, 0);
+            self.nestedInsert = SendMessageW(window, CB_INSERTSTRING, wp, reinterpret_cast<LPARAM>(longer));
+        }
+        if (message == self.reenterMessage && self.reenterApp) {
+            auto* app = self.reenterApp;
+            self.reenterApp = nullptr;
+            ++self.reentries;
+            SyncAccessoryEditPanel(app);
+        }
+        if (message == CB_RESETCONTENT && self.destroyOnReset) {
+            self.destroyOnReset = false;
+            ++self.resetCombo;
+            DestroyWindow(window);
+            return CB_ERR;
+        }
         if (message == WM_SETTEXT) ++self.setText;
         else if (message == EM_REPLACESEL) ++self.replaceText;
         else if (message == EM_SETSEL) ++self.textSelection;
@@ -409,6 +440,93 @@ void NativeListPublicationFailure() {
     Check(SendMessageW(parent, CB_GETCURSEL, 0, 0) == 2 && SendMessageW(bones, CB_GETCURSEL, 0, 0) == 1 &&
         ComboText(bones, 1, L"stable_parent_two"), "next refresh repairs item-data publication failure");
 }
+void CachedSourceAndNativeMutations() {
+    Fixture f; StableParent(f);
+    const HWND combo = f.Item(panel::kAttachBoneCombo);
+    const auto before = f.accessory;
+    wchar_t nativeName[32] = L"wide native before";
+    wchar_t englishName[32] = L"wide english before";
+    f.firstBones[2].jpText = nativeName;
+    f.firstBones[2].enText = englishName;
+    f.Clear(); SyncAccessoryEditPanel(f.app.get());
+    Check(f.boneSpy.resetCombo == 1 && ComboText(combo, 1, nativeName),
+        "wide name source replaces legacy label without a model revision");
+    wcscpy_s(nativeName, L"wide native after");
+    f.Clear(); SyncAccessoryEditPanel(f.app.get());
+    Check(f.boneSpy.resetCombo == 1 && ComboText(combo, 1, nativeName),
+        "in-place wide name edit invalidates the stable cached list");
+    f.app->EnglishUI() = kUiEnglish;
+    f.Clear(); SyncAccessoryEditPanel(f.app.get());
+    Check(f.boneSpy.resetCombo == 1 && ComboText(combo, 1, englishName),
+        "cached wide labels follow the actual requested display language");
+    wcscpy_s(englishName, L"wide english after");
+    f.Clear(); SyncAccessoryEditPanel(f.app.get());
+    Check(f.boneSpy.resetCombo == 1 && ComboText(combo, 1, englishName),
+        "in-place English wide source change is observed with identical source pointers");
+    SendMessageW(combo, CB_DELETESTRING, 0, 0);
+    Check(SendMessageW(combo, CB_INSERTSTRING, 0, reinterpret_cast<LPARAM>(L"foreign text")) == 0 &&
+        SendMessageW(combo, CB_SETITEMDATA, 0, 0) != CB_ERR,
+        "replace a native cached row without changing the final row count");
+    f.Clear(); SyncAccessoryEditPanel(f.app.get());
+    Check(f.boneSpy.resetCombo == 1 && ComboText(combo, 0, L"english0") &&
+        SendMessageW(combo, CB_GETCURSEL, 0, 0) == 1,
+        "external same-count row replacement cannot retain a stale cached label or selection");
+    SendMessageW(combo, CB_SETITEMDATA, 1, 0);
+    f.Clear(); SyncAccessoryEditPanel(f.app.get());
+    Check(f.boneSpy.resetCombo == 1 && SendMessageW(combo, CB_GETITEMDATA, 1, 0) == 2,
+        "external cached item identity mutation is repaired");
+    const auto oldTranslation = gModelNameAutoTranslation;
+    gModelNameAutoTranslation = !oldTranslation;
+    f.Clear(); SyncAccessoryEditPanel(f.app.get());
+    Check(!f.boneSpy.resetCombo && ComboText(combo, 1, englishName),
+        "translation preference changes revalidate unchanged authoritative labels without rewriting them");
+    gModelNameAutoTranslation = oldTranslation;
+    f.Clear(); SyncAccessoryEditPanel(f.app.get());
+    Check(!f.boneSpy.resetCombo && ComboText(combo, 1, englishName),
+        "restoring translation preference also preserves an identical displayed list");
+    f.Clear(); refresh_allocation::attempts = 0; refresh_allocation::observe = true;
+    for (unsigned i = 0; i < 10; ++i) SyncAccessoryEditPanel(f.app.get());
+    refresh_allocation::observe = false;
+    Check(!refresh_allocation::attempts && f.NoWrites() &&
+        !std::memcmp(&before, &f.accessory, sizeof(before)) && !f.app->SceneModified(),
+        "unchanged cached wide sources allocate no C++ memory and preserve native authoring");
+}
+void CachedListReentryAndLifetime() {
+    Fixture f; StableParent(f);
+    const HWND combo = f.Item(panel::kAttachBoneCombo);
+    SendMessageW(combo, CB_SETITEMDATA, 0, 0);
+    f.boneSpy.replaceOnTextRead = true;
+    f.Clear(); SyncAccessoryEditPanel(f.app.get());
+    Check(f.boneSpy.nestedDelete == CB_ERR && f.boneSpy.nestedInsert == CB_ERR &&
+        f.boneSpy.resetCombo == 1 && ComboText(combo, 1, L"stable_parent_two") &&
+        SendMessageW(combo, CB_GETCOUNT, 0, 0) == 2,
+        "bounded native text read rejects synchronous row growth then retries complete publication");
+    SendMessageW(combo, CB_SETITEMDATA, 0, 0);
+    f.boneSpy.renameOnTextRead = &f.firstBones[0];
+    f.Clear(); SyncAccessoryEditPanel(f.app.get());
+    Check(f.boneSpy.resetCombo == 1 && ComboText(combo, 0, L"source_edited") &&
+        ComboText(combo, 1, L"stable_parent_two"),
+        "source change during native verification cannot publish an already stale readiness result");
+    f.accessory.parentModel = 8;
+    f.boneSpy.reenterApp = f.app.get(); f.boneSpy.reenterMessage = CB_ADDSTRING;
+    f.Clear(); SyncAccessoryEditPanel(f.app.get());
+    Check(f.boneSpy.reentries == 1 && f.boneSpy.resetCombo == 1 &&
+        SendMessageW(f.Item(panel::kMainComboGround), CB_GETCURSEL, 0, 0) == 4 &&
+        ComboText(f.Item(panel::kAttachBoneCombo), 1, L"second2"),
+        "synchronous native list reentry never publishes or selects a partially constructed list");
+    f.accessory.parentModel = 5; f.boneSpy.destroyOnReset = true;
+    f.Clear(); SyncAccessoryEditPanel(f.app.get());
+    Check(!f.Item(panel::kAttachBoneCombo) && !f.parentSpy.selectCombo && !f.boneSpy.selectCombo &&
+        SendMessageW(f.Item(panel::kMainComboGround), CB_GETCURSEL, 0, 0) == 4,
+        "synchronous combo destruction cancels publication and retains the previous parent selection");
+    Check(f.boneSpy.Watch(f.Add(L"COMBOBOX", panel::kAttachBoneCombo, CBS_DROPDOWNLIST)),
+        "create a replacement native window after retiring its per-window cache");
+    f.Clear(); SyncAccessoryEditPanel(f.app.get());
+    Check(f.boneSpy.resetCombo == 1 && f.parentSpy.selectCombo == 1 &&
+        ComboText(f.Item(panel::kAttachBoneCombo), 1, L"stable_parent_two") &&
+        SendMessageW(f.Item(panel::kAttachBoneCombo), CB_GETCURSEL, 0, 0) == 1,
+        "replacement window receives a fresh complete list and source identity");
+}
 void LargeStableParentTiming() {
     Fixture f;
     std::vector<mdl::BoneRecord> bones(4000);
@@ -431,6 +549,7 @@ void LargeStableParentTiming() {
     refresh_allocation::observe = false;
     QueryPerformanceCounter(&end);
     const auto allocations = refresh_allocation::attempts;
+    Check(allocations == 0, "warm stable 4000-bone refresh performs no C++ allocation");
     Check(f.NoWrites() && !f.app->SceneModified() && f.app->CurrentFrame() == 17,
         "4000-bone stable refresh sends no list, checkbox, selection or edit mutation");
     const double milliseconds = double(end.QuadPart - begin.QuadPart) * 1000.0 / double(frequency.QuadPart);
@@ -484,7 +603,8 @@ int main() {
     Check(InitCommonControlsEx(&controls) != FALSE, "initialize native common controls");
     OrdinaryPose(); ShadowRangeReadout(); AccessoryParentsAndContents();
     AllocationFailureReadout(false); AllocationFailureReadout(true);
-    NativeListPublicationFailure(); LargeStableParentTiming();
+    NativeListPublicationFailure(); CachedSourceAndNativeMutations();
+    CachedListReentryAndLifetime(); LargeStableParentTiming();
 #if !MMD_ORIGINAL_PROFILE
     BoundDrafts(); BoundAllocationFailureReadout();
 #endif

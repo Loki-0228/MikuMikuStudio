@@ -41,6 +41,7 @@
 #include "mikudancestudio/bone_combo.hpp"
 #include "mikudancestudio/accessory_layout.hpp"
 #include "mikudancestudio/panel_controls.hpp"
+#include "accessory_bone_combo_cache.hpp"
 
 namespace mikudancestudio {
 namespace {
@@ -109,14 +110,22 @@ void FormatLegacyOneDecimal(char* text, std::size_t size, float value) {
 
 // Compare the actual list as well as the parent row. Model slots and combo
 // rows have different identities, and labels/bone filtering can change while
-// the selected parent row stays the same. Avoid a process-wide window cache.
+// the selected parent row stays the same. The optional cache is window-owned,
+// observes all list mutations, and still compares live source contents.
 bool AccessoryBoneComboMatches(HWND combo, const mdl::ModelRecord* model,
                                bool english) {
     if (combo == nullptr)
         return true;
+    auto cache = accessory_bone_combo::Find(combo, true);
+    if (!cache || cache->busy) return false;
+    if (cache && cache->valid && cache->source.Matches(model, english)) return true;
+    accessory_bone_combo::Guard guard(cache);
+    accessory_bone_combo::Source source;
+    const bool captured = cache && accessory_bone_combo::Source::Capture(model, english, source);
+    const auto mutations = cache ? cache->mutations : 0;
     LRESULT row = 0;
     const LRESULT count = SendMessageW(combo, CB_GETCOUNT, 0, 0);
-    if (count < 0)
+    if (count < 0 || !guard.Alive())
         return false;
     if (model != nullptr && model->boneTable != nullptr) {
         for (std::uint32_t bone = 0; bone < model->boneCount; ++bone) {
@@ -124,29 +133,40 @@ bool AccessoryBoneComboMatches(HWND combo, const mdl::ModelRecord* model,
             if (record.type >= mdl::BoneType::InertTip &&
                 record.type != mdl::BoneType::FixedAxis)
                 continue;
-            if (row >= count ||
-                SendMessageW(combo, CB_GETITEMDATA, row, 0) != bone)
-                return false;
             const auto label = text_encoding::BoneLabel(record, english);
+            if (row >= count ||
+                SendMessageW(combo, CB_GETITEMDATA, row, 0) != bone || !guard.Alive())
+                return false;
+            accessory_bone_combo::ReadGuard read(cache);
             if (SendMessageW(combo, CB_GETLBTEXTLEN, row, 0) !=
-                static_cast<LRESULT>(label.size()))
+                static_cast<LRESULT>(label.size()) || !guard.Alive())
                 return false;
             std::wstring actual(label.size() + 1, L'\0');
             if (SendMessageW(combo, CB_GETLBTEXT, row,
                     reinterpret_cast<LPARAM>(actual.data())) !=
                     static_cast<LRESULT>(label.size()) ||
+                !guard.Alive() || cache->mutations != mutations ||
                 actual.compare(0, label.size(), label) != 0)
                 return false;
+            if (captured && (model->boneTable != source.table || model->boneCount != source.count)) return false;
             ++row;
         }
     }
-    return row == count;
+    if (!guard.Alive() || row != count || (cache && cache->mutations != mutations)) return false;
+    if (captured) {
+        if (!source.Matches(model, english)) return false;
+        cache->Remember(std::move(source), mutations);
+    }
+    return true;
 }
 
 bool RebuildAccessoryBoneCombo(HWND combo, const mdl::ModelRecord* model,
                                 bool english) {
     if (combo == nullptr)
         return true;
+    auto cache = accessory_bone_combo::Find(combo, true);
+    if (!cache || cache->busy) return false;
+    accessory_bone_combo::Guard guard(cache);
     struct Row { std::wstring label; std::uint32_t bone; };
     std::vector<Row> rows;
     if (model != nullptr && model->boneTable != nullptr) {
@@ -159,23 +179,47 @@ bool RebuildAccessoryBoneCombo(HWND combo, const mdl::ModelRecord* model,
             rows.push_back({text_encoding::BoneLabel(record, english), bone});
         }
     }
+    accessory_bone_combo::Source source;
+    const bool captured = cache && accessory_bone_combo::Source::Capture(model, english, source);
     // Complete all C++ allocation before retiring the displayed list. A native
     // control can still run out of space while publishing; leave its selection
     // empty and retry on the next content/parent mismatch in that case.
-    if (SendMessageW(combo, CB_RESETCONTENT, 0, 0) == CB_ERR)
+    std::size_t longest = 0;
+    for (const auto& row : rows) longest = (std::max)(longest, row.label.size());
+    std::wstring actual(longest + 1, L'\0');
+    if (SendMessageW(combo, CB_RESETCONTENT, 0, 0) == CB_ERR || !guard.Alive())
         return false;
     for (const auto& row : rows) {
         const LRESULT index = SendMessageW(combo, CB_ADDSTRING, 0,
             reinterpret_cast<LPARAM>(row.label.c_str()));
-        if (index == CB_ERR || index == CB_ERRSPACE ||
-            SendMessageW(combo, CB_SETITEMDATA, index, row.bone) == CB_ERR)
+        if (!guard.Alive() || index == CB_ERR || index == CB_ERRSPACE ||
+            SendMessageW(combo, CB_SETITEMDATA, index, row.bone) == CB_ERR || !guard.Alive())
             return false;
+    }
+    // Native callbacks can change the list during publication. Only cache a
+    // complete, verified result; any failed/partial attempt remains invalid.
+    const auto mutations = cache ? cache->mutations : 0;
+    if (SendMessageW(combo, CB_GETCOUNT, 0, 0) != static_cast<LRESULT>(rows.size()) || !guard.Alive()) return false;
+    for (std::size_t i = 0; i < rows.size(); ++i) {
+        const auto& row = rows[i];
+        if (SendMessageW(combo, CB_GETITEMDATA, i, 0) != row.bone || !guard.Alive()) return false;
+        accessory_bone_combo::ReadGuard read(cache);
+        if (SendMessageW(combo, CB_GETLBTEXTLEN, i, 0) != static_cast<LRESULT>(row.label.size()) || !guard.Alive()) return false;
+        if (SendMessageW(combo, CB_GETLBTEXT, i, reinterpret_cast<LPARAM>(actual.data())) != static_cast<LRESULT>(row.label.size()) ||
+            !guard.Alive() || cache->mutations != mutations ||
+            actual.compare(0, row.label.size(), row.label) != 0) return false;
+    }
+    if (!guard.Alive() || (cache && cache->mutations != mutations)) return false;
+    if (captured) {
+        if (!source.Matches(model, english)) return false;
+        cache->Remember(std::move(source), mutations);
     }
     return true;
 }
 
 void SelectAccessoryBoneIfChanged(HWND combo, int bone) {
     const LRESULT current = SendMessageW(combo, CB_GETCURSEL, 0, 0);
+    if (bone >= 0 && current >= 0 && SendMessageW(combo, CB_GETITEMDATA, current, 0) == bone) return;
     const LRESULT count = SendMessageW(combo, CB_GETCOUNT, 0, 0);
     LRESULT target = -1;
     for (LRESULT row = 0; row < count; ++row) {
