@@ -51,8 +51,9 @@ bool AllowViewportCameraPreview(MMDApp&, UINT button) noexcept;
 bool AcceptViewportCameraPreview(MMDApp&) noexcept;
 MmsResult EndViewportCameraGesture(MMDApp&, bool& changed) noexcept;
 bool CancelViewportCameraGesture(MMDApp&) noexcept;
-// Model view uses offsets/angles/distance, never bone poses. A matched follow
-// parent's legacy hint/release path remains closed until separately migrated.
+// Model view uses offsets/angles/distance, never bone poses. For a matched
+// follow parent, RMB only displays its native trace hint; MMB pans offsets.
+// Release/cancel clears or restores the hint, and only numeric changes record.
 // Camera and model gestures are mutually exclusive. Existing camera preview,
 // end and cancel entries dispatch an active model gesture too, sharing the
 // original pump math and existing reset/unbind/shutdown hooks. Begin stays
@@ -60,14 +61,21 @@ bool CancelViewportCameraGesture(MMDApp&) noexcept;
 MmsResult BeginViewportModelGesture(MMDApp&, SharedHistory&, HWND owner, UINT button) noexcept;
 bool AllowViewportModelPreview(MMDApp&, UINT button) noexcept;
 bool AcceptViewportModelPreview(MMDApp&) noexcept;
+// Keep the exact gesture alive across synchronous native refresh callbacks;
+// a callback may cancel it and start a distinct gesture in the same app.
+std::shared_ptr<const HistoryChange> ViewportModelFollowRefreshSource(MMDApp&) noexcept;
+// Record only hint values the native pump has actually stored. The pump
+// accepts the numeric sample before synchronous refresh callbacks and checks
+// it again before the refresh's final layout store.
+void RecordViewportModelFollowHint(MMDApp&) noexcept;
 MmsResult EndViewportModelGesture(MMDApp&, bool& changed) noexcept;
 bool CancelViewportModelGesture(MMDApp&) noexcept;
 // A wheel message is one adjustment. Main/float legacy math differs, and
 // parented main-window cameras adjust target Z instead of distance.
 MmsResult AdjustViewportCameraWheel(MMDApp&, SharedHistory&, std::int16_t delta,
     bool floating, bool& changed) noexcept;
-// The detached window has no matched-parent wheel hint path and remains
-// supported there; only the main-window matched-follow wheel fails closed.
+// The detached wheel always adjusts distance. The main-window matched-follow
+// branch only updates native trace hints, leaving author data and redo intact.
 MmsResult AdjustViewportModelWheel(MMDApp&, SharedHistory&, std::int16_t delta,
     bool floating, bool& changed) noexcept;
 // One pump batch, in original 2/4/6/8/5/0/1 order, is one Adjustment.

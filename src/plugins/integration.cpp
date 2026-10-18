@@ -18,8 +18,11 @@
 #include "mikudancestudio/ported_funcs.hpp"
 #include "mikudancestudio/runtime_log.hpp"
 #include "mikudancestudio/build_profile.hpp"
+#include "../window/ui_control_layout.hpp"
 #include <ShlObj.h>
 #include <commctrl.h>
+
+namespace mikudancestudio { void LayoutViewportPanels(MMDApp*); }
 
 namespace mikudancestudio::plugins {
 namespace {
@@ -164,6 +167,22 @@ static void InitializeRuntime(MMDApp* app, bool migrationTest) {
         }
 #endif
         ui = std::make_unique<NativeUi>(manager->Ui(), app->MainWindow(), LogMessage);
+        ui->SetLayoutPublished([app](int height) -> MmsResult {
+            if (closing || owner != app || !app->WindowLayoutReady() || app->SceneMutationInProgress()) return MMS_E_NOT_READY;
+            toolbarHeight = height;
+            // Only the geometry that depends on the plugin strip changes.
+            // Do not enter HandleWindowSize, FrameDriver or scene evaluation.
+            return Boundary([&] {
+                mikudancestudio::ui::LayoutBatch batch;
+                RefreshMainWindowViewport(app);
+                LayoutViewportPanels(app);
+                const bool applied = batch.Commit();
+                RECT damage{}; GetClientRect(app->MainWindow(), &damage);
+                damage.left = app->SidebarWidth() + 9; damage.bottom = std::max(0L, damage.bottom - 157);
+                mikudancestudio::ui::RepaintLayout(app->MainWindow(), batch.Changes(), damage);
+                return applied ? MMS_OK : MMS_E_FAILED;
+            });
+        });
         if (!SetWindowSubclass(app->MainWindow(), Subclass, 0x4d4d5301, 0)) throw std::runtime_error("plugin lifetime hook failed");
         manager->Load(fs::path(module).parent_path() / L"PLUGINS"); Refresh(app); return MMS_OK;
     });

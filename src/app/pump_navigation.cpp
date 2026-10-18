@@ -132,11 +132,34 @@ bool BoneEditPathActive(MMDApp* app) {
 
 // The view-lock sequence around PostLanguageSweep2 (0x40D070):
 // 0xA442C = windowLayoutReady, 0xA05D1 = viewDirty view-dirty.
-void EnterBoneEditRefresh(MMDApp* app, bool hold) {
+bool EnterBoneEditRefresh(MMDApp* app, bool hold, UINT button) {
+#if !MMD_ORIGINAL_PROFILE
+    const bool bound=plugins::BoundNativePoseHistory(app)!=nullptr;
+    const auto source=bound?plugins::ViewportModelFollowRefreshSource(*app):nullptr;
+    // MMB has already written its two native float results. Accept that real
+    // sample before EnableWindow in PostLanguageSweep2 can synchronously move
+    // capture or cancel the gesture; cancellation must own this sample too.
+    if(bound&&(!source||!plugins::AcceptViewportCameraPreview(*app)))return false;
+#endif
     app->state.viewDirty = hold ? 1 : 0;                 // 0xA05D1
     app->state.windowLayoutReady = 0;                   // 0xA442C
+#if !MMD_ORIGINAL_PROFILE
+    if(bound)plugins::RecordViewportModelFollowHint(*app);
+#endif
     PostLanguageSweep2(app);                            // 0x40D070
+#if !MMD_ORIGINAL_PROFILE
+    // A synchronous callback may have cancelled the accepted sample. Do not
+    // overwrite its restored layout flag after returning from that callback.
+    if(bound&&(plugins::ViewportModelFollowRefreshSource(*app)!=source||
+        !plugins::AllowViewportCameraPreview(*app,button)))return false;
+#else
+    (void)button;
+#endif
     app->state.windowLayoutReady = 1;
+#if !MMD_ORIGINAL_PROFILE
+    if(bound)plugins::RecordViewportModelFollowHint(*app);
+#endif
+    return true;
 }
 
 // Camera/accessory-mode branch shared by every preset key (x64 sites
@@ -342,7 +365,7 @@ void ConsumeRightButtonDrag(MMDApp* app) {
 
     if (state.rightMouseButtonState == 3 && inputActive) {      // 0x470BF5
         if (modelMode && BoneEditPathActive(app)) {             // 0x470C15..
-            EnterBoneEditRefresh(app, /*hold=*/true);           // 0x470C57..
+            EnterBoneEditRefresh(app, /*hold=*/true, WM_RBUTTONDOWN); // 0x470C57..
             return;                 // bone path skips PostViewRefresh
         }
         if (modelMode && app->ShiftModifierActive()) {          // 0x470C7A
@@ -372,7 +395,7 @@ void ConsumeRightButtonDrag(MMDApp* app) {
 
     if (state.rightMouseButtonState == 2 && inputActive) {      // 0x470D62
         if (modelMode && BoneEditPathActive(app))
-            EnterBoneEditRefresh(app, /*hold=*/false);          // 0x470DB9..
+            EnterBoneEditRefresh(app, /*hold=*/false, WM_RBUTTONDOWN); // 0x470DB9..
     }
 }
 
@@ -407,8 +430,9 @@ void ConsumeMiddleButtonPan(MMDApp* app) {
                 static_cast<float>(dy) * scale;                 // 0x30C
             app->ViewOffsetX() = app->ViewOffsetX() -
                 static_cast<float>(dx) * scale;                 // 0x308
-            if (BoneEditPathActive(app))                        // 0x44DA78..
-                EnterBoneEditRefresh(app, /*hold=*/true);       // 0x44DAC8..
+            if (BoneEditPathActive(app) &&                      // 0x44DA78..
+                !EnterBoneEditRefresh(app, /*hold=*/true, WM_MBUTTONDOWN))
+                return;                                        // 0x44DAC8..
         } else if (app->CameraParentModel() >= 0) {             // 0x44DAF0
             PanSelectedCameraKey(app, dx, dy);                  // 0x44DAFF..
         } else {
@@ -423,7 +447,7 @@ void ConsumeMiddleButtonPan(MMDApp* app) {
 
     if (state.middleMouseButtonState == 2 && inputActive) {     // 0x44DE6E
         if (modelMode && BoneEditPathActive(app))
-            EnterBoneEditRefresh(app, /*hold=*/false);          // 0x44DED3..
+            EnterBoneEditRefresh(app, /*hold=*/false, WM_MBUTTONDOWN); // 0x44DED3..
     }
 }
 

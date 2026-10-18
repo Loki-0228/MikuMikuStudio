@@ -1,10 +1,10 @@
-# 界面重绘接口参考
+# 界面刷新接口参考
 
-`mms.ui.refresh` 1.0 为插件自己的工具栏按钮和原生 surface 面板安排异步重绘。接口定义见 [refresh.h](include/mms/refresh.h)。结构使用 `MmsHeader`、`MMS_CALL` 和 8 字节对齐，调用失败不修改输出参数。
+`mms.ui.refresh` 1.0 为插件自己的工具栏按钮和原生 surface 面板安排异步刷新。接口定义见 [refresh.h](include/mms/refresh.h)。结构使用 `MmsHeader`、`MMS_CALL` 和 8 字节对齐，调用失败不修改输出参数。
 
-当前支持 `REPAINT + SELF`，以及已创建宿主按钮的 `STATE + SELF`。STATE 更新启用与选中；有效布局提示包含 `MMS_HINT_PRESERVE_HIDDEN_SLOT` 时，也可在现有槽位隐藏或恢复按钮。面板不报告 STATE。已绑定目标还支持 `DATA + SELF`，见[数据绑定接口](data-refresh.md)。LAYOUT、SUBTREE、DEPENDENTS、来源订阅和动画帧尚未提供。
+当前支持 `REPAINT + SELF`，以及已创建宿主按钮的 `STATE + SELF`。STATE 更新启用、选中及受支持的显隐；面板不报告 STATE。已绑定目标还支持 `DATA + SELF`，见[数据绑定接口](data-refresh.md)。原生布局后端为已有按钮和已挂载 surface 提供 `LAYOUT + SELF`，按保留的布局树重新测量和排列。SUBTREE、DEPENDENTS、来源订阅、自动依赖、插件量测提供者和动画帧尚未提供。
 
-REPAINT 在 UI 安全点调用 `InvalidateRect` 或 `InvalidateRgn`，不查询命令状态或直接执行绘制。STATE 在相同安全点只读调用该按钮的 getState，再更新原生启用与选中状态。DATA 先准备并交换不可变显示模型，组合请求按 DATA、STATE、REPAINT 执行。这些阶段均不重新布局、不调用 `FrameDriver`，不修改播放头、工程 dirty 或撤销历史。插件窗口后续的正常 `WM_PAINT` 仍由插件处理。
+组合请求在同一队列中按 DATA、STATE、LAYOUT、REPAINT 执行。DATA 准备并交换不可变显示模型；STATE 只读查询目标按钮的 getState；LAYOUT 使用已保留的描述、提示和状态排版；REPAINT 调用 `InvalidateRect` 或 `InvalidateRgn`，不直接执行绘制。刷新不调用 `FrameDriver`，不修改播放头、工程 dirty 或撤销历史，也不保存布局偏好。插件窗口后续的正常 `WM_PAINT` 仍由插件处理。
 
 ## 服务查询与线程
 
@@ -39,7 +39,7 @@ REPAINT 在 UI 安全点调用 `InvalidateRect` 或 `InvalidateRgn`，不查询�
 | `target.instanceGeneration` | 宿主分配的呈现实例代次。销毁、重建或失效后重新发布会改变该值。 |
 | `target.projectEpoch` | 当前工程上下文代次。场景替换或重置后旧值失效。 |
 | `geometryRevision` | 当前实际几何修订，包括位置、客户区尺寸、窗口坐标空间 DPI 和逻辑可见性。 |
-| `supportedKinds`、`supportedScopes` | 宿主按钮报告 REPAINT、STATE；面板报告 REPAINT。已有有效绑定时额外报告 DATA。范围均为 SELF。全局能力是并集，调用前还须检查目标能力。 |
+| `supportedKinds`、`supportedScopes` | 宿主按钮报告 REPAINT、STATE；面板报告 REPAINT。原生布局后端支持的已有按钮及已挂载 surface 额外报告 LAYOUT；有效绑定额外报告 DATA。范围均为 SELF。全局能力是并集，调用前还须检查目标能力。 |
 | `ready` | 已有可用窗口、布局发布成功且客户区宽高均大于零时为 1。 |
 | `visible` | 目标在插件布局中的逻辑可见性。此值不表示窗口无遮挡，也不要求宿主顶层窗口已显示。 |
 | `width`、`height` | 目标客户区的 DIP 尺寸。 |
@@ -48,7 +48,9 @@ REPAINT 在 UI 安全点调用 `InvalidateRect` 或 `InvalidateRgn`，不查询�
 
 尚未创建窗口的元素返回 `NOT_READY`，查询不会创建或显示 surface。已创建但隐藏的目标可以有 `ready=1`、`visible=0`，仍可接受重绘请求。请求不强制显示窗口。
 
-布局开始移动窗口前暂停目标。暂停期间 `getTarget` 可以成功返回 `ready=0`，新请求返回 `NOT_READY`。只有完整成功的布局才重新发布目标；失败或分配异常不会继续接受旧坐标。暂停本身不增加几何修订，实际几何未变化的再次布局保留原修订和实例代次。
+布局开始移动窗口前暂停目标和公开几何。暂停期间 `getTarget` 可以成功返回 `ready=0`，新请求返回 `NOT_READY`，新布局快照也返回 `NOT_READY`。只有完整成功的布局才重新发布；失败或分配异常不会继续接受旧坐标，已有不可变快照租约仍可读。暂停本身不增加几何修订，实际几何未变化的再次布局保留原修订和实例代次。
+
+已收缩为零尺寸的目标仍可保留窗口和同一目标引用。它的 `ready=0`，但在未暂停、实例和工程有效且目标支持 LAYOUT 时，可以接受含 LAYOUT 的请求。恢复按钮命令的可见性应使用 STATE 与 LAYOUT 组合；纯 REPAINT 或 STATE 不绕过零尺寸检查。
 
 注销元素、销毁 view 或更新导致目标失效时，旧的待执行票据以 `STALE` 结束。工程上下文切换同样使旧目标引用失效。单纯移动和缩放保持实例代次，但改变几何修订。
 
@@ -60,7 +62,7 @@ REPAINT 在 UI 安全点调用 `InvalidateRect` 或 `InvalidateRgn`，不查询�
 | --- | --- |
 | `target` | 完整复制 `getTarget` 返回的引用。 |
 | `binding`、`sourceRevision` | 含 DATA 时填写有效绑定与当前非零来源版本；不含 DATA 时必须为 0，见[绑定规则](data-refresh.md)。 |
-| `kinds` | REPAINT、STATE、DATA 或其组合；目标须支持所请求的全部种类。 |
+| `kinds` | REPAINT、STATE、DATA、LAYOUT 或其组合；目标须支持所请求的全部种类。 |
 | `scope` | 必须为 `MMS_UI_REFRESH_SELF`。 |
 | `expectedGeometryRevision` | 局部矩形请求必须填写取得矩形时的非零几何修订。整目标请求可填 0，表示接受执行时的有效几何；填写非零值时仍严格检查。 |
 | `dirtyRects` | REPAINT 的局部数组；非空时 stride 至少为结构大小、recordVersion=1。count=0 表示整个目标客户区。不含 REPAINT 时必须 count=0。 |
@@ -71,7 +73,7 @@ REPAINT 在 UI 安全点调用 `InvalidateRect` 或 `InvalidateRgn`，不查询�
 
 宿主把矩形裁剪到目标客户区，再按该窗口坐标空间的 DPI 向外取整为像素区域。多个矩形取并集；零面积或完全位于客户区外的矩形不产生损伤。没有矩形表示整个目标，不表示整个 MMS 窗口或场景。
 
-宿主在接收和执行时都检查实例、工程代次及非零的几何修订。带旧修订的矩形返回 `STALE`，不会自动改成全窗口重绘。零几何修订只免除整目标请求的几何匹配，不能绕过 `ready`、实例或工程检查。
+宿主在接收和执行时都检查实例、工程代次及非零的几何修订。带旧修订的矩形返回 `STALE`，不会自动改成全窗口重绘。零几何修订只免除整目标请求的几何匹配，不能绕过实例、工程或布局暂停检查；零尺寸恢复仅适用上述含 LAYOUT 的请求。
 
 ## 票据状态与合并
 
@@ -81,7 +83,7 @@ REPAINT 在 UI 安全点调用 `InvalidateRect` 或 `InvalidateRgn`，不查询�
 | --- | --- |
 | `PENDING` | 已接受，等待 UI 安全点处理。 |
 | `RUNNING` | 已进入本次处理批次，不能再取消。 |
-| `COMPLETED` | 请求的状态更新及区域失效操作均成功；`result=MMS_OK`，completedKinds 为请求种类。 |
+| `COMPLETED` | 请求的各刷新阶段均成功；`result=MMS_OK`，completedKinds 为请求种类。 |
 | `CANCELLED` | 在执行前取消，`result=MMS_E_CANCELLED`。 |
 | `FAILED` | 校验或窗口失效操作失败；`result` 保存错误码。 |
 
@@ -89,13 +91,13 @@ REPAINT 在 UI 安全点调用 `InvalidateRect` 或 `InvalidateRgn`，不查询�
 
 合并只处理本批待执行贡献，要求相同插件、目标、coalesceKey、kinds、binding、sourceRevision 和几何约束策略。固定修订请求与接受当前几何的请求分组处理，避免过期局部请求使合法整目标请求失败。同组 STATE 只计算一次；任一整目标重绘贡献会覆盖同组局部矩形。不同 kinds 独立处理，STATE 失败不会吞掉另一张纯 REPAINT 票据。取消一个 PENDING 票据仅撤回自身贡献。cancel 对终态票据返回成功，不改变既有结果。
 
-STATE 与 REPAINT 组合时先更新状态，再提交损伤。状态回调失败或提出不支持的显隐变化时，该组合不会继续重绘；状态已成功而后续重绘失败时，FAILED 票据的 completedKinds 保留 STATE 位。UI 状态不属于工程事务，不承诺对已发生的原生窗口变化执行事务回滚。
+组合请求在某一阶段失败后停止后续阶段，FAILED 票据的 completedKinds 保留已成功的阶段位。例如 DATA 和 LAYOUT 已成功、后续局部重绘因几何变化返回 STALE 时，仍保留这些完成位。UI 状态不属于工程事务，不承诺对已发生的原生窗口变化执行事务回滚。
 
 ## 按钮状态刷新
 
-STATE 只重新查询目标按钮的命令，更新原 HWND 的 enabled、checked 和受支持的 visible。不调用命令，不刷新共享同一命令的菜单，不读取属性或改变标签、尺寸和布局。按钮以手动选中、推按钮外观呈现；点击不会自行切换选中来源，命令 getState 仍是唯一来源。Enter 和普通命令激活保留。
+STATE 只重新查询目标按钮的命令，更新原 HWND 的 enabled、checked 和受支持的 visible。不调用命令，不刷新共享同一命令的菜单，不读取属性或改变标签。单独 STATE 不改变尺寸和布局；重排需显式组合 LAYOUT。按钮以手动选中、推按钮外观呈现；点击不会自行切换选中来源，命令 getState 仍是唯一来源。Enter 和普通命令激活保留。
 
-显隐要求最近成功布局已为按钮保留正尺寸槽位，且有效布局提示包含 `MMS_HINT_PRESERVE_HIDDEN_SLOT`。用户覆盖可能移除此提示，因此目标支持 STATE 不代表支持任意显隐。缺少提示时，变化以 FAILED/UNSUPPORTED 结束；布局提示修改后尚未重新发布有效布局时，以 FAILED/NOT_READY 结束，均在修改启用和选中前拒绝。隐藏保留原位置、尺寸及相邻控件位置，不测量、不收缩空位、不触发 LAYOUT，也不修改用户布局偏好。
+单独 STATE 的显隐要求最近成功布局已为按钮保留正尺寸槽位，且有效布局提示包含 `MMS_HINT_PRESERVE_HIDDEN_SLOT`。用户覆盖可能移除此提示，因此目标支持 STATE 不代表单独 STATE 支持任意显隐。缺少提示时，变化以 FAILED/UNSUPPORTED 结束；布局提示修改后尚未重新发布有效布局时，以 FAILED/NOT_READY 结束，均在修改启用和选中前拒绝。此路径隐藏时保留原位置、尺寸及相邻控件位置，不测量或收缩空位。无保留槽位的收缩与恢复使用下述 STATE 与 LAYOUT 组合。
 
 恢复显示遵守最近布局的祖先可见性，不会显示隐藏的父区域。父区域隐藏时，按钮命令状态仍可更新，但目标逻辑 visible 保持 0。隐藏后若焦点仍在该按钮，宿主将焦点移至可用的相邻控件或父窗口；恢复不抢回焦点。
 
@@ -105,9 +107,21 @@ STATE 只重新查询目标按钮的命令，更新原 HWND 的 enabled、checke
 
 request 返回 OK 只表示成功入队，不在后台调用 getState。面板能力不支持时直接拒绝入队；回调输出、显隐及执行时过期错误在 UI 处理后写入票据，调用者必须用 query 检查结果。
 
-回调运行在 UI 线程，并保持只读回调保护直到状态应用结束。回调内的注册、注销及命令执行返回 BUSY，不继承编辑权限；在同插件的 DATA/STATE 因果链中再次请求 DATA 或 STATE 返回 BUSY，限制也传播到该链安排的 UI 任务、取消回调及后代任务，避免递归刷新。回调必须快速返回已准备状态，不能等待需要 UI 的后台作业。
+回调运行在 UI 线程，并保持只读回调保护直到状态应用结束。回调内的注册、注销及命令执行返回 BUSY，不继承编辑权限；在同插件的 DATA/STATE/LAYOUT 因果链中再次请求 DATA、STATE 或 LAYOUT 返回 BUSY，限制也传播到该链安排的 UI 任务、取消回调及后代任务，避免递归刷新。回调必须快速返回已准备状态，不能等待需要 UI 的后台作业。
 
-宿主在回调之后、每组实际执行前及原生状态应用后重新检查实例、工程、几何和就绪状态。回调泵消息导致目标过期时，请求失败，不使用旧坐标。原生显隐回调中取得的是上次发布的目标；显隐发布后，基于旧几何的局部请求会过期。显隐过程中工程切换会暂停原目标，等待正常布局重新发布。状态未变化时不重复修改原生状态。未挂载或尺寸为零的目标仍为 NOT_READY。
+宿主在回调之后、每组实际执行前及原生状态应用后重新检查实例、工程、几何和就绪状态。回调泵消息导致目标过期时，请求失败，不使用旧坐标。原生显隐回调中取得的是上次发布的目标；显隐发布后，基于旧几何的局部请求会过期。显隐过程中工程切换会暂停原目标，等待正常布局重新发布。状态未变化时不重复修改原生状态。未挂载目标仍为 NOT_READY；零尺寸恢复遵守 LAYOUT 规则。
+
+## 保留布局刷新
+
+LAYOUT 使用现有布局树中的元素描述、布局提示、文字量测和已缓存的命令可见性重新排版。纯 LAYOUT 不查询所有命令状态，也不读取属性或准备 DATA。它不会创建尚未挂载的 surface；已有 surface 只收到必要的尺寸及显隐回调。失败面板的错误提示不会因布局请求而被清除。
+
+按钮 STATE 与 LAYOUT 组合可以在没有保留槽位提示时隐藏并收缩空位，也可以用同一目标引用恢复零尺寸按钮。需要重新查询命令可见性时，不能只发 LAYOUT。SELF 指请求的目标范围；保留树的重排可能移动同一布局中的相邻元素，不等于提供 SUBTREE、DEPENDENTS 或自动依赖订阅。
+
+宿主先应用原生布局，更新依赖该区域的视口几何，再发布目标和布局快照。此路径不调用 `HandleWindowSize`、`FrameDriver` 或偏好保存。布局回调处于只读保护，surface 提供者及其因果任务也受保护。它们不能借本次回调执行编辑、注册或递归 DATA/STATE/LAYOUT。
+
+布局失败可能发生在部分 HWND 已移动之后。宿主暂停目标和新几何快照，不把部分结果发布为就绪，也不承诺回滚已移动窗口。后续正常宿主布局成功后恢复发布；旧快照租约保持可读。
+
+局部矩形使用捕获时的目标坐标。若同一请求的 LAYOUT 改变几何，旧矩形不能用于新布局，票据以 FAILED/STALE 结束，保留已成功的 completedKinds，不自动扩大为整目标重绘。需要随布局重绘时应提交无局部矩形、几何修订为 0 的整目标请求；完成后再重新查询几何以计算下一次局部损伤。
 
 `release` 成功后，该句柄再用于 `query`、`cancel` 或 `release` 返回 `NOT_FOUND`。已释放的待执行贡献继续运行并占用配额，终止后才回收。需要撤回贡献时先 `cancel`，再 `release`。
 
@@ -134,11 +148,11 @@ request 返回 OK 只表示成功入队，不在后台调用 getState。面板�
 | --- | --- |
 | `THREAD` | 在工作线程调用 `getCapabilities` 或 `getTarget`。 |
 | `ARGUMENT` | 非法结构、未知标志、非法矩形、缺少 DATA 绑定及版本、非 DATA 请求的非零 binding 或 sourceRevision、访问其他插件目标。 |
-| `UNSUPPORTED` | 请求 LAYOUT、SUBTREE、DEPENDENTS；目标不支持 STATE；没有保留槽位提示的显隐变化；或查询按钮和面板以外的元素。 |
-| `NOT_READY` | 停止中、目标未挂载、布局暂停、客户区尺寸为零，或显隐需要的布局尚未重新发布。 |
+| `UNSUPPORTED` | 请求 SUBTREE、DEPENDENTS；后端或目标不支持 LAYOUT、STATE；单独 STATE 请求没有保留槽位提示的显隐变化；或查询按钮和面板以外的元素。 |
+| `NOT_READY` | 停止中、目标未挂载、布局暂停、零尺寸目标请求不含可用的 LAYOUT，或显隐需要的布局尚未重新发布。 |
 | `STALE` | 元素已注销、实例重建、工程代次或要求的几何修订不匹配。 |
 | `NOT_FOUND` | 票据不存在、已释放或属于其他插件。 |
-| `BUSY` | 配额已满、取消执行中的贡献，或在同插件的 DATA/STATE 只读因果链中再次提交 DATA/STATE。 |
+| `BUSY` | 配额已满、取消执行中的贡献，或在同插件的 DATA/STATE/LAYOUT 只读因果链中再次提交 DATA/STATE/LAYOUT。 |
 | `MEMORY`、`FAILED` | 内存、GDI 区域、调度唤醒或窗口失效操作失败。 |
 
 实现仍保留 Win7 的窗口 DC DPI 回退，重绘依赖 GDI，不要求特定显卡。代码接入状态不代替 Win7、AMD、多 DPI 和真实桌面绘制验收。

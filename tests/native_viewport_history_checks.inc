@@ -255,8 +255,18 @@ void ViewportWheelMessageAdmission(){
     Check(!plugins::HandleBoundViewportMessage(*f.app,nullptr,WM_MOUSEWHEEL,MAKEWPARAM(0,120),0)&&!f.history.UndoCount(),
         "main-window sidebar wheel stays a timeline scroll instead of a camera history edit");
     f.app->MouseX()=500;f.app->CameraMode()=0;f.app->state.followCameraEnabled=1;f.app->CameraParentModel()=0;
-    Check(plugins::HandleBoundViewportMessage(*f.app,nullptr,WM_MOUSEWHEEL,MAKEWPARAM(0,120),0)&&ViewportEqual(ViewportRead(*f.app),before),
-        "bound matched-follow model wheel is consumed without entering its pending hint path");
+    Check(plugins::HandleBoundViewportMessage(*f.app,nullptr,WM_MOUSEWHEEL,MAKEWPARAM(0,120),0)&&ViewportEqual(ViewportRead(*f.app),before)&&
+        !f.app->state.viewDirty&&!f.app->state.b6568482&&!f.history.UndoCount(),
+        "bound matched-follow wheel with a missing model is consumed before unsafe readout or native hint writes");
+    {
+        Fixture model;model.m->selectedBone=-1;f.app->ModelSlot(0)=model.raw();
+        const auto hintWindow=CreateWindowExW(0,L"STATIC",L"follow wheel hint fixture",WS_OVERLAPPED,0,0,200,100,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
+        Check(hintWindow!=nullptr,"valid followed wheel owns its hidden refresh window");f.app->MainWindow()=hintWindow;f.app->WindowLayoutReady()=1;
+        Check(plugins::HandleBoundViewportMessage(*f.app,hintWindow,WM_MOUSEWHEEL,MAKEWPARAM(0,120),0)&&ViewportEqual(ViewportRead(*f.app),before)&&
+            f.app->state.viewDirty==1&&f.app->state.b6568482==1&&f.app->WindowLayoutReady()==1&&!f.history.UndoCount(),
+            "bound valid matched-follow main wheel keeps native hint flags while preserving numeric view and history");
+        f.app->ModelSlot(0)=nullptr;f.app->MainWindow()=nullptr;DestroyWindow(hintWindow);
+    }
     f.app->CameraMode()=1;f.app->state.followCameraEnabled=0;f.app->CameraParentModel()=-1;
     const auto owner=CreateWindowExW(0,L"STATIC",L"wheel capture fixture",WS_OVERLAPPED,0,0,200,100,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
     Check(owner!=nullptr,"wheel capture fixture owns a hidden window");SetCapture(owner);

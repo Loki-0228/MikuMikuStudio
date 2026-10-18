@@ -170,9 +170,15 @@ void ModelViewportGatesAndFailures(){
             "actual object-history wrapper may replay model view under its authorized scene and UI guards");
     }
     f.app->state.followCameraEnabled=1;f.app->CameraParentModel()=0;f.app->SelectedModelSlot()=0;
-    for(UINT button:{UINT(WM_RBUTTONDOWN),UINT(WM_MBUTTONDOWN)})
-        Check(plugins::BeginViewportModelGesture(*f.app,f.history,nullptr,button)==MMS_E_NOT_READY,"matched-follow legacy hint/release gestures stay explicitly closed");
-    Check(plugins::AdjustViewportModelWheel(*f.app,f.history,120,false,changed)==MMS_E_NOT_READY&&!changed,"matched-follow main wheel cannot fall through to the unmigrated hint path");
+    const auto followed=NumpadRead(*f.app);const auto redo=f.history.RedoCount();
+    for(UINT button:{UINT(WM_RBUTTONDOWN),UINT(WM_MBUTTONDOWN)}){
+        Check(plugins::BeginViewportModelGesture(*f.app,f.history,nullptr,button)==MMS_OK,"matched-follow original hint/release gesture is explicitly admitted");
+        Check(plugins::EndViewportModelGesture(*f.app,changed)==MMS_OK&&!changed&&NumpadSame(NumpadRead(*f.app),followed)&&
+            !f.app->state.viewDirty&&f.history.RedoCount()==redo,"empty matched-follow release performs hint cleanup without numeric authoring or redo loss");
+    }
+    Check(plugins::AdjustViewportModelWheel(*f.app,f.history,120,false,changed)==MMS_OK&&!changed&&NumpadSame(NumpadRead(*f.app),followed)&&
+        f.app->state.viewDirty==1&&f.app->state.b6568482==1&&f.app->WindowLayoutReady()==1&&f.history.RedoCount()==redo,
+        "matched-follow main wheel retains its original hint-only behavior without an empty history node");
     Check(plugins::AdjustViewportModelWheel(*f.app,f.history,120,true,changed)==MMS_OK&&changed,"detached model wheel has no hint path and supports the same followed parent");
     f.app->state.followCameraEnabled=0;
     Check(plugins::BeginViewportModelGesture(*f.app,f.history,nullptr,WM_RBUTTONDOWN)==MMS_OK,"begin model gesture for camera mutual exclusion");

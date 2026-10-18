@@ -1,6 +1,6 @@
 # C++17 界面重绘 SDK
 
-`mms/cpp/refresh.hpp` 包装已有 `mms.ui.refresh` C 表，复用原元素、目标和票据，无需链接宿主库。开发环境与[界面注册 SDK](cpp-ui.md)相同。当前支持 REPAINT 及按钮首阶段 STATE；[数据刷新 SDK](data-refresh.md)通过同一 Request 和 RefreshTicket 提交 DATA，宿主行为见 [C 接口参考](refresh.md)。
+`mms/cpp/refresh.hpp` 包装已有 `mms.ui.refresh` C 表，复用原元素、目标和票据，无需链接宿主库。开发环境与[界面注册 SDK](cpp-ui.md)相同。当前支持 SELF 范围的 REPAINT、按钮部分 STATE 及保留布局的 LAYOUT；[数据刷新 SDK](data-refresh.md)通过同一 Request 和 RefreshTicket 提交 DATA。实际目标能力和宿主行为见 [C 接口参考](refresh.md)。
 
 ## 类型与线程
 
@@ -47,12 +47,14 @@ MmsResult result = refresh.RepaintRect(target, dirty, ticket, 17);
 | `RepaintRect(target, rect, ticket, key=0)` | 一个局部 DIP 矩形，自动填写捕获时的几何修订。 |
 | `RefreshState(target, ticket, key=0)` | 请求按钮状态刷新，严格匹配捕获的几何修订。支持启用、选中及保留槽位内的显隐。 |
 | `RefreshStateCurrent(ref, ticket, key=0)` | 使用原目标引用提交无坐标 STATE，接受执行时的有效几何。适合工作线程在显隐变化后继续使用同一实例及工程引用。 |
+| `RelayoutCurrent(ref, ticket, key=0)` | 使用原目标引用提交 LAYOUT + SELF，几何修订为 0；按保留布局及缓存状态排版，不隐含 STATE 或 REPAINT。 |
+| `RefreshStateLayout(ref, ticket, key=0)` | 使用原目标引用提交 STATE、LAYOUT、REPAINT，范围为 SELF、几何修订为 0；支持按钮收缩空位及同一引用恢复零尺寸按钮。 |
 | `RepaintRects(target, rects, count, ticket, key=0)` | 多个局部 DIP 矩形；count=0 等同整目标请求。 |
 | `Request(request, ticket)` | 原样提交完整 C 请求，调用者填写结构头和字段。 |
 
 `key` 为原 coalesceKey。SDK 不合并、不重试，不在 STALE 后自动扩大损伤范围。矩形只需在调用期间有效，宿主复制其内容。旧几何被拒绝时，在 UI 线程重新捕获并计算矩形，不能只改代次。
 
-输出票据必须为空。已有票据时返回 BUSY，不向宿主提交或覆盖旧句柄。接受后直接保存原句柄，不再分配内存。未挂载、暂停或停止仍返回 NOT_READY；布局及超出当前按钮范围的状态仍返回 UNSUPPORTED；DATA 须使用有效数据绑定及来源版本。
+输出票据必须为空。已有票据时返回 BUSY，不向宿主提交或覆盖旧句柄。接受后直接保存原句柄，不再分配内存。未挂载、暂停或停止仍返回 NOT_READY；不支持 LAYOUT 的后端或目标、超出当前按钮范围的 STATE 返回 UNSUPPORTED；DATA 须使用有效数据绑定及来源版本。
 
 提交返回 OK 只代表入队。不支持的显隐、回调失败或执行时过期由 Query 返回的终态和 result 表达，不能只检查提交结果。`RefreshStateCurrent` 不绕过实例、工程、ready 或有效布局提示检查；工程切换或实例重建后仍须重新取得目标。
 
@@ -66,6 +68,23 @@ spec.button.hints = &hints; // spec 是 CommandUiSpec；注册调用复制提示
 ```
 
 用户布局覆盖仍可改变有效提示。隐藏保留槽位，不触发重新排版；恢复不显示隐藏的父区域。显隐改变几何修订，使用严格 `RefreshState` 或局部矩形前应重新捕获目标；无坐标后台状态请求可用 `RefreshStateCurrent(target.target, ticket)`。
+
+## 收缩与恢复布局
+
+需要随可见性收缩空位时，不必声明 PRESERVE_HIDDEN_SLOT。向支持 LAYOUT 的按钮提交状态与布局组合：
+
+```cpp
+mms::sdk::RefreshTicket ticket;
+MmsResult result = refresh.RefreshStateLayout(target.target, ticket);
+```
+
+宿主只查询目标按钮状态，再按现有布局树重排并提交重绘。隐藏收缩后，目标可以返回 `ready=0` 和零尺寸，但仍保留同一实例及工程引用；`RefreshStateLayout` 可用该引用恢复。它不绕过未挂载、布局暂停、实例失效或工程变化的检查。面板不支持 STATE，应按实际能力使用 `RelayoutCurrent` 或完整 `Request`。
+
+只需按已保留描述、提示和缓存可见性排版时，使用 `RelayoutCurrent(target.target, ticket)`。纯 LAYOUT 不重新查询命令，不创建 surface，不保存偏好。它和其他方法共用 C 请求、合并键、票据及停止规则，没有独立队列。后台线程使用已捕获的服务与引用提交，不能在 UI 线程等待完成。
+
+组合按 DATA、STATE、LAYOUT、REPAINT 执行。布局改变几何后，基于旧几何的局部矩形返回 STALE；读取票据的 completedKinds 判断已完成阶段。SDK 不自动扩大损伤或重试。上述两个方法使用无坐标请求；复杂插件仍可通过 Request 指定同一套 C 字段。
+
+布局失败会暂停目标和新几何快照，已有快照租约仍可读。宿主不承诺回滚部分已移动的 HWND；后续正常宿主布局成功后恢复发布。
 
 ## 查询和清理
 
@@ -86,10 +105,10 @@ if (result == MMS_OK && state.status == MMS_UI_REFRESH_COMPLETED) {
 }
 ```
 
-COMPLETED 表示请求的状态或窗口失效操作已完成，不保证像素已显示。组合请求可用 Request 提交；失败时读取 completedKinds 判断已完成阶段。释放 pending 票据后，贡献仍执行并占额度；撤回使用 `CancelAndRelease()`。
+COMPLETED 表示请求的各刷新阶段已完成，不保证像素已显示。组合请求可用 Request 提交；失败时读取 completedKinds 判断已完成阶段。释放 pending 票据后，贡献仍执行并占额度；撤回使用 `CancelAndRelease()`。
 
 移动构造转移同一个句柄，原对象变空。票据保存服务表副本，原 `RefreshServices` 变量退出作用域不使票据失效，但宿主 context 仍须有效。通过 `get()` 借用原句柄读取状态；转移释放责任时用 `detach()`，避免两个所有者重复清理。
 
 析构仅尝试 `Release()`，不会取消或等待 UI。析构无法报告释放失败，也不能保留已销毁的 SDK 对象。在 `stop` 中先停止生产请求、结束自己的后台任务，再显式清理全部票据。失败时保留对象并返回 BUSY 或错误供宿主重试，不能仅依赖析构完成停止。
 
-本封装不创建后台线程、轮询器、默认订阅或动画时钟，DATA 便利入口由同层的 `data_refresh.hpp` 组合本封装实现；两者均不开放 LAYOUT 或完整显隐依赖，也不启用 `mms.edit`。包装捕获意外 C++ 异常并返回错误码；插件仍须遵守 C ABI，不让异常跨 DLL。
+本封装不创建后台线程、轮询器、默认订阅或动画时钟。DATA 便利入口由同层的 `data_refresh.hpp` 组合本封装实现。完整 STATE、SUBTREE、DEPENDENTS、自动依赖和插件量测提供者尚未开放，普通 `mms.edit` 仍关闭。包装捕获意外 C++ 异常并返回错误码；插件仍须遵守 C ABI，不让异常跨 DLL。

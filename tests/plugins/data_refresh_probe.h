@@ -47,6 +47,26 @@ typedef MmsResult (MMS_CALL *DataRefreshProbeQueryFn)(DataRefreshProbeState*);
 typedef MmsResult (MMS_CALL *DataRefreshProbeSimpleFn)(void);
 typedef void (MMS_CALL *DataRefreshProbePrepareHookFn)(void*);
 typedef MmsResult (MMS_CALL *DataRefreshProbeSetPrepareHookFn)(DataRefreshProbePrepareHookFn,void*);
+// Independent LAYOUT diagnostics keep every existing DATA counter and struct unchanged.
+#define LAYOUT_PROBE_ACTIVE 1u
+#define LAYOUT_PROBE_ENQUEUE 2u
+#define LAYOUT_PROBE_THROW 4u
+typedef struct DataRefreshProbeLayoutTaskState {
+    uint32_t calls;
+    MmsResult mutate, dataRequest, stateRequest, layoutRequest, enqueueChild;
+    DataRefreshProbeEditState edit;
+} DataRefreshProbeLayoutTaskState;
+typedef struct DataRefreshProbeLayoutState {
+    uint32_t size, flags, resizeCount;
+    MmsResult directMutation, recursiveData, recursiveState, recursiveLayout;
+    MmsResult enqueueRun, enqueueCancel, selfCancel;
+    DataRefreshProbeEditState edit;
+    DataRefreshProbeLayoutTaskState tasks[4];
+} DataRefreshProbeLayoutState;
+typedef void (MMS_CALL *DataRefreshProbeLayoutHookFn)(void*);
+typedef MmsResult (MMS_CALL *DataRefreshProbeLayoutConfigureFn)(uint32_t,DataRefreshProbeLayoutHookFn,void*);
+typedef MmsResult (MMS_CALL *DataRefreshProbeLayoutQueryFn)(DataRefreshProbeLayoutState*);
+typedef MmsResult (MMS_CALL *DataRefreshProbeLayoutVisibleFn)(uint32_t);
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -62,6 +82,12 @@ MmsResult MMS_CALL ProbeReleaseHold(void);
 MmsResult MMS_CALL ProbeRemoveTarget(void);
 MmsResult MMS_CALL ProbeSetPrepareHook(DataRefreshProbePrepareHookFn,void*);
 MmsResult MMS_CALL ProbeEnqueueNormal(void);
+MmsResult MMS_CALL ProbeLayoutConfigure(uint32_t,DataRefreshProbeLayoutHookFn,void*);
+MmsResult MMS_CALL ProbeLayoutQuery(DataRefreshProbeLayoutState*);
+// Worker-safe enqueue only: actual UI/edit/refresh probes run after publication.
+MmsResult MMS_CALL ProbeEnqueueLayoutNormal(void);
+// Defaults to visible=1. Does not invoke getState or refresh on its own.
+MmsResult MMS_CALL ProbeLayoutSetVisible(uint32_t);
 #ifdef __cplusplus
 }
 #endif

@@ -10,3 +10,7 @@ EXPORTS
     ProbeRemoveTarget
     ProbeSetPrepareHook
     ProbeEnqueueNormal
+    ProbeLayoutConfigure
+    ProbeLayoutQuery
+    ProbeEnqueueLayoutNormal
+    ProbeLayoutSetVisible

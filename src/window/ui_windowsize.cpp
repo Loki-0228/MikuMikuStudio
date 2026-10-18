@@ -223,11 +223,14 @@ void HandleWindowSize(MMDApp* app) {
     MoveCtrl(hwnd, 462, 650 - bandXBase, bottom - 122, 23, 14);
     MoveCtrl(hwnd, 457, 514 - bandXBase, bottom - 104, 136, 18);
     MoveCtrl(hwnd, 463, 650 - bandXBase, bottom - 104, 23, 14);
-    MoveCtrl(hwnd, 458, 514 - bandXBase, bottom - 84, 132, 20);
+    // Keep the native 20px thumb/tick area, with disjoint sibling windows.
+    // The old 18px pitch let each direction slider repaint two rows of its
+    // neighbour even while that neighbour's thumb and paint count were idle.
+    MoveCtrl(hwnd, 458, 514 - bandXBase, bottom - 86, 132, 20);
     MoveCtrl(hwnd, 464, 646 - bandXBase, bottom - 84, 27, 14);
     MoveCtrl(hwnd, 459, 514 - bandXBase, bottom - 66, 132, 20);
     MoveCtrl(hwnd, 465, 646 - bandXBase, bottom - 66, 27, 14);
-    MoveCtrl(hwnd, 460, 514 - bandXBase, bottom - 48, 132, 20);
+    MoveCtrl(hwnd, 460, 514 - bandXBase, bottom - 46, 132, 20);
     MoveCtrl(hwnd, 466, 646 - bandXBase, bottom - 48, 27, 14);
     MoveCtrl(hwnd, 468, 590 - bandXBase, bottom - 26, 75, 20);
     MoveCtrl(hwnd, 467, 524 - bandXBase, bottom - 26, 50, 20);

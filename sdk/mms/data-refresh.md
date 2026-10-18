@@ -2,7 +2,7 @@
 
 `mms.ui.refresh.bind` 1.0 将插件准备的数据复制为宿主保留的不可变显示模型。C 定义见 [refresh_binding.h](include/mms/refresh_binding.h)，C++17 包装见 [data_refresh.hpp](include/mms/cpp/data_refresh.hpp)。它复用原 UI 元素、目标引用和 [mms.ui.refresh 票据](refresh.md)，不创建第二个控件或刷新队列。
 
-当前范围为本插件已挂载按钮或 surface 面板的 `DATA + SELF`。发布来源不会自动刷新；插件显式请求 DATA，按需组合 STATE 和 REPAINT。按钮状态回调或面板绘制通过 `acquireDisplay` 读取模型。面板的文字、图形和交互仍由插件实现。依赖订阅、跨插件绑定、LAYOUT、SUBTREE 和 DEPENDENTS 尚未开放。
+当前范围为本插件已挂载按钮或 surface 面板的 `DATA + SELF`。发布来源不会自动刷新；插件显式请求 DATA，按目标能力组合 STATE、LAYOUT 和 REPAINT。按钮状态回调或面板绘制通过 `acquireDisplay` 读取模型。面板的文字、图形和交互仍由插件实现。[保留布局的 LAYOUT](refresh.md#保留布局刷新)共用原刷新队列；依赖订阅、跨插件绑定、SUBTREE 和 DEPENDENTS 尚未开放。
 
 ## 开发和协商
 
@@ -29,13 +29,13 @@ revision 由宿主生成。成功发布不同字节增加 revision，相同字�
 
 DATA 请求填写 `binding`、非零 `sourceRevision`、原目标引用和 SELF。入队时必须匹配来源的当前版本 N，宿主保留该版本的强引用。其后发布 N+1 不改变已接受的 N；尚未捕获的旧 N 返回 STALE。若 N+1 已先消费，旧 N 不得覆盖新显示。不同绑定或来源版本分组执行，每个票据仍独立取消、查询和释放。
 
-UI 安全点先执行 DATA，再执行组合中的 STATE，最后提交 REPAINT。DATA 单独请求不隐含重绘、状态查询或布局。重复消费同一版本跳过 prepare；新版本得到相同显示字节时只推进来源版本，不增加 displayRevision。显式组合的 STATE 和 REPAINT 仍按请求执行。
+UI 安全点依次执行请求中的 DATA、STATE、LAYOUT、REPAINT。DATA 单独请求不隐含重绘、状态查询或布局。重复消费同一版本跳过 prepare；新版本得到相同显示字节时只推进来源版本，不增加 displayRevision。显式组合的其他阶段仍按请求执行，不能把 DATA 发布视为自动布局订阅。
 
 prepare 接收借用的 `sourceBytes`、精确 `sourceRevision`、上次消费的 `previousRevision` 和短期 `builder`。回调调用一次 `writePrepared` 后返回；返回错误、没有写入、重复写入、分配失败或目标失效都保留上一份完整显示。builder 在回调结束后失效。prepare 为 NULL 时，宿主直接复制来源作为显示模型。
 
-候选准备、目标复核及最终交换保持只读保护。回调不能注册或注销 UI、执行编辑或递归请求 DATA/STATE。由本插件在该因果链中安排的 UI 任务，包括取消回调及后代任务，继续保留相同限制。无关插件的独立后台任务不会因时间重叠而永久继承该限制。
+候选准备、目标复核及最终交换保持只读保护。回调不能注册或注销 UI、执行编辑或递归请求 DATA/STATE/LAYOUT。由本插件在该因果链中安排的 UI 任务，包括取消回调及后代任务，继续保留相同限制。无关插件的独立后台任务不会因时间重叠而永久继承该限制。
 
-成功 DATA 的票据 `sourceRevision` 是实际消费版本；`completedKinds` 保留已完成阶段，即使后续 STATE 或 REPAINT 失败。DATA 本身失败时不继续后续阶段。COMPLETED 不表示已显示像素。
+成功 DATA 的票据 `sourceRevision` 是实际消费版本；`completedKinds` 保留已完成阶段，即使后续 STATE、LAYOUT 或 REPAINT 失败。后续失败不回滚已成功交换的显示模型。DATA 本身失败时不继续后续阶段。COMPLETED 不表示已显示像素。
 
 刷新不修改工程、播放头、编辑姿态或共同历史，也不触发场景求值。耗时计算应在后台完成后再发布，prepare 只做有界的显示准备，不等待 UI 作业。
 

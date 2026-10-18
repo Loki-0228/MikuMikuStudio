@@ -234,7 +234,71 @@ void CameraHudReleaseAndBinding() {
     Check(plugins::EndCameraHudGesture(*f.app, changed) == MMS_E_STALE && !changed && NumpadSame(NumpadRead(*f.app), before),
         "stale reset token cancels its still-owned HUD preview and publishes no partial record");
 }
+struct CameraHudReleaseReentryWindow {
+    inline static thread_local CameraHudReleaseReentryWindow* active=nullptr;
+    NumpadFixture& fixture;HWND owner,edit,floating;WNDPROC ownerProc,editProc;POINT cursor{};bool cursorValid,armed=false,observed=false;
+    int replacementOperation;NumpadView original{},native{},replacement{};
+    CameraHudReleaseReentryWindow(NumpadFixture& f,int operation):fixture(f),owner(f.app->MainWindow()),
+        edit(GetDlgItem(owner,operation==15?panel::kReadoutPosXEdit:panel::kReadoutRotXEdit)),floating(f.app->FloatingWindow()),
+        ownerProc(nullptr),editProc(nullptr),cursorValid(GetCursorPos(&cursor)!=FALSE),replacementOperation(operation==15?18:15){
+        Check(!active&&edit,"camera release reentry uses the actual native readout EDIT");active=this;
+        ownerProc=reinterpret_cast<WNDPROC>(SetWindowLongPtrW(owner,GWLP_WNDPROC,reinterpret_cast<LONG_PTR>(MicWndProc)));
+        editProc=reinterpret_cast<WNDPROC>(SetWindowLongPtrW(edit,GWLP_WNDPROC,reinterpret_cast<LONG_PTR>(EditProc)));
+        Check(ownerProc&&editProc,"camera release fixture installs real MicWndProc and forwards the native EDIT procedure");f.app->FloatingWindow()=owner;
+    }
+    ~CameraHudReleaseReentryWindow(){armed=false;plugins::CancelCameraHudGesture(*fixture.app);if(GetCapture()==owner)ReleaseCapture();
+        SetWindowLongPtrW(edit,GWLP_WNDPROC,reinterpret_cast<LONG_PTR>(editProc));SetWindowLongPtrW(owner,GWLP_WNDPROC,reinterpret_cast<LONG_PTR>(ownerProc));
+        fixture.app->FloatingWindow()=floating;active=nullptr;if(cursorValid)SetCursorPos(cursor.x,cursor.y);}
+    static LRESULT CALLBACK EditProc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp){
+        auto* self=active;const auto originalProc=self->editProc;
+        if(message==WM_SETTEXT&&self->armed){self->armed=false;self->observed=true;
+            Check(NumpadSame(NumpadRead(*self->fixture.app),self->native),"real camera release readout callback observes its accepted seven-pixel native sample");
+            SendMessageW(self->owner,WM_CANCELMODE,0,0);
+            Check(!plugins::CameraHudGestureActive(*self->fixture.app)&&NumpadSame(NumpadRead(*self->fixture.app),self->original),
+                "real readout callback cancels the old camera gesture and restores its owned pose before replacement");
+            Check(plugins::BeginCameraHudGesture(*self->fixture.app,self->fixture.history,self->owner,self->replacementOperation)==MMS_OK,
+                "camera readout callback starts a distinct gesture with its own history reservation in the same owner");SetCapture(self->owner);
+            CameraHudSample(*self->fixture.app,self->replacementOperation,3);self->replacement=NumpadRead(*self->fixture.app);
+            self->fixture.app->MouseX()=333;self->fixture.app->MouseY()=444;self->fixture.app->PreviousMouseX()=300;self->fixture.app->PreviousMouseY()=400;
+            self->fixture.app->ViewToolDragOperation()=static_cast<ViewportToolAction>(self->replacementOperation);
+            self->fixture.app->InteractionDragMode()=static_cast<ViewportDragMode>(self->replacementOperation-2);
+            self->fixture.app->LeftMouseButtonState()=3;self->fixture.app->state.a06B5=1;
+        }
+        return CallWindowProcA(originalProc,hwnd,message,wp,lp);
+    }
+};
+void CameraHudReleaseReentrantReplacement(){
+    using Mode=plugins::SharedHistory::RecordingMode;
+    for(auto mode:{Mode::AllOperations,Mode::ExplicitOnly})for(int operation:{15,18}){
+        NumpadFixture f;f.app->state.coordinateSystem=1;CameraHudReleaseReentryWindow window(f,operation);bool changed=false;
+        Check(plugins::AdjustViewportCameraWheel(*f.app,f.history,120,true,changed)==MMS_OK&&changed&&f.history.History(false)==MMS_OK,
+            "seed redo before same-owner camera release replacement");
+        Check(f.history.SetMode(mode)==MMS_OK,"configure camera release replacement recording mode");plugins::NativePoseTestBinding binding(*f.app,f.history);
+        window.original=NumpadRead(*f.app);const auto first=f.first.Digest(),second=f.second.Digest();const auto keys=GlobalRegistrationKeys(f.app->CameraKeys());
+        const auto bytes=f.history.RetainedBytes();std::uint64_t revision=0;f.history.Revision(revision);PostViewRefresh(f.app.get());
+        Check(plugins::BeginCameraHudGesture(*f.app,f.history,window.owner,operation)==MMS_OK,"reserve old camera HUD before a real mouse-up readout callback");SetCapture(window.owner);
+        f.app->PreviousMouseX()=f.app->MouseX()=100;f.app->PreviousMouseY()=f.app->MouseY()=100;
+        POINT release{100,107};Check(ClientToScreen(window.owner,&release)&&SetCursorPos(release.x,release.y),"place actual camera release cursor seven native pixels from its previous sample");
+        window.native=window.original;const auto field=operation==15?0u:3u;const double scale=operation==15?0.05000000074505806:0.019999999552965164;
+        window.native.values[field]=float(double(window.native.values[field])+7.0*scale);window.armed=true;
+        // Before the source guard, this exact WM_SETTEXT callback replaced the
+        // gesture, then the old release copied PreviousMouse and End'ed its new
+        // token; MicWndProc also released the new same-owner capture.
+        SendMessageW(window.owner,WM_LBUTTONUP,0,MAKELPARAM(1,1));std::uint64_t afterRevision=0;f.history.Revision(afterRevision);
+        Check(window.observed&&plugins::CameraHudGestureActive(*f.app)&&GetCapture()==window.owner&&
+            f.app->MouseX()==333&&f.app->MouseY()==444&&f.app->PreviousMouseX()==300&&f.app->PreviousMouseY()==400&&
+            f.app->ViewToolDragOperation()==static_cast<ViewportToolAction>(window.replacementOperation)&&
+            f.app->InteractionDragMode()==static_cast<ViewportDragMode>(window.replacementOperation-2)&&f.app->LeftMouseButtonState()==3&&f.app->state.a06B5==1&&
+            NumpadSame(NumpadRead(*f.app),window.replacement)&&!f.history.UndoCount()&&f.history.RedoCount()==1&&f.history.RetainedBytes()==bytes&&
+            afterRevision==revision&&f.history.SetMode(mode)==MMS_E_BUSY&&f.first.Digest()==first&&f.second.Digest()==second&&GlobalRegistrationSame(f.app->CameraKeys(),keys),
+            "old camera mouse-up is swallowed without ending replacement token, overwriting mouse snapshots, clearing tools, releasing capture or changing redo/history");
+        Check(plugins::EndCameraHudGesture(*f.app,changed)==MMS_OK&&changed&&f.history.UndoCount()==(mode==Mode::AllOperations?1u:0u),
+            "the preserved replacement camera reservation still commits its own independently sampled pose once");ReleaseCapture();
+        if(mode==Mode::AllOperations)Check(f.history.History(false)==MMS_OK&&NumpadSame(NumpadRead(*f.app),window.original),
+            "replacement camera undo restores only its own gesture, proving old release did not consume its transaction");
+    }
+}
 }
 void NativeCameraHudHistoryChecks() {
-    CameraHudMathAndHistory(); CameraHudCancelNoopAndBudget(); CameraHudIdentityAndGates(); CameraHudReleaseAndBinding();
+    CameraHudMathAndHistory(); CameraHudCancelNoopAndBudget(); CameraHudIdentityAndGates(); CameraHudReleaseAndBinding();CameraHudReleaseReentrantReplacement();
 }

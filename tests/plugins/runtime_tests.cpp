@@ -40,7 +40,9 @@ static std::string ManifestText(std::string id = "org.example.hello", std::strin
 }
 #include "manager_edit_checks.inc"
 #include "manager_refresh_checks.inc"
+#include "layout_refresh_checks.inc"
 #include "manager_data_refresh_checks.inc"
+#include "manager_layout_refresh_checks.inc"
 #include "manager_data_refresh_concurrency_checks.inc"
 #include "task_dispatch_checks.inc"
 static void JsonChecks() {
@@ -345,6 +347,12 @@ static void LifecycleChecks(const fs::path& root, const fs::path& fixture) {
 int wmain(int argc, wchar_t** argv) {
     const fs::path root = fs::temp_directory_path() / (L"mms-abi-contract-" + std::to_wstring(GetCurrentProcessId()));
     try {
+        if ((argc == 2 || argc == 3) && std::wstring(argv[1]) == L"--layout-refresh-only") {
+            CHECK(!fs::exists(root)); fs::create_directories(root);
+            LayoutRefreshChecks();
+            if (argc == 3) ManagerLayoutRefreshChecks(root, fs::absolute(argv[2]));
+            std::cout << "PASS LAYOUT refresh checks=" << checks << "\n"; fs::remove_all(root); return 0;
+        }
         if ((argc == 2 || argc == 3) && std::wstring(argv[1]) == L"--data-only") {
             CHECK(!fs::exists(root)); fs::create_directories(root);
             DataRefreshChecks(); CppDataRefreshChecks();
@@ -360,6 +368,7 @@ int wmain(int argc, wchar_t** argv) {
             StateRefreshChecks();
             VisibilityRefreshChecks();
             CppRefreshChecks();
+            LayoutRefreshChecks();
             DataRefreshChecks(); CppDataRefreshChecks();
             if (argc == 3) ManagerRefreshChecks(root, fs::absolute(argv[2]));
             std::cout << "PASS refresh checks=" << checks << "\n"; fs::remove_all(root); return 0;

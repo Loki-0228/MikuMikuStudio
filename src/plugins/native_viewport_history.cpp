@@ -2,6 +2,7 @@
 #if !MMD_ORIGINAL_PROFILE
 #include "native_pose_scope.hpp"
 #include "native_camera_hud_history.hpp"
+#include "native_accessory_hud_history.hpp"
 #include "native_history_commands.hpp"
 #include "native_object_commands.hpp"
 #include "native_viewport_reset_camera.hpp"
@@ -13,6 +14,7 @@
 #include "mikudancestudio/bake_ui_lock.hpp"
 #include "mikudancestudio/plugin_scene.hpp"
 #include "mikudancestudio/autosave.hpp"
+#include "mikudancestudio/ported_funcs.hpp"
 #include <array>
 #include <cmath>
 #include <cstring>
@@ -173,12 +175,15 @@ struct PresetContext {
 };
 struct PresetModel {
     unsigned slot;unsigned char* model;mdl::BoneRecord* bones;std::uint32_t count;
+    std::uint64_t initialGeneration;
     std::shared_ptr<RetainedSceneObject> owner;
     PresetModel(MMDApp& app,unsigned index):slot(index),model(app.ModelSlot(index)),
-        bones(mdl::Mdl(model)->boneTable),count(mdl::Mdl(model)->boneCount),owner(RetainSceneObject(app,MMS_OBJECT_MODEL,index)){}
-    bool Current(MMDApp& app)const noexcept {
+        bones(mdl::Mdl(model)->boneTable),count(mdl::Mdl(model)->boneCount),
+        initialGeneration(SceneObjectIdentity(model).generation),owner(RetainSceneObject(app,MMS_OBJECT_MODEL,index)){}
+    bool Current(MMDApp& app,bool initial=false)const noexcept {
         return owner->Present()&&app.ModelSlot(slot)==model&&SceneObjectPresent(model,owner->Id())&&
-            mdl::Mdl(model)->boneTable==bones&&mdl::Mdl(model)->boneCount==count;
+            mdl::Mdl(model)->boneTable==bones&&mdl::Mdl(model)->boneCount==count&&
+            (!initial||SceneObjectIdentity(model).generation==initialGeneration);
     }
 };
 bool ModelReadoutReady(MMDApp& app)noexcept {
@@ -201,6 +206,7 @@ struct NumpadChange final:HistoryChange,std::enable_shared_from_this<NumpadChang
     MMDApp& app;const std::uint64_t pool,binding;const int frame;const PresetContext context;
     const ViewportPresetState before;ViewportPresetState after;unsigned mask=0;std::uint64_t generation=1;bool applied=false,preview=false,modelReadout=false;
     HWND previewOwner=nullptr;
+    bool matchedFollow=false;
     std::vector<PresetModel> models;std::shared_ptr<ViewportResetCameraSource> resetCamera;
     explicit NumpadChange(MMDApp& a):app(a),pool(mdl::KeyPoolIdentity(a.CameraKeys())),binding(BoundNativePoseGeneration(&a)),
         frame(a.CurrentFrame()),context(a),before(ReadPreset(a)),after(before){}
@@ -218,7 +224,8 @@ struct NumpadChange final:HistoryChange,std::enable_shared_from_this<NumpadChang
     }
     bool SameScene()const noexcept {
         if(!pool||mdl::KeyPoolIdentity(app.CameraKeys())!=pool)return false;
-        for(const auto& model:models)if(!model.Current(app))return false;return true;
+        if(matchedFollow&&(app.CameraParentModel()!=before.parentModel||app.CameraParentBone()!=before.parentBone))return false;
+        for(const auto& model:models)if(!model.Current(app,matchedFollow&&generation==1))return false;return true;
     }
     bool CaptureAllowed()const noexcept {
         const auto capture=GetCapture();return !capture||(preview&&previewOwner&&capture==previewOwner);
@@ -233,12 +240,17 @@ struct NumpadChange final:HistoryChange,std::enable_shared_from_this<NumpadChang
     struct Candidate final:PreparedHistoryChange {
         std::shared_ptr<NumpadChange> source;const bool forward,initialPreview;const std::uint64_t generation,binding;
         const int frame;const PresetContext context;const ViewportPresetState expected;bool consumed=false;
+        mutable resource_budget::Collector resources;std::uint64_t retainedBytes=0;
         Candidate(std::shared_ptr<NumpadChange> s,bool f):source(std::move(s)),forward(f),initialPreview(source->preview),generation(source->generation),
             binding(BoundNativePoseGeneration(&source->app)),frame(source->app.CurrentFrame()),context(source->app),expected(ReadPreset(source->app)){}
         bool IsCurrent()const noexcept override {
             return !consumed&&generation==source->generation&&forward!=source->applied&&source->SameScene()&&source->InitialCurrent()&&
                 ViewportReady(source->app,generation!=1)&&source->CaptureAllowed()&&binding==BoundNativePoseGeneration(&source->app)&&
-                frame==source->app.CurrentFrame()&&context.Current(source->app)&&EqualPreset(ReadPreset(source->app),initialPreview?source->after:expected);
+                frame==source->app.CurrentFrame()&&context.Current(source->app)&&EqualPreset(ReadPreset(source->app),initialPreview?source->after:expected)&&
+                source->OwnersCovered(resources);
+        }
+        bool TargetRetainedBytes(std::uint64_t& out)const noexcept override {
+            if(!source->matchedFollow)return false;out=retainedBytes;return true;
         }
         void Publish()noexcept override {
             if(!IsCurrent())std::terminate();WritePreset(source->app,forward?source->after:source->before,source->mask);
@@ -251,7 +263,14 @@ struct NumpadChange final:HistoryChange,std::enable_shared_from_this<NumpadChang
             if(generation==UINT64_MAX)return MMS_E_NOT_READY;
             if(!ViewportReady(app,generation!=1)||!CaptureAllowed())return MMS_E_BUSY;
             if(!FinitePreset(ReadPreset(app)))return MMS_E_ARGUMENT;
-            out=std::make_unique<Candidate>(shared_from_this(),forward);return MMS_OK;
+            auto next=std::make_unique<Candidate>(shared_from_this(),forward);
+            if(matchedFollow){
+                for(const auto& model:models)if(auto r=model.owner->MeasureBookkeeping(next->resources))return r;
+                if(!next->resources.Result().Complete())return MMS_E_NOT_READY;
+                next->retainedBytes=resource_budget::Collector::Sum(RetainedBytes(),next->resources.Result().totalBytes);
+            }
+            if(!next->IsCurrent())return MMS_E_STALE;
+            out=std::move(next);return MMS_OK;
         });
     }
     std::uint64_t RetainedBytes()const noexcept override {
@@ -259,6 +278,12 @@ struct NumpadChange final:HistoryChange,std::enable_shared_from_this<NumpadChang
         const auto add=[&](std::uint64_t value){bytes=value>UINT64_MAX-bytes?UINT64_MAX:bytes+value;};
         add(models.capacity()*sizeof(PresetModel));if(resetCamera)add(resetCamera->RetainedBytes());return bytes;
     }
+    bool OwnersCovered(resource_budget::Collector& resources)const noexcept {
+        if(matchedFollow)for(const auto& model:models)if(!model.owner->CoversBookkeeping(resources))return false;
+        return !matchedFollow||resources.Result().Complete();
+    }
+    // These follow-view gestures never seek/evaluate or change authored bones.
+    bool RequiresPhysicsReset()const noexcept override{return !matchedFollow;}
 };
 bool MatchedModelFollow(MMDApp& app)noexcept {
     return !app.CameraMode()&&app.state.followCameraEnabled&&app.CameraParentModel()>=0&&
@@ -267,17 +292,34 @@ bool MatchedModelFollow(MMDApp& app)noexcept {
 struct ModelGesture {
     MMDApp* app;SharedHistory* history;HWND owner;UINT button;std::uint64_t revision=0;
     std::shared_ptr<NumpadChange> change;std::unique_ptr<SharedHistory::NativeTransaction> transaction;
+    unsigned char dirtyBefore=0,dirtyAfter=0,layoutBefore=0,layoutAfter=0;bool hintTouched=false;
     bool SourceCurrent()const noexcept {
         return change->SameScene()&&change->ModelReadoutCurrent()&&change->frame==app->CurrentFrame()&&change->context.Current(*app)&&
-            change->binding==BoundNativePoseGeneration(app)&&!MatchedModelFollow(*app);
+            change->binding==BoundNativePoseGeneration(app)&&MatchedModelFollow(*app)==change->matchedFollow;
     }
     bool Current()const noexcept {
         std::uint64_t live=0;
         return !history->Revision(live)&&live==revision&&SourceCurrent()&&EqualPreset(ReadPreset(*app),change->after);
     }
     bool Rollback()noexcept {
+        if(change->matchedFollow){
+            // UI mode/selection changes stop further input, but do not transfer
+            // ownership of an otherwise unchanged pan. A new frame, binding,
+            // object/table or actual attachment is a different evaluation domain.
+            if(!change->SameScene()||change->frame!=app->CurrentFrame()||change->binding!=BoundNativePoseGeneration(app)||
+                app->CameraParentModel()!=change->after.parentModel||app->CameraParentBone()!=change->after.parentBone)return false;
+            const auto mask=PresetMask(change->before,change->after);
+            const auto restore=mask&~PresetMask(ReadPreset(*app),change->after);
+            WritePreset(*app,change->before,restore);return restore!=0||mask==0;
+        }
         if(!SourceCurrent()||!EqualPreset(ReadPreset(*app),change->after))return false;
         WritePreset(*app,change->before,PresetMask(change->before,change->after));return true;
+    }
+    void CancelHint()noexcept {
+        if(!change->matchedFollow||!hintTouched)return;
+        if(app->state.viewDirty==dirtyAfter)app->state.viewDirty=dirtyBefore;
+        if(app->state.windowLayoutReady==layoutAfter)app->state.windowLayoutReady=layoutBefore;
+        if(app->MainWindow()||app->FloatingWindow())PostLanguageSweep2(app);
     }
 };
 thread_local std::unique_ptr<ModelGesture> modelGesture;
@@ -307,12 +349,13 @@ MmsResult BeginViewportCameraGesture(MMDApp& a,SharedHistory& h,HWND owner,UINT 
 }
 bool CancelViewportCameraGesture(MMDApp& a) noexcept {
     const bool hudRestored=CancelCameraHudGesture(a);
+    const bool accessoryRestored=CancelAccessoryHudGesture(a);
     const bool modelRestored=CancelViewportModelGesture(a);
-    if(!gesture || gesture->app!=&a)return modelRestored||hudRestored;
+    if(!gesture || gesture->app!=&a)return modelRestored||hudRestored||accessoryRestored;
     auto current=std::move(gesture);const bool restored=current->Rollback();current->transaction.reset();
     a.state.rightMouseButtonState=0;a.state.middleMouseButtonState=0;
     if(current->owner && GetCapture()==current->owner)ReleaseCapture();
-    return restored||modelRestored||hudRestored;
+    return restored||modelRestored||hudRestored||accessoryRestored;
 }
 bool AllowViewportCameraPreview(MMDApp& a,UINT button) noexcept {
     if(modelGesture&&modelGesture->app==&a)return AllowViewportModelPreview(a,button);
@@ -345,13 +388,14 @@ MmsResult BeginViewportModelGesture(MMDApp& app,SharedHistory& history,HWND owne
     if(button!=WM_RBUTTONDOWN&&button!=WM_MBUTTONDOWN)return MMS_E_ARGUMENT;
     if(auto result=history.CheckNativeEdit())return result;
     if(gesture||modelGesture||app.CameraMode()||!ViewportReady(app)||GetCapture())return MMS_E_BUSY;
-    if(MatchedModelFollow(app)||!ModelReadoutReady(app))return MMS_E_NOT_READY;
+    if(!ModelReadoutReady(app))return MMS_E_NOT_READY;
     if(!mdl::KeyPoolIdentity(app.CameraKeys()))return MMS_E_NOT_READY;
     if(!FinitePreset(ReadPreset(app)))return MMS_E_ARGUMENT;
     return Boundary([&]()->MmsResult{
         auto pending=std::make_unique<ModelGesture>();pending->app=&app;pending->history=&history;pending->owner=owner;pending->button=button;
         pending->change=std::make_shared<NumpadChange>(app);auto& change=*pending->change;
         change.preview=true;change.previewOwner=owner;change.modelReadout=true;
+        change.matchedFollow=MatchedModelFollow(app);pending->dirtyBefore=app.state.viewDirty;pending->layoutBefore=app.state.windowLayoutReady;
         if(change.context.selected)change.AddModel(change.context.slot);
         change.AddParent(change.before.parentModel,change.before.parentBone);
         if(auto result=history.Revision(pending->revision))return result;
@@ -361,7 +405,7 @@ MmsResult BeginViewportModelGesture(MMDApp& app,SharedHistory& history,HWND owne
 }
 bool CancelViewportModelGesture(MMDApp& app)noexcept {
     if(!modelGesture||modelGesture->app!=&app)return false;
-    auto pending=std::move(modelGesture);const bool restored=pending->Rollback();pending->transaction.reset();
+    auto pending=std::move(modelGesture);const bool restored=pending->Rollback();pending->CancelHint();pending->transaction.reset();
     app.state.rightMouseButtonState=0;app.state.middleMouseButtonState=0;
     if(pending->owner&&GetCapture()==pending->owner)ReleaseCapture();return restored;
 }
@@ -369,7 +413,19 @@ bool AllowViewportModelPreview(MMDApp& app,UINT button)noexcept {
     if(!modelGesture||modelGesture->app!=&app||modelGesture->button!=button)return false;
     if(!ViewportReady(app)||(modelGesture->owner&&GetCapture()!=modelGesture->owner)||!modelGesture->Current()){
         CancelViewportModelGesture(app);return false;
-    }return true;
+    }
+    return true;
+}
+std::shared_ptr<const HistoryChange> ViewportModelFollowRefreshSource(MMDApp& app)noexcept {
+    return modelGesture&&modelGesture->app==&app&&modelGesture->change->matchedFollow?modelGesture->change:nullptr;
+}
+void RecordViewportModelFollowHint(MMDApp& app)noexcept {
+    if(!modelGesture||modelGesture->app!=&app||!modelGesture->change->matchedFollow)return;
+    // The pump calls this only after its real hint stores, before any native
+    // control notification can reenter cancellation. Do not claim future
+    // writes in Allow: a cancelled sample may not have reached those stores.
+    modelGesture->hintTouched=true;modelGesture->dirtyAfter=app.state.viewDirty;
+    modelGesture->layoutAfter=app.state.windowLayoutReady;
 }
 bool AcceptViewportModelPreview(MMDApp& app)noexcept {
     if(!modelGesture||modelGesture->app!=&app)return false;
@@ -379,7 +435,7 @@ bool AcceptViewportModelPreview(MMDApp& app)noexcept {
         pending.history->Revision(revision)||revision!=pending.revision){CancelViewportModelGesture(app);return false;}
     const auto current=ReadPreset(app);
     constexpr unsigned pan=(1u<<6)|(1u<<7),orbit=pan|(1u<<3)|(1u<<4)|(1u<<8);
-    const auto allowed=pending.button==WM_RBUTTONDOWN?orbit:pan;
+    const auto allowed=pending.button==WM_RBUTTONDOWN?(pending.change->matchedFollow?0u:orbit):pan;
     if(PresetMask(pending.change->after,current)&~allowed){CancelViewportModelGesture(app);return false;}
     if(!FinitePreset(current)){
         WritePreset(app,pending.change->after,allowed);CancelViewportModelGesture(app);return false;
@@ -388,14 +444,28 @@ bool AcceptViewportModelPreview(MMDApp& app)noexcept {
 }
 MmsResult EndViewportModelGesture(MMDApp& app,bool& changed)noexcept {
     changed=false;if(!modelGesture||modelGesture->app!=&app)return MMS_E_NOT_READY;
+    if(modelGesture->change->matchedFollow){
+        const auto releasingSource=modelGesture->change;
+        if(!ViewportReady(app)||!modelGesture->Current()){
+            CancelViewportModelGesture(app);return MMS_E_STALE;
+        }
+        // Run the actual native release while the bound preview still exists;
+        // the restored pump admits it through AllowViewportModelPreview.
+        const auto active=app.ViewportInputActive();app.ViewportInputActive()=1;
+        if(modelGesture->button==WM_RBUTTONDOWN){app.state.rightMouseButtonState=2;ConsumeRightButtonDrag(&app);}
+        else{app.state.middleMouseButtonState=2;ConsumeMiddleButtonPan(&app);}
+        app.ViewportInputActive()=active;
+        if(!modelGesture||modelGesture->app!=&app||modelGesture->change!=releasingSource)return MMS_E_STALE;
+        modelGesture->dirtyAfter=app.state.viewDirty;
+    }
     auto pending=std::move(modelGesture);
     if(pending->owner&&GetCapture()==pending->owner)ReleaseCapture();
     app.state.rightMouseButtonState=0;app.state.middleMouseButtonState=0;
-    if(!ViewportReady(app)||!pending->Current()){pending->Rollback();return MMS_E_STALE;}
+    if(!ViewportReady(app)||!pending->Current()){pending->Rollback();pending->CancelHint();return MMS_E_STALE;}
     auto& change=*pending->change;change.mask=PresetMask(change.before,change.after);
     if(!change.mask)return MMS_OK;
     const auto result=pending->history->CommitNative(std::move(pending->transaction));
-    if(result){pending->Rollback();return result;}changed=true;return MMS_OK;
+    if(result){pending->Rollback();pending->CancelHint();return result;}changed=true;return MMS_OK;
 }
 MmsResult AdjustViewportCameraWheel(MMDApp& a,SharedHistory& h,std::int16_t delta,bool floating,bool& changed) noexcept {
     changed=false;
@@ -420,10 +490,19 @@ MmsResult AdjustViewportCameraWheel(MMDApp& a,SharedHistory& h,std::int16_t delt
 MmsResult AdjustViewportModelWheel(MMDApp& app,SharedHistory& history,std::int16_t delta,bool floating,bool& changed)noexcept {
     changed=false;if(auto result=history.CheckNativeEdit())return result;
     if(gesture||modelGesture||app.CameraMode()||GetCapture()||!ViewportReady(app))return MMS_E_BUSY;
-    if((!floating&&MatchedModelFollow(app))||!ModelReadoutReady(app))return MMS_E_NOT_READY;
+    if(!ModelReadoutReady(app))return MMS_E_NOT_READY;
     if(!mdl::KeyPoolIdentity(app.CameraKeys()))return MMS_E_NOT_READY;
     const auto before=ReadPreset(app);if(!FinitePreset(before))return MMS_E_ARGUMENT;
     if(!delta)return MMS_OK;
+    if(!floating&&MatchedModelFollow(app)){
+        // The native main-window follow wheel is a trace-mode hint, not a
+        // dolly or a bone edit. Preserve its flags and refresh order without
+        // manufacturing an authored edit, dirty bit or empty undo record.
+        const auto& parent=*mdl::Mdl(app.SelectedModel());
+        if(!parent.boneTable||app.CameraParentBone()<0||unsigned(app.CameraParentBone())>=parent.boneCount)return MMS_E_NOT_READY;
+        app.state.viewDirty=1;app.state.windowLayoutReady=0;PostLanguageSweep2(&app);
+        app.state.windowLayoutReady=1;app.state.b6568482=1;PostViewRefresh(&app);return MMS_OK;
+    }
     auto after=before;
     if(floating)after.distance=static_cast<float>(static_cast<double>(delta)*0.05000000074505806+static_cast<double>(before.distance));
     else after.distance=static_cast<float>(delta)*0.05f+before.distance;
@@ -485,6 +564,7 @@ MmsResult AdjustViewportNumpadPresets(MMDApp& app,SharedHistory& history,std::ui
 }
 bool HandleBoundViewportMessage(MMDApp& a,HWND owner,UINT msg,WPARAM wp,LPARAM lp) noexcept {
     if(HandleCameraHudMessage(a,owner,msg,wp,lp))return true;
+    if(HandleAccessoryHudMessage(a,owner,msg,wp,lp))return true;
     if(msg==WM_CANCELMODE || msg==WM_KILLFOCUS || msg==WM_NCDESTROY ||
         (msg==WM_ACTIVATEAPP && !wp) || (msg==WM_KEYDOWN && wp==VK_ESCAPE) ||
         (msg==WM_CAPTURECHANGED&&((gesture&&reinterpret_cast<HWND>(lp)!=gesture->owner)||

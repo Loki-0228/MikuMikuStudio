@@ -60,6 +60,7 @@ class UiRegistry {
     std::function<void()> changed_;
     uint64_t geometryRevision_ = 0, geometryUiRevision_ = 0;
     std::map<std::string, MmsUiLayoutItemV1> geometry_;
+    bool geometryReady_ = false;
     MmsResult Check(UiClient&, bool mutate = false) const;
     bool Own(UiClient&, MmsString id, MmsString owner) const;
     bool Exists(const std::string&) const;
@@ -127,6 +128,7 @@ public:
     bool ExistingSurface(const std::string& element, SurfacePresentation&) const noexcept;
     struct Geometry { float x, y, width, height; bool visible, overflowed; };
     bool PublishGeometry(const std::map<std::string, Geometry>&, uint64_t revision);
+    void SuspendGeometry() noexcept { geometryReady_ = false; }
     MmsResult CheckVisibilityPublication(MmsHandle) const noexcept;
     MmsResult PublishVisibility(MmsHandle, bool visible) noexcept;
 };

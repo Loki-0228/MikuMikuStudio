@@ -9,6 +9,7 @@ namespace {
 constexpr std::size_t kTickets = 256, kGlobalTickets = 4096, kRects = 32;
 constexpr std::size_t kBytes = 256 * 1024, kGlobalBytes = 4 * 1024 * 1024, kBatch = 64;
 constexpr std::uint32_t kSupported = MMS_UI_REFRESH_REPAINT | MMS_UI_REFRESH_STATE | MMS_UI_REFRESH_DATA;
+constexpr std::uint32_t kAllKinds = kSupported | MMS_UI_REFRESH_LAYOUT;
 bool SameRef(const MmsUiTargetRefV1& a, const MmsUiTargetRefV1& b) noexcept {
     return a.element == b.element && a.instanceGeneration == b.instanceGeneration && a.projectEpoch == b.projectEpoch;
 }
@@ -46,6 +47,12 @@ struct UiRefreshQueue::Target {
     std::uint64_t generation = 0, geometry = 0;
     bool suspended = false;
     bool Ready() const noexcept { return !suspended && presentation.window && presentation.width > 0 && presentation.height > 0; }
+    bool ReadyFor(uint32_t kinds) const noexcept {
+        // A published collapsed button can request STATE|LAYOUT to regain its
+        // slot; pure REPAINT/STATE keep their original positive-size rule.
+        return Ready() || ((kinds & MMS_UI_REFRESH_LAYOUT) && !suspended &&
+            presentation.window && presentation.layoutRefresh);
+    }
 };
 struct UiRefreshQueue::Ticket {
     RefreshClient* owner = nullptr;
@@ -81,6 +88,25 @@ UiRefreshQueue::UiRefreshQueue(UiRegistry& registry) : registry_(registry),
         [this] { return registry_.InCallback(); }})) {}
 UiRefreshQueue::~UiRefreshQueue() = default;
 void UiRefreshQueue::SetWake(std::function<bool()> wake) { wake_ = std::move(wake); }
+void UiRefreshQueue::SetLayout(std::function<MmsResult(MmsHandle)> layout) {
+    if (GetCurrentThreadId() != thread_) throw std::invalid_argument("refresh layout thread");
+    std::lock_guard<std::mutex> lock(mutex_); layout_ = std::move(layout);
+}
+bool UiRefreshQueue::CachedStateVisible(MmsHandle element, bool fallback) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto found = targets_.find(element);
+    return found == targets_.end() ? fallback : found->second.presentation.stateVisible;
+}
+MmsResult UiRefreshQueue::WithLayoutProvider(const UiClient& provider, const std::function<MmsResult()>& callback) {
+    if (GetCurrentThreadId() != thread_) return MMS_E_THREAD;
+    const UiClient* previous = nullptr;
+    { std::lock_guard<std::mutex> lock(mutex_); previous = evaluatingLayoutProvider_;
+        if (evaluatingLayoutOwner_) evaluatingLayoutProvider_ = &provider; }
+    struct Guard { UiRefreshQueue& queue; const UiClient* previous; ~Guard() {
+        std::lock_guard<std::mutex> lock(queue.mutex_); queue.evaluatingLayoutProvider_ = previous;
+    } } guard{*this, previous};
+    return callback ? callback() : MMS_E_ARGUMENT;
+}
 MmsUiRefreshApiV1 UiRefreshQueue::Api(RefreshClient& client) {
     MmsUiRefreshApiV1 api{}; api.h = Header<MmsUiRefreshApiV1>(); api.context = &client;
 #define REFRESH_CALL(body) auto& c = *static_cast<RefreshClient*>(p); Flight flight(c); return Boundary([&]() -> MmsResult { body; })
@@ -97,7 +123,8 @@ MmsResult UiRefreshQueue::Capabilities(RefreshClient& client, MmsUiRefreshCapabi
     if (GetCurrentThreadId() != thread_) return MMS_E_THREAD;
     if (!Valid(out)) return MMS_E_ARGUMENT;
     if (client.stopping.load()) return MMS_E_NOT_READY;
-    *out = {Header<MmsUiRefreshCapabilitiesV1>(), kSupported, MMS_UI_REFRESH_SELF,
+    std::lock_guard<std::mutex> lock(mutex_);
+    *out = {Header<MmsUiRefreshCapabilitiesV1>(), uint32_t(kSupported | (layout_ ? MMS_UI_REFRESH_LAYOUT : 0)), MMS_UI_REFRESH_SELF,
         std::uint32_t(kTickets), std::uint32_t(kRects), kBytes, std::uint32_t(kBatch), 0};
     return MMS_OK;
 }
@@ -117,6 +144,7 @@ MmsResult UiRefreshQueue::GetTarget(RefreshClient& client, MmsHandle handle, Mms
     const MmsUiTargetRefV1 ref{Header<MmsUiTargetRefV1>(), handle, t.generation, epoch_};
     *out = {Header<MmsUiRefreshTargetV1>(), ref, t.geometry,
         std::uint32_t(MMS_UI_REFRESH_REPAINT | (t.presentation.stateRefresh ? MMS_UI_REFRESH_STATE : 0) |
+            (t.presentation.layoutRefresh && layout_ ? MMS_UI_REFRESH_LAYOUT : 0) |
             (bindings_->HasBinding(client, ref) ? MMS_UI_REFRESH_DATA : 0)), MMS_UI_REFRESH_SELF, std::uint32_t(t.Ready()), std::uint32_t(t.presentation.visible),
         t.presentation.width, t.presentation.height};
     return MMS_OK;
@@ -125,7 +153,7 @@ MmsResult UiRefreshQueue::Request(RefreshClient& client, const MmsUiRefreshReque
     if (!Valid(request) || !Valid(&request->target) || !out || !request->target.element ||
         !request->target.instanceGeneration || !request->target.projectEpoch || !request->kinds ||
         request->kinds & ~15u || request->flags || request->reserved) return MMS_E_ARGUMENT;
-    if (request->kinds & ~kSupported) return MMS_E_UNSUPPORTED;
+    if (request->kinds & ~kAllKinds) return MMS_E_UNSUPPORTED;
     if (request->scope != MMS_UI_REFRESH_SELF) return request->scope == MMS_UI_REFRESH_SUBTREE ||
         request->scope == MMS_UI_REFRESH_DEPENDENTS ? MMS_E_UNSUPPORTED : MMS_E_ARGUMENT;
     if (request->kinds & MMS_UI_REFRESH_DATA) {
@@ -151,14 +179,15 @@ MmsResult UiRefreshQueue::Request(RefreshClient& client, const MmsUiRefreshReque
     }
     std::lock_guard<std::mutex> lock(mutex_);
     if (client.stopping.load()) return MMS_E_NOT_READY;
-    if ((ticket.kinds & (MMS_UI_REFRESH_STATE | MMS_UI_REFRESH_DATA)) && ReadOnlyCauseLocked(client)) return MMS_E_BUSY;
+    if ((ticket.kinds & (MMS_UI_REFRESH_STATE | MMS_UI_REFRESH_DATA | MMS_UI_REFRESH_LAYOUT)) && ReadOnlyCauseLocked(client)) return MMS_E_BUSY;
     if (ticket.target.projectEpoch != epoch_) return MMS_E_STALE;
     const auto target = targets_.find(ticket.target.element);
     if (target == targets_.end() || target->second.generation != ticket.target.instanceGeneration) return MMS_E_STALE;
     if (target->second.presentation.owner != client.owner || client.owner == "mms") return MMS_E_ARGUMENT;
     if ((ticket.kinds & MMS_UI_REFRESH_STATE) && !target->second.presentation.stateRefresh) return MMS_E_UNSUPPORTED;
+    if ((ticket.kinds & MMS_UI_REFRESH_LAYOUT) && (!layout_ || !target->second.presentation.layoutRefresh)) return MMS_E_UNSUPPORTED;
     if (ticket.expectedGeometry && ticket.expectedGeometry != target->second.geometry) return MMS_E_STALE;
-    if (!target->second.Ready()) return MMS_E_NOT_READY;
+    if (!target->second.ReadyFor(ticket.kinds)) return MMS_E_NOT_READY;
     if (ticket.kinds & MMS_UI_REFRESH_DATA)
         if (auto result = bindings_->Capture(client, ticket.binding, ticket.target, ticket.sourceRevision, ticket.data)) return result;
     std::size_t count = 0, bytes = 0, globalBytes = 0; bool pending = false;
@@ -267,7 +296,7 @@ void UiRefreshQueue::Drain() {
             else if (ticket.target.projectEpoch != epoch_ || target == targets_.end() ||
                 target->second.generation != ticket.target.instanceGeneration ||
                 (ticket.expectedGeometry && ticket.expectedGeometry != target->second.geometry)) result = MMS_E_STALE;
-            else if (!target->second.Ready()) result = MMS_E_NOT_READY;
+            else if (!target->second.ReadyFor(ticket.kinds)) result = MMS_E_NOT_READY;
             if (result) {
                 ticket.Finish(result == MMS_E_CANCELLED ? MMS_UI_REFRESH_CANCELLED : MMS_UI_REFRESH_FAILED, result);
                 if (ticket.released) it = tickets_.erase(it); else ++it;
@@ -302,7 +331,7 @@ void UiRefreshQueue::Drain() {
                 const auto target = targets_.find(group.ref.element);
                 if (group.ref.projectEpoch != epoch_ || target == targets_.end() || target->second.generation != group.ref.instanceGeneration ||
                     (strict && target->second.geometry != group.target.geometry)) return MMS_E_STALE;
-                if (!target->second.Ready()) return MMS_E_NOT_READY;
+                if (!target->second.ReadyFor(group.kinds)) return MMS_E_NOT_READY;
                 if (!IsWindow(target->second.presentation.window)) return MMS_E_STALE;
                 if ((group.kinds & MMS_UI_REFRESH_STATE) && !target->second.presentation.stateRefresh) return MMS_E_UNSUPPORTED;
                 if (!strict) group.target = target->second;
@@ -345,7 +374,8 @@ void UiRefreshQueue::Drain() {
                     const bool visibilityChanged = bool(state.visible) != group.target.presentation.stateVisible;
                     // Only an existing reserved slot can change visibility without
                     // measurement, sibling reflow or viewport changes.
-                    if (visibilityChanged && !group.target.presentation.stateVisibility) return MMS_E_UNSUPPORTED;
+                    if (visibilityChanged && !group.target.presentation.stateVisibility &&
+                        !(group.kinds & MMS_UI_REFRESH_LAYOUT)) return MMS_E_UNSUPPORTED;
                     if (visibilityChanged) if (const auto check = registry_.CheckVisibilityPublication(group.ref.element)) return check;
                     HWND window = group.target.presentation.window;
                     if (!IsWindow(window)) return MMS_E_STALE;
@@ -426,6 +456,21 @@ void UiRefreshQueue::Drain() {
                 if (r) return r;
                 completed |= MMS_UI_REFRESH_STATE;
             }
+            if (group.kinds & MMS_UI_REFRESH_LAYOUT) {
+                if (const auto r = validate(group.fixedGeometry)) return r;
+                const auto priorGeometry = group.target.geometry;
+                { std::lock_guard<std::mutex> lock(mutex_); evaluatingLayoutOwner_ = group.owner; }
+                struct LayoutGuard { UiRefreshQueue& queue; ~LayoutGuard() {
+                    std::lock_guard<std::mutex> lock(queue.mutex_); queue.evaluatingLayoutOwner_ = nullptr;
+                } } guard{*this};
+                const auto r = registry_.WithReadOnlyCallback([&] { return layout_ ? layout_(group.ref.element) : MMS_E_UNSUPPORTED; });
+                if (r) return r;
+                if (const auto check = validate(false)) return check;
+                completed |= MMS_UI_REFRESH_LAYOUT;
+                // Rectangles belong to their captured local coordinate space.
+                // Whole-target repaint follows the newly published geometry.
+                if (!group.rects.empty() && priorGeometry != group.target.geometry) return MMS_E_STALE;
+            }
             if (group.kinds & MMS_UI_REFRESH_REPAINT) {
                 if (const auto r = validate(group.fixedGeometry || (group.kinds & MMS_UI_REFRESH_STATE))) return r;
                 const auto r = Invalidate(group.target.presentation, group.whole, group.rects);
@@ -450,13 +495,15 @@ bool UiRefreshQueue::Pending() const {
 }
 bool UiRefreshQueue::ReadOnlyCause() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    return evaluatingStateOwner_ || evaluatingStateProvider_ || evaluatingDataOwner_ || inheritedReadOnlyCause_;
+    return evaluatingStateOwner_ || evaluatingStateProvider_ || evaluatingDataOwner_ ||
+        evaluatingLayoutOwner_ || evaluatingLayoutProvider_ || inheritedReadOnlyCause_;
 }
 bool UiRefreshQueue::ReadOnlyCauseLocked(const RefreshClient& client) const noexcept {
     if (client.queue != this) return false;
     const auto sameOwner = [&](const RefreshClient* cause) { return cause && cause->owner == client.owner; };
-    return sameOwner(evaluatingStateOwner_) || sameOwner(evaluatingDataOwner_) || sameOwner(inheritedReadOnlyCause_) ||
-        (evaluatingStateProvider_ && evaluatingStateProvider_->id == client.owner);
+    return sameOwner(evaluatingStateOwner_) || sameOwner(evaluatingDataOwner_) || sameOwner(evaluatingLayoutOwner_) ||
+        sameOwner(inheritedReadOnlyCause_) || (evaluatingStateProvider_ && evaluatingStateProvider_->id == client.owner) ||
+        (evaluatingLayoutProvider_ && evaluatingLayoutProvider_->id == client.owner);
 }
 bool UiRefreshQueue::ReadOnlyCause(const RefreshClient& client) const {
     std::lock_guard<std::mutex> lock(mutex_);

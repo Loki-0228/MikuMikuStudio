@@ -26,6 +26,7 @@
 #include "../src/plugins/scene_store.hpp"
 #include "../src/plugins/scene_object_history.hpp"
 #include "../src/plugins/history_runtime.hpp"
+#include "../src/plugins/native_accessory_hud_history.hpp"
 #include "mikudancestudio/plugin_runtime.hpp"
 #include "mikudancestudio/plugin_storage.hpp"
 #include <thread>
@@ -703,7 +704,10 @@ void CheckShadowFilter(MMDApp* app) {
 #include "plugins/geometry_host_checks.inc"
 #include "../src/plugins/project_storage.hpp"
 #include "plugins/storage_host_checks.inc"
+#include "plugins/slider_paint_trace_host_checks.inc"
+#include "plugins/slider_nonoverlap_host_checks.inc"
 #if !MMD_ORIGINAL_PROFILE
+#include "plugins/layout_refresh_host_checks.inc"
 #include "plugins/object_history_host_checks.inc"
 #include "plugins/import_picker_host_checks.inc"
 #include "plugins/edit_history_host_checks.inc"
@@ -731,7 +735,38 @@ int main(int argc, char** argv) {
     SetWindowPos(window, nullptr, 0, 0, 1200,820, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
     HandleWindowSize(app);
     Check(!IsWindowVisible(window), "production host stays hidden");
+    if (argc == 4 && std::string(argv[1]) == "--slider-paint-only") {
+        const bool bound = std::string(argv[3]) == "bound";
+        try {
 #if !MMD_ORIGINAL_PROFILE
+            if (bound) {
+                plugins::Shutdown();
+                Check(plugins::InitializeHistoryTestRuntime(app), "bind actual common history for slider paint diagnosis");
+                Check(plugins::NativeHistory(app)->SetMode(plugins::SharedHistory::RecordingMode::AllOperations) == MMS_OK,
+                    "exercise real all-operation slider transactions while tracing");
+            }
+#endif
+            app->CameraMode() = 1;
+            PostLanguageSweep2(app); PostViewRefresh(app); HandleWindowSize(app);
+            // This diagnostic alone intentionally exposes its disposable host
+            // so GetDC snapshots can distinguish real child pixels from DIBs.
+            originalShow(window, SW_SHOWNOACTIVATE);
+            for (int id : {447,455,456,457,458,459,460}) originalShow(GetDlgItem(window,id), SW_SHOWNOACTIVATE);
+            RedrawWindow(window, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+            slider_nonoverlap_host_checks::Run(app, std::filesystem::absolute(argv[2]) / "nonoverlap");
+            slider_paint_trace_host_checks::Run(app, std::filesystem::absolute(argv[2]), bound);
+            originalShow(window, SW_HIDE);
+            ShutdownCleanup(app); g_Block = nullptr; delete app; return 0;
+        } catch (const std::exception& error) {
+            std::fprintf(stderr, "FAIL slider paint: %s\n", error.what());
+            originalShow(window, SW_HIDE);
+            ShutdownCleanup(app); g_Block = nullptr; delete app; return 1;
+        }
+    }
+#if !MMD_ORIGINAL_PROFILE
+    if(argc==3 && std::string(argv[1])=="--layout-integration-only") {
+        layout_refresh_host_checks::Run(app,std::string(argv[2])=="bound");ShutdownCleanup(app);g_Block=nullptr;delete app;return 0;
+    }
     if(argc==2 && std::string(argv[1])=="--camera-interpolation-only") {
         camera_interpolation_host_checks::Run(app);ShutdownCleanup(app);g_Block=nullptr;delete app;return 0;
     }

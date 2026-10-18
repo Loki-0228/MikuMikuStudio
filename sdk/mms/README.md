@@ -4,9 +4,9 @@
 
 基础 UI 的类型化与声明式封装已提供，见 [C++17 界面注册 SDK](cpp-ui.md)。`UiServices`、`RegistrationBundle` 和 `CommandUi` 包装同一套 C ABI，复杂插件继续操作原始句柄。
 
-[C++17 重绘 SDK](cpp-refresh.md)提供 `RefreshServices` 和可移动的 `RefreshTicket`，封装目标查询、整目标或局部矩形重绘及取消、释放。票据仍为原 C 句柄，可以移交给低层代码。
+[C++17 刷新 SDK](cpp-refresh.md)提供 `RefreshServices` 和可移动的 `RefreshTicket`，封装目标查询、整目标或局部矩形重绘及取消、释放。`RelayoutCurrent` 和 `RefreshStateLayout` 组合原 C 请求，实现保留布局的重排及按钮收缩恢复。票据仍为原 C 句柄，可以移交给低层代码。
 
-界面异步重绘已提供 [mms.ui.refresh 参考](refresh.md)，当前支持同插件按钮及原生面板的 `REPAINT + SELF`，以及按钮启用、选中和保留槽位显隐的 `STATE + SELF`。有效绑定目标支持 [DATA + SELF 及分层 SDK](data-refresh.md)，复用同一刷新票据。后续设计以[统一插件扩展架构](../../docs/PLUGIN_EXTENSION_ARCHITECTURE.md)为准，另见 [UI 呈现与刷新扩展](../../docs/PLUGIN_UI_PRESENTATION.md)、[多视口与洋葱皮](../../docs/PLUGIN_VIEWPORT_RENDERING.md)及[数据格式与编辑工具](../../docs/PLUGIN_DATA_EXTENSIONS.md)。各页标明已实现范围，其余服务及工具封装仍为提案。
+界面异步刷新已提供 [mms.ui.refresh 参考](refresh.md)，支持同插件按钮及原生面板的 `REPAINT + SELF`、按钮部分 `STATE + SELF`，以及原生布局后端中已有按钮和已挂载 surface 的 `LAYOUT + SELF`。有效绑定目标支持 [DATA + SELF 及分层 SDK](data-refresh.md)，复用同一刷新票据。后续设计以[统一插件扩展架构](../../docs/PLUGIN_EXTENSION_ARCHITECTURE.md)为准，另见 [UI 呈现与刷新扩展](../../docs/PLUGIN_UI_PRESENTATION.md)、[多视口与洋葱皮](../../docs/PLUGIN_VIEWPORT_RENDERING.md)及[数据格式与编辑工具](../../docs/PLUGIN_DATA_EXTENSIONS.md)。各页标明已实现范围，其余服务及工具封装仍为提案。
 
 ## 开发环境
 
@@ -44,7 +44,7 @@ cmake --build build/hello-menu --config Release
 | `mms.ui` 1.0 | 命令、菜单项、工具栏按钮和组；元数据更新；只读属性；快照租约；命令参数、范围与选项校验；布局修订检查、指定顺序移动、创建与删除空组、显示、首选尺寸、快捷键及恢复。 |
 | `mms.ui.surface` 1.0 | 菜单、工具栏和工作区页签挂载位置；原生子窗口工厂、多个视图、尺寸、隐藏、焦点与销毁。 |
 | `mms.ui.layout` 1.0 | 默认布局提示、事务内用户覆盖、实际几何快照；行、列、换行和网格；伸缩、上下限、隐藏占位。 |
-| `mms.ui.refresh` 1.0 | 本插件已有按钮和原生 surface 的 REPAINT + SELF；按钮额外支持启用、选中及保留槽位内显隐的 STATE。UI 线程查询能力和目标，后台使用同一票据；实例、工程及几何修订校验。有效绑定目标支持 DATA，组合按 DATA→STATE→REPAINT 执行。LAYOUT 和其他范围返回 UNSUPPORTED。 |
+| `mms.ui.refresh` 1.0 | 本插件已有按钮和原生 surface 的 REPAINT + SELF；按钮部分 STATE；原生布局后端为已有按钮和已挂载 surface 提供保留布局的 LAYOUT。STATE 与 LAYOUT 组合支持收缩空位和同引用恢复零尺寸按钮。UI 线程查询能力和目标，后台使用同一票据；有效绑定目标支持 DATA。组合依次执行 DATA、STATE、LAYOUT、REPAINT；SUBTREE、DEPENDENTS 等其他范围仍未开放。 |
 | `mms.ui.refresh.bind` 1.0 | 本插件不可变来源、来源版本、目标绑定、只读显示准备及显示租约；工作线程发布，原刷新队列消费。 |
 | `mms.scene` 1.0 | 阶段 0 的对象、骨骼、网格、绑定、刚体、关节、形状、Morph、材质和纹理路径；独立 ID、运行时代次、不可变快照及 PMM 身份保存。阶段 1–4 返回 UNSUPPORTED。 |
 | `mms.storage` 1.0 | 插件工程数据、两阶段加载、只读保存数据租约；PMM 与扩展文件成对保存和中断恢复。提供者名为 `mms.serializer`。 |
@@ -54,9 +54,9 @@ cmake --build build/hello-menu --config Release
 
 布局事务的用户覆盖由宿主保存，重启或 EXE 改名后按稳定 ID 恢复。缺失插件的配置继续保留。保存位置、默认值合并和失败行为见[界面布局保存](ui-preferences.md)。
 
-需要布局提示时，元素声明 `MMS_UI_LAYOUT`，使用 `layout.setDefaultHints`。用户通过 `stageHints` 设置的覆盖值不会被后续默认值覆盖。布局快照仅枚举有 LAYOUT 能力的元素；新 UI 修订的 HWND 几何尚未完成时返回 NOT_READY。旧快照不会被后续布局修改。
+需要布局提示时，元素声明 `MMS_UI_LAYOUT`，使用 `layout.setDefaultHints`。用户通过 `stageHints` 设置的覆盖值不会被后续默认值覆盖。布局快照仅枚举有 LAYOUT 能力的元素；新 UI 修订的 HWND 几何尚未完成或布局失败暂停时返回 NOT_READY。旧快照租约不会被后续布局修改，失败不承诺回滚已移动的 HWND。
 
-重绘目标直接使用原元素 handle，按钮不要求 LAYOUT 能力。`getCapabilities`、`getTarget` 允许在 UI 线程的命令回调内纯读；只有 `request`、`query`、`cancel`、`release` 允许后台调用。局部矩形使用目标客户区 DIP，并带实际几何修订。`release` 不取消已接受的请求，未释放票据会阻止插件卸载。完整错误和停止规则见[界面重绘接口参考](refresh.md)。
+刷新目标直接使用原元素 handle，按钮不要求 `MMS_UI_LAYOUT` 注册能力；具体刷新种类仍须检查目标的 supportedKinds。纯 LAYOUT 使用缓存状态，不重新查询所有命令。`getCapabilities`、`getTarget` 允许在 UI 线程的命令回调内纯读；只有 `request`、`query`、`cancel`、`release` 允许后台调用。局部矩形使用目标客户区 DIP，并带实际几何修订；同次布局改变几何后，旧矩形返回 STALE，保留已完成阶段。`release` 不取消已接受的请求，未释放票据会阻止插件卸载。完整错误和停止规则见[界面刷新接口参考](refresh.md)。
 
 面板在 `mms.workspace.tabs.extensions` 注册 PANEL，并引用自己注册的 `surfaceId`。尺寸以 DIP 声明；回调使用父窗口坐标空间中的像素和 DPI。当前 MMS 保留 Windows 位图缩放，因此窗口 DPI 为 96；插件不要再乘显示器缩放比例。现代系统动态查询窗口 DPI，Win7 使用窗口 DC。跨原生父窗口移动先销毁后创建，业务数据应保留在插件实例中。
 

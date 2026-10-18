@@ -30,6 +30,7 @@ struct RefreshPresentation {
     // Host-owned buttons opt in. Visibility is mutable only in a reserved slot.
     bool stateRefresh = false, stateVisible = true;
     bool stateVisibility = false, layoutVisible = true;
+    bool layoutRefresh = false;
 };
 class UiRefreshQueue {
     struct Target;
@@ -45,8 +46,11 @@ class UiRefreshQueue {
     const RefreshClient* evaluatingStateOwner_ = nullptr;
     const UiClient* evaluatingStateProvider_ = nullptr;
     const RefreshClient* evaluatingDataOwner_ = nullptr;
+    const RefreshClient* evaluatingLayoutOwner_ = nullptr;
+    const UiClient* evaluatingLayoutProvider_ = nullptr;
     const RefreshClient* inheritedReadOnlyCause_ = nullptr;
     std::function<bool()> wake_;
+    std::function<MmsResult(MmsHandle)> layout_;
     MmsResult Capabilities(RefreshClient&, MmsUiRefreshCapabilitiesV1*);
     MmsResult GetTarget(RefreshClient&, MmsHandle, MmsUiRefreshTargetV1*);
     MmsResult Request(RefreshClient&, const MmsUiRefreshRequestV1*, MmsHandle*);
@@ -66,6 +70,11 @@ public:
     const RefreshClient* ExchangeInheritedReadOnlyCause(const RefreshClient*) noexcept;
     // Configure once before plugin loading; Wake must be a nonblocking signal.
     void SetWake(std::function<bool()>);
+    // The native adapter remeasures its retained layout. This is not a plugin
+    // callback and must never evaluate scene data or save user preferences.
+    void SetLayout(std::function<MmsResult(MmsHandle)>);
+    bool CachedStateVisible(MmsHandle, bool fallback) const;
+    MmsResult WithLayoutProvider(const UiClient&, const std::function<MmsResult()>&);
     void SyncTargets(const std::vector<RefreshPresentation>&);
     void InvalidateTarget(MmsHandle) noexcept;
     // Pause before native moves, retaining the last geometry revision. Only

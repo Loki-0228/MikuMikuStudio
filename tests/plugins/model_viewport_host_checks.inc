@@ -204,12 +204,13 @@ void RunWheel(MMDApp* app,plugins::SharedHistory& history,int(*value)(),Original
         app->CameraDistance()=-58.002994537353516f;const auto before=Read(*app);
         Menu(app,L"Edit probe once");Menu(app,L"Edit probe prepared");SendMessageW(owner,WM_MOUSEWHEEL,MAKEWPARAM(0,120),0);
         Check(Same(Read(*app),before)&&history.UndoCount()==1,"pending plugin transaction rejects real model wheel atomically");Menu(app,L"Edit probe cancel");
-        auto expected=before;const bool blocked=!detached&&branch==4;
-        if(!blocked){if(detached)expected.values[6]=static_cast<float>(-120.0*0.05000000074505806+static_cast<double>(expected.values[6]));else expected.values[6]=-120.f*.05f+expected.values[6];}
+        auto expected=before;const bool hintOnly=!detached&&branch==4;
+        if(!hintOnly){if(detached)expected.values[6]=static_cast<float>(-120.0*0.05000000074505806+static_cast<double>(expected.values[6]));else expected.values[6]=-120.f*.05f+expected.values[6];}
         SendMessageW(owner,WM_MOUSEWHEEL,MAKEWPARAM(0,static_cast<WORD>(-120)),0);const auto after=Read(*app);
-        const unsigned nativeNodes=!blocked&&mode==Mode::AllOperations?1:0;
-        Check(Same(after,expected)&&history.UndoCount()==1+nativeNodes&&app->CurrentFrame()==7&&app->state.viewDirty==0&&app->state.b6568482==0&&app->WindowLayoutReady()==1,
-            "real model wheel preserves main float or detached double arithmetic and rejects only the matched-follow UI-migration path");original.Invariants();
+        const unsigned nativeNodes=!hintOnly&&mode==Mode::AllOperations?1:0;
+        Check(Same(after,expected)&&history.UndoCount()==1+nativeNodes&&app->CurrentFrame()==7&&app->state.viewDirty==unsigned(hintOnly)&&
+            app->state.b6568482==unsigned(hintOnly)&&app->WindowLayoutReady()==1,
+            "real model wheel preserves main float/detached double arithmetic or exact native matched-follow hints without an empty journal node");original.Invariants();
         Menu(app,L"Edit probe once");Menu(app,L"Edit probe undo");Check(value()==initial+1,"plugin edit following model wheel is independently undoable");
         app->CurrentFrame()=61;app->CameraMode()=1;app->SelectedModelSlot()=other;Unrelated(*app,before,after);const auto current=Read(*app);
         if(nativeNodes){Menu(app,L"Edit probe undo");Check(Same(Read(*app),Replay(before,after,current,false))&&app->CurrentFrame()==61&&value()==initial+1,
@@ -251,10 +252,26 @@ void RunCancelAndSpecial(MMDApp* app,plugins::SharedHistory& history,int(*value)
         Menu(app,L"Edit probe redo");Menu(app,L"Edit probe undo");Check(value()==initial&&history.Reset()==MMS_OK,"cancelled model preview keeps the original plugin redo valid");history.Collect();original.Invariants();
     }
     for(bool detached:{false,true})for(auto mode:{Mode::AllOperations,Mode::ExplicitOnly})for(UINT button:{WM_RBUTTONDOWN,WM_MBUTTONDOWN}){
-        Check(history.SetMode(mode)==MMS_OK,"configure matched-follow rejection recording policy");Build(*app,selected,other,4,2);const auto owner=windows.Select(detached);const auto before=Read(*app);const Action action{button,MK_SHIFT};
-        Mouse(owner,button,action,300,100);Mouse(owner,WM_MOUSEMOVE,action,313,107);Mouse(owner,button==WM_RBUTTONDOWN?WM_RBUTTONUP:WM_MBUTTONUP,action,319,111);
-        Check(Same(Read(*app),before)&&GetCapture()!=owner&&!history.UndoCount()&&!history.RedoCount()&&!app->SceneModified()&&app->state.viewDirty==0&&app->state.b6568482==0&&app->WindowLayoutReady()==1,
-            "matched-follow model drag stays closed until its UI trace and release lifecycle are migrated");original.Invariants();
+        Check(history.SetMode(mode)==MMS_OK,"configure matched-follow hint and pan recording policy");Build(*app,selected,other,4,2);const auto owner=windows.Select(detached);const auto before=Read(*app);const Action action{button,MK_SHIFT};
+        Mouse(owner,button,action,300,100);Mouse(owner,WM_MOUSEMOVE,action,313,107);
+        auto expected=before;const bool pan=button==WM_MBUTTONDOWN;if(pan)LegacyDrag(expected,action,13,7);
+        Check(Same(Read(*app),expected)&&GetCapture()==owner&&app->state.viewDirty==1&&!history.UndoCount(),
+            "real matched-follow held input uses only the original RMB hint or MMB offsets before final publication");
+        Mouse(owner,button==WM_RBUTTONDOWN?WM_RBUTTONUP:WM_MBUTTONUP,action,319,111);if(pan)LegacyDrag(expected,action,6,4);
+        const unsigned nativeNodes=pan&&mode==Mode::AllOperations?1:0;
+        Check(Same(Read(*app),expected)&&GetCapture()!=owner&&history.UndoCount()==nativeNodes&&!history.RedoCount()&&
+            bool(app->SceneModified())==pan&&bool(app->RecordedFrameCountByte1())==pan&&!app->PhysicsResetPending()&&
+            !app->state.viewDirty&&!app->state.b6568482&&app->WindowLayoutReady()==1,
+            "matched-follow release clears transient hint and records only a whole numeric pan under the configured policy");original.Invariants();
+        if(nativeNodes){
+            app->CameraMode()=1;app->SelectedModelSlot()=other;app->CurrentFrame()=61;app->state.followCameraEnabled=0;app->PhysicsResetPending()=0;
+            Menu(app,L"Edit probe undo");Check(Same(Read(*app),before)&&app->CurrentFrame()==61&&!app->PhysicsResetPending(),
+                "real followed-pan undo crosses model and frame without a physics settle");
+            Menu(app,L"Edit probe redo");Check(Same(Read(*app),expected)&&app->CurrentFrame()==61&&!app->PhysicsResetPending(),
+                "real followed-pan redo restores the exact sampled offsets without scene reevaluation");
+            Menu(app,L"Edit probe undo");
+        }
+        Check(history.Reset()==MMS_OK,"matched-follow host case releases its private journal records");history.Collect();original.Invariants();
     }
 }
 void Run(MMDApp* app,plugins::SharedHistory& history,int(*value)()){

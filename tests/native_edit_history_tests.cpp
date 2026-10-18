@@ -411,8 +411,10 @@ void CrossModelJournal(){
 #include "native_legacy_global_retime_checks.inc"
 #include "native_numpad_view_checks.inc"
 #include "native_camera_hud_history_checks.inc"
+#include "native_accessory_hud_history_checks.inc"
 #include "native_numpad_dispatch_checks.inc"
 #include "native_model_viewport_history_checks.inc"
+#include "native_same_model_follow_checks.inc"
 #include "native_curve_write_checks.inc"
 #include "native_morph_curve_write_checks.inc"
 #include "native_bone_curve_write_checks.inc"
@@ -660,6 +662,14 @@ int main(int argc,char** argv){
         run("NativeCameraHudHistoryChecks",NativeCameraHudHistoryChecks);
         std::printf("PASS native camera HUD: %u checks\n",checks);return 0;
     }
+    if(argc==2&&!std::strcmp(argv[1],"--accessory-hud-only")) {
+        run("NativeAccessoryHudHistoryChecks",NativeAccessoryHudHistoryChecks);
+        std::printf("PASS native accessory HUD: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--same-model-follow-only")) {
+        run("NativeSameModelFollowChecks",NativeSameModelFollowChecks);
+        std::printf("PASS native same-model follow: %u checks\n",checks);return 0;
+    }
     if(argc==2&&!std::strcmp(argv[1],"--global-key-delete-only")) {
         run("NativeGlobalKeyDeleteChecks",NativeGlobalKeyDeleteChecks);
         std::printf("PASS native global key deletion: %u checks\n",checks);return 0;
@@ -769,6 +779,8 @@ int main(int argc,char** argv){
     run("NativeModelVmdCurvesChecks",NativeModelVmdCurvesChecks);
     run("NativeCameraFollowChecks",NativeCameraFollowChecks);
     run("NativeCameraHudHistoryChecks",NativeCameraHudHistoryChecks);
+    run("NativeAccessoryHudHistoryChecks",NativeAccessoryHudHistoryChecks);
+    run("NativeSameModelFollowChecks",NativeSameModelFollowChecks);
     run("PoseAndStale",PoseAndStale);run("KeysAndChain",KeysAndChain);run("Bake",Bake);
     run("Deletion",Deletion);run("EmptyAndCycle",EmptyAndCycle);run("FreeCurves",FreeCurves);
     run("Scatter",Scatter);run("FailedNativeCommands",FailedNativeCommands);run("RemovalBindings",RemovalBindings);

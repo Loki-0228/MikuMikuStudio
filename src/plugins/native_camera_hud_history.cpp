@@ -240,8 +240,11 @@ bool HandleCameraHudMessage(MMDApp& app, HWND owner, UINT message, WPARAM wp, LP
         return message == WM_KEYDOWN;
     }
     if (message == WM_LBUTTONUP && gesture->owner == owner) {
+        const auto source = gesture->change;
         const int operation = gesture->operation;
-        if (AllowCameraHudPreview(app, operation)) {
+        const bool allowed = AllowCameraHudPreview(app, operation);
+        if (!CameraHudGestureActive(app) || gesture->change != source) return true;
+        if (allowed) {
             // Centered HUD drags warp on press and at viewport edges. A queued
             // release can still carry pre-warp client coordinates, so follow
             // MouseInteractionBegin's live screen->owner-client sampling. If
@@ -253,6 +256,10 @@ bool HandleCameraHudMessage(MMDApp& app, HWND owner, UINT message, WPARAM wp, LP
                 app.CtrlModifierState() = (wp & MK_CONTROL) ? 3 : 0;
                 if (operation <= 17) ModeCameraAdjust(&app, operation - 15);
                 else ModeAngleAdjust(&app, operation - 18);
+                // A native readout callback can cancel this release and begin
+                // another HUD gesture. Its cursor snapshots and capture belong
+                // to that new gesture; swallow this old mouse-up entirely.
+                if (!CameraHudGestureActive(app) || gesture->change != source) return true;
                 app.PreviousMouseX() = app.MouseX(); app.PreviousMouseY() = app.MouseY();
             }
         }

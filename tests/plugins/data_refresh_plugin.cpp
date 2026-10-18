@@ -14,6 +14,7 @@
 #include <memory>
 #include <new>
 #include <string>
+#include <stdexcept>
 #include <thread>
 
 namespace {
@@ -26,6 +27,9 @@ struct Plugin {
     HINSTANCE module=nullptr;bool registeredClass=false;
     DataRefreshProbePrepareHookFn prepareHook=nullptr;void* prepareHookContext=nullptr;
     DataRefreshProbeState state{};
+    DataRefreshProbeLayoutState layoutState{};
+    DataRefreshProbeLayoutHookFn layoutHook=nullptr;void* layoutHookContext=nullptr;
+    uint32_t layoutVisible=1;
 };
 Plugin* current=nullptr;
 constexpr wchar_t kPanelClass[]=L"MMS.DataRefresh.Probe.View.V1";
@@ -85,6 +89,35 @@ void ExecuteTask(void* context,bool cancelled){std::unique_ptr<Task> task(static
 }
 void MMS_CALL TaskRun(void* context){ExecuteTask(context,false);}
 void MMS_CALL TaskCancel(void* context){ExecuteTask(context,true);}
+struct LayoutTask{Plugin* owner;unsigned slot;bool child;bool normal;};
+void MMS_CALL LayoutTaskRun(void*);
+void MMS_CALL LayoutTaskCancel(void*);
+MmsResult EnqueueLayout(Plugin& p,unsigned slot,bool child,bool cancelNow,bool normal=false,MmsResult* cancellation=nullptr){
+    auto task=std::make_unique<LayoutTask>(LayoutTask{&p,slot,child,normal});MmsHandle handle=0;
+    const auto result=p.host.enqueueUi(p.host.context,LayoutTaskRun,LayoutTaskCancel,task.get(),&handle);
+    if(result)return result;task.release();
+    if(cancelNow){const auto cancelled=p.host.cancelUi(p.host.context,handle);if(cancellation)*cancellation=cancelled;}
+    return MMS_OK;
+}
+void ExecuteLayoutTask(void* context,bool cancelled){
+    std::unique_ptr<LayoutTask> task(static_cast<LayoutTask*>(context));auto& p=*task->owner;
+    auto& state=p.layoutState.tasks[task->slot];++state.calls;AttemptEdit(p,state.edit);
+    if(task->normal&&task->child){
+        const auto id=p.id+".layout-normal-child",command=p.id+".command";
+        MmsUiElementV1 element{};element.h=Header<MmsUiElementV1>();element.id=S(id);element.ownerPlugin=S(p.id);
+        element.parentId=S("mms.menu.plugins");element.label=S("Layout child");element.commandId=S(command);element.kind=MMS_UI_MENU_ITEM;
+        MmsHandle handle=0;state.mutate=p.ui.registerElement(p.ui.context,&element,&handle);
+        if(!state.mutate)state.mutate=p.ui.unregisterItem(p.ui.context,handle);
+    }else{
+        state.mutate=p.ui.unregisterItem(p.ui.context,p.menu);if(!state.mutate&&task->normal)p.menu=0;
+    }
+    state.dataRequest=AttemptRefresh(p,MMS_UI_REFRESH_DATA);state.stateRequest=AttemptRefresh(p,MMS_UI_REFRESH_STATE);
+    state.layoutRequest=AttemptRefresh(p,MMS_UI_REFRESH_LAYOUT);
+    if(!task->child)state.enqueueChild=EnqueueLayout(p,task->slot==1?3u:2u,true,false,task->normal);
+    Log(p,cancelled?"LAYOUT_PROBE_TASK_CANCEL":"LAYOUT_PROBE_TASK_RUN");
+}
+void MMS_CALL LayoutTaskRun(void* context){ExecuteLayoutTask(context,false);}
+void MMS_CALL LayoutTaskCancel(void* context){ExecuteLayoutTask(context,true);}
 MmsResult MMS_CALL Prepare(void* context,const MmsUiDataPrepareV1* input){auto& p=*static_cast<Plugin*>(context);auto& s=p.state;
     ++s.prepareCount;s.prepareSequence=++s.sequence;s.preparedRevision=input->sourceRevision;
     AttemptEdit(p,s.edit);
@@ -137,7 +170,14 @@ MmsResult MMS_CALL CreateView(void* context,const MmsUiMountV1* mount,void** out
     if(!window)return MMS_E_FAILED;*native=reinterpret_cast<uintptr_t>(window);*out=view.release();
     p.state.panelWindow=*native;++p.state.panelCreated;return MMS_OK;
 }
-void MMS_CALL ResizeView(void* context,const MmsUiRectV1* bounds,uint32_t){auto& view=*static_cast<View*>(context);
+void MMS_CALL ResizeView(void* context,const MmsUiRectV1* bounds,uint32_t){auto& view=*static_cast<View*>(context);auto& p=*view.owner;
+    if(p.layoutState.flags&LAYOUT_PROBE_ACTIVE){auto& s=p.layoutState;++s.resizeCount;AttemptEdit(p,s.edit);
+        Denied(p,s.directMutation,s.recursiveData,s.recursiveState);s.recursiveLayout=AttemptRefresh(p,MMS_UI_REFRESH_LAYOUT);
+        if(s.flags&LAYOUT_PROBE_ENQUEUE){s.enqueueRun=EnqueueLayout(p,0,false,false);
+            s.enqueueCancel=EnqueueLayout(p,1,false,true,false,&s.selfCancel);}
+        if(p.layoutHook)p.layoutHook(p.layoutHookContext);
+        if(s.flags&LAYOUT_PROBE_THROW)throw std::runtime_error("controlled real DLL layout resize failure");
+    }
     MoveWindow(view.window,bounds->x,bounds->y,int(bounds->width),int(bounds->height),TRUE);}
 void MMS_CALL ShowView(void* context,uint32_t visible){ShowWindow(static_cast<View*>(context)->window,visible?SW_SHOWNA:SW_HIDE);}
 MmsResult MMS_CALL FocusView(void* context){SetFocus(static_cast<View*>(context)->window);return MMS_OK;}
@@ -145,7 +185,7 @@ void MMS_CALL DestroyView(void* context){std::unique_ptr<View> view(static_cast<
     DestroyWindow(view->window);if(p.state.panelWindow==reinterpret_cast<uintptr_t>(view->window))p.state.panelWindow=0;
     ++p.state.panelDestroyed;Log(p,"DATA_PROBE_VIEW_DESTROY");}
 MmsResult MMS_CALL State(void* context,MmsObjectRef,MmsCommandStateV1* out){auto& p=*static_cast<Plugin*>(context);
-    if(!out)return MMS_E_ARGUMENT;*out={Header<MmsCommandStateV1>(),1,0,1,0,{}};
+    if(!out)return MMS_E_ARGUMENT;*out={Header<MmsCommandStateV1>(),1,0,p.layoutVisible,0,{}};
     ++p.state.stateCount;p.state.stateSequence=++p.state.sequence;
     if(p.binding){DataDisplay display;if(!p.binding.Acquire(display)){const int value=DisplayInt(display);
         p.state.stateValue=value;p.state.displayRevision=display.value().displayRevision;
@@ -248,3 +288,18 @@ extern "C" MmsResult MMS_CALL ProbeEnqueueNormal(void){return mms::sdk::detail::
     if(const auto result=AttemptRefresh(*p,MMS_UI_REFRESH_DATA))return result;
     if(const auto result=AttemptRefresh(*p,MMS_UI_REFRESH_STATE))return result;
     return Enqueue(*p,0,false,false,nullptr,true);});}
+extern "C" MmsResult MMS_CALL ProbeLayoutConfigure(uint32_t flags,DataRefreshProbeLayoutHookFn hook,void* context){
+    if(!current)return MMS_E_NOT_READY;if(flags&~7u)return MMS_E_ARGUMENT;
+    current->layoutState={};current->layoutState.size=sizeof(DataRefreshProbeLayoutState);current->layoutState.flags=flags;
+    current->layoutHook=hook;current->layoutHookContext=context;return MMS_OK;
+}
+extern "C" MmsResult MMS_CALL ProbeLayoutQuery(DataRefreshProbeLayoutState* out){
+    if(!out||out->size!=sizeof(*out))return MMS_E_ARGUMENT;if(!current)return MMS_E_NOT_READY;
+    *out=current->layoutState;out->size=sizeof(*out);return MMS_OK;
+}
+extern "C" MmsResult MMS_CALL ProbeEnqueueLayoutNormal(void){return mms::sdk::detail::Call([&]()->MmsResult{
+    auto* p=current;if(!p||!p->binding||!p->state.sourceRevision)return MMS_E_NOT_READY;
+    return EnqueueLayout(*p,0,false,false,true);});}
+extern "C" MmsResult MMS_CALL ProbeLayoutSetVisible(uint32_t visible){
+    if(!current)return MMS_E_NOT_READY;if(visible>1)return MMS_E_ARGUMENT;current->layoutVisible=visible;return MMS_OK;
+}

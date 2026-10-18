@@ -441,6 +441,7 @@ void ObjectMenuDeletion(MMDApp* app, plugins::SharedHistory& history, const MmsS
 #include "viewport_history_host_checks.inc"
 #include "model_viewport_host_checks.inc"
 #include "camera_hud_host_checks.inc"
+#include "accessory_hud_host_checks.inc"
 #include "numpad_view_host_checks.inc"
 #include "curve_motion_import_host_checks.inc"
 #include "native_camera_sampling_host_checks.inc"
@@ -498,6 +499,7 @@ void Run(MMDApp* app) {
     viewport_history_host_checks::Run(app,*history,value);
     model_viewport_host_checks::Run(app,*history,value);
     camera_hud_host_checks::Run(app,*history);
+    accessory_hud_host_checks::Run(app,*history,value);
     numpad_view_host_checks::Run(app,*history,value);
     curve_motion_import_host_checks::Run(app,*history);
     native_camera_sampling_host_checks::Run(app,*history,value);

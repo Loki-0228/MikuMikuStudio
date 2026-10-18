@@ -839,13 +839,14 @@ bool UiRegistry::PublishGeometry(const std::map<std::string, Geometry>& input, u
         auto prior = geometry_.find(id);
         if (prior == geometry_.end() || std::memcmp(value.rect, prior->second.rect, sizeof(value.rect)) || value.visible != prior->second.visible || value.overflowed != prior->second.overflowed) { changed = true; break; }
     }
-    geometry_.swap(candidate); geometryUiRevision_ = revision; if (changed) ++geometryRevision_; return true;
+    geometry_.swap(candidate); geometryUiRevision_ = revision; geometryReady_ = true;
+    if (changed) ++geometryRevision_; return true;
 }
 MmsResult UiRegistry::CheckVisibilityPublication(MmsHandle handle) const noexcept {
     if (GetCurrentThreadId() != thread_) return MMS_E_THREAD;
     for (const auto& [id, e] : elements) if (e.handle == handle) {
         if (!(e.desc.capabilities & MMS_UI_LAYOUT)) return MMS_OK;
-        return geometryUiRevision_ == revision_ && geometry_.count(id) ? MMS_OK : MMS_E_NOT_READY;
+        return geometryReady_ && geometryUiRevision_ == revision_ && geometry_.count(id) ? MMS_OK : MMS_E_NOT_READY;
     }
     return MMS_E_STALE;
 }
@@ -860,7 +861,7 @@ MmsResult UiRegistry::PublishVisibility(MmsHandle handle, bool visible) noexcept
 }
 MmsResult UiRegistry::LayoutSnapshot(UiClient& c, MmsUiLayoutSnapshotV1* out) {
     auto check = Check(c); if (check) return check; if (!Valid(out)) return MMS_E_ARGUMENT;
-    if (geometryUiRevision_ != revision_) return MMS_E_NOT_READY;
+    if (!geometryReady_ || geometryUiRevision_ != revision_) return MMS_E_NOT_READY;
     auto lease = std::make_unique<Lease>(); lease->owner = c.id; lease->kind = 4;
     for (const auto& [id, item] : geometry_) { auto copy = item; copy.elementId = lease->arena.Copy(Text(id)); lease->geometry.push_back(copy); }
     MmsHandle h = next_++; MmsUiLayoutSnapshotV1 result{Header<MmsUiLayoutSnapshotV1>(), h, revision_, geometryRevision_, {lease->geometry.data(), lease->geometry.size(), sizeof(MmsUiLayoutItemV1), 1}};
@@ -967,8 +968,20 @@ MmsResult UiRegistry::ShowSurface(const std::string& id, HWND parent, const MmsU
             found = inserted;
         }
         auto& v = *found->second; Callback guard(callbackDepth_);
-        if (std::memcmp(&v.bounds, &bounds, sizeof(bounds)) || v.dpi != dpi) { v.surface->desc.resizeView(v.context, &bounds, dpi); v.bounds = bounds; v.dpi = dpi; }
-        if (v.visible != visible) { v.surface->desc.showView(v.context, visible ? 1 : 0); v.visible = visible; }
+        if (std::memcmp(&v.bounds, &bounds, sizeof(bounds)) || v.dpi != dpi) {
+            const auto result = refresh_.WithLayoutProvider(*v.surface->owner, [&] {
+                v.surface->desc.resizeView(v.context, &bounds, dpi); return MMS_OK;
+            });
+            if (result) return result;
+            v.bounds = bounds; v.dpi = dpi;
+        }
+        if (v.visible != visible) {
+            const auto result = refresh_.WithLayoutProvider(*v.surface->owner, [&] {
+                v.surface->desc.showView(v.context, visible ? 1 : 0); return MMS_OK;
+            });
+            if (result) return result;
+            v.visible = visible;
+        }
         return MMS_OK;
     });
 }
