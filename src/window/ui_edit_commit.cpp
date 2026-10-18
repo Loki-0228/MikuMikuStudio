@@ -279,10 +279,10 @@ bool CommitBoundMorphNumber(MMDApp* app,HWND edit) {
             bool changed=false;
             if(plugins::ApplyBoundMorphValue(*app,app->SelectedModelSlot(),unsigned(model->selectedMorphs[lane]),value,changed)==MMS_OK) {
                 if(!changed)plugins::RefreshBoundMorphReadout(*app);
-                // The original text path computes the slider from the parsed
-                // double before narrowing the authored weight to float.
-                const auto position=static_cast<int>((std::clamp)(raw*100.0,double((std::numeric_limits<int>::min)()),double((std::numeric_limits<int>::max)())));
-                SendDlgItemMessageW(app->MainWindow(),505+lane*5,TBM_SETPOS,TRUE,position);
+                // Successful authoring already refreshed the paired slider.
+                // Use that same display conversion for changed and equal
+                // values: .29's parsed double otherwise writes 28 after the
+                // canonical authored-float readout correctly displayed 29.
                 return true;
             }
         }

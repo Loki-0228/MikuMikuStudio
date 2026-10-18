@@ -1,4 +1,6 @@
 // Include after native_morph_text_checks.inc.
+#include "slider_readout_spy.hpp"
+#include "../src/plugins/native_object_commands.hpp"
 namespace {
 struct MorphSliderFixture : MorphTextFixture {
     MorphSliderFixture(){first.m->physicsMode=second.m->physicsMode=2;}
@@ -104,5 +106,112 @@ void MorphSliderGuardChecks(){
     const auto fake=CreateWindowExA(0,TRACKBAR_CLASSA,"",WS_CHILD,0,0,80,20,f.app->MainWindow(),reinterpret_cast<HMENU>(INT_PTR(505)),GetModuleHandleW(nullptr),nullptr);
     Check(fake&&plugins::TryCommitBoundMorphSlider(f.app.get(),fake)&&f.history.UndoCount()==1,"duplicate control ID is not a registered morph source");DestroyWindow(fake);
 }
+struct MorphEnterControl {
+    MorphSliderFixture& fixture;HWND edit,focus;WNDPROC previous,saved;
+    inline static thread_local MorphEnterControl* active=nullptr;
+    unsigned lostFocus=0;HWND nextFocus=nullptr;
+    LRESULT modifyBeforeEnter=-1,modifyAtLoss=-1,modifyAfterLoss=-1,modifyAfterEnter=-1;
+    char textBeforeEnter[64]{};
+    static LRESULT CALLBACK ObserveFocus(HWND window,UINT message,WPARAM wp,LPARAM lp){
+        Check(active&&active->edit==window,"ANSI morph focus observer belongs to this thread and this original EDIT");
+        auto& self=*active;
+        if(message==WM_KILLFOCUS){++self.lostFocus;self.nextFocus=reinterpret_cast<HWND>(wp);
+            self.modifyAtLoss=SendMessageA(window,EM_GETMODIFY,0,0);}
+        const auto result=CallWindowProcA(EditSubclassProc,window,message,wp,lp);
+        if(message==WM_KILLFOCUS)self.modifyAfterLoss=SendMessageA(window,EM_GETMODIFY,0,0);
+        return result;
+    }
+    explicit MorphEnterControl(MorphSliderFixture& f,unsigned lane):fixture(f),edit(f.Field(lane)),focus(GetFocus()),
+        previous(reinterpret_cast<WNDPROC>(GetWindowLongPtrA(edit,GWLP_WNDPROC))),saved(f.app->OriginalEditProc()){
+        Check(!active&&!IsWindowUnicode(edit),"morph Enter starts with one original ANSI EDIT on the current thread");
+        Check(previous!=nullptr,"morph Enter fixture retains the real native EDIT procedure");fixture.app->OriginalEditProc()=previous;
+        active=this;
+        Check(SetWindowLongPtrA(edit,GWLP_WNDPROC,reinterpret_cast<LONG_PTR>(ObserveFocus))==reinterpret_cast<LONG_PTR>(previous),
+            "install ANSI focus observer forwarding every message once through the actual production EDIT handler");
+        Check(!IsWindowUnicode(edit)&&fixture.app->OriginalEditProc()==previous,
+            "ANSI focus observer preserves EDIT encoding and the original native ANSI procedure");
+    }
+    ~MorphEnterControl(){Check(!IsWindowUnicode(edit)&&fixture.app->OriginalEditProc()==previous,
+            "morph Enter leaves the original ANSI encoding and native procedure intact");
+        SetWindowLongPtrA(edit,GWLP_WNDPROC,reinterpret_cast<LONG_PTR>(previous));active=nullptr;
+        Check(!IsWindowUnicode(edit)&&reinterpret_cast<WNDPROC>(GetWindowLongPtrA(edit,GWLP_WNDPROC))==previous,
+            "removing the focus observer restores exactly the native ANSI EDIT procedure");fixture.app->OriginalEditProc()=saved;
+        if(focus&&IsWindow(focus))SetFocus(focus);else SetFocus(nullptr);}
+    void Focus(){
+        // Use only this thread's hidden fixture. Never show or activate a
+        // window, or change the user's foreground window, to obtain focus.
+        SetFocus(edit);Check(GetFocus()==edit,"real morph EDIT owns focus before entering text");
+    }
+    void PressEnter(){
+        Check(GetFocus()==edit,"real morph EDIT retains focus immediately before Enter");
+        Check(!IsWindowUnicode(edit)&&fixture.app->OriginalEditProc()==previous,"Enter starts with the unchanged native ANSI EDIT chain");
+        lostFocus=0;nextFocus=nullptr;
+        modifyBeforeEnter=SendMessageA(edit,EM_GETMODIFY,0,0);GetWindowTextA(edit,textBeforeEnter,sizeof(textBeforeEnter));
+        SendMessageA(edit,WM_KEYDOWN,VK_RETURN,0);
+        modifyAfterEnter=SendMessageA(edit,EM_GETMODIFY,0,0);
+        Check(!IsWindowUnicode(edit)&&fixture.app->OriginalEditProc()==previous,"Enter preserves the native ANSI EDIT chain");
+        Check(GetFocus()==fixture.app->MainWindow(),"production Enter transfers native focus to the main window");
+        Check(lostFocus==1&&nextFocus==fixture.app->MainWindow(),
+            "production Enter causes exactly one real WM_KILLFOCUS to commit the morph edit");
+    }
+    void Enter(unsigned lane,const char* text){Focus();fixture.TypeField(lane,text);PressEnter();}
+};
+void MorphTextPercentThumbChecks(){
+    using Mode=plugins::SharedHistory::RecordingMode;
+    struct Input {const char* text;int tick;float authored;};
+    const Input input[]={{"0.29",29,.29f},{"0.57",57,.57f},{"0.58",58,.58f},{"0.53",53,.53f},{"0.59",59,.59f},{".6543219",65,.654321f}};
+    for(auto mode:{Mode::AllOperations,Mode::ExplicitOnly})for(unsigned lane=0;lane<4;++lane)for(unsigned slot=0;slot<2;++slot)for(const auto& value:input){
+        MorphSliderFixture f;plugins::NativePoseTestBinding binding(*f.app,f.history);f.app->SelectedModelSlot()=std::uint8_t(slot);
+        Check(f.history.SetMode(mode)==MMS_OK,"configure actual morph Enter adjustment recording policy");auto& target=slot?f.second:f.first;
+        const int index=target.m->selectedMorphs[lane];const float before=target.m->morphs[index].value;
+        const auto keys=MorphKeysCopy(target);const auto other=slot?f.firstMorphs:f.secondMorphs;const auto ring=PoseRingDigest(target);
+        MorphEnterControl control(f,lane);slider_readout_probe::Spy slider;Check(slider.Watch(f.Slider(lane)),"observe every real native thumb-position write during EDIT Enter");
+        SendMessageW(f.Slider(lane),TBM_SETPOS,FALSE,0);slider.Clear();control.Enter(lane,value.text);
+        const auto actualTick=SendMessageW(f.Slider(lane),TBM_GETPOS,0,0);
+        const bool accepted=MorphSameFloat(target.m->morphs[index].value,value.authored)&&actualTick==value.tick&&
+            slider.counts.positions==1&&slider.counts.lastPosition==value.tick&&f.history.UndoCount()==(mode==Mode::AllOperations?1u:0u);
+        if(!accepted){
+            std::uint32_t actualBits=0,expectedBits=0;std::memcpy(&actualBits,&target.m->morphs[index].value,sizeof(actualBits));
+            std::memcpy(&expectedBits,&value.authored,sizeof(expectedBits));char textAfter[64]{};GetWindowTextA(control.edit,textAfter,sizeof(textAfter));
+            std::printf("MORPH_ENTER_DIAGNOSTIC mode=%s lane=%u slot=%u input=%s before_text=%s after_text=%s actual=%.9g expected=%.9g bits=%08X/%08X tick=%lld expected_tick=%d positions=%u last=%lld undo=%llu redo=%llu focus=%p main=%p loss=%u next=%p modify=%lld/%lld/%lld/%lld original=%p previous=%p installed=%p edit_unicode=%d dirty=%u recorded=%u\n",
+                mode==Mode::AllOperations?"all":"explicit",lane,slot,value.text,control.textBeforeEnter,textAfter,
+                double(target.m->morphs[index].value),double(value.authored),actualBits,expectedBits,static_cast<long long>(actualTick),value.tick,
+                slider.counts.positions,static_cast<long long>(slider.counts.lastPosition),static_cast<unsigned long long>(f.history.UndoCount()),
+                static_cast<unsigned long long>(f.history.RedoCount()),static_cast<void*>(GetFocus()),static_cast<void*>(f.app->MainWindow()),
+                control.lostFocus,static_cast<void*>(control.nextFocus),static_cast<long long>(control.modifyBeforeEnter),
+                static_cast<long long>(control.modifyAtLoss),static_cast<long long>(control.modifyAfterLoss),static_cast<long long>(control.modifyAfterEnter),
+                reinterpret_cast<void*>(f.app->OriginalEditProc()),reinterpret_cast<void*>(control.previous),
+                reinterpret_cast<void*>(GetWindowLongPtrA(control.edit,GWLP_WNDPROC)),int(IsWindowUnicode(control.edit)),
+                unsigned(f.app->SceneModified()),unsigned(f.app->RecordedFrameCountByte1()));std::fflush(stdout);
+        }
+        Check(accepted,
+            "real EDIT Enter authors the original seven-character double-to-float value and writes its one canonical displayed tick; .29/.57/.58 never visit the adjacent lower tick");
+        slider.Clear();for(unsigned repeat=0;repeat<3;++repeat)plugins::RefreshBoundMorphReadout(*f.app);
+        Check(slider.counts.positions==0&&SendMessageW(f.Slider(lane),TBM_GETPOS,0,0)==value.tick&&MorphSameFloat(target.m->morphs[index].value,value.authored),
+            "repeated native morph readout preserves the accepted thumb and precise author without redundant position redraws");
+        slider.Clear();f.app->SceneModified()=f.app->RecordedFrameCountByte1()=0;control.Enter(lane,value.text);
+        Check(slider.counts.positions==0&&f.history.UndoCount()==(mode==Mode::AllOperations?1u:0u)&&!f.app->SceneModified()&&!f.app->RecordedFrameCountByte1()&&
+            MorphSameFloat(target.m->morphs[index].value,value.authored),"equal real EDIT Enter adds no history and never forces an extra thumb redraw or narrowed precision write");
+        if(mode==Mode::AllOperations){
+            Check(plugins::RunBoundObjectHistory(*f.app,f.history,false)==MMS_OK&&MorphSameFloat(target.m->morphs[index].value,before),"actual guarded morph undo restores original precise author after Enter");
+            slider.Clear();Check(plugins::RunBoundObjectHistory(*f.app,f.history,true)==MMS_OK&&MorphSameFloat(target.m->morphs[index].value,value.authored)&&
+                SendMessageW(f.Slider(lane),TBM_GETPOS,0,0)==value.tick&&slider.counts.positions==1&&slider.counts.lastPosition==value.tick,
+                "actual guarded morph redo uses the same canonical thumb tick without the old parsed-double second write");
+        }
+        Check(MorphKeysMatch(target,keys)&&PoseRingDigest(target)==ring&&!std::memcmp((slot?f.firstMorphs:f.secondMorphs).data(),other.data(),sizeof(other)),
+            "morph display-only correction leaves all native keys, legacy rings and the other model authoring intact");
+    }
+    {MorphSliderFixture f;plugins::NativePoseTestBinding binding(*f.app,f.history);const unsigned lane=1;MorphEnterControl control(f,lane);
+        f.CommitField(lane,".75");Check(f.history.History(false)==MMS_OK,"seed morph Enter failure redo");plugins::RefreshBoundMorphReadout(*f.app);
+        const auto before=f.firstMorphs;const auto tick=SendMessageW(f.Slider(lane),TBM_GETPOS,0,0);f.TypeField(2,"pending draft");
+        slider_readout_probe::Spy slider;Check(slider.Watch(f.Slider(lane)),"observe native slider while Enter preparation is refused");
+        f.app->SceneModified()=f.app->RecordedFrameCountByte1()=0;control.Focus();f.TypeField(lane,"0.29");slider.Clear();failAfter=0;
+        control.PressEnter();failAfter=-1;char draft[64]{};GetWindowTextA(f.Field(2),draft,sizeof(draft));
+        Check(!std::memcmp(before.data(),f.firstMorphs.data(),sizeof(before))&&!f.history.UndoCount()&&f.history.RedoCount()==1&&
+            SendMessageW(f.Slider(lane),TBM_GETPOS,0,0)==tick&&!slider.counts.positions&&!std::strcmp(draft,"pending draft")&&
+            SendMessageW(f.Field(2),EM_GETMODIFY,0,0)&&!f.app->SceneModified()&&!f.app->RecordedFrameCountByte1(),
+            "failed real EDIT Enter preserves precise author, original thumb, redo and another lane's uncommitted draft without publishing a transient requested tick");
+    }
 }
-void NativeMorphSliderChecks(){MorphSliderParityChecks();MorphSliderHistoryChecks();MorphSliderFailureChecks();MorphSliderGuardChecks();}
+}
+void NativeMorphSliderChecks(){MorphSliderParityChecks();MorphSliderHistoryChecks();MorphSliderFailureChecks();MorphSliderGuardChecks();MorphTextPercentThumbChecks();}
