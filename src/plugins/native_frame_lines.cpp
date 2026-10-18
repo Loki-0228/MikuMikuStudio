@@ -267,7 +267,8 @@ template<class K> MmsResult PlanGlobal(MMDApp& app,int frame,bool insert,std::sh
                 if(!key.frame){auto& previous=staged[key.previous];previous.next=key.next;
                     if constexpr(std::is_same_v<K,mdl::CameraKey>){previous.distance=key.distance;previous.fov=key.fov;previous.perspective=key.perspective;
                         std::memcpy(previous.eye,key.eye,sizeof(key.eye));std::memcpy(previous.target,key.target,sizeof(key.target));
-                        for(unsigned c=0;c<4;++c)std::memcpy(previous.interpolation[c],key.interpolation[c],4);
+                        std::memcpy(previous.interpolation,key.interpolation,sizeof(previous.interpolation));
+                        previous.parentModel=key.parentModel;previous.parentBone=key.parentBone;
                     }else{std::memcpy(previous.direction,key.direction,sizeof(key.direction));std::memcpy(previous.color,key.color,sizeof(key.color));}
                     if(key.next)staged[key.next].previous=key.previous;
                 }

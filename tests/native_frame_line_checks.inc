@@ -15,8 +15,90 @@ void FrameLineCommit(plugins::SharedHistory& history,const std::shared_ptr<plugi
     failAfter=0;const auto status=history.CommitNative(std::move(token));failAfter=-1;
     Check(status==MMS_OK,"frame line publishes without allocations");
 }
+struct FrameLineCameraParentFixture : GlobalRegistrationFixture {
+    Fixture firstParent,secondParent;
+    FrameLineCameraParentFixture(){
+        app->ModelSlot(0)=firstParent.raw();app->ModelSlot(1)=secondParent.raw();app->CurrentFrame()=0;app->LastRegisteredFrame()=31;
+        auto* keys=app->CameraKeys();keys[1].frame=1;
+        for(unsigned slot=0;slot<3;++slot){auto& key=keys[slot];key.parentModel=slot==1?1:0;key.parentBone=slot?1:0;
+            key.distance=-float(33+slot*29);key.fov=31+int(slot)*37;key.perspective=std::uint8_t(slot%2);key.selected=std::uint8_t(9+slot);
+            key.reserved1[0]=std::uint8_t(70+slot);key.reserved2[2]=std::uint8_t(80+slot);
+            for(unsigned axis=0;axis<3;++axis){key.eye[axis]=float(slot*7+axis)+.125f;key.target[axis]=float(slot+axis)*.125f;}
+            for(unsigned control=0;control<4;++control)for(unsigned lane=0;lane<6;++lane)
+                key.interpolation[control][lane]=std::uint8_t(5+slot*29+control*11+lane*3);
+        }
+        ReloadModels(app.get());
+    }
+    ~FrameLineCameraParentFixture(){
+        Check(history.Reset()==MMS_OK,"release retained frame-line parent references before fixture models");history.Collect();
+        plugins::ForgetSceneObject(firstParent.raw());plugins::ForgetSceneObject(secondParent.raw());app->ModelSlot(0)=app->ModelSlot(1)=nullptr;
+    }
+};
+std::vector<mdl::CameraKey> FrameLineCameraZeroExpected(const std::vector<mdl::CameraKey>& before){
+    auto after=before;
+    // Independent semantic oracle: the incoming record becomes the root's
+    // payload, while only slot/list/selection/reserved metadata stays the root's.
+    after[0]=before[1];after[0].frame=before[0].frame;after[0].previous=before[0].previous;
+    after[0].selected=before[0].selected;
+    std::memcpy(after[0].reserved1,before[0].reserved1,sizeof(after[0].reserved1));
+    std::memcpy(after[0].reserved2,before[0].reserved2,sizeof(after[0].reserved2));
+    after[1].frame=0;after[2].frame=before[2].frame-1;after[2].previous=0;return after;
+}
+struct FrameLineCameraPose {
+    std::array<float,8> values;int model,bone;std::uint8_t perspective;
+    bool operator==(const FrameLineCameraPose& other)const{return values==other.values&&model==other.model&&bone==other.bone&&perspective==other.perspective;}
+};
+FrameLineCameraPose FrameLineReadCameraPose(MMDApp& app){return {{app.CameraPositionX(),app.CameraPositionY(),app.CameraPositionZ(),
+    app.CameraPitch(),app.CameraYaw(),app.CameraRoll(),app.CameraDistance(),app.CameraFov()},app.CameraParentModel(),app.CameraParentBone(),app.CameraPerspective()};}
+void FrameLineCameraZeroPayloadChecks(){
+    {
+        FrameLineCameraParentFixture f;const auto before=GlobalRegistrationKeys(f.app->CameraKeys());const auto expected=FrameLineCameraZeroExpected(before);
+        const auto pose=FrameLineReadCameraPose(*f.app);const auto firstRing=PoseRingDigest(f.firstParent),secondRing=PoseRingDigest(f.secondParent);
+        failAfter=0;const auto affected=ShiftGlobalKeysForFrameLine(f.app.get(),true,false);failAfter=-1;
+        Check(affected==2&&GlobalRegistrationSame(f.app->CameraKeys(),expected)&&FrameLineReadCameraPose(*f.app)==pose&&!f.history.UndoCount(),
+            "ordinary zero-frame deletion merges both parent fields and all six control columns without changing slot metadata or legacy history");
+        ReloadModels(f.app.get());
+        Check(f.app->CameraParentModel()==1&&f.app->CameraParentBone()==1&&f.app->CameraDistance()==before[1].distance&&f.app->CameraFov()==float(before[1].fov)&&
+            PoseRingDigest(f.firstParent)==firstRing&&PoseRingDigest(f.secondParent)==secondRing,
+            "ordinary camera seek reads the merged frame-one binding and authored values from the native root payload");
+    }
+    using Mode=plugins::SharedHistory::RecordingMode;
+    for(auto mode:{Mode::AllOperations,Mode::ExplicitOnly}){
+        FrameLineCameraParentFixture f;GlobalRegistrationFixture oracle;plugins::NativePoseTestBinding binding(*f.app,f.history);
+        Check(f.history.SetMode(mode)==MMS_OK,"configure camera parent frame-line history mode");
+        const auto before=GlobalRegistrationKeys(f.app->CameraKeys());const auto expected=FrameLineCameraZeroExpected(before);
+        const auto firstRing=PoseRingDigest(f.firstParent),secondRing=PoseRingDigest(f.secondParent);
+        Check(DeleteBoneCameraFrameLine(f.app.get())==2&&f.history.UndoCount()==1&&f.app->CurrentFrame()==0&&
+            GlobalRegistrationSame(f.app->CameraKeys(),expected)&&f.app->CameraParentModel()==1&&f.app->CameraParentBone()==1&&
+            f.app->CameraDistance()==before[1].distance&&f.app->CameraFov()==float(before[1].fov),
+            "bound zero-frame command records one complete payload and immediately follows the frame-one parent in both modes");
+        const auto expectedPose=[&](const std::vector<mdl::CameraKey>& keys,int frame){
+            std::memcpy(oracle.app->CameraKeys(),keys.data(),keys.size()*sizeof(keys[0]));oracle.app->CurrentFrame()=frame;ReloadModels(oracle.app.get());
+            return FrameLineReadCameraPose(*oracle.app);
+        };
+        f.app->CameraMode()=0;f.app->SelectedModelSlot()=1;
+        for(int frame:{0,1,15,30,31}){
+            f.app->CurrentFrame()=frame;ReloadModels(f.app.get());const auto undoPose=expectedPose(before,frame);
+            Check(f.history.History(false)==MMS_OK&&f.app->CurrentFrame()==frame&&GlobalRegistrationSame(f.app->CameraKeys(),before)&&
+                FrameLineReadCameraPose(*f.app)==undoPose,
+                "camera frame-line undo at a different playhead restores every original native byte and the real sampler's complete pose and parent");
+            const int redoFrame=frame+2;f.app->CurrentFrame()=redoFrame;ReloadModels(f.app.get());const auto redoPose=expectedPose(expected,redoFrame);
+            Check(f.history.History(true)==MMS_OK&&f.app->CurrentFrame()==redoFrame&&GlobalRegistrationSame(f.app->CameraKeys(),expected)&&
+                FrameLineReadCameraPose(*f.app)==redoPose&&PoseRingDigest(f.firstParent)==firstRing&&PoseRingDigest(f.secondParent)==secondRing,
+                "camera frame-line redo after another seek restores all 24 controls and both parents without changing either model's legacy ring");
+        }
+        f.app->CurrentFrame()=9;ReloadModels(f.app.get());f.app->CameraPositionX()=999.125f;f.app->CameraParentModel()=0;f.app->CameraParentBone()=1;
+        const auto dirty=FrameLineReadCameraPose(*f.app);
+        Check(f.history.History(false)==MMS_OK&&GlobalRegistrationSame(f.app->CameraKeys(),before)&&FrameLineReadCameraPose(*f.app)==dirty,
+            "complete camera payload undo preserves a later unregistered camera pose and valid alternative parent");
+        f.app->CurrentFrame()=18;
+        Check(f.history.History(true)==MMS_OK&&GlobalRegistrationSame(f.app->CameraKeys(),expected)&&FrameLineReadCameraPose(*f.app)==dirty&&f.app->CurrentFrame()==18,
+            "complete camera payload redo preserves the later unregistered binding without moving the playhead");
+    }
+}
 void NativeFrameLineChecks() {
     using Mode=plugins::SharedHistory::RecordingMode;
+    std::puts("  frame lines: complete camera root payload, six curves and distinct valid parents");FrameLineCameraZeroPayloadChecks();
     std::puts("  frame lines: global legacy parity and both modes");std::fflush(stdout);
     for(unsigned kind=0;kind<2;++kind)for(bool insert:{true,false})for(bool merge:{false,true})for(int frame:{0,12,17,31,40})for(auto mode:{Mode::AllOperations,Mode::ExplicitOnly}) {
         GlobalRegistrationFixture f,oracle;f.app->CurrentFrame()=oracle.app->CurrentFrame()=frame;

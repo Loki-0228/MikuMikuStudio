@@ -501,6 +501,12 @@ target_link_libraries(pmd_index_save_tests PRIVATE mikudancestudio_core winmm ds
 set_target_properties(pmd_index_save_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
 add_test(NAME pmd_index_save COMMAND pmd_index_save_tests)
 
+add_executable(camera_frame_line_payload_tests EXCLUDE_FROM_ALL tests/camera_frame_line_payload_tests.cpp)
+target_link_libraries(camera_frame_line_payload_tests PRIVATE mikudancestudio_core winmm dsound)
+set_target_properties(camera_frame_line_payload_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_test(NAME camera_frame_line_payload COMMAND camera_frame_line_payload_tests)
+set_tests_properties(camera_frame_line_payload PROPERTIES TIMEOUT 20)
+
 add_executable(path_resolve_tests EXCLUDE_FROM_ALL tests/path_resolve_tests.cpp)
 target_link_libraries(path_resolve_tests PRIVATE mikudancestudio_core winmm dsound)
 set_target_properties(path_resolve_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
