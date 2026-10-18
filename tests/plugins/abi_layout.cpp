@@ -2,6 +2,10 @@
 #include <type_traits>
 #include <mms/refresh.h>
 #include <mms/refresh_binding.h>
+#include <mms/refresh_state.h>
+static_assert(offsetof(MmsUiStateContentDescV1, prepare) == 48, "STATE callback offset");
+static_assert(offsetof(MmsUiRefreshStateContentApiV1, writePrepared) == 48, "STATE write offset");
+static_assert(std::is_standard_layout<MmsUiRefreshStateContentApiV1>::value, "STATE standard layout");
 static_assert(offsetof(MmsUiDataBindingDescV1, prepare) == 56, "DATA callback offset");
 static_assert(offsetof(MmsUiDataDisplayV1, bytes) == 56, "DATA bytes offset");
 static_assert(std::is_standard_layout<MmsUiRefreshBindingApiV1>::value, "DATA standard layout");

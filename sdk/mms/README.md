@@ -6,6 +6,8 @@
 
 [C++17 刷新 SDK](cpp-refresh.md)提供 `RefreshServices` 和可移动的 `RefreshTicket`，封装目标查询、整目标或局部矩形重绘及取消、释放。`RelayoutCurrent` 和 `RefreshStateLayout` 组合原 C 请求，实现保留布局的重排及按钮收缩恢复。票据仍为原 C 句柄，可以移交给低层代码。
 
+[按钮状态内容 SDK](state-content.md)在原按钮和 STATE 阶段上包装文案、说明与禁用原因提供者，复用相同目标和票据。简单插件注册提供者后提交 STATE 与 LAYOUT 组合，需要低层控制时继续使用同一 C 表。
+
 界面异步刷新已提供 [mms.ui.refresh 参考](refresh.md)，支持同插件按钮及原生面板的 `REPAINT + SELF`、按钮部分 `STATE + SELF`，以及原生布局后端中已有按钮和已挂载 surface 的 `LAYOUT + SELF`。有效绑定目标支持 [DATA + SELF 及分层 SDK](data-refresh.md)，复用同一刷新票据。后续设计以[统一插件扩展架构](../../docs/PLUGIN_EXTENSION_ARCHITECTURE.md)为准，另见 [UI 呈现与刷新扩展](../../docs/PLUGIN_UI_PRESENTATION.md)、[多视口与洋葱皮](../../docs/PLUGIN_VIEWPORT_RENDERING.md)及[数据格式与编辑工具](../../docs/PLUGIN_DATA_EXTENSIONS.md)。各页标明已实现范围，其余服务及工具封装仍为提案。
 
 ## 开发环境
@@ -46,6 +48,7 @@ cmake --build build/hello-menu --config Release
 | `mms.ui.layout` 1.0 | 默认布局提示、事务内用户覆盖、实际几何快照；行、列、换行和网格；伸缩、上下限、隐藏占位。 |
 | `mms.ui.refresh` 1.0 | 本插件已有按钮和原生 surface 的 REPAINT + SELF；按钮部分 STATE；原生布局后端为已有按钮和已挂载 surface 提供保留布局的 LAYOUT。STATE 与 LAYOUT 组合支持收缩空位和同引用恢复零尺寸按钮。UI 线程查询能力和目标，后台使用同一票据；有效绑定目标支持 DATA。组合依次执行 DATA、STATE、LAYOUT、REPAINT；SUBTREE、DEPENDENTS 等其他范围仍未开放。 |
 | `mms.ui.refresh.bind` 1.0 | 本插件不可变来源、来源版本、目标绑定、只读显示准备及显示租约；工作线程发布，原刷新队列消费。 |
+| `mms.ui.refresh.state` 1.0 | 本插件已有宿主按钮的文案、说明及禁用原因；短命 builder 单次复制，在原 STATE 阶段应用，原 LAYOUT 使用已发布文案量测。附加服务表不改变旧刷新 ABI。 |
 | `mms.scene` 1.0 | 阶段 0 的对象、骨骼、网格、绑定、刚体、关节、形状、Morph、材质和纹理路径；独立 ID、运行时代次、不可变快照及 PMM 身份保存。阶段 1–4 返回 UNSUPPORTED。 |
 | `mms.storage` 1.0 | 插件工程数据、两阶段加载、只读保存数据租约；PMM 与扩展文件成对保存和中断恢复。提供者名为 `mms.serializer`。 |
 | 其他服务 | 尚未接入，`queryService` 返回 NOT_FOUND。 |

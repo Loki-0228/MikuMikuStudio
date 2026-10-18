@@ -4,6 +4,7 @@
 #include <mms/ui.h>
 #include <mms/surface.h>
 #include <mms/layout.h>
+#include <mms/refresh_state.h>
 #include <map>
 #include <deque>
 
@@ -41,6 +42,14 @@ struct SurfaceRecord {
     std::shared_ptr<Arena> arena;
     MmsUiSurfaceDescV1 desc{};
 };
+struct StateContentBudget { std::atomic<uint64_t> bytes{0}; };
+struct ButtonStateContent {
+    uint32_t fields = 0;
+    std::wstring label, description, disabledReason, help;
+    std::shared_ptr<StateContentBudget> owner, global;
+    uint64_t charge = 0;
+    ~ButtonStateContent() { if (charge) { owner->bytes.fetch_sub(charge); global->bytes.fetch_sub(charge); } }
+};
 class UiRegistry {
     struct Lease;
     struct Layout;
@@ -61,6 +70,18 @@ class UiRegistry {
     uint64_t geometryRevision_ = 0, geometryUiRevision_ = 0;
     std::map<std::string, MmsUiLayoutItemV1> geometry_;
     bool geometryReady_ = false;
+    struct StateProvider;
+    struct StateBuilder;
+    std::map<MmsHandle, std::shared_ptr<StateProvider>> stateProviders_;
+    std::map<MmsHandle, MmsHandle> stateProviderElements_;
+    std::map<MmsHandle, StateBuilder*> stateBuilders_;
+    std::map<std::string, std::shared_ptr<StateContentBudget>> stateContentOwners_;
+    std::shared_ptr<StateContentBudget> stateContentGlobal_ = std::make_shared<StateContentBudget>();
+    MmsResult StateContentCaps(UiClient&, MmsUiStateContentCapabilitiesV1*);
+    MmsResult StateContentProvider(UiClient&, const MmsUiStateContentDescV1*, MmsHandle*, MmsHandle replace = 0);
+    MmsResult RemoveStateContentProvider(UiClient&, MmsHandle);
+    MmsResult WriteStateContent(UiClient&, MmsHandle, const MmsUiStateContentV1*);
+    void ForgetStateContent(MmsHandle) noexcept;
     MmsResult Check(UiClient&, bool mutate = false) const;
     bool Own(UiClient&, MmsString id, MmsString owner) const;
     bool Exists(const std::string&) const;
@@ -98,6 +119,7 @@ public:
     MmsUiApiV1 Api(UiClient&);
     MmsUiSurfaceApiV1 SurfaceApi(UiClient&);
     MmsUiLayoutApiV1 LayoutApi(UiClient&);
+    MmsUiRefreshStateContentApiV1 StateContentApi(UiClient&);
     UiRefreshQueue& Refresh() noexcept { return refresh_; }
     // Request adapter work without editing registry/preferences revisions.
     void RequestPresentation() noexcept;
@@ -107,6 +129,8 @@ public:
     MmsResult WithReadOnlyCallback(const std::function<MmsResult()>&);
     // Keep the read-only callback guard through native state application.
     MmsResult WithElementState(MmsHandle, const std::function<MmsResult(const MmsCommandStateV1&)>&);
+    MmsResult WithElementStateContent(const MmsUiTargetRefV1&, uint64_t providerRevision,
+        const std::function<MmsResult(const MmsCommandStateV1&, const std::shared_ptr<const ButtonStateContent>&)>&);
     void Retire(UiClient&);
     bool HasLeases(const UiClient&) const;
     uint64_t Revision() const { return revision_; }

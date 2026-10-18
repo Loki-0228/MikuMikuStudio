@@ -216,6 +216,10 @@ struct Manager::Impl {
             if (closing || i.stopping.load()) return MMS_E_NOT_READY;
             return Table(major, minor, bytes, out, registry.Refresh().Bindings().Api(i.refresh));
         }
+        if (id == "mms.ui.refresh.state") {
+            if (closing || i.stopping.load()) return MMS_E_NOT_READY;
+            return Table(major, minor, bytes, out, registry.StateContentApi(i.ui));
+        }
         if (id == "mms.scene" && scene) return Table(major, minor, bytes, out, scene->Api(i.scene));
         if (id == "mms.storage") return Table(major, minor, bytes, out, storage.Api(i.storage));
         if (id == "mms.edit" && edits) return Table(major, minor, bytes, out, EditApi(i));

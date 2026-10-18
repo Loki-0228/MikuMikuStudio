@@ -11,6 +11,7 @@ class UiRegistry;
 struct UiClient;
 class UiRefreshQueue;
 class UiRefreshBindings;
+struct ButtonStateContent;
 struct RefreshClient {
     UiRefreshQueue* queue;
     std::string owner;
@@ -51,6 +52,7 @@ class UiRefreshQueue {
     const RefreshClient* inheritedReadOnlyCause_ = nullptr;
     std::function<bool()> wake_;
     std::function<MmsResult(MmsHandle)> layout_;
+    std::function<MmsResult(MmsHandle, const std::shared_ptr<const ButtonStateContent>&, bool)> stateContent_;
     MmsResult Capabilities(RefreshClient&, MmsUiRefreshCapabilitiesV1*);
     MmsResult GetTarget(RefreshClient&, MmsHandle, MmsUiRefreshTargetV1*);
     MmsResult Request(RefreshClient&, const MmsUiRefreshRequestV1*, MmsHandle*);
@@ -73,6 +75,10 @@ public:
     // The native adapter remeasures its retained layout. This is not a plugin
     // callback and must never evaluate scene data or save user preferences.
     void SetLayout(std::function<MmsResult(MmsHandle)>);
+    void SetStateContent(std::function<MmsResult(MmsHandle, const std::shared_ptr<const ButtonStateContent>&, bool)>);
+    bool HasStateContent() const;
+    MmsResult CheckStateContentTarget(const std::string&, const MmsUiTargetRefV1&) const;
+    void SetStateProviderRevision(MmsHandle, uint64_t) noexcept;
     bool CachedStateVisible(MmsHandle, bool fallback) const;
     MmsResult WithLayoutProvider(const UiClient&, const std::function<MmsResult()>&);
     void SyncTargets(const std::vector<RefreshPresentation>&);

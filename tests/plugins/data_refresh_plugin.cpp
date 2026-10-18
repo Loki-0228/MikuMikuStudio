@@ -2,6 +2,7 @@
 // manager/registry internals, project data, files or a renderer.
 #include "data_refresh_probe.h"
 #include <mms/cpp/data_refresh.hpp>
+#include <mms/cpp/state_content.hpp>
 #include <mms/surface.h>
 #include <mms/edit.h>
 #define WIN32_LEAN_AND_MEAN
@@ -22,6 +23,7 @@ using namespace mms::sdk;
 struct Plugin {
     MmsHostV1 host{};MmsUiApiV1 ui{};MmsUiSurfaceApiV1 surface{};MmsEditApiV1 edit{};
     RefreshServices refresh;DataServices data;DataSource source;DataBinding binding;
+    StateContentServices stateContent;
     RefreshTicket ticket;DataDisplay held;
     std::string id;MmsHandle command=0,menu=0,button=0,panel=0,factory=0;
     HINSTANCE module=nullptr;bool registeredClass=false;
@@ -201,6 +203,10 @@ MmsResult MMS_CALL Create(const MmsHostV1* host,const MmsCreateInfoV1* info,void
     if((result=host->queryService(host->context,Text("mms.ui.surface"),1,0,sizeof(p->surface),&p->surface)))return result;
     if((result=RefreshServices::Query(*host,p->refresh)))return result;
     if((result=DataServices::Query(*host,p->data)))return result;
+    if((result=StateContentServices::Query(*host,p->stateContent)))return result;
+    MmsUiStateContentCapabilitiesV1 contentCaps{};
+    if((result=p->stateContent.Capabilities(contentCaps)))return result;
+    if(contentCaps.maxBytesPerField!=4096||contentCaps.maxProvidersPerPlugin!=128)return MMS_E_VERSION;
     if(!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
         reinterpret_cast<LPCWSTR>(&PanelProc),&p->module))return MMS_E_FAILED;
     current=p.get();*out=p.release();return MMS_OK;

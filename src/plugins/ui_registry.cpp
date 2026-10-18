@@ -263,6 +263,60 @@ struct UiRegistry::Preferences {
     std::map<std::string, Json> entries;
     std::string json = PreferencesJson(entries);
 };
+struct UiRegistry::StateProvider {
+    MmsHandle handle = 0;
+    uint64_t revision = 0;
+    UiClient* owner = nullptr;
+    MmsUiStateContentDescV1 desc{};
+};
+struct UiRegistry::StateBuilder {
+    UiClient* owner = nullptr;
+    uint32_t fields = 0;
+    bool written = false;
+    MmsResult failure = MMS_OK;
+    std::shared_ptr<const ButtonStateContent> candidate;
+};
+namespace {
+constexpr uint32_t kStateFields = MMS_UI_STATE_LABEL | MMS_UI_STATE_DESCRIPTION | MMS_UI_STATE_DISABLED_REASON;
+constexpr uint32_t kStateProviders = 128, kStateGlobalProviders = 4096;
+constexpr uint64_t kStateFieldBytes = 4096, kStateOwnerBytes = 1024 * 1024, kStateGlobalBytes = 8 * 1024 * 1024;
+bool StateReserve(std::atomic<uint64_t>& value, uint64_t amount, uint64_t maximum) noexcept {
+    auto previous = value.load();
+    do { if (previous > maximum || amount > maximum - previous) return false; }
+    while (!value.compare_exchange_weak(previous, previous + amount));
+    return true;
+}
+MmsResult StateCharge(const std::shared_ptr<ButtonStateContent>& value,
+    const std::shared_ptr<StateContentBudget>& owner, const std::shared_ptr<StateContentBudget>& global) {
+    value->help = value->description;
+    if (!value->disabledReason.empty()) {
+        if (!value->help.empty()) value->help += L"\n";
+        value->help += value->disabledReason;
+    }
+    const uint64_t bytes = sizeof(ButtonStateContent) + sizeof(wchar_t) *
+        (value->label.capacity() + value->description.capacity() + value->disabledReason.capacity() + value->help.capacity() + 4);
+    value->owner = owner; value->global = global;
+    if (!StateReserve(owner->bytes, bytes, kStateOwnerBytes)) return MMS_E_BUSY;
+    if (!StateReserve(global->bytes, bytes, kStateGlobalBytes)) { owner->bytes.fetch_sub(bytes); return MMS_E_BUSY; }
+    value->charge = bytes; return MMS_OK;
+}
+std::wstring StateText(MmsString text) {
+    if (text.bytes > kStateFieldBytes) throw std::invalid_argument("state content string quota");
+    return Wide(String(text));
+}
+std::wstring LegacyStateText(MmsString text) {
+    // Existing commands were allowed larger reasons, and STATE previously
+    // ignored them. Bound their optional display without rejecting old state.
+    if (!text.data || !text.bytes || text.bytes > 1024 * 1024) return {};
+    size_t count = size_t(std::min(text.bytes, kStateFieldBytes));
+    while (count && count < text.bytes && (static_cast<unsigned char>(text.data[count]) & 0xc0) == 0x80) --count;
+    if (std::memchr(text.data, 0, count) || (count && !MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data, int(count), nullptr, 0))) return {};
+    return Wide(std::string_view(text.data, count));
+}
+bool StateSameRef(const MmsUiTargetRefV1& a, const MmsUiTargetRefV1& b) noexcept {
+    return a.element == b.element && a.instanceGeneration == b.instanceGeneration && a.projectEpoch == b.projectEpoch;
+}
+}
 UiRegistry::UiRegistry(std::function<void()> change, std::function<void(UiClient&, MmsResult)> finished):
     commandFinished_(std::move(finished)), refresh_(*this), preferences_(std::make_unique<Preferences>()), changed_(std::move(change)) {
     for (const auto& [id, label, kind] : {std::tuple<const char*, const char*, uint32_t>{"mms.menu.plugins", "插件", MMS_UI_MENU}, {"mms.toolbar.main.extensions", "插件工具栏", MMS_UI_TOOLBAR}, {"mms.workspace.tabs.extensions", "插件工作区", MMS_UI_GROUP}}) {
@@ -499,7 +553,7 @@ MmsResult UiRegistry::Element(UiClient& c, const MmsUiElementV1* input, MmsHandl
     auto tree = elements; tree[id] = std::move(r); auto next = next_;
     auto merged = MergePreferences(tree, preferences_->entries, next, false); if (merged) return merged;
     for (auto& [key, element] : tree) element.desc.generation = generation_++;
-    if (replace) { refresh_.InvalidateTarget(replace); DestroyView(id); }
+    if (replace) { ForgetStateContent(replace); refresh_.InvalidateTarget(replace); DestroyView(id); }
     elements.swap(tree); next_ = next; *out = elements[id].handle; Changed(); return MMS_OK;
 }
 MmsResult UiRegistry::Property(UiClient& c, const MmsPropertyDescV1* input, MmsHandle* out, MmsHandle replace) {
@@ -520,7 +574,7 @@ MmsResult UiRegistry::Remove(UiClient& c, MmsHandle handle) {
     for (auto it = elements.begin(); it != elements.end(); ++it) if (it->second.handle == handle) {
         if (String(it->second.desc.ownerPlugin) != c.id) return MMS_E_ARGUMENT;
         for (const auto& [id, e] : elements) if (String(e.desc.parentId) == it->first) return MMS_E_BUSY;
-        refresh_.InvalidateTarget(handle);
+        ForgetStateContent(handle); refresh_.InvalidateTarget(handle);
         DestroyView(it->first);
         elements.erase(it); Changed(); return MMS_OK;
     }
@@ -586,6 +640,122 @@ MmsResult UiRegistry::WithElementState(MmsHandle handle, const std::function<Mms
     if (result) return result;
     if (!Valid(&state) || state.enabled > 1 || state.checked > 1 || state.visible > 1 || state.reserved) return MMS_E_FAILED;
     return apply(state);
+}
+MmsResult UiRegistry::StateContentCaps(UiClient& client, MmsUiStateContentCapabilitiesV1* out) {
+    if (const auto check = Check(client)) return check;
+    if (!Valid(out)) return MMS_E_ARGUMENT;
+    if (client.stopping) return MMS_E_NOT_READY;
+    *out = {Header<MmsUiStateContentCapabilitiesV1>(), refresh_.HasStateContent() ? kStateFields : 0,
+        kStateProviders, kStateFieldBytes, kStateOwnerBytes, kStateGlobalBytes};
+    return MMS_OK;
+}
+MmsResult UiRegistry::StateContentProvider(UiClient& client, const MmsUiStateContentDescV1* desc, MmsHandle* out, MmsHandle replace) {
+    if (const auto check = Check(client, true)) return check;
+    if (!Valid(desc) || !out || !desc->prepare || !desc->fields || (desc->fields & ~kStateFields) || desc->reserved) return MMS_E_ARGUMENT;
+    if (const auto check = refresh_.CheckStateContentTarget(client.id, desc->target)) return check;
+    auto old = stateProviders_.find(replace);
+    if (replace && (old == stateProviders_.end() || old->second->owner != &client)) return MMS_E_NOT_FOUND;
+    if (replace && old->second->desc.target.element != desc->target.element) return MMS_E_ARGUMENT;
+    const auto existing = stateProviderElements_.find(desc->target.element);
+    if (existing != stateProviderElements_.end() && existing->second != replace) return MMS_E_CONFLICT;
+    if (!replace) {
+        if (stateProviders_.size() >= kStateGlobalProviders ||
+            std::count_if(stateProviders_.begin(), stateProviders_.end(), [&](const auto& item) { return item.second->owner == &client; }) >= kStateProviders)
+            return MMS_E_BUSY;
+    }
+    if (!next_ || next_ == UINT64_MAX) return MMS_E_MEMORY;
+    auto candidate = std::make_shared<StateProvider>();
+    candidate->owner = &client; candidate->handle = replace ? replace : next_; candidate->revision = next_;
+    candidate->desc = *desc; candidate->desc.h = Header<MmsUiStateContentDescV1>();
+    // All allocations precede publication and old-ticket invalidation.
+    auto providers = stateProviders_; auto targets = stateProviderElements_;
+    providers[candidate->handle] = candidate; targets[desc->target.element] = candidate->handle;
+    stateProviders_.swap(providers); stateProviderElements_.swap(targets); ++next_;
+    refresh_.SetStateProviderRevision(desc->target.element, candidate->revision);
+    *out = candidate->handle; return MMS_OK;
+}
+void UiRegistry::ForgetStateContent(MmsHandle element) noexcept {
+    const auto found = stateProviderElements_.find(element);
+    if (found == stateProviderElements_.end()) return;
+    stateProviders_.erase(found->second); stateProviderElements_.erase(found);
+    refresh_.SetStateProviderRevision(element, 0);
+}
+MmsResult UiRegistry::RemoveStateContentProvider(UiClient& client, MmsHandle handle) {
+    if (const auto check = Check(client)) return check;
+    if (callbackDepth_) return MMS_E_BUSY;
+    const auto found = stateProviders_.find(handle);
+    if (found == stateProviders_.end() || found->second->owner != &client) return MMS_E_NOT_FOUND;
+    ForgetStateContent(found->second->desc.target.element); return MMS_OK;
+}
+MmsResult UiRegistry::WriteStateContent(UiClient& client, MmsHandle handle, const MmsUiStateContentV1* content) {
+    if (const auto check = Check(client)) return check;
+    auto found = stateBuilders_.find(handle);
+    if (found == stateBuilders_.end() || found->second->owner != &client || !callbackDepth_) return MMS_E_NOT_FOUND;
+    auto& builder = *found->second;
+    if (builder.failure) return builder.failure;
+    if (builder.written) return builder.failure = MMS_E_CONFLICT;
+    builder.written = true;
+    // Poison an invalid/failed write, even when the plugin ignores its result.
+    return builder.failure = Boundary([&]() -> MmsResult {
+        if (client.stopping) return MMS_E_NOT_READY;
+        if (!Valid(content) || content->reserved || (content->fields & ~builder.fields) ||
+            (!(content->fields & MMS_UI_STATE_LABEL) && content->label.bytes) ||
+            (!(content->fields & MMS_UI_STATE_DESCRIPTION) && content->description.bytes) ||
+            (!(content->fields & MMS_UI_STATE_DISABLED_REASON) && content->disabledReason.bytes)) return MMS_E_ARGUMENT;
+        auto next = std::make_shared<ButtonStateContent>();
+        next->fields = content->fields;
+        next->label = content->fields & MMS_UI_STATE_LABEL ? StateText(content->label) : std::wstring{};
+        next->description = content->fields & MMS_UI_STATE_DESCRIPTION ? StateText(content->description) : builder.candidate->description;
+        next->disabledReason = content->fields & MMS_UI_STATE_DISABLED_REASON ? StateText(content->disabledReason) : builder.candidate->disabledReason;
+        if (const auto check = StateCharge(next, builder.candidate->owner, stateContentGlobal_)) return check;
+        builder.candidate = std::move(next); return MMS_OK;
+    });
+}
+MmsResult UiRegistry::WithElementStateContent(const MmsUiTargetRefV1& target, uint64_t providerRevision,
+    const std::function<MmsResult(const MmsCommandStateV1&, const std::shared_ptr<const ButtonStateContent>&)>& apply) {
+    return WithElementState(target.element, [&](const MmsCommandStateV1& state) -> MmsResult {
+        auto element = std::find_if(elements.begin(), elements.end(), [&](const auto& e) { return e.second.handle == target.element; });
+        if (element == elements.end()) return MMS_E_STALE;
+        const auto command = commands.find(String(element->second.desc.commandId));
+        if (command == commands.end()) return MMS_E_STALE;
+        const auto owner = String(element->second.desc.ownerPlugin);
+        const auto entry = stateProviderElements_.find(target.element);
+        std::shared_ptr<StateProvider> provider;
+        if (entry != stateProviderElements_.end()) provider = stateProviders_.at(entry->second);
+        if (providerRevision != (provider ? provider->revision : 0)) return MMS_E_STALE;
+        if (provider && (provider->owner->stopping || !StateSameRef(provider->desc.target, target))) return MMS_E_STALE;
+        if (provider) if (const auto check = refresh_.CheckStateContentTarget(owner, target)) return check;
+        auto& budget = stateContentOwners_[owner]; if (!budget) budget = std::make_shared<StateContentBudget>();
+        auto baseline = std::make_shared<ButtonStateContent>();
+        baseline->description = LegacyStateText(command->second->desc.info.description);
+        baseline->disabledReason = LegacyStateText(state.disabledReason);
+        if (const auto check = StateCharge(baseline, budget, stateContentGlobal_)) return check;
+        StateBuilder builder; builder.owner = provider ? provider->owner : nullptr;
+        builder.fields = provider ? provider->desc.fields : 0; builder.candidate = std::move(baseline);
+        if (provider) {
+            if (!next_ || next_ == UINT64_MAX) return MMS_E_MEMORY;
+            const auto handle = next_++;
+            stateBuilders_.emplace(handle, &builder);
+            struct Guard { UiRegistry& registry; MmsHandle handle; ~Guard() { registry.stateBuilders_.erase(handle); } } guard{*this, handle};
+            const auto result = Boundary([&] { return provider->desc.prepare(provider->desc.context, &target, handle); });
+            if (result) return result;
+            if (builder.failure) return builder.failure;
+            if (!builder.written) return MMS_E_FAILED;
+            if (provider->owner->stopping) return MMS_E_NOT_READY;
+        }
+        return apply(state, builder.candidate);
+    });
+}
+MmsUiRefreshStateContentApiV1 UiRegistry::StateContentApi(UiClient& client) {
+    MmsUiRefreshStateContentApiV1 api{}; api.h = Header<MmsUiRefreshStateContentApiV1>(); api.context = &client;
+#define STATE_CONTENT_CALL(body) auto& c = *static_cast<UiClient*>(p); return Boundary([&]() -> MmsResult { body; })
+    api.getCapabilities = [](void* p, MmsUiStateContentCapabilitiesV1* out) { STATE_CONTENT_CALL(return c.registry->StateContentCaps(c, out)); };
+    api.registerProvider = [](void* p, const MmsUiStateContentDescV1* desc, MmsHandle* out) { STATE_CONTENT_CALL(return c.registry->StateContentProvider(c, desc, out)); };
+    api.updateProvider = [](void* p, MmsHandle handle, const MmsUiStateContentDescV1* desc) { STATE_CONTENT_CALL(MmsHandle out; return c.registry->StateContentProvider(c, desc, &out, handle)); };
+    api.unregisterProvider = [](void* p, MmsHandle handle) { STATE_CONTENT_CALL(return c.registry->RemoveStateContentProvider(c, handle)); };
+    api.writePrepared = [](void* p, MmsHandle handle, const MmsUiStateContentV1* content) { STATE_CONTENT_CALL(return c.registry->WriteStateContent(c, handle, content)); };
+#undef STATE_CONTENT_CALL
+    return api;
 }
 MmsResult UiRegistry::Invoke(UiClient& c, MmsString id, MmsObjectRef target, MmsSpan args) {
     auto check = Check(c, true); if (check) return check; auto found = commands.find(String(id)); if (found == commands.end()) return MMS_E_NOT_FOUND;
@@ -758,10 +928,11 @@ MmsResult UiRegistry::Commit(UiClient& c, MmsHandle h) {
 bool UiRegistry::HasLeases(const UiClient& c) const { if (c.unsafeToUnload) return true; for (const auto& [h, lease] : leases_) if (lease->owner == c.id) return true; return false; }
 void UiRegistry::Retire(UiClient& c) {
     for (auto it = layouts_.begin(); it != layouts_.end();) if (it->second->owner == c.id) it = layouts_.erase(it); else ++it;
-    for (auto it = elements.begin(); it != elements.end();) if (String(it->second.desc.ownerPlugin) == c.id && !it->second.layoutGroup) { refresh_.InvalidateTarget(it->second.handle); DestroyView(it->first); it = elements.erase(it); } else ++it;
+    for (auto it = elements.begin(); it != elements.end();) if (String(it->second.desc.ownerPlugin) == c.id && !it->second.layoutGroup) { ForgetStateContent(it->second.handle); refresh_.InvalidateTarget(it->second.handle); DestroyView(it->first); it = elements.erase(it); } else ++it;
     for (auto it = commands.begin(); it != commands.end();) if (String(it->second->desc.info.ownerPlugin) == c.id) it = commands.erase(it); else ++it;
     for (auto it = properties.begin(); it != properties.end();) if (String(it->second->desc.info.ownerPlugin) == c.id) it = properties.erase(it); else ++it;
     for (auto it = surfaces.begin(); it != surfaces.end();) if (it->second->owner == &c) it = surfaces.erase(it); else ++it;
+    stateContentOwners_.erase(c.id);
     Changed();
 }
 MmsUiApiV1 UiRegistry::Api(UiClient& client) {

@@ -1,6 +1,11 @@
 #include <mms/surface.h>
 #include <mms/refresh.h>
 #include <mms/refresh_binding.h>
+#include <mms/refresh_state.h>
+_Static_assert(sizeof(MmsUiStateContentV1) == 64, "STATE content");
+_Static_assert(sizeof(MmsUiStateContentDescV1) == 64, "STATE provider descriptor");
+_Static_assert(sizeof(MmsUiStateContentCapabilitiesV1) == 40, "STATE content capabilities");
+_Static_assert(sizeof(MmsUiRefreshStateContentApiV1) == 56, "STATE content API");
 _Static_assert(sizeof(MmsUiRefreshBindingApiV1) == 96, "DATA binding API");
 _Static_assert(sizeof(MmsUiDataCapabilitiesV1) == 56, "DATA capabilities");
 _Static_assert(sizeof(MmsUiDataSourceDescV1) == 40, "DATA source descriptor");

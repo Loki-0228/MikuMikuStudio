@@ -4,7 +4,7 @@
 
 当前支持 `REPAINT + SELF`，以及已创建宿主按钮的 `STATE + SELF`。STATE 更新启用、选中及受支持的显隐；面板不报告 STATE。已绑定目标还支持 `DATA + SELF`，见[数据绑定接口](data-refresh.md)。原生布局后端为已有按钮和已挂载 surface 提供 `LAYOUT + SELF`，按保留的布局树重新测量和排列。SUBTREE、DEPENDENTS、来源订阅、自动依赖、插件量测提供者和动画帧尚未提供。
 
-组合请求在同一队列中按 DATA、STATE、LAYOUT、REPAINT 执行。DATA 准备并交换不可变显示模型；STATE 只读查询目标按钮的 getState；LAYOUT 使用已保留的描述、提示和状态排版；REPAINT 调用 `InvalidateRect` 或 `InvalidateRgn`，不直接执行绘制。刷新不调用 `FrameDriver`，不修改播放头、工程 dirty 或撤销历史，也不保存布局偏好。插件窗口后续的正常 `WM_PAINT` 仍由插件处理。
+组合请求在同一队列中按 DATA、STATE、LAYOUT、REPAINT 执行。DATA 准备并交换不可变显示模型；STATE 只读查询目标按钮的 getState，并可通过[状态内容服务](state-content.md)准备显示文案和提示；LAYOUT 使用已保留的描述、提示和状态排版；REPAINT 调用 `InvalidateRect` 或 `InvalidateRgn`，不直接执行绘制。刷新不调用 `FrameDriver`，不修改播放头、工程 dirty 或撤销历史，也不保存布局偏好。插件窗口后续的正常 `WM_PAINT` 仍由插件处理。
 
 ## 服务查询与线程
 
@@ -95,7 +95,7 @@
 
 ## 按钮状态刷新
 
-STATE 只重新查询目标按钮的命令，更新原 HWND 的 enabled、checked 和受支持的 visible。不调用命令，不刷新共享同一命令的菜单，不读取属性或改变标签。单独 STATE 不改变尺寸和布局；重排需显式组合 LAYOUT。按钮以手动选中、推按钮外观呈现；点击不会自行切换选中来源，命令 getState 仍是唯一来源。Enter 和普通命令激活保留。
+STATE 重新查询目标按钮的命令，更新原 HWND 的 enabled、checked 和受支持的 visible。可选的 `mms.ui.refresh.state` 1.0 在同一阶段准备文案、说明和禁用原因，见[状态内容与 SDK](state-content.md)。未注册提供者时，文案使用元素标签，说明使用命令描述，禁用原因使用命令 getState 的结果。不调用命令，不刷新共享同一命令的菜单，也不读取属性。单独 STATE 不改变尺寸和布局；文案长度变化后重排需显式组合 LAYOUT。按钮以手动选中、推按钮外观呈现；点击不会自行切换选中来源，命令 getState 仍是启用、选中及显隐的来源。Enter 和普通命令激活保留。
 
 单独 STATE 的显隐要求最近成功布局已为按钮保留正尺寸槽位，且有效布局提示包含 `MMS_HINT_PRESERVE_HIDDEN_SLOT`。用户覆盖可能移除此提示，因此目标支持 STATE 不代表单独 STATE 支持任意显隐。缺少提示时，变化以 FAILED/UNSUPPORTED 结束；布局提示修改后尚未重新发布有效布局时，以 FAILED/NOT_READY 结束，均在修改启用和选中前拒绝。此路径隐藏时保留原位置、尺寸及相邻控件位置，不测量或收缩空位。无保留槽位的收缩与恢复使用下述 STATE 与 LAYOUT 组合。
 
