@@ -4,6 +4,7 @@
 
 ## 记录索引
 
+- [v2026.10.18.2-pre.1 预发布说明](#release-v2026-10-18-2-pre-1)
 - [v2026.10.18.1 正式发布说明](#release-v2026-10-18-1)
 - [v2026.10.18.1-pre.1 预发布说明](#release-v2026-10-18-1-pre-1)
 - [v2026.10.17.1 正式发布说明](#release-v2026-10-17-1)
@@ -17,6 +18,88 @@
 - [v2026.10.11.3 构建与发布记录](#record-release-3)
 - [v2026.10.11.2 构建与发布记录](#record-release-2)
 - [MMS 原生媒体导入与导出](#record-native-media)
+
+<a id="release-v2026-10-18-2-pre-1"></a>
+
+本节为预发布说明。
+
+<!-- release-notes:v2026.10.18.2-pre.1:begin -->
+## MikuMikuStudio v2026.10.18.2-pre.1
+
+Windows x64
+
+[English](#release-v2026-10-18-2-pre-1-en) | [中文](#release-v2026-10-18-2-pre-1-zh) | [日本語](#release-v2026-10-18-2-pre-1-ja)
+
+<a id="release-v2026-10-18-2-pre-1-en"></a>
+
+### English
+
+Changes since the last published release, `v2026.10.18.1`.
+
+#### What's new
+
+- Single-image and image-sequence exports choose transparency automatically from the image format. PNG and DDS preserve transparent backgrounds without a separate setting; the other formats retain an opaque background. Corrected color encoding at semitransparent edges.
+- Fixed the single-image save dialog's format list and default file extensions. Format detection now uses the final extension, accepts uppercase extensions and `.jpeg`, and ignores format-like text in folder names.
+- Fixed keyframe paste being blocked by duplicate bone or morph names on unrelated tracks. Only the tracks involved in the paste are checked for ambiguous destinations. Ambiguous target names and invalid frame ranges still stop the paste before existing keys are changed.
+- Reduced unnecessary PMM compatibility warnings. English bone and morph display labels, display-group names, and model captions that fit PMM's own fields no longer trigger warnings intended for legacy binding names. Complete names continue to be preserved in MMS extension data.
+- Corrected PMM v2/v3 selection, including the saved model timeline upper bound. Expanded pools with few live keys still compact into v2, and deleting excess keys can return a v3 project to v2. Invalid keyframe references and unsupported frame ranges now stop saving and leave the existing file untouched, instead of being treated as a reason to use v3.
+- Added drag-and-drop sorting to the Accessory dialog. Apply the order with OK or discard it with Cancel; Move up and Move down remain available. Reordering preserves the selected accessory, registration scope, and model draw-order split, including accessories with identical names. The order is retained when saving and reopening PMM files.
+
+#### Download and use
+
+Choose the full package for MMS's extended editing, antialiasing, and modern media features. The minimal package retains the original MMD feature range and encoding limits. Extract each package into a separate folder and run `MikuMikuDance.exe`. Models, personal settings, MME, MMV, and FFmpeg are not included.
+
+#### Optional NVIDIA fix
+
+Neither application package includes the NVIDIA fix. If needed, download `MMSNvidiaAAFix.dll` separately and place it beside the full build's EXE. Install it from Help, then restart MMS. Use Help to uninstall. Deleting the DLL does not remove an installed setting.
+
+<a id="release-v2026-10-18-2-pre-1-zh"></a>
+
+### 中文
+
+以下为相较上次正式发布 `v2026.10.18.1` 的更新。
+
+#### 更新内容
+
+- 单张图片和图片序列导出根据图片格式自动选择透明背景。PNG、DDS 保留透明背景，无需单独设置；其他格式使用不透明背景。修正半透明边缘的颜色编码。
+- 修复单张图片保存窗口的格式列表和默认扩展名。根据文件末尾的扩展名识别格式，支持大写扩展名与 `.jpeg`，文件夹名称中的格式文字不再干扰判断。
+- 修复无关轨道的骨骼、表情重名导致关键帧无法粘贴的问题。仅检查本次粘贴涉及的目标轨道是否重名；实际目标有歧义或帧范围无效时，在改动现有关键帧前停止粘贴。
+- 减少 PMM 不必要的兼容性提示。英文骨骼、表情显示名称、显示组名称，以及可由 PMM 自身字段完整表示的模型名称，不再触发针对旧版绑定名称的提示。完整名称仍通过 MMS 扩展数据保留。
+- 修正 PMM v2/v3 的选择判断，补充保存的模型时间轴上限检查。已扩容但有效关键帧较少的轨道仍压缩为 v2，删除超限关键帧后可重新保存为 v2。关键帧引用或帧范围无效时停止保存，保留已有文件，不再将其误判为需要 v3。
+- 配件窗口支持拖拽调整绘制顺序，点击「确定」应用，「取消」放弃修改，保留「上移」「下移」按钮。排序后保持选中配件、注册范围及模型绘制分界，同名配件也按各自对象处理。PMM 保存重开后保留顺序。
+
+#### 下载与使用
+
+完整包提供 MMS 的扩展编辑、抗锯齿及现代媒体功能。最小包保留原版 MMD 的功能范围及编码限制。分别解压到独立目录后运行 `MikuMikuDance.exe`。模型、个人设置、MME、MMV 和 FFmpeg 需自行准备。
+
+#### NVIDIA 修复安装（可选）
+
+两个主程序包均不附带 NVIDIA 修复插件。需要时单独下载 `MMSNvidiaAAFix.dll`，放到完整版 EXE 同目录，在「帮助」菜单选择安装并重启 MMS。卸载也通过该菜单操作，删除 DLL 不会撤销已安装的设置。
+
+<a id="release-v2026-10-18-2-pre-1-ja"></a>
+
+### 日本語
+
+前回の正式リリース `v2026.10.18.1` からの変更です。
+
+#### 更新内容
+
+- 静止画と画像連番の出力では、画像形式から背景の透過を自動で選びます。PNG と DDS は追加設定なしで透明な背景を保持し、その他の形式は不透明な背景で出力します。半透明の輪郭部分の色の保存処理も修正しました。
+- 静止画の保存ダイアログの形式一覧と既定の拡張子を修正しました。ファイル末尾の拡張子で形式を判定し、大文字の拡張子と `.jpeg` に対応します。フォルダー名に含まれる形式名は判定に影響しません。
+- 無関係なトラックのボーン名やモーフ名が重複していると、キーフレームを貼り付けられない問題を修正しました。今回の貼り付け先に関係する名前だけを確認します。貼り付け先を特定できない場合やフレーム範囲が無効な場合は、既存のキーを変更する前に停止します。
+- PMM の不要な互換性メッセージを減らしました。英語のボーン・モーフ表示名、表示グループ名、および PMM のフィールドに収まるモデル名では、旧形式の照合名に関する警告を出しません。完全な名前は引き続き MMS の拡張データに保持します。
+- PMM v2/v3 の選択を修正し、保存するモデルのタイムライン上限も確認します。拡張済みの領域でも有効なキーが少ない場合は v2 に詰めて保存し、超過分を削除すれば v3 のプロジェクトを再び v2 で保存できます。無効なキー参照やフレーム範囲は v3 が必要な条件として扱わず、保存を停止して既存のファイルを保持します。
+- アクセサリ設定で描画順をドラッグして変更できます。OK で適用し、キャンセルで変更を破棄します。上へ・下へボタンも引き続き使えます。選択中のアクセサリ、登録対象、モデル描画の区切りを保持し、同名のアクセサリも別々のオブジェクトとして扱います。PMM の保存と再読み込み後も順序を保持します。
+
+#### ダウンロードと使用方法
+
+MMS の拡張編集、アンチエイリアス、各種メディア機能には完全版を選んでください。最小版は元の MMD の機能範囲と文字コードの制限を維持します。それぞれ別のフォルダーに展開して `MikuMikuDance.exe` を実行してください。モデル、個人設定、MME、MMV、FFmpeg は含まれません。
+
+#### NVIDIA 修正の導入（任意）
+
+NVIDIA 修正 DLL は両パッケージに含まれません。必要な場合だけ `MMSNvidiaAAFix.dll` を別途ダウンロードし、完全版の EXE と同じ場所に置いてください。ヘルプからインストールして MMS を再起動します。アンインストールもヘルプから行います。DLL を削除しても適用済みの設定は解除されません。
+
+<!-- release-notes:v2026.10.18.2-pre.1:end -->
 
 <a id="release-v2026-10-18-1"></a>
 

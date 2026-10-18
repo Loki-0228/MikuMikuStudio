@@ -1,7 +1,9 @@
 // MAINTENANCE: regression-keep; real accessory imports, dialog commands and PMM round trips.
 namespace accessory_feedback {
 enum class DialogAction { Settings, Delete, CancelDelete };
+enum class MoveAction { Buttons, Drag, CancelDrag, OutsideDrag };
 DialogAction action = DialogAction::Settings;
+MoveAction moveAction = MoveAction::Buttons;
 int split = -1, moveFrom = -1, moveTo = -1, dialogs = 0, initialSplit = -1;
 bool cancelSettings = false;
 
@@ -36,9 +38,31 @@ LRESULT CALLBACK InspectDialog(int code, WPARAM wp, LPARAM lp) {
                 initialSplit = GetDlgItemInt(dialog, panel::kAccessoryOrderEdit, nullptr, TRUE);
                 if (split >= 0) SetDlgItemInt(dialog, panel::kAccessoryOrderEdit, split, FALSE);
                 if (moveFrom >= 0) {
-                    SendDlgItemMessageW(dialog, panel::kOrderListBox, LB_SETCURSEL, moveFrom, 0);
-                    for (int i = moveFrom; i != moveTo; i += moveFrom < moveTo ? 1 : -1)
-                        SendMessageW(dialog, WM_COMMAND, moveFrom < moveTo ? 0x277 : 0x276, 0);
+                    const HWND list=GetDlgItem(dialog,panel::kOrderListBox);
+                    SendMessageW(list,LB_SETCURSEL,moveFrom,0);
+                    if(moveAction==MoveAction::Buttons) {
+                        for (int i = moveFrom; i != moveTo; i += moveFrom < moveTo ? 1 : -1)
+                            SendMessageW(dialog, WM_COMMAND, moveFrom < moveTo ? 0x277 : 0x276, 0);
+                    } else {
+                        const UINT message=RegisterWindowMessageW(L"commctrl_DragListMsg");
+                        const auto point=[&](int row,bool after) {
+                            RECT rect{};Check(SendMessageW(list,LB_GETITEMRECT,row,reinterpret_cast<LPARAM>(&rect))!=LB_ERR,"get drag item rectangle");
+                            POINT pt{rect.left+8,after?rect.bottom-1:rect.top+1};ClientToScreen(list,&pt);return pt;
+                        };
+                        DRAGLISTINFO info{DL_BEGINDRAG,list,point(moveFrom,false)};
+                        Check(SendMessageW(dialog,message,panel::kOrderListBox,reinterpret_cast<LPARAM>(&info))==TRUE,"accessory list accepts native drag begin");
+                        const auto count=SendMessageW(list,LB_GETCOUNT,0,0);
+                        const auto insertion=moveTo>moveFrom?moveTo+1:moveTo;
+                        info.ptCursor=point(insertion<count?insertion:static_cast<int>(count)-1,insertion==count);
+                        if(moveAction==MoveAction::OutsideDrag) {
+                            RECT rect{};GetWindowRect(list,&rect);info.ptCursor={rect.right+40,rect.top+20};
+                        }
+                        info.uNotification=DL_DRAGGING;
+                        Check(SendMessageW(dialog,message,panel::kOrderListBox,reinterpret_cast<LPARAM>(&info))==
+                              (moveAction==MoveAction::OutsideDrag?DL_STOPCURSOR:DL_MOVECURSOR),"drag feedback matches valid or outside drop target");
+                        info.uNotification=moveAction==MoveAction::CancelDrag?DL_CANCELDRAG:DL_DROPPED;
+                        SendMessageW(dialog,message,panel::kOrderListBox,reinterpret_cast<LPARAM>(&info));
+                    }
                 }
                 PostMessageW(dialog, WM_COMMAND, cancelSettings ? IDCANCEL : 0x278, 0);
             } else {
@@ -50,8 +74,10 @@ LRESULT CALLBACK InspectDialog(int code, WPARAM wp, LPARAM lp) {
     }
     return CallNextHookEx(nullptr, code, wp, lp);
 }
-void Settings(MMDApp* app, int value = -1, int from = -1, int to = -1, bool cancel = false) {
+void Settings(MMDApp* app, int value = -1, int from = -1, int to = -1, bool cancel = false,
+              MoveAction method = MoveAction::Buttons) {
     action = DialogAction::Settings; split = value; moveFrom = from; moveTo = to; cancelSettings = cancel;
+    moveAction=method;
     const int before = dialogs;
     CmdFileMenu(app, app->MainWindow(), 249, 0);
     Check(dialogs == before + 1, "exercise one production accessory order dialog");
@@ -142,6 +168,32 @@ void CheckAccessoryFeedback(MMDApp* app, const std::filesystem::path& output, co
             roundTrip(L"selection-" + std::to_wstring(language));
             Check(app->AccessorySlot(2)->order == 0 && app->AccessorySlot(1)->order == 2,
                   "PMM retains reordered accessories");
+        }
+        if (std::wcscmp(mode, L"drag") == 0 || std::wcscmp(mode, L"all") == 0) {
+            seed();Choose(app,1);
+            const HWND scope=GetDlgItem(app->MainWindow(),panel::kRegisterScopeCombo);
+            SendMessageW(scope,CB_SETCURSEL,6,0);
+            Settings(app,1,2,0,false,MoveAction::Drag);Selected(app,1,2);
+            Check(app->AccessorySlot(2)->order==0&&app->AccessorySlot(0)->order==1&&
+                  SendMessageW(scope,CB_GETCURSEL,0,0)==4,"drag upward moves the correct object and registration scope");
+            Settings(app,-1,0,2,false,MoveAction::Drag);Selected(app,1,1);
+            Check(app->AccessorySlot(2)->order==2,"drag downward can place an item after the last row");
+            Settings(app,-1,1,1,false,MoveAction::Drag);Selected(app,1,1);
+            for(auto method:{MoveAction::CancelDrag,MoveAction::OutsideDrag}) {
+                Settings(app,-1,2,0,false,method);Selected(app,1,1);
+                Check(app->AccessorySlot(2)->order==2,"cancelled or outside drag preserves the list");
+            }
+            app->SceneModified()=0;
+            Settings(app,0,2,0,true,MoveAction::Drag);Selected(app,1,1);
+            Check(app->AccessorySlot(2)->order==2&&app->AccessoryRenderSplitOrder()==1&&app->SceneModified()==0,
+                  "dialog cancellation discards dragged order, split and dirty state");
+            // Identical captions must retain distinct accessory identities.
+            ResetAppState(app);load(0);load(0);load(0);Choose(app,1);
+            Settings(app,1,2,0,false,MoveAction::Drag);Selected(app,1,2);
+            Check(app->AccessorySlot(2)->order==0&&app->AccessorySlot(0)->order==1,"duplicate accessory names do not confuse dragging");
+            roundTrip(L"drag-"+std::to_wstring(language));
+            Check(app->AccessorySlot(2)->order==0&&app->AccessorySlot(1)->order==2&&app->AccessoryRenderSplitOrder()==1,
+                  "PMM retains dragged order and model draw split");
         }
         if (std::wcscmp(mode, L"delete") == 0 || std::wcscmp(mode, L"all") == 0) {
             seed(); Settings(app, 2, 0, 2); // B, C, A: last entry is slot zero, not the highest slot.

@@ -124,6 +124,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <new>
+#include <string>
 
 #include "mikudancestudio/text_encoding.hpp"
 #include "mikudancestudio/globals.hpp"
@@ -874,6 +875,48 @@ INT_PTR __stdcall GroundShadowColorDlgProc(HWND hDlg, UINT msg, WPARAM wParam,
 // static is behaviourally identical.
 static int g_accOrderCount = 0;
 
+// Reorder the dialog's scratch data only. OK applies it to the accessories;
+// Cancel discards it. Use the same move for buttons and drag-and-drop.
+bool MoveAccessoryOrderItem(MMDApp* app,HWND dialog,int from,int to) {
+    const HWND list=GetDlgItem(dialog,panel::kOrderListBox);
+    auto** order=static_cast<mdl::AccessoryRecord**>(app->AccessoryOrderArray());
+    const auto count=SendMessageW(list,LB_GETCOUNT,0,0);
+    if(!order||from<0||to<0||from>=count||to>=count||from==to)return false;
+    const auto length=SendMessageW(list,LB_GETTEXTLEN,from,0);
+    if(length==LB_ERR)return false;
+    std::wstring text(static_cast<std::size_t>(length)+1,L'\0');
+    if(SendMessageW(list,LB_GETTEXT,from,reinterpret_cast<LPARAM>(text.data()))==LB_ERR)return false;
+    const auto data=SendMessageW(list,LB_GETITEMDATA,from,0);
+    // Insert first so an allocation failure leaves the original row intact.
+    const int insertion=to>from?to+1:to;
+    const auto inserted=SendMessageW(list,LB_INSERTSTRING,insertion,reinterpret_cast<LPARAM>(text.c_str()));
+    if(inserted==LB_ERR||inserted==LB_ERRSPACE)return false;
+    SendMessageW(list,LB_SETITEMDATA,inserted,data);
+    SendMessageW(list,LB_DELETESTRING,from+(to<from?1:0),0);
+    if(to<from)std::rotate(order+to,order+from,order+from+1);
+    else std::rotate(order+from,order+from+1,order+to+1);
+    SendMessageW(list,LB_SETCURSEL,to,0);
+    SetDlgItemTextW(dialog,panel::kAccessoryNameEdit,text.c_str());
+    return true;
+}
+
+// A drop is an insertion between rows, including below the final row. Scroll
+// during dragging, but never accept a drop outside the list's client area.
+int AccessoryOrderDropIndex(HWND list,POINT cursor,bool scroll) {
+    if(scroll)LBItemFromPt(list,cursor,TRUE);
+    POINT client=cursor;ScreenToClient(list,&client);
+    RECT bounds{};GetClientRect(list,&bounds);
+    if(!PtInRect(&bounds,client))return -1;
+    const int count=static_cast<int>(SendMessageW(list,LB_GETCOUNT,0,0));
+    if(count<=0)return -1;
+    const int item=LBItemFromPt(list,cursor,FALSE);
+    RECT row{};
+    if(item>=0&&item<count&&SendMessageW(list,LB_GETITEMRECT,item,reinterpret_cast<LPARAM>(&row))!=LB_ERR)
+        return item+(client.y>=(row.top+row.bottom)/2?1:0);
+    if(SendMessageW(list,LB_GETITEMRECT,count-1,reinterpret_cast<LPARAM>(&row))!=LB_ERR&&client.y>=row.bottom)return count;
+    return -1;
+}
+
 // VA 0x0044CA40 - modal accessory-order dialog proc (case 249, tpl 0x293/
 // 0x273).  WM_INITDIALOG: topmost; the main-window accessory combo 0x1D7
 // is copied into the dialog list 0x274 (CB_GETCOUNT/CB_GETLBTEXT ->
@@ -898,6 +941,36 @@ INT_PTR __stdcall AccessorySettingsDlgProc(HWND hDlg, UINT msg, WPARAM wParam,
                                            LPARAM lParam) {  // was Sub44CA40, VA 0x0044CA40
     MMDApp* app = g_Block;
     wchar_t text[0x100];
+    static const UINT dragMessage=RegisterWindowMessageW(L"commctrl_DragListMsg");
+    if(dragMessage&&msg==dragMessage&&lParam) {
+        const auto& drag=*reinterpret_cast<const DRAGLISTINFO*>(lParam);
+        const HWND list=GetDlgItem(hDlg,panel::kOrderListBox);
+        if(drag.hWnd!=list)return FALSE;
+        LRESULT result=0;
+        if(drag.uNotification==DL_BEGINDRAG) {
+            const int from=LBItemFromPt(list,drag.ptCursor,FALSE);
+            const bool valid=from>=0&&from<g_accOrderCount;
+            SetWindowLongPtrW(hDlg,DWLP_USER,valid?from+1:0);
+            if(valid) {
+                SendMessageW(list,LB_SETCURSEL,from,0);
+                SendMessageW(hDlg,WM_COMMAND,MAKEWPARAM(panel::kOrderListBox,LBN_SELCHANGE),reinterpret_cast<LPARAM>(list));
+            }
+            result=valid?TRUE:FALSE;
+        } else if(drag.uNotification==DL_DRAGGING) {
+            const int insertion=GetWindowLongPtrW(hDlg,DWLP_USER)?AccessoryOrderDropIndex(list,drag.ptCursor,true):-1;
+            DrawInsert(hDlg,list,insertion);
+            result=insertion>=0?DL_MOVECURSOR:DL_STOPCURSOR;
+        } else if(drag.uNotification==DL_DROPPED||drag.uNotification==DL_CANCELDRAG) {
+            const int from=static_cast<int>(GetWindowLongPtrW(hDlg,DWLP_USER))-1;
+            const int insertion=AccessoryOrderDropIndex(list,drag.ptCursor,false);
+            DrawInsert(hDlg,list,-1);
+            SetWindowLongPtrW(hDlg,DWLP_USER,0);
+            if(drag.uNotification==DL_DROPPED&&from>=0&&insertion>=0)
+                MoveAccessoryOrderItem(app,hDlg,from,insertion>from?insertion-1:insertion);
+        }
+        SetWindowLongPtrW(hDlg,DWLP_MSGRESULT,result);
+        return TRUE;
+    }
     if (msg == WM_INITDIALOG) {
         MakeDialogTopmostIfRequested(app, hDlg);
         const HWND main = MainHwnd(app);
@@ -917,6 +990,8 @@ INT_PTR __stdcall AccessorySettingsDlgProc(HWND hDlg, UINT msg, WPARAM wParam,
         SetWindowTextW(GetDlgItem(hDlg, panel::kAccessoryOrderEdit), text);
         SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox), LB_SETCURSEL,
                      0xFFFFFFFF, 0);
+        SetWindowLongPtrW(hDlg,DWLP_USER,0);
+        MakeDragList(GetDlgItem(hDlg,panel::kOrderListBox));
         return 0;
     }
     if (msg != WM_COMMAND) {
@@ -927,39 +1002,13 @@ INT_PTR __stdcall AccessorySettingsDlgProc(HWND hDlg, UINT msg, WPARAM wParam,
         case 0x276: {  // move up
             const LRESULT sel = SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox),
                                              LB_GETCURSEL, 0, 0);
-            if (sel >= 1) {
-                SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox), LB_GETTEXT, sel,
-                             (LPARAM)text);
-                SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox), LB_DELETESTRING,
-                             sel, 0);
-                SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox), LB_INSERTSTRING,
-                             sel - 1, (LPARAM)text);
-                SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox), LB_SETCURSEL,
-                             sel - 1, 0);
-                auto** order = static_cast<mdl::AccessoryRecord**>(app->AccessoryOrderArray());
-                auto* tmp = order[sel - 1];
-                order[sel - 1] = order[sel];
-                order[sel] = tmp;
-            }
+            MoveAccessoryOrderItem(app,hDlg,static_cast<int>(sel),static_cast<int>(sel)-1);
             return 0;
         }
         case 0x277: {  // move down
             const LRESULT sel = SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox),
                                              LB_GETCURSEL, 0, 0);
-            if (sel != -1 && sel < g_accOrderCount - 1) {
-                SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox), LB_GETTEXT, sel,
-                             (LPARAM)text);
-                SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox), LB_DELETESTRING,
-                             sel, 0);
-                SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox), LB_INSERTSTRING,
-                             sel + 1, (LPARAM)text);
-                SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox), LB_SETCURSEL,
-                             sel + 1, 0);
-                auto** order = static_cast<mdl::AccessoryRecord**>(app->AccessoryOrderArray());
-                auto* tmp = order[sel + 1];
-                order[sel + 1] = order[sel];
-                order[sel] = tmp;
-            }
+            if(sel!=LB_ERR)MoveAccessoryOrderItem(app,hDlg,static_cast<int>(sel),static_cast<int>(sel)+1);
             return 0;
         }
         case 0x278: {  // OK: commit the new order
