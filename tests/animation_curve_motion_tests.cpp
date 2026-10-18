@@ -1113,6 +1113,7 @@ void TestDefaultInterpolationBytes() {
 }
 
 #include "curve_motion_camera_compat_checks.inc"
+#include "curve_motion_native_controls_checks.inc"
 
 }  // namespace
 
@@ -1134,6 +1135,7 @@ int main() {
     TestFileRoundTripWithUnicodePath();
     TestCameraCompatibilityMatrix();
     TestLegacyCameraLayoutAndBoundaries();
+    TestNativeRawControlCompatibility();
     if (g_failures == 0) {
         std::printf("animation_curve_motion_tests: all checks passed\n");
         return 0;

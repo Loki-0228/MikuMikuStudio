@@ -300,7 +300,7 @@ Error RestoreRightBoundary(MMDApp& app, ac::Track& out, const ac::Track& source,
 }  // namespace
 
 Error Resample(MMDApp& app, const ac::Track& source, int first, int last, int step, ac::Track& out,
-               std::wstring& message) {
+               std::wstring& message, const Channel* sampledSource = nullptr) {
     out = ac::Track{};
     if (source.keys.empty()) {
         message = L"The track has no keys to resample.";
@@ -319,7 +319,9 @@ Error Resample(MMDApp& app, const ac::Track& source, int first, int last, int st
     const auto sample = [&](int frame) {
         ac::Key key;
         key.frame = frame;
-        key.value = ac::Evaluate(source, static_cast<double>(frame)).value;
+        key.value = sampledSource && sampledSource->sample
+            ? sampledSource->sample(*sampledSource, static_cast<double>(frame)).value
+            : ac::Evaluate(source, static_cast<double>(frame)).value;
         key.interpolation = stepKeys ? ac::Interpolation::Step : ac::Interpolation::Linear;
         key.tangent = stepKeys ? ac::Tangent::Flat : ac::Tangent::Linear;
         // Linear and Step intervals read values only, so the handles of a sampled
@@ -1023,13 +1025,28 @@ Error PrepareScene(Plan::Impl& impl, MMDApp& app, const std::vector<Group>& grou
                            L"轨道存储不可用。");
             return Error::Unavailable;
         }
-        target.baked = target.original;
+        std::vector<Channel> cameraSources;
+        const auto* sources = &target.original;
+        if (choice.kind == Kind::Camera) {
+            std::vector<bool> fields(target.original.size());
+            for (std::size_t c = 0; c < fields.size(); ++c) fields[c] = FieldOn(choice, c);
+            if (!curve_host::PrepareCameraBakeSources(target.original, fields, impl.request.firstFrame,
+                    impl.request.lastFrame, cameraSources, message)) return Error::Memory;
+            sources = &cameraSources;
+        }
+        target.baked = *sources;
         for (std::size_t c = 0; c < target.baked.size(); ++c) {
             if (!FieldOn(choice, c)) continue;
+            ac::Track sampledTrack;
             const Error sampled =
-                Resample(app, target.original[c].track, impl.request.firstFrame,
-                         impl.request.lastFrame, impl.request.step, target.baked[c].track, message);
+                Resample(app, (*sources)[c].track, impl.request.firstFrame,
+                         impl.request.lastFrame, impl.request.step, sampledTrack, message,
+                         choice.kind == Kind::Camera ? &(*sources)[c] : nullptr);
             if (sampled != Error::None) return sampled;
+            if (choice.kind == Kind::Camera) {
+                if (!curve_host::FinishCameraBakeChannel((*sources)[c], sampledTrack, target.baked[c], message))
+                    return Error::Memory;
+            } else target.baked[c].track = std::move(sampledTrack);
         }
         const Error valid = ValidChannels(target.baked, group->fields, message);
         if (valid != Error::None) {

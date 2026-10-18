@@ -284,10 +284,14 @@ void CameraBake() {
     Check(frames == std::vector<int>({0, 5, 15, 25, 40}),
           "the selected range is resampled and every key outside it is kept");
     bool xValues = true;
-    for (const auto& key : channels[0].track.keys) xValues = xValues && Near(key.value, animation_curve::Evaluate(source[0].track, key.frame).value);
+    for (const auto& key : channels[0].track.keys) {
+        const auto value = source[0].sample ? source[0].sample(source[0], key.frame)
+                                            : animation_curve::Evaluate(source[0].track, key.frame);
+        xValues = xValues && Near(key.value, value.value) && Near(key.value, double(key.frame));
+    }
     bool yValues = true;
     for (const auto& key : channels[1].track.keys) yValues = yValues && Near(key.value, 0);
-    Check(xValues, "camera X is resampled from the source curve");
+    Check(xValues, "camera X is sampled from its actual native timing and retains the fixture's analytic X(frame)=frame");
     Check(yValues, "camera Y keeps the value of its own keys");
     Check(curve_host::Read(*scene->app, curve_host::Kind::Camera, 0, channels, error) &&
               channels[8].track.discrete && channels[8].track.keys.front().value == 0,
@@ -1051,6 +1055,19 @@ void BoundarySplit() {
     // The same range on a Linear lane must stay exactly the same line.
     {
         auto scene = std::make_unique<Scene>();
+        auto authored = CameraChannels(*scene);
+        // Native zero controls play linearly, but their canvas proxy is a
+        // Bezier. Use a real scalar Linear author to keep this an independent
+        // regression for the existing Free/Linear boundary splitter.
+        auto& linear = authored[0];
+        linear.sample = {}; linear.nativeControls.clear(); linear.controlGeometry.clear();
+        for (auto& key : linear.track.keys) {
+            key.interpolation = animation_curve::Interpolation::Linear;
+            key.tangent = animation_curve::Tangent::Linear;
+        }
+        std::wstring error;
+        Check(curve_host::Write(*scene->app, curve_host::Kind::Camera, 0, authored, error),
+              "write a scalar-only Linear author for the existing boundary regression");
         const auto before = CameraChannels(*scene);
         Check(before.size() == 11 && before[0].track.keys.size() == 3, "the linear lane has three keys");
         BakeCameraField(*scene, 0, 6, 12, 2);
@@ -1060,6 +1077,28 @@ void BoundarySplit() {
               "a Linear lane keeps its exact shape outside the range");
         Check(SameSamples(before[0].track, after[0].track, 6, 12, 2),
               "a Linear lane keeps its step samples");
+    }
+    // The ordinary native linear camera remains a separate regression. Its
+    // zero control bytes take the player's linear fast path, not the scalar
+    // canvas proxy returned alongside its authoritative native sampler.
+    {
+        auto scene = std::make_unique<Scene>();
+        const auto before = CameraChannels(*scene);
+        BakeCameraField(*scene, 0, 6, 12, 2);
+        const auto after = CameraChannels(*scene);
+        const auto value = [](const curve_editor::Channel& channel, double frame) {
+            return channel.sample ? channel.sample(channel, frame).value
+                                  : animation_curve::Evaluate(channel.track, frame).value;
+        };
+        bool outside = true, samples = true;
+        for (double frame = 0; frame <= 20; frame += .25) {
+            if (frame > 6 && frame < 12) continue;
+            outside = outside && Near(value(before[0], frame), value(after[0], frame));
+        }
+        for (int frame = 6; frame <= 12; frame += 2)
+            samples = samples && Near(value(before[0], frame), value(after[0], frame));
+        Check(outside, "ordinary native Linear timing keeps its actual outside samples");
+        Check(samples, "ordinary native Linear timing keeps every requested step sample");
     }
     // A discrete lane holds its value on both sides of the range.
     {

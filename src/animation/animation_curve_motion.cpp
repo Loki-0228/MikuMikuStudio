@@ -52,6 +52,7 @@
 #include <Windows.h>
 
 #include "mikudancestudio/animation_curve_motion.hpp"
+#include "native_curve_sample.hpp"
 
 #include <algorithm>
 #include <array>
@@ -368,30 +369,38 @@ void NormalizeTracks(Tracks& tracks) {
     }
 }
 
-// Applies one MMD control lane to the interval that ends at `index`.  A lane
-// the curve core cannot express (a byte above 127, crossed handles, or the
-// 3939 physics marker overwriting x1) leaves the interval linear instead of
-// inventing a curve.
+bool ValidLane(const std::array<double,4>& controls) noexcept {
+    return std::all_of(controls.begin(),controls.end(),[](double value){return std::isfinite(value)&&value>=0&&value<=127;});
+}
+bool ByteLane(const std::array<double,4>& controls) noexcept {
+    return std::all_of(controls.begin(),controls.end(),[](double value){return std::isfinite(value)&&value>=0&&value<=255&&std::floor(value)==value;});
+}
+double EaseLane(const std::array<double,4>& controls,double time) {
+    // Invalid legacy bone lanes (including the physics marker) keep their
+    // previous linear fallback. Every legal raw X geometry stays untouched.
+    if(!ValidLane(controls)||(controls[0]==controls[1]&&controls[2]==controls[3]))return std::clamp(time,0.0,1.0);
+    return native_curve_sample::Evaluate(controls,time).value;
+}
+// The scalar handles are only a canvas proxy. Raw camera controls remain
+// authoritative in NativeCameraData and are restored into native channels.
 void ApplyLane(ac::Track& track, std::size_t index, const std::array<double, 4>& controls) {
     if (index == 0 || index >= track.keys.size()) return;
-    if (track.keys[index].value == track.keys[index - 1].value) return;
-    if (controls[0] == controls[1] && controls[2] == controls[3]) return;  // diagonal is linear
-    std::string reason;
-    ac::SetMmdControls(track, index, controls, reason);
-}
-
-// A track whose keys hold 0, 1, 2, ... with the channel's lanes applied.  The
-// eased fraction of interval i is therefore value(frame) - i, which is how the
-// rotation channel drives the quaternion slerp.
-ac::Track FractionTrack(const std::vector<std::uint32_t>& frames,
-                        const std::vector<std::array<double, 4>>& lanes) {
-    ac::Track track;
-    track.keys.reserve(frames.size());
-    for (std::size_t index = 0; index < frames.size(); ++index) {
-        track.keys.push_back(MakeLinearKey(CheckedFrame(frames[index]), double(index)));
+    if(!ValidLane(controls))return;
+    auto& a=track.keys[index-1];auto& b=track.keys[index];
+    if(a.value==b.value||(controls[0]==controls[1]&&controls[2]==controls[3]))return;
+    const double span=double(b.frame)-a.frame,delta=b.value-a.value;
+    const double outWeight=controls[0]/127.0,inWeight=1-controls[2]/127.0;
+    // Construct this already sorted, finite imported interval directly. The
+    // complete tracks are validated once below, not once per control lane.
+    if(controls[0]<controls[2]&&outWeight>=.0001&&outWeight<=.9999&&
+       inWeight>=.0001&&inWeight<=.9999&&outWeight+inWeight<=.9999){
+        a.outWeight=outWeight;b.inWeight=inWeight;
+        a.outSlope=(controls[1]/127.0)*delta/(span*outWeight);
+        b.inSlope=(1-controls[3]/127.0)*delta/(span*inWeight);
+    }else{
+        a.outSlope=b.inSlope=delta/span;
     }
-    for (std::size_t index = 1; index < track.keys.size(); ++index) ApplyLane(track, index, lanes[index]);
-    return track;
+    track.keys[index].interpolation=ac::Interpolation::Bezier;
 }
 
 bool IsAccessoryBoneChannel(const std::string& id) {
@@ -443,6 +452,17 @@ struct CameraFrame {
     std::uint32_t fov = 0;
     std::uint8_t perspective = 0;
 };
+CameraFrame ReadCameraFrame(Reader& reader,bool legacy) {
+    CameraFrame camera;camera.frame=reader.u32();CheckedFrame(camera.frame);camera.distance=reader.f();
+    for(double& value:camera.eye)value=reader.f();for(double& value:camera.target)value=reader.f();
+    if(legacy){std::uint8_t bytes[4]{};for(auto& value:bytes)value=reader.u8();
+        camera.controls.fill(CameraChannel(bytes));camera.fov=45;
+    }else{
+        for(auto& lane:camera.controls){std::uint8_t bytes[4]{};for(auto& value:bytes)value=reader.u8();lane=CameraChannel(bytes);}
+        camera.fov=reader.u32();camera.perspective=reader.u8();
+    }
+    return camera;
+}
 
 struct LightFrame {
     std::uint32_t frame = 0;
@@ -501,10 +521,7 @@ std::vector<ac::NamedTrack> BuildAccessory(std::vector<BoneFrame> bones) {
     const std::uint32_t last = bones.back().frame;
     CheckSampleCount(first, last);
 
-    std::vector<std::uint32_t> boneFrames;
-    boneFrames.reserve(bones.size());
     for (BoneFrame& bone : bones) {
-        boneFrames.push_back(bone.frame);
         bone.quaternion = NormalizeQuaternion(bone.quaternion);
     }
 
@@ -521,23 +538,6 @@ std::vector<ac::NamedTrack> BuildAccessory(std::vector<BoneFrame> bones) {
         return out;
     }
 
-    // Position: one value track per axis, each carrying its own MMD lane.
-    ac::Track positions[3];
-    for (int axis = 0; axis < 3; ++axis) {
-        positions[axis].keys.reserve(bones.size());
-        for (const BoneFrame& bone : bones) {
-            positions[axis].keys.push_back(
-                MakeLinearKey(CheckedFrame(bone.frame), bone.position[std::size_t(axis)]));
-        }
-        for (std::size_t index = 1; index < positions[axis].keys.size(); ++index) {
-            ApplyLane(positions[axis], index, bones[index].controls[std::size_t(axis)]);
-        }
-    }
-    std::vector<std::array<double, 4>> rotationLanes;
-    rotationLanes.reserve(bones.size());
-    for (const BoneFrame& bone : bones) rotationLanes.push_back(bone.controls[3]);
-    const ac::Track fractions = FractionTrack(boneFrames, rotationLanes);
-
     const std::uint64_t count = std::uint64_t(last) - std::uint64_t(first) + 1;
     std::size_t segment = 0;
     std::array<double, 3> previous{};
@@ -547,8 +547,8 @@ std::vector<ac::NamedTrack> BuildAccessory(std::vector<BoneFrame> bones) {
         while (segment + 1 < bones.size() && bones[segment + 1].frame <= frame) ++segment;
         const std::size_t lower = std::min(segment, bones.size() - 2);
         const std::size_t upper = lower + 1;
-        const double fraction =
-            std::clamp(ac::Evaluate(fractions, double(frame)).value - double(lower), 0.0, 1.0);
+        const double time=double(frame-bones[lower].frame)/double(bones[upper].frame-bones[lower].frame);
+        const double fraction=std::clamp(EaseLane(bones[upper].controls[3],time),0.0,1.0);
         const std::array<double, 4> quaternion =
             Slerp(bones[lower].quaternion, bones[upper].quaternion, fraction);
         std::array<double, 3> euler = EulerDegrees(quaternion);
@@ -562,7 +562,8 @@ std::vector<ac::NamedTrack> BuildAccessory(std::vector<BoneFrame> bones) {
         const std::int32_t checked = CheckedFrame(frame);
         for (int axis = 0; axis < 3; ++axis) {
             out[std::size_t(axis)].track.keys.push_back(
-                MakeLinearKey(checked, ac::Evaluate(positions[axis], double(frame)).value));
+                MakeLinearKey(checked,bones[lower].position[axis]+(bones[upper].position[axis]-bones[lower].position[axis])*
+                    EaseLane(bones[upper].controls[axis],time)));
             out[std::size_t(3 + axis)].track.keys.push_back(MakeLinearKey(checked, euler[std::size_t(axis)]));
         }
     }
@@ -597,7 +598,10 @@ std::vector<ac::NamedTrack> BuildCamera(std::vector<CameraFrame> cameras) {
         }
     }
     std::vector<ac::NamedTrack> out;
-    for (const std::string& id : ids) out.push_back({id, std::move(tracks[id])});
+    for (const std::string& id : ids) {
+        std::string error;if(!ac::Validate(tracks[id],error))throw std::runtime_error(error);
+        out.push_back({id, std::move(tracks[id])});
+    }
     return out;
 }
 
@@ -653,6 +657,220 @@ std::vector<ac::NamedTrack> BuildParameterProxies(std::vector<MorphFrame> morphs
 
 }  // namespace
 
+struct NativeCameraData {
+    bool legacy=false;
+    std::string modelName;
+    std::vector<CameraFrame> frames;
+    // Raw record order stays intact for byte roundtrips. The separate index
+    // resolves duplicate frames with the standard reader's last-row rule.
+    std::vector<std::size_t> sorted;
+    std::vector<ac::NamedTrack> baseline;
+};
+
+namespace {
+constexpr const char* kCameraIds[]={"x","y","z","rx","ry","rz","distance","fov","perspective"};
+constexpr unsigned kCameraLane[]={0,1,2,3,3,3,4,5};
+void IndexCameraFrames(NativeCameraData& data) {
+    data.sorted.reserve(data.frames.size());
+    for(std::size_t i=0;i<data.frames.size();++i)data.sorted.push_back(i);
+    std::stable_sort(data.sorted.begin(),data.sorted.end(),[&](auto a,auto b){return data.frames[a].frame<data.frames[b].frame;});
+    std::size_t used=0;
+    for(auto index:data.sorted){
+        if(used&&data.frames[data.sorted[used-1]].frame==data.frames[index].frame)data.sorted[used-1]=index;
+        else data.sorted[used++]=index;
+    }
+    data.sorted.resize(used);
+}
+const CameraFrame* CameraFrameAt(const NativeCameraData& data,std::uint32_t frame) noexcept {
+    const auto found=std::lower_bound(data.sorted.begin(),data.sorted.end(),frame,
+        [&](auto index,auto target){return data.frames[index].frame<target;});
+    return found!=data.sorted.end()&&data.frames[*found].frame==frame?&data.frames[*found]:nullptr;
+}
+bool CameraId(const std::string& id) noexcept {
+    for(const auto* known:kCameraIds)if(id==known)return true;return false;
+}
+bool SameTrack(const ac::Track& a,const ac::Track& b) noexcept {
+    if(a.discrete!=b.discrete||a.keys.size()!=b.keys.size())return false;
+    for(std::size_t i=0;i<a.keys.size();++i){const auto& x=a.keys[i];const auto& y=b.keys[i];
+        if(x.frame!=y.frame||x.value!=y.value||x.inSlope!=y.inSlope||x.outSlope!=y.outSlope||
+           x.inWeight!=y.inWeight||x.outWeight!=y.outWeight||x.interpolation!=y.interpolation||x.tangent!=y.tangent)return false;}
+    return true;
+}
+const ac::Track* FindTrack(const std::vector<ac::NamedTrack>& tracks,const std::string& id) noexcept {
+    for(const auto& track:tracks)if(track.id==id)return &track.track;return nullptr;
+}
+bool NativeBodyCurrent(const Motion& motion) noexcept {
+    if(motion.kind!=Kind::Camera||!motion.nativeCamera)return false;
+    for(const auto& frame:motion.nativeCamera->frames){
+        if(frame.perspective>1)return false;
+        for(const auto& lane:frame.controls)if(!ByteLane(lane))return false;
+    }
+    // The first effective key's controls and superseded duplicate rows never
+    // drive an interval. They remain raw bytes, including the old 128..255
+    // unused range. Used interval controls retain the prior 0..127 rule.
+    for(std::size_t i=1;i<motion.nativeCamera->sorted.size();++i)
+        for(const auto& lane:motion.nativeCamera->frames[motion.nativeCamera->sorted[i]].controls)if(!ValidLane(lane))return false;
+    for(const auto* id:kCameraIds){const auto* track=FindTrack(motion.tracks,id);const auto* before=FindTrack(motion.nativeCamera->baseline,id);
+        if(!track||!before||!SameTrack(*track,*before))return false;}
+    return true;
+}
+bool CameraChannels(const std::vector<curve_editor::Channel>& channels,bool selectedOnly,
+    std::array<const curve_editor::Channel*,9>& found) noexcept {
+    found.fill(nullptr);
+    for(const auto& channel:channels){if(selectedOnly&&!channel.selected)continue;
+        if(channel.id=="parentModel"||channel.id=="parentBone")continue;
+        unsigned index=0;while(index<9&&channel.id!=kCameraIds[index])++index;
+        if(index==9||found[index])return false;found[index]=&channel;}
+    return std::all_of(found.begin(),found.end(),[](const auto* channel){return channel!=nullptr;});
+}
+bool NativeGeometry(const curve_editor::Channel& channel,std::size_t end) noexcept {
+    if(!end||end>=channel.track.keys.size()||end>=channel.nativeControls.size()||end>=channel.controlGeometry.size())return false;
+    const auto& a=channel.track.keys[end-1];const auto& b=channel.track.keys[end];
+    return b.interpolation==ac::Interpolation::Bezier&&channel.controlGeometry[end]==
+        std::array<double,4>{a.outWeight,a.outSlope,b.inWeight,b.inSlope};
+}
+float CameraTime(const std::array<double,4>& controls,float time) noexcept {
+    if(controls[0]==controls[1]&&controls[2]==controls[3])return time;
+    const float x1=float(controls[0])/127.f,x2=float(controls[2])/127.f;
+    float u=.5f,half=.25f;
+    for(int i=0;i<12;++i){const float v=1-u,v3=v*3;const float x=(v3*v*u)*x1+(v3*u*u)*x2+u*u*u;
+        if(x==time)break;u=x>=time?u-half:u+half;half*=.5f;}
+    const float v=1-u,v3=v*3;
+    return (v3*v*u)*float(controls[1])/127.f+(v3*u*u)*float(controls[3])/127.f+u*u*u;
+}
+ac::Sample ImportedCameraSample(const curve_editor::Channel& channel,double frame) {
+    const auto& keys=channel.track.keys;
+    if(keys.size()<2||!std::isfinite(frame))return ac::Evaluate(channel.track,frame);
+    const auto sample=[&](double at){
+        if(at<=keys.front().frame)return keys.front().value;if(at>=keys.back().frame)return keys.back().value;
+        const auto bound=std::upper_bound(keys.begin(),keys.end(),at,[](double f,const ac::Key& key){return f<key.frame;});
+        const auto end=std::size_t(bound-keys.begin());const auto& a=keys[end-1];const auto& b=keys[end];
+        if(!NativeGeometry(channel,end))return ac::Evaluate(channel.track,at).value;
+        if(at==a.frame||double(b.frame)-a.frame==1)return a.value;
+        return a.value+(b.value-a.value)*CameraTime(channel.nativeControls[end],float((at-a.frame)/(double(b.frame)-a.frame)));
+    };
+    double derivative=0;
+    if(frame>=keys.front().frame&&frame<=keys.back().frame){
+        const auto bound=std::upper_bound(keys.begin(),keys.end(),frame,[](double f,const ac::Key& key){return f<key.frame;});
+        const auto end=std::min(std::size_t(bound-keys.begin()),keys.size()-1);
+        if(end&&NativeGeometry(channel,end)){const auto& a=keys[end-1];const auto& b=keys[end];const double span=double(b.frame)-a.frame;
+            if(span>1)derivative=(b.value-a.value)/span*native_curve_sample::Evaluate(channel.nativeControls[end],(frame-a.frame)/span).slope;
+        }else derivative=ac::Evaluate(channel.track,frame).derivative;
+    }
+    return {sample(frame),derivative};
+}
+void WriteNativeCamera(const NativeCameraData& camera,const std::vector<ac::NamedTrack>& tracks,
+    std::vector<std::uint8_t>& output) {
+    Writer writer;writer.text(camera.legacy?kVmd1Signature:kVmd2Signature,kSignatureBytes);
+    writer.text(camera.modelName,camera.legacy?kLegacyNameBytes:kModelNameBytes);
+    writer.u32(0);writer.u32(0);writer.u32(std::uint32_t(camera.frames.size()));
+    for(const auto& frame:camera.frames){writer.u32(frame.frame);writer.f(frame.distance);
+        for(double value:frame.eye)writer.f(value);for(double value:frame.target)writer.f(value);
+        const unsigned lanes=camera.legacy?1u:6u;
+        for(unsigned lane=0;lane<lanes;++lane){const auto& control=frame.controls[lane];
+            writer.u8(std::uint8_t(control[0]));writer.u8(std::uint8_t(control[2]));
+            writer.u8(std::uint8_t(control[1]));writer.u8(std::uint8_t(control[3]));}
+        if(!camera.legacy){writer.u32(frame.fov);writer.u8(frame.perspective);}
+    }
+    writer.u32(0);if(!camera.legacy)writer.u32(0);writer.u32(0);
+    // Standard camera timing belongs to the standard body. Keep only fields
+    // that VMD cannot express in the existing scalar extension; no new marker
+    // or payload schema is needed to distinguish native timing from Free.
+    std::vector<ac::NamedTrack> extra;
+    for(const auto& track:tracks)if(!CameraId(track.id))extra.push_back(track);
+    if(!extra.empty()){
+        std::vector<std::uint8_t> payload;std::string error;if(!ac::Encode(extra,payload,error))throw std::runtime_error(error);
+        const auto prefix=writer.bytes.size();writer.raw(payload.data(),payload.size());writer.raw(kFooterMagic,sizeof(kFooterMagic));
+        writer.u64(std::uint64_t(prefix));writer.u64(std::uint64_t(payload.size()));
+        writer.u32(Crc32(writer.bytes.data(),prefix));writer.u32(Crc32(payload.data(),payload.size()));
+        writer.u32(std::uint32_t(Kind::Camera));writer.u32(0);
+    }
+    output.swap(writer.bytes);
+}
+void AttachNativeCamera(Motion& motion,std::vector<CameraFrame> frames,bool legacy,const std::string& name) {
+    auto native=std::make_shared<NativeCameraData>();native->frames=std::move(frames);native->legacy=legacy;
+    native->modelName=name;native->baseline=motion.tracks;IndexCameraFrames(*native);motion.nativeCamera=std::move(native);
+}
+}
+
+bool CanCaptureNativeCamera(const std::vector<curve_editor::Channel>& channels,bool selectedOnly) noexcept {
+    std::array<const curve_editor::Channel*,9> found{};if(!CameraChannels(channels,selectedOnly,found))return false;
+    const auto& keys=found[0]->track.keys;if(keys.empty())return false;
+    for(unsigned lane=0;lane<9;++lane){const auto& channel=*found[lane];
+        if(channel.track.keys.size()!=keys.size()||channel.track.discrete!=(lane==8)||!channel.preservedCameraIntervals.empty())return false;
+        if(lane<8&&!channel.sample)return false;
+        for(std::size_t key=0;key<keys.size();++key){const auto& value=channel.track.keys[key];
+            if(value.frame!=keys[key].frame||!std::isfinite(value.value)||!std::isfinite(float(value.value)))return false;
+            if(lane==7&&(value.value<0||value.value>double(UINT32_MAX)||std::floor(value.value)!=value.value))return false;
+            if(lane==8&&value.value!=0&&value.value!=1)return false;
+            if(lane<8&&!key&&!channel.nativeControls.empty()&&!ByteLane(channel.nativeControls[0]))return false;
+            if(lane<8&&key){if(!NativeGeometry(channel,key)||!ValidLane(channel.nativeControls[key]))return false;
+                for(double control:channel.nativeControls[key])if(std::floor(control)!=control)return false;
+                if(lane>=4&&lane<=5&&channel.nativeControls[key]!=found[3]->nativeControls[key])return false;}
+        }
+    }
+    return true;
+}
+Motion CaptureChannels(Kind kind,const std::vector<curve_editor::Channel>& channels) {
+    Motion motion;motion.kind=kind;
+    for(const auto& channel:channels)if(channel.selected)motion.tracks.push_back({channel.id,channel.track});
+    if(kind!=Kind::Camera||!CanCaptureNativeCamera(channels))return motion;
+    std::array<const curve_editor::Channel*,9> found{};CameraChannels(channels,true,found);
+    auto native=std::make_shared<NativeCameraData>();native->modelName=std::string(kCameraLightName,12);native->baseline=motion.tracks;
+    for(std::size_t key=0;key<found[0]->track.keys.size();++key){CameraFrame row;row.frame=std::uint32_t(found[0]->track.keys[key].frame);
+        row.distance=found[6]->track.keys[key].value;row.fov=std::uint32_t(found[7]->track.keys[key].value);row.perspective=std::uint8_t(found[8]->track.keys[key].value);
+        for(unsigned axis=0;axis<3;++axis){row.eye[axis]=found[axis]->track.keys[key].value;row.target[axis]=found[axis+3]->track.keys[key].value*kPi/180.0;}
+        for(unsigned lane=0;lane<6;++lane){const unsigned channel=lane<4?lane:lane==4?6:7;
+            row.controls[lane]=key<found[channel]->nativeControls.size()?found[channel]->nativeControls[key]:std::array<double,4>{20,20,107,107};}
+        native->frames.push_back(std::move(row));
+    }
+    IndexCameraFrames(*native);motion.nativeCamera=std::move(native);return motion;
+}
+bool RestoreChannels(const Motion& motion,std::vector<curve_editor::Channel>& channels,std::string& error) {
+    try{
+        auto candidate=channels;
+        for(auto& channel:candidate){const auto* track=FindTrack(motion.tracks,channel.id);if(!track)continue;
+            channel.track=*track;channel.sample={};channel.nativeControls.clear();channel.controlGeometry.clear();
+            channel.preservedCameraIntervals.clear();channel.interpolationGroup.clear();
+            if(motion.kind!=Kind::Camera||!motion.nativeCamera)continue;
+            const auto* baseline=FindTrack(motion.nativeCamera->baseline,channel.id);if(!baseline||!SameTrack(*track,*baseline))continue;
+            unsigned index=0;while(index<8&&channel.id!=kCameraIds[index])++index;if(index==8)continue;
+            channel.nativeControls.resize(track->keys.size());channel.controlGeometry.resize(track->keys.size());
+            bool native=false;
+            for(std::size_t key=0;key<track->keys.size();++key){
+                const auto* row=CameraFrameAt(*motion.nativeCamera,std::uint32_t(track->keys[key].frame));
+                if(!row)throw std::runtime_error("native camera timing is missing a source frame");
+                const auto& controls=row->controls[kCameraLane[index]];
+                if(!key){if(ByteLane(controls))channel.nativeControls[key]=controls;continue;}
+                if(!ValidLane(controls))continue;
+                channel.nativeControls[key]=controls;
+                if(key){const auto& a=channel.track.keys[key-1];auto& b=channel.track.keys[key];b.interpolation=ac::Interpolation::Bezier;
+                    channel.controlGeometry[key]={a.outWeight,a.outSlope,b.inWeight,b.inSlope};native=true;}
+            }
+            if(native)channel.sample=ImportedCameraSample;
+            if(index>=3&&index<6)channel.interpolationGroup="camera/rotation";
+        }
+        channels.swap(candidate);error.clear();return true;
+    }catch(const std::exception& caught){error=caught.what();return false;}
+}
+ac::Sample Evaluate(const Motion& motion,const std::string& id,double frame) {
+    const auto* track=FindTrack(motion.tracks,id);if(!track)return {};
+    if(!motion.nativeCamera||motion.kind!=Kind::Camera)return ac::Evaluate(*track,frame);
+    const auto* before=FindTrack(motion.nativeCamera->baseline,id);
+    unsigned index=0;while(index<8&&id!=kCameraIds[index])++index;
+    if(index==8||!before||!SameTrack(*track,*before)||track->keys.size()<2||!std::isfinite(frame))return ac::Evaluate(*track,frame);
+    const auto& keys=track->keys;
+    if(frame<keys.front().frame)return {keys.front().value,0};if(frame>keys.back().frame)return {keys.back().value,0};
+    const auto bound=std::upper_bound(keys.begin(),keys.end(),frame,[](double f,const ac::Key& key){return f<key.frame;});
+    const auto end=std::min(std::size_t(bound-keys.begin()),keys.size()-1);const auto& a=keys[end-1];const auto& b=keys[end];
+    const auto* row=CameraFrameAt(*motion.nativeCamera,std::uint32_t(b.frame));
+    if(!row||!ValidLane(row->controls[kCameraLane[index]]))return ac::Evaluate(*track,frame);
+    const auto& control=row->controls[kCameraLane[index]];const double span=double(b.frame)-a.frame,time=(frame-a.frame)/span;
+    const double value=frame==a.frame?a.value:frame==b.frame?b.value:span==1?a.value:
+        a.value+(b.value-a.value)*CameraTime(control,float(time));
+    return {value,span==1?0:(b.value-a.value)/span*native_curve_sample::Evaluate(control,time).slope};
+}
+
 bool Encode(const Motion& motion, std::vector<std::uint8_t>& out, std::string& error) {
     try {
         if (std::uint32_t(motion.kind) > std::uint32_t(Kind::Morph)) {
@@ -662,6 +880,30 @@ bool Encode(const Motion& motion, std::vector<std::uint8_t>& out, std::string& e
         // is built (and validated) before anything is written.
         std::vector<std::uint8_t> payload;
         if (!ac::Encode(motion.tracks, payload, error)) return false;
+        if(NativeBodyCurrent(motion)){
+            WriteNativeCamera(*motion.nativeCamera,motion.tracks,out);return true;
+        }
+        if(motion.nativeCamera){
+            // Edited scalar channels must not reuse stale raw rows. Bake only
+            // unchanged native channels through their real timing; changed
+            // Free tracks and nonstandard bindings keep their exact payload.
+            std::vector<curve_editor::Channel> channels;
+            for(const auto& track:motion.tracks){curve_editor::Channel channel;channel.id=track.id;channels.push_back(std::move(channel));}
+            if(!RestoreChannels(motion,channels,error))return false;
+            Motion prepared;prepared.kind=motion.kind;
+            for(auto& channel:channels){
+                if(channel.sample&&!channel.track.keys.empty()){
+                    ac::Track sampled;const auto first=channel.track.keys.front().frame,last=channel.track.keys.back().frame;
+                    CheckSampleCount(std::uint32_t(first),std::uint32_t(last));
+                    sampled.keys.reserve(std::size_t(std::uint64_t(last)-std::uint64_t(first)+1));
+                    for(std::int64_t frame=first;frame<=last;++frame)
+                        sampled.keys.push_back(MakeLinearKey(std::int32_t(frame),channel.sample(channel,double(frame)).value));
+                    channel.track=std::move(sampled);
+                }
+                prepared.tracks.push_back({channel.id,std::move(channel.track)});
+            }
+            return Encode(prepared,out,error);
+        }
 
         std::map<std::string, const ac::Track*> lookup;
         for (const ac::NamedTrack& named : motion.tracks) lookup[named.id] = &named.track;
@@ -843,10 +1085,11 @@ bool Decode(const std::uint8_t* data, std::size_t size, Kind requested, Motion& 
         Reader reader{data, size};
         const std::string signature = reader.text(kSignatureBytes);
         const bool legacy = signature == kVmd1Signature;
+        std::string modelName;
         if (signature == kVmd2Signature) {
-            reader.skip(kModelNameBytes);
+            modelName=reader.text(kModelNameBytes);
         } else if (legacy) {
-            reader.skip(kLegacyNameBytes);
+            modelName=reader.text(kLegacyNameBytes);
         } else {
             throw std::runtime_error("the file is not a Vocaloid Motion Data file");
         }
@@ -868,6 +1111,8 @@ bool Decode(const std::uint8_t* data, std::size_t size, Kind requested, Motion& 
         std::vector<CameraFrame> cameras;
         std::vector<LightFrame> lights;
         std::vector<ShadowFrame> shadows;
+        std::uint32_t cameraCount=0;
+        std::size_t cameraOffset=0;
 
         const std::uint32_t boneCount = reader.count(kBoneRecordBytes);
         for (std::uint32_t index = 0; index < boneCount; ++index) {
@@ -898,31 +1143,10 @@ bool Decode(const std::uint8_t* data, std::size_t size, Kind requested, Motion& 
         // The remaining sections are optional: an old VMD 0001 file, or any
         // writer that stops early, simply ends here.
         if (reader.remaining() > 0) {
-            const std::uint32_t cameraCount = reader.count(legacy ? kLegacyCameraRecordBytes : kCameraRecordBytes);
+            cameraCount = reader.count(legacy ? kLegacyCameraRecordBytes : kCameraRecordBytes);
+            cameraOffset=reader.pos;
             for (std::uint32_t index = 0; index < cameraCount; ++index) {
-                CameraFrame camera;
-                camera.frame = reader.u32();
-                CheckedFrame(camera.frame);
-                camera.distance = reader.f();
-                for (double& component : camera.eye) component = reader.f();
-                for (double& component : camera.target) component = reader.f();
-                if (legacy) {
-                    std::uint8_t bytes[4] = {};
-                    for (std::uint8_t& byte : bytes) byte = reader.u8();
-                    // VMD1 stores one X1/X2/Y1/Y2 lane shared by all camera
-                    // channels, with no FOV or perspective fields.
-                    camera.controls.fill(CameraChannel(bytes));
-                    camera.fov = 45;
-                    camera.perspective = 0;
-                } else {
-                    for (std::array<double, 4>& lane : camera.controls) {
-                        std::uint8_t bytes[4] = {};
-                        for (std::uint8_t& byte : bytes) byte = reader.u8();
-                        lane = CameraChannel(bytes);
-                    }
-                    camera.fov = reader.u32();
-                    camera.perspective = reader.u8();
-                }
+                CameraFrame camera=ReadCameraFrame(reader,legacy);
                 if (wantCamera) cameras.push_back(std::move(camera));
             }
         }
@@ -990,6 +1214,16 @@ bool Decode(const std::uint8_t* data, std::size_t size, Kind requested, Motion& 
             Motion candidate;
             candidate.kind = requested;
             if (!ac::Decode(data + standardEnd, std::size_t(curveBytes), candidate.tracks, error)) return false;
+            if(requested==Kind::Camera&&cameraCount&&std::none_of(candidate.tracks.begin(),candidate.tracks.end(),
+                [](const auto& track){return CameraId(track.id);})){
+                // Native standard body plus only nonstandard scalar fields.
+                // Existing complete scalar tails retain their old precedence.
+                Reader cameraReader{data,size,cameraOffset};std::vector<CameraFrame> rows;rows.reserve(cameraCount);
+                for(std::uint32_t i=0;i<cameraCount;++i)rows.push_back(ReadCameraFrame(cameraReader,legacy));
+                auto tracks=BuildCamera(rows);
+                for(auto& extra:candidate.tracks)tracks.push_back(std::move(extra));candidate.tracks=std::move(tracks);
+                AttachNativeCamera(candidate,std::move(rows),legacy,modelName);
+            }
             out = std::move(candidate);
             return true;
         }
@@ -1015,7 +1249,8 @@ bool Decode(const std::uint8_t* data, std::size_t size, Kind requested, Motion& 
             candidate.tracks = BuildAccessory(std::move(bones));
             break;
         case Kind::Camera:
-            candidate.tracks = BuildCamera(std::move(cameras));
+            candidate.tracks = BuildCamera(cameras);
+            AttachNativeCamera(candidate,std::move(cameras),legacy,modelName);
             break;
         case Kind::Light:
             candidate.tracks = BuildLight(std::move(lights));

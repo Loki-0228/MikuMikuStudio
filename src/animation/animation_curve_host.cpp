@@ -3,6 +3,7 @@
 #include "mikudancestudio/key_pool.hpp"
 #define NOMINMAX
 #include "mikudancestudio/animation_curve_host.hpp"
+#include "mikudancestudio/animation_curve_motion.hpp"
 #include "native_curve_sample.hpp"
 #include "mikudancestudio/accessory_layout.hpp"
 #include "mikudancestudio/mmd_app.hpp"
@@ -218,6 +219,10 @@ bool NativeRead(MMDApp& app,Kind kind,int slot,std::vector<Channel>& out){
             out[c].controlGeometry.resize(out[c].track.keys.size());
             out[c].sample=CameraSample;
             if(c>=3&&c<6)out[c].interpolationGroup="camera/rotation";
+            // The root's controls do not affect playback, but they are still
+            // bytes of the original standard camera record on raw export.
+            const int lane=c<3?int(c):c<6?3:c==6?4:5;
+            for(int j=0;j<4;++j)out[c].nativeControls[0][j]=app.CameraKeys()[0].interpolation[j][lane];
         }
         uint32_t i=app.CameraKeys()[0].next;size_t end=1;
         while(i){
@@ -424,12 +429,16 @@ void Reconcile(State&s,const std::vector<Channel>&native){
         channel.controlGeometry.assign(keys.size(),{});
         if(native[c].nativeControls.empty()){
             channel.nativeControls.clear();channel.controlGeometry.clear();
-        }else for(size_t end=1;end<keys.size();++end){
-            const auto at=std::lower_bound(fresh.begin(),fresh.end(),keys[end].frame,[](const auto&key,int f){return key.frame<f;});
-            const auto n=size_t(at-fresh.begin());
-            if(at==fresh.end()||n==0||at->frame!=keys[end].frame||fresh[n-1].frame!=keys[end-1].frame)continue;
-            channel.nativeControls[end]=native[c].nativeControls[n];
-            channel.controlGeometry[end]=native[c].controlGeometry[n];
+        }else {
+            if(!keys.empty()&&!fresh.empty()&&keys.front().frame==fresh.front().frame)
+                channel.nativeControls.front()=native[c].nativeControls.front();
+            for(size_t end=1;end<keys.size();++end){
+                const auto at=std::lower_bound(fresh.begin(),fresh.end(),keys[end].frame,[](const auto&key,int f){return key.frame<f;});
+                const auto n=size_t(at-fresh.begin());
+                if(at==fresh.end()||n==0||at->frame!=keys[end].frame||fresh[n-1].frame!=keys[end-1].frame)continue;
+                channel.nativeControls[end]=native[c].nativeControls[n];
+                channel.controlGeometry[end]=native[c].controlGeometry[n];
+            }
         }
         channel.sample=native[c].sample;
         channel.interpolationGroup=native[c].interpolationGroup;
@@ -510,10 +519,17 @@ template<class K> void Mirror(K*& pool,const K* previous,const std::vector<Chann
     std::copy(records.begin(),records.end(),pool);
 }
 void MirrorCameraControls(mdl::CameraKey* keys,std::size_t count,const std::vector<Channel>& input){
+    constexpr std::size_t lanes[6]={0,1,2,3,6,7};
     for(std::size_t i=0;i<count;++i)for(int c=0;c<6;++c){keys[i].interpolation[0][c]=20;keys[i].interpolation[1][c]=20;
         keys[i].interpolation[2][c]=107;keys[i].interpolation[3][c]=107;}
+    if(count)for(std::size_t lane=0;lane<6;++lane){
+        if(lanes[lane]>=input.size())continue;const auto& source=input[lanes[lane]];
+        if(source.track.keys.empty()||source.track.keys.front().frame!=int(keys[0].frame)||source.nativeControls.empty())continue;
+        const auto& raw=source.nativeControls.front();
+        if(!std::all_of(raw.begin(),raw.end(),[](double value){return std::isfinite(value)&&value>=0&&value<=255&&std::floor(value)==value;}))continue;
+        for(std::size_t component=0;component<4;++component)keys[0].interpolation[component][lane]=static_cast<std::uint8_t>(raw[component]);
+    }
     for(std::size_t i=1;i<count;++i){auto& key=keys[i];const int start=int(keys[i-1].frame),end=int(key.frame);
-        constexpr std::size_t lanes[6]={0,1,2,3,6,7};
         for(std::size_t lane=0;lane<6;++lane){std::array<double,4> controls{};
             if(!CameraIntervalControls(input[lanes[lane]],start,end,controls))continue;
             if(lane==3){std::array<double,4> y{},z{};
@@ -553,6 +569,107 @@ bool Read(MMDApp& app,Kind kind,int slot,std::vector<Channel>&out,std::wstring&e
         out[c].base=out[c].track.keys.empty()?0:out[c].track.keys.front().value;
         out[c].unit=(out[c].id=="rx"||out[c].id=="ry"||out[c].id=="rz"||out[c].id=="fov")?L"°":L"";
     }return true;
+}
+void InstallImportedCameraTiming(Channel& channel) noexcept {
+    channel.sample=CameraSample;
+}
+namespace {
+bool CanonicalCameraTiming(const Channel& channel) noexcept {
+    const auto sampler=channel.sample.target<ac::Sample(*)(const Channel&,double)>();
+    return sampler&&*sampler==CameraSample;
+}
+void PreserveCameraTiming(Channel& channel) {
+    if(!CanonicalCameraTiming(channel))return;
+    PrunePreserved(channel);
+    const auto preservedCount=channel.preservedCameraIntervals.size();
+    for(std::size_t end=1;end<channel.track.keys.size();++end){
+        if(!NativeGeometry(channel,end))continue;
+        const auto& a=channel.track.keys[end-1];const auto& b=channel.track.keys[end];
+        const auto found=std::lower_bound(channel.preservedCameraIntervals.begin(),channel.preservedCameraIntervals.begin()+preservedCount,a.frame,
+            [](const auto& value,int f){return value.first<f;});
+        if(found!=channel.preservedCameraIntervals.begin()+preservedCount&&found->first==a.frame&&found->last==b.frame)continue;
+        PreservedCameraInterval value;value.first=value.sourceFirst=a.frame;value.last=value.sourceLast=b.frame;
+        value.sampleFirst=a.frame;value.sampleLast=b.frame;value.sourceValueFirst=a.value;value.sourceValueLast=b.value;
+        value.controls=channel.nativeControls[end];value.geometry=IntervalGeometry(a,b);channel.preservedCameraIntervals.push_back(value);
+    }
+    PrunePreserved(channel);
+}
+void RemapCameraControlRows(const Channel& source,Channel& target) {
+    target.nativeControls.clear();target.controlGeometry.clear();
+    if(!source.nativeControls.empty())target.nativeControls.resize(target.track.keys.size());
+    if(!source.controlGeometry.empty())target.controlGeometry.assign(target.track.keys.size(),{-1,0,-1,0});
+    if(!target.nativeControls.empty()&&!source.track.keys.empty()&&
+        source.track.keys.front().frame==target.track.keys.front().frame)
+        target.nativeControls.front()=source.nativeControls.front();
+    for(std::size_t end=1;end<target.track.keys.size();++end){
+        const auto original=std::lower_bound(source.track.keys.begin(),source.track.keys.end(),target.track.keys[end].frame,
+            [](const auto& key,int f){return key.frame<f;});
+        const auto index=std::size_t(original-source.track.keys.begin());
+        if(original==source.track.keys.end()||!index||original->frame!=target.track.keys[end].frame||
+            source.track.keys[index-1].frame!=target.track.keys[end-1].frame)continue;
+        if(index<source.nativeControls.size())target.nativeControls[end]=source.nativeControls[index];
+        if(index<source.controlGeometry.size())target.controlGeometry[end]=source.controlGeometry[index];
+    }
+}
+void SplitCameraBakeBoundary(Channel& channel,int frame) {
+    if(!CanonicalCameraTiming(channel))return;
+    const auto at=std::lower_bound(channel.track.keys.begin(),channel.track.keys.end(),frame,
+        [](const auto& key,int f){return key.frame<f;});
+    if(at==channel.track.keys.begin()||at==channel.track.keys.end()||at->frame==frame)return;
+    const auto end=std::size_t(at-channel.track.keys.begin());
+    const auto found=std::lower_bound(channel.preservedCameraIntervals.begin(),channel.preservedCameraIntervals.end(),channel.track.keys[end-1].frame,
+        [](const auto& value,int f){return value.first<f;});
+    if(found==channel.preservedCameraIntervals.end()||found->last!=at->frame||!PreservedCurrent(channel,*found))return;
+    const auto interval=*found;
+    auto next=channel;
+    const double value=SampleValue(channel,frame);
+    auto a=channel.track.keys[end-1],b=channel.track.keys[end];
+    ac::Key middle;middle.frame=frame;middle.value=value;
+    middle.interpolation=ac::Interpolation::Bezier;middle.tangent=ac::Tangent::Free;
+    // These are editable, finite canvas handles. The saved source domain is
+    // authoritative outside the bake, so no analytic inverse replaces the
+    // player's fixed 12-step float inverse at either new boundary.
+    a.outWeight=middle.inWeight=middle.outWeight=b.inWeight=1.0/3.0;
+    a.outSlope=middle.inSlope=(value-a.value)/(frame-a.frame);
+    middle.outSlope=b.inSlope=(b.value-value)/(b.frame-frame);
+    next.track.keys[end-1]=a;next.track.keys[end]=b;
+    next.track.keys.insert(next.track.keys.begin()+end,middle);
+    RemapCameraControlRows(channel,next);
+    auto& intervals=next.preservedCameraIntervals;
+    intervals.erase(std::remove_if(intervals.begin(),intervals.end(),[&](const auto& old){return old.first==interval.first&&old.last==interval.last;}),intervals.end());
+    const auto position=[&](int f){return interval.sampleFirst==interval.first&&interval.sampleLast==interval.last?double(f):
+        interval.sampleFirst+(double(f)-interval.first)/(interval.last-interval.first)*(interval.sampleLast-interval.sampleFirst);};
+    for(const auto index:{end,end+1}){
+        auto part=interval;part.first=next.track.keys[index-1].frame;part.last=next.track.keys[index].frame;
+        part.sampleFirst=position(part.first);part.sampleLast=position(part.last);
+        part.geometry=IntervalGeometry(next.track.keys[index-1],next.track.keys[index]);intervals.push_back(part);
+    }
+    PrunePreserved(next);
+    std::string detail;if(!ac::Validate(next.track,detail))throw std::invalid_argument("invalid camera bake boundary");
+    channel=std::move(next);
+}
+}
+bool PrepareCameraBakeSources(const std::vector<Channel>& input,const std::vector<bool>& fields,int first,int last,
+                             std::vector<Channel>& output,std::wstring& error) {
+    try{
+        if(fields.size()!=input.size()||first<0||last<first||last>frame_limits::maximum)
+            return CurvePreparationFailure(error,L"相机烧录通道或范围无效。");
+        auto next=input;
+        // A new native camera row belongs to every lane. Preserve peer timing
+        // before the standard mirror's union can split an unselected lane.
+        for(auto& channel:next)PreserveCameraTiming(channel);
+        for(std::size_t c=0;c<next.size();++c)if(fields[c]){
+            SplitCameraBakeBoundary(next[c],first);SplitCameraBakeBoundary(next[c],last);
+        }
+        output.swap(next);return true;
+    }catch(const std::exception&){return CurvePreparationFailure(error,L"无法准备相机烧录边界，原数据已保留。");}
+}
+bool FinishCameraBakeChannel(const Channel& source,const ac::Track& sampled,Channel& output,std::wstring& error) {
+    try{
+        auto next=source;next.track=sampled;RemapCameraControlRows(source,next);PrunePreserved(next);
+        std::string detail;if(!ac::Validate(next.track,detail))throw std::invalid_argument("invalid sampled camera channel");
+        output=std::move(next);return true;
+    }catch(const std::exception&){return CurvePreparationFailure(error,L"无法准备相机烧录结果，原数据已保留。");}
 }
 bool InsertPreservingShape(std::vector<Channel>& channels,std::size_t selected,int frame,std::size_t& index,std::wstring& error) {
     try {
@@ -651,31 +768,52 @@ bool InsertPreservingShape(std::vector<Channel>& channels,std::size_t selected,i
 bool PrepareMotionChannels(const std::vector<Channel>& input,std::vector<Channel>& output,std::wstring& error,bool selectedOnly,
                            std::uint64_t maximumSampleBytes) {
     try {
+        bool canonical=true;
+        for(const auto& channel:input)if((!selectedOnly||channel.selected)&&channel.sample&&!CanonicalCameraTiming(channel))canonical=false;
+        const bool raw=canonical&&curve_motion::CanCaptureNativeCamera(input,selectedOnly);
+        const auto exactSlice=[](const Channel& channel){
+            return std::any_of(channel.preservedCameraIntervals.begin(),channel.preservedCameraIntervals.end(),
+                [&](const auto& value){return PreservedCurrent(channel,value);});
+        };
+        const auto sampled=[&](const Channel& channel){
+            if((selectedOnly&&!channel.selected)||channel.track.keys.empty())return false;
+            if(channel.sample&&!CanonicalCameraTiming(channel))return true;
+            if(raw)return false;
+            if(exactSlice(channel)){
+                if(!channel.sample)throw std::invalid_argument("native camera slice has no sampler");
+                return true;
+            }
+            if(CanonicalCameraTiming(channel))for(std::size_t end=1;end<channel.track.keys.size();++end)
+                if(NativeGeometry(channel,end))return true;
+            return false;
+        };
         std::uint64_t sampleBytes=0;
         for(const auto& channel:input){
-            if((selectedOnly&&!channel.selected)||channel.track.keys.empty()||
-               std::none_of(channel.preservedCameraIntervals.begin(),channel.preservedCameraIntervals.end(),
-                   [&](const auto& value){return PreservedCurrent(channel,value);}))continue;
+            if(!sampled(channel))continue;
             const auto first=channel.track.keys.front().frame,last=channel.track.keys.back().frame;
             if(first<0||last<first||last>frame_limits::maximum)throw std::invalid_argument("native camera sample range");
             const auto count=std::uint64_t(last)-std::uint64_t(first)+1;
-            if(count>(maximumSampleBytes-sampleBytes)/sizeof(ac::Key)){
+            if(count>(std::numeric_limits<std::size_t>::max)()/sizeof(ac::Key))throw std::bad_alloc();
+            // Keep the existing explicit-slice/opaque callback preparation
+            // budget. Ordinary native VMD did not have this extra frame cap:
+            // mixed native/scalar output remains bounded by the standard
+            // codec's unchanged addressable-memory/frame/record limits.
+            if((exactSlice(channel)||!CanonicalCameraTiming(channel))&&count>(maximumSampleBytes-sampleBytes)/sizeof(ac::Key)){
                 return CurvePreparationFailure(error,L"原生相机逐帧采样超过本次准备内存预算，请缩短导出范围或先显式烘焙。");
             }
-            sampleBytes+=count*sizeof(ac::Key);
+            if(exactSlice(channel)||!CanonicalCameraTiming(channel))sampleBytes+=count*sizeof(ac::Key);
         }
         auto next=input;
         for(auto& channel:next) {
-            if(selectedOnly&&!channel.selected)continue;
-            PrunePreserved(channel);if(channel.preservedCameraIntervals.empty())continue;
-            const auto sampler=channel.sample.target<ac::Sample(*)(const Channel&,double)>();
-            if(!sampler||*sampler!=CameraSample||channel.track.keys.empty())throw std::invalid_argument("native camera slice sampler");
+            if(!sampled(channel))continue;
+            PrunePreserved(channel);
             ac::Track baked;baked.discrete=channel.track.discrete;
             const auto first=channel.track.keys.front().frame,last=channel.track.keys.back().frame;
             baked.keys.reserve(std::size_t(last)-first+1);
             for(std::int64_t frame=first;frame<=last;++frame) {
-                ac::Key key;key.frame=int(frame);key.value=CameraSample(channel,double(frame)).value;
-                key.interpolation=ac::Interpolation::Linear;key.tangent=ac::Tangent::Free;baked.keys.push_back(key);
+                ac::Key key;key.frame=int(frame);key.value=SampleValue(channel,double(frame));
+                key.interpolation=baked.discrete?ac::Interpolation::Step:ac::Interpolation::Linear;
+                key.tangent=ac::Tangent::Free;baked.keys.push_back(key);
             }
             std::string detail;if(!ac::Validate(baked,detail))throw std::invalid_argument("invalid baked camera samples");
             channel.track=std::move(baked);channel.sample={};channel.nativeControls.clear();channel.controlGeometry.clear();
@@ -1188,6 +1326,8 @@ template<class K> std::vector<Channel> TargetChannels(const NativeKeyView& view,
         for(std::size_t c=0;c<8;++c) {
             auto& channel=result[c];channel.nativeControls.resize(keys.size());channel.controlGeometry.resize(keys.size());
             channel.sample=CameraSample;if(c>=3&&c<6)channel.interpolationGroup="camera/rotation";
+            const int rootLane=c<3?int(c):c<6?3:c==6?4:5;
+            for(int j=0;j<4;++j)channel.nativeControls[0][j]=keys[0].interpolation[j][rootLane];
             for(std::size_t end=1;end<keys.size();++end) {
                 const int lane=c<3?int(c):c<6?3:c==6?4:5;
                 auto& controls=channel.nativeControls[end];
@@ -1478,6 +1618,8 @@ void RemapIntervals(const Channel& source,Channel& target,const std::vector<int>
     target.nativeControls.clear();target.controlGeometry.clear();
     if(!source.nativeControls.empty())target.nativeControls.resize(keys.size());
     if(!source.controlGeometry.empty())target.controlGeometry.assign(keys.size(),{-1,0,-1,0});
+    if(!target.nativeControls.empty()&&!original.empty()&&!oldFrames.empty()&&oldFrames.front()==original.front().frame)
+        target.nativeControls.front()=source.nativeControls.front();
     for(std::size_t i=1;i<keys.size();++i){
         const auto found=std::lower_bound(original.begin(),original.end(),oldFrames[i],[](const ac::Key& k,int f){return k.frame<f;});
         const auto n=std::size_t(found-original.begin());
@@ -1600,6 +1742,13 @@ void ReconcileRetimed(State& target,const State& source,const std::vector<Channe
             }
             at->value=fresh.value;
         }
+        // A deleted frame zero may be replaced by a different native row.
+        // Its unused control bytes belong to that actual winning row, rather
+        // than the discarded root or the interval remapper's empty root slot.
+        if(!channel.nativeControls.empty()&&!native[c].nativeControls.empty()&&
+            !channel.track.keys.empty()&&!native[c].track.keys.empty()&&
+            channel.track.keys.front().frame==native[c].track.keys.front().frame)
+            channel.nativeControls.front()=native[c].nativeControls.front();
         auto automatic=channel.track;ac::UpdateAutomatic(automatic);
         for(std::size_t i=0;i<channel.track.keys.size();++i){auto& key=channel.track.keys[i];
             if(key.tangent!=ac::Tangent::Automatic)continue;

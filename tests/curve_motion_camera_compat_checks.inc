@@ -54,8 +54,10 @@ void TestCameraCompatibilityMatrix() {
     Check(cm::Decode(encoded.data(), encoded.size(), cm::Kind::Camera, exact, error) && SameTracks(imported, exact),
           "camera export/import retains sparse frames, handles and discrete data in the extension");
     const auto standard = WithoutTail(encoded); BodyCounts counts; std::string parseError;
-    Check(ParseBody(standard, counts, parseError) && counts.end == standard.size() && counts.cameras == 24 && counts.hasIkSection,
-          "camera re-export has a complete VMD2 prefix and display/IK end code before its extension");
+    BodyCounts originalCounts;std::string originalParse;
+    Check(ParseBody(bytes,originalCounts,originalParse)&&ParseBody(standard, counts, parseError) && counts.end == standard.size() && counts.cameras == 2 && counts.hasIkSection&&
+        std::memcmp(bytes.data()+originalCounts.cameraStart+4,standard.data()+counts.cameraStart+4,2*61)==0,
+          "camera re-export retains both sparse standard records including every native control byte and the complete display/IK boundary");
     cm::Motion proxy;
     if (!cm::Decode(standard.data(), standard.size(), cm::Kind::Camera, proxy, error)) {
         Check(false, "camera proxy imports without the extension: " + error); return;

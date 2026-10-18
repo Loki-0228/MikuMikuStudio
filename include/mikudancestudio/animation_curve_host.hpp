@@ -13,12 +13,26 @@ namespace mikudancestudio::curve_host {
 enum class Kind { Camera, Light, Shadow, Gravity, Accessory };
 bool Read(MMDApp&, Kind, int slot, std::vector<curve_editor::Channel>&, std::wstring&);
 bool Write(MMDApp&, Kind, int slot, const std::vector<curve_editor::Channel>&, std::wstring&);
+// The motion importer validates raw controls/geometry before calling this.
+// Installing the existing sampler never changes keys or interpolation bytes.
+void InstallImportedCameraTiming(curve_editor::Channel&) noexcept;
+// Private preparation for partial camera baking. Native intervals outside the
+// range retain their original evaluator, including raw crossed/endpoint X.
+// Scalar-only boundaries continue through channel_bake's existing splitter.
+bool PrepareCameraBakeSources(const std::vector<curve_editor::Channel>& input,
+                             const std::vector<bool>& fields, int first, int last,
+                             std::vector<curve_editor::Channel>& output, std::wstring& error);
+bool FinishCameraBakeChannel(const curve_editor::Channel& source,
+                             const animation_curve::Track& sampled,
+                             curve_editor::Channel& output, std::wstring& error);
 // Private-copy subdivision. Native camera intervals keep their original float
 // evaluator; unrelated scalar channels use the common Bezier subdivision.
 bool InsertPreservingShape(std::vector<curve_editor::Channel>&, std::size_t channel, int frame,
                            std::size_t& index, std::wstring& error);
-// Converts only channels carrying exact native slices to integer-frame scalar
-// proxies for the existing VMD writer. Does not change the standard VMD codec.
+// Keeps complete canonical native cameras eligible for sparse raw VMD output.
+// Mixed/scalar motions sample native or opaque callbacks at integer frames.
+// maximumSampleBytes retains the explicit-slice/opaque preparation budget;
+// ordinary native motions keep the standard codec's existing frame limits.
 bool PrepareMotionChannels(const std::vector<curve_editor::Channel>&,
                            std::vector<curve_editor::Channel>&, std::wstring& error, bool selectedOnly = true,
                            std::uint64_t maximumSampleBytes = 64ull * 1024 * 1024);

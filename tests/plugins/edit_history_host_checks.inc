@@ -13,6 +13,9 @@
 #include "mikudancestudio/key_pool.hpp"
 #include "mikudancestudio/animation_curve_editor.hpp"
 #include "mikudancestudio/animation_curve_host.hpp"
+#include "mikudancestudio/animation_curve_motion.hpp"
+#include "mikudancestudio/channel_bake.hpp"
+#include "../src/plugins/native_history_commands.hpp"
 #include "mikudancestudio/panel_controls.hpp"
 #include "../src/plugins/native_key_commands.hpp"
 #include "../src/plugins/native_object_commands.hpp"
@@ -432,6 +435,8 @@ void ObjectMenuDeletion(MMDApp* app, plugins::SharedHistory& history, const MmsS
 #include "viewport_history_host_checks.inc"
 #include "model_viewport_host_checks.inc"
 #include "numpad_view_host_checks.inc"
+#include "curve_motion_import_host_checks.inc"
+#include "native_camera_sampling_host_checks.inc"
 #include "camera_follow_host_checks.inc"
 #include "sparse_registration_host_checks.inc"
 #include "bone_curve_sync_host_checks.inc"
@@ -485,6 +490,8 @@ void Run(MMDApp* app) {
     viewport_history_host_checks::Run(app,*history,value);
     model_viewport_host_checks::Run(app,*history,value);
     numpad_view_host_checks::Run(app,*history,value);
+    curve_motion_import_host_checks::Run(app,*history);
+    native_camera_sampling_host_checks::Run(app,*history,value);
     camera_follow_host_checks::Run(app,*history,value);
     sparse_registration_host_checks::Run(app,*history,value);
     bone_curve_sync_host_checks::Run(app,*history,value);

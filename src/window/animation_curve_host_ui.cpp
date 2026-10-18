@@ -213,17 +213,36 @@ bool Motion(MMDApp&app,Kind kind,int slot,HWND owner,bool save,const std::vector
     if(save){
         std::vector<curve_editor::Channel> prepared;
         if(!PrepareMotionChannels(channels,prepared,error))return false;
-        for(const auto&c:prepared)if(c.selected)motion.tracks.push_back({c.id,c.track});
+        motion=curve_motion::CaptureChannels(static_cast<curve_motion::Kind>(kind),prepared);
         if(!curve_motion::Save(path,motion,detail)){error=Wide(detail);return false;}return true;
     }
     if(!curve_motion::Load(path,motion.kind,motion,detail)){error=Wide(detail);return false;}
     // Read into the explicit source, never infer the recipient from VMD names.
     // Matching channels replace this source's tracks; other channels survive.
     bool matched=false;
-    for(auto&c:channels){auto found=std::find_if(motion.tracks.begin(),motion.tracks.end(),[&](const auto&t){return t.id==c.id;});
-        if(found==motion.tracks.end())continue;matched=true;c.track=found->track;
+    for(const auto& c:channels)if(std::any_of(motion.tracks.begin(),motion.tracks.end(),[&](const auto& t){return t.id==c.id;}))matched=true;
+    if(!curve_motion::RestoreChannels(motion,channels,detail)){error=Wide(detail);return false;}
+    for(auto&c:channels){
+        if(std::none_of(motion.tracks.begin(),motion.tracks.end(),[&](const auto& t){return t.id==c.id;}))continue;
         if(c.track.keys.empty())continue;
-        if(c.track.keys.front().frame>0){auto base=c.track.keys.front();base.frame=0;c.track.keys.insert(c.track.keys.begin(),base);}
+        if(c.track.keys.front().frame>0){auto base=c.track.keys.front();base.frame=0;c.track.keys.insert(c.track.keys.begin(),base);
+            if(!c.nativeControls.empty()){
+                const auto rootControls=c.nativeControls.front();c.nativeControls.insert(c.nativeControls.begin(),rootControls);
+                // This new constant prefix is a real interval. Original root
+                // bytes may use the unused 128..255 range; keep those at the
+                // new unused root and give the prefix legal diagonal timing.
+                c.nativeControls[1]={20,20,107,107};
+                auto& a=c.track.keys[0];auto& b=c.track.keys[1];
+                a.outWeight=20.0/127.0;b.inWeight=1.0-107.0/127.0;a.outSlope=b.inSlope=0;
+                b.interpolation=animation_curve::Interpolation::Bezier;
+            }
+            if(!c.controlGeometry.empty()){
+                c.controlGeometry.insert(c.controlGeometry.begin(),std::array<double,4>{});
+                for(std::size_t end=1;end<c.track.keys.size();++end){const auto& a=c.track.keys[end-1];const auto& b=c.track.keys[end];
+                    c.controlGeometry[end]={a.outWeight,a.outSlope,b.inWeight,b.inSlope};}
+            }
+        }
+        if(kind==Kind::Camera&&!c.nativeControls.empty())InstallImportedCameraTiming(c);
     }
     if(!matched){error=Text(app.EnglishUI(),L"一致するトラックがありません。",L"No matching tracks.",L"没有可匹配的轨道。");return false;}
     if(!Write(app,kind,slot,channels,error))return false;
