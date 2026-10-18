@@ -326,12 +326,14 @@ std::vector<std::uint8_t> Build(const VmdFile& file) {
             cursor.f32(camera.distance);
             for (double value : camera.eye) cursor.f32(value);
             for (double value : camera.target) cursor.f32(value);
-            cursor.raw(camera.block.data(), camera.block.size());
-            cursor.u32(camera.fov);
-            cursor.u8(camera.perspective);
+            cursor.raw(camera.block.data(), file.legacy ? 4 : camera.block.size());
+            if (!file.legacy) {
+                cursor.u32(camera.fov);
+                cursor.u8(camera.perspective);
+            }
         }
         cursor.u32(0);  // light
-        cursor.u32(0);  // self shadow
+        if (!file.legacy) cursor.u32(0);  // self shadow was introduced by VMD2
         cursor.u32(0);  // display/IK master
     }
     cursor.raw(file.trailing.data(), file.trailing.size());
@@ -397,14 +399,16 @@ bool ParseBody(const std::vector<std::uint8_t>& bytes, BodyCounts& counts, std::
         need(0);
         counts.cameraStart = pos;
         counts.cameras = u32();
-        pos += std::size_t(counts.cameras) * 61;
+        pos += std::size_t(counts.cameras) * (counts.legacy ? 36 : 61);
         need(0);
         counts.lights = u32();
         pos += std::size_t(counts.lights) * 28;
         need(0);
-        counts.shadows = u32();
-        pos += std::size_t(counts.shadows) * 9;
-        need(0);
+        if (!counts.legacy) {
+            counts.shadows = u32();
+            pos += std::size_t(counts.shadows) * 9;
+            need(0);
+        }
         counts.hasIkSection = pos < bytes.size();
         if (counts.hasIkSection) {
             counts.ikMasters = u32();
@@ -1108,6 +1112,8 @@ void TestDefaultInterpolationBytes() {
     Check(cameraPattern, "the camera proxy writes the original default lane bytes");
 }
 
+#include "curve_motion_camera_compat_checks.inc"
+
 }  // namespace
 
 int main() {
@@ -1126,6 +1132,8 @@ int main() {
     TestDefaultInterpolationBytes();
     TestProxyNamesWithoutTail();
     TestFileRoundTripWithUnicodePath();
+    TestCameraCompatibilityMatrix();
+    TestLegacyCameraLayoutAndBoundaries();
     if (g_failures == 0) {
         std::printf("animation_curve_motion_tests: all checks passed\n");
         return 0;

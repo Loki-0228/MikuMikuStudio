@@ -1,5 +1,6 @@
 #include "mikudancestudio/extended_names.hpp"
 #include "mikudancestudio/frame_limits.hpp"
+#include "mikudancestudio/animation_curve_motion.hpp"
 // Exercise the real LoadVmdMotion entry, key registrars, and extension loaders.
 // No windows or D3D device are created. Each case can also run in isolation:
 // vmd_load_safety_tests.exe --case overflow|short|counts|valid|tails|camera|ik|twist|force-morph
@@ -20,6 +21,7 @@
 #include <filesystem>
 #include <fstream>
 #include <io.h>
+#include <iterator>
 #include <memory>
 #include <share.h>
 #include <string>
@@ -666,6 +668,8 @@ void UnicodeIdentity() {
     std::free(fixture.bones[1].jpText);fixture.bones[1].jpText=nullptr;
 }
 
+#include "vmd_curve_compat_checks.inc"
+
 int main(int argc, char** argv) {
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
     if (argc >= 2 && std::strcmp(argv[1], "--benchmark") == 0) {
@@ -678,7 +682,7 @@ int main(int argc, char** argv) {
         Benchmark(warmup, iterations); return 0;
     }
     struct Case { const char* name; void (*run)(); };
-    const Case cases[]{{"path-motion", UnicodeMotionPaths}, {"path-camera", UnicodeCameraPaths}, {"unicode", UnicodeIdentity}, {"overflow", Overflow}, {"short", ShortReads}, {"counts", Counts}, {"valid", Valid}, {"tails", Tails}, {"camera", Camera}, {"ik", Ik}, {"twist", FixedAxisRotations}, {"force-morph", ForceMorphPaste}};
+    const Case cases[]{{"path-motion", UnicodeMotionPaths}, {"path-camera", UnicodeCameraPaths}, {"unicode", UnicodeIdentity}, {"overflow", Overflow}, {"short", ShortReads}, {"counts", Counts}, {"valid", Valid}, {"tails", Tails}, {"camera", Camera}, {"curve-compat", NativeCameraCurveCompatibility}, {"ik", Ik}, {"twist", FixedAxisRotations}, {"force-morph", ForceMorphPaste}};
     if (argc == 3 && std::strcmp(argv[1], "--case") == 0) {
         for (const auto& test : cases) if (std::strcmp(argv[2], test.name) == 0) { test.run(); std::printf("VMD %s: passed\n", test.name); return 0; }
         return 2;

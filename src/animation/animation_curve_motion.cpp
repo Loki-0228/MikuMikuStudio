@@ -37,7 +37,10 @@
 // at every integer frame (quaternion slerp driven by the rotation channel,
 // Euler angles unwrapped across frames) and rejects a file that holds more
 // than one bone track instead of guessing which one to use.  Camera keeps the
-// native semantics of its six control lanes.  Morph and effect names that do
+// native semantics of its six control lanes. VMD 0001 uses 36-byte camera
+// records: frame, distance, position, rotation and one shared four-byte lane;
+// FOV defaults to 45 and perspective to 0, and there is no self-shadow section.
+// Morph and effect names that do
 // not fit the 15-byte proxy field are stored as a checksum placeholder;
 // without a tail that placeholder is kept verbatim rather than guessed back
 // into an id.  Later standard sections may be absent (VMD 0001 files and
@@ -79,6 +82,7 @@ constexpr std::size_t kLegacyNameBytes = 10;
 constexpr std::size_t kBoneRecordBytes = 111;
 constexpr std::size_t kMorphRecordBytes = 23;
 constexpr std::size_t kCameraRecordBytes = 61;
+constexpr std::size_t kLegacyCameraRecordBytes = 36;
 constexpr std::size_t kLightRecordBytes = 28;
 constexpr std::size_t kShadowRecordBytes = 9;
 constexpr std::size_t kIkMasterBytes = 9;
@@ -838,9 +842,10 @@ bool Decode(const std::uint8_t* data, std::size_t size, Kind requested, Motion& 
 
         Reader reader{data, size};
         const std::string signature = reader.text(kSignatureBytes);
+        const bool legacy = signature == kVmd1Signature;
         if (signature == kVmd2Signature) {
             reader.skip(kModelNameBytes);
-        } else if (signature == kVmd1Signature) {
+        } else if (legacy) {
             reader.skip(kLegacyNameBytes);
         } else {
             throw std::runtime_error("the file is not a Vocaloid Motion Data file");
@@ -893,7 +898,7 @@ bool Decode(const std::uint8_t* data, std::size_t size, Kind requested, Motion& 
         // The remaining sections are optional: an old VMD 0001 file, or any
         // writer that stops early, simply ends here.
         if (reader.remaining() > 0) {
-            const std::uint32_t cameraCount = reader.count(kCameraRecordBytes);
+            const std::uint32_t cameraCount = reader.count(legacy ? kLegacyCameraRecordBytes : kCameraRecordBytes);
             for (std::uint32_t index = 0; index < cameraCount; ++index) {
                 CameraFrame camera;
                 camera.frame = reader.u32();
@@ -901,13 +906,23 @@ bool Decode(const std::uint8_t* data, std::size_t size, Kind requested, Motion& 
                 camera.distance = reader.f();
                 for (double& component : camera.eye) component = reader.f();
                 for (double& component : camera.target) component = reader.f();
-                for (std::array<double, 4>& lane : camera.controls) {
+                if (legacy) {
                     std::uint8_t bytes[4] = {};
                     for (std::uint8_t& byte : bytes) byte = reader.u8();
-                    lane = CameraChannel(bytes);
+                    // VMD1 stores one X1/X2/Y1/Y2 lane shared by all camera
+                    // channels, with no FOV or perspective fields.
+                    camera.controls.fill(CameraChannel(bytes));
+                    camera.fov = 45;
+                    camera.perspective = 0;
+                } else {
+                    for (std::array<double, 4>& lane : camera.controls) {
+                        std::uint8_t bytes[4] = {};
+                        for (std::uint8_t& byte : bytes) byte = reader.u8();
+                        lane = CameraChannel(bytes);
+                    }
+                    camera.fov = reader.u32();
+                    camera.perspective = reader.u8();
                 }
-                camera.fov = reader.u32();
-                camera.perspective = reader.u8();
                 if (wantCamera) cameras.push_back(std::move(camera));
             }
         }
@@ -922,7 +937,7 @@ bool Decode(const std::uint8_t* data, std::size_t size, Kind requested, Motion& 
                 if (wantLight) lights.push_back(std::move(light));
             }
         }
-        if (reader.remaining() > 0) {
+        if (!legacy && reader.remaining() > 0) {
             const std::uint32_t shadowCount = reader.count(kShadowRecordBytes);
             for (std::uint32_t index = 0; index < shadowCount; ++index) {
                 ShadowFrame shadow;
