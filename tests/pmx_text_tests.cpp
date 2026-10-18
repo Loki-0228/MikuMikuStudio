@@ -208,9 +208,62 @@ void TextCapacityAndRetry() {
     }
 #endif
 }
+void OwnToonBoundaries() {
+    const auto baseline = owned_text::Count();
+    unsigned cases = 0;
+    for (bool buffered : {false, true}) {
+        fileio::bufferedReads = buffered;
+        for (const unsigned width : {1u, 2u, 4u}) {
+            const int maximum = width == 1 ? 127 : width == 2 ? 32767 : 0x7fffffff;
+            for (const unsigned textures : {0u, 1u}) for (const int toon : {-1, 0, 1, maximum}) {
+                auto bytes = Geometry(); bytes[12] = static_cast<unsigned char>(width);
+                const auto index = [&](int value) {
+                    if (width == 1) Put(bytes, static_cast<std::int8_t>(value));
+                    else if (width == 2) Put(bytes, static_cast<std::int16_t>(value));
+                    else Put(bytes, static_cast<std::int32_t>(value));
+                };
+                Put(bytes, textures); if (textures) Text(bytes, L"");
+                Put(bytes, 1u); Text(bytes); Text(bytes);
+                for (int i = 0; i < 11; ++i) Put(bytes, 0.f);
+                Put(bytes, static_cast<unsigned char>(0));
+                for (int i = 0; i < 5; ++i) Put(bytes, 0.f);
+                index(-1); index(-1); Put(bytes, static_cast<unsigned char>(0));
+                Put(bytes, static_cast<unsigned char>(0)); index(toon); Text(bytes, L""); Put(bytes, 0u);
+                Put(bytes, 1u); Text(bytes); Text(bytes);
+                for (int i = 0; i < 3; ++i) Put(bytes, 0.f);
+                Put(bytes, static_cast<unsigned char>(255)); Put(bytes, 0u);
+                Put(bytes, static_cast<unsigned short>(0));
+                for (int i = 0; i < 3; ++i) Put(bytes, 0.f);
+                for (int i = 0; i < 4; ++i) Put(bytes, 0u);
+                wchar_t directory[MAX_PATH]{}, path[MAX_PATH]{};
+                Check(GetTempPathW(MAX_PATH, directory) && GetTempFileNameW(directory, L"toon", 0, path),
+                    "create own-toon fixture");
+                int fd = _wopen(path, _O_BINARY | _O_WRONLY | _O_TRUNC);
+                Check(fd >= 0 && _write(fd, bytes.data(), unsigned(bytes.size())) == bytes.size(),
+                    "write own-toon fixture");
+                _close(fd); fd = _wopen(path, _O_BINARY | _O_RDONLY);
+                Check(fd >= 0 && _lseek(fd, 3, SEEK_SET) == 3, "open own-toon PMX");
+                auto model = std::make_unique<mdl::ModelRecord>(); PathResolutionWorkspace paths{};
+                auto* raw = reinterpret_cast<unsigned char*>(model.get());
+                Check(LoadPMX(raw, nullptr, 0, 0, paths, fd),
+                    "ordinary loader accepts absent, empty or out-of-range own toon without an invalid read");
+                const auto* material = mdl::Materials(raw);
+                Check(model->materialCount == 1 && material[0].toonReference == 0xFF &&
+                    material[0].toonPath[0] == L'\0', "missing own toon clears its path and reference");
+                Check(model->boneCount == 1 && text_encoding::BoneName(model->boneTable[0], false) == L"A",
+                    "each texture index width leaves the following bone data aligned");
+                ModelDispose(raw); Check(DeleteFileW(path) != FALSE, "own-toon fixture remains disposable");
+                Check(owned_text::Count() == baseline, "own-toon load/disposal preserves text ownership");
+                ++cases;
+            }
+        }
+    }
+    std::printf("PASS %u own-toon boundary cases, buffered and unbuffered, 1/2/4-byte indices\n", cases);
+}
 int main() {
     ExpandedDisplay();
     TextCapacityAndRetry();
+    OwnToonBoundaries();
     unsigned cases = 0;
     for (bool buffered : {false, true}) {
         fileio::bufferedReads = buffered;

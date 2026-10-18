@@ -501,6 +501,31 @@ target_link_libraries(pmd_index_save_tests PRIVATE mikudancestudio_core winmm ds
 set_target_properties(pmd_index_save_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
 add_test(NAME pmd_index_save COMMAND pmd_index_save_tests)
 
+add_executable(path_resolve_tests EXCLUDE_FROM_ALL tests/path_resolve_tests.cpp)
+target_link_libraries(path_resolve_tests PRIVATE mikudancestudio_core winmm dsound)
+set_target_properties(path_resolve_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_test(NAME path_resolve_regressions COMMAND path_resolve_tests)
+set_tests_properties(path_resolve_regressions PROPERTIES TIMEOUT 20)
+
+add_executable(kinect_pose_math_tests EXCLUDE_FROM_ALL tests/kinect_pose_math_tests.cpp)
+target_link_libraries(kinect_pose_math_tests PRIVATE mikudancestudio_core winmm dsound)
+set_target_properties(kinect_pose_math_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_test(NAME kinect_pose_math_regressions COMMAND kinect_pose_math_tests)
+set_tests_properties(kinect_pose_math_regressions PROPERTIES TIMEOUT 20)
+
+add_executable(recording_state_tests EXCLUDE_FROM_ALL tests/recording_state_tests.cpp)
+target_include_directories(recording_state_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(recording_state_tests PRIVATE user32)
+set_target_properties(recording_state_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_test(NAME recording_state_regressions COMMAND recording_state_tests)
+set_tests_properties(recording_state_regressions PROPERTIES TIMEOUT 20)
+
+add_executable(recording_teardown_tests EXCLUDE_FROM_ALL tests/recording_teardown_tests.cpp)
+target_link_libraries(recording_teardown_tests PRIVATE mikudancestudio_core minhook::minhook winmm dsound)
+set_target_properties(recording_teardown_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_test(NAME recording_teardown_regressions COMMAND recording_teardown_tests)
+set_tests_properties(recording_teardown_regressions PROPERTIES TIMEOUT 20)
+
 option(MIKUDANCESTUDIO_PERF "Enable render-thread phase timing for benchmarks" OFF)
 if (MIKUDANCESTUDIO_PERF)
     target_compile_definitions(mikudancestudio_core PUBLIC MIKUDANCESTUDIO_PERF=1)

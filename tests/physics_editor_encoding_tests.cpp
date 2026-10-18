@@ -17,6 +17,7 @@
 #include "mikudancestudio/owned_text.hpp"
 #include "mikudancestudio/ui_language.hpp"
 #include <array>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -388,6 +389,248 @@ void Renames(Fixture& fixture) {
     for(int id:{704,741,742}) ExpectText(ItemText(dialog,id,0),full,"reopened list/A/B agree on committed body name");
     fixture.Close(false);
 }
+void TopologyAndModes(bool legacy) {
+    {
+        Fixture fixture(legacy, true); if (!fixture.ready) return;
+        HWND dialog = fixture.Open(kUiEnglish); if (!dialog) return;
+        Command(dialog, 738); // copy a joint whose endpoints will be deleted
+        Command(dialog, 706); // delete body scratch slot 0
+        Check(fixture.app->state.selectedRigidIndex == 1 &&
+              SendDlgItemMessageW(dialog,704,CB_GETCURSEL,0,0) == 0,
+              "deleting first body selects the surviving scratch slot");
+        Check(fixture.app->state.selectedJointIndex == -1,
+              "deleting a body clears selection when all attached joints disappear");
+        Type(dialog,718,L"3.25"); Enter(dialog,718);
+        Check(fixture.Bodies()[1].mass == 3.25f,
+              "Enter updates surviving body even with no selected joint");
+        Command(dialog,735);
+        Check(fixture.Joints()[0].rigidA == 1 && fixture.Joints()[0].rigidB == 1 &&
+              SendDlgItemMessageW(dialog,741,CB_GETCURSEL,0,0) == 0 &&
+              SendDlgItemMessageW(dialog,742,CB_GETCURSEL,0,0) == 0,
+              "new joint uses the first surviving body rather than deleted slot zero");
+        Command(dialog,739);
+        Check(fixture.Joints()[0].rigidA == 1 && fixture.Joints()[0].rigidB == 1,
+              "joint paste does not restore an endpoint deleted after copy");
+        fixture.Close(true);
+        Check(fixture.model->rigidCount == 1 && fixture.model->jointCount == 1 &&
+              fixture.model->rigidTable[0].mass == 3.25f &&
+              fixture.model->jointTable[0].rigidA == 0 && fixture.model->jointTable[0].rigidB == 0 &&
+              fixture.world.world.getNumCollisionObjects() == 1 && fixture.world.world.getNumConstraints() == 1,
+              "OK safely compacts surviving body and newly added joint into live physics");
+    }
+    {
+        Fixture fixture(legacy, true); if (!fixture.ready) return;
+        HWND dialog = fixture.Open(kUiEnglish); if (!dialog) return;
+        Command(dialog,737);
+        Check(fixture.app->state.selectedJointIndex == 1,
+              "deleting first joint selects surviving scratch slot");
+        Type(dialog,744,L"2.5"); Enter(dialog,744);
+        Check(fixture.Joints()[1].position[0] == 2.5f,
+              "joint edits target the visible surviving joint after deleting the first");
+        Command(dialog,737);
+        Check(fixture.app->state.selectedJointIndex == -1 &&
+              SendDlgItemMessageW(dialog,736,CB_GETCOUNT,0,0) == 0,
+              "consecutive joint deletes clear both actual records and list");
+        Command(dialog,706); Command(dialog,706);
+        Check(fixture.app->state.selectedRigidIndex == -1 &&
+              SendDlgItemMessageW(dialog,704,CB_GETCOUNT,0,0) == 0,
+              "consecutive body deletes clear both actual records and list");
+        // Enter still reaches a subclass even after the native edit has been
+        // disabled. Neither family may form a reference to selected slot -1.
+        Type(dialog,718,L"8.5"); Enter(dialog,718);
+        Type(dialog,744,L"7.5"); Enter(dialog,744);
+        const auto deletedBody = fixture.Bodies()[0];
+        const auto deletedJoint = fixture.Joints()[0];
+        for (int id : {724,725,726,727,728,729,730,731,738,739,706,737}) Command(dialog,id);
+        for (int id : {704,736,707,708,741,742,743}) {
+            const HWND combo = GetDlgItem(dialog,id);
+            SendMessageW(combo,CB_SETCURSEL,WPARAM(-1),0);
+            SendMessageW(dialog,WM_COMMAND,MAKEWPARAM(id,CBN_SELCHANGE),reinterpret_cast<LPARAM>(combo));
+        }
+        Check(fixture.app->state.selectedRigidIndex == -1 && fixture.app->state.selectedJointIndex == -1 &&
+              !std::memcmp(&deletedBody,&fixture.Bodies()[0],sizeof deletedBody) &&
+              !std::memcmp(&deletedJoint,&fixture.Joints()[0],sizeof deletedJoint),
+              "empty selection ignores queued edits, copy/paste, mode and combo notifications without touching deleted slots");
+        fixture.Close(true);
+        Check(fixture.model->rigidCount == 0 && fixture.model->jointCount == 0 &&
+              fixture.world.world.getNumCollisionObjects() == 0 && fixture.world.world.getNumConstraints() == 0,
+              "empty physics edit commits without resurrecting deleted scratch slots");
+        dialog = fixture.Open(kUiEnglish); if (!dialog) return;
+        Check(fixture.app->state.selectedRigidIndex == -1 && fixture.app->state.selectedJointIndex == -1 &&
+              !IsWindowEnabled(GetDlgItem(dialog,718)) && !IsWindowEnabled(GetDlgItem(dialog,744)),
+              "reopened empty tables have no selection and disable both editor families");
+        fixture.Close(false);
+    }
+    {
+        Fixture fixture(legacy); if (!fixture.ready) return;
+        HWND dialog = fixture.Open(kUiEnglish); if (!dialog) return;
+        auto* oldBodies = fixture.model->rigidTable;
+        auto* oldJoints = fixture.model->jointTable;
+        void* oldBody = oldBodies[0].body;
+        const std::array<NameState,2> bodyNames{{NameState(oldBodies[0]),NameState(oldBodies[1])}};
+        const std::array<NameState,2> jointNames{{NameState(oldJoints[0]),NameState(oldJoints[1])}};
+        const int warnings = messages;
+        fixture.Joints()[0].rigidA = -1;
+        Command(dialog,IDOK);
+        Check(messages == warnings + 1 && IsWindow(dialog) &&
+              fixture.model->rigidTable == oldBodies && fixture.model->jointTable == oldJoints &&
+              oldBodies[0].body == oldBody && fixture.world.world.getNumConstraints() == 2 &&
+              fixture.world.world.getNumCollisionObjects() == 2,
+              "invalid joint refuses OK before releasing any old table or Bullet object");
+        fixture.Joints()[0].rigidA = 100000;
+        Command(dialog,IDOK);
+        Check(IsWindow(dialog) && fixture.model->rigidTable == oldBodies &&
+              fixture.world.world.getNumCollisionObjects() == 2,
+              "out-of-range joint endpoint also leaves live physics intact");
+        for (unsigned i = 0; i < 2; ++i) {
+            bodyNames[i].ExpectUnchanged(oldBodies[i],"invalid references preserve exact rigid names and ownership");
+            jointNames[i].ExpectUnchanged(oldJoints[i],"invalid references preserve exact joint names and ownership");
+        }
+        fixture.Close(false);
+    }
+    {
+        Fixture fixture(legacy); if (!fixture.ready) return;
+        HWND dialog = fixture.Open(kUiEnglish); if (!dialog) return;
+        Select(dialog,736,1); Select(dialog,741,1); Select(dialog,742,1);
+        Command(dialog,706);
+        Check(fixture.app->state.selectedJointIndex == 1 && fixture.Joints()[1].constraint >= 0 &&
+              reinterpret_cast<std::intptr_t>(fixture.Bodies()[0].keyData) == -1 &&
+              fixture.Joints()[1].rigidA == 1 && fixture.Joints()[1].rigidB == 1,
+              "deleted-body rejection fixture retains an independent live joint and an in-range deleted body slot");
+        auto* oldBodies = fixture.model->rigidTable;
+        auto* oldJoints = fixture.model->jointTable;
+        std::array<unsigned char,sizeof(mdl::RigidRecord)*2> bodyBytes{};
+        std::array<unsigned char,sizeof(mdl::JointRecord)*2> jointBytes{};
+        std::memcpy(bodyBytes.data(),oldBodies,bodyBytes.size());
+        std::memcpy(jointBytes.data(),oldJoints,jointBytes.size());
+        const std::array<NameState,2> bodyNames{{NameState(oldBodies[0]),NameState(oldBodies[1])}};
+        const std::array<NameState,2> jointNames{{NameState(oldJoints[0]),NameState(oldJoints[1])}};
+        const std::array<btCollisionObject*,2> bodyObjects{{fixture.world.world.getCollisionObjectArray()[0],
+            fixture.world.world.getCollisionObjectArray()[1]}};
+        const std::array<btTypedConstraint*,2> constraints{{fixture.world.world.getConstraint(0),
+            fixture.world.world.getConstraint(1)}};
+        const auto textCount = owned_text::Count();
+        const int warnings = messages;
+        fixture.Joints()[1].rigidB = 0;
+        Command(dialog,IDOK);
+        const bool unchangedTables = fixture.model->rigidTable == oldBodies &&
+            fixture.model->jointTable == oldJoints && fixture.model->rigidCount == 2 && fixture.model->jointCount == 2;
+        Check(messages == warnings + 1 && IsWindow(dialog) && fixture.app->state.frameCopyDialog == dialog &&
+              unchangedTables && !std::memcmp(bodyBytes.data(),oldBodies,bodyBytes.size()) &&
+              !std::memcmp(jointBytes.data(),oldJoints,jointBytes.size()) && owned_text::Count() == textCount &&
+              fixture.world.world.getNumCollisionObjects() == 2 && fixture.world.world.getNumConstraints() == 2 &&
+              fixture.world.world.getCollisionObjectArray()[0] == bodyObjects[0] &&
+              fixture.world.world.getCollisionObjectArray()[1] == bodyObjects[1] &&
+              fixture.world.world.getConstraint(0) == constraints[0] && fixture.world.world.getConstraint(1) == constraints[1],
+              "live joint B referencing an in-range deleted body refuses OK before altering window, tables, Bullet objects or text ownership");
+        if (unchangedTables) for (unsigned i = 0; i < 2; ++i) {
+            bodyNames[i].ExpectUnchanged(oldBodies[i],"deleted B endpoint refusal preserves rigid names and ownership");
+            jointNames[i].ExpectUnchanged(oldJoints[i],"deleted B endpoint refusal preserves joint names and ownership");
+        }
+        fixture.Close(false);
+    }
+    {
+        Fixture fixture(legacy, true); if (!fixture.ready) return;
+        HWND dialog = fixture.Open(kUiEnglish); if (!dialog) return;
+        Command(dialog,730);
+        Check(fixture.Bodies()[0].mode == 0 && fixture.Bodies()[0].staticFlag == 1 &&
+              fixture.Bodies()[0].kinematicFlag == 0,
+              "bone-follow selection synchronizes static and alignment flags in scratch");
+        fixture.Close(true);
+        dialog = fixture.Open(kUiEnglish); if (!dialog) return;
+        Check(fixture.Bodies()[0].mode == 0 && IsDlgButtonChecked(dialog,730) == BST_CHECKED,
+              "bone-follow authoring mode survives commit and reopen");
+        CheckDlgButton(dialog,731,BST_CHECKED); Command(dialog,729);
+        Check(fixture.Bodies()[0].mode == 2 && fixture.Bodies()[0].staticFlag == 0 &&
+              fixture.Bodies()[0].kinematicFlag == 1,
+              "physical bone-alignment selection clears the old static flag");
+        Command(dialog,724); Select(dialog,704,1); Command(dialog,725);
+        Check(fixture.Bodies()[1].mode == 2 && fixture.Bodies()[1].staticFlag == 0 &&
+              fixture.Bodies()[1].kinematicFlag == 1,
+              "body parameter paste synchronizes authoring flags");
+        fixture.Close(true);
+        dialog = fixture.Open(kUiEnglish); if (!dialog) return;
+        Check(fixture.Bodies()[0].mode == 2 && fixture.Bodies()[1].mode == 2,
+              "physical alignment mode survives commit and reopen on both bodies");
+        Command(dialog,731);
+        Check(fixture.Bodies()[0].mode == 1 && fixture.Bodies()[0].staticFlag == 0 &&
+              fixture.Bodies()[0].kinematicFlag == 0,
+              "turning alignment off keeps the physical author type consistent");
+        fixture.Close(true);
+        dialog = fixture.Open(kUiEnglish); if (!dialog) return;
+        Check(fixture.Bodies()[0].mode == 1 && IsDlgButtonChecked(dialog,729) == BST_CHECKED &&
+              IsDlgButtonChecked(dialog,731) == BST_UNCHECKED,
+              "ordinary physical mode and checkbox survive commit and reopen");
+        Command(dialog,731);
+        Check(fixture.Bodies()[0].mode == 2 && fixture.Bodies()[0].staticFlag == 0 &&
+              fixture.Bodies()[0].kinematicFlag == 1,
+              "turning alignment back on updates all physical author flags");
+        Command(dialog,685);
+        const int added = fixture.app->state.selectedRigidIndex;
+        Check(fixture.Bodies()[added].mode == 0 && fixture.Bodies()[added].staticFlag == 1,
+              "new bone-follow rigid body starts with matching authoring flags");
+        fixture.Close(true);
+        dialog = fixture.Open(kUiEnglish); if (!dialog) return;
+        Select(dialog,704,added);
+        Check(fixture.Bodies()[added].mode == 0 && fixture.Bodies()[added].staticFlag == 1 &&
+              IsDlgButtonChecked(dialog,730) == BST_CHECKED,
+              "new bone-follow body survives its own commit and reopen");
+        CheckDlgButton(dialog,731,BST_UNCHECKED); Command(dialog,729);
+        Check(fixture.Bodies()[added].mode == 1 && fixture.Bodies()[added].staticFlag == 0 &&
+              fixture.Bodies()[added].kinematicFlag == 0,
+              "ordinary physical selection clears static and alignment flags");
+        fixture.Close(true);
+        dialog = fixture.Open(kUiEnglish); if (!dialog) return;
+        Select(dialog,704,added);
+        Check(fixture.Bodies()[added].mode == 1 && fixture.Bodies()[added].staticFlag == 0 &&
+              fixture.Bodies()[added].kinematicFlag == 0,
+              "newly created body's ordinary physical mode survives commit and reopen");
+        fixture.Close(false);
+    }
+    {
+        Fixture fixture(legacy); if (!fixture.ready) return;
+        HWND dialog = fixture.Open(kUiEnglish); if (!dialog) return;
+        // Keep joint 1 attached only to body 1, then delete body 0 through the
+        // normal dialog. Its associated joint 0 must disappear independently.
+        Select(dialog,736,1); Select(dialog,741,1); Select(dialog,742,1);
+        fixture.Close(true);
+        const NameState survivingBody(fixture.model->rigidTable[1]);
+        const NameState survivingJoint(fixture.model->jointTable[1]);
+        dialog = fixture.Open(kUiEnglish); if (!dialog) return;
+        Command(dialog,706);
+        Check(fixture.app->state.selectedRigidIndex == 1 && fixture.app->state.selectedJointIndex == 1 &&
+              SendDlgItemMessageW(dialog,704,CB_GETCURSEL,0,0) == 0 &&
+              SendDlgItemMessageW(dialog,736,CB_GETCURSEL,0,0) == 0,
+              "body deletion selects surviving body and independent joint scratch slots together");
+        Type(dialog,744,L"4.75"); Enter(dialog,744);
+        Check(fixture.Joints()[1].position[0] == 4.75f,
+              "joint Enter targets the displayed survivor after related body deletion");
+        fixture.Close(true);
+        Check(fixture.model->rigidCount == 1 && fixture.model->jointCount == 1 &&
+              fixture.model->jointTable[0].rigidA == 0 && fixture.model->jointTable[0].rigidB == 0 &&
+              fixture.model->jointTable[0].position[0] == 4.75f,
+              "surviving independent joint compacts and retains its actual edit");
+        survivingBody.ExpectUnchanged(fixture.model->rigidTable[0],"body compaction transfers surviving wide text ownership");
+        survivingJoint.ExpectUnchanged(fixture.model->jointTable[0],"joint compaction transfers surviving wide text ownership");
+    }
+    {
+        Fixture fixture(legacy,true); if (!fixture.ready) return;
+        HWND dialog = fixture.Open(kUiEnglish); if (!dialog) return;
+        Command(dialog,738); Command(dialog,706);
+        Command(dialog,685); // the replacement body reuses scratch slot 0
+        Check(fixture.app->state.selectedRigidIndex == 0,"new body reuses the deleted first scratch slot");
+        Command(dialog,735);
+        Select(dialog,741,0); Select(dialog,742,0); // combo row 0 is original body 1
+        Command(dialog,739);
+        const int joint = fixture.app->state.selectedJointIndex;
+        Check(fixture.Joints()[joint].rigidA == 1 && fixture.Joints()[joint].rigidB == 1,
+              "copied joint cannot acquire a different body after its old endpoint slot is reused");
+        fixture.Close(true);
+        Check(fixture.model->jointCount == 1 && fixture.model->jointTable[0].rigidA == 1 &&
+              fixture.model->jointTable[0].rigidB == 1,
+              "slot-reuse paste keeps the chosen surviving endpoint after native compaction");
+    }
+}
 unsigned long long FileTicks(const FILETIME& value) {
     return (static_cast<unsigned long long>(value.dwHighDateTime)<<32)|value.dwLowDateTime;
 }
@@ -446,7 +689,8 @@ int main(int argc,char** argv) {
     if(benchmark)Benchmark(iterations);
     else for(bool legacy:{false,true}) {
         context=legacy?"PMD-CP932-records":"PMX-Unicode";
-        Fixture fixture(legacy); if(fixture.ready){Unchanged(fixture);Renames(fixture);}
+        { Fixture fixture(legacy); if(fixture.ready){Unchanged(fixture);Renames(fixture);} }
+        TopologyAndModes(legacy);
     }
     UnhookWindowsHookEx(guard);MH_DisableHook(MH_ALL_HOOKS);MH_Uninitialize();
     std::printf("RESULT checks=%d failures=%d dialogs=%d messages=%d actual_acp=%u gpu=0\n",checks,failures,opened,messages,GetACP());

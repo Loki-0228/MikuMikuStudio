@@ -1,4 +1,8 @@
 #include "mikudancestudio/frame_limits.hpp"
+#include "mikudancestudio/recording_state.hpp"
+#include "mikudancestudio/runtime_log.hpp"
+#include "recording_ack_wait.hpp"
+#include <wrl/client.h>
 // ===========================================================================
 // VA 0x0046EEE0..0x0046F575 - playback / frame-step catch-up section of the
 // FrameDriver (original: sub_46B090)
@@ -194,59 +198,37 @@ void KinematicSyncPass(MMDApp* app, bool reverse, bool selSkip) {
 // 500ms and finish with 0x464A00.  Returns true when the section should be
 // treated as finished via the 0x46F575 exit (always the case here).
 void FrameStepBeyondEnd(MMDApp* app) {
+    if (!app || recording_state::Stopping(app) ||
+        recording_state::Guard::Active(app->Recorder(), recording_state::Operation::GraphTeardown)) return;
     auto& s = *app;
     DShowRecorder* recorder = s.Recorder();
-    IPushSource* push =
+    Microsoft::WRL::ComPtr<IPushSource> pushOwner =
         recorder != nullptr
             ? static_cast<IPushSource*>(recorder->framePush)
             : nullptr;
+    IPushSource* push = pushOwner.Get();
     unsigned char* flagPtr = s.RecordingCompletionFlag();
 
-    // The original guards BOTH capture calls with a null test on the
-    // +0x68 interface (0x46F079 test/jz and 0x46F0A4 test/jz): with no
-    // AVI-dump dialog opened the interface stays null and the calls are
-    // skipped entirely.  Omitting the guards null-dereferences on the
-    // first frame-step click past the end.
-    auto capture = [&]() -> long {                          // 0x46F070/9B
-#ifdef MIKUDANCESTUDIO_DIAG
-        static int capCount = 0;
-#endif
-        if (push == nullptr)
-            return 0;
-        // IPushSource methods are STDMETHODCALLTYPE: `this` is the first
-        // stack argument (NOT a cdecl call - the 8-byte cleanup mismatch
-        // corrupted the caller's stack).
-#ifdef MIKUDANCESTUDIO_DIAG
-        if (getenv("MIKUDANCESTUDIO_TRACE_REC")) {
-            if (++capCount <= 5 || capCount % 60 == 0) {
-                FILE* tf = fopen(getenv("MIKUDANCESTUDIO_TRACE_REC"), "a");
-                if (tf) {
-                    fprintf(tf,
-                            "capture#%d push=%p flag=%d\n",
-                            capCount, static_cast<void*>(push),
-                            (int)*flagPtr);
-                    fclose(tf);
-                }
+    // The graph's end-of-stream drain handles the last downstream delivery.
+    // Retain the source while message dispatch can stop or replace recording.
+    if (push) {
+        const auto window = s.RecordingWindow();
+        const auto frameStep = s.FrameStepPlayback();
+        const auto current = [&] {
+            return !recording_state::Stopping(app) && s.Recorder() == recorder &&
+                recorder->framePush == push && s.RecordingWindow() == window &&
+                s.FrameStepPlayback() == frameStep && s.RecordingCompletionFlag() == flagPtr;
+        };
+        const auto result = recording_state::WaitForAck(push, flagPtr, current,
+            [&] { return recording_state::PumpRecordingMessages(current); });
+        if (result != recording_state::AckResult::Ready) {
+            if (result != recording_state::AckResult::Cancelled && current()) {
+                runtime_log::Write("RECORDING final acknowledgement failed result=%d", static_cast<int>(result));
+                FinishAviRecord(app);
             }
+            return;
         }
-#endif
-        return push->GetStreamingState(flagPtr);
-    };
-
-    capture();
-    while (*flagPtr == 0) {                                 // 0x46F08C
-        if (push == nullptr)                                // 0x46F0A4 jz
-            break;
-        if (capture() == static_cast<long>(0x80004005))     // E_FAIL
-            break;                                          // 0x46F0B1
-        MSG msg;
-        while (PeekMessageA(&msg, nullptr, 0, 0, PM_REMOVE)) {
-            TranslateMessage(&msg);                         // 0x46F0D8
-            DispatchMessageA(&msg);
-        }
-        Sleep(1);                                           // 0x46F102
     }
-    Sleep(500);                                             // 0x46F115
     FinishAviRecord(app, true);                                    // 0x46F122
 }
 

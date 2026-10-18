@@ -558,6 +558,7 @@ DWORD CAMThread::DoBufferProcessingLoop()
         if (!requestPending) {
             const HRESULT hr = FillBuffer(pSample);           // slot +0x08
             if (hr != 0) {
+                static_cast<CPushPinDIBSq*>(pStream)->EndStreaming();
                 pSample->Release();
                 pin.DeliverEndOfStream();                     // slot +0x4C
                 if (hr == 1)
@@ -569,8 +570,12 @@ DWORD CAMThread::DoBufferProcessingLoop()
             }
             const HRESULT hrDeliver = pin.Deliver(pSample);   // slot +0x44
             pSample->Release();
-            if (hrDeliver != 0)
-                return 0;                                     // 0x100026d8
+            if (hrDeliver != S_OK) {
+                static_cast<CPushPinDIBSq*>(pStream)->EndStreaming();
+                MMDxShow_NotifyEvent(pin.m_pFilter, 3 /* EC_ERRORABORT */,
+                    FAILED(hrDeliver) ? hrDeliver : E_FAIL, 0);
+                return FAILED(hrDeliver) ? static_cast<DWORD>(hrDeliver) : static_cast<DWORD>(E_FAIL);
+            }
         }
     }
 }

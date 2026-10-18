@@ -4,6 +4,7 @@
 #define NOMINMAX
 #include <Windows.h>
 #include <array>
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -12,6 +13,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <io.h>
 #include "mikudancestudio/mmd_app.hpp"
 #include "mikudancestudio/model.hpp"
 #include "mikudancestudio/ported_funcs.hpp"
@@ -34,7 +36,7 @@ struct Files {
             std::exit(2);
         }
     }
-    ~Files() { fs::remove(path); fs::remove(directory); }
+    ~Files() { std::error_code ignored; fs::remove(path, ignored); fs::remove(directory, ignored); }
 };
 std::vector<unsigned char> Read(const fs::path& path) {
     std::ifstream stream(path, std::ios::binary);
@@ -64,6 +66,132 @@ struct Fixture {
         std::strcpy(bones[0].name, "bone"); model->groupCount = 2;
     }
 };
+
+// Hook only this executable's imported CRT entry points. The production PMD
+// serialization and filesystem replacement still run, including real partial
+// writes. No disk-full volume or permissions change is needed for the fixture.
+struct CrtFault {
+    enum class Kind { Write, ShortWrite, Commit, Close };
+    using Write = int (__cdecl*)(int, const void*, unsigned);
+    using FileOperation = int (__cdecl*)(int);
+    static inline Write realWrite = nullptr;
+    static inline FileOperation realClose = nullptr;
+    static inline Kind kind = Kind::Write;
+    static inline unsigned failAt = 1, calls = 0;
+    ULONG_PTR* slot = nullptr;
+    ULONG_PTR previous = 0;
+    static int __cdecl WriteResult(int fd, const void* data, unsigned count) {
+        if (++calls < failAt) return realWrite(fd, data, count);
+        if (kind == Kind::ShortWrite && count > 1) return realWrite(fd, data, count - 1);
+        errno = ENOSPC;
+        return -1;
+    }
+    static int __cdecl CommitResult(int) { ++calls; errno = ENOSPC; return -1; }
+    static int __cdecl CloseResult(int fd) {
+        ++calls;
+        // Close the actual descriptor even when simulating a reported close
+        // failure, so this fault injector itself cannot leak a file handle.
+        realClose(fd);
+        errno = EIO;
+        return -1;
+    }
+    explicit CrtFault(Kind requested, unsigned afterWrites = 1) {
+        kind = requested; failAt = afterWrites; calls = 0;
+        const char* symbol = requested == Kind::Commit ? "_commit" :
+                             requested == Kind::Close ? "_close" : "_write";
+        auto* base = reinterpret_cast<unsigned char*>(GetModuleHandleW(nullptr));
+        const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+        const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
+        const auto imports = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+        for (auto* entry = reinterpret_cast<IMAGE_IMPORT_DESCRIPTOR*>(base + imports.VirtualAddress);
+             imports.VirtualAddress && entry->Name && !slot; ++entry) {
+            if (!entry->OriginalFirstThunk) continue;
+            auto* names = reinterpret_cast<IMAGE_THUNK_DATA*>(base + entry->OriginalFirstThunk);
+            auto* addresses = reinterpret_cast<IMAGE_THUNK_DATA*>(base + entry->FirstThunk);
+            for (; names->u1.AddressOfData; ++names, ++addresses) {
+                if (IMAGE_SNAP_BY_ORDINAL(names->u1.Ordinal)) continue;
+                const auto* name = reinterpret_cast<const IMAGE_IMPORT_BY_NAME*>(base + names->u1.AddressOfData);
+                if (std::strcmp(reinterpret_cast<const char*>(name->Name), symbol)) continue;
+                slot = reinterpret_cast<ULONG_PTR*>(&addresses->u1.Function);
+                break;
+            }
+        }
+        if (!slot) return;
+        DWORD oldProtection = 0;
+        if (!VirtualProtect(slot, sizeof *slot, PAGE_READWRITE, &oldProtection)) { slot = nullptr; return; }
+        previous = *slot;
+        if (requested == Kind::Close) {
+            realClose = reinterpret_cast<FileOperation>(previous);
+            *slot = reinterpret_cast<ULONG_PTR>(&CloseResult);
+        } else if (requested == Kind::Commit) {
+            *slot = reinterpret_cast<ULONG_PTR>(&CommitResult);
+        } else {
+            realWrite = reinterpret_cast<Write>(previous);
+            *slot = reinterpret_cast<ULONG_PTR>(&WriteResult);
+        }
+        DWORD ignored = 0;
+        VirtualProtect(slot, sizeof *slot, oldProtection, &ignored);
+    }
+    ~CrtFault() {
+        if (!slot) return;
+        DWORD oldProtection = 0, ignored = 0;
+        if (VirtualProtect(slot, sizeof *slot, PAGE_READWRITE, &oldProtection)) {
+            *slot = previous;
+            VirtualProtect(slot, sizeof *slot, oldProtection, &ignored);
+        }
+    }
+    CrtFault(const CrtFault&) = delete;
+    CrtFault& operator=(const CrtFault&) = delete;
+};
+
+void FailedSave(Files& files, Fixture& fixture) {
+    const auto previous = Read(files.path);
+    std::wcscpy(fixture.model->path, L"previous.pmd");
+    const auto unchanged = [&] (const char* label) {
+        Check(Read(files.path) == previous && std::wstring(fixture.model->path) == L"previous.pmd", label);
+        Check(std::distance(fs::directory_iterator(files.directory), fs::directory_iterator{}) == 1,
+              "failed save removes its partial temporary file");
+    };
+    for (const auto kind : {CrtFault::Kind::Write, CrtFault::Kind::ShortWrite,
+                            CrtFault::Kind::Commit, CrtFault::Kind::Close}) {
+        for (const unsigned failAt : {1u, 8u}) {
+            if (failAt != 1 && (kind == CrtFault::Kind::Commit || kind == CrtFault::Kind::Close)) continue;
+            DWORD error = ERROR_SUCCESS;
+            {
+                CrtFault fault(kind, failAt);
+                Check(fault.slot != nullptr, "install a scoped fault on the production CRT import");
+                if (!fault.slot) continue;
+                SetLastError(ERROR_SUCCESS);
+                SaveEnhancedModel(fixture.app.get(), files.path.c_str());
+                error = GetLastError();
+                Check(CrtFault::calls == failAt, "writer stops at the fault and attempts flush/close only once");
+            }
+            Check(error == ERROR_WRITE_FAULT, "write, flush or close failure reports an unsuccessful save");
+            unchanged("first or later write, short-write, flush and close faults preserve destination and path");
+        }
+    }
+    // Deny replacement while allowing ordinary writes. Direct truncation would
+    // succeed with this sharing mode; a failed atomic publish must preserve it.
+    HANDLE locked = CreateFileW(files.path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    Check(locked != INVALID_HANDLE_VALUE, "lock existing PMD against replacement only");
+    if (locked != INVALID_HANDLE_VALUE) {
+        SetLastError(ERROR_SUCCESS);
+        SaveEnhancedModel(fixture.app.get(), files.path.c_str());
+        const DWORD error = GetLastError();
+        CloseHandle(locked);
+        Check(error == ERROR_WRITE_FAULT, "failed publication reports write failure");
+        unchanged("denied replacement preserves the original PMD bytes and prior model path");
+    }
+    const auto missing = files.directory / L"missing" / L"new.pmd";
+    SetLastError(ERROR_SUCCESS);
+    SaveEnhancedModel(fixture.app.get(), missing.c_str());
+    Check(GetLastError() == ERROR_WRITE_FAULT && !fs::exists(missing), "unavailable destination creates no partial PMD");
+    unchanged("failure to create the temporary PMD preserves destination and prior model path");
+    SaveEnhancedModel(fixture.app.get(), files.path.c_str());
+    Check(Read(files.path) == previous && std::wstring(fixture.model->path) == files.path.wstring(),
+          "save succeeds again with identical PMD bytes after all faults are removed");
+}
 }
 
 int main() {
@@ -96,6 +224,7 @@ int main() {
         Check(valid && twiceArea == 1, "re-read triangle keeps its winding and nonzero area");
     }
     Check(std::wstring(fixture.model->path) == files.path.wstring(), "successful save records the output path");
+    FailedSave(files, fixture);
     std::printf("pmd_index_save_tests: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

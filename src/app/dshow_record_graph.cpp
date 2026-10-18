@@ -682,7 +682,14 @@ bool BuildRecordingGraph(DShowRecorder* rec, HWND hwnd, unsigned char english,
         TeardownDShowGraph(rec);
         return false;
     }
-    push->SetBitmapInfo(config, 40, fps);                        // SetBitmapInfo
+    hr = push->SetBitmapInfo(config, 40, fps);
+    if (FAILED(hr)) {
+        MessageBoxW(hwnd, L"无法配置视频帧源，请检查帧率和可用内存。\n"
+            L"Could not configure the video frame source. Check the frame rate and available memory.",
+            L"视频导出 / Video export", MB_OK | MB_ICONERROR);
+        TeardownDShowGraph(rec);
+        return false;
+    }
 
     // 3: SampleGrabber with the video media type
     if (CoCreateInstance(kClsidSampleGrabber, nullptr, CLSCTX_INPROC_SERVER,

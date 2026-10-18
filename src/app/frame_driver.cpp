@@ -1,4 +1,5 @@
 #include "mikudancestudio/perf_timing.hpp"
+#include "mikudancestudio/recording_state.hpp"
 // ===========================================================================
 // VA 0x0046B090 - FrameDriver  (original: sub_46B090, 0xED01 = 60KB)
 // ===========================================================================
@@ -515,6 +516,8 @@ PresentResult PresentScene(MMDApp* app) {
 }
 
 void FrameDriver(MMDApp* app) {
+    if (!app || recording_state::Stopping(app) ||
+        recording_state::Guard::Active(app->Recorder(), recording_state::Operation::GraphTeardown)) return;
     updates::FrameScope scope;
     if (!scope) return;
     ui_metrics::Add(ui_metrics::FrameDriver);

@@ -9,6 +9,7 @@
 #include <cstring>
 #include <cwchar>
 #include <memory>
+#include <type_traits>
 #include <vector>
 
 #include "mikudancestudio/model.hpp"
@@ -1263,6 +1264,8 @@ int RunDisplayFramePaste() {
 }
 }
 
+#include "global_zero_delete_checks.hpp"
+
 int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     if (argc > 1 && std::strcmp(argv[1], "--pick-cycle") == 0) {
@@ -1272,6 +1275,10 @@ int main(int argc, char** argv) {
     }
     if (argc > 1 && std::strcmp(argv[1], "display-paste") == 0)
         return RunDisplayFramePaste();
+    if (argc > 1 && std::strcmp(argv[1], "--global-zero-delete") == 0) {
+        GlobalZeroDeleteChecks(); return 0;
+    }
+    GlobalZeroDeleteChecks();
     if (RunDisplayFramePaste() != 0) return 1;
     std::puts("bone_registration_tests: fresh model / right shoulder");
     FreshModelRegistration();

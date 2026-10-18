@@ -1,4 +1,5 @@
 #include "window_settings.hpp"
+#include "mikudancestudio/recording_state.hpp"
 #include "mikudancestudio/autosave.hpp"
 #include "mikudancestudio/plugin_menu.hpp"
 #include "mikudancestudio/plugin_runtime.hpp"
@@ -124,12 +125,22 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
     updates::MessageScope dispatchScope;
     MMDApp* app = g_Block;
     auto& s = *app;
+    const bool finishingRecording = recording_state::Stopping(app);
+    const bool drainingRecording = recording_state::Guard::Active(s.Recorder(), recording_state::Operation::GraphTeardown);
 #if !MMD_ORIGINAL_PROFILE
-    if (plugins::HandleBoundViewportMessage(s, hwnd, msg, wParam, lParam)) return 0;
+    if (!finishingRecording && !drainingRecording &&
+        plugins::HandleBoundViewportMessage(s, hwnd, msg, wParam, lParam)) return 0;
 #endif
     // EnableWindow prevents new user input; queued commands and accelerators
     // still need to be rejected while a bake's message loop is pumping.
-    if (bake::UiLocked()) {
+    if ((finishingRecording || drainingRecording) &&
+        (msg == WM_CLOSE || (msg == WM_SYSCOMMAND && (wParam & 0xfff0) == SC_CLOSE))) {
+        recording_state::Guard::DeferClose(finishingRecording ? static_cast<const void*>(app) : s.Recorder(),
+            finishingRecording ? recording_state::Operation::Finish : recording_state::Operation::GraphTeardown,
+            reinterpret_cast<std::uintptr_t>(hwnd));
+        return 0;
+    }
+    if (bake::UiLocked() || finishingRecording || drainingRecording) {
         if (msg == WM_DROPFILES) { DragFinish(reinterpret_cast<HDROP>(wParam)); return 0; }
         if (msg == WM_COMMAND || msg == WM_NOTIFY || msg == WM_CLOSE ||
             msg == WM_HSCROLL || msg == WM_VSCROLL ||

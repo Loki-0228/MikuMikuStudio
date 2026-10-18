@@ -36,6 +36,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cwchar>
+#include <new>
 
 #include <fcntl.h>
 #include <io.h>
@@ -84,10 +85,9 @@ void WideToSjis(D3DRenderer* renderer, char* out, const wchar_t* wide,
 
 constexpr UINT kD3dxDefault = 0xFFFFFFFFu;
 
-#if MMD_ORIGINAL_PROFILE
 enum class PmdRefusal { Representation, Write };
 
-void RefuseOriginalPmd(MMDApp* app, PmdRefusal reason) {
+void RefusePmd(MMDApp* app, PmdRefusal reason) {
     const wchar_t* incompatible[] = {
         L"このモデルの名前、材質参照、または構造を標準 PMD に完全に保存できません。PMX から PMD への変換には対応していません。既存のファイルは変更していません。",
         L"The model names, material references or structure cannot be preserved in standard PMD. PMX-to-PMD conversion is unsupported. The existing file was not changed.",
@@ -96,7 +96,7 @@ void RefuseOriginalPmd(MMDApp* app, PmdRefusal reason) {
         L"PMD ファイルを完全に保存できませんでした。保存先と空き容量を確認してください。既存のファイルは変更していません。",
         L"The PMD file could not be saved completely. Check the destination and free space. The existing file was not changed.",
         L"PMD 文件未能完整保存，请检查保存位置和剩余空间。已有文件未改动。"};
-    runtime_log::Write("ORIGINAL_PROFILE PMD save refused: %s",
+    runtime_log::Write("PMD save refused: %s",
         reason == PmdRefusal::Representation ? "not representable" : "write failed");
     if (app && app->Hwnd()) {
         const unsigned language = app->EnglishUI() <= 2 ? app->EnglishUI() : 1;
@@ -107,9 +107,55 @@ void RefuseOriginalPmd(MMDApp* app, PmdRefusal reason) {
     SetLastError(reason == PmdRefusal::Representation ? ERROR_INVALID_DATA : ERROR_WRITE_FAULT);
 }
 
+class PmdOutput final {
+    int file_ = -1;
+    wchar_t destination_[MAX_PATH]{}, temporary_[MAX_PATH]{};
+    bool failed_ = false;
+public:
+    PmdOutput() = default;
+    PmdOutput(const PmdOutput&) = delete;
+    PmdOutput& operator=(const PmdOutput&) = delete;
+    ~PmdOutput() noexcept {
+        // Preserve the failure reported by RefusePmd even when cleanup changes
+        // the thread's Win32 error. This also covers allocating writer code.
+        const DWORD error = GetLastError();
+        if (file_ != -1) ::_close(file_);
+        if (*temporary_) DeleteFileW(temporary_);
+        SetLastError(error);
+    }
+    bool Open(const wchar_t* path) noexcept {
+        wchar_t* filename = nullptr;
+        const DWORD count = GetFullPathNameW(path, MAX_PATH, destination_, &filename);
+        if (!count || count >= MAX_PATH || !filename || !*filename) return false;
+        wchar_t directory[MAX_PATH]{};
+        wcsncpy_s(directory, destination_, static_cast<std::size_t>(filename - destination_));
+        if (!GetTempFileNameW(directory, L"mmd", 0, temporary_)) return false;
+        return _wsopen_s(&file_, temporary_, _O_BINARY | _O_WRONLY | _O_TRUNC,
+            _SH_DENYRW, _S_IREAD | _S_IWRITE) == 0 && file_ != -1;
+    }
+    int Descriptor() const noexcept { return file_; }
+    int Write(int descriptor, const void* bytes, unsigned count) noexcept {
+        if (failed_) return -1;
+        const int written = ::_write(descriptor, bytes, count);
+        if (written < 0 || static_cast<unsigned>(written) != count) failed_ = true;
+        return written;
+    }
+    bool Publish() noexcept {
+        if (file_ == -1) return false;
+        if (::_commit(file_) != 0) failed_ = true;
+        if (::_close(file_) != 0) failed_ = true;
+        file_ = -1;
+        if (failed_ || !MoveFileExW(temporary_, destination_,
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) return false;
+        *temporary_ = L'\0';
+        return true;
+    }
+};
+
 // The shared writer emits the narrow fields verbatim. Original MMD consumes
 // these as C strings (and forces the final English byte to zero), so reserve a
 // terminator and validate complete CP932 identities against authoritative text.
+#if MMD_ORIGINAL_PROFILE
 bool OriginalPmdName(const char* raw, std::size_t capacity, const wchar_t* wide = nullptr) {
     std::string encoded;
     return capacity && original_file_encoding::Name(raw, capacity, wide, capacity - 1, encoded) &&
@@ -377,16 +423,15 @@ int CollectToonFileNames(HWND hDlg) {  // was Sub41EA20, VA 0x0041EA20
 // OVERWRITES (not adds to) the raw vertex position with its offset.
 // ===========================================================================
 void SaveEnhancedModel(MMDApp* app, const wchar_t* path) {  // was Sub41EC10, 0x41EC10
-#if MMD_ORIGINAL_PROFILE
+    try {
     if (!app || !app->SelectedModel() || !path || !*path || wcsnlen_s(path, 256) == 256) {
-        RefuseOriginalPmd(app, PmdRefusal::Representation);
+        RefusePmd(app, PmdRefusal::Representation);
         return;
     }
-#endif
     mdl::ModelRecord& model = *mdl::Mdl(app->SelectedModel());
 #if MMD_ORIGINAL_PROFILE
     if (mdl::DisplayGroupCount(model)>255 || mdl::FacialFrameCount(model)>255) {
-        RefuseOriginalPmd(app,PmdRefusal::Representation);return;
+        RefusePmd(app,PmdRefusal::Representation);return;
     }
 #else
     if (!save_compatibility::CanSavePmd(model)) {
@@ -397,64 +442,24 @@ void SaveEnhancedModel(MMDApp* app, const wchar_t* path) {  // was Sub41EC10, 0x
 #endif
     D3DRenderer* renderer = app->Renderer();
 
-    int fh = -1;
 #if MMD_ORIGINAL_PROFILE
     std::vector<std::array<char, 20>> textureNames;
     if (!PrepareOriginalPmd(model, textureNames)) {
-        RefuseOriginalPmd(app, PmdRefusal::Representation);
-        return;
-    }
-    // Write beside the destination, then publish only a complete PMD. A bad
-    // name, short write, or failed replacement must leave the old file intact.
-    wchar_t destination[MAX_PATH]{};
-    wchar_t* filename = nullptr;
-    const DWORD destinationLength = GetFullPathNameW(path, MAX_PATH, destination, &filename);
-    if (!destinationLength || destinationLength >= MAX_PATH || !filename || !*filename) {
-        RefuseOriginalPmd(app, PmdRefusal::Write);
-        return;
-    }
-    wchar_t directory[MAX_PATH]{};
-    wcsncpy_s(directory, destination, static_cast<std::size_t>(filename - destination));
-    wchar_t temporary[MAX_PATH]{};
-    if (!GetTempFileNameW(directory, L"mmd", 0, temporary)) {
-        RefuseOriginalPmd(app, PmdRefusal::Write);
-        return;
-    }
-    if (_wsopen_s(&fh, temporary, _O_BINARY | _O_WRONLY | _O_TRUNC,
-                  _SH_DENYRW, _S_IREAD | _S_IWRITE) != 0 || fh == -1) {
-        DeleteFileW(temporary);
-        RefuseOriginalPmd(app, PmdRefusal::Write);
-        return;
-    }
-    bool writeFailed = false;
-    const auto _write = [&](int descriptor, const void* bytes, unsigned count) {
-        const int written = ::_write(descriptor, bytes, count);
-        if (written < 0 || static_cast<unsigned>(written) != count) writeFailed = true;
-        return written;
-    };
-#else
-    // pmode was _S_IREAD, so newly created .pmd files were read-only and
-    // a second save to the same path failed with EACCES 13. All other write
-    // sites in the port pass _S_IWRITE.
-    // Defect B2-05.
-    const errno_t openErr = _wsopen_s(&fh, path,
-                                      _O_BINARY | _O_WRONLY | _O_CREAT |
-                                          _O_TRUNC,
-                                      _SH_DENYNO, _S_IWRITE);
-    if (openErr != 0 || fh == -1) {
-        char text[0x100];
-        if (model.physicsFlags != 0)  // English-data byte (set at load)
-            sprintf_s(text, 0x100, "Cannot save file:%d", openErr);
-        else  // 0x54FED0: "ファイルが保存できません:%d"
-            sprintf_s(text, 0x100,
-                      "\x83\x74\x83\x40\x83\x43\x83\x8B\x82\xaa\x95\xdb"
-                      "\x91\xb6\x82\xc5\x82\xab\x82\xdc\x82\xb9\x82\xf1"
-                      ":%d",
-                      openErr);
-        LegacyUiMessageBoxA(static_cast<HWND>(model.hwnd), text, "", 0);
+        RefusePmd(app, PmdRefusal::Representation);
         return;
     }
 #endif
+    // Write beside the destination, then publish only a complete PMD. A bad
+    // name, short write, or failed replacement must leave the old file intact.
+    PmdOutput output;
+    if (!output.Open(path)) {
+        RefusePmd(app, PmdRefusal::Write);
+        return;
+    }
+    const int fh = output.Descriptor();
+    const auto _write = [&](int descriptor, const void* bytes, unsigned count) {
+        return output.Write(descriptor, bytes, count);
+    };
 
     // ---- header ----------------------------------------------------------
     _write(fh, "Pmd", 3);
@@ -678,19 +683,14 @@ void SaveEnhancedModel(MMDApp* app, const wchar_t* path) {  // was Sub41EC10, 0x
         _write(fh, joint.springs, 24);
     }
 
-#if MMD_ORIGINAL_PROFILE
-    if (_commit(fh) != 0) writeFailed = true;
-    if (_close(fh) != 0) writeFailed = true;
-    if (writeFailed || !MoveFileExW(temporary, destination,
-                                  MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-        DeleteFileW(temporary);
-        RefuseOriginalPmd(app, PmdRefusal::Write);
+    if (!output.Publish()) {
+        RefusePmd(app, PmdRefusal::Write);
         return;
     }
-#else
-    _close(fh);
-#endif
     wcscpy_s(model.path, 0x100, path);
+    } catch (const std::bad_alloc&) {
+        RefusePmd(app, PmdRefusal::Write);
+    }
 }
 
 // ===========================================================================

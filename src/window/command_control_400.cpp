@@ -672,7 +672,6 @@ void DeleteMarkedKeyframes(MMDApp* app) {
         auto* light = app->LightKeys();
         if (light[0].selected != 0) {
             ResetLightRecord(light[0], true);
-            light[0].next = 0;
         }
         for (std::uint32_t i = 1, poolCapacity = static_cast<std::uint32_t>(mdl::KeyPoolCapacity(light)); i < poolCapacity; ++i) {
             if (light[i].selected != 0) {
@@ -684,7 +683,6 @@ void DeleteMarkedKeyframes(MMDApp* app) {
         auto* shadow = app->ShadowKeys();
         if (shadow[0].selected != 0) {
             ResetShadowRecord(app, shadow[0]);
-            shadow[0].next = 0;
         }
         for (std::uint32_t i = 1, poolCapacity = static_cast<std::uint32_t>(mdl::KeyPoolCapacity(shadow)); i < poolCapacity; ++i) {
             if (shadow[i].selected != 0) {
@@ -696,7 +694,6 @@ void DeleteMarkedKeyframes(MMDApp* app) {
         auto* gravity = app->GravityKeys();
         if (gravity[0].selected != 0) {
             ResetGravityRecord(gravity[0]);
-            gravity[0].next = 0;
         }
         for (std::uint32_t i = 1, poolCapacity = static_cast<std::uint32_t>(mdl::KeyPoolCapacity(gravity)); i < poolCapacity; ++i) {
             if (gravity[i].selected != 0) {
