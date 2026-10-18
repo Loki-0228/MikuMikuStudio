@@ -41,6 +41,7 @@ using Curves = std::map<int, Entry>;
 struct State {
     const void* identity = nullptr;
     Curves curves;
+    unsigned deferredEdits = 0;
     std::array<Curves, 30> undo, redo;
     std::array<bool, 30> undoValid{}, redoValid{};
 };
@@ -273,6 +274,7 @@ bool ReconcileSnapshot(Entry& entry,std::uint64_t hash,std::vector<NativeKey> fr
     return true;
 }
 bool Reconcile(const unsigned char* model,int bone,Entry& entry) {
+    if(const auto* state=Current(model);state&&state->deferredEdits)return true;
     const auto hash=Hash(model,bone);if(!hash)return false;
     if(hash==entry.nativeHash&&entry.registrations.empty())return true;
     std::vector<NativeKey> fresh;if(!Snapshot(model,bone,fresh))return false;
@@ -288,6 +290,92 @@ std::string StableId(const unsigned char* model, int bone, int channel) {
     return id;
 }
 std::string PmmKey(int slot) { return "org.mikudancestudio.model." + std::to_string(slot) + ".boneCurve.v1"; }
+}
+struct RangeRetime::Impl {
+    unsigned char* model=nullptr;
+    const void* identity=nullptr;
+    Curves curves;
+    bool ready=false,active=false;
+};
+RangeRetime::RangeRetime(unsigned char* model,int first,int last,double scale) noexcept {
+    try{
+    impl_=std::make_unique<Impl>();
+    impl_->model=model;
+    if(!model||first<0||last<first||!std::isfinite(scale)||scale<=0)return;
+    auto* state=Current(model);
+    if(state&&state->deferredEdits)return;
+    Synchronize(model);state=Current(model);
+    if(!state){impl_->ready=true;return;}
+    impl_->identity=state->identity;impl_->curves=state->curves;
+    const auto mapped=[=](int frame){
+        if(frame<first)return double(frame);
+        const double span=std::trunc(double(last-first)*scale);
+        return frame<=last?double(first)+std::trunc(double(frame-first)*scale):double(frame)+span-(last-first);
+    };
+    std::string error;
+    for(auto& pair:impl_->curves){
+        std::map<int,std::pair<unsigned,int>> winners;std::map<int,unsigned> counts;
+        for(const auto& native:pair.second.baseline){const double frame=mapped(int(native.key.frame));
+            if(!std::isfinite(frame)||frame<0||frame>frame_limits::maximum)return;
+            const int destination=int(frame);++counts[destination];
+            const auto found=winners.find(destination);
+            if(found==winners.end()||native.slot>found->second.first)winners[destination]={native.slot,int(native.key.frame)};
+        }
+        for(auto& track:pair.second.tracks){
+        if(std::all_of(track.keys.begin(),track.keys.end(),[&](const auto& key){return mapped(key.frame)==key.frame;}))continue;
+        // Native registration iterates old pool slots, so the last slot wins
+        // a collapsed frame (including zero). Sample missing sparse lane keys
+        // at that source before merging, preserving their authored precision.
+        for(const auto& winner:winners)if(counts.at(winner.first)>1){std::size_t at=0;
+            if(!FindOrInsert(track,winner.second.second,at,error))return;}
+        const auto original=track.keys;std::vector<std::size_t> chosen;track.keys.clear();
+        for(std::size_t i=0;i<original.size();++i){
+            const double frame=mapped(original[i].frame);
+            if(!std::isfinite(frame)||frame<0||frame>frame_limits::maximum)return;
+            auto key=original[i];key.frame=int(frame);
+            const auto winner=winners.find(key.frame);
+            if(winner!=winners.end()&&counts.at(key.frame)>1&&original[i].frame!=winner->second.second)continue;
+            if(!track.keys.empty()&&track.keys.back().frame==key.frame){
+                track.keys.back()=key;chosen.back()=i;
+            }else{track.keys.push_back(key);chosen.push_back(i);}
+        }
+        for(std::size_t i=0;i<track.keys.size();++i){auto& key=track.keys[i];bool freezeAutomatic=false;
+            if(i){const int oldSpan=original[chosen[i]].frame-original[chosen[i-1]].frame,newSpan=key.frame-track.keys[i-1].frame;
+                key.inSlope*=double(oldSpan)/newSpan;
+                freezeAutomatic=chosen[i-1]+1!=chosen[i]||oldSpan!=newSpan;}
+            if(i+1<track.keys.size()){const int oldSpan=original[chosen[i+1]].frame-original[chosen[i]].frame,newSpan=track.keys[i+1].frame-key.frame;
+                key.outSlope*=double(oldSpan)/newSpan;
+                freezeAutomatic=freezeAutomatic||chosen[i]+1!=chosen[i+1]||oldSpan!=newSpan;}
+            if(freezeAutomatic&&key.tangent==ac::Tangent::Automatic)key.tangent=ac::Tangent::Free;
+            if(i&&chosen[i-1]+1!=chosen[i]){auto& previous=track.keys[i-1];const double sum=previous.outWeight+key.inWeight;
+                if(sum>0.9999){previous.outWeight=std::clamp(previous.outWeight*0.9998/sum,0.0001,0.9997);key.inWeight=0.9998-previous.outWeight;}}
+        }
+        if(!ac::Validate(track,error))return;
+        }
+    }
+    ++state->deferredEdits;impl_->active=true;impl_->ready=true;
+    }catch(...){/* Preparation has not started the native edit. */}
+}
+RangeRetime::~RangeRetime(){
+    if(impl_&&impl_->active)if(auto* state=Current(impl_->model);state&&state->identity==impl_->identity){
+        --state->deferredEdits;
+        // A failed registrar may have changed only part of the native pool.
+        // Never attach the fully prepared curves to that incomplete result.
+        try{Synchronize(impl_->model);}catch(...){/* Preserve authoring for a later reconciliation retry. */}
+    }
+}
+bool RangeRetime::Ready()const noexcept{return impl_&&impl_->ready;}
+bool RangeRetime::Complete() noexcept {
+    try{
+    if(!impl_)return false;
+    if(!impl_->ready)return false;if(!impl_->active)return true;
+    auto* state=Current(impl_->model);if(!state||state->identity!=impl_->identity)return false;
+    for(auto& pair:impl_->curves){pair.second.baseline.clear();
+        if(!Snapshot(impl_->model,pair.first,pair.second.baseline))return false;
+        pair.second.nativeHash=Hash(impl_->model,pair.first);if(!pair.second.nativeHash)return false;
+        pair.second.registrations.clear();}
+    state->curves.swap(impl_->curves);--state->deferredEdits;impl_->active=false;return true;
+    }catch(...){return false;}
 }
 bool Read(const unsigned char* model, int bone, Tracks& out) {
     auto* entry = Current(model, bone); if (!entry) return false;
@@ -306,7 +394,7 @@ void Synchronize(const unsigned char* model) {
 }
 void ReconcileRegisteredFrame(const unsigned char* model,int bone,int frame) noexcept {
     try{
-        auto* state=Current(model);if(!state||frame<0||frame>frame_limits::maximum)return;
+        auto* state=Current(model);if(!state||state->deferredEdits||frame<0||frame>frame_limits::maximum)return;
         auto found=state->curves.find(bone);if(found!=state->curves.end())found->second.registrations.insert(frame);
     }catch(...){
         // A completed legacy registration cannot be rolled back by a failed
@@ -445,6 +533,33 @@ bool SameHistory(const State& a,const State& b) noexcept {
     for(unsigned i=0;i<30;++i)if(!SameCurves(a.undo[i],b.undo[i])||!SameCurves(a.redo[i],b.redo[i]))return false;
     return true;
 }
+#if !MMD_ORIGINAL_PROFILE
+class UndoCaptureState final:public native_history::SideState {
+    unsigned char* model_;unsigned ring_;const void* identity_;
+    State* expected_=nullptr;
+    Curves current_,saved_;
+public:
+    UndoCaptureState(unsigned char* model,unsigned ring):model_(model),ring_(ring),identity_(mdl::Mdl(model)->boneTable){
+        if(ring>=30)throw std::invalid_argument("bone curve undo ring");
+        const auto found=states.find(model);expected_=found==states.end()?nullptr:&found->second;
+        if(expected_&&expected_->identity!=identity_)throw std::invalid_argument("bone curve undo identity");
+        if(!expected_)return;
+        current_=expected_->curves;
+        for(auto& pair:current_)if(!Reconcile(model,pair.first,pair.second))throw std::invalid_argument("bone curve undo source");
+        saved_=current_;
+    }
+    bool IsCurrent()const noexcept override {
+        if(mdl::Mdl(model_)->boneTable!=identity_)return false;
+        const auto found=states.find(model_);const auto* current=found==states.end()?nullptr:&found->second;
+        return current==expected_;
+    }
+    void Publish()noexcept override {
+        if(!expected_)return;
+        expected_->curves.swap(current_);expected_->undo[ring_].swap(saved_);
+        expected_->undoValid[ring_]=true;expected_->redoValid[ring_]=false;
+    }
+};
+#endif
 class HistoryState final:public native_history::SideState {
     unsigned char* model_;
     bool present_;
@@ -476,6 +591,12 @@ public:
     }
 };
 }
+#if !MMD_ORIGINAL_PROFILE
+std::unique_ptr<native_history::SideState> PrepareUndoCapture(unsigned char* model,unsigned ring){
+    if(!model)throw std::invalid_argument("bone curve undo model");
+    return std::make_unique<UndoCaptureState>(model,ring);
+}
+#endif
 std::unique_ptr<native_history::SideState> PrepareHistory(unsigned char* model,const std::vector<native_history::RingStep>& steps) {
     return std::make_unique<HistoryState>(model,steps);
 }

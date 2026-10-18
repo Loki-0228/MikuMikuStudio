@@ -123,10 +123,11 @@
 #include <cstring>
 #include <new>
 #include <memory>
+#include <vector>
 #if !MMD_ORIGINAL_PROFILE
 #include <cmath>
 #include <string_view>
-#include <vector>
+#include "mikudancestudio/native_edit_history.hpp"
 #include "../plugins/native_pose_scope.hpp"
 #include "../plugins/native_history_commands.hpp"
 #include "../plugins/native_object_commands.hpp"
@@ -1196,230 +1197,103 @@ void CmdControl450(MMDApp* app, HWND hwnd, std::uint16_t id,
     // the record, new values into the bone frames, selection + frame
     // flags, current bone = pasted index, then the language sweeps.
     // ------------------------------------------------------------------
-    case 497: {
-        if (app->state.copiedBoneCount == 0) {
-            break;  // jz def_47E903 (no-op)
-        }
-        unsigned char* model = ActiveModel(app);
-        auto* modelRecord = mikudancestudio::mdl::Mdl(model);
-        const std::int32_t boneCount = modelRecord->boneCount;
-        unsigned char* sel = modelRecord->boneSelection;
-        for (std::int32_t i = 0; i < boneCount; ++i) {
-            sel[i] = 0;
-        }
-        EnableWindow(GetDlgItem(hwnd, panel::kUndoButton), TRUE);
-        EnableWindow(GetDlgItem(hwnd, panel::kRedoButton), FALSE);
-        modelRecord->undoDirty = 1;
-        modelRecord->redoDirty = 0;
-        ++modelRecord->undoState[0];
-        if (modelRecord->undoState[0] >= 0x1E) {
-            modelRecord->undoState[0] = 0;
-        }
-        const std::int32_t pasteIdx = modelRecord->undoState[0];
-        modelRecord->undoState[1] = pasteIdx;
-        bone_scale::CaptureUndo(model);
-        auto& undo = modelRecord->undoRings[0].slots[pasteIdx];
-        undo.operation = 1;
-        // count stored 28*(pasteIdx+0x164) dwords past the undo-table base
-        undo.dirty = app->state.copiedBoneCount;
-        unsigned char* pasteBlob =
-            reinterpret_cast<unsigned char*>(undo.bonePose);
-        if (pasteBlob != nullptr) {
-            undo_storage::Free(pasteBlob);
-            undo.bonePose = nullptr;
-        }
-        const std::int32_t count =
-            app->state.copiedBoneCount;
-        pasteBlob = static_cast<unsigned char*>(undo_storage::Allocate(
-            MulOrMax(static_cast<std::uint32_t>(count), 0x24u)));
-        if (pasteBlob != nullptr) {
-            ConstructArrayElements(pasteBlob, 0x24,
-                                   static_cast<std::uint32_t>(count),
-                                   &IdentityCtor);
-        }
-        undo.bonePose = reinterpret_cast<mikudancestudio::mdl::BonePoseSnapshot*>(
-            pasteBlob);
-        memset(pasteBlob, 0, static_cast<std::size_t>(count) * 0x24u);
-
-        auto& records =
-            reinterpret_cast<BoneCopyRecord*&>(app->BoneCopyRecords());
-        for (std::int32_t j = 0; j < count; ++j) {
-            model = ActiveModel(app);
-            modelRecord = mikudancestudio::mdl::Mdl(model);
-            const std::int32_t nBones = modelRecord->boneCount;
-            sel = modelRecord->boneSelection;
-            mikudancestudio::mdl::BoneRecord* const bones = modelRecord->boneTable;
-            unsigned char* frameFlag = modelRecord->bonePhysicsState;
-            const BoneCopyRecord& src = records[j];
-            // exact name match (the original's inline 2-byte-step compare
-            // is byte-identical to strcmp)
-            std::int32_t found = -1;
-            for (std::int32_t k = 0; k < nBones; ++k) {
-                if (strcmp(bones[k].name, src.name) == 0) {
-                    found = k;
-                    break;
-                }
-            }
-            if (found < 0) {
-                continue;
-            }
-            pasteBlob = reinterpret_cast<unsigned char*>(undo.bonePose);
-            auto& rec = reinterpret_cast<mikudancestudio::mdl::BonePoseSnapshot*>(
-                pasteBlob)[j];
-            mikudancestudio::mdl::BoneRecord* bone = &bones[found];
-            rec.boneIndex = found;
-            sel[found] = 1;
-            // old pos into the undo record
-            memcpy(rec.position, bone->trans, sizeof rec.position);
-            // new pos from the copy record
-            memcpy(bone->trans, src.position, sizeof bone->trans);
-            // old quat into the undo record, new quat into the bone
-            memcpy(rec.rotation, bone->rotQuat, sizeof rec.rotation);
-            memcpy(bone->rotQuat, src.rotation, sizeof bone->rotQuat);
-            bone_scale::SetPose(model, found, bone_scale::Clipboard(app, j, true));
-            rec.physicsDisabled = frameFlag[found];
-            frameFlag[found] = 1;
-            modelRecord->selectedBone = found;
-            PostLanguageSweep(app);
-            PostLanguageSweep2(app);
-        }
-        SetFocus(hwnd);
-        app->PhysicsResetPending() = 1;
-        break;
-    }
-
-    // ------------------------------------------------------------------
-    // 498 (0x0048203D): bone paste, left/right mirror variant (x64 body
-    // 0x14004425E, verified 2026-09-07 - was misnamed "delete-tag").  Same
-    // undo-record bookkeeping as 497; the paste target is the opposite-side
-    // bone resolved through the 左/右 name tags (kNeedle530BFC/kNeedle530BF8)
-    // instead of a plain name match, and the pasted transform is mirrored
-    // (X position and quat Y/Z negated; x64 uses -0.0f from the 0x140132B80
-    // pool).  When both tag searches fail, the exact-name match index (k1)
-    // is used as the fallback target.
-    // ------------------------------------------------------------------
+    case 497:
     case 498: {
-        if (app->state.copiedBoneCount == 0) {
-            break;  // jz def_47E903 (no-op)
+        const bool mirror = id == 498;
+        const int count = app->state.copiedBoneCount;
+        if (count <= 0 || !app->BoneCopyRecords()) break;
+        unsigned char* const model = ActiveModel(app);
+        auto& native = *mdl::Mdl(model);
+        const int boneCount = static_cast<int>(native.boneCount);
+        auto* const bones = native.boneTable;
+        auto* const sel = native.boneSelection;
+        auto* const frameFlag = native.bonePhysicsState;
+        if (boneCount <= 0 || !bones || !sel || !frameFlag) break;
+        const auto* records = static_cast<const BoneCopyRecord*>(app->BoneCopyRecords());
+        std::vector<int> targets(static_cast<std::size_t>(count), -1);
+        std::vector<int> finalSource(static_cast<std::size_t>(boneCount), -1);
+        int matched = 0;
+        for (int j = 0; j < count; ++j) {
+            int exact = -1;
+            for (int i = 0; i < boneCount; ++i) if (!std::strcmp(bones[i].name, records[j].name)) {
+                exact = i;
+                break;
+            }
+            if (exact < 0) continue;
+            int target = -1;
+            if (mirror) {
+                // Keep the native left/right suffix search and exact-name
+                // fallback. Only undo storage changes, not target resolution.
+                for (int pass = 0; pass < 2 && target < 0; ++pass) {
+                    const char* from = pass ? kNeedle530BF8 : kNeedle530BFC;
+                    const char* to = pass ? kNeedle530BFC : kNeedle530BF8;
+                    const char* tag = std::strstr(bones[exact].name, from);
+                    if (!tag) continue;
+                    for (int i = 0; i < boneCount; ++i) {
+                        const char* opposite = std::strstr(bones[i].name, to);
+                        if (opposite && !std::strcmp(opposite + 2, tag + 2)) { target = i; break; }
+                    }
+                }
+            }
+            if (target < 0) target = exact;
+            targets[j] = target;
+            if (finalSource[target] < 0) ++matched;
+            finalSource[target] = j;
         }
-        unsigned char* model = ActiveModel(app);
-        auto* modelRecord = mikudancestudio::mdl::Mdl(model);
-        const std::int32_t boneCount = modelRecord->boneCount;
-        unsigned char* sel = modelRecord->boneSelection;
-        for (std::int32_t i = 0; i < boneCount; ++i) {
-            sel[i] = 0;
+        bool changed = false;
+        for (int i = 0; i < boneCount; ++i) if (finalSource[i] >= 0) {
+            const int source = finalSource[i];
+            const auto& copied = records[source];
+            for (int c = 0; c < 3; ++c)
+                changed = changed || bones[i].trans[c] != (mirror && !c ? -copied.position[c] : copied.position[c]);
+            for (int c = 0; c < 4; ++c)
+                changed = changed || bones[i].rotQuat[c] != (mirror && (c == 1 || c == 2) ? -copied.rotation[c] : copied.rotation[c]);
+            changed = changed || bone_scale::Pose(model, i) != bone_scale::Clipboard(app, source, true, mirror);
         }
+        // Neither a foreign pose nor an identical final pose is a new edit.
+        // In particular, preserve the existing redo entry and selection.
+        if (!changed) break;
+        const auto release = [](mdl::BonePoseSnapshot* value) { undo_storage::Free(value); };
+        std::unique_ptr<mdl::BonePoseSnapshot, decltype(release)> snapshot(
+            static_cast<mdl::BonePoseSnapshot*>(undo_storage::Allocate(sizeof(mdl::BonePoseSnapshot) * matched)), release);
+        std::memset(snapshot.get(), 0, sizeof(mdl::BonePoseSnapshot) * matched);
+        int captured = 0;
+        for (int i = 0; i < boneCount; ++i) if (finalSource[i] >= 0) {
+            auto& before = snapshot.get()[captured++];
+            before.boneIndex = i;
+            std::memcpy(before.position, bones[i].trans, sizeof before.position);
+            std::memcpy(before.rotation, bones[i].rotQuat, sizeof before.rotation);
+            before.physicsDisabled = frameFlag[i];
+        }
+        const auto nextRing = (native.undoState[0] + 1) % 30;
+#if !MMD_ORIGINAL_PROFILE
+        auto sides = bone_scale::PrepareUndoCapture(model, nextRing);
+        if (!sides->IsCurrent()) break;
+#endif
+        auto& undo = native.undoRings[0].slots[nextRing];
+        undo_storage::Free(undo.bonePose);
+        undo.bonePose = snapshot.release();
+        undo.operation = 1;
+        undo.dirty = matched;
+#if !MMD_ORIGINAL_PROFILE
+        sides->Publish();
+#endif
+        native.undoState[0] = native.undoState[1] = nextRing;
+        native.undoDirty = 1;
+        native.redoDirty = 0;
         EnableWindow(GetDlgItem(hwnd, panel::kUndoButton), TRUE);
         EnableWindow(GetDlgItem(hwnd, panel::kRedoButton), FALSE);
-        modelRecord->undoDirty = 1;
-        modelRecord->redoDirty = 0;
-        ++modelRecord->undoState[0];
-        if (modelRecord->undoState[0] >= 0x1E) {
-            modelRecord->undoState[0] = 0;
-        }
-        const std::int32_t pasteIdx = modelRecord->undoState[0];
-        modelRecord->undoState[1] = pasteIdx;
-        bone_scale::CaptureUndo(model);
-        auto& undo = modelRecord->undoRings[0].slots[pasteIdx];
-        undo.operation = 1;
-        undo.dirty = app->state.copiedBoneCount;
-        unsigned char* pasteBlob =
-            reinterpret_cast<unsigned char*>(undo.bonePose);
-        if (pasteBlob != nullptr) {
-            undo_storage::Free(pasteBlob);
-            undo.bonePose = nullptr;
-        }
-        const std::int32_t count =
-            app->state.copiedBoneCount;
-        pasteBlob = static_cast<unsigned char*>(undo_storage::Allocate(
-            MulOrMax(static_cast<std::uint32_t>(count), 0x24u)));
-        if (pasteBlob != nullptr) {
-            ConstructArrayElements(pasteBlob, 0x24,
-                                   static_cast<std::uint32_t>(count),
-                                   &IdentityCtor);
-        }
-        undo.bonePose = reinterpret_cast<mikudancestudio::mdl::BonePoseSnapshot*>(
-            pasteBlob);
-        memset(pasteBlob, 0, static_cast<std::size_t>(count) * 0x24u);
-
-        auto& records =
-            reinterpret_cast<BoneCopyRecord*&>(app->BoneCopyRecords());
-        for (std::int32_t j = 0; j < count; ++j) {
-            model = ActiveModel(app);
-            modelRecord = mikudancestudio::mdl::Mdl(model);
-            const std::int32_t nBones = modelRecord->boneCount;
-            sel = modelRecord->boneSelection;
-            mikudancestudio::mdl::BoneRecord* const bones = modelRecord->boneTable;
-            unsigned char* frameFlag = modelRecord->bonePhysicsState;
-            const BoneCopyRecord& src = records[j];
-            // step 1: exact name match -> k1
-            std::int32_t k1 = -1;
-            for (std::int32_t k = 0; k < nBones; ++k) {
-                if (strcmp(bones[k].name, src.name) == 0) {
-                    k1 = k;
-                    break;
-                }
-            }
-            if (k1 < 0) {
-                continue;  // no exact-name bone: record skipped
-            }
-            std::int32_t target = -1;
-            const char* tag1 = strstr(bones[k1].name, kNeedle530BFC);
-            if (tag1 != nullptr) {
-                // pass 1 (x64 0x14004456C..0x140044617): k1 carries the 左
-                // tag; find the 右-tagged bone whose suffix matches
-                const char* suffix = tag1 + 2;
-                for (std::int32_t k = 0; k < nBones; ++k) {
-                    const char* q = strstr(bones[k].name, kNeedle530BF8);
-                    if (q != nullptr && strcmp(q + 2, suffix) == 0) {
-                        target = k;
-                        break;
-                    }
-                }
-            }
-            if (target < 0) {
-                // pass 2 (x64 0x14004461D..0x1400446D9): k1 carries the 右
-                // tag; find the 左-tagged bone whose suffix matches.  (The
-                // old x86-derived raw-offset search from (char*)bones + j
-                // does not exist in the x64 image.)
-                const char* suffix = strstr(bones[k1].name, kNeedle530BF8);
-                if (suffix != nullptr) {
-                    suffix += 2;
-                    for (std::int32_t k = 0; k < nBones; ++k) {
-                        const char* q = strstr(bones[k].name, kNeedle530BFC);
-                        if (q != nullptr && strcmp(q + 2, suffix) == 0) {
-                            target = k;
-                            break;
-                        }
-                    }
-                }
-            }
-            if (target < 0) {
-                target = k1;  // fallback to the exact-name match
-            }
-            pasteBlob = reinterpret_cast<unsigned char*>(undo.bonePose);
-            auto& rec = reinterpret_cast<mikudancestudio::mdl::BonePoseSnapshot*>(
-                pasteBlob)[j];
-            mikudancestudio::mdl::BoneRecord* bone = &bones[target];
-            rec.boneIndex = target;
-            sel[target] = 1;
-            // old pos into the undo record
-            memcpy(rec.position, bone->trans, sizeof rec.position);
-            // new pos from the copy record - X negated (fchs)
-            bone->trans[0] = -src.position[0];
-            bone->trans[1] = src.position[1];
-            bone->trans[2] = src.position[2];
-            // old quat into the undo record
-            memcpy(rec.rotation, bone->rotQuat, sizeof rec.rotation);
-            // new quat from the copy record - Y and Z negated (fchs)
-            bone->rotQuat[0] = src.rotation[0];
-            bone->rotQuat[1] = -src.rotation[1];
-            bone->rotQuat[2] = -src.rotation[2];
-            bone->rotQuat[3] = src.rotation[3];
-            bone_scale::SetPose(model, static_cast<int>(bone - bones), bone_scale::Clipboard(app, j, true, true));
-            rec.physicsDisabled = frameFlag[target];
-            frameFlag[target] = 1;
-            modelRecord->selectedBone = target;
+        std::memset(sel, 0, static_cast<std::size_t>(boneCount));
+        for (int j = 0; j < count; ++j) {
+            const int target = targets[j];
+            if (target < 0) continue;
+            const auto& source = records[j];
+            auto& bone = bones[target];
+            for (int c = 0; c < 3; ++c) bone.trans[c] = mirror && !c ? -source.position[c] : source.position[c];
+            for (int c = 0; c < 4; ++c) bone.rotQuat[c] = mirror && (c == 1 || c == 2) ? -source.rotation[c] : source.rotation[c];
+            bone_scale::SetPose(model, target, bone_scale::Clipboard(app, j, true, mirror));
+            sel[target] = frameFlag[target] = 1;
+            native.selectedBone = target;
             PostLanguageSweep(app);
             PostLanguageSweep2(app);
         }
@@ -1427,7 +1301,6 @@ void CmdControl450(MMDApp* app, HWND hwnd, std::uint16_t id,
         app->PhysicsResetPending() = 1;
         break;
     }
-
     default:
         // def_47E903 (0x482897): only reachable actions are gated on
         // notify==BN_CLICKED and the sending control being 0x1B4/0x1BB..., a

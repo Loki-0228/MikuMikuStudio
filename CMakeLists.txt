@@ -524,6 +524,19 @@ set_target_properties(pmm_input_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMA
 add_test(NAME pmm_input_ownership COMMAND pmm_input_tests)
 set_tests_properties(pmm_input_ownership PROPERTIES TIMEOUT 20)
 
+# Retained ordinary editing commands also run in the original-compatible build.
+foreach(legacy_edit_test legacy_pose_match_tests legacy_model_paste_tests legacy_bone_curve_history_tests)
+    add_executable(${legacy_edit_test} EXCLUDE_FROM_ALL tests/${legacy_edit_test}.cpp)
+    target_link_libraries(${legacy_edit_test} PRIVATE mikudancestudio_core winmm dsound)
+    set_target_properties(${legacy_edit_test} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+    add_test(NAME ${legacy_edit_test} COMMAND ${legacy_edit_test})
+    set_tests_properties(${legacy_edit_test} PROPERTIES TIMEOUT 45)
+endforeach()
+
+add_executable(legacy_mme_save_checks EXCLUDE_FROM_ALL tests/legacy_mme_save_checks.cpp)
+target_link_libraries(legacy_mme_save_checks PRIVATE mikudancestudio_core minhook::minhook winmm dsound)
+set_target_properties(legacy_mme_save_checks PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+
 add_executable(pmm_input_host_tests EXCLUDE_FROM_ALL tests/pmm_input_host_tests.cpp)
 target_link_libraries(pmm_input_host_tests PRIVATE mikudancestudio_core minhook::minhook winmm dsound)
 set_target_properties(pmm_input_host_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
@@ -955,6 +968,8 @@ else()
 endif()
 target_sources(pmm_input_host_tests PRIVATE res/MMD.rc ${MIKUDANCESTUDIO_GEN_RES} exports/MikuMikuDance.def)
 target_link_options(pmm_input_host_tests PRIVATE "/MANIFEST:NO" "${MIKUDANCESTUDIO_GEN_RES}")
+target_sources(legacy_mme_save_checks PRIVATE res/MMD.rc ${MIKUDANCESTUDIO_GEN_RES})
+target_link_options(legacy_mme_save_checks PRIVATE "/MANIFEST:NO" "${MIKUDANCESTUDIO_GEN_RES}")
 if (MIKUDANCESTUDIO_BUILD_UI_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/device_lost_wait_tests.cpp")
     add_executable(device_lost_wait_tests EXCLUDE_FROM_ALL tests/device_lost_wait_tests.cpp
         res/MMD.rc ${MIKUDANCESTUDIO_GEN_RES} exports/MikuMikuDance.def)
@@ -1476,6 +1491,10 @@ if(Python3_Interpreter_FOUND)
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/project_open_identity_runner.py"
                 "$<TARGET_FILE:pmm_input_host_tests>" "${CMAKE_BINARY_DIR}/tests/pmm-input-host-runs")
     set_tests_properties(pmm_input_host PROPERTIES TIMEOUT 150)
+    add_test(NAME legacy_mme_save_checks
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/project_open_identity_runner.py"
+                "$<TARGET_FILE:legacy_mme_save_checks>" "${CMAKE_BINARY_DIR}/tests/legacy-mme-save-runs")
+    set_tests_properties(legacy_mme_save_checks PROPERTIES TIMEOUT 150)
     add_test(NAME optional_graphics_imports
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/optional_graphics_imports.py"
                 "$<TARGET_FILE:MikuDanceStudio>")

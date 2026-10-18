@@ -9,6 +9,7 @@
 
 namespace mikudancestudio {
 class MMDApp;
+namespace native_history { class SideState; }
 namespace bone_scale {
 // Row-vector convention, in the bone's unposed model-space basis. Kept outside
 // the legacy PMM/PMD structures so their byte layout remains unchanged.
@@ -156,6 +157,11 @@ Snapshot Capture(const unsigned char* model);
 std::uint64_t Revision(const unsigned char* model);
 bool Restore(unsigned char* model, Snapshot snapshot);
 void CaptureUndo(unsigned char* model);
+#if !MMD_ORIGINAL_PROFILE
+// Captures scale and free-curve undo together; publication only exchanges the
+// prepared ring snapshots, without restoring transforms or editing current.
+std::unique_ptr<native_history::SideState> PrepareUndoCapture(unsigned char* model,unsigned ring);
+#endif
 struct StagedBakeState { unsigned char* model=nullptr; unsigned ring=0; Snapshot undo,current; };
 // Allocate scale/undo copies before a multi-model bake publishes any keys.
 bool StageBakeState(unsigned char* model, Snapshot current, std::size_t capacity, StagedBakeState&);

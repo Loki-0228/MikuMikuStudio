@@ -1323,6 +1323,8 @@ static bool SaveSceneFileImpl(MMDApp* app, const wchar_t* target, bool backup) {
                     L"PMM", MB_OK | MB_ICONERROR);
         return false;
     }
+    // Autosave notifies native MME only after this copy has also survived
+    // retention/rotation. A plain copy must not retarget project save hooks.
     if (backup) return true;
 #if !MMD_ORIGINAL_PROFILE
     std::wstring compatibleCopy;

@@ -375,6 +375,43 @@ void CaptureUndo(unsigned char* model) {
     bone_curve::CaptureUndo(model,ring);
     s.undo[ring]=s.current; s.undoValid[ring]=true; s.redoValid[ring]=false;
 }
+#if !MMD_ORIGINAL_PROFILE
+namespace {
+class UndoCaptureState final:public native_history::SideState {
+    unsigned char* model_;unsigned ring_;State* expected_=nullptr;
+    Snapshot snapshot_;
+    decltype(states)::node_type node_;
+    std::unique_ptr<native_history::SideState> curves_;
+public:
+    UndoCaptureState(unsigned char* model,unsigned ring):model_(model),ring_(ring){
+        if(!model||ring>=30)throw std::invalid_argument("scale undo capture");
+        curves_=bone_curve::PrepareUndoCapture(model,ring);
+        const auto found=states.find(model);
+        if(found!=states.end()){expected_=&found->second;snapshot_=expected_->current;}
+        else{
+            decltype(states) staged;staged.try_emplace(model);node_=staged.extract(model);
+            // A node insertion cannot allocate after this reservation while
+            // the ordinary UI command keeps exclusive control until publish.
+            states.reserve(states.size()+1);
+        }
+    }
+    bool IsCurrent()const noexcept override {
+        const auto found=states.find(model_);const auto* current=found==states.end()?nullptr:&found->second;
+        return current==expected_&&curves_->IsCurrent();
+    }
+    void Publish()noexcept override {
+        auto* target=expected_;
+        if(!target)target=&states.insert(std::move(node_)).position->second;
+        target->undo[ring_].pose.swap(snapshot_.pose);target->undo[ring_].keys.swap(snapshot_.keys);
+        target->undo[ring_].curves.swap(snapshot_.curves);target->undoValid[ring_]=true;target->redoValid[ring_]=false;
+        curves_->Publish();
+    }
+};
+}
+std::unique_ptr<native_history::SideState> PrepareUndoCapture(unsigned char* model,unsigned ring){
+    return std::make_unique<UndoCaptureState>(model,ring);
+}
+#endif
 bool StageBakeState(unsigned char* model,Snapshot current,std::size_t capacity,StagedBakeState& out) {
     if(!model)return false;
     for(const auto& p:current.pose)if(p.first<0||p.first>=int(mdl::Mdl(model)->boneCount)||!Valid(p.second))return false;

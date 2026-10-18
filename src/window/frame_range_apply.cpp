@@ -14,6 +14,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include "mikudancestudio/bone_scale.hpp"
+#include "mikudancestudio/bone_curve.hpp"
 #include <Windows.h>
 
 #include <array>
@@ -109,10 +110,16 @@ struct DisplayCopy {
     std::vector<unsigned char> relations;
 };
 
-void ScaleBoneKeys(MMDApp* app, unsigned char* model, HWND hDlg,
-                   std::uint32_t start, std::uint32_t end, double scale) {
+enum class BoneScaleResult { Unchanged,Applied,PreparationFailure,TouchedFailure };
+BoneScaleResult ScaleBoneKeys(MMDApp* app, unsigned char* model, HWND hDlg,
+                   std::uint32_t start, std::uint32_t end, double scale,bool& touched) {
+    touched=false;
     if (IsDlgButtonChecked(hDlg, panel::kScaleBoneCheckbox) != BST_CHECKED)
-        return;
+        return BoneScaleResult::Unchanged;
+#if !MMD_ORIGINAL_PROFILE
+    bone_curve::RangeRetime authored(model,int(start),int(end),scale);
+    if(!authored.Ready())return BoneScaleResult::PreparationFailure;
+#endif
 
     mdl::BoneKey* const keys = mdl::BoneKeys(model);
     mdl::MorphKey* const morphKeys = mdl::MorphKeys(model);
@@ -134,7 +141,7 @@ void ScaleBoneKeys(MMDApp* app, unsigned char* model, HWND hDlg,
         }
     }
     if (count == 0)
-        return;
+        return BoneScaleResult::Unchanged;
     TraceRange("bone.count", count);
 
     ClearMorphMarks(morphKeys);
@@ -171,21 +178,34 @@ void ScaleBoneKeys(MMDApp* app, unsigned char* model, HWND hDlg,
     // Deleting the marked originals creates the first type-2 snapshot.
     // The inline block turns it into type 4 and opens the paired insertion
     // snapshot before the registrar starts touching the new records.
+    // The ordinary registrar path already has live edits and paired undo
+    // rings. A later allocation failure must never leave those edits clean.
+    touched=true;app->SceneModified()=1;
     DeleteMarkedKeyframes(app);
     TraceRange("bone.deleted");
     BeginRangeScaleBoneUndo(model, app->CurrentFrame(), count);
     TraceRange("bone.undo_open");
     ResetBoneKeyCursor(model);
     const int selected = mdl::Mdl(model)->selectedBone;
+    struct RestoreSelectedBone {
+        mdl::ModelRecord& model; int selected;
+        ~RestoreSelectedBone() { model.selectedBone = selected; }
+    } restoreSelected{*mdl::Mdl(model), selected};
     std::size_t scaleIndex=0;
     for (auto& copy : copies) {
         mdl::Mdl(model)->selectedBone = owners[scaleIndex];
         bone_scale::Registration scaleRegistration(scaleCopies[scaleIndex],scaleCurves[scaleIndex]);
         ++scaleIndex;
-        if (!RegisterBoneKey(model, copy.data(), static_cast<int>(start), 1)) break;
+        if (!RegisterBoneKey(model, copy.data(), static_cast<int>(start), 1)) {
+            mdl::Mdl(model)->selectedBone=selected;return BoneScaleResult::TouchedFailure;
+        }
     }
     mdl::Mdl(model)->selectedBone = selected;
+#if !MMD_ORIGINAL_PROFILE
+    if(!authored.Complete())return BoneScaleResult::TouchedFailure;
+#endif
     TraceRange("bone.inserted");
+    return BoneScaleResult::Applied;
 }
 
 void ScaleMorphKeys(MMDApp* app, unsigned char* model, HWND hDlg,
@@ -378,19 +398,26 @@ void ApplyFrameRangeScale(HWND hDlg) {
     }
     app->FrameRangeStartFrame()=startSigned;
     TraceRange("begin");
-    ScaleBoneKeys(app, model, hDlg, start, end, scale);
-    ScaleMorphKeys(app, model, hDlg, start, end, scale);
-    ScaleDisplayKeys(app, model, hDlg, start, end, scale);
+    bool boneTouched=false;BoneScaleResult boneResult=BoneScaleResult::PreparationFailure;
+    try{boneResult=ScaleBoneKeys(app,model,hDlg,start,end,scale,boneTouched);}
+    catch(...){if(!boneTouched)return;boneResult=BoneScaleResult::TouchedFailure;}
+    if(boneResult==BoneScaleResult::PreparationFailure)return;
+    if(boneResult!=BoneScaleResult::TouchedFailure){
+        ScaleMorphKeys(app, model, hDlg, start, end, scale);
+        ScaleDisplayKeys(app, model, hDlg, start, end, scale);
+    }
     TraceRange("families_done");
 
     const std::uint32_t modelMax = mdl::Mdl(model)->maxFrame;
     if (app->LastRegisteredFrame() < modelMax)
         app->LastRegisteredFrame() = modelMax;
-    SeekModelFrame(model, app->CurrentFrame(),
-              app->PlaybackPhysicsMode());
-    PanelPaint(app);
-    SelectionReeval(app);
     app->SceneModified() = 1;
+    // Readout may itself need memory. Keep the safe dirty/max metadata even
+    // when an OOM prevents immediate evaluation or painting after a live edit.
+    try{
+        SeekModelFrame(model, app->CurrentFrame(),app->PlaybackPhysicsMode());
+        PanelPaint(app);SelectionReeval(app);
+    }catch(...){InvalidateRect(app->MainWindow(),nullptr,FALSE);}
     TraceRange("done");
 }
 

@@ -149,9 +149,12 @@ void PoseCommandLegacyChecks() {
     f.Copy();f.app->SelectedModelSlot()=1;
     strcpy_s(f.second.bones[0].name,"other0");strcpy_s(f.second.bones[1].name,"other1");
     for(unsigned command:{497u,498u}) {
-        const auto before=f.second.m->undoState[0];f.Command(command);
-        Check(f.second.m->undoState[0]==(before+1)%30&&f.history.UndoCount()==0&&f.app->PhysicsResetPending()==1,
-            "unbound paste commands retain legacy unmatched-clipboard behavior");
+        const auto before=f.second.m->undoState[0];const auto ring=PoseRingDigest(f.second);
+        const auto pose=f.second.Digest();const auto selection=f.second.selected;
+        const auto physics=f.app->PhysicsResetPending();f.Command(command);
+        Check(f.second.m->undoState[0]==before&&PoseRingDigest(f.second)==ring&&f.second.Digest()==pose&&
+            f.second.selected==selection&&f.history.UndoCount()==0&&f.app->PhysicsResetPending()==physics,
+            "unbound unmatched pose paste preserves native history, pose, selection and physics state");
     }
 }
 }

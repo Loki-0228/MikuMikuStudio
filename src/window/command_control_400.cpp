@@ -2136,84 +2136,30 @@ static void Cmd400_FramePaste(MMDApp* app, HWND hwnd) {
         if (boneSel == 0 && morphSel == 0 && camSel == 0) {
             return;  // was: break (switch exit)
         }
-        app->SceneModified() = 1;
-        const std::int32_t frame =
-            app->state.currentFrame;
+        const std::int32_t frame = app->state.currentFrame;
         unsigned char* model = ActiveModel(app);
         TraceModelPaste("active model=%p frame=%d", model, frame);
+        const auto matches = [](const auto* records, std::uint32_t count,
+                                const auto* targets, std::uint32_t targetCount) {
+            for (std::uint32_t i = 0; i < count; ++i)
+                for (std::uint32_t j = 0; j < targetCount; ++j)
+                    if (!std::strcmp(records[i].name, targets[j].name)) return true;
+            return false;
+        };
+        const auto& native = *mdl::Mdl(model);
+        if (!camSel && !matches(app->BoneClipboard(), boneSel, native.boneTable, native.boneCount) &&
+            !matches(app->MorphClipboard(), morphSel, native.morphs, native.morphCount)) return;
+        // Prepare the complete before-image before changing marks or dirty state.
+        // Morph/display-only pastes consume the same one-step model history as
+        // a bone paste; the auxiliary tail retains IK and parent selectors.
+        if (!BeginModelFramePasteUndo(model, frame, boneSel,
+                                      morphSel != 0, camSel != 0)) return;
+        app->SceneModified() = 1;
         // clear all model-mode marks (loc_4849C0..)
         ClearModelKeyMarks(mdl::BoneKeys(model),
                            mdl::BoneKeyCapacity(*mdl::Mdl(model)));
         ClearModelKeyMarks(mdl::MorphKeys(model), mdl::MorphKeyCapacity(mdl::MorphKeys(model)));
         ClearModelKeyMarks(mdl::DisplayKeys(model), mdl::KeyPoolCapacity(mdl::DisplayKeys(model)));
-        if (boneSel != 0) {
-            // undo/redo buttons + undo-table entry (loc_484C84..)
-            EnableWindow(GetDlgItem(hwnd, panel::kUndoButton), TRUE);
-            EnableWindow(GetDlgItem(hwnd, panel::kRedoButton), FALSE);
-            mdl::Mdl(model)->undoDirty = 1;
-            mdl::Mdl(model)->redoDirty = 0;
-            mdl::ModelRecord& record = *mdl::Mdl(model);
-            const std::int32_t next = record.undoState[0] + 1;
-            record.undoState[0] = next >= 0x1E ? 0 : next;
-            const std::int32_t cur = record.undoState[0];
-            record.undoState[1] = cur;
-            bone_scale::CaptureUndo(model);
-            auto& undo = mikudancestudio::mdl::Mdl(model)->undoRings[0].slots[cur];
-            undo.operation = 2;
-            undo.frame = frame;
-            // bone-name snapshot buffer (+0x10 of the entry, 0x24-
-            // stride records)
-            void* p = undo.bonePose;
-            if (p != nullptr) {
-                undo_storage::Free(p);
-                undo.bonePose = nullptr;
-            }
-            const std::int32_t boneCount = mdl::Mdl(model)->boneCount;
-            auto* undoBone = static_cast<mikudancestudio::mdl::BonePoseSnapshot*>(
-                undo_storage::MallocOrThrow(static_cast<std::uint32_t>(boneCount) *
-                       sizeof(mikudancestudio::mdl::BonePoseSnapshot)));
-            if (undoBone != nullptr) {
-                ConstructArrayElements(undoBone,
-                                       sizeof(mikudancestudio::mdl::BonePoseSnapshot),
-                                       static_cast<std::uint32_t>(boneCount),
-                                       reinterpret_cast<void*>(&IdentityCtor));
-            }
-            undo.bonePose = undoBone;
-            memset(undoBone, 0,
-                   static_cast<std::uint32_t>(boneCount) *
-                       sizeof(mikudancestudio::mdl::BonePoseSnapshot));
-            if (boneCount > 0) {
-                const mdl::ModelRecord& record = *mdl::Mdl(model);
-                const mdl::BoneRecord* bones = record.boneTable;
-                unsigned char* boneState = record.bonePhysicsState;
-                for (std::int32_t i = 0; i < boneCount; ++i) {
-                    auto& rec = undoBone[i];
-                    const auto& src = bones[i];
-                    rec.boneIndex = i;
-                    memcpy(rec.position, src.trans, sizeof rec.position);
-                    memcpy(rec.rotation, src.rotQuat, sizeof rec.rotation);
-                    rec.physicsDisabled = boneState[i];
-                }
-            }
-            // second undo-history table (0x23F0 base, 0x1C stride):
-            // entry cnt+0x164 cleared
-            undo.dirty = 0;
-            // light snapshot buffer (+0x14 of the entry, 3*0x40 *
-            // boneSel bytes)
-            p = undo.auxiliaryPose;
-            if (p != nullptr) {
-                undo_storage::Free(p);
-                undo.auxiliaryPose = nullptr;
-            }
-            unsigned char* undoLight = static_cast<unsigned char*>(
-                undo_storage::MallocOrThrow(boneSel * 3 * sizeof(mdl::BoneKeySnapshot)));
-            if (undoLight != nullptr) {
-                ConstructArrayElements(undoLight, 0x40, boneSel * 3,
-                                       reinterpret_cast<void*>(&IdentityCtor));
-            }
-            undo.auxiliaryPose = undoLight;
-            memset(undoLight, 0, boneSel * 3 * sizeof(mdl::BoneKeySnapshot));
-        }
         mdl::BoneKeyVisitClear(*mdl::Mdl(model));
         ResetBoneKeyCursor(model);
         TraceModelPaste("undo-ready free=%d",

@@ -58,6 +58,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <utility>
 #include <vector>
 #include <fcntl.h>
@@ -76,6 +77,7 @@
 #include "mikudancestudio/original_file_encoding.hpp"
 #include "mikudancestudio/original_import.hpp"
 #if !MMD_ORIGINAL_PROFILE
+#include "mikudancestudio/native_edit_history.hpp"
 #include "../plugins/native_vpd_import.hpp"
 #endif
 
@@ -241,6 +243,7 @@ void LoadVpdFile(const wchar_t* path) {
 
     FILE* fp = nullptr;
     if (_wfopen_s(&fp, path, kModeRead) != 0 || fp == nullptr) return;
+    std::unique_ptr<FILE, decltype(&std::fclose)> file(fp, &std::fclose);
 
 #if MMD_ORIGINAL_PROFILE
     // Validate all standard names before advancing the undo ring or applying
@@ -267,7 +270,7 @@ void LoadVpdFile(const wchar_t* path) {
         ++foundBones;
     }
     if (!namesFit || foundBones != expectedBones) {
-        std::fclose(fp);
+        file.reset();
         original_import::Refuse(app->Hwnd(), app->EnglishUI());
         return;
     }
@@ -304,37 +307,17 @@ void LoadVpdFile(const wchar_t* path) {
                                                               canonicalNames[i].second);
     }
 #endif
-    const HWND hwnd = static_cast<HWND>(app->Hwnd());
-    EnableWindow(GetDlgItem(hwnd, panel::kUndoButton), TRUE);
-    EnableWindow(GetDlgItem(hwnd, panel::kRedoButton), FALSE);
-
-    // ---- undo ring (model+0x31B4 wraps at 30; slots at model+0x26EC) ---
     mdl::ModelRecord& modelRecord = *mdl::Mdl(model);
-    modelRecord.undoDirty = 1;                          // 0x418AE9
-    modelRecord.redoDirty = 0;                          // 0x418AF0
-    int ring = ++mdl::Mdl(model)->undoState[0];
-    if (ring >= 30) mdl::Mdl(model)->undoState[0] = 0;
-    ring = mdl::Mdl(model)->undoState[0];
-    mdl::Mdl(model)->undoState[1] = ring;
-#if !MMD_ORIGINAL_PROFILE
-    bone_scale::CaptureUndo(model);
-#endif
-
-    mdl::UndoRecord& undo = mdl::Mdl(model)->undoRings[0].slots[ring];
-    undo.operation = 1;
-    undo.dirty = count;
-    if (undo.bonePose != nullptr) {
-        undo_storage::Free(undo.bonePose);
-        undo.bonePose = nullptr;
-    }
-    mdl::BonePoseSnapshot* const snap =
-        static_cast<mdl::BonePoseSnapshot*>(
-            undo_storage::Allocate(sizeof(mdl::BonePoseSnapshot) * count));
-    undo.bonePose = snap;
-    std::memset(snap, 0, sizeof(mdl::BonePoseSnapshot) * count);
-    undo.dirty = count;
-
     const int boneCnt = modelRecord.boneCount;
+    if (boneCnt <= 0 || !modelRecord.boneTable || !modelRecord.boneSelection ||
+        !modelRecord.bonePhysicsState) {
+        file.reset();
+        return;
+    }
+    // Resolve the final pose before touching the ring. Input rows may miss
+    // every target, repeat one target, or match several same-named bones.
+    std::vector<mdl::BonePoseSnapshot> poses(static_cast<std::size_t>(boneCnt));
+    std::vector<std::uint8_t> touched(static_cast<std::size_t>(boneCnt), 0);
     mikudancestudio::mdl::BoneRecord* const bones = mikudancestudio::mdl::Bones(model);
     unsigned char* const selBits = modelRecord.boneSelection;
     unsigned char* const regBits = modelRecord.bonePhysicsState;
@@ -342,7 +325,7 @@ void LoadVpdFile(const wchar_t* path) {
     // The bones the standard segment writes; the scale extension may only
     // land on one of them (vpd_scale_io.hpp, resolution rule 3).
 #if !MMD_ORIGINAL_PROFILE
-    std::vector<std::uint8_t> touched(static_cast<std::size_t>(boneCnt), 0);
+    std::vector<bone_scale::Matrix> scales(static_cast<std::size_t>(boneCnt));
 #endif
 
     for (int k = 0; k < count; ++k) {
@@ -384,13 +367,6 @@ void LoadVpdFile(const wchar_t* path) {
             if (std::strcmp(name, bone->name) != 0)
 #endif
                 continue;
-
-            // snapshot the pre-load pose into the undo record (0x418E2D..)
-            mdl::BonePoseSnapshot& rec = snap[k];
-            rec.boneIndex = i;
-            std::memcpy(rec.position, bone->trans, sizeof rec.position);
-            std::memcpy(rec.rotation, bone->rotQuat, sizeof rec.rotation);
-            rec.physicsDisabled = regBits[i];
 
             // twist correction - same algorithm as registrar 0x49D880
             // (0x418F5C): ((u16@&bone->flags & 0x400) && type==4) || type==8
@@ -451,28 +427,21 @@ void LoadVpdFile(const wchar_t* path) {
                 }
             }
 
-            selBits[i] = 1;                              // 0x419226
-            regBits[i] = 1;
-#if !MMD_ORIGINAL_PROFILE
             touched[static_cast<std::size_t>(i)] = 1;
-            bone_scale::SetPose(model, i, {}); // Standard VPD has no scale channel.
-#endif
-            std::memcpy(bone->trans, trans, 12);        // 0x419256
-            std::memcpy(bone->rotQuat, quat, 16);
+            auto& pose = poses[static_cast<std::size_t>(i)];
+            pose.boneIndex = i;
+            std::memcpy(pose.position, trans, sizeof pose.position);
+            std::memcpy(pose.rotation, quat, sizeof pose.rotation);
             // No break: 0x419240's bone loop keeps scanning after a match,
             // so EVERY bone whose name equals the VPD bone gets the pose.
         }
     }
-    std::fclose(fp);
+    file.reset();
 
     // ---- MMS addition: bone scale tail extension (vpd_scale_io.hpp) ------
-    // The standard segment above is parsed exactly as the original and every
-    // touched bone already fell back to the default identity scale, so an
-    // ordinary VPD (no tail) and a refused tail both leave the pose without
-    // inherited scale.  The tail is read only now, after the loader's own end
-    // position, and applied entry by entry under the documented resolution
-    // rules; the undo snapshot, the registration bytes and the selection
-    // scope set above are not touched by any of it.
+    // Stage the same default identity scale for every touched bone. Read the
+    // tail after the standard segment, using the existing resolution rules;
+    // it participates in the final no-op check before any undo/UI mutation.
 #if !MMD_ORIGINAL_PROFILE
     vpd_scale_io::Extension extension;
     const vpd_scale_io::TailLoad tailStatus =
@@ -488,7 +457,7 @@ void LoadVpdFile(const wchar_t* path) {
         int applied = 0;
         for (std::size_t e = 0; e < extension.entries.size(); ++e) {
             if (targets[e] < 0) continue;
-            bone_scale::SetPose(model, targets[e], extension.entries[e].scale);
+            scales[static_cast<std::size_t>(targets[e])] = extension.entries[e].scale;
             ++applied;
         }
         if (applied != static_cast<int>(extension.entries.size()))
@@ -501,6 +470,59 @@ void LoadVpdFile(const wchar_t* path) {
                            vpd_scale_io::Describe(tailStatus));
     }
 #endif
+    int matched = 0;
+    bool changed = false;
+    for (int i = 0; i < boneCnt; ++i) {
+        if (!touched[static_cast<std::size_t>(i)]) continue;
+        ++matched;
+        for (int c = 0; c < 3; ++c)
+            changed = changed || poses[i].position[c] != bones[i].trans[c];
+        for (int c = 0; c < 4; ++c)
+            changed = changed || poses[i].rotation[c] != bones[i].rotQuat[c];
+#if !MMD_ORIGINAL_PROFILE
+        changed = changed || scales[i] != bone_scale::Pose(model, i);
+#endif
+    }
+    if (!changed) return; // An unmatched/identical pose must preserve redo.
+    const auto release = [](mdl::BonePoseSnapshot* value) { undo_storage::Free(value); };
+    std::unique_ptr<mdl::BonePoseSnapshot, decltype(release)> snapshot(
+        static_cast<mdl::BonePoseSnapshot*>(undo_storage::Allocate(sizeof(mdl::BonePoseSnapshot) * matched)), release);
+    std::memset(snapshot.get(), 0, sizeof(mdl::BonePoseSnapshot) * matched);
+    int captured = 0;
+    for (int i = 0; i < boneCnt; ++i) if (touched[static_cast<std::size_t>(i)]) {
+        auto& before = snapshot.get()[captured++];
+        before.boneIndex = i;
+        std::memcpy(before.position, bones[i].trans, sizeof before.position);
+        std::memcpy(before.rotation, bones[i].rotQuat, sizeof before.rotation);
+        before.physicsDisabled = regBits[i];
+    }
+    const auto nextRing = (modelRecord.undoState[0] + 1) % 30;
+#if !MMD_ORIGINAL_PROFILE
+    auto sides = bone_scale::PrepareUndoCapture(model, nextRing);
+    if (!sides->IsCurrent()) return;
+#endif
+    auto& undo = modelRecord.undoRings[0].slots[nextRing];
+    undo_storage::Free(undo.bonePose);
+    undo.bonePose = snapshot.release();
+    undo.operation = 1;
+    undo.dirty = matched;
+#if !MMD_ORIGINAL_PROFILE
+    sides->Publish();
+#endif
+    modelRecord.undoState[0] = modelRecord.undoState[1] = nextRing;
+    modelRecord.undoDirty = 1;
+    modelRecord.redoDirty = 0;
+    const HWND hwnd = static_cast<HWND>(app->Hwnd());
+    EnableWindow(GetDlgItem(hwnd, panel::kUndoButton), TRUE);
+    EnableWindow(GetDlgItem(hwnd, panel::kRedoButton), FALSE);
+    for (int i = 0; i < boneCnt; ++i) if (touched[static_cast<std::size_t>(i)]) {
+        std::memcpy(bones[i].trans, poses[i].position, sizeof poses[i].position);
+        std::memcpy(bones[i].rotQuat, poses[i].rotation, sizeof poses[i].rotation);
+#if !MMD_ORIGINAL_PROFILE
+        bone_scale::SetPose(model, i, scales[i]);
+#endif
+        selBits[i] = regBits[i] = 1;
+    }
 }
 
 }  // namespace mikudancestudio

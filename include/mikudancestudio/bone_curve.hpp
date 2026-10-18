@@ -8,6 +8,7 @@
 
 namespace mikudancestudio {
 class MMDApp;
+namespace native_history { class SideState; }
 namespace mdl { struct BoneKey; }
 namespace bone_scale { struct Matrix; }
 namespace bone_curve {
@@ -19,6 +20,20 @@ bool Has(const unsigned char* model, int bone);
 bool Write(unsigned char* model, int bone, const Tracks&, std::string& error);
 // Merge native edits into authored tracks without discarding unrelated curves.
 void Synchronize(const unsigned char* model);
+// The ordinary range tool recreates native keys through its paired undo rings.
+// Keep authored curves detached from that transient deletion/reinsertion, then
+// attach their retimed sparse tracks to the completed native/scale baseline.
+class RangeRetime {
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+public:
+    RangeRetime(unsigned char* model,int first,int last,double scale) noexcept;
+    ~RangeRetime();
+    bool Ready() const noexcept;
+    bool Complete() noexcept;
+    RangeRetime(const RangeRetime&)=delete;
+    RangeRetime& operator=(const RangeRetime&)=delete;
+};
 // A native registration also creates missing lane keys at a shared mirror frame.
 void ReconcileRegisteredFrame(const unsigned char* model, int bone, int frame) noexcept;
 void Evaluate(unsigned char* model, double frame);
@@ -26,6 +41,10 @@ void Forget(unsigned char* model);
 void CopyState(const unsigned char* source, unsigned char* destination);
 void ExchangeState(unsigned char* first, unsigned char* second);
 void CaptureUndo(unsigned char* model, unsigned ring);
+#if !MMD_ORIGINAL_PROFILE
+// Prepare the ordinary ring's before-image without changing live authoring.
+std::unique_ptr<native_history::SideState> PrepareUndoCapture(unsigned char* model,unsigned ring);
+#endif
 void Undo(unsigned char* model, unsigned ring);
 void Redo(unsigned char* model, unsigned ring);
 void Reset();

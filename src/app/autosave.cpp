@@ -9,8 +9,10 @@
 #include "mikudancestudio/pmm_extension.hpp"
 #include "mikudancestudio/runtime_log.hpp"
 #include "mikudancestudio/bake_ui_lock.hpp"
+#include "mikudancestudio/effect_api.hpp"
 #include <algorithm>
 #include <atomic>
+#include <cwchar>
 #include <fcntl.h>
 #include <io.h>
 #include <share.h>
@@ -27,6 +29,23 @@ std::atomic<bool> saving{false};
 std::atomic<MMDApp*> activeApp{nullptr};
 DWORD mainThread = 0;
 ULONGLONG nextSave = 0, nextScan = 0;
+
+// Only called after the corresponding owned PMM was successfully removed.
+// Keep the existing PMM/plugin-sidecar deletion policy; EMM is native MME
+// state and is not covered by the plugin sidecar's hash/transaction.
+void RemoveBackupEffects(const fs::path& project) noexcept {
+    const auto* path = project.c_str();
+    const auto size = project.native().size();
+    if (size < 4 || size >= MAX_PATH || _wcsicmp(path + size - 4, L".pmm") != 0) return;
+    wchar_t effects[MAX_PATH]{};
+    std::wmemcpy(effects, path, size + 1);
+    std::wmemcpy(effects + size - 4, L".emm", 5);
+    if (!DeleteFileW(effects)) {
+        const DWORD error = GetLastError();
+        if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND)
+            runtime_log::WritePath("AUTOSAVE obsolete EMM could not be removed", effects);
+    }
+}
 
 fs::path SettingsPath() {
     // Isolated integration tests use a disposable profile, never the user's.
@@ -201,7 +220,12 @@ fs::path NewName(MMDApp* app, bool crash, const fs::path& directory) {
         const auto path = directory / (stem + stamp + (collision ? L"_" + std::to_wstring(collision) : L"") + L".pmm");
         if (path.wstring().size() >= 256) return {};
         std::error_code error;
-        if (!fs::exists(path, error) && !error) return path;
+        if (fs::exists(path, error) || error) continue;
+        auto effects = path;
+        effects.replace_extension(L".emm");
+        // An orphan EMM can be a user's file. Do not pick a name whose
+        // native MME save notification would overwrite that existing file.
+        if (!fs::exists(effects, error) && !error) return path;
     }
     return {};
 }
@@ -349,12 +373,18 @@ Result BackupNow(MMDApp* app, bool crash) noexcept {
                     (active.empty() || !fs::equivalent(p, active, sameError));
             });
             if (victim == old.end() || !Owned(*victim) || !plugins::DeletePluginBackup(victim->c_str())) {
-                plugins::DeletePluginBackup(destination.c_str());
+                if (plugins::DeletePluginBackup(destination.c_str())) RemoveBackupEffects(destination);
                 if (!crash) RefreshCapacity(app);
                 return Result::Full;
             }
+            RemoveBackupEffects(*victim);
             old.erase(victim);
         }
+        // This is the legacy native MME file notification, not completion of
+        // its EMM write. MME consumes it on a later normal render callback
+        // and still decides whether its live EMMAutoSave setting allows it.
+        // Do not notify a candidate that failed retention/rotation above.
+        NotifyEffectFileSave(destination.c_str());
         if (!crash) RefreshCapacity(app);
         runtime_log::WritePath(crash ? "crash_backup" : "autosave", destination.c_str());
         return Result::Saved;

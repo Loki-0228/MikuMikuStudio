@@ -412,6 +412,11 @@ int RegisterBonePoseAtFrame(unsigned char* model, int boneIndex,  // was Sub4B38
     const unsigned currentSlot = static_cast<unsigned>(current);
     if (keys[currentSlot].frame == frame) {
         AppendBoneKeyToUndo(model, current);
+        if(autoInterpolation){
+            // RebuildBoneInterpolation also edits both adjacent records.
+            if(keys[current].frame)AppendBoneKeyToUndo(model,int(keys[current].previous));
+            if(keys[current].next)AppendBoneKeyToUndo(model,int(keys[current].next));
+        }
         fill(current);
     } else {
         // x64 sub_7FF7CB4E9DB0 @0x7FF7CB4EA46F：空闲槽扫描从持久游标
@@ -512,6 +517,59 @@ void RegisterSelectedBoneKeys(unsigned char* model, int frame, int mode) {  // w
         RegisterBonePoseAtFrame(model, i, static_cast<std::uint32_t>(frame), mode);
         secondary[i] = 0;
     }
+}
+
+bool BeginModelFramePasteUndo(unsigned char* model,int frame,std::uint32_t bonePasteCount,bool morph,bool display) noexcept {
+    if(!model||(!bonePasteCount&&!morph&&!display))return false;
+    using Buffer=std::unique_ptr<void,decltype(&undo_storage::Free)>;
+    try{
+        auto& m=*mdl::Mdl(model);
+        if(m.undoState[0]>=30||bonePasteCount>unsigned(INT32_MAX)||bonePasteCount>mdl::BoneKeyCapacity(m)||
+            (m.boneCount&&(!m.boneTable||!m.bonePhysicsState))||(morph&&!m.morphKeys)||(display&&!m.displayKeys))return false;
+        const auto multiply=[](std::size_t a,std::size_t b,std::size_t& result){
+            if(b&&a>SIZE_MAX/b)return false;result=a*b;return true;};
+        const auto add=[](std::size_t a,std::size_t b,std::size_t& result){
+            if(a>SIZE_MAX-b)return false;result=a+b;return true;};
+        const bool auxiliary=morph||display;const auto layout=DeleteAuxLayout(m,morph,display);
+        std::size_t boneBytes=0,poseBytes=0,auxBytes=0,morphBytes=0,selectorBytes=0,rowBytes=0,displayBytes=0;
+        if(!multiply(bonePasteCount,3*sizeof(mdl::BoneKeySnapshot),boneBytes)||
+            !multiply(m.boneCount,sizeof(mdl::BonePoseSnapshot),poseBytes))return false;
+        auxBytes=boneBytes;
+        if(auxiliary){
+            if(!multiply(layout.morphCapacity,sizeof(mdl::MorphKey),morphBytes)||
+                !multiply(layout.selectorCount,sizeof(mdl::BoneReference),selectorBytes)||
+                !add(sizeof(mdl::DisplayKey),layout.ikCount,rowBytes)||!add(rowBytes,selectorBytes,rowBytes)||
+                !multiply(layout.displayCapacity,rowBytes,displayBytes)||!add(auxBytes,sizeof(layout),auxBytes)||
+                !add(auxBytes,morphBytes,auxBytes)||!add(auxBytes,displayBytes,auxBytes))return false;
+        }
+        Buffer pose(poseBytes?undo_storage::Allocate(poseBytes):nullptr,&undo_storage::Free);
+        Buffer aux(auxBytes?undo_storage::Allocate(auxBytes):nullptr,&undo_storage::Free);
+        if(poseBytes)std::memset(pose.get(),0,poseBytes);
+        if(auxBytes)std::memset(aux.get(),0,auxBytes);
+        auto* saved=static_cast<mdl::BonePoseSnapshot*>(pose.get());
+        for(unsigned i=0;i<m.boneCount;++i){saved[i].boneIndex=int(i);
+            std::memcpy(saved[i].position,m.boneTable[i].trans,sizeof(saved[i].position));
+            std::memcpy(saved[i].rotation,m.boneTable[i].rotQuat,sizeof(saved[i].rotation));saved[i].physicsDisabled=m.bonePhysicsState[i];}
+        if(auxiliary)CaptureDeleteAux(m,layout,static_cast<unsigned char*>(aux.get())+boneBytes);
+        const unsigned next=(m.undoState[0]+1)%30;
+#if !MMD_ORIGINAL_PROFILE
+        auto sides=bone_scale::PrepareUndoCapture(model,next);
+        if(!sides->IsCurrent())return false;
+#endif
+        // No allocating operation remains after this point. The captured
+        // display pointers stay owned by the model; replay restores payloads.
+        auto& undo=m.undoRings[0].slots[next];undo_storage::Free(undo.bonePose);undo_storage::Free(undo.auxiliaryPose);
+        undo={};undo.operation=auxiliary?7:2;undo.frame=frame;undo.reserved0=int(bonePasteCount);
+        undo.bonePose=static_cast<mdl::BonePoseSnapshot*>(pose.release());undo.auxiliaryPose=aux.release();
+#if !MMD_ORIGINAL_PROFILE
+        sides->Publish();
+#endif
+        m.undoState[0]=m.undoState[1]=next;m.undoDirty=1;m.redoDirty=0;
+        mdl::BoneKeyVisitClear(m);
+        EnableWindow(GetDlgItem(static_cast<HWND>(m.hwnd),panel::kUndoButton),TRUE);
+        EnableWindow(GetDlgItem(static_cast<HWND>(m.hwnd),panel::kRedoButton),FALSE);
+        return true;
+    }catch(...){return false;}
 }
 
 void SnapshotPoseBeforeFrameChange(unsigned char* model, int frame) {  // was Sub4A0080

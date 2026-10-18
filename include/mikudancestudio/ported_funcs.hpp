@@ -479,6 +479,9 @@ int RegisterBonePoseAtFrame(unsigned char* model, int boneIdx,
                             std::uint32_t frame, int mode);  // VA 0x004B38A0,
                                                   // was Sub4B38A0
 void RegisterSelectedBoneKeys(unsigned char* model, int frame, int mode);
+// Opens one ordinary bone/morph/display paste step after all before-images
+// have been allocated. Failure preserves the current undo/redo ring.
+bool BeginModelFramePasteUndo(unsigned char* model,int frame,std::uint32_t bonePasteCount,bool morph,bool display) noexcept;
                                                   // VA 0x004C2080, was Sub4C2080
 void ResetDisplayKeyCursor(unsigned char* model); // VA 0x004A4A00, was Sub4A4A00
 void DeleteMarkedModelKeys(unsigned char* model, int frame);

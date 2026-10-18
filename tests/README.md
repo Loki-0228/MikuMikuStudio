@@ -220,3 +220,10 @@ MME 测试需在独立目录放入三个 MME DLL，日志必须显示 `PLUGINS m
 动态精度与固定阴影范围的方向一致：数值越小，精度越高。`native_shadow_cycle` 通过 `native_shadow_cycle.py` 生成无描边的双面 PMX 投影者和接收面，运行隐藏生产渲染。它验证实际遮挡、两个模式下转动相机时阴影贴图一致、动态精度改变贴图分辨率，以及取消动态缩放后贴图逐位恢复。此回归使用独立程序副本，不修改用户配置。
 
 `frame_benchmark --verify-shadow-cycle` 可用于指定的 PMX 模型，需同时提供 `--throughput`、`--viewport`、`--self-shadow 1|2` 和 PNG 输出路径。它保存固定、禁用投影、动态低精度、动态高精度及恢复后的画面和深度贴图；禁用投影仅临时修改内存中的材质标志，不写入模型。真实模型验证记录见 [自阴影修复](../docs/records/rendering/shadows.md#record-native-shadow-coverage)。
+
+
+## 普通编辑历史和备份通知回归
+
+`legacy_pose_match_tests`、`legacy_model_paste_tests`、`legacy_bone_curve_history_tests` 使用真实未绑定入口，分别验证姿态／VPD 唯一匹配及准备故障、模型三族七种粘贴组合、自动插值邻键与 Free 范围伸缩。两个构建配置均保留；Free 和 Scale 仅在完整配置验收。内存预算扫描保留 before-image 失败不变及范围收尾失败标脏、Undo 恢复断言，不将普通登记当作整体原子事务。
+
+`legacy_mme_save_checks` 由 `project_open_identity_runner.py` 复制到独立 EXE／data 目录，真实执行 PMM 保存和轮换，通过原创队列 mock 检查通知和同名 EMM 清理。它不加载第三方 MME，也不证明其效果分配或落盘完成。详细范围及后续关闭需求见[本批记录](../docs/records/abi-ordinary-edit-history-2026-10-19.md)。这些测试保留为回归；相关行为移除后再评估清理。
