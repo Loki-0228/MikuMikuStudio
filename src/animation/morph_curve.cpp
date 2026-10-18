@@ -1948,6 +1948,42 @@ template<class Map>void CopyLayerEntry(Map& target,const Map& source,int morph){
 struct AuthoredReplacement::Impl{
     unsigned char* model;Identity identity;bool beforePresent=false,published=false,forwardState=false;std::uint64_t generation=1,initialDigest=0;
     State before,after;MorphPool target;std::vector<unsigned> changed;
+    Impl(unsigned char* value,const NativeKeyView& future,const std::uint8_t* block,std::size_t size,int offset,const std::vector<int>* targets)
+        :model(value),identity(IdentityOf(value)){
+        std::vector<std::uint8_t> payload;std::vector<ac::NamedTrack> tracks;std::string error;
+        if(!model||!block||!size||!DecodeVmdBlock(block,size,payload)||!DecodePayloadImpl(payload.data(),payload.size(),tracks,error))return;
+        if(!identity.keyPoolIdentity||!identity.morphs||!identity.morphCount)throw std::invalid_argument("unowned morph curve import");
+        const auto found=States().find(model);if(found!=States().end()){
+            if(!Matches(found->second.identity,model))throw std::invalid_argument("stale morph import layers");
+            beforePresent=true;before=found->second;initialDigest=LayersDigest(before);}
+        after=before;after.identity=identity;std::set<unsigned> installed;
+        for(const auto& named:tracks){int claimed=-1;std::string name;
+            if(!ParseStableId(named.id,claimed,name)||name.size()!=kNameBytes||named.track.keys.empty())continue;
+            int match=-1,matches=0;
+            if(targets){if(claimed>=0&&std::size_t(claimed)<targets->size())match=(*targets)[claimed];matches=match>=0&&unsigned(match)<identity.morphCount?1:0;}
+            else for(unsigned index=0;index<identity.morphCount;++index)if(!std::memcmp(name.data(),identity.morphs[index].name,kNameBytes)){match=int(index);++matches;}
+            if(matches!=1)continue;
+            const auto chain=ViewChain(future,identity.morphCount,unsigned(match));ac::Track imported=named.track;bool describes=true;
+            for(auto& key:imported.keys){const std::int64_t shifted=std::int64_t(key.frame)+offset;
+                if(shifted<0||shifted>kMaximumFrame){describes=false;break;}key.frame=int(shifted);const auto* native=FindNative(chain,key.frame);
+                if(!native||!native->allocated||float(key.value)!=float(native->value)){describes=false;break;}}
+            if(!describes)continue;
+            ac::Track effective;const auto author=after.authored.find(match);const auto mirror=after.mirror.find(match),observed=after.observed.find(match);
+            if(author!=after.authored.end()){
+                if(mirror==after.mirror.end()||observed==after.observed.end())effective=author->second;
+                else if(SameNative(observed->second,chain)){const auto cached=after.effective.find(match);if(cached!=after.effective.end())effective=cached->second;}
+                else Derive(author->second,mirror->second,chain,effective);}
+            if(effective.keys.empty())effective=CurveOf(chain);ac::Track merged;MergeImported(effective,imported,merged);
+            if(!merged.keys.empty()&&merged.keys.front().frame>0){const auto* head=future.key(future.context,unsigned(match));
+                if(!head||head->frame||!std::isfinite(head->value))continue;ac::Key anchor;anchor.frame=0;anchor.value=head->value;MakeNativeInterpolation(anchor);merged.keys.insert(merged.keys.begin(),anchor);}
+            if(!TrackInvariants(ac::NamedTrack{StableId(match,identity.morphs[match].name),merged},error))continue;
+            // VMD author data follows ApplyVmd's double-precision admission.
+            // A control ordinate outside float range can still describe an
+            // entirely float-representable curve; the native mirror stays intact.
+            SetInstalled(after,match,merged,chain);installed.insert(unsigned(match));
+        }
+        for(auto morph:installed)if(!OwnedAuthorEqual(before,after,morph))changed.push_back(morph);
+    }
     Impl(unsigned char* value,const std::vector<ac::NamedTrack>& input):model(value),identity(IdentityOf(value)){
         if(!model||!identity.keyPoolIdentity||!identity.morphs||!identity.morphCount||input.empty())throw std::invalid_argument("unowned morph curve replacement");
         const auto& record=*mdl::Mdl(model);const auto capacity=mdl::MorphKeyCapacity(record);
@@ -2012,6 +2048,7 @@ struct AuthoredReplacement::Target::Impl{
         const auto found=States().find(source->model);const auto* now=found==States().end()?nullptr:&found->second;return now==previous&&(!now||LayersDigest(*now)==digest);}
 };
 AuthoredReplacement::AuthoredReplacement(unsigned char* model,const std::vector<ac::NamedTrack>& tracks):impl_(std::make_shared<Impl>(model,tracks)){}
+AuthoredReplacement::AuthoredReplacement(std::shared_ptr<Impl> impl):impl_(std::move(impl)){}
 AuthoredReplacement::~AuthoredReplacement()=default;
 bool AuthoredReplacement::Changed()const noexcept{return !impl_->changed.empty();}
 bool AuthoredReplacement::IsCurrent()const noexcept{return impl_->Current(!impl_->forwardState);}
@@ -2039,6 +2076,14 @@ void AuthoredReplacement::Target::Publish()noexcept{auto& p=*impl_;if(p.publishe
     if(!p.target.empty())p.target.mapped().identity=IdentityOf(p.source->model);
     p.retired=States().extract(p.source->model);if(!p.target.empty())States().insert(std::move(p.target));
     p.source->published=true;p.source->forwardState=p.forward;++p.source->generation;p.published=true;}
+AuthoredImport::AuthoredImport(unsigned char* model,const NativeKeyView& future,const std::uint8_t* block,std::size_t size,int offset,const std::vector<int>* targets)
+    :transition_(new AuthoredReplacement(std::make_shared<AuthoredReplacement::Impl>(model,future,block,size,offset,targets))){}
+AuthoredImport::~AuthoredImport()=default;
+bool AuthoredImport::Changed()const noexcept{return transition_->Changed();}
+bool AuthoredImport::IsCurrent()const noexcept{return transition_->IsCurrent();}
+const std::vector<unsigned>& AuthoredImport::ChangedMorphs()const noexcept{return transition_->ChangedMorphs();}
+std::uint64_t AuthoredImport::RetainedBytes()const noexcept{std::uint64_t bytes=sizeof(*this);LayerAdd(bytes,transition_->RetainedBytes());return bytes;}
+std::unique_ptr<AuthoredImport::Target> AuthoredImport::Prepare(const NativeKeyView& keys,bool forward)const{return transition_->Prepare(keys,forward);}
 #endif
 
 }  // namespace mikudancestudio::morph_curve

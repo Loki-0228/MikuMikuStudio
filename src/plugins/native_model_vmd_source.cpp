@@ -159,9 +159,17 @@ MmsResult DecodeModelVmdSource(const char* ansi,const wchar_t* wide,std::uint32_
         auto tail=input.standardEnd;const auto namesBytes=extended_names::DecodeMotion(input.Data(0),input.Size(),tail,decoded.names);
         decoded.hasUnicodeNames=namesBytes!=0;tail+=namesBytes;
         if(decoded.hasUnicodeNames&&(decoded.names.boneOwners.size()!=input.boneCount||decoded.names.morphOwners.size()!=input.morphCount||decoded.names.ikOwners.size()!=input.totalIkEntries))return MMS_E_ARGUMENT;
-        // These authored tracks require private-state participants before they
-        // can be imported atomically. Do not silently flatten a valid block.
-        if(morph_curve::VmdBlockSize(input.Data(tail),input.Size()-tail)||bone_curve::VmdBlockSize(input.Data(tail),input.Size()-tail))return MMS_E_NOT_READY;
+        // Match the legacy consumption order. A bad morph CRC does not
+        // advance the cursor, so subsequent bone/scale blocks stay hidden.
+        const auto morphBytes=morph_curve::VmdBlockSize(input.Data(tail),input.Size()-tail);
+        if(morphBytes&&morphBytes<=input.Size()-tail){
+            std::vector<std::uint8_t> payload;
+            if(morph_curve::DecodeVmdBlock(input.Data(tail),morphBytes,payload)==morphBytes){
+                decoded.source.morphCurveBlock.assign(input.Data(tail),input.Data(tail)+morphBytes);tail+=morphBytes;
+            }
+        }
+        const auto boneBytes=bone_curve::VmdBlockSize(input.Data(tail),input.Size()-tail);
+        if(boneBytes){decoded.source.boneCurveBlock.assign(input.Data(tail),input.Data(tail)+boneBytes);tail+=boneBytes;}
         // The tail is checked against the same bytes used above, including a
         // Unicode dictionary in the prefix. A damaged/stale scale extension
         // follows the established loader policy: ignore it as a whole while
@@ -183,6 +191,8 @@ MmsResult ResolveModelVmdTargets(MMDApp& app,unsigned slot,ModelVmdSource& sourc
         const auto bones=extended_names::MatchNames(resolved.names.bones,names);names.clear();names.reserve(model.morphCount);
         for(unsigned i=0;i<model.morphCount;++i)names.push_back(text_encoding::MorphName(model.morphs[i],false));
         const auto morphs=extended_names::MatchNames(resolved.names.morphs,names);
+        resolved.source.curveTargetsResolved=true;
+        resolved.source.boneCurveTargets=bones;resolved.source.morphCurveTargets=morphs;
         if(resolved.names.boneOwners.size()!=resolved.source.bones.size()||resolved.names.morphOwners.size()!=resolved.source.morphs.size())return MMS_E_ARGUMENT;
         for(std::size_t i=0;i<resolved.source.bones.size();++i){const auto owner=resolved.names.boneOwners[i];if(owner>=bones.size())return MMS_E_ARGUMENT;
             auto& key=resolved.source.bones[i];key.targetResolved=true;key.targetIndex=bones[owner];}
@@ -197,13 +207,13 @@ MmsResult ResolveModelVmdTargets(MMDApp& app,unsigned slot,ModelVmdSource& sourc
         source=std::move(resolved);return MMS_OK;
     });
 }
-MmsResult PlanModelVmdImport(MMDApp& app,unsigned slot,const ModelVmdSource& source,std::shared_ptr<HistoryChange>& out)noexcept{
-    out.reset();if(slot>=kModelSlotCount||!app.ModelSlot(slot))return MMS_E_ARGUMENT;
+MmsResult PlanModelVmdImport(MMDApp& app,unsigned slot,const ModelVmdSource& source,std::shared_ptr<HistoryChange>& out,ModelPasteReport* report)noexcept{
+    out.reset();if(report)*report={};if(slot>=kModelSlotCount||!app.ModelSlot(slot))return MMS_E_ARGUMENT;
     if(app.CameraMode()||app.PlaybackActive()||app.FrameStepPlayback()||app.SceneMutationInProgress()||app.state.recordPlaybackStartPending)return MMS_E_NOT_READY;
     return Boundary([&]()->MmsResult{
         auto wrapper=std::make_shared<ModelVmdMappedChange>(app,slot);auto resolved=source;
         if(auto result=ResolveModelVmdTargets(app,slot,resolved))return result;
-        if(auto result=PlanModelKeyPaste(app,slot,resolved.source,wrapper->inner))return result;
+        if(auto result=PlanModelKeyPaste(app,slot,resolved.source,wrapper->inner,report))return result;
         if(wrapper->inner)out=std::move(wrapper);return MMS_OK;
     });
 }

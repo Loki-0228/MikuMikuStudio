@@ -12,6 +12,7 @@
 #include "mikudancestudio/key_pool.hpp"
 #include "mikudancestudio/mmd_app.hpp"
 #include "mikudancestudio/model.hpp"
+#include "mikudancestudio/morph_curve.hpp"
 #include "mikudancestudio/plugin_scene.hpp"
 #include <array>
 #include <cmath>
@@ -40,14 +41,27 @@ template<class Visitor> bool VisitStorage(const mdl::ModelRecord& m, Visitor&& v
         !add(m.ikChains, m.ikChainCount, sizeof(mdl::IkChain)) ||
         !add(m.boneOrderTable, m.boneOrderCount, sizeof(mdl::BoneOrderEntry)) ||
         !add(m.bonePhysicsState, m.boneCount, 1) ||
-        !add(m.boneSelection, m.boneCount, 1)) return false;
+        !add(m.boneSelection, m.boneCount, 1) ||
+        !add(m.boneKeyCursors, m.boneCount, sizeof(std::uint32_t)) ||
+        !add(m.boneTrackActive, m.boneCount, 1) ||
+        !add(m.boneKeyIndices, m.boneCount, sizeof(std::uint32_t)) ||
+        !add(m.morphKeyCursors, m.morphCount, sizeof(std::uint32_t)) ||
+        !add(m.morphTrackActive, m.morphCount, 1) ||
+        !add(m.morphKeyIndices, m.morphCount, sizeof(std::uint32_t))) return false;
+    for (unsigned index = 0; m.ikChains && index < m.ikChainCount; ++index)
+        if (!add(m.ikChains[index].links, m.ikChains[index].linkCount, sizeof(std::uint16_t))) return false;
     for (std::size_t index = 0; index < mdl::KeyPoolCapacity(m.displayKeys); ++index)
         if (!add(m.displayKeys[index].ikStates, m.ikChainCount, 1) ||
             !add(m.displayKeys[index].selectorStates, m.boneOrderCount, sizeof(mdl::BoneReference))) return false;
     return true;
 }
 struct Layout {
+    struct Peer {const unsigned char* model;std::vector<Range> ranges;};
     std::vector<Range> ranges;
+    const MMDApp* peerApp=nullptr;
+    unsigned ownSlot=0;
+    std::array<unsigned char*,kModelSlotCount> models{};
+    std::vector<Peer> peers;
     explicit Layout(const mdl::ModelRecord& model) {
         if (!VisitStorage(model, [&](const Range& range) { ranges.push_back(range); return true; }))
             throw std::invalid_argument("model key storage overflow");
@@ -58,11 +72,47 @@ struct Layout {
             if (sorted[index].begin < sorted[index - 1].end)
                 throw std::invalid_argument("aliased model key storage");
     }
+    void ValidatePeers(const MMDApp& app,unsigned slotOfOwner) {
+        peerApp=&app;ownSlot=slotOfOwner;peers.clear();models.fill(nullptr);
+        auto sorted=ranges;
+        sorted.erase(std::remove_if(sorted.begin(),sorted.end(),[](const Range& r){return r.begin==r.end;}),sorted.end());
+        std::sort(sorted.begin(),sorted.end(),[](const Range& a,const Range& b){return a.begin<b.begin;});
+        const auto separate=[&](const Range& other){
+            if(other.begin==other.end)return true;
+            const auto at=std::lower_bound(sorted.begin(),sorted.end(),other.begin,[](const Range& own,std::uintptr_t value){return own.end<=value;});
+            return at==sorted.end()||at->begin>=other.end;
+        };
+        const auto state=reinterpret_cast<std::uintptr_t>(&app.state);
+        if(!separate({state,state+sizeof app.state}))throw std::invalid_argument("model key aliases app state");
+        for(unsigned slot=0;slot<kModelSlotCount;++slot)if(slot!=ownSlot&&app.ModelSlot(slot)){
+            models[slot]=app.ModelSlot(slot);
+            const auto& peer=*mdl::Mdl(app.ModelSlot(slot));
+            // Unmanaged peer pools do not provide safe capacities for nested
+            // traversal; keep the preparation fail-closed before using them.
+            if((peer.boneKeys&&!mdl::BoneKeyPoolIdentity(peer.boneKeys))||
+                (peer.morphKeys&&!mdl::MorphKeyPoolIdentity(peer.morphKeys))||
+                (peer.displayKeys&&!mdl::KeyPoolIdentity(peer.displayKeys)))throw std::invalid_argument("unmanaged peer model keys");
+            Peer snapshot{app.ModelSlot(slot),{}};
+            if(!VisitStorage(peer,[&](const Range& range){snapshot.ranges.push_back(range);return separate(range);}))
+                throw std::invalid_argument("aliased peer model key storage");
+            peers.push_back(std::move(snapshot));
+        }
+    }
+    bool PeersCurrent() const noexcept {
+        if(!peerApp)return true;
+        for(unsigned slot=0;slot<kModelSlotCount;++slot)
+            if(slot!=ownSlot&&peerApp->ModelSlot(slot)!=models[slot])return false;
+        for(const auto& peer:peers){std::size_t index=0;
+            if(!VisitStorage(*mdl::Mdl(peer.model),[&](const Range& range){return index<peer.ranges.size()&&peer.ranges[index++]==range;})||
+                index!=peer.ranges.size())return false;
+        }
+        return true;
+    }
     bool IsCurrent(const mdl::ModelRecord& model) const noexcept {
         std::size_t index = 0;
         return VisitStorage(model, [&](const Range& range) {
             return index < ranges.size() && ranges[index++] == range;
-        }) && index == ranges.size();
+        }) && index == ranges.size() && PeersCurrent();
     }
 };
 struct ModelKeyChange final : HistoryChange {
@@ -78,7 +128,7 @@ struct ModelKeyChange final : HistoryChange {
         Layout layout;
         std::array<std::unique_ptr<PreparedHistoryChange>, 4> parts;
         bool published = false;
-        Candidate(MMDApp& a, unsigned s) : app(a), slot(s), model(a.ModelSlot(s)), layout(*mdl::Mdl(model)) {}
+        Candidate(MMDApp& a, unsigned s) : app(a), slot(s), model(a.ModelSlot(s)), layout(*mdl::Mdl(model)) {layout.ValidatePeers(app,slot);}
         bool IsCurrent() const noexcept override {
             if (published || app.ModelSlot(slot) != model) return false;
             for (const auto& part : parts) if (part && !part->IsCurrent()) return false;
@@ -228,7 +278,7 @@ struct ModelPasteChange final : HistoryChange, std::enable_shared_from_this<Mode
         std::shared_ptr<ModelPasteChange> source;std::uint64_t generation;int frame;bool consumed=false;
         Layout layout;std::array<std::unique_ptr<PreparedHistoryChange>,4> parts;
         explicit Candidate(std::shared_ptr<ModelPasteChange> s):source(std::move(s)),generation(source->generation),frame(source->app.CurrentFrame()),
-            layout(*mdl::Mdl(source->model)){}
+            layout(*mdl::Mdl(source->model)){layout.ValidatePeers(source->app,source->slot);}
         bool IsCurrent()const noexcept override {
             if(consumed||source->generation!=generation||source->app.ModelSlot(source->slot)!=source->model||source->app.CurrentFrame()!=frame)return false;
             for(const auto& part:parts)if(part&&!part->IsCurrent())return false;
@@ -276,7 +326,7 @@ MmsResult PlanModelKeyDeletion(MMDApp& app, unsigned slot, bool automatic,
         if ((model.boneKeys && !mdl::BoneKeyPoolIdentity(model.boneKeys)) ||
             (model.morphKeys && !mdl::MorphKeyPoolIdentity(model.morphKeys)) ||
             (model.displayKeys && !mdl::KeyPoolIdentity(model.displayKeys))) return MMS_E_NOT_READY;
-        Layout check(model);
+        Layout check(model);check.ValidatePeers(app,slot);
         const bool bones = Marked(model.boneKeys, mdl::BoneKeyCapacity(model.boneKeys));
         const bool morphs = Marked(model.morphKeys, mdl::MorphKeyCapacity(model.morphKeys));
         const bool displays = Marked(model.displayKeys, mdl::KeyPoolCapacity(model.displayKeys));
@@ -299,6 +349,13 @@ MmsResult ValidateModelPasteSource(const ModelPasteSource& source,unsigned famil
     if(((families&ModelPasteBones)&&source.bones.size()>mdl::kBoneKeyCapacityLimit)||
         ((families&ModelPasteMorphs)&&source.morphs.size()>mdl::kMorphKeyCapacityLimit)||
         ((families&ModelPasteDisplays)&&source.displays.size()>mdl::KeyPoolLimit<mdl::DisplayKey>()))return MMS_E_ARGUMENT;
+    constexpr std::size_t maximumBoneBlock=16u*1024*1024+12;
+    if((families&ModelPasteBones)&&(source.boneCurveBlock.size()>maximumBoneBlock||source.boneCurveTargets.size()>UINT32_MAX))return MMS_E_ARGUMENT;
+    if((families&ModelPasteMorphs)&&(source.morphCurveBlock.size()>morph_curve::kMaximumPayloadBytes+16||source.morphCurveTargets.size()>UINT32_MAX))return MMS_E_ARGUMENT;
+    if(!source.curveTargetsResolved&&((families&ModelPasteBones)&&!source.boneCurveTargets.empty()||
+        (families&ModelPasteMorphs)&&!source.morphCurveTargets.empty()))return MMS_E_ARGUMENT;
+    if(families&ModelPasteBones)for(int target:source.boneCurveTargets)if(target< -1)return MMS_E_ARGUMENT;
+    if(families&ModelPasteMorphs)for(int target:source.morphCurveTargets)if(target< -1)return MMS_E_ARGUMENT;
     unsigned frame;
     if(families&ModelPasteBones)for(const auto& record:source.bones)
         if(!frame_limits::Add(int(source.frameOffset),record.key.frame,frame)||(record.targetResolved&&record.targetIndex< -1))return MMS_E_ARGUMENT;
@@ -354,19 +411,19 @@ MmsResult PlanModelKeyPaste(MMDApp& app,unsigned slot,std::shared_ptr<HistoryCha
     if(auto result=CaptureModelPasteSource(app,source))return result;
     return PlanModelKeyPaste(app,slot,source,out);
 }
-MmsResult PlanModelKeyPaste(MMDApp& app,unsigned slot,const ModelPasteSource& source,std::shared_ptr<HistoryChange>& out) noexcept {
-    out.reset();
+MmsResult PlanModelKeyPaste(MMDApp& app,unsigned slot,const ModelPasteSource& source,std::shared_ptr<HistoryChange>& out,ModelPasteReport* report) noexcept {
+    out.reset();if(report)*report={};
     if(slot>=kModelSlotCount||!app.ModelSlot(slot)||app.PlaybackActive()||app.FrameStepPlayback()||
         app.state.recordPlaybackStartPending||app.SceneMutationInProgress())return MMS_E_NOT_READY;
     if(app.CurrentFrame()<0||app.CurrentFrame()>frame_limits::maximum)return MMS_E_ARGUMENT;
     if(auto result=ValidateModelPasteSource(source))return result;
     return Boundary([&]()->MmsResult {
-        if(source.bones.empty()&&source.morphs.empty()&&source.displays.empty())return MMS_OK;
+        if(source.bones.empty()&&source.morphs.empty()&&source.displays.empty()&&source.boneCurveBlock.empty()&&source.morphCurveBlock.empty())return MMS_OK;
         const auto& model=*mdl::Mdl(app.ModelSlot(slot));
         if((model.boneKeys&&!mdl::BoneKeyPoolIdentity(model.boneKeys))||
             (model.morphKeys&&!mdl::MorphKeyPoolIdentity(model.morphKeys))||
             (model.displayKeys&&!mdl::KeyPoolIdentity(model.displayKeys)))return MMS_E_NOT_READY;
-        Layout check(model);
+        Layout check(model);check.ValidatePeers(app,slot);
         std::array<ModelPasteFamilyResult,3> results;
         std::shared_ptr<DisplayKeyDeletion> display;
         if(!source.displays.empty()){
@@ -376,15 +433,18 @@ MmsResult PlanModelKeyPaste(MMDApp& app,unsigned slot,const ModelPasteSource& so
         }
         if(!model.boneCount)for(const auto& record:source.bones)
             if(record.targetResolved&&record.targetIndex>=0)return MMS_E_ARGUMENT;
-        if(model.boneCount&&(!source.bones.empty()||display)){
+        if(model.boneCount&&(!source.bones.empty()||!source.boneCurveBlock.empty()||display)){
             std::shared_ptr<HistoryChange> part;
             if(auto error=PlanBoneKeyPaste(app,slot,false,source,part,&results[0],display))return error;
         }
-        if(!source.morphs.empty()){
+        if(!source.morphs.empty()||!source.morphCurveBlock.empty()){
             std::shared_ptr<HistoryChange> part;
             if(auto error=PlanMorphKeyPaste(app,slot,source,part,&results[1]))return error;
         }
-        if(!results[0].dataChanged&&!results[1].dataChanged&&!results[2].dataChanged)return MMS_OK;
+        const bool boneCurvesSkipped=results[0].curveBlockSkipped;
+        if(!results[0].dataChanged&&!results[1].dataChanged&&!results[2].dataChanged){
+            if(report)report->boneCurvesSkipped=boneCurvesSkipped;return MMS_OK;
+        }
         auto change=std::make_shared<ModelPasteChange>(app,slot);
         auto metadata=std::make_shared<RangeMetadata>(app,slot);
         metadata->restoreGrownTail=true;metadata->requireInitialMarks=true;
@@ -396,9 +456,13 @@ MmsResult PlanModelKeyPaste(MMDApp& app,unsigned slot,const ModelPasteSource& so
             while(cursor<morphCapacity&&model.morphKeys[cursor].frame)++cursor;
             metadata->cursorAfter=results[1].hasKeys?results[1].searchCursor:int(cursor);
         }
+        std::uint32_t registrationMaximum=metadata->maxBefore;
         for(unsigned family=0;family<results.size();++family){
             auto& result=results[family];change->parts[family]=std::move(result.change);
             if(result.hasKeys)metadata->maxAfter=(std::max)(metadata->maxAfter,result.maxFrame);
+            if(result.hasKeys)registrationMaximum=(std::max)(registrationMaximum,
+                result.hasRegistrationExtent?result.registrationMaxFrame:result.maxFrame);
+            if(result.overridesSearchCursor)metadata->cursorAfter=result.searchCursor;
             const auto limit=family==0?std::size_t(mdl::kBoneKeyCapacityLimit):family==1?
                 std::size_t(mdl::kMorphKeyCapacityLimit):mdl::KeyPoolLimit<mdl::DisplayKey>();
             for(auto index:result.markedSlots){
@@ -407,8 +471,9 @@ MmsResult PlanModelKeyPaste(MMDApp& app,unsigned slot,const ModelPasteSource& so
                 metadata->after[family][index]=1;
             }
         }
-        if(source.advanceLastRegisteredFrame)metadata->lastAfter=(std::max)(metadata->lastBefore,metadata->maxAfter);
-        change->parts[3]=std::move(metadata);out=std::move(change);return MMS_OK;
+        if(source.advanceLastRegisteredFrame)metadata->lastAfter=(std::max)(metadata->lastBefore,registrationMaximum);
+        change->parts[3]=std::move(metadata);out=std::move(change);
+        if(report)report->boneCurvesSkipped=boneCurvesSkipped;return MMS_OK;
     });
 }
 MmsResult PlanModelRangeScale(MMDApp& app, unsigned slot, const ModelRangeScaleOptions& options,
@@ -424,7 +489,7 @@ MmsResult PlanModelRangeScale(MMDApp& app, unsigned slot, const ModelRangeScaleO
         if ((model.boneKeys && !mdl::BoneKeyPoolIdentity(model.boneKeys)) ||
             (model.morphKeys && !mdl::MorphKeyPoolIdentity(model.morphKeys)) ||
             (model.displayKeys && !mdl::KeyPoolIdentity(model.displayKeys))) return MMS_E_NOT_READY;
-        Layout check(model);
+        Layout check(model);check.ValidatePeers(app,slot);
         const BoneRangeScaleOptions family{options.start, options.end, options.scale, options.automaticInterpolation};
         std::array<RangeScaleResult, 3> results;
         std::shared_ptr<DisplayKeyDeletion> display;

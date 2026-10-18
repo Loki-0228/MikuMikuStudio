@@ -566,23 +566,25 @@ bool AuthoringState::Read(int bone,Tracks& out) const {
     const auto found=impl_->curves.find(bone);if(found==impl_->curves.end())return false;
     out=found->second.tracks;return true;
 }
+bool ValidateFreeTracks(const Tracks& tracks,std::string& error){
+    for(const auto& track:tracks){
+        if(!ac::Validate(track,error))return false;
+        if(track.discrete||track.keys.empty()||track.keys.front().frame||track.keys.back().frame>frame_limits::maximum){error="Invalid free bone curve frames.";return false;}
+        for(const auto& key:track.keys)if(std::abs(key.value)>1e12||std::abs(key.inSlope)>1e12||std::abs(key.outSlope)>1e12){error="Free bone curve limit exceeded.";return false;}
+    }
+    const auto valid=[](double value){return std::isfinite(value)&&value>=0.001&&value<=1000;};
+    for(unsigned c=6;c<9;++c){const auto& keys=tracks[c].keys;
+        for(std::size_t i=0;i<keys.size();++i){if(!valid(keys[i].value)){error="Invalid free bone curve scale.";return false;}
+            if(i&&keys[i].interpolation==ac::Interpolation::Bezier){const auto& a=keys[i-1];const auto& b=keys[i];const double span=double(b.frame)-a.frame;
+                if(!valid(a.value+a.outSlope*a.outWeight*span)||!valid(b.value-b.inSlope*b.inWeight*span)){error="Invalid free bone curve scale hull.";return false;}}}
+    }
+    return true;
+}
 bool AuthoringState::Replace(int bone,const Tracks& tracks,const NativeKeyView& view) {
     if(!impl_||!impl_->SameOwner(impl_->model)||bone<0||unsigned(bone)>=impl_->boneCount||
         (!impl_->curves.empty()&&impl_->storedIdentity!=impl_->bones))throw std::invalid_argument("bone curve replacement owner");
     std::string error;
-    for(const auto& track:tracks){
-        if(!ac::Validate(track,error)||track.discrete||track.keys.empty()||track.keys.front().frame||
-            track.keys.back().frame>frame_limits::maximum)throw std::invalid_argument("bone curve replacement track");
-        for(const auto& key:track.keys)if(std::abs(key.value)>1e12||std::abs(key.inSlope)>1e12||std::abs(key.outSlope)>1e12)
-            throw std::invalid_argument("bone curve replacement limit");
-    }
-    const auto valid=[](double value){return std::isfinite(value)&&value>=0.001&&value<=1000;};
-    for(unsigned c=6;c<9;++c){const auto& keys=tracks[c].keys;
-        for(std::size_t i=0;i<keys.size();++i){if(!valid(keys[i].value))throw std::invalid_argument("bone curve replacement scale");
-            if(i&&keys[i].interpolation==ac::Interpolation::Bezier){const auto& a=keys[i-1];const auto& b=keys[i];const double span=double(b.frame)-a.frame;
-                if(!valid(a.value+a.outSlope*a.outWeight*span)||!valid(b.value-b.inSlope*b.inWeight*span))
-                    throw std::invalid_argument("bone curve replacement scale hull");}}
-    }
+    if(!ValidateFreeTracks(tracks,error))throw std::invalid_argument(error);
     Entry next;next.tracks=tracks;next.baseline=SnapshotTarget(view,bone,impl_->boneCount);next.nativeHash=SnapshotHash(next.baseline);
     const auto found=impl_->curves.find(bone);if(found!=impl_->curves.end()&&SameEntry(found->second,next))return false;
     if(found==impl_->curves.end())impl_->curves.emplace(bone,std::move(next));else SwapEntry(found->second,next);
@@ -622,6 +624,38 @@ bool ReadDetached(const unsigned char* model,int bone,Tracks& out) {
     auto native=SnapshotTarget(view,bone,mdl::Mdl(model)->boneCount);const auto hash=SnapshotHash(native);
     if(!ReconcileSnapshot(next,hash,std::move(native)))throw std::invalid_argument("detached bone curve reconciliation");
     out=std::move(next.tracks);return true;
+}
+bool DecodeVmdTracks(const unsigned char* model,const std::uint8_t* data,std::size_t size,int offset,
+    const std::vector<int>* targets,std::vector<VmdTrackImport>& out,std::string& error){
+    if(!model||offset<0||size<12||VmdBlockSize(data,size)!=size){error="Invalid bone curve extension.";return false;}
+    const auto& record=*mdl::Mdl(model);if(record.boneCount&&!record.boneTable){error="Missing bone curve names.";return false;}
+    std::vector<ac::NamedTrack> decoded;if(!ac::Decode(data+12,size-12,decoded,error))return false;
+    std::map<std::string,const ac::Track*> byName;std::map<std::pair<int,int>,const ac::Track*> byIndex;
+    for(const auto& item:decoded){const auto lane=item.id.find('/',5);
+        if(item.id.rfind("bone/",0)!=0||lane==std::string::npos)continue;
+        if(targets){const auto channelEnd=item.id.find('/',lane+1);if(channelEnd==std::string::npos)continue;
+            unsigned source=0;int channel=0;
+            const auto owner=std::from_chars(item.id.data()+5,item.id.data()+lane,source);
+            const auto parsed=std::from_chars(item.id.data()+lane+1,item.id.data()+channelEnd,channel);
+            if(owner.ec!=std::errc{}||owner.ptr!=item.id.data()+lane||parsed.ec!=std::errc{}||parsed.ptr!=item.id.data()+channelEnd||
+                source>=targets->size()||channel<0||channel>=9)continue;
+            const int target=(*targets)[source];if(target>=0)byIndex.emplace(std::make_pair(target,channel),&item.track);
+        }else byName.emplace(item.id.substr(lane+1),&item.track);
+    }
+    std::vector<VmdTrackImport> prepared;
+    for(unsigned bone=0;bone<record.boneCount;++bone){Tracks tracks;bool complete=true;
+        for(int c=0;c<9;++c){const ac::Track* source=nullptr;
+            if(targets){const auto found=byIndex.find({int(bone),c});if(found!=byIndex.end())source=found->second;}
+            else{auto id=StableId(model,int(bone),c);id.erase(0,id.find('/',5)+1);const auto found=byName.find(id);if(found!=byName.end())source=found->second;}
+            if(!source){complete=false;break;}tracks[c]=*source;
+            for(auto& key:tracks[c].keys){if(key.frame<0||key.frame>frame_limits::maximum-offset){error="Bone curve frame is out of range.";return false;}key.frame+=offset;}
+            if(tracks[c].keys.empty()){error="Empty bone curve.";return false;}
+            if(tracks[c].keys.front().frame>0){auto anchor=tracks[c].keys.front();anchor.frame=0;anchor.inSlope=anchor.outSlope=0;
+                tracks[c].keys.front().interpolation=ac::Interpolation::Step;tracks[c].keys.insert(tracks[c].keys.begin(),anchor);}
+        }
+        if(complete)prepared.push_back({int(bone),std::move(tracks)});
+    }
+    out.swap(prepared);return true;
 }
 bool AuthoringState::Sample(int bone,double frame,std::uint64_t targetNativeHash,
     float position[3],float rotation[4],bone_scale::Matrix& scale) const noexcept {

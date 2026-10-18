@@ -383,6 +383,7 @@ struct MorphPaste final : HistoryChange, std::enable_shared_from_this<MorphPaste
     Rule rule;
     std::vector<Rule> pasteRules;
     std::vector<unsigned> pasteNameTargets;
+    std::unique_ptr<morph_curve::AuthoredImport> importedCurves;
     std::uint64_t identity, boneIdentity, displayIdentity;
     std::size_t capacity, boneCapacity, displayCapacity;
     std::vector<RegistrationPatch> patches;
@@ -467,6 +468,7 @@ struct MorphPaste final : HistoryChange, std::enable_shared_from_this<MorphPaste
         std::vector<Dependency> dependencies;
         std::vector<unsigned char> morphMarks, boneMarks, displayMarks;
         morph_curve::AuthoredLayers layers;
+        std::unique_ptr<morph_curve::AuthoredImport::Target> importedLayers;
         std::unique_ptr<mdl::MorphKeyPoolGrowth> growth;
         float beforeValue, afterValue;
         std::vector<float> beforeValues, afterValues;
@@ -508,7 +510,7 @@ struct MorphPaste final : HistoryChange, std::enable_shared_from_this<MorphPaste
             for (std::size_t i = 0; i < morphMarks.size(); ++i) if (pool[i].allocated != morphMarks[i]) return false;
             for (std::size_t i = 0; i < boneMarks.size(); ++i) if (bones[i].allocated != boneMarks[i]) return false;
             for (std::size_t i = 0; i < displayMarks.size(); ++i) if (displays[i].allocated != displayMarks[i]) return false;
-            return morph_curve::LayersUnchanged(source->model, layers);
+            return morph_curve::LayersUnchanged(source->model, layers) && (!importedLayers || importedLayers->IsCurrent());
         }
         void Publish() noexcept override {
             // Aggregate validated all participants before bone publication.
@@ -531,6 +533,7 @@ struct MorphPaste final : HistoryChange, std::enable_shared_from_this<MorphPaste
                 if (patch.data) m.morphKeys[patch.key.slot] = target;
                 else m.morphKeys[patch.key.slot].allocated = target.allocated;
             }
+            if (importedLayers) importedLayers->Publish();
             if (!source->aggregate) {
                 for (const auto& flag : source->boneFlags) bones[flag.slot].allocated = forward ? 0 : flag.before;
                 for (const auto& flag : source->displayFlags) displays[flag.slot].allocated = forward ? 0 : flag.before;
@@ -547,7 +550,7 @@ struct MorphPaste final : HistoryChange, std::enable_shared_from_this<MorphPaste
     };
     MmsResult Prepare(bool forward, std::unique_ptr<PreparedHistoryChange>& out) override {
         out.reset();
-        if (!Structure()) return MMS_E_STALE;
+        if (!Structure() || (importedCurves && !importedCurves->IsCurrent())) return MMS_E_STALE;
         if (generation == UINT64_MAX) return MMS_E_NOT_READY;
         if (!published && (!forward || app.CurrentFrame() != playheadBefore || !SameFloat(value, morphs[morph].value) || (!aggregate && !InitialMarksCurrent())))
             return MMS_E_STALE;
@@ -582,13 +585,15 @@ struct MorphPaste final : HistoryChange, std::enable_shared_from_this<MorphPaste
             view.key = [](const void* context, std::uint32_t slot) noexcept {
                 return static_cast<const Candidate*>(context)->Target(slot);
             };
+            if (importedCurves) candidate->importedLayers=importedCurves->Prepare(view,forward);
             morph_curve::NativeKeyView currentView;
             currentView.context=candidate->pool;currentView.capacity=candidate->capacity;
             currentView.key=[](const void* context,std::uint32_t index) noexcept {return static_cast<const mdl::MorphKey*>(context)+index;};
             for (std::size_t i=0;i<pasteRules.size();++i) {
                 float oldValue=0,targetValue=0;
                 const auto index=int(pasteRules[i].morph);
-                if (!morph_curve::SampleLayersTarget(candidate->layers,currentView,index,candidate->frame,oldValue,error) ||
+                if (!morph_curve::SampleLayersTarget(candidate->layers,currentView,index,candidate->frame,oldValue,error)) return MMS_E_ARGUMENT;
+                if (candidate->importedLayers ? !candidate->importedLayers->Sample(index,candidate->frame,targetValue) :
                     !morph_curve::SampleLayersTarget(candidate->layers,view,index,candidate->frame,targetValue,error)) return MMS_E_ARGUMENT;
                 if (SameFloat(oldValue,candidate->beforeValues[i])) candidate->afterValues[i]=targetValue;
             }
@@ -602,7 +607,7 @@ struct MorphPaste final : HistoryChange, std::enable_shared_from_this<MorphPaste
         AddBytes(bytes, boneFlags.capacity(), sizeof(RegistrationFlag));
         AddBytes(bytes, displayFlags.capacity(), sizeof(RegistrationFlag));
         AddBytes(bytes,pasteRules.capacity(),sizeof(Rule));
-        AddBytes(bytes,pasteNameTargets.capacity(),sizeof(unsigned));return bytes;
+        AddBytes(bytes,pasteNameTargets.capacity(),sizeof(unsigned));if(importedCurves)AddBytes(bytes,importedCurves->RetainedBytes(),1);return bytes;
     }
 };
 }
@@ -753,6 +758,17 @@ MmsResult PlanMorphKeyPaste(MMDApp& app,unsigned slot,const ModelPasteSource& in
         Owners targets;TrackChains(model.morphCount,targetCapacity,read,targets);
         bool dataChanged=false;
         for(const auto& item:planned) if(item.second.data&&!SameKey(item.second.key.before,item.second.key.after,false)) {dataChanged=true;break;}
+        if(!input.morphCurveBlock.empty()) {
+            // The aggregate clears all old export marks. Match the exact final
+            // standard import, including marks, without publishing or mirroring.
+            std::vector<mdl::MorphKey> future(targetCapacity);
+            for(std::size_t index=0;index<future.size();++index){future[index]=read(unsigned(index));future[index].allocated=marked.count(unsigned(index))?1:0;}
+            morph_curve::NativeKeyView view{&future,[](const void* context,std::uint32_t index)noexcept{
+                const auto& pool=*static_cast<const std::vector<mdl::MorphKey>*>(context);return index<pool.size()?&pool[index]:nullptr;},future.size()};
+            auto curves=std::make_unique<morph_curve::AuthoredImport>(app.ModelSlot(slot),view,input.morphCurveBlock.data(),input.morphCurveBlock.size(),int(input.frameOffset),
+                input.curveTargetsResolved?&input.morphCurveTargets:nullptr);
+            if(curves->Changed()){dataChanged=true;for(auto morph:curves->ChangedMorphs())affected.insert(morph);change->importedCurves=std::move(curves);}
+        }
         if(!dataChanged&&!aggregate)return MMS_OK;
         for(const auto& item:planned) if(!SameKey(item.second.key.before,item.second.key.after,true))change->patches.push_back(item.second);
         for(auto morph:affected) {
@@ -768,7 +784,7 @@ MmsResult PlanMorphKeyPaste(MMDApp& app,unsigned slot,const ModelPasteSource& in
             for(std::size_t i=0;i<change->boneCapacity;++i)if(model.boneKeys[i].allocated)change->boneFlags.push_back({unsigned(i),model.boneKeys[i].allocated});
             for(std::size_t i=0;i<change->displayCapacity;++i)if(model.displayKeys[i].allocated)change->displayFlags.push_back({unsigned(i),model.displayKeys[i].allocated});
             cursor=1;while(cursor<change->displayCapacity&&model.displayKeys[cursor].frame)++cursor;change->searchAfter=int(cursor);
-            if(change->patches.empty()&&change->boneFlags.empty()&&change->displayFlags.empty()&&change->search==change->searchAfter&&change->maxBefore==change->maxAfter)return MMS_OK;
+            if(!change->importedCurves&&change->patches.empty()&&change->boneFlags.empty()&&change->displayFlags.empty()&&change->search==change->searchAfter&&change->maxBefore==change->maxAfter)return MMS_OK;
         }
         out=std::move(change);return MMS_OK;
     });

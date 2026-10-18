@@ -87,7 +87,12 @@ void Run(MMDApp* app,plugins::SharedHistory& history,int(*value)()){
     Check(app&&app->ModelSlot(0)&&!history.UndoCount()&&!history.RedoCount(),"real numpad fixture starts with a loaded model and empty common history");
     Original original(*app,history);const auto initial=value();
     for(unsigned branch=0;branch<3;++branch)for(unsigned mask:{1u<<4,1u,1u|(1u<<1)})for(bool authored:{false,true})for(auto mode:{Mode::AllOperations,Mode::ExplicitOnly}){
-        if(authored&&(branch!=2||!(mask&1u)))continue;Build(*app,branch,authored);Check(history.SetMode(mode)==MMS_OK,"configure real numpad adjustment history mode");
+        if(authored&&(branch!=2||!(mask&1u)))continue;Build(*app,branch,authored);
+        // The bound curve writer records the authored preparation itself.
+        // Keep that data while isolating the numpad command's journal nodes.
+        Check(history.Reset()==MMS_OK,"clear only completed numpad camera authoring setup history");history.Collect();
+        Check(!history.UndoCount()&&!history.RedoCount(),"real numpad command fixture begins after setup with an empty common journal");
+        Check(history.SetMode(mode)==MMS_OK,"configure real numpad adjustment history mode");
         const auto before=Read(*app),expected=Expected(*app,mask);const auto native=std::vector<mdl::CameraKey>(app->CameraKeys(),app->CameraKeys()+mdl::KeyPoolCapacity(app->CameraKeys()));
         const auto& model=*mdl::Mdl(app->ModelSlot(0));const auto bone=model.boneTable[0];const std::array<std::uint32_t,2> rings{model.undoState[0],model.undoState[1]};
         Menu(app,L"Edit probe once");Menu(app,L"Edit probe prepared");Keys(*app,mask);ConsumeNumpadViewPresets(app);

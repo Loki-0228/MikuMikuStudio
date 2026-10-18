@@ -42,6 +42,16 @@ class AuthoringRestore;
 // Canonical read for a shared-history host. Reconciliation is performed on a
 // detached author snapshot, never on live authoring or legacy undo rings.
 bool ReadDetached(const unsigned char* model, int bone, Tracks& out);
+struct VmdTrackImport { int bone = -1; Tracks tracks; };
+bool ValidateFreeTracks(const Tracks&,std::string& error);
+// Decode and resolve one complete MDSBCRV1 block without importing native keys
+// or changing authoring. Explicit targets index the source dictionary; an
+// empty vector still forbids fallback to legacy name matching. The caller
+// checks overlap against its private post-standard-import native tracks.
+// Malformed blocks return false; allocation failures propagate to the host's
+// atomic preparation boundary. A failed call leaves out unchanged.
+bool DecodeVmdTracks(const unsigned char* model, const std::uint8_t*,std::size_t,
+    int offset,const std::vector<int>* targets,std::vector<VmdTrackImport>& out,std::string& error);
 // Borrowed, immutable view of one planned native pool. Scale and its native
 // interpolation are supplied from the same private target as the key records.
 struct NativeKeyView {

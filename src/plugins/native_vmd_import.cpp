@@ -5,6 +5,7 @@
 #include "native_model_vmd_source.hpp"
 #include "mikudancestudio/text_encoding.hpp"
 #include "native_history_commands.hpp"
+#include "native_morph_commands.hpp"
 #include "mikudancestudio/animation_curve_host.hpp"
 #include "mikudancestudio/autosave.hpp"
 #include "mikudancestudio/bake_ui_lock.hpp"
@@ -119,7 +120,7 @@ bool TryImportBoundVmd(MMDApp* app,const char* ansiPath,const wchar_t* widePath,
     if(!app)return false;auto* history=BoundNativePoseHistory(app);if(!history)return false;
     result=0;
     if(!ImportReady(*app,*history))return true;
-    bool committed=false;
+    bool committed=false,boneCurvesSkipped=false;
     const auto status=Boundary([&]()->MmsResult {
         std::shared_ptr<HistoryChange> change;std::array<bool,255> matched{};
         const bool modelMode=!app->CameraMode();
@@ -145,7 +146,9 @@ bool TryImportBoundVmd(MMDApp* app,const char* ansiPath,const wchar_t* widePath,
                     app->CameraMode()||app->SelectedModelSlot()!=slot||app->CurrentFrame()!=frame||app->ModelSlot(slot)!=pointer||
                     !SceneObjectPresent(pointer,identity))return MMS_E_STALE;
             }
-            if(auto error=PlanModelVmdImport(*app,slot,source,change))return error;
+            ModelPasteReport report;
+            if(auto error=PlanModelVmdImport(*app,slot,source,change,&report))return error;
+            boneCurvesSkipped=report.boneCurvesSkipped;
         }else if(auto error=PlanVmd(*app,ansiPath,widePath,change,&matched))return error;
         if(!change)return MMS_OK;
         std::unique_ptr<SharedHistory::NativeTransaction> token;
@@ -159,13 +162,28 @@ bool TryImportBoundVmd(MMDApp* app,const char* ansiPath,const wchar_t* widePath,
             for(unsigned index=0;index<model.boneCount;++index){const auto type=model.boneTable[index].type;
                 if(static_cast<std::int8_t>(type)<=static_cast<std::int8_t>(mdl::BoneType::Effector)||type==mdl::BoneType::FixedAxis)result=int(index)+1;}
         }
+        bake::ScopedUiInputGate inputGate;
         PublishBoundPoseEdit(*app,*history,true);
+        if(modelMode){
+            RefreshBoundMorphReadout(*app);
+            curve_host::NotifyModelRegistered(app,false);curve_host::NotifyModelRegistered(app,true);
+        }
         if(!modelMode)for(auto kind:{curve_host::Kind::Camera,curve_host::Kind::Light,curve_host::Kind::Shadow})curve_host::NotifyRegistered(app,kind);
         for(unsigned slot=0;slot<matched.size();++slot)if(matched[slot])curve_host::NotifyRegistered(app,curve_host::Kind::Accessory,int(slot));
         if(std::any_of(matched.begin(),matched.end(),[](bool value){return value;}))SyncAccessoryEditPanel(app);
         SelectionReeval(app);if(app->MainWindow()&&app->Renderer())PanelPaint(app);
         return MMS_OK;
     });
+    if(status==MMS_OK&&boneCurvesSkipped){
+        runtime_log::Write("controlled VMD: bone curve extension skipped; standard keys preserved");
+        if(const auto owner=app->MainWindow()){
+            const int language=app->EnglishUI();
+            const wchar_t* text=language==1?L"Free curves require compatible bone tracks. Only the standard bone keys were imported.":
+                language==2?L"骨骼自由曲线与目标轨道不兼容，本次只读取了标准骨骼关键帧。":
+                L"自由カーブが対象のボーントラックと一致しません。標準ボーンキーのみ読み込みました。";
+            MessageBoxW(owner,text,L"MMS VMD",MB_OK|MB_ICONWARNING);
+        }
+    }
     if(status!=MMS_OK&&committed){
         runtime_log::Write("controlled VMD import committed; UI refresh incomplete");
         if(app->MainWindow())InvalidateRect(app->MainWindow(),nullptr,FALSE);

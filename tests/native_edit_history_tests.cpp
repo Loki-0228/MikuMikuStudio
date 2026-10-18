@@ -413,9 +413,30 @@ void CrossModelJournal(){
 #include "native_curve_write_checks.inc"
 #include "native_morph_curve_write_checks.inc"
 #include "native_bone_curve_write_checks.inc"
+#include "native_morph_vmd_curves_checks.inc"
+#include "native_bone_vmd_curves_checks.inc"
+#include "native_model_vmd_curves_checks.inc"
 int main(int argc,char** argv){
     std::setvbuf(stdout,nullptr,_IONBF,0);
     const auto run=[](const char* name,void(*test)()){std::printf("RUN %s\n",name);test();};
+    if(argc==2&&!std::strcmp(argv[1],"--vmd-curves-only")) {
+        run("NativeMorphVmdCurvesChecks",NativeMorphVmdCurvesChecks);
+        run("NativeBoneVmdCurvesChecks",NativeBoneVmdCurvesChecks);
+        run("NativeModelVmdCurvesChecks",NativeModelVmdCurvesChecks);
+        std::printf("PASS native model VMD curves: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--morph-vmd-curves-only")) {
+        run("NativeMorphVmdCurvesChecks",NativeMorphVmdCurvesChecks);
+        std::printf("PASS native morph VMD curves: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--bone-vmd-curves-only")) {
+        run("NativeBoneVmdCurvesChecks",NativeBoneVmdCurvesChecks);
+        std::printf("PASS native bone VMD curves: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--model-vmd-curves-only")) {
+        run("NativeModelVmdCurvesChecks",NativeModelVmdCurvesChecks);
+        std::printf("PASS native model VMD curves integration: %u checks\n",checks);return 0;
+    }
     if(argc==2&&!std::strcmp(argv[1],"--bone-curve-write-only")) {
         run("NativeBoneCurveWriteChecks",NativeBoneCurveWriteChecks);
         std::printf("PASS native bone curve write: %u checks\n",checks);return 0;
@@ -712,6 +733,9 @@ int main(int argc,char** argv){
     run("NativeCurveWriteChecks",NativeCurveWriteChecks);
     run("NativeMorphCurveWriteChecks",NativeMorphCurveWriteChecks);
     run("NativeBoneCurveWriteChecks",NativeBoneCurveWriteChecks);
+    run("NativeMorphVmdCurvesChecks",NativeMorphVmdCurvesChecks);
+    run("NativeBoneVmdCurvesChecks",NativeBoneVmdCurvesChecks);
+    run("NativeModelVmdCurvesChecks",NativeModelVmdCurvesChecks);
     run("PoseAndStale",PoseAndStale);run("KeysAndChain",KeysAndChain);run("Bake",Bake);
     run("Deletion",Deletion);run("EmptyAndCycle",EmptyAndCycle);run("FreeCurves",FreeCurves);
     run("Scatter",Scatter);run("FailedNativeCommands",FailedNativeCommands);run("RemovalBindings",RemovalBindings);

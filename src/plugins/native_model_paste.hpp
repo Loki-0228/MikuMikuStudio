@@ -41,6 +41,13 @@ struct ModelPasteSource {
     // Early VMD writers can end before the optional display section. Their
     // final allocation cursor belongs to Morph rather than Display.
     bool resetDisplayCursor=true;
+    // Optional model VMD author blocks, kept byte-exact after envelope checks.
+    // Families consume them against the SAME private pool as standard keys.
+    std::vector<std::uint8_t> boneCurveBlock,morphCurveBlock;
+    bool curveTargetsResolved=false;
+    // Unicode dictionary owner index -> destination index. Resolved empty
+    // tables are intentional and must never fall back to CP932 matching.
+    std::vector<int> boneCurveTargets,morphCurveTargets;
 };
 enum ModelPasteFamilyMask : unsigned {ModelPasteBones=1,ModelPasteMorphs=2,ModelPasteDisplays=4,ModelPasteAll=7};
 // Internal snapshot helpers; family wrappers capture only their own source so
@@ -57,10 +64,17 @@ struct ModelPasteFamilyResult {
     bool hasKeys = false;
     bool dataChanged = false;
     std::vector<unsigned> markedSlots;
+    bool overridesSearchCursor = false;
+    bool curveBlockSkipped = false;
+    // The legacy loader advances the registration extent BEFORE author tails.
+    // A tail may alter model.maxFrame without advancing that earlier marker.
+    bool hasRegistrationExtent = false;
+    std::uint32_t registrationMaxFrame = 0;
 };
+struct ModelPasteReport { bool boneCurvesSkipped=false; };
 MmsResult PlanModelKeyPaste(MMDApp&, unsigned modelSlot,
     std::shared_ptr<HistoryChange>&) noexcept;
 MmsResult PlanModelKeyPaste(MMDApp&,unsigned modelSlot,const ModelPasteSource&,
-    std::shared_ptr<HistoryChange>&) noexcept;
+    std::shared_ptr<HistoryChange>&,ModelPasteReport* = nullptr) noexcept;
 }
 #endif

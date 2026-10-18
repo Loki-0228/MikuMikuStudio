@@ -65,15 +65,32 @@ void Run(MMDApp* app,plugins::SharedHistory& history,int(*value)()){
     Original original(*app,history);const auto initial=value();
     for(unsigned family=0;family<2;++family)for(bool insert:{false,true})for(bool collision:{false,true})
         for(auto mode:{plugins::SharedHistory::RecordingMode::AllOperations,plugins::SharedHistory::RecordingMode::ExplicitOnly}){
-        Build(*app,family,collision);Check(history.SetMode(mode)==MMS_OK,"configure real explicit authored frame-line history mode");
+        const auto historyBeforeBuild=history.UndoCount();Build(*app,family,collision);const auto historyAfterBuild=history.UndoCount();
+        // Bound Write now correctly records its setup edit in the common
+        // journal. Keep the prepared data, then start the command assertions
+        // at the same empty-history boundary as the original fixture.
+        Check(history.Reset()==MMS_OK,"clear only completed free frame-line authoring setup history");history.Collect();
+        Check(!history.UndoCount()&&!history.RedoCount(),"real free frame-line command fixture begins after setup with an empty common journal");
+        Check(history.SetMode(mode)==MMS_OK,"configure real explicit authored frame-line history mode");
         app->CameraMode()=1;app->SelectedModelSlot()=0;app->CurrentFrame()=collision?0:12;const int frame=app->CurrentFrame();
         const auto beforeChannels=Read(*app,family);const auto before=Encode(beforeChannels);const auto pose=Pose(*app);
         const std::vector<mdl::CameraKey> camera(app->CameraKeys(),app->CameraKeys()+mdl::KeyPoolCapacity(app->CameraKeys()));
         const std::vector<mdl::LightKey> light(app->LightKeys(),app->LightKeys()+mdl::KeyPoolCapacity(app->LightKeys()));
         const unsigned command=family?(insert?257:258):(insert?255:256);
-        Menu(app,L"Edit probe once");Menu(app,L"Edit probe prepared");SendMessageW(app->MainWindow(),WM_COMMAND,command,0);
-        Check(history.UndoCount()==1&&Encode(Read(*app,family))==before&&!std::memcmp(app->CameraKeys(),camera.data(),camera.size()*sizeof(camera[0]))&&
-            !std::memcmp(app->LightKeys(),light.data(),light.size()*sizeof(light[0])),"real pending plugin transaction rejects mapped frame-line changes atomically");
+        const auto lastBeforePending=app->LastRegisteredFrame();
+        Menu(app,L"Edit probe once");const auto historyAfterOnce=history.UndoCount();
+        Menu(app,L"Edit probe prepared");const auto historyAfterPrepared=history.UndoCount();SendMessageW(app->MainWindow(),WM_COMMAND,command,0);
+        const bool pendingHistory=history.UndoCount()==1,authorSame=Encode(Read(*app,family))==before;
+        const bool cameraSame=!std::memcmp(app->CameraKeys(),camera.data(),camera.size()*sizeof(camera[0]));
+        const bool lightSame=!std::memcmp(app->LightKeys(),light.data(),light.size()*sizeof(light[0]));
+        if(!pendingHistory||!authorSame||!cameraSame||!lightSame) {
+            std::printf("DIAG pending free frame-line family=%u insert=%u collision=%u mode=%u command=%u counts(before-build/after-build/after-once/after-prepared/after-command)=%zu/%zu/%zu/%zu/%zu redo=%zu plugin=%d initial=%d author=%u camera=%u light=%u pose=%u frame=%d/%d last=%u/%u capture=%p main-enabled=%u\n",
+                family,unsigned(insert),unsigned(collision),unsigned(mode),command,historyBeforeBuild,historyAfterBuild,historyAfterOnce,historyAfterPrepared,
+                history.UndoCount(),history.RedoCount(),value(),initial,unsigned(authorSame),unsigned(cameraSame),unsigned(lightSame),unsigned(Pose(*app)==pose),
+                app->CurrentFrame(),frame,app->LastRegisteredFrame(),lastBeforePending,reinterpret_cast<void*>(GetCapture()),unsigned(IsWindowEnabled(app->MainWindow())));
+            std::fflush(stdout);
+        }
+        Check(pendingHistory&&authorSame&&cameraSame&&lightSame,"real pending plugin transaction rejects mapped frame-line changes atomically");
         Menu(app,L"Edit probe cancel");SendMessageW(app->MainWindow(),WM_COMMAND,command,0);
         const auto afterChannels=Read(*app,family);const auto after=Encode(afterChannels);const int end=31+(insert?1:-1);
         Check(after!=before&&afterChannels[0].track.keys.back().frame==end&&afterChannels[0].track.keys.back().value==beforeChannels[0].track.keys.back().value&&

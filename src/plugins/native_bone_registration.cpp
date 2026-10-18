@@ -28,8 +28,10 @@
 
 namespace mikudancestudio::plugins {
 namespace {
+bool ValidateTailCursorStorage(MMDApp&,unsigned) noexcept;
 struct KeyPatch { unsigned slot; mdl::BoneKey before{}, after{}; bool data = false; };
 struct FlagPatch { unsigned slot; unsigned char before; };
+struct TailCursor { unsigned bone; std::uint32_t before; unsigned char active; };
 struct PoseValue { float position[3], rotation[4]; unsigned char dirty; };
 struct PosePatch { unsigned bone; PoseValue before{}, after{}; bone_scale::Matrix sourceScale; unsigned fields = 0; unsigned char physics; };
 struct BoneRule {
@@ -80,6 +82,10 @@ struct RegistrationChange final : HistoryChange, std::enable_shared_from_this<Re
     std::vector<unsigned> keyDependencies;
     std::vector<mdl::BoneKey> planningDependencies;
     std::vector<unsigned> evaluationBones;
+    std::vector<TailCursor> tailCursors;
+    std::uint32_t* tailCursorTable=nullptr;
+    unsigned char* tailActiveTable=nullptr;
+    int tailInitialFrame=0;
     std::shared_ptr<DisplayKeyDeletion> display;
     std::vector<int> displaySelectors;
     std::vector<BoneRule> rules;
@@ -114,6 +120,7 @@ struct RegistrationChange final : HistoryChange, std::enable_shared_from_this<Re
         const auto& m = *mdl::Mdl(model);
         if (m.boneTable != bones || m.boneCount != count || !m.bonePhysicsState ||
             mdl::BoneKeyPoolIdentity(m.boneKeys) != poolIdentity) return false;
+        if(!tailCursors.empty()&&(m.boneKeyCursors!=tailCursorTable||m.boneTrackActive!=tailActiveTable||!ValidateTailCursorStorage(app,slot)))return false;
         for (std::size_t index = 0; index < displaySelectors.size(); ++index)
             if (bones[index].slotIndex != displaySelectors[index]) return false;
         if (!rules.empty() && m.physicsMode != rulePhysicsMode) return false;
@@ -146,6 +153,9 @@ struct RegistrationChange final : HistoryChange, std::enable_shared_from_this<Re
         std::vector<PoseValue> currentPoses;
         std::vector<bone_scale::Matrix> currentScales;
         std::vector<unsigned char> currentMorph, currentDisplay;
+        std::vector<std::uint32_t> currentTailCursors,targetTailCursors;
+        std::vector<unsigned char> currentTailActive,targetTailActive;
+        int tailFrame=0;
         unsigned char* dirty;
         mdl::MorphKey* morphs;
         mdl::DisplayKey* displays;
@@ -161,6 +171,10 @@ struct RegistrationChange final : HistoryChange, std::enable_shared_from_this<Re
                 (source->publishMetadata && (m.maxFrame != currentMax || m.searchCursor != currentSearch ||
                 source->app.state.lastRegisteredFrame != currentLast))) return false;
             const auto capacity = mdl::BoneKeyCapacity(m.boneKeys);
+            if(!source->tailCursors.empty()&&source->app.CurrentFrame()!=tailFrame)return false;
+            for(std::size_t n=0;n<source->tailCursors.size();++n){const auto bone=source->tailCursors[n].bone;
+                if((source->tailCursorTable&&source->tailCursorTable[bone]!=currentTailCursors[n])||
+                    (source->tailActiveTable&&source->tailActiveTable[bone]!=currentTailActive[n]))return false;}
             for (std::size_t n = 0; n < source->keys.size(); ++n) {
                 const auto& patch = source->keys[n];
                 const auto live = patch.slot < capacity ? m.boneKeys[patch.slot] : mdl::BoneKey{};
@@ -217,6 +231,9 @@ struct RegistrationChange final : HistoryChange, std::enable_shared_from_this<Re
             }
             if (scale && !scale->Publish()) std::terminate();
             if (curves && !curves->Publish()) std::terminate();
+            for(std::size_t n=0;n<source->tailCursors.size();++n){const auto bone=source->tailCursors[n].bone;
+                if(source->tailCursorTable)source->tailCursorTable[bone]=targetTailCursors[n];
+                if(source->tailActiveTable)source->tailActiveTable[bone]=targetTailActive[n];}
             if (evaluation) evaluation->Publish();
             if (!growth->Accept()) std::terminate();
             source->published=true;
@@ -262,6 +279,27 @@ struct RegistrationChange final : HistoryChange, std::enable_shared_from_this<Re
             if (scaleChanged || observeAuthoring) candidate->scale = bone_scale::AuthoringRestore::Prepare(model,
                 forward ? scaleAfter : scaleBefore, candidate->growth->CandidateCapacity());
             if (curvesChanged || observeAuthoring) candidate->curves = bone_curve::AuthoringRestore::Prepare(model, forward ? *curveAfter : *curveBefore);
+            candidate->tailFrame=app.CurrentFrame();
+            for(const auto& entry:tailCursors){
+                if(!published&&((tailCursorTable&&tailCursorTable[entry.bone]!=entry.before)||
+                    (tailActiveTable&&tailActiveTable[entry.bone]!=entry.active)))return MMS_E_STALE;
+                candidate->currentTailCursors.push_back(tailCursorTable?tailCursorTable[entry.bone]:0);
+                candidate->currentTailActive.push_back(tailActiveTable?tailActiveTable[entry.bone]:0);
+                unsigned cursor=entry.bone;
+                if(published&&candidate->tailFrame!=tailInitialFrame){
+                    if(candidate->tailFrame<0||candidate->tailFrame>frame_limits::maximum)return MMS_E_NOT_READY;
+                    for(std::size_t hop=0;hop<candidate->growth->CandidateCapacity();++hop){
+                        const auto found=std::lower_bound(keys.begin(),keys.end(),cursor,[](const KeyPatch& patch,unsigned index){return patch.slot<index;});
+                        const auto* key=found!=keys.end()&&found->slot==cursor&&found->data?(forward?&found->after:&found->before):
+                            cursor<capacity?&m.boneKeys[cursor]:nullptr;
+                        if(!key)return MMS_E_STALE;
+                        if(key->frame>=unsigned(candidate->tailFrame)||!key->next)break;
+                        cursor=key->next;
+                    }
+                }else if(!forward)cursor=entry.before;
+                candidate->targetTailCursors.push_back(cursor);
+                candidate->targetTailActive.push_back(forward?1:entry.active);
+            }
             if (!evaluationBones.empty()) {
                 struct Target { const RegistrationChange& change; bool forward; } target{*this, forward};
                 BoneEvaluationView view;
@@ -295,6 +333,7 @@ struct RegistrationChange final : HistoryChange, std::enable_shared_from_this<Re
         AddBytes(result, keyDependencies.capacity() * sizeof(unsigned)); AddBytes(result, rules.capacity() * sizeof(BoneRule));
         AddBytes(result,planningDependencies.capacity()*sizeof(mdl::BoneKey));
         AddBytes(result, evaluationBones.capacity() * sizeof(unsigned));
+        AddBytes(result,tailCursors.capacity()*sizeof(TailCursor));
         AddBytes(result, pasteNames.capacity() * sizeof(std::array<char, 20>));
         AddBytes(result, displaySelectors.capacity() * sizeof(int));
         AddBytes(result, morphFlags.capacity() * sizeof(FlagPatch)); AddBytes(result, displayFlags.capacity() * sizeof(FlagPatch));
@@ -615,6 +654,118 @@ unsigned InsertRangeCopy(KeyPlan& plan, const RangeKeyCopy& copy, unsigned start
     change.maxAfter = (std::max)(change.maxAfter, appended ? copy.frame : start);
     return target;
 }
+struct BoneTailView {
+    const KeyPlan& plan;const bone_scale::AuthoringState& scale;
+    bone_curve::NativeKeyView View()const noexcept{
+        return {this,plan.capacity,[](const void* p,std::uint32_t slot)noexcept->const mdl::BoneKey*{
+            const auto& plan=static_cast<const BoneTailView*>(p)->plan;if(slot>=plan.capacity)return nullptr;
+            const auto found=plan.patches.find(slot);if(found!=plan.patches.end())return &found->second.after;
+            if(slot<plan.initialCapacity)return &plan.model.boneKeys[slot];static const mdl::BoneKey empty{};return &empty;},
+            [](const void* p,std::uint32_t slot,bone_scale::Matrix& value,bone_scale::Curve& curve)noexcept{
+                const auto& target=*static_cast<const BoneTailView*>(p);if(slot>=target.plan.capacity)return false;
+                value=target.scale.Key(int(slot));curve=target.scale.KeyCurve(int(slot));return true;}};
+    }
+};
+std::vector<unsigned> BoneTailChain(const KeyPlan& plan,unsigned bone){
+    plan.ValidateChain(bone);std::vector<unsigned> slots;unsigned index=bone;
+    for(;;){slots.push_back(index);const auto key=plan.Read(index);if(!key.next)break;index=key.next;}return slots;
+}
+void BoneTailQuaternion(const bone_curve::Tracks& tracks,int frame,float* q){
+    constexpr double pi=3.14159265358979323846;
+    const double x=animation_curve::Evaluate(tracks[3],frame).value*pi/360,y=animation_curve::Evaluate(tracks[4],frame).value*pi/360,
+        z=animation_curve::Evaluate(tracks[5],frame).value*pi/360;
+    const double sx=std::sin(x),cx=std::cos(x),sy=std::sin(y),cy=std::cos(y),sz=std::sin(z),cz=std::cos(z);
+    q[0]=float(cy*sx*cz+sy*cx*sz);q[1]=float(sy*cx*cz-cy*sx*sz);
+    q[2]=float(cy*cx*sz-sy*sx*cz);q[3]=float(cy*cx*cz+sy*sx*sz);
+}
+bone_scale::Matrix BoneTailScale(const bone_curve::Tracks& tracks,int frame,bone_scale::Matrix matrix){
+    for(unsigned row=0;row<3;++row){double norm=0;for(unsigned c=0;c<3;++c)norm+=double(matrix.v[row*3+c])*matrix.v[row*3+c];
+        norm=std::sqrt(norm);const double value=animation_curve::Evaluate(tracks[6+row],frame).value;
+        for(unsigned c=0;c<3;++c)matrix.v[row*3+c]=float(norm>1e-12?matrix.v[row*3+c]*value/norm:(c==row?value:0));}
+    return matrix;
+}
+// Reproduce bone_curve::Write against the post-standard private pool. This
+// participant never calls a live registrar, side-table swap or TLS import scope.
+bool MirrorBoneTail(KeyPlan& plan,bone_scale::AuthoringState& scale,bone_curve::AuthoringState& curves,
+    const bone_curve::VmdTrackImport& imported,std::set<unsigned>& marks,unsigned& maximum,std::string& error){
+    if(!bone_curve::ValidateFreeTracks(imported.tracks,error))return false;
+    const unsigned bone=unsigned(imported.bone);const auto oldSlots=BoneTailChain(plan,bone);
+    std::set<int> frames;for(const auto& track:imported.tracks)for(const auto& key:track.keys)frames.insert(key.frame);
+    for(auto slot:oldSlots)if(!frames.count(int(plan.Read(slot).frame))){error="The free-curve VMD overlaps existing bone motion.";return false;}
+    std::vector<mdl::BoneKey> original;original.reserve(oldSlots.size());
+    std::vector<bone_scale::Matrix> matrices;std::vector<bone_scale::Curve> controls;
+    for(auto index:oldSlots){original.push_back(plan.Read(index));matrices.push_back(scale.Key(int(index)));controls.push_back(scale.KeyCurve(int(index)));}
+    std::vector<unsigned> slots=oldSlots;
+    for(std::size_t index=plan.model.boneCount;slots.size()<frames.size()&&index<plan.capacity;++index)
+        if(!plan.Read(unsigned(index)).frame&&std::find(oldSlots.begin(),oldSlots.end(),unsigned(index))==oldSlots.end())slots.push_back(unsigned(index));
+    while(slots.size()<frames.size()){
+        if(plan.capacity>=mdl::kBoneKeyCapacityLimit)throw std::bad_alloc();slots.push_back(unsigned(plan.capacity++));}
+    std::size_t at=0,n=0;
+    for(int frame:frames){while(at+1<original.size()&&original[at+1].frame<=unsigned(frame))++at;
+        auto key=original[at];key.frame=unsigned(frame);key.allocated=1;key.previous=n?slots[n-1]:0;key.next=n+1<frames.size()?slots[n+1]:0;
+        for(unsigned c=0;c<3;++c)key.position[c]=float(animation_curve::Evaluate(imported.tracks[c],frame).value);
+        BoneTailQuaternion(imported.tracks,frame,key.rotation);
+        for(unsigned lane=0;lane<4;++lane)for(unsigned c=0;c<4;++c)key.interpolation[lane+4*c]=c<2?20:107;
+        auto matrix=matrices[at];
+        if(at+1<original.size()){const float time=float(std::clamp((double(frame)-original[at].frame)/double(original[at+1].frame-original[at].frame),0.0,1.0));
+            matrix=bone_scale::Interpolate(matrix,matrices[at+1],bone_scale::CurveTime(controls[at+1],time));}
+        matrix=BoneTailScale(imported.tracks,frame,matrix);
+        if(!bone_scale::Valid(matrix)){error="Invalid bone scale.";return false;}
+        if(!scale.SetKey(int(slots[n]),matrix)||!scale.SetKeyCurve(int(slots[n]),bone_scale::LinearCurve()))throw std::invalid_argument("bone tail scale storage");
+        plan.Write(slots[n])=key;marks.insert(slots[n]);++n;
+    }
+    for(std::size_t index=frames.size();index<oldSlots.size();++index){plan.Write(oldSlots[index])={};scale.ClearKey(int(oldSlots[index]));}
+    const BoneTailView view{plan,scale};curves.Replace(imported.bone,imported.tracks,view.View());
+    maximum=(std::max)(maximum,unsigned(*frames.rbegin()));return true;
+}
+struct BoneTailResult {bool applied=false,skipped=false;std::set<unsigned> bones;};
+bool ValidateTailCursorStorage(MMDApp& app,unsigned ownSlot)noexcept{
+    if(ownSlot>=kModelSlotCount||!app.ModelSlot(ownSlot))return false;
+    const auto& own=*mdl::Mdl(app.ModelSlot(ownSlot));
+    struct Range{std::uintptr_t first=0,last=0;};std::array<Range,2> writes{};unsigned writeCount=0;
+    const auto range=[](const void* p,std::size_t count,std::size_t size,Range& out)noexcept{const auto first=reinterpret_cast<std::uintptr_t>(p);
+        if(!size||count>(UINTPTR_MAX-first)/size)return false;out={first,first+count*size};return true;};
+    if(own.boneKeyCursors&&!range(own.boneKeyCursors,own.boneCount,sizeof(std::uint32_t),writes[writeCount++]))return false;
+    if(own.boneTrackActive&&!range(own.boneTrackActive,own.boneCount,1,writes[writeCount++]))return false;
+    if(writeCount==2&&writes[0].first<writes[1].last&&writes[1].first<writes[0].last)return false;
+    if(!writeCount)return true;
+    const auto protect=[&](const void* p,std::size_t count,std::size_t size)noexcept{if(!p||!count)return true;Range target;
+        if(!range(p,count,size,target))return false;for(unsigned i=0;i<writeCount;++i)if(writes[i].first<target.last&&target.first<writes[i].last)return false;return true;};
+    if(!protect(&app.state,1,sizeof app.state))return false;
+    for(unsigned slot=0;slot<kModelSlotCount;++slot)if(app.ModelSlot(slot)){
+        const auto& m=*mdl::Mdl(app.ModelSlot(slot));
+        if(!protect(&m,1,sizeof m)||!protect(m.boneTable,m.boneCount,sizeof(mdl::BoneRecord))||
+            !protect(m.bonePhysicsState,m.boneCount,1)||!protect(m.boneSelection,m.boneCount,1)||
+            !protect(m.boneKeyIndices,m.boneCount,sizeof(std::uint32_t))||!protect(m.morphKeyIndices,m.morphCount,sizeof(std::uint32_t))||
+            !protect(m.morphs,m.morphCount,sizeof(mdl::MorphRecord))||!protect(m.morphKeyCursors,m.morphCount,sizeof(std::uint32_t))||!protect(m.morphTrackActive,m.morphCount,1))return false;
+        if(slot!=ownSlot&&(!protect(m.boneKeyCursors,m.boneCount,sizeof(std::uint32_t))||!protect(m.boneTrackActive,m.boneCount,1)))return false;
+        if(m.boneKeys&&!protect(m.boneKeys,mdl::BoneKeyCapacity(m.boneKeys),sizeof(mdl::BoneKey)))return false;
+        if(m.morphKeys&&mdl::MorphKeyPoolIdentity(m.morphKeys)&&!protect(m.morphKeys,mdl::MorphKeyCapacity(m.morphKeys),sizeof(mdl::MorphKey)))return false;
+        if(m.displayKeys&&mdl::KeyPoolIdentity(m.displayKeys)){const auto capacity=mdl::KeyPoolCapacity(m.displayKeys);if(!protect(m.displayKeys,capacity,sizeof(mdl::DisplayKey)))return false;
+            for(std::size_t i=0;i<capacity;++i)if(!protect(m.displayKeys[i].ikStates,m.ikChainCount,1)||!protect(m.displayKeys[i].selectorStates,m.boneOrderCount,sizeof(mdl::BoneReference)))return false;}
+        if(!protect(m.ikChains,m.ikChainCount,sizeof(mdl::IkChain))||!protect(m.boneOrderTable,m.boneOrderCount,sizeof(mdl::BoneOrderEntry)))return false;
+        if(m.ikChains)for(unsigned i=0;i<m.ikChainCount;++i)if(!protect(m.ikChains[i].links,m.ikChains[i].linkCount,sizeof(std::uint16_t)))return false;
+    }
+    return true;
+}
+BoneTailResult ApplyBoneTail(KeyPlan& plan,RegistrationChange& change,const ModelPasteSource& input,std::set<unsigned>& marks){
+    BoneTailResult result;if(input.boneCurveBlock.empty())return result;
+    std::string error;std::vector<bone_curve::VmdTrackImport> imports;
+    if(!bone_curve::DecodeVmdTracks(change.model,input.boneCurveBlock.data(),input.boneCurveBlock.size(),int(input.frameOffset),
+        input.curveTargetsResolved?&input.boneCurveTargets:nullptr,imports,error)){result.skipped=true;return result;}
+    if(imports.empty())return result;
+    // A failure in any bone abandons the complete author block, while the
+    // earlier private standard+scale import remains available for publication.
+    KeyPlan target=plan;auto scale=change.scaleAfter.Clone();auto curves=change.curveAfter->Clone();
+    auto targetMarks=marks;auto maximum=change.maxAfter;
+    try{for(const auto& imported:imports){
+            if(!MirrorBoneTail(target,scale,*curves,imported,targetMarks,maximum,error)){result.skipped=true;return result;}
+            result.bones.insert(unsigned(imported.bone));
+        }}catch(const std::bad_alloc&){throw;}catch(const std::exception&){result.bones.clear();result.skipped=true;return result;}
+    plan.patches.swap(target.patches);plan.reads.swap(target.reads);plan.capacity=target.capacity;
+    change.scaleAfter=std::move(scale);change.curveAfter=std::move(curves);change.maxAfter=maximum;
+    marks.swap(targetMarks);result.applied=true;return result;
+}
 }
 MmsResult PlanBoneKeyPaste(MMDApp& app, unsigned slot, bool mirror,
     std::shared_ptr<HistoryChange>& out, ModelPasteFamilyResult* aggregate,
@@ -643,7 +794,7 @@ MmsResult PlanBoneKeyPaste(MMDApp& app,unsigned slot,bool mirror,const ModelPast
             return MMS_OK;
         };
         const auto count = input.bones.size();
-        if (!count) return displayOnly();
+        if (!count&&input.boneCurveBlock.empty()) return displayOnly();
         if (count > mdl::kBoneKeyCapacityLimit || app.CurrentFrame() < 0)
             return MMS_E_ARGUMENT;
         KeyPlan plan(model, true);
@@ -717,7 +868,7 @@ MmsResult PlanBoneKeyPaste(MMDApp& app,unsigned slot,bool mirror,const ModelPast
             if (!PrepareRangeRotation(model, copy.key, rules, mirror)) return MMS_E_NOT_READY;
             copies.push_back(copy);
         }
-        if (copies.empty()) {
+        if (copies.empty()&&input.boneCurveBlock.empty()) {
             if(aggregate&&!display) {
                 FinishKeyPlan(plan,*change,owners);
                 out=change;aggregate->change=std::move(change);
@@ -742,26 +893,40 @@ MmsResult PlanBoneKeyPaste(MMDApp& app,unsigned slot,bool mirror,const ModelPast
             if (mirror) std::memcpy(plan.Write(target).position, copy.key.key.position, sizeof(copy.key.key.position));
             if (!change->scaleAfter.SetKeyCurve(int(target), copy.curve)) return MMS_E_ARGUMENT;
         }
+        const auto registrationMaximum=change->maxAfter;
+        const auto tail=ApplyBoneTail(plan,*change,input,pastedSlots);
+        bool tailCursorChanged=false;
+        if(tail.applied){if(!ValidateTailCursorStorage(app,slot))return MMS_E_ARGUMENT;change->tailCursorTable=model.boneKeyCursors;change->tailActiveTable=model.boneTrackActive;
+            change->tailInitialFrame=app.CurrentFrame();
+            for(auto bone:tail.bones){registrations.erase(bone);rules.insert(bone);
+                change->tailCursors.push_back({bone,model.boneKeyCursors?model.boneKeyCursors[bone]:0,
+                    static_cast<unsigned char>(model.boneTrackActive?model.boneTrackActive[bone]:0)});
+                tailCursorChanged|=(model.boneKeyCursors&&model.boneKeyCursors[bone]!=bone)||(model.boneTrackActive&&model.boneTrackActive[bone]!=1);}}
         // Ordinary paste resets the shared cursor to the display pool even
         // when that clipboard is empty; mirror paste keeps the bone cursor.
         if (!mirror&&!aggregate) {
             cursor = 1;
             while (cursor < change->displayCapacity && model.displayKeys[cursor].frame) ++cursor;
         }
-        change->searchAfter = int(cursor);
+        change->searchAfter = tail.applied?int(model.boneCount):int(cursor);
         // Pasting does not update the last-registration UI marker.
         CaptureRules(*change, rules);
         const bool changed=FinishKeyPlan(plan,*change,owners,registrations);
+        if(tail.applied){change->evaluationBones.insert(change->evaluationBones.end(),tail.bones.begin(),tail.bones.end());
+            std::sort(change->evaluationBones.begin(),change->evaluationBones.end());
+            change->evaluationBones.erase(std::unique(change->evaluationBones.begin(),change->evaluationBones.end()),change->evaluationBones.end());}
         AttachDisplay(*change,std::move(display));
         if(aggregate) {
-            aggregate->hasKeys=true;aggregate->maxFrame=change->maxAfter;aggregate->searchCursor=change->searchAfter;
+            aggregate->hasKeys=!copies.empty()||tail.applied;aggregate->maxFrame=change->maxAfter;aggregate->searchCursor=change->searchAfter;
             aggregate->markedSlots.assign(pastedSlots.begin(),pastedSlots.end());
-            aggregate->dataChanged=change->scaleChanged||change->curvesChanged;
+            aggregate->overridesSearchCursor=tail.applied;aggregate->curveBlockSkipped=tail.skipped;
+            if(tail.applied){aggregate->hasRegistrationExtent=true;aggregate->registrationMaxFrame=registrationMaximum;}
+            aggregate->dataChanged=change->scaleChanged||change->curvesChanged||tailCursorChanged;
             for(const auto& patch:change->keys)aggregate->dataChanged|=!SameKeyData(patch.before,patch.after);
             // An unchanged source family still participates when another family
             // changes, so its selection and target display sampling are retained.
             out=change;aggregate->change=std::move(change);
-        } else if(changed||change->display||change->searchBefore!=change->searchAfter||change->maxBefore!=change->maxAfter)
+        } else if(changed||tailCursorChanged||change->display||change->searchBefore!=change->searchAfter||change->maxBefore!=change->maxAfter)
             out=std::move(change);
         return MMS_OK;
     });

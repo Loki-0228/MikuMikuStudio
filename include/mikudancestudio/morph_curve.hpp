@@ -69,9 +69,9 @@
 //   uint32 totalBytes             whole block, header included
 //   uint32 crc32                  IEEE CRC32 (reflected, poly 0xEDB88320) of the body
 //   uint8  body[totalBytes - 16]  the payload above
-// A reader that does not know the magic ignores the block, and the declared
-// totalBytes lets a reader that finds a damaged body still step over it, so the
-// bone-scale tail behind it keeps its boundary either way.
+// A reader that does not know the magic ignores the block. The declared size
+// bounds decoding; the model loader advances past the block only after its CRC
+// validates. A damaged body therefore does not establish the next tail boundary.
 
 #pragma once
 
@@ -243,6 +243,8 @@ struct NativeKeyView {
 class AuthoredReplacement {
     struct Impl;
     std::shared_ptr<Impl> impl_;
+    explicit AuthoredReplacement(std::shared_ptr<Impl>);
+    friend class AuthoredImport;
 public:
     AuthoredReplacement(unsigned char*, const std::vector<animation_curve::NamedTrack>&);
     ~AuthoredReplacement();
@@ -262,6 +264,22 @@ public:
         bool Sample(int morph, int frame, float& out) const;
         void Publish() noexcept;
     };
+    std::unique_ptr<Target> Prepare(const NativeKeyView&, bool forward) const;
+};
+// Installs only the optional VMD author layer against an already prepared
+// standard import. Never mirrors or changes native keys. A nonnull targets
+// pointer, including an empty vector, disables encoded-name fallback.
+class AuthoredImport {
+    std::unique_ptr<AuthoredReplacement> transition_;
+public:
+    AuthoredImport(unsigned char*, const NativeKeyView&, const std::uint8_t*,
+                   std::size_t, int frameOffset, const std::vector<int>* targets = nullptr);
+    ~AuthoredImport();
+    bool Changed() const noexcept;
+    bool IsCurrent() const noexcept;
+    const std::vector<unsigned>& ChangedMorphs() const noexcept;
+    std::uint64_t RetainedBytes() const noexcept;
+    using Target = AuthoredReplacement::Target;
     std::unique_ptr<Target> Prepare(const NativeKeyView&, bool forward) const;
 };
 #endif

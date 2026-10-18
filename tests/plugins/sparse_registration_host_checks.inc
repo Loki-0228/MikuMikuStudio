@@ -91,7 +91,12 @@ void Run(MMDApp* app,plugins::SharedHistory& history,int(*value)()){
     Check(app&&!history.UndoCount()&&!history.RedoCount(),"real sparse camera fixture begins with a clean shared journal");
     const auto initial=value();Original original(*app,history);app->CameraKeys()=mdl::KeyPoolCreate<mdl::CameraKey>(8);
     for(auto mode:{plugins::SharedHistory::RecordingMode::AllOperations,plugins::SharedHistory::RecordingMode::ExplicitOnly}){
-        Build(*app);Check(history.SetMode(mode)==MMS_OK,"real sparse explicit registration configures recording mode");
+        Build(*app);
+        // Sparse authoring is preparation, now correctly recorded by the
+        // bound writer. Registration assertions start after that setup node.
+        Check(history.Reset()==MMS_OK,"clear only completed sparse camera authoring setup history");history.Collect();
+        Check(!history.UndoCount()&&!history.RedoCount(),"real sparse registration fixture begins after setup with an empty common journal");
+        Check(history.SetMode(mode)==MMS_OK,"real sparse explicit registration configures recording mode");
         app->CameraMode()=1;app->CurrentFrame()=12;app->SelectGlobalTimelineTrack(GlobalTimelineTrack::Camera);
         SendDlgItemMessageW(app->MainWindow(),panel::kPhysicsFrameCheckbox,BM_SETCHECK,BST_UNCHECKED,0);SamePose(*app);
         const auto pristine=Encode(Read(*app));const std::vector<mdl::CameraKey> before(app->CameraKeys(),app->CameraKeys()+mdl::KeyPoolCapacity(app->CameraKeys()));

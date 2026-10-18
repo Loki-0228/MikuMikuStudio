@@ -20,6 +20,6 @@ MmsResult DecodeModelVmdSource(const char* ansiPath,const wchar_t* widePath,
 // thread-local pointers or replaces the application's clipboard.
 MmsResult ResolveModelVmdTargets(MMDApp&,unsigned slot,ModelVmdSource&) noexcept;
 MmsResult PlanModelVmdImport(MMDApp&,unsigned slot,const ModelVmdSource&,
-    std::shared_ptr<HistoryChange>&) noexcept;
+    std::shared_ptr<HistoryChange>&,ModelPasteReport* = nullptr) noexcept;
 }
 #endif
