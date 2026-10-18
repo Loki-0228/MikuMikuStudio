@@ -91,6 +91,8 @@ void InitFlagSubsystem(MMDApp* app);       // VA 0x00461E00
 
 // ---- file loaders reached from startup dispatch ---------------------------
 void LoadSceneFile();                      // VA 0x00458F80 (.pmm)
+// Candidate paths do not replace the active save target on a refused open.
+bool LoadSceneFile(const wchar_t* candidate);
 void LoadModelFile(MMDApp* app, const wchar_t* path,
                    bool showModelInfo = true);  // VA 0x00460430 (.pmd/.pmx)
 void LoadAccessoryFile(const wchar_t* path);  // VA 0x00460B30 (.x)

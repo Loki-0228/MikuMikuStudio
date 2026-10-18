@@ -507,6 +507,10 @@ set_target_properties(camera_frame_line_payload_tests PROPERTIES RUNTIME_OUTPUT_
 add_test(NAME camera_frame_line_payload COMMAND camera_frame_line_payload_tests)
 set_tests_properties(camera_frame_line_payload PROPERTIES TIMEOUT 20)
 
+add_executable(project_open_identity_tests EXCLUDE_FROM_ALL tests/project_open_identity_tests.cpp)
+target_link_libraries(project_open_identity_tests PRIVATE mikudancestudio_core minhook::minhook winmm dsound)
+set_target_properties(project_open_identity_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+
 add_executable(path_resolve_tests EXCLUDE_FROM_ALL tests/path_resolve_tests.cpp)
 target_link_libraries(path_resolve_tests PRIVATE mikudancestudio_core winmm dsound)
 set_target_properties(path_resolve_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
@@ -1445,6 +1449,10 @@ install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/licenses/" DESTINATION licenses)
 include(cmake/plugin_abi.cmake)
 
 if(Python3_Interpreter_FOUND)
+    add_test(NAME project_open_identity
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/project_open_identity_runner.py"
+                "$<TARGET_FILE:project_open_identity_tests>" "${CMAKE_BINARY_DIR}/tests/project-open-runs")
+    set_tests_properties(project_open_identity PROPERTIES TIMEOUT 150)
     add_test(NAME optional_graphics_imports
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/optional_graphics_imports.py"
                 "$<TARGET_FILE:MikuDanceStudio>")

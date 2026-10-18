@@ -1,5 +1,7 @@
 #include "mikudancestudio/build_profile.hpp"
 #include "mikudancestudio/plugin_storage.hpp"
+#include "mikudancestudio/plugin_runtime.hpp"
+#include "project_open.hpp"
 // ===========================================================================
 // VA 0x00408870 - PathToProjectDir  (original: sub_408870, 0xEF bytes)
 // VA 0x00458F80 - LoadSceneFile    (original: sub_458F80, 0x589B bytes,
@@ -95,10 +97,10 @@ void FontSubInit(MMDApp* app, const wchar_t* directory) {
 }
 
 // VA 0x00458F80 - PMM load shell (phase A).
-static void KeyPoolLoadFailed(MMDApp* app, int fd) {
+static void KeyPoolLoadFailed(MMDApp* app, int fd, bool replaced) {
     const unsigned language = app->EnglishUI();
     _close(fd);
-    ResetAppState(app);
+    if (replaced) ResetAppState(app);
     app->EnglishUI() = language;
     const wchar_t* text[] = {
         L"キーフレームを読み込むためのメモリが不足しています。",
@@ -108,96 +110,139 @@ static void KeyPoolLoadFailed(MMDApp* app, int fd) {
                 L"PMM", MB_OK | MB_ICONERROR);
 }
 
-void LoadSceneFile() {
-
-    MMDApp* app = g_Block;
-
-    if (!plugins::PrepareProjectLoad(app, app->EnvFileName())) return;
-    struct PluginLoadScope { MMDApp* app; ~PluginLoadScope() { plugins::CancelProjectLoad(app); } } pluginLoadScope{app};
-
-    ScopedSceneMutation mutation(*app);
-
-    runtime_log::WritePath("LOAD_SCENE", app->EnvFileName());
-
+void AcceptProjectSceneReplacement(MMDApp* app) {
     NotifyEffectFileOpen(app->EnvFileName());
+    app->SceneModified() = 0;
+    app->WindowLayoutReady() = 0;
+    PathToProjectDir(app->PathWorkspace().projectDirectory, app->EnvFileName());
+}
 
-    app->SceneModified() = 0;                                  // 0x458FE6
+bool LoadSceneFile(const wchar_t* candidate) {
+    MMDApp* app = g_Block;
+    if (!app || !candidate) return false;
+    const auto length = wcsnlen_s(candidate, 0x100);
+    if (!length || length >= 0x100) return false;
+    static thread_local bool opening = false;
+    if (opening || app->SceneMutationInProgress() || plugins::InCallback()) return false;
+    struct OpenScope {
+        bool& active;
+        explicit OpenScope(bool& value) : active(value) { active = true; }
+        ~OpenScope() { active = false; }
+    } openScope(opening);
+    // The input can alias EnvFileName. Freeze it before assigning read context.
+    wchar_t path[0x100]{};
+    std::wmemcpy(path, candidate, length + 1);
+    bool replaced = false;
+    struct RestoreIdentity {
+        MMDApp* app;
+        bool& replaced;
+        wchar_t file[0x100], directory[0x100];
+        unsigned char dirty, layout;
+        bool committed = false;
+        RestoreIdentity(MMDApp* value, bool& changed) : app(value), replaced(changed),
+            dirty(value->SceneModified()), layout(value->WindowLayoutReady()) {
+            std::memcpy(file, app->EnvFileName(), sizeof file);
+            std::memcpy(directory, app->PathWorkspace().projectDirectory, sizeof directory);
+        }
+        ~RestoreIdentity() {
+            if (committed) return;
+            if (!replaced) {
+                std::memcpy(app->EnvFileName(), file, sizeof file);
+                std::memcpy(app->PathWorkspace().projectDirectory, directory, sizeof directory);
+                app->SceneModified() = dirty;
+                app->WindowLayoutReady() = layout;
+            } else {
+                // The native loader has already replaced or reset the old
+                // scene. Never attach that result to either the old file or
+                // the rejected candidate. This is not a scene rollback.
+                app->EnvFileName()[0] = L'\0';
+                app->PathWorkspace().projectDirectory[0] = L'\0';
+                if (app->MainWindow()) SetWindowTextW(app->MainWindow(), L"MikuMikuDance");
+            }
+        }
+    } restore{app, replaced};
+
+    // Pair recovery, the PMM read lock and serializer candidates stay inside
+    // the existing plugin transaction. No current project identity is changed.
+    if (!plugins::PrepareProjectLoad(app, path)) return false;
+    struct PluginLoadScope {
+        MMDApp* app;
+        ~PluginLoadScope() { plugins::CancelProjectLoad(app); }
+    } pluginLoadScope{app};
+    runtime_log::WritePath("LOAD_SCENE", path);
+
     int fd = -1;
-    const errno_t err =
-        _wsopen_s(&fd, app->EnvFileName(), 0x8000, 0x40, 0x80);
-
+    const errno_t err = _wsopen_s(&fd, path, 0x8000, 0x40, 0x80);
     if (err != 0) {
         const wchar_t* format[] = {L"%ls\nエラーコード: %d", L"%ls\nError code: %d", L"%ls\n错误码：%d"};
         wchar_t detail[512]{};
-        swprintf_s(detail, format[app->EnglishUI() <= kUiChinese ? app->EnglishUI() : kUiEnglish], app->EnvFileName(), err);
-
+        swprintf_s(detail, format[app->EnglishUI() <= kUiChinese ? app->EnglishUI() : kUiEnglish], path, err);
         ShowUiMessage(app, app->MainWindow(), UiMessage::OpenProjectError, MB_OK, detail);
-
-        return;
+        return false;
     }
-
-    app->state.windowLayoutReady = 0;              // 0x459055
-    PathToProjectDir(app->PathWorkspace().projectDirectory,     // 0x45905C
-                      app->EnvFileName());
-
     char hdr[0x1E]{};
-    const int read = _read(fd, hdr, sizeof(hdr));                                       // 0x459070
-    if (read != sizeof(hdr) || std::memcmp(hdr, "Polygon Movie maker", 19) != 0) {
-        ShowUiMessage(app, app->MainWindow(), UiMessage::InvalidProjectFile, MB_OK, app->EnvFileName());
-        _close(fd);                                             // 0x4590C1
-        return;
+    const int read = _read(fd, hdr, sizeof hdr);
+    if (read != sizeof hdr || std::memcmp(hdr, "Polygon Movie maker", 19) != 0) {
+        ShowUiMessage(app, app->MainWindow(), UiMessage::InvalidProjectFile, MB_OK, path);
+        _close(fd);
+        return false;
     }
-
-    // version field at hdr+0x14 (5-byte compare incl. NUL as the original).
-    if (strncmp(hdr + 0x14, "0001", 5) == 0) {
-        // The inline v1 loader body (0x45916D..0x45E7F7) owns the fd and
-        // closes it on every path itself (pmm_load_v1.cpp).
-        try { LoadSceneV1(app, fd); }
-        catch (const pmm_io::UnsupportedText&) {
-            const auto language = app->EnglishUI();
-            _close(fd); ResetAppState(app); app->EnglishUI() = language;
-            original_import::Refuse(app->MainWindow(), language);
-        }
-        catch (const std::bad_alloc&) { KeyPoolLoadFailed(app, fd); }
-        catch (const std::runtime_error&) { _close(fd); ResetAppState(app); ShowUiMessage(app, app->MainWindow(), UiMessage::InvalidProjectFile, MB_OK | MB_ICONERROR); }
-        LocalizeUI(app);
-        return;
-    }
-    if (strncmp(hdr + 0x14, "0002", 5) == 0
+    const bool version1 = strncmp(hdr + 0x14, "0001", 5) == 0;
+    const bool supported = version1 || strncmp(hdr + 0x14, "0002", 5) == 0
 #if !MMD_ORIGINAL_PROFILE
         || strncmp(hdr + 0x14, "0003", 5) == 0
 #endif
-    ) {
-        try {
-            pmm_io::CheckedReads checked(fd);
-            LoadSceneV2(app, fd);
-        } catch (const pmm_io::UnsupportedText&) {
-            const auto language = app->EnglishUI();
-            _close(fd); ResetAppState(app); app->EnglishUI() = language;
-            original_import::Refuse(app->MainWindow(), language);
-        } catch (const std::bad_alloc&) {
-            KeyPoolLoadFailed(app, fd);
-        } catch(const pmm_io::ShortRead& error) {
-            const auto language=app->EnglishUI();
-            const wchar_t* formats[]={L"%ls\n位置：%lld、必要なバイト数：%u、読み取ったバイト数：%d",
-                L"%ls\nByte offset: %lld; expected bytes: %u; received bytes: %d",
-                L"%ls\n文件偏移：%lld；应读取：%u 字节；实际读取：%d 字节"};
-            wchar_t detail[512]{};
-            swprintf_s(detail,formats[language<=2?language:1],app->EnvFileName(),error.offset,error.expected,error.received);
-            _close(fd);
-            ResetAppState(app);
-            app->EnglishUI()=language;
-            ShowUiMessage(app,app->MainWindow(),UiMessage::IncompleteProjectFile,MB_OK|MB_ICONERROR,detail);
-        } catch (const std::runtime_error&) {
-            const auto language = app->EnglishUI();
-            _close(fd); ResetAppState(app); app->EnglishUI() = language;
-            ShowUiMessage(app, app->MainWindow(), UiMessage::InvalidProjectFile, MB_OK | MB_ICONERROR);
-        }
-        LocalizeUI(app);                                     // 0x459106
-        return;                                                 // 0x45E7F7
+        ;
+    if (!supported) {
+        ShowUiMessage(app, app->MainWindow(), UiMessage::UnsupportedProjectVersion, MB_OK, path);
+        _close(fd);
+        return false;
     }
-    ShowUiMessage(app, app->MainWindow(), UiMessage::UnsupportedProjectVersion, MB_OK, app->EnvFileName());
-    _close(fd);                                                 // 0x459149
+
+    ScopedSceneMutation mutation(*app);
+    // Native asset resolution and success-tail notifications need this read
+    // context. The scope restores it if the history boundary refuses entry.
+    std::wmemcpy(app->EnvFileName(), path, length + 1);
+    bool loaded = false;
+    try {
+        if (version1) loaded = TryLoadSceneV1(app, fd, replaced);
+        else {
+            pmm_io::CheckedReads checked(fd);
+            loaded = TryLoadSceneV2(app, fd, replaced);
+        }
+    } catch (const pmm_io::UnsupportedText&) {
+        const auto language = app->EnglishUI();
+        _close(fd);
+        if (replaced) ResetAppState(app);
+        app->EnglishUI() = language;
+        original_import::Refuse(app->MainWindow(), language);
+    } catch (const std::bad_alloc&) {
+        KeyPoolLoadFailed(app, fd, replaced);
+    } catch (const pmm_io::ShortRead& error) {
+        const auto language = app->EnglishUI();
+        const wchar_t* formats[] = {L"%ls\n位置：%lld、必要なバイト数：%u、読み取ったバイト数：%d",
+            L"%ls\nByte offset: %lld; expected bytes: %u; received bytes: %d",
+            L"%ls\n文件偏移：%lld；应读取：%u 字节；实际读取：%d 字节"};
+        wchar_t detail[512]{};
+        swprintf_s(detail, formats[language <= 2 ? language : 1], path, error.offset, error.expected, error.received);
+        _close(fd);
+        if (replaced) ResetAppState(app);
+        app->EnglishUI() = language;
+        ShowUiMessage(app, app->MainWindow(), UiMessage::IncompleteProjectFile, MB_OK | MB_ICONERROR, detail);
+    } catch (const std::runtime_error&) {
+        const auto language = app->EnglishUI();
+        _close(fd);
+        if (replaced) ResetAppState(app);
+        app->EnglishUI() = language;
+        ShowUiMessage(app, app->MainWindow(), UiMessage::InvalidProjectFile, MB_OK | MB_ICONERROR, path);
+    }
+    if (replaced) LocalizeUI(app);
+    restore.committed = loaded;
+    return loaded;
+}
+
+void LoadSceneFile() {
+    if (g_Block) (void)LoadSceneFile(g_Block->EnvFileName());
 }
 
 }  // namespace mikudancestudio

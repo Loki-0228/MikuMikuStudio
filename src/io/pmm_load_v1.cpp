@@ -1,4 +1,5 @@
 #include "mikudancestudio/plugin_storage.hpp"
+#include "project_open.hpp"
 #include "mikudancestudio/key_pool.hpp"
 #include "mikudancestudio/mmv4mms.hpp"
 #include "mikudancestudio/native_media.hpp"
@@ -2189,10 +2190,12 @@ static void LoadSceneV1_SuccessTail(PmmV1LoadContext& ctx) {
 
 }  // namespace
 
-void LoadSceneV1(MMDApp* app, int fd) {
+bool TryLoadSceneV1(MMDApp* app, int fd, bool& replaced) {
     auto* s = app;
     PmmV1LoadContext ctx(app);
     if (!plugins::BeginProjectSceneReplacement(app)) throw std::runtime_error("history scene replacement refused");
+    replaced = true;
+    AcceptProjectSceneReplacement(app);
     pmm_settings::Reset(*app);
 
     LoadSceneV1_DisposeAndHeader(ctx, fd);            // 0x45916D..0x459630
@@ -2202,7 +2205,7 @@ void LoadSceneV1(MMDApp* app, int fd) {
         unsigned char modelIdx = 0;
         for (;;) {
             if (!LoadSceneV1_ModelBlock(ctx, fd))
-                return;  // AbortV1Load already ran (0x45A7C5)
+                return false;  // AbortV1Load already ran (0x45A7C5)
             if (++modelIdx >= modelCount) break;                 // 0x45A6B4
         }
     }
@@ -2212,7 +2215,7 @@ void LoadSceneV1(MMDApp* app, int fd) {
     LogV1Stage("regcombo-done", _tell(fd));
     LoadSceneV1_CameraTrack(ctx, fd);                 // 0x45AC10..0x45B090
     LoadSceneV1_LightTrack(ctx, fd);                  // 0x45B090..0x45B761
-    if (!LoadSceneV1_AccessoryBlock(ctx, fd)) return; // 0x45B761..0x45C479
+    if (!LoadSceneV1_AccessoryBlock(ctx, fd)) return false; // 0x45B761..0x45C479
     LogV1Stage("accessories-done", _tell(fd));
     LoadSceneV1_ConfigBlock(ctx, fd);                 // 0x45C48C..0x45D278
     LoadSceneV1_ReadGatedTail(ctx, fd);               // 0x45D278..0x45E117
@@ -2223,6 +2226,12 @@ void LoadSceneV1(MMDApp* app, int fd) {
     mmv4mms::ProjectOpened(app, app->EnvFileName());
     plugins::CommitProjectLoad(app);
     recent_projects::Record(app, app->EnvFileName());
+    return true;
+}
+
+void LoadSceneV1(MMDApp* app, int fd) {
+    bool replaced = false;
+    (void)TryLoadSceneV1(app, fd, replaced);
 }
 
 }  // namespace mikudancestudio

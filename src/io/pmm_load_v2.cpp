@@ -1,4 +1,5 @@
 #include "mikudancestudio/plugin_storage.hpp"
+#include "project_open.hpp"
 #include "mikudancestudio/key_pool.hpp"
 #include "mikudancestudio/mmv4mms.hpp"
 #include "mikudancestudio/native_media.hpp"
@@ -3253,10 +3254,12 @@ static void LoadSceneV2_SuccessTail(PmmV2LoadContext& ctx,
 
 }  // namespace
 
-void LoadSceneV2(MMDApp* app, int fd) {  // was Sub450000, VA 0x00450000
+bool TryLoadSceneV2(MMDApp* app, int fd, bool& replaced) {  // was Sub450000, VA 0x00450000
     auto* s = app;
     PmmV2LoadContext ctx(app);
     if (!plugins::BeginProjectSceneReplacement(app)) throw std::runtime_error("history scene replacement refused");
+    replaced = true;
+    AcceptProjectSceneReplacement(app);
     pmm_settings::Reset(*app);
 
     LoadSceneV2_DisposeAndHeader(ctx, fd);            // 0x450040..0x45044C
@@ -3279,7 +3282,7 @@ void LoadSceneV2(MMDApp* app, int fd) {  // was Sub450000, VA 0x00450000
         for (;;) {  // 0x4504BA
             if (!LoadSceneV2_ModelBlock(ctx, fd, workspaces, modelCount,
                                         modelIdx))
-                return;  // AbortV2Load already ran (0x45426C family)
+                return false;  // AbortV2Load already ran (0x45426C family)
             if (++modelIdx >= modelCount) break;                // 0x45410A
         }
     }
@@ -3303,7 +3306,7 @@ void LoadSceneV2(MMDApp* app, int fd) {  // was Sub450000, VA 0x00450000
         // Defect B3-26.
         FreeRecordArrays(workspaces, modelCount);
         delete[] workspaces;
-        return;
+        return false;
     }
     LoadSceneV2_ConfigBlock(ctx, fd);                   // 0x456617..0x45776E
     LoadSceneV2_PhysicsTracksAndClose(ctx, fd, modelCount);  // 0x45777C..0x458112
@@ -3317,6 +3320,12 @@ void LoadSceneV2(MMDApp* app, int fd) {  // was Sub450000, VA 0x00450000
     mmv4mms::ProjectOpened(app, app->EnvFileName());
     recent_projects::Record(app, app->EnvFileName());
     plugins::CommitProjectLoad(app);
+    return true;
+}
+
+void LoadSceneV2(MMDApp* app, int fd) {
+    bool replaced = false;
+    (void)TryLoadSceneV2(app, fd, replaced);
 }
 
 }  // namespace mikudancestudio

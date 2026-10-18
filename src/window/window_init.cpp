@@ -462,10 +462,11 @@ bool InitMainWindowAndD3D(MMDApp* app, void* hInstanceIn, int nShowCmd) {
         // truncating `destination` in place (docs/ARCHITECTURE.md §8).
         wchar_t dirBuf[1000];
         if (wcsstr(destination, L".pmm") || wcsstr(destination, L".PMM")) {
-            wcscpy_s(app->DirUser(), 0x3E8,
-                     ExtractDirFromPath(dirBuf, destination, 1000));
-            wcscpy_s(app->EnvFileName(), 0x100, destination);
-            LoadSceneFile();                                    // 0x458F80
+            // The startup command line is a candidate, not an active project.
+            app->EnvFileName()[0] = L'\0';
+            if (LoadSceneFile(destination))
+                wcscpy_s(app->DirUser(), 0x3E8,
+                         ExtractDirFromPath(dirBuf, destination, 1000));
         } else if (wcsstr(destination, L".pmd") || wcsstr(destination, L".PMD") ||
                    wcsstr(destination, L".pmx") || wcsstr(destination, L".PMX")) {
             wcscpy_s(app->DirModel(), 0x3E8,

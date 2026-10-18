@@ -174,7 +174,7 @@ bool HandleMessage(MMDApp* app,UINT msg,WPARAM wp,LPARAM lp) {
             }
             if(app->SceneModified() && ShowUiMessage(app,app->MainWindow(),UiMessage::OpenUnsaved,MB_OKCANCEL|MB_TOPMOST)!=IDOK)return true;
             if(path.size()>=kPathFieldCapacity)return true;
-            wcscpy_s(app->EnvFileName(),kPathFieldCapacity,path.c_str());LoadSceneFile();return true;
+            (void)LoadSceneFile(path.c_str());return true;
         }
     }
 #endif
