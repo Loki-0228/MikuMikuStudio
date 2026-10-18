@@ -71,6 +71,8 @@ cmake --build build/hello-menu --config Release
 
 对象 ID 不使用内存地址。保存为包含 MMS 扩展的 PMM 后重开，已发布的对象及场景元素 ID 保留，运行时代次变化。已删除对象和旧代次引用返回 STALE；尚未释放的旧快照及其嵌套数组仍可读取。插件持有快照时，宿主保留其服务上下文和 DLL，直到租约释放。绑定骨骼矩阵来自源骨骼原点，不能作为物理后姿态使用。
 
+附件对象的 `MmsObjectV1.name` 是当前显示名称，`sourcePath` 保留来源路径。改名后的新快照读取新名称，已有租约保持原名称。旧附件名称为空时，以来源文件名作为兼容回退；未终止的名称使快照获取返回 NOT_READY。
+
 网格通道返回一个 `MmsMeshV1`。模型顶点来自 CPU 原始记录，位置、普通 UV、附加 UV 和材质参数在副本中恢复 Morph 基准值；附件读取加载器保留的原始 D3DX 网格，锁定结束前复制数据。快照不暴露 GPU 指针。三角形用稳定材质 ID，权重用同一对象的骨骼 ID。额外 UV 按 float4 连续排列，未声明的 UV、未使用的权重和 SDEF 字段为零。
 
 绑定通道返回一个 `MmsBindingV1`。`vertexBindings` 是 `uint32_t` 数组，逐个显示顶点指向 `bindVertices` 的索引。阶段 0 的 `morphVertices` 与 `bindVertices` 相同。SDEF 的 `sdefR0`、`sdefR1` 是相对于加权中心的偏移；附件的权重类型为 `MMS_WEIGHT_NONE`，骨骼 ID 和权重均为零。ABI 可表达 QDEF，当前 MMS 文件导入器仍只接受 PMX 2.0；运行时 QDEF 记录测试不代表 PMX 2.1 文件导入已经实现。

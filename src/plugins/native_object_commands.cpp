@@ -1,5 +1,6 @@
 #include "native_object_commands.hpp"
 #if !MMD_ORIGINAL_PROFILE
+#include "native_accessory_settings.hpp"
 #include "native_history_commands.hpp"
 #include "native_global_commands.hpp"
 #include "native_morph_commands.hpp"
@@ -22,10 +23,12 @@
 #include "mikudancestudio/text_encoding.hpp"
 #include "mikudancestudio/ui_language.hpp"
 #include "mikudancestudio/ui_message.hpp"
+#include "mikudancestudio/ui_translation.hpp"
 #include <commctrl.h>
 #include <array>
 #include <cstdio>
 
+namespace mikudancestudio { INT_PTR __stdcall AccessorySettingsDlgProc(HWND, UINT, WPARAM, LPARAM); }
 namespace mikudancestudio::plugins {
 namespace {
 class Operation;
@@ -38,6 +41,13 @@ struct SelectionToken {
 };
 thread_local SelectionToken pendingSelection;
 thread_local bool hasPendingSelection = false;
+struct AccessorySettingsSession {
+    MMDApp& app;
+    AccessorySettingsPlan plan;
+    HWND dialog = nullptr;
+    MmsResult result = MMS_E_CANCELLED;
+};
+thread_local AccessorySettingsSession* accessorySettings = nullptr;
 constexpr UINT_PTR kOperationSubclass = 0x4d4d536e;
 
 bool Ready(MMDApp& app, bool pluginCall = false) noexcept {
@@ -211,12 +221,14 @@ bool RefreshUi(MMDApp& app, SharedHistory& history, const scene_history_ui::Sele
     if (topologyChanged) {
         PostModelReload2(&app);
         EnsureInterpChannelCombo(&app);
-        if (app.CameraMode() && app.Renderer() && app.PanelDC()) PostLanguageSweep(&app);
         SetModelExtensionMenuEnabled(&app, !app.CameraMode() && app.SelectedModel() != nullptr);
     }
+    // Metadata edits keep the same object pointers/counts, but order/name
+    // changes invalidate the cached timeline labels and row-to-slot mapping.
+    // Rebuild only the camera-mode list; this path never seeks or evaluates.
+    if (app.CameraMode() && app.Renderer() && app.PanelDC()) PostLanguageSweep(&app);
     EnableMenuItem(GetMenu(main), 249, MF_BYCOMMAND |
-        (SendDlgItemMessageW(main, 471, CB_GETCOUNT, 0, 0) > 0 && !BoundNativePoseHistory(&app)
-            ? MF_ENABLED : MF_GRAYED));
+        (SendDlgItemMessageW(main, 471, CB_GETCOUNT, 0, 0) > 0 ? MF_ENABLED : MF_GRAYED));
     AccessoryReadout(app);
     EnableWindow(GetDlgItem(main, panel::kUndoButton), history.UndoCount() != 0);
     EnableWindow(GetDlgItem(main, panel::kRedoButton), history.RedoCount() != 0);
@@ -365,6 +377,84 @@ bool TryDeleteBoundModel(MMDApp* app, HWND window) noexcept { return TryDelete(a
 bool TryDeleteBoundAccessory(MMDApp* app, HWND window) noexcept { return TryDelete(app, window, false); }
 bool TryImportBoundModel(MMDApp* app, const wchar_t* path, bool showInfo) noexcept { return TryImport(app, path, true, showInfo); }
 bool TryImportBoundAccessory(MMDApp* app, const wchar_t* path) noexcept { return TryImport(app, path, false, false); }
+bool BoundAccessorySettingsDialog(const MMDApp* app, HWND dialog) noexcept {
+    return accessorySettings && &accessorySettings->app == app && accessorySettings->dialog == dialog &&
+        NativeObjectOperationActive(app) && !NativeObjectPublicationAuthorized(app);
+}
+bool InitializeBoundAccessorySettings(MMDApp* app, HWND dialog, int& count) noexcept {
+    if (!accessorySettings || &accessorySettings->app != app || accessorySettings->dialog ||
+        !NativeObjectOperationActive(app) || GetParent(dialog) != app->MainWindow()) return false;
+    accessorySettings->dialog = dialog;
+    const auto result = Boundary([&]() -> MmsResult {
+        std::array<mdl::AccessoryRecord*, kModelSlotCount> order{};
+        count = 0;
+        for (unsigned slot = 0; slot < kModelSlotCount; ++slot) if (auto* object = app->AccessorySlot(slot)) {
+            if (object->order >= kModelSlotCount || order[object->order]) return MMS_E_STALE;
+            order[object->order] = object; ++count;
+        }
+        if (!count || app->AccessoryOrderArray()) return MMS_E_NOT_READY;
+        app->AccessoryOrderArray() = std::calloc(std::size_t(count), sizeof(mdl::AccessoryRecord*));
+        if (!app->AccessoryOrderArray()) return MMS_E_MEMORY;
+        auto** scratch = static_cast<mdl::AccessoryRecord**>(app->AccessoryOrderArray());
+        const auto list = GetDlgItem(dialog, panel::kOrderListBox);
+        for (int row = 0; row < count; ++row) {
+            if (!order[row]) return MMS_E_STALE;
+            scratch[row] = order[row];
+            const auto text = text_encoding::Display(order[row]->name);
+            if (SendMessageW(list, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(text.c_str())) != row) return MMS_E_MEMORY;
+        }
+        if (!SetDlgItemInt(dialog, panel::kAccessoryOrderEdit, app->AccessoryRenderSplitOrder(), FALSE)) return MMS_E_FAILED;
+        SendMessageW(list, LB_SETCURSEL, WPARAM(-1), 0);
+        return MMS_OK;
+    });
+    if (result) accessorySettings->result = result;
+    return result == MMS_OK;
+}
+bool AcceptBoundAccessorySettings(MMDApp* app, HWND dialog) noexcept {
+    if (!BoundNativePoseHistory(app)) return false;
+    if (!BoundAccessorySettingsDialog(app, dialog)) { EndDialog(dialog, IDCANCEL); return true; }
+    accessorySettings->result = accessorySettings->plan.ReadDialog(dialog);
+    EndDialog(dialog, accessorySettings->result == MMS_OK ? 1 : IDCANCEL);
+    return true;
+}
+bool TryEditBoundAccessorySettings(MMDApp* app) noexcept {
+    if (!app) return false;
+    auto* history = BoundNativePoseHistory(app); if (!history) return false;
+    if (!Ready(*app) || EditorsOpen(*app) || NativeObjectUiPending(app) || accessorySettings) return true;
+    if (history->CheckNativeEdit() != MMS_OK) return true;
+    const auto result = Boundary([&]() -> MmsResult {
+        Operation scope(*app); AccessorySettingsSession session{*app};
+        if (auto r = session.plan.Begin(*app)) return r;
+        const auto selection = CaptureSelectionToken(*app);
+        accessorySettings = &session;
+        struct Cleanup {
+            MMDApp& app;
+            ~Cleanup() { accessorySettings = nullptr; std::free(app.AccessoryOrderArray()); app.AccessoryOrderArray() = nullptr; }
+        } cleanup{*app};
+        const auto response = UiDialogBoxParamA(static_cast<HINSTANCE>(app->HInstance()),
+            MAKEINTRESOURCEA(app->EnglishUI() ? 0x293 : 0x273), app->MainWindow(), AccessorySettingsDlgProc, 0);
+        // Scratch data is no longer an active editor when entering the journal.
+        std::free(app->AccessoryOrderArray()); app->AccessoryOrderArray() = nullptr;
+        accessorySettings = nullptr;
+        if (response == -1) return MMS_E_FAILED;
+        if (response != 1) return session.result == MMS_E_CANCELLED ? MMS_OK : session.result;
+        if (session.result != MMS_OK) return session.result;
+        std::shared_ptr<HistoryChange> change;
+        if (auto r = session.plan.Take(change)) return r;
+        if (!change) return MMS_OK;
+        {
+            Publication allow(scope);
+            std::unique_ptr<SharedHistory::NativeTransaction> transaction;
+            if (auto r = history->PrepareNative("Accessory settings", std::move(change), transaction)) return r;
+            if (auto r = history->CommitNative(std::move(transaction))) return r;
+        }
+        app->SceneModified() = 1;
+        RefreshPublishedUi(*app, *history, selection);
+        return MMS_OK;
+    });
+    if (result != MMS_OK) runtime_log::Write("PLUGIN_ABI accessory settings refused: %d", result);
+    return true;
+}
 bool RefreshBoundObjectUi(MMDApp& app, SharedHistory& history) noexcept {
     if (!Ready(app)) return false;
     return Boundary([&]() -> MmsResult {
@@ -379,8 +469,15 @@ MmsResult RunBoundObjectHistory(MMDApp& app, SharedHistory& history, bool redo, 
         Operation scope(app);
         const auto selection = CaptureSelectionToken(app);
         std::array<const void*, kModelSlotCount * 2> objects{};
+        struct AccessoryUi { std::uint8_t order = 0; std::array<char, 100> name{}; };
+        std::array<AccessoryUi, kModelSlotCount> accessoryUi{};
+        const auto split = app.AccessoryRenderSplitOrder();
         for (unsigned i = 0; i < kModelSlotCount; ++i) {
             objects[i] = app.ModelSlot(i); objects[i + kModelSlotCount] = app.AccessorySlot(i);
+            if (const auto* a = app.AccessorySlot(i)) {
+                accessoryUi[i].order = a->order;
+                std::memcpy(accessoryUi[i].name.data(), a->name, sizeof a->name);
+            }
         }
         {
             Publication allow(scope);
@@ -389,14 +486,17 @@ MmsResult RunBoundObjectHistory(MMDApp& app, SharedHistory& history, bool redo, 
         bool changedObjects = false;
         for (unsigned i = 0; i < kModelSlotCount; ++i)
             changedObjects = changedObjects || objects[i] != app.ModelSlot(i) || objects[i + kModelSlotCount] != app.AccessorySlot(i);
+        bool changedLists = changedObjects || split != app.AccessoryRenderSplitOrder();
+        for (unsigned i = 0; i < kModelSlotCount && !changedLists; ++i) if (const auto* a = app.AccessorySlot(i))
+            changedLists = a->order != accessoryUi[i].order || std::memcmp(a->name, accessoryUi[i].name.data(), sizeof a->name);
         if (changedObjects) SafeSelection(app);
         if (deferUi) {
             // A plugin may pump before its invocation returns. Make native
             // selection safe now, but leave every control update to the host.
-            if (changedObjects) ScheduleUi(app, &selection);
+            if (changedLists) ScheduleUi(app, &selection);
         } else {
-            PublishBoundPoseEdit(app, history, true);
-            if (changedObjects) RefreshPublishedUi(app, history, selection);
+            PublishBoundPoseEdit(app, history, history.LastPublicationRequiresPhysicsReset());
+            if (changedLists) RefreshPublishedUi(app, history, selection);
             else {
                 // The journal already published its local track evaluation.
                 // Refresh values without seeking, while Operation still blocks

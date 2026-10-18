@@ -372,6 +372,7 @@ void CrossModelJournal(){
 #include "native_model_key_checks.inc"
 #include "native_model_range_checks.inc"
 #include "native_object_command_checks.inc"
+#include "native_accessory_settings_checks.inc"
 #include "native_vpd_import_checks.inc"
 #include "native_vmd_import_checks.inc"
 #include "native_shadow_ambient_checks.inc"
@@ -412,6 +413,10 @@ void CrossModelJournal(){
 int main(int argc,char** argv){
     std::setvbuf(stdout,nullptr,_IONBF,0);
     const auto run=[](const char* name,void(*test)()){std::printf("RUN %s\n",name);test();};
+    if(argc==2&&!std::strcmp(argv[1],"--accessory-settings-only")) {
+        run("NativeAccessorySettingsChecks",NativeAccessorySettingsChecks);
+        std::printf("PASS accessory settings: %u checks\n",checks);return 0;
+    }
     if(argc==2&&!std::strcmp(argv[1],"--model-viewport-only")) {
         run("NativeModelViewportHistoryChecks",NativeModelViewportHistoryChecks);
         std::printf("PASS native model viewport: %u checks\n",checks);return 0;
@@ -688,6 +693,7 @@ int main(int argc,char** argv){
     run("NativeModelKeyChecks",NativeModelKeyChecks);
     run("NativeModelRangeChecks",NativeModelRangeChecks);
     run("NativeObjectCommandChecks",NativeObjectCommandChecks);
+    run("NativeAccessorySettingsChecks",NativeAccessorySettingsChecks);
     run("PoseAndStale",PoseAndStale);run("KeysAndChain",KeysAndChain);run("Bake",Bake);
     run("Deletion",Deletion);run("EmptyAndCycle",EmptyAndCycle);run("FreeCurves",FreeCurves);
     run("Scatter",Scatter);run("FailedNativeCommands",FailedNativeCommands);run("RemovalBindings",RemovalBindings);

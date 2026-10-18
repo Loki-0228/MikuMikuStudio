@@ -95,7 +95,10 @@ MmsResult Capture(MMDApp* app, const MmsSceneQueryV1& query, std::shared_ptr<con
         } else {
             const auto& accessory = *static_cast<const mdl::AccessoryRecord*>(token);
             object.sourcePath = data->Keep(Utf8(accessory.sourcePath));
-            object.name = data->Keep(Utf8(fs::path(accessory.sourcePath).stem().native())); object.visible = accessory.visible;
+            if (!std::memchr(accessory.name, 0, sizeof accessory.name)) return MMS_E_NOT_READY;
+            const auto label = accessory.name[0] ? text_encoding::Display(accessory.name) : fs::path(accessory.sourcePath).stem().native();
+            if (accessory.name[0] && label.empty()) return MMS_E_NOT_READY;
+            object.name = data->Keep(Utf8(label)); object.visible = accessory.visible;
             // Stage zero is source binding space. Scene attachment transforms
             // belong to the evaluated stages and are not read from live bones.
         }

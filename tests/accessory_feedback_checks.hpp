@@ -6,6 +6,8 @@ DialogAction action = DialogAction::Settings;
 MoveAction moveAction = MoveAction::Buttons;
 int split = -1, moveFrom = -1, moveTo = -1, dialogs = 0, initialSplit = -1;
 bool cancelSettings = false;
+int renameRow = -1;
+const wchar_t* renameText = nullptr;
 void ProbeOrderMoves(MMDApp*, HWND);
 
 LRESULT CALLBACK HideDialog(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR id, DWORD_PTR) {
@@ -67,6 +69,12 @@ LRESULT CALLBACK InspectDialog(int code, WPARAM wp, LPARAM lp) {
                         SendMessageW(dialog,message,panel::kOrderListBox,reinterpret_cast<LPARAM>(&info));
                     }
                 }
+                if (renameText) {
+                    const auto list = GetDlgItem(dialog,panel::kOrderListBox);
+                    SendMessageW(list,LB_SETCURSEL,renameRow,0);
+                    SetDlgItemTextW(dialog,panel::kAccessoryNameEdit,renameText);
+                    SendMessageW(dialog,WM_COMMAND,633,0);
+                }
                 PostMessageW(dialog, WM_COMMAND, cancelSettings ? IDCANCEL : 0x278, 0);
             } else {
                 Check(GetDlgItem(dialog, IDOK) && GetDlgItem(dialog, IDCANCEL), "accessory delete confirmation");
@@ -78,9 +86,10 @@ LRESULT CALLBACK InspectDialog(int code, WPARAM wp, LPARAM lp) {
     return CallNextHookEx(nullptr, code, wp, lp);
 }
 void Settings(MMDApp* app, int value = -1, int from = -1, int to = -1, bool cancel = false,
-              MoveAction method = MoveAction::Buttons) {
+              MoveAction method = MoveAction::Buttons, int nameRow = -1, const wchar_t* name = nullptr) {
     action = DialogAction::Settings; split = value; moveFrom = from; moveTo = to; cancelSettings = cancel;
     moveAction=method;
+    renameRow=nameRow;renameText=name;
     const int before = dialogs;
     CmdFileMenu(app, app->MainWindow(), 249, 0);
     Check(dialogs == before + 1, "exercise one production accessory order dialog");
@@ -110,6 +119,7 @@ void Selected(MMDApp* app, int slot, int order) {
           "accessory position controls show the selected object's values");
 }
 #include "accessory_order_checks.hpp"
+#include "accessory_settings_history_checks.hpp"
 } // namespace accessory_feedback
 
 void CheckAccessoryFeedback(MMDApp* app, const std::filesystem::path& output, const wchar_t* mode) {
@@ -203,6 +213,16 @@ void CheckAccessoryFeedback(MMDApp* app, const std::filesystem::path& output, co
             roundTrip(L"drag-"+std::to_wstring(language));
             Check(app->AccessorySlot(2)->order==0&&app->AccessorySlot(1)->order==2&&app->AccessoryRenderSplitOrder()==1,
                   "PMM retains dragged order and model draw split");
+        }
+        if (std::wcscmp(mode, L"history") == 0 || std::wcscmp(mode, L"all") == 0) {
+#if !MMD_ORIGINAL_PROFILE
+            for (bool explicitOnly : {false,true}) {
+                seed();Choose(app,1);CheckBoundAccessorySettings(app,explicitOnly);
+                roundTrip(L"history-"+std::to_wstring(language)+L"-"+std::to_wstring(explicitOnly));
+                Check(app->AccessorySlot(2)->order==0&&app->AccessoryRenderSplitOrder()==1&&
+                    text_encoding::Display(app->AccessorySlot(2)->name)==L"重命名あ", "PMM preserves controlled settings");
+            }
+#endif
         }
         if (std::wcscmp(mode, L"delete") == 0 || std::wcscmp(mode, L"all") == 0) {
             seed(); Settings(app, 2, 0, 2); // B, C, A: last entry is slot zero, not the highest slot.

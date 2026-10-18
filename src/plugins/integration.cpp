@@ -157,7 +157,8 @@ static void InitializeRuntime(MMDApp* app, bool migrationTest) {
             manager->SetEditPublished([app] {
                 if (closing || owner != app) return;
                 app->SceneModified() = 1; app->RecordedFrameCountByte1() = 1;
-                app->PhysicsResetPending() = 1; historyUiPending = true;
+                if (history->LastPublicationRequiresPhysicsReset()) app->PhysicsResetPending() = 1;
+                historyUiPending = true;
                 PostMessageW(app->MainWindow(), kRefresh, 0, 0);
             });
         }

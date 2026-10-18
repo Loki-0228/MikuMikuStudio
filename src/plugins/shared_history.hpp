@@ -22,6 +22,9 @@ public:
     virtual ~HistoryChange() = default;
     virtual MmsResult Prepare(bool forward, std::unique_ptr<PreparedHistoryChange>&) = 0;
     virtual uint64_t RetainedBytes() const noexcept = 0;
+    // Metadata-only participants may opt out. Unknown native and plugin
+    // changes retain the conservative physics invalidation policy.
+    virtual bool RequiresPhysicsReset() const noexcept { return true; }
 };
 
 // One journal for native and plugin changes. The application supplies its
@@ -50,6 +53,7 @@ private:
     ResetTransaction* reset_ = nullptr;
     EditStore* edits_ = nullptr;
     RecordingMode recordingMode_ = RecordingMode::AllOperations;
+    bool lastPhysicsReset_ = true;
     MmsResult Ready() const;
     MmsResult ReserveNode(std::shared_ptr<const EditRecord>, std::shared_ptr<HistoryChange>,
                          std::unique_ptr<Publication>&, bool record = true);
@@ -66,6 +70,10 @@ public:
     // Check standalone native-edit admission, including pending plugin edits,
     // without keeping a reservation across a modal UI loop. Recheck on apply.
     MmsResult CheckNativeEdit();
+    // Read-only transport admission. The caller checks application/UI locks;
+    // playback itself is permitted so navigation can stop it. Never bypasses
+    // a prepared publication, serializer or edit callback/transaction.
+    MmsResult CheckNativeNavigation() const;
     RecordingMode Mode() const noexcept { return recordingMode_; }
     MmsResult SetMode(RecordingMode);
     size_t MaxEntries() const noexcept { return maxEntries_; }
@@ -107,6 +115,8 @@ public:
     size_t RedoCount() const noexcept { return redo_.size(); }
     uint64_t RetainedBytes() const noexcept { return bytes_; }
     const std::string* NextLabel(bool redo) const noexcept;
+    // Describes the last successful publication, including undo and redo.
+    bool LastPublicationRequiresPhysicsReset() const noexcept { return lastPhysicsReset_; }
 };
 class SharedHistory::NativeTransaction {
     friend class SharedHistory;

@@ -133,6 +133,7 @@
 #if !MMD_ORIGINAL_PROFILE
 #include "../plugins/native_global_commands.hpp"
 #include "../plugins/native_pose_scope.hpp"
+#include "../plugins/native_object_commands.hpp"
 #endif
 #include "mikudancestudio/ui_message.hpp"
 #include "mikudancestudio/ui_translation.hpp"
@@ -888,7 +889,7 @@ static int g_accOrderCount = 0;
 bool MoveAccessoryOrderItem(MMDApp* app,HWND dialog,int from,int to) {
     if(!app||!dialog)return false;
 #if !MMD_ORIGINAL_PROFILE
-    if(plugins::BoundNativePoseHistory(app))return false;
+    if(plugins::BoundNativePoseHistory(app)&&!plugins::BoundAccessorySettingsDialog(app,dialog))return false;
 #endif
     const HWND list=GetDlgItem(dialog,panel::kOrderListBox);
     if(!list||!IsWindow(list))return false;
@@ -1010,8 +1011,13 @@ INT_PTR __stdcall AccessorySettingsDlgProc(HWND hDlg, UINT msg, WPARAM wParam,
     }
     if (msg == WM_INITDIALOG) {
 #if !MMD_ORIGINAL_PROFILE
-        // Sorting and renaming have not yet acquired a shared-history record.
-        if(plugins::BoundNativePoseHistory(app)) {EndDialog(hDlg,2);return 0;}
+        if(plugins::BoundNativePoseHistory(app)) {
+            if(!plugins::InitializeBoundAccessorySettings(app,hDlg,g_accOrderCount)) {EndDialog(hDlg,2);return 0;}
+            MakeDialogTopmostIfRequested(app,hDlg);
+            SetWindowLongPtrW(hDlg,DWLP_USER,0);
+            MakeDragList(GetDlgItem(hDlg,panel::kOrderListBox));
+            return 0;
+        }
 #endif
         if(app->AccessoryOrderArray()) {EndDialog(hDlg,2);return 0;}
         MakeDialogTopmostIfRequested(app, hDlg);
@@ -1063,9 +1069,7 @@ INT_PTR __stdcall AccessorySettingsDlgProc(HWND hDlg, UINT msg, WPARAM wParam,
         }
         case 0x278: {  // OK: commit the new order
 #if !MMD_ORIGINAL_PROFILE
-            if(plugins::BoundNativePoseHistory(app)) {
-                SendMessageW(hDlg,WM_COMMAND,IDCANCEL,0);return 0;
-            }
+            if(plugins::AcceptBoundAccessorySettings(app,hDlg))return 0;
 #endif
             const auto list=GetDlgItem(hDlg,panel::kOrderListBox);
             if(g_accOrderCount<0||g_accOrderCount>255||
@@ -1201,24 +1205,31 @@ INT_PTR __stdcall AccessorySettingsDlgProc(HWND hDlg, UINT msg, WPARAM wParam,
     }
     // LOWORD == 633: rename the selected list item from edit 0x275 (the
     // original's IDCANCEL id - the dialog never closes on it).
-    if (GetFocus() != GetDlgItem(hDlg, panel::kAccessoryOrderEdit)) {
-        const LRESULT sel = SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox),
-                                         LB_GETCURSEL, 0, 0);
+    try { if (GetFocus() != GetDlgItem(hDlg, panel::kAccessoryOrderEdit)) {
+        const auto list = GetDlgItem(hDlg, panel::kOrderListBox);
+        const LRESULT sel = SendMessageW(list, LB_GETCURSEL, 0, 0);
         GetWindowTextW(GetDlgItem(hDlg, panel::kAccessoryNameEdit), text, 256);
         char encodedName[100]{};
         if (text[0] != 0 && !text_encoding::EncodeDisplay(encodedName, sizeof encodedName, text)) {
             MessageBoxW(hDlg, L"名称过长，请缩短名称。 / Name is too long.", L"配件 / Accessory", MB_OK);
             return 0;
         }
-        if (text[0] != 0 && sel < g_accOrderCount && sel >= 0) {
-            SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox), LB_DELETESTRING,
-                         sel, 0);
-            SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox), LB_INSERTSTRING,
-                         sel, (LPARAM)text);
-            SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox), LB_SETCURSEL,
-                         sel, 0);
+        if (text[0] != 0 && sel < g_accOrderCount && sel >= 0 &&
+            SendMessageW(list,LB_GETCOUNT,0,0)==g_accOrderCount) {
+#if !MMD_ORIGINAL_PROFILE
+            if(plugins::BoundNativePoseHistory(app)&&!plugins::BoundAccessorySettingsDialog(app,hDlg))return 0;
+#endif
+            const auto data=SendMessageW(list,LB_GETITEMDATA,sel,0);
+            const auto inserted=SendMessageW(list,LB_INSERTSTRING,sel,reinterpret_cast<LPARAM>(text));
+            if(inserted==LB_ERR||inserted==LB_ERRSPACE)return 0;
+            if(inserted!=sel||SendMessageW(list,LB_SETITEMDATA,inserted,data)==LB_ERR||
+                SendMessageW(list,LB_DELETESTRING,sel+1,0)==LB_ERR) {
+                SendMessageW(list,LB_DELETESTRING,inserted,0);
+                SendMessageW(list,LB_SETCURSEL,sel,0);return 0;
+            }
+            SendMessageW(list,LB_SETCURSEL,sel,0);
         }
-    }
+    } } catch(const std::exception&) { return 0; }
     return 0;
 }
 
@@ -2834,7 +2845,7 @@ void CmdFileMenu(MMDApp* app, HWND hwnd, std::uint16_t id, std::uint16_t notify)
     // ------------------------------------------------------------------
     case 249: {
 #if !MMD_ORIGINAL_PROFILE
-        if(plugins::BoundNativePoseHistory(app))break;
+        if(plugins::TryEditBoundAccessorySettings(app))break;
 #endif
         app->state.dialogFlags[8] = 1;
         app->state.enterKeyState = 1;

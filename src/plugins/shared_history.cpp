@@ -90,6 +90,12 @@ MmsResult SharedHistory::CheckNativeEdit() {
     if (auto r = Enter()) return r;
     Leave(); return MMS_OK;
 }
+MmsResult SharedHistory::CheckNativeNavigation() const {
+    if (auto r = Ready()) return r;
+    if (entered_ || pending_ || applied_ || reset_ || storage_.InCallback() || storage_.Prepared() ||
+        (edits_ && (edits_->InCallback() || edits_->HasPending()))) return MMS_E_BUSY;
+    return MMS_OK;
+}
 MmsResult SharedHistory::SetMode(RecordingMode mode) {
     return Configure(mode,maxEntries_,maxBytes_);
 }
@@ -147,6 +153,8 @@ MmsResult SharedHistory::Reserve(std::shared_ptr<const EditRecord> record,
     });
 }
 void SharedHistory::Publish(Publication& p) noexcept {
+    const auto& node = *p.node.front();
+    lastPhysicsReset_ = !node.native || node.native->RequiresPhysicsReset() || !node.plugins->before.empty();
     // Preview still changes the scene revision, so old candidates cannot
     // publish against it. The journal and redo remain untouched.
     if (!p.record) { ++revision_; return; }
@@ -195,6 +203,7 @@ MmsResult SharedHistory::History(bool redo) {
         if (native && !native->IsCurrent()) return MMS_E_STALE;
         if (!storage_.Commit()) { poisoned_ = true; return MMS_E_FAILED; }
         if (native) native->Publish();
+        lastPhysicsReset_ = !node.native || node.native->RequiresPhysicsReset() || !node.plugins->before.empty();
         bytes_ = bytes_ - node.bytes + targetBytes;
         node.bytes = targetBytes;
         auto& destination = redo ? undo_ : redo_;
@@ -355,7 +364,7 @@ MmsResult SharedHistory::Reset() {
 void SharedHistory::ResetLocked() noexcept {
     InvalidatePending();
     retired_.splice(retired_.end(), undo_); retired_.splice(retired_.end(), redo_);
-    bytes_ = 0; ++revision_;
+    bytes_ = 0; lastPhysicsReset_ = true; ++revision_;
 }
 SharedHistory::ResetTransaction::ResetTransaction(SharedHistory& owner) : owner_(&owner) {
     owner.reset_ = this;

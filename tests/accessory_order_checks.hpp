@@ -92,6 +92,27 @@ void ProbeOrderMoves(MMDApp* app, HWND dialog) {
         RemoveWindowSubclass(list, FailOrderMessage, 0x4d4d53a1);
         SameOrderRows(app, dialog, before, "failed list writes roll back text, item-data, scratch and selection");
     }
+    SetDlgItemTextW(dialog,panel::kAccessoryNameEdit,L"atomic rename");
+    const auto renameBefore=ReadOrderRows(app,dialog);
+    for(auto message:{LB_INSERTSTRING,LB_SETITEMDATA,LB_DELETESTRING}) {
+        OrderFailure failure{UINT(message)};
+        Check(SetWindowSubclass(list,FailOrderMessage,0x4d4d53a1,reinterpret_cast<DWORD_PTR>(&failure))!=FALSE,
+            "install rename list write failure");
+        SendMessageW(dialog,WM_COMMAND,633,0);
+        RemoveWindowSubclass(list,FailOrderMessage,0x4d4d53a1);
+        Check(failure.calls==1,"rename exercises the requested list failure");
+        SameOrderRows(app,dialog,renameBefore,"failed rename retains row text, item identity, scratch and typed edit");
+    }
+    SendMessageW(dialog,WM_COMMAND,633,0);
+    const auto renamed=ReadOrderRows(app,dialog);
+    Check(renamed.text[1]==L"atomic rename"&&renamed.data==before.data&&renamed.owners==before.owners,
+        "successful rename preserves each item's independent identity");
+    // Restore the private text and edit before the remaining hit-test checks.
+    SendMessageW(list,LB_DELETESTRING,1,0);
+    SendMessageW(list,LB_INSERTSTRING,1,reinterpret_cast<LPARAM>(before.text[1].c_str()));
+    SendMessageW(list,LB_SETITEMDATA,1,before.data[1]);SendMessageW(list,LB_SETCURSEL,before.selected,0);
+    SetDlgItemTextW(dialog,panel::kAccessoryNameEdit,before.edit.c_str());
+    SameOrderRows(app,dialog,before,"restore private helper fixture after rename checks");
     const auto first = OrderPoint(list, 0), afterFirst = OrderPoint(list, 0, true), last = OrderPoint(list, 2, true);
     RECT bounds{}; GetWindowRect(list, &bounds);
     const POINT outside{bounds.right + 20, bounds.top + 5};
@@ -198,20 +219,22 @@ void CheckBoundOrderRefusal(MMDApp* app) {
         plugins::NativePoseTestBinding binding(*app, history);
         const int previousDialogs = dialogs;
         action = DialogAction::Settings; split = moveFrom = moveTo = -1; cancelSettings = true;
+        const auto playback = app->PlaybackActive(); app->PlaybackActive() = 1;
         SendMessageW(app->MainWindow(), WM_COMMAND, 249, 0); same();
         CommandDispatch(nullptr, 249); same();
         CmdFileMenu(app, app->MainWindow(), 249, 0); same();
-        Check(dialogs == previousDialogs, "bound real-window, dispatcher and direct ordering routes create no dialog");
+        app->PlaybackActive() = playback;
+        Check(dialogs == previousDialogs, "bound ordering routes create no dialog during playback");
         SendMessageW(app->MainWindow(), WM_INITMENUPOPUP, reinterpret_cast<WPARAM>(GetMenu(app->MainWindow())), 0);
         const auto menuState = GetMenuState(GetMenu(app->MainWindow()), 249, MF_BYCOMMAND);
-        Check(menuState != UINT(-1) && (menuState & MF_GRAYED),
-            "opening a menu disables ordering while shared history is bound");
+        Check(menuState != UINT(-1) && !(menuState & (MF_GRAYED | MF_DISABLED)),
+            "opening a menu makes migrated ordering available while shared history is bound");
         // Test the second independent refresh entry without relying on menu-open.
-        EnableMenuItem(GetMenu(app->MainWindow()), 249, MF_BYCOMMAND | MF_ENABLED);
+        EnableMenuItem(GetMenu(app->MainWindow()), 249, MF_BYCOMMAND | MF_GRAYED);
         Check(plugins::RefreshBoundObjectUi(*app, history), "refresh bound accessory object controls");
         const auto refreshed = GetMenuState(GetMenu(app->MainWindow()), 249, MF_BYCOMMAND);
-        Check(refreshed != UINT(-1) && (refreshed & MF_GRAYED),
-            "common-history object refresh independently disables ordering without a topology change");
+        Check(refreshed != UINT(-1) && !(refreshed & (MF_GRAYED | MF_DISABLED)),
+            "common-history object refresh independently enables migrated ordering without a topology change");
     }
     Check(plugins::RefreshBoundObjectUi(*app, history) &&
         !(GetMenuState(GetMenu(app->MainWindow()), 249, MF_BYCOMMAND) & (MF_GRAYED | MF_DISABLED)),
@@ -225,6 +248,6 @@ void CheckBoundOrderRefusal(MMDApp* app) {
         history.History(true) == MMS_OK && marker == 1, "the unrelated redo entry remains executable after rejected order commands");
     Choose(app, 1);
     app->state.dialogFlags[8] = oldDialogFlag; app->state.enterKeyState = oldEnter;
-    std::puts("PASS accessory ordering fails closed while bound and legacy drag remains available after unbinding");
+    std::puts("PASS accessory ordering rejects playback and both bound and legacy menus remain available");
 }
 #endif

@@ -12,6 +12,12 @@ bool TryDeleteBoundModel(MMDApp*, HWND) noexcept;
 bool TryDeleteBoundAccessory(MMDApp*, HWND) noexcept;
 bool TryImportBoundModel(MMDApp*, const wchar_t*, bool showInfo) noexcept;
 bool TryImportBoundAccessory(MMDApp*, const wchar_t*) noexcept;
+bool TryEditBoundAccessorySettings(MMDApp*) noexcept;
+bool InitializeBoundAccessorySettings(MMDApp*, HWND, int& count) noexcept;
+bool BoundAccessorySettingsDialog(const MMDApp*, HWND) noexcept;
+// Consumes every bound OK, including a refused or stale dialog. The plan is
+// read here, but only published by the caller after the modal has closed.
+bool AcceptBoundAccessorySettings(MMDApp*, HWND) noexcept;
 // deferUi is only for the Manager's already-authorized top-level edit call.
 // The caller queues the normal deferred publication notification afterwards.
 MmsResult RunBoundObjectHistory(MMDApp&, SharedHistory&, bool redo, bool deferUi = false) noexcept;

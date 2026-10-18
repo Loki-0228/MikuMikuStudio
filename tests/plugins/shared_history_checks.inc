@@ -453,7 +453,55 @@ static void SharedHistoryPendingPluginChecks() {
         CHECK(api.redo(api.context) == MMS_OK && state.value == 9 && value == 7);
     }
 }
+static void SharedHistoryNavigationChecks() {
+    StorageStore storage; bool playing=true;
+    SharedHistory history(storage,[&]{return playing?MMS_E_BUSY:MMS_OK;});
+    CHECK(history.CheckNativeEdit()==MMS_E_BUSY && history.CheckNativeNavigation()==MMS_OK);
+    playing=false;
+    CHECK(history.Enter()==MMS_OK && history.CheckNativeNavigation()==MMS_E_BUSY);history.Leave();
+    int value=0;std::unique_ptr<SharedHistory::NativeTransaction> native;
+    CHECK(history.PrepareNative("navigation pending",std::make_shared<HistoryValue>(value,0,1),native)==MMS_OK);
+    CHECK(history.CheckNativeNavigation()==MMS_E_BUSY);
+    CHECK(history.CommitNative(std::move(native))==MMS_OK && history.CheckNativeNavigation()==MMS_OK);
+    std::unique_ptr<SharedHistory::AppliedTransaction> applied;
+    CHECK(history.ReserveAppliedNative("navigation applied",1024,applied)==MMS_OK && history.CheckNativeNavigation()==MMS_E_BUSY);
+    applied.reset();CHECK(history.CheckNativeNavigation()==MMS_OK);
+    std::unique_ptr<SharedHistory::ResetTransaction> reset;
+    CHECK(history.PrepareReset(reset)==MMS_OK && history.CheckNativeNavigation()==MMS_E_BUSY);
+    reset.reset();CHECK(history.CheckNativeNavigation()==MMS_OK);
+    StorageClient sc;sc.id="example.navigation";storage.Api(sc);
+    MmsSerializerV1 serializer{Header<MmsSerializerV1>(),&history};
+    serializer.prepareLoad=[](void* p,MmsBytes,uint32_t,MmsHandle* out)->MmsResult{
+        CHECK(static_cast<SharedHistory*>(p)->CheckNativeNavigation()==MMS_E_BUSY);*out=17;return MMS_OK;};
+    serializer.commitLoad=[](void* p,MmsHandle){CHECK(static_cast<SharedHistory*>(p)->CheckNativeNavigation()==MMS_E_BUSY);};
+    serializer.cancelLoad=serializer.commitLoad;
+    serializer.save=[](void* p,MmsBytes* bytes,uint32_t* schema,MmsHandle* lease)->MmsResult{
+        CHECK(static_cast<SharedHistory*>(p)->CheckNativeNavigation()==MMS_E_BUSY);
+        *bytes={};*schema=7;*lease=19;return MMS_OK;};
+    serializer.releaseBytes=[](void*,MmsHandle){};
+    MmsHandle registered=0;
+    CHECK(storage.Register(sc,S("example.navigation"),&serializer,sizeof(serializer),&registered)==MMS_OK);
+    CHECK(storage.Prepare({})==MMS_OK && history.CheckNativeNavigation()==MMS_E_BUSY);
+    storage.Cancel();CHECK(history.CheckNativeNavigation()==MMS_OK);
+    StoredRecords records;CHECK(storage.Capture(records)==MMS_OK && history.CheckNativeNavigation()==MMS_OK);
+    {
+        EditStore edit(history,storage);EditClient client;client.id=sc.id;auto api=edit.Api(client);
+        MmsHandle transaction=0;uint64_t revision=0;CHECK(history.Revision(revision)==MMS_OK);
+        CHECK(api.begin(api.context,S("navigation plugin pending"),revision,&transaction)==MMS_OK);
+        CHECK(history.CheckNativeNavigation()==MMS_E_BUSY);api.cancel(api.context,transaction);
+        CHECK(history.CheckNativeNavigation()==MMS_OK);
+        SerializerFixture state;EditParticipantFixture participant{&state,0,1};auto table=participant.Api("example.navigation");
+        participant.onCommit=[&]{CHECK(!edit.HasPending() && edit.InCallback() && history.CheckNativeNavigation()==MMS_E_BUSY);};
+        CHECK(api.begin(api.context,S("navigation callback"),revision,&transaction)==MMS_OK);
+        CHECK(api.join(api.context,transaction,&table)==MMS_OK && api.prepare(api.context,transaction)==MMS_OK);
+        CHECK(history.CheckNativeNavigation()==MMS_E_BUSY);
+        CHECK(api.commit(api.context,transaction)==MMS_OK && history.CheckNativeNavigation()==MMS_OK);
+    }
+    MmsResult worker=MMS_OK;std::thread thread([&]{worker=history.CheckNativeNavigation();});thread.join();
+    CHECK(worker==MMS_E_THREAD);
+}
 static void SharedHistoryChecks() {
+    SharedHistoryNavigationChecks();
     SharedHistoryCleanupBoundaryChecks();
     SharedHistoryPendingPluginChecks();
     SharedHistoryDynamicBudgetChecks();
