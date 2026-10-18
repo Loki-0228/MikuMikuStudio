@@ -63,13 +63,17 @@ bool ObserveTemporalWrite(MMDApp* app,IDirect3DSurface9* surface,std::wstring& e
             SUCCEEDED(device->CreateOffscreenPlainSurface(desc.Width,desc.Height,desc.Format,D3DPOOL_SYSTEMMEM,&pixels,nullptr)) &&
             SUCCEEDED(device->GetRenderTargetData(surface,pixels)),"read back temporal fixture pixels");
         D3DLOCKED_RECT lock{};Check(SUCCEEDED(pixels->LockRect(&lock,nullptr,D3DLOCK_READONLY)),"map temporal fixture pixels");
-        unsigned visible=0;
+        unsigned visible=0,clear=0;
         for(unsigned y=0;y<desc.Height;++y) {
             const auto* row=reinterpret_cast<const DWORD*>(static_cast<const char*>(lock.pBits)+y*lock.Pitch);
-            for(unsigned x=0;x<desc.Width;++x)visible+=(row[x]&0xffffffu)!=0xffffffu;
+            for(unsigned x=0;x<desc.Width;++x) {
+                visible+=desc.Format==D3DFMT_A8R8G8B8?(row[x]>>24)!=0:(row[x]&0xffffffu)!=0xffffffu;
+                clear+=desc.Format==D3DFMT_A8R8G8B8 && (row[x]>>24)==0;
+            }
         }
         pixels->UnlockRect();pixels->Release();device->Release();
         Check(visible>4,"temporal image contains visible fixture geometry");
+        Check(desc.Format==D3DFMT_A8R8G8B8 && clear>4,"temporal transparent render retains visible geometry and clear background");
     }
     const bool result=temporalOriginalWrite(app,surface,error);
     if(probe && result){probe->lastWrittenRender=probe->renders;probe->writes.push_back(sample);}
@@ -157,6 +161,14 @@ void CheckTemporalImageSequence(MMDApp* app) {
             Check(sample.renders==(i==0?firstSamples:1u),"later sequence images render once using shared history");
             if(firstSamples>1)Check(sample.samples>=firstSamples,"first image contains all required temporal samples");
             Check(fs::file_size(seq::FramePath(options,i+1))>0,"temporal output image is complete");
+            const auto pixels=ImagePixels(seq::FramePath(options,i+1));
+            unsigned clear=0,visible=0;
+            for(std::size_t pixel=0;pixel<pixels.size();pixel+=4) {
+                clear+=pixels[pixel+3]==0;visible+=pixels[pixel+3]!=0;
+                if(pixels[pixel+3]==0)Check(pixels[pixel]==0 && pixels[pixel+1]==0 && pixels[pixel+2]==0,
+                    "temporal encoded transparent pixels contain no hidden background colour");
+            }
+            Check(clear>4 && visible>4,"encoded temporal PNG retains both model pixels and transparent background");
         }
         std::printf("PASS temporal-sequence mode=%u range=%d..%d images=%u renders=%u first_samples=%u physics=%u catchups=%u reject_motion=%d\n",
             unsigned(app->antialiasing.algorithm),first,last,expected,probe.renders,firstSamples,probe.physics,probe.catchups,rejectMotion);

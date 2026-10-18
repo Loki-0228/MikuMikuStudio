@@ -634,16 +634,12 @@ MmsResult PlanDisplayKeyPaste(MMDApp& app,unsigned slot,const ModelPasteSource& 
             (model.morphKeys&&!mdl::MorphKeyPoolIdentity(model.morphKeys))||
             (model.ikChainCount&&!model.ikChains)||(model.boneOrderCount&&!model.boneOrderTable)||
             extended_names::importedIkTargets)return MMS_E_NOT_READY;
-        // Command 421 rejects ambiguous destination bone names before any
-        // family is pasted, including display-only records. Keep its bounded
-        // name comparison; IK matching itself still accepts full-width names.
+        // Display payloads apply flags to each IK/selector entry by name.
+        // They do not choose one bone destination, so duplicate helper or IK
+        // names are valid and retain the legacy broadcast matching below.
         if(model.boneCount&&!model.boneTable)return MMS_E_NOT_READY;
         const bool resolved=std::all_of(input.displays.begin(),input.displays.end(),[](const auto& source){
             return source.ikTargetsResolved&&source.selectors.empty();});
-        std::set<std::string> uniqueNames;
-        for(unsigned bone=0;bone<model.boneCount;++bone)
-            if(!uniqueNames.emplace(model.boneTable[bone].name,
-                strnlen_s(model.boneTable[bone].name,sizeof(model.boneTable[bone].name))).second&&!resolved)return MMS_E_ARGUMENT;
         Chain(model);CheckPayloadStorage(model);
         const auto capacity=mdl::KeyPoolCapacity(model.displayKeys);
         auto change=std::make_shared<DisplayDeletion>(app,slot,aggregate==nullptr);

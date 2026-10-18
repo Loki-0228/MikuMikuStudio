@@ -382,6 +382,7 @@ struct MorphPaste final : HistoryChange, std::enable_shared_from_this<MorphPaste
     unsigned char physicsMode;
     Rule rule;
     std::vector<Rule> pasteRules;
+    std::vector<unsigned> pasteNameTargets;
     std::uint64_t identity, boneIdentity, displayIdentity;
     std::size_t capacity, boneCapacity, displayCapacity;
     std::vector<RegistrationPatch> patches;
@@ -413,6 +414,14 @@ struct MorphPaste final : HistoryChange, std::enable_shared_from_this<MorphPaste
         if (!lifetime->Present() || app.ModelSlot(modelSlot) != model || !SceneObjectPresent(model, lifetime->Id())) return false;
         const auto& current=*mdl::Mdl(model);
         if (current.morphs!=morphs || current.morphCount!=count) return false;
+        // Resolve by name only for initial publication. History traversal owns
+        // the resolved indices and never consults a later clipboard.
+        if (!published) for (auto target : pasteNameTargets) {
+            unsigned matches = 0;
+            for (unsigned index = 0; index < count; ++index)
+                if (!std::strncmp(morphs[target].name, morphs[index].name, sizeof morphs[index].name)) ++matches;
+            if (matches != 1) return false;
+        }
         for (const auto& item : pasteRules) {
             const auto& actual=morphs[item.morph];
             if (actual.panel!=item.panel || actual.type!=item.type || std::memcmp(actual.name,item.name.data(),item.name.size())) return false;
@@ -592,7 +601,8 @@ struct MorphPaste final : HistoryChange, std::enable_shared_from_this<MorphPaste
         AddBytes(bytes, patches.capacity(), sizeof(RegistrationPatch));
         AddBytes(bytes, boneFlags.capacity(), sizeof(RegistrationFlag));
         AddBytes(bytes, displayFlags.capacity(), sizeof(RegistrationFlag));
-        AddBytes(bytes,pasteRules.capacity(),sizeof(Rule));return bytes;
+        AddBytes(bytes,pasteRules.capacity(),sizeof(Rule));
+        AddBytes(bytes,pasteNameTargets.capacity(),sizeof(unsigned));return bytes;
     }
 };
 }
@@ -689,10 +699,7 @@ MmsResult PlanMorphKeyPaste(MMDApp& app,unsigned slot,const ModelPasteSource& in
         if (!mdl::MorphKeyPoolIdentity(model.morphKeys) || (model.boneKeys&&!mdl::BoneKeyPoolIdentity(model.boneKeys)) ||
             (model.displayKeys&&!mdl::KeyPoolIdentity(model.displayKeys))) return MMS_E_NOT_READY;
         Owners owners;Chains(model,owners);
-        const bool resolved=std::all_of(input.morphs.begin(),input.morphs.end(),[](const auto& record){return record.targetResolved;});
-        std::set<std::string> names;
-        for(unsigned morph=0;morph<model.morphCount;++morph)
-            if(!names.emplace(model.morphs[morph].name,strnlen_s(model.morphs[morph].name,sizeof(model.morphs[morph].name))).second&&!resolved) return MMS_E_ARGUMENT;
+        std::set<unsigned> nameTargets;
         struct Copy {unsigned morph,frame;float value;};std::vector<Copy> copies;
         for (const auto& record:input.morphs) {
             const auto& rec=record.key;unsigned frame;
@@ -702,12 +709,16 @@ MmsResult PlanMorphKeyPaste(MMDApp& app,unsigned slot,const ModelPasteSource& in
                 if(record.targetIndex>=0)copies.push_back({unsigned(record.targetIndex),frame,rec.value});
                 continue;
             }
+            int target=-1;
             for (unsigned morph=0;morph<model.morphCount;++morph) if (!std::strncmp(rec.name,model.morphs[morph].name,sizeof(model.morphs[morph].name))) {
-                copies.push_back({morph,frame,rec.value});break;
+                if(target>=0)return MMS_E_ARGUMENT;
+                target=int(morph);
             }
+            if(target>=0){copies.push_back({unsigned(target),frame,rec.value});nameTargets.insert(unsigned(target));}
         }
         if (copies.empty()) return MMS_OK;
         auto change=std::make_shared<MorphPaste>(app,slot,copies.front().morph,app.CurrentFrame());change->aggregate=aggregate!=nullptr;
+        change->pasteNameTargets.assign(nameTargets.begin(),nameTargets.end());
         const auto capacity=mdl::MorphKeyCapacity(model.morphKeys);auto targetCapacity=capacity;
         std::map<unsigned,RegistrationPatch> planned;
         const auto read=[&](unsigned index) -> mdl::MorphKey {

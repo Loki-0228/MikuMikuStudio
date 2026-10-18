@@ -23,6 +23,16 @@ struct Options {
     float fps = 30;
     bool closeAfterExport = false;
 };
+int FormatFromPath(const wchar_t*);
+bool SupportsAlpha(int format);
+bool Transparent(MMDApp*);
+void BeginStill(MMDApp*, int format);
+bool StillActive(MMDApp*);
+void EndStill(MMDApp*);
+// Cancel only a pending still capture, without stopping or sampling playback.
+bool CancelStillCapture(MMDApp*);
+// Alpha render targets contain premultiplied colour. Image files use straight alpha.
+long SaveSurface(const wchar_t*, int format, IDirect3DSurface9*, bool transparent);
 const wchar_t* Text(MMDApp*, const wchar_t* zh, const wchar_t* en, const wchar_t* ja);
 std::uint32_t DefaultEndFrame(MMDApp*);
 // Actual scene tracks and audio, independent of the editor's playback range.

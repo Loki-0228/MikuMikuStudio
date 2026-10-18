@@ -93,6 +93,22 @@ void ModelPasteGrowthAndNoopChecks() {
 }
 void ModelPasteFailureChecks() {
     std::puts("  model mixed cancellation failures alias and staleness");std::fflush(stdout);
+    {
+        ModelPasteFixture f;plugins::NativePoseTestBinding binding(*f.app,f.history);
+        ModelPasteCommit(f,f.Plan());const ModelKeyState after(f.first);
+        Check(f.history.History(false)==MMS_OK,"seed mixed-family redo before destination name ambiguity");
+        auto* oldMorphs=f.first.m->morphs;const auto oldCount=f.first.m->morphCount;
+        std::array<mdl::MorphRecord,3> morphs{};morphs[0]=oldMorphs[0];morphs[1]=morphs[0];
+        std::strcpy(morphs[2].name,"helper");
+        f.first.m->morphs=morphs.data();f.first.m->morphCount=unsigned(morphs.size());
+        const auto digest=f.first.Digest();const ModelKeyState before(f.first);
+        CmdControl400(f.app.get(),f.app->MainWindow(),421,0);
+        Check(f.first.Digest()==digest&&before.Matches(f.first)&&!f.history.UndoCount()&&f.history.RedoCount()==1,
+            "late ambiguous morph target rejects the entire real mixed paste before bone or display publication");
+        f.first.m->morphs=oldMorphs;f.first.m->morphCount=oldCount;
+        Check(f.history.History(true)==MMS_OK&&after.Matches(f.first),
+            "failed mixed destination validation preserves existing complete redo payload");
+    }
     ModelPasteFixture f;const auto before=f.first.Digest();const ModelKeyState keys(f.first);std::shared_ptr<plugins::HistoryChange> change;
     f.clipboard[2].ikCount=1;f.clipboard[2].ikStates=nullptr;
     Check(plugins::PlanModelKeyPaste(*f.app,0,change)!=MMS_OK&&!change&&f.first.Digest()==before&&keys.Matches(f.first),"malformed late deep participant cancels bone and morph plans");

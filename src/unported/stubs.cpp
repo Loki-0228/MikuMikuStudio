@@ -78,6 +78,7 @@ void RefreshAfterFrameApply(MMDApp* app);      // VA 0x432FA0 (ui_frame_step.cpp
 //   it zero and the two ShowWindow calls always run. Defect FB-15.
 // ---------------------------------------------------------------------------
 void FinishAviRecord(MMDApp* app, bool reachedRequestedEnd) {  // was Sub464A00
+    if (image_sequence::CancelStillCapture(app)) return;
     auto& s = *app;
     timeEndPeriod(1);                                       // 0x464A07
     s.state.playbackActive = 0;             // 0x464A11
@@ -103,6 +104,7 @@ void FinishAviRecord(MMDApp* app, bool reachedRequestedEnd) {  // was Sub464A00
         else AbortPngMovRecording(s.Recorder());
     }
     ReleaseTransparentCapture(app);
+    image_sequence::EndStill(app);
     bool dshowComplete = false;
     TeardownDShowGraph(s.Recorder(), &dshowComplete);           // 0x464A31
     D3DRenderer* r = s.Renderer();

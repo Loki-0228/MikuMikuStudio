@@ -43,8 +43,70 @@ struct KeyPasteFixture : BoneRegistrationFixture {
         return change;
     }
 };
+struct NamedBonePasteFixture : KeyPasteFixture {
+    std::array<mdl::BoneRecord,4> namedBones{};
+    std::array<unsigned char,4> namedDirty{},namedSelection{};
+    NamedBonePasteFixture() {
+        std::copy(first.bones.begin(),first.bones.end(),namedBones.begin());
+        for(unsigned index=2;index<4;++index) {
+            auto& bone=namedBones[index];std::strcpy(bone.name,"helper");
+            bone.type=mdl::BoneType::RotateMove;bone.parent=bone.slotIndex=-1;bone.rotQuat[3]=1;
+            for(unsigned axis=0;axis<4;++axis)bone.matInit[axis*5]=1;
+            first.m->boneKeys[index].rotation[3]=1;
+        }
+        first.m->boneTable=namedBones.data();first.m->boneCount=unsigned(namedBones.size());
+        first.m->bonePhysicsState=namedDirty.data();first.m->boneSelection=namedSelection.data();
+    }
+    ~NamedBonePasteFixture() {
+        history.Reset();history.Collect();
+        first.m->boneTable=first.bones.data();first.m->boneCount=unsigned(first.bones.size());
+        first.m->bonePhysicsState=first.dirty.data();first.m->boneSelection=first.selected.data();
+    }
+};
 void NativeKeyPasteChecks() {
     using Mode = plugins::SharedHistory::RecordingMode;
+    std::puts("  key paste: used destination names only");
+    for(bool mirror:{false,true})for(auto mode:{Mode::AllOperations,Mode::ExplicitOnly}) {
+        NamedBonePasteFixture f;plugins::NativePoseTestBinding binding(*f.app,f.history);
+        Check(f.history.SetMode(mode)==MMS_OK,"configure duplicate-helper bone paste mode");
+        const auto original=RegistrationKeys(f.first);const auto ring=PoseRingDigest(f.first);
+        CmdControl400(f.app.get(),f.app->MainWindow(),mirror?422:421,0);
+        Check(f.history.UndoCount()==1&&PoseRingDigest(f.first)==ring,
+            "actual normal or mirrored command accepts unrelated duplicate helper names once");
+        const auto after=RegistrationKeys(f.first);f.clipboard={};f.app->ClipboardCounts()={};
+        Check(f.history.History(false)==MMS_OK&&SameRegistrationKeys(f.first,original)&&
+            f.history.History(true)==MMS_OK&&SameRegistrationKeys(f.first,after),
+            "duplicate-helper bone paste owns undo redo payload after clipboard destruction");
+    }
+    for(bool mirror:{false,true}) {
+        NamedBonePasteFixture f;
+        std::memcpy(f.namedBones[2].name,f.namedBones[mirror?1:0].name,20);
+        const auto before=f.first.Digest();const auto keys=RegistrationKeys(f.first);
+        std::shared_ptr<plugins::HistoryChange> change;
+        Check(plugins::PlanBoneKeyPaste(*f.app,0,mirror,change)==MMS_E_ARGUMENT&&!change&&
+            f.first.Digest()==before&&SameRegistrationKeys(f.first,keys)&&!f.history.UndoCount(),
+            "an actually used normal or mirror destination duplicate rejects all keys before mutation");
+    }
+    {
+        NamedBonePasteFixture f;std::strcpy(f.namedBones[2].name,"prefix \x89\x45 arm");
+        std::shared_ptr<plugins::HistoryChange> change;const auto before=f.first.Digest();
+        Check(plugins::PlanBoneKeyPaste(*f.app,0,true,change)==MMS_E_ARGUMENT&&!change&&f.first.Digest()==before,
+            "mirror suffix matches with distinct full names remain ambiguous and reject atomically");
+    }
+    for(bool mirror:{false,true}) {
+        NamedBonePasteFixture f;auto change=f.Plan(mirror);
+        std::memcpy(f.namedBones[2].name,f.namedBones[mirror?1:0].name,20);
+        const auto before=f.first.Digest();std::unique_ptr<plugins::SharedHistory::NativeTransaction> transaction;
+        Check(f.history.PrepareNative("new destination ambiguity",change,transaction)==MMS_E_STALE&&!transaction&&
+            f.first.Digest()==before&&!f.history.UndoCount(),
+            "a new target ambiguity after bone planning stales preparation without partial writes");
+    }
+    {
+        NamedBonePasteFixture f;f.clipboard.back().frame=UINT32_MAX;
+        const auto before=f.first.Digest();std::shared_ptr<plugins::HistoryChange> change;
+        Check(plugins::PlanBoneKeyPaste(*f.app,0,false,change)==MMS_E_ARGUMENT&&!change&&f.first.Digest()==before,
+            "allowing unrelated duplicate bones does not permit an overflowing later copied frame");
+    }
     std::puts("  key paste: legacy payload parity");
     for (bool mirror : {false, true}) for (int offset : {0, 10, 20, 40}) {
         KeyPasteFixture f; SeedRegistrationChain(f.first); SeedRegistrationChain(f.second);

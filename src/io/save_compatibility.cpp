@@ -15,14 +15,36 @@
 
 namespace mikudancestudio::save_compatibility {
 namespace {
-template<class K> bool Fits(const K* keys,std::size_t dense,std::size_t capacity,std::size_t original) {
-    if(dense>original)return false;
-    std::size_t used = 0;
+void Invalid(Report& report,const std::wstring& reason) {
+    report.invalidData=true;
+    if(report.reason.empty())report.reason=reason;
+}
+void InspectFrame(Report& report,std::int64_t frame,const wchar_t* field) {
+    if(frame<0 || frame>frame_limits::maximum)Invalid(report,field);
+    else if(frame>frame_limits::legacyMaximum)report.needsNewPmm=true;
+}
+template<class K> void InspectKeys(Report& report,const K* keys,std::size_t dense,
+                                  std::size_t capacity,std::size_t original,const std::wstring& track) {
+    if(dense>capacity || (dense && !keys)) {
+        Invalid(report,track+L": missing dense keys");
+        return;
+    }
+    const auto live=[&](std::uint32_t index) {
+        return index<capacity && (index<dense || keys[index].frame!=0);
+    };
+    std::size_t used=0;
+    bool extended=false;
     for(std::size_t i=0;keys&&i<capacity;++i){
         if(i>=dense&&!keys[i].frame)continue;
-        if (++used > original || keys[i].previous >= capacity || keys[i].next >= capacity || keys[i].frame > frame_limits::legacyMaximum) return false;
+        // A newer header cannot make an invalid reference or frame readable.
+        // Check every live key, even after the legacy capacity is exceeded.
+        if(!live(keys[i].previous) || !live(keys[i].next) || keys[i].frame>frame_limits::maximum) {
+            Invalid(report,track+L": invalid key "+std::to_wstring(i));
+            return;
+        }
+        extended|=++used>original || keys[i].frame>frame_limits::legacyMaximum;
     }
-    return true;
+    report.needsNewPmm|=extended;
 }
 bool PathFits(const wchar_t* value){std::string bytes;return text_encoding::EncodeExact(value,932,bytes)&&bytes.size()<256;}
 bool RawName(const char* value,std::size_t size,std::set<std::string>& seen){
@@ -31,24 +53,44 @@ bool RawName(const char* value,std::size_t size,std::set<std::string>& seen){
        !text_encoding::EncodeExact(wide.c_str(),932,roundtrip)||roundtrip!=bytes)return false;
     return seen.insert(bytes).second;
 }
+bool PmmNamesFit(const mdl::ModelRecord& model) {
+    // PMM stores both model captions as length-prefixed strings (255 bytes).
+    // Bone/morph English captions and display-group names come from the model
+    // file; they are not the short identity fields saved in the PMM.
+    std::string bytes;
+    for(bool english : {false,true})
+        if(!text_encoding::EncodeExact(text_encoding::ModelName(model,english).c_str(),932,bytes) || bytes.size()>255)return false;
+    const auto fits=[&](const auto& record,const std::wstring& fullName) {
+        return text_encoding::EncodeExact(fullName.c_str(),932,bytes) &&
+            bytes==std::string(record.name,strnlen_s(record.name,sizeof record.name));
+    };
+    for(unsigned i=0;i<model.boneCount;++i)
+        if(!fits(model.boneTable[i],text_encoding::BoneName(model.boneTable[i],false)))return false;
+    for(unsigned i=0;i<model.morphCount;++i)
+        if(!fits(model.morphs[i],text_encoding::MorphName(model.morphs[i],false)))return false;
+    return true;
+}
 }
 Report InspectPmm(MMDApp& app){
     Report report;
-    if (app.CurrentFrame() > frame_limits::legacyMaximum ||
-        app.TimelineStartFrame() > frame_limits::legacyMaximum ||
-        app.LastRegisteredFrame() > frame_limits::legacyMaximum) report.needsNewPmm = true;
+    InspectFrame(report,app.CurrentFrame(),L"current frame");
+    InspectFrame(report,app.TimelineStartFrame(),L"timeline start frame");
+    InspectFrame(report,app.LastRegisteredFrame(),L"last registered frame");
     for (const auto control : {panel::kPlayStartFrameEdit, panel::kPlayStopFrameEdit}) {
         char text[256]{}; std::int32_t frame = 0;
         GetWindowTextA(GetDlgItem(app.MainWindow(), control), text, sizeof text);
-        if (frame_limits::Parse(text, frame) && frame > frame_limits::legacyMaximum) report.needsNewPmm = true;
+        if(frame_limits::ParsePlaybackBound(text,frame))InspectFrame(report,frame,L"playback range");
+        else Invalid(report,L"playback range");
     }
     for(int slot=0;slot<kModelSlotCount;++slot){
         const auto* raw=app.ModelSlot(slot);if(!raw)continue;const auto& m=*mdl::Mdl(raw);
-        if(!Fits(m.boneKeys,m.boneCount,mdl::BoneKeyCapacity(m),mdl::kBoneKeyCapacity)||
-           !Fits(m.morphKeys,m.morphCount,mdl::MorphKeyCapacity(m),mdl::kMorphKeyCapacity)||
-           !Fits(m.displayKeys,1,mdl::KeyPoolCapacity(m.displayKeys),mdl::kDisplayKeyCapacity)||
-           mdl::DisplayGroupCount(m)>255||mdl::FacialFrameCount(m)>255)report.needsNewPmm=true;
-        report.namesNeedExtension|=!extended_names::LegacyNamesFit(m,false);
+        const auto track=L"model "+std::to_wstring(slot);
+        InspectKeys(report,m.boneKeys,m.boneCount,mdl::BoneKeyCapacity(m),mdl::kBoneKeyCapacity,track+L" bones");
+        InspectKeys(report,m.morphKeys,m.morphCount,mdl::MorphKeyCapacity(m),mdl::kMorphKeyCapacity,track+L" morphs");
+        InspectKeys(report,m.displayKeys,1,mdl::KeyPoolCapacity(m.displayKeys),mdl::kDisplayKeyCapacity,track+L" display/IK");
+        InspectFrame(report,m.maxFrame,L"model timeline upper bound");
+        if(mdl::DisplayGroupCount(m)>255||mdl::FacialFrameCount(m)>255)report.needsNewPmm=true;
+        report.namesNeedExtension|=!PmmNamesFit(m);
         std::set<std::string> bones,morphs;
         for(unsigned i=0;i<m.boneCount;++i)if(!RawName(m.boneTable[i].name,20,bones))report.canCopyLegacy=false;
         for(unsigned i=0;i<m.morphCount;++i)if(!RawName(m.morphs[i].name,20,morphs))report.canCopyLegacy=false;
@@ -56,17 +98,17 @@ Report InspectPmm(MMDApp& app){
         std::set<std::string> modelName;
         if(!RawName(m.name,sizeof(m.name),modelName))report.canCopyLegacy=false;
     }
-    if(!Fits(app.CameraKeys(),1,mdl::KeyPoolCapacity(app.CameraKeys()),10000)||
-       !Fits(app.LightKeys(),1,mdl::KeyPoolCapacity(app.LightKeys()),10000)||
-       !Fits(app.ShadowKeys(),1,mdl::KeyPoolCapacity(app.ShadowKeys()),10000)||
-       !Fits(app.GravityKeys(),1,mdl::KeyPoolCapacity(app.GravityKeys()),10000))report.needsNewPmm=true;
+    InspectKeys(report,app.CameraKeys(),1,mdl::KeyPoolCapacity(app.CameraKeys()),10000,L"camera");
+    InspectKeys(report,app.LightKeys(),1,mdl::KeyPoolCapacity(app.LightKeys()),10000,L"light");
+    InspectKeys(report,app.ShadowKeys(),1,mdl::KeyPoolCapacity(app.ShadowKeys()),10000,L"shadow");
+    InspectKeys(report,app.GravityKeys(),1,mdl::KeyPoolCapacity(app.GravityKeys()),10000,L"gravity");
     for(int slot=0;slot<255;++slot){
         if(!app.AccessorySlot(slot))continue;
-        if(!Fits(app.AccessoryKeys(slot),1,mdl::KeyPoolCapacity(app.AccessoryKeys(slot)),10000))report.needsNewPmm=true;
+        InspectKeys(report,app.AccessoryKeys(slot),1,mdl::KeyPoolCapacity(app.AccessoryKeys(slot)),10000,L"accessory "+std::to_wstring(slot));
         if(!PathFits(app.AccessorySlot(slot)->sourcePath)){report.canCopyLegacy=false;report.needsNewPmm=true;}
     }
     if(!PathFits(app.WavePath())||!PathFits(app.AviBackgroundPath())||!PathFits(app.PictureBackgroundPath())){report.canCopyLegacy=false;report.needsNewPmm=true;}
-    if(report.needsNewPmm)report.canCopyLegacy=false;
+    if(report.needsNewPmm||report.invalidData)report.canCopyLegacy=false;
     return report;
 }
 Report InspectMotion(const mdl::ModelRecord& m){

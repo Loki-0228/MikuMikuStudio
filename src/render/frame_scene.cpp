@@ -1,6 +1,7 @@
 #include "mikudancestudio/mmv4mms.hpp"
 #include "mikudancestudio/viewport_render_scale.hpp"
 #include "mikudancestudio/transparent_capture.hpp"
+#include "mikudancestudio/image_sequence_export.hpp"
 #include "mikudancestudio/native_mesh.hpp"
 #include "mikudancestudio/deformed_mesh_capture.hpp"
 #include "mikudancestudio/mesh_bake_cache.hpp"
@@ -534,8 +535,12 @@ void RenderFrameScene(MMDApp* app) {
     }
     TransparentFrameScope transparentFrame(app);
     if (!transparentFrame.Ready()) {
-        FinishAviRecord(app);
-        MessageBoxW(static_cast<HWND>(app->Hwnd()), L"无法创建带 Alpha 的渲染目标。", L"MOV export", MB_OK | MB_ICONERROR);
+        if (!image_sequence::CancelStillCapture(app)) FinishAviRecord(app);
+        app->state.timelineAdvanceDue=app->state.timelineAdvanceRequested=0;
+        MessageBoxW(static_cast<HWND>(app->Hwnd()), image_sequence::Text(app,
+            L"无法创建透明背景的渲染目标，本次导出已取消。",
+            L"Could not create a transparent render target. Export was canceled.",
+            L"透明なレンダーターゲットを作成できません。出力を中止しました。"), L"MMS", MB_OK | MB_ICONERROR);
         return;
     }
     D3dObjectValidationScope validatedObjects;

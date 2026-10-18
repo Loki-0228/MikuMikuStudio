@@ -105,11 +105,18 @@ void NativeDisplayPasteChecks() {
     std::puts("  display paste: cancellation stale and fault injection");
     {
         DisplayPasteFixture f;
-        std::memcpy(f.first.bones[1].name,f.first.bones[0].name,sizeof(f.first.bones[0].name));
-        const auto before=f.first.Digest();std::shared_ptr<plugins::HistoryChange> change;
-        Check(plugins::PlanDisplayKeyPaste(*f.app,0,change)==MMS_E_ARGUMENT&&!change&&
-            f.first.Digest()==before&&!f.history.UndoCount()&&!f.history.RedoCount(),
-            "display-only paste keeps command 421 ambiguous destination name rejection before mutation");
+        for(auto* model:{&f.first,&f.second})
+            std::memcpy(model->bones[1].name,model->bones[0].name,sizeof(model->bones[0].name));
+        const DisplayTestState before(f.first);const auto digest=f.first.Digest();
+        auto change=f.Plan();Check(f.first.Digest()==digest&&before.Matches(f.first),
+            "display-only paste with duplicate IK names plans without changing native data");
+        DisplayTestCommit(f,change);DisplayPasteOracle(f);
+        Check(DisplayTestState(f.second).Matches(f.first)&&DisplayFrameEqual(f.first,f.second),
+            "display paste broadcasts matching flags to duplicate IK and selector entries like native registrar");
+        const DisplayTestState after(f.first);f.clipboard={};f.app->ClipboardCounts()={};
+        Check(f.history.UndoCount()==1&&f.history.History(false)==MMS_OK&&before.Matches(f.first)&&
+            f.history.History(true)==MMS_OK&&after.Matches(f.first),
+            "display-only duplicate-name payload remains one reversible owned transaction");
     }
     {
         DisplayPasteFixture f;const auto before=f.first.Digest();auto change=f.Plan();

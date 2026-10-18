@@ -649,7 +649,6 @@ MmsResult PlanBoneKeyPaste(MMDApp& app,unsigned slot,bool mirror,const ModelPast
         KeyPlan plan(model, true);
         const auto owners = ValidateOwners(plan);
         std::vector<std::string> names;
-        std::set<std::string> unique;
         const bool resolved=std::all_of(input.bones.begin(),input.bones.end(),[](const auto& record){return record.targetResolved;});
         auto change = NewKeyChange(app, slot);
         change->publishMetadata=aggregate==nullptr;
@@ -660,7 +659,6 @@ MmsResult PlanBoneKeyPaste(MMDApp& app,unsigned slot,bool mirror,const ModelPast
             const auto length = strnlen_s(model.boneTable[bone].name, sizeof(model.boneTable[bone].name));
             if (length == sizeof(model.boneTable[bone].name)&&!resolved) return MMS_E_ARGUMENT;
             names.emplace_back(model.boneTable[bone].name, length);
-            if (!unique.emplace(names.back()).second&&!resolved) return MMS_E_ARGUMENT;
             std::array<char, 20> name{};
             std::memcpy(name.data(), model.boneTable[bone].name, name.size());
             change->pasteNames.push_back(name);
@@ -670,14 +668,22 @@ MmsResult PlanBoneKeyPaste(MMDApp& app,unsigned slot,bool mirror,const ModelPast
                                                    {"\x89\x45", "\x8d\xb6"}}) {
                 const auto hit = source.find(markers.first);
                 if (hit == std::string::npos) continue;
+                int target = -1;
                 for (unsigned bone = 0; bone < names.size(); ++bone) {
                     const auto other = names[bone].find(markers.second);
-                    if (other != std::string::npos && source.substr(hit + 2) == names[bone].substr(other + 2))
-                        return int(bone);
+                    if (other != std::string::npos && source.substr(hit + 2) == names[bone].substr(other + 2)) {
+                        if (target >= 0) return -2;
+                        target = int(bone);
+                    }
                 }
+                if (target >= 0) return target;
             }
-            for (unsigned bone = 0; bone < names.size(); ++bone) if (names[bone] == source) return int(bone);
-            return -1;
+            int target = -1;
+            for (unsigned bone = 0; bone < names.size(); ++bone) if (names[bone] == source) {
+                if (target >= 0) return -2;
+                target = int(bone);
+            }
+            return target;
         };
         struct Copy { RangeKeyCopy key; bone_scale::Curve curve; };
         std::vector<Copy> copies;
@@ -688,6 +694,9 @@ MmsResult PlanBoneKeyPaste(MMDApp& app,unsigned slot,bool mirror,const ModelPast
             unsigned frame;
             if ((!record.targetResolved&&length == sizeof(source.name)) || !frame_limits::Add(int(input.frameOffset), source.frame, frame)) return MMS_E_ARGUMENT;
             const int bone=record.targetResolved?record.targetIndex:find(std::string(source.name,length));
+            // Unrelated duplicate names are harmless. Every destination used
+            // by this paste, including suffix-based mirror mapping, must be unique.
+            if (bone == -2) return MMS_E_ARGUMENT;
             if (bone < 0) continue;
             if(unsigned(bone)>=model.boneCount)return MMS_E_ARGUMENT;
             Copy copy{{unsigned(bone),frame,{},record.scale},record.scaleCurve};

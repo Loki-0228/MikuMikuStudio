@@ -1,4 +1,5 @@
 #include "mikudancestudio/original_import.hpp"
+#include "mikudancestudio/image_sequence_export.hpp"
 #include "mikudancestudio/key_pool.hpp"
 // ===========================================================================
 // CommandDispatch family: View/Edit option-menu cases 251..303 (0x47E8A0)
@@ -1817,6 +1818,22 @@ bool StoredLimitNeedsRewrite(const MMDApp& app,
             limit->value[0] != static_cast<std::uint8_t>(selected));
 }
 
+UINT_PTR CALLBACK ImageSaveTypeHook(HWND dialog, UINT message, WPARAM, LPARAM lp) {
+    if (message == WM_NOTIFY && lp) {
+        auto* notice = reinterpret_cast<OFNOTIFYW*>(lp);
+        if (notice->hdr.code == CDN_TYPECHANGE && notice->lpOFN) {
+            constexpr int formats[] = {2, 1, 0, 3, 4, 5, 6};
+            const auto selected = notice->lpOFN->nFilterIndex;
+            if (selected > 0 && selected <= std::size(formats)) {
+                const auto* extension = image_sequence::kFormats[formats[selected - 1]].extension + 1;
+                notice->lpOFN->lpstrDefExt = extension;
+                SendMessageW(GetParent(dialog), CDM_SETDEFEXT, 0, reinterpret_cast<LPARAM>(extension));
+            }
+        }
+    }
+    return 0;
+}
+
 }  // namespace
 
 #if !MMD_ORIGINAL_PROFILE
@@ -2372,11 +2389,9 @@ void CmdViewMenu(MMDApp* app, HWND hwnd, std::uint16_t id,
         std::memset(&ofn, 0, sizeof(ofn));
         ofn.lStructSize = sizeof(ofn);
         ofn.hwndOwner = hwnd;
-        ofn.lpstrFilter = english
-            ? L"All picture format\x00\x00"
-              L"*.bmp;*.jpg;*.png;*.dds;*.dib;*.pfm;*.hdr\x00\x00"
-              L"Bmp files(*.bmp)\x00\x00*.bmp\x00\x00"
-            : kFilterPicJp;
+        ofn.lpstrFilter = L"PNG (*.png)\0*.png\0JPEG (*.jpg;*.jpeg)\0*.jpg;*.jpeg\0"
+            L"BMP (*.bmp)\0*.bmp\0DDS (*.dds)\0*.dds\0DIB (*.dib)\0*.dib\0"
+            L"PFM (*.pfm)\0*.pfm\0HDR (*.hdr)\0*.hdr\0";
         ofn.lpstrFile = fileBuf;
         ofn.nFilterIndex = 1;
         ofn.nMaxFile = 0x100;
@@ -2386,7 +2401,9 @@ void CmdViewMenu(MMDApp* app, HWND hwnd, std::uint16_t id,
         } else {
             ofn.lpstrInitialDir = L"UserFile";
         }
-        ofn.lpstrDefExt = L"bmp";
+        ofn.lpstrDefExt = L"png";
+        ofn.Flags |= OFN_EXPLORER | OFN_ENABLEHOOK;
+        ofn.lpfnHook = ImageSaveTypeHook;
         wchar_t fileTitle[0x100];
         ofn.nMaxFileTitle = 0x100;
         ofn.lpstrFileTitle = fileTitle;
@@ -2401,6 +2418,7 @@ void CmdViewMenu(MMDApp* app, HWND hwnd, std::uint16_t id,
             CopyDirPathW(app->DirUser(), dir);
         }
         wcscpy_s(app->CaptureSavePath(), 0x100, fileBuf);
+        image_sequence::BeginStill(app, image_sequence::FormatFromPath(fileBuf));
         D3DRenderer* locale = app->Renderer();
         const std::int32_t oldW = locale->screenWidth;   // 0x1D4E4
         const std::int32_t oldH = locale->screenHeight;  // 0x1D4E8
@@ -2419,7 +2437,14 @@ void CmdViewMenu(MMDApp* app, HWND hwnd, std::uint16_t id,
             locale->presentParameters.BackBufferHeight = renderH;  // 0x1D500
             locale->screenWidth = renderW;                         // 0x1D4E4
             locale->screenHeight = renderH;                        // 0x1D4E8
-            PostDeviceReset(app);  // 0x440DB0
+            if (!PostDeviceReset(app)) {  // 0x440DB0
+                image_sequence::CancelStillCapture(app);
+                MessageBoxW(hwnd, image_sequence::Text(app,
+                    L"无法创建图片导出目标，本次导出已取消。",
+                    L"Could not create the image export target. Export was canceled.",
+                    L"画像出力先を作成できません。出力を中止しました。"), L"MMS", MB_OK | MB_ICONERROR);
+                return;
+            }
         }
         RECT rc;
         rc.left = 0;
@@ -2440,6 +2465,7 @@ void CmdViewMenu(MMDApp* app, HWND hwnd, std::uint16_t id,
             nullptr);
         app->RecordingWindow() = recWnd;                    // 0xA0D24
         if (recWnd == nullptr) {
+            image_sequence::CancelStillCapture(app);
             LegacyUiMessageBoxA(hwnd, "CreateWindow failed",
                         english ? "create main window" : kCaptionCreateWndJp,
                         MB_TOPMOST);

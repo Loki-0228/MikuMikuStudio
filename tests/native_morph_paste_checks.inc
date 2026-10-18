@@ -32,6 +32,30 @@ struct MorphPasteFixture : MorphKeyFixture {
 };
 void NativeMorphPasteChecks(){
     using Mode=plugins::SharedHistory::RecordingMode;
+    for(auto mode:{Mode::AllOperations,Mode::ExplicitOnly}) {
+        MorphPasteFixture f;plugins::NativePoseTestBinding binding(*f.app,f.history);
+        std::memcpy(f.firstMorphs[2].name,f.firstMorphs[1].name,20);
+        for(auto& source:f.clipboard)std::memcpy(source.name,f.firstMorphs[0].name,20);
+        Check(f.history.SetMode(mode)==MMS_OK,"configure duplicate-helper morph paste mode");
+        const auto before=MorphKeysCopy(f.first);CmdControl400(f.app.get(),f.app->MainWindow(),421,0);
+        Check(f.history.UndoCount()==1,"actual morph paste accepts duplicates outside copied destinations");
+        const auto after=MorphKeysCopy(f.first);f.clipboard={};f.app->ClipboardCounts()={};
+        Check(f.history.History(false)==MMS_OK&&MorphKeysMatch(f.first,before)&&
+            f.history.History(true)==MMS_OK&&MorphKeysMatch(f.first,after),
+            "duplicate-helper morph paste owns undo redo after original clipboard is destroyed");
+    }
+    for(bool afterPreparation:{false,true}) {
+        MorphPasteFixture f;
+        for(auto& source:f.clipboard)std::memcpy(source.name,f.firstMorphs[0].name,20);
+        auto change=f.Plan();std::unique_ptr<plugins::SharedHistory::NativeTransaction> transaction;
+        if(afterPreparation)Check(f.history.PrepareNative("morph name collision",change,transaction)==MMS_OK,
+            "prepare morph transaction before helper name changes");
+        std::memcpy(f.firstMorphs[2].name,f.firstMorphs[0].name,20);const auto before=f.first.Digest();
+        const auto result=afterPreparation?f.history.CommitNative(std::move(transaction)):
+            f.history.PrepareNative("morph name collision",change,transaction);
+        Check(result==MMS_E_STALE&&f.first.Digest()==before&&!f.history.UndoCount(),
+            "a helper becoming a copied morph destination invalidates both prepare and commit");
+    }
     std::puts("  morph paste: legacy registrar parity and explicit modes");std::fflush(stdout);
     for(auto mode:{Mode::AllOperations,Mode::ExplicitOnly})for(int frame:{0,10,25,70}) {
         MorphPasteFixture f;f.app->CurrentFrame()=frame;Check(f.history.SetMode(mode)==MMS_OK,"morph paste history mode set");

@@ -49,6 +49,8 @@
 
 #include "mikudancestudio/bone_scale.hpp"
 #include "mikudancestudio/d3dx_dyn.hpp"
+#include "mikudancestudio/image_sequence_export.hpp"
+#include "mikudancestudio/transparent_capture.hpp"
 #include "mikudancestudio/frame_presentation.hpp"
 #include "mikudancestudio/frame_rate.hpp"
 #include "mikudancestudio/frame_sampling.hpp"
@@ -248,113 +250,103 @@ void HoldPresentCaptureFence() {
 //      FAILED -> destroy wait window, viewport refresh, return.
 //   2. back buffer lazily re-fetched (GetBackBuffer(0, 0, MONO, &bb)).
 //   3. StretchRect(bb, rect{0,0,w,h}, surf, same rect, D3DTEXF_LINEAR);
-//      if that FAILED, retried with filter NONE.  If both succeeded ->
-//      D3DXSaveSurfaceToFileW(path, extFormat(path), surf, 0, &rect) (the
-//      extension ladder ".bmp"0/".jpg"1/".png"3/".dds"4/".dib"6/".pfm"8/
-//      ".hdr"7; an unrecognized extension passes the surface pointer as the
-//      format - a latent original quirk, D3DX rejects it harmlessly).
+//      if that FAILED, retry with filter NONE. PNG/DDS instead copy from
+//      the alpha render target with filter NONE, and encode straight alpha.
+//      The final path extension selects the same encoder as image sequences.
 //   4. save tail: Release(surf); re-fetch back buffer if null;
 //      SetRenderTarget(0, bb) when wrapper byte 0x1D4F8 == 0; destroy the
 //      wait window; when the window size (0xA02AC/A02B0) exceeds the device
 //      size (wrapper 0x1D4E4/0x1D4E8), copy it into 0x1D4E4/0x1D4E8 and
 //      0x1D4FC/0x1D500 and run PostDeviceReset (0x440DB0).
-//   5. always RefreshMainWindowViewport (viewport refresh) at the end (save path); the
-//      blit-failed and create-failed paths only destroy + refresh.
+//   5. release the temporary surface before restoring the viewport and device
+//      dimensions on every exit, including creation/copy/encoding failure.
 // ---------------------------------------------------------------------------
-void TimelineAdvance(MMDApp* app) {
-    D3DRenderer* r = app->Renderer();
-    if (r == nullptr)
-        return;  // wrapper absent: nothing the original could act on either
-    IDirect3DDevice9* device = r->device;  // +0x1D4E0
-    if (device == nullptr)
-        return;
+namespace {
 
-    IDirect3DSurface9* surf = nullptr;                            // 0x46016A
-    if (FAILED(device->CreateRenderTarget(
-            app->RenderWidth(),
-            app->RenderHeight(),
-            r->backbufferFormat,  // wrapper+0x1D540
-            D3DMULTISAMPLE_NONE, 0, FALSE, &surf, nullptr))) {
-        DestroyWindow(app->RecordingWindow());                    // 0x460177
-        app->RecordingWindow() = nullptr;
-        RefreshMainWindowViewport(app);                                           // 0x460185
-        return;
+// Still output owns only its temporary window and render resources. In
+// particular, it must not use FinishAviRecord: that path stops playback and
+// reapplies the current frame, which can overwrite an unregistered edit.
+void CleanupStillCapture(MMDApp* app) {
+    if (!app) return;
+    app->state.timelineAdvanceDue = app->state.timelineAdvanceRequested = 0;
+    image_sequence::EndStill(app);
+
+    auto* renderer = app->Renderer();
+    if (renderer && renderer->device) {
+        auto*& backBuffer = renderer->backbufferSurface;
+        if (!backBuffer)
+            renderer->device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &backBuffer);
+        if (!renderer->multisampleAvailable && backBuffer)
+            renderer->device->SetRenderTarget(0, backBuffer);
     }
-
-    IDirect3DSurface9** backBuffer = &r->backbufferSurface;  // +0x1D538
-    if (*backBuffer == nullptr)                                   // 0x460197
-        device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, backBuffer);
-
-    RECT rect;                                                    // 0x4601B7
-    rect.left = 0;
-    rect.top = 0;
-    rect.right = app->RenderWidth();
-    rect.bottom = app->RenderHeight();
-
-    HRESULT hr = device->StretchRect(*backBuffer, &rect, surf, &rect,
-                                     D3DTEXF_LINEAR);             // 0x460200
-    if (FAILED(hr))
-        hr = device->StretchRect(*backBuffer, &rect, surf, &rect,
-                                 D3DTEXF_NONE);                   // 0x46022E
-    if (FAILED(hr)) {
-        // both blits rejected: no file is written, just clean up.
-        DestroyWindow(app->RecordingWindow());                    // 0x46023B
-        app->RecordingWindow() = nullptr;
-        RefreshMainWindowViewport(app);                                           // 0x460249
-        if (surf != nullptr)
-            surf->Release();                                      // 0x460260
-        return;
-    }
-
-    // ---- save path (0x460269): extension ladder -------------------------
-    const wchar_t* path = app->CaptureSavePath();
-    std::intptr_t format;  // passed straight to D3DX as the original does
-    if (wcsstr(path, L".bmp") != nullptr)
-        format = 0;                                               // D3DXIFF_BMP
-    else if (wcsstr(path, L".jpg") != nullptr)
-        format = 1;                                               // D3DXIFF_JPG
-    else if (wcsstr(path, L".png") != nullptr)
-        format = 3;                                               // D3DXIFF_PNG
-    else if (wcsstr(path, L".dds") != nullptr)
-        format = 4;                                               // D3DXIFF_DDS
-    else if (wcsstr(path, L".dib") != nullptr)
-        format = 6;                                               // D3DXIFF_DIB
-    else if (wcsstr(path, L".pfm") != nullptr)
-        format = 8;                                               // D3DXIFF_PFM
-    else if (wcsstr(path, L".hdr") != nullptr)
-        format = 7;                                               // D3DXIFF_HDR
-    else
-        format = reinterpret_cast<std::intptr_t>(surf);           // 0x46031C
-    auto& d3dxApi = d3dx::Get();
-    if (d3dxApi.Load() && d3dxApi.saveSurfaceToFileW != nullptr)
-        d3dxApi.saveSurfaceToFileW(path, static_cast<int>(format),
-                                   surf, nullptr, &rect);         // 0x46032D
-    if (surf != nullptr) {
-        surf->Release();                                          // 0x460340
-        surf = nullptr;
-    }
-
-    if (*backBuffer == nullptr)                                   // 0x46034C
-        device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, backBuffer);
-    if (r->multisampleAvailable == 0)  // wrapper+0x1D4F8
-        device->SetRenderTarget(0, *backBuffer);                  // 0x460391
-    DestroyWindow(app->RecordingWindow());                        // 0x46039A
+    const HWND window = app->RecordingWindow();
     app->RecordingWindow() = nullptr;
+    if (window) DestroyWindow(window);
 
-    // window-vs-device size check (0x4603B2..0x460410): when either device
-    // dimension is larger than the window's, adopt the window size and reset.
-    const std::int32_t winW = app->state.recRTW;
-    const std::int32_t winH = app->state.recRTH;
-    const bool tooWide = r->screenHeight > winH;   // wrapper+0x1D4E8
-    const bool tooHigh = r->screenWidth > winW;    // wrapper+0x1D4E4
-    if (tooWide || tooHigh) {
-        r->presentParameters.BackBufferWidth = winW;   // 0x1D4FC
-        r->presentParameters.BackBufferHeight = winH;  // 0x1D500
-        r->screenWidth = winW;   // 0x1D4E4
-        r->screenHeight = winH;  // 0x1D4E8
-        if (!PostDeviceReset(app)) return;                        // 0x460410
+    // Command 276 saves the pre-capture size before growing the backbuffer.
+    // Restore it on every exit, including render-target and copy failures.
+    const auto width = app->state.recRTW;
+    const auto height = app->state.recRTH;
+    if (renderer && width > 0 && height > 0 &&
+        (renderer->screenWidth > width || renderer->screenHeight > height)) {
+        renderer->presentParameters.BackBufferWidth = width;
+        renderer->presentParameters.BackBufferHeight = height;
+        renderer->screenWidth = width;
+        renderer->screenHeight = height;
+        if (!PostDeviceReset(app)) return;
     }
-    RefreshMainWindowViewport(app);                                               // 0x460417
+    RefreshMainWindowViewport(app);
+}
+
+}  // namespace
+
+bool image_sequence::CancelStillCapture(MMDApp* app) {
+    if (!StillActive(app)) return false;
+    CleanupStillCapture(app);
+    return true;
+}
+
+void TimelineAdvance(MMDApp* app) {
+    struct FinishStill {
+        MMDApp* app;
+        bool notify = image_sequence::StillActive(app);
+        bool failed = true;
+        ~FinishStill() {
+            CleanupStillCapture(app);
+            if (notify && failed) {
+                MessageBoxW(app->MainWindow(), image_sequence::Text(app,
+                    L"图片导出失败，请检查图片格式、保存位置和剩余空间。",
+                    L"Image export failed. Check the format, destination and free space.",
+                    L"画像を出力できません。形式、保存先、空き容量を確認してください。"),
+                    L"MMS", MB_OK | MB_ICONERROR);
+            }
+        }
+    } finish{app};
+    D3DRenderer* renderer = app->Renderer();
+    if (!renderer || !renderer->device) return;
+    auto* device = renderer->device;
+    const bool transparent = TransparentExportActive(app);
+
+    // The local copy is released before FinishStill can reset the device.
+    Microsoft::WRL::ComPtr<IDirect3DSurface9> surface;
+    if (FAILED(device->CreateRenderTarget(app->RenderWidth(), app->RenderHeight(),
+            transparent ? D3DFMT_A8R8G8B8 : renderer->backbufferFormat,
+            D3DMULTISAMPLE_NONE, 0, FALSE, &surface, nullptr))) return;
+
+    auto*& backBuffer = renderer->backbufferSurface;
+    if (!backBuffer)
+        device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &backBuffer);
+    auto* source = transparent ? TransparentCaptureSurface(app) : backBuffer;
+    const RECT rect{0, 0, app->RenderWidth(), app->RenderHeight()};
+    HRESULT hr = source ? device->StretchRect(source, &rect, surface.Get(), &rect,
+        transparent ? D3DTEXF_NONE : D3DTEXF_LINEAR) : E_FAIL;
+    if (FAILED(hr) && source)
+        hr = device->StretchRect(source, &rect, surface.Get(), &rect, D3DTEXF_NONE);
+    if (FAILED(hr)) return;
+
+    const wchar_t* path = app->CaptureSavePath();
+    finish.failed = FAILED(image_sequence::SaveSurface(path,
+        image_sequence::FormatFromPath(path), surface.Get(), transparent));
 }
 
 namespace {

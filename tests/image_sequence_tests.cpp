@@ -12,6 +12,7 @@
 #include "mikudancestudio/d3dx_dyn.hpp"
 #include "mikudancestudio/antialias.hpp"
 #include "mikudancestudio/antialias_motion.hpp"
+#include "mikudancestudio/transparent_capture.hpp"
 #include "mikudancestudio/global_key_layout.hpp"
 #include "mikudancestudio/runtime_log.hpp"
 #include "mikudancestudio/model.hpp"
@@ -23,8 +24,10 @@
 #include "../src/window/image_sequence_dialog.hpp"
 #include <MinHook.h>
 #include "plugins/coordinator_fixture.hpp"
+#include "../src/plugins/native_pose_scope.hpp"
 #include <ShObjIdl.h>
 #include <wrl/client.h>
+#include <wincodec.h>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -53,6 +56,7 @@ int WINAPI MessageW(HWND, LPCWSTR text, LPCWSTR, UINT) {
     std::fwprintf(stderr, L"FAIL unexpected message: %ls\n", text); std::exit(2);
 }
 int WINAPI MessageA(HWND, LPCSTR text, LPCSTR, UINT) {
+    if (expectWarning) { ++warnings; return IDOK; }
     std::printf("FAIL unexpected message: %s\n", text); std::exit(2);
 }
 decltype(&ShowWindow) originalShowWindow;
@@ -353,6 +357,8 @@ void StillImageLanguageTests(MMDApp* app) {
     app->RenderWidth() = width; app->RenderHeight() = height;
     MH_DisableHook(reinterpret_cast<void*>(&GetSaveFileNameW)); MH_RemoveHook(reinterpret_cast<void*>(&GetSaveFileNameW));
 }
+#include "transparent_image_checks.hpp"
+#include "transparent_capture_failure_checks.hpp"
 #include "antialias_image_sequence_checks.hpp"
 #include "image_sequence_continuity_checks.hpp"
 }
@@ -362,7 +368,8 @@ int wmain(int argc, wchar_t** argv) {
     fs::create_directories(output);
     wchar_t desktop[256]{}; DWORD bytes = 0;
     Check(GetUserObjectInformationW(GetThreadDesktop(GetCurrentThreadId()), UOI_NAME, desktop, sizeof desktop, &bytes) &&
-        (_wcsicmp(desktop, L"Default") != 0 || (argc == 3 && wcscmp(argv[2], L"--hidden-production") == 0)),
+        (_wcsicmp(desktop, L"Default") != 0 || (argc == 3 &&
+            (wcscmp(argv[2], L"--hidden-production") == 0 || wcscmp(argv[2], L"--still-only") == 0))),
         "private desktop or explicit hidden GPU test required");
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
     Check(MH_Initialize() == MH_OK, "initialize message guards");
@@ -386,10 +393,22 @@ int wmain(int argc, wchar_t** argv) {
     }
     Check(InitMainWindowAndD3D(app, GetModuleHandleW(nullptr), SW_HIDE), "initialize production renderer");
     Check(!IsWindowVisible(app->MainWindow()), "production host remains hidden");
+    if (argc == 3 && wcscmp(argv[2], L"--still-only") == 0) {
+        StillImageLanguageTests(app);
+        const auto pixels = ImagePixels(output / L"单张_0_0.png");
+        unsigned clear = 0;
+        for (std::size_t i = 3; i < pixels.size(); i += 4) clear += pixels[i] == 0;
+        Check(clear > 10, "single-image PNG background becomes transparent automatically");
+        ShutdownCleanup(app); g_Block = nullptr; delete app; UnhookWindowsHookEx(hide);
+        std::printf("PASS automatic still-image checks=%u\n", checks);
+        return 0;
+    }
     NamesAndValidation(app); SceneRangeTests(app); DialogTests(app); app->EnglishUI() = 2;
     MenuEntryTests(app);
     CameraAndContinuityTests(app);
     StillImageLanguageTests(app);
+    TransparentImages(app);
+    TransparentStillFailures(app);
     seq::Options o; o.directory = output.wstring(); o.width = 64; o.height = 48; o.end = 1;
     for (int format = 0; format < std::size(seq::kFormats); ++format) {
         o.format = format; o.prefix = L"中文_" + std::to_wstring(format) + L"_";
