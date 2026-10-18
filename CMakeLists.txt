@@ -507,6 +507,14 @@ set_target_properties(path_resolve_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${
 add_test(NAME path_resolve_regressions COMMAND path_resolve_tests)
 set_tests_properties(path_resolve_regressions PROPERTIES TIMEOUT 20)
 
+add_executable(ui_control_readout_tests EXCLUDE_FROM_ALL tests/ui_control_readout_tests.cpp)
+target_include_directories(ui_control_readout_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_compile_definitions(ui_control_readout_tests PRIVATE _WIN32_WINNT=0x0601 WINVER=0x0601)
+target_link_libraries(ui_control_readout_tests PRIVATE user32 comctl32)
+set_target_properties(ui_control_readout_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_test(NAME ui_control_readout_regressions COMMAND ui_control_readout_tests)
+set_tests_properties(ui_control_readout_regressions PROPERTIES TIMEOUT 20)
+
 add_executable(kinect_pose_math_tests EXCLUDE_FROM_ALL tests/kinect_pose_math_tests.cpp)
 target_link_libraries(kinect_pose_math_tests PRIVATE mikudancestudio_core winmm dsound)
 set_target_properties(kinect_pose_math_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")

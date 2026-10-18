@@ -7,6 +7,7 @@
 #include "mikudancestudio/bone_curve.hpp"
 #include "mikudancestudio/morph_curve.hpp"
 #include <shlobj.h>
+#include "../slider_readout_spy.hpp"
 #include "mikudancestudio/key_pool.hpp"
 #include "mikudancestudio/animation_curve_editor.hpp"
 #include "mikudancestudio/animation_curve_host.hpp"

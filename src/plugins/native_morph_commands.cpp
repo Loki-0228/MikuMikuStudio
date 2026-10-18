@@ -6,6 +6,7 @@
 #include "mikudancestudio/bake_ui_lock.hpp"
 #include "mikudancestudio/bone_key_pool.hpp"
 #include "mikudancestudio/mmd_app.hpp"
+#include "mikudancestudio/ui_control_readout.hpp"
 #include "mikudancestudio/model.hpp"
 #include "mikudancestudio/plugin_scene.hpp"
 #include <commctrl.h>
@@ -145,11 +146,11 @@ bool TryCommitBoundMorphSlider(MMDApp* app,HWND slider) noexcept {
         // narrowed .53f (which would produce 52). Rejections restore the author
         // value, even if the paired edit contains pending user text.
         const auto position=result==MMS_OK?int(tick):MorphSliderPosition(current);
-        SendMessageW(slider,TBM_SETPOS,TRUE,position);
+        ui::SetTrackbarPositionIfChanged(slider,position);
         const auto edit=GetDlgItem(app->MainWindow(),506+int(lane)*5);
         if(edit && !SendMessageW(edit,EM_GETMODIFY,0,0)) {
             char text[64]{};std::snprintf(text,sizeof(text),"%5.4f",result==MMS_OK?scaled:double(current));
-            SetWindowTextA(edit,text);
+            ui::SetReadoutTextIfChangedA(edit,text);
         }
         return result;
     });
@@ -173,7 +174,7 @@ void RefreshBoundMorphReadout(MMDApp& app) noexcept {
         // Float multiplication can otherwise turn a later refresh into 52,
         // making the following ENDTRACK author an unintended second edit.
         if(static_cast<float>(double(tick)/100.0)!=value)
-            SendMessageW(slider,TBM_SETPOS,TRUE,position);
+            ui::SetTrackbarPositionIfChanged(slider,position);
     }
 }
 }

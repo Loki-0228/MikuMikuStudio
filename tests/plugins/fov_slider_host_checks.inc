@@ -3,6 +3,14 @@ void Run(MMDApp* app, plugins::SharedHistory& history, int (*value)()) {
     const auto original=app->CameraFov();const auto originalMode=app->CameraPerspective();
     const auto originalDistance=app->CameraDistance();const auto editor=app->CameraMode();const auto frame=app->CurrentFrame();
     const auto slider=GetDlgItem(app->MainWindow(),panel::kFovSlider);Check(slider!=nullptr,"real FOV trackbar exists");
+    std::array<slider_readout_probe::Spy,6> peerSliders,peerEdits;
+    for(unsigned i=0;i<6;++i)Check(peerSliders[i].Watch(GetDlgItem(app->MainWindow(),455+int(i)))&&
+        peerEdits[i].Watch(GetDlgItem(app->MainWindow(),461+int(i))),"observe actual RGB and direction siblings of the FOV control");
+    const auto clearPeers=[&]{for(unsigned i=0;i<6;++i){peerSliders[i].Clear();peerEdits[i].Clear();}};
+    const auto quietPeers=[&]{bool quiet=true;for(unsigned i=0;i<6;++i)if(!peerSliders[i].counts.NoEcho()||!peerEdits[i].counts.NoEcho()){
+        const auto& s=peerSliders[i].counts;const auto& e=peerEdits[i].counts;quiet=false;
+        std::printf("DIAG FOV peer lane=%u TBM_SETPOS=%u redraw=%u textset=%u replace=%u select=%u paint=%u erase=%u\n",
+            i,s.positions,s.redrawPositions,e.textSets,e.textReplaces,e.selections,s.paints,s.erases);}return quiet;};
     const auto scroll=[&](int tick,unsigned code=TB_THUMBTRACK){
         SendMessageW(slider,TBM_SETPOS,TRUE,tick);
         SendMessageW(app->MainWindow(),WM_HSCROLL,MAKEWPARAM(code,0),reinterpret_cast<LPARAM>(slider));
@@ -20,7 +28,9 @@ void Run(MMDApp* app, plugins::SharedHistory& history, int (*value)()) {
     };
     for(unsigned mode=0;mode<2;++mode){
         app->CameraFov()=45.125f;app->CameraPerspective()=mode;app->CameraDistance()=-45;
-        plugins::RefreshBoundGlobalReadout(*app);
+        plugins::RefreshBoundGlobalReadout(*app);clearPeers();
+        for(unsigned repeat=0;repeat<10;++repeat)plugins::RefreshBoundGlobalReadout(*app);
+        Check(quietPeers(),"actual stable global refresh does not echo RGB or fractional direction siblings");
         const auto count=mdl::KeyPoolCapacity(app->CameraKeys());
         const std::vector<mdl::CameraKey> keys(app->CameraKeys(),app->CameraKeys()+count);
         auto& model=*mdl::Mdl(app->ModelSlot(0));const auto ring=model.undoState[0];const auto bone=model.boneTable[0].trans[1];
@@ -28,7 +38,8 @@ void Run(MMDApp* app, plugins::SharedHistory& history, int (*value)()) {
         Check(app->CameraFov()==45.125f&&!history.UndoCount()&&!app->SceneModified()&&!app->RecordedFrameCountByte1()&&
             SendMessageW(slider,TBM_GETPOS,0,0)==45,"pending plugin transaction rejects FOV slider and restores moved thumb");
         Menu(app,L"Edit probe cancel");Menu(app,L"Edit probe once");
-        SetCapture(slider);Check(GetCapture()==slider,"actual FOV slider owns live capture");scroll(67);ReleaseCapture();
+        clearPeers();SetCapture(slider);Check(GetCapture()==slider,"actual FOV slider owns live capture");scroll(67);ReleaseCapture();
+        Check(quietPeers(),"actual captured FOV WM_HSCROLL does not echo unchanged native light siblings");
         Check(value()==1&&history.UndoCount()==2&&app->CameraFov()==67&&echo(67)&&projection(),
             "actual captured FOV slider joins plugin history and updates the real device projection");
         scroll(91);Check(history.UndoCount()==3&&app->CameraFov()==91&&echo(91)&&projection(),"second live FOV position creates another common step");

@@ -11,18 +11,25 @@ void Run(MMDApp* app,plugins::SharedHistory& history,int(*value)()) {
     for(unsigned lane=0;lane<4;++lane) {
         model.selectedMorphs[lane]=int(index);model.morphs[index].value=.12345678f;
         const auto slider=GetDlgItem(app->MainWindow(),505+int(lane)*5);Check(slider!=nullptr,"actual morph slider lane exists");
+        slider_readout_probe::Spy sliderMessages,editMessages;
+        Check(sliderMessages.Watch(slider)&&editMessages.Watch(GetDlgItem(app->MainWindow(),506+int(lane)*5)),"observe actual morph native control echoes");
         const auto scroll=[&](int tick,unsigned code=TB_THUMBTRACK){SendMessageW(slider,TBM_SETPOS,TRUE,tick);
+            sliderMessages.Clear();editMessages.Clear(); // Exclude the simulated user thumb movement itself.
             SendMessageW(app->MainWindow(),WM_HSCROLL,MAKEWPARAM(code,0),reinterpret_cast<LPARAM>(slider));};
         plugins::RefreshBoundMorphReadout(*app);
         Menu(app,L"Edit probe prepared");app->SceneModified()=app->RecordedFrameCountByte1()=0;scroll(53);
         Check(model.morphs[index].value==.12345678f&&!history.UndoCount()&&!app->SceneModified()&&
-            SendMessageW(slider,TBM_GETPOS,0,0)==12,"pending plugin edit rejects actual morph slider and restores thumb");Menu(app,L"Edit probe cancel");
+            SendMessageW(slider,TBM_GETPOS,0,0)==12,"pending plugin edit rejects actual morph slider and restores thumb");
+        Check(sliderMessages.counts.positions==1&&sliderMessages.counts.redrawPositions==1,"actual pending morph rejection restores the moved native thumb exactly once");Menu(app,L"Edit probe cancel");
         Menu(app,L"Edit probe once");SetCapture(slider);Check(GetCapture()==slider,"actual morph slider owns capture");scroll(53);ReleaseCapture();
         Check(value()==1&&history.UndoCount()==2&&model.morphs[index].value==.53f&&SendMessageW(slider,TBM_GETPOS,0,0)==53,
             "actual captured morph slider joins shared history and preserves float-boundary tick");
+        Check(!sliderMessages.counts.positions,"actual successful morph publication does not echo the already moved native thumb");
+        sliderMessages.Clear();editMessages.Clear();
         plugins::RefreshBoundMorphReadout(*app);SendMessageW(app->MainWindow(),WM_HSCROLL,TB_ENDTRACK,reinterpret_cast<LPARAM>(slider));
         Check(history.UndoCount()==2&&model.morphs[index].value==.53f&&SendMessageW(slider,TBM_GETPOS,0,0)==53,
             "morph safe refresh and native end-track do not author a drifted tick");
+        Check(sliderMessages.counts.NoEcho()&&editMessages.counts.NoEcho(),"actual unchanged morph refresh and ENDTRACK send no redundant position, text or selection messages");
         scroll(75);Check(history.UndoCount()==3&&model.morphs[index].value==.75f,"next actual morph position creates one additional live node");
         Menu(app,L"Edit probe once");Menu(app,L"Edit probe undo");app->SceneModified()=0;scroll(75,TB_ENDTRACK);
         Check(history.RedoCount()==1&&!app->SceneModified(),"same actual morph tick retains later plugin redo");Menu(app,L"Edit probe redo");

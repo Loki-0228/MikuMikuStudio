@@ -30,6 +30,7 @@
 
 #include "mikudancestudio/adaptive_shadow.hpp"
 #include "mikudancestudio/mmd_app.hpp"
+#include "mikudancestudio/ui_control_readout.hpp"
 #include "mikudancestudio/model.hpp"
 #include "mikudancestudio/bone_combo.hpp"
 #include "mikudancestudio/accessory_layout.hpp"
@@ -68,6 +69,7 @@ inline void WriteLightTrace(MMDApp*, const char*) {}
 
 void ReplaceEditText(HWND main, int id, const char* text) {
     HWND edit = GetDlgItem(main, id);
+    if (ui::ReadoutTextMatchesA(edit, text)) return;
     const LRESULT length = GetWindowTextLengthA(edit);
     SendMessageA(edit, EM_SETSEL, 0, length);
     SendMessageA(edit, EM_REPLACESEL, FALSE,
@@ -163,10 +165,10 @@ void RefreshLightPanel(MMDApp* app) {
     const HWND main = app->state.hwnd;
     char text[0x34];
     for (int lane = 0; lane < 3; ++lane) {
-        SendMessageA(GetDlgItem(main, 455 + lane), TBM_SETPOS, TRUE,
-                     static_cast<LPARAM>(static_cast<int>(color[lane] * 256.0f)));
-        SendMessageA(GetDlgItem(main, 458 + lane), TBM_SETPOS, TRUE,
-                     static_cast<LPARAM>(static_cast<int>(direction[lane] * 100.0f)));
+        ui::SetTrackbarPositionIfChanged(GetDlgItem(main, 455 + lane),
+            static_cast<int>(color[lane] * 256.0f));
+        ui::SetTrackbarPositionIfChanged(GetDlgItem(main, 458 + lane),
+            static_cast<int>(direction[lane] * 100.0f));
 
         sprintf_s(text, sizeof(text), "%3d",
                   static_cast<int>(color[lane] * 256.0f));

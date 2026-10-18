@@ -87,6 +87,7 @@
 
 #include "mikudancestudio/d3dx_dyn.hpp"
 #include "mikudancestudio/mmd_app.hpp"
+#include "mikudancestudio/ui_control_readout.hpp"
 #include "mikudancestudio/model.hpp"
 #include "mikudancestudio/ported_funcs.hpp"
 #include "mikudancestudio/panel_controls.hpp"
@@ -132,7 +133,7 @@ void HandleMorphSlider(MMDApp* app, HWND hwnd, int sliderId,
 
     char buf[256];
     sprintf_s(buf, 0x100, "%5.4f", scaled);
-    SetWindowTextA(GetDlgItem(hwnd, echoId), buf);
+    ui::SetReadoutTextIfChangedA(GetDlgItem(hwnd, echoId), buf);
 }
 
 // Edit-control echo sequence used by the RGB/acc/FOV blocks: read the
@@ -141,6 +142,7 @@ void HandleMorphSlider(MMDApp* app, HWND hwnd, int sliderId,
 // each message; the handle is deterministic so one fetch suffices.
 void EchoEditText(HWND hwnd, int id, const char* text) {
     HWND edit = GetDlgItem(hwnd, id);
+    if (ui::ReadoutTextMatchesA(edit, text)) return;
     SendMessageA(edit, EM_SETSEL, 0,
                  static_cast<LPARAM>(GetWindowTextLengthA(edit)));
     SendMessageA(edit, EM_REPLACESEL, 0,
@@ -295,7 +297,7 @@ void HandleHScroll(LPARAM lParam, WPARAM wParam) {
         SetShadowSliderPosition(app, static_cast<int>(pos));
         char buf[256];
         sprintf_s(buf, 0x100, "%d", static_cast<int>(pos));
-        SetWindowTextA(GetDlgItem(hwnd, panel::kSelfShadowRangeEdit), buf);
+        ui::SetReadoutTextIfChangedA(GetDlgItem(hwnd, panel::kSelfShadowRangeEdit), buf);
         RefreshRequest(-3);
     }
     // ---- 428: timeline strip ------------------------------------------------

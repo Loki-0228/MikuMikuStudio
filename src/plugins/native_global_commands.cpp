@@ -10,6 +10,7 @@
 #include "mikudancestudio/bake_ui_lock.hpp"
 #include "mikudancestudio/key_pool.hpp"
 #include "mikudancestudio/mmd_app.hpp"
+#include "mikudancestudio/ui_control_readout.hpp"
 #include "mikudancestudio/model.hpp"
 #include "mikudancestudio/panel_controls.hpp"
 #include "mikudancestudio/ported_funcs.hpp"
@@ -1025,10 +1026,10 @@ void RefreshBoundGlobalReadout(MMDApp& app) noexcept {
             };
             char text[64]{};
             std::snprintf(text, sizeof(text), "%3d", bounded(color));
-            SetDlgItemTextA(app.MainWindow(), 461 + int(axis), text);
+            ui::SetReadoutTextIfChangedA(GetDlgItem(app.MainWindow(), 461 + int(axis)), text);
             std::snprintf(text, sizeof(text), "%+.1f", direction);
-            SetDlgItemTextA(app.MainWindow(), 464 + int(axis), text);
-            SendDlgItemMessageW(app.MainWindow(), 455 + int(axis), TBM_SETPOS, TRUE, bounded(color));
+            ui::SetReadoutTextIfChangedA(GetDlgItem(app.MainWindow(), 464 + int(axis)), text);
+            ui::SetTrackbarPositionIfChanged(GetDlgItem(app.MainWindow(), 455 + int(axis)), bounded(color));
             const auto directionSlider = GetDlgItem(app.MainWindow(), 458 + int(axis));
             const auto currentTick = SendMessageW(directionSlider, TBM_GETPOS, 0, 0);
             // The authored float may not multiply back to its original integer
@@ -1037,7 +1038,7 @@ void RefreshBoundGlobalReadout(MMDApp& app) noexcept {
                 const int nearest=bounded(std::round(direction * 100.0));
                 const int restored=static_cast<float>(double(nearest)/100.0)==app.LightDirection()[axis]?
                     nearest:bounded(direction * 100.0);
-                SendMessageW(directionSlider, TBM_SETPOS, TRUE, restored);
+                ui::SetTrackbarPositionIfChanged(directionSlider, restored);
             }
         }
         if (app.SelectedAccessorySlot() < kModelSlotCount) {
