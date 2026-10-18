@@ -1,5 +1,6 @@
 #include "mikudancestudio/transparent_capture.hpp"
 #include "mikudancestudio/wic_mov_recorder.hpp"
+#include "mikudancestudio/image_sequence_export.hpp"
 #include "mikudancestudio/mmd_app.hpp"
 #include <unordered_map>
 
@@ -10,7 +11,9 @@ std::unordered_map<MMDApp*, ComPtr<IDirect3DSurface9>> targets;
 constexpr D3DRENDERSTATETYPE alphaStates[] = {
     D3DRS_SEPARATEALPHABLENDENABLE, D3DRS_BLENDOPALPHA, D3DRS_SRCBLENDALPHA, D3DRS_DESTBLENDALPHA};
 }
-bool TransparentExportActive(MMDApp* app) { return app && IsPngMovRecording(app->Recorder()); }
+bool TransparentExportActive(MMDApp* app) {
+    return app && (IsPngMovRecording(app->Recorder()) || image_sequence::Transparent(app));
+}
 IDirect3DSurface9* TransparentCaptureSurface(MMDApp* app) {
     const auto it = targets.find(app); return it == targets.end() ? nullptr : it->second.Get();
 }

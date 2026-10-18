@@ -103,6 +103,7 @@ void FinishAviRecord(MMDApp* app, bool reachedRequestedEnd) {  // was Sub464A00
         else AbortPngMovRecording(s.Recorder());
     }
     ReleaseTransparentCapture(app);
+    image_sequence::EndStill(app);
     bool dshowComplete = false;
     TeardownDShowGraph(s.Recorder(), &dshowComplete);           // 0x464A31
     D3DRenderer* r = s.Renderer();

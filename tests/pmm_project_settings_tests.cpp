@@ -3,6 +3,7 @@
 #include "mikudancestudio/display_capacity.hpp"
 #include "mikudancestudio/save_compatibility.hpp"
 #include "mikudancestudio/key_pool.hpp"
+#include "mikudancestudio/bone_key_pool.hpp"
 #include "mikudancestudio/frame_limits.hpp"
 #include "mikudancestudio/panel_controls.hpp"
 #include "mikudancestudio/text_encoding.hpp"
@@ -20,6 +21,7 @@
 #include <cstring>
 #include <filesystem>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 #include "mikudancestudio/mmd_app.hpp"
@@ -33,6 +35,9 @@ using namespace mikudancestudio;
 namespace ext = mikudancestudio::pmm_extension;
 namespace settings = mikudancestudio::pmm_settings;
 namespace {
+bool expectedInvalidSave=false;
+bool invalidSaveDialogHandled=false;
+unsigned invalidSaveDialogs=0;
 // Five tiers, stored as their own enum values.  The five menu ids are
 // contiguous from kTransparentSortPrecisionMenuFirst: Low = 304 .. Maximum = 307
 // and Off = kTransparentSortPrecisionMenuOff = 308.
@@ -235,6 +240,14 @@ void AutomaticMetadata() {
     Check(text_encoding::BoneName(bones[0],false)==first&&text_encoding::BoneName(bones[1],false)==second,"PMM metadata restores distinct complete Unicode names");
     Check(mdl::DisplayGroupCount(*model)==300&&mdl::FacialFrameCount(*model)==512&&groups[299].flags==1,"expanded display counts and final group state survive PMM metadata");
     Check(save_compatibility::InspectPmm(*app).needsNewPmm,"group capacity beyond original PMM selects the new version");
+    mdl::SetDisplayCapacity(*model,1,1);
+    Check(extended_names::Assign(bones[0].jpText,L"boneA")&&extended_names::Assign(bones[1].jpText,L"boneB"),"restore exact legacy binding names");
+    Check(extended_names::Assign(bones[0].enText,L"An English display label far beyond nineteen bytes"),"set a long English caption");
+    Check(extended_names::Assign(model->pmxTextBuffers[0],L"A model caption longer than twenty bytes"),"set a length-prefixed PMM model caption");
+    const auto ordinary=save_compatibility::InspectPmm(*app);
+    Check(!ordinary.needsNewPmm&&!ordinary.namesNeedExtension,"English captions and display-group metadata do not trigger a PMM compatibility warning");
+    Check(extended_names::Assign(bones[0].jpText,first),"restore a Unicode binding name");
+    Check(save_compatibility::InspectPmm(*app).namesNeedExtension,"a real binding alias still requires Unicode extension data");
     app->ModelSlot(0)=nullptr;
     auto*& camera=app->CameraKeys();camera=mdl::KeyPoolCreate<mdl::CameraKey>();
     Check(!save_compatibility::InspectPmm(*app).needsNewPmm,"ordinary project prefers original PMM");
@@ -250,6 +263,164 @@ void AutomaticMetadata() {
     for(auto& bone:bones){std::free(bone.jpText);std::free(bone.enText);}
     for(auto& morph:morphs){std::free(morph.jpText);std::free(morph.enText);}
     std::puts("PASS automatic Unicode metadata, display counts and legacy-first format selection");
+}
+
+template<class K> void TrackFormatBoundaries(MMDApp& app,K*& track,std::size_t original) {
+    K* saved=track;
+    if constexpr(std::is_same_v<K,mdl::BoneKey>)track=mdl::BoneKeyPoolCreate(original+1);
+    else if constexpr(std::is_same_v<K,mdl::MorphKey>)track=mdl::MorphKeyPoolCreate(original+1);
+    else track=mdl::KeyPoolCreate<K>(original+1);
+    const auto expect=[&](bool extended,const char* message) {
+        const auto report=save_compatibility::InspectPmm(app);
+        Check(!report.invalidData && report.needsNewPmm==extended,message);
+    };
+    expect(false,"allocated capacity alone never selects v3");
+    for(std::size_t i=0;i<original;++i){auto& k=track[i];k.frame=static_cast<std::uint32_t>(i);k.previous=i?static_cast<std::uint32_t>(i-1):0;k.next=i+1<original?static_cast<std::uint32_t>(i+1):0;}
+    expect(false,"exactly the legacy live-key capacity still selects v2");
+    track[original-1].next=static_cast<std::uint32_t>(original);
+    track[original].frame=static_cast<std::uint32_t>(original);
+    track[original].previous=static_cast<std::uint32_t>(original-1);
+    expect(true,"one live key beyond the legacy limit selects v3");
+    track[original].next=static_cast<std::uint32_t>(original+1);
+    Check(save_compatibility::InspectPmm(app).invalidData,"validation continues after the legacy capacity is exceeded");
+    std::memset(track,0,(original+1)*sizeof(K));
+    track[0].next=static_cast<std::uint32_t>(original);
+    track[original].frame=frame_limits::legacyMaximum;
+    expect(false,"sparse high slot and exact legacy maximum frame select v2");
+    ++track[original].frame;
+    expect(true,"first extended frame selects v3");
+    track[original].frame=frame_limits::maximum;
+    expect(true,"largest supported frame selects v3");
+    ++track[original].frame;
+    const auto invalid=save_compatibility::InspectPmm(app);
+    Check(invalid.invalidData&&!invalid.canCopyLegacy&&!invalid.reason.empty(),"unsupported frame cannot be saved using either PMM version");
+    track[original].frame=21;
+    track[original].previous=static_cast<std::uint32_t>(original+1);
+    Check(save_compatibility::InspectPmm(app).invalidData,"out-of-range previous link is invalid");
+    track[original].previous=1;
+    Check(save_compatibility::InspectPmm(app).invalidData,"link to an empty slot is invalid");
+    track[original].previous=0;
+    expect(false,"repairing the link restores v2 eligibility");
+    track[1].next=static_cast<std::uint32_t>(original+100);
+    expect(false,"stale links in unused slots are not serialized or rejected");
+    if constexpr(std::is_same_v<K,mdl::BoneKey>)mdl::BoneKeyPoolDestroy(track);
+    else if constexpr(std::is_same_v<K,mdl::MorphKey>)mdl::MorphKeyPoolDestroy(track);
+    else mdl::KeyPoolDestroy(track);
+    track=saved;
+}
+
+void FormatTriggerBoundaries(MMDApp& app) {
+    const auto expect=[&](bool extended,const char* message) {
+        const auto report=save_compatibility::InspectPmm(app);
+        Check(!report.invalidData&&report.needsNewPmm==extended,message);
+    };
+    expect(false,"initialized production scene is valid legacy PMM");
+    TrackFormatBoundaries(app,app.CameraKeys(),10000);
+    TrackFormatBoundaries(app,app.LightKeys(),10000);
+    TrackFormatBoundaries(app,app.ShadowKeys(),10000);
+    TrackFormatBoundaries(app,app.GravityKeys(),10000);
+    auto model=std::make_unique<mdl::ModelRecord>();
+    std::array<mdl::BoneRecord,1> bones{};std::array<mdl::MorphRecord,1> morphs{};
+    std::array<mdl::DisplayGroup,256> groups{};
+    std::strcpy(bones[0].name,"bone");std::strcpy(morphs[0].name,"face");
+    model->boneTable=bones.data();model->boneCount=1;model->morphs=morphs.data();model->morphCount=1;
+    model->boneKeys=mdl::BoneKeyPoolCreate(1);model->morphKeys=mdl::MorphKeyPoolCreate(1);
+    model->displayKeys=mdl::KeyPoolCreate<mdl::DisplayKey>(1);model->groupNames=groups.data();
+    Check(!app.ModelSlot(254),"format audit model slot is free");
+    app.ModelSlot(254)=reinterpret_cast<unsigned char*>(model.get());
+    TrackFormatBoundaries(app,model->boneKeys,mdl::kBoneKeyCapacity);
+    TrackFormatBoundaries(app,model->morphKeys,mdl::kMorphKeyCapacity);
+    TrackFormatBoundaries(app,model->displayKeys,mdl::kDisplayKeyCapacity);
+    model->maxFrame=frame_limits::legacyMaximum;
+    expect(false,"model timeline at legacy maximum selects v2");
+    ++model->maxFrame;
+    expect(true,"persisted model timeline beyond legacy maximum selects v3");
+    model->maxFrame=0;
+    mdl::SetDisplayCapacity(*model,255,255);expect(false,"255 display groups and facial rows still select v2");
+    mdl::SetDisplayCapacity(*model,256,255);expect(true,"256 display groups select v3");
+    mdl::SetDisplayCapacity(*model,255,256);expect(true,"256 facial rows select v3");
+    mdl::SetDisplayCapacity(*model,0,0);
+    wcscpy_s(model->path,L"D:\\model.pmx");expect(false,"legacy reference path selects v2");
+    wcscpy_s(model->path,L"D:\\model-\U0001f31f.pmx");expect(true,"non-CP932 model reference selects v3");
+    app.ModelSlot(254)=nullptr;
+    mdl::ForgetDisplayCapacity(*model);
+    mdl::BoneKeyPoolDestroy(model->boneKeys);mdl::MorphKeyPoolDestroy(model->morphKeys);mdl::KeyPoolDestroy(model->displayKeys);
+    auto accessory=std::make_unique<mdl::AccessoryRecord>();
+    Check(!app.AccessorySlot(254),"format audit accessory slot is free");
+    auto* savedAccessoryKeys=app.AccessoryKeys(254);
+    app.AccessorySlot(254)=accessory.get();app.AccessoryKeys(254)=mdl::KeyPoolCreate<mdl::AccessoryKey>(1);
+    TrackFormatBoundaries(app,app.AccessoryKeys(254),10000);
+    wcscpy_s(accessory->sourcePath,L"D:\\accessory-\U0001f31f.x");expect(true,"non-CP932 accessory reference selects v3");
+    mdl::KeyPoolDestroy(app.AccessoryKeys(254));app.AccessorySlot(254)=nullptr;app.AccessoryKeys(254)=savedAccessoryKeys;
+    for(auto* path:{app.WavePath(),app.AviBackgroundPath(),app.PictureBackgroundPath()}) {
+        const std::wstring saved=path;
+        wcscpy_s(path,256,L"D:\\media-\U0001f31f.png");expect(true,"each non-CP932 media reference selects v3");
+        wcscpy_s(path,256,saved.c_str());
+    }
+    for(auto* frame:{&app.CurrentFrame(),&app.TimelineStartFrame()}) {
+        const auto saved=*frame;
+        *frame=frame_limits::legacyMaximum;expect(false,"exact legacy UI frame selects v2");
+        ++*frame;expect(true,"first extended UI frame selects v3");
+        *frame=-1;Check(save_compatibility::InspectPmm(app).invalidData,"negative UI frame is invalid");
+        *frame=saved;
+    }
+    const auto last=app.LastRegisteredFrame();
+    app.LastRegisteredFrame()=frame_limits::legacyMaximum;expect(false,"exact legacy last frame selects v2");
+    ++app.LastRegisteredFrame();expect(true,"extended last frame selects v3");app.LastRegisteredFrame()=last;
+    for(auto control:{panel::kPlayStartFrameEdit,panel::kPlayStopFrameEdit}) {
+        char saved[256]{};GetDlgItemTextA(app.MainWindow(),control,saved,sizeof saved);
+        SetDlgItemTextA(app.MainWindow(),control,"10000000");expect(false,"exact legacy playback bound selects v2");
+        SetDlgItemTextA(app.MainWindow(),control,"10000001");expect(true,"extended playback bound selects v3");
+        SetDlgItemTextA(app.MainWindow(),control,"2147483647");Check(save_compatibility::InspectPmm(app).invalidData,"unsupported playback bound is rejected before writing");
+        SetDlgItemTextA(app.MainWindow(),control," ");expect(false,"blank playback range retains native zero-default behavior");
+        SetDlgItemTextA(app.MainWindow(),control,saved);
+    }
+    expect(false,"all temporary extended data removed restores v2 eligibility");
+    std::puts("PASS PMM format and invalid-data boundaries for all eight key pools, frames, counts and reference paths");
+}
+
+void InvalidFormatEscalation(MMDApp& app,const std::filesystem::path& directory) {
+    auto* keys=app.CameraKeys();const auto head=keys[0];
+    keys[0].next=static_cast<std::uint32_t>(mdl::KeyPoolCapacity(keys));
+    const auto path=directory/L"invalid-links-must-not-become-v3.pmm";
+    Check(!SaveSceneCopy(&app,path.c_str()),"corrupt links are refused rather than saved as PMM v3");
+    Check(!std::filesystem::exists(path),"invalid data creates no PMM file");
+    const auto existing=directory/L"invalid-links-preserve-existing.pmm";
+    const char marker[]="existing PMM must remain untouched";
+    int fd=Open(existing,_O_CREAT|_O_EXCL|_O_WRONLY);
+    Check(_write(fd,marker,sizeof marker)==sizeof marker,"create existing-file preservation fixture");_close(fd);
+    const std::wstring savedName=app.EnvFileName();const auto language=app.EnglishUI();
+    wcscpy_s(app.EnvFileName(),256,existing.c_str());
+    const auto timer=SetTimer(nullptr,0,20,[](HWND,UINT,UINT_PTR,DWORD) {
+        if(!expectedInvalidSave||invalidSaveDialogHandled)return;
+        EnumThreadWindows(GetCurrentThreadId(),[](HWND window,LPARAM)->BOOL {
+            wchar_t cls[32]{};GetClassNameW(window,cls,32);
+            if(wcscmp(cls,L"#32770"))return TRUE;
+            bool matched=false;
+            EnumChildWindows(window,[](HWND child,LPARAM data)->BOOL {
+                wchar_t text[1024]{};GetWindowTextW(child,text,1024);
+                if(wcsstr(text,L"PMM v3"))*reinterpret_cast<bool*>(data)=true;
+                return TRUE;
+            },reinterpret_cast<LPARAM>(&matched));
+            Check(matched,"expected invalid-data save warning");
+            invalidSaveDialogHandled=true;++invalidSaveDialogs;
+            PostMessageW(window,WM_CLOSE,0,0);return FALSE;
+        },0);
+    });
+    Check(timer!=0,"install hidden save-warning dismissal timer");
+    for(unsigned lang=0;lang<3;++lang) {
+        app.EnglishUI()=lang;app.SceneModified()=1;
+        invalidSaveDialogHandled=false;
+        expectedInvalidSave=true;SaveSceneFile(&app);expectedInvalidSave=false;
+        Check(invalidSaveDialogs==lang+1&&app.SceneModified()==1,"normal save reports invalid data in each language and retains modified state");
+        fd=Open(existing,_O_RDONLY);char actual[sizeof marker]{};
+        Check(_read(fd,actual,sizeof actual)==sizeof marker&&std::memcmp(actual,marker,sizeof marker)==0&&_filelengthi64(fd)==sizeof marker,
+              "normal save never replaces an existing project with invalid data");_close(fd);
+    }
+    KillTimer(nullptr,timer);
+    wcscpy_s(app.EnvFileName(),256,savedName.c_str());app.EnglishUI()=language;
+    keys[0]=head;
+    std::puts("PASS invalid links refuse backup and normal PMM saves, preserve existing files and report errors in all three languages");
 }
 
 void AutomaticCameraRoundtrip(MMDApp& app, const std::filesystem::path& directory) {
@@ -276,6 +447,14 @@ void AutomaticCameraRoundtrip(MMDApp& app, const std::filesystem::path& director
     Check(mdl::KeyPoolCapacity(app.CameraKeys())>10000&&app.CameraKeys()[9999].next==10000&&
           app.CameraKeys()[10000].previous==9999&&app.CameraKeys()[10000].frame==10000&&app.CameraKeys()[10000].distance==-10000,
           "new PMM roundtrip preserves the key beyond the original camera limit");
+    app.CameraKeys()[9999].next=0;app.CameraKeys()[10000]={};
+    const auto reduced=directory/L"automatic-reduced.pmm";
+    Check(SaveSceneCopy(&app,reduced.c_str()),"save formerly expanded track after deleting excess keys");
+    fd=Open(reduced,_O_RDONLY);Check(_read(fd,header,30)==30,"read reduced header");_close(fd);
+    Check(std::memcmp(header,"Polygon Movie maker 0002",24)==0,"v3 history does not prevent saving reduced content as v2");
+    Load(app,reduced);
+    Check(app.CameraKeys()[9998].next==9999&&app.CameraKeys()[9999].previous==9998&&app.CameraKeys()[9999].next==0,
+          "reduced v2 roundtrip retains every remaining camera link");
     ResetAppState(&app);
     const auto longFrame = directory / L"automatic-large-frame.pmm";
     app.CurrentFrame()=frame_limits::maximum-20;
@@ -307,6 +486,9 @@ int wmain(int argc, wchar_t** argv) {
         if(code==HCBT_ACTIVATE){
             auto window=reinterpret_cast<HWND>(wp);wchar_t cls[32]{};GetClassNameW(window,cls,32);
             if(!wcscmp(cls,L"#32770") && GetDlgItem(window,IDOK)){
+                if(expectedInvalidSave) {
+                    return CallNextHookEx(nullptr,code,wp,lp);
+                }
                 EnumChildWindows(window,[](HWND child,LPARAM)->BOOL {
                     wchar_t text[1024]{};GetWindowTextW(child,text,1024);
                     if(*text)std::fwprintf(stderr,L"PMM unexpected dialog: %ls\n",text);
@@ -331,6 +513,8 @@ int wmain(int argc, wchar_t** argv) {
     app->state = MMDAppState{}; app->InitDefaults();
     Check(InitMainWindowAndD3D(app, GetModuleHandleW(nullptr), SW_HIDE), "initialize hidden production app");
     ShowWindow(app->MainWindow(), SW_HIDE);
+    FormatTriggerBoundaries(*app);
+    InvalidFormatEscalation(*app,directory);
     AutomaticCameraRoundtrip(*app,directory);
     const auto a = directory / L"settings-a.pmm";
     const auto b = directory / L"settings-b.pmm";

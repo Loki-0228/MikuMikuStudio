@@ -66,7 +66,8 @@ bool ObserveTemporalWrite(MMDApp* app,IDirect3DSurface9* surface,std::wstring& e
         unsigned visible=0;
         for(unsigned y=0;y<desc.Height;++y) {
             const auto* row=reinterpret_cast<const DWORD*>(static_cast<const char*>(lock.pBits)+y*lock.Pitch);
-            for(unsigned x=0;x<desc.Width;++x)visible+=(row[x]&0xffffffu)!=0xffffffu;
+            for(unsigned x=0;x<desc.Width;++x)visible+=desc.Format==D3DFMT_A8R8G8B8?
+                (row[x]>>24)!=0:(row[x]&0xffffffu)!=0xffffffu;
         }
         pixels->UnlockRect();pixels->Release();device->Release();
         Check(visible>4,"temporal image contains visible fixture geometry");

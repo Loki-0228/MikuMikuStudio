@@ -1186,6 +1186,18 @@ static bool SaveSceneFileImpl(MMDApp* app, const wchar_t* target, bool backup) {
 #endif
 
     const auto compatibility = save_compatibility::InspectPmm(*s);
+    if(compatibility.invalidData) {
+        runtime_log::WritePath("PMM save refused: invalid keyframe or timeline data",compatibility.reason.c_str());
+        SetLastError(ERROR_INVALID_DATA);
+        if(backup)return false;
+        s->SceneModified()=1;
+        const wchar_t* messages[]={
+            L"キーフレームの参照またはフレーム範囲が無効なため、PMM を保存できません。PMM v3 に切り替えても修復できません。既存のファイルは変更していません。",
+            L"PMM cannot be saved because a keyframe reference or frame range is invalid. Switching to PMM v3 cannot repair it. The existing file was not changed.",
+            L"关键帧引用或帧范围无效，无法保存 PMM。切换 PMM v3 也无法修复此问题。已有文件未改动。"};
+        if(main)MessageBoxW(main,messages[s->EnglishUI()<=2?s->EnglishUI():1],L"PMM",MB_OK|MB_ICONERROR);
+        return false;
+    }
 #if MMD_ORIGINAL_PROFILE
     if (compatibility.needsNewPmm) {
         if (!backup) original_file_encoding::Refuse(main, s->EnglishUI(), L"PMM");

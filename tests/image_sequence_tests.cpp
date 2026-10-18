@@ -24,6 +24,8 @@
 #include <MinHook.h>
 #include <ShObjIdl.h>
 #include <wrl/client.h>
+#include <wincodec.h>
+#include "mikudancestudio/d3dx_dyn.hpp"
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -346,6 +348,56 @@ void StillImageLanguageTests(MMDApp* app) {
     app->RenderWidth() = width; app->RenderHeight() = height;
     MH_DisableHook(reinterpret_cast<void*>(&GetSaveFileNameW)); MH_RemoveHook(reinterpret_cast<void*>(&GetSaveFileNameW));
 }
+std::vector<unsigned char> ImagePixels(const fs::path& path,UINT* width=nullptr,UINT* height=nullptr) {
+    using Microsoft::WRL::ComPtr;
+    ComPtr<IWICImagingFactory> factory;ComPtr<IWICBitmapDecoder> decoder;ComPtr<IWICBitmapFrameDecode> frame;ComPtr<IWICFormatConverter> converter;
+    Check(SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&factory))),"create independent image decoder");
+    Check(SUCCEEDED(factory->CreateDecoderFromFilename(path.c_str(),nullptr,GENERIC_READ,WICDecodeMetadataCacheOnLoad,&decoder)) &&
+        SUCCEEDED(decoder->GetFrame(0,&frame)) && SUCCEEDED(factory->CreateFormatConverter(&converter)),"decode exported image");
+    Check(SUCCEEDED(converter->Initialize(frame.Get(),GUID_WICPixelFormat32bppBGRA,WICBitmapDitherTypeNone,nullptr,0,WICBitmapPaletteTypeCustom)),"decode straight-alpha BGRA pixels");
+    UINT w=0,h=0;Check(SUCCEEDED(converter->GetSize(&w,&h)),"read encoded dimensions");
+    std::vector<unsigned char> pixels(std::size_t(w)*h*4);
+    Check(SUCCEEDED(converter->CopyPixels(nullptr,w*4,static_cast<UINT>(pixels.size()),pixels.data())),"read encoded pixels");
+    if(width)*width=w;if(height)*height=h;return pixels;
+}
+void TransparentImages(MMDApp* app) {
+    Check(seq::FormatFromPath(L"C:/directory.png/picture.JPG")==1 && seq::FormatFromPath(L"picture.JPEG")==1 &&
+        seq::FormatFromPath(L"picture.PNG")==2 && seq::FormatFromPath(L"picture.png.bad")==-1,"image format uses only the final extension, including uppercase and JPEG");
+    for(int language : {0,1,2}) {
+        UINT width=0,height=0;
+        const auto pixels=ImagePixels(output/(L"单张_"+std::to_wstring(language)+L"_0.png"),&width,&height);
+        Check(width==64 && height==48,"single-image export retains the requested dimensions");
+        unsigned clear=0;
+        for(std::size_t i=0;i<pixels.size();i+=4)if(pixels[i+3]==0) {
+            ++clear;Check(pixels[i]==0 && pixels[i+1]==0 && pixels[i+2]==0,"transparent pixels contain no hidden background colour");
+        }
+        Check(clear>64,"single-image PNG exports contain a transparent background");
+    }
+    app->GroundGridEnabled()=false;app->GroundShadowEnabled()=false;
+    seq::Options o;o.directory=output.wstring();o.width=64;o.height=48;o.end=0;
+    for(auto algorithm : {antialias::Algorithm::MmdOriginal,antialias::Algorithm::Fxaa,antialias::Algorithm::Taa,antialias::Algorithm::Smaa}) {
+        std::wstring error;Check(antialias::Select(app,algorithm,error),"select AA for alpha export");
+        o.prefix=L"alpha-aa-"+std::to_wstring(unsigned(algorithm))+L"_";
+        RunExport(app,o);
+        const auto pixels=ImagePixels(seq::FramePath(o,1));
+        for(std::size_t i=3;i<pixels.size();i+=4)Check(pixels[i]==0,"post-process AA preserves empty-background alpha");
+    }
+    std::wstring error;Check(antialias::Select(app,antialias::Algorithm::MmdOriginal,error),"restore native AA");
+    o.format=0;o.prefix=L"opaque-bmp_";RunExport(app,o);
+    const auto opaque=ImagePixels(seq::FramePath(o,1));
+    for(std::size_t i=3;i<opaque.size();i+=4)Check(opaque[i]==255,"BMP automatically retains an opaque scene background");
+    ResetAppState(app);
+    // Exercise half coverage independently of the scene/shaders and decode the
+    // actual PNG to catch premultiplied colour being written as straight alpha.
+    Microsoft::WRL::ComPtr<IDirect3DSurface9> surface;
+    auto* device=app->Renderer()->device;
+    Check(SUCCEEDED(device->CreateRenderTarget(2,2,D3DFMT_A8R8G8B8,D3DMULTISAMPLE_NONE,0,FALSE,&surface,nullptr)),"create semi-transparent image fixture");
+    Check(SUCCEEDED(device->ColorFill(surface.Get(),nullptr,0x80402010)),"fill premultiplied sample");
+    const auto path=output/L"half-alpha.png";
+    Check(SUCCEEDED(seq::SaveSurface(path.c_str(),2,surface.Get(),true)),"write half-alpha PNG");
+    const auto half=ImagePixels(path);
+    Check(half[0]==32 && half[1]==64 && half[2]==128 && half[3]==128,"PNG stores straight alpha without dark fringes");
+}
 #include "antialias_image_sequence_checks.hpp"
 #include "image_sequence_continuity_checks.hpp"
 }
@@ -355,7 +407,8 @@ int wmain(int argc, wchar_t** argv) {
     fs::create_directories(output);
     wchar_t desktop[256]{}; DWORD bytes = 0;
     Check(GetUserObjectInformationW(GetThreadDesktop(GetCurrentThreadId()), UOI_NAME, desktop, sizeof desktop, &bytes) &&
-        (_wcsicmp(desktop, L"Default") != 0 || (argc == 3 && wcscmp(argv[2], L"--hidden-production") == 0)),
+        (_wcsicmp(desktop, L"Default") != 0 || (argc == 3 &&
+            (wcscmp(argv[2], L"--hidden-production") == 0 || wcscmp(argv[2],L"--still-only")==0))),
         "private desktop or explicit hidden GPU test required");
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
     Check(MH_Initialize() == MH_OK, "initialize message guards");
@@ -379,10 +432,19 @@ int wmain(int argc, wchar_t** argv) {
     }
     Check(InitMainWindowAndD3D(app, GetModuleHandleW(nullptr), SW_HIDE), "initialize production renderer");
     Check(!IsWindowVisible(app->MainWindow()), "production host remains hidden");
+    if(argc==3 && wcscmp(argv[2],L"--still-only")==0) {
+        StillImageLanguageTests(app);
+        const auto pixels=ImagePixels(output/L"单张_0_0.png");
+        unsigned clear=0;for(std::size_t i=3;i<pixels.size();i+=4)clear+=pixels[i]==0;
+        Check(clear>10,"single-image PNG background becomes transparent automatically");
+        ShutdownCleanup(app);g_Block=nullptr;delete app;UnhookWindowsHookEx(hide);
+        std::printf("PASS automatic still-image checks=%u\n",checks);return 0;
+    }
     NamesAndValidation(app); SceneRangeTests(app); DialogTests(app); app->EnglishUI() = 2;
     MenuEntryTests(app);
     CameraAndContinuityTests(app);
     StillImageLanguageTests(app);
+    TransparentImages(app);
     seq::Options o; o.directory = output.wstring(); o.width = 64; o.height = 48; o.end = 1;
     for (int format = 0; format < std::size(seq::kFormats); ++format) {
         o.format = format; o.prefix = L"中文_" + std::to_wstring(format) + L"_";

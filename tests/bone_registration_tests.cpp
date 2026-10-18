@@ -23,6 +23,7 @@
 #include "mikudancestudio/frame_scope.hpp"
 
 namespace mikudancestudio {
+bool PrepareFramePaste(MMDApp*);
 void CmdControl400(MMDApp*, HWND, std::uint16_t, std::uint16_t);
 void CmdViewMenu(MMDApp*, HWND, std::uint16_t, std::uint16_t);
 void CmdControl500(MMDApp*, HWND, std::uint16_t, std::uint16_t);
@@ -1218,9 +1219,40 @@ void DisplayFramePaste() {
     VirtualFree(guarded, 0, MEM_RELEASE);
 }
 
+void PasteDestinationNames() {
+    Fixture f;
+    auto app=std::make_unique<MMDApp>();
+    app->state=MMDAppState{}; app->ModelSlot(0)=f.Raw();
+    std::strcpy(f.bones[0].name,"target");
+    std::strcpy(f.bones[1].name,"helper");
+    std::strcpy(f.bones[2].name,"helper");
+    mdl::BoneClipboardRecord key{}; std::strcpy(key.name,"target");
+    app->BoneClipboard()=&key; app->ClipboardCounts().bones=1;
+    Check(PrepareFramePaste(app.get()),"unrelated duplicate bone names do not block a valid paste");
+    std::strcpy(key.name,"helper");
+    Check(!PrepareFramePaste(app.get()),"an ambiguous copied bone is still rejected before editing");
+    std::array<mdl::MorphRecord,3> morphs{};
+    f.model->morphs=morphs.data();f.model->morphCount=3;
+    std::strcpy(morphs[0].name,"face");std::strcpy(morphs[1].name,"unused");std::strcpy(morphs[2].name,"unused");
+    mdl::MorphClipboardRecord expression{};std::strcpy(expression.name,"face");
+    app->MorphClipboard()=&expression;app->ClipboardCounts().bones=0;app->ClipboardCounts().morphs=1;
+    Check(PrepareFramePaste(app.get()),"unrelated duplicate morph names do not block expression paste");
+    std::strcpy(expression.name,"unused");
+    Check(!PrepareFramePaste(app.get()),"an ambiguous copied morph is still rejected");
+    app->ClipboardCounts().morphs=0;app->MorphClipboard()=nullptr;
+    app->ClipboardCounts().bones=0; app->ClipboardCounts().displays=1;
+    mdl::DisplayClipboardRecord display{}; app->DisplayClipboard()=&display;
+    Check(PrepareFramePaste(app.get()),"display-only paste does not require all bone names to be unique");
+    app->ClipboardCounts().displays=0; app->ClipboardCounts().bones=1;
+    std::strcpy(key.name,"target"); key.frame=UINT32_MAX;
+    Check(!PrepareFramePaste(app.get()),"frame overflow still rejects the paste");
+    app->BoneClipboard()=nullptr; app->DisplayClipboard()=nullptr;
+}
+
 int RunDisplayFramePaste() {
     __try {
         DisplayFramePaste();
+        PasteDestinationNames();
         std::puts("Display frame paste regressions passed");
         return 0;
     } __except(EXCEPTION_EXECUTE_HANDLER) {

@@ -5,6 +5,7 @@ namespace mikudancestudio { class MMDApp; namespace mdl {struct ModelRecord;}
 namespace save_compatibility {
 struct Report {
     bool needsNewPmm=false;
+    bool invalidData=false;
     bool namesNeedExtension=false;
     bool canCopyLegacy=true;
     std::wstring reason;

@@ -49,6 +49,8 @@
 
 #include "mikudancestudio/bone_scale.hpp"
 #include "mikudancestudio/d3dx_dyn.hpp"
+#include "mikudancestudio/image_sequence_export.hpp"
+#include "mikudancestudio/transparent_capture.hpp"
 #include "mikudancestudio/frame_presentation.hpp"
 #include "mikudancestudio/frame_rate.hpp"
 #include "mikudancestudio/frame_sampling.hpp"
@@ -260,6 +262,10 @@ void HoldPresentCaptureFence() {
 //      blit-failed and create-failed paths only destroy + refresh.
 // ---------------------------------------------------------------------------
 void TimelineAdvance(MMDApp* app) {
+    struct FinishStill {
+        MMDApp* app;
+        ~FinishStill() { image_sequence::EndStill(app); }
+    } finish{app};
     D3DRenderer* r = app->Renderer();
     if (r == nullptr)
         return;  // wrapper absent: nothing the original could act on either
@@ -271,7 +277,7 @@ void TimelineAdvance(MMDApp* app) {
     if (FAILED(device->CreateRenderTarget(
             app->RenderWidth(),
             app->RenderHeight(),
-            r->backbufferFormat,  // wrapper+0x1D540
+            TransparentExportActive(app)?D3DFMT_A8R8G8B8:r->backbufferFormat,
             D3DMULTISAMPLE_NONE, 0, FALSE, &surf, nullptr))) {
         DestroyWindow(app->RecordingWindow());                    // 0x460177
         app->RecordingWindow() = nullptr;
@@ -289,11 +295,12 @@ void TimelineAdvance(MMDApp* app) {
     rect.right = app->RenderWidth();
     rect.bottom = app->RenderHeight();
 
-    HRESULT hr = device->StretchRect(*backBuffer, &rect, surf, &rect,
-                                     D3DTEXF_LINEAR);             // 0x460200
+    auto* source=TransparentExportActive(app)?TransparentCaptureSurface(app):*backBuffer;
+    HRESULT hr=source?device->StretchRect(source,&rect,surf,&rect,
+        TransparentExportActive(app)?D3DTEXF_NONE:D3DTEXF_LINEAR):E_FAIL;
     if (FAILED(hr))
-        hr = device->StretchRect(*backBuffer, &rect, surf, &rect,
-                                 D3DTEXF_NONE);                   // 0x46022E
+        hr = source?device->StretchRect(source, &rect, surf, &rect,
+                                 D3DTEXF_NONE):E_FAIL;             // 0x46022E
     if (FAILED(hr)) {
         // both blits rejected: no file is written, just clean up.
         DestroyWindow(app->RecordingWindow());                    // 0x46023B
@@ -306,27 +313,13 @@ void TimelineAdvance(MMDApp* app) {
 
     // ---- save path (0x460269): extension ladder -------------------------
     const wchar_t* path = app->CaptureSavePath();
-    std::intptr_t format;  // passed straight to D3DX as the original does
-    if (wcsstr(path, L".bmp") != nullptr)
-        format = 0;                                               // D3DXIFF_BMP
-    else if (wcsstr(path, L".jpg") != nullptr)
-        format = 1;                                               // D3DXIFF_JPG
-    else if (wcsstr(path, L".png") != nullptr)
-        format = 3;                                               // D3DXIFF_PNG
-    else if (wcsstr(path, L".dds") != nullptr)
-        format = 4;                                               // D3DXIFF_DDS
-    else if (wcsstr(path, L".dib") != nullptr)
-        format = 6;                                               // D3DXIFF_DIB
-    else if (wcsstr(path, L".pfm") != nullptr)
-        format = 8;                                               // D3DXIFF_PFM
-    else if (wcsstr(path, L".hdr") != nullptr)
-        format = 7;                                               // D3DXIFF_HDR
-    else
-        format = reinterpret_cast<std::intptr_t>(surf);           // 0x46031C
-    auto& d3dxApi = d3dx::Get();
-    if (d3dxApi.Load() && d3dxApi.saveSurfaceToFileW != nullptr)
-        d3dxApi.saveSurfaceToFileW(path, static_cast<int>(format),
-                                   surf, nullptr, &rect);         // 0x46032D
+    const HRESULT saved=image_sequence::SaveSurface(path,image_sequence::FormatFromPath(path),
+        surf,TransparentExportActive(app));
+    if(FAILED(saved)) {
+        MessageBoxW(app->MainWindow(),image_sequence::Text(app,L"图片导出失败，请检查图片格式、保存位置和剩余空间。",
+            L"Image export failed. Check the format, destination and free space.",
+            L"画像を出力できません。形式、保存先、空き容量を確認してください。"),L"MMS",MB_OK|MB_ICONERROR);
+    }
     if (surf != nullptr) {
         surf->Release();                                          // 0x460340
         surf = nullptr;

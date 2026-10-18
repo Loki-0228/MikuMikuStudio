@@ -12,6 +12,7 @@
 #include "mikudancestudio/key_pool.hpp"
 #include "mikudancestudio/bone_key_pool.hpp"
 #include "mikudancestudio/frame_limits.hpp"
+#include "mikudancestudio/transparent_capture.hpp"
 #include <cmath>
 #include <algorithm>
 #include <climits>
@@ -19,11 +20,13 @@
 #include <filesystem>
 #include <limits>
 #include <unordered_map>
+#include <wrl/client.h>
 
 namespace mikudancestudio::image_sequence {
 namespace {
 struct Session { Options options; std::uint64_t written = 0; };
 std::unordered_map<MMDApp*, Session> sessions;
+std::unordered_map<MMDApp*, bool> stills;
 template<class Key>
 std::uint32_t TrackEnd(const Key* keys, std::size_t capacity, std::uint32_t head = 0) {
     std::uint32_t last = 0;
@@ -48,6 +51,46 @@ std::wstring Collision(MMDApp* app, const std::wstring& path) {
         L"This file already exists. Choose another folder or prefix:\n",
         L"同名のファイルがあります。出力フォルダーまたは接頭辞を変更してください：\n")) + path;
 }
+}
+
+int FormatFromPath(const wchar_t* path) {
+    const auto extension=std::filesystem::path(path ? path : L"").extension().wstring();
+    for(int i=0;i<std::size(kFormats);++i)
+        if(_wcsicmp(extension.c_str(),kFormats[i].extension)==0 ||
+           (i==1 && _wcsicmp(extension.c_str(),L".jpeg")==0))return i;
+    return -1;
+}
+bool SupportsAlpha(int format) { return format==2 || format==3; }
+void BeginStill(MMDApp* app,int format) { stills.insert_or_assign(app,SupportsAlpha(format)); }
+void EndStill(MMDApp* app) { if(stills.erase(app))ReleaseTransparentCapture(app); }
+bool Transparent(MMDApp* app) {
+    const auto found=sessions.find(app);
+    if(found!=sessions.end())return SupportsAlpha(found->second.options.format);
+    const auto still=stills.find(app);
+    return app && app->RecordingWindow() && still!=stills.end() && still->second;
+}
+long SaveSurface(const wchar_t* path,int format,IDirect3DSurface9* surface,bool transparent) {
+    auto& api=d3dx::Get();
+    if(format<0 || format>=std::size(kFormats) || !surface || !api.Load() || !api.saveSurfaceToFileW)return E_INVALIDARG;
+    if(!transparent || !SupportsAlpha(format))return api.saveSurfaceToFileW(path,kFormats[format].d3dxFormat,surface,nullptr,nullptr);
+    Microsoft::WRL::ComPtr<IDirect3DDevice9> device;
+    Microsoft::WRL::ComPtr<IDirect3DSurface9> pixels;
+    D3DSURFACE_DESC desc{};
+    HRESULT hr=surface->GetDesc(&desc);if(FAILED(hr))return hr;
+    if(desc.Format!=D3DFMT_A8R8G8B8)return E_INVALIDARG;
+    hr=surface->GetDevice(&device);if(FAILED(hr))return hr;
+    hr=device->CreateOffscreenPlainSurface(desc.Width,desc.Height,desc.Format,D3DPOOL_SYSTEMMEM,&pixels,nullptr);if(FAILED(hr))return hr;
+    hr=device->GetRenderTargetData(surface,pixels.Get());if(FAILED(hr))return hr;
+    D3DLOCKED_RECT lock{};hr=pixels->LockRect(&lock,nullptr,0);if(FAILED(hr))return hr;
+    for(UINT y=0;y<desc.Height;++y) {
+        auto* row=static_cast<unsigned char*>(lock.pBits)+std::size_t(y)*lock.Pitch;
+        for(UINT x=0;x<desc.Width;++x) {
+            auto* p=row+x*4;const unsigned alpha=p[3];
+            for(int c=0;c<3;++c)p[c]=alpha?static_cast<unsigned char>(std::min(255u,(unsigned(p[c])*255+alpha/2)/alpha)):0;
+        }
+    }
+    pixels->UnlockRect();
+    return api.saveSurfaceToFileW(path,kFormats[format].d3dxFormat,pixels.Get(),nullptr,nullptr);
 }
 
 const wchar_t* Text(MMDApp* app, const wchar_t* zh, const wchar_t* en, const wchar_t* ja) {
@@ -190,7 +233,7 @@ bool Prepare(MMDApp* app, const Options& o, std::wstring& error) {
 }
 
 bool Active(MMDApp* app) { return sessions.find(app) != sessions.end(); }
-void Abort(MMDApp* app) { sessions.erase(app); }
+void Abort(MMDApp* app) { sessions.erase(app); EndStill(app); }
 
 bool WriteFrame(MMDApp* app, IDirect3DSurface9* surface, std::wstring& error) {
     error.clear();
@@ -205,10 +248,8 @@ bool WriteFrame(MMDApp* app, IDirect3DSurface9* surface, std::wstring& error) {
     }
     // Use the same surface encoder as single-image output. Publish only a
     // complete frame, with no replacement even if a collision appears mid-export.
-    auto& api = d3dx::Get();
-    const HRESULT hr = surface && api.saveSurfaceToFileW
-        ? api.saveSurfaceToFileW(temporary, kFormats[s.options.format].d3dxFormat,
-            surface, nullptr, nullptr) : E_FAIL;
+    const HRESULT hr = SaveSurface(temporary,s.options.format,surface,
+        SupportsAlpha(s.options.format));
     if (FAILED(hr)) {
         DeleteFileW(temporary);
         error = FileError(app, path.c_str(), static_cast<unsigned long>(hr));

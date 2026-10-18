@@ -2044,7 +2044,7 @@ static void Cmd400_FrameCopy(MMDApp* app, HWND hwnd) {
 // RefreshLightPanel, RefreshSelfShadowPanel, ApplyGravityTrack, ApplyAccessoryTrack per slot, SyncAccessoryEditPanel).
 // ------------------------------------------------------------------
 // Reserve the whole paste before marks, undo records or keys are changed.
-static bool PrepareFramePaste(MMDApp* app) {
+bool PrepareFramePaste(MMDApp* app) {
     const auto& n=app->ClipboardCounts();
     const auto frames=[&](const auto* records,std::uint32_t count) {
         if(count&&!records)return false;
@@ -2062,16 +2062,23 @@ static bool PrepareFramePaste(MMDApp* app) {
         if(app->state.optflag[0]==0) {
             auto* raw=ActiveModel(app);if(!raw)return false;auto& m=*mdl::Mdl(raw);
             if(!frames(app->BoneClipboard(),n.bones)||!frames(app->MorphClipboard(),n.morphs)||!frames(app->DisplayClipboard(),n.displays))return false;
-            // The legacy clipboard identifies tracks by their short names.
-            // Refuse ambiguous destinations before any family can be pasted.
-            const auto unique=[](const auto* records,std::uint32_t count) {
-                std::set<std::string> names;
+            // Only names used by this paste can make a destination ambiguous.
+            // Models commonly contain duplicate names on unrelated helper tracks.
+            const auto unambiguous=[](const auto* records,std::uint32_t count,
+                                      const auto* targets,std::uint32_t targetCount) {
+                if(!count)return true;
+                if(!targets && targetCount)return false;
+                std::set<std::string> wanted,matched;
                 for(std::uint32_t i=0;i<count;++i)
-                    if(!names.emplace(records[i].name,strnlen_s(records[i].name,sizeof records[i].name)).second)return false;
+                    wanted.emplace(records[i].name,strnlen_s(records[i].name,sizeof records[i].name));
+                for(std::uint32_t j=0;j<targetCount;++j) {
+                    const std::string name(targets[j].name,strnlen_s(targets[j].name,sizeof targets[j].name));
+                    if(wanted.count(name) && !matched.emplace(name).second)return false;
+                }
                 return true;
             };
-            if(((n.bones||n.displays)&&!unique(m.boneTable,m.boneCount)) ||
-                (n.morphs&&!unique(m.morphs,m.morphCount)))return false;
+            if(!unambiguous(app->BoneClipboard(),n.bones,m.boneTable,m.boneCount) ||
+               !unambiguous(app->MorphClipboard(),n.morphs,m.morphs,m.morphCount))return false;
             return mdl::BoneKeyPoolEnsure(m,needed(m.boneKeys,mdl::BoneKeyCapacity(m),m.boneCount,n.bones)) &&
                 mdl::MorphKeyPoolEnsure(m,needed(m.morphKeys,mdl::MorphKeyCapacity(m),m.morphCount,n.morphs)) &&
                 mdl::DisplayKeyPoolEnsure(m,needed(m.displayKeys,mdl::KeyPoolCapacity(m.displayKeys),1,n.displays));
