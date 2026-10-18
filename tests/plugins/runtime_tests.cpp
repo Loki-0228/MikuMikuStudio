@@ -38,6 +38,7 @@ static std::string ManifestText(std::string id = "org.example.hello", std::strin
 }
 #include "manager_edit_checks.inc"
 #include "manager_refresh_checks.inc"
+#include "task_dispatch_checks.inc"
 static void JsonChecks() {
     CHECK(Json::Parse("{\"a\":1}").At("a").UInt() == 1);
     CHECK(Throws([] { Json::Parse("{\"a\":1,\"a\":2}"); }));
@@ -351,7 +352,8 @@ int wmain(int argc, wchar_t** argv) {
         }
         CHECK(argc == 4); CHECK(!fs::exists(root)); fs::create_directories(root);
         JsonChecks(); DiscoveryChecks(root); UiChecks(); UiPreferenceChecks(); UiPreferencesFileChecks(root); LayoutChecks(); TreeLayoutChecks(); LayoutServiceChecks(); UpdateChecks(); Win32HostChecks(); SurfaceChecks(); CppSdkChecks(); LoaderChecks(root, fs::absolute(argv[1]));
-        LifecycleChecks(root, fs::absolute(argv[2])); SceneChecks(); StorageChecks(root); EditChecks(); SharedHistoryChecks();
+        LifecycleChecks(root, fs::absolute(argv[2])); TaskDispatchChecks(root, fs::absolute(argv[2]), fs::absolute(argv[3]));
+        SceneChecks(); StorageChecks(root); EditChecks(); SharedHistoryChecks();
         ManagerEditChecks(root, fs::absolute(argv[3]));
         std::cout << "PASS checks=" << checks << "\n"; fs::remove_all(root); return 0;
     } catch (const std::exception& e) { std::cerr << "FAIL after " << checks << ": " << e.what() << "\nfixtures=" << Utf8(root.native()) << "\n"; return 1; }

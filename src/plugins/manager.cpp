@@ -79,6 +79,7 @@ struct Manager::Impl {
     unsigned active = 0;
     static constexpr UINT kDrain = WM_APP + 1;
     static constexpr UINT kRefreshDrain = WM_APP + 2;
+    static constexpr UINT_PTR kTaskRetry = 0x4d4d5371;
     static constexpr UINT_PTR kRefreshRetry = 0x4d4d5372;
     std::function<bool()> refreshGuard;
 
@@ -175,7 +176,12 @@ struct Manager::Impl {
     static LRESULT CALLBACK Window(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
         auto* self = reinterpret_cast<Impl*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
         if (message == WM_NCCREATE) { self = static_cast<Impl*>(reinterpret_cast<CREATESTRUCTW*>(lp)->lpCreateParams); SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self)); }
-        if (self && message == kDrain) { Boundary([&] { self->Drain(); return MMS_OK; }); return 0; }
+        if (self && (message == kDrain || (message == WM_TIMER && wp == kTaskRetry))) {
+            KillTimer(hwnd, kTaskRetry);
+            Boundary([&] { self->Drain(); return MMS_OK; });
+            self->RetryTasks();
+            return 0;
+        }
         if (self && (message == kRefreshDrain || (message == WM_TIMER && wp == kRefreshRetry))) {
             KillTimer(hwnd, kRefreshRetry);
             const auto result = Boundary([&] { self->DrainRefresh(); return MMS_OK; });
@@ -253,6 +259,18 @@ struct Manager::Impl {
         if (GetCurrentThreadId() != thread || draining || closing || active || registry.InCallback() || storage.InCallback() || storage.Prepared() ||
             (edits && edits->InCallback()) || (refreshGuard && !refreshGuard())) return;
         registry.Refresh().Drain();
+    }
+    void RetryTasks() noexcept {
+        // A modal/read-only callback can consume every posted wake while the
+        // mutation gate is closed. Retain a bounded, non-recursive retry until
+        // callbacks and project preparation finish. Do not run plugin code here.
+        bool failed = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            if (tasks.empty()) KillTimer(wake, kTaskRetry);
+            else failed = !SetTimer(wake, kTaskRetry, 16, nullptr);
+        }
+        if (failed) Write("UI task retry timer unavailable; pending tasks retained");
     }
     void Drain() {
         if (GetCurrentThreadId() != thread || draining || active || registry.InCallback() || storage.InCallback() || storage.Prepared() ||
