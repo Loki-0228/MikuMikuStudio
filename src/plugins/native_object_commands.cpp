@@ -213,9 +213,10 @@ bool RefreshUi(MMDApp& app, SharedHistory& history, const scene_history_ui::Sele
         EnsureInterpChannelCombo(&app);
         if (app.CameraMode() && app.Renderer() && app.PanelDC()) PostLanguageSweep(&app);
         SetModelExtensionMenuEnabled(&app, !app.CameraMode() && app.SelectedModel() != nullptr);
-        EnableMenuItem(GetMenu(main), 249, MF_BYCOMMAND |
-            (SendDlgItemMessageW(main, 471, CB_GETCOUNT, 0, 0) > 0 ? MF_ENABLED : MF_GRAYED));
     }
+    EnableMenuItem(GetMenu(main), 249, MF_BYCOMMAND |
+        (SendDlgItemMessageW(main, 471, CB_GETCOUNT, 0, 0) > 0 && !BoundNativePoseHistory(&app)
+            ? MF_ENABLED : MF_GRAYED));
     AccessoryReadout(app);
     EnableWindow(GetDlgItem(main, panel::kUndoButton), history.UndoCount() != 0);
     EnableWindow(GetDlgItem(main, panel::kRedoButton), history.RedoCount() != 0);

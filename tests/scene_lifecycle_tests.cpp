@@ -15,6 +15,11 @@
 #include "mikudancestudio/text_encoding.hpp"
 #include "mikudancestudio/d3dx_dyn.hpp"
 #include "mikudancestudio/mmv4mms.hpp"
+#include "mikudancestudio/build_profile.hpp"
+#if !MMD_ORIGINAL_PROFILE
+#include "../src/plugins/native_pose_scope.hpp"
+#include "../src/plugins/native_object_commands.hpp"
+#endif
 #include <commctrl.h>
 #include <cstdio>
 #include <cstdlib>
@@ -40,6 +45,8 @@ void ConsumeRightButtonDrag(MMDApp*);
 void ConsumeMiddleButtonPan(MMDApp*);
 void CmdViewMenu(MMDApp*, HWND, std::uint16_t, std::uint16_t);
 void CmdFileMenu(MMDApp*, HWND, std::uint16_t, std::uint16_t);
+bool MoveAccessoryOrderItem(MMDApp*, HWND, int, int);
+int AccessoryOrderDropIndex(HWND, POINT, bool);
 void HandleWindowPaint(MMDApp*);
 void RefreshAfterFrameApply(MMDApp*);
 void ConsumeArrowKeyNavigation(MMDApp*);

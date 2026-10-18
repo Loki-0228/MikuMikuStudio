@@ -125,12 +125,14 @@
 #include <cstdlib>
 #include <cstring>
 #include <new>
+#include <string>
 
 #include "mikudancestudio/text_encoding.hpp"
 #include "mikudancestudio/globals.hpp"
 #include "mikudancestudio/mmd_app.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "../plugins/native_global_commands.hpp"
+#include "../plugins/native_pose_scope.hpp"
 #endif
 #include "mikudancestudio/ui_message.hpp"
 #include "mikudancestudio/ui_translation.hpp"
@@ -881,6 +883,73 @@ INT_PTR __stdcall GroundShadowColorDlgProc(HWND hDlg, UINT msg, WPARAM wParam,
 // static is behaviourally identical.
 static int g_accOrderCount = 0;
 
+// Reorder the dialog's scratch data only. OK applies it to the accessories;
+// Cancel discards it. Use the same move for buttons and drag-and-drop.
+bool MoveAccessoryOrderItem(MMDApp* app,HWND dialog,int from,int to) {
+    if(!app||!dialog)return false;
+#if !MMD_ORIGINAL_PROFILE
+    if(plugins::BoundNativePoseHistory(app))return false;
+#endif
+    const HWND list=GetDlgItem(dialog,panel::kOrderListBox);
+    if(!list||!IsWindow(list))return false;
+    auto** order=static_cast<mdl::AccessoryRecord**>(app->AccessoryOrderArray());
+    const auto count=SendMessageW(list,LB_GETCOUNT,0,0);
+    if(!order||g_accOrderCount<=0||g_accOrderCount>255||count!=g_accOrderCount||
+       from<0||to<0||from>=count||to>=count||from==to)return false;
+    try {
+        const auto length=SendMessageW(list,LB_GETTEXTLEN,from,0);
+        if(length<0)return false;
+        std::wstring text(static_cast<std::size_t>(length)+1,L'\0');
+        if(SendMessageW(list,LB_GETTEXT,from,reinterpret_cast<LPARAM>(text.data()))==LB_ERR)return false;
+        const auto data=SendMessageW(list,LB_GETITEMDATA,from,0);
+        const auto previousSelection=SendMessageW(list,LB_GETCURSEL,0,0);
+        // Keep the original row until the new row, position and item identity
+        // are ready. A failing insert must never erase the source item.
+        const int insertion=to>from?to+1:to;
+        const auto inserted=SendMessageW(list,LB_INSERTSTRING,insertion,reinterpret_cast<LPARAM>(text.c_str()));
+        if(inserted==LB_ERR||inserted==LB_ERRSPACE)return false;
+        const auto rollback=[&] {
+            SendMessageW(list,LB_DELETESTRING,inserted,0);
+            SendMessageW(list,LB_SETCURSEL,previousSelection,0);
+        };
+        // Never rotate the scratch array against a listbox implementation
+        // that inserted the row elsewhere.
+        if(inserted!=insertion||SendMessageW(list,LB_SETITEMDATA,inserted,data)==LB_ERR) {
+            rollback();return false;
+        }
+        if(SendMessageW(list,LB_DELETESTRING,from+(to<from?1:0),0)==LB_ERR) {
+            rollback();return false;
+        }
+        if(to<from)std::rotate(order+to,order+from,order+from+1);
+        else std::rotate(order+from,order+from+1,order+to+1);
+        SendMessageW(list,LB_SETCURSEL,to,0);
+        SetDlgItemTextW(dialog,panel::kAccessoryNameEdit,text.c_str());
+        return true;
+    } catch(const std::exception&) {
+        // Allocation happens before the first list or scratch-data mutation.
+        // No exception may escape into the dialog's Win32 callback.
+        return false;
+    }
+}
+
+// A drop is an insertion between rows, including below the final row. Scroll
+// during dragging, but never accept a drop outside the list's client area.
+int AccessoryOrderDropIndex(HWND list,POINT cursor,bool scroll) {
+    if(!list||!IsWindow(list))return -1;
+    if(scroll)LBItemFromPt(list,cursor,TRUE);
+    POINT client=cursor;if(!ScreenToClient(list,&client))return -1;
+    RECT bounds{};if(!GetClientRect(list,&bounds))return -1;
+    if(!PtInRect(&bounds,client))return -1;
+    const int count=static_cast<int>(SendMessageW(list,LB_GETCOUNT,0,0));
+    if(count<=0)return -1;
+    const int item=LBItemFromPt(list,cursor,FALSE);
+    RECT row{};
+    if(item>=0&&item<count&&SendMessageW(list,LB_GETITEMRECT,item,reinterpret_cast<LPARAM>(&row))!=LB_ERR)
+        return item+(client.y>=(row.top+row.bottom)/2?1:0);
+    if(SendMessageW(list,LB_GETITEMRECT,count-1,reinterpret_cast<LPARAM>(&row))!=LB_ERR&&client.y>=row.bottom)return count;
+    return -1;
+}
+
 // VA 0x0044CA40 - modal accessory-order dialog proc (case 249, tpl 0x293/
 // 0x273).  WM_INITDIALOG: topmost; the main-window accessory combo 0x1D7
 // is copied into the dialog list 0x274 (CB_GETCOUNT/CB_GETLBTEXT ->
@@ -905,18 +974,65 @@ INT_PTR __stdcall AccessorySettingsDlgProc(HWND hDlg, UINT msg, WPARAM wParam,
                                            LPARAM lParam) {  // was Sub44CA40, VA 0x0044CA40
     MMDApp* app = g_Block;
     wchar_t text[0x100];
+    static const UINT dragMessage=RegisterWindowMessageW(L"commctrl_DragListMsg");
+    if(dragMessage&&msg==dragMessage&&lParam) {
+        const auto& drag=*reinterpret_cast<const DRAGLISTINFO*>(lParam);
+        const HWND list=GetDlgItem(hDlg,panel::kOrderListBox);
+        if(drag.hWnd!=list)return FALSE;
+        LRESULT result=0;
+        if(drag.uNotification==DL_BEGINDRAG) {
+            const int from=LBItemFromPt(list,drag.ptCursor,FALSE);
+            POINT client=drag.ptCursor;RECT bounds{};
+            const bool inside=ScreenToClient(list,&client)&&GetClientRect(list,&bounds)&&PtInRect(&bounds,client);
+            const bool valid=inside&&g_accOrderCount>0&&g_accOrderCount<=255&&
+                SendMessageW(list,LB_GETCOUNT,0,0)==g_accOrderCount&&
+                app->AccessoryOrderArray()&&from>=0&&from<g_accOrderCount;
+            SetWindowLongPtrW(hDlg,DWLP_USER,valid?from+1:0);
+            if(valid) {
+                SendMessageW(list,LB_SETCURSEL,from,0);
+                SendMessageW(hDlg,WM_COMMAND,MAKEWPARAM(panel::kOrderListBox,LBN_SELCHANGE),reinterpret_cast<LPARAM>(list));
+            }
+            result=valid?TRUE:FALSE;
+        } else if(drag.uNotification==DL_DRAGGING) {
+            const int insertion=GetWindowLongPtrW(hDlg,DWLP_USER)?AccessoryOrderDropIndex(list,drag.ptCursor,true):-1;
+            DrawInsert(hDlg,list,insertion);
+            result=insertion>=0?DL_MOVECURSOR:DL_STOPCURSOR;
+        } else if(drag.uNotification==DL_DROPPED||drag.uNotification==DL_CANCELDRAG) {
+            const int from=static_cast<int>(GetWindowLongPtrW(hDlg,DWLP_USER))-1;
+            const int insertion=AccessoryOrderDropIndex(list,drag.ptCursor,false);
+            DrawInsert(hDlg,list,-1);
+            SetWindowLongPtrW(hDlg,DWLP_USER,0);
+            if(drag.uNotification==DL_DROPPED&&from>=0&&insertion>=0)
+                MoveAccessoryOrderItem(app,hDlg,from,insertion>from?insertion-1:insertion);
+        }
+        SetWindowLongPtrW(hDlg,DWLP_MSGRESULT,result);
+        return TRUE;
+    }
     if (msg == WM_INITDIALOG) {
+#if !MMD_ORIGINAL_PROFILE
+        // Sorting and renaming have not yet acquired a shared-history record.
+        if(plugins::BoundNativePoseHistory(app)) {EndDialog(hDlg,2);return 0;}
+#endif
+        if(app->AccessoryOrderArray()) {EndDialog(hDlg,2);return 0;}
         MakeDialogTopmostIfRequested(app, hDlg);
         const HWND main = MainHwnd(app);
         g_accOrderCount = static_cast<int>(
             SendMessageW(GetDlgItem(main, panel::kAccessoryCombo), CB_GETCOUNT, 0, 0));
+        if(g_accOrderCount<0||g_accOrderCount>255) {g_accOrderCount=0;EndDialog(hDlg,2);return 0;}
         reinterpret_cast<unsigned char*&>(app->AccessoryOrderArray()) = static_cast<unsigned char*>(
             std::calloc(g_accOrderCount, sizeof(mdl::AccessoryRecord*)));
+        const auto cancelInitialization=[&] {
+            std::free(app->AccessoryOrderArray());app->AccessoryOrderArray()=nullptr;
+            g_accOrderCount=0;EndDialog(hDlg,2);
+        };
+        if(g_accOrderCount&&!app->AccessoryOrderArray()) {cancelInitialization();return 0;}
         for (int i = 0; i < g_accOrderCount; ++i) {
-            SendMessageW(GetDlgItem(main, panel::kAccessoryCombo), CB_GETLBTEXT, i,
-                         (LPARAM)text);
-            SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox), LB_ADDSTRING, 0,
-                         (LPARAM)text);
+            const auto length=SendMessageW(GetDlgItem(main,panel::kAccessoryCombo),CB_GETLBTEXTLEN,i,0);
+            if(length<0||length>=sizeof(text)/sizeof(*text)||
+               SendMessageW(GetDlgItem(main,panel::kAccessoryCombo),CB_GETLBTEXT,i,reinterpret_cast<LPARAM>(text))==CB_ERR||
+               SendMessageW(GetDlgItem(hDlg,panel::kOrderListBox),LB_ADDSTRING,0,reinterpret_cast<LPARAM>(text))!=i) {
+                cancelInitialization();return 0;
+            }
         }
         BuildAccessoryOrderArray(app, g_accOrderCount);
         swprintf_s(text, 0x64, L"%d",
@@ -924,6 +1040,8 @@ INT_PTR __stdcall AccessorySettingsDlgProc(HWND hDlg, UINT msg, WPARAM wParam,
         SetWindowTextW(GetDlgItem(hDlg, panel::kAccessoryOrderEdit), text);
         SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox), LB_SETCURSEL,
                      0xFFFFFFFF, 0);
+        SetWindowLongPtrW(hDlg,DWLP_USER,0);
+        MakeDragList(GetDlgItem(hDlg,panel::kOrderListBox));
         return 0;
     }
     if (msg != WM_COMMAND) {
@@ -934,42 +1052,33 @@ INT_PTR __stdcall AccessorySettingsDlgProc(HWND hDlg, UINT msg, WPARAM wParam,
         case 0x276: {  // move up
             const LRESULT sel = SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox),
                                              LB_GETCURSEL, 0, 0);
-            if (sel >= 1) {
-                SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox), LB_GETTEXT, sel,
-                             (LPARAM)text);
-                SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox), LB_DELETESTRING,
-                             sel, 0);
-                SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox), LB_INSERTSTRING,
-                             sel - 1, (LPARAM)text);
-                SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox), LB_SETCURSEL,
-                             sel - 1, 0);
-                auto** order = static_cast<mdl::AccessoryRecord**>(app->AccessoryOrderArray());
-                auto* tmp = order[sel - 1];
-                order[sel - 1] = order[sel];
-                order[sel] = tmp;
-            }
+            MoveAccessoryOrderItem(app,hDlg,static_cast<int>(sel),static_cast<int>(sel)-1);
             return 0;
         }
         case 0x277: {  // move down
             const LRESULT sel = SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox),
                                              LB_GETCURSEL, 0, 0);
-            if (sel != -1 && sel < g_accOrderCount - 1) {
-                SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox), LB_GETTEXT, sel,
-                             (LPARAM)text);
-                SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox), LB_DELETESTRING,
-                             sel, 0);
-                SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox), LB_INSERTSTRING,
-                             sel + 1, (LPARAM)text);
-                SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox), LB_SETCURSEL,
-                             sel + 1, 0);
-                auto** order = static_cast<mdl::AccessoryRecord**>(app->AccessoryOrderArray());
-                auto* tmp = order[sel + 1];
-                order[sel + 1] = order[sel];
-                order[sel] = tmp;
-            }
+            if(sel!=LB_ERR)MoveAccessoryOrderItem(app,hDlg,static_cast<int>(sel),static_cast<int>(sel)+1);
             return 0;
         }
         case 0x278: {  // OK: commit the new order
+#if !MMD_ORIGINAL_PROFILE
+            if(plugins::BoundNativePoseHistory(app)) {
+                SendMessageW(hDlg,WM_COMMAND,IDCANCEL,0);return 0;
+            }
+#endif
+            const auto list=GetDlgItem(hDlg,panel::kOrderListBox);
+            if(g_accOrderCount<0||g_accOrderCount>255||
+               SendMessageW(list,LB_GETCOUNT,0,0)!=g_accOrderCount||
+               (g_accOrderCount&&!app->AccessoryOrderArray())) {
+                SendMessageW(hDlg,WM_COMMAND,IDCANCEL,0);return 0;
+            }
+            for(int i=0;i<g_accOrderCount;++i) {
+                const auto length=SendMessageW(list,LB_GETTEXTLEN,i,0);
+                if(length<0||length>=sizeof(text)/sizeof(*text)) {
+                    SendMessageW(hDlg,WM_COMMAND,IDCANCEL,0);return 0;
+                }
+            }
             const HWND main = MainHwnd(app);
             const LRESULT previousScope = SendMessageW(
                 GetDlgItem(main, panel::kRegisterScopeCombo), CB_GETCURSEL, 0, 0);
@@ -2724,6 +2833,9 @@ void CmdFileMenu(MMDApp* app, HWND hwnd, std::uint16_t id, std::uint16_t notify)
     // 0x273 JP); a cancel result falls through to the no-op default.
     // ------------------------------------------------------------------
     case 249: {
+#if !MMD_ORIGINAL_PROFILE
+        if(plugins::BoundNativePoseHistory(app))break;
+#endif
         app->state.dialogFlags[8] = 1;
         app->state.enterKeyState = 1;
         const std::intptr_t r = UiDialogBoxParamA(

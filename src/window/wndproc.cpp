@@ -57,6 +57,9 @@
 #include "mikudancestudio/bake_ui_lock.hpp"
 #include "viewport_corner_menu.hpp"
 #include "../plugins/native_viewport_history.hpp"
+#if !MMD_ORIGINAL_PROFILE
+#include "../plugins/native_pose_scope.hpp"
+#endif
 
 namespace mikudancestudio {
 
@@ -152,6 +155,9 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         bool hasAccessory = false;
         for (int slot = 0; slot < 255; ++slot)
             if (app->AccessorySlot(slot) != nullptr) { hasAccessory = true; break; }
+#if !MMD_ORIGINAL_PROFILE
+        hasAccessory = hasAccessory && !plugins::BoundNativePoseHistory(app);
+#endif
         EnableMenuItem(GetMenu(hwnd), 249, MF_BYCOMMAND |
             (hasAccessory ? MF_ENABLED : MF_GRAYED));
         RefreshSkinningMenu(app); bake::RefreshMenu(app);
