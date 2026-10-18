@@ -13,6 +13,8 @@
 #include <new>
 #include <stdexcept>
 #include <commctrl.h>
+#include <algorithm>
+#include <exception>
 namespace { thread_local long failAfter = -1; thread_local unsigned allocationFailures = 0; }
 void* operator new(std::size_t size) {
     if (failAfter == 0) { ++allocationFailures; throw std::bad_alloc(); }
@@ -297,9 +299,63 @@ static void CheckCameraHoldSamples() {
     Check(step.sample(step, 30).value == 17.0, "authored camera Step reaches the terminal key exactly");
     curve_host::Reset(app.get()); app->CameraKeys() = nullptr;
 }
+#include "native_camera_insert_checks.hpp"
+static void CheckLongCameraSpeed() {
+    auto app=std::make_unique<MMDApp>();::new(static_cast<void*>(&app->state)) MMDAppState{};
+    auto camera=std::make_unique<mdl::CameraKey[]>(mdl::kTimelineKeyCapacity);app->CameraKeys()=camera.get();
+    for(int index=0;index<2;++index){auto& key=camera[index];key.frame=index*100000;key.previous=0;key.next=index?0:1;
+        key.parentModel=-1;key.fov=45;key.distance=-30;key.eye[0]=index?90.f:-10.f;
+        for(int lane=0;lane<6;++lane){key.interpolation[0][lane]=20;key.interpolation[1][lane]=20;
+            key.interpolation[2][lane]=107;key.interpolation[3][lane]=107;}}
+    std::vector<curve_editor::Channel> channels;std::wstring error;
+    Check(curve_host::Read(*app,curve_host::Kind::Camera,0,channels,error),"read long native camera interval");
+    for(double frame:{0.0,12500.0,25000.0,50000.0,75000.0,87500.0,100000.0}){
+        const auto sample=channels[0].sample(channels[0],frame);
+        Check(std::abs(sample.derivative-.001)<1e-10,"long linear native camera speed stays nonzero and constant");
+    }
+    camera[1].interpolation[1][0]=0;camera[1].interpolation[3][0]=127;
+    Check(curve_host::Read(*app,curve_host::Kind::Camera,0,channels,error),"read long eased camera interval");
+    double speeds[3]{};int index=0;
+    for(double frame:{25000.0,50000.0,75000.0}){
+        const auto sample=channels[0].sample(channels[0],frame);speeds[index++]=sample.derivative;
+        Check(sample.derivative>.0001&&sample.derivative<.01,"long eased camera speed has no quantized zero plateaus or spikes");
+        const double low=channels[0].sample(channels[0],frame-100).value;
+        const double high=channels[0].sample(channels[0],frame+100).value;
+        std::printf("CAMERA_SPEED_QUANTIZATION frame=%.0f analytic=%.12g nativeSecant=%.12g difference=%.12g low=%.12g high=%.12g\n",
+            frame,sample.derivative,(high-low)/200,sample.derivative-(high-low)/200,low,high);
+    }
+    // Independent parametric reference: choose the Bezier parameter first,
+    // compute its frame by the forward polynomial, then compare dy/dx. There
+    // is no inverse solver or quantized playback value in this oracle.
+    for(double u:{.25,.5,.75}){
+        const double v=1-u;
+        const double x=(3*v*v*u*20+3*v*u*u*107+u*u*u*127)/127;
+        const double dx=(3*v*v*20+6*v*u*87+3*u*u*20)/127;
+        const double dy=6*v*u;
+        const double expected=.001*dy/dx;
+        const auto actual=channels[0].sample(channels[0],x*100000).derivative;
+        Check(std::abs(actual-expected)<1e-10,"native eased speed matches independent forward-parametric Bezier derivative");
+    }
+    Check(speeds[1]>speeds[0]&&std::abs(speeds[0]-speeds[2])<1e-10,"eased native speed has the expected symmetric peak");
+    curve_host::Reset(app.get());app->CameraKeys()=nullptr;
+}
 int main(){
+    std::set_terminate([]() noexcept {
+        std::fprintf(stderr,"TERMINATE animation curve host failAfter=%ld failures=%u\n",failAfter,allocationFailures);
+        if(auto pending=std::current_exception())try{std::rethrow_exception(pending);}
+            catch(const std::exception& error){std::fprintf(stderr,"TERMINATE exception: %s\n",error.what());}
+            catch(...){std::fputs("TERMINATE non-standard exception\n",stderr);}
+        std::fflush(stderr);std::abort();
+    });
+    const auto stage=[](const char* name){std::fprintf(stderr,"STAGE %s\n",name);std::fflush(stderr);};
+    stage("native camera speed");CheckLongCameraSpeed();
+    stage("crossed camera endpoints");
     CheckCrossedCameraEndpoints();
+    stage("camera one-frame holds");
     CheckCameraHoldSamples();
+    stage("exact camera subdivision");
+    CheckNativeCameraInsertion();
+    stage("existing host and UI regressions");
     auto app=std::make_unique<MMDApp>();
     ::new (static_cast<void*>(&app->state)) MMDAppState{};
     auto cam=std::make_unique<mdl::CameraKey[]>(mdl::kTimelineKeyCapacity);

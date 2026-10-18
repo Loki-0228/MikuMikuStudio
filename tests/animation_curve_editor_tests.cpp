@@ -27,6 +27,7 @@
 #include <CommCtrl.h>
 
 #include "mikudancestudio/animation_curve_editor.hpp"
+#include "../src/window/curve_editor_axis.hpp"
 
 #include <cmath>
 #include <cstdio>
@@ -1440,6 +1441,97 @@ void NativeChangesDuringMmdDrag() {
     ce::CloseOwned(nullptr);
 }
 
+// Tests the actual displayed ruler, rather than an obsolete invisible hit
+// strip at the foot of the graph. Host values stand in for the shared timeline.
+void TimelineRulerNavigation() {
+    HostSource host;
+    host.data.push_back(MakeChannel("x",L"X",{MakeKey(0,0),MakeKey(100,10)}));
+    auto session=MakeSession(host);int frame=0,seeks=0;bool playing=false;
+    session.currentFrame=[&]{return double(frame);};
+    session.isPlaying=[&]{return playing;};
+    session.seek=[&](int next){frame=next;playing=false;++seeks;};
+    HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
+    HWND canvas=GetDlgItem(window,kIdCanvas);
+    CurveEditorAxisState axis{};
+    Check(SendMessageW(window,WM_APP+394,0,reinterpret_cast<LPARAM>(&axis))!=0,"read ruler geometry");
+    const auto position=[&](int f){
+        auto point=AskPoint(window,kHookPointForFrame,f);
+        return MAKELPARAM(point.x,(axis.plot.top-1)/2);
+    };
+    SendMessageW(canvas,WM_LBUTTONDOWN,MK_LBUTTON,position(30));
+    Check(frame==30&&seeks==1,"clicking the displayed upper frame ruler seeks immediately");
+    SendMessageW(canvas,WM_MOUSEMOVE,MK_LBUTTON,position(70));
+    Check(frame==70&&seeks==2,"dragging the displayed ruler seeks continuously");
+    SendMessageW(canvas,WM_LBUTTONUP,0,position(80));
+    Check(frame==80,"the final ruler release sample is applied");
+    const int before=seeks;
+    SendMessageW(canvas,WM_LBUTTONDOWN,MK_LBUTTON,position(80));
+    SendMessageW(canvas,WM_LBUTTONUP,0,position(80));
+    Check(seeks==before,"the same frame does not evaluate repeatedly");
+    playing=true;
+    SendMessageW(canvas,WM_LBUTTONDOWN,MK_LBUTTON,position(80));
+    SendMessageW(canvas,WM_LBUTTONUP,0,position(80));
+    Check(!playing&&seeks==before+1,"seeking the playback frame still stops transport");
+    Check(host.applyCalls==0&&KeyCount(window)==2,"ruler navigation never authors keys or history");
+    ce::CloseOwned(nullptr);
+}
+
+struct KeyboardModifiers {
+    BYTE original[256]{};
+    KeyboardModifiers(){GetKeyboardState(original);}
+    ~KeyboardModifiers(){SetKeyboardState(original);}
+    void Set(bool control=false,bool shift=false,bool alt=false){
+        BYTE state[256]{};state[VK_CONTROL]=control?0x80:0;
+        state[VK_SHIFT]=shift?0x80:0;state[VK_MENU]=alt?0x80:0;SetKeyboardState(state);
+    }
+};
+void AuthoringKeyboardShortcuts() {
+    KeyboardModifiers modifiers;
+    HostSource host;host.data.push_back(MakeChannel("x",L"X",{MakeKey(0,0),MakeKey(10,5)}));
+    HWND window=static_cast<HWND>(ce::Open(nullptr,MakeSession(host),false));
+    const HWND canvas=GetDlgItem(window,kIdCanvas),button=GetDlgItem(window,kIdFitAll);
+    modifiers.Set();SetText(window,kIdFrameEdit,L"20");SetText(window,kIdValueEdit,L"3.5");
+    SendMessageW(canvas,WM_KEYDOWN,VK_INSERT,0);
+    Check(KeyCount(window)==3&&host.applyCalls==1,"Insert adds a key through the existing command");
+    modifiers.Set(true);SendMessageW(window,WM_KEYDOWN,'Z',0);
+    Check(KeyCount(window)==2&&host.applyCalls==2,"Ctrl+Z on the editor undoes once");
+    SendMessageW(button,WM_KEYDOWN,'Y',0);
+    Check(KeyCount(window)==3&&host.applyCalls==3,"Ctrl+Y on a child button redoes once");
+    SendMessageW(GetDlgItem(window,kIdChannelList),WM_KEYDOWN,'Z',0);
+    Check(KeyCount(window)==2,"Ctrl+Z works from the channel tree");
+    modifiers.Set(true,true);SendMessageW(GetDlgItem(window,kIdMmdPanel),WM_KEYDOWN,'Z',0);
+    Check(KeyCount(window)==3,"Ctrl+Shift+Z works from the native curve panel");
+    const int before=host.applyCalls;
+    SendMessageW(canvas,WM_KEYDOWN,'Z',LPARAM(1)<<30);
+    Check(host.applyCalls==before,"held-key repeats do not add history operations");
+    modifiers.Set(true,false,true);SendMessageW(canvas,WM_KEYDOWN,'Z',0);
+    Check(host.applyCalls==before,"Alt combinations do not invoke authoring history");
+    modifiers.Set();
+    const HWND edit=GetDlgItem(window,kIdValueEdit);
+    SetWindowTextW(edit,L"1234");SendMessageW(edit,EM_SETSEL,1,2);
+    SendMessageW(edit,WM_KEYDOWN,VK_DELETE,0);
+    Check(GetText(window,kIdValueEdit)==L"134"&&host.applyCalls==before,"Delete edits numeric text without deleting a curve key");
+    modifiers.Set(true);SendMessageW(edit,WM_KEYDOWN,'Z',0);
+    Check(host.applyCalls==before,"text undo never reaches curve history");
+    modifiers.Set();SendMessageW(edit,WM_KEYDOWN,VK_INSERT,0);
+    SendMessageW(edit,WM_KEYDOWN,VK_PROCESSKEY,0);
+    Check(host.applyCalls==before,"input-box insert and IME processing never author keys");
+    modifiers.Set();ClickKey(window,2);SendMessageW(button,WM_KEYDOWN,VK_DELETE,0);
+    Check(KeyCount(window)==2,"Delete from a child button removes the curve selection");
+    EnableWindow(window,FALSE);modifiers.Set(true);SendMessageW(canvas,WM_KEYDOWN,'Z',0);
+    Check(KeyCount(window)==2,"disabled editors refuse authoring shortcuts");EnableWindow(window,TRUE);
+    ce::CloseOwned(nullptr);
+    auto readonly=MakeSession(host);readonly.sources[0].apply={};
+    window=static_cast<HWND>(ce::Open(nullptr,std::move(readonly),false));
+    const int readsBefore=host.applyCalls;
+    modifiers.Set();SendMessageW(window,WM_KEYDOWN,VK_INSERT,0);
+    SendMessageW(GetDlgItem(window,kIdCanvas),WM_KEYDOWN,VK_DELETE,0);
+    modifiers.Set(true);SendMessageW(window,WM_KEYDOWN,'Z',0);SendMessageW(window,WM_KEYDOWN,'Y',0);
+    Check(host.applyCalls==readsBefore,"read-only sessions refuse every authoring shortcut");
+    ce::CloseOwned(nullptr);
+    Note("ruler navigation and local authoring shortcuts");
+}
+
 void PlayheadTimer() {
     HostSource host;
     host.data.push_back(MakeChannel("pos.x", L"Position X", {MakeKey(0, 0.0), MakeKey(10, 5.0)}));
@@ -2830,7 +2922,16 @@ void CurveModeButtons() {
 
 }  // namespace
 
+#include "curve_native_editor_checks.inc"
 int main(int argc,char** argv) {
+    if(argc>1&&std::string(argv[1])=="--native-subdivision"){
+        NativeSubdivisionRoute();NativeSampleBake();
+        std::printf("native editor subdivision/bake: %d checks\n",g_checks);return 0;
+    }
+    if(argc>1&&std::string(argv[1])=="--timeline-input"){
+        TimelineRulerNavigation();AuthoringKeyboardShortcuts();
+        std::printf("curve timeline/input regressions: %d checks\n",g_checks);return 0;
+    }
     if(argc>1&&std::string(argv[1])=="--native-sync"){
         PendingNativeChangesBeforeWrite(false);NativeSelectionBeforeDelete();NativeSelectionBeforeDelete(false);
         NativeEditsBeforeHistory();CanonicalWriteAndUndo();NativeChangesDuringMmdDrag();
@@ -2863,6 +2964,7 @@ int main(int argc,char** argv) {
     MmdPanel();
     MotionButtons();
     BakeSelectedChannels();
+    NativeSubdivisionRoute();NativeSampleBake();
     DuplicateFrameSelectsExisting();
     DeleteRecomputesAutomatic();
     FrameRangeRejected();
@@ -2875,6 +2977,7 @@ int main(int argc,char** argv) {
     NativeEditsBeforeHistory();
     CanonicalWriteAndUndo();
     NativeChangesDuringMmdDrag();
+    TimelineRulerNavigation();AuthoringKeyboardShortcuts();
     PlayheadTimer();
     RangeBarKeyboard();
     TabNavigation();

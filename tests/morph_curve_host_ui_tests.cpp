@@ -953,6 +953,56 @@ void LauncherButtons() {
 }
 
 
+void CurveTransportAndLongBoneSpeed() {
+    auto model=MakeModel({{"smile",1}},"transport-speed");NativeTrack(model,0,{{0,0},{20,1}});
+    auto app=std::make_unique<MMDApp>();ResetApp(*app);
+    mdl::BoneRecord bone{};bone.type=mdl::BoneType::Move;bone.parent=bone.slotIndex=bone.tailIdx=-1;
+    for(int index:{0,5,10,15})bone.matInit[index]=bone.matWorld[index]=1;
+    bone.rotQuat[3]=1;
+    auto boneKeys=std::make_unique<mdl::BoneKey[]>(mdl::kBoneKeyCapacity);
+    auto displayKeys=std::make_unique<mdl::DisplayKey[]>(mdl::kDisplayKeyCapacity);
+    for(int index=0;index<2;++index){auto& key=boneKeys[index];key.frame=index*100000;key.next=index?0:1;key.previous=0;
+        key.allocated=1;key.position[0]=index*100.f;key.rotation[0]=index?float(std::sin(.5)):0;
+        key.rotation[3]=index?float(std::cos(.5)):1;
+        for(int axis=0;axis<4;++axis){key.interpolation[axis]=key.interpolation[axis+4]=20;
+            key.interpolation[axis+8]=key.interpolation[axis+12]=107;}}
+    unsigned char selection=1,dirty=0;auto& record=*model.record();
+    record.boneCount=1;record.boneTable=&bone;record.boneKeys=boneKeys.get();record.displayKeys=displayKeys.get();
+    record.boneSelection=&selection;record.bonePhysicsState=&dirty;record.selectedBone=0;record.selectedMorphs[0]=0;
+    displayKeys[0].visible=1;
+    auto scale=mikudancestudio::bone_scale::Matrix{};scale.v[0]=2; mikudancestudio::bone_scale::SetKey(model.raw(),1,scale);
+    ac::Track morph;std::string error;Check(mc::Read(model.raw(),0,morph,error),"read transport expression fixture");
+    Check(mc::Write(model.raw(),{{mc::StableId(0,record.morphs[0].name),morph}},error),"author transport expression fixture");
+    HWND owner=CreateWindowW(L"STATIC",L"curve transport speed",WS_OVERLAPPED,0,0,800,600,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
+    app->Hwnd()=owner;app->ModelSlot(0)=model.raw();
+    HWND frameEdit=CreateWindowW(L"EDIT",L"0",WS_CHILD,0,0,80,24,owner,reinterpret_cast<HMENU>(static_cast<INT_PTR>(mikudancestudio::panel::kCurrentFrameEdit)),GetModuleHandleW(nullptr),nullptr);
+    app->SceneModified()=0;ch::OpenMorph(app.get(),0,false);
+    HWND editor=FindWindowW(L"MikuDanceStudioCurveEditorWindow",nullptr);
+    Check(editor!=nullptr,"open real expression transport host");
+    SetDlgItemTextW(editor,1024,L"10");SendMessageW(editor,WM_COMMAND,MAKEWPARAM(1025,BN_CLICKED),0);
+    wchar_t text[32]{};GetWindowTextW(frameEdit,text,32);
+    Check(app->CurrentFrame()==10&&wcscmp(text,L"10")==0&&std::abs(record.morphs[0].value-.5)<.0001,
+        "expression transport updates the shared frame field and evaluated expression");
+    ce::CloseOwned(owner);ch::OpenInterpolation(app.get(),false);
+    editor=FindWindowW(L"MikuDanceStudioCurveEditorWindow",nullptr);
+    Check(editor!=nullptr,"open real bone transport and speed host");
+    for(double frame:{25000.0,50000.0,75000.0}){
+        double values[3]={frame,0,0};
+        Check(SendMessageW(editor,WM_APP+396,0,reinterpret_cast<LPARAM>(values))!=0,"sample native bone position graph");
+        Check(std::abs(values[2]-.001)<1e-10,"long native bone position speed remains constant");
+        SendMessageW(editor,WM_APP+396,3,reinterpret_cast<LPARAM>(values));
+        Check(values[2]>.0003&&values[2]<.001,"long native quaternion rotation speed remains nonzero and finite");
+        SendMessageW(editor,WM_APP+396,6,reinterpret_cast<LPARAM>(values));
+        Check(values[2]>.000008&&values[2]<.000012,"long native scale speed remains nonzero and finite");
+    }
+    SetDlgItemTextW(editor,1024,L"50");SendMessageW(editor,WM_COMMAND,MAKEWPARAM(1025,BN_CLICKED),0);
+    GetWindowTextW(frameEdit,text,32);
+    Check(app->CurrentFrame()==50&&wcscmp(text,L"50")==0,"bone and scale transport update the shared timeline");
+    Check(app->SceneModified()==0&&boneKeys[1].frame==100000,"curve navigation and speed queries do not author keys");
+    ce::CloseOwned(owner);DestroyWindow(owner);app->Hwnd()=nullptr;app->ModelSlot(0)=nullptr;
+    mc::Forget(model.raw());mikudancestudio::bone_scale::Forget(model.raw());
+}
+
 void BakedMorphKeepsBoneEditing() {
     for (bool curveBake : {true, false}) {
         auto model = MakeModel({{"smile", 1}}, "bake-edit");
@@ -1048,6 +1098,10 @@ void BakedMorphKeepsBoneEditing() {
 }  // namespace
 
 int main(int argc, char** argv) {
+    if(argc>1&&std::string(argv[1])=="--timeline-speed"){
+        CurveTransportAndLongBoneSpeed();
+        std::printf("curve transport/speed: %d checks, %d failures\n",g_checks,g_failures);return g_failures?1:0;
+    }
     if(argc>1&&std::string(argv[1])=="--comparison-settings"){
         ComparisonMode();
         std::printf("comparison settings isolation: %d checks, %d failures\n",g_checks,g_failures);
@@ -1070,6 +1124,7 @@ int main(int argc, char** argv) {
         return g_failures ? 1 : 0;
     }
     BakedMorphKeepsBoneEditing();
+    CurveTransportAndLongBoneSpeed();
     ComparisonMode();
     ChannelBuild();
     ChangedTracks();

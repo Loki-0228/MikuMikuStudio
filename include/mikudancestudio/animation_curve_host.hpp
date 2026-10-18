@@ -13,6 +13,19 @@ namespace mikudancestudio::curve_host {
 enum class Kind { Camera, Light, Shadow, Gravity, Accessory };
 bool Read(MMDApp&, Kind, int slot, std::vector<curve_editor::Channel>&, std::wstring&);
 bool Write(MMDApp&, Kind, int slot, const std::vector<curve_editor::Channel>&, std::wstring&);
+// Private-copy subdivision. Native camera intervals keep their original float
+// evaluator; unrelated scalar channels use the common Bezier subdivision.
+bool InsertPreservingShape(std::vector<curve_editor::Channel>&, std::size_t channel, int frame,
+                           std::size_t& index, std::wstring& error);
+// Converts only channels carrying exact native slices to integer-frame scalar
+// proxies for the existing VMD writer. Does not change the standard VMD codec.
+bool PrepareMotionChannels(const std::vector<curve_editor::Channel>&,
+                           std::vector<curve_editor::Channel>&, std::wstring& error, bool selectedOnly = true,
+                           std::uint64_t maximumSampleBytes = 64ull * 1024 * 1024);
+// Carries exact native sampling through a scalar retime with one-to-one keys.
+// Merging/deleting exact slice boundaries requires an explicit bake first.
+bool RetimePreservedChannel(const curve_editor::Channel& source,
+                            curve_editor::Channel& transformed, std::wstring& error);
 void Apply(MMDApp*, Kind, double frame, int slot = 0);
 bool Has(MMDApp*, Kind, int slot = 0);
 // Legacy registration only: reconcile an explicit native frame on a detached

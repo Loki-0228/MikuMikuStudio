@@ -77,6 +77,7 @@
 #include <functional>
 #include <limits>
 #include <map>
+#include <memory>
 #include <new>
 #include <string>
 #include <utility>
@@ -1992,6 +1993,8 @@ bool PrepareImpl(MMDApp& app, const fc::Rates& rates, PlanPtr& plan, fc::Report&
         ap.hasAuthoring = true;
         for (curve_host::AuthoringEntry& entry : entries) {
             for (curve_editor::Channel& channel : entry.channels) {
+                std::unique_ptr<curve_editor::Channel> exact;
+                if (!channel.preservedCameraIntervals.empty()) exact = std::make_unique<curve_editor::Channel>(channel);
                 ac::Track converted;
                 art::Report laneReport;
                 if (!art::Retime(channel.track, applyRates, options, converted, laneReport, detail)) {
@@ -2001,6 +2004,7 @@ bool PrepareImpl(MMDApp& app, const fc::Rates& rates, PlanPtr& plan, fc::Report&
                     return false;
                 }
                 channel.track = std::move(converted);
+                if (exact && !curve_host::RetimePreservedChannel(*exact, channel, error)) return false;
             }
             for (curve_editor::Channel& channel : entry.baseline) {
                 ac::Track converted;

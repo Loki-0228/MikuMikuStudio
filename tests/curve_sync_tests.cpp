@@ -7,6 +7,10 @@
 #include "mikudancestudio/global_key_layout.hpp"
 #include "mikudancestudio/key_pool.hpp"
 #include "mikudancestudio/clipboard_layout.hpp"
+#include "mikudancestudio/panel_controls.hpp"
+#include "mikudancestudio/bake_ui_lock.hpp"
+#include "../src/window/curve_editor_axis.hpp"
+#include "../src/plugins/native_pose_scope.hpp"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -290,4 +294,93 @@ void CameraSparseRegistration() {
     curve_host::Reset(app.get());mdl::KeyPoolDestroy(app->CameraKeys());
 }
 }
-int main() {CameraSparseRegistration();CameraEditorCommands();CameraSelectionAfterCurveWrite();CameraFrameZeroRegistration();GlobalFrameZeroRegistrations();MorphSync();SelectionSync();std::puts("PASS: curve synchronization");}
+LRESULT CALLBACK CurveTransportHost(HWND window,UINT message,WPARAM wp,LPARAM lp) {
+    auto* app=reinterpret_cast<MMDApp*>(GetWindowLongPtrW(window,GWLP_USERDATA));
+    if(app&&message==WM_COMMAND&&LOWORD(wp)==panel::kPlayButton){app->PlaybackActive()=app->PlaybackActive()?0:1;return 0;}
+    return DefWindowProcW(window,message,wp,lp);
+}
+void SceneRulerSynchronization() {
+    auto app=std::make_unique<MMDApp>();std::memset(&app->state,0,sizeof app->state);app->EnglishUI()=2;
+    WNDCLASSW type{};type.lpfnWndProc=CurveTransportHost;type.hInstance=GetModuleHandleW(nullptr);
+    type.lpszClassName=L"MmsCurveTransportHost";RegisterClassW(&type);
+    HWND owner=CreateWindowW(type.lpszClassName,L"curve ruler host",WS_OVERLAPPED,0,0,600,400,nullptr,nullptr,type.hInstance,nullptr);
+    SetWindowLongPtrW(owner,GWLP_USERDATA,reinterpret_cast<LONG_PTR>(app.get()));
+    Check(owner!=nullptr,"create ruler synchronization owner");app->Hwnd()=owner;app->SidebarWidth()=400;
+    HWND frameEdit=CreateWindowW(L"EDIT",L"0",WS_CHILD,0,0,80,24,owner,reinterpret_cast<HMENU>(static_cast<INT_PTR>(panel::kCurrentFrameEdit)),GetModuleHandleW(nullptr),nullptr);
+    Check(frameEdit!=nullptr,"create main current-frame readout");
+    app->CameraKeys()=mdl::KeyPoolCreate<mdl::CameraKey>();app->LightKeys()=mdl::KeyPoolCreate<mdl::LightKey>();
+    app->ShadowKeys()=mdl::KeyPoolCreate<mdl::SelfShadowKey>();app->GravityKeys()=mdl::KeyPoolCreate<mdl::GravityKey>();
+    app->CameraKeys()[0].fov=45;app->CameraKeys()[0].parentModel=-1;
+    for(auto kind:{curve_host::Kind::Camera,curve_host::Kind::Light,curve_host::Kind::Shadow,curve_host::Kind::Gravity}){
+        std::vector<ce::Channel> channels;std::wstring error;
+        Check(curve_host::Read(*app,kind,0,channels,error),"read global ruler fixture");
+        const int lane=kind==curve_host::Kind::Shadow?1:0;
+        auto key=channels[lane].track.keys.front();key.frame=200;key.value=kind==curve_host::Kind::Shadow?.05:20;
+        key.interpolation=ac::Interpolation::Linear;channels[lane].track.keys.push_back(key);
+        Check(curve_host::Write(*app,kind,0,channels,error),"author global ruler fixture");
+    }
+    app->SceneModified()=0;
+    curve_host::Open(app.get(),false);
+    HWND editor=FindWindowW(L"MikuDanceStudioCurveEditorWindow",nullptr);
+    Check(editor!=nullptr,"open real scene curve host");HWND canvas=GetDlgItem(editor,1020);
+    CurveEditorAxisState axis{};SendMessageW(editor,WM_APP+394,0,reinterpret_cast<LPARAM>(&axis));
+    const auto at=[&](int frame){
+        auto point=SendMessageW(editor,WM_APP+301,frame,0);
+        return MAKELPARAM(LOWORD(point),(axis.plot.top-1)/2);
+    };
+    SendMessageW(canvas,WM_LBUTTONDOWN,MK_LBUTTON,at(100));SendMessageW(canvas,WM_LBUTTONUP,0,at(100));
+    wchar_t text[32]{};GetWindowTextW(frameEdit,text,32);
+    Check(app->CurrentFrame()==100&&wcscmp(text,L"100")==0,"curve ruler updates the main playhead and readout");
+    Check(std::abs(app->CameraPositionAxis(0)-10)<.001&&std::abs(app->LightDirection()[0]-10)<.001&&
+        std::abs(app->ShadowDistance()-.025)<.00001&&std::abs(app->GravityMagnitude()-10)<.001,
+        "curve ruler evaluates the camera light shadow and gravity shown by the viewport");
+    Check(app->SceneModified()==0&&app->LastRegisteredFrame()==200,"navigation keeps authored state and key horizon unchanged");
+    EnableWindow(owner,FALSE);
+    SetDlgItemTextW(editor,1024,L"50");SendMessageW(editor,WM_COMMAND,MAKEWPARAM(1025,BN_CLICKED),0);
+    Check(app->CurrentFrame()==100,"disabled host refuses queued curve navigation");EnableWindow(owner,TRUE);
+    {bake::ScopedUiLock lock(nullptr);SendMessageW(canvas,WM_LBUTTONDOWN,MK_LBUTTON,at(50));SendMessageW(canvas,WM_LBUTTONUP,0,at(50));}
+    Check(app->CurrentFrame()==100,"bake publication lock refuses curve navigation");
+    SetDlgItemTextW(editor,1024,L"150");SendMessageW(editor,WM_COMMAND,MAKEWPARAM(1025,BN_CLICKED),0);
+    GetWindowTextW(frameEdit,text,32);
+    Check(app->CurrentFrame()==150&&wcscmp(text,L"150")==0&&std::abs(app->CameraPositionAxis(0)-15)<.001,
+        "numeric curve transport shares the same main-timeline evaluation path");
+    Check(app->SceneModified()==0,"all curve transport paths remain navigation only");
+    {
+        plugins::StorageStore storage;
+        // Same playback rejection as the production integration's edit gate.
+        plugins::SharedHistory history(storage,[&]{return app->PlaybackActive()||app->FrameStepPlayback()||
+            app->state.recordPlaybackStartPending||app->SceneMutationInProgress()?MMS_E_BUSY:MMS_OK;});
+        plugins::NativePoseTestBinding binding(*app,history);
+        app->PlaybackCursorSeconds()=3;app->PlaybackActive()=1;
+        Check(history.CheckNativeEdit()==MMS_E_BUSY&&history.CheckNativeNavigation()==MMS_OK,
+            "real playback edit gate does not block read-only transport admission");
+        SetDlgItemTextW(editor,1024,L"175");SendMessageW(editor,WM_COMMAND,MAKEWPARAM(1025,BN_CLICKED),0);
+        Check(!app->PlaybackActive()&&app->CurrentFrame()==175,"bound curve seek stops playback before evaluating the requested frame");
+        app->PlaybackCursorSeconds()=2;app->PlaybackActive()=1;
+        SendMessageW(editor,WM_COMMAND,MAKEWPARAM(1021,BN_CLICKED),0);
+        Check(!app->PlaybackActive()&&app->CurrentFrame()==60,"bound curve Stop uses the main playback command and current playback frame");
+        Check(storage.Prepare({})==MMS_OK,"prepare serializer boundary during playback");
+        app->PlaybackActive()=1;app->PlaybackCursorSeconds()=4;
+        SetDlgItemTextW(editor,1024,L"125");SendMessageW(editor,WM_COMMAND,MAKEWPARAM(1025,BN_CLICKED),0);
+        SendMessageW(editor,WM_COMMAND,MAKEWPARAM(1021,BN_CLICKED),0);
+        Check(app->PlaybackActive()&&app->CurrentFrame()==60,"prepared serializer blocks both stop and seek before changing transport");
+        storage.Cancel();
+        const auto blocked=[&]{
+            SetDlgItemTextW(editor,1024,L"125");SendMessageW(editor,WM_COMMAND,MAKEWPARAM(1025,BN_CLICKED),0);
+            SendMessageW(editor,WM_COMMAND,MAKEWPARAM(1021,BN_CLICKED),0);
+            Check(app->PlaybackActive()&&app->CurrentFrame()==60,"native modal editor blocks stop and seek before changing transport");
+        };
+        app->GravitySettingDialog()=owner;blocked();app->GravitySettingDialog()=nullptr;
+        app->GroundShadowColorDialog()=owner;blocked();app->GroundShadowColorDialog()=nullptr;
+        app->AccessoryOrderArray()=app.get();blocked();app->AccessoryOrderArray()=nullptr;
+        app->state.accessoryEditDialogOpen=1;blocked();app->state.accessoryEditDialogOpen=0;
+        app->state.edgeThicknessDialog=owner;blocked();app->state.edgeThicknessDialog=nullptr;
+        app->PlaybackActive()=0;
+        Check(!history.UndoCount()&&!history.RedoCount()&&app->SceneModified()==0,"bound playback navigation does not create edits");
+    }
+    ce::CloseOwned(owner);curve_host::Reset(app.get());
+    mdl::KeyPoolDestroy(app->CameraKeys());mdl::KeyPoolDestroy(app->LightKeys());mdl::KeyPoolDestroy(app->ShadowKeys());mdl::KeyPoolDestroy(app->GravityKeys());
+    app->CameraKeys()=nullptr;app->LightKeys()=nullptr;app->ShadowKeys()=nullptr;app->GravityKeys()=nullptr;
+    DestroyWindow(owner);app->Hwnd()=nullptr;
+}
+int main() {SceneRulerSynchronization();CameraSparseRegistration();CameraEditorCommands();CameraSelectionAfterCurveWrite();CameraFrameZeroRegistration();GlobalFrameZeroRegistrations();MorphSync();SelectionSync();std::puts("PASS: curve synchronization");}

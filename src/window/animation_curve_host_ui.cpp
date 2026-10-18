@@ -1,5 +1,6 @@
 #include "mikudancestudio/frame_limits.hpp"
 #include "curve_editor_selection.hpp"
+#include "../animation/native_curve_sample.hpp"
 #include "mikudancestudio/display_capacity.hpp"
 #include "mikudancestudio/key_pool.hpp"
 #include "mikudancestudio/bone_curve.hpp"
@@ -7,6 +8,8 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
+#include "mikudancestudio/bake_ui_lock.hpp"
+#include "mikudancestudio/autosave.hpp"
 #include <commctrl.h>
 #include <commdlg.h>
 #include "mikudancestudio/animation_curve_host.hpp"
@@ -29,6 +32,8 @@
 #include "mikudancestudio/global_key_layout.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "../plugins/native_pose_scope.hpp"
+#include "../plugins/native_object_commands.hpp"
+#include "mikudancestudio/plugin_runtime.hpp"
 #endif
 #include "ui_control_layout.hpp"
 #include "settings_json.hpp"
@@ -64,6 +69,32 @@ void Refresh(MMDApp&app){
 // tables, so a caller without a live main window (the background regression)
 // must not run it.
 void RefreshMain(MMDApp&app){if(IsWindow(app.MainWindow()))Refresh(app);}
+// Transport changes are navigation, but still must respect scene publication,
+// save and modal operation locks while those operations dispatch messages.
+bool TransportReady(MMDApp& app){
+#if !MMD_ORIGINAL_PROFILE
+    if(plugins::InCallback()||plugins::NativeObjectOperationActive(&app)||plugins::NativeObjectUiPending(&app))return false;
+    if(auto* history=plugins::BoundNativePoseHistory(&app))
+        if(history->CheckNativeNavigation()!=MMS_OK)return false;
+#endif
+    return IsWindow(app.MainWindow())&&IsWindowEnabled(app.MainWindow())&&
+        GetWindowThreadProcessId(app.MainWindow(),nullptr)==GetCurrentThreadId()&&
+        !bake::UiLocked()&&!SceneSaveInProgress()&&!app.SceneMutationInProgress()&&
+        !app.FrameStepPlayback()&&!app.state.recordPlaybackStartPending&&
+        !app.FrameRangeDialog()&&!app.state.frameCopyDialog&&!app.RecordingWindow()&&
+        !app.GravitySettingDialog()&&!app.GroundShadowColorDialog()&&!app.AccessoryOrderArray()&&
+        !app.state.accessoryEditDialogOpen&&!app.state.edgeThicknessDialog;
+}
+void SeekMain(MMDApp& app,int frame){
+    if(!TransportReady(app))return;
+    app.CurrentFrame()=std::clamp(frame,0,frame_limits::maximum);
+    Refresh(app);
+    // RefreshAfterFrameApply updates the timeline and pose, but does not echo
+    // the current-frame field or the viewport's selected-object readouts.
+    const auto text=std::to_wstring(app.CurrentFrame());
+    SetDlgItemTextW(app.MainWindow(),panel::kCurrentFrameEdit,text.c_str());
+    if(app.Renderer())PostViewRefresh(&app);
+}
 // Use the same playback command as the main window, including audio/physics.
 void BindTransport(curve_editor::Session& session,MMDApp* app){
     session.theme.enabled=true;
@@ -72,18 +103,20 @@ void BindTransport(curve_editor::Session& session,MMDApp* app){
     session.currentFrame=[app]{return app->PlaybackActive()?double(app->PlaybackCursorSeconds())*30.0:double(app->CurrentFrame());};
     session.isPlaying=[app]{return IsWindow(app->MainWindow())&&app->PlaybackActive()!=0;};
     session.setPlaying=[app](bool playing){
-        if(!IsWindow(app->MainWindow())||playing==(app->PlaybackActive()!=0))return;
+        if(!TransportReady(*app)||playing==(app->PlaybackActive()!=0))return;
         const int frame=std::max(0,int(std::lround(double(app->PlaybackCursorSeconds())*30.0)));
         const auto startsAtCurrent=app->PlaybackStartsAtCurrentFrame();
         if(playing)app->PlaybackStartsAtCurrentFrame()=1;
         SendMessageW(app->MainWindow(),WM_COMMAND,MAKEWPARAM(panel::kPlayButton,BN_CLICKED),reinterpret_cast<LPARAM>(GetDlgItem(app->MainWindow(),panel::kPlayButton)));
         app->PlaybackStartsAtCurrentFrame()=startsAtCurrent;
-        if(!playing){app->CurrentFrame()=frame;RefreshMain(*app);}
+        if(!playing)SeekMain(*app,frame);
     };
     const auto seek=session.seek;
     const auto stop=session.setPlaying;
     session.seek=[app,seek,stop](int frame){
+        if(!TransportReady(*app))return;
         if(app->PlaybackActive())stop(false);
+        if(app->PlaybackActive())return;
         if(seek)seek(std::clamp(frame,0,mikudancestudio::frame_limits::maximum));
     };
 }
@@ -141,7 +174,9 @@ bool Motion(MMDApp&app,Kind kind,int slot,HWND owner,bool save,const std::vector
     if(!(save?GetUiSaveFileNameW(&dialog):GetUiOpenFileNameW(&dialog)))return false;
     curve_motion::Motion motion;motion.kind=static_cast<curve_motion::Kind>(kind);std::string detail;
     if(save){
-        for(const auto&c:channels)if(c.selected)motion.tracks.push_back({c.id,c.track});
+        std::vector<curve_editor::Channel> prepared;
+        if(!PrepareMotionChannels(channels,prepared,error))return false;
+        for(const auto&c:prepared)if(c.selected)motion.tracks.push_back({c.id,c.track});
         if(!curve_motion::Save(path,motion,detail)){error=Wide(detail);return false;}return true;
     }
     if(!curve_motion::Load(path,motion.kind,motion,detail)){error=Wide(detail);return false;}
@@ -381,7 +416,7 @@ static void OpenScene(MMDApp*app,bool visible,const std::string&cameraChannel){
     if(!app)return;
     curve_editor::Session session;session.id="mms.scene";session.language=app->EnglishUI();
     session.currentFrame=[app]{return double(app->CurrentFrame());};
-    session.seek=[app](int f){app->CurrentFrame()=f;Refresh(*app);};
+    session.seek=[app](int f){SeekMain(*app,f);};
     auto append=[&](Kind kind,int slot){
         auto*identity=kind==Kind::Accessory?app->AccessorySlot(slot):nullptr;
         curve_editor::Source source;source.id=std::to_string(int(kind))+"/"+std::to_string(slot);source.label=Title(*app,kind);
@@ -421,6 +456,10 @@ static void OpenScene(MMDApp*app,bool visible,const std::string&cameraChannel){
             if(!alive()){error=L"The source has been removed.";return false;}
             if(!IsWindowEnabled(app->MainWindow())){error=Text(app->EnglishUI(),L"処理の終了を待ってください。",L"Wait for the active operation to finish.",L"请等待当前操作完成。");return false;}
             if(!Write(*app,kind,slot,channels,error))return false;Refresh(*app);return true;};
+        source.subdivide=[alive](auto&channels,std::size_t channel,int frame,std::size_t&index,std::wstring&error){
+            if(!alive()){error=L"The source has been removed.";return false;}
+            return InsertPreservingShape(channels,channel,frame,index,error);
+        };
         if(kind==Kind::Camera)source.initialMainChannel=cameraChannel;
         source.readMotion=[app,kind,slot,alive](void*owner,std::wstring&error){return alive()&&Motion(*app,kind,slot,static_cast<HWND>(owner),false,nullptr,error);};
         source.writeMotion=[app,kind,slot,alive](void*owner,const auto&channels,std::wstring&error){return alive()&&Motion(*app,kind,slot,static_cast<HWND>(owner),true,&channels,error);};
@@ -579,7 +618,7 @@ void OpenMorph(MMDApp*app,int lane,bool visible){
     session.currentFrame=[app]{return double(app->CurrentFrame());};
     session.seek=[app,identity](int f){
         if(!MorphIdentityCurrent(*app,identity))return;
-        app->CurrentFrame()=f;RefreshMain(*app);};
+        SeekMain(*app,f);};
 
     auto state=std::make_shared<MorphSourceState>();
     state->identity=identity;
@@ -663,7 +702,7 @@ double GraphScale(const bone_scale::Matrix&m,int axis){
 }
 double NearAngle(double angle,double reference){return angle+360.0*std::round((reference-angle)/360.0);}
 int GraphLane(int channel){return channel<3?channel:channel<6?3:4;}
-double GraphValue(const BoneGraph&keys,const curve_editor::Channel&channel,int axis,double frame){
+double GraphValue(const BoneGraph&keys,const curve_editor::Channel&channel,int axis,double frame,bool smooth=false){
     if(keys.empty())return 0;
     if(frame<=keys.front().frame)return keys.front().values[axis];
     if(frame>=keys.back().frame)return keys.back().values[axis];
@@ -676,7 +715,8 @@ double GraphValue(const BoneGraph&keys,const curve_editor::Channel&channel,int a
     if(!curve_editor::ReadChannelControls(channel,end,controls))
         for(int c=0;c<4;++c)controls[c]=b.controls[GraphLane(axis)][c];
     bone_scale::Curve native{};for(int c=0;c<4;++c)native[c]=static_cast<std::uint8_t>(controls[c]);
-    const double eased=bone_scale::CurveTime(native,static_cast<float>(raw));
+    const double eased=smooth?native_curve_sample::Evaluate(controls,raw).value:
+        bone_scale::CurveTime(native,static_cast<float>(raw));
     if(axis<3)return a.values[axis]+(b.values[axis]-a.values[axis])*eased;
     if(axis>=6)return GraphScale(bone_scale::Interpolate(a.scale,b.scale,static_cast<float>(eased)),axis-6);
     auto qb=b.rotation;double dot=0;for(int c=0;c<4;++c)dot+=a.rotation[c]*qb[c];
@@ -746,8 +786,23 @@ static curve_editor::Source BoneSource(MMDApp*app,const MorphModelIdentity&ident
             }
             channel.sample=[snapshot,c](const curve_editor::Channel&current,double frame){
                 const double value=GraphValue(*snapshot,current,c,frame);
-                const double low=std::max(double(snapshot->front().frame),frame-0.001),high=std::min(double(snapshot->back().frame),frame+0.001);
-                return animation_curve::Sample{value,high>low?(GraphValue(*snapshot,current,c,high)-GraphValue(*snapshot,current,c,low))/(high-low):0};
+                double derivative=0;
+                if(snapshot->size()>1&&frame>=snapshot->front().frame&&frame<=snapshot->back().frame){
+                    auto at=std::upper_bound(snapshot->begin(),snapshot->end(),frame,
+                        [](double f,const BoneGraphKey& key){return f<key.frame;});
+                    const auto end=std::min(std::size_t(at-snapshot->begin()),snapshot->size()-1);
+                    const auto&a=(*snapshot)[end-1];const auto&b=(*snapshot)[end];
+                    const double span=double(b.frame)-a.frame;
+                    const double width=std::max(1e-4,span*1e-4);
+                    const double low=std::max(double(a.frame),frame-width),high=std::min(double(b.frame),frame+width);
+                    if(c<3){
+                        std::array<double,4> controls{};
+                        if(!curve_editor::ReadChannelControls(current,end,controls))
+                            for(int i=0;i<4;++i)controls[i]=b.controls[c][i];
+                        derivative=(b.values[c]-a.values[c])/span*native_curve_sample::Evaluate(controls,(frame-a.frame)/span).slope;
+                    }else if(high>low)derivative=(GraphValue(*snapshot,current,c,high,true)-GraphValue(*snapshot,current,c,low,true))/(high-low);
+                }
+                return animation_curve::Sample{value,derivative};
             };
             channels.push_back(std::move(channel));
         }
@@ -891,7 +946,8 @@ void OpenInterpolation(MMDApp*app,bool visible){
     const int initialBone=record->selectedBone;const auto identity=MorphIdentityOf(*app,model);
     curve_editor::Session session;session.id="mms.interpolation.bone";session.language=app->EnglishUI();
     session.currentFrame=[app]{return double(app->CurrentFrame());};
-    session.seek=[app](int frame){app->CurrentFrame()=frame;Refresh(*app);SelectionReeval(app);};
+    session.seek=[app,identity](int frame){
+        if(MorphIdentityCurrent(*app,identity))SeekMain(*app,frame);};
     session.initialSource=bone_curve::Has(model,initialBone)?1:0;
     for(bool freeCurves : {false,true}) {
     struct Entry{curve_editor::Source source;std::vector<curve_editor::Channel> baseline;};

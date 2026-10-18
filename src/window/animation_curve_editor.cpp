@@ -333,9 +333,9 @@ const wchar_t *T(unsigned language, Str id) {
     case StrFitRange: return zh ? L"适配区间" : en ? L"Fit range" : L"範囲表示";
     case StrShortcuts: return zh ? L"快捷键说明" : en ? L"Shortcuts" : L"ショートカット";
     case StrShortcutsText:
-        return zh ? L"中键或空格加左键：双轴平移。滚轮纵移，Shift 横移，Alt 横缩，Ctrl 纵缩，Ctrl+Alt 双缩。Home 适配全部，F 适配当前区间，H 平移工具，V 选择工具。范围条中央拖动平移，两端拖动缩放；点击横条或纵条的中段或两端后，方向键执行同样的平移或缩放，按住 Shift 步长为十倍。Tab 在控件间移动焦点。快捷键不会写入输入框。"
-                  : en ? L"Middle button or Space+drag: two-axis pan. Wheel pans vertically, Shift pans horizontally, Alt zooms time, Ctrl zooms value, Ctrl+Alt zooms both. Home fits all, F fits the current range, H selects the pan tool, V the select tool. Drag the range bar centre to pan and its ends to zoom; after clicking the middle or an end of the time or value bar the arrow keys pan or zoom the same way, ten times further with Shift. Tab moves the focus between controls. Shortcuts never reach an edit box."
-                       : L"中ボタンまたはスペース＋ドラッグ：2 軸パン。ホイールは縦移動、Shift は横移動、Alt は時間ズーム、Ctrl は値ズーム、Ctrl+Alt は両方。Home で全体表示、F で範囲表示、H でパンツール、V で選択ツール。範囲バーの中央で移動、両端でズーム。時間バーまたは値バーの中央・両端をクリックした後は方向キーでも同じ移動・ズームができ、Shift で 10 倍になります。Tab でコントロール間を移動します。ショートカットは入力欄に入力されません。";
+        return zh ? L"中键或空格加左键：双轴平移。滚轮纵移，Shift 横移，Alt 横缩，Ctrl 纵缩，Ctrl+Alt 双缩。Home 适配全部，F 适配当前区间，H 平移工具，V 选择工具。范围条中央拖动平移，两端拖动缩放；点击横条或纵条的中段或两端后，方向键执行同样的平移或缩放，按住 Shift 步长为十倍。Insert 添加，Delete 删除，Ctrl+Z 撤销，Ctrl+Y 或 Ctrl+Shift+Z 重做。点击或拖动顶部帧刻度切换主时间轴。Tab 在控件间移动焦点；输入框保留文字编辑快捷键。"
+                  : en ? L"Middle button or Space+drag: two-axis pan. Wheel pans vertically, Shift pans horizontally, Alt zooms time, Ctrl zooms value, Ctrl+Alt zooms both. Home fits all, F fits the current range, H selects the pan tool, V the select tool. Drag the range bar centre to pan and its ends to zoom; after clicking the middle or an end of the time or value bar the arrow keys pan or zoom the same way, ten times further with Shift. Insert adds, Delete removes, Ctrl+Z undoes, Ctrl+Y or Ctrl+Shift+Z redoes. Click or drag the top frame ruler to seek the main timeline. Tab moves focus; text fields retain their own editing keys."
+                       : L"中ボタンまたはスペース＋ドラッグ：2 軸パン。ホイールは縦移動、Shift は横移動、Alt は時間ズーム、Ctrl は値ズーム、Ctrl+Alt は両方。Home で全体表示、F で範囲表示、H でパンツール、V で選択ツール。範囲バーの中央で移動、両端でズーム。時間バーまたは値バーの中央・両端をクリックした後は方向キーでも同じ移動・ズームができ、Shift で 10 倍になります。Insert で追加、Delete で削除、Ctrl+Z で元に戻し、Ctrl+Y または Ctrl+Shift+Z でやり直します。上部のフレーム目盛をクリック・ドラッグして移動します。Tab でフォーカスを移動します。入力欄は文字編集キーを保持します。";
     case StrChannels: return zh ? L"通道" : en ? L"Channels" : L"チャンネル";
     case StrSelectAll: return zh ? L"全选" : en ? L"Select all" : L"全選択";
     case StrMmdTitle: return zh ? L"原版 0–127 手柄" : en ? L"MMD 0–127 handles" : L"0–127 ハンドル";
@@ -605,7 +605,8 @@ bool SameCurveData(const std::vector<Channel> &left, const std::vector<Channel> 
         if (left[index].minimum != right[index].minimum) return false;
         if (left[index].maximum != right[index].maximum) return false;
         if (!SameTrack(left[index].track, right[index].track) ||
-            left[index].nativeControls != right[index].nativeControls) return false;
+            left[index].nativeControls != right[index].nativeControls ||
+            left[index].preservedCameraIntervals != right[index].preservedCameraIntervals) return false;
     }
     return true;
 }
@@ -1197,6 +1198,13 @@ bool CommitChannels(Editor &editor, std::vector<Channel> next, const std::wstrin
     // change to its siblings before the single host write.
     for (std::size_t c = 0; c < next.size() && c < state.channels.size(); ++c) {
         if (next[c].interpolationGroup.empty()) continue;
+        // A native subdivision already handles its linked lanes. Indices no
+        // longer identify the same intervals after inserting/deleting a key.
+        const auto& previousKeys = state.channels[c].track.keys;
+        const auto& nextKeys = next[c].track.keys;
+        if (previousKeys.size() != nextKeys.size() ||
+            !std::equal(previousKeys.begin(), previousKeys.end(), nextKeys.begin(),
+                [](const Key& a, const Key& b) { return a.frame == b.frame; })) continue;
         for (std::size_t end = 1; end < next[c].track.keys.size(); ++end) {
             std::array<double,4> before{}, after{};
             if (!ReadChannelControls(state.channels[c], end, before) ||
@@ -2939,6 +2947,7 @@ void SeekTimeline(Editor& editor,int frame){
     const bool playing=editor.session.isPlaying&&editor.session.isPlaying();
     if(!playing&&editor.session.currentFrame&&editor.session.currentFrame()==frame)return;
     if(editor.session.seek)editor.session.seek(frame);
+    OnPlayheadTimer(editor);
     editor.mmdFollowPlayhead=true;
     UpdateMmdPanel(editor);
 }
@@ -3285,7 +3294,24 @@ void RunBake(Editor &editor) {
             SetStatus(editor, std::wstring(T(editor.session.language, StrBakeFailed)) + Widen(error), true);
             return;
         }
+        if (channel.sample) {
+            for (auto& key : output.keys) {
+                key.value = channel.sample(channel, key.frame).value;
+                if (!std::isfinite(key.value)) {
+                    SetStatus(editor, T(editor.session.language, StrBakeFailed), true); return;
+                }
+                key.inSlope = key.outSlope = 0;
+            }
+            for (std::size_t i = 1; i < output.keys.size(); ++i) {
+                const auto& a = output.keys[i - 1]; const auto& b = output.keys[i];
+                const double slope = (b.value - a.value) / (double(b.frame) - a.frame);
+                output.keys[i - 1].outSlope = output.keys[i].inSlope = slope;
+            }
+        }
         channel.track = std::move(output);
+        channel.sample = {};
+        channel.nativeControls.clear(); channel.controlGeometry.clear();
+        channel.preservedCameraIntervals.clear();
         ++baked;
     }
     const std::wstring message = std::wstring(T(editor.session.language, StrBakeDone)) + FormatInteger(baked);
@@ -3641,7 +3667,7 @@ void CanvasMouseDown(Editor &editor, UINT flags, POINT point) {
     if (editor.mmdDragHandle >= 0) editor.mmdDragHandle = -1;
 
     if(editor.session.seek&&point.x>=editor.plot.left&&point.x<=editor.plot.right&&
-       point.y>=editor.plot.bottom-Scale(18,editor.dpi)&&point.y<editor.plot.bottom){
+       point.y>=editor.plot.top-Scale(24,editor.dpi)&&point.y<editor.plot.top){
         editor.drag=Drag::Seek;SetCapture(editor.canvas);SeekAtPoint(editor,point);return;
     }
     const int timeZone = TimeBarZone(editor, point);
@@ -3938,7 +3964,9 @@ void CanvasMouseMove(Editor &editor, POINT point) {
 
 void CanvasMouseUp(Editor &editor, POINT point) {
     const Drag drag = editor.drag;
-    if (drag == Drag::Rubber) {
+    if (drag == Drag::Seek) {
+        SeekAtPoint(editor,point);
+    } else if (drag == Drag::Rubber) {
         const bool trivial = std::abs(point.x - editor.dragOrigin.x) < 4 && std::abs(point.y - editor.dragOrigin.y) < 4;
         if (trivial) {
             if (!editor.rubberAdd) {
@@ -4146,18 +4174,37 @@ void DeleteFromShortcut(Editor& editor,LPARAM keyData) {
         SendMessageW(editor.window,WM_COMMAND,MAKEWPARAM(kIdDeleteKey,BN_CLICKED),0);
 }
 
+// Keep the editor's authoring keys inside this window. Text fields retain
+// native undo, deletion, insertion/paste and IME handling; no main-window
+// shortcut is synthesized. Dispatch through the same enabled buttons as clicks.
+bool EditingShortcut(Editor& editor, HWND target, UINT message, WPARAM key, LPARAM data) {
+    if(message!=WM_KEYDOWN)return false;
+    wchar_t name[32]{};GetClassNameW(target,name,32);
+    if(_wcsicmp(name,L"EDIT")==0)return false;
+    const bool control=(GetKeyState(VK_CONTROL)&0x8000)!=0;
+    const bool shift=(GetKeyState(VK_SHIFT)&0x8000)!=0;
+    int command=0;
+    if(control&&key=='Z')command=shift?kIdRedo:kIdUndo;
+    else if(control&&key=='Y')command=kIdRedo;
+    else if(!control&&!shift&&key==VK_INSERT)command=kIdAddKey;
+    else if(key==VK_DELETE)command=kIdDeleteKey;
+    if(!command)return false;
+    if((data&(LPARAM(1)<<30)) || (data&(LPARAM(1)<<29)) ||
+       (GetKeyState(VK_MENU)&0x8000) || editor.drag!=Drag::None || editor.mmdDragHandle>=0 ||
+       !IsWindowEnabled(editor.window))return true;
+    const HWND button=GetDlgItem(editor.window,command);
+    if(button&&IsWindowEnabled(button))
+        SendMessageW(editor.window,WM_COMMAND,MAKEWPARAM(command,BN_CLICKED),reinterpret_cast<LPARAM>(button));
+    return true;
+}
+
 // Shared by every subclassed control: Tab keeps moving the focus, hovering
 // explains the control in the hint line, and destruction drops the bookkeeping
 // entry.  Returns true when the message is fully answered by `result`.
 bool HandleChildMessage(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam, LRESULT &result) {
     const int id=GetDlgCtrlID(hwnd);
-    if(message==WM_KEYDOWN && wparam==VK_DELETE){
-        wchar_t className[64]{};GetClassNameW(hwnd,className,64);
-        if(_wcsicmp(className,L"EDIT")!=0){
-            if(auto* editor=EditorForChild(hwnd))DeleteFromShortcut(*editor,lparam);
-            result=0;return true;
-        }
-    }
+    if(auto* editor=EditorForChild(hwnd))
+        if(EditingShortcut(*editor,hwnd,message,wparam,lparam)){result=0;return true;}
     const bool coordinate=id>=kIdMmdX1&&id<=kIdMmdY2;
     if(coordinate && message==WM_KEYDOWN && wparam==VK_RETURN){
         if(!(lparam&(LPARAM(1)<<30)) && !(lparam&(LPARAM(1)<<29)) && !(GetKeyState(VK_MENU)&0x8000))
@@ -5110,13 +5157,16 @@ void InsertCurveKeyAtPoint(Editor& editor,POINT point,UINT flags) {
         [](const Key& key,int f){return key.frame<f;});
     std::size_t index=std::size_t(existing-channel.track.keys.begin());
     if(existing==channel.track.keys.end() || existing->frame!=frame){
-        // Native nonlinear samplers/linked lanes need a host subdivision API;
-        // never substitute a scalar approximation and call it shape preserving.
-        if(channel.sample || !channel.nativeControls.empty() || !channel.interpolationGroup.empty()){
-            SetStatus(editor,L"此原生通道暂不支持保持原形状插帧。骨骼可切换到自由曲线。",true);return;
-        }
         std::vector<Channel> next=CopyChannels(editor);std::string error;
-        if(animation_curve::InsertPreservingShape(next[hit].track,frame,index,error)!=animation_curve::InsertResult::Inserted){
+        // Native samplers must preserve their own evaluator, including linked
+        // lanes. The editor never substitutes their scalar display proxy.
+        if(channel.sample || !channel.nativeControls.empty() || !channel.interpolationGroup.empty()){
+            std::wstring detail;
+            const auto& subdivide=CurrentSource(editor).subdivide;
+            if(!subdivide || !subdivide(next,hit,frame,index,detail)){
+                SetStatus(editor,detail.empty()?L"当前来源没有提供原生曲线细分。骨骼可切换到自由曲线。":detail,true);return;
+            }
+        }else if(animation_curve::InsertPreservingShape(next[hit].track,frame,index,error)!=animation_curve::InsertResult::Inserted){
             SetStatus(editor,L"此位置无法在当前权重限制内保持原曲线，请选择其他帧。",true);return;
         }
         if(!CommitChannels(editor,std::move(next),L"已添加关键帧，原曲线形状保持不变。"))return;
@@ -5209,6 +5259,7 @@ LRESULT CALLBACK CanvasProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpara
     }
     case WM_KEYDOWN:
     case WM_SYSKEYDOWN:
+        if(EditingShortcut(*editor,hwnd,message,wparam,lparam))return 0;
         switch (wparam) {
         case VK_RETURN:
             if(message==WM_KEYDOWN)ApplyFromRegisterShortcut(*editor,lparam);
@@ -5303,8 +5354,8 @@ LRESULT CALLBACK MmdProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) 
     if (!editor) return DefWindowProcW(hwnd, message, wparam, lparam);
     switch (message) {
     case WM_KEYDOWN:
+        if(EditingShortcut(*editor,hwnd,message,wparam,lparam))return 0;
         if(wparam==VK_RETURN){ApplyFromRegisterShortcut(*editor,lparam);return 0;}
-        if(wparam==VK_DELETE){DeleteFromShortcut(*editor,lparam);return 0;}
         if(wparam==VK_ESCAPE && editor->mmdDragHandle>=0){
             editor->mmdDragHandle=-1;
             if(GetCapture()==hwnd)ReleaseCapture();
@@ -5356,6 +5407,16 @@ LRESULT CALLBACK MmdProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) 
 
 LRESULT HandleHook(Editor &editor, UINT message, WPARAM wparam, LPARAM lparam) {
     switch (message) {
+    case WM_APP+396: {
+        // Read-only sampling evidence for native-host speed regressions.
+        if(!lparam)return FALSE;
+        const auto& channels=CurrentState(editor).channels;
+        const auto index=std::size_t(wparam);if(index>=channels.size())return FALSE;
+        auto* values=reinterpret_cast<double*>(lparam);
+        const auto& channel=channels[index];
+        const auto sample=channel.sample?channel.sample(channel,values[0]):animation_curve::Evaluate(channel.track,values[0]);
+        values[1]=sample.value;values[2]=sample.derivative;return TRUE;
+    }
     case WM_APP+394: {
         if(!lparam)return FALSE;
         CanvasMetrics(editor);
@@ -5563,8 +5624,8 @@ LRESULT CALLBACK EditorProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpara
         break;
     }
     case WM_KEYDOWN:
+        if(EditingShortcut(*editor,hwnd,message,wparam,lparam))return 0;
         if(wparam==VK_RETURN){ApplyFromRegisterShortcut(*editor,lparam);return 0;}
-        if(wparam==VK_DELETE){DeleteFromShortcut(*editor,lparam);return 0;}
         break;
     case WM_APP+393: {
         auto* bounds=reinterpret_cast<double*>(lparam);

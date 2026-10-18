@@ -25,6 +25,20 @@ struct Collection {
     std::string id;
     std::wstring label;
 };
+// Exact native-camera evaluation retained after inserting authored keys. The
+// displayed scalar handles remain editable; changing an endpoint/handle makes
+// that interval's saved geometry cease to match and releases its native slice.
+struct NativeCameraInterval {
+    std::int32_t first = 0, last = 0, sourceFirst = 0, sourceLast = 0;
+    double sampleFirst = 0, sampleLast = 0, sourceValueFirst = 0, sourceValueLast = 0;
+    std::array<double,4> controls{};
+    std::array<double,6> geometry{}; // a.value/outWeight/outSlope, b.value/inWeight/inSlope
+    bool operator==(const NativeCameraInterval& other) const noexcept {
+        return first==other.first&&last==other.last&&sourceFirst==other.sourceFirst&&sourceLast==other.sourceLast&&
+            sampleFirst==other.sampleFirst&&sampleLast==other.sampleLast&&sourceValueFirst==other.sourceValueFirst&&
+            sourceValueLast==other.sourceValueLast&&controls==other.controls&&geometry==other.geometry;
+    }
+};
 struct Channel {
     std::string id;
     std::wstring label, unit;
@@ -50,6 +64,7 @@ struct Channel {
     // Ordered tree ancestors. IDs are stable within each source; labels may
     // change with the UI language. Empty paths remain root-level channels.
     std::vector<Collection> collections;
+    std::vector<NativeCameraInterval> preservedCameraIntervals;
 };
 struct Source {
     std::string id;
@@ -94,6 +109,9 @@ struct Source {
     // Native selection is addressed by frame, never by mutable pool slot.
     std::function<std::vector<int>(const std::string&)> readKeySelection;
     std::function<void(const std::string&, const std::vector<int>&)> writeKeySelection;
+    // Optional native subdivision. Works on a detached channel set; the
+    // normal apply callback remains the only publication/history boundary.
+    std::function<bool(std::vector<Channel>&, std::size_t, int, std::size_t&, std::wstring&)> subdivide;
 };
 struct Theme {
     // COLORREF values in MMD's in-memory order, already parsed by the host.
