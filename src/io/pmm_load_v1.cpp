@@ -139,6 +139,7 @@
 // the loader string tables live here (see the header comment for the
 // v1/v2 parameterization points).
 #include "pmm_io_common.hpp"
+#include "pmm_input.hpp"
 
 #pragma comment(lib, "avifil32.lib")
 
@@ -312,8 +313,8 @@ struct PmmV1LoadContext {
 // dialog, which now skips that file:
 // close + ResetAppState + HandleWindowSize + return; the split-out twin
 // of the abortLoad lambda the inline body carried.
-static void AbortV1Load(MMDApp* s, int fd) {
-    _close(fd);                                              // 0x45A7CA
+static void AbortV1Load(MMDApp* s, pmm_io::Input& input) {
+    input.Close();                                           // 0x45A7CA
     ResetAppState(s);                                        // 0x45A7D4
     HandleWindowSize(s);                                     // 0x45A7DB
 }
@@ -1089,7 +1090,8 @@ static void LoadSceneV1_LightTrack(PmmV1LoadContext& ctx, int fd) {
 // ---- 0x45B761..0x45C479: accessory block (retry dialog; a cancelled
 // picker keeps the empty accessory and goes on, retry failure ->
 // close+ResetAppState WITHOUT HandleWindowSize) + UI; false = aborted ----
-static bool LoadSceneV1_AccessoryBlock(PmmV1LoadContext& ctx, int fd) {
+static bool LoadSceneV1_AccessoryBlock(PmmV1LoadContext& ctx, pmm_io::Input& input) {
+    const int fd = input.Descriptor();
     auto* const s = ctx.s;
     HWND const main = ctx.main;
     PathResolutionWorkspace& paths = *ctx.paths;
@@ -1220,7 +1222,7 @@ static bool LoadSceneV1_AccessoryBlock(PmmV1LoadContext& ctx, int fd) {
                          0x3E8, ofnTitle);                       // 0x45BB59
             }
             if (!LoadAccessoryObject(s, accs[accSlot], ofnFile)) {
-                _close(fd);                                      // 0x45C5D5
+                input.Close();                                  // 0x45C5D5
                 ResetAppState(s);                                // 0x45C5DF
                 // NOTE: no HandleWindowSize on this path (unlike 0x45A7C5).
                 return false;
@@ -2190,7 +2192,8 @@ static void LoadSceneV1_SuccessTail(PmmV1LoadContext& ctx) {
 
 }  // namespace
 
-bool TryLoadSceneV1(MMDApp* app, int fd, bool& replaced) {
+bool TryLoadSceneV1(MMDApp* app, pmm_io::Input& input, bool& replaced) {
+    const int fd = input.Descriptor();
     auto* s = app;
     PmmV1LoadContext ctx(app);
     if (!plugins::BeginProjectSceneReplacement(app)) throw std::runtime_error("history scene replacement refused");
@@ -2215,12 +2218,12 @@ bool TryLoadSceneV1(MMDApp* app, int fd, bool& replaced) {
     LogV1Stage("regcombo-done", _tell(fd));
     LoadSceneV1_CameraTrack(ctx, fd);                 // 0x45AC10..0x45B090
     LoadSceneV1_LightTrack(ctx, fd);                  // 0x45B090..0x45B761
-    if (!LoadSceneV1_AccessoryBlock(ctx, fd)) return false; // 0x45B761..0x45C479
+    if (!LoadSceneV1_AccessoryBlock(ctx, input)) return false; // 0x45B761..0x45C479
     LogV1Stage("accessories-done", _tell(fd));
     LoadSceneV1_ConfigBlock(ctx, fd);                 // 0x45C48C..0x45D278
     LoadSceneV1_ReadGatedTail(ctx, fd);               // 0x45D278..0x45E117
     LogV1Stage("gated-tail-done", _tell(fd));
-    _close(fd);                                       // 0x45E11D
+    input.Close();                                    // 0x45E11D
     LoadSceneV1_SuccessTail(ctx);                     // 0x45E149..0x45E7F7
     native_mesh::ProjectOpened(app, app->EnvFileName());
     mmv4mms::ProjectOpened(app, app->EnvFileName());
@@ -2230,8 +2233,9 @@ bool TryLoadSceneV1(MMDApp* app, int fd, bool& replaced) {
 }
 
 void LoadSceneV1(MMDApp* app, int fd) {
+    pmm_io::Input input(fd);
     bool replaced = false;
-    (void)TryLoadSceneV1(app, fd, replaced);
+    (void)TryLoadSceneV1(app, input, replaced);
 }
 
 }  // namespace mikudancestudio

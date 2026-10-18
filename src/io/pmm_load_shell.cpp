@@ -53,6 +53,7 @@
 
 #include "mikudancestudio/mmd_app.hpp"
 #include "pmm_io_common.hpp"
+#include "pmm_input.hpp"
 #include "mikudancestudio/ported_funcs.hpp"
 #include "mikudancestudio/effect_api.hpp"
 #include "mikudancestudio/runtime_log.hpp"
@@ -97,9 +98,9 @@ void FontSubInit(MMDApp* app, const wchar_t* directory) {
 }
 
 // VA 0x00458F80 - PMM load shell (phase A).
-static void KeyPoolLoadFailed(MMDApp* app, int fd, bool replaced) {
+static void KeyPoolLoadFailed(MMDApp* app, pmm_io::Input& input, bool replaced) {
     const unsigned language = app->EnglishUI();
-    _close(fd);
+    input.Close();
     if (replaced) ResetAppState(app);
     app->EnglishUI() = language;
     const wchar_t* text[] = {
@@ -173,6 +174,7 @@ bool LoadSceneFile(const wchar_t* candidate) {
 
     int fd = -1;
     const errno_t err = _wsopen_s(&fd, path, 0x8000, 0x40, 0x80);
+    pmm_io::Input input(fd);
     if (err != 0) {
         const wchar_t* format[] = {L"%ls\nエラーコード: %d", L"%ls\nError code: %d", L"%ls\n错误码：%d"};
         wchar_t detail[512]{};
@@ -184,7 +186,7 @@ bool LoadSceneFile(const wchar_t* candidate) {
     const int read = _read(fd, hdr, sizeof hdr);
     if (read != sizeof hdr || std::memcmp(hdr, "Polygon Movie maker", 19) != 0) {
         ShowUiMessage(app, app->MainWindow(), UiMessage::InvalidProjectFile, MB_OK, path);
-        _close(fd);
+        input.Close();
         return false;
     }
     const bool version1 = strncmp(hdr + 0x14, "0001", 5) == 0;
@@ -195,7 +197,7 @@ bool LoadSceneFile(const wchar_t* candidate) {
         ;
     if (!supported) {
         ShowUiMessage(app, app->MainWindow(), UiMessage::UnsupportedProjectVersion, MB_OK, path);
-        _close(fd);
+        input.Close();
         return false;
     }
 
@@ -205,19 +207,19 @@ bool LoadSceneFile(const wchar_t* candidate) {
     std::wmemcpy(app->EnvFileName(), path, length + 1);
     bool loaded = false;
     try {
-        if (version1) loaded = TryLoadSceneV1(app, fd, replaced);
+        if (version1) loaded = TryLoadSceneV1(app, input, replaced);
         else {
-            pmm_io::CheckedReads checked(fd);
-            loaded = TryLoadSceneV2(app, fd, replaced);
+            input.EnableCheckedReads();
+            loaded = TryLoadSceneV2(app, input, replaced);
         }
     } catch (const pmm_io::UnsupportedText&) {
         const auto language = app->EnglishUI();
-        _close(fd);
+        input.Close();
         if (replaced) ResetAppState(app);
         app->EnglishUI() = language;
         original_import::Refuse(app->MainWindow(), language);
     } catch (const std::bad_alloc&) {
-        KeyPoolLoadFailed(app, fd, replaced);
+        KeyPoolLoadFailed(app, input, replaced);
     } catch (const pmm_io::ShortRead& error) {
         const auto language = app->EnglishUI();
         const wchar_t* formats[] = {L"%ls\n位置：%lld、必要なバイト数：%u、読み取ったバイト数：%d",
@@ -225,13 +227,13 @@ bool LoadSceneFile(const wchar_t* candidate) {
             L"%ls\n文件偏移：%lld；应读取：%u 字节；实际读取：%d 字节"};
         wchar_t detail[512]{};
         swprintf_s(detail, formats[language <= 2 ? language : 1], path, error.offset, error.expected, error.received);
-        _close(fd);
+        input.Close();
         if (replaced) ResetAppState(app);
         app->EnglishUI() = language;
         ShowUiMessage(app, app->MainWindow(), UiMessage::IncompleteProjectFile, MB_OK | MB_ICONERROR, detail);
     } catch (const std::runtime_error&) {
         const auto language = app->EnglishUI();
-        _close(fd);
+        input.Close();
         if (replaced) ResetAppState(app);
         app->EnglishUI() = language;
         ShowUiMessage(app, app->MainWindow(), UiMessage::InvalidProjectFile, MB_OK | MB_ICONERROR, path);

@@ -511,6 +511,16 @@ add_executable(project_open_identity_tests EXCLUDE_FROM_ALL tests/project_open_i
 target_link_libraries(project_open_identity_tests PRIVATE mikudancestudio_core minhook::minhook winmm dsound)
 set_target_properties(project_open_identity_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
 
+add_executable(pmm_input_tests EXCLUDE_FROM_ALL tests/pmm_input_tests.cpp)
+target_include_directories(pmm_input_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+set_target_properties(pmm_input_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_test(NAME pmm_input_ownership COMMAND pmm_input_tests)
+set_tests_properties(pmm_input_ownership PROPERTIES TIMEOUT 20)
+
+add_executable(pmm_input_host_tests EXCLUDE_FROM_ALL tests/pmm_input_host_tests.cpp)
+target_link_libraries(pmm_input_host_tests PRIVATE mikudancestudio_core minhook::minhook winmm dsound)
+set_target_properties(pmm_input_host_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+
 add_executable(path_resolve_tests EXCLUDE_FROM_ALL tests/path_resolve_tests.cpp)
 target_link_libraries(path_resolve_tests PRIVATE mikudancestudio_core winmm dsound)
 set_target_properties(path_resolve_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
@@ -936,6 +946,8 @@ if (CMAKE_SIZEOF_VOID_P EQUAL 8)
 else()
     set(MIKUDANCESTUDIO_GEN_RES "${MIKUDANCESTUDIO_RESOURCE_DIR}/gen_resources.res")
 endif()
+target_sources(pmm_input_host_tests PRIVATE res/MMD.rc ${MIKUDANCESTUDIO_GEN_RES} exports/MikuMikuDance.def)
+target_link_options(pmm_input_host_tests PRIVATE "/MANIFEST:NO" "${MIKUDANCESTUDIO_GEN_RES}")
 if (MIKUDANCESTUDIO_BUILD_UI_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/device_lost_wait_tests.cpp")
     add_executable(device_lost_wait_tests EXCLUDE_FROM_ALL tests/device_lost_wait_tests.cpp
         res/MMD.rc ${MIKUDANCESTUDIO_GEN_RES} exports/MikuMikuDance.def)
@@ -1453,6 +1465,10 @@ if(Python3_Interpreter_FOUND)
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/project_open_identity_runner.py"
                 "$<TARGET_FILE:project_open_identity_tests>" "${CMAKE_BINARY_DIR}/tests/project-open-runs")
     set_tests_properties(project_open_identity PROPERTIES TIMEOUT 150)
+    add_test(NAME pmm_input_host
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/project_open_identity_runner.py"
+                "$<TARGET_FILE:pmm_input_host_tests>" "${CMAKE_BINARY_DIR}/tests/pmm-input-host-runs")
+    set_tests_properties(pmm_input_host PROPERTIES TIMEOUT 150)
     add_test(NAME optional_graphics_imports
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/optional_graphics_imports.py"
                 "$<TARGET_FILE:MikuDanceStudio>")

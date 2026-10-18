@@ -111,6 +111,7 @@
 #include <cstring>
 #include <new>
 #include <cstdlib>
+#include <utility>
 #include <io.h>
 
 #include "mikudancestudio/text_encoding.hpp"
@@ -132,6 +133,7 @@
 // the loader string tables live here (see the header comment for the
 // v1/v2 parameterization points).
 #include "pmm_io_common.hpp"
+#include "pmm_input.hpp"
 
 #pragma comment(lib, "avifil32.lib")
 
@@ -391,12 +393,30 @@ static void FreeRecordArrays(PmmModelLoadWorkspace* workspaces,
     }
 }
 
-static void AbortV2Load(MMDApp* s, int fd,
-                        PmmModelLoadWorkspace* workspaces,
-                        unsigned char modelCount) {
-    _close(fd);
-    FreeRecordArrays(workspaces, modelCount);
-    delete[] workspaces;
+class ModelWorkspaceOwner final {
+    PmmModelLoadWorkspace* entries_;
+    unsigned char count_;
+public:
+    explicit ModelWorkspaceOwner(unsigned char count)
+        : entries_(new PmmModelLoadWorkspace[count]), count_(count) {}
+    ~ModelWorkspaceOwner() noexcept { Close(); }
+    ModelWorkspaceOwner(const ModelWorkspaceOwner&) = delete;
+    ModelWorkspaceOwner& operator=(const ModelWorkspaceOwner&) = delete;
+    PmmModelLoadWorkspace* Data() const noexcept { return entries_; }
+    void Close() noexcept {
+        // Abort/reset and success-tail callbacks may throw after the original
+        // release point. Consume ownership before either path can reenter.
+        auto* entries = std::exchange(entries_, nullptr);
+        if (!entries) return;
+        FreeRecordArrays(entries, count_);
+        delete[] entries;
+    }
+};
+
+static void AbortV2Load(MMDApp* s, pmm_io::Input& input,
+                        ModelWorkspaceOwner& workspaces) {
+    input.Close();
+    workspaces.Close();
     ResetAppState(s);                                       // 0x44E540
     HandleWindowSize(s);                                    // 0x443300
 }
@@ -1141,10 +1161,12 @@ static void LoadSceneV2_ModelStateLoad(PmmV2LoadContext& ctx, int fd,
 // ring (structure-difference dialog + re-map against a re-loaded file),
 // then skip consumption or the state load.  Returns false after
 // AbortV2Load ran.
-static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, int fd,
-                                   PmmModelLoadWorkspace* workspaces,
+static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, pmm_io::Input& input,
+                                   ModelWorkspaceOwner& workspaceOwner,
                                    unsigned char modelCount,
                                    unsigned char modelIdx) {
+    const int fd = input.Descriptor();
+    auto* const workspaces = workspaceOwner.Data();
     auto* const s = ctx.s;
     HWND const main = ctx.main;
     HINSTANCE const hInst = ctx.hInst;
@@ -1231,7 +1253,7 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, int fd,
                 const auto label = text_encoding::Display(name);
                 const INT_PTR r = ShowProjectModelDialog(s, hInst, main,
                     ProjectModelIssue::MissingFile, label.c_str());
-                if (r == 2 || r == 4) { AbortV2Load(s, fd, workspaces, modelCount); return false; }   // 0x45426C
+                if (r == 2 || r == 4) { AbortV2Load(s, input, workspaceOwner); return false; }   // 0x45426C
                 if (r == 1) {                                   // 0x4506FD
                     SetCurrentDirectoryW(reinterpret_cast<const wchar_t*>(
                         s->state.exeDir));
@@ -1279,7 +1301,7 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, int fd,
                             s->Physics(),
                             paths)) {                             // 0x45431A
                         ShowUiMessage(s, main, UiMessage::OpenModelError, MB_OK, ofnFile);
-                        AbortV2Load(s, fd, workspaces, modelCount);
+                        AbortV2Load(s, input, workspaceOwner);
                         return false;
                     }
                     }
@@ -1326,7 +1348,7 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, int fd,
                     // per-item writes are never reached.
                     // Defect B3-11.
                     if (workspace.displayCount < 0) {
-                        AbortV2Load(s, fd, workspaces, modelCount);
+                        AbortV2Load(s, input, workspaceOwner);
                         return false;
                     }
                     workspace.boneNameMap = static_cast<NameMapping*>(
@@ -1334,7 +1356,7 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, int fd,
                                     workspace.displayCount));
                     if (workspace.boneNameMap == nullptr &&
                         workspace.displayCount != 0) {
-                        AbortV2Load(s, fd, workspaces, modelCount);
+                        AbortV2Load(s, input, workspaceOwner);
                         return false;
                     }
                     std::memset(workspace.boneNameMap, 0,
@@ -1386,7 +1408,7 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, int fd,
                     // for the same treatment.
                     // Defect B3-11.
                     if (workspace.morphCount < 0) {
-                        AbortV2Load(s, fd, workspaces, modelCount);
+                        AbortV2Load(s, input, workspaceOwner);
                         return false;
                     }
                     workspace.morphNameMap = static_cast<NameMapping*>(
@@ -1394,7 +1416,7 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, int fd,
                                     workspace.morphCount));
                     if (workspace.morphNameMap == nullptr &&
                         workspace.morphCount != 0) {
-                        AbortV2Load(s, fd, workspaces, modelCount);
+                        AbortV2Load(s, input, workspaceOwner);
                         return false;
                     }
                     std::memset(workspace.morphNameMap, 0,
@@ -1444,14 +1466,14 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, int fd,
                     // handling as the display and morph counts above.
                     // Defect B3-11.
                     if (workspace.ikCount < 0) {
-                        AbortV2Load(s, fd, workspaces, modelCount);
+                        AbortV2Load(s, input, workspaceOwner);
                         return false;
                     }
                     workspace.ikIndexMap = static_cast<IndexMapping*>(
                         std::malloc(sizeof(IndexMapping) * workspace.ikCount));
                     if (workspace.ikIndexMap == nullptr &&
                         workspace.ikCount != 0) {
-                        AbortV2Load(s, fd, workspaces, modelCount);
+                        AbortV2Load(s, input, workspaceOwner);
                         return false;
                     }
                     IndexMapping* const ikMappings =
@@ -1479,7 +1501,7 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, int fd,
                     // treatment as the display, morph and IK counts above.
                     // Defect B3-11.
                     if (workspace.rigidBodyCount < 0) {
-                        AbortV2Load(s, fd, workspaces, modelCount);
+                        AbortV2Load(s, input, workspaceOwner);
                         return false;
                     }
                     workspace.rigidIndexMap = static_cast<IndexMapping*>(
@@ -1487,7 +1509,7 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, int fd,
                                     workspace.rigidBodyCount));
                     if (workspace.rigidIndexMap == nullptr &&
                         workspace.rigidBodyCount != 0) {
-                        AbortV2Load(s, fd, workspaces, modelCount);
+                        AbortV2Load(s, input, workspaceOwner);
                         return false;
                     }
                     IndexMapping* const rigidMappings =
@@ -1541,7 +1563,7 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, int fd,
                     //   r==4      -> 跳过该模型（0x49B29D cmp 4）
                     //   其余值    -> 0x49B2A1 jnz 0x49BB78，与双匹配成立时
                     //                （0x49AA2F 的 jz）同一出口：继续状态装载
-                    if (r == 2 || r == 5) { AbortV2Load(s, fd, workspaces, modelCount); return false; }
+                    if (r == 2 || r == 5) { AbortV2Load(s, input, workspaceOwner); return false; }
                     if (r == 4) {                                // 0x45231C
                         if (model != nullptr) {
                             ModelDispose(model);
@@ -1629,7 +1651,7 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, int fd,
                             s->Physics(),
                             paths)) {                             // 0x4544FD
                         ShowUiMessage(s, main, UiMessage::OpenModelError, MB_OK, ofnFile);
-                        AbortV2Load(s, fd, workspaces, modelCount);
+                        AbortV2Load(s, input, workspaceOwner);
                         return false;
                     }
                     // re-run the mapping against the new model
@@ -2092,7 +2114,8 @@ static void LoadSceneV2_LightTrack(PmmV2LoadContext& ctx, int fd) {
 
 // ---- 0x45593E..0x456617: accessory-shadow name list + accessory block
 // (locate-and-retry dialog; the two abort paths return false) -----------
-static bool LoadSceneV2_AccessoryBlock(PmmV2LoadContext& ctx, int fd) {
+static bool LoadSceneV2_AccessoryBlock(PmmV2LoadContext& ctx, pmm_io::Input& input) {
+    const int fd = input.Descriptor();
     auto* const s = ctx.s;
     HWND const main = ctx.main;
     PathResolutionWorkspace& paths = *ctx.paths;
@@ -2228,7 +2251,7 @@ static bool LoadSceneV2_AccessoryBlock(PmmV2LoadContext& ctx, int fd) {
                          0x3E8, d);                  // 0x7FF7CB49F33C
             }
             if (!LoadAccessoryObject(s, accs[accSlot], ofnFile)) {
-                _close(fd);                                     // 0x456764
+                input.Close();                                 // 0x456764
                 ResetAppState(s);
                 return false;
             }
@@ -2669,8 +2692,9 @@ static void LoadSceneV2_ConfigBlock(PmmV2LoadContext& ctx, int fd) {
 // ---- 0x45777C..0x458112: selection + self-shadow tracks, model color
 // sweep, camera parent re-register, 16 config dwords, optional per-model
 // 0x4CCF0 block, _close --------------------------------------------------
-static void LoadSceneV2_PhysicsTracksAndClose(PmmV2LoadContext& ctx, int fd,
+static void LoadSceneV2_PhysicsTracksAndClose(PmmV2LoadContext& ctx, pmm_io::Input& input,
                                             unsigned char modelCount) {
+    const int fd = input.Descriptor();
     auto* const s = ctx.s;
     HWND const main = ctx.main;
     unsigned char** const slots = ctx.slots;
@@ -2838,7 +2862,7 @@ static void LoadSceneV2_PhysicsTracksAndClose(PmmV2LoadContext& ctx, int fd,
         }
     }
     pmm_settings::Load(*s, fd);
-    _close(fd);                                                 // 0x458112
+    input.Close();                                             // 0x458112
 
 }
 
@@ -2848,8 +2872,9 @@ static void LoadSceneV2_PhysicsTracksAndClose(PmmV2LoadContext& ctx, int fd,
 // (remap or reference removal), key-chain integrity boxes, combo 434,
 // frame edit, record array free, repaint -------------------------------
 static void LoadSceneV2_SuccessTail(PmmV2LoadContext& ctx,
-                                  PmmModelLoadWorkspace* workspaces,
+                                  ModelWorkspaceOwner& workspaceOwner,
                                   unsigned char modelCount) {
+    auto* const workspaces = workspaceOwner.Data();
     auto* const s = ctx.s;
     HWND const main = ctx.main;
     D3DRenderer* const wrap = ctx.wrap;
@@ -3232,8 +3257,7 @@ static void LoadSceneV2_SuccessTail(PmmV2LoadContext& ctx,
         PanelPaint(s);                                          // 0x414610
     }
     // record array free (0x458EB2..0x458F25)
-    FreeRecordArrays(workspaces, modelCount);
-    delete[] workspaces;
+    workspaceOwner.Close();
     InvalidateRect(main, nullptr, FALSE);                       // 0x458F36
     RelayoutSidebarControls(s);                                               // 0x442EB0
     s->PhysicsResetPending() = 1;                               // 0x458F43
@@ -3254,7 +3278,8 @@ static void LoadSceneV2_SuccessTail(PmmV2LoadContext& ctx,
 
 }  // namespace
 
-bool TryLoadSceneV2(MMDApp* app, int fd, bool& replaced) {  // was Sub450000, VA 0x00450000
+bool TryLoadSceneV2(MMDApp* app, pmm_io::Input& input, bool& replaced) {  // was Sub450000, VA 0x00450000
+    const int fd = input.Descriptor();
     auto* s = app;
     PmmV2LoadContext ctx(app);
     if (!plugins::BeginProjectSceneReplacement(app)) throw std::runtime_error("history scene replacement refused");
@@ -3269,9 +3294,9 @@ bool TryLoadSceneV2(MMDApp* app, int fd, bool& replaced) {  // was Sub450000, VA
     Rd(fd, &s->SelectedModelSlot(), 1);                         // 0x45045F
     unsigned char modelCount = 0;
     Rd(fd, &modelCount, 1);                                     // 0x45046C
-    auto* const workspaces = new PmmModelLoadWorkspace[modelCount];
+    ModelWorkspaceOwner workspaceOwner(modelCount);
+    auto* const workspaces = workspaceOwner.Data();
     unsigned char modelIdx = 0;
-    try {
 
     LogPmmModelStage(fd, "accessory-track-174-at-load-entry", 0, 0,
                      s->AccessoryKeys(174));
@@ -3280,7 +3305,7 @@ bool TryLoadSceneV2(MMDApp* app, int fd, bool& replaced) {  // was Sub450000, VA
 
     if (modelCount != 0) {
         for (;;) {  // 0x4504BA
-            if (!LoadSceneV2_ModelBlock(ctx, fd, workspaces, modelCount,
+            if (!LoadSceneV2_ModelBlock(ctx, input, workspaceOwner, modelCount,
                                         modelIdx))
                 return false;  // AbortV2Load already ran (0x45426C family)
             if (++modelIdx >= modelCount) break;                // 0x45410A
@@ -3292,7 +3317,7 @@ bool TryLoadSceneV2(MMDApp* app, int fd, bool& replaced) {  // was Sub450000, VA
     LoadSceneV2_ReallocateTracks(ctx);                  // 0x454C9A..0x454DFB
     LoadSceneV2_CameraTrack(ctx, fd);                   // 0x454E07..0x455286
     LoadSceneV2_LightTrack(ctx, fd);                    // 0x455286..0x45593E
-    if (!LoadSceneV2_AccessoryBlock(ctx, fd)) {         // 0x45593E..0x456617
+    if (!LoadSceneV2_AccessoryBlock(ctx, input)) {      // 0x45593E..0x456617
         // On the accessory abort path, the stream is closed and the app state is reset
         // (0x14007FE0C: _close + ResetAppState, followed by the epilogue);
         // execution never reaches the success tail, the only place that
@@ -3304,18 +3329,12 @@ bool TryLoadSceneV2(MMDApp* app, int fd, bool& replaced) {  // was Sub450000, VA
         // call it on this exit either; only the picker-cancel exit at
         // 0x14007FE21 calls it.
         // Defect B3-26.
-        FreeRecordArrays(workspaces, modelCount);
-        delete[] workspaces;
+        workspaceOwner.Close();
         return false;
     }
     LoadSceneV2_ConfigBlock(ctx, fd);                   // 0x456617..0x45776E
-    LoadSceneV2_PhysicsTracksAndClose(ctx, fd, modelCount);  // 0x45777C..0x458112
-    } catch(...) {
-        FreeRecordArrays(workspaces,modelCount);
-        delete[] workspaces;
-        throw;
-    }
-    LoadSceneV2_SuccessTail(ctx, workspaces, modelCount);    // 0x458120..0x458F53
+    LoadSceneV2_PhysicsTracksAndClose(ctx, input, modelCount);  // 0x45777C..0x458112
+    LoadSceneV2_SuccessTail(ctx, workspaceOwner, modelCount);    // 0x458120..0x458F53
     native_mesh::ProjectOpened(app, app->EnvFileName());
     mmv4mms::ProjectOpened(app, app->EnvFileName());
     recent_projects::Record(app, app->EnvFileName());
@@ -3324,8 +3343,9 @@ bool TryLoadSceneV2(MMDApp* app, int fd, bool& replaced) {  // was Sub450000, VA
 }
 
 void LoadSceneV2(MMDApp* app, int fd) {
+    pmm_io::Input input(fd);
     bool replaced = false;
-    (void)TryLoadSceneV2(app, fd, replaced);
+    (void)TryLoadSceneV2(app, input, replaced);
 }
 
 }  // namespace mikudancestudio

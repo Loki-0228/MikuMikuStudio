@@ -12,6 +12,7 @@
 #include "mikudancestudio/scene_ownership.hpp"
 #include "mikudancestudio/ui_translation.hpp"
 #include "../src/io/project_open.hpp"
+#include "../src/io/pmm_input.hpp"
 #include "../src/io/pmm_io_common.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "../src/plugins/history_runtime.hpp"
@@ -42,7 +43,7 @@ std::wstring savedPath;
 bool cancelBrowser = false, cancelConfirmation = false, reenter = false;
 enum class NativeMode { RefuseBoundary, ThrowMemory, ThrowShortRead, ThrowRecord, Accept, CancelAfterBoundary };
 NativeMode nativeMode = NativeMode::RefuseBoundary;
-using Body = bool (*)(MMDApp*, int, bool&);
+using Body = bool (*)(MMDApp*, pmm_io::Input&, bool&);
 Body originalV1 = nullptr, originalV2 = nullptr;
 using Begin = bool (*)(MMDApp*);
 Begin originalBegin = nullptr;
@@ -154,7 +155,7 @@ void Localize(MMDApp*) { ++localized; }
 bool BeginReplacement(MMDApp* value) {
     return nativeMode == NativeMode::RefuseBoundary ? false : originalBegin(value);
 }
-bool LoadBody(Body original, MMDApp* value, int fd, bool& replaced) {
+bool LoadBody(Body original, MMDApp* value, pmm_io::Input& input, bool& replaced) {
     if (nativeMode == NativeMode::RefuseBoundary) {
 #if MMD_ORIGINAL_PROFILE
         // Original's BeginProjectSceneReplacement is a constant true stub and
@@ -162,7 +163,7 @@ bool LoadBody(Body original, MMDApp* value, int fd, bool& replaced) {
         // V1/V2 bodies through the actual rejected Begin boundary below.
         throw std::runtime_error("fixture boundary refusal in original profile");
 #else
-        return original(value, fd, replaced);
+        return original(value, input, replaced);
 #endif
     }
     if (nativeMode == NativeMode::ThrowMemory) throw std::bad_alloc();
@@ -173,7 +174,7 @@ bool LoadBody(Body original, MMDApp* value, int fd, bool& replaced) {
     AcceptProjectSceneReplacement(value);
     Check(value->SceneModified() == 0 && value->WindowLayoutReady() == 0,
         "identity acceptance occurs only at the destructive boundary");
-    _close(fd);
+    input.Close();
     if (nativeMode == NativeMode::CancelAfterBoundary) {
         Check(plugins::ResetPluginProject(value), "simulate the native loader's empty-scene reset after cancellation");
         value->EnvFileName()[0] = 0;
@@ -186,8 +187,8 @@ bool LoadBody(Body original, MMDApp* value, int fd, bool& replaced) {
     recent_projects::Record(value, value->EnvFileName());
     return true;
 }
-bool LoadV1(MMDApp* value, int fd, bool& replaced) { return LoadBody(originalV1, value, fd, replaced); }
-bool LoadV2(MMDApp* value, int fd, bool& replaced) { return LoadBody(originalV2, value, fd, replaced); }
+bool LoadV1(MMDApp* value, pmm_io::Input& input, bool& replaced) { return LoadBody(originalV1, value, input, replaced); }
+bool LoadV2(MMDApp* value, pmm_io::Input& input, bool& replaced) { return LoadBody(originalV2, value, input, replaced); }
 
 template<class Function, class Replacement>
 void Hook(Function function, Replacement replacement, void** original = nullptr) {
