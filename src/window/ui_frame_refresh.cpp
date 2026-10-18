@@ -1,4 +1,8 @@
 #include "mikudancestudio/key_pool.hpp"
+#include "mikudancestudio/build_profile.hpp"
+#if !MMD_ORIGINAL_PROFILE
+#include "../plugins/native_pose_scope.hpp"
+#endif
 #include "mikudancestudio/ui_translation.hpp"
 #include "mikudancestudio/ui_language.hpp"
 // ===========================================================================
@@ -67,13 +71,31 @@ void WriteLightTrace(MMDApp* app, const char* stage) {
 inline void WriteLightTrace(MMDApp*, const char*) {}
 #endif
 
-void ReplaceEditText(HWND main, int id, const char* text) {
+bool KeepPendingBoundEdit(MMDApp* app, HWND edit) noexcept {
+#if !MMD_ORIGINAL_PROFILE
+    return app && plugins::BoundNativePoseHistory(app) && edit &&
+        SendMessageW(edit, EM_GETMODIFY, 0, 0) != 0;
+#else
+    (void)app;
+    (void)edit;
+    return false;
+#endif
+}
+
+void ReplaceEditText(MMDApp* app, HWND main, int id, const char* text) {
     HWND edit = GetDlgItem(main, id);
-    if (ui::ReadoutTextMatchesA(edit, text)) return;
+    if (KeepPendingBoundEdit(app, edit) || ui::ReadoutTextMatchesA(edit, text)) return;
     const LRESULT length = GetWindowTextLengthA(edit);
     SendMessageA(edit, EM_SETSEL, 0, length);
     SendMessageA(edit, EM_REPLACESEL, FALSE,
                  reinterpret_cast<LPARAM>(text));
+#if !MMD_ORIGINAL_PROFILE
+    // EM_REPLACESEL marks the edit as modified even for a host readout.
+    // Mark the completed host write as a readout, including initialization
+    // before binding. A real pending bound edit returned before this write.
+    if (ui::ReadoutTextMatchesA(edit, text))
+        SendMessageW(edit, EM_SETMODIFY, FALSE, 0);
+#endif
 }
 
 void FormatLegacyOneDecimal(char* text, std::size_t size, float value) {
@@ -172,9 +194,9 @@ void RefreshLightPanel(MMDApp* app) {
 
         sprintf_s(text, sizeof(text), "%3d",
                   static_cast<int>(color[lane] * 256.0f));
-        ReplaceEditText(main, 461 + lane, text);
+        ReplaceEditText(app, main, 461 + lane, text);
         FormatLegacyOneDecimal(text, sizeof(text), direction[lane]);
-        ReplaceEditText(main, 464 + lane, text);
+        ReplaceEditText(app, main, 464 + lane, text);
     }
 }
 
@@ -186,7 +208,7 @@ void SyncCameraFovControls(MMDApp* app) {
     sprintf_s(text,"%.6g",static_cast<double>(app->CameraFov()));
     const HWND edit=GetDlgItem(main,panel::kFovEdit);
     GetWindowTextA(edit,previous,sizeof(previous));
-    if(std::strcmp(text,previous)!=0)SetWindowTextA(edit,text);
+    if(!KeepPendingBoundEdit(app,edit)&&std::strcmp(text,previous)!=0)SetWindowTextA(edit,text);
     const HWND slider=GetDlgItem(main,panel::kFovSlider);
     const int position=static_cast<int>(std::lround(std::clamp(app->CameraFov(),1.f,125.f)));
     if(SendMessageA(slider,TBM_GETPOS,0,0)!=position)
@@ -228,7 +250,7 @@ void SyncSelfShadowControls(MMDApp* app) {
     sprintf_s(text, sizeof(text), "%d", range);
     const HWND edit=GetDlgItem(main,panel::kSelfShadowRangeEdit);
     char previous[sizeof(text)]{};GetWindowTextA(edit,previous,sizeof(previous));
-    if(std::strcmp(text,previous)!=0)SetWindowTextA(edit,text);
+    if(!KeepPendingBoundEdit(app,edit)&&std::strcmp(text,previous)!=0)SetWindowTextA(edit,text);
 
     const int mode = app->SelfShadowMode();
     const int ids[]={panel::kEditOffCheckbox,panel::kEditMode1Checkbox,panel::kEditMode2Checkbox};
@@ -289,18 +311,18 @@ void SyncAccessoryEditPanel(MMDApp* app) {
     for (int lane = 0; lane < 3; ++lane) {
         sprintf_s(text, sizeof(text), "%3.4f",
                   static_cast<double>(accessory->position[lane]));
-        ReplaceEditText(main, 478 + lane, text);
+        ReplaceEditText(app, main, 478 + lane, text);
         sprintf_s(text, sizeof(text), "%3.4f",
                   static_cast<double>(accessory->rotation[lane]) /
                       3.141592025756836 * 180.0);
-        ReplaceEditText(main, 481 + lane, text);
+        ReplaceEditText(app, main, 481 + lane, text);
     }
     sprintf_s(text, sizeof(text), "%3.4f",
               static_cast<double>(accessory->scale));
-    ReplaceEditText(main, 484, text);
+    ReplaceEditText(app, main, 484, text);
     sprintf_s(text, sizeof(text), "%3.2f",
               static_cast<double>(accessory->opacity));
-    ReplaceEditText(main, 485, text);
+    ReplaceEditText(app, main, 485, text);
 }
 
 // was Sub411DF0, VA 0x00411DF0 - self-shadow track's "register" backend:

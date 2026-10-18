@@ -16,6 +16,7 @@ class RetainedSceneObject : public std::enable_shared_from_this<RetainedSceneObj
     explicit RetainedSceneObject(std::unique_ptr<Impl>);
     static MmsResult MeasureNativeResources(const std::vector<std::shared_ptr<RetainedSceneObject>>&,
                                            resource_budget::Collector&, bool);
+    MmsResult MeasureBookkeepingImpl(resource_budget::Collector&, bool includePhysics, bool includeParkedKeys) const;
     static std::shared_ptr<HistoryChange> CaptureRemovalImpl(
         const std::vector<std::shared_ptr<RetainedSceneObject>>&, uint64_t, bool);
     static MmsResult PrepareInsertionImpl(
@@ -37,6 +38,19 @@ public:
     // binding charges remain CaptureRemoval's job.
     MmsResult MeasureResources(resource_budget::Report&) const noexcept;
     static MmsResult MeasureResourcesBatch(const Objects&, resource_budget::Report&) noexcept;
+    // Measure allocations retained by this published holder, excluding the
+    // active object's model/mesh/Bullet resources. Includes parked accessory
+    // keys, authoring state and physics lifetime containers. Reuse one Collector
+    // across all holders in a change so shared allocation identities count once.
+    // Call on the owning UI thread while native edits/teardown are excluded.
+    // No seek, evaluation, plugin callback or graphics-resource query is made.
+    // Unpublished private imports return NOT_READY. On any failure discard the
+    // partial collector. Check Result().Complete() before budget admission.
+    MmsResult MeasureBookkeeping(resource_budget::Collector&) const noexcept;
+    // Validate the recorded identities/capacities without allocating or changing
+    // the ledger. Growth, replacement, incomplete data or stale membership fails.
+    // The collector is a payload estimate, not a process/driver-memory bound.
+    bool CoversBookkeeping(resource_budget::Collector&) const noexcept;
     // Prepared candidates retain this holder until publication cleanup or
     // cancellation. The app/world must outlive both holders and candidates.
     std::unique_ptr<PreparedHistoryChange> PreparePresence(bool present);

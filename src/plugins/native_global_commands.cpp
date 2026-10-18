@@ -1,4 +1,5 @@
 #include "native_global_commands.hpp"
+#include "native_camera_follow_ui.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "native_global_registration.hpp"
 #include "native_accessory_registration.hpp"
@@ -991,6 +992,7 @@ bool TryRegisterBoundAccessory(MMDApp* app, HWND window) noexcept {
 void RefreshBoundGlobalReadout(MMDApp& app) noexcept {
     if (!app.MainWindow()) return;
     Boundary([&]() -> MmsResult {
+        bake::ScopedUiInputGate input;
         RefreshProjectDisplayReadout(app);
         RefreshShadowAmbientReadout(app);
         if (app.cameraProjectionRefreshPending && app.Renderer() && app.Renderer()->device) {
@@ -1026,9 +1028,13 @@ void RefreshBoundGlobalReadout(MMDApp& app) noexcept {
             };
             char text[64]{};
             std::snprintf(text, sizeof(text), "%3d", bounded(color));
-            ui::SetReadoutTextIfChangedA(GetDlgItem(app.MainWindow(), 461 + int(axis)), text);
+            const auto colorEdit = GetDlgItem(app.MainWindow(), 461 + int(axis));
+            if (!SendMessageW(colorEdit, EM_GETMODIFY, 0, 0))
+                ui::SetReadoutTextIfChangedA(colorEdit, text);
             std::snprintf(text, sizeof(text), "%+.1f", direction);
-            ui::SetReadoutTextIfChangedA(GetDlgItem(app.MainWindow(), 464 + int(axis)), text);
+            const auto directionEdit = GetDlgItem(app.MainWindow(), 464 + int(axis));
+            if (!SendMessageW(directionEdit, EM_GETMODIFY, 0, 0))
+                ui::SetReadoutTextIfChangedA(directionEdit, text);
             ui::SetTrackbarPositionIfChanged(GetDlgItem(app.MainWindow(), 455 + int(axis)), bounded(color));
             const auto directionSlider = GetDlgItem(app.MainWindow(), 458 + int(axis));
             const auto currentTick = SendMessageW(directionSlider, TBM_GETPOS, 0, 0);
@@ -1047,6 +1053,7 @@ void RefreshBoundGlobalReadout(MMDApp& app) noexcept {
                 (unsigned(object->parentModel) < kModelSlotCount && app.ModelSlot(object->parentModel))))
                 SyncAccessoryEditPanel(&app);
         }
+        RefreshBoundCameraFollowReadout(app);
         return MMS_OK;
     });
 }

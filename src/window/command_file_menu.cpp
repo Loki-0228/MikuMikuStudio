@@ -133,6 +133,7 @@
 #include "mikudancestudio/mmd_app.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "../plugins/native_global_commands.hpp"
+#include "../plugins/native_camera_follow.hpp"
 #include "../plugins/native_pose_scope.hpp"
 #include "../plugins/native_object_commands.hpp"
 #endif
@@ -2497,6 +2498,9 @@ void CmdFileMenu(MMDApp* app, HWND hwnd, std::uint16_t id, std::uint16_t notify)
     // ------------------------------------------------------------------
     case 247: {
         app->state.dialogFlags[2] = 1;
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::TrySetBoundCameraFollow(app, app->state.followCameraEnabled == 0)) break;
+#endif
         // Match the checkbox: enable restores the camera, disable carries its
         // view into the model editor across the pivot change.
         float focusOld[3] = {0.0f, 0.0f, 0.0f};

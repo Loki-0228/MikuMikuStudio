@@ -169,6 +169,7 @@
 #include "../plugins/native_bone_registration.hpp"
 #include "../plugins/native_key_commands.hpp"
 #include "../plugins/native_global_commands.hpp"
+#include "../plugins/native_camera_follow.hpp"
 #endif
 
 namespace mikudancestudio {
@@ -632,6 +633,10 @@ void CmdControl500(MMDApp* app, HWND hwnd, std::uint16_t id, std::uint16_t notif
 
     // ---- 535: display-mode checkbox 0x217 (byte 0x9ED98) -----------------
     case 535: {  // 0x48BE6A
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::TrySetBoundCameraFollow(app,
+            SendMessageW(GetDlgItem(hwnd, panel::kFollowCameraCheckbox), BM_GETCHECK, 0, 0) == BST_CHECKED)) break;
+#endif
         // Enabling tracking restores the current camera. Disabling it carries
         // that view into the model editor across the reference-pivot change.
         const float eyeOldX = app->ViewOffsetX();

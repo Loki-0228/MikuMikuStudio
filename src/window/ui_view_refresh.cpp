@@ -46,6 +46,9 @@
 #include "mikudancestudio/model.hpp"
 #include "mikudancestudio/bone_parent_coordinates.hpp"
 #include "mikudancestudio/panel_controls.hpp"
+#if !MMD_ORIGINAL_PROFILE
+#include "../plugins/native_pose_scope.hpp"
+#endif
 
 namespace mikudancestudio {
 
@@ -56,8 +59,17 @@ namespace {
 // between two keystrokes put the old value back under the caret.  The edit's
 // modify flag marks unsaved typing; SetWindowText clears it, and the commit
 // path clears it before committing, so the committed value is still echoed.
-void SetReadoutText(HWND edit, const char* text) {
-    if (edit != nullptr && edit == GetFocus() &&
+void SetReadoutText(MMDApp* app, HWND edit, const char* text) {
+    bool preservePending = edit == GetFocus();
+#if !MMD_ORIGINAL_PROFILE
+    // Deferred common-history refresh can arrive after the user moved focus.
+    // Preserve that individual draft while still refreshing every other edit
+    // and all of PostViewRefresh's derived pose/projection state.
+    preservePending = preservePending || plugins::BoundNativePoseHistory(app);
+#else
+    (void)app;
+#endif
+    if (edit != nullptr && preservePending &&
         SendMessageA(edit, EM_GETMODIFY, 0, 0) != 0)
         return;
     SetWindowTextA(edit, text);
@@ -151,28 +163,28 @@ void PostViewRefresh(MMDApp* app) {
         // ---- camera / light readout ----------------------------------------
         sprintf_s(text, 0x100, "%1.2f",
                   static_cast<double>(app->CameraPositionX()));
-        SetReadoutText(GetDlgItem(hwnd, panel::kReadoutPosXEdit), text);
+        SetReadoutText(app, GetDlgItem(hwnd, panel::kReadoutPosXEdit), text);
         sprintf_s(text, 0x100, "%1.2f",
                   static_cast<double>(app->CameraPositionY()));
-        SetReadoutText(GetDlgItem(hwnd, panel::kReadoutPosYEdit), text);
+        SetReadoutText(app, GetDlgItem(hwnd, panel::kReadoutPosYEdit), text);
         float posz = app->CameraPositionZ();
         sprintf_s(text, 0x100, "%1.2f", static_cast<double>(posz));
-        SetReadoutText(GetDlgItem(hwnd, panel::kReadoutPosZEdit), text);
+        SetReadoutText(app, GetDlgItem(hwnd, panel::kReadoutPosZEdit), text);
         float ang = static_cast<float>(                       // 0x40D25C
             -static_cast<double>(app->CameraPitch()) /
             3.141592f * 180.0f);
         if (std::fabs(static_cast<double>(ang)) < 1e-7f)      // 0x40D26E
             ang = 0.0f;
         sprintf_s(text, 0x100, "%1.1f", static_cast<double>(ang));
-        SetReadoutText(GetDlgItem(hwnd, panel::kReadoutRotXEdit), text);
+        SetReadoutText(app, GetDlgItem(hwnd, panel::kReadoutRotXEdit), text);
         sprintf_s(text, 0x100, "%1.1f",                       // 0x40D2E3
                   static_cast<double>(app->CameraYaw()) /
                       3.141592f * 180.0f);
-        SetReadoutText(GetDlgItem(hwnd, panel::kReadoutRotYEdit), text);
+        SetReadoutText(app, GetDlgItem(hwnd, panel::kReadoutRotYEdit), text);
         sprintf_s(text, 0x100, "%1.1f",                       // 0x40D329
                   static_cast<double>(app->CameraRoll()) /
                       3.141592f * 180.0f);
-        SetReadoutText(GetDlgItem(hwnd, panel::kReadoutRotZEdit), text);
+        SetReadoutText(app, GetDlgItem(hwnd, panel::kReadoutRotZEdit), text);
         if (app->CameraParentModel() < 0) {
             float camAngle = static_cast<float>(
                 -static_cast<double>(app->CameraDistance()));
@@ -182,7 +194,7 @@ void PostViewRefresh(MMDApp* app) {
         } else {
             sprintf_s(text, 0x100, "%1.2f", 0.0);
         }
-        SetReadoutText(GetDlgItem(hwnd, panel::kReadoutDistEdit), text);
+        SetReadoutText(app, GetDlgItem(hwnd, panel::kReadoutDistEdit), text);
         return;
     }
 
@@ -191,11 +203,11 @@ void PostViewRefresh(MMDApp* app) {
     const std::int32_t boneIdx = mikudancestudio::mdl::Mdl(model)->selectedBone;
     if (boneIdx < 0) {                                     // 0x40D401 jl
         for (int id = 0x220; id <= 0x226; ++id)
-            SetReadoutText(GetDlgItem(hwnd, id), "-----");
+            SetReadoutText(app, GetDlgItem(hwnd, id), "-----");
 #if !MMD_ORIGINAL_PROFILE
-        SetReadoutText(GetDlgItem(hwnd, panel::kReadoutScaleXEdit), "-----");
-        SetReadoutText(GetDlgItem(hwnd, panel::kReadoutScaleYEdit), "-----");
-        SetReadoutText(GetDlgItem(hwnd, panel::kReadoutScaleZEdit), "-----");
+        SetReadoutText(app, GetDlgItem(hwnd, panel::kReadoutScaleXEdit), "-----");
+        SetReadoutText(app, GetDlgItem(hwnd, panel::kReadoutScaleYEdit), "-----");
+        SetReadoutText(app, GetDlgItem(hwnd, panel::kReadoutScaleZEdit), "-----");
         EnableWindow(GetDlgItem(hwnd, panel::kReadoutScaleXEdit), FALSE);
         EnableWindow(GetDlgItem(hwnd, panel::kReadoutScaleYEdit), FALSE);
         EnableWindow(GetDlgItem(hwnd, panel::kReadoutScaleZEdit), FALSE);
@@ -210,7 +222,7 @@ void PostViewRefresh(MMDApp* app) {
                             panel::kReadoutScaleZEdit};
     for (int i = 0; i < 3; ++i) {
         sprintf_s(text, 0x100, "%1.2f", static_cast<double>(scaleValues[i]));
-        SetReadoutText(GetDlgItem(hwnd, scaleIds[i]), text);
+        SetReadoutText(app, GetDlgItem(hwnd, scaleIds[i]), text);
         EnableWindow(GetDlgItem(hwnd, scaleIds[i]),
                      app->PlaybackActive() == 0 ? TRUE : FALSE);
     }
@@ -230,11 +242,11 @@ void PostViewRefresh(MMDApp* app) {
         quat = reinterpret_cast<const float*>(bone->rotQuat);
     }
     sprintf_s(text, 0x100, "%1.2f", static_cast<double>(display[0] + BoneParentBindOffset(model,boneIdx,0)));
-    SetReadoutText(GetDlgItem(hwnd, panel::kReadoutPosXEdit), text);
+    SetReadoutText(app, GetDlgItem(hwnd, panel::kReadoutPosXEdit), text);
     sprintf_s(text, 0x100, "%1.2f", static_cast<double>(display[1] + BoneParentBindOffset(model,boneIdx,1)));
-    SetReadoutText(GetDlgItem(hwnd, panel::kReadoutPosYEdit), text);
+    SetReadoutText(app, GetDlgItem(hwnd, panel::kReadoutPosYEdit), text);
     sprintf_s(text, 0x100, "%1.2f", static_cast<double>(display[2] + BoneParentBindOffset(model,boneIdx,2)));
-    SetReadoutText(GetDlgItem(hwnd, panel::kReadoutPosZEdit), text);
+    SetReadoutText(app, GetDlgItem(hwnd, panel::kReadoutPosZEdit), text);
 
     // The original code hard-imports D3DXMatrixRotationQuaternion and calls it
     // unconditionally, so the matrix is always filled before the Euler
@@ -296,17 +308,17 @@ void PostViewRefresh(MMDApp* app) {
     if (std::fabs(static_cast<double>(d)) < 1e-7f)      // 0x40D7D7 dbl_52B758
         d = 0.0f;
     sprintf_s(text, 0x100, "%1.1f", static_cast<double>(d));
-    SetReadoutText(GetDlgItem(hwnd, panel::kReadoutRotXEdit), text);
+    SetReadoutText(app, GetDlgItem(hwnd, panel::kReadoutRotXEdit), text);
     d = app->BoneRotationEditDegreesY();
     if (std::fabs(static_cast<double>(d)) < 1e-7f)
         d = 0.0f;
     sprintf_s(text, 0x100, "%1.1f", static_cast<double>(d));
-    SetReadoutText(GetDlgItem(hwnd, panel::kReadoutRotYEdit), text);
+    SetReadoutText(app, GetDlgItem(hwnd, panel::kReadoutRotYEdit), text);
     d = app->BoneRotationEditDegreesZ();
     if (std::fabs(static_cast<double>(d)) < 1e-7f)
         d = 0.0f;
     sprintf_s(text, 0x100, "%1.1f", static_cast<double>(d));
-    SetReadoutText(GetDlgItem(hwnd, panel::kReadoutRotZEdit), text);
+    SetReadoutText(app, GetDlgItem(hwnd, panel::kReadoutRotZEdit), text);
 }
 
 }  // namespace mikudancestudio

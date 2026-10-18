@@ -2,6 +2,8 @@
 #include "../src/plugins/native_pose_scope.hpp"
 #include "../src/plugins/native_global_commands.hpp"
 #include "../src/plugins/native_morph_commands.hpp"
+#include "../src/plugins/native_camera_follow.hpp"
+#include "../src/plugins/native_camera_follow_ui.hpp"
 #include "mikudancestudio/bone_key_pool.hpp"
 #include "mikudancestudio/bone_scale.hpp"
 #include "mikudancestudio/bone_curve.hpp"
@@ -430,6 +432,7 @@ void ObjectMenuDeletion(MMDApp* app, plugins::SharedHistory& history, const MmsS
 #include "viewport_history_host_checks.inc"
 #include "model_viewport_host_checks.inc"
 #include "numpad_view_host_checks.inc"
+#include "camera_follow_host_checks.inc"
 #include "sparse_registration_host_checks.inc"
 #include "bone_curve_sync_host_checks.inc"
 #include "vmd_model_curves_host_checks.inc"
@@ -459,6 +462,7 @@ void Run(MMDApp* app) {
     Check(InitializeHistoryTestRuntime(app), "explicit host binding exposes the same common journal");
     auto* history = NativeHistory(app);
     Check(history && BoundNativePoseHistory(app) == history && !history->UndoCount(), "native and plugin history share ownership");
+    camera_follow_host_checks::CheckInitializationReadout(app);
     Check(history->SetMode(SharedHistory::RecordingMode::AllOperations)==MMS_OK,"explicitly opt migration probes into all-operation history");
     const auto library = GetModuleHandleW(L"manager_edit_probe.dll");
     auto value = reinterpret_cast<int(*)()>(GetProcAddress(library, "GetProbeValue"));
@@ -481,6 +485,7 @@ void Run(MMDApp* app) {
     viewport_history_host_checks::Run(app,*history,value);
     model_viewport_host_checks::Run(app,*history,value);
     numpad_view_host_checks::Run(app,*history,value);
+    camera_follow_host_checks::Run(app,*history,value);
     sparse_registration_host_checks::Run(app,*history,value);
     bone_curve_sync_host_checks::Run(app,*history,value);
     vmd_model_curves_host_checks::Run(app,*history,value);

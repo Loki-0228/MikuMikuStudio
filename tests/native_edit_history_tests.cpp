@@ -417,6 +417,8 @@ void CrossModelJournal(){
 #include "native_morph_vmd_curves_checks.inc"
 #include "native_bone_vmd_curves_checks.inc"
 #include "native_model_vmd_curves_checks.inc"
+#include "native_camera_follow_checks.inc"
+#include "retained_bookkeeping_checks.inc"
 int main(int argc,char** argv){
     std::setvbuf(stdout,nullptr,_IONBF,0);
     const auto run=[](const char* name,void(*test)()){std::printf("RUN %s\n",name);test();};
@@ -457,6 +459,14 @@ int main(int argc,char** argv){
     if(argc==2&&!std::strcmp(argv[1],"--model-viewport-only")) {
         run("NativeModelViewportHistoryChecks",NativeModelViewportHistoryChecks);
         std::printf("PASS native model viewport: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--retained-bookkeeping-only")) {
+        run("RetainedBookkeepingChecks",RetainedBookkeepingChecks);
+        std::printf("PASS retained owner bookkeeping: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--camera-follow-only")) {
+        run("NativeCameraFollowChecks",NativeCameraFollowChecks);
+        std::printf("PASS native camera follow: %u checks\n",checks);return 0;
     }
     if(argc==2&&!std::strcmp(argv[1],"--numpad-only")) {
         run("NativeNumpadViewChecks",NativeNumpadViewChecks);
@@ -700,6 +710,7 @@ int main(int argc,char** argv){
     run("SceneResourceBudgetChecks",SceneResourceBudgetChecks);
     run("UndoStorageChecks",UndoStorageChecks);
     run("SceneObjectBudgetChecks",SceneObjectBudgetChecks);
+    run("RetainedBookkeepingChecks",RetainedBookkeepingChecks);
     run("SceneObjectInsertionChecks",SceneObjectInsertionChecks);
     run("SharedHistoryAppliedChecks",SharedHistoryAppliedChecks);
     run("NativePoseScopeChecks",NativePoseScopeChecks);
@@ -745,6 +756,7 @@ int main(int argc,char** argv){
     run("NativeMorphVmdCurvesChecks",NativeMorphVmdCurvesChecks);
     run("NativeBoneVmdCurvesChecks",NativeBoneVmdCurvesChecks);
     run("NativeModelVmdCurvesChecks",NativeModelVmdCurvesChecks);
+    run("NativeCameraFollowChecks",NativeCameraFollowChecks);
     run("PoseAndStale",PoseAndStale);run("KeysAndChain",KeysAndChain);run("Bake",Bake);
     run("Deletion",Deletion);run("EmptyAndCycle",EmptyAndCycle);run("FreeCurves",FreeCurves);
     run("Scatter",Scatter);run("FailedNativeCommands",FailedNativeCommands);run("RemovalBindings",RemovalBindings);

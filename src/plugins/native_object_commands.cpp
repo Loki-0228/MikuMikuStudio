@@ -2,6 +2,7 @@
 #if !MMD_ORIGINAL_PROFILE
 #include "native_accessory_settings.hpp"
 #include "native_history_commands.hpp"
+#include "native_camera_follow_ui.hpp"
 #include "native_global_commands.hpp"
 #include "native_morph_commands.hpp"
 #include "native_pose_scope.hpp"
@@ -199,7 +200,8 @@ void AccessoryReadout(MMDApp& app) {
                 id == 484 ? double(accessory->scale) : double(accessory->opacity);
             sprintf_s(text, id == 485 ? "%3.2f" : "%3.4f", value);
         }
-        SetDlgItemTextA(main, id, text);
+        const auto edit = GetDlgItem(main, id);
+        if (!SendMessageW(edit, EM_GETMODIFY, 0, 0)) SetWindowTextA(edit, text);
     }
 }
 bool RefreshUi(MMDApp& app, SharedHistory& history, const scene_history_ui::Selection& selection) {
@@ -466,6 +468,9 @@ bool RefreshBoundObjectUi(MMDApp& app, SharedHistory& history) noexcept {
 MmsResult RunBoundObjectHistory(MMDApp& app, SharedHistory& history, bool redo, bool deferUi) noexcept {
     if (!Ready(app, deferUi) || EditorsOpen(app) || NativeObjectUiPending(&app)) return MMS_E_BUSY;
     return Boundary([&]() -> MmsResult {
+        // A pending draft may need storage. Capture it before the journal
+        // publishes, so failure cannot hide a successfully applied traversal.
+        ScopedFollowReadoutDrafts drafts(app);
         Operation scope(app);
         const auto selection = CaptureSelectionToken(app);
         std::array<const void*, kModelSlotCount * 2> objects{};

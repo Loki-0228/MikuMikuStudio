@@ -2,8 +2,10 @@
 #if !MMD_ORIGINAL_PROFILE
 #include "native_pose_scope.hpp"
 #include "native_object_commands.hpp"
+#include "native_camera_follow_ui.hpp"
 #include "mikudancestudio/animation_curve_editor.hpp"
 #include "mikudancestudio/bone_scale.hpp"
+#include "mikudancestudio/bake_ui_lock.hpp"
 #include "mikudancestudio/mmd_app.hpp"
 #include "mikudancestudio/model.hpp"
 #include "mikudancestudio/panel_controls.hpp"
@@ -24,7 +26,12 @@ void RefreshBoundPoseReadout(MMDApp& app) noexcept {
             canRead = bone_scale::Identity(bone_scale::Pose(app.SelectedModel(), model->selectedBone)) ||
                 bone_scale::TransformsApplied(app.SelectedModel());
     }
-    if (canRead) Boundary([&]() -> MmsResult { PostViewRefresh(&app); return MMS_OK; });
+    Boundary([&]() -> MmsResult {
+        bake::ScopedUiInputGate input;
+        if (canRead) PostViewRefresh(&app);
+        RefreshBoundCameraFollowReadout(app);
+        return MMS_OK;
+    });
 }
 void PublishBoundPoseEdit(MMDApp& app, SharedHistory& history, bool physicsReset) noexcept {
     app.SceneModified() = 1;

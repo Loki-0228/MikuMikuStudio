@@ -572,8 +572,14 @@ bool CreateUIControls(MMDApp* app, HWND hwnd) {
     // ---- 0x46A99F..0x46AC5E: edit/trackbar mirrors of the work records ---
     char text[0x100];
     auto setEdit = [&](int id, const char* t) {
-        SendMessageA(GetDlgItem(hwnd, id), EM_REPLACESEL, 0,
+        const auto edit = GetDlgItem(hwnd, id);
+        SendMessageA(edit, EM_REPLACESEL, 0,
                      reinterpret_cast<LPARAM>(t));
+#if !MMD_ORIGINAL_PROFILE
+        // Initial numeric output is not a user draft. Otherwise the first
+        // bound refresh would retain this startup text as a pending edit.
+        SendMessageA(edit, EM_SETMODIFY, FALSE, 0);
+#endif
     };
     auto setTrack = [&](int id, int pos) {
         SendMessageA(GetDlgItem(hwnd, id), TBM_SETPOS, 1, pos);

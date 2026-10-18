@@ -171,6 +171,44 @@ MmsResult RetainedSceneObject::MeasureResourcesBatch(const Objects& objects, res
         report = measured.Result(); return MMS_OK;
     });
 }
+MmsResult RetainedSceneObject::MeasureBookkeepingImpl(resource_budget::Collector& measured,
+    bool includePhysics, bool includeParkedKeys) const {
+    const auto& owner = *impl_;
+    measured.Array(this, 1); measured.Array(&owner, 1);
+    const auto registry = retainedObjects.find({&owner.app, owner.object});
+    if (registry != retainedObjects.end()) measured.Add(&*registry, 1, sizeof(*registry) + 4 * sizeof(void*));
+    measured.Vector(owner.joints);
+    if (includeParkedKeys && owner.inactiveKeys) {
+        // This pool is owned, so a borrowed legacy-sized fallback would invent
+        // an allocation extent. Count the same tracked node used by full native
+        // resource measurements, under its registry lock.
+        std::lock_guard<std::mutex> lock(mdl::KeyPoolStorage<mdl::AccessoryKey>::mutex);
+        const auto& capacities = mdl::KeyPoolStorage<mdl::AccessoryKey>::capacities;
+        const auto found = capacities.find(owner.inactiveKeys);
+        if (found == capacities.end()) return MMS_E_NOT_READY;
+        measured.Array(owner.inactiveKeys, found->second.capacity);
+        measured.Add(&*found, 1, sizeof(*found) + 4 * sizeof(void*));
+    }
+    if (includePhysics && owner.physics) owner.physics->MeasureResources(measured);
+    if (owner.curves) owner.curves->MeasureResources(measured);
+    return MMS_OK;
+}
+MmsResult RetainedSceneObject::MeasureBookkeeping(resource_budget::Collector& measured) const noexcept {
+    return Boundary([&]() -> MmsResult {
+        // Import candidates still own a private world. It is moved to cleanup
+        // on the first publication and is not a retained published-object cost.
+        // Keep the existing full-resource first-import measurement independent.
+        if (!impl_->publishedOnce || impl_->importScene) return MMS_E_NOT_READY;
+        if (!impl_->MembershipCurrent()) return MMS_E_STALE;
+        return MeasureBookkeepingImpl(measured, true, true);
+    });
+}
+bool RetainedSceneObject::CoversBookkeeping(resource_budget::Collector& measured) const noexcept {
+    bool current = false;
+    return measured.Covers([&](resource_budget::Collector& out) {
+        current = MeasureBookkeeping(out) == MMS_OK;
+    }) && current;
+}
 MmsResult RetainedSceneObject::MeasureNativeResources(const Objects& objects,
     resource_budget::Collector& measured, bool includePhysics) {
         if (objects.empty()) return MMS_E_ARGUMENT;
@@ -188,13 +226,12 @@ MmsResult RetainedSceneObject::MeasureNativeResources(const Objects& objects,
                 const auto* exchange = owner.present ? owner.inactiveKeys : owner.app.AccessoryKeys(owner.slot);
                 resource_budget::Accessory(*static_cast<const mdl::AccessoryRecord*>(owner.object), exchange, measured);
             }
-            measured.Array(retained.get(), 1); measured.Array(&owner, 1);
-            const auto registry = retainedObjects.find({&owner.app, owner.object});
-            if (registry != retainedObjects.end()) measured.Add(&*registry, 1, sizeof(*registry) + 4 * sizeof(void*));
-            measured.Vector(owner.joints);
             for (auto* joint : owner.joints) resource_budget::Joint(joint, measured);
-            if (includePhysics && owner.physics) owner.physics->MeasureResources(measured);
-            if (owner.curves) owner.curves->MeasureResources(measured);
+            // Accessory() above already measures both exchanged key pools with
+            // its established native/borrowed-pool policy. Keep that full-object
+            // import/removal path unchanged; the new holder-only API instead
+            // requires an exact managed extent for its own parked allocation.
+            if (auto result = retained->MeasureBookkeepingImpl(measured, includePhysics, false)) return result;
         }
         return MMS_OK;
 }

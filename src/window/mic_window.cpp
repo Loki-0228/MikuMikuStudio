@@ -21,6 +21,8 @@
 #include "mikudancestudio/mmd_app.hpp"
 #include "mikudancestudio/ported_funcs.hpp"
 #include "../plugins/native_viewport_history.hpp"
+#include "../plugins/native_camera_follow.hpp"
+#include "mikudancestudio/panel_controls.hpp"
 
 namespace mikudancestudio {
 
@@ -106,6 +108,11 @@ LRESULT CALLBACK MicWndProc(HWND hwnd, UINT msg, WPARAM wParam,
         SaveFlagSubsystem(app);                                    // 0x466BBD
         return 0;
     case WM_COMMAND:                                               // 0x466B91
+#if !MMD_ORIGINAL_PROFILE
+        if (LOWORD(wParam) == panel::kFollowCameraCheckbox &&
+            plugins::TrySetBoundCameraFollow(app,
+                IsDlgButtonChecked(hwnd, panel::kFollowCameraCheckbox) == BST_CHECKED)) return 0;
+#endif
         DispatchSeparateWindowCommand(app, LOWORD(wParam));  // 0x466B9E
         return 0;
     case WM_PAINT: {                                               // 0x466AB7
