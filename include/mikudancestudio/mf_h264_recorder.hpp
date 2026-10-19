@@ -30,6 +30,10 @@ bool StartBuiltInH264Recording(DShowRecorder* recorder, const wchar_t* path,
                                std::uint32_t averageBitrate,
                                void* ownerWindow,
                                unsigned char uiLanguage);
+// Clears the "hardware encoder unusable" latch that a driver fault sets, so the
+// next system-H.264 export probes the hardware chain again.  Call it only on an
+// explicit user request (re-selecting the system encoder in the export dialog).
+void ResetH264HardwareEncoderState();
 bool IsBuiltInH264Recording(const DShowRecorder* recorder);
 bool WriteBuiltInH264Frame(DShowRecorder* recorder, const void* bgra,
                            std::size_t bytes);

@@ -721,6 +721,10 @@ INT_PTR __stdcall AviOutDlgProc(HWND hDlg, UINT msg, WPARAM wParam,
                     const LRESULT codec = SendMessageW(
                         GetDlgItem(hDlg, panel::kAviCodecCombo), CB_GETITEMDATA,
                         sel, 0);
+                    // Re-picking the system encoder is the user asking for the
+                    // hardware chain again after a driver fault disabled it.
+                    if (codec == kSystemH264Codec)
+                        ResetH264HardwareEncoderState();
                     const WaveAudioContext* audio = app->Audio();
                     const bool audioAvailable = codec != kNativePngMovCodec &&
                         audio != nullptr && audio->dataSize > 0 && audio->path[0] != L'\0';

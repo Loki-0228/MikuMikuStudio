@@ -513,6 +513,35 @@ void CloseEncoderProbe(EncoderProbe& probe) {
 // while opening the settings window also keeps the later export on the
 // software encoder.
 bool g_hardwareEncoderUnsafe = false;
+bool g_hardwareFallbackNoticeShown = false;
+
+// Tells the user once per session that the export fell back to software.  The
+// fault itself happens inside the vendor MFT, so there is no HRESULT to show;
+// this notice is the only signal the user gets that the quality/speed differs
+// from the "system H.264" they picked.
+void ReportHardwareFallbackOnce(void* ownerWindow, unsigned char language) {
+    if (g_hardwareFallbackNoticeShown)
+        return;
+    g_hardwareFallbackNoticeShown = true;
+    MessageBoxW(static_cast<HWND>(ownerWindow),
+                UiText(language,
+                       L"The system hardware encoder stopped with a driver fault "
+                       L"while starting the MP4/H.264 export.\n\n"
+                       L"This export continues with the software H.264 encoder. "
+                       L"Pick \"System H.264 auto\" in the export dialog again if "
+                       L"you want to retry the hardware encoder.",
+                       L"系统硬件编码器在启动 MP4/H.264 导出时发生驱动故障。\n\n"
+                       L"本次导出已改用软件 H.264 编码器继续。"
+                       L"如需重试硬件编码器，请在导出对话框里重新选择"
+                       L"「系统自动 H.264」。",
+                       L"システムのハードウェアエンコーダーが MP4/H.264 "
+                       L"書き出しの開始時にドライバー障害を起こしました。\n\n"
+                       L"この書き出しはソフトウェア H.264 エンコーダーで続行します。"
+                       L"ハードウェアエンコーダーを再試行するには、"
+                       L"書き出しダイアログで「系统自动 H.264」を選び直してください。"),
+                UiText(language, L"MP4 Export", L"MP4 导出", L"MP4 書き出し"),
+                MB_OK | MB_ICONWARNING);
+}
 
 bool CreateEncoderProbe(bool system, std::int32_t width, std::int32_t height,
                         float fps, std::uint32_t averageBitrate,
@@ -1330,6 +1359,8 @@ bool StartBuiltInH264Recording(DShowRecorder* recorder, const wchar_t* path,
         hr = OpenH264SinkWriterGuarded(&recording->writer, path, false, width,
                                        height, fps, averageBitrate,
                                        &recording->videoStream);
+        if (SUCCEEDED(hr))
+            ReportHardwareFallbackOnce(recording->owner, recording->uiLanguage);
     }
     if (FAILED(hr)) return false;
 
@@ -1484,6 +1515,14 @@ bool FinishBuiltInH264Recording(DShowRecorder* recorder,
     if (SUCCEEDED(hr)) hr = recording->writer->Finalize();
     if (FAILED(hr)) ReportFailure(recording->owner, hr);
     return SUCCEEDED(hr) && completeFrameCount;
+}
+
+void ResetH264HardwareEncoderState() {
+    if (!g_hardwareEncoderUnsafe && !g_hardwareFallbackNoticeShown)
+        return;
+    g_hardwareEncoderUnsafe = false;
+    g_hardwareFallbackNoticeShown = false;
+    runtime_log::Write("H264 hardware encoder re-enabled by the user");
 }
 
 }  // namespace mikudancestudio
