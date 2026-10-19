@@ -332,7 +332,7 @@ struct RawEntry {
     double timeScale = 1;
 };
 
-constexpr std::uint32_t kMagic = 0x4353444Du;  // 'M','D','S','C'
+constexpr std::uint32_t kMagic = 0x43534D4Du;  // 'M','M','S','C'
 constexpr std::uint32_t kRecordVersionV2 = 2;
 
 void AppendRawF64(std::vector<std::uint8_t>& value, double number) {

@@ -502,7 +502,7 @@ bool DrawPreview(MMDApp& app){
     SelectObject(dc,old);DeleteObject(pen);return true;
 }
 std::size_t VmdBlockSize(const std::uint8_t* data,std::size_t size){
-    if(!data||size<12||std::memcmp(data,"MDSBCRV1",8))return 0;
+    if(!data||size<12||(std::memcmp(data,"MMSBCRV1",8)&&std::memcmp(data,"MDSBCRV1",8)))return 0;
     std::uint32_t bytes=0;for(int i=0;i<4;++i)bytes|=std::uint32_t(data[8+i])<<(8*i);
     return bytes<=16u*1024*1024&&bytes<=size-12?std::size_t(bytes)+12:0;
 }
@@ -523,7 +523,7 @@ bool CaptureVmd(const unsigned char* model,int offset,std::vector<std::uint8_t>&
     if(tracks.empty())return true;
     std::vector<std::uint8_t> payload;if(!ac::Encode(tracks,payload,error))return false;
     if(payload.size()>16u*1024*1024){error="Bone curve extension is too large.";return false;}
-    block.assign({'M','D','S','B','C','R','V','1'});
+    block.assign({'M','M','S','B','C','R','V','1'});
     for(int i=0;i<4;++i)block.push_back(std::uint8_t(payload.size()>>(8*i)));
     block.insert(block.end(),payload.begin(),payload.end());return true;
 }

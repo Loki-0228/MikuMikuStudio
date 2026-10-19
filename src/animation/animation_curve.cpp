@@ -858,7 +858,7 @@ bool Encode(const std::vector<NamedTrack> &tracks, std::vector<std::uint8_t> &ou
     std::vector<std::uint8_t> buffer;
     buffer.reserve(totalBytes);
     buffer.push_back('M');
-    buffer.push_back('D');
+    buffer.push_back('M');
     buffer.push_back('S');
     buffer.push_back('C');
     WriteU16(buffer, 1);
@@ -902,8 +902,9 @@ bool Decode(const std::uint8_t *data, std::size_t size, std::vector<NamedTrack> 
         error = "the payload is shorter than the " + std::to_string(kHeaderBytes) + "-byte header";
         return false;
     }
-    if (magic[0] != 'M' || magic[1] != 'D' || magic[2] != 'S' || magic[3] != 'C') {
-        error = "the payload does not start with the MDSC magic";
+    if (!((magic[0] == 'M' && magic[1] == 'M' && magic[2] == 'S' && magic[3] == 'C') ||
+          (magic[0] == 'M' && magic[1] == 'D' && magic[2] == 'S' && magic[3] == 'C'))) {
+        error = "the payload does not start with the MMSC magic";
         return false;
     }
     std::uint16_t version = 0;

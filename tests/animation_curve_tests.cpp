@@ -619,7 +619,7 @@ std::vector<std::uint8_t> BuildPayload(const std::vector<RawTrack> &tracks, std:
                                        std::uint16_t flags = 0) {
     std::vector<std::uint8_t> out;
     out.push_back('M');
-    out.push_back('D');
+    out.push_back('M');
     out.push_back('S');
     out.push_back('C');
     PushU16(out, version);
@@ -724,7 +724,7 @@ void TestCodecLayout() {
     std::vector<std::uint8_t> bytes;
     Check(ac::Encode(tracks, bytes, error), "the layout fixture encodes: " + error);
 
-    const std::uint8_t expectedHeader[22] = {'M', 'D', 'S', 'C', 1, 0, 0, 0, 1, 0, 0,
+    const std::uint8_t expectedHeader[22] = {'M', 'M', 'S', 'C', 1, 0, 0, 0, 1, 0, 0,
                                              0,   1,   0,   0,   0, 'a', 0, 1, 0, 0, 0};
     Check(bytes.size() == 22 + 52, "the layout fixture is one header plus one key record");
     Check(std::memcmp(bytes.data(), expectedHeader, sizeof(expectedHeader)) == 0,

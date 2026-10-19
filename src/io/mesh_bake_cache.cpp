@@ -38,8 +38,10 @@ constexpr std::uint8_t kKindModel = 0;
 constexpr std::uint8_t kKindAccessory = 1;
 constexpr int kAccessorySlotCount = 255;
 
-// 'M','D','S','C' as a little-endian 32-bit word.
-constexpr std::uint32_t kRecordMagic = 0x4353444Du;
+// 'M','M','S','C' as a little-endian 32-bit word.  The legacy 'M','D','S','C'
+// form is still accepted when reading an old cache.
+constexpr std::uint32_t kRecordMagic = 0x43534D4Du;
+constexpr std::uint32_t kLegacyRecordMagic = 0x4353444Du;
 constexpr std::uint32_t kRecordVersion = 1;
 // The version 2 layout repeats version 1 and appends the time scale of every
 // entry.  It is only written once an entry carries a scale other than 1.
@@ -652,7 +654,8 @@ bool ParseRecord(const std::vector<std::uint8_t>& value,
                  std::string& error) {
     std::size_t cursor = 0;
     std::uint32_t magic = 0, version = 0, count = 0;
-    if (!TakeU32(value, cursor, magic) || magic != kRecordMagic) {
+    if (!TakeU32(value, cursor, magic) ||
+        (magic != kRecordMagic && magic != kLegacyRecordMagic)) {
         error = "The mesh cache record does not start with its magic number";
         return false;
     }

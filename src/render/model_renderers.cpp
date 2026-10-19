@@ -1860,7 +1860,7 @@ void DumpAlphaGeometry(const std::vector<transparent_geometry::Triangle>& source
     if (written) return;
     FILE* file = nullptr;
     if (fopen_s(&file, path, "wb") || !file) return;
-    const char magic[8] = {'M','D','S','B','S','P','0','1'};
+    const char magic[8] = {'M','M','S','B','S','P','0','1'};
     const std::uint64_t counts[] = {source.size(), sorted.size()};
     bool ok = std::fwrite(magic, 1, 8, file) == 8 && std::fwrite(counts, sizeof(counts), 1, file) == 1;
     for (const auto* list : {&source, &sorted}) {

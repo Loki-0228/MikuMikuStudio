@@ -66,9 +66,10 @@
 // PrepareTimeScale and CommitTimeScale retime the whole cache; no source
 // geometry in any archive is ever rewritten or re-exported.
 //
-// Record value layout ("mds.mesh_cache.v1", little-endian, no padding):
+// Record value layout ("mds.mesh_cache.v1", little-endian, no padding).
+// New writes use the MMSC magic; the legacy MDSC form is also read.
 //
-//   uint8  magic[4]  = {'M','D','S','C'}
+//   uint8  magic[4]  = {'M','M','S','C'}
 //   uint32 version   = 1
 //   uint32 count     = number of entries, at most 512
 //   entry[count]:
@@ -86,7 +87,7 @@
 // module.  Version 2 repeats the version 1 layout and appends the time scale of
 // every entry as an IEEE 754 binary64 little-endian double:
 //
-//   uint8  magic[4]  = {'M','D','S','C'}
+//   uint8  magic[4]  = {'M','M','S','C'}
 //   uint32 version   = 2
 //   uint32 count     = number of entries, at most 512
 //   entry[count]:

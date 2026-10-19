@@ -11,7 +11,7 @@
 //   6. self-shadow section : u32 count, count *   9 bytes
 //   7. display/IK section  : u32 count, count * (9 bytes + 21 per IK entry)
 //   8. optional curve payload followed by a 40-byte MMVCURV1 / MMVCURV2 footer
-//      V1 holds the scalar codec; V2 wraps it in MDSN with exact camera timing.
+//      V1 holds the scalar codec; V2 wraps it in MMSN with exact camera timing.
 //      Both preserve the standard VMD body and checksum the prefix/payload.
 //
 // Every standard section is written, in that order, before the tail, so a
@@ -780,7 +780,7 @@ bool Encode(const Motion& motion, std::vector<std::uint8_t>& out, std::string& e
             if (!RestoreChannels(motion, checked, error)) return false;
             if (motion.nativeTiming.size() > kMaximumRecords) throw std::runtime_error("too many native timing records");
             Writer envelope;
-            envelope.raw("MDSN",4); envelope.u64(payload.size()); envelope.raw(payload.data(),payload.size());
+            envelope.raw("MMSN",4); envelope.u64(payload.size()); envelope.raw(payload.data(),payload.size());
             envelope.u32(std::uint32_t(motion.nativeTiming.size()));
             for (const auto& timing : motion.nativeTiming) {
                 envelope.u32(std::uint32_t(timing.id.size())); envelope.raw(timing.id.data(),timing.id.size());
@@ -1118,7 +1118,8 @@ bool Decode(const std::uint8_t* data, std::size_t size, Kind requested, Motion& 
             std::size_t scalarBytes = std::size_t(curveBytes);
             Reader envelope{curveData,scalarBytes};
             if (nativeTail) {
-                if (envelope.text(4)!="MDSN") throw std::runtime_error("the native timing envelope marker is invalid");
+                const std::string marker = envelope.text(4);
+                if (marker != "MMSN" && marker != "MDSN") throw std::runtime_error("the native timing envelope marker is invalid");
                 const auto length = envelope.u64();
                 if (length > envelope.remaining()) throw std::runtime_error("the native timing scalar length is invalid");
                 curveData += envelope.pos; scalarBytes = std::size_t(length); envelope.skip(scalarBytes);
@@ -1152,7 +1153,9 @@ bool Decode(const std::uint8_t* data, std::size_t size, Kind requested, Motion& 
         // shifted footer, or a curve payload whose footer was cut off, means
         // the tail is damaged and the standard proxy must not silently take
         // its place.
-        if (size - standardEnd >= 4 && (std::memcmp(data + standardEnd, "MDSC", 4) == 0 ||
+        if (size - standardEnd >= 4 && (std::memcmp(data + standardEnd, "MMSC", 4) == 0 ||
+            std::memcmp(data + standardEnd, "MMSN", 4) == 0 ||
+            std::memcmp(data + standardEnd, "MDSC", 4) == 0 ||
             std::memcmp(data + standardEnd, "MDSN", 4) == 0)) {
             throw std::runtime_error("the curve payload is present but its footer is missing or damaged");
         }
