@@ -845,7 +845,7 @@ FxaaFloat4 MMSOutlineFilter(FxaaTex tex,FxaaFloat2 at,FxaaFloat2 rcp,FxaaFloat4 
                 // and total ink stays conserved.
                 FxaaFloat width=max(centerTensor.z,neighborTensor.z);
                 FxaaFloat ramp=max(centerTensor.w,neighborTensor.w);
-                FxaaFloat strength=lerp(0.0,0.100,smoothstep(0.20,0.60,width));
+                FxaaFloat strength=lerp(0.045,0.130,smoothstep(0.30,1.5,width));
                 strength*=1.0-saturate(ramp*3.0);
                 FxaaFloat weight=strength*(0.2+0.8*across)/distanceSquared;
                 // Both ends use the same coefficient. All four RGBA channels

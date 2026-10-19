@@ -20,11 +20,9 @@ Adaptation:
 - Return untouched center RGBA in flat regions and filter RGB/alpha together.
 - For native outlines, record coverage in an optional separate MRT. Estimate
   the local line width and normal from a 3x3 coverage neighborhood, then apply
-  pair-symmetric RGBA diffusion before the luma threshold. The measured width
-  selects the spread strength: none below roughly a quarter of a pixel, rising
-  to the full amount at one pixel and wider. A line narrower than a pixel
-  already sits at its authored coverage, so spreading it only dilutes it, while
-  a wider line gains a transition without reading lighter.
+  pair-symmetric RGBA diffusion before the luma threshold. Thin lines receive
+  weaker filtering and wider lines stronger filtering, so the filtered edge
+  keeps the density its authored width implies.
 - The spread of the fractional coverage samples separates a ramp that the
   rasteriser already resolved from a hard single-sample edge. A resolved ramp
   carries several different fractional values and keeps its density; a hard
