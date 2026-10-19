@@ -402,16 +402,8 @@ ctest --test-dir out -C Release --output-on-failure
 
 ## 来源与许可
 
-源码快照、文件哈希与打包脚本 SHA256 见 `MANIFEST.json`。源码、新增工程、示例与说明均沿用随包 `LICENSE`，未重新授权；来源记录见 `NOTICE.md`。
+源码快照、文件哈希与打包脚本 SHA256 见 `MANIFEST.json`。源码、新增工程、示例与说明均沿用随包 `LICENSE`，未重新授权。
 '''
-
-NOTICE = r'''# 来源与许可说明
-
-`third_party/native_ui` 是 MMS 仓库内的原创模块。文件按 `MANIFEST.json` 记录的快照复制，未复制其他 UI 项目的源码。原始 `native_ui.lock.json` 保留上游记录；其历史基线不替代本包当前文件哈希。
-
-根目录 `LICENSE` 逐字复制源仓库现有许可，源码与新增工程、示例、文档均沿用该许可。Windows SDK 和 MSVC 由开发者自行安装。
-'''
-
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -436,7 +428,7 @@ def main() -> int:
     files: dict[str, bytes] = {"LICENSE": (repository / "LICENSE").read_bytes()}
     for path in originals:
         files[path.relative_to(repository).as_posix()] = path.read_bytes()
-    generated = {"CMakeLists.txt": CMAKE, "README.md": README, "NOTICE.md": NOTICE,
+    generated = {"CMakeLists.txt": CMAKE, "README.md": README,
                  "examples/workspace.cpp": WORKSPACE, "examples/app.manifest": MANIFEST,
                  "tests/layout_checks.cpp": CHECKS}
     for name, content in generated.items():
