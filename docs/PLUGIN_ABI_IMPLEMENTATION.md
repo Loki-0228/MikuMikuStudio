@@ -347,13 +347,13 @@ C++17 UI SDK 整合后，ABI 契约累计 **1,694** 项通过，新增 **171** �
 
 ## 重现
 
-先按 `profiles/win7-x64.lock` 安装 Conan 依赖至 `build/win7-x64`，再执行：
+先按 `profiles/win7-x64.lock` 安装 Conan 依赖至 `build/conan`，再执行：
 
 ```powershell
 cmake --preset win7-x64
 cmake --build --preset win7-x64-release --target MikuDanceStudio plugin_abi_tests
 ctest --preset win7-x64-release -R '^plugin_abi_contract$' --output-on-failure
-python tests/plugins/host_smoke.py build/win7-x64/build/Release/MikuMikuDance.exe build/win7-x64/build/tests/plugins/lifecycle/Release/lifecycle.dll build/abi-smoke-new gui-panel
+python tests/plugins/host_smoke.py build/cmake/Release/MikuMikuDance.exe build/cmake/tests/plugins/lifecycle/Release/lifecycle.dll build/abi-smoke-new gui-panel
 ```
 
 本机 PDB 工具版本不匹配，验证构建显式设 `MIKUDANCESTUDIO_DEBUG_SYMBOLS=OFF`，默认配置仍生成符号。资源编译临时目录设为仓库内 `build/abi-tmp`，未修改系统环境。

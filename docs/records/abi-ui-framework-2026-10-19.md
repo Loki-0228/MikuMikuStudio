@@ -94,11 +94,12 @@ DOCK、声明式 INPUT 和新增侧栏、属性区、时间线、状态栏挂载
 
 发布目录不再包含构建树和验证证据，`build/` 下现在的内容：
 
-- `win7-x64/build/`：完整配置构建树，包含产品、库和测试可执行文件。`CMakeCache.txt` 记录的绝对路径与目录一致，可以继续增量构建。
+- `cmake/`：完整配置构建树，包含产品、库和测试可执行文件。`CMakeCache.txt` 记录的绝对路径与目录一致，可以继续增量构建。
+- `conan/`：Conan 依赖与工具链，工具链在 `conan/build/generators/conan_toolchain.cmake`。
 - `release/`：发布目录，只有 `MikuMikuDance.exe`、`licenses/` 和 `mms-adaptive-ui-template.zip`。
 - `verification/logs/`：最终构建和回归日志。
 - `verification/layout/`：最终布局拖动证据。
-- `packages/mms-adaptive-ui-template.zip`：GUI 模块源码包，发布目录中的压缩包由此复制。
+- `packages/mms-adaptive-ui-template.zip`：GUI 模块源码包，发布目录中的压缩包由此复制；包内不再包含 `NOTICE.md`。
 
 发布目录用 `scripts/package_abi_release.ps1` 重建：
 
@@ -108,7 +109,7 @@ DOCK、声明式 INPUT 和新增侧栏、属性区、时间线、状态栏挂载
 
 脚本核对构建目录属于当前源码、档位为 `full`、平台为 x64，然后复制程序、`licenses` 和 GUI 模块压缩包；发布目录的条目多于或少于这三项时直接报错。`cmake --install` 还会安装 `PLUGINS/config.json`，所以发布目录不用安装规则生成。
 
-发布目录中的 `MikuMikuDance.exe` SHA256 为 `DABFCF5919CAD736B02FCF84A5C7CEB9A2BE67F9A9EF2EFA937BAC944DBDF624`，与本记录的最终产品一致。此前记录中的 `build/release/build/...` 和 `build/release/verification/...` 分别对应现在的 `build/win7-x64/build/...` 和 `build/verification/...`。
+发布目录中的 `MikuMikuDance.exe` SHA256 为 `FBB05C7875E876703CB6BF747D95F66CF27ECE49FA1544E2C83030B283DF2C33`，对应改名为 `cmake` 后重新配置、修掉构建警告并重新链接的产物；本记录的回归结果对应改名前验证的二进制 `DABFCF5919CAD736B02FCF84A5C7CEB9A2BE67F9A9EF2EFA937BAC944DBDF624`，新二进制没有重跑回归测试。重建期间修掉三类警告：`src/model/pmx_load.cpp` 的 C4018 有符号/无符号比较（去掉多余转换，判定语义不变）、`src/mmdxshow/dll_main.cpp` 的 C4996 `GetVersionExA` 弃用（保留原查询并局部抑制）、`MMSNvidiaAAFix` 导出 `DllRegisterServer`/`DllUnregisterServer` 的 LNK4104（x64 改用 `.def` 并标记 PRIVATE）。搬动构建目录还会让旧路径的 `.tlog` 目录留在中间目录，触发 MSB8028；删掉旧 `.tlog` 目录后重建，警告清零。此前记录中的 `build/release/build/...` 对应 `build/cmake/...`，`build/release/verification/...` 对应 `build/verification/...`。
 
 `build/release/mms-abi-20261020-slider-check-r2/` 和上一轮的其他可运行包在这次整理中删除。其余 230 余个测试运行目录、旧构建目录、旧日志和旧补丁在上一轮清理中删除，清理前后 `build/` 占用从约 8.1 GB 降到约 2.4 GB。旧记录引用的 `build/abi-*` 测试证据路径不再存在，历史结论以各记录中的文字为准。
 

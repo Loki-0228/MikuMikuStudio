@@ -10,7 +10,7 @@
 | `docs/` | 使用指南、格式参考、开发资料和专题记录 |
 | `build/` | 本地构建目录；是否启用测试取决于配置 |
 | `build/Release/` | 正式程序的本地产物目录 |
-| `build/win7-x64/build/`、`build/release/` | ABI 开发目录的构建树和发布目录，见[Win7 x64 基础构建](win7-build.md) |
+| `build/cmake/`、`build/conan/`、`build/release/` | ABI 开发目录的构建树、Conan 依赖和发布目录，见[Win7 x64 基础构建](win7-build.md) |
 | `.local/builds/`、`.local/worktrees/` | 独立构建和隔离工作树 |
 | `.local/artifacts/` | 本地测试、截图、测量与清单 |
 | `.local/releases/`、`.local/archives/` | 本地发布快照和保留的历史文件 |

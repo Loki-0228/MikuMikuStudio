@@ -1,7 +1,7 @@
 #Requires -Version 7.0
 [CmdletBinding()]
 param(
-    [string]$BuildDirectory = 'build/win7-x64/build',
+    [string]$BuildDirectory = 'build/cmake',
     [string]$ReleaseDirectory = 'build/release',
     [string]$UiTemplateArchive = 'build/packages/mms-adaptive-ui-template.zip',
     [switch]$Force
@@ -41,7 +41,7 @@ if ((Test-Path -LiteralPath $release) -and @(Get-ChildItem -LiteralPath $release
 New-Item -ItemType Directory -Path $release -Force | Out-Null
 
 # Copy only the three shipped items. The build tree stays under
-# build/win7-x64/build and the verification evidence under build/verification.
+# build/cmake and the verification evidence under build/verification.
 Copy-Item -LiteralPath $exe -Destination (Join-Path $release 'MikuMikuDance.exe')
 Copy-Item -LiteralPath (Join-Path $repo 'licenses') -Destination $release -Recurse
 
