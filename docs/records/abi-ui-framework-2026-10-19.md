@@ -50,10 +50,10 @@ DOCK、声明式 INPUT 和新增侧栏、属性区、时间线、状态栏挂载
 
 以下结果对应第一版最终源码与二进制；窄侧栏时间线修正后的结果见下一节。本轮在框架记录之后又修改了原始兼容分支的侧栏布局和两个测试。
 
-- 完整配置：21／21 组通过，152.99 秒。日志 `build/abi-resume-20261020/ctest-full-final.log`。
-- 原始兼容配置：18／18 组通过，16.81 秒。日志 `build/abi-resume-20261020/ctest-original-1.log`。
-- 布局拖动稳定边界回归：普通与共同历史绑定模式各完成 86 次比较，0 失败、0 不完整。每种模式覆盖 9 条可见滑杆和 2 个曲线入口，另有 2 次预期几何变化比较跳过。证据目录为 `build/abi-layout-final-20261020/ordinary/` 和 `build/abi-layout-final-20261020/bound/`；两份 `layout-product-regression.txt` 的状态均为 `PASS_STABLE_BOUNDARIES`，退出码均为 0。
-- 契约重复运行：`ui_control_layout_contract` 6／6 通过，`plugin_abi_contract` 6／6 通过。日志 `build/abi-resume-20261020/repeat-targets.log`。
+- 完整配置：21／21 组通过，152.99 秒。日志 `build/release/verification/logs/ctest-full-final.log`。
+- 原始兼容配置：18／18 组通过，16.81 秒。日志 `build/release/verification/logs/ctest-original-1.log`。
+- 布局拖动稳定边界回归：普通与共同历史绑定模式各完成 86 次比较，0 失败、0 不完整。每种模式覆盖 9 条可见滑杆和 2 个曲线入口，另有 2 次预期几何变化比较跳过。第一版证据目录已在 2026-10-20 清理中删除，最终版证据在下一节。
+- 契约重复运行：`ui_control_layout_contract` 6／6 通过，`plugin_abi_contract` 6／6 通过。日志 `build/release/verification/logs/repeat-targets.log`。
 
 最终完整配置产品 `MikuMikuDance.exe` 的 SHA256 为 `D2CAE5EBC669786FBE63EC0939B4E5C1A9E2B0F01839CC5BCFC81EA2EFBD50B8`。用于布局回归的 `small_viewport_host_tests.exe` 的 SHA256 为 `8B7E3BFB78BF81BFF3328A4449EFFBCB8AF800AB153B97D55B30A4A6545B3344`。
 
@@ -82,25 +82,25 @@ DOCK、声明式 INPUT 和新增侧栏、属性区、时间线、状态栏挂载
 验证：
 
 - `sidebar_resize_tests` 全部通过，输出 `Sidebar live resize regressions passed`。新增检查覆盖 250、310、328、400、600 五种侧栏宽度下的横、纵滚动条位置、面板底部和二者交接。
-- 完整配置 21／21 组通过，282.46 秒。原始兼容配置 18／18 组通过，14.08 秒。日志为 `build/abi-resume-20261020/ctest-full-final2.log` 和 `build/abi-resume-20261020/ctest-original-final2.log`。
-- 布局拖动稳定边界：普通和共同历史绑定模式各 86 次比较，0 失败、0 不完整。普通模式第一次运行因真实按键或鼠标键处于按下状态中止，第二次通过；绑定模式一次通过。证据在 `build/abi-layout-final2-20261020/ordinary/` 和 `bound/`。
+- 完整配置 21／21 组通过，282.46 秒。原始兼容配置 18／18 组通过，14.08 秒。日志为 `build/release/verification/logs/ctest-full-final2.log` 和 `build/release/verification/logs/ctest-original-final2.log`。
+- 布局拖动稳定边界：普通和共同历史绑定模式各 86 次比较，0 失败、0 不完整。普通模式第一次运行因真实按键或鼠标键处于按下状态中止，第二次通过；绑定模式一次通过。证据在 `build/release/verification/layout/ordinary/` 和 `bound/`。
 - 最终完整配置产品 `MikuMikuDance.exe` 的 SHA256 为 `DABFCF5919CAD736B02FCF84A5C7CEB9A2BE67F9A9EF2EFA937BAC944DBDF624`。布局回归宿主 `small_viewport_host_tests.exe` 的 SHA256 为 `F7784142884D5FA09CBF896F440BAB92D56B510CBF2C912FF8CF6229A0C17FB3`。
 
 用户在 2026-10-20 的复验中确认截图红框位置已正常：窄侧栏换行行不再压住橙色关键帧行，横纵滚动条交界没有白条残影。连续拖动时的滑杆白闪仍按首轮记录单独判定，本次确认只覆盖该区域。
 
-以上自动检查仍不替代 175% 下的人工拖动复验。用于该复验的产品包在 `build/mms-abi-20261020-slider-check-r2/`。
+以上自动检查仍不替代 175% 下的人工拖动复验。用于该复验的产品包在 `build/release/mms-abi-20261020-slider-check-r2/`。
 
 ## 构建目录清理（2026-10-20）
 
 按用户要求，`build/` 下只保留以下内容：
 
-- `win7-x64/`：最终完整配置构建树，包含产品、库和测试可执行文件。
-- `mms-abi-20261020-slider-check-r2/` 及其 zip：最终可运行产品包。
-- `abi-resume-20261020/`：最终构建和回归日志。
-- `abi-layout-final2-20261020/`：最终布局拖动证据。
-- `packages/mms-adaptive-ui-template.zip`：此前的 C++ UI 模板交付包。
+- `release/build/`：从 `win7-x64` 迁移的最终完整配置构建树，包含产品、库和测试可执行文件。它是冻结产物，`CMakeCache.txt` 仍记录旧路径；重新配置前须清理该缓存或另用空构建目录。
+- `release/mms-abi-20261020-slider-check-r2/` 及其 zip：最终可运行产品包。
+- `release/verification/logs/`：最终构建和回归日志。
+- `release/verification/layout/`：最终布局拖动证据。
+- `release/mms-adaptive-ui-template.zip`：此前的 C++ UI 模板交付包。
 
-其余 230 余个测试运行目录、旧构建目录、旧日志和旧补丁已删除，清理前后 `build/` 占用从约 8.1 GB 降到约 2.4 GB。旧记录中引用的 `build/abi-*` 历史证据路径不再存在，历史结论以各记录中的文字为准。
+其余 230 余个测试运行目录、旧构建目录、旧日志和旧补丁已删除，清理前后 `build/` 占用从约 8.1 GB 降到约 2.4 GB。历史记录中的 `build/win7-x64/...` 路径对应改名后的 `build/release/build/...`；旧记录引用的 `build/abi-*` 测试证据路径不再存在，历史结论以各记录中的文字为准。
 
 ## 兼容边界
 
