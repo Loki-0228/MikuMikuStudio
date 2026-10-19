@@ -79,6 +79,7 @@
 | `window_interaction_tests.cpp` | 窗口消息、鼠标/选择行为。 |
 | `pmm_reload_tests.cpp` | PMM 重载与状态恢复。 |
 | `pmm_extension_tests.cpp` | PMM v2 尾部扩展的独立字节布局、CRC32、长度边界、重复键、未知记录与文件位置恢复；纯文件测试。 |
+| `pmm_container_tests.cpp` | PMM 0003 块容器（`PMM3END` footer、`PMM3TOC` 目录）的独立字节布局、CRC32、未知块保留、旧 `MDSXPMM2` 识别和长度/偏移边界；纯文件测试。 |
 | `pmm_project_settings_tests.cpp` | 隐藏生产窗口中的实际 PMM 保存、加载、另存和新建，核对运算器类型、缺失类型回退自动、五档排序上限的菜单状态与单一档位字段、未知档位字节原样保留与显式替换、旧开关记录不参与档位判断及未知数据保留。显式传入测试产物目录，可附加 PMX 模型路径；需 D3D9 设备。`--pmx-boundary <输出目录>` 单独运行无顶点测试 PMX 的真实载入器绑定名与 v3 边界检查，不需要 D3D 设备。 |
 | `morph_runtime_tests.cpp` | 表情运行时计算和边界。 |
 | `runtime_layout_tests.cpp` | 结构体布局相关行为、标准姿态骨骼遍历、稀疏轨道清理、配件、物理及全局帧。 |
