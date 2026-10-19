@@ -1426,6 +1426,10 @@ if(MSVC AND CMAKE_SIZEOF_VOID_P EQUAL 4)
     target_link_options(MMSNvidiaAAFix PRIVATE "/EXPORT:DllRegisterServer=_DllRegisterServer@0"
         "/EXPORT:DllUnregisterServer=_DllUnregisterServer@0"
         "/EXPORT:MMSNvidiaAAFixQueryInstalled=_MMSNvidiaAAFixQueryInstalled@4")
+elseif(MSVC)
+    # x64 keeps the registration entry points out of the import library via the
+    # .def file, which also silences LNK4104 for them.
+    target_sources(MMSNvidiaAAFix PRIVATE src/tools/MMSNvidiaAAFix.def)
 endif()
 add_dependencies(MikuDanceStudio MMSNvidiaAAFix)
 

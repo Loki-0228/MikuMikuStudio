@@ -359,6 +359,10 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvRe
 
     g_amPlatform = 1;                 // VER_PLATFORM_WIN32_WINDOWS default
     g_osVer.dwOSVersionInfoSize = sizeof(g_osVer);
+    // The original module reads dwPlatformId here. GetVersionExA is deprecated
+    // only because manifests can lie about the version; this port keeps the
+    // original query instead of switching to a different API.
+#pragma warning(suppress : 4996)
     if (GetVersionExA(&g_osVer))
         g_amPlatform = g_osVer.dwPlatformId;
 

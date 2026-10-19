@@ -25,9 +25,16 @@ HRESULT Change(bool enabled) noexcept {
 }
 }
 // Loading the DLL only exposes its API; registration requires an explicit call.
-extern "C" __declspec(dllexport) HRESULT WINAPI DllRegisterServer() { return Change(true); }
-extern "C" __declspec(dllexport) HRESULT WINAPI DllUnregisterServer() { return Change(false); }
-extern "C" __declspec(dllexport) HRESULT WINAPI MMSNvidiaAAFixQueryInstalled(BOOL* installed) {
+// x86 exports these through the /EXPORT link options, x64 through the .def file
+// that also marks the registration entry points PRIVATE (LNK4104).
+#if defined(_M_IX86)
+#define MMS_HELPER_EXPORT __declspec(dllexport)
+#else
+#define MMS_HELPER_EXPORT
+#endif
+extern "C" MMS_HELPER_EXPORT HRESULT WINAPI DllRegisterServer() { return Change(true); }
+extern "C" MMS_HELPER_EXPORT HRESULT WINAPI DllUnregisterServer() { return Change(false); }
+extern "C" MMS_HELPER_EXPORT HRESULT WINAPI MMSNvidiaAAFixQueryInstalled(BOOL* installed) {
     if (!installed) return E_POINTER;
     *installed = FALSE;
     try {
