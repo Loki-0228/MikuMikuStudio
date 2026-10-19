@@ -1,12 +1,12 @@
 #pragma once
-#include "mikudancestudio/build_profile.hpp"
+#include "mikumikustudio/build_profile.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "native_viewport_history.hpp"
 #include <cstdint>
 #include <memory>
 
-namespace mikudancestudio { class MMDApp; }
-namespace mikudancestudio::plugins {
+namespace mikumikustudio { class MMDApp; }
+namespace mikumikustudio::plugins {
 // An immutable CPU sample of the camera state restored by model-view NUMPAD0.
 // Capturing never installs a pose, reconciles live authoring, or evaluates a
 // model. Initial publication must check IsCurrent; history replays its owned

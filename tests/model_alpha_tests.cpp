@@ -2,8 +2,8 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
-#include "mikudancestudio/model_alpha_pass.hpp"
-#include "mikudancestudio/transparent_triangles.hpp"
+#include "mikumikustudio/model_alpha_pass.hpp"
+#include "mikumikustudio/transparent_triangles.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <initializer_list>
@@ -45,14 +45,14 @@ void CheckSortParity() {
         for (const auto& t:reference) for(auto i:t.indices) expected.push_back(i);
         if (count==0) continue; // null empty vectors use the existing rejection contract
         auto source = actual;
-        Check(mikudancestudio::SortTransparentTriangles(vertices.data(),sizeof(Vertex),
+        Check(mikumikustudio::SortTransparentTriangles(vertices.data(),sizeof(Vertex),
             static_cast<UINT>(vertices.size()),actual.data(),static_cast<UINT>(actual.size()),matrix),
             "sort randomized triangles");
         Check(actual==expected,"radix matches stable reference including equal and negative depths");
-        mikudancestudio::TransparentTriangleOrder cache;
+        mikumikustudio::TransparentTriangleOrder cache;
         for (int repeat = 0; repeat < 3; ++repeat) {
             actual = source;
-            Check(mikudancestudio::SortTransparentTriangles(vertices.data(), sizeof(Vertex),
+            Check(mikumikustudio::SortTransparentTriangles(vertices.data(), sizeof(Vertex),
                 static_cast<UINT>(vertices.size()), actual.data(), static_cast<UINT>(actual.size()), matrix, &cache)
                 && actual == expected, "cached order matches stable reference on repeated passes");
         }
@@ -62,16 +62,16 @@ void CheckSortParity() {
             if (change == 1) vertices[source[0]].z += 4096.f;
             if (change == 2) std::rotate(source.begin(), source.begin() + 3, source.end());
             actual = source; expected = source;
-            Check(mikudancestudio::SortTransparentTriangles(vertices.data(), sizeof(Vertex),
+            Check(mikumikustudio::SortTransparentTriangles(vertices.data(), sizeof(Vertex),
                 static_cast<UINT>(vertices.size()), expected.data(), static_cast<UINT>(expected.size()), changedMatrix),
                 "sort changed reference inputs");
-            Check(mikudancestudio::SortTransparentTriangles(vertices.data(), sizeof(Vertex),
+            Check(mikumikustudio::SortTransparentTriangles(vertices.data(), sizeof(Vertex),
                 static_cast<UINT>(vertices.size()), actual.data(), static_cast<UINT>(actual.size()), changedMatrix, &cache)
                 && actual == expected, "cache revalidates camera, deformed positions and source order");
         }
         const auto unchanged=actual;
         vertices[actual[0]].z=std::numeric_limits<float>::quiet_NaN();
-        Check(!mikudancestudio::SortTransparentTriangles(vertices.data(),sizeof(Vertex),
+        Check(!mikumikustudio::SortTransparentTriangles(vertices.data(),sizeof(Vertex),
             static_cast<UINT>(vertices.size()),actual.data(),static_cast<UINT>(actual.size()),matrix, &cache)
             && actual==unchanged,"nonfinite input leaves indices unchanged");
     }
@@ -86,7 +86,7 @@ void Quad(IDirect3DDevice9* device, float z, DWORD color) {
 
 int main() {
     {
-        using Cache = mikudancestudio::TransparentSortFrameCache;
+        using Cache = mikumikustudio::TransparentSortFrameCache;
         Cache frame;
         Check(Cache::active == &frame, "render scope installs sort cache");
         const auto entry = frame.EntryFor(&frame, &frame, 0, 300);
@@ -99,7 +99,7 @@ int main() {
         { Cache disabled(false); Check(Cache::active == nullptr, "native rendering disables cache"); }
         Check(Cache::active == &frame, "nested scope restores parent");
     }
-    Check(mikudancestudio::TransparentSortFrameCache::active == nullptr,
+    Check(mikumikustudio::TransparentSortFrameCache::active == nullptr,
           "cache lifetime ends with frame");
     std::thread workers[4];
     for (auto& worker:workers) worker=std::thread([] { CheckSortParity<unsigned int>(); });
@@ -135,8 +135,8 @@ int main() {
     pixels[0]=0x00000000; pixels[1]=0x40000000; pixels[2]=0x80000000; pixels[3]=0xFF000000;
     texture->UnlockRect(0);
     unsigned char tag[4]{};
-    mikudancestudio::CacheTextureColorAndAlpha(texture, tag);
-    Check((tag[3] & mikudancestudio::kTextureUsesAlpha) != 0, "texture alpha classification");
+    mikumikustudio::CacheTextureColorAndAlpha(texture, tag);
+    Check((tag[3] & mikumikustudio::kTextureUsesAlpha) != 0, "texture alpha classification");
     device->SetSamplerState(0,D3DSAMP_MINFILTER,D3DTEXF_POINT);
     device->SetSamplerState(0,D3DSAMP_MAGFILTER,D3DTEXF_POINT);
     IDirect3DSurface9* back=nullptr; device->GetBackBuffer(0,0,D3DBACKBUFFER_TYPE_MONO,&back);
@@ -146,20 +146,20 @@ int main() {
         device->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0xFFFFFFFF,1,0);
         device->BeginScene();
         int frontDraws=0, rearDraws=0;
-        const auto draw = [&](mikudancestudio::ModelAlphaPass pass) {
-            if (mikudancestudio::ModelMaterialMatchesPass(pass,true)) {
+        const auto draw = [&](mikumikustudio::ModelAlphaPass pass) {
+            if (mikumikustudio::ModelMaterialMatchesPass(pass,true)) {
                 device->SetTexture(0,texture); Quad(device,0.25f,0xFFFFFFFF);
                 ++frontDraws;
             }
-            if (mikudancestudio::ModelMaterialMatchesPass(pass,false)) {
+            if (mikumikustudio::ModelMaterialMatchesPass(pass,false)) {
                 device->SetTexture(0,nullptr); Quad(device,0.75f,0xFF0000FF);
                 ++rearDraws;
             }
         };
         if (split) {
-            draw(mikudancestudio::ModelAlphaPass::Opaque);
-            draw(mikudancestudio::ModelAlphaPass::Translucent);
-        } else draw(mikudancestudio::ModelAlphaPass::Original);
+            draw(mikumikustudio::ModelAlphaPass::Opaque);
+            draw(mikumikustudio::ModelAlphaPass::Translucent);
+        } else draw(mikumikustudio::ModelAlphaPass::Original);
         Check(frontDraws==1 && rearDraws==1, "each material is submitted only once");
         // An inverted-hull outline behind the front hair must not paint over
         // its soft alpha pixels. With translucent ZWRITE disabled this is black.
@@ -195,7 +195,7 @@ int main() {
     worldView._11=worldView._22=worldView._33=worldView._44=1;
     for (bool sort : {false,true}) {
         unsigned short indices[]={0,1,2,2,1,3,4,5,6,6,5,7};
-        if (sort) Check(mikudancestudio::SortTransparentTriangles(layers,sizeof(Vertex),8,
+        if (sort) Check(mikumikustudio::SortTransparentTriangles(layers,sizeof(Vertex),8,
             indices,12,worldView), "sort transparent triangles");
         device->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0xFFFFFFFF,1,0);
         device->BeginScene();
@@ -213,54 +213,54 @@ int main() {
         read->UnlockRect();
     }
     unsigned int wideIndices[]={0,1,2,4,5,6};
-    Check(mikudancestudio::SortTransparentTriangles(layers,sizeof(Vertex),8,wideIndices,6,worldView)
+    Check(mikumikustudio::SortTransparentTriangles(layers,sizeof(Vertex),8,wideIndices,6,worldView)
           && wideIndices[0]==4, "32-bit indices sort far surface first");
     worldView._33=-1;
-    Check(mikudancestudio::SortTransparentTriangles(layers,sizeof(Vertex),8,wideIndices,6,worldView)
+    Check(mikumikustudio::SortTransparentTriangles(layers,sizeof(Vertex),8,wideIndices,6,worldView)
           && wideIndices[0]==0, "camera reversal changes triangle order");
     wideIndices[0]=8;
-    Check(!mikudancestudio::SortTransparentTriangles(layers,sizeof(Vertex),8,wideIndices,6,worldView),
+    Check(!mikumikustudio::SortTransparentTriangles(layers,sizeof(Vertex),8,wideIndices,6,worldView),
           "invalid vertex index rejected before reading vertex data");
     texture->LockRect(0,&lock,nullptr,0);
     pixels=static_cast<DWORD*>(lock.pBits);
     for (int i=0;i<4;++i) pixels[i]=0xFF112233;
     texture->UnlockRect(0);
-    mikudancestudio::CacheTextureColorAndAlpha(texture,tag);
+    mikumikustudio::CacheTextureColorAndAlpha(texture,tag);
     Check(tag[0]==0x11 && tag[1]==0x22 && tag[2]==0x33, "toon color metadata preserved");
-    Check(tag[3]==mikudancestudio::kTextureAlphaKnown, "reload updates opaque texture classification");
+    Check(tag[3]==mikumikustudio::kTextureAlphaKnown, "reload updates opaque texture classification");
     DWORD paddedPixels[]={0xFFFFFFFF,0xFFFFFFFF,0,0xFFFFFFFF,0x80FFFFFF,0};
     D3DLOCKED_RECT padded{3*sizeof(DWORD),paddedPixels};
-    Check(mikudancestudio::TexturePixelsUseAlpha(padded,2,2), "alpha scan respects pitch and later rows");
+    Check(mikumikustudio::TexturePixelsUseAlpha(padded,2,2), "alpha scan respects pitch and later rows");
     paddedPixels[4]=0xFFFFFFFF;
-    Check(!mikudancestudio::TexturePixelsUseAlpha(padded,2,2), "padding is not mistaken for alpha texels");
+    Check(!mikumikustudio::TexturePixelsUseAlpha(padded,2,2), "padding is not mistaken for alpha texels");
     // Material classification: transparent ordering only covers materials
     // that can emit visible non-opaque fragments. An authored alpha of exactly
     // zero emits nothing - the alpha test above keeps it from writing depth -
     // so hidden helper materials stay out of the sort and peel sets even when
     // their texture carries alpha.
-    Check(!mikudancestudio::MaterialAlphaVisible(
-              mikudancestudio::EffectiveMaterialAlpha(0.0f, false)),
+    Check(!mikumikustudio::MaterialAlphaVisible(
+              mikumikustudio::EffectiveMaterialAlpha(0.0f, false)),
           "authored alpha 0 needs no transparent ordering");
-    Check(mikudancestudio::MaterialAlphaVisible(
-              mikudancestudio::EffectiveMaterialAlpha(1.0f / 255.0f, false)),
+    Check(mikumikustudio::MaterialAlphaVisible(
+              mikumikustudio::EffectiveMaterialAlpha(1.0f / 255.0f, false)),
           "very low non-zero alpha still needs transparent ordering");
-    Check(mikudancestudio::MaterialAlphaVisible(
-              mikudancestudio::EffectiveMaterialAlpha(0.8f, false)),
+    Check(mikumikustudio::MaterialAlphaVisible(
+              mikumikustudio::EffectiveMaterialAlpha(0.8f, false)),
           "material alpha below one needs transparent ordering");
-    Check(mikudancestudio::MaterialAlphaVisible(
-              mikudancestudio::EffectiveMaterialAlpha(1.0f, false)),
+    Check(mikumikustudio::MaterialAlphaVisible(
+              mikumikustudio::EffectiveMaterialAlpha(1.0f, false)),
           "opaque material alpha still defers to the texture alpha term");
     // The translucent-display override forces 0.5 alpha on every material, so
     // it lifts even an authored alpha-0 material back into the translucent set.
-    Check(mikudancestudio::MaterialAlphaVisible(
-              mikudancestudio::EffectiveMaterialAlpha(0.0f, true)),
+    Check(mikumikustudio::MaterialAlphaVisible(
+              mikumikustudio::EffectiveMaterialAlpha(0.0f, true)),
           "translucent display keeps alpha-0 materials translucent");
     // The hidden material keeps its draw: the opaque pass submits it exactly
     // once, so an MME effect intercepting that draw still runs.
-    Check(mikudancestudio::ModelMaterialMatchesPass(
-              mikudancestudio::ModelAlphaPass::Opaque, false) &&
-              !mikudancestudio::ModelMaterialMatchesPass(
-                  mikudancestudio::ModelAlphaPass::Translucent, false),
+    Check(mikumikustudio::ModelMaterialMatchesPass(
+              mikumikustudio::ModelAlphaPass::Opaque, false) &&
+              !mikumikustudio::ModelMaterialMatchesPass(
+                  mikumikustudio::ModelAlphaPass::Translucent, false),
           "hidden material draw submits once through the opaque pass");
     read->Release(); back->Release(); texture->Release(); device->Release(); d3d->Release();
     DestroyWindow(window);

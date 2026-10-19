@@ -3,7 +3,7 @@
 #include <array>
 #include <set>
 
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 using Version = std::array<uint32_t, 3>;
 Version ParseVersion(const std::string&);
 struct ServiceRequirement { std::string id; uint32_t major, minor; };

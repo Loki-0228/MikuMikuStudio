@@ -13,16 +13,16 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
-#include "mikudancestudio/d3dx_effect.hpp"
-#include "mikudancestudio/native_shadow_projection.hpp"
-#include "mikudancestudio/adaptive_shadow.hpp"
+#include "mikumikustudio/d3dx_effect.hpp"
+#include "mikumikustudio/native_shadow_projection.hpp"
+#include "mikumikustudio/adaptive_shadow.hpp"
 
-using namespace mikudancestudio::d3dx;
+using namespace mikumikustudio::d3dx;
 using Microsoft::WRL::ComPtr;
 namespace {
 constexpr unsigned kSize=128;
 void CheckVertexBounds() {
-    using namespace mikudancestudio;
+    using namespace mikumikustudio;
     unsigned checks = 0;
     const auto compare = [&](const void* data, std::size_t stride, std::size_t count) {
         NativeShadowBounds reference;
@@ -64,7 +64,7 @@ void CheckVertexBounds() {
     std::printf("PASS full vertex bounds: %u scalar parity checks\n",checks);
 }
 void CheckReferenceFit() {
-    using namespace mikudancestudio;
+    using namespace mikumikustudio;
     NativeShadowBounds bounds;
     const float low[3]={-6,0,-3}, high[3]={6,20,8};
     bounds.Include(low);bounds.Include(high);
@@ -94,7 +94,7 @@ void CheckReferenceFit() {
 void CheckProjection() {
     CheckVertexBounds();
     CheckReferenceFit();
-    using namespace mikudancestudio;
+    using namespace mikumikustudio;
     if (ShadowSamplingFactor(.1f) != 4.f || ShadowSamplingFactor(.05f) != 1.f ||
         ShadowSamplingFactor(.00001f) != 1.f)
         throw std::runtime_error("shared finest range lost its 4x sampling demand");
@@ -110,7 +110,7 @@ void CheckProjection() {
     for (const auto& direction : std::vector<std::array<float, 3>>{
              {-.5f, -1, .5f}, {0, -1, 0}, {0, 0, 1}, {1, 0, 0}, {0, 0, 0}}) {
         for (int mode : {1, 2}) {
-            const auto matrix = mikudancestudio::NativeShadowProjection(focus, direction.data(), .01784f, mode);
+            const auto matrix = mikumikustudio::NativeShadowProjection(focus, direction.data(), .01784f, mode);
             const auto project = [&](const std::array<float, 3>& point) {
                 std::array<float, 3> result{};
                 for (int axis = 0; axis < 3; ++axis)
@@ -134,7 +134,7 @@ void CheckProjection() {
         }
     }
     std::puts("PASS focused coverage and directional occluder/receiver projection");
-    mikudancestudio::NativeShadowBounds bounds;
+    mikumikustudio::NativeShadowBounds bounds;
     const float lower[3]{-20, -5, -130}, upper[3]{35, 48, 160};
     bounds.Include(lower); bounds.Include(upper);
     const float panned[3]{300, -120, 90};
@@ -142,8 +142,8 @@ void CheckProjection() {
     for (const auto& direction : std::vector<std::array<float, 3>>{
              {-.5f, -1, .5f}, {0, -1, 0}, {0, 0, 1}, {1, 0, 0}, {0, 0, 0}}) {
         for (int mode : {1, 2}) for (float range : {.1f, .01125f, .00001f}) {
-            const auto projection = mikudancestudio::NativeShadowProjection(focus, direction.data(), range, mode, &bounds);
-            if (projection != mikudancestudio::NativeShadowProjection(panned, direction.data(), range, mode, &bounds))
+            const auto projection = mikumikustudio::NativeShadowProjection(focus, direction.data(), range, mode, &bounds);
+            if (projection != mikumikustudio::NativeShadowProjection(panned, direction.data(), range, mode, &bounds))
                 throw std::runtime_error("camera pan moved fitted shadow coverage");
             for (unsigned corner = 0; corner < 8; ++corner) {
                 const auto point = bounds.Corner(corner);

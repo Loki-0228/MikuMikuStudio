@@ -1,4 +1,4 @@
-#include "mikudancestudio/frame_limits.hpp"
+#include "mikumikustudio/frame_limits.hpp"
 // ===========================================================================
 // Left frame-editor refresh and single-frame stepping helpers.
 //   0x00430F20 / 0x004312E0  StepFrame(app, true/false) - one frame forward /
@@ -15,12 +15,12 @@
 #include <cstdint>
 #include <cstdio>
 
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/panel_controls.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/panel_controls.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 void SnapshotPoseBeforeFrameChange(unsigned char* model, int frame);  // VA 0x004A0080, was Sub4A0080
 void SyncModelEditControls(unsigned char* model);                     // VA 0x004A02C0, was Sub4A02C0
@@ -234,4 +234,4 @@ void RefreshAfterFrameApply(MMDApp* app) {
     app->PhysicsResetPending() = 1;
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

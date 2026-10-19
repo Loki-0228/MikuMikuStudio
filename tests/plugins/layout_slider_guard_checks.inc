@@ -2,7 +2,7 @@
 // These synchronous guard tests use the actual FOV/vertical native HWNDs. They
 // do not replace GWLP_WNDPROC, drive physical input, or prove visible no-flicker.
 #include "../../src/window/light_slider_paint_buffer.hpp"
-#include "mikudancestudio/build_profile.hpp"
+#include "mikumikustudio/build_profile.hpp"
 #include <array>
 #include <algorithm>
 #include <filesystem>
@@ -11,9 +11,9 @@
 
 #if !MMD_ORIGINAL_PROFILE
 namespace layout_slider_guard_checks {
-namespace buffer=mikudancestudio::ui::light_slider_paint_buffer;
+namespace buffer=mikumikustudio::ui::light_slider_paint_buffer;
 namespace trace=slider_paint_trace;
-using mikudancestudio::MMDApp;
+using mikumikustudio::MMDApp;
 enum class Fault {None,NoLayout,VisibleCue,PrepareFlags,NativeFlags,NativeMove,NativeReparent,QueryFlags,QueryMove,QueryCapture};
 static const char* Name(Fault value)noexcept{switch(value){
     case Fault::NoLayout:return "main-capture-without-layout";case Fault::VisibleCue:return "visible-keyboard-cue";

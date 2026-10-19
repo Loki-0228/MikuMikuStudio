@@ -2,17 +2,17 @@
 // Both profiles exercise the real unbound VPD loader, paste command and native
 // undo/redo implementation. No window, renderer device or plugin runtime starts.
 #define NOMINMAX
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/bone_scale.hpp"
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/undo_storage.hpp"
-#include "mikudancestudio/vpd_scale_io.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/undo_storage.hpp"
+#include "mikumikustudio/vpd_scale_io.hpp"
 #if !MMD_ORIGINAL_PROFILE
-#include "mikudancestudio/bone_curve.hpp"
-#include "mikudancestudio/native_edit_history.hpp"
+#include "mikumikustudio/bone_curve.hpp"
+#include "mikumikustudio/native_edit_history.hpp"
 #endif
 #include <array>
 #include <cstdio>
@@ -44,8 +44,8 @@ void operator delete[](void* value)noexcept{std::free(value);}
 void operator delete(void* value,std::size_t)noexcept{std::free(value);}
 void operator delete[](void* value,std::size_t)noexcept{std::free(value);}
 
-namespace mikudancestudio { void CmdControl450(MMDApp*, HWND, std::uint16_t, std::uint16_t); }
-using namespace mikudancestudio;
+namespace mikumikustudio { void CmdControl450(MMDApp*, HWND, std::uint16_t, std::uint16_t); }
+using namespace mikumikustudio;
 namespace {
 unsigned checks=0;
 void Check(bool value,const char* message){++checks;if(!value){std::printf("FAIL %s\n",message);std::exit(1);}}

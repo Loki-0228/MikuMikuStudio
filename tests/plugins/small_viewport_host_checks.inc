@@ -1,7 +1,7 @@
 // Actual hidden-window and D3D9 coverage. No replacement layout math is used.
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/window_dpi_scope.hpp"
-#include "mikudancestudio/scene_sampling.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/window_dpi_scope.hpp"
+#include "mikumikustudio/scene_sampling.hpp"
 #include <array>
 #include <memory>
 #include <stdexcept>

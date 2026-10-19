@@ -1,16 +1,16 @@
-#include "mikudancestudio/model_import.hpp"
+#include "mikumikustudio/model_import.hpp"
 #if !MMD_ORIGINAL_PROFILE
-#include "mikudancestudio/import_texture_cache.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/path_workspace.hpp"
-#include "mikudancestudio/physics_scene.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/import_texture_cache.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/path_workspace.hpp"
+#include "mikumikustudio/physics_scene.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 #include <cstdlib>
 #include <cwchar>
 #include <utility>
 
-namespace mikudancestudio::model_import {
+namespace mikumikustudio::model_import {
 namespace {
 thread_local std::vector<Message>* messages = nullptr;
 class Capture {

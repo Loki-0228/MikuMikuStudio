@@ -41,7 +41,7 @@ technique Main < string MMDPass = "object"; > {
         env = os.environ.copy()
         env['LOCALAPPDATA'] = str(directory / 'Local')
         env['APPDATA'] = str(directory / 'Roaming')
-        env['MIKUDANCESTUDIO_AUTOSAVE_CONFIG'] = str(directory / 'autosave.ini')
+        env['MIKUMIKUSTUDIO_AUTOSAVE_CONFIG'] = str(directory / 'autosave.ini')
         with (directory / 'result.log').open('wb') as log:
             arguments = ['--file-watch', str(models / 'fx/assigned.fx')] if file_watch else ['--emd-autoload']
             result = subprocess.run([str(directory / 'MikuMikuDance.exe'), str(model), *arguments],

@@ -1,0 +1,283 @@
+// Real menu 288/289 resources, controls and dialog procedures. No synthetic
+// WM_INITDIALOG or private apply helper substitutes for the user-facing path.
+#include "mikumikustudio/scene_history_ui.hpp"
+
+namespace model_order_dialog_checks {
+constexpr std::array<int, 3> kSlots{2, 9, 254};
+constexpr std::array<int, 3> kCombos{436, 449, 474};
+int failures = 0;
+int moveRow = -1;
+int moveCommand = 0;
+bool cancel = false;
+int dialogs = 0;
+std::array<std::wstring, 3> initialLabels;
+bool faultRound = false, rejectInserts = false;
+int faultStage = 0;
+int listFaultMode = 0, listFaultStage = 0, listInsertions = 0;
+bool listFaultEnabled = false;
+constexpr UINT kFaultContinue = WM_APP + 0x135;
+constexpr UINT_PTR kFaultSubclass = 0x4d4f4435;
+
+void Expect(bool value, const char* message) {
+    if (!value) { ++failures; std::fprintf(stderr, "MODEL-ORDER FAIL: %s\n", message); }
+}
+std::wstring Text(HWND window, UINT lengthMessage, UINT textMessage, int row) {
+    const auto size = SendMessageW(window, lengthMessage, row, 0);
+    Check(size >= 0, "model-order row exists");
+    std::wstring result(static_cast<std::size_t>(size) + 1, L'\0');
+    Check(SendMessageW(window, textMessage, row, reinterpret_cast<LPARAM>(result.data())) == size,
+          "read complete model-order Unicode row");
+    result.resize(static_cast<std::size_t>(size));
+    return result;
+}
+LRESULT CALLBACK RejectInsert(HWND window, UINT message, WPARAM wp, LPARAM lp, UINT_PTR, DWORD_PTR) {
+    if (message == CB_INSERTSTRING && rejectInserts) return CB_ERRSPACE;
+    return DefSubclassProc(window, message, wp, lp);
+}
+LRESULT CALLBACK RejectListWrite(HWND window, UINT message, WPARAM wp, LPARAM lp, UINT_PTR, DWORD_PTR) {
+    if (listFaultEnabled && message == LB_INSERTSTRING) {
+        if (listFaultMode == 1) { listFaultEnabled = false; return LB_ERRSPACE; }
+        if (++listInsertions > 1) return LB_ERRSPACE;
+    }
+    if (listFaultEnabled && listFaultMode == 2 && message == LB_DELETESTRING) return LB_ERR;
+    return DefSubclassProc(window, message, wp, lp);
+}
+LRESULT CALLBACK ListFaultDialog(HWND dialog, UINT message, WPARAM wp, LPARAM lp, UINT_PTR, DWORD_PTR) {
+    if (message == kFaultContinue) {
+        listFaultStage = static_cast<int>(wp);
+        if (wp == 1) {
+            SendMessageW(dialog, WM_COMMAND, 632, 0);
+            PostMessageW(dialog, kFaultContinue, 2, 0);
+        } else {
+            listFaultEnabled = false;
+            RemoveWindowSubclass(GetDlgItem(dialog, 628), RejectListWrite, kFaultSubclass);
+            SendMessageW(dialog, WM_COMMAND, 632, 0);
+        }
+        return 0;
+    }
+    if (message == WM_NCDESTROY) RemoveWindowSubclass(dialog, ListFaultDialog, kFaultSubclass);
+    return DefSubclassProc(dialog, message, wp, lp);
+}
+LRESULT CALLBACK FaultDialog(HWND dialog, UINT message, WPARAM wp, LPARAM lp, UINT_PTR, DWORD_PTR) {
+    if (message == kFaultContinue) {
+        faultStage = static_cast<int>(wp);
+        if (wp == 1) {
+            SendMessageW(dialog, WM_COMMAND, 632, 0);
+            for (int i = 0; i != 3; ++i)
+                Expect(mdl::Mdl(g_Block->ModelSlot(kSlots[i]))->comboSelIndex == i + 1,
+                       "a failed refresh restores the complete original native draw order");
+            Expect(g_Block->SceneModified() == 0, "a refused order publication does not mark the project modified");
+            PostMessageW(dialog, kFaultContinue, 2, 0);
+        } else if (wp == 2) {
+            SendMessageW(dialog, WM_COMMAND, IDCANCEL, 0);
+            SendMessageW(dialog, WM_CLOSE, 0, 0);
+            SendMessageW(dialog, WM_SYSCOMMAND, SC_CLOSE, 0);
+            Expect(g_Block->AccessoryOrderArray() != nullptr,
+                   "failed cancel repair keeps its live modal scratch until recovery");
+            PostMessageW(dialog, kFaultContinue, 3, 0);
+        } else {
+            rejectInserts = false;
+            RemoveWindowSubclass(GetDlgItem(g_Block->MainWindow(), 436), RejectInsert, kFaultSubclass);
+            SendMessageW(dialog, WM_CLOSE, 0, 0);
+        }
+        return 0;
+    }
+    if (message == WM_NCDESTROY) RemoveWindowSubclass(dialog, FaultDialog, kFaultSubclass);
+    return DefSubclassProc(dialog, message, wp, lp);
+}
+LRESULT CALLBACK DialogHook(int code, WPARAM wp, LPARAM lp) {
+    if (code == HCBT_CREATEWND) {
+        auto* created = reinterpret_cast<CBT_CREATEWNDW*>(lp);
+        if (!(created->lpcs->style & WS_CHILD)) {
+            created->lpcs->x = -32000; created->lpcs->y = -32000;
+        }
+    }
+    if (code == HCBT_ACTIVATE) {
+        HWND dialog = reinterpret_cast<HWND>(wp);
+        HWND list = GetDlgItem(dialog, 628);
+        Check(list && GetDlgItem(dialog, 630) && GetDlgItem(dialog, 631) && GetDlgItem(dialog, 632),
+              "model-order command opens its actual expected dialog");
+        ++dialogs;
+        Check(SendMessageW(list, LB_GETCOUNT, 0, 0) == 3, "model-order dialog contains all three models");
+        for (int i = 0; i != 3; ++i)
+            initialLabels[i] = Text(list, LB_GETTEXTLEN, LB_GETTEXT, i);
+        if (listFaultMode) {
+            listFaultEnabled = true; listInsertions = 0; listFaultStage = 0;
+            Check(SetWindowSubclass(list, RejectListWrite, kFaultSubclass, 0) != FALSE,
+                  "install native list insertion/deletion failure observer");
+        }
+        if (moveRow >= 0) {
+            Check(SendMessageW(list, LB_SETCURSEL, moveRow, 0) == moveRow, "choose actual reorder row");
+            SendMessageW(dialog, WM_COMMAND, moveCommand, 0);
+        }
+        if (listFaultMode == 2) {
+            Check(SetWindowSubclass(dialog, ListFaultDialog, kFaultSubclass, 0) != FALSE,
+                  "observe list repair before a successful modal exit");
+            PostMessageW(dialog, kFaultContinue, 1, 0);
+        } else if (faultRound) {
+            rejectInserts = true; faultStage = 0;
+            Check(SetWindowSubclass(GetDlgItem(g_Block->MainWindow(), 436), RejectInsert, kFaultSubclass, 0) != FALSE &&
+                  SetWindowSubclass(dialog, FaultDialog, kFaultSubclass, 0) != FALSE,
+                  "install bounded native combo failure and modal continuation observers");
+            PostMessageW(dialog, kFaultContinue, 1, 0);
+        } else PostMessageW(dialog, WM_COMMAND, cancel ? IDCANCEL : 632, 0);
+        return 1; // The off-screen fixture must not activate over the user's app.
+    }
+    return CallNextHookEx(nullptr, code, wp, lp);
+}
+struct Fixture {
+    MMDApp* app;
+    std::array<mdl::ModelRecord*, 3> models{};
+    std::array<wchar_t*, 3> originalNames{};
+    std::array<std::wstring, 3> labels{L"一号_模型_髪", L"二号_モデル_腕", L"三号_😀_脚"};
+    mdl::AccessoryRecord accessory{};
+    const unsigned char originalLanguage;
+    const unsigned char originalNamePreference;
+    explicit Fixture(MMDApp* value, const wchar_t* modelPath)
+        : app(value), originalLanguage(value->EnglishUI()), originalNamePreference(gModelInfoLanguagePreference) {
+        app->EnglishUI() = kUiChinese;
+        SetModelInfoLanguagePreference(kModelInfoLanguageAuto);
+        for (int i = 0; i != 3; ++i) {
+            LoadModelFile(app, modelPath, false);
+            Check(app->ModelSlot(i) != nullptr && app->SelectedModelSlot() == i,
+                  "model-order fixture loads three actual native models");
+            models[i] = mdl::Mdl(app->ModelSlot(i));
+            originalNames[i] = models[i]->pmxTextBuffers[0];
+            models[i]->pmxTextBuffers[0] = labels[i].data();
+        }
+        for (int i = 0; i != 3; ++i) app->ModelSlot(i) = nullptr;
+        for (int i = 0; i != 3; ++i)
+            app->ModelSlot(kSlots[i]) = reinterpret_cast<unsigned char*>(models[i]);
+        accessory.order = 0; accessory.parentModel = kSlots[0]; accessory.parentBone = 0;
+        strcpy_s(accessory.name, "order fixture");
+        app->AccessorySlot(17) = &accessory;
+        app->SelectedAccessorySlot() = 17;
+        Reset();
+    }
+    ~Fixture() {
+        for (int i = 0; i != 3; ++i) models[i]->pmxTextBuffers[0] = originalNames[i];
+        app->AccessorySlot(17) = nullptr;
+        app->SelectedAccessorySlot() = 0;
+        app->EnglishUI() = originalLanguage;
+        SetModelInfoLanguagePreference(originalNamePreference);
+    }
+    void Reset() {
+        for (int i = 0; i != 3; ++i) models[i]->comboSelIndex = models[i]->comboSelIndex2 = static_cast<unsigned char>(i + 1);
+        for (int i = 0; i != 3; ++i) {
+            Check(models[i]->boneCount > 0 && models[i]->boneTable, "native reorder fixture has real editable bone poses");
+            models[i]->boneTable[0].trans[0] = 13.5f + static_cast<float>(i);
+        }
+        app->SetSelectedModelSlot(kSlots[1]); app->CameraMode() = 0;
+        app->EditMode() = ViewportEditMode::Scale;
+        app->CameraParentModel() = kSlots[2]; app->CameraParentBone() = 0;
+        accessory.parentModel = kSlots[0]; accessory.parentBone = 0;
+        app->SelectedAccessorySlot() = 17;
+        Check(scene_history_ui::RefreshObjectLists(*app, scene_history_ui::CaptureSelection(*app), false, false) ==
+              scene_history_ui::Result::Ok, "initialize real model selectors from object identities");
+        EnableWindow(GetDlgItem(app->MainWindow(), panel::kUndoButton), TRUE);
+        EnableWindow(GetDlgItem(app->MainWindow(), panel::kRedoButton), TRUE);
+    }
+    void Open(int command, int row, int movement, bool cancelled) {
+        std::array<std::array<float, 7>, 3> poses{};
+        for (int i = 0; i != 3; ++i) {
+            std::copy_n(models[i]->boneTable[0].trans, 3, poses[i].begin());
+            std::copy_n(models[i]->boneTable[0].rotQuat, 4, poses[i].begin() + 3);
+        }
+        const auto frame = app->CurrentFrame();
+        moveRow = row; moveCommand = movement; cancel = cancelled;
+        const auto count = dialogs;
+        HHOOK hook = SetWindowsHookExW(WH_CBT, DialogHook, nullptr, GetCurrentThreadId());
+        Check(hook != nullptr, "install off-screen real model-order dialog driver");
+        CmdViewMenu(app, app->MainWindow(), static_cast<std::uint16_t>(command), 0);
+        UnhookWindowsHookEx(hook);
+        Check(dialogs == count + 1 && app->AccessoryOrderArray() == nullptr,
+              "actual model-order dialog completes and frees only its scratch order");
+        for (int i = 0; i != 3; ++i)
+            Expect(std::equal(poses[i].begin(), poses[i].begin() + 3, models[i]->boneTable[0].trans) &&
+                   std::equal(poses[i].begin() + 3, poses[i].end(), models[i]->boneTable[0].rotQuat),
+                   "reorder, cancel and retry preserve every model's live unregistered bone pose");
+        Expect(app->CurrentFrame() == frame, "model order never seeks or moves the editing frame");
+    }
+    void Verify(const char* phase, std::array<int, 3> draw, std::array<int, 3> calculate) {
+        int captionMismatches = 0;
+        for (int row = 1; row <= 3; ++row) {
+            const auto index = draw[row - 1];
+            Expect(models[index]->comboSelIndex == row, "draw order is the requested complete permutation");
+            Expect(models[calculate[row - 1]]->comboSelIndex2 == row,
+                   "calculation order is its independently requested complete permutation");
+            for (int id : kCombos) {
+                HWND combo = GetDlgItem(app->MainWindow(), id);
+                Expect(SendMessageW(combo, CB_GETCOUNT, 0, 0) == 4, "reordering keeps all three selector rows");
+                const auto caption = Text(combo, CB_GETLBTEXTLEN, CB_GETLBTEXT, row);
+                Expect(caption == labels[index], "all selector captions follow draw order, including Unicode and duplicate names");
+                Expect(SendMessageW(combo, CB_GETITEMDATA, row, 0) == kSlots[index],
+                       "every selector row retains its logical model slot, including duplicate captions");
+                for (int logical = 0; logical != 3; ++logical)
+                    if (models[logical]->comboSelIndex == row && caption != labels[logical]) ++captionMismatches;
+            }
+        }
+        const auto selectedRow = models[1]->comboSelIndex;
+        const auto mainRow = SendDlgItemMessageW(app->MainWindow(), 436, CB_GETCURSEL, 0, 0);
+        std::printf("MODEL-ORDER %s: caption/object mismatches=%d mainRow=%lld expected=%u selectedSlot=%u cameraMode=%u parentRows=%lld/%lld\n",
+            phase, captionMismatches, static_cast<long long>(mainRow), static_cast<unsigned>(selectedRow),
+            static_cast<unsigned>(app->SelectedModelSlot()), static_cast<unsigned>(app->CameraMode()),
+            static_cast<long long>(SendDlgItemMessageW(app->MainWindow(),449,CB_GETCURSEL,0,0)),
+            static_cast<long long>(SendDlgItemMessageW(app->MainWindow(),474,CB_GETCURSEL,0,0)));
+        Expect(captionMismatches == 0, "each displayed model name matches the object resolved by that actual row");
+        Expect(mainRow == selectedRow && app->MainModelComboSelection() == selectedRow &&
+               app->SelectedModelSlot() == kSlots[1] && app->CameraMode() == 0 &&
+               app->EditMode() == ViewportEditMode::Scale,
+               "reordering preserves the selected model identity, edit mode and collapsed caption");
+        Expect(SendDlgItemMessageW(app->MainWindow(),449,CB_GETCURSEL,0,0) == models[2]->comboSelIndex &&
+               SendDlgItemMessageW(app->MainWindow(),474,CB_GETCURSEL,0,0) == models[0]->comboSelIndex &&
+               app->CameraParentModel() == kSlots[2] && accessory.parentModel == kSlots[0],
+               "parent selectors retain their actual bound model identities after row movement");
+        Expect(IsWindowEnabled(GetDlgItem(app->MainWindow(), panel::kUndoButton)) &&
+               IsWindowEnabled(GetDlgItem(app->MainWindow(), panel::kRedoButton)),
+               "order-only UI refresh preserves existing undo and redo availability");
+    }
+};
+void Run(MMDApp* app, const wchar_t* modelPath) {
+    Fixture f(app, modelPath);
+    failures = 0;
+    f.Open(288, 2, 630, false); f.Verify("display-up", {0, 2, 1}, {0, 1, 2});
+    f.Open(288, 1, 631, false); f.Verify("display-down", {0, 1, 2}, {0, 1, 2});
+    f.Open(288, 0, 630, false); f.Verify("display-boundary", {0, 1, 2}, {0, 1, 2});
+    f.Open(288, 0, 631, true); f.Verify("display-cancel", {0, 1, 2}, {0, 1, 2});
+    f.Reset();
+    // Deliberately independent calculation order. Its dialog must initialize
+    // from this order rather than the model-manipulation selector captions.
+    f.models[2]->comboSelIndex2 = 1; f.models[0]->comboSelIndex2 = 2; f.models[1]->comboSelIndex2 = 3;
+    f.Open(289, 2, 630, false);
+    Expect(initialLabels == std::array<std::wstring,3>{f.labels[2], f.labels[0], f.labels[1]},
+           "calculation dialog initially lists independent calculation order");
+    f.Verify("calculate-up", {0, 1, 2}, {2, 1, 0});
+    f.Open(289, 1, 631, false); f.Verify("calculate-down", {0, 1, 2}, {2, 0, 1});
+    f.Open(289, 0, 630, false); f.Verify("calculate-boundary", {0, 1, 2}, {2, 0, 1});
+    f.Open(289, 0, 631, true); f.Verify("calculate-cancel", {0, 1, 2}, {2, 0, 1});
+    // Repeat with two truly equal captions. Slot identity, rather than a name
+    // lookup, must keep the active object and its parent bindings attached.
+    f.labels[1] = f.labels[0]; f.models[1]->pmxTextBuffers[0] = f.labels[1].data();
+    f.Reset();
+    f.Open(288, 2, 630, false); f.Verify("duplicate-display", {0, 2, 1}, {0, 1, 2});
+    f.Reset();
+    f.Open(289, 2, 630, false); f.Verify("duplicate-calculate", {0, 1, 2}, {0, 2, 1});
+    f.Reset(); app->SceneModified() = 0;
+    faultRound = true; f.Open(288, 2, 630, false); faultRound = false;
+    Expect(faultStage == 3, "persistent insertion failure cannot release the modal before successful cancel repair");
+    f.Verify("control-failure-recovery", {0, 1, 2}, {0, 1, 2});
+    Expect(app->SceneModified() == 0, "control failure and cancellation retain the original project dirty state");
+    f.Reset(); app->SceneModified() = 0;
+    listFaultMode = 1; f.Open(288, 2, 630, false); listFaultMode = 0;
+    f.Verify("list-insert-failure", {0, 1, 2}, {0, 1, 2});
+    Expect(app->SceneModified() == 0, "a rejected list move leaves the original order unmodified");
+    f.Reset(); app->SceneModified() = 0;
+    listFaultMode = 2; f.Open(288, 2, 630, false); listFaultMode = 0;
+    Expect(listFaultStage == 2, "incomplete list recovery prevents OK until its full scratch permutation is visible");
+    f.Verify("list-delete-recovery", {0, 1, 2}, {0, 1, 2});
+    Expect(app->SceneModified() == 0, "list deletion failure and repair never publish a partial order");
+    std::printf("MODEL-ORDER actual modal checks: %d failure(s)\n", failures);
+    Check(failures == 0, "real 288/289 names, object identities, independent orders and cancellation");
+    std::puts("PASS real model-order dialogs: names match resolved objects, independent calculation order, selection and parents preserved");
+}
+} // namespace model_order_dialog_checks

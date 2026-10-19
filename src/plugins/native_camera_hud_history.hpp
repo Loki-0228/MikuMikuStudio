@@ -1,9 +1,9 @@
 #pragma once
-#include "mikudancestudio/build_profile.hpp"
+#include "mikumikustudio/build_profile.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "shared_history.hpp"
-namespace mikudancestudio { class MMDApp; }
-namespace mikudancestudio::plugins {
+namespace mikumikustudio { class MMDApp; }
+namespace mikumikustudio::plugins {
 // Internal migration for the six camera HUD pose axes (operations 15..20).
 // The native ModeCameraAdjust/ModeAngleAdjust bodies still compute samples.
 // All other HUD writers remain behind their existing migration gates.

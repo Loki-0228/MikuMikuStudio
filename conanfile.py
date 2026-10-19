@@ -2,8 +2,8 @@ from conan import ConanFile
 from conan.tools.cmake import CMakeDeps, CMakeToolchain, cmake_layout
 
 
-class MikuDanceStudioConan(ConanFile):
-    """MikuDanceStudio - 1:1 open-source restoration of MikuMikuDance v932.
+class MikuMikuStudioConan(ConanFile):
+    """MikuMikuStudio - 1:1 open-source restoration of MikuMikuDance v932.
 
     Package management via Conan 2.  The only third-party link-time
     dependency of the original binary is Bullet Physics 2.75 (statically
@@ -13,7 +13,7 @@ class MikuDanceStudioConan(ConanFile):
     Mesh export adds static Alembic/Ogawa and MinHook for the native draw path.
     """
 
-    name = "mikudancestudio"
+    name = "mikumikustudio"
     version = "0.1.0"
     settings = "os", "compiler", "build_type", "arch"
 

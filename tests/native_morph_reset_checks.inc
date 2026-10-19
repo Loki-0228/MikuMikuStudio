@@ -3,11 +3,11 @@
 #include "../src/plugins/native_morph_reset.hpp"
 #include "../src/plugins/scene_object_history.hpp"
 #include "../src/plugins/native_object_commands.hpp"
-#include "mikudancestudio/bake_ui_lock.hpp"
-#include "mikudancestudio/autosave.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/scene_ownership.hpp"
-namespace mikudancestudio { void CmdFileMenu(MMDApp*,HWND,std::uint16_t,std::uint16_t); }
+#include "mikumikustudio/bake_ui_lock.hpp"
+#include "mikumikustudio/autosave.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/scene_ownership.hpp"
+namespace mikumikustudio { void CmdFileMenu(MMDApp*,HWND,std::uint16_t,std::uint16_t); }
 namespace {
 struct MorphResetFixture:MorphTextFixture {
     std::array<std::array<mdl::MorphRecord,7>,2> morphs{};

@@ -1,13 +1,13 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include "mikudancestudio/recording_state.hpp"
+#include "mikumikustudio/recording_state.hpp"
 #include "../src/app/recording_ack_wait.hpp"
 #include <cstdio>
 #include <limits>
 #include <initializer_list>
 #include <utility>
 #include <array>
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 struct FakePush final : IPushSource {
     unsigned calls = 0, readyAfter = 2;
     bool ended = false;

@@ -1,5 +1,5 @@
 // MAINTENANCE: regression-keep; hidden-window GPU test for the D3D9 vertex
-// shader output capture (include/mikudancestudio/vertex_capture.hpp).
+// shader output capture (include/mikumikustudio/vertex_capture.hpp).
 //
 // What is verified, on a real HAL device with a hidden window:
 //   * the captured float4 is the vertex shader's POSITION output and not the
@@ -19,7 +19,7 @@
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include "mikudancestudio/vertex_capture.hpp"
+#include "mikumikustudio/vertex_capture.hpp"
 #include "../src/render/antialias_motion_cache.hpp"
 
 #include <Windows.h>
@@ -355,7 +355,7 @@ void CheckCaptureMatches(const char* label, Fixture& fixture,
                          unsigned expectedFirstVertex) {
     std::vector<std::array<float, 4>> captured;
     std::string error;
-    const bool ok = mikudancestudio::vertex_capture::Capture(
+    const bool ok = mikumikustudio::vertex_capture::Capture(
         fixture.device, firstVertex, vertexCount, captured, error);
     Check(ok, std::string(label) + ": capture failed: " + error);
     Check(captured.size() == vertexCount,
@@ -446,7 +446,7 @@ void TestBasicCaptures(Fixture& fixture) {
 }
 
 void TestTemporalVertexCache(Fixture& fixture) {
-    using mikudancestudio::antialias::motion::detail::VertexCache;
+    using mikumikustudio::antialias::motion::detail::VertexCache;
     VertexCache cache;
     fixture.device->SetVertexShader(fixture.shader3);
     fixture.device->SetVertexDeclaration(fixture.declaration);
@@ -537,12 +537,12 @@ void TestStateRestored(Fixture& fixture) {
 
     std::vector<std::array<float, 4>> captured;
     std::string error;
-    Check(mikudancestudio::vertex_capture::Capture(fixture.device, 1, 6,
+    Check(mikumikustudio::vertex_capture::Capture(fixture.device, 1, 6,
                                                    captured, error),
           "state restore: capture failed: " + error);
     Check(captured.size() == 6, "state restore: vertex count");
-    mikudancestudio::vertex_capture::GpuCapture gpuCapture;
-    std::shared_ptr<const mikudancestudio::vertex_capture::GpuPositions> gpuPositions;
+    mikumikustudio::vertex_capture::GpuCapture gpuCapture;
+    std::shared_ptr<const mikumikustudio::vertex_capture::GpuPositions> gpuPositions;
     Check(gpuCapture.Capture(fixture.device,1,6,gpuPositions,error),"GPU capture restores every probed device state: "+error);
 
     IDirect3DVertexShader9* vertexShader = nullptr;
@@ -686,7 +686,7 @@ void TestHandAssembledShaders(Fixture& fixture) {
             fixture.device->SetVertexShader(shader);
             captured.clear();
             error.clear();
-            Check(mikudancestudio::vertex_capture::Capture(
+            Check(mikumikustudio::vertex_capture::Capture(
                       fixture.device, 0, 4, captured, error),
                   "forwarded position: capture failed: " + error);
             for (unsigned index = 0; index < 4; ++index) {
@@ -722,7 +722,7 @@ void TestHandAssembledShaders(Fixture& fixture) {
         fixture.device->SetVertexShader(shader);
         captured.clear();
         error.clear();
-        Check(mikudancestudio::vertex_capture::Capture(fixture.device, 0, 4,
+        Check(mikumikustudio::vertex_capture::Capture(fixture.device, 0, 4,
                                                        captured, error),
               "point size neutralised: capture failed: " + error);
         float worst = 0.0f;
@@ -754,7 +754,7 @@ void TestHandAssembledShaders(Fixture& fixture) {
             fixture.device->SetVertexShader(shader);
             captured.clear();
             error.clear();
-            Check(!mikudancestudio::vertex_capture::Capture(
+            Check(!mikumikustudio::vertex_capture::Capture(
                       fixture.device, 0, 2, captured, error),
                   "no position output: capture must fail");
             Check(!error.empty(), "no position output: error message");
@@ -783,7 +783,7 @@ void TestHandAssembledShaders(Fixture& fixture) {
             fixture.device->SetVertexShader(shader);
             captured.clear();
             error.clear();
-            Check(!mikudancestudio::vertex_capture::Capture(
+            Check(!mikumikustudio::vertex_capture::Capture(
                       fixture.device, 0, 2, captured, error),
                   "all oT written: capture must fail");
             Check(error.find("texture coordinate") != std::string::npos,
@@ -849,7 +849,7 @@ void TestChunkedCapture(Fixture& fixture) {
 
     std::vector<std::array<float, 4>> captured;
     std::string error;
-    Check(mikudancestudio::vertex_capture::Capture(fixture.device, 0,
+    Check(mikumikustudio::vertex_capture::Capture(fixture.device, 0,
                                                    vertexCount, captured,
                                                    error),
           "chunked capture failed: " + error);
@@ -875,8 +875,8 @@ void TestChunkedCapture(Fixture& fixture) {
     Note(text);
     Check(worst < 1.0e-4f, "chunked capture: value mismatch");
 
-    mikudancestudio::vertex_capture::GpuCapture gpuCapture;
-    std::shared_ptr<const mikudancestudio::vertex_capture::GpuPositions> gpu;
+    mikumikustudio::vertex_capture::GpuCapture gpuCapture;
+    std::shared_ptr<const mikumikustudio::vertex_capture::GpuPositions> gpu;
     Check(gpuCapture.Capture(fixture.device,0,vertexCount,gpu,error),"large GPU capture: "+error);
     Microsoft::WRL::ComPtr<IDirect3DSurface9> surface,system;
     Check(SUCCEEDED(gpu->texture->GetSurfaceLevel(0,&surface))&&
@@ -896,7 +896,7 @@ void TestChunkedCapture(Fixture& fixture) {
 }
 
 void TestGpuCapture(Fixture& fixture) {
-    using namespace mikudancestudio::vertex_capture;
+    using namespace mikumikustudio::vertex_capture;
     using Microsoft::WRL::ComPtr;
     fixture.device->SetVertexDeclaration(fixture.declaration);
     fixture.device->SetStreamSource(0,fixture.vertexBuffer,0,sizeof(Vertex));
@@ -933,7 +933,7 @@ void TestGpuCapture(Fixture& fixture) {
         ComPtr<IDirect3DVertexShader9> restored;fixture.device->GetVertexShader(&restored);
         Check(restored.Get()==shader,"GPU capture restores the original vertex shader");
     }
-    mikudancestudio::antialias::motion::detail::VertexCache cache;
+    mikumikustudio::antialias::motion::detail::VertexCache cache;
     fixture.device->SetVertexShader(fixture.shader3);
     std::shared_ptr<const GpuPositions> first,second;
     Check(cache.CaptureGpu(fixture.device,fixture.code3,0,0,8,0,3,first,error),"cache GPU full declared range");
@@ -953,14 +953,14 @@ void TestFailures(Fixture& fixture) {
 
     captured.push_back({1.0f, 1.0f, 1.0f, 1.0f});
     error.clear();
-    Check(!mikudancestudio::vertex_capture::Capture(nullptr, 0, 4, captured,
+    Check(!mikumikustudio::vertex_capture::Capture(nullptr, 0, 4, captured,
                                                    error),
           "null device must fail");
     Check(!error.empty(), "null device must report a reason");
     Check(captured.empty(), "null device must clear the output");
 
     error.clear();
-    Check(!mikudancestudio::vertex_capture::Capture(fixture.device, 0xFFFFFFFFu,
+    Check(!mikumikustudio::vertex_capture::Capture(fixture.device, 0xFFFFFFFFu,
                                                    2, captured, error),
           "overflowing vertex range must fail");
     Check(!error.empty(), "overflowing vertex range must report a reason");
@@ -968,7 +968,7 @@ void TestFailures(Fixture& fixture) {
     // Zero vertices is a no-op, not a failure.
     captured.push_back({1.0f, 1.0f, 1.0f, 1.0f});
     error.clear();
-    Check(mikudancestudio::vertex_capture::Capture(fixture.device, 4, 0,
+    Check(mikumikustudio::vertex_capture::Capture(fixture.device, 4, 0,
                                                    captured, error),
           "zero vertices must succeed");
     Check(captured.empty(), "zero vertices must yield an empty result");
@@ -977,7 +977,7 @@ void TestFailures(Fixture& fixture) {
     fixture.device->SetVertexShader(nullptr);
     captured.clear();
     error.clear();
-    Check(!mikudancestudio::vertex_capture::Capture(fixture.device, 0, 4,
+    Check(!mikumikustudio::vertex_capture::Capture(fixture.device, 0, 4,
                                                     captured, error),
           "no vertex shader must fail");
     Check(error.find("no vertex shader") != std::string::npos,
@@ -993,7 +993,7 @@ void TestFailures(Fixture& fixture) {
     if (probe == nullptr) {
         captured.clear();
         error.clear();
-        Check(!mikudancestudio::vertex_capture::Capture(fixture.device, 0, 4,
+        Check(!mikumikustudio::vertex_capture::Capture(fixture.device, 0, 4,
                                                        captured, error),
               "no vertex declaration must fail");
         Check(!error.empty(), "no vertex declaration must report a reason");

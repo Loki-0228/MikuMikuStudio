@@ -1,4 +1,4 @@
-// MAINTENANCE: production editor behind include/mikudancestudio/animation_curve_editor.hpp.
+// MAINTENANCE: production editor behind include/mikumikustudio/animation_curve_editor.hpp.
 // This file owns the shared modeless Win32 curve window used by the host and by
 // MMV.  It depends on the pure-CPU curve core (animation_curve.cpp) only; it
 // does not include any other port header, so both callers can link it unchanged.
@@ -24,7 +24,7 @@
 //   behind it from data the editor never writes.  Switching a comparison mode
 //   therefore calls no Source::apply at all.  A source that leaves the
 //   comparison members empty keeps the plain control set and draws its visible
-//   background channels. See include/mikudancestudio/animation_curve_comparison.hpp
+//   background channels. See include/mikumikustudio/animation_curve_comparison.hpp
 //   for the exact non-constant rule the range filter uses.
 // * The channel tree groups tracks by stable collection paths. Checkboxes
 //   control visibility, including all descendants of a collection; clicking a
@@ -136,7 +136,7 @@
 #include <CommCtrl.h>
 #include <windowsx.h>
 #include <objidl.h>
-#include "mikudancestudio/gdiplus_compat.hpp"
+#include "mikumikustudio/gdiplus_compat.hpp"
 
 #ifdef min
 #undef min
@@ -145,9 +145,9 @@
 #undef max
 #endif
 
-#include "mikudancestudio/animation_curve_comparison.hpp"
-#include "mikudancestudio/animation_curve_editor.hpp"
-#include "mikudancestudio/interpolation_link.hpp"
+#include "mikumikustudio/animation_curve_comparison.hpp"
+#include "mikumikustudio/animation_curve_editor.hpp"
+#include "mikumikustudio/interpolation_link.hpp"
 
 #include <algorithm>
 #include <array>
@@ -177,7 +177,7 @@
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "gdi32.lib")
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace curve_editor {
 namespace {
 
@@ -279,9 +279,9 @@ constexpr UINT_PTR kSourceChangedTimer = 2;
 // the editor accepts from an edit box or a drag.
 constexpr long long kMaximumFrame = 2147483647;
 
-const wchar_t kEditorClass[] = L"MikuDanceStudioCurveEditorWindow";
-const wchar_t kCanvasClass[] = L"MikuDanceStudioCurveCanvasWindow";
-const wchar_t kMmdClass[] = L"MikuDanceStudioCurveMmdWindow";
+const wchar_t kEditorClass[] = L"MikuMikuStudioCurveEditorWindow";
+const wchar_t kCanvasClass[] = L"MikuMikuStudioCurveCanvasWindow";
+const wchar_t kMmdClass[] = L"MikuMikuStudioCurveMmdWindow";
 
 // ---------------------------------------------------------------------------
 // Localisation.  Language 0 is Japanese, 1 English, 2 Chinese.
@@ -6216,4 +6216,4 @@ void DrawLauncher(void *hdcPointer, int x, int y, int width, int height, bool pr
 }
 
 }  // namespace curve_editor
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

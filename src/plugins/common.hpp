@@ -17,7 +17,7 @@
 #include <string_view>
 #include <vector>
 
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 namespace fs = std::filesystem;
 using Log = std::function<void(const std::string&)>;
 template<class T> constexpr MmsHeader Header() { return {sizeof(T), 1, 0}; }

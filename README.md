@@ -246,8 +246,8 @@ while omitting the optional DX12 runtime dependency. Configure a separate build:
 ```bat
 cmake -S . -B build/dx12-disabled -G "Visual Studio 17 2022" -A x64 ^
   -DCMAKE_TOOLCHAIN_FILE=D:/MMD-Next/MMS/build/generators/conan_toolchain.cmake ^
-  -DMIKUDANCESTUDIO_ENABLE_DX12=OFF
-cmake --build build/dx12-disabled --config Release --target MikuDanceStudio
+  -DMIKUMIKUSTUDIO_ENABLE_DX12=OFF
+cmake --build build/dx12-disabled --config Release --target MikuMikuStudio
 ```
 
 This build hides DX12 compute adapters, keeps vertex processing on the CPU,
@@ -283,7 +283,7 @@ Regression tests are never part of a release artifact (excluded from the default
 build, no install rule). To run them:
 
 ```bat
-cmake --preset conan-default -DMIKUDANCESTUDIO_BUILD_INPUT_TESTS=ON
+cmake --preset conan-default -DMIKUMIKUSTUDIO_BUILD_INPUT_TESTS=ON
 cmake --build build --config Release
 cmake --build build --config Release --target keyboard_input_tests
 ctest --test-dir build -C Release --output-on-failure
@@ -329,7 +329,7 @@ them by editing the code.
 
 This project modifies code that [XiaHan](https://blog.han.moe)
 reverse-engineered from the original 32-bit mmd932 and refactored into the
-[MikuDanceStudio](https://github.com/jstzwj/MikuDanceStudio) port, which carried
+[MikuMikuStudio](https://github.com/jstzwj/MikuMikuStudio) port, which carried
 out the bulk of the behavior-level port and the x64 alignment. 洛琪
 (GitHub: [Loki-0228](https://github.com/Loki-0228)) maintains this repository
 and contributes MME compatibility work, Chinese UI improvements, playback and
@@ -345,7 +345,7 @@ input fixes, crash diagnostics, and build and release organization.
 - [XiaHan](https://blog.han.moe), who reverse-engineered the original 32-bit
   mmd932 and refactored it into the code this project modifies, and the other
   contributors to the
-  [MikuDanceStudio port](https://github.com/jstzwj/MikuDanceStudio).
+  [MikuMikuStudio port](https://github.com/jstzwj/MikuMikuStudio).
 - 舞力介入P, original author of MikuMikuEffect (MME), for bringing effect
   extensions to MMD. See the [MME introduction coauthored by its creator](https://codezine.jp/article/detail/5997).
 - MME community effect authors and contributors, for sharing effects,
@@ -499,7 +499,7 @@ build/Release/
 测试程序不参与默认构建，需启用选项并显式构建测试目标：
 
 ```bat
-cmake --preset conan-default -DMIKUDANCESTUDIO_BUILD_INPUT_TESTS=ON
+cmake --preset conan-default -DMIKUMIKUSTUDIO_BUILD_INPUT_TESTS=ON
 cmake --build build --config Release --target keyboard_input_tests
 ctest --test-dir build -C Release -R keyboard_input_regressions --output-on-failure
 ```
@@ -546,7 +546,7 @@ ctest --test-dir build -C Release -R keyboard_input_regressions --output-on-fail
 ### 项目来源与维护
 
 本项目在 [XiaHan](https://blog.han.moe) 对 mmd932 32 位原版逆向并重构的代码基础上修改。
-上游的 [MikuDanceStudio](https://github.com/jstzwj/MikuDanceStudio)
+上游的 [MikuMikuStudio](https://github.com/jstzwj/MikuMikuStudio)
 移植工程完成了主体行为级移植与 x64 对齐，是本项目继续开发的基础。
 
 本项目由洛琪（[Loki-0228](https://github.com/Loki-0228)）维护，
@@ -560,7 +560,7 @@ ctest --test-dir build -C Release -R keyboard_input_regressions --output-on-fail
   本项目使用其物理引擎（zlib 许可）。
 - [XiaHan](https://blog.han.moe)：本项目在他对 mmd932 32 位原版逆向并重构的代码基础上修改，
   感谢他提供逆向成果与重构代码。也感谢
-  [MikuDanceStudio](https://github.com/jstzwj/MikuDanceStudio) 移植工程的其他贡献者。
+  [MikuMikuStudio](https://github.com/jstzwj/MikuMikuStudio) 移植工程的其他贡献者。
 - 舞力介入P：MikuMikuEffect（MME）原作者，感谢其为 MMD 带来的特效扩展能力。
   可参阅[作者参与撰写的 MME 介绍](https://codezine.jp/article/detail/5997)。
 - MME 社区的特效作者与贡献者：感谢他们创作和分享特效、工具与使用经验。
@@ -715,7 +715,7 @@ cmake --install build --config Release --prefix build/Release
 本プロジェクトは、[XiaHan](https://blog.han.moe) 氏が mmd932 32 ビット版オリジナルを
 リバースエンジニアリングしてリファクタリングしたコードを基に改変したものです。
 移植本体と x64 対応は同氏によるもので、上流の
-[MikuDanceStudio](https://github.com/jstzwj/MikuDanceStudio) 移植プロジェクトとして
+[MikuMikuStudio](https://github.com/jstzwj/MikuMikuStudio) 移植プロジェクトとして
 公開されています。洛琪（GitHub：[Loki-0228](https://github.com/Loki-0228)）が
 本リポジトリを保守し、MME 互換対応、中国語 UI の改善、再生・入力の不具合修正、
 クラッシュ診断、ビルド・配布構成の整備に取り組んでいます。
@@ -729,7 +729,7 @@ cmake --install build --config Release --prefix build/Release
 - [XiaHan](https://blog.han.moe) 氏：本プロジェクトは、同氏が mmd932 32 ビット版
   オリジナルをリバースエンジニアリングしリファクタリングしたコードを基に改変した
   ものです。同氏ならびに上流の
-  [MikuDanceStudio](https://github.com/jstzwj/MikuDanceStudio) の貢献者の皆様に
+  [MikuMikuStudio](https://github.com/jstzwj/MikuMikuStudio) の貢献者の皆様に
   感謝します。
 - 舞力介入P 氏：MikuMikuEffect（MME）の原作者。
   MMD にエフェクト拡張機能をもたらしてくださったことに感謝します。

@@ -2,9 +2,9 @@
 // NativePoseScopeChecks(). Uses hidden EDIT controls, no renderer or messages
 // pumped through the user's MMS process.
 #include "../src/plugins/native_pose_scope.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/d3dx_dyn.hpp"
-namespace mikudancestudio { LRESULT CALLBACK EditSubclassProc(HWND,UINT,WPARAM,LPARAM); }
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+namespace mikumikustudio { LRESULT CALLBACK EditSubclassProc(HWND,UINT,WPARAM,LPARAM); }
 namespace {
 struct PoseNumericFixture {
     Fixture first,second;

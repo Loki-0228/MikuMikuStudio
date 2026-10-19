@@ -199,7 +199,7 @@ def main():
             shutil.copy2(getattr(args, label), runtime / 'MikuMikuDance.exe')
             resources = {str(p.relative_to(runtime)): digest(p) for p in runtime.rglob('*')
                          if p.is_file() and p.name != 'MikuMikuDance.exe'}
-            appdata = runtime / 'appdata' / 'MikuDanceStudio'
+            appdata = runtime / 'appdata' / 'MikuMikuStudio'
             appdata.mkdir(parents=True)
             (appdata / 'processor.ini').write_text('[Vertices]\nMode=cpu\n', encoding='ascii')
             pair['runs'][label] = dict(runtime=str(runtime), resources=resources,
@@ -211,9 +211,9 @@ def main():
         def worker(label):
             run = pair['runs'][label]
             runtime = Path(run['runtime'])
-            env = {k: v for k, v in os.environ.items() if not k.startswith(('MIKUDANCESTUDIO_', 'MMS_', 'MMN_', 'OMP_'))}
+            env = {k: v for k, v in os.environ.items() if not k.startswith(('MIKUMIKUSTUDIO_', 'MMS_', 'MMN_', 'OMP_'))}
             env['LOCALAPPDATA'] = env['APPDATA'] = str(runtime / 'appdata')
-            env['MIKUDANCESTUDIO_PUMP_STATS'] = str(runtime / 'pump.log')
+            env['MIKUMIKUSTUDIO_PUMP_STATS'] = str(runtime / 'pump.log')
             with (runtime / 'process.log').open('w', encoding='utf-8') as output:
                 return lp.run([str(runtime / 'MikuMikuDance.exe'), str(args.scene)], runtime, env,
                               output, 1200, None if args.uncapped else 1,

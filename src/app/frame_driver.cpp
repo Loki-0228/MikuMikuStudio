@@ -1,5 +1,5 @@
-#include "mikudancestudio/perf_timing.hpp"
-#include "mikudancestudio/recording_state.hpp"
+#include "mikumikustudio/perf_timing.hpp"
+#include "mikumikustudio/recording_state.hpp"
 // ===========================================================================
 // VA 0x0046B090 - FrameDriver  (original: sub_46B090, 0xED01 = 60KB)
 // ===========================================================================
@@ -48,22 +48,22 @@
 #include <cstring>
 #include <cwchar>
 
-#include "mikudancestudio/bone_scale.hpp"
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/image_sequence_export.hpp"
-#include "mikudancestudio/transparent_capture.hpp"
-#include "mikudancestudio/frame_presentation.hpp"
-#include "mikudancestudio/frame_rate.hpp"
-#include "mikudancestudio/frame_sampling.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/globals.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/native_media.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/runtime_log.hpp"
-#include "mikudancestudio/ui_metrics.hpp"
-#include "mikudancestudio/update_coordinator.hpp"
+#include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/image_sequence_export.hpp"
+#include "mikumikustudio/transparent_capture.hpp"
+#include "mikumikustudio/frame_presentation.hpp"
+#include "mikumikustudio/frame_rate.hpp"
+#include "mikumikustudio/frame_sampling.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/globals.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/native_media.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/runtime_log.hpp"
+#include "mikumikustudio/ui_metrics.hpp"
+#include "mikumikustudio/update_coordinator.hpp"
 #include "frame_state_dump.hpp"
 #include "../plugins/native_pose_scope.hpp"
 #include "../plugins/native_model_hud_history.hpp"
@@ -72,7 +72,7 @@
 // main-pump letter hotkey consumption ladder (x86 0x46FF35..0x4739E2).
 // pump_navigation.cpp / pump_edit_keys.cpp: the non-letter pump segments
 // that surround the ladder in the original message pump.
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 void ConsumeLetterHotkeys(MMDApp* app);
 void ConsumeRightButtonDrag(MMDApp* app);   // pump_navigation.cpp (G10)
@@ -126,13 +126,13 @@ void PrepareUninitializedImageModels(MMDApp* app) {
             }
 }
 
-#ifdef MIKUDANCESTUDIO_DIAG
+#ifdef MIKUMIKUSTUDIO_DIAG
 // ---- A/B capture tooling (see frame_state_dump.hpp for the gate) ---------
 
 void TraceOperationInput(MMDApp* app, const char* phase) {
     char directory[MAX_PATH]{};
     const DWORD length = GetEnvironmentVariableA(
-        "MIKUDANCESTUDIO_AB_TRACE_INPUT", directory, MAX_PATH);
+        "MIKUMIKUSTUDIO_AB_TRACE_INPUT", directory, MAX_PATH);
     if (length == 0 || length >= MAX_PATH)
         return;
     const int state = app->LeftMouseButtonState();
@@ -148,9 +148,9 @@ void TraceOperationInput(MMDApp* app, const char* phase) {
     const unsigned slot = app->state.slotIdx;
     auto* model = app->ModelSlot(slot);
     if (model != nullptr) {
-        const int selected = mikudancestudio::mdl::Mdl(model)->selectedBone;
-        auto* bones = mikudancestudio::mdl::Bones(model);
-        const int count = static_cast<int>(mikudancestudio::mdl::Mdl(model)->boneCount);
+        const int selected = mikumikustudio::mdl::Mdl(model)->selectedBone;
+        auto* bones = mikumikustudio::mdl::Bones(model);
+        const int count = static_cast<int>(mikumikustudio::mdl::Mdl(model)->boneCount);
         if (bones != nullptr && selected >= 0 && selected < count)
             std::memcpy(quaternion, &bones[selected].rotQuat[0],
                         sizeof(quaternion));
@@ -168,7 +168,7 @@ void TraceOperationInput(MMDApp* app, const char* phase) {
 
 bool LineCaptureSwitchReady() {
     char stableCapture[2]{};
-    if (GetEnvironmentVariableA("MIKUDANCESTUDIO_AB_STABLE_CAPTURE", stableCapture,
+    if (GetEnvironmentVariableA("MIKUMIKUSTUDIO_AB_STABLE_CAPTURE", stableCapture,
                                 sizeof(stableCapture)) != 1 ||
         stableCapture[0] != '1') {
         return true;
@@ -176,7 +176,7 @@ bool LineCaptureSwitchReady() {
 
     char directory[MAX_PATH]{};
     const DWORD length = GetEnvironmentVariableA(
-        "MIKUDANCESTUDIO_VB_DUMP_DIR", directory, MAX_PATH);
+        "MIKUMIKUSTUDIO_VB_DUMP_DIR", directory, MAX_PATH);
     if (length == 0 || length >= MAX_PATH)
         return false;
 
@@ -210,7 +210,7 @@ bool WriteCaptureMarker(const char* path, const char* contents) {
 void ActivateRefreshedVbCapture() {
     char directory[MAX_PATH]{};
     const DWORD length = GetEnvironmentVariableA(
-        "MIKUDANCESTUDIO_VB_DUMP_DIR", directory, MAX_PATH);
+        "MIKUMIKUSTUDIO_VB_DUMP_DIR", directory, MAX_PATH);
     if (length == 0 || length >= MAX_PATH)
         return;
 
@@ -226,7 +226,7 @@ void ActivateRefreshedVbCapture() {
 
 void HoldPresentCaptureFence() {
     char stableCapture[2]{};
-    if (GetEnvironmentVariableA("MIKUDANCESTUDIO_AB_STABLE_CAPTURE", stableCapture,
+    if (GetEnvironmentVariableA("MIKUMIKUSTUDIO_AB_STABLE_CAPTURE", stableCapture,
                                 sizeof(stableCapture)) != 1 ||
         stableCapture[0] != '1') {
         return;
@@ -234,7 +234,7 @@ void HoldPresentCaptureFence() {
 
     char directory[MAX_PATH]{};
     const DWORD length = GetEnvironmentVariableA(
-        "MIKUDANCESTUDIO_VB_DUMP_DIR", directory, MAX_PATH);
+        "MIKUMIKUSTUDIO_VB_DUMP_DIR", directory, MAX_PATH);
     if (length == 0 || length >= MAX_PATH)
         return;
 
@@ -259,7 +259,7 @@ void HoldPresentCaptureFence() {
         Sleep(1);
 }
 
-#endif  // MIKUDANCESTUDIO_DIAG
+#endif  // MIKUMIKUSTUDIO_DIAG
 
 }  // namespace
 
@@ -381,7 +381,7 @@ namespace {
 
 // Field trace for the coordinate selector. It writes one line per change to the
 // inputs read by the selector and its consumers, and creates nothing unless
-// MIKUDANCESTUDIO_TRACE_FILE names a file (the runtime_log::Trace contract).
+// MIKUMIKUSTUDIO_TRACE_FILE names a file (the runtime_log::Trace contract).
 // The reported flicker and unresponsive switching outlived three code-level
 // explanations, so the next report needs data: this line reveals which of the
 // state byte, the panel byte, the state limit, the accessory slot, or the HUD
@@ -424,7 +424,7 @@ void TraceCoordinateSelector(MMDApp* app) {
 // pivot and its source, the eye, cameraPos and the camera angles. The panel
 // switch, the follow switch, the camera-key evaluation and the stop path all
 // rewrite these, so a recorded jump points straight at the writer. Creates
-// nothing unless MIKUDANCESTUDIO_TRACE_FILE names a file (runtime_log::Trace).
+// nothing unless MIKUMIKUSTUDIO_TRACE_FILE names a file (runtime_log::Trace).
 void TraceFrameViewpoint(MMDApp* app) {
     static int lastPanel = -1;
     static int lastTrack = -1;
@@ -555,12 +555,12 @@ void FrameDriver(MMDApp* app) {
     // Opt-in heap tripwire for the crash investigation.  The field crashes are
     // intermittent (0%..50% between batches) and only surface later, wherever a
     // corrupted block is next used, so the crash itself is a poor bisect
-    // signal.  With MIKUDANCESTUDIO_HEAP_CHECK set, every frame validates the
+    // signal.  With MIKUMIKUSTUDIO_HEAP_CHECK set, every frame validates the
     // process heap and reports the FIRST frame on which it is already corrupt -
     // a signal that is independent of whether a crash follows.
     static const bool heapCheck = [] {
         char value[8]{};
-        return GetEnvironmentVariableA("MIKUDANCESTUDIO_HEAP_CHECK", value,
+        return GetEnvironmentVariableA("MIKUMIKUSTUDIO_HEAP_CHECK", value,
                                        sizeof(value)) > 0 &&
                value[0] != '\0' && value[0] != '0';
     }();
@@ -592,13 +592,13 @@ void FrameDriver(MMDApp* app) {
         app->DeltaTime() = delta;
         return;
     }
-#ifdef MIKUDANCESTUDIO_DIAG
+#ifdef MIKUMIKUSTUDIO_DIAG
     // DIAGNOSTIC ONLY: append a tick per pass to prove liveness of the
     // frame driver in real-time runs (stderr is unavailable in the GUI
     // subsystem).
     static char tickPath[MAX_PATH]{};
     static bool tickInit = GetEnvironmentVariableA(
-        "MIKUDANCESTUDIO_TRACE_TICKS", tickPath, sizeof tickPath) != 0;
+        "MIKUMIKUSTUDIO_TRACE_TICKS", tickPath, sizeof tickPath) != 0;
     if (tickInit) {
         static LONG tickCount = 0;
         if (InterlockedIncrement(&tickCount) % 60 == 0) {
@@ -659,27 +659,27 @@ void FrameDriver(MMDApp* app) {
 
 
     AdvanceFrameRenderGate(app);
-#ifdef MIKUDANCESTUDIO_DIAG
+#ifdef MIKUMIKUSTUDIO_DIAG
     char freezePhysics[2]{};
-    if (GetEnvironmentVariableA("MIKUDANCESTUDIO_AB_FREEZE_PHYSICS", freezePhysics,
+    if (GetEnvironmentVariableA("MIKUMIKUSTUDIO_AB_FREEZE_PHYSICS", freezePhysics,
                                 sizeof(freezePhysics)) == 1 &&
         freezePhysics[0] == '1') {
         app->state.accessoryEditDialogOpen = 1;
     }
     char requireLine[2]{};
     const bool requireLineEnabled =
-        GetEnvironmentVariableA("MIKUDANCESTUDIO_AB_REQUIRE_LINE", requireLine,
+        GetEnvironmentVariableA("MIKUMIKUSTUDIO_AB_REQUIRE_LINE", requireLine,
                                 sizeof(requireLine)) == 1 &&
         requireLine[0] == '1';
     char keepPhysics[2]{};
     const bool keepPhysicsEnabled =
-        GetEnvironmentVariableA("MIKUDANCESTUDIO_AB_KEEP_PHYSICS", keepPhysics,
+        GetEnvironmentVariableA("MIKUMIKUSTUDIO_AB_KEEP_PHYSICS", keepPhysics,
                                 sizeof(keepPhysics)) == 1 &&
         keepPhysics[0] == '1';
     static LONG lineModeRequested = 0;
 #endif
     DumpFrameEntryState(app);
-#ifdef MIKUDANCESTUDIO_DIAG
+#ifdef MIKUMIKUSTUDIO_DIAG
     if (requireLineEnabled && lineModeRequested != 0)
         DumpFrameEntryState(app, "frame_state_line.json");
 #endif
@@ -720,13 +720,13 @@ void FrameDriver(MMDApp* app) {
     // region (0x471342..0x473127), and the letter ladder itself
     // (0x46FF35..0x4739E2) - the arrow-key and numpad blocks are
     // interleaved inside the ladder at their binary positions.
-    mikudancestudio::ConsumeRightButtonDrag(app);  // pump_navigation.cpp
-    mikudancestudio::ConsumeMiddleButtonPan(app);  // pump_navigation.cpp
-    mikudancestudio::ConsumeEditKeys(app);         // pump_edit_keys.cpp
+    mikumikustudio::ConsumeRightButtonDrag(app);  // pump_navigation.cpp
+    mikumikustudio::ConsumeMiddleButtonPan(app);  // pump_navigation.cpp
+    mikumikustudio::ConsumeEditKeys(app);         // pump_edit_keys.cpp
     if (device_lost_wait::Pending(app)) return;
-    mikudancestudio::ConsumeLetterHotkeys(app);    // key_ladder.cpp
+    mikumikustudio::ConsumeLetterHotkeys(app);    // key_ladder.cpp
     if (device_lost_wait::Pending(app)) return;
-#ifdef MIKUDANCESTUDIO_DIAG
+#ifdef MIKUMIKUSTUDIO_DIAG
     TraceOperationInput(app, "before");
 #endif
 
@@ -821,7 +821,7 @@ void FrameDriver(MMDApp* app) {
 #endif
         RecentreCenteredDragCursor(app);
     }
-#ifdef MIKUDANCESTUDIO_DIAG
+#ifdef MIKUMIKUSTUDIO_DIAG
     TraceOperationInput(app, "after");
 #endif
 
@@ -868,7 +868,7 @@ void FrameDriver(MMDApp* app) {
     // the transient line counter for the next frame.
     DumpRequestedFrameState(app);
 
-#ifdef MIKUDANCESTUDIO_DIAG
+#ifdef MIKUMIKUSTUDIO_DIAG
     // Match ida_capture_original_vb.py: its one-shot breakpoint changes
     // these fields at the first camera sprite Unlock, after transforms and
     // sprite production but before the following FrameDriver cycle.
@@ -888,7 +888,7 @@ void FrameDriver(MMDApp* app) {
         }
         char stableCapture[2]{};
         if (GetEnvironmentVariableA(
-                "MIKUDANCESTUDIO_AB_STABLE_CAPTURE", stableCapture,
+                "MIKUMIKUSTUDIO_AB_STABLE_CAPTURE", stableCapture,
                 sizeof(stableCapture)) == 1 && stableCapture[0] == '1') {
             app->state.fpsOverlayElapsedSeconds = 0.0f;
             app->state.fpsOverlayFrameCount = 0;
@@ -946,9 +946,9 @@ void FrameDriver(MMDApp* app) {
 
     // ---- 8. reload path (0x47989D..0x4798CB) ----------------------------
     if (s.state.modelReloadPending != 0) {
-#ifdef MIKUDANCESTUDIO_DIAG
-        if (getenv("MIKUDANCESTUDIO_TRACE_REC")) {
-            FILE* tf = fopen(getenv("MIKUDANCESTUDIO_TRACE_REC"), "a");
+#ifdef MIKUMIKUSTUDIO_DIAG
+        if (getenv("MIKUMIKUSTUDIO_TRACE_REC")) {
+            FILE* tf = fopen(getenv("MIKUMIKUSTUDIO_TRACE_REC"), "a");
             if (tf) { fputs("frame section8 reload path\n", tf); fclose(tf); }
         }
 #endif
@@ -967,7 +967,7 @@ void FrameDriver(MMDApp* app) {
     }
 
     const auto [presented, hr] = PresentScene(app);
-#ifdef MIKUDANCESTUDIO_DIAG
+#ifdef MIKUMIKUSTUDIO_DIAG
     if (presented && SUCCEEDED(hr)) {
         if (requireLineEnabled && lineModeRequested != 0)
             ActivateRefreshedVbCapture();
@@ -978,4 +978,4 @@ void FrameDriver(MMDApp* app) {
 
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

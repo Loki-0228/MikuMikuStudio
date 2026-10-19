@@ -1,18 +1,18 @@
-#include "mikudancestudio/update_coordinator.hpp"
-#include "mikudancestudio/autosave.hpp"
-#include "mikudancestudio/bake_ui_lock.hpp"
-#include "mikudancestudio/build_profile.hpp"
-#include "mikudancestudio/frame_presentation.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/plugin_runtime.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/runtime_log.hpp"
+#include "mikumikustudio/update_coordinator.hpp"
+#include "mikumikustudio/autosave.hpp"
+#include "mikumikustudio/bake_ui_lock.hpp"
+#include "mikumikustudio/build_profile.hpp"
+#include "mikumikustudio/frame_presentation.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/plugin_runtime.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/runtime_log.hpp"
 #include "device_lost_wait.hpp"
 #include <native_ui/update.hpp>
 #include <algorithm>
 #include <cmath>
 
-namespace mikudancestudio::updates {
+namespace mikumikustudio::updates {
 namespace {
 constexpr UINT kWake = WM_APP + 0x73;
 struct State {

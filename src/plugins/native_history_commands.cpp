@@ -3,15 +3,15 @@
 #include "native_pose_scope.hpp"
 #include "native_object_commands.hpp"
 #include "native_camera_follow_ui.hpp"
-#include "mikudancestudio/animation_curve_editor.hpp"
-#include "mikudancestudio/bone_scale.hpp"
-#include "mikudancestudio/bake_ui_lock.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/animation_curve_editor.hpp"
+#include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/bake_ui_lock.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 void RefreshBoundPoseReadout(MMDApp& app) noexcept {
     // PostViewRefresh assumes a valid selected model/bone in model mode.
     // A common undo may instead affect another model, or run in camera mode.

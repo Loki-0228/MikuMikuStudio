@@ -4,6 +4,10 @@
 
 状态分为 **未实现**、**已实现未验证**、**本机已验证**、**缺其他系统/硬件环境**。代码、本机结果和平台结果分别列出。
 
+2026-10-20 完成 [main 名称与格式标记同步](records/abi-main-marker-sync-2026-10-20.md)：同步标准 19 字节 PMM 名称判断及所选命名修复；按用户要求仅识别 MMS 扩展标记，不保留旧 MDS 读取别名。独立镜头数值修复工具及启动器已从 ABI 分支移除。完整和基础配置构建、格式专项及六组相关共同历史专项通过；完整历史套件在真实光标定位处受本机环境限制，未声明整套通过。UI 框架已由用户确认修复完成，下列早期闪动描述保留为历史排查记录。
+
+[模型顺序修复](records/abi-model-order-2026-10-20.md)使模型名称、行数据、当前模型和父模型选择保持一致，计算顺序使用独立字段；列表写入失败恢复后才允许提交或退出。完整和基础配置各 13 个实际对话框场景通过。菜单 288／289 的共同历史迁移及同时加载 255 个模型的既有循环边界仍属后续工作。
+
 工具栏命令溢出已接入现有布局与 NativeUi：`MMS_UI_OVERFLOW_MENU=3` 适用于工具栏扩展区的 BUTTON、GROUP、SEPARATOR，支持 keepTogether 整组折叠。原 HWND、handle 和命令身份保留，菜单状态更新及卸载使用原生命周期规则。**状态：本机已验证。** 完整配置 21／21、原始兼容配置 18／18 组通过，`plugin_abi_contract` 重复 6／6 通过；最终轮证据见 [UI 框架记录](records/abi-ui-framework-2026-10-19.md)。SDK 范围见[工具栏命令溢出](../sdk/mms/cpp-ui.md#工具栏命令溢出)。DOCK、INPUT、其他挂载点及普通 `mms.edit` 的开放状态不变。
 
 布局框架的最终构建为完整配置 21／21、原始兼容配置 18／18 组通过；布局拖动稳定边界普通和共同历史绑定模式各 86 次比较，0 失败、0 不完整。用户在 2026-10-20 的 175% 复验中确认窄侧栏“当前”行和滚动条交界已修复；连续滑杆白闪的屏幕表现仍以[UI 框架记录](records/abi-ui-framework-2026-10-19.md#窄侧栏时间线布局修正2026-10-20)为准。早期局部滑杆缓冲和失败证据保留在[布局候选记录](records/abi-light-slider-flicker-2026-10-19.md#布局拖动候选与本轮验证)。
@@ -351,12 +355,12 @@ C++17 UI SDK 整合后，ABI 契约累计 **1,694** 项通过，新增 **171** �
 
 ```powershell
 cmake --preset win7-x64
-cmake --build --preset win7-x64-release --target MikuDanceStudio plugin_abi_tests
+cmake --build --preset win7-x64-release --target MikuMikuStudio plugin_abi_tests
 ctest --preset win7-x64-release -R '^plugin_abi_contract$' --output-on-failure
 python tests/plugins/host_smoke.py build/cmake/Release/MikuMikuDance.exe build/cmake/tests/plugins/lifecycle/Release/lifecycle.dll build/abi-smoke-new gui-panel
 ```
 
-本机 PDB 工具版本不匹配，验证构建显式设 `MIKUDANCESTUDIO_DEBUG_SYMBOLS=OFF`，默认配置仍生成符号。资源编译临时目录设为仓库内 `build/abi-tmp`，未修改系统环境。
+本机 PDB 工具版本不匹配，验证构建显式设 `MIKUMIKUSTUDIO_DEBUG_SYMBOLS=OFF`，默认配置仍生成符号。资源编译临时目录设为仓库内 `build/abi-tmp`，未修改系统环境。
 
 原生历史阶段的 D3DX 效果预编译停在 `CompileEffect`，原生历史及后续对象资源验证继续使用已校验的资源缓存。资源输入未修改，缓存时间晚于全部输入；另对两份资源各 80 个记录重新核对类型、语言和非着色器内容，并检查缓存哈希及编译后效果标识。记录见 `plugin-abi-native-history-resource-cache.json` 和 `plugin-abi-native-history-resource-verify.log`。C++ 代码及测试重新编译、链接，缓存复用不计为新的着色器编译验证。临时校验命令只用于本机生成目录；每批完成后恢复正常资源构建命令。本次记录见 `plugin-abi-batch-layout-resource-restored.log`。
 

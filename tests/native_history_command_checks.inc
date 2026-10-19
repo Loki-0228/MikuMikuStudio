@@ -1,7 +1,7 @@
 // Include after native_pose_scope_checks.inc. Exercise production routing with
 // hidden controls and explicit key snapshots; never activate the user's window.
 #include "../src/plugins/native_history_commands.hpp"
-namespace mikudancestudio { void DispatchLetterHotkeys(MMDApp*,HWND); }
+namespace mikumikustudio { void DispatchLetterHotkeys(MMDApp*,HWND); }
 namespace {
 void PressHistoryLetter(PoseNumericFixture& f,int key,HWND focus=nullptr) {
     unsigned char keys[256]{};f.app->LetterHotkeys().Update(keys,true);

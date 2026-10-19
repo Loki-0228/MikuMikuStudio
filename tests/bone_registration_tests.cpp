@@ -12,19 +12,19 @@
 #include <type_traits>
 #include <vector>
 
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/undo_storage.hpp"
-#include "mikudancestudio/bone_scale.hpp"
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/keyboard_input.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/accessory_layout.hpp"
-#include "mikudancestudio/global_key_layout.hpp"
-#include "mikudancestudio/frame_scope.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/undo_storage.hpp"
+#include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/keyboard_input.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/accessory_layout.hpp"
+#include "mikumikustudio/global_key_layout.hpp"
+#include "mikumikustudio/frame_scope.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 bool PrepareFramePaste(MMDApp*);
 void CmdControl400(MMDApp*, HWND, std::uint16_t, std::uint16_t);
 void CmdViewMenu(MMDApp*, HWND, std::uint16_t, std::uint16_t);
@@ -41,7 +41,7 @@ void DriveViewportBoxSelect(MMDApp*, int step, int x, int y);
 }
 
 namespace {
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 
 void Check(bool condition, const char* description) {
     if (!condition) {
@@ -80,8 +80,8 @@ struct Fixture {
     ~Fixture() {
         for (auto& ring : model->undoRings) {
             for (auto& slot : ring.slots) {
-                mikudancestudio::undo_storage::Delete(slot.bonePose);
-                mikudancestudio::undo_storage::Delete(slot.auxiliaryPose);
+                mikumikustudio::undo_storage::Delete(slot.bonePose);
+                mikumikustudio::undo_storage::Delete(slot.auxiliaryPose);
             }
         }
     }
@@ -324,8 +324,8 @@ void PoolGrowthRegistration() {
     bone_scale::Forget(raw);
     for (auto& ring : model->undoRings)
         for (auto& slot : ring.slots) {
-            mikudancestudio::undo_storage::Free(slot.bonePose);
-            mikudancestudio::undo_storage::Free(slot.auxiliaryPose);
+            mikumikustudio::undo_storage::Free(slot.bonePose);
+            mikumikustudio::undo_storage::Free(slot.auxiliaryPose);
         }
     mdl::BoneKeyPoolDestroy(model->boneKeys);
     std::puts("bone_registration_tests: runtime pool capacity growth");
@@ -856,8 +856,8 @@ struct PickFixture {
     ~PickFixture() {
         for (auto& ring : model->undoRings) {
             for (auto& slot : ring.slots) {
-                mikudancestudio::undo_storage::Delete(slot.bonePose);
-                mikudancestudio::undo_storage::Delete(slot.auxiliaryPose);
+                mikumikustudio::undo_storage::Delete(slot.bonePose);
+                mikumikustudio::undo_storage::Delete(slot.auxiliaryPose);
             }
         }
     }

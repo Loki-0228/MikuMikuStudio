@@ -4,24 +4,24 @@
 #include "native_history_commands.hpp"
 #include "native_object_commands.hpp"
 #include "scene_object_history.hpp"
-#include "mikudancestudio/autosave.hpp"
-#include "mikudancestudio/bake_ui_lock.hpp"
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/bone_scale.hpp"
-#include "mikudancestudio/bone_scale_gizmo.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/plugin_scene.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/update_coordinator.hpp"
+#include "mikumikustudio/autosave.hpp"
+#include "mikumikustudio/bake_ui_lock.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/bone_scale_gizmo.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/plugin_scene.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/update_coordinator.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstring>
 #include <stdexcept>
 #include <vector>
-namespace mikudancestudio { void FinishModelHudInteraction(MMDApp*,int,int) noexcept; }
-namespace mikudancestudio::plugins {
+namespace mikumikustudio { void FinishModelHudInteraction(MMDApp*,int,int) noexcept; }
+namespace mikumikustudio::plugins {
 namespace {
 constexpr unsigned kRotation=8,kDirty=16,kScale=32,kGeometry=15|kScale;
 struct Pose {

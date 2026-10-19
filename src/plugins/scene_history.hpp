@@ -1,8 +1,8 @@
 #pragma once
 #include "shared_history.hpp"
 #include <vector>
-namespace mikudancestudio { class MMDApp; }
-namespace mikudancestudio::plugins {
+namespace mikumikustudio { class MMDApp; }
+namespace mikumikustudio::plugins {
 // Captures only the incoming bindings and ordering affected by deletion. This
 // is one component of object removal, not the resource/membership operation.
 // It never owns model/mesh/Bullet resources. The scene owner must retain them

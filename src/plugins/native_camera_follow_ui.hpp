@@ -1,10 +1,10 @@
 #pragma once
-#include "mikudancestudio/build_profile.hpp"
+#include "mikumikustudio/build_profile.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include <memory>
 
-namespace mikudancestudio { class MMDApp; }
-namespace mikudancestudio::plugins {
+namespace mikumikustudio { class MMDApp; }
+namespace mikumikustudio::plugins {
 // Preserve every pending native edit, including an edit which has already
 // lost focus. Capture/allocation must complete before the caller publishes.
 // Ordinary readouts use per-edit modify checks without constructing a scope.

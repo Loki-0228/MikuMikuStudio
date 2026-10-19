@@ -26,11 +26,11 @@
 #include <cstdint>
 #include <process.h>   // _beginthread
 
-#include "mikudancestudio/physics_scene.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/wave_audio_context.hpp"
+#include "mikumikustudio/physics_scene.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/wave_audio_context.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 
 // VA 0x004C2CE0 - DirectSound feed-thread proc.  Streaming loop, verbatim
@@ -265,4 +265,4 @@ void WaveRestartAt(void* obj, double seconds) {  // was Sub4C3530, VA 0x004C3530
     SetTimer(hwnd, 0x64, 0x21, nullptr);                        // 0x4C3580
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

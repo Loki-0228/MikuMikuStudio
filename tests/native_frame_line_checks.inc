@@ -1,5 +1,5 @@
 #include "../src/plugins/native_frame_lines.hpp"
-namespace mikudancestudio {
+namespace mikumikustudio {
 int ShiftGlobalKeysForFrameLine(MMDApp*,bool,bool);
 int ShiftMorphKeysForFrameLine(MMDApp*,bool);
 int InsertBoneCameraFrameLine(MMDApp*); int DeleteBoneCameraFrameLine(MMDApp*);

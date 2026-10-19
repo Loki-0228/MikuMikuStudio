@@ -1,7 +1,7 @@
 #pragma once
 #include "nvidia_antialias_driver.hpp"
 
-namespace mikudancestudio::nvidia_antialias_fix::detail {
+namespace mikumikustudio::nvidia_antialias_fix::detail {
 constexpr wchar_t kHelperName[] = L"MMSNvidiaAAFix.dll";
 constexpr wchar_t kApplicationName[] = L"MikuMikuDance.exe";
 

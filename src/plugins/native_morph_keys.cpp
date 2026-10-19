@@ -4,12 +4,12 @@
 #include "native_range_scale.hpp"
 #include "native_model_paste.hpp"
 #include "scene_object_history.hpp"
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/frame_limits.hpp"
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/morph_curve.hpp"
-#include "mikudancestudio/plugin_scene.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/frame_limits.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/morph_curve.hpp"
+#include "mikumikustudio/plugin_scene.hpp"
 #include <array>
 #include <algorithm>
 #include <cmath>
@@ -17,7 +17,7 @@
 #include <map>
 #include <set>
 
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 namespace {
 struct Patch { unsigned slot; mdl::MorphKey before, after; };
 struct Dependency { unsigned slot; mdl::MorphKey key; };

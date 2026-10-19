@@ -1,13 +1,13 @@
-#include "mikudancestudio/ui_translation.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/ui_language.hpp"
+#include "mikumikustudio/ui_translation.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/ui_language.hpp"
 #include <cstring>
 #include <cwchar>
 #include <string>
-#include "mikudancestudio/text_encoding.hpp"
+#include "mikumikustudio/text_encoding.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 struct Translation { const char* en; const wchar_t* zh; };
 constexpr Translation kLabels[] = {

@@ -18,27 +18,27 @@
 // arguments (this+656852/53/54, flag 0) into a local Lbl() wrapper.
 // Every call site keeps its exact string/size/coordinate arguments.
 // =========================================================================//
-#include "mikudancestudio/build_profile.hpp"
-#include "mikudancestudio/animation_curve_host.hpp"
+#include "mikumikustudio/build_profile.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
 
 #include <cstdint>
 
-#include "mikudancestudio/bottom_panel_layout.hpp"
-#include "mikudancestudio/frame_presentation.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ui_metrics.hpp"
-#include "mikudancestudio/update_coordinator.hpp"
-#include "mikudancestudio/bottom_panel_resize.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/ui_translation.hpp"
-#include "mikudancestudio/ui_language.hpp"
+#include "mikumikustudio/bottom_panel_layout.hpp"
+#include "mikumikustudio/frame_presentation.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ui_metrics.hpp"
+#include "mikumikustudio/update_coordinator.hpp"
+#include "mikumikustudio/bottom_panel_resize.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/ui_translation.hpp"
+#include "mikumikustudio/ui_language.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 
 // Buffer only the damaged bounds. The destination remains the BeginPaint DC,
@@ -506,9 +506,9 @@ void HandleWindowPaint(MMDApp* app) {
     if (app->state.optflag[0] == 0) {
         unsigned char* model = app->SelectedModel();
         app->state.scrollNMax =
-            mikudancestudio::mdl::Mdl(model)->boneListRows - 3;
+            mikumikustudio::mdl::Mdl(model)->boneListRows - 3;
         app->state.scrollNPos =
-            mikudancestudio::mdl::Mdl(model)->boneListPos;
+            mikumikustudio::mdl::Mdl(model)->boneListPos;
     } else {
         app->state.scrollNMax =
             app->DisplayObjectListMatchCount() - 2;
@@ -525,4 +525,4 @@ void HandleWindowPaint(MMDApp* app) {
         SetScrollInfo(scrollbar,SB_CTL,reinterpret_cast<SCROLLINFO*>(&app->state.scrollCbSize),TRUE);
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

@@ -1,10 +1,10 @@
 // MAINTENANCE: hardware-manual; purpose and cleanup conditions in tests/README.md.
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/gpu_model.hpp"
-#include "mikudancestudio/skinning_backend.hpp"
-#include "mikudancestudio/bone_scale.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/gpu_model.hpp"
+#include "mikumikustudio/skinning_backend.hpp"
+#include "mikumikustudio/bone_scale.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -12,7 +12,7 @@
 #include <memory>
 #include <chrono>
 #include <cstdlib>
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 int wmain(int argc,wchar_t** argv) {
     if(argc!=2) return 2;
     std::setvbuf(stdout,nullptr,_IONBF,0);

@@ -1,10 +1,10 @@
 #define NOMINMAX
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/globals.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/frame_presentation.hpp"
-#include "mikudancestudio/frame_sampling.hpp"
-#include "mikudancestudio/plugin_runtime.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/globals.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/frame_presentation.hpp"
+#include "mikumikustudio/frame_sampling.hpp"
+#include "mikumikustudio/plugin_runtime.hpp"
 #include "../src/plugins/history_runtime.hpp"
 #include "../src/plugins/native_pose_scope.hpp"
 #include <MinHook.h>
@@ -14,7 +14,7 @@
 #include <cwchar>
 #include <vector>
 
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 namespace {
 decltype(&ShowWindow) realShow=nullptr;
 BOOL WINAPI Hidden(HWND window,int command){return realShow(window,GetParent(window)?command:SW_HIDE);}

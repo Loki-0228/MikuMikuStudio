@@ -1,6 +1,6 @@
 namespace scene_host_checks {
 void Run(MMDApp* app) {
-    using namespace mikudancestudio::plugins;
+    using namespace mikumikustudio::plugins;
     wchar_t modelPath[32768]{};
     Check(GetEnvironmentVariableW(L"MMS_SCENE_TEST_MODEL",modelPath,32768)>0,"scene model fixture supplied");
     LoadModelFile(app,modelPath,false);

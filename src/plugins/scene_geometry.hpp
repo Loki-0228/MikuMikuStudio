@@ -1,7 +1,7 @@
 #pragma once
 #include "scene_identity.hpp"
 #include <array>
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 using GeometryDigests = std::map<uint32_t, std::array<unsigned char, 32>>;
 constexpr uint64_t bindGeometryChannels = MMS_CHANNEL_MESH | MMS_CHANNEL_BINDING |
     MMS_CHANNEL_MATERIALS | MMS_CHANNEL_TEXTURES;

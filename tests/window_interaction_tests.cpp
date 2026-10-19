@@ -26,15 +26,15 @@
 #include <cstdlib>
 #include <string>
 
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/text_encoding.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/text_encoding.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 // Non-exported helpers under test (definitions in the files noted).
-int BoneListRowBoneIndex(const mikudancestudio::mdl::ModelRecord* record,
+int BoneListRowBoneIndex(const mikumikustudio::mdl::ModelRecord* record,
                          std::int32_t row);   // ui_editor_click.cpp
 std::int32_t BoneListRowMorphIndex(
-    const mikudancestudio::mdl::ModelRecord* record,
+    const mikumikustudio::mdl::ModelRecord* record,
     std::int32_t row);                        // ui_editor_click.cpp
 enum class PasteFrameGate {
     Ready,
@@ -43,7 +43,7 @@ enum class PasteFrameGate {
 };
 PasteFrameGate PasteFrameGateOf(bool accessoryMode, std::uint32_t copiedFrames,
                                 bool targetSelected);  // command_file_menu.cpp
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio
 
 static void Check(bool condition, const char* description) {
     if (!condition) {
@@ -54,12 +54,12 @@ static void Check(bool condition, const char* description) {
 
 namespace {
 
-using mikudancestudio::BoneListRowBoneIndex;
-using mikudancestudio::BoneListRowMorphIndex;
-using mikudancestudio::PasteFrameGate;
-using mikudancestudio::PasteFrameGateOf;
-namespace mdl = mikudancestudio::mdl;
-namespace enc = mikudancestudio::text_encoding;
+using mikumikustudio::BoneListRowBoneIndex;
+using mikumikustudio::BoneListRowMorphIndex;
+using mikumikustudio::PasteFrameGate;
+using mikumikustudio::PasteFrameGateOf;
+namespace mdl = mikumikustudio::mdl;
+namespace enc = mikumikustudio::text_encoding;
 
 // ---------------------------------------------------------------------------
 // Defect 8: "row -> bone index" mapping of the bone list.

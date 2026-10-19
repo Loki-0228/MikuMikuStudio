@@ -4,7 +4,7 @@
 #include <cwctype>
 #include <string>
 
-namespace mikudancestudio::nvidia_antialias_fix {
+namespace mikumikustudio::nvidia_antialias_fix {
 // Private to the optional installer DLL and its driver-contract tests.
 struct State {
     bool available = false;
@@ -14,7 +14,7 @@ struct State {
 };
 }
 
-namespace mikudancestudio::nvidia_antialias_fix::detail {
+namespace mikumikustudio::nvidia_antialias_fix::detail {
 // Minimal ABI declarations from NVIDIA's public nvapi.h / nvapi_interface.h.
 // Keep V1 structures and pack(4), including the binary union's length word.
 using U32 = std::uint32_t;
@@ -70,7 +70,7 @@ inline std::wstring ProfileName(const std::wstring& path) {
     for (wchar_t c : NormalizePath(path)) { hash ^= unsigned(c); hash *= 1099511628211ull; }
     wchar_t suffix[32]{};
     swprintf_s(suffix, L"%016llx", static_cast<unsigned long long>(hash));
-    return std::wstring(L"MikuDanceStudio AA fix ") + suffix;
+    return std::wstring(L"MikuMikuStudio AA fix ") + suffix;
 }
 inline bool InspectEffective(Api& api, const std::wstring& path, State& state) {
     state = {};
@@ -142,7 +142,7 @@ inline bool Execute(Api& api, const std::wstring& path, const bool* enabled, Sta
         Profile info; wcscpy_s(info.name, name.c_str());
         if (!check(api.createProfile(session.value, &info, &profile), L"CreateProfile")) return false;
         Application app; wcscpy_s(app.name, path.c_str());
-        wcscpy_s(app.friendly, L"MikuDanceStudio");
+        wcscpy_s(app.friendly, L"MikuMikuStudio");
         if (!check(api.createApp(session.value, profile, &app), L"CreateApplication")) return false;
     } else if (!check(status, L"FindProfileByName")) return false;
     // Never change a shared, predefined, or mismatched profile, even if someone

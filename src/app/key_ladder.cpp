@@ -50,15 +50,15 @@
 #include <cstdio>
 #include <cstdlib>
 
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/native_edit_history.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/runtime_log.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/native_edit_history.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/runtime_log.hpp"
 #include "../plugins/native_history_commands.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 // command_view_menu.cpp - the Ctrl+G branch body (x86 0x4726EE, x64
 // 0x7FF7CB44F625).  Defined at namespace scope there; declared here to
@@ -410,4 +410,4 @@ void ConsumeLetterHotkeys(MMDApp* app) {
     DispatchLetterHotkeys(app, GetFocus());
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

@@ -2,7 +2,7 @@
 #include "edit_store.hpp"
 #include <list>
 
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 // Internal native participants. A change owns the resources needed by both
 // directions, including absent objects. It must never recover an object by
 // reopening its source file. Public plugins use edit.h and serializer bytes.

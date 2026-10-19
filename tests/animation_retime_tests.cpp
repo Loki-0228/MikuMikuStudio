@@ -1,4 +1,4 @@
-// MAINTENANCE: pure-CPU coverage for include/mikudancestudio/animation_retime.hpp
+// MAINTENANCE: pure-CPU coverage for include/mikumikustudio/animation_retime.hpp
 // and src/animation/animation_retime.cpp.  No Win32, no renderer, no GPU.
 //
 // The point of the suite is to pin the honest part of the contract: exactness is
@@ -6,8 +6,8 @@
 // error and leave the output untouched on failure.  The counterexample cases
 // below are the ones the design cannot represent exactly, and they assert that
 // behaviour instead of claiming losslessness.
-#include "mikudancestudio/animation_curve.hpp"
-#include "mikudancestudio/animation_retime.hpp"
+#include "mikumikustudio/animation_curve.hpp"
+#include "mikumikustudio/animation_retime.hpp"
 
 #include <chrono>
 #include <cmath>
@@ -19,8 +19,8 @@
 #include <utility>
 #include <vector>
 
-namespace ac = mikudancestudio::animation_curve;
-namespace rt = mikudancestudio::animation_retime;
+namespace ac = mikumikustudio::animation_curve;
+namespace rt = mikumikustudio::animation_retime;
 
 namespace {
 

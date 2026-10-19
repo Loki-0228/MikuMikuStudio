@@ -1,10 +1,10 @@
 #include <algorithm>
-#include "mikudancestudio/extended_names.hpp"
+#include "mikumikustudio/extended_names.hpp"
 // Persistence for native bone scaling: the PMM v2
-// "org.mikudancestudio.model.<slot>.boneScale.v1" (or ".v2") tail record and
-// the VMD tail extension ("MDSXVMDX" footer after the standard prefix).  Wire
+// "org.mikumikustudio.model.<slot>.boneScale.v1" (or ".v2") tail record and
+// the VMD tail extension ("MMSXVMDX" footer after the standard prefix).  Wire
 // layouts and strictness rules are documented in
-// include/mikudancestudio/bone_scale_io.hpp.
+// include/mikumikustudio/bone_scale_io.hpp.
 //
 // The codec part is deterministic CPU code with its own matrix validation,
 // byte readers and CRC32, so a test can pin the wire format without a model.
@@ -30,13 +30,13 @@
 #include <utility>
 #include <vector>
 
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/bone_scale_io.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/runtime_log.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/bone_scale_io.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/runtime_log.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace bone_scale_io {
 namespace {
 
@@ -237,10 +237,10 @@ bool ValidCurveBytes(const std::uint8_t* bytes) {
 // ---- VMD tail extension helpers -----------------------------------------
 
 // Payload magic (kept from the codec's original standalone-file layout).
-const char kPayloadMagic[8] = {'M', 'D', 'S', 'X', 'M', 'D', 'S', 'X'};
+const char kPayloadMagic[8] = {'M', 'M', 'S', 'X', 'M', 'M', 'S', 'X'};
 // Footer magic: uint64 payloadBytes followed by these 8 bytes at the very end
 // of the file locate the extension.
-const char kFooterMagic[8] = {'M', 'D', 'S', 'X', 'V', 'M', 'D', 'X'};
+const char kFooterMagic[8] = {'M', 'M', 'S', 'X', 'V', 'M', 'D', 'X'};
 
 // ---- model helpers -------------------------------------------------------
 
@@ -554,12 +554,12 @@ std::string PmmKey(int slot) {
 }
 
 std::string PmmKey(int slot, std::uint32_t version) {
-    return std::string("org.mikudancestudio.model.") + std::to_string(slot) +
+    return std::string("org.mikumikustudio.model.") + std::to_string(slot) +
            ".boneScale.v" + std::to_string(version);
 }
 
 bool ParsePmmKey(const std::string& key, int& slot, std::string& version) {
-    static const std::string kPrefix = "org.mikudancestudio.model.";
+    static const std::string kPrefix = "org.mikumikustudio.model.";
     static const std::string kMiddle = ".boneScale.";
     if (key.size() <= kPrefix.size() + kMiddle.size()) return false;
     if (key.compare(0, kPrefix.size(), kPrefix) != 0) return false;
@@ -1281,4 +1281,4 @@ int ApplyImportedExtension(unsigned char* model, const VmdExtension& extension,
 }
 
 }  // namespace bone_scale_io
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

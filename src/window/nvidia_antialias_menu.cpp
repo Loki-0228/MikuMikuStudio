@@ -1,10 +1,10 @@
-#include "mikudancestudio/nvidia_antialias_menu.hpp"
-#include "mikudancestudio/nvidia_antialias_fix.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/build_profile.hpp"
+#include "mikumikustudio/nvidia_antialias_menu.hpp"
+#include "mikumikustudio/nvidia_antialias_fix.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/build_profile.hpp"
 #include "nvidia_antialias_uninstall_dialog.hpp"
 
-namespace mikudancestudio::nvidia_antialias_menu {
+namespace mikumikustudio::nvidia_antialias_menu {
 namespace {
 constexpr UINT kAboutCommand = 201;
 

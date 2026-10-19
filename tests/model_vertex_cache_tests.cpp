@@ -1,10 +1,10 @@
 // MAINTENANCE: hardware-manual. Hidden D3D9 buffers, no visible window.
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/model_vertex_cache.hpp"
-#include "mikudancestudio/skinning_backend.hpp"
-#include "mikudancestudio/gpu_model.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/model_vertex_cache.hpp"
+#include "mikumikustudio/skinning_backend.hpp"
+#include "mikumikustudio/gpu_model.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 #include <wrl/client.h>
 #include <array>
 #include <cstdio>
@@ -13,10 +13,10 @@
 #include <memory>
 #include <vector>
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 bool UpdateModelVertexBuffersCpu(MMDApp*, unsigned char*, const float[16]);
 }
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 using Microsoft::WRL::ComPtr;
 void Check(bool ok, const char* message) {
     if (!ok) { std::printf("FAIL %s\n", message); std::exit(1); }

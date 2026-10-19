@@ -11,17 +11,17 @@
 #include <memory>
 #include <string>
 #include <vector>
-#include "mikudancestudio/build_profile.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/build_profile.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 
 #if !MMD_ORIGINAL_PROFILE
 #error This test exercises the mmd932 profile only.
 #endif
 
 namespace {
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 namespace fs = std::filesystem;
 using Bytes = std::vector<unsigned char>;
 int checks = 0, failures = 0;

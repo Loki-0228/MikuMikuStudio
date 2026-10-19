@@ -1,9 +1,9 @@
 #pragma once
-#include "mikudancestudio/build_profile.hpp"
+#include "mikumikustudio/build_profile.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "shared_history.hpp"
-namespace mikudancestudio { class MMDApp; }
-namespace mikudancestudio::plugins {
+namespace mikumikustudio { class MMDApp; }
+namespace mikumikustudio::plugins {
 // Six native accessory pose axes, only in camera-panel accessory coordinates.
 // Samples still use ModeCameraAdjust/ModeAngleAdjust and one shared journal.
 bool AccessoryHudOperation(MMDApp&, int operation) noexcept;

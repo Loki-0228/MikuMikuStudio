@@ -2,10 +2,10 @@
 
 #include <Windows.h>
 #include <unknwn.h>
-#include "mikudancestudio/dshow_recorder.hpp"
-#include "mikudancestudio/recording_state.hpp"
+#include "mikumikustudio/dshow_recorder.hpp"
+#include "mikumikustudio/recording_state.hpp"
 
-namespace mikudancestudio::recording_state {
+namespace mikumikustudio::recording_state {
 
 enum class AckResult { Ready, Ended, Cancelled, TimedOut };
 
@@ -61,4 +61,4 @@ bool PumpRecordingMessages(Current current) {
     return current();
 }
 
-} // namespace mikudancestudio::recording_state
+} // namespace mikumikustudio::recording_state

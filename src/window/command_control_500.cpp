@@ -1,5 +1,5 @@
-#include "mikudancestudio/frame_limits.hpp"
-#include "mikudancestudio/key_pool.hpp"
+#include "mikumikustudio/frame_limits.hpp"
+#include "mikumikustudio/key_pool.hpp"
 // ===========================================================================
 // CommandDispatch family: control notifications 500..567 (0x47E8A0)
 // ===========================================================================
@@ -154,16 +154,16 @@
 #include <cstdio>
 #include <cstdlib>
 
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/animation_curve_host.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/adaptive_shadow.hpp"
-#include "mikudancestudio/shadow_filter.hpp"
-#include "mikudancestudio/build_profile.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/adaptive_shadow.hpp"
+#include "mikumikustudio/shadow_filter.hpp"
+#include "mikumikustudio/build_profile.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "../plugins/native_pose_axis.hpp"
 #include "../plugins/native_bone_registration.hpp"
@@ -172,7 +172,7 @@
 #include "../plugins/native_camera_follow.hpp"
 #endif
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 // ---- helpers ported in other translation units (declared with original
 //      VAs; bodies in the files noted on each line) -------------------------
@@ -316,7 +316,7 @@ void BonePosEdit(MMDApp* app, std::size_t axis) {
     if (sel >= 0) {
         PushBoneEditUndo(app);   // 0x42D6E0 bone-edit keyframe register
         unsigned char* m = ActiveModel(app);
-        mikudancestudio::mdl::Bones(m)[sel].trans[axis] = 0.0f;
+        mikumikustudio::mdl::Bones(m)[sel].trans[axis] = 0.0f;
         m = ActiveModel(app);
         mdl::Mdl(m)->bonePhysicsState[sel] = 1;
     }
@@ -996,4 +996,4 @@ void CmdControl500(MMDApp* app, HWND hwnd, std::uint16_t id, std::uint16_t notif
     }
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

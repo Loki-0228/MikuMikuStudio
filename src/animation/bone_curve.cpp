@@ -1,14 +1,14 @@
-#include "mikudancestudio/extended_names.hpp"
+#include "mikumikustudio/extended_names.hpp"
 #include <charconv>
-#include "mikudancestudio/frame_limits.hpp"
+#include "mikumikustudio/frame_limits.hpp"
 #define NOMINMAX
-#include "mikudancestudio/bone_curve.hpp"
-#include "mikudancestudio/native_edit_history.hpp"
+#include "mikumikustudio/bone_curve.hpp"
+#include "mikumikustudio/native_edit_history.hpp"
 #include "../plugins/scene_resource_budget.hpp"
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/bone_scale.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/panel_controls.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/panel_controls.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -16,7 +16,7 @@
 #include <set>
 #include <stdexcept>
 
-namespace mikudancestudio::bone_curve {
+namespace mikumikustudio::bone_curve {
 namespace {
 namespace ac = animation_curve;
 constexpr double pi = 3.14159265358979323846;
@@ -289,7 +289,7 @@ std::string StableId(const unsigned char* model, int bone, int channel) {
     for (int i=0; i<20; ++i) { const auto b=static_cast<unsigned char>(name[i]); id+=hex[b>>4]; id+=hex[b&15]; }
     return id;
 }
-std::string PmmKey(int slot) { return "org.mikudancestudio.model." + std::to_string(slot) + ".boneCurve.v1"; }
+std::string PmmKey(int slot) { return "org.mikumikustudio.model." + std::to_string(slot) + ".boneCurve.v1"; }
 }
 struct RangeRetime::Impl {
     unsigned char* model=nullptr;
@@ -408,7 +408,7 @@ bool Write(unsigned char* model, int bone, const Tracks& tracks, std::string& er
     std::set<int> frames;
     for (const auto& track : tracks) {
         if (!ac::Validate(track, error)) return false;
-        if (track.discrete || track.keys.empty() || track.keys.front().frame != 0 || track.keys.back().frame > mikudancestudio::frame_limits::maximum) {
+        if (track.discrete || track.keys.empty() || track.keys.front().frame != 0 || track.keys.back().frame > mikumikustudio::frame_limits::maximum) {
             error="Bone curves must keep frame zero and use representable nonnegative frame numbers."; return false;
         }
         for (const auto& key : track.keys) {
@@ -919,7 +919,7 @@ bool DrawPreview(MMDApp& app){
     SelectObject(dc,old);DeleteObject(pen);return true;
 }
 std::size_t VmdBlockSize(const std::uint8_t* data,std::size_t size){
-    if(!data||size<12||std::memcmp(data,"MDSBCRV1",8))return 0;
+    if(!data||size<12||std::memcmp(data,"MMSBCRV1",8))return 0;
     std::uint32_t bytes=0;for(int i=0;i<4;++i)bytes|=std::uint32_t(data[8+i])<<(8*i);
     return bytes<=16u*1024*1024&&bytes<=size-12?std::size_t(bytes)+12:0;
 }
@@ -940,7 +940,7 @@ bool CaptureVmd(const unsigned char* model,int offset,std::vector<std::uint8_t>&
     if(tracks.empty())return true;
     std::vector<std::uint8_t> payload;if(!ac::Encode(tracks,payload,error))return false;
     if(payload.size()>16u*1024*1024){error="Bone curve extension is too large.";return false;}
-    block.assign({'M','D','S','B','C','R','V','1'});
+    block.assign({'M','M','S','B','C','R','V','1'});
     for(int i=0;i<4;++i)block.push_back(std::uint8_t(payload.size()>>(8*i)));
     block.insert(block.end(),payload.begin(),payload.end());return true;
 }
@@ -972,7 +972,7 @@ bool ApplyVmd(unsigned char* model,const std::uint8_t* data,std::size_t size,int
             if(unicodeTargets){auto it=byIndex.find({int(bone),c});if(it!=byIndex.end())source=it->second;}
             else{auto it=byName.find(id);if(it!=byName.end())source=it->second;}
             if(!source){complete=false;break;}tracks[c]=*source;
-            for(auto& key:tracks[c].keys){if(key.frame<0||key.frame>mikudancestudio::frame_limits::maximum-offset){error="Bone curve frame is out of range.";return false;}key.frame+=offset;}
+            for(auto& key:tracks[c].keys){if(key.frame<0||key.frame>mikumikustudio::frame_limits::maximum-offset){error="Bone curve frame is out of range.";return false;}key.frame+=offset;}
             if(tracks[c].keys.empty()){error="Empty bone curve.";return false;}
             if(tracks[c].keys.front().frame>0){auto anchor=tracks[c].keys.front();anchor.frame=0;anchor.inSlope=anchor.outSlope=0;tracks[c].keys.front().interpolation=ac::Interpolation::Step;tracks[c].keys.insert(tracks[c].keys.begin(),anchor);}
         }

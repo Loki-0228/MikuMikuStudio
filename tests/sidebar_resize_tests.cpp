@@ -1,37 +1,37 @@
 // Exercise production mouse messages and repainting without opening a user window.
 #define NOMINMAX
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/globals.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/frame_presentation.hpp"
-#include "mikudancestudio/frame_sampling.hpp"
-#include "mikudancestudio/viewport_render_scale.hpp"
-#include "mikudancestudio/force_paste.hpp"
-#include "mikudancestudio/recent_projects.hpp"
-#include "mikudancestudio/plugin_menu.hpp"
-#include "mikudancestudio/plugin_menu.h"
-#include "mikudancestudio/ui_translation.hpp"
-#include "mikudancestudio/bottom_panel_resize.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/adaptive_shadow.hpp"
-#include "mikudancestudio/system_settings.hpp"
-#include "mikudancestudio/update_coordinator.hpp"
-#include "mikudancestudio/ui_metrics.hpp"
-#include "mikudancestudio/scene_ownership.hpp"
-#include "mikudancestudio/bake_ui_lock.hpp"
-#include "mikudancestudio/physics_scene.hpp"
-#include "mikudancestudio/plugin_scene.hpp"
-#include "mikudancestudio/pmm_extension.hpp"
-#include "mikudancestudio/autosave.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/globals.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/frame_presentation.hpp"
+#include "mikumikustudio/frame_sampling.hpp"
+#include "mikumikustudio/viewport_render_scale.hpp"
+#include "mikumikustudio/force_paste.hpp"
+#include "mikumikustudio/recent_projects.hpp"
+#include "mikumikustudio/plugin_menu.hpp"
+#include "mikumikustudio/plugin_menu.h"
+#include "mikumikustudio/ui_translation.hpp"
+#include "mikumikustudio/bottom_panel_resize.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/adaptive_shadow.hpp"
+#include "mikumikustudio/system_settings.hpp"
+#include "mikumikustudio/update_coordinator.hpp"
+#include "mikumikustudio/ui_metrics.hpp"
+#include "mikumikustudio/scene_ownership.hpp"
+#include "mikumikustudio/bake_ui_lock.hpp"
+#include "mikumikustudio/physics_scene.hpp"
+#include "mikumikustudio/plugin_scene.hpp"
+#include "mikumikustudio/pmm_extension.hpp"
+#include "mikumikustudio/autosave.hpp"
 #include "../src/plugins/scene_store.hpp"
 #include "../src/plugins/scene_object_history.hpp"
 #include "../src/plugins/history_runtime.hpp"
 #include "../src/plugins/native_accessory_hud_history.hpp"
-#include "mikudancestudio/plugin_runtime.hpp"
-#include "mikudancestudio/plugin_storage.hpp"
+#include "mikumikustudio/plugin_runtime.hpp"
+#include "mikumikustudio/plugin_storage.hpp"
 #include <thread>
 #include <btBulletDynamicsCommon.h>
-#include "mikudancestudio/model.hpp"
+#include "mikumikustudio/model.hpp"
 #include <MinHook.h>
 #include <commctrl.h>
 #include <cstdio>
@@ -45,8 +45,8 @@
 #include <string>
 #include <vector>
 
-using namespace mikudancestudio;
-namespace mikudancestudio {
+using namespace mikumikustudio;
+namespace mikumikustudio {
 void BuildAccessoryOrderArray(MMDApp*, int);
 void ApplyAccessorySettingsDialog(MMDApp*, int, HWND);
 void DisablePlaybackMenus(HWND);

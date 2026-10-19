@@ -8,29 +8,29 @@
 #include "native_pose_scope.hpp"
 #include "history_runtime.hpp"
 #include "scene_object_history.hpp"
-#include "mikudancestudio/animation_curve_editor.hpp"
-#include "mikudancestudio/autosave.hpp"
-#include "mikudancestudio/bake_ui_lock.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/physics_scene.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/plugin_runtime.hpp"
-#include "mikudancestudio/plugin_scene.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/runtime_log.hpp"
-#include "mikudancestudio/scene_history_ui.hpp"
-#include "mikudancestudio/scene_ownership.hpp"
-#include "mikudancestudio/text_encoding.hpp"
-#include "mikudancestudio/ui_language.hpp"
-#include "mikudancestudio/ui_message.hpp"
-#include "mikudancestudio/ui_translation.hpp"
+#include "mikumikustudio/animation_curve_editor.hpp"
+#include "mikumikustudio/autosave.hpp"
+#include "mikumikustudio/bake_ui_lock.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/physics_scene.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/plugin_runtime.hpp"
+#include "mikumikustudio/plugin_scene.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/runtime_log.hpp"
+#include "mikumikustudio/scene_history_ui.hpp"
+#include "mikumikustudio/scene_ownership.hpp"
+#include "mikumikustudio/text_encoding.hpp"
+#include "mikumikustudio/ui_language.hpp"
+#include "mikumikustudio/ui_message.hpp"
+#include "mikumikustudio/ui_translation.hpp"
 #include <commctrl.h>
 #include <array>
 #include <cstdio>
 
-namespace mikudancestudio { INT_PTR __stdcall AccessorySettingsDlgProc(HWND, UINT, WPARAM, LPARAM); }
-namespace mikudancestudio::plugins {
+namespace mikumikustudio { INT_PTR __stdcall AccessorySettingsDlgProc(HWND, UINT, WPARAM, LPARAM); }
+namespace mikumikustudio::plugins {
 namespace {
 class Operation;
 thread_local Operation* operation = nullptr;

@@ -13,7 +13,7 @@
 #include <thread>
 #include <limits>
 
-using namespace mikudancestudio::plugins;
+using namespace mikumikustudio::plugins;
 static int checks = 0;
 #define CHECK(x) do { ++checks; if (!(x)) throw std::runtime_error(std::string(__FILE__) + ":" + std::to_string(__LINE__) + " " #x); } while (false)
 template<class F> static bool Throws(F f) { try { f(); return false; } catch (...) { return true; } }

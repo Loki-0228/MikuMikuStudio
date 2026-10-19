@@ -3,7 +3,7 @@
 #include "../src/plugins/native_camera_interpolation.hpp"
 #include "../src/plugins/native_key_commands.hpp"
 #include "../src/plugins/native_pose_scope.hpp"
-#include "mikudancestudio/panel_controls.hpp"
+#include "mikumikustudio/panel_controls.hpp"
 namespace camera_interpolation_checks {
 struct Fixture : GlobalRegistrationFixture {
     HDC dc = nullptr;
@@ -107,7 +107,7 @@ std::vector<std::uint8_t> SavedCurves(MMDApp& app) {
     // This is the production PMM-save capture path. Do not call Read first:
     // Capture itself must recognize a normally grown authoring pool.
     pmm_extension::Document document; curve_host::Capture(app, document);
-    const auto* record = pmm_extension::Find(document, "org.mikudancestudio.animation_curves.v1");
+    const auto* record = pmm_extension::Find(document, "org.mikumikustudio.animation_curves.v1");
     Check(record != nullptr, "PMM capture retains its authored-curves extension");
     std::vector<animation_curve::NamedTrack> tracks; std::string error;
     Check(animation_curve::Decode(record->value.data(), record->value.size(), tracks, error) &&
@@ -374,7 +374,7 @@ void FailuresAndStale() {
         Check(Curves(*f.app) != authored && !curve_host::Has(f.app.get(), curve_host::Kind::Camera),
             "ordinary Read never transfers free or Step authoring to a replacement camera pool");
         pmm_extension::Document document; curve_host::Capture(*f.app, document);
-        const auto* record = pmm_extension::Find(document, "org.mikudancestudio.animation_curves.v1");
+        const auto* record = pmm_extension::Find(document, "org.mikumikustudio.animation_curves.v1");
         Check(record && record->value != saved,
             "PMM capture does not serialize the replaced camera object's old authored curves");
         f.app->CameraKeys() = previous; mdl::KeyPoolDestroy(replacement);

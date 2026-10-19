@@ -1,7 +1,7 @@
 // Hidden Win32 controls and real D3D9 render targets; never activates a window.
-#include "mikudancestudio/viewport_render_scale.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/viewport_render_scale.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 #include <CommCtrl.h>
 #include <cstdio>
 #include <cstdlib>
@@ -9,8 +9,8 @@
 #include <memory>
 #include <limits>
 
-using namespace mikudancestudio;
-namespace scale = mikudancestudio::viewport_render_scale;
+using namespace mikumikustudio;
+namespace scale = mikumikustudio::viewport_render_scale;
 using Microsoft::WRL::ComPtr;
 namespace {
 unsigned checks = 0;

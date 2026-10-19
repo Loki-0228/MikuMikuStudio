@@ -22,12 +22,12 @@ $cachePath = Join-Path $build 'CMakeCache.txt'
 if (-not (Test-Path -LiteralPath $cachePath)) { throw "缺少 CMake 缓存：$cachePath" }
 $cache = [IO.File]::ReadAllText($cachePath)
 $sourceRoot = [regex]::Match($cache, '(?m)^CMAKE_HOME_DIRECTORY:INTERNAL=(.+)$').Groups[1].Value.Trim()
-$profile = [regex]::Match($cache, '(?m)^MIKUDANCESTUDIO_PROFILE:STRING=(.+)$').Groups[1].Value.Trim()
+$profile = [regex]::Match($cache, '(?m)^MIKUMIKUSTUDIO_PROFILE:STRING=(.+)$').Groups[1].Value.Trim()
 $platform = [regex]::Match($cache, '(?m)^CMAKE_GENERATOR_PLATFORM:STRING=(.+)$').Groups[1].Value.Trim()
 if (-not $sourceRoot -or [IO.Path]::GetFullPath($sourceRoot) -ne $repo) {
     throw "构建目录不属于当前源码：$build"
 }
-if ($profile -ne 'full') { throw "发布目录要求完整档构建，当前 MIKUDANCESTUDIO_PROFILE 为 '$profile'：$build" }
+if ($profile -ne 'full') { throw "发布目录要求完整档构建，当前 MIKUMIKUSTUDIO_PROFILE 为 '$profile'：$build" }
 if ($platform -ne 'x64') { throw "发布目录要求 x64 构建：$build" }
 $exe = Join-Path $build 'Release/MikuMikuDance.exe'
 if (-not (Test-Path -LiteralPath $exe)) { throw "缺少 Release 程序：$exe" }

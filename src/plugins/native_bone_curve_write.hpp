@@ -1,10 +1,10 @@
 #pragma once
-#include "mikudancestudio/build_profile.hpp"
+#include "mikumikustudio/build_profile.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "shared_history.hpp"
-#include "mikudancestudio/bone_curve.hpp"
-namespace mikudancestudio { class MMDApp; }
-namespace mikudancestudio::plugins {
+#include "mikumikustudio/bone_curve.hpp"
+namespace mikumikustudio { class MMDApp; }
+namespace mikumikustudio::plugins {
 struct NativeBoneCurveControls {
     int frame=0;
     std::array<bone_scale::Curve,5> controls{};

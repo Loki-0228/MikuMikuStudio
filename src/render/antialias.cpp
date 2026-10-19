@@ -1,17 +1,17 @@
-#include "mikudancestudio/local_data_path.hpp"
-#include "mikudancestudio/system_settings.hpp"
+#include "mikumikustudio/local_data_path.hpp"
+#include "mikumikustudio/system_settings.hpp"
 #include "../app/settings_json.hpp"
-#include "mikudancestudio/antialias.hpp"
-#include "mikudancestudio/antialias_motion.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/graphics_runtime.hpp"
-#include "mikudancestudio/runtime_log.hpp"
-#include "mikudancestudio/build_profile.hpp"
-#include "mikudancestudio/pmm_project_settings.hpp"
+#include "mikumikustudio/antialias.hpp"
+#include "mikumikustudio/antialias_motion.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/graphics_runtime.hpp"
+#include "mikumikustudio/runtime_log.hpp"
+#include "mikumikustudio/build_profile.hpp"
+#include "mikumikustudio/pmm_project_settings.hpp"
 #include "antialias_shader.hpp"
 #include "outline_coverage_shader.hpp"
-#include "mikudancestudio/model.hpp"
+#include "mikumikustudio/model.hpp"
 #include "smaa_shader.hpp"
 #include "smaa_lookup.hpp"
 #include <wrl/client.h>
@@ -25,7 +25,7 @@
 #include <vector>
 #include <unordered_map>
 
-namespace mikudancestudio::antialias {
+namespace mikumikustudio::antialias {
 using Microsoft::WRL::ComPtr;
 namespace {
 struct Target {

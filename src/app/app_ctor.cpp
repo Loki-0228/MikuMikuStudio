@@ -14,12 +14,12 @@
 // this+0x9F4F8.  WinMain memsets the whole 0xA4530-byte object right after
 // construction, so the only observable effect is returning `this`.
 // ===========================================================================
-#include "mikudancestudio/mmd_app.hpp"
+#include "mikumikustudio/mmd_app.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 MMDApp::MMDApp() {
     // this+0x9F4F8 subobject (VA 0x004C46F0) constructs nothing.
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

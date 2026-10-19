@@ -1,12 +1,12 @@
 #pragma once
-#include "mikudancestudio/build_profile.hpp"
+#include "mikumikustudio/build_profile.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include <Windows.h>
 #include <memory>
 #include <array>
 #include <mms/plugin.h>
-namespace mikudancestudio { class MMDApp; }
-namespace mikudancestudio::plugins {
+namespace mikumikustudio { class MMDApp; }
+namespace mikumikustudio::plugins {
 class HistoryChange;
 class SharedHistory;
 // Internal modal session. The app outlives the session; no journal reservation

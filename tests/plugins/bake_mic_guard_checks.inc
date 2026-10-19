@@ -1,13 +1,13 @@
 // Include at file scope in the actual hidden-host harness. Invoke Run(app)
 // after small_viewport_host_checks::Run, outside any UI lock or active gesture.
 // This creates the production detached HWND; it never injects system input.
-#include "mikudancestudio/bake_ui_lock.hpp"
-#include "mikudancestudio/frame_presentation.hpp"
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/scene_sampling.hpp"
-#include "mikudancestudio/window_dpi_scope.hpp"
+#include "mikumikustudio/bake_ui_lock.hpp"
+#include "mikumikustudio/frame_presentation.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/scene_sampling.hpp"
+#include "mikumikustudio/window_dpi_scope.hpp"
 #include "../../src/plugins/history_runtime.hpp"
 #include <commctrl.h>
 #include <array>
@@ -20,7 +20,7 @@
 #include <vector>
 
 namespace bake_mic_guard_checks {
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 inline void Require(bool condition,const char* text) {
     if(!condition)throw std::runtime_error(text);
 }

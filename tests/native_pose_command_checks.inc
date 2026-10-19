@@ -1,6 +1,6 @@
 // Include after native_pose_scope_checks.inc; call NativePoseCommandChecks().
 // Reuses its hidden windows and invokes the production command-family entry.
-namespace mikudancestudio { void CmdControl450(MMDApp*,HWND,std::uint16_t,std::uint16_t); }
+namespace mikumikustudio { void CmdControl450(MMDApp*,HWND,std::uint16_t,std::uint16_t); }
 namespace {
 struct PoseCommandFixture : PoseNumericFixture {
     PoseCommandFixture() {

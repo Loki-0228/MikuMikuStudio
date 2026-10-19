@@ -1,9 +1,9 @@
 #pragma once
-#include "mikudancestudio/build_profile.hpp"
+#include "mikumikustudio/build_profile.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "shared_history.hpp"
-namespace mikudancestudio { class MMDApp; }
-namespace mikudancestudio::plugins {
+namespace mikumikustudio { class MMDApp; }
+namespace mikumikustudio::plugins {
 // MMS_OK means the unbound legacy route may continue. A bound journal always
 // owns this entry: standard model/global and accessory VMD use private plans.
 MmsResult CheckVmdImportHistory(MMDApp*) noexcept;

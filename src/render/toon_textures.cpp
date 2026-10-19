@@ -31,11 +31,11 @@
 #include <cstdio>
 #include <cstring>
 
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 
 // Layout binary-compatible with D3DXIMAGE_INFO. D3DX is resolved at runtime, so
@@ -165,4 +165,4 @@ bool InitToonTextures(MMDApp* app) {
     return true;
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

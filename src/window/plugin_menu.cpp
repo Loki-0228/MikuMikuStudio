@@ -1,8 +1,8 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include "mikudancestudio/plugin_menu.h"
-#include "mikudancestudio/plugin_menu.hpp"
-#include "mikudancestudio/mmd_app.hpp"
+#include "mikumikustudio/plugin_menu.h"
+#include "mikumikustudio/plugin_menu.hpp"
+#include "mikumikustudio/mmd_app.hpp"
 #include <commctrl.h>
 #include <algorithm>
 #include <map>
@@ -10,7 +10,7 @@
 #include <string>
 #include <vector>
 
-namespace mikudancestudio::plugin_menu {
+namespace mikumikustudio::plugin_menu {
 namespace {
 struct Entry {
     MmsPluginMenu api{};
@@ -147,6 +147,6 @@ bool HandleShortcut(MMDApp* app,unsigned key){
 }
 extern "C" __declspec(dllexport) int __cdecl MMSGetMenuHostApi(uint32_t version,MmsMenuHostApi* out){
     if(!out||out->structureSize<sizeof(*out)||version!=MMS_MENU_ABI_VERSION)return 0;
-    using namespace mikudancestudio::plugin_menu;
+    using namespace mikumikustudio::plugin_menu;
     *out={sizeof(*out),MMS_MENU_ABI_VERSION,Register,Unregister,RefreshToken};return 1;
 }

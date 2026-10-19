@@ -1,9 +1,9 @@
-// MikuDanceStudio: physics bake parameter presets (UTF-8 JSON), standalone module.
+// MikuMikuStudio: physics bake parameter presets (UTF-8 JSON), standalone module.
 //
 // The wire format is the one fixed in docs/guides/physics-baking.md:
 //
 //     {
-//       "format": "MikuDanceStudioPhysicsPreset",
+//       "format": "MikuMikuStudioPhysicsPreset",
 //       "schemaVersion": 1,
 //       "name": "preset name",
 //       "erp": 0.2,
@@ -13,7 +13,7 @@
 //       "baseSimulationRateHz": 60
 //     }
 //
-// Contract implemented here (header: include/mikudancestudio/physics_bake_settings.hpp):
+// Contract implemented here (header: include/mikumikustudio/physics_bake_settings.hpp):
 //
 //   * All eight keys are mandatory and no other key is accepted.  Duplicate
 //     keys, unknown keys, wrong value types, malformed numbers, numbers whose
@@ -52,7 +52,7 @@
 
 #include "btBulletDynamicsCommon.h"
 
-#include "mikudancestudio/physics_bake_settings.hpp"
+#include "mikumikustudio/physics_bake_settings.hpp"
 
 #include <charconv>
 #include <cmath>
@@ -64,7 +64,7 @@
 #include <string_view>
 #include <utility>
 
-namespace mikudancestudio::bake {
+namespace mikumikustudio::bake {
 namespace {
 
 constexpr std::size_t kMaxPresetBytes = 64u * 1024u;
@@ -80,7 +80,7 @@ constexpr int kMultiplierMax = 16;
 constexpr int kBaseRateA = 30;
 constexpr int kBaseRateB = 60;
 constexpr double kSchemaVersion = 1.0;
-constexpr const wchar_t* kFormatId = L"MikuDanceStudioPhysicsPreset";
+constexpr const wchar_t* kFormatId = L"MikuMikuStudioPhysicsPreset";
 constexpr const wchar_t* kDefaultName = L"Bullet defaults";
 
 // The eight keys of the format, in the canonical order used for the
@@ -685,7 +685,7 @@ std::string EncodePreset(const Settings& settings) {
     std::string out;
     out.reserve(256);
     out += "{\n";
-    out += "\t\"format\": \"MikuDanceStudioPhysicsPreset\",\n";
+    out += "\t\"format\": \"MikuMikuStudioPhysicsPreset\",\n";
     out += "\t\"schemaVersion\": 1,\n";
     out += "\t\"name\": \"";
     out += EncodeJsonString(settings.name);
@@ -785,4 +785,4 @@ bool SavePreset(const wchar_t* path, const Settings& settings, SettingsError& er
     return true;
 }
 
-}  // namespace mikudancestudio::bake
+}  // namespace mikumikustudio::bake

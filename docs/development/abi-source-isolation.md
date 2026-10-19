@@ -25,7 +25,7 @@ main 的已验证功能通过 Git 合并进入 ABI 分支，两份源码和构�
 	Set-Location D:/MMD-Next/MMS-abi-dev
 	conan install . --profile:host profiles/win7-x64 --profile:build profiles/win7-x64 --lockfile profiles/win7-x64.lock --output-folder build/conan --no-remote
 	cmake --preset win7-x64
-	cmake --build --preset win7-x64-release --target MikuDanceStudio plugin_abi_tests
+	cmake --build --preset win7-x64-release --target MikuMikuStudio plugin_abi_tests
 ```
 
 `--no-remote` 适用于依赖已在本机缓存的环境；缺少依赖时先按项目构建指南准备锁定版本。测试产生的工程、配置、插件和日志放在独立目录的 `build/` 内。

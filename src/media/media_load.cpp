@@ -1,4 +1,4 @@
-#include "mikudancestudio/original_import.hpp"
+#include "mikumikustudio/original_import.hpp"
 // ===========================================================================
 // VA 0x0042AE20 - CopyDirPathW         (original: sub_42AE20, 16 bytes)
 // VA 0x0042AE40 - CopyPathW         (original: sub_42AE40, 23 bytes)
@@ -24,7 +24,7 @@
 // =========================================================================//
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include "mikudancestudio/native_media.hpp"
+#include "mikumikustudio/native_media.hpp"
 #include <algorithm>
 #include <cmath>
 #include <Windows.h>
@@ -40,11 +40,11 @@
 #include <share.h>
 #include <sys/stat.h>
 
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 
 // 0x52BA94: "AVIデータ読込"
@@ -496,4 +496,4 @@ void LoadBackgroundPicture(MMDApp* app) {
     PicBgOverlayRefresh(app);                                                 // 0x433A22
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

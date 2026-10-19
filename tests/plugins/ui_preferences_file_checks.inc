@@ -1,5 +1,5 @@
 #include "ui_preferences_file.hpp"
-#include "mikudancestudio/system_settings.hpp"
+#include "mikumikustudio/system_settings.hpp"
 static void UiPreferencesFileChecks(const fs::path& root) {
     struct Fixture {
         UiRegistry registry;
@@ -72,14 +72,14 @@ static void UiPreferencesFileChecks(const fs::path& root) {
     Fixture unifiedFirst; UiPreferencesFile ua(legacy, true, unified);
     CHECK(ua.Load(unifiedFirst.registry) == MMS_OK);
     CHECK(!unifiedFirst.registry.elements.at("example.file.group").visible);
-    mikudancestudio::system_settings::Store settings(unified);
+    mikumikustudio::system_settings::Store settings(unified);
     std::string section;
-    CHECK(settings.ReadSection("pluginUi", section) == mikudancestudio::system_settings::Result::Ok);
+    CHECK(settings.ReadSection("pluginUi", section) == mikumikustudio::system_settings::Result::Ok);
     Fixture unifiedSecond; UiPreferencesFile ub(legacy, true, unified);
     CHECK(ub.Load(unifiedSecond.registry) == MMS_OK);
-    CHECK(settings.WriteSection("history", "{\"recordAll\":1}") == mikudancestudio::system_settings::Result::Ok);
+    CHECK(settings.WriteSection("history", "{\"recordAll\":1}") == mikumikustudio::system_settings::Result::Ok);
     unifiedFirst.Size(180); CHECK(ua.Save(unifiedFirst.registry) == MMS_OK);
-    CHECK(settings.ReadSection("history", section) == mikudancestudio::system_settings::Result::Ok && Json::Parse(section).At("recordAll").UInt() == 1);
+    CHECK(settings.ReadSection("history", section) == mikumikustudio::system_settings::Result::Ok && Json::Parse(section).At("recordAll").UInt() == 1);
     unifiedSecond.Size(240); CHECK(ub.Save(unifiedSecond.registry) == MMS_E_CONFLICT);
     CHECK(ReadFile(legacy) == initial && fs::last_write_time(legacy) == oldTime);
     Write(legacy, "{invalid");

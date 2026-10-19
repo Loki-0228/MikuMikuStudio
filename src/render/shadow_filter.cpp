@@ -1,18 +1,18 @@
-#include "mikudancestudio/shadow_filter.hpp"
-#include "mikudancestudio/build_profile.hpp"
-#include "mikudancestudio/viewport_render_scale.hpp"
-#include "mikudancestudio/d3d_wrapper.hpp"
-#include "mikudancestudio/d3dx_effect.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/graphics_runtime.hpp"
-#include "mikudancestudio/runtime_log.hpp"
+#include "mikumikustudio/shadow_filter.hpp"
+#include "mikumikustudio/build_profile.hpp"
+#include "mikumikustudio/viewport_render_scale.hpp"
+#include "mikumikustudio/d3d_wrapper.hpp"
+#include "mikumikustudio/d3dx_effect.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/graphics_runtime.hpp"
+#include "mikumikustudio/runtime_log.hpp"
 #include <algorithm>
 #include <cmath>
 #include <vector>
 #include <unordered_map>
 #include <utility>
 
-namespace mikudancestudio::shadow_filter {
+namespace mikumikustudio::shadow_filter {
 using Microsoft::WRL::ComPtr;
 namespace {
 HRESULT FirstFailure(HRESULT first, HRESULT next) {
@@ -458,4 +458,4 @@ void ReleaseRenderer(D3DRenderer* renderer, bool forget) {
     state.hasKey = state.failed = false;
     if (forget) states.erase(found);
 }
-} // namespace mikudancestudio::shadow_filter
+} // namespace mikumikustudio::shadow_filter

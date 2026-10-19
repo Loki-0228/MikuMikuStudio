@@ -1,6 +1,6 @@
 #include "storage_store.hpp"
 
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 namespace {
 // A bounded public transfer. The encoded sidecar imposes its own total limit.
 constexpr uint64_t kMaxBytes = 64ull * 1024 * 1024;

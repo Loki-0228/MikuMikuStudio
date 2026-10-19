@@ -1,9 +1,9 @@
 #include "native_viewport_reset_camera.hpp"
 #if !MMD_ORIGINAL_PROFILE
-#include "mikudancestudio/animation_curve_host.hpp"
-#include "mikudancestudio/frame_limits.hpp"
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/mmd_app.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
+#include "mikumikustudio/frame_limits.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/mmd_app.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -13,7 +13,7 @@
 #include <utility>
 #include <vector>
 
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 namespace {
 constexpr double kPi = 3.14159265358979323846;
 using Key = mdl::CameraKey;

@@ -26,14 +26,14 @@
 #include <cstdint>
 #include <cstring>
 
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/ui_language.hpp"
-#include "mikudancestudio/build_profile.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/ui_language.hpp"
+#include "mikumikustudio/build_profile.hpp"
 #if !MMD_ORIGINAL_PROFILE
-#include "mikudancestudio/ui_control_layout.hpp"
+#include "mikumikustudio/ui_control_layout.hpp"
 #endif
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 void CreateUiFont(MMDApp* app, HWND hwnd) {
     auto& s = *app;
@@ -108,4 +108,4 @@ void ApplyUiFontToControl(MMDApp* app, HWND control, int id) {
 #endif
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

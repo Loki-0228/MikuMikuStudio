@@ -22,20 +22,20 @@
 #include <string>
 #include <type_traits>
 #include <vector>
-#include "mikudancestudio/build_profile.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/native_mesh.hpp"
-#include "mikudancestudio/scene_ownership.hpp"
-#include "mikudancestudio/ui_message.hpp"
+#include "mikumikustudio/build_profile.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/native_mesh.hpp"
+#include "mikumikustudio/scene_ownership.hpp"
+#include "mikumikustudio/ui_message.hpp"
 #include "../src/io/pmm_io_common.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "../src/plugins/history_runtime.hpp"
 #include "../src/plugins/project_storage.hpp"
 #endif
 
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 namespace fs = std::filesystem;
 namespace {
 unsigned checks = 0, tailCalls = 0, messages = 0, missingDialogs = 0, resetThrows = 0;

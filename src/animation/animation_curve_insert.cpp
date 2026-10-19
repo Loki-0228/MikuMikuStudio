@@ -1,12 +1,12 @@
 
-#include "mikudancestudio/animation_curve.hpp"
+#include "mikumikustudio/animation_curve.hpp"
 #include <algorithm>
 #include <cmath>
 
 // Transactional subdivision of the stored scalar curve.
 // Do not round handles to MMD's 0..127 integers: that would change its shape.
-namespace mikudancestudio::animation_curve {
-namespace ac = mikudancestudio::animation_curve;
+namespace mikumikustudio::animation_curve {
+namespace ac = mikumikustudio::animation_curve;
 
 struct Point { double x, y; };
 inline Point Lerp(Point a, Point b, double t) {

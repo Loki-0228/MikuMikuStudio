@@ -1,13 +1,13 @@
-#include "mikudancestudio/system_settings_ui.hpp"
-#include "mikudancestudio/system_settings.hpp"
-#include "mikudancestudio/mmd_app.hpp"
+#include "mikumikustudio/system_settings_ui.hpp"
+#include "mikumikustudio/system_settings.hpp"
+#include "mikumikustudio/mmd_app.hpp"
 #include "../plugins/history_runtime.hpp"
 #include "../plugins/json.hpp"
 #include "../plugins/shared_history.hpp"
 #include <Windows.h>
 #include <algorithm>
 
-namespace mikudancestudio::system_settings_ui {
+namespace mikumikustudio::system_settings_ui {
 namespace {
 const wchar_t* Text(MMDApp* app,const wchar_t* zh,const wchar_t* en,const wchar_t* ja) {
     return app->EnglishUI()==2?zh:app->EnglishUI()?en:ja;

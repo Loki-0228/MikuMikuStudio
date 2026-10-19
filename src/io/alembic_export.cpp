@@ -1,16 +1,16 @@
-#include "mikudancestudio/frame_limits.hpp"
+#include "mikumikustudio/frame_limits.hpp"
 #define NOMINMAX
-#include "mikudancestudio/alembic_export.hpp"
-#include "mikudancestudio/frame_presentation.hpp"
-#include "mikudancestudio/deformed_mesh_capture.hpp"
-#include "mikudancestudio/scene_sampling.hpp"
-#include "mikudancestudio/mesh_bake_cache.hpp"
-#include "mikudancestudio/native_mesh.hpp"
-#include "mikudancestudio/physics_bake.hpp"
-#include "mikudancestudio/channel_bake.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/model.hpp"
+#include "mikumikustudio/alembic_export.hpp"
+#include "mikumikustudio/frame_presentation.hpp"
+#include "mikumikustudio/deformed_mesh_capture.hpp"
+#include "mikumikustudio/scene_sampling.hpp"
+#include "mikumikustudio/mesh_bake_cache.hpp"
+#include "mikumikustudio/native_mesh.hpp"
+#include "mikumikustudio/physics_bake.hpp"
+#include "mikumikustudio/channel_bake.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/model.hpp"
 #include <memory>
 #include <algorithm>
 #include <Alembic/AbcGeom/All.h>
@@ -21,7 +21,7 @@
 #include <cmath>
 #include <stdexcept>
 
-namespace mikudancestudio::alembic_export {
+namespace mikumikustudio::alembic_export {
 namespace {
 namespace Abc=Alembic::Abc;
 namespace Geom=Alembic::AbcGeom;
@@ -128,14 +128,14 @@ Result Export(MMDApp& app,const std::filesystem::path& path,const Options& optio
         ~Busy(){exporting=false;app.state.messageSeen=1;if(app.MainWindow())InvalidateRect(app.MainWindow(),nullptr,FALSE);}
     } busy(app);
     try {
-        const auto target=options.writeAbc?std::filesystem::absolute(path):std::filesystem::temp_directory_path()/L"MikuDanceStudio-mesh-bake.abc";
+        const auto target=options.writeAbc?std::filesystem::absolute(path):std::filesystem::temp_directory_path()/L"MikuMikuStudio-mesh-bake.abc";
         const auto temporary=target.parent_path()/(target.filename().wstring()+L".partial-"+std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(GetTickCount64()));
         struct Cleanup{std::filesystem::path path;~Cleanup(){std::error_code e;std::filesystem::remove(path,e);}}cleanup{temporary};
         std::set<const void*> bakedObjects;
         std::ofstream stream(temporary,std::ios::binary|std::ios::trunc);
         stream.exceptions(std::ios::badbit|std::ios::failbit);
         {
-            Alembic::AbcCoreAbstract::MetaData metadata;metadata.set("application","MikuDanceStudio");
+            Alembic::AbcCoreAbstract::MetaData metadata;metadata.set("application","MikuMikuStudio");
             Abc::OArchive archive(Alembic::AbcCoreOgawa::WriteArchive()(&stream,metadata));
             const auto sampling=archive.addTimeSampling(Abc::TimeSampling(1.0/options.framesPerSecond,options.firstFrame/30.0));
             auto root=archive.getTop();

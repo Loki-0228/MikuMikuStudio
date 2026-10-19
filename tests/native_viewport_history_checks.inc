@@ -1,6 +1,6 @@
 #include "../src/plugins/native_viewport_history.hpp"
-#include "mikudancestudio/plugin_storage.hpp"
-namespace mikudancestudio {void ConsumeRightButtonDrag(MMDApp*);void ConsumeMiddleButtonPan(MMDApp*);}
+#include "mikumikustudio/plugin_storage.hpp"
+namespace mikumikustudio {void ConsumeRightButtonDrag(MMDApp*);void ConsumeMiddleButtonPan(MMDApp*);}
 namespace {
 using ViewportValues=std::array<float,7>;
 ViewportValues ViewportRead(MMDApp& a){return {a.CameraPositionX(),a.CameraPositionY(),a.CameraPositionZ(),a.CameraPitch(),a.CameraYaw(),a.CameraRoll(),a.CameraDistance()};}

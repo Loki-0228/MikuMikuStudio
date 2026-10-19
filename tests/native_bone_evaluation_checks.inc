@@ -1,7 +1,7 @@
 // Include after native_bone_registration_checks.inc and curve authoring checks.
 // Call NativeBoneEvaluationChecks(). All scene windows belong to test fixtures.
 #include "../src/plugins/native_bone_evaluation.hpp"
-#include "mikudancestudio/frame_limits.hpp"
+#include "mikumikustudio/frame_limits.hpp"
 #include <limits>
 namespace {
 void EvaluationSeed(Fixture& f) {

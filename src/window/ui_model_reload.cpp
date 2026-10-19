@@ -1,8 +1,8 @@
-#include "mikudancestudio/build_profile.hpp"
+#include "mikumikustudio/build_profile.hpp"
 // ===========================================================================
 // VA 0x0040D940 / 0x0044D610 - model/camera panel refresh helpers
 // ===========================================================================
-#include "mikudancestudio/animation_curve_host.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
@@ -14,14 +14,14 @@
 #include <cstdlib>
 #include <cstring>
 
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/ui_translation.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/panel_controls.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/ui_translation.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/panel_controls.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 void SelectionReeval(MMDApp* app);  // 0x430510
 void ApplyGravityTrack(MMDApp* app);        // 0x412330
@@ -59,11 +59,11 @@ void EnableMenuCommands(HMENU menu, const int* ids, std::size_t count,
         EnableMenuItem(menu, ids[i], state);
 }
 
-mikudancestudio::mdl::BoneRecord* BoneAt(unsigned char* model, int boneIndex) {
-    return mikudancestudio::mdl::Bones(model) + boneIndex;
+mikumikustudio::mdl::BoneRecord* BoneAt(unsigned char* model, int boneIndex) {
+    return mikumikustudio::mdl::Bones(model) + boneIndex;
 }
 
-void BonePoint(mikudancestudio::mdl::BoneRecord* bone, float out[3]) {
+void BonePoint(mikumikustudio::mdl::BoneRecord* bone, float out[3]) {
     const float* matrix = reinterpret_cast<const float*>(bone->matInit);
     const float* point = reinterpret_cast<const float*>(bone->position);
     out[0] = matrix[0] * point[0] + matrix[4] * point[1] +
@@ -77,9 +77,9 @@ void BonePoint(mikudancestudio::mdl::BoneRecord* bone, float out[3]) {
 }  // namespace
 
 void PostModelReload(MMDApp* app) {  // 0x41A650
-#ifdef MIKUDANCESTUDIO_DIAG
-    if (getenv("MIKUDANCESTUDIO_TRACE_REC")) {
-        FILE* tf = fopen(getenv("MIKUDANCESTUDIO_TRACE_REC"), "a");
+#ifdef MIKUMIKUSTUDIO_DIAG
+    if (getenv("MIKUMIKUSTUDIO_TRACE_REC")) {
+        FILE* tf = fopen(getenv("MIKUMIKUSTUDIO_TRACE_REC"), "a");
         if (tf) { fprintf(tf, "PostModelReload targetSlot=%d\n",
                           app->CameraParentModel()); fclose(tf); }
     }
@@ -106,7 +106,7 @@ void PostModelReload(MMDApp* app) {  // 0x41A650
     const int targetSlot = app->CameraParentModel();
     if (targetSlot >= 0) {
         unsigned char* targetModel = ModelAt(app, targetSlot);
-        mikudancestudio::mdl::BoneRecord* targetBone = BoneAt(
+        mikumikustudio::mdl::BoneRecord* targetBone = BoneAt(
             targetModel, app->CameraParentBone());
         auto& targetBasis = reinterpret_cast<d3dx::D3DXMATRIXF&>(
             app->CameraAttachmentBasis());
@@ -517,14 +517,14 @@ void ApplyModelComboSelection(MMDApp* app) {  // was Sub44D940, 0x44D940
         HWND optionWindow = app->state.edgeThicknessDialog;
         if (optionWindow != nullptr && model != nullptr) {
             char text[256]{};
-            sprintf_s(text, "%3.2f", mikudancestudio::mdl::Mdl(model)->edgeScale);
+            sprintf_s(text, "%3.2f", mikumikustudio::mdl::Mdl(model)->edgeScale);
             HWND edit = GetDlgItem(optionWindow, panel::kEdgeThicknessEdit);
             SendMessageA(edit, EM_SETSEL, 0, GetWindowTextLengthA(edit));
             SendMessageA(edit, EM_REPLACESEL, 0,
                          reinterpret_cast<LPARAM>(text));
             SendMessageA(GetDlgItem(optionWindow, panel::kEdgeThicknessSlider), TBM_SETPOS, TRUE,
                          static_cast<LPARAM>(
-                             mikudancestudio::mdl::Mdl(model)->edgeScale *
+                             mikumikustudio::mdl::Mdl(model)->edgeScale *
                              100.0f));
         }
         SetModelExtensionMenuEnabled(app, model != nullptr);
@@ -546,4 +546,4 @@ void ApplyModelComboSelection(MMDApp* app) {  // was Sub44D940, 0x44D940
     PostLanguageSweep2(app);
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

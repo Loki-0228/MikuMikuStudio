@@ -1,5 +1,5 @@
 // Included by the hidden native/MME host. Timing excludes captures and resize.
-#include "mikudancestudio/build_profile.hpp"
+#include "mikumikustudio/build_profile.hpp"
 #include "viewport_scale_target_checks.hpp"
 #include "viewport_scale_gpu_checks.hpp"
 namespace scale_cache_verify {
@@ -198,7 +198,7 @@ void CheckViewportScalePerformance(MMDApp* app, const wchar_t* output) {
                 flush();
             }
             frame_rate::Reset(app);
-#ifdef MIKUDANCESTUDIO_PERF
+#ifdef MIKUMIKUSTUDIO_PERF
             perf::Reset();
 #endif
             const auto cacheBefore=model_vertex_cache::GetStats();
@@ -220,7 +220,7 @@ void CheckViewportScalePerformance(MMDApp* app, const wchar_t* output) {
                 static_cast<unsigned long long>(cacheAfter.misses-cacheBefore.misses),
                 static_cast<unsigned long long>(cacheAfter.stores-cacheBefore.stores),cacheAfter.bytes,
                 static_cast<unsigned long long>(cacheAfter.outlineHits-cacheBefore.outlineHits),cacheAfter.cpuBytes);
-#ifdef MIKUDANCESTUDIO_PERF
+#ifdef MIKUMIKUSTUDIO_PERF
             perf::Report(frames);
 #endif
             Check(presented==frames && (build_profile::original || app->frameRate.presentedFrames==frames),

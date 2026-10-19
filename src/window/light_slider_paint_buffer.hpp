@@ -1,6 +1,6 @@
 #pragma once
 // Private, optional native-trackbar paint route. This is not a plugin ABI.
-#include "mikudancestudio/build_profile.hpp"
+#include "mikumikustudio/build_profile.hpp"
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -12,7 +12,7 @@
 #include <cstdint>
 
 #if !MMD_ORIGINAL_PROFILE
-namespace mikudancestudio::ui::light_slider_paint_buffer {
+namespace mikumikustudio::ui::light_slider_paint_buffer {
 // Synchronous UI-thread reader. It must only read the host's current divider
 // flags, must not dispatch messages or edit state, and must outlive Forward.
 // A captured main window alone does not identify an internal layout drag.
@@ -238,5 +238,5 @@ inline LRESULT Forward(WNDPROC native,HWND window,UINT message,WPARAM wp,LPARAM 
     if((!copied||!ended)&&!painting.destroyed)detail::RetryDirect(window,sameWindow?resources.full:nullptr,api);
     return result;
 }
-} // namespace mikudancestudio::ui::light_slider_paint_buffer
+} // namespace mikumikustudio::ui::light_slider_paint_buffer
 #endif

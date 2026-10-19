@@ -1,10 +1,10 @@
 #pragma once
-#include "mikudancestudio/accessory_layout.hpp"
-#include "mikudancestudio/plugin_scene.hpp"
-#include "mikudancestudio/pmm_extension.hpp"
-#include "mikudancestudio/animation_curve_motion.hpp"
-#include "mikudancestudio/autosave.hpp"
-#include "mikudancestudio/plugin_runtime.hpp"
+#include "mikumikustudio/accessory_layout.hpp"
+#include "mikumikustudio/plugin_scene.hpp"
+#include "mikumikustudio/pmm_extension.hpp"
+#include "mikumikustudio/animation_curve_motion.hpp"
+#include "mikumikustudio/autosave.hpp"
+#include "mikumikustudio/plugin_runtime.hpp"
 #include "../src/plugins/native_object_commands.hpp"
 #include "../src/plugins/edit_store.hpp"
 #include "../src/plugins/native_curve_commands.hpp"
@@ -13,7 +13,7 @@
 #include <cwchar>
 
 namespace bound_curve_history_checks {
-namespace p= mikudancestudio::plugins;
+namespace p= mikumikustudio::plugins;
 constexpr int sourceCombo=1002,canvasId=1020,channelTree=1015,frameField=1041,valueField=1043;
 constexpr int addButton=1056,deleteButton=1057,applyButton=1058,undoButton=1059,redoButton=1060;
 constexpr curve_host::Kind kinds[]={curve_host::Kind::Camera,curve_host::Kind::Light,
@@ -124,7 +124,7 @@ struct Fixture {
         curve_host::Open(app.get(),false);
         EnumThreadWindows(GetCurrentThreadId(),[](HWND window,LPARAM context)->BOOL{
             auto& f=*reinterpret_cast<Fixture*>(context);wchar_t name[96]{};GetClassNameW(window,name,96);
-            if(GetWindow(window,GW_OWNER)==f.app->MainWindow()&&!std::wcscmp(name,L"MikuDanceStudioCurveEditorWindow"))f.editor=window;
+            if(GetWindow(window,GW_OWNER)==f.app->MainWindow()&&!std::wcscmp(name,L"MikuMikuStudioCurveEditorWindow"))f.editor=window;
             return TRUE;
         },reinterpret_cast<LPARAM>(this));
         Check(editor&&GetDlgItem(editor,canvasId),"real scene curve editor opens with bound production history");
@@ -298,7 +298,7 @@ void CameraShapeDragAndBudget(){
     f.History(true);inserted=f.Read(curve_host::Kind::Camera);checkShape(inserted);
     {
         pmm_extension::Document document;curve_host::Capture(*f.app,document);
-        Check(pmm_extension::Representable(document)&&pmm_extension::Find(document,"org.mikudancestudio.camera_intervals.v1"),
+        Check(pmm_extension::Representable(document)&&pmm_extension::Find(document,"org.mikumikustudio.camera_intervals.v1"),
               "real bound edit produces a serializable separate exact-camera PMM record");
         auto restored=std::make_unique<MMDApp>();::new(static_cast<void*>(&restored->state))MMDAppState{};
         restored->CameraKeys()=mdl::KeyPoolCreate<mdl::CameraKey>(mdl::KeyPoolCapacity(f.app->CameraKeys()));

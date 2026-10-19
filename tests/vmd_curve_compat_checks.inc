@@ -55,7 +55,7 @@ void CheckNativeCameraFrame(Fixture& fixture,int version,int frame) {
     }
 }
 void NativeCameraCurveCompatibility() {
-    namespace cm=mikudancestudio::curve_motion;
+    namespace cm=mikumikustudio::curve_motion;
     for (int version:{1,2}) {
         Fixture fixture(true); fixture.EnableAccessory();
         accessory_motion_io::Track track; track.name="prop.x";

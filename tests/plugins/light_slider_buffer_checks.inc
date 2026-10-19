@@ -1,6 +1,6 @@
 // Include after the light paint/surface diagnostics in the disposable full host.
 #include "../../src/window/light_slider_paint_buffer.hpp"
-#include "mikudancestudio/build_profile.hpp"
+#include "mikumikustudio/build_profile.hpp"
 #include <fstream>
 #if !MMD_ORIGINAL_PROFILE
 namespace light_slider_buffer_checks {
@@ -8,8 +8,8 @@ namespace trace=slider_paint_trace;
 namespace prior=slider_paint_trace_host_checks;
 namespace surface=light_slider_native_surface_checks;
 namespace observed=light_slider_paint_checks;
-namespace buffer=mikudancestudio::ui::light_slider_paint_buffer;
-using mikudancestudio::MMDApp;
+namespace buffer=mikumikustudio::ui::light_slider_paint_buffer;
+using mikumikustudio::MMDApp;
 enum class Failure {None,FirstRegion,UpdateRegion,FullRegion,ReferenceDC,MemoryDC,Bitmap,Select,Invalidate,Begin,Transfer,End,CaptureLoss,Resize,RetryProperty};
 static const char* Name(Failure failure){switch(failure){
     case Failure::FirstRegion:return "first-region";case Failure::UpdateRegion:return "update-region";
@@ -219,8 +219,8 @@ struct RestoreSize {
     ~RestoreSize(){Restore();}
 };
 static void Run(MMDApp* app,const std::filesystem::path& outputDirectory,bool bound){
-    trace::Require(app&&app==mikudancestudio::g_Block&&!GetCapture()&&!app->PlaybackActive()&&!app->FrameStepPlayback()&&
-        bool(mikudancestudio::plugins::BoundNativePoseHistory(app))==bound,
+    trace::Require(app&&app==mikumikustudio::g_Block&&!GetCapture()&&!app->PlaybackActive()&&!app->FrameStepPlayback()&&
+        bool(mikumikustudio::plugins::BoundNativePoseHistory(app))==bound,
         "candidate buffer regression requires a disposable idle actual host and requested real history binding");
     const auto output=outputDirectory/"buffer";std::filesystem::create_directories(output);
     std::ofstream report(output/"light-buffer-report.txt");trace::Require(bool(report),"open actual lighting buffer report");

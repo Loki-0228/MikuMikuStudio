@@ -1,5 +1,5 @@
 #pragma once
-#include "mikudancestudio/build_profile.hpp"
+#include "mikumikustudio/build_profile.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "BulletDynamics/Dynamics/btDynamicsWorld.h"
 #include <type_traits>
@@ -13,7 +13,7 @@
 // members without changing Bullet's declarations, layout or linked library.
 // Re-audit this file and the import allocation tests when upgrading Bullet.
 static_assert(BT_BULLET_VERSION == 275, "Re-audit the Bullet import storage adapter");
-namespace mikudancestudio::history_physics::import_storage {
+namespace mikumikustudio::history_physics::import_storage {
 namespace {
 template<class Tag, typename Tag::Member member> struct MemberAccess {
     friend typename Tag::Member Access(Tag) noexcept { return member; }

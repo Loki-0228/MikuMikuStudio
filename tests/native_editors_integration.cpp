@@ -1,21 +1,21 @@
 // Real MMS controls and DX9 render-target readback, kept entirely hidden.
 #define NOMINMAX
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/bone_scale.hpp"
-#include "mikudancestudio/bone_scale_gizmo.hpp"
-#include "mikudancestudio/animation_curve_host.hpp"
-#include "mikudancestudio/morph_curve.hpp"
-#include "mikudancestudio/frame_rate_correction.hpp"
-#include "mikudancestudio/d3dx_dyn.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/bone_scale_gizmo.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
+#include "mikumikustudio/morph_curve.hpp"
+#include "mikumikustudio/frame_rate_correction.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
 #include <commctrl.h>
 #include <filesystem>
 #include <fstream>
 #include <cstdio>
 #include <cmath>
 #include <set>
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 namespace fs=std::filesystem;
 namespace {
 int failures=0;
@@ -104,7 +104,7 @@ void Morphs(){
     std::vector<curve_editor::Channel> channels;Check(curve_host::ReadMorphChannels(*app,channels,error),"read actual model expression channels");
     for(int lane=0;lane<4;++lane){
         SendMessageW(GetDlgItem(app->MainWindow(),curve_host::kMorphCurveLane[lane]),BM_CLICK,0,0);
-        HWND curve=FindWindowW(L"MikuDanceStudioCurveEditorWindow",nullptr);Check(curve!=nullptr&&!IsWindowVisible(curve),"real expression launcher opens hidden production editor");if(!curve)continue;
+        HWND curve=FindWindowW(L"MikuMikuStudioCurveEditorWindow",nullptr);Check(curve!=nullptr&&!IsWindowVisible(curve),"real expression launcher opens hidden production editor");if(!curve)continue;
         int info[12]{};SendMessageW(curve,WM_APP+308,0,reinterpret_cast<LPARAM>(info));
         const auto wanted=morph_curve::StableId(chosen[lane],model->morphs[chosen[lane]].name);
         Check(info[1]>=0&&info[1]<int(channels.size())&&channels[info[1]].id==wanted,"editor starts on lane current expression");
@@ -161,8 +161,8 @@ void FrameRate(){
     frc::RefreshMenu(app);
     Check(GetMenuState(GetSubMenu(GetMenu(app->MainWindow()),1),frc::kMenuCommand,MF_BYCOMMAND)!=UINT(-1),"Edit menu contains native frame-rate correction");
     SendMessageW(app->MainWindow(),WM_COMMAND,frc::kMenuCommand,0);
-    HWND window=FindWindowW(L"MikuDanceStudioFrameRateCorrection",nullptr);
-    if(!window)window=FindWindowW(L"MikuDanceStudioFrameRateCorrectionWindow",nullptr);
+    HWND window=FindWindowW(L"MikuMikuStudioFrameRateCorrection",nullptr);
+    if(!window)window=FindWindowW(L"MikuMikuStudioFrameRateCorrectionWindow",nullptr);
     Check(window!=nullptr&&!IsWindowVisible(window),"Edit command opens production FPS window in background");
     if(!window)return;
     SetDlgItemTextW(window,1302,L"120");SetDlgItemTextW(window,1304,L"30");

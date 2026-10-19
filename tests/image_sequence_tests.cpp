@@ -3,24 +3,24 @@
 // the input desktop with visibility/activation blocked for all test windows.
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include "mikudancestudio/image_sequence_export.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/globals.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/ui_translation.hpp"
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/antialias.hpp"
-#include "mikudancestudio/antialias_motion.hpp"
-#include "mikudancestudio/transparent_capture.hpp"
-#include "mikudancestudio/global_key_layout.hpp"
-#include "mikudancestudio/runtime_log.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/model_layout.hpp"
-#include "mikudancestudio/accessory_layout.hpp"
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/frame_limits.hpp"
+#include "mikumikustudio/image_sequence_export.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/globals.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/ui_translation.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/antialias.hpp"
+#include "mikumikustudio/antialias_motion.hpp"
+#include "mikumikustudio/transparent_capture.hpp"
+#include "mikumikustudio/global_key_layout.hpp"
+#include "mikumikustudio/runtime_log.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/model_layout.hpp"
+#include "mikumikustudio/accessory_layout.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/frame_limits.hpp"
 #include "../src/window/image_sequence_dialog.hpp"
 #include <MinHook.h>
 #include "plugins/coordinator_fixture.hpp"
@@ -39,8 +39,8 @@
 
 extern "C" float ExpGetFrameTime();
 
-using namespace mikudancestudio;
-namespace seq = mikudancestudio::image_sequence;
+using namespace mikumikustudio;
+namespace seq = mikumikustudio::image_sequence;
 namespace fs = std::filesystem;
 namespace {
 unsigned checks = 0, warnings = 0;

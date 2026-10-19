@@ -1,9 +1,9 @@
 // Include after light_slider_geometry_checks.inc and the slider trace host helpers.
 // Diagnostic only: no pixel is drawn, no window is moved, and no SWP refresh is forced.
 #include "../slider_paint_trace.hpp"
-#include "mikudancestudio/build_profile.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/key_pool.hpp"
+#include "mikumikustudio/build_profile.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/key_pool.hpp"
 #include <array>
 #include <cstring>
 #include <filesystem>
@@ -15,17 +15,17 @@ namespace light_slider_clip_checks {
 namespace trace = slider_paint_trace;
 namespace prior = slider_paint_trace_host_checks;
 namespace geometry = light_slider_geometry_checks::detail;
-using mikudancestudio::MMDApp;
+using mikumikustudio::MMDApp;
 constexpr std::array<int, 6> kIds{455,456,457,458,459,460};
 
 template<class Key> struct KeyCopy {
     Key* const pointer;
     const std::uint64_t identity;
     const std::vector<Key> bytes;
-    explicit KeyCopy(Key* value) : pointer(value), identity(mikudancestudio::mdl::KeyPoolIdentity(value)),
-        bytes(value,value+mikudancestudio::mdl::KeyPoolCapacity(value)) {}
+    explicit KeyCopy(Key* value) : pointer(value), identity(mikumikustudio::mdl::KeyPoolIdentity(value)),
+        bytes(value,value+mikumikustudio::mdl::KeyPoolCapacity(value)) {}
     void Check(Key* value) const {
-        using namespace mikudancestudio::mdl;
+        using namespace mikumikustudio::mdl;
         trace::Require(value==pointer && KeyPoolIdentity(value)==identity && KeyPoolCapacity(value)==bytes.size() &&
             !std::memcmp(value,bytes.data(),bytes.size()*sizeof(Key)),
             "clip-only style comparison preserves original VMD pool identity, capacity and every byte");
@@ -38,10 +38,10 @@ struct Invariant {
     const int modified,physics,recorded;
     const HWND focus=GetFocus(),capture=GetCapture();
     std::array<Window,6> windows{};
-    KeyCopy<mikudancestudio::mdl::CameraKey> camera;
-    KeyCopy<mikudancestudio::mdl::LightKey> light;
-    KeyCopy<mikudancestudio::mdl::SelfShadowKey> shadow;
-    KeyCopy<mikudancestudio::mdl::GravityKey> gravity;
+    KeyCopy<mikumikustudio::mdl::CameraKey> camera;
+    KeyCopy<mikumikustudio::mdl::LightKey> light;
+    KeyCopy<mikumikustudio::mdl::SelfShadowKey> shadow;
+    KeyCopy<mikumikustudio::mdl::GravityKey> gravity;
     explicit Invariant(MMDApp& value) : app(value),history(value),modified(value.SceneModified()),
         physics(value.PhysicsResetPending()),recorded(value.RecordedFrameCountByte1()),
         camera(value.CameraKeys()),light(value.LightKeys()),shadow(value.ShadowKeys()),gravity(value.GravityKeys()) {
@@ -162,7 +162,7 @@ struct RestoreStyle {
     ~RestoreStyle(){Restore();}
 };
 static void Run(MMDApp* app,const std::filesystem::path& outputDirectory){
-    trace::Require(app && app==mikudancestudio::g_Block && app->MainWindow() && app->CameraKeys() && app->LightKeys() &&
+    trace::Require(app && app==mikumikustudio::g_Block && app->MainWindow() && app->CameraKeys() && app->LightKeys() &&
         app->ShadowKeys() && app->GravityKeys() && !app->PlaybackActive() && !app->FrameStepPlayback(),
         "clip comparison requires a disposable idle actual MMS host");
     std::filesystem::create_directories(outputDirectory);

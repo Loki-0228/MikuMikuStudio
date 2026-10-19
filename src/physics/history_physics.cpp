@@ -1,10 +1,10 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
-#include "mikudancestudio/history_physics.hpp"
+#include "mikumikustudio/history_physics.hpp"
 #include "../plugins/scene_resource_budget.hpp"
-#include "mikudancestudio/dynamics_world.hpp"
-#include "mikudancestudio/physics_scene.hpp"
+#include "mikumikustudio/dynamics_world.hpp"
+#include "mikumikustudio/physics_scene.hpp"
 #include "bullet_import_storage.hpp"
 #include "btBulletDynamicsCommon.h"
 #include "BulletCollision/CollisionDispatch/btManifoldResult.h"
@@ -24,7 +24,7 @@
 // omits its extern declaration from btPersistentManifold.h.
 extern ContactProcessedCallback gContactProcessedCallback;
 
-namespace mikudancestudio::history_physics {
+namespace mikumikustudio::history_physics {
 Broadphase::Broadphase(const btVector3& lo, const btVector3& hi, unsigned handles)
     : Broadphase(lo, hi, handles, std::make_unique<PairCache>()) {}
 Broadphase::Broadphase(const btVector3& lo, const btVector3& hi, unsigned handles,

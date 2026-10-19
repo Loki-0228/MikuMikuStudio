@@ -2,7 +2,7 @@
 #include <fstream>
 #include <limits>
 
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 namespace {
 struct Reader {
     std::string_view source;

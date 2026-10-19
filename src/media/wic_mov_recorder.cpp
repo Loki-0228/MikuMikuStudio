@@ -3,8 +3,8 @@
 #include <Windows.h>
 #include <wincodec.h>
 #include <wrl/client.h>
-#include "mikudancestudio/wic_mov_recorder.hpp"
-#include "mikudancestudio/dshow_recorder.hpp"
+#include "mikumikustudio/wic_mov_recorder.hpp"
+#include "mikumikustudio/dshow_recorder.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -15,7 +15,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 using Microsoft::WRL::ComPtr;
 namespace {
 using Bytes = std::vector<unsigned char>;

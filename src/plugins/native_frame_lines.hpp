@@ -1,9 +1,9 @@
 #pragma once
-#include "mikudancestudio/build_profile.hpp"
+#include "mikumikustudio/build_profile.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "shared_history.hpp"
-namespace mikudancestudio { class MMDApp; }
-namespace mikudancestudio::plugins {
+namespace mikumikustudio { class MMDApp; }
+namespace mikumikustudio::plugins {
 MmsResult PlanCameraFrameLine(MMDApp&, int frame, bool insert, std::shared_ptr<HistoryChange>&) noexcept;
 MmsResult PlanLightFrameLine(MMDApp&, int frame, bool insert, std::shared_ptr<HistoryChange>&) noexcept;
 // The migration binding consumes failure/no-op without entering an old ring.

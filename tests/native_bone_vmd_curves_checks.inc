@@ -1,6 +1,6 @@
 // Include after native_bone_registration_checks.inc and model-paste helpers.
 // The legacy ApplyVmd/registrar remain independent native-byte oracles.
-#include "mikudancestudio/extended_names.hpp"
+#include "mikumikustudio/extended_names.hpp"
 namespace {
 using BoneVmdBytes=std::vector<std::uint8_t>;
 std::string BoneVmdId(const char* name,unsigned owner,unsigned lane){
@@ -18,7 +18,7 @@ bone_curve::Tracks BoneVmdTracks(double value=12){
 }
 BoneVmdBytes BoneVmdBlock(const std::vector<animation_curve::NamedTrack>& tracks){
     BoneVmdBytes body;std::string error;Check(animation_curve::Encode(tracks,body,error),"encode original bone curve wire payload");
-    BoneVmdBytes block{'M','D','S','B','C','R','V','1'};
+    BoneVmdBytes block{'M','M','S','B','C','R','V','1'};
     for(unsigned byte=0;byte<4;++byte)block.push_back(std::uint8_t(body.size()>>(8*byte)));
     block.insert(block.end(),body.begin(),body.end());return block;
 }

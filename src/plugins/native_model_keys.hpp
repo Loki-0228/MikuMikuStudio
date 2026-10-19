@@ -1,9 +1,9 @@
 #pragma once
-#include "mikudancestudio/build_profile.hpp"
+#include "mikumikustudio/build_profile.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "shared_history.hpp"
-namespace mikudancestudio { class MMDApp; }
-namespace mikudancestudio::plugins {
+namespace mikumikustudio { class MMDApp; }
+namespace mikumikustudio::plugins {
 // One atomic model-key deletion across bone, morph and display/IK/parent
 // tracks. Keyboard fallback is considered only when all families are unmarked.
 // A null successful result is a no-op. The caller owns the serialized editing

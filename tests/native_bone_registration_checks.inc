@@ -1,7 +1,7 @@
 // Include after native_pose_scope_checks.inc; call NativeBoneRegistrationChecks().
 // Uses the actual legacy registrar as an independent interpolation oracle.
 #include "../src/plugins/native_bone_registration.hpp"
-namespace mikudancestudio {
+namespace mikumikustudio {
 void CmdControl500(MMDApp*,HWND,std::uint16_t,std::uint16_t);
 void RegisterSelectedBoneKeys(unsigned char*,int,int);
 }

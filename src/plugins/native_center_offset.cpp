@@ -4,25 +4,25 @@
 #include "native_history_commands.hpp"
 #include "native_pose_scope.hpp"
 #include "scene_object_history.hpp"
-#include "mikudancestudio/animation_curve_host.hpp"
-#include "mikudancestudio/autosave.hpp"
-#include "mikudancestudio/bake_ui_lock.hpp"
-#include "mikudancestudio/bone_curve.hpp"
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/bone_scale.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/plugin_scene.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/runtime_log.hpp"
-#include "mikudancestudio/ui_translation.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
+#include "mikumikustudio/autosave.hpp"
+#include "mikumikustudio/bake_ui_lock.hpp"
+#include "mikumikustudio/bone_curve.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/plugin_scene.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/runtime_log.hpp"
+#include "mikumikustudio/ui_translation.hpp"
 #include <cmath>
 #include <cstring>
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 INT_PTR __stdcall ModelOffsetDlgProc(HWND, UINT, WPARAM, LPARAM);
 }
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 namespace {
 thread_local bool dialogActive = false;
 std::uint64_t AddRetained(std::uint64_t first, std::uint64_t second) noexcept {

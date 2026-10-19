@@ -1,8 +1,8 @@
 // Include after edit_history_host_checks.inc. This probe uses real command
 // dispatch and the loaded edit DLL, never a camera interpolation planner.
-#include "mikudancestudio/global_key_layout.hpp"
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/panel_controls.hpp"
+#include "mikumikustudio/global_key_layout.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/panel_controls.hpp"
 #include <array>
 #include <cstring>
 #include <vector>

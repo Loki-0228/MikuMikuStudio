@@ -1,13 +1,13 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include "autosave_dialog.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ui_translation.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ui_translation.hpp"
 #include <ShObjIdl.h>
 #include <wrl/client.h>
 #include <algorithm>
 
-namespace mikudancestudio::autosave {
+namespace mikumikustudio::autosave {
 const wchar_t* Text(MMDApp* app, const wchar_t* zh, const wchar_t* en, const wchar_t* ja) {
     const unsigned lang = app ? app->EnglishUI() : 1;
     return lang == 2 ? zh : lang == 0 ? ja : en;

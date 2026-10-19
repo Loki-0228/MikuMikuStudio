@@ -8,9 +8,9 @@
 #include <cstdlib>
 #include <memory>
 #include <vector>
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-using namespace mikudancestudio;
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+using namespace mikumikustudio;
 namespace {
 void Check(bool ok, const char* label) {
     if (!ok) { std::fprintf(stderr, "FAIL: %s\n", label); std::exit(1); }

@@ -1,12 +1,12 @@
 // Pure editor geometry; the separate host checks use the real hidden windows,
 // production refresh/present gates, D3D target and history/key pools.
-#include "mikudancestudio/viewport_bounds.hpp"
-#include "mikudancestudio/viewport_panel_layout.hpp"
+#include "mikumikustudio/viewport_bounds.hpp"
+#include "mikumikustudio/viewport_panel_layout.hpp"
 #include <climits>
 #include <cstdio>
 #include <cstdlib>
 
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 namespace {
 unsigned checks=0;
 void Check(bool value,const char* message){++checks;if(!value){std::fprintf(stderr,"FAIL %s\n",message);std::exit(1);}}

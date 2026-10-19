@@ -1,21 +1,21 @@
 #include "scene_resource_budget.hpp"
 #if !MMD_ORIGINAL_PROFILE
-#include "mikudancestudio/affine_collision_shape.hpp"
-#include "mikudancestudio/accessory_layout.hpp"
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/bullet275_storage.hpp"
-#include "mikudancestudio/d3dx_mesh.hpp"
-#include "mikudancestudio/display_capacity.hpp"
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/owned_text.hpp"
+#include "mikumikustudio/affine_collision_shape.hpp"
+#include "mikumikustudio/accessory_layout.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/bullet275_storage.hpp"
+#include "mikumikustudio/d3dx_mesh.hpp"
+#include "mikumikustudio/display_capacity.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/owned_text.hpp"
 #include <btBulletDynamicsCommon.h>
 #include <BulletDynamics/ConstraintSolver/btGeneric6DofSpringConstraint.h>
 #include <cwchar>
 #include <memory>
 #include <typeinfo>
 
-namespace mikudancestudio::plugins::resource_budget {
+namespace mikumikustudio::plugins::resource_budget {
 namespace {
 struct Release { template<class T> void operator()(T* p) const noexcept { if(p) p->Release(); } };
 const void* ComIdentity(IUnknown* resource, Collector& out) {

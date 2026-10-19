@@ -2,10 +2,10 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
-#include "mikudancestudio/text_encoding.hpp"
-#include "mikudancestudio/path_workspace.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/model.hpp"
+#include "mikumikustudio/text_encoding.hpp"
+#include "mikumikustudio/path_workspace.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/model.hpp"
 #include "../src/io/pmm_io_common.hpp"
 #include <cstdio>
 #include <cstdlib>
@@ -33,7 +33,7 @@ LRESULT CALLBACK LossyUnicodeProc(HWND window, UINT message, WPARAM wp, LPARAM l
 }
 
 int main() {
-    using namespace mikudancestudio;
+    using namespace mikumikustudio;
     namespace enc = text_encoding;
     namespace fs = std::filesystem;
     // Reproduce the application's Japanese CRT locale on a non-Japanese OS.

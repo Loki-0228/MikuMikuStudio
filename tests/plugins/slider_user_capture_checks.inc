@@ -1,10 +1,10 @@
 // Opt-in manual diagnostic, never a CTest/no-flicker assertion. The user
 // activates the window and supplies input; the product update loop stays live.
-#include "mikudancestudio/autosave.hpp"
-#include "mikudancestudio/bake_ui_lock.hpp"
-#include "mikudancestudio/bottom_panel_resize.hpp"
-#include "mikudancestudio/plugin_menu.hpp"
-#include "mikudancestudio/update_coordinator.hpp"
+#include "mikumikustudio/autosave.hpp"
+#include "mikumikustudio/bake_ui_lock.hpp"
+#include "mikumikustudio/bottom_panel_resize.hpp"
+#include "mikumikustudio/plugin_menu.hpp"
+#include "mikumikustudio/update_coordinator.hpp"
 #include "slider_desktop_capture.hpp"
 #include "slider_real_input_metadata.inc"
 #include <algorithm>

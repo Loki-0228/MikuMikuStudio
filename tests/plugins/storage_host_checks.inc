@@ -7,11 +7,11 @@ unsigned FindCommand(HMENU menu){
     }return 0;
 }
 void Pump(){MSG msg{};unsigned count=0;while(count++<4096 && PeekMessageW(&msg,nullptr,0,0,PM_REMOVE)){TranslateMessage(&msg);DispatchMessageW(&msg);}}
-int Value(const mikudancestudio::plugins::PluginProject& p){
+int Value(const mikumikustudio::plugins::PluginProject& p){
     auto it=p.records.find("org.example.gui-storage");Check(it!=p.records.end() && it->second.bytes.size()==sizeof(int),"real DLL serializer saved bytes");int n=0;std::memcpy(&n,it->second.bytes.data(),sizeof(n));return n;
 }
 void Run(MMDApp* app){
-    using namespace mikudancestudio::plugins;
+    using namespace mikumikustudio::plugins;
     wchar_t model[32768]{};Check(GetEnvironmentVariableW(L"MMS_SCENE_TEST_MODEL",model,32768)>0,"storage scene fixture");
     LoadModelFile(app,model,false);Check(app->ModelSlot(0)!=nullptr,"load storage model");
     Pump();const auto command=FindCommand(GetMenu(app->MainWindow()));Check(command!=0,"actual plugin menu registered");

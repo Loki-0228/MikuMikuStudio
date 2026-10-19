@@ -42,12 +42,12 @@
 #include <cstdlib>
 #include <new>
 
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/frame_presentation.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/panel_controls.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/frame_presentation.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/panel_controls.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 
 // Free if non-null, then null the slot - mirrors the asm block
@@ -238,4 +238,4 @@ void HandleLButtonUp(MMDApp* app) {
     app->PendingTimelineSelectionRow() = TimelineSelectionRow::None;
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

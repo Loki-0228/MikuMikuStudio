@@ -1,8 +1,8 @@
 // Include after edit_history_host_checks.inc. All writes under test dispatch
 // actual WM_COMMAND routes; private planners are never called by this probe.
-#include "mikudancestudio/animation_curve_host.hpp"
-#include "mikudancestudio/accessory_layout.hpp"
-#include "mikudancestudio/panel_controls.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
+#include "mikumikustudio/accessory_layout.hpp"
+#include "mikumikustudio/panel_controls.hpp"
 #include <algorithm>
 #include <array>
 #include <climits>

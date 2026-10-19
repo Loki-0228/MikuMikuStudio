@@ -2,7 +2,7 @@
 // bone_key_pool_tests.cpp, then call BoneKeyPoolIdentityChecks() from main.
 // Pool identity is process-local and typed; no identity values are persisted.
 void BoneKeyPoolIdentityChecks() {
-    using namespace mikudancestudio;
+    using namespace mikumikustudio;
     Check(mdl::BoneKeyPoolIdentity(nullptr) == 0,
           "null bone pool has no strong identity");
     {

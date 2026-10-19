@@ -3,14 +3,14 @@
 #define NOMINMAX
 #include <Windows.h>
 #include <commctrl.h>
-#include "mikudancestudio/ui_message.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/undo_storage.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/text_encoding.hpp"
-#include "mikudancestudio/bone_scale.hpp"
+#include "mikumikustudio/ui_message.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/undo_storage.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/text_encoding.hpp"
+#include "mikumikustudio/bone_scale.hpp"
 #include <vector>
 #include <type_traits>
 #include <cstdio>
@@ -21,8 +21,8 @@
 #include <cstring>
 #include <string>
 
-using namespace mikudancestudio;
-namespace mikudancestudio {
+using namespace mikumikustudio;
+namespace mikumikustudio {
 void DragInterpolationControlPoint(MMDApp*);
 void SnapshotSelectedKeysForUndo(unsigned char*,int);
 void UndoModelEdit(unsigned char*,std::int32_t*);
@@ -46,8 +46,8 @@ void NativeCurveLinkRegression(MMDApp* app, HWND owner) {
     *reinterpret_cast<HWND*>(raw)=owner;
     model->boneKeys=bones.data();app->ModelSlot(0)=raw;app->SetSelectedModelSlot(0);
     auto* oldCamera=app->CameraKeys();app->CameraKeys()=cameras.data();
-    HWND combo=CreateWindowExW(0,L"COMBOBOX",L"",WS_CHILD|CBS_DROPDOWNLIST,0,0,100,100,owner,reinterpret_cast<HMENU>(panel::kInterpCurveCombo),nullptr,nullptr);
-    HWND automatic=CreateWindowExW(0,L"BUTTON",L"",WS_CHILD|BS_AUTOCHECKBOX,0,0,20,20,owner,reinterpret_cast<HMENU>(panel::kPhysicsFrameCheckbox),nullptr,nullptr);
+    HWND combo=CreateWindowExW(0,L"COMBOBOX",L"",WS_CHILD|CBS_DROPDOWNLIST,0,0,100,100,owner,reinterpret_cast<HMENU>(static_cast<INT_PTR>(panel::kInterpCurveCombo)),nullptr,nullptr);
+    HWND automatic=CreateWindowExW(0,L"BUTTON",L"",WS_CHILD|BS_AUTOCHECKBOX,0,0,20,20,owner,reinterpret_cast<HMENU>(static_cast<INT_PTR>(panel::kPhysicsFrameCheckbox)),nullptr,nullptr);
     for(int i=0;i<7;++i)SendMessageW(combo,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(L"curve"));
     HDC dc=CreateCompatibleDC(nullptr);HBITMAP bitmap=CreateBitmap(128,128,1,32,nullptr);
     auto oldBitmap=SelectObject(dc,bitmap);auto oldDC=app->CurveDC();app->CurveDC()=dc;
@@ -82,7 +82,7 @@ void NativeCurveLinkRegression(MMDApp* app, HWND owner) {
             Check(std::memcmp(bones[neighbor].interpolation,linked.interpolation,16)==0&&bone_scale::KeyCurve(raw,neighbor)==linkedScale,"native redo restores the complete linked edit");
         }
     }
-    for(auto& ring:model->undoRings)for(auto& slot:ring.slots){mikudancestudio::undo_storage::Free(slot.bonePose);mikudancestudio::undo_storage::Free(slot.auxiliaryPose);}
+    for(auto& ring:model->undoRings)for(auto& slot:ring.slots){mikumikustudio::undo_storage::Free(slot.bonePose);mikumikustudio::undo_storage::Free(slot.auxiliaryPose);}
     // The first incoming segment has no predecessor; the last has no successor.
     app->CameraMode()=1;SendMessageW(combo,CB_SETCURSEL,3,0);SendMessageW(automatic,BM_SETCHECK,BST_CHECKED,0);
     for(int mode : {1,2}){
@@ -265,6 +265,16 @@ int seen = 0;
 bool projectDialog = false;
 bool mismatchDialog = false;
 const wchar_t* expectedButtons[4]{};
+std::string DiagnosticUtf8(const std::wstring& text) {
+    if (text.empty()) return {};
+    const int length = static_cast<int>(text.size());
+    const int size = WideCharToMultiByte(CP_UTF8, 0, text.data(), length, nullptr, 0, nullptr, nullptr);
+    if (!size) return "<UTF-8 conversion failed>";
+    std::string result(size, '\0');
+    if (!WideCharToMultiByte(CP_UTF8, 0, text.data(), length, result.data(), size, nullptr, nullptr))
+        return "<UTF-8 conversion failed>";
+    return result;
+}
 LRESULT CALLBACK Inspect(int code, WPARAM wp, LPARAM lp) {
     if (code == HCBT_ACTIVATE) {
         HWND dialog = reinterpret_cast<HWND>(wp);
@@ -272,8 +282,15 @@ LRESULT CALLBACK Inspect(int code, WPARAM wp, LPARAM lp) {
         if (std::wstring(cls) == L"#32770") {
 
             ++seen;
-            Check(Text(dialog) == expectedTitle, "localized title on actual dialog");
+            const auto title = Text(dialog);
             const auto body = Text(GetDlgItem(dialog, projectDialog ? 686 : 0xFFFF));
+            if (title != expectedTitle || body.find(expectedBody) == std::wstring::npos) {
+                std::fprintf(stderr,
+                    "dialog mismatch language=%u project=%d\nexpected title: %s\nactual title: %s\nexpected body: %s\nactual body: %s\n",
+                    unsigned(language), int(projectDialog), DiagnosticUtf8(expectedTitle).c_str(),
+                    DiagnosticUtf8(title).c_str(), DiagnosticUtf8(expectedBody).c_str(), DiagnosticUtf8(body).c_str());
+            }
+            Check(title == expectedTitle, "localized title on actual dialog");
             Check(body.find(expectedBody) != std::wstring::npos, "localized body on actual dialog");
             if (expectedDetail) Check(body.find(expectedDetail) != std::wstring::npos, "Unicode name preserved");
             if (HWND cancel = GetDlgItem(dialog, IDCANCEL))

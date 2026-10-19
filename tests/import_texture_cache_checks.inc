@@ -1,7 +1,7 @@
-#include "mikudancestudio/import_texture_cache.hpp"
-#include "mikudancestudio/d3d_wrapper.hpp"
-#include "mikudancestudio/model_alpha_pass.hpp"
-#include "mikudancestudio/texture_lookup.hpp"
+#include "mikumikustudio/import_texture_cache.hpp"
+#include "mikumikustudio/d3d_wrapper.hpp"
+#include "mikumikustudio/model_alpha_pass.hpp"
+#include "mikumikustudio/texture_lookup.hpp"
 #include <limits>
 #include <stdexcept>
 

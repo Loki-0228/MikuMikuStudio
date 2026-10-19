@@ -4,12 +4,12 @@
 #define NOMINMAX
 #include <Windows.h>
 #include <commctrl.h>
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/scene_history_ui.hpp"
-#include "mikudancestudio/text_encoding.hpp"
-#include "mikudancestudio/ui_language.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/scene_history_ui.hpp"
+#include "mikumikustudio/text_encoding.hpp"
+#include "mikumikustudio/ui_language.hpp"
 #include <array>
 #include <cstdio>
 #include <cstdlib>
@@ -20,8 +20,8 @@
 #include <thread>
 #include <vector>
 
-using namespace mikudancestudio;
-namespace history_ui = mikudancestudio::scene_history_ui;
+using namespace mikumikustudio;
+namespace history_ui = mikumikustudio::scene_history_ui;
 namespace {
 unsigned checks = 0;
 void Check(bool value, const char* message) {

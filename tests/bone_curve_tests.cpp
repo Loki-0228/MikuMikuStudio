@@ -1,11 +1,11 @@
 #define NOMINMAX
-#include "mikudancestudio/bone_curve.hpp"
-#include "mikudancestudio/bone_scale.hpp"
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/animation_curve_host.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/undo_storage.hpp"
+#include "mikumikustudio/bone_curve.hpp"
+#include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/undo_storage.hpp"
 #include <commctrl.h>
 #include <cmath>
 #include <cstdio>
@@ -15,7 +15,7 @@
 #include <new>
 #include <stdexcept>
 #include <vector>
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 namespace ac=animation_curve;
 namespace { thread_local long boneFailAfter=-1; }
 void* operator new(std::size_t bytes){
@@ -144,6 +144,12 @@ void NativeSyncTests(const bone_curve::Tracks& initial){
     model.record->boneKeys[0].position[1]=3;readNow();Check(read[1].keys.front().value==3,"loaded baseline accepts later native edit");
     const auto exported=Encoded(read);std::vector<std::uint8_t> vmd;
     Check(bone_curve::CaptureVmd(data,0,vmd,error),"export reconciled bone curves");
+    Check(vmd.size()>=12&&std::memcmp(vmd.data(),"MMSBCRV1",8)==0&&bone_curve::VmdBlockSize(vmd.data(),vmd.size())==vmd.size(),
+          "bone curves write and identify MMSBCRV1");
+    auto oldBlock=vmd;oldBlock[1]='D';
+    Check(bone_curve::VmdBlockSize(oldBlock.data(),oldBlock.size())==0&&
+          !bone_curve::ApplyVmd(data,oldBlock.data(),oldBlock.size(),0,error),"MDSBCRV1 is not decoded");
+    readNow();Check(Encoded(read)==exported,"unknown MDS bone block leaves current authored curves intact");
     bone_curve::Reset();Check(bone_curve::ApplyVmd(data,vmd.data(),vmd.size(),0,error),"import reconciled bone curves");readNow();
     Check(Encoded(read)==exported,"VMD roundtrip retains reconciled authoring");
     app->ModelSlot(0)=nullptr;
@@ -364,7 +370,7 @@ int main(){
     EnumThreadWindows(GetCurrentThreadId(),[](HWND window,LPARAM parameter)->BOOL{
         auto& result=*reinterpret_cast<Owned*>(parameter);
         wchar_t cls[80]{};GetClassNameW(window,cls,80);
-        if(GetWindow(window,GW_OWNER)==result.parent&&wcscmp(cls,L"MikuDanceStudioCurveEditorWindow")==0)result.editor=window;
+        if(GetWindow(window,GW_OWNER)==result.parent&&wcscmp(cls,L"MikuMikuStudioCurveEditorWindow")==0)result.editor=window;
         return TRUE;
     },reinterpret_cast<LPARAM>(&owned));
     HWND editor=owned.editor;Check(editor!=nullptr,"bone editor opens");

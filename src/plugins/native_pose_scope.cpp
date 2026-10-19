@@ -2,12 +2,12 @@
 #include "native_viewport_history.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "scene_object_history.hpp"
-#include "mikudancestudio/native_edit_history.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/plugin_scene.hpp"
+#include "mikumikustudio/native_edit_history.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/plugin_scene.hpp"
 
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 namespace {
 thread_local NativePoseTestBinding* binding=nullptr;
 thread_local std::uint64_t bindingGeneration=1;

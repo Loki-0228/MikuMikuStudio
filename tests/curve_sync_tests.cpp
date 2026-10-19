@@ -1,14 +1,14 @@
 // MAINTENANCE: regression-keep; dense curve synchronization and raw native edits.
 #define NOMINMAX
-#include "mikudancestudio/animation_curve_host.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/morph_curve.hpp"
-#include "mikudancestudio/global_key_layout.hpp"
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/clipboard_layout.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/bake_ui_lock.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/morph_curve.hpp"
+#include "mikumikustudio/global_key_layout.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/clipboard_layout.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/bake_ui_lock.hpp"
 #include "../src/window/curve_editor_axis.hpp"
 #include "../src/plugins/native_pose_scope.hpp"
 #include <algorithm>
@@ -19,11 +19,11 @@
 #include <cstring>
 #include <memory>
 
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 namespace ac = animation_curve;
 namespace ce = curve_editor;
 namespace mc = morph_curve;
-namespace mikudancestudio {
+namespace mikumikustudio {
 void PumpEnterRegisterFrame(MMDApp*, HWND, bool);
 void PumpDeleteRebuild(MMDApp*, HWND, bool);
 void RegisterCameraState(MMDApp*, int);
@@ -101,7 +101,7 @@ void MorphSync() {
     HWND editor=nullptr;
     EnumThreadWindows(GetCurrentThreadId(),[](HWND window,LPARAM parameter)->BOOL{
         wchar_t name[80]{};GetClassNameW(window,name,80);
-        if(wcscmp(name,L"MikuDanceStudioCurveEditorWindow")==0)*reinterpret_cast<HWND*>(parameter)=window;
+        if(wcscmp(name,L"MikuMikuStudioCurveEditorWindow")==0)*reinterpret_cast<HWND*>(parameter)=window;
         return TRUE;
     },reinterpret_cast<LPARAM>(&editor));
     Check(editor!=nullptr,"real morph editor opens hidden");
@@ -321,7 +321,7 @@ void SceneRulerSynchronization() {
     }
     app->SceneModified()=0;
     curve_host::Open(app.get(),false);
-    HWND editor=FindWindowW(L"MikuDanceStudioCurveEditorWindow",nullptr);
+    HWND editor=FindWindowW(L"MikuMikuStudioCurveEditorWindow",nullptr);
     Check(editor!=nullptr,"open real scene curve host");HWND canvas=GetDlgItem(editor,1020);
     CurveEditorAxisState axis{};SendMessageW(editor,WM_APP+394,0,reinterpret_cast<LPARAM>(&axis));
     const auto at=[&](int frame){

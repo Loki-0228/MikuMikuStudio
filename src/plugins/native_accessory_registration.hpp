@@ -1,9 +1,9 @@
 #pragma once
-#include "mikudancestudio/build_profile.hpp"
+#include "mikumikustudio/build_profile.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "shared_history.hpp"
-namespace mikudancestudio { class MMDApp; }
-namespace mikudancestudio::plugins {
+namespace mikumikustudio { class MMDApp; }
+namespace mikumikustudio::plugins {
 // Parsed values for the seven numeric controls committed by command 487.
 // Rotation is in radians. The UI reads at most seven text bytes, as the native
 // control path does, and converts degrees with 3.141592025756836 / 180.

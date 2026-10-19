@@ -1,10 +1,10 @@
 #pragma once
-#include "mikudancestudio/build_profile.hpp"
+#include "mikumikustudio/build_profile.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include <memory>
 #include <mms/plugin.h>
-namespace mikudancestudio {class MMDApp;}
-namespace mikudancestudio::plugins {
+namespace mikumikustudio {class MMDApp;}
+namespace mikumikustudio::plugins {
 class SharedHistory;
 // A modal input snapshot, without an edit reservation or scene ownership.
 class VpdImportSession {

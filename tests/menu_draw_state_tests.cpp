@@ -5,9 +5,9 @@
 #include <cstdio>
 #include <memory>
 #include <cstring>
-#include "mikudancestudio/mmd_app.hpp"
+#include "mikumikustudio/mmd_app.hpp"
 
-#include "mikudancestudio/viewport_corner_settings.hpp"
+#include "mikumikustudio/viewport_corner_settings.hpp"
 #include "../src/window/viewport_corner_menu.hpp"
 
 namespace {
@@ -80,7 +80,7 @@ BOOL CALLBACK FindPopup(HWND window, LPARAM) {
     return TRUE;
 }
 LRESULT CALLBACK PopupOwner(HWND window, UINT message, WPARAM wp, LPARAM lp) {
-    using namespace mikudancestudio;
+    using namespace mikumikustudio;
     if (message == WM_MEASUREITEM && viewport_corner_menu::HandleMeasureItem(
             reinterpret_cast<MEASUREITEMSTRUCT*>(lp))) return TRUE;
     if (message == WM_INITMENUPOPUP)
@@ -123,7 +123,7 @@ LRESULT CALLBACK PopupOwner(HWND window, UINT message, WPARAM wp, LPARAM lp) {
 // A real native popup on a private, inactive desktop. No mouse movement,
 // foreground window, screen capture, or change to the user's desktop.
 bool InitialPopupChecks() {
-    using namespace mikudancestudio;
+    using namespace mikumikustudio;
     const HDESK previous = GetThreadDesktop(GetCurrentThreadId());
     wchar_t name[80];
     swprintf_s(name, L"mms-menu-test-%lu", GetCurrentProcessId());
@@ -185,7 +185,7 @@ bool InitialPopupChecks() {
 // Exercise the production owner-draw handler on a shared memory DC. The next
 // menu item must inherit the caller's state, not the corner picker's highlight.
 int main() {
-    using namespace mikudancestudio;
+    using namespace mikumikustudio;
     // Run before creating any GDI/window resources on the normal desktop.
     if (!InitialPopupChecks()) return 1;
     constexpr int width = 240;

@@ -18,7 +18,7 @@ void operator delete[](void* p) noexcept { std::free(p); }
 void operator delete(void* p, std::size_t) noexcept { std::free(p); }
 void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
 
-using namespace mikudancestudio::plugins;
+using namespace mikumikustudio::plugins;
 namespace {
 unsigned checks = 0;
 void Check(bool value, const char* message) {

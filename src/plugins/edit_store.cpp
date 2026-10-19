@@ -1,6 +1,6 @@
 #include "edit_store.hpp"
 
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 namespace {
 struct Busy { bool& value; Busy(bool& b):value(b){value=true;} ~Busy(){value=false;} };
 struct HostLock { EditHost& host; ~HostLock(){host.Leave();} };

@@ -9,21 +9,21 @@
 //
 // The test executable must link the menu resources:
 //   add_executable(menu_language_tests EXCLUDE_FROM_ALL
-//       tests/menu_language_tests.cpp res/MMD.rc ${MIKUDANCESTUDIO_GEN_RES})
-//   target_link_libraries(menu_language_tests PRIVATE mikudancestudio_core winmm dsound)
+//       tests/menu_language_tests.cpp res/MMD.rc ${MIKUMIKUSTUDIO_GEN_RES})
+//   target_link_libraries(menu_language_tests PRIVATE mikumikustudio_core winmm dsound)
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/ui_language.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/ui_language.hpp"
 #include <cstdio>
 #include <cstring>
 #include <string>
 #include <memory>
 
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 
 
 namespace {

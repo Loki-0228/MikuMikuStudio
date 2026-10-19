@@ -5,7 +5,7 @@
 #define NOMINMAX
 #endif
 #include <Windows.h>
-#include "mikudancestudio/mmd_app.hpp"
+#include "mikumikustudio/mmd_app.hpp"
 #include <algorithm>
 #include <array>
 #include <cstdint>
@@ -248,7 +248,7 @@ struct ClipData {
     }
 };
 }
-inline Result Run(mikudancestudio::MMDApp& app,const std::filesystem::path& outputDirectory){
+inline Result Run(mikumikustudio::MMDApp& app,const std::filesystem::path& outputDirectory){
     namespace fs=std::filesystem;using namespace detail;
     fs::create_directories(outputDirectory);
     std::ofstream report(outputDirectory/L"light-slider-geometry.txt");

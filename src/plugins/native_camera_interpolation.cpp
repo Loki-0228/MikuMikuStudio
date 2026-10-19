@@ -1,16 +1,16 @@
 #include "native_camera_interpolation.hpp"
 #if !MMD_ORIGINAL_PROFILE
-#include "mikudancestudio/animation_curve_host.hpp"
-#include "mikudancestudio/frame_limits.hpp"
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/mmd_app.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
+#include "mikumikustudio/frame_limits.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/mmd_app.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <stdexcept>
 #include <vector>
 
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 namespace {
 using Key = mdl::CameraKey;
 using Controls = std::array<std::array<std::uint8_t, 4>, 6>;

@@ -8,9 +8,9 @@
 // ===========================================================================
 #include <cstdint>
 
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 std::uint32_t ColorLerp(std::uint32_t a, std::uint32_t b, float t) {
     // Original computes G and B through one 16-bit register pair; the
@@ -33,4 +33,4 @@ std::uint32_t ColorLerp(std::uint32_t a, std::uint32_t b, float t) {
                                       ((bl & 0xFF) << 16));
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

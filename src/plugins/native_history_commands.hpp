@@ -1,8 +1,8 @@
 #pragma once
-#include "mikudancestudio/build_profile.hpp"
+#include "mikumikustudio/build_profile.hpp"
 #if !MMD_ORIGINAL_PROFILE
-namespace mikudancestudio { class MMDApp; }
-namespace mikudancestudio::plugins {
+namespace mikumikustudio { class MMDApp; }
+namespace mikumikustudio::plugins {
 class SharedHistory;
 void RefreshBoundPoseReadout(MMDApp&) noexcept;
 // Only after a successful, nonempty edit and after its token has been released.

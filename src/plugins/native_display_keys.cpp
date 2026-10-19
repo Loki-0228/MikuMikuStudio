@@ -5,21 +5,21 @@
 #include "native_bone_registration.hpp"
 #include "native_range_scale.hpp"
 #include "native_model_paste.hpp"
-#include "mikudancestudio/bone_curve.hpp"
-#include "mikudancestudio/bone_scale.hpp"
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/frame_limits.hpp"
-#include "mikudancestudio/extended_names.hpp"
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/plugin_scene.hpp"
+#include "mikumikustudio/bone_curve.hpp"
+#include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/frame_limits.hpp"
+#include "mikumikustudio/extended_names.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/plugin_scene.hpp"
 #include <map>
 #include <set>
 #include <array>
 #include <cmath>
 #include <string>
 
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 namespace {
 // Compare explicit members rather than pointer values or ABI padding. Nested
 // buffers belong to the current pool and are never replaced by history data.

@@ -1,5 +1,5 @@
 #include "../src/plugins/native_morph_keys.hpp"
-namespace mikudancestudio {
+namespace mikumikustudio {
 bool RegisterMorphKeyFromRecord(unsigned char*,const unsigned char*,int);
 int ResetMorphKeyCursor(unsigned char*);
 void ResetDisplayKeyCursor(unsigned char*);

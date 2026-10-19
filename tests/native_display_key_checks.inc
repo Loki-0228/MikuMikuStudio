@@ -2,7 +2,7 @@
 // Uses the actual legacy DeleteMarkedModelKeys as the independent byte oracle.
 #include "../src/plugins/native_display_keys.hpp"
 #include "../src/plugins/native_range_scale.hpp"
-#include "mikudancestudio/extended_names.hpp"
+#include "mikumikustudio/extended_names.hpp"
 #include "../src/model/keyframe_common.hpp"
 #include <limits>
 namespace {

@@ -1,6 +1,6 @@
-#include "mikudancestudio/extended_names.hpp"
-#include "mikudancestudio/frame_limits.hpp"
-#include "mikudancestudio/animation_curve_motion.hpp"
+#include "mikumikustudio/extended_names.hpp"
+#include "mikumikustudio/frame_limits.hpp"
+#include "mikumikustudio/animation_curve_motion.hpp"
 // Exercise the real LoadVmdMotion entry, key registrars, and extension loaders.
 // No windows or D3D device are created. Each case can also run in isolation:
 // vmd_load_safety_tests.exe --case overflow|short|counts|valid|tails|camera|ik|twist|force-morph
@@ -27,24 +27,24 @@
 #include <string>
 #include <sys/stat.h>
 #include <vector>
-#include "mikudancestudio/accessory_layout.hpp"
-#include "mikudancestudio/accessory_motion_io.hpp"
-#include "mikudancestudio/bone_scale.hpp"
-#include "mikudancestudio/bone_scale_io.hpp"
-#include "mikudancestudio/global_key_layout.hpp"
-#include "mikudancestudio/globals.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/undo_storage.hpp"
-#include "mikudancestudio/morph_curve.hpp"
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/force_paste.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/accessory_layout.hpp"
+#include "mikumikustudio/accessory_motion_io.hpp"
+#include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/bone_scale_io.hpp"
+#include "mikumikustudio/global_key_layout.hpp"
+#include "mikumikustudio/globals.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/undo_storage.hpp"
+#include "mikumikustudio/morph_curve.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/force_paste.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 #include <limits>
 
-namespace mikudancestudio { int LoadVmdMotion(MMDApp*, const char*); }
+namespace mikumikustudio { int LoadVmdMotion(MMDApp*, const char*); }
 namespace {
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 using Bytes = std::vector<std::uint8_t>;
 void Check(bool condition, const char* description) {
     if (!condition) { std::fprintf(stderr, "FAIL: %s\n", description); std::exit(1); }
@@ -194,7 +194,7 @@ struct Fixture {
     unsigned char* Raw() { return reinterpret_cast<unsigned char*>(model.get()); }
     ~Fixture() {
         bone_scale::Forget(Raw()); morph_curve::Forget(Raw());
-        for (auto& ring : model->undoRings) for (auto& slot : ring.slots) { mikudancestudio::undo_storage::Free(slot.bonePose); mikudancestudio::undo_storage::Free(slot.auxiliaryPose); }
+        for (auto& ring : model->undoRings) for (auto& slot : ring.slots) { mikumikustudio::undo_storage::Free(slot.bonePose); mikumikustudio::undo_storage::Free(slot.auxiliaryPose); }
         for (auto& key : displayKeys) { std::free(key.ikStates); std::free(key.selectorStates); }
         g_Block = previous;
     }
@@ -257,7 +257,7 @@ void UnicodePaths(bool camera) {
                     const auto tail = bone_scale_io::EncodeExtension(extension);
                     motion.bytes.insert(motion.bytes.end(), tail.begin(), tail.end());
                     Put(motion.bytes, std::uint64_t(tail.size()));
-                    Text(motion.bytes, "MDSXVMDX", 8);
+                    Text(motion.bytes, "MMSXVMDX", 8);
                 }
                 const auto path = directory / name;
                 {
@@ -453,7 +453,7 @@ void Valid() {
 }
 void Tails() {
     Motion motion;
-    for (const Bytes& tail : {Bytes{1, 2, 3}, Bytes{'M','M','S','M','C','R','V','1', 16, 0, 0, 0}, Bytes{'M','D','S','X','M','D','S','X'}}) {
+    for (const Bytes& tail : {Bytes{1, 2, 3}, Bytes{'M','M','S','M','C','R','V','1', 16, 0, 0, 0}, Bytes{'M','M','S','X','M','M','S','X'}}) {
         auto bytes = motion.bytes; bytes.insert(bytes.end(), tail.begin(), tail.end());
         Fixture fixture; fixture.Imported(bytes);
     }
@@ -469,7 +469,7 @@ void Tails() {
     entry.scale.v[0] = entry.scale.v[4] = entry.scale.v[8] = 2;
     extension.entries.push_back(entry);
     const auto encoded = bone_scale_io::EncodeExtension(extension);
-    bytes.insert(bytes.end(), encoded.begin(), encoded.end()); Put(bytes, std::uint64_t(encoded.size())); Text(bytes, "MDSXVMDX", 8);
+    bytes.insert(bytes.end(), encoded.begin(), encoded.end()); Put(bytes, std::uint64_t(encoded.size())); Text(bytes, "MMSXVMDX", 8);
     Fixture fixture; fixture.Imported(bytes);
     Check(bone_scale::Key(fixture.Raw(), 0).v[0] == 2, "scale extension follows exact morph-block boundary");
 }
@@ -634,7 +634,7 @@ void Benchmark(unsigned warmup, unsigned iterations) {
 } // namespace
 
 void UnicodeIdentity() {
-    using namespace mikudancestudio;
+    using namespace mikumikustudio;
     Fixture fixture;fixture.EnableIk();
     const std::wstring first=L"相同的长名称前缀_左侧_\U0001f31f",second=L"相同的长名称前缀_右侧_\U0001f31f";
     Check(extended_names::Assign(fixture.bones[0].jpText,first)&&extended_names::Assign(fixture.bones[1].jpText,second),"allocate complete names");
@@ -649,7 +649,7 @@ void UnicodeIdentity() {
     bone_scale_io::VmdExtension scales;scales.prefixBytes=scaleFingerprint.bytes();scales.prefixCrc32=scaleFingerprint.crc32();
     bone_scale_io::VmdExtension::Entry scale;scale.name=extended_names::MotionIndexName(1);scale.frame=0;scale.scale.v[0]=2.f;scales.entries.push_back(scale);
     const auto scaleBytes=bone_scale_io::EncodeExtension(scales);
-    motion.bytes.insert(motion.bytes.end(),scaleBytes.begin(),scaleBytes.end());Put(motion.bytes,std::uint64_t(scaleBytes.size()));Text(motion.bytes,"MDSXVMDX",8);
+    motion.bytes.insert(motion.bytes.end(),scaleBytes.begin(),scaleBytes.end());Put(motion.bytes,std::uint64_t(scaleBytes.size()));Text(motion.bytes,"MMSXVMDX",8);
     Check(fixture.Load(motion.bytes)==int(fixture.model->boneCount),"load Unicode motion names");
     Check(fixture.boneKeys[1].position[0]==7.f&&fixture.boneKeys[0].position[0]==-3.f,"long names with the same legacy prefix address distinct bones");
     Check(fixture.displayKeys[0].ikStates[1]==1&&fixture.displayKeys[0].ikStates[2]==0,"Unicode IK names address the correct chain");

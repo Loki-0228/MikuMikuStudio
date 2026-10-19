@@ -1,10 +1,10 @@
 // Include after slider_paint_trace_host_checks.inc in a disposable full host.
 // Test-only RedrawWindow policy comparison. It never replaces native painting.
 #include "../slider_paint_trace.hpp"
-#include "mikudancestudio/bottom_panel_resize.hpp"
-#include "mikudancestudio/build_profile.hpp"
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/mmd_app.hpp"
+#include "mikumikustudio/bottom_panel_resize.hpp"
+#include "mikumikustudio/build_profile.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/mmd_app.hpp"
 #include "../../src/window/light_slider_paint_buffer.hpp"
 #include <MinHook.h>
 #include <algorithm>
@@ -20,8 +20,8 @@
 namespace layout_slider_repaint_checks {
 namespace trace = slider_paint_trace;
 namespace prior = slider_paint_trace_host_checks;
-namespace buffer = mikudancestudio::ui::light_slider_paint_buffer;
-using mikudancestudio::MMDApp;
+namespace buffer = mikumikustudio::ui::light_slider_paint_buffer;
+using mikumikustudio::MMDApp;
 inline constexpr std::array<int,13> kIds{447,455,456,457,458,459,460,505,510,515,520,534,560};
 inline constexpr std::array<int,8> kRequired{447,455,456,457,458,459,460,560};
 inline constexpr std::array<int,3> kPanels{2,4,5};
@@ -31,10 +31,10 @@ template<class Key> struct KeyCopy {
     Key* const pointer;
     const std::uint64_t identity;
     const std::vector<Key> bytes;
-    explicit KeyCopy(Key* value):pointer(value),identity(mikudancestudio::mdl::KeyPoolIdentity(value)),
-        bytes(value,value+mikudancestudio::mdl::KeyPoolCapacity(value)) {}
+    explicit KeyCopy(Key* value):pointer(value),identity(mikumikustudio::mdl::KeyPoolIdentity(value)),
+        bytes(value,value+mikumikustudio::mdl::KeyPoolCapacity(value)) {}
     void Check(Key* value) const {
-        using namespace mikudancestudio::mdl;
+        using namespace mikumikustudio::mdl;
         trace::Require(value==pointer && KeyPoolIdentity(value)==identity && KeyPoolCapacity(value)==bytes.size() &&
             !std::memcmp(value,bytes.data(),bytes.size()*sizeof(Key)),
             "layout-only repaint preserves VMD pool identities, capacities and every byte");
@@ -43,10 +43,10 @@ template<class Key> struct KeyCopy {
 struct Invariant {
     MMDApp& app;
     const prior::PumpInvariant history;
-    KeyCopy<mikudancestudio::mdl::CameraKey> camera;
-    KeyCopy<mikudancestudio::mdl::LightKey> light;
-    KeyCopy<mikudancestudio::mdl::SelfShadowKey> shadow;
-    KeyCopy<mikudancestudio::mdl::GravityKey> gravity;
+    KeyCopy<mikumikustudio::mdl::CameraKey> camera;
+    KeyCopy<mikumikustudio::mdl::LightKey> light;
+    KeyCopy<mikumikustudio::mdl::SelfShadowKey> shadow;
+    KeyCopy<mikumikustudio::mdl::GravityKey> gravity;
     const std::array<float,13> additional;
     const std::uint32_t noiseMode;
     const int noise,shadowMode,modified,physics,recorded,cameraMode;
@@ -262,7 +262,7 @@ struct Session {
     void Cancel() noexcept {
         if(gesture && IsWindow(app.MainWindow())){
             // The production cancel path restores this gesture's original extra.
-            mikudancestudio::HandleBottomPanelResize(&app,WM_CANCELMODE,0,0);
+            mikumikustudio::HandleBottomPanelResize(&app,WM_CANCELMODE,0,0);
             if(GetCapture()==app.MainWindow())ReleaseCapture();
         }
         gesture=false;
@@ -337,7 +337,7 @@ static void WriteEvents(const std::filesystem::path& output,const Probe& probe) 
 }
 
 static void Run(MMDApp& app,const std::filesystem::path& output) {
-    trace::Require(&app==mikudancestudio::g_Block && app.MainWindow() && IsWindowVisible(app.MainWindow()) && !IsIconic(app.MainWindow()) &&
+    trace::Require(&app==mikumikustudio::g_Block && app.MainWindow() && IsWindowVisible(app.MainWindow()) && !IsIconic(app.MainWindow()) &&
         app.CameraMode()!=0 && !app.FloatingWindow() && !app.FullscreenMode() && !app.PlaybackActive() && !app.FrameStepPlayback() &&
         !app.SidebarResizeDragging() && app.bottomPanelSizing.dragging<0 && !app.bottomPanelSizing.relayout && !GetCapture() &&
         app.CameraKeys() && app.LightKeys() && app.ShadowKeys() && app.GravityKeys(),
@@ -348,7 +348,7 @@ static void Run(MMDApp& app,const std::filesystem::path& output) {
         "INCOMPLETE required FOV, six lighting and shadow native sliders must actually be visible");
     for(int id:kIds)trace::Require(GetFocus()!=GetDlgItem(app.MainWindow(),id),
         "INCOMPLETE enter layout diagnosis with focus outside native slider controls");
-    const auto spans=mikudancestudio::BottomPanelSpans(&app);
+    const auto spans=mikumikustudio::BottomPanelSpans(&app);
     int used=0;for(const auto& p:spans)used+=p.extra;
     trace::Require(!spans.empty() && client.right-3-spans.back().right-used>=31,
         "INCOMPLETE bottom layout must have at least 31 actual spare pixels beyond existing expansions");
@@ -378,19 +378,19 @@ static void Run(MMDApp& app,const std::filesystem::path& output) {
         for(unsigned pass=0;pass<3;++pass)for(int panel:kPanels){
             buffer::ScopedFunctionsForTesting passFunctions(pass<2?direct:normal);
             session.Guard();invariant.Check();probe.pass=pass;probe.panel=unsigned(panel);probe.step=0;probe.reference=false;probe.candidate=pass==1;
-            const auto currentSpans=mikudancestudio::BottomPanelSpans(&app);
+            const auto currentSpans=mikumikustudio::BottomPanelSpans(&app);
             const auto edge=std::find_if(currentSpans.begin(),currentSpans.end(),[&](const auto& p){return p.id==panel;});
             trace::Require(edge!=currentSpans.end(),"find current production bottom-panel edge");
-            const int x=mikudancestudio::BottomPanelX(&app,edge->right),y=client.bottom-150;
-            trace::Require(mikudancestudio::HitBottomPanelEdge(&app,x,y)==panel,"production hit-test identifies the intended real bottom edge");
+            const int x=mikumikustudio::BottomPanelX(&app,edge->right),y=client.bottom-150;
+            trace::Require(mikumikustudio::HitBottomPanelEdge(&app,x,y)==panel,"production hit-test identifies the intended real bottom edge");
             session.gesture=true;
-            trace::Require(mikudancestudio::HandleBottomPanelResize(&app,WM_LBUTTONDOWN,MK_LBUTTON,MAKELPARAM(x,y)) &&
+            trace::Require(mikumikustudio::HandleBottomPanelResize(&app,WM_LBUTTONDOWN,MK_LBUTTON,MAKELPARAM(x,y)) &&
                 app.bottomPanelSizing.dragging==panel && GetCapture()==app.MainWindow(),"actual bottom edge begins production main-window capture");
             const auto beforeBounds=[&]{std::array<RECT,13> value{};for(unsigned i=0;i<kIds.size();++i)value[i]=Bounds(app.MainWindow(),probe.windows[i]);return value;}();
             for(unsigned step=0;step<kDeltas.size();++step){
                 session.Guard();probe.step=step;probe.reference=false;probe.candidate=pass==1;
                 const auto before=probe.counts;
-                trace::Require(mikudancestudio::HandleBottomPanelResize(&app,WM_MOUSEMOVE,MK_LBUTTON,MAKELPARAM(x+kDeltas[step],y)),
+                trace::Require(mikumikustudio::HandleBottomPanelResize(&app,WM_MOUSEMOVE,MK_LBUTTON,MAKELPARAM(x+kDeltas[step],y)),
                     "actual production bottom mouse move applies its live layout");
                 trace::Require(GetCapture()==app.MainWindow() && app.bottomPanelSizing.dragging==panel,
                     "layout comparison preserves actual main capture while resizing");

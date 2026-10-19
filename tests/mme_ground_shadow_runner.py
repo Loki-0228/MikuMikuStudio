@@ -67,7 +67,7 @@ def main():
         fixture(model)
     env = os.environ.copy()
     env.update(LOCALAPPDATA=str(root/'Local'), APPDATA=str(root/'Roaming'),
-               MIKUDANCESTUDIO_AUTOSAVE_CONFIG=str(root/'autosave.ini'))
+               MIKUMIKUSTUDIO_AUTOSAVE_CONFIG=str(root/'autosave.ini'))
     if args.native:
         env['MMS_MME_ORDER_NATIVE'] = '1'
     with (root/'result.log').open('wb') as log:

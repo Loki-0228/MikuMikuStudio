@@ -1,4 +1,4 @@
-#include "mikudancestudio/perf_timing.hpp"
+#include "mikumikustudio/perf_timing.hpp"
 // ===========================================================================
 // VA 0x004970B0 - ModelApplyMorphs  (original: sub_4970B0, 0x288D bytes)
 // ===========================================================================
@@ -53,9 +53,9 @@
 #include <cstdint>
 #include <cstring>
 
-#include "mikudancestudio/model.hpp"
+#include "mikumikustudio/model.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 
 // D3DXQuaternionMultiply(out, a, b): out = a * b (Hamilton product).
@@ -317,4 +317,4 @@ void ModelApplyMorphs(unsigned char* m) {
     }
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

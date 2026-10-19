@@ -7,7 +7,7 @@ struct Vertex {
     float4 center, r0, r1;
     float4 additionalUv[4];
 };
-// Shared with include/mikudancestudio/d3d12_skinning.hpp (gpu::Bone).
+// Shared with include/mikumikustudio/d3d12_skinning.hpp (gpu::Bone).
 // flags bit 0 marks the affine extension (stretch = H of the polar
 // decomposition A = H * R, normalMatrix = (linear)^-T) valid. A record with
 // flags 0 - the default - keeps the legacy rigid path below untouched, so

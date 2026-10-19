@@ -1,6 +1,6 @@
-#include "mikudancestudio/update_coordinator.hpp"
-#include "mikudancestudio/frame_limits.hpp"
-#include "mikudancestudio/recording_state.hpp"
+#include "mikumikustudio/update_coordinator.hpp"
+#include "mikumikustudio/frame_limits.hpp"
+#include "mikumikustudio/recording_state.hpp"
 // ===========================================================================
 // Window procedures (separate/recording windows)
 // ===========================================================================
@@ -13,7 +13,7 @@
 // MAINTENANCE: production-keep; historical path, see CLEANUP(C06).
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include "mikudancestudio/build_profile.hpp"
+#include "mikumikustudio/build_profile.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "../plugins/native_pose_axis.hpp"
 #include "../plugins/native_global_commands.hpp"
@@ -23,16 +23,16 @@
 #include <cstdio>
 #include <cstdlib>
 
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/globals.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ui_message.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/recording_preview.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/globals.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ui_message.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/recording_preview.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 // Full-port callees defined in other TUs (local declarations).
 void RefreshAfterFrameApply(MMDApp* app);      // VA 0x432FA0 (ui_frame_step.cpp),
@@ -169,14 +169,14 @@ void DispatchSeparateWindowCommand(MMDApp* app, unsigned short id) {  // was Sub
             PostViewRefresh(app);                                // 0x40D130
         } else {
             unsigned char* model = s.SelectedModel();
-            const std::int32_t bone = mikudancestudio::mdl::Mdl(model)->selectedBone;
+            const std::int32_t bone = mikumikustudio::mdl::Mdl(model)->selectedBone;
             if (bone >= 0) {
                 PushBoneEditUndo(app);                                  // 0x42D6E0
-                mikudancestudio::mdl::BoneRecord* bones =
-                    mikudancestudio::mdl::Bones(model);
+                mikumikustudio::mdl::BoneRecord* bones =
+                    mikumikustudio::mdl::Bones(model);
                 bones[bone].trans[axis] = 0.0f;
                 unsigned char* flags =
-                    mikudancestudio::mdl::Mdl(model)->bonePhysicsState;
+                    mikumikustudio::mdl::Mdl(model)->bonePhysicsState;
                 flags[bone] = 1;
                 PostViewRefresh(app);
             } else {
@@ -195,7 +195,7 @@ void DispatchSeparateWindowCommand(MMDApp* app, unsigned short id) {  // was Sub
 #endif
         if (s.CameraMode() == 0) {
             unsigned char* model = s.SelectedModel();
-            const std::int32_t bone = mikudancestudio::mdl::Mdl(model)->selectedBone;
+            const std::int32_t bone = mikumikustudio::mdl::Mdl(model)->selectedBone;
             if (bone >= 0) {
                 PushBoneEditUndo(app);
                 constexpr float kPiLow = 3.141592025756836f;   // 0x52B968?
@@ -226,14 +226,14 @@ void DispatchSeparateWindowCommand(MMDApp* app, unsigned short id) {  // was Sub
                     api.multiply(&rot, &rz, &rx);
                     api.rotY(&ry, degY);
                     api.multiply(&rot, &rot, &ry);
-                    mikudancestudio::mdl::BoneRecord* bones =
-                        mikudancestudio::mdl::Bones(model);
+                    mikumikustudio::mdl::BoneRecord* bones =
+                        mikumikustudio::mdl::Bones(model);
                     api.quatFromMatrix(
                         reinterpret_cast<float*>(&bones[bone].rotQuat[0]),
                         &rot);                                   // 0x462623
                 }
                 unsigned char* flags =
-                    mikudancestudio::mdl::Mdl(model)->bonePhysicsState;
+                    mikumikustudio::mdl::Mdl(model)->bonePhysicsState;
                 flags[bone] = 1;
             }
             PostViewRefresh(app);                                // 0x46252E
@@ -331,4 +331,4 @@ void DispatchSeparateWindowCommand(MMDApp* app, unsigned short id) {  // was Sub
     }
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

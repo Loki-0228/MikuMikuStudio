@@ -1,8 +1,8 @@
 #pragma once
 #include "settings_json.hpp"
-#include "mikudancestudio/mmd_app.hpp"
+#include "mikumikustudio/mmd_app.hpp"
 
-namespace mikudancestudio::window_settings {
+namespace mikumikustudio::window_settings {
 inline std::string Snapshot(MMDApp& app, int x, int y, int width, int height,
     int maximized, int floating, int physics, int check119, int check12d) {
     std::string out = "{";

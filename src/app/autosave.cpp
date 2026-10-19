@@ -1,15 +1,15 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include "mikudancestudio/autosave.hpp"
-#include "mikudancestudio/local_data_path.hpp"
-#include "mikudancestudio/system_settings.hpp"
+#include "mikumikustudio/autosave.hpp"
+#include "mikumikustudio/local_data_path.hpp"
+#include "mikumikustudio/system_settings.hpp"
 #include "settings_json.hpp"
-#include "mikudancestudio/plugin_storage.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/pmm_extension.hpp"
-#include "mikudancestudio/runtime_log.hpp"
-#include "mikudancestudio/bake_ui_lock.hpp"
-#include "mikudancestudio/effect_api.hpp"
+#include "mikumikustudio/plugin_storage.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/pmm_extension.hpp"
+#include "mikumikustudio/runtime_log.hpp"
+#include "mikumikustudio/bake_ui_lock.hpp"
+#include "mikumikustudio/effect_api.hpp"
 #include <algorithm>
 #include <atomic>
 #include <cwchar>
@@ -17,7 +17,7 @@
 #include <io.h>
 #include <share.h>
 
-namespace mikudancestudio::autosave {
+namespace mikumikustudio::autosave {
 namespace fs = std::filesystem;
 namespace {
 Settings settings;
@@ -50,7 +50,7 @@ void RemoveBackupEffects(const fs::path& project) noexcept {
 fs::path SettingsPath() {
     // Isolated integration tests use a disposable profile, never the user's.
     wchar_t overridePath[32768]{};
-    const auto n = GetEnvironmentVariableW(L"MIKUDANCESTUDIO_AUTOSAVE_CONFIG", overridePath, 32768);
+    const auto n = GetEnvironmentVariableW(L"MIKUMIKUSTUDIO_AUTOSAVE_CONFIG", overridePath, 32768);
     if (n && n < 32768) return overridePath;
     // Each installation owns its settings. Do not inherit the old shared
     // LOCALAPPDATA profile, whose absolute backup path may belong to another EXE.
@@ -75,7 +75,7 @@ Settings Defaults() {
 }
 bool HasConfigOverride() {
     wchar_t value[32768]{};
-    const auto n = GetEnvironmentVariableW(L"MIKUDANCESTUDIO_AUTOSAVE_CONFIG", value, 32768);
+    const auto n = GetEnvironmentVariableW(L"MIKUMIKUSTUDIO_AUTOSAVE_CONFIG", value, 32768);
     return n && n < 32768;
 }
 bool DefaultDirectory(const Settings& value) {

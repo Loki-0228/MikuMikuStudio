@@ -2,7 +2,7 @@
 #include "scene_store.hpp"
 #include <set>
 
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 class SceneIdentity {
 public:
     struct Entry { MmsObjectRef object{}; std::map<uint64_t, MmsId> elements; bool present = true, published = true; };

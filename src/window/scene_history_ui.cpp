@@ -1,4 +1,4 @@
-#include "mikudancestudio/scene_history_ui.hpp"
+#include "mikumikustudio/scene_history_ui.hpp"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -11,14 +11,14 @@
 #include <string>
 #include <vector>
 
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/text_encoding.hpp"
-#include "mikudancestudio/ui_language.hpp"
-#include "mikudancestudio/ui_translation.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/text_encoding.hpp"
+#include "mikumikustudio/ui_language.hpp"
+#include "mikumikustudio/ui_translation.hpp"
 
-namespace mikudancestudio::scene_history_ui {
+namespace mikumikustudio::scene_history_ui {
 namespace {
 constexpr int kAccessorySlots = 255;
 struct ModelRow { int slot, order; const unsigned char* object; std::wstring name; };
@@ -212,4 +212,4 @@ Result RefreshObjectLists(MMDApp& app, const Selection& selection, bool canUndo,
     } catch (const std::bad_alloc&) { return Result::OutOfMemory; }
     catch (...) { return Result::InvalidData; }
 }
-} // namespace mikudancestudio::scene_history_ui
+} // namespace mikumikustudio::scene_history_ui

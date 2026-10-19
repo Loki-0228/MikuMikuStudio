@@ -434,7 +434,7 @@ commit 只接受已准备事务，在同一编辑锁内再次检查场景修订�
 
 ## 原生恢复的准备与发布
 
-增强构建已将 `UndoModelEdit` / `RedoModelEdit` 接到 `native_history::ModelEdit`。内部声明见 `include/mikudancestudio/native_edit_history.hpp`，实现见 `src/model/native_edit_history.inc`。原始兼容构建保留旧路径。这一步改造原生恢复过程，尚未把原生和插件记录排入共同历史。
+增强构建已将 `UndoModelEdit` / `RedoModelEdit` 接到 `native_history::ModelEdit`。内部声明见 `include/mikumikustudio/native_edit_history.hpp`，实现见 `src/model/native_edit_history.inc`。原始兼容构建保留旧路径。这一步改造原生恢复过程，尚未把原生和插件记录排入共同历史。
 
 `Prepare(model, frame, redo)` 复制本次操作涉及的姿势、关键帧及辅助状态，分配 redo 缓冲，准备缩放和曲线侧表。关键帧按被修改的槽位保存，不复制整个骨骼关键帧池。类型 4 的连续操作整体准备，最多检查 30 个环槽；损坏循环直接拒绝。覆盖范围如下。
 
@@ -470,7 +470,7 @@ MSVC 的某些容器移动构造会分配内存，因此包含 `std::map` 的状
 
 ## 当前原生撤销入口
 
-现有历史主要是每模型 30 槽 undo/redo 环，记录布局见 `include/mikudancestudio/undo_layout.hpp`。以下路径须进入共同历史，不能只修改界面按钮。
+现有历史主要是每模型 30 槽 undo/redo 环，记录布局见 `include/mikumikustudio/undo_layout.hpp`。以下路径须进入共同历史，不能只修改界面按钮。
 
 | 入口 | 当前内容及接入要求 |
 | --- | --- |

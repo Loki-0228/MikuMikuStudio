@@ -1,5 +1,5 @@
 // Include after native_global_paste_checks.inc and global registration fixtures.
-namespace mikudancestudio { int RegisterGravityKey(MMDApp*,const void*);void ApplyGravityTrack(MMDApp*); }
+namespace mikumikustudio { int RegisterGravityKey(MMDApp*,const void*);void ApplyGravityTrack(MMDApp*); }
 namespace {
 void GravityPasteOnly(GlobalPasteFixture& f) {
     f.app->ClipboardCounts()={};f.app->ClipboardCounts().gravity=unsigned(f.gravity.size());

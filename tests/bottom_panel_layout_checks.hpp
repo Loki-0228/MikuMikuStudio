@@ -2,7 +2,7 @@
 // real panel borders and the native volume control, then save one review image.
 #pragma once
 #include <fstream>
-#include "mikudancestudio/ui_language.hpp"
+#include "mikumikustudio/ui_language.hpp"
 
 namespace bottom_panel_checks {
 struct Header { std::wstring text; RECT bounds; SIZE extent; UINT format; };

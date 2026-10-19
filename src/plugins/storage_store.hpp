@@ -4,7 +4,7 @@
 #include <map>
 #include <atomic>
 
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 struct StoredData { uint32_t schema = 0; std::vector<unsigned char> bytes; };
 using StoredRecords = std::map<std::string, StoredData>;
 class StorageStore;

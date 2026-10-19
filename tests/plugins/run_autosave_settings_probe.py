@@ -12,7 +12,7 @@ output.mkdir(exist_ok=False)
 work = output / "unrelated-cwd"
 work.mkdir()
 profile = output / "shared-profile"
-legacy = profile / "MikuDanceStudio" / "autosave.ini"
+legacy = profile / "MikuMikuStudio" / "autosave.ini"
 legacy.parent.mkdir(parents=True)
 legacy.write_text("[autosave]\nenabled=1\nintervalMinutes=9\nmaxBackups=3\ndirectory=" + str(output / "old-install" / "backups") + "\n", encoding="utf-16")
 legacy_bytes = legacy.read_bytes()
@@ -33,12 +33,12 @@ def install(name):
 
 def run(executable, folder, mode, *, override=False, no_profile=False):
     env = os.environ.copy()
-    env.pop("MIKUDANCESTUDIO_AUTOSAVE_CONFIG", None)
+    env.pop("MIKUMIKUSTUDIO_AUTOSAVE_CONFIG", None)
     env["LOCALAPPDATA"] = str(profile)
     if no_profile:
         env.pop("LOCALAPPDATA", None)
     if override:
-        env["MIKUDANCESTUDIO_AUTOSAVE_CONFIG"] = str(folder / "override.ini")
+        env["MIKUMIKUSTUDIO_AUTOSAVE_CONFIG"] = str(folder / "override.ini")
     result = subprocess.run([str(executable), str(folder), mode], cwd=work, env=env,
                             startupinfo=startup, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
     log = result.stdout.decode("utf-8", errors="replace")

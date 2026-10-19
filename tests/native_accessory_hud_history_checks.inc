@@ -3,10 +3,10 @@
 // also routes actual queued mouse-up/capture messages through MicWndProc.
 #include "../src/plugins/native_accessory_hud_history.hpp"
 #include "../src/plugins/scene_history.hpp"
-#include "mikudancestudio/frame_presentation.hpp"
-#include "mikudancestudio/viewport_tool_layout.hpp"
-#include "mikudancestudio/viewport_corner_settings.hpp"
-namespace mikudancestudio { int ViewportToolAtPointForTest(MMDApp*); }
+#include "mikumikustudio/frame_presentation.hpp"
+#include "mikumikustudio/viewport_tool_layout.hpp"
+#include "mikumikustudio/viewport_corner_settings.hpp"
+namespace mikumikustudio { int ViewportToolAtPointForTest(MMDApp*); }
 namespace {
 using AccessoryHudValues=std::array<float,6>;
 AccessoryHudValues AccessoryHudRead(const mdl::AccessoryRecord& a){return {a.position[0],a.position[1],a.position[2],a.rotation[0],a.rotation[1],a.rotation[2]};}

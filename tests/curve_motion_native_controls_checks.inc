@@ -25,9 +25,9 @@ void TestNativeCameraRawRoundTrip(bool legacy,const std::array<double,4>& specia
     const auto bytes=Build(file);cm::Motion motion;std::string error;
     Check(cm::Decode(bytes.data(),bytes.size(),cm::Kind::Camera,motion,error),"raw crossed/endpoint camera decodes: "+error);
     Check(bool(motion.nativeCamera),"standard camera import retains an opaque native source");
-    std::vector<mikudancestudio::curve_editor::Channel> channels;
+    std::vector<mikumikustudio::curve_editor::Channel> channels;
     for(const char* id:{"x","y","z","rx","ry","rz","distance","fov","perspective"}){
-        mikudancestudio::curve_editor::Channel channel;channel.id=id;channel.nativeControls.push_back({1,2,3,4});
+        mikumikustudio::curve_editor::Channel channel;channel.id=id;channel.nativeControls.push_back({1,2,3,4});
         channel.controlGeometry.push_back({4,3,2,1});channel.preservedCameraIntervals.emplace_back();
         channel.sample=[](const auto&,double){return ac::Sample{-999,0};};channels.push_back(std::move(channel));
     }
@@ -63,7 +63,7 @@ void TestNativeCameraRawRoundTrip(bool legacy,const std::array<double,4>& specia
         "a second native decode-encode pass remains byte stable without a new wire tail");
     // Existing scalar extension carries only nonstandard binding channels;
     // the standard sparse body remains authoritative for camera timing.
-    for(const char* id:{"parentModel","parentBone"}){mikudancestudio::curve_editor::Channel binding;binding.id=id;
+    for(const char* id:{"parentModel","parentBone"}){mikumikustudio::curve_editor::Channel binding;binding.id=id;
         binding.track=MakeTrack({{3,-1},{26,2}},true);channels.push_back(std::move(binding));}
     Check(cm::CanCaptureNativeCamera(channels),"the host's eleven channels keep native eligibility without dropping parent bindings");
     const auto captured=cm::CaptureChannels(cm::Kind::Camera,channels);std::vector<std::uint8_t> bound;
@@ -106,8 +106,8 @@ void TestNativeIllegalFallback() {
     first.block=last.block=CameraBlock(lanes);file.cameras={first,last};const auto bytes=Build(file);
     cm::Motion motion;std::string error;Check(cm::Decode(bytes.data(),bytes.size(),cm::Kind::Camera,motion,error),"previously accepted out-of-range raw lane keeps its explicit linear fallback");
     CheckNear(cm::Evaluate(motion,"x",7).value,7,1e-12,"illegal raw control above127 does not acquire native nonlinear meaning");
-    std::vector<mikudancestudio::curve_editor::Channel> channels;
-    for(const auto& track:motion.tracks){mikudancestudio::curve_editor::Channel channel;channel.id=track.id;channels.push_back(std::move(channel));}
+    std::vector<mikumikustudio::curve_editor::Channel> channels;
+    for(const auto& track:motion.tracks){mikumikustudio::curve_editor::Channel channel;channel.id=track.id;channels.push_back(std::move(channel));}
     Check(cm::RestoreChannels(motion,channels,error)&&!cm::CanCaptureNativeCamera(channels),"illegal source controls cannot pass native sparse capture eligibility");
     std::vector<std::uint8_t> encoded;Check(cm::Encode(motion,encoded,error)&&encoded!=bytes,"illegal source controls are not written back through the valid-native path");
     cm::Motion restored;Check(cm::Decode(encoded.data(),encoded.size(),cm::Kind::Camera,restored,error),"linear fallback re-export still decodes");
@@ -129,8 +129,8 @@ void TestUnusedNativeRootBytes(bool legacy) {
     file.cameras={first,ignored,last};const auto bytes=Build(file);cm::Motion motion;std::string error;std::vector<std::uint8_t> encoded;
     Check(cm::Decode(bytes.data(),bytes.size(),cm::Kind::Camera,motion,error)&&cm::Encode(motion,encoded,error)&&encoded==bytes,
         "unused root and superseded duplicate control bytes retain their complete 0..255 legacy container without affecting native eligibility");
-    std::vector<mikudancestudio::curve_editor::Channel> channels;
-    for(const auto& track:motion.tracks){mikudancestudio::curve_editor::Channel channel;channel.id=track.id;channels.push_back(std::move(channel));}
+    std::vector<mikumikustudio::curve_editor::Channel> channels;
+    for(const auto& track:motion.tracks){mikumikustudio::curve_editor::Channel channel;channel.id=track.id;channels.push_back(std::move(channel));}
     Check(cm::RestoreChannels(motion,channels,error)&&cm::CanCaptureNativeCamera(channels),"restoring unused root bytes does not downgrade an otherwise legal sparse native motion");
     for(const auto& channel:channels)if(channel.id!="perspective")
         Check(channel.nativeControls[0]==std::array<double,4>{250,250,250,250},"restored native root metadata keeps its unused original byte values");
@@ -161,8 +161,8 @@ void TestNativeRawControlCompatibility() {
         }
         const auto bytes=Build(file);cm::Motion motion;std::string error;const auto start=GetTickCount64();
         Check(cm::Decode(bytes.data(),bytes.size(),cm::Kind::Camera,motion,error),"ten-thousand-key ordinary camera import succeeds");
-        std::vector<mikudancestudio::curve_editor::Channel> channels;
-        for(const auto& track:motion.tracks){mikudancestudio::curve_editor::Channel channel;channel.id=track.id;channels.push_back(std::move(channel));}
+        std::vector<mikumikustudio::curve_editor::Channel> channels;
+        for(const auto& track:motion.tracks){mikumikustudio::curve_editor::Channel channel;channel.id=track.id;channels.push_back(std::move(channel));}
         Check(cm::RestoreChannels(motion,channels,error)&&cm::CanCaptureNativeCamera(channels),"ten-thousand-key metadata restores through one sorted index");
         Check(Find(motion,"x")&&Find(motion,"x")->keys.size()==10000&&cm::Evaluate(motion,"x",19998).value==9999,
             "long native camera retains the complete sparse horizon");

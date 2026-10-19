@@ -3,7 +3,7 @@
 #include <mutex>
 #include <limits>
 
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 namespace {
 constexpr uint32_t kSources = 64, kBindings = 128, kLeases = 128, kContributions = 256;
 constexpr uint64_t kModelBytes = 256 * 1024, kOwnerBytes = 2 * 1024 * 1024, kGlobalBytes = 32 * 1024 * 1024;

@@ -3,16 +3,16 @@
 #define NOMINMAX
 #include <Windows.h>
 #include <d3d9.h>
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <vector>
 
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 namespace {
 void Check(bool ok, const char* message) {
     if (!ok) { std::fprintf(stderr, "FAIL: %s\n", message); std::exit(1); }

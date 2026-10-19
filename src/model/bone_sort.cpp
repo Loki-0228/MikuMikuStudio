@@ -19,16 +19,16 @@
 #include <cstdlib>
 #include <cstring>
 
-#include "mikudancestudio/model.hpp"
+#include "mikumikustudio/model.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 void InitBoneSortOrder(unsigned char* m) {
     // ---- pass 1: count slots ------------------------------------------------
     mdl::BoneOrderCount(m) = 1;
-    if (mikudancestudio::mdl::Mdl(m)->boneCount > 0) {
-        mikudancestudio::mdl::BoneRecord* bones = mikudancestudio::mdl::Bones(m);
-        for (std::uint32_t i = 0; i < mikudancestudio::mdl::Mdl(m)->boneCount; ++i) {
+    if (mikumikustudio::mdl::Mdl(m)->boneCount > 0) {
+        mikumikustudio::mdl::BoneRecord* bones = mikumikustudio::mdl::Bones(m);
+        for (std::uint32_t i = 0; i < mikumikustudio::mdl::Mdl(m)->boneCount; ++i) {
             const mdl::BoneType t = bones[i].type;
             if (t == mdl::BoneType::Move || t == mdl::BoneType::Ik)
                 ++mdl::BoneOrderCount(m);
@@ -36,25 +36,25 @@ void InitBoneSortOrder(unsigned char* m) {
     }
 
     // ---- (re)allocate the slot table ---------------------------------------
-    if (mikudancestudio::mdl::Mdl(m)->boneOrderTable != nullptr) {
-        std::free(mikudancestudio::mdl::Mdl(m)->boneOrderTable);
-        mikudancestudio::mdl::Mdl(m)->boneOrderTable = nullptr;
+    if (mikumikustudio::mdl::Mdl(m)->boneOrderTable != nullptr) {
+        std::free(mikumikustudio::mdl::Mdl(m)->boneOrderTable);
+        mikumikustudio::mdl::Mdl(m)->boneOrderTable = nullptr;
     }
     const std::uint32_t slots = mdl::BoneOrderCount(m);
     auto* tbl = static_cast<mdl::BoneOrderEntry*>(operator new(
         sizeof(mdl::BoneOrderEntry) * slots));
-    mikudancestudio::mdl::BoneOrder(m) = tbl;
+    mikumikustudio::mdl::BoneOrder(m) = tbl;
     std::memset(tbl, 0, sizeof(mdl::BoneOrderEntry) * slots);
     tbl[0].boneIndex = -1;
     tbl[0].linkedModel = -1;
 
     // ---- pass 2: assign slots ----------------------------------------------
     mdl::BoneOrderCount(m) = 1;
-    if (mikudancestudio::mdl::Mdl(m)->boneCount > 0) {
-        mikudancestudio::mdl::BoneRecord* bones = mikudancestudio::mdl::Bones(m);
-        const std::uint32_t n = mikudancestudio::mdl::Mdl(m)->boneCount;
+    if (mikumikustudio::mdl::Mdl(m)->boneCount > 0) {
+        mikumikustudio::mdl::BoneRecord* bones = mikumikustudio::mdl::Bones(m);
+        const std::uint32_t n = mikumikustudio::mdl::Mdl(m)->boneCount;
         for (std::uint32_t boneIdx = 0; boneIdx < n; ++boneIdx) {
-            mikudancestudio::mdl::BoneRecord* bone = &bones[boneIdx];
+            mikumikustudio::mdl::BoneRecord* bone = &bones[boneIdx];
             const mdl::BoneType t = bone->type;
             if (t == mdl::BoneType::Move || t == mdl::BoneType::Ik) {
                 auto& entry = tbl[mdl::BoneOrderCount(m)];
@@ -66,4 +66,4 @@ void InitBoneSortOrder(unsigned char* m) {
     }
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

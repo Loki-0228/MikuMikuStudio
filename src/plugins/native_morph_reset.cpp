@@ -4,20 +4,20 @@
 #include "native_pose_scope.hpp"
 #include "native_object_commands.hpp"
 #include "scene_object_history.hpp"
-#include "mikudancestudio/autosave.hpp"
-#include "mikudancestudio/bake_ui_lock.hpp"
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/plugin_scene.hpp"
-#include "mikudancestudio/ui_control_readout.hpp"
+#include "mikumikustudio/autosave.hpp"
+#include "mikumikustudio/bake_ui_lock.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/plugin_scene.hpp"
+#include "mikumikustudio/ui_control_readout.hpp"
 #include <array>
 #include <cstring>
 #include <exception>
 #include <vector>
 
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 namespace {
 std::uint32_t WeightBits(const mdl::MorphRecord& morph) noexcept {
     std::uint32_t value;std::memcpy(&value,&morph.value,sizeof(value));return value;

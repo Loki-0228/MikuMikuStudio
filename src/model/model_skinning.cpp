@@ -1,8 +1,8 @@
-#include "mikudancestudio/perf_timing.hpp"
-#include "mikudancestudio/geometry_workers.hpp"
-#include "mikudancestudio/gpu_model.hpp"
-#include "mikudancestudio/skinning_backend.hpp"
-#include "mikudancestudio/model_vertex_cache.hpp"
+#include "mikumikustudio/perf_timing.hpp"
+#include "mikumikustudio/geometry_workers.hpp"
+#include "mikumikustudio/gpu_model.hpp"
+#include "mikumikustudio/skinning_backend.hpp"
+#include "mikumikustudio/model_vertex_cache.hpp"
 // ===========================================================================
 // VA 0x004B0C50 / 0x004A9400 - per-frame model VB deformation
 // ===========================================================================
@@ -30,33 +30,33 @@
 #include <memory>
 #include <algorithm>
 
-#include "mikudancestudio/affine_skinning.hpp"
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/affine_skinning.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 
-// Porting-era VB dump under MIKUDANCESTUDIO_VB_DUMP_DIR (CMake option
-// MIKUDANCESTUDIO_DIAG, default OFF); the OFF stub below keeps the call
+// Porting-era VB dump under MIKUMIKUSTUDIO_VB_DUMP_DIR (CMake option
+// MIKUMIKUSTUDIO_DIAG, default OFF); the OFF stub below keeps the call
 // site valid and inlines away to nothing.
-#ifdef MIKUDANCESTUDIO_DIAG
+#ifdef MIKUMIKUSTUDIO_DIAG
 bool ModelVbCaptureReady(char directory[MAX_PATH]) {
     const DWORD length = GetEnvironmentVariableA(
-        "MIKUDANCESTUDIO_VB_DUMP_DIR", directory, MAX_PATH);
+        "MIKUMIKUSTUDIO_VB_DUMP_DIR", directory, MAX_PATH);
     if (length == 0 || length >= MAX_PATH)
         return false;
 
     char stable[2]{};
-    if (GetEnvironmentVariableA("MIKUDANCESTUDIO_AB_STABLE_CAPTURE", stable,
+    if (GetEnvironmentVariableA("MIKUMIKUSTUDIO_AB_STABLE_CAPTURE", stable,
                                 sizeof(stable)) != 1 || stable[0] != '1')
         return true;
 
     char requireLine[2]{};
     const bool refreshed =
-        GetEnvironmentVariableA("MIKUDANCESTUDIO_AB_REQUIRE_LINE", requireLine,
+        GetEnvironmentVariableA("MIKUMIKUSTUDIO_AB_REQUIRE_LINE", requireLine,
                                 sizeof(requireLine)) == 1 &&
         requireLine[0] == '1';
     char gate[MAX_PATH]{};
@@ -131,7 +131,7 @@ inline void DumpModelVertexBuffers(MMDApp*, unsigned char*,
 #endif
 
 // The skinning transforms, the weight blends and the SDEF quaternion blend
-// live in mikudancestudio/affine_skinning.hpp together with the per-bone
+// live in mikumikustudio/affine_skinning.hpp together with the per-bone
 // affine precomputation; this file keeps the model-record plumbing.
 void TransformPosition(float out[3], const float in[3], const float* m) {
     affine::TransformPosition(out, in, m);
@@ -529,12 +529,12 @@ void ApplyPmdVertexMorphs(unsigned char* model) {
         vertex.position[2] = entry.offset[2];
     }
 
-    mikudancestudio::mdl::MorphRecord* morphs = mikudancestudio::mdl::Morphs(model);
+    mikumikustudio::mdl::MorphRecord* morphs = mikumikustudio::mdl::Morphs(model);
     const int morphCount = record.morphCount;
     if (morphs == nullptr || morphCount <= 1)
         return;
     for (int i = 1; i < morphCount; ++i) {
-        mikudancestudio::mdl::MorphRecord* morph = &morphs[i];
+        mikumikustudio::mdl::MorphRecord* morph = &morphs[i];
         const float weight = morph->value;
         if (weight == 0.0f)
             continue;
@@ -565,7 +565,7 @@ float PmdEdgeDistance(MMDApp* app, unsigned char* model,
     const int boneCount = record.boneCount;
     float modelPoint[3]{};
     if (bones != nullptr && boneCount > 0) {
-        mikudancestudio::mdl::BoneRecord* bone = &bones[(boneCount > 1 ? 1 : 0)];
+        mikumikustudio::mdl::BoneRecord* bone = &bones[(boneCount > 1 ? 1 : 0)];
         const float bind[3] = {bone->position[0], bone->position[1],
                                bone->position[2]};
         TransformPosition(modelPoint, bind,
@@ -976,4 +976,4 @@ bool PrepareGpuModelInput(MMDApp* app,unsigned char* model,const float world[16]
     return true;
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

@@ -32,15 +32,15 @@
 #include <string>
 #include <stdexcept>
 
-#include "mikudancestudio/accessory_layout.hpp"
-#include "mikudancestudio/global_key_layout.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/frame_limits.hpp"
-#include "mikudancestudio/bone_pose_safety.hpp"
-#include "mikudancestudio/unicode_window.hpp"
-#include "mikudancestudio/original_import.hpp"
+#include "mikumikustudio/accessory_layout.hpp"
+#include "mikumikustudio/global_key_layout.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/frame_limits.hpp"
+#include "mikumikustudio/bone_pose_safety.hpp"
+#include "mikumikustudio/unicode_window.hpp"
+#include "mikumikustudio/original_import.hpp"
 
-namespace mikudancestudio::pmm_io {
+namespace mikumikustudio::pmm_io {
 
 // Stream dialect selector for the two parameterized readers.
 enum class PmmStream { V1, V2 };
@@ -319,7 +319,7 @@ inline const char kJpOpenCaption[] =
 // from inside the brackets and loads the matching assignment file
 // ("<project>.emm") - that is how effect assignments survive a pmm round trip
 // and how MME resets its per-object state when another project is opened.
-// Renaming the prefix (the port used "MikuDanceStudio [%s]") makes MME miss
+// Renaming the prefix (the port used "MikuMikuStudio [%s]") makes MME miss
 // the project change: its object table keeps the previous project's entries and
 // its draw hook then dereferences an uninitialised record.
 inline const wchar_t kAppTitleFormat[] = L"MikuMikuDance [%s]";
@@ -329,4 +329,4 @@ inline void SetProjectWindowTitle(HWND window, const wchar_t* path) {
     SetUnicodeWindowTitle(window, title.c_str());
 }
 
-}  // namespace mikudancestudio::pmm_io
+}  // namespace mikumikustudio::pmm_io

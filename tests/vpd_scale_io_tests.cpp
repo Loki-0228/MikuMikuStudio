@@ -1,8 +1,8 @@
 // MAINTENANCE: regression-keep; VPD pose-file bone scale tail extension
-// (include/mikudancestudio/vpd_scale_io.hpp, src/io/vpd_scale_io.cpp).
+// (include/mikumikustudio/vpd_scale_io.hpp, src/io/vpd_scale_io.cpp).
 //
 // What is pinned here:
-//   - the wire layout of the tail (footer "MDSXVPDX", payload "MDSXVPDS",
+//   - the wire layout of the tail (footer "MMSXVPDX", payload "MMSXVPDS",
 //     little-endian fields, 32-byte payload header, 60-byte entries, trailing
 //     CRC32), built byte by byte with the test's own helpers so the layout is
 //     independent of the module under test;
@@ -41,10 +41,10 @@
 #include <string>
 #include <vector>
 
-#include "mikudancestudio/vpd_scale_io.hpp"
+#include "mikumikustudio/vpd_scale_io.hpp"
 
-namespace bs = mikudancestudio::bone_scale;
-namespace vpd = mikudancestudio::vpd_scale_io;
+namespace bs = mikumikustudio::bone_scale;
+namespace vpd = mikumikustudio::vpd_scale_io;
 
 namespace {
 
@@ -168,7 +168,7 @@ std::vector<std::uint8_t> TailFile(const std::vector<std::uint8_t>& text,
     std::vector<std::uint8_t> bytes = text;
     bytes.insert(bytes.end(), payload.begin(), payload.end());
     PutU64(bytes, static_cast<std::uint64_t>(payload.size()));
-    const char footer[] = "MDSXVPDX";
+    const char footer[] = "MMSXVPDX";
     bytes.insert(bytes.end(), footer, footer + 8);
     return bytes;
 }
@@ -257,8 +257,8 @@ void WireLayoutAndRoundTrip() {
     const std::vector<std::uint8_t> payload = vpd::Encode(extension);
     Check(payload.size() == 32 + 60 * 2 + 4,
           "payload is 32 header + 2 * 60 entries + 4 CRC bytes");
-    Check(std::memcmp(payload.data(), "MDSXVPDS", 8) == 0,
-          "payload magic is MDSXVPDS");
+    Check(std::memcmp(payload.data(), "MMSXVPDS", 8) == 0,
+          "payload magic is MMSXVPDS");
     Check(ReadU32(payload, 8) == 1, "payload version is 1");
     Check(ReadU32(payload, 12) == 0, "payload reserved field is zero");
     Check(ReadU64(payload, 16) == extension.prefixBytes,
@@ -357,8 +357,8 @@ void OldFormatAndFileLifecycle() {
     const std::size_t footerAt = full.size() - 16;
     Check(ReadU64(full, footerAt) == full.size() - text.size() - 16,
           "footer records the payload byte count");
-    Check(std::memcmp(full.data() + footerAt + 8, "MDSXVPDX", 8) == 0,
-          "footer magic is MDSXVPDX and sits at the very end");
+    Check(std::memcmp(full.data() + footerAt + 8, "MMSXVPDX", 8) == 0,
+          "footer magic is MMSXVPDX and sits at the very end");
 
     Check(vpd::LoadTail(file.path, 2, loaded) == vpd::TailLoad::Loaded &&
               loaded.entries.size() == 2,
@@ -411,6 +411,18 @@ void CorruptionRejects() {
     TempFile file;
     vpd::Extension loaded;
 
+    auto oldPayload = payload;
+    oldPayload[1] = 'D'; oldPayload.resize(oldPayload.size() - 4);
+    PutU32(oldPayload, RefCrc32(oldPayload));
+    Check(vpd::DecodePayload(oldPayload.data(), oldPayload.size(), loaded) == vpd::Decode::BadMagic,
+          "MDSXVPDS is refused even with a valid payload checksum");
+    Check(file.Write(TailFile(text, oldPayload)) &&
+              vpd::LoadTail(file.path, 2, loaded) == vpd::TailLoad::IgnoredBadPayload && loaded.entries.empty(),
+          "MMS footer does not make an MDS payload readable");
+    auto oldFooter = good; oldFooter[oldFooter.size() - 7] = 'D';
+    Check(file.Write(oldFooter) && vpd::LoadTail(file.path, 2, loaded) == vpd::TailLoad::Absent && loaded.entries.empty(),
+          "MDSXVPDX is an unknown optional tail and does not supply pose scales");
+
     std::vector<std::uint8_t> broken = good;
     broken[text.size() + 30] ^= 0x40;  // the entry-count field
     Check(file.Write(broken) &&
@@ -460,18 +472,18 @@ void CorruptionRejects() {
         RawEntry(3, "bone3", kShear);
     std::vector<std::vector<std::uint8_t>> one{raw};
 
-    Check(file.Write(TailFile(text, HandPayload("MDSXVPDS", 2, 0, text.size(),
+    Check(file.Write(TailFile(text, HandPayload("MMSXVPDS", 2, 0, text.size(),
                                                 RefCrc32(text), 1, one))) &&
               vpd::LoadTail(file.path, 2, loaded) ==
                   vpd::TailLoad::IgnoredBadVersion,
           "a future payload version is refused as a whole, never read as "
           "version 1");
-    Check(file.Write(TailFile(text, HandPayload("MDSXVPDS", 0, 0, text.size(),
+    Check(file.Write(TailFile(text, HandPayload("MMSXVPDS", 0, 0, text.size(),
                                                 RefCrc32(text), 1, one))) &&
               vpd::LoadTail(file.path, 2, loaded) ==
                   vpd::TailLoad::IgnoredBadVersion,
           "version 0 is unknown too");
-    Check(file.Write(TailFile(text, HandPayload("MDSXVPDS", 1, 1, text.size(),
+    Check(file.Write(TailFile(text, HandPayload("MMSXVPDS", 1, 1, text.size(),
                                                 RefCrc32(text), 1, one))) &&
               vpd::LoadTail(file.path, 2, loaded) ==
                   vpd::TailLoad::IgnoredBadPayload,
@@ -496,7 +508,7 @@ void CorruptionRejects() {
         std::vector<std::vector<std::uint8_t>> entries{
             RawEntry(3, "bone3", *bad[i])};
         std::vector<std::uint8_t> forged =
-            HandPayload("MDSXVPDS", 1, 0, text.size(), RefCrc32(text), 1, entries);
+            HandPayload("MMSXVPDS", 1, 0, text.size(), RefCrc32(text), 1, entries);
         vpd::Extension direct;
         Check(vpd::DecodePayload(forged.data(), forged.size(), direct) ==
                   vpd::Decode::BadData,
@@ -512,7 +524,7 @@ void CorruptionRejects() {
 
     std::vector<std::vector<std::uint8_t>> duplicates{
         RawEntry(3, "bone3", kShear), RawEntry(3, "bone3", kWide)};
-    Check(file.Write(TailFile(text, HandPayload("MDSXVPDS", 1, 0, text.size(),
+    Check(file.Write(TailFile(text, HandPayload("MMSXVPDS", 1, 0, text.size(),
                                                 RefCrc32(text), 2, duplicates))) &&
               vpd::LoadTail(file.path, 2, loaded) ==
                   vpd::TailLoad::IgnoredBadPayload,
@@ -522,12 +534,12 @@ void CorruptionRejects() {
     Check(vpd::DecodePayload(payload.data(), payload.size() - 5, loaded) ==
               vpd::Decode::BadData,
           "a payload cut below its own length formula is refused");
-    std::vector<std::uint8_t> lying = HandPayload("MDSXVPDS", 1, 0, text.size(),
+    std::vector<std::uint8_t> lying = HandPayload("MMSXVPDS", 1, 0, text.size(),
                                                   RefCrc32(text), 3, one);
     Check(vpd::DecodePayload(lying.data(), lying.size(), loaded) ==
               vpd::Decode::BadData,
           "an entry count that breaks the length formula is refused");
-    std::vector<std::uint8_t> huge = HandPayload("MDSXVPDS", 1, 0, text.size(),
+    std::vector<std::uint8_t> huge = HandPayload("MMSXVPDS", 1, 0, text.size(),
                                                  RefCrc32(text), 0xFFFFFFFFu,
                                                  one);
     Check(vpd::DecodePayload(huge.data(), huge.size(), loaded) ==
@@ -540,7 +552,7 @@ void CorruptionRejects() {
     // though its own bytes are consistent.
     std::vector<std::vector<std::uint8_t>> oneEntry{raw};
     Check(file.Write(TailFile(
-              text, HandPayload("MDSXVPDS", 1, 0, text.size() + 1,
+              text, HandPayload("MMSXVPDS", 1, 0, text.size() + 1,
                                 RefCrc32(text), 1, oneEntry))) &&
               vpd::LoadTail(file.path, 2, loaded) ==
                   vpd::TailLoad::IgnoredBadPayload,

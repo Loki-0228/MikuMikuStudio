@@ -1,13 +1,13 @@
 #include "native_accessory_settings.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "scene_object_history.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/plugin_scene.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/text_encoding.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/plugin_scene.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/text_encoding.hpp"
 #include <array>
 
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 struct AccessorySettingsPlan::State final : HistoryChange, std::enable_shared_from_this<State> {
     using Name = std::array<char, sizeof(mdl::AccessoryRecord::name)>;
     struct Value { std::uint8_t order = 0; Name name{}; };

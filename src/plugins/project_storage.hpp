@@ -1,7 +1,7 @@
 #pragma once
 #include "storage_store.hpp"
 
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 struct PluginProject {
     std::string projectId, saveId, mainHash;
     StoredRecords records;

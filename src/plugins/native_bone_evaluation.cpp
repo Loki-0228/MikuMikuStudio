@@ -1,17 +1,17 @@
 #include "native_bone_evaluation.hpp"
 #if !MMD_ORIGINAL_PROFILE
-#include "mikudancestudio/bone_curve.hpp"
-#include "mikudancestudio/bone_scale.hpp"
-#include "mikudancestudio/frame_limits.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
+#include "mikumikustudio/bone_curve.hpp"
+#include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/frame_limits.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstring>
 #include <exception>
 
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 namespace {
 struct Pose {
     std::array<float, 3> position{};

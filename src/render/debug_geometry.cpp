@@ -1,4 +1,4 @@
-#include "mikudancestudio/physics_scale.hpp"
+#include "mikumikustudio/physics_scale.hpp"
 // ===========================================================================
 // Debug geometry and operation-axis renderer
 //   0x00401400..0x00401D93  primitive helpers
@@ -20,16 +20,16 @@
 
 #include "btBulletDynamicsCommon.h"
 
-#include "mikudancestudio/accessory_layout.hpp"
-#include "mikudancestudio/bone_projection.hpp"
-#include "mikudancestudio/bone_scale.hpp"
-#include "mikudancestudio/bone_scale_gizmo.hpp"
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/model.hpp"
+#include "mikumikustudio/accessory_layout.hpp"
+#include "mikumikustudio/bone_projection.hpp"
+#include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/bone_scale_gizmo.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/model.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 // Shared with bone dragging so the gizmo and the actual edit operation use
 // the same view-space basis.
@@ -238,7 +238,7 @@ unsigned char* CurrentModel(MMDApp* app) {
     return app->SelectedModel();
 }
 
-Matrix* BoneMatrix(mikudancestudio::mdl::BoneRecord* bone) {
+Matrix* BoneMatrix(mikumikustudio::mdl::BoneRecord* bone) {
     return reinterpret_cast<Matrix*>(bone->matInit);
 }
 
@@ -293,16 +293,16 @@ void OrthonormalizeGizmoBasis(Matrix* world) {
 void AttachToBone(MMDApp* app, Matrix* world, int boneIndex) {
     auto& api = d3dx::Get();
     unsigned char* model = CurrentModel(app);
-    auto* bones = mikudancestudio::mdl::Bones(model);
+    auto* bones = mikumikustudio::mdl::Bones(model);
     // The bone index on a rigid-body record comes from the loaded file, and the
     // original code clamped only the lower bound, so an index past the model's own
     // table read beyond it. Both bounds now fall back to the first bone.
     // Defect RB-12.
     const int boneCount =
-        static_cast<int>(mikudancestudio::mdl::Mdl(model)->boneCount);
+        static_cast<int>(mikumikustudio::mdl::Mdl(model)->boneCount);
     if (bones == nullptr || boneCount <= 0)
         return;
-    mikudancestudio::mdl::BoneRecord* bone =
+    mikumikustudio::mdl::BoneRecord* bone =
         &bones[(boneIndex < 0 || boneIndex >= boneCount) ? 0 : boneIndex];
     Matrix translation;
     api.translation(&translation, bone->position[0], bone->position[1],
@@ -426,14 +426,14 @@ void DrawAccessoryDebug(MMDApp* app) {
     // joints (mdl::JointRecord).  While the dialog is open the records'
     // keyData / constraint slots hold the combo index (-1 = deleted slot).
     auto* bodies =
-        static_cast<mikudancestudio::mdl::RigidRecord*>(
+        static_cast<mikumikustudio::mdl::RigidRecord*>(
             app->state.rigidScratchArray);
     auto* joints =
-        static_cast<mikudancestudio::mdl::JointRecord*>(
+        static_cast<mikumikustudio::mdl::JointRecord*>(
             app->state.jointScratchArray);
     const bool dialogSelection = app->state.physicsEditorJointPage != 0;
     for (int index = 0; index < kDebugRecordCapacity; ++index) {
-        mikudancestudio::mdl::RigidRecord* record = &bodies[index];
+        mikumikustudio::mdl::RigidRecord* record = &bodies[index];
         const int comboSlot =
             static_cast<int>(reinterpret_cast<std::intptr_t>(record->keyData));
         if (comboSlot >= 0) {
@@ -453,7 +453,7 @@ void DrawAccessoryDebug(MMDApp* app) {
             if (dialogSelection) {
                 const int linkIndex = app->state.selectedJointIndex;
                 if (linkIndex >= 0) {
-                    const mikudancestudio::mdl::JointRecord* link =
+                    const mikumikustudio::mdl::JointRecord* link =
                         &joints[linkIndex];
                     selected = index == link->rigidA ||
                                index == link->rigidB;
@@ -478,7 +478,7 @@ void DrawAccessoryDebug(MMDApp* app) {
                 SetDebugColor(scene, 155, 255, 0);
         }
 
-        mikudancestudio::mdl::JointRecord* link = &joints[index];
+        mikumikustudio::mdl::JointRecord* link = &joints[index];
         if (link->constraint < 0)
             continue;
         Matrix world;
@@ -526,7 +526,7 @@ namespace {
 // `unitScale` is the view-distance factor the original applied to it, so both
 // gizmos keep one on-screen size and one placement rule.
 bool BoneGizmoTransform(MMDApp* app, const float frameMatrix[16],
-                        mikudancestudio::mdl::BoneRecord* bone,
+                        mikumikustudio::mdl::BoneRecord* bone,
                         Matrix& world, float& unitScale,
                         bool viewAxes = false) {
     if (bone == nullptr)
@@ -653,7 +653,7 @@ struct ScreenHandleVertex {
 constexpr int kQuadTriangles[6] = {0, 1, 2, 0, 2, 3};
 
 void DrawBoneScaleHandles(MMDApp* app,
-                          mikudancestudio::mdl::BoneRecord* bone,
+                          mikumikustudio::mdl::BoneRecord* bone,
                           const float frameMatrix[16]) {
     Matrix world;
     float unitScale = 1.0f;
@@ -1040,7 +1040,7 @@ struct RotateSectorState {
 };
 RotateSectorState g_rotateSector;
 
-void DrawHudAxisPreview(MMDApp* app, mikudancestudio::mdl::BoneRecord* bone,
+void DrawHudAxisPreview(MMDApp* app, mikumikustudio::mdl::BoneRecord* bone,
                         const float frameMatrix[16], HudPreviewKind kind,
                         int axis, bool rotateDragging) {
     if (!rotateDragging || kind != HudPreviewKind::Rotate || bone == nullptr ||
@@ -1444,19 +1444,19 @@ void DrawBoneOperationAxis(MMDApp* app, const float frameMatrix[16]) {
     // Defect RB-03.
     if (model == nullptr)
         return;
-    const int selected = mikudancestudio::mdl::Mdl(model)->selectedBone;
+    const int selected = mikumikustudio::mdl::Mdl(model)->selectedBone;
     if (selected < 0)
         return;
-    auto* bones = mikudancestudio::mdl::Bones(model);
+    auto* bones = mikumikustudio::mdl::Bones(model);
     // pmm_load_v1 reads selectedBone directly from the file without validating it,
     // so an index beyond the model's own table can reach this draw; keep the
     // lookup within that table.
     // Defect RB-12.
     const int boneCount =
-        static_cast<int>(mikudancestudio::mdl::Mdl(model)->boneCount);
+        static_cast<int>(mikumikustudio::mdl::Mdl(model)->boneCount);
     if (bones == nullptr || selected >= boneCount)
         return;
-    mikudancestudio::mdl::BoneRecord* bone = &bones[selected];
+    mikumikustudio::mdl::BoneRecord* bone = &bones[selected];
 
     // MMS addition: scale mode draws its own handles instead of the operation
     // axis mesh.  Every bone type scales (BONE_SCALING.md), so the FixedAxis
@@ -1759,4 +1759,4 @@ void SetupFrameWorldTransform(MMDApp* app) {
                          reinterpret_cast<const D3DMATRIX*>(&view));
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

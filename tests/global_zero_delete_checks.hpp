@@ -1,5 +1,5 @@
 // Exercise the retained unbound command, including selected non-head neighbours.
-#include "mikudancestudio/animation_curve_host.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
 namespace {
 void GlobalZeroDeleteChecks() {
     unsigned scenarios = 0;

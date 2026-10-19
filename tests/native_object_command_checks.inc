@@ -1,12 +1,12 @@
 // Include after the common history/pose fixtures. These tests drive the real
 // 437/473 handlers and their actual confirmation boxes in a hidden window.
 #include "../src/plugins/native_object_commands.hpp"
-#include "mikudancestudio/scene_history_ui.hpp"
-#include "mikudancestudio/text_encoding.hpp"
-#include "mikudancestudio/ui_message.hpp"
-#include "mikudancestudio/plugin_storage.hpp"
+#include "mikumikustudio/scene_history_ui.hpp"
+#include "mikumikustudio/text_encoding.hpp"
+#include "mikumikustudio/ui_message.hpp"
+#include "mikumikustudio/plugin_storage.hpp"
 #include <commctrl.h>
-namespace mikudancestudio {
+namespace mikumikustudio {
 void CmdControl450(MMDApp*, HWND, std::uint16_t, std::uint16_t);
 void DeleteModel(unsigned char*, int);
 void DeleteAccessory(mdl::AccessoryRecord*, int);

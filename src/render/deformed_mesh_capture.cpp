@@ -1,9 +1,9 @@
 #define NOMINMAX
-#include "mikudancestudio/deformed_mesh_capture.hpp"
-#include "mikudancestudio/vertex_capture.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/native_mesh.hpp"
-#include "mikudancestudio/d3dx_dyn.hpp"
+#include "mikumikustudio/deformed_mesh_capture.hpp"
+#include "mikumikustudio/vertex_capture.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/native_mesh.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
 #include <d3d9.h>
 #include <wrl/client.h>
 #include <algorithm>
@@ -13,7 +13,7 @@
 #include <stdexcept>
 #include <MinHook.h>
 
-namespace mikudancestudio::deformed_mesh_capture {
+namespace mikumikustudio::deformed_mesh_capture {
 using Microsoft::WRL::ComPtr;
 namespace {
 using DrawIndexed = HRESULT (WINAPI*)(IDirect3DDevice9*,D3DPRIMITIVETYPE,INT,UINT,UINT,UINT,UINT);

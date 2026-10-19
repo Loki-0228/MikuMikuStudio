@@ -1,10 +1,10 @@
 #pragma once
-#include "mikudancestudio/build_profile.hpp"
+#include "mikumikustudio/build_profile.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "shared_history.hpp"
-#include "mikudancestudio/model.hpp"
-namespace mikudancestudio { class MMDApp; }
-namespace mikudancestudio::plugins {
+#include "mikumikustudio/model.hpp"
+namespace mikumikustudio { class MMDApp; }
+namespace mikumikustudio::plugins {
 struct BoneRangeScaleOptions;
 struct RangeScaleResult;
 struct ModelPasteFamilyResult;

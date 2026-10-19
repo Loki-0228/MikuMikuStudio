@@ -1,4 +1,4 @@
-#include "mikudancestudio/key_pool.hpp"
+#include "mikumikustudio/key_pool.hpp"
 // ===========================================================================
 // Select-dialog family (original sub_47A3F0 SelectNavDlgProc helpers)
 // ===========================================================================
@@ -40,16 +40,16 @@
 #include <cstring>
 #include <new>
 
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/ui_language.hpp"
-#include "mikudancestudio/text_encoding.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/ui_language.hpp"
+#include "mikumikustudio/text_encoding.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 // ---- display refresh --------------------------------------------------------
 // VA 0x004250C0 - select-dialog value display refresh (thiscall app, hDlg);
@@ -560,11 +560,11 @@ void RefreshSelectNavDisplay(MMDApp* app, HWND hDlg) {  // was Sub4250C0, VA 0x0
     }
 
     unsigned char* model = s.SelectedModel();
-    mikudancestudio::mdl::BoneRecord* bones =
-        mikudancestudio::mdl::Bones(model);
+    mikumikustudio::mdl::BoneRecord* bones =
+        mikumikustudio::mdl::Bones(model);
     const SelectAttachRecord* const rec =
         SelRecord(app, sel);                             // 0xA0668 + 20*sel
-    mikudancestudio::mdl::BoneRecord* bone = &bones[rec->boneIndex];
+    mikumikustudio::mdl::BoneRecord* bone = &bones[rec->boneIndex];
 
     auto& api = d3dx::Get();
     if (!api.Load())                                             // d3dx absent
@@ -574,9 +574,9 @@ void RefreshSelectNavDisplay(MMDApp* app, HWND hDlg) {  // was Sub4250C0, VA 0x0
         std::memcpy(&m, bone->matInit, sizeof m);
     } else if (kind >= 2) {                                      // 0x425286
         unsigned char* srcModel = s.ModelSlot(rec->targetModelSlot);
-        mikudancestudio::mdl::BoneRecord* srcBones =
-            mikudancestudio::mdl::Bones(srcModel);
-        mikudancestudio::mdl::BoneRecord& src =
+        mikumikustudio::mdl::BoneRecord* srcBones =
+            mikumikustudio::mdl::Bones(srcModel);
+        mikumikustudio::mdl::BoneRecord& src =
             srcBones[rec->targetBoneIndex];
         std::memcpy(&m, &src.matInit[0], sizeof m);
         const float* const p = src.position;  // x64 0x13C (bone+316)
@@ -657,4 +657,4 @@ void RefreshSelectNavDisplay(MMDApp* app, HWND hDlg) {  // was Sub4250C0, VA 0x0
     EnableWindow(GetDlgItem(hDlg, panel::kOrderUpButton), TRUE);                   // 0x425685
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

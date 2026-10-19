@@ -26,11 +26,11 @@
 #include <cstdint>
 #include <cstring>
 
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/ui_translation.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/ui_translation.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 
 struct Glyph { const char* s; short x, y; };
@@ -386,5 +386,5 @@ bool InitSceneFontTexture(MMDApp* app) {
     return true;
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio
 

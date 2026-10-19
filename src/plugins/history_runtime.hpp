@@ -1,7 +1,7 @@
 #pragma once
 #include "shared_history.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 class MMDApp;
 namespace plugins {
 // Internal host journal. Public mms.edit remains unavailable until every

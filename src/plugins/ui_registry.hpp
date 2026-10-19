@@ -8,7 +8,7 @@
 #include <map>
 #include <deque>
 
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 struct Json;
 class UiRegistry;
 struct UiClient { UiRegistry* registry; std::string id; bool stopping = false, unsafeToUnload = false; };

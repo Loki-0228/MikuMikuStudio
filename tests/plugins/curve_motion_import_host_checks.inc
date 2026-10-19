@@ -1,7 +1,7 @@
 // Include after numpad_view_host_checks.inc. Uses the real curve editor's
 // Read/Save actions, production file wrappers and bound native publication.
-#include "mikudancestudio/animation_curve_motion.hpp"
-#include "mikudancestudio/ui_translation.hpp"
+#include "mikumikustudio/animation_curve_motion.hpp"
+#include "mikumikustudio/ui_translation.hpp"
 #include <filesystem>
 namespace curve_motion_import_host_checks {
 std::wstring selected;
@@ -66,7 +66,7 @@ void Run(MMDApp* app,plugins::SharedHistory& history){
         const auto input=(directory/(L"MMS-曲线原生输入-"+tag+L".vmd")).native();
         const auto output=(directory/(L"MMS-曲线原生输出-"+tag+L".vmd")).native();Write(input,Input(legacy,delayed));
         curve_editor::CloseOwned(app->MainWindow());curve_host::Open(app,false);
-        const auto editor=FindWindowW(L"MikuDanceStudioCurveEditorWindow",nullptr);Check(editor!=nullptr,"open actual scene curve editor for raw VMD import");
+        const auto editor=FindWindowW(L"MikuMikuStudioCurveEditorWindow",nullptr);Check(editor!=nullptr,"open actual scene curve editor for raw VMD import");
         const auto sources=GetDlgItem(editor,1002);Check(SendMessageW(sources,CB_SETCURSEL,0,0)==0,"choose actual camera source");
         SendMessageW(editor,WM_COMMAND,MAKEWPARAM(1002,CBN_SELCHANGE),reinterpret_cast<LPARAM>(sources));
         const auto before=*app->CameraKeys();curve_host::AuthoringTable author;std::wstring wide;

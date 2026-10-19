@@ -1,21 +1,21 @@
-#include "mikudancestudio/ui_translation.hpp"
+#include "mikumikustudio/ui_translation.hpp"
 #include <set>
 // MAINTENANCE: integration-manual; purpose and cleanup conditions in tests/README.md.
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/ui_language.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/bone_scale.hpp"
-#include "mikudancestudio/sequence_scatter.hpp"
-#include "mikudancestudio/morph_curve.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/effect_api.hpp"
-#include "mikudancestudio/text_encoding.hpp"
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/mmv4mms.hpp"
-#include "mikudancestudio/build_profile.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/ui_language.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/sequence_scatter.hpp"
+#include "mikumikustudio/morph_curve.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/effect_api.hpp"
+#include "mikumikustudio/text_encoding.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/mmv4mms.hpp"
+#include "mikumikustudio/build_profile.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "../src/plugins/native_pose_scope.hpp"
 #include "../src/plugins/native_object_commands.hpp"
@@ -34,7 +34,7 @@
 #include <fstream>
 #include <wrl/client.h>
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 void LoadSceneFile();
 void RegisterCameraState(MMDApp*, int);
 void CmdControl450(MMDApp*, HWND, std::uint16_t, std::uint16_t);
@@ -53,7 +53,7 @@ void ConsumeArrowKeyNavigation(MMDApp*);
 bool SaveSceneCopy(MMDApp*, const wchar_t*);
 bool ApplyBoneFrameScaleAdd(MMDApp*, HWND);
 }
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 namespace {
 void Check(bool ok, const char* what) {
     if (!ok) { std::fprintf(stderr, "FAIL: %s\n", what); std::exit(7); }
@@ -655,7 +655,7 @@ void CheckViewTools(MMDApp* app) {
     // comparing the two PNGs is how the mark is checked against the plate.
     // Nothing is written unless the directory is given.
     wchar_t previewDirectory[MAX_PATH]{};
-    if (GetEnvironmentVariableW(L"MIKUDANCESTUDIO_HUD_PREVIEW_DIR", previewDirectory,
+    if (GetEnvironmentVariableW(L"MIKUMIKUSTUDIO_HUD_PREVIEW_DIR", previewDirectory,
                                 MAX_PATH) > 0 && previewDirectory[0] != 0) {
         const auto captureRows = [&](const wchar_t* name) {
             app->state.messageSeen = 10;
@@ -724,7 +724,7 @@ void CheckFreeViewPlayback(MMDApp* app, bool retainedCameraParent) {
     };
     const auto capture = [&](const wchar_t* name) {
         wchar_t directory[MAX_PATH]{};
-        if (!GetEnvironmentVariableW(L"MIKUDANCESTUDIO_PLAYBACK_VIEW_PREVIEW_DIR", directory, MAX_PATH)) return;
+        if (!GetEnvironmentVariableW(L"MIKUMIKUSTUDIO_PLAYBACK_VIEW_PREVIEW_DIR", directory, MAX_PATH)) return;
         app->state.messageSeen = 10;
         RenderFrameScene(app);
         IDirect3DSurface9* surface = nullptr;
@@ -1757,8 +1757,9 @@ void CheckRecordingFrames(MMDApp* app) {
 }
 
 }
+#include "model_order_dialog_checks.inc"
 int wmain(int argc, wchar_t** argv) {
-    using namespace mikudancestudio;
+    using namespace mikumikustudio;
     if (argc < 2) return 2;
     const bool allstarMmv=argc>3&&std::wcscmp(argv[3],L"--allstar-mmv")==0;
     if(allstarMmv)SetErrorMode(SEM_FAILCRITICALERRORS|SEM_NOGPFAULTERRORBOX);
@@ -1795,6 +1796,10 @@ int wmain(int argc, wchar_t** argv) {
     if (cameraStartup) wcscpy_s(app->EnvFileName(), 256, scenePath);
     if (!InitMainWindowAndD3D(app, GetModuleHandleW(nullptr), SW_HIDE)) return 3;
     ShowWindow(app->MainWindow(), SW_HIDE);
+    if (argc > 3 && std::wcscmp(argv[3], L"--model-order") == 0) {
+        model_order_dialog_checks::Run(app, scenePath);
+        ShutdownCleanup(app); delete app; g_Block = nullptr; return 0;
+    }
     if (argc > 3 && std::wcscmp(argv[3], L"--accessory-feedback") == 0) {
         CheckAccessoryFeedback(app, scenePath, argc > 4 ? argv[4] : L"all");
         ShutdownCleanup(app); delete app; g_Block = nullptr; return 0;

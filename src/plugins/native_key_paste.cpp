@@ -7,13 +7,13 @@
 #include "native_model_paste.hpp"
 #include "native_pose_scope.hpp"
 #include "native_history_commands.hpp"
-#include "mikudancestudio/animation_curve_host.hpp"
-#include "mikudancestudio/autosave.hpp"
-#include "mikudancestudio/bake_ui_lock.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
+#include "mikumikustudio/autosave.hpp"
+#include "mikumikustudio/bake_ui_lock.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 #include <array>
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 bool TryPasteBoundKeys(MMDApp* app, HWND window, bool mirror) noexcept {
     if (!app) return false;
     auto* history = BoundNativePoseHistory(app);

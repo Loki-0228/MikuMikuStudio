@@ -1,13 +1,13 @@
 #include "native_global_key_delete.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "scene_object_history.hpp"
-#include "mikudancestudio/accessory_layout.hpp"
-#include "mikudancestudio/animation_curve_host.hpp"
-#include "mikudancestudio/frame_limits.hpp"
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/plugin_scene.hpp"
+#include "mikumikustudio/accessory_layout.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
+#include "mikumikustudio/frame_limits.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/plugin_scene.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -17,7 +17,7 @@
 #include <stdexcept>
 #include <vector>
 
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 namespace {
 // Native lane layout, arithmetic and parent ownership match the existing
 // private curve-write plans; deletion changes only selected slot payloads.

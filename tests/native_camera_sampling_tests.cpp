@@ -1,12 +1,12 @@
 // MAINTENANCE: regression-keep; ordinary camera export and native channel bake.
 // CPU-only: real ReloadModels, curve_host, VMD encoder and bake Prepare/Commit.
 #define NOMINMAX
-#include "mikudancestudio/animation_curve_host.hpp"
-#include "mikudancestudio/animation_curve_motion.hpp"
-#include "mikudancestudio/channel_bake.hpp"
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
+#include "mikumikustudio/animation_curve_motion.hpp"
+#include "mikumikustudio/channel_bake.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "../src/plugins/native_frame_lines.hpp"
 #endif
@@ -37,7 +37,7 @@ void operator delete(void* p)noexcept{std::free(p);}
 void operator delete[](void* p)noexcept{std::free(p);}
 void operator delete(void* p,std::size_t)noexcept{std::free(p);}
 void operator delete[](void* p,std::size_t)noexcept{std::free(p);}
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 namespace ac=animation_curve;
 namespace {
 constexpr double pi=3.14159265358979323846;

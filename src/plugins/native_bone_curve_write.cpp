@@ -2,19 +2,19 @@
 #if !MMD_ORIGINAL_PROFILE
 #include "native_bone_evaluation.hpp"
 #include "scene_object_history.hpp"
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/frame_limits.hpp"
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/plugin_scene.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/frame_limits.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/plugin_scene.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <set>
 #include <stdexcept>
 
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 namespace {
 using Key=mdl::BoneKey;
 constexpr double pi=3.14159265358979323846;

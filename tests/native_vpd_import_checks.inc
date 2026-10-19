@@ -1,5 +1,5 @@
 #include "../src/plugins/native_vpd_import.hpp"
-#include "mikudancestudio/vpd_scale_io.hpp"
+#include "mikumikustudio/vpd_scale_io.hpp"
 #include <filesystem>
 #include <share.h>
 #include <io.h>

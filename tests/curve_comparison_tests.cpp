@@ -1,5 +1,5 @@
 // MAINTENANCE: unit coverage for the comparison filter helper
-// (include/mikudancestudio/animation_curve_comparison.hpp), the rule the curve
+// (include/mikumikustudio/animation_curve_comparison.hpp), the rule the curve
 // editor uses to decide whether a curve really changes inside a frame span.
 // Pure CPU; no Win32, DirectX or GUI.
 //
@@ -9,8 +9,8 @@
 // checks the exact rule against dense sampling of animation_curve::Evaluate,
 // so the two can only disagree in the safe direction: dense sampling may miss a
 // variation the exact rule finds, never the other way round.
-#include "mikudancestudio/animation_curve.hpp"
-#include "mikudancestudio/animation_curve_comparison.hpp"
+#include "mikumikustudio/animation_curve.hpp"
+#include "mikumikustudio/animation_curve_comparison.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -22,8 +22,8 @@
 #include <utility>
 #include <vector>
 
-namespace ac = mikudancestudio::animation_curve;
-namespace cc = mikudancestudio::curve_comparison;
+namespace ac = mikumikustudio::animation_curve;
+namespace cc = mikumikustudio::curve_comparison;
 
 namespace {
 

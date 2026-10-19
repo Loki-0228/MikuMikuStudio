@@ -1,5 +1,5 @@
-#include "mikudancestudio/adaptive_shadow.hpp"
-namespace mikudancestudio { void CmdControl500(MMDApp*,HWND,std::uint16_t,std::uint16_t); }
+#include "mikumikustudio/adaptive_shadow.hpp"
+namespace mikumikustudio { void CmdControl500(MMDApp*,HWND,std::uint16_t,std::uint16_t); }
 namespace {
 struct ShadowParameterFixture : AccessoryRegistrationFixture {
     ShadowParameterFixture() {

@@ -2,10 +2,10 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/text_encoding.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/text_encoding.hpp"
 #include <array>
 #include <cstdio>
 #include <cstdlib>
@@ -18,10 +18,10 @@
 #include <string>
 #include <vector>
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 void PostLoadInit(unsigned char*);
 }
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 namespace {
 void Check(bool ok, const char* what) {
     if (!ok) { std::fprintf(stderr, "FAIL: %s\n", what); std::exit(1); }

@@ -8,15 +8,15 @@
 #include "native_history_commands.hpp"
 #include "native_global_commands.hpp"
 #include "scene_object_history.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/plugin_scene.hpp"
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/bake_ui_lock.hpp"
-#include "mikudancestudio/autosave.hpp"
-#include "mikudancestudio/frame_limits.hpp"
-#include "mikudancestudio/runtime_log.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/plugin_scene.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/bake_ui_lock.hpp"
+#include "mikumikustudio/autosave.hpp"
+#include "mikumikustudio/frame_limits.hpp"
+#include "mikumikustudio/runtime_log.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -25,7 +25,7 @@
 #include <stdexcept>
 #include <type_traits>
 
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 namespace {
 bool Ready(MMDApp& a,bool history=false) noexcept {
     const bool authorized=history&&NativeObjectPublicationAuthorized(&a);

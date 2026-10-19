@@ -2,7 +2,7 @@
 // The actual legacy deletion and seek functions supply independent oracles.
 #include "../src/plugins/native_morph_keys.hpp"
 #include "../src/plugins/native_range_scale.hpp"
-#include "mikudancestudio/frame_limits.hpp"
+#include "mikumikustudio/frame_limits.hpp"
 #include <limits>
 namespace {
 struct MorphKeyFixture : BoneRegistrationFixture {

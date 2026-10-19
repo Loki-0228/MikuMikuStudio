@@ -22,12 +22,12 @@
 
 #include <cstdint>
 
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/ui_language.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/ui_language.hpp"
 #include <cwchar>
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 void DrawControlText(MMDApp* app, HWND hwnd, HDC hdc, RECT rc) {
     wchar_t text[256]{};
@@ -69,4 +69,4 @@ void HandleTimer100(MMDApp* app) {
     app->AudioSeekReady() = 1;                             // this+656054
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

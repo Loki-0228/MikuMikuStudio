@@ -1,6 +1,6 @@
-#include "mikudancestudio/perf_timing.hpp"
+#include "mikumikustudio/perf_timing.hpp"
 // ===========================================================================
-// MikuDanceStudio: Bullet physics object creation (phase 8)
+// MikuMikuStudio: Bullet physics object creation (phase 8)
 // ===========================================================================
 // VA 0x004064F0  CreateRigidBody  - shape + motion state + rigid body
 // VA 0x00406010  CreatePhysJoint  - 6DOF spring constraint
@@ -44,17 +44,17 @@
 #include <memory>
 #include <limits>
 #include <stdexcept>
-#include "mikudancestudio/build_profile.hpp"
+#include "mikumikustudio/build_profile.hpp"
 
 #include "btBulletDynamicsCommon.h"
 #include "BulletDynamics/ConstraintSolver/btGeneric6DofSpringConstraint.h"
 
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/physics_scene.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/physics_scene.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 
 // The parity-patched Bullet exposes a separate solver UID. Prefer it when
@@ -258,15 +258,15 @@ void SetRotationOriginal(float* basis, const float* quaternion) {
 }
 #endif
 
-// Porting-era dumps under MIKUDANCESTUDIO_STATE_DUMP_DIR (CMake option
-// MIKUDANCESTUDIO_DIAG, default OFF); the OFF stubs below keep the call
+// Porting-era dumps under MIKUMIKUSTUDIO_STATE_DUMP_DIR (CMake option
+// MIKUMIKUSTUDIO_DIAG, default OFF); the OFF stubs below keep the call
 // sites valid and inline away to nothing.
-#ifdef MIKUDANCESTUDIO_DIAG
+#ifdef MIKUMIKUSTUDIO_DIAG
 void DumpRigidCreateState(int shape, int mode, const float* inputMatrix,
                           const float* quaternion, const btRigidBody* body) {
     char directory[MAX_PATH]{};
     const DWORD length = GetEnvironmentVariableA(
-        "MIKUDANCESTUDIO_STATE_DUMP_DIR", directory, MAX_PATH);
+        "MIKUMIKUSTUDIO_STATE_DUMP_DIR", directory, MAX_PATH);
     if (length == 0 || length >= MAX_PATH || body == nullptr)
         return;
     CreateDirectoryA(directory, nullptr);
@@ -309,7 +309,7 @@ void DumpConstraintCreateState(
         int index, btGeneric6DofSpringConstraint* constraint) {
     char directory[MAX_PATH]{};
     const DWORD length = GetEnvironmentVariableA(
-        "MIKUDANCESTUDIO_STATE_DUMP_DIR", directory, MAX_PATH);
+        "MIKUMIKUSTUDIO_STATE_DUMP_DIR", directory, MAX_PATH);
     if (length == 0 || length >= MAX_PATH || constraint == nullptr)
         return;
     CreateDirectoryA(directory, nullptr);
@@ -547,7 +547,7 @@ void CreateRigidBody(PhysicsScene* scene, void** out, int shape, float sx, float
 #endif
 }
 
-#ifdef MIKUDANCESTUDIO_DIAG
+#ifdef MIKUMIKUSTUDIO_DIAG
 static unsigned JointBits(float value) {
     unsigned bits;
     std::memcpy(&bits, &value, 4);
@@ -584,12 +584,12 @@ int CreatePhysJoint(PhysicsScene* scene, void* rbA, void* rbB,
         throw std::overflow_error("physics constraint ID exhausted");
     if (!rbA || !rbB) throw std::invalid_argument("missing physics joint body");
 #endif
-#ifdef MIKUDANCESTUDIO_DIAG
-    // Env-gated (MIKUDANCESTUDIO_DUMP_JOINTARGS=<path>) creation-argument trace -
+#ifdef MIKUMIKUSTUDIO_DIAG
+    // Env-gated (MIKUMIKUSTUDIO_DUMP_JOINTARGS=<path>) creation-argument trace -
     // the original receives the very same 32 floats on the stack at
     // 0x406010, so a probe there yields a directly comparable record.
     static FILE* jointArgLog = []() -> FILE* {
-        const char* path = std::getenv("MIKUDANCESTUDIO_DUMP_JOINTARGS");
+        const char* path = std::getenv("MIKUMIKUSTUDIO_DUMP_JOINTARGS");
         return path ? std::fopen(path, "w") : nullptr;
     }();
     if (jointArgLog) {
@@ -615,7 +615,7 @@ int CreatePhysJoint(PhysicsScene* scene, void* rbA, void* rbB,
     frameB.setOrigin(btVector3(bx, by, bz));
     const float qb[4] = {bq0, bq1, bq2, bq3};
     SetRotationOriginal(reinterpret_cast<float*>(&frameB.getBasis()), qb);
-#ifdef MIKUDANCESTUDIO_DIAG
+#ifdef MIKUMIKUSTUDIO_DIAG
     if (jointArgLog) {
         std::fprintf(jointArgLog, "frm A=%s B=%s\n",
             WordsHex(reinterpret_cast<const float*>(&frameA), 16).c_str(),
@@ -691,9 +691,9 @@ void SetPhysicsMode(unsigned char* m, int afterPhysics,
     MMD_PERF_SCOPE(Pose);
     mdl::ModelRecord& model = *mdl::Mdl(m);
     const int boneCount = model.boneCount;
-    mikudancestudio::mdl::BoneRecord* bones = mikudancestudio::mdl::Bones(m);
+    mikumikustudio::mdl::BoneRecord* bones = mikumikustudio::mdl::Bones(m);
     for (int i = 0; i < boneCount; ++i) {
-        mikudancestudio::mdl::BoneRecord* bone = &bones[i];
+        mikumikustudio::mdl::BoneRecord* bone = &bones[i];
         const unsigned char flag = bone->hasRigidBody;
         if (((physicsMode == 1 || (physicsMode >= 2 && bone->physicsDisabled == 0)) && flag) != 0) {
             std::memcpy(bone->physicsOffset, bone->ikBackup, 12);           // pos
@@ -710,7 +710,7 @@ void SetPhysicsMode(unsigned char* m, int afterPhysics,
         for (int i = 0; i < recCount; ++i) {
             const mdl::BoneMorphOffsetRecord& record = records[i];
             if (record.boneIndex < 0 || record.boneIndex >= boneCount) continue;
-            mikudancestudio::mdl::BoneRecord* bone = &bones[record.boneIndex];
+            mikumikustudio::mdl::BoneRecord* bone = &bones[record.boneIndex];
             bone->physicsOffset[0] += record.translation[0];
             bone->physicsOffset[1] += record.translation[1];
             bone->physicsOffset[2] += record.translation[2];
@@ -727,4 +727,4 @@ void SetPhysicsMode(unsigned char* m, int afterPhysics,
         BoneFrameTransform(m, afterPhysics, i, modelSlots, physicsMode);  // 0x493A60
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

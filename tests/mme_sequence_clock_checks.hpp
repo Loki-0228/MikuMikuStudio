@@ -1,8 +1,8 @@
 // Real MME TIME/ELAPSEDTIME semantics, including effects that run while stopped.
-#include "mikudancestudio/image_sequence_export.hpp"
-#include "mikudancestudio/global_key_layout.hpp"
+#include "mikumikustudio/image_sequence_export.hpp"
+#include "mikumikustudio/global_key_layout.hpp"
 namespace {
-namespace clock_seq = mikudancestudio::image_sequence;
+namespace clock_seq = mikumikustudio::image_sequence;
 decltype(&clock_seq::WriteFrame) clockOriginalWrite = nullptr;
 std::vector<float> effectClockSamples;
 float clockOutputFps = 30;

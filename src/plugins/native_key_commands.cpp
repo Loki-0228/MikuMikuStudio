@@ -9,20 +9,20 @@
 #include "native_global_commands.hpp"
 #include "native_history_commands.hpp"
 #include "native_pose_scope.hpp"
-#include "mikudancestudio/animation_curve_host.hpp"
-#include "mikudancestudio/autosave.hpp"
-#include "mikudancestudio/bake_ui_lock.hpp"
-#include "mikudancestudio/frame_limits.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
+#include "mikumikustudio/autosave.hpp"
+#include "mikumikustudio/bake_ui_lock.hpp"
+#include "mikumikustudio/frame_limits.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 #include <cerrno>
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
 
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 namespace {
 bool ModelReady(const MMDApp& app) noexcept {
     return !app.state.optflag[0] && app.SelectedModelSlot() < kModelSlotCount &&

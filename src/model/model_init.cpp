@@ -12,16 +12,16 @@
 // Runtime accesses use the named, architecture-pinned ModelRecord fields.
 // Pose-history storage is shared with the saved PMM state block on both ABIs.
 // =========================================================================//
-#include "mikudancestudio/bone_scale.hpp"
-#include "mikudancestudio/model_vertex_cache.hpp"
-#include "mikudancestudio/morph_curve.hpp"
+#include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/model_vertex_cache.hpp"
+#include "mikumikustudio/morph_curve.hpp"
 #include <cstdint>
 #include <cstring>
 
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/text_encoding.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/text_encoding.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 void ModelInitMorphSlots(unsigned char* m);                  // 0x4A89B0
 
@@ -65,39 +65,39 @@ void ModelInitDefaults(unsigned char* m) {                   // 0x4A8DC0
     mdl::Mdl(m)->morphTrackActive = nullptr;
     mdl::Mdl(m)->displayKeyCursor = 0;
     mdl::Mdl(m)->displayTrackActive = 0;
-    mikudancestudio::mdl::Mdl(m)->displayState = 0;
-    mikudancestudio::mdl::Mdl(m)->selectedBone = 0;
+    mikumikustudio::mdl::Mdl(m)->displayState = 0;
+    mikumikustudio::mdl::Mdl(m)->selectedBone = 0;
     mdl::Mdl(m)->boneSelection = nullptr;
     mdl::Mdl(m)->bonePhysicsState = nullptr;
-    mikudancestudio::mdl::Mdl(m)->loadComplete = 1;
+    mikumikustudio::mdl::Mdl(m)->loadComplete = 1;
     for (std::int32_t& selectedMorph : mdl::Mdl(m)->selectedMorphs)
         selectedMorph = -1;
-    mikudancestudio::mdl::Mdl(m)->edgeScale = 1.0f;
+    mikumikustudio::mdl::Mdl(m)->edgeScale = 1.0f;
     mdl::BoneKeys(m) = nullptr;
     mdl::MorphKeys(m) = nullptr;
     mdl::DisplayKeys(m) = nullptr;
     mdl::BoneKeyIndices(m) = nullptr;
     mdl::MorphKeyIndices(m) = nullptr;
-    mikudancestudio::mdl::Mdl(m)->boneListPos = 0;
-    mikudancestudio::mdl::Mdl(m)->maxFrame = 0;
-    mikudancestudio::mdl::Mdl(m)->undoState[0] = 0;
-    mikudancestudio::mdl::Mdl(m)->undoState[1] = 0;
-    mikudancestudio::mdl::Mdl(m)->postLoadFlag2 = 0;
-    std::memset(mikudancestudio::mdl::Mdl(m)->undoRings, 0,
-                sizeof(mikudancestudio::mdl::Mdl(m)->undoRings));
+    mikumikustudio::mdl::Mdl(m)->boneListPos = 0;
+    mikumikustudio::mdl::Mdl(m)->maxFrame = 0;
+    mikumikustudio::mdl::Mdl(m)->undoState[0] = 0;
+    mikumikustudio::mdl::Mdl(m)->undoState[1] = 0;
+    mikumikustudio::mdl::Mdl(m)->postLoadFlag2 = 0;
+    std::memset(mikumikustudio::mdl::Mdl(m)->undoRings, 0,
+                sizeof(mikumikustudio::mdl::Mdl(m)->undoRings));
     // 10804 (0x348 bytes = the x86 ring size): the second undo ring, i.e.
     // undoRings[1] on both architectures.
     std::memset(&model.undoRings[1], 0, sizeof(model.undoRings[1]));
     mdl::Mdl(m)->undoDirty = 0;
     mdl::Mdl(m)->redoDirty = 0;
-    mikudancestudio::mdl::Mdl(m)->physicsFlags = 0;
+    mikumikustudio::mdl::Mdl(m)->physicsFlags = 0;
     mdl::Mdl(m)->rigidTable = nullptr;
-    mikudancestudio::mdl::Mdl(m)->rigidCount = 0;
-    mikudancestudio::mdl::Mdl(m)->jointCount = 0;
+    mikumikustudio::mdl::Mdl(m)->rigidCount = 0;
+    mikumikustudio::mdl::Mdl(m)->jointCount = 0;
     mdl::Mdl(m)->jointTable = nullptr;
     mdl::Mdl(m)->indexBuffer = nullptr;
-    mikudancestudio::mdl::Mdl(m)->toonFlag = 1;
-    mikudancestudio::mdl::Mdl(m)->toonShared = 0xFFFFFFFFu;
+    mikumikustudio::mdl::Mdl(m)->toonFlag = 1;
+    mikumikustudio::mdl::Mdl(m)->toonShared = 0xFFFFFFFFu;
     model.displayKeyframesPresent = 0;
     model.morph0Count = 0;
     model.uvMorphCounts = {};
@@ -106,21 +106,21 @@ void ModelInitDefaults(unsigned char* m) {                   // 0x4A8DC0
     model.boneMorphTable = nullptr;
     model.uvMorphTables = {};
     model.materialMorphPools = {};
-    mikudancestudio::mdl::Mdl(m)->matFloat2 = -999.0f;
-    mikudancestudio::mdl::Mdl(m)->boneCount = 0;
-    mikudancestudio::mdl::Mdl(m)->matColumn[0] = -999.0f;
-    mikudancestudio::mdl::Mdl(m)->morphCount = 0;
-    mikudancestudio::mdl::Mdl(m)->matColumn[3] = -999.0f;
-    mikudancestudio::mdl::Mdl(m)->ikChainCount = 0;
-    mikudancestudio::mdl::Mdl(m)->matColumn[6] = -999.0f;
-    mikudancestudio::mdl::Mdl(m)->displayRootBone = 0;
-    mikudancestudio::mdl::Mdl(m)->matColumn[9] = -999.0f;
-    mikudancestudio::mdl::Mdl(m)->pmxAdditionalUvCount = 0;
-    mikudancestudio::mdl::Mdl(m)->matColumn[12] = -999.0f;
+    mikumikustudio::mdl::Mdl(m)->matFloat2 = -999.0f;
+    mikumikustudio::mdl::Mdl(m)->boneCount = 0;
+    mikumikustudio::mdl::Mdl(m)->matColumn[0] = -999.0f;
+    mikumikustudio::mdl::Mdl(m)->morphCount = 0;
+    mikumikustudio::mdl::Mdl(m)->matColumn[3] = -999.0f;
+    mikumikustudio::mdl::Mdl(m)->ikChainCount = 0;
+    mikumikustudio::mdl::Mdl(m)->matColumn[6] = -999.0f;
+    mikumikustudio::mdl::Mdl(m)->displayRootBone = 0;
+    mikumikustudio::mdl::Mdl(m)->matColumn[9] = -999.0f;
+    mikumikustudio::mdl::Mdl(m)->pmxAdditionalUvCount = 0;
+    mikumikustudio::mdl::Mdl(m)->matColumn[12] = -999.0f;
     mdl::Mdl(m)->maxBoneLayer = 0;
-    mikudancestudio::mdl::Mdl(m)->matColumn[15] = -999.0f;
+    mikumikustudio::mdl::Mdl(m)->matColumn[15] = -999.0f;
     mdl::Mdl(m)->boneOrderTable = nullptr;
-    mikudancestudio::mdl::Mdl(m)->centerBone = 0;
+    mikumikustudio::mdl::Mdl(m)->centerBone = 0;
     mdl::Mdl(m)->frameRegistrationSelection = 3;
     for (auto& position : model.standardBonePositions)
         position[1] = -999.0f;
@@ -133,12 +133,12 @@ void ModelInitDefaults(unsigned char* m) {                   // 0x4A8DC0
     ModelInitMorphSlots(m);                                // 0x4A89B0
 
     mdl::PoseTraceFlag(m) = 0;
-    mikudancestudio::mdl::Mdl(m)->lightDir[0] = -1.0f;
-    mikudancestudio::mdl::Mdl(m)->lightDir[1] = 90.0f;
-    mikudancestudio::mdl::Mdl(m)->lightDir[2] = 10.0f;
+    mikumikustudio::mdl::Mdl(m)->lightDir[0] = -1.0f;
+    mikumikustudio::mdl::Mdl(m)->lightDir[1] = 90.0f;
+    mikumikustudio::mdl::Mdl(m)->lightDir[2] = 10.0f;
     mdl::Mdl(m)->legIkXOffset = 1.0f;
     mdl::PoseTraceBuffer(m) = nullptr;
-    mikudancestudio::mdl::Mdl(m)->matMisc = 0;
+    mikumikustudio::mdl::Mdl(m)->matMisc = 0;
 }
 
 void ModelInitMorphSlots(unsigned char* m) {               // 0x4A89B0
@@ -147,11 +147,11 @@ void ModelInitMorphSlots(unsigned char* m) {               // 0x4A89B0
             sample[0] = sample[2] = 0.0f;
             sample[1] = -999.0f;
         }
-    mikudancestudio::mdl::Mdl(m)->lightDir[0] = -1.0f;
+    mikumikustudio::mdl::Mdl(m)->lightDir[0] = -1.0f;
     mdl::PoseTraceFlag(m) = 0;  // 8616; x64 0x21E0
-    mikudancestudio::mdl::Mdl(m)->lightDir[1] = 90.0f;
-    mikudancestudio::mdl::Mdl(m)->lightDir[2] = 10.0f;
+    mikumikustudio::mdl::Mdl(m)->lightDir[1] = 90.0f;
+    mikumikustudio::mdl::Mdl(m)->lightDir[2] = 10.0f;
     mdl::Mdl(m)->legIkXOffset = 1.0f;
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

@@ -1,9 +1,9 @@
-#include "mikudancestudio/plugin_storage.hpp"
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/mmv4mms.hpp"
-#include "mikudancestudio/native_media.hpp"
-#include "mikudancestudio/native_mesh.hpp"
-#include "mikudancestudio/effect_api.hpp"
+#include "mikumikustudio/plugin_storage.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/mmv4mms.hpp"
+#include "mikumikustudio/native_media.hpp"
+#include "mikumikustudio/native_mesh.hpp"
+#include "mikumikustudio/effect_api.hpp"
 // ===========================================================================
 // VA 0x0044E540 - ResetAppState  (original: sub_44E540, 0x2AA0 bytes)
 // ===========================================================================
@@ -28,21 +28,21 @@
 #include <cstdlib>
 #include <cstring>
 
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/scene_ownership.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/ui_language.hpp"
-#include "mikudancestudio/ui_translation.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/scene_ownership.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/ui_language.hpp"
+#include "mikumikustudio/ui_translation.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 void ReloadModels(MMDApp* app);   // VA 0x0042E640 (timeline_advance.cpp), originally named Sub42E640
 // Frees the two 100000-slot scratch arrays of the physics-model editor.
 // The function is defined in src/window/physics_model_dialog.cpp.
 void ReleasePhysicsEditScratch(MMDApp* app);
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 // The original Help popup, located through a command of its own submenu instead
 // of a top-level index.  "About" carries command 201 in both menu templates of
@@ -566,4 +566,4 @@ void ResetAppState(MMDApp* app) {
     InvalidateRect(hwnd, nullptr, FALSE);
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

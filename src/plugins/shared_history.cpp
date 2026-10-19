@@ -1,7 +1,7 @@
 #include "shared_history.hpp"
 #include <limits>
 
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 struct SharedHistory::Node {
     std::shared_ptr<const EditRecord> plugins;
     std::shared_ptr<HistoryChange> native;

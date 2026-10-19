@@ -4,7 +4,7 @@
 // Scope of this file: the 11 functions 0x4C5150, 0x4C5260, 0x4C5E50,
 // 0x4C5E60, 0x4C5E70, 0x4C5E80, 0x4C5E90, 0x4C5EA0, 0x4C5EB0, 0x4C5ED0,
 // 0x4C5EE0.  Each was decompiled from the original MikuMikuDance v932
-// (32-bit x86 VC9, IDA Hex-Rays) and checked against the existing MikuDanceStudio
+// (32-bit x86 VC9, IDA Hex-Rays) and checked against the existing MikuMikuStudio
 // tree.  VERDICT: every one of the 11 is already fully covered - either as a
 // complete port or inlined into a port of its only caller(s).  No new bodies
 // are needed; this file records the evidence per VA so the coverage ledger
@@ -37,7 +37,7 @@
 //   operator new(68 * count) into this[1], copies each 72-byte source record
 //   (ID3DXBuffer via vtable+3 GetBufferPointer) down to 68 bytes, releases
 //   the buffer, returns 1.
-//   Port: mikudancestudio::InitAxisMesh at
+//   Port: mikumikustudio::InitAxisMesh at
 //   src/render/debug_geometry.cpp:253-290 (line 253: `bool InitAxisMesh`) -
 //   step-for-step identical, including the 544 mesh flags, 72->68 stride
 //   copy, the null-new early-out, and ReleaseCom of the material buffer.
@@ -51,7 +51,7 @@
 //     (*(device->vt + 196))(device, this[1] + 68*i)   // SetMaterial
 //     (*(device->vt + 260))(device, 0, 0)             // SetTexture(0, null)
 //     (*(mesh->vt + 12))(mesh = *this, i)             // DrawSubset(i)
-//   Port: mikudancestudio::(anon)::DrawAxisMesh at
+//   Port: mikumikustudio::(anon)::DrawAxisMesh at
 //   src/render/debug_geometry.cpp:192-203, called from the two ported
 //   callers at src/render/debug_geometry.cpp:400 (DrawAccessoryDebug =
 //   original 0x420F30, call site 0x4213FF) and :486 (DrawBoneOperationAxis
@@ -115,7 +115,7 @@
 // =========================================================================//
 
 // Intentionally no definitions.  See the ledger above.
-namespace mikudancestudio {
+namespace mikumikustudio {
 // All 11 in-scope VAs are covered by existing ports (see ledger above);
 // nothing to define.
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

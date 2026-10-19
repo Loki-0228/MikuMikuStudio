@@ -1,10 +1,10 @@
 #pragma once
-#include "mikudancestudio/build_profile.hpp"
+#include "mikumikustudio/build_profile.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "shared_history.hpp"
 
-namespace mikudancestudio { class MMDApp; }
-namespace mikudancestudio::plugins {
+namespace mikumikustudio { class MMDApp; }
+namespace mikumikustudio::plugins {
 // A synchronous internal type-1 edit. The app/scene owner must outlive the
 // scope AND journal. Its resident model resources are budgeted by the caller;
 // this participant charges only its new owned pose payload and bookkeeping.

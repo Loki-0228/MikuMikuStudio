@@ -6,7 +6,7 @@
 
 ## 构建与运行
 
-启用 `MIKUDANCESTUDIO_BUILD_EFFECT_TESTS`，显式构建 `frame_benchmark` 与 `frame_benchmark_mme`。后者输出到 `tests/mme-benchmark/Release/MikuMikuDance.exe`，以保留 MME 需要的程序名和导出。原生测试目录不得含 MME 的 `d3d9.dll`；MME 目录需用户现有的 `d3d9.dll`、`MMEffect.dll`、`MMHack.dll`、配置和 `Data` 资源。
+启用 `MIKUMIKUSTUDIO_BUILD_EFFECT_TESTS`，显式构建 `frame_benchmark` 与 `frame_benchmark_mme`。后者输出到 `tests/mme-benchmark/Release/MikuMikuDance.exe`，以保留 MME 需要的程序名和导出。原生测试目录不得含 MME 的 `d3d9.dll`；MME 目录需用户现有的 `d3d9.dll`、`MMEffect.dll`、`MMHack.dll`、配置和 `Data` 资源。
 
 以下命令在有桌面与硬件 D3D9 权限的终端执行，从可执行文件所在目录启动：
 
@@ -69,7 +69,7 @@ JSON 的 `mmv` 对象记录 `loaded`、`timings_available`、`sample_count`，�
 
 原始记录全部落在输出目录，保留失败样本：
 
-- `manifest.json` 记录创建时间、指标说明、协议、预热与采样参数、超时、用例清单、脚本自身 SHA-256、`OMP_*` 与 `MIKUDANCESTUDIO_*` 环境变量，以及每个 run 的命令、日志、JSON、退出码和 ms 结果。
+- `manifest.json` 记录创建时间、指标说明、协议、预热与采样参数、超时、用例清单、脚本自身 SHA-256、`OMP_*` 与 `MIKUMIKUSTUDIO_*` 环境变量，以及每个 run 的命令、日志、JSON、退出码和 ms 结果。
 - 每个 build 记录工作树路径、HEAD 提交、整树状态、`src`/`include`/`tests`/`CMakeLists.txt` 的状态、`CMakeCache.txt` 的全文与 SHA-256，以及运行时目录下每个文件的 SHA-256。
 - 两份素材目录逐文件记录 SHA-256，两侧使用逐字节相同的素材与 `Data` 拷贝。
 - 运行日志与逐次 JSON 按 `用例-轮次-序号-标签` 命名保留。

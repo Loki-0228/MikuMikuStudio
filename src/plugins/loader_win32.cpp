@@ -3,7 +3,7 @@
 #include <fstream>
 #include <set>
 
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 namespace {
 class Pe {
     std::string bytes_;

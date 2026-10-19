@@ -1,13 +1,13 @@
 // MAINTENANCE: regression-keep; purpose and cleanup conditions in tests/README.md.
-// Regressions for the PMM v2 tail extension codec ("MDSXPMM2" trailer), see
-// include/mikudancestudio/pmm_extension.hpp and src/io/pmm_extension.cpp.
+// Regressions for the PMM v2 tail extension codec ("MMSXPMM2" trailer), see
+// include/mikumikustudio/pmm_extension.hpp and src/io/pmm_extension.cpp.
 //
 // Pure CPU: no window, no GPU, no MMDApp, no other project module.  Every
 // temporary file is deleted by its TempFile guard on every path.  The tests
 // build the wire bytes and the CRC32 values with their own helpers, so the
 // on-disk layout (little-endian fields, no struct padding) is pinned
 // independently of the module under test.
-#include "mikudancestudio/pmm_extension.hpp"
+#include "mikumikustudio/pmm_extension.hpp"
 
 #include <fcntl.h>
 #include <io.h>
@@ -21,7 +21,7 @@
 #include <utility>
 #include <vector>
 
-namespace pmmx = mikudancestudio::pmm_extension;
+namespace pmmx = mikumikustudio::pmm_extension;
 
 namespace {
 
@@ -130,7 +130,7 @@ void PushRawRecord(std::vector<std::uint8_t>& stream, std::uint32_t keySize,
 std::vector<std::uint8_t> EncodeTrailer(std::uint64_t standardSize, std::uint64_t extensionSize,
                                         std::uint32_t crc, std::uint32_t reserved) {
     std::vector<std::uint8_t> trailer;
-    trailer.insert(trailer.end(), "MDSXPMM2", "MDSXPMM2" + 8);
+    trailer.insert(trailer.end(), "MMSXPMM2", "MMSXPMM2" + 8);
     PutU64(trailer, standardSize);
     PutU64(trailer, extensionSize);
     PutU32(trailer, crc);
@@ -247,6 +247,20 @@ private:
 // standardSize and restores the file position.
 void TestNoTrailerIsAbsent() {
     {
+        TempFile file("absent_mds_marker");
+        const auto stream = EncodeStream({MakeRecord("vendor.unknown", {1, 2, 3})});
+        auto bytes = ComposeFile(StandardBytes(64), stream, 64, stream.size(), RefCrc32(stream), 0);
+        bytes[bytes.size() - 31] = 'D';  // MDSXPMM2 with otherwise valid framing and CRC.
+        file.WriteWhole(bytes);
+        pmmx::Document out; out.records.push_back(MakeRecord("stale", {7}));
+        std::uint64_t standardSize = 0xDEAD;
+        file.Seek(9);
+        Check(pmmx::Read(file.fd(), out, standardSize) == pmmx::ReadResult::Absent && out.records.empty(),
+              "MDSXPMM2 is an unknown trailer and never decodes its records");
+        Check(standardSize == 0xDEAD && file.Tell() == 9,
+              "unknown MDS trailer preserves the ordinary reader boundary and file position");
+    }
+    {
         TempFile file("absent_plain");
         Check(file.ok(), "absent_plain: temp file created");
         file.WriteWhole(StandardBytes(64));
@@ -316,6 +330,8 @@ void TestRoundTripSettingsAndUnknown() {
           "the file grows by records plus the 32-byte trailer");
 
     const std::vector<std::uint8_t> written = file.ReadWhole();
+    Check(written.size() >= 32 && std::memcmp(written.data() + written.size() - 32, "MMSXPMM2", 8) == 0,
+          "Append writes the MMSXPMM2 trailer");
     Check(written.size() >= 64 &&
               std::memcmp(written.data(), prefix.data(), 64) == 0,
           "Append leaves the standard prefix untouched");

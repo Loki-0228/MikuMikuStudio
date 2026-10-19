@@ -1,6 +1,6 @@
-#include "mikudancestudio/bone_key_pool.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
 #include "../plugins/scene_resource_budget.hpp"
-#include "mikudancestudio/key_pool.hpp"
+#include "mikumikustudio/key_pool.hpp"
 
 #include <cassert>
 #include <algorithm>
@@ -12,7 +12,7 @@
 #include <utility>
 #include <vector>
 
-namespace mikudancestudio::mdl {
+namespace mikumikustudio::mdl {
 namespace {
 
 struct Entry {
@@ -737,4 +737,4 @@ void MeasureBoneKeyStorage(const ModelRecord& model, plugins::resource_budget::C
     if (morph != MorphRegistry().end()) out.Add(&*morph, 1, sizeof(*morph) + 4 * sizeof(void*));
 }
 #endif
-}  // namespace mikudancestudio::mdl
+}  // namespace mikumikustudio::mdl

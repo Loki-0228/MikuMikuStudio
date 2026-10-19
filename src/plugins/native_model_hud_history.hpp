@@ -1,9 +1,9 @@
 #pragma once
-#include "mikudancestudio/build_profile.hpp"
+#include "mikumikustudio/build_profile.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "shared_history.hpp"
-namespace mikudancestudio { class MMDApp; }
-namespace mikudancestudio::plugins {
+namespace mikumikustudio { class MMDApp; }
+namespace mikumikustudio::plugins {
 bool ModelHudOperation(MMDApp&,int operation) noexcept;
 int ModelHudOperationForMode(int mode) noexcept;
 MmsResult BeginModelHudGesture(MMDApp&,SharedHistory&,HWND owner,int operation) noexcept;

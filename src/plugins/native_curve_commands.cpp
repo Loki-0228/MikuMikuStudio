@@ -9,14 +9,14 @@
 #include "native_object_commands.hpp"
 #include "native_pose_scope.hpp"
 #include "history_runtime.hpp"
-#include "mikudancestudio/autosave.hpp"
-#include "mikudancestudio/bake_ui_lock.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/plugin_runtime.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/runtime_log.hpp"
+#include "mikumikustudio/autosave.hpp"
+#include "mikumikustudio/bake_ui_lock.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/plugin_runtime.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/runtime_log.hpp"
 
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 namespace {
 const wchar_t* Text(const MMDApp& app, const wchar_t* ja, const wchar_t* en, const wchar_t* zh) noexcept {
     return app.EnglishUI() == 0 ? ja : app.EnglishUI() == 1 ? en : zh;

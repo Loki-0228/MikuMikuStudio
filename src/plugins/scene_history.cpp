@@ -1,11 +1,11 @@
 #include "scene_history.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/plugin_scene.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/plugin_scene.hpp"
 #include <array>
 
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 namespace {
 enum class Field {
     ModelOrder, ModelOrder2, ModelParent, ModelBone, SelectorParent, SelectorBone,

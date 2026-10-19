@@ -1,5 +1,5 @@
 // ===========================================================================
-// MikuDanceStudio - runtime diagnostics and crash reports
+// MikuMikuStudio - runtime diagnostics and crash reports
 // ===========================================================================
 // Normal diagnostics stay in a bounded in-memory ring. Anything that would
 // kill the process (unhandled exception, std::terminate, abort, invalid
@@ -30,9 +30,9 @@
 #include <cwchar>
 #include <exception>
 
-#include "mikudancestudio/runtime_log.hpp"
+#include "mikumikustudio/runtime_log.hpp"
 
-namespace mikudancestudio::runtime_log {
+namespace mikumikustudio::runtime_log {
 namespace {
 
 // ---- in-memory record -----------------------------------------------------
@@ -455,8 +455,8 @@ int BuildReport(const char* reason, const EXCEPTION_RECORD* record,
     int used = 0;
     dialogText[0] = L'\0';
     AppendText(used,
-        L"MikuDanceStudio 遇到致命错误，点击\u201c确定\u201d后程序才会关闭。\r\n"
-        L"MikuDanceStudio hit a fatal error; the program closes only after OK.\r\n\r\n");
+        L"MikuMikuStudio 遇到致命错误，点击\u201c确定\u201d后程序才会关闭。\r\n"
+        L"MikuMikuStudio hit a fatal error; the program closes only after OK.\r\n\r\n");
     if (reason != nullptr && *reason != '\0')
         AppendText(used, L"原因 / reason: %ls\r\n",
                    Widen(reason, narrow, _countof(narrow)));
@@ -628,14 +628,14 @@ void ShowLastError(const char* reason, const EXCEPTION_RECORD* record,
     AppendText(used, L"\r\n(Ctrl+C 复制以上信息 / Ctrl+C copies this text)\r\n");
 
     const int result = MessageBoxW(nullptr, dialogText,
-        L"MikuDanceStudio - 致命错误 / Fatal error",
+        L"MikuMikuStudio - 致命错误 / Fatal error",
         MB_OK | MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST | MB_TASKMODAL);
     if (result == 0) {
         // The box could not be created (no interactive desktop, exhausted
         // desktop heap).  Retry with the minimal flag set instead of losing
         // the report and letting the process vanish.
         MessageBoxW(nullptr, dialogText,
-                    L"MikuDanceStudio - 致命错误 / Fatal error",
+                    L"MikuMikuStudio - 致命错误 / Fatal error",
                     MB_OK | MB_ICONERROR);
     }
 }
@@ -760,7 +760,7 @@ void SetPhase(const char* value) noexcept { phase.store(value, std::memory_order
 void TraceV(const char* format, va_list args) noexcept {
     // Opt-in outside fatal errors. The guards call
     // this so a field session can see what they rejected without a crash.
-    const char* path = std::getenv("MIKUDANCESTUDIO_TRACE_FILE");
+    const char* path = std::getenv("MIKUMIKUSTUDIO_TRACE_FILE");
     if (path == nullptr || path[0] == '\0')
         return;
     FILE* stream = std::fopen(path, "a");

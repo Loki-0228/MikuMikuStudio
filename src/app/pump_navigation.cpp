@@ -72,14 +72,14 @@
 #include <cmath>
 #include <cstdint>
 
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 #include "../plugins/native_pose_scope.hpp"
 #include "../plugins/native_viewport_history.hpp"
 #include "../plugins/native_history_commands.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 // Sibling-TU bodies, declared locally the key_ladder.cpp way (kept out of
 // ported_funcs.hpp).
@@ -552,4 +552,4 @@ void ConsumeNumpadViewPresets(MMDApp* app) {
     }
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

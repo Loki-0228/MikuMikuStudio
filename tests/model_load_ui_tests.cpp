@@ -2,9 +2,9 @@
 // model files, D3D device, application host, or message loop are required.
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include "mikudancestudio/model_load_ui.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/model_load_ui.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <cwchar>
@@ -12,7 +12,7 @@
 #include <stdexcept>
 #include <thread>
 
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 namespace {
 unsigned checks = 0;
 void Check(bool condition, const char* message) {

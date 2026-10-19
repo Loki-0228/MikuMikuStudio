@@ -4,7 +4,7 @@
 #endif
 #include <Windows.h>
 #include <CommCtrl.h>
-#include "mikudancestudio/ui_control_layout.hpp"
+#include "mikumikustudio/ui_control_layout.hpp"
 #include <array>
 #include <cstdio>
 #include <stdexcept>
@@ -16,7 +16,7 @@
 // Its child paint procedure deliberately uses BeginPaint: a standalone erase
 // cannot pass merely because a custom renderer ignores WM_ERASEBKGND.
 namespace {
-namespace layout = mikudancestudio::ui;
+namespace layout = mikumikustudio::ui;
 struct DpiApi {
     using Set = HANDLE(WINAPI*)(HANDLE);
     using Thread = HANDLE(WINAPI*)();
@@ -825,7 +825,7 @@ void ForeignDpiCaller(Fixture& fixture, const DpiApi& api, bool createdUnaware) 
     fixture.Reset(); fixture.phase = Phase::Collect;
     layout::LayoutBatch batch;
     {
-        mikudancestudio::WindowDpiScope gathering(fixture.Parent());
+        mikumikustudio::WindowDpiScope gathering(fixture.Parent());
         layout::MoveLayoutWindow(a.handle, 100, 330, 80, 24, false);
         layout::MoveLayoutWindow(b.handle, 260, 330, 90, 24, false);
         fixture.NoEarlyMessages();

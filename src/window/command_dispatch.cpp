@@ -1,17 +1,17 @@
-#include "mikudancestudio/display_capacity.hpp"
-#include "mikudancestudio/autosave.hpp"
-#include "mikudancestudio/viewport_render_scale.hpp"
-#include "mikudancestudio/force_paste.hpp"
-#include "mikudancestudio/image_sequence_export.hpp"
-#include "mikudancestudio/plugin_menu.hpp"
-#include "mikudancestudio/plugin_runtime.hpp"
-#include "mikudancestudio/ui_translation.hpp"
-#include "mikudancestudio/native_mesh.hpp"
-#include "mikudancestudio/animation_curve_editor.hpp"
-#include "mikudancestudio/frame_rate_correction.hpp"
-#include "mikudancestudio/sequence_scatter.hpp"
-#include "mikudancestudio/system_settings_ui.hpp"
-#include "mikudancestudio/native_media.hpp"
+#include "mikumikustudio/display_capacity.hpp"
+#include "mikumikustudio/autosave.hpp"
+#include "mikumikustudio/viewport_render_scale.hpp"
+#include "mikumikustudio/force_paste.hpp"
+#include "mikumikustudio/image_sequence_export.hpp"
+#include "mikumikustudio/plugin_menu.hpp"
+#include "mikumikustudio/plugin_runtime.hpp"
+#include "mikumikustudio/ui_translation.hpp"
+#include "mikumikustudio/native_mesh.hpp"
+#include "mikumikustudio/animation_curve_editor.hpp"
+#include "mikumikustudio/frame_rate_correction.hpp"
+#include "mikumikustudio/sequence_scatter.hpp"
+#include "mikumikustudio/system_settings_ui.hpp"
+#include "mikumikustudio/native_media.hpp"
 // ===========================================================================
 // VA 0x0047E8A0 - CommandDispatch  (original: sub_47E8A0, 0x10A6A = 68KB)
 // ===========================================================================
@@ -51,22 +51,22 @@
 #include <cmath>
 #include <cstring>
 
-#include "mikudancestudio/accessory_layout.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/bone_combo.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/runtime_log.hpp"
-#include "mikudancestudio/skinning_menu.hpp"
-#include "mikudancestudio/physics_bake.hpp"
-#include "mikudancestudio/ui_language.hpp"
+#include "mikumikustudio/accessory_layout.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/bone_combo.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/runtime_log.hpp"
+#include "mikumikustudio/skinning_menu.hpp"
+#include "mikumikustudio/physics_bake.hpp"
+#include "mikumikustudio/ui_language.hpp"
 #include "viewport_corner_menu.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "../plugins/native_global_commands.hpp"
 #endif
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 // Family entry points (defined in the per-family TUs listed above).
 void CmdFileMenu(MMDApp* app, HWND hwnd, std::uint16_t id, std::uint16_t notify);
@@ -130,8 +130,8 @@ void MorphRowSelect(MMDApp* app, HWND hwnd, HWND combo, std::size_t lane,
     // display-frame row sweep (0x48ec01..0x48ec41)
     mdl::ModelRecord* live = mdl::Mdl(app->SelectedModel());
     mdl::FrameGroup* groups = live->displayFrames;
-    for (std::uint32_t i = 0; i < mikudancestudio::mdl::FacialFrameCount(*live); ++i) {
-        groups[i].selected = (mikudancestudio::mdl::FrameTargetIndex(groups[i]) == index) ? 1 : 0;
+    for (std::uint32_t i = 0; i < mikumikustudio::mdl::FacialFrameCount(*live); ++i) {
+        groups[i].selected = (mikumikustudio::mdl::FrameTargetIndex(groups[i]) == index) ? 1 : 0;
     }
     PostLanguageSweep(app);   // 0x42F1E0 (x64 sub_7FF7CB47F7F0)
     PostLanguageSweep2(app);  // 0x40D070 (x64 sub_7FF7CB440CE0)
@@ -445,9 +445,9 @@ void CommandDispatch(HWND ctrl, WPARAM wParam) {
         char text[256];
         sprintf_s(text, 256,
                   s.EnglishUI() != 0
-                      ? "MikuDanceStudio Ver.%4.2f\n  (DirectX9 Version)\n\n"
+                      ? "MikuMikuStudio Ver.%4.2f\n  (DirectX9 Version)\n\n"
                         "programmed by Yu Higuchi"
-                      : "MikuDanceStudio Ver.%4.2f\n  (DirectX9 Version)\n\n"
+                      : "MikuMikuStudio Ver.%4.2f\n  (DirectX9 Version)\n\n"
                         "programmed by \x94\xF3\x8C\xFB\x97\x44",
                   9.32);
         const HWND owner = s.state.floatingWindow != 0
@@ -598,4 +598,4 @@ void CommandDispatch(HWND ctrl, WPARAM wParam) {
     RefreshForcePasteControls(app);
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

@@ -1,12 +1,12 @@
 #pragma once
 #include "scene_history.hpp"
 #include "scene_resource_budget.hpp"
-#include "mikudancestudio/accessory_import.hpp"
-#include "mikudancestudio/model_import.hpp"
-#include "mikudancestudio/import_texture_cache.hpp"
-#include "mikudancestudio/history_physics.hpp"
+#include "mikumikustudio/accessory_import.hpp"
+#include "mikumikustudio/model_import.hpp"
+#include "mikumikustudio/import_texture_cache.hpp"
+#include "mikumikustudio/history_physics.hpp"
 
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 // One shared owner per native object. The active scene owns the live object;
 // this holder owns it while absent. Callers must use this lifecycle for every
 // removal and release all holders before destroying the app/physics world.

@@ -1,5 +1,5 @@
 #pragma once
-namespace mikudancestudio::antialias {
+namespace mikumikustudio::antialias {
 inline constexpr char kOutlineCoverageShader[] = R"hlsl(
 row_major float4x4 transform : register(c0);
 float4 viewport : register(c4); // half viewport dimensions

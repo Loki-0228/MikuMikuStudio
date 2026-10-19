@@ -1,12 +1,12 @@
-#include "mikudancestudio/frame_limits.hpp"
+#include "mikumikustudio/frame_limits.hpp"
 // Disk-backed cache of baked deformed meshes.  See the header for the archive
 // naming contract, the PMM record layout and the file-lifetime rules.
 #define NOMINMAX
 
-#include "mikudancestudio/mesh_bake_cache.hpp"
+#include "mikumikustudio/mesh_bake_cache.hpp"
 #include "../plugins/scene_resource_budget.hpp"
 
-#include "mikudancestudio/mmd_app.hpp"
+#include "mikumikustudio/mmd_app.hpp"
 
 #include <Alembic/AbcCoreOgawa/All.h>
 #include <Alembic/AbcGeom/All.h>
@@ -26,7 +26,7 @@
 #include <system_error>
 #include <utility>
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace mesh_bake_cache {
 namespace {
 
@@ -39,8 +39,8 @@ constexpr std::uint8_t kKindModel = 0;
 constexpr std::uint8_t kKindAccessory = 1;
 constexpr int kAccessorySlotCount = 255;
 
-// 'M','D','S','C' as a little-endian 32-bit word.
-constexpr std::uint32_t kRecordMagic = 0x4353444Du;
+// 'M','M','S','C' as a little-endian 32-bit word.
+constexpr std::uint32_t kRecordMagic = 0x43534D4Du;
 constexpr std::uint32_t kRecordVersion = 1;
 // The version 2 layout repeats version 1 and appends the time scale of every
 // entry.  It is only written once an entry carries a scale other than 1.
@@ -52,9 +52,9 @@ constexpr std::size_t kMaxRelativePathBytes = 512;
 constexpr std::size_t kMaxSidecarStemBytes = 64;
 constexpr std::size_t kHashChunkBytes = 64 * 1024;
 // The timeline works in whole frames at a fixed 30 fps rate, and MMD accepts no
-// frame beyond mikudancestudio::frame_limits::maximum.  A retime may not push a native range past it.
+// frame beyond mikumikustudio::frame_limits::maximum.  A retime may not push a native range past it.
 constexpr double kBakeFrameRate = 30.0;
-constexpr double kMaxTimelineFrames = double(mikudancestudio::frame_limits::maximum);
+constexpr double kMaxTimelineFrames = double(mikumikustudio::frame_limits::maximum);
 
 std::string Utf8(const std::filesystem::path& path) { return path.u8string(); }
 
@@ -440,7 +440,7 @@ std::filesystem::path SharedTempRoot() {
     std::error_code ignored;
     auto base = std::filesystem::temp_directory_path(ignored);
     if (ignored || base.empty()) base = std::filesystem::current_path(ignored);
-    return base / "MikuDanceStudio" / "mesh_bake_cache";
+    return base / "MikuMikuStudio" / "mesh_bake_cache";
 }
 
 // Creates (once) the directory this process owns for its own copies: an
@@ -1455,4 +1455,4 @@ bool CommitTimeScale(const TimeScalePlanPtr& plan, std::string& error,
 }
 
 }  // namespace mesh_bake_cache
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

@@ -1,8 +1,8 @@
 // Include after native_bone_curve_write_checks.inc and history_physics_checks.inc.
 // Call NativePhysicsToggleChecks(). No renderer, file import or world step.
 #include "../src/plugins/native_physics_toggle.hpp"
-#include "mikudancestudio/d3d_wrapper.hpp"
-namespace mikudancestudio { void ApplyPhysicsOnOff(int); }
+#include "mikumikustudio/d3d_wrapper.hpp"
+namespace mikumikustudio { void ApplyPhysicsOnOff(int); }
 namespace {
 struct PhysicsToggleFixture : BoneRegistrationFixture {
     std::unique_ptr<D3DRenderer> renderer = std::make_unique<D3DRenderer>();

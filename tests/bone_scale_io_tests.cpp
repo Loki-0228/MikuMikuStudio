@@ -1,6 +1,6 @@
 // MAINTENANCE: regression-keep; native bone-scaling persistence codec
-// (include/mikudancestudio/bone_scale_io.hpp, src/io/bone_scale_io.cpp):
-// the PMM v2 "org.mikudancestudio.model.<slot>.boneScale.v1" record payload,
+// (include/mikumikustudio/bone_scale_io.hpp, src/io/bone_scale_io.cpp):
+// the PMM v2 "org.mikumikustudio.model.<slot>.boneScale.v1" record payload,
 // the single-file VMD tail extension and imported-key matcher.
 //
 // The codec sections exercise only the public codec API.  The VPD section at
@@ -31,17 +31,18 @@
 #include <string>
 #include <vector>
 
-#include "mikudancestudio/bone_scale_io.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/undo_storage.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/vpd_scale_io.hpp"
+#include "mikumikustudio/bone_scale_io.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/undo_storage.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/vpd_scale_io.hpp"
+#include "mikumikustudio/extended_names.hpp"
 
-namespace bs = mikudancestudio::bone_scale;
-namespace bsio = mikudancestudio::bone_scale_io;
-namespace mdl = mikudancestudio::mdl;
-namespace vpdio = mikudancestudio::vpd_scale_io;
+namespace bs = mikumikustudio::bone_scale;
+namespace bsio = mikumikustudio::bone_scale_io;
+namespace mdl = mikumikustudio::mdl;
+namespace vpdio = mikumikustudio::vpd_scale_io;
 
 namespace {
 
@@ -172,7 +173,7 @@ std::vector<std::uint8_t> HandExtension(
     const std::vector<const char*>& names, bool goodCrc = true,
     const std::vector<bs::Curve>& curves = {}) {
     std::vector<std::uint8_t> body;
-    const char magic[8] = {'M', 'D', 'S', 'X', 'M', 'D', 'S', 'X'};
+    const char magic[8] = {'M', 'M', 'S', 'X', 'M', 'M', 'S', 'X'};
     body.insert(body.end(), magic, magic + 8);
     PutU32(body, version);
     PutU32(body, 0);
@@ -274,33 +275,33 @@ bsio::Samples SampleBlock() {
 }
 
 void PmmKeyParsing() {
-    Check(bsio::PmmKey(3) == "org.mikudancestudio.model.3.boneScale.v1",
-          "PMM record key follows the existing org.mikudancestudio namespace");
+    Check(bsio::PmmKey(3) == "org.mikumikustudio.model.3.boneScale.v1",
+          "PMM record key follows the existing org.mikumikustudio namespace");
     Check(bsio::PmmKey(255, 2) ==
-              "org.mikudancestudio.model.255.boneScale.v2" &&
+              "org.mikumikustudio.model.255.boneScale.v2" &&
               bsio::PmmKey(255, bsio::kPmmVersionV1) == bsio::PmmKey(255),
           "the record key names the layout version it holds");
     int slot = -1;
     std::string version;
-    Check(bsio::ParsePmmKey("org.mikudancestudio.model.3.boneScale.v1", slot,
+    Check(bsio::ParsePmmKey("org.mikumikustudio.model.3.boneScale.v1", slot,
                             version) &&
               slot == 3 && version == "v1",
           "PMM record key parses back to slot and version");
-    Check(bsio::ParsePmmKey("org.mikudancestudio.model.255.boneScale.v2", slot,
+    Check(bsio::ParsePmmKey("org.mikumikustudio.model.255.boneScale.v2", slot,
                             version) &&
               slot == 255 && version == "v2",
           "the version 2 record suffix parses back to slot and version");
-    Check(bsio::ParsePmmKey("org.mikudancestudio.model.9.boneScale.v9", slot,
+    Check(bsio::ParsePmmKey("org.mikumikustudio.model.9.boneScale.v9", slot,
                             version) &&
               slot == 9 && version == "v9",
           "an unknown version suffix stays its own version and is never read as v2");
-    Check(!bsio::ParsePmmKey("org.mikudancestudio.model.3.boneScale.", slot,
+    Check(!bsio::ParsePmmKey("org.mikumikustudio.model.3.boneScale.", slot,
                              version),
           "a missing version suffix is not a bone-scale record");
-    Check(!bsio::ParsePmmKey("org.mikudancestudio.model.x.boneScale.v1", slot,
+    Check(!bsio::ParsePmmKey("org.mikumikustudio.model.x.boneScale.v1", slot,
                              version),
           "a non-numeric slot is not a bone-scale record");
-    Check(!bsio::ParsePmmKey("org.mikudancestudio.view.transparent_sort",
+    Check(!bsio::ParsePmmKey("org.mikumikustudio.view.transparent_sort",
                              slot, version),
           "unrelated PMM keys are left to their own reader");
     Check(!bsio::ParsePmmKey("mds.viewport.zoom", slot, version),
@@ -563,6 +564,8 @@ void ExtensionCodecRoundTrip() {
     const std::vector<std::uint8_t> bytes = bsio::EncodeExtension(source);
     Check(bytes.size() == 32 + 2 * 55 + 4,
           "extension layout is a 32-byte header, 55-byte entries and a CRC32");
+    Check(std::memcmp(bytes.data(), "MMSXMMSX", 8) == 0,
+          "bone-scale payload writes MMSXMMSX");
     bsio::VmdExtension decoded;
     Check(bsio::DecodeExtension(bytes.data(), bytes.size(), decoded) ==
               bsio::ExtensionDecode::Ok,
@@ -584,6 +587,12 @@ void ExtensionCodecRejects() {
     const bsio::VmdExtension source = ExtensionBlock();
     const std::vector<std::uint8_t> good = bsio::EncodeExtension(source);
     bsio::VmdExtension decoded;
+
+    auto oldMagic = good;
+    std::memcpy(oldMagic.data(), "MDSXMDSX", 8);
+    oldMagic.resize(oldMagic.size() - 4); PutU32(oldMagic, RefCrc32(oldMagic));
+    Check(bsio::DecodeExtension(oldMagic.data(), oldMagic.size(), decoded) == bsio::ExtensionDecode::BadMagic,
+          "MDSXMDSX is refused even with a valid payload checksum");
 
     std::vector<std::uint8_t> truncated(good.begin(), good.end() - 10);
     Check(bsio::DecodeExtension(truncated.data(), truncated.size(), decoded) ==
@@ -762,6 +771,17 @@ void ExtensionImmutableSnapshot() {
           "write actual encoded scale tail for immutable-reader equivalence");
     Check(_close(fd) == 0, "close immutable scale extension fixture");
     const auto complete = file.Read();
+    Check(complete.size() >= 16 && std::memcmp(complete.data() + complete.size() - 8, "MMSXVMDX", 8) == 0,
+          "bone-scale file writer emits MMSXVMDX");
+    auto oldFooter = complete; oldFooter[oldFooter.size() - 7] = 'D';
+    bsio::VmdExtension unknown;
+    Check(bsio::LoadVmdExtensionBytes(oldFooter.data(), oldFooter.size(), unknown,
+                                     static_cast<std::int64_t>(kFakeVmd.size())) == bsio::ExtensionLoad::Absent,
+          "MDSXVMDX is an unknown optional tail in the immutable reader");
+    Check(file.Write(oldFooter) && bsio::LoadVmdExtension(file.path(), unknown,
+                                     static_cast<std::int64_t>(kFakeVmd.size())) == bsio::ExtensionLoad::Absent,
+          "MDSXVMDX is an unknown optional tail in the file reader");
+    Check(file.Write(complete), "restore MMS tail for immutable-reader equivalence");
     bsio::VmdExtension bytesResult, pathResult;
     Check(bsio::LoadVmdExtensionBytes(complete.data(), complete.size(), bytesResult,
                                      static_cast<std::int64_t>(kFakeVmd.size())) == bsio::ExtensionLoad::Loaded,
@@ -816,6 +836,25 @@ void ExtensionImmutableSnapshot() {
               bsio::LoadVmdExtensionBytes(complete.data(), complete.size(), bytesResult,
                                          static_cast<std::int64_t>(kFakeVmd.size())) == bsio::ExtensionLoad::Loaded,
           "immutable scale reader never reopens the original source path");
+}
+
+void UnicodeMotionMarker() {
+    namespace names = mikumikustudio::extended_names;
+    names::MotionNames source;
+    source.model = L"\u30e2\u30c7\u30eb"; source.bones = {L"\u9aa8"}; source.morphs = {L"\u8868\u60c5"};
+    source.boneOwners = {0}; source.morphOwners = {0}; source.ikOwners = {0, UINT32_MAX};
+    const auto block = names::EncodeMotion(source, kFakeVmd.size(), RefCrc32(kFakeVmd));
+    Check(block.size() >= 8 && std::memcmp(block.data(), "MMSNAME1", 8) == 0,
+          "Unicode motion dictionary writes MMSNAME1");
+    auto file = kFakeVmd; file.insert(file.end(), block.begin(), block.end());
+    names::MotionNames decoded;
+    Check(names::DecodeMotion(file.data(), file.size(), kFakeVmd.size(), decoded) == block.size() &&
+              decoded.model == source.model && decoded.bones == source.bones && decoded.morphs == source.morphs &&
+              decoded.boneOwners == source.boneOwners && decoded.morphOwners == source.morphOwners && decoded.ikOwners == source.ikOwners,
+          "MMSNAME1 preserves Unicode names and source-owner indices");
+    file[kFakeVmd.size() + 1] = 'D'; decoded.model = L"sentinel";
+    Check(names::DecodeMotion(file.data(), file.size(), kFakeVmd.size(), decoded) == 0 && decoded.model == L"sentinel",
+          "MDSNAME1 remains an unknown block without publishing its dictionary");
 }
 
 void ExtensionMatchingAndOffset() {
@@ -1073,7 +1112,7 @@ std::vector<std::uint8_t> TailFile(const std::vector<std::uint8_t>& payload) {
     auto bytes=kFakeVmd;
     bytes.insert(bytes.end(),payload.begin(),payload.end());
     PutU64(bytes,payload.size());
-    const char footer[]="MDSXVMDX";
+    const char footer[]="MMSXVMDX";
     bytes.insert(bytes.end(),footer,footer+8);return bytes;
 }
 void ExtensionFileLifecycle() {
@@ -1176,8 +1215,8 @@ struct Fixture {
         bs::Forget(data());
         for (auto& ring : record->undoRings)
             for (auto& slot : ring.slots) {
-                mikudancestudio::undo_storage::Free(slot.bonePose);
-                mikudancestudio::undo_storage::Free(slot.auxiliaryPose);
+                mikumikustudio::undo_storage::Free(slot.bonePose);
+                mikumikustudio::undo_storage::Free(slot.auxiliaryPose);
             }
     }
 };
@@ -1192,14 +1231,14 @@ void VpdPoseFileRoundTrip() {
     const bs::Matrix identity;
 
     Fixture f(6);
-    mikudancestudio::MMDApp app;
+    mikumikustudio::MMDApp app;
     app.ClearModelSlots();
     app.SetSelectedModelSlot(0);
     app.SelectedModel() = f.data();
     app.PlaybackPhysicsMode() = 0;
     app.Hwnd() = nullptr;
-    mikudancestudio::MMDApp* previousBlock = mikudancestudio::g_Block;
-    mikudancestudio::g_Block = &app;
+    mikumikustudio::MMDApp* previousBlock = mikumikustudio::g_Block;
+    mikumikustudio::g_Block = &app;
     TempMotion file;
     std::int32_t frame = 0;
 
@@ -1209,7 +1248,7 @@ void VpdPoseFileRoundTrip() {
     Check(bs::SetPose(f.data(), 2, wide), "install a second non-unit scale");
     Check(bs::SetPose(f.data(), 4, outside),
           "install a scale on a bone outside the pose");
-    mikudancestudio::SaveVpdFile(file.path().c_str());
+    mikumikustudio::SaveVpdFile(file.path().c_str());
     vpdio::Extension tail;
     Check(vpdio::LoadTail(file.path(), 4, tail) == vpdio::TailLoad::Loaded &&
               tail.entries.size() == 2,
@@ -1229,7 +1268,7 @@ void VpdPoseFileRoundTrip() {
     f.selected[5] = 0;
     f.dirty[5] = 1;
 
-    mikudancestudio::LoadVpdFile(file.path().c_str());
+    mikumikustudio::LoadVpdFile(file.path().c_str());
 
     Check(SameMatrix(bs::Pose(f.data(), 1), shear),
           "the nine-component scale restores exactly");
@@ -1257,7 +1296,7 @@ void VpdPoseFileRoundTrip() {
           "the undo ring holds the pose entry the load registered");
 
     // ---- one undo restores the pre-load scale state ----------------------
-    mikudancestudio::UndoModelEdit(f.data(), &frame);
+    mikumikustudio::UndoModelEdit(f.data(), &frame);
     Check(SameMatrix(bs::Pose(f.data(), 0), residueFour),
           "one undo restores the pre-load scale of a pose bone");
     Check(SameMatrix(bs::Pose(f.data(), 1), residueFive),
@@ -1271,7 +1310,7 @@ void VpdPoseFileRoundTrip() {
     Fixture plain(6);
     app.SelectedModel() = plain.data();
     for (int i = 0; i < 4; ++i) plain.selected[i] = 1;
-    mikudancestudio::SaveVpdFile(file.path().c_str());
+    mikumikustudio::SaveVpdFile(file.path().c_str());
     Check(vpdio::LoadTail(file.path(), 4, tail) == vpdio::TailLoad::Absent,
           "a save without scale writes an ordinary VPD with no tail");
     Check(bs::SetPose(plain.data(), 0, residueFour),
@@ -1280,7 +1319,7 @@ void VpdPoseFileRoundTrip() {
           "leave a scaled pose bone behind");
     Check(bs::SetPose(plain.data(), 4, outside),
           "leave a scale outside the old-format pose");
-    mikudancestudio::LoadVpdFile(file.path().c_str());
+    mikumikustudio::LoadVpdFile(file.path().c_str());
     Check(SameMatrix(bs::Pose(plain.data(), 0), identity),
           "an old VPD restores identity on a pose bone");
     Check(SameMatrix(bs::Pose(plain.data(), 1), identity),
@@ -1291,7 +1330,7 @@ void VpdPoseFileRoundTrip() {
         Check(plain.selected[i] == 1 && plain.dirty[i] == 1,
               "an old VPD keeps the selection and registration semantics");
 
-    mikudancestudio::g_Block = previousBlock;
+    mikumikustudio::g_Block = previousBlock;
     std::printf("vpd-roundtrip: SaveVpdFile/LoadVpdFile scale semantics pinned\n");
 }
 
@@ -1306,6 +1345,7 @@ int main() {
     ExtensionCodecRejects();
     ExtensionCurveVersioning();
     ExtensionImmutableSnapshot();
+    UnicodeMotionMarker();
     ExtensionMatchingAndOffset();
     CurveLossBoundary();
     ExtensionFileLifecycle();

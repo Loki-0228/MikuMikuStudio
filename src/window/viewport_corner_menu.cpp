@@ -6,12 +6,12 @@
 #define NOMINMAX
 #include <Windows.h>
 
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ui_language.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ui_language.hpp"
 #include "viewport_corner_menu.hpp"
-#include "mikudancestudio/viewport_corner_settings.hpp"
+#include "mikumikustudio/viewport_corner_settings.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace viewport_corner_menu {
 namespace {
 
@@ -148,4 +148,4 @@ bool HandleCommand(MMDApp* app, unsigned command) {
 }
 
 }  // namespace viewport_corner_menu
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

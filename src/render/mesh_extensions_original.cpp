@@ -1,14 +1,14 @@
-#include "mikudancestudio/build_profile.hpp"
-#include "mikudancestudio/accessory_layout.hpp"
-#include "mikudancestudio/alembic_export.hpp"
-#include "mikudancestudio/deformed_mesh_capture.hpp"
-#include "mikudancestudio/mesh_bake_cache.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/native_mesh.hpp"
+#include "mikumikustudio/build_profile.hpp"
+#include "mikumikustudio/accessory_layout.hpp"
+#include "mikumikustudio/alembic_export.hpp"
+#include "mikumikustudio/deformed_mesh_capture.hpp"
+#include "mikumikustudio/mesh_bake_cache.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/native_mesh.hpp"
 
 static_assert(MMD_ORIGINAL_PROFILE, "The original mesh provider belongs to the mmd932 profile");
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 constexpr char kUnavailable[] = "Mesh capture, Alembic and mesh baking are unavailable in the MMD 9.32 profile";
 

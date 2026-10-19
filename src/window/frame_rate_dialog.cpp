@@ -45,8 +45,8 @@
 #define NOMINMAX
 #include <Windows.h>
 
-#include "mikudancestudio/frame_rate_correction.hpp"
-#include "mikudancestudio/mmd_app.hpp"
+#include "mikumikustudio/frame_rate_correction.hpp"
+#include "mikumikustudio/mmd_app.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -58,7 +58,7 @@
 #include <string>
 #include <vector>
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace frame_rate_correction {
 namespace {
 
@@ -218,7 +218,7 @@ constexpr int kFieldTextMargin = 4;
 constexpr int kFieldPad = 2 * (kClientEdge + kFieldTextMargin) + 12;
 constexpr int kLabelPad = 8;
 
-const wchar_t kClassName[] = L"MikuDanceStudioFrameRateCorrection";
+const wchar_t kClassName[] = L"MikuMikuStudioFrameRateCorrection";
 
 // ---------------------------------------------------------------------------
 // Fonts: the port picks the panel family by UI language (see
@@ -1156,4 +1156,4 @@ bool HandleCommand(MMDApp* app, unsigned id) {
 }
 
 }  // namespace frame_rate_correction
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

@@ -1,9 +1,9 @@
 // Include after slider_paint_trace_host_checks.inc in the disposable full host.
 // Diagnostic only: do not substitute this supplied-HDC paint for production paint.
 #include "../slider_paint_trace.hpp"
-#include "mikudancestudio/build_profile.hpp"
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/mmd_app.hpp"
+#include "mikumikustudio/build_profile.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/mmd_app.hpp"
 #include <array>
 #include <cstring>
 #include <filesystem>
@@ -14,26 +14,26 @@
 namespace light_slider_native_surface_checks {
 namespace trace = slider_paint_trace;
 namespace prior = slider_paint_trace_host_checks;
-using mikudancestudio::MMDApp;
+using mikumikustudio::MMDApp;
 constexpr std::array<int, 6> kIds{455, 456, 457, 458, 459, 460};
 constexpr std::array<std::uint32_t, 2> kMarkers{0x00e71195u, 0x000ddf61u};
 
 struct Keys {
     MMDApp& app;
     const int frame;
-    const mikudancestudio::mdl::CameraKey* camera;
-    const mikudancestudio::mdl::LightKey* light;
+    const mikumikustudio::mdl::CameraKey* camera;
+    const mikumikustudio::mdl::LightKey* light;
     const std::uint64_t cameraIdentity, lightIdentity;
-    const std::vector<mikudancestudio::mdl::CameraKey> cameraBytes;
-    const std::vector<mikudancestudio::mdl::LightKey> lightBytes;
+    const std::vector<mikumikustudio::mdl::CameraKey> cameraBytes;
+    const std::vector<mikumikustudio::mdl::LightKey> lightBytes;
     explicit Keys(MMDApp& value) : app(value), frame(value.CurrentFrame()),
         camera(value.CameraKeys()), light(value.LightKeys()),
-        cameraIdentity(mikudancestudio::mdl::KeyPoolIdentity(camera)),
-        lightIdentity(mikudancestudio::mdl::KeyPoolIdentity(light)),
-        cameraBytes(camera, camera + mikudancestudio::mdl::KeyPoolCapacity(camera)),
-        lightBytes(light, light + mikudancestudio::mdl::KeyPoolCapacity(light)) {}
+        cameraIdentity(mikumikustudio::mdl::KeyPoolIdentity(camera)),
+        lightIdentity(mikumikustudio::mdl::KeyPoolIdentity(light)),
+        cameraBytes(camera, camera + mikumikustudio::mdl::KeyPoolCapacity(camera)),
+        lightBytes(light, light + mikumikustudio::mdl::KeyPoolCapacity(light)) {}
     void Check() const {
-        using namespace mikudancestudio::mdl;
+        using namespace mikumikustudio::mdl;
         trace::Require(app.CurrentFrame() == frame && app.CameraKeys() == camera && app.LightKeys() == light &&
             KeyPoolIdentity(camera) == cameraIdentity && KeyPoolIdentity(light) == lightIdentity &&
             KeyPoolCapacity(camera) == cameraBytes.size() && KeyPoolCapacity(light) == lightBytes.size() &&
@@ -212,7 +212,7 @@ static void Probe(Session& session, const Keys& keys, HWND window, const char* p
 }
 
 static void Run(MMDApp* app, const std::filesystem::path& outputDirectory) {
-    trace::Require(app && app == mikudancestudio::g_Block && app->MainWindow() && app->OriginalTrackbarProc() &&
+    trace::Require(app && app == mikumikustudio::g_Block && app->MainWindow() && app->OriginalTrackbarProc() &&
         app->CameraKeys() && app->LightKeys() && !app->PlaybackActive() && !app->FrameStepPlayback() && !GetCapture(),
         "native light surface diagnosis requires an idle disposable full MMS host with no capture");
     const auto output = outputDirectory / "native-surface";

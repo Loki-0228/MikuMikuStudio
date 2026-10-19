@@ -1,4 +1,4 @@
-// MAINTENANCE: standalone CPU coverage for include/mikudancestudio/
+// MAINTENANCE: standalone CPU coverage for include/mikumikustudio/
 // native_frame_retime.hpp and src/animation/native_frame_retime.cpp.
 //
 // The suite builds a synthetic project by hand: two models (one of them not the
@@ -23,14 +23,14 @@
 // linked here; the stubs at the bottom stand in for them so this file stays a
 // pure CPU test.  Build with -DMDS_NATIVE_FRAME_RETIME_STANDALONE to bring the
 // stubs in; the unified build defines nothing and links the real modules.
-#include "mikudancestudio/animation_curve_host.hpp"
-#include "mikudancestudio/bone_scale.hpp"
-#include "mikudancestudio/frame_rate_correction.hpp"
-#include "mikudancestudio/global_key_layout.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/morph_curve.hpp"
-#include "mikudancestudio/native_frame_retime.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
+#include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/frame_rate_correction.hpp"
+#include "mikumikustudio/global_key_layout.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/morph_curve.hpp"
+#include "mikumikustudio/native_frame_retime.hpp"
 
 #include <algorithm>
 #include <array>
@@ -43,7 +43,7 @@
 #include <string>
 #include <vector>
 
-#include "mikudancestudio/animation_curve.hpp"
+#include "mikumikustudio/animation_curve.hpp"
 
 namespace {
 
@@ -74,25 +74,25 @@ std::uint64_t HashBytes(std::uint64_t hash, const void* data, std::size_t size) 
 // One digest over every pool of the project, so "changed nothing" is a single
 // comparison and it covers bytes no assertion names.
 struct Fixture {
-    std::unique_ptr<mikudancestudio::MMDApp> app;
+    std::unique_ptr<mikumikustudio::MMDApp> app;
     std::unique_ptr<unsigned char[]> object[2];
-    std::vector<mikudancestudio::mdl::BoneKey> boneKeys[2];
-    std::vector<mikudancestudio::mdl::MorphKey> morphKeys[2];
-    std::vector<mikudancestudio::mdl::DisplayKey> displayKeys[2];
-    std::vector<mikudancestudio::mdl::CameraKey> camera;    std::vector<mikudancestudio::mdl::LightKey> light;
-    std::vector<mikudancestudio::mdl::SelfShadowKey> shadow;
-    std::vector<mikudancestudio::mdl::GravityKey> gravity;
-    std::vector<mikudancestudio::mdl::AccessoryKey> accessory[2];
-    mikudancestudio::mdl::AccessoryRecord accessoryRecord[2]{};
+    std::vector<mikumikustudio::mdl::BoneKey> boneKeys[2];
+    std::vector<mikumikustudio::mdl::MorphKey> morphKeys[2];
+    std::vector<mikumikustudio::mdl::DisplayKey> displayKeys[2];
+    std::vector<mikumikustudio::mdl::CameraKey> camera;    std::vector<mikumikustudio::mdl::LightKey> light;
+    std::vector<mikumikustudio::mdl::SelfShadowKey> shadow;
+    std::vector<mikumikustudio::mdl::GravityKey> gravity;
+    std::vector<mikumikustudio::mdl::AccessoryKey> accessory[2];
+    mikumikustudio::mdl::AccessoryRecord accessoryRecord[2]{};
     // Display keys own two heap arrays each.  Four records per model, so the
     // store is sliced: record r takes ikStore[slot] + r*ikChainCount.
     std::vector<std::uint8_t> ikStore[2];
-    std::vector<mikudancestudio::mdl::BoneReference> selectorStore[2];
+    std::vector<mikumikustudio::mdl::BoneReference> selectorStore[2];
     // Real record tables, not null pointers: the morph and bone tables are what
     // the morph-curve and bone-scale modules read, so the fixture has to carry
     // them for a build that links the real modules.
-    std::vector<mikudancestudio::mdl::MorphRecord> morphTable[2];
-    std::vector<mikudancestudio::mdl::BoneRecord> boneTable[2];
+    std::vector<mikumikustudio::mdl::MorphRecord> morphTable[2];
+    std::vector<mikumikustudio::mdl::BoneRecord> boneTable[2];
 
     unsigned char* Model(int slot) { return object[slot].get(); }
 
@@ -104,7 +104,7 @@ struct Fixture {
     // record is safe for every case in this file.
     ~Fixture() {
 #ifndef MDS_NATIVE_FRAME_RETIME_STANDALONE
-        if (app) mikudancestudio::curve_host::Reset(app.get());
+        if (app) mikumikustudio::curve_host::Reset(app.get());
 #endif
         for (int slot = 0; slot < 2; ++slot) {
             for (auto& key : displayKeys[slot]) {
@@ -115,8 +115,8 @@ struct Fixture {
             }
 #ifndef MDS_NATIVE_FRAME_RETIME_STANDALONE
             if (object[slot]) {
-                mikudancestudio::bone_scale::Forget(object[slot].get());
-                mikudancestudio::morph_curve::Forget(object[slot].get());
+                mikumikustudio::bone_scale::Forget(object[slot].get());
+                mikumikustudio::morph_curve::Forget(object[slot].get());
             }
 #endif
         }
@@ -125,59 +125,59 @@ struct Fixture {
     std::uint64_t Digest() const {
         std::uint64_t hash = 1469598103934665603ull;
         for (int slot = 0; slot < 2; ++slot) {
-            hash = HashBytes(hash, object[slot].get(), sizeof(mikudancestudio::mdl::ModelRecord));
+            hash = HashBytes(hash, object[slot].get(), sizeof(mikumikustudio::mdl::ModelRecord));
             hash = HashBytes(hash, boneKeys[slot].data(),
-                             boneKeys[slot].size() * sizeof(mikudancestudio::mdl::BoneKey));
+                             boneKeys[slot].size() * sizeof(mikumikustudio::mdl::BoneKey));
             hash = HashBytes(hash, morphKeys[slot].data(),
-                             morphKeys[slot].size() * sizeof(mikudancestudio::mdl::MorphKey));
+                             morphKeys[slot].size() * sizeof(mikumikustudio::mdl::MorphKey));
             hash = HashBytes(hash, displayKeys[slot].data(),
-                             displayKeys[slot].size() * sizeof(mikudancestudio::mdl::DisplayKey));
+                             displayKeys[slot].size() * sizeof(mikumikustudio::mdl::DisplayKey));
             hash = HashBytes(hash, accessory[slot].data(),
-                             accessory[slot].size() * sizeof(mikudancestudio::mdl::AccessoryKey));
+                             accessory[slot].size() * sizeof(mikumikustudio::mdl::AccessoryKey));
         }
-        hash = HashBytes(hash, camera.data(), camera.size() * sizeof(mikudancestudio::mdl::CameraKey));
-        hash = HashBytes(hash, light.data(), light.size() * sizeof(mikudancestudio::mdl::LightKey));
-        hash = HashBytes(hash, shadow.data(), shadow.size() * sizeof(mikudancestudio::mdl::SelfShadowKey));
-        hash = HashBytes(hash, gravity.data(), gravity.size() * sizeof(mikudancestudio::mdl::GravityKey));
+        hash = HashBytes(hash, camera.data(), camera.size() * sizeof(mikumikustudio::mdl::CameraKey));
+        hash = HashBytes(hash, light.data(), light.size() * sizeof(mikumikustudio::mdl::LightKey));
+        hash = HashBytes(hash, shadow.data(), shadow.size() * sizeof(mikumikustudio::mdl::SelfShadowKey));
+        hash = HashBytes(hash, gravity.data(), gravity.size() * sizeof(mikumikustudio::mdl::GravityKey));
         return hash;
     }
 };
 
-using mikudancestudio::mdl::BoneKey;
-using mikudancestudio::mdl::DisplayKey;
-using mikudancestudio::mdl::MorphKey;
+using mikumikustudio::mdl::BoneKey;
+using mikumikustudio::mdl::DisplayKey;
+using mikumikustudio::mdl::MorphKey;
 
 // A three-key bone chain (frames 0, 1, 2) on bone 3, a two-key morph chain on
 // morph 1, a two-key display chain, and a two-key chain in every global and
 // accessory table.  Ratio 0.5 turns the bone chain's frames 1 and 2 into one
 // collision on frame 1, which is the case the change list exists for.
 void Build(Fixture& fixture) {
-    fixture.app = std::make_unique<mikudancestudio::MMDApp>();
+    fixture.app = std::make_unique<mikumikustudio::MMDApp>();
     // MMDApp's constructor is a no-op and the production Init zeroes the state
     // explicitly, so a fixture has to do the same.  Left unzeroed, every
     // accessory slot this fixture does not fill holds the debug allocator's
     // 0xBAADF00D, and the first real name read walks those slots and crashes
     // inside text_encoding::Display.
-    fixture.app->state = mikudancestudio::MMDAppState{};
+    fixture.app->state = mikumikustudio::MMDAppState{};
     auto& app = *fixture.app;
     for (int slot = 0; slot < 2; ++slot) {
-        fixture.object[slot].reset(new unsigned char[sizeof(mikudancestudio::mdl::ModelRecord)]());
+        fixture.object[slot].reset(new unsigned char[sizeof(mikumikustudio::mdl::ModelRecord)]());
         unsigned char* model = fixture.object[slot].get();
         fixture.boneKeys[slot].assign(600000, BoneKey{});
         fixture.morphKeys[slot].assign(20000, MorphKey{});
         fixture.displayKeys[slot].assign(1000, DisplayKey{});
-        mikudancestudio::mdl::BoneKeys(model) = fixture.boneKeys[slot].data();
-        mikudancestudio::mdl::MorphKeys(model) = fixture.morphKeys[slot].data();
-        mikudancestudio::mdl::DisplayKeys(model) = fixture.displayKeys[slot].data();
-        auto& record = *mikudancestudio::mdl::Mdl(model);
+        mikumikustudio::mdl::BoneKeys(model) = fixture.boneKeys[slot].data();
+        mikumikustudio::mdl::MorphKeys(model) = fixture.morphKeys[slot].data();
+        mikumikustudio::mdl::DisplayKeys(model) = fixture.displayKeys[slot].data();
+        auto& record = *mikumikustudio::mdl::Mdl(model);
         record.boneCount = 4;
         record.morphCount = 2;
         // The morph and bone tables the real modules read.  Morph 1 gets a name
         // so a stable id can be built from it, which is what the expression
         // module keys its authoring on.
-        fixture.morphTable[slot].assign(2, mikudancestudio::mdl::MorphRecord{});
+        fixture.morphTable[slot].assign(2, mikumikustudio::mdl::MorphRecord{});
         std::memcpy(fixture.morphTable[slot][1].name, "eye1", 4);
-        fixture.boneTable[slot].assign(4, mikudancestudio::mdl::BoneRecord{});
+        fixture.boneTable[slot].assign(4, mikumikustudio::mdl::BoneRecord{});
         std::memcpy(fixture.boneTable[slot][3].name, "center", 6);
         record.morphs = fixture.morphTable[slot].data();
         record.boneTable = fixture.boneTable[slot].data();
@@ -223,8 +223,8 @@ void Build(Fixture& fixture) {
             // allocates them: the conversion frees the arrays of a record it
             // drops, so they must not point into shared storage.
             display[slotIndex].ikStates = static_cast<std::uint8_t*>(std::malloc(2));
-            display[slotIndex].selectorStates = static_cast<mikudancestudio::mdl::BoneReference*>(
-                std::malloc(sizeof(mikudancestudio::mdl::BoneReference)));
+            display[slotIndex].selectorStates = static_cast<mikumikustudio::mdl::BoneReference*>(
+                std::malloc(sizeof(mikumikustudio::mdl::BoneReference)));
             display[slotIndex].ikStates[0] = static_cast<std::uint8_t>(record + 1);
             display[slotIndex].ikStates[1] = static_cast<std::uint8_t>(9 - record);
             display[slotIndex].selectorStates[0].modelIndex = record + 1;
@@ -243,10 +243,10 @@ void Build(Fixture& fixture) {
     app.EnglishUI() = 1;
     app.SceneModified() = 0;
 
-    fixture.camera.assign(10000, mikudancestudio::mdl::CameraKey{});
-    fixture.light.assign(10000, mikudancestudio::mdl::LightKey{});
-    fixture.shadow.assign(10000, mikudancestudio::mdl::SelfShadowKey{});
-    fixture.gravity.assign(10000, mikudancestudio::mdl::GravityKey{});
+    fixture.camera.assign(10000, mikumikustudio::mdl::CameraKey{});
+    fixture.light.assign(10000, mikumikustudio::mdl::LightKey{});
+    fixture.shadow.assign(10000, mikumikustudio::mdl::SelfShadowKey{});
+    fixture.gravity.assign(10000, mikumikustudio::mdl::GravityKey{});
     fixture.camera[0].frame = 0;
     fixture.camera[0].next = 1;
     fixture.camera[1].frame = 30;
@@ -269,7 +269,7 @@ void Build(Fixture& fixture) {
     app.GravityKeys() = fixture.gravity.data();
 
     for (int slot = 0; slot < 2; ++slot) {
-        fixture.accessory[slot].assign(10000, mikudancestudio::mdl::AccessoryKey{});
+        fixture.accessory[slot].assign(10000, mikumikustudio::mdl::AccessoryKey{});
         fixture.accessory[slot][0].frame = 0;
         fixture.accessory[slot][0].next = 1;
         fixture.accessory[slot][0].scale = 1.0f;
@@ -281,9 +281,9 @@ void Build(Fixture& fixture) {
     }
 }
 
-const mikudancestudio::frame_rate_correction::FrameChange* FindChange(
-    const mikudancestudio::frame_rate_correction::Report& report,
-    mikudancestudio::frame_rate_correction::FrameChange::ChangeKind kind, std::int32_t originalFrame) {
+const mikumikustudio::frame_rate_correction::FrameChange* FindChange(
+    const mikumikustudio::frame_rate_correction::Report& report,
+    mikumikustudio::frame_rate_correction::FrameChange::ChangeKind kind, std::int32_t originalFrame) {
     for (const auto& change : report.changes) {
         if (change.kind == kind && change.originalFrame == originalFrame) return &change;
     }
@@ -294,8 +294,8 @@ const mikudancestudio::frame_rate_correction::FrameChange* FindChange(
 // every Rounded entry carries a rounding offset (exactFrame - newFrame is
 // larger than the tolerance) and newFrame is round(exactFrame); every entry is
 // one cause; and the list accounts for every counter without truncation.
-void CheckChangeList(const mikudancestudio::frame_rate_correction::Report& report, const char* what) {
-    using mikudancestudio::frame_rate_correction::FrameChange;
+void CheckChangeList(const mikumikustudio::frame_rate_correction::Report& report, const char* what) {
+    using mikumikustudio::frame_rate_correction::FrameChange;
     std::uint64_t rounded = 0;
     std::uint64_t merged = 0;
     for (const auto& change : report.changes) {
@@ -335,20 +335,20 @@ const std::uint8_t kEase[4] = {20, 40, 107, 120};
 const std::uint8_t kCrossing[4] = {100, 20, 50, 30};
 const std::uint8_t kEdge[4] = {0, 30, 127, 100};
 
-namespace ac = mikudancestudio::animation_curve;
-namespace bs = mikudancestudio::bone_scale;
-namespace mc = mikudancestudio::morph_curve;
-namespace ch = mikudancestudio::curve_host;
+namespace ac = mikumikustudio::animation_curve;
+namespace bs = mikumikustudio::bone_scale;
+namespace mc = mikumikustudio::morph_curve;
+namespace ch = mikumikustudio::curve_host;
 
 // A bone key stores its sixteen interpolation bytes as four control rows of
 // four channels; a camera key stores four control rows of six channels.  These
 // two write one channel's tuple the way the record lays it out.
-void SetBoneChannel(mikudancestudio::mdl::BoneKey& key, int channel, const std::uint8_t* tuple) {
+void SetBoneChannel(mikumikustudio::mdl::BoneKey& key, int channel, const std::uint8_t* tuple) {
     for (int control = 0; control < 4; ++control)
         key.interpolation[control * 4 + channel] = tuple[control];
 }
 
-void SetCameraChannel(mikudancestudio::mdl::CameraKey& key, int channel, const std::uint8_t* tuple) {
+void SetCameraChannel(mikumikustudio::mdl::CameraKey& key, int channel, const std::uint8_t* tuple) {
     for (int control = 0; control < 4; ++control)
         key.interpolation[control][channel] = tuple[control];
 }
@@ -370,7 +370,7 @@ void GiveCameraThreeKeys(Fixture& fixture) {
 // chain with equal endpoint values behind a non-linear ease.
 void PlantNativeShapes(Fixture& fixture) {
     for (int slot = 0; slot < 2; ++slot) {
-        mikudancestudio::mdl::BoneKey* bones = fixture.boneKeys[slot].data();
+        mikumikustudio::mdl::BoneKey* bones = fixture.boneKeys[slot].data();
         for (int key = 3; key <= 5; ++key)
             for (int channel = 0; channel < 4; ++channel)
                 SetBoneChannel(bones[key], channel, kEase);
@@ -383,7 +383,7 @@ void PlantNativeShapes(Fixture& fixture) {
         bones[3].position[0] = 1.0f;
         bones[4].position[0] = 1.0f;
     }
-    mikudancestudio::mdl::CameraKey* camera = fixture.camera.data();
+    mikumikustudio::mdl::CameraKey* camera = fixture.camera.data();
     for (int key = 0; key < 3; ++key)
         for (int channel = 0; channel < 6; ++channel)
             SetCameraChannel(camera[key], channel, kEase);
@@ -412,12 +412,12 @@ void CheckBytes(const void* actual, const void* expected, std::size_t size, cons
 }  // namespace
 
 int main() {
-    using mikudancestudio::frame_rate_correction::FrameChange;
-    using mikudancestudio::frame_rate_correction::Rates;
-    using mikudancestudio::frame_rate_correction::Report;
-    using mikudancestudio::native_frame_retime::Commit;
-    using mikudancestudio::native_frame_retime::PlanPtr;
-    using mikudancestudio::native_frame_retime::Prepare;
+    using mikumikustudio::frame_rate_correction::FrameChange;
+    using mikumikustudio::frame_rate_correction::Rates;
+    using mikumikustudio::frame_rate_correction::Report;
+    using mikumikustudio::native_frame_retime::Commit;
+    using mikumikustudio::native_frame_retime::PlanPtr;
+    using mikumikustudio::native_frame_retime::Prepare;
 
     // ---- a fractional rate first (29.97 -> 30): every key that lands off a
     //      frame must be reported, with the offset that makes it a rounding ----
@@ -471,7 +471,7 @@ int main() {
     Build(fixture);
     const std::uint64_t before = fixture.Digest();
     const std::vector<std::uint8_t> ikBefore = fixture.ikStore[0];
-    const std::vector<mikudancestudio::mdl::BoneReference> selectorBefore = fixture.selectorStore[0];
+    const std::vector<mikumikustudio::mdl::BoneReference> selectorBefore = fixture.selectorStore[0];
 
     // Ratio 30 -> 12, that is 2/5.  The bone chain's frames 1, 2 and 3 land on
     // 0.4, 0.8 and 1.2: all three need rounding, and 2 and 3 share frame 1.  The
@@ -500,7 +500,7 @@ int main() {
         }
         if (std::memcmp(&fixture.displayKeys[0][slotIndex].selectorStates[0],
                         &fixture.selectorStore[0][record],
-                        sizeof(mikudancestudio::mdl::BoneReference)) != 0) {
+                        sizeof(mikumikustudio::mdl::BoneReference)) != 0) {
             payloadsUnchanged = false;
         }
     }
@@ -611,7 +611,7 @@ int main() {
     CheckEqual(static_cast<std::uint64_t>(fixture.accessory[0][1].frame), 12, "an accessory track is retimed");
     CheckEqual(static_cast<std::uint64_t>(fixture.accessory[1][1].frame), 12, "the second accessory is retimed");
     CheckEqual(fixture.app->SceneModified(), 1, "a successful commit marks the scene");
-    CheckEqual(static_cast<std::uint64_t>(mikudancestudio::mdl::Mdl(fixture.Model(0))->maxFrame), 12,
+    CheckEqual(static_cast<std::uint64_t>(mikumikustudio::mdl::Mdl(fixture.Model(0))->maxFrame), 12,
                "the model timeline bound is recomputed");
     Check(!Commit(*fixture.app, plan, error, {}), "a plan is committed at most once");
 
@@ -835,7 +835,7 @@ int main() {
         Fixture hosted;
         Build(hosted);
         auto& app = *hosted.app;
-        std::vector<mikudancestudio::curve_editor::Channel> channels;
+        std::vector<mikumikustudio::curve_editor::Channel> channels;
         std::wstring hostError;
         Check(ch::Read(app, ch::Kind::Accessory, 0, channels, hostError), "read native accessory channels");
         Check(channels.size() == 12, "all native accessory channels are available without MMV");
@@ -919,7 +919,7 @@ int main() {
             break;
         }
         case 4: {
-            std::vector<mikudancestudio::curve_editor::Channel> channels;
+            std::vector<mikumikustudio::curve_editor::Channel> channels;
             Check(ch::Read(app, ch::Kind::Accessory, 0, channels, error), "read fresh accessory authoring");
             if (!channels.empty()) {
                 channels[0].track.keys.back().value = 3;
@@ -959,18 +959,18 @@ int main() {
 // authoring", which is what this suite's fixture has, so the native pools and
 // the change list are exercised on their own.  The unified build links the real
 // modules instead and never defines the macro.
-namespace mikudancestudio::mdl {
+namespace mikumikustudio::mdl {
 std::size_t BoneKeyCapacity(const ModelRecord&) { return kBoneKeyCapacity; }
-}  // namespace mikudancestudio::mdl
+}  // namespace mikumikustudio::mdl
 
-namespace mikudancestudio::bone_scale {
+namespace mikumikustudio::bone_scale {
 Matrix Key(const unsigned char*, int) { return Matrix{}; }
 Curve KeyCurve(const unsigned char*, int) { return LinearCurve(); }
 bool CaptureCurveTable(const unsigned char*, CurveTableState&) { return false; }
 void SwapCurveTable(unsigned char*, CurveTableState&) noexcept {}
-}  // namespace mikudancestudio::bone_scale
+}  // namespace mikumikustudio::bone_scale
 
-namespace mikudancestudio::morph_curve {
+namespace mikumikustudio::morph_curve {
 struct AuthoredLayers::Impl {
     int unused = 0;
 };
@@ -989,9 +989,9 @@ bool RebuildLayers(const unsigned char*, const std::vector<animation_curve::Name
 }
 void SwapLayers(unsigned char*, AuthoredLayers&) noexcept {}
 bool LayersUnchanged(const unsigned char*, const AuthoredLayers&) { return true; }
-}  // namespace mikudancestudio::morph_curve
+}  // namespace mikumikustudio::morph_curve
 
-namespace mikudancestudio::curve_host {
+namespace mikumikustudio::curve_host {
 struct AuthoringTable::Impl {
     int unused = 0;
 };
@@ -1010,5 +1010,5 @@ bool RebuildAuthoring(MMDApp&, const std::vector<AuthoringEntry>&, AuthoringTabl
 }
 void SwapAuthoring(MMDApp&, AuthoringTable&) noexcept {}
 bool AuthoringUnchanged(MMDApp&, const AuthoringTable&) { return true; }
-}  // namespace mikudancestudio::curve_host
+}  // namespace mikumikustudio::curve_host
 #endif

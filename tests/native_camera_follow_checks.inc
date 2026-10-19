@@ -3,8 +3,8 @@
 #include "../src/plugins/native_camera_follow.hpp"
 #include "../src/plugins/native_camera_follow_ui.hpp"
 #include "../src/plugins/native_object_commands.hpp"
-#include "mikudancestudio/bake_ui_lock.hpp"
-namespace mikudancestudio {void CmdControl500(MMDApp*,HWND,std::uint16_t,std::uint16_t);void CmdFileMenu(MMDApp*,HWND,std::uint16_t,std::uint16_t);}
+#include "mikumikustudio/bake_ui_lock.hpp"
+namespace mikumikustudio {void CmdControl500(MMDApp*,HWND,std::uint16_t,std::uint16_t);void CmdFileMenu(MMDApp*,HWND,std::uint16_t,std::uint16_t);}
 namespace {
 struct FollowState {
     NumpadView view;std::uint8_t follow=0,shadow=0;

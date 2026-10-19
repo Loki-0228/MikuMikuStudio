@@ -1,7 +1,7 @@
 #include "animation_curve_insert_checks.hpp"
 // MAINTENANCE: unit coverage for the shared animation curve core
 // (src/animation/animation_curve.cpp).  Pure CPU; no Win32, DirectX or GUI.
-#include "mikudancestudio/animation_curve.hpp"
+#include "mikumikustudio/animation_curve.hpp"
 
 #include <algorithm>
 #include <array>
@@ -15,7 +15,7 @@
 #include <utility>
 #include <vector>
 
-namespace ac = mikudancestudio::animation_curve;
+namespace ac = mikumikustudio::animation_curve;
 
 namespace {
 
@@ -619,7 +619,7 @@ std::vector<std::uint8_t> BuildPayload(const std::vector<RawTrack> &tracks, std:
                                        std::uint16_t flags = 0) {
     std::vector<std::uint8_t> out;
     out.push_back('M');
-    out.push_back('D');
+    out.push_back('M');
     out.push_back('S');
     out.push_back('C');
     PushU16(out, version);
@@ -724,7 +724,7 @@ void TestCodecLayout() {
     std::vector<std::uint8_t> bytes;
     Check(ac::Encode(tracks, bytes, error), "the layout fixture encodes: " + error);
 
-    const std::uint8_t expectedHeader[22] = {'M', 'D', 'S', 'C', 1, 0, 0, 0, 1, 0, 0,
+    const std::uint8_t expectedHeader[22] = {'M', 'M', 'S', 'C', 1, 0, 0, 0, 1, 0, 0,
                                              0,   1,   0,   0,   0, 'a', 0, 1, 0, 0, 0};
     Check(bytes.size() == 22 + 52, "the layout fixture is one header plus one key record");
     Check(std::memcmp(bytes.data(), expectedHeader, sizeof(expectedHeader)) == 0,
@@ -767,8 +767,11 @@ void TestCodecCorruption() {
     Check(ac::Decode(good.data(), good.size(), decoded, error), "the corruption fixture decodes: " + error);
     Check(decoded.size() == 2, "the corruption fixture holds two tracks");
 
+    auto oldMarker = good; oldMarker[1] = 'D';
+    CheckDecodeFails(oldMarker, "an MDSC payload is not decoded as MMSC", "magic");
+
     CheckDecodeFails({}, "an empty payload");
-    CheckDecodeFails(std::vector<std::uint8_t>{'M', 'D', 'S'}, "a payload below the header size");
+    CheckDecodeFails(std::vector<std::uint8_t>{'M', 'M', 'S'}, "a payload below the header size");
     CheckDecodeFails(std::vector<std::uint8_t>(12, 0), "a payload without the magic", "magic");
     CheckDecodeFails(BuildPayload({first}, 2), "a future version", "version");
     CheckDecodeFails(BuildPayload({first}, 1, 1), "a set reserved flag", "flags");

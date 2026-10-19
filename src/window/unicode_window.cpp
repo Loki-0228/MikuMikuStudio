@@ -1,10 +1,10 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include "mikudancestudio/unicode_window.hpp"
+#include "mikumikustudio/unicode_window.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
-constexpr wchar_t kPreviousProc[] = L"MikuDanceStudio.UnicodeTitle.PreviousProc";
+constexpr wchar_t kPreviousProc[] = L"MikuMikuStudio.UnicodeTitle.PreviousProc";
 
 LRESULT CALLBACK UnicodeTitleProc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
     auto previous = reinterpret_cast<WNDPROC>(GetPropW(window, kPreviousProc));

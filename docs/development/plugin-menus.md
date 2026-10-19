@@ -1,6 +1,6 @@
 # 插件自行注册菜单
 
-MMS 导出 `MMSGetMenuHostApi`，版本为 `MMS_MENU_ABI_VERSION == 1`。公开 C 头文件为 `include/mikudancestudio/plugin_menu.h`。插件通过 `GetProcAddress(GetModuleHandleW(nullptr), "MMSGetMenuHostApi")` 查询，不需要链接 MMS 导入库，也不需要把插件源码加入宿主构建。
+MMS 导出 `MMSGetMenuHostApi`，版本为 `MMS_MENU_ABI_VERSION == 1`。公开 C 头文件为 `include/mikumikustudio/plugin_menu.h`。插件通过 `GetProcAddress(GetModuleHandleW(nullptr), "MMSGetMenuHostApi")` 查询，不需要链接 MMS 导入库，也不需要把插件源码加入宿主构建。
 
 宿主不预建 MMV、MME 或 MMHack 的菜单。每个成功注册的插件获得一个右对齐的顶层入口和 64 个独立命令 ID；标题、菜单内容、勾选状态、命令及快捷键均来自插件回调。没有 DLL、DLL 无效、初始化失败或插件未注册时，不出现对应入口。
 

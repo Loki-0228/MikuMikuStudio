@@ -40,7 +40,7 @@ void SettingsLocationChecks(const fs::path& executable,const std::wstring& mode)
     const auto folder=executable.parent_path();const auto config=folder/L"data"/L"settings.json";
     const bool overrideMode=mode==L"--settings-override";
     const bool migrationMode=mode==L"--settings-migrate";
-    if(!overrideMode)SetEnvironmentVariableW(L"MIKUDANCESTUDIO_AUTOSAVE_CONFIG",nullptr);
+    if(!overrideMode)SetEnvironmentVariableW(L"MIKUMIKUSTUDIO_AUTOSAVE_CONFIG",nullptr);
     if (migrationMode) {
         Check(!fs::exists(config), "migration fixture starts without central settings");
         fs::create_directories(config.parent_path());

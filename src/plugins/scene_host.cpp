@@ -2,23 +2,23 @@
 #include "scene_geometry.hpp"
 #include "scene_definitions.hpp"
 #include "scene_history.hpp"
-#include "mikudancestudio/plugin_scene.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/bone_layout.hpp"
-#include "mikudancestudio/accessory_layout.hpp"
-#include "mikudancestudio/text_encoding.hpp"
-#include "mikudancestudio/pmm_extension.hpp"
-#include "mikudancestudio/runtime_log.hpp"
-#include "mikudancestudio/build_profile.hpp"
+#include "mikumikustudio/plugin_scene.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/bone_layout.hpp"
+#include "mikumikustudio/accessory_layout.hpp"
+#include "mikumikustudio/text_encoding.hpp"
+#include "mikumikustudio/pmm_extension.hpp"
+#include "mikumikustudio/runtime_log.hpp"
+#include "mikumikustudio/build_profile.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "native_pose_scope.hpp"
 #endif
 #include <set>
 
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 namespace {
-constexpr char identityKey[] = "org.mikudancestudio.plugin.objectIdentity.v1";
+constexpr char identityKey[] = "org.mikumikustudio.plugin.objectIdentity.v1";
 SceneIdentity identities;
 uint64_t revision = 1;
 std::vector<unsigned char> previous;

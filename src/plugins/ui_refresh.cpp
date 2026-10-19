@@ -4,7 +4,7 @@
 #include <cmath>
 #include <limits>
 
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 namespace {
 constexpr std::size_t kTickets = 256, kGlobalTickets = 4096, kRects = 32;
 constexpr std::size_t kBytes = 256 * 1024, kGlobalBytes = 4 * 1024 * 1024, kBatch = 64;

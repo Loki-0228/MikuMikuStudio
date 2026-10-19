@@ -2,7 +2,7 @@
 #include "common.hpp"
 #include <array>
 #include <bcrypt.h>
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 class Digest {
     struct State {
         BCRYPT_ALG_HANDLE algorithm = nullptr; BCRYPT_HASH_HANDLE hash = nullptr;

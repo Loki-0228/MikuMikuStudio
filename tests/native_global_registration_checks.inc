@@ -1,6 +1,6 @@
 // Private global registration, included by native_edit_history_tests.cpp.
 #include "../src/plugins/native_global_registration.hpp"
-namespace mikudancestudio {
+namespace mikumikustudio {
 void RegisterCameraState(MMDApp*,int);
 void RegisterLightState(MMDApp*,int);
 void RegisterSelfShadowState(MMDApp*,int);

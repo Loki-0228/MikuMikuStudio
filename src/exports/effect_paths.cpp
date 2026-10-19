@@ -3,9 +3,9 @@
 #include <Windows.h>
 #include <d3d9.h>
 
-#include "mikudancestudio/effect_api.hpp"
-#include "mikudancestudio/text_encoding.hpp"
-#include "mikudancestudio/runtime_log.hpp"
+#include "mikumikustudio/effect_api.hpp"
+#include "mikumikustudio/text_encoding.hpp"
+#include "mikumikustudio/runtime_log.hpp"
 #include <atomic>
 #include <cstring>
 #include <cwchar>
@@ -16,7 +16,7 @@
 #include <algorithm>
 #include <set>
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 namespace fs = std::filesystem;
 struct RelativeAssignment {
@@ -475,4 +475,4 @@ void PrepareEffectProjectPaths(const wchar_t* project) {
     }
     SetLastError(incomingError);
 }
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

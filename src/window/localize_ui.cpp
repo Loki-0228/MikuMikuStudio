@@ -20,8 +20,8 @@
 //      "camera/light/accessory" / "ground" / JP/EN third label, add every
 //      loaded model's name (slot+8826 EN / slot+8776 JP), restore selection.
 // =========================================================================//
-#include "mikudancestudio/animation_curve_host.hpp"
-#include "mikudancestudio/build_profile.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
+#include "mikumikustudio/build_profile.hpp"
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
@@ -29,16 +29,16 @@
 #include <cstdint>
 #include <string>
 
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/text_encoding.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/bone_combo.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/ui_language.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/text_encoding.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/bone_combo.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/ui_language.hpp"
 #include "ui_controls.inc"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 
 struct TextEntry { int id; const char* en; const wchar_t* zh; };
@@ -423,7 +423,7 @@ void RefreshModelSelectorNames(MMDApp* app) {
         for (int i = 0; i < kModelSlotCount; ++i) {
             unsigned char* slot = s.ModelSlot(i);
             if (slot != nullptr &&
-                mikudancestudio::mdl::Mdl(slot)->comboSelIndex == order) {
+                mikumikustudio::mdl::Mdl(slot)->comboSelIndex == order) {
                 slotIdx = i;
                 break;
             }
@@ -583,4 +583,4 @@ void LocalizeUI(MMDApp* app) {
     RefreshBoneModePanel(app);
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

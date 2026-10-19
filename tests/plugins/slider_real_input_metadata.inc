@@ -7,7 +7,7 @@
 #endif
 #include <Windows.h>
 #include <CommCtrl.h>
-#include "mikudancestudio/mmd_app.hpp"
+#include "mikumikustudio/mmd_app.hpp"
 #include <array>
 #include <atomic>
 #include <cstdint>
@@ -46,7 +46,7 @@ class Trace {
     // be overwritten on Detach, nor retain a pointer to a destroyed recorder.
     struct Route {HWND window=nullptr;WNDPROC original=nullptr;Trace* trace=nullptr;unsigned index=0;bool unicode=false;};
     static std::array<Route,14>& Routes()noexcept{static thread_local std::array<Route,14> routes{};return routes;}
-    mikudancestudio::MMDApp& app_;
+    mikumikustudio::MMDApp& app_;
     const DWORD ownerThread_=GetCurrentThreadId();
     std::unique_ptr<Event[]> storage_=std::make_unique<Event[]>(kCapacity);
     std::array<Watch,14> watches_{};
@@ -208,7 +208,7 @@ class Trace {
         <<','<<facts.mainCapture<<','<<facts.layoutDragging<<','<<facts.sidebarWidth<<','<<facts.mainClientKnown
         <<','<<facts.mainClient.left<<','<<facts.mainClient.top<<','<<facts.mainClient.right<<','<<facts.mainClient.bottom;}
 public:
-    explicit Trace(mikudancestudio::MMDApp& app):app_(app){}
+    explicit Trace(mikumikustudio::MMDApp& app):app_(app){}
     ~Trace(){Detach();}
     Trace(const Trace&)=delete;Trace& operator=(const Trace&)=delete;
     bool Attach(){

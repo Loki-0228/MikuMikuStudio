@@ -1,12 +1,12 @@
 #pragma once
-#include "mikudancestudio/model.hpp"
+#include "mikumikustudio/model.hpp"
 #include "mmv/mmv.h"
 #include <algorithm>
 #include <cstring>
 #include <iterator>
 #include <stdexcept>
 
-namespace mikudancestudio::mmv4mms {
+namespace mikumikustudio::mmv4mms {
 // PMX only initializes declared UV sets and SDEF data on SDEF vertices.
 // The public ABI has fixed-size arrays, so absent fields must be zeroed.
 inline void CopyPmxOptionalFields(const mdl::PmxVertex& source, uint32_t uvCount,

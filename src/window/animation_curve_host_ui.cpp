@@ -1,52 +1,52 @@
-#include "mikudancestudio/frame_limits.hpp"
+#include "mikumikustudio/frame_limits.hpp"
 #include "curve_editor_selection.hpp"
 #include "../animation/native_curve_sample.hpp"
-#include "mikudancestudio/display_capacity.hpp"
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/bone_curve.hpp"
-#include "mikudancestudio/ui_translation.hpp"
+#include "mikumikustudio/display_capacity.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/bone_curve.hpp"
+#include "mikumikustudio/ui_translation.hpp"
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
-#include "mikudancestudio/bake_ui_lock.hpp"
-#include "mikudancestudio/autosave.hpp"
+#include "mikumikustudio/bake_ui_lock.hpp"
+#include "mikumikustudio/autosave.hpp"
 #include <commctrl.h>
 #include <commdlg.h>
-#include "mikudancestudio/animation_curve_host.hpp"
-#include "mikudancestudio/ui_language.hpp"
-#include "mikudancestudio/animation_curve_motion.hpp"
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/bone_scale.hpp"
-#include "mikudancestudio/accessory_layout.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/morph_curve.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/runtime_log.hpp"
-#include "mikudancestudio/text_encoding.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
+#include "mikumikustudio/ui_language.hpp"
+#include "mikumikustudio/animation_curve_motion.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/accessory_layout.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/morph_curve.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/runtime_log.hpp"
+#include "mikumikustudio/text_encoding.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <memory>
 #include <cstdlib>
-#include "mikudancestudio/global_key_layout.hpp"
+#include "mikumikustudio/global_key_layout.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "../plugins/native_pose_scope.hpp"
 #include "../plugins/native_object_commands.hpp"
 #include "../plugins/shared_history.hpp"
 #include "../plugins/native_curve_commands.hpp"
 #include "../plugins/native_bone_curve_write.hpp"
-#include "mikudancestudio/plugin_scene.hpp"
-#include "mikudancestudio/plugin_runtime.hpp"
+#include "mikumikustudio/plugin_scene.hpp"
+#include "mikumikustudio/plugin_runtime.hpp"
 #endif
 #include "ui_control_layout.hpp"
 #include "settings_json.hpp"
-#include "mikudancestudio/local_data_path.hpp"
+#include "mikumikustudio/local_data_path.hpp"
 
-namespace mikudancestudio { void RefreshAfterFrameApply(MMDApp*); }
+namespace mikumikustudio { void RefreshAfterFrameApply(MMDApp*); }
 
-namespace mikudancestudio::curve_host {
+namespace mikumikustudio::curve_host {
 namespace {
 const wchar_t* Text(unsigned lang,const wchar_t*ja,const wchar_t*en,const wchar_t*zh){return lang==0?ja:lang==1?en:zh;}
 std::wstring Title(unsigned l,Kind k){
@@ -154,7 +154,7 @@ void BindTransport(curve_editor::Session& session,MMDApp* app){
         if(!TransportReady(*app))return;
         if(app->PlaybackActive())stop(false);
         if(app->PlaybackActive())return;
-        if(seek)seek(std::clamp(frame,0,mikudancestudio::frame_limits::maximum));
+        if(seek)seek(std::clamp(frame,0,mikumikustudio::frame_limits::maximum));
     };
 }
 std::uint8_t& SelectionFlag(mdl::BoneKey& key){return key.allocated;}
@@ -1138,12 +1138,12 @@ static std::vector<curve_editor::Collection> BoneDisplayCollections(MMDApp*app,u
     if(rows&&groups){
         for(std::uint32_t i=0;i<record.rigidBodyCount;++i){
             const auto&row=rows[i];
-            if(mikudancestudio::mdl::FrameTargetIndex(row)<record.boneCount&&mikudancestudio::mdl::FrameGroupIndex(row)<mikudancestudio::mdl::DisplayGroupCount(record)&&
-               membership[mikudancestudio::mdl::FrameTargetIndex(row)]<0)
-                membership[mikudancestudio::mdl::FrameTargetIndex(row)]=mikudancestudio::mdl::FrameGroupIndex(row);
+            if(mikumikustudio::mdl::FrameTargetIndex(row)<record.boneCount&&mikumikustudio::mdl::FrameGroupIndex(row)<mikumikustudio::mdl::DisplayGroupCount(record)&&
+               membership[mikumikustudio::mdl::FrameTargetIndex(row)]<0)
+                membership[mikumikustudio::mdl::FrameTargetIndex(row)]=mikumikustudio::mdl::FrameGroupIndex(row);
         }
     }
-    if(groups&&mikudancestudio::mdl::DisplayGroupCount(record)>0&&record.displayRootBone<record.boneCount&&
+    if(groups&&mikumikustudio::mdl::DisplayGroupCount(record)>0&&record.displayRootBone<record.boneCount&&
        membership[record.displayRootBone]<0)
         membership[record.displayRootBone]=0;
     std::vector<curve_editor::Collection> result;

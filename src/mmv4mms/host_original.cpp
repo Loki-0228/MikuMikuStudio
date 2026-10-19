@@ -1,9 +1,9 @@
-#include "mikudancestudio/build_profile.hpp"
-#include "mikudancestudio/mmv4mms.hpp"
+#include "mikumikustudio/build_profile.hpp"
+#include "mikumikustudio/mmv4mms.hpp"
 
 static_assert(MMD_ORIGINAL_PROFILE, "The original MMV provider belongs to the mmd932 profile");
 
-namespace mikudancestudio::mmv4mms {
+namespace mikumikustudio::mmv4mms {
 // Keep lifecycle calls valid without loading a plugin or registering its menu.
 void Initialize(MMDApp*) {}
 void Shutdown() {}

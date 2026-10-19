@@ -2,13 +2,13 @@
 // visible thumb flicker; it detects redundant host messages in that chain.
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include "mikudancestudio/build_profile.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/accessory_layout.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/ui_language.hpp"
+#include "mikumikustudio/build_profile.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/accessory_layout.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/ui_language.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "../src/plugins/native_pose_scope.hpp"
 #include "../src/plugins/native_global_commands.hpp"
@@ -41,7 +41,7 @@ void operator delete[](void* value) noexcept { std::free(value); }
 void operator delete(void* value, std::size_t) noexcept { std::free(value); }
 void operator delete[](void* value, std::size_t) noexcept { std::free(value); }
 
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 namespace {
 unsigned checks = 0;
 void Check(bool okay, const char* label) {

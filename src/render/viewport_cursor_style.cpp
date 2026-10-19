@@ -7,7 +7,7 @@
 #include <cstddef>
 #include <cmath>
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 constexpr int kSheetSize = 512;
 constexpr int kCellSize = 128;
@@ -151,4 +151,4 @@ bool RestyleViewportCursorAtlas(IDirect3DTexture9* texture) {
         kSheetSize, kSheetSize, locked.Pitch / sizeof(std::uint32_t));
     return SUCCEEDED(texture->UnlockRect(0));
 }
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

@@ -1,10 +1,10 @@
 // Include in the actual disposable scene host. Run after all seven parameter
 // sliders are visible/on-screen. Observation changes no authored slider value.
 #include "../slider_paint_trace.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/globals.hpp"
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/build_profile.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/globals.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/build_profile.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "../../src/plugins/native_pose_scope.hpp"
 #endif
@@ -20,8 +20,8 @@ static bool Contains(const RECT& outer,const RECT& inner){
     return inner.left>=outer.left&&inner.top>=outer.top&&inner.right<=outer.right&&inner.bottom<=outer.bottom&&
         inner.left<inner.right&&inner.top<inner.bottom;
 }
-static void Run(mikudancestudio::MMDApp* app,const std::filesystem::path& output){
-    using namespace mikudancestudio;
+static void Run(mikumikustudio::MMDApp* app,const std::filesystem::path& output){
+    using namespace mikumikustudio;
     trace::Require(app&&app==g_Block&&IsWindow(app->MainWindow())&&!GetCapture()&&!app->PlaybackActive()&&!app->FrameStepPlayback(),
         "slider nonoverlap regression requires the actual idle disposable UI host");
     std::array<HWND,7> windows{};std::array<RECT,7> bounds{};

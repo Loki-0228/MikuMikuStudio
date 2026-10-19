@@ -2,13 +2,13 @@
 #define NOMINMAX
 #include <Windows.h>
 #include <CommCtrl.h>
-#include "mikudancestudio/animation_curve_editor.hpp"
+#include "mikumikustudio/animation_curve_editor.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
 
-namespace ce=mikudancestudio::curve_editor;
-namespace ac=mikudancestudio::animation_curve;
+namespace ce=mikumikustudio::curve_editor;
+namespace ac=mikumikustudio::animation_curve;
 void Check(bool condition,const char* text){if(!condition){std::fprintf(stderr,"FAIL: %s\n",text);std::exit(1);}}
 RECT Bounds(HWND window,HWND parent){RECT r{};GetWindowRect(window,&r);MapWindowPoints(nullptr,parent,reinterpret_cast<POINT*>(&r),2);return r;}
 SCROLLINFO Scroll(HWND tree){SCROLLINFO s{sizeof(s),SIF_ALL};GetScrollInfo(tree,SB_VERT,&s);return s;}

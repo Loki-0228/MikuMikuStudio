@@ -6,9 +6,9 @@
 #include <io.h>
 #include <limits>
 #include <vector>
-#include "mikudancestudio/original_import.hpp"
+#include "mikumikustudio/original_import.hpp"
 
-namespace mikudancestudio::vmd_read {
+namespace mikumikustudio::vmd_read {
 
 // Parse the same immutable bytes that will be imported. A preflight followed
 // by unchecked reads from the file would still allow a late I/O failure (or a
@@ -148,4 +148,4 @@ private:
     }
 };
 
-} // namespace mikudancestudio::vmd_read
+} // namespace mikumikustudio::vmd_read

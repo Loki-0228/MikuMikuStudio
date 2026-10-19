@@ -1,14 +1,14 @@
 #define NOMINMAX
-#include "mikudancestudio/effect_display.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/native_mesh.hpp"
-#include "mikudancestudio/text_encoding.hpp"
-#include "mikudancestudio/ui_language.hpp"
+#include "mikumikustudio/effect_display.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/native_mesh.hpp"
+#include "mikumikustudio/text_encoding.hpp"
+#include "mikumikustudio/ui_language.hpp"
 #include <commctrl.h>
 #include <cwchar>
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 constexpr UINT_PTR kDisplaySubclass = 0x4D4D454C;
 std::wstring Item(HWND list, int row, LPARAM* identity = nullptr) {

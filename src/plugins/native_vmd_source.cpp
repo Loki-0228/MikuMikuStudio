@@ -1,10 +1,10 @@
 #include "native_vmd_source.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "../model/vmd_read_guard.hpp"
-#include "mikudancestudio/accessory_motion_io.hpp"
-#include "mikudancestudio/frame_limits.hpp"
-#include "mikudancestudio/global_key_layout.hpp"
-#include "mikudancestudio/key_pool.hpp"
+#include "mikumikustudio/accessory_motion_io.hpp"
+#include "mikumikustudio/frame_limits.hpp"
+#include "mikumikustudio/global_key_layout.hpp"
+#include "mikumikustudio/key_pool.hpp"
 #include <cerrno>
 #include <cmath>
 #include <cstring>
@@ -13,7 +13,7 @@
 #include <share.h>
 #include <stdexcept>
 #include <sys/stat.h>
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 namespace {
 struct VmdDescriptor {int value=-1;~VmdDescriptor(){if(value>=0)_close(value);}};
 template<class T> T VmdValue(const std::uint8_t* bytes){T value;std::memcpy(&value,bytes,sizeof(value));return value;}

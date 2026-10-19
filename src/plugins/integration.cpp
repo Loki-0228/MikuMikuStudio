@@ -1,4 +1,4 @@
-#include "mikudancestudio/local_data_path.hpp"
+#include "mikumikustudio/local_data_path.hpp"
 #include "manager.hpp"
 #include "native_ui.hpp"
 #include "project_storage.hpp"
@@ -7,24 +7,26 @@
 #include "native_viewport_history.hpp"
 #include "native_history_commands.hpp"
 #include "native_object_commands.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/animation_curve_editor.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/plugin_storage.hpp"
-#include "mikudancestudio/plugin_runtime.hpp"
-#include "mikudancestudio/system_settings_ui.hpp"
-#include "mikudancestudio/plugin_scene.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/runtime_log.hpp"
-#include "mikudancestudio/build_profile.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/animation_curve_editor.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/plugin_storage.hpp"
+#include "mikumikustudio/plugin_runtime.hpp"
+#include "mikumikustudio/system_settings_ui.hpp"
+#include "mikumikustudio/plugin_scene.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/runtime_log.hpp"
+#include "mikumikustudio/build_profile.hpp"
+#include "mikumikustudio/ui_message.hpp"
 #include "../window/ui_control_layout.hpp"
 #include <ShlObj.h>
 #include <commctrl.h>
+#include <cwchar>
 
-namespace mikudancestudio { void LayoutViewportPanels(MMDApp*); }
+namespace mikumikustudio { void LayoutViewportPanels(MMDApp*); }
 
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 namespace {
 std::unique_ptr<Manager> manager;
 std::unique_ptr<NativeUi> ui;
@@ -174,13 +176,13 @@ static void InitializeRuntime(MMDApp* app, bool migrationTest) {
             // Only the geometry that depends on the plugin strip changes.
             // Do not enter HandleWindowSize, FrameDriver or scene evaluation.
             return Boundary([&] {
-                mikudancestudio::ui::LayoutBatch batch;
+                mikumikustudio::ui::LayoutBatch batch;
                 RefreshMainWindowViewport(app);
                 LayoutViewportPanels(app);
                 const bool applied = batch.Commit();
                 RECT damage{}; GetClientRect(app->MainWindow(), &damage);
                 damage.left = app->SidebarWidth() + 9; damage.bottom = std::max(0L, damage.bottom - 157);
-                mikudancestudio::ui::RepaintLayout(app->MainWindow(), batch.Changes(), damage);
+                mikumikustudio::ui::RepaintLayout(app->MainWindow(), batch.Changes(), damage);
                 return applied ? MMS_OK : MMS_E_FAILED;
             });
         });
@@ -313,10 +315,16 @@ bool PrepareProjectLoad(MMDApp* app, const wchar_t* path) {
     if (NativeObjectOperationActive(app) || NativeObjectUiPending(app)) return false;
 #endif
     if (loadingProject || (manager && manager->InCallback())) return false;
+    bool mainOpenFailed = false;
+    DWORD mainOpenError = ERROR_SUCCESS;
     try {
         auto data=ReadPluginProject(fs::absolute(path));
         loadingMain=CreateFileW(path,GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
-        if(loadingMain==INVALID_HANDLE_VALUE)throw std::runtime_error("cannot lock PMM for loading");
+        if(loadingMain==INVALID_HANDLE_VALUE){
+            mainOpenError=GetLastError();
+            mainOpenFailed=true;
+            throw std::runtime_error("cannot lock PMM for loading");
+        }
         if(!data.mainHash.empty() && FileHash(path)!=data.mainHash)throw std::runtime_error("PMM changed before loading");
         if (manager && owner == app) {
             if (auto r=PrepareHistoryReset(projectHistoryReset))
@@ -329,6 +337,13 @@ bool PrepareProjectLoad(MMDApp* app, const wchar_t* path) {
         projectHistoryReset.reset();
         if(loadingMain!=INVALID_HANDLE_VALUE){CloseHandle(loadingMain);loadingMain=INVALID_HANDLE_VALUE;}
         LogMessage(std::string("project load refused: ")+e.what());
+        if(mainOpenFailed){
+            const wchar_t* formats[]={L"%ls\nエラーコード: %lu",L"%ls\nError code: %lu",L"%ls\n错误码：%lu"};
+            wchar_t detail[512]{};
+            _snwprintf_s(detail,_countof(detail),_TRUNCATE,formats[app->EnglishUI()<=2?app->EnglishUI():1],path,static_cast<unsigned long>(mainOpenError));
+            if(app->MainWindow())ShowUiMessage(app,app->MainWindow(),UiMessage::OpenProjectError,MB_OK|MB_ICONERROR,detail);
+            return false;
+        }
         const wchar_t* messages[]={L"プラグインのプロジェクトデータを読み込めません。PMM と付随ファイルの対応、およびプラグインのバージョンを確認してください。",L"Cannot load plugin project data. Check the PMM/sidecar pair and plugin versions.",L"无法读取插件工程数据。请检查 PMM 与扩展文件是否配套，以及插件版本是否匹配。"};
         if(app->MainWindow())MessageBoxW(app->MainWindow(),messages[app->EnglishUI()<=2?app->EnglishUI():1],L"MMS",MB_OK|MB_ICONERROR);
         return false;

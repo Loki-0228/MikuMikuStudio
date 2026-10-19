@@ -4,7 +4,7 @@
 #include <optional>
 #include <utility>
 
-namespace mikudancestudio::pmm_io {
+namespace mikumikustudio::pmm_io {
 // Own exactly one CRT input descriptor. Readers only borrow Descriptor(); every
 // close, including an abort inside a native body, consumes this same owner.
 // CheckedReads scopes, like their existing TLS implementation, nest in LIFO

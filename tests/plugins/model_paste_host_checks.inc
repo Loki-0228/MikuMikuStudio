@@ -1,5 +1,5 @@
-#include "mikudancestudio/clipboard_layout.hpp"
-#include "mikudancestudio/bone_scale.hpp"
+#include "mikumikustudio/clipboard_layout.hpp"
+#include "mikumikustudio/bone_scale.hpp"
 namespace model_paste_host_checks {
 struct Snapshot {
     std::vector<mdl::BoneKey> bones;

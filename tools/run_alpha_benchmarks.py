@@ -35,8 +35,8 @@ def main() -> None:
         parser.error("use a new output directory to preserve previous results")
 
     environment = {k: v for k, v in os.environ.items()
-                   if k.startswith(("MIKUDANCESTUDIO_", "OMP_"))}
-    if environment.get("MIKUDANCESTUDIO_SKIP_PHYSICS", "0") not in ("", "0"):
+                   if k.startswith(("MIKUMIKUSTUDIO_", "OMP_"))}
+    if environment.get("MIKUMIKUSTUDIO_SKIP_PHYSICS", "0") not in ("", "0"):
         parser.error("physics must remain enabled")
     builds = {"A": args.baseline.resolve(), "B": args.candidate.resolve()}
     manifest = {"created": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
@@ -51,7 +51,7 @@ def main() -> None:
             "mme": root / "build/tests/mme-benchmark/Release/MikuMikuDance.exe",
         }
         cache = (root / "build/CMakeCache.txt").read_text(encoding="utf-8")
-        for switch in ("MIKUDANCESTUDIO_PERF:BOOL=OFF", "MIKUDANCESTUDIO_DIAG:BOOL=OFF",
+        for switch in ("MIKUMIKUSTUDIO_PERF:BOOL=OFF", "MIKUMIKUSTUDIO_DIAG:BOOL=OFF",
                        "CMAKE_CXX_FLAGS_RELEASE:STRING=/O2 /Ob2 /DNDEBUG"):
             if switch not in cache:
                 raise RuntimeError(f"{root}: required configuration missing: {switch}")

@@ -1,8 +1,8 @@
 // MAINTENANCE: regression-keep; purpose and cleanup conditions in tests/README.md.
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/gpu_model.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/gpu_model.hpp"
 #include <array>
 #include <cmath>
 #include <cstdio>
@@ -11,7 +11,7 @@
 #include <cstring>
 #include <vector>
 
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 static void Check(bool ok, const char* message) {
     if (!ok) { std::fprintf(stderr, "FAIL: %s\n", message); std::exit(1); }
 }

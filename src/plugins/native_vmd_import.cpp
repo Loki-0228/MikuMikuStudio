@@ -3,22 +3,22 @@
 #include "native_pose_scope.hpp"
 #include "native_vmd_source.hpp"
 #include "native_model_vmd_source.hpp"
-#include "mikudancestudio/text_encoding.hpp"
+#include "mikumikustudio/text_encoding.hpp"
 #include "native_history_commands.hpp"
 #include "native_morph_commands.hpp"
-#include "mikudancestudio/animation_curve_host.hpp"
-#include "mikudancestudio/autosave.hpp"
-#include "mikudancestudio/bake_ui_lock.hpp"
-#include "mikudancestudio/frame_limits.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/runtime_log.hpp"
-#include "mikudancestudio/plugin_scene.hpp"
-#include "mikudancestudio/model.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
+#include "mikumikustudio/autosave.hpp"
+#include "mikumikustudio/bake_ui_lock.hpp"
+#include "mikumikustudio/frame_limits.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/runtime_log.hpp"
+#include "mikumikustudio/plugin_scene.hpp"
+#include "mikumikustudio/model.hpp"
 #include <array>
 #include <algorithm>
 #include <cstring>
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 MmsResult CheckVmdImportHistory(MMDApp* app) noexcept {
     if (!app) return MMS_E_ARGUMENT;
     return BoundNativePoseHistory(app) ? MMS_E_NOT_READY : MMS_OK;

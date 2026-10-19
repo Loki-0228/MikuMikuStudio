@@ -7,15 +7,15 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
-#include "mikudancestudio/dshow_recorder.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/globals.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/recording_state.hpp"
-#include "mikudancestudio/ui_metrics.hpp"
+#include "mikumikustudio/dshow_recorder.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/globals.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/recording_state.hpp"
+#include "mikumikustudio/ui_metrics.hpp"
 #include "../src/app/recording_ack_wait.hpp"
 
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 namespace {
 unsigned checks = 0;
 void Check(bool ok, const char* message) {
@@ -65,7 +65,7 @@ struct ControlPeer final : DispatchPeer<IMediaControl> {
     HRESULT STDMETHODCALLTYPE get_RegFilterCollection(IDispatch**) override { return E_NOTIMPL; }
     HRESULT STDMETHODCALLTYPE StopWhenReady() override { return E_NOTIMPL; }
 };
-struct PushPeer final : mikudancestudio::IPushSource {
+struct PushPeer final : mikumikustudio::IPushSource {
     ULONG references = 1;
     unsigned begins = 0, releases = 0, stateReads = 0;
     HRESULT beginResult = S_OK;

@@ -1,13 +1,13 @@
 #pragma once
-#include "mikudancestudio/skinning_backend.hpp"
-#include "mikudancestudio/geometry_workers.hpp"
+#include "mikumikustudio/skinning_backend.hpp"
+#include "mikumikustudio/geometry_workers.hpp"
 #include <Windows.h>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <stdexcept>
 
-namespace mikudancestudio::skinning::calibration_cache {
+namespace mikumikustudio::skinning::calibration_cache {
 // Bump when the benchmark geometry, CPU/GPU algorithm or measurement changes.
 constexpr std::uint32_t kVersion=2;
 constexpr std::uint64_t kMagic=0x31484341434e4b53ull;
@@ -24,7 +24,7 @@ inline std::filesystem::path LegacyPath(const wchar_t* product) {
     wchar_t local[32768]{};
     const auto n=GetEnvironmentVariableW(L"LOCALAPPDATA",local,32768);
     if(!n || n>=32768)return {};
-    return std::filesystem::path(local)/L"MikuDanceStudio"/
+    return std::filesystem::path(local)/L"MikuMikuStudio"/
         (std::wstring(L"skinning-")+product+L"-v1.bin");
 }
 inline std::wstring CpuKey() {

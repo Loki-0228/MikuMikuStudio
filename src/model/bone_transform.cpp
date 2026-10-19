@@ -59,7 +59,7 @@
 // =========================================================================//
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include "mikudancestudio/bone_scale.hpp"
+#include "mikumikustudio/bone_scale.hpp"
 #include <Windows.h>
 
 #include <cmath>
@@ -67,16 +67,16 @@
 #include <cstdio>
 #include <cstring>
 
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/model.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/model.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 
 using d3dx::D3DXMATRIXF;
 
-#ifdef MIKUDANCESTUDIO_DIAG
-// ---- IK CCD probe under MIKUDANCESTUDIO_STATE_DUMP_DIR --------------------
+#ifdef MIKUMIKUSTUDIO_DIAG
+// ---- IK CCD probe under MIKUMIKUSTUDIO_STATE_DUMP_DIR --------------------
 // (porting-era A/B tooling; see ../app/frame_state_dump.hpp for the gate.
 //  Lives in the hottest IK loop, so the OFF build must carry none of it.)
 
@@ -107,7 +107,7 @@ void WriteIkProbe(unsigned char* model, int chainIndex, int iteration,
         return;
     char directory[MAX_PATH]{};
     const DWORD length = GetEnvironmentVariableA(
-        "MIKUDANCESTUDIO_STATE_DUMP_DIR", directory, MAX_PATH);
+        "MIKUMIKUSTUDIO_STATE_DUMP_DIR", directory, MAX_PATH);
     if (length == 0 || length >= MAX_PATH)
         return;
     char path[MAX_PATH]{};
@@ -151,7 +151,7 @@ void WriteIkPrecheck(unsigned char* model, int chainIndex, int iteration,
         return;
     char directory[MAX_PATH]{};
     const DWORD length = GetEnvironmentVariableA(
-        "MIKUDANCESTUDIO_STATE_DUMP_DIR", directory, MAX_PATH);
+        "MIKUMIKUSTUDIO_STATE_DUMP_DIR", directory, MAX_PATH);
     if (length == 0 || length >= MAX_PATH)
         return;
     char path[MAX_PATH]{};
@@ -183,7 +183,7 @@ void WriteIkPrecheck(unsigned char* model, int chainIndex, int iteration,
     std::fclose(stream);
 }
 
-#endif  // MIKUDANCESTUDIO_DIAG
+#endif  // MIKUMIKUSTUDIO_DIAG
 
 // The original's truncated "pi": 0x4048F5C3 (x64 dword_7FF7CB552B90,
 // 3.1400001f - NOT float(pi), the mantissa-truncated constant both
@@ -912,7 +912,7 @@ void BoneTransform_CcdIk(D3& d3, unsigned char* m,
                 Vec3Norm(d1, d1);
                 Vec3Norm(d2, d2);
                 const float diff2 = SquaredDiff3X87(d1, d2);
-#ifdef MIKUDANCESTUDIO_DIAG
+#ifdef MIKUMIKUSTUDIO_DIAG
                 WriteIkPrecheck(m, ci, iter, li, d1, d2, diff2, target,
                                 root, link);
 #endif
@@ -1041,7 +1041,7 @@ void BoneTransform_CcdIk(D3& d3, unsigned char* m,
                     std::cos(half)};
                 float acc[4] = {link.rotQuat2[0], link.rotQuat2[1],
                                 link.rotQuat2[2], link.rotQuat2[3]};
-#ifdef MIKUDANCESTUDIO_DIAG
+#ifdef MIKUMIKUSTUDIO_DIAG
                 WriteIkProbe(m, ci, iter, li, loops,
                              ik.boneIndex, ik.targetBone, child[li], d1, d2,
                              axis, dot, static_cast<float>(half), acc, rotq);
@@ -1331,7 +1331,7 @@ void BoneTransform_PostIkPass(D3& d3, mdl::BoneRecord* boneRecords,
 }  // namespace
 
 void ArmBoneTransformIkProbe() {
-#ifdef MIKUDANCESTUDIO_DIAG
+#ifdef MIKUMIKUSTUDIO_DIAG
     InterlockedExchange(&gIkProbeArmed, 1);
     InterlockedExchange(&gIkProbeWritten, 0);
 #endif
@@ -1368,4 +1368,4 @@ void BoneFrameTransform(unsigned char* m, unsigned char afterPhysics,
                               physicsMode);                          // E 0x496881
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

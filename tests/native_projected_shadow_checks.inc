@@ -1,4 +1,4 @@
-namespace mikudancestudio {void CmdFileMenu(MMDApp*,HWND,std::uint16_t,std::uint16_t);}
+namespace mikumikustudio {void CmdFileMenu(MMDApp*,HWND,std::uint16_t,std::uint16_t);}
 namespace {
 std::uint8_t& ShadowDisplayFlag(MMDApp& app,unsigned field){return field?app.ProjectedShadowBlendEnabled():app.GroundShadowEnabled();}
 std::array<std::uint8_t,3> ShadowDisplayValues(MMDApp& app){return {app.GroundGridEnabled(),app.GroundShadowEnabled(),app.ProjectedShadowBlendEnabled()};}

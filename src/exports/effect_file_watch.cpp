@@ -1,6 +1,6 @@
-#include "mikudancestudio/effect_file_watch.hpp"
-#include "mikudancestudio/effect_apng.hpp"
-#include "mikudancestudio/runtime_log.hpp"
+#include "mikumikustudio/effect_file_watch.hpp"
+#include "mikumikustudio/effect_apng.hpp"
+#include "mikumikustudio/runtime_log.hpp"
 #include "effect_file_watch_cache.hpp"
 #include <MinHook.h>
 #include <intrin.h>
@@ -8,7 +8,7 @@
 #include <cstring>
 #include <new>
 
-namespace mikudancestudio::effect_file_watch {
+namespace mikumikustudio::effect_file_watch {
 #if defined(_WIN64)
 namespace {
 ReadTime original = nullptr;

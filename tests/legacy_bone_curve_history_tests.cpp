@@ -1,15 +1,15 @@
 // Ordinary, unbound editor entry points. Shared-history planners are not used.
 #define NOMINMAX
-#include "mikudancestudio/animation_curve.hpp"
-#include "mikudancestudio/bone_curve.hpp"
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/bone_scale.hpp"
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/undo_storage.hpp"
+#include "mikumikustudio/animation_curve.hpp"
+#include "mikumikustudio/bone_curve.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/undo_storage.hpp"
 #include <array>
 #include <cmath>
 #include <cstdio>
@@ -18,10 +18,10 @@
 #include <memory>
 #include <new>
 #include <vector>
-namespace mikudancestudio { void ApplyFrameRangeScale(HWND); }
+namespace mikumikustudio { void ApplyFrameRangeScale(HWND); }
 namespace {
 thread_local long allocationLimit=-1;
-thread_local mikudancestudio::mdl::ModelRecord* completeProbe=nullptr;
+thread_local mikumikustudio::mdl::ModelRecord* completeProbe=nullptr;
 thread_local float completeProbePosition=0;
 thread_local bool failedAfterNative=false;
 bool CompletedNativeRange()noexcept{
@@ -38,7 +38,7 @@ void* operator new(std::size_t size){if(allocationLimit==0){failedAfterNative=fa
 void* operator new[](std::size_t size){return ::operator new(size);}
 void operator delete(void* p)noexcept{std::free(p);}void operator delete[](void* p)noexcept{std::free(p);}
 void operator delete(void* p,std::size_t)noexcept{std::free(p);}void operator delete[](void* p,std::size_t)noexcept{std::free(p);}
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 namespace ac=animation_curve;
 namespace {
 unsigned checks=0;

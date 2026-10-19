@@ -4,19 +4,19 @@
 #include "../src/plugins/native_morph_commands.hpp"
 #include "../src/plugins/native_camera_follow.hpp"
 #include "../src/plugins/native_camera_follow_ui.hpp"
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/bone_scale.hpp"
-#include "mikudancestudio/bone_curve.hpp"
-#include "mikudancestudio/morph_curve.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/bone_curve.hpp"
+#include "mikumikustudio/morph_curve.hpp"
 #include <shlobj.h>
 #include "../slider_readout_spy.hpp"
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/animation_curve_editor.hpp"
-#include "mikudancestudio/animation_curve_host.hpp"
-#include "mikudancestudio/animation_curve_motion.hpp"
-#include "mikudancestudio/channel_bake.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/animation_curve_editor.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
+#include "mikumikustudio/animation_curve_motion.hpp"
+#include "mikumikustudio/channel_bake.hpp"
 #include "../src/plugins/native_history_commands.hpp"
-#include "mikudancestudio/panel_controls.hpp"
+#include "mikumikustudio/panel_controls.hpp"
 #include "../src/plugins/native_key_commands.hpp"
 #include "../src/plugins/native_object_commands.hpp"
 #include "../src/plugins/native_frame_lines.hpp"
@@ -30,17 +30,17 @@
 #include "../src/plugins/native_camera_hud_history.hpp"
 #include "../src/plugins/native_model_hud_history.hpp"
 #include "../src/plugins/scene_object_history.hpp"
-#include "mikudancestudio/accessory_motion_io.hpp"
-#include "mikudancestudio/clipboard_layout.hpp"
-#include "mikudancestudio/text_encoding.hpp"
-#include "mikudancestudio/ui_language.hpp"
-#include "mikudancestudio/system_settings_ui.hpp"
-#include "mikudancestudio/frame_presentation.hpp"
-#include "mikudancestudio/viewport_tool_layout.hpp"
-#include "mikudancestudio/viewport_corner_settings.hpp"
-namespace mikudancestudio { void DispatchSeparateWindowCommand(MMDApp*, unsigned short); }
-namespace mikudancestudio { void ConsumeNumpadViewPresets(MMDApp*); }
-namespace mikudancestudio { int ViewportToolAtPointForTest(MMDApp*); }
+#include "mikumikustudio/accessory_motion_io.hpp"
+#include "mikumikustudio/clipboard_layout.hpp"
+#include "mikumikustudio/text_encoding.hpp"
+#include "mikumikustudio/ui_language.hpp"
+#include "mikumikustudio/system_settings_ui.hpp"
+#include "mikumikustudio/frame_presentation.hpp"
+#include "mikumikustudio/viewport_tool_layout.hpp"
+#include "mikumikustudio/viewport_corner_settings.hpp"
+namespace mikumikustudio { void DispatchSeparateWindowCommand(MMDApp*, unsigned short); }
+namespace mikumikustudio { void ConsumeNumpadViewPresets(MMDApp*); }
+namespace mikumikustudio { int ViewportToolAtPointForTest(MMDApp*); }
 namespace edit_history_host_checks {
 UINT FindMenuCommand(HMENU menu, const wchar_t* label) {
     for (int index = 0; menu && index < GetMenuItemCount(menu); ++index) {

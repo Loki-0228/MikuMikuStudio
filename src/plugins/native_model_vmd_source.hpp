@@ -1,10 +1,10 @@
 #pragma once
 #include "native_model_paste.hpp"
 #if !MMD_ORIGINAL_PROFILE
-#include "mikudancestudio/extended_names.hpp"
-#include "mikudancestudio/bone_scale_io.hpp"
+#include "mikumikustudio/extended_names.hpp"
+#include "mikumikustudio/bone_scale_io.hpp"
 #include <string>
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 struct ModelVmdSource {
     ModelPasteSource source;
     int version=0;

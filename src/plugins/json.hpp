@@ -2,7 +2,7 @@
 #include "common.hpp"
 #include <map>
 
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 // Small, bounded JSON reader for manifests. Numbers retain their spelling so
 // schema integers never round or silently accept fractional/exponent values.
 struct Json {

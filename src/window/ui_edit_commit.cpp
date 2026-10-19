@@ -1,4 +1,4 @@
-#include "mikudancestudio/frame_limits.hpp"
+#include "mikumikustudio/frame_limits.hpp"
 // ===========================================================================
 // VA 0x00463640 - EditCommit  (original: sub_463640, 0xB2A bytes)
 // VA 0x0044BEF0 - EditCommitTail  (original: sub_44BEF0)
@@ -66,15 +66,15 @@
 #include <cstring>
 #include <limits>
 
-#include "mikudancestudio/adaptive_shadow.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/bone_parent_coordinates.hpp"
-#include "mikudancestudio/accessory_layout.hpp"
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/bone_scale.hpp"
+#include "mikumikustudio/adaptive_shadow.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/bone_parent_coordinates.hpp"
+#include "mikumikustudio/accessory_layout.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/bone_scale.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "../plugins/native_pose_scope.hpp"
 #include "../plugins/native_history_commands.hpp"
@@ -83,7 +83,7 @@
 #include "light_slider_paint_buffer.hpp"
 #endif
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 // Dependencies ported in other translation units.
 void RefreshAfterFrameApply(MMDApp* app);          // VA 0x00432FA0, was Sub432FA0 (ui_frame_step.cpp)
@@ -124,10 +124,10 @@ void ComposeEulerToBone(MMDApp* app, unsigned char* model, int sel) {
     d3dx->multiply(&rot, &rot, &tmp);
     d3dx->rotY(&tmp, app->state.eulerY);
     d3dx->multiply(&rot, &rot, &tmp);
-    mikudancestudio::mdl::BoneRecord* bones = mikudancestudio::mdl::Bones(model);
+    mikumikustudio::mdl::BoneRecord* bones = mikumikustudio::mdl::Bones(model);
     d3dx->quatFromMatrix(reinterpret_cast<float*>(&bones[sel].rotQuat[0]),
                          &rot);
-    mikudancestudio::mdl::Mdl(model)->bonePhysicsState[sel] = 1;
+    mikumikustudio::mdl::Mdl(model)->bonePhysicsState[sel] = 1;
 }
 
 #if !MMD_ORIGINAL_PROFILE
@@ -372,11 +372,11 @@ void CommitEditControlTail(MMDApp* app, HWND edit) {  // was Sub44BEF0
         const double v = atof(text);
         if (!cameraMode) {
             unsigned char* model = SlotModel(app);
-            const int sel = mikudancestudio::mdl::Mdl(model)->selectedBone;
+            const int sel = mikumikustudio::mdl::Mdl(model)->selectedBone;
             if (sel >= 0) {
                 PushBoneEditUndo(app);
-                mikudancestudio::mdl::Bones(model)[sel].trans[0] = static_cast<float>(v) - BoneParentBindOffset(model,sel,0);
-                mikudancestudio::mdl::Mdl(model)->bonePhysicsState[sel] = 1;
+                mikumikustudio::mdl::Bones(model)[sel].trans[0] = static_cast<float>(v) - BoneParentBindOffset(model,sel,0);
+                mikumikustudio::mdl::Mdl(model)->bonePhysicsState[sel] = 1;
             }
             PostViewRefresh(app);
             return;
@@ -392,11 +392,11 @@ void CommitEditControlTail(MMDApp* app, HWND edit) {  // was Sub44BEF0
         const double v = atof(text);
         if (!cameraMode) {
             unsigned char* model = SlotModel(app);
-            const int sel = mikudancestudio::mdl::Mdl(model)->selectedBone;
+            const int sel = mikumikustudio::mdl::Mdl(model)->selectedBone;
             if (sel >= 0) {
                 PushBoneEditUndo(app);
-                mikudancestudio::mdl::Bones(model)[sel].trans[1] = static_cast<float>(v) - BoneParentBindOffset(model,sel,1);
-                mikudancestudio::mdl::Mdl(model)->bonePhysicsState[sel] = 1;
+                mikumikustudio::mdl::Bones(model)[sel].trans[1] = static_cast<float>(v) - BoneParentBindOffset(model,sel,1);
+                mikumikustudio::mdl::Mdl(model)->bonePhysicsState[sel] = 1;
             }
             PostViewRefresh(app);
             return;
@@ -412,11 +412,11 @@ void CommitEditControlTail(MMDApp* app, HWND edit) {  // was Sub44BEF0
         double v = atof(text);
         if (!cameraMode) {
             unsigned char* model = SlotModel(app);
-            const int sel = mikudancestudio::mdl::Mdl(model)->selectedBone;
+            const int sel = mikumikustudio::mdl::Mdl(model)->selectedBone;
             if (sel >= 0) {
                 PushBoneEditUndo(app);
-                mikudancestudio::mdl::Bones(model)[sel].trans[2] = static_cast<float>(v) - BoneParentBindOffset(model,sel,2);
-                mikudancestudio::mdl::Mdl(model)->bonePhysicsState[sel] = 1;
+                mikumikustudio::mdl::Bones(model)[sel].trans[2] = static_cast<float>(v) - BoneParentBindOffset(model,sel,2);
+                mikumikustudio::mdl::Mdl(model)->bonePhysicsState[sel] = 1;
             }
             PostViewRefresh(app);
             return;
@@ -432,7 +432,7 @@ void CommitEditControlTail(MMDApp* app, HWND edit) {  // was Sub44BEF0
         const double v = atof(text);
         if (!cameraMode) {
             unsigned char* model = SlotModel(app);
-            const int sel = mikudancestudio::mdl::Mdl(model)->selectedBone;
+            const int sel = mikumikustudio::mdl::Mdl(model)->selectedBone;
             if (sel >= 0) {
                 PushBoneEditUndo(app);
                 app->state.eulerX =
@@ -467,7 +467,7 @@ void CommitEditControlTail(MMDApp* app, HWND edit) {  // was Sub44BEF0
             return;
         }
         unsigned char* model = SlotModel(app);
-        const int sel = mikudancestudio::mdl::Mdl(model)->selectedBone;
+        const int sel = mikumikustudio::mdl::Mdl(model)->selectedBone;
         if (sel >= 0) {
             PushBoneEditUndo(app);
             app->state.eulerX =      // re-convert stored
@@ -498,7 +498,7 @@ void CommitEditControlTail(MMDApp* app, HWND edit) {  // was Sub44BEF0
             return;
         }
         unsigned char* model = SlotModel(app);
-        const int sel = mikudancestudio::mdl::Mdl(model)->selectedBone;
+        const int sel = mikumikustudio::mdl::Mdl(model)->selectedBone;
         if (sel >= 0) {
             PushBoneEditUndo(app);
             app->state.eulerX =
@@ -728,10 +728,10 @@ void CommitEditControl(MMDApp* app, HWND edit) {  // was Sub463640
             const double v = atof(text);
             unsigned char* model = SlotModel(app);
             const int selector =
-                mikudancestudio::mdl::Mdl(model)->selectedMorphs[
+                mikumikustudio::mdl::Mdl(model)->selectedMorphs[
                     (morphEdit - 506) / 5];
-            if (mikudancestudio::mdl::Morphs(model) != nullptr && selector >= 0)
-                mikudancestudio::mdl::Morphs(model)[selector].value =
+            if (mikumikustudio::mdl::Morphs(model) != nullptr && selector >= 0)
+                mikumikustudio::mdl::Morphs(model)[selector].value =
                     static_cast<float>(v);
             SendMessageA(GetDlgItem(main, morphEdit - 1), TBM_SETPOS, 1,
                          static_cast<LPARAM>(static_cast<int>(v * 100.0)));
@@ -915,4 +915,4 @@ void InstallControlSubclass(MMDApp* app, HWND control, int id) {
     }
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

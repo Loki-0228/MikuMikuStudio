@@ -4,7 +4,7 @@
 #include "../../third_party/smaa/AreaTex.h"
 #include "../../third_party/smaa/SearchTex.h"
 
-namespace mikudancestudio::antialias {
+namespace mikumikustudio::antialias {
 // Expand the upstream R8G8/R8 tables to universally filterable DX9 RGBA8.
 // DEFAULT + UpdateTexture also works on D3D9Ex, which rejects MANAGED textures.
 inline HRESULT CreateSmaaLookup(IDirect3DDevice9* device,unsigned width,unsigned height,

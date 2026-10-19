@@ -23,7 +23,7 @@ HWND Editor(MMDApp& app){
     struct Find{HWND owner=nullptr,result=nullptr;}find{app.MainWindow()};
     EnumThreadWindows(GetCurrentThreadId(),[](HWND window,LPARAM context)->BOOL{
         auto& find=*reinterpret_cast<Find*>(context);wchar_t name[96]{};GetClassNameW(window,name,96);
-        if(GetWindow(window,GW_OWNER)==find.owner&&!std::wcscmp(name,L"MikuDanceStudioCurveEditorWindow"))find.result=window;
+        if(GetWindow(window,GW_OWNER)==find.owner&&!std::wcscmp(name,L"MikuMikuStudioCurveEditorWindow"))find.result=window;
         return TRUE;
     },reinterpret_cast<LPARAM>(&find));return find.result;
 }

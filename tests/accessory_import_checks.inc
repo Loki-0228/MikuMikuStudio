@@ -1,7 +1,7 @@
 // CPU-only production private-loader checks. Include in native history tests.
-#include "mikudancestudio/accessory_import.hpp"
-#include "mikudancestudio/import_texture_cache.hpp"
-#include "mikudancestudio/text_encoding.hpp"
+#include "mikumikustudio/accessory_import.hpp"
+#include "mikumikustudio/import_texture_cache.hpp"
+#include "mikumikustudio/text_encoding.hpp"
 #include <string>
 #include <vector>
 namespace {

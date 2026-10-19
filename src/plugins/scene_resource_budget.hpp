@@ -1,5 +1,5 @@
 #pragma once
-#include "mikudancestudio/build_profile.hpp"
+#include "mikumikustudio/build_profile.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include <algorithm>
 #include <cstdint>
@@ -12,7 +12,7 @@ struct IUnknown;
 class btRigidBody;
 class btTypedConstraint;
 class btCollisionShape;
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace mdl { struct ModelRecord; struct AccessoryRecord; struct AccessoryKey; }
 namespace plugins::resource_budget {
 // This is a retained-payload estimate, not a process/VRAM measurement. Global

@@ -1,4 +1,4 @@
-namespace mikudancestudio { void CmdControl400(MMDApp*,HWND,std::uint16_t,std::uint16_t); }
+namespace mikumikustudio { void CmdControl400(MMDApp*,HWND,std::uint16_t,std::uint16_t); }
 namespace {
 struct CameraProjectionFixture : FovTextFixture {
     CameraProjectionFixture(){app->CameraMode()=1;app->CameraDistance()=-45.125f;

@@ -5,7 +5,7 @@
 #include <atomic>
 #include <mutex>
 
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 struct Manager::Impl {
     struct Instance {
         Impl* host;

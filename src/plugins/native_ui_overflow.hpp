@@ -4,7 +4,7 @@
 #include <map>
 #include <set>
 
-namespace mikudancestudio::plugins::toolbar_overflow {
+namespace mikumikustudio::plugins::toolbar_overflow {
 struct Policy { bool menu = false; bool command = false; bool separator = false; };
 struct Result {
     native_ui::TreeResult layout;

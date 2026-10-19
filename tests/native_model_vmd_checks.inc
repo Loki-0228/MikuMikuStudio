@@ -71,7 +71,7 @@ VmdDecodeBytes ModelVmdWithScale(VmdDecodeBytes prefix,bone_scale_io::VmdExtensi
     bone_scale_io::PrefixFingerprint fingerprint;fingerprint.Append(prefix.data(),prefix.size());
     extension.prefixBytes=fingerprint.bytes();extension.prefixCrc32=fingerprint.crc32();
     const auto payload=bone_scale_io::EncodeExtension(extension);prefix.insert(prefix.end(),payload.begin(),payload.end());
-    VmdDecodePut(prefix,std::uint64_t(payload.size()));prefix.insert(prefix.end(),{'M','D','S','X','V','M','D','X'});return prefix;
+    VmdDecodePut(prefix,std::uint64_t(payload.size()));prefix.insert(prefix.end(),{'M','M','S','X','V','M','D','X'});return prefix;
 }
 void NativeModelVmdScaleChecks(){
     using namespace plugins;
@@ -183,7 +183,7 @@ void NativeModelVmdChecks(){
         source.version=99;Check(DecodeModelVmdSource(nullptr,file.path.c_str(),unsigned(frame_limits::maximum)-10,source)==MMS_E_ARGUMENT&&source.version==99,"ignored global maximum still guards model frame offset");
         const auto curveAt=std::size_t(54+47);bytes[curveAt]=128;file.Write(bytes);
         Check(DecodeModelVmdSource(nullptr,file.path.c_str(),0,source)==MMS_E_ARGUMENT&&source.version==99,"invalid imported interpolation rejects before output publication");
-        bytes=ModelVmdFixtureBytes();bytes.insert(bytes.end(),8,0);bytes.insert(bytes.end(),{'M','D','S','X','V','M','D','X'});file.Write(bytes);
+        bytes=ModelVmdFixtureBytes();bytes.insert(bytes.end(),8,0);bytes.insert(bytes.end(),{'M','M','S','X','V','M','D','X'});file.Write(bytes);
         Check(DecodeModelVmdSource(nullptr,file.path.c_str(),0,source)==MMS_OK&&source.scales.entries.empty(),"malformed scale footer retains legacy ignored-extension policy");
         file.Write(VmdDecodeMotion().bytes);Check(DecodeModelVmdSource(nullptr,file.path.c_str(),0,source)==MMS_E_ARGUMENT,"camera motion cannot enter model import");
     }

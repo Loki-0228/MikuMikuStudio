@@ -1,11 +1,11 @@
 #pragma once
-#include "mikudancestudio/build_profile.hpp"
+#include "mikumikustudio/build_profile.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include <array>
 #include <memory>
 #include <mms/plugin.h>
-namespace mikudancestudio { class MMDApp; }
-namespace mikudancestudio::plugins {
+namespace mikumikustudio { class MMDApp; }
+namespace mikumikustudio::plugins {
 class SharedHistory;
 class HistoryChange;
 // Internal planner participant. It adds root-parent dependencies without

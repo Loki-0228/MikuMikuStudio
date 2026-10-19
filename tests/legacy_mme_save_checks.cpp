@@ -18,19 +18,19 @@
 #include <memory>
 #include <string>
 #include <vector>
-#include "mikudancestudio/autosave.hpp"
-#include "mikudancestudio/build_profile.hpp"
-#include "mikudancestudio/effect_api.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/autosave.hpp"
+#include "mikumikustudio/build_profile.hpp"
+#include "mikumikustudio/effect_api.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "../src/plugins/project_storage.hpp"
 #endif
 
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 namespace fs = std::filesystem;
-namespace as = mikudancestudio::autosave;
+namespace as = mikumikustudio::autosave;
 namespace {
 unsigned checks = 0, notifications = 0, consumed = 0, renderCalls = 0, commitFaults = 0;
 bool mockPresent = false, mockAutoSave = true, failCommit = false, freezeClock = false;
@@ -199,7 +199,7 @@ int main() {
     Check(!GetModuleHandleW(L"MMHack.dll") && !GetModuleHandleW(L"MMEffect.dll"),
         "this test neither ships nor loads third-party MME binaries");
     SetEnvironmentVariableW(L"MMS_NVIDIA_AA_FIX", L"0");
-    SetEnvironmentVariableW(L"MIKUDANCESTUDIO_AUTOSAVE_CONFIG", (root / L"autosave.ini").c_str());
+    SetEnvironmentVariableW(L"MIKUMIKUSTUDIO_AUTOSAVE_CONFIG", (root / L"autosave.ini").c_str());
     SetEnvironmentVariableW(L"MMS_RECENT_PROJECTS_FILE", (root / L"recent.txt").c_str());
     uiThread = GetCurrentThreadId();
     Check(MH_Initialize() == MH_OK, "initialize isolated observers");

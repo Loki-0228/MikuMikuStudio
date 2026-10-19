@@ -1,5 +1,5 @@
-// Separate PMM tail record. MDSC v1 and standard PMM/VMD formats stay intact.
-constexpr char preservedCameraRecord[]="org.mikudancestudio.camera_intervals.v1";
+// Separate PMM tail record. MMSC v1 and standard PMM/VMD formats stay intact.
+constexpr char preservedCameraRecord[]="org.mikumikustudio.camera_intervals.v1";
 using PreservedCameraAddress=std::tuple<int,int,int>;
 using PreservedCameraTable=std::map<PreservedCameraAddress,std::vector<PreservedCameraInterval>>;
 struct CameraIntervalWriter {

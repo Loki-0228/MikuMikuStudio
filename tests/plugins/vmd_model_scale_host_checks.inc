@@ -12,7 +12,7 @@ void AppendScale(vmd_model_host_checks::File& file,const mdl::ModelRecord& model
     for(unsigned i=0;i<2;++i){bone_scale_io::VmdExtension::Entry entry;
         std::memcpy(entry.name.data(),model.boneTable[bone].name,strnlen_s(model.boneTable[bone].name,15));entry.frame=i*8;
         if(!i)entry.scale.v[0]=2.5f;entry.curve=i?bone_scale::Curve{8,31,92,120}:bone_scale::Curve{14,37,88,118};extension.entries.push_back(entry);}
-    const auto tail=bone_scale_io::EncodeExtension(extension);file.Raw(tail.data(),tail.size());file.Put(std::uint64_t(tail.size()));file.Raw("MDSXVMDX",8);
+    const auto tail=bone_scale_io::EncodeExtension(extension);file.Raw(tail.data(),tail.size());file.Put(std::uint64_t(tail.size()));file.Raw("MMSXVMDX",8);
     FILE* stream=nullptr;Check(!_wfopen_s(&stream,file.path.c_str(),L"wb")&&stream,"open scaled model VMD fixture");
     Check(std::fwrite(file.bytes.data(),1,file.bytes.size(),stream)==file.bytes.size(),"write real writer-produced scale/curve tail");Check(!std::fclose(stream),"close scaled VMD fixture");
 }

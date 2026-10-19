@@ -8,17 +8,17 @@
 #include "native_pose_scope.hpp"
 #include "native_history_commands.hpp"
 #include "scene_object_history.hpp"
-#include "mikudancestudio/animation_curve_host.hpp"
-#include "mikudancestudio/bone_curve.hpp"
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/bone_pose_safety.hpp"
-#include "mikudancestudio/bone_scale.hpp"
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/frame_limits.hpp"
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/plugin_scene.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
+#include "mikumikustudio/bone_curve.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/bone_pose_safety.hpp"
+#include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/frame_limits.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/plugin_scene.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -27,7 +27,7 @@
 #include <stdexcept>
 #include <string>
 
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 namespace {
 bool ValidateTailCursorStorage(MMDApp&,unsigned) noexcept;
 struct KeyPatch { unsigned slot; mdl::BoneKey before{}, after{}; bool data = false; };

@@ -1,4 +1,4 @@
-#include "mikudancestudio/model_import.hpp"
+#include "mikumikustudio/model_import.hpp"
 #include "../src/plugins/scene_identity.hpp"
 #include <io.h>
 namespace {

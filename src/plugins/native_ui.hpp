@@ -1,7 +1,7 @@
 #pragma once
 #include "ui_registry.hpp"
 
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 class NativeUi {
     struct Impl;
     std::unique_ptr<Impl> impl_;

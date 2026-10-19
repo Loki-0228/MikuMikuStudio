@@ -1,6 +1,6 @@
-#include "mikudancestudio/native_mesh.hpp"
-#include "mikudancestudio/effect_display.hpp"
-#include "mikudancestudio/perf_timing.hpp"
+#include "mikumikustudio/native_mesh.hpp"
+#include "mikumikustudio/effect_display.hpp"
+#include "mikumikustudio/perf_timing.hpp"
 // ===========================================================================
 // VA 0x004C3590..0x004C3A00 - MMD effect/accessory plugin API (37 exports)
 // ===========================================================================
@@ -65,20 +65,20 @@
 #include <cwchar>
 #include <string>
 
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/effect_api.hpp"
-#include "mikudancestudio/text_encoding.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/effect_api.hpp"
+#include "mikumikustudio/text_encoding.hpp"
 
 // VA 0x0042A110 - model-slot count; real body in src/unported/stubs.cpp.
-namespace mikudancestudio {
+namespace mikumikustudio {
 int GetPmdNum(MMDApp* app);
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio
 
 namespace {
 
-using mikudancestudio::MMDApp;
+using mikumikustudio::MMDApp;
 
 // x64 reference RVA 0xA6FA0: try CP932, then the renderer's explicit
 // locales. The process-wide Japanese locale cannot encode Chinese paths.
@@ -90,7 +90,7 @@ void EffectFilename(MMDApp* app, char* out, const wchar_t* path) {
     // remains governed separately by the original-profile save policy.
     if (GetModuleHandleW(L"MMEffect.dll")) {
         std::string nativePath;
-        if (mikudancestudio::text_encoding::EncodeExact(path, CP_ACP, nativePath) && nativePath.size() < 256) {
+        if (mikumikustudio::text_encoding::EncodeExact(path, CP_ACP, nativePath) && nativePath.size() < 256) {
             strcpy_s(out, 256, nativePath.c_str());
             return;
         }
@@ -118,20 +118,20 @@ void EffectFilename(MMDApp* app, char* out, const wchar_t* path) {
 
 unsigned char* ModelByIndex(MMDApp* app, int index) {  // 0x780/x64 0xBE8
     int occupied = -1;
-    for (int i = 0; i < mikudancestudio::kModelSlotCount; ++i) {
+    for (int i = 0; i < mikumikustudio::kModelSlotCount; ++i) {
         unsigned char* slot = app->ModelSlot(i);
         if (slot != nullptr && ++occupied == index)
-            return mikudancestudio::native_mesh::RenderModel(slot);
+            return mikumikustudio::native_mesh::RenderModel(slot);
     }
     return nullptr;
 }
 
-mikudancestudio::mdl::AccessoryRecord* AcsByIndex(MMDApp* app, int index) {
+mikumikustudio::mdl::AccessoryRecord* AcsByIndex(MMDApp* app, int index) {
     int occupied = -1;
     for (int i = 0; i < 0xFF; ++i) {
-        mikudancestudio::mdl::AccessoryRecord* slot = app->AccessorySlot(i);
+        mikumikustudio::mdl::AccessoryRecord* slot = app->AccessorySlot(i);
         if (slot != nullptr && ++occupied == index)
-            return mikudancestudio::native_mesh::RenderAccessory(slot);
+            return mikumikustudio::native_mesh::RenderAccessory(slot);
     }
     return nullptr;
 }
@@ -160,7 +160,7 @@ int CountAcs(MMDApp* app) {
 // Report the key only for objects the engine has asked about this frame.
 // Otherwise return 0, which MMHack reads as "no current object", continuing
 // without per-object effect state.
-std::uint8_t g_modelOrderSeen[mikudancestudio::kModelSlotCount] = {0};
+std::uint8_t g_modelOrderSeen[mikumikustudio::kModelSlotCount] = {0};
 std::uint8_t g_accessoryOrderSeen[0xFF] = {0};
 
 // Memoize repeated MME queries only within the owning render thread's current
@@ -214,7 +214,7 @@ void TranslateEffectEditor(HWND window) {
     HMENU menu = GetMenu(window);
     if (!menu || GetMenuState(menu, 40028, MF_BYCOMMAND) == UINT(-1) ||
         GetMenuState(menu, 40007, MF_BYCOMMAND) == UINT(-1)) return;
-    mikudancestudio::InstallEffectListDisplay(window, effectEditorApp);
+    mikumikustudio::InstallEffectListDisplay(window, effectEditorApp);
     if (effectEditorApp->EnglishUI() != 2) return;
     SetWindowTextW(window, L"效果文件分配");
     const auto setMenuText = [](HMENU target, UINT id, bool byPosition, const wchar_t* text) {
@@ -324,13 +324,13 @@ LRESULT CALLBACK EffectMenuProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp,
         RepairEffectMenu(menu);
         if (menu != nullptr && enabled != UINT(-1))
             CheckMenuItem(menu, kEffectEnable, MF_BYCOMMAND | (enabled & MF_CHECKED));
-        mikudancestudio::RefreshEffectMenuLanguage(
-            reinterpret_cast<mikudancestudio::MMDApp*>(reference));
+        mikumikustudio::RefreshEffectMenuLanguage(
+            reinterpret_cast<mikumikustudio::MMDApp*>(reference));
         DrawMenuBar(hwnd);
     } else if (message == WM_INITMENUPOPUP) {
         // Apply after MME handles the message: it may have rebuilt its popup.
-        mikudancestudio::RefreshEffectMenuLanguage(
-            reinterpret_cast<mikudancestudio::MMDApp*>(reference));
+        mikumikustudio::RefreshEffectMenuLanguage(
+            reinterpret_cast<mikumikustudio::MMDApp*>(reference));
     }
     if (languageChange || (message == WM_COMMAND && (LOWORD(wp) == 310 || LOWORD(wp) == 311))) {
         EnumThreadWindows(GetCurrentThreadId(), [](HWND window, LPARAM) -> BOOL {
@@ -345,14 +345,14 @@ LRESULT CALLBACK EffectMenuProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp,
 }
 
 // ---- D3DX wrappers with local fallbacks (d3dx9_32.dll may be absent) ------
-void Identity(mikudancestudio::d3dx::D3DXMATRIXF* m) {
+void Identity(mikumikustudio::d3dx::D3DXMATRIXF* m) {
     std::memset(m, 0, sizeof(*m));
     m->m[0][0] = m->m[1][1] = m->m[2][2] = m->m[3][3] = 1.0f;
 }
 
-void MulFallback(mikudancestudio::d3dx::D3DXMATRIXF* o, const mikudancestudio::d3dx::D3DXMATRIXF* a,
-                 const mikudancestudio::d3dx::D3DXMATRIXF* b) {  // o = a * b (row vectors)
-    mikudancestudio::d3dx::D3DXMATRIXF t;
+void MulFallback(mikumikustudio::d3dx::D3DXMATRIXF* o, const mikumikustudio::d3dx::D3DXMATRIXF* a,
+                 const mikumikustudio::d3dx::D3DXMATRIXF* b) {  // o = a * b (row vectors)
+    mikumikustudio::d3dx::D3DXMATRIXF t;
     for (int i = 0; i < 4; ++i)
         for (int j = 0; j < 4; ++j) {
             float s = 0.0f;
@@ -364,10 +364,10 @@ void MulFallback(mikudancestudio::d3dx::D3DXMATRIXF* o, const mikudancestudio::d
 }
 
 struct D3dx {
-    mikudancestudio::d3dx::Api& api;
+    mikumikustudio::d3dx::Api& api;
     bool ok;
-    D3dx() : api(mikudancestudio::d3dx::Get()), ok(api.Load()) {}
-    void Translation(mikudancestudio::d3dx::D3DXMATRIXF* m, float x, float y, float z) {
+    D3dx() : api(mikumikustudio::d3dx::Get()), ok(api.Load()) {}
+    void Translation(mikumikustudio::d3dx::D3DXMATRIXF* m, float x, float y, float z) {
         if (ok && api.translation) {
             api.translation(m, x, y, z);
         } else {  // documented fallback, same formula
@@ -377,14 +377,14 @@ struct D3dx {
             m->m[3][2] = z;
         }
     }
-    void Multiply(mikudancestudio::d3dx::D3DXMATRIXF* o, const mikudancestudio::d3dx::D3DXMATRIXF* a,
-                  const mikudancestudio::d3dx::D3DXMATRIXF* b) {
+    void Multiply(mikumikustudio::d3dx::D3DXMATRIXF* o, const mikumikustudio::d3dx::D3DXMATRIXF* a,
+                  const mikumikustudio::d3dx::D3DXMATRIXF* b) {
         if (ok && api.multiply)
             api.multiply(o, a, b);
         else
             MulFallback(o, a, b);
     }
-    void Rot(float angle, int axis, mikudancestudio::d3dx::D3DXMATRIXF* m) {
+    void Rot(float angle, int axis, mikumikustudio::d3dx::D3DXMATRIXF* m) {
         if (ok && (axis == 0 ? api.rotX : axis == 1 ? api.rotY : api.rotZ)) {
             (axis == 0 ? api.rotX : axis == 1 ? api.rotY : api.rotZ)(m, angle);
             return;
@@ -399,7 +399,7 @@ struct D3dx {
             m->m[0][0] = c; m->m[0][1] = s; m->m[1][0] = -s; m->m[1][1] = c;
         }
     }
-    void Scaling(mikudancestudio::d3dx::D3DXMATRIXF* m, float x, float y, float z) {
+    void Scaling(mikumikustudio::d3dx::D3DXMATRIXF* m, float x, float y, float z) {
         if (ok && api.scaling) {
             api.scaling(m, x, y, z);
         } else {
@@ -417,12 +417,12 @@ struct D3dx {
 // dst = Scaling(Si*10) * Rz * Rx * Ry * T(local xyz) * T(parent xyz) * bone
 // (each step is D3DXMatrixMultiply(dst, dst, step); the original builds the
 // result directly into the caller's buffer, zero-filled first).
-float* AccWorldMatrix(const mikudancestudio::mdl::AccessoryRecord& acc, float* dst16,
+float* AccWorldMatrix(const mikumikustudio::mdl::AccessoryRecord& acc, float* dst16,
                       float px, float py, float pz,
                       const float* boneMat16) {
-    auto* dst = reinterpret_cast<mikudancestudio::d3dx::D3DXMATRIXF*>(dst16);
-    auto* bone = reinterpret_cast<const mikudancestudio::d3dx::D3DXMATRIXF*>(boneMat16);
-    mikudancestudio::d3dx::D3DXMATRIXF step;
+    auto* dst = reinterpret_cast<mikumikustudio::d3dx::D3DXMATRIXF*>(dst16);
+    auto* bone = reinterpret_cast<const mikumikustudio::d3dx::D3DXMATRIXF*>(boneMat16);
+    mikumikustudio::d3dx::D3DXMATRIXF step;
     D3dx d3;
 
     const float si10 = static_cast<float>(acc.scale * 10.0);
@@ -443,7 +443,7 @@ float* AccWorldMatrix(const mikudancestudio::mdl::AccessoryRecord& acc, float* d
 
 }  // namespace
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 // Only the seven commands on the MME main popup are translated. Command IDs,
 // checked/disabled states, separator items and third-party additions survive.
@@ -574,7 +574,7 @@ void NotifyEffectFileSave(const wchar_t* path) {
         CloseHandle(file);
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio
 
 extern "C" {
 
@@ -582,36 +582,36 @@ extern "C" {
 // 0x4C35A0 -> 0x42A110
 __declspec(dllexport) int ExpGetPmdNum() {
     MMD_PERF_SCOPE(EffectApi);
-    return mikudancestudio::GetPmdNum(mikudancestudio::g_Block);
+    return mikumikustudio::GetPmdNum(mikumikustudio::g_Block);
 }
 
 // 0x4C35B0 -> 0x42A160: wide model path -> SJIS into app+0xA02B7.
 __declspec(dllexport) char* ExpGetPmdFilename(int index) {
     MMD_PERF_SCOPE(EffectApi);
-    MMDApp* app = mikudancestudio::g_Block;
+    MMDApp* app = mikumikustudio::g_Block;
     unsigned char* model = ModelByIndex(app, index);
     if (model == nullptr)
         return nullptr;                      // original: xor eax, eax
     char* out = reinterpret_cast<char*>(app->state.sjisOut);
-    EffectFilename(app, out, mikudancestudio::mdl::Mdl(model)->path);
+    EffectFilename(app, out, mikumikustudio::mdl::Mdl(model)->path);
     return out;
 }
 
 // 0x4C35D0 -> 0x441000: order byte + min(AcsNum, PreAcsNum).
 __declspec(dllexport) int ExpGetPmdOrder(int index) {
     MMD_PERF_SCOPE(EffectApi);
-    MMDApp* app = mikudancestudio::g_Block;
+    MMDApp* app = mikumikustudio::g_Block;
     int base = CountAcs(app);
     const int pre = app->state.accessoryRenderSplitOrder;
     if (pre < base)
         base = pre;
     int occupied = -1;
-    for (int i = 0; i < mikudancestudio::kModelSlotCount; ++i) {
+    for (int i = 0; i < mikumikustudio::kModelSlotCount; ++i) {
         unsigned char* slot = app->ModelSlot(i);
         if (slot != nullptr && ++occupied == index) {
-            if (index >= 0 && index < mikudancestudio::kModelSlotCount)
+            if (index >= 0 && index < mikumikustudio::kModelSlotCount)
                 { g_modelOrderSeen[index] = 1; ++g_currentObjectGeneration; }
-            return mikudancestudio::mdl::Mdl(slot)->comboSelIndex + base;
+            return mikumikustudio::mdl::Mdl(slot)->comboSelIndex + base;
         }
     }
     return 0;
@@ -620,10 +620,10 @@ __declspec(dllexport) int ExpGetPmdOrder(int index) {
 // 0x4C35F0 -> 0x42A1C0 -> 0x4A48D0: dword model+0x1C.
 __declspec(dllexport) int ExpGetPmdMatNum(int index) {
     MMD_PERF_SCOPE(EffectApi);
-    unsigned char* model = ModelByIndex(mikudancestudio::g_Block, index);
+    unsigned char* model = ModelByIndex(mikumikustudio::g_Block, index);
     if (model == nullptr)
         return 0;
-    return static_cast<int>(mikudancestudio::mdl::Mdl(model)->materialCount);
+    return static_cast<int>(mikumikustudio::mdl::Mdl(model)->materialCount);
 }
 
 // 0x4C3610 -> 0x42A210 -> 0x4A48E0: copies 17 material floats into `out`.
@@ -637,14 +637,14 @@ __declspec(dllexport) float* ExpGetPmdMaterial(float* out, int index,
                                                int mat) {
     MMD_PERF_SCOPE(EffectApi);
     std::memset(out, 0, 0x44);
-    unsigned char* model = ModelByIndex(mikudancestudio::g_Block, index);
+    unsigned char* model = ModelByIndex(mikumikustudio::g_Block, index);
     if (model == nullptr)
         return out;
     const std::uint32_t count =
-        mikudancestudio::mdl::Mdl(model)->materialCount;
+        mikumikustudio::mdl::Mdl(model)->materialCount;
     if (static_cast<std::uint32_t>(mat) < count) {
-        const mikudancestudio::mdl::ModelMaterialRecord& rec =
-            mikudancestudio::mdl::Materials(model)[
+        const mikumikustudio::mdl::ModelMaterialRecord& rec =
+            mikumikustudio::mdl::Materials(model)[
                 static_cast<std::size_t>(mat)];
         std::memcpy(out, &rec, 0x44);
     }
@@ -654,16 +654,16 @@ __declspec(dllexport) float* ExpGetPmdMaterial(float* out, int index,
 // 0x4C3650 -> 0x42A290: dword model+0x2D84.
 __declspec(dllexport) int ExpGetPmdBoneNum(int index) {
     MMD_PERF_SCOPE(EffectApi);
-    unsigned char* model = ModelByIndex(mikudancestudio::g_Block, index);
+    unsigned char* model = ModelByIndex(mikumikustudio::g_Block, index);
     if (model == nullptr)
         return 0;
-    return static_cast<int>(mikudancestudio::mdl::Mdl(model)->boneCount);
+    return static_cast<int>(mikumikustudio::mdl::Mdl(model)->boneCount);
 }
 
 // 0x4C3670 -> 0x42A2E0: SJIS bone name = bone record base (name at +0).
 __declspec(dllexport) char* ExpGetPmdBoneName(int index, int bone) {
     MMD_PERF_SCOPE(EffectApi);
-    unsigned char* model = ModelByIndex(mikudancestudio::g_Block, index);
+    unsigned char* model = ModelByIndex(mikumikustudio::g_Block, index);
     if (model == nullptr)
         return nullptr;
     // Deliberate hardening: the original checks only the model index -
@@ -673,10 +673,10 @@ __declspec(dllexport) char* ExpGetPmdBoneName(int index, int bone) {
     // comparing it against boneCount, so an out-of-range index reads past the
     // bone table. The port reports the bone as not found.
     // Defect CB-11.
-    const std::uint32_t boneCount = mikudancestudio::mdl::Mdl(model)->boneCount;
+    const std::uint32_t boneCount = mikumikustudio::mdl::Mdl(model)->boneCount;
     if (bone < 0 || static_cast<std::uint32_t>(bone) >= boneCount)
         return nullptr;
-    return mikudancestudio::mdl::Bones(model)[bone].name;
+    return mikumikustudio::mdl::Bones(model)[bone].name;
 }
 
 // 0x4C3690 -> 0x42A330: out = T(bone position) * bone world matrix;
@@ -684,9 +684,9 @@ __declspec(dllexport) char* ExpGetPmdBoneName(int index, int bone) {
 __declspec(dllexport) float* ExpGetPmdBoneWorldMat(float* out, int index,
                                                    int bone) {
     MMD_PERF_SCOPE(EffectApi);
-    mikudancestudio::d3dx::D3DXMATRIXF m;
+    mikumikustudio::d3dx::D3DXMATRIXF m;
     Identity(&m);
-    unsigned char* model = ModelByIndex(mikudancestudio::g_Block, index);
+    unsigned char* model = ModelByIndex(mikumikustudio::g_Block, index);
     // Deliberate hardening: the original computes the bone address from the raw
     // index using the same unchecked 0x270 multiply (0x1400A745B inside
     // 0x1400A7370) and dereferences it without validating the index against
@@ -695,16 +695,16 @@ __declspec(dllexport) float* ExpGetPmdBoneWorldMat(float* out, int index,
     // Defect CB-11.
     if (model != nullptr && bone >= 0 &&
         static_cast<std::uint32_t>(bone) <
-            mikudancestudio::mdl::Mdl(model)->boneCount) {
-        mikudancestudio::mdl::BoneRecord& boneRec =
-            mikudancestudio::mdl::Bones(model)[bone];
-        mikudancestudio::d3dx::D3DXMATRIXF t;
+            mikumikustudio::mdl::Mdl(model)->boneCount) {
+        mikumikustudio::mdl::BoneRecord& boneRec =
+            mikumikustudio::mdl::Bones(model)[bone];
+        mikumikustudio::d3dx::D3DXMATRIXF t;
         D3dx d3;
         d3.Translation(&t, boneRec.position[0], boneRec.position[1],
                        boneRec.position[2]);
         d3.Multiply(&m, &m, &t);
         d3.Multiply(&m, &m,
-                    reinterpret_cast<const mikudancestudio::d3dx::D3DXMATRIXF*>(boneRec.matInit));
+                    reinterpret_cast<const mikumikustudio::d3dx::D3DXMATRIXF*>(boneRec.matInit));
     }
     std::memcpy(out, &m, 0x40);
     return out;
@@ -713,16 +713,16 @@ __declspec(dllexport) float* ExpGetPmdBoneWorldMat(float* out, int index,
 // 0x4C36D0 -> 0x42A460: dword model+0x2D80.
 __declspec(dllexport) int ExpGetPmdMorphNum(int index) {
     MMD_PERF_SCOPE(EffectApi);
-    unsigned char* model = ModelByIndex(mikudancestudio::g_Block, index);
+    unsigned char* model = ModelByIndex(mikumikustudio::g_Block, index);
     if (model == nullptr)
         return 0;
-    return static_cast<int>(mikudancestudio::mdl::Mdl(model)->morphCount);
+    return static_cast<int>(mikumikustudio::mdl::Mdl(model)->morphCount);
 }
 
 // 0x4C36F0 -> 0x42A4B0: SJIS morph name = morph record base (name at +0).
 __declspec(dllexport) char* ExpGetPmdMorphName(int index, int morph) {
     MMD_PERF_SCOPE(EffectApi);
-    unsigned char* model = ModelByIndex(mikudancestudio::g_Block, index);
+    unsigned char* model = ModelByIndex(mikumikustudio::g_Block, index);
     if (model == nullptr)
         return nullptr;
     // Deliberate hardening: the original only validates the model index, then
@@ -732,16 +732,16 @@ __declspec(dllexport) char* ExpGetPmdMorphName(int index, int morph) {
     // found.
     // Defect CB-11.
     const std::uint32_t morphCount =
-        mikudancestudio::mdl::Mdl(model)->morphCount;
+        mikumikustudio::mdl::Mdl(model)->morphCount;
     if (morph < 0 || static_cast<std::uint32_t>(morph) >= morphCount)
         return nullptr;
-    return mikudancestudio::mdl::Morphs(model)[morph].name;
+    return mikumikustudio::mdl::Morphs(model)[morph].name;
 }
 
 // 0x4C3710 -> 0x42A500: morph value (float) at record +0x30.
 __declspec(dllexport) float ExpGetPmdMorphValue(int index, int morph) {
     MMD_PERF_SCOPE(EffectApi);
-    unsigned char* model = ModelByIndex(mikudancestudio::g_Block, index);
+    unsigned char* model = ModelByIndex(mikumikustudio::g_Block, index);
     if (model == nullptr)
         return 0.0f;
     // Deliberate hardening: the original bounds only the model index and then
@@ -751,19 +751,19 @@ __declspec(dllexport) float ExpGetPmdMorphValue(int index, int morph) {
     // the result it also returns when the model slot is missing.
     // Defect CB-11.
     const std::uint32_t morphCount =
-        mikudancestudio::mdl::Mdl(model)->morphCount;
+        mikumikustudio::mdl::Mdl(model)->morphCount;
     if (morph < 0 || static_cast<std::uint32_t>(morph) >= morphCount)
         return 0.0f;
-    return mikudancestudio::mdl::Morphs(model)[morph].value;
+    return mikumikustudio::mdl::Morphs(model)[morph].value;
 }
 
 // 0x4C3730 -> 0x42A560: display byte model+0x2D8D.
 __declspec(dllexport) int ExpGetPmdDisp(int index) {
     MMD_PERF_SCOPE(EffectApi);
-    unsigned char* model = ModelByIndex(mikudancestudio::g_Block, index);
+    unsigned char* model = ModelByIndex(mikumikustudio::g_Block, index);
     if (model == nullptr)
         return 0;
-    return static_cast<unsigned char>(mikudancestudio::mdl::Mdl(model)->loadComplete);
+    return static_cast<unsigned char>(mikumikustudio::mdl::Mdl(model)->loadComplete);
 }
 
 // x64 reference RVA 0xDB91C returns EAX, not RAX: IDs are the low 32 bits
@@ -771,27 +771,27 @@ __declspec(dllexport) int ExpGetPmdDisp(int index) {
 __declspec(dllexport) std::uint32_t ExpGetPmdID(int index) {
     MMD_PERF_SCOPE(EffectApi);
     return static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(
-        ModelByIndex(mikudancestudio::g_Block, index)));
+        ModelByIndex(mikumikustudio::g_Block, index)));
 }
 
 // --- accessory (ACS/stage) queries -----------------------------------------
 // 0x4C3770 -> 0x42A5F0.
 __declspec(dllexport) int ExpGetAcsNum() {
     MMD_PERF_SCOPE(EffectApi);
-    return CountAcs(mikudancestudio::g_Block);
+    return CountAcs(mikumikustudio::g_Block);
 }
 
 // 0x4C3780 -> 0x42A640.
 __declspec(dllexport) int ExpGetPreAcsNum() {
     MMD_PERF_SCOPE(EffectApi);
-    return mikudancestudio::g_Block->state.accessoryRenderSplitOrder;
+    return mikumikustudio::g_Block->state.accessoryRenderSplitOrder;
 }
 
 // 0x4C3790 -> 0x42A650: wide path (acc+0x29C) -> SJIS into app+0xA02B7.
 __declspec(dllexport) char* ExpGetAcsFilename(int index) {
     MMD_PERF_SCOPE(EffectApi);
-    MMDApp* app = mikudancestudio::g_Block;
-    mikudancestudio::mdl::AccessoryRecord* acc = AcsByIndex(app, index);
+    MMDApp* app = mikumikustudio::g_Block;
+    mikumikustudio::mdl::AccessoryRecord* acc = AcsByIndex(app, index);
     if (acc == nullptr)
         return nullptr;
     char* out = reinterpret_cast<char*>(app->state.sjisOut);
@@ -803,8 +803,8 @@ __declspec(dllexport) char* ExpGetAcsFilename(int index) {
 // stage block, order+1+PmdNum for those after it.
 __declspec(dllexport) int ExpGetAcsOrder(int index) {
     MMD_PERF_SCOPE(EffectApi);
-    MMDApp* app = mikudancestudio::g_Block;
-    mikudancestudio::mdl::AccessoryRecord* acc = AcsByIndex(app, index);
+    MMDApp* app = mikumikustudio::g_Block;
+    mikumikustudio::mdl::AccessoryRecord* acc = AcsByIndex(app, index);
     if (acc == nullptr)
         return 0;
     if (index >= 0 && index < 0xFF)
@@ -812,20 +812,20 @@ __declspec(dllexport) int ExpGetAcsOrder(int index) {
     int order = acc->order + 1;
     if (order < app->state.accessoryRenderSplitOrder + 1)
         return -order;
-    return order + mikudancestudio::GetPmdNum(app);
+    return order + mikumikustudio::GetPmdNum(app);
 }
 
 // 0x4C37D0 -> 0x42A720 + 0x4C5D00: out zero-filled; a parented accessory
 // uses the parent bone position/matrix, otherwise T(0,0,0) * identity.
 __declspec(dllexport) float* ExpGetAcsWorldMat(float* out, int index) {
     MMD_PERF_SCOPE(EffectApi);
-    MMDApp* app = mikudancestudio::g_Block;
+    MMDApp* app = mikumikustudio::g_Block;
     std::memset(out, 0, 0x40);
-    mikudancestudio::mdl::AccessoryRecord* acc = AcsByIndex(app, index);
+    mikumikustudio::mdl::AccessoryRecord* acc = AcsByIndex(app, index);
     if (acc != nullptr) {
         const std::int32_t parentSlot = acc->parentModel;
         float px = 0.0f, py = 0.0f, pz = 0.0f;
-        mikudancestudio::d3dx::D3DXMATRIXF bone;
+        mikumikustudio::d3dx::D3DXMATRIXF bone;
         // Deliberate hardening: the original only tests this field for
         // `parentModel == -1` (cmp dword ptr [r10+240h], -1 at 0x1400A19F3), then
         // indexes the model slot array with the raw value, so an out-of-range or
@@ -834,7 +834,7 @@ __declspec(dllexport) float* ExpGetAcsWorldMat(float* out, int index) {
         // unparented identity matrix instead of being dereferenced.
         // Defect CB-02.
         unsigned char* model = nullptr;
-        if (parentSlot >= 0 && parentSlot < mikudancestudio::kModelSlotCount)
+        if (parentSlot >= 0 && parentSlot < mikumikustudio::kModelSlotCount)
             model = app->ModelSlot(parentSlot);
         // Deliberate hardening: the original code loads parentBone and scales it by
         // the 0x270 bone stride before dereferencing it (0x1400A1B10,
@@ -845,9 +845,9 @@ __declspec(dllexport) float* ExpGetAcsWorldMat(float* out, int index) {
         // Defect RB-06.
         if (model != nullptr && acc->parentBone >= 0 &&
             static_cast<std::uint32_t>(acc->parentBone) <
-                mikudancestudio::mdl::Mdl(model)->boneCount) {
-            mikudancestudio::mdl::BoneRecord& boneRec =
-                mikudancestudio::mdl::Bones(model)[acc->parentBone];
+                mikumikustudio::mdl::Mdl(model)->boneCount) {
+            mikumikustudio::mdl::BoneRecord& boneRec =
+                mikumikustudio::mdl::Bones(model)[acc->parentBone];
             px = boneRec.position[0];
             py = boneRec.position[1];
             pz = boneRec.position[2];
@@ -863,43 +863,43 @@ __declspec(dllexport) float* ExpGetAcsWorldMat(float* out, int index) {
 // 0x4C3800 -> 0x42A8F0 (float acc+0x214; 0 when the index never matches).
 __declspec(dllexport) float ExpGetAcsX(int index) {
     MMD_PERF_SCOPE(EffectApi);
-    const auto* acc = AcsByIndex(mikudancestudio::g_Block, index);
+    const auto* acc = AcsByIndex(mikumikustudio::g_Block, index);
     return acc != nullptr ? acc->position[0] : 0.0f;
 }
 // 0x4C3820 -> 0x42A940 (acc+0x218).
 __declspec(dllexport) float ExpGetAcsY(int index) {
     MMD_PERF_SCOPE(EffectApi);
-    const auto* acc = AcsByIndex(mikudancestudio::g_Block, index);
+    const auto* acc = AcsByIndex(mikumikustudio::g_Block, index);
     return acc != nullptr ? acc->position[1] : 0.0f;
 }
 // 0x4C3840 -> 0x42A990 (acc+0x21C).
 __declspec(dllexport) float ExpGetAcsZ(int index) {
     MMD_PERF_SCOPE(EffectApi);
-    const auto* acc = AcsByIndex(mikudancestudio::g_Block, index);
+    const auto* acc = AcsByIndex(mikumikustudio::g_Block, index);
     return acc != nullptr ? acc->position[2] : 0.0f;
 }
 // 0x4C3860 -> 0x42A9E0 (acc+0x220).
 __declspec(dllexport) float ExpGetAcsRx(int index) {
     MMD_PERF_SCOPE(EffectApi);
-    const auto* acc = AcsByIndex(mikudancestudio::g_Block, index);
+    const auto* acc = AcsByIndex(mikumikustudio::g_Block, index);
     return acc != nullptr ? acc->rotation[0] : 0.0f;
 }
 // 0x4C3880 -> 0x42AA30 (acc+0x224).
 __declspec(dllexport) float ExpGetAcsRy(int index) {
     MMD_PERF_SCOPE(EffectApi);
-    const auto* acc = AcsByIndex(mikudancestudio::g_Block, index);
+    const auto* acc = AcsByIndex(mikumikustudio::g_Block, index);
     return acc != nullptr ? acc->rotation[1] : 0.0f;
 }
 // 0x4C38A0 -> 0x42AA80 (acc+0x228).
 __declspec(dllexport) float ExpGetAcsRz(int index) {
     MMD_PERF_SCOPE(EffectApi);
-    const auto* acc = AcsByIndex(mikudancestudio::g_Block, index);
+    const auto* acc = AcsByIndex(mikumikustudio::g_Block, index);
     return acc != nullptr ? acc->rotation[2] : 0.0f;
 }
 // 0x4C38C0 -> 0x42AAD0 (acc+0x22C scaled by dbl 10.0 @ 0x52C170).
 __declspec(dllexport) float ExpGetAcsSi(int index) {
     MMD_PERF_SCOPE(EffectApi);
-    const auto* acc = AcsByIndex(mikudancestudio::g_Block, index);
+    const auto* acc = AcsByIndex(mikumikustudio::g_Block, index);
     return acc != nullptr
                ? static_cast<float>(acc->scale * 10.0)
                : 0.0f;
@@ -907,14 +907,14 @@ __declspec(dllexport) float ExpGetAcsSi(int index) {
 // 0x4C38E0 -> 0x42AB20 (acc+0x4A0).
 __declspec(dllexport) float ExpGetAcsTr(int index) {
     MMD_PERF_SCOPE(EffectApi);
-    const auto* acc = AcsByIndex(mikudancestudio::g_Block, index);
+    const auto* acc = AcsByIndex(mikumikustudio::g_Block, index);
     return acc != nullptr ? acc->opacity : 0.0f;
 }
 
 // 0x4C3900 -> 0x42AB70: display byte acc+0x210.
 __declspec(dllexport) int ExpGetAcsDisp(int index) {
     MMD_PERF_SCOPE(EffectApi);
-    const auto* acc = AcsByIndex(mikudancestudio::g_Block, index);
+    const auto* acc = AcsByIndex(mikumikustudio::g_Block, index);
     if (acc == nullptr)
         return 0;
     return acc->visible;
@@ -924,13 +924,13 @@ __declspec(dllexport) int ExpGetAcsDisp(int index) {
 __declspec(dllexport) std::uint32_t ExpGetAcsID(int index) {
     MMD_PERF_SCOPE(EffectApi);
     return static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(
-        AcsByIndex(mikudancestudio::g_Block, index)));
+        AcsByIndex(mikumikustudio::g_Block, index)));
 }
 
 // 0x4C3940 -> 0x42AC00: dword acc+0x4A4.
 __declspec(dllexport) int ExpGetAcsMatNum(int index) {
     MMD_PERF_SCOPE(EffectApi);
-    const auto* acc = AcsByIndex(mikudancestudio::g_Block, index);
+    const auto* acc = AcsByIndex(mikumikustudio::g_Block, index);
     if (acc == nullptr)
         return 0;
     return static_cast<int>(acc->materialCount);
@@ -944,7 +944,7 @@ __declspec(dllexport) float* ExpGetAcsMaterial(float* out, int index,
                                                int mat) {
     MMD_PERF_SCOPE(EffectApi);
     std::memset(out, 0, 0x44);
-    const auto* acc = AcsByIndex(mikudancestudio::g_Block, index);
+    const auto* acc = AcsByIndex(mikumikustudio::g_Block, index);
     if (acc == nullptr)
         return out;
     if (acc->materials != nullptr && mat >= 0 &&
@@ -962,8 +962,8 @@ __declspec(dllexport) float* ExpGetAcsMaterial(float* out, int index,
 // engine yet (see g_modelOrderSeen).
 __declspec(dllexport) int ExpGetCurrentObject() {
     MMD_PERF_SCOPE(EffectApi);
-    MMDApp* app = mikudancestudio::g_Block;
-    const void* cur = mikudancestudio::native_mesh::SourceObject(app->state.activeRenderObject);
+    MMDApp* app = mikumikustudio::g_Block;
+    const void* cur = mikumikustudio::native_mesh::SourceObject(app->state.activeRenderObject);
     if (cur == nullptr)
         return 0;
     auto& cache = g_currentObjectCache;
@@ -977,7 +977,7 @@ __declspec(dllexport) int ExpGetCurrentObject() {
             if (slot == cur && slot->order == cache.order) return cache.result;
         } else {
             const auto* slot = app->ModelSlot(cache.slot);
-            if (slot == cur && mikudancestudio::mdl::Mdl(slot)->comboSelIndex == cache.order)
+            if (slot == cur && mikumikustudio::mdl::Mdl(slot)->comboSelIndex == cache.order)
                 return cache.result;
         }
     }
@@ -987,7 +987,7 @@ __declspec(dllexport) int ExpGetCurrentObject() {
         // accessory slots first
         int ordinal = 0;
         for (int i = 0; i < 0xFF; ++i) {
-            mikudancestudio::mdl::AccessoryRecord* slot = app->AccessorySlot(i);
+            mikumikustudio::mdl::AccessoryRecord* slot = app->AccessorySlot(i);
             if (slot == nullptr)
                 continue;
             if (slot == cur) {
@@ -996,7 +996,7 @@ __declspec(dllexport) int ExpGetCurrentObject() {
                     return 0;  // not in MMHack's order map yet
                 int order = slot->order + 1;
                 if (order >= app->state.accessoryRenderSplitOrder + 1)
-                    return order + mikudancestudio::GetPmdNum(app);
+                    return order + mikumikustudio::GetPmdNum(app);
                 return -order;
             }
             ++ordinal;
@@ -1007,15 +1007,15 @@ __declspec(dllexport) int ExpGetCurrentObject() {
         if (pre < base)
             base = pre;
         ordinal = 0;
-        for (int i = 0; i < mikudancestudio::kModelSlotCount; ++i) {
+        for (int i = 0; i < mikumikustudio::kModelSlotCount; ++i) {
             unsigned char* slot = app->ModelSlot(i);
             if (slot == nullptr)
                 continue;
             if (slot == cur) {
-                foundSlot = i; foundOrder = mikudancestudio::mdl::Mdl(slot)->comboSelIndex;
+                foundSlot = i; foundOrder = mikumikustudio::mdl::Mdl(slot)->comboSelIndex;
                 if (g_modelOrderSeen[ordinal] == 0)
                     return 0;  // not in MMHack's order map yet
-                return mikudancestudio::mdl::Mdl(slot)->comboSelIndex + base;
+                return mikumikustudio::mdl::Mdl(slot)->comboSelIndex + base;
             }
             ++ordinal;
         }
@@ -1036,20 +1036,20 @@ __declspec(dllexport) int ExpGetCurrentObject() {
 // material cursor at +0x37C4/+0x3B6C); -1 when null or unmatched.
 __declspec(dllexport) int ExpGetCurrentMaterial() {
     MMD_PERF_SCOPE(EffectApi);
-    MMDApp* app = mikudancestudio::g_Block;
+    MMDApp* app = mikumikustudio::g_Block;
     unsigned char* cur = static_cast<unsigned char*>(app->state.activeRenderObject);
     if (cur == nullptr)
         return -1;
     for (int i = 0; i < 0xFF; ++i) {
-        mikudancestudio::mdl::AccessoryRecord* slot = mikudancestudio::native_mesh::RenderAccessory(app->AccessorySlot(i));
-        if (slot == reinterpret_cast<mikudancestudio::mdl::AccessoryRecord*>(cur))
+        mikumikustudio::mdl::AccessoryRecord* slot = mikumikustudio::native_mesh::RenderAccessory(app->AccessorySlot(i));
+        if (slot == reinterpret_cast<mikumikustudio::mdl::AccessoryRecord*>(cur))
             return slot->currentMaterial;
     }
-    for (int i = 0; i < mikudancestudio::kModelSlotCount; ++i) {
-        unsigned char* slot = mikudancestudio::native_mesh::RenderModel(app->ModelSlot(i));
+    for (int i = 0; i < mikumikustudio::kModelSlotCount; ++i) {
+        unsigned char* slot = mikumikustudio::native_mesh::RenderModel(app->ModelSlot(i));
         if (slot == cur)
             return static_cast<std::int32_t>(
-                mikudancestudio::mdl::Mdl(cur)->toonShared);
+                mikumikustudio::mdl::Mdl(cur)->toonShared);
     }
     return -1;
 }
@@ -1057,25 +1057,25 @@ __declspec(dllexport) int ExpGetCurrentMaterial() {
 // 0x4C39C0 -> 0x42ADE0.
 __declspec(dllexport) int ExpGetCurrentTechnic() {
     MMD_PERF_SCOPE(EffectApi);
-    return mikudancestudio::g_Block->state.activeRenderPass;
+    return mikumikustudio::g_Block->state.activeRenderPass;
 }
 
 // 0x4C39D0 -> 0x42ADF0.
 __declspec(dllexport) void ExpSetRenderRepeatCount(int count) {
     MMD_PERF_SCOPE(EffectApi);
-    mikudancestudio::g_Block->state.renderPassCount = count;
+    mikumikustudio::g_Block->state.renderPassCount = count;
 }
 
 // 0x4C39F0 -> 0x42AE00.
 __declspec(dllexport) int ExpGetRenderRepeatCount() {
     MMD_PERF_SCOPE(EffectApi);
-    return mikudancestudio::g_Block->state.renderPassCount;
+    return mikumikustudio::g_Block->state.renderPassCount;
 }
 
 // 0x4C3A00 -> 0x42AE10: English UI flag byte (app+0xA0B4C).
 __declspec(dllexport) int ExpGetEnglishMode() {
     MMD_PERF_SCOPE(EffectApi);
-    return mikudancestudio::g_Block->state.englishUI;
+    return mikumikustudio::g_Block->state.englishUI;
 }
 
 // 0x4C3590 -> 0x42A0D0: physics cursor (0x9E64C) while playing, else the
@@ -1083,7 +1083,7 @@ __declspec(dllexport) int ExpGetEnglishMode() {
 // add) divided by 30.
 __declspec(dllexport) float ExpGetFrameTime() {
     MMD_PERF_SCOPE(EffectApi);
-    MMDApp* app = mikudancestudio::g_Block;
+    MMDApp* app = mikumikustudio::g_Block;
     if (app->state.playbackActive != 0)
         return app->PlaybackCursorSeconds();
     const std::int32_t frame = app->state.currentFrame;

@@ -1,17 +1,17 @@
-#include "mikudancestudio/d3d12_native.hpp"
-#include "mikudancestudio/viewport_render_scale.hpp"
+#include "mikumikustudio/d3d12_native.hpp"
+#include "mikumikustudio/viewport_render_scale.hpp"
 #if defined(MMD_ENABLE_DX12) && MMD_ENABLE_DX12
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include "mikudancestudio/d3d12_native.hpp"
-#include "mikudancestudio/gpu_model.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/model_alpha_pass.hpp"
-#include "mikudancestudio/processor_settings.hpp"
-#include "mikudancestudio/runtime_log.hpp"
-#include "mikudancestudio/graphics_runtime.hpp"
+#include "mikumikustudio/d3d12_native.hpp"
+#include "mikumikustudio/gpu_model.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/model_alpha_pass.hpp"
+#include "mikumikustudio/processor_settings.hpp"
+#include "mikumikustudio/runtime_log.hpp"
+#include "mikumikustudio/graphics_runtime.hpp"
 #include <d3d12.h>
 #include <d3d12sdklayers.h>
 #include <dxgi1_6.h>
@@ -26,7 +26,7 @@
 #include <numeric>
 #include "d3d12_native_shaders.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 using Microsoft::WRL::ComPtr;
 void Check12(HRESULT hr,const char* name) {
@@ -457,7 +457,7 @@ bool RenderD3D12Native(MMDApp* app,const float world[16]) {
 }
 }
 #else
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 const char* status = "DX12 features are disabled in this build";
 }

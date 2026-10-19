@@ -1,12 +1,12 @@
-// PMM v2 tail extension codec ("MDSXPMM2" trailer).
+// PMM v2 tail extension codec ("MMSXPMM2" trailer).
 //
-// Format, limits and API contract: include/mikudancestudio/pmm_extension.hpp.
+// Format, limits and API contract: include/mikumikustudio/pmm_extension.hpp.
 // Serialization is field by field (explicit little-endian stores); no C++
 // struct is written to or read from disk, so padding cannot leak into the
 // file.  Integer size arithmetic is checked before it is used, so a hostile
 // uint64 in the trailer cannot wrap a size check.
 
-#include "mikudancestudio/pmm_extension.hpp"
+#include "mikumikustudio/pmm_extension.hpp"
 
 #include <io.h>
 
@@ -16,11 +16,11 @@
 #include <unordered_set>
 #include <utility>
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace pmm_extension {
 namespace {
 
-const char kMagic[8] = {'M', 'D', 'S', 'X', 'P', 'M', 'M', '2'};
+const char kMagic[8] = {'M', 'M', 'S', 'X', 'P', 'M', 'M', '2'};
 
 struct Crc32Table {
     std::uint32_t entry[256];
@@ -349,4 +349,4 @@ bool Erase(Document& document, const std::string& key) {
 }
 
 }  // namespace pmm_extension
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

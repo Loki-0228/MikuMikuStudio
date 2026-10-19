@@ -6,18 +6,18 @@
 #include <algorithm>
 #include <climits>
 
-#include "mikudancestudio/frame_presentation.hpp"
-#include "mikudancestudio/frame_rate.hpp"
-#include "mikudancestudio/build_profile.hpp"
-#include "mikudancestudio/viewport_render_scale.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/window_dpi_scope.hpp"
-#include "mikudancestudio/plugin_runtime.hpp"
-#include "mikudancestudio/viewport_bounds.hpp"
-#include "mikudancestudio/bake_ui_lock.hpp"
+#include "mikumikustudio/frame_presentation.hpp"
+#include "mikumikustudio/frame_rate.hpp"
+#include "mikumikustudio/build_profile.hpp"
+#include "mikumikustudio/viewport_render_scale.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/window_dpi_scope.hpp"
+#include "mikumikustudio/plugin_runtime.hpp"
+#include "mikumikustudio/viewport_bounds.hpp"
+#include "mikumikustudio/bake_ui_lock.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 thread_local bool nativeBakePreview=false;
 thread_local FrameSceneOutputScope* sceneOutput=nullptr;
@@ -289,4 +289,4 @@ void FillFramePresentationMargins(MMDApp* app, IDirect3DDevice9* device) {
     // render target, and a zero-rectangle Clear clears the entire scene.
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

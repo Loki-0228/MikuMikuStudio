@@ -8,24 +8,24 @@
 #include "native_object_commands.hpp"
 #include "native_viewport_reset_camera.hpp"
 #include "scene_object_history.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/bone_scale.hpp"
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/bake_ui_lock.hpp"
-#include "mikudancestudio/plugin_scene.hpp"
-#include "mikudancestudio/autosave.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/bake_ui_lock.hpp"
+#include "mikumikustudio/plugin_scene.hpp"
+#include "mikumikustudio/autosave.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 #include <array>
 #include <cmath>
 #include <cstring>
 #include <vector>
 #include <stdexcept>
-namespace mikudancestudio {
+namespace mikumikustudio {
 void ConsumeRightButtonDrag(MMDApp*);
 void ConsumeMiddleButtonPan(MMDApp*);
 }
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 namespace {
 using Values=std::array<float,7>;
 Values Read(MMDApp& a) noexcept {return {a.CameraPositionX(),a.CameraPositionY(),a.CameraPositionZ(),a.CameraPitch(),a.CameraYaw(),a.CameraRoll(),a.CameraDistance()};}

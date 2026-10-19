@@ -1,6 +1,6 @@
-#include "mikudancestudio/frame_limits.hpp"
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/ui_translation.hpp"
+#include "mikumikustudio/frame_limits.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/ui_translation.hpp"
 // ===========================================================================
 // Accessory-frame paste/refresh helpers ("paste to difference flame",
 // menu 0xFA) and the shared array constructor.
@@ -22,7 +22,7 @@
 // end; the free-slot scan starts at index 1 and a full table raises the
 // "You cannot regist over 10000point" box.
 // =========================================================================//
-#include "mikudancestudio/animation_curve_host.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
@@ -31,11 +31,11 @@
 #include <cstdio>
 #include <cstring>
 
-#include "mikudancestudio/accessory_layout.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/accessory_layout.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 
 // JP overflow strings 0x52B918 / 0x52B908, Shift-JIS byte-exact (same
@@ -62,7 +62,7 @@ std::uint32_t FindFreeAccSlot(MMDApp* app, mdl::AccessoryKey*& table) {
             app->EnglishUI() == 2 ? L"无法扩展关键帧存储，本次粘贴已取消。" :
             app->EnglishUI() == 0 ? L"メモリを確保できないため、貼り付けを中止しました。" :
             L"Unable to allocate keyframe storage. Paste was cancelled.",
-            L"MikuDanceStudio", MB_OK | MB_ICONERROR);
+            L"MikuMikuStudio", MB_OK | MB_ICONERROR);
         return 0;
     }
     return slot;
@@ -265,4 +265,4 @@ int PasteAccessoryKeyRecord(MMDApp* app, void* recData, int useSelectedSlot) {
     return 1;
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

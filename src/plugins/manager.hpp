@@ -4,7 +4,7 @@
 #include "scene_store.hpp"
 #include "storage_store.hpp"
 
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 class EditHost;
 struct PluginStatus { std::string id, stage, error; fs::path package; };
 class Manager {

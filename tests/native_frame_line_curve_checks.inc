@@ -121,7 +121,7 @@ void FLCLoadAuthorOnly(GlobalRegistrationFixture& f,unsigned family,int authorFr
     std::vector<animation_curve::NamedTrack> named;
     for(const auto& channel:channels)named.push_back({std::to_string(int(FLCKind(family)))+"/0/"+channel.id,channel.track});
     FLCBytes bytes;std::string error;Check(animation_curve::Encode(named,bytes,error),"encode a valid PMM authoring frame beyond the native mirror");
-    pmm_extension::Document document;pmm_extension::Set(document,"org.mikudancestudio.animation_curves.v1",std::move(bytes));curve_host::Load(*f.app,document);
+    pmm_extension::Document document;pmm_extension::Set(document,"org.mikumikustudio.animation_curves.v1",std::move(bytes));curve_host::Load(*f.app,document);
     Check(FLCAt(FLCRead(f,family)[0].track,authorFrame)!=nullptr,"PMM restores an independent authored frame without creating a native row");
 }
 std::array<float,12> FLCPose(MMDApp& app,unsigned family){std::array<float,12> pose{};

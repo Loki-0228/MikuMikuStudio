@@ -1,16 +1,16 @@
 #include "native_curve_write.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "scene_object_history.hpp"
-#include "mikudancestudio/accessory_layout.hpp"
-#include "mikudancestudio/frame_limits.hpp"
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/plugin_scene.hpp"
+#include "mikumikustudio/accessory_layout.hpp"
+#include "mikumikustudio/frame_limits.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/plugin_scene.hpp"
 #include <array>
 #include <cmath>
 #include <vector>
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 namespace {
 using Kind=curve_host::Kind;
 constexpr double pi=3.14159265358979323846;

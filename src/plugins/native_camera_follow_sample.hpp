@@ -1,5 +1,5 @@
 #pragma once
-#include "mikudancestudio/build_profile.hpp"
+#include "mikumikustudio/build_profile.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "shared_history.hpp"
 #include <array>
@@ -7,11 +7,11 @@
 #include <memory>
 #include <vector>
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 class MMDApp;
 namespace mdl { struct AccessoryRecord; struct BoneRecord; }
 }
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 class RetainedSceneObject;
 struct FollowLightSample {
     std::array<float,3> direction{},color{};

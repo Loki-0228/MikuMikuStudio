@@ -1,4 +1,4 @@
-#include "mikudancestudio/display_capacity.hpp"
+#include "mikumikustudio/display_capacity.hpp"
 // ===========================================================================
 // VA 0x0042F1E0 - PostLanguageSweep  (original: sub_42F1E0, ~0x1320 bytes)
 // ===========================================================================
@@ -57,14 +57,14 @@
 #include <cstdint>
 #include <cstring>
 
-#include "mikudancestudio/text_encoding.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ui_translation.hpp"
-#include "mikudancestudio/ui_language.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/model.hpp"
+#include "mikumikustudio/text_encoding.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ui_translation.hpp"
+#include "mikumikustudio/ui_language.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/model.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 // Timeline rows are only 14 pixels high. Use a bounded Unicode cell rather
 // than an ANSI TextOut baseline whose fallback font can spill into the next
@@ -151,8 +151,8 @@ void DrawRecordName(MMDApp* app, const mdl::ModelRecord& model,
     // FrameGroup holds only a truncated SJIS mirror; PMX keeps the original
     // Unicode on the bone/morph itself. Match the names used by the combos.
     const auto name = morph
-        ? text_encoding::MorphLabel(model.morphs[mikudancestudio::mdl::FrameTargetIndex(record)], english)
-        : text_encoding::BoneLabel(model.boneTable[mikudancestudio::mdl::FrameTargetIndex(record)], english);
+        ? text_encoding::MorphLabel(model.morphs[mikumikustudio::mdl::FrameTargetIndex(record)], english)
+        : text_encoding::BoneLabel(model.boneTable[mikumikustudio::mdl::FrameTargetIndex(record)], english);
     DrawTimelineLabel(app, hdc, name.c_str(), 15, y, color);
 }
 
@@ -256,7 +256,7 @@ void PostLanguageSweep(MMDApp* app) {
         std::uint32_t frameType = 1;  // frame type carried onto the next line
         int line = 1;                // tree line counter
         std::uint32_t faceIdx = 0;    // face index (0x430138)
-        if (mikudancestudio::mdl::DisplayGroupCount(*mikudancestudio::mdl::Mdl(model)) <= 1) {
+        if (mikumikustudio::mdl::DisplayGroupCount(*mikumikustudio::mdl::Mdl(model)) <= 1) {
             PanelPaint(app);
             return;
         }
@@ -285,13 +285,13 @@ void PostLanguageSweep(MMDApp* app) {
                                       s.state.themeColors[34]);
                         s.PanelRowFlags()[line] = 1;
                     }
-                    if (mikudancestudio::mdl::FacialFrameCount(*record) != 0 && frameType == 2) {
+                    if (mikumikustudio::mdl::FacialFrameCount(*record) != 0 && frameType == 2) {
                         // frame 2: highlight when any face flag (+44) is
                         // set - first face with a live flag (0x42FC57,
                         // LABEL_76 skipped when none is live).
                         bool anyFaceSelected = false;
                         for (unsigned int f = 0;
-                             f < mikudancestudio::mdl::FacialFrameCount(*mikudancestudio::mdl::Mdl(model)); ++f) {
+                             f < mikumikustudio::mdl::FacialFrameCount(*mikumikustudio::mdl::Mdl(model)); ++f) {
                             if (faces[f].selected != 0) {
                                 anyFaceSelected = true;
                                 break;
@@ -309,8 +309,8 @@ void PostLanguageSweep(MMDApp* app) {
                     if (groupCnt) {
                         bool anyRigidVisible = false;
                         for (int g = 0; g < groupCnt; ++g) {
-                            if (mikudancestudio::mdl::FrameGroupIndex(groups[g]) == frameNo &&
-                                flagTab[mikudancestudio::mdl::FrameTargetIndex(groups[g])] != 0) {
+                            if (mikumikustudio::mdl::FrameGroupIndex(groups[g]) == frameNo &&
+                                flagTab[mikumikustudio::mdl::FrameTargetIndex(groups[g])] != 0) {
                                 anyRigidVisible = true;
                                 break;
                             }
@@ -327,17 +327,17 @@ void PostLanguageSweep(MMDApp* app) {
                     if (frameType == 1)
                         record->boneListSelLine = line;
                     for (std::uint32_t j = 0;
-                         j < mikudancestudio::mdl::FacialFrameCount(*mikudancestudio::mdl::Mdl(model)); ++j) {
+                         j < mikumikustudio::mdl::FacialFrameCount(*mikumikustudio::mdl::Mdl(model)); ++j) {
                         const mdl::FrameGroup& face = faces[j];
-                        if (mikudancestudio::mdl::FrameGroupIndex(face) + 1 == frameNo)
-                            morphLineByIndex[mikudancestudio::mdl::FrameTargetIndex(face)] = -line;
+                        if (mikumikustudio::mdl::FrameGroupIndex(face) + 1 == frameNo)
+                            morphLineByIndex[mikumikustudio::mdl::FrameTargetIndex(face)] = -line;
                     }
                     if (groupCnt) {
                         for (unsigned int g = 0;
                              g < static_cast<unsigned int>(groupCnt); ++g) {
                             const mdl::FrameGroup& rigid = groups[g];
-                            if (mikudancestudio::mdl::FrameGroupIndex(rigid) == frameNo)
-                                boneLineByIndex[mikudancestudio::mdl::FrameTargetIndex(rigid)] = -line;
+                            if (mikumikustudio::mdl::FrameGroupIndex(rigid) == frameNo)
+                                boneLineByIndex[mikumikustudio::mdl::FrameTargetIndex(rigid)] = -line;
                         }
                     }
                     frameIdx = frameType;
@@ -364,7 +364,7 @@ void PostLanguageSweep(MMDApp* app) {
                 ++record->boneListRows;
                 if (frameIdx == 1) {
                     record->boneListSelLine = line - 1;
-                } else if (mikudancestudio::mdl::FacialFrameCount(*record) != 0 && frameIdx == 2) {
+                } else if (mikumikustudio::mdl::FacialFrameCount(*record) != 0 && frameIdx == 2) {
                     // face section (frame 2) - list the frame's face records
                     // (0x430153..0x43030B; LABEL_122/123/139 were the skip /
                     // advance / exhausted edges of this loop).
@@ -380,13 +380,13 @@ void PostLanguageSweep(MMDApp* app) {
                             if (face.selected != 0)  // LABEL_122 skip
                                 s.PanelRowFlags()[line] = 1;
                             record->boneListRowRecord[recOff] =
-                                -1 - mikudancestudio::mdl::FrameTargetIndex(face);
-                            morphLineByIndex[mikudancestudio::mdl::FrameTargetIndex(face)] = line++;
+                                -1 - mikumikustudio::mdl::FrameTargetIndex(face);
+                            morphLineByIndex[mikumikustudio::mdl::FrameTargetIndex(face)] = line++;
                             ++recOff;
                             rowY += 14;
                         }
                         ++record->boneListRows;  // LABEL_123
-                        if (++faceIdx >= mikudancestudio::mdl::FacialFrameCount(*record))
+                        if (++faceIdx >= mikumikustudio::mdl::FacialFrameCount(*record))
                             break;               // LABEL_139
                     }
                 } else if (groupCnt) {
@@ -396,10 +396,10 @@ void PostLanguageSweep(MMDApp* app) {
                     for (unsigned int g = 0;
                          g < static_cast<unsigned int>(groupCnt); ++g) {
                         const mdl::FrameGroup& rigid = groups[g];
-                        if (mikudancestudio::mdl::FrameGroupIndex(rigid) == frameNo) {
+                        if (mikumikustudio::mdl::FrameGroupIndex(rigid) == frameNo) {
                             if (record->boneListRows > record->boneListPos &&
                                 line < 200) {
-                                if (flagTab[mikudancestudio::mdl::FrameTargetIndex(rigid)] != 0) {
+                                if (flagTab[mikumikustudio::mdl::FrameTargetIndex(rigid)] != 0) {
                                     DrawRecordName(app, *record, rigid, false, panel, rowY,
                                                    s.state.themeColors[34]);
                                     s.PanelRowFlags()[line] = 1;
@@ -408,8 +408,8 @@ void PostLanguageSweep(MMDApp* app) {
                                                    s.state.themeColors[33]);
                                 }
                                 record->boneListRowRecord[recOff] =
-                                    mikudancestudio::mdl::FrameTargetIndex(rigid);
-                                boneLineByIndex[mikudancestudio::mdl::FrameTargetIndex(rigid)] = line++;
+                                    mikumikustudio::mdl::FrameTargetIndex(rigid);
+                                boneLineByIndex[mikumikustudio::mdl::FrameTargetIndex(rigid)] = line++;
                                 ++recOff;
                                 rowY += 14;
                             }
@@ -421,7 +421,7 @@ void PostLanguageSweep(MMDApp* app) {
 
             // LABEL_140 advance: next display frame
             frameType = ++frameIdx;
-            if (frameIdx >= mikudancestudio::mdl::DisplayGroupCount(*mikudancestudio::mdl::Mdl(model))) {
+            if (frameIdx >= mikumikustudio::mdl::DisplayGroupCount(*mikumikustudio::mdl::Mdl(model))) {
                 PanelPaint(app);
                 return;
             }
@@ -526,4 +526,4 @@ void PostLanguageSweep(MMDApp* app) {
     PanelPaint(app);  // 0x42F730 tail call (0x414610)
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

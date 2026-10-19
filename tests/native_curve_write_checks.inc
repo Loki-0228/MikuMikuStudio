@@ -1,5 +1,5 @@
 #include "../src/plugins/native_curve_write.hpp"
-#include "mikudancestudio/pmm_extension.hpp"
+#include "mikumikustudio/pmm_extension.hpp"
 #include <limits>
 namespace {
 struct CurveWriteFixture {

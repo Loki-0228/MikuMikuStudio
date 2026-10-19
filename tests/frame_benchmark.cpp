@@ -10,20 +10,20 @@
 // evaluate MMV, so their stage measurements are marked unavailable.
 //
 // Nothing here is a product path: the executable is EXCLUDE_FROM_ALL, and the
-// renderer phase timers need MIKUDANCESTUDIO_PERF; MMV host timers do not.
-#include "mikudancestudio/perf_timing.hpp"
-#include "mikudancestudio/d3d12_native.hpp"
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/sequential_file_reader.hpp"
-#include "mikudancestudio/gpu_model.hpp"
-#include "mikudancestudio/skinning_backend.hpp"
-#include "mikudancestudio/frame_presentation.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/adaptive_shadow.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/native_mesh.hpp"
+// renderer phase timers need MIKUMIKUSTUDIO_PERF; MMV host timers do not.
+#include "mikumikustudio/perf_timing.hpp"
+#include "mikumikustudio/d3d12_native.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/sequential_file_reader.hpp"
+#include "mikumikustudio/gpu_model.hpp"
+#include "mikumikustudio/skinning_backend.hpp"
+#include "mikumikustudio/frame_presentation.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/adaptive_shadow.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/native_mesh.hpp"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -37,8 +37,8 @@
 #pragma comment(lib, "psapi.lib")
 #include <commctrl.h>
 
-namespace mikudancestudio { void LoadSceneFile(); }
-using namespace mikudancestudio;
+namespace mikumikustudio { void LoadSceneFile(); }
+using namespace mikumikustudio;
 #include "playback_benchmark.hpp"
 unsigned loadDialogs=0;
 bool skipMissingModels=false;
@@ -782,7 +782,7 @@ std::string FormatVec3(const Vec3& value) {
     return buffer;
 }
 
-#ifdef MIKUDANCESTUDIO_PERF
+#ifdef MIKUMIKUSTUDIO_PERF
 const char* const kPhaseNames[] = {
     "frame", "scene", "vertex_update", "morph", "skin", "transparent_sort",
     "materials", "physics", "present", "sort_lock", "sort_cpu", "pose",
@@ -791,7 +791,7 @@ const char* const kPhaseNames[] = {
     "clear", "composition", "overlays", "end_scene", "validation_release",
     "screen_capture", "begin_scene", "effect_api"};
 static_assert(sizeof(kPhaseNames) / sizeof(kPhaseNames[0]) == perf::Count,
-              "phase name table must match mikudancestudio::perf::Phase");
+              "phase name table must match mikumikustudio::perf::Phase");
 #endif
 
 }  // namespace
@@ -1358,7 +1358,7 @@ int wmain(int argc, wchar_t** argv) {
                            stderr);
                 return kExitMmvForbidden;
             }
-#ifdef MIKUDANCESTUDIO_PERF
+#ifdef MIKUMIKUSTUDIO_PERF
             perf::Reset();
 #endif
             std::printf("warmup_complete frames=%d; starting measured frames\n", warmup);
@@ -1386,7 +1386,7 @@ int wmain(int argc, wchar_t** argv) {
         mmvLoaded ? 1u : 0u, mmvStagesAvailable ? times.size() : 0, mmvInputDemandSumMs / times.size(),
         mmvSnapshotSumMs / times.size(), mmvEvaluationSumMs / times.size(), mmvUploadSumMs / times.size(),
         mmvAcceptedFrames, mmvFailedFrames);
-#ifdef MIKUDANCESTUDIO_PERF
+#ifdef MIKUMIKUSTUDIO_PERF
     perf::Report(static_cast<unsigned>(times.size()));
 #endif
     std::printf("automatic_calibrations=%llu cpu_updates=%llu\n",
@@ -2012,13 +2012,13 @@ int wmain(int argc, wchar_t** argv) {
         json.String("draw_counts",
                     L"no draw-call counter is reported; the driver does not invent one");
         json.String("production_timing",
-                    L"phase timers exist only in builds configured with MIKUDANCESTUDIO_PERF=ON");
+                    L"phase timers exist only in builds configured with MIKUMIKUSTUDIO_PERF=ON");
         json.String("mmv_timing",
                     L"mmv stage values are host-side CPU durations of the latest MMV update, read once per counted frame; neither FPS nor GPU time. *_mean_ms divides the summed stage duration by sample_count, *_samples counts the counted frames where the stage reported a nonzero duration");
         json.String("mmv_gpu_timing",
                     L"MMV runtime support has been removed; no MMV GPU timing is collected");
         json.End();
-#ifdef MIKUDANCESTUDIO_PERF
+#ifdef MIKUMIKUSTUDIO_PERF
         json.Object("phases_ms_per_frame");
         for (int phase = 0; phase < perf::Count; ++phase) {
             char key[64];

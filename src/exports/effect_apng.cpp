@@ -3,14 +3,14 @@
 #include <Windows.h>
 #include <bcrypt.h>
 
-#include "mikudancestudio/effect_apng.hpp"
-#include "mikudancestudio/runtime_log.hpp"
+#include "mikumikustudio/effect_apng.hpp"
+#include "mikumikustudio/runtime_log.hpp"
 
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 #if defined(_WIN64)
 namespace {
 
@@ -300,4 +300,4 @@ bool InstallEffectApngCompatibility() {
 }
 bool IsEffectApngCompatibilityInstalled() { return false; }
 #endif
-} // namespace mikudancestudio
+} // namespace mikumikustudio

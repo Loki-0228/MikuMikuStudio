@@ -1,8 +1,8 @@
 #pragma once
-#include "mikudancestudio/build_profile.hpp"
+#include "mikumikustudio/build_profile.hpp"
 #include <array>
 #include <cstdint>
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 // The restored and controlled pumps share this detached calculator. Values
 // retain the original float constants, including their historical rounding.
 struct ViewportPresetState {
@@ -42,8 +42,8 @@ inline bool ComputeNumpadViewPreset(const ViewportPresetContext& context,unsigne
 }
 #if !MMD_ORIGINAL_PROFILE
 #include "shared_history.hpp"
-namespace mikudancestudio { class MMDApp; }
-namespace mikudancestudio::plugins {
+namespace mikumikustudio { class MMDApp; }
+namespace mikumikustudio::plugins {
 // Camera right/middle drags reserve once, preview in place, then publish once.
 // No history/storage lock is retained across window messages.
 MmsResult BeginViewportCameraGesture(MMDApp&, SharedHistory&, HWND owner, UINT button) noexcept;

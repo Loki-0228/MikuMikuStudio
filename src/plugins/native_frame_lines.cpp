@@ -5,17 +5,17 @@
 #include "native_history_commands.hpp"
 #include "native_pose_scope.hpp"
 #include "scene_object_history.hpp"
-#include "mikudancestudio/animation_curve_host.hpp"
-#include "mikudancestudio/autosave.hpp"
-#include "mikudancestudio/bake_ui_lock.hpp"
-#include "mikudancestudio/frame_limits.hpp"
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/plugin_scene.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
+#include "mikumikustudio/autosave.hpp"
+#include "mikumikustudio/bake_ui_lock.hpp"
+#include "mikumikustudio/frame_limits.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/plugin_scene.hpp"
 #include <algorithm>
 #include <cstring>
 #include <stdexcept>
@@ -23,8 +23,8 @@
 #include <cmath>
 #include <map>
 #include <vector>
-namespace mikudancestudio { void RefreshFrameLineViews(MMDApp*); }
-namespace mikudancestudio::plugins {
+namespace mikumikustudio { void RefreshFrameLineViews(MMDApp*); }
+namespace mikumikustudio::plugins {
 namespace {
 constexpr double pi=3.14159265358979323846;
 using Kind=curve_host::Kind;

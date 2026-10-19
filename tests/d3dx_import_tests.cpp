@@ -1,9 +1,9 @@
 // MAINTENANCE: regression-keep; purpose and cleanup conditions in tests/README.md.
-#include "mikudancestudio/d3dx_dyn.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
 #include <cstdio>
 #include <cstdlib>
 
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 
 namespace {
 void Check(bool ok, const char* message) {
@@ -11,7 +11,7 @@ void Check(bool ok, const char* message) {
 }
 }
 
-#if defined(MIKUDANCESTUDIO_D3DX_STATIC_IMPORTS) && defined(_WIN64)
+#if defined(MIKUMIKUSTUDIO_D3DX_STATIC_IMPORTS) && defined(_WIN64)
 // Test only: replace one import in this test executable, as an effect proxy
 // does after device creation. Restore the slot before exiting the test.
 extern "C" d3dx::FnMatrixOp2 __imp_D3DXMatrixMultiply;
@@ -27,7 +27,7 @@ __declspec(noinline) bool Reload(d3dx::Api& api) { return api.Load(); }
 #endif
 
 int main() {
-#if defined(MIKUDANCESTUDIO_D3DX_STATIC_IMPORTS) && defined(_WIN64)
+#if defined(MIKUMIKUSTUDIO_D3DX_STATIC_IMPORTS) && defined(_WIN64)
     d3dx::Api api;
     Check(Reload(api), "load original imports");
     const HMODULE originalModule = api.module;

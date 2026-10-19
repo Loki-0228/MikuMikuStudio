@@ -1,18 +1,18 @@
 // Include after slider_paint_trace_host_checks.inc in a disposable visible host.
 // Observes production drawing; it neither replaces drawing nor judges flicker.
 #include "../slider_paint_trace.hpp"
-#include "mikudancestudio/build_profile.hpp"
-#include "mikudancestudio/globals.hpp"
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/update_coordinator.hpp"
+#include "mikumikustudio/build_profile.hpp"
+#include "mikumikustudio/globals.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/update_coordinator.hpp"
 #include <cstring>
 
 #if !MMD_ORIGINAL_PROFILE
 namespace light_slider_paint_checks {
 namespace trace=slider_paint_trace;
 namespace prior=slider_paint_trace_host_checks;
-using mikudancestudio::MMDApp;
+using mikumikustudio::MMDApp;
 static constexpr std::array<int,14> kIds{455,456,457,458,459,460,461,462,463,464,465,466,447,560};
 static constexpr std::size_t kMessageLimit=8192,kImageLimit=4096,kPixelBytes=64*1024*1024;
 static constexpr unsigned kSampleLimit=192,kBitmapLimit=96;
@@ -21,18 +21,18 @@ static std::array<float,8> Values(MMDApp& app){return {app.LightColor()[0],app.L
     app.LightDirection()[0],app.LightDirection()[1],app.LightDirection()[2],app.CameraFov(),app.ShadowDistance()};}
 template<class Key> struct KeyCopy {
     Key* const pointer;const std::uint64_t identity;const std::vector<Key> bytes;
-    explicit KeyCopy(Key* value):pointer(value),identity(mikudancestudio::mdl::KeyPoolIdentity(value)),
-        bytes(value,value+mikudancestudio::mdl::KeyPoolCapacity(value)){}
-    void Check(Key* value)const{using namespace mikudancestudio::mdl;
+    explicit KeyCopy(Key* value):pointer(value),identity(mikumikustudio::mdl::KeyPoolIdentity(value)),
+        bytes(value,value+mikumikustudio::mdl::KeyPoolCapacity(value)){}
+    void Check(Key* value)const{using namespace mikumikustudio::mdl;
         trace::Require(value==pointer&&KeyPoolIdentity(value)==identity&&KeyPoolCapacity(value)==bytes.size()&&
             !std::memcmp(value,bytes.data(),bytes.size()*sizeof(Key)),"light drawing diagnosis preserves original VMD pool identity, capacity and every key byte");}
 };
 struct Keys {
     MMDApp& app;const int frame;
-    KeyCopy<mikudancestudio::mdl::CameraKey> camera;
-    KeyCopy<mikudancestudio::mdl::LightKey> light;
-    KeyCopy<mikudancestudio::mdl::SelfShadowKey> shadow;
-    KeyCopy<mikudancestudio::mdl::GravityKey> gravity;
+    KeyCopy<mikumikustudio::mdl::CameraKey> camera;
+    KeyCopy<mikumikustudio::mdl::LightKey> light;
+    KeyCopy<mikumikustudio::mdl::SelfShadowKey> shadow;
+    KeyCopy<mikumikustudio::mdl::GravityKey> gravity;
     explicit Keys(MMDApp& a):app(a),frame(a.CurrentFrame()),camera(a.CameraKeys()),light(a.LightKeys()),shadow(a.ShadowKeys()),gravity(a.GravityKeys()){}
     void Check()const{trace::Require(app.CurrentFrame()==frame,"light drawing diagnosis does not move the playhead");
         camera.Check(app.CameraKeys());light.Check(app.LightKeys());shadow.Check(app.ShadowKeys());gravity.Check(app.GravityKeys());}
@@ -221,7 +221,7 @@ struct CaptureCleanup {
         SendMessageW(capture,WM_CANCELMODE,0,0);if(GetCapture()==capture)ReleaseCapture();break;}}
 };
 static void Run(MMDApp* app,const std::filesystem::path& output,bool bound,bool oneSafePoint=true){
-    using namespace mikudancestudio;
+    using namespace mikumikustudio;
     trace::Require(app&&app==g_Block&&app->MainWindow()&&app->CameraKeys()&&app->LightKeys()&&app->ShadowKeys()&&app->GravityKeys()&&
         !GetCapture()&&!app->PlaybackActive()&&IsWindowVisible(app->MainWindow())&&!IsIconic(app->MainWindow())&&
         bool(plugins::BoundNativePoseHistory(app))==bound,"light paint diagnosis uses a visible disposable idle real host with the requested binding");

@@ -5,15 +5,15 @@
 #define NOMINMAX
 #include <Windows.h>
 #include <MinHook.h>
-#include "mikudancestudio/build_profile.hpp"
-#include "mikudancestudio/d3d_wrapper.hpp"
-#include "mikudancestudio/dshow_recorder.hpp"
-#include "mikudancestudio/globals.hpp"
-#include "mikudancestudio/mf_h264_recorder.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/ui_translation.hpp"
-#include "mikudancestudio/wave_audio_context.hpp"
+#include "mikumikustudio/build_profile.hpp"
+#include "mikumikustudio/d3d_wrapper.hpp"
+#include "mikumikustudio/dshow_recorder.hpp"
+#include "mikumikustudio/globals.hpp"
+#include "mikumikustudio/mf_h264_recorder.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/ui_translation.hpp"
+#include "mikumikustudio/wave_audio_context.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <cwchar>
@@ -21,11 +21,11 @@
 #include <memory>
 #include <string>
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 INT_PTR __stdcall AviOutDlgProc(HWND, UINT, WPARAM, LPARAM);
 int FillCodecCombo(DShowRecorder*, HWND, char);
 }
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 namespace {
 unsigned checks = 0, failures = 0, codecCalls = 0;
 void Check(bool value, const char* label) {

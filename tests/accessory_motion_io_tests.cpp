@@ -1,14 +1,14 @@
 // Unit tests for the `.x` accessory block of camera / light VMD files
 // (accessory_motion_io.hpp): round trip, rejection of damaged blocks, and the
 // by-name, in-order matching rule.
-#include "mikudancestudio/accessory_motion_io.hpp"
+#include "mikumikustudio/accessory_motion_io.hpp"
 
 #include <cstdio>
 #include <cstdlib>
 #include <string>
 #include <vector>
 
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 namespace io = accessory_motion_io;
 
 namespace {

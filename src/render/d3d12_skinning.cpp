@@ -1,10 +1,10 @@
-#include "mikudancestudio/d3d12_skinning.hpp"
+#include "mikumikustudio/d3d12_skinning.hpp"
 #if defined(MMD_ENABLE_DX12) && MMD_ENABLE_DX12
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include "mikudancestudio/d3d12_skinning.hpp"
+#include "mikumikustudio/d3d12_skinning.hpp"
 #include <Windows.h>
-#include "mikudancestudio/graphics_runtime.hpp"
+#include "mikumikustudio/graphics_runtime.hpp"
 #include <d3d12.h>
 #include <dxgi1_6.h>
 #include <d3dcompiler.h>
@@ -19,7 +19,7 @@
 #include <unordered_set>
 #include "d3d12_skinning_shader.hpp"
 
-namespace mikudancestudio::gpu {
+namespace mikumikustudio::gpu {
 using Microsoft::WRL::ComPtr;
 namespace {
 void Check(HRESULT hr, const char* operation) {
@@ -479,7 +479,7 @@ bool Skinning::Readback(Ticket t,std::vector<Output>& output) {
 }
 }
 #else
-namespace mikudancestudio::gpu {
+namespace mikumikustudio::gpu {
 struct Skinning::Impl { std::string error = "DX12 support is disabled in this build"; };
 Skinning::Skinning():impl(std::make_unique<Impl>()){}
 Skinning::~Skinning()=default;

@@ -27,7 +27,7 @@ def main():
     env = os.environ.copy()
     env['LOCALAPPDATA'] = str(root / 'Local')
     env['APPDATA'] = str(root / 'Roaming')
-    env['MIKUDANCESTUDIO_AUTOSAVE_CONFIG'] = str(root / 'autosave.ini')
+    env['MIKUMIKUSTUDIO_AUTOSAVE_CONFIG'] = str(root / 'autosave.ini')
     results = []
     for mode in (1, 2):
         references = {}

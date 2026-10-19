@@ -1,4 +1,4 @@
-# MikuDanceStudio x64 host profile - alignment target is MikuMikuDanceE_v932x64
+# MikuMikuStudio x64 host profile - alignment target is MikuMikuDanceE_v932x64
 # (MMD v932 64-bit, VC9/MSVCR90, d3dx9_43, SSE2 - no x87).
 include(default)
 

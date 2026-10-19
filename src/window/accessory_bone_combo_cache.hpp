@@ -1,6 +1,6 @@
 #pragma once
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/ui_language.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/ui_language.hpp"
 #include <commctrl.h>
 #include <array>
 #include <cstdint>
@@ -11,7 +11,7 @@
 #include <string>
 #include <vector>
 
-namespace mikudancestudio::accessory_bone_combo {
+namespace mikumikustudio::accessory_bone_combo {
 inline bool Listed(const mdl::BoneRecord& bone) noexcept {
     return bone.type < mdl::BoneType::InertTip || bone.type == mdl::BoneType::FixedAxis;
 }

@@ -1,8 +1,8 @@
 // Include after edit_history_host_checks.inc. This probe loads real files and
 // invokes the real main-window routes; it never calls a registration planner.
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/bone_key_pool.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
 #include "../src/plugins/native_pose_scope.hpp"
 #include <array>
 #include <climits>

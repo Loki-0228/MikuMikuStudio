@@ -1,4 +1,4 @@
-#include "mikudancestudio/frame_limits.hpp"
+#include "mikumikustudio/frame_limits.hpp"
 // MAINTENANCE: VMD transport for the animation curve editor.
 //
 // File layout this module writes
@@ -51,7 +51,7 @@
 #define NOMINMAX
 #include <Windows.h>
 
-#include "mikudancestudio/animation_curve_motion.hpp"
+#include "mikumikustudio/animation_curve_motion.hpp"
 #include "native_curve_sample.hpp"
 
 #include <algorithm>
@@ -67,7 +67,7 @@
 #include <string>
 #include <vector>
 
-namespace mikudancestudio::curve_motion {
+namespace mikumikustudio::curve_motion {
 namespace {
 
 namespace ac = animation_curve;
@@ -75,7 +75,7 @@ namespace ac = animation_curve;
 constexpr double kPi = 3.14159265358979323846;
 constexpr std::size_t kMaximumBytes = std::size_t((std::numeric_limits<std::ptrdiff_t>::max)());
 constexpr std::size_t kMaximumRecords = (std::numeric_limits<std::uint32_t>::max)();
-constexpr std::uint32_t kMaximumFrame = std::uint32_t(mikudancestudio::frame_limits::maximum);
+constexpr std::uint32_t kMaximumFrame = std::uint32_t(mikumikustudio::frame_limits::maximum);
 constexpr std::size_t kFooterBytes = 40;
 constexpr std::size_t kSignatureBytes = 30;
 constexpr std::size_t kModelNameBytes = 20;
@@ -1228,12 +1228,12 @@ bool Decode(const std::uint8_t* data, std::size_t size, Kind requested, Motion& 
             return true;
         }
 
-        // A foreign tail (for example the MDSXVMDX block the bone scale
+        // A foreign tail (for example the MMSXVMDX block the bone scale
         // extension writes) is ignored, but this module's own markers must not
         // appear in the trailing region: a shifted footer, or a curve payload
         // whose footer was cut off, means the tail is damaged and the standard
         // proxy must not silently take its place.
-        if (size - standardEnd >= 4 && std::memcmp(data + standardEnd, "MDSC", 4) == 0) {
+        if (size - standardEnd >= 4 && std::memcmp(data + standardEnd, "MMSC", 4) == 0) {
             throw std::runtime_error("the curve payload is present but its footer is missing or damaged");
         }
         for (std::size_t at = standardEnd; at + sizeof(kFooterMagic) <= size; ++at) {
@@ -1336,4 +1336,4 @@ bool Load(const wchar_t* path, Kind requested, Motion& out, std::string& error) 
     return Decode(bytes.data(), bytes.size(), requested, out, error);
 }
 
-}  // namespace mikudancestudio::curve_motion
+}  // namespace mikumikustudio::curve_motion

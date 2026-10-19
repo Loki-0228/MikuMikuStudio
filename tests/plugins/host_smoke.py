@@ -123,11 +123,14 @@ def run(executable, fixture, directory, filename, mode="gui"):
         while time.monotonic() < deadline:
             send(main, 0x116, 0, 0)  # WM_INITMENU, production refresh path
             toolbar = next((h for h, cls in children(main) if cls == "MMS.PluginAbi.Toolbar.V1"), None)
-            buttons = [h for h, cls in children(toolbar) if cls == "Button"] if toolbar else []
+            # The host also owns an overflow button. Exercise the registered
+            # plugin control, not whichever Button HWND was created first.
+            buttons = [h for h, cls in children(toolbar)
+                       if cls == "Button" and 0xa000 <= u.GetDlgCtrlID(h) < 0xc000] if toolbar else []
             if buttons:
                 break
             time.sleep(0.05)
-        assert toolbar and buttons, "toolbar button absent"
+        assert toolbar and len(buttons) == 1, "expected exactly one registered probe toolbar button"
         bar = u.GetMenu(main)
         command = None
         for pos in range(u.GetMenuItemCount(bar)):

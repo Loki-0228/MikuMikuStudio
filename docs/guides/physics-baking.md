@@ -50,7 +50,7 @@
 
 ```json
 {
-  "format": "MikuDanceStudioPhysicsPreset",
+  "format": "MikuMikuStudioPhysicsPreset",
   "schemaVersion": 1,
   "name": "Bullet defaults",
   "erp": 0.2,
@@ -62,6 +62,8 @@
 ```
 
 全部字段必填。格式版本固定为 1，拒绝未知或重复字段、错误类型、缺失字段、非法 UTF-8、截断 JSON、NaN/Infinity、溢出与超范围数值。允许 UTF-8 BOM、合法 JSON 转义和科学计数法。整数参数必须具有整数值。名称最多 128 个 Unicode 字符，不允许控制字符；文件最大 64 KiB。
+
+`format` 必须为 `MikuMikuStudioPhysicsPreset`；旧 `MikuDanceStudioPhysicsPreset` 不作为读取别名。读取失败时保留当前参数。
 
 读取先完整校验，再替换当前参数；失败保留当前设置并按界面语言提示原因。保存先写同目录临时文件，再替换目标；失败保留原有预设。高级设置中的取消不会应用未确认的参数，已明确另存的预设文件保留。
 

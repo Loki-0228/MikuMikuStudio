@@ -69,8 +69,8 @@ struct DeviceObserver {
 };
 
 template<class Prepare>
-int Run(mikudancestudio::MMDApp* app, int seconds, const wchar_t* jsonPath, Prepare prepare) {
-    using namespace mikudancestudio;
+int Run(mikumikustudio::MMDApp* app, int seconds, const wchar_t* jsonPath, Prepare prepare) {
+    using namespace mikumikustudio;
     using Clock = std::chrono::steady_clock;
     auto* device = app->Renderer()->device;
     DeviceObserver observer;

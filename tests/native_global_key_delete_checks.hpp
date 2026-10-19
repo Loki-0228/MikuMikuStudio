@@ -3,11 +3,11 @@
 #pragma once
 #include "../src/plugins/native_global_key_delete.hpp"
 #include "../src/plugins/native_key_commands.hpp"
-#include "mikudancestudio/animation_curve_motion.hpp"
+#include "mikumikustudio/animation_curve_motion.hpp"
 #include <stdexcept>
 #include <cwchar>
 namespace global_key_delete_checks {
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 using Kind=curve_host::Kind;
 using Mode=plugins::SharedHistory::RecordingMode;
 template<class K>void Clear(K* keys){for(std::size_t i=0;i<mdl::KeyPoolCapacity(keys);++i)keys[i].selected=0;}

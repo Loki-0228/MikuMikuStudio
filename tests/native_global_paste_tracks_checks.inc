@@ -1,5 +1,5 @@
 #include "../src/plugins/native_global_paste.hpp"
-namespace mikudancestudio {
+namespace mikumikustudio {
 int RegisterCameraKey(MMDApp*,const void*,int);
 int RegisterLightKey(MMDApp*,const void*);
 int RegisterSelfShadowKey(MMDApp*,const void*);

@@ -6,7 +6,7 @@
 namespace slider_hover_host_checks {
 namespace trace=slider_paint_trace;
 namespace prior=slider_paint_trace_host_checks;
-using mikudancestudio::MMDApp;
+using mikumikustudio::MMDApp;
 static bool Near(POINT a,POINT b) noexcept {return std::abs(a.x-b.x)<=1&&std::abs(a.y-b.y)<=1;}
 static bool Inside(const RECT& a,const RECT& b) noexcept {
     return b.left>=a.left&&b.top>=a.top&&b.right<=a.right&&b.bottom<=a.bottom&&b.left<b.right&&b.top<b.bottom;
@@ -89,17 +89,17 @@ struct Metadata {
 };
 struct Keys {
     MMDApp& app;const int frame;
-    const mikudancestudio::mdl::CameraKey* camera;
-    const mikudancestudio::mdl::LightKey* light;
+    const mikumikustudio::mdl::CameraKey* camera;
+    const mikumikustudio::mdl::LightKey* light;
     const std::uint64_t cameraId,lightId;
-    const std::vector<mikudancestudio::mdl::CameraKey> cameraBytes;
-    const std::vector<mikudancestudio::mdl::LightKey> lightBytes;
+    const std::vector<mikumikustudio::mdl::CameraKey> cameraBytes;
+    const std::vector<mikumikustudio::mdl::LightKey> lightBytes;
     explicit Keys(MMDApp& a):app(a),frame(a.CurrentFrame()),camera(a.CameraKeys()),light(a.LightKeys()),
-        cameraId(mikudancestudio::mdl::KeyPoolIdentity(camera)),lightId(mikudancestudio::mdl::KeyPoolIdentity(light)),
-        cameraBytes(camera,camera+mikudancestudio::mdl::KeyPoolCapacity(camera)),
-        lightBytes(light,light+mikudancestudio::mdl::KeyPoolCapacity(light)){}
+        cameraId(mikumikustudio::mdl::KeyPoolIdentity(camera)),lightId(mikumikustudio::mdl::KeyPoolIdentity(light)),
+        cameraBytes(camera,camera+mikumikustudio::mdl::KeyPoolCapacity(camera)),
+        lightBytes(light,light+mikumikustudio::mdl::KeyPoolCapacity(light)){}
     void Check() const {
-        using namespace mikudancestudio::mdl;
+        using namespace mikumikustudio::mdl;
         trace::Require(app.CurrentFrame()==frame&&app.CameraKeys()==camera&&app.LightKeys()==light&&
             KeyPoolIdentity(camera)==cameraId&&KeyPoolIdentity(light)==lightId&&
             KeyPoolCapacity(camera)==cameraBytes.size()&&KeyPoolCapacity(light)==lightBytes.size()&&
@@ -180,7 +180,7 @@ struct Session {
         if(!Own(foreground))Stop("fixture_must_already_own_foreground");
         InputQueue();IdleCache();
         const auto existing=prior::UiPump::WakeWindow();
-        if(!mikudancestudio::updates::Initialize(&app))Stop("coordinator_initialize_failed");
+        if(!mikumikustudio::updates::Initialize(&app))Stop("coordinator_initialize_failed");
         ownsCoordinator=!existing;
         wake=prior::UiPump::WakeWindow();
         if(!wake||(existing&&wake!=existing))Stop("coordinator_window_mismatch");
@@ -189,7 +189,7 @@ struct Session {
     }
     void Safe() {
         InputQueue();const prior::PumpInvariant invariant(app);const auto before=Clock();
-        mikudancestudio::updates::SafePoint(&app);clockAdvances+=Clock()!=before;invariant.Check();
+        mikumikustudio::updates::SafePoint(&app);clockAdvances+=Clock()!=before;invariant.Check();
     }
     void NativeEffect(const prior::PumpInvariant& before,HWND window,int oldPosition) {
         const auto values=prior::Parameters(app);const int id=GetDlgCtrlID(window),lane=id==447?0:1;
@@ -288,7 +288,7 @@ struct Session {
         try{report<<"CLEANUP cursor_restore_attempted="<<restore<<" restored="<<restored<<" takeover="<<takenOver
             <<" original="<<original.x<<','<<original.y<<" foreground_restore_attempted="<<restoreForeground
             <<" foreground_restored="<<foregroundRestored<<" (one attempt only; never restores after detected user takeover)\n";report.flush();}catch(...){}
-        if(ownsCoordinator)mikudancestudio::updates::Shutdown(&app);
+        if(ownsCoordinator)mikumikustudio::updates::Shutdown(&app);
     }
     ~Session(){Cleanup();}
 };
@@ -370,7 +370,7 @@ static void WriteSamples(const std::filesystem::path& output,const std::vector<S
 }
 static void Run(MMDApp* app,const std::filesystem::path& output,bool bound,HWND previousForeground,
     BOOL foregroundRequested,HWND foregroundAfterRequest) {
-    using namespace mikudancestudio;
+    using namespace mikumikustudio;
     trace::Require(app&&app==g_Block&&app->Renderer()&&app->Renderer()->device&&!app->PlaybackActive()&&!app->FrameStepPlayback()&&
         GetWindowThreadProcessId(app->MainWindow(),nullptr)==GetCurrentThreadId()&&IsWindowEnabled(app->MainWindow())&&
         !GetCapture()&&app->CameraKeys()&&app->LightKeys()&&bool(plugins::BoundNativePoseHistory(app))==bound,

@@ -1,12 +1,12 @@
 // MAINTENANCE: regression-keep; the "Correct by frame rate..." floating window
-// (include/mikudancestudio/frame_rate_correction.hpp,
+// (include/mikumikustudio/frame_rate_correction.hpp,
 //  src/window/frame_rate_dialog.cpp).
 //
 // This test owns the backend, because the window module is compiled on its own
 // here: the stub below defines Prepare/Apply/Available/RequestSaveAs (and the
 // opaque Plan) and records what the window asked for.  Build it WITHOUT the real
 // backend, or the linker sees two definitions.  Defining
-// MIKUDANCESTUDIO_FRAME_RATE_REAL_BACKEND skips the stub and the behavioural
+// MIKUMIKUSTUDIO_FRAME_RATE_REAL_BACKEND skips the stub and the behavioural
 // checks, leaving the pure UI checks (window, languages, layout, menu) that do
 // not depend on what Prepare decides.
 //
@@ -57,17 +57,17 @@
 #include <string>
 #include <vector>
 
-#include "mikudancestudio/frame_rate_correction.hpp"
-#include "mikudancestudio/mmd_app.hpp"
+#include "mikumikustudio/frame_rate_correction.hpp"
+#include "mikumikustudio/mmd_app.hpp"
 
-namespace frc = mikudancestudio::frame_rate_correction;
-using mikudancestudio::MMDApp;
+namespace frc = mikumikustudio::frame_rate_correction;
+using mikumikustudio::MMDApp;
 
 // ---------------------------------------------------------------------------
 // Stub backend.
 // ---------------------------------------------------------------------------
-#if !defined(MIKUDANCESTUDIO_FRAME_RATE_REAL_BACKEND)
-namespace mikudancestudio {
+#if !defined(MIKUMIKUSTUDIO_FRAME_RATE_REAL_BACKEND)
+namespace mikumikustudio {
 namespace frame_rate_correction {
 
 class Plan {
@@ -135,7 +135,7 @@ bool Available(MMDApp*) {
 }
 
 }  // namespace frame_rate_correction
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio
 #endif
 
 namespace {
@@ -677,7 +677,7 @@ void CheckLayout(HWND dialog, const Language& language,
     Note(line);
 }
 
-#if !defined(MIKUDANCESTUDIO_FRAME_RATE_REAL_BACKEND)
+#if !defined(MIKUMIKUSTUDIO_FRAME_RATE_REAL_BACKEND)
 // ---------------------------------------------------------------------------
 // Behaviour that only the stub can drive.
 // ---------------------------------------------------------------------------
@@ -1169,7 +1169,7 @@ int main() {
     Check(apply != nullptr && !IsWindowEnabled(apply),
           "Apply is disabled before any successful Prepare");
 
-#if !defined(MIKUDANCESTUDIO_FRAME_RATE_REAL_BACKEND)
+#if !defined(MIKUMIKUSTUDIO_FRAME_RATE_REAL_BACKEND)
     CheckBackendBehaviour(dialog, owner, *app);
     // The destroyed window is forgotten: the next request builds a new one.
     frc::ShowDialog(app.get(), false);

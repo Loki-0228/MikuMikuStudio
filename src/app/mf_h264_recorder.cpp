@@ -10,7 +10,7 @@
 #include <mferror.h>
 #include <mfidl.h>
 #include <mfreadwrite.h>
-#include "mikudancestudio/mf_optional.hpp"
+#include "mikumikustudio/mf_optional.hpp"
 #include <wmcodecdsp.h>
 
 #include <algorithm>
@@ -26,12 +26,12 @@
 #include <unordered_map>
 #include <vector>
 
-#include "mikudancestudio/dshow_recorder.hpp"
-#include "mikudancestudio/mf_h264_recorder.hpp"
-#include "mikudancestudio/ui_language.hpp"
-#include "mikudancestudio/wave_audio_context.hpp"
+#include "mikumikustudio/dshow_recorder.hpp"
+#include "mikumikustudio/mf_h264_recorder.hpp"
+#include "mikumikustudio/ui_language.hpp"
+#include "mikumikustudio/wave_audio_context.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 
 struct Recording {
@@ -335,7 +335,7 @@ bool ResolveSinkWriterEncoder(IMFSinkWriter* writer, DWORD stream,
     target.Reset();
     if (writer == nullptr)
         return false;
-    mikudancestudio::media_compat::SinkWriterExtended* extended = nullptr;
+    mikumikustudio::media_compat::SinkWriterExtended* extended = nullptr;
     if (FAILED(writer->QueryInterface(IID_PPV_ARGS(&extended)))) {
         // Win7 exposes the stream encoder through the original Sink Writer.
         // Query the actual writer, not an unrelated encoder from the registry.
@@ -1371,4 +1371,4 @@ bool FinishBuiltInH264Recording(DShowRecorder* recorder,
     return SUCCEEDED(hr) && completeFrameCount;
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

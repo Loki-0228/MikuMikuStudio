@@ -1,5 +1,5 @@
 #include "../src/plugins/native_viewport_history.hpp"
-namespace mikudancestudio {void ConsumeNumpadViewPresets(MMDApp*);void ReloadModels(MMDApp*);void PostModelReload(MMDApp*);}
+namespace mikumikustudio {void ConsumeNumpadViewPresets(MMDApp*);void ReloadModels(MMDApp*);void PostModelReload(MMDApp*);}
 namespace {
 struct NumpadView {
     std::array<float,10> values{};D3DMATRIX basis{};std::uint8_t suppressed=0,perspective=0;int parentModel=-1,parentBone=0;
@@ -206,7 +206,7 @@ void NumpadResetLegacyParity(){
             channels[0].track.keys.back().frame=55;std::vector<animation_curve::NamedTrack> named;
             for(const auto& channel:channels)named.push_back({"0/0/"+channel.id,channel.track});std::vector<std::uint8_t> bytes;std::string encodeError;
             Check(animation_curve::Encode(named,bytes,encodeError),"encode PMM author-only camera source");pmm_extension::Document document;
-            pmm_extension::Set(document,"org.mikudancestudio.animation_curves.v1",std::move(bytes));curve_host::Load(*f.app,document);
+            pmm_extension::Set(document,"org.mikumikustudio.animation_curves.v1",std::move(bytes));curve_host::Load(*f.app,document);
             // Capture a new pristine source after installing the authored-only
             // frame, then change it through the same-author retime participant.
             Check(plugins::PlanViewportNumpadPresets(*f.app,1u,change)==MMS_OK&&change&&change->Prepare(true,prepared)==MMS_OK,"freeze reset over PMM author-only frame source");

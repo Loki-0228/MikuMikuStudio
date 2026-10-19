@@ -1,9 +1,9 @@
 #include "ui_preferences_file.hpp"
 #include "ui_registry.hpp"
-#include "mikudancestudio/system_settings.hpp"
+#include "mikumikustudio/system_settings.hpp"
 #include <atomic>
 
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 namespace {
 constexpr size_t kMaxBytes = 1024 * 1024;
 struct File {

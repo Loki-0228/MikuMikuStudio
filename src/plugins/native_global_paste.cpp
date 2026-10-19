@@ -1,13 +1,13 @@
 #include "native_global_paste.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "native_global_registration.hpp"
-#include "mikudancestudio/frame_limits.hpp"
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/mmd_app.hpp"
+#include "mikumikustudio/frame_limits.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/mmd_app.hpp"
 #include <array>
 #include <algorithm>
 #include <stdexcept>
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 namespace {
 template<class K> bool CopySource(const K* input,std::uint32_t count,std::size_t limit,std::vector<K>& out) {
     if(count>limit||(count&&!input))return false;

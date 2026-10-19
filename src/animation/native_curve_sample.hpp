@@ -3,7 +3,7 @@
 #include <array>
 #include <cmath>
 
-namespace mikudancestudio::native_curve_sample {
+namespace mikumikustudio::native_curve_sample {
 struct Sample { double value=0,slope=0; };
 inline double Cubic(double a,double b,double u){
     const double v=1-u;return 3*v*v*u*a+3*v*u*u*b+u*u*u;

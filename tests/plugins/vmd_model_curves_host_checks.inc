@@ -74,14 +74,14 @@ void Append(vmd_model_host_checks::File& file,const mdl::ModelRecord& model,unsi
     std::vector<ac::NamedTrack> named;
     for(unsigned lane=0;lane<9;++lane)named.push_back({"bone/"+std::to_string(bone)+"/"+std::to_string(lane)+"/"+Hex(model.boneTable[bone].name),tracks[lane]});
     Check(ac::Encode(named,payload,error),"real VMD fixture encodes all nine exact bone lanes");
-    file.Raw("MDSBCRV1",8);file.Put(std::uint32_t(payload.size()));file.Raw(payload.data(),payload.size());
+    file.Raw("MMSBCRV1",8);file.Put(std::uint32_t(payload.size()));file.Raw(payload.data(),payload.size());
     bone_scale_io::VmdExtension scales;bone_scale_io::PrefixFingerprint prefix;prefix.Append(file.bytes.data(),file.bytes.size());
     scales.prefixBytes=prefix.bytes();scales.prefixCrc32=prefix.crc32();
     for(unsigned i=0;i<2;++i) {
         bone_scale_io::VmdExtension::Entry entry;std::memcpy(entry.name.data(),model.boneTable[bone].name,strnlen_s(model.boneTable[bone].name,15));
         entry.frame=i*8;entry.scale.v[0]=i?4.f:2.f;entry.scale.v[1]=i?3.f:1.5f;entry.curve={7,31,88,119};scales.entries.push_back(entry);
     }
-    const auto tail=bone_scale_io::EncodeExtension(scales);file.Raw(tail.data(),tail.size());file.Put(std::uint64_t(tail.size()));file.Raw("MDSXVMDX",8);
+    const auto tail=bone_scale_io::EncodeExtension(scales);file.Raw(tail.data(),tail.size());file.Put(std::uint64_t(tail.size()));file.Raw("MMSXVMDX",8);
     FILE* stream=nullptr;Check(!_wfopen_s(&stream,file.path.c_str(),L"wb")&&stream,"open real model VMD containing both exact author blocks");
     Check(std::fwrite(file.bytes.data(),1,file.bytes.size(),stream)==file.bytes.size(),"write real model VMD with dictionary-free morph bone and scale sequence");
     Check(!std::fclose(stream),"close real model author-tail VMD before immutable loading");

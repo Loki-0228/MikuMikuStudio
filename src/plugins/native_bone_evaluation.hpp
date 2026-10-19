@@ -1,18 +1,18 @@
 #pragma once
-#include "mikudancestudio/build_profile.hpp"
+#include "mikumikustudio/build_profile.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "shared_history.hpp"
 #include <cstddef>
 #include <cstdint>
 #include <vector>
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 class MMDApp;
 namespace mdl { struct BoneKey; struct BoneOrderEntry; }
 namespace bone_scale { class AuthoringState; }
 namespace bone_curve { class AuthoringState; }
 }
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 // A direction-specific, read-only view of the complete target key tracks.
 // Pointers returned by key remain valid throughout PrepareBoneEvaluation.
 // The callback returns null for invalid slots. The prepared participant owns

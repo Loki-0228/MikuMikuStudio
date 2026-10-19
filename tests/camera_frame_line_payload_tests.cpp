@@ -1,17 +1,17 @@
 // Exercise the ordinary frame-line implementation in both build profiles.
 // Camera interpolation has six real channels, including distance and FOV.
-#include "mikudancestudio/build_profile.hpp"
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
+#include "mikumikustudio/build_profile.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <new>
 
-namespace mikudancestudio { int ShiftGlobalKeysForFrameLine(MMDApp*, bool, bool); }
-using namespace mikudancestudio;
+namespace mikumikustudio { int ShiftGlobalKeysForFrameLine(MMDApp*, bool, bool); }
+using namespace mikumikustudio;
 namespace {
 unsigned checks = 0;
 void Check(bool value, const char* label) {

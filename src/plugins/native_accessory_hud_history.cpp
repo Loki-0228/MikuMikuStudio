@@ -4,22 +4,22 @@
 #include "native_history_commands.hpp"
 #include "native_global_commands.hpp"
 #include "native_object_commands.hpp"
-#include "mikudancestudio/accessory_layout.hpp"
-#include "mikudancestudio/autosave.hpp"
-#include "mikudancestudio/bake_ui_lock.hpp"
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/plugin_scene.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/update_coordinator.hpp"
+#include "mikumikustudio/accessory_layout.hpp"
+#include "mikumikustudio/autosave.hpp"
+#include "mikumikustudio/bake_ui_lock.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/plugin_scene.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/update_coordinator.hpp"
 #include <array>
 #include <cmath>
 #include <cstring>
 #include <stdexcept>
 
-namespace mikudancestudio { void FinishCameraHudInteraction(MMDApp*) noexcept; }
-namespace mikudancestudio::plugins {
+namespace mikumikustudio { void FinishCameraHudInteraction(MMDApp*) noexcept; }
+namespace mikumikustudio::plugins {
 namespace {
 using Values=std::array<float,6>;
 Values Read(const mdl::AccessoryRecord& a)noexcept{return {a.position[0],a.position[1],a.position[2],a.rotation[0],a.rotation[1],a.rotation[2]};}

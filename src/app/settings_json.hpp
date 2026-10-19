@@ -1,11 +1,11 @@
 #pragma once
 #include "../plugins/json.hpp"
-#include "mikudancestudio/system_settings.hpp"
+#include "mikumikustudio/system_settings.hpp"
 #include <cmath>
 #include <climits>
 #include <cstdlib>
 
-namespace mikudancestudio::settings_json {
+namespace mikumikustudio::settings_json {
 using plugins::Json;
 inline std::string Quote(std::string_view value) {
     std::string out = "\"";

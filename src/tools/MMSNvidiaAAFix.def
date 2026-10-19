@@ -2,4 +2,4 @@ LIBRARY MMSNvidiaAAFix
 EXPORTS
     DllRegisterServer PRIVATE
     DllUnregisterServer PRIVATE
-    MMSNvidiaAAFixQueryInstalled
+    MMSNvidiaAAFixQueryInstalled PRIVATE

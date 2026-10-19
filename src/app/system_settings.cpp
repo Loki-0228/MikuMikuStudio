@@ -1,9 +1,9 @@
-#include "mikudancestudio/system_settings.hpp"
-#include "mikudancestudio/local_data_path.hpp"
+#include "mikumikustudio/system_settings.hpp"
+#include "mikumikustudio/local_data_path.hpp"
 #include "../plugins/json.hpp"
 #include <atomic>
 
-namespace mikudancestudio::system_settings {
+namespace mikumikustudio::system_settings {
 namespace {
 using plugins::Json;
 constexpr DWORD MaximumBytes = 1024 * 1024;

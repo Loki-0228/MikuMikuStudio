@@ -24,14 +24,14 @@
 //   strictly increasing in time and therefore invertible.
 // * Time is recovered by inverting the cubic; it is never assumed linear.
 
-#include "mikudancestudio/animation_curve.hpp"
+#include "mikumikustudio/animation_curve.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <utility>
 
-namespace mikudancestudio::animation_curve {
+namespace mikumikustudio::animation_curve {
 namespace {
 
 constexpr double kMinimumWeight = 0.0001;
@@ -839,7 +839,7 @@ bool Encode(const std::vector<NamedTrack> &tracks, std::vector<std::uint8_t> &ou
     std::vector<std::uint8_t> buffer;
     buffer.reserve(totalBytes);
     buffer.push_back('M');
-    buffer.push_back('D');
+    buffer.push_back('M');
     buffer.push_back('S');
     buffer.push_back('C');
     WriteU16(buffer, 1);
@@ -883,8 +883,8 @@ bool Decode(const std::uint8_t *data, std::size_t size, std::vector<NamedTrack> 
         error = "the payload is shorter than the " + std::to_string(kHeaderBytes) + "-byte header";
         return false;
     }
-    if (magic[0] != 'M' || magic[1] != 'D' || magic[2] != 'S' || magic[3] != 'C') {
-        error = "the payload does not start with the MDSC magic";
+    if (magic[0] != 'M' || magic[1] != 'M' || magic[2] != 'S' || magic[3] != 'C') {
+        error = "the payload does not start with the MMSC magic";
         return false;
     }
     std::uint16_t version = 0;
@@ -1012,4 +1012,4 @@ bool Decode(const std::uint8_t *data, std::size_t size, std::vector<NamedTrack> 
     return true;
 }
 
-}  // namespace mikudancestudio::animation_curve
+}  // namespace mikumikustudio::animation_curve

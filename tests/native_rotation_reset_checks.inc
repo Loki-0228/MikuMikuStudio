@@ -1,5 +1,5 @@
 // Production menu 302, using the same hidden-window fixture as numeric edits.
-namespace mikudancestudio { void CmdViewMenu(MMDApp*, HWND, std::uint16_t, std::uint16_t); }
+namespace mikumikustudio { void CmdViewMenu(MMDApp*, HWND, std::uint16_t, std::uint16_t); }
 namespace {
 void RotationResetCommand(PoseNumericFixture& f) {
     CmdViewMenu(f.app.get(), f.app->MainWindow(), 302, 0);

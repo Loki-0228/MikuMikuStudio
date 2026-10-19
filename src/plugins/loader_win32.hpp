@@ -1,7 +1,7 @@
 #pragma once
 #include "manifest.hpp"
 
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 struct PeInfo { std::vector<std::string> imports; uint16_t subsystemMajor = 0, subsystemMinor = 0; };
 PeInfo InspectPe(const fs::path&);
 std::string Sha256(const fs::path&);

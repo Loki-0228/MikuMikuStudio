@@ -27,8 +27,8 @@ int ObservePmmInputClose(int descriptor) noexcept;
 
 namespace {
 thread_local long failAfter = -1;
-using mikudancestudio::pmm_io::Input;
-namespace pmm = mikudancestudio::pmm_io;
+using mikumikustudio::pmm_io::Input;
+namespace pmm = mikumikustudio::pmm_io;
 unsigned checks = 0;
 struct CloseEvent { int descriptor, checked; bool consumed; };
 std::array<CloseEvent, 128> closeEvents{};

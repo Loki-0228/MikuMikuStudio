@@ -19,9 +19,9 @@
 
 #include <cstdint>
 
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 void FillPanelBottom(HDC hdc, int left, int top, int right, int bottom,
                      std::uint32_t color, std::uint32_t color2, int mode) {
@@ -75,4 +75,4 @@ void FillPanelBottom(HDC hdc, int left, int top, int right, int bottom,
     DeleteObject(border);
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

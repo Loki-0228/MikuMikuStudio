@@ -1,7 +1,7 @@
 // MAINTENANCE: regression-keep; purpose and cleanup conditions in tests/README.md.
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/d3dx_dyn.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
 #include <vfw.h>
 #include <cmath>
 #include <cstdio>
@@ -11,7 +11,7 @@
 #include <string>
 #include <vector>
 
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 namespace {
 constexpr int width = 160, height = 96;
 void Check(bool ok, const char* message) {

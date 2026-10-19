@@ -1,8 +1,8 @@
 // ===========================================================================
 // Porting-era diagnostics: whole-app state snapshots under
-// MIKUDANCESTUDIO_STATE_DUMP_DIR, used to diff the port against the original
-// binaries.  Compiled only with -DMIKUDANCESTUDIO_DIAG (CMake option
-// MIKUDANCESTUDIO_DIAG, default OFF); the OFF stubs below keep the call
+// MIKUMIKUSTUDIO_STATE_DUMP_DIR, used to diff the port against the original
+// binaries.  Compiled only with -DMIKUMIKUSTUDIO_DIAG (CMake option
+// MIKUMIKUSTUDIO_DIAG, default OFF); the OFF stubs below keep the call
 // sites valid and inline away to nothing.
 // ===========================================================================
 #pragma once
@@ -15,13 +15,13 @@
 #include <cstdio>
 #include <cstring>
 
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/model.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/model.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
-#ifdef MIKUDANCESTUDIO_DIAG
+#ifdef MIKUMIKUSTUDIO_DIAG
 
 inline void DumpFrameEntryState(MMDApp* app,
                                 const char* fileName = "frame_state.json",
@@ -32,7 +32,7 @@ inline void DumpFrameEntryState(MMDApp* app,
         ? &lineDumped : &entryDumped;
     char directory[MAX_PATH]{};
     const DWORD length = GetEnvironmentVariableA(
-        "MIKUDANCESTUDIO_STATE_DUMP_DIR", directory, MAX_PATH);
+        "MIKUMIKUSTUDIO_STATE_DUMP_DIR", directory, MAX_PATH);
     if (length == 0 || length >= MAX_PATH ||
         (oneShot && InterlockedCompareExchange(dumped, 1, 0) != 0))
         return;
@@ -207,8 +207,8 @@ inline void DumpFrameEntryState(MMDApp* app,
         const mdl::ModelRecord& state = *mdl::Mdl(model);
         const int boneCount = static_cast<int>(state.boneCount);
         const auto* bones = mdl::Bones(model);
-        auto* active = mikudancestudio::mdl::Mdl(model)->boneSelection;
-        auto* secondary = mikudancestudio::mdl::Mdl(model)->bonePhysicsState;
+        auto* active = mikumikustudio::mdl::Mdl(model)->boneSelection;
+        auto* secondary = mikumikustudio::mdl::Mdl(model)->bonePhysicsState;
         int activeCount = 0;
         int secondaryCount = 0;
         if (boneCount >= 0 && boneCount <= 100000) {
@@ -538,7 +538,7 @@ inline void DumpFrameEntryState(MMDApp* app,
 inline void DumpRequestedFrameState(MMDApp* app) {
     char directory[MAX_PATH]{};
     const DWORD length = GetEnvironmentVariableA(
-        "MIKUDANCESTUDIO_STATE_DUMP_DIR", directory, MAX_PATH);
+        "MIKUMIKUSTUDIO_STATE_DUMP_DIR", directory, MAX_PATH);
     if (length == 0 || length >= MAX_PATH)
         return;
 
@@ -557,7 +557,7 @@ inline void DumpRequestedFrameState(MMDApp* app) {
     }
 }
 
-#else  // !MIKUDANCESTUDIO_DIAG
+#else  // !MIKUMIKUSTUDIO_DIAG
 
 inline void DumpFrameEntryState(MMDApp*,
                                 const char* = "frame_state.json",
@@ -565,6 +565,6 @@ inline void DumpFrameEntryState(MMDApp*,
 
 inline void DumpRequestedFrameState(MMDApp*) {}
 
-#endif  // MIKUDANCESTUDIO_DIAG
+#endif  // MIKUMIKUSTUDIO_DIAG
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

@@ -1,12 +1,12 @@
 // Retained unbound command regression: one paste/undo covers every key family.
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/bone_scale.hpp"
-#include "mikudancestudio/bone_curve.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/undo_storage.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/bone_curve.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/undo_storage.hpp"
 #include <array>
 #include <cstdio>
 #include <cstdlib>
@@ -28,11 +28,11 @@ void operator delete[](void* p) noexcept { std::free(p); }
 void operator delete(void* p, std::size_t) noexcept { std::free(p); }
 void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 void CmdControl400(MMDApp*, HWND, std::uint16_t, std::uint16_t);
 }
 namespace {
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 unsigned checks = 0;
 void Check(bool value, const char* text) {
     ++checks;

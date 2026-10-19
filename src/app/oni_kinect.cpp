@@ -61,11 +61,11 @@
 
 #include <cstdint>
 
-#include "mikudancestudio/globals.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/globals.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 // [sub1d574 + 0x1D4E0] D3D device, same fetch as RenderDeviceOf in
 // app_gap_bodies.cpp (0x429f33: mov 0xa06c4; mov 0x1d4e0).
@@ -271,4 +271,4 @@ void DisableKinect(MMDApp* app) {
     s.state.kinectCaptureActive = 0;                   // 0x42a0c0
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

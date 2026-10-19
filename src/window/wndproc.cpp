@@ -1,12 +1,12 @@
 #include "window_settings.hpp"
-#include "mikudancestudio/recording_state.hpp"
-#include "mikudancestudio/autosave.hpp"
-#include "mikudancestudio/plugin_menu.hpp"
-#include "mikudancestudio/plugin_runtime.hpp"
-#include "mikudancestudio/build_profile.hpp"
-#include "mikudancestudio/update_coordinator.hpp"
-#include "mikudancestudio/nvidia_antialias_menu.hpp"
-#include "mikudancestudio/system_settings_ui.hpp"
+#include "mikumikustudio/recording_state.hpp"
+#include "mikumikustudio/autosave.hpp"
+#include "mikumikustudio/plugin_menu.hpp"
+#include "mikumikustudio/plugin_runtime.hpp"
+#include "mikumikustudio/build_profile.hpp"
+#include "mikumikustudio/update_coordinator.hpp"
+#include "mikumikustudio/nvidia_antialias_menu.hpp"
+#include "mikumikustudio/system_settings_ui.hpp"
 // ===========================================================================
 // VA 0x004C3A10 - MainWndProc  (original: sub_4C3A10, 0x8A6 bytes)
 // ===========================================================================
@@ -40,26 +40,26 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
-#include "mikudancestudio/frame_rate_correction.hpp"
+#include "mikumikustudio/frame_rate_correction.hpp"
 #include <stdio.h>
 #include <cstdlib>
 
 #include <cstdint>
 
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/recent_projects.hpp"
-#include "mikudancestudio/bottom_panel_resize.hpp"
-#include "mikudancestudio/ui_message.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/runtime_log.hpp"
-#include "mikudancestudio/skinning_menu.hpp"
-#include "mikudancestudio/physics_bake.hpp"
-#include "mikudancestudio/bake_ui_lock.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/recent_projects.hpp"
+#include "mikumikustudio/bottom_panel_resize.hpp"
+#include "mikumikustudio/ui_message.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/runtime_log.hpp"
+#include "mikumikustudio/skinning_menu.hpp"
+#include "mikumikustudio/physics_bake.hpp"
+#include "mikumikustudio/bake_ui_lock.hpp"
 #include "viewport_corner_menu.hpp"
 #include "../plugins/native_viewport_history.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 namespace {
 
@@ -477,4 +477,4 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
     }
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

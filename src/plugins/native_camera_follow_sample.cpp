@@ -1,14 +1,14 @@
 #include "native_camera_follow_sample.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "scene_object_history.hpp"
-#include "mikudancestudio/accessory_layout.hpp"
-#include "mikudancestudio/animation_curve_host.hpp"
-#include "mikudancestudio/frame_limits.hpp"
-#include "mikudancestudio/global_key_layout.hpp"
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/plugin_scene.hpp"
+#include "mikumikustudio/accessory_layout.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
+#include "mikumikustudio/frame_limits.hpp"
+#include "mikumikustudio/global_key_layout.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/plugin_scene.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -17,7 +17,7 @@
 #include <type_traits>
 #include <utility>
 
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 namespace {
 constexpr double kPi=3.14159265358979323846;
 void Add(std::uint64_t& bytes,std::uint64_t count,std::uint64_t stride=1)noexcept{

@@ -1,12 +1,12 @@
-#include "mikudancestudio/display_capacity.hpp"
-#include "mikudancestudio/text_encoding.hpp"
-#include "mikudancestudio/owned_text.hpp"
+#include "mikumikustudio/display_capacity.hpp"
+#include "mikumikustudio/text_encoding.hpp"
+#include "mikumikustudio/owned_text.hpp"
 // MAINTENANCE: regression-keep; malformed PMX text must fail before allocation
 // or string conversion, and partially constructed models must remain disposable.
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/path_workspace.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/sequential_file_reader.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/path_workspace.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/sequential_file_reader.hpp"
 #include <Windows.h>
 #include <cstdio>
 #include <cstdlib>
@@ -27,7 +27,7 @@ void operator delete(void* pointer) noexcept { std::free(pointer); }
 void operator delete[](void* pointer) noexcept { std::free(pointer); }
 void operator delete(void* pointer, std::size_t) noexcept { std::free(pointer); }
 void operator delete[](void* pointer, std::size_t) noexcept { std::free(pointer); }
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 namespace {
 using Bytes = std::vector<unsigned char>;
 void Check(bool ok, const char* what) {

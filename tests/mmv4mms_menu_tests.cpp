@@ -6,11 +6,11 @@
 #include <cstring>
 #include <memory>
 #include <string>
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/mmv4mms.hpp"
-#include "mikudancestudio/plugin_menu.hpp"
-#include "mikudancestudio/plugin_menu.h"
-using namespace mikudancestudio;
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/mmv4mms.hpp"
+#include "mikumikustudio/plugin_menu.hpp"
+#include "mikumikustudio/plugin_menu.h"
+using namespace mikumikustudio;
 void Check(bool ok,const char* message){if(!ok){std::printf("FAIL: %s\n",message);std::exit(1);}}
 std::wstring Caption(HMENU popup,UINT id){wchar_t text[256]{};GetMenuStringW(popup,id,text,256,MF_BYCOMMAND);return text;}
 struct Fixture {

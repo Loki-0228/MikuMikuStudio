@@ -1,18 +1,18 @@
-#include "mikudancestudio/frame_limits.hpp"
-#include "mikudancestudio/ui_translation.hpp"
+#include "mikumikustudio/frame_limits.hpp"
+#include "mikumikustudio/ui_translation.hpp"
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
 #include <CommCtrl.h>
 #include <CommDlg.h>
-#include "mikudancestudio/physics_bake.hpp"
-#include "mikudancestudio/alembic_export.hpp"
-#include "mikudancestudio/bake_ui_lock.hpp"
-#include "mikudancestudio/mesh_bake_cache.hpp"
-#include "mikudancestudio/native_mesh.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/ui_language.hpp"
+#include "mikumikustudio/physics_bake.hpp"
+#include "mikumikustudio/alembic_export.hpp"
+#include "mikumikustudio/bake_ui_lock.hpp"
+#include "mikumikustudio/mesh_bake_cache.hpp"
+#include "mikumikustudio/native_mesh.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/ui_language.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -23,7 +23,7 @@
 #include <string>
 #include <vector>
 
-namespace mikudancestudio::bake {
+namespace mikumikustudio::bake {
 namespace {
 constexpr int Start=100,End=101,Last=102,Physics=103,Keys=104,Selected=105,Presets=106,Advanced=107,Details=108,
     Bar=109,Status=110,Erp=120,Cfm=121,Substeps=122,Multiplier=123,BaseRate=124,Rate=125,Name=126,Save=127,Load=128,Help=129,

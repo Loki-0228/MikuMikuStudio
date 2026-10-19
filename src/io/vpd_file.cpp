@@ -1,4 +1,4 @@
-#include "mikudancestudio/undo_storage.hpp"
+#include "mikumikustudio/undo_storage.hpp"
 // ===========================================================================
 // VA 0x00418750 - SaveVpdFile  (0x2B2 bytes)
 // VA 0x00418A10 - LoadVpdFile  (0x95C bytes)
@@ -49,8 +49,8 @@
 // =========================================================================//
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include "mikudancestudio/build_profile.hpp"
-#include "mikudancestudio/bone_scale.hpp"
+#include "mikumikustudio/build_profile.hpp"
+#include "mikumikustudio/bone_scale.hpp"
 #include <Windows.h>
 
 #include <array>
@@ -66,22 +66,22 @@
 #include <share.h>
 #include <sys/stat.h>
 
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/globals.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/runtime_log.hpp"
-#include "mikudancestudio/vpd_scale_io.hpp"
-#include "mikudancestudio/original_file_encoding.hpp"
-#include "mikudancestudio/original_import.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/globals.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/runtime_log.hpp"
+#include "mikumikustudio/vpd_scale_io.hpp"
+#include "mikumikustudio/original_file_encoding.hpp"
+#include "mikumikustudio/original_import.hpp"
 #if !MMD_ORIGINAL_PROFILE
-#include "mikudancestudio/native_edit_history.hpp"
+#include "mikumikustudio/native_edit_history.hpp"
 #include "../plugins/native_vpd_import.hpp"
 #endif
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 
 // Active model = slot array at this+0x780 indexed by byte this+0x910.
@@ -164,7 +164,7 @@ void SaveVpdFile(const wchar_t* path) {
         if (selBits[i] != 0) ++selected;
     std::fprintf(fp, kCountFmt, selected);
 
-    mikudancestudio::mdl::BoneRecord* const bones = mikudancestudio::mdl::Bones(model);
+    mikumikustudio::mdl::BoneRecord* const bones = mikumikustudio::mdl::Bones(model);
     const int physMode = app->PlaybackPhysicsMode();
     // MMS addition: the pose scales of the exported bones ride in the tail
     // extension (vpd_scale_io.hpp).  One entry per selected bone whose pose
@@ -176,7 +176,7 @@ void SaveVpdFile(const wchar_t* path) {
     int running = 0;
     for (int i = 0; i < boneCnt; ++i) {
         if (selBits[i] == 0) continue;
-        mikudancestudio::mdl::BoneRecord* const bone = bones + i;
+        mikumikustudio::mdl::BoneRecord* const bone = bones + i;
 #if MMD_ORIGINAL_PROFILE
         std::fprintf(fp, kBoneFmt, running, boneNames[i].c_str());
 #else
@@ -318,7 +318,7 @@ void LoadVpdFile(const wchar_t* path) {
     // every target, repeat one target, or match several same-named bones.
     std::vector<mdl::BonePoseSnapshot> poses(static_cast<std::size_t>(boneCnt));
     std::vector<std::uint8_t> touched(static_cast<std::size_t>(boneCnt), 0);
-    mikudancestudio::mdl::BoneRecord* const bones = mikudancestudio::mdl::Bones(model);
+    mikumikustudio::mdl::BoneRecord* const bones = mikumikustudio::mdl::Bones(model);
     unsigned char* const selBits = modelRecord.boneSelection;
     unsigned char* const regBits = modelRecord.bonePhysicsState;
     const bool pmx = modelRecord.physicsMode == 2;              // 0x418FC4
@@ -358,7 +358,7 @@ void LoadVpdFile(const wchar_t* path) {
         const auto inputNameLength = std::strlen(name);
 #endif
         for (int i = 0; i < boneCnt; ++i) {
-            mikudancestudio::mdl::BoneRecord* const bone = bones + i;
+            mikumikustudio::mdl::BoneRecord* const bone = bones + i;
 #if MMD_ORIGINAL_PROFILE
             if (hasCanonicalMatch ? !(canonicalNames[i].first && canonicalNames[i].second == name) :
                 !(strnlen_s(bone->name, 20) == inputNameLength &&
@@ -525,4 +525,4 @@ void LoadVpdFile(const wchar_t* path) {
     }
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

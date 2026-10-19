@@ -1,13 +1,13 @@
 #include "native_model_vmd_source.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "../model/vmd_read_guard.hpp"
-#include "mikudancestudio/bone_curve.hpp"
-#include "mikudancestudio/frame_limits.hpp"
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/morph_curve.hpp"
-#include "mikudancestudio/text_encoding.hpp"
+#include "mikumikustudio/bone_curve.hpp"
+#include "mikumikustudio/frame_limits.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/morph_curve.hpp"
+#include "mikumikustudio/text_encoding.hpp"
 #include <cerrno>
 #include <algorithm>
 #include <array>
@@ -18,7 +18,7 @@
 #include <map>
 #include <share.h>
 #include <sys/stat.h>
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 namespace {
 struct ModelVmdDescriptor {int value=-1;~ModelVmdDescriptor(){if(value>=0)_close(value);}};
 template<class T>T ModelVmdValue(const std::uint8_t* bytes){T value;std::memcpy(&value,bytes,sizeof(value));return value;}

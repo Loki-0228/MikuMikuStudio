@@ -1,7 +1,7 @@
 // ===========================================================================
 // processor_settings.cpp - global processor policy (host side)
 //
-// See include/mikudancestudio/processor_settings.hpp for the contract.  This
+// See include/mikumikustudio/processor_settings.hpp for the contract.  This
 // file owns: the per-installation settings.json processor section,
 // the Requested/Active split with a
 // single startup freeze, adapter resolution by LUID then full hardware
@@ -15,8 +15,8 @@
 // ===========================================================================
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include "mikudancestudio/local_data_path.hpp"
-#include "mikudancestudio/system_settings.hpp"
+#include "mikumikustudio/local_data_path.hpp"
+#include "mikumikustudio/system_settings.hpp"
 #include "../app/settings_json.hpp"
 #include <Windows.h>
 #include <d3d9.h>
@@ -31,12 +31,12 @@
 #include <utility>
 #include <vector>
 
-#include "mikudancestudio/processor_settings.hpp"
-#include "mikudancestudio/runtime_log.hpp"
-#include "mikudancestudio/skinning_backend.hpp"
-#include "mikudancestudio/graphics_runtime.hpp"
+#include "mikumikustudio/processor_settings.hpp"
+#include "mikumikustudio/runtime_log.hpp"
+#include "mikumikustudio/skinning_backend.hpp"
+#include "mikumikustudio/graphics_runtime.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace processor {
 namespace {
 
@@ -222,7 +222,7 @@ Configuration ReadConfiguration(const wchar_t* path, std::wstring& warning) {
 
 std::wstring Serialize(const Configuration& configuration) {
     std::wstring text;
-    text += L"; MikuDanceStudio processor settings (this Windows user, all projects).\r\n";
+    text += L"; MikuMikuStudio processor settings (this Windows user, all projects).\r\n";
     text += L"; Changes take effect on the next launch.\r\n";
     const auto emit = [&](Role role, const Selection& selection) {
         text += L"["; text += SectionName(role); text += L"]\r\n";
@@ -896,4 +896,4 @@ void ResetForTesting() {
 }
 
 }  // namespace processor
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

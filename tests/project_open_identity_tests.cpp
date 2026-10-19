@@ -3,14 +3,14 @@
 // journal are real. Only modal dialogs, the final save call, effect/localization
 // callbacks and accepted native bodies are intercepted. Accepted-body probes
 // model the destructive boundary; they are not native PMM parser round trips.
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/plugin_runtime.hpp"
-#include "mikudancestudio/plugin_storage.hpp"
-#include "mikudancestudio/recent_projects.hpp"
-#include "mikudancestudio/effect_api.hpp"
-#include "mikudancestudio/scene_ownership.hpp"
-#include "mikudancestudio/ui_translation.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/plugin_runtime.hpp"
+#include "mikumikustudio/plugin_storage.hpp"
+#include "mikumikustudio/recent_projects.hpp"
+#include "mikumikustudio/effect_api.hpp"
+#include "mikumikustudio/scene_ownership.hpp"
+#include "mikumikustudio/ui_translation.hpp"
 #include "../src/io/project_open.hpp"
 #include "../src/io/pmm_input.hpp"
 #include "../src/io/pmm_io_common.hpp"
@@ -33,7 +33,7 @@
 #include <string>
 #include <vector>
 
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 namespace fs = std::filesystem;
 namespace {
 unsigned checks = 0, messages = 0, browsers = 0, saves = 0, effects = 0, localized = 0;

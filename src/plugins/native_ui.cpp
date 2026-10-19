@@ -6,9 +6,9 @@
 #include <set>
 #include <commctrl.h>
 #include <cstdio>
-#include "mikudancestudio/ui_control_layout.hpp"
+#include "mikumikustudio/ui_control_layout.hpp"
 
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 struct NativeUi::Impl {
     UiRegistry& registry;
     UiClient client;

@@ -1,8 +1,8 @@
 // Hidden production startup, CPU compiler scheduling and unchanged GPU output.
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/default_effect.hpp"
-#include "mikudancestudio/d3dx_effect.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/default_effect.hpp"
+#include "mikumikustudio/d3dx_effect.hpp"
 #include <MinHook.h>
 #include <wrl/client.h>
 #include <atomic>
@@ -13,8 +13,8 @@
 #include <fstream>
 #include <thread>
 #include <vector>
-using namespace mikudancestudio;
-using namespace mikudancestudio::d3dx;
+using namespace mikumikustudio;
+using namespace mikumikustudio::d3dx;
 using Microsoft::WRL::ComPtr;
 namespace fs = std::filesystem;
 namespace {

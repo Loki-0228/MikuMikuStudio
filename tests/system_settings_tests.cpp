@@ -2,7 +2,7 @@
 #define NOMINMAX
 #endif
 #include <Windows.h>
-#include "mikudancestudio/system_settings.hpp"
+#include "mikumikustudio/system_settings.hpp"
 #include "../src/plugins/json.hpp"
 #include <cstdio>
 #include <atomic>
@@ -10,9 +10,9 @@
 #include <thread>
 
 namespace fs = std::filesystem;
-namespace settings = mikudancestudio::system_settings;
+namespace settings = mikumikustudio::system_settings;
 using settings::Result;
-using mikudancestudio::plugins::Json;
+using mikumikustudio::plugins::Json;
 namespace {
 unsigned checks = 0;
 void Check(bool value, const char* message) {
@@ -63,7 +63,7 @@ void Processes(const fs::path& path) {
 }
 int wmain(int argc, wchar_t** argv) {
     if (argc == 4 && std::wstring(argv[1]) == L"--worker")
-        return Worker(fs::path(argv[2]), mikudancestudio::plugins::Utf8(argv[3]));
+        return Worker(fs::path(argv[2]), mikumikustudio::plugins::Utf8(argv[3]));
     wchar_t executable[32768]{}; GetModuleFileNameW(nullptr, executable, 32768);
     const auto root = fs::path(executable).parent_path() /
         (L"settings-store-test-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));

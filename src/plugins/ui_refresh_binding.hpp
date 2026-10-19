@@ -2,7 +2,7 @@
 #include "ui_refresh.hpp"
 #include <mms/refresh_binding.h>
 
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 class UiRefreshBindings {
     struct Impl;
     std::unique_ptr<Impl> impl_;

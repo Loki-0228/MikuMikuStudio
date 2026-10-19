@@ -1,7 +1,7 @@
 #pragma once
 #include "common.hpp"
 
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 class UiRegistry;
 // Process-local writer for one user layout file. Invalid or unknown documents
 // are left intact. A separate lock serializes cooperating MMS processes.

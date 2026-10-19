@@ -1,5 +1,5 @@
 // Include after native_vmd_accessory_checks.inc and all accessory/global fixtures.
-namespace mikudancestudio { int PasteAccessoryKeyRecord(MMDApp*,void*,int); }
+namespace mikumikustudio { int PasteAccessoryKeyRecord(MMDApp*,void*,int); }
 namespace {
 using AccessorySparseChannels=std::vector<curve_editor::Channel>;
 AccessorySparseChannels AccessorySparseRead(MMDApp& app){

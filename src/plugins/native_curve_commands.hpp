@@ -1,8 +1,8 @@
 #pragma once
-#include "mikudancestudio/build_profile.hpp"
+#include "mikumikustudio/build_profile.hpp"
 #if !MMD_ORIGINAL_PROFILE
-#include "mikudancestudio/animation_curve_host.hpp"
-namespace mikudancestudio::plugins {
+#include "mikumikustudio/animation_curve_host.hpp"
+namespace mikumikustudio::plugins {
 struct BoneCurveEdit;
 struct DisplayCurveRow;
 // Bound writes consume every outcome. They never return to the legacy writer.

@@ -23,7 +23,7 @@ for mode in ('native', 'mme'):
     fixture(model)
     env = os.environ.copy()
     env.update(LOCALAPPDATA=str(directory / 'Local'), APPDATA=str(directory / 'Roaming'),
-               MIKUDANCESTUDIO_AUTOSAVE_CONFIG=str(directory / 'autosave.ini'))
+               MIKUMIKUSTUDIO_AUTOSAVE_CONFIG=str(directory / 'autosave.ini'))
     if mode == 'native':
         env['MMS_MME_ORDER_NATIVE'] = '1'
     else:

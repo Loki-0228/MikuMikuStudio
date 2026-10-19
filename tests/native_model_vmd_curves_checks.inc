@@ -1,10 +1,10 @@
 // Include after native_model_vmd_checks.inc. These integration checks use the
 // real unbound LoadVmdMotion as an oracle, then exercise the bound planner and
 // SharedHistory. No renderer device, visible window, or source re-open on undo.
-#include "mikudancestudio/d3d_wrapper.hpp"
+#include "mikumikustudio/d3d_wrapper.hpp"
 namespace model_vmd_curve_integration {
-namespace ac = mikudancestudio::animation_curve;
-namespace p = mikudancestudio::plugins;
+namespace ac = mikumikustudio::animation_curve;
+namespace p = mikumikustudio::plugins;
 struct VmdCurveFixture : ModelPasteFixture {
     std::wstring boneName=L"\u9aa8\u9abc\u957f\u540d\u5c3e\u6bb5",morphName=L"\u8868\u60c5\u957f\u540d\u5c3e\u6bb5";
     std::unique_ptr<D3DRenderer> renderer=std::make_unique<D3DRenderer>();
@@ -115,7 +115,7 @@ struct Motion {
                 tracks.push_back({"bone/0/"+std::to_string(lane)+"/"+HexName(boneRaw.data()),std::move(track)});
             }
             std::vector<std::uint8_t> payload;Check(ac::Encode(tracks,payload,error),"encode independent nine-lane bone author payload");
-            bone={'M','D','S','B','C','R','V','1'};VmdDecodePut(bone,std::uint32_t(payload.size()));bone.insert(bone.end(),payload.begin(),payload.end());
+            bone={'M','M','S','B','C','R','V','1'};VmdDecodePut(bone,std::uint32_t(payload.size()));bone.insert(bone.end(),payload.begin(),payload.end());
             bytes.insert(bytes.end(),bone.begin(),bone.end());
         }
         boneEnd=bytes.size();

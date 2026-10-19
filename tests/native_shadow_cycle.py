@@ -61,7 +61,7 @@ def main():
             env = os.environ.copy()
             env['LOCALAPPDATA'] = str(root / 'Local')
             env['APPDATA'] = str(root / 'Roaming')
-            env['MIKUDANCESTUDIO_AUTOSAVE_CONFIG'] = str(root / 'autosave.ini')
+            env['MIKUMIKUSTUDIO_AUTOSAVE_CONFIG'] = str(root / 'autosave.ini')
             run = subprocess.run(command, cwd=root, env=env, stdout=subprocess.PIPE,
                                  stderr=subprocess.STDOUT, creationflags=subprocess.CREATE_NO_WINDOW, timeout=40)
             name.with_suffix('.log').write_bytes(run.stdout)

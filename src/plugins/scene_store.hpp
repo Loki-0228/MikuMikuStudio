@@ -6,7 +6,7 @@
 #include <map>
 #include <mutex>
 
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 struct IdLess { bool operator()(MmsId a, MmsId b) const { return a.hi < b.hi || (a.hi == b.hi && a.lo < b.lo); } };
 inline bool Same(MmsId a, MmsId b) { return a.lo == b.lo && a.hi == b.hi; }
 inline bool Empty(MmsId a) { return !a.lo && !a.hi; }

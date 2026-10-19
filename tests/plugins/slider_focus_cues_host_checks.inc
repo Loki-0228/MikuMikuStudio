@@ -1,27 +1,27 @@
 // Include after slider_paint_trace_host_checks.inc in the disposable MMS host.
 #include "../slider_paint_trace.hpp"
-#include "mikudancestudio/build_profile.hpp"
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/build_profile.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 #include <fstream>
 #include <memory>
 #if !MMD_ORIGINAL_PROFILE
 namespace slider_focus_cues_host_checks {
 namespace trace=slider_paint_trace;
 namespace prior=slider_paint_trace_host_checks;
-using mikudancestudio::MMDApp;
+using mikumikustudio::MMDApp;
 struct Keys {
     MMDApp& app;const int frame;
-    const mikudancestudio::mdl::CameraKey* camera;
-    const mikudancestudio::mdl::LightKey* light;
+    const mikumikustudio::mdl::CameraKey* camera;
+    const mikumikustudio::mdl::LightKey* light;
     const std::uint64_t cameraId,lightId;
-    const std::vector<mikudancestudio::mdl::CameraKey> cameraBytes;
-    const std::vector<mikudancestudio::mdl::LightKey> lightBytes;
+    const std::vector<mikumikustudio::mdl::CameraKey> cameraBytes;
+    const std::vector<mikumikustudio::mdl::LightKey> lightBytes;
     explicit Keys(MMDApp& a):app(a),frame(a.CurrentFrame()),camera(a.CameraKeys()),light(a.LightKeys()),
-        cameraId(mikudancestudio::mdl::KeyPoolIdentity(camera)),lightId(mikudancestudio::mdl::KeyPoolIdentity(light)),
-        cameraBytes(camera,camera+mikudancestudio::mdl::KeyPoolCapacity(camera)),lightBytes(light,light+mikudancestudio::mdl::KeyPoolCapacity(light)){}
+        cameraId(mikumikustudio::mdl::KeyPoolIdentity(camera)),lightId(mikumikustudio::mdl::KeyPoolIdentity(light)),
+        cameraBytes(camera,camera+mikumikustudio::mdl::KeyPoolCapacity(camera)),lightBytes(light,light+mikumikustudio::mdl::KeyPoolCapacity(light)){}
     void Check()const{
-        using namespace mikudancestudio::mdl;
+        using namespace mikumikustudio::mdl;
         trace::Require(app.CurrentFrame()==frame&&app.CameraKeys()==camera&&app.LightKeys()==light&&
             KeyPoolIdentity(camera)==cameraId&&KeyPoolIdentity(light)==lightId&&
             KeyPoolCapacity(camera)==cameraBytes.size()&&KeyPoolCapacity(light)==lightBytes.size()&&
@@ -150,7 +150,7 @@ static void Prime(MMDApp& app,HWND window,int position){
     trace::Require(prior::Authored(app,GetDlgCtrlID(window),int(SendMessageW(window,TBM_GETPOS,0,0))),"fixture uses unchanged native parameter arithmetic before cue-only comparisons");
 }
 static void Run(MMDApp* app,const std::filesystem::path& output,bool bound){
-    using namespace mikudancestudio;
+    using namespace mikumikustudio;
     trace::Require(app&&app==g_Block&&app->CameraKeys()&&app->LightKeys()&&app->MainWindow()&&!GetCapture()&&!app->PlaybackActive()&&
         !app->FrameStepPlayback()&&bool(plugins::BoundNativePoseHistory(app))==bound,"focus regression requires actual idle disposable host and requested history binding");
     std::filesystem::create_directories(output);std::ofstream report(output/"focus-cues-report.txt");trace::Require(bool(report),"open focus regression report");

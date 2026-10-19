@@ -1,7 +1,7 @@
 // Include after native_numpad_view_checks.inc; drive the real guarded history
 // dispatcher as well as the direct journal API used by the numeric tests.
 #include "../src/plugins/native_object_commands.hpp"
-#include "mikudancestudio/bake_ui_lock.hpp"
+#include "mikumikustudio/bake_ui_lock.hpp"
 namespace {
 void NativeNumpadDispatchChecks(){
     using Mode=plugins::SharedHistory::RecordingMode;

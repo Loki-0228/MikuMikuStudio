@@ -1,5 +1,5 @@
 namespace scene_geometry_checks {
-using namespace mikudancestudio::plugins;
+using namespace mikumikustudio::plugins;
 bool Near(float a,float b) { return std::fabs(a-b)<.00001f; }
 template<class T> const T& Channel(const MmsSceneApiV1& api,MmsHandle handle,MmsObjectRef object,uint32_t channel) {
     MmsSpan span{};Check(api.readChannel(api.context,handle,object,channel,&span)==MMS_OK && span.count && span.stride==sizeof(T),"typed geometry channel");

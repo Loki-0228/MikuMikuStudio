@@ -1,6 +1,6 @@
 // Include after native_bone_registration_checks.inc.
 #include "../src/plugins/native_key_paste.hpp"
-namespace mikudancestudio {
+namespace mikumikustudio {
 bool RegisterBoneKey(unsigned char*, unsigned char*, int, unsigned char);
 bool RegisterMirroredBoneKey(unsigned char*, unsigned char*, int);
 void ResetBoneKeyCursor(unsigned char*);

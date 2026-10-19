@@ -1,6 +1,6 @@
 // Include after the shared Fixture/Check definitions in native_edit_history_tests.
-#include "mikudancestudio/owned_text.hpp"
-#include "mikudancestudio/extended_names.hpp"
+#include "mikumikustudio/owned_text.hpp"
+#include "mikumikustudio/extended_names.hpp"
 namespace {
 void OwnedTextResourceChecks() {
     namespace rb = plugins::resource_budget;

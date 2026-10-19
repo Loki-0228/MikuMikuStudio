@@ -5,7 +5,7 @@
 // ===========================================================================
 #include <Windows.h>
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 class MMDApp;
 
 namespace viewport_corner_menu {
@@ -20,4 +20,4 @@ void EnsureItem(MMDApp* app);
 bool HandleCommand(MMDApp* app, unsigned command);  // 点击：循环到下一角
 
 }  // namespace viewport_corner_menu
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

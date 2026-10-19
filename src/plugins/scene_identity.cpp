@@ -1,6 +1,6 @@
 #include "scene_identity.hpp"
 #include <bcrypt.h>
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 MmsId SceneIdentity::NewId() {
     MmsId id{};
     do {

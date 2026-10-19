@@ -1,13 +1,13 @@
 #include "scene_geometry.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/accessory_layout.hpp"
-#include "mikudancestudio/d3dx_mesh.hpp"
-#include "mikudancestudio/text_encoding.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/accessory_layout.hpp"
+#include "mikumikustudio/d3dx_mesh.hpp"
+#include "mikumikustudio/text_encoding.hpp"
 #include <cmath>
 #include <numeric>
 #include "scene_digest.hpp"
 
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 namespace {
 template<class T, size_t N> void Copy(T (&out)[N], const T (&in)[N]) { std::copy(in, in + N, out); }
 struct Geometry {

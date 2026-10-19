@@ -6,15 +6,15 @@
 // the mode split of the bake dialog.
 #define NOMINMAX
 #include <Windows.h>
-#include "mikudancestudio/accessory_layout.hpp"
-#include "mikudancestudio/animation_curve_host.hpp"
-#include "mikudancestudio/bake_ui_lock.hpp"
-#include "mikudancestudio/channel_bake.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/physics_bake.hpp"
-#include "mikudancestudio/pmm_extension.hpp"
+#include "mikumikustudio/accessory_layout.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
+#include "mikumikustudio/bake_ui_lock.hpp"
+#include "mikumikustudio/channel_bake.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/physics_bake.hpp"
+#include "mikumikustudio/pmm_extension.hpp"
 #include <atomic>
 #include <cmath>
 #include <cstdio>
@@ -27,7 +27,7 @@
 #include <utility>
 #include <vector>
 
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 
 namespace {
 int failures = 0;

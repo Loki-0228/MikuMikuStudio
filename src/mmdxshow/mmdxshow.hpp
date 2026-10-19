@@ -1,5 +1,5 @@
 // =============================================================================
-// MMDxShow.dll — Phase A skeleton (MikuDanceStudio 1:1 replica)
+// MMDxShow.dll — Phase A skeleton (MikuMikuStudio 1:1 replica)
 // =============================================================================
 // Target binary : MikuMikuDanceE_v932/Data/MMDxShow.dll
 //               (32-bit x86, VC8 / MSVCR80, DirectShow push-source filter)

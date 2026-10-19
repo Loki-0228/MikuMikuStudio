@@ -2,14 +2,14 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
-#include "mikudancestudio/build_profile.hpp"
-#include "mikudancestudio/bone_scale.hpp"
-#include "mikudancestudio/morph_curve.hpp"
-#include "mikudancestudio/animation_curve_host.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/physics_scale.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/build_profile.hpp"
+#include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/morph_curve.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/physics_scale.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 #include <btBulletDynamicsCommon.h>
 #include <BulletDynamics/ConstraintSolver/btGeneric6DofSpringConstraint.h>
 #include <algorithm>
@@ -22,7 +22,7 @@
 #include <vector>
 
 static_assert(MMD_ORIGINAL_PROFILE, "This test must link the mmd932 core");
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 namespace {
 int checks = 0, failures = 0;
 void Check(bool value, const char* message) {

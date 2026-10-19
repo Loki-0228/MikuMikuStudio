@@ -1,5 +1,5 @@
 #include "../src/plugins/native_vmd_source.hpp"
-#include "mikudancestudio/accessory_motion_io.hpp"
+#include "mikumikustudio/accessory_motion_io.hpp"
 #include <filesystem>
 namespace {
 struct VmdGlobalFile {

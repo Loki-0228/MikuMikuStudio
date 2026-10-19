@@ -1,4 +1,4 @@
-#include "mikudancestudio/original_import.hpp"
+#include "mikumikustudio/original_import.hpp"
 // ===========================================================================
 // VA 0x00418500 - LoadWaveFile       (original: sub_418500, 0x241 bytes)
 // VA 0x004C2660 - WaveCtxReset       (original: sub_4C2660)
@@ -70,7 +70,7 @@
 // =========================================================================//
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include "mikudancestudio/native_media.hpp"
+#include "mikumikustudio/native_media.hpp"
 #include <Windows.h>
 #include <mmsystem.h>   // WAVEFORMATEX for dsound.h
 #include <dsound.h>
@@ -81,12 +81,12 @@
 #include <cstdlib>
 #include <cwchar>
 
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/ui_message.hpp"
-#include "mikudancestudio/wave_audio_context.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/ui_message.hpp"
+#include "mikumikustudio/wave_audio_context.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 
 // Waveform-column constants.  x86 0x4C2F70 ran these as x87 doubles
@@ -96,13 +96,13 @@ namespace {
 // 0x7FF7CB552C10 = 390.0f.  The port follows the x64 single-precision
 // chain (behavior basis); 1.0f/30.0f folds to 0x3D088889 exactly.
 
-// Diagnostic-only file trace under MIKUDANCESTUDIO_TRACE_WAVE (CMake
-// option MIKUDANCESTUDIO_DIAG, default OFF); the OFF stubs keep the call
+// Diagnostic-only file trace under MIKUMIKUSTUDIO_TRACE_WAVE (CMake
+// option MIKUMIKUSTUDIO_DIAG, default OFF); the OFF stubs keep the call
 // sites valid and inline away to nothing.
-#ifdef MIKUDANCESTUDIO_DIAG
-bool MIKUDANCESTUDIO_WAVE_TRACE() { return getenv("MIKUDANCESTUDIO_TRACE_WAVE") != nullptr; }
+#ifdef MIKUMIKUSTUDIO_DIAG
+bool MIKUMIKUSTUDIO_WAVE_TRACE() { return getenv("MIKUMIKUSTUDIO_TRACE_WAVE") != nullptr; }
 void WaveTrace(const char* fmt, ...) {
-    FILE* tf = fopen(getenv("MIKUDANCESTUDIO_TRACE_WAVE"), "a");
+    FILE* tf = fopen(getenv("MIKUMIKUSTUDIO_TRACE_WAVE"), "a");
     if (!tf) return;
     va_list ap; va_start(ap, fmt);
     vfprintf(tf, fmt, ap);
@@ -110,16 +110,16 @@ void WaveTrace(const char* fmt, ...) {
     fclose(tf);
 }
 #else
-inline bool MIKUDANCESTUDIO_WAVE_TRACE() { return false; }
+inline bool MIKUMIKUSTUDIO_WAVE_TRACE() { return false; }
 inline void WaveTrace(const char*, ...) {}
 #endif
 
 bool EnsureAudioDevice(WaveAudioContext* audio) {
     if (audio->directSound != nullptr)
         return true;
-#ifdef MIKUDANCESTUDIO_DIAG
+#ifdef MIKUMIKUSTUDIO_DIAG
     // Preserve the sanitizer escape hatch for the DirectSound worker thread.
-    if (std::getenv("MIKUDANCESTUDIO_SKIP_DSOUND") != nullptr)
+    if (std::getenv("MIKUMIKUSTUDIO_SKIP_DSOUND") != nullptr)
         return false;
 #endif
     IDirectSound* device = nullptr;
@@ -592,7 +592,7 @@ bool WaveStartPlayback(void* obj) {
     IDirectSoundBuffer*& buffer = audio->streamingBuffer;
     const HRESULT csbHr = dsound->CreateSoundBuffer(&desc, &buffer,
                                                      nullptr);      // 0x4C290B
-    if (MIKUDANCESTUDIO_WAVE_TRACE())
+    if (MIKUMIKUSTUDIO_WAVE_TRACE())
         WaveTrace("CSB hr=%08lx ds=%p tag=%02x%02x ch=%02x%02x "
                   "rate=%08lx avg=%08lx align=%04x bits=%04x cb=%04x "
                   "bytes=%lu\n",
@@ -679,4 +679,4 @@ void LoadWaveFile(MMDApp* app) {
     SetFrameNormalized(s.FrameNormalization());                     // 0x4C2B80
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

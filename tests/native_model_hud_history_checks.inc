@@ -2,12 +2,12 @@
 // Uses owned native models, the original unbound math as oracle, and actual
 // hidden Win32 EDIT/MicWndProc messages. No D3D device is created.
 #include "../src/plugins/native_model_hud_history.hpp"
-#include "mikudancestudio/bone_scale_gizmo.hpp"
-#include "mikudancestudio/d3d_wrapper.hpp"
-#include "mikudancestudio/frame_presentation.hpp"
-#include "mikudancestudio/viewport_tool_layout.hpp"
-#include "mikudancestudio/viewport_corner_settings.hpp"
-namespace mikudancestudio {int ViewportToolAtPointForTest(MMDApp*);}
+#include "mikumikustudio/bone_scale_gizmo.hpp"
+#include "mikumikustudio/d3d_wrapper.hpp"
+#include "mikumikustudio/frame_presentation.hpp"
+#include "mikumikustudio/viewport_tool_layout.hpp"
+#include "mikumikustudio/viewport_corner_settings.hpp"
+namespace mikumikustudio {int ViewportToolAtPointForTest(MMDApp*);}
 namespace {
 constexpr int modelHudOperations[]={3,4,5,6,7,8,9,10,11,12,13,14,22,23,24,25,26,27,28,29};
 int ModelHudMode(int operation){

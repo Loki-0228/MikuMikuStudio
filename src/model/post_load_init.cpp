@@ -1,4 +1,4 @@
-#include "mikudancestudio/display_capacity.hpp"
+#include "mikumikustudio/display_capacity.hpp"
 // ===========================================================================
 // VA 0x0049C850 - PostLoadInit  (original: sub_49C850, 3007 bytes)
 // ===========================================================================
@@ -43,14 +43,14 @@
 #include <exception>
 #include <stdexcept>
 
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/model_load_ui.hpp"
-#include "mikudancestudio/text_encoding.hpp"
-#include "mikudancestudio/ui_language.hpp"
-#include "mikudancestudio/frame_scope.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/model_load_ui.hpp"
+#include "mikumikustudio/text_encoding.hpp"
+#include "mikumikustudio/ui_language.hpp"
+#include "mikumikustudio/frame_scope.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 
 // JP wide labels (.rdata 0x531090/0x53107C/0x53106C/0x531048/0x531038/
@@ -131,7 +131,7 @@ void PostLoadInit(unsigned char* m) {
     HWND boneCombo = Dlg(m, 443);
     SendMessage(boneCombo, CB_RESETCONTENT, 0, 0);
     mdl::ModelRecord* model = mdl::Mdl(m);
-    mikudancestudio::mdl::BoneRecord* bones = model->boneTable;
+    mikumikustudio::mdl::BoneRecord* bones = model->boneTable;
     // The combo names follow the English UI only, exactly like the tree panel
     // (ui_panel_sweep.cpp) and the palette.  Reading the per-model flag here
     // was inconsistent twice over: PMX loads never set it, and pmd_load stored
@@ -204,16 +204,16 @@ void PostLoadInit(unsigned char* m) {
         addScope(FrameScope::SelectedMorphs, L"Sel facial", kJpSelFacial, L"选中表情");
         addScope(FrameScope::AllMorphs, L"All facial", kJpAllFacial, L"全部表情");
         const auto* groups = model->displayFrames;
-        for (std::uint32_t g = 0; g < mikudancestudio::mdl::FacialFrameCount(*model); ++g) {
-            if (!model->morphs || mikudancestudio::mdl::FrameTargetIndex(groups[g]) >= model->morphCount) continue;
-            const auto name = text_encoding::MorphLabel(model->morphs[mikudancestudio::mdl::FrameTargetIndex(groups[g])], useEnglishNames);
+        for (std::uint32_t g = 0; g < mikumikustudio::mdl::FacialFrameCount(*model); ++g) {
+            if (!model->morphs || mikumikustudio::mdl::FrameTargetIndex(groups[g]) >= model->morphCount) continue;
+            const auto name = text_encoding::MorphLabel(model->morphs[mikumikustudio::mdl::FrameTargetIndex(groups[g])], useEnglishNames);
             SendMessageW(frameCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(name.c_str()));
         }
         addScope(FrameScope::AllBones, L"All bone", kJpAllBone, L"全部骨骼");
         const auto* frames = static_cast<const mdl::FrameGroup*>(model->rbGroups);
         for (std::uint32_t f = 0; f < model->rigidBodyCount; ++f) {
-            if (!bones || mikudancestudio::mdl::FrameTargetIndex(frames[f]) >= model->boneCount) continue;
-            const auto name = text_encoding::BoneLabel(bones[mikudancestudio::mdl::FrameTargetIndex(frames[f])], useEnglishNames);
+            if (!bones || mikumikustudio::mdl::FrameTargetIndex(frames[f]) >= model->boneCount) continue;
+            const auto name = text_encoding::BoneLabel(bones[mikumikustudio::mdl::FrameTargetIndex(frames[f])], useEnglishNames);
             SendMessageW(frameCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(name.c_str()));
         }
     }
@@ -252,4 +252,4 @@ void PostLoadInitOrDefer(unsigned char* model) {
 }
 }  // namespace model_load_ui
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

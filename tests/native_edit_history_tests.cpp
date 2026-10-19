@@ -1,24 +1,24 @@
 // CPU-only regression of the production native history prepare/publish path.
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include "mikudancestudio/native_edit_history.hpp"
-#include "mikudancestudio/undo_storage.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/bone_scale.hpp"
-#include "mikudancestudio/bone_curve.hpp"
-#include "mikudancestudio/morph_curve.hpp"
-#include "mikudancestudio/sequence_scatter.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/plugin_scene.hpp"
+#include "mikumikustudio/native_edit_history.hpp"
+#include "mikumikustudio/undo_storage.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/bone_curve.hpp"
+#include "mikumikustudio/morph_curve.hpp"
+#include "mikumikustudio/sequence_scatter.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/plugin_scene.hpp"
 #include "../src/plugins/scene_history.hpp"
 #include "../src/plugins/scene_object_history.hpp"
-#include "mikudancestudio/animation_curve_host.hpp"
-#include "mikudancestudio/physics_scene.hpp"
-#include "mikudancestudio/history_physics.hpp"
-#include "mikudancestudio/dynamics_world.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
+#include "mikumikustudio/physics_scene.hpp"
+#include "mikumikustudio/history_physics.hpp"
+#include "mikumikustudio/dynamics_world.hpp"
 #include "btBulletDynamicsCommon.h"
 #include <malloc.h>
 #include <cstdio>
@@ -40,8 +40,8 @@ void operator delete[](void* p) noexcept {std::free(p);}
 void operator delete(void* p,std::size_t) noexcept {std::free(p);}
 void operator delete[](void* p,std::size_t) noexcept {std::free(p);}
 
-using namespace mikudancestudio;
-namespace mikudancestudio { void CmdControl400(MMDApp*, HWND, std::uint16_t, std::uint16_t); }
+using namespace mikumikustudio;
+namespace mikumikustudio { void CmdControl400(MMDApp*, HWND, std::uint16_t, std::uint16_t); }
 namespace nh=native_history;
 namespace {
 unsigned checks=0;

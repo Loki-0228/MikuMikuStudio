@@ -1,5 +1,5 @@
 #include <CommCtrl.h>
-namespace mikudancestudio { void CommitEditControl(MMDApp*, HWND); }
+namespace mikumikustudio { void CommitEditControl(MMDApp*, HWND); }
 namespace {
 std::array<float, 6> LightTextPose(MMDApp& app) { return {app.LightColor()[0], app.LightColor()[1], app.LightColor()[2],
     app.LightDirection()[0], app.LightDirection()[1], app.LightDirection()[2]}; }

@@ -1,4 +1,4 @@
-#include "mikudancestudio/accessory_motion_io.hpp"
+#include "mikumikustudio/accessory_motion_io.hpp"
 #include "../../src/plugins/native_vmd_source.hpp"
 namespace vmd_accessory_host_checks {
 unsigned At(MMDApp* app,unsigned slot,unsigned frame){const auto* keys=app->AccessoryKeys(slot);unsigned at=0;while(keys[at].frame<frame&&keys[at].next)at=keys[at].next;Check(keys[at].frame==frame,"real accessory VMD key exists");return at;}

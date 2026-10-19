@@ -19,11 +19,11 @@
 #include <string>
 #include <vector>
 
-#include "mikudancestudio/processor_settings.hpp"
-#include "mikudancestudio/skinning_backend.hpp"
+#include "mikumikustudio/processor_settings.hpp"
+#include "mikumikustudio/skinning_backend.hpp"
 
-using namespace mikudancestudio;
-namespace processor = mikudancestudio::processor;
+using namespace mikumikustudio;
+namespace processor = mikumikustudio::processor;
 namespace {
 FILE* g_log = nullptr;
 unsigned g_checks = 0;

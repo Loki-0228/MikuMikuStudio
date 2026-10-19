@@ -1,5 +1,5 @@
 // Exact native-camera subdivision, without opening windows or touching files.
-#include "mikudancestudio/frame_limits.hpp"
+#include "mikumikustudio/frame_limits.hpp"
 static void CheckNativeCameraInsertion() {
     namespace ac=animation_curve;
     const auto stage=[](const char* name){std::fprintf(stderr,"STAGE camera insertion %s\n",name);std::fflush(stderr);};
@@ -62,8 +62,8 @@ static void CheckNativeCameraInsertion() {
     std::vector<curve_editor::Channel> stored;
     Check(curve_host::Read(*f.app,curve_host::Kind::Camera,0,stored,error),"read subdivided authoring");sameSamples(stored);
     pmm_extension::Document document;curve_host::Capture(*f.app,document);
-    Check(pmm_extension::Find(document,"org.mikudancestudio.animation_curves.v1")&&
-        pmm_extension::Find(document,"org.mikudancestudio.camera_intervals.v1"),"exact intervals occupy a separate optional PMM record");
+    Check(pmm_extension::Find(document,"org.mikumikustudio.animation_curves.v1")&&
+        pmm_extension::Find(document,"org.mikumikustudio.camera_intervals.v1"),"exact intervals occupy a separate optional PMM record");
     curve_host::Reset(f.app.get());curve_host::Load(*f.app,document);
     Check(curve_host::Read(*f.app,curve_host::Kind::Camera,0,stored,error),"reload persisted exact native intervals");sameSamples(stored);
 #if !MMD_ORIGINAL_PROFILE
@@ -119,12 +119,12 @@ static void CheckNativeCameraInsertion() {
     Check(edited[0].sample(edited[0],at).value==ac::Evaluate(edited[0].track,at).value,
         "intentional endpoint edits release their original native slice");
     stage("malformed record rejection");
-    auto malformed=document;auto* record=const_cast<pmm_extension::Record*>(pmm_extension::Find(malformed,"org.mikudancestudio.camera_intervals.v1"));
+    auto malformed=document;auto* record=const_cast<pmm_extension::Record*>(pmm_extension::Find(malformed,"org.mikumikustudio.camera_intervals.v1"));
     record->value[4]=99;curve_host::Load(*f.app,malformed);
     Check(curve_host::Read(*f.app,curve_host::Kind::Camera,0,stored,error)&&stored[0].preservedCameraIntervals.empty(),
         "unknown exact interval versions cannot partially install native slices");
     for(std::size_t length:{std::size_t(0),std::size_t(8),std::size_t(27),record->value.size()-1}){
-        malformed=document;record=const_cast<pmm_extension::Record*>(pmm_extension::Find(malformed,"org.mikudancestudio.camera_intervals.v1"));
+        malformed=document;record=const_cast<pmm_extension::Record*>(pmm_extension::Find(malformed,"org.mikumikustudio.camera_intervals.v1"));
         record->value.resize(length);curve_host::Load(*f.app,malformed);
         Check(curve_host::Read(*f.app,curve_host::Kind::Camera,0,stored,error)&&stored[0].preservedCameraIntervals.empty(),
             "truncated exact interval records fail transactionally");}

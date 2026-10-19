@@ -2,12 +2,12 @@
 // coverage and after real NativePoseTestBinding for bound coverage, with separate
 // fresh output folders. This authors live slider values, but never saves a scene.
 #include "../slider_paint_trace.hpp"
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/build_profile.hpp"
-#include "mikudancestudio/update_coordinator.hpp"
-#include "mikudancestudio/ui_metrics.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/build_profile.hpp"
+#include "mikumikustudio/update_coordinator.hpp"
+#include "mikumikustudio/ui_metrics.hpp"
 #include "../../src/plugins/history_runtime.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "../../src/plugins/native_pose_scope.hpp"
@@ -57,26 +57,26 @@ static void Flush(HWND parent, const std::array<HWND, 7>& controls) {
     for (auto control : controls) UpdateWindow(control);
     GdiFlush();
 }
-static bool Authored(mikudancestudio::MMDApp& app, int id, int position) {
+static bool Authored(mikumikustudio::MMDApp& app, int id, int position) {
     if (id == 447) return app.CameraFov() == float(position);
     const unsigned lane = unsigned(id - 455);
     return lane < 3 ? app.LightColor()[lane] == float(double(position) * .00390625) :
         app.LightDirection()[lane - 3] == float(double(position) / 100.0);
 }
 #if !MMD_ORIGINAL_PROFILE
-static std::array<float,7> Parameters(mikudancestudio::MMDApp& app) {
+static std::array<float,7> Parameters(mikumikustudio::MMDApp& app) {
     return {app.CameraFov(),app.LightColor()[0],app.LightColor()[1],app.LightColor()[2],
         app.LightDirection()[0],app.LightDirection()[1],app.LightDirection()[2]};
 }
 struct PumpInvariant {
-    mikudancestudio::MMDApp& app;
+    mikumikustudio::MMDApp& app;
     const std::array<float,7> values;
     const int frame;
-    struct History { mikudancestudio::plugins::SharedHistory* value=nullptr; std::uint64_t revision=0,retained=0; std::size_t undo=0,redo=0; };
+    struct History { mikumikustudio::plugins::SharedHistory* value=nullptr; std::uint64_t revision=0,retained=0; std::size_t undo=0,redo=0; };
     std::array<History,2> histories{};
-    explicit PumpInvariant(mikudancestudio::MMDApp& value):app(value),values(Parameters(value)),frame(value.CurrentFrame()) {
-        histories[0].value=mikudancestudio::plugins::NativeHistory(&app);
-        histories[1].value=mikudancestudio::plugins::BoundNativePoseHistory(&app);
+    explicit PumpInvariant(mikumikustudio::MMDApp& value):app(value),values(Parameters(value)),frame(value.CurrentFrame()) {
+        histories[0].value=mikumikustudio::plugins::NativeHistory(&app);
+        histories[1].value=mikumikustudio::plugins::BoundNativePoseHistory(&app);
         for(auto& h:histories)if(h.value){trace::Require(h.value->Revision(h.revision)==MMS_OK,"read actual history before queued UI work");
             h.retained=h.value->RetainedBytes();h.undo=h.value->UndoCount();h.redo=h.value->RedoCount();}
     }
@@ -84,8 +84,8 @@ struct PumpInvariant {
         const auto current=Parameters(app);
         trace::Require(app.CurrentFrame()==frame&&!std::memcmp(values.data(),current.data(),sizeof(values)),
             "queued UI/frame scheduling preserves all seven just-authored parameter values and playhead");
-        trace::Require(mikudancestudio::plugins::NativeHistory(&app)==histories[0].value,"queued UI work retains its original host journal");
-        trace::Require(mikudancestudio::plugins::BoundNativePoseHistory(&app)==histories[1].value,"queued UI work retains its bound journal");
+        trace::Require(mikumikustudio::plugins::NativeHistory(&app)==histories[0].value,"queued UI work retains its original host journal");
+        trace::Require(mikumikustudio::plugins::BoundNativePoseHistory(&app)==histories[1].value,"queued UI work retains its bound journal");
         for(const auto& h:histories)if(h.value){std::uint64_t revision=0;
             trace::Require(h.value->Revision(revision)==MMS_OK&&revision==h.revision&&h.value->RetainedBytes()==h.retained&&
                 h.value->UndoCount()==h.undo&&h.value->RedoCount()==h.redo,
@@ -96,7 +96,7 @@ struct PumpInvariant {
 // In particular, a filtered PeekMessage can still return WM_QUIT: inspect with
 // NOREMOVE first, and preserve a quit posted between the two calls as well.
 struct UiPump {
-    mikudancestudio::MMDApp& app;
+    mikumikustudio::MMDApp& app;
     trace::Trace& observer;
     std::ofstream& report;
     HWND main=nullptr,wake=nullptr,initialForeground=nullptr;
@@ -198,32 +198,32 @@ struct UiPump {
         void Dispatched() noexcept {armed=false;}
     };
     void CheckInitialKeyCache() {
-        struct KeySlot {int key;std::int32_t mikudancestudio::MMDAppState::* value;};
+        struct KeySlot {int key;std::int32_t mikumikustudio::MMDAppState::* value;};
         static constexpr KeySlot slots[]={
-            {VK_UP,&mikudancestudio::MMDAppState::upKeyState},
-            {VK_DOWN,&mikudancestudio::MMDAppState::downKeyState},
-            {VK_LEFT,&mikudancestudio::MMDAppState::leftKeyState},
-            {VK_RIGHT,&mikudancestudio::MMDAppState::rightKeyState},
-            {VK_SPACE,&mikudancestudio::MMDAppState::spaceKeyState},
-            {VK_DELETE,&mikudancestudio::MMDAppState::deleteKeyState},
-            {VK_ESCAPE,&mikudancestudio::MMDAppState::escKeyState},
-            {VK_TAB,&mikudancestudio::MMDAppState::tabKeyState},
-            {VK_RETURN,&mikudancestudio::MMDAppState::enterKeyState},
-            {VK_MENU,&mikudancestudio::MMDAppState::menuKeyState},
-            {221,&mikudancestudio::MMDAppState::keyState221},
-            {226,&mikudancestudio::MMDAppState::keyState226},
-            {VK_SHIFT,&mikudancestudio::MMDAppState::shiftModifierState},
-            {VK_CONTROL,&mikudancestudio::MMDAppState::ctrlModifierState},
-            {VK_LBUTTON,&mikudancestudio::MMDAppState::leftMouseButtonState},
-            {VK_RBUTTON,&mikudancestudio::MMDAppState::rightMouseButtonState},
-            {VK_MBUTTON,&mikudancestudio::MMDAppState::middleMouseButtonState}
+            {VK_UP,&mikumikustudio::MMDAppState::upKeyState},
+            {VK_DOWN,&mikumikustudio::MMDAppState::downKeyState},
+            {VK_LEFT,&mikumikustudio::MMDAppState::leftKeyState},
+            {VK_RIGHT,&mikumikustudio::MMDAppState::rightKeyState},
+            {VK_SPACE,&mikumikustudio::MMDAppState::spaceKeyState},
+            {VK_DELETE,&mikumikustudio::MMDAppState::deleteKeyState},
+            {VK_ESCAPE,&mikumikustudio::MMDAppState::escKeyState},
+            {VK_TAB,&mikumikustudio::MMDAppState::tabKeyState},
+            {VK_RETURN,&mikumikustudio::MMDAppState::enterKeyState},
+            {VK_MENU,&mikumikustudio::MMDAppState::menuKeyState},
+            {221,&mikumikustudio::MMDAppState::keyState221},
+            {226,&mikumikustudio::MMDAppState::keyState226},
+            {VK_SHIFT,&mikumikustudio::MMDAppState::shiftModifierState},
+            {VK_CONTROL,&mikumikustudio::MMDAppState::ctrlModifierState},
+            {VK_LBUTTON,&mikumikustudio::MMDAppState::leftMouseButtonState},
+            {VK_RBUTTON,&mikumikustudio::MMDAppState::rightMouseButtonState},
+            {VK_MBUTTON,&mikumikustudio::MMDAppState::middleMouseButtonState}
         };
         for(const auto& slot:slots)if(app.state.*slot.value!=0)
             Interrupted("non_idle_native_key_cache","admission",slot.key);
         for(int i=0;i<10;++i)if(app.state.numpadKeyState[i]!=0)
             Interrupted("non_idle_numpad_cache","admission",VK_NUMPAD0+i);
         for(int i=0;i<18;++i)if(app.LetterHotkeys().Value(i)!=0||app.state.dialogFlags[i]!=0)
-            Interrupted("non_idle_letter_or_dialog_cache","admission",mikudancestudio::kLetterVirtualKeys[i]);
+            Interrupted("non_idle_letter_or_dialog_cache","admission",mikumikustudio::kLetterVirtualKeys[i]);
     }
     static HWND WakeWindow() {
         HWND found=nullptr;
@@ -233,7 +233,7 @@ struct UiPump {
                 trace::Require(!found,"one coordinator message window for the isolated UI thread");found=candidate;}
         }return found;
     }
-    UiPump(mikudancestudio::MMDApp& value,trace::Trace& valueObserver,std::ofstream& stream):
+    UiPump(mikumikustudio::MMDApp& value,trace::Trace& valueObserver,std::ofstream& stream):
         app(value),observer(valueObserver),report(stream),main(value.MainWindow()),initialForeground(GetForegroundWindow()) {
         phase="ui-pump-admission";
         report<<"INPUT_GUARD initial_foreground="<<reinterpret_cast<std::uintptr_t>(initialForeground)
@@ -245,21 +245,21 @@ struct UiPump {
             <<"the pressed-since-query low bit. OS mouse moves generated by capture changes still interrupt as incomplete.\n";
         CheckInitialKeyCache();CheckInput("admission");CheckInitialKeyCache();
         const auto existing=WakeWindow();
-        trace::Require(mikudancestudio::updates::Initialize(&app),"initialize or reuse the actual production update coordinator");
+        trace::Require(mikumikustudio::updates::Initialize(&app),"initialize or reuse the actual production update coordinator");
         ownsCoordinator=!existing;
         try {wake=WakeWindow();trace::Require(wake&&(!existing||wake==existing),"retain the exact application coordinator HWND");}
-        catch(...){if(ownsCoordinator)mikudancestudio::updates::Shutdown(&app);throw;}
+        catch(...){if(ownsCoordinator)mikumikustudio::updates::Shutdown(&app);throw;}
         report<<"COORDINATOR main="<<reinterpret_cast<std::uintptr_t>(main)<<" wake="<<reinterpret_cast<std::uintptr_t>(wake)
             <<" created_by_pass="<<ownsCoordinator<<" fps_limit="<<app.FpsLimit()<<'\n';
     }
-    ~UiPump(){if(ownsCoordinator)mikudancestudio::updates::Shutdown(&app);}
+    ~UiPump(){if(ownsCoordinator)mikumikustudio::updates::Shutdown(&app);}
     std::uint64_t Clock() const noexcept {return (std::uint64_t(app.TimeNowHigh())<<32)|app.TimeNowLow();}
     void Safe() {
         CheckInput("before_safepoint");
         const auto before=Clock(),present=app.frameRate.presentedFrames;
         ++safePoints;
         observer.Phase(phase+"-safepoint-"+std::to_string(safePoints));
-        mikudancestudio::updates::SafePoint(&app);
+        mikumikustudio::updates::SafePoint(&app);
         clockAdvances+=Clock()!=before;
         if(Clock()!=before||app.frameRate.presentedFrames!=present)
             report<<"SAFE sample="<<samples<<" index="<<safePoints<<" phase="<<phase
@@ -422,9 +422,9 @@ static void DetailedPaint(trace::Trace& observer, HWND parent, const std::array<
         "metadata-only diagnosis preserves the actual final window pixels, native paint count and value");
 }
 #if !MMD_ORIGINAL_PROFILE
-static void PumpedDrags(mikudancestudio::MMDApp& app,const std::array<HWND,7>& controls,
+static void PumpedDrags(mikumikustudio::MMDApp& app,const std::array<HWND,7>& controls,
     const std::filesystem::path& output,bool requireLivePixels) {
-    using namespace mikudancestudio;
+    using namespace mikumikustudio;
     std::filesystem::create_directories(output);
     std::ofstream report(output/"paint-report.txt");
     trace::Require(bool(report),"create the independent queued-drag report");
@@ -531,9 +531,9 @@ static void PumpedDrags(mikudancestudio::MMDApp& app,const std::array<HWND,7>& c
     }catch(...){observer.Detach();observer.Write(output);report<<"FAILED: queued-drag evidence retained; no flicker conclusion.\n";report.flush();throw;}
 }
 #endif
-static Summary Run(mikudancestudio::MMDApp* app, const std::filesystem::path& output,
+static Summary Run(mikumikustudio::MMDApp* app, const std::filesystem::path& output,
     bool expectedBound, bool requireLivePixels = true) {
-    using namespace mikudancestudio;
+    using namespace mikumikustudio;
     trace::Require(app && app == g_Block && app->MainWindow() && app->Renderer() && app->Renderer()->device,
         "slider paint tracing requires the actual isolated scene host and device");
     trace::Require(GetWindowThreadProcessId(app->MainWindow(), nullptr) == GetCurrentThreadId() &&

@@ -1,16 +1,16 @@
 #pragma once
 // Real hidden model editors bound to the production common journal. Include
 // after bound_curve_history_checks.hpp; no renderer or source file is needed.
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/bone_curve.hpp"
-#include "mikudancestudio/bone_scale.hpp"
-#include "mikudancestudio/undo_storage.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/bone_curve.hpp"
+#include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/undo_storage.hpp"
 #include <array>
 
 namespace bound_model_curve_history_checks {
-namespace p=mikudancestudio::plugins;
-namespace bc=mikudancestudio::bone_curve;
-namespace mc=mikudancestudio::morph_curve;
+namespace p=mikumikustudio::plugins;
+namespace bc=mikumikustudio::bone_curve;
+namespace mc=mikumikustudio::morph_curve;
 namespace shared=bound_curve_history_checks;
 struct Model {
     std::unique_ptr<mdl::ModelRecord> record=std::make_unique<mdl::ModelRecord>();
@@ -79,7 +79,7 @@ struct Fixture:shared::Fixture {
     Model& At(unsigned slot){return slot?second:first;}
     void FindEditor(){
         editor=nullptr;EnumThreadWindows(GetCurrentThreadId(),[](HWND window,LPARAM context)->BOOL{auto& f=*reinterpret_cast<Fixture*>(context);wchar_t name[96]{};
-            GetClassNameW(window,name,96);if(GetWindow(window,GW_OWNER)==f.app->MainWindow()&&!std::wcscmp(name,L"MikuDanceStudioCurveEditorWindow"))f.editor=window;return TRUE;},reinterpret_cast<LPARAM>(this));
+            GetClassNameW(window,name,96);if(GetWindow(window,GW_OWNER)==f.app->MainWindow()&&!std::wcscmp(name,L"MikuMikuStudioCurveEditorWindow"))f.editor=window;return TRUE;},reinterpret_cast<LPARAM>(this));
         Check(editor&&GetDlgItem(editor,shared::canvasId),"real bound model curve window opens on the production host");
         std::uint64_t state[5]{};Check(SendMessageW(editor,WM_APP+397,0,reinterpret_cast<LPARAM>(state))&&state[0]==0&&state[1]==0&&state[3],
             "model editor uses the real external journal and retains no local undo stack");

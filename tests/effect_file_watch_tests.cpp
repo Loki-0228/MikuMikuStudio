@@ -3,7 +3,7 @@
 #include <cstdio>
 #include <fstream>
 #include <iostream>
-using namespace mikudancestudio::effect_file_watch;
+using namespace mikumikustudio::effect_file_watch;
 std::uint64_t __fastcall Read(const char* path) {
     HANDLE file = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
     if (file == INVALID_HANDLE_VALUE) return 0;

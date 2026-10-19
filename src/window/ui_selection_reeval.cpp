@@ -1,5 +1,5 @@
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/bone_curve.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/bone_curve.hpp"
 // ===========================================================================
 // VA 0x00430510 with helpers 0x00415E90 / 0x00416090
 // ===========================================================================
@@ -9,16 +9,16 @@
 
 #include <cstdint>
 
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/bone_scale.hpp"
-#include "mikudancestudio/interpolation_link.hpp"
-#include "mikudancestudio/accessory_layout.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/panel_controls.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/interpolation_link.hpp"
+#include "mikumikustudio/accessory_layout.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/panel_controls.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 void ClearGlobalFrameSelection(MMDApp* app) {
     if (!app) return;
@@ -308,4 +308,4 @@ void SelectionReeval(MMDApp* app) {  // 0x430510 / x64 0x7FF7CB482BB0
     CurvePanelRepaint(app);
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

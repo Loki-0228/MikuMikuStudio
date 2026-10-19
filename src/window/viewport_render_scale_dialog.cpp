@@ -1,16 +1,16 @@
-#include "mikudancestudio/viewport_render_scale.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/frame_presentation.hpp"
-#include "mikudancestudio/frame_rate.hpp"
-#include "mikudancestudio/ui_translation.hpp"
-#include "mikudancestudio/build_profile.hpp"
+#include "mikumikustudio/viewport_render_scale.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/frame_presentation.hpp"
+#include "mikumikustudio/frame_rate.hpp"
+#include "mikumikustudio/ui_translation.hpp"
+#include "mikumikustudio/build_profile.hpp"
 #include <CommCtrl.h>
 #include <algorithm>
 #include <chrono>
 #include <cwchar>
 
-namespace mikudancestudio::viewport_render_scale {
+namespace mikumikustudio::viewport_render_scale {
 namespace {
 using Clock = std::chrono::steady_clock;
 constexpr wchar_t kPreviewSession[] = L"MMS.ViewportScalePreview";

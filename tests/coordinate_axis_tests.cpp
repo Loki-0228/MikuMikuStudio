@@ -43,24 +43,24 @@
 #include <memory>
 #include <utility>
 
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/frame_presentation.hpp"
-#include "mikudancestudio/viewport_corner_settings.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/ui_language.hpp"
-#include "mikudancestudio/ui_translation.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/frame_presentation.hpp"
+#include "mikumikustudio/viewport_corner_settings.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/ui_language.hpp"
+#include "mikumikustudio/ui_translation.hpp"
 
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 // Panel-command dispatcher (src/window/command_control_500.cpp); the definition
 // is in this namespace, so the declaration must be here as well.
 void CmdControl500(MMDApp*, HWND, std::uint16_t, std::uint16_t);
 void CmdControl400(MMDApp*, HWND, std::uint16_t, std::uint16_t);
 void CmdFileMenu(MMDApp*, HWND, std::uint16_t, std::uint16_t);
 void ConsumeNumpadViewPresets(MMDApp*);
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio
 
 namespace {
 

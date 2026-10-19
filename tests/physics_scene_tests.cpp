@@ -1,15 +1,15 @@
 // MAINTENANCE: integration-manual; run with an existing PMM or PMD path.
 // --physics-modes requires a PMM with physics disabled on its initial bones.
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/panel_controls.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/panel_controls.hpp"
 #include <btBulletDynamicsCommon.h>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <string>
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 namespace {
 int dialogs = 0;
 LRESULT CALLBACK BlockDialog(int code, WPARAM wp, LPARAM lp) {

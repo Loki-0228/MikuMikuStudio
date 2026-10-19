@@ -1,6 +1,6 @@
-// VPD pose-file tail extension for native bone scaling: the "MDSXVPDX" footer
+// VPD pose-file tail extension for native bone scaling: the "MMSXVPDX" footer
 // after the standard VPD text.  Wire layout and strictness rules are
-// documented in include/mikudancestudio/vpd_scale_io.hpp.
+// documented in include/mikumikustudio/vpd_scale_io.hpp.
 //
 // This module is deterministic CPU code with its own matrix validation, byte
 // readers and CRC32 (the same standalone shape as pmm_extension.cpp), so a
@@ -24,9 +24,9 @@
 #include <utility>
 #include <vector>
 
-#include "mikudancestudio/vpd_scale_io.hpp"
+#include "mikumikustudio/vpd_scale_io.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace vpd_scale_io {
 namespace {
 
@@ -181,8 +181,8 @@ constexpr std::size_t kFooterBytes = 16;
 
 // ---- tail identification -------------------------------------------------
 
-const char kPayloadMagic[8] = {'M', 'D', 'S', 'X', 'V', 'P', 'D', 'S'};
-const char kFooterMagic[8] = {'M', 'D', 'S', 'X', 'V', 'P', 'D', 'X'};
+const char kPayloadMagic[8] = {'M', 'M', 'S', 'X', 'V', 'P', 'D', 'S'};
+const char kFooterMagic[8] = {'M', 'M', 'S', 'X', 'V', 'P', 'D', 'X'};
 
 // ---- shared encode -------------------------------------------------------
 
@@ -542,4 +542,4 @@ std::vector<std::int32_t> Resolve(const std::vector<Entry>& entries,
 }
 
 }  // namespace vpd_scale_io
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

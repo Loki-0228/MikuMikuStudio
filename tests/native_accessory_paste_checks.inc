@@ -1,5 +1,5 @@
 #include "../src/plugins/native_global_paste.hpp"
-namespace mikudancestudio { int PasteAccessoryKeyRecord(MMDApp*,void*,int); }
+namespace mikumikustudio { int PasteAccessoryKeyRecord(MMDApp*,void*,int); }
 namespace {
 struct AccessoryPasteFixture : AccessoryRegistrationFixture {
     std::array<mdl::AccessoryClipboardKey,4> clipboard{};

@@ -1,12 +1,12 @@
 #pragma once
-#include "mikudancestudio/build_profile.hpp"
+#include "mikumikustudio/build_profile.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "shared_history.hpp"
-#include "mikudancestudio/clipboard_layout.hpp"
-#include "mikudancestudio/accessory_layout.hpp"
+#include "mikumikustudio/clipboard_layout.hpp"
+#include "mikumikustudio/accessory_layout.hpp"
 #include <vector>
-namespace mikudancestudio { class MMDApp; }
-namespace mikudancestudio::plugins {
+namespace mikumikustudio { class MMDApp; }
+namespace mikumikustudio::plugins {
 // Internal participants never own the shared selection snapshot or last frame.
 // The aggregate validates every participant before publishing any of them.
 class PreparedGlobalPastePart {

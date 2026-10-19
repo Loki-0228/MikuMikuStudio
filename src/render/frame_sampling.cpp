@@ -1,9 +1,9 @@
-#include "mikudancestudio/frame_sampling.hpp"
-#include "mikudancestudio/antialias.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/frame_sampling.hpp"
+#include "mikumikustudio/antialias.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 void RenderFrameSceneForOutput(MMDApp* app) {
     RenderFrameScene(app);
     if (!app->RecordingWindow()) return;

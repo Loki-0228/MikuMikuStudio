@@ -1,9 +1,9 @@
-#include "mikudancestudio/ui_language.hpp"
-#include "mikudancestudio/local_data_path.hpp"
+#include "mikumikustudio/ui_language.hpp"
+#include "mikumikustudio/local_data_path.hpp"
 #include "settings_json.hpp"
 #include "ui_language_settings.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 void language_preferences::SaveTo(const std::filesystem::path& settings) {
     const std::string json = "{\"modelInfo\":" + std::to_string(gModelInfoLanguagePreference) +
         ",\"autoTranslate\":" + std::to_string(gModelNameAutoTranslation ? 1 : 0) + "}";

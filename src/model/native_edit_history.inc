@@ -1,4 +1,4 @@
-// Included inside mikudancestudio, after the legacy snapshot helpers. The
+// Included inside mikumikustudio, after the legacy snapshot helpers. The
 // original-profile build retains its original undo implementation below.
 #if !MMD_ORIGINAL_PROFILE
 namespace native_history {

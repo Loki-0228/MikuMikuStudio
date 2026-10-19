@@ -6,7 +6,7 @@
 #include <map>
 #include <vector>
 
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 class UiRegistry;
 struct UiClient;
 class UiRefreshQueue;

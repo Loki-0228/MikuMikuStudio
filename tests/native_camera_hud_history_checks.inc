@@ -2,10 +2,10 @@
 // arithmetic, private model identities and independent model/key/ring snapshots.
 #include "../src/plugins/native_camera_hud_history.hpp"
 #include "../src/plugins/native_object_commands.hpp"
-#include "mikudancestudio/frame_presentation.hpp"
-#include "mikudancestudio/plugin_runtime.hpp"
-#include "mikudancestudio/viewport_bounds.hpp"
-#include "mikudancestudio/window_dpi_scope.hpp"
+#include "mikumikustudio/frame_presentation.hpp"
+#include "mikumikustudio/plugin_runtime.hpp"
+#include "mikumikustudio/viewport_bounds.hpp"
+#include "mikumikustudio/window_dpi_scope.hpp"
 namespace {
 void HudFixtureGeometry(MMDApp& app) {
     const bool floating=app.FloatingWindow()!=nullptr;

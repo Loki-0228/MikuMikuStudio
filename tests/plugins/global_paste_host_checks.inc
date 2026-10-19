@@ -1,4 +1,4 @@
-#include "mikudancestudio/clipboard_layout.hpp"
+#include "mikumikustudio/clipboard_layout.hpp"
 namespace global_paste_host_checks {
 template<class K> std::vector<K> Capture(K* pool){return {pool,pool+mdl::KeyPoolCapacity(pool)};}
 template<class K> bool Same(K* pool,const std::vector<K>& saved){return mdl::KeyPoolCapacity(pool)>=saved.size()&&!std::memcmp(pool,saved.data(),saved.size()*sizeof(K));}

@@ -1,8 +1,8 @@
 // Include after native_pose_scope_checks.inc; call NativePoseAxisChecks().
 // Runs the real command dispatchers against PoseNumericFixture's hidden UI.
 #include "../src/plugins/native_pose_axis.hpp"
-#include "mikudancestudio/scene_ownership.hpp"
-namespace mikudancestudio {
+#include "mikumikustudio/scene_ownership.hpp"
+namespace mikumikustudio {
 void CmdControl500(MMDApp*, HWND, std::uint16_t, std::uint16_t);
 void DispatchSeparateWindowCommand(MMDApp*, unsigned short);
 }

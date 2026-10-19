@@ -2,7 +2,7 @@
 #include "storage_store.hpp"
 #include <mms/edit.h>
 
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 class HistoryChange;
 class EditStore;
 class SharedHistory;

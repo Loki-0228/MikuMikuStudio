@@ -1,5 +1,5 @@
 // MAINTENANCE: regression-keep; MMS native expression (morph) curve host entry
-// (include/mikudancestudio/animation_curve_host.hpp,
+// (include/mikumikustudio/animation_curve_host.hpp,
 //  src/window/animation_curve_host_ui.cpp).
 //
 // Covered here, on the CPU, with hidden windows only and without a renderer or
@@ -49,26 +49,26 @@
 #include <utility>
 #include <vector>
 
-#include "mikudancestudio/animation_curve_host.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/morph_curve.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/channel_bake.hpp"
-#include "mikudancestudio/bone_scale.hpp"
-#include "mikudancestudio/system_settings.hpp"
-#include "mikudancestudio/local_data_path.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/morph_curve.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/channel_bake.hpp"
+#include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/system_settings.hpp"
+#include "mikumikustudio/local_data_path.hpp"
 #include "../src/plugins/json.hpp"
 
-namespace mc = mikudancestudio::morph_curve;
-namespace ac = mikudancestudio::animation_curve;
-namespace mdl = mikudancestudio::mdl;
-namespace ch = mikudancestudio::curve_host;
-namespace ce = mikudancestudio::curve_editor;
+namespace mc = mikumikustudio::morph_curve;
+namespace ac = mikumikustudio::animation_curve;
+namespace mdl = mikumikustudio::mdl;
+namespace ch = mikumikustudio::curve_host;
+namespace ce = mikumikustudio::curve_editor;
 
-using mikudancestudio::MMDApp;
-using mikudancestudio::curve_editor::Channel;
+using mikumikustudio::MMDApp;
+using mikumikustudio::curve_editor::Channel;
 
 namespace {
 
@@ -299,9 +299,9 @@ struct PreservedSettingsFile {
     }
 };
 void ComparisonModeFixture() {
-    namespace settings = mikudancestudio::system_settings;
-    using Json = mikudancestudio::plugins::Json;
-    const auto directory=mikudancestudio::local_data::ExecutableDirectory();
+    namespace settings = mikumikustudio::system_settings;
+    using Json = mikumikustudio::plugins::Json;
+    const auto directory=mikumikustudio::local_data::ExecutableDirectory();
     // This entry point must never run against an ordinary test/runtime folder.
     if(GetFileAttributesW((directory/L".morph-comparison-fixture").c_str()) == INVALID_FILE_ATTRIBUTES){
         Check(false,"comparison settings fixture requires its isolated copied executable");return;
@@ -970,21 +970,21 @@ void CurveTransportAndLongBoneSpeed() {
     record.boneCount=1;record.boneTable=&bone;record.boneKeys=boneKeys.get();record.displayKeys=displayKeys.get();
     record.boneSelection=&selection;record.bonePhysicsState=&dirty;record.selectedBone=0;record.selectedMorphs[0]=0;
     displayKeys[0].visible=1;
-    auto scale=mikudancestudio::bone_scale::Matrix{};scale.v[0]=2; mikudancestudio::bone_scale::SetKey(model.raw(),1,scale);
+    auto scale=mikumikustudio::bone_scale::Matrix{};scale.v[0]=2; mikumikustudio::bone_scale::SetKey(model.raw(),1,scale);
     ac::Track morph;std::string error;Check(mc::Read(model.raw(),0,morph,error),"read transport expression fixture");
     Check(mc::Write(model.raw(),{{mc::StableId(0,record.morphs[0].name),morph}},error),"author transport expression fixture");
     HWND owner=CreateWindowW(L"STATIC",L"curve transport speed",WS_OVERLAPPED,0,0,800,600,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
     app->Hwnd()=owner;app->ModelSlot(0)=model.raw();
-    HWND frameEdit=CreateWindowW(L"EDIT",L"0",WS_CHILD,0,0,80,24,owner,reinterpret_cast<HMENU>(static_cast<INT_PTR>(mikudancestudio::panel::kCurrentFrameEdit)),GetModuleHandleW(nullptr),nullptr);
+    HWND frameEdit=CreateWindowW(L"EDIT",L"0",WS_CHILD,0,0,80,24,owner,reinterpret_cast<HMENU>(static_cast<INT_PTR>(mikumikustudio::panel::kCurrentFrameEdit)),GetModuleHandleW(nullptr),nullptr);
     app->SceneModified()=0;ch::OpenMorph(app.get(),0,false);
-    HWND editor=FindWindowW(L"MikuDanceStudioCurveEditorWindow",nullptr);
+    HWND editor=FindWindowW(L"MikuMikuStudioCurveEditorWindow",nullptr);
     Check(editor!=nullptr,"open real expression transport host");
     SetDlgItemTextW(editor,1024,L"10");SendMessageW(editor,WM_COMMAND,MAKEWPARAM(1025,BN_CLICKED),0);
     wchar_t text[32]{};GetWindowTextW(frameEdit,text,32);
     Check(app->CurrentFrame()==10&&wcscmp(text,L"10")==0&&std::abs(record.morphs[0].value-.5)<.0001,
         "expression transport updates the shared frame field and evaluated expression");
     ce::CloseOwned(owner);ch::OpenInterpolation(app.get(),false);
-    editor=FindWindowW(L"MikuDanceStudioCurveEditorWindow",nullptr);
+    editor=FindWindowW(L"MikuMikuStudioCurveEditorWindow",nullptr);
     Check(editor!=nullptr,"open real bone transport and speed host");
     for(double frame:{25000.0,50000.0,75000.0}){
         double values[3]={frame,0,0};
@@ -1000,7 +1000,7 @@ void CurveTransportAndLongBoneSpeed() {
     Check(app->CurrentFrame()==50&&wcscmp(text,L"50")==0,"bone and scale transport update the shared timeline");
     Check(app->SceneModified()==0&&boneKeys[1].frame==100000,"curve navigation and speed queries do not author keys");
     ce::CloseOwned(owner);DestroyWindow(owner);app->Hwnd()=nullptr;app->ModelSlot(0)=nullptr;
-    mc::Forget(model.raw());mikudancestudio::bone_scale::Forget(model.raw());
+    mc::Forget(model.raw());mikumikustudio::bone_scale::Forget(model.raw());
 }
 
 void BakedMorphKeepsBoneEditing() {
@@ -1029,10 +1029,10 @@ void BakedMorphKeepsBoneEditing() {
         HWND parent = CreateWindowW(L"STATIC", L"Hidden morph bake regression", WS_POPUP,
             0, 0, 800, 600, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
         app->Hwnd() = parent; app->ModelSlot(0) = model.raw(); app->EnglishUI() = 2;
-        MMDApp* previousApp = mikudancestudio::g_Block;
-        mikudancestudio::g_Block = app.get();
+        MMDApp* previousApp = mikumikustudio::g_Block;
+        mikumikustudio::g_Block = app.get();
         ch::OpenMorph(app.get(), 0, false);
-        HWND editor = FindWindowW(L"MikuDanceStudioCurveEditorWindow", nullptr);
+        HWND editor = FindWindowW(L"MikuMikuStudioCurveEditorWindow", nullptr);
         Check(editor != nullptr, "the expression bake editor opens hidden");
         HWND canvas = GetDlgItem(editor, 1020);
         const LPARAM key = SendMessageW(editor, WM_APP + 300, 1, 0);
@@ -1046,7 +1046,7 @@ void BakedMorphKeepsBoneEditing() {
             SendMessageW(editor, WM_COMMAND, MAKEWPARAM(1076, BN_CLICKED),
                          reinterpret_cast<LPARAM>(GetDlgItem(editor, 1076)));
         } else {
-            namespace cb = mikudancestudio::channel_bake;
+            namespace cb = mikumikustudio::channel_bake;
             cb::Request request; request.scope = cb::Scope::Model;
             request.firstFrame = 0; request.lastFrame = 20; request.step = 1;
             request.selection.Touch(cb::Kind::Morph, 0, 1);
@@ -1055,43 +1055,43 @@ void BakedMorphKeepsBoneEditing() {
                   "prepare expression-only channel bake");
             Check(cb::Commit(*app, plan, error) == cb::Error::None,
                   "commit expression-only channel bake");
-            mikudancestudio::SeekSelectedModelToCurrentFrame(app.get());
+            mikumikustudio::SeekSelectedModelToCurrentFrame(app.get());
         }
         ac::Track baked; std::string error;
         Check(mc::Read(model.raw(), 0, baked, error) && baked.keys.size() == 21,
               "expression bake really writes all 21 samples");
         Check(app->TimelineSelectionChanged() == 0,
               "expression selection and bake do not arm a native timeline drag");
-        auto renderer = std::make_unique<mikudancestudio::D3DRenderer>();
+        auto renderer = std::make_unique<mikumikustudio::D3DRenderer>();
         std::memset(renderer.get(), 0, sizeof(*renderer));
         app->Renderer() = renderer.get();
         for (int mode : {4, 10}) {
-            app->InteractionDragMode() = static_cast<mikudancestudio::ViewportDragMode>(mode);
+            app->InteractionDragMode() = static_cast<mikumikustudio::ViewportDragMode>(mode);
             app->MouseY() = 200; app->PreviousMouseY() = 210;
-            mikudancestudio::BoneEditModes(app.get());
+            mikumikustudio::BoneEditModes(app.get());
             const float rotation = bone.rotQuat[0], translation = bone.trans[0];
             Check(mode == 4 ? std::fabs(rotation) > 0.01f : std::fabs(translation) > 0.01f,
                   "bone rotation and translation respond after expression baking");
-            mikudancestudio::HandleMouseMove(500 + mode, 270);
+            mikumikustudio::HandleMouseMove(500 + mode, 270);
             Check(bone.rotQuat[0] == rotation && bone.trans[0] == translation,
                   "mouse movement after expression baking preserves manual bone edits");
         }
         // Defense against a stale flag from older editors or another callback.
         app->TimelineSelectionChanged() = 1;
         const auto pose = bone;
-        mikudancestudio::HandleMouseMove(520, 271);
+        mikumikustudio::HandleMouseMove(520, 271);
         Check(bone.rotQuat[0] == pose.rotQuat[0] && bone.trans[0] == pose.trans[0],
               "a selection flag without a timeline gesture cannot re-seek bones");
         app->SelectionBoxDragging() = 1;
-        mikudancestudio::HandleMouseMove(540, 272); // Cross a frame cell; sub-cell motion is a no-op.
+        mikumikustudio::HandleMouseMove(540, 272); // Cross a frame cell; sub-cell motion is a no-op.
         Check(bone.rotQuat[0] == boneKey.rotation[0] && bone.trans[0] == boneKey.position[0],
               "a real timeline drag still applies the native frame");
         app->SelectionBoxDragging() = app->TimelineSelectionChanged() = 0;
         app->Renderer() = nullptr;
         ce::CloseOwned(parent); DestroyWindow(parent);
         app->ModelSlot(0) = nullptr; app->Hwnd() = nullptr;
-        mc::Forget(model.raw()); mikudancestudio::bone_scale::Forget(model.raw());
-        mikudancestudio::g_Block = previousApp;
+        mc::Forget(model.raw()); mikumikustudio::bone_scale::Forget(model.raw());
+        mikumikustudio::g_Block = previousApp;
     }
 }
 

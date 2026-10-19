@@ -6,7 +6,7 @@
 #include <limits>
 #include <set>
 
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 namespace {
 template<class T, class F> MmsSpan CopySpan(Arena& arena, MmsSpan in, F copy) {
     if (in.count == 0) return {nullptr, 0, sizeof(T), 1};

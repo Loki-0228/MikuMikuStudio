@@ -1,22 +1,22 @@
 #include "scene_object_history.hpp"
-#include "mikudancestudio/animation_curve_host.hpp"
-#include "mikudancestudio/dynamics_world.hpp"
-#include "mikudancestudio/history_physics.hpp"
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/physics_scale.hpp"
-#include "mikudancestudio/physics_scene.hpp"
-#include "mikudancestudio/plugin_scene.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
+#include "mikumikustudio/dynamics_world.hpp"
+#include "mikumikustudio/history_physics.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/physics_scale.hpp"
+#include "mikumikustudio/physics_scene.hpp"
+#include "mikumikustudio/plugin_scene.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 #include "BulletDynamics/ConstraintSolver/btTypedConstraint.h"
 #include <map>
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 void DeleteModel(unsigned char*, int);
 void DeleteAccessory(mdl::AccessoryRecord*, int);
 }
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 namespace {
 using Key = std::pair<MMDApp*, const void*>;
 std::map<Key, std::weak_ptr<RetainedSceneObject>> retainedObjects;

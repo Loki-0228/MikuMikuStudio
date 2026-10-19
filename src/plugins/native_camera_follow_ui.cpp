@@ -1,10 +1,10 @@
 #include "native_camera_follow_ui.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "shared_history.hpp"
-#include "mikudancestudio/bake_ui_lock.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/ui_control_readout.hpp"
+#include "mikumikustudio/bake_ui_lock.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/ui_control_readout.hpp"
 #include <CommCtrl.h>
 #include <algorithm>
 #include <cmath>
@@ -16,7 +16,7 @@
 #include <string>
 #include <vector>
 
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 namespace {
 constexpr wchar_t kDraftOwner[] = L"MMS.NativeReadout.PendingEditOwner";
 void CheckButton(HWND window, int id, bool checked) noexcept {

@@ -2,7 +2,7 @@
 #include <numeric>
 #include <set>
 
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 MmsTime Normalize(MmsTime t) {
     if (!t.denominator) throw std::invalid_argument("zero time denominator");
     const uint64_t magnitude = t.numerator < 0 ? uint64_t(-(t.numerator + 1)) + 1 : uint64_t(t.numerator);

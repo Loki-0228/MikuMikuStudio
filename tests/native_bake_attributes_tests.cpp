@@ -10,11 +10,11 @@
 namespace {
 namespace Abc=Alembic::Abc;
 namespace Geom=Alembic::AbcGeom;
-namespace native=mikudancestudio::native_mesh;
-namespace cache=mikudancestudio::mesh_bake_cache;
-namespace data=mikudancestudio::mesh_data;
-using mikudancestudio::MMDApp;
-using mikudancestudio::deformed_mesh_capture::Mesh;
+namespace native=mikumikustudio::native_mesh;
+namespace cache=mikumikustudio::mesh_bake_cache;
+namespace data=mikumikustudio::mesh_data;
+using mikumikustudio::MMDApp;
+using mikumikustudio::deformed_mesh_capture::Mesh;
 
 void Require(bool ok,const std::string& message){if(!ok)throw std::runtime_error(message);}
 
@@ -73,7 +73,7 @@ void Attributes(const data::Vertex& vertex,const data::Vertex* source){
 struct Scene {
     std::unique_ptr<MMDApp> app=std::make_unique<MMDApp>();
     unsigned char object[64]{};
-    Scene(){app->state=mikudancestudio::MMDAppState{};app->ModelSlot(0)=object;}
+    Scene(){app->state=mikumikustudio::MMDAppState{};app->ModelSlot(0)=object;}
     ~Scene(){cache::Clear();}
     void Install(const std::filesystem::path& path){
         cache::Clear();std::string error;Require(cache::Install(*app,path,error),"install fixture: "+error);
@@ -158,7 +158,7 @@ int wmain(int argc,wchar_t** argv){
         Require(argc==2||(argc==3&&std::wstring(argv[2])==L"--benchmark"),"output directory required, optional --benchmark");
         // The application loads D3DX during renderer startup. This CPU-only
         // entry calls playback directly, so initialize the same matrix API.
-        auto& d3dx=mikudancestudio::d3dx::Get();
+        auto& d3dx=mikumikustudio::d3dx::Get();
         Require(d3dx.Load()&&d3dx.inverse&&d3dx.vec3Transform,"load production D3DX matrix entry points");
         const auto directory=std::filesystem::absolute(argv[1]);std::filesystem::create_directories(directory);
         Scene scene;if(argc==3){Benchmark(scene,directory);return 0;}

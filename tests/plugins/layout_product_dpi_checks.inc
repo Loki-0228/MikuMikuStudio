@@ -1,7 +1,7 @@
 // Opt-in product-DPI layout observation. Not CTest and not a no-flicker test.
 // Include after slider_user_capture_checks and layout_slider_repaint_checks.
-#include "mikudancestudio/update_coordinator.hpp"
-#include "mikudancestudio/animation_curve_host.hpp"
+#include "mikumikustudio/update_coordinator.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
 #include <iterator>
 #include <thread>
 
@@ -9,11 +9,11 @@
 namespace layout_product_dpi_checks {
 namespace base=layout_slider_repaint_checks;
 namespace trace=slider_paint_trace;
-using mikudancestudio::MMDApp;
+using mikumikustudio::MMDApp;
 inline constexpr std::array<int,19> kIcons{453,454,469,470,566,567,488,489,502,503,528,529,530,
-    mikudancestudio::curve_editor::kInterpolationCurve,mikudancestudio::curve_editor::kAccessoryCurve,
-    mikudancestudio::curve_host::kMorphCurveLane[0],mikudancestudio::curve_host::kMorphCurveLane[1],
-    mikudancestudio::curve_host::kMorphCurveLane[2],mikudancestudio::curve_host::kMorphCurveLane[3]};
+    mikumikustudio::curve_editor::kInterpolationCurve,mikumikustudio::curve_editor::kAccessoryCurve,
+    mikumikustudio::curve_host::kMorphCurveLane[0],mikumikustudio::curve_host::kMorphCurveLane[1],
+    mikumikustudio::curve_host::kMorphCurveLane[2],mikumikustudio::curve_host::kMorphCurveLane[3]};
 struct Incomplete:std::runtime_error{using std::runtime_error::runtime_error;};
 inline LONGLONG Now(){LARGE_INTEGER value{};QueryPerformanceCounter(&value);return value.QuadPart;}
 inline void Guard(MMDApp& app,bool gesture){
@@ -71,8 +71,8 @@ inline std::size_t White(const trace::Snapshot& image)noexcept{
 }
 inline bool Slider(int id)noexcept{return std::find(base::kIds.begin(),base::kIds.end(),id)!=base::kIds.end();}
 inline bool CurveLauncher(int id)noexcept{
-    return id==int(mikudancestudio::curve_editor::kInterpolationCurve)||id==int(mikudancestudio::curve_editor::kAccessoryCurve)||
-        std::find(std::begin(mikudancestudio::curve_host::kMorphCurveLane),std::end(mikudancestudio::curve_host::kMorphCurveLane),unsigned(id))!=std::end(mikudancestudio::curve_host::kMorphCurveLane);
+    return id==int(mikumikustudio::curve_editor::kInterpolationCurve)||id==int(mikumikustudio::curve_editor::kAccessoryCurve)||
+        std::find(std::begin(mikumikustudio::curve_host::kMorphCurveLane),std::end(mikumikustudio::curve_host::kMorphCurveLane),unsigned(id))!=std::end(mikumikustudio::curve_host::kMorphCurveLane);
 }
 struct Capture{unsigned phase=0;int id=0;std::string kind,status;RECT bounds{};LONGLONG begin=0,end=0;trace::Snapshot image;unsigned nativePaints=0,nativeErases=0;LRESULT ui=0;VisualState visual;};
 class DirectDrawTrace{
@@ -262,8 +262,8 @@ inline void Describe(MMDApp& app,const std::filesystem::path& output){
     f<<"client="<<client.right<<','<<client.bottom<<" sidebar_width="<<app.SidebarWidth()<<" bottom_band_top="<<client.bottom-157
         <<" camera="<<int(app.CameraMode())<<" caller_workarea="<<work.left<<','<<work.top<<','<<work.right<<','<<work.bottom
         <<" physical_context="<<physicalContext<<" physical_screen="<<physicalWidth<<','<<physicalHeight<<'\n';
-    for(const auto& panel:mikudancestudio::BottomPanelSpans(&app))f<<"bottom_separator panel="<<panel.id
-        <<" x="<<mikudancestudio::BottomPanelX(&app,panel.right)<<" width="<<panel.right-panel.left<<" extra="<<panel.extra<<'\n';
+    for(const auto& panel:mikumikustudio::BottomPanelSpans(&app))f<<"bottom_separator panel="<<panel.id
+        <<" x="<<mikumikustudio::BottomPanelX(&app,panel.right)<<" width="<<panel.right-panel.left<<" extra="<<panel.extra<<'\n';
     for(const auto& window:windows){const auto awareness=window.hwnd&&context?context(window.hwnd):nullptr;
         f<<"id="<<window.id<<" hwnd="<<reinterpret_cast<std::uintptr_t>(window.hwnd)
             <<" visible="<<(window.hwnd&&IsWindowVisible(window.hwnd))<<" dpi="<<(window.hwnd&&dpi?dpi(window.hwnd):0)
@@ -361,8 +361,8 @@ struct Driver{
         Phase(name);const unsigned before=presents.count;const auto begin=GetTickCount64();
         HWND wake=nullptr;for(HWND candidate=nullptr;(candidate=FindWindowExW(HWND_MESSAGE,candidate,L"MMS.UpdateCoordinator.V1",nullptr));)
             if(GetWindowThreadProcessId(candidate,nullptr)==GetCurrentThreadId()){wake=candidate;break;}
-        mikudancestudio::updates::RequestViewport(&app,false);
-        do{Guard(app,gesture);++safePoints;mikudancestudio::updates::SafePoint(&app);invariant.Check();
+        mikumikustudio::updates::RequestViewport(&app,false);
+        do{Guard(app,gesture);++safePoints;mikumikustudio::updates::SafePoint(&app);invariant.Check();
             Dispatch(app.MainWindow(),WM_APP+0x6a);if(wake){Dispatch(wake,WM_APP+0x73);Dispatch(wake,WM_TIMER);}
             Dispatch(app.MainWindow(),WM_PAINT);for(auto window:targets)Dispatch(window,WM_PAINT);
             if(presents.count>before)break;Sleep(1);
@@ -463,8 +463,8 @@ inline void Write(const std::filesystem::path& output,const Driver& driver,const
 inline void Run(MMDApp& app,const std::filesystem::path& output,bool regression=false){
     std::filesystem::create_directories(output);std::string status="observed";
     app.CameraMode()=1;PostLanguageSweep2(&app);PostViewRefresh(&app);Fit(app);Describe(app,output);
-    trace::Require(mikudancestudio::updates::Initialize(&app),"initialize product update coordinator");
-    struct Coordinator{MMDApp& app;~Coordinator(){mikudancestudio::updates::Shutdown(&app);}}coordinator{app};app.MilliToSec()=.001f;
+    trace::Require(mikumikustudio::updates::Initialize(&app),"initialize product update coordinator");
+    struct Coordinator{MMDApp& app;~Coordinator(){mikumikustudio::updates::Shutdown(&app);}}coordinator{app};app.MilliToSec()=.001f;
     slider_real_input_metadata::Trace messages(app);trace::Require(messages.Attach(),"attach actual fixed-ring message observation");
     base::Probe native(app);PresentTrace present(app.Renderer()->device);DirectDrawTrace direct(app);Driver driver(app,native,messages,present,direct);
     try{
@@ -477,13 +477,13 @@ inline void Run(MMDApp& app,const std::filesystem::path& output,bool regression=
         for(int delta:{sidebarDelta/2,sidebarDelta,0}){driver.Phase("sidebar-move-"+std::to_string(delta));driver.Send(WM_MOUSEMOVE,side+delta,y);invariant.Check();driver.CaptureNow("sidebar-after-handler");
             driver.SafeAndPresent("sidebar-safepoint-present",invariant);driver.CaptureNow("sidebar-after-present");}
         driver.Send(WM_LBUTTONUP,side,y);driver.gesture=false;invariant.Check();driver.CaptureNow("sidebar-released");
-        auto spans=mikudancestudio::BottomPanelSpans(&app);int used=0;for(const auto& p:spans)used+=p.extra;
+        auto spans=mikumikustudio::BottomPanelSpans(&app);int used=0;for(const auto& p:spans)used+=p.extra;
         const int spare=client.right-3-spans.back().right-used;
         if(spare<4)throw Incomplete("actual work-area client lacks four bottom-panel expansion pixels");
         const int bottomDelta=std::min(80,spare);
         const auto edge=std::find_if(spans.begin(),spans.end(),[](const auto& p){return p.id==2&&p.right-p.left>20;});
         if(edge==spans.end())throw Incomplete("camera bottom panel is collapsed");
-        const int x=mikudancestudio::BottomPanelX(&app,edge->right),bottomY=client.bottom-150;
+        const int x=mikumikustudio::BottomPanelX(&app,edge->right),bottomY=client.bottom-150;
         driver.Phase("bottom-down");driver.gesture=true;driver.Send(WM_LBUTTONDOWN,x,bottomY);
         if(app.bottomPanelSizing.dragging!=2||GetCapture()!=app.MainWindow())throw Incomplete("actual bottom handler did not acquire intended edge");
         for(int delta:{bottomDelta/2,bottomDelta,0}){driver.Phase("bottom-move-"+std::to_string(delta));driver.Send(WM_MOUSEMOVE,x+delta,bottomY);invariant.Check();driver.CaptureNow("bottom-after-handler");

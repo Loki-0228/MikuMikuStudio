@@ -1,7 +1,7 @@
 // MAINTENANCE: unit coverage for the VMD curve transport
 // (src/animation/animation_curve_motion.cpp).  Pure CPU: no GUI, no GPU and no
 // window; the file test only creates a temporary directory.
-#include "mikudancestudio/animation_curve_motion.hpp"
+#include "mikumikustudio/animation_curve_motion.hpp"
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -19,8 +19,8 @@
 #include <utility>
 #include <vector>
 
-namespace cm = mikudancestudio::curve_motion;
-namespace ac = mikudancestudio::animation_curve;
+namespace cm = mikumikustudio::curve_motion;
+namespace ac = mikumikustudio::animation_curve;
 
 namespace {
 
@@ -797,13 +797,23 @@ void TestForeignTailIgnored() {
           "the plain file decodes: " + error);
 
     VmdFile withTail = file;
-    withTail.trailing.assign({'M', 'D', 'S', 'X', 'V', 'M', 'D', 'X'});
+    withTail.trailing.assign({'M', 'M', 'S', 'X', 'V', 'M', 'D', 'X'});
     withTail.trailing.resize(80, 0x5a);
     const std::vector<std::uint8_t> bytes = Build(withTail);
     cm::Motion decoded;
     Check(cm::Decode(bytes.data(), bytes.size(), cm::Kind::Accessory, decoded, error),
-          "an unrelated MDSXVMDX tail is ignored: " + error);
+          "an unrelated MMSXVMDX tail is ignored: " + error);
     Check(SameTracks(decoded, expected), "the unrelated tail does not change the standard data");
+
+    withTail.trailing[1] = 'D';
+    const auto oldScaleTail = Build(withTail);
+    Check(cm::Decode(oldScaleTail.data(), oldScaleTail.size(), cm::Kind::Accessory, decoded, error) && SameTracks(decoded, expected),
+          "unknown MDSXVMDX tail leaves the standard VMD tracks readable");
+    Check(ac::Encode(expected.tracks, withTail.trailing, error), "encode valid scalar data for unknown-marker boundary");
+    withTail.trailing[1] = 'D';  // Valid MDSC-shaped payload, without an MMVCURV1 footer.
+    const auto oldCurveTail = Build(withTail);
+    Check(cm::Decode(oldCurveTail.data(), oldCurveTail.size(), cm::Kind::Accessory, decoded, error) && SameTracks(decoded, expected),
+          "unknown MDSC tail does not replace or invalidate the standard VMD tracks");
 }
 
 void TestMultipleBoneTracksRejected() {
@@ -903,6 +913,17 @@ void TestCorruptTailIsRejected() {
 
     const std::size_t footer = bytes.size() - 40;
     const std::size_t bodyEnd = TailPrefix(bytes);
+    Check(bodyEnd + 4 <= bytes.size() && std::memcmp(bytes.data() + bodyEnd, "MMSC", 4) == 0,
+          "VMD curve writer emits an MMSC scalar payload");
+    auto oldScalar = bytes; oldScalar[bodyEnd + 1] = 'D';
+    std::uint32_t oldCrc = 0xFFFFFFFFu;
+    for (std::size_t i = bodyEnd; i < footer; ++i) {
+        oldCrc ^= oldScalar[i];
+        for (int bit = 0; bit < 8; ++bit) oldCrc = (oldCrc >> 1) ^ (0xEDB88320u & (0u - (oldCrc & 1u)));
+    }
+    oldCrc ^= 0xFFFFFFFFu;
+    for (unsigned i = 0; i < 4; ++i) oldScalar[footer + 28 + i] = std::uint8_t(oldCrc >> (8 * i));
+    refused(oldScalar, "an MDSC payload under a valid MMVCURV1 footer is not decoded");
     refused({}, "an empty buffer");
     refused(std::vector<std::uint8_t>(20, 0), "a buffer below the header size");
 

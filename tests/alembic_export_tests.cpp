@@ -1,15 +1,15 @@
 // MAINTENANCE: integration regression; hidden real renderer and Ogawa roundtrip.
 #define NOMINMAX
-#include "mikudancestudio/alembic_export.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/native_mesh.hpp"
-#include "mikudancestudio/effect_api.hpp"
-#include "mikudancestudio/bone_scale.hpp"
-#include "mikudancestudio/mesh_bake_cache.hpp"
-#include "mikudancestudio/physics_bake.hpp"
-#include "mikudancestudio/panel_controls.hpp"
+#include "mikumikustudio/alembic_export.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/native_mesh.hpp"
+#include "mikumikustudio/effect_api.hpp"
+#include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/mesh_bake_cache.hpp"
+#include "mikumikustudio/physics_bake.hpp"
+#include "mikumikustudio/panel_controls.hpp"
 #include <Alembic/AbcGeom/All.h>
 #include <Alembic/AbcCoreOgawa/All.h>
 #include <filesystem>
@@ -22,8 +22,8 @@
 #include <chrono>
 #include <MinHook.h>
 #include <CommCtrl.h>
-using namespace mikudancestudio;
-namespace mikudancestudio { LRESULT CALLBACK EditSubclassProc(HWND,UINT,WPARAM,LPARAM); }
+using namespace mikumikustudio;
+namespace mikumikustudio { LRESULT CALLBACK EditSubclassProc(HWND,UINT,WPARAM,LPARAM); }
 namespace Abc=Alembic::Abc;
 namespace Geom=Alembic::AbcGeom;
 namespace {

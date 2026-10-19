@@ -4,7 +4,7 @@
 #include <array>
 #include <fstream>
 
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 namespace {
 constexpr size_t kMaxSidecar = 96 * 1024 * 1024;
 constexpr char hex[] = "0123456789abcdef";

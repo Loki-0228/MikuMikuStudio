@@ -3,12 +3,12 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
-#include "mikudancestudio/bone_scale.hpp"
-#include "mikudancestudio/bone_scale_io.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/undo_storage.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/bone_scale_io.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/undo_storage.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -19,7 +19,7 @@
 #include <filesystem>
 #include <fstream>
 #include <vector>
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 namespace bs=bone_scale;
 namespace {
 void Check(bool ok,const char* message) { if(!ok) { std::fprintf(stderr,"FAIL: %s\n",message); std::exit(1); } }
@@ -56,7 +56,7 @@ struct Fixture {
     ~Fixture() {
         bs::Forget(data());
         for(auto& ring:record->undoRings) for(auto& slot:ring.slots) {
-            mikudancestudio::undo_storage::Free(slot.bonePose); mikudancestudio::undo_storage::Free(slot.auxiliaryPose);
+            mikumikustudio::undo_storage::Free(slot.bonePose); mikumikustudio::undo_storage::Free(slot.auxiliaryPose);
         }
     }
 };
@@ -264,7 +264,7 @@ void PersistenceIntegration() {
     bs::Forget(m); io::LoadPmm(*app,seekSave);
     Near(bs::Pose(m,1),Diagonal(3,4,5),"known PMM record saves the current evaluated pose");
     pmm_extension::Document future;
-    const std::string futureKey="org.mikudancestudio.model.0.boneScale.v42";
+    const std::string futureKey="org.mikumikustudio.model.0.boneScale.v42";
     pmm_extension::Set(future,futureKey,{1,2,3,4});
     bs::Forget(m); io::LoadPmm(*app,future); bs::Evaluate(m,5);
     auto unchanged=future; io::CapturePmm(*app,unchanged);
@@ -299,7 +299,7 @@ void PmmRefusedRecordPreservation() {
         pose.bone=1; pose.name=FixedName("not this model"); pose.scale=Diagonal(2,3,4);
         wanted.pose.push_back(pose);
         const std::vector<std::uint8_t> payload=io::EncodePmm(wanted);
-        const std::string future="org.mikudancestudio.model.0.boneScale.v42";
+        const std::string future="org.mikumikustudio.model.0.boneScale.v42";
         pmm_extension::Document document;
         pmm_extension::Set(document,io::PmmKey(0),payload);
         pmm_extension::Set(document,future,{1,2,3,4});

@@ -2,13 +2,13 @@
 #if !MMD_ORIGINAL_PROFILE
 #include "native_history_commands.hpp"
 #include "native_pose_scope.hpp"
-#include "mikudancestudio/autosave.hpp"
-#include "mikudancestudio/bake_ui_lock.hpp"
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ui_control_readout.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/plugin_scene.hpp"
+#include "mikumikustudio/autosave.hpp"
+#include "mikumikustudio/bake_ui_lock.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ui_control_readout.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/plugin_scene.hpp"
 #include <commctrl.h>
 #include <algorithm>
 #include <array>
@@ -17,7 +17,7 @@
 #include <cstring>
 #include <limits>
 
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 namespace {
 int MorphSliderPosition(float value) noexcept {
     const double scaled=(std::clamp)(double(value)*100.0,double((std::numeric_limits<int>::min)()),

@@ -1,4 +1,4 @@
-#include "mikudancestudio/extended_names.hpp"
+#include "mikumikustudio/extended_names.hpp"
 // MAINTENANCE: native morph (expression) curves for one model.
 //
 // What this module owns
@@ -26,7 +26,7 @@
 // The block is written after the complete standard body and BEFORE the
 // bone-scale extension payload, both through the same write lambda:
 //
-//   [standard VMD body][morph curve block][bone scale payload][MDSXVMDX footer]
+//   [standard VMD body][morph curve block][bone scale payload][MMSXVMDX footer]
 //
 // bone_scale_io defines the container's standard prefix as the byte count the
 // loader consumed before it calls LoadVmdExtension, so a loader that steps over
@@ -59,14 +59,14 @@
 #define NOMINMAX
 #include <Windows.h>
 
-#include "mikudancestudio/morph_curve.hpp"
+#include "mikumikustudio/morph_curve.hpp"
 
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/runtime_log.hpp"
-#include "mikudancestudio/text_encoding.hpp"
-#include "mikudancestudio/ui_language.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/runtime_log.hpp"
+#include "mikumikustudio/text_encoding.hpp"
+#include "mikumikustudio/ui_language.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -82,12 +82,12 @@
 #include <utility>
 #include <vector>
 
-namespace mikudancestudio::morph_curve {
+namespace mikumikustudio::morph_curve {
 namespace {
 
 namespace ac = animation_curve;
 
-constexpr char kPmmPrefix[] = "org.mikudancestudio.model.";
+constexpr char kPmmPrefix[] = "org.mikumikustudio.model.";
 constexpr char kPmmMiddle[] = ".morphCurve.";
 constexpr char kPmmVersion[] = "v1";
 constexpr char kPayloadMagic[4] = {'M', 'M', 'S', 'C'};
@@ -2086,11 +2086,11 @@ std::uint64_t AuthoredImport::RetainedBytes()const noexcept{std::uint64_t bytes=
 std::unique_ptr<AuthoredImport::Target> AuthoredImport::Prepare(const NativeKeyView& keys,bool forward)const{return transition_->Prepare(keys,forward);}
 #endif
 
-}  // namespace mikudancestudio::morph_curve
+}  // namespace mikumikustudio::morph_curve
 
 #include "../plugins/scene_resource_budget.hpp"
 #if !MMD_ORIGINAL_PROFILE
-namespace mikudancestudio::morph_curve {
+namespace mikumikustudio::morph_curve {
 void MeasureResources(const unsigned char* model, plugins::resource_budget::Collector& out) {
     const auto found = States().find(model); if (found == States().end()) return;
     const auto& s = found->second;

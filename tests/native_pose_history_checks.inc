@@ -1,6 +1,6 @@
 // Include after Fixture, Scale and PublishNoAllocation in native_edit_history_tests.cpp.
 // These checks use the production owned-pose path without a window or renderer.
-#include "mikudancestudio/undo_storage.hpp"
+#include "mikumikustudio/undo_storage.hpp"
 void NativePoseHistoryChecks() {
     {
         Fixture f;nh::PoseEditCapture capture;std::unique_ptr<nh::OwnedPoseEdit> edit;
@@ -56,7 +56,7 @@ void NativePoseHistoryChecks() {
             Check(capture.Begin(f.raw())==nh::Result::Ready,"owned pose capture begins before edit");
             const auto slot=(f.m->undoState[0]+1)%30;
             auto& old=f.m->undoRings[0].slots[slot];
-            mikudancestudio::undo_storage::Free(old.bonePose);mikudancestudio::undo_storage::Free(old.auxiliaryPose);old={};
+            mikumikustudio::undo_storage::Free(old.bonePose);mikumikustudio::undo_storage::Free(old.auxiliaryPose);old={};
             f.Entry(slot,1,float(i));f.m->undoState[0]=f.m->undoState[1]=slot;
             bone_scale::CaptureUndo(f.raw());
             f.bones[0].trans[0]=float(i+1);f.dirty[0]=static_cast<unsigned char>((i+1)%2);

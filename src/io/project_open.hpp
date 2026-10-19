@@ -1,6 +1,6 @@
 #pragma once
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 class MMDApp;
 namespace pmm_io { class Input; }
 

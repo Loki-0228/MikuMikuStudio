@@ -1,11 +1,11 @@
 #include "scene_definitions.hpp"
 #include "scene_digest.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/text_encoding.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/text_encoding.hpp"
 #include <btBulletDynamicsCommon.h>
 #include <cmath>
 
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 namespace {
 template<class T, size_t N> void Copy(T (&out)[N], const T (&in)[N]) { std::copy(in, in + N, out); }
 void Identity(float* out) { std::fill(out, out + 16, 0.f); out[0] = out[5] = out[10] = out[15] = 1; }

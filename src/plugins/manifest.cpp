@@ -1,7 +1,7 @@
 #include "manifest.hpp"
 #include <charconv>
 
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 namespace {
 void CheckId(const std::string& id) { if (!ValidId(id) || id == "mms" || id.rfind("mms.", 0) == 0) throw std::invalid_argument("invalid plugin ID: " + id); }
 bool Plain(const fs::path& p) { auto a = GetFileAttributesW(p.c_str()); return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_REPARSE_POINT); }

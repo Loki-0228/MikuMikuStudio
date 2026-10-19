@@ -1,5 +1,5 @@
 // Include after native_display_registration_checks.inc.
-namespace mikudancestudio {
+namespace mikumikustudio {
 bool RegisterDisplayKeyFromRecord(unsigned char*,int,unsigned char,int,const unsigned char*,int,const unsigned char*,int);
 void ResetDisplayKeyCursor(unsigned char*);
 }

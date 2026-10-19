@@ -3,14 +3,14 @@
 #define NOMINMAX
 #endif
 #include <Windows.h>
-#include "mikudancestudio/effect_file_watch.hpp"
+#include "mikumikustudio/effect_file_watch.hpp"
 #include <array>
 #include <filesystem>
 #include <memory>
 #include <string>
 #include <unordered_map>
 
-namespace mikudancestudio::effect_file_watch {
+namespace mikumikustudio::effect_file_watch {
 using ReadTime = std::uint64_t(__fastcall*)(const char*);
 inline std::wstring Fold(std::wstring value) {
     if (!value.empty()) CharLowerBuffW(value.data(), DWORD(value.size()));

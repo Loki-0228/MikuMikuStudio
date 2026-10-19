@@ -1,7 +1,7 @@
 // ===========================================================================
 // Transparent geometry ordering regressions (pure CPU, no device access).
 // ===========================================================================
-// Contract under test (include/mikudancestudio/transparent_geometry.hpp and
+// Contract under test (include/mikumikustudio/transparent_geometry.hpp and
 // TransparentSortPrecision from view_options.hpp):
 //
 //   * High orders whole faces by their centre depth, far to near, and
@@ -29,7 +29,7 @@
 // Every expected value below is derived from analytic plane/edge geometry;
 // none of them is copied from the implementation.
 // ===========================================================================
-#include "mikudancestudio/transparent_geometry.hpp"
+#include "mikumikustudio/transparent_geometry.hpp"
 
 #include <cmath>
 #include <cstdint>
@@ -38,11 +38,11 @@
 #include <limits>
 #include <vector>
 
-using mikudancestudio::TransparentSortPrecision;
-using mikudancestudio::transparent_geometry::Order;
-using mikudancestudio::transparent_geometry::Statistics;
-using mikudancestudio::transparent_geometry::Triangle;
-using mikudancestudio::transparent_geometry::Vertex;
+using mikumikustudio::TransparentSortPrecision;
+using mikumikustudio::transparent_geometry::Order;
+using mikumikustudio::transparent_geometry::Statistics;
+using mikumikustudio::transparent_geometry::Triangle;
+using mikumikustudio::transparent_geometry::Vertex;
 
 namespace {
 
@@ -854,7 +854,7 @@ void TestStandardDegenerateAndNonFiniteInputs() {
 }  // namespace
 
 void TestBatchDraws() {
-    using mikudancestudio::transparent_geometry::BatchDraws;
+    using mikumikustudio::transparent_geometry::BatchDraws;
     const auto face = [](double x, double y, double size, std::uint32_t draw, int identity) {
         auto t = MakeTriangle(MakeVertex(x, y, 0.8, 0.7),
                               MakeVertex(x + size, y, 0.2, 0.9),

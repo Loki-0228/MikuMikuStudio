@@ -1,4 +1,4 @@
-#include "mikudancestudio/clipboard_layout.hpp"
+#include "mikumikustudio/clipboard_layout.hpp"
 namespace key_paste_host_checks {
 void Run(MMDApp* app, plugins::SharedHistory& history, int (*value)()) {
     auto& model = *mdl::Mdl(app->ModelSlot(0));

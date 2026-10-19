@@ -1,8 +1,8 @@
-#ifndef MIKUDANCESTUDIO_RENDER_VIEWPORT_CURSOR_STYLE_HPP_
-#define MIKUDANCESTUDIO_RENDER_VIEWPORT_CURSOR_STYLE_HPP_
+#ifndef MIKUMIKUSTUDIO_RENDER_VIEWPORT_CURSOR_STYLE_HPP_
+#define MIKUMIKUSTUDIO_RENDER_VIEWPORT_CURSOR_STYLE_HPP_
 #include <cstdint>
 struct IDirect3DTexture9;
-namespace mikudancestudio {
+namespace mikumikustudio {
 // Rebuild the eight rotate/move cursor cells once after loading the HUD sheet.
 // Only x >= 256 changes; operation buttons, UVs and input regions stay intact.
 // Flat red/green/blue fills, black outlines and a light rim replace the old
@@ -14,5 +14,5 @@ bool RestyleViewportCursorAtlas(IDirect3DTexture9* texture);
 // CPU rasterizer. Padded row strides are supported; non-target bytes stay intact.
 void RestyleViewportCursorAtlasPixels(std::uint32_t* pixels, int width,
                                       int height, int stridePixels);
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio
 #endif

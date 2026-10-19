@@ -1,10 +1,10 @@
 #pragma once
-#include "mikudancestudio/build_profile.hpp"
+#include "mikumikustudio/build_profile.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "native_global_paste.hpp"
-#include "mikudancestudio/accessory_motion_io.hpp"
+#include "mikumikustudio/accessory_motion_io.hpp"
 #include <string>
-namespace mikudancestudio::plugins {
+namespace mikumikustudio::plugins {
 // Decodes one immutable file snapshot. Standard record values are owned by
 // source. Valid accessory extensions remain owned until scene matching and
 // private planning are complete; unknown or damaged tails remain ignorable.

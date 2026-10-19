@@ -1,12 +1,12 @@
 #define NOMINMAX
-#include "mikudancestudio/animation_curve_host.hpp"
-#include "mikudancestudio/accessory_layout.hpp"
-#include "mikudancestudio/frame_presentation.hpp"
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/viewport_bounds.hpp"
-#include "mikudancestudio/window_dpi_scope.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
+#include "mikumikustudio/accessory_layout.hpp"
+#include "mikumikustudio/frame_presentation.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/viewport_bounds.hpp"
+#include "mikumikustudio/window_dpi_scope.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
@@ -29,7 +29,7 @@ void operator delete(void* memory) noexcept { std::free(memory); }
 void operator delete[](void* memory) noexcept { std::free(memory); }
 void operator delete(void* memory, std::size_t) noexcept { std::free(memory); }
 void operator delete[](void* memory, std::size_t) noexcept { std::free(memory); }
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 static void Check(bool b,const char*s){if(!b){std::fprintf(stderr,"FAIL: %s\n",s);std::exit(1);}}
 static bool PublishWithoutAllocation(curve_host::AccessoryAuthoring::Exchange& exchange) {
     failAfter = 0;

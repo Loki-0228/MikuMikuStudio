@@ -1,12 +1,12 @@
 #pragma once
-#include "mikudancestudio/build_profile.hpp"
+#include "mikumikustudio/build_profile.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include <array>
 #include <memory>
 #include <Windows.h>
 #include <mms/plugin.h>
-namespace mikudancestudio { class MMDApp; }
-namespace mikudancestudio::plugins {
+namespace mikumikustudio { class MMDApp; }
+namespace mikumikustudio::plugins {
 class SharedHistory;
 // Internal modal authoring session. Begin captures values and identity without
 // holding a journal reservation. Apply revalidates after the modal loop, then

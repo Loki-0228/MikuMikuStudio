@@ -30,12 +30,12 @@
 #include <string>
 #include <vector>
 
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/viewport_corner_settings.hpp"
-#include "mikudancestudio/viewport_tool_layout.hpp"
-#include "mikudancestudio/frame_presentation.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/viewport_corner_settings.hpp"
+#include "mikumikustudio/viewport_tool_layout.hpp"
+#include "mikumikustudio/frame_presentation.hpp"
 
 namespace {
 
@@ -48,11 +48,11 @@ void Check(bool condition, const char* what) {
     }
 }
 
-using mikudancestudio::MMDApp;
-using mikudancestudio::MMDAppState;
-using mikudancestudio::D3DRenderer;
-namespace layout = mikudancestudio::viewport_tool_layout;
-namespace settings = mikudancestudio::viewport_corner_settings;
+using mikumikustudio::MMDApp;
+using mikumikustudio::MMDAppState;
+using mikumikustudio::D3DRenderer;
+namespace layout = mikumikustudio::viewport_tool_layout;
+namespace settings = mikumikustudio::viewport_corner_settings;
 using Corner = layout::Corner;
 
 // MMDAppState is 0xA55E0 bytes on x64 (661 KB).  `app->state = MMDAppState{}`
@@ -71,10 +71,10 @@ void ResetAppState(MMDApp& app) { std::memset(&app.state, 0, sizeof(app.state));
 // bone_registration_tests); the global is restored on scope exit.
 struct BlockGuard {
     MMDApp* previous;
-    explicit BlockGuard(MMDApp* app) : previous(mikudancestudio::g_Block) {
-        mikudancestudio::g_Block = app;
+    explicit BlockGuard(MMDApp* app) : previous(mikumikustudio::g_Block) {
+        mikumikustudio::g_Block = app;
     }
-    ~BlockGuard() { mikudancestudio::g_Block = previous; }
+    ~BlockGuard() { mikumikustudio::g_Block = previous; }
 };
 
 constexpr Corner kCorners[] = {Corner::TopLeft, Corner::TopRight,
@@ -174,7 +174,7 @@ void DrawChecks(IDirect3DDevice9* device) {
 
     Check(SUCCEEDED(device->CreateVertexBuffer(0x6D60, D3DUSAGE_WRITEONLY,
         0, D3DPOOL_MANAGED, &app->OverlayVertices(), nullptr)), "allocate caption batch");
-    Check(mikudancestudio::InitSceneFontTexture(app.get()), "build caption atlas");
+    Check(mikumikustudio::InitSceneFontTexture(app.get()), "build caption atlas");
 
     for (Corner corner : kCorners) {
         settings::ResetCacheForTest(corner);
@@ -186,7 +186,7 @@ void DrawChecks(IDirect3DDevice9* device) {
             Check(scale == 1.0f, "HUD size is independent of scene scale when it fits");
             const layout::Anchor a = layout::Make(view, scale, corner);
             app->SpriteOverlayPrimitiveCount() = 0;
-            mikudancestudio::PrepareFrameSpriteOverlay(app.get());
+            mikumikustudio::PrepareFrameSpriteOverlay(app.get());
 
             std::vector<QuadBox> quads;
             void* data = nullptr;
@@ -228,7 +228,7 @@ void DrawChecks(IDirect3DDevice9* device) {
                                       0.001953125f + 0.078125f * col}),
                       "scale row cell sits at the docked anchor");
             }
-            mikudancestudio::PrepareFrameTextOverlay(app.get());
+            mikumikustudio::PrepareFrameTextOverlay(app.get());
             void* textData = nullptr;
             const int count = app->TextOverlayPrimitiveCount() * 3;
             if (app->OverlayVertices() && count >= 54 && SUCCEEDED(
@@ -299,22 +299,22 @@ void HitChecks(IDirect3DDevice9* device) {
                 app->MouseX() = app->PreviousMouseX() = x;
                 app->MouseY() = app->PreviousMouseY() = y;
                 app->state.optflag[0] = 0;
-                Check(mikudancestudio::HandleViewportToolPress(app.get()),
+                Check(mikumikustudio::HandleViewportToolPress(app.get()),
                       "row cell answers a press");
                 Check(static_cast<int>(app->ViewportToolOperation()) ==
                           row.modelOp,
                       "model-panel row cell maps to its own axis operation");
-                mikudancestudio::ReleaseLeftButtonState(app.get(), false);
+                mikumikustudio::ReleaseLeftButtonState(app.get(), false);
 
                 app->MouseX() = app->PreviousMouseX() = x;
                 app->MouseY() = app->PreviousMouseY() = y;
                 app->state.optflag[0] = 1;
-                Check(mikudancestudio::HandleViewportToolPress(app.get()),
+                Check(mikumikustudio::HandleViewportToolPress(app.get()),
                       "row cell answers a press on the camera panel");
                 Check(static_cast<int>(app->ViewportToolOperation()) ==
                           row.cameraOp,
                       "camera-panel row cell maps to its own axis operation");
-                mikudancestudio::ReleaseLeftButtonState(app.get(), false);
+                mikumikustudio::ReleaseLeftButtonState(app.get(), false);
             }
 
             // 坐标条（操作 21）：格心 (70, 145) 在命中带 (130..10, 167..125)。
@@ -324,24 +324,24 @@ void HitChecks(IDirect3DDevice9* device) {
                 static_cast<int>(a.X(70.0f));
             app->MouseY() = app->PreviousMouseY() =
                 static_cast<int>(a.Y(corner == Corner::TopLeft || corner == Corner::TopRight ? -20.0f : 145.0f));
-            Check(mikudancestudio::HandleViewportToolPress(app.get()),
+            Check(mikumikustudio::HandleViewportToolPress(app.get()),
                   "coordinate strip answers a press at every corner");
             Check(app->state.coordinateSystem == 1,
                   "one press advances the coordinate selector once");
-            mikudancestudio::ReleaseLeftButtonState(app.get(), false);
+            mikumikustudio::ReleaseLeftButtonState(app.get(), false);
 
             // 缩放行无选中骨骼：bone_scale::Enabled 为假，格心 (110, 25) 不命中。
             app->MouseX() = app->PreviousMouseX() =
                 static_cast<int>(a.X(110.0f));
             app->MouseY() = app->PreviousMouseY() =
                 static_cast<int>(a.Y(25.0f));
-            Check(!mikudancestudio::HandleViewportToolPress(app.get()),
+            Check(!mikumikustudio::HandleViewportToolPress(app.get()),
                   "scale row stays inert while bone scaling is disabled");
-            mikudancestudio::ReleaseLeftButtonState(app.get(), false);
+            mikumikustudio::ReleaseLeftButtonState(app.get(), false);
             // Real enabled scale operations must still address uniform/X/Y/Z
             // in that logical order, including the moved uniform button.
-            auto model = std::make_unique<mikudancestudio::mdl::ModelRecord>();
-            mikudancestudio::mdl::BoneRecord bone{};
+            auto model = std::make_unique<mikumikustudio::mdl::ModelRecord>();
+            mikumikustudio::mdl::BoneRecord bone{};
             unsigned char selected = 1;
             model->boneTable = &bone;
             model->boneCount = 1;
@@ -351,17 +351,17 @@ void HitChecks(IDirect3DDevice9* device) {
             app->ModelSlot(0) = reinterpret_cast<unsigned char*>(model.get());
             app->SetSelectedModelSlot(0);
             app->state.optflag[0] = 0;
-            app->EditMode() = mikudancestudio::ViewportEditMode::Bone;
+            app->EditMode() = mikumikustudio::ViewportEditMode::Bone;
             for (int column = 0; column < 4; ++column) {
                 const bool leftSide = corner == Corner::TopLeft || corner == Corner::BottomLeft;
                 const float units = column == 0 ? (leftSide ? -10.0f : 150.0f)
                                                 : 150.0f - 40.0f * column;
                 app->MouseX() = app->PreviousMouseX() = static_cast<int>(a.X(units));
                 app->MouseY() = app->PreviousMouseY() = static_cast<int>(a.Y(25.0f));
-                Check(mikudancestudio::HandleViewportToolPress(app.get()) &&
+                Check(mikumikustudio::HandleViewportToolPress(app.get()) &&
                           static_cast<int>(app->ViewportToolOperation()) == 22 + column,
                       "enabled scale cell retains its own axis operation");
-                mikudancestudio::ReleaseLeftButtonState(app.get(), false);
+                mikumikustudio::ReleaseLeftButtonState(app.get(), false);
             }
             app->ModelSlot(0) = nullptr;
 

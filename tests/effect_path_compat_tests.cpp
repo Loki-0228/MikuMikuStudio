@@ -52,14 +52,14 @@ void operator delete(void* p) noexcept { std::free(p); }
 void operator delete[](void* p) noexcept { std::free(p); }
 void operator delete(void* p, std::size_t) noexcept { std::free(p); }
 void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
-namespace mikudancestudio::runtime_log {
+namespace mikumikustudio::runtime_log {
 void Write(const char*, ...) noexcept { ++traces; SetLastError(8811); }
 void WritePath(const char*, const wchar_t* path) noexcept {
     ++traces; wcscpy_s(tracedPath, path ? path : L""); SetLastError(8812);
 }
 }
 namespace {
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 unsigned checks = 0;
 void Check(bool ok, const char* message) {
     ++checks;

@@ -1,11 +1,11 @@
-#include "mikudancestudio/physics_scale.hpp"
+#include "mikumikustudio/physics_scale.hpp"
 #include "../plugins/scene_resource_budget.hpp"
-#include "mikudancestudio/affine_collision_shape.hpp"
-#include "mikudancestudio/affine_skinning.hpp"
-#include "mikudancestudio/bone_scale.hpp"
-#include "mikudancestudio/dynamics_world.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/physics_scene.hpp"
+#include "mikumikustudio/affine_collision_shape.hpp"
+#include "mikumikustudio/affine_skinning.hpp"
+#include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/dynamics_world.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/physics_scene.hpp"
 #include <BulletDynamics/ConstraintSolver/btGeneric6DofConstraint.h>
 #include <algorithm>
 #include <btBulletDynamicsCommon.h>
@@ -15,7 +15,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace mikudancestudio::physics_scale {
+namespace mikumikustudio::physics_scale {
 namespace {
 using Mat = bone_scale::Transform;
 Mat Identity() {
@@ -440,4 +440,4 @@ float JointRadiusBaseline(const unsigned char *model, int joint) {
     return it == states.end() ? mdl::Mdl(model)->jointTable[joint].radiusBound
                               : it->second.joints[joint].radius;
 }
-} // namespace mikudancestudio::physics_scale
+} // namespace mikumikustudio::physics_scale

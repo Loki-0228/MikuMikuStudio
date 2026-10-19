@@ -1,12 +1,12 @@
 #pragma once
-#include "mikudancestudio/build_profile.hpp"
+#include "mikumikustudio/build_profile.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "shared_history.hpp"
 #include <array>
 #include <cstdint>
 
-namespace mikudancestudio { class MMDApp; }
-namespace mikudancestudio::plugins {
+namespace mikumikustudio { class MMDApp; }
+namespace mikumikustudio::plugins {
 struct CameraInterpolationOptions {
     // Bits 0..5: X, Y, Z, rotation, distance, field of view.
     std::uint8_t channels = 0;

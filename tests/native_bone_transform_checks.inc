@@ -4,10 +4,10 @@
 // cursor, then RegisterBoneKey with one matrix payload per saved record. It
 // deliberately omits DeleteMarkedKeyframes/PanelPaint/SeekModelFrame: this hidden
 // CPU fixture has no renderer. Neither oracle calls the new planner.
-#include "mikudancestudio/frame_limits.hpp"
+#include "mikumikustudio/frame_limits.hpp"
 #include "../src/plugins/native_key_commands.hpp"
 #include <limits>
-namespace mikudancestudio { void ApplyFrameRangeScale(HWND); }
+namespace mikumikustudio { void ApplyFrameRangeScale(HWND); }
 namespace {
 void TransformProgress(const char* name) {
     std::printf("  bone transform: %s\n",name);std::fflush(stdout);

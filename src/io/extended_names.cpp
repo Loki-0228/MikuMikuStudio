@@ -1,16 +1,16 @@
-#include "mikudancestudio/extended_names.hpp"
-#include "mikudancestudio/display_capacity.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/text_encoding.hpp"
-#include "mikudancestudio/original_file_encoding.hpp"
-#include "mikudancestudio/owned_text.hpp"
+#include "mikumikustudio/extended_names.hpp"
+#include "mikumikustudio/display_capacity.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/text_encoding.hpp"
+#include "mikumikustudio/original_file_encoding.hpp"
+#include "mikumikustudio/owned_text.hpp"
 #include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <map>
 #include <stdexcept>
 
-namespace mikudancestudio::extended_names {
+namespace mikumikustudio::extended_names {
 namespace {
 struct Writer {
     std::vector<std::uint8_t> data;
@@ -55,7 +55,7 @@ struct Reader {
 std::uint32_t Crc(const std::uint8_t* p,std::size_t n) {
     std::uint32_t c=~0u;for(std::size_t i=0;i<n;++i){c^=p[i];for(int j=0;j<8;++j)c=(c>>1)^(0xedb88320u&(0u-(c&1u)));}return ~c;
 }
-std::string Key(int slot) {return "org.mikudancestudio.model."+std::to_string(slot)+".unicode.v1";}
+std::string Key(int slot) {return "org.mikumikustudio.model."+std::to_string(slot)+".unicode.v1";}
 bool Exact(const std::wstring& name,std::size_t bytes) {std::string encoded;return original_file_encoding::Encode(name.c_str(),bytes,encoded);}
 }
 bool Assign(wchar_t*& destination,const std::wstring& value) noexcept {
@@ -127,12 +127,12 @@ void LoadPmm(MMDApp& app,const pmm_extension::Document& doc) {
 }
 std::vector<std::uint8_t> EncodeMotion(const MotionNames& names,std::uint64_t prefixSize,std::uint32_t prefixCrc) {
     Writer w;w.text(names.model);w.names(names.bones);w.names(names.morphs);w.indices(names.boneOwners);w.indices(names.morphOwners);w.indices(names.ikOwners);
-    Writer out;const char magic[]="MDSNAME1";out.data.insert(out.data.end(),magic,magic+8);
+    Writer out;const char magic[]="MMSNAME1";out.data.insert(out.data.end(),magic,magic+8);
     out.u64(w.data.size());out.u64(prefixSize);out.u32(prefixCrc);out.u32(Crc(w.data.data(),w.data.size()));
     out.data.insert(out.data.end(),w.data.begin(),w.data.end());return out.data;
 }
 std::size_t DecodeMotion(const std::uint8_t* file,std::size_t size,std::size_t offset,MotionNames& out) {
-    if(offset>size||size-offset<8||std::memcmp(file+offset,"MDSNAME1",8))return 0;
+    if(offset>size||size-offset<8||std::memcmp(file+offset,"MMSNAME1",8))return 0;
     Reader h{file+offset,size-offset};h.at=8;const auto n=h.u64(),prefix=h.u64();const auto crc=h.u32(),payload=h.u32();
     if(prefix!=offset||n>h.size-h.at||Crc(file,offset)!=crc||Crc(h.data+h.at,static_cast<std::size_t>(n))!=payload)throw std::runtime_error("Unicode motion checksum mismatch");
     Reader r{h.data+h.at,static_cast<std::size_t>(n)};MotionNames result;

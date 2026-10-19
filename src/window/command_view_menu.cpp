@@ -1,6 +1,6 @@
-#include "mikudancestudio/original_import.hpp"
-#include "mikudancestudio/image_sequence_export.hpp"
-#include "mikudancestudio/key_pool.hpp"
+#include "mikumikustudio/original_import.hpp"
+#include "mikumikustudio/image_sequence_export.hpp"
+#include "mikumikustudio/key_pool.hpp"
 // ===========================================================================
 // CommandDispatch family: View/Edit option-menu cases 251..303 (0x47E8A0)
 // ===========================================================================
@@ -229,6 +229,7 @@
 #include <commctrl.h>
 #include <commdlg.h>
 
+#include <array>
 #include <cmath>
 #include <cctype>
 #include <limits>
@@ -240,33 +241,36 @@
 #include <cwchar>
 #include <btBulletDynamicsCommon.h>
 
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/accessory_layout.hpp"
-#include "mikudancestudio/global_key_layout.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/animation_curve_host.hpp"
-#include "mikudancestudio/text_encoding.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/ui_translation.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/bone_parent_coordinates.hpp"
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/pmm_extension.hpp"
-#include "mikudancestudio/pmm_project_settings.hpp"
-#include "mikudancestudio/view_options.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/bake_ui_lock.hpp"
+#include "mikumikustudio/effect_api.hpp"
+#include "mikumikustudio/scene_history_ui.hpp"
+#include "mikumikustudio/accessory_layout.hpp"
+#include "mikumikustudio/global_key_layout.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
+#include "mikumikustudio/text_encoding.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/ui_translation.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/bone_parent_coordinates.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/pmm_extension.hpp"
+#include "mikumikustudio/pmm_project_settings.hpp"
+#include "mikumikustudio/view_options.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "../plugins/native_pose_axis.hpp"
 #include "../plugins/native_pose_scope.hpp"
 #include "../plugins/native_global_commands.hpp"
 #endif
-#include "mikudancestudio/ui_language.hpp"
+#include "mikumikustudio/ui_language.hpp"
 
 #include "dialog_scaffold.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
-// Gravity keyframe registrar, defined below at mikudancestudio scope (the
+// Gravity keyframe registrar, defined below at mikumikustudio scope (the
 // pump's Enter register-frame block in pump_edit_keys.cpp also calls it).
 void RegisterGravityKeyCurrent(MMDApp* app, std::int32_t frame);  // VA 0x00412B20, was Sub412B20
 
@@ -298,7 +302,6 @@ int CollectToonFileNames(HWND hDlg);             // was Sub41EA20, VA 0x0041EA20
 // misc dialog bodies: misc_dialogs.cpp
 bool ApplyBoneFrameScaleAdd(MMDApp* app, HWND hDlg);
 void ApplyMorphScaleAdd(MMDApp* app, HWND hDlg);  // was Sub43E680, VA 0x0043E680
-void InitModelOrderDialog(int count, HWND hDlg);  // was Sub41E810, VA 0x0041E810
 void InitGravityDialog(HWND hDlg);               // was Sub423160, VA 0x00423160
 void ApplyPhysicsOnOff(int on);                  // was Sub4403C0, VA 0x004403C0
 
@@ -531,38 +534,148 @@ LRESULT CALLBACK ModelEdgeEditSubclassProc(  // was Sub45ECC0, VA 0x0045ECC0
     return CallWindowProcA(app->ModelEdgeEditProc(),
                            hwnd, msg, wParam, lParam);
 }
-// VA 0x0041E910 - calculate-order dialog OK apply: walks the order array
-// (app+0xA0B1C, filled by 0x41E7B0 with slotIndex+1 per order) and stores
-// the combo order byte into model+0x2D7C (x64 twin 12552, the same field
-// ExpGetPmdOrder reads - verified on the x64 binary's OK handler).
-// Element [0] is never written (values start at 1), kept as-is from the
-// original.
-//
-// The slot lookup compensates the stored +1, exactly as the inverse direction
-// does in ApplyModelDisplayOrderDialog (order[i] - 1).  Addressing the array
-// with the stored value verbatim read slotIndex+1 and then dereferenced it, so
-// any empty slot at that position wrote through a null pointer: with models in
-// slots 0 and 2 and an empty slot 1, order[1] was 1 and the dialog crashed on
-// OK.  A slot at index 254 also reached index 255, one past the 255-slot
-// array.  Both are reachable from ordinary use (load three models, delete the
-// middle one, open the background menu's "model calculate order").  Rows whose
-// slot is empty or whose model is gone are now skipped rather than written.
-void ApplyModelCalculateOrderDialog(MMDApp* app, int count, HWND hDlg) {  // was Sub41E910, VA 0x0041E910
-    (void)hDlg;  // the original's second pushed argument is never read
-    std::int32_t* order =
-        static_cast<std::int32_t*>(app->AccessoryOrderArray());
-    if (order == nullptr)
-        return;
-    for (int i = 1; i < count; ++i) {
-        const int slot = order[i] - 1;
-        if (slot < 0 || slot >= kModelSlotCount)
-            continue;
-        unsigned char* model = app->ModelSlot(slot);
-        if (model == nullptr)
-            continue;
-        mdl::Mdl(model)->comboSelIndex = static_cast<unsigned char>(i);
+// Display order is also the native model-selector row identity. Calculation
+// order is independent (comboSelIndex2, consumed by physics_frame.cpp).
+struct ModelOrderDialogState {
+    MMDApp& app;
+    bool calculate;
+    int count = 0;
+    std::int32_t* order = nullptr; // [0] unused; entries hold slot + 1
+    std::array<unsigned char*, kModelSlotCount> models{};
+    std::array<unsigned char, kModelSlotCount> draw{}, calculation{};
+    bool uiNeedsRepair = false, listNeedsRepair = false, closeRequested = false;
+    bool restoreCanUndo = false, restoreCanRedo = false;
+    scene_history_ui::Selection restoreSelection{};
+    ~ModelOrderDialogState() {
+        if (app.AccessoryOrderArray() == order) app.AccessoryOrderArray() = nullptr;
+        std::free(order);
     }
+    bool IsCurrent() const noexcept {
+        for (int slot = 0; slot < kModelSlotCount; ++slot) {
+            auto* model = app.ModelSlot(slot);
+            if (model != models[slot]) return false;
+            if (model && (mdl::Mdl(model)->comboSelIndex != draw[slot] ||
+                          mdl::Mdl(model)->comboSelIndex2 != calculation[slot])) return false;
+        }
+        return app.AccessoryOrderArray() == order;
+    }
+};
+
+bool ModelOrderEditReady(MMDApp& app) {
+    if (bake::UiLocked() || app.SceneMutationInProgress()) return false;
+#if !MMD_ORIGINAL_PROFILE
+    if (auto* history = plugins::BoundNativePoseHistory(&app))
+        if (history->CheckNativeNavigation() != MMS_OK) return false;
+#endif
+    return true;
 }
+
+bool InitModelOrderRows(ModelOrderDialogState& state, HWND dialog) {
+    if (state.app.AccessoryOrderArray()) return false;
+    // List captions are derived from the objects, never copied from a possibly
+    // stale selector. The two dialogs choose different native order fields.
+    bake::ScopedUiInputGate gate;
+    for (int slot = 0; slot < kModelSlotCount; ++slot) {
+        auto* model = state.app.ModelSlot(slot);
+        state.models[slot] = model;
+        if (!model) continue;
+        ++state.count;
+        state.draw[slot] = mdl::Mdl(model)->comboSelIndex;
+        state.calculation[slot] = mdl::Mdl(model)->comboSelIndex2;
+    }
+    state.order = static_cast<std::int32_t*>(
+        std::calloc(static_cast<std::size_t>(state.count) + 1, sizeof(std::int32_t)));
+    if (!state.order) return false;
+    state.app.AccessoryOrderArray() = state.order;
+    try {
+        for (int row = 1; row <= state.count; ++row) {
+            int found = -1;
+            for (int slot = 0; slot < kModelSlotCount; ++slot) {
+                if (!state.models[slot] || (state.calculate ? state.calculation[slot] : state.draw[slot]) != row)
+                    continue;
+                if (found >= 0) return false;
+                found = slot;
+            }
+            if (found < 0) return false;
+            state.order[row] = found + 1;
+            const auto name = text_encoding::ModelLabel(*mdl::Mdl(state.models[found]),
+                UiUsesEnglishNames(state.app.EnglishUI()));
+            if (SendDlgItemMessageW(dialog, panel::kOrderListBox, LB_ADDSTRING, 0,
+                    reinterpret_cast<LPARAM>(name.c_str())) != row - 1) return false;
+        }
+    } catch (...) { return false; }
+    return state.IsCurrent();
+}
+
+bool RepairModelOrderUi(ModelOrderDialogState& state) {
+    if (!state.uiNeedsRepair) return true;
+    bake::ScopedUiInputGate gate;
+    state.uiNeedsRepair = scene_history_ui::RefreshObjectLists(state.app, state.restoreSelection,
+        state.restoreCanUndo, state.restoreCanRedo) != scene_history_ui::Result::Ok;
+    return !state.uiNeedsRepair;
+}
+
+bool RepairModelOrderRows(ModelOrderDialogState& state, HWND dialog) {
+    if (!state.listNeedsRepair) return true;
+    if (!state.IsCurrent()) return false;
+    bake::ScopedUiInputGate gate;
+    SendDlgItemMessageW(dialog, panel::kOrderListBox, LB_RESETCONTENT, 0, 0);
+    try {
+        for (int row = 1; row <= state.count; ++row) {
+            const int slot = state.order[row] - 1;
+            if (slot < 0 || slot >= kModelSlotCount || !state.models[slot]) return false;
+            const auto name = text_encoding::ModelLabel(*mdl::Mdl(state.models[slot]),
+                UiUsesEnglishNames(state.app.EnglishUI()));
+            if (SendDlgItemMessageW(dialog, panel::kOrderListBox, LB_INSERTSTRING, row - 1,
+                    reinterpret_cast<LPARAM>(name.c_str())) != row - 1) return false;
+        }
+    } catch (...) { return false; }
+    state.listNeedsRepair = false;
+    return true;
+}
+
+bool ApplyModelOrderDialog(ModelOrderDialogState& state) {
+    auto& app = state.app;
+    if (!ModelOrderEditReady(app) || !RepairModelOrderUi(state) || !state.IsCurrent()) return false;
+    std::array<bool, kModelSlotCount> used{};
+    bool changed = false;
+    for (int row = 1; row <= state.count; ++row) {
+        const int slot = state.order[row] - 1;
+        if (slot < 0 || slot >= kModelSlotCount || !state.models[slot] || used[slot]) return false;
+        used[slot] = true;
+        changed |= (state.calculate ? state.calculation[slot] : state.draw[slot]) != row;
+    }
+    // No callbacks occur between the order-byte writes. Native control reads
+    // and refreshes share the guard against synchronous input/close reentry.
+    bake::ScopedUiInputGate gate;
+    const auto selection = scene_history_ui::CaptureSelection(app);
+    const bool canUndo = IsWindowEnabled(GetDlgItem(app.MainWindow(), panel::kUndoButton)) != FALSE;
+    const bool canRedo = IsWindowEnabled(GetDlgItem(app.MainWindow(), panel::kRedoButton)) != FALSE;
+    for (int row = 1; row <= state.count; ++row) {
+        auto& model = *mdl::Mdl(state.models[state.order[row] - 1]);
+        (state.calculate ? model.comboSelIndex2 : model.comboSelIndex) = static_cast<unsigned char>(row);
+    }
+    if (!state.calculate && scene_history_ui::RefreshObjectLists(app, selection, canUndo, canRedo) !=
+            scene_history_ui::Result::Ok) {
+        for (int slot = 0; slot < kModelSlotCount; ++slot)
+            if (state.models[slot]) mdl::Mdl(state.models[slot])->comboSelIndex = state.draw[slot];
+        // A failed native control write must not publish a different order.
+        // Cancel/retry cannot release the modal owner until the restored
+        // mapping is complete, including repeated CB_ERRSPACE failures.
+        state.restoreSelection = selection;
+        state.restoreCanUndo = canUndo; state.restoreCanRedo = canRedo;
+        state.uiNeedsRepair = true;
+        RepairModelOrderUi(state);
+        return false;
+    }
+    if (changed) {
+        app.SceneModified() = 1;
+        if (!state.calculate) InvalidateEffectCurrentObjectCache();
+        InvalidateRect(app.MainWindow(), nullptr, FALSE);
+    }
+    return true;
+}
+
 // VA 0x00466370 - gravity-setting dialog (266) edit subclass: WM_KEYDOWN +
 // VK_RETURN reads the edit (0x2C5..0x2C9 = 709..713) as a float and applies
 // it through 0x45FD80 with channel 0..4; edits 710..712 additionally park
@@ -688,55 +801,12 @@ void ApplyGravitySettingDialog(MMDApp* app) {  // was Sub460080, VA 0x00460080
     RefreshRequest(-4);                                       // 0x440AC0
     PanelPaint(app);                                          // 0x414610
 }
-// VA 0x0041E7B0 - order-array builder: for order = 1..count-1 scan the 100
-// model slots for the model whose order byte (+0x2D7C) equals `order` and
-// store slotIndex+1 into the array at app+0xA0B1C.
-void BuildModelOrderArray(MMDApp* app, int count) {  // was Sub41E7B0, VA 0x0041E7B0
-    std::int32_t* order =
-        static_cast<std::int32_t*>(app->AccessoryOrderArray());
-    for (int ord = 1; ord < count; ++ord) {
-        // x64: no exact twin pinned for 0x41E7B0, but every slot/order scan
-        // verified on the x64 binary so far runs the full 255-slot array
-        // (family evidence; see app_layout.hpp kModelSlotCount).
-        for (int i = 0; i < kModelSlotCount; ++i) {
-            unsigned char* model = app->ModelSlot(i);
-            if (model != nullptr &&
-                mdl::Mdl(model)->comboSelIndex == ord) {
-                order[ord] = i + 1;
-                break;
-            }
-        }
-    }
-}
-// VA 0x0045EC80 - display-order apply (inverse direction of 0x41E910): for
-// i = 1..count-1 store i into model+0x2D7C.  The original addresses the
-// slot via base 0x77C (= 0x780 - 4), cancelling the +1 stored by 0x41E7B0;
-// the second argument (dialog) is never read.
-void ApplyModelDisplayOrderDialog(MMDApp* app, int count, HWND hDlg) {  // was Sub45EC80, VA 0x0045EC80
-    (void)hDlg;
-    std::int32_t* order =
-        static_cast<std::int32_t*>(app->AccessoryOrderArray());
-    for (int i = 1; i < count; ++i) {
-        unsigned char* model = app->ModelSlot(order[i] - 1);
-        mdl::Mdl(model)->comboSelIndex = static_cast<unsigned char>(i);
-    }
-    ApplyModelComboSelection(app);                                       // 0x44D940
-}
-
-// Original data-segment globals dword_545930 / dword_545938 (not in Block).
-int g_calculateOrderDialogCount = 0;  // was g_dword545930, VA 0x00545930 -
-                                      // model calculate-order dialog working
-                                      // count (main combo count - 1)
-int g_displayOrderDialogCount = 0;    // was g_dword545938, VA 0x00545938 -
-                                      // model display-order dialog combo
-                                      // count
-
 // Newly-required unported dependencies (0x45ECC0 / 0x460080 call sites) -
 // file-local stub bodies so the call sites link (stubs.cpp must not be
 // modified).  CollectEnglishNameEdit's real body now lives in model_edge_dialog.cpp;
 // only the forward declaration at the top of this TU is needed.
 }  // namespace (anonymous) - RegisterGravityKeyCurrent is consumed by pump_edit_keys.cpp
-// and stays at mikudancestudio scope.
+// and stays at mikumikustudio scope.
 // VA 0x00412B20 (x64 twin sub_7FF7CB47DA60, confirmed on the x64 binary;
 // the pre-existing "frame-table rebuild" label was wrong): the gravity
 // keyframe registrar.  Walks the gravity track's next-chain (app+0x380,
@@ -806,7 +876,7 @@ void RegisterGravityKeyCurrent(MMDApp* app, std::int32_t frame) {  // VA 0x00412
             app->EnglishUI() == 2 ? L"无法扩展关键帧存储，本次注册已取消。" :
             app->EnglishUI() == 0 ? L"メモリを確保できないため、登録を中止しました。" :
             L"Unable to allocate keyframe storage. Registration was cancelled.",
-            L"MikuDanceStudio", MB_OK | MB_ICONERROR);
+            L"MikuMikuStudio", MB_OK | MB_ICONERROR);
         return;
     }
     keys = app->GravityKeys();
@@ -841,13 +911,6 @@ namespace {  // (resumed)
 // 0x52E628: "ON (X印)" (SJIS 0x88F3 = 印); 0x52E624: "OFF".
 static const char kOnXMarkJp[] = "ON (X\x88\xF3)";
 static const char kOff[] = "OFF";
-// 0x52D370 / 0x52D368 / 0x52D360: JP wide labels "ｶﾒﾗ･照明･ｱｸｾｻﾘ" / "画面" /
-// "なし" (half-width katakana mixed with kanji; sent via SendMessageW).
-static const wchar_t kJpCamLightAcc[] = {
-    0xFF76, 0xFF92, 0xFF97, 0xFF65, 0x7167, 0x660E, 0xFF65, 0xFF71, 0xFF78,
-    0xFF7E, 0xFF7B, 0xFF98, 0x0000};
-static const wchar_t kJpScreen[] = {0x5730, 0x9762, 0x0000};
-static const wchar_t kJpNone[] = {0x306A, 0x3057, 0x0000};
 // "fine shadow mode" notice (x64 0x7FF7CB54D6A0 / 0x7FF7CB54D6B0): JP
 // caption = the Fshadow button's two-kanji label + "モード"; JP text =
 // "この命令は画面右上の「<Fshadow label>」ボタンに取って変わりました"
@@ -1270,98 +1333,85 @@ INT_PTR CALLBACK ModelEdgeDlgProc(HWND hDlg, UINT msg, WPARAM wParam,
     return 0;
 }
 
-// ===========================================================================
-// 0x42E370 - case 289 model calculate-order dialog (template caption "model
-// calculate order" / モデル計算順設定; 0x32B EN / 0x32A JP), modal.
-// WM_INITDIALOG: top-most gate; g_calculateOrderDialogCount =
-// CB_GETCOUNT(main combo 0x1B4) - 1; sub_41E810 fills listbox 628 from the
-// int array at
-// app+0xA0B1C.  WM_COMMAND ids 630/631 move the selected listbox entry up/
-// down (LB_GETTEXT/DELETESTRING/INSERTSTRING/SETCURSEL) and swap the two
-// adjacent dwords of the app+0xA0B1C array; id 632 (OK) applies via
-// sub_41E910 + EndDialog(1), id 2 -> EndDialog(2); both free the array.
-// Reference: MikuMikuDance.exe sub_42E370.
-// ===========================================================================
-INT_PTR CALLBACK ModelCalculateOrderDlgProc(HWND hDlg, UINT msg, WPARAM wParam,
-                                            LPARAM lParam) {  // was Sub42E370, VA 0x0042E370
-    (void)lParam;
-    MMDApp* app = g_Block;
-    if (msg == WM_INITDIALOG) {
-        MakeDialogTopmostIfRequested(app, hDlg);
-        g_calculateOrderDialogCount = static_cast<int>(
-            SendMessageW(GetDlgItem(app->state.hwnd, panel::kMainComboModel),
-                         CB_GETCOUNT, 0, 0)) -
-            1;
-        InitModelOrderDialog(g_calculateOrderDialogCount, hDlg);  // 0x41E810
-        return 0;
+// Menus 288 and 289 use the same one-based scratch representation and actual
+// list controls. Only the selected native order field differs.
+INT_PTR ModelOrderDlgProc(HWND dialog, UINT message, WPARAM wp, LPARAM lp) {
+    auto* state = reinterpret_cast<ModelOrderDialogState*>(GetWindowLongPtrW(dialog, DWLP_USER));
+    const bool close = message == WM_CLOSE || (message == WM_SYSCOMMAND && (wp & 0xfff0) == SC_CLOSE) ||
+        (message == WM_COMMAND && LOWORD(wp) == IDCANCEL);
+    if (state && bake::UiLocked() && (close || message == WM_COMMAND)) {
+        state->closeRequested |= close;
+        return TRUE;
     }
-    if (msg != WM_COMMAND) {
-        return 0;
+    if (message == WM_INITDIALOG) {
+        state = reinterpret_cast<ModelOrderDialogState*>(lp);
+        SetWindowLongPtrW(dialog, DWLP_USER, reinterpret_cast<LONG_PTR>(state));
+        if (!state || !InitModelOrderRows(*state, dialog)) { EndDialog(dialog, IDCANCEL); return TRUE; }
+        if (state->closeRequested) { EndDialog(dialog, IDCANCEL); return TRUE; }
+        MakeDialogTopmostIfRequested(&state->app, dialog);
+        return FALSE;
     }
-    const WORD id = LOWORD(wParam);
-    if (id == 630) {  // move up (0x42E3A6)
-        const int sel = static_cast<int>(
-            SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox), LB_GETCURSEL, 0, 0));
-        if (sel >= 1) {
-            const auto length = SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox), LB_GETTEXTLEN, sel, 0);
-            std::wstring buf(length >= 0 ? static_cast<size_t>(length) + 1 : 1, L'\0');
-            SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox), LB_GETTEXT, sel, (LPARAM)buf.data());
-            SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox), LB_DELETESTRING, sel,
-                         0);
-            SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox), LB_INSERTSTRING,
-                         sel - 1, (LPARAM)buf.c_str());
-            SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox), LB_SETCURSEL, sel - 1,
-                         0);
-            std::int32_t* arr =
-                static_cast<std::int32_t*>(app->AccessoryOrderArray());
-            const std::int32_t tmp = arr[sel - 1];
-            arr[sel - 1] = arr[sel];
-            arr[sel] = tmp;
-        }
-        return 0;
+    if (!state) return FALSE;
+    // X and Alt+F4 must use the same repair gate as the Cancel button.
+    if (message == WM_CLOSE || (message == WM_SYSCOMMAND && (wp & 0xfff0) == SC_CLOSE)) {
+        if (RepairModelOrderUi(*state)) EndDialog(dialog, IDCANCEL);
+        return TRUE;
     }
-    if (id == 631) {  // move down (0x42E451)
-        const int sel = static_cast<int>(
-            SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox), LB_GETCURSEL, 0, 0));
-        if (sel != -1 && sel < g_calculateOrderDialogCount - 1) {
-            const auto length = SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox), LB_GETTEXTLEN, sel, 0);
-            std::wstring buf(length >= 0 ? static_cast<size_t>(length) + 1 : 1, L'\0');
-            SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox), LB_GETTEXT, sel, (LPARAM)buf.data());
-            SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox), LB_DELETESTRING, sel,
-                         0);
-            SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox), LB_INSERTSTRING,
-                         sel + 1, (LPARAM)buf.c_str());
-            SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox), LB_SETCURSEL, sel + 1,
-                         0);
-            std::int32_t* arr =
-                static_cast<std::int32_t*>(app->AccessoryOrderArray());
-            const std::int32_t tmp = arr[sel + 1];
-            arr[sel + 1] = arr[sel];
-            arr[sel] = tmp;
-        }
-        return 0;
+    if (message != WM_COMMAND) return FALSE;
+    const WORD command = LOWORD(wp);
+    if (command == 630 || command == 631) {
+        if (!RepairModelOrderRows(*state, dialog)) return TRUE;
+        const int row = static_cast<int>(SendDlgItemMessageW(dialog, panel::kOrderListBox, LB_GETCURSEL, 0, 0));
+        const int target = row + (command == 630 ? -1 : 1);
+        if (row < 0 || row >= state->count || target < 0 || target >= state->count) return TRUE;
+        try {
+            bake::ScopedUiInputGate gate;
+            HWND list = GetDlgItem(dialog, panel::kOrderListBox);
+            const auto size = SendMessageW(list, LB_GETTEXTLEN, row, 0);
+            if (size < 0) return TRUE;
+            std::wstring name(static_cast<std::size_t>(size) + 1, L'\0');
+            if (SendMessageW(list, LB_GETTEXT, row, reinterpret_cast<LPARAM>(name.data())) != size) return TRUE;
+            // Allocate the duplicate before deleting its original. Failure to
+            // insert leaves every original row and scratch identity intact.
+            const int insertAt = target < row ? target : target + 1;
+            const auto inserted = SendMessageW(list, LB_INSERTSTRING, insertAt, reinterpret_cast<LPARAM>(name.c_str()));
+            if (inserted < 0) return TRUE;
+            const int removeAt = insertAt <= row ? row + 1 : row;
+            if (inserted != insertAt || SendMessageW(list, LB_DELETESTRING, removeAt, 0) == LB_ERR) {
+                if (SendMessageW(list, LB_DELETESTRING, inserted, 0) == LB_ERR) {
+                    state->listNeedsRepair = true;
+                    RepairModelOrderRows(*state, dialog);
+                }
+                SendMessageW(list, LB_SETCURSEL, row, 0);
+                return TRUE;
+            }
+            SendMessageW(list, LB_SETCURSEL, target, 0);
+            const auto previous = state->order[row + 1];
+            state->order[row + 1] = state->order[target + 1];
+            state->order[target + 1] = previous;
+            if (state->closeRequested) {
+                state->closeRequested = false;
+                PostMessageW(dialog, WM_CLOSE, 0, 0);
+            }
+        } catch (...) { return TRUE; }
+        return TRUE;
     }
-    if (id == 632) {  // OK (0x42E52E)
-        ApplyModelCalculateOrderDialog(app, g_calculateOrderDialogCount, hDlg);  // 0x41E910
-        EndDialog(hDlg, 1);
-        if (app->AccessoryOrderArray() == nullptr) {
-            return 0;
-        }
-        std::free(app->AccessoryOrderArray());
-        app->AccessoryOrderArray() = nullptr;
-        return 0;
+    if (command == 632) {
+        if (RepairModelOrderRows(*state, dialog) && ApplyModelOrderDialog(*state)) EndDialog(dialog, IDOK);
+        else if (state->closeRequested && RepairModelOrderUi(*state)) EndDialog(dialog, IDCANCEL);
+        return TRUE;
     }
-    if (id == 2) {  // Cancel (0x42E57E)
-        EndDialog(hDlg, 2);
-        if (app->AccessoryOrderArray() == nullptr) {
-            return 0;
-        }
-        std::free(app->AccessoryOrderArray());
-        app->AccessoryOrderArray() = nullptr;
-        return 0;
+    if (command == IDCANCEL) {
+        if (RepairModelOrderUi(*state)) EndDialog(dialog, IDCANCEL);
+        return TRUE;
     }
-    return 0;
+    return FALSE;
 }
+
+INT_PTR CALLBACK ModelCalculateOrderDlgProc(HWND dialog, UINT message, WPARAM wp, LPARAM lp) {
+    return ModelOrderDlgProc(dialog, message, wp, lp);
+}
+
 
 // ===========================================================================
 // 0x479E90 - case 266 gravity-setting dialog (template caption "gravity
@@ -1609,143 +1659,10 @@ INT_PTR CALLBACK BoneNumericInputDlgProc(HWND hDlg, UINT msg, WPARAM wParam,
     return 0;
 }
 
-// ===========================================================================
-// 0x4641F0 - case 288 model display-order dialog (template caption "model
-// disply order" / モデル描画順設定; 0x325 EN / 0x324 JP), modal.
-// WM_INITDIALOG: top-most gate; g_displayOrderDialogCount = CB_GETCOUNT
-// (main combo 0x1B4); allocate the int array app+0xA0B1C; CB_GETLBTEXT(main
-// combo 0x1B4,
-// i) 1..count-1 into listbox 0x274; sub_41E7B0 init.
-// WM_COMMAND ids 630/631: move the listbox 0x274 entry up/down and swap the
-// adjacent dwords of the app+0xA0B1C array.  id 632 (OK): rebuild the main
-// combos 0x1B4/0x1DA/0x1C1 (EN: "camera/light/accessory" / "ground" / "non",
-// JP wide: "ｶﾒﾗ･照明･ｱｸｾｻﾘ" / "画面" / "なし") from the listbox contents
-// (count-1 entries), CB_SETCURSEL(0x1B4, 0), sub_45EC80 apply,
-// EndDialog(1).  id 2: EndDialog(2).  Both free app+0xA0B1C.
-// Reference: MikuMikuDance.exe sub_4641F0 (decompiled by hand from the
-// disassembly; Hex-Rays fails on this routine).
-// ===========================================================================
-INT_PTR CALLBACK ModelDisplayOrderDlgProc(HWND hDlg, UINT msg, WPARAM wParam,
-                                          LPARAM lParam) {  // was Sub4641F0, VA 0x004641F0
-    (void)lParam;
-    MMDApp* app = g_Block;
-    if (msg == WM_INITDIALOG) {
-        MakeDialogTopmostIfRequested(app, hDlg);
-        const int count = static_cast<int>(
-            SendMessageW(GetDlgItem(app->state.hwnd, panel::kMainComboModel),
-                         CB_GETCOUNT, 0, 0));
-        g_displayOrderDialogCount = count;
-        app->AccessoryOrderArray() = std::calloc(count, sizeof(std::int32_t));
-        for (int i = 1; i < count; ++i) {
-            const auto length = SendMessageW(GetDlgItem(app->state.hwnd, panel::kMainComboModel), CB_GETLBTEXTLEN, i, 0);
-            std::wstring buf(length >= 0 ? static_cast<size_t>(length) + 1 : 1, L'\0');
-            SendMessageW(GetDlgItem(app->state.hwnd, panel::kMainComboModel), CB_GETLBTEXT, i, (LPARAM)buf.data());
-            SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox), LB_ADDSTRING, 0,
-                         (LPARAM)buf.c_str());
-        }
-        BuildModelOrderArray(app, count);  // 0x41E7B0
-        return 0;
-    }
-    if (msg != WM_COMMAND) {
-        return 0;
-    }
-    const WORD id = LOWORD(wParam);
-    if (id == 630) {  // move up (0x464225)
-        const int sel = static_cast<int>(
-            SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox), LB_GETCURSEL, 0, 0));
-        if (sel >= 1) {
-            const auto length = SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox), LB_GETTEXTLEN, sel, 0);
-            std::wstring buf(length >= 0 ? static_cast<size_t>(length) + 1 : 1, L'\0');
-            SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox), LB_GETTEXT, sel, (LPARAM)buf.data());
-            SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox), LB_DELETESTRING,
-                         sel, 0);
-            SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox), LB_INSERTSTRING,
-                         sel - 1, (LPARAM)buf.c_str());
-            SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox), LB_SETCURSEL,
-                         sel - 1, 0);
-            std::int32_t* arr =
-                static_cast<std::int32_t*>(app->AccessoryOrderArray());
-            const std::int32_t tmp = arr[sel + 1];
-            arr[sel + 1] = arr[sel];
-            arr[sel] = tmp;
-        }
-        return 0;
-    }
-    if (id == 631) {  // move down (0x4642DE)
-        const int sel = static_cast<int>(
-            SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox), LB_GETCURSEL, 0, 0));
-        if (sel != -1 && sel < g_displayOrderDialogCount - 2) {
-            const auto length = SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox), LB_GETTEXTLEN, sel, 0);
-            std::wstring buf(length >= 0 ? static_cast<size_t>(length) + 1 : 1, L'\0');
-            SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox), LB_GETTEXT, sel, (LPARAM)buf.data());
-            SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox), LB_DELETESTRING,
-                         sel, 0);
-            SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox), LB_INSERTSTRING,
-                         sel + 1, (LPARAM)buf.c_str());
-            SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox), LB_SETCURSEL,
-                         sel + 1, 0);
-            std::int32_t* arr =
-                static_cast<std::int32_t*>(app->AccessoryOrderArray());
-            const std::int32_t tmp = arr[sel + 2];
-            arr[sel + 2] = arr[sel + 1];
-            arr[sel + 1] = tmp;
-        }
-        return 0;
-    }
-    if (id == 632) {  // OK (0x4643AD)
-        HWND mainWnd = app->state.hwnd;
-        SendMessageW(GetDlgItem(mainWnd, panel::kMainComboModel), CB_RESETCONTENT, 0,
-                     0);
-        SendMessageW(GetDlgItem(mainWnd, panel::kMainComboGround), CB_RESETCONTENT, 0,
-                     0);
-        SendMessageW(GetDlgItem(mainWnd, panel::kMainComboNormal), CB_RESETCONTENT, 0,
-                     0);
-        if (app->state.englishUI != 0) {
-            AddUiComboText(app, GetDlgItem(mainWnd, panel::kMainComboModel),
-                           "camera/light/accessory");
-            AddUiComboText(app, GetDlgItem(mainWnd, panel::kMainComboGround),
-                           "ground");
-            AddUiComboText(app, GetDlgItem(mainWnd, panel::kMainComboNormal),
-                           "non");
-        } else {
-            SendMessageW(GetDlgItem(mainWnd, panel::kMainComboModel), CB_ADDSTRING, 0,
-                         (LPARAM)kJpCamLightAcc);
-            SendMessageW(GetDlgItem(mainWnd, panel::kMainComboGround), CB_ADDSTRING, 0,
-                         (LPARAM)kJpScreen);
-            SendMessageW(GetDlgItem(mainWnd, panel::kMainComboNormal), CB_ADDSTRING, 0,
-                         (LPARAM)kJpNone);
-        }
-        for (int i = 0; i < g_displayOrderDialogCount - 1; ++i) {
-            const auto length = SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox), LB_GETTEXTLEN, i, 0);
-            std::wstring buf(length >= 0 ? static_cast<size_t>(length) + 1 : 1, L'\0');
-            SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox), LB_GETTEXT, i, (LPARAM)buf.data());
-            SendMessageW(GetDlgItem(mainWnd, panel::kMainComboModel), CB_ADDSTRING, 0,
-                         (LPARAM)buf.c_str());
-            SendMessageW(GetDlgItem(mainWnd, panel::kMainComboGround), CB_ADDSTRING, 0,
-                         (LPARAM)buf.c_str());
-            SendMessageW(GetDlgItem(mainWnd, panel::kMainComboNormal), CB_ADDSTRING, 0,
-                         (LPARAM)buf.c_str());
-        }
-        SendMessageW(GetDlgItem(mainWnd, panel::kMainComboModel), CB_SETCURSEL, 0, 0);
-        ApplyModelDisplayOrderDialog(app, g_displayOrderDialogCount, hDlg);  // 0x45EC80
-        EndDialog(hDlg, 1);
-        if (app->AccessoryOrderArray() == nullptr) {
-            return 0;
-        }
-        std::free(app->AccessoryOrderArray());
-        app->AccessoryOrderArray() = nullptr;
-        return 0;
-    }
-    if (id == 2) {  // Cancel (0x464613)
-        EndDialog(hDlg, 2);
-        if (app->AccessoryOrderArray() == nullptr) {
-            return 0;
-        }
-        std::free(app->AccessoryOrderArray());
-        app->AccessoryOrderArray() = nullptr;
-        return 0;
-    }
-    return 0;
+// Menu 288: publish the display/selector permutation and refresh by object
+// identity. Selecting the same model again would reset live editing state.
+INT_PTR CALLBACK ModelDisplayOrderDlgProc(HWND dialog, UINT message, WPARAM wp, LPARAM lp) {
+    return ModelOrderDlgProc(dialog, message, wp, lp);
 }
 
 }  // namespace
@@ -2687,24 +2604,30 @@ void CmdViewMenu(MMDApp* app, HWND hwnd, std::uint16_t id,
     // 288 (0x0048A08F): modal dialog 0x325 EN / 0x324 JP (sub_4641F0);
     // return when closed.
     // ------------------------------------------------------------------
-    case 288:
+    case 288: {
+        if (app->AccessoryOrderArray() || !ModelOrderEditReady(*app)) return;
+        ModelOrderDialogState state{*app, false};
         app->state.enterKeyState = 1;
         UiDialogBoxParamA(hInst,
                         MAKEINTRESOURCEA(english ? 0x325 : 0x324),
-                        hwnd, ModelDisplayOrderDlgProc, 0);
+                        hwnd, ModelDisplayOrderDlgProc, reinterpret_cast<LPARAM>(&state));
         return;
+    }
 
     // ------------------------------------------------------------------
     // 289 (0x0048A0DF): modal dialog 0x32B EN / 0x32A JP (sub_42E370);
     // return when closed.
     // ------------------------------------------------------------------
-    case 289:
+    case 289: {
+        if (app->AccessoryOrderArray() || !ModelOrderEditReady(*app)) return;
+        ModelOrderDialogState state{*app, true};
         app->state.dialogFlags[2] = 1;
         app->state.enterKeyState = 1;
         UiDialogBoxParamA(hInst,
                         MAKEINTRESOURCEA(english ? 0x32B : 0x32A),
-                        hwnd, ModelCalculateOrderDlgProc, 0);
+                        hwnd, ModelCalculateOrderDlgProc, reinterpret_cast<LPARAM>(&state));
         return;
+    }
 
     // ------------------------------------------------------------------
     // 290 (0x0048B926): full scene reload - 0xA0274 = 1,
@@ -3107,4 +3030,4 @@ void CmdViewMenu(MMDApp* app, HWND hwnd, std::uint16_t id,
     }
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

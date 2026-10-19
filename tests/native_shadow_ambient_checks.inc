@@ -1,4 +1,4 @@
-namespace mikudancestudio {
+namespace mikumikustudio {
 INT_PTR __stdcall GroundShadowColorDlgProc(HWND,UINT,WPARAM,LPARAM);
 }
 namespace {

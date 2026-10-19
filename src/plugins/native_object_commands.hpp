@@ -1,10 +1,10 @@
 #pragma once
-#include "mikudancestudio/build_profile.hpp"
+#include "mikumikustudio/build_profile.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include <Windows.h>
 #include <mms/plugin.h>
-namespace mikudancestudio { class MMDApp; }
-namespace mikudancestudio::plugins {
+namespace mikumikustudio { class MMDApp; }
+namespace mikumikustudio::plugins {
 class SharedHistory;
 // Internal migration routes only. A bound route consumes failure/cancellation;
 // the caller must never continue into the legacy immediate-free deletion.

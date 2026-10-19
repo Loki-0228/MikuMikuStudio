@@ -1,12 +1,12 @@
-#include "mikudancestudio/native_mesh.hpp"
+#include "mikumikustudio/native_mesh.hpp"
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
 
-#include "mikudancestudio/effect_api.hpp"
+#include "mikumikustudio/effect_api.hpp"
 #include <cstring>
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 const wchar_t* EffectMaterialNameWithFallback(EffectMaterialNameQuery query,
     std::uintptr_t object, int material, int english) {
@@ -96,4 +96,4 @@ bool InstallEffectMaterialNameCompatibility() {
     return true;
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

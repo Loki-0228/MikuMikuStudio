@@ -1,15 +1,15 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include "mikudancestudio/build_profile.hpp"
-#include "mikudancestudio/native_media.hpp"
-#include "mikudancestudio/wave_audio_context.hpp"
-#include "mikudancestudio/mf_h264_recorder.hpp"
-#include "mikudancestudio/wic_mov_recorder.hpp"
+#include "mikumikustudio/build_profile.hpp"
+#include "mikumikustudio/native_media.hpp"
+#include "mikumikustudio/wave_audio_context.hpp"
+#include "mikumikustudio/mf_h264_recorder.hpp"
+#include "mikumikustudio/wic_mov_recorder.hpp"
 #include <cwchar>
 
 static_assert(MMD_ORIGINAL_PROFILE, "Original media provider must not enter the full build");
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 constexpr const wchar_t* kUnavailable =
     L"This MMD 9.32 profile supports WAV audio and AVI video only.";

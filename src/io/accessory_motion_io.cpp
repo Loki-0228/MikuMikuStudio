@@ -1,18 +1,18 @@
-#include "mikudancestudio/key_pool.hpp"
+#include "mikumikustudio/key_pool.hpp"
 // MMS addition: `.x` accessory motion inside a camera / light VMD.  The block
 // format and the matching rule are documented in accessory_motion_io.hpp.
-#include "mikudancestudio/accessory_motion_io.hpp"
+#include "mikumikustudio/accessory_motion_io.hpp"
 
 #include <algorithm>
 #include <cstring>
 #include <map>
 
-#include "mikudancestudio/accessory_layout.hpp"
-#include "mikudancestudio/animation_curve_host.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/accessory_layout.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 // accessory_paste.cpp: pastes one clipboard record at the current frame plus
 // its offset into the record's own slot (useSelectedSlot == 0).  Returns 0 when
@@ -250,4 +250,4 @@ int Apply(MMDApp* app, const std::vector<Track>& tracks) {
 }
 
 }  // namespace accessory_motion_io
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

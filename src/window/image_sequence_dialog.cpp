@@ -2,9 +2,9 @@
 #define NOMINMAX
 #include "image_sequence_dialog.hpp"
 #include "dialog_scaffold.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/ui_translation.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/ui_translation.hpp"
 #include <ShObjIdl.h>
 #include <wrl/client.h>
 #include <algorithm>
@@ -12,7 +12,7 @@
 #include <cwctype>
 #include <filesystem>
 
-namespace mikudancestudio::image_sequence {
+namespace mikumikustudio::image_sequence {
 namespace {
 const wchar_t* Title(MMDApp* app) {
     return Text(app, L"导出图片序列", L"Export image sequence", L"連番画像出力");
@@ -222,4 +222,4 @@ bool HandleCommand(MMDApp* app, unsigned command) {
     if (!app->state.recordPlaybackStartPending) Abort(app);
     return true;
 }
-} // namespace mikudancestudio::image_sequence
+} // namespace mikumikustudio::image_sequence

@@ -1,6 +1,6 @@
 // Include after native_global_registration_checks.inc and existing pose fixture.
 #include "../src/plugins/native_accessory_registration.hpp"
-namespace mikudancestudio { void ApplyAccessoryTrack(MMDApp*,int); void ClearGlobalFrameSelection(MMDApp*);
+namespace mikumikustudio { void ApplyAccessoryTrack(MMDApp*,int); void ClearGlobalFrameSelection(MMDApp*);
 void CmdControl450(MMDApp*,HWND,std::uint16_t,std::uint16_t); }
 namespace {
 struct AccessoryRegistrationFixture : PoseNumericFixture {
