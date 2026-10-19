@@ -853,6 +853,7 @@ FxaaFloat MMSOutlineResolvedRamp(FxaaFloat2 at,FxaaFloat2 rcp) {
 }
 FxaaFloat4 MMSOutlineFilter(FxaaTex tex,FxaaFloat2 at,FxaaFloat2 rcp,FxaaFloat4 centerTensor) {
     FxaaFloat4 center=FxaaTexTop(tex,at), result=center;
+    FxaaFloat centerCoverage=FxaaTexTop(nativeOutline,at).r;
     // Coverage the rasteriser resolved is already a transition; pushing it
     // again is what moved a strong filter's outline off its authored place.
     [branch] if(max(centerTensor.w,MMSOutlineResolvedRamp(at,rcp))>1.0/255.0) return center;
@@ -879,10 +880,19 @@ FxaaFloat4 MMSOutlineFilter(FxaaTex tex,FxaaFloat2 at,FxaaFloat2 rcp,FxaaFloat4 
                 FxaaFloat ramp=max(centerTensor.w,neighborTensor.w);
                 FxaaFloat strength=lerp(0.036,0.130,smoothstep(0.80,2.0,width));
                 strength*=1.0-saturate(ramp*3.0);
-                FxaaFloat weight=strength*(0.2+0.8*across)/distanceSquared;
-                // Both ends use the same coefficient. All four RGBA channels
-                // move together, so the contour smooths across its normal
-                // more strongly than along its tangent.
+                // Only rebalance ink between pixels the outline itself covers.
+                // Blending into an uncovered neighbour paints ink outside the
+                // drawn stroke, which is what made a strong filter widen the
+                // outline outward along the whole contour.
+                FxaaFloat neighborCoverage=FxaaTexTop(nativeOutline,there).r;
+                FxaaFloat coverageMatch=saturate(min(centerCoverage,neighborCoverage)*32.0);
+                // Continuity comes from carrying ink along the stroke, not from
+                // spreading it across the edge: the along-contour weight keeps a
+                // thin outline connected and cannot move its outer boundary.
+                FxaaFloat along=saturate(1.0-across);
+                FxaaFloat weight=strength*(0.2+0.8*along)*coverageMatch/distanceSquared;
+                // All four RGBA channels move together, so a contour keeps its
+                // colour balance while its ink settles along the stroke.
                 result+=(FxaaTexTop(tex,there)-center)*weight;
             }
         }
@@ -1085,6 +1095,19 @@ FxaaFloat4 FxaaPixelShader(
     [branch] if(outlineFlags.x > 0.5) {
         FxaaFloat4 tensor=MMSOutlineTensor(pos,fxaaQualityRcpFrame);
         [branch] if(tensor.z>0) return MMSOutlineFilter(tex,pos,fxaaQualityRcpFrame,tensor);
+    }
+    // Beside the stroke the generic sub-pixel blur would pull stroke colour
+    // into uncovered background: the outline would spread outward and thin out
+    // in its own gaps. Those pixels keep what the rasteriser wrote.
+    [branch] if(outlineFlags.x > 0.5) {
+        FxaaFloat halo=0.0;
+        [unroll] for(int my=-1;my<=1;++my) {
+            [unroll] for(int mx=-1;mx<=1;++mx) {
+                halo=max(halo,FxaaTexTop(nativeOutline,
+                    pos + FxaaFloat2(mx,my)*fxaaQualityRcpFrame*1.5).r);
+            }
+        }
+        [branch] if(halo > 0.5/255.0) return FxaaTexTop(tex,pos);
     }
     [branch] if(outlineFlags.z>0.5) return FxaaTexTop(tex,pos);
     FxaaFloat mmsUseAlpha = MMSSelectAlpha(tex, pos, fxaaQualityRcpFrame);

@@ -490,14 +490,16 @@ unsigned CheckNativeMask(Gpu& gpu,IWICImagingFactory* wic,const fs::path& direct
             c.name+": filter does not move the line away from its MSAA position");
         Verify(std::memcmp(output.data(),repeat.data(),output.size()*sizeof(Pixel))==0,c.name+": static input repeats bit for bit");
         if(variant!=0) {
-            // The widened hull is a hard step. Filtering it may never move it
-            // away from the resolved coverage MSAA produces, and a line at
-            // least a pixel wide must gain a transition.
+            // The resolve carries ink along the stroke and never across it, so
+            // a straight hull keeps the profile the rasteriser wrote: no
+            // cross-normal spread, no outward bleed. Continuity on real
+            // contours comes from the along-stroke weight, which a straight
+            // uniform-colour fixture cannot show.
             if(widths[width]>=1) {
-                Verify(m.outputIdealRmse<m.inputIdealRmse*.95,
-                    c.name+": filter visibly reduces distance to the MSAA coverage");
-                Verify(m.changed>16 && m.varianceGain>.0001,
-                    c.name+": widened hull receives a measurable spatial spread");
+                Verify(m.varianceGain<.0001,
+                    c.name+": straight hull gains no cross-normal spread");
+                Verify(m.outputIdealRmse<=m.inputIdealRmse+.0005,
+                    c.name+": filtering never pushes the hull away from the coverage reference");
             } else {
                 // A quarter-pixel hull carries too little ink for a spread to
                 // recover, so the property that matters is that it keeps its
@@ -533,18 +535,13 @@ unsigned CheckNativeMask(Gpu& gpu,IWICImagingFactory* wic,const fs::path& direct
             const auto& thin=measurements[transparent][variant][0][direction];
             const auto& one=measurements[transparent][variant][1][direction];
             const auto& thick=measurements[transparent][variant][2][direction];
-            // Resolved coverage is left alone, so this ordering only applies to
-            // the hard single-sample hull that still needs a transition. The
-            // filter reads the rasterised width, so after the minimum-width hull
-            // a quarter-pixel and a one-pixel authored line share one width and
-            // must therefore share their spread. Only a wider hull earns more.
+            // No authored width may earn cross-normal spread: ink stays inside
+            // the drawn stroke, so the outline cannot grow outward.
             if(variant==0)continue;
-            Verify(std::abs(thin.varianceGain-one.varianceGain)<=1e-3,
+            Verify(std::abs(thin.varianceGain)<=1e-3 && std::abs(one.varianceGain)<=1e-3 &&
+                std::abs(thick.varianceGain)<=1e-3,
                 "native "+std::string(transparent?"premult-":"opaque-")+inputs[variant]+"-"+directions[direction]+
-                ": quarter-pixel and one-pixel authored lines rasterise one width and share one spread");
-            Verify(one.varianceGain<thick.varianceGain*.9,
-                "native "+std::string(transparent?"premult-":"opaque-")+inputs[variant]+"-"+directions[direction]+
-                ": a two-pixel authored line receives more normal blur than a one-pixel line");
+                ": no authored width gains cross-normal spread");
         }
     }
     Case textureCase; textureCase.shape=Shape::Strip; textureCase.width=1;

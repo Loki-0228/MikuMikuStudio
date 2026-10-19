@@ -35,9 +35,17 @@ Adaptation:
   Leaving resolved coverage untouched keeps the outline where the rasteriser
   wrote it, which is the position MSAA and TAA resolve for the same geometry;
   re-filtering it was what moved a strong filter's outline off its place.
-- The hull path keeps its pair-maximum coefficient so all four RGBA channels
-  move together, the coefficient is the same in both directions, and total ink
-  stays conserved. Custom effect edges continue through the RGB Quality path.
+- The hull path carries ink along the stroke and never across it. A neighbour
+  earns weight only when the outline covers that neighbour too, and the
+  along-contour term dominates, so a straight stroke keeps the profile the
+  rasteriser wrote instead of gaining a cross-normal transition. That is what
+  stops the outline growing outward along the whole contour, and it keeps the
+  pair-shared coefficient so all four RGBA channels move together and total
+  ink stays conserved.
+- The pixels beside the stroke keep their rasterised colour. The generic
+  sub-pixel blur would pull stroke colour into uncovered background, which
+  read as an outward spill and thinned the stroke where it is faint. Custom
+  effect edges continue through the RGB Quality path.
 - An optional independent MSAA outline layer has its own width-dependent
   softening pass. Protect that resolved layer from a second FXAA displacement.
 - TAA and SMAA may use the native-outline filter as a line-only prepass;
