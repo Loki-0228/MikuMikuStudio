@@ -1,31 +1,31 @@
 // MAINTENANCE: regression-keep; hidden real-MME display, EMD and material-order checks.
 // Exercise the real mapping dialog without displaying or activating a window.
 #define NOMINMAX
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/animation_curve_host.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/viewport_render_scale.hpp"
-#include "mikudancestudio/shadow_filter.hpp"
-#include "mikudancestudio/perf_timing.hpp"
-#include "mikudancestudio/frame_presentation.hpp"
-#include "mikudancestudio/window_dpi_scope.hpp"
-#include "mikudancestudio/scene_sampling.hpp"
-#include "mikudancestudio/d3d12_native.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/text_encoding.hpp"
-#include "mikudancestudio/ui_language.hpp"
-#include "mikudancestudio/effect_display.hpp"
-#include "mikudancestudio/effect_file_watch.hpp"
-#include "mikudancestudio/effect_api.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/d3dx_effect.hpp"
-#include "mikudancestudio/skinning_backend.hpp"
-#include "mikudancestudio/model_vertex_cache.hpp"
-#include "mikudancestudio/runtime_log.hpp"
-#include "mikudancestudio/graphics_runtime.hpp"
-#include "mikudancestudio/antialias_motion.hpp"
-#include "mikudancestudio/deformed_mesh_capture.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/viewport_render_scale.hpp"
+#include "mikumikustudio/shadow_filter.hpp"
+#include "mikumikustudio/perf_timing.hpp"
+#include "mikumikustudio/frame_presentation.hpp"
+#include "mikumikustudio/window_dpi_scope.hpp"
+#include "mikumikustudio/scene_sampling.hpp"
+#include "mikumikustudio/d3d12_native.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/text_encoding.hpp"
+#include "mikumikustudio/ui_language.hpp"
+#include "mikumikustudio/effect_display.hpp"
+#include "mikumikustudio/effect_file_watch.hpp"
+#include "mikumikustudio/effect_api.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/d3dx_effect.hpp"
+#include "mikumikustudio/skinning_backend.hpp"
+#include "mikumikustudio/model_vertex_cache.hpp"
+#include "mikumikustudio/runtime_log.hpp"
+#include "mikumikustudio/graphics_runtime.hpp"
+#include "mikumikustudio/antialias_motion.hpp"
+#include "mikumikustudio/deformed_mesh_capture.hpp"
 #include "../src/render/antialias_shader.hpp"
 #include "../src/render/outline_multisample.hpp"
 #include <atomic>
@@ -42,11 +42,11 @@
 #include <wrl/client.h>
 #include <set>
 #include <wincodec.h>
-#include "mikudancestudio/image_sequence_export.hpp"
+#include "mikumikustudio/image_sequence_export.hpp"
 #include <cwctype>
 
-using namespace mikudancestudio;
-namespace mikudancestudio { void RegisterCameraState(MMDApp*, int); void RefreshAfterFrameApply(MMDApp*); void LayoutViewportPanels(MMDApp*); int ViewportToolAtPointForTest(MMDApp*); }
+using namespace mikumikustudio;
+namespace mikumikustudio { void RegisterCameraState(MMDApp*, int); void RefreshAfterFrameApply(MMDApp*); void LayoutViewportPanels(MMDApp*); int ViewportToolAtPointForTest(MMDApp*); }
 extern "C" char* ExpGetPmdFilename(int);
 namespace {
 void Check(bool ok, const char* label) {

@@ -1,9 +1,9 @@
-#include "mikudancestudio/transparent_capture.hpp"
-#include "mikudancestudio/shadow_filter.hpp"
-#include "mikudancestudio/native_mesh.hpp"
-#include "mikudancestudio/deformed_mesh_capture.hpp"
-#include "mikudancestudio/perf_timing.hpp"
-#include "mikudancestudio/antialias.hpp"
+#include "mikumikustudio/transparent_capture.hpp"
+#include "mikumikustudio/shadow_filter.hpp"
+#include "mikumikustudio/native_mesh.hpp"
+#include "mikumikustudio/deformed_mesh_capture.hpp"
+#include "mikumikustudio/perf_timing.hpp"
+#include "mikumikustudio/antialias.hpp"
 // ===========================================================================
 // VA 0x00425D20 / 0x00426CD0 / 0x004277E0 - model and shadow render passes
 // ===========================================================================
@@ -20,35 +20,35 @@
 #include <cstdint>
 #include <cstring>
 #include <type_traits>
-#include "mikudancestudio/geometry_workers.hpp"
+#include "mikumikustudio/geometry_workers.hpp"
 
-#include "mikudancestudio/d3dx_effect.hpp"
-#include "mikudancestudio/d3d_object_guard.hpp"
-#include "mikudancestudio/runtime_log.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/model_alpha_pass.hpp"
+#include "mikumikustudio/d3dx_effect.hpp"
+#include "mikumikustudio/d3d_object_guard.hpp"
+#include "mikumikustudio/runtime_log.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/model_alpha_pass.hpp"
 #if !MMD_ORIGINAL_PROFILE
-#include "mikudancestudio/transparent_triangles.hpp"
-#include "mikudancestudio/transparent_geometry.hpp"
-#include "mikudancestudio/transparent_peeling.hpp"
-#include "mikudancestudio/transparent_material_order.hpp"
+#include "mikumikustudio/transparent_triangles.hpp"
+#include "mikumikustudio/transparent_geometry.hpp"
+#include "mikumikustudio/transparent_peeling.hpp"
+#include "mikumikustudio/transparent_material_order.hpp"
 #endif
 #include <limits>
 #include <new>
 #include <numeric>
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 
-#include "mikudancestudio/texture_lookup.hpp"
-#include "mikudancestudio/shared_toon.hpp"
-#include "mikudancestudio/draw_order.hpp"
-#include "mikudancestudio/adaptive_shadow.hpp"
-#include "mikudancestudio/build_profile.hpp"
+#include "mikumikustudio/texture_lookup.hpp"
+#include "mikumikustudio/shared_toon.hpp"
+#include "mikumikustudio/draw_order.hpp"
+#include "mikumikustudio/adaptive_shadow.hpp"
+#include "mikumikustudio/build_profile.hpp"
 #if !MMD_ORIGINAL_PROFILE
-#include "mikudancestudio/native_shadow_projection.hpp"
+#include "mikumikustudio/native_shadow_projection.hpp"
 #endif
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 
 template <typename ResolveModel>
@@ -61,10 +61,10 @@ auto BuildModelDrawOrder(MMDApp* app, ResolveModel resolveModel) {
 
 using Matrix = d3dx::D3DXMATRIXF;
 
-// Porting-era material-state capture under MIKUDANCESTUDIO_VB_DUMP_DIR
-// (CMake option MIKUDANCESTUDIO_DIAG, default OFF); the OFF stubs below
+// Porting-era material-state capture under MIKUMIKUSTUDIO_VB_DUMP_DIR
+// (CMake option MIKUMIKUSTUDIO_DIAG, default OFF); the OFF stubs below
 // keep the call sites valid and inline away to nothing.
-#ifdef MIKUDANCESTUDIO_DIAG
+#ifdef MIKUMIKUSTUDIO_DIAG
 struct MaterialStateCapture {
     FILE* stream = nullptr;
     bool first = true;
@@ -95,16 +95,16 @@ bool BeginMaterialStateCapture() {
 
     char directory[MAX_PATH]{};
     const DWORD length = GetEnvironmentVariableA(
-        "MIKUDANCESTUDIO_VB_DUMP_DIR", directory, MAX_PATH);
+        "MIKUMIKUSTUDIO_VB_DUMP_DIR", directory, MAX_PATH);
     if (length == 0 || length >= MAX_PATH)
         return false;
 
     char stable[2]{};
-    if (GetEnvironmentVariableA("MIKUDANCESTUDIO_AB_STABLE_CAPTURE", stable,
+    if (GetEnvironmentVariableA("MIKUMIKUSTUDIO_AB_STABLE_CAPTURE", stable,
                                 sizeof(stable)) == 1 && stable[0] == '1') {
         char requireLine[2]{};
         const bool refreshed =
-            GetEnvironmentVariableA("MIKUDANCESTUDIO_AB_REQUIRE_LINE", requireLine,
+            GetEnvironmentVariableA("MIKUMIKUSTUDIO_AB_REQUIRE_LINE", requireLine,
                                     sizeof(requireLine)) == 1 &&
             requireLine[0] == '1';
         char gate[MAX_PATH]{};
@@ -469,7 +469,7 @@ bool RestoreModelIndexOrder(MMDApp* app) {
 
 // A D3D9 object handed to a vtable method must be a committed user-mode
 // address whose first qword - the vtable - points into an image's executable
-// code (see include/mikudancestudio/d3d_object_guard.hpp).  A field that was
+// code (see include/mikumikustudio/d3d_object_guard.hpp).  A field that was
 // never written - or was reached through an offset that only holds it on x86 -
 // otherwise reaches the device as a sentinel such as -1 and the fault surfaces
 // inside d3d9.dll, far from the caller that passed it.
@@ -1495,7 +1495,7 @@ bool ProjectAlphaGroup(MMDApp* app, const std::vector<NativeAlphaDraw>& draws,
 // Opt-in stage timing for the native ordered-alpha path.  A plain counter
 // guard keeps QueryPerformanceCounter (and the frequency query) out of ordinary
 // runs: the block below is the only place this file calls either API, and it is
-// reached only while MIKUDANCESTUDIO_TRACE_FILE names a non-empty path.  Every
+// reached only while MIKUMIKUSTUDIO_TRACE_FILE names a non-empty path.  Every
 // stage is timed on its own - the caller reads Now() immediately before the
 // call and adds Elapsed(start) immediately after it - so the totals never
 // subtract one stage's timestamp from another's.  Durations accumulate over all
@@ -1510,7 +1510,7 @@ struct AlphaStageTimer {
     double drawMs = 0.0;
 
     AlphaStageTimer() {
-        const char* path = std::getenv("MIKUDANCESTUDIO_TRACE_FILE");
+        const char* path = std::getenv("MIKUMIKUSTUDIO_TRACE_FILE");
         enabled = path != nullptr && path[0] != '\0';
         if (enabled) QueryPerformanceFrequency(&frequency);
     }
@@ -1854,7 +1854,7 @@ bool CollectAlphaGeometry(MMDApp* app, const std::vector<NativeAlphaDraw>& draws
 // Optional, explicit diagnostic output: projected geometry, never a desktop capture.
 void DumpAlphaGeometry(const std::vector<transparent_geometry::Triangle>& source,
                        const std::vector<transparent_geometry::Triangle>& sorted) {
-    const char* path = std::getenv("MIKUDANCESTUDIO_ALPHA_GEOMETRY_DUMP");
+    const char* path = std::getenv("MIKUMIKUSTUDIO_ALPHA_GEOMETRY_DUMP");
     if (!path || !*path || source.empty()) return;
     thread_local bool written = false;
     if (written) return;
@@ -3010,4 +3010,4 @@ bool RenderShadowMapChecked(MMDApp* app,const float frameMatrix[16]) {
     return restore.Apply()&&rendered;
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

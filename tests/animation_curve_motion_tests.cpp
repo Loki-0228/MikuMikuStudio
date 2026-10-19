@@ -1,7 +1,7 @@
 // MAINTENANCE: unit coverage for the VMD curve transport
 // (src/animation/animation_curve_motion.cpp).  Pure CPU: no GUI, no GPU and no
 // window; the file test only creates a temporary directory.
-#include "mikudancestudio/animation_curve_motion.hpp"
+#include "mikumikustudio/animation_curve_motion.hpp"
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -19,8 +19,8 @@
 #include <utility>
 #include <vector>
 
-namespace cm = mikudancestudio::curve_motion;
-namespace ac = mikudancestudio::animation_curve;
+namespace cm = mikumikustudio::curve_motion;
+namespace ac = mikumikustudio::animation_curve;
 
 namespace {
 
@@ -748,8 +748,8 @@ void TestNativeCameraTimingRoundTrip() {
         auto bytes=Build(file);cm::Motion imported;std::string error;
         Check(cm::Decode(bytes.data(),bytes.size(),cm::Kind::Camera,imported,error),"native camera imports: "+error);
         Check(imported.nativeTiming.size()==8,"all native camera lanes retain original timing");
-        std::vector<mikudancestudio::curve_editor::Channel> channels;
-        for(const auto& named:imported.tracks){mikudancestudio::curve_editor::Channel channel;channel.id=named.id;channels.push_back(std::move(channel));}
+        std::vector<mikumikustudio::curve_editor::Channel> channels;
+        for(const auto& named:imported.tracks){mikumikustudio::curve_editor::Channel channel;channel.id=named.id;channels.push_back(std::move(channel));}
         Check(cm::RestoreChannels(imported,channels,error),"restore native camera editor channels: "+error);
         auto captured=cm::CaptureChannels(cm::Kind::Camera,channels);
         Check(cm::Encode(captured,bytes,error),"native timing VMD encodes: "+error);

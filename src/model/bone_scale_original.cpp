@@ -1,13 +1,13 @@
-#include "mikudancestudio/build_profile.hpp"
-#include "mikudancestudio/bone_scale.hpp"
-#include "mikudancestudio/bone_scale_gizmo.hpp"
-#include "mikudancestudio/model.hpp"
+#include "mikumikustudio/build_profile.hpp"
+#include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/bone_scale_gizmo.hpp"
+#include "mikumikustudio/model.hpp"
 #include <cmath>
 #include <cstring>
 
 static_assert(MMD_ORIGINAL_PROFILE, "Original profile provider must not enter the full build");
 
-namespace mikudancestudio::bone_scale {
+namespace mikumikustudio::bone_scale {
 // Keep the legacy records and their undo rings untouched. This provider owns
 // no model, clipboard, registration or affine-physics side tables.
 bool Identity(const Matrix& value) { return value == Matrix{}; }

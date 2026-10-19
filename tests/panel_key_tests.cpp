@@ -44,13 +44,13 @@
 #define NOMINMAX
 #include <Windows.h>
 
-#include "mikudancestudio/keyboard_input.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/bone_parent_coordinates.hpp"
-#include "mikudancestudio/bone_scale.hpp"
+#include "mikumikustudio/keyboard_input.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/bone_parent_coordinates.hpp"
+#include "mikumikustudio/bone_scale.hpp"
 
 static void Check(bool condition, const char* description) {
     if (!condition) {
@@ -61,7 +61,7 @@ static void Check(bool condition, const char* description) {
 
 // CommandDispatch family entry point for the bone-panel controls (the same
 // non-exported declaration tests/keyboard_input_tests.cpp uses).
-namespace mikudancestudio {
+namespace mikumikustudio {
 void CmdControl450(MMDApp*, HWND, std::uint16_t, std::uint16_t);
 void CmdControl500(MMDApp*, HWND, std::uint16_t, std::uint16_t);
 void DispatchSeparateWindowCommand(MMDApp*, unsigned short);
@@ -69,13 +69,13 @@ void DispatchSeparateWindowCommand(MMDApp*, unsigned short);
 
 namespace {
 
-using mikudancestudio::MMDApp;
-using mikudancestudio::mdl::BoneKey;
-using mikudancestudio::mdl::BoneRecord;
-using mikudancestudio::mdl::CameraKey;
-using mikudancestudio::mdl::kBoneKeyCapacity;
-using mikudancestudio::mdl::Mdl;
-using mikudancestudio::mdl::ModelRecord;
+using mikumikustudio::MMDApp;
+using mikumikustudio::mdl::BoneKey;
+using mikumikustudio::mdl::BoneRecord;
+using mikumikustudio::mdl::CameraKey;
+using mikumikustudio::mdl::kBoneKeyCapacity;
+using mikumikustudio::mdl::Mdl;
+using mikumikustudio::mdl::ModelRecord;
 
 // A model with `bones` bone records, per-bone selection/flag arrays and a bone
 // key pool.  Bone 0 is the root (parent -1); every other bone hangs off it so
@@ -96,7 +96,7 @@ struct Fixture {
         for (int i = 0; i < boneCount; ++i) {
             bones[static_cast<std::size_t>(i)].parent = i == 0 ? -1 : 0;
             bones[static_cast<std::size_t>(i)].type =
-                mikudancestudio::mdl::BoneType::RotateMove;
+                mikumikustudio::mdl::BoneType::RotateMove;
         }
         record->boneTable = bones.data();
         record->boneCount = static_cast<std::uint32_t>(boneCount);
@@ -196,16 +196,16 @@ void FovDataFlow() {
     app->state.cameraPerspective = 0;
 
     // The slider body writes the state and reports a change only once.
-    Check(mikudancestudio::ApplyCameraFovSlider(app.get(), 30) == false,
+    Check(mikumikustudio::ApplyCameraFovSlider(app.get(), 30) == false,
           "FOV slider: same value is not a change");
-    Check(mikudancestudio::ApplyCameraFovSlider(app.get(), 72) == true,
+    Check(mikumikustudio::ApplyCameraFovSlider(app.get(), 72) == true,
           "FOV slider: new value must be applied");
     Check(app->CameraFov() == 72.0f, "FOV slider: value must reach cameraFov");
 
     // The frame path derives the perspective projection from that state.
     float projection[16]{};
     const float aspect = 16.0f / 9.0f;
-    Check(mikudancestudio::BuildCameraPerspectiveProjection(app.get(), aspect,
+    Check(mikumikustudio::BuildCameraPerspectiveProjection(app.get(), aspect,
                                                             projection),
           "frame projection: perspective matrix must be buildable");
     const double fovRadians = 72.0 * 0.01745329238474369;
@@ -221,29 +221,29 @@ void FovDataFlow() {
     // perspective matrix differs per FOV while the ortho matrix does not.
     float other[16]{};
     app->CameraFov() = 110.0f;
-    Check(mikudancestudio::BuildCameraPerspectiveProjection(app.get(), aspect,
+    Check(mikumikustudio::BuildCameraPerspectiveProjection(app.get(), aspect,
                                                             other),
           "frame projection: rebuild after a slider move");
     Check(other[5] < projection[5],
           "frame projection: a wider FOV must narrow the vertical scale");
 
-    Check(mikudancestudio::CameraFrameProjectionFor(app.get()) ==
-              mikudancestudio::CameraFrameProjection::Perspective,
+    Check(mikumikustudio::CameraFrameProjectionFor(app.get()) ==
+              mikumikustudio::CameraFrameProjection::Perspective,
           "frame projection: perspective while cameraPerspective is clear");
     app->state.cameraPerspective = 1;
-    Check(mikudancestudio::CameraFrameProjectionFor(app.get()) ==
-              mikudancestudio::CameraFrameProjection::Orthographic,
+    Check(mikumikustudio::CameraFrameProjectionFor(app.get()) ==
+              mikumikustudio::CameraFrameProjection::Orthographic,
           "frame projection: the パース byte selects the ortho override");
     app->state.cameraPerspective = 0;
 
     // No device / no renderer must stay harmless (the frame path is called
     // before any device exists in a headless run).
-    Check(mikudancestudio::ApplyFrameCameraProjection(app.get()) ==
-              mikudancestudio::CameraFrameProjection::Perspective,
+    Check(mikumikustudio::ApplyFrameCameraProjection(app.get()) ==
+              mikumikustudio::CameraFrameProjection::Perspective,
           "frame projection: installs without a device");
-    Check(mikudancestudio::ApplyCameraFovSlider(nullptr, 10) == false,
+    Check(mikumikustudio::ApplyCameraFovSlider(nullptr, 10) == false,
           "FOV slider: null app is rejected");
-    Check(!mikudancestudio::BuildCameraPerspectiveProjection(app.get(), 0.0f,
+    Check(!mikumikustudio::BuildCameraPerspectiveProjection(app.get(), 0.0f,
                                                              projection),
           "frame projection: a zero aspect ratio is rejected");
     std::puts("PASS defect 5: FOV slider -> state -> per-frame projection");
@@ -257,26 +257,26 @@ void DeleteShortcutPreconditions() {
     std::memset(&app->state, 0, sizeof(app->state));
     app->state.deleteKeyState = 1;  // the polled press edge
 
-    Check(mikudancestudio::DeleteShortcutAllowed(app.get(), true, false),
+    Check(mikumikustudio::DeleteShortcutAllowed(app.get(), true, false),
           "Del gate: pressed with an accepting focus must fire");
     // The reported failure: the focus sat on a panel button, not on the main
     // window.  The window half of the rule now accepts it (the button belongs
     // to the app window tree), the pure gate must not add a main-window test.
-    Check(mikudancestudio::DeleteShortcutAllowed(app.get(), true, false),
+    Check(mikumikustudio::DeleteShortcutAllowed(app.get(), true, false),
           "Del gate: a panel-button focus must not kill the key");
-    Check(!mikudancestudio::DeleteShortcutAllowed(app.get(), false, false),
+    Check(!mikumikustudio::DeleteShortcutAllowed(app.get(), false, false),
           "Del gate: a foreign/text-entry focus keeps the key");
-    Check(!mikudancestudio::DeleteShortcutAllowed(app.get(), true, true),
+    Check(!mikumikustudio::DeleteShortcutAllowed(app.get(), true, true),
           "Del gate: the five frame edits keep the key");
     app->state.deleteKeyState = 0;
-    Check(!mikudancestudio::DeleteShortcutAllowed(app.get(), true, false),
+    Check(!mikumikustudio::DeleteShortcutAllowed(app.get(), true, false),
           "Del gate: no press edge is a no-op");
     app->state.deleteKeyState = 1;
     app->PlaybackActive() = 1;
-    Check(!mikudancestudio::DeleteShortcutAllowed(app.get(), true, false),
+    Check(!mikumikustudio::DeleteShortcutAllowed(app.get(), true, false),
           "Del gate: playback suppresses the key");
     app->PlaybackActive() = 0;
-    Check(!mikudancestudio::DeleteShortcutAllowed(nullptr, true, false),
+    Check(!mikumikustudio::DeleteShortcutAllowed(nullptr, true, false),
           "Del gate: null app is rejected");
     std::puts("PASS defect 6a: Delete precondition is a pure predicate");
 }
@@ -292,7 +292,7 @@ void SelectedBoneKeyRemoval() {
           "bone key fixture allocated");
 
     const int marked =
-        mikudancestudio::MarkSelectedBoneKeysAtFrame(fixture.bytes, 20);
+        mikumikustudio::MarkSelectedBoneKeysAtFrame(fixture.bytes, 20);
     Check(marked == 1, "Del: exactly the selected bone's key is marked");
     Check(fixture.keys[static_cast<std::size_t>(selectedKey)].allocated != 0,
           "Del: the selected bone's current-frame key is deletable");
@@ -306,9 +306,9 @@ void SelectedBoneKeyRemoval() {
     Fixture empty(3);
     empty.selection[1] = 1;
     empty.AddKey(1, 10);
-    Check(mikudancestudio::MarkSelectedBoneKeysAtFrame(empty.bytes, 20) == 0,
+    Check(mikumikustudio::MarkSelectedBoneKeysAtFrame(empty.bytes, 20) == 0,
           "Del: a frame without keys is a no-op");
-    Check(mikudancestudio::MarkSelectedBoneKeysAtFrame(nullptr, 20) == 0,
+    Check(mikumikustudio::MarkSelectedBoneKeysAtFrame(nullptr, 20) == 0,
           "Del: a missing model is a no-op");
     std::puts("PASS defect 6b: Del removes the selected bones' current keys");
 }
@@ -333,7 +333,7 @@ void InitializeSelectionSet() {
     std::memset(&app->state, 0, sizeof(app->state));
     app->SelectedModelSlot() = 0;
     app->ModelSlot(0) = fixture.bytes;
-    mikudancestudio::CmdControl450(app.get(), nullptr, 495, 0);
+    mikumikustudio::CmdControl450(app.get(), nullptr, 495, 0);
     Check(fixture.bones[0].trans[1] == 0.0f,
           "初期化: bone 0 translation reset (root seed)");
     Check(fixture.bones[0].rotQuat[3] == 1.0f &&
@@ -358,7 +358,7 @@ void InitializeSelectionSet() {
     ModelRecord bare{};
     bare.boneCount = 4;
     app->ModelSlot(0) = reinterpret_cast<unsigned char*>(&bare);
-    mikudancestudio::CmdControl450(app.get(), nullptr, 495, 0);
+    mikumikustudio::CmdControl450(app.get(), nullptr, 495, 0);
     std::puts("PASS defect 6c: 初期化 resets exactly the selected set");
 }
 
@@ -373,9 +373,9 @@ LRESULT CALLBACK ResetPanelProc(HWND window, UINT message, WPARAM wp, LPARAM lp)
     if (message == WM_COMMAND && context && LOWORD(wp) >= 537 &&
         LOWORD(wp) <= 539 && HIWORD(wp) == BN_CLICKED) {
         if (context->separate)
-            mikudancestudio::DispatchSeparateWindowCommand(context->app, LOWORD(wp));
+            mikumikustudio::DispatchSeparateWindowCommand(context->app, LOWORD(wp));
         else
-            mikudancestudio::CmdControl500(context->app, window, LOWORD(wp), HIWORD(wp));
+            mikumikustudio::CmdControl500(context->app, window, LOWORD(wp), HIWORD(wp));
         return 0;
     }
     return DefWindowProcW(window, message, wp, lp);
@@ -385,7 +385,7 @@ LRESULT CALLBACK ResetPanelProc(HWND window, UINT message, WPARAM wp, LPARAM lp)
 // render device. Bind coordinates are intentionally nonzero: reset means the
 // bind pose, not moving the child bone onto the parent's origin.
 void BoneTranslationReset() {
-    using namespace mikudancestudio;
+    using namespace mikumikustudio;
     for (bool separate : {false, true})
     for (bool pmx : {false, true})
     for (auto type : {mdl::BoneType::RotateMove, mdl::BoneType::Move,
@@ -545,7 +545,7 @@ void FrameLineInsertDelete() {
     // The frame-line commands end in PanelPaint, which reads the render
     // wrapper's list dimensions: a zero-initialised wrapper keeps that path
     // headless (no device, no window, all-zero dimensions).
-    auto renderer = std::make_unique<mikudancestudio::D3DRenderer>();
+    auto renderer = std::make_unique<mikumikustudio::D3DRenderer>();
     std::memset(renderer.get(), 0, sizeof(*renderer));
 
     auto app = std::make_unique<MMDApp>();
@@ -560,7 +560,7 @@ void FrameLineInsertDelete() {
     // exported half of the command (the command's tail needs a seek + panel
     // paint, i.e. a device and a window).
     const int moved =
-        mikudancestudio::ShiftBoneKeysForFrameLineInsert(app.get(), 30);
+        mikumikustudio::ShiftBoneKeysForFrameLineInsert(app.get(), 30);
     Check(moved == 1, "I: the key on the current frame is moved");
     Check(fixture.keys[static_cast<std::size_t>(key)].frame == 31,
           "I: the key lands on cur + 1");
@@ -570,7 +570,7 @@ void FrameLineInsertDelete() {
 
     // K on the frame that now carries the key: the record is unlinked, cleared
     // and removed from the frame line.
-    const int removed = mikudancestudio::ShiftBoneKeysForFrameLineDelete(
+    const int removed = mikumikustudio::ShiftBoneKeysForFrameLineDelete(
         app.get(), 31, /*autoInterp=*/false);
     Check(removed == 1, "K: the key on the current frame is removed");
     Check(!fixture.HasKeyAt(31), "K: no key is left on that frame line");
@@ -579,17 +579,17 @@ void FrameLineInsertDelete() {
     Check(fixture.ChainLength(1) == 0, "K: the bone track is unlinked");
 
     // A frame line with no key is a no-op for both commands.
-    Check(mikudancestudio::ShiftBoneKeysForFrameLineDelete(app.get(), 31,
+    Check(mikumikustudio::ShiftBoneKeysForFrameLineDelete(app.get(), 31,
                                                            false) == 0,
           "K: no key at the frame is a no-op");
-    Check(mikudancestudio::ShiftBoneKeysForFrameLineInsert(app.get(), 31) == 0,
+    Check(mikumikustudio::ShiftBoneKeysForFrameLineInsert(app.get(), 31) == 0,
           "I: no key at or after the frame is a no-op");
 
     // K on an empty line still pulls the keys above it down by one frame (that
     // is what "delete the frame line" means) and reports the change.
     const int shifted = fixture.AddKey(2, 12);
     Check(shifted >= 0, "frame-line fixture third key");
-    Check(mikudancestudio::ShiftBoneKeysForFrameLineDelete(app.get(), 5,
+    Check(mikumikustudio::ShiftBoneKeysForFrameLineDelete(app.get(), 5,
                                                            false) == 1,
           "K: pulls the keys above the frame line down by one");
     Check(fixture.keys[static_cast<std::size_t>(shifted)].frame == 11,
@@ -598,9 +598,9 @@ void FrameLineInsertDelete() {
     // The commands are frame-line operations: they must not require a selected
     // bone or a selected frame.
     fixture.selection.assign(3, 0);
-    Check(mikudancestudio::ShiftBoneKeysForFrameLineInsert(app.get(), 11) == 1,
+    Check(mikumikustudio::ShiftBoneKeysForFrameLineInsert(app.get(), 11) == 1,
           "I: works without any bone selection");
-    Check(mikudancestudio::ShiftBoneKeysForFrameLineDelete(app.get(), 12,
+    Check(mikumikustudio::ShiftBoneKeysForFrameLineDelete(app.get(), 12,
                                                            false) == 1,
           "K: works without any bone selection");
     Check(fixture.KeyCount() == 0, "I/K leave no key behind");

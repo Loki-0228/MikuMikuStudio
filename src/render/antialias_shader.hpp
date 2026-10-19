@@ -1,5 +1,5 @@
 #pragma once
-namespace mikudancestudio::antialias {
+namespace mikumikustudio::antialias {
 inline constexpr char kShader[] = R"hlsl(
 sampler2D scene : register(s0);
 sampler2D history : register(s1);

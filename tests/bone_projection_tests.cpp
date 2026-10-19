@@ -1,7 +1,7 @@
 // MAINTENANCE: regression-keep; purpose and cleanup conditions in tests/README.md.
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include "mikudancestudio/bone_projection.hpp"
+#include "mikumikustudio/bone_projection.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -14,7 +14,7 @@ void Check(bool value, const char* message) {
 }
 
 int main() {
-    using namespace mikudancestudio;
+    using namespace mikumikustudio;
     // Place one bone immediately before inaccessible memory. The former
     // bone + 308 / bone + 464 reads land in the reserved guard region.
     SYSTEM_INFO info{};

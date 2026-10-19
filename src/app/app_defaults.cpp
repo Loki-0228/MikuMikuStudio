@@ -9,10 +9,10 @@
 #include <cstdio>
 #include <cstring>
 
-#include "mikudancestudio/globals.hpp"
-#include "mikudancestudio/mmd_app.hpp"
+#include "mikumikustudio/globals.hpp"
+#include "mikumikustudio/mmd_app.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 void MMDApp::InitDefaults() {
     auto& s = *this;
@@ -258,4 +258,4 @@ void MMDApp::InitDefaults() {
     state.a06B6 = 0;
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

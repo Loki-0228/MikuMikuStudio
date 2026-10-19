@@ -26,10 +26,10 @@
 #include <cstdint>
 #include <cstring>
 
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/ui_language.hpp"
-namespace mikudancestudio {
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/ui_language.hpp"
+namespace mikumikustudio {
 
 void CreateUiFont(MMDApp* app, HWND hwnd) {
     auto& s = *app;
@@ -92,4 +92,4 @@ void ApplyUiFontToControl(MMDApp* app, HWND control, int id) {
         }
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

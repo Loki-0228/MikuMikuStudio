@@ -48,7 +48,7 @@ technique Main < string MMDPass = "object_ss"; > {
 ''', encoding='ascii')
     env = os.environ.copy()
     env.update(LOCALAPPDATA=str(root/'Local'), APPDATA=str(root/'Roaming'),
-               MIKUDANCESTUDIO_AUTOSAVE_CONFIG=str(root/'autosave.ini'))
+               MIKUMIKUSTUDIO_AUTOSAVE_CONFIG=str(root/'autosave.ini'))
     with (root / 'result.log').open('wb') as log:
         result = subprocess.run([str(host), str(model), str(root)], cwd=root, env=env,
             stdout=log, stderr=subprocess.STDOUT, creationflags=subprocess.CREATE_NO_WINDOW, timeout=90)

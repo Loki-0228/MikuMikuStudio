@@ -2,7 +2,7 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
-#include "mikudancestudio/vertex_capture.hpp"
+#include "mikumikustudio/vertex_capture.hpp"
 #include <wrl/client.h>
 #include <algorithm>
 #include <array>
@@ -12,7 +12,7 @@
 #include <iterator>
 #include <map>
 
-namespace mikudancestudio::antialias::motion::detail {
+namespace mikumikustudio::antialias::motion::detail {
 // A cache is valid for one scene frame only. Contents, rather than buffer
 // addresses alone, are compared so an effect rewriting a stream between its
 // material draws cannot reuse an earlier vertex-shader result.

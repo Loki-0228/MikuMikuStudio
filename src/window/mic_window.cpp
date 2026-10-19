@@ -1,4 +1,4 @@
-#include "mikudancestudio/ui_translation.hpp"
+#include "mikumikustudio/ui_translation.hpp"
 // ===========================================================================
 // VA 0x00461E00 / 0x00461FA0 - separate ("Mic") window create / destroy pair
 // ===========================================================================
@@ -11,16 +11,16 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
-#include "mikudancestudio/build_profile.hpp"
-#include "mikudancestudio/frame_presentation.hpp"
+#include "mikumikustudio/build_profile.hpp"
+#include "mikumikustudio/frame_presentation.hpp"
 
 #include <cstdint>
 #include <cstdlib>
 
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 // WM_COMMAND child dispatch (0x004620A0) - full port in wndproc_stubs.cpp.
 void DispatchSeparateWindowCommand(MMDApp* app, unsigned short id);  // VA 0x004620A0, was Sub4620A0
@@ -253,4 +253,4 @@ void SaveFlagSubsystem(MMDApp* app) {
     RelayoutSidebarControls(app);                                                // 0x462090
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

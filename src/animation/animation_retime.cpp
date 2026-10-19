@@ -1,4 +1,4 @@
-// MAINTENANCE: implementation of include/mikudancestudio/animation_retime.hpp.
+// MAINTENANCE: implementation of include/mikumikustudio/animation_retime.hpp.
 // Pure CPU.  It links against the curve core (animation_curve.cpp) only, never
 // against a renderer, the app state or the UI, so the host, the editor and the
 // background tests can all use it.
@@ -18,7 +18,7 @@
 //      shifted by the same delta, so the tangent at the joint is not rotated.
 //   3. Nothing is repaired silently.  If the result cannot be expressed inside
 //      the core's key limits, the whole call fails and the output is untouched.
-#include "mikudancestudio/animation_retime.hpp"
+#include "mikumikustudio/animation_retime.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -27,7 +27,7 @@
 #include <string>
 #include <vector>
 
-namespace mikudancestudio::animation_retime {
+namespace mikumikustudio::animation_retime {
 namespace {
 
 using animation_curve::Interpolation;
@@ -752,4 +752,4 @@ bool Retime(const Track &input, const Rates &rates, const Options &options, Trac
     return true;
 }
 
-}  // namespace mikudancestudio::animation_retime
+}  // namespace mikumikustudio::animation_retime

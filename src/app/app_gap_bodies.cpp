@@ -1,4 +1,4 @@
-#include "mikudancestudio/display_capacity.hpp"
+#include "mikumikustudio/display_capacity.hpp"
 // ===========================================================================
 // MikuMikuStudio - app/render gap-fill bodies (11 original functions, one file)
 // ===========================================================================
@@ -37,12 +37,12 @@
 #include <cstdint>
 #include <cstdio>
 
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/panel_controls.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/panel_controls.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 // Already-ported callees (real bodies; PostViewRefresh is declared in
 // ported_funcs.hpp, RefreshAfterFrameApply lives in
@@ -516,14 +516,14 @@ void JumpNextKeyframe(MMDApp* app) {  // 0x441070
             best = f;
     }
     // Selected facial display rows map to their morph-key track heads.
-    if (mikudancestudio::mdl::FacialFrameCount(*mikudancestudio::mdl::Mdl(model)) != 0) {                                    // 0x441300
-        int count = mikudancestudio::mdl::FacialFrameCount(*mikudancestudio::mdl::Mdl(model));
+    if (mikumikustudio::mdl::FacialFrameCount(*mikumikustudio::mdl::Mdl(model)) != 0) {                                    // 0x441300
+        int count = mikumikustudio::mdl::FacialFrameCount(*mikumikustudio::mdl::Mdl(model));
         mdl::MorphKey* base = mdl::MorphKeys(model);
         const auto* rec = mdl::DisplayFrames(model);
         do {                                                        // 0x441396
             if (rec->selected != 0) {                                      // 0x441333
                 std::uint32_t node =
-                    mikudancestudio::mdl::FrameTargetIndex(*rec);
+                    mikumikustudio::mdl::FrameTargetIndex(*rec);
                 if (base[node].frame <= cur) {
                     for (;;) {                                      // 0x441374
                         const std::uint32_t next = base[node].next;
@@ -545,11 +545,11 @@ void JumpNextKeyframe(MMDApp* app) {  // 0x441070
     // *(model+11668), node 60 bytes)
     {
         const int count =
-            static_cast<int>(mikudancestudio::mdl::Mdl(model)->boneCount);   // 0x4413a0
+            static_cast<int>(mikumikustudio::mdl::Mdl(model)->boneCount);   // 0x4413a0
         if (count > 0) {
             mdl::BoneKey* base = mdl::BoneKeys(model);
             const unsigned char* flags =
-                mikudancestudio::mdl::Mdl(model)->boneSelection;
+                mikumikustudio::mdl::Mdl(model)->boneSelection;
             for (int k = 0; k < count; ++k) {
                 if (flags[k] != 0) {                                // 0x4413dc
                     std::uint32_t node = k;
@@ -773,14 +773,14 @@ void JumpPrevKeyframe(MMDApp* app) {  // 0x4414C0
         }
     }
     // morph tracks @model+9956 (gate count byte @model+11692)
-    if (mikudancestudio::mdl::FacialFrameCount(*mikudancestudio::mdl::Mdl(model)) != 0) {                                    // 0x441858
-        int count = mikudancestudio::mdl::FacialFrameCount(*mikudancestudio::mdl::Mdl(model));
+    if (mikumikustudio::mdl::FacialFrameCount(*mikumikustudio::mdl::Mdl(model)) != 0) {                                    // 0x441858
+        int count = mikumikustudio::mdl::FacialFrameCount(*mikumikustudio::mdl::Mdl(model));
         mdl::MorphKey* base = mdl::MorphKeys(model);
         const auto* rec = mdl::DisplayFrames(model);
         do {                                                        // 0x441946
             if (rec->selected != 0) {                                      // 0x441890
                 std::uint32_t node =
-                    mikudancestudio::mdl::FrameTargetIndex(*rec);
+                    mikumikustudio::mdl::FrameTargetIndex(*rec);
                 if (base[node].frame < cur) {
                     for (;;) {                                      // 0x4418d5
                         const std::uint32_t next = base[node].next;
@@ -807,11 +807,11 @@ void JumpPrevKeyframe(MMDApp* app) {  // 0x4414C0
     // key tree @model+9952 (count dword @model+11652, node 60 bytes)
     {
         const int count =
-            static_cast<int>(mikudancestudio::mdl::Mdl(model)->boneCount);   // 0x441954
+            static_cast<int>(mikumikustudio::mdl::Mdl(model)->boneCount);   // 0x441954
         if (count > 0) {
             mdl::BoneKey* base = mdl::BoneKeys(model);
             const unsigned char* flags =
-                mikudancestudio::mdl::Mdl(model)->boneSelection;
+                mikumikustudio::mdl::Mdl(model)->boneSelection;
             for (int k = 0; k < count; ++k) {
                 if (flags[k] != 0) {                                // 0x441994
                     std::uint32_t node = k;
@@ -848,4 +848,4 @@ void JumpPrevKeyframe(MMDApp* app) {  // 0x4414C0
     PostViewRefresh(app);                                           // 0x441ab3
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

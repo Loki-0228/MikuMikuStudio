@@ -1,7 +1,7 @@
-#include "mikudancestudio/default_effect.hpp"
-#include "mikudancestudio/d3dx_effect.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/runtime_log.hpp"
+#include "mikumikustudio/default_effect.hpp"
+#include "mikumikustudio/d3dx_effect.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/runtime_log.hpp"
 #include <atomic>
 #include <cstring>
 #include <memory>
@@ -10,7 +10,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 using CreateCompiler = HRESULT(WINAPI*)(LPCVOID, UINT, const void*, const void*,
                                        DWORD, void**, void**);

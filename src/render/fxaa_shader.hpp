@@ -1,5 +1,5 @@
 #pragma once
-namespace mikudancestudio::antialias {
+namespace mikumikustudio::antialias {
 // One spatial resolve for native, material and MME edges. Coverage alpha stays
 // independent of RGB luminance, including transparent image/video exports.
 inline constexpr char kFxaaShader[] =

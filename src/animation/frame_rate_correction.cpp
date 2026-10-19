@@ -1,23 +1,23 @@
-#include "mikudancestudio/frame_limits.hpp"
+#include "mikumikustudio/frame_limits.hpp"
 #define NOMINMAX
-#include "mikudancestudio/frame_rate_correction.hpp"
-#include "mikudancestudio/alembic_export.hpp"
-#include "mikudancestudio/animation_curve_editor.hpp"
-#include "mikudancestudio/animation_retime.hpp"
-#include "mikudancestudio/bake_ui_lock.hpp"
-#include "mikudancestudio/mesh_bake_cache.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/native_frame_retime.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/text_encoding.hpp"
+#include "mikumikustudio/frame_rate_correction.hpp"
+#include "mikumikustudio/alembic_export.hpp"
+#include "mikumikustudio/animation_curve_editor.hpp"
+#include "mikumikustudio/animation_retime.hpp"
+#include "mikumikustudio/bake_ui_lock.hpp"
+#include "mikumikustudio/mesh_bake_cache.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/native_frame_retime.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/text_encoding.hpp"
 
 #include <Windows.h>
 #include <cmath>
 #include <exception>
 #include <utility>
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 void RefreshAfterFrameApply(MMDApp*);
 namespace frame_rate_correction {
 namespace {
@@ -49,7 +49,7 @@ bool Same(const TimeState& a, const TimeState& b) {
 }
 bool MapTime(const TimeState& input, const Rates& rates, TimeState& output, std::string& error) {
     const animation_retime::Rates r{rates.originalFPS, rates.currentFPS};
-    constexpr int maximum = mikudancestudio::frame_limits::maximum;
+    constexpr int maximum = mikumikustudio::frame_limits::maximum;
     if (!animation_retime::MapFrame(input.frame, r, maximum, output.frame, error) ||
         !animation_retime::MapFrame(input.timeline, r, maximum, output.timeline, error)) return false;
     auto seconds = [&](double value, double& result) {

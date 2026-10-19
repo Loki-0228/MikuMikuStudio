@@ -1,10 +1,10 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
-#include "mikudancestudio/graphics_runtime.hpp"
+#include "mikumikustudio/graphics_runtime.hpp"
 #include <string>
 
-namespace mikudancestudio::graphics_runtime {
+namespace mikumikustudio::graphics_runtime {
 namespace {
 struct Module {
     HMODULE handle = nullptr;

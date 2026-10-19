@@ -40,16 +40,16 @@
 #include <share.h>
 #include <sys/stat.h>
 
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/d3d_wrapper.hpp"
-#include "mikudancestudio/model_alpha_pass.hpp"
-#include "mikudancestudio/path_workspace.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/text_encoding.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/d3d_wrapper.hpp"
+#include "mikumikustudio/model_alpha_pass.hpp"
+#include "mikumikustudio/path_workspace.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/text_encoding.hpp"
 
-#include "mikudancestudio/texture_lookup.hpp"
+#include "mikumikustudio/texture_lookup.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 
 // minimal D3DX constants/struct for the dynamic loader (no SDK headers)
@@ -288,4 +288,4 @@ int LoadTextureShared(unsigned char* sub, wchar_t* path) {     // 0x407490
     return 1;
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

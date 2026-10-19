@@ -1,5 +1,5 @@
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/bone_curve.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/bone_curve.hpp"
 // ===========================================================================
 // Misc dialog bodies: frame-control apply, reorder fill, accessory-edit init, physics ON/OFF apply
 // ===========================================================================
@@ -21,7 +21,7 @@
 // =========================================================================//
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include "mikudancestudio/bone_scale.hpp"
+#include "mikumikustudio/bone_scale.hpp"
 #include <Windows.h>
 #include <commctrl.h>
 #include <commdlg.h>
@@ -38,15 +38,15 @@
 #include <new>
 #include <unordered_set>
 
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/global_key_layout.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/panel_controls.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/global_key_layout.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/panel_controls.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 // ---- interpolation-curve panel helpers ------------------------------------
 // The two GDI helpers are twins of the ones ported in
@@ -876,4 +876,4 @@ void ApplyPhysicsOnOff(int on) {  // was Sub4403C0, VA 0x004403C0
               app->state.playbackPhysicsMode);  // 0x4B4260 (x64 0x4EBD90)
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

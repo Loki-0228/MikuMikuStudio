@@ -68,7 +68,7 @@ def main():
             runtime = Path(run['runtime'])
             env = os.environ.copy()
             env['LOCALAPPDATA'] = env['APPDATA'] = str(runtime / 'appdata')
-            run['environment'] = {k: v for k, v in env.items() if k.startswith(('OMP_', 'MIKUDANCESTUDIO_', 'MMS_', 'MMN_'))}
+            run['environment'] = {k: v for k, v in env.items() if k.startswith(('OMP_', 'MIKUMIKUSTUDIO_', 'MMS_', 'MMN_'))}
             try:
                 with (args.output / (run['name'] + '.log')).open('w', encoding='utf-8') as stream:
                     run['returncode'] = limited_process.run(run['command'], runtime, env, stream, 900,

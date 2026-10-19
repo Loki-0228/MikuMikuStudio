@@ -5,7 +5,7 @@
 #include <cstdlib>
 #include <cwchar>
 
-#include "mikudancestudio/geometry_workers.hpp"
+#include "mikumikustudio/geometry_workers.hpp"
 
 int wmain(int argc, wchar_t** argv) {
     if (argc != 3) return 1;
@@ -22,7 +22,7 @@ int wmain(int argc, wchar_t** argv) {
 
     // This must be the first OpenMP access: checking max threads before it
     // would initialize VCOMP with the old wait policy.
-    const int workers = mikudancestudio::GeometryWorkerCount();
+    const int workers = mikumikustudio::GeometryWorkerCount();
 #ifdef _OPENMP
     const int expected = requested < 8 ? requested : 8;
     if (workers != expected) return 4;
@@ -48,7 +48,7 @@ int wmain(int argc, wchar_t** argv) {
             if (values[i] != frame * i) return 7;
         Sleep(16);
     }
-    if (mikudancestudio::GeometryWorkerCount() != expected) return 8;
+    if (mikumikustudio::GeometryWorkerCount() != expected) return 8;
     std::printf("policy=%ls workers=%d repeated_work=ok\n", policy, workers);
 #else
     if (workers != 1) return 9;

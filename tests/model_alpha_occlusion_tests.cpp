@@ -59,18 +59,18 @@
 #include <memory>
 #include <vector>
 
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/d3dx_effect.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/model_alpha_pass.hpp"
-#include "mikudancestudio/texture_lookup.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/d3dx_effect.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/model_alpha_pass.hpp"
+#include "mikumikustudio/texture_lookup.hpp"
 #if !MMD_ORIGINAL_PROFILE
-#include "mikudancestudio/transparent_geometry.hpp"
+#include "mikumikustudio/transparent_geometry.hpp"
 #endif
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 
 namespace {
 
@@ -2126,7 +2126,7 @@ int main(int argc, char** argv) {
         // alpha. The former shadow-alpha experiment was withdrawn; material
         // caster gates live above this shader and are not exercised here.
         if (resource != 0) {
-            using namespace mikudancestudio::d3dx;
+            using namespace mikumikustudio::d3dx;
             for (const float depthShift : {0.0f, 0.125f}) {
                 D3DMATRIX lightProjection = identity;
                 lightProjection._43 = depthShift;

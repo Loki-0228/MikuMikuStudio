@@ -26,7 +26,7 @@
 #include <Windows.h>
 #include <CommCtrl.h>
 
-#include "mikudancestudio/animation_curve_editor.hpp"
+#include "mikumikustudio/animation_curve_editor.hpp"
 
 #include <cmath>
 #include <cstdio>
@@ -36,8 +36,8 @@
 #include <string>
 #include <vector>
 
-namespace ce = mikudancestudio::curve_editor;
-namespace ac = mikudancestudio::animation_curve;
+namespace ce = mikumikustudio::curve_editor;
+namespace ac = mikumikustudio::animation_curve;
 
 namespace {
 

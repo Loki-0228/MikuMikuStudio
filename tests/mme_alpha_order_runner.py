@@ -28,10 +28,10 @@ def main():
         model = directory / 'alpha-order.pmx'
         model.write_bytes(fixture(alpha_order=True))
         env = {key: value for key, value in os.environ.items()
-               if not key.startswith(('MIKUDANCESTUDIO_', 'MMS_MME_'))}
+               if not key.startswith(('MIKUMIKUSTUDIO_', 'MMS_MME_'))}
         env['LOCALAPPDATA'] = str(directory / 'Local')
         env['APPDATA'] = str(directory / 'Roaming')
-        env['MIKUDANCESTUDIO_AUTOSAVE_CONFIG'] = str(directory / 'autosave.ini')
+        env['MIKUMIKUSTUDIO_AUTOSAVE_CONFIG'] = str(directory / 'autosave.ini')
         if not use_mme:
             env['MMS_MME_ORDER_NATIVE'] = '1'
         command = [str(host), str(model), '--alpha-order', str(directory / 'pixels')]

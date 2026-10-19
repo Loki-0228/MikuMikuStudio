@@ -73,7 +73,7 @@ for name, dpi, overrides in cases:
         make_fixture(directory / 'model', 255, [''] * 10)
     env = {key: value for key, value in os.environ.items() if not key.startswith('PROBE_')}
     env.update(LOCALAPPDATA=str(directory / 'Local'), APPDATA=str(directory / 'Roaming'),
-               MIKUDANCESTUDIO_AUTOSAVE_CONFIG=str(directory / 'autosave.ini'),
+               MIKUMIKUSTUDIO_AUTOSAVE_CONFIG=str(directory / 'autosave.ini'),
                MMS_ANTIALIAS_CONFIG=str(directory / 'antialias.ini'), **overrides)
     if args.mme_dir:
         env['PROBE_REQUIRE_MME'] = '1'

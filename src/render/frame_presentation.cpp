@@ -5,15 +5,15 @@
 
 #include <algorithm>
 
-#include "mikudancestudio/frame_presentation.hpp"
-#include "mikudancestudio/frame_rate.hpp"
-#include "mikudancestudio/build_profile.hpp"
-#include "mikudancestudio/viewport_render_scale.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/window_dpi_scope.hpp"
+#include "mikumikustudio/frame_presentation.hpp"
+#include "mikumikustudio/frame_rate.hpp"
+#include "mikumikustudio/build_profile.hpp"
+#include "mikumikustudio/viewport_render_scale.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/window_dpi_scope.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace { thread_local bool nativeBakePreview=false; }
 bool NativeBakePreviewActive(){return nativeBakePreview;}
 bool BakePreview::Due(bool last){
@@ -127,4 +127,4 @@ void FillFramePresentationMargins(MMDApp* app, IDirect3DDevice9* device) {
     // render target, and a zero-rectangle Clear clears the entire scene.
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

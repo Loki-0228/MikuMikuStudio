@@ -8,9 +8,9 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
-#include "mikudancestudio/path_workspace.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-using namespace mikudancestudio;
+#include "mikumikustudio/path_workspace.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+using namespace mikumikustudio;
 namespace {
 int checks = 0, failures = 0;
 void Check(bool ok, const char* text) {

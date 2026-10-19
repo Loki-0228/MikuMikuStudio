@@ -1,6 +1,6 @@
 #pragma once
 
-namespace mikudancestudio::ui {
+namespace mikumikustudio::ui {
 // A sidebar resize repaints the complete host only after both the panel
 // controls and viewport controls have reached their final positions.
 inline void MoveLayoutControl(HWND parent, int id, int x, int y, int width, int height,

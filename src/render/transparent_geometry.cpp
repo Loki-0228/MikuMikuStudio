@@ -1,4 +1,4 @@
-#include "mikudancestudio/transparent_geometry.hpp"
+#include "mikumikustudio/transparent_geometry.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -7,7 +7,7 @@
 #include <queue>
 #include <utility>
 
-namespace mikudancestudio::transparent_geometry {
+namespace mikumikustudio::transparent_geometry {
 namespace {
 struct Plane { double n[3]{}, d = 0; };
 struct Limits { std::size_t extra; unsigned depth; double epsilon; };
@@ -363,4 +363,4 @@ bool BatchDraws(std::vector<Triangle>& ordered, unsigned width, unsigned height,
     ordered.swap(result);
     return true;
 }
-} // namespace mikudancestudio::transparent_geometry
+} // namespace mikumikustudio::transparent_geometry

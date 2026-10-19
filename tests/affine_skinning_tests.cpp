@@ -6,8 +6,8 @@
 // consistent. The test is pure mathematics - no window, device or model file.
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include "mikudancestudio/affine_skinning.hpp"
-#include "mikudancestudio/d3d12_skinning.hpp"
+#include "mikumikustudio/affine_skinning.hpp"
+#include "mikumikustudio/d3d12_skinning.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -16,7 +16,7 @@
 #include <cstring>
 #include <vector>
 
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 
 namespace {
 

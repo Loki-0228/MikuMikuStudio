@@ -10,16 +10,16 @@
 #include <vector>
 #include <cstring>
 #include <filesystem>
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/bone_scale.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/bone_scale.hpp"
 #include <cmath>
-using namespace mikudancestudio;
-namespace mikudancestudio { void DrawFrameOverlayBatches(MMDApp*); }
+using namespace mikumikustudio;
+namespace mikumikustudio { void DrawFrameOverlayBatches(MMDApp*); }
 // MMS: the top status bar's XYZ bone-scale readout (src/window/ui_palette.cpp).
-namespace mikudancestudio {
+namespace mikumikustudio {
 bool SelectedBoneScaleReadout(MMDApp*, float[3]);
 bool SetSelectedBoneScaleAxis(MMDApp*, int, float);
 bool BoneScaleReadoutText(MMDApp*, char*, std::size_t);

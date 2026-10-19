@@ -1,6 +1,6 @@
 // MAINTENANCE: regression-keep; purpose and cleanup conditions in tests/README.md.
 // Regressions for the PMM v2 tail extension codec ("MMSXPMM2" trailer; legacy
-// "MDSXPMM2" is read), see include/mikudancestudio/pmm_extension.hpp and
+// "MDSXPMM2" is read), see include/mikumikustudio/pmm_extension.hpp and
 // src/io/pmm_extension.cpp.
 //
 // Pure CPU: no window, no GPU, no MMDApp, no other project module.  Every
@@ -8,7 +8,7 @@
 // build the wire bytes and the CRC32 values with their own helpers, so the
 // on-disk layout (little-endian fields, no struct padding) is pinned
 // independently of the module under test.
-#include "mikudancestudio/pmm_extension.hpp"
+#include "mikumikustudio/pmm_extension.hpp"
 
 #include <fcntl.h>
 #include <io.h>
@@ -22,7 +22,7 @@
 #include <utility>
 #include <vector>
 
-namespace pmmx = mikudancestudio::pmm_extension;
+namespace pmmx = mikumikustudio::pmm_extension;
 
 namespace {
 

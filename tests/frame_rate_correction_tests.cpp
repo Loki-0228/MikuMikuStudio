@@ -1,15 +1,15 @@
 // Transaction coordinator tests. Component behavior is exercised by the real
 // native, cache and curve suites; these fakes force each cross-module veto.
 #define NOMINMAX
-#include "mikudancestudio/frame_rate_correction.hpp"
-#include "mikudancestudio/native_frame_retime.hpp"
-#include "mikudancestudio/mesh_bake_cache.hpp"
-#include "mikudancestudio/mmd_app.hpp"
+#include "mikumikustudio/frame_rate_correction.hpp"
+#include "mikumikustudio/native_frame_retime.hpp"
+#include "mikumikustudio/mesh_bake_cache.hpp"
+#include "mikumikustudio/mmd_app.hpp"
 #include <Windows.h>
 #include <cstdio>
 #include <memory>
 #include <stdexcept>
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 namespace {
 int failures = 0, nativeValue = 0, cacheValue = 0, saves = 0;
 bool busy = false, nativeVeto = false, cacheVeto = false;
@@ -19,7 +19,7 @@ void Check(bool ok, const char* message) {
     if (!ok) ++failures;
 }
 }
-namespace mikudancestudio {
+namespace mikumikustudio {
 void CmdSaveScene(MMDApp*) { ++saves; }
 void RefreshAfterFrameApply(MMDApp*) {}
 namespace curve_editor { void CloseOwned(void*) {} }

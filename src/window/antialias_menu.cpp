@@ -1,10 +1,10 @@
-#include "mikudancestudio/antialias.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/build_profile.hpp"
+#include "mikumikustudio/antialias.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/build_profile.hpp"
 #include <algorithm>
 
-namespace mikudancestudio::antialias {
+namespace mikumikustudio::antialias {
 namespace {
 MMDApp* owner=nullptr;
 HMENU parent=nullptr, popup=nullptr, smaaPopup=nullptr, outlinePopup=nullptr;

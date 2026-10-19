@@ -8,14 +8,14 @@
 #include <cstdio>
 #include <cstring>
 #include <memory>
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/model.hpp"
-namespace mikudancestudio {
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/model.hpp"
+namespace mikumikustudio {
 float* BuildLookAtQuaternion(float[4], const float[4], float, float, float, float, float, float, unsigned char);
 void InitStandardSkeletonQuats(unsigned char*, unsigned char);
 }
 namespace {
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 int checks = 0, failures = 0;
 void Check(bool ok, const char* text) {
     ++checks; if (!ok) { ++failures; std::fprintf(stderr,"FAIL: %s\n",text); }

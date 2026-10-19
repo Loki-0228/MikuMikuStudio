@@ -3,11 +3,11 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
-#include "mikudancestudio/bone_scale.hpp"
-#include "mikudancestudio/bone_scale_io.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/bone_scale_io.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -18,7 +18,7 @@
 #include <filesystem>
 #include <fstream>
 #include <vector>
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 namespace bs=bone_scale;
 namespace {
 void Check(bool ok,const char* message) { if(!ok) { std::fprintf(stderr,"FAIL: %s\n",message); std::exit(1); } }

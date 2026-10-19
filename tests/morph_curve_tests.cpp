@@ -1,5 +1,5 @@
 // MAINTENANCE: regression-keep; native morph (expression) curves
-// (include/mikudancestudio/morph_curve.hpp, src/animation/morph_curve.cpp).
+// (include/mikumikustudio/morph_curve.hpp, src/animation/morph_curve.cpp).
 //
 // Covered here, all on the CPU and without a window, a GPU or a real model:
 //   * enumeration: index, panel, stable id, display name, and byte-exact
@@ -39,18 +39,18 @@
 #include <utility>
 #include <vector>
 
-#include "mikudancestudio/animation_curve_motion.hpp"
-#include "mikudancestudio/bone_scale_io.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/morph_curve.hpp"
-#include "mikudancestudio/animation_curve_host.hpp"
+#include "mikumikustudio/animation_curve_motion.hpp"
+#include "mikumikustudio/bone_scale_io.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/morph_curve.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
 
-namespace mc = mikudancestudio::morph_curve;
-namespace ac = mikudancestudio::animation_curve;
-namespace mdl = mikudancestudio::mdl;
-namespace bsio = mikudancestudio::bone_scale_io;
+namespace mc = mikumikustudio::morph_curve;
+namespace ac = mikumikustudio::animation_curve;
+namespace mdl = mikumikustudio::mdl;
+namespace bsio = mikumikustudio::bone_scale_io;
 
 namespace {
 
@@ -782,7 +782,7 @@ void AuthoredFallbackAndRestore() {
 // ---------------------------------------------------------------------------
 
 void PmmRoundTrip() {
-    mikudancestudio::MMDApp app;
+    mikumikustudio::MMDApp app;
     FakeModel first = MakeModel({{"eye", 2}, {"mouth", 3}});
     FakeModel second = MakeModel({{"eye", 2}}, "other");
     app.ModelSlot(0) = first.raw();
@@ -804,10 +804,10 @@ void PmmRoundTrip() {
           "the bone-scale key is not a morph curve key");
     Check(slot == "org.mikudancestudio.model.3.morphCurve.v1", "PMM key layout is pinned");
 
-    mikudancestudio::pmm_extension::Document document;
+    mikumikustudio::pmm_extension::Document document;
     mc::CapturePmm(app, document);
-    const auto* firstRecord = mikudancestudio::pmm_extension::Find(document, mc::PmmKey(0));
-    const auto* secondRecord = mikudancestudio::pmm_extension::Find(document, mc::PmmKey(1));
+    const auto* firstRecord = mikumikustudio::pmm_extension::Find(document, mc::PmmKey(0));
+    const auto* secondRecord = mikumikustudio::pmm_extension::Find(document, mc::PmmKey(1));
     Check(firstRecord != nullptr && secondRecord != nullptr, "both slots captured");
     // Copy before the document grows: appending a record may reallocate it.
     const std::vector<std::uint8_t> firstValue =
@@ -815,7 +815,7 @@ void PmmRoundTrip() {
 
     // A record of an unknown version must survive a capture verbatim while the
     // model it describes still matches.
-    mikudancestudio::pmm_extension::Set(
+    mikumikustudio::pmm_extension::Set(
         document, "org.mikudancestudio.model.0.morphCurve.v9", {1, 2, 3});
 
     mc::Reset(&app);
@@ -834,23 +834,23 @@ void PmmRoundTrip() {
     second.morphs[0].name[0] = 'Z';
     second.storage->morphs = second.morphs.data();
     mc::CapturePmm(app, document);
-    Check(mikudancestudio::pmm_extension::Find(document, mc::PmmKey(0)) != nullptr,
+    Check(mikumikustudio::pmm_extension::Find(document, mc::PmmKey(0)) != nullptr,
           "a matching record keeps its bytes");
-    Check(mikudancestudio::pmm_extension::Find(document, mc::PmmKey(1)) == nullptr,
+    Check(mikumikustudio::pmm_extension::Find(document, mc::PmmKey(1)) == nullptr,
           "a record for a different model is dropped");
-    Check(mikudancestudio::pmm_extension::Find(
+    Check(mikumikustudio::pmm_extension::Find(
               document, "org.mikudancestudio.model.0.morphCurve.v9") != nullptr,
           "an unknown version of a matching slot is preserved");
-    Check(mikudancestudio::pmm_extension::Find(document, mc::PmmKey(0))->value == firstValue,
+    Check(mikumikustudio::pmm_extension::Find(document, mc::PmmKey(0))->value == firstValue,
           "the kept record is byte-identical");
 
     // A record that does not describe the loaded model is ignored and keeps its
     // raw bytes.
-    mikudancestudio::pmm_extension::Document broken;
-    mikudancestudio::pmm_extension::Set(broken, mc::PmmKey(0), {9, 9, 9});
+    mikumikustudio::pmm_extension::Document broken;
+    mikumikustudio::pmm_extension::Set(broken, mc::PmmKey(0), {9, 9, 9});
     mc::LoadPmm(app, broken);
     Check(!mc::AnyCurve(first.raw()), "a malformed record installs nothing");
-    Check(mikudancestudio::pmm_extension::Find(broken, mc::PmmKey(0))->value.size() == 3,
+    Check(mikumikustudio::pmm_extension::Find(broken, mc::PmmKey(0))->value.size() == 3,
           "a malformed record keeps its bytes");
 
     app.ModelSlot(0) = nullptr;
@@ -1132,10 +1132,10 @@ void VmdSelectionAndImportMerge() {
 // Calls the port's own standard-section reader on a buffer that may carry the
 // morph curve block behind the standard body.
 void curve_motion_check(const std::vector<std::uint8_t>& bytes, bool expectTrack) {
-    mikudancestudio::curve_motion::Motion motion;
+    mikumikustudio::curve_motion::Motion motion;
     std::string error;
-    const bool decoded = mikudancestudio::curve_motion::Decode(
-        bytes.data(), bytes.size(), mikudancestudio::curve_motion::Kind::Morph, motion, error);
+    const bool decoded = mikumikustudio::curve_motion::Decode(
+        bytes.data(), bytes.size(), mikumikustudio::curve_motion::Kind::Morph, motion, error);
     Check(decoded, "a standard-section reader still imports the prefix");
     if (!decoded) return;
     const bool found = !motion.tracks.empty();
@@ -1192,9 +1192,9 @@ void DenseWriteAndGrowthIdentity() {
     Check(mc::Write(model.raw(), {Named(model, 1, authored)}, error),
           "install an authored curve before growth");
     const auto identity = mdl::MorphKeyPoolIdentity(record.morphKeys);
-    auto app = std::make_unique<mikudancestudio::MMDApp>();
+    auto app = std::make_unique<mikumikustudio::MMDApp>();
     app->ModelSlot(0) = model.raw(); app->SetSelectedModelSlot(0);
-    const auto editorIdentity = mikudancestudio::curve_host::MorphIdentityOf(*app, model.raw());
+    const auto editorIdentity = mikumikustudio::curve_host::MorphIdentityOf(*app, model.raw());
     ac::Track dense;
     for (int frame = 0; frame <= 22000; ++frame) {
         ac::Key key; key.frame = frame; key.value = frame / 22000.0;
@@ -1206,7 +1206,7 @@ void DenseWriteAndGrowthIdentity() {
     Check(mdl::MorphKeyCapacity(record) > mdl::kMorphKeyCapacity &&
               mdl::MorphKeyPoolIdentity(record.morphKeys) == identity,
           "morph pool identity survives growth");
-    Check(mikudancestudio::curve_host::MorphIdentityCurrent(*app, editorIdentity),
+    Check(mikumikustudio::curve_host::MorphIdentityCurrent(*app, editorIdentity),
           "the curve editor remains bound to the same model after growth");
     ac::Track first, second;
     Check(mc::Read(model.raw(), 0, first, error) && mc::Read(model.raw(), 1, second, error),

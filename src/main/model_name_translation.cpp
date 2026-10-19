@@ -1,9 +1,9 @@
-#include "mikudancestudio/text_encoding.hpp"
-#include "mikudancestudio/ui_language.hpp"
+#include "mikumikustudio/text_encoding.hpp"
+#include "mikumikustudio/ui_language.hpp"
 
 #include <unordered_map>
 
-namespace mikudancestudio::text_encoding {
+namespace mikumikustudio::text_encoding {
 namespace {
 struct NameEntry {
     const wchar_t* japanese;

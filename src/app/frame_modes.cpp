@@ -36,7 +36,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
-#include "mikudancestudio/panel_controls.hpp"
+#include "mikumikustudio/panel_controls.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -44,20 +44,20 @@
 #include <cstdio>
 #include <limits>
 
-#include "mikudancestudio/bone_scale.hpp"
-#include "mikudancestudio/bone_scale_gizmo.hpp"
-#include "mikudancestudio/viewport_corner_settings.hpp"
-#include "mikudancestudio/viewport_tool_layout.hpp"
-#include "mikudancestudio/frame_presentation.hpp"
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/globals.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/runtime_log.hpp"
+#include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/bone_scale_gizmo.hpp"
+#include "mikumikustudio/viewport_corner_settings.hpp"
+#include "mikumikustudio/viewport_tool_layout.hpp"
+#include "mikumikustudio/frame_presentation.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/globals.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/runtime_log.hpp"
 #include "frame_state_dump.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 // Exact doubles from the original image.  These stay double until the final
 // store, matching the x87 instruction stream at 0x470E4B..0x470EDF.
@@ -492,15 +492,15 @@ void PickBoneAtCursor(MMDApp* app, bool additive) {
     unsigned char* model = ActiveBoneModel(app);
     if (model == nullptr)
         return;
-    auto* bones = mikudancestudio::mdl::Bones(model);
-    auto* selected = mikudancestudio::mdl::Mdl(model)->boneSelection;
-    const int count = mikudancestudio::mdl::Mdl(model)->boneCount;
+    auto* bones = mikumikustudio::mdl::Bones(model);
+    auto* selected = mikumikustudio::mdl::Mdl(model)->boneSelection;
+    const int count = mikumikustudio::mdl::Mdl(model)->boneCount;
     if (bones == nullptr || selected == nullptr || count <= 0)
         return;
 
     const int x = app->MouseX();
     const int y = app->MouseY();
-    const int active = mikudancestudio::mdl::Mdl(model)->selectedBone;
+    const int active = mikumikustudio::mdl::Mdl(model)->selectedBone;
     int firstHit = -1;
     int candidate = -1;
     bool changed = false;
@@ -515,9 +515,9 @@ void PickBoneAtCursor(MMDApp* app, bool additive) {
         if (additive) {
             selected[i] = selected[i] == 0 ? 1 : 0;
             if (selected[i] != 0)
-                mikudancestudio::mdl::Mdl(model)->selectedBone = i;
-            else if (mikudancestudio::mdl::Mdl(model)->selectedBone == i)
-                mikudancestudio::mdl::Mdl(model)->selectedBone = -1;
+                mikumikustudio::mdl::Mdl(model)->selectedBone = i;
+            else if (mikumikustudio::mdl::Mdl(model)->selectedBone == i)
+                mikumikustudio::mdl::Mdl(model)->selectedBone = -1;
             changed = true;
         } else {
             // MMD 9.32 (0x140031C81): advance past the active bone in
@@ -535,7 +535,7 @@ void PickBoneAtCursor(MMDApp* app, bool additive) {
     if (!additive && candidate >= 0) {
         std::memset(selected, 0, static_cast<std::size_t>(count));
         selected[candidate] = 1;
-        mikudancestudio::mdl::Mdl(model)->selectedBone = candidate;
+        mikumikustudio::mdl::Mdl(model)->selectedBone = candidate;
         changed = true;
     }
     if (changed) {
@@ -550,9 +550,9 @@ void UpdateBoneBoxSelection(MMDApp* app) {
     unsigned char* model = ActiveBoneModel(app);
     if (model == nullptr)
         return;
-    auto* bones = mikudancestudio::mdl::Bones(model);
-    auto* selected = mikudancestudio::mdl::Mdl(model)->boneSelection;
-    const int count = mikudancestudio::mdl::Mdl(model)->boneCount;
+    auto* bones = mikumikustudio::mdl::Bones(model);
+    auto* selected = mikumikustudio::mdl::Mdl(model)->boneSelection;
+    const int count = mikumikustudio::mdl::Mdl(model)->boneCount;
     if (bones == nullptr || selected == nullptr || count <= 0)
         return;
 
@@ -1374,4 +1374,4 @@ void ApplyCameraReferenceModeChange(MMDApp* app, int oldMode) {
     CarryEyeForFocusChange(app, focusOld, focusNew);
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

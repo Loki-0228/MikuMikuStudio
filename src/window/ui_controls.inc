@@ -3,7 +3,7 @@
 // 168 CreateWindowEx blocks (direct + pcVar indirect calls).
 #pragma once
 #include <cwchar>
-namespace mikudancestudio { namespace ui {
+namespace mikumikustudio { namespace ui {
 struct PosExpr { int kind; int off; };  // 0 fixed, 1 sidebar+off, 2 sidebar/2+off
 struct ControlSpec { int id;
   const wchar_t* wcls; const char* acls;   // class for the W/A variant

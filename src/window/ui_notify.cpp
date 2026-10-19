@@ -1,4 +1,4 @@
-#include "mikudancestudio/build_profile.hpp"
+#include "mikumikustudio/build_profile.hpp"
 // ===========================================================================
 // VA 0x004398B0 - HandleNotify  (original: sub_4398B0, 0x3D5 bytes)
 // ===========================================================================
@@ -71,13 +71,13 @@
 
 #pragma comment(lib, "uxtheme.lib")
 
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/accessory_layout.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/panel_controls.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/accessory_layout.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/panel_controls.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 // VA 0x0041A550 - defined in ui_control_text.cpp; not yet declared in
 // ported_funcs.hpp, so an external-linkage forward declaration lives here
@@ -382,4 +382,4 @@ void InstallPanelCheckboxPaint(HWND control) {
                       static_cast<UINT_PTR>(id), 0);
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

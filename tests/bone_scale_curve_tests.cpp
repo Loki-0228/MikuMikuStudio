@@ -14,12 +14,12 @@
 #include <memory>
 #include <vector>
 
-#include "mikudancestudio/bone_scale.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/panel_controls.hpp"
+#include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/panel_controls.hpp"
 
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 namespace bs = bone_scale;
 
 namespace {

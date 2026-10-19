@@ -1,4 +1,4 @@
-#include "mikudancestudio/key_pool.hpp"
+#include "mikumikustudio/key_pool.hpp"
 // ===========================================================================
 // x64 0x7FF7CB44C12E..0x7FF7CB44C656 - Kinect 骨架驱动泵块（行为级移植）
 // ===========================================================================
@@ -65,21 +65,21 @@
 // =========================================================================//
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/bone_scale.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/bone_scale.hpp"
 #include <Windows.h>
 
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 
-#include "mikudancestudio/globals.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/panel_controls.hpp"
+#include "mikumikustudio/globals.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/panel_controls.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 // 既有孪生（定义见各自文件）。
 void ModelVertexHistoryPush(unsigned char* model, int samples);   // dialog_gaps.cpp, x86 0x4B75C0
@@ -662,4 +662,4 @@ void ManageKinectRecordGate(MMDApp* app, unsigned char selActive) {
     s.state.autoRepeat = 0;                       // x64 0xA1E14 / x86 0xA0D68
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

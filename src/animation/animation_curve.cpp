@@ -24,14 +24,14 @@
 //   strictly increasing in time and therefore invertible.
 // * Time is recovered by inverting the cubic; it is never assumed linear.
 
-#include "mikudancestudio/animation_curve.hpp"
+#include "mikumikustudio/animation_curve.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <utility>
 
-namespace mikudancestudio::animation_curve {
+namespace mikumikustudio::animation_curve {
 namespace {
 
 constexpr double kMinimumWeight = 0.0001;
@@ -1032,4 +1032,4 @@ bool Decode(const std::uint8_t *data, std::size_t size, std::vector<NamedTrack> 
     return true;
 }
 
-}  // namespace mikudancestudio::animation_curve
+}  // namespace mikumikustudio::animation_curve

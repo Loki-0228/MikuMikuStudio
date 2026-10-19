@@ -1,12 +1,12 @@
 // MAINTENANCE: regression-keep; purpose and cleanup conditions in tests/README.md.
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 void ConsumeLetterHotkeys(MMDApp*);
 void DispatchLetterHotkeys(MMDApp*, HWND);
 void CmdControl450(MMDApp*, HWND, std::uint16_t, std::uint16_t);
@@ -21,7 +21,7 @@ void Check(bool condition, const char* description) {
 }
 
 int main() {
-    using namespace mikudancestudio;
+    using namespace mikumikustudio;
     unsigned char keys[256]{};
     LetterHotkeyState input;
     constexpr int aSlot = 5;

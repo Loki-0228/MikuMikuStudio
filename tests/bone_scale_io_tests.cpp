@@ -1,5 +1,5 @@
 // MAINTENANCE: regression-keep; native bone-scaling persistence codec
-// (include/mikudancestudio/bone_scale_io.hpp, src/io/bone_scale_io.cpp):
+// (include/mikumikustudio/bone_scale_io.hpp, src/io/bone_scale_io.cpp):
 // the PMM v2 "org.mikudancestudio.model.<slot>.boneScale.v1" record payload,
 // the single-file VMD tail extension and imported-key matcher.
 //
@@ -31,16 +31,16 @@
 #include <string>
 #include <vector>
 
-#include "mikudancestudio/bone_scale_io.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/vpd_scale_io.hpp"
+#include "mikumikustudio/bone_scale_io.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/vpd_scale_io.hpp"
 
-namespace bs = mikudancestudio::bone_scale;
-namespace bsio = mikudancestudio::bone_scale_io;
-namespace mdl = mikudancestudio::mdl;
-namespace vpdio = mikudancestudio::vpd_scale_io;
+namespace bs = mikumikustudio::bone_scale;
+namespace bsio = mikumikustudio::bone_scale_io;
+namespace mdl = mikumikustudio::mdl;
+namespace vpdio = mikumikustudio::vpd_scale_io;
 
 namespace {
 
@@ -1120,14 +1120,14 @@ void VpdPoseFileRoundTrip() {
     const bs::Matrix identity;
 
     Fixture f(6);
-    mikudancestudio::MMDApp app;
+    mikumikustudio::MMDApp app;
     app.ClearModelSlots();
     app.SetSelectedModelSlot(0);
     app.SelectedModel() = f.data();
     app.PlaybackPhysicsMode() = 0;
     app.Hwnd() = nullptr;
-    mikudancestudio::MMDApp* previousBlock = mikudancestudio::g_Block;
-    mikudancestudio::g_Block = &app;
+    mikumikustudio::MMDApp* previousBlock = mikumikustudio::g_Block;
+    mikumikustudio::g_Block = &app;
     TempMotion file;
     std::int32_t frame = 0;
 
@@ -1137,7 +1137,7 @@ void VpdPoseFileRoundTrip() {
     Check(bs::SetPose(f.data(), 2, wide), "install a second non-unit scale");
     Check(bs::SetPose(f.data(), 4, outside),
           "install a scale on a bone outside the pose");
-    mikudancestudio::SaveVpdFile(file.path().c_str());
+    mikumikustudio::SaveVpdFile(file.path().c_str());
     vpdio::Extension tail;
     Check(vpdio::LoadTail(file.path(), 4, tail) == vpdio::TailLoad::Loaded &&
               tail.entries.size() == 2,
@@ -1157,7 +1157,7 @@ void VpdPoseFileRoundTrip() {
     f.selected[5] = 0;
     f.dirty[5] = 1;
 
-    mikudancestudio::LoadVpdFile(file.path().c_str());
+    mikumikustudio::LoadVpdFile(file.path().c_str());
 
     Check(SameMatrix(bs::Pose(f.data(), 1), shear),
           "the nine-component scale restores exactly");
@@ -1185,7 +1185,7 @@ void VpdPoseFileRoundTrip() {
           "the undo ring holds the pose entry the load registered");
 
     // ---- one undo restores the pre-load scale state ----------------------
-    mikudancestudio::UndoModelEdit(f.data(), &frame);
+    mikumikustudio::UndoModelEdit(f.data(), &frame);
     Check(SameMatrix(bs::Pose(f.data(), 0), residueFour),
           "one undo restores the pre-load scale of a pose bone");
     Check(SameMatrix(bs::Pose(f.data(), 1), residueFive),
@@ -1199,7 +1199,7 @@ void VpdPoseFileRoundTrip() {
     Fixture plain(6);
     app.SelectedModel() = plain.data();
     for (int i = 0; i < 4; ++i) plain.selected[i] = 1;
-    mikudancestudio::SaveVpdFile(file.path().c_str());
+    mikumikustudio::SaveVpdFile(file.path().c_str());
     Check(vpdio::LoadTail(file.path(), 4, tail) == vpdio::TailLoad::Absent,
           "a save without scale writes an ordinary VPD with no tail");
     Check(bs::SetPose(plain.data(), 0, residueFour),
@@ -1208,7 +1208,7 @@ void VpdPoseFileRoundTrip() {
           "leave a scaled pose bone behind");
     Check(bs::SetPose(plain.data(), 4, outside),
           "leave a scale outside the old-format pose");
-    mikudancestudio::LoadVpdFile(file.path().c_str());
+    mikumikustudio::LoadVpdFile(file.path().c_str());
     Check(SameMatrix(bs::Pose(plain.data(), 0), identity),
           "an old VPD restores identity on a pose bone");
     Check(SameMatrix(bs::Pose(plain.data(), 1), identity),
@@ -1219,7 +1219,7 @@ void VpdPoseFileRoundTrip() {
         Check(plain.selected[i] == 1 && plain.dirty[i] == 1,
               "an old VPD keeps the selection and registration semantics");
 
-    mikudancestudio::g_Block = previousBlock;
+    mikumikustudio::g_Block = previousBlock;
     std::printf("vpd-roundtrip: SaveVpdFile/LoadVpdFile scale semantics pinned\n");
 }
 

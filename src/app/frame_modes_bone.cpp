@@ -43,13 +43,13 @@
 #include <cstdio>
 #include <cstring>
 
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/globals.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/globals.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 void ViewWorldAxis(MMDApp* app, int axis, float out[3]);
 namespace {
@@ -161,12 +161,12 @@ unsigned char* CurrentModel(MMDApp* app) {
 
 bool IsSelectedRoot(unsigned char* model, int index, bool excludeSelected) {
     const auto* selected = static_cast<const unsigned char*>(
-        mikudancestudio::mdl::Mdl(model)->boneSelection);
+        mikumikustudio::mdl::Mdl(model)->boneSelection);
     if (selected == nullptr || selected[index] == 0)
         return false;
-    if (excludeSelected && index == mikudancestudio::mdl::Mdl(model)->selectedBone)
+    if (excludeSelected && index == mikumikustudio::mdl::Mdl(model)->selectedBone)
         return false;
-    auto* bones = mikudancestudio::mdl::Bones(model);
+    auto* bones = mikumikustudio::mdl::Bones(model);
     const mdl::BoneRecord& bone = bones[index];
     if (bone.type != mdl::BoneType::Move && bone.type != mdl::BoneType::Ik)
         return false;
@@ -191,9 +191,9 @@ void BoneWorldPoint(const mdl::BoneRecord& bone, float out[3]) {
 }
 
 void ApplySelectedRootTranslation(unsigned char* model, const float delta[3]) {
-    auto* bones = mikudancestudio::mdl::Bones(model);
-    auto* dirty = mikudancestudio::mdl::Mdl(model)->bonePhysicsState;
-    const int count = mikudancestudio::mdl::Mdl(model)->boneCount;
+    auto* bones = mikumikustudio::mdl::Bones(model);
+    auto* dirty = mikumikustudio::mdl::Mdl(model)->bonePhysicsState;
+    const int count = mikumikustudio::mdl::Mdl(model)->boneCount;
     if (bones == nullptr)
         return;
     for (int i = 0; i < count; ++i) {
@@ -234,7 +234,7 @@ bool EditModeRecord(MMDApp* app, int mode) {
             // Physics-editor joint page: drag edits the joint rotation
             // (dialog edits 754..756).
             auto* joints =
-                static_cast<mikudancestudio::mdl::JointRecord*>(
+                static_cast<mikumikustudio::mdl::JointRecord*>(
                     app->state.jointScratchArray);
             const int index = app->state.selectedJointIndex;
             if (joints != nullptr && index >= 0) {
@@ -247,7 +247,7 @@ bool EditModeRecord(MMDApp* app, int mode) {
         } else {
             // Rigid-body page: drag edits the body rotation (715..717).
             auto* bodies =
-                static_cast<mikudancestudio::mdl::RigidRecord*>(
+                static_cast<mikumikustudio::mdl::RigidRecord*>(
                     app->state.rigidScratchArray);
             const int index = app->state.selectedRigidIndex;
             if (bodies != nullptr && index >= 0) {
@@ -267,7 +267,7 @@ bool EditModeRecord(MMDApp* app, int mode) {
         if (app->state.physicsEditorJointPage != 0) {
             // Joint position drag (744..746).
             auto* joints =
-                static_cast<mikudancestudio::mdl::JointRecord*>(
+                static_cast<mikumikustudio::mdl::JointRecord*>(
                     app->state.jointScratchArray);
             const int index = app->state.selectedJointIndex;
             if (joints != nullptr && index >= 0) {
@@ -279,7 +279,7 @@ bool EditModeRecord(MMDApp* app, int mode) {
             // Rigid body: shift-drag scales the shape size (709..711),
             // plain drag moves the body (712..714).
             auto* bodies =
-                static_cast<mikudancestudio::mdl::RigidRecord*>(
+                static_cast<mikumikustudio::mdl::RigidRecord*>(
                     app->state.rigidScratchArray);
             const int index = app->state.selectedRigidIndex;
             if (bodies != nullptr && index >= 0) {
@@ -355,10 +355,10 @@ void ApplyScreenPlaneBoneMove(MMDApp* app, unsigned char* model, int mode) {
 }
 
 void ApplyLocalAxisBoneMove(MMDApp* app, unsigned char* model, int mode) {
-    const int selectedIndex = mikudancestudio::mdl::Mdl(model)->selectedBone;
+    const int selectedIndex = mikumikustudio::mdl::Mdl(model)->selectedBone;
     if (selectedIndex < 0)
         return;
-    auto* bones = mikudancestudio::mdl::Bones(model);
+    auto* bones = mikumikustudio::mdl::Bones(model);
     if (bones == nullptr)
         return;
     mdl::BoneRecord& selected = bones[selectedIndex];
@@ -411,11 +411,11 @@ void BoneLocalAxes(MMDApp* app, float out[16]) {
     out[0] = out[5] = out[10] = out[15] = 1.0f;
 
     unsigned char* model = app->SelectedModel();
-    if (model == nullptr || mikudancestudio::mdl::Mdl(model)->selectedBone < 0)
+    if (model == nullptr || mikumikustudio::mdl::Mdl(model)->selectedBone < 0)
         return;
-    auto* bones = mikudancestudio::mdl::Bones(model);
+    auto* bones = mikumikustudio::mdl::Bones(model);
     const mdl::BoneRecord& bone =
-        bones[mikudancestudio::mdl::Mdl(model)->selectedBone];
+        bones[mikumikustudio::mdl::Mdl(model)->selectedBone];
 
     const bool hasAxes = !(bone.localAxes[0] == 0.0f &&
                            bone.localAxes[1] == 0.0f &&
@@ -534,7 +534,7 @@ void BoneEditModes(MMDApp* app) {
     unsigned char* model = CurrentModel(app);
     if (model == nullptr)
         return;
-    const int sel = mikudancestudio::mdl::Mdl(model)->selectedBone;
+    const int sel = mikumikustudio::mdl::Mdl(model)->selectedBone;
     if (sel < 0)
         return;
 
@@ -546,7 +546,7 @@ void BoneEditModes(MMDApp* app) {
         ApplyLocalAxisBoneMove(app, model, mode);
         return;
     }
-    auto* bones = mikudancestudio::mdl::Bones(model);
+    auto* bones = mikumikustudio::mdl::Bones(model);
     mdl::BoneRecord& bone = bones[sel];
 
     const bool selA = app->state.shiftModifierState == 3;  // coarse selector
@@ -696,7 +696,7 @@ void BoneEditModes(MMDApp* app) {
         for (int i = 0; i < 3; ++i)
             axis[i] = static_cast<float>(double(axis[i]) * inverseAxisLength);
         unsigned char* dirty =
-            mikudancestudio::mdl::Mdl(model)->bonePhysicsState;
+            mikumikustudio::mdl::Mdl(model)->bonePhysicsState;
         if (dirty != nullptr)
             dirty[sel] = 1;
 
@@ -719,7 +719,7 @@ void BoneEditModes(MMDApp* app) {
             float piv[3]{};
             BoneWorldPoint(bone, piv);
             const float invq[4] = {-dq[0], -dq[1], -dq[2], dq[3]};
-            const int n = mikudancestudio::mdl::Mdl(model)->boneCount;
+            const int n = mikumikustudio::mdl::Mdl(model)->boneCount;
             for (int i = 0; i < n; ++i) {
                 mdl::BoneRecord& ch = bones[i];
                 if (!IsSelectedRoot(model, i, true))
@@ -744,4 +744,4 @@ void BoneEditModes(MMDApp* app) {
     }
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

@@ -1,13 +1,13 @@
 #define NOMINMAX
-#include "mikudancestudio/antialias_motion.hpp"
-#include "mikudancestudio/antialias.hpp"
-#include "mikudancestudio/build_profile.hpp"
-#include "mikudancestudio/deformed_mesh_capture.hpp"
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/graphics_runtime.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/runtime_log.hpp"
-#include "mikudancestudio/vertex_capture.hpp"
+#include "mikumikustudio/antialias_motion.hpp"
+#include "mikumikustudio/antialias.hpp"
+#include "mikumikustudio/build_profile.hpp"
+#include "mikumikustudio/deformed_mesh_capture.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/graphics_runtime.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/runtime_log.hpp"
+#include "mikumikustudio/vertex_capture.hpp"
 #include "antialias_motion_cache.hpp"
 #include <wrl/client.h>
 #include <algorithm>
@@ -20,7 +20,7 @@
 #include <tuple>
 #include <vector>
 
-namespace mikudancestudio::antialias::motion {
+namespace mikumikustudio::antialias::motion {
 #if !MMD_ORIGINAL_PROFILE
 using Microsoft::WRL::ComPtr;
 namespace {

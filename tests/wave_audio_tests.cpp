@@ -1,7 +1,7 @@
 // Hidden integration: startup, menu, file drop, PMM audio and device retry.
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/ui_message.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/ui_message.hpp"
 #include <MinHook.h>
 #include <commdlg.h>
 #include <shellapi.h>
@@ -14,12 +14,12 @@
 #include <process.h>
 #include <vector>
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 void CmdOpenWave(MMDApp*);
 void LoadSceneFile();
 void WaveRestartAt(void*, double);
 }
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 namespace fs = std::filesystem;
 namespace {
 unsigned creates = 0, errors = 0;

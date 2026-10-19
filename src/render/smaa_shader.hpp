@@ -1,5 +1,5 @@
 #pragma once
-namespace mikudancestudio::antialias {
+namespace mikumikustudio::antialias {
 // Official MEDIUM/HIGH presets and T2x, with color edges for MMD's colored lines.
 // The algorithm and lookup data retain their license in third_party.
 inline constexpr char kSmaaShader[] = R"hlsl(

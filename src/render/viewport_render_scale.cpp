@@ -1,8 +1,8 @@
-#include "mikudancestudio/viewport_render_scale.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/runtime_log.hpp"
-#include "mikudancestudio/build_profile.hpp"
-#include "mikudancestudio/frame_presentation.hpp"
+#include "mikumikustudio/viewport_render_scale.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/runtime_log.hpp"
+#include "mikumikustudio/build_profile.hpp"
+#include "mikumikustudio/frame_presentation.hpp"
 #include <algorithm>
 #include <cerrno>
 #include <cmath>
@@ -12,7 +12,7 @@
 #include <limits>
 #include <unordered_map>
 
-namespace mikudancestudio::viewport_render_scale {
+namespace mikumikustudio::viewport_render_scale {
 using Microsoft::WRL::ComPtr;
 namespace {
 struct Target {

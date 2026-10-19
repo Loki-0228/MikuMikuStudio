@@ -81,7 +81,7 @@ MeshMaterialList {1;1;0;;Material {0.2;0.5;0.9;1.0;;5;0.1;0.1;0.1;;0;0;0;;}}
 }
 ''', encoding='ascii')
     env = dict(os.environ, MMS_ANTIALIAS_CONFIG=str(folder / 'aa.ini'),
-               MIKUDANCESTUDIO_AUTOSAVE_CONFIG=str(folder / 'autosave.ini'), MMS_NVIDIA_AA_FIX='0',
+               MIKUMIKUSTUDIO_AUTOSAVE_CONFIG=str(folder / 'autosave.ini'), MMS_NVIDIA_AA_FIX='0',
                LOCALAPPDATA=str(folder / 'Local'), APPDATA=str(folder / 'Roaming'))
     results = []
 

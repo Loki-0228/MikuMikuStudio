@@ -1,4 +1,4 @@
-#include "mikudancestudio/frame_limits.hpp"
+#include "mikumikustudio/frame_limits.hpp"
 // MAINTENANCE: VMD transport for the animation curve editor.
 //
 // File layout this module writes
@@ -50,7 +50,7 @@
 #define NOMINMAX
 #include <Windows.h>
 
-#include "mikudancestudio/animation_curve_motion.hpp"
+#include "mikumikustudio/animation_curve_motion.hpp"
 
 #include <algorithm>
 #include <array>
@@ -65,7 +65,7 @@
 #include <string>
 #include <vector>
 
-namespace mikudancestudio::curve_motion {
+namespace mikumikustudio::curve_motion {
 namespace {
 
 namespace ac = animation_curve;
@@ -73,7 +73,7 @@ namespace ac = animation_curve;
 constexpr double kPi = 3.14159265358979323846;
 constexpr std::size_t kMaximumBytes = std::size_t((std::numeric_limits<std::ptrdiff_t>::max)());
 constexpr std::size_t kMaximumRecords = (std::numeric_limits<std::uint32_t>::max)();
-constexpr std::uint32_t kMaximumFrame = std::uint32_t(mikudancestudio::frame_limits::maximum);
+constexpr std::uint32_t kMaximumFrame = std::uint32_t(mikumikustudio::frame_limits::maximum);
 constexpr std::size_t kFooterBytes = 40;
 constexpr std::size_t kSignatureBytes = 30;
 constexpr std::size_t kModelNameBytes = 20;
@@ -1259,4 +1259,4 @@ bool Load(const wchar_t* path, Kind requested, Motion& out, std::string& error) 
     return Decode(bytes.data(), bytes.size(), requested, out, error);
 }
 
-}  // namespace mikudancestudio::curve_motion
+}  // namespace mikumikustudio::curve_motion

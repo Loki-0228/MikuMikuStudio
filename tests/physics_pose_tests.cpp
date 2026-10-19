@@ -1,7 +1,7 @@
 // MAINTENANCE: regression-keep; invalid physics poses must not poison later frames.
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/physics_scene.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/physics_scene.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 #include "../src/io/pmm_io_common.hpp"
 #include <btBulletDynamicsCommon.h>
 #include <array>
@@ -14,7 +14,7 @@
 #include <limits>
 #include <memory>
 #include <vector>
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 namespace {
 int failures = 0;
 void Check(bool ok, const char* message) {

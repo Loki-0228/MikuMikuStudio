@@ -1,19 +1,19 @@
 // Exercise production mouse messages and repainting without opening a user window.
 #define NOMINMAX
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/globals.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/frame_presentation.hpp"
-#include "mikudancestudio/viewport_render_scale.hpp"
-#include "mikudancestudio/force_paste.hpp"
-#include "mikudancestudio/recent_projects.hpp"
-#include "mikudancestudio/plugin_menu.hpp"
-#include "mikudancestudio/plugin_menu.h"
-#include "mikudancestudio/ui_translation.hpp"
-#include "mikudancestudio/bottom_panel_resize.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/adaptive_shadow.hpp"
-#include "mikudancestudio/model.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/globals.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/frame_presentation.hpp"
+#include "mikumikustudio/viewport_render_scale.hpp"
+#include "mikumikustudio/force_paste.hpp"
+#include "mikumikustudio/recent_projects.hpp"
+#include "mikumikustudio/plugin_menu.hpp"
+#include "mikumikustudio/plugin_menu.h"
+#include "mikumikustudio/ui_translation.hpp"
+#include "mikumikustudio/bottom_panel_resize.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/adaptive_shadow.hpp"
+#include "mikumikustudio/model.hpp"
 #include <MinHook.h>
 #include <cstdio>
 #include <cstdlib>
@@ -25,8 +25,8 @@
 #include <string>
 #include <vector>
 
-using namespace mikudancestudio;
-namespace mikudancestudio {
+using namespace mikumikustudio;
+namespace mikumikustudio {
 void BuildAccessoryOrderArray(MMDApp*, int);
 void ApplyAccessorySettingsDialog(MMDApp*, int, HWND);
 void DisablePlaybackMenus(HWND);

@@ -13,19 +13,19 @@
 #include <map>
 #include <set>
 #include <unordered_map>
-#include "mikudancestudio/native_mesh.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/d3dx_mesh.hpp"
-#include "mikudancestudio/mesh_bake_cache.hpp"
-#include "mikudancestudio/effect_api.hpp"
-#include "mikudancestudio/runtime_log.hpp"
-#include "mikudancestudio/text_encoding.hpp"
+#include "mikumikustudio/native_mesh.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/d3dx_mesh.hpp"
+#include "mikumikustudio/mesh_bake_cache.hpp"
+#include "mikumikustudio/effect_api.hpp"
+#include "mikumikustudio/runtime_log.hpp"
+#include "mikumikustudio/text_encoding.hpp"
 extern "C" float* ExpGetAcsWorldMat(float*,int);
-namespace mikudancestudio {float ModelOutlineDistance(MMDApp*,unsigned char*,const float[16]);}
-namespace mikudancestudio::native_mesh {
+namespace mikumikustudio {float ModelOutlineDistance(MMDApp*,unsigned char*,const float[16]);}
+namespace mikumikustudio::native_mesh {
 namespace {
 using Microsoft::WRL::ComPtr;
 MMDApp* host=nullptr;

@@ -1,13 +1,13 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
-#include "mikudancestudio/text_encoding.hpp"
-#include "mikudancestudio/model.hpp"
+#include "mikumikustudio/text_encoding.hpp"
+#include "mikumikustudio/model.hpp"
 #include <cstring>
 #include <cwchar>
 #include <unordered_map>
 
-namespace mikudancestudio::text_encoding {
+namespace mikumikustudio::text_encoding {
 namespace {
 std::unordered_map<const mdl::ModelRecord*,MaterialNames> materialNames;
 struct DisplayGroupText {

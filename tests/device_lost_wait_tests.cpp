@@ -2,10 +2,10 @@
 // test source with each revision's production core; never copy the recovery
 // helper into the baseline. One scenario per process, with an external timeout.
 #define NOMINMAX
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/globals.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/default_effect.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/globals.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/default_effect.hpp"
 #include <MinHook.h>
 #include <vfw.h>
 #include <dbghelp.h>
@@ -21,8 +21,8 @@
 #include <string>
 #include <vector>
 
-using namespace mikudancestudio;
-namespace mikudancestudio { void RefreshAfterFrameApply(MMDApp* app); }
+using namespace mikumikustudio;
+namespace mikumikustudio { void RefreshAfterFrameApply(MMDApp* app); }
 namespace {
 constexpr UINT kAction = WM_APP + 0x352;
 int failures = 0;

@@ -1,7 +1,7 @@
 // ===========================================================================
 // processor_settings.cpp - global processor policy (host side)
 //
-// See include/mikudancestudio/processor_settings.hpp for the contract.  This
+// See include/mikumikustudio/processor_settings.hpp for the contract.  This
 // file owns: the per-installation config file (data/processor.ini,
 // atomically replaced), the Requested/Active split with a
 // single startup freeze, adapter resolution by LUID then full hardware
@@ -15,7 +15,7 @@
 // ===========================================================================
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include "mikudancestudio/local_data_path.hpp"
+#include "mikumikustudio/local_data_path.hpp"
 #include <Windows.h>
 #include <d3d9.h>
 #include <dxgi1_6.h>
@@ -29,12 +29,12 @@
 #include <utility>
 #include <vector>
 
-#include "mikudancestudio/processor_settings.hpp"
-#include "mikudancestudio/runtime_log.hpp"
-#include "mikudancestudio/skinning_backend.hpp"
-#include "mikudancestudio/graphics_runtime.hpp"
+#include "mikumikustudio/processor_settings.hpp"
+#include "mikumikustudio/runtime_log.hpp"
+#include "mikumikustudio/skinning_backend.hpp"
+#include "mikumikustudio/graphics_runtime.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace processor {
 namespace {
 
@@ -826,4 +826,4 @@ void ResetForTesting() {
 }
 
 }  // namespace processor
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

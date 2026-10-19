@@ -1,10 +1,10 @@
 #define NOMINMAX
-#include "mikudancestudio/bone_curve.hpp"
-#include "mikudancestudio/bone_scale.hpp"
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/animation_curve_host.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/bone_curve.hpp"
+#include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 #include <commctrl.h>
 #include <cmath>
 #include <cstdio>
@@ -12,7 +12,7 @@
 #include <cstring>
 #include <memory>
 #include <vector>
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 namespace ac=animation_curve;
 void Check(bool ok,const char* text){if(!ok){std::fprintf(stderr,"FAIL: %s\n",text);std::exit(1);}}
 struct Model {

@@ -1,8 +1,8 @@
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/keyboard_input.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/keyboard_input.hpp"
 #include <cwchar>
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 // An active input method (Chinese/Japanese IME) does not deliver the letters
 // the way a plain English layout does: the keys are routed through the IME's

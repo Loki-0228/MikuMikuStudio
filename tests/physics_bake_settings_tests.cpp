@@ -8,7 +8,7 @@
 #define NOMINMAX
 #include <Windows.h>
 
-#include "mikudancestudio/physics_bake_settings.hpp"
+#include "mikumikustudio/physics_bake_settings.hpp"
 
 #include <cstdio>
 #include <cstdlib>
@@ -17,8 +17,8 @@
 #include <string>
 #include <vector>
 
-using namespace mikudancestudio;
-namespace bake = mikudancestudio::bake;
+using namespace mikumikustudio;
+namespace bake = mikumikustudio::bake;
 
 namespace {
 

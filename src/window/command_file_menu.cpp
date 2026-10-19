@@ -1,6 +1,6 @@
-#include "mikudancestudio/display_capacity.hpp"
-#include "mikudancestudio/recording_state.hpp"
-#include "mikudancestudio/key_pool.hpp"
+#include "mikumikustudio/display_capacity.hpp"
+#include "mikumikustudio/recording_state.hpp"
+#include "mikumikustudio/key_pool.hpp"
 // ===========================================================================
 // CommandDispatch family: File/Play/Edit/View menu cases (0x47E8A0)
 // ===========================================================================
@@ -111,11 +111,11 @@
 // =========================================================================//
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include "mikudancestudio/image_sequence_export.hpp"
-#include "mikudancestudio/force_paste.hpp"
-#include "mikudancestudio/animation_curve_host.hpp"
-#include "mikudancestudio/wic_mov_recorder.hpp"
-#include "mikudancestudio/bone_scale.hpp"
+#include "mikumikustudio/image_sequence_export.hpp"
+#include "mikumikustudio/force_paste.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
+#include "mikumikustudio/wic_mov_recorder.hpp"
+#include "mikumikustudio/bone_scale.hpp"
 #include <Windows.h>
 #include <commctrl.h>
 #include <commdlg.h>
@@ -127,23 +127,23 @@
 #include <new>
 #include <string>
 
-#include "mikudancestudio/text_encoding.hpp"
-#include "mikudancestudio/globals.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ui_message.hpp"
-#include "mikudancestudio/ui_translation.hpp"
+#include "mikumikustudio/text_encoding.hpp"
+#include "mikumikustudio/globals.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ui_message.hpp"
+#include "mikumikustudio/ui_translation.hpp"
 #include <algorithm>
 #include <cmath>
-#include "mikudancestudio/accessory_layout.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/mf_h264_recorder.hpp"
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/panel_controls.hpp"
+#include "mikumikustudio/accessory_layout.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/mf_h264_recorder.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/panel_controls.hpp"
 
 #include "dialog_scaffold.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 // ---------------------------------------------------------------------------
 // No offset-style app-state accesses remain in this file.  The one
@@ -1323,12 +1323,12 @@ int ForcePasteMorphTarget(const MMDApp* app) {
     const auto* model = mdl::Mdl(raw);
     if (!model->displayFrames || !model->morphs) return -1;
     int target = -1;
-    for (unsigned i = 0; i < mikudancestudio::mdl::FacialFrameCount(*model); ++i) {
+    for (unsigned i = 0; i < mikumikustudio::mdl::FacialFrameCount(*model); ++i) {
         const auto& row = model->displayFrames[i];
-        if (!row.selected || mikudancestudio::mdl::FrameTargetIndex(row) >= model->morphCount ||
-            model->morphs[mikudancestudio::mdl::FrameTargetIndex(row)].panel == mdl::MorphPanel::system) continue;
-        if (target >= 0 && target != mikudancestudio::mdl::FrameTargetIndex(row)) return -2;
-        target = mikudancestudio::mdl::FrameTargetIndex(row);
+        if (!row.selected || mikumikustudio::mdl::FrameTargetIndex(row) >= model->morphCount ||
+            model->morphs[mikumikustudio::mdl::FrameTargetIndex(row)].panel == mdl::MorphPanel::system) continue;
+        if (target >= 0 && target != mikumikustudio::mdl::FrameTargetIndex(row)) return -2;
+        target = mikumikustudio::mdl::FrameTargetIndex(row);
     }
     return target;
 }
@@ -1530,8 +1530,8 @@ void CmdFileMenu(MMDApp* app, HWND hwnd, std::uint16_t id, std::uint16_t notify)
         // Defect B2-09.
         for (std::int32_t b = 0; b < boneCount; ++b) {
             model = ActiveModel(app);
-            mikudancestudio::mdl::BoneRecord* boneFrames =
-                mikudancestudio::mdl::Bones(model);
+            mikumikustudio::mdl::BoneRecord* boneFrames =
+                mikumikustudio::mdl::Bones(model);
             const mdl::BoneType type = boneFrames[b].type;
             if (type == mdl::BoneType::InertTip ||
                 type == mdl::BoneType::Effector) {
@@ -2787,4 +2787,4 @@ void CmdFileMenu(MMDApp* app, HWND hwnd, std::uint16_t id, std::uint16_t notify)
     }
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

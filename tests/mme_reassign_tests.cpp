@@ -22,12 +22,12 @@
 // MMS_MME_APNG_CONTRACT_TEST=1 requires APNG_TRACE and the installed production
 // fix; isolated fake objects exercise its real wrapper without calling D3D.
 #define NOMINMAX
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/text_encoding.hpp"
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/effect_apng.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/text_encoding.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/effect_apng.hpp"
 #include <MinHook.h>
 #include <commctrl.h>
 #include <commdlg.h>
@@ -57,7 +57,7 @@ extern "C" int ExpGetCurrentObject();
 extern "C" int ExpGetPmdNum();
 extern "C" int ExpGetAcsNum();
 
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 namespace fs = std::filesystem;
 using Microsoft::WRL::ComPtr;
 namespace {

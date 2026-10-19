@@ -1,7 +1,7 @@
-#include "mikudancestudio/frame_limits.hpp"
-#include "mikudancestudio/extended_names.hpp"
-#include "mikudancestudio/display_capacity.hpp"
-#include "mikudancestudio/key_pool.hpp"
+#include "mikumikustudio/frame_limits.hpp"
+#include "mikumikustudio/extended_names.hpp"
+#include "mikumikustudio/display_capacity.hpp"
+#include "mikumikustudio/key_pool.hpp"
 // ===========================================================================
 // VA 0x0049D880 / 0x0049E310 / 0x0049F190 / 0x0049F8C0 /
 //    0x004A4940 / 0x004A49A0 / 0x004A27F0
@@ -92,8 +92,8 @@
 // =========================================================================//
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include "mikudancestudio/bone_scale.hpp"
-#include "mikudancestudio/bone_curve.hpp"
+#include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/bone_curve.hpp"
 #include <Windows.h>
 
 #include <cmath>
@@ -102,16 +102,16 @@
 #include <cstring>
 #include <climits>
 
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/text_encoding.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/text_encoding.hpp"
 
 #include "keyframe_common.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 
 using kfa::Rd32;
@@ -146,7 +146,7 @@ void OverflowBox(unsigned char* m, int limit) {
     // "paste to another frame" command (case 250) can raise from
     // RegisterBoneKey.  ASCII decodes identically under CP932, so the English
     // branch is unaffected.
-    if (mikudancestudio::mdl::Mdl(m)->physicsFlags != 0) {
+    if (mikumikustudio::mdl::Mdl(m)->physicsFlags != 0) {
         sprintf_s(text, 0x100,
                   "You cannot regist over %d point\n"
                   "Please execute 'delete unused frame'", limit);
@@ -366,14 +366,14 @@ int AllocateMorphKeySlot(unsigned char* model, mdl::MorphKey*& keys,
 void RegisterMorphKeyCurrent(unsigned char* model, int morph, int frameArg) {
     unsigned char* const m = model;
     if (m == nullptr || morph < 0 ||
-        (mikudancestudio::mdl::Mdl(m)->physicsMode != 2 && morph == 0) || mikudancestudio::mdl::Morphs(m) == nullptr)
+        (mikumikustudio::mdl::Mdl(m)->physicsMode != 2 && morph == 0) || mikumikustudio::mdl::Morphs(m) == nullptr)
         return;
 
     mdl::MorphKey* keys = mdl::MorphKeys(m);
     std::size_t capacity = mdl::MorphKeyCapacity(keys);
     if(frameArg<0||frameArg>frame_limits::maximum)return;
     const std::uint32_t frame = static_cast<std::uint32_t>(frameArg);
-    const float value = mikudancestudio::mdl::Morphs(m)[morph].value;
+    const float value = mikumikustudio::mdl::Morphs(m)[morph].value;
 
     const auto fill = [&](int index) {
         keys[index].frame = frame;
@@ -463,7 +463,7 @@ bool RegisterBoneKey(unsigned char* model, unsigned char* rec, int frameOffset,
         (btype == mdl::BoneType::UnderIk &&
          (bone.flags & mdl::kBoneFlagFixedAxis) == mdl::kBoneFlagFixedAxis)) {
         float boneAxis[3];
-        if (mikudancestudio::mdl::Mdl(m)->physicsMode == 2) {  // PMX
+        if (mikumikustudio::mdl::Mdl(m)->physicsMode == 2) {  // PMX
             std::memcpy(boneAxis, bone.axis, sizeof boneAxis);
         } else {
             const mdl::BoneRecord& tail = mdl::Bones(m)[bone.tailBone];
@@ -605,7 +605,7 @@ bool RegisterMirroredBoneKey(unsigned char* model, unsigned char* rec,
         (btype == mdl::BoneType::UnderIk &&
          (bone.flags & mdl::kBoneFlagFixedAxis) == mdl::kBoneFlagFixedAxis)) {
         float boneAxis[3];
-        if (mikudancestudio::mdl::Mdl(m)->physicsMode == 2) {
+        if (mikumikustudio::mdl::Mdl(m)->physicsMode == 2) {
             std::memcpy(boneAxis, bone.axis, sizeof boneAxis);
         } else {
             const mdl::BoneRecord& tail = mdl::Bones(m)[bone.tailBone];
@@ -728,7 +728,7 @@ bool RegisterMorphKeyFromRecord(unsigned char* model, const unsigned char* rec,
     int morphIdx = 0;
     const int morphCnt = static_cast<int>(mdl::Mdl(m)->morphCount);
     if (morphCnt <= 0) return true;
-    const mikudancestudio::mdl::MorphRecord* mrec = mikudancestudio::mdl::Morphs(m);
+    const mikumikustudio::mdl::MorphRecord* mrec = mikumikustudio::mdl::Morphs(m);
     if (mrec == nullptr) return true;
     while (std::strncmp(reinterpret_cast<const char*>(rec),
                         mrec->name, sizeof(mrec->name)) != 0) {
@@ -961,7 +961,7 @@ void RegisterDisplayKeyCurrent(unsigned char* model, int frameArg) {
 
     const auto fill = [&](int index) {
         mdl::DisplayKey& rec = keys[index];
-        rec.visible = mikudancestudio::mdl::Mdl(m)->loadComplete;
+        rec.visible = mikumikustudio::mdl::Mdl(m)->loadComplete;
         auto* const ik = mdl::IkStates(rec);
         mdl::IkChain* const chains = mdl::IkChains(m);
         for (std::uint32_t i = 0; i < mdl::Mdl(m)->ikChainCount; ++i)
@@ -1026,7 +1026,7 @@ int MarkKeyTrackRangeByName(unsigned char* model, std::uint32_t from,
 
     // 1. facial display-frame groups (0x4A2806..0x4A2855): SJIS name only
     //    (0x4A2820 inline strcmp), targetIndex roots the morph track.
-    const int facialCount = mikudancestudio::mdl::FacialFrameCount(record);
+    const int facialCount = mikumikustudio::mdl::FacialFrameCount(record);
     if (facialCount > 0) {
         mdl::FrameGroup* const groups = mdl::DisplayFrames(model);
         for (int g = 0; g < facialCount; ++g) {
@@ -1039,7 +1039,7 @@ int MarkKeyTrackRangeByName(unsigned char* model, std::uint32_t from,
                 // This port rejects such a root and returns the same
                 // "nothing marked" result.
                 // Defect MB-19.
-                const int root = static_cast<int>(mikudancestudio::mdl::FrameTargetIndex(groups[g]));
+                const int root = static_cast<int>(mikumikustudio::mdl::FrameTargetIndex(groups[g]));
                 if (root >= static_cast<int>(mdl::MorphKeyCapacity(mdl::MorphKeys(model))))
                     return 0;
                 return MarkTrackRange(mdl::MorphKeys(model), root, from, to);
@@ -1084,7 +1084,7 @@ int MarkKeyTrackRangeByName(unsigned char* model, std::uint32_t from,
                 // index against the bone-key pool rather than traversing from an
                 // unchecked index.
                 // Defect MB-19.
-                const int root = static_cast<int>(mikudancestudio::mdl::FrameTargetIndex(groups[g]));
+                const int root = static_cast<int>(mikumikustudio::mdl::FrameTargetIndex(groups[g]));
                 if (root < 0 ||
                     static_cast<std::size_t>(root) >=
                         mdl::BoneKeyCapacity(record))
@@ -1096,4 +1096,4 @@ int MarkKeyTrackRangeByName(unsigned char* model, std::uint32_t from,
     return 0;
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

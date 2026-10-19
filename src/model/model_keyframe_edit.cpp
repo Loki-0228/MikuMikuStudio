@@ -1,4 +1,4 @@
-#include "mikudancestudio/key_pool.hpp"
+#include "mikumikustudio/key_pool.hpp"
 // ===========================================================================
 // Model keyframe edit helpers used by the left frame editor.
 //   0x0049D410  append one touched bone-key record to the undo slot
@@ -12,9 +12,9 @@
 // ===========================================================================
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include "mikudancestudio/bone_scale.hpp"
-#include "mikudancestudio/bone_curve.hpp"
-#include "mikudancestudio/sequence_scatter.hpp"
+#include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/bone_curve.hpp"
+#include "mikumikustudio/sequence_scatter.hpp"
 #include <Windows.h>
 #include <CommCtrl.h>
 
@@ -24,17 +24,17 @@
 #include <cstring>
 #include <new>
 #include <memory>
-#include "mikudancestudio/mmd_app.hpp"
+#include "mikumikustudio/mmd_app.hpp"
 #include <utility>
 
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/bone_pose_safety.hpp"
-#include "mikudancestudio/physics_bake.hpp"
-#include "mikudancestudio/panel_controls.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/bone_pose_safety.hpp"
+#include "mikumikustudio/physics_bake.hpp"
+#include "mikumikustudio/panel_controls.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 
 mdl::UndoRecord& CurrentUndo(unsigned char* model) {
@@ -63,7 +63,7 @@ void SetFrameEdit(unsigned char* model, int frame) {
 void CaptureAndApplyPose(unsigned char* model,
                          const mdl::BonePoseSnapshot* source,
                          mdl::BonePoseSnapshot* capture, int count) {
-    mikudancestudio::mdl::BoneRecord* bones = mikudancestudio::mdl::Bones(model);
+    mikumikustudio::mdl::BoneRecord* bones = mikumikustudio::mdl::Bones(model);
     unsigned char* selected = mdl::Mdl(model)->bonePhysicsState;
     for (int i = 0; i < count; ++i) {
         const auto& in = source[i];
@@ -97,7 +97,7 @@ void RestoreBakedPhysics(unsigned char* model, const mdl::BonePoseSnapshot* sour
 
 void ApplyPose(unsigned char* model, const mdl::BonePoseSnapshot* source,
                int count) {
-    mikudancestudio::mdl::BoneRecord* bones = mikudancestudio::mdl::Bones(model);
+    mikumikustudio::mdl::BoneRecord* bones = mikumikustudio::mdl::Bones(model);
     unsigned char* selected = mdl::Mdl(model)->bonePhysicsState;
     for (int i = 0; i < count; ++i) {
         const auto& in = source[i];
@@ -197,7 +197,7 @@ void SnapshotPose(unsigned char* model, mdl::UndoRecord& undo) {
                             sizeof(mdl::BonePoseSnapshot));
 
     auto* dst = static_cast<mdl::BonePoseSnapshot*>(slot);
-    mikudancestudio::mdl::BoneRecord* pose = mikudancestudio::mdl::Bones(model);
+    mikumikustudio::mdl::BoneRecord* pose = mikumikustudio::mdl::Bones(model);
     unsigned char* selected = mdl::Mdl(model)->bonePhysicsState;
     for (std::int32_t i = 0; i < count; ++i) {
         auto& out = dst[i];
@@ -294,8 +294,8 @@ void BoneKeyOverflow(unsigned char* model) {
     static const char kJpTitle[] = "\xcc\xda\xb0\xd1\x93\x6f\x98\x5e";
     char text[0x100];
     const int capacity =
-        static_cast<int>(mdl::BoneKeyCapacity(*mikudancestudio::mdl::Mdl(model)));
-    if (mikudancestudio::mdl::Mdl(model)->physicsFlags != 0) {
+        static_cast<int>(mdl::BoneKeyCapacity(*mikumikustudio::mdl::Mdl(model)));
+    if (mikumikustudio::mdl::Mdl(model)->physicsFlags != 0) {
         sprintf_s(text, sizeof(text),
                   "You cannot regist over %d point\n"
                   "Please execute 'delete unused frame'",
@@ -459,8 +459,8 @@ int RegisterBonePoseAtFrame(unsigned char* model, int boneIndex,  // was Sub4B38
         fill(freeIndex);
     }
 
-    if (frame > mikudancestudio::mdl::Mdl(model)->maxFrame)
-        mikudancestudio::mdl::Mdl(model)->maxFrame = frame;
+    if (frame > mikumikustudio::mdl::Mdl(model)->maxFrame)
+        mikumikustudio::mdl::Mdl(model)->maxFrame = frame;
     return static_cast<int>(frame);
 }
 
@@ -664,9 +664,9 @@ int MarkSelectedBoneKeysAtFrame(unsigned char* model, int frame) {
     }
     mdl::BoneKey* const keys = mdl::BoneKeys(model);
     const std::int32_t boneCount =
-        static_cast<std::int32_t>(mikudancestudio::mdl::Mdl(model)->boneCount);
+        static_cast<std::int32_t>(mikumikustudio::mdl::Mdl(model)->boneCount);
     const unsigned char* const selected =
-        mikudancestudio::mdl::Mdl(model)->boneSelection;
+        mikumikustudio::mdl::Mdl(model)->boneSelection;
     if (keys == nullptr || boneCount <= 0 || selected == nullptr ||
         frame < 0) {
         return 0;
@@ -709,8 +709,8 @@ void DeleteMarkedModelKeys(unsigned char* model, int frame) {  // was Sub4A09E0,
     mdl::BoneKey* const boneKeys = mdl::BoneKeys(model);
     mdl::MorphKey* const morphKeys = mdl::MorphKeys(model);
     mdl::DisplayKey* const displayKeys = mdl::DisplayKeys(model);
-    const std::size_t boneCount = mikudancestudio::mdl::Mdl(model)->boneCount;
-    const std::size_t morphCount = mikudancestudio::mdl::Mdl(model)->morphCount;
+    const std::size_t boneCount = mikumikustudio::mdl::Mdl(model)->boneCount;
+    const std::size_t morphCount = mikumikustudio::mdl::Mdl(model)->morphCount;
     // Hoisted once: the sweeps below cover the pool's whole runtime capacity,
     // and this function never grows it.
     const std::size_t boneKeyCapacity = mdl::BoneKeyCapacity(*mdl::Mdl(model));
@@ -764,11 +764,11 @@ void DeleteMarkedModelKeys(unsigned char* model, int frame) {  // was Sub4A09E0,
         rec.visible = 1;
         auto* ik = mdl::IkStates(rec);
         for (std::uint32_t j = 0;
-             j < mikudancestudio::mdl::Mdl(model)->ikChainCount; ++j)
+             j < mikumikustudio::mdl::Mdl(model)->ikChainCount; ++j)
             ik[j] = 1;
         auto* selectors = mdl::SelectorStates(rec);
         for (std::uint32_t j = 0;
-             j < mikudancestudio::mdl::Mdl(model)->boneOrderCount; ++j) {
+             j < mikumikustudio::mdl::Mdl(model)->boneOrderCount; ++j) {
             selectors[j].modelIndex = -1;
             selectors[j].boneIndex = 0;
         }
@@ -1114,7 +1114,7 @@ void SyncModelEditControls(unsigned char* model) {  // was Sub4A02C0
         return;
     const HWND hwnd = *reinterpret_cast<HWND*>(model);
     SendMessageA(GetDlgItem(hwnd, panel::kModelVisibleCheckbox), BM_SETCHECK,
-                 mikudancestudio::mdl::Mdl(model)->loadComplete != 0 ? BST_CHECKED : BST_UNCHECKED, 0);
+                 mikumikustudio::mdl::Mdl(model)->loadComplete != 0 ? BST_CHECKED : BST_UNCHECKED, 0);
 
     mdl::IkChain* chains = mdl::IkChains(model);
     if (chains != nullptr) {
@@ -1150,4 +1150,4 @@ void RebuildBoneKeyInterpolation(unsigned char* model, int index, int lane) {  /
     RebuildBoneInterpolation(model, index, lane);
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

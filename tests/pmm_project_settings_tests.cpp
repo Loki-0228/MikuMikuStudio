@@ -1,12 +1,12 @@
-#include "mikudancestudio/autosave.hpp"
-#include "mikudancestudio/extended_names.hpp"
-#include "mikudancestudio/display_capacity.hpp"
-#include "mikudancestudio/save_compatibility.hpp"
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/frame_limits.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/text_encoding.hpp"
+#include "mikumikustudio/autosave.hpp"
+#include "mikumikustudio/extended_names.hpp"
+#include "mikumikustudio/display_capacity.hpp"
+#include "mikumikustudio/save_compatibility.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/frame_limits.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/text_encoding.hpp"
 #include <memory>
 // MAINTENANCE: regression-keep; PMM settings, portable processor matching and unknown fields.
 #define WIN32_LEAN_AND_MEAN
@@ -25,16 +25,16 @@
 #include <type_traits>
 #include <utility>
 #include <vector>
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/pmm_project_settings.hpp"
-#include "mikudancestudio/view_options.hpp"
-#include "mikudancestudio/bone_scale.hpp"
-#include "mikudancestudio/model.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/pmm_project_settings.hpp"
+#include "mikumikustudio/view_options.hpp"
+#include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/model.hpp"
 
-using namespace mikudancestudio;
-namespace ext = mikudancestudio::pmm_extension;
-namespace settings = mikudancestudio::pmm_settings;
+using namespace mikumikustudio;
+namespace ext = mikumikustudio::pmm_extension;
+namespace settings = mikumikustudio::pmm_settings;
 namespace {
 bool expectedInvalidSave=false;
 bool invalidSaveDialogHandled=false;

@@ -1,11 +1,11 @@
-#include "mikudancestudio/app_layout.hpp"
+#include "mikumikustudio/app_layout.hpp"
 // MAINTENANCE: regression-keep; scaled shapes, joint frames and physics readback.
-#include "mikudancestudio/bone_scale.hpp"
-#include "mikudancestudio/dynamics_world.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/physics_scale.hpp"
-#include "mikudancestudio/physics_scene.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/dynamics_world.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/physics_scale.hpp"
+#include "mikumikustudio/physics_scene.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 #include <BulletDynamics/ConstraintSolver/btGeneric6DofSpringConstraint.h>
 #include <array>
 #include <btBulletDynamicsCommon.h>
@@ -13,7 +13,7 @@
 #include <cstdio>
 #include <cstring>
 #include <memory>
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 namespace {
 int failures = 0;
 void Check(bool pass, const char *text) {

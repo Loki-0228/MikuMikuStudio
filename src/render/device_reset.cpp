@@ -1,12 +1,12 @@
-#include "mikudancestudio/mmv4mms.hpp"
-#include "mikudancestudio/shadow_filter.hpp"
-#include "mikudancestudio/viewport_render_scale.hpp"
-#include "mikudancestudio/model_vertex_cache.hpp"
-#include "mikudancestudio/native_mesh.hpp"
-#include "mikudancestudio/transparent_capture.hpp"
-#include "mikudancestudio/build_profile.hpp"
+#include "mikumikustudio/mmv4mms.hpp"
+#include "mikumikustudio/shadow_filter.hpp"
+#include "mikumikustudio/viewport_render_scale.hpp"
+#include "mikumikustudio/model_vertex_cache.hpp"
+#include "mikumikustudio/native_mesh.hpp"
+#include "mikumikustudio/transparent_capture.hpp"
+#include "mikumikustudio/build_profile.hpp"
 #if !MMD_ORIGINAL_PROFILE
-#include "mikudancestudio/transparent_peeling.hpp"
+#include "mikumikustudio/transparent_peeling.hpp"
 #endif
 // ===========================================================================
 // VA 0x00440DB0 - PostDeviceReset (app method, thiscall this = Block)
@@ -34,13 +34,13 @@
 
 #include <cstdint>
 
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/d3dx_effect.hpp"
-#include "mikudancestudio/runtime_log.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/d3dx_effect.hpp"
+#include "mikumikustudio/runtime_log.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 #include "../app/device_lost_wait.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 
 template <typename ComPtr>
@@ -138,4 +138,4 @@ bool PostDeviceReset(MMDApp* app) {
     return true;
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

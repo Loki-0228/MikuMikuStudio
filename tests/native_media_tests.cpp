@@ -1,7 +1,7 @@
 #define NOMINMAX
-#include "mikudancestudio/native_media.hpp"
-#include "mikudancestudio/wic_mov_recorder.hpp"
-#include "mikudancestudio/wave_audio_context.hpp"
+#include "mikumikustudio/native_media.hpp"
+#include "mikumikustudio/wic_mov_recorder.hpp"
+#include "mikumikustudio/wave_audio_context.hpp"
 #include <filesystem>
 #include <fstream>
 #include <cstdio>
@@ -13,7 +13,7 @@
 #include <chrono>
 #include <cstring>
 #include <thread>
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 namespace fs = std::filesystem;
 void Check(bool ok, const char* why) { if (!ok) { std::printf("FAIL %s\n", why); std::exit(1); } }
 void CheckResult(bool ok, const std::wstring& error, const char* why) {

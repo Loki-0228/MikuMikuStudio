@@ -1,20 +1,20 @@
 #define NOMINMAX
-#include "mikudancestudio/save_compatibility.hpp"
-#include "mikudancestudio/extended_names.hpp"
-#include "mikudancestudio/frame_limits.hpp"
-#include "mikudancestudio/display_capacity.hpp"
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/text_encoding.hpp"
-#include "mikudancestudio/panel_controls.hpp"
+#include "mikumikustudio/save_compatibility.hpp"
+#include "mikumikustudio/extended_names.hpp"
+#include "mikumikustudio/frame_limits.hpp"
+#include "mikumikustudio/display_capacity.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/text_encoding.hpp"
+#include "mikumikustudio/panel_controls.hpp"
 #include <Windows.h>
 #include <array>
 #include <filesystem>
 #include <map>
 #include <set>
 
-namespace mikudancestudio::save_compatibility {
+namespace mikumikustudio::save_compatibility {
 namespace {
 void Invalid(Report& report,const std::wstring& reason) {
     report.invalidData=true;

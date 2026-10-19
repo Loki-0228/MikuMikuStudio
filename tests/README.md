@@ -87,13 +87,13 @@
 | `physics_pose_tests.cpp` | 骨骼姿态与物理登记中的非有限数值防护：PMM v1/v2 读取与 `RegisterBonePoseAtFrame` 登记时把 NaN/Inf 位置与旋转修复为可用值且保留正常的非单位四元数，物理回写后异常刚体按跟随矩阵复位，超大关节距离用双精度算回并夹到半径界。含样例 PMM 的 23 条无效关键帧回归与修复前后对照入口。 |
 | `pmx_joint_tests.cpp` | PMX joint 端点校验：刚体 A 缺失、刚体 B 缺失、双方缺失、索引越界、刚体表为空与刚体未创建时，该 joint 以约束号 `-1` 无效化并保留原始编号与名称；核对中日英三语警告标题与正文，以及关闭模型时只回收自己的约束、不误删其他模型的 0 号约束。 |
 
-部分测试需要 Win32 窗口、D3D 设备或 DLL，不能将沙箱/硬件初始化失败视为功能通过。测试目标统一注册在仓库根目录的 `CMakeLists.txt`（`tests/` 下没有 CMakeLists.txt），部分目标受 `MIKUDANCESTUDIO_BUILD_*` 选项控制。`ctest --test-dir build -C Release -N` 列出当前构建配置实际注册的项目，README 不代替该清单：注册数量随 CMake 选项与源码变化，以该命令的输出为准。
+部分测试需要 Win32 窗口、D3D 设备或 DLL，不能将沙箱/硬件初始化失败视为功能通过。测试目标统一注册在仓库根目录的 `CMakeLists.txt`（`tests/` 下没有 CMakeLists.txt），部分目标受 `MIKUMIKUSTUDIO_BUILD_*` 选项控制。`ctest --test-dir build -C Release -N` 列出当前构建配置实际注册的项目，README 不代替该清单：注册数量随 CMake 选项与源码变化，以该命令的输出为准。
 
 ## 手动验证与性能：按用途保留
 
 | 标记 | 文件 | 依赖与清理条件 |
 | --- | --- | --- |
-| `integration-manual` | `scene_lifecycle_tests.cpp` | 需要本地 PMM 与素材；普通目标与 MME 目标共用同一份源码，MME 目标还需外部插件。`--startup-view` 在仅执行过 `InitDefaults`、窗口初始化与 D3D 初始化的状态下核对启动视点（相机面板、cameraPos = (0, 10, 0)、距离 -45、两个视图偏移清零、地面原点落在 `atan(10/45)`），并断言一次帧求值（`ResetAppState` + `ReloadModels`）不会改变世界矩阵与视图矩阵。`--playback-view` 验证选择模型后按 P 播放与停止时均保持自由视角，播放过程中的旋转、平移、缩放有效，并隔离残留的镜头骨骼目标与延迟刷新。`--view-tools` 验证以模型首骨骼或选中骨骼为旋转中心、绑定相机的平移与缩放及登记回读、骨骼批量变换与撤销重做。设置环境变量 `MIKUDANCESTUDIO_HUD_PREVIEW_DIR` 时，该模式另外把相机态与配件态的整帧写进该目录（`hud-camera-rows.png`、`hud-accessory-rows.png`），用于核对两块操作按钮行；不设置时不写文件。MME 目标的 `--material-names` 模式核对由插件实际导入的材质名查询结果。不得以“与单元测试重复”为由删除本测试；只有在替代测试覆盖真实加载、渲染、物理、编辑与重载之后，才可考虑合并。 |
+| `integration-manual` | `scene_lifecycle_tests.cpp` | 需要本地 PMM 与素材；普通目标与 MME 目标共用同一份源码，MME 目标还需外部插件。`--startup-view` 在仅执行过 `InitDefaults`、窗口初始化与 D3D 初始化的状态下核对启动视点（相机面板、cameraPos = (0, 10, 0)、距离 -45、两个视图偏移清零、地面原点落在 `atan(10/45)`），并断言一次帧求值（`ResetAppState` + `ReloadModels`）不会改变世界矩阵与视图矩阵。`--playback-view` 验证选择模型后按 P 播放与停止时均保持自由视角，播放过程中的旋转、平移、缩放有效，并隔离残留的镜头骨骼目标与延迟刷新。`--view-tools` 验证以模型首骨骼或选中骨骼为旋转中心、绑定相机的平移与缩放及登记回读、骨骼批量变换与撤销重做。设置环境变量 `MIKUMIKUSTUDIO_HUD_PREVIEW_DIR` 时，该模式另外把相机态与配件态的整帧写进该目录（`hud-camera-rows.png`、`hud-accessory-rows.png`），用于核对两块操作按钮行；不设置时不写文件。MME 目标的 `--material-names` 模式核对由插件实际导入的材质名查询结果。不得以“与单元测试重复”为由删除本测试；只有在替代测试覆盖真实加载、渲染、物理、编辑与重载之后，才可考虑合并。 |
 | `benchmark` | `frame_benchmark.cpp` | 普通/MME 性能目标共用源码，结果依赖设备、模型、效果、配置。保留工具，过期结果可按清理清单 C07 归档。 |
 | `hardware-manual` | `d3d12_interop_tests.cpp` | D3D9/D3D12 互操作验证，显式构建运行；当前不在 CTest 默认回归集。 |
 | `hardware-manual` | `d3d12_skinning_tests.cpp` | D3D12 骨骼计算及正式 D3D9 缓冲桥接验证，需本地 PMD/PMX 素材及硬件设备；当前不在 CTest 默认回归集。 |
@@ -147,7 +147,7 @@ MikuMikuDance.exe <另一个新输出前缀> 1 --emm-default-off [素材PMM绝�
 
 ## 密集透明累积专项
 
-`model_alpha_occlusion_tests --low-alpha` 使用内置 SM3 资源 118，比较 256 层 alpha=1/255 和 512 层 alpha=2/255 的黑色面在白底上的结果与双精度解析式，容差 2，并核对最终 A=255。该模式明确选择最高档；`--peel-budget` 是保留的历史参数名，选择高档直接排序完整三角形，使用 1152 层检查最近的绿色层仍显示，不再表示固定的 1024 层预算。最高档以 `MIKUDANCESTUDIO_TRACE_FILE` 的实际层数、`complete` 与 `committed` 核对完整剥离，不能仅凭最终像素把回退误报为剥离通过。背景窗口隐藏，像素来自目标读回。历史实现见[浮点合成修复](../docs/records/rendering/transparency.md#record-cloud-float-compositing)，当前夹具与档位复核见[透明排序回归复核](../docs/records/rendering/transparency.md#record-transparent-sort-validation)。
+`model_alpha_occlusion_tests --low-alpha` 使用内置 SM3 资源 118，比较 256 层 alpha=1/255 和 512 层 alpha=2/255 的黑色面在白底上的结果与双精度解析式，容差 2，并核对最终 A=255。该模式明确选择最高档；`--peel-budget` 是保留的历史参数名，选择高档直接排序完整三角形，使用 1152 层检查最近的绿色层仍显示，不再表示固定的 1024 层预算。最高档以 `MIKUMIKUSTUDIO_TRACE_FILE` 的实际层数、`complete` 与 `committed` 核对完整剥离，不能仅凭最终像素把回退误报为剥离通过。背景窗口隐藏，像素来自目标读回。历史实现见[浮点合成修复](../docs/records/rendering/transparency.md#record-cloud-float-compositing)，当前夹具与档位复核见[透明排序回归复核](../docs/records/rendering/transparency.md#record-transparent-sort-validation)。
 
 三个专项均支持附加 `--msaa`，使用实际 4x 目标和同尺寸 resolve 后读回；硬件不支持时明确失败。MSAA 三项也注册 CTest。`--intersections` 同时覆盖不透明表面夹在两个透明表面之间，保证后方颜色不会混进前方透明层。
 

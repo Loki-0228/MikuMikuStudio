@@ -3,7 +3,7 @@
 #define NOMINMAX
 #include <Windows.h>
 #include <MinHook.h>
-#include "mikudancestudio/runtime_log.hpp"
+#include "mikumikustudio/runtime_log.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
@@ -16,12 +16,12 @@
 #if !defined(MMS_RUNTIME_LOG_TESTS)
 #error runtime_log_tests requires MMS_RUNTIME_LOG_TESTS for the in-flight crash probe
 #endif
-namespace mikudancestudio::runtime_log::testing {
+namespace mikumikustudio::runtime_log::testing {
 void OnNextWriteClaimed(void (*probe)() noexcept) noexcept;
 }
 
 namespace fs = std::filesystem;
-namespace diagnostics = mikudancestudio::runtime_log;
+namespace diagnostics = mikumikustudio::runtime_log;
 namespace {
 unsigned checks = 0;
 bool blocked = false;

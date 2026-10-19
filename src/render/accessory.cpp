@@ -1,7 +1,7 @@
-#include "mikudancestudio/original_import.hpp"
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/native_mesh.hpp"
-#include "mikudancestudio/deformed_mesh_capture.hpp"
+#include "mikumikustudio/original_import.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/native_mesh.hpp"
+#include "mikumikustudio/deformed_mesh_capture.hpp"
 // ===========================================================================
 // Accessory object, loader and render helpers
 //   0x00460B30  application slot/UI loader
@@ -10,7 +10,7 @@
 //   0x004C55C0  effect renderer
 //   0x004C5F40  .x/.vac object loader
 // ===========================================================================
-#include "mikudancestudio/perf_timing.hpp"
+#include "mikumikustudio/perf_timing.hpp"
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
@@ -25,24 +25,24 @@
 #include <cwchar>
 #include <new>
 
-#include "mikudancestudio/text_encoding.hpp"
-#include "mikudancestudio/ui_translation.hpp"
-#include "mikudancestudio/d3d_object_guard.hpp"
-#include "mikudancestudio/runtime_log.hpp"
-#include "mikudancestudio/accessory_layout.hpp"
-#include "mikudancestudio/d3dx_effect.hpp"
-#include "mikudancestudio/d3dx_mesh.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/animation_curve_host.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/panel_controls.hpp"
+#include "mikumikustudio/text_encoding.hpp"
+#include "mikumikustudio/ui_translation.hpp"
+#include "mikumikustudio/d3d_object_guard.hpp"
+#include "mikumikustudio/runtime_log.hpp"
+#include "mikumikustudio/accessory_layout.hpp"
+#include "mikumikustudio/d3dx_effect.hpp"
+#include "mikumikustudio/d3dx_mesh.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/panel_controls.hpp"
 
-#include "mikudancestudio/texture_lookup.hpp"
-#include "mikudancestudio/draw_order.hpp"
-#include "mikudancestudio/shadow_filter.hpp"
+#include "mikumikustudio/texture_lookup.hpp"
+#include "mikumikustudio/draw_order.hpp"
+#include "mikumikustudio/shadow_filter.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 void RefreshRequest(int area);
 void PostLanguageSweep2(MMDApp* app);  // VA 0x0040D070, was declared here as
                                        // Sub40D070 (real body: ui_view_refresh.cpp)
@@ -108,12 +108,12 @@ void ReleaseCom(void* object) {
     reinterpret_cast<IUnknown*>(object)->Release();  // vtable slot 2
 }
 
-// Porting-era trace under MIKUDANCESTUDIO_PMM_TRACE_DIR (CMake option
-// MIKUDANCESTUDIO_DIAG, default OFF); the OFF stub keeps the call sites
+// Porting-era trace under MIKUMIKUSTUDIO_PMM_TRACE_DIR (CMake option
+// MIKUMIKUSTUDIO_DIAG, default OFF); the OFF stub keeps the call sites
 // valid and inlines away to nothing.
-#ifdef MIKUDANCESTUDIO_DIAG
+#ifdef MIKUMIKUSTUDIO_DIAG
 void TraceAccessoryLoadStage(const char* stage, const void* value) {
-    const char* directory = std::getenv("MIKUDANCESTUDIO_PMM_TRACE_DIR");
+    const char* directory = std::getenv("MIKUMIKUSTUDIO_PMM_TRACE_DIR");
     if (directory == nullptr || directory[0] == '\0')
         return;
     char path[MAX_PATH];
@@ -136,7 +136,7 @@ IDirect3DTexture9* CachedTexture(D3DRenderer* sub, const wchar_t* path) {
 
 using MeshDrawSubset = HRESULT(__stdcall*)(void*, DWORD);
 
-// Field diagnostic (active only while MIKUDANCESTUDIO_TRACE_FILE names a path):
+// Field diagnostic (active only while MIKUMIKUSTUDIO_TRACE_FILE names a path):
 // snapshots the first qwords of each accessory mesh's object header on first
 // draw and reports the first frame on which they change.  The reported crash
 // sits inside ID3DXMesh::DrawSubset, which binds the mesh's own device and
@@ -147,7 +147,7 @@ void TraceMeshHeader(void* mesh) noexcept {
     static bool resolved = false;
     if (!resolved) {
         resolved = true;
-        path = std::getenv("MIKUDANCESTUDIO_TRACE_FILE");
+        path = std::getenv("MIKUMIKUSTUDIO_TRACE_FILE");
     }
     if (path == nullptr || path[0] == '\0')
         return;
@@ -182,12 +182,12 @@ void TraceMeshHeader(void* mesh) noexcept {
 
 HRESULT DrawSubset(void* accessory, DWORD index) {
     // Bisect switch for the crash investigation: with
-    // MIKUDANCESTUDIO_SKIP_ACCESSORY_DRAW set, the accessory mesh draw is not
+    // MIKUMIKUSTUDIO_SKIP_ACCESSORY_DRAW set, the accessory mesh draw is not
     // issued at all.  If the field crash disappears, the corruption lives in
     // this draw path; if it stays, the accessory draw is only the victim.
     // Unset (the shipped case) costs one cached env probe.
     static const bool skip = [] {
-        const char* value = std::getenv("MIKUDANCESTUDIO_SKIP_ACCESSORY_DRAW");
+        const char* value = std::getenv("MIKUMIKUSTUDIO_SKIP_ACCESSORY_DRAW");
         return value != nullptr && value[0] != '\0' && value[0] != '0';
     }();
     if (skip)
@@ -245,7 +245,7 @@ void AccessoryPlacement(MMDApp* app, void* accessory, Matrix* world) {
     auto* model = app->ModelSlot(modelSlot);
     if (model == nullptr)
         return;
-    auto* bones = mikudancestudio::mdl::Bones(model);
+    auto* bones = mikumikustudio::mdl::Bones(model);
     const int boneCount = mdl::Mdl(model)->boneCount;
     const int boneIndex = std::max(mdl::Accessory(accessory)->parentBone, 0);
     // Deliberate hardening: the original placement function tests the parent slot
@@ -368,10 +368,10 @@ void SetAccessoryLight(MMDApp* app, IDirect3DDevice9* device,
 }
 
 // Diagnostic-only real-time trace.  Nothing is opened (and no file is ever
-// created) unless MIKUDANCESTUDIO_TRACE_FILE names a path, so a normal run -
+// created) unless MIKUMIKUSTUDIO_TRACE_FILE names a path, so a normal run -
 // including every release run - still writes nothing to disk.
 void AccessoryTrace(const char* format, ...) {
-    const char* path = std::getenv("MIKUDANCESTUDIO_TRACE_FILE");
+    const char* path = std::getenv("MIKUMIKUSTUDIO_TRACE_FILE");
     if (path == nullptr || path[0] == '\0')
         return;
     FILE* stream = std::fopen(path, "a");
@@ -1310,4 +1310,4 @@ void RenderAccessoriesEffectRange(MMDApp* app, int firstOrder,
     AccessoryTrace("acs tail: after SetAccessoryLight");
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

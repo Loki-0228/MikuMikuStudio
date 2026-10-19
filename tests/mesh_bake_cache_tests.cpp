@@ -13,8 +13,8 @@
 
 #define NOMINMAX
 
-#include "mikudancestudio/mesh_bake_cache.hpp"
-#include "mikudancestudio/mmd_app.hpp"
+#include "mikumikustudio/mesh_bake_cache.hpp"
+#include "mikumikustudio/mmd_app.hpp"
 
 #include <Alembic/AbcCoreOgawa/All.h>
 #include <Alembic/AbcGeom/All.h>
@@ -37,39 +37,39 @@
 #include <string>
 #include <vector>
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 // The regression never creates a window, a device or a renderer, and the module
 // only reads the two slot arrays.  Supplying the constructor here keeps the test
 // free of the core library and of the whole GPU/UI link surface.
 MMDApp::MMDApp() {}
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio
 
 namespace {
 
 namespace Abc = Alembic::Abc;
 namespace Geom = Alembic::AbcGeom;
 
-using mikudancestudio::MMDApp;
-using mikudancestudio::MMDAppState;
-using mikudancestudio::deformed_mesh_capture::Mesh;
-using mikudancestudio::kModelSlotCount;
-namespace mdl = mikudancestudio::mdl;
-using mikudancestudio::mesh_bake_cache::Clear;
-using mikudancestudio::mesh_bake_cache::Empty;
-using mikudancestudio::mesh_bake_cache::Forget;
-using mikudancestudio::mesh_bake_cache::Has;
-using mikudancestudio::mesh_bake_cache::Install;
-using mikudancestudio::mesh_bake_cache::kRecordKey;
-using mikudancestudio::mesh_bake_cache::kRecordKeyV3;
-using mikudancestudio::mesh_bake_cache::Load;
-using mikudancestudio::mesh_bake_cache::Sample;
-using mikudancestudio::mesh_bake_cache::Save;
-using mikudancestudio::mesh_bake_cache::BindGeneration;
-using mikudancestudio::mesh_bake_cache::EntryInfo;
-using mikudancestudio::mesh_bake_cache::Info;
-namespace extension = mikudancestudio::pmm_extension;
+using mikumikustudio::MMDApp;
+using mikumikustudio::MMDAppState;
+using mikumikustudio::deformed_mesh_capture::Mesh;
+using mikumikustudio::kModelSlotCount;
+namespace mdl = mikumikustudio::mdl;
+using mikumikustudio::mesh_bake_cache::Clear;
+using mikumikustudio::mesh_bake_cache::Empty;
+using mikumikustudio::mesh_bake_cache::Forget;
+using mikumikustudio::mesh_bake_cache::Has;
+using mikumikustudio::mesh_bake_cache::Install;
+using mikumikustudio::mesh_bake_cache::kRecordKey;
+using mikumikustudio::mesh_bake_cache::kRecordKeyV3;
+using mikumikustudio::mesh_bake_cache::Load;
+using mikumikustudio::mesh_bake_cache::Sample;
+using mikumikustudio::mesh_bake_cache::Save;
+using mikumikustudio::mesh_bake_cache::BindGeneration;
+using mikumikustudio::mesh_bake_cache::EntryInfo;
+using mikumikustudio::mesh_bake_cache::Info;
+namespace extension = mikumikustudio::pmm_extension;
 
 void Check(bool ok, const std::string& why) {
     if (ok) return;
@@ -301,7 +301,7 @@ std::size_t CountSidecars(const std::filesystem::path& directory) {
     std::size_t count = 0;
     for (const auto& entry : std::filesystem::directory_iterator(directory, ec)) {
         const auto name = entry.path().filename().u8string();
-        const std::string suffix = mikudancestudio::mesh_bake_cache::kSidecarSuffix;
+        const std::string suffix = mikumikustudio::mesh_bake_cache::kSidecarSuffix;
         if (name.size() > suffix.size() &&
             name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0)
             ++count;
@@ -630,7 +630,7 @@ void CachePersistence(const std::filesystem::path& directory, Scene& scene) {
     Check(entries[0].kind == 0 && entries[0].slot == 0, "the model slot is recorded");
     Check(entries[1].kind == 1 && entries[1].slot == 2,
           "the accessory slot is recorded");
-    const std::string suffix = mikudancestudio::mesh_bake_cache::kSidecarSuffix;
+    const std::string suffix = mikumikustudio::mesh_bake_cache::kSidecarSuffix;
     for (const auto& entry : entries) {
         Check(entry.path.size() > suffix.size() &&
                   entry.path.compare(entry.path.size() - suffix.size(),
@@ -1021,7 +1021,7 @@ void NativeRange(const std::filesystem::path& directory,Scene& scene){
     Clear();const auto archive=directory/L"native-range.abc";std::string error;
     WriteArchive(archive,{{kModelChild,100.f}},3,30.,1.,true);
     Check(Install(scene.app,archive,error),"install bounded source-vertex patch: "+error);
-    namespace cache=mikudancestudio::mesh_bake_cache;
+    namespace cache=mikumikustudio::mesh_bake_cache;
     Check(cache::RangeLimited(scene.Model0()),"range policy is read from native archive");
     Check(!cache::ActiveAt(scene.Model0(),29./30.)&&cache::ActiveAt(scene.Model0(),1.)&&cache::ActiveAt(scene.Model0(),32.9/30.)&&!cache::ActiveAt(scene.Model0(),33./30.),"cache and discrete FX switches share frame interval");
     const auto meshes=SampleAt(scene.Model0(),31./30.,"source-vertex patch");
@@ -1041,7 +1041,7 @@ void NativeRange(const std::filesystem::path& directory,Scene& scene){
 // changed under it, and the version 2 record is what carries the scale across a
 // project save.
 void TimeScale(const std::filesystem::path& directory, Scene& scene) {
-    namespace cache = mikudancestudio::mesh_bake_cache;
+    namespace cache = mikumikustudio::mesh_bake_cache;
     Clear();
     Check(Empty(), "the retime stage starts with an empty cache");
     scene.BindModel0();
@@ -1558,7 +1558,7 @@ void CutoffGenerations(const std::filesystem::path& directory, Scene& scene) {
     Check(Load(scene.app,project,reloaded,error),"load the cleared v3 project: "+error);
     Check(Empty()&&!Has(scene.Model0())&&!Has(scene.Model1()),"cleared v3 caches do not resurrect after save and reload");
     Check(extension::Find(reloaded,kRecordKey)==nullptr&&
-          extension::Find(reloaded,mikudancestudio::mesh_bake_cache::kRecordKeyV2)==nullptr&&
+          extension::Find(reloaded,mikumikustudio::mesh_bake_cache::kRecordKeyV2)==nullptr&&
           extension::Find(reloaded,kRecordKeyV3)==nullptr,"clear removes all known cache record versions");
     Clear();
     Trace("per-object cutoff layers and generation bindings");

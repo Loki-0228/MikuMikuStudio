@@ -1,10 +1,10 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include "mikudancestudio/native_media.hpp"
+#include "mikumikustudio/native_media.hpp"
 #include <mfapi.h>
 #include <mfidl.h>
 #include <mfreadwrite.h>
-#include "mikudancestudio/mf_optional.hpp"
+#include "mikumikustudio/mf_optional.hpp"
 #include <mferror.h>
 #include <wrl/client.h>
 #include <algorithm>
@@ -20,7 +20,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace mikudancestudio::media {
+namespace mikumikustudio::media {
 namespace {
 using Microsoft::WRL::ComPtr;
 struct Failure { HRESULT hr; const wchar_t* operation; };

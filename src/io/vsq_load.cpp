@@ -1,5 +1,5 @@
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/ui_translation.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/ui_translation.hpp"
 // ===========================================================================
 // VA 0x00435FE0..0x00438CC9 - LoadVsqFile  (VSQ load / auto lipsync)
 // ===========================================================================
@@ -132,13 +132,13 @@
 #include <share.h>
 #include <sys/stat.h>
 
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/panel_controls.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/panel_controls.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 
 // ---- JP-locale texts, verbatim Shift-JIS bytes from .rdata ---------------
@@ -974,4 +974,4 @@ void LoadVsqFile(MMDApp* app, const wchar_t* path) {  // was Sub435FE0
         AviBgOverlayRefresh(app);                                   // 0x4168D0
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

@@ -1,19 +1,19 @@
 // Explicit hidden production test: no windows are shown or activated.
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include "mikudancestudio/autosave.hpp"
-#include "mikudancestudio/local_data_path.hpp"
-#include "mikudancestudio/antialias.hpp"
-#include "mikudancestudio/processor_settings.hpp"
-#include "mikudancestudio/viewport_corner_settings.hpp"
-#include "mikudancestudio/recent_projects.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/pmm_extension.hpp"
-#include "mikudancestudio/scene_ownership.hpp"
-#include "mikudancestudio/runtime_log.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/ui_translation.hpp"
+#include "mikumikustudio/autosave.hpp"
+#include "mikumikustudio/local_data_path.hpp"
+#include "mikumikustudio/antialias.hpp"
+#include "mikumikustudio/processor_settings.hpp"
+#include "mikumikustudio/viewport_corner_settings.hpp"
+#include "mikumikustudio/recent_projects.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/pmm_extension.hpp"
+#include "mikumikustudio/scene_ownership.hpp"
+#include "mikumikustudio/runtime_log.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/ui_translation.hpp"
 #include "../src/window/autosave_dialog.hpp"
 #include <MinHook.h>
 #include <filesystem>
@@ -44,9 +44,9 @@ void operator delete[](void* p) noexcept { std::free(p); }
 void operator delete(void* p, std::size_t) noexcept { std::free(p); }
 void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
 
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 namespace fs = std::filesystem;
-namespace as = mikudancestudio::autosave;
+namespace as = mikumikustudio::autosave;
 namespace {
 unsigned checks = 0, warnings = 0;
 bool expectedWarning = false, crashChild = false;
@@ -253,7 +253,7 @@ int wmain(int argc, wchar_t** argv) {
     Check(fullWarningMode || !fs::exists(crashDirectory), "test requires a fresh isolated EXE directory");
     fs::create_directories(root);
     const auto config = root / L"autosave.ini";
-    SetEnvironmentVariableW(L"MIKUDANCESTUDIO_AUTOSAVE_CONFIG", config.c_str());
+    SetEnvironmentVariableW(L"MIKUMIKUSTUDIO_AUTOSAVE_CONFIG", config.c_str());
     SetEnvironmentVariableW(L"LOCALAPPDATA", (root / L"profile").c_str());
     as::Result allocationResult = as::Result::Busy;
     FailNextAllocation([&] { allocationResult = as::BackupNow(nullptr, true); },

@@ -111,7 +111,7 @@ def main():
                 command += ['--playback-seconds', str(args.seconds)]
             run = dict(name=name, mode=mode, label=label, command=command, log=str(log),
                        exe_sha256=digest(exe), started_at=time.strftime('%Y-%m-%dT%H:%M:%S'),
-                       environment={k: v for k, v in env.items() if k.startswith(('OMP_', 'MIKUDANCESTUDIO_', 'MMS_', 'MMN_'))})
+                       environment={k: v for k, v in env.items() if k.startswith(('OMP_', 'MIKUMIKUSTUDIO_', 'MMS_', 'MMN_'))})
             manifest['runs'].append(run)
             save(args.output / 'manifest.json', manifest)
             with log.open('w', encoding='utf-8') as stream:

@@ -1,9 +1,9 @@
 #pragma once
-#include "mikudancestudio/animation_curve.hpp"
+#include "mikumikustudio/animation_curve.hpp"
 #include <cstdio>
 
 inline int RunSplitChecks() {
-    namespace ac=mikudancestudio::animation_curve;
+    namespace ac=mikumikustudio::animation_curve;
     int failures=0,cases=0,samples=0;double valueError=0,speedError=0,curvatureError=0;
     auto check=[&](bool good,const char* name){if(!good){++failures;printf("Subdivision failure: %s\n",name);}};
     auto encoded=[](const ac::Track& track){std::vector<std::uint8_t> bytes;std::string error;ac::Encode({{"curve",track}},bytes,error);return bytes;};

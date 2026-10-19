@@ -1,9 +1,9 @@
-#include "mikudancestudio/mmv4mms.hpp"
-#include "mikudancestudio/plugin_menu.hpp"
-#include "mikudancestudio/ui_translation.hpp"
-#include "mikudancestudio/native_mesh.hpp"
-#include "mikudancestudio/skinning_backend.hpp"
-#include "mikudancestudio/geometry_workers.hpp"
+#include "mikumikustudio/mmv4mms.hpp"
+#include "mikumikustudio/plugin_menu.hpp"
+#include "mikumikustudio/ui_translation.hpp"
+#include "mikumikustudio/native_mesh.hpp"
+#include "mikumikustudio/skinning_backend.hpp"
+#include "mikumikustudio/geometry_workers.hpp"
 // ===========================================================================
 // VA 0x0047A5B0 - InitMainWindowAndD3D  (original: sub_47A5B0, 0x1AE4 bytes)
 // ===========================================================================
@@ -36,14 +36,14 @@
 #include <cstring>
 #include <new>
 
-#include "mikudancestudio/accessory_layout.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/ui_language.hpp"
-#include "mikudancestudio/effect_api.hpp"
+#include "mikumikustudio/accessory_layout.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/ui_language.hpp"
+#include "mikumikustudio/effect_api.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 
 // color.txt order after the leading text RGB row. The file groups colors by
@@ -477,4 +477,4 @@ bool InitMainWindowAndD3D(MMDApp* app, void* hInstanceIn, int nShowCmd) {
     return true;
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

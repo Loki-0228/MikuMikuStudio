@@ -2,7 +2,7 @@
 // VA 0x004032B0 - SceneConstruct  (original: sub_4032B0, 0x2D5A bytes)
 // ===========================================================================
 // Builds the physics scene wrapper stored at app+650672 (restored as
-// mikudancestudio::PhysicsScene in include/mikudancestudio/physics_scene.hpp; the original
+// mikumikustudio::PhysicsScene in include/mikumikustudio/physics_scene.hpp; the original
 // field offsets are pinned there by static_assert on both architectures):
 //   10 gizmo vertex/index buffers, FVF 0x42 (XYZ | DIFFUSE, 16 B stride),
 //   D3DUSAGE_WRITEONLY, D3DPOOL_MANAGED, INDEX16, then the Bullet world
@@ -39,13 +39,13 @@
 #include "btBulletDynamicsCommon.h"
 #include "BulletCollision/BroadphaseCollision/btAxisSweep3.h"  // bt32BitAxisSweep3
 
-#include "mikudancestudio/d3d_wrapper.hpp"
-#include "mikudancestudio/physics_scene.hpp"
-#include "mikudancestudio/dynamics_world.hpp"
+#include "mikumikustudio/d3d_wrapper.hpp"
+#include "mikumikustudio/physics_scene.hpp"
+#include "mikumikustudio/dynamics_world.hpp"
 
 #include "scene_gizmo_data.inc"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 
 // One gizmo vertex buffer: create, lock(0, len), copy, unlock.
@@ -155,4 +155,4 @@ bool SceneConstruct(PhysicsScene* scene, D3DRenderer* d3dSub) {
     return true;
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

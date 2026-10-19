@@ -3,12 +3,12 @@
 #include <Windows.h>
 #include <d3d9.h>
 #include <wrl/client.h>
-#include "mikudancestudio/skinning_backend.hpp"
-#include "mikudancestudio/model_vertex_cache.hpp"
-#include "mikudancestudio/gpu_model.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/runtime_log.hpp"
+#include "mikumikustudio/skinning_backend.hpp"
+#include "mikumikustudio/model_vertex_cache.hpp"
+#include "mikumikustudio/gpu_model.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/runtime_log.hpp"
 #include "skinning_calibration_cache.hpp"
 #include <algorithm>
 #include <chrono>
@@ -24,11 +24,11 @@
 #include <stdexcept>
 #include <utility>
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 bool UpdateModelVertexBuffersCpu(MMDApp*, unsigned char*, const float[16]);
 }
 
-namespace mikudancestudio::skinning {
+namespace mikumikustudio::skinning {
 namespace {
 Preference preference;
 Status status;

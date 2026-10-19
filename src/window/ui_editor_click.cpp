@@ -1,6 +1,6 @@
-#include "mikudancestudio/frame_limits.hpp"
-#include "mikudancestudio/display_capacity.hpp"
-#include "mikudancestudio/key_pool.hpp"
+#include "mikumikustudio/frame_limits.hpp"
+#include "mikumikustudio/display_capacity.hpp"
+#include "mikumikustudio/key_pool.hpp"
 // ===========================================================================
 // VA 0x00446A70 - HandleLButtonDown  (original: sub_446A70)
 // ===========================================================================
@@ -44,7 +44,7 @@
 // =========================================================================//
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include "mikudancestudio/bone_scale.hpp"
+#include "mikumikustudio/bone_scale.hpp"
 #include <Windows.h>
 #include <commctrl.h>
 
@@ -54,13 +54,13 @@
 #include <cstring>
 #include <new>
 
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/panel_controls.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/panel_controls.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 // Forward declarations for functions ported in other translation units
 // (declared here with their original VAs; bodies in the files noted).
@@ -129,7 +129,7 @@ static int Div14(int v) {
 // what makes the mapping testable).
 //   Original: 0x446C8A / x64 0x7FF7CB459F00 (`movsxd rdx,[r8+rax*4+0x3224]`
 //   then `test edx,edx / js` to the -999 morph path).
-int BoneListRowBoneIndex(const mikudancestudio::mdl::ModelRecord* record,
+int BoneListRowBoneIndex(const mikumikustudio::mdl::ModelRecord* record,
                          std::int32_t row) {
     if (record == nullptr)
         return -1;
@@ -147,7 +147,7 @@ int BoneListRowBoneIndex(const mikudancestudio::mdl::ModelRecord* record,
 // index encoded in the record (-1 - record) or -1 when the row is not a morph
 // row.  A -999 record encodes want == 998, which never matches a real morph,
 // exactly like the original's `or r11,-1 / sub r11d,edx` fall-through.
-std::int32_t BoneListRowMorphIndex(const mikudancestudio::mdl::ModelRecord* record,
+std::int32_t BoneListRowMorphIndex(const mikumikustudio::mdl::ModelRecord* record,
                                    std::int32_t row) {
     if (record == nullptr)
         return -1;
@@ -222,17 +222,17 @@ static void ClearActiveModelFlags(MMDApp* app) {
     if (ActiveModel(app) == nullptr)
         return;
     unsigned char* model = ActiveModel(app);
-    mikudancestudio::mdl::BoneKey* boneKeys = mikudancestudio::mdl::BoneKeys(model);
+    mikumikustudio::mdl::BoneKey* boneKeys = mikumikustudio::mdl::BoneKeys(model);
     const std::size_t boneKeyCapacity =
-        mikudancestudio::mdl::BoneKeyCapacity(*mikudancestudio::mdl::Mdl(model));
+        mikumikustudio::mdl::BoneKeyCapacity(*mikumikustudio::mdl::Mdl(model));
     for (std::size_t i = 0; i < boneKeyCapacity; ++i)
         boneKeys[i].allocated = 0;
 
-    mikudancestudio::mdl::MorphKey* morphKeys = mikudancestudio::mdl::MorphKeys(model);
-    const auto morphCapacity1 = mikudancestudio::mdl::MorphKeyCapacity(morphKeys);
+    mikumikustudio::mdl::MorphKey* morphKeys = mikumikustudio::mdl::MorphKeys(model);
+    const auto morphCapacity1 = mikumikustudio::mdl::MorphKeyCapacity(morphKeys);
     for (std::size_t i = 0; i < morphCapacity1; ++i)
         morphKeys[i].allocated = 0;
-    mikudancestudio::mdl::DisplayKey* displayKeys = mikudancestudio::mdl::DisplayKeys(model);
+    mikumikustudio::mdl::DisplayKey* displayKeys = mikumikustudio::mdl::DisplayKeys(model);
     for (std::size_t i = 0, poolCapacity = static_cast<std::size_t>(mdl::KeyPoolCapacity(displayKeys)); i < poolCapacity; ++i)
         displayKeys[i].allocated = 0;
 }
@@ -334,16 +334,16 @@ static void SelectionStats(MMDApp* app, int x, int y, HWND hwnd) {
             boneCnt = 0;
             unsigned char* m = ActiveModel(app);
             if (m != nullptr) {
-                mikudancestudio::mdl::BoneKey* bones = mikudancestudio::mdl::BoneKeys(m);
+                mikumikustudio::mdl::BoneKey* bones = mikumikustudio::mdl::BoneKeys(m);
                 const std::size_t boneKeyCapacity =
-                    mikudancestudio::mdl::BoneKeyCapacity(*mikudancestudio::mdl::Mdl(m));
+                    mikumikustudio::mdl::BoneKeyCapacity(*mikumikustudio::mdl::Mdl(m));
                 for (std::size_t i = 0; i < boneKeyCapacity; ++i)
                     if (bones[i].allocated != 0) ++boneCnt;
                 if (boneCnt > 0) {
                     EnableWindow(GetDlgItem(hwnd, panel::kUndoButton), TRUE);      // 400
                     EnableWindow(GetDlgItem(hwnd, panel::kRedoButton), FALSE);     // 401
                     // keyframe-cluster append on the active model (0x449886-0x449A5A)
-                    auto* record = mikudancestudio::mdl::Mdl(m);
+                    auto* record = mikumikustudio::mdl::Mdl(m);
                     record->undoDirty = 1;
                     record->redoDirty = 0;
                     std::uint32_t& kf = record->undoState[0];
@@ -360,14 +360,14 @@ static void SelectionStats(MMDApp* app, int x, int y, HWND hwnd) {
                         free(bufSlot);
                         bufSlot = nullptr;
                     }
-                    const std::int32_t boneN = mikudancestudio::mdl::Mdl(m)->boneCount;
-                    bufSlot = static_cast<mikudancestudio::mdl::BonePoseSnapshot*>(
+                    const std::int32_t boneN = mikumikustudio::mdl::Mdl(m)->boneCount;
+                    bufSlot = static_cast<mikumikustudio::mdl::BonePoseSnapshot*>(
                         ::operator new(static_cast<std::size_t>(boneN) *
-                                       sizeof(mikudancestudio::mdl::BonePoseSnapshot)));
+                                       sizeof(mikumikustudio::mdl::BonePoseSnapshot)));
                     memset(bufSlot, 0, static_cast<std::size_t>(boneN) *
-                                           sizeof(mikudancestudio::mdl::BonePoseSnapshot));
-                    mikudancestudio::mdl::BoneRecord* srcBase = mikudancestudio::mdl::Bones(m);
-                    unsigned char* flagMap = mikudancestudio::mdl::Mdl(m)->bonePhysicsState;
+                                           sizeof(mikumikustudio::mdl::BonePoseSnapshot));
+                    mikumikustudio::mdl::BoneRecord* srcBase = mikumikustudio::mdl::Bones(m);
+                    unsigned char* flagMap = mikumikustudio::mdl::Mdl(m)->bonePhysicsState;
                     for (int i = 0; i < boneN; ++i) {
                         auto& out = bufSlot[i];
                         out.boneIndex = 0;
@@ -384,12 +384,12 @@ static void SelectionStats(MMDApp* app, int x, int y, HWND hwnd) {
                     }
                     dataSlot = ::operator new(static_cast<std::size_t>(boneCnt) * sizeof(mdl::BoneKeySnapshot));
                     memset(dataSlot, 0, static_cast<std::size_t>(boneCnt) * sizeof(mdl::BoneKeySnapshot));
-                    mikudancestudio::mdl::BoneKeyVisitClear(*mikudancestudio::mdl::Mdl(m));
+                    mikumikustudio::mdl::BoneKeyVisitClear(*mikumikustudio::mdl::Mdl(m));
                     // ... and the visit map the registrar dedups through, for
                     // the same capacity, resolved once for the sweep below.
                     unsigned char* const visited =
-                        mikudancestudio::mdl::BoneKeyVisitMapOf(
-                            *mikudancestudio::mdl::Mdl(m), boneKeyCapacity).bytes;
+                        mikumikustudio::mdl::BoneKeyVisitMapOf(
+                            *mikumikustudio::mdl::Mdl(m), boneKeyCapacity).bytes;
                     // feed every set bone flag to 0x49D410 (0x449CF0-0x449D1C)
                     for (std::size_t i = 0; i < boneKeyCapacity; ++i)
                         if (bones[i].allocated != 0)
@@ -409,7 +409,7 @@ static void SelectionStats(MMDApp* app, int x, int y, HWND hwnd) {
                     // the qsort below sorts uninitialised, since boneCnt counts
                     // every allocated slot.
                     for (std::size_t slot = 0; slot < boneKeyCapacity; ++slot) {
-                        mikudancestudio::mdl::BoneKey& key = bones[slot];
+                        mikumikustudio::mdl::BoneKey& key = bones[slot];
                         if (key.allocated != 0) {
                             bout[0] = static_cast<std::int32_t>(slot);
                             bout[3] = static_cast<std::int32_t>(key.frame);
@@ -427,8 +427,8 @@ static void SelectionStats(MMDApp* app, int x, int y, HWND hwnd) {
                 morphCnt = 0;
                 {
                     unsigned char* mm = ActiveModel(app);
-                    mikudancestudio::mdl::MorphKey* morphs = mikudancestudio::mdl::MorphKeys(mm);
-                    const auto morphCapacity2 = mikudancestudio::mdl::MorphKeyCapacity(morphs);
+                    mikumikustudio::mdl::MorphKey* morphs = mikumikustudio::mdl::MorphKeys(mm);
+                    const auto morphCapacity2 = mikumikustudio::mdl::MorphKeyCapacity(morphs);
                     for (std::size_t i = 0; i < morphCapacity2; ++i)
                         if (morphs[i].allocated != 0) ++morphCnt;
                     if (morphCnt > 0) {
@@ -439,7 +439,7 @@ static void SelectionStats(MMDApp* app, int x, int y, HWND hwnd) {
                         int idx = 2;
                         for (int i = 0; i < 0xFA0; ++i) {
                             for (int k = 0; k < 5; ++k) {
-                                mikudancestudio::mdl::MorphKey& key = morphs[i * 5 + k];
+                                mikumikustudio::mdl::MorphKey& key = morphs[i * 5 + k];
                                 if (key.allocated != 0) {
                                     mout[0] = idx - 2 + k;
                                     mout[3] = static_cast<std::int32_t>(key.frame);
@@ -460,7 +460,7 @@ static void SelectionStats(MMDApp* app, int x, int y, HWND hwnd) {
                 ikCnt = 0;
                 {
                     unsigned char* mm = ActiveModel(app);
-                    mikudancestudio::mdl::DisplayKey* displayKeys = mikudancestudio::mdl::DisplayKeys(mm);
+                    mikumikustudio::mdl::DisplayKey* displayKeys = mikumikustudio::mdl::DisplayKeys(mm);
                     for (std::size_t i = 0, poolCapacity = static_cast<std::size_t>(mdl::KeyPoolCapacity(displayKeys)); i < poolCapacity; ++i)
                         if (displayKeys[i].allocated != 0) ++ikCnt;
                     if (ikCnt > 0) {
@@ -471,7 +471,7 @@ static void SelectionStats(MMDApp* app, int x, int y, HWND hwnd) {
                         int idx = 2;
                         for (int i = 0; i < 0xC8; ++i) {       // 0x6D60/0x8C
                             for (int k = 0; k < 5; ++k) {
-                                mikudancestudio::mdl::DisplayKey& key = displayKeys[i * 5 + k];
+                                mikumikustudio::mdl::DisplayKey& key = displayKeys[i * 5 + k];
                                 if (key.allocated != 0) {
                                     iout[0] = idx - 2 + k;
                                     iout[3] = static_cast<std::int32_t>(key.frame);
@@ -693,23 +693,23 @@ static void HandleLButtonDown_NameColumnHit(MMDApp* app, HWND hwnd,
     if (!app->ShiftModifierActive()) {
         unsigned char* m0 = ActiveModel(app);
         const std::int32_t boneCount =
-            mikudancestudio::mdl::Mdl(m0)->boneCount;
+            mikumikustudio::mdl::Mdl(m0)->boneCount;
         for (int i = 0; i < boneCount; ++i) {
             unsigned char* mm = ActiveModel(app);
-            mikudancestudio::mdl::Mdl(mm)->boneSelection[i] = 0;
+            mikumikustudio::mdl::Mdl(mm)->boneSelection[i] = 0;
         }
         for (int i = 0;
-             i < static_cast<int>(mikudancestudio::mdl::FacialFrameCount(*mikudancestudio::mdl::Mdl(m0))); ++i) {
+             i < static_cast<int>(mikumikustudio::mdl::FacialFrameCount(*mikumikustudio::mdl::Mdl(m0))); ++i) {
             unsigned char* mm = ActiveModel(app);
             mdl::DisplayFrames(mm)[i].selected = 0;
         }
-        mikudancestudio::mdl::Mdl(ActiveModel(app))->displayKeyframesPresent = 0;
+        mikumikustudio::mdl::Mdl(ActiveModel(app))->displayKeyframesPresent = 0;
     }
 
     // loc_446C8A: row lookup + selection toggle
     {
         unsigned char* m = ActiveModel(app);
-        mdl::ModelRecord* const record = mikudancestudio::mdl::Mdl(m);
+        mdl::ModelRecord* const record = mikumikustudio::mdl::Mdl(m);
         const std::int32_t row = Div14(y - 0xA0);
         // The row table is 200 entries and only rows that were painted carry a
         // live record; guard the derived index instead of reading past it.
@@ -723,12 +723,12 @@ static void HandleLButtonDown_NameColumnHit(MMDApp* app, HWND hwnd,
         // outside boneSelection.
         const std::int32_t idx = BoneListRowBoneIndex(record, row);
         if (idx >= 0) {
-            unsigned char* p = mikudancestudio::mdl::Mdl(m)->boneSelection + idx;
+            unsigned char* p = mikumikustudio::mdl::Mdl(m)->boneSelection + idx;
             if (*p != 0) {
                 *p = 0;
             } else {
                 *p = 1;
-                mikudancestudio::mdl::Mdl(m)->selectedBone = idx;
+                mikumikustudio::mdl::Mdl(m)->selectedBone = idx;
             }
             // Repaint the label column here: the visible bone-row highlight
             // (themeColors[34] rows in PanelPaint) is produced by
@@ -744,7 +744,7 @@ static void HandleLButtonDown_NameColumnHit(MMDApp* app, HWND hwnd,
             // `test edx,edx / js` + `cmp edx,0xFFFFFC19 / je` pair.
             const std::int32_t want = BoneListRowMorphIndex(record, row);
             const std::int32_t morphCount =
-                static_cast<std::int32_t>(mikudancestudio::mdl::FacialFrameCount(*mikudancestudio::mdl::Mdl(m)));
+                static_cast<std::int32_t>(mikumikustudio::mdl::FacialFrameCount(*mikumikustudio::mdl::Mdl(m)));
             int i = 0;
             for (; i < morphCount; ++i) {
                 if (mdl::FrameTargetIndex(mdl::DisplayFrames(m)[i]) == want)
@@ -758,27 +758,27 @@ static void HandleLButtonDown_NameColumnHit(MMDApp* app, HWND hwnd,
                     faceRec.selected = 0;
                 } else {
                     faceRec.selected = 1;
-                    const std::int32_t morphIndex = mikudancestudio::mdl::FrameTargetIndex(faceRec);
-                    auto& morph = mikudancestudio::mdl::Morphs(m)[morphIndex];
+                    const std::int32_t morphIndex = mikumikustudio::mdl::FrameTargetIndex(faceRec);
+                    auto& morph = mikumikustudio::mdl::Morphs(m)[morphIndex];
                     const auto panel = morph.panel;
                     HWND hCombo = nullptr, hSpin = nullptr, hText = nullptr;
                     switch (panel) {                         // 0x446D99-0x446E77
-                        case mikudancestudio::mdl::MorphPanel::eyebrow:
+                        case mikumikustudio::mdl::MorphPanel::eyebrow:
                             hCombo = GetDlgItem(hwnd, panel::kMorphCombo0);
                             hSpin = GetDlgItem(hwnd, panel::kMorphSlider0);
                             hText = GetDlgItem(hwnd, panel::kMorphEdit0);
                             break;
-                        case mikudancestudio::mdl::MorphPanel::eye:
+                        case mikumikustudio::mdl::MorphPanel::eye:
                             hCombo = GetDlgItem(hwnd, panel::kMorphCombo1);
                             hSpin = GetDlgItem(hwnd, panel::kMorphSlider1);
                             hText = GetDlgItem(hwnd, panel::kMorphEdit1);
                             break;
-                        case mikudancestudio::mdl::MorphPanel::mouth:
+                        case mikumikustudio::mdl::MorphPanel::mouth:
                             hCombo = GetDlgItem(hwnd, panel::kMorphCombo2);
                             hSpin = GetDlgItem(hwnd, panel::kMorphSlider2);
                             hText = GetDlgItem(hwnd, panel::kMorphEdit2);
                             break;
-                        case mikudancestudio::mdl::MorphPanel::other:
+                        case mikumikustudio::mdl::MorphPanel::other:
                             hCombo = GetDlgItem(hwnd, panel::kMorphCombo3);
                             hSpin = GetDlgItem(hwnd, panel::kMorphSlider3);
                             hText = GetDlgItem(hwnd, panel::kMorphEdit3);
@@ -793,7 +793,7 @@ static void HandleLButtonDown_NameColumnHit(MMDApp* app, HWND hwnd,
                         PostLanguageSweep2(app);
                         return;
                     }
-                    mikudancestudio::mdl::Mdl(m)->selectedMorphs[panelIndex] = morphIndex;
+                    mikumikustudio::mdl::Mdl(m)->selectedMorphs[panelIndex] = morphIndex;
                     // sync the combo cursor with the morph name
                     // (CB_GETCOUNT 0x146 / CB_GETLBTEXT 0x148 / CB_SETCURSEL
                     // 0x14E, 0x446EC0-0x446FAE)
@@ -805,8 +805,8 @@ static void HandleLButtonDown_NameColumnHit(MMDApp* app, HWND hwnd,
                     }
                     // Morph value spin/text sync (0x446FB4-0x447027):
                     // spin gets (int)(value*100.0), text gets "%5.4f"
-                    const float v = mikudancestudio::mdl::Morphs(m)[
-                        mikudancestudio::mdl::Mdl(m)->selectedMorphs[panelIndex]].value;
+                    const float v = mikumikustudio::mdl::Morphs(m)[
+                        mikumikustudio::mdl::Mdl(m)->selectedMorphs[panelIndex]].value;
                     SendMessageA(hSpin, TBM_SETPOS, 1,
                                  static_cast<LPARAM>(static_cast<std::int32_t>(v * 100.0)));
                     char valBuf[0x64];
@@ -833,7 +833,7 @@ static void HandleLButtonDown_NameColumnHit(MMDApp* app, HWND hwnd,
         }
         if (type == 2) {
             for (int i = 0;
-                 i < static_cast<int>(mikudancestudio::mdl::FacialFrameCount(*mikudancestudio::mdl::Mdl(m))); ++i) {
+                 i < static_cast<int>(mikumikustudio::mdl::FacialFrameCount(*mikumikustudio::mdl::Mdl(m))); ++i) {
                 mdl::FrameGroup& face = mdl::DisplayFrames(m)[i];
                 face.selected = (face.selected == 0) ? 1 : 0;
             }
@@ -853,10 +853,10 @@ static void HandleLButtonDown_NameColumnHit(MMDApp* app, HWND hwnd,
         for (int i = 0;
              i < static_cast<int>(mdl::Mdl(m)->rigidBodyCount); ++i) {
             mdl::FrameGroup& rigid = mdl::RigidGroups(m)[i];
-            if (mikudancestudio::mdl::FrameGroupIndex(rigid) == type) {
-                const std::int32_t boneIdx = mikudancestudio::mdl::FrameTargetIndex(rigid);
+            if (mikumikustudio::mdl::FrameGroupIndex(rigid) == type) {
+                const std::int32_t boneIdx = mikumikustudio::mdl::FrameTargetIndex(rigid);
                 unsigned char* p =
-                    mikudancestudio::mdl::Mdl(m)->boneSelection + boneIdx;
+                    mikumikustudio::mdl::Mdl(m)->boneSelection + boneIdx;
                 if (*p != 0)
                     *p = 0;
                 else
@@ -956,11 +956,11 @@ static void HandleLButtonDown_TimelineAreaHit(MMDApp* app, HWND hwnd,
         const std::int32_t ikType = app->state.rowHitIk[row2d];
         if (ikType > 0) {
             ToggleModelKeyAllocated(app,
-                mikudancestudio::mdl::DisplayKeys(ActiveModel(app))[ikType],
+                mikumikustudio::mdl::DisplayKeys(ActiveModel(app))[ikType],
                 shiftActive);
         } else if (ikType == -10) {                 // loc_447CD9 (row 0)
             ToggleModelKeyAllocated(app,
-                mikudancestudio::mdl::DisplayKeys(ActiveModel(app))[0],
+                mikumikustudio::mdl::DisplayKeys(ActiveModel(app))[0],
                 shiftActive);
         }
         // stage 2 (loc_447F03): morph-type flags, model+0x26E4
@@ -968,11 +968,11 @@ static void HandleLButtonDown_TimelineAreaHit(MMDApp* app, HWND hwnd,
         const std::int32_t morphType = app->state.rowHitMorph[row2d];
         if (morphType > 0) {
             ToggleModelKeyAllocated(app,
-                mikudancestudio::mdl::MorphKeys(ActiveModel(app))[morphType],
+                mikumikustudio::mdl::MorphKeys(ActiveModel(app))[morphType],
                 shiftActive);
         } else if (morphType == -10) {              // loc_448189 (row 0)
             ToggleModelKeyAllocated(app,
-                mikudancestudio::mdl::MorphKeys(ActiveModel(app))[0],
+                mikumikustudio::mdl::MorphKeys(ActiveModel(app))[0],
                 shiftActive);
         } else if (morphType == -1) {               // loc_4483B8
             StageRangeRow(app, morphType, shiftActive,
@@ -986,11 +986,11 @@ static void HandleLButtonDown_TimelineAreaHit(MMDApp* app, HWND hwnd,
         const std::int32_t boneType = app->state.rowHitBone[row2d];
         if (boneType > 0) {
             ToggleModelKeyAllocated(app,
-                mikudancestudio::mdl::BoneKeys(ActiveModel(app))[boneType],
+                mikumikustudio::mdl::BoneKeys(ActiveModel(app))[boneType],
                 shiftActive);
         } else if (boneType == -10) {               // loc_448889 (row 0)
             ToggleModelKeyAllocated(app,
-                mikudancestudio::mdl::BoneKeys(ActiveModel(app))[0],
+                mikumikustudio::mdl::BoneKeys(ActiveModel(app))[0],
                 shiftActive);
         } else if (boneType == -1) {                // loc_448AB8
             StageRangeRow(app, boneType, shiftActive,
@@ -1258,4 +1258,4 @@ void HandleLButtonDown(MMDApp* app) {
     HandleLButtonDown_NameRowRectHit(app, x, y, rc.bottom);
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

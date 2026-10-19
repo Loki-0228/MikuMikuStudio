@@ -2,9 +2,9 @@
 
 #include <Windows.h>
 #include <unknwn.h>
-#include "mikudancestudio/dshow_recorder.hpp"
+#include "mikumikustudio/dshow_recorder.hpp"
 
-namespace mikudancestudio::recording_state {
+namespace mikumikustudio::recording_state {
 
 enum class AckResult { Ready, Ended, Cancelled, TimedOut };
 
@@ -28,4 +28,4 @@ AckResult WaitForAck(IPushSource* push, unsigned char* flag, Current current,
     }
 }
 
-} // namespace mikudancestudio::recording_state
+} // namespace mikumikustudio::recording_state

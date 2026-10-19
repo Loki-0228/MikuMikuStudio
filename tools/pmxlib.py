@@ -83,7 +83,7 @@ class Morph:
     - group: ``(morph_index:int, weight:float)``
     - vertex: ``(vertex_index:int, x:float, y:float, z:float)``
     - bone: ``(bone_index:int, tx,ty,tz, qx,qy,qz,qw)`` —— 回転量是四元数（4 float），
-      与 include/mikudancestudio/subrecord_layout.hpp 中 PmxBoneMorphEntry 一致
+      与 include/mikumikustudio/subrecord_layout.hpp 中 PmxBoneMorphEntry 一致
     - uv*: ``(vertex_index:int, x,y,z,w)``
     - material: ``(material_index:int, calc_mode:int, diffuse4, specular3,
       shininess, ambient3, edge_color4, edge_size, tex_tint4, sphere_tint4,
@@ -419,7 +419,7 @@ class PmxModel:
 
         # --- 骨骼 ---
         # 标志位按 MMD 实际读取的顺序（见 src/model/pmx_load.cpp 与
-        # include/mikudancestudio/bone_layout.hpp）。
+        # include/mikumikustudio/bone_layout.hpp）。
         start = r.pos
         nb = r.i32()
         for _ in range(nb):

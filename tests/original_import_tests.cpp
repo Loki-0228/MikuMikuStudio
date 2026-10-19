@@ -8,17 +8,17 @@
 #include <vector>
 #include <fcntl.h>
 #include <io.h>
-#include "mikudancestudio/original_import.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/accessory_layout.hpp"
-#include "mikudancestudio/wave_audio_context.hpp"
+#include "mikumikustudio/original_import.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/accessory_layout.hpp"
+#include "mikumikustudio/wave_audio_context.hpp"
 #include "../src/model/vmd_read_guard.hpp"
 #include "../src/io/pmm_io_common.hpp"
 
-namespace mikudancestudio { void CmdViewMenu(MMDApp*, HWND, std::uint16_t, std::uint16_t); }
+namespace mikumikustudio { void CmdViewMenu(MMDApp*, HWND, std::uint16_t, std::uint16_t); }
 namespace {
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 using Bytes = std::vector<unsigned char>;
 namespace fs = std::filesystem;
 int checks = 0;

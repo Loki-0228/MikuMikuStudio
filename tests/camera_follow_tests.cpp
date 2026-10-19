@@ -9,14 +9,14 @@
 #include <cstdio>
 #include <cstring>
 #include <memory>
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/scene_ownership.hpp"
-using namespace mikudancestudio;
-namespace mikudancestudio { void SampleGlobalPlaybackTracks(MMDApp*); }
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/scene_ownership.hpp"
+using namespace mikumikustudio;
+namespace mikumikustudio { void SampleGlobalPlaybackTracks(MMDApp*); }
 namespace {
 struct ChildPaintProbe {
     MMDApp* app;

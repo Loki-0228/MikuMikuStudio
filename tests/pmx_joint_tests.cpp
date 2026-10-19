@@ -1,10 +1,10 @@
 // MAINTENANCE: regression-keep; missing PMX joint endpoints disable only that joint.
 #define NOMINMAX
-#include "mikudancestudio/pmx_joint_validation.hpp"
-#include "mikudancestudio/physics_scene.hpp"
-#include "mikudancestudio/path_workspace.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/mmd_app.hpp"
+#include "mikumikustudio/pmx_joint_validation.hpp"
+#include "mikumikustudio/physics_scene.hpp"
+#include "mikumikustudio/path_workspace.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/mmd_app.hpp"
 #include <btBulletDynamicsCommon.h>
 #include <cstdio>
 #include <cstring>
@@ -12,8 +12,8 @@
 #include <io.h>
 #include <memory>
 #include <vector>
-using namespace mikudancestudio;
-namespace mikudancestudio { void InitPhysicsModelDialog(HWND); void ReleasePhysicsEditScratch(MMDApp*); }
+using namespace mikumikustudio;
+namespace mikumikustudio { void InitPhysicsModelDialog(HWND); void ReleasePhysicsEditScratch(MMDApp*); }
 namespace {
 using Bytes=std::vector<unsigned char>;
 int failures=0,dialogs=0;

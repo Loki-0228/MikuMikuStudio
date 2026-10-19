@@ -25,16 +25,16 @@
 // =========================================================================//
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include "mikudancestudio/transparent_capture.hpp"
+#include "mikumikustudio/transparent_capture.hpp"
 #include <Windows.h>
 #include <d3d9.h>
 
 #include <cstdint>
 
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 
 IDirect3DDevice9* DeviceOf(MMDApp* app) {
@@ -123,4 +123,4 @@ void InitRenderStates(MMDApp* app) {
     }
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

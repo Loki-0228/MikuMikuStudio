@@ -1,8 +1,8 @@
 #pragma once
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 
-namespace mikudancestudio::device_lost_wait {
+namespace mikumikustudio::device_lost_wait {
 
 enum class Result { Ready, Reset, Interrupted, Failed };
 
@@ -189,4 +189,4 @@ inline bool Resume(MMDApp* app, bool recording) {
     return result == Result::Ready || result == Result::Reset;
 }
 
-} // namespace mikudancestudio::device_lost_wait
+} // namespace mikumikustudio::device_lost_wait

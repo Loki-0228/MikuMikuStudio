@@ -1,6 +1,6 @@
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/ui_translation.hpp"
-#include "mikudancestudio/ui_language.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/ui_translation.hpp"
+#include "mikumikustudio/ui_language.hpp"
 // ===========================================================================
 // Timeline-driven Light / Self Shadow panel refresh.
 //   0x00411070  RefreshLightPanel (was Sub411070): evaluate the light key
@@ -13,7 +13,7 @@
 //               self-shadow key at a frame with the current mode + interval
 //               (the SelfShadow sibling of RegisterCameraState/RegisterLightState)
 // ===========================================================================
-#include "mikudancestudio/animation_curve_host.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
@@ -26,25 +26,25 @@
 #include <cstring>
 #include <cmath>
 #include <algorithm>
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 
-#include "mikudancestudio/adaptive_shadow.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/bone_combo.hpp"
-#include "mikudancestudio/accessory_layout.hpp"
-#include "mikudancestudio/panel_controls.hpp"
+#include "mikumikustudio/adaptive_shadow.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/bone_combo.hpp"
+#include "mikumikustudio/accessory_layout.hpp"
+#include "mikumikustudio/panel_controls.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 
-// Porting-era trace under MIKUDANCESTUDIO_LIGHT_TRACE_DIR (CMake option
-// MIKUDANCESTUDIO_DIAG, default OFF); the OFF stub keeps the call sites
+// Porting-era trace under MIKUMIKUSTUDIO_LIGHT_TRACE_DIR (CMake option
+// MIKUMIKUSTUDIO_DIAG, default OFF); the OFF stub keeps the call sites
 // (including the cross-TU TraceSceneLightState) valid and inlines away to
 // nothing.
-#ifdef MIKUDANCESTUDIO_DIAG
+#ifdef MIKUMIKUSTUDIO_DIAG
 void WriteLightTrace(MMDApp* app, const char* stage) {
-    const char* directory = std::getenv("MIKUDANCESTUDIO_LIGHT_TRACE_DIR");
+    const char* directory = std::getenv("MIKUMIKUSTUDIO_LIGHT_TRACE_DIR");
     if (directory == nullptr || directory[0] == '\0')
         return;
     char path[MAX_PATH];
@@ -356,4 +356,4 @@ void RegisterSelfShadowState(MMDApp* app, int frameValue) {
     curve_host::NotifyRegistered(app, curve_host::Kind::Shadow, 0, frameValue);
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

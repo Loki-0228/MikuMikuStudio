@@ -1,5 +1,5 @@
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/animation_curve_editor.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/animation_curve_editor.hpp"
 // ===========================================================================
 // VA 0x00444CC0 - HandleMouseMove  (original: sub_444CC0)
 // ===========================================================================
@@ -65,14 +65,14 @@
 #include <cstdio>
 #include <cstdlib>
 
-#include "mikudancestudio/accessory_layout.hpp"
-#include "mikudancestudio/global_key_layout.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/model.hpp"
+#include "mikumikustudio/accessory_layout.hpp"
+#include "mikumikustudio/global_key_layout.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/model.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 // VA 0x00414610 - ported (ui_panel_paint.cpp).
 void PanelPaint(MMDApp* app);
@@ -136,7 +136,7 @@ void RemapList(MMDApp* app, const int* recs, int count, Key* keys,
     auto valid = [headCount, capacity](int idx) {
         return idx >= headCount && idx < capacity;
     };
-#ifdef MIKUDANCESTUDIO_DIAG
+#ifdef MIKUMIKUSTUDIO_DIAG
     // TEMP(debug, keyframe-drag crash): validate the record buffer before
     // the remap walks it - rec[0] must be a list index within capacity.
     // Logs and skips the whole remap instead of dereferencing a wild index.
@@ -222,7 +222,7 @@ void RemapAccList(MMDApp* app, const int* recs, int count, int row) {
     auto listOf = [app](int slot) {
         return app->AccessoryKeys(slot);
     };
-#ifdef MIKUDANCESTUDIO_DIAG
+#ifdef MIKUMIKUSTUDIO_DIAG
     // TEMP(debug, keyframe-drag crash): same validation as RemapList - the
     // accessory records carry the key index at +4 and the slot at +8.
     // (Diagnostic only: the original walks the records unvalidated.)
@@ -478,7 +478,7 @@ void HandleMouseMove(std::uint32_t lParam, int mouseY) {
                 }
                 SyncAccessoryEditPanel(app);    // 0x44587D
             }
-            mikudancestudio::curve_editor::NotifyOwnedChanged(app->Hwnd());
+            mikumikustudio::curve_editor::NotifyOwnedChanged(app->Hwnd());
         } else if (app->SelectionBoxDragging() != 0) {
             // ---- 5. hover highlight (0x44606F..0x446A2C) ------------------
             // hover row/column range from the anchor (this+0xA018C/0xA0190)
@@ -664,4 +664,4 @@ void HandleMouseMove(std::uint32_t lParam, int mouseY) {
         DragInterpolationControlPoint(app);
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

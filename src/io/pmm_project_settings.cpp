@@ -1,24 +1,24 @@
-#include "mikudancestudio/extended_names.hpp"
-#include "mikudancestudio/bone_curve.hpp"
-#include "mikudancestudio/ui_translation.hpp"
-#include "mikudancestudio/build_profile.hpp"
+#include "mikumikustudio/extended_names.hpp"
+#include "mikumikustudio/bone_curve.hpp"
+#include "mikumikustudio/ui_translation.hpp"
+#include "mikumikustudio/build_profile.hpp"
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
 #include <io.h>
-#include "mikudancestudio/pmm_project_settings.hpp"
-#include "mikudancestudio/bone_scale_io.hpp"
-#include "mikudancestudio/animation_curve_host.hpp"
-#include "mikudancestudio/morph_curve.hpp"
-#include "mikudancestudio/mesh_bake_cache.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/skinning_menu.hpp"
-#include "mikudancestudio/view_options.hpp"
-#include "mikudancestudio/runtime_log.hpp"
+#include "mikumikustudio/pmm_project_settings.hpp"
+#include "mikumikustudio/bone_scale_io.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
+#include "mikumikustudio/morph_curve.hpp"
+#include "mikumikustudio/mesh_bake_cache.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/skinning_menu.hpp"
+#include "mikumikustudio/view_options.hpp"
+#include "mikumikustudio/runtime_log.hpp"
 #include <algorithm>
 #include <utility>
 
-namespace mikudancestudio::pmm_settings {
+namespace mikumikustudio::pmm_settings {
 namespace {
 // Wire contract of org.mikudancestudio.view.transparent_sort_precision: one byte
 // holding the tier the user picked, Off included, and the byte is the

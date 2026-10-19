@@ -1,9 +1,9 @@
-#include "mikudancestudio/transparent_material_order.hpp"
+#include "mikumikustudio/transparent_material_order.hpp"
 #include <cstdio>
 #include <limits>
 #include <random>
 
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 namespace {
 int failures = 0;
 AlphaMaterialGeometry Quad(float x, float z, bool reverse = false) {

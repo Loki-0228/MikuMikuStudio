@@ -1,16 +1,16 @@
-#include "mikudancestudio/original_import.hpp"
-#include "mikudancestudio/display_capacity.hpp"
-#include "mikudancestudio/save_compatibility.hpp"
-#include "mikudancestudio/autosave.hpp"
-#include "mikudancestudio/viewport_render_scale.hpp"
-#include "mikudancestudio/model_vertex_cache.hpp"
-#include "mikudancestudio/image_sequence_export.hpp"
-#include "mikudancestudio/mmv4mms.hpp"
-#include "mikudancestudio/plugin_menu.hpp"
-#include "mikudancestudio/ui_translation.hpp"
-#include "mikudancestudio/native_mesh.hpp"
-#include "mikudancestudio/frame_rate_correction.hpp"
-#include "mikudancestudio/sequence_scatter.hpp"
+#include "mikumikustudio/original_import.hpp"
+#include "mikumikustudio/display_capacity.hpp"
+#include "mikumikustudio/save_compatibility.hpp"
+#include "mikumikustudio/autosave.hpp"
+#include "mikumikustudio/viewport_render_scale.hpp"
+#include "mikumikustudio/model_vertex_cache.hpp"
+#include "mikumikustudio/image_sequence_export.hpp"
+#include "mikumikustudio/mmv4mms.hpp"
+#include "mikumikustudio/plugin_menu.hpp"
+#include "mikumikustudio/ui_translation.hpp"
+#include "mikumikustudio/native_mesh.hpp"
+#include "mikumikustudio/frame_rate_correction.hpp"
+#include "mikumikustudio/sequence_scatter.hpp"
 #include "viewport_corner_menu.hpp"
 // ===========================================================================
 // Enhance-model IO: toon collect (0x41EA20), save model (0x41EC10), model colour (0x4A4850)
@@ -42,29 +42,29 @@
 #include <share.h>
 #include <sys/stat.h>
 
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/d3d_wrapper.hpp"
-#include "mikudancestudio/effect_api.hpp"
-#include "mikudancestudio/skinning_menu.hpp"
-#include "mikudancestudio/physics_bake.hpp"
-#include "mikudancestudio/global_key_layout.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/text_encoding.hpp"
-#include "mikudancestudio/model_alpha_pass.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/view_options.hpp"
-#include "mikudancestudio/ui_language.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/d3d_wrapper.hpp"
+#include "mikumikustudio/effect_api.hpp"
+#include "mikumikustudio/skinning_menu.hpp"
+#include "mikumikustudio/physics_bake.hpp"
+#include "mikumikustudio/global_key_layout.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/text_encoding.hpp"
+#include "mikumikustudio/model_alpha_pass.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/view_options.hpp"
+#include "mikumikustudio/ui_language.hpp"
 
-#include "mikudancestudio/texture_lookup.hpp"
+#include "mikumikustudio/texture_lookup.hpp"
 #if MMD_ORIGINAL_PROFILE
-#include "mikudancestudio/original_file_encoding.hpp"
+#include "mikumikustudio/original_file_encoding.hpp"
 #include <array>
 #include <set>
 #include <vector>
 #endif
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 
 // ---- narrow/wide name helpers of the enhance-model chain ------------------
@@ -1536,4 +1536,4 @@ void ReloadTextureCache(void* rendererArg) {
 // VA 0x004629D0 - fullscreen enter/restore window manager; the real body
 // now lives in src/app/avi_record_start.cpp (declared in ported_funcs.hpp).
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

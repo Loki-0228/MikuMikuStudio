@@ -1,9 +1,9 @@
 // MAINTENANCE: regression-keep; purpose and cleanup conditions in tests/README.md.
-#include "mikudancestudio/effect_api.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/scene_ownership.hpp"
+#include "mikumikustudio/effect_api.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/scene_ownership.hpp"
 #include "btBulletDynamicsCommon.h"
 
 #include <cstdio>
@@ -12,7 +12,7 @@
 #include <string>
 #include <memory>
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 void LocalizeEffectMenu(HMENU menu, unsigned char language);
 }
 
@@ -89,7 +89,7 @@ const wchar_t* __cdecl QueryMaterialName(std::uintptr_t object, int index, int e
 }
 
 void CheckMaterialNameFallback() {
-    using namespace mikudancestudio;
+    using namespace mikumikustudio;
     for (int index = 0; index < _countof(materialNames); ++index) {
         for (int english : {0, 1}) {
             materialNameQueries = 0;
@@ -112,7 +112,7 @@ void CheckMaterialNameFallback() {
 }
 
 void CheckMenuTranslation(HMENU menu) {
-    using mikudancestudio::LocalizeEffectMenu;
+    using mikumikustudio::LocalizeEffectMenu;
     const int count = GetMenuItemCount(menu);
     const UINT enabled = GetMenuState(menu, 40006, MF_BYCOMMAND);
     const UINT disabled = GetMenuState(menu, 40004, MF_BYCOMMAND);
@@ -150,7 +150,7 @@ void CheckMenuTranslation(HMENU menu) {
 }
 
 int main() {
-    using namespace mikudancestudio;
+    using namespace mikumikustudio;
     CheckMaterialNameFallback();
     auto app = std::make_unique<MMDApp>();
     std::memset(&app->state, 0, sizeof(app->state));

@@ -1,4 +1,4 @@
-#include "mikudancestudio/key_pool.hpp"
+#include "mikumikustudio/key_pool.hpp"
 // ===========================================================================
 // VA 0x00412330 - ApplyGravityTrack (was Sub412330)  (0x7F1 bytes)  gravity-track apply + physics
 //                                    dialog (hwnd @ app+0xA0CCC) refresh
@@ -28,7 +28,7 @@
 // copy from the previous record.  Port adds null guards the original gets
 // from the 0x466D20 allocations.
 // =========================================================================//
-#include "mikudancestudio/animation_curve_host.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
@@ -38,11 +38,11 @@
 #include <cstdio>
 #include <cstring>
 
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/global_key_layout.hpp"
-#include "mikudancestudio/panel_controls.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/global_key_layout.hpp"
+#include "mikumikustudio/panel_controls.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 
 constexpr float kWrap2p32 = 4294967296.0f;   // 0x52B9F0
@@ -171,4 +171,4 @@ void ApplyGravityTrack(MMDApp* app) {  // was Sub412330, VA 0x00412330
 // Ported in src/window/accessory_paste.cpp (parallel-port winner: verbatim
 // prev-record copy in the between-keys branch, per 0x4131AC..0x413224).
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

@@ -2,7 +2,7 @@
 #include <Windows.h>
 #include <vector>
 
-namespace mikudancestudio::nvidia_antialias_menu::uninstall_dialog {
+namespace mikumikustudio::nvidia_antialias_menu::uninstall_dialog {
 constexpr int Warning = 100, Detail = 101;
 inline const wchar_t* Text(int language, const wchar_t* zh, const wchar_t* en, const wchar_t* ja) {
     return language == 2 ? zh : language == 0 ? ja : en;

@@ -8,7 +8,7 @@
 #include <Windows.h>
 #include "nvidia_antialias_profile.hpp"
 
-namespace mikudancestudio::nvidia_antialias_fix::detail {
+namespace mikumikustudio::nvidia_antialias_fix::detail {
 // Shared with the elevated helper. No renderer, plug-in, or application runtime
 // library may be linked into that DLL.
 struct Driver {

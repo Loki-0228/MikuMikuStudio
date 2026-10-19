@@ -1,10 +1,10 @@
 // MAINTENANCE: regression-keep; purpose and cleanup conditions in tests/README.md.
-#include "mikudancestudio/sequential_file_reader.hpp"
+#include "mikumikustudio/sequential_file_reader.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
 #include <fcntl.h>
-using namespace mikudancestudio::fileio;
+using namespace mikumikustudio::fileio;
 void Check(bool ok,const char* what){if(!ok){std::fprintf(stderr,"FAIL %s\n",what);std::exit(1);}}
 int main(){
     FILE* file=nullptr;Check(tmpfile_s(&file)==0,"temporary file");

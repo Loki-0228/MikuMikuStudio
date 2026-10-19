@@ -64,14 +64,14 @@
 #include <cstdint>
 #include <cstring>
 
-#include "mikudancestudio/accessory_layout.hpp"
-#include "mikudancestudio/animation_curve_host.hpp"
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/accessory_layout.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 #include "device_lost_wait.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 
 constexpr double kPiOver180 = 0.01745329238474369;   // dbl_52BB20 region
@@ -643,4 +643,4 @@ void SampleGlobalPlaybackTracks(MMDApp* app) {
         curve_host::Apply(app, curve_host::Kind::Accessory, app->PlaybackCursorSeconds()*30.0, slot);
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

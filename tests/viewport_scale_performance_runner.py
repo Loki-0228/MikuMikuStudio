@@ -53,7 +53,7 @@ def main():
     (root / 'Data/mmconfig.ini').write_text('40\n40\n1000\n740\n0\n640\n480\n250\n2\n', encoding='ascii')
     env = os.environ.copy()
     env.update(LOCALAPPDATA=str(root / 'Local'), APPDATA=str(root / 'Roaming'),
-               MIKUDANCESTUDIO_AUTOSAVE_CONFIG=str(root / 'autosave.ini'),
+               MIKUMIKUSTUDIO_AUTOSAVE_CONFIG=str(root / 'autosave.ini'),
                MMS_ANTIALIAS_CONFIG=str(root / 'aa.ini'), MMS_NVIDIA_AA_FIX='0', MMS_VIEWPORT_PERF='1')
     for name in ('MMS_SCALE_TRACE_TARGETS', 'MMS_SCALE_QUICK', 'MMS_MME_ORDER_NATIVE', 'MMS_SCALE_ACCESSORY', 'MMS_SCALE_EMM', 'MMS_SCALE_CAPTURE', 'MMS_SCALE_PROJECT_SETTINGS', 'MMS_SCALE_GPU_TIMING', 'MMS_SCALE_GPU_SAMPLES', 'MMS_SCALE_GPU_DRAWS'):
         env.pop(name, None)

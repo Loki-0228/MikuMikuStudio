@@ -1,12 +1,12 @@
-#include "mikudancestudio/extended_names.hpp"
+#include "mikumikustudio/extended_names.hpp"
 #include <charconv>
-#include "mikudancestudio/frame_limits.hpp"
+#include "mikumikustudio/frame_limits.hpp"
 #define NOMINMAX
-#include "mikudancestudio/bone_curve.hpp"
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/bone_scale.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/panel_controls.hpp"
+#include "mikumikustudio/bone_curve.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/panel_controls.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -14,7 +14,7 @@
 #include <set>
 #include <stdexcept>
 
-namespace mikudancestudio::bone_curve {
+namespace mikumikustudio::bone_curve {
 namespace {
 namespace ac = animation_curve;
 constexpr double pi = 3.14159265358979323846;
@@ -351,7 +351,7 @@ bool Write(unsigned char* model, int bone, const Tracks& tracks, std::string& er
     std::set<int> frames;
     for (const auto& track : tracks) {
         if (!ac::Validate(track, error)) return false;
-        if (track.discrete || track.keys.empty() || track.keys.front().frame != 0 || track.keys.back().frame > mikudancestudio::frame_limits::maximum) {
+        if (track.discrete || track.keys.empty() || track.keys.front().frame != 0 || track.keys.back().frame > mikumikustudio::frame_limits::maximum) {
             error="Bone curves must keep frame zero and use representable nonnegative frame numbers."; return false;
         }
         for (const auto& key : track.keys) {
@@ -555,7 +555,7 @@ bool ApplyVmd(unsigned char* model,const std::uint8_t* data,std::size_t size,int
             if(unicodeTargets){auto it=byIndex.find({int(bone),c});if(it!=byIndex.end())source=it->second;}
             else{auto it=byName.find(id);if(it!=byName.end())source=it->second;}
             if(!source){complete=false;break;}tracks[c]=*source;
-            for(auto& key:tracks[c].keys){if(key.frame<0||key.frame>mikudancestudio::frame_limits::maximum-offset){error="Bone curve frame is out of range.";return false;}key.frame+=offset;}
+            for(auto& key:tracks[c].keys){if(key.frame<0||key.frame>mikumikustudio::frame_limits::maximum-offset){error="Bone curve frame is out of range.";return false;}key.frame+=offset;}
             if(tracks[c].keys.empty()){error="Empty bone curve.";return false;}
             if(tracks[c].keys.front().frame>0){auto anchor=tracks[c].keys.front();anchor.frame=0;anchor.inSlope=anchor.outSlope=0;tracks[c].keys.front().interpolation=ac::Interpolation::Step;tracks[c].keys.insert(tracks[c].keys.begin(),anchor);}
         }

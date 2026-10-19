@@ -18,8 +18,8 @@
 // morph frame transform 0x7FF7CB478BC3, model order 0x7FF7CB478383
 // (or ebx,-1), physics editor 0x7FF7CB4AE84E.  One helper, one constant.
 // =========================================================================//
-#ifndef MIKUDANCESTUDIO_WINDOW_DIALOG_SCAFFOLD_HPP
-#define MIKUDANCESTUDIO_WINDOW_DIALOG_SCAFFOLD_HPP
+#ifndef MIKUMIKUSTUDIO_WINDOW_DIALOG_SCAFFOLD_HPP
+#define MIKUMIKUSTUDIO_WINDOW_DIALOG_SCAFFOLD_HPP
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -27,9 +27,9 @@
 
 #include <cstdlib>
 
-#include "mikudancestudio/mmd_app.hpp"
+#include "mikumikustudio/mmd_app.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 // EM_REPLACESEL prefill of one edit control (the dialogs fill their empty
 // edits by replacing the empty selection, not by SetWindowText).
@@ -71,6 +71,6 @@ inline void MakeDialogTopmostIfRequested(MMDApp* app, HWND hDlg) {
     }
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio
 
-#endif  // MIKUDANCESTUDIO_WINDOW_DIALOG_SCAFFOLD_HPP
+#endif  // MIKUMIKUSTUDIO_WINDOW_DIALOG_SCAFFOLD_HPP

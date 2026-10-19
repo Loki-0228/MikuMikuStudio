@@ -4,7 +4,7 @@
 #include <cstdio>
 #include <memory>
 #include <stdexcept>
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 namespace {
 void Check(bool ok,const char* message){if(!ok)throw std::runtime_error(message);}
 }

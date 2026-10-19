@@ -1,5 +1,5 @@
-#include "mikudancestudio/extended_names.hpp"
-#include "mikudancestudio/frame_limits.hpp"
+#include "mikumikustudio/extended_names.hpp"
+#include "mikumikustudio/frame_limits.hpp"
 // Exercise the real LoadVmdMotion entry, key registrars, and extension loaders.
 // No windows or D3D device are created. Each case can also run in isolation:
 // vmd_load_safety_tests.exe --case overflow|short|counts|valid|tails|camera|ik|twist|force-morph
@@ -25,23 +25,23 @@
 #include <string>
 #include <sys/stat.h>
 #include <vector>
-#include "mikudancestudio/accessory_layout.hpp"
-#include "mikudancestudio/accessory_motion_io.hpp"
-#include "mikudancestudio/bone_scale.hpp"
-#include "mikudancestudio/bone_scale_io.hpp"
-#include "mikudancestudio/global_key_layout.hpp"
-#include "mikudancestudio/globals.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/morph_curve.hpp"
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/force_paste.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/accessory_layout.hpp"
+#include "mikumikustudio/accessory_motion_io.hpp"
+#include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/bone_scale_io.hpp"
+#include "mikumikustudio/global_key_layout.hpp"
+#include "mikumikustudio/globals.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/morph_curve.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/force_paste.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 #include <limits>
 
-namespace mikudancestudio { int LoadVmdMotion(MMDApp*, const char*); }
+namespace mikumikustudio { int LoadVmdMotion(MMDApp*, const char*); }
 namespace {
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 using Bytes = std::vector<std::uint8_t>;
 void Check(bool condition, const char* description) {
     if (!condition) { std::fprintf(stderr, "FAIL: %s\n", description); std::exit(1); }
@@ -631,7 +631,7 @@ void Benchmark(unsigned warmup, unsigned iterations) {
 } // namespace
 
 void UnicodeIdentity() {
-    using namespace mikudancestudio;
+    using namespace mikumikustudio;
     Fixture fixture;fixture.EnableIk();
     const std::wstring first=L"相同的长名称前缀_左侧_\U0001f31f",second=L"相同的长名称前缀_右侧_\U0001f31f";
     Check(extended_names::Assign(fixture.bones[0].jpText,first)&&extended_names::Assign(fixture.bones[1].jpText,second),"allocate complete names");

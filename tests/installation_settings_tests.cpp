@@ -1,19 +1,19 @@
 // CPU-only installation settings checks. No resource/shader compilation or GPU is required.
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include "mikudancestudio/autosave.hpp"
-#include "mikudancestudio/local_data_path.hpp"
-#include "mikudancestudio/antialias.hpp"
-#include "mikudancestudio/processor_settings.hpp"
-#include "mikudancestudio/viewport_corner_settings.hpp"
-#include "mikudancestudio/recent_projects.hpp"
-#include "mikudancestudio/mmd_app.hpp"
+#include "mikumikustudio/autosave.hpp"
+#include "mikumikustudio/local_data_path.hpp"
+#include "mikumikustudio/antialias.hpp"
+#include "mikumikustudio/processor_settings.hpp"
+#include "mikumikustudio/viewport_corner_settings.hpp"
+#include "mikumikustudio/recent_projects.hpp"
+#include "mikumikustudio/mmd_app.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
 namespace fs=std::filesystem;
-namespace as=mikudancestudio::autosave;
-using namespace mikudancestudio;
+namespace as=mikumikustudio::autosave;
+using namespace mikumikustudio;
 namespace {
 unsigned checks=0;
 fs::path root;

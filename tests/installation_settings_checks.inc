@@ -2,7 +2,7 @@
 void SettingsLocationChecks(const fs::path& executable,const std::wstring& mode) {
     const auto folder=executable.parent_path();const auto config=folder/L"data"/L"autosave.ini";
     const bool overrideMode=mode==L"--settings-override";
-    if(!overrideMode)SetEnvironmentVariableW(L"MIKUDANCESTUDIO_AUTOSAVE_CONFIG",nullptr);
+    if(!overrideMode)SetEnvironmentVariableW(L"MIKUMIKUSTUDIO_AUTOSAVE_CONFIG",nullptr);
     const auto current=as::Current();std::wstring error;
     Check(processor::ConfigPath()==(folder/L"data"/L"processor.ini").wstring(),"processor preferences are local to this installation");
     Check(viewport_corner_settings::SettingsPath()==(folder/L"data"/L"viewport.ini").wstring(),"viewport preferences are local to this installation");

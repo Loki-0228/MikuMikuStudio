@@ -1,11 +1,11 @@
-#include "mikudancestudio/frame_limits.hpp"
-#include "mikudancestudio/key_pool.hpp"
+#include "mikumikustudio/frame_limits.hpp"
+#include "mikumikustudio/key_pool.hpp"
 #define NOMINMAX
-#include "mikudancestudio/animation_curve_host.hpp"
-#include "mikudancestudio/animation_curve_motion.hpp"
-#include "mikudancestudio/accessory_layout.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/runtime_log.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
+#include "mikumikustudio/animation_curve_motion.hpp"
+#include "mikumikustudio/accessory_layout.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/runtime_log.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -18,7 +18,7 @@
 #include <utility>
 #include <vector>
 
-namespace mikudancestudio::curve_host {
+namespace mikumikustudio::curve_host {
 namespace {
 namespace ac = animation_curve;
 using Channel = curve_editor::Channel;
@@ -112,7 +112,7 @@ template<class K> bool Native(K* pool,Kind kind,std::vector<Channel>& out){
     for(size_t c=0;c<f.size();++c){out[c].id=f[c].id;out[c].track.discrete=f[c].discrete;}
     uint32_t i=0,previousFrame=0;
     for(size_t visited=0;visited<mdl::KeyPoolCapacity(pool);++visited){
-        if(i>=mdl::KeyPoolCapacity(pool) || pool[i].frame>int32_t(mikudancestudio::frame_limits::maximum) ||
+        if(i>=mdl::KeyPoolCapacity(pool) || pool[i].frame>int32_t(mikumikustudio::frame_limits::maximum) ||
            (visited && pool[i].frame<=previousFrame))return false;
         for(size_t c=0;c<f.size();++c){
             ac::Key key;key.frame=int(pool[i].frame);key.value=Value(pool[i],c);
@@ -417,7 +417,7 @@ bool Write(MMDApp&app,Kind kind,int slot,const std::vector<Channel>&input,std::w
         if(input[c].id!=f[c].id||t.discrete!=f[c].discrete||!ac::Validate(t,detail)||t.keys.empty()||t.keys.front().frame!=0){
             error=Error(app,L"各トラックの 0 フレームキーを保持してください。",L"Keep a valid frame-zero key in every track.",L"每个轨道须保留有效的第 0 帧关键帧。");return false;}
         for(const auto&k:t.keys){
-            if(k.frame>mikudancestudio::frame_limits::maximum||k.value<f[c].minimum||k.value>f[c].maximum||(f[c].discrete&&std::floor(k.value)!=k.value)){
+            if(k.frame>mikumikustudio::frame_limits::maximum||k.value<f[c].minimum||k.value>f[c].maximum||(f[c].discrete&&std::floor(k.value)!=k.value)){
                 error=Error(app,L"値またはフレームが範囲外です。",L"Value or frame is outside the allowed range.",L"数值或帧号超出允许范围。");return false;}
             frames.insert(k.frame);
         }
@@ -573,7 +573,7 @@ void Load(MMDApp&app,const pmm_extension::Document&doc){
         for(auto&c:next.channels){auto t=std::find_if(g.second.begin(),g.second.end(),[&](const auto&v){return v.id==c.id;});
             if(t==g.second.end()||t->track.keys.empty()||t->track.keys[0].frame!=0||t->track.discrete!=c.track.discrete){valid=false;break;}
             const auto index=size_t(&c-next.channels.data());const auto&field=Fields(k)[index];
-            for(const auto&key:t->track.keys)if(key.frame>mikudancestudio::frame_limits::maximum||key.value<field.minimum||key.value>field.maximum||
+            for(const auto&key:t->track.keys)if(key.frame>mikumikustudio::frame_limits::maximum||key.value<field.minimum||key.value>field.maximum||
                 (field.discrete&&std::floor(key.value)!=key.value)){valid=false;break;}
             if(!valid)break;
             const Channel original=c;c.track=t->track;

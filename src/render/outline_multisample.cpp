@@ -1,11 +1,11 @@
 #include "outline_multisample.hpp"
 #include "outline_multisample_shader.hpp"
-#include "mikudancestudio/build_profile.hpp"
-#include "mikudancestudio/deformed_mesh_capture.hpp"
-#include "mikudancestudio/graphics_runtime.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/runtime_log.hpp"
+#include "mikumikustudio/build_profile.hpp"
+#include "mikumikustudio/deformed_mesh_capture.hpp"
+#include "mikumikustudio/graphics_runtime.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/runtime_log.hpp"
 #include <wrl/client.h>
 #include <algorithm>
 #include <array>
@@ -16,7 +16,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace mikudancestudio::antialias::outline_multisample {
+namespace mikumikustudio::antialias::outline_multisample {
 using Microsoft::WRL::ComPtr;
 namespace {
 void Check(HRESULT hr,const char* operation) {

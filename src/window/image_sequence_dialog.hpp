@@ -1,8 +1,8 @@
 #pragma once
-#include "mikudancestudio/image_sequence_export.hpp"
+#include "mikumikustudio/image_sequence_export.hpp"
 #include <Windows.h>
 
-namespace mikudancestudio::image_sequence {
+namespace mikumikustudio::image_sequence {
 constexpr int kDialog = 9100;
 enum Control {
     Folder = 9101, Browse, Prefix, FormatCombo, Example,

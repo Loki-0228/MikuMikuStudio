@@ -1,5 +1,5 @@
 #include "repair_core.hpp"
-#include "mikudancestudio/animation_curve.hpp"
+#include "mikumikustudio/animation_curve.hpp"
 #include <Windows.h>
 #include <algorithm>
 #include <cstring>
@@ -8,7 +8,7 @@
 #include <stdexcept>
 
 using namespace repair;
-namespace ac=mikudancestudio::animation_curve;
+namespace ac=mikumikustudio::animation_curve;
 namespace {
 int checks=0;
 void Check(bool ok,const char* text) {++checks;if(!ok)throw std::runtime_error(text);}

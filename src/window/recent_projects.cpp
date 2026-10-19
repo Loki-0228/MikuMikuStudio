@@ -1,16 +1,16 @@
-#include "mikudancestudio/recent_projects.hpp"
-#include "mikudancestudio/local_data_path.hpp"
-#include "mikudancestudio/build_profile.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/ui_message.hpp"
+#include "mikumikustudio/recent_projects.hpp"
+#include "mikumikustudio/local_data_path.hpp"
+#include "mikumikustudio/build_profile.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/ui_message.hpp"
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <string>
 #include <vector>
 
-namespace mikudancestudio::recent_projects {
+namespace mikumikustudio::recent_projects {
 namespace {
 constexpr UINT first=34800, browse=34810;
 MMDApp* owner=nullptr;

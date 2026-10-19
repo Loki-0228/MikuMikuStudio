@@ -1,13 +1,13 @@
 #pragma once
-#include "mikudancestudio/skinning_backend.hpp"
-#include "mikudancestudio/geometry_workers.hpp"
+#include "mikumikustudio/skinning_backend.hpp"
+#include "mikumikustudio/geometry_workers.hpp"
 #include <Windows.h>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <stdexcept>
 
-namespace mikudancestudio::skinning::calibration_cache {
+namespace mikumikustudio::skinning::calibration_cache {
 // Bump when the benchmark geometry, CPU/GPU algorithm or measurement changes.
 constexpr std::uint32_t kVersion=2;
 constexpr std::uint64_t kMagic=0x31484341434e4b53ull;

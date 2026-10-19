@@ -37,7 +37,7 @@ void CheckVisibleImage(const std::filesystem::path& path, bool alpha) {
     if (std::getenv("MMS_IMAGE_EXPECT_MAGENTA")) Check(magenta > 8, "export contains the actual assigned MME effect");
 }
 void CheckImageVisibility(MMDApp* app, const std::filesystem::path& directory) {
-    namespace sequence = mikudancestudio::image_sequence;
+    namespace sequence = mikumikustudio::image_sequence;
     Check(app->SelectedModel() != nullptr, "image visibility test uses an actual model");
     app->GroundGridEnabled() = app->GroundShadowEnabled() = false;
     app->CameraPositionX() = 0; app->CameraPositionY() = 12; app->CameraPositionZ() = 0;

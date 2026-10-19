@@ -1,7 +1,7 @@
-#include "mikudancestudio/frame_limits.hpp"
-#include "mikudancestudio/extended_names.hpp"
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/bone_curve.hpp"
+#include "mikumikustudio/frame_limits.hpp"
+#include "mikumikustudio/extended_names.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/bone_curve.hpp"
 // ===========================================================================
 // VA 0x00434B60 - VMD motion file loader  (0x147F bytes)
 // ===========================================================================
@@ -65,12 +65,12 @@
 // =========================================================================//
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include "mikudancestudio/build_profile.hpp"
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/accessory_motion_io.hpp"
-#include "mikudancestudio/bone_scale.hpp"
-#include "mikudancestudio/bone_scale_io.hpp"
-#include "mikudancestudio/morph_curve.hpp"
+#include "mikumikustudio/build_profile.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/accessory_motion_io.hpp"
+#include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/bone_scale_io.hpp"
+#include "mikumikustudio/morph_curve.hpp"
 #include <Windows.h>
 
 #include <cerrno>
@@ -88,15 +88,15 @@
 #include <vector>
 #include "vmd_read_guard.hpp"
 
-#include "mikudancestudio/globals.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/text_encoding.hpp"
-#include "mikudancestudio/original_file_encoding.hpp"
+#include "mikumikustudio/globals.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/text_encoding.hpp"
+#include "mikumikustudio/original_file_encoding.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 // loader-tail helpers, ported in other translation units
 void SelectionReeval(MMDApp* app);                   // 0x430510 (ui_selection_reeval.cpp)
 void RefreshLightPanel(MMDApp* app);                         // 0x411070 (ui_frame_refresh.cpp)
@@ -548,9 +548,9 @@ static int LoadVmdMotionPath(MMDApp* app, const char* fileName, const wchar_t* w
     if (undoBytes) std::memset(preparedKeys.get(), 0, undoBytes);
 
     // clear the allocation marks of all three key arrays
-    mikudancestudio::mdl::BoneKey* const bkeys = mikudancestudio::mdl::BoneKeys(model);
-    mikudancestudio::mdl::MorphKey* const mkeys = mikudancestudio::mdl::MorphKeys(model);
-    mikudancestudio::mdl::DisplayKey* const ikeys = mikudancestudio::mdl::DisplayKeys(model);
+    mikumikustudio::mdl::BoneKey* const bkeys = mikumikustudio::mdl::BoneKeys(model);
+    mikumikustudio::mdl::MorphKey* const mkeys = mikumikustudio::mdl::MorphKeys(model);
+    mikumikustudio::mdl::DisplayKey* const ikeys = mikumikustudio::mdl::DisplayKeys(model);
     // The capacity is resolved once, outside the sweep: a per-iteration lookup
     // would take the registry lock for every slot.
     const int boneKeyCapacity = static_cast<int>(mdl::BoneKeyCapacity(*mdl::Mdl(model)));
@@ -570,7 +570,7 @@ static int LoadVmdMotionPath(MMDApp* app, const char* fileName, const wchar_t* w
     bone_scale::CaptureUndo(model);
 #endif
 
-    auto& undo = mikudancestudio::mdl::Mdl(model)->undoRings[0].slots[ringIdx];
+    auto& undo = mikumikustudio::mdl::Mdl(model)->undoRings[0].slots[ringIdx];
     undo.operation = 2;
     undo.dirty = 0;
     undo.frame = s.state.currentFrame;
@@ -584,12 +584,12 @@ static int LoadVmdMotionPath(MMDApp* app, const char* fileName, const wchar_t* w
     auto* const snap = reinterpret_cast<mdl::BonePoseSnapshot*>(preparedPose.release());
     undo.bonePose = snap;
     if (boneCnt > 0) {
-        mikudancestudio::mdl::BoneRecord* const bones =
-            mikudancestudio::mdl::Bones(model);
+        mikumikustudio::mdl::BoneRecord* const bones =
+            mikumikustudio::mdl::Bones(model);
         const unsigned char* const flags =
-            mikudancestudio::mdl::Mdl(model)->bonePhysicsState;
+            mikumikustudio::mdl::Mdl(model)->bonePhysicsState;
         for (int b = 0; b < boneCnt; ++b) {
-            mikudancestudio::mdl::BonePoseSnapshot& slot = snap[b];
+            mikumikustudio::mdl::BonePoseSnapshot& slot = snap[b];
             slot.boneIndex = b;
             std::memcpy(slot.position, bones[b].trans, sizeof slot.position);
             std::memcpy(slot.rotation, bones[b].rotQuat, sizeof slot.rotation);
@@ -782,4 +782,4 @@ void LoadVmdFile(const wchar_t* path) {
     LoadVmdMotionPath(g_Block, nullptr, path);
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

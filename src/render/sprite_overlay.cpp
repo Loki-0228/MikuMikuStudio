@@ -9,17 +9,17 @@
 #include <cmath>
 #include <cstdint>
 
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/frame_presentation.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/bone_projection.hpp"
-#include "mikudancestudio/bone_scale.hpp"
-#include "mikudancestudio/viewport_corner_settings.hpp"
-#include "mikudancestudio/viewport_tool_layout.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/frame_presentation.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/bone_projection.hpp"
+#include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/viewport_corner_settings.hpp"
+#include "mikumikustudio/viewport_tool_layout.hpp"
 #include "vb_dump.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 
 struct SpriteVertex {
@@ -331,7 +331,7 @@ void PrepareFrameSpriteOverlay(MMDApp* app) {
                 app->SpriteOverlayPrimitiveCount();
             BoneOverlayResult boneResult{393939, 393939, 0.0f, 0,
                 app->LineOverlayPrimitiveCount()};
-            auto* bones = mikudancestudio::mdl::Bones(model);
+            auto* bones = mikumikustudio::mdl::Bones(model);
             const int boneCount = mdl::Mdl(model)->boneCount;
             const int selected = mdl::Mdl(model)->selectedBone;
             auto* active = mdl::Mdl(model)->boneSelection;
@@ -385,12 +385,12 @@ void PrepareFrameSpriteOverlay(MMDApp* app) {
                         40 * (5000 - incomingLineCount),
                         reinterpret_cast<void**>(&lines), 0))) {
                     LineVertex* const lineBegin = lines;
-                    const auto filtered = [&](mikudancestudio::mdl::BoneRecord* bone) -> bool {
+                    const auto filtered = [&](mikumikustudio::mdl::BoneRecord* bone) -> bool {
                         return (physMode == 1 && bone->hasRigidBody) ||
                             (physMode == 2 && bone->hasRigidBody &&
                              bone->physicsDisabled == 0);
                     };
-                    const auto emitBone = [&](mikudancestudio::mdl::BoneRecord* bone,
+                    const auto emitBone = [&](mikumikustudio::mdl::BoneRecord* bone,
                                               D3DCOLOR color) -> bool {
                         int endX = 393939;
                         int endY = 393939;
@@ -872,4 +872,4 @@ void PrepareFrameSpriteOverlay(MMDApp* app) {
     vb->Unlock();
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

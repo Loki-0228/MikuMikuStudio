@@ -21,7 +21,7 @@
 // ===========================================================================
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include "mikudancestudio/native_media.hpp"
+#include "mikumikustudio/native_media.hpp"
 #include <Windows.h>
 #include <algorithm>
 #include <climits>
@@ -32,12 +32,12 @@
 #include <cstring>
 #include <cwchar>
 
-#include "mikudancestudio/globals.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/globals.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 #include "../app/device_lost_wait.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 
 // .rdata 0x52BA20 - double 1.2000000476837158, overlay scale divisor used by
@@ -412,4 +412,4 @@ void PicBgOverlayRefresh(MMDApp* app) {
 //  The real bodies above are the parallel-port winner - full VFW decode
 //  chain; the background_plane.cpp twin was removed.)
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

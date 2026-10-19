@@ -1,7 +1,7 @@
 #pragma once
-#include "mikudancestudio/bone_curve.hpp"
-#include "mikudancestudio/animation_curve.hpp"
-namespace mikudancestudio { void ApplyFrameRangeScale(HWND); }
+#include "mikumikustudio/bone_curve.hpp"
+#include "mikumikustudio/animation_curve.hpp"
+namespace mikumikustudio { void ApplyFrameRangeScale(HWND); }
 namespace {
 void ReviewAutomaticInterpolationUndo() {
     Fixture f;

@@ -76,7 +76,7 @@ def main():
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)
     env = {k.upper(): v for k, v in os.environ.items()}
-    env.pop("MIKUDANCESTUDIO_TRACE_FILE", None)
+    env.pop("MIKUMIKUSTUDIO_TRACE_FILE", None)
     startup = subprocess.STARTUPINFO()
     startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
     startup.wShowWindow = 0
@@ -88,7 +88,7 @@ def main():
         "timeout_seconds": args.timeout,
         "cases_requested": [case for case, _, _ in cases],
         "script_sha256": sha(Path(__file__).resolve()),
-        "environment": {k: v for k, v in env.items() if k.startswith(("OMP_", "MIKUDANCESTUDIO_"))},
+        "environment": {k: v for k, v in env.items() if k.startswith(("OMP_", "MIKUMIKUSTUDIO_"))},
         "builds": {}, "assets": {}, "runs": [],
     }
     for model in (args.grass, args.character):

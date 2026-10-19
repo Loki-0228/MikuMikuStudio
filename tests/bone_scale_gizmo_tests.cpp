@@ -14,21 +14,21 @@
 #include <string>
 #include <vector>
 
-#include "mikudancestudio/bone_scale.hpp"
-#include "mikudancestudio/bone_scale_gizmo.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/ui_language.hpp"
+#include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/bone_scale_gizmo.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/ui_language.hpp"
 
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 namespace bs = bone_scale;
 namespace gizmo = bone_scale::gizmo;
 
 // Declared in localize_ui.cpp (the panel's caption table and mode cycle) and
 // used by the command handlers.  Not exported through a header because only the
 // UI pass, the command handlers and this test need them.
-namespace mikudancestudio {
+namespace mikumikustudio {
 std::wstring UiControlCaption(int id, unsigned char language);
 std::wstring BoneModePanelCaption(ViewportEditMode mode, unsigned char language);
 ViewportEditMode NextBoneSelectMode(ViewportEditMode current);

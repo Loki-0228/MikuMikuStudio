@@ -1,7 +1,7 @@
 #include "animation_curve_insert_checks.hpp"
 // MAINTENANCE: unit coverage for the shared animation curve core
 // (src/animation/animation_curve.cpp).  Pure CPU; no Win32, DirectX or GUI.
-#include "mikudancestudio/animation_curve.hpp"
+#include "mikumikustudio/animation_curve.hpp"
 
 #include <algorithm>
 #include <array>
@@ -15,7 +15,7 @@
 #include <utility>
 #include <vector>
 
-namespace ac = mikudancestudio::animation_curve;
+namespace ac = mikumikustudio::animation_curve;
 
 namespace {
 

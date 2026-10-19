@@ -9,12 +9,12 @@
 #include <cstring>
 #include <memory>
 #include <vector>
-#include "mikudancestudio/graphics_runtime.hpp"
+#include "mikumikustudio/graphics_runtime.hpp"
 #include "../src/render/smaa_shader.hpp"
 #include "../src/render/smaa_lookup.hpp"
 
 using Microsoft::WRL::ComPtr;
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 namespace {
 void Check(bool ok,const char* message) {
     if(!ok){std::fprintf(stderr,"FAIL: %s\n",message);std::exit(1);}

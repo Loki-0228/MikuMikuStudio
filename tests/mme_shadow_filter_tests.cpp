@@ -1,7 +1,7 @@
 #define NOMINMAX
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/d3dx_effect.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/d3dx_effect.hpp"
 #include <MinHook.h>
 #include <wrl/client.h>
 #include <cstdio>
@@ -11,8 +11,8 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
-using namespace mikudancestudio;
-using namespace mikudancestudio::d3dx;
+using namespace mikumikustudio;
+using namespace mikumikustudio::d3dx;
 using Microsoft::WRL::ComPtr;
 namespace {
 void Check(bool ok, const char* text) { std::printf("%s %s\n",ok?"PASS":"FAIL",text);if(!ok)std::exit(1); }

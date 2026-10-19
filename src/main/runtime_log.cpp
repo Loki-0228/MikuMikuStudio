@@ -30,9 +30,9 @@
 #include <cwchar>
 #include <exception>
 
-#include "mikudancestudio/runtime_log.hpp"
+#include "mikumikustudio/runtime_log.hpp"
 
-namespace mikudancestudio::runtime_log {
+namespace mikumikustudio::runtime_log {
 namespace {
 
 // ---- in-memory record -----------------------------------------------------
@@ -722,7 +722,7 @@ void SetPhase(const char* value) noexcept { phase.store(value, std::memory_order
 void TraceV(const char* format, va_list args) noexcept {
     // Opt-in outside fatal errors. The guards call
     // this so a field session can see what they rejected without a crash.
-    const char* path = std::getenv("MIKUDANCESTUDIO_TRACE_FILE");
+    const char* path = std::getenv("MIKUMIKUSTUDIO_TRACE_FILE");
     if (path == nullptr || path[0] == '\0')
         return;
     FILE* stream = std::fopen(path, "a");

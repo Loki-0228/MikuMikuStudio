@@ -9,9 +9,9 @@
 // The original evaluates the divisor in exactly that order; addition order
 // of floats is preserved below.
 // ===========================================================================
-#include "mikudancestudio/globals.hpp"
+#include "mikumikustudio/globals.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 void QuaternionToMatrix3x4(float* outMatrix, const float* quaternion) {
     const float qx = quaternion[0];
@@ -47,4 +47,4 @@ void QuaternionToMatrix3x4(float* outMatrix, const float* quaternion) {
     outMatrix[11] = 0.0f;                                     // pad
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

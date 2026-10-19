@@ -1,4 +1,4 @@
-#include "mikudancestudio/bone_curve.hpp"
+#include "mikumikustudio/bone_curve.hpp"
 // ===========================================================================
 // VA 0x004A31D0 - per-model keyframe application  (5754 bytes, 187 blocks)
 // + helpers VA 0x004A05A0 (VMD interpolation easing) and 0x00499B50
@@ -103,8 +103,8 @@
 // =========================================================================//
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include "mikudancestudio/bone_scale.hpp"
-#include "mikudancestudio/morph_curve.hpp"
+#include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/morph_curve.hpp"
 #include <Windows.h>
 
 #include <cmath>
@@ -113,12 +113,12 @@
 
 #include "btBulletDynamicsCommon.h"
 
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 
 #include "keyframe_common.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 
 using kfa::CopyIkDisplayFlags;
@@ -225,10 +225,10 @@ float BoneEase(unsigned char* model, int channel, int keyIdx, float t) {  // was
 
 // ---- VA 0x00499B50 --------------------------------------------------------
 void NotifyBonePhysicsMode(unsigned char* model, int boneIdx, unsigned char mode) {  // was Sub499B50
-    mikudancestudio::mdl::RigidRecord* const rigids = mikudancestudio::mdl::Rigids(model);
+    mikumikustudio::mdl::RigidRecord* const rigids = mikumikustudio::mdl::Rigids(model);
     const int cnt = static_cast<int>(mdl::Mdl(model)->rigidCount);
     for (int i = 0; i < cnt; ++i) {
-        mikudancestudio::mdl::RigidRecord* const r = &rigids[i];
+        mikumikustudio::mdl::RigidRecord* const r = &rigids[i];
         if (r->staticFlag != 0 || r->boneIndex != boneIdx) continue;
         btRigidBody* const body = static_cast<btRigidBody*>(r->body);
         if (body == nullptr)
@@ -271,7 +271,7 @@ void InitModelTrackCursors(unsigned char* model, double cursor, int physicsMode)
             if (next == 0) {
                 state.displayTrackActive = 0;
                 const mdl::DisplayKey& rec = ikKeys[cur];
-                mikudancestudio::mdl::Mdl(m)->loadComplete = rec.visible;
+                mikumikustudio::mdl::Mdl(m)->loadComplete = rec.visible;
                 kfa::CopyIkDisplayFlags(m, rec);
                 kfa::RefreshIkSelectors(m, ikKeys, cur, cur, false, 0, 0);
                 break;
@@ -285,7 +285,7 @@ void InitModelTrackCursors(unsigned char* model, double cursor, int physicsMode)
     // Morph tracks are independently rooted at their morph index.
     const int morphCount = static_cast<int>(mdl::Mdl(m)->morphCount);
     mdl::MorphKey* const morphKeys = mdl::MorphKeys(m);
-    mikudancestudio::mdl::MorphRecord* const morphValues = mikudancestudio::mdl::Morphs(m);
+    mikumikustudio::mdl::MorphRecord* const morphValues = mikumikustudio::mdl::Morphs(m);
     unsigned char* const morphActive = state.morphTrackActive;
     std::uint32_t* const morphCursor = state.morphKeyCursors;
     if (morphCount > 0 && morphKeys != nullptr && morphValues != nullptr &&
@@ -313,11 +313,11 @@ void InitModelTrackCursors(unsigned char* model, double cursor, int physicsMode)
     // initializer excludes only type 7, exactly as 0x4A301F does.
     const int boneCount = static_cast<int>(mdl::Mdl(m)->boneCount);
     mdl::BoneKey* const boneKeys = mdl::BoneKeys(m);
-    mikudancestudio::mdl::BoneRecord* const bones = mdl::Bones(m);
+    mikumikustudio::mdl::BoneRecord* const bones = mdl::Bones(m);
     unsigned char* const boneActive = state.boneTrackActive;
     std::uint32_t* const boneCursor = state.boneKeyCursors;
     for (int boneIndex = 0; boneIndex < boneCount; ++boneIndex) {
-        mikudancestudio::mdl::BoneRecord* const bone = &bones[boneIndex];
+        mikumikustudio::mdl::BoneRecord* const bone = &bones[boneIndex];
         boneActive[boneIndex] = 1;
         if (bone->type == mdl::BoneType::InertTip) {
             boneActive[boneIndex] = 0;
@@ -378,7 +378,7 @@ void AdvanceModelKeyframes(unsigned char* model, double cursor, int physicsMode)
             }
             // park: track exhausted (variant A, 0x4A328B)
             state.displayTrackActive = 0;
-            mikudancestudio::mdl::Mdl(m)->loadComplete = rec.visible;
+            mikumikustudio::mdl::Mdl(m)->loadComplete = rec.visible;
             CopyIkDisplayFlags(m, rec);
             RefreshIkSelectors(m, keys, cur, cur, false, 0, 0);
         }
@@ -387,7 +387,7 @@ void AdvanceModelKeyframes(unsigned char* model, double cursor, int physicsMode)
             const mdl::DisplayKey& rec = keys[cur];
             if (frame == (double)rec.frame) {
                 // exact hit (variant B, 0x4A3477)
-                mikudancestudio::mdl::Mdl(m)->loadComplete = rec.visible;
+                mikumikustudio::mdl::Mdl(m)->loadComplete = rec.visible;
                 CopyIkDisplayFlags(m, rec);
                 RefreshIkSelectors(m, keys, cur, cur, true, cur, cur);
             } else {
@@ -396,7 +396,7 @@ void AdvanceModelKeyframes(unsigned char* model, double cursor, int physicsMode)
                 // record's pair
                 const int prevIdx = static_cast<int>(rec.previous);
                 const mdl::DisplayKey& prec = keys[prevIdx];
-                mikudancestudio::mdl::Mdl(m)->loadComplete = prec.visible;
+                mikumikustudio::mdl::Mdl(m)->loadComplete = prec.visible;
                 CopyIkDisplayFlags(m, prec);
                 RefreshIkSelectors(m, keys, prevIdx, prevIdx, true, cur, cur);
             }
@@ -407,7 +407,7 @@ void AdvanceModelKeyframes(unsigned char* model, double cursor, int physicsMode)
     const int morphCnt = static_cast<int>(mdl::Mdl(m)->morphCount);
     if (morphCnt > 0) {
         mdl::MorphKey* const keys = mdl::MorphKeys(m);
-        mikudancestudio::mdl::MorphRecord* const vals = mikudancestudio::mdl::Morphs(m);  // 136-byte structs
+        mikumikustudio::mdl::MorphRecord* const vals = mikumikustudio::mdl::Morphs(m);  // 136-byte structs
         unsigned char* const active = state.morphTrackActive;
         std::uint32_t* const cursors = state.morphKeyCursors;
         for (int k = 0; k < morphCnt; ++k) {
@@ -445,24 +445,24 @@ void AdvanceModelKeyframes(unsigned char* model, double cursor, int physicsMode)
     const int boneCnt = static_cast<int>(mdl::Mdl(m)->boneCount);
     if (boneCnt > 0) {
         mdl::BoneKey* const keys = mdl::BoneKeys(m);
-        mikudancestudio::mdl::BoneRecord* const bones =
+        mikumikustudio::mdl::BoneRecord* const bones =
             mdl::Bones(m);
         unsigned char* const active = state.boneTrackActive;
         std::uint32_t* const cursors = state.boneKeyCursors;
         for (int b = 0; b < boneCnt; ++b) {
-            mikudancestudio::mdl::BoneRecord* const bone = &bones[b];
+            mikumikustudio::mdl::BoneRecord* const bone = &bones[b];
             if (active[b] == 0) continue;
 
-            // advance (0x4A3ACA) - MIKUDANCESTUDIO_SPIN_CANARY guards a record-
+            // advance (0x4A3ACA) - MIKUMIKUSTUDIO_SPIN_CANARY guards a record-
             // link cycle (diagnostic; the original chain is acyclic)
-#ifdef MIKUDANCESTUDIO_DIAG
+#ifdef MIKUMIKUSTUDIO_DIAG
             int spin = 0;
 #endif
             while ((double)keys[cursors[b]].frame < frame &&
                    active[b] != 0) {
-#ifdef MIKUDANCESTUDIO_DIAG
-                if (++spin > 100000 && getenv("MIKUDANCESTUDIO_SPIN_CANARY")) {
-                    FILE* sf = fopen(getenv("MIKUDANCESTUDIO_SPIN_CANARY"), "a");
+#ifdef MIKUMIKUSTUDIO_DIAG
+                if (++spin > 100000 && getenv("MIKUMIKUSTUDIO_SPIN_CANARY")) {
+                    FILE* sf = fopen(getenv("MIKUMIKUSTUDIO_SPIN_CANARY"), "a");
                     if (sf) {
                         fprintf(sf,
                                 "BONE spin b=%d cursor=%d frame=%.3f\n",
@@ -765,4 +765,4 @@ void AdvanceModelKeyframes(unsigned char* model, double cursor, int physicsMode)
 #endif
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

@@ -54,7 +54,7 @@
 // <Windows.h> and its min / max macros.
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include "mikudancestudio/vertex_capture.hpp"
+#include "mikumikustudio/vertex_capture.hpp"
 
 #include <Windows.h>
 #include <d3d9.h>
@@ -68,7 +68,7 @@
 #include <climits>
 #include <iterator>
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace vertex_capture {
 namespace {
 
@@ -1378,4 +1378,4 @@ bool Capture(IDirect3DDevice9* device, unsigned firstVertex, unsigned vertexCoun
 
 
 }  // namespace vertex_capture
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

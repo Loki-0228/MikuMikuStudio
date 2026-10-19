@@ -1,5 +1,5 @@
 #include "../render/nvidia_antialias_elevation.hpp"
-namespace detail = mikudancestudio::nvidia_antialias_fix::detail;
+namespace detail = mikumikustudio::nvidia_antialias_fix::detail;
 
 namespace {
 // Derive identity from the DLL, including when Windows loads it in regsvr32.
@@ -19,7 +19,7 @@ HRESULT Change(bool enabled) noexcept {
         std::wstring application;
         if (!SiblingApplication(application)) return E_INVALIDARG;
         if (!detail::IsElevated()) return HRESULT_FROM_WIN32(ERROR_ELEVATION_REQUIRED);
-        mikudancestudio::nvidia_antialias_fix::State state;
+        mikumikustudio::nvidia_antialias_fix::State state;
         return detail::RunForPath(application, &enabled, state) && state.enabled == enabled ? S_OK : E_FAIL;
     } catch (...) { return E_FAIL; }
 }
@@ -35,7 +35,7 @@ extern "C" HRESULT WINAPI MMSNvidiaAAFixQueryInstalled(BOOL* installed) {
         if (!SiblingApplication(application)) return E_INVALIDARG;
         detail::Driver driver;
         if (!driver.ready) return HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED);
-        mikudancestudio::nvidia_antialias_fix::State state;
+        mikumikustudio::nvidia_antialias_fix::State state;
         if (!detail::Execute(driver.api, application, nullptr, state)) return E_FAIL;
         *installed = state.enabled ? TRUE : FALSE;
         return S_OK;

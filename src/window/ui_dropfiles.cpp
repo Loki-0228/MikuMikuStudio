@@ -1,5 +1,5 @@
-#include "mikudancestudio/native_media.hpp"
-#include "mikudancestudio/ui_translation.hpp"
+#include "mikumikustudio/native_media.hpp"
+#include "mikumikustudio/ui_translation.hpp"
 // ===========================================================================
 // VA 0x00461300 - HandleDropFiles  (original: sub_461300)
 // ===========================================================================
@@ -70,12 +70,12 @@
 #include <cwchar>
 #include <new>
 
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ui_message.hpp"
-#include "mikudancestudio/text_encoding.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ui_message.hpp"
+#include "mikumikustudio/text_encoding.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 // ---- pending loaders called below ------------------------------------------
 // 0x435FE0 (VSQ load), 0x42A020 (DisableKinect), 0x429CB0 (OpenNiInit) and
@@ -314,4 +314,4 @@ void HandleDropFiles(HDROP hDrop) {
     DragFinish(hDrop);  // 0x461BF7 (not reached by the cancel path above)
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

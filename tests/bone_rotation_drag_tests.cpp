@@ -4,12 +4,12 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
-#include "mikudancestudio/build_profile.hpp"
-#include "mikudancestudio/bone_scale.hpp"
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/build_profile.hpp"
+#include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -17,7 +17,7 @@
 #include <limits>
 #include <memory>
 
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 namespace {
 unsigned checks = 0, failures = 0;
 constexpr unsigned steps = 10000;

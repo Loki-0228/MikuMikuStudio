@@ -1,20 +1,20 @@
-#include "mikudancestudio/bone_curve.hpp"
+#include "mikumikustudio/bone_curve.hpp"
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/bone_scale.hpp"
-#include "mikudancestudio/bone_scale_gizmo.hpp"
-#include "mikudancestudio/affine_skinning.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/bone_scale_gizmo.hpp"
+#include "mikumikustudio/affine_skinning.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <unordered_map>
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 void ViewWorldAxis(MMDApp*, int, float[3]);
 namespace bone_scale {
 namespace {

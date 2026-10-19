@@ -2,9 +2,9 @@
 #define NOMINMAX
 #include <Windows.h>
 #include <shellapi.h>
-#include "mikudancestudio/nvidia_antialias_fix.hpp"
+#include "mikumikustudio/nvidia_antialias_fix.hpp"
 
-namespace mikudancestudio::nvidia_antialias_fix {
+namespace mikumikustudio::nvidia_antialias_fix {
 namespace {
 const wchar_t* Localized(int language, const wchar_t* chinese, const wchar_t* english, const wchar_t* japanese) {
     return language == 2 ? chinese : language == 1 ? english : japanese;

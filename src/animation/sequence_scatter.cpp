@@ -1,9 +1,9 @@
-#include "mikudancestudio/sequence_scatter.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/morph_curve.hpp"
-#include "mikudancestudio/frame_limits.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/panel_controls.hpp"
+#include "mikumikustudio/sequence_scatter.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/morph_curve.hpp"
+#include "mikumikustudio/frame_limits.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/panel_controls.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -14,7 +14,7 @@
 #include <set>
 #include <stdexcept>
 
-namespace mikudancestudio::sequence_scatter {
+namespace mikumikustudio::sequence_scatter {
 namespace ac = animation_curve;
 namespace {
 constexpr std::size_t kMaxInsertedKeys = 100000;

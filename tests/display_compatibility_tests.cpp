@@ -1,12 +1,12 @@
 // Hidden production startup and recording. Never capture the desktop.
 #define NOMINMAX
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/globals.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/wic_mov_recorder.hpp"
-#include "mikudancestudio/ui_language.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/adaptive_shadow.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/globals.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/wic_mov_recorder.hpp"
+#include "mikumikustudio/ui_language.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/adaptive_shadow.hpp"
 #include <commctrl.h>
 #include <cstring>
 #include <MinHook.h>
@@ -16,8 +16,8 @@
 #include <fstream>
 #include <vector>
 
-using namespace mikudancestudio;
-namespace mikudancestudio {
+using namespace mikumikustudio;
+namespace mikumikustudio {
 void DisablePlaybackMenus(HWND);
 void RestorePlaybackMenus(MMDApp*);
 }

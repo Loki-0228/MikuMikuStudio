@@ -1,4 +1,4 @@
-#include "mikudancestudio/key_pool.hpp"
+#include "mikumikustudio/key_pool.hpp"
 // ===========================================================================
 // VA 0x00466D20 - CreateUIControls  (original: sub_466D20, 0x436B bytes)
 // ===========================================================================
@@ -21,7 +21,7 @@
 // not pass through the Windows ANSI code page. Other controls retain their
 // original ANSI/wide creation variants.
 // ===========================================================================
-#include "mikudancestudio/animation_curve_host.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
@@ -36,21 +36,21 @@
 #include <cstring>
 #include <new>
 
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/mmd_app.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/mmd_app.hpp"
 #include <cstdio>
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/ui_translation.hpp"
-#include "mikudancestudio/model.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/ui_translation.hpp"
+#include "mikumikustudio/model.hpp"
 #include "../render/viewport_cursor_style.hpp"
-#include "mikudancestudio/bone_combo.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/adaptive_shadow.hpp"
-#include "mikudancestudio/build_profile.hpp"
-#include "mikudancestudio/ui_language.hpp"
+#include "mikumikustudio/bone_combo.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/adaptive_shadow.hpp"
+#include "mikumikustudio/build_profile.hpp"
+#include "mikumikustudio/ui_language.hpp"
 #include "ui_controls.inc"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 static int EvalPos(const ui::PosExpr& e, int sidebar) {
     switch (e.kind) {
@@ -89,12 +89,12 @@ static unsigned char* NewZeroed(std::size_t bytes) {
     return p;
 }
 
-// Porting-era trace under MIKUDANCESTUDIO_PMM_TRACE_DIR (CMake option
-// MIKUDANCESTUDIO_DIAG, default OFF); the OFF stub keeps the call site
+// Porting-era trace under MIKUMIKUSTUDIO_PMM_TRACE_DIR (CMake option
+// MIKUMIKUSTUDIO_DIAG, default OFF); the OFF stub keeps the call site
 // valid and inlines away to nothing.
-#ifdef MIKUDANCESTUDIO_DIAG
+#ifdef MIKUMIKUSTUDIO_DIAG
 static void TraceInitialAccessoryTrack(const MMDApp& app) {
-    const char* directory = std::getenv("MIKUDANCESTUDIO_PMM_TRACE_DIR");
+    const char* directory = std::getenv("MIKUMIKUSTUDIO_PMM_TRACE_DIR");
     if (directory == nullptr || directory[0] == '\0')
         return;
     char path[MAX_PATH];
@@ -416,8 +416,8 @@ bool CreateUIControls(MMDApp* app, HWND hwnd) {
         s.ObjectSlot(i) = nullptr;                              // 0x9DD70[i]
     }
     TraceInitialAccessoryTrack(s);
-#ifdef MIKUDANCESTUDIO_DIAG
-    if (std::getenv("MIKUDANCESTUDIO_PMM_GUARD_ACCESSORY_TRACKS") != nullptr) {
+#ifdef MIKUMIKUSTUDIO_DIAG
+    if (std::getenv("MIKUMIKUSTUDIO_PMM_GUARD_ACCESSORY_TRACKS") != nullptr) {
         SYSTEM_INFO systemInfo{};
         GetSystemInfo(&systemInfo);
         const std::uintptr_t address = reinterpret_cast<std::uintptr_t>(
@@ -736,4 +736,4 @@ void RefillBoneRegisterCombo(MMDApp* app, int slot) {
     PostLanguageSweep2(app);                                     // 0x410132
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

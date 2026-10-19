@@ -1,5 +1,5 @@
-#include "mikudancestudio/build_profile.hpp"
-#include "mikudancestudio/window_dpi_scope.hpp"
+#include "mikumikustudio/build_profile.hpp"
+#include "mikumikustudio/window_dpi_scope.hpp"
 // ===========================================================================
 // VA 0x00443300 - HandleWindowSize  (original: sub_443300, ~0x19B1 bytes)
 // ===========================================================================
@@ -41,7 +41,7 @@
 // auto-generated dump (coordinates/IDs mislabelled past 0x44365E); this
 // port follows the live IDA disassembly/pseudocode of VA 0x00443300.
 // =========================================================================//
-#include "mikudancestudio/animation_curve_host.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
@@ -49,13 +49,13 @@
 #include <cstdint>
 #include <algorithm>
 
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/bottom_panel_resize.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/bottom_panel_resize.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 #include "ui_control_layout.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 namespace {
 
@@ -438,4 +438,4 @@ void CommitSidebarResize(MMDApp* app) {
         RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN | RDW_UPDATENOW);
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

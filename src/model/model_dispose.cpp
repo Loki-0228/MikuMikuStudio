@@ -1,9 +1,9 @@
-#include "mikudancestudio/display_capacity.hpp"
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/mmv4mms.hpp"
-#include "mikudancestudio/native_mesh.hpp"
-#include "mikudancestudio/text_encoding.hpp"
-#include "mikudancestudio/physics_scale.hpp"
+#include "mikumikustudio/display_capacity.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/mmv4mms.hpp"
+#include "mikumikustudio/native_mesh.hpp"
+#include "mikumikustudio/text_encoding.hpp"
+#include "mikumikustudio/physics_scale.hpp"
 // ===========================================================================
 // VA 0x0048F830 - ModelDispose  (original: sub_48F830, 2099 bytes)
 // ===========================================================================
@@ -57,24 +57,24 @@
 // =========================================================================//
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include "mikudancestudio/bone_scale.hpp"
+#include "mikumikustudio/bone_scale.hpp"
 #include <Windows.h>
 #include <unknwn.h>
 
 #include <cstdint>
-#include "mikudancestudio/d3d12_native.hpp"
-#include "mikudancestudio/skinning_backend.hpp"
+#include "mikumikustudio/d3d12_native.hpp"
+#include "mikumikustudio/skinning_backend.hpp"
 #include <cstdlib>
 
 #include "btBulletDynamicsCommon.h"
 
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/morph_curve.hpp"
-#include "mikudancestudio/physics_scene.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/morph_curve.hpp"
+#include "mikumikustudio/physics_scene.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 
 template <typename T>
@@ -165,7 +165,7 @@ void ModelDispose(unsigned char* m) {
     FreeOwned(model.rigidTable);
 
     // ---- two consecutive 30-slot undo rings -------------------------------
-    for (auto& ring : mikudancestudio::mdl::Mdl(m)->undoRings) {
+    for (auto& ring : mikumikustudio::mdl::Mdl(m)->undoRings) {
         for (auto& undo : ring.slots) {
             if (undo.auxiliaryPose != nullptr) {
                 std::free(undo.auxiliaryPose);
@@ -236,8 +236,8 @@ void ModelDispose(unsigned char* m) {
 
     // ---- IK chains ---------------------------------------------------------
     if (mdl::Mdl(m)->ikChains != nullptr &&
-        mikudancestudio::mdl::Mdl(m)->ikChainCount > 0) {
-        const int n = mikudancestudio::mdl::Mdl(m)->ikChainCount;
+        mikumikustudio::mdl::Mdl(m)->ikChainCount > 0) {
+        const int n = mikumikustudio::mdl::Mdl(m)->ikChainCount;
         for (int i = 0; i < n; ++i)
             FreeOwned(mdl::IkChains(m)[i].links);
     }
@@ -249,10 +249,10 @@ void ModelDispose(unsigned char* m) {
     FreeOwned(mdl::Mdl(m)->boneTrackActive);
 
     // ---- bones -------------------------------------------------------------
-    if (mikudancestudio::mdl::Mdl(m)->boneCount > 0) {
-        mikudancestudio::mdl::BoneRecord* bones = mdl::Mdl(m)->boneTable;
-        for (std::uint32_t i = 0; i < mikudancestudio::mdl::Mdl(m)->boneCount; ++i) {
-            mikudancestudio::mdl::BoneRecord* bone = &bones[i];
+    if (mikumikustudio::mdl::Mdl(m)->boneCount > 0) {
+        mikumikustudio::mdl::BoneRecord* bones = mdl::Mdl(m)->boneTable;
+        for (std::uint32_t i = 0; i < mikumikustudio::mdl::Mdl(m)->boneCount; ++i) {
+            mikumikustudio::mdl::BoneRecord* bone = &bones[i];
             FreeOwned(bone->jpText);
             FreeOwned(bone->enText);
             FreeOwned(bone->ikLinks);
@@ -289,4 +289,4 @@ void DeleteModel(unsigned char* model, int freeFlag) {
         std::free(model);                                   // 0x40A720
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

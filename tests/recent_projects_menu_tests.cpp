@@ -1,15 +1,15 @@
 // MAINTENANCE: regression-keep; real Win32 popup lifecycle for the Open split menu.
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/recent_projects.hpp"
-#include "mikudancestudio/ui_translation.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/recent_projects.hpp"
+#include "mikumikustudio/ui_translation.hpp"
 #include <MinHook.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cwchar>
 #include <memory>
 
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 namespace {
 enum class Scenario { Label, ExpandedLabel, Arrow, Enter, Browse, Disabled };
 MMDApp* app=nullptr;

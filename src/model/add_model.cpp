@@ -22,15 +22,15 @@
 #include <cstdlib>
 #include <cstring>
 
-#include "mikudancestudio/text_encoding.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/runtime_log.hpp"
-#include "mikudancestudio/ui_language.hpp"
+#include "mikumikustudio/text_encoding.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/runtime_log.hpp"
+#include "mikumikustudio/ui_language.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 
 #include "model_labels.inc"  // GENERATED (kMsgModelLimitJp / kTitleAddModelJp)
@@ -113,7 +113,7 @@ void LoadModelFile(MMDApp* app, const wchar_t* path, bool showModelInfo) { // 0x
         // Refresh model-dependent menu state here so the first loaded model
         // can open Model Extension immediately.
         SetModelExtensionMenuEnabled(app, true);
-        mikudancestudio::mdl::Mdl(model)->displayState = app->state.characterTransparentMode;
+        mikumikustudio::mdl::Mdl(model)->displayState = app->state.characterTransparentMode;
 
         if (app->state.optflag[0] != 0) {
             RebuildModelModePanel(app);                                   // 0x44D610
@@ -194,4 +194,4 @@ void LoadModelFile(MMDApp* app, const wchar_t* path, bool showModelInfo) { // 0x
     }
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

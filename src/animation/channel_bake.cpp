@@ -1,5 +1,5 @@
-#include "mikudancestudio/frame_limits.hpp"
-#include "mikudancestudio/key_pool.hpp"
+#include "mikumikustudio/frame_limits.hpp"
+#include "mikumikustudio/key_pool.hpp"
 // Native channel baking.  See channel_bake.hpp for the contract.
 //
 // Two families of tracks live here:
@@ -12,15 +12,15 @@
 // The bone pools are deliberately absent: bake::Compute/Commit owns them, and
 // this module only reports the bone channel in its enumeration.
 #define NOMINMAX
-#include "mikudancestudio/accessory_layout.hpp"
-#include "mikudancestudio/animation_curve_host.hpp"
-#include "mikudancestudio/channel_bake.hpp"
-#include "mikudancestudio/global_key_layout.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/model_layout.hpp"
-#include "mikudancestudio/text_encoding.hpp"
-#include "mikudancestudio/ui_language.hpp"
+#include "mikumikustudio/accessory_layout.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
+#include "mikumikustudio/channel_bake.hpp"
+#include "mikumikustudio/global_key_layout.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/model_layout.hpp"
+#include "mikumikustudio/text_encoding.hpp"
+#include "mikumikustudio/ui_language.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -29,7 +29,7 @@
 #include <set>
 #include <utility>
 
-namespace mikudancestudio::channel_bake {
+namespace mikumikustudio::channel_bake {
 namespace {
 namespace ac = animation_curve;
 using Channel = curve_editor::Channel;
@@ -373,7 +373,7 @@ Error ValidChannels(const std::vector<Channel>& channels, const std::vector<Fiel
             return Error::InvalidRequest;
         }
         for (const auto& key : track.keys) {
-            if (key.frame > mikudancestudio::frame_limits::maximum || !std::isfinite(key.value) || key.value < fields[c].minimum ||
+            if (key.frame > mikumikustudio::frame_limits::maximum || !std::isfinite(key.value) || key.value < fields[c].minimum ||
                 key.value > fields[c].maximum ||
                 (fields[c].discrete && std::floor(key.value) != key.value)) {
                 message = L"A baked value or frame is outside the allowed range.";
@@ -403,7 +403,7 @@ bool ReadMorph(unsigned char* model, int morph, ac::Track& out, std::wstring& me
     std::uint32_t previous = 0;
     const auto morphCapacity1 = mdl::MorphKeyCapacity(keys);
     for (std::size_t visited = 0; visited <= morphCapacity1; ++visited) {
-        if (index >= morphCapacity1 || keys[index].frame > mikudancestudio::frame_limits::maximum ||
+        if (index >= morphCapacity1 || keys[index].frame > mikumikustudio::frame_limits::maximum ||
             (visited && keys[index].frame <= previous)) {
             message = L"The morph track is not a valid key chain.";
             return false;
@@ -447,7 +447,7 @@ bool ReadDisplay(unsigned char* model, std::vector<DisplayRecord>& out, int& cha
     unsigned index = 0;
     std::uint32_t previous = 0;
     for (std::size_t visited = 0; visited <= mdl::KeyPoolCapacity(keys); ++visited) {
-        if (index >= mdl::KeyPoolCapacity(keys) || keys[index].frame > mikudancestudio::frame_limits::maximum ||
+        if (index >= mdl::KeyPoolCapacity(keys) || keys[index].frame > mikumikustudio::frame_limits::maximum ||
             (visited && keys[index].frame <= previous)) {
             message = L"The display track is not a valid key chain.";
             return false;
@@ -1784,4 +1784,4 @@ const wchar_t* ErrorText(MMDApp& app, Error error) {
     }
 }
 
-}  // namespace mikudancestudio::channel_bake
+}  // namespace mikumikustudio::channel_bake

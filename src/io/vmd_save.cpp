@@ -1,10 +1,10 @@
 #include <exception>
-#include "mikudancestudio/save_compatibility.hpp"
-#include "mikudancestudio/extended_names.hpp"
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/bone_curve.hpp"
-#include "mikudancestudio/ui_translation.hpp"
-#include "mikudancestudio/build_profile.hpp"
+#include "mikumikustudio/save_compatibility.hpp"
+#include "mikumikustudio/extended_names.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/bone_curve.hpp"
+#include "mikumikustudio/ui_translation.hpp"
+#include "mikumikustudio/build_profile.hpp"
 // ===========================================================================
 // VA 0x00419370 - SaveVmdFile  (0xE23 bytes)
 // ===========================================================================
@@ -58,17 +58,17 @@
 #include <sys/stat.h>
 #include <vector>
 
-#include "mikudancestudio/globals.hpp"
-#include "mikudancestudio/accessory_motion_io.hpp"
-#include "mikudancestudio/global_key_layout.hpp"
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/bone_scale_io.hpp"
-#include "mikudancestudio/morph_curve.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/original_file_encoding.hpp"
+#include "mikumikustudio/globals.hpp"
+#include "mikumikustudio/accessory_motion_io.hpp"
+#include "mikumikustudio/global_key_layout.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/bone_scale_io.hpp"
+#include "mikumikustudio/morph_curve.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/original_file_encoding.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 
 unsigned char* ActiveModel(MMDApp* app) {
@@ -291,17 +291,17 @@ static void SaveVmdFileImpl(const wchar_t* path) {
     // 并跳过循环（计数全来自全局键表 app+976/984/992）。这些 model 侧的
     // 计数与表指针只在模型模式读取；相机模式下 model 可能为空。
     int boneCount = 0, morphCount = 0, ikChainCount = 0;
-    mikudancestudio::mdl::BoneRecord* bones = nullptr;
-    mikudancestudio::mdl::MorphRecord* morphs = nullptr;
-    mikudancestudio::mdl::IkChain* ikChains = nullptr;
+    mikumikustudio::mdl::BoneRecord* bones = nullptr;
+    mikumikustudio::mdl::MorphRecord* morphs = nullptr;
+    mikumikustudio::mdl::IkChain* ikChains = nullptr;
     if (!cameraMode) {
         auto* const rec = mdl::Mdl(model);
         boneCount = rec->boneCount;
         morphCount = rec->morphCount;
         ikChainCount = rec->ikChainCount;
-        bones = mikudancestudio::mdl::Bones(model);
-        morphs = mikudancestudio::mdl::Morphs(model);
-        ikChains = mikudancestudio::mdl::IkChains(model);
+        bones = mikumikustudio::mdl::Bones(model);
+        morphs = mikumikustudio::mdl::Morphs(model);
+        ikChains = mikumikustudio::mdl::IkChains(model);
     }
 
     std::uint32_t outDword;
@@ -589,4 +589,4 @@ void SaveVmdFile(const wchar_t* path) {
     }
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

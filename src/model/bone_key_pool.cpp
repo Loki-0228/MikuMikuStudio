@@ -1,5 +1,5 @@
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/key_pool.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/key_pool.hpp"
 
 #include <cassert>
 #include <algorithm>
@@ -11,7 +11,7 @@
 #include <utility>
 #include <vector>
 
-namespace mikudancestudio::mdl {
+namespace mikumikustudio::mdl {
 namespace {
 
 struct Entry {
@@ -364,4 +364,4 @@ bool DisplayKeyFreeSlot(ModelRecord& model, std::uint32_t& slot) noexcept {
     return true;
 }
 
-}  // namespace mikudancestudio::mdl
+}  // namespace mikumikustudio::mdl

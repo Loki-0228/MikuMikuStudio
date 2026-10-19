@@ -1,8 +1,8 @@
 // Display FPS counts completed scene submissions, never message-pump work.
-#include "mikudancestudio/frame_rate.hpp"
+#include "mikumikustudio/frame_rate.hpp"
 #include <cstdio>
 #include <cstdlib>
-using mikudancestudio::frame_rate::State;
+using mikumikustudio::frame_rate::State;
 void Check(bool ok,const char* what) {
     std::printf("%s %s\n",ok?"PASS":"FAIL",what);
     if(!ok)std::exit(2);

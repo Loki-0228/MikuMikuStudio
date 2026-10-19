@@ -11,10 +11,10 @@
 // Pin resource initialization, x64 offsets and the actual D3DX mesh ABI here.
 // A crash inside d3d9.dll can also be delayed damage from the PMX bone-morph
 // work buffer; morph_runtime_tests and scene_lifecycle_tests cover that cause.
-#include "mikudancestudio/d3d_object_guard.hpp"
-#include "mikudancestudio/d3dx_mesh.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
+#include "mikumikustudio/d3d_object_guard.hpp"
+#include "mikumikustudio/d3dx_mesh.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
 
 #include <Windows.h>
 #include <d3d9.h>
@@ -25,10 +25,10 @@
 #include <cstring>
 #include <memory>
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 // src/render/accessory.cpp - the accessory loader's FVF normalisation.
 bool NormalizeAccessoryMeshFvf(void*& mesh, IDirect3DDevice9* device);
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio
 
 namespace {
 
@@ -59,7 +59,7 @@ public:
 };
 
 void CheckValidationLifetime() {
-    using namespace mikudancestudio;
+    using namespace mikumikustudio;
     bool destroyed = false;
     auto* object = new TrackedCom(destroyed);
     Check(PlausibleD3dObject(object) && object->RefCount()==1,
@@ -124,9 +124,9 @@ HRESULT MeshDraw(void* mesh, DWORD subset) {
 void FillMesh(void* mesh, DWORD fvf) {
     IDirect3DVertexBuffer9* vb = nullptr;
     IDirect3DIndexBuffer9* ib = nullptr;
-    Check(SUCCEEDED(mikudancestudio::d3dx::MeshVertexBuffer(mesh, &vb)) && vb,
+    Check(SUCCEEDED(mikumikustudio::d3dx::MeshVertexBuffer(mesh, &vb)) && vb,
           "GetVertexBuffer returns a real COM resource");
-    Check(SUCCEEDED(mikudancestudio::d3dx::MeshIndexBuffer(mesh, &ib)) && ib,
+    Check(SUCCEEDED(mikumikustudio::d3dx::MeshIndexBuffer(mesh, &ib)) && ib,
           "GetIndexBuffer returns a real COM resource");
     D3DVERTEXBUFFER_DESC vd{}; D3DINDEXBUFFER_DESC id{};
     Check(SUCCEEDED(vb->GetDesc(&vd)) && vd.FVF == fvf, "VB descriptor matches mesh layout");
@@ -147,17 +147,17 @@ void FillMesh(void* mesh, DWORD fvf) {
     ib->Unlock();
     using LockAttributes = HRESULT(WINAPI*)(void*, DWORD, DWORD**);
     DWORD* attributes = nullptr;
-    Check(SUCCEEDED((mikudancestudio::d3dx::MeshMethod<LockAttributes, 24>(mesh)(mesh, 0, &attributes))),
+    Check(SUCCEEDED((mikumikustudio::d3dx::MeshMethod<LockAttributes, 24>(mesh)(mesh, 0, &attributes))),
           "lock attributes");
     attributes[0] = attributes[1] = 0;
-    mikudancestudio::d3dx::MeshMethod<HRESULT(WINAPI*)(void*), 25>(mesh)(mesh);
+    mikumikustudio::d3dx::MeshMethod<HRESULT(WINAPI*)(void*), 25>(mesh)(mesh);
     vb->Release(); ib->Release();
 }
 
 }  // namespace
 
 int main() {
-    using namespace mikudancestudio;
+    using namespace mikumikustudio;
     // Unbuffered: a crash inside Direct3D must not swallow the progress lines.
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     std::setvbuf(stderr, nullptr, _IONBF, 0);

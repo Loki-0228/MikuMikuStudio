@@ -1,19 +1,19 @@
-#include "mikudancestudio/frame_limits.hpp"
-#include "mikudancestudio/ui_translation.hpp"
-#include "mikudancestudio/ui_language.hpp"
+#include "mikumikustudio/frame_limits.hpp"
+#include "mikumikustudio/ui_translation.hpp"
+#include "mikumikustudio/ui_language.hpp"
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
 #include <CommCtrl.h>
 #include <CommDlg.h>
-#include "mikudancestudio/alembic_export.hpp"
-#include "mikudancestudio/bake_ui_lock.hpp"
-#include "mikudancestudio/native_mesh.hpp"
-#include "mikudancestudio/mesh_bake_cache.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/text_encoding.hpp"
-#include "mikudancestudio/channel_bake.hpp"
+#include "mikumikustudio/alembic_export.hpp"
+#include "mikumikustudio/bake_ui_lock.hpp"
+#include "mikumikustudio/native_mesh.hpp"
+#include "mikumikustudio/mesh_bake_cache.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/text_encoding.hpp"
+#include "mikumikustudio/channel_bake.hpp"
 #include <set>
 #include <algorithm>
 #include <cmath>
@@ -21,7 +21,7 @@
 #include <string>
 #include <vector>
 
-namespace mikudancestudio::alembic_export {
+namespace mikumikustudio::alembic_export {
 namespace {
 enum {First=120,Last,Rate,Selected,Bar,Status,WriteAbc,BakeProject,ClearBake,Objects,Materials,Vertices,BoneVertices,Layers};
 struct Row { Selection selection;std::wstring materials,vertices; };

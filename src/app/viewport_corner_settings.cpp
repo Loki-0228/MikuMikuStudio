@@ -12,15 +12,15 @@
 // ===========================================================================
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include "mikudancestudio/local_data_path.hpp"
+#include "mikumikustudio/local_data_path.hpp"
 #include <Windows.h>
 
 #include <mutex>
 #include <string>
 
-#include "mikudancestudio/viewport_corner_settings.hpp"
+#include "mikumikustudio/viewport_corner_settings.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace viewport_corner_settings {
 namespace {
 
@@ -210,4 +210,4 @@ void ResetCacheForTest(Corner corner) {
 }
 
 }  // namespace viewport_corner_settings
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

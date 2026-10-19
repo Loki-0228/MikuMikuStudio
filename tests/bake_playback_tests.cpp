@@ -3,13 +3,13 @@
 // Timings are per rendered frame, including an explicit GPU completion wait;
 // they are not wall-clock playback FPS. No user window or pointer is moved.
 #define NOMINMAX
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/globals.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/physics_bake.hpp"
-#include "mikudancestudio/d3d12_native.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/bone_scale.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/globals.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/physics_bake.hpp"
+#include "mikumikustudio/d3d12_native.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/bone_scale.hpp"
 #include <MinHook.h>
 #include <wrl/client.h>
 #include <chrono>
@@ -21,7 +21,7 @@
 #include <vector>
 #include <cmath>
 
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 using Clock = std::chrono::steady_clock;
 void Check(bool ok, const char* why) {
     if (!ok) { std::printf("FAIL %s\n", why); std::exit(1); }

@@ -1,5 +1,5 @@
-#include "mikudancestudio/physics_scale.hpp"
-#include "mikudancestudio/bone_scale.hpp"
+#include "mikumikustudio/physics_scale.hpp"
+#include "mikumikustudio/bone_scale.hpp"
 // ===========================================================================
 // Physics-model editor (menu 262 "enhance model / physics model", dialog
 // 0x2AC EN / 0x2AB JP, x86 dialog proc 0x465020)
@@ -78,17 +78,17 @@
 
 #include "btBulletDynamicsCommon.h"
 
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/global_key_layout.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/ui_translation.hpp"
-#include "mikudancestudio/ui_language.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/text_encoding.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/global_key_layout.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/ui_translation.hpp"
+#include "mikumikustudio/ui_language.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/text_encoding.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 // Forward declarations (twins of the block in command_view_menu.cpp - the
 // helpers are defined in this file).
@@ -183,7 +183,7 @@ constexpr int kJointPageRadio = 801;       // 0x321
 // (x86: 1,400,000 / record 140 = 10,000 slots; the x64 recompile doubled the
 // record sizes with its pointers and raised the pool tenfold:
 // 15,200,000 / 152 = 100,000 slots).
-#if MIKUDANCESTUDIO_X64
+#if MIKUMIKUSTUDIO_X64
 constexpr int kMaxEditRecords = 100000;    // slots per scratch array
 #else
 constexpr int kMaxEditRecords = 10000;     // x86 original capacity
@@ -1737,4 +1737,4 @@ INT_PTR CALLBACK PhysicsModelDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
     return 0;
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

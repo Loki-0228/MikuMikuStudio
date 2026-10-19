@@ -1,21 +1,21 @@
 // Real MMS controls and DX9 render-target readback, kept entirely hidden.
 #define NOMINMAX
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/bone_scale.hpp"
-#include "mikudancestudio/bone_scale_gizmo.hpp"
-#include "mikudancestudio/animation_curve_host.hpp"
-#include "mikudancestudio/morph_curve.hpp"
-#include "mikudancestudio/frame_rate_correction.hpp"
-#include "mikudancestudio/d3dx_dyn.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/bone_scale_gizmo.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
+#include "mikumikustudio/morph_curve.hpp"
+#include "mikumikustudio/frame_rate_correction.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
 #include <commctrl.h>
 #include <filesystem>
 #include <fstream>
 #include <cstdio>
 #include <cmath>
 #include <set>
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 namespace fs=std::filesystem;
 namespace {
 int failures=0;

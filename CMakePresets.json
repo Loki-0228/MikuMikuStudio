@@ -12,9 +12,9 @@
       "cacheVariables": {
         "CMAKE_SYSTEM_VERSION": "10.0.19041.0",
         "CMAKE_TRY_COMPILE_CONFIGURATION": "Release",
-        "MIKUDANCESTUDIO_WIN7_BASELINE": "ON",
-        "MIKUDANCESTUDIO_ENABLE_DX12": "OFF",
-        "MIKUDANCESTUDIO_PROFILE": "full"
+        "MIKUMIKUSTUDIO_WIN7_BASELINE": "ON",
+        "MIKUMIKUSTUDIO_ENABLE_DX12": "OFF",
+        "MIKUMIKUSTUDIO_PROFILE": "full"
       }
     }
   ],

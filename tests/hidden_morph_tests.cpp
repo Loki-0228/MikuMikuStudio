@@ -28,14 +28,14 @@
 #include <string>
 #include <vector>
 
-#include "mikudancestudio/gpu_model.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/text_encoding.hpp"
+#include "mikumikustudio/gpu_model.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/text_encoding.hpp"
 
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 
 namespace {
 

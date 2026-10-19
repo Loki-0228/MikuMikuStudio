@@ -1,5 +1,5 @@
 // MAINTENANCE: regression-keep; VPD pose-file bone scale tail extension
-// (include/mikudancestudio/vpd_scale_io.hpp, src/io/vpd_scale_io.cpp).
+// (include/mikumikustudio/vpd_scale_io.hpp, src/io/vpd_scale_io.cpp).
 //
 // What is pinned here:
 //   - the wire layout of the tail (footer "MMSXVPDX", payload "MMSXVPDS",
@@ -42,10 +42,10 @@
 #include <string>
 #include <vector>
 
-#include "mikudancestudio/vpd_scale_io.hpp"
+#include "mikumikustudio/vpd_scale_io.hpp"
 
-namespace bs = mikudancestudio::bone_scale;
-namespace vpd = mikudancestudio::vpd_scale_io;
+namespace bs = mikumikustudio::bone_scale;
+namespace vpd = mikumikustudio::vpd_scale_io;
 
 namespace {
 

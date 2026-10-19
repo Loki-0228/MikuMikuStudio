@@ -15,9 +15,9 @@
 // =========================================================================//
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include "mikudancestudio/image_sequence_export.hpp"
-#include "mikudancestudio/transparent_capture.hpp"
-#include "mikudancestudio/wic_mov_recorder.hpp"
+#include "mikumikustudio/image_sequence_export.hpp"
+#include "mikumikustudio/transparent_capture.hpp"
+#include "mikumikustudio/wic_mov_recorder.hpp"
 #include <Windows.h>
 #include <d3d9.h>
 #include <mmsystem.h>   // timeEndPeriod
@@ -30,18 +30,18 @@
 #include <locale.h>
 #include <new>
 
-#include "mikudancestudio/text_encoding.hpp"
-#include "mikudancestudio/globals.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/mf_h264_recorder.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/recording_state.hpp"
+#include "mikumikustudio/text_encoding.hpp"
+#include "mikumikustudio/globals.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/mf_h264_recorder.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/recording_state.hpp"
 #include "../app/device_lost_wait.hpp"
 
-#include "mikudancestudio/texture_lookup.hpp"
+#include "mikumikustudio/texture_lookup.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 // Full-port callees defined in other TUs (local declarations).
 void RefreshAfterFrameApply(MMDApp* app);      // VA 0x432FA0 (ui_frame_step.cpp),
@@ -370,4 +370,4 @@ void WideToSjisPath(char* dst, const wchar_t* src, std::size_t size) {
 // 0x4C4700 accessory-track dtor (was Sub4C4700) is DisposeAccessory in
 // src/render/accessory.cpp.
 // 0x0040FF80 PMM model dialogs now live in src/window/ui_message.cpp.
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

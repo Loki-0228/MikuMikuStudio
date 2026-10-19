@@ -26,7 +26,7 @@ WM_RBUTTONDOWN, WM_RBUTTONUP = 0x0204, 0x0205
 WM_MBUTTONDOWN, WM_MBUTTONUP = 0x0207, 0x0208
 MK_RBUTTON, MK_MBUTTON = 0x0002, 0x0010
 
-# Port (x64) offsets, from include/mikudancestudio/app_layout.hpp pins.
+# Port (x64) offsets, from include/mikumikustudio/app_layout.hpp pins.
 FIELDS = [
     (0x2F8 + 0x30, "cameraMode(optflag0)", "byte"),
     (0x308 + 0x38, "viewOffsetX", "float"),

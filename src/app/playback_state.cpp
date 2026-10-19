@@ -1,4 +1,4 @@
-#include "mikudancestudio/frame_limits.hpp"
+#include "mikumikustudio/frame_limits.hpp"
 #include <algorithm>
 // ===========================================================================
 // VA 0x00433A40 - playback-start state initialization
@@ -6,7 +6,7 @@
 // ===========================================================================
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include "mikudancestudio/bone_scale.hpp"
+#include "mikumikustudio/bone_scale.hpp"
 #include <Windows.h>
 #include <d3d9.h>
 
@@ -16,15 +16,15 @@
 #include <cstring>
 #include <new>
 
-#include "mikudancestudio/accessory_layout.hpp"
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/force_paste.hpp"
+#include "mikumikustudio/accessory_layout.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/force_paste.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 void SyncModelEditControls(unsigned char* model);  // VA 0x004A02C0, was Sub4A02C0
 void ApplyAccessoryTrack(MMDApp* app, int index);  // VA 0x00413120
@@ -90,7 +90,7 @@ void SetPhysicsMenuState(HWND hwnd, UINT state) {
 
 }  // namespace
 
-// Exported at mikudancestudio scope for the fullscreen record restore path
+// Exported at mikumikustudio scope for the fullscreen record restore path
 // (0x4629D0 in src/app/avi_record_start.cpp); the bodies were
 // originally file-local here.
 // VA 0x00429790.  UINT 1 is MF_GRAYED, matching the immediate operands in
@@ -141,7 +141,7 @@ void RestorePlaybackMenus(MMDApp* app) {
         EnableWindow(GetDlgItem(hwnd, panel::kExpandShrinkButton), TRUE);
 
         unsigned char* model = app->SelectedModel();
-        const UINT state = model != nullptr && mikudancestudio::mdl::Mdl(model)->physicsMode == 2
+        const UINT state = model != nullptr && mikumikustudio::mdl::Mdl(model)->physicsMode == 2
                                ? MFS_DISABLED | MFS_GRAYED
                                : MFS_ENABLED;
         SetPhysicsMenuState(hwnd, state);
@@ -337,14 +337,14 @@ void SavePlaybackUndoSnapshot(MMDApp* app, unsigned char* model) {
     // Defect AB-06.
     auto*& buffer = undo.bonePose;
     ::operator delete(buffer);
-    buffer = static_cast<mikudancestudio::mdl::BonePoseSnapshot*>(
+    buffer = static_cast<mikumikustudio::mdl::BonePoseSnapshot*>(
         ::operator new(sizeof(*buffer) * boneCount));
     std::memset(buffer, 0, static_cast<std::size_t>(36) * boneCount);
     auto* records = buffer;
-    mikudancestudio::mdl::BoneRecord* bones = mikudancestudio::mdl::Bones(model);
+    mikumikustudio::mdl::BoneRecord* bones = mikumikustudio::mdl::Bones(model);
     for (int i = 0; i < boneCount; ++i) {
         auto& dst = records[i];
-        mikudancestudio::mdl::BoneRecord* bone = &bones[i];
+        mikumikustudio::mdl::BoneRecord* bone = &bones[i];
         dst.boneIndex = i;
         std::memcpy(dst.position, bone->trans, sizeof(dst.position));
         std::memcpy(dst.rotation, bone->rotQuat, sizeof(dst.rotation));
@@ -401,9 +401,9 @@ void UpdateBoneFrames(MMDApp* app) {
 }
 
 void StopPlayback(MMDApp* app) {  // was Sub4341E0
-#ifdef MIKUDANCESTUDIO_DIAG
-    if (getenv("MIKUDANCESTUDIO_TRACE_REC")) {
-        FILE* tf = fopen(getenv("MIKUDANCESTUDIO_TRACE_REC"), "a");
+#ifdef MIKUMIKUSTUDIO_DIAG
+    if (getenv("MIKUMIKUSTUDIO_TRACE_REC")) {
+        FILE* tf = fopen(getenv("MIKUMIKUSTUDIO_TRACE_REC"), "a");
         if (tf) { fputs("StopPlayback stop-playback enter\n", tf); fclose(tf); }
     }
 #endif
@@ -525,4 +525,4 @@ void StopPlayback(MMDApp* app) {  // was Sub4341E0
     PostLanguageSweep2(app);
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

@@ -12,10 +12,10 @@
 
 #include <cstdint>
 
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 
 std::int32_t GcdBySubtraction(std::int32_t a, std::int32_t b) {
@@ -206,4 +206,4 @@ ULONG DownsampleCaptureSurface(MMDApp* app) {
     return systemSurface->Release();
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

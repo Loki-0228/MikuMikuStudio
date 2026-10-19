@@ -16,27 +16,27 @@
 #include <string>
 #include <sys/stat.h>
 #include <vector>
-#include "mikudancestudio/build_profile.hpp"
-#include "mikudancestudio/accessory_layout.hpp"
-#include "mikudancestudio/accessory_motion_io.hpp"
-#include "mikudancestudio/bone_scale.hpp"
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/bone_scale_io.hpp"
-#include "mikudancestudio/global_key_layout.hpp"
-#include "mikudancestudio/globals.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/morph_curve.hpp"
-#include "mikudancestudio/original_file_encoding.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/pmm_extension.hpp"
-#include "mikudancestudio/pmm_project_settings.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/vpd_scale_io.hpp"
+#include "mikumikustudio/build_profile.hpp"
+#include "mikumikustudio/accessory_layout.hpp"
+#include "mikumikustudio/accessory_motion_io.hpp"
+#include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/bone_scale_io.hpp"
+#include "mikumikustudio/global_key_layout.hpp"
+#include "mikumikustudio/globals.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/morph_curve.hpp"
+#include "mikumikustudio/original_file_encoding.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/pmm_extension.hpp"
+#include "mikumikustudio/pmm_project_settings.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/vpd_scale_io.hpp"
 #include "../src/model/vmd_read_guard.hpp"
 
 namespace {
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 using Bytes = std::vector<std::uint8_t>;
 namespace fs = std::filesystem;
 int checks = 0, failures = 0;
@@ -392,7 +392,7 @@ void Pmm(Files& files) {
 
 int main() {
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
-    if (!build_profile::original) { std::fprintf(stderr, "Requires MIKUDANCESTUDIO_PROFILE=mmd932\n"); return 2; }
+    if (!build_profile::original) { std::fprintf(stderr, "Requires MIKUMIKUSTUDIO_PROFILE=mmd932\n"); return 2; }
     std::printf("original_profile_io_tests ACP=%u original=%d\n", GetACP(), build_profile::original ? 1 : 0);
     wchar_t desktop[256]{}; DWORD needed = 0;
     if (GetUserObjectInformationW(GetThreadDesktop(GetCurrentThreadId()), UOI_NAME, desktop, sizeof desktop, &needed))

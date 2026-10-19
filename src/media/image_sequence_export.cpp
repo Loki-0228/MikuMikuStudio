@@ -1,18 +1,18 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include "mikudancestudio/image_sequence_export.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/globals.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/model_layout.hpp"
-#include "mikudancestudio/global_key_layout.hpp"
-#include "mikudancestudio/accessory_layout.hpp"
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/frame_limits.hpp"
-#include "mikudancestudio/transparent_capture.hpp"
+#include "mikumikustudio/image_sequence_export.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/globals.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/model_layout.hpp"
+#include "mikumikustudio/global_key_layout.hpp"
+#include "mikumikustudio/accessory_layout.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/frame_limits.hpp"
+#include "mikumikustudio/transparent_capture.hpp"
 #include <cmath>
 #include <algorithm>
 #include <climits>
@@ -22,7 +22,7 @@
 #include <unordered_map>
 #include <wrl/client.h>
 
-namespace mikudancestudio::image_sequence {
+namespace mikumikustudio::image_sequence {
 namespace {
 struct Session { Options options; std::uint64_t written = 0; };
 std::unordered_map<MMDApp*, Session> sessions;
@@ -278,4 +278,4 @@ bool Finish(MMDApp* app, bool reachedRequestedEnd, std::wstring& error) {
     sessions.erase(it);
     return complete;
 }
-} // namespace mikudancestudio::image_sequence
+} // namespace mikumikustudio::image_sequence

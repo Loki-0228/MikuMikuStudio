@@ -1,7 +1,7 @@
-#include "mikudancestudio/frame_limits.hpp"
-#include "mikudancestudio/key_pool.hpp"
+#include "mikumikustudio/frame_limits.hpp"
+#include "mikumikustudio/key_pool.hpp"
 // MAINTENANCE: the native half of the frame-rate conversion.  The contract and
-// the vocabulary are in include/mikudancestudio/native_frame_retime.hpp; this
+// the vocabulary are in include/mikumikustudio/native_frame_retime.hpp; this
 // file is the implementation and repeats only what the code cannot say.
 //
 // Pipeline
@@ -53,19 +53,19 @@
 // list holds exactly that many entries unless the module's own budget stopped
 // it - in which case detailsTruncated is set and omittedDetailCount says how
 // many were left out.
-#include "mikudancestudio/native_frame_retime.hpp"
+#include "mikumikustudio/native_frame_retime.hpp"
 
-#include "mikudancestudio/accessory_layout.hpp"
-#include "mikudancestudio/animation_curve_host.hpp"
-#include "mikudancestudio/animation_retime.hpp"
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/bone_scale.hpp"
-#include "mikudancestudio/global_key_layout.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/morph_curve.hpp"
-#include "mikudancestudio/text_encoding.hpp"
-#include "mikudancestudio/ui_language.hpp"
+#include "mikumikustudio/accessory_layout.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
+#include "mikumikustudio/animation_retime.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/global_key_layout.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/morph_curve.hpp"
+#include "mikumikustudio/text_encoding.hpp"
+#include "mikumikustudio/ui_language.hpp"
 
 #include <algorithm>
 #include <array>
@@ -82,7 +82,7 @@
 #include <utility>
 #include <vector>
 
-namespace mikudancestudio::native_frame_retime {
+namespace mikumikustudio::native_frame_retime {
 namespace {
 
 namespace ac = animation_curve;
@@ -93,7 +93,7 @@ using Bytes = std::vector<std::uint8_t>;
 
 // Frame domain of every native key table, and the frame bound one conversion
 // accepts.  Both come from the port's own layouts.
-constexpr std::int32_t kMaximumFrame = mikudancestudio::frame_limits::maximum;
+constexpr std::int32_t kMaximumFrame = mikumikustudio::frame_limits::maximum;
 constexpr std::size_t kAccessorySlots = 255;
 
 // ---------------------------------------------------------------------------
@@ -135,7 +135,7 @@ std::uint8_t Quantise(double value) {
 
 bool IsLinearTuple(const std::uint8_t tuple[4]) {
     // The port's own linear test (src/model/model_keyframe_advance.cpp:160 and
-    // include/mikudancestudio/bone_scale.hpp): both polynomial pairs agree.
+    // include/mikumikustudio/bone_scale.hpp): both polynomial pairs agree.
     return tuple[0] == tuple[1] && tuple[2] == tuple[3];
 }
 
@@ -2465,4 +2465,4 @@ bool Commit(MMDApp& app, const PlanPtr& plan, std::wstring& error,
     }
 }
 
-}  // namespace mikudancestudio::native_frame_retime
+}  // namespace mikumikustudio::native_frame_retime

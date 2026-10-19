@@ -28,8 +28,8 @@
 // ===========================================================================
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include "mikudancestudio/image_sequence_export.hpp"
-#include "mikudancestudio/wic_mov_recorder.hpp"
+#include "mikumikustudio/image_sequence_export.hpp"
+#include "mikumikustudio/wic_mov_recorder.hpp"
 #include <Windows.h>
 #include <d3d9.h>
 #include <mmsystem.h>
@@ -43,14 +43,14 @@
 #include <cstring>
 #include <vector>
 
-#include "mikudancestudio/globals.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/window_dpi_scope.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/recording_preview.hpp"
+#include "mikumikustudio/globals.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/window_dpi_scope.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/recording_preview.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 // Bodies live in other translation units (see ported_funcs.hpp / their TUs).
 void RefreshAfterFrameApply(MMDApp* app);          // VA 0x00432FA0, was Sub432FA0
@@ -208,9 +208,9 @@ void EnsureRecordRenderTarget(MMDApp* app) {
 // (0x45EC27..0x45EC67 / 0x4649AE..0x4649EB).
 void RecordStartTail(MMDApp* app) {
     auto& s = *app;
-#ifdef MIKUDANCESTUDIO_DIAG
-    if (getenv("MIKUDANCESTUDIO_TRACE_REC")) {
-        FILE* tf = fopen(getenv("MIKUDANCESTUDIO_TRACE_REC"), "a");
+#ifdef MIKUMIKUSTUDIO_DIAG
+    if (getenv("MIKUMIKUSTUDIO_TRACE_REC")) {
+        FILE* tf = fopen(getenv("MIKUMIKUSTUDIO_TRACE_REC"), "a");
         if (tf) {
             fputs("RecordStartTail enter\n", tf);
             fclose(tf);
@@ -230,9 +230,9 @@ void RecordStartTail(MMDApp* app) {
     s.state.recordPlaybackStartPending = 1;              // 0x45EC52
     timeBeginPeriod(1);                                        // 0x45EC58
     KickRecordPhysics(app);                                            // 0x401BD0
-#ifdef MIKUDANCESTUDIO_DIAG
-    if (getenv("MIKUDANCESTUDIO_TRACE_REC")) {
-        FILE* tf = fopen(getenv("MIKUDANCESTUDIO_TRACE_REC"), "a");
+#ifdef MIKUMIKUSTUDIO_DIAG
+    if (getenv("MIKUMIKUSTUDIO_TRACE_REC")) {
+        FILE* tf = fopen(getenv("MIKUMIKUSTUDIO_TRACE_REC"), "a");
         if (tf) {
             fputs("RecordStartTail done\n", tf);
             fclose(tf);
@@ -544,4 +544,4 @@ void ApplyFullscreenWindowState(MMDApp* app, bool exclusive) {
     s.state.recordFullscreenActive = 0;
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

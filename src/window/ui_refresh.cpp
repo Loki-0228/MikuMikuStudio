@@ -37,10 +37,10 @@
 #include <cstdint>
 #include <cstdio>
 
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 
 // --- sub_440AC0 (RefreshRequest) -------------------------------------------
@@ -186,4 +186,4 @@ void CloseDataFile(void* file) {
     audio->fileHandle = nullptr;
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

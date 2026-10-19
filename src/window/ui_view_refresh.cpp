@@ -1,4 +1,4 @@
-#include "mikudancestudio/build_profile.hpp"
+#include "mikumikustudio/build_profile.hpp"
 // ===========================================================================
 // VA 0x0040D070 - PostLanguageSweep2  (original: sub_40D070)
 // ===========================================================================
@@ -39,15 +39,15 @@
 #include <cstdint>
 #include <cstdio>
 
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/frame_presentation.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/bone_parent_coordinates.hpp"
-#include "mikudancestudio/panel_controls.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/frame_presentation.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/bone_parent_coordinates.hpp"
+#include "mikumikustudio/panel_controls.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 namespace {
 
@@ -107,7 +107,7 @@ void PostLanguageSweep2(MMDApp* app) {
 //
 // Bone mode (this+0x2F8 == 0): current model = slot array this+0x780
 // [byte this+0x910]; selected bone index = model+0x2D90; if < 0, all seven
-// controls get "-----".  Otherwise bone record = (model+0x26BC) + sizeof(mikudancestudio::mdl::BoneRecord) *idx
+// controls get "-----".  Otherwise bone record = (model+0x26BC) + sizeof(mikumikustudio::mdl::BoneRecord) *idx
 // (604 = 0x25C stride) and the layout is picked by
 //     (this+0xA0CC4 == 3) & &bone->hasRigidBody:
 //   rotation layout  : "%1.2f" of bone->ikBackup/0x18C/0x190, quat at +0x194
@@ -188,7 +188,7 @@ void PostViewRefresh(MMDApp* app) {
 
     // ---- bone readout ------------------------------------------------------
     unsigned char* model = app->SelectedModel();
-    const std::int32_t boneIdx = mikudancestudio::mdl::Mdl(model)->selectedBone;
+    const std::int32_t boneIdx = mikumikustudio::mdl::Mdl(model)->selectedBone;
     if (boneIdx < 0) {                                     // 0x40D401 jl
         for (int id = 0x220; id <= 0x226; ++id)
             SetReadoutText(GetDlgItem(hwnd, id), "-----");
@@ -215,8 +215,8 @@ void PostViewRefresh(MMDApp* app) {
                      app->PlaybackActive() == 0 ? TRUE : FALSE);
     }
 #endif
-    mikudancestudio::mdl::BoneRecord* bone =
-        &mikudancestudio::mdl::Bones(model)[boneIdx];
+    mikumikustudio::mdl::BoneRecord* bone =
+        &mikumikustudio::mdl::Bones(model)[boneIdx];
     const float* display;
     const float* quat;
     if (((app->PlaybackPhysicsMode() == 3) &                 // 0x40D417
@@ -309,4 +309,4 @@ void PostViewRefresh(MMDApp* app) {
     SetReadoutText(GetDlgItem(hwnd, panel::kReadoutRotZEdit), text);
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

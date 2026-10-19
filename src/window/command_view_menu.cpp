@@ -1,6 +1,6 @@
-#include "mikudancestudio/original_import.hpp"
-#include "mikudancestudio/image_sequence_export.hpp"
-#include "mikudancestudio/key_pool.hpp"
+#include "mikumikustudio/original_import.hpp"
+#include "mikumikustudio/image_sequence_export.hpp"
+#include "mikumikustudio/key_pool.hpp"
 // ===========================================================================
 // CommandDispatch family: View/Edit option-menu cases 251..303 (0x47E8A0)
 // ===========================================================================
@@ -240,28 +240,28 @@
 #include <cwchar>
 #include <btBulletDynamicsCommon.h>
 
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/accessory_layout.hpp"
-#include "mikudancestudio/global_key_layout.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/animation_curve_host.hpp"
-#include "mikudancestudio/text_encoding.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/ui_translation.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/bone_parent_coordinates.hpp"
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/pmm_extension.hpp"
-#include "mikudancestudio/pmm_project_settings.hpp"
-#include "mikudancestudio/view_options.hpp"
-#include "mikudancestudio/ui_language.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/accessory_layout.hpp"
+#include "mikumikustudio/global_key_layout.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
+#include "mikumikustudio/text_encoding.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/ui_translation.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/bone_parent_coordinates.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/pmm_extension.hpp"
+#include "mikumikustudio/pmm_project_settings.hpp"
+#include "mikumikustudio/view_options.hpp"
+#include "mikumikustudio/ui_language.hpp"
 
 #include "dialog_scaffold.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
-// Gravity keyframe registrar, defined below at mikudancestudio scope (the
+// Gravity keyframe registrar, defined below at mikumikustudio scope (the
 // pump's Enter register-frame block in pump_edit_keys.cpp also calls it).
 void RegisterGravityKeyCurrent(MMDApp* app, std::int32_t frame);  // VA 0x00412B20, was Sub412B20
 
@@ -771,7 +771,7 @@ int g_displayOrderDialogCount = 0;    // was g_dword545938, VA 0x00545938 -
 // modified).  CollectEnglishNameEdit's real body now lives in model_edge_dialog.cpp;
 // only the forward declaration at the top of this TU is needed.
 }  // namespace (anonymous) - RegisterGravityKeyCurrent is consumed by pump_edit_keys.cpp
-// and stays at mikudancestudio scope.
+// and stays at mikumikustudio scope.
 // VA 0x00412B20 (x64 twin sub_7FF7CB47DA60, confirmed on the x64 binary;
 // the pre-existing "frame-table rebuild" label was wrong): the gravity
 // keyframe registrar.  Walks the gravity track's next-chain (app+0x380,
@@ -3087,4 +3087,4 @@ void CmdViewMenu(MMDApp* app, HWND hwnd, std::uint16_t id,
     }
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

@@ -13,7 +13,7 @@ class MikuMikuStudioConan(ConanFile):
     Mesh export adds static Alembic/Ogawa and MinHook for the native draw path.
     """
 
-    name = "mikudancestudio"
+    name = "mikumikustudio"
     version = "0.1.0"
     settings = "os", "compiler", "build_type", "arch"
 

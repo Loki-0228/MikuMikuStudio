@@ -24,7 +24,7 @@ for mme in (False, True):
     env.update(
         LOCALAPPDATA=str(directory / "Local"),
         APPDATA=str(directory / "Roaming"),
-        MIKUDANCESTUDIO_AUTOSAVE_CONFIG=str(directory / "autosave.ini"),
+        MIKUMIKUSTUDIO_AUTOSAVE_CONFIG=str(directory / "autosave.ini"),
         MMS_ANTIALIAS_CONFIG=str(directory / "aa.ini"),
         MMS_MME_ORDER_NATIVE="0" if mme else "1",
         MMS_VIEWPORT_DIALOG="1",

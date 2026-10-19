@@ -1,6 +1,6 @@
-#include "mikudancestudio/extended_names.hpp"
-#include "mikudancestudio/text_encoding.hpp"
-#include "mikudancestudio/display_capacity.hpp"
+#include "mikumikustudio/extended_names.hpp"
+#include "mikumikustudio/text_encoding.hpp"
+#include "mikumikustudio/display_capacity.hpp"
 // ===========================================================================
 // Model-edge / English-name dialog (menu 259, sub_464BD0 family)
 // ===========================================================================
@@ -29,11 +29,11 @@
 #include <cstdint>
 #include <cstring>
 
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 
 // ---- dialog controls (template 0x29A EN / 0x299 JP) ----------------------
@@ -67,7 +67,7 @@ int MorphNameSlot(MMDApp* app) {
 
 int GroupNameSlot(MMDApp* app, mdl::ModelRecord* model) {
     return app->ModelEdgeComboCursor(2) +
-           (mikudancestudio::mdl::FacialFrameCount(*model) != 0 ? 3 : 2);
+           (mikumikustudio::mdl::FacialFrameCount(*model) != 0 ? 3 : 2);
 }
 
 // Mirror the English names into the facial display-frame rows (each row's
@@ -75,10 +75,10 @@ int GroupNameSlot(MMDApp* app, mdl::ModelRecord* model) {
 void MirrorFacialFrameNames(mdl::ModelRecord* model) {
     mdl::FrameGroup* frames = model->displayFrames;
     mdl::MorphRecord* morphs = model->morphs;
-    for (std::uint32_t i = 0; i < mikudancestudio::mdl::FacialFrameCount(*model); ++i) {
-        if (mikudancestudio::mdl::FrameTargetIndex(frames[i]) < model->morphCount)
+    for (std::uint32_t i = 0; i < mikumikustudio::mdl::FacialFrameCount(*model); ++i) {
+        if (mikumikustudio::mdl::FrameTargetIndex(frames[i]) < model->morphCount)
             strcpy_s(frames[i].nameEn, 0x14,
-                     morphs[mikudancestudio::mdl::FrameTargetIndex(frames[i])].nameEn);
+                     morphs[mikumikustudio::mdl::FrameTargetIndex(frames[i])].nameEn);
     }
 }
 
@@ -91,9 +91,9 @@ void MirrorBoneFrameNames(mdl::ModelRecord* model) {
     mdl::BoneRecord* bones = model->boneTable;
     const std::uint32_t count = model->rigidBodyCount;
     for (std::uint32_t i = 0; i < count; ++i) {
-        if (mikudancestudio::mdl::FrameTargetIndex(frames[i]) < model->boneCount)
+        if (mikumikustudio::mdl::FrameTargetIndex(frames[i]) < model->boneCount)
             strcpy_s(frames[i].nameEn, 0x14,
-                     bones[mikudancestudio::mdl::FrameTargetIndex(frames[i])].nameEn);
+                     bones[mikumikustudio::mdl::FrameTargetIndex(frames[i])].nameEn);
     }
 }
 
@@ -237,7 +237,7 @@ void InitModelEdgeDialog(HWND hDlg) {  // was Sub43C430, VA 0x0043C430
                      reinterpret_cast<LPARAM>(text_encoding::MorphName(morphs[k],true).c_str()));
     SendMessageA(morphCombo, CB_SETCURSEL, 0, 0);
     HWND morphEdit = GetDlgItem(hDlg, kEditMorphNameEn);
-    if (mikudancestudio::mdl::FacialFrameCount(*model) != 0 && model->morphCount > 1) {
+    if (mikumikustudio::mdl::FacialFrameCount(*model) != 0 && model->morphCount > 1) {
         SetWindowTextW(morphEdit,text_encoding::MorphName(morphs[1],true).c_str());
     } else {
         EnableWindow(morphCombo, FALSE);
@@ -249,12 +249,12 @@ void InitModelEdgeDialog(HWND hDlg) {  // was Sub43C430, VA 0x0043C430
     SendMessageA(groupCombo, CB_RESETCONTENT, 0, 0);
     mdl::DisplayGroup* groups = mdl::DisplayGroups(app->SelectedModel());
     const std::uint32_t firstGroup =
-        mikudancestudio::mdl::FacialFrameCount(*model) != 0 ? 3 : 2;
-    for (std::uint32_t g = firstGroup; g < mikudancestudio::mdl::DisplayGroupCount(*model); ++g)
+        mikumikustudio::mdl::FacialFrameCount(*model) != 0 ? 3 : 2;
+    for (std::uint32_t g = firstGroup; g < mikumikustudio::mdl::DisplayGroupCount(*model); ++g)
         SendMessageW(groupCombo, CB_ADDSTRING, 0,
                      reinterpret_cast<LPARAM>(text_encoding::DisplayGroupName(groups[g],true).c_str()));
     HWND groupEdit = GetDlgItem(hDlg, kEditGroupNameEn);
-    if (firstGroup < mikudancestudio::mdl::DisplayGroupCount(*model)) {
+    if (firstGroup < mikumikustudio::mdl::DisplayGroupCount(*model)) {
         SetWindowTextW(groupEdit,text_encoding::DisplayGroupName(groups[firstGroup],true).c_str());
     } else {
         EnableWindow(groupCombo, FALSE);
@@ -326,7 +326,7 @@ void ApplyModelEdgeDialog(HWND hDlg) {  // was Sub45F240, VA 0x0045F240
     CollectEnglishNameEdit(app, GetDlgItem(hDlg, kEditModelNameEn), 0);    // 0x43BED0
     if (model->boneCount != 0)
         CollectEnglishNameEdit(app, GetDlgItem(hDlg, kEditBoneNameEn), 1); // 0x43BED0
-    if (mikudancestudio::mdl::FacialFrameCount(*model) != 0 && model->morphCount > 1)
+    if (mikumikustudio::mdl::FacialFrameCount(*model) != 0 && model->morphCount > 1)
         CollectEnglishNameEdit(app, GetDlgItem(hDlg, kEditMorphNameEn), 2); // 0x43BED0
 
     CollectEnglishNameEdit(app,GetDlgItem(hDlg,kEditGroupNameEn),3);
@@ -388,7 +388,7 @@ void SelectModelEdgeBone(HWND hDlg) {  // was Sub45F050, VA 0x0045F050
 void SelectModelEdgeMorph(HWND hDlg) {  // was Sub45EF10, VA 0x0045EF10
     MMDApp* app = g_Block;
     mdl::ModelRecord* model = mdl::Mdl(app->SelectedModel());
-    if (mikudancestudio::mdl::FacialFrameCount(*model) == 0)
+    if (mikumikustudio::mdl::FacialFrameCount(*model) == 0)
         return;
 
     CollectEnglishNameEdit(app, GetDlgItem(hDlg, kEditMorphNameEn), 2);   // 0x43BED0
@@ -421,4 +421,4 @@ void SelectModelEdgeGroup(HWND hDlg) {  // was Sub45EDC0, VA 0x0045EDC0
     RefreshNameEdit(GetDlgItem(hDlg,kEditGroupNameEn),text_encoding::DisplayGroupName(groups[GroupNameSlot(app, model)],true).c_str());
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

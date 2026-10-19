@@ -1,11 +1,11 @@
-#include "mikudancestudio/build_profile.hpp"
-#include "mikudancestudio/physics_scale.hpp"
-#include "mikudancestudio/model.hpp"
+#include "mikumikustudio/build_profile.hpp"
+#include "mikumikustudio/physics_scale.hpp"
+#include "mikumikustudio/model.hpp"
 #include <btBulletDynamicsCommon.h>
 #include <BulletDynamics/ConstraintSolver/btGeneric6DofConstraint.h>
 
 static_assert(MMD_ORIGINAL_PROFILE, "Original profile provider must not enter the full build");
-namespace mikudancestudio::physics_scale {
+namespace mikumikustudio::physics_scale {
 void Sync(unsigned char*, bool) {}
 bool Follow(const unsigned char*, int, float[16]) { return false; }
 void Readback(unsigned char*) {}

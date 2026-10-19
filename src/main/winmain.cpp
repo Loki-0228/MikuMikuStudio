@@ -1,6 +1,6 @@
-#include "mikudancestudio/autosave.hpp"
-#include "mikudancestudio/plugin_menu.hpp"
-#include "mikudancestudio/bake_ui_lock.hpp"
+#include "mikumikustudio/autosave.hpp"
+#include "mikumikustudio/plugin_menu.hpp"
+#include "mikumikustudio/bake_ui_lock.hpp"
 // ===========================================================================
 // VA 0x004C4460 - WinMain  (original: _WinMain@16)
 // ===========================================================================
@@ -26,12 +26,12 @@
 #include <cwchar>
 #include <cstdio>
 
-#include "mikudancestudio/globals.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/processor_settings.hpp"
-#include "mikudancestudio/runtime_log.hpp"
-#include "mikudancestudio/d3d12_native.hpp"
+#include "mikumikustudio/globals.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/processor_settings.hpp"
+#include "mikumikustudio/runtime_log.hpp"
+#include "mikumikustudio/d3d12_native.hpp"
 
 // Ask hybrid graphics drivers to prefer the high-performance adapter.
 // On the tested Intel/NVIDIA laptop, D3D9 exposes only the integrated GPU
@@ -45,7 +45,7 @@ __declspec(dllexport) DWORD AmdPowerXpressRequestHighPerformance = 1;
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
                    LPSTR lpCmdLine, int nShowCmd) {
-    using namespace mikudancestudio;
+    using namespace mikumikustudio;
 
     runtime_log::Initialize();
     // The legacy UI uses fixed 96-DPI coordinates for both GDI drawing and
@@ -133,11 +133,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
 
     PeekMessageW(&msg, nullptr, 0, 0, 0);  // PM_NOREMOVE prime, original arg set
     // DIAG(fps): once per second append loop/pump/sleep statistics to the
-    // file named by MIKUDANCESTUDIO_PUMP_STATS.  Purely observational -
+    // file named by MIKUMIKUSTUDIO_PUMP_STATS.  Purely observational -
     // the loop below is untouched when the variable is unset.
     char pumpStatsPath[MAX_PATH]{};
     std::FILE* pumpStats = nullptr;
-    if (GetEnvironmentVariableA("MIKUDANCESTUDIO_PUMP_STATS",
+    if (GetEnvironmentVariableA("MIKUMIKUSTUDIO_PUMP_STATS",
                                 pumpStatsPath, MAX_PATH) > 0) {
         pumpStats = std::fopen(pumpStatsPath, "a");
     }

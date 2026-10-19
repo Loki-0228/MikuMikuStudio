@@ -1,5 +1,5 @@
 // Real editor command regressions for the all-code review findings.
-namespace mikudancestudio {
+namespace mikumikustudio {
 void CmdControl450(MMDApp*, HWND, std::uint16_t, std::uint16_t);
 void DeleteMarkedKeyframes(MMDApp*);
 }

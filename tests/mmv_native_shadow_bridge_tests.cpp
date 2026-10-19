@@ -7,12 +7,12 @@
 #include <commdlg.h>
 #include <MinHook.h>
 #include <wrl/client.h>
-#include "mikudancestudio/build_profile.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/mmv4mms.hpp"
-#include "mikudancestudio/shadow_filter.hpp"
+#include "mikumikustudio/build_profile.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/mmv4mms.hpp"
+#include "mikumikustudio/shadow_filter.hpp"
 #include "mmv/mms.h"
 #include <algorithm>
 #include <atomic>
@@ -26,7 +26,7 @@
 #include <vector>
 
 static_assert(!MMD_ORIGINAL_PROFILE,"The original profile has no MMV renderer");
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 using Microsoft::WRL::ComPtr;
 namespace {
 unsigned checks=0,renderCalls=0,failedClears=0,begins=0,ends=0,failedBegins=0;

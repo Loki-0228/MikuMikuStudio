@@ -1,14 +1,14 @@
-#include "mikudancestudio/pmm_key_map.hpp"
-#include "mikudancestudio/save_compatibility.hpp"
-#include "mikudancestudio/frame_limits.hpp"
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/autosave.hpp"
+#include "mikumikustudio/pmm_key_map.hpp"
+#include "mikumikustudio/save_compatibility.hpp"
+#include "mikumikustudio/frame_limits.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/autosave.hpp"
 #include <atomic>
 #include <filesystem>
-#include "mikudancestudio/mmv4mms.hpp"
-#include "mikudancestudio/ui_translation.hpp"
-#include "mikudancestudio/native_mesh.hpp"
-#include "mikudancestudio/mesh_bake_cache.hpp"
+#include "mikumikustudio/mmv4mms.hpp"
+#include "mikumikustudio/ui_translation.hpp"
+#include "mikumikustudio/native_mesh.hpp"
+#include "mikumikustudio/mesh_bake_cache.hpp"
 #include <exception>
 // ===========================================================================
 // VA 0x0041B080 - SaveSceneFile  (original: sub_41B080, 0x3746 bytes)
@@ -133,23 +133,23 @@
 #include <io.h>
 #include <utility>
 
-#include "mikudancestudio/text_encoding.hpp"
-#include "mikudancestudio/build_profile.hpp"
-#include "mikudancestudio/original_file_encoding.hpp"
-#include "mikudancestudio/accessory_layout.hpp"
-#include "mikudancestudio/global_key_layout.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/effect_api.hpp"
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/panel_controls.hpp"
+#include "mikumikustudio/text_encoding.hpp"
+#include "mikumikustudio/build_profile.hpp"
+#include "mikumikustudio/original_file_encoding.hpp"
+#include "mikumikustudio/accessory_layout.hpp"
+#include "mikumikustudio/global_key_layout.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/effect_api.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/panel_controls.hpp"
 
 // Shared PMM IO constants (window-title format; the loader record readers
 // live there too).
 #include "pmm_io_common.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 // VA 0x00407910, defined in src/window/ui_dropfiles.cpp.
 void WideToSjisPath(char* dst, const wchar_t* src, std::size_t size);
@@ -1352,4 +1352,4 @@ bool SaveSceneCopy(MMDApp* app, const wchar_t* target) {
     catch (...) { return false; }
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

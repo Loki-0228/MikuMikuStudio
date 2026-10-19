@@ -1,4 +1,4 @@
-#include "mikudancestudio/physics_scale.hpp"
+#include "mikumikustudio/physics_scale.hpp"
 // MAINTENANCE: regression-keep; offline baking, transactional keys and native dialog translations.
 // Modes: no argument runs the unit/dialog suite; `--ui <dir>` adds screenshots;
 // `<model.pmx> <output-directory>` runs the full scene integration;
@@ -7,17 +7,17 @@
 // `--capacity-scene <model.pmx> <output-directory>` runs the scene integration
 // with a bone-key pool grown past the original capacity.
 #define NOMINMAX
-#include "mikudancestudio/physics_bake.hpp"
-#include "mikudancestudio/native_mesh.hpp"
-#include "mikudancestudio/physics_scene.hpp"
-#include "mikudancestudio/affine_skinning.hpp"
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/alembic_export.hpp"
-#include "mikudancestudio/bake_ui_lock.hpp"
-#include "mikudancestudio/mesh_bake_cache.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/ui_language.hpp"
+#include "mikumikustudio/physics_bake.hpp"
+#include "mikumikustudio/native_mesh.hpp"
+#include "mikumikustudio/physics_scene.hpp"
+#include "mikumikustudio/affine_skinning.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/alembic_export.hpp"
+#include "mikumikustudio/bake_ui_lock.hpp"
+#include "mikumikustudio/mesh_bake_cache.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/ui_language.hpp"
 #include <btBulletDynamicsCommon.h>
 #include <CommCtrl.h>
 #include <array>
@@ -33,7 +33,7 @@
 #include <set>
 #include <string>
 #include <vector>
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 namespace {
 int failures=0,dialogs=0,language=0;bool inspect=false;std::filesystem::path images;MMDApp* inspectApp=nullptr;
 // One real bake is driven through the hidden dialog to observe the interface

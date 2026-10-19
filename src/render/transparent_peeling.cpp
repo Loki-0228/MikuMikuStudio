@@ -1,15 +1,15 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include "mikudancestudio/transparent_peeling.hpp"
-#include "mikudancestudio/d3dx_effect.hpp"
-#include "mikudancestudio/runtime_log.hpp"
+#include "mikumikustudio/transparent_peeling.hpp"
+#include "mikumikustudio/d3dx_effect.hpp"
+#include "mikumikustudio/runtime_log.hpp"
 #include <array>
 #include <cstring>
 #include <string>
 #include <vector>
 #include <fstream>
 #include <cstdlib>
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 using namespace d3dx;
 template<class T> void Release(T*& p){if(p){p->Release();p=nullptr;}}
@@ -250,7 +250,7 @@ int TransparentPeeling::EndLayer(){
  DWORD pixels=0;HRESULT hr=S_FALSE;const ULONGLONG start=GetTickCount64();
  while((hr=p.query->GetData(&pixels,sizeof(pixels),D3DGETDATA_FLUSH))==S_FALSE){if(GetTickCount64()-start>10000)return -1;Sleep(0);}
  if(FAILED(hr))return -1;if(!pixels)return 0;
- if(const char* prefix=std::getenv("MIKUDANCESTUDIO_PEEL_DUMP")) {
+ if(const char* prefix=std::getenv("MIKUMIKUSTUDIO_PEEL_DUMP")) {
   if(p.layer<3 || p.layer==8 || p.layer==127 || p.layer==1023) {
    IDirect3DSurface9* surface=nullptr;
    if(SUCCEEDED(d->CreateOffscreenPlainSurface(p.target.Width,p.target.Height,D3DFMT_A32B32G32R32F,D3DPOOL_SYSTEMMEM,&surface,nullptr)) && SUCCEEDED(d->GetRenderTargetData(p.depthSurfaces[p.layer%2],surface))) {
@@ -379,4 +379,4 @@ bool TransparentPeeling::Commit(){
  return true;
 }
 void ClearTransparentPeelingCache(){program.reset();}
-} // namespace mikudancestudio
+} // namespace mikumikustudio

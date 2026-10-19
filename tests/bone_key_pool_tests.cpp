@@ -1,14 +1,14 @@
-#include "mikudancestudio/display_capacity.hpp"
-#include "mikudancestudio/frame_limits.hpp"
+#include "mikumikustudio/display_capacity.hpp"
+#include "mikumikustudio/frame_limits.hpp"
 // MAINTENANCE: regression-keep; runtime bone-key pool capacity
-// (mikudancestudio/bone_key_pool.hpp).
+// (mikumikustudio/bone_key_pool.hpp).
 //
 // The pool starts at the original capacity and grows on demand; these cases pin
 // the capacity bookkeeping itself, so they use a deliberately small pool and
 // never touch the GPU, a window or a device.
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/global_key_layout.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/global_key_layout.hpp"
 
 #include <array>
 #include <cstdint>
@@ -29,12 +29,12 @@ void Check(bool ok, const char* name) {
     }
 }
 
-using mikudancestudio::mdl::BoneKey;
-using mikudancestudio::mdl::ModelRecord;
+using mikumikustudio::mdl::BoneKey;
+using mikumikustudio::mdl::ModelRecord;
 
 struct Fixture {
     std::unique_ptr<ModelRecord> model = std::make_unique<ModelRecord>();
-    std::array<mikudancestudio::mdl::BoneRecord, 2> bones{};
+    std::array<mikumikustudio::mdl::BoneRecord, 2> bones{};
     std::array<unsigned char, 2> physics{}, selection{};
 
     explicit Fixture(std::size_t capacity) {
@@ -43,7 +43,7 @@ struct Fixture {
         model->boneCount = 2;
         model->bonePhysicsState = physics.data();
         model->boneSelection = selection.data();
-        model->boneKeys = mikudancestudio::mdl::BoneKeyPoolCreate(capacity);
+        model->boneKeys = mikumikustudio::mdl::BoneKeyPoolCreate(capacity);
     }
     ~Fixture() {
         for (auto& ring : model->undoRings)
@@ -51,29 +51,29 @@ struct Fixture {
                 std::free(slot.bonePose);
                 std::free(slot.auxiliaryPose);
             }
-        mikudancestudio::mdl::BoneKeyPoolDestroy(model->boneKeys);
+        mikumikustudio::mdl::BoneKeyPoolDestroy(model->boneKeys);
     }
     std::size_t Capacity() const {
-        return mikudancestudio::mdl::BoneKeyCapacity(*model);
+        return mikumikustudio::mdl::BoneKeyCapacity(*model);
     }
 };
 void CapacityOfAHandBuiltPool() {
     // A pool the registry never saw keeps reporting the original capacity, which
     // is what keeps hand-built fixtures and any not-yet-migrated caller correct.
     std::vector<BoneKey> pool(8);
-    Check(mikudancestudio::mdl::BoneKeyCapacity(pool.data()) ==
-              mikudancestudio::mdl::kBoneKeyCapacity,
+    Check(mikumikustudio::mdl::BoneKeyCapacity(pool.data()) ==
+              mikumikustudio::mdl::kBoneKeyCapacity,
           "an unregistered pool reports the original capacity");
-    Check(mikudancestudio::mdl::BoneKeyCapacity(nullptr) == 0,
+    Check(mikumikustudio::mdl::BoneKeyCapacity(nullptr) == 0,
           "a null pool reports no capacity");
 }
 
 void CreateEnsureAndDestroy() {
     Fixture fixture(64);
     Check(fixture.Capacity() == 64, "a created pool reports the capacity it was made with");
-    Check(mikudancestudio::mdl::BoneKeyVisitMapSize(*fixture.model) == 64,
+    Check(mikumikustudio::mdl::BoneKeyVisitMapSize(*fixture.model) == 64,
           "the visit map covers the pool capacity");
-    Check(mikudancestudio::mdl::BoneKeyVisitMapOf(*fixture.model).bytes ==
+    Check(mikumikustudio::mdl::BoneKeyVisitMapOf(*fixture.model).bytes ==
               fixture.model->keyVisitMap,
           "a pool below the original capacity uses the inline visit map");
 
@@ -82,9 +82,9 @@ void CreateEnsureAndDestroy() {
     fixture.model->boneKeys[5].frame = 33;
     fixture.model->boneKeys[5].rotation[3] = 1.0f;
     fixture.model->boneKeys[5].allocated = 1;
-    const std::size_t grown = mikudancestudio::mdl::BoneKeyPlanCapacity(
+    const std::size_t grown = mikumikustudio::mdl::BoneKeyPlanCapacity(
         fixture.Capacity(), 100);
-    Check(mikudancestudio::mdl::BoneKeyPoolEnsure(*fixture.model, 100),
+    Check(mikumikustudio::mdl::BoneKeyPoolEnsure(*fixture.model, 100),
           "a request past the end grows the pool");
     Check(fixture.model->boneKeys != before, "growth publishes a new block");
     Check(fixture.Capacity() >= 100 && fixture.Capacity() == grown,
@@ -99,14 +99,14 @@ void CreateEnsureAndDestroy() {
     // the inline visit map still covers every slot and no side buffer was
     // needed.  The crossing case is exercised by VisitClearFollowsTheCapacity
     // and GrowthPreservesVisitMarks below.
-    const auto grownVisit = mikudancestudio::mdl::BoneKeyVisitMapOf(*fixture.model);
-    Check(fixture.Capacity() <= mikudancestudio::mdl::kBoneKeyCapacity,
+    const auto grownVisit = mikumikustudio::mdl::BoneKeyVisitMapOf(*fixture.model);
+    Check(fixture.Capacity() <= mikumikustudio::mdl::kBoneKeyCapacity,
           "this growth stays inside the original capacity");
     Check(grownVisit.bytes == fixture.model->keyVisitMap,
           "a pool that stayed inside the original capacity keeps the inline visit map");
     Check(grownVisit.size == fixture.Capacity(),
           "the visit map length matches the capacity it reports");
-    Check(mikudancestudio::mdl::BoneKeyVisitMapSize(*fixture.model) ==
+    Check(mikumikustudio::mdl::BoneKeyVisitMapSize(*fixture.model) ==
               fixture.Capacity(),
           "the visit map tracks the grown capacity");
     // The visit map must be writable up to the last slot of the new capacity.
@@ -114,39 +114,39 @@ void CreateEnsureAndDestroy() {
     Check(grownVisit.bytes[fixture.Capacity() - 1] == 1,
           "the visit map covers the last slot");
 
-    Check(mikudancestudio::mdl::BoneKeyPoolEnsure(*fixture.model, 100),
+    Check(mikumikustudio::mdl::BoneKeyPoolEnsure(*fixture.model, 100),
           "an in-range request is a no-op");
     Check(fixture.Capacity() == grown, "a no-op request does not grow again");
 
     // Destroying the pool drops its record, so the address reports the original
     // capacity again instead of matching a stale entry.
     BoneKey* released = fixture.model->boneKeys;
-    mikudancestudio::mdl::BoneKeyPoolDestroy(fixture.model->boneKeys);
+    mikumikustudio::mdl::BoneKeyPoolDestroy(fixture.model->boneKeys);
     Check(fixture.model->boneKeys == nullptr, "destroy clears the caller's pointer");
-    Check(mikudancestudio::mdl::BoneKeyCapacity(released) ==
-              mikudancestudio::mdl::kBoneKeyCapacity,
+    Check(mikumikustudio::mdl::BoneKeyCapacity(released) ==
+              mikumikustudio::mdl::kBoneKeyCapacity,
           "a released pool no longer matches the registry");
 }
 
 void PlanningAndTheStructuralLimit() {
-    using mikudancestudio::mdl::BoneKeyPlanCapacity;
+    using mikumikustudio::mdl::BoneKeyPlanCapacity;
     Check(BoneKeyPlanCapacity(64, 64) == 64, "a fitted request keeps the capacity");
     const std::size_t planned = BoneKeyPlanCapacity(64, 65);
     Check(planned > 65, "a request past the end leaves growth headroom");
-    Check(planned % mikudancestudio::mdl::kBoneKeyGrowthQuantum == 0,
+    Check(planned % mikumikustudio::mdl::kBoneKeyGrowthQuantum == 0,
           "the planned capacity is a multiple of the growth quantum");
     Check(BoneKeyPlanCapacity(64, UINT64_MAX) == 0,
           "a request beyond the structural limit is refused");
-    Check(BoneKeyPlanCapacity(mikudancestudio::mdl::kBoneKeyCapacityLimit,
-                              mikudancestudio::mdl::kBoneKeyCapacityLimit) ==
-              mikudancestudio::mdl::kBoneKeyCapacityLimit,
+    Check(BoneKeyPlanCapacity(mikumikustudio::mdl::kBoneKeyCapacityLimit,
+                              mikumikustudio::mdl::kBoneKeyCapacityLimit) ==
+              mikumikustudio::mdl::kBoneKeyCapacityLimit,
           "the structural limit itself is representable");
     // The limit is the smaller of the 32-bit index range and the size_t byte
     // range, so growing to it can never wrap an index or a byte count.
-    Check(mikudancestudio::mdl::kBoneKeyCapacityLimit <=
+    Check(mikumikustudio::mdl::kBoneKeyCapacityLimit <=
               static_cast<std::size_t>(INT32_MAX),
           "the ceiling keeps every slot index inside int32");
-    Check(mikudancestudio::mdl::kBoneKeyCapacityLimit <=
+    Check(mikumikustudio::mdl::kBoneKeyCapacityLimit <=
               SIZE_MAX / (sizeof(BoneKey) + 1),
           "the ceiling keeps the pool and its visit map inside size_t");
 }
@@ -156,10 +156,10 @@ void RefusedGrowthLeavesTheModelAlone() {
     BoneKey* before = fixture.model->boneKeys;
     fixture.model->boneKeys[3].frame = 9;
     fixture.model->maxFrame = 9;
-    Check(!mikudancestudio::mdl::BoneKeyPoolEnsure(
+    Check(!mikumikustudio::mdl::BoneKeyPoolEnsure(
               *fixture.model,
               static_cast<std::uint64_t>(
-                  mikudancestudio::mdl::kBoneKeyCapacityLimit) + 1),
+                  mikumikustudio::mdl::kBoneKeyCapacityLimit) + 1),
           "a request beyond the ceiling is refused");
     Check(fixture.model->boneKeys == before &&
               fixture.Capacity() == 64 &&
@@ -169,28 +169,28 @@ void RefusedGrowthLeavesTheModelAlone() {
 
 void VisitClearFollowsTheCapacity() {
     Fixture fixture(64);
-    mikudancestudio::mdl::BoneKeyVisitClear(*fixture.model);
+    mikumikustudio::mdl::BoneKeyVisitClear(*fixture.model);
     fixture.model->keyVisitMap[10] = 1;
-    mikudancestudio::mdl::BoneKeyVisitClear(*fixture.model);
+    mikumikustudio::mdl::BoneKeyVisitClear(*fixture.model);
     Check(fixture.model->keyVisitMap[10] == 0,
           "clearing an original-size pool clears the inline map");
     // Only a capacity above the original one needs the side buffer, so the
     // growth below asks for more slots than the original pool had.
-    Check(mikudancestudio::mdl::BoneKeyPoolEnsure(
+    Check(mikumikustudio::mdl::BoneKeyPoolEnsure(
               *fixture.model,
               static_cast<std::uint64_t>(
-                  mikudancestudio::mdl::kBoneKeyCapacity) + 1),
+                  mikumikustudio::mdl::kBoneKeyCapacity) + 1),
           "grow the pool past the original capacity");
-    Check(fixture.Capacity() > mikudancestudio::mdl::kBoneKeyCapacity,
+    Check(fixture.Capacity() > mikumikustudio::mdl::kBoneKeyCapacity,
           "the grown capacity really crosses the original one");
-    const auto visited = mikudancestudio::mdl::BoneKeyVisitMapOf(*fixture.model);
+    const auto visited = mikumikustudio::mdl::BoneKeyVisitMapOf(*fixture.model);
     Check(visited.bytes != fixture.model->keyVisitMap,
           "a pool grown past the original capacity uses the side visit map");
     Check(visited.size == fixture.Capacity(),
           "the side visit map covers the whole capacity");
     visited.bytes[10] = 1;
     visited.bytes[150] = 1;
-    mikudancestudio::mdl::BoneKeyVisitClear(*fixture.model);
+    mikumikustudio::mdl::BoneKeyVisitClear(*fixture.model);
     Check(visited.bytes[10] == 0 && visited.bytes[150] == 0,
           "clearing a grown pool clears the side map, not just the inline array");
 }
@@ -199,20 +199,20 @@ void VisitClearFollowsTheCapacity() {
 // dedup the undo records already collected for this pool.
 void GrowthPreservesVisitMarks() {
     Fixture fixture(64);
-    const auto before = mikudancestudio::mdl::BoneKeyVisitMapOf(*fixture.model);
+    const auto before = mikumikustudio::mdl::BoneKeyVisitMapOf(*fixture.model);
     before.bytes[3] = 1;
     before.bytes[63] = 1;
-    const std::size_t firstTarget = mikudancestudio::mdl::BoneKeyPlanCapacity(
+    const std::size_t firstTarget = mikumikustudio::mdl::BoneKeyPlanCapacity(
         fixture.Capacity(),
-        static_cast<std::uint64_t>(mikudancestudio::mdl::kBoneKeyCapacity) + 1);
-    Check(mikudancestudio::mdl::BoneKeyPoolEnsure(
+        static_cast<std::uint64_t>(mikumikustudio::mdl::kBoneKeyCapacity) + 1);
+    Check(mikumikustudio::mdl::BoneKeyPoolEnsure(
               *fixture.model,
               static_cast<std::uint64_t>(
-                  mikudancestudio::mdl::kBoneKeyCapacity) + 1),
+                  mikumikustudio::mdl::kBoneKeyCapacity) + 1),
           "grow the pool past the original capacity");
-    Check(fixture.Capacity() > mikudancestudio::mdl::kBoneKeyCapacity,
+    Check(fixture.Capacity() > mikumikustudio::mdl::kBoneKeyCapacity,
           "the grown capacity really crosses the original one");
-    const auto grown = mikudancestudio::mdl::BoneKeyVisitMapOf(*fixture.model);
+    const auto grown = mikumikustudio::mdl::BoneKeyVisitMapOf(*fixture.model);
     Check(grown.bytes != fixture.model->keyVisitMap,
           "the grown pool reads through the side visit map");
     Check(grown.size == fixture.Capacity() && grown.size == firstTarget,
@@ -223,9 +223,9 @@ void GrowthPreservesVisitMarks() {
           "the slots the growth adds start unvisited");
 
     grown.bytes[150] = 1;
-    Check(mikudancestudio::mdl::BoneKeyPoolEnsure(*fixture.model, grown.size + 1),
+    Check(mikumikustudio::mdl::BoneKeyPoolEnsure(*fixture.model, grown.size + 1),
           "grow the pool a second time");
-    const auto again = mikudancestudio::mdl::BoneKeyVisitMapOf(*fixture.model);
+    const auto again = mikumikustudio::mdl::BoneKeyVisitMapOf(*fixture.model);
     Check(again.size > grown.size, "the second growth publishes a larger capacity");
     Check(again.bytes[3] == 1 && again.bytes[150] == 1,
           "a second growth carries the side marks over");
@@ -237,23 +237,23 @@ void GrowthPreservesVisitMarks() {
 // Nothing in this module may release memory it did not allocate, and the inline
 // visit map keeps working for such a pool.
 void BorrowedPoolIsNeverFreed() {
-    const std::size_t initial = mikudancestudio::mdl::kBoneKeyCapacity;
+    const std::size_t initial = mikumikustudio::mdl::kBoneKeyCapacity;
     std::vector<BoneKey> pool(initial);
     pool[7].frame = 42;
     pool[7].rotation[3] = 1.0f;
     auto model = std::make_unique<ModelRecord>();
     model->boneKeys = pool.data();
-    Check(mikudancestudio::mdl::BoneKeyCapacity(*model) == initial,
+    Check(mikumikustudio::mdl::BoneKeyCapacity(*model) == initial,
           "a borrowed pool reports the original capacity");
     model->keyVisitMap[9] = 1;
-    mikudancestudio::mdl::BoneKeyVisitClear(*model);
+    mikumikustudio::mdl::BoneKeyVisitClear(*model);
     Check(model->keyVisitMap[9] == 0, "clearing a borrowed pool uses the inline map");
-    Check(mikudancestudio::mdl::BoneKeyVisitMapOf(*model).size == initial,
+    Check(mikumikustudio::mdl::BoneKeyVisitMapOf(*model).size == initial,
           "a borrowed pool's visit map length is its capacity");
 
     // Destroying a pool this module did not allocate only clears the handle.
     BoneKey* borrowed = model->boneKeys;
-    mikudancestudio::mdl::BoneKeyPoolDestroy(borrowed);
+    mikumikustudio::mdl::BoneKeyPoolDestroy(borrowed);
     Check(borrowed == nullptr, "destroy clears the caller's pointer");
     Check(pool[7].frame == 42 && pool[7].rotation[3] == 1.0f,
           "a borrowed pool's storage is still valid after destroy");
@@ -261,20 +261,20 @@ void BorrowedPoolIsNeverFreed() {
     // Growth adopts a borrowed pool: it copies the records and leaves the
     // caller's storage alone, which is what the vector-based fixtures rely on.
     model->boneKeys = pool.data();
-    Check(mikudancestudio::mdl::BoneKeyPoolEnsure(
+    Check(mikumikustudio::mdl::BoneKeyPoolEnsure(
               *model, static_cast<std::uint64_t>(initial) + 1),
           "a borrowed pool can be adopted by growth");
     Check(model->boneKeys != pool.data(), "adoption publishes a new block");
     Check(pool[7].frame == 42, "adoption leaves the caller's storage untouched");
     Check(model->boneKeys[7].frame == 42, "adoption copies the records");
-    Check(mikudancestudio::mdl::BoneKeyCapacity(*model) > initial,
+    Check(mikumikustudio::mdl::BoneKeyCapacity(*model) > initial,
           "the adopted pool reports the grown capacity");
-    mikudancestudio::mdl::BoneKeyPoolDestroy(model->boneKeys);
+    mikumikustudio::mdl::BoneKeyPoolDestroy(model->boneKeys);
 }
 
 
 void MorphPoolGrowth() {
-    namespace mdl = mikudancestudio::mdl;
+    namespace mdl = mikumikustudio::mdl;
     auto model = std::make_unique<ModelRecord>();
     model->morphKeys = mdl::MorphKeyPoolCreate(mdl::kMorphKeyCapacity);
     model->morphKeys[3].frame = 71;
@@ -310,7 +310,7 @@ void MorphPoolGrowth() {
 }  // namespace
 
 void GlobalAndDisplayGrowth() {
-    namespace mdl = mikudancestudio::mdl;
+    namespace mdl = mikumikustudio::mdl;
     auto* camera = mdl::KeyPoolCreate<mdl::CameraKey>();
     for (unsigned i = 1; i < 10000; ++i) {
         camera[i].frame = i;
@@ -360,7 +360,7 @@ void GlobalAndDisplayGrowth() {
 }
 
 void ExpandedDisplayAndFrames() {
-    namespace mdl=mikudancestudio::mdl;
+    namespace mdl=mikumikustudio::mdl;
     auto model=std::make_unique<mdl::ModelRecord>();
     std::vector<mdl::DisplayGroup> groups(700);model->groupNames=groups.data();
     mdl::SetDisplayCapacity(*model,700,900);
@@ -375,9 +375,9 @@ void ExpandedDisplayAndFrames() {
     mdl::SetFrameIndices(rows[0],1,2);
     Check(mdl::FrameGroupIndex(rows[0])==1&&mdl::FrameTargetIndex(rows[0])==2,"reused storage does not inherit wide indices");
     std::uint32_t result=0;
-    Check(mikudancestudio::frame_limits::Add(10000000,37,result)&&result==10000037,"frame arithmetic extends beyond the former cap");
+    Check(mikumikustudio::frame_limits::Add(10000000,37,result)&&result==10000037,"frame arithmetic extends beyond the former cap");
     result=77;
-    Check(!mikudancestudio::frame_limits::Add(mikudancestudio::frame_limits::maximum,1,result)&&result==77,"structural frame overflow preserves the output");
+    Check(!mikumikustudio::frame_limits::Add(mikumikustudio::frame_limits::maximum,1,result)&&result==77,"structural frame overflow preserves the output");
 }
 
 int main() {

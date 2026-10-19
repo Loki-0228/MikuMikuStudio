@@ -3,7 +3,7 @@
 // standalone so the wire layout can be tested without MMDApp, a window or a
 // GPU.  It only reads/writes the container after the standard PMM prefix.
 
-#include "mikudancestudio/pmm_container.hpp"
+#include "mikumikustudio/pmm_container.hpp"
 
 #include <io.h>
 
@@ -16,7 +16,7 @@
 #include <stdexcept>
 #include <utility>
 
-namespace mikudancestudio::pmm_container {
+namespace mikumikustudio::pmm_container {
 namespace {
 
 constexpr char kTocMagic[8] = {'P', 'M', 'M', '3', 'T', 'O', 'C', '\0'};
@@ -471,4 +471,4 @@ bool Erase(Document& document, std::string_view key) {
     return false;
 }
 
-}  // namespace mikudancestudio::pmm_container
+}  // namespace mikumikustudio::pmm_container

@@ -1,5 +1,5 @@
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/ui_translation.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/ui_translation.hpp"
 // ===========================================================================
 // CommandDispatch family: control notifications 450..499 (0x47E8A0)
 // ===========================================================================
@@ -108,10 +108,10 @@
 //   (the translated file covers only cases 200..0xDC; this port follows the
 //   IDA decompilation of MikuMikuDance.exe 0x47E8A0 directly)
 // =========================================================================//
-#include "mikudancestudio/animation_curve_host.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include "mikudancestudio/bone_scale.hpp"
+#include "mikumikustudio/bone_scale.hpp"
 #include <vector>
 #include <Windows.h>
 #include <commctrl.h>
@@ -123,15 +123,15 @@
 #include <cstring>
 #include <new>
 
-#include "mikudancestudio/text_encoding.hpp"
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ui_message.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/panel_controls.hpp"
+#include "mikumikustudio/text_encoding.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ui_message.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/panel_controls.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 struct BoneCopyRecord {
     char name[20];
@@ -701,9 +701,9 @@ void CmdControl450(MMDApp* app, HWND hwnd, std::uint16_t id,
     // ------------------------------------------------------------------
     case 494: {
         unsigned char* model = ActiveModel(app);
-        auto* const modelRecord = mikudancestudio::mdl::Mdl(model);
+        auto* const modelRecord = mikumikustudio::mdl::Mdl(model);
         const std::int32_t boneCount = modelRecord->boneCount;
-        mikudancestudio::mdl::BoneRecord* const bones = modelRecord->boneTable;
+        mikumikustudio::mdl::BoneRecord* const bones = modelRecord->boneTable;
         unsigned char* const sel = modelRecord->boneSelection;
         if (boneCount > 0 && (bones == nullptr || sel == nullptr))
             break;
@@ -751,7 +751,7 @@ void CmdControl450(MMDApp* app, HWND hwnd, std::uint16_t id,
         // (defect 6: the "part of the selection is not reset" report must not
         // be able to degenerate into a fault on a partially loaded model).
         {
-            auto* const guard = mikudancestudio::mdl::Mdl(ActiveModel(app));
+            auto* const guard = mikumikustudio::mdl::Mdl(ActiveModel(app));
             // boneCount == 0 slips past the guard above, and the reset path
             // below then reads boneSel[0]: on a slot that never loaded a model
             // (model_init leaves boneCount 0 with boneSelection null), that read
@@ -769,7 +769,7 @@ void CmdControl450(MMDApp* app, HWND hwnd, std::uint16_t id,
         }
         PushBoneEditUndo(app);  // prep (thiscall)
         unsigned char* model = ActiveModel(app);
-        auto* modelRecord = mikudancestudio::mdl::Mdl(model);
+        auto* modelRecord = mikumikustudio::mdl::Mdl(model);
         unsigned char* boneSel = modelRecord->boneSelection;
         for (int i=0; i<int(modelRecord->boneCount); ++i) {
             if (boneSel[i] && !bone_scale::Identity(bone_scale::Pose(model, i))) {
@@ -792,14 +792,14 @@ void CmdControl450(MMDApp* app, HWND hwnd, std::uint16_t id,
         unsigned char* frameFlag = modelRecord->bonePhysicsState;
         for (std::int32_t i = 1; i < boneCount; ++i) {
             model = ActiveModel(app);
-            modelRecord = mikudancestudio::mdl::Mdl(model);
+            modelRecord = mikumikustudio::mdl::Mdl(model);
             boneSel = modelRecord->boneSelection;
             frameFlag = modelRecord->bonePhysicsState;
             if (boneSel[i] == 0) {
                 continue;
             }
-            mikudancestudio::mdl::BoneRecord* const bones = modelRecord->boneTable;
-            mikudancestudio::mdl::BoneRecord* bone = &bones[i];
+            mikumikustudio::mdl::BoneRecord* const bones = modelRecord->boneTable;
+            mikumikustudio::mdl::BoneRecord* bone = &bones[i];
             if (bone->parent == -1) {
                 // ---- no parent: bake via own quaternion ----------------
                 d3dx::D3DXMATRIXF mat{};
@@ -921,7 +921,7 @@ void CmdControl450(MMDApp* app, HWND hwnd, std::uint16_t id,
     // ------------------------------------------------------------------
     case 496: {
         unsigned char* model = ActiveModel(app);
-        auto* modelRecord = mikudancestudio::mdl::Mdl(model);
+        auto* modelRecord = mikumikustudio::mdl::Mdl(model);
         const std::int32_t boneCount = modelRecord->boneCount;
         std::int32_t count = 0;
         if (boneCount > 0) {
@@ -957,9 +957,9 @@ void CmdControl450(MMDApp* app, HWND hwnd, std::uint16_t id,
                static_cast<std::size_t>(count) * sizeof(BoneCopyRecord));
         app->state.copiedBoneCount = 0;  // fill cursor
         model = ActiveModel(app);
-        modelRecord = mikudancestudio::mdl::Mdl(model);
+        modelRecord = mikumikustudio::mdl::Mdl(model);
         const std::int32_t nBones = modelRecord->boneCount;
-        mikudancestudio::mdl::BoneRecord* const bones = modelRecord->boneTable;
+        mikumikustudio::mdl::BoneRecord* const bones = modelRecord->boneTable;
         unsigned char* sel = modelRecord->boneSelection;
         std::int32_t cursor = 0;
         for (std::int32_t i = 0; i < nBones; ++i) {
@@ -992,7 +992,7 @@ void CmdControl450(MMDApp* app, HWND hwnd, std::uint16_t id,
             break;  // jz def_47E903 (no-op)
         }
         unsigned char* model = ActiveModel(app);
-        auto* modelRecord = mikudancestudio::mdl::Mdl(model);
+        auto* modelRecord = mikumikustudio::mdl::Mdl(model);
         const std::int32_t boneCount = modelRecord->boneCount;
         unsigned char* sel = modelRecord->boneSelection;
         for (std::int32_t i = 0; i < boneCount; ++i) {
@@ -1028,7 +1028,7 @@ void CmdControl450(MMDApp* app, HWND hwnd, std::uint16_t id,
                                    static_cast<std::uint32_t>(count),
                                    &IdentityCtor);
         }
-        undo.bonePose = reinterpret_cast<mikudancestudio::mdl::BonePoseSnapshot*>(
+        undo.bonePose = reinterpret_cast<mikumikustudio::mdl::BonePoseSnapshot*>(
             pasteBlob);
         memset(pasteBlob, 0, static_cast<std::size_t>(count) * 0x24u);
         std::vector<unsigned char> captured(static_cast<std::size_t>(boneCount), 0);
@@ -1037,10 +1037,10 @@ void CmdControl450(MMDApp* app, HWND hwnd, std::uint16_t id,
             reinterpret_cast<BoneCopyRecord*&>(app->BoneCopyRecords());
         for (std::int32_t j = 0; j < count; ++j) {
             model = ActiveModel(app);
-            modelRecord = mikudancestudio::mdl::Mdl(model);
+            modelRecord = mikumikustudio::mdl::Mdl(model);
             const std::int32_t nBones = modelRecord->boneCount;
             sel = modelRecord->boneSelection;
-            mikudancestudio::mdl::BoneRecord* const bones = modelRecord->boneTable;
+            mikumikustudio::mdl::BoneRecord* const bones = modelRecord->boneTable;
             unsigned char* frameFlag = modelRecord->bonePhysicsState;
             const BoneCopyRecord& src = records[j];
             // exact name match (the original's inline 2-byte-step compare
@@ -1055,7 +1055,7 @@ void CmdControl450(MMDApp* app, HWND hwnd, std::uint16_t id,
             if (found < 0) {
                 continue;
             }
-            mikudancestudio::mdl::BoneRecord* bone = &bones[found];
+            mikumikustudio::mdl::BoneRecord* bone = &bones[found];
             sel[found] = 1;
             if (!captured[found]) {
                 captured[found] = 1;
@@ -1095,7 +1095,7 @@ void CmdControl450(MMDApp* app, HWND hwnd, std::uint16_t id,
             break;  // jz def_47E903 (no-op)
         }
         unsigned char* model = ActiveModel(app);
-        auto* modelRecord = mikudancestudio::mdl::Mdl(model);
+        auto* modelRecord = mikumikustudio::mdl::Mdl(model);
         const std::int32_t boneCount = modelRecord->boneCount;
         unsigned char* sel = modelRecord->boneSelection;
         for (std::int32_t i = 0; i < boneCount; ++i) {
@@ -1130,7 +1130,7 @@ void CmdControl450(MMDApp* app, HWND hwnd, std::uint16_t id,
                                    static_cast<std::uint32_t>(count),
                                    &IdentityCtor);
         }
-        undo.bonePose = reinterpret_cast<mikudancestudio::mdl::BonePoseSnapshot*>(
+        undo.bonePose = reinterpret_cast<mikumikustudio::mdl::BonePoseSnapshot*>(
             pasteBlob);
         memset(pasteBlob, 0, static_cast<std::size_t>(count) * 0x24u);
         std::vector<unsigned char> captured(static_cast<std::size_t>(boneCount), 0);
@@ -1139,10 +1139,10 @@ void CmdControl450(MMDApp* app, HWND hwnd, std::uint16_t id,
             reinterpret_cast<BoneCopyRecord*&>(app->BoneCopyRecords());
         for (std::int32_t j = 0; j < count; ++j) {
             model = ActiveModel(app);
-            modelRecord = mikudancestudio::mdl::Mdl(model);
+            modelRecord = mikumikustudio::mdl::Mdl(model);
             const std::int32_t nBones = modelRecord->boneCount;
             sel = modelRecord->boneSelection;
-            mikudancestudio::mdl::BoneRecord* const bones = modelRecord->boneTable;
+            mikumikustudio::mdl::BoneRecord* const bones = modelRecord->boneTable;
             unsigned char* frameFlag = modelRecord->bonePhysicsState;
             const BoneCopyRecord& src = records[j];
             // step 1: exact name match -> k1
@@ -1190,7 +1190,7 @@ void CmdControl450(MMDApp* app, HWND hwnd, std::uint16_t id,
             if (target < 0) {
                 target = k1;  // fallback to the exact-name match
             }
-            mikudancestudio::mdl::BoneRecord* bone = &bones[target];
+            mikumikustudio::mdl::BoneRecord* bone = &bones[target];
             sel[target] = 1;
             if (!captured[target]) {
                 captured[target] = 1;
@@ -1229,4 +1229,4 @@ void CmdControl450(MMDApp* app, HWND hwnd, std::uint16_t id,
     }
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

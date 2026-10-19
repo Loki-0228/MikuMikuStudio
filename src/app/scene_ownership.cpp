@@ -1,4 +1,4 @@
-#include "mikudancestudio/key_pool.hpp"
+#include "mikumikustudio/key_pool.hpp"
 // ===========================================================================
 // MikuMikuStudio - scene-resident allocation teardown
 // ===========================================================================
@@ -6,23 +6,23 @@
 #include <cstdlib>
 #include <new>
 
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/scene_ownership.hpp"
-#include "mikudancestudio/d3d12_native.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/scene_ownership.hpp"
+#include "mikumikustudio/d3d12_native.hpp"
 
-#include "mikudancestudio/effect_api.hpp"
+#include "mikumikustudio/effect_api.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 namespace {
 
-// Porting-era trace under MIKUDANCESTUDIO_PMM_TRACE_DIR (CMake option
-// MIKUDANCESTUDIO_DIAG, default OFF); the OFF stub keeps the call sites
+// Porting-era trace under MIKUMIKUSTUDIO_PMM_TRACE_DIR (CMake option
+// MIKUMIKUSTUDIO_DIAG, default OFF); the OFF stub keeps the call sites
 // valid and inlines away to nothing.
-#ifdef MIKUDANCESTUDIO_DIAG
+#ifdef MIKUMIKUSTUDIO_DIAG
 void TraceAccessoryRelease(int slot, const char* phase, const void* track) {
-    const char* directory = std::getenv("MIKUDANCESTUDIO_PMM_TRACE_DIR");
+    const char* directory = std::getenv("MIKUMIKUSTUDIO_PMM_TRACE_DIR");
     if (directory == nullptr || directory[0] == '\0')
         return;
     // The directory path comes directly from the environment and has no
@@ -31,7 +31,7 @@ void TraceAccessoryRelease(int slot, const char* phase, const void* track) {
     // invoke the CRT invalid-parameter handler, which by default terminates
     // the process.  snprintf instead truncates and always terminates, matching
     // the DIAG dump path in frame_state_dump.hpp:40-41.  DIAG-only helper
-    // (MIKUDANCESTUDIO_DIAG, default OFF).
+    // (MIKUMIKUSTUDIO_DIAG, default OFF).
     // Defect AB-09.
     char path[MAX_PATH];
     std::snprintf(path, sizeof(path), "%s\\pmm_model_load.log", directory);
@@ -147,4 +147,4 @@ void ReleaseAccessoriesAndTracks(MMDApp& app) {
     }
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

@@ -54,7 +54,7 @@
 // =========================================================================//
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include "mikudancestudio/wic_mov_recorder.hpp"
+#include "mikumikustudio/wic_mov_recorder.hpp"
 #include <Windows.h>
 #include <objbase.h>
 #include <dshow.h>   // strmif/control/uuids: graph, capture builder, mux cfg
@@ -64,13 +64,13 @@
 #include <cstdlib>
 #include <cstring>
 
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/dshow_recorder.hpp"
-#include "mikudancestudio/mf_h264_recorder.hpp"
-#include "mikudancestudio/wave_audio_context.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/dshow_recorder.hpp"
+#include "mikumikustudio/mf_h264_recorder.hpp"
+#include "mikumikustudio/wave_audio_context.hpp"
 #include "mmdxshow.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 namespace {
 
@@ -946,4 +946,4 @@ bool BuildRecordingGraph(DShowRecorder* rec, HWND hwnd, unsigned char english,
     return true;
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

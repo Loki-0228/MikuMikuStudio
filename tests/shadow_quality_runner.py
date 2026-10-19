@@ -30,7 +30,7 @@ def main():
     fixture(model)
     env = os.environ.copy()
     env.update(LOCALAPPDATA=str(root / 'Local'), APPDATA=str(root / 'Roaming'),
-               MIKUDANCESTUDIO_AUTOSAVE_CONFIG=str(root / 'autosave.ini'))
+               MIKUMIKUSTUDIO_AUTOSAVE_CONFIG=str(root / 'autosave.ini'))
     results, zoom = [], []
     for mode in (1, 2):
         for adaptive in (0, 1):

@@ -13,12 +13,12 @@
 #include <memory>
 #include <stdexcept>
 #include <vector>
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/physics_scene.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/physics_scene.hpp"
 #include "mmv/mesh.hpp"
 
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 
 namespace {
 MMDApp* host=nullptr;

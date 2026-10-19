@@ -1,4 +1,4 @@
-#include "mikudancestudio/build_profile.hpp"
+#include "mikumikustudio/build_profile.hpp"
 // ===========================================================================
 // VA 0x0040CAC0 - LayoutViewportPanels  (original: sub_40CAC0, 0x5A9 bytes,
 // was Sub40CAC0)
@@ -28,14 +28,14 @@
 #include <initializer_list>
 #include <map>
 
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/frame_presentation.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/window_dpi_scope.hpp"
-#include "mikudancestudio/ui_language.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/frame_presentation.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/window_dpi_scope.hpp"
+#include "mikumikustudio/ui_language.hpp"
 #include "ui_control_layout.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 namespace {
 int scaleCaptionWidths[3]{};
@@ -306,4 +306,4 @@ void LayoutViewportPanels(MMDApp* app) {  // was Sub40CAC0, VA 0x0040CAC0
 #endif
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

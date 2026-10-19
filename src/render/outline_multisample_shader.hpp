@@ -1,5 +1,5 @@
 #pragma once
-namespace mikudancestudio::antialias::outline_multisample {
+namespace mikumikustudio::antialias::outline_multisample {
 inline constexpr char kShader[] = R"hlsl(
 row_major float4x4 transform : register(c0);
 float4 lineColor : register(c4);

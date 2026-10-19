@@ -1,9 +1,9 @@
-#include "mikudancestudio/frame_rate.hpp"
-#include "mikudancestudio/build_profile.hpp"
-#include "mikudancestudio/mmd_app.hpp"
+#include "mikumikustudio/frame_rate.hpp"
+#include "mikumikustudio/build_profile.hpp"
+#include "mikumikustudio/mmd_app.hpp"
 #include <chrono>
 
-namespace mikudancestudio::frame_rate {
+namespace mikumikustudio::frame_rate {
 namespace {
 double Now() {
     return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();

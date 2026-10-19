@@ -1,7 +1,7 @@
 // External camera-motion fixture through the production loader and renderer.
 // The VMD remains an explicit test input rather than a bundled user asset.
 #include <cmath>
-#include "mikudancestudio/global_key_layout.hpp"
+#include "mikumikustudio/global_key_layout.hpp"
 void CheckCameraMotionScene(MMDApp* app, const wchar_t* path) {
     const auto* output = _wgetenv(L"MMS_CAMERA_FIXTURE");
     Check(output && *output, "camera fixture output directory is explicit");

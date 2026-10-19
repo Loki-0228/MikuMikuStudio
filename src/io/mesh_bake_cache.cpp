@@ -1,11 +1,11 @@
-#include "mikudancestudio/frame_limits.hpp"
+#include "mikumikustudio/frame_limits.hpp"
 // Disk-backed cache of baked deformed meshes.  See the header for the archive
 // naming contract, the PMM record layout and the file-lifetime rules.
 #define NOMINMAX
 
-#include "mikudancestudio/mesh_bake_cache.hpp"
+#include "mikumikustudio/mesh_bake_cache.hpp"
 
-#include "mikudancestudio/mmd_app.hpp"
+#include "mikumikustudio/mmd_app.hpp"
 
 #include <Alembic/AbcCoreOgawa/All.h>
 #include <Alembic/AbcGeom/All.h>
@@ -25,7 +25,7 @@
 #include <system_error>
 #include <utility>
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace mesh_bake_cache {
 namespace {
 
@@ -53,9 +53,9 @@ constexpr std::size_t kMaxRelativePathBytes = 512;
 constexpr std::size_t kMaxSidecarStemBytes = 64;
 constexpr std::size_t kHashChunkBytes = 64 * 1024;
 // The timeline works in whole frames at a fixed 30 fps rate, and MMD accepts no
-// frame beyond mikudancestudio::frame_limits::maximum.  A retime may not push a native range past it.
+// frame beyond mikumikustudio::frame_limits::maximum.  A retime may not push a native range past it.
 constexpr double kBakeFrameRate = 30.0;
-constexpr double kMaxTimelineFrames = double(mikudancestudio::frame_limits::maximum);
+constexpr double kMaxTimelineFrames = double(mikumikustudio::frame_limits::maximum);
 
 std::string Utf8(const std::filesystem::path& path) { return path.u8string(); }
 
@@ -1440,4 +1440,4 @@ bool CommitTimeScale(const TimeScalePlanPtr& plan, std::string& error,
 }
 
 }  // namespace mesh_bake_cache
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

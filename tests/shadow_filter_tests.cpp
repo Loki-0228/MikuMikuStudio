@@ -1,16 +1,16 @@
 // Hidden production-host acceptance test; run each invocation in its own directory.
 // Entry: MikuMikuDance.exe <model-without-FX.pmx> <new-output-directory> --mme 0|1
-// Link like mme_shadow_filter_tests: mikudancestudio_core, MinHook, winmm,
+// Link like mme_shadow_filter_tests: mikumikustudio_core, MinHook, winmm,
 // dsound, generated resources, res/MMD.rc and exports/MikuMikuDance.def.
 // Keep OUTPUT_NAME=MikuMikuDance and ENABLE_EXPORTS=ON for the real MME case.
 // Place the real MME DLLs beside only the --mme 1 copy. Use the default desktop;
 // all windows created by this process are hidden. No other process is touched.
 #define NOMINMAX
-#include "mikudancestudio/shadow_filter.hpp"
-#include "mikudancestudio/accessory_layout.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/d3dx_effect.hpp"
+#include "mikumikustudio/shadow_filter.hpp"
+#include "mikumikustudio/accessory_layout.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/d3dx_effect.hpp"
 #include <MinHook.h>
 #include <algorithm>
 #include <array>
@@ -27,10 +27,10 @@
 #include <unordered_map>
 #include <vector>
 
-using namespace mikudancestudio;
-using namespace mikudancestudio::d3dx;
+using namespace mikumikustudio;
+using namespace mikumikustudio::d3dx;
 using Microsoft::WRL::ComPtr;
-namespace sf = mikudancestudio::shadow_filter;
+namespace sf = mikumikustudio::shadow_filter;
 namespace {
 unsigned checks = 0;
 void Check(bool good, const char* why) {

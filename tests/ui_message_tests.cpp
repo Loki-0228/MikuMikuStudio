@@ -3,13 +3,13 @@
 #define NOMINMAX
 #include <Windows.h>
 #include <commctrl.h>
-#include "mikudancestudio/ui_message.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/text_encoding.hpp"
-#include "mikudancestudio/bone_scale.hpp"
+#include "mikumikustudio/ui_message.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/text_encoding.hpp"
+#include "mikumikustudio/bone_scale.hpp"
 #include <vector>
 #include <type_traits>
 #include <cstdio>
@@ -20,8 +20,8 @@
 #include <cstring>
 #include <string>
 
-using namespace mikudancestudio;
-namespace mikudancestudio {
+using namespace mikumikustudio;
+namespace mikumikustudio {
 void DragInterpolationControlPoint(MMDApp*);
 void SnapshotSelectedKeysForUndo(unsigned char*,int);
 void UndoModelEdit(unsigned char*,std::int32_t*);

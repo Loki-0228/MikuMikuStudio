@@ -33,15 +33,15 @@
 #include <stdexcept>
 #include <cstring>
 
-#include "mikudancestudio/accessory_layout.hpp"
-#include "mikudancestudio/global_key_layout.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/frame_limits.hpp"
-#include "mikudancestudio/bone_pose_safety.hpp"
-#include "mikudancestudio/unicode_window.hpp"
-#include "mikudancestudio/original_import.hpp"
+#include "mikumikustudio/accessory_layout.hpp"
+#include "mikumikustudio/global_key_layout.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/frame_limits.hpp"
+#include "mikumikustudio/bone_pose_safety.hpp"
+#include "mikumikustudio/unicode_window.hpp"
+#include "mikumikustudio/original_import.hpp"
 
-namespace mikudancestudio::pmm_io {
+namespace mikumikustudio::pmm_io {
 
 // Stream dialect selector for the two parameterized readers.
 enum class PmmStream { V1, V2 };
@@ -382,4 +382,4 @@ inline void SetProjectWindowTitle(HWND window, const wchar_t* path) {
     SetUnicodeWindowTitle(window, title.c_str());
 }
 
-}  // namespace mikudancestudio::pmm_io
+}  // namespace mikumikustudio::pmm_io

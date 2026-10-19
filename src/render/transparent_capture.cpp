@@ -1,10 +1,10 @@
-#include "mikudancestudio/transparent_capture.hpp"
-#include "mikudancestudio/wic_mov_recorder.hpp"
-#include "mikudancestudio/image_sequence_export.hpp"
-#include "mikudancestudio/mmd_app.hpp"
+#include "mikumikustudio/transparent_capture.hpp"
+#include "mikumikustudio/wic_mov_recorder.hpp"
+#include "mikumikustudio/image_sequence_export.hpp"
+#include "mikumikustudio/mmd_app.hpp"
 #include <unordered_map>
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 using Microsoft::WRL::ComPtr;
 namespace {
 std::unordered_map<MMDApp*, ComPtr<IDirect3DSurface9>> targets;

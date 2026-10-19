@@ -1,6 +1,6 @@
 #include "../src/render/nvidia_antialias_profile.hpp"
 #include "../src/render/nvidia_antialias_elevation.hpp"
-#include "mikudancestudio/nvidia_antialias_fix.hpp"
+#include "mikumikustudio/nvidia_antialias_fix.hpp"
 #include <cstdio>
 #include <fstream>
 #include <cstdlib>
@@ -30,8 +30,8 @@ inline BOOL WINAPI Close(HANDLE) { return TRUE; }
 #undef WaitForSingleObject
 #undef GetExitCodeProcess
 #undef CloseHandle
-using namespace mikudancestudio::nvidia_antialias_fix;
-using namespace mikudancestudio::nvidia_antialias_fix::detail;
+using namespace mikumikustudio::nvidia_antialias_fix;
+using namespace mikumikustudio::nvidia_antialias_fix::detail;
 namespace {
 const std::wstring path=L"D:\\MMS only\\MikuMikuDance.exe";
 struct Database {
@@ -169,7 +169,7 @@ int main(int argc,char** argv){
     const bool canonicalValid=CanonicalFile(ModulePath(),canonical);
     if(!canonicalValid)std::printf("canonical diagnostics: module=%ls result=%ls windows=%lu\n",ModulePath().c_str(),canonical.c_str(),GetLastError());
     Check(canonicalValid&&canonical==CanonicalModulePath(),"startup inspection and helper registration share the canonical executable identity");
-    namespace dialog = mikudancestudio::nvidia_antialias_menu::uninstall_dialog;
+    namespace dialog = mikumikustudio::nvidia_antialias_menu::uninstall_dialog;
     const auto previousDesktop=GetThreadDesktop(GetCurrentThreadId());
     const auto desktopName=L"MMSNvidiaDialogTest-"+std::to_wstring(GetCurrentProcessId());
     const auto desktop=CreateDesktopW(desktopName.c_str(),nullptr,nullptr,0,GENERIC_ALL,nullptr);

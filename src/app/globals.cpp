@@ -1,9 +1,9 @@
 // ===========================================================================
 // Standalone globals (definitions)
 // ===========================================================================
-#include "mikudancestudio/globals.hpp"
+#include "mikumikustudio/globals.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 // VA 0x005294C8; .rdata image 0.0f, runtime-set to 2.0f (initializer port
 // tracked in docs/PORTING_STATUS.md under "globals init").
@@ -29,4 +29,4 @@ float g_FrameScale = 30.0f;
 // which 0.0f does not.
 float g_CatchupDtBudget = 0.0f;
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

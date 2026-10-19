@@ -1,11 +1,11 @@
 #include <algorithm>
-#include "mikudancestudio/extended_names.hpp"
+#include "mikumikustudio/extended_names.hpp"
 // Persistence for native bone scaling: the PMM v2
 // "org.mikudancestudio.model.<slot>.boneScale.v1" (or ".v2") tail record and
 // the VMD tail extension ("MMSXVMDX" footer after the standard prefix; legacy
 // "MDSXVMDX" is also read).  Wire
 // layouts and strictness rules are documented in
-// include/mikudancestudio/bone_scale_io.hpp.
+// include/mikumikustudio/bone_scale_io.hpp.
 //
 // The codec part is deterministic CPU code with its own matrix validation,
 // byte readers and CRC32, so a test can pin the wire format without a model.
@@ -31,13 +31,13 @@
 #include <utility>
 #include <vector>
 
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/bone_scale_io.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/runtime_log.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/bone_scale_io.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/runtime_log.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace bone_scale_io {
 namespace {
 
@@ -1286,4 +1286,4 @@ int ApplyImportedExtension(unsigned char* model, const VmdExtension& extension,
 }
 
 }  // namespace bone_scale_io
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

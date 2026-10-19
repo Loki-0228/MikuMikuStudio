@@ -17,9 +17,9 @@
 // ===========================================================================
 #include <cwchar>
 
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 wchar_t* ExtractDirFromPath(wchar_t* destination, const wchar_t* fullPath,
                             std::size_t destinationCapacity) {
@@ -57,4 +57,4 @@ wchar_t* ExtractDirFromPath(wchar_t* destination, const wchar_t* fullPath,
     return out;
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

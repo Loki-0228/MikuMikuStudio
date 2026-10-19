@@ -11,12 +11,12 @@
 #include <cstdint>
 #include <cstring>
 
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/window_dpi_scope.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/window_dpi_scope.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 void PicBgOverlayRefresh(MMDApp* app);  // VA 0x00417130
 namespace {
 
@@ -399,4 +399,4 @@ void RefreshSeparateWindowViewport(MMDApp* app) {  // was Sub4290F0, 0x4290F0..0
               0.625f, 0.9375f);
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

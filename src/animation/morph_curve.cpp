@@ -1,4 +1,4 @@
-#include "mikudancestudio/extended_names.hpp"
+#include "mikumikustudio/extended_names.hpp"
 // MAINTENANCE: native morph (expression) curves for one model.
 //
 // What this module owns
@@ -60,14 +60,14 @@
 #define NOMINMAX
 #include <Windows.h>
 
-#include "mikudancestudio/morph_curve.hpp"
+#include "mikumikustudio/morph_curve.hpp"
 
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/runtime_log.hpp"
-#include "mikudancestudio/text_encoding.hpp"
-#include "mikudancestudio/ui_language.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/runtime_log.hpp"
+#include "mikumikustudio/text_encoding.hpp"
+#include "mikumikustudio/ui_language.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -81,7 +81,7 @@
 #include <utility>
 #include <vector>
 
-namespace mikudancestudio::morph_curve {
+namespace mikumikustudio::morph_curve {
 namespace {
 
 namespace ac = animation_curve;
@@ -1809,4 +1809,4 @@ bool LayersUnchanged(const unsigned char* model, const AuthoredLayers& layers) {
     return LayersDigest(found->second) == LayersDigest(layers.impl_->state);
 }
 
-}  // namespace mikudancestudio::morph_curve
+}  // namespace mikumikustudio::morph_curve

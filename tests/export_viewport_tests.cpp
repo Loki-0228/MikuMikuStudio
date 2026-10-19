@@ -1,16 +1,16 @@
 // Hidden production export regression; reads GPU surfaces, never the desktop.
 #define NOMINMAX
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/globals.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/default_effect.hpp"
-#include "mikudancestudio/viewport_render_scale.hpp"
-#include "mikudancestudio/effect_api.hpp"
-#include "mikudancestudio/frame_presentation.hpp"
-#include "mikudancestudio/window_dpi_scope.hpp"
-#include "mikudancestudio/antialias.hpp"
-#include "mikudancestudio/mf_h264_recorder.hpp"
-#include "mikudancestudio/native_media.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/globals.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/default_effect.hpp"
+#include "mikumikustudio/viewport_render_scale.hpp"
+#include "mikumikustudio/effect_api.hpp"
+#include "mikumikustudio/frame_presentation.hpp"
+#include "mikumikustudio/window_dpi_scope.hpp"
+#include "mikumikustudio/antialias.hpp"
+#include "mikumikustudio/mf_h264_recorder.hpp"
+#include "mikumikustudio/native_media.hpp"
 #include <MinHook.h>
 #include <Windows.h>
 #include <wrl/client.h>
@@ -22,8 +22,8 @@
 #include <string>
 #include <thread>
 #include <chrono>
-using namespace mikudancestudio;
-namespace mikudancestudio { void LayoutViewportPanels(MMDApp* app); }
+using namespace mikumikustudio;
+namespace mikumikustudio { void LayoutViewportPanels(MMDApp* app); }
 using Microsoft::WRL::ComPtr;
 namespace fs=std::filesystem;
 namespace {

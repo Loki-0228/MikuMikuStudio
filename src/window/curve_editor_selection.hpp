@@ -2,7 +2,7 @@
 #include <algorithm>
 #include <vector>
 
-namespace mikudancestudio::curve_editor {
+namespace mikumikustudio::curve_editor {
 // Query in nondecreasing frame order. Native callers already provide sorted
 // frames; normalize callbacks from other hosts without modifying their input.
 class FrameSelectionCursor {

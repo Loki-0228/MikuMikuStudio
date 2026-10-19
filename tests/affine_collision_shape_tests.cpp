@@ -1,9 +1,9 @@
 // MAINTENANCE: regression-keep; affine support must preserve Bullet 2.75 margins.
-#include "mikudancestudio/affine_collision_shape.hpp"
+#include "mikumikustudio/affine_collision_shape.hpp"
 #include <btBulletDynamicsCommon.h>
 #include <cmath>
 #include <cstdio>
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 int main() {
     int failures = 0;
     auto check = [&](bool pass, const char *text) {

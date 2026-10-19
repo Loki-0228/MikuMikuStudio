@@ -5,7 +5,7 @@
 #include <d3d9.h>
 #include <string>
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 class MMDApp;
 namespace antialias::outline_multisample {
 struct Stats {

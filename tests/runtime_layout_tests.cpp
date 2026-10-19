@@ -1,10 +1,10 @@
-#include "mikudancestudio/frame_limits.hpp"
+#include "mikumikustudio/frame_limits.hpp"
 // MAINTENANCE: regression-keep; purpose and cleanup conditions in tests/README.md.
 #include <array>
 #include <algorithm>
 #include <string>
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/animation_curve_host.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -13,15 +13,15 @@
 #include <vector>
 
 #include "btBulletDynamicsCommon.h"
-#include "mikudancestudio/dynamics_world.hpp"
-#include "mikudancestudio/physics_scene.hpp"
-#include "mikudancestudio/mmd_app.hpp"
+#include "mikumikustudio/dynamics_world.hpp"
+#include "mikumikustudio/physics_scene.hpp"
+#include "mikumikustudio/mmd_app.hpp"
 #include <commctrl.h>
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/accessory_layout.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/accessory_layout.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 void ModelInitDefaults(unsigned char*);
 void ModelVertexHistoryPush(unsigned char*, int);
 char ModelStandardPoseSetup(unsigned char*, bool, unsigned char, unsigned char);
@@ -36,7 +36,7 @@ void StepFrame(MMDApp*, bool);
 }
 
 namespace {
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 static_assert(alignof(btVector3) == 16, "Match the Windows Bullet library ABI");
 static_assert(alignof(btRigidBody) == 16, "Match the Windows Bullet library ABI");
 void Check(bool ok, const char* what) {

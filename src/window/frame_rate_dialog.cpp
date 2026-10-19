@@ -45,8 +45,8 @@
 #define NOMINMAX
 #include <Windows.h>
 
-#include "mikudancestudio/frame_rate_correction.hpp"
-#include "mikudancestudio/mmd_app.hpp"
+#include "mikumikustudio/frame_rate_correction.hpp"
+#include "mikumikustudio/mmd_app.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -58,7 +58,7 @@
 #include <string>
 #include <vector>
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace frame_rate_correction {
 namespace {
 
@@ -1156,4 +1156,4 @@ bool HandleCommand(MMDApp* app, unsigned id) {
 }
 
 }  // namespace frame_rate_correction
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

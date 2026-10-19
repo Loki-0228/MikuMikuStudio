@@ -1,4 +1,4 @@
-#include "mikudancestudio/frame_limits.hpp"
+#include "mikumikustudio/frame_limits.hpp"
 #include <algorithm>
 // ===========================================================================
 // VA 0x0044AEE0 - HandleHScroll  (original: sub_44AEE0)
@@ -77,7 +77,7 @@
 // =========================================================================//
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include "mikudancestudio/build_profile.hpp"
+#include "mikumikustudio/build_profile.hpp"
 #include <Windows.h>
 #include <commctrl.h>
 
@@ -85,14 +85,14 @@
 #include <cstdio>
 #include <cmath>
 
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/adaptive_shadow.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/adaptive_shadow.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 
 // One of the four morph-value sliders (505/510/515/520). The original code repeats
@@ -338,4 +338,4 @@ void HandleHScroll(LPARAM lParam, WPARAM wParam) {
     }
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

@@ -1,13 +1,13 @@
 // MAINTENANCE: regression-keep; source-level MMDModern lookup equivalents.
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include "mikudancestudio/texture_lookup.hpp"
-#include "mikudancestudio/draw_order.hpp"
+#include "mikumikustudio/texture_lookup.hpp"
+#include "mikumikustudio/draw_order.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
 
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 void Check(bool value, const char* message) {
     if (!value) { std::fprintf(stderr, "FAIL: %s\n", message); std::exit(1); }
 }

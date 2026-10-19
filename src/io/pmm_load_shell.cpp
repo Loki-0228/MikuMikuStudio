@@ -1,4 +1,4 @@
-#include "mikudancestudio/build_profile.hpp"
+#include "mikumikustudio/build_profile.hpp"
 // ===========================================================================
 // VA 0x00408870 - PathToProjectDir  (original: sub_408870, 0xEF bytes)
 // VA 0x00458F80 - LoadSceneFile    (original: sub_458F80, 0x589B bytes,
@@ -49,16 +49,16 @@
 #include <new>
 #include <stdexcept>
 
-#include "mikudancestudio/mmd_app.hpp"
+#include "mikumikustudio/mmd_app.hpp"
 #include "pmm_io_common.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/effect_api.hpp"
-#include "mikudancestudio/runtime_log.hpp"
-#include "mikudancestudio/scene_ownership.hpp"
-#include "mikudancestudio/ui_message.hpp"
-#include "mikudancestudio/ui_language.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/effect_api.hpp"
+#include "mikumikustudio/runtime_log.hpp"
+#include "mikumikustudio/scene_ownership.hpp"
+#include "mikumikustudio/ui_message.hpp"
+#include "mikumikustudio/ui_language.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 // VA 0x00408870 - wide path -> project directory (truncate at "UserFile").
 void PathToProjectDir(wchar_t* destination, const wchar_t* source) {
@@ -209,4 +209,4 @@ void LoadSceneFile() {
     if (g_Block) LoadSceneFile(g_Block->EnvFileName());
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

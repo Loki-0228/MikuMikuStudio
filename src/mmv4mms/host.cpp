@@ -15,27 +15,27 @@
 #include <unordered_map>
 #include <vector>
 #include "btBulletDynamicsCommon.h"
-#include "mikudancestudio/mmv4mms.hpp"
-#include "mikudancestudio/native_mesh.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/d3dx_mesh.hpp"
-#include "mikudancestudio/physics_scene.hpp"
-#include "mikudancestudio/runtime_log.hpp"
-#include "mikudancestudio/text_encoding.hpp"
-#include "mikudancestudio/shared_toon.hpp"
-#include "mikudancestudio/shadow_filter.hpp"
-#include "mikudancestudio/transparent_capture.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/mmv4mms.hpp"
+#include "mikumikustudio/native_mesh.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/d3dx_mesh.hpp"
+#include "mikumikustudio/physics_scene.hpp"
+#include "mikumikustudio/runtime_log.hpp"
+#include "mikumikustudio/text_encoding.hpp"
+#include "mikumikustudio/shared_toon.hpp"
+#include "mikumikustudio/shadow_filter.hpp"
+#include "mikumikustudio/transparent_capture.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 #include "mmv/mesh.hpp"
 #include "mmv/mms.h"
 #include "mmv/menu.h"
 #include "pmx_optional_fields.hpp"
 #include "material_pass.hpp"
 extern "C" float* ExpGetAcsWorldMat(float*,int);
-namespace mikudancestudio {float ModelOutlineDistance(MMDApp*,unsigned char*,const float[16]);}
-namespace mikudancestudio::mmv4mms {
+namespace mikumikustudio {float ModelOutlineDistance(MMDApp*,unsigned char*,const float[16]);}
+namespace mikumikustudio::mmv4mms {
 namespace {
 using Microsoft::WRL::ComPtr;
 MMDApp* host=nullptr;

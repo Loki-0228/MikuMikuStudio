@@ -1,4 +1,4 @@
-#include "mikudancestudio/frame_limits.hpp"
+#include "mikumikustudio/frame_limits.hpp"
 // ===========================================================================
 // VA 0x0046EEE0..0x0046F575 - playback / frame-step catch-up section of the
 // FrameDriver (original: sub_46B090)
@@ -91,8 +91,8 @@
 // =========================================================================//
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include "mikudancestudio/image_sequence_export.hpp"
-#include "mikudancestudio/bone_scale.hpp"
+#include "mikumikustudio/image_sequence_export.hpp"
+#include "mikumikustudio/bone_scale.hpp"
 #include <Windows.h>
 
 #include <cstdint>
@@ -101,13 +101,13 @@
 
 #include "btBulletDynamicsCommon.h"
 
-#include "mikudancestudio/globals.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/panel_controls.hpp"
+#include "mikumikustudio/globals.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/panel_controls.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 
 // fild dword + "test/jge/fadd flt_52B9F0" (x86) / zero-extended
@@ -129,8 +129,8 @@ btDiscreteDynamicsWorld* PlayWorld(MMDApp* app) {
 }
 
 void StepWorld(btDiscreteDynamicsWorld* world) {
-#ifdef MIKUDANCESTUDIO_DIAG
-    if (getenv("MIKUDANCESTUDIO_TRACE_STEPS") != nullptr)
+#ifdef MIKUMIKUSTUDIO_DIAG
+    if (getenv("MIKUMIKUSTUDIO_TRACE_STEPS") != nullptr)
         fprintf(stderr, "CATCHUP step (cursor behind target)\n");
 #endif
     world->stepSimulation(1.0f / 60.0f, 10, 1.0f / 60.0f);   // 0x46F206
@@ -155,7 +155,7 @@ void OrderedMorphPhysicsPass(MMDApp* app, int count, bool selSkip) {
     for (int order = 0; order < kModelSlotCount; ++order) {
         for (int j = 0; j < kModelSlotCount; ++j) {
             unsigned char* mdl = models[j];
-            if (mdl == nullptr || mikudancestudio::mdl::Mdl(mdl)->comboSelIndex2 != order)
+            if (mdl == nullptr || mikumikustudio::mdl::Mdl(mdl)->comboSelIndex2 != order)
                 continue;
             if (selSkip && s.state.optflag[0] == 0 &&
                 s.SelectedModelSlot() == j)
@@ -208,7 +208,7 @@ void FrameStepBeyondEnd(MMDApp* app) {
     // skipped entirely.  Omitting the guards null-dereferences on the
     // first frame-step click past the end.
     auto capture = [&]() -> long {                          // 0x46F070/9B
-#ifdef MIKUDANCESTUDIO_DIAG
+#ifdef MIKUMIKUSTUDIO_DIAG
         static int capCount = 0;
 #endif
         if (push == nullptr)
@@ -216,10 +216,10 @@ void FrameStepBeyondEnd(MMDApp* app) {
         // IPushSource methods are STDMETHODCALLTYPE: `this` is the first
         // stack argument (NOT a cdecl call - the 8-byte cleanup mismatch
         // corrupted the caller's stack).
-#ifdef MIKUDANCESTUDIO_DIAG
-        if (getenv("MIKUDANCESTUDIO_TRACE_REC")) {
+#ifdef MIKUMIKUSTUDIO_DIAG
+        if (getenv("MIKUMIKUSTUDIO_TRACE_REC")) {
             if (++capCount <= 5 || capCount % 60 == 0) {
-                FILE* tf = fopen(getenv("MIKUDANCESTUDIO_TRACE_REC"), "a");
+                FILE* tf = fopen(getenv("MIKUMIKUSTUDIO_TRACE_REC"), "a");
                 if (tf) {
                     fprintf(tf,
                             "capture#%d push=%p flag=%d\n",
@@ -421,13 +421,13 @@ void PlaybackCatchup(MMDApp* app, unsigned char selActive) {
     }
 
     // ---- 5. playing (0x46F264..) ------------------------------------------
-    // MIKUDANCESTUDIO_TRACE_PLAY: per-substep bone dump for the first model, first
+    // MIKUMIKUSTUDIO_TRACE_PLAY: per-substep bone dump for the first model, first
     // 40 catch-up substeps after play starts (diagnostic only; compiled
-    // under MIKUDANCESTUDIO_DIAG).
-#ifdef MIKUDANCESTUDIO_DIAG
+    // under MIKUMIKUSTUDIO_DIAG).
+#ifdef MIKUMIKUSTUDIO_DIAG
     static int tracePlayLeft = -1;
     static int tracePassLeft = -1;
-    if (const char* tp = getenv("MIKUDANCESTUDIO_TRACE_PLAY")) {
+    if (const char* tp = getenv("MIKUMIKUSTUDIO_TRACE_PLAY")) {
         if (tracePlayLeft < 0) {
             FILE* tf = fopen(tp, "a");
             if (tf) {
@@ -446,7 +446,7 @@ void PlaybackCatchup(MMDApp* app, unsigned char selActive) {
                     mdl::Mdl(mdl)->boneTrackActive;
                 std::uint32_t* const cursors =
                     mdl::Mdl(mdl)->boneKeyCursors;
-                mikudancestudio::mdl::BoneRecord* const bones = mikudancestudio::mdl::Bones(mdl);
+                mikumikustudio::mdl::BoneRecord* const bones = mikumikustudio::mdl::Bones(mdl);
                 const mdl::BoneKey* const keyList = mdl::BoneKeys(mdl);
                 fprintf(tf2, "loadstate boneCnt=%d\n", boneCnt);
                 for (int b = 0; b < boneCnt && b < 12; ++b)
@@ -499,10 +499,10 @@ void PlaybackCatchup(MMDApp* app, unsigned char selActive) {
                          s.PlaybackStartSeconds();
     const double end = s.PlaybackEndSeconds();
 
-#ifdef MIKUDANCESTUDIO_DIAG
+#ifdef MIKUMIKUSTUDIO_DIAG
     if (tracePassLeft > 0) {
         --tracePassLeft;
-        if (FILE* tf = fopen(getenv("MIKUDANCESTUDIO_TRACE_PLAY"), "a")) {
+        if (FILE* tf = fopen(getenv("MIKUMIKUSTUDIO_TRACE_PLAY"), "a")) {
             fprintf(tf,
                     "pass cursor=%.5f target=%.5f end=%.5f elapsed=%.3f "
                     "b330=%d sel=%d\n",
@@ -528,17 +528,17 @@ void PlaybackCatchup(MMDApp* app, unsigned char selActive) {
                     // the substep is paid from the dt budget (subss 1/60f).
                     g_CatchupDtBudget -= 1.0f / 60.0f;
                     BumpCursor(app);
-#ifdef MIKUDANCESTUDIO_DIAG
-                    if (tracePlayLeft > 0 && getenv("MIKUDANCESTUDIO_TRACE_PLAY")) {
+#ifdef MIKUMIKUSTUDIO_DIAG
+                    if (tracePlayLeft > 0 && getenv("MIKUMIKUSTUDIO_TRACE_PLAY")) {
                         --tracePlayLeft;
                         unsigned char* mdl = s.ModelSlot(0);
-                        FILE* tf = fopen(getenv("MIKUDANCESTUDIO_TRACE_PLAY"), "a");
+                        FILE* tf = fopen(getenv("MIKUMIKUSTUDIO_TRACE_PLAY"), "a");
                         if (tf) {
                             if (mdl != nullptr) {
-                                mikudancestudio::mdl::BoneRecord* bones =
-                                    mikudancestudio::mdl::Bones(mdl);
+                                mikumikustudio::mdl::BoneRecord* bones =
+                                    mikumikustudio::mdl::Bones(mdl);
                                 const std::int32_t boneCount = static_cast<std::int32_t>(
-                                    mikudancestudio::mdl::Mdl(mdl)->boneCount);
+                                    mikumikustudio::mdl::Mdl(mdl)->boneCount);
                                 fprintf(tf,
                                         "sub cursor=%.5f target=%.5f bones=",
                                         Cursor(app), target);
@@ -576,4 +576,4 @@ void PlaybackCatchup(MMDApp* app, unsigned char selActive) {
     PlayingBeyondEnd(app);
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

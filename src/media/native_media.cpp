@@ -1,7 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include "mikudancestudio/native_media.hpp"
-#include "mikudancestudio/wave_audio_context.hpp"
+#include "mikumikustudio/native_media.hpp"
+#include "mikumikustudio/wave_audio_context.hpp"
 #include <mfapi.h>
 #include <mfidl.h>
 #include <mfreadwrite.h>
@@ -18,7 +18,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace mikudancestudio::media {
+namespace mikumikustudio::media {
 using Microsoft::WRL::ComPtr;
 namespace {
 struct Failure { HRESULT hr; const wchar_t* operation; };

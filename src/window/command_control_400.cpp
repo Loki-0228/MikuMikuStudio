@@ -1,10 +1,10 @@
-#include "mikudancestudio/frame_limits.hpp"
+#include "mikumikustudio/frame_limits.hpp"
 #include <set>
 #include <array>
 #include <string>
-#include "mikudancestudio/display_capacity.hpp"
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/ui_translation.hpp"
+#include "mikumikustudio/display_capacity.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/ui_translation.hpp"
 // ===========================================================================
 // CommandDispatch family: control notifications 400..449 (0x47E8A0)
 // ===========================================================================
@@ -181,7 +181,7 @@
 // =========================================================================//
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include "mikudancestudio/bone_scale.hpp"
+#include "mikumikustudio/bone_scale.hpp"
 #include <Windows.h>
 
 #include <commdlg.h>
@@ -191,21 +191,21 @@
 #include <cstdlib>
 #include <cstring>
 
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/accessory_layout.hpp"
-#include "mikudancestudio/global_key_layout.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/animation_curve_host.hpp"
-#include "mikudancestudio/ui_message.hpp"
-#include "mikudancestudio/text_encoding.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/ui_language.hpp"
-#include "mikudancestudio/frame_scope.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/accessory_layout.hpp"
+#include "mikumikustudio/global_key_layout.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
+#include "mikumikustudio/ui_message.hpp"
+#include "mikumikustudio/text_encoding.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/ui_language.hpp"
+#include "mikumikustudio/frame_scope.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 // ---------------------------------------------------------------------------
 // App-state offsets used by this family, kept file-local (never
@@ -251,14 +251,14 @@ static void ReplaceClipboardBuffer(Record*& buffer, std::uint32_t count) {
     memset(buffer, 0, count * sizeof(Record));
 }
 
-// Porting-era trace under MIKUDANCESTUDIO_STATE_DUMP_DIR (CMake option
-// MIKUDANCESTUDIO_DIAG, default OFF); the OFF stub keeps the call sites
+// Porting-era trace under MIKUMIKUSTUDIO_STATE_DUMP_DIR (CMake option
+// MIKUMIKUSTUDIO_DIAG, default OFF); the OFF stub keeps the call sites
 // valid and inlines away to nothing.
-#ifdef MIKUDANCESTUDIO_DIAG
+#ifdef MIKUMIKUSTUDIO_DIAG
 static void TraceModelPaste(const char* format, ...) {
     char directory[MAX_PATH]{};
     const DWORD length = GetEnvironmentVariableA(
-        "MIKUDANCESTUDIO_STATE_DUMP_DIR", directory, MAX_PATH);
+        "MIKUMIKUSTUDIO_STATE_DUMP_DIR", directory, MAX_PATH);
     if (length == 0 || length >= MAX_PATH)
         return;
     char path[MAX_PATH]{};
@@ -1372,7 +1372,7 @@ static void Cmd400_FrameRangeSelect(MMDApp* app, HWND hwnd) {
             // 0x2DAC
             unsigned char* model = ActiveModel(app);
             const mdl::ModelRecord& record = *mdl::Mdl(model);
-            const std::uint32_t morphCount = mikudancestudio::mdl::FacialFrameCount(record);
+            const std::uint32_t morphCount = mikumikustudio::mdl::FacialFrameCount(record);
             if (morphCount != 0) {
                 mdl::FrameGroup* groups = record.displayFrames;
                 for (std::uint32_t i = 0; i < morphCount; ++i) {
@@ -2360,7 +2360,7 @@ static void Cmd400_FrameReversePaste(MMDApp* app, HWND hwnd) {
     const std::int32_t cur = record.undoState[0];
     record.undoState[1] = cur;
     bone_scale::CaptureUndo(model);
-    auto& undo = mikudancestudio::mdl::Mdl(model)->undoRings[0].slots[cur];
+    auto& undo = mikumikustudio::mdl::Mdl(model)->undoRings[0].slots[cur];
     undo.operation = 2;
     undo.frame = frame;
     void* p = undo.bonePose;
@@ -2369,18 +2369,18 @@ static void Cmd400_FrameReversePaste(MMDApp* app, HWND hwnd) {
         undo.bonePose = nullptr;
     }
     const std::int32_t boneCount = mdl::Mdl(model)->boneCount;
-    auto* undoBone = static_cast<mikudancestudio::mdl::BonePoseSnapshot*>(
+    auto* undoBone = static_cast<mikumikustudio::mdl::BonePoseSnapshot*>(
         malloc(static_cast<std::uint32_t>(boneCount) *
-               sizeof(mikudancestudio::mdl::BonePoseSnapshot)));
+               sizeof(mikumikustudio::mdl::BonePoseSnapshot)));
     if (undoBone != nullptr) {
         ConstructArrayElements(undoBone,
-                               sizeof(mikudancestudio::mdl::BonePoseSnapshot),
+                               sizeof(mikumikustudio::mdl::BonePoseSnapshot),
                                static_cast<std::uint32_t>(boneCount),
                                reinterpret_cast<void*>(&IdentityCtor));
     }
     undo.bonePose = undoBone;
     memset(undoBone, 0, static_cast<std::uint32_t>(boneCount) *
-                            sizeof(mikudancestudio::mdl::BonePoseSnapshot));
+                            sizeof(mikumikustudio::mdl::BonePoseSnapshot));
     if (boneCount > 0) {
         const mdl::BoneRecord* bones = record.boneTable;
         unsigned char* boneState = record.bonePhysicsState;
@@ -3242,4 +3242,4 @@ void CmdControl400(MMDApp* app, HWND hwnd, std::uint16_t id,
     }
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

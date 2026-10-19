@@ -1,8 +1,8 @@
 // ===========================================================================
 // Porting-era diagnostics: vertex-batch capture under
-// MIKUDANCESTUDIO_VB_DUMP_DIR for A/B comparison against the original
-// renderers.  Compiled only with -DMIKUDANCESTUDIO_DIAG (CMake option
-// MIKUDANCESTUDIO_DIAG, default OFF); the OFF stub below keeps the call
+// MIKUMIKUSTUDIO_VB_DUMP_DIR for A/B comparison against the original
+// renderers.  Compiled only with -DMIKUMIKUSTUDIO_DIAG (CMake option
+// MIKUMIKUSTUDIO_DIAG, default OFF); the OFF stub below keeps the call
 // sites valid and inlines away to nothing.
 // ===========================================================================
 #pragma once
@@ -16,26 +16,26 @@
 #include <cstdio>
 #include <cstring>
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
-#ifdef MIKUDANCESTUDIO_DIAG
+#ifdef MIKUMIKUSTUDIO_DIAG
 
 inline void DumpVertexBatch(const char* name, const void* bytes,
                             std::uint32_t primitiveCount,
                             std::size_t bytesPerPrimitive) {
     char directory[MAX_PATH]{};
     const DWORD length = GetEnvironmentVariableA(
-        "MIKUDANCESTUDIO_VB_DUMP_DIR", directory, MAX_PATH);
+        "MIKUMIKUSTUDIO_VB_DUMP_DIR", directory, MAX_PATH);
     if (length == 0 || length >= MAX_PATH || bytes == nullptr)
         return;
 
     char stableCapture[2]{};
-    if (GetEnvironmentVariableA("MIKUDANCESTUDIO_AB_STABLE_CAPTURE", stableCapture,
+    if (GetEnvironmentVariableA("MIKUMIKUSTUDIO_AB_STABLE_CAPTURE", stableCapture,
                                 sizeof(stableCapture)) == 1 &&
         stableCapture[0] == '1') {
         char requireLine[2]{};
         const bool refreshedModelCapture =
-            GetEnvironmentVariableA("MIKUDANCESTUDIO_AB_REQUIRE_LINE", requireLine,
+            GetEnvironmentVariableA("MIKUMIKUSTUDIO_AB_REQUIRE_LINE", requireLine,
                                     sizeof(requireLine)) == 1 &&
             requireLine[0] == '1';
         char gatePath[MAX_PATH]{};
@@ -93,11 +93,11 @@ inline void DumpVertexBatch(const char* name, const void* bytes,
     }
 }
 
-#else  // !MIKUDANCESTUDIO_DIAG
+#else  // !MIKUMIKUSTUDIO_DIAG
 
 inline void DumpVertexBatch(const char*, const void*, std::uint32_t,
                             std::size_t) {}
 
-#endif  // MIKUDANCESTUDIO_DIAG
+#endif  // MIKUMIKUSTUDIO_DIAG
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

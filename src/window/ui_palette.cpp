@@ -40,23 +40,23 @@
 #include <cstdint>
 #include <cstdio>
 
-#include "mikudancestudio/text_encoding.hpp"
-#include "mikudancestudio/ui_language.hpp"
-#include "mikudancestudio/bottom_panel_layout.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/frame_presentation.hpp"
-#include "mikudancestudio/bottom_panel_resize.hpp"
-#include "mikudancestudio/accessory_layout.hpp"
-#include "mikudancestudio/bone_scale.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/ui_translation.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/panel_controls.hpp"
+#include "mikumikustudio/text_encoding.hpp"
+#include "mikumikustudio/ui_language.hpp"
+#include "mikumikustudio/bottom_panel_layout.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/frame_presentation.hpp"
+#include "mikumikustudio/bottom_panel_resize.hpp"
+#include "mikumikustudio/accessory_layout.hpp"
+#include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/ui_translation.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/panel_controls.hpp"
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 
 // Shift-JIS (cp932) label bytes from .rdata, used by the Japanese-UI branch
@@ -356,7 +356,7 @@ void HandlePaletteChanged(HDC hdc) {
     const std::int32_t bottom = rc.bottom;
     const auto FillPanelBottom = [app, bottom](HDC dc, int l, int t, int r, int b, COLORREF c1, COLORREF c2, int edge) {
         if (t >= bottom - 157) { l = BottomPanelX(app, l); r = BottomPanelX(app, r); }
-        mikudancestudio::FillPanelBottom(dc, l, t, r, b, c1, c2, edge);
+        mikumikustudio::FillPanelBottom(dc, l, t, r, b, c1, c2, edge);
     };
     const std::int32_t side = app->SidebarWidth();
     const COLORREF colA = app->ThemeColor(UiThemeColor::ControlLight);
@@ -513,7 +513,7 @@ void HandlePaletteChanged(HDC hdc) {
 //       / %s" / "ｶﾒﾗ･照明･ｱｸｾｻﾘ / %s" into the 256-byte Buffer.
 //     - bone: model slots this+0x780 [byte this+0x910]; name at model+0x227A
 //       (EN) / model+0x2248 (JP); bone index model+0x2D90; bone record =
-//       (model+0x26BC) + sizeof(mikudancestudio::mdl::BoneRecord) *index, name at +0x14 (EN, "%s : %s").  The JP
+//       (model+0x26BC) + sizeof(mikumikustudio::mdl::BoneRecord) *index, name at +0x14 (EN, "%s : %s").  The JP
 //       branch keeps the original quirk: sprintf_s with a "%s" format and
 //       TWO extra arguments, the second (bone record, no +0x14) is ignored.
 //     - trace-mode line pair when
@@ -667,8 +667,8 @@ void HandlePaletteChanged2(HDC hdc) {
             } else {
                 unsigned char* model = app->SelectedModel();
                 if (model != nullptr) {                          // 0x42C4AD
-                    const mikudancestudio::mdl::ModelRecord& record =
-                        *mikudancestudio::mdl::Mdl(model);
+                    const mikumikustudio::mdl::ModelRecord& record =
+                        *mikumikustudio::mdl::Mdl(model);
                     const std::int32_t boneIdx = record.selectedBone;
                     auto label = text_encoding::ModelLabel(record, UiUsesEnglishNames(app->EnglishUI()));
                     if (boneIdx >= 0) {
@@ -720,8 +720,8 @@ void HandlePaletteChanged2(HDC hdc) {
         } else {
             unsigned char* model = app->SelectedModel();
             if (model != nullptr) {                              // 0x42C660
-                const mikudancestudio::mdl::ModelRecord& record =
-                    *mikudancestudio::mdl::Mdl(model);
+                const mikumikustudio::mdl::ModelRecord& record =
+                    *mikumikustudio::mdl::Mdl(model);
                 const auto label = text_encoding::ModelLabel(record, UiUsesEnglishNames(app->EnglishUI()));
                 const int width = drawWide(label.c_str(), hdc, 16,
                                                    xBase + 10, hideTop - 20,
@@ -758,4 +758,4 @@ void HandlePaletteChanged2(HDC hdc) {
               0, 0, 0, 1);                                       // 0x42C7E3
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

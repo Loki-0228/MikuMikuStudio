@@ -1,13 +1,13 @@
-#include "mikudancestudio/mmv4mms.hpp"
-#include "mikudancestudio/viewport_render_scale.hpp"
-#include "mikudancestudio/transparent_capture.hpp"
-#include "mikudancestudio/image_sequence_export.hpp"
-#include "mikudancestudio/native_mesh.hpp"
-#include "mikudancestudio/deformed_mesh_capture.hpp"
-#include "mikudancestudio/mesh_bake_cache.hpp"
-#include "mikudancestudio/bone_scale.hpp"
-#include "mikudancestudio/perf_timing.hpp"
-#include "mikudancestudio/d3d12_native.hpp"
+#include "mikumikustudio/mmv4mms.hpp"
+#include "mikumikustudio/viewport_render_scale.hpp"
+#include "mikumikustudio/transparent_capture.hpp"
+#include "mikumikustudio/image_sequence_export.hpp"
+#include "mikumikustudio/native_mesh.hpp"
+#include "mikumikustudio/deformed_mesh_capture.hpp"
+#include "mikumikustudio/mesh_bake_cache.hpp"
+#include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/perf_timing.hpp"
+#include "mikumikustudio/d3d12_native.hpp"
 // ===========================================================================
 // VA 0x0046DC00..0x0046E787 - FrameDriver D3D scene envelope
 // ===========================================================================
@@ -26,20 +26,20 @@
 #include <cstdint>
 #include <cstring>
 
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/frame_presentation.hpp"
-#include "mikudancestudio/frame_rate.hpp"
-#include "mikudancestudio/d3d_object_guard.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/frame_presentation.hpp"
+#include "mikumikustudio/frame_rate.hpp"
+#include "mikumikustudio/d3d_object_guard.hpp"
 #if !MMD_ORIGINAL_PROFILE
-#include "mikudancestudio/transparent_triangles.hpp"
+#include "mikumikustudio/transparent_triangles.hpp"
 #endif
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/effect_api.hpp"
-#include "mikudancestudio/default_effect.hpp"
-#include "mikudancestudio/runtime_log.hpp"
-#include "mikudancestudio/shadow_filter.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/effect_api.hpp"
+#include "mikumikustudio/default_effect.hpp"
+#include "mikumikustudio/runtime_log.hpp"
+#include "mikumikustudio/shadow_filter.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 
 struct TexturedScreenVertex {
@@ -153,10 +153,10 @@ void DrawFullscreenQuad(IDirect3DDevice9* device,
 }
 
 // Porting-era screen-texture readback under
-// MIKUDANCESTUDIO_SCREEN_TEXTURE_DUMP_DIR (CMake option MIKUDANCESTUDIO_DIAG,
+// MIKUMIKUSTUDIO_SCREEN_TEXTURE_DUMP_DIR (CMake option MIKUMIKUSTUDIO_DIAG,
 // default OFF); the OFF stub below keeps the call sites valid and inlines
 // away to nothing.
-#ifdef MIKUDANCESTUDIO_DIAG
+#ifdef MIKUMIKUSTUDIO_DIAG
 #pragma pack(push, 1)
 struct DumpBitmapFileHeader {
     std::uint16_t type;
@@ -173,12 +173,12 @@ struct DumpBitmapFileHeader {
 void DumpAccessoryScreenTexture(MMDApp* app, IDirect3DDevice9* device) {
     char directory[MAX_PATH]{};
     const DWORD length = GetEnvironmentVariableA(
-        "MIKUDANCESTUDIO_SCREEN_TEXTURE_DUMP_DIR", directory, MAX_PATH);
+        "MIKUMIKUSTUDIO_SCREEN_TEXTURE_DUMP_DIR", directory, MAX_PATH);
     if (length == 0 || length >= MAX_PATH)
         return;
 
     char stableCapture[2]{};
-    if (GetEnvironmentVariableA("MIKUDANCESTUDIO_AB_STABLE_CAPTURE", stableCapture,
+    if (GetEnvironmentVariableA("MIKUMIKUSTUDIO_AB_STABLE_CAPTURE", stableCapture,
                                 sizeof(stableCapture)) == 1 &&
         stableCapture[0] == '1') {
         char gatePath[MAX_PATH]{};
@@ -707,4 +707,4 @@ void RenderFrameScene(MMDApp* app) {
     DumpAccessoryScreenTexture(app, device);
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

@@ -1,17 +1,17 @@
 // Regression: preserve legacy UI layout across DPI-scaled fullscreen transitions.
 #define NOMINMAX
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/globals.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/frame_presentation.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/globals.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/frame_presentation.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
 #include <utility>
 #include <MinHook.h>
 
-namespace mikudancestudio { void LayoutViewportPanels(MMDApp*); }
-using namespace mikudancestudio;
+namespace mikumikustudio { void LayoutViewportPanels(MMDApp*); }
+using namespace mikumikustudio;
 static void Check(bool ok, const char* label) {
     std::printf("%s %s\n", ok ? "PASS" : "FAIL", label);
     if (!ok) std::exit(1);

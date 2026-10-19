@@ -7,12 +7,12 @@
 #include <commctrl.h>
 #include <commdlg.h>
 #include <MinHook.h>
-#include "mikudancestudio/build_profile.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/globals.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/ui_language.hpp"
+#include "mikumikustudio/build_profile.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/globals.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/ui_language.hpp"
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -21,7 +21,7 @@
 #include <vector>
 
 static_assert(MMD_ORIGINAL_PROFILE, "This UI test requires the mmd932 profile");
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 namespace {
 int checks = 0, failures = 0;
 unsigned blockedActivations = 0;

@@ -1,10 +1,10 @@
 // Native Bullet 2.75 versus the production Bullet3 C ABI. No Bullet3 C++
 // symbols are linked into this executable. Animation/IK use the MMS loader.
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/dynamics_world.hpp"
-#include "mikudancestudio/bone_key_pool.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/dynamics_world.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
 #include "../../MMV/plugins/bullet3/include/mmv_bullet3.h"
 #include <btBulletDynamicsCommon.h>
 #include <BulletDynamics/ConstraintSolver/btGeneric6DofSpringConstraint.h>
@@ -16,7 +16,7 @@
 #include <cstdio>
 #include <stdexcept>
 #include <chrono>
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 namespace fs=std::filesystem;
 void Require(bool b,const char* s){if(!b)throw std::runtime_error(s);}
 struct Profile {

@@ -3,11 +3,11 @@
 #define NOMINMAX
 #endif
 #include "../src/render/outline_multisample.hpp"
-#include "mikudancestudio/deformed_mesh_capture.hpp"
-#include "mikudancestudio/graphics_runtime.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/deformed_mesh_capture.hpp"
+#include "mikumikustudio/graphics_runtime.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 #include <wrl/client.h>
 #include <MinHook.h>
 #include <algorithm>
@@ -24,9 +24,9 @@
 #include <string>
 #include <vector>
 
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 using Microsoft::WRL::ComPtr;
-namespace sampled = mikudancestudio::antialias::outline_multisample;
+namespace sampled = mikumikustudio::antialias::outline_multisample;
 namespace {
 constexpr unsigned kSide=128;
 unsigned checks=0;

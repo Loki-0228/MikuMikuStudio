@@ -1,5 +1,5 @@
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/animation_curve_editor.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/animation_curve_editor.hpp"
 // ===========================================================================
 // VA 0x00471342..0x00473127 - ConsumeEditKeys  (main-pump edit-key family)
 // ===========================================================================
@@ -66,15 +66,15 @@
 
 #include <cstdint>
 
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/panel_controls.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/panel_controls.hpp"
 #include "device_lost_wait.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 // Global-track register backends, defined with these signatures in
 // command_control_400.cpp / ui_frame_refresh.cpp / command_view_menu.cpp
@@ -554,4 +554,4 @@ void ConsumeEditKeys(MMDApp* app) {
     PumpEscStop(app, focusNotInPanelEdit);                     // G4
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

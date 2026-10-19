@@ -3,7 +3,7 @@
 // ===========================================================================
 // Direct3D9 subsystem bootstrap, called at the top of UI creation
 // (0x00466D20 @ 0x466D5B, i.e. during WM_CREATE).  The render object is
-// the D3DRenderer restored in include/mikudancestudio/d3d_wrapper.hpp (original
+// the D3DRenderer restored in include/mikumikustudio/d3d_wrapper.hpp (original
 // field offsets pinned there by static_assert on both architectures).
 //
 // Flow: monitor enum -> Direct3DCreate9 -> format probing (CheckDeviceType +
@@ -24,17 +24,17 @@
 #include <cstring>
 #include <cstdint>
 
-#include "mikudancestudio/d3d_wrapper.hpp"
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/default_effect.hpp"
-#include "mikudancestudio/effect_apng.hpp"
-#include "mikudancestudio/effect_file_watch.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/processor_settings.hpp"
-#include "mikudancestudio/runtime_log.hpp"
+#include "mikumikustudio/d3d_wrapper.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/default_effect.hpp"
+#include "mikumikustudio/effect_apng.hpp"
+#include "mikumikustudio/effect_file_watch.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/processor_settings.hpp"
+#include "mikumikustudio/runtime_log.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 
 // VA 0x00406E50 - fnEnum: track the largest monitor dimensions.
@@ -53,17 +53,17 @@ void ReleaseCom(void* object) {
     reinterpret_cast<IUnknown*>(object)->Release();  // vtable slot 2
 }
 
-// Porting-era error/state dumps under MIKUDANCESTUDIO_STATE_DUMP_DIR /
-// MIKUDANCESTUDIO_VB_DUMP_DIR (CMake option MIKUDANCESTUDIO_DIAG, default
+// Porting-era error/state dumps under MIKUMIKUSTUDIO_STATE_DUMP_DIR /
+// MIKUMIKUSTUDIO_VB_DUMP_DIR (CMake option MIKUMIKUSTUDIO_DIAG, default
 // OFF); the OFF stubs below keep the call sites valid and inline away to
 // nothing.
-#ifdef MIKUDANCESTUDIO_DIAG
+#ifdef MIKUMIKUSTUDIO_DIAG
 void DumpCreateDeviceFailure(const D3DPRESENT_PARAMETERS& pp,
                              const HRESULT* attempts, int attemptCount,
                              D3DFORMAT depthFormat) {
     char directory[MAX_PATH]{};
     const DWORD length = GetEnvironmentVariableA(
-        "MIKUDANCESTUDIO_VB_DUMP_DIR", directory, MAX_PATH);
+        "MIKUMIKUSTUDIO_VB_DUMP_DIR", directory, MAX_PATH);
     if (length == 0 || length >= MAX_PATH)
         return;
     CreateDirectoryA(directory, nullptr);
@@ -91,7 +91,7 @@ void DumpEffectStatus(bool haveD3dx, int vsMajor, int psMajor,
                       int maxTexW, int maxTexH, D3DRenderer* renderer) {
     char directory[MAX_PATH]{};
     const DWORD length = GetEnvironmentVariableA(
-        "MIKUDANCESTUDIO_STATE_DUMP_DIR", directory, MAX_PATH);
+        "MIKUMIKUSTUDIO_STATE_DUMP_DIR", directory, MAX_PATH);
     if (length == 0 || length >= MAX_PATH)
         return;
     CreateDirectoryA(directory, nullptr);
@@ -422,4 +422,4 @@ bool InitD3D(MMDApp* app, HWND hwnd, bool english, HMODULE hModule) {
     return true;
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

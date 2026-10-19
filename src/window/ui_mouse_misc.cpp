@@ -1,4 +1,4 @@
-#include "mikudancestudio/frame_limits.hpp"
+#include "mikumikustudio/frame_limits.hpp"
 // ===========================================================================
 // VA 0x0044AAA0 - HandleLButtonDblClk  (original: sub_44AAA0)
 // ===========================================================================
@@ -54,12 +54,12 @@
 #include <cstdint>
 #include <cstdio>
 
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/panel_controls.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/panel_controls.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 // Forward declarations for functions ported in other translation units
 // (declared here with their original VAs; bodies in the files noted).
@@ -375,4 +375,4 @@ void HandleMouseActivate(MMDApp* app) {
     }
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

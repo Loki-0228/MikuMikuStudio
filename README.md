@@ -246,7 +246,7 @@ while omitting the optional DX12 runtime dependency. Configure a separate build:
 ```bat
 cmake -S . -B build/dx12-disabled -G "Visual Studio 17 2022" -A x64 ^
   -DCMAKE_TOOLCHAIN_FILE=D:/MMD-Next/MMS/build/generators/conan_toolchain.cmake ^
-  -DMIKUDANCESTUDIO_ENABLE_DX12=OFF
+  -DMIKUMIKUSTUDIO_ENABLE_DX12=OFF
 cmake --build build/dx12-disabled --config Release --target MikuMikuStudio
 ```
 
@@ -283,7 +283,7 @@ Regression tests are never part of a release artifact (excluded from the default
 build, no install rule). To run them:
 
 ```bat
-cmake --preset conan-default -DMIKUDANCESTUDIO_BUILD_INPUT_TESTS=ON
+cmake --preset conan-default -DMIKUMIKUSTUDIO_BUILD_INPUT_TESTS=ON
 cmake --build build --config Release
 cmake --build build --config Release --target keyboard_input_tests
 ctest --test-dir build -C Release --output-on-failure
@@ -499,7 +499,7 @@ build/Release/
 测试程序不参与默认构建，需启用选项并显式构建测试目标：
 
 ```bat
-cmake --preset conan-default -DMIKUDANCESTUDIO_BUILD_INPUT_TESTS=ON
+cmake --preset conan-default -DMIKUMIKUSTUDIO_BUILD_INPUT_TESTS=ON
 cmake --build build --config Release --target keyboard_input_tests
 ctest --test-dir build -C Release -R keyboard_input_regressions --output-on-failure
 ```

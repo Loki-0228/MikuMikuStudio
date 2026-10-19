@@ -1,8 +1,8 @@
 // MAINTENANCE: regression-keep; purpose and cleanup conditions in tests/README.md.
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/d3dx_effect.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/physics_scene.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/d3dx_effect.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/physics_scene.hpp"
 #include "btBulletDynamicsCommon.h"
 #include "BulletCollision/BroadphaseCollision/btAxisSweep3.h"
 #include <cstdio>
@@ -19,7 +19,7 @@ HRESULT WINAPI Lost(void* object) { ++static_cast<EffectProbe*>(object)->lost; r
 HRESULT WINAPI Reset(void* object) { ++static_cast<EffectProbe*>(object)->reset; return S_OK; }
 }
 int main() {
-    using namespace mikudancestudio;
+    using namespace mikumikustudio;
     HWND window = CreateWindowW(L"STATIC", L"Device reset regression", WS_POPUP,
         0, 0, 64, 64, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
     Check(window != nullptr, "create hidden device window");

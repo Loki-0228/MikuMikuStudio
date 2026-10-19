@@ -1,14 +1,14 @@
 #pragma once
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/model_alpha_pass.hpp"
-#include "mikudancestudio/native_mesh.hpp"
-#include "mikudancestudio/texture_lookup.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/model_alpha_pass.hpp"
+#include "mikumikustudio/native_mesh.hpp"
+#include "mikumikustudio/texture_lookup.hpp"
 #include "mmv/mms.h"
 #include <cmath>
 #include <vector>
 
-namespace mikudancestudio::mmv4mms {
+namespace mikumikustudio::mmv4mms {
 struct MaterialPassContext {
     MMDApp* app;
     const std::vector<MmvObject>* objects;
@@ -74,4 +74,4 @@ inline int MMV_CALL ReadMaterialPass(void* pointer, uint32_t objectIndex,
         (!custom && known ? MMV_MMS_MATERIAL_COVERAGE : MMV_MMS_MATERIAL_TRANSLUCENT);
     return MMV_OK;
 }
-} // namespace mikudancestudio::mmv4mms
+} // namespace mikumikustudio::mmv4mms

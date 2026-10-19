@@ -1,8 +1,8 @@
 #define NOMINMAX
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/native_mesh.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/native_mesh.hpp"
 #include <Windows.h>
 #include <filesystem>
 #include <fstream>
@@ -10,8 +10,8 @@
 #include <chrono>
 #include <vector>
 #include <wrl/client.h>
-#include "mikudancestudio/effect_api.hpp"
-using namespace mikudancestudio;
+#include "mikumikustudio/effect_api.hpp"
+using namespace mikumikustudio;
 namespace fs=std::filesystem;
 using Microsoft::WRL::ComPtr;
 namespace {

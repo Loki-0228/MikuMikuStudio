@@ -1,12 +1,12 @@
 // MAINTENANCE: regression-keep; purpose and cleanup conditions in tests/README.md.
 // Regressions for the PMM 0003 block container codec ("PMM3END" footer,
-// "PMM3TOC" table), see include/mikudancestudio/pmm_container.hpp and
+// "PMM3TOC" table), see include/mikumikustudio/pmm_container.hpp and
 // docs/reference/pmm-0003-container.md.
 //
 // Pure CPU: no window, no GPU, no MMDApp, no other project module.  The
 // tests build the wire bytes and CRCs with their own helpers so the on-disk
 // layout is pinned independently of the codec under test.
-#include "mikudancestudio/pmm_container.hpp"
+#include "mikumikustudio/pmm_container.hpp"
 
 #include <fcntl.h>
 #include <io.h>
@@ -22,7 +22,7 @@
 #include <utility>
 #include <vector>
 
-namespace pmmc = mikudancestudio::pmm_container;
+namespace pmmc = mikumikustudio::pmm_container;
 
 namespace {
 

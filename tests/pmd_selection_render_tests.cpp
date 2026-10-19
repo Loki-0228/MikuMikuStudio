@@ -7,15 +7,15 @@
 #include <cstdlib>
 #include <filesystem>
 #include <memory>
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/texture_lookup.hpp"
-#include "mikudancestudio/mmv4mms.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/texture_lookup.hpp"
+#include "mikumikustudio/mmv4mms.hpp"
 
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 using Microsoft::WRL::ComPtr;
 namespace fs = std::filesystem;
 namespace {

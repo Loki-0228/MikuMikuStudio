@@ -1,19 +1,19 @@
 #define NOMINMAX
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/globals.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/wic_mov_recorder.hpp"
-#include "mikudancestudio/native_media.hpp"
-#include "mikudancestudio/frame_presentation.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/physics_scene.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/processor_settings.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/globals.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/wic_mov_recorder.hpp"
+#include "mikumikustudio/native_media.hpp"
+#include "mikumikustudio/frame_presentation.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/physics_scene.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/processor_settings.hpp"
 #include <btBulletDynamicsCommon.h>
 #include <shellapi.h>
 #include <shlobj.h>
-#include "mikudancestudio/transparent_capture.hpp"
+#include "mikumikustudio/transparent_capture.hpp"
 #include <filesystem>
 #include <fstream>
 #include <vector>
@@ -23,8 +23,8 @@
 #include <algorithm>
 #include <memory>
 #include <MinHook.h>
-namespace mikudancestudio { void DispatchLetterHotkeys(MMDApp*,HWND); }
-using namespace mikudancestudio;
+namespace mikumikustudio { void DispatchLetterHotkeys(MMDApp*,HWND); }
+using namespace mikumikustudio;
 using Microsoft::WRL::ComPtr;
 namespace fs = std::filesystem;
 void Check(bool ok, const char* why) { if (!ok) { std::printf("FAIL %s\n", why); std::exit(1); } }

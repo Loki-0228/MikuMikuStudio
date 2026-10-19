@@ -1,5 +1,5 @@
 #include "repair_core.hpp"
-#include "mikudancestudio/plugin_menu.h"
+#include "mikumikustudio/plugin_menu.h"
 #include <commdlg.h>
 #include <atomic>
 #include <memory>

@@ -27,12 +27,12 @@
 #include <Windows.h>
 #include <commctrl.h>
 
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/ui_language.hpp"
-#include "mikudancestudio/bone_combo.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/ui_language.hpp"
+#include "mikumikustudio/bone_combo.hpp"
 #include "../src/window/ui_controls.inc"  // generated creation table (caption sweep)
 
 #include <array>
@@ -47,7 +47,7 @@
 #include <sys/stat.h>
 #include <clocale>
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 // LocalizeUI's caption lookup and localized-id list (src/window/localize_ui.cpp);
 // not exported through a header because only the UI pass and these tests use
 // them.
@@ -57,9 +57,9 @@ int UiLocalizedControlId(int index);
 void DrawTimelineLabel(MMDApp*, HDC, const wchar_t*, int, int, COLORREF);
 HWND CreateUiPanelControl(const ui::ControlSpec&, HWND, HINSTANCE, int);
 void RefreshModelSelectorNames(MMDApp*);
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio
 
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 
 static void Check(bool condition, const char* description) {
     if (!condition) {
@@ -474,7 +474,7 @@ static void CheckImportedTimelineNames(mdl::ModelRecord& model,
 }
 
 static void MissingEnglishPmxRegression(bool chineseNames = false) {
-    using namespace mikudancestudio;
+    using namespace mikumikustudio;
     wchar_t directory[MAX_PATH]{}; GetTempPathW(MAX_PATH, directory);
     const auto path = std::wstring(directory) + L"MDS-bone-names-" +
         std::to_wstring(GetCurrentProcessId()) + L".pmx";
@@ -806,7 +806,7 @@ void TimelineLabelRasterRegression() {
     }
     // Optional local preview of the actual GDI result, including row boundaries.
     char output[MAX_PATH]{};
-    if (GetEnvironmentVariableA("MIKUDANCESTUDIO_TIMELINE_FONT_PREVIEW", output, MAX_PATH)) {
+    if (GetEnvironmentVariableA("MIKUMIKUSTUDIO_TIMELINE_FONT_PREVIEW", output, MAX_PATH)) {
         GdiFlush();
         std::memset(pixels, 0xff, width * height * 4);
         app->EnglishUI() = 2;

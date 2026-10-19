@@ -1,11 +1,11 @@
-#include "mikudancestudio/display_capacity.hpp"
-#include "mikudancestudio/text_encoding.hpp"
+#include "mikumikustudio/display_capacity.hpp"
+#include "mikumikustudio/text_encoding.hpp"
 // MAINTENANCE: regression-keep; malformed PMX text must fail before allocation
 // or string conversion, and partially constructed models must remain disposable.
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/path_workspace.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/sequential_file_reader.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/path_workspace.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/sequential_file_reader.hpp"
 #include <Windows.h>
 #include <cstdio>
 #include <cstdlib>
@@ -14,7 +14,7 @@
 #include <io.h>
 #include <memory>
 #include <vector>
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 namespace {
 using Bytes = std::vector<unsigned char>;
 void Check(bool ok, const char* what) {

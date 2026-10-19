@@ -1,14 +1,14 @@
-#include "mikudancestudio/model_vertex_cache.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/geometry_workers.hpp"
+#include "mikumikustudio/model_vertex_cache.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/geometry_workers.hpp"
 #include <algorithm>
 #include <cstring>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
-namespace mikudancestudio::model_vertex_cache {
+namespace mikumikustudio::model_vertex_cache {
 namespace {
 constexpr std::size_t perModelLimit = 256u * 1024u * 1024u;
 constexpr std::size_t totalLimit = 512u * 1024u * 1024u;

@@ -1,6 +1,6 @@
 # 原版兼容构建档
 
-`MIKUDANCESTUDIO_PROFILE=mmd932` 从同一份源码生成精简的 x64 程序，对应 Release 中文件名含 `minimal` 的最小包。默认 `full` 对应完整包。两档各自生成资源文件，不覆盖源码目录的资源，也不通过运行时开关加载被移除的模块。功能对照见 [README](../../README.md#下载与版本区别)。
+`MIKUMIKUSTUDIO_PROFILE=mmd932` 从同一份源码生成精简的 x64 程序，对应 Release 中文件名含 `minimal` 的最小包。默认 `full` 对应完整包。两档各自生成资源文件，不覆盖源码目录的资源，也不通过运行时开关加载被移除的模块。功能对照见 [README](../../README.md#下载与版本区别)。
 
 两档在同一分支维护，不另设最小包分支。共同功能的缺陷在共享实现中修复，并分别构建、验收 `full` 与 `mmd932`；只有功能本身不在最小档范围内时，才限定到完整档。
 
@@ -41,7 +41,7 @@ VMD 不保存池槽号；它使用名字与帧号，因此不能直接套用 PMM
 ```powershell
 cmake -S . -B build-original -G "Visual Studio 17 2022" -A x64 `
   -DCMAKE_TOOLCHAIN_FILE=<Conan工具链绝对路径> `
-  -DMIKUDANCESTUDIO_PROFILE=mmd932
+  -DMIKUMIKUSTUDIO_PROFILE=mmd932
 cmake --build build-original --config Release --target MikuMikuStudio --parallel 1 -- /nr:false
 ```
 

@@ -2,9 +2,9 @@
 #define NOMINMAX
 #include <Windows.h>
 
-#include "mikudancestudio/geometry_workers.hpp"
+#include "mikumikustudio/geometry_workers.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 void InitializeGeometryWorkers() {
 #ifdef _OPENMP
@@ -23,4 +23,4 @@ void InitializeGeometryWorkers() {
 #endif
 }
 
-} // namespace mikudancestudio
+} // namespace mikumikustudio

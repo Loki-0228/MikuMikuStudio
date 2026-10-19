@@ -1,12 +1,12 @@
 // MAINTENANCE: regression-keep; dense curve synchronization and raw native edits.
 #define NOMINMAX
-#include "mikudancestudio/animation_curve_host.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/morph_curve.hpp"
-#include "mikudancestudio/global_key_layout.hpp"
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/clipboard_layout.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/morph_curve.hpp"
+#include "mikumikustudio/global_key_layout.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/clipboard_layout.hpp"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -15,11 +15,11 @@
 #include <cstring>
 #include <memory>
 
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 namespace ac = animation_curve;
 namespace ce = curve_editor;
 namespace mc = morph_curve;
-namespace mikudancestudio {
+namespace mikumikustudio {
 void PumpEnterRegisterFrame(MMDApp*, HWND, bool);
 void PumpDeleteRebuild(MMDApp*, HWND, bool);
 void RegisterCameraState(MMDApp*, int);

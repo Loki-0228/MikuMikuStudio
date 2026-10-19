@@ -5,11 +5,11 @@
 #include <d3d9.h>
 #include <wrl/client.h>
 #include <MinHook.h>
-#include "mikudancestudio/graphics_runtime.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/skinning_backend.hpp"
+#include "mikumikustudio/graphics_runtime.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/skinning_backend.hpp"
 #include <array>
 #include <cmath>
 #include <cstdio>
@@ -19,7 +19,7 @@
 #include <memory>
 #include <vector>
 
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 using Microsoft::WRL::ComPtr;
 namespace {
 const wchar_t* missingDll = nullptr;

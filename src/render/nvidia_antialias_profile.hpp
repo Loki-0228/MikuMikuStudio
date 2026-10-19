@@ -4,7 +4,7 @@
 #include <cwctype>
 #include <string>
 
-namespace mikudancestudio::nvidia_antialias_fix {
+namespace mikumikustudio::nvidia_antialias_fix {
 // Private to the optional installer DLL and its driver-contract tests.
 struct State {
     bool available = false;
@@ -14,7 +14,7 @@ struct State {
 };
 }
 
-namespace mikudancestudio::nvidia_antialias_fix::detail {
+namespace mikumikustudio::nvidia_antialias_fix::detail {
 // Minimal ABI declarations from NVIDIA's public nvapi.h / nvapi_interface.h.
 // Keep V1 structures and pack(4), including the binary union's length word.
 using U32 = std::uint32_t;

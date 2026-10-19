@@ -11,15 +11,15 @@
 #include <cstdio>
 #include <cstring>
 
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/frame_presentation.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/ui_language.hpp"
-#include "mikudancestudio/viewport_corner_settings.hpp"
-#include "mikudancestudio/viewport_tool_layout.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/frame_presentation.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/ui_language.hpp"
+#include "mikumikustudio/viewport_corner_settings.hpp"
+#include "mikumikustudio/viewport_tool_layout.hpp"
 #include "vb_dump.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 // MMS addition: the bone-scale readout of the top status bar (ui_palette.cpp).
 // One change-guarded tick per frame keeps that painted text following bone
@@ -354,4 +354,4 @@ void PrepareFrameLineOverlay(MMDApp* app) {  // 0x4757C3..0x4759D8
     vb->Unlock();
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

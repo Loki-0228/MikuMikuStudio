@@ -90,7 +90,7 @@ def main():
         env = os.environ.copy()
         env['LOCALAPPDATA'] = str(directory / 'Local')
         env['APPDATA'] = str(directory / 'Roaming')
-        env['MIKUDANCESTUDIO_AUTOSAVE_CONFIG'] = str(directory / 'autosave.ini')
+        env['MIKUMIKUSTUDIO_AUTOSAVE_CONFIG'] = str(directory / 'autosave.ini')
         if name.endswith('other-cwd'):
             (directory / 'browse').mkdir()
             env['MMS_EMM_WORKING_DIRECTORY'] = str(directory / 'browse')

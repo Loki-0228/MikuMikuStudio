@@ -1,11 +1,11 @@
-#include "mikudancestudio/build_profile.hpp"
-#include "mikudancestudio/animation_curve_host.hpp"
-#include "mikudancestudio/frame_rate_correction.hpp"
-#include "mikudancestudio/native_frame_retime.hpp"
-#include "mikudancestudio/physics_bake.hpp"
+#include "mikumikustudio/build_profile.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
+#include "mikumikustudio/frame_rate_correction.hpp"
+#include "mikumikustudio/native_frame_retime.hpp"
+#include "mikumikustudio/physics_bake.hpp"
 
 static_assert(MMD_ORIGINAL_PROFILE, "Original profile provider must not enter the full build");
-namespace mikudancestudio::curve_host {
+namespace mikumikustudio::curve_host {
 void Open(MMDApp*, bool) {}
 void OpenInterpolation(MMDApp*, bool) {}
 void OpenMorph(MMDApp*, int, bool) {}
@@ -24,7 +24,7 @@ bool Command(MMDApp*, unsigned id) {
         id == kMorphCurveLane[0] || id == kMorphCurveLane[1] || id == kMorphCurveLane[2] || id == kMorphCurveLane[3];
 }
 }
-namespace mikudancestudio::curve_editor {
+namespace mikumikustudio::curve_editor {
 void* Open(void*, Session, bool) { return nullptr; }
 void CloseOwned(void*) {}
 bool OwnsWindow(void*, void*) { return false; }
@@ -33,7 +33,7 @@ void NotifySourceChanged(void*, const std::string&) {}
 void NotifyOwnedChanged(void*) {}
 void DrawLauncher(void*, int, int, int, int, bool, bool, bool) {}
 }
-namespace mikudancestudio::frame_rate_correction {
+namespace mikumikustudio::frame_rate_correction {
 bool Prepare(MMDApp&, const Rates&, PlanPtr&, Report&, std::wstring&) { return false; }
 bool Apply(MMDApp&, const PlanPtr&, std::wstring&) { return false; }
 void RequestSaveAs(MMDApp&) {}
@@ -42,11 +42,11 @@ void ShowDialog(MMDApp*, bool) {}
 void RefreshMenu(MMDApp*) {}
 bool HandleCommand(MMDApp*, unsigned id) { return id == kMenuCommand; }
 }
-namespace mikudancestudio::native_frame_retime {
+namespace mikumikustudio::native_frame_retime {
 bool Prepare(MMDApp&, const frame_rate_correction::Rates&, PlanPtr&, frame_rate_correction::Report&, std::wstring&) { return false; }
 bool Commit(MMDApp&, const PlanPtr&, std::wstring&, const std::function<bool(std::wstring&)>&) { return false; }
 }
-namespace mikudancestudio::bake {
+namespace mikumikustudio::bake {
 void RefreshMenu(MMDApp*) {}
 bool HandleCommand(MMDApp*, unsigned id) {
     return id == kBakeMenuCommand || id == kExportMenuCommand || id == kClearMeshBakeMenuCommand || id == kBakeMeshMenuCommand;

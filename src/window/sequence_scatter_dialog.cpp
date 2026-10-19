@@ -1,16 +1,16 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
-#include "mikudancestudio/sequence_scatter.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/frame_limits.hpp"
+#include "mikumikustudio/sequence_scatter.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/frame_limits.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cwctype>
 #include <cstdio>
 #include <cstring>
 
-namespace mikudancestudio::sequence_scatter {
+namespace mikumikustudio::sequence_scatter {
 namespace {
 struct Text { const wchar_t* jp; const wchar_t* en; const wchar_t* zh; };
 const wchar_t* Tr(unsigned language, Text t) { return language == 0 ? t.jp : language == 2 ? t.zh : t.en; }

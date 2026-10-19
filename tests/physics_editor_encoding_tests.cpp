@@ -8,13 +8,13 @@
 #include <commctrl.h>
 #include <MinHook.h>
 #include <btBulletDynamicsCommon.h>
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/path_workspace.hpp"
-#include "mikudancestudio/physics_scene.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/text_encoding.hpp"
-#include "mikudancestudio/ui_language.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/path_workspace.hpp"
+#include "mikumikustudio/physics_scene.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/text_encoding.hpp"
+#include "mikumikustudio/ui_language.hpp"
 #include <array>
 #include <cstdio>
 #include <cstdlib>
@@ -26,7 +26,7 @@
 #include <string>
 #include <vector>
 
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 namespace {
 using Bytes = std::vector<unsigned char>;
 int failures = 0, checks = 0, messages = 0, opened = 0;

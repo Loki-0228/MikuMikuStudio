@@ -1,15 +1,15 @@
-#include "mikudancestudio/extended_names.hpp"
-#include "mikudancestudio/display_capacity.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/text_encoding.hpp"
-#include "mikudancestudio/original_file_encoding.hpp"
+#include "mikumikustudio/extended_names.hpp"
+#include "mikumikustudio/display_capacity.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/text_encoding.hpp"
+#include "mikumikustudio/original_file_encoding.hpp"
 #include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <map>
 #include <stdexcept>
 
-namespace mikudancestudio::extended_names {
+namespace mikumikustudio::extended_names {
 namespace {
 struct Writer {
     std::vector<std::uint8_t> data;

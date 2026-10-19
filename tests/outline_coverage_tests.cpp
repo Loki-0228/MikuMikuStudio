@@ -1,8 +1,8 @@
 // MAINTENANCE: regression-keep; real native outline coverage and AA state isolation.
-#include "mikudancestudio/antialias.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/antialias.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 #include "../src/render/outline_multisample.hpp"
 #include <wrl/client.h>
 #include <array>
@@ -15,7 +15,7 @@
 #include <memory>
 #include <map>
 #include <vector>
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 using Microsoft::WRL::ComPtr;
 namespace {
 constexpr unsigned side=128;

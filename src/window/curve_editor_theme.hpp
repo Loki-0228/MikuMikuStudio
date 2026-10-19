@@ -18,7 +18,7 @@ inline COLORREF error=RGB(168,0,0);
 inline bool loaded=false;
 inline HBRUSH paperBrush=nullptr;
 
-inline void Load(const mikudancestudio::curve_editor::Theme& theme) {
+inline void Load(const mikumikustudio::curve_editor::Theme& theme) {
     if(!theme.enabled)return;
     const auto& colors=theme.colors;text=theme.text;loaded=true;
     shell=Mix(colors[0],colors[1],0.5);

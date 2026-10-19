@@ -1,15 +1,15 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include "mikudancestudio/skinning_menu.hpp"
-#include "mikudancestudio/processor_settings.hpp"
-#include "mikudancestudio/skinning_backend.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ui_language.hpp"
+#include "mikumikustudio/skinning_menu.hpp"
+#include "mikumikustudio/processor_settings.hpp"
+#include "mikumikustudio/skinning_backend.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ui_language.hpp"
 #include <algorithm>
 #include <string>
 #include <vector>
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 using processor::Mode;
 using processor::Selection;

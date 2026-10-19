@@ -1,18 +1,18 @@
-#include "mikudancestudio/frame_limits.hpp"
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/physics_scale.hpp"
-#include "mikudancestudio/physics_bake.hpp"
-#include "mikudancestudio/morph_curve.hpp"
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/bone_pose_safety.hpp"
-#include "mikudancestudio/affine_skinning.hpp"
-#include "mikudancestudio/text_encoding.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/dynamics_world.hpp"
-#include "mikudancestudio/scene_sampling.hpp"
-#include "mikudancestudio/accessory_layout.hpp"
-#include "mikudancestudio/frame_presentation.hpp"
+#include "mikumikustudio/frame_limits.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/physics_scale.hpp"
+#include "mikumikustudio/physics_bake.hpp"
+#include "mikumikustudio/morph_curve.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/bone_pose_safety.hpp"
+#include "mikumikustudio/affine_skinning.hpp"
+#include "mikumikustudio/text_encoding.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/dynamics_world.hpp"
+#include "mikumikustudio/scene_sampling.hpp"
+#include "mikumikustudio/accessory_layout.hpp"
+#include "mikumikustudio/frame_presentation.hpp"
 #include <btBulletDynamicsCommon.h>
 #include <BulletDynamics/ConstraintSolver/btGeneric6DofSpringConstraint.h>
 #include <algorithm>
@@ -24,7 +24,7 @@
 #include <stdexcept>
 #include <unordered_map>
 
-namespace mikudancestudio::bake {
+namespace mikumikustudio::bake {
 namespace {
 struct SceneError {};
 template<class T> void Copy(std::vector<T>& dst, T*& target, const T* source, std::size_t count) {
@@ -1019,7 +1019,7 @@ Result ComputeLayered(MMDApp& app,const Request& request,const native_mesh::Laye
 }
 }
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 void InitExportPlaybackTracks(MMDApp*, double);
 void SampleGlobalPlaybackTracks(MMDApp*);
 namespace scene_sampling {

@@ -13,7 +13,7 @@
 //       "baseSimulationRateHz": 60
 //     }
 //
-// Contract implemented here (header: include/mikudancestudio/physics_bake_settings.hpp):
+// Contract implemented here (header: include/mikumikustudio/physics_bake_settings.hpp):
 //
 //   * All eight keys are mandatory and no other key is accepted.  Duplicate
 //     keys, unknown keys, wrong value types, malformed numbers, numbers whose
@@ -52,7 +52,7 @@
 
 #include "btBulletDynamicsCommon.h"
 
-#include "mikudancestudio/physics_bake_settings.hpp"
+#include "mikumikustudio/physics_bake_settings.hpp"
 
 #include <charconv>
 #include <cmath>
@@ -64,7 +64,7 @@
 #include <string_view>
 #include <utility>
 
-namespace mikudancestudio::bake {
+namespace mikumikustudio::bake {
 namespace {
 
 constexpr std::size_t kMaxPresetBytes = 64u * 1024u;
@@ -786,4 +786,4 @@ bool SavePreset(const wchar_t* path, const Settings& settings, SettingsError& er
     return true;
 }
 
-}  // namespace mikudancestudio::bake
+}  // namespace mikumikustudio::bake

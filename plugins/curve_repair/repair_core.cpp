@@ -1,5 +1,5 @@
 #include "repair_core.hpp"
-#include "mikudancestudio/animation_curve.hpp"
+#include "mikumikustudio/animation_curve.hpp"
 #include <Windows.h>
 #include <algorithm>
 #include <cmath>
@@ -12,7 +12,7 @@
 #include <stdexcept>
 
 namespace repair {
-namespace ac = mikudancestudio::animation_curve;
+namespace ac = mikumikustudio::animation_curve;
 namespace {
 constexpr double pi = 3.14159265358979323846;
 const char* names[] = {"x", "y", "z", "rx", "ry", "rz", "distance", "fov"};

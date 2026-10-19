@@ -2,9 +2,9 @@
 #define NOMINMAX
 #include <Windows.h>
 #include <cwchar>
-#include "mikudancestudio/text_encoding.hpp"
+#include "mikumikustudio/text_encoding.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 // Generic legacy text. File paths use existence-based code page selection in
 // ResolveAnsiUserFile; never dereference the original x86 locale-table offsets.
 void ConvertAnsiToWide(void* localeTableBase, const char* text,

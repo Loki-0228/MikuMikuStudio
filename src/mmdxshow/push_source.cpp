@@ -88,7 +88,7 @@
 #include <string.h>
 
 #include "mmdxshow.hpp"
-#include "../../include/mikudancestudio/recording_state.hpp"
+#include "../../include/mikumikustudio/recording_state.hpp"
 
 // --- GUID references (instantiated in dll_main.cpp under <initguid.h>) ------
 // CLSID_FilterMapper   .rdata 0x10008680   (values pinned in dll_main.cpp)
@@ -148,7 +148,7 @@ HRESULT CPushSourceDIBSq::SetBitmapInfo(const void* pBitmapInfo,
                                         int n, float fps)
 {
     if (!pBitmapInfo) return E_POINTER;
-    if (!mikudancestudio::recording_state::ValidFps(fps)) return E_INVALIDARG;
+    if (!mikumikustudio::recording_state::ValidFps(fps)) return E_INVALIDARG;
     if (CPushPinDIBSq::ReadFlag(m_pPin->m_bStreamEnded) != 0)
         return E_FAIL;                     // 0x80004005
 
@@ -168,7 +168,7 @@ HRESULT CPushSourceDIBSq::SetBitmapInfo(const void* pBitmapInfo,
     // Defect FB-03.
     m_pPin->m_nPushExtra = n;
 
-    m_pPin->m_rtAvgPerFrame = mikudancestudio::recording_state::FrameDuration(fps);
+    m_pPin->m_rtAvgPerFrame = mikumikustudio::recording_state::FrameDuration(fps);
 
     m_pPin->m_bBitmapSet = 1;
     CPushPinDIBSq::WriteFlag(m_pPin->m_bFrameAck, 1);

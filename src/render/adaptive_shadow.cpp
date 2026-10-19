@@ -1,10 +1,10 @@
-#include "mikudancestudio/adaptive_shadow.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/build_profile.hpp"
-#include "mikudancestudio/viewport_render_scale.hpp"
+#include "mikumikustudio/adaptive_shadow.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/build_profile.hpp"
+#include "mikumikustudio/viewport_render_scale.hpp"
 
 #if MMD_ORIGINAL_PROFILE
-namespace mikudancestudio {
+namespace mikumikustudio {
 void LoadShadowResolutionPreference(MMDApp* app) {
     // The original build never consumes the full build's adaptive preference.
     app->AdaptiveShadowResolution() = false;
@@ -25,19 +25,19 @@ void SetShadowSliderPosition(MMDApp* app, int position) {
 }
 }
 #else
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/native_mesh.hpp"
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/d3dx_mesh.hpp"
-#include "mikudancestudio/d3d_object_guard.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/native_mesh.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/d3dx_mesh.hpp"
+#include "mikumikustudio/d3d_object_guard.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 #include <cstdio>
 #include <cstring>
 #include <limits>
 #include <string>
 
 extern "C" float* ExpGetAcsWorldMat(float*, int);
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 std::wstring PreferencePath(MMDApp* app) {
     return std::wstring(app->ExeDir()) + L"\\Data\\adaptive_shadow.ini";

@@ -1,19 +1,19 @@
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/autosave.hpp"
-#include "mikudancestudio/shadow_filter.hpp"
-#include "mikudancestudio/viewport_render_scale.hpp"
-#include "mikudancestudio/image_sequence_export.hpp"
-#include "mikudancestudio/default_effect.hpp"
-#include "mikudancestudio/mmv4mms.hpp"
-#include "mikudancestudio/plugin_menu.hpp"
-#include "mikudancestudio/transparent_capture.hpp"
-#include "mikudancestudio/wic_mov_recorder.hpp"
-#include "mikudancestudio/native_media.hpp"
-#include "mikudancestudio/native_mesh.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/autosave.hpp"
+#include "mikumikustudio/shadow_filter.hpp"
+#include "mikumikustudio/viewport_render_scale.hpp"
+#include "mikumikustudio/image_sequence_export.hpp"
+#include "mikumikustudio/default_effect.hpp"
+#include "mikumikustudio/mmv4mms.hpp"
+#include "mikumikustudio/plugin_menu.hpp"
+#include "mikumikustudio/transparent_capture.hpp"
+#include "mikumikustudio/wic_mov_recorder.hpp"
+#include "mikumikustudio/native_media.hpp"
+#include "mikumikustudio/native_mesh.hpp"
 #include "device_lost_wait.hpp"
-#include "mikudancestudio/build_profile.hpp"
+#include "mikumikustudio/build_profile.hpp"
 #if !MMD_ORIGINAL_PROFILE
-#include "mikudancestudio/transparent_peeling.hpp"
+#include "mikumikustudio/transparent_peeling.hpp"
 #endif
 // ===========================================================================
 // VA 0x00462C40 - ShutdownCleanup  (original: sub_462C40, 0x6A8 bytes)
@@ -86,17 +86,17 @@
 
 #include "btBulletDynamicsCommon.h"
 
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/d3d12_native.hpp"
-#include "mikudancestudio/skinning_backend.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/dshow_recorder.hpp"
-#include "mikudancestudio/recording_state.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/d3d12_native.hpp"
+#include "mikumikustudio/skinning_backend.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/dshow_recorder.hpp"
+#include "mikumikustudio/recording_state.hpp"
 #include <wrl/client.h>
 
-#include "mikudancestudio/texture_lookup.hpp"
+#include "mikumikustudio/texture_lookup.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 // 0x4C4700 real body lives in src/render/accessory.cpp (not yet declared
 // in ported_funcs.hpp; the no-op stub for it in stubs.cpp is superseded).
@@ -168,7 +168,7 @@ void ReleaseRecorderCom(ComSlot& slot) {
 
 // ===========================================================================
 // VA 0x00409320 - TeardownDShowGraph and 0x004096C0 -
-// TeardownDShowGraphCoUninit now live at mikudancestudio:: scope below (the graph
+// TeardownDShowGraphCoUninit now live at mikumikustudio:: scope below (the graph
 // builder in src/app/dshow_record_graph.cpp calls the teardown too).
 // =========================================================================//
 
@@ -360,7 +360,7 @@ void DisposeRenderSubsystem(D3DRenderer* sub) {
 //     this[23],[17],[20],[21],[22],[19],[18],[17] (again),[16],[15],[14],
 //     [13],[12],[11],[10],[9],[8],[7],[6],[5],[26],[4],[3],[1],[0];
 //     free(this[2]) between [3] and [1].
-// At mikudancestudio:: scope (not the anonymous namespace above) because the graph
+// At mikumikustudio:: scope (not the anonymous namespace above) because the graph
 // builder in src/app/dshow_record_graph.cpp tears down on every failure
 // path exactly like the original.
 // =========================================================================//
@@ -688,4 +688,4 @@ void ShutdownCleanup(MMDApp* app) {
     // (the inline font sub-object at kBufFontsub); intentionally nothing.
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

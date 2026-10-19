@@ -1,5 +1,5 @@
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/ui_translation.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/ui_translation.hpp"
 // ===========================================================================
 // File 菜单八命令 + 保存 PMM：WM_COMMAND 202..206/209/210/213（及 208）
 // ===========================================================================
@@ -31,14 +31,14 @@
 #include <cstring>
 #include <cwchar>
 
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/accessory_motion_io.hpp"
-#include "mikudancestudio/ui_message.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/bone_key_pool.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/accessory_motion_io.hpp"
+#include "mikumikustudio/ui_message.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 
 // 主窗口句柄（x64 app+0xA16C8）。文件内部使用；command_file_menu.cpp 另有
@@ -617,4 +617,4 @@ void CmdLoadAvi(MMDApp* app) {
     app->SceneModified() = 1;                   // 0x46B35A [0xA1B31]
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

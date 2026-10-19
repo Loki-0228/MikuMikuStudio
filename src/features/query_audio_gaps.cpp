@@ -1,4 +1,4 @@
-#include "mikudancestudio/key_pool.hpp"
+#include "mikumikustudio/key_pool.hpp"
 // ===========================================================================
 // Gap ports: wave-context reset, physics-pose key registration and the
 // standard-skeleton base-quaternion initializer
@@ -69,7 +69,7 @@
 // =========================================================================//
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include "mikudancestudio/bone_scale.hpp"
+#include "mikumikustudio/bone_scale.hpp"
 #include <Windows.h>
 
 #include <cmath>
@@ -78,16 +78,16 @@
 #include <cstring>
 #include <new>
 
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/wave_audio_context.hpp"
-#include "mikudancestudio/panel_controls.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/wave_audio_context.hpp"
+#include "mikumikustudio/panel_controls.hpp"
 
 #include "../model/keyframe_common.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 
 using kfa::Rd32;
@@ -192,10 +192,10 @@ const char kJpFrameRegTitle[] = "\xcc\xda\xb0\xd1\x93\x6f\x98\x5e";
 // the original 600000 (x86 300000) until a caller grows the pool.
 void OverflowBoxBoneKey(unsigned char* m) {
     const int capacity =
-        static_cast<int>(mikudancestudio::mdl::BoneKeyCapacity(
-            *mikudancestudio::mdl::Mdl(m)));
+        static_cast<int>(mikumikustudio::mdl::BoneKeyCapacity(
+            *mikumikustudio::mdl::Mdl(m)));
     char text[256];
-    if (mikudancestudio::mdl::Mdl(m)->physicsFlags != 0)
+    if (mikumikustudio::mdl::Mdl(m)->physicsFlags != 0)
         sprintf_s(text, 0x100,
                   "You cannot regist over %d point\n"
                   "Please execute 'delete unused frame'",
@@ -206,7 +206,7 @@ void OverflowBoxBoneKey(unsigned char* m) {
     // Caption 0x4A4C22: JP 0x52B908 when the JP flag is clear, "register
     // frame" when set (the JP constant was previously unused).
     MessageBoxA(*reinterpret_cast<HWND*>(m), text,
-                mikudancestudio::mdl::Mdl(m)->physicsFlags != 0
+                mikumikustudio::mdl::Mdl(m)->physicsFlags != 0
                     ? "register frame"
                     : kJpFrameRegTitle,
                 0);
@@ -288,9 +288,9 @@ const unsigned char kNameRShoulder[] =      // 0x531138 "右肩" (5)
     {0x89, 0x45, 0x8C, 0xA8, 0x00};
 
 int FindBoneByName(unsigned char* m, const void* name, std::size_t cb) {
-    const int cnt = mikudancestudio::mdl::Mdl(m)->boneCount;
+    const int cnt = mikumikustudio::mdl::Mdl(m)->boneCount;
     if (cnt <= 0) return -1;
-    mikudancestudio::mdl::BoneRecord* const bones = mikudancestudio::mdl::Bones(m);
+    mikumikustudio::mdl::BoneRecord* const bones = mikumikustudio::mdl::Bones(m);
     for (int i = 0; i < cnt; ++i)
         if (std::memcmp(name, bones[i].name, cb) == 0) return i;
     return -1;  // original leaves the counter at cnt and skips the call
@@ -356,7 +356,7 @@ bool RegisterPhysicsPoseChain(unsigned char* m, int boneIdx, int srcIdx,
     }
 
     int next = static_cast<int>(keys[cur].next);
-    int scan = mikudancestudio::mdl::Mdl(m)->boneCount;                  // v9
+    int scan = mikumikustudio::mdl::Mdl(m)->boneCount;                  // v9
     int cand = scan;                                              // v20
     if (static_cast<std::size_t>(scan) >= boneKeyCapacity) {
         if (!growPool()) {
@@ -377,11 +377,11 @@ bool RegisterPhysicsPoseChain(unsigned char* m, int boneIdx, int srcIdx,
         cand = scan;                                              // 0x4A4B0E
     }
 
-    if (mikudancestudio::mdl::Mdl(m)->matMisc == 0) return true;          // 0x4A4B22
+    if (mikumikustudio::mdl::Mdl(m)->matMisc == 0) return true;          // 0x4A4B22
 
     std::uint32_t frame = startFrame;                             // v19
     const float* p = static_cast<const float*>(
-                          mikudancestudio::mdl::PoseTraceBuffer(m)) +
+                          mikumikustudio::mdl::PoseTraceBuffer(m)) +
                      srcIdx;              // i = srcIdx (measured in floats; advances by 77 per sample). Defect FB-08.
     unsigned int iter = 0;                                        // v22
     for (;;) {
@@ -435,8 +435,8 @@ bool RegisterPhysicsPoseChain(unsigned char* m, int boneIdx, int srcIdx,
             }
         }
         // LABEL_42 (0x4A5598)
-        if (frame > mikudancestudio::mdl::Mdl(m)->maxFrame)
-            mikudancestudio::mdl::Mdl(m)->maxFrame = frame;
+        if (frame > mikumikustudio::mdl::Mdl(m)->maxFrame)
+            mikumikustudio::mdl::Mdl(m)->maxFrame = frame;
         if (next != 0) {                                           // 0x4A55A6
             keys[cur].next = static_cast<std::uint32_t>(next);
             keys[next].previous = static_cast<std::uint32_t>(cur);
@@ -445,7 +445,7 @@ bool RegisterPhysicsPoseChain(unsigned char* m, int boneIdx, int srcIdx,
         ++iter;
         p += 77;                                                   // i += 308
         if (iter >= static_cast<unsigned int>(
-                        mikudancestudio::mdl::Mdl(m)->matMisc))
+                        mikumikustudio::mdl::Mdl(m)->matMisc))
             return true;                                          // 0x4A55EE
     }
 }
@@ -480,9 +480,9 @@ void RegisterPhysicsPose(unsigned char* m, std::uint32_t frame) {
     // (oni_skeleton_pump.cpp) freed the same buffers with delete[], which is
     // the same mismatch in the opposite direction.
     const auto cleanup = [&]() {                                   // 0x4A60BF
-        if (mikudancestudio::mdl::PoseTraceBuffer(m) != nullptr) {
-            ::operator delete(mikudancestudio::mdl::PoseTraceBuffer(m));
-            mikudancestudio::mdl::PoseTraceBuffer(m) = nullptr;
+        if (mikumikustudio::mdl::PoseTraceBuffer(m) != nullptr) {
+            ::operator delete(mikumikustudio::mdl::PoseTraceBuffer(m));
+            mikumikustudio::mdl::PoseTraceBuffer(m) = nullptr;
         }
         model.matMisc = 0;
     };
@@ -504,7 +504,7 @@ void RegisterPhysicsPose(unsigned char* m, std::uint32_t frame) {
     model.undoDirty = 1;                                          // 0x4A573D
     model.redoDirty = 0;                                          // 0x4A5744
 
-    auto& undo = mikudancestudio::mdl::Mdl(m)->undoRings[0].slots[slot];
+    auto& undo = mikumikustudio::mdl::Mdl(m)->undoRings[0].slots[slot];
     undo.operation = 2;                                            // 0x4A5768
     undo.frame = frame;                                             // 0x4A5786
 
@@ -514,15 +514,15 @@ void RegisterPhysicsPose(unsigned char* m, std::uint32_t frame) {
         ::operator delete(pose);
         pose = nullptr;
     }
-    pose = static_cast<mikudancestudio::mdl::BonePoseSnapshot*>(
+    pose = static_cast<mikumikustudio::mdl::BonePoseSnapshot*>(
         ::operator new(sizeof(*pose) * boneCnt));                    // 0x4A57F1
     std::memset(pose, 0, sizeof(*pose) * static_cast<std::size_t>(boneCnt));
     if (boneCnt > 0) {                                             // 0x4A582C
-        mikudancestudio::mdl::BoneRecord* const bones = model.boneTable;
+        mikumikustudio::mdl::BoneRecord* const bones = model.boneTable;
         const unsigned char* flags = model.bonePhysicsState;
         for (int b = 0; b < boneCnt; ++b) {
             auto& rec = pose[b];
-            const mikudancestudio::mdl::BoneRecord* bone = &bones[b];
+            const mikumikustudio::mdl::BoneRecord* bone = &bones[b];
             rec.boneIndex = b;                                    // 0x4A5856
             std::memcpy(rec.position, bone->trans, sizeof(rec.position));
             std::memcpy(rec.rotation, bone->rotQuat, sizeof(rec.rotation));
@@ -572,10 +572,10 @@ void RegisterPhysicsPose(unsigned char* m, std::uint32_t frame) {
     {
         const int ikCnt = model.ikChainCount;
         const mdl::IkChain* const chains = model.ikChains;
-        mikudancestudio::mdl::BoneRecord* const bones = model.boneTable;
+        mikumikustudio::mdl::BoneRecord* const bones = model.boneTable;
         int chain = -1;
         for (int c = 0; c < ikCnt; ++c) {                          // 0x4A5D80
-            const mikudancestudio::mdl::BoneRecord* root = &bones[chains[c].boneIndex];
+            const mikumikustudio::mdl::BoneRecord* root = &bones[chains[c].boneIndex];
             if (std::memcmp(kNameLLegIk, root->name, 9) == 0) { chain = c; break; }
         }
         if (chain >= 0) {
@@ -591,10 +591,10 @@ void RegisterPhysicsPose(unsigned char* m, std::uint32_t frame) {
     {
         const int ikCnt = model.ikChainCount;
         const mdl::IkChain* const chains = model.ikChains;
-        mikudancestudio::mdl::BoneRecord* const bones = model.boneTable;
+        mikumikustudio::mdl::BoneRecord* const bones = model.boneTable;
         int chain = -1;
         for (int c = 0; c < ikCnt; ++c) {                          // 0x4A5E80
-            const mikudancestudio::mdl::BoneRecord* root = &bones[chains[c].boneIndex];
+            const mikumikustudio::mdl::BoneRecord* root = &bones[chains[c].boneIndex];
             if (std::memcmp(kNameRLegIk, root->name, 9) == 0) { chain = c; break; }
         }
         if (chain >= 0) {
@@ -1200,4 +1200,4 @@ void InitStandardSkeletonQuats(unsigned char* m, unsigned char flag) {
     }
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

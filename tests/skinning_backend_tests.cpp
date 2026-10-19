@@ -4,13 +4,13 @@
 #include <Windows.h>
 #include <d3d9.h>
 #include <wrl/client.h>
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/processor_settings.hpp"
-#include "mikudancestudio/skinning_backend.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/processor_settings.hpp"
+#include "mikumikustudio/skinning_backend.hpp"
 #include "../src/model/skinning_calibration_cache.hpp"
-#include "mikudancestudio/skinning_menu.hpp"
+#include "mikumikustudio/skinning_menu.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -22,13 +22,13 @@
 #include <memory>
 #include <limits>
 #include <vector>
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 using Microsoft::WRL::ComPtr;
 // Test seam, defined in src/window/skinning_menu.cpp.  skinning_menu.hpp is
 // deliberately not extended for it, so the declaration lives here: the pure
 // classification behind the renderer menu's "not provided by the current
 // D3D9" rows.
-namespace mikudancestudio {
+namespace mikumikustudio {
 std::vector<unsigned> RendererExtraDeviceRows(
     const std::vector<processor::AdapterEntry>& rendererAdapters,
     const std::vector<processor::AdapterEntry>& computeAdapters);

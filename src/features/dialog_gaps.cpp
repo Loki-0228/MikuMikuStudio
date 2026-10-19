@@ -1,5 +1,5 @@
-#include "mikudancestudio/save_compatibility.hpp"
-#include "mikudancestudio/model_vertex_cache.hpp"
+#include "mikumikustudio/save_compatibility.hpp"
+#include "mikumikustudio/model_vertex_cache.hpp"
 // ===========================================================================
 // dialog_gaps.cpp - remaining dialog/feature gap functions (round N)
 // ===========================================================================
@@ -16,7 +16,7 @@
 //
 // Already covered elsewhere (verified this round - NOT re-ported):
 //   0x004B0C50  UpdateModelVertexBuffers - src/model/model_skinning.cpp:318,
-//               declared include/mikudancestudio/ported_funcs.hpp:133
+//               declared include/mikumikustudio/ported_funcs.hpp:133
 //   0x004912F0  absorbed into src/render/model_renderers.cpp:
 //               ConfigureMaterialStages (:430, texture cascade 0x491470..
 //               0x491B38/0x491E41..0x492163), DrawModelMaterials (:817,
@@ -48,11 +48,11 @@
 #include <share.h>
 #include <sys/stat.h>
 
-#include "mikudancestudio/globals.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/model.hpp"
+#include "mikumikustudio/globals.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/model.hpp"
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 // Wide -> Shift-JIS conversion, VA 0x00407910; real body in
 // src/window/ui_dropfiles.cpp (declared locally, same as pmm_save.cpp:126).
@@ -147,8 +147,8 @@ float* QuaternionNlerp(float* out, float q0x, float q0y, float q0z, float q0w,
 // missing before.  Callers: 0x450000 (v2 loader), 0x47E8A0 (command dispatch).
 // ---------------------------------------------------------------------------
 void ModelBonePhysicsModeApply(unsigned char* model, int mode) {
-    const int boneCount = mikudancestudio::mdl::Mdl(model)->boneCount;        // 0x4B2218
-    mikudancestudio::mdl::BoneRecord* bones = mikudancestudio::mdl::Bones(model);
+    const int boneCount = mikumikustudio::mdl::Mdl(model)->boneCount;        // 0x4B2218
+    mikumikustudio::mdl::BoneRecord* bones = mikumikustudio::mdl::Bones(model);
     if (mode == 0) {
         for (int i = 0; boneCount > 0 && i < boneCount; ++i)     // 0x4B221A
             if (bones[i].hasRigidBody != 0)
@@ -159,7 +159,7 @@ void ModelBonePhysicsModeApply(unsigned char* model, int mode) {
                 NotifyBonePhysicsMode(model, i, 0);                          // 0x4B2283
     } else if (mode >= 2) {
         for (int i = 0; boneCount > 0 && i < boneCount; ++i) {   // 0x4B22A3
-            mikudancestudio::mdl::BoneRecord* bone = &bones[i];
+            mikumikustudio::mdl::BoneRecord* bone = &bones[i];
             if (bone->hasRigidBody != 0)
                 NotifyBonePhysicsMode(model, i, bone->physicsDisabled != 0);             // 0x4B22D1
         }
@@ -240,7 +240,7 @@ int SavePmdFile(unsigned char* model, char* path, void* /*localeTable*/) {
                                      128 /*_S_IREAD*/);          // 0x49026F
     if (openErr != 0) {
         char text[256];
-        if (mikudancestudio::mdl::Mdl(model)->physicsFlags != 0)                                   // English UI
+        if (mikumikustudio::mdl::Mdl(model)->physicsFlags != 0)                                   // English UI
             sprintf_s(text, 0x100u, "Cannot save file:%d", openErr);
         else
             sprintf_s(text, 0x100u,
@@ -424,11 +424,11 @@ int SavePmdFile(unsigned char* model, char* path, void* /*localeTable*/) {
     _write(fh, state.nameEn, sizeof(state.nameEn));
     _write(fh, state.commentEn, sizeof(state.commentEn));
     for (std::uint32_t i = 0;
-         i < mikudancestudio::mdl::Mdl(model)->boneCount; ++i)
-        _write(fh, &mikudancestudio::mdl::Bones(model)[i].nameEn[0], 0x14);
-    if (mikudancestudio::mdl::Mdl(model)->morphCount > 1)
+         i < mikumikustudio::mdl::Mdl(model)->boneCount; ++i)
+        _write(fh, &mikumikustudio::mdl::Bones(model)[i].nameEn[0], 0x14);
+    if (mikumikustudio::mdl::Mdl(model)->morphCount > 1)
         for (std::uint32_t i = 1;
-             i < mikudancestudio::mdl::Mdl(model)->morphCount; ++i)
+             i < mikumikustudio::mdl::Mdl(model)->morphCount; ++i)
             _write(fh, mdl::Morphs(model)[i].nameEn,
                    sizeof(mdl::Morphs(model)[i].nameEn));
     if (frameCount != 0)
@@ -562,22 +562,22 @@ const unsigned char kAnkleL[7] =                                 // 0x5311D8
 // the cursor is re-read for every field.
 inline float& TraceSlot(unsigned char* model, std::size_t fieldOffset) {
     return At<float>(
-        static_cast<unsigned char*>(mikudancestudio::mdl::PoseTraceBuffer(model)),
-        308 * (std::size_t)mikudancestudio::mdl::Mdl(model)->matMisc +
+        static_cast<unsigned char*>(mikumikustudio::mdl::PoseTraceBuffer(model)),
+        308 * (std::size_t)mikumikustudio::mdl::Mdl(model)->matMisc +
             fieldOffset);
 }
 
 // Mirror of one standard-bone quat/pos group (record slot offset, source
 // into model+64..336). Defect FB-12. sign = -1 negates the
 // middle two components (left/right mirroring).
-void WritePoseGroup(unsigned char* model, mikudancestudio::mdl::BoneRecord* bone,
+void WritePoseGroup(unsigned char* model, mikumikustudio::mdl::BoneRecord* bone,
                     std::size_t slot, int quatBase, float s1, float s2,
                     float s3, float s4) {
     bone->rotQuat[3] = s4;
     bone->rotQuat[0] = s1;
     bone->rotQuat[1] = s2;
     bone->rotQuat[2] = s3;
-    if (mikudancestudio::mdl::PoseTraceFlag(model) != 0) {
+    if (mikumikustudio::mdl::PoseTraceFlag(model) != 0) {
         TraceSlot(model, slot) = bone->rotQuat[3];
         TraceSlot(model, slot + 4) = bone->rotQuat[0];
         TraceSlot(model, slot + 8) = bone->rotQuat[1];
@@ -590,24 +590,24 @@ void WritePoseGroup(unsigned char* model, mikudancestudio::mdl::BoneRecord* bone
 char ModelStandardPoseSetup(unsigned char* model, bool recordEnable,
                             unsigned char mirrorLeftRight, unsigned char skeletonFlag) {
     char wasRecording = 0;
-    if (mikudancestudio::mdl::PoseTraceFlag(model) == 0 && recordEnable) {  // 0x4B577A
-        mikudancestudio::mdl::PoseTraceFlag(model) = 1;
-        if (mikudancestudio::mdl::PoseTraceBuffer(model) != nullptr) {
+    if (mikumikustudio::mdl::PoseTraceFlag(model) == 0 && recordEnable) {  // 0x4B577A
+        mikumikustudio::mdl::PoseTraceFlag(model) = 1;
+        if (mikumikustudio::mdl::PoseTraceBuffer(model) != nullptr) {
             // Defect FB-13: this buffer is allocated just below with the scalar
             // ::operator new, so it is released with the scalar ::operator delete
             // rather than the CRT free().
             ::operator delete(
-                mikudancestudio::mdl::PoseTraceBuffer(model));    // 0x4B5795
-            mikudancestudio::mdl::PoseTraceBuffer(model) = nullptr;
+                mikumikustudio::mdl::PoseTraceBuffer(model));    // 0x4B5795
+            mikumikustudio::mdl::PoseTraceBuffer(model) = nullptr;
         }
-        mikudancestudio::mdl::PoseTraceBuffer(model) =
+        mikumikustudio::mdl::PoseTraceBuffer(model) =
             ::operator new(0x3B3760);                             // 0x4B57B0
-        mikudancestudio::mdl::Mdl(model)->matMisc = 0;
+        mikumikustudio::mdl::Mdl(model)->matMisc = 0;
     }
     if (!recordEnable) {                                         // 0x4B57BE
-        if (mikudancestudio::mdl::PoseTraceFlag(model) != 0)
+        if (mikumikustudio::mdl::PoseTraceFlag(model) != 0)
             wasRecording = 1;
-        mikudancestudio::mdl::PoseTraceFlag(model) = 0;
+        mikumikustudio::mdl::PoseTraceFlag(model) = 0;
     }
 
     // IK scan (0x4B57DA..0x4B5847): pick up the leg-IK "add" flags that the
@@ -615,11 +615,11 @@ char ModelStandardPoseSetup(unsigned char* model, bool recordEnable,
     // like the original.
     bool leftIkAdd = recordEnable;
     bool rightIkAdd = false;
-    if (mikudancestudio::mdl::Mdl(model)->ikChainCount > 0) {
-        for (std::uint16_t i = 0; i < (std::uint16_t)mikudancestudio::mdl::Mdl(model)->ikChainCount; ++i) {
-            const mikudancestudio::mdl::IkChain& ik = mikudancestudio::mdl::IkChains(model)[i];
-            const mikudancestudio::mdl::BoneRecord* bone =
-                &mikudancestudio::mdl::Bones(model)[ik.boneIndex];
+    if (mikumikustudio::mdl::Mdl(model)->ikChainCount > 0) {
+        for (std::uint16_t i = 0; i < (std::uint16_t)mikumikustudio::mdl::Mdl(model)->ikChainCount; ++i) {
+            const mikumikustudio::mdl::IkChain& ik = mikumikustudio::mdl::IkChains(model)[i];
+            const mikumikustudio::mdl::BoneRecord* bone =
+                &mikumikustudio::mdl::Bones(model)[ik.boneIndex];
             if (std::memcmp(bone, kLegIkL, 9) == 0)
                 leftIkAdd = ik.enabled != 0;                     // 0x4B5814
             if (std::memcmp(bone, kLegIkR, 9) == 0)
@@ -632,10 +632,10 @@ char ModelStandardPoseSetup(unsigned char* model, bool recordEnable,
     // Height-scale normalization (0x4B5854..0x4B5994): when the scale slot
     // still holds the 90.0 sentinel and a leg height exists, derive the
     // scale from the 左足 bind pose and the offsets from 左足首.
-    if ((double)mikudancestudio::mdl::Mdl(model)->lightDir[1] == 90.0 &&
-        (double)mikudancestudio::mdl::Mdl(model)->lightDir[0] != -1.0) {
-        const int boneCount = mikudancestudio::mdl::Mdl(model)->boneCount;
-        mikudancestudio::mdl::BoneRecord* bones = mikudancestudio::mdl::Bones(model);
+    if ((double)mikumikustudio::mdl::Mdl(model)->lightDir[1] == 90.0 &&
+        (double)mikumikustudio::mdl::Mdl(model)->lightDir[0] != -1.0) {
+        const int boneCount = mikumikustudio::mdl::Mdl(model)->boneCount;
+        mikumikustudio::mdl::BoneRecord* bones = mikumikustudio::mdl::Bones(model);
         int leg = 0;
         while (leg < boneCount &&
                std::memcmp(bones[leg].name, kLegL, sizeof(kLegL)) != 0) {
@@ -644,12 +644,12 @@ char ModelStandardPoseSetup(unsigned char* model, bool recordEnable,
         if (leg < boneCount) {
             const float legY = bones[leg].position[1];
             if ((double)legY != -1.0) {
-                const float scale = mikudancestudio::mdl::Mdl(model)->lightDir[0] / legY;  // 0x4B5928
+                const float scale = mikumikustudio::mdl::Mdl(model)->lightDir[0] / legY;  // 0x4B5928
                 const double scaleD = scale;                     // held st(6)
-                mikudancestudio::mdl::Mdl(model)->lightDir[1] = scale;
+                mikumikustudio::mdl::Mdl(model)->lightDir[1] = scale;
                 const float offset =
-                    -mikudancestudio::mdl::Mdl(model)->matColumn2[1] / scale;                // 0x4B5954
-                mikudancestudio::mdl::Mdl(model)->lightDir[2] = offset;
+                    -mikumikustudio::mdl::Mdl(model)->matColumn2[1] / scale;                // 0x4B5954
+                mikumikustudio::mdl::Mdl(model)->lightDir[2] = offset;
                 int ankle = 0;
                 while (ankle < boneCount &&
                        std::memcmp(bones[ankle].name, kAnkleL, sizeof(kAnkleL)) != 0) {
@@ -658,14 +658,14 @@ char ModelStandardPoseSetup(unsigned char* model, bool recordEnable,
                 if (ankle < boneCount) {
                     const float ankleY = bones[ankle].position[1];
                     if ((double)ankleY == -1.0) {
-                        mikudancestudio::mdl::Mdl(model)->legIkXOffset = (float)(80.0 / scaleD);
+                        mikumikustudio::mdl::Mdl(model)->legIkXOffset = (float)(80.0 / scaleD);
                     } else {
-                        mikudancestudio::mdl::Mdl(model)->lightDir[2] =
+                        mikumikustudio::mdl::Mdl(model)->lightDir[2] =
                             (float)((double)ankleY / scaleD + (double)offset);
-                        mikudancestudio::mdl::Mdl(model)->legIkXOffset = (float)(80.0 / scaleD);    // 0x4B59B6
+                        mikumikustudio::mdl::Mdl(model)->legIkXOffset = (float)(80.0 / scaleD);    // 0x4B59B6
                     }
                 } else {
-                    mikudancestudio::mdl::Mdl(model)->legIkXOffset =
+                    mikumikustudio::mdl::Mdl(model)->legIkXOffset =
                         (float)(80.0 / scaleD);                  // 0x4B5994
                 }
             }
@@ -677,19 +677,19 @@ char ModelStandardPoseSetup(unsigned char* model, bool recordEnable,
     // the original leaves them as stale stack bytes when the model has no
     // センター - the port zero-inits them (deviation noted).
     float centerPos[3] = {0.0f, 0.0f, 0.0f};
-    const int boneCount = mikudancestudio::mdl::Mdl(model)->boneCount;
-    mikudancestudio::mdl::BoneRecord* bones = mikudancestudio::mdl::Bones(model);
+    const int boneCount = mikumikustudio::mdl::Mdl(model)->boneCount;
+    mikumikustudio::mdl::BoneRecord* bones = mikumikustudio::mdl::Bones(model);
     for (int i = 0; i < boneCount; ++i) {
-        mikudancestudio::mdl::BoneRecord* bone = &bones[i];
+        mikumikustudio::mdl::BoneRecord* bone = &bones[i];
         if (std::memcmp(bone, kCenter, 9) == 0) {
-            if ((double)mikudancestudio::mdl::Mdl(model)->matFloat2 != -999.0) {
-                const double inv = 1.0 / (double)mikudancestudio::mdl::Mdl(model)->lightDir[1];
+            if ((double)mikumikustudio::mdl::Mdl(model)->matFloat2 != -999.0) {
+                const double inv = 1.0 / (double)mikumikustudio::mdl::Mdl(model)->lightDir[1];
                 bone->trans[0] =
-                    (float)((double)mikudancestudio::mdl::Mdl(model)->matFloat * inv);
+                    (float)((double)mikumikustudio::mdl::Mdl(model)->matFloat * inv);
                 bone->trans[1] =
-                    (float)((double)mikudancestudio::mdl::Mdl(model)->matFloat2 * inv);
+                    (float)((double)mikumikustudio::mdl::Mdl(model)->matFloat2 * inv);
                 bone->trans[2] =
-                    (float)(inv * (double)mikudancestudio::mdl::Mdl(model)->matFloat3);
+                    (float)(inv * (double)mikumikustudio::mdl::Mdl(model)->matFloat3);
                 if (mirrorLeftRight == 0)
                     bone->trans[0] = -bone->trans[0];
             }
@@ -697,7 +697,7 @@ char ModelStandardPoseSetup(unsigned char* model, bool recordEnable,
             bone->rotQuat[0] = 0.0f;
             bone->rotQuat[1] = 0.0f;
             bone->rotQuat[2] = 0.0f;
-            if (mikudancestudio::mdl::PoseTraceFlag(model) != 0) {
+            if (mikumikustudio::mdl::PoseTraceFlag(model) != 0) {
                 TraceSlot(model, 0) = bone->trans[0];
                 TraceSlot(model, 4) = bone->trans[1];
                 TraceSlot(model, 8) = bone->trans[2];
@@ -707,141 +707,141 @@ char ModelStandardPoseSetup(unsigned char* model, bool recordEnable,
             centerPos[2] = bone->trans[2];
         } else if (std::memcmp(bone, kUpperBody, 7) == 0) {
             WritePoseGroup(model, bone, 12, 0,
-                mikudancestudio::mdl::Mdl(model)->localTransforms[0], mirrorLeftRight ? mikudancestudio::mdl::Mdl(model)->localTransforms[1] : -mikudancestudio::mdl::Mdl(model)->localTransforms[1],
-                mirrorLeftRight ? mikudancestudio::mdl::Mdl(model)->localTransforms[2] : -mikudancestudio::mdl::Mdl(model)->localTransforms[2],
-                mikudancestudio::mdl::Mdl(model)->localTransforms[3]);
+                mikumikustudio::mdl::Mdl(model)->localTransforms[0], mirrorLeftRight ? mikumikustudio::mdl::Mdl(model)->localTransforms[1] : -mikumikustudio::mdl::Mdl(model)->localTransforms[1],
+                mirrorLeftRight ? mikumikustudio::mdl::Mdl(model)->localTransforms[2] : -mikumikustudio::mdl::Mdl(model)->localTransforms[2],
+                mikumikustudio::mdl::Mdl(model)->localTransforms[3]);
         } else if (std::memcmp(bone, kNeck, 3) == 0) {
             WritePoseGroup(model, bone, 28, 0,
-                mikudancestudio::mdl::Mdl(model)->localTransforms[4], mirrorLeftRight ? mikudancestudio::mdl::Mdl(model)->localTransforms[5] : -mikudancestudio::mdl::Mdl(model)->localTransforms[5],
-                mirrorLeftRight ? mikudancestudio::mdl::Mdl(model)->localTransforms[6] : -mikudancestudio::mdl::Mdl(model)->localTransforms[6],
-                mikudancestudio::mdl::Mdl(model)->localTransforms[7]);
+                mikumikustudio::mdl::Mdl(model)->localTransforms[4], mirrorLeftRight ? mikumikustudio::mdl::Mdl(model)->localTransforms[5] : -mikumikustudio::mdl::Mdl(model)->localTransforms[5],
+                mirrorLeftRight ? mikumikustudio::mdl::Mdl(model)->localTransforms[6] : -mikumikustudio::mdl::Mdl(model)->localTransforms[6],
+                mikumikustudio::mdl::Mdl(model)->localTransforms[7]);
         } else if (std::memcmp(bone, kArmL, 5) == 0) {
             if (mirrorLeftRight != 0)
-                WritePoseGroup(model, bone, 44, 0, mikudancestudio::mdl::Mdl(model)->localTransforms[8],
-                    mikudancestudio::mdl::Mdl(model)->localTransforms[9], mikudancestudio::mdl::Mdl(model)->localTransforms[10],
-                    mikudancestudio::mdl::Mdl(model)->localTransforms[11]);
+                WritePoseGroup(model, bone, 44, 0, mikumikustudio::mdl::Mdl(model)->localTransforms[8],
+                    mikumikustudio::mdl::Mdl(model)->localTransforms[9], mikumikustudio::mdl::Mdl(model)->localTransforms[10],
+                    mikumikustudio::mdl::Mdl(model)->localTransforms[11]);
             else
-                WritePoseGroup(model, bone, 44, 0, mikudancestudio::mdl::Mdl(model)->localTransforms[20],
-                    -mikudancestudio::mdl::Mdl(model)->localTransforms[21], -mikudancestudio::mdl::Mdl(model)->localTransforms[22],
-                    mikudancestudio::mdl::Mdl(model)->localTransforms[23]);
+                WritePoseGroup(model, bone, 44, 0, mikumikustudio::mdl::Mdl(model)->localTransforms[20],
+                    -mikumikustudio::mdl::Mdl(model)->localTransforms[21], -mikumikustudio::mdl::Mdl(model)->localTransforms[22],
+                    mikumikustudio::mdl::Mdl(model)->localTransforms[23]);
         } else if (std::memcmp(bone, kElbowL, 7) == 0) {
             if (mirrorLeftRight != 0)
-                WritePoseGroup(model, bone, 60, 0, mikudancestudio::mdl::Mdl(model)->localTransforms[16],
-                    mikudancestudio::mdl::Mdl(model)->localTransforms[17], mikudancestudio::mdl::Mdl(model)->localTransforms[18],
-                    mikudancestudio::mdl::Mdl(model)->localTransforms[19]);
+                WritePoseGroup(model, bone, 60, 0, mikumikustudio::mdl::Mdl(model)->localTransforms[16],
+                    mikumikustudio::mdl::Mdl(model)->localTransforms[17], mikumikustudio::mdl::Mdl(model)->localTransforms[18],
+                    mikumikustudio::mdl::Mdl(model)->localTransforms[19]);
             else
-                WritePoseGroup(model, bone, 60, 0, mikudancestudio::mdl::Mdl(model)->localTransforms[28],
-                    -mikudancestudio::mdl::Mdl(model)->localTransforms[29], -mikudancestudio::mdl::Mdl(model)->localTransforms[30],
-                    mikudancestudio::mdl::Mdl(model)->localTransforms[31]);
+                WritePoseGroup(model, bone, 60, 0, mikumikustudio::mdl::Mdl(model)->localTransforms[28],
+                    -mikumikustudio::mdl::Mdl(model)->localTransforms[29], -mikumikustudio::mdl::Mdl(model)->localTransforms[30],
+                    mikumikustudio::mdl::Mdl(model)->localTransforms[31]);
         } else if (std::memcmp(bone, kArmR, 5) == 0) {
             if (mirrorLeftRight != 0)
-                WritePoseGroup(model, bone, 76, 0, mikudancestudio::mdl::Mdl(model)->localTransforms[20],
-                    mikudancestudio::mdl::Mdl(model)->localTransforms[21], mikudancestudio::mdl::Mdl(model)->localTransforms[22],
-                    mikudancestudio::mdl::Mdl(model)->localTransforms[23]);
+                WritePoseGroup(model, bone, 76, 0, mikumikustudio::mdl::Mdl(model)->localTransforms[20],
+                    mikumikustudio::mdl::Mdl(model)->localTransforms[21], mikumikustudio::mdl::Mdl(model)->localTransforms[22],
+                    mikumikustudio::mdl::Mdl(model)->localTransforms[23]);
             else
-                WritePoseGroup(model, bone, 76, 0, mikudancestudio::mdl::Mdl(model)->localTransforms[8],
-                    -mikudancestudio::mdl::Mdl(model)->localTransforms[9], -mikudancestudio::mdl::Mdl(model)->localTransforms[10],
-                    mikudancestudio::mdl::Mdl(model)->localTransforms[11]);
+                WritePoseGroup(model, bone, 76, 0, mikumikustudio::mdl::Mdl(model)->localTransforms[8],
+                    -mikumikustudio::mdl::Mdl(model)->localTransforms[9], -mikumikustudio::mdl::Mdl(model)->localTransforms[10],
+                    mikumikustudio::mdl::Mdl(model)->localTransforms[11]);
         } else if (std::memcmp(bone, kElbowR, 7) == 0) {
             if (mirrorLeftRight != 0)
-                WritePoseGroup(model, bone, 92, 0, mikudancestudio::mdl::Mdl(model)->localTransforms[28],
-                    mikudancestudio::mdl::Mdl(model)->localTransforms[29], mikudancestudio::mdl::Mdl(model)->localTransforms[30],
-                    mikudancestudio::mdl::Mdl(model)->localTransforms[31]);
+                WritePoseGroup(model, bone, 92, 0, mikumikustudio::mdl::Mdl(model)->localTransforms[28],
+                    mikumikustudio::mdl::Mdl(model)->localTransforms[29], mikumikustudio::mdl::Mdl(model)->localTransforms[30],
+                    mikumikustudio::mdl::Mdl(model)->localTransforms[31]);
             else
-                WritePoseGroup(model, bone, 92, 0, mikudancestudio::mdl::Mdl(model)->localTransforms[16],
-                    -mikudancestudio::mdl::Mdl(model)->localTransforms[17], -mikudancestudio::mdl::Mdl(model)->localTransforms[18],
-                    mikudancestudio::mdl::Mdl(model)->localTransforms[19]);
+                WritePoseGroup(model, bone, 92, 0, mikumikustudio::mdl::Mdl(model)->localTransforms[16],
+                    -mikumikustudio::mdl::Mdl(model)->localTransforms[17], -mikumikustudio::mdl::Mdl(model)->localTransforms[18],
+                    mikumikustudio::mdl::Mdl(model)->localTransforms[19]);
         } else if (std::memcmp(bone, kLowerBody, 7) == 0) {
-            WritePoseGroup(model, bone, 108, 0, mikudancestudio::mdl::Mdl(model)->localTransforms[32],
-                mirrorLeftRight ? mikudancestudio::mdl::Mdl(model)->localTransforms[33] : -mikudancestudio::mdl::Mdl(model)->localTransforms[33],
-                mirrorLeftRight ? mikudancestudio::mdl::Mdl(model)->localTransforms[34] : -mikudancestudio::mdl::Mdl(model)->localTransforms[34],
-                mikudancestudio::mdl::Mdl(model)->localTransforms[35]);
+            WritePoseGroup(model, bone, 108, 0, mikumikustudio::mdl::Mdl(model)->localTransforms[32],
+                mirrorLeftRight ? mikumikustudio::mdl::Mdl(model)->localTransforms[33] : -mikumikustudio::mdl::Mdl(model)->localTransforms[33],
+                mirrorLeftRight ? mikumikustudio::mdl::Mdl(model)->localTransforms[34] : -mikumikustudio::mdl::Mdl(model)->localTransforms[34],
+                mikumikustudio::mdl::Mdl(model)->localTransforms[35]);
         } else if (std::memcmp(bone, kLegL, 5) == 0) {
             if (mirrorLeftRight != 0)
-                WritePoseGroup(model, bone, 124, 0, mikudancestudio::mdl::Mdl(model)->localTransforms[36],
-                    mikudancestudio::mdl::Mdl(model)->localTransforms[37], mikudancestudio::mdl::Mdl(model)->localTransforms[38],
-                    mikudancestudio::mdl::Mdl(model)->localTransforms[39]);
+                WritePoseGroup(model, bone, 124, 0, mikumikustudio::mdl::Mdl(model)->localTransforms[36],
+                    mikumikustudio::mdl::Mdl(model)->localTransforms[37], mikumikustudio::mdl::Mdl(model)->localTransforms[38],
+                    mikumikustudio::mdl::Mdl(model)->localTransforms[39]);
             else
-                WritePoseGroup(model, bone, 124, 0, mikudancestudio::mdl::Mdl(model)->localTransforms[48],
-                    -mikudancestudio::mdl::Mdl(model)->localTransforms[49], -mikudancestudio::mdl::Mdl(model)->localTransforms[50],
-                    mikudancestudio::mdl::Mdl(model)->localTransforms[51]);
+                WritePoseGroup(model, bone, 124, 0, mikumikustudio::mdl::Mdl(model)->localTransforms[48],
+                    -mikumikustudio::mdl::Mdl(model)->localTransforms[49], -mikumikustudio::mdl::Mdl(model)->localTransforms[50],
+                    mikumikustudio::mdl::Mdl(model)->localTransforms[51]);
         } else if (std::memcmp(bone, kLegR, 5) == 0) {
             if (mirrorLeftRight != 0)
-                WritePoseGroup(model, bone, 140, 0, mikudancestudio::mdl::Mdl(model)->localTransforms[48],
-                    mikudancestudio::mdl::Mdl(model)->localTransforms[49], mikudancestudio::mdl::Mdl(model)->localTransforms[50],
-                    mikudancestudio::mdl::Mdl(model)->localTransforms[51]);
+                WritePoseGroup(model, bone, 140, 0, mikumikustudio::mdl::Mdl(model)->localTransforms[48],
+                    mikumikustudio::mdl::Mdl(model)->localTransforms[49], mikumikustudio::mdl::Mdl(model)->localTransforms[50],
+                    mikumikustudio::mdl::Mdl(model)->localTransforms[51]);
             else
-                WritePoseGroup(model, bone, 140, 0, mikudancestudio::mdl::Mdl(model)->localTransforms[36],
-                    -mikudancestudio::mdl::Mdl(model)->localTransforms[37], -mikudancestudio::mdl::Mdl(model)->localTransforms[38],
-                    mikudancestudio::mdl::Mdl(model)->localTransforms[39]);
+                WritePoseGroup(model, bone, 140, 0, mikumikustudio::mdl::Mdl(model)->localTransforms[36],
+                    -mikumikustudio::mdl::Mdl(model)->localTransforms[37], -mikumikustudio::mdl::Mdl(model)->localTransforms[38],
+                    mikumikustudio::mdl::Mdl(model)->localTransforms[39]);
         } else if (std::memcmp(bone, kKneeL, 7) == 0) {           // 0x530F60
             if (leftIkAdd)
                 WritePoseGroup(model, bone, 156, 0, 0.0f, 0.0f, 0.0f, 1.0f);
             else if (mirrorLeftRight != 0)
-                WritePoseGroup(model, bone, 156, 0, mikudancestudio::mdl::Mdl(model)->localTransforms[40],
-                    mikudancestudio::mdl::Mdl(model)->localTransforms[41], mikudancestudio::mdl::Mdl(model)->localTransforms[42],
-                    mikudancestudio::mdl::Mdl(model)->localTransforms[43]);
+                WritePoseGroup(model, bone, 156, 0, mikumikustudio::mdl::Mdl(model)->localTransforms[40],
+                    mikumikustudio::mdl::Mdl(model)->localTransforms[41], mikumikustudio::mdl::Mdl(model)->localTransforms[42],
+                    mikumikustudio::mdl::Mdl(model)->localTransforms[43]);
             else
-                WritePoseGroup(model, bone, 156, 0, mikudancestudio::mdl::Mdl(model)->localTransforms[52],
-                    -mikudancestudio::mdl::Mdl(model)->localTransforms[53], -mikudancestudio::mdl::Mdl(model)->localTransforms[54],
-                    mikudancestudio::mdl::Mdl(model)->localTransforms[55]);
+                WritePoseGroup(model, bone, 156, 0, mikumikustudio::mdl::Mdl(model)->localTransforms[52],
+                    -mikumikustudio::mdl::Mdl(model)->localTransforms[53], -mikumikustudio::mdl::Mdl(model)->localTransforms[54],
+                    mikumikustudio::mdl::Mdl(model)->localTransforms[55]);
         } else if (std::memcmp(bone, kKneeR, 7) == 0) {           // 0x530F58
             if (rightIkAdd)
                 WritePoseGroup(model, bone, 172, 0, 0.0f, 0.0f, 0.0f, 1.0f);
             else if (mirrorLeftRight != 0)
-                WritePoseGroup(model, bone, 172, 0, mikudancestudio::mdl::Mdl(model)->localTransforms[52],
-                    mikudancestudio::mdl::Mdl(model)->localTransforms[53], mikudancestudio::mdl::Mdl(model)->localTransforms[54],
-                    mikudancestudio::mdl::Mdl(model)->localTransforms[55]);
+                WritePoseGroup(model, bone, 172, 0, mikumikustudio::mdl::Mdl(model)->localTransforms[52],
+                    mikumikustudio::mdl::Mdl(model)->localTransforms[53], mikumikustudio::mdl::Mdl(model)->localTransforms[54],
+                    mikumikustudio::mdl::Mdl(model)->localTransforms[55]);
             else
-                WritePoseGroup(model, bone, 172, 0, mikudancestudio::mdl::Mdl(model)->localTransforms[40],
-                    -mikudancestudio::mdl::Mdl(model)->localTransforms[41], -mikudancestudio::mdl::Mdl(model)->localTransforms[42],
-                    mikudancestudio::mdl::Mdl(model)->localTransforms[43]);
+                WritePoseGroup(model, bone, 172, 0, mikumikustudio::mdl::Mdl(model)->localTransforms[40],
+                    -mikumikustudio::mdl::Mdl(model)->localTransforms[41], -mikumikustudio::mdl::Mdl(model)->localTransforms[42],
+                    mikumikustudio::mdl::Mdl(model)->localTransforms[43]);
         } else if (std::memcmp(bone, kLegIkL, 9) == 0) {
             if (mirrorLeftRight != 0) {
-                if ((double)mikudancestudio::mdl::Mdl(model)->matColumn3[1] != -999.0) {
-                    const double inv = 1.0 / (double)mikudancestudio::mdl::Mdl(model)->lightDir[1];
+                if ((double)mikumikustudio::mdl::Mdl(model)->matColumn3[1] != -999.0) {
+                    const double inv = 1.0 / (double)mikumikustudio::mdl::Mdl(model)->lightDir[1];
                     bone->trans[0] =
-                        (float)(inv * (double)mikudancestudio::mdl::Mdl(model)->matColumn3[0]);
+                        (float)(inv * (double)mikumikustudio::mdl::Mdl(model)->matColumn3[0]);
                     bone->trans[1] =
-                        (float)((double)mikudancestudio::mdl::Mdl(model)->matColumn3[1] * inv);
+                        (float)((double)mikumikustudio::mdl::Mdl(model)->matColumn3[1] * inv);
                     bone->trans[2] =
-                        (float)(inv * (double)mikudancestudio::mdl::Mdl(model)->matColumn3[2]);
-                    bone->trans[1] = mikudancestudio::mdl::Mdl(model)->lightDir[2] +
+                        (float)(inv * (double)mikumikustudio::mdl::Mdl(model)->matColumn3[2]);
+                    bone->trans[1] = mikumikustudio::mdl::Mdl(model)->lightDir[2] +
                         bone->trans[1];
                     bone->trans[0] = bone->trans[0] -
-                        mikudancestudio::mdl::Mdl(model)->legIkXOffset;
-                    bone->rotQuat[3] = mikudancestudio::mdl::Mdl(model)->localTransforms[47];
-                    bone->rotQuat[0] = mikudancestudio::mdl::Mdl(model)->localTransforms[44];
-                    bone->rotQuat[1] = mikudancestudio::mdl::Mdl(model)->localTransforms[45];
-                    bone->rotQuat[2] = mikudancestudio::mdl::Mdl(model)->localTransforms[46];
+                        mikumikustudio::mdl::Mdl(model)->legIkXOffset;
+                    bone->rotQuat[3] = mikumikustudio::mdl::Mdl(model)->localTransforms[47];
+                    bone->rotQuat[0] = mikumikustudio::mdl::Mdl(model)->localTransforms[44];
+                    bone->rotQuat[1] = mikumikustudio::mdl::Mdl(model)->localTransforms[45];
+                    bone->rotQuat[2] = mikumikustudio::mdl::Mdl(model)->localTransforms[46];
                 } else if (skeletonFlag != 0) {
                     bone->trans[0] = centerPos[0];
                     bone->trans[1] = centerPos[1];
                     bone->trans[2] = centerPos[2];
                 }
-            } else if ((double)mikudancestudio::mdl::Mdl(model)->matColumn2[1] != -999.0) {
-                const double inv = 1.0 / (double)mikudancestudio::mdl::Mdl(model)->lightDir[1];
+            } else if ((double)mikumikustudio::mdl::Mdl(model)->matColumn2[1] != -999.0) {
+                const double inv = 1.0 / (double)mikumikustudio::mdl::Mdl(model)->lightDir[1];
                 bone->trans[0] =
-                    (float)(inv * (double)mikudancestudio::mdl::Mdl(model)->matColumn2[0]);
+                    (float)(inv * (double)mikumikustudio::mdl::Mdl(model)->matColumn2[0]);
                 bone->trans[1] =
-                    (float)((double)mikudancestudio::mdl::Mdl(model)->matColumn2[1] * inv);
+                    (float)((double)mikumikustudio::mdl::Mdl(model)->matColumn2[1] * inv);
                 bone->trans[2] =
-                    (float)(inv * (double)mikudancestudio::mdl::Mdl(model)->matColumn2[2]);
-                bone->trans[1] = mikudancestudio::mdl::Mdl(model)->lightDir[2] +
+                    (float)(inv * (double)mikumikustudio::mdl::Mdl(model)->matColumn2[2]);
+                bone->trans[1] = mikumikustudio::mdl::Mdl(model)->lightDir[2] +
                     bone->trans[1];
-                bone->trans[0] = mikudancestudio::mdl::Mdl(model)->legIkXOffset +
+                bone->trans[0] = mikumikustudio::mdl::Mdl(model)->legIkXOffset +
                     bone->trans[0];
                 bone->trans[0] = -bone->trans[0];
-                bone->rotQuat[3] = mikudancestudio::mdl::Mdl(model)->localTransforms[59];
-                bone->rotQuat[0] = mikudancestudio::mdl::Mdl(model)->localTransforms[56];
-                bone->rotQuat[1] = -mikudancestudio::mdl::Mdl(model)->localTransforms[57];
-                bone->rotQuat[2] = -mikudancestudio::mdl::Mdl(model)->localTransforms[58];
+                bone->rotQuat[3] = mikumikustudio::mdl::Mdl(model)->localTransforms[59];
+                bone->rotQuat[0] = mikumikustudio::mdl::Mdl(model)->localTransforms[56];
+                bone->rotQuat[1] = -mikumikustudio::mdl::Mdl(model)->localTransforms[57];
+                bone->rotQuat[2] = -mikumikustudio::mdl::Mdl(model)->localTransforms[58];
             } else if (skeletonFlag != 0) {
                 bone->trans[0] = centerPos[0];
                 bone->trans[1] = centerPos[1];
                 bone->trans[2] = centerPos[2];
             }
-            if (mikudancestudio::mdl::PoseTraceFlag(model) != 0) {
+            if (mikumikustudio::mdl::PoseTraceFlag(model) != 0) {
                 TraceSlot(model, 188) = bone->trans[0];
                 TraceSlot(model, 192) = bone->trans[1];
                 TraceSlot(model, 196) = bone->trans[2];
@@ -852,50 +852,50 @@ char ModelStandardPoseSetup(unsigned char* model, bool recordEnable,
             }
         } else if (std::memcmp(bone, kLegIkR, 9) == 0) {
             if (mirrorLeftRight != 0) {
-                if ((double)mikudancestudio::mdl::Mdl(model)->matColumn2[1] != -999.0) {
-                    const double inv = 1.0 / (double)mikudancestudio::mdl::Mdl(model)->lightDir[1];
+                if ((double)mikumikustudio::mdl::Mdl(model)->matColumn2[1] != -999.0) {
+                    const double inv = 1.0 / (double)mikumikustudio::mdl::Mdl(model)->lightDir[1];
                     bone->trans[0] =
-                        (float)(inv * (double)mikudancestudio::mdl::Mdl(model)->matColumn2[0]);
+                        (float)(inv * (double)mikumikustudio::mdl::Mdl(model)->matColumn2[0]);
                     bone->trans[1] =
-                        (float)((double)mikudancestudio::mdl::Mdl(model)->matColumn2[1] * inv);
+                        (float)((double)mikumikustudio::mdl::Mdl(model)->matColumn2[1] * inv);
                     bone->trans[2] =
-                        (float)(inv * (double)mikudancestudio::mdl::Mdl(model)->matColumn2[2]);
-                    bone->trans[1] = mikudancestudio::mdl::Mdl(model)->lightDir[2] +
+                        (float)(inv * (double)mikumikustudio::mdl::Mdl(model)->matColumn2[2]);
+                    bone->trans[1] = mikumikustudio::mdl::Mdl(model)->lightDir[2] +
                         bone->trans[1];
-                bone->trans[0] = mikudancestudio::mdl::Mdl(model)->legIkXOffset +
+                bone->trans[0] = mikumikustudio::mdl::Mdl(model)->legIkXOffset +
                         bone->trans[0];
-                    bone->rotQuat[3] = mikudancestudio::mdl::Mdl(model)->localTransforms[59];
-                    bone->rotQuat[0] = mikudancestudio::mdl::Mdl(model)->localTransforms[56];
-                    bone->rotQuat[1] = mikudancestudio::mdl::Mdl(model)->localTransforms[57];
-                    bone->rotQuat[2] = mikudancestudio::mdl::Mdl(model)->localTransforms[58];
+                    bone->rotQuat[3] = mikumikustudio::mdl::Mdl(model)->localTransforms[59];
+                    bone->rotQuat[0] = mikumikustudio::mdl::Mdl(model)->localTransforms[56];
+                    bone->rotQuat[1] = mikumikustudio::mdl::Mdl(model)->localTransforms[57];
+                    bone->rotQuat[2] = mikumikustudio::mdl::Mdl(model)->localTransforms[58];
                 } else if (skeletonFlag != 0) {
                     bone->trans[0] = centerPos[0];
                     bone->trans[1] = centerPos[1];
                     bone->trans[2] = centerPos[2];
                 }
-            } else if ((double)mikudancestudio::mdl::Mdl(model)->matColumn3[1] != -999.0) {
-                const double inv = 1.0 / (double)mikudancestudio::mdl::Mdl(model)->lightDir[1];
+            } else if ((double)mikumikustudio::mdl::Mdl(model)->matColumn3[1] != -999.0) {
+                const double inv = 1.0 / (double)mikumikustudio::mdl::Mdl(model)->lightDir[1];
                 bone->trans[0] =
-                    (float)(inv * (double)mikudancestudio::mdl::Mdl(model)->matColumn3[0]);
+                    (float)(inv * (double)mikumikustudio::mdl::Mdl(model)->matColumn3[0]);
                 bone->trans[1] =
-                    (float)((double)mikudancestudio::mdl::Mdl(model)->matColumn3[1] * inv);
+                    (float)((double)mikumikustudio::mdl::Mdl(model)->matColumn3[1] * inv);
                 bone->trans[2] =
-                    (float)(inv * (double)mikudancestudio::mdl::Mdl(model)->matColumn3[2]);
-                bone->trans[1] = mikudancestudio::mdl::Mdl(model)->lightDir[2] +
+                    (float)(inv * (double)mikumikustudio::mdl::Mdl(model)->matColumn3[2]);
+                bone->trans[1] = mikumikustudio::mdl::Mdl(model)->lightDir[2] +
                     bone->trans[1];
                 bone->trans[0] = bone->trans[0] -
-                    mikudancestudio::mdl::Mdl(model)->legIkXOffset;
+                    mikumikustudio::mdl::Mdl(model)->legIkXOffset;
                 bone->trans[0] = -bone->trans[0];
-                bone->rotQuat[3] = mikudancestudio::mdl::Mdl(model)->localTransforms[47];
-                bone->rotQuat[0] = mikudancestudio::mdl::Mdl(model)->localTransforms[44];
-                bone->rotQuat[1] = -mikudancestudio::mdl::Mdl(model)->localTransforms[45];
-                bone->rotQuat[2] = -mikudancestudio::mdl::Mdl(model)->localTransforms[46];
+                bone->rotQuat[3] = mikumikustudio::mdl::Mdl(model)->localTransforms[47];
+                bone->rotQuat[0] = mikumikustudio::mdl::Mdl(model)->localTransforms[44];
+                bone->rotQuat[1] = -mikumikustudio::mdl::Mdl(model)->localTransforms[45];
+                bone->rotQuat[2] = -mikumikustudio::mdl::Mdl(model)->localTransforms[46];
             } else if (skeletonFlag != 0) {
                 bone->trans[0] = centerPos[0];
                 bone->trans[1] = centerPos[1];
                 bone->trans[2] = centerPos[2];
             }
-            if (mikudancestudio::mdl::PoseTraceFlag(model) != 0) {
+            if (mikumikustudio::mdl::PoseTraceFlag(model) != 0) {
                 TraceSlot(model, 216) = bone->trans[0];
                 TraceSlot(model, 220) = bone->trans[1];
                 TraceSlot(model, 224) = bone->trans[2];
@@ -906,45 +906,45 @@ char ModelStandardPoseSetup(unsigned char* model, bool recordEnable,
             }
         } else if (std::memcmp(bone, kTwistL, 7) == 0) {         // 0x52B80C
             if (mirrorLeftRight != 0)
-                WritePoseGroup(model, bone, 244, 0, mikudancestudio::mdl::Mdl(model)->localTransforms[12],
-                    mikudancestudio::mdl::Mdl(model)->localTransforms[13], mikudancestudio::mdl::Mdl(model)->localTransforms[14],
-                    mikudancestudio::mdl::Mdl(model)->localTransforms[15]);
+                WritePoseGroup(model, bone, 244, 0, mikumikustudio::mdl::Mdl(model)->localTransforms[12],
+                    mikumikustudio::mdl::Mdl(model)->localTransforms[13], mikumikustudio::mdl::Mdl(model)->localTransforms[14],
+                    mikumikustudio::mdl::Mdl(model)->localTransforms[15]);
             else
-                WritePoseGroup(model, bone, 244, 0, mikudancestudio::mdl::Mdl(model)->localTransforms[24],
-                    -mikudancestudio::mdl::Mdl(model)->localTransforms[25], -mikudancestudio::mdl::Mdl(model)->localTransforms[26],
-                    mikudancestudio::mdl::Mdl(model)->localTransforms[27]);
+                WritePoseGroup(model, bone, 244, 0, mikumikustudio::mdl::Mdl(model)->localTransforms[24],
+                    -mikumikustudio::mdl::Mdl(model)->localTransforms[25], -mikumikustudio::mdl::Mdl(model)->localTransforms[26],
+                    mikumikustudio::mdl::Mdl(model)->localTransforms[27]);
         } else if (std::memcmp(bone, kTwistR, 7) == 0) {         // 0x52B7F4
             if (mirrorLeftRight != 0)
-                WritePoseGroup(model, bone, 260, 0, mikudancestudio::mdl::Mdl(model)->localTransforms[24],
-                    mikudancestudio::mdl::Mdl(model)->localTransforms[25], mikudancestudio::mdl::Mdl(model)->localTransforms[26],
-                    mikudancestudio::mdl::Mdl(model)->localTransforms[27]);
+                WritePoseGroup(model, bone, 260, 0, mikumikustudio::mdl::Mdl(model)->localTransforms[24],
+                    mikumikustudio::mdl::Mdl(model)->localTransforms[25], mikumikustudio::mdl::Mdl(model)->localTransforms[26],
+                    mikumikustudio::mdl::Mdl(model)->localTransforms[27]);
             else
-                WritePoseGroup(model, bone, 260, 0, mikudancestudio::mdl::Mdl(model)->localTransforms[12],
-                    -mikudancestudio::mdl::Mdl(model)->localTransforms[13], -mikudancestudio::mdl::Mdl(model)->localTransforms[14],
-                    mikudancestudio::mdl::Mdl(model)->localTransforms[15]);
+                WritePoseGroup(model, bone, 260, 0, mikumikustudio::mdl::Mdl(model)->localTransforms[12],
+                    -mikumikustudio::mdl::Mdl(model)->localTransforms[13], -mikumikustudio::mdl::Mdl(model)->localTransforms[14],
+                    mikumikustudio::mdl::Mdl(model)->localTransforms[15]);
         } else if (std::memcmp(bone, kShoulderL, 5) == 0) {
             if (mirrorLeftRight != 0)
-                WritePoseGroup(model, bone, 276, 0, mikudancestudio::mdl::Mdl(model)->localTransforms[60],
-                    mikudancestudio::mdl::Mdl(model)->localTransforms[61], mikudancestudio::mdl::Mdl(model)->localTransforms[62],
-                    mikudancestudio::mdl::Mdl(model)->localTransforms[63]);
+                WritePoseGroup(model, bone, 276, 0, mikumikustudio::mdl::Mdl(model)->localTransforms[60],
+                    mikumikustudio::mdl::Mdl(model)->localTransforms[61], mikumikustudio::mdl::Mdl(model)->localTransforms[62],
+                    mikumikustudio::mdl::Mdl(model)->localTransforms[63]);
             else
-                WritePoseGroup(model, bone, 276, 0, mikudancestudio::mdl::Mdl(model)->localTransforms[64],
-                    -mikudancestudio::mdl::Mdl(model)->localTransforms[65], -mikudancestudio::mdl::Mdl(model)->localTransforms[66],
+                WritePoseGroup(model, bone, 276, 0, mikumikustudio::mdl::Mdl(model)->localTransforms[64],
+                    -mikumikustudio::mdl::Mdl(model)->localTransforms[65], -mikumikustudio::mdl::Mdl(model)->localTransforms[66],
                     mdl::Mdl(model)->localTransforms[67]);
         } else if (std::memcmp(bone, kShoulderR, 5) == 0) {
             if (mirrorLeftRight != 0)
-                WritePoseGroup(model, bone, 292, 0, mikudancestudio::mdl::Mdl(model)->localTransforms[64],
-                    mikudancestudio::mdl::Mdl(model)->localTransforms[65], mikudancestudio::mdl::Mdl(model)->localTransforms[66],
+                WritePoseGroup(model, bone, 292, 0, mikumikustudio::mdl::Mdl(model)->localTransforms[64],
+                    mikumikustudio::mdl::Mdl(model)->localTransforms[65], mikumikustudio::mdl::Mdl(model)->localTransforms[66],
                     mdl::Mdl(model)->localTransforms[67]);
             else
-                WritePoseGroup(model, bone, 292, 0, mikudancestudio::mdl::Mdl(model)->localTransforms[60],
-                    -mikudancestudio::mdl::Mdl(model)->localTransforms[61], -mikudancestudio::mdl::Mdl(model)->localTransforms[62],
-                    mikudancestudio::mdl::Mdl(model)->localTransforms[63]);
+                WritePoseGroup(model, bone, 292, 0, mikumikustudio::mdl::Mdl(model)->localTransforms[60],
+                    -mikumikustudio::mdl::Mdl(model)->localTransforms[61], -mikumikustudio::mdl::Mdl(model)->localTransforms[62],
+                    mikumikustudio::mdl::Mdl(model)->localTransforms[63]);
         }
     }
-    if (mikudancestudio::mdl::PoseTraceFlag(model) != 0)
-        ++mikudancestudio::mdl::Mdl(model)->matMisc;                        // 0x4B77C7
+    if (mikumikustudio::mdl::PoseTraceFlag(model) != 0)
+        ++mikumikustudio::mdl::Mdl(model)->matMisc;                        // 0x4B77C7
     return wasRecording;
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

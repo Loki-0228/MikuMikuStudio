@@ -1,8 +1,8 @@
-#include "mikudancestudio/key_pool.hpp"
-#include "mikudancestudio/mmv4mms.hpp"
-#include "mikudancestudio/native_media.hpp"
-#include "mikudancestudio/ui_translation.hpp"
-#include "mikudancestudio/native_mesh.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/mmv4mms.hpp"
+#include "mikumikustudio/native_media.hpp"
+#include "mikumikustudio/ui_translation.hpp"
+#include "mikumikustudio/native_mesh.hpp"
 // ===========================================================================
 // VA 0x00450000 - LoadSceneV2  (was Sub450000; original: sub_450000,
 //                            0x9796 bytes - the v2 (.pmm "0002") loader body)
@@ -111,21 +111,21 @@
 #include <cstdlib>
 #include <io.h>
 
-#include "mikudancestudio/text_encoding.hpp"
-#include "mikudancestudio/accessory_layout.hpp"
-#include "mikudancestudio/d3dx_dyn.hpp"
-#include "mikudancestudio/global_key_layout.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/recent_projects.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/scene_ownership.hpp"
-#include "mikudancestudio/bone_key_pool.hpp"
-#include "mikudancestudio/model.hpp"
-#include "mikudancestudio/bone_combo.hpp"
-#include "mikudancestudio/panel_controls.hpp"
-#include "mikudancestudio/ui_language.hpp"
-#include "mikudancestudio/ui_message.hpp"
-#include "mikudancestudio/runtime_log.hpp"
+#include "mikumikustudio/text_encoding.hpp"
+#include "mikumikustudio/accessory_layout.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/global_key_layout.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/recent_projects.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/scene_ownership.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/model.hpp"
+#include "mikumikustudio/bone_combo.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/ui_language.hpp"
+#include "mikumikustudio/ui_message.hpp"
+#include "mikumikustudio/runtime_log.hpp"
 
 // Shared PMM record readers, the Rd helper and the byte-identical halves of
 // the loader string tables live here (see the header comment for the
@@ -134,7 +134,7 @@
 
 #pragma comment(lib, "avifil32.lib")
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 using namespace pmm_io;
 
@@ -202,14 +202,14 @@ struct PmmModelLoadWorkspace {
 // / ReadPmmGravityKey / ReadPmmAccessoryKey) and the skip-path Discard*
 // family live in pmm_io_common.hpp, shared with the v1 loader body.
 
-// Porting-era traces under MIKUDANCESTUDIO_PMM_TRACE_DIR (CMake option
-// MIKUDANCESTUDIO_DIAG, default OFF); the OFF stubs keep the call sites
+// Porting-era traces under MIKUMIKUSTUDIO_PMM_TRACE_DIR (CMake option
+// MIKUMIKUSTUDIO_DIAG, default OFF); the OFF stubs keep the call sites
 // valid and inline away to nothing.
-#ifdef MIKUDANCESTUDIO_DIAG
+#ifdef MIKUMIKUSTUDIO_DIAG
 void LogPmmModelAttempt(const char* rawPath, const wchar_t* resolvedPath,
                         D3DRenderer* wrap, void* physics,
                         bool loaded) {
-    const char* dir = std::getenv("MIKUDANCESTUDIO_PMM_TRACE_DIR");
+    const char* dir = std::getenv("MIKUMIKUSTUDIO_PMM_TRACE_DIR");
     if (dir == nullptr || dir[0] == '\0')
         return;
     char path[MAX_PATH];
@@ -231,7 +231,7 @@ void LogPmmModelAttempt(const char* rawPath, const wchar_t* resolvedPath,
 
 void LogPmmModelStage(int fd, const char* stage, std::int32_t fileCount,
                       std::int32_t modelCount, const void* modelData) {
-    const char* dir = std::getenv("MIKUDANCESTUDIO_PMM_TRACE_DIR");
+    const char* dir = std::getenv("MIKUMIKUSTUDIO_PMM_TRACE_DIR");
     if (dir == nullptr || dir[0] == '\0')
         return;
     char path[MAX_PATH];
@@ -247,7 +247,7 @@ void LogPmmModelStage(int fd, const char* stage, std::int32_t fileCount,
 }
 
 void LogPmmHeapState(int fd, const char* stage) {
-    const char* dir = std::getenv("MIKUDANCESTUDIO_PMM_TRACE_DIR");
+    const char* dir = std::getenv("MIKUMIKUSTUDIO_PMM_TRACE_DIR");
     if (dir == nullptr || dir[0] == '\0')
         return;
     char path[MAX_PATH];
@@ -1303,9 +1303,9 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, int fd,
                 if (!skipFrom4) Rd(fd, &workspace.boneGroupCount, 1);         // 0x450942
             } else {
                 Rd(fd, &workspace.boneGroupCount, 1);                         // 0x4508C5
-                workspace.boneGroupsMatch = workspace.boneGroupCount == mikudancestudio::mdl::Mdl(model)->groupCount ? 1 : 0; // 0x4508DF
+                workspace.boneGroupsMatch = workspace.boneGroupCount == mikumikustudio::mdl::Mdl(model)->groupCount ? 1 : 0; // 0x4508DF
                 LogPmmModelStage(fd, "model-marker", workspace.boneGroupCount,
-                                 mikudancestudio::mdl::Mdl(model)->groupCount, model);
+                                 mikumikustudio::mdl::Mdl(model)->groupCount, model);
             }
 
             // ---- reconciliation + state load ------------------------------
@@ -2641,8 +2641,8 @@ static void LoadSceneV2_ConfigBlock(PmmV2LoadContext& ctx, int fd) {
         Rd(fd, &s->state.gravityY, 4);
         Rd(fd, &s->state.gravityZ, 4);
         Rd(fd, &b, 1);                                          // 0x45775C
-#ifdef MIKUDANCESTUDIO_DIAG
-        if (std::getenv("MIKUDANCESTUDIO_TRACE_NOISE_OFF") != nullptr)
+#ifdef MIKUMIKUSTUDIO_DIAG
+        if (std::getenv("MIKUMIKUSTUDIO_TRACE_NOISE_OFF") != nullptr)
             std::fprintf(stderr, "noise byte file offset=%ld value=%d\n",
                          static_cast<long>(_tell(fd)), static_cast<int>(b));
 #endif
@@ -2813,7 +2813,7 @@ static void LoadSceneV2_PhysicsTracksAndClose(PmmV2LoadContext& ctx, int fd,
                 if (static_cast<int>(mslot) < kModelSlotCount &&
                     slots[mslot] != nullptr) {
                     Rd(fd,
-                       &mikudancestudio::mdl::Mdl(slots[mslot])
+                       &mikumikustudio::mdl::Mdl(slots[mslot])
                             ->frameRegistrationSelection,
                        sizeof(std::int32_t));
                 } else {
@@ -3131,7 +3131,7 @@ static void LoadSceneV2_SuccessTail(PmmV2LoadContext& ctx,
                                      reinterpret_cast<void*>(static_cast<
                                          std::uintptr_t>(keys[cur].frame)));
                 }
-                mikudancestudio::mdl::BoneRecord* bone = mdl::Bones(m) + b;
+                mikumikustudio::mdl::BoneRecord* bone = mdl::Bones(m) + b;
                 // 0x458B49: the format argument and the chain cut both
                 // use the EXPECTED-PREV record (iVar13's byte offset),
                 // not the mismatching cur record.
@@ -3320,4 +3320,4 @@ void LoadSceneV2(MMDApp* app, int fd) {  // was Sub450000, VA 0x00450000
     recent_projects::Record(app, app->EnvFileName());
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio

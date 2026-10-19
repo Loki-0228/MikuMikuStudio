@@ -1,11 +1,11 @@
-#include "mikudancestudio/ui_message.hpp"
-#include "mikudancestudio/ui_language.hpp"
-#include "mikudancestudio/mmd_app.hpp"
+#include "mikumikustudio/ui_message.hpp"
+#include "mikumikustudio/ui_language.hpp"
+#include "mikumikustudio/mmd_app.hpp"
 #include <array>
 #include <cwchar>
 #include <string>
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 namespace {
 struct Text { const wchar_t* title; const wchar_t* body; };
 // Columns follow kUiJapanese / kUiEnglish / kUiChinese, never a boolean flag.

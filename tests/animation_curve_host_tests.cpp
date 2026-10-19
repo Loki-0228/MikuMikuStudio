@@ -1,15 +1,15 @@
 #define NOMINMAX
-#include "mikudancestudio/animation_curve_host.hpp"
-#include "mikudancestudio/accessory_layout.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/frame_presentation.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
+#include "mikumikustudio/accessory_layout.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/frame_presentation.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
 #include <cmath>
 #include <commctrl.h>
-using namespace mikudancestudio;
+using namespace mikumikustudio;
 static void Check(bool b,const char*s){if(!b){std::fprintf(stderr,"FAIL: %s\n",s);std::exit(1);}}
 static void CheckScaleLabelRepaint(MMDApp& app,HWND parent){
     const auto panels=FramePanelLayout(&app);

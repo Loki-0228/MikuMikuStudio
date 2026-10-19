@@ -63,9 +63,9 @@
 // =========================================================================//
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include "mikudancestudio/image_sequence_export.hpp"
-#include "mikudancestudio/transparent_capture.hpp"
-#include "mikudancestudio/wic_mov_recorder.hpp"
+#include "mikumikustudio/image_sequence_export.hpp"
+#include "mikumikustudio/transparent_capture.hpp"
+#include "mikumikustudio/wic_mov_recorder.hpp"
 #include <Windows.h>
 #include <d3d9.h>
 
@@ -74,17 +74,17 @@
 #include <cstdarg>
 #include <cstring>
 
-#include "mikudancestudio/globals.hpp"
-#include "mikudancestudio/mmd_app.hpp"
-#include "mikudancestudio/ported_funcs.hpp"
-#include "mikudancestudio/mf_h264_recorder.hpp"
+#include "mikumikustudio/globals.hpp"
+#include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/mf_h264_recorder.hpp"
 #include "device_lost_wait.hpp"
 #include "recording_ack_wait.hpp"
-#include "mikudancestudio/recording_state.hpp"
-#include "mikudancestudio/runtime_log.hpp"
+#include "mikumikustudio/recording_state.hpp"
+#include "mikumikustudio/runtime_log.hpp"
 #include <wrl/client.h>
 
-namespace mikudancestudio {
+namespace mikumikustudio {
 
 // VA 0x00407470 - stereo activation toggle on the 0x1D574 wrapper
 // (src/io/io_gaps.cpp).
@@ -92,15 +92,15 @@ int StereoActivationToggle(unsigned char* wrapper, std::uint8_t enable);
 
 namespace {
 
-// MIKUDANCESTUDIO_TRACE_REC diagnostic (CMake option MIKUDANCESTUDIO_DIAG,
+// MIKUMIKUSTUDIO_TRACE_REC diagnostic (CMake option MIKUMIKUSTUDIO_DIAG,
 // default OFF): one line per pass (throttled), plus one line per early-out
 // with the failing stage.  The OFF stub keeps the call sites valid and
 // inlines away to nothing.
-#ifdef MIKUDANCESTUDIO_DIAG
+#ifdef MIKUMIKUSTUDIO_DIAG
 void TraceRec(const char* fmt, ...) {
-    if (getenv("MIKUDANCESTUDIO_TRACE_REC") == nullptr)
+    if (getenv("MIKUMIKUSTUDIO_TRACE_REC") == nullptr)
         return;
-    if (FILE* tf = fopen(getenv("MIKUDANCESTUDIO_TRACE_REC"), "a")) {
+    if (FILE* tf = fopen(getenv("MIKUMIKUSTUDIO_TRACE_REC"), "a")) {
         va_list ap;
         va_start(ap, fmt);
         vfprintf(tf, fmt, ap);
@@ -183,8 +183,8 @@ bool RecordingReadbackPass(MMDApp* app) {
     // DIAGNOSTIC ONLY: pace the recording passes to a wall-clock rate
     // (the original's pin-consumption ack paces it to ~60/s; the port runs
     // at ~200/s) to test for residual wall-clock coupling in the physics.
-#ifdef MIKUDANCESTUDIO_DIAG
-    if (const char* pace = getenv("MIKUDANCESTUDIO_REC_PACE_MS"))
+#ifdef MIKUMIKUSTUDIO_DIAG
+    if (const char* pace = getenv("MIKUMIKUSTUDIO_REC_PACE_MS"))
         Sleep(atoi(pace));
 #endif
     DShowRecorder* recorder = s.Recorder();
@@ -380,4 +380,4 @@ bool RecordingReadbackPass(MMDApp* app) {
     return true;
 }
 
-}  // namespace mikudancestudio
+}  // namespace mikumikustudio
