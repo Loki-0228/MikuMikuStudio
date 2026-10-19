@@ -30,12 +30,22 @@ void Install(void* target,void* detour,void** original=nullptr){
 #include "plugins/bake_mic_guard_checks.inc"
 #include "plugins/slider_paint_trace_host_checks.inc"
 #include "plugins/slider_focus_cues_host_checks.inc"
+#include "plugins/light_slider_geometry_checks.inc"
+#include "plugins/light_slider_clip_checks.inc"
+#include "plugins/light_slider_paint_checks.inc"
+#include "plugins/light_slider_native_surface_checks.inc"
+#include "plugins/light_slider_buffer_checks.inc"
 
 int main(int argc,char** argv){
     std::setvbuf(stdout,nullptr,_IONBF,0);SetProcessDPIAware();
     const bool focusCues=argc==3&&!std::strcmp(argv[2],"focus-cues");
-    if((argc!=2&&!focusCues)||(std::strcmp(argv[1],"ordinary")&&std::strcmp(argv[1],"bound"))){
-        std::fprintf(stderr,"usage: small_viewport_host_tests ordinary|bound [focus-cues]\n");return 2;
+    const bool lightPaint=argc==3&&!std::strcmp(argv[2],"light-paint");
+    const bool lightGeometry=argc==3&&!std::strcmp(argv[2],"light-geometry");
+    const bool lightSurface=argc==3&&!std::strcmp(argv[2],"light-surface");
+    const bool lightClip=argc==3&&!std::strcmp(argv[2],"light-clip");
+    const bool lightBuffer=argc==3&&!std::strcmp(argv[2],"light-buffer");
+    if((argc!=2&&!focusCues&&!lightPaint&&!lightGeometry&&!lightSurface&&!lightClip&&!lightBuffer)||(std::strcmp(argv[1],"ordinary")&&std::strcmp(argv[1],"bound"))){
+        std::fprintf(stderr,"usage: small_viewport_host_tests ordinary|bound [focus-cues|light-paint|light-geometry|light-surface|light-clip|light-buffer]\n");return 2;
     }
     if(MH_Initialize()!=MH_OK)return 2;
     Install(reinterpret_cast<void*>(&ShowWindow),reinterpret_cast<void*>(Hidden),reinterpret_cast<void**>(&realShow));
@@ -53,12 +63,30 @@ int main(int argc,char** argv){
         const bool expectedBound=!std::strcmp(argv[1],"bound");
         small_viewport_host_checks::Require(bool(plugins::BoundNativePoseHistory(app))==expectedBound,
             "actual native editing binding matches the isolated viewport test mode");
-        if(focusCues){
+        if(focusCues||lightPaint||lightGeometry||lightSurface||lightClip||lightBuffer){
             app->CameraMode()=1;PostLanguageSweep2(app);PostViewRefresh(app);
             small_viewport_host_checks::ClientSize(*app,1200,820);
-            realShow(app->MainWindow(),SW_SHOWNOACTIVATE);
+            realShow(app->MainWindow(),lightPaint?SW_SHOW:SW_SHOWNOACTIVATE);
+            if(lightPaint){
+                const BOOL requested=SetForegroundWindow(app->MainWindow());
+                std::printf("LIGHT_DIAGNOSTIC_FOREGROUND requested=%d actual_self=%d; one initial request, no retry\n",
+                    int(requested),int(GetForegroundWindow()==app->MainWindow()));
+            }
             RedrawWindow(app->MainWindow(),nullptr,nullptr,RDW_INVALIDATE|RDW_ALLCHILDREN|RDW_UPDATENOW);
-            slider_focus_cues_host_checks::Run(app,std::filesystem::current_path()/"focus-cues",expectedBound);
+            if(focusCues){
+                slider_focus_cues_host_checks::Run(app,std::filesystem::current_path()/"focus-cues",expectedBound);
+            }else{
+                const auto output=std::filesystem::current_path()/"light-paint";
+                if(!lightSurface&&!lightBuffer){
+                    const auto geometry=light_slider_geometry_checks::Run(*app,output);
+                    small_viewport_host_checks::Require(geometry.physical!=light_slider_geometry_checks::PhysicalStatus::Failed,
+                        "light slider geometry capture and DPI context restoration have no API error");
+                }
+                if(lightPaint)light_slider_paint_checks::Run(app,output,expectedBound,false);
+                if(lightPaint||lightSurface)light_slider_native_surface_checks::Run(app,output);
+                if(lightClip)light_slider_clip_checks::Run(app,output);
+                if(lightBuffer)light_slider_buffer_checks::Run(app,output,expectedBound);
+            }
             realShow(app->MainWindow(),SW_HIDE);
         }else{
             small_viewport_host_checks::Run(app);

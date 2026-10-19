@@ -80,6 +80,7 @@
 #include "../plugins/native_history_commands.hpp"
 #include "../plugins/native_global_commands.hpp"
 #include "../plugins/native_morph_commands.hpp"
+#include "light_slider_paint_buffer.hpp"
 #endif
 
 namespace mikudancestudio {
@@ -812,14 +813,18 @@ LRESULT CALLBACK TrackbarSubclassProc(HWND hWnd, UINT Msg, WPARAM wParam,
             SendMessageW(hWnd, WM_UPDATEUISTATE, MAKEWPARAM(mouseFocus ? UIS_SET : UIS_CLEAR, UISF_HIDEFOCUS), 0);
     }
 #endif
-    // The native WM_PAINT initializes themed track/thumb state. Substituting
-    // WM_PRINTCLIENT here can leave the first paint blank until hover changes
-    // that state. WS_CLIPCHILDREN already prevents the parent erasing sliders.
+    // Keep native WM_PAINT initialization and input. The full profile commits
+    // only a captured light slider's complete native drawing in one copy.
     if (Msg == WM_LBUTTONUP)
         SetFocus(app->MainWindow());
+#if !MMD_ORIGINAL_PROFILE
+    return ui::light_slider_paint_buffer::Forward(
+        app->OriginalTrackbarProc(), hWnd, Msg, wParam, lParam);
+#else
     return CallWindowProcA(
         app->OriginalTrackbarProc(),
         hWnd, Msg, wParam, lParam);
+#endif
 }
 
 // ---------------------------------------------------------------------------
