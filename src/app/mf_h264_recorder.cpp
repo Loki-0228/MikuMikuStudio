@@ -49,6 +49,12 @@ struct Recording {
     std::uint64_t frameIndex = 0;
     std::uint64_t frameDuration = 0;
     std::uint64_t frameBytes = 0;
+    std::int32_t width = 0;
+    std::int32_t height = 0;
+    // Set when the export runs on the hardware encoder: the Sink Writer then
+    // takes NV12 and every BGRA frame is converted in WriteBuiltInH264Frame.
+    bool nv12Input = false;
+    std::vector<unsigned char> convertScratch;
     std::uint32_t fpsNumerator = 30;
     std::uint32_t fpsDenominator = 1;
     HWND owner = nullptr;
@@ -440,16 +446,74 @@ void FpsToRatio(float fps, std::uint32_t& numerator, std::uint32_t& denominator)
     }
 }
 
-// Builds the H.264 output type + RGB32 input type exactly the way the export
-// does and adds the video stream to the Sink Writer.  Shared so the settings
-// probe configures the same chain the export will use.
+// BGRA (top-down) -> NV12, BT.709 with the 16..235 / 16..240 studio range that
+// H.264 normally carries.  The hardware encoder asks for NV12 (AMD answer in
+// AMF issue #470: the H.264 core only runs pre-analysis on NV12), so the
+// conversion happens here on the CPU instead of inside the encoder's D3D9
+// colour-conversion path.
+void ConvertBgraToNv12(const unsigned char* bgra, int width, int height,
+                       unsigned char* nv12) {
+    const std::size_t pixelCount = static_cast<std::size_t>(width) * height;
+    unsigned char* luma = nv12;
+    unsigned char* chroma = nv12 + pixelCount;
+    const auto clampTo = [](int value, int low, int high) {
+        return static_cast<unsigned char>(std::clamp(value, low, high));
+    };
+    for (int y = 0; y < height; ++y) {
+        const unsigned char* source =
+            bgra + static_cast<std::size_t>(y) * width * 4;
+        unsigned char* destination = luma + static_cast<std::size_t>(y) * width;
+        for (int x = 0; x < width; ++x) {
+            const int b = source[x * 4 + 0];
+            const int g = source[x * 4 + 1];
+            const int r = source[x * 4 + 2];
+            const int full = (54 * r + 183 * g + 19 * b + 128) >> 8;
+            destination[x] = clampTo(16 + ((219 * full + 128) >> 8), 16, 235);
+        }
+    }
+    for (int y = 0; y < height; y += 2) {
+        const unsigned char* row0 =
+            bgra + static_cast<std::size_t>(y) * width * 4;
+        const unsigned char* row1 = row0 + static_cast<std::size_t>(width) * 4;
+        unsigned char* destination =
+            chroma + static_cast<std::size_t>(y / 2) * width;
+        for (int x = 0; x < width; x += 2) {
+            int b = 0;
+            int g = 0;
+            int r = 0;
+            for (int dy = 0; dy < 2; ++dy) {
+                const unsigned char* row = dy == 0 ? row0 : row1;
+                for (int dx = 0; dx < 2; ++dx) {
+                    const unsigned char* pixel = row + (x + dx) * 4;
+                    b += pixel[0];
+                    g += pixel[1];
+                    r += pixel[2];
+                }
+            }
+            b /= 4;
+            g /= 4;
+            r /= 4;
+            const int full = (54 * r + 183 * g + 19 * b + 128) >> 8;
+            destination[x] = clampTo(128 + (((b - full) * 121) >> 8), 16, 240);
+            destination[x + 1] =
+                clampTo(128 + (((r - full) * 143) >> 8), 16, 240);
+        }
+    }
+}
+
+// Builds the H.264 output type and the input type, then adds the video stream
+// to the Sink Writer.  Shared so the settings probe configures the same chain
+// the export will use: the hardware path takes NV12 (what the AMD encoder asks
+// for), the software path keeps RGB32 and lets Media Foundation convert.
 HRESULT AddH264VideoStream(IMFSinkWriter* writer, std::int32_t width,
                            std::int32_t height, float fps,
-                           std::uint32_t averageBitrate, DWORD* stream) {
+                           std::uint32_t averageBitrate, bool nv12Input,
+                           DWORD* stream) {
     std::uint32_t fpsNumerator = 30;
     std::uint32_t fpsDenominator = 1;
     FpsToRatio(fps, fpsNumerator, fpsDenominator);
     const std::uint64_t frameBytes = std::uint64_t(width) * height * 4;
+    const std::uint64_t nv12Bytes = std::uint64_t(width) * height * 3 / 2;
 
     IMFMediaType* output = nullptr;
     IMFMediaType* input = nullptr;
@@ -464,12 +528,27 @@ HRESULT AddH264VideoStream(IMFSinkWriter* writer, std::int32_t width,
     }
     if (SUCCEEDED(hr)) hr = MFCreateMediaType(&input);
     if (SUCCEEDED(hr)) {
-        SetVideoAttributes(input, MFVideoFormat_RGB32, width, height,
-                           fpsNumerator, fpsDenominator);
-        input->SetUINT32(MF_MT_DEFAULT_STRIDE,
-                         static_cast<UINT32>(-std::int32_t(width * 4)));
-        input->SetUINT32(MF_MT_SAMPLE_SIZE, static_cast<UINT32>(frameBytes));
-        input->SetUINT32(MF_MT_FIXED_SIZE_SAMPLES, TRUE);
+        if (nv12Input) {
+            SetVideoAttributes(input, MFVideoFormat_NV12, width, height,
+                               fpsNumerator, fpsDenominator);
+            input->SetUINT32(MF_MT_DEFAULT_STRIDE,
+                             static_cast<UINT32>(width));
+            input->SetUINT32(MF_MT_SAMPLE_SIZE,
+                             static_cast<UINT32>(nv12Bytes));
+            input->SetUINT32(MF_MT_FIXED_SIZE_SAMPLES, TRUE);
+            input->SetUINT32(MF_MT_YUV_MATRIX, MFVideoTransferMatrix_BT709);
+            input->SetUINT32(MF_MT_VIDEO_NOMINAL_RANGE, MFNominalRange_16_235);
+            input->SetUINT32(MF_MT_VIDEO_PRIMARIES, MFVideoPrimaries_BT709);
+            input->SetUINT32(MF_MT_TRANSFER_FUNCTION, MFVideoTransFunc_709);
+        } else {
+            SetVideoAttributes(input, MFVideoFormat_RGB32, width, height,
+                               fpsNumerator, fpsDenominator);
+            input->SetUINT32(MF_MT_DEFAULT_STRIDE,
+                             static_cast<UINT32>(-std::int32_t(width * 4)));
+            input->SetUINT32(MF_MT_SAMPLE_SIZE,
+                             static_cast<UINT32>(frameBytes));
+            input->SetUINT32(MF_MT_FIXED_SIZE_SAMPLES, TRUE);
+        }
         hr = writer->SetInputMediaType(*stream, input, nullptr);
     }
     if (input != nullptr) input->Release();
@@ -613,7 +692,7 @@ bool CreateEncoderProbe(bool system, std::int32_t width, std::int32_t height,
 
     DWORD stream = 0;
     hr = AddH264VideoStream(probe.writer, width, height, fps,
-                            averageBitrate, &stream);
+                            averageBitrate, system, &stream);
     if (SUCCEEDED(hr) &&
         !ResolveSinkWriterEncoder(probe.writer, stream, probe.target)) {
         // Some Sink Writer builds only instantiate the chain on BeginWriting.
@@ -1272,7 +1351,7 @@ HRESULT OpenH264SinkWriterGuarded(IMFSinkWriter** writer, const wchar_t* path,
                                   bool hardware, std::int32_t width,
                                   std::int32_t height, float fps,
                                   std::uint32_t averageBitrate,
-                                  DWORD* stream) noexcept {
+                                  bool nv12Input, DWORD* stream) noexcept {
     __try {
         IMFAttributes* attributes = nullptr;
         HRESULT hr = MFCreateAttributes(&attributes, 1);
@@ -1285,7 +1364,7 @@ HRESULT OpenH264SinkWriterGuarded(IMFSinkWriter** writer, const wchar_t* path,
         if (attributes != nullptr) attributes->Release();
         if (SUCCEEDED(hr))
             hr = AddH264VideoStream(*writer, width, height, fps,
-                                    averageBitrate, stream);
+                                    averageBitrate, nv12Input, stream);
         return hr;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         runtime_log::Write(
@@ -1346,7 +1425,7 @@ bool StartBuiltInH264Recording(DShowRecorder* recorder, const wchar_t* path,
     bool hardwareActive = enableSystemEncoders && !g_hardwareEncoderUnsafe;
     hr = OpenH264SinkWriterGuarded(&recording->writer, path, hardwareActive,
                                    width, height, fps, averageBitrate,
-                                   &recording->videoStream);
+                                   hardwareActive, &recording->videoStream);
     if (FAILED(hr) && hardwareActive) {
         // Keep the session on the software encoder and try once more.  The
         // hardware writer is released first so it lets go of the output file;
@@ -1357,12 +1436,15 @@ bool StartBuiltInH264Recording(DShowRecorder* recorder, const wchar_t* path,
         ReleaseSinkWriterQuietly(recording->writer);
         recording->videoStream = 0;
         hr = OpenH264SinkWriterGuarded(&recording->writer, path, false, width,
-                                       height, fps, averageBitrate,
+                                       height, fps, averageBitrate, false,
                                        &recording->videoStream);
         if (SUCCEEDED(hr))
             ReportHardwareFallbackOnce(recording->owner, recording->uiLanguage);
     }
     if (FAILED(hr)) return false;
+    recording->width = width;
+    recording->height = height;
+    recording->nv12Input = hardwareActive;
 
     ApplyResult settings = ApplyConfiguredEncoderSettings(
         recording->writer, recording->videoStream, hardwareActive,
@@ -1460,14 +1542,27 @@ bool WriteBuiltInH264Frame(DShowRecorder* recorder, const void* bgra,
 
     IMFMediaBuffer* buffer = nullptr;
     IMFSample* sample = nullptr;
-    HRESULT hr = MFCreateMemoryBuffer(static_cast<DWORD>(bytes), &buffer);
+    const std::uint64_t sampleBytes = recording.nv12Input
+        ? std::uint64_t(recording.width) * recording.height * 3 / 2
+        : recording.frameBytes;
+    HRESULT hr = MFCreateMemoryBuffer(static_cast<DWORD>(sampleBytes), &buffer);
     BYTE* destination = nullptr;
     DWORD maximum = 0;
     if (SUCCEEDED(hr)) hr = buffer->Lock(&destination, &maximum, nullptr);
     if (SUCCEEDED(hr)) {
-        memcpy(destination, bgra, bytes);
+        if (recording.nv12Input) {
+            recording.convertScratch.resize(
+                static_cast<std::size_t>(sampleBytes));
+            ConvertBgraToNv12(static_cast<const unsigned char*>(bgra),
+                              recording.width, recording.height,
+                              recording.convertScratch.data());
+            memcpy(destination, recording.convertScratch.data(),
+                   static_cast<std::size_t>(sampleBytes));
+        } else {
+            memcpy(destination, bgra, bytes);
+        }
         buffer->Unlock();
-        hr = buffer->SetCurrentLength(static_cast<DWORD>(bytes));
+        hr = buffer->SetCurrentLength(static_cast<DWORD>(sampleBytes));
     }
     if (SUCCEEDED(hr)) hr = MFCreateSample(&sample);
     if (SUCCEEDED(hr)) hr = sample->AddBuffer(buffer);
