@@ -20,6 +20,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -220,6 +221,184 @@ void AntialiasRoundtrip(MMDApp& app, const std::filesystem::path& directory) {
         std::vector<std::uint8_t>{0,7,7}, "explicit selection replaces only the unknown AA record");
     std::puts("PASS PMM anti-aliasing choices, local defaults, unknown data and fallback preservation");
 }
+}
+
+void LegacyBindingMetadata() {
+    auto app=std::make_unique<MMDApp>();auto model=std::make_unique<mdl::ModelRecord>();
+    std::memset(&app->state,0,sizeof app->state);
+    std::array<mdl::BoneRecord,2> bones{};std::array<mdl::MorphRecord,2> morphs{};
+    model->boneTable=bones.data();model->boneCount=1;model->morphs=morphs.data();model->morphCount=1;
+    std::strcpy(model->name,"Ronova");std::strcpy(model->nameEn,"New MMD Model");
+    app->ModelSlot(0)=reinterpret_cast<unsigned char*>(model.get());
+    const auto assign=[](auto& record,const wchar_t* name) {
+        Check(extended_names::Assign(record.jpText,name),"allocate complete binding name");
+        std::string encoded;
+        Check(text_encoding::EncodeExact(name,932,encoded),"encode sample binding name without substitutions");
+        std::memset(record.name,0,sizeof record.name);
+        std::memcpy(record.name,encoded.data(),(std::min)(encoded.size(),sizeof(record.name)-1));
+    };
+    const auto expect=[&](bool extended,const char* message) {
+        const auto report=save_compatibility::InspectPmm(*app);
+        Check(!report.needsNewPmm&&report.namesNeedExtension==extended,message);
+    };
+    assign(bones[0],L"+FlycloakRootB CB A01");assign(morphs[0],L"face");
+    Check(std::strcmp(bones[0].name,"+FlycloakRootB CB A")==0,"Ronova sample uses its original nineteen-byte binding");
+    expect(false,"ordinary long ASCII bone identity does not require a compatibility copy");
+    Check(save_compatibility::InspectMotion(*model).namesNeedExtension,
+          "accepting a PMM binding does not relax VMD name limits");
+    Check(!save_compatibility::CanSavePmd(*model),"accepting a PMM binding does not relax PMD name limits");
+    ext::Document document;extended_names::CapturePmm(*app,document);
+    Check(extended_names::Assign(bones[0].jpText,L"changed"),"alter full name before extension restore");
+    extended_names::LoadPmm(*app,document);
+    Check(text_encoding::BoneName(bones[0],false)==L"+FlycloakRootB CB A01",
+          "complete source name remains in PMM metadata without a compatibility warning");
+    for(const wchar_t* name : {L"1234567890123456789",L"12345678901234567890",L"あいうえおABCDEFGHIJK"}) {
+        assign(bones[0],name);expect(false,"exact and canonical truncated CP932 bone bindings remain compatible");
+        assign(morphs[0],name);expect(false,"exact and canonical truncated CP932 morph bindings remain compatible");
+    }
+    assign(bones[0],L"abcdefghijklmnopqrあ");expect(false,"a split 19-byte CP932 mirror still binds to the same model bytes");
+    assign(bones[0],L"+FlycloakRootB CB A01");
+    std::strcpy(bones[0].name,"+FlycloakRootB");expect(true,"an arbitrary shorter alias still requires an extension");
+    assign(bones[0],L"+FlycloakRootB CB A01");
+    Check(extended_names::Assign(bones[0].jpText,L"骨骼\U0001f31f"),"allocate non-CP932 binding name");
+    expect(true,"Unicode replacement aliases still require an extension");
+    assign(bones[0],L"+FlycloakRootB CB A01");assign(bones[1],L"+FlycloakRootB CB A02");model->boneCount=2;
+    expect(true,"distinct bones with colliding canonical short names still require an extension");model->boneCount=1;
+    assign(morphs[0],L"+FlycloakRootB CB A01");assign(morphs[1],L"+FlycloakRootB CB A02");model->morphCount=2;
+    expect(true,"distinct morphs with colliding canonical short names still require an extension");
+    app->ModelSlot(0)=nullptr;
+    for(auto* p:model->pmxTextBuffers)std::free(p);
+    for(auto& bone:bones){std::free(bone.jpText);std::free(bone.enText);}
+    for(auto& morph:morphs){std::free(morph.jpText);std::free(morph.enText);}
+    std::puts("PASS PMM canonical legacy binding names, collisions, and unchanged PMD/VMD limits");
+}
+
+// ---- real-PMX name and PMM version boundary -------------------------------
+// The supplied RNW_Test.pmm contains a model bone whose full CP932 name is
+// "+FlycloakRootB CB A01" (21 bytes) while the PMM stores its 19-byte mirror
+// "+FlycloakRootB CB A". The old compatibility check treated every such
+// truncation as unrepresentable. This fixture drives the real PMX loader so
+// the mirror, the extension decision and the v3 boundary are checked against
+// the bytes the loader actually produces, not a hand-written record.
+template<class T> void PutPmx(std::ofstream& file, const T& value) {
+    file.write(reinterpret_cast<const char*>(&value), sizeof value);
+}
+void PutPmxText(std::ofstream& file, const std::wstring& value) {
+    PutPmx(file, static_cast<std::uint32_t>(value.size() * sizeof(wchar_t)));
+    file.write(reinterpret_cast<const char*>(value.data()),
+               static_cast<std::streamsize>(value.size() * sizeof(wchar_t)));
+}
+void WritePmmNameBoundaryPmx(const std::filesystem::path& path) {
+    std::ofstream file(path, std::ios::binary);
+    file.write("PMX ", 4);
+    PutPmx(file, 2.0f);
+    const unsigned char header[8] = {0, 0, 1, 1, 1, 1, 1, 1};  // UTF-16, 1-byte indices
+    PutPmx(file, static_cast<unsigned char>(sizeof header));
+    file.write(reinterpret_cast<const char*>(header), sizeof header);
+    PutPmxText(file, L"Boundary"); PutPmxText(file, L"Boundary");
+    PutPmxText(file, L""); PutPmxText(file, L"");
+    PutPmx(file, std::int32_t(0));  // texture table
+    PutPmx(file, std::int32_t(0));  // vertices
+    PutPmx(file, std::int32_t(0));  // surface indices
+    PutPmx(file, std::int32_t(0));  // materials
+    const wchar_t* const names[] = {
+        L"1234567890123456789",
+        L"+FlycloakRootB CB A01",
+        L"あいうえおかきくけこ",
+        L"bone\U0001f600",
+        L"CollisionPrefixABCDEFG1",
+        L"CollisionPrefixABCDEFG2",
+    };
+    PutPmx(file, std::int32_t(6));  // bones
+    for (int i = 0; i < 6; ++i) {
+        PutPmxText(file, names[i]);
+        PutPmxText(file, L"en");
+        PutPmx(file, float(i)); PutPmx(file, 0.0f); PutPmx(file, 0.0f);
+        PutPmx(file, static_cast<signed char>(-1));  // parent
+        PutPmx(file, std::int32_t(0));               // layer
+        PutPmx(file, std::uint16_t(0));              // flags
+        PutPmx(file, 0.0f); PutPmx(file, 1.0f); PutPmx(file, 0.0f);  // tail offset
+    }
+    PutPmx(file, std::int32_t(0));  // morphs
+    PutPmx(file, std::int32_t(1));  // display frames
+    PutPmxText(file, L"Root"); PutPmxText(file, L"Root");
+    PutPmx(file, static_cast<unsigned char>(0));
+    PutPmx(file, std::int32_t(6));
+    for (int i = 0; i < 6; ++i) {
+        PutPmx(file, static_cast<unsigned char>(0));  // bone element
+        PutPmx(file, static_cast<signed char>(i));
+    }
+    PutPmx(file, std::int32_t(0));  // rigid bodies
+    PutPmx(file, std::int32_t(0));  // joints
+    Check(bool(file), "write bones-only PMX boundary fixture");
+}
+void PmxNameBoundaries(MMDApp& app, const std::filesystem::path& directory) {
+    const auto pmx = directory / L"boundary-bones.pmx";
+    WritePmmNameBoundaryPmx(pmx);
+    LoadModelFile(&app, pmx.c_str(), false);
+    auto* raw = app.ModelSlot(0);
+    Check(raw != nullptr, "load the boundary PMX through the real PMX loader");
+    auto& model = *mdl::Mdl(raw);
+    Check(model.boneCount == 6, "boundary PMX supplies six bones");
+    Check(std::strcmp(model.boneTable[0].name, "1234567890123456789") == 0,
+          "a 19-byte CP932 name is stored unchanged");
+    Check(std::strcmp(model.boneTable[1].name, "+FlycloakRootB CB A") == 0,
+          "a 21-byte name keeps the 19-byte mirror used by the supplied PMM");
+    std::string jp;
+    Check(text_encoding::EncodeExact(L"あいうえおかきくけこ", 932, jp) && jp.size() == 20,
+          "encode the 20-byte Japanese boundary name");
+    Check(std::memcmp(model.boneTable[2].name, jp.data(), 19) == 0 &&
+          model.boneTable[2].name[19] == '\0',
+          "the loader keeps the 19-byte mirror when it splits a CP932 character");
+    Check(text_encoding::BoneName(model.boneTable[2], false) == L"あいうえおかきくけこ",
+          "the complete source name remains available beside the split mirror");
+
+    const auto inspect = [&] { return save_compatibility::InspectPmm(app); };
+    model.boneCount = 2;
+    auto report = inspect();
+    Check(!report.invalidData && !report.namesNeedExtension && !report.needsNewPmm,
+          "19-byte and canonical 21-byte mirrors need no extension and select PMM v2");
+    Check(report.canCopyLegacy, "canonical ASCII mirrors remain copyable");
+    model.boneCount = 3;
+    report = inspect();
+    Check(!report.namesNeedExtension && !report.needsNewPmm,
+          "a split 19-byte CP932 mirror still binds and needs no extension");
+    model.boneCount = 4;
+    report = inspect();
+    Check(report.namesNeedExtension && !report.needsNewPmm,
+          "a non-CP932 source name needs the extension but never selects v3");
+    model.boneCount = 6;
+    report = inspect();
+    Check(report.namesNeedExtension && !report.needsNewPmm && !report.canCopyLegacy,
+          "distinct full names sharing one mirror need the extension and cannot be copied");
+    model.boneCount = 2;
+    const auto canonical = directory / L"boundary-canonical.pmm";
+    Check(SaveSceneCopy(&app, canonical.c_str()), "save the canonical boundary project");
+    int fd = Open(canonical, _O_RDONLY);
+    char header30[30]{};
+    Check(_read(fd, header30, 30) == 30, "read the canonical PMM header");
+    _close(fd);
+    Check(std::memcmp(header30, "Polygon Movie maker 0002", 24) == 0,
+          "canonical model names keep the PMM 0002 header");
+
+    model.boneCount = 0;
+    model.maxFrame = frame_limits::legacyMaximum;
+    Check(!inspect().needsNewPmm && !inspect().invalidData,
+          "the exact legacy frame still selects PMM v2");
+    model.maxFrame = frame_limits::legacyMaximum + 1;
+    Check(inspect().needsNewPmm, "one frame beyond the legacy maximum selects PMM v3");
+    model.maxFrame = 0;
+    mdl::SetDisplayCapacity(model, 255, 255);
+    Check(!inspect().needsNewPmm, "255 display groups and facial rows select PMM v2");
+    mdl::SetDisplayCapacity(model, 256, 255);
+    Check(inspect().needsNewPmm, "256 display groups select PMM v3");
+    mdl::SetDisplayCapacity(model, 255, 256);
+    Check(inspect().needsNewPmm, "256 facial rows select PMM v3");
+    mdl::SetDisplayCapacity(model, 0, 0);
+    mdl::ForgetDisplayCapacity(model);
+    wcscpy_s(model.path, L"D:\\model-\U0001f31f.pmx");
+    Check(inspect().needsNewPmm, "a non-CP932 model path selects PMM v3");
+    std::puts("PASS real PMX name mirrors and the strict PMM v3 selection boundary");
 }
 
 void AutomaticMetadata() {
@@ -478,6 +657,27 @@ void AutomaticCameraRoundtrip(MMDApp& app, const std::filesystem::path& director
 }
 
 int wmain(int argc, wchar_t** argv) {
+    if(argc==2 && wcscmp(argv[1],L"--metadata-only")==0) {
+        LegacyBindingMetadata();AutomaticMetadata();return 0;
+    }
+    if(argc==3 && wcscmp(argv[1],L"--pmx-boundary")==0) {
+        const auto directory=std::filesystem::absolute(argv[2]);
+        std::filesystem::create_directories(directory);
+        std::setvbuf(stdout,nullptr,_IONBF,0);
+        const auto aaPreference=directory/L"antialias-user.ini";
+        SetEnvironmentVariableW(L"MMS_ANTIALIAS_CONFIG",aaPreference.c_str());
+        SetEnvironmentVariableW(L"MMS_NVIDIA_AA_FIX",L"0");
+        WritePrivateProfileStringW(L"Antialias",L"Algorithm",L"4",aaPreference.c_str());
+        WritePrivateProfileStringW(L"Antialias",L"Enabled",L"0",aaPreference.c_str());
+        WritePrivateProfileStringW(L"Antialias",L"LastSmaaAlgorithm",L"6",aaPreference.c_str());
+        auto* app=new MMDApp();g_Block=app;
+        app->state=MMDAppState{};app->InitDefaults();
+        Check(InitMainWindowAndD3D(app,GetModuleHandleW(nullptr),SW_HIDE),"initialize hidden production app");
+        ShowWindow(app->MainWindow(),SW_HIDE);
+        PmxNameBoundaries(*app,directory);
+        ShutdownCleanup(app);delete app;g_Block=nullptr;
+        return 0;
+    }
     if (argc < 2 || argc > 4) return 2;
     const bool capacityOnly = argc == 4 && wcscmp(argv[3], L"--key-capacity") == 0;
     if (argc == 4 && !capacityOnly) return 2;
@@ -507,7 +707,7 @@ int wmain(int argc, wchar_t** argv) {
     WritePrivateProfileStringW(L"Antialias", L"Algorithm", L"4", aaPreference.c_str());
     WritePrivateProfileStringW(L"Antialias", L"Enabled", L"0", aaPreference.c_str());
     WritePrivateProfileStringW(L"Antialias", L"LastSmaaAlgorithm", L"6", aaPreference.c_str());
-    AutomaticMetadata();
+    LegacyBindingMetadata();AutomaticMetadata();
     MatchTypes();
     auto* app = new MMDApp(); g_Block = app;
     app->state = MMDAppState{}; app->InitDefaults();

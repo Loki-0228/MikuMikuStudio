@@ -11,6 +11,7 @@
 #include <Windows.h>
 #include <array>
 #include <filesystem>
+#include <map>
 #include <set>
 
 namespace mikudancestudio::save_compatibility {
@@ -60,14 +61,29 @@ bool PmmNamesFit(const mdl::ModelRecord& model) {
     std::string bytes;
     for(bool english : {false,true})
         if(!text_encoding::EncodeExact(text_encoding::ModelName(model,english).c_str(),932,bytes) || bytes.size()>255)return false;
-    const auto fits=[&](const auto& record,const std::wstring& fullName) {
-        return text_encoding::EncodeExact(fullName.c_str(),932,bytes) &&
-            bytes==std::string(record.name,strnlen_s(record.name,sizeof record.name));
+    const auto fits=[&](const auto& record,const std::wstring& fullName,
+                        std::map<std::string,std::string>& identities) {
+        if(!text_encoding::EncodeExact(fullName.c_str(),932,bytes))return false;
+        const std::string identity(record.name,strnlen_s(record.name,sizeof record.name));
+        const auto [found,inserted]=identities.emplace(identity,bytes);
+        if(!inserted && found->second!=bytes)return false;
+        if(bytes==identity)return true;
+        // PMM binds keys to the model's legacy identity; it reloads the full
+        // name from the model file. PMX WideToSjis produces this mirror with a
+        // 19-byte NUL-reserving truncation, so the normal, unambiguous
+        // truncation does not require a new format or a compatibility copy.
+        // The nineteenth byte may be the lead byte of a split CP932 character:
+        // the PMM reader compares the stored bytes with strcmp against the
+        // same model mirror, so the split prefix still binds. Reject arbitrary
+        // aliases, non-CP932 full names and colliding identities only.
+        return identity.size()==sizeof(record.name)-1 && bytes.size()>identity.size() &&
+            bytes.compare(0,identity.size(),identity)==0;
     };
+    std::map<std::string,std::string> bones,morphs;
     for(unsigned i=0;i<model.boneCount;++i)
-        if(!fits(model.boneTable[i],text_encoding::BoneName(model.boneTable[i],false)))return false;
+        if(!fits(model.boneTable[i],text_encoding::BoneName(model.boneTable[i],false),bones))return false;
     for(unsigned i=0;i<model.morphCount;++i)
-        if(!fits(model.morphs[i],text_encoding::MorphName(model.morphs[i],false)))return false;
+        if(!fits(model.morphs[i],text_encoding::MorphName(model.morphs[i],false),morphs))return false;
     return true;
 }
 }
