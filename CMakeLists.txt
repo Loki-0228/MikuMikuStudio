@@ -586,6 +586,10 @@ if(MIKUDANCESTUDIO_PROFILE STREQUAL "full")
     target_link_libraries(small_viewport_host_tests PRIVATE mikudancestudio_core minhook::minhook winmm dsound)
     set_target_properties(small_viewport_host_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/viewport/$<CONFIG>")
 
+    add_executable(trackbar_buffer_tests EXCLUDE_FROM_ALL tests/trackbar_buffer_tests.cpp)
+    target_compile_definitions(trackbar_buffer_tests PRIVATE _WIN32_WINNT=0x0601 WINVER=0x0601)
+    target_link_libraries(trackbar_buffer_tests PRIVATE user32 gdi32 comctl32 uxtheme)
+    set_target_properties(trackbar_buffer_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/viewport/$<CONFIG>")
 endif()
 
 add_executable(kinect_pose_math_tests EXCLUDE_FROM_ALL tests/kinect_pose_math_tests.cpp)

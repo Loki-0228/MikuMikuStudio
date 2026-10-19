@@ -707,6 +707,7 @@ void CheckShadowFilter(MMDApp* app) {
 #include "plugins/slider_paint_trace_host_checks.inc"
 #include "plugins/slider_nonoverlap_host_checks.inc"
 #if !MMD_ORIGINAL_PROFILE
+#include "plugins/slider_hover_host_checks.inc"
 #include "plugins/layout_refresh_host_checks.inc"
 #include "plugins/object_history_host_checks.inc"
 #include "plugins/import_picker_host_checks.inc"
@@ -722,7 +723,14 @@ int main(int argc, char** argv) {
     const bool schedulerOnly=argc==2 && std::string(argv[1])=="--scheduler-only";
     if(schedulerOnly) SetEnvironmentVariableW(L"MMS_UI_METRICS",L"scheduler-test.metrics.jsonl");
     std::setvbuf(stdout, nullptr, _IONBF, 0);
-    SetProcessDPIAware();
+    bool sliderHoverUnaware=false;
+#if !MMD_ORIGINAL_PROFILE
+    if(argc==4&&std::string(argv[1])=="--slider-hover-only"){
+        wchar_t requested[2]{};
+        sliderHoverUnaware=GetEnvironmentVariableW(L"MMS_TEST_SLIDER_UNAWARE",requested,2)==1&&requested[0]==L'1';
+    }
+#endif
+    if(!sliderHoverUnaware)SetProcessDPIAware();
     Check(MH_Initialize() == MH_OK, "initialize hidden-window guards");
     Hook(&ShowWindow, &KeepHidden, &originalShow);
     Hook(&MessageBoxA, &UnexpectedA); Hook(&MessageBoxW, &UnexpectedW, &originalMessageBoxW);
@@ -764,6 +772,26 @@ int main(int argc, char** argv) {
         }
     }
 #if !MMD_ORIGINAL_PROFILE
+    if(argc==4&&std::string(argv[1])=="--slider-hover-only") {
+        const std::string mode=argv[3];
+        try {
+            slider_paint_trace::Require(mode=="ordinary"||mode=="bound","hover mode must be ordinary or bound");
+            const bool bound=mode=="bound";
+            if(bound){plugins::Shutdown();
+                Check(plugins::InitializeHistoryTestRuntime(app),"bind actual common history for separate cursor/hover diagnosis");
+                Check(plugins::NativeHistory(app)->SetMode(plugins::SharedHistory::RecordingMode::AllOperations)==MMS_OK,"exercise actual slider history transactions");}
+            app->CameraMode()=1;PostLanguageSweep2(app);PostViewRefresh(app);HandleWindowSize(app);
+            const auto previousForeground=GetForegroundWindow();
+            originalShow(window,SW_SHOW);
+            const BOOL foregroundRequested=SetForegroundWindow(window);
+            const auto foregroundAfterRequest=GetForegroundWindow();
+            for(int id:{447,455,456,457,458,459,460})originalShow(GetDlgItem(window,id),SW_SHOWNOACTIVATE);
+            RedrawWindow(window,nullptr,nullptr,RDW_INVALIDATE|RDW_ERASE|RDW_ALLCHILDREN|RDW_UPDATENOW);
+            slider_hover_host_checks::Run(app,std::filesystem::absolute(argv[2]),bound,previousForeground,foregroundRequested,foregroundAfterRequest);
+            originalShow(window,SW_HIDE);ShutdownCleanup(app);g_Block=nullptr;delete app;return 0;
+        }catch(const std::exception& error){std::fprintf(stderr,"FAIL slider cursor/hover: %s\n",error.what());
+            originalShow(window,SW_HIDE);ShutdownCleanup(app);g_Block=nullptr;delete app;return 1;}
+    }
     if(argc==3 && std::string(argv[1])=="--layout-integration-only") {
         layout_refresh_host_checks::Run(app,std::string(argv[2])=="bound");ShutdownCleanup(app);g_Block=nullptr;delete app;return 0;
     }
