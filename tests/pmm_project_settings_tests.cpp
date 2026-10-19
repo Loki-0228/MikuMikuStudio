@@ -288,7 +288,11 @@ void PutPmxText(std::ofstream& file, const std::wstring& value) {
     file.write(reinterpret_cast<const char*>(value.data()),
                static_cast<std::streamsize>(value.size() * sizeof(wchar_t)));
 }
-void WritePmmNameBoundaryPmx(const std::filesystem::path& path) {
+void WritePmmNameBoundaryPmx(const std::filesystem::path& path,
+                           const std::vector<std::wstring>& names = {
+                               L"1234567890123456789", L"+FlycloakRootB CB A01",
+                               L"あいうえおかきくけこ", L"bone\U0001f600",
+                               L"CollisionPrefixABCDEFG1", L"CollisionPrefixABCDEFG2"}) {
     std::ofstream file(path, std::ios::binary);
     file.write("PMX ", 4);
     PutPmx(file, 2.0f);
@@ -301,16 +305,8 @@ void WritePmmNameBoundaryPmx(const std::filesystem::path& path) {
     PutPmx(file, std::int32_t(0));  // vertices
     PutPmx(file, std::int32_t(0));  // surface indices
     PutPmx(file, std::int32_t(0));  // materials
-    const wchar_t* const names[] = {
-        L"1234567890123456789",
-        L"+FlycloakRootB CB A01",
-        L"あいうえおかきくけこ",
-        L"bone\U0001f600",
-        L"CollisionPrefixABCDEFG1",
-        L"CollisionPrefixABCDEFG2",
-    };
-    PutPmx(file, std::int32_t(6));  // bones
-    for (int i = 0; i < 6; ++i) {
+    PutPmx(file, static_cast<std::int32_t>(names.size()));  // bones
+    for (std::size_t i = 0; i < names.size(); ++i) {
         PutPmxText(file, names[i]);
         PutPmxText(file, L"en");
         PutPmx(file, float(i)); PutPmx(file, 0.0f); PutPmx(file, 0.0f);
@@ -323,14 +319,54 @@ void WritePmmNameBoundaryPmx(const std::filesystem::path& path) {
     PutPmx(file, std::int32_t(1));  // display frames
     PutPmxText(file, L"Root"); PutPmxText(file, L"Root");
     PutPmx(file, static_cast<unsigned char>(0));
-    PutPmx(file, std::int32_t(6));
-    for (int i = 0; i < 6; ++i) {
+    PutPmx(file, static_cast<std::int32_t>(names.size()));
+    for (std::size_t i = 0; i < names.size(); ++i) {
         PutPmx(file, static_cast<unsigned char>(0));  // bone element
         PutPmx(file, static_cast<signed char>(i));
     }
     PutPmx(file, std::int32_t(0));  // rigid bodies
     PutPmx(file, std::int32_t(0));  // joints
     Check(bool(file), "write bones-only PMX boundary fixture");
+}
+void MeasuredNameBoundariesRoundtrip(MMDApp& app, const std::filesystem::path& directory) {
+    // These input names match the native MMD measurements documented in
+    // docs/reference/legacy-mmd-limits.md. Exercise MMS's actual save/load path:
+    // the VMD 15-byte limit must not force a PMM v3 header or lose bone keys.
+    const std::vector<std::wstring> names{
+        std::wstring(15, L'B'), std::wstring(16, L'B'), std::wstring(19, L'B'),
+        std::wstring(20, L'B'), std::wstring(21, L'B'),
+        std::wstring(7, L'あ') + L"A", std::wstring(8, L'あ'),
+        std::wstring(9, L'あ') + L"A", std::wstring(10, L'あ'), L"骨\U0001f31f"};
+    for (std::size_t i = 0; i < names.size(); ++i) {
+        ResetAppState(&app);
+        const auto stem = L"measured-name-" + std::to_wstring(i);
+        const auto pmx = directory / (stem + L".pmx");
+        const auto pmm = directory / (stem + L".pmm");
+        WritePmmNameBoundaryPmx(pmx, {names[i]});
+        LoadModelFile(&app, pmx.c_str(), false);
+        Check(app.ModelSlot(0) != nullptr, "load a measured name through the production PMX loader");
+        auto& model = *mdl::Mdl(app.ModelSlot(0));
+        Check(model.boneCount == 1, "measured-name fixture has one bone");
+        const auto report = save_compatibility::InspectPmm(app);
+        Check(!report.invalidData && !report.needsNewPmm,
+              "measured names alone never upgrade PMM to v3");
+        Check(report.namesNeedExtension == (i == names.size() - 1),
+              "canonical CP932 names need no warning; a Unicode alias still does");
+        const std::string mirror(model.boneTable[0].name);
+        model.boneKeys[0].position[0] = float(i + 1);
+        Check(SaveSceneCopy(&app, pmm.c_str()), "save the measured-name project");
+        Read(pmm);  // Checks the actual 0002 header and extension integrity.
+        Load(app, pmm);
+        Check(app.ModelSlot(0) != nullptr, "reload the measured-name PMM");
+        const auto& restored = *mdl::Mdl(app.ModelSlot(0));
+        Check(restored.boneCount == 1 &&
+              text_encoding::BoneName(restored.boneTable[0], false) == names[i] &&
+              mirror == restored.boneTable[0].name &&
+              restored.boneKeys[0].position[0] == float(i + 1),
+              "PMM v2 roundtrip retains the full name, binding mirror and keyed value");
+    }
+    ResetAppState(&app);
+    std::puts("PASS ten measured name cases keep PMM v2 and survive actual MMS save/load");
 }
 void PmxNameBoundaries(MMDApp& app, const std::filesystem::path& directory) {
     const auto pmx = directory / L"boundary-bones.pmx";
@@ -674,6 +710,7 @@ int wmain(int argc, wchar_t** argv) {
         app->state=MMDAppState{};app->InitDefaults();
         Check(InitMainWindowAndD3D(app,GetModuleHandleW(nullptr),SW_HIDE),"initialize hidden production app");
         ShowWindow(app->MainWindow(),SW_HIDE);
+        MeasuredNameBoundariesRoundtrip(*app,directory);
         PmxNameBoundaries(*app,directory);
         ShutdownCleanup(app);delete app;g_Block=nullptr;
         return 0;

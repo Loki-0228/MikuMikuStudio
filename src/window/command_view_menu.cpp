@@ -1666,19 +1666,26 @@ INT_PTR CALLBACK ModelDisplayOrderDlgProc(HWND hDlg, UINT msg, WPARAM wParam,
     MMDApp* app = g_Block;
     if (msg == WM_INITDIALOG) {
         MakeDialogTopmostIfRequested(app, hDlg);
-        const int count = static_cast<int>(
-            SendMessageW(GetDlgItem(app->state.hwnd, panel::kMainComboModel),
-                         CB_GETCOUNT, 0, 0));
+        int count = 1;  // row zero is camera/light/accessory
+        for (int slot = 0; slot < kModelSlotCount; ++slot)
+            if (app->ModelSlot(slot) != nullptr) ++count;
         g_displayOrderDialogCount = count;
         app->AccessoryOrderArray() = std::calloc(count, sizeof(std::int32_t));
-        for (int i = 1; i < count; ++i) {
-            const auto length = SendMessageW(GetDlgItem(app->state.hwnd, panel::kMainComboModel), CB_GETLBTEXTLEN, i, 0);
-            std::wstring buf(length >= 0 ? static_cast<size_t>(length) + 1 : 1, L'\0');
-            SendMessageW(GetDlgItem(app->state.hwnd, panel::kMainComboModel), CB_GETLBTEXT, i, (LPARAM)buf.data());
-            SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox), LB_ADDSTRING, 0,
-                         (LPARAM)buf.c_str());
+        if (app->AccessoryOrderArray() == nullptr) {
+            EndDialog(hDlg, 2);
+            return 0;
         }
         BuildModelOrderArray(app, count);  // 0x41E7B0
+        const auto* order = static_cast<const std::int32_t*>(app->AccessoryOrderArray());
+        for (int i = 1; i < count; ++i) {
+            // The repaired order is the source of both identity and label.
+            // Copying old combo text would preserve stale/mismatched names.
+            const auto* model = mdl::Mdl(app->ModelSlot(order[i] - 1));
+            const auto label = text_encoding::ModelLabel(
+                *model, UiUsesEnglishNames(app->EnglishUI()));
+            SendMessageW(GetDlgItem(hDlg, panel::kOrderListBox), LB_ADDSTRING, 0,
+                         reinterpret_cast<LPARAM>(label.c_str()));
+        }
         return 0;
     }
     if (msg != WM_COMMAND) {

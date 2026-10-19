@@ -108,6 +108,10 @@ std::uint64_t LayerBakeTransaction::Generation() const noexcept { return 0; }
 }
 
 namespace deformed_mesh_capture {
+bool Observe(MMDApp&, DrawObserver*, std::string& error) { return Unavailable(error); }
+void StopObserving(DrawObserver*) {}
+ObserverSilenceScope::ObserverSilenceScope() : previous_(0) {}
+ObserverSilenceScope::~ObserverSilenceScope() = default;
 // A session owns no device, window, hook or capture state in this profile.
 struct Session::Impl {};
 Session::Session(MMDApp&, bool) {}

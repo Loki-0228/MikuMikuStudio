@@ -438,12 +438,6 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
             else
                 swprintf_s(buf, 0x14, L"Null_%02d", nullIdx++);
         }
-#if MMD_ORIGINAL_PROFILE
-        if (i < 2 && !original_import::Text(buf, 20)) {
-            original_import::Refuse(hwnd, englishUI);
-            return AbortPmxLoad(reader, m);
-        }
-#endif
         WideToSjis(sjisMirrors[i], buf, kSjisSizes[i]);
     }
     if (showInfo) {                                         // 0x4B7A56
@@ -742,6 +736,7 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
     // Cleared up front so a failure on any entry can release the whole table.
     for (std::uint32_t t = 0; t < texCount; ++t)
         texPaths[t] = nullptr;
+    bool textureReferencesFit = true;
     for (std::uint32_t t = 0; t < texCount; ++t) {
         std::uint32_t len = 0;
         if (!ReadValidatedTextLength(reader, textCtx, len)) {
@@ -759,10 +754,7 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
         }
 #if MMD_ORIGINAL_PROFILE
         if (texPaths[t] && !original_import::Text(texPaths[t])) {
-            releaseTexturePaths(texPaths, texCount);
-            reader.Close();
-            original_import::Refuse(hwnd, englishUI);
-            return false;
+            textureReferencesFit = false;
         }
 #endif
     }
@@ -1975,15 +1967,10 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
         key.rotation[3] = 1.0f;
     }
     text_encoding::SetMaterialNames(model,std::move(materialNames));
-#if MMD_ORIGINAL_PROFILE
-    if (!original_import::Model(model)) {
-        original_import::Refuse(hwnd, englishUI);
-        return false;
-    }
-#endif
     model.loadComplete = 1;
     PostLoadInit(m);                                        // 0x49C850
     model_vertex_cache::RegisterLoaded(m);
+    original_import::WarnModelImport(model, hwnd, englishUI, true, textureReferencesFit);
     // Report once per model, including PMM loads whose showInfo flag is off.
     // Headless importers have no owner window and can inspect the same text
     // with PmxJointWarnings without displaying a modal dialog.

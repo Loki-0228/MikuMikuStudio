@@ -71,8 +71,41 @@ inline bool ModelNames(const mdl::ModelRecord& model) {
     return true;
 }
 
-// The PMD writer also checks structural and texture-field limits. Sharing
-// that check keeps import and entry to the model editor consistent with save.
+// The PMD writer also checks structural and texture-field limits. Reuse those
+// checks for import warnings and for entry to the PMD-only model editor.
 bool Model(mdl::ModelRecord& model);
 bool CanEdit(mdl::ModelRecord& model);
+
+// Standard output limits are not parse errors. Keep readable model data and
+// warn once after loading; the existing save/editor checks still prevent loss.
+inline void WarnModelImport(mdl::ModelRecord& model, void* owner, unsigned language,
+                            bool legacyTextFits = true, bool referencesFit = true) {
+#if MMD_ORIGINAL_PROFILE
+    const bool namesFit = legacyTextFits && ModelNames(model);
+    const bool pathsFit = referencesFit && Text(model.path);
+    const bool dataFit = !namesFit || Model(model);
+    if (namesFit && pathsFit && dataFit) return;
+    const unsigned lang = language <= 2 ? language : 1;
+    const wchar_t* headings[] = {
+        L"モデルを読み込みました。次の項目は一部の元の MMD 形式に完全には保存できません：\n",
+        L"The model was loaded. Some original MMD output formats cannot preserve these fields completely:\n",
+        L"模型已导入。以下内容无法完整保存到部分原版 MMD 格式：\n"};
+    const wchar_t* names[] = {L"・名前の文字または長さ（VMD のボーン／モーフ名は CP932 で 15 バイトまで）\n", L"- Name characters or lengths (VMD bone/morph names allow 15 CP932 bytes)\n", L"－名称的字符或长度（VMD 的骨骼／表情名最多为 15 个 CP932 字节）\n"};
+    const wchar_t* paths[] = {L"・モデル／テクスチャの参照パス\n", L"- Model or texture reference paths\n", L"－模型或贴图引用路径\n"};
+    const wchar_t* data[] = {L"・材質、物理または表示項目\n", L"- Material, physics or display entries\n", L"－材质、物理或显示项目\n"};
+    const wchar_t* endings[] = {
+        L"\n読み込んだデータは保持されています。保存時に選択した形式の制限を確認し、完全に保存できない場合は通知します。",
+        L"\nThe loaded data has been retained. Saving checks the selected format and warns if it cannot preserve the data completely.",
+        L"\n已保留读取到的数据。保存时会按所选格式检查，无法完整保存时会提示。"};
+    std::wstring message = headings[lang];
+    if (!namesFit) message += names[lang];
+    if (!pathsFit) message += paths[lang];
+    if (!dataFit) message += data[lang];
+    message += endings[lang];
+    runtime_log::Write("ORIGINAL_PROFILE model loaded with compatibility warning names=%d paths=%d data=%d",
+                       namesFit, pathsFit, dataFit);
+    if (owner) MessageBoxW(static_cast<HWND>(owner), message.c_str(),
+        L"MMD", MB_OK | MB_ICONWARNING);
+#endif
+}
 }

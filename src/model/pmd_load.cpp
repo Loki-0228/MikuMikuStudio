@@ -122,17 +122,30 @@ bool ModelLoadPMD(unsigned char* m, HWND hwnd, const wchar_t* path,
     //   m+60 - the physics scene wrapper: gizmos +4..44, constraint-id
     //   counter +56, btDiscreteDynamicsWorld* +64), a9 appPathBuf.
     const bool enData = englishUi != 0;
-    if (!original_import::Reference(path, hwnd, englishUi)) return false;
     mdl::ModelRecord& model = *mdl::Mdl(m);
     char text[256];
     wchar_t wide1[256], wide2[384], wide3[384];
+
+    // The host stores model paths in a fixed UTF-16 buffer. This is separate
+    // from CP932 output compatibility; do not pass an oversized source path
+    // into the CRT's invalid-parameter handler while allowing Unicode input.
+    if (!path || wcsnlen_s(path, 256) == 256) {
+        SetLastError(ERROR_FILENAME_EXCED_RANGE);
+        if (hwnd && boxGate) {
+            const wchar_t* messages[] = {
+                L"モデルのパスが長すぎます。フォルダーまたはファイル名を短くして、もう一度読み込んでください。",
+                L"The model path is too long. Shorten the folder or file name and try again.",
+                L"模型路径过长。请缩短文件夹或文件名后重新导入。"};
+            MessageBoxW(hwnd, messages[englishUi <= 2 ? englishUi : 1], L"MMD", MB_OK | MB_ICONWARNING);
+        }
+        return false;
+    }
 
     model.hwnd = hwnd;
     model.scenePtr = sub048;               // 0x4BF42B
     model.physicsFlags = englishUi;           // 0x4BF431: English-data byte
 
     ResolveUserFilePath(paths, path);                         // 0x4089F0
-    if (!original_import::Reference(paths.resolvedPath, hwnd, englishUi)) return false;
     wcscpy_s(model.path, 0x100, paths.resolvedPath);
 
     // MME records this wide path when associating the index-buffer output
@@ -160,8 +173,10 @@ bool ModelLoadPMD(unsigned char* m, HWND hwnd, const wchar_t* path,
     }
 
     bool textFits = true;
+    bool textComplete = true;
     const auto readName = [&](char* destination, unsigned capacity, unsigned maximum) {
         const int count = _read(fh, destination, capacity);
+        textComplete = textComplete && count == static_cast<int>(capacity);
 #if MMD_ORIGINAL_PROFILE
         textFits = textFits && count == static_cast<int>(capacity) &&
             original_import::Legacy(destination, capacity, maximum);
@@ -993,14 +1008,12 @@ bool ModelLoadPMD(unsigned char* m, HWND hwnd, const wchar_t* path,
         }
     }
 #if MMD_ORIGINAL_PROFILE
-    if (!textFits || !original_import::Model(model)) {
-        original_import::Refuse(hwnd, englishUi);
-        return false;
-    }
+    if (!textComplete) return false;
 #endif
     model.loadComplete = 1;
     PostLoadInit(m);                                          // 0x49C850
     model_vertex_cache::RegisterLoaded(m);
+    original_import::WarnModelImport(model, hwnd, englishUi, textFits);
     return true;
 }
 

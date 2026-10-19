@@ -30,7 +30,7 @@
 
 Both application ZIPs contain `MikuMikuDance.exe` and licenses. Neither includes models, user settings, MME, or the NVIDIA fix DLL. Starting with `v2026.10.15.1`, `MMSNvidiaAAFix.dll` is a separate optional release asset with [installation instructions in the release notes](docs/records/releases.md#optional-nvidia-fix).
 
-The minimal build checks names and file references during import and rejects text that cannot fit the standard CP932 fields. Compatible PMX models remain available for scenes and animation. Model editing supports PMD only and rejects PMX before opening an editor. Save-time checks remain as a safeguard for later edits. Save extended full-build projects as separate copies when using the minimal build, because scale, curve, and mesh-cache extensions are discarded. Round-trip loading and saving with the actual MMD 9.32 executable has not yet been validated. See [minimal build limits](docs/reference/minimal-build.md).
+In the current source, the minimal build loads readable PMD and PMX models even when their names or references exceed legacy output limits. It retains the loaded data and warns about those limits. Saving checks the selected format separately; VMD's 15-byte bone-name limit does not block model import. Other file-import checks remain in place. Model editing supports PMD only and rejects PMX before opening an editor. Save extended full-build projects as separate copies when using the minimal build, because scale, curve, and mesh-cache extensions are discarded. See [minimal build limits](docs/reference/minimal-build.md) and [measured MMD 9.26 boundaries](docs/reference/legacy-mmd-limits.md). These tests do not establish lossless round trips for arbitrary projects in MMD 9.32.
 
 Extract the two builds into separate directories and run the executable in each directory. Keep your existing installation if it contains settings or plugins.
 
@@ -42,9 +42,11 @@ PMM `0002` extensions preserve bone curves, project settings, and scene and acce
 
 The full build also provides the following extended-save behavior.
 
-PMM saving prefers the original `0002` header. Unused reserved space does not force a new format, and sparse high key slots are compacted when their live contents still fit. Only content outside the original limits or legacy path encoding selects the MMS `0003` format. Original MMD and the minimal build cannot open that format.
+PMM saving prefers the original `0002` header. Unused reserved space does not force a new format, and sparse high key slots are compacted when their live contents still fit. Only content outside the original limits or legacy path encoding selects the MMS `0003` format. Bone names of 16–19 CP932 bytes, canonical truncated bindings, and name extensions alone keep `0002`; the VMD 15-byte name limit does not select the PMM version. Original MMD and the minimal build cannot open `0003`.
 
 If names cannot be encoded without loss, MMS preserves the complete names in an extension and reports the difference. It also writes a `.compat.pmm` or `.compat.vmd` copy with legacy short names when that copy is usable. Existing copies receive a numbered suffix. Capacity overflow, ambiguous short names, or unsupported reference paths prevent a compatible copy; MMS reports this instead of dropping keys or assigning motion to the wrong bone.
+
+The current `0003` writer still uses the v2 record layout and the `MMSXPMM2` tail extension; readers also accept the older `MDSXPMM2` marker. The [new section-based PMM design](docs/reference/pmm-0003-sections.md) groups data by model, camera, light, accessory, and project settings. Full names, paths, and keyframe curves belong to their corresponding sections, and unknown sections are preserved. This design has not been integrated into project loading or saving. It supersedes the earlier `PMM3END` container proposal. See [current PMM extensions](docs/reference/pmm-extensions.md) for implemented behavior and [legacy MMD limits](docs/reference/legacy-mmd-limits.md) for native-executable measurements.
 
 Processor choices are saved per Windows user and take effect on the next
 startup. They are not stored in project files.
@@ -73,7 +75,7 @@ startup. They are not stored in project files.
 
 完整包和最小包 ZIP 均包含 `MikuMikuDance.exe` 与许可文件，不附带用户配置、模型、MME 或 NVIDIA 修复 DLL。从 `v2026.10.15.1` 起，`MMSNvidiaAAFix.dll` 作为独立附件按需下载，见[Release Notes 中的安装说明](docs/records/releases.md#nvidia-修复安装可选)。
 
-最小包仍保留三语界面等便利修复，并非原版 MMD 的逐字节复刻。它在导入时检查名称和文件内引用：须能完整表示为 CP932，并符合标准字段的字节上限，超出范围时拒绝导入。合规 PMX 仍可用于场景和动画；模型编辑仅支持 PMD，PMX 在进入模型编辑时即被拦截。保存端保留校验，防止后续编辑产生无法表示的内容。
+最小包仍保留三语界面等便利修复，并非原版 MMD 的逐字节复刻。当前源码允许读取结构可解析的 PMD、PMX 模型；名称或引用路径超出旧格式保存限制时，保留读取到的数据并警告。保存时再按所选格式检查，不用 VMD 的 15 字节骨骼名限制取消模型导入。其他文件的导入检查保持原有规则。PMX 可用于场景和动画，模型编辑仍仅支持 PMD。
 
 含缩放、曲线或 mesh 缓存等扩展的完整包工程，经最小包保存后会丢失这些扩展，请另存为副本。真实 MMD 9.32 程序的双向载入及再保存尚未完成验证，不能据此保证任意工程无损互导。选择下载前可查看[最小包范围与格式限制](docs/reference/minimal-build.md)及[透明排序验收记录](docs/records/rendering/transparency.md#record-transparent-sort-validation)。
 
@@ -87,9 +89,11 @@ PMM `0002` 在保留标准文件头的前提下，通过扩展保存骨骼曲线
 
 完整包还支持以下扩展保存行为。
 
-保存 PMM 时优先采用旧版 `0002`。未使用的预留空间不会触发新版格式；高位关键帧槽位存在空洞时，保存器会压紧槽位。只有实际内容超出旧版能力或引用路径无法用旧编码表示时，才采用 MMS `0003`。原版 MMD 和最小包不能打开该格式。
+保存 PMM 时优先采用旧版 `0002`。未使用的预留空间不会触发新版格式；高位关键帧槽位存在空洞时，保存器会压紧槽位。只有实际内容超出旧版能力或引用路径无法用旧编码表示时，才采用 MMS `0003`。16～19 个 CP932 字节的骨骼名、符合原版截断规则的绑定名，以及单独的名称扩展仍使用 `0002`，不套用 VMD 的 15 字节名称限制。原版 MMD 和最小包不能打开 `0003`。
 
 名称无法无损编码时，MMS 在扩展中保留完整名称并提示，同时在能生成可用副本时自动写入 `.compat.pmm` 或 `.compat.vmd`。副本采用旧格式短名称，同名副本添加序号。容量不足、短名称冲突或引用路径不兼容时，MMS 会说明无法生成兼容副本，不会删减关键帧或把动作分配给错误的骨骼。
+
+当前 `0003` 仍采用 v2 记录布局和 `MMSXPMM2` 尾部扩展，读取时也接受旧标记 `MDSXPMM2`。[新版 PMM 分节设计](docs/reference/pmm-0003-sections.md)按模型、相机、灯光、配件和工程设置划分数据，将完整名称、路径及关键帧曲线放入对应节，并保留未知节。该设计尚未接入工程保存和加载，已取代早期的 `PMM3END` 尾部容器方案。已实现行为见 [PMM 扩展](docs/reference/pmm-extensions.md)，原版程序的名称、路径与导出边界见[旧版 MMD 限制实测](docs/reference/legacy-mmd-limits.md)。
 
 运算器选择按 Windows 用户跨工程保存，下次启动生效，不写入工程文件。
 
@@ -115,7 +119,7 @@ PMM `0002` 在保留标准文件头的前提下，通过扩展保存骨骼曲线
 
 両方のアプリ ZIP に `MikuMikuDance.exe` とライセンスを含みます。モデル、ユーザー設定、MME、NVIDIA 修正 DLL は同梱しません。`v2026.10.15.1` 以降、`MMSNvidiaAAFix.dll` は任意の独立ダウンロードです。[リリースノートの導入手順](docs/records/releases.md#nvidia-修正の導入任意)を参照してください。
 
-最小版は読み込み時に名前と参照先の CP932 表現およびフィールド長を確認し、表現できない内容の読み込みを拒否します。条件を満たす PMX はシーンやアニメーションで利用できます。モデル編集は PMD のみ対応し、PMX は編集画面を開く前に拒否します。読み込み後の編集に備え、保存時の確認も残しています。完全版の拡張を含むプロジェクトを最小版で保存すると、スケール、曲線、メッシュキャッシュの拡張が失われるため、別名で保存してください。実際の MMD 9.32 を使った双方向の読み込みと再保存は、まだ検証できていません。[最小版の制限](docs/reference/minimal-build.md)も参照してください。
+現在のソースでは、最小版は解析可能な PMD・PMX モデルを読み込みます。名前や参照先が旧形式の保存制限を超える場合は、読み込んだデータを保持して警告します。保存時は選択した形式の制限を確認し、VMD の 15 バイトのボーン名制限だけではモデルの読み込みを拒否しません。他のファイルの読み込み時の検証は従来どおりです。PMX はシーンとアニメーションで利用できますが、モデル編集は PMD のみ対応します。完全版の拡張を含むプロジェクトを最小版で保存すると、スケール、曲線、メッシュキャッシュの拡張が失われるため、別名で保存してください。[最小版の制限](docs/reference/minimal-build.md)と [MMD 9.26 の実測結果](docs/reference/legacy-mmd-limits.md)を参照してください。任意のプロジェクトを MMD 9.32 で無損失に往復できることを保証するものではありません。
 
 両方を使う場合は別々のフォルダーに展開し、それぞれの実行ファイルを起動してください。設定やプラグインが入った既存のフォルダーは残してください。
 
@@ -127,9 +131,11 @@ PMM `0002` は標準ヘッダーを維持し、拡張データとしてボーン
 
 完全版には、次の拡張保存機能もあります。
 
-PMM は従来の `0002` 形式を優先します。未使用の予約領域では新形式に切り替わりません。高い番号に残ったキーは、保存時に空きスロットを詰めます。実際の内容が従来の範囲を超える場合、または参照パスを旧文字コードで表現できない場合にだけ、MMS `0003` 形式を使います。オリジナル MMD と最小版はこの形式を開けません。
+PMM は従来の `0002` 形式を優先します。未使用の予約領域では新形式に切り替わりません。高い番号に残ったキーは、保存時に空きスロットを詰めます。実際の内容が従来の範囲を超える場合、または参照パスを旧文字コードで表現できない場合にだけ、MMS `0003` 形式を使います。CP932 で 16～19 バイトのボーン名、従来の切り詰め規則に一致する識別名、名前だけの拡張は `0002` のままです。VMD の 15 バイト制限は PMM の形式選択には適用しません。オリジナル MMD と最小版は `0003` を開けません。
 
 名前を無損失で保存できない場合は、拡張に完全な名前を保存して通知します。利用可能な互換コピーを作れる場合は、旧形式の短い名前を使った `.compat.pmm` または `.compat.vmd` を自動保存します。同名のコピーは上書きせず連番を付けます。容量不足、短縮名の重複、参照パスの制約がある場合は、キーの省略や誤ったボーンへの割り当てを行わず、コピーを作れない理由を通知します。
+
+現在の `0003` は v2 のレコード構造と `MMSXPMM2` 末尾拡張を使い、読み込み時は旧マーカー `MDSXPMM2` も受け付けます。[新しい PMM のセクション設計](docs/reference/pmm-0003-sections.md)では、モデル、カメラ、照明、アクセサリ、プロジェクト設定ごとにデータを分けます。完全な名前、パス、キーフレーム曲線を対応するセクションに置き、未知のセクションも保持します。この設計はプロジェクトの読み込みと保存にはまだ接続されておらず、以前の `PMM3END` 末尾コンテナ案を置き換えるものです。実装済みの動作は [PMM 拡張](docs/reference/pmm-extensions.md)、実際の旧版プログラムの制限は [MMD の実測記録](docs/reference/legacy-mmd-limits.md)を参照してください。
 
 処理デバイスの選択は Windows ユーザーごとに保存され、次回起動時に反映されます。プロジェクトファイルには保存されません。
 

@@ -12,6 +12,8 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+include(cmake/LegacyOptions.cmake)
+
 set(MIKUMIKUSTUDIO_PROFILE "full" CACHE STRING "Build profile: full or mmd932")
 set_property(CACHE MIKUMIKUSTUDIO_PROFILE PROPERTY STRINGS full mmd932)
 if(NOT MIKUMIKUSTUDIO_PROFILE STREQUAL "full" AND NOT MIKUMIKUSTUDIO_PROFILE STREQUAL "mmd932")
@@ -168,6 +170,19 @@ add_executable(animation_curve_tests EXCLUDE_FROM_ALL tests/animation_curve_test
 target_link_libraries(animation_curve_tests PRIVATE mikumikustudio_animation_curve)
 set_target_properties(animation_curve_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
 enable_testing()
+foreach(_case IN ITEMS legacy override fresh)
+    set(_legacy_options)
+    if(NOT _case STREQUAL "fresh")
+        list(APPEND _legacy_options -DMIKUDANCESTUDIO_PROFILE=mmd932
+            -DMIKUDANCESTUDIO_ENABLE_DX12=OFF -DMIKUDANCESTUDIO_WIN7_BASELINE=ON)
+    endif()
+    if(_case STREQUAL "override")
+        list(APPEND _legacy_options -DMIKUMIKUSTUDIO_PROFILE=full
+            -DMIKUMIKUSTUDIO_ENABLE_DX12=ON -DMIKUMIKUSTUDIO_WIN7_BASELINE=OFF)
+    endif()
+    add_test(NAME legacy_build_options_${_case} COMMAND ${CMAKE_COMMAND}
+        -DCASE=${_case} ${_legacy_options} -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/legacy_cmake_options_tests.cmake)
+endforeach()
 
 add_executable(native_shadow_tests EXCLUDE_FROM_ALL tests/native_shadow_tests.cpp)
 target_include_directories(native_shadow_tests PRIVATE include)
@@ -841,6 +856,18 @@ endif()
 # ---------------------------------------------------------------------------
 option(MIKUMIKUSTUDIO_BUILD_UI_TESTS "Build user-acceptance regression tests" OFF)
 if (MIKUMIKUSTUDIO_BUILD_UI_TESTS)
+    add_executable(mf_h264_startup_tests EXCLUDE_FROM_ALL tests/mf_h264_startup_tests.cpp)
+    target_include_directories(mf_h264_startup_tests PRIVATE include)
+    target_compile_options(mf_h264_startup_tests PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/Ob0>)
+    target_link_libraries(mf_h264_startup_tests PRIVATE minhook::minhook mikumikustudio_runtime_log
+        mfplat mfreadwrite mfuuid ole32 oleaut32 strmiids user32 gdi32)
+    add_executable(model_display_order_tests EXCLUDE_FROM_ALL tests/model_display_order_tests.cpp)
+    target_link_libraries(model_display_order_tests PRIVATE mikumikustudio_core minhook::minhook winmm dsound)
+    foreach(_test IN ITEMS mf_h264_startup_tests model_display_order_tests)
+        set_target_properties(${_test} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+        add_test(NAME ${_test} COMMAND ${_test})
+        set_tests_properties(${_test} PROPERTIES TIMEOUT 30)
+    endforeach()
     add_executable(native_media_tests EXCLUDE_FROM_ALL tests/native_media_tests.cpp
         src/media/native_media.cpp src/media/native_video.cpp src/media/wic_mov_recorder.cpp)
     target_include_directories(native_media_tests PRIVATE include)

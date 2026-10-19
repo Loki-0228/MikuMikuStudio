@@ -25,6 +25,6 @@
 
 原版 MMD 重新保存 `0002` 工程时可能丢弃 MMS 扩展。最小包仅保存标准内容，忽略完整包的缩放、曲线和网格缓存扩展。交换前另存副本，并检查目标程序中的实际结果。
 
-最小包要求名称和文件内引用能够用 CP932 完整表示，字段长度也必须符合旧格式。当前测试不能保证任意工程在真实 MMD 9.32 中无损往返。
+当前源码的最小包可以导入结构可解析、但名称或引用超出旧格式限制的 PMD、PMX，并保留数据、显示警告。保存时按所选格式检查 CP932 编码、字段长度和关键帧绑定。出现导入警告后，交换文件前仍需验证保存结果。具体边界见[旧版 MMD 限制实测](../reference/legacy-mmd-limits.md)；当前测试不能保证任意工程在 MMD 9.32 中无损往返。
 
 详细数据定义见 [PMM 扩展](../reference/pmm-extensions.md)、[VPD 缩放](../reference/vpd-scale.md)和[最小构建档](../reference/minimal-build.md)。载入、保存、编码与容量的证据见[工程格式记录](../records/formats/projects.md)和[模型载入记录](../records/formats/models.md)。
