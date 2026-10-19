@@ -1,6 +1,7 @@
 // MAINTENANCE: regression-keep; purpose and cleanup conditions in tests/README.md.
-// Regressions for the PMM v2 tail extension codec ("MDSXPMM2" trailer), see
-// include/mikudancestudio/pmm_extension.hpp and src/io/pmm_extension.cpp.
+// Regressions for the PMM v2 tail extension codec ("MMSXPMM2" trailer; legacy
+// "MDSXPMM2" is read), see include/mikudancestudio/pmm_extension.hpp and
+// src/io/pmm_extension.cpp.
 //
 // Pure CPU: no window, no GPU, no MMDApp, no other project module.  Every
 // temporary file is deleted by its TempFile guard on every path.  The tests
@@ -130,7 +131,7 @@ void PushRawRecord(std::vector<std::uint8_t>& stream, std::uint32_t keySize,
 std::vector<std::uint8_t> EncodeTrailer(std::uint64_t standardSize, std::uint64_t extensionSize,
                                         std::uint32_t crc, std::uint32_t reserved) {
     std::vector<std::uint8_t> trailer;
-    trailer.insert(trailer.end(), "MDSXPMM2", "MDSXPMM2" + 8);
+    trailer.insert(trailer.end(), "MMSXPMM2", "MMSXPMM2" + 8);
     PutU64(trailer, standardSize);
     PutU64(trailer, extensionSize);
     PutU32(trailer, crc);
@@ -299,6 +300,29 @@ void TestNoTrailerIsAbsent() {
 
 // Two settings plus one unknown record survive Append -> Read unchanged, the
 // standard prefix is not rewritten, and the file position comes back.
+void TestLegacyMarkerIsRead() {
+    TempFile file("legacy_marker");
+    Check(file.ok(), "create legacy marker fixture");
+    const auto prefix = StandardBytes(55);
+    std::vector<std::uint8_t> stream;
+    const std::vector<std::uint8_t> key = BytesOf("legacy.key");
+    const std::vector<std::uint8_t> value = BytesOf("legacy.value");
+    PushRawRecord(stream, static_cast<std::uint32_t>(key.size()),
+                  static_cast<std::uint32_t>(value.size()), key, value);
+    std::vector<std::uint8_t> bytes = ValidFile(prefix, stream);
+    std::memcpy(bytes.data() + bytes.size() - 32, "MDSXPMM2", 8);
+    file.WriteWhole(bytes);
+
+    pmmx::Document out;
+    std::uint64_t standardSize = 0;
+    Check(pmmx::Read(file.fd(), out, standardSize) == pmmx::ReadResult::Loaded,
+          "legacy MDSXPMM2 marker is read");
+    Check(standardSize == prefix.size() && out.records.size() == 1 &&
+              out.records[0].key == "legacy.key" &&
+              out.records[0].value == value,
+          "legacy marker records are decoded");
+}
+
 void TestRoundTripSettingsAndUnknown() {
     TempFile file("roundtrip");
     Check(file.ok(), "roundtrip: temp file created");
@@ -858,6 +882,7 @@ void TestAppendRejects() {
 
 int main() {
     TestNoTrailerIsAbsent();
+    TestLegacyMarkerIsRead();
     TestRoundTripSettingsAndUnknown();
     TestUnknownOrderAndValuePreserved();
     TestExactByteLayout();

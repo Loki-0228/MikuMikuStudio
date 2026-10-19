@@ -12,10 +12,11 @@
 //   [TOC: "PMM3TOC" + entries]
 //   [footer: "PMM3END" + sizes + CRCs]     (last 64 bytes)
 //
-// A container is absent when the last 64 bytes are not "PMM3END"; the legacy
-// "MDSXPMM2" trailer is reported as ReadResult::Legacy so the caller can use
-// the existing extension codec.  Unknown blocks are caller-owned: this codec
-// preserves their key, version, flags, encoding and payload bytes exactly.
+// A container is absent when the last 64 bytes are not "PMM3END"; a trailing
+// "MMSXPMM2" (or legacy "MDSXPMM2") extension is reported as
+// ReadResult::Legacy so the caller can use the existing extension codec.
+// Unknown blocks are caller-owned: this codec preserves their key, version,
+// flags, encoding and payload bytes exactly.
 #pragma once
 
 #include <cstddef>
@@ -47,8 +48,8 @@ struct Document {
 };
 
 enum class ReadResult {
-    Absent,   // no "PMM3END" and no "MDSXPMM2"
-    Legacy,   // "MDSXPMM2" trailer; the caller should use pmm_extension
+    Absent,   // no "PMM3END" and no trailing extension marker
+    Legacy,   // "MMSXPMM2" or legacy "MDSXPMM2"; use pmm_extension
     Loaded,   // valid "PMM3END" container
     Invalid,  // "PMM3END" matched but the container is malformed
 };
@@ -64,10 +65,10 @@ inline constexpr std::uint32_t kMaxKeyBytes = 255;
 
 // Reads the container from fd.  On Loaded, `document` receives every block in
 // TOC order and `standardSize` receives the standard-prefix byte count.  On
-// Legacy, `standardSize` receives the MDSXPMM2 standard size.  On Absent the
-// outputs are cleared.  On Invalid the container was recognized but rejected;
-// `document` is cleared and `standardSize` is left unchanged.  The file
-// position is restored on every result.
+// Legacy, `standardSize` receives the trailing extension's standard size.  On
+// Absent the outputs are cleared.  On Invalid the container was recognized but
+// rejected; `document` is cleared and `standardSize` is left unchanged.  The
+// file position is restored on every result.
 ReadResult Read(int fd, Document& document, std::uint64_t& standardSize);
 
 // Appends the container to fd.  The descriptor must be positioned at end of

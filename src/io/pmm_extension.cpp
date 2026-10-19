@@ -1,4 +1,4 @@
-// PMM v2 tail extension codec ("MDSXPMM2" trailer).
+// PMM v2 tail extension codec ("MMSXPMM2" trailer; legacy "MDSXPMM2" is read).
 //
 // Format, limits and API contract: include/mikudancestudio/pmm_extension.hpp.
 // Serialization is field by field (explicit little-endian stores); no C++
@@ -20,7 +20,10 @@ namespace mikudancestudio {
 namespace pmm_extension {
 namespace {
 
-const char kMagic[8] = {'M', 'D', 'S', 'X', 'P', 'M', 'M', '2'};
+const char kMagic[8] = {'M', 'M', 'S', 'X', 'P', 'M', 'M', '2'};
+// Files written before the MDS -> MMS rename keep the old marker.  Read it,
+// never write it.
+const char kLegacyMagic[8] = {'M', 'D', 'S', 'X', 'P', 'M', 'M', '2'};
 
 struct Crc32Table {
     std::uint32_t entry[256];
@@ -231,7 +234,8 @@ ReadResult Read(int fd, Document& out, std::uint64_t& standardSize) {
             result = ReadResult::IoError;
         } else if (!ReadExact(fd, trailer, kTrailerSize)) {
             result = ReadResult::IoError;
-        } else if (std::memcmp(trailer, kMagic, sizeof(kMagic)) == 0) {
+        } else if (std::memcmp(trailer, kMagic, sizeof(kMagic)) == 0 ||
+                   std::memcmp(trailer, kLegacyMagic, sizeof(kLegacyMagic)) == 0) {
             result = LoadFromTrailer(fd, trailer, static_cast<std::uint64_t>(length), parsed,
                                      parsedStandard);
         }

@@ -92,9 +92,11 @@ std::vector<std::uint8_t> StandardPrefix() {
     return bytes;
 }
 
-std::vector<std::uint8_t> LegacyTrailer(std::uint64_t standardSize) {
+std::vector<std::uint8_t> LegacyTrailer(std::uint64_t standardSize,
+                                        const char* magic = "MDSXPMM2") {
     std::vector<std::uint8_t> bytes;
-    for (char c : std::string("MDSXPMM2")) bytes.push_back(static_cast<std::uint8_t>(c));
+    for (const char* c = magic; *c; ++c)
+        bytes.push_back(static_cast<std::uint8_t>(*c));
     PutU64(bytes, standardSize);
     PutU64(bytes, 0);  // extension size
     PutU32(bytes, 0);  // extension CRC
@@ -289,18 +291,22 @@ void TestUnknownBlockPreserved() {
 }
 
 void TestLegacyTrailerIsLegacy() {
-    TempFile file("legacy");
-    Check(file.ok(), "create legacy fixture");
-    std::vector<std::uint8_t> bytes = StandardPrefix();
-    const std::vector<std::uint8_t> trailer = LegacyTrailer(30);
-    bytes.insert(bytes.end(), trailer.begin(), trailer.end());
-    file.WriteWhole(bytes);
-    pmmc::Document document;
-    std::uint64_t standardSize = 0;
-    Check(ReadContainer(file, document, standardSize) == pmmc::ReadResult::Legacy,
-          "MDSXPMM2 is reported as Legacy");
-    Check(document.blocks.empty() && standardSize == 30,
-          "legacy standard size is returned");
+    for (const char* magic : {"MDSXPMM2", "MMSXPMM2"}) {
+        const std::string tag = std::string("legacy_") + magic;
+        TempFile file(tag.c_str());
+        Check(file.ok(), "create legacy fixture");
+        std::vector<std::uint8_t> bytes = StandardPrefix();
+        const std::vector<std::uint8_t> trailer = LegacyTrailer(30, magic);
+        bytes.insert(bytes.end(), trailer.begin(), trailer.end());
+        file.WriteWhole(bytes);
+        pmmc::Document document;
+        std::uint64_t standardSize = 0;
+        Check(ReadContainer(file, document, standardSize) ==
+                  pmmc::ReadResult::Legacy,
+              "MMSXPMM2 and legacy MDSXPMM2 are reported as Legacy");
+        Check(document.blocks.empty() && standardSize == 30,
+              "legacy standard size is returned");
+    }
 }
 
 void TestEmptyDocument() {

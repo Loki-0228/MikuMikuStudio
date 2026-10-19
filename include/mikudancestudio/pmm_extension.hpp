@@ -1,4 +1,4 @@
-// PMM v2 tail extension codec ("MDSXPMM2" trailer).
+// PMM v2 tail extension codec ("MMSXPMM2" trailer; legacy "MDSXPMM2" is read).
 //
 // Standalone module: no MMDApp, no Win32 UI, no GPU, no other project headers.
 // The PMM header stays "Polygon Movie maker 0002"; the extension is appended
@@ -18,12 +18,16 @@
 // individual value uses a 32-bit length.
 //
 // Trailer (32 bytes):
-//   char     magic[8]       = "MDSXPMM2"
+//   char     magic[8]       = "MMSXPMM2"
 //   uint64   standardSize   = byte count of the standard PMM prefix
 //   uint64   extensionSize  = byte count of the record stream
 //   uint32   crc32          = IEEE CRC32 (reflected, poly 0xEDB88320) of the
 //                            record stream bytes
 //   uint32   reserved       = 0
+//
+// New writes use "MMSXPMM2".  Files written before the MDS -> MMS rename carry
+// "MDSXPMM2" and are read with the same layout; Read accepts both markers.
+// Append always writes the current "MMSXPMM2" marker.
 //
 // There is no global or per-block version number.  Extensions are namespaced
 // keys (for example "mds.viewport.zoom"); records whose keys a reader does not

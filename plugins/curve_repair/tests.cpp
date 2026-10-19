@@ -22,7 +22,7 @@ void Extension(Bytes& b,const std::vector<ac::NamedTrack>& tracks){
     Bytes values;std::string error;Check(ac::Encode(tracks,values,error),"encode curves");Bytes records;
     Record(records,"org.mikudancestudio.animation_curves.v1",values);Record(records,"org.example.unknown",{1,2,0,255,17});
     const auto standard=b.size();b.insert(b.end(),records.begin(),records.end());
-    const char magic[]="MDSXPMM2";b.insert(b.end(),magic,magic+8);U64(b,standard);U64(b,records.size());U32(b,Crc(records));U32(b,0);
+    const char magic[]="MMSXPMM2";b.insert(b.end(),magic,magic+8);U64(b,standard);U64(b,records.size());U32(b,Crc(records));U32(b,0);
 }
 std::vector<CameraKey> Keys(){
     std::vector<CameraKey> keys(3);const std::uint32_t frames[]={0,44,90};
@@ -68,6 +68,9 @@ void Tests(){
     const auto a=Analyze(pmm);Check(a.patches.size()==1,"exact endpoint recovered");Check(a.patches[0].frame==44&&a.patches[0].after==Stored(0,0),"frame 44 zero restored");
     Check(a.patches[0].before==Stored(-5.587480700341985e-8,0),"independent frame 44 regression value");
     const auto fixed=Apply(a);Check(Analyze(fixed).patches.empty(),"repair is idempotent");
+    auto legacy=Pmm(damaged);Extension(legacy,tracks);
+    std::memcpy(legacy.data()+legacy.size()-32,"MDSXPMM2",8);
+    Check(Analyze(legacy).patches.size()==1,"legacy MDSXPMM2 marker is read");
     for(std::size_t i=0;i<pmm.size();++i)if(i<a.patches[0].offset||i>=a.patches[0].offset+4)Check(pmm[i]==fixed[i],"unrelated byte preserved");
     auto clean=Pmm(keys);Extension(clean,tracks);Check(Analyze(clean).patches.empty(),"clean project unchanged");
     auto model=Pmm(damaged,true);Extension(model,tracks);Check(Analyze(model).patches.size()==1,"model blocks skipped structurally");
@@ -117,7 +120,8 @@ void Tests(){
 void Make(const std::filesystem::path& base,const std::filesystem::path& folder){
     auto bytes=ReadFile(base);const auto old=ReadCamera(bytes,bytes.size());
     const auto offset=old.front().offset;std::size_t end=offset+78+4;for(std::size_t i=1;i<old.size();++i)end=std::max(end,old[i].offset+78);
-    std::size_t standard=bytes.size();if(bytes.size()>=32&&std::memcmp(bytes.data()+bytes.size()-32,"MDSXPMM2",8)==0){std::uint64_t n;std::memcpy(&n,bytes.data()+bytes.size()-24,8);standard=static_cast<std::size_t>(n);}
+    std::size_t standard=bytes.size();if(bytes.size()>=32){const auto* tail=bytes.data()+bytes.size()-32;
+        if(std::memcmp(tail,"MMSXPMM2",8)==0||std::memcmp(tail,"MDSXPMM2",8)==0){std::uint64_t n;std::memcpy(&n,bytes.data()+bytes.size()-24,8);standard=static_cast<std::size_t>(n);}}
     const auto keys=Keys();auto result=Bytes(bytes.begin(),bytes.begin()+offset);const auto camera=CameraSection(Damage(keys));result.insert(result.end(),camera.begin(),camera.end());result.insert(result.end(),bytes.begin()+end,bytes.begin()+standard);Extension(result,Tracks(keys));
     std::filesystem::create_directories(folder);Write(folder/L"旧误差_日本語.pmm",result);Write(folder/L"原始镜头.vmd",Vmd(keys));Write(folder/L"旧误差_日本語.emm",{'t','e','s','t'});
     Check(Analyze(result).patches.size()==1,"real PMM fixture generated");

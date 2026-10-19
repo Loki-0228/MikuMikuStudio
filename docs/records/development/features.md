@@ -525,7 +525,7 @@ git diff --stat ba6b269 80bc305 -- src include res docs tests
 | 项目 | 内容 |
 | --- | --- |
 | 入口 | 无独立入口。正常保存、另存和打开 PMM 时自动读写。 |
-| 默认行为 | 文件头仍为 `Polygon Movie maker 0002`；标准数据之后是扩展记录串与 32 字节尾标 `MDSXPMM2`，含标准长度、扩展长度、CRC32 与保留字段。 |
+| 默认行为 | 文件头仍为 `Polygon Movie maker 0002`；标准数据之后是扩展记录串与 32 字节尾标 `MMSXPMM2`（读取兼容旧 `MDSXPMM2`），含标准长度、扩展长度、CRC32 与保留字段。 |
 | 保存方式 | 已定义设置：`org.mikudancestudio.skinning.processor`（运算器类型意图）、`org.mikudancestudio.view.transparent_sort_precision`（透明排序档位）、`org.mikudancestudio.model.<slot>.boneScale.v1`（骨骼缩放）。未知且有效的记录原样写回。 |
 | 兼容性 | 原版 MMD 9.32 x64 读完标准数据后关闭文件，忽略附加数据的结论来自库内静态反汇编核对，未启动原版界面验证。原版重新保存会丢失扩展。 |
 | 证据 | `58f4ea1`；`src/io/pmm_extension.cpp:1`、`src/io/pmm_project_settings.cpp`、[PMM v2 扩展格式](../../reference/pmm-extensions.md)。 |

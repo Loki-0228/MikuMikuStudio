@@ -48,7 +48,10 @@ std::uint32_t Crc(const Bytes& bytes, std::size_t first, std::size_t last) {
 std::vector<ac::NamedTrack> Curves(const Bytes& bytes, std::size_t& standard) {
     standard=bytes.size();
     std::vector<ac::NamedTrack> tracks;
-    if(bytes.size()<32 || std::memcmp(bytes.data()+bytes.size()-32,"MDSXPMM2",8)) return tracks;
+    if(bytes.size()<32) return tracks;
+    const auto* marker=bytes.data()+bytes.size()-32;
+    // New writes use MMSXPMM2; files from before the rename keep MDSXPMM2.
+    if(std::memcmp(marker,"MMSXPMM2",8) && std::memcmp(marker,"MDSXPMM2",8)) return tracks;
     Reader tail{bytes,bytes.size(),bytes.size()-24};
     const auto prefix=tail.u64(), size=tail.u64(); const auto crc=tail.u32(), reserved=tail.u32();
     if(reserved || prefix<55 || prefix>bytes.size()-32 || size!=bytes.size()-32-prefix)

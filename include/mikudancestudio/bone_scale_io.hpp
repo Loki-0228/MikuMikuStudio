@@ -4,10 +4,11 @@
 //
 //   PMM v2 tail extension record  "org.mikudancestudio.model.<slot>.boneScale.v1"
 //   or "org.mikudancestudio.model.<slot>.boneScale.v2"
-//     One record per model slot inside the existing "MDSXPMM2" extension
-//     container (pmm_extension.hpp).  The standard PMM and the container
-//     layout are untouched; a record this reader does not understand (an
-//     unknown version suffix) keeps its raw bytes and is rewritten unchanged.
+//     One record per model slot inside the existing "MMSXPMM2" extension
+//     container (legacy "MDSXPMM2" is also read, pmm_extension.hpp).  The
+//     standard PMM and the container layout are untouched; a record this
+//     reader does not understand (an unknown version suffix) keeps its raw
+//     bytes and is rewritten unchanged.
 //     The two known suffixes name the two layouts below; a slot holds the one
 //     layout its capture selected and never both.
 //

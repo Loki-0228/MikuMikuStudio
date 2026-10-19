@@ -22,6 +22,7 @@ namespace {
 constexpr char kTocMagic[8] = {'P', 'M', 'M', '3', 'T', 'O', 'C', '\0'};
 constexpr char kFooterMagic[8] = {'P', 'M', 'M', '3', 'E', 'N', 'D', '\0'};
 constexpr char kLegacyMagic[8] = {'M', 'D', 'S', 'X', 'P', 'M', 'M', '2'};
+constexpr char kCurrentLegacyMagic[8] = {'M', 'M', 'S', 'X', 'P', 'M', 'M', '2'};
 
 // Footer offsets.
 constexpr std::size_t kFooterVersion = 8;
@@ -295,8 +296,9 @@ ReadResult Read(int fd, Document& document, std::uint64_t& standardSize) {
 
     auto restore = [&] { _lseeki64(fd, saved, SEEK_SET); };
 
-    // A PMM3END footer takes precedence; otherwise a legacy MDSXPMM2 trailer
-    // is reported so the caller can use the existing extension codec.
+    // A PMM3END footer takes precedence; otherwise a trailing extension
+    // marker (MMSXPMM2, or legacy MDSXPMM2) is reported so the caller can use
+    // the existing extension codec.
     if (length >= static_cast<__int64>(kFooterSize)) {
         std::uint8_t footer[kFooterSize]{};
         if (_lseeki64(fd, length - static_cast<__int64>(kFooterSize), SEEK_SET) < 0) {
@@ -334,7 +336,9 @@ ReadResult Read(int fd, Document& document, std::uint64_t& standardSize) {
             restore();
             return ReadResult::Invalid;
         }
-        if (std::memcmp(trailer, kLegacyMagic, sizeof kLegacyMagic) == 0) {
+        if (std::memcmp(trailer, kLegacyMagic, sizeof kLegacyMagic) == 0 ||
+            std::memcmp(trailer, kCurrentLegacyMagic,
+                        sizeof kCurrentLegacyMagic) == 0) {
             const std::uint64_t standard = GetU64(trailer + 8);
             if (standard < kMinimumStandardSize ||
                 standard > static_cast<std::uint64_t>(length) - 32) {
