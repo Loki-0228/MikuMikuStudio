@@ -1,5 +1,5 @@
 #pragma once
-// Private, optional native-lighting paint route. This is not a plugin ABI.
+// Private, optional native-trackbar paint route. This is not a plugin ABI.
 #include "mikudancestudio/build_profile.hpp"
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -9,9 +9,18 @@
 #endif
 #include <Windows.h>
 #include <CommCtrl.h>
+#include <cstdint>
 
 #if !MMD_ORIGINAL_PROFILE
 namespace mikudancestudio::ui::light_slider_paint_buffer {
+// Synchronous UI-thread reader. It must only read the host's current divider
+// flags, must not dispatch messages or edit state, and must outlive Forward.
+// A captured main window alone does not identify an internal layout drag.
+struct LayoutContext {
+    HWND main=nullptr;
+    void* user=nullptr;
+    bool (*dragging)(void*) noexcept=nullptr;
+};
 // The default table consists solely of Win7-era Win32/GDI calls. Tests may
 // substitute individual calls while the real HWND and native procedure remain.
 struct GdiFunctions {
@@ -81,6 +90,17 @@ inline bool NonemptyUpdate(HWND window,HRGN region,const GdiFunctions& api)noexc
     const int kind=api.getUpdateRgn(window,region,FALSE);
     return kind==SIMPLEREGION||kind==COMPLEXREGION;
 }
+inline bool LayoutSlider(int id)noexcept{
+    switch(id){
+    case 447:case 455:case 456:case 457:case 458:case 459:case 460:
+    case 505:case 510:case 515:case 520:case 534:case 560:return true;
+    default:return false;
+    }
+}
+inline bool LayoutDragging(HWND window,int id,const LayoutContext& layout)noexcept{
+    return layout.main&&layout.dragging&&LayoutSlider(id)&&GetCapture()==layout.main&&
+        GetParent(window)==layout.main&&GetDlgItem(layout.main,id)==window&&layout.dragging(layout.user);
+}
 } // namespace detail
 
 // Test-only thread-local override. It neither modifies the process imports nor
@@ -96,8 +116,10 @@ public:
 
 // Replace only the full-profile TrackbarSubclassProc's final native forwarding
 // call. Other messages, visible keyboard cues and foreign supplied HDCs keep
-// their exact arguments and original return value.
-inline LRESULT Forward(WNDPROC native,HWND window,UINT message,WPARAM wp,LPARAM lp)noexcept{
+// their exact arguments and original return value. The buffer commits one
+// admitted native paint together; it does not make the whole layout or DWM
+// composition atomic, nor suppress a separately dispatched native paint.
+inline LRESULT Forward(WNDPROC native,HWND window,UINT message,WPARAM wp,LPARAM lp,const LayoutContext& layout={})noexcept{
     const auto& api=detail::Functions();
     const auto direct=[&]()noexcept{
         if(message==WM_PAINT&&detail::active&&detail::active->window==window&&detail::active->destroyed)return LRESULT(0);
@@ -131,12 +153,31 @@ inline LRESULT Forward(WNDPROC native,HWND window,UINT message,WPARAM wp,LPARAM 
     }
     if(detail::permanentlyDisabled)return direct();
     const int id=GetDlgCtrlID(window);
-    if(id<455||id>460||GetCapture()!=window||!(SendMessageW(window,WM_QUERYUISTATE,0,0)&UISF_HIDEFOCUS))return direct();
+    // Lock this transaction to its original admission mode. A later capture
+    // transfer cannot turn a retired layout paint into a held-light paint.
+    const bool layoutMode=detail::LayoutDragging(window,id,layout);
+    if((!layoutMode&&(id<455||id>460||GetCapture()!=window))||
+        !(SendMessageW(window,WM_QUERYUISTATE,0,0)&UISF_HIDEFOCUS))return direct();
     RECT client{};
     if(!GetClientRect(window,&client)||client.left||client.top)return direct();
-    // Limit this candidate to the real client sizes whose hidden-focus native
-    // supplied-HDC output was checked against the complete window surface.
-    if(client.right!=(id<458?136:132)||client.bottom!=(id<458?18:20))return direct();
+    if(layoutMode){
+        // Divider widths are dynamic; the vertical slider uses its actual
+        // client width/height without rotating or replacing native drawing.
+        // Bound allocation before creating any GDI resource (at most 4 MiB).
+        if(client.right<=0||client.bottom<=0||client.right>4096||client.bottom>256||
+            std::uint64_t(client.right)*std::uint64_t(client.bottom)>(std::uint64_t(1)<<20))return direct();
+    }else{
+        // Preserve the separately checked held-light route's exact sizes.
+        if(client.right!=(id<458?136:132)||client.bottom!=(id<458?18:20))return direct();
+    }
+    HWND parent=nullptr;RECT position{};
+    if(layoutMode){parent=GetParent(window);if(!GetWindowRect(window,&position))return direct();}
+    const auto sameAdmission=[&]()noexcept{
+        if(!layoutMode)return GetCapture()==window;
+        RECT now{};
+        return detail::LayoutDragging(window,id,layout)&&GetParent(window)==parent&&
+            GetWindowRect(window,&now)&&EqualRect(&now,&position);
+    };
     const auto windowProcedure=GetWindowLongPtrA(window,GWLP_WNDPROC);
     if(!windowProcedure)return direct();
     // Guard preparation as well as painting. GDI/test callbacks and resource
@@ -155,11 +196,14 @@ inline LRESULT Forward(WNDPROC native,HWND window,UINT message,WPARAM wp,LPARAM 
     if(!resources.previous||resources.previous==HGDI_ERROR)return direct();
     api.releaseDC(window,resources.reference);resources.reference=nullptr;
     // Preparation has not validated/erased or enlarged the original damage.
-    // Recheck admission after all resource calls, then refresh the saved damage.
+    // QUERYUISTATE can itself enter an outer window procedure. Perform it
+    // before the final geometry/capture proof, leaving no synchronous query
+    // after that proof which could move the target or retire its gesture.
+    const bool preparedHidden=!painting.destroyed&&IsWindow(window)&&
+        (SendMessageW(window,WM_QUERYUISTATE,0,0)&UISF_HIDEFOCUS)!=0;
     RECT current{};
-    if(painting.destroyed||!IsWindow(window)||GetWindowLongPtrA(window,GWLP_WNDPROC)!=windowProcedure||
-        !GetClientRect(window,&current)||!EqualRect(&current,&client)||GetCapture()!=window||
-        !(SendMessageW(window,WM_QUERYUISTATE,0,0)&UISF_HIDEFOCUS)||
+    if(!preparedHidden||painting.destroyed||!IsWindow(window)||GetWindowLongPtrA(window,GWLP_WNDPROC)!=windowProcedure||
+        !GetClientRect(window,&current)||!EqualRect(&current,&client)||!sameAdmission()||
         !detail::NonemptyUpdate(window,resources.original,api))return direct();
     // A complete tiny control is painted and committed together. Preparing
     // resources may fail without changing the original partial update region.
@@ -176,12 +220,15 @@ inline LRESULT Forward(WNDPROC native,HWND window,UINT message,WPARAM wp,LPARAM 
         return direct(); // Native WM_PAINT has not run yet; call it once.
     }
     const auto result=CallWindowProcA(native,window,WM_PAINT,reinterpret_cast<WPARAM>(resources.memory),lp);
-    // Native customdraw/parent callbacks can resize, replace or destroy the
-    // window synchronously. Do not commit an old-size surface afterwards.
+    // Native customdraw/parent callbacks can resize, move, reparent, replace or
+    // destroy the window synchronously, or retire the divider gesture while
+    // main still has capture. Do not commit an old surface afterwards.
+    const bool paintedHidden=!painting.destroyed&&IsWindow(window)&&
+        (SendMessageW(window,WM_QUERYUISTATE,0,0)&UISF_HIDEFOCUS)!=0;
     RECT after{};
-    const bool sameWindow=!painting.destroyed&&IsWindow(window)&&GetWindowLongPtrA(window,GWLP_WNDPROC)==windowProcedure&&
-        GetClientRect(window,&after)&&EqualRect(&after,&client)&&GetCapture()==window&&
-        (SendMessageW(window,WM_QUERYUISTATE,0,0)&UISF_HIDEFOCUS)&&!painting.destroyed;
+    const bool sameWindow=paintedHidden&&!painting.destroyed&&IsWindow(window)&&GetWindowLongPtrA(window,GWLP_WNDPROC)==windowProcedure&&
+        GetClientRect(window,&after)&&EqualRect(&after,&client)&&sameAdmission()&&
+        !painting.destroyed;
     const bool copied=sameWindow&&api.bitBlt(destination,0,0,client.right,client.bottom,resources.memory,0,0,SRCCOPY)!=FALSE;
     // Destruction releases the window's paint DC. An HWND value reused during
     // the callback must never receive the old EndPaint or retry invalidation.

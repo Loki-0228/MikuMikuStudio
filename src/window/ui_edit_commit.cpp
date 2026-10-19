@@ -813,13 +813,19 @@ LRESULT CALLBACK TrackbarSubclassProc(HWND hWnd, UINT Msg, WPARAM wParam,
             SendMessageW(hWnd, WM_UPDATEUISTATE, MAKEWPARAM(mouseFocus ? UIS_SET : UIS_CLEAR, UISF_HIDEFOCUS), 0);
     }
 #endif
-    // Keep native WM_PAINT initialization and input. The full profile commits
-    // only a captured light slider's complete native drawing in one copy.
+    // Keep native WM_PAINT initialization and input. The full profile can
+    // commit one complete native paint during a captured divider gesture or
+    // the separately admitted held-light route; other input stays native.
     if (Msg == WM_LBUTTONUP)
         SetFocus(app->MainWindow());
 #if !MMD_ORIGINAL_PROFILE
+    const ui::light_slider_paint_buffer::LayoutContext layout{
+        app->MainWindow(),app,[](void* host) noexcept {
+            auto& value=*static_cast<MMDApp*>(host);
+            return value.SidebarResizeDragging()!=0||value.bottomPanelSizing.dragging>=0;
+        }};
     return ui::light_slider_paint_buffer::Forward(
-        app->OriginalTrackbarProc(), hWnd, Msg, wParam, lParam);
+        app->OriginalTrackbarProc(), hWnd, Msg, wParam, lParam, layout);
 #else
     return CallWindowProcA(
         app->OriginalTrackbarProc(),
