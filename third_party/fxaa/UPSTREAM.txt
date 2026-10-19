@@ -19,17 +19,25 @@ Adaptation:
   sampling RGBA with .25/.50/.25 weights. Do not mix back unfiltered dark ink.
 - Return untouched center RGBA in flat regions and filter RGB/alpha together.
 - For native outlines, record coverage in an optional separate MRT. Estimate
-  the local line width and normal from a 3x3 coverage neighborhood, then apply
-  pair-symmetric RGBA diffusion before the luma threshold. Thin lines receive
-  weaker filtering and wider lines stronger filtering, so the filtered edge
-  keeps the density its authored width implies.
+  the rasterised line width and normal from a 3x3 coverage neighborhood, then
+  apply pair-symmetric RGBA diffusion before the luma threshold. Dividing the
+  covered mass by the projected normal extent and by the window's peak
+  coverage keeps that width independent of the contour direction and of the
+  outline's alpha. Thin lines receive weak filtering and wider lines stronger
+  filtering, with the full amount reached only at two pixels, so the filtered
+  edge keeps the density a hardware MSAA resolve gives the same outline.
 - The spread of the fractional coverage samples separates a ramp that the
   rasteriser already resolved from a hard single-sample edge. A resolved ramp
-  carries several different fractional values and keeps its density; a hard
-  edge carries one flat value or none and receives the transition. Both terms
-  take the neighbour-pair maximum so the coefficient is the same in both
-  directions and total ink stays conserved. Custom effect edges continue
-  through the RGB Quality path.
+  carries several different fractional values and is returned untouched; a
+  hard edge carries one flat value or none and receives the transition. The
+  test reads seven taps on both centre axes, because one axis alone misses the
+  rim of a diagonal band, and a single window cannot see a two-pixel band.
+  Leaving resolved coverage untouched keeps the outline where the rasteriser
+  wrote it, which is the position MSAA and TAA resolve for the same geometry;
+  re-filtering it was what moved a strong filter's outline off its place.
+- The hull path keeps its pair-maximum coefficient so all four RGBA channels
+  move together, the coefficient is the same in both directions, and total ink
+  stays conserved. Custom effect edges continue through the RGB Quality path.
 - An optional independent MSAA outline layer has its own width-dependent
   softening pass. Protect that resolved layer from a second FXAA displacement.
 - TAA and SMAA may use the native-outline filter as a line-only prepass;
