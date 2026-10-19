@@ -295,6 +295,13 @@ void MorphStep(MMDApp* app, HWND hwnd, std::size_t lane, int comboId,
 // keyframe (sub_42D6E0), zeroes the selected bone's local position component
 // and marks its per-frame edit flag.
 void BonePosEdit(MMDApp* app, std::size_t axis) {
+    // An explicit reset replaces this field's pending text too. A keyboard
+    // or forwarded button command can arrive while the edit keeps focus;
+    // otherwise PostViewRefresh protects its modified text and a later
+    // WM_KILLFOCUS commits that old displacement over the reset pose.
+    const HWND owner = app->FloatingWindow() ? app->FloatingWindow() : app->MainWindow();
+    SendDlgItemMessageA(owner, panel::kReadoutPosXEdit + static_cast<int>(axis),
+                        EM_SETMODIFY, FALSE, 0);
     if (app->state.optflag[0] != 0) {
         app->CameraPositionAxis(axis) = 0.0f;
         RefreshRequest(-1);

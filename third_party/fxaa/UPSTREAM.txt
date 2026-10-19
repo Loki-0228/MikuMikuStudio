@@ -1,0 +1,44 @@
+NVIDIA FXAA 3.11 (PC Quality), adapted for MMS Direct3D 9.
+
+Reference source: https://github.com/GameTechDev/CMAA2/blob/master/Projects/CMAA2/FXAA/Fxaa3_11.h
+Original source named by that header:
+https://github.com/NVIDIAGameWorks/D3DSamples/blob/master/samples/FXAA/src/FXAA3_11.h
+Saved input SHA256: 4834fada78774fc55726adeb717c53ca7324b66820df08ef773515cafb148aef
+License: NVIDIA BSD-style 3-clause notice, retained in FXAA.hlsl and
+../../licenses/FXAA-LICENSE.txt.
+
+Adaptation:
+- Retain the licensed PC Quality implementation; omit inactive console paths.
+- Select HLSL3, Quality29, and bound every lookup to viewport pixel centers.
+- Compute RGB luminance without storing it in coverage alpha.
+- During transparent export only, choose RGB or alpha contrast once per pixel.
+  The complete edge direction and endpoint search use that same scalar.
+- Keep low-contrast/thin-ridge subpixel strength at .25. A monotonic,
+  high-contrast single boundary ramps strength toward .50.
+- Add a Sobel-normal footprint up to .25 pixel only at those boundaries,
+  sampling RGBA with .25/.50/.25 weights. Do not mix back unfiltered dark ink.
+- Return untouched center RGBA in flat regions and filter RGB/alpha together.
+- For native outlines, record coverage in an optional separate MRT. Estimate
+  the local line width and normal from a 3x3 coverage neighborhood, then apply
+  pair-symmetric RGBA diffusion before the luma threshold. The measured width
+  selects the spread strength: none below roughly a quarter of a pixel, rising
+  to the full amount at one pixel and wider. A line narrower than a pixel
+  already sits at its authored coverage, so spreading it only dilutes it, while
+  a wider line gains a transition without reading lighter.
+- The spread of the fractional coverage samples separates a ramp that the
+  rasteriser already resolved from a hard single-sample edge. A resolved ramp
+  carries several different fractional values and keeps its density; a hard
+  edge carries one flat value or none and receives the transition. Both terms
+  take the neighbour-pair maximum so the coefficient is the same in both
+  directions and total ink stays conserved. Custom effect edges continue
+  through the RGB Quality path.
+- An optional independent MSAA outline layer has its own width-dependent
+  softening pass. Protect that resolved layer from a second FXAA displacement.
+- TAA and SMAA may use the native-outline filter as a line-only prepass;
+  non-outline pixels bypass this prepass and retain the selected AA method.
+
+MMS bindings: s0 scene, s1 native-outline coverage or resolved MSAA line layer;
+c0 inverse dimensions/history/transparent flag; c1 viewport UV bounds;
+c2 jitter offset; c4.x coverage-mask validity; c4.y resolved MSAA layer validity;
+c4.z line-only prepass. Entry fxaa, target ps_3_0.
+The CMake-generated fxaa_reference.hpp embeds this source unchanged.

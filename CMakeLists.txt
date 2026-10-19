@@ -116,6 +116,10 @@ string(REPLACE "${MMS_SMAA_LATIN1_DOT}" "·" MMS_SMAA_REFERENCE "${MMS_SMAA_REFE
 string(REPLACE "\n" "\n)smaa\"\nR\"smaa(" MMS_SMAA_REFERENCE "${MMS_SMAA_REFERENCE}")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS third_party/smaa/SMAA.hlsl)
 configure_file(src/render/smaa_reference.in.hpp generated/smaa_reference.hpp @ONLY)
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/third_party/fxaa/FXAA.hlsl" MMS_FXAA_REFERENCE)
+string(REPLACE "\n" "\n)fxaa\"\nR\"fxaa(" MMS_FXAA_REFERENCE "${MMS_FXAA_REFERENCE}")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS third_party/fxaa/FXAA.hlsl)
+configure_file(src/render/fxaa_reference.in.hpp generated/fxaa_reference.hpp @ONLY)
 
 if (MIKUDANCESTUDIO_ENABLE_DX12)
     file(READ "${CMAKE_CURRENT_SOURCE_DIR}/src/render/d3d12_skinning.hlsl" MMD_D3D12_SKINNING_HLSL)
@@ -365,6 +369,7 @@ add_library(mikudancestudio_core STATIC
     src/window/viewport_render_scale_dialog.cpp
     src/render/viewport_render_scale.cpp
     src/render/antialias.cpp
+    src/render/outline_multisample.cpp
     src/render/frame_sampling.cpp
     src/render/antialias_motion.cpp
     src/render/nvidia_antialias_fix.cpp
@@ -687,6 +692,14 @@ if (MIKUDANCESTUDIO_BUILD_EFFECT_TESTS)
     set_target_properties(smaa_shader_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
     add_test(NAME smaa_shader_checks COMMAND smaa_shader_tests)
     set_tests_properties(smaa_shader_checks PROPERTIES LABELS "hardware-manual" TIMEOUT 60)
+    add_executable(fxaa_shader_tests EXCLUDE_FROM_ALL tests/fxaa_shader_tests.cpp)
+    target_compile_features(fxaa_shader_tests PRIVATE cxx_std_17)
+    target_link_libraries(fxaa_shader_tests PRIVATE ole32 windowscodecs user32)
+    set_target_properties(fxaa_shader_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+    add_test(NAME fxaa_shader_checks COMMAND fxaa_shader_tests
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/fxaa/FXAA.hlsl"
+        "${CMAKE_BINARY_DIR}/tests/fxaa-captures" --strict-quality)
+    set_tests_properties(fxaa_shader_checks PROPERTIES LABELS "hardware-manual" TIMEOUT 60)
     add_executable(d3d12_interop_tests EXCLUDE_FROM_ALL tests/d3d12_interop_tests.cpp)
     add_executable(sequential_file_reader_tests EXCLUDE_FROM_ALL tests/sequential_file_reader_tests.cpp)
     target_include_directories(sequential_file_reader_tests PRIVATE include)
@@ -724,6 +737,11 @@ if (MIKUDANCESTUDIO_BUILD_EFFECT_TESTS)
     target_link_libraries(outline_coverage_tests PRIVATE mikudancestudio_core winmm dsound)
     set_target_properties(outline_coverage_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
     add_test(NAME outline_coverage_regressions COMMAND outline_coverage_tests)
+    add_executable(outline_multisample_tests EXCLUDE_FROM_ALL tests/outline_multisample_tests.cpp)
+    target_link_libraries(outline_multisample_tests PRIVATE mikudancestudio_core winmm dsound)
+    set_target_properties(outline_multisample_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+    add_test(NAME outline_multisample_regressions COMMAND outline_multisample_tests)
+    set_tests_properties(outline_multisample_regressions PROPERTIES LABELS "hardware-manual" TIMEOUT 90)
     add_executable(model_vertex_cache_tests EXCLUDE_FROM_ALL tests/model_vertex_cache_tests.cpp)
     target_link_libraries(model_vertex_cache_tests PRIVATE mikudancestudio_core winmm dsound)
     set_target_properties(model_vertex_cache_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
@@ -834,6 +852,8 @@ if (MIKUDANCESTUDIO_BUILD_UI_TESTS)
             RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
         add_test(NAME ${ui_test} COMMAND ${ui_test})
     endforeach()
+    add_test(NAME bone_translation_reset COMMAND panel_key_tests --bone-translation-reset)
+    set_tests_properties(bone_translation_reset PROPERTIES TIMEOUT 20 LABELS "ui")
     add_executable(bone_key_pool_tests EXCLUDE_FROM_ALL tests/bone_key_pool_tests.cpp src/model/bone_key_pool.cpp)
     target_include_directories(bone_key_pool_tests PRIVATE include)
     set_target_properties(bone_key_pool_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")

@@ -7,8 +7,11 @@
 #include "mikudancestudio/runtime_log.hpp"
 #include "mikudancestudio/build_profile.hpp"
 #include "mikudancestudio/pmm_project_settings.hpp"
+#include "mikudancestudio/transparent_capture.hpp"
 #include "antialias_shader.hpp"
+#include "fxaa_shader.hpp"
 #include "outline_coverage_shader.hpp"
+#include "outline_multisample.hpp"
 #include "mikudancestudio/model.hpp"
 #include "smaa_shader.hpp"
 #include "smaa_lookup.hpp"
@@ -34,7 +37,16 @@ struct Target {
     ComPtr<IDirect3DPixelShader9> fxaa, temporal, smaa[4];
     ComPtr<IDirect3DVertexShader9> outlineVertex;
     ComPtr<IDirect3DPixelShader9> outlinePixel;
+    ComPtr<IDirect3DPixelShader9> outlineMaskPixel;
     ComPtr<IDirect3DVertexDeclaration9> outlineDeclaration;
+    ComPtr<IDirect3DTexture9> outlineMask;
+    ComPtr<IDirect3DSurface9> outlineMaskSurface;
+    ComPtr<IDirect3DPixelShader9> nativeFilterPixel;
+    ComPtr<IDirect3DTexture9> filteredScene;
+    ComPtr<IDirect3DSurface9> filteredSceneSurface;
+    unsigned outlineMrtCount=0;
+    bool outlineMaskValid=false,outlineMaskWritten=false;
+    bool outlineStateFailed=false;
     bool outlineAttempted=false;
     ComPtr<IDirect3DTexture9> edges, weights, areaLookup, searchLookup;
     ComPtr<IDirect3DSurface9> edgeSurface, weightSurface;
@@ -48,6 +60,52 @@ struct Target {
     bool recording=false, temporalUnavailable=false;
 };
 std::unordered_map<MMDApp*,Target> targets;
+void DisableOutlineMask(Target& target,const char* stage,HRESULT result) {
+    runtime_log::Write("AA native outline mask disabled at %s hr=0x%08lX; using spatial fallback",stage,result);
+    target.outlineMaskValid=false;target.outlineMaskWritten=false;
+    target.outlineMask.Reset();target.outlineMaskSurface.Reset();target.outlineMaskPixel.Reset();
+    target.nativeFilterPixel.Reset();target.filteredScene.Reset();target.filteredSceneSurface.Reset();
+}
+// State blocks exclude render targets. Detach MME's optional MRTs before the
+// fullscreen pass, then restore them even if a query/binding step fails.
+struct ExtraRenderTargetScope {
+    IDirect3DDevice9* device;
+    ComPtr<IDirect3DSurface9> color,depth,extra[3];
+    D3DVIEWPORT9 viewport;
+    unsigned count=0;
+    bool pending=false;
+    ExtraRenderTargetScope(IDirect3DDevice9* value,IDirect3DSurface9* output,
+                           IDirect3DSurface9* outputDepth,const D3DVIEWPORT9& view):
+        device(value),color(output),depth(outputDepth),viewport(view) {}
+    HRESULT CaptureAndUnbind() {
+        D3DCAPS9 caps{};
+        HRESULT hr=device->GetDeviceCaps(&caps);if(FAILED(hr))return hr;
+        count=std::min(3u,caps.NumSimultaneousRTs>0?unsigned(caps.NumSimultaneousRTs-1):0u);
+        for(unsigned i=0;i<count;++i) {
+            hr=device->GetRenderTarget(i+1,&extra[i]);
+            if(hr!=D3DERR_NOTFOUND && FAILED(hr))return hr;
+        }
+        pending=true;
+        for(unsigned i=0;i<count;++i)if(FAILED(hr=device->SetRenderTarget(i+1,nullptr)))return hr;
+        return S_OK;
+    }
+    HRESULT Restore() {
+        if(!pending)return S_OK;pending=false;
+        HRESULT result=S_OK;
+        const auto remember=[&](HRESULT hr) {if(SUCCEEDED(result) && FAILED(hr))result=hr;};
+        // First remove intermediates whose size/depth may differ from the
+        // original output, then restore all original bindings and viewport.
+        remember(device->SetDepthStencilSurface(nullptr));
+        for(unsigned i=0;i<count;++i)remember(device->SetRenderTarget(i+1,nullptr));
+        remember(device->SetRenderTarget(0,color.Get()));
+        remember(device->SetDepthStencilSurface(depth.Get()));
+        for(unsigned i=0;i<count;++i)remember(device->SetRenderTarget(i+1,extra[i].Get()));
+        remember(device->SetViewport(&viewport));
+        if(FAILED(result))runtime_log::Write("AA extra render target restoration failed hr=0x%08lX",result);
+        return result;
+    }
+    ~ExtraRenderTargetScope(){Restore();}
+};
 bool Smaa(Algorithm algorithm) {
     return algorithm==Algorithm::Smaa || algorithm==Algorithm::SmaaStandard ||
         algorithm==Algorithm::SmaaT2xStandard || algorithm==Algorithm::SmaaT2xEnhanced;
@@ -72,6 +130,7 @@ void Save(MMDApp* app) {
     const auto& settings=app->antialiasing;
     WritePrivateProfileStringW(L"Antialias",L"Algorithm",std::to_wstring(unsigned(settings.algorithm)).c_str(),path.c_str());
     WritePrivateProfileStringW(L"Antialias",L"LastSmaaAlgorithm",std::to_wstring(unsigned(settings.lastSmaaAlgorithm)).c_str(),path.c_str());
+    WritePrivateProfileStringW(L"Antialias",L"OutlineMode",std::to_wstring(unsigned(settings.outlineMode)).c_str(),path.c_str());
     WritePrivateProfileStringW(L"Antialias",L"Enabled",settings.enabled?L"1":L"0",path.c_str());
 }
 void ReadUserPreferences(Settings& settings) {
@@ -81,6 +140,8 @@ void ReadUserPreferences(Settings& settings) {
     settings.enabled=GetPrivateProfileIntW(L"Antialias",L"Enabled",1,path.c_str())!=0;
     const auto last=Algorithm(GetPrivateProfileIntW(L"Antialias",L"LastSmaaAlgorithm",unsigned(Algorithm::Smaa),path.c_str()));
     settings.lastSmaaAlgorithm=Smaa(last)?last:Algorithm::Smaa;
+    const auto outline=GetPrivateProfileIntW(L"Antialias",L"OutlineMode",unsigned(OutlineMode::FxaaAdaptive),path.c_str());
+    settings.outlineMode=outline<=unsigned(OutlineMode::Multisample)?OutlineMode(outline):OutlineMode::FxaaAdaptive;
 }
 void ResolveUnsupported(MMDApp* app) {
     if(!app->Renderer() || !app->Renderer()->device)return;
@@ -118,8 +179,8 @@ std::shared_ptr<ShaderCompilation> RequestShader(unsigned index) {
     static constexpr const char* entries[]={"fxaa","temporal","smaaEdges","smaaWeights","smaaResolve","smaaTemporal"};
     const char* entry=entries[index<2?index:2+(index-2)%4];
     const auto variant=index>=2?(index-2)/4:0;
-    const char* source=index>=2?kSmaaShader:kShader;
-    const auto sourceSize=index>=2?sizeof(kSmaaShader)-1:sizeof(kShader)-1;
+    const char* source=index>=2?kSmaaShader:index==0?kFxaaShader:kShader;
+    const auto sourceSize=index>=2?sizeof(kSmaaShader)-1:index==0?sizeof(kFxaaShader)-1:sizeof(kShader)-1;
     runtime_log::Write("AA compile queued %s",entry);
     try {
         if(!work->completed)throw std::bad_alloc();
@@ -155,6 +216,8 @@ HRESULT Ensure(MMDApp* app) {
     const bool useSmaa=Smaa(algorithm),useTemporal=Temporal(algorithm);
     const unsigned shaderBase=2+4*SmaaVariant(algorithm);
     auto fxaa=useSmaa?nullptr:RequestShader(0);
+    auto nativeFilter=algorithm!=Algorithm::Fxaa && app->antialiasing.outlineMode==OutlineMode::FxaaAdaptive?
+        RequestShader(0):nullptr;
     auto temporal=algorithm==Algorithm::Taa?RequestShader(1):nullptr;
     auto edges=useSmaa?RequestShader(shaderBase):nullptr;
     auto weights=useSmaa?RequestShader(shaderBase+1):nullptr;
@@ -162,7 +225,7 @@ HRESULT Ensure(MMDApp* app) {
     auto smaaTemporal=SmaaTemporal(algorithm)?RequestShader(shaderBase+3):nullptr;
     // The same preset's unjittered neighborhood shader is the motion fallback.
     auto smaaFallback=SmaaTemporal(algorithm)?RequestShader(shaderBase-8+2):nullptr;
-    for(const auto& shader:{fxaa,temporal,edges,weights,resolve,smaaTemporal,smaaFallback})if(shader) {
+    for(const auto& shader:{fxaa,nativeFilter,temporal,edges,weights,resolve,smaaTemporal,smaaFallback})if(shader) {
         // Export waits for the requested output; preview never waits for HLSL.
         if(app->RecordingWindow() && !shader->done.load(std::memory_order_acquire))
             WaitForSingleObject(shader->completed,INFINITE);
@@ -189,6 +252,23 @@ HRESULT Ensure(MMDApp* app) {
         return FAILED(result)?result:tex->GetSurfaceLevel(0,&surface);
     };
     if(FAILED(hr=texture(next.scene,next.color,desc.Format)))return hr;
+    if(app->antialiasing.outlineMode==OutlineMode::FxaaAdaptive) {
+        D3DCAPS9 caps{};
+        const HRESULT capability=device->GetDeviceCaps(&caps);
+        if(FAILED(capability))DisableOutlineMask(next,"device capabilities",capability);
+        else if(caps.NumSimultaneousRTs<2 || !(caps.PrimitiveMiscCaps&D3DPMISCCAPS_MRTPOSTPIXELSHADERBLENDING))
+            DisableOutlineMask(next,"MRT alpha blending unsupported",D3DERR_NOTAVAILABLE);
+        else {
+            const HRESULT mask=texture(next.outlineMask,next.outlineMaskSurface,desc.Format);
+            if(FAILED(mask))DisableOutlineMask(next,"allocation",mask);
+            else next.outlineMrtCount=std::min(4u,unsigned(caps.NumSimultaneousRTs));
+        }
+        if(nativeFilter && next.outlineMask) {
+            HRESULT filter=texture(next.filteredScene,next.filteredSceneSurface,D3DFMT_A8R8G8B8);
+            if(SUCCEEDED(filter))filter=device->CreatePixelShader(nativeFilter->bytecode.data(),&next.nativeFilterPixel);
+            if(FAILED(filter))DisableOutlineMask(next,"native-only filter allocation",filter);
+        }
+    }
     if(useTemporal) {
         for(int i=0;i<2;++i)if(FAILED(hr=texture(next.history[i],next.historySurface[i],
             useSmaa?D3DFMT_A8R8G8B8:desc.Format)))return hr;
@@ -323,14 +403,27 @@ void ApplyRenderState(MMDApp* app) {
     app->Renderer()->device->SetRenderState(D3DRS_MULTISAMPLEANTIALIAS,
         app->antialiasing.enabled && !PostProcess(app->antialiasing));
 }
-void Release(MMDApp* app){motion::Release(app);targets.erase(app);}
+void Release(MMDApp* app){outline_multisample::Release(app);motion::Release(app);targets.erase(app);}
 bool DrawOutline(MMDApp* app,unsigned char* model,unsigned firstIndex,
                  unsigned indexCount,const float* uniformColor) {
     if(build_profile::original || !app || !model || !PostProcess(app->antialiasing))return false;
     const auto found=targets.find(app);if(found==targets.end())return false;
-    auto& t=found->second;auto* device=app->Renderer()->device;
+    auto& t=found->second;
+    // This pass supplies its own native coverage shaders. Submitting through
+    // MME's proxy lets its material draw callback replace that mask shader,
+    // so motion capture would see an external shader writing our bound MRT.
+    // Use the scene's runtime owner and restore its actual state afterwards,
+    // as the independent multisample outline pass does.
+    ComPtr<IDirect3DDevice9> native;
+    if(FAILED(t.color->GetDevice(&native)))return false;
+    auto* device=native.Get();
+    // The frame will be rejected by Complete. Returning handled prevents the
+    // caller from issuing a second legacy outline draw into broken bindings.
+    if(t.outlineStateFailed)return true;
     ComPtr<IDirect3DSurface9> target;
     if(FAILED(device->GetRenderTarget(0,&target)) || target.Get()!=t.color.Get())return false;
+    if(outline_multisample::Active(app))
+        return outline_multisample::Draw(app,model,firstIndex,indexCount,uniformColor);
     auto* body=mdl::ResourceAs<IDirect3DVertexBuffer9>(mdl::Mdl(model)->vertexBuffer);
     if(!body)return false;
     if(!t.outlineAttempted) {
@@ -351,6 +444,16 @@ bool DrawOutline(MMDApp* app,unsigned char* model,unsigned firstIndex,
         if(FAILED(hr)) {
             t.outlineVertex.Reset();t.outlinePixel.Reset();t.outlineDeclaration.Reset();
             runtime_log::Write("Outline coverage unavailable hr=%08lX: %s",hr,error?static_cast<const char*>(error->GetBufferPointer()):"");
+        }
+        if(t.outlineDeclaration && t.outlineMask) {
+            ComPtr<ID3DBlob> mask,error;
+            hr=graphics_runtime::Compile(kOutlineCoverageShader,sizeof(kOutlineCoverageShader)-1,
+                "outline mask coverage",nullptr,nullptr,"outlineMaskPixel","ps_3_0",D3DCOMPILE_OPTIMIZATION_LEVEL3,0,&mask,&error);
+            if(SUCCEEDED(hr))hr=device->CreatePixelShader(static_cast<const DWORD*>(mask->GetBufferPointer()),&t.outlineMaskPixel);
+            if(FAILED(hr)) {
+                runtime_log::Write("FXAA native outline mask shader: %s",error?static_cast<const char*>(error->GetBufferPointer()):"");
+                DisableOutlineMask(t,"shader creation",hr);
+            }
         }
     }
     if(!t.outlineDeclaration)return false;
@@ -380,22 +483,122 @@ bool DrawOutline(MMDApp* app,unsigned char* model,unsigned firstIndex,
        FAILED(device->GetStreamSource(1,&oldStream,&oldOffset,&oldStride)) ||
        FAILED(device->GetVertexShaderConstantF(0,oldConstants,7)))return false;
     for(unsigned i=0;i<_countof(states);++i)if(FAILED(device->GetRenderState(states[i],&values[i])))return false;
+    // Only native outlines on the main AA scene can mark this mask. Preserve
+    // an effect's existing MRT instead of intercepting its secondary output.
+    ComPtr<IDirect3DSurface9> oldExtra;
+    DWORD oldExtraWrites=0;
+    bool maskBound=false;
+    if(t.outlineMaskValid && t.outlineMaskPixel) {
+        HRESULT mask=S_OK;
+        bool externalTarget=false;
+        for(unsigned i=1;i<t.outlineMrtCount;++i) {
+            ComPtr<IDirect3DSurface9> external;
+            mask=device->GetRenderTarget(i,&external);
+            if(mask==D3DERR_NOTFOUND)mask=S_OK;
+            if(FAILED(mask))break;
+            if(i==1)oldExtra=external;
+            if(external){externalTarget=true;break;}
+        }
+        if(SUCCEEDED(mask) && externalTarget) {
+            DisableOutlineMask(t,"effect already uses additional targets",D3DERR_NOTAVAILABLE);
+        } else {
+            if(SUCCEEDED(mask))mask=device->GetRenderState(D3DRS_COLORWRITEENABLE1,&oldExtraWrites);
+            if(SUCCEEDED(mask))mask=device->SetRenderTarget(1,t.outlineMaskSurface.Get());
+            if(SUCCEEDED(mask)) {
+                maskBound=true;
+                // SetRenderTarget may reset viewport state. Keep inset/export
+                // viewports identical to the surrounding native pass.
+                mask=device->SetViewport(&viewport);
+                if(SUCCEEDED(mask))mask=device->SetRenderState(D3DRS_COLORWRITEENABLE1,15);
+            }
+            if(FAILED(mask)) {
+                HRESULT restore=S_OK;
+                if(maskBound) {
+                    // A failed write-mask/viewport setup may leave RT1 bound.
+                    // Retry restoration before permitting the ordinary draw.
+                    for(unsigned attempt=0;attempt<2;++attempt) {
+                        const HRESULT restored=device->SetRenderTarget(1,oldExtra.Get());
+                        const HRESULT writes=device->SetRenderState(D3DRS_COLORWRITEENABLE1,oldExtraWrites);
+                        const HRESULT view=device->SetViewport(&viewport);
+                        restore=FAILED(restored)?restored:FAILED(writes)?writes:view;
+                        if(SUCCEEDED(restore))break;
+                        runtime_log::Write("FXAA outline mask setup restore failed attempt=%u target=0x%08lX writes=0x%08lX viewport=0x%08lX",
+                            attempt+1,restored,writes,view);
+                    }
+                }
+                maskBound=false;DisableOutlineMask(t,"secondary target binding",mask);
+                if(FAILED(restore)){t.outlineStateFailed=true;return true;}
+            }
+        }
+    }
     const auto additional=mdl::Mdl(model)->pmxAdditionalUvCount;
     const UINT stride=sizeof(mdl::SkinnedVertexBase)+(additional>=1 && additional<=4?16*additional:0);
     HRESULT hr=device->SetStreamSource(1,body,0,stride);
     if(SUCCEEDED(hr))hr=device->SetVertexDeclaration(t.outlineDeclaration.Get());
     if(SUCCEEDED(hr))hr=device->SetVertexShader(t.outlineVertex.Get());
-    if(SUCCEEDED(hr))hr=device->SetPixelShader(t.outlinePixel.Get());
+    if(SUCCEEDED(hr))hr=device->SetPixelShader(maskBound?t.outlineMaskPixel.Get():t.outlinePixel.Get());
     if(SUCCEEDED(hr))hr=device->SetVertexShaderConstantF(0,constants,7);
     const DWORD coverageStates[]={TRUE,D3DBLEND_SRCALPHA,D3DBLEND_INVSRCALPHA,D3DBLENDOP_ADD,
         TRUE,D3DCMP_GREATER,0};
     for(unsigned i=0;i<_countof(states);++i)if(SUCCEEDED(hr))hr=device->SetRenderState(states[i],coverageStates[i]);
     if(SUCCEEDED(hr))hr=device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST,0,0,mdl::Mdl(model)->vertexCount,firstIndex,indexCount/3);
+    if(maskBound && SUCCEEDED(hr))t.outlineMaskWritten=true;
     device->SetVertexShader(oldVertex.Get());device->SetPixelShader(oldPixel.Get());
     device->SetVertexDeclaration(oldDeclaration.Get());device->SetStreamSource(1,oldStream.Get(),oldOffset,oldStride);
     device->SetVertexShaderConstantF(0,oldConstants,7);
     for(unsigned i=0;i<_countof(states);++i)device->SetRenderState(states[i],values[i]);
-    return SUCCEEDED(hr);
+    if(maskBound) {
+        const HRESULT restored=device->SetRenderTarget(1,oldExtra.Get());
+        const HRESULT writes=device->SetRenderState(D3DRS_COLORWRITEENABLE1,oldExtraWrites);
+        const HRESULT view=device->SetViewport(&viewport);
+        if(FAILED(restored) || FAILED(writes) || FAILED(view)) {
+            runtime_log::Write("FXAA outline mask restore failed target=0x%08lX writes=0x%08lX viewport=0x%08lX",restored,writes,view);
+            const HRESULT restore=FAILED(restored)?restored:FAILED(writes)?writes:view;
+            DisableOutlineMask(t,"secondary target restoration",restore);
+            t.outlineStateFailed=true;
+        } else if(FAILED(hr))DisableOutlineMask(t,"outline drawing",hr);
+    }
+    return t.outlineStateFailed || SUCCEEDED(hr);
+}
+void FinishOutlines(MMDApp* app) {
+    if(build_profile::original || !app)return;
+    if(!outline_multisample::Finish(app)) {
+        const auto found=targets.find(app);
+        if(found!=targets.end())found->second.outlineStateFailed=true;
+    }
+}
+bool NativeOutlineMaskDraw(MMDApp* app,IDirect3DDevice9* device) {
+    if(build_profile::original || !app || !device ||
+       app->ActiveRenderPass()!=AccessoryRenderPass::ModelOutline ||
+       app->antialiasing.outlineMode!=OutlineMode::FxaaAdaptive || !PostProcess(app->antialiasing))return false;
+    const auto found=targets.find(app);if(found==targets.end())return false;
+    const auto& target=found->second;
+    if(!target.outlineMaskValid || !target.outlineMaskSurface || !target.outlineMaskPixel || target.outlineStateFailed)return false;
+    ComPtr<IDirect3DSurface9> color,mask;
+    if(FAILED(device->GetRenderTarget(0,&color)) || color.Get()!=target.color.Get() ||
+       FAILED(device->GetRenderTarget(1,&mask)) || mask.Get()!=target.outlineMaskSurface.Get()) {
+        runtime_log::Trace("AA native mask gate rejected frame=%d targets=%p/%p expected=%p/%p",
+            app->CurrentFrame(),color.Get(),mask.Get(),target.color.Get(),target.outlineMaskSurface.Get());
+        return false;
+    }
+    // Matching the exact shader excludes an effect that happens to reuse the
+    // auxiliary surface outside our own native outline submission.
+    ComPtr<IDirect3DPixelShader9> pixel;
+    if(FAILED(device->GetPixelShader(&pixel)) || pixel.Get()!=target.outlineMaskPixel.Get()) {
+        runtime_log::Trace("AA native mask gate rejected frame=%d pixel=%p expected=%p",
+            app->CurrentFrame(),pixel.Get(),target.outlineMaskPixel.Get());
+        return false;
+    }
+    for(unsigned slot=2;slot<target.outlineMrtCount;++slot) {
+        ComPtr<IDirect3DSurface9> extra;
+        const auto hr=device->GetRenderTarget(slot,&extra);
+        if((FAILED(hr) && hr!=D3DERR_NOTFOUND) || extra) {
+            runtime_log::Trace("AA native mask gate rejected frame=%d external_slot=%u target=%p hr=0x%08lX",
+                app->CurrentFrame(),slot,extra.Get(),hr);
+            return false;
+        }
+    }
+    return true;
 }
 bool Initializing(MMDApp* app) {
     if(build_profile::original || !app || !PostProcess(app->antialiasing))return false;
@@ -414,6 +617,8 @@ unsigned RequiredSamples(MMDApp* app) {
     return app->antialiasing.algorithm==Algorithm::Taa?8:SmaaTemporal(app->antialiasing.algorithm)?2:1;
 }
 void ResetHistory(MMDApp* app) {
+    if(app && (app->antialiasing.outlineMode!=OutlineMode::Multisample || !PostProcess(app->antialiasing)))
+        outline_multisample::Release(app);
     motion::Release(app);
     if(auto found=targets.find(app);found!=targets.end()) {
         found->second.samples=0;found->second.temporalUnavailable=false;
@@ -452,6 +657,23 @@ static bool SelectInternal(MMDApp* app,Algorithm algorithm,std::wstring& error,b
     ApplyRenderState(app);RefreshMenu(app);PostViewRefresh(app);return ok;
 }
 bool Select(MMDApp* app,Algorithm algorithm,std::wstring& error) {return SelectInternal(app,algorithm,error,true);}
+bool SelectOutlineMode(MMDApp* app,OutlineMode mode,std::wstring& error) {
+    error.clear();
+    if(!app || build_profile::original)return false;
+    Initialize(app);
+    if(unsigned(mode)>unsigned(OutlineMode::Multisample)) {
+        error=app->EnglishUI()==2?L"无效的描边抗锯齿策略。":app->EnglishUI()==1?
+            L"Invalid outline anti-aliasing strategy.":L"無効な輪郭線アンチエイリアス方式です。";
+        return false;
+    }
+    if(app->antialiasing.outlineMode==mode){RefreshMenu(app);return true;}
+    app->antialiasing.outlineMode=mode;
+    // This preference is independent of PMM/VMD and of the selected scene AA
+    // algorithm or its enabled state. Do not mark a project change for it.
+    Release(app);ResetHistory(app);Save(app);
+    RefreshMenu(app);PostViewRefresh(app);
+    return true;
+}
 const wchar_t* DialogTitle(MMDApp* app) {
     return app->EnglishUI()==2?L"抗锯齿":app->EnglishUI()==1?L"Anti-aliasing":L"アンチエイリアス";
 }
@@ -499,12 +721,15 @@ struct FrameScope::Impl {
         app->Renderer()->backbufferSurface=previousSlot;app->Renderer()->depthStencilSurface=depthSlot;
         ApplyRenderState(app);
     }
-    ~Impl(){if(bindingsChanged)Restore();if(temporal)motion::Cancel(app);}
+    ~Impl(){outline_multisample::Cancel(app);if(bindingsChanged)Restore();if(temporal)motion::Cancel(app);}
 };
 FrameScope::FrameScope(MMDApp* app) {
     if(build_profile::original)return;
     Initialize(app);ApplyRenderState(app);
+    if(app->antialiasing.outlineMode!=OutlineMode::Multisample || !PostProcess(app->antialiasing))
+        outline_multisample::Release(app);
     if(!PostProcess(app->antialiasing))return;
+    if(auto previous=targets.find(app);previous!=targets.end())previous->second.outlineStateFailed=false;
     impl_=std::make_unique<Impl>(app);auto& p=*impl_;
     const HRESULT allocation=Ensure(app);
     if(allocation==S_FALSE){impl_.reset();return;}
@@ -520,6 +745,15 @@ FrameScope::FrameScope(MMDApp* app) {
         return;
     }
     auto& t=targets.at(app);
+    t.outlineMaskValid=false;t.outlineMaskWritten=false;
+    if(t.outlineMaskSurface) {
+        // FrameScope precedes the scene's Clear/BeginScene. ColorFill clears
+        // just this unbound auxiliary target without changing color/depth or
+        // viewport state, including when the scene uses an inset viewport.
+        const HRESULT cleared=p.device->ColorFill(t.outlineMaskSurface.Get(),nullptr,0);
+        if(SUCCEEDED(cleared))t.outlineMaskValid=true;
+        else DisableOutlineMask(t,"frame clear",cleared);
+    }
     if(FAILED(p.device->GetRenderTarget(0,&p.previous)) || FAILED(p.device->GetDepthStencilSurface(&p.depth)) ||
        FAILED(p.device->GetViewport(&p.viewport)) || FAILED(p.device->GetTransform(D3DTS_PROJECTION,&p.projection)))return;
     p.previousSlot=app->Renderer()->backbufferSurface;p.depthSlot=app->Renderer()->depthStencilSurface;
@@ -556,6 +790,11 @@ FrameScope::FrameScope(MMDApp* app) {
     p.ready=SUCCEEDED(p.device->SetRenderTarget(0,t.color.Get())) &&
         SUCCEEDED(p.device->SetDepthStencilSurface(t.depth.Get())) && SUCCEEDED(p.device->SetViewport(&p.viewport));
     app->Renderer()->backbufferSurface=t.color.Get();app->Renderer()->depthStencilSurface=t.depth.Get();
+    if(p.ready && app->antialiasing.outlineMode==OutlineMode::Multisample) {
+        ComPtr<IDirect3DDevice9> native;
+        if(SUCCEEDED(t.color->GetDevice(&native)) && outline_multisample::Begin(app,native.Get(),t.color.Get(),p.viewport))
+            outline_multisample::SetSoftening(app,true);
+    }
 }
 FrameScope::~FrameScope()=default;
 bool FrameScope::Ready()const{return !impl_ || impl_->ready;}
@@ -566,21 +805,74 @@ bool FrameScope::Complete() {
     // Native ownership avoids invoking MME's frame callbacks a second time.
     ComPtr<IDirect3DDevice9> native;
     if(FAILED(t.color->GetDevice(&native))){p.Restore();return false;}
-    auto* device=native.Get();ComPtr<IDirect3DStateBlock9> saved;
+    auto* device=native.Get();
+    if(t.outlineStateFailed || outline_multisample::Failed(p.app)) {
+        // Mask acquisition only occurred when every extra target was unbound.
+        // Do not capture a leaked mask target as an original external MRT.
+        for(unsigned i=1;i<t.outlineMrtCount;++i) {
+            const HRESULT detached=device->SetRenderTarget(i,nullptr);
+            if(FAILED(detached))runtime_log::Write("AA failed-frame extra target detach failed slot=%u hr=0x%08lX",i,detached);
+        }
+        p.Restore();t.samples=0;motion::Cancel(p.app);
+        runtime_log::Write("AA frame rejected after outline state restoration failure; resolve canceled");
+        return false;
+    }
+    ComPtr<IDirect3DStateBlock9> saved;
     if(FAILED(device->CreateStateBlock(D3DSBT_ALL,&saved))){p.Restore();return false;}
+    ExtraRenderTargetScope extraTargets(device,p.previous.Get(),p.depth.Get(),p.viewport);
+    const HRESULT detached=extraTargets.CaptureAndUnbind();
+    if(FAILED(detached)) {
+        extraTargets.Restore();p.Restore();
+        runtime_log::Write("AA extra render target capture/detach failed hr=0x%08lX",detached);
+        return false;
+    }
     p.Restore();
     HRESULT hr=device->BeginScene();
     ComPtr<IDirect3DSurface9> motionSurface;
     bool historyWritten=false;
     if(SUCCEEDED(hr)) {
-        auto* vectors=p.temporal?motion::Resolve(p.app,device):nullptr;
-        FullscreenState(device);
         const auto& v=p.viewport;const auto& desc=t.description;
-        const float constants[]={1.f/desc.Width,1.f/desc.Height,vectors?float(std::min(t.samples,31u))/(std::min(t.samples,31u)+1):0,0,
+        float constants[]={1.f/desc.Width,1.f/desc.Height,0,
+            TransparentExportActive(p.app)?1.f:0.f,
             (v.X+.5f)/desc.Width,(v.Y+.5f)/desc.Height,(v.X+v.Width-.5f)/desc.Width,(v.Y+v.Height-.5f)/desc.Height,
             p.jitterX,p.jitterY,.002f,.002f,
             t.historyJitterX,t.historyJitterY,0,0};
+        IDirect3DTexture9* currentScene=t.scene.Get();
+        FullscreenState(device);
+        if(t.algorithm!=Algorithm::Fxaa && p.app->antialiasing.outlineMode==OutlineMode::FxaaAdaptive &&
+           t.nativeFilterPixel && t.filteredScene && t.outlineMaskValid && t.outlineMaskWritten) {
+            // The same native-line filter is applied before TAA/SMAA. Keep
+            // scene identity unchanged for draw observation and use this
+            // transient source only for the subsequent color resolve.
+            const float noJitter[]={0,0,0,0};
+            const float lineOnly[]={1,0,1,0};
+            device->SetDepthStencilSurface(nullptr);
+            device->SetTexture(0,nullptr);device->SetTexture(1,nullptr);
+            hr=device->SetRenderTarget(0,t.filteredSceneSurface.Get());
+            if(SUCCEEDED(hr))hr=device->SetPixelShaderConstantF(0,constants,4);
+            if(SUCCEEDED(hr))hr=device->SetPixelShaderConstantF(2,noJitter,1);
+            if(SUCCEEDED(hr))hr=device->SetPixelShaderConstantF(4,lineOnly,1);
+            if(SUCCEEDED(hr))hr=device->SetTexture(1,t.outlineMask.Get());
+            if(SUCCEEDED(hr))hr=Draw(device,currentScene,t.nativeFilterPixel.Get(),v,desc.Width,desc.Height);
+            const auto remember=[&](HRESULT result){if(SUCCEEDED(hr))hr=result;};
+            remember(device->SetTexture(0,nullptr));remember(device->SetTexture(1,nullptr));
+            remember(device->SetRenderTarget(0,p.previous.Get()));
+            remember(device->SetViewport(&v));
+            remember(device->SetPixelShaderConstantF(4,noJitter,1));
+            if(SUCCEEDED(hr))currentScene=t.filteredScene.Get();
+            else {
+                runtime_log::Write("AA native-line prefilter failed hr=0x%08lX",hr);
+                runtime_log::Trace("AA native-line prefilter failed frame=%d algorithm=%u hr=0x%08lX",
+                    p.app->CurrentFrame(),unsigned(t.algorithm),hr);
+            }
+        }
+        if(SUCCEEDED(hr)) {
+        auto* vectors=p.temporal?motion::Resolve(p.app,device):nullptr;
+        FullscreenState(device);
+        constants[2]=vectors?float(std::min(t.samples,31u))/(std::min(t.samples,31u)+1):0;
         device->SetPixelShaderConstantF(0,constants,4);
+        const float noMask[]={0,0,0,0};
+        device->SetPixelShaderConstantF(4,noMask,1);
         if(Smaa(p.app->antialiasing.algorithm)) {
             const float metrics[]={1.f/desc.Width,1.f/desc.Height,float(desc.Width),float(desc.Height)};
             device->SetPixelShaderConstantF(0,metrics,1);
@@ -601,7 +893,7 @@ bool FrameScope::Complete() {
             const D3DVIEWPORT9 full={0,0,desc.Width,desc.Height,0,1};
             hr=device->SetRenderTarget(0,t.edgeSurface.Get());device->SetViewport(&full);
             if(SUCCEEDED(hr))hr=device->Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0);
-            if(SUCCEEDED(hr))hr=Draw(device,t.scene.Get(),t.smaa[0].Get(),v,desc.Width,desc.Height);
+            if(SUCCEEDED(hr))hr=Draw(device,currentScene,t.smaa[0].Get(),v,desc.Width,desc.Height);
             device->SetTexture(0,nullptr);
             if(SUCCEEDED(hr))hr=device->SetRenderTarget(0,t.weightSurface.Get());device->SetViewport(&full);
             if(SUCCEEDED(hr))hr=device->Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0);
@@ -614,12 +906,12 @@ bool FrameScope::Complete() {
             // The non-temporal neighborhood shader preserves alpha if motion
             // is unavailable, with the same standard/enhanced spatial preset.
             auto* neighborhood=!vectors && SmaaTemporal(t.algorithm)?t.fxaa.Get():t.smaa[2].Get();
-            if(SUCCEEDED(hr))hr=Draw(device,t.scene.Get(),neighborhood,v,desc.Width,desc.Height);
+            if(SUCCEEDED(hr))hr=Draw(device,currentScene,neighborhood,v,desc.Width,desc.Height);
             for(unsigned sampler=0;sampler<3;++sampler)device->SetTexture(sampler,nullptr);
             if(vectors && SUCCEEDED(hr)) {
                 device->SetRenderTarget(0,p.previous.Get());
                 device->SetTexture(1,t.history[t.historyIndex].Get());device->SetTexture(2,vectors);
-                device->SetTexture(3,t.historyDepth.Get());device->SetTexture(4,t.scene.Get());
+                device->SetTexture(3,t.historyDepth.Get());device->SetTexture(4,currentScene);
                 device->SetTexture(5,t.weights.Get());
                 for(unsigned sampler=0;sampler<6;++sampler) {
                     const auto filter=sampler==2 || sampler==3?D3DTEXF_POINT:D3DTEXF_LINEAR;
@@ -633,7 +925,7 @@ bool FrameScope::Complete() {
                 }
             }
             if(FAILED(hr)) {
-                Draw(device,t.scene.Get(),nullptr,v,desc.Width,desc.Height);
+                Draw(device,currentScene,nullptr,v,desc.Width,desc.Height);
                 p.app->antialiasing.enabled=false;RefreshMenu(p.app);
             }
         } else if(vectors) {
@@ -641,7 +933,7 @@ bool FrameScope::Complete() {
             device->SetDepthStencilSurface(nullptr);device->SetTexture(1,t.history[t.historyIndex].Get());
             device->SetTexture(2,vectors);device->SetTexture(3,t.historyDepth.Get());
             hr=device->SetRenderTarget(0,t.historySurface[next].Get());
-            if(SUCCEEDED(hr))hr=Draw(device,t.scene.Get(),t.temporal.Get(),v,desc.Width,desc.Height);
+            if(SUCCEEDED(hr))hr=Draw(device,currentScene,t.temporal.Get(),v,desc.Width,desc.Height);
             device->SetTexture(1,nullptr);device->SetTexture(2,nullptr);device->SetTexture(3,nullptr);
             device->SetRenderTarget(0,p.previous.Get());
             if(SUCCEEDED(hr))hr=Draw(device,t.history[next].Get(),nullptr,v,desc.Width,desc.Height);
@@ -651,7 +943,20 @@ bool FrameScope::Complete() {
         } else {
             t.samples=0;motion::Cancel(p.app);
             device->SetDepthStencilSurface(nullptr);device->SetRenderTarget(0,p.previous.Get());
-            hr=Draw(device,t.scene.Get(),t.fxaa.Get(),v,desc.Width,desc.Height);
+            auto* nativeLines=t.algorithm==Algorithm::Fxaa?outline_multisample::GetTexture(p.app):nullptr;
+            const bool mask=!nativeLines && t.algorithm==Algorithm::Fxaa && t.outlineMaskValid && t.outlineMaskWritten && t.outlineMask;
+            const float maskConstants[]={mask?1.f:0.f,nativeLines?1.f:0.f,0,0};
+            hr=device->SetTexture(1,nativeLines?nativeLines:mask?t.outlineMask.Get():nullptr);
+            if(FAILED(hr) && (mask || nativeLines)) {
+                DisableOutlineMask(t,"resolve texture binding",hr);
+                const float noMask[]={0,0,0,0};
+                hr=device->SetTexture(1,nullptr);
+                if(SUCCEEDED(hr))hr=device->SetPixelShaderConstantF(4,noMask,1);
+            } else if(SUCCEEDED(hr))hr=device->SetPixelShaderConstantF(4,maskConstants,1);
+            if(SUCCEEDED(hr))hr=Draw(device,currentScene,t.fxaa.Get(),v,desc.Width,desc.Height);
+            const HRESULT unbound=device->SetTexture(1,nullptr);
+            if(SUCCEEDED(hr))hr=unbound;
+        }
         }
         const auto end=device->EndScene();if(SUCCEEDED(hr))hr=end;
     }
@@ -662,14 +967,18 @@ bool FrameScope::Complete() {
         motion::Commit(p.app);++t.samples;
         t.historyJitterX=p.jitterX;t.historyJitterY=p.jitterY;
     } else if(p.temporal) {
+        runtime_log::Trace("AA temporal resolve canceled frame=%d algorithm=%u outline=%u samples=%u hr=0x%08lX history=%u motion_surface=%u mask=%u/%u",
+            p.app->CurrentFrame(),unsigned(t.algorithm),unsigned(p.app->antialiasing.outlineMode),t.samples,hr,
+            historyWritten?1u:0u,motionSurface?1u:0u,t.outlineMaskValid?1u:0u,t.outlineMaskWritten?1u:0u);
         t.samples=0;t.temporalUnavailable=true;motion::Cancel(p.app);
     } else if(SUCCEEDED(hr) && !Temporal(t.algorithm)) {
         t.samples=1;
     }
     saved->Apply();
     // State blocks exclude the target/depth bindings and may restore jitter.
-    device->SetDepthStencilSurface(nullptr);device->SetRenderTarget(0,p.previous.Get());device->SetDepthStencilSurface(p.depth.Get());
-    device->SetViewport(&p.viewport);device->SetTransform(D3DTS_PROJECTION,&p.projection);ApplyRenderState(p.app);
+    const HRESULT restoredTargets=extraTargets.Restore();
+    if(SUCCEEDED(hr))hr=restoredTargets;
+    device->SetTransform(D3DTS_PROJECTION,&p.projection);ApplyRenderState(p.app);
     if(FAILED(hr))runtime_log::Write("AA resolve failed hr=0x%08lX",hr);
     p.completed=SUCCEEDED(hr);
     return SUCCEEDED(hr);

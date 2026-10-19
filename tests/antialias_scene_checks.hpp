@@ -17,6 +17,8 @@ HRESULT WINAPI RejectAntialiasFloatTarget(IDirect3D9* d3d,UINT adapter,D3DDEVTYP
 }
 void CheckAntialiasScene(MMDApp* app, const wchar_t* directory) {
     if(std::getenv("MMS_AA_STABILITY")) { CheckAntialiasStability(app,directory);return; }
+    Check(antialias::Settings{}.outlineMode==antialias::OutlineMode::FxaaAdaptive,
+        "new AA settings default to FXAA outline softening without additional MSAA");
     CheckTemporalResolveShader();
     captureDirectory = directory;
     std::filesystem::create_directories(captureDirectory);
@@ -105,6 +107,8 @@ void CheckAntialiasScene(MMDApp* app, const wchar_t* directory) {
         std::memcpy(savedBones.data()+std::size_t(bone)*16,bones[bone].matInit,16*sizeof(float));
     const auto savedFrame=app->CurrentFrame();const auto savedPlayback=app->PlaybackActive();
     const auto playbackStart=antialias::AccumulatedSamples(app);
+    std::printf("TAA playback begin frame=%d samples=%u required=%u outline_mode=%u previous_playback=%d viewport_tool=%u\n",
+        savedFrame,playbackStart,antialias::RequiredSamples(app),unsigned(app->antialiasing.outlineMode),int(savedPlayback),app->UsesViewportTool()?1u:0u);
     const auto beforePlayback=capturedPixels;
     app->PlaybackActive()=1;
     for(int frame=0;frame<12;++frame) {
@@ -118,6 +122,12 @@ void CheckAntialiasScene(MMDApp* app, const wchar_t* directory) {
         app->state.messageSeen=10;RenderFrameScene(app);
         captureRequested=true;r->device->Present(nullptr,nullptr,nullptr,nullptr);
         Check(!captureRequested,"animated production frame reaches presentation");
+        const auto motion=antialias::motion::GetStats(app);
+        const auto outline=antialias::outline_multisample::GetStats(app);
+        std::printf("TAA playback step=%d frame=%d samples=%u required=%u motion=%u/%u captures=%u hits=%u gpu=%u readbacks=%u coverage=%u opaque_skips=%u outline_samples=%u outlines=%u composites=%u failed=%u fallback=%s\n",
+            frame,app->CurrentFrame(),antialias::AccumulatedSamples(app),antialias::RequiredSamples(app),motion.matchedDraws,motion.draws,
+            motion.vertexCaptures,motion.vertexCacheHits,motion.gpuVertexCaptures,motion.cpuVertexReadbacks,motion.coverageReplays,motion.opaqueCoverageSkips,
+            outline.sampleCount,outline.outlineDraws,outline.composites,outline.frameFailed?1u:0u,outline.fallbackReason.c_str());
     }
     Check(antialias::AccumulatedSamples(app)>=playbackStart+12,
         "playback with changing skinned positions keeps temporal accumulation active");
@@ -250,6 +260,99 @@ void CheckAntialiasScene(MMDApp* app, const wchar_t* directory) {
     Check(antialias::AccumulatedSamples(app)>=8,"recording continues temporal accumulation across changing frames");
     app->CurrentFrame()=recordingFrame;
     DestroyWindow(app->RecordingWindow());app->RecordingWindow()=nullptr;
+    // Exercise both shared outline strategies with each post-process family.
+    // Require real native geometry rather than treating an empty/fallback
+    // outline layer as successful MME compatibility.
+    unsigned eligibleOutlineModels=0,eligibleOutlineMaterials=0;
+    for(int slot=0;slot<kModelSlotCount;++slot)if(auto* model=app->ModelSlot(slot)) {
+        const auto& state=*mdl::Mdl(model);
+        if(state.loadComplete==0 || state.displayState!=0 || state.edgeScale<=0 || state.postLoadFlag2!=0)continue;
+        auto* materials=mdl::Materials(model);if(!materials)continue;
+        ++eligibleOutlineModels;
+        for(unsigned material=0;material<state.materialCount;++material)
+            eligibleOutlineMaterials+=materials[material].faceVertexCount>0 && materials[material].doubleSided!=0;
+    }
+    std::printf("OUTLINE fixture eligible_models=%u eligible_materials=%u playback=%d viewport_tool=%u effect_suppressed=%d\n",
+        eligibleOutlineModels,eligibleOutlineMaterials,int(app->PlaybackActive()),app->UsesViewportTool()?1u:0u,int(app->ModelNonDisplayMode()));
+    Check(eligibleOutlineModels>0 && eligibleOutlineMaterials>0,
+        "shared-outline fixture contains visible loaded native models with enabled outline material draws");
+    Check(app->PlaybackActive()!=0 || app->UsesViewportTool(),
+        "shared-outline fixture opens the renderer's camera/playback outline gate");
+    Check(r->postProcessEnabled==0 || app->ModelNonDisplayMode()==0,
+        "shared-outline fixture does not suppress native outlines in the effect-rendering path");
+    std::ofstream strategyTable(captureDirectory/L"outline-strategies.tsv");
+    Check(strategyTable.good(),"create shared-outline execution evidence");
+    strategyTable<<"outline_mode\talgorithm\twarmup_frames\taccumulated_samples\trequired_samples\toutline_samples\tdepth_replays\toutline_draws\tcomposites\tobserved_native\tframe_failed\tfallback\tmotion_draws\tmotion_matched\tmotion_pixels\n";
+    for(const auto outline:{antialias::OutlineMode::FxaaAdaptive,antialias::OutlineMode::Multisample}) {
+        std::wstring outlineError;
+        const auto beforeAlgorithm=app->antialiasing.algorithm;
+        const bool beforeEnabled=app->antialiasing.enabled;
+        Check(antialias::SelectOutlineMode(app,outline,outlineError),"select shared outline strategy through the production API");
+        Check(app->antialiasing.outlineMode==outline && app->antialiasing.algorithm==beforeAlgorithm &&
+            app->antialiasing.enabled==beforeEnabled,"outline strategy does not replace the selected scene AA mode");
+        for(const auto algorithm:{antialias::Algorithm::Fxaa,antialias::Algorithm::Taa,
+                                 antialias::Algorithm::SmaaStandard,antialias::Algorithm::Smaa,
+                                 antialias::Algorithm::SmaaT2xStandard,antialias::Algorithm::SmaaT2xEnhanced}) {
+            select(algorithm);
+            const bool temporal=algorithm==antialias::Algorithm::Taa || algorithm==antialias::Algorithm::SmaaT2xStandard ||
+                algorithm==antialias::Algorithm::SmaaT2xEnhanced;
+            const unsigned expectedSamples=algorithm==antialias::Algorithm::Taa?8:temporal?2:1;
+            const int warmupFrames=algorithm==antialias::Algorithm::Taa?10:temporal?4:3;
+            const auto name=std::string(outline==antialias::OutlineMode::FxaaAdaptive?"outline-fxaa-adaptive-aa":"outline-msaa-coverage-aa")+
+                std::to_string(unsigned(algorithm));
+            capture(name.c_str(),warmupFrames);
+            const auto warmedSamples=antialias::AccumulatedSamples(app);
+            const auto savedYaw=app->CameraYaw();
+            if(temporal) {
+                // Both observers must keep working when geometry/camera history
+                // is used. A static image alone would miss silent motion fallback.
+                app->CameraYaw()=savedYaw+.004f;
+                capture(name.c_str(),1);
+            }
+            const auto native=antialias::outline_multisample::GetStats(app);
+            const auto motion=antialias::motion::GetStats(app);
+            const auto accumulated=antialias::AccumulatedSamples(app),required=antialias::RequiredSamples(app);
+            float motionPixels=0;
+            if(temporal)motionPixels=ReadAntialiasMotionField(app).MaximumPixels();
+            strategyTable<<unsigned(outline)<<'\t'<<unsigned(algorithm)<<'\t'<<warmupFrames<<'\t'<<accumulated<<'\t'<<required<<'\t'
+                <<native.sampleCount<<'\t'<<native.depthReplays<<'\t'<<native.outlineDraws<<'\t'<<native.composites<<'\t'
+                <<native.observedNativeDevice<<'\t'<<native.frameFailed<<'\t'<<native.fallbackReason<<'\t'
+                <<motion.draws<<'\t'<<motion.matchedDraws<<'\t'<<motionPixels<<'\n';
+            strategyTable.flush();
+            std::printf("OUTLINE mode=%u algorithm=%u accumulated=%u required=%u samples=%u depth=%u draws=%u composites=%u native=%u failed=%u fallback=%s motion=%u/%u motion_px=%g\n",
+                unsigned(outline),unsigned(algorithm),accumulated,required,native.sampleCount,native.depthReplays,native.outlineDraws,
+                native.composites,native.observedNativeDevice?1u:0u,native.frameFailed?1u:0u,native.fallbackReason.c_str(),
+                motion.matchedDraws,motion.draws,motionPixels);
+            Check(app->antialiasing.enabled && app->antialiasing.algorithm==algorithm && app->antialiasing.outlineMode==outline,
+                "actual shared-outline frame preserves both requested selections and AA activation");
+            Check(required==expectedSamples,"shared-outline rendering does not silently replace the requested temporal algorithm with spatial fallback");
+            if(temporal) {
+                Check(warmedSamples>=unsigned(warmupFrames) && accumulated>=warmedSamples+1,
+                    "TAA and SMAA T2x retain actual history across a camera-moving frame with either outline strategy");
+                Check(motion.draws>0 && motion.matchedDraws>0 && motionPixels>.01f,
+                    "shared outline and temporal observers both preserve matched geometry and real camera velocity");
+            }
+            if(outline==antialias::OutlineMode::Multisample) {
+                Check(native.sampleCount>=4 && native.depthReplays>0 && native.outlineDraws>0 && native.composites==1,
+                    "MSAA outline strategy really replays body depth, draws multisampled hulls and composites exactly once");
+                Check(native.observedNativeDevice && !native.observing && !native.frameFailed && native.fallbackReason.empty() &&
+                    !antialias::outline_multisample::Active(app) && !antialias::outline_multisample::Failed(app) &&
+                    antialias::outline_multisample::GetTexture(app)!=nullptr,
+                    "MSAA outline frame completes on the native device with a published layer and no fallback");
+            } else {
+                Check(native.sampleCount==0 && native.depthReplays==0 && native.outlineDraws==0 && native.composites==0 &&
+                    !native.observedNativeDevice && !native.observing && !native.frameFailed && native.fallbackReason.empty() &&
+                    !antialias::outline_multisample::Active(app) && antialias::outline_multisample::GetTexture(app)==nullptr,
+                    "pure FXAA outline strategy never allocates or executes an independent MSAA outline pass");
+            }
+            app->CameraYaw()=savedYaw;
+        }
+    }
+    {
+        std::wstring outlineError;
+        Check(antialias::SelectOutlineMode(app,antialias::OutlineMode::FxaaAdaptive,outlineError),
+            "restore pure FXAA outline preference before menu and restart checks");
+    }
     select(antialias::Algorithm::MmdOriginal);
     select(antialias::Algorithm::Fxaa);
     for(int language=0;language<3;++language) {
@@ -264,12 +367,51 @@ void CheckAntialiasScene(MMDApp* app, const wchar_t* directory) {
                 if(item.wID==277){parent=child;popup=item.hSubMenu;index=j;}
             }
         }
-        Check(popup && GetMenuItemCount(popup)==5,"algorithm flyout has Off, original MSAA, FXAA, TAA and grouped SMAA");
+        Check(popup && GetMenuItemCount(popup)==7,
+            "AA flyout has the algorithm choices, separator and independent outline processing submenu");
         wchar_t offLabel[32]{};GetMenuStringW(popup,antialias::kOffCommand,offLabel,32,MF_BYCOMMAND);
         Check(std::wcscmp(offLabel,language==2?L"关闭":language==1?L"Off":L"オフ")==0,"Off is localized in every UI language");
-        const int smaaPosition=GetMenuItemCount(popup)-1;
+        const auto commandPosition=[&](unsigned command) {
+            for(int i=0;i<GetMenuItemCount(popup);++i) {
+                MENUITEMINFOW item{sizeof(item)};item.fMask=MIIM_ID;
+                if(GetMenuItemInfoW(popup,i,TRUE,&item) && item.wID==command)return i;
+            }
+            return -1;
+        };
+        const int smaaPosition=commandPosition(antialias::kSmaaCommand);
+        const int outlinePosition=commandPosition(antialias::kOutlineCommand);
         auto smaaPopup=GetSubMenu(popup,smaaPosition);
         Check(smaaPopup && GetMenuItemCount(smaaPopup)==4,"four SMAA variants are available in the right-hand submenu");
+        auto outlinePopup=GetSubMenu(popup,outlinePosition);
+        Check(outlinePopup && GetMenuItemCount(outlinePopup)==2,"outline processing offers exactly two independent strategies");
+        wchar_t outlineLabel[96]{},fxaaOutlineLabel[96]{},msaaOutlineLabel[96]{};
+        GetMenuStringW(popup,antialias::kOutlineCommand,outlineLabel,96,MF_BYCOMMAND);
+        GetMenuStringW(outlinePopup,antialias::kOutlineFxaaCommand,fxaaOutlineLabel,96,MF_BYCOMMAND);
+        GetMenuStringW(outlinePopup,antialias::kOutlineMsaaCommand,msaaOutlineLabel,96,MF_BYCOMMAND);
+        Check(std::wcscmp(outlineLabel,language==2?L"描边处理":language==1?L"Outline processing":L"輪郭線処理")==0 &&
+            std::wcscmp(fxaaOutlineLabel,language==2?L"FXAA 自适应柔化":language==1?L"FXAA adaptive softening":L"FXAA 適応平滑化")==0 &&
+            std::wcscmp(msaaOutlineLabel,language==2?L"MSAA 覆盖＋自适应柔化":language==1?L"MSAA coverage + adaptive softening":L"MSAA カバレッジ＋適応平滑化")==0,
+            "outline processing and both strategies are localized in every UI language");
+        const auto checkOutlineSelection=[&]() {
+            // RefreshMenu replaces descendant menus after each selection.
+            const auto child=GetSubMenu(popup,outlinePosition);
+            const auto& settings=app->antialiasing;
+            const bool editable=settings.enabled && settings.algorithm>=antialias::Algorithm::Fxaa &&
+                settings.algorithm<antialias::Algorithm::Count;
+            Check(((GetMenuState(popup,antialias::kOutlineCommand,MF_BYCOMMAND)&(MF_DISABLED|MF_GRAYED))==0)==editable,
+                "outline strategy submenu is enabled only for active post-process AA");
+            Check(GetMenuDefaultItem(child,FALSE,0)==UINT(-1),"outline submenu has no implicit default action");
+            for(const auto mode:{antialias::OutlineMode::FxaaAdaptive,antialias::OutlineMode::Multisample}) {
+                const unsigned command=mode==antialias::OutlineMode::FxaaAdaptive?
+                    antialias::kOutlineFxaaCommand:antialias::kOutlineMsaaCommand;
+                MENUITEMINFOW item{sizeof(item)};item.fMask=MIIM_STATE|MIIM_FTYPE;
+                Check(GetMenuItemInfoW(child,command,FALSE,&item)!=FALSE,"outline strategy item exists");
+                Check((item.fType&MFT_RADIOCHECK)!=0 && ((item.fState&MFS_CHECKED)!=0)==(settings.outlineMode==mode),
+                    "exactly the remembered outline strategy has a radio check even while disabled");
+                Check(((item.fState&(MFS_DISABLED|MFS_GRAYED))==0)==editable,
+                    "outline child availability follows post-process AA activation");
+            }
+        };
         const auto checkSmaaSelection=[&](antialias::Algorithm active) {
             // Selecting a variant refreshes the native submenu, so do not keep
             // the old handle between command dispatches.
@@ -291,8 +433,18 @@ void CheckAntialiasScene(MMDApp* app, const wchar_t* directory) {
                 Check(((GetMenuState(popup,antialias::kFirstCommand+unsigned(other),MF_BYCOMMAND)&MF_CHECKED)!=0)==(enabled && active==other),
                     "the algorithm submenu marks only the selected family");
             }
+            checkOutlineSelection();
         };
         checkSmaaSelection(antialias::Algorithm::Fxaa);
+        for(const auto mode:{antialias::OutlineMode::FxaaAdaptive,antialias::OutlineMode::Multisample}) {
+            const auto command=mode==antialias::OutlineMode::FxaaAdaptive?
+                antialias::kOutlineFxaaCommand:antialias::kOutlineMsaaCommand;
+            SendMessageW(app->MainWindow(),WM_COMMAND,command,0);
+            Check(app->antialiasing.outlineMode==mode && app->antialiasing.enabled &&
+                app->antialiasing.algorithm==antialias::Algorithm::Fxaa,
+                "choosing an outline strategy preserves the selected AA algorithm and activation");
+            checkOutlineSelection();
+        }
         Check((GetMenuState(popup,antialias::kFirstCommand+unsigned(antialias::Algorithm::Fxaa),MF_BYCOMMAND)&MF_CHECKED)!=0,
             "selected algorithm has radio check");
         SendMessageW(app->MainWindow(),WM_MENUSELECT,MAKEWPARAM(smaaPosition,MF_POPUP),reinterpret_cast<LPARAM>(popup));
@@ -304,13 +456,28 @@ void CheckAntialiasScene(MMDApp* app, const wchar_t* directory) {
             "opening the SMAA submenu does not post a selection command");
         Check(app->antialiasing.algorithm==antialias::Algorithm::Fxaa,
             "opening the SMAA submenu preserves the current algorithm");
+        SendMessageW(app->MainWindow(),WM_MENUSELECT,MAKEWPARAM(outlinePosition,MF_POPUP),reinterpret_cast<LPARAM>(popup));
+        Check(antialias::MenuFilter(MSGF_MENU,0,reinterpret_cast<LPARAM>(&smaaEnter))==0,
+            "Enter on the outline label is left to native submenu navigation");
+        Check(!PeekMessageW(&smaaPending,app->MainWindow(),WM_COMMAND,WM_COMMAND,PM_REMOVE),
+            "opening the outline submenu posts neither an AA toggle nor a strategy command");
+        SendMessageW(app->MainWindow(),WM_COMMAND,antialias::kOutlineCommand,0);
+        Check(app->antialiasing.enabled && app->antialiasing.algorithm==antialias::Algorithm::Fxaa &&
+            app->antialiasing.outlineMode==antialias::OutlineMode::Multisample,
+            "a stale outline parent command changes neither activation, algorithm nor strategy");
         for(const auto active:{antialias::Algorithm::SmaaStandard,antialias::Algorithm::Smaa,
                                antialias::Algorithm::SmaaT2xStandard,antialias::Algorithm::SmaaT2xEnhanced,
                                antialias::Algorithm::Taa,antialias::Algorithm::MmdOriginal,antialias::Algorithm::Fxaa}) {
             select(active);checkSmaaSelection(active);
+            Check(app->antialiasing.outlineMode==antialias::OutlineMode::Multisample,
+                "changing the AA algorithm retains the independent outline strategy");
             CommandDispatch(nullptr,MAKEWPARAM(277,0));
             Check(!app->antialiasing.enabled && app->antialiasing.algorithm==active,"main Off remembers the selected algorithm");
             checkSmaaSelection(active);
+            SendMessageW(app->MainWindow(),WM_COMMAND,antialias::kOutlineFxaaCommand,0);
+            Check(!app->antialiasing.enabled && app->antialiasing.algorithm==active &&
+                app->antialiasing.outlineMode==antialias::OutlineMode::Multisample,
+                "a disabled outline command cannot enable AA or change its remembered strategy");
             CommandDispatch(nullptr,MAKEWPARAM(277,0));
             Check(app->antialiasing.enabled && app->antialiasing.algorithm==active,"main On restores the selected algorithm");
             checkSmaaSelection(active);
@@ -323,6 +490,17 @@ void CheckAntialiasScene(MMDApp* app, const wchar_t* directory) {
             Check(app->antialiasing.enabled,"selecting an algorithm turns AA back on");
             checkSmaaSelection(active);
         }
+        for(const auto active:{antialias::Algorithm::MmdOriginal,antialias::Algorithm::Msaa2,
+                               antialias::Algorithm::Msaa4,antialias::Algorithm::Msaa8}) {
+            select(active);checkOutlineSelection();
+            SendMessageW(app->MainWindow(),WM_COMMAND,antialias::kOutlineFxaaCommand,0);
+            Check(app->antialiasing.enabled && app->antialiasing.algorithm==active &&
+                app->antialiasing.outlineMode==antialias::OutlineMode::Multisample,
+                "original and explicit MSAA ignore unavailable outline strategy commands");
+        }
+        select(antialias::Algorithm::Fxaa);
+        SendMessageW(app->MainWindow(),WM_COMMAND,antialias::kOutlineFxaaCommand,0);
+        checkOutlineSelection();
         SendMessageW(app->MainWindow(),WM_MENUSELECT,MAKEWPARAM(index,MF_POPUP),reinterpret_cast<LPARAM>(parent));
         MSG enter{};enter.message=WM_KEYDOWN;enter.wParam=VK_RETURN;
         Check(antialias::MenuFilter(MSGF_MENU,0,reinterpret_cast<LPARAM>(&enter))==1,"Enter on parent keeps toggle action");

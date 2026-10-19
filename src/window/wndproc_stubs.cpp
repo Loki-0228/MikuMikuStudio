@@ -152,6 +152,11 @@ void DispatchSeparateWindowCommand(MMDApp* app, unsigned short id) {  // was Sub
     case 0x21A:
     case 0x21B: {
         const std::size_t axis = id - 0x219;  // 0/1/2 -> +320/+324/+328
+        // Reset also replaces pending text when the command arrives without
+        // moving keyboard focus away from the coordinate field.
+        const HWND owner = separate ? separate : main;
+        SendDlgItemMessageA(owner, panel::kReadoutPosXEdit + static_cast<int>(axis),
+                            EM_SETMODIFY, FALSE, 0);
         if (s.CameraMode() != 0) {
             s.CameraPositionAxis(axis) = 0.0f;
             RefreshRequest(-1);                                  // 0x440AC0

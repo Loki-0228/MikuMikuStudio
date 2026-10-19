@@ -3,6 +3,7 @@
 #include "mikudancestudio/mmd_app.hpp"
 #include "mikudancestudio/model.hpp"
 #include "mikudancestudio/ported_funcs.hpp"
+#include "../src/render/outline_multisample.hpp"
 #include <wrl/client.h>
 #include <array>
 #include <cmath>
@@ -72,7 +73,7 @@ struct Fixture {
         for(unsigned y=0;y<side;++y)std::memcpy(pixels.data()+y*side,static_cast<char*>(lock.pBits)+y*lock.Pitch,side*4);
         readback->UnlockRect();return pixels;
     }
-    std::vector<DWORD> Draw(float width,float slope,float phase,bool coverage,bool effect=false,bool disabled=false,bool occluded=false,DWORD color=0xff000000,bool resolved=false,unsigned referenceSamples=0) {
+    std::vector<DWORD> Draw(float width,float slope,float phase,bool coverage,bool effect=false,bool disabled=false,bool occluded=false,DWORD color=0xff000000,bool resolved=false,unsigned referenceSamples=0,bool effectMrt=false) {
         mdl::SkinnedVertexBase vertices[4]{};mdl::EdgeVertex outlines[4]{};
         // White front face and black inverted hull. The right boundary is a
         // straight line with known fractional width, independent of shaders.
@@ -106,6 +107,10 @@ struct Fixture {
             device->SetDepthStencilSurface(target.depth.Get());
         } else {
             frame=std::make_unique<antialias::FrameScope>(app.get());Check(frame->Ready(),"begin post-process scene");
+            // Retain coverage/ink tests for the single-sample fallback. The
+            // real MSAA outline layer is tested against per-pixel hardware
+            // coverage in outline_multisample_tests, not this expanded hull.
+            antialias::outline_multisample::Cancel(app.get());
         }
         Check(SUCCEEDED(device->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER|D3DCLEAR_STENCIL,0xffffffff,1,0)),"clear scene");
         device->SetVertexShader(nullptr);device->SetPixelShader(nullptr);device->SetFVF(D3DFVF_XYZ|D3DFVF_NORMAL|D3DFVF_TEX1);
@@ -126,6 +131,10 @@ struct Fixture {
         device->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_INVSRCALPHA);
         device->SetTextureStageState(0,D3DTSS_COLORARG1,D3DTA_DIFFUSE);device->SetTextureStageState(0,D3DTSS_ALPHAARG1,D3DTA_DIFFUSE);
         const float uniform[]={float((color>>16)&255)/255,float((color>>8)&255)/255,float(color&255)/255,float(color>>24)/255};
+        DWORD extraWritesBefore=0;
+        D3DVIEWPORT9 viewportBefore{};
+        Check(SUCCEEDED(device->GetRenderState(D3DRS_COLORWRITEENABLE1,&extraWritesBefore)) &&
+              SUCCEEDED(device->GetViewport(&viewportBefore)),"read outline MRT state");
         const bool drawn=coverage && antialias::DrawOutline(app.get(),Raw(),0,6,effect?uniform:nullptr);
         Check(!coverage || drawn,"production coverage draw succeeds");
         if(!drawn)Check(SUCCEEDED(device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST,0,0,4,0,2)),"legacy outline draw");
@@ -133,6 +142,15 @@ struct Fixture {
         UINT offset=0,stride=0;DWORD fvf=0;
         device->GetVertexShader(&vs);device->GetPixelShader(&ps);device->GetStreamSource(1,&stream,&offset,&stride);device->GetFVF(&fvf);
         Check(!vs&&!ps&&!stream&&fvf==(D3DFVF_XYZ|D3DFVF_DIFFUSE),"coverage restores shaders, declaration and secondary stream");
+        ComPtr<IDirect3DSurface9> extraAfter;
+        DWORD extraWritesAfter=0;
+        D3DVIEWPORT9 viewportAfter{};
+        const auto extraResult=device->GetRenderTarget(1,&extraAfter);
+        Check(extraResult==D3DERR_NOTFOUND && !extraAfter &&
+              SUCCEEDED(device->GetRenderState(D3DRS_COLORWRITEENABLE1,&extraWritesAfter)) &&
+              extraWritesBefore==extraWritesAfter && SUCCEEDED(device->GetViewport(&viewportAfter)) &&
+              std::memcmp(&viewportBefore,&viewportAfter,sizeof(viewportBefore))==0,
+              "outline mask restores secondary target, write mask and viewport");
         Check(SUCCEEDED(device->EndScene()),"finish geometry");
         if(referenceSamples) {
             auto& target=msaa[referenceSamples];
@@ -142,7 +160,24 @@ struct Fixture {
                 "resolve real MSAA reference");
             return Read(target.resolved.Get());
         }
-        auto pixels=Read();Check(frame->Complete(),"complete actual FXAA resolve");return resolved?Read():pixels;
+        auto pixels=Read();
+        ComPtr<IDirect3DSurface9> extraTarget;
+        constexpr DWORD marker=0x7f203060;
+        if(effectMrt) {
+            Check(SUCCEEDED(device->CreateRenderTarget(side,side,D3DFMT_A8R8G8B8,D3DMULTISAMPLE_NONE,0,FALSE,&extraTarget,nullptr)) &&
+                  SUCCEEDED(device->ColorFill(extraTarget.Get(),nullptr,marker)) &&
+                  SUCCEEDED(device->SetRenderTarget(1,extraTarget.Get())),"bind an effect MRT before AA resolve");
+        }
+        Check(frame->Complete(),"complete actual FXAA resolve");
+        if(effectMrt) {
+            ComPtr<IDirect3DSurface9> restored;
+            Check(SUCCEEDED(device->GetRenderTarget(1,&restored)) && restored.Get()==extraTarget.Get(),
+                  "resolve restores the effect MRT binding");
+            const auto extraPixels=Read(extraTarget.Get());
+            for(auto value:extraPixels)Check(value==marker,"AA resolve does not write to the effect MRT");
+            Check(SUCCEEDED(device->SetRenderTarget(1,nullptr)),"unbind test effect MRT");
+        }
+        return resolved?Read():pixels;
     }
 };
 double Ink(const std::vector<DWORD>& pixels,unsigned y) {
@@ -206,5 +241,8 @@ int wmain(int argc,wchar_t** argv) {
         double ink=0;for(unsigned y=24;y<104;++y)ink+=Ink(pixels,y);
         Check(ink==0,"disabled edges and foreground occlusion stay invisible");
     }
+    Check(f.Draw(.25f,.25f,.5f,true,false,false,false,0xff000000,true)==
+          f.Draw(.25f,.25f,.5f,true,false,false,false,0xff000000,true,0,true),
+          "effect MRT isolation preserves the resolved scene");
     std::puts("PASS native outline coverage, opacity, thick lines, disabled edges, occlusion and state restoration");
 }

@@ -10,28 +10,6 @@ float4 bounds : register(c1); // viewport pixel-center UV bounds
 float4 reproject : register(c2); // current jitter UV, absolute/relative depth tolerance
 float4 previousSampling : register(c3); // previous depth texture's jitter UV
 float4 readScene(float2 uv) { return tex2D(scene,clamp(uv,bounds.xy,bounds.zw)); }
-float luminance(float3 c) { return dot(c,float3(.299,.587,.114)); }
-// Directional FXAA: detect local luma contrast, search along the edge, reject
-// the wider filter when it crosses the local luma range. Flat areas stay exact.
-float4 fxaa(float2 uv : TEXCOORD0) : COLOR0 {
-    uv+=reproject.xy;
-    float4 center=readScene(uv);
-    float nw=luminance(readScene(uv+pixel.xy*float2(-1,-1)).rgb);
-    float ne=luminance(readScene(uv+pixel.xy*float2(1,-1)).rgb);
-    float sw=luminance(readScene(uv+pixel.xy*float2(-1,1)).rgb);
-    float se=luminance(readScene(uv+pixel.xy*float2(1,1)).rgb);
-    float m=luminance(center.rgb);
-    float low=min(m,min(min(nw,ne),min(sw,se)));
-    float high=max(m,max(max(nw,ne),max(sw,se)));
-    if(high-low < max(.0312,high*.125)) return center;
-    float2 direction=float2(-((nw+ne)-(sw+se)),(nw+sw)-(ne+se));
-    float reduce=max((nw+ne+sw+se)*(.25*.125),1.0/128.0);
-    direction=clamp(direction/(min(abs(direction.x),abs(direction.y))+reduce),-8,8)*pixel.xy;
-    float4 a=.5*(readScene(uv+direction*(-1.0/6.0))+readScene(uv+direction*(1.0/6.0)));
-    float4 b=a*.5+.25*(readScene(uv-direction*.5)+readScene(uv+direction*.5));
-    float l=luminance(b.rgb);
-    return l<low || l>high ? a:b;
-}
 // Actual previous/current geometry positions provide velocity without jitter.
 // The history lookup follows that velocity. Linear-depth rejection prevents a
 // newly exposed surface from inheriting the occluder's color.

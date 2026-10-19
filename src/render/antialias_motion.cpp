@@ -1,5 +1,6 @@
 #define NOMINMAX
 #include "mikudancestudio/antialias_motion.hpp"
+#include "mikudancestudio/antialias.hpp"
 #include "mikudancestudio/build_profile.hpp"
 #include "mikudancestudio/deformed_mesh_capture.hpp"
 #include "mikudancestudio/d3dx_dyn.hpp"
@@ -171,7 +172,11 @@ struct State final:deformed_mesh_capture::DrawObserver {
     ~State(){deformed_mesh_capture::StopObserving(this);}
     void Fail(const char* message) {
         failed=true;
-        if(lastError!=message){lastError=message;runtime_log::Write("TAA motion unavailable: %s",message);}
+        if(lastError!=message){
+            lastError=message;runtime_log::Write("TAA motion unavailable: %s",message);
+            runtime_log::Trace("TAA motion unavailable frame=%d pass=%u: %s",
+                app?app->CurrentFrame():-1,app?unsigned(app->ActiveRenderPass()):0,message);
+        }
     }
     bool SceneDraw(IDirect3DDevice9* device) {
         if(!collecting||failed)return false;
@@ -268,8 +273,17 @@ struct State final:deformed_mesh_capture::DrawObserver {
             object=app->ActiveRenderObject();material=UINT_MAX;
         }
         if(type!=D3DPT_TRIANGLELIST && !grid){Fail("Non-triangle-list material geometry");return;}
-        ComPtr<IDirect3DSurface9> extra;
-        if(SUCCEEDED(device->GetRenderTarget(1,&extra))&&extra){Fail("Material writes multiple scene render targets");return;}
+        D3DCAPS9 caps{};Check(device->GetDeviceCaps(&caps),"Cannot query motion render-target limits");
+        bool extraTarget=false;
+        for(unsigned slot=1;slot<std::min(4u,unsigned(caps.NumSimultaneousRTs));++slot) {
+            ComPtr<IDirect3DSurface9> extra;
+            const auto hr=device->GetRenderTarget(slot,&extra);
+            if(hr!=D3DERR_NOTFOUND)Check(hr,"Cannot inspect motion source render targets");
+            extraTarget|=bool(extra);
+        }
+        if(extraTarget && !NativeOutlineMaskDraw(app,device)) {
+            Fail("Material writes multiple scene render targets");return;
+        }
         ComPtr<IDirect3DIndexBuffer9> indices;
         Check(device->GetIndices(&indices),"Cannot read motion indices");
         if(!indices)throw std::runtime_error("Motion source has no index buffer");

@@ -28,5 +28,15 @@ Output outlineVertex(float3 edge : POSITION0, float4 color : COLOR0,
     return result;
 }
 float4 outlinePixel(float4 color : COLOR0) : COLOR0 { return color; }
+struct MaskOutput { float4 color : COLOR0; float4 coverage : COLOR1; };
+MaskOutput outlineMaskPixel(float4 color : COLOR0) {
+    MaskOutput result;
+    // COLOR0 is identical to the ordinary outline shader, including coverage
+    // alpha. Shared SRCALPHA/INVSRCALPHA blending accumulates coverage in R of
+    // the separate MRT; the existing scene depth test rejects occluded hulls.
+    result.color = color;
+    result.coverage = float4(1, 0, 0, color.a);
+    return result;
+}
 )hlsl";
 }

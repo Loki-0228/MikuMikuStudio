@@ -27,6 +27,7 @@
 #include "mikudancestudio/antialias_motion.hpp"
 #include "mikudancestudio/deformed_mesh_capture.hpp"
 #include "../src/render/antialias_shader.hpp"
+#include "../src/render/outline_multisample.hpp"
 #include <atomic>
 #include <MinHook.h>
 #include <commctrl.h>

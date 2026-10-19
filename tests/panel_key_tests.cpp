@@ -48,6 +48,9 @@
 #include "mikudancestudio/mmd_app.hpp"
 #include "mikudancestudio/model.hpp"
 #include "mikudancestudio/ported_funcs.hpp"
+#include "mikudancestudio/panel_controls.hpp"
+#include "mikudancestudio/bone_parent_coordinates.hpp"
+#include "mikudancestudio/bone_scale.hpp"
 
 static void Check(bool condition, const char* description) {
     if (!condition) {
@@ -60,6 +63,8 @@ static void Check(bool condition, const char* description) {
 // non-exported declaration tests/keyboard_input_tests.cpp uses).
 namespace mikudancestudio {
 void CmdControl450(MMDApp*, HWND, std::uint16_t, std::uint16_t);
+void CmdControl500(MMDApp*, HWND, std::uint16_t, std::uint16_t);
+void DispatchSeparateWindowCommand(MMDApp*, unsigned short);
 }
 
 namespace {
@@ -357,6 +362,177 @@ void InitializeSelectionSet() {
     std::puts("PASS defect 6c: 初期化 resets exactly the selected set");
 }
 
+struct ResetPanelContext {
+    MMDApp* app;
+    bool separate;
+};
+
+LRESULT CALLBACK ResetPanelProc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
+    const auto* context = reinterpret_cast<const ResetPanelContext*>(
+        GetWindowLongPtrW(window, GWLP_USERDATA));
+    if (message == WM_COMMAND && context && LOWORD(wp) >= 537 &&
+        LOWORD(wp) <= 539 && HIWORD(wp) == BN_CLICKED) {
+        if (context->separate)
+            mikudancestudio::DispatchSeparateWindowCommand(context->app, LOWORD(wp));
+        else
+            mikudancestudio::CmdControl500(context->app, window, LOWORD(wp), HIWORD(wp));
+        return 0;
+    }
+    return DefWindowProcW(window, message, wp, lp);
+}
+
+// Exercise native edit focus loss and native button notifications without a
+// render device. Bind coordinates are intentionally nonzero: reset means the
+// bind pose, not moving the child bone onto the parent's origin.
+void BoneTranslationReset() {
+    using namespace mikudancestudio;
+    for (bool separate : {false, true})
+    for (bool pmx : {false, true})
+    for (auto type : {mdl::BoneType::RotateMove, mdl::BoneType::Move,
+                      mdl::BoneType::FixedAxis}) {
+        Fixture f(3);
+        f.record->selectedBone = 1;
+        f.record->physicsMode = pmx ? 2 : 0;
+        f.selection[1] = 1;
+        f.bones[1].type = type;
+        f.bones[1].flags = mdl::kBoneFlagVisible |
+            (type == mdl::BoneType::Move ? mdl::kBoneFlagMovable : 0);
+        for (int bone = 0; bone < 3; ++bone) {
+            f.bones[bone].rotQuat[3] = 1.f;
+            f.keys[bone].rotation[3] = 1.f;
+            f.bones[bone].slotIndex = -1;
+        }
+        const float origin[] = {2.f, 4.f, 6.f}, child[] = {5.f, 8.f, 1.f};
+        std::memcpy(f.bones[0].position, origin, sizeof(origin));
+        std::memcpy(f.bones[1].position, child, sizeof(child));
+        f.bones[2].trans[0] = 17.f;
+        for (int frame : {20, 40}) {
+            const auto index = f.AddKey(1, frame);
+            Check(index >= 0, "reset fixture has existing bone keys");
+            f.keys[index].position[0] = frame + .25f;
+            f.keys[index].position[1] = -frame - .5f;
+            f.keys[index].position[2] = frame * 2.f;
+        }
+        const auto originalKeys = f.keys;
+        auto app = std::make_unique<MMDApp>();
+        app->state = MMDAppState{};
+        app->ModelSlot(0) = f.bytes;
+        app->CurrentFrame() = 10;
+        auto* previousApp = g_Block;
+        g_Block = app.get();
+        std::printf("RESET-BEGIN format=%s panel=%s type=%u\n",
+            pmx ? "PMX" : "PMD", separate ? "separate" : "main", unsigned(type));
+        HWND window = CreateWindowExW(0, L"STATIC", L"bone reset regression",
+            WS_OVERLAPPED, 0, 0, 600, 160, nullptr, nullptr,
+            GetModuleHandleW(nullptr), nullptr);
+        Check(window != nullptr, "create hidden reset panel");
+        app->Hwnd() = f.record->hwnd = window;
+        if (separate) app->FloatingWindow() = window;
+        ResetPanelContext context{app.get(), separate};
+        SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(&context));
+        SetWindowLongPtrW(window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(ResetPanelProc));
+        for (int axis = 0; axis < 3; ++axis) {
+            const int editId = panel::kReadoutPosXEdit + axis;
+            HWND edit = CreateWindowExA(0, "EDIT", "", WS_CHILD,
+                axis * 120, 0, 80, 20, window,
+                reinterpret_cast<HMENU>(static_cast<INT_PTR>(editId)),
+                GetModuleHandleW(nullptr), nullptr);
+            HWND button = CreateWindowExA(0, "BUTTON", "reset", WS_CHILD | BS_PUSHBUTTON,
+                axis * 120, 25, 80, 20, window,
+                reinterpret_cast<HMENU>(static_cast<INT_PTR>(537 + axis)),
+                GetModuleHandleW(nullptr), nullptr);
+            Check(edit && button, "create native coordinate edit and reset button");
+            app->OriginalEditProc() = reinterpret_cast<WNDPROC>(
+                GetWindowLongPtrA(edit, GWLP_WNDPROC));
+            InstallControlSubclass(app.get(), edit, editId);
+            const float baseline = BoneParentBindOffset(f.bytes, 1, axis);
+            PostViewRefresh(app.get());
+            char shown[32]{};
+            GetWindowTextA(edit, shown, sizeof(shown));
+            Check(std::atof(shown) == baseline, "unmoved bone displays its bind coordinate");
+            for (int commitMode : {0, 1, 2, 3}) {
+                if (commitMode == 3) {
+                    f.bones[1].trans[axis] = -1.25f;
+                    PostViewRefresh(app.get());
+                }
+                Check(SetFocus(edit) != nullptr || GetFocus() == edit,
+                      "coordinate edit takes thread focus");
+                char input[32]{};
+                std::snprintf(input, sizeof(input), "%g", double(baseline + 2.5f));
+                SetWindowTextA(edit, input);
+                SendMessageA(edit, EM_SETMODIFY, TRUE, 0);
+                if (commitMode < 2) {
+                    SetFocus(commitMode == 0 ? window : button);
+                    Check(f.bones[1].trans[axis] == 2.5f,
+                          "rotation-only bone accepts manual displacement on focus loss");
+                }
+                const int beforeReset = f.record->undoState[0];
+                if (commitMode == 3)
+                    SendMessageW(window, WM_COMMAND, MAKEWPARAM(537 + axis, BN_CLICKED),
+                                 reinterpret_cast<LPARAM>(button));
+                else
+                    SendMessageA(button, BM_CLICK, 0, 0);
+                Check(f.bones[1].trans[axis] == 0.f && f.flags[1] != 0,
+                      "axis button clears actual displacement and marks pose dirty");
+                std::printf("RESET-HISTORY mode=%d before=%d after=%d editFocus=%d\n",
+                    commitMode, beforeReset, f.record->undoState[0], GetFocus() == edit);
+                Check(f.record->undoState[0] == (beforeReset + (commitMode == 2 ? 2 : 1)) % 30,
+                      "reset adds one undo step after any native button focus-loss commit");
+                GetWindowTextA(edit, shown, sizeof(shown));
+                Check(std::atof(shown) == baseline,
+                      "reset restores the original bind coordinate readout");
+                UndoModelEdit(f.bytes, &app->CurrentFrame(), 0);
+                Check(f.bones[1].trans[axis] == (commitMode == 3 ? -1.25f : 2.5f),
+                      "undo restores the actual pre-reset displacement");
+                RedoModelEdit(f.bytes, &app->CurrentFrame(), 0);
+                Check(f.bones[1].trans[axis] == 0.f, "redo reapplies displacement reset");
+                PostViewRefresh(app.get());
+                SetFocus(edit);
+                SetFocus(window);
+                Check(f.bones[1].trans[axis] == 0.f,
+                      "later focus loss cannot restore the old typed displacement");
+                Check(std::memcmp(originalKeys.data(), f.keys.data(),
+                                  f.keys.size() * sizeof(BoneKey)) == 0,
+                      "input, reset, undo and redo leave every existing key unchanged");
+                Check(f.bones[2].trans[0] == 17.f,
+                      "reset preserves the unselected bone");
+                std::printf("RESET format=%s panel=%s type=%u axis=%d commit=%d "
+                    "bind=%g trans=%g readout=%s\n", pmx ? "PMX" : "PMD",
+                    separate ? "separate" : "main", unsigned(type), axis,
+                    commitMode, baseline, f.bones[1].trans[axis], shown);
+            }
+        }
+        RegisterSelectedBoneKeys(f.bytes, 10, 0);
+        const auto registered = f.keys[1].next;
+        Check(registered >= f.record->boneCount && f.keys[registered].frame == 10,
+              "registering the reset pose inserts the requested current frame");
+        for (float value : f.keys[registered].position)
+            Check(value == 0.f, "registered reset pose stores zero animation displacement");
+        auto next = f.keys[registered].next;
+        Check(next != 0 && f.keys[next].frame == 20,
+              "registering the reset pose keeps the following key at frame 20");
+        for (int frame : {20, 40}) {
+            Check(next != 0 && f.keys[next].frame == frame,
+                  "registering a reset leaves later keys in order");
+            Check(std::memcmp(f.keys[next].position, originalKeys[next].position,
+                              sizeof(f.keys[next].position)) == 0 &&
+                  std::memcmp(f.keys[next].rotation, originalKeys[next].rotation,
+                              sizeof(f.keys[next].rotation)) == 0,
+                  "registering a reset preserves the values in all later keys");
+            next = f.keys[next].next;
+        }
+        DestroyWindow(window);
+        g_Block = previousApp;
+        bone_scale::Forget(f.bytes);
+        for (auto& ring : f.record->undoRings)
+            for (auto& slot : ring.slots) {
+                std::free(slot.bonePose); slot.bonePose = nullptr;
+                std::free(slot.auxiliaryPose); slot.auxiliaryPose = nullptr;
+            }
+    }
+    std::puts("PASS native bone displacement input, reset and history regression");
+}
+
 // ---------------------------------------------------------------------------
 // Defect 7 - I / K on a frame that already carries a keyframe
 // ---------------------------------------------------------------------------
@@ -433,9 +609,13 @@ void FrameLineInsertDelete() {
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
     // Unbuffered so a hang (or a crash) still shows which case was running.
     std::setvbuf(stdout, nullptr, _IONBF, 0);
+    if (argc > 1 && std::strcmp(argv[1], "--bone-translation-reset") == 0) {
+        BoneTranslationReset();
+        return 0;
+    }
     std::puts("panel_key_tests: start");
     std::puts("  case 1/5 FOV data flow");
     FovDataFlow();

@@ -2318,6 +2318,7 @@ void DrawModelOutlines(MMDApp* app, bool effectEdge) {
         device->SetVertexShader(nullptr);
         device->SetPixelShader(nullptr);
     }
+    antialias::FinishOutlines(app);
 }
 
 void DrawGroundGeometry(MMDApp* app, IDirect3DDevice9* device) {
