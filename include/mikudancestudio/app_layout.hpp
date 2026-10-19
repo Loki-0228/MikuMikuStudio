@@ -1,5 +1,5 @@
 // ===========================================================================
-// MikuDanceStudio - the application state object
+// MikuMikuStudio - the application state object
 // ===========================================================================
 // Hand-maintained.  Placeholders (v<off>/f<off>/pad*) are promoted to real
 // names as field semantics are recovered; keep each member's size/arch

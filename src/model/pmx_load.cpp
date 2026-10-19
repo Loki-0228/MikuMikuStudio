@@ -1666,7 +1666,7 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
                 // count, so a truncated or out-of-range index reads past the
                 // bone table. This port discards such entries.
                 // Defect MB-13.
-                if (entry.index < 0 || static_cast<std::uint32_t>(entry.index) >= boneCount)
+                if (entry.index < 0 || entry.index >= boneCount)
                     continue;
                 mdl::FrameGroup& rec = boneFrames[w];
                 mdl::SetFrameIndices(rec, facialCount ? groupIdx + 1 : groupIdx, entry.index);

@@ -4,7 +4,7 @@
 
 namespace mikudancestudio {
 namespace {
-constexpr wchar_t kPreviousProc[] = L"MikuDanceStudio.UnicodeTitle.PreviousProc";
+constexpr wchar_t kPreviousProc[] = L"MikuMikuStudio.UnicodeTitle.PreviousProc";
 
 LRESULT CALLBACK UnicodeTitleProc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
     auto previous = reinterpret_cast<WNDPROC>(GetPropW(window, kPreviousProc));

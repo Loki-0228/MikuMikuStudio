@@ -1,9 +1,9 @@
-// MikuDanceStudio: physics bake parameter presets (UTF-8 JSON), standalone module.
+// MikuMikuStudio: physics bake parameter presets (UTF-8 JSON), standalone module.
 //
 // The wire format is the one fixed in docs/guides/physics-baking.md:
 //
 //     {
-//       "format": "MikuDanceStudioPhysicsPreset",
+//       "format": "MikuMikuStudioPhysicsPreset",
 //       "schemaVersion": 1,
 //       "name": "preset name",
 //       "erp": 0.2,
@@ -80,7 +80,8 @@ constexpr int kMultiplierMax = 16;
 constexpr int kBaseRateA = 30;
 constexpr int kBaseRateB = 60;
 constexpr double kSchemaVersion = 1.0;
-constexpr const wchar_t* kFormatId = L"MikuDanceStudioPhysicsPreset";
+constexpr const wchar_t* kFormatId = L"MikuMikuStudioPhysicsPreset";
+constexpr const wchar_t* kLegacyFormatId = L"MikuDanceStudioPhysicsPreset";
 constexpr const wchar_t* kDefaultName = L"Bullet defaults";
 
 // The eight keys of the format, in the canonical order used for the
@@ -655,7 +656,7 @@ bool DecodePreset(std::string_view json, Settings& settings, SettingsError& erro
             return false;
         }
     }
-    if (fields.format != kFormatId) {
+    if (fields.format != kFormatId && fields.format != kLegacyFormatId) {
         error = SettingsError::InvalidJson;
         return false;
     }
@@ -685,7 +686,7 @@ std::string EncodePreset(const Settings& settings) {
     std::string out;
     out.reserve(256);
     out += "{\n";
-    out += "\t\"format\": \"MikuDanceStudioPhysicsPreset\",\n";
+    out += "\t\"format\": \"MikuMikuStudioPhysicsPreset\",\n";
     out += "\t\"schemaVersion\": 1,\n";
     out += "\t\"name\": \"";
     out += EncodeJsonString(settings.name);

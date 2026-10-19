@@ -390,7 +390,7 @@ bool InitMainWindowAndD3D(MMDApp* app, void* hInstanceIn, int nShowCmd) {
 
     // A Unicode window keeps project filenames intact in WM_SETTEXT/GETTEXT.
     HWND hwnd = CreateWindowExW(                                // 0x47BD4B
-        0, L"Polygon Movie Maker", L"MikuDanceStudio", WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
+        0, L"Polygon Movie Maker", L"MikuMikuStudio", WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
         X, Y, nWidth, nHeight, nullptr, nullptr, hInstance, nullptr);
     s.Hwnd() = hwnd;
     if (!hwnd) {

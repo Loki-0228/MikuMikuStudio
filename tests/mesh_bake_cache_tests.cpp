@@ -114,7 +114,7 @@ void WriteArchive(const std::filesystem::path& path,
         // The archive must be destroyed (its index and trailer written) before
         // the stream is flushed and closed.
         Alembic::AbcCoreAbstract::MetaData metadata;
-        metadata.set("application", "MikuDanceStudio-mesh_bake_cache-tests");
+        metadata.set("application", "MikuMikuStudio-mesh_bake_cache-tests");
         Abc::OArchive archive(Alembic::AbcCoreOgawa::WriteArchive()(&stream, metadata));
         const auto sampling =
             archive.addTimeSampling(Abc::TimeSampling(1.0 / fps, startSeconds));
@@ -156,7 +156,7 @@ void WriteSparseArchive(const std::filesystem::path& path,
     Check(stream.is_open(), "create fixture archive " + path.u8string());
     {
         Alembic::AbcCoreAbstract::MetaData metadata;
-        metadata.set("application", "MikuDanceStudio-mesh_bake_cache-tests");
+        metadata.set("application", "MikuMikuStudio-mesh_bake_cache-tests");
         Abc::OArchive archive(Alembic::AbcCoreOgawa::WriteArchive()(&stream, metadata));
         const auto sampling =
             archive.addTimeSampling(Abc::TimeSampling(1.0 / 30.0, 0.0));
@@ -236,7 +236,7 @@ std::filesystem::path SharedTempRoot() {
     std::error_code ec;
     auto base = std::filesystem::temp_directory_path(ec);
     if (ec || base.empty()) base = std::filesystem::current_path(ec);
-    return base / "MikuDanceStudio" / "mesh_bake_cache";
+    return base / "MikuMikuStudio" / "mesh_bake_cache";
 }
 
 // The private directories of this process, found by the process id the module

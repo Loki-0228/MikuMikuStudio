@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# probe_port_state.py - read the live MikuDanceStudio port's MMDApp camera /
+# probe_port_state.py - read the live MikuMikuStudio port's MMDApp camera /
 # mouse state out of a running instance, optionally while posting a drag into
 # its window, so viewport view operations can be verified without foreground
 # activation.

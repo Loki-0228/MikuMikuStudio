@@ -1,5 +1,5 @@
 // ===========================================================================
-// MikuDanceStudio - the per-model record
+// MikuMikuStudio - the per-model record
 // ===========================================================================
 // Maintained typed layout; the former generator is no longer in the project.
 // x86 layout pinned byte-exact (0x4CCF4); x64 architecture-specific

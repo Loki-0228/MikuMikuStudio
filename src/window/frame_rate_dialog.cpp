@@ -218,7 +218,7 @@ constexpr int kFieldTextMargin = 4;
 constexpr int kFieldPad = 2 * (kClientEdge + kFieldTextMargin) + 12;
 constexpr int kLabelPad = 8;
 
-const wchar_t kClassName[] = L"MikuDanceStudioFrameRateCorrection";
+const wchar_t kClassName[] = L"MikuMikuStudioFrameRateCorrection";
 
 // ---------------------------------------------------------------------------
 // Fonts: the port picks the panel family by UI language (see

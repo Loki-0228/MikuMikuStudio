@@ -1,9 +1,9 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(MikuDanceStudio LANGUAGES CXX)
+project(MikuMikuStudio LANGUAGES CXX)
 
 # ---------------------------------------------------------------------------
-# MikuDanceStudio: behavioural restoration of MikuMikuDance v932.
+# MikuMikuStudio: behavioural restoration of MikuMikuDance v932.
 # MikuMikuDanceE_v932x64 is the x64 reference.  The x86 binary remains a
 # source-recovery aid only.
 # ---------------------------------------------------------------------------
@@ -100,7 +100,7 @@ if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
 endif()
 
 if (NOT WIN32)
-    message(FATAL_ERROR "MikuDanceStudio targets Windows only (Win32/DirectX9).")
+    message(FATAL_ERROR "MikuMikuStudio targets Windows only (Win32/DirectX9).")
 endif()
 
 # ---------------------------------------------------------------------------
@@ -248,7 +248,9 @@ if (MSVC)
     # VCOMP reads OMP_WAIT_POLICY during DLL load, before WinMain for a normal
     # import. Delay loading lets the host configure its default first. Publish
     # this to every core consumer, including the independent frame benchmark.
-    target_link_options(mikudancestudio_geometry_workers INTERFACE /DELAYLOAD:vcomp140.dll)
+    # Consumers that do not pull an OpenMP symbol have no vcomp import; keep
+    # the optional delay-load for the ones that do and silence LNK4199 there.
+    target_link_options(mikudancestudio_geometry_workers INTERFACE /DELAYLOAD:vcomp140.dll /IGNORE:4199)
     target_link_libraries(mikudancestudio_geometry_workers PUBLIC delayimp)
 endif()
 
@@ -1061,15 +1063,15 @@ if (MIKUDANCESTUDIO_BUILD_EFFECT_TESTS)
     set_target_properties(d3d12_skinning_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
 endif()
 
-add_executable(MikuDanceStudio WIN32
+add_executable(MikuMikuStudio WIN32
     src/main/winmain.cpp
     res/MMD.rc
     ${MIKUDANCESTUDIO_GEN_RES}
     ${CMAKE_CURRENT_SOURCE_DIR}/exports/MikuMikuDance.def
 )
-add_custom_command(TARGET MikuDanceStudio POST_BUILD
+add_custom_command(TARGET MikuMikuStudio POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${CMAKE_CURRENT_SOURCE_DIR}/licenses" "$<TARGET_FILE_DIR:MikuDanceStudio>/licenses")
+        "${CMAKE_CURRENT_SOURCE_DIR}/licenses" "$<TARGET_FILE_DIR:MikuMikuStudio>/licenses")
 
 if (MIKUDANCESTUDIO_BUILD_UI_TESTS)
     add_executable(affine_skinning_tests EXCLUDE_FROM_ALL tests/affine_skinning_tests.cpp)
@@ -1298,7 +1300,7 @@ if (MIKUDANCESTUDIO_BUILD_UI_TESTS)
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/mme/$<CONFIG>")
 endif()
 
-target_link_libraries(MikuDanceStudio PRIVATE
+target_link_libraries(MikuMikuStudio PRIVATE
     mikudancestudio_core
     winmm      # timeGetTime - main loop timing
     dsound     # original timeline/audio subsystem initialization (0x4C2470)
@@ -1315,11 +1317,19 @@ set_target_properties(MMSNvidiaAAFix PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/$<CONFIG>"
     MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 if(MSVC AND CMAKE_SIZEOF_VOID_P EQUAL 4)
-    target_link_options(MMSNvidiaAAFix PRIVATE "/EXPORT:DllRegisterServer=_DllRegisterServer@0"
-        "/EXPORT:DllUnregisterServer=_DllUnregisterServer@0"
-        "/EXPORT:MMSNvidiaAAFixQueryInstalled=_MMSNvidiaAAFixQueryInstalled@4")
+    target_link_options(MMSNvidiaAAFix PRIVATE
+        "/EXPORT:DllRegisterServer=_DllRegisterServer@0,PRIVATE"
+        "/EXPORT:DllUnregisterServer=_DllUnregisterServer@0,PRIVATE"
+        "/EXPORT:MMSNvidiaAAFixQueryInstalled=_MMSNvidiaAAFixQueryInstalled@4,PRIVATE")
+elseif(MSVC)
+    # The exports are PRIVATE so the helper stays a loader/GetProcAddress
+    # target; PRIVATE also suppresses LNK4104 without an extra import library.
+    target_link_options(MMSNvidiaAAFix PRIVATE
+        "/EXPORT:DllRegisterServer,PRIVATE"
+        "/EXPORT:DllUnregisterServer,PRIVATE"
+        "/EXPORT:MMSNvidiaAAFixQueryInstalled,PRIVATE")
 endif()
-add_dependencies(MikuDanceStudio MMSNvidiaAAFix)
+add_dependencies(MikuMikuStudio MMSNvidiaAAFix)
 
 # The core's PUBLIC d3dx9_43 import dependency lands in each consuming
 # executable's IAT, including the host table patched by MME.
@@ -1328,12 +1338,12 @@ add_dependencies(MikuDanceStudio MMSNvidiaAAFix)
 # .res directly as an input file (CMake itself would classify it as <None>).
 # /MANIFEST:NO keeps the linker from adding a default manifest on top of the
 # original one embedded through the .res.
-target_link_options(MikuDanceStudio PRIVATE
+target_link_options(MikuMikuStudio PRIVATE
     "/MAP:${CMAKE_CURRENT_BINARY_DIR}/MikuMikuDance.map"
     "/MANIFEST:NO"
     "${MIKUDANCESTUDIO_GEN_RES}"
 )
-set_target_properties(MikuDanceStudio PROPERTIES
+set_target_properties(MikuMikuStudio PROPERTIES
     # The original x64 binary is MikuMikuDance.exe, and MikuMikuEffect needs
     # that exact module name: its MMHack.dll statically imports the 15 Exp*
     # entry points from "MikuMikuDance.exe", so a differently named host makes
@@ -1421,7 +1431,7 @@ endif()
 # The runtime assets (Data\toon*.bmp, mmconfig.ini) come from the reference
 # MMD installation and are not part of this source tree.
 # ---------------------------------------------------------------------------
-install(TARGETS MikuDanceStudio RUNTIME DESTINATION .)
+install(TARGETS MikuMikuStudio RUNTIME DESTINATION .)
 # The NVIDIA driver-setting helper is an explicit, separate download/install.
 install(TARGETS MMSNvidiaAAFix RUNTIME DESTINATION . COMPONENT NvidiaAAFix EXCLUDE_FROM_ALL)
 install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/licenses/" DESTINATION licenses)
@@ -1429,7 +1439,7 @@ install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/licenses/" DESTINATION licenses)
 if(Python3_Interpreter_FOUND)
     add_test(NAME optional_graphics_imports
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/optional_graphics_imports.py"
-                "$<TARGET_FILE:MikuDanceStudio>")
+                "$<TARGET_FILE:MikuMikuStudio>")
 endif()
 
 if(MIKUDANCESTUDIO_BUILD_EFFECT_TESTS)

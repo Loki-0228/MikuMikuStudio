@@ -1,5 +1,5 @@
 // ===========================================================================
-// MikuDanceStudio - shared path-resolution workspace (app+0x9F338)
+// MikuMikuStudio - shared path-resolution workspace (app+0x9F338)
 // ===========================================================================
 #pragma once
 

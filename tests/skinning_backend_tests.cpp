@@ -630,7 +630,7 @@ int main(int argc, char** argv) {
     Check(DeleteFileW(path), "remove test settings");
     // ---- the processor menu ---------------------------------------------
     // Every choice is written to a test override under the workspace, never to
-    // the real %LOCALAPPDATA%\MikuDanceStudio\processor.ini.
+    // the real %LOCALAPPDATA%\MikuMikuStudio\processor.ini.
     const std::filesystem::path configDir = L".local/artifacts/global-processor";
     std::filesystem::create_directories(configDir);
     const std::wstring configPath = (configDir / L"processor.ini").wstring();

@@ -4,7 +4,7 @@
 // Scope of this file: the 11 functions 0x4C5150, 0x4C5260, 0x4C5E50,
 // 0x4C5E60, 0x4C5E70, 0x4C5E80, 0x4C5E90, 0x4C5EA0, 0x4C5EB0, 0x4C5ED0,
 // 0x4C5EE0.  Each was decompiled from the original MikuMikuDance v932
-// (32-bit x86 VC9, IDA Hex-Rays) and checked against the existing MikuDanceStudio
+// (32-bit x86 VC9, IDA Hex-Rays) and checked against the existing MikuMikuStudio
 // tree.  VERDICT: every one of the 11 is already fully covered - either as a
 // complete port or inlined into a port of its only caller(s).  No new bodies
 // are needed; this file records the evidence per VA so the coverage ledger

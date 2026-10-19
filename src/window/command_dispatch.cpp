@@ -438,9 +438,9 @@ void CommandDispatch(HWND ctrl, WPARAM wParam) {
         char text[256];
         sprintf_s(text, 256,
                   s.EnglishUI() != 0
-                      ? "MikuDanceStudio Ver.%4.2f\n  (DirectX9 Version)\n\n"
+                      ? "MikuMikuStudio Ver.%4.2f\n  (DirectX9 Version)\n\n"
                         "programmed by Yu Higuchi"
-                      : "MikuDanceStudio Ver.%4.2f\n  (DirectX9 Version)\n\n"
+                      : "MikuMikuStudio Ver.%4.2f\n  (DirectX9 Version)\n\n"
                         "programmed by \x94\xF3\x8C\xFB\x97\x44",
                   9.32);
         const HWND owner = s.state.floatingWindow != 0

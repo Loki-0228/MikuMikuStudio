@@ -97,7 +97,7 @@ void MorphSync() {
     HWND editor=nullptr;
     EnumThreadWindows(GetCurrentThreadId(),[](HWND window,LPARAM parameter)->BOOL{
         wchar_t name[80]{};GetClassNameW(window,name,80);
-        if(wcscmp(name,L"MikuDanceStudioCurveEditorWindow")==0)*reinterpret_cast<HWND*>(parameter)=window;
+        if(wcscmp(name,L"MikuMikuStudioCurveEditorWindow")==0)*reinterpret_cast<HWND*>(parameter)=window;
         return TRUE;
     },reinterpret_cast<LPARAM>(&editor));
     Check(editor!=nullptr,"real morph editor opens hidden");

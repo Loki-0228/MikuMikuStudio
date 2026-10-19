@@ -1,6 +1,6 @@
 #include "mikudancestudio/key_pool.hpp"
 // ===========================================================================
-// MikuDanceStudio - scene-resident allocation teardown
+// MikuMikuStudio - scene-resident allocation teardown
 // ===========================================================================
 #include <cstdio>
 #include <cstdlib>

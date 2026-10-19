@@ -50,7 +50,7 @@
 
 ```json
 {
-  "format": "MikuDanceStudioPhysicsPreset",
+  "format": "MikuMikuStudioPhysicsPreset",
   "schemaVersion": 1,
   "name": "Bullet defaults",
   "erp": 0.2,

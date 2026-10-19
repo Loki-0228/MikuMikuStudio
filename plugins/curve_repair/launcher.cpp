@@ -134,7 +134,7 @@ void Launch() {
 void Browse() {
     wchar_t path[32768]{};const auto current=EditText(kPath);wcsncpy_s(path,current.c_str(),_TRUNCATE);
     OPENFILENAMEW ofn{};ofn.lStructSize=sizeof(ofn);ofn.hwndOwner=windowHandle;ofn.lpstrFile=path;ofn.nMaxFile=32768;
-    ofn.lpstrFilter=L"MikuDanceStudio (*.exe)\0MikuMikuDance.exe\0All executable files (*.exe)\0*.exe\0\0";
+    ofn.lpstrFilter=L"MikuMikuStudio (*.exe)\0MikuMikuDance.exe\0All executable files (*.exe)\0*.exe\0\0";
     ofn.lpstrTitle=L"Select the current MMS executable";
     ofn.Flags=OFN_FILEMUSTEXIST|OFN_PATHMUSTEXIST|OFN_NOCHANGEDIR|OFN_EXPLORER;
     if(GetOpenFileNameW(&ofn))SetDlgItemTextW(windowHandle,kPath,path);

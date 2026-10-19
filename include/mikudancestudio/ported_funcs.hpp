@@ -1,5 +1,5 @@
 // ===========================================================================
-// MikuDanceStudio - cross-module declarations for ported original functions
+// MikuMikuStudio - cross-module declarations for ported original functions
 // ===========================================================================
 // Every declaration records its original virtual address. Functions whose
 // bodies are not yet ported live in src/unported/stubs.cpp (or

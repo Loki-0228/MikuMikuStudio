@@ -1,5 +1,5 @@
 // ===========================================================================
-// MikuDanceStudio - shared raw padding helpers
+// MikuMikuStudio - shared raw padding helpers
 // ===========================================================================
 // One definition for the opaque padding type used by the hand-maintained
 // layout headers (app_layout / model_layout / bone_layout).  The mdl

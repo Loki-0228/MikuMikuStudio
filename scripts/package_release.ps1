@@ -46,7 +46,7 @@ foreach ($build in $builds) {
 }
 # Build both profiles from the clean commit before copying any binaries.
 foreach ($build in $builds) {
-    $targets = @('MikuDanceStudio')
+    $targets = @('MikuMikuStudio')
     if ($build.Name -eq 'full') { $targets += 'MMSNvidiaAAFix' }
     & cmake --build $build.Path --config Release --target @targets -- /m:2 /nologo
     if ($LASTEXITCODE -ne 0) { throw "构建失败：$($build.Name)" }

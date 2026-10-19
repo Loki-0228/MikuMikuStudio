@@ -1,5 +1,5 @@
 // ===========================================================================
-// MikuDanceStudio - the per-bone record
+// MikuMikuStudio - the per-bone record
 // ===========================================================================
 // Hand-maintained: the generator script this header used to reference
 // (scripts/gen_bone_layout.py) is not part of this repository.  Defect HB-12.

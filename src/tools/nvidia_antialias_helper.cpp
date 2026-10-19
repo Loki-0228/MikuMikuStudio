@@ -25,9 +25,9 @@ HRESULT Change(bool enabled) noexcept {
 }
 }
 // Loading the DLL only exposes its API; registration requires an explicit call.
-extern "C" __declspec(dllexport) HRESULT WINAPI DllRegisterServer() { return Change(true); }
-extern "C" __declspec(dllexport) HRESULT WINAPI DllUnregisterServer() { return Change(false); }
-extern "C" __declspec(dllexport) HRESULT WINAPI MMSNvidiaAAFixQueryInstalled(BOOL* installed) {
+extern "C" HRESULT WINAPI DllRegisterServer() { return Change(true); }
+extern "C" HRESULT WINAPI DllUnregisterServer() { return Change(false); }
+extern "C" HRESULT WINAPI MMSNvidiaAAFixQueryInstalled(BOOL* installed) {
     if (!installed) return E_POINTER;
     *installed = FALSE;
     try {

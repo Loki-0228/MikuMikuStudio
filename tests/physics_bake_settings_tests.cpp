@@ -58,7 +58,7 @@ bake::Settings Named(const wchar_t* name) {
 // (including its quotes).
 std::string MakeJson(const std::string& nameLiteral) {
     std::string json = "{\n";
-    json += "\"format\": \"MikuDanceStudioPhysicsPreset\",\n";
+    json += "\"format\": \"MikuMikuStudioPhysicsPreset\",\n";
     json += "\"schemaVersion\": 1,\n";
     json += "\"name\": ";
     json += nameLiteral;
@@ -211,7 +211,7 @@ void TestRoundTrip() {
 
     const std::string encoded = bake::EncodePreset(s);
     Check(!encoded.empty(), "encode produces text for valid settings");
-    Check(encoded.find("\"format\": \"MikuDanceStudioPhysicsPreset\"") != std::string::npos,
+    Check(encoded.find("\"format\": \"MikuMikuStudioPhysicsPreset\"") != std::string::npos,
           "encode writes the format identifier");
     Check(encoded.find("\"schemaVersion\": 1") != std::string::npos,
           "encode writes schemaVersion 1");
@@ -252,7 +252,7 @@ void TestDecodeAccepts() {
     const std::string sci =
         "{\"baseSimulationRateHz\": 3e1, \"simulationRateMultiplier\": 2.0, \"substeps\": 4e0,"
         " \"cfm\": 1.25e1, \"erp\": 2e-1, \"name\": \"sci\","
-        " \"format\": \"MikuDanceStudioPhysicsPreset\", \"schemaVersion\": 1e0}";
+        " \"format\": \"MikuMikuStudioPhysicsPreset\", \"schemaVersion\": 1e0}";
     bake::Settings expected;
     expected.erp = 0.2f;
     expected.cfm = 12.5f;
@@ -264,7 +264,7 @@ void TestDecodeAccepts() {
 
     const std::string spaced =
         "\t { \n\"name\" : \"spaced\" ,\r\n \"schemaVersion\" : 1 , "
-        "\"format\": \"MikuDanceStudioPhysicsPreset\" , \"cfm\" : 0.5 , \"erp\" : 1 , "
+        "\"format\": \"MikuMikuStudioPhysicsPreset\" , \"cfm\" : 0.5 , \"erp\" : 1 , "
         "\"baseSimulationRateHz\" : 60 , \"simulationRateMultiplier\" : 1 , \"substeps\" : 16 \n}\n\n";
     expected.erp = 1.f;
     expected.cfm = 0.5f;
@@ -292,21 +292,21 @@ void TestDecodeRejects() {
 
     ExpectError("{\n\"schemaVersion\": 1\n}", bake::SettingsError::MissingField,
                 "missing keys are reported as MissingField");
-    ExpectError("{\"format\": \"MikuDanceStudioPhysicsPreset\"}", bake::SettingsError::MissingField,
+    ExpectError("{\"format\": \"MikuMikuStudioPhysicsPreset\"}", bake::SettingsError::MissingField,
                 "MissingField comes before value checks");
 
     ExpectError(
-        "{\"format\": \"MikuDanceStudioPhysicsPreset\", \"schemaVersion\": 1, \"name\": \"x\","
+        "{\"format\": \"MikuMikuStudioPhysicsPreset\", \"schemaVersion\": 1, \"name\": \"x\","
         " \"erp\": 0.2, \"erp\": 0.3, \"cfm\": 0.0, \"substeps\": 1,"
         " \"simulationRateMultiplier\": 1, \"baseSimulationRateHz\": 60}",
         bake::SettingsError::InvalidJson, "duplicate keys are rejected");
     ExpectError(
-        "{\"format\": \"MikuDanceStudioPhysicsPreset\", \"schemaVersion\": 1, \"name\": \"x\","
+        "{\"format\": \"MikuMikuStudioPhysicsPreset\", \"schemaVersion\": 1, \"name\": \"x\","
         " \"extra\": 1, \"erp\": 0.2, \"cfm\": 0.0, \"substeps\": 1,"
         " \"simulationRateMultiplier\": 1, \"baseSimulationRateHz\": 60}",
         bake::SettingsError::InvalidJson, "unknown keys are rejected");
     ExpectError(
-        "{\"format\": \"MikuDanceStudioPhysicsPreset\", \"schemaVersion\": 1, \"name\": \"x\","
+        "{\"format\": \"MikuMikuStudioPhysicsPreset\", \"schemaVersion\": 1, \"name\": \"x\","
         " \"erp\": \"0.2\", \"cfm\": 0.0, \"substeps\": 1,"
         " \"simulationRateMultiplier\": 1, \"baseSimulationRateHz\": 60}",
         bake::SettingsError::InvalidJson, "a string where a number belongs is rejected");
@@ -315,7 +315,7 @@ void TestDecodeRejects() {
     ExpectError(MakeJson("true"), bake::SettingsError::InvalidJson,
                 "a boolean value is rejected");
     ExpectError(
-        "{\"format\": \"MikuDanceStudioPhysicsPreset\", \"schemaVersion\": 1, \"name\": \"x\","
+        "{\"format\": \"MikuMikuStudioPhysicsPreset\", \"schemaVersion\": 1, \"name\": \"x\","
         " \"erp\": 0.2, \"cfm\": 0.0, \"substeps\": 1,"
         " \"simulationRateMultiplier\": 1, \"baseSimulationRateHz\": 60, }",
         bake::SettingsError::InvalidJson, "a trailing comma is rejected");
@@ -328,7 +328,7 @@ void TestDecodeRejects() {
                 "a non-integer schemaVersion is unsupported");
     ExpectError(With(base, "\"schemaVersion\": 1", "\"schemaVersion\": \"1\""),
                 bake::SettingsError::InvalidJson, "schemaVersion as a string is rejected");
-    ExpectError(With(base, "\"format\": \"MikuDanceStudioPhysicsPreset\"",
+    ExpectError(With(base, "\"format\": \"MikuMikuStudioPhysicsPreset\"",
                      "\"format\": \"SomethingElse\""),
                 bake::SettingsError::InvalidJson,
                 "a different format identifier is rejected");

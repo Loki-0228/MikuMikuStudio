@@ -12,7 +12,7 @@ output.mkdir(exist_ok=False)
 work = output / "unrelated-cwd"
 work.mkdir()
 profile = output / "shared-profile"
-legacy = profile / "MikuDanceStudio" / "autosave.ini"
+legacy = profile / "MikuMikuStudio" / "autosave.ini"
 legacy.parent.mkdir(parents=True)
 legacy.write_text("[autosave]\nenabled=1\nintervalMinutes=9\nmaxBackups=3\ndirectory=" + str(output / "old-install" / "backups") + "\n", encoding="utf-16")
 legacy_bytes = legacy.read_bytes()

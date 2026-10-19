@@ -841,7 +841,7 @@ void RegisterGravityKeyCurrent(MMDApp* app, std::int32_t frame) {  // VA 0x00412
             app->EnglishUI() == 2 ? L"无法扩展关键帧存储，本次注册已取消。" :
             app->EnglishUI() == 0 ? L"メモリを確保できないため、登録を中止しました。" :
             L"Unable to allocate keyframe storage. Registration was cancelled.",
-            L"MikuDanceStudio", MB_OK | MB_ICONERROR);
+            L"MikuMikuStudio", MB_OK | MB_ICONERROR);
         return;
     }
     keys = app->GravityKeys();

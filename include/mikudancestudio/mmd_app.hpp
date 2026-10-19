@@ -1,5 +1,5 @@
 // ===========================================================================
-// MikuDanceStudio - the MikuMikuDance v932 application state object
+// MikuMikuStudio - the MikuMikuDance v932 application state object
 // ===========================================================================
 // Original form:
 //   WinMain (VA 0x004C4460) performs

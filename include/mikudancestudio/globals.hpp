@@ -1,5 +1,5 @@
 // ===========================================================================
-// MikuDanceStudio - standalone .data/.rdata globals recovered from the original
+// MikuMikuStudio - standalone .data/.rdata globals recovered from the original
 // ===========================================================================
 #pragma once
 

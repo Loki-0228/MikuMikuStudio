@@ -1150,7 +1150,7 @@ void PhysicsFrame(MMDApp* app, unsigned char selActive) {
     static LONG stagesCaptured = 0;
     // Arm on the first executable physics pass, including the synchronous
     // PMM-load pass.  Waiting for optflag[0] to clear observes a world that has
-    // already been stepped and makes the original/MikuDanceStudio solver inputs
+    // already been stepped and makes the original/MikuMikuStudio solver inputs
     // incomparable.
     const bool captureStages =
         GetEnvironmentVariableA("MIKUDANCESTUDIO_AB_PHYSICS_STAGES",

@@ -62,7 +62,7 @@ std::uint32_t FindFreeAccSlot(MMDApp* app, mdl::AccessoryKey*& table) {
             app->EnglishUI() == 2 ? L"无法扩展关键帧存储，本次粘贴已取消。" :
             app->EnglishUI() == 0 ? L"メモリを確保できないため、貼り付けを中止しました。" :
             L"Unable to allocate keyframe storage. Paste was cancelled.",
-            L"MikuDanceStudio", MB_OK | MB_ICONERROR);
+            L"MikuMikuStudio", MB_OK | MB_ICONERROR);
         return 0;
     }
     return slot;

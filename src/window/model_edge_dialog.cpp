@@ -75,7 +75,7 @@ int GroupNameSlot(MMDApp* app, mdl::ModelRecord* model) {
 void MirrorFacialFrameNames(mdl::ModelRecord* model) {
     mdl::FrameGroup* frames = model->displayFrames;
     mdl::MorphRecord* morphs = model->morphs;
-    for (int i = 0; i < mikudancestudio::mdl::FacialFrameCount(*model); ++i) {
+    for (std::uint32_t i = 0; i < mikudancestudio::mdl::FacialFrameCount(*model); ++i) {
         if (mikudancestudio::mdl::FrameTargetIndex(frames[i]) < model->morphCount)
             strcpy_s(frames[i].nameEn, 0x14,
                      morphs[mikudancestudio::mdl::FrameTargetIndex(frames[i])].nameEn);

@@ -441,7 +441,7 @@ std::filesystem::path SharedTempRoot() {
     std::error_code ignored;
     auto base = std::filesystem::temp_directory_path(ignored);
     if (ignored || base.empty()) base = std::filesystem::current_path(ignored);
-    return base / "MikuDanceStudio" / "mesh_bake_cache";
+    return base / "MikuMikuStudio" / "mesh_bake_cache";
 }
 
 // Creates (once) the directory this process owns for its own copies: an

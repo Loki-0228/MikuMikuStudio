@@ -1,6 +1,6 @@
 #include "mikudancestudio/perf_timing.hpp"
 // ===========================================================================
-// MikuDanceStudio: Bullet physics object creation (phase 8)
+// MikuMikuStudio: Bullet physics object creation (phase 8)
 // ===========================================================================
 // VA 0x004064F0  CreateRigidBody  - shape + motion state + rigid body
 // VA 0x00406010  CreatePhysJoint  - 6DOF spring constraint

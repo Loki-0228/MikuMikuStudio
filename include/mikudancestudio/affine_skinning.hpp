@@ -1,5 +1,5 @@
 // ===========================================================================
-// MikuDanceStudio - affine bone skinning math (shared CPU/GPU source of truth)
+// MikuMikuStudio - affine bone skinning math (shared CPU/GPU source of truth)
 // ===========================================================================
 // Pure inline mathematics used by three consumers:
 //   * the CPU skinning workers (src/model/model_skinning.cpp),

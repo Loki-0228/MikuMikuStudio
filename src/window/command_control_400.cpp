@@ -394,7 +394,7 @@ static int InsertGlobalFrame(MMDApp* app, Key*& table,
             L"Unable to allocate keyframe storage. The keyframe was not registered.",
             L"无法扩展关键帧存储，本次注册已取消。"};
         MessageBoxW(app->MainWindow(), messages[app->EnglishUI() <= 2 ? app->EnglishUI() : 1],
-                    L"MikuDanceStudio", MB_OK | MB_ICONERROR);
+                    L"MikuMikuStudio", MB_OK | MB_ICONERROR);
         return 0;
     }
     Key& current = table[index];

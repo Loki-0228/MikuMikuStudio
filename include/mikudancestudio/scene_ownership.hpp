@@ -1,5 +1,5 @@
 // ===========================================================================
-// MikuDanceStudio - ownership of scene-resident heap allocations
+// MikuMikuStudio - ownership of scene-resident heap allocations
 // ===========================================================================
 #pragma once
 

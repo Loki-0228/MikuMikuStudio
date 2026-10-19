@@ -128,14 +128,14 @@ Result Export(MMDApp& app,const std::filesystem::path& path,const Options& optio
         ~Busy(){exporting=false;app.state.messageSeen=1;if(app.MainWindow())InvalidateRect(app.MainWindow(),nullptr,FALSE);}
     } busy(app);
     try {
-        const auto target=options.writeAbc?std::filesystem::absolute(path):std::filesystem::temp_directory_path()/L"MikuDanceStudio-mesh-bake.abc";
+        const auto target=options.writeAbc?std::filesystem::absolute(path):std::filesystem::temp_directory_path()/L"MikuMikuStudio-mesh-bake.abc";
         const auto temporary=target.parent_path()/(target.filename().wstring()+L".partial-"+std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(GetTickCount64()));
         struct Cleanup{std::filesystem::path path;~Cleanup(){std::error_code e;std::filesystem::remove(path,e);}}cleanup{temporary};
         std::set<const void*> bakedObjects;
         std::ofstream stream(temporary,std::ios::binary|std::ios::trunc);
         stream.exceptions(std::ios::badbit|std::ios::failbit);
         {
-            Alembic::AbcCoreAbstract::MetaData metadata;metadata.set("application","MikuDanceStudio");
+            Alembic::AbcCoreAbstract::MetaData metadata;metadata.set("application","MikuMikuStudio");
             Abc::OArchive archive(Alembic::AbcCoreOgawa::WriteArchive()(&stream,metadata));
             const auto sampling=archive.addTimeSampling(Abc::TimeSampling(1.0/options.framesPerSecond,options.firstFrame/30.0));
             auto root=archive.getTop();

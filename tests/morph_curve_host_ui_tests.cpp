@@ -891,7 +891,7 @@ void BakedMorphKeepsBoneEditing() {
         MMDApp* previousApp = mikudancestudio::g_Block;
         mikudancestudio::g_Block = app.get();
         ch::OpenMorph(app.get(), 0, false);
-        HWND editor = FindWindowW(L"MikuDanceStudioCurveEditorWindow", nullptr);
+        HWND editor = FindWindowW(L"MikuMikuStudioCurveEditorWindow", nullptr);
         Check(editor != nullptr, "the expression bake editor opens hidden");
         HWND canvas = GetDlgItem(editor, 1020);
         const LPARAM key = SendMessageW(editor, WM_APP + 300, 1, 0);

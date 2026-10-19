@@ -1,5 +1,5 @@
 // ===========================================================================
-// MikuDanceStudio - main-window panel & dialog control IDs
+// MikuMikuStudio - main-window panel & dialog control IDs
 // ===========================================================================
 // Single home for the control IDs that used to appear as scattered decimal /
 // hexadecimal literals (the old code even ran both tracks in parallel:

@@ -247,7 +247,7 @@ while omitting the optional DX12 runtime dependency. Configure a separate build:
 cmake -S . -B build/dx12-disabled -G "Visual Studio 17 2022" -A x64 ^
   -DCMAKE_TOOLCHAIN_FILE=D:/MMD-Next/MMS/build/generators/conan_toolchain.cmake ^
   -DMIKUDANCESTUDIO_ENABLE_DX12=OFF
-cmake --build build/dx12-disabled --config Release --target MikuDanceStudio
+cmake --build build/dx12-disabled --config Release --target MikuMikuStudio
 ```
 
 This build hides DX12 compute adapters, keeps vertex processing on the CPU,

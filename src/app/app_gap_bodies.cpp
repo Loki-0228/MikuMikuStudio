@@ -1,6 +1,6 @@
 #include "mikudancestudio/display_capacity.hpp"
 // ===========================================================================
-// MikuDanceStudio - app/render gap-fill bodies (11 original functions, one file)
+// MikuMikuStudio - app/render gap-fill bodies (11 original functions, one file)
 // ===========================================================================
 // Contents (original VAs):
 //   0x0040A680  AngleFabsF          float fabs wrapper (CRT fabs)

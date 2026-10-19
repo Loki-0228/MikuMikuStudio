@@ -1,6 +1,6 @@
 # res/ — 资源目录
 
-本目录持有 MikuDanceStudio 可执行文件内嵌的全部 Win32 资源。资源在构建期由
+本目录持有 MikuMikuStudio 可执行文件内嵌的全部 Win32 资源。资源在构建期由
 `scripts/gen_resources.py` 打包成 COFF `.res`（`gen_resources.res` 为 x86、
 `gen_resources_x64.res` 为 x64，仅 manifest 不同），由 CMake 直接交给链接器嵌入
 `MikuMikuDanceE.exe`，运行时经 `FindResource` / `LoadMenu` / `LoadBitmap` 等加载。

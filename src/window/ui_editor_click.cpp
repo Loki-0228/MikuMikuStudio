@@ -216,7 +216,7 @@ static void ClearSelectionBitmaps(MMDApp* app) {
 // display-key selections.  (sub_446A70 @ 0x447AF0 / 0x447BA0 / 0x447C30 etc.)
 static void ClearActiveModelFlags(MMDApp* app) {
     // The original reaches this helper only while the model-edit context is
-    // active.  During a partially completed mode switch MikuDanceStudio can briefly
+    // active.  During a partially completed mode switch MikuMikuStudio can briefly
     // expose the same row with no active slot, so preserve that entrance
     // invariant here instead of dereferencing slot 0/null.
     if (ActiveModel(app) == nullptr)

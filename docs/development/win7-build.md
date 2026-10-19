@@ -7,7 +7,7 @@
 ```powershell
 conan install . --profile:host profiles/win7-x64 --profile:build profiles/win7-x64 --lockfile profiles/win7-x64.lock --output-folder build/win7-x64 --build=missing
 cmake --preset win7-x64
-cmake --build --preset win7-x64-release --target MikuDanceStudio
+cmake --build --preset win7-x64-release --target MikuMikuStudio
 ```
 
 依赖已在本机缓存时可用 `--no-remote` 代替 `--build=missing`。不要复制其他源码工作目录的 CMake 缓存。检查 `CMAKE_HOME_DIRECTORY` 和 `CMAKE_INSTALL_PREFIX`，验证产物放在独立目录，验收前不覆盖 `build/Release`。

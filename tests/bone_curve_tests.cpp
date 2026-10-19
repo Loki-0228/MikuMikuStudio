@@ -213,7 +213,7 @@ int main(){
     EnumThreadWindows(GetCurrentThreadId(),[](HWND window,LPARAM parameter)->BOOL{
         auto& result=*reinterpret_cast<Owned*>(parameter);
         wchar_t cls[80]{};GetClassNameW(window,cls,80);
-        if(GetWindow(window,GW_OWNER)==result.parent&&wcscmp(cls,L"MikuDanceStudioCurveEditorWindow")==0)result.editor=window;
+        if(GetWindow(window,GW_OWNER)==result.parent&&wcscmp(cls,L"MikuMikuStudioCurveEditorWindow")==0)result.editor=window;
         return TRUE;
     },reinterpret_cast<LPARAM>(&owned));
     HWND editor=owned.editor;Check(editor!=nullptr,"bone editor opens");

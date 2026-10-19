@@ -199,7 +199,7 @@ def main():
             shutil.copy2(getattr(args, label), runtime / 'MikuMikuDance.exe')
             resources = {str(p.relative_to(runtime)): digest(p) for p in runtime.rglob('*')
                          if p.is_file() and p.name != 'MikuMikuDance.exe'}
-            appdata = runtime / 'appdata' / 'MikuDanceStudio'
+            appdata = runtime / 'appdata' / 'MikuMikuStudio'
             appdata.mkdir(parents=True)
             (appdata / 'processor.ini').write_text('[Vertices]\nMode=cpu\n', encoding='ascii')
             pair['runs'][label] = dict(runtime=str(runtime), resources=resources,

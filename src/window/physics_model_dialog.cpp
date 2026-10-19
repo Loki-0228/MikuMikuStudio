@@ -281,7 +281,7 @@ bool ValidatePhysicsEdits(HWND dialog) {
             L"A joint refers to a deleted or missing rigid body. Select valid bodies A and B before applying the edits.",
             L"关节引用了已删除或不存在的刚体，请重新选择有效的刚体 A 和 B 后再确定。"};
         const unsigned language = g_Block->EnglishUI() <= 2 ? g_Block->EnglishUI() : 1;
-        MessageBoxW(dialog, messages[language], L"MikuDanceStudio", MB_OK | MB_ICONWARNING);
+        MessageBoxW(dialog, messages[language], L"MikuMikuStudio", MB_OK | MB_ICONWARNING);
         return false;
     }
     return true;

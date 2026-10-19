@@ -220,7 +220,7 @@ Configuration ReadConfiguration(const wchar_t* path, std::wstring& warning) {
 
 std::wstring Serialize(const Configuration& configuration) {
     std::wstring text;
-    text += L"; MikuDanceStudio processor settings (this Windows user, all projects).\r\n";
+    text += L"; MikuMikuStudio processor settings (this Windows user, all projects).\r\n";
     text += L"; Changes take effect on the next launch.\r\n";
     const auto emit = [&](Role role, const Selection& selection) {
         text += L"["; text += SectionName(role); text += L"]\r\n";

@@ -278,9 +278,9 @@ constexpr UINT_PTR kSourceChangedTimer = 2;
 // the editor accepts from an edit box or a drag.
 constexpr long long kMaximumFrame = 2147483647;
 
-const wchar_t kEditorClass[] = L"MikuDanceStudioCurveEditorWindow";
-const wchar_t kCanvasClass[] = L"MikuDanceStudioCurveCanvasWindow";
-const wchar_t kMmdClass[] = L"MikuDanceStudioCurveMmdWindow";
+const wchar_t kEditorClass[] = L"MikuMikuStudioCurveEditorWindow";
+const wchar_t kCanvasClass[] = L"MikuMikuStudioCurveCanvasWindow";
+const wchar_t kMmdClass[] = L"MikuMikuStudioCurveMmdWindow";
 
 // ---------------------------------------------------------------------------
 // Localisation.  Language 0 is Japanese, 1 English, 2 Chinese.

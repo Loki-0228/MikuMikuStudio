@@ -45,8 +45,8 @@ void NativeCurveLinkRegression(MMDApp* app, HWND owner) {
     *reinterpret_cast<HWND*>(raw)=owner;
     model->boneKeys=bones.data();app->ModelSlot(0)=raw;app->SetSelectedModelSlot(0);
     auto* oldCamera=app->CameraKeys();app->CameraKeys()=cameras.data();
-    HWND combo=CreateWindowExW(0,L"COMBOBOX",L"",WS_CHILD|CBS_DROPDOWNLIST,0,0,100,100,owner,reinterpret_cast<HMENU>(panel::kInterpCurveCombo),nullptr,nullptr);
-    HWND automatic=CreateWindowExW(0,L"BUTTON",L"",WS_CHILD|BS_AUTOCHECKBOX,0,0,20,20,owner,reinterpret_cast<HMENU>(panel::kPhysicsFrameCheckbox),nullptr,nullptr);
+    HWND combo=CreateWindowExW(0,L"COMBOBOX",L"",WS_CHILD|CBS_DROPDOWNLIST,0,0,100,100,owner,reinterpret_cast<HMENU>(static_cast<INT_PTR>(panel::kInterpCurveCombo)),nullptr,nullptr);
+    HWND automatic=CreateWindowExW(0,L"BUTTON",L"",WS_CHILD|BS_AUTOCHECKBOX,0,0,20,20,owner,reinterpret_cast<HMENU>(static_cast<INT_PTR>(panel::kPhysicsFrameCheckbox)),nullptr,nullptr);
     for(int i=0;i<7;++i)SendMessageW(combo,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(L"curve"));
     HDC dc=CreateCompatibleDC(nullptr);HBITMAP bitmap=CreateBitmap(128,128,1,32,nullptr);
     auto oldBitmap=SelectObject(dc,bitmap);auto oldDC=app->CurveDC();app->CurveDC()=dc;

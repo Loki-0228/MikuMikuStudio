@@ -1999,7 +1999,7 @@ static void LoadSceneV1_SuccessTail(PmmV1LoadContext& ctx) {
                           dir[2] * mag * 10.0f));
         }
     }
-    // Title brand: the port ships as MikuDanceStudio (About-box rename);
+    // Title brand: the port ships as MikuMikuStudio (About-box rename);
     // the same kAppTitleFormat constant serves the v2 load and pmm_save.cpp.
     SetProjectWindowTitle(main, s->EnvFileName());
 

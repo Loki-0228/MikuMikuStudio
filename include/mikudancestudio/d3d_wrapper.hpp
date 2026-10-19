@@ -1,5 +1,5 @@
 // ===========================================================================
-// MikuDanceStudio - the render/locale subsystem object ("0x1D574 object")
+// MikuMikuStudio - the render/locale subsystem object ("0x1D574 object")
 // ===========================================================================
 // Original form (recovered from the x86 AND x64 binaries):
 //   InitMainWindowAndD3D (x86 0x47A5B0 / x64 sub_14000CB50) performs

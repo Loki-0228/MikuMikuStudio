@@ -42,7 +42,7 @@ VMD 不保存池槽号；它使用名字与帧号，因此不能直接套用 PMM
 cmake -S . -B build-original -G "Visual Studio 17 2022" -A x64 `
   -DCMAKE_TOOLCHAIN_FILE=<Conan工具链绝对路径> `
   -DMIKUDANCESTUDIO_PROFILE=mmd932
-cmake --build build-original --config Release --target MikuDanceStudio --parallel 1 -- /nr:false
+cmake --build build-original --config Release --target MikuMikuStudio --parallel 1 -- /nr:false
 ```
 
 原版档强制关闭 DX12。构建需要 Python 生成独立资源；配置阶段仍使用完整项目的依赖描述，不能据此认为 Alembic 等已进入最小程序。产物保留 `MikuMikuDance.exe` 名称，以兼容原生 MME。

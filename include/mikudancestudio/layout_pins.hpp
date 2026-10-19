@@ -1,5 +1,5 @@
 // ===========================================================================
-// MikuDanceStudio - layout pin wall (MMDAppState)
+// MikuMikuStudio - layout pin wall (MMDAppState)
 // ===========================================================================
 // Regression guard for MMDAppState, split from app_layout.hpp so the
 // struct definition reads like the original author's code:
