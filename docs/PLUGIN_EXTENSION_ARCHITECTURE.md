@@ -57,7 +57,7 @@ auto event = events.subscribe(topic, [=] { updateLayer(layer); });
 表中的简称 `style`、`paint` 等均保留 `mms.ui.` 前缀，不是另一组服务。`mms.render.*` 的具体服务名见视口文档。
 现有 `registerProvider` 只接入 `mms.serializer`。格式、渲染及其他提供者需要逐项扩展白名单、能力查询和生命周期，不能仅凭函数名视为可用。
 
-工具栏溢出组合原布局树、元素 handle、按钮 HWND 和命令，不新增注册身份。空间恢复后同一按钮返回工具栏。菜单沿用原状态和调用检查，已打开的项目可更新或移除，卸载不会保留可调用的旧项目。该能力仅覆盖 `mms.toolbar.main.extensions` 及其 GROUP，不提供任意位置自动迁移、面板折叠或通用菜单状态内容服务。当前实现及本轮验收证据见 [UI 框架记录](records/abi-ui-framework-2026-10-19.md)。
+工具栏溢出组合原布局树、元素 handle、按钮 HWND 和命令，不新增注册身份。空间恢复后同一按钮返回工具栏。菜单沿用原状态和调用检查，已打开的项目可更新或移除，卸载不会保留可调用的旧项目。该能力仅覆盖 `mms.toolbar.main.extensions` 及其 GROUP，不提供任意位置自动迁移、面板折叠或通用菜单状态内容服务。状态：**本机已验证**（完整配置 21／21、原始兼容配置 18／18、ABI 契约重复 6／6）。实现及验收证据见 [UI 框架记录](records/abi-ui-framework-2026-10-19.md)。
 
 ## 对象身份与权限
 

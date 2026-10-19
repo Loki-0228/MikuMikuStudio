@@ -59,7 +59,7 @@ cmake --build build/hello-menu --config Release
 
 需要布局提示时，元素声明 `MMS_UI_LAYOUT`，使用 `layout.setDefaultHints`。用户通过 `stageHints` 设置的覆盖值不会被后续默认值覆盖。布局快照仅枚举有 LAYOUT 能力的元素；新 UI 修订的 HWND 几何尚未完成或布局失败暂停时返回 NOT_READY。旧快照租约不会被后续布局修改，失败不承诺回滚已移动的 HWND。
 
-工具栏溢出使用 `MmsUiLayoutHintsV1.overflow=MMS_UI_OVERFLOW_MENU`，不增加服务表或注册对象。当前只接受 `mms.toolbar.main.extensions` 下的 BUTTON、GROUP、SEPARATOR，祖先只能是该工具栏及 GROUP。空间不足时，后序命令进入「更多」菜单；空间恢复时，原按钮 HWND 和元素 handle 继续使用。菜单项引用原命令，沿用状态、权限和卸载规则。分组、`MMS_HINT_KEEP_TOGETHER`、旧宿主回退及完整边界见 [C++17 布局参考](cpp-ui.md#工具栏命令溢出)。本轮实现与验收证据见 [UI 框架记录](../../docs/records/abi-ui-framework-2026-10-19.md)。
+工具栏溢出使用 `MmsUiLayoutHintsV1.overflow=MMS_UI_OVERFLOW_MENU`，不增加服务表或注册对象。当前只接受 `mms.toolbar.main.extensions` 下的 BUTTON、GROUP、SEPARATOR，祖先只能是该工具栏及 GROUP。空间不足时，后序命令进入「更多」菜单；空间恢复时，原按钮 HWND 和元素 handle 继续使用。菜单项引用原命令，沿用状态、权限和卸载规则。分组、`MMS_HINT_KEEP_TOGETHER`、旧宿主回退及完整边界见 [C++17 布局参考](cpp-ui.md#工具栏命令溢出)。状态：**本机已验证**（完整配置 21／21、原始兼容配置 18／18、ABI 契约重复 6／6）；验收证据见 [UI 框架记录](../../docs/records/abi-ui-framework-2026-10-19.md)。
 
 刷新目标直接使用原元素 handle，按钮不要求 `MMS_UI_LAYOUT` 注册能力；具体刷新种类仍须检查目标的 supportedKinds。纯 LAYOUT 使用缓存状态，不重新查询所有命令。`getCapabilities`、`getTarget` 允许在 UI 线程的命令回调内纯读；只有 `request`、`query`、`cancel`、`release` 允许后台调用。局部矩形使用目标客户区 DIP，并带实际几何修订；同次布局改变几何后，旧矩形返回 STALE，保留已完成阶段。`release` 不取消已接受的请求，未释放票据会阻止插件卸载。完整错误和停止规则见[界面刷新接口参考](refresh.md)。
 

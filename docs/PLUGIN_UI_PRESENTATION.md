@@ -25,7 +25,7 @@ Win7 SP1 x64、CPU 绘制和 AMD 兼容是基础约束；不以 CUDA、NVAPI、A
 
 基础类型化和声明式注册已有 [C++17 SDK](../sdk/mms/cpp-ui.md)：`CommandUi` 用 `RegistrationBundle` 组合现有命令、菜单、按钮、分组和默认布局。原始 C 表、handle、权限及生命周期规则继续生效。失败回收受阻时保留引用，插件在 `stop` 中显式关闭并重试。数据刷新另由同层的 `data_refresh.hpp` 包装原来源、绑定和显示租约。
 
-工具栏 BUTTON、GROUP 和 SEPARATOR 可在原布局提示中选择 `MMS_UI_OVERFLOW_MENU=3`。空间不足时，宿主将后序命令呈现为「更多」菜单；空间恢复后使用原按钮 HWND 和 handle。分组可继承该策略，`MMS_HINT_KEEP_TOGETHER` 保持整组折叠。菜单使用原命令的状态和调用入口，STATE 更新已有项，注销或失效时移除对应项。该范围仅限 `mms.toolbar.main.extensions` 及其 GROUP，完整语义见 [SDK 工具栏命令溢出](../sdk/mms/cpp-ui.md#工具栏命令溢出)。DOCK、INPUT、侧栏、属性区、时间线和状态栏挂载仍未开放。本轮实现与验收证据见 [UI 框架记录](records/abi-ui-framework-2026-10-19.md)。
+工具栏 BUTTON、GROUP 和 SEPARATOR 可在原布局提示中选择 `MMS_UI_OVERFLOW_MENU=3`。空间不足时，宿主将后序命令呈现为「更多」菜单；空间恢复后使用原按钮 HWND 和 handle。分组可继承该策略，`MMS_HINT_KEEP_TOGETHER` 保持整组折叠。菜单使用原命令的状态和调用入口，STATE 更新已有项，注销或失效时移除对应项。该范围仅限 `mms.toolbar.main.extensions` 及其 GROUP，完整语义见 [SDK 工具栏命令溢出](../sdk/mms/cpp-ui.md#工具栏命令溢出)。DOCK、INPUT、侧栏、属性区、时间线和状态栏挂载仍未开放。状态：**本机已验证**；完整配置 21／21、原始兼容配置 18／18、ABI 契约重复 6／6。实现与验收证据见 [UI 框架记录](records/abi-ui-framework-2026-10-19.md)。
 
 [重绘 SDK](../sdk/mms/cpp-refresh.md)用 `RefreshServices` 和 `RefreshTicket` 包装同一刷新 C 表，提供局部矩形便利方法、跨线程所有权移交及显式清理。原始票据可继续用于 C 接口，没有额外宿主实现。
 

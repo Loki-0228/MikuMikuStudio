@@ -97,6 +97,6 @@ spec.button.hints = &hints;
 
 此扩展不增加函数表版本，也没有独立的溢出能力查询。取得 `mms.ui.layout` 1.0 不代表旧宿主接受数值 `3`；检查 `Register`、`SetDefaultHints` 或底层 `stageHints` 的结果。返回 `MMS_E_UNSUPPORTED` 时，由插件明确注册受支持的菜单位置，或报告不支持。`CommandUi` 不会静默回退；注册失败后的清理规则不变。
 
-实现状态及本轮验收证据见 [UI 框架记录](../../docs/records/abi-ui-framework-2026-10-19.md)。工具栏溢出不开放 DOCK、INPUT、新挂载点、通用菜单内容提供者或普通 `mms.edit`。
+实现状态：**本机已验证**（完整配置 21／21、原始兼容配置 18／18、ABI 契约重复 6／6）。验收证据见 [UI 框架记录](../../docs/records/abi-ui-framework-2026-10-19.md)。工具栏溢出不开放 DOCK、INPUT、新挂载点、通用菜单内容提供者或普通 `mms.edit`。
 
 Win7 SP1 x64、CPU 基础路径和 AMD 继续作为发布约束。当前构建与本机测试不替代 Win7 和 AMD 真机验收。
