@@ -2,7 +2,8 @@
 #include "mikudancestudio/extended_names.hpp"
 // Persistence for native bone scaling: the PMM v2
 // "org.mikudancestudio.model.<slot>.boneScale.v1" (or ".v2") tail record and
-// the VMD tail extension ("MDSXVMDX" footer after the standard prefix).  Wire
+// the VMD tail extension ("MMSXVMDX" footer after the standard prefix; legacy
+// "MDSXVMDX" is also read).  Wire
 // layouts and strictness rules are documented in
 // include/mikudancestudio/bone_scale_io.hpp.
 //
@@ -236,11 +237,13 @@ bool ValidCurveBytes(const std::uint8_t* bytes) {
 
 // ---- VMD tail extension helpers -----------------------------------------
 
-// Payload magic (kept from the codec's original standalone-file layout).
-const char kPayloadMagic[8] = {'M', 'D', 'S', 'X', 'M', 'D', 'S', 'X'};
+// Payload magic.  New writes use MMS; the MDS form is read for old files.
+const char kPayloadMagic[8] = {'M', 'M', 'S', 'X', 'M', 'M', 'S', 'X'};
+const char kLegacyPayloadMagic[8] = {'M', 'D', 'S', 'X', 'M', 'D', 'S', 'X'};
 // Footer magic: uint64 payloadBytes followed by these 8 bytes at the very end
 // of the file locate the extension.
-const char kFooterMagic[8] = {'M', 'D', 'S', 'X', 'V', 'M', 'D', 'X'};
+const char kFooterMagic[8] = {'M', 'M', 'S', 'X', 'V', 'M', 'D', 'X'};
+const char kLegacyFooterMagic[8] = {'M', 'D', 'S', 'X', 'V', 'M', 'D', 'X'};
 
 // ---- model helpers -------------------------------------------------------
 
@@ -755,7 +758,8 @@ ExtensionDecode DecodeExtension(const std::uint8_t* data, std::size_t size,
     if (data == nullptr || size < kPayloadHeaderBytes + 4 ||
         size > kMaxExtensionBytes)
         return ExtensionDecode::BadData;
-    if (std::memcmp(data, kPayloadMagic, sizeof kPayloadMagic) != 0)
+    if (std::memcmp(data, kPayloadMagic, sizeof kPayloadMagic) != 0 &&
+        std::memcmp(data, kLegacyPayloadMagic, sizeof kLegacyPayloadMagic) != 0)
         return ExtensionDecode::BadMagic;
     Reader reader{data, size, 8};
     std::uint32_t version = 0, reserved = 0, crc = 0, count = 0;
@@ -896,7 +900,9 @@ ExtensionLoad LoadVmdExtension(const std::wstring& vmdPath, VmdExtension& out,
     }
     std::uint64_t payloadBytes = 0;
     std::memcpy(&payloadBytes, footer, sizeof payloadBytes);
-    if (std::memcmp(footer + 8, kFooterMagic, sizeof kFooterMagic) != 0) {
+    if (std::memcmp(footer + 8, kFooterMagic, sizeof kFooterMagic) != 0 &&
+        std::memcmp(footer + 8, kLegacyFooterMagic,
+                    sizeof kLegacyFooterMagic) != 0) {
         _close(fd);
         return ExtensionLoad::Absent;  // an ordinary motion: no tail at all
     }

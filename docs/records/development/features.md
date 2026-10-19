@@ -428,7 +428,7 @@ git diff --stat ba6b269 80bc305 -- src include res docs tests
 | --- | --- |
 | 入口 | 视口移动按钮下方新增的整体、X、Y、Z 四个按钮；局部/全局/视图选择器决定分轴方向。 |
 | 默认行为 | 每向上拖动 100 像素约为 `e` 倍；Ctrl 精调，Shift 加速；配件、相机、灯光与无骨骼选择时禁用；播放期间不能编辑。 |
-| 保存方式 | 当前姿态与缩放关键帧写入 PMM v2 扩展记录 `org.mikudancestudio.model.<slot>.boneScale.v1`；VMD 标准段不变，缩放写在同文件尾部的 `MDSXMDSX`/`MDSXVMDX` 扩展中。PMM 全部扩展上限 16 MiB，VMD 扩展上限 8 MiB。 |
+| 保存方式 | 当前姿态与缩放关键帧写入 PMM v2 扩展记录 `org.mikudancestudio.model.<slot>.boneScale.v1`；VMD 标准段不变，缩放写在同文件尾部的 `MMSXMMSX`/`MMSXVMDX` 扩展中（读取兼容旧 `MDSXMDSX`/`MDSXVMDX`）。PMM 全部扩展上限 16 MiB，VMD 扩展上限 8 MiB。 |
 | 兼容性 | 原版 MMD 读取标准段并忽略尾部扩展；通过原版重新保存会丢弃扩展。 |
 | 证据 | `ad032d9` 为功能提交；`src/model/bone_scale.cpp`（`Enabled` 第 385 行、`Drag` 第 393 行、`Interpolate` 第 146 行）、`include/mikudancestudio/bone_scale.hpp:71-77`、`src/io/bone_scale_io.cpp`、`include/mikudancestudio/bone_scale_io.hpp:40-48`、[骨骼缩放说明](../../guides/bone-scaling.md)。 |
 | 验证范围 | 14 组通过：缩放求值、关键帧登记与编辑、撤销重做、真实 VMD 往返、真实 PMM 保存重开、损坏扩展拒绝、HUD 三种 DPI 两组背景共 18 组回读。PMX 最大绝对差 `1.91e-6`，PMD `1.79e-7`。 |
@@ -539,7 +539,7 @@ git diff --stat ba6b269 80bc305 -- src include res docs tests
 | --- | --- |
 | 入口 | 骨骼缩放导出与曲线导出共用同一条尾部扩展通道。 |
 | 默认行为 | 标准 VMD 段不变；没有尾部扩展的 VMD 导入时骨骼缩放为单位矩阵，不会报错。 |
-| 证据 | `src/io/bone_scale_io.cpp:3`、`include/mikudancestudio/bone_scale_io.hpp:40-48`（`MDSXMDSX`/`MDSXVMDX`）、`src/animation/animation_curve_motion.cpp:12`（`MMVCURV1` 尾部 40 字节页脚）。 |
+| 证据 | `src/io/bone_scale_io.cpp:3`、`include/mikudancestudio/bone_scale_io.hpp:40-48`（`MMSXMMSX`/`MMSXVMDX`，旧 `MDSXMDSX`/`MDSXVMDX` 读取兼容）、`src/animation/animation_curve_motion.cpp:12`（`MMVCURV1` 尾部 40 字节页脚）。 |
 | 状态 | 已交付增强。 |
 
 <a id="record-mms-native-features-audit-五已交付增强烘焙网格缓存与输出"></a>

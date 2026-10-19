@@ -73,7 +73,8 @@
 // VMD file with an extension:
 //   [standard VMD bytes: header + full standard body]   prefixBytes
 //   [extension payload]                                 payloadBytes
-//   [footer: uint64 payloadBytes; char magic[8] = "MDSXVMDX"]     (16 bytes)
+//   [footer: uint64 payloadBytes; char magic[8] = "MMSXVMDX"]     (16 bytes)
+//            (legacy "MDSXVMDX" is also read)
 //
 //   A file is "just a standard VMD" when the last 8 bytes are not the footer
 //   magic; a file with the footer must satisfy
@@ -81,7 +82,7 @@
 //   from the payload.
 //
 // Extension payload:
-//   char     magic[8]   = "MDSXMDSX"
+//   char     magic[8]   = "MMSXMMSX"
 //   uint32   version    = 1 or 2
 //   uint32   reserved   = 0
 //   uint64   prefixBytes = byte count of the standard VMD prefix

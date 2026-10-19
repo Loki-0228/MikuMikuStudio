@@ -16,7 +16,8 @@
 //   [standard VPD text]                           prefixBytes
 //   [extension payload]                           payloadBytes
 //   [footer: uint64 payloadBytes;
-//            char magic[8] = "MDSXVPDX"]          (16 bytes)
+//            char magic[8] = "MMSXVPDX"]          (16 bytes)
+//            (legacy "MDSXVPDX" is also read)
 //
 //   A file is "just a standard VPD" when the last 8 bytes are not the footer
 //   magic; a file with the footer must satisfy
@@ -24,7 +25,7 @@
 //   the payload.
 //
 // Extension payload:
-//   char     magic[8]    = "MDSXVPDS"
+//   char     magic[8]    = "MMSXVPDS"
 //   uint32   version     = 1
 //   uint32   reserved    = 0
 //   uint64   prefixBytes = byte count of the standard VPD text

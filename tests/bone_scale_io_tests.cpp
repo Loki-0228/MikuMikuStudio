@@ -1001,7 +1001,7 @@ std::vector<std::uint8_t> TailFile(const std::vector<std::uint8_t>& payload) {
     auto bytes=kFakeVmd;
     bytes.insert(bytes.end(),payload.begin(),payload.end());
     PutU64(bytes,payload.size());
-    const char footer[]="MDSXVMDX";
+    const char footer[]="MMSXVMDX";
     bytes.insert(bytes.end(),footer,footer+8);return bytes;
 }
 void ExtensionFileLifecycle() {

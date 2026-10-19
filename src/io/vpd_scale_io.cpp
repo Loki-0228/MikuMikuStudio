@@ -1,4 +1,4 @@
-// VPD pose-file tail extension for native bone scaling: the "MDSXVPDX" footer
+// VPD pose-file tail extension for native bone scaling: the "MMSXVPDX" footer
 // after the standard VPD text.  Wire layout and strictness rules are
 // documented in include/mikudancestudio/vpd_scale_io.hpp.
 //
@@ -181,8 +181,11 @@ constexpr std::size_t kFooterBytes = 16;
 
 // ---- tail identification -------------------------------------------------
 
-const char kPayloadMagic[8] = {'M', 'D', 'S', 'X', 'V', 'P', 'D', 'S'};
-const char kFooterMagic[8] = {'M', 'D', 'S', 'X', 'V', 'P', 'D', 'X'};
+// New writes use MMS; the MDS forms are read for old files.
+const char kPayloadMagic[8] = {'M', 'M', 'S', 'X', 'V', 'P', 'D', 'S'};
+const char kLegacyPayloadMagic[8] = {'M', 'D', 'S', 'X', 'V', 'P', 'D', 'S'};
+const char kFooterMagic[8] = {'M', 'M', 'S', 'X', 'V', 'P', 'D', 'X'};
+const char kLegacyFooterMagic[8] = {'M', 'D', 'S', 'X', 'V', 'P', 'D', 'X'};
 
 // ---- shared encode -------------------------------------------------------
 
@@ -277,7 +280,8 @@ Decode DecodePayload(const std::uint8_t* data, std::size_t size,
     if (data == nullptr || size < kPayloadHeaderBytes + 4 ||
         size > kMaxTailBytes)
         return Decode::BadData;
-    if (std::memcmp(data, kPayloadMagic, sizeof kPayloadMagic) != 0)
+    if (std::memcmp(data, kPayloadMagic, sizeof kPayloadMagic) != 0 &&
+        std::memcmp(data, kLegacyPayloadMagic, sizeof kLegacyPayloadMagic) != 0)
         return Decode::BadMagic;
     Reader reader{data, size, 8};
     std::uint32_t version = 0, reserved = 0, crc = 0, count = 0;
@@ -399,7 +403,9 @@ TailLoad LoadTail(const std::wstring& path, std::int64_t expectedRecords,
     }
     std::uint64_t payloadBytes = 0;
     std::memcpy(&payloadBytes, footer, sizeof payloadBytes);
-    if (std::memcmp(footer + 8, kFooterMagic, sizeof kFooterMagic) != 0) {
+    if (std::memcmp(footer + 8, kFooterMagic, sizeof kFooterMagic) != 0 &&
+        std::memcmp(footer + 8, kLegacyFooterMagic,
+                    sizeof kLegacyFooterMagic) != 0) {
         _close(fd);
         return TailLoad::Absent;  // an ordinary pose file: no tail at all
     }

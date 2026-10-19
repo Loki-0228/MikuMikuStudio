@@ -1146,11 +1146,12 @@ bool Decode(const std::uint8_t* data, std::size_t size, Kind requested, Motion& 
             return true;
         }
 
-        // A foreign tail (for example the MDSXVMDX block the bone scale
-        // extension writes) is ignored, but this module's own markers must not
-        // appear in the trailing region: a shifted footer, or a curve payload
-        // whose footer was cut off, means the tail is damaged and the standard
-        // proxy must not silently take its place.
+        // A foreign tail (for example the MMSXVMDX block the bone scale
+        // extension writes, or its legacy MDSXVMDX form) is ignored, but this
+        // module's own markers must not appear in the trailing region: a
+        // shifted footer, or a curve payload whose footer was cut off, means
+        // the tail is damaged and the standard proxy must not silently take
+        // its place.
         if (size - standardEnd >= 4 && (std::memcmp(data + standardEnd, "MDSC", 4) == 0 ||
             std::memcmp(data + standardEnd, "MDSN", 4) == 0)) {
             throw std::runtime_error("the curve payload is present but its footer is missing or damaged");

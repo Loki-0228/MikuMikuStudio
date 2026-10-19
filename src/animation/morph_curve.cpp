@@ -26,7 +26,8 @@
 // The block is written after the complete standard body and BEFORE the
 // bone-scale extension payload, both through the same write lambda:
 //
-//   [standard VMD body][morph curve block][bone scale payload][MDSXVMDX footer]
+//   [standard VMD body][morph curve block][bone scale payload][MMSXVMDX footer]
+//   (legacy MDSXVMDX footers are also read)
 //
 // bone_scale_io defines the container's standard prefix as the byte count the
 // loader consumed before it calls LoadVmdExtension, so a loader that steps over

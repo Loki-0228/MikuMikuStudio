@@ -2,7 +2,8 @@
 // (include/mikudancestudio/vpd_scale_io.hpp, src/io/vpd_scale_io.cpp).
 //
 // What is pinned here:
-//   - the wire layout of the tail (footer "MDSXVPDX", payload "MDSXVPDS",
+//   - the wire layout of the tail (footer "MMSXVPDX", payload "MMSXVPDS",
+//     with the legacy MDSXVPDX/MDSXVPDS forms still accepted)
 //     little-endian fields, 32-byte payload header, 60-byte entries, trailing
 //     CRC32), built byte by byte with the test's own helpers so the layout is
 //     independent of the module under test;
@@ -257,8 +258,8 @@ void WireLayoutAndRoundTrip() {
     const std::vector<std::uint8_t> payload = vpd::Encode(extension);
     Check(payload.size() == 32 + 60 * 2 + 4,
           "payload is 32 header + 2 * 60 entries + 4 CRC bytes");
-    Check(std::memcmp(payload.data(), "MDSXVPDS", 8) == 0,
-          "payload magic is MDSXVPDS");
+    Check(std::memcmp(payload.data(), "MMSXVPDS", 8) == 0,
+          "payload magic is MMSXVPDS");
     Check(ReadU32(payload, 8) == 1, "payload version is 1");
     Check(ReadU32(payload, 12) == 0, "payload reserved field is zero");
     Check(ReadU64(payload, 16) == extension.prefixBytes,
@@ -357,8 +358,8 @@ void OldFormatAndFileLifecycle() {
     const std::size_t footerAt = full.size() - 16;
     Check(ReadU64(full, footerAt) == full.size() - text.size() - 16,
           "footer records the payload byte count");
-    Check(std::memcmp(full.data() + footerAt + 8, "MDSXVPDX", 8) == 0,
-          "footer magic is MDSXVPDX and sits at the very end");
+    Check(std::memcmp(full.data() + footerAt + 8, "MMSXVPDX", 8) == 0,
+          "footer magic is MMSXVPDX and sits at the very end");
 
     Check(vpd::LoadTail(file.path, 2, loaded) == vpd::TailLoad::Loaded &&
               loaded.entries.size() == 2,

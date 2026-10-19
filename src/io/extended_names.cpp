@@ -124,12 +124,12 @@ void LoadPmm(MMDApp& app,const pmm_extension::Document& doc) {
 }
 std::vector<std::uint8_t> EncodeMotion(const MotionNames& names,std::uint64_t prefixSize,std::uint32_t prefixCrc) {
     Writer w;w.text(names.model);w.names(names.bones);w.names(names.morphs);w.indices(names.boneOwners);w.indices(names.morphOwners);w.indices(names.ikOwners);
-    Writer out;const char magic[]="MDSNAME1";out.data.insert(out.data.end(),magic,magic+8);
+    Writer out;const char magic[]="MMSNAME1";out.data.insert(out.data.end(),magic,magic+8);
     out.u64(w.data.size());out.u64(prefixSize);out.u32(prefixCrc);out.u32(Crc(w.data.data(),w.data.size()));
     out.data.insert(out.data.end(),w.data.begin(),w.data.end());return out.data;
 }
 std::size_t DecodeMotion(const std::uint8_t* file,std::size_t size,std::size_t offset,MotionNames& out) {
-    if(offset>size||size-offset<8||std::memcmp(file+offset,"MDSNAME1",8))return 0;
+    if(offset>size||size-offset<8||(std::memcmp(file+offset,"MMSNAME1",8)&&std::memcmp(file+offset,"MDSNAME1",8)))return 0;
     Reader h{file+offset,size-offset};h.at=8;const auto n=h.u64(),prefix=h.u64();const auto crc=h.u32(),payload=h.u32();
     if(prefix!=offset||n>h.size-h.at||Crc(file,offset)!=crc||Crc(h.data+h.at,static_cast<std::size_t>(n))!=payload)throw std::runtime_error("Unicode motion checksum mismatch");
     Reader r{h.data+h.at,static_cast<std::size_t>(n)};MotionNames result;
