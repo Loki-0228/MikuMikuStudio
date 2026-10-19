@@ -920,6 +920,8 @@ Result ComputeLayered(MMDApp& app,const Request& request,const native_mesh::Laye
             [&](double seconds,bool output){
                 const int frame=int(std::floor(seconds*30+1e-6));
                 if(progress&&!progress(frame,request.lastFrame)){cancelled=true;return false;}
+                FrameSceneOutputScope frameOutput(&app);
+                if(!frameOutput.Ready())throw std::runtime_error("A valid device viewport is unavailable for layered bone sampling");
                 RenderFrameScene(&app);
                 if(!output)return true;
                 native_mesh::LayerOutput layerOutput,layerSource;
@@ -1043,13 +1045,14 @@ bool Visit(MMDApp& app, int firstFrame, int lastFrame, int fps,
         }
         struct AppRestore {
             MMDApp& app;
+            FrameViewportPublicationWatch viewport;
             std::unique_ptr<MMDAppState> saved;
             double cursor, start, end;
             std::vector<std::pair<mdl::AccessoryRecord*,mdl::AccessoryRecord>> accessories;
-            explicit AppRestore(MMDApp& a):app(a),saved(new MMDAppState(a.state)), cursor(a.PlaybackCursorSeconds()), start(a.PlaybackStartSeconds()), end(a.PlaybackEndSeconds()) {
+            explicit AppRestore(MMDApp& a):app(a),viewport(&a),saved(new MMDAppState(a.state)), cursor(a.PlaybackCursorSeconds()), start(a.PlaybackStartSeconds()), end(a.PlaybackEndSeconds()) {
                 for(int i=0;i<255;++i)if(auto* p=a.AccessorySlot(i)) accessories.emplace_back(p,*p);
             }
-            ~AppRestore(){for(auto& a:accessories)*a.first=a.second;app.state=*saved;app.PlaybackCursorSeconds()=cursor;app.PlaybackStartSeconds()=start;app.PlaybackEndSeconds()=end;}
+            ~AppRestore(){for(auto& a:accessories)*a.first=a.second;viewport.PreserveGeometryInto(*saved);app.state=*saved;app.PlaybackCursorSeconds()=cursor;app.PlaybackStartSeconds()=start;app.PlaybackEndSeconds()=end;viewport.RestoreEditorUi();}
         } restore(app);
         Evaluate(models,slots,0,true);
         for(auto& m:models){ModelDynamicReseat(m->raw());ModelKinematicSync(m->raw());}

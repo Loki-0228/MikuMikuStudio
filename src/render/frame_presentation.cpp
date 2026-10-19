@@ -4,6 +4,7 @@
 #include <d3d9.h>
 
 #include <algorithm>
+#include <climits>
 
 #include "mikudancestudio/frame_presentation.hpp"
 #include "mikudancestudio/frame_rate.hpp"
@@ -13,9 +14,32 @@
 #include "mikudancestudio/ported_funcs.hpp"
 #include "mikudancestudio/window_dpi_scope.hpp"
 #include "mikudancestudio/plugin_runtime.hpp"
+#include "mikudancestudio/viewport_bounds.hpp"
+#include "mikudancestudio/bake_ui_lock.hpp"
 
 namespace mikudancestudio {
-namespace { thread_local bool nativeBakePreview=false; }
+namespace {
+thread_local bool nativeBakePreview=false;
+thread_local FrameSceneOutputScope* sceneOutput=nullptr;
+thread_local FrameViewportPublicationWatch* viewportPublication=nullptr;
+bool DeviceViewportRect(MMDApp* app,RECT& rect) {
+    rect={};
+    auto* renderer=app?app->Renderer():nullptr;
+    if(!renderer||!renderer->device)return false;
+    D3DVIEWPORT9 viewport{};
+    IDirect3DSurface9* target=nullptr;
+    D3DSURFACE_DESC desc{};
+    const auto result=renderer->device->GetRenderTarget(0,&target);
+    const bool described=SUCCEEDED(result)&&target&&SUCCEEDED(target->GetDesc(&desc));
+    if(target)target->Release();
+    if(!described||FAILED(renderer->device->GetViewport(&viewport))||!viewport.Width||!viewport.Height||
+        viewport.X>=desc.Width||viewport.Y>=desc.Height||viewport.Width>desc.Width-viewport.X||
+        viewport.Height>desc.Height-viewport.Y||viewport.X>LONG_MAX||viewport.Y>LONG_MAX||
+        viewport.Width>DWORD(LONG_MAX)-viewport.X||viewport.Height>DWORD(LONG_MAX)-viewport.Y)return false;
+    rect={LONG(viewport.X),LONG(viewport.Y),LONG(viewport.X+viewport.Width),LONG(viewport.Y+viewport.Height)};
+    return true;
+}
+}
 bool NativeBakePreviewActive(){return nativeBakePreview;}
 bool BakePreview::Due(bool last){
     if(!app_||!app_->Renderer()||!app_->Renderer()->device)return false;
@@ -25,6 +49,7 @@ bool BakePreview::Due(bool last){
 }
 void BakePreview::Present(){
     if(!app_||!app_->Renderer()||!app_->Renderer()->device)return;
+    if(!FrameViewportRenderable(app_))return;
     auto* device=app_->Renderer()->device;
     if (build_profile::original) FillFramePresentationMargins(app_,device);
     const RECT rect=FramePresentationRect(app_);
@@ -42,9 +67,24 @@ void BakePreview::RenderNative(){
     nativeBakePreview=true;RenderFrameScene(app_);Present();
 }
 
+static bool ReadFrameGeometry(MMDApp* app,FrameViewportGeometry& geometry) {
+    const bool fullscreen=app->FullscreenMode()!=0;
+    const HWND window=fullscreen||!app->FloatingWindow()?app->MainWindow():app->FloatingWindow();
+    const WindowDpiScope dpi(window);
+    RECT client{};
+    if(!window||IsIconic(window)||!GetClientRect(window,&client)){geometry={};return false;}
+    return CalculateFrameViewport(client,app->SidebarWidth(),plugins::ToolbarHeight(app),
+        fullscreen?FrameViewportMode::Fullscreen:app->FloatingWindow()?FrameViewportMode::Floating:FrameViewportMode::Docked,
+        app->RenderWidth(),app->RenderHeight(),geometry);
+}
+
 static RECT BasePresentationRect(MMDApp* app) {
     RECT result = app->ViewportRect();
     if (app->RecordingWindow() != nullptr) return result;
+    if(!build_profile::original){
+        FrameViewportGeometry geometry;
+        return ReadFrameGeometry(app,geometry)?geometry.available:RECT{};
+    }
     const HWND window = app->FullscreenMode() != 0 || !app->FloatingWindow()
         ? app->MainWindow() : app->FloatingWindow();
     const WindowDpiScope dpi(window);
@@ -69,6 +109,15 @@ static RECT BasePresentationRect(MMDApp* app) {
 }
 
 ViewportPanelLayout FramePanelLayout(MMDApp* app) {
+    if(!build_profile::original&&!app->RecordingWindow()){
+        FrameViewportGeometry geometry;
+        if(!ReadFrameGeometry(app,geometry)||!FrameRectWithin(app->ViewportRect(),geometry.available))return {};
+        const bool adaptive=app->FullscreenMode()==0;
+        auto panels=MakeViewportPanelLayout(geometry.available,app->ViewportRect(),adaptive,app->state.optflag[0]==0,
+            adaptive&&app->state.optflag[0]==0?ViewportScaleCaptionWidth(app):36);
+        if(!FrameRectWithin(panels.overlay,geometry.presentationBounds))return {};
+        return panels;
+    }
     const bool adaptive = !build_profile::original && !app->FullscreenMode() &&
         !app->RecordingWindow() && (app->MainWindow() || app->FloatingWindow());
     return MakeViewportPanelLayout(build_profile::original ? app->ViewportRect() : BasePresentationRect(app),
@@ -78,6 +127,117 @@ ViewportPanelLayout FramePanelLayout(MMDApp* app) {
 
 RECT FramePresentationRect(MMDApp* app) {
     return build_profile::original ? BasePresentationRect(app) : FramePanelLayout(app).overlay;
+}
+
+bool FrameViewportRenderable(MMDApp* app) {
+    if(!app)return false;
+    if(build_profile::original||app->RecordingWindow())return true;
+    for(auto* output=sceneOutput;output;output=output->previous_)
+        if(output->app_==app&&output->borrowedViewport_)return false;
+    const auto rect=FramePresentationRect(app);
+    const auto* renderer=app->Renderer();
+    if(!renderer||!renderer->device)return false;
+    if(IsRectEmpty(&rect))return false;
+    IDirect3DSurface9* back=nullptr;D3DSURFACE_DESC desc{};
+    HRESULT result=renderer->device->GetBackBuffer(0,0,D3DBACKBUFFER_TYPE_MONO,&back);
+    if(SUCCEEDED(result))result=back?back->GetDesc(&desc):E_FAIL;
+    if(back)back->Release();
+    if(FAILED(result)){
+        // Requested presentation parameters can precede a failed Reset. Read
+        // actual surface dimensions, but leave lost-device detection/recovery
+        // reachable through the ordinary Present path.
+        const auto cooperative=renderer->device->TestCooperativeLevel();
+        return result==D3DERR_DEVICELOST||result==D3DERR_DEVICENOTRESET||
+            cooperative==D3DERR_DEVICELOST||cooperative==D3DERR_DEVICENOTRESET;
+    }
+    if(!desc.Width||!desc.Height||desc.Width>LONG_MAX||desc.Height>LONG_MAX)return false;
+    const RECT buffer{0,0,LONG(desc.Width),LONG(desc.Height)};
+    return FrameRectWithin(rect,buffer)&&FrameRectWithin(app->ViewportRect(),buffer);
+}
+
+FrameSceneOutputScope::FrameSceneOutputScope(MMDApp* app):app_(app) {
+    if(!app)return;
+    if(!FrameViewportRenderable(app)){
+        if(!DeviceViewportRect(app,borrowed_))return;
+        saved_=app->ViewportRect();app->ViewportRect()=borrowed_;borrowedViewport_=restoreViewport_=true;
+    }
+    previous_=sceneOutput;sceneOutput=this;entered_=true;ready_=true;
+}
+FrameSceneOutputScope::~FrameSceneOutputScope(){
+    if(!entered_)return;
+    // A synchronous resize can publish newer geometry while an output callback
+    // is running. Restore only the rectangle this scope still owns.
+    if(restoreViewport_&&EqualRect(&app_->ViewportRect(),&borrowed_))app_->ViewportRect()=saved_;
+    if(sceneOutput==this)sceneOutput=previous_;
+}
+void FrameViewportPublished(MMDApp* app) noexcept {
+    FrameEditorViewportRefreshed(app);
+}
+void FrameEditorViewportRefreshed(MMDApp* app) noexcept {
+    // Notify the whole chain: a nested same-app scope cannot pass the old
+    // restore ownership back to an outer scope. Other apps remain untouched.
+    for(auto* output=sceneOutput;output;output=output->previous_)
+        if(output->app_==app)output->restoreViewport_=false;
+    for(auto* watch=viewportPublication;watch;watch=watch->previous_)
+        if(watch->app_==app)watch->observed_=true;
+}
+bool FrameEditorViewportRebuilding(MMDApp* app) noexcept {
+    for(auto* watch=viewportPublication;watch;watch=watch->previous_)
+        if(watch->app_==app&&watch->rebuilding_)return true;
+    return false;
+}
+FrameViewportPublicationWatch::FrameViewportPublicationWatch(MMDApp* app) noexcept:app_(app) {
+    previous_=viewportPublication;viewportPublication=this;
+}
+FrameViewportPublicationWatch::~FrameViewportPublicationWatch(){
+    if(viewportPublication==this)viewportPublication=previous_;
+}
+void FrameViewportPublicationWatch::PreserveGeometryInto(MMDAppState& restored) const noexcept {
+    if(!app_||!observed_||build_profile::original)return;
+    const auto& live=app_->state;
+    // Only the fixed-context UI geometry closure belongs to the refresh.
+    // Output dimensions, HWND/menu ownership and sampled scene state do not.
+    restored.hideRight=live.hideRight;restored.hideTop=live.hideTop;
+    restored.hideLeft=live.hideLeft;restored.hideBottom=live.hideBottom;
+    restored.sidebarWidth=live.sidebarWidth;restored.sidebarRatio=live.sidebarRatio;
+    restored.separateWindowSidebarWidth=live.separateWindowSidebarWidth;
+    restored.windowLayoutReady=live.windowLayoutReady;
+}
+void FrameViewportPublicationWatch::RestoreEditorUi() noexcept {
+    if(!app_||!observed_||build_profile::original||!IsWindow(app_->MainWindow()))return;
+    const bake::ScopedUiInputGate inputGate;
+    const auto ready=app_->WindowLayoutReady();
+    const bool relayout=app_->bottomPanelSizing.relayout;
+    const auto selecting=app_->SelectionBoxDragging();
+    const float rotation[]{app_->BoneRotationEditDegreesX(),app_->BoneRotationEditDegreesY(),app_->BoneRotationEditDegreesZ()};
+    const bool rebuilding=rebuilding_;
+    rebuilding_=true;app_->bottomPanelSizing.relayout=true;
+    app_->SelectionBoxDragging()=0;app_->WindowLayoutReady()=0;
+    bool restored=false;
+    try{
+        // Use the restored mode/frame, not the sampling callback's camera
+        // mode. The relayout flag also avoids a lossy sidebar ratio round trip.
+        // Refresh* observes rebuilding_ and leaves accepted/empty geometry and
+        // the actual device viewport untouched throughout this UI-only pass.
+        HandleWindowSize(app_);
+        if(app_->Renderer()&&app_->PanelDC())PanelPaint(app_);
+        restored=true;
+    }catch(...){
+        // Scene restoration must still complete during cancellation/unwind.
+        // An incomplete UI pass cannot make a stale presentation usable.
+        app_->ViewportRect()={};
+    }
+    app_->BoneRotationEditDegreesX()=rotation[0];app_->BoneRotationEditDegreesY()=rotation[1];
+    app_->BoneRotationEditDegreesZ()=rotation[2];app_->SelectionBoxDragging()=selecting;
+    app_->bottomPanelSizing.relayout=relayout;rebuilding_=rebuilding;
+    app_->WindowLayoutReady()=restored?ready:0;
+    RedrawWindow(app_->MainWindow(),nullptr,nullptr,RDW_INVALIDATE|RDW_ALLCHILDREN);
+}
+bool FrameSceneRenderable(MMDApp* app){
+    if(FrameViewportRenderable(app))return true;
+    if(!sceneOutput||!sceneOutput->ready_||sceneOutput->app_!=app)return false;
+    RECT current{};
+    return DeviceViewportRect(app,current)&&EqualRect(&current,&app->ViewportRect());
 }
 
 RECT FrameOverlayRect(MMDApp* app) {
@@ -100,6 +260,7 @@ void FillFramePresentationMargins(MMDApp* app, IDirect3DDevice9* device) {
     if (app->RecordingWindow() != nullptr) return;
     const RECT scene = app->ViewportRect();
     const RECT present = FramePresentationRect(app);
+    if(!build_profile::original&&IsRectEmpty(&present))return;
     if (EqualRect(&present, &scene))
         return;
 

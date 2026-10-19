@@ -168,6 +168,8 @@ Result Export(MMDApp& app,const std::filesystem::path& path,const Options& optio
                 [&](double seconds,bool output) {
                     const int frame=int(std::floor(seconds*30+1e-6));
                     if(progress&&!progress(frame,options.lastFrame)){result.cancelled=true;return false;}
+                    FrameSceneOutputScope frameOutput(&app);
+                    if(!frameOutput.Ready())throw std::runtime_error("A valid device viewport is unavailable for geometry sampling");
                     if(capture)capture->BeginFrame();RenderFrameScene(&app);
                     if(layerBake&&output){
                         // Per-frame expressibility: everything the mesh cache

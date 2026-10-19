@@ -80,6 +80,7 @@
 #include "mikudancestudio/ported_funcs.hpp"
 #include "mikudancestudio/model.hpp"
 #include "mikudancestudio/panel_controls.hpp"
+#include "mikudancestudio/frame_presentation.hpp"
 
 namespace mikudancestudio {
 namespace {
@@ -374,7 +375,9 @@ void PanelPaint(MMDApp* app) {
             DeleteObject(box);
         }
         DeleteDC(icons);
-        PostViewRefresh(app);
+        // Restoring editor layout after isolated sampling must not evaluate
+        // scale transforms or replace authored readouts through this tail.
+        if(!FrameEditorViewportRebuilding(app))PostViewRefresh(app);
         rc.bottom -= 248;
         rc.left = 6;
         rc.top = 145;

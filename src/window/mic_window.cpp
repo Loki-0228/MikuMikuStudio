@@ -14,6 +14,9 @@
 #include <Windows.h>
 #include "mikudancestudio/build_profile.hpp"
 #include "mikudancestudio/frame_presentation.hpp"
+#if !MMD_ORIGINAL_PROFILE
+#include "mikudancestudio/bake_ui_lock.hpp"
+#endif
 
 #include <cstdint>
 #include <cstdlib>
@@ -86,6 +89,17 @@ LRESULT CALLBACK MicWndProc(HWND hwnd, UINT msg, WPARAM wParam,
     updates::ObserveMessage(app, msg, wParam, lParam);
     auto& s = *app;
 #if !MMD_ORIGINAL_PROFILE
+    // Disabling the detached window does not discard already queued messages.
+    // A bake pumps those messages while it borrows private scene state; closing
+    // here would destroy the HWND subsequently restored by that scene snapshot.
+    // Keep resize/paint and capture-loss cleanup available, like the main HWND.
+    if (bake::UiLocked() &&
+        (msg == WM_COMMAND || msg == WM_NOTIFY || msg == WM_CLOSE ||
+         msg == WM_HSCROLL || msg == WM_VSCROLL ||
+         (msg >= WM_KEYFIRST && msg <= WM_KEYLAST) ||
+         (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST) ||
+         (msg == WM_SYSCOMMAND && (wParam & 0xfff0) == SC_CLOSE)))
+        return 0;
     if (plugins::HandleBoundViewportMessage(s, hwnd, msg, wParam, lParam)) return 0;
 #endif
     if (msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP ||

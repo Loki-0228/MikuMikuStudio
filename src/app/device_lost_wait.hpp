@@ -61,11 +61,14 @@ inline bool Pending(MMDApp* app) noexcept {
 // preserve a Wait's active guard, including synchronous window messages from
 // the driver. Successful() belongs at the very end of PostDeviceReset.
 class ResetScope {
+    inline static thread_local ResetScope* top_=nullptr;
+    ResetScope* previous_;
     MMDApp* app_;
     D3DRenderer* renderer_;
     IDirect3DDevice9* device_;
     bool wasActive_;
     bool successful_ = false;
+    bool nestedFailure_ = false;
 
     void Pending() noexcept {
         state.app = app_; state.renderer = renderer_; state.device = device_;
@@ -74,23 +77,35 @@ class ResetScope {
     bool MatchesPending() const noexcept {
         return state.app == app_ && state.renderer == renderer_ && state.device == device_;
     }
+    void PropagateFailure() noexcept {
+        for(auto* scope=previous_;scope;scope=scope->previous_)
+            if(scope->app_==app_&&scope->renderer_==renderer_&&scope->device_==device_)
+                scope->nestedFailure_=true;
+    }
 public:
     explicit ResetScope(MMDApp* app) noexcept
-        : app_(app), renderer_(app ? app->Renderer() : nullptr),
+        : previous_(top_),app_(app), renderer_(app ? app->Renderer() : nullptr),
           device_(renderer_ ? renderer_->device : nullptr), wasActive_(Active()) {
+        top_=this;
         state.active = true;
         Pending();
     }
     ResetScope(const ResetScope&) = delete;
     ResetScope& operator=(const ResetScope&) = delete;
-    void Successful() noexcept {
+    bool Successful() noexcept {
+        if(nestedFailure_||!app_||!SameDevice(app_,renderer_,device_))return false;
         successful_ = true;
         if (MatchesPending()) ClearPending();
+        return true;
     }
     ~ResetScope() {
-        // A nested successful Reset cannot conceal a later outer failure.
-        if (!successful_ && app_ && SameDevice(app_, renderer_, device_)) Pending();
+        // An inner success cannot hide an outer failure, and an outer success
+        // cannot hide a new same-device failure reported by its tail callbacks.
+        if ((!successful_||nestedFailure_) && app_ && SameDevice(app_, renderer_, device_)) {
+            PropagateFailure();Pending();
+        }
         else if (MatchesPending()) ClearPending();
+        top_=previous_;
         state.active = wasActive_;
     }
 };
@@ -99,6 +114,7 @@ inline Result Wait(MMDApp* app, IDirect3DDevice9* device, bool recording) {
     if (Active() || !app || !device) return Result::Interrupted;
     auto* renderer = app->Renderer();
     if (!SameDevice(app, renderer, device)) return Result::Interrupted;
+    if(state.app&&state.app!=app)return Result::Interrupted;
     if (state.app != app || state.renderer != renderer || state.device != device)
         ClearPending();
     state.app = app; state.renderer = renderer; state.device = device;
@@ -116,9 +132,10 @@ inline Result Wait(MMDApp* app, IDirect3DDevice9* device, bool recording) {
     const auto* system = app->CaptureSystemSurface();
     const auto* back = renderer->backbufferSurface;
     const auto* pixels = app->CaptureReadbackPixels();
+    const auto ownsPending=[&]{return state.app==app&&state.renderer==renderer&&state.device==device;};
     const auto controlsCurrent = [&] {
         if (!SameDevice(app, renderer, device)) {
-            ClearPending();
+            if(ownsPending())ClearPending();
             return false;
         }
         if (app->SceneMutationInProgress() || static_cast<HWND>(app->Hwnd()) != window ||
@@ -149,8 +166,9 @@ inline Result Wait(MMDApp* app, IDirect3DDevice9* device, bool recording) {
             DispatchMessageW(&message);
             if (!current()) return Result::Interrupted;
         }
+        if(state.app&&!ownsPending())return Result::Interrupted;
         const HRESULT status = device->TestCooperativeLevel();
-        if (!current()) return Result::Interrupted;
+        if (!current()||(state.app&&!ownsPending())) return Result::Interrupted;
         if (status == D3D_OK && !state.resetRequired) {
             ClearPending();
             return Result::Ready;
@@ -161,10 +179,13 @@ inline Result Wait(MMDApp* app, IDirect3DDevice9* device, bool recording) {
             state.resetRequired = true;
             const bool reset = PostDeviceReset(app);
             if (!SameDevice(app, renderer, device)) {
-                ClearPending();
+                if(ownsPending())ClearPending();
                 return Result::Interrupted;
             }
-            if (!reset) return Result::Failed;
+            if (!reset||(ownsPending()&&state.resetRequired)) return Result::Failed;
+            // A callback may have reported another application's failure.
+            // This successful reset has no authority to clear that pending id.
+            if(state.app&&!ownsPending())return Result::Interrupted;
             ClearPending();
             return controlsCurrent() ? Result::Reset : Result::Interrupted;
         }

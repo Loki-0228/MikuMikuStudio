@@ -26,7 +26,7 @@ ModelHudPose ModelHudRead(Fixture& f){ModelHudPose result;result.dirty=f.dirty;r
 bool ModelHudSame(const ModelHudPose& a,const ModelHudPose& b){return !std::memcmp(a.bones.data(),b.bones.data(),sizeof(a.bones))&&a.dirty==b.dirty&&a.scale==b.scale;}
 void ModelHudWrite(Fixture& f,const ModelHudPose& value){for(unsigned b=0;b<2;++b){std::memcpy(f.bones[b].trans,value.bones[b].data(),3*sizeof(float));
     std::memcpy(f.bones[b].rotQuat,value.bones[b].data()+3,4*sizeof(float));}f.dirty=value.dirty;auto scale=value.scale;Check(bone_scale::ExchangePoseValues(f.raw(),scale),"restore test model HUD pose in its existing storage");}
-struct ModelHudFixture:NumpadFixture{
+struct ModelHudFixture:CameraHudFixture{
     std::unique_ptr<D3DRenderer> renderer=std::make_unique<D3DRenderer>();
     ModelHudFixture(){Branch(2,CameraAttachmentReference::SelectedBone);app->CameraParentModel()=-1;app->EditMode()=ViewportEditMode::Bone;
         app->Renderer()=renderer.get();renderer->screenWidth=800;renderer->screenHeight=600;renderer->viewScale=1.25f;
@@ -263,17 +263,19 @@ void ModelHudTailReferenceAdmission(){
 }
 struct ModelHudReleaseWindow{
     inline static thread_local ModelHudReleaseWindow* active=nullptr;
-    ModelHudFixture& fixture;HWND owner,edit,floating;WNDPROC ownerProc,editProc;POINT cursor{};bool cursorValid,armed=false,observed=false;
+    ModelHudFixture& fixture;HWND owner,edit,floating;WNDPROC ownerProc,editProc;RECT originalView{};POINT cursor{};bool cursorValid,armed=false,observed=false;
     ModelHudPose original{},replacement{};std::shared_ptr<const plugins::HistoryChange> oldSource,newSource;
     explicit ModelHudReleaseWindow(ModelHudFixture& f):fixture(f),owner(f.app->MainWindow()),edit(GetDlgItem(owner,panel::kReadoutPosXEdit)),floating(f.app->FloatingWindow()),
-        ownerProc(nullptr),editProc(nullptr),cursorValid(GetCursorPos(&cursor)!=FALSE){Check(!active&&edit,"model HUD reentry fixture uses a real native EDIT");active=this;
+        ownerProc(nullptr),editProc(nullptr),originalView(f.app->ViewportRect()),cursorValid(GetCursorPos(&cursor)!=FALSE){Check(!active&&edit,"model HUD reentry fixture uses a real native EDIT");active=this;
         ownerProc=reinterpret_cast<WNDPROC>(SetWindowLongPtrW(owner,GWLP_WNDPROC,reinterpret_cast<LONG_PTR>(MicWndProc)));
         editProc=reinterpret_cast<WNDPROC>(SetWindowLongPtrW(edit,GWLP_WNDPROC,reinterpret_cast<LONG_PTR>(EditProc)));
-        Check(ownerProc&&editProc,"model HUD fixture forwards actual MicWndProc and native EDIT procedures");f.app->FloatingWindow()=owner;}
+        Check(ownerProc&&editProc,"model HUD fixture forwards actual MicWndProc and native EDIT procedures");f.app->FloatingWindow()=owner;HudFixtureGeometry(*f.app);}
     ~ModelHudReleaseWindow(){armed=false;plugins::CancelModelHudGesture(*fixture.app);if(GetCapture()==owner)ReleaseCapture();
         SetWindowLongPtrW(edit,GWLP_WNDPROC,reinterpret_cast<LONG_PTR>(editProc));SetWindowLongPtrW(owner,GWLP_WNDPROC,reinterpret_cast<LONG_PTR>(ownerProc));
-        fixture.app->FloatingWindow()=floating;active=nullptr;if(cursorValid)SetCursorPos(cursor.x,cursor.y);}
-    void Cursor(int x,int y){POINT point{x,y};Check(ClientToScreen(owner,&point)&&SetCursorPos(point.x,point.y),"place actual OS model HUD cursor independently from stale message lParam");}
+        fixture.app->FloatingWindow()=floating;fixture.app->ViewportRect()=originalView;active=nullptr;if(cursorValid)SetCursorPos(cursor.x,cursor.y);}
+    void Cursor(int x,int y){HudFixtureCursor(*fixture.app,owner,{x,y},
+        "place actual OS model HUD cursor independently from stale message lParam",
+        "real model HUD cursor round-trips through actual screen and client coordinates");}
     static LRESULT CALLBACK EditProc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp){auto* self=active;const auto proc=self->editProc;
         if(message==WM_SETTEXT&&self->armed){self->armed=false;self->observed=true;auto& f=self->fixture;
             Check(!ModelHudSame(ModelHudRead(f.first),self->original),"model release readout callback sees a real accepted native pose sample");

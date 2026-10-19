@@ -494,6 +494,7 @@ PresentResult PresentScene(MMDApp* app) {
     //   else                       -> Present(&RECT@A0D40, same, A06B8, NULL)
     // Device loss waits with a shared message pump, including windowed mode.
     if (device_lost_wait::Pending(app)) return {false, D3DERR_DEVICELOST};
+    if(!FrameViewportRenderable(app))return {false,D3D_OK};
     IDirect3DDevice9* device = nullptr;
     if (s.Renderer() != nullptr)
         device = s.Renderer()->device;                     // +0x1D4E0

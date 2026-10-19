@@ -62,6 +62,7 @@ void UpdateReadout(HWND dialog, MMDApp* app) {
     Show4KWarning(dialog, app, Above4K(size));
 }
 bool RefreshPreview(MMDApp* app) {
+    if(!FrameViewportRenderable(app))return false;
     auto* renderer = app->Renderer();
     if (!renderer || !renderer->device || FAILED(renderer->device->TestCooperativeLevel())) return false;
     auto* session = static_cast<PreviewSession*>(GetPropW(app->MainWindow(), kPreviewSession));

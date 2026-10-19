@@ -133,10 +133,10 @@ bool PostDeviceReset(MMDApp* app) {
         RefreshMainWindowViewport(app);                                           // 0x42C810
     }
 
+    if(!recovery.Successful())return false;
     app->state.recentFile0[0] = 0;                                 // 0x440FE2
     app->state.recentFile1[0] = 0;
     app->state.recentFile2[0] = 0;
-    recovery.Successful();
     return true;
 }
 

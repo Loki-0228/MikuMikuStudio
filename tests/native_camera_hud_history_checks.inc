@@ -2,7 +2,49 @@
 // arithmetic, private model identities and independent model/key/ring snapshots.
 #include "../src/plugins/native_camera_hud_history.hpp"
 #include "../src/plugins/native_object_commands.hpp"
+#include "mikudancestudio/frame_presentation.hpp"
+#include "mikudancestudio/plugin_runtime.hpp"
+#include "mikudancestudio/viewport_bounds.hpp"
+#include "mikudancestudio/window_dpi_scope.hpp"
 namespace {
+void HudFixtureGeometry(MMDApp& app) {
+    const bool floating=app.FloatingWindow()!=nullptr;
+    const HWND owner=floating?app.FloatingWindow():app.MainWindow();
+    const WindowDpiScope dpi(owner);RECT client{};FrameViewportGeometry geometry{};
+    Check(owner&&GetClientRect(owner,&client)&&CalculateFrameViewport(client,app.SidebarWidth(),
+        plugins::ToolbarHeight(&app),floating?FrameViewportMode::Floating:FrameViewportMode::Docked,
+        app.RenderWidth(),app.RenderHeight(),geometry),
+        "CPU HUD fixture has positive output dimensions and valid geometry in its actual hidden client");
+    app.ViewportRect()=geometry.scene;
+    const auto overlay=FrameOverlayRect(&app);
+    Check(!IsRectEmpty(&overlay)&&FrameRectWithin(overlay,geometry.presentationBounds),
+        "CPU HUD fixture meets production viewport admission before hit testing or cursor placement");
+}
+struct CameraHudFixture:NumpadFixture {
+    CameraHudFixture() {
+        app->RenderWidth()=1280;app->RenderHeight()=720;
+        Check(SetWindowPos(app->MainWindow(),nullptr,0,0,800,600,SWP_NOZORDER|SWP_NOACTIVATE)!=FALSE,
+            "size the hidden HUD-only fixture without changing the shared numeric or numpad fixtures");
+        HudFixtureGeometry(*app);
+    }
+};
+void HudFixtureCursor(MMDApp& app,HWND owner,POINT requested,const char* placement,const char* roundtrip) {
+    POINT screen=requested;
+    const bool positioned=ClientToScreen(owner,&screen)&&SetCursorPos(screen.x,screen.y);
+    POINT actualScreen{},actualClient{};
+    const bool sampled=GetCursorPos(&actualScreen)!=FALSE;
+    actualClient=actualScreen;const bool converted=sampled&&ScreenToClient(owner,&actualClient);
+    const bool exact=positioned&&converted&&actualClient.x==requested.x&&actualClient.y==requested.y;
+    if(!exact){RECT bounds{},client{},clip{};GetWindowRect(owner,&bounds);GetClientRect(owner,&client);GetClipCursor(&clip);
+        const auto view=app.ViewportRect(),overlay=FrameOverlayRect(&app);
+        std::fprintf(stderr,"HUD cursor mismatch: expected_client=(%ld,%ld) expected_screen=(%ld,%ld) actual_screen=(%ld,%ld) actual_client=(%ld,%ld) positioned=%u sampled=%u converted=%u window=(%ld,%ld,%ld,%ld) client=(%ld,%ld,%ld,%ld) clip=(%ld,%ld,%ld,%ld) viewport=(%ld,%ld,%ld,%ld) overlay=(%ld,%ld,%ld,%ld) output=(%d,%d)\n",
+            requested.x,requested.y,screen.x,screen.y,actualScreen.x,actualScreen.y,actualClient.x,actualClient.y,
+            positioned?1u:0u,sampled?1u:0u,converted?1u:0u,bounds.left,bounds.top,bounds.right,bounds.bottom,
+            client.left,client.top,client.right,client.bottom,clip.left,clip.top,clip.right,clip.bottom,
+            view.left,view.top,view.right,view.bottom,overlay.left,overlay.top,overlay.right,overlay.bottom,
+            app.RenderWidth(),app.RenderHeight());}
+    Check(positioned,placement);Check(exact,roundtrip);
+}
 void CameraHudSample(MMDApp& app, int operation, int dy, unsigned modifier = 0) {
     app.PreviousMouseX() = 100; app.PreviousMouseY() = 100;
     app.MouseX() = 103; app.MouseY() = 100 + dy;
@@ -16,7 +58,7 @@ void CameraHudMathAndHistory() {
     for (int operation = 15; operation <= 20; ++operation) for (int coordinate : {0, 1})
         for (int parent : {-1, 1}) for (unsigned modifier : {0u, 1u, 2u, 3u})
             for (auto mode : {Mode::AllOperations, Mode::ExplicitOnly}) {
-                NumpadFixture f, oracle;
+                CameraHudFixture f, oracle;
                 for (auto* app : {f.app.get(), oracle.app.get()}) {
                     app->CameraMode() = 1; app->state.coordinateSystem = coordinate;
                     app->CameraParentModel() = parent; app->CameraParentBone() = 0;
@@ -66,7 +108,7 @@ void CameraHudMathAndHistory() {
 void CameraHudCancelNoopAndBudget() {
     using Mode = plugins::SharedHistory::RecordingMode;
     for (auto mode : {Mode::AllOperations, Mode::ExplicitOnly}) {
-        NumpadFixture f; plugins::NativePoseTestBinding binding(*f.app, f.history);
+        CameraHudFixture f; plugins::NativePoseTestBinding binding(*f.app, f.history);
         Check(f.history.SetMode(mode) == MMS_OK, "configure HUD cancellation recording policy");
         const auto before = NumpadRead(*f.app);
         for (UINT message : {UINT(WM_CANCELMODE), UINT(WM_KILLFOCUS), UINT(WM_CAPTURECHANGED),
@@ -86,7 +128,7 @@ void CameraHudCancelNoopAndBudget() {
         Check(plugins::EndCameraHudGesture(*f.app, changed) == MMS_OK && !changed && NumpadSame(NumpadRead(*f.app), before),
             "zero-delta HUD is truly empty in either recording mode");
     }
-    NumpadFixture f; plugins::NativePoseTestBinding binding(*f.app, f.history);
+    CameraHudFixture f; plugins::NativePoseTestBinding binding(*f.app, f.history);
     bool prepared = false; const auto before = NumpadRead(*f.app);
     for (long allowance = 0; allowance < 50; ++allowance) {
         failAfter = allowance; const auto result = plugins::BeginCameraHudGesture(*f.app, f.history, nullptr, 15); failAfter = -1;
@@ -118,7 +160,7 @@ void CameraHudCancelNoopAndBudget() {
 }
 void CameraHudIdentityAndGates() {
     for (unsigned reason = 0; reason < 9; ++reason) {
-        NumpadFixture f; f.app->CameraParentModel() = 1; f.app->CameraParentBone() = 0;
+        CameraHudFixture f; f.app->CameraParentModel() = 1; f.app->CameraParentBone() = 0;
         plugins::NativePoseTestBinding binding(*f.app, f.history);
         const auto ownedBefore = NumpadRead(*f.app);
         Check(plugins::BeginCameraHudGesture(*f.app, f.history, nullptr, 15) == MMS_OK, "start parented HUD before source identity changes");
@@ -147,7 +189,7 @@ void CameraHudIdentityAndGates() {
         f.app->ModelSlot(1) = parent; f.second.m->boneTable = bones; f.second.m->boneCount = count;
         if (replacement) { f.app->CameraKeys() = pool; mdl::KeyPoolDestroy(replacement); }
     }
-    NumpadFixture f; plugins::NativePoseTestBinding binding(*f.app, f.history);
+    CameraHudFixture f; plugins::NativePoseTestBinding binding(*f.app, f.history);
     const auto before = NumpadRead(*f.app);
     for (int operation : {1, 2, 9, 12, 14, 21, 22, 26})
         Check(plugins::BeginCameraHudGesture(*f.app, f.history, nullptr, operation) == MMS_E_NOT_READY &&
@@ -167,7 +209,7 @@ void CameraHudIdentityAndGates() {
     Check(!plugins::AllowCameraHudPreview(*f.app, 15) && NumpadSame(NumpadRead(*f.app), foreign),
         "stale HUD cancellation does not overwrite another author's camera values");
     for(int operation:{15,18}){
-        NumpadFixture independent;plugins::NativePoseTestBinding independentBinding(*independent.app,independent.history);
+        CameraHudFixture independent;plugins::NativePoseTestBinding independentBinding(*independent.app,independent.history);
         const auto before=NumpadRead(*independent.app);
         Check(plugins::BeginCameraHudGesture(*independent.app,independent.history,nullptr,operation)==MMS_OK,
             "begin HUD before a foreign author edits an independent pose field");
@@ -181,7 +223,7 @@ void CameraHudIdentityAndGates() {
             !independent.history.UndoCount(),"conflicting position/rotation author cancels only the still-owned HUD fields without an unrecorded preview residue");
     }
     for (unsigned stale = 0; stale < 2; ++stale) {
-        NumpadFixture replay; replay.app->CameraParentModel() = 1;
+        CameraHudFixture replay; replay.app->CameraParentModel() = 1;
         plugins::NativePoseTestBinding replayBinding(*replay.app, replay.history);
         Check(plugins::BeginCameraHudGesture(*replay.app, replay.history, nullptr, 18) == MMS_OK,
             "begin a parented HUD record before replay identity test");
@@ -195,14 +237,15 @@ void CameraHudIdentityAndGates() {
     }
 }
 void CameraHudReleaseAndBinding() {
-    NumpadFixture f; plugins::NativePoseTestBinding binding(*f.app, f.history);
+    CameraHudFixture f; plugins::NativePoseTestBinding binding(*f.app, f.history);
     struct CursorRestore{POINT saved{};bool valid=GetCursorPos(&saved)!=FALSE;~CursorRestore(){if(valid)SetCursorPos(saved.x,saved.y);}} cursorRestore;
     const auto before = NumpadRead(*f.app); const auto owner = f.app->MainWindow();
     SetCapture(owner); Check(GetCapture() == owner, "HUD mouse-up fixture owns real capture");
     Check(plugins::BeginCameraHudGesture(*f.app, f.history, owner, 18) == MMS_OK, "begin a captured HUD gesture");
     f.app->PreviousMouseX() = f.app->MouseX() = 100; f.app->PreviousMouseY() = f.app->MouseY() = 100;
-    POINT release{100,107};Check(ClientToScreen(owner,&release)&&SetCursorPos(release.x,release.y),
-        "final HUD sample fixture places the real OS cursor in the owner client's coordinate system");
+    HudFixtureCursor(*f.app,owner,{100,107},
+        "final HUD sample fixture places the real OS cursor in the owner client's coordinate system",
+        "final camera HUD cursor round-trips through the actual screen and client coordinates");
     plugins::HandleBoundViewportMessage(*f.app, owner, WM_LBUTTONUP, 0, MAKELPARAM(100, 107));
     Check(!plugins::CameraHudGestureActive(*f.app) && f.history.UndoCount() == 1 &&
         !NumpadSame(NumpadRead(*f.app), before), "coalesced final mouse-up sample belongs to the same complete HUD transaction");
@@ -221,7 +264,7 @@ void CameraHudReleaseAndBinding() {
     ReleaseCapture(); DestroyWindow(stealer);
     Check(plugins::BeginCameraHudGesture(*f.app, f.history, nullptr, 18) == MMS_OK, "begin HUD before nested binding");
     CameraHudSample(*f.app, 18, 7);
-    { NumpadFixture other; plugins::NativePoseTestBinding nested(*other.app, other.history);
+    { CameraHudFixture other; plugins::NativePoseTestBinding nested(*other.app, other.history);
         Check(!plugins::CameraHudGestureActive(*f.app) && NumpadSame(NumpadRead(*f.app), before),
             "binding replacement cancels HUD while the original app and journal still exist"); }
     Check(plugins::BeginCameraHudGesture(*f.app, f.history, nullptr, 18) == MMS_OK, "begin HUD before existing reset cleanup entry");
@@ -236,19 +279,19 @@ void CameraHudReleaseAndBinding() {
 }
 struct CameraHudReleaseReentryWindow {
     inline static thread_local CameraHudReleaseReentryWindow* active=nullptr;
-    NumpadFixture& fixture;HWND owner,edit,floating;WNDPROC ownerProc,editProc;POINT cursor{};bool cursorValid,armed=false,observed=false;
+    NumpadFixture& fixture;HWND owner,edit,floating;WNDPROC ownerProc,editProc;RECT originalView{};POINT cursor{};bool cursorValid,armed=false,observed=false;
     int replacementOperation;NumpadView original{},native{},replacement{};
     CameraHudReleaseReentryWindow(NumpadFixture& f,int operation):fixture(f),owner(f.app->MainWindow()),
         edit(GetDlgItem(owner,operation==15?panel::kReadoutPosXEdit:panel::kReadoutRotXEdit)),floating(f.app->FloatingWindow()),
-        ownerProc(nullptr),editProc(nullptr),cursorValid(GetCursorPos(&cursor)!=FALSE),replacementOperation(operation==15?18:15){
+        ownerProc(nullptr),editProc(nullptr),originalView(f.app->ViewportRect()),cursorValid(GetCursorPos(&cursor)!=FALSE),replacementOperation(operation==15?18:15){
         Check(!active&&edit,"camera release reentry uses the actual native readout EDIT");active=this;
         ownerProc=reinterpret_cast<WNDPROC>(SetWindowLongPtrW(owner,GWLP_WNDPROC,reinterpret_cast<LONG_PTR>(MicWndProc)));
         editProc=reinterpret_cast<WNDPROC>(SetWindowLongPtrW(edit,GWLP_WNDPROC,reinterpret_cast<LONG_PTR>(EditProc)));
-        Check(ownerProc&&editProc,"camera release fixture installs real MicWndProc and forwards the native EDIT procedure");f.app->FloatingWindow()=owner;
+        Check(ownerProc&&editProc,"camera release fixture installs real MicWndProc and forwards the native EDIT procedure");f.app->FloatingWindow()=owner;HudFixtureGeometry(*f.app);
     }
     ~CameraHudReleaseReentryWindow(){armed=false;plugins::CancelCameraHudGesture(*fixture.app);if(GetCapture()==owner)ReleaseCapture();
         SetWindowLongPtrW(edit,GWLP_WNDPROC,reinterpret_cast<LONG_PTR>(editProc));SetWindowLongPtrW(owner,GWLP_WNDPROC,reinterpret_cast<LONG_PTR>(ownerProc));
-        fixture.app->FloatingWindow()=floating;active=nullptr;if(cursorValid)SetCursorPos(cursor.x,cursor.y);}
+        fixture.app->FloatingWindow()=floating;fixture.app->ViewportRect()=originalView;active=nullptr;if(cursorValid)SetCursorPos(cursor.x,cursor.y);}
     static LRESULT CALLBACK EditProc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp){
         auto* self=active;const auto originalProc=self->editProc;
         if(message==WM_SETTEXT&&self->armed){self->armed=false;self->observed=true;
@@ -270,7 +313,7 @@ struct CameraHudReleaseReentryWindow {
 void CameraHudReleaseReentrantReplacement(){
     using Mode=plugins::SharedHistory::RecordingMode;
     for(auto mode:{Mode::AllOperations,Mode::ExplicitOnly})for(int operation:{15,18}){
-        NumpadFixture f;f.app->state.coordinateSystem=1;CameraHudReleaseReentryWindow window(f,operation);bool changed=false;
+        CameraHudFixture f;f.app->state.coordinateSystem=1;CameraHudReleaseReentryWindow window(f,operation);bool changed=false;
         Check(plugins::AdjustViewportCameraWheel(*f.app,f.history,120,true,changed)==MMS_OK&&changed&&f.history.History(false)==MMS_OK,
             "seed redo before same-owner camera release replacement");
         Check(f.history.SetMode(mode)==MMS_OK,"configure camera release replacement recording mode");plugins::NativePoseTestBinding binding(*f.app,f.history);
@@ -278,7 +321,8 @@ void CameraHudReleaseReentrantReplacement(){
         const auto bytes=f.history.RetainedBytes();std::uint64_t revision=0;f.history.Revision(revision);PostViewRefresh(f.app.get());
         Check(plugins::BeginCameraHudGesture(*f.app,f.history,window.owner,operation)==MMS_OK,"reserve old camera HUD before a real mouse-up readout callback");SetCapture(window.owner);
         f.app->PreviousMouseX()=f.app->MouseX()=100;f.app->PreviousMouseY()=f.app->MouseY()=100;
-        POINT release{100,107};Check(ClientToScreen(window.owner,&release)&&SetCursorPos(release.x,release.y),"place actual camera release cursor seven native pixels from its previous sample");
+        HudFixtureCursor(*f.app,window.owner,{100,107},"place actual camera release cursor seven native pixels from its previous sample",
+            "camera release replacement cursor round-trips through actual screen and client coordinates");
         window.native=window.original;const auto field=operation==15?0u:3u;const double scale=operation==15?0.05000000074505806:0.019999999552965164;
         window.native.values[field]=float(double(window.native.values[field])+7.0*scale);window.armed=true;
         // Before the source guard, this exact WM_SETTEXT callback replaced the

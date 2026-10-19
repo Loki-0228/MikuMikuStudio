@@ -12,7 +12,7 @@ using AccessoryHudValues=std::array<float,6>;
 AccessoryHudValues AccessoryHudRead(const mdl::AccessoryRecord& a){return {a.position[0],a.position[1],a.position[2],a.rotation[0],a.rotation[1],a.rotation[2]};}
 bool AccessoryHudSame(const mdl::AccessoryRecord& a,const mdl::AccessoryRecord& b){return !std::memcmp(&a,&b,sizeof(a));}
 void AccessoryHudSet(mdl::AccessoryRecord& a,unsigned field,float value){if(field<3)a.position[field]=value;else a.rotation[field-3]=value;}
-struct AccessoryHudFixture:NumpadFixture{
+struct AccessoryHudFixture:CameraHudFixture{
     mdl::AccessoryRecord other{};
     AccessoryHudFixture(){
         app->AccessorySlot(8)=&other;app->SelectedAccessorySlot()=7;app->state.coordinateSystem=2;app->EditMode()=ViewportEditMode::Camera;
@@ -179,22 +179,23 @@ void AccessoryHudIdentityAndAdmission(){
     }
 }
 struct AccessoryHudWindow{
-    AccessoryHudFixture& fixture;WNDPROC previous;HWND floating;RECT bounds{};POINT cursor{};bool cursorValid;viewport_tool_layout::Corner corner;
-    explicit AccessoryHudWindow(AccessoryHudFixture& f):fixture(f),previous(nullptr),floating(f.app->FloatingWindow()),cursorValid(GetCursorPos(&cursor)!=FALSE),corner(viewport_corner_settings::Current()){
+    AccessoryHudFixture& fixture;WNDPROC previous;HWND floating;RECT bounds{},originalView{};POINT cursor{};bool cursorValid;viewport_tool_layout::Corner corner;
+    explicit AccessoryHudWindow(AccessoryHudFixture& f):fixture(f),previous(nullptr),floating(f.app->FloatingWindow()),originalView(f.app->ViewportRect()),cursorValid(GetCursorPos(&cursor)!=FALSE),corner(viewport_corner_settings::Current()){
         const auto owner=f.app->MainWindow();GetWindowRect(owner,&bounds);SetWindowPos(owner,nullptr,0,0,800,600,SWP_NOZORDER|SWP_NOACTIVATE);
         previous=reinterpret_cast<WNDPROC>(SetWindowLongPtrW(owner,GWLP_WNDPROC,reinterpret_cast<LONG_PTR>(MicWndProc)));
-        Check(previous!=nullptr,"window fixture installs the real detached viewport procedure");f.app->FloatingWindow()=owner;f.app->ViewportRect()=FrameOverlayRect(f.app.get());
+        Check(previous!=nullptr,"window fixture installs the real detached viewport procedure");f.app->FloatingWindow()=owner;HudFixtureGeometry(*f.app);f.app->ViewportRect()=FrameOverlayRect(f.app.get());
         viewport_corner_settings::ResetCacheForTest(viewport_tool_layout::Corner::BottomRight);
     }
     ~AccessoryHudWindow(){plugins::CancelAccessoryHudGesture(*fixture.app);if(GetCapture()==fixture.app->MainWindow())ReleaseCapture();
-        SetWindowLongPtrW(fixture.app->MainWindow(),GWLP_WNDPROC,reinterpret_cast<LONG_PTR>(previous));fixture.app->FloatingWindow()=floating;
+        SetWindowLongPtrW(fixture.app->MainWindow(),GWLP_WNDPROC,reinterpret_cast<LONG_PTR>(previous));fixture.app->FloatingWindow()=floating;fixture.app->ViewportRect()=originalView;
         SetWindowPos(fixture.app->MainWindow(),nullptr,bounds.left,bounds.top,bounds.right-bounds.left,bounds.bottom-bounds.top,SWP_NOZORDER|SWP_NOACTIVATE);
         viewport_corner_settings::ResetCacheForTest(corner);if(cursorValid)SetCursorPos(cursor.x,cursor.y);}
     POINT Hit(int operation){auto& app=*fixture.app;const auto hud=viewport_tool_layout::Make(FrameOverlayRect(&app),FrameOverlayScale(&app),viewport_corner_settings::Current());
         const float columns[]={110.f,70.f,30.f};POINT point{LONG(hud.x-columns[(operation-15)%3]*hud.scale),LONG(hud.y-(operation<18?65.f:105.f)*hud.scale)};
         app.MouseX()=point.x;app.MouseY()=point.y;Check(ViewportToolAtPointForTest(&app)==operation,"real accessory HUD window hits the displayed native axis");return point;}
-    void Cursor(POINT point){const auto expected=point;const auto owner=fixture.app->MainWindow();Check(ClientToScreen(owner,&point)&&SetCursorPos(point.x,point.y),"place real OS cursor for accessory HUD release fixture");
-        Check(GetCursorPos(&point)&&ScreenToClient(owner,&point)&&point.x==expected.x&&point.y==expected.y,"real accessory HUD cursor converts through its actual window/client coordinates");}
+    void Cursor(POINT point){HudFixtureCursor(*fixture.app,fixture.app->MainWindow(),point,
+        "place real OS cursor for accessory HUD release fixture",
+        "real accessory HUD cursor converts through its actual window/client coordinates");}
     void DispatchUp(){MSG message{};Check(PeekMessageW(&message,fixture.app->MainWindow(),WM_LBUTTONUP,WM_LBUTTONUP,PM_REMOVE),"retrieve real queued accessory HUD release");DispatchMessageW(&message);}
 };
 void AccessoryHudQueuedRelease(){
@@ -223,14 +224,14 @@ void AccessoryHudQueuedRelease(){
 }
 struct AccessoryHudReentrantEcho{
     inline static thread_local AccessoryHudReentrantEcho* active=nullptr;
-    AccessoryHudFixture& fixture;HWND owner,edit,other,floating;WNDPROC ownerProc,editProc;
+    AccessoryHudFixture& fixture;HWND owner,edit,other,floating;WNDPROC ownerProc,editProc;RECT originalView{};
     bool armed=false,observed=false,restart=false;unsigned field,foreign=0;mdl::AccessoryRecord native{},foreignPose{},original{},replacement{};
     int replacementOperation=0;std::shared_ptr<const plugins::HistoryChange> replacementSource;
     explicit AccessoryHudReentrantEcho(AccessoryHudFixture& f,int operation):fixture(f),owner(f.app->MainWindow()),
-        edit(GetDlgItem(owner,478+operation-15)),other(nullptr),floating(f.app->FloatingWindow()),ownerProc(nullptr),editProc(nullptr),field(unsigned(operation-15)){
+        edit(GetDlgItem(owner,478+operation-15)),other(nullptr),floating(f.app->FloatingWindow()),ownerProc(nullptr),editProc(nullptr),originalView(f.app->ViewportRect()),field(unsigned(operation-15)){
         Check(!active&&edit,"accessory echo cancellation fixture owns the actual native axis EDIT");active=this;
         ownerProc=reinterpret_cast<WNDPROC>(SetWindowLongPtrW(owner,GWLP_WNDPROC,reinterpret_cast<LONG_PTR>(MicWndProc)));
-        Check(ownerProc!=nullptr,"accessory echo cancellation installs the actual detached viewport procedure");f.app->FloatingWindow()=owner;
+        Check(ownerProc!=nullptr,"accessory echo cancellation installs the actual detached viewport procedure");f.app->FloatingWindow()=owner;HudFixtureGeometry(*f.app);
         other=CreateWindowExW(0,L"STATIC",L"accessory echo capture replacement",WS_OVERLAPPED,0,0,100,100,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
         editProc=reinterpret_cast<WNDPROC>(SetWindowLongPtrW(edit,GWLP_WNDPROC,reinterpret_cast<LONG_PTR>(EditProc)));
         Check(other&&editProc,"create foreign capture and subclass WM_SETTEXT while forwarding the native EDIT procedure");
@@ -238,7 +239,7 @@ struct AccessoryHudReentrantEcho{
     ~AccessoryHudReentrantEcho(){armed=false;plugins::CancelAccessoryHudGesture(*fixture.app);
         if(GetCapture()==owner||GetCapture()==other)ReleaseCapture();
         SetWindowLongPtrW(edit,GWLP_WNDPROC,reinterpret_cast<LONG_PTR>(editProc));DestroyWindow(other);
-        SetWindowLongPtrW(owner,GWLP_WNDPROC,reinterpret_cast<LONG_PTR>(ownerProc));fixture.app->FloatingWindow()=floating;active=nullptr;}
+        SetWindowLongPtrW(owner,GWLP_WNDPROC,reinterpret_cast<LONG_PTR>(ownerProc));fixture.app->FloatingWindow()=floating;fixture.app->ViewportRect()=originalView;active=nullptr;}
     static LRESULT CALLBACK EditProc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp){
         auto* self=active;const auto original=self->editProc;
         if(message==WM_SETTEXT&&self->armed){self->armed=false;self->observed=true;
@@ -305,7 +306,8 @@ void AccessoryHudReleaseReentrantReplacement(){
         const auto bytes=f.history.RetainedBytes();std::uint64_t revision=0;f.history.Revision(revision);
         Check(plugins::BeginAccessoryHudGesture(*f.app,f.history,window.owner,operation)==MMS_OK,"reserve old accessory HUD before real release EDIT notification");SetCapture(window.owner);
         const auto oldSource=plugins::AccessoryHudPreviewSource(*f.app);f.app->PreviousMouseX()=f.app->MouseX()=100;f.app->PreviousMouseY()=f.app->MouseY()=100;
-        POINT release{100,107};Check(ClientToScreen(window.owner,&release)&&SetCursorPos(release.x,release.y),"place actual seven-pixel accessory release cursor");
+        HudFixtureCursor(*f.app,window.owner,{100,107},"place actual seven-pixel accessory release cursor",
+            "accessory release replacement cursor round-trips through actual screen and client coordinates");
         window.native=f.accessory;const unsigned field=unsigned(operation-15);const double scale=operation<18?-0.05000000074505806:0.019999999552965164;
         AccessoryHudSet(window.native,field,float(double(AccessoryHudRead(window.native)[field])+7.0*scale));
         window.restart=true;window.replacementOperation=operation==15?18:15;window.armed=true;

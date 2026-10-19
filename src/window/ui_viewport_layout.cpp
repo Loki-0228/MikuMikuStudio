@@ -123,6 +123,12 @@ void LayoutViewportPanels(MMDApp* app) {  // was Sub40CAC0, VA 0x0040CAC0
         scaleCaptionWidths[std::clamp<int>(app->EnglishUI(), 0, 2)] = ScaleLabelTextWidth(label, app);
     const auto panels = FramePanelLayout(app);
     const RECT viewport = panels.overlay;
+    if(!MMD_ORIGINAL_PROFILE&&IsRectEmpty(&viewport)){
+        const bool defer=app->SidebarResizeDragging()!=0||app->bottomPanelSizing.relayout;
+        for(int id=536;id<=557;++id)ui::MoveLayoutControl(base,id,-9000,-9000,1,1,defer);
+        for(int id=570;id<=577;++id)ui::MoveLayoutControl(base,id,-9000,-9000,1,1,defer);
+        return;
+    }
     const int stripY = viewport.bottom;                           // 658764
     const int rowY = viewport.top;                                // 658756
     const bool deferPaint = app->SidebarResizeDragging() != 0 || app->bottomPanelSizing.relayout;

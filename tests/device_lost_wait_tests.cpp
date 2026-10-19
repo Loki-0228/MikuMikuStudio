@@ -6,7 +6,11 @@
 #include "mikudancestudio/globals.hpp"
 #include "mikudancestudio/ported_funcs.hpp"
 #include "mikudancestudio/default_effect.hpp"
+#include "mikudancestudio/accessory_layout.hpp"
 #include "mikudancestudio/update_coordinator.hpp"
+#include "mikudancestudio/frame_presentation.hpp"
+#include "mikudancestudio/window_dpi_scope.hpp"
+#include "../src/app/device_lost_wait.hpp"
 #include <MinHook.h>
 #include <vfw.h>
 #include <dbghelp.h>
@@ -18,7 +22,9 @@
 #include <cstring>
 #include <cwchar>
 #include <initializer_list>
+#include <memory>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -42,6 +48,10 @@ unsigned stateCalls = 0;
 unsigned backgroundCopies = 0;
 unsigned insideOriginalReset = 0, driverResetCalls = 0;
 unsigned driverCooperatives = 0;
+unsigned tailLosses = 0;
+MMDApp* foreignTailApp = nullptr;
+bool injectForeignTail = false;
+unsigned foreignTailFailures = 0;
 HMODULE deviceModule = nullptr;
 std::chrono::steady_clock::time_point lossStarted;
 
@@ -53,6 +63,31 @@ void Require(bool value, const char* label) {
     Check(value, label);
     if (!value) std::exit(2);
 }
+// Only the self-contained reset-tail case needs this generated scene. Keep
+// its source alive through device reset and remove only our two owned paths.
+struct ResetTailScene {
+    std::filesystem::path directory,mesh;
+    ResetTailScene(){
+        wchar_t temporary[MAX_PATH]{},unique[MAX_PATH]{};
+        const DWORD length=GetTempPathW(MAX_PATH,temporary);
+        Require(length&&length<MAX_PATH&&GetTempFileNameW(temporary,L"MMS",0,unique),
+            "reserve an owned temporary path for the reset-tail scene");
+        directory=unique;
+        Require(DeleteFileW(unique)&&CreateDirectoryW(unique,nullptr),"create the owned reset-tail fixture directory");
+        mesh=directory/L"reset-tail.x";
+        std::ofstream output(mesh,std::ios::binary|std::ios::trunc);
+        output << "xof 0303txt 0032\nMesh tri {3;-5;5;0;,0;15;0;,5;5;0;;1;3;0,1,2;;"
+            "MeshMaterialList {1;1;0;;Material {0.8;0.3;0.1;1.0;;1.0;0;0;0;;0;0;0;;}}}";
+        output.close();Require(bool(output),"write the original reset-tail triangle accessory");
+        LoadAccessoryFile(mesh.c_str());
+        const auto* object=app->AccessorySlot(0);
+        Require(object&&object->mesh&&object->materials&&object->materialCount,
+            "load the generated reset-tail scene through actual accessory mesh/material import");
+        Require(app->ObjectSlot(0)!=nullptr,"real imported accessory satisfies the default-effect scene-object prerequisite");
+        app->state.selfShadowEnabled=1;app->SelfShadowMode()=2;
+    }
+    ~ResetTailScene(){std::error_code error;std::filesystem::remove(mesh,error);std::filesystem::remove(directory,error);}
+};
 int WINAPI UnexpectedA(HWND, LPCSTR text, LPCSTR, UINT) {
     std::printf("FAIL unexpected dialog: %s\n", text); std::exit(2);
 }
@@ -202,7 +237,8 @@ HRESULT WINAPI OnPresent(IDirect3DDevice9* value, const RECT* source,
     if (!Observed(value)) return originalPresent(value, source, target, window, dirty);
     ObserveCall("Present", true, _ReturnAddress());
     ++presents;
-    if (!InFrameCase() && scenario != "ok" && scenario != "direct-reset-ok" && scenario != "direct-reset-fail" && presents == 1) {
+    if (!InFrameCase() && scenario != "ok" && scenario != "direct-reset-ok" && scenario != "direct-reset-fail" &&
+        scenario != "reset-tail-lost" && presents == 1) {
         lossStarted = std::chrono::steady_clock::now();
         if (scenario == "quit") PostQuitMessage(37);
         if (UsesAction()) Require(PostMessageW(app->MainWindow(), kAction, 0, 0) != FALSE,
@@ -226,6 +262,7 @@ HRESULT WINAPI OnCooperative(IDirect3DDevice9* value) {
     }
     ObserveCall("TestCooperativeLevel", false, caller);
     ++cooperatives;
+    if (scenario == "reset-tail-lost") return D3D_OK;
     if (scenario == "ready") return D3D_OK;
     if (scenario == "lost-ready") return cooperatives <= 2 ? D3DERR_DEVICELOST : D3D_OK;
     if (scenario == "lost-reset") {
@@ -284,7 +321,19 @@ HRESULT WINAPI OnReadback(IDirect3DDevice9* value, IDirect3DSurface9* source, ID
     return originalReadback(value, source, target);
 }
 HRESULT WINAPI OnSetViewport(IDirect3DDevice9* value, const D3DVIEWPORT9* viewport) {
-    if (Observed(value)) { ObserveCall("SetViewport", true, _ReturnAddress()); ++stateCalls; }
+    if (Observed(value)) {
+        const auto caller=_ReturnAddress();ObserveCall("SetViewport", true, caller);++stateCalls;
+        // Inject the application viewport publication after a real S_OK Reset,
+        // never a call made internally by the D3D runtime during Reset.
+        if(scenario=="reset-tail-lost"&&resets==1&&!tailLosses&&!insideOriginalReset&&
+            AddressModule(caller)==GetModuleHandleW(nullptr)){
+            ++tailLosses;resetFailed=true;return D3DERR_DEVICELOST;
+        }
+        if(injectForeignTail&&!insideOriginalReset&&AddressModule(caller)==GetModuleHandleW(nullptr)){
+            injectForeignTail=false;++foreignTailFailures;
+            device_lost_wait::ResetScope failedOther(foreignTailApp);
+        }
+    }
     return originalSetViewport(value, viewport);
 }
 HRESULT WINAPI OnSetTransform(IDirect3DDevice9* value, D3DTRANSFORMSTATETYPE type, const D3DMATRIX* matrix) {
@@ -420,6 +469,76 @@ bool Known(const std::string& value, std::initializer_list<const char*> choices)
     for (const char* choice : choices) if (value == choice) return true;
     return false;
 }
+void ResetScopeStackChecks(){
+    namespace recovery=device_lost_wait;
+    Require(!recovery::Active(),"reset stack fixture begins outside production recovery");
+    recovery::ClearPending();
+    {
+        recovery::ResetScope outer(app);
+        {recovery::ResetScope middle(app);{recovery::ResetScope tail(app);}
+            Check(!middle.Successful(),"same-device tail failure prevents intermediate success");}
+        Check(!outer.Successful(),"same-device failure propagates through the complete reset stack");
+    }
+    Check(recovery::Pending(app)&&recovery::state.resetRequired&&!recovery::Active(),
+        "failed reset stack retains pending device after the active scopes end");recovery::ClearPending();
+    {
+        recovery::ResetScope outer(app);
+        {recovery::ResetScope inner(app);Check(inner.Successful(),"inner reset may finish successfully");}
+        // Deliberately leave the outer reset unsuccessful.
+    }
+    Check(recovery::Pending(app)&&recovery::state.resetRequired,
+        "successful inner reset cannot conceal later outer failure");recovery::ClearPending();
+    {
+        recovery::ResetScope outer(app);
+        {recovery::ResetScope inner(app);Check(inner.Successful(),"successful nested reset is accepted");}
+        Check(outer.Successful(),"successful outer reset remains accepted after nested success");
+    }
+    Check(!recovery::Pending(app)&&!recovery::Active(),"successful stack clears only its own pending identity");
+    auto other=std::make_unique<MMDApp>();std::memset(&other->state,0,sizeof(other->state));other->Renderer()=renderer;
+    {
+        recovery::ResetScope outer(app);
+        {recovery::ResetScope foreign(other.get());}
+        Check(outer.Successful(),"another app's nested failure does not mark this app's reset unsuccessful");
+    }
+    Check(recovery::state.app==other.get()&&recovery::state.renderer==renderer&&recovery::state.device==device&&
+        recovery::state.resetRequired&&!recovery::Pending(app)&&recovery::Pending(other.get()),
+        "successful outer app cannot clear a different app's pending failure");
+    recovery::ClearPending();other->Renderer()=nullptr;
+}
+void GeometryOnlyResetCheck(){
+    const WindowDpiScope dpi(app->MainWindow());
+    RECT original{};Require(GetWindowRect(app->MainWindow(),&original)!=FALSE,"retain hidden window extent before geometry-only reset");
+    RECT extent{0,0,760,160};
+    Require(AdjustWindowRectEx(&extent,DWORD(GetWindowLongPtrW(app->MainWindow(),GWL_STYLE)),GetMenu(app->MainWindow())!=nullptr,
+        DWORD(GetWindowLongPtrW(app->MainWindow(),GWL_EXSTYLE)))!=FALSE,"calculate undersized hidden client");
+    Require(SetWindowPos(app->MainWindow(),nullptr,0,0,extent.right-extent.left,extent.bottom-extent.top,
+        SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE)!=FALSE,"shrink hidden client without focus or activation");
+    RefreshMainWindowViewport(app);
+    Check(!FrameViewportRenderable(app)&&IsRectEmpty(&app->ViewportRect()),"geometry-only fixture has no editor viewport");
+    const auto before=resets;
+    Check(PostDeviceReset(app)&&resets==before+1&&!device_lost_wait::Pending(app)&&!device_lost_wait::state.resetRequired,
+        "S_OK Reset with insufficient editor space is successful and schedules no false device recovery");
+    Require(SetWindowPos(app->MainWindow(),nullptr,0,0,original.right-original.left,original.bottom-original.top,
+        SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE)!=FALSE,"restore hidden client after geometry-only reset");
+    RefreshMainWindowViewport(app);Check(FrameViewportRenderable(app),"restored client becomes renderable without another Reset");
+}
+void WaitForeignTailCheck(){
+    namespace recovery=device_lost_wait;
+    auto other=std::make_unique<MMDApp>();std::memset(&other->state,0,sizeof(other->state));other->Renderer()=renderer;
+    foreignTailApp=other.get();injectForeignTail=true;
+    {recovery::ResetScope needsReset(app);}
+    const auto before=resets;
+    const auto result=recovery::Wait(app,device,false);
+    Check(result==recovery::Result::Interrupted&&resets==before+1&&foreignTailFailures==1&&!injectForeignTail&&
+        recovery::state.app==other.get()&&recovery::state.renderer==renderer&&recovery::state.device==device&&
+        recovery::state.resetRequired&&!recovery::Active(),
+        "actual successful Reset A plus failed nested app B leaves B pending through the complete Wait tail");
+    const auto queries=cooperatives;
+    Check(recovery::Wait(app,device,false)==recovery::Result::Interrupted&&cooperatives==queries&&resets==before+1&&
+        recovery::state.app==other.get()&&recovery::state.resetRequired,
+        "another Wait cannot query or replace the foreign app's pending recovery");
+    recovery::ClearPending();other->Renderer()=nullptr;foreignTailApp=nullptr;
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -435,7 +554,7 @@ int main(int argc, char** argv) {
     Require(Known(entry, {"frame", "readback", "record-frame"}), "entry is frame, readback, or record-frame");
     Require(Known(mode, {"windowed", "fullscreen"}), "mode is windowed or fullscreen");
     Require(Known(scenario, {"ok", "ready", "lost-ready", "lost-reset", "message-ready", "paused-background-seek", "quit",
-        "reset-ok", "reset-fail", "message-reset-fail", "direct-reset-ok", "direct-reset-fail",
+        "reset-ok", "reset-fail", "message-reset-fail", "direct-reset-ok", "direct-reset-fail", "reset-tail-lost",
         "in-frame-esc-reset-fail", "in-frame-timeline-reset-fail", "in-frame-record-end-reset-fail", "in-frame-record-esc-reset-fail",
         "cancel", "replace-device", "replace-slot", "invalidate-surfaces", "reenter", "fatal"}),
         "known scenario");
@@ -445,6 +564,8 @@ int main(int argc, char** argv) {
         Require(entry == "frame" && mode == "fullscreen", "fullscreen ESC scenario needs frame/fullscreen");
     if (scenario == "in-frame-timeline-reset-fail") Require(entry == "frame", "timeline scenario needs frame entry");
     if (scenario == "paused-background-seek") Require(entry == "frame", "paused seek needs frame entry");
+    if(scenario=="reset-tail-lost")Require(entry=="frame"&&mode=="windowed"&&!coordinator,
+        "tail-loss regression needs the direct windowed frame entry");
     if (scenario == "in-frame-record-end-reset-fail" || scenario == "in-frame-record-esc-reset-fail")
         Require(entry == "record-frame", "recording completion/cancel needs full production frame entry");
     std::printf("SCENARIO entry=%s case=%s mode=%s (hidden windowed device; fullscreen code branch only)\n",
@@ -464,14 +585,18 @@ int main(int argc, char** argv) {
     Hook(&GetFocus, &Focus, &originalFocus);
     app = new MMDApp;
     g_Block = app;
-    app->state = MMDAppState{};
+    std::memset(&app->state,0,sizeof(app->state));
     app->InitDefaults();
     Require(InitMainWindowAndD3D(app, GetModuleHandleW(nullptr), SW_HIDE), "initialize actual production host");
     Require(!IsWindowVisible(app->MainWindow()), "host stays hidden");
-    if (const auto* model = _wgetenv(L"MMS_DEVICE_TEST_MODEL")) {
+    std::unique_ptr<ResetTailScene> resetTailScene;
+    const auto* model = _wgetenv(L"MMS_DEVICE_TEST_MODEL");
+    if (model&&*model) {
         LoadModelFile(app, model, false);
         Require(app->ModelSlot(0) != nullptr, "load deterministic effect-bearing model fixture");
         app->state.selfShadowEnabled = 1; app->SelfShadowMode() = 2;
+    }else if(scenario=="reset-tail-lost"){
+        resetTailScene=std::make_unique<ResetTailScene>();
     }
     app->DeltaTime() = 1.f / 30;
     app->state.messageSeen = 1;
@@ -571,19 +696,31 @@ int main(int argc, char** argv) {
     auto* const initialBackground = app->AviBackgroundTexture();
     const int initialCount = app->state.recordedFrameCount;
     const int initialFrame = app->CurrentFrame();
+    if(scenario=="reset-tail-lost")ResetScopeStackChecks();
     const auto start = std::chrono::steady_clock::now();
     const auto cpuStart = ThreadTicks();
     armed = true;
-    const bool directReset = scenario == "direct-reset-fail" || scenario == "direct-reset-ok";
+    const bool directReset = scenario == "direct-reset-fail" || scenario == "direct-reset-ok" || scenario=="reset-tail-lost";
     if (directReset) {
         const bool reset = PostDeviceReset(app);
         Check(reset == (scenario == "direct-reset-ok"), "direct PostDeviceReset reports actual scripted result");
         Check(resets == 1, "direct path executes one Reset");
+        if(scenario=="reset-tail-lost")Check(tailLosses==1&&resetFailed&&device_lost_wait::Pending(app)&&
+            device_lost_wait::state.resetRequired&&IsRectEmpty(&app->ViewportRect())&&presents==0&&beginScenes==0,
+            "real S_OK Reset plus one tail DEVICELOST reports failure and retains recovery before any rendering");
     }
     const bool firstResult = Invoke();
     const unsigned firstPresents = presents, firstBegins = beginScenes, firstReadbacks = readbacks;
     const int firstCount = app->state.recordedFrameCount, firstFrame = app->CurrentFrame();
-    if (InFrameCase()) {
+    if(scenario=="reset-tail-lost"){
+        Check(resets==2&&tailLosses==1&&!resetFailed&&!device_lost_wait::Pending(app)&&
+            !device_lost_wait::state.resetRequired&&FrameViewportRenderable(app),
+            "next production Resume performs a second actual Reset on S_OK and restores the viewport");
+        Check(firstPresents>0&&firstBegins>0&&firstFrame==initialFrame&&firstCount==initialCount,
+            "successful tail-loss recovery resumes rendering without advancing an idle playhead or recording sample");
+        GeometryOnlyResetCheck();
+        WaitForeignTailCheck();
+    }else if (InFrameCase()) {
         Check(resets == 1, "actual frame input/capture/recording tail reaches failed Reset");
         Check(workBeforeRecovery == 0, "failed in-frame Reset stops before the next D3D call");
         const bool completedRecording = scenario == "in-frame-record-end-reset-fail";

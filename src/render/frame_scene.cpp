@@ -422,6 +422,7 @@ void DrawOverlayBatches(MMDApp* app, IDirect3DDevice9* device, bool presentation
 
 #if !MMD_ORIGINAL_PROFILE
 void DrawPresentationOverlays(MMDApp* app) {
+    if(!FrameViewportRenderable(app))return;
     using Microsoft::WRL::ComPtr;
     ComPtr<IDirect3DSurface9> back, previous, depth;
     ComPtr<IDirect3DDevice9> native;
@@ -496,6 +497,7 @@ void DrawFrameOverlayBatches(MMDApp* app) {
 
 void RenderFrameScene(MMDApp* app) {
     frame_rate::BeginScene(app);
+    if(!FrameSceneRenderable(app))return;
     MMD_PERF_SCOPE(Scene);
     shadow_filter::Invalidate(app);
     D3DRenderer* sub = app->Renderer();
@@ -528,7 +530,8 @@ void RenderFrameScene(MMDApp* app) {
     native_mesh::Initialize(app);
     mmv4mms::Initialize(app);
     const bool transparent = TransparentExportActive(app);
-    if (!mmv4mms::Active() && !transparent && !NativeBakePreviewActive() && !deformed_mesh_capture::Active() && mesh_bake_cache::Empty() && RenderD3D12Native(app, reinterpret_cast<const float*>(&frameWorld))) {
+    if (!mmv4mms::Active() && !transparent && !NativeBakePreviewActive() && !deformed_mesh_capture::Active() && mesh_bake_cache::Empty() &&
+        FrameViewportRenderable(app) && RenderD3D12Native(app, reinterpret_cast<const float*>(&frameWorld))) {
         frame_rate::CompleteScene(app);
         frame_rate::Presented(app, true);
         return;

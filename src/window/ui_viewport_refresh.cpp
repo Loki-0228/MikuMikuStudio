@@ -16,6 +16,10 @@
 #include "mikudancestudio/ported_funcs.hpp"
 #include "mikudancestudio/window_dpi_scope.hpp"
 #include "mikudancestudio/plugin_runtime.hpp"
+#include "mikudancestudio/build_profile.hpp"
+#include "mikudancestudio/frame_presentation.hpp"
+#include "mikudancestudio/viewport_bounds.hpp"
+#include "../app/device_lost_wait.hpp"
 
 namespace mikudancestudio {
 void PicBgOverlayRefresh(MMDApp* app);  // VA 0x00417130
@@ -31,6 +35,34 @@ struct ScreenVertex {
     float v;
 };
 static_assert(sizeof(ScreenVertex) == 28);
+
+struct EditorRefreshCompletion {
+    MMDApp* app;
+    bool editor;
+    ~EditorRefreshCompletion(){if(editor)FrameEditorViewportRefreshed(app);}
+};
+
+bool PublishEditorViewport(MMDApp* app,IDirect3DDevice9* device,const D3DVIEWPORT9& viewport) {
+    IDirect3DSurface9* target=nullptr;
+    D3DSURFACE_DESC desc{};
+    HRESULT result=device->GetRenderTarget(0,&target);
+    if(SUCCEEDED(result))result=target?target->GetDesc(&desc):E_FAIL;
+    if(target)target->Release();
+    if(SUCCEEDED(result)){
+        // Subtraction avoids wrapping X+Width/Y+Height at the DWORD boundary.
+        if(!viewport.Width||!viewport.Height||viewport.X>=desc.Width||viewport.Y>=desc.Height||
+            viewport.Width>desc.Width-viewport.X||viewport.Height>desc.Height-viewport.Y)result=D3DERR_INVALIDCALL;
+        else result=device->SetViewport(&viewport);
+    }
+    if(SUCCEEDED(result)){FrameViewportPublished(app);return true;}
+    app->ViewportRect()={};
+    if(result==D3DERR_DEVICELOST||result==D3DERR_DEVICENOTRESET){
+        // The render gate must not hide a lost device indefinitely. Resume
+        // already owns Reset, whose successful tail rebuilds this viewport.
+        device_lost_wait::ResetScope pending(app);
+    }
+    return false;
+}
 
 }  // namespace
 
@@ -178,14 +210,19 @@ void WriteQuad(IDirect3DVertexBuffer9* buffer, float left, float top,
 }  // namespace
 
 void RefreshMainWindowViewport(MMDApp* app) {  // was Sub42C810
+    if(FrameEditorViewportRebuilding(app))return;
     auto& s = *app;
     RECT& view = s.ViewportRect();                     // 0xA0D40
+    const bool editor=!build_profile::original&&!s.RecordingWindow();
+    const EditorRefreshCompletion completion{app,editor};
     const HWND hwnd = app->MainWindow();
-    if (hwnd == nullptr)
+    if (hwnd == nullptr){
+        if(editor)view={};
         return;
+    }
 
     const WindowDpiScope dpi(hwnd);
-    GetClientRect(hwnd, &view);                         // 0x42C82D/85F
+    if(!GetClientRect(hwnd,&view)&&editor){view={};return;} // 0x42C82D/85F
 
     // Fullscreen uses the whole main-window client area. Do not reserve the
     // sidebar and bottom panels as the normal window layout does.
@@ -205,10 +242,18 @@ void RefreshMainWindowViewport(MMDApp* app) {  // was Sub42C810
 
     const int renderWidth = s.RenderWidth();
     const int renderHeight = s.RenderHeight();
-    if (renderWidth <= 0 || renderHeight <= 0)
+    if (renderWidth <= 0 || renderHeight <= 0){
+        if(editor)view={};
         return;
+    }
 
     const int pluginHeight = plugins::ToolbarHeight(app);
+    if(editor){
+        FrameViewportGeometry geometry;
+        if(IsIconic(hwnd)||!CalculateFrameViewport(view,s.SidebarWidth(),pluginHeight,FrameViewportMode::Docked,
+            renderWidth,renderHeight,geometry)){view={};return;}
+        view=geometry.scene;
+    }else{
     const int availableHeight = std::max(1L, view.bottom - 217 - pluginHeight);
     const int sidebar = s.SidebarWidth();
     const int availableWidth = view.right - sidebar - 9;
@@ -236,13 +281,18 @@ void RefreshMainWindowViewport(MMDApp* app) {  // was Sub42C810
         view.top = 0;
     if (view.bottom < view.top)
         view.bottom = view.top + 1;
+    }
 
     D3DRenderer* wrapper = app->Renderer();
-    if (wrapper == nullptr)
+    if (wrapper == nullptr){
+        if(editor)view={};
         return;
+    }
     IDirect3DDevice9* device = wrapper->device;
-    if (device == nullptr)
+    if (device == nullptr){
+        if(editor)view={};
         return;
+    }
 
     D3DVIEWPORT9 viewport{};
     if (s.RecordingWindow() != nullptr) {
@@ -260,7 +310,8 @@ void RefreshMainWindowViewport(MMDApp* app) {  // was Sub42C810
     }
     viewport.MinZ = 0.0f;
     viewport.MaxZ = 1.0f;
-    device->SetViewport(&viewport);                     // 0x42C9E5
+    if(editor){if(!PublishEditorViewport(app,device,viewport))return;}
+    else device->SetViewport(&viewport);                // 0x42C9E5
 
     const float aspect = static_cast<float>(renderWidth) /
                          static_cast<float>(renderHeight);
@@ -295,21 +346,35 @@ void RefreshMainWindowViewport(MMDApp* app) {  // was Sub42C810
 }
 
 void RefreshSeparateWindowViewport(MMDApp* app) {  // was Sub4290F0, 0x4290F0..0x42976B
+    if(FrameEditorViewportRebuilding(app))return;
     auto& s = *app;
     RECT& view = s.ViewportRect();
+    const bool editor=!build_profile::original&&!s.RecordingWindow();
+    const EditorRefreshCompletion completion{app,editor};
     const int renderWidth = s.RenderWidth();
     const int renderHeight = s.RenderHeight();
-    if (renderWidth <= 0 || renderHeight <= 0)
+    if (renderWidth <= 0 || renderHeight <= 0){
+        if(editor)view={};
         return;
+    }
 
     const bool fullScreen = s.FullscreenMode() != 0;
     HWND target = fullScreen
         ? app->MainWindow()
         : s.FloatingWindow();
     const WindowDpiScope dpi(target);
-    if (target == nullptr || !GetClientRect(target, &view))
+    if (target == nullptr || !GetClientRect(target, &view)){
+        if(editor)view={};
         return;
+    }
 
+    if(editor){
+        FrameViewportGeometry geometry;
+        if(IsIconic(target)||!CalculateFrameViewport(view,0,0,
+            fullScreen?FrameViewportMode::Fullscreen:FrameViewportMode::Floating,renderWidth,renderHeight,geometry)){
+            view={};return;}
+        view=geometry.scene;
+    }else{
     int clientWidth = view.right;
     int clientHeight = view.bottom;
     int desiredWidth = clientHeight * renderWidth / renderHeight;
@@ -339,13 +404,18 @@ void RefreshSeparateWindowViewport(MMDApp* app) {  // was Sub4290F0, 0x4290F0..0
         view.left = center - width / 2;
         view.right = center + width / 2;
     }
+    }
 
     D3DRenderer* wrapper = app->Renderer();
-    if (wrapper == nullptr)
+    if (wrapper == nullptr){
+        if(editor)view={};
         return;
+    }
     IDirect3DDevice9* device = wrapper->device;
-    if (device == nullptr)
+    if (device == nullptr){
+        if(editor)view={};
         return;
+    }
 
     D3DVIEWPORT9 viewport{};
     if (s.RecordingWindow() != nullptr) {
@@ -363,7 +433,8 @@ void RefreshSeparateWindowViewport(MMDApp* app) {  // was Sub4290F0, 0x4290F0..0
     }
     viewport.MinZ = 0.0f;
     viewport.MaxZ = 1.0f;
-    device->SetViewport(&viewport);
+    if(editor){if(!PublishEditorViewport(app,device,viewport))return;}
+    else device->SetViewport(&viewport);
 
     const float aspect = static_cast<float>(renderWidth) /
                          static_cast<float>(renderHeight);

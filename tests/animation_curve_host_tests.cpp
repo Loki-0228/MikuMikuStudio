@@ -5,6 +5,8 @@
 #include "mikudancestudio/key_pool.hpp"
 #include "mikudancestudio/mmd_app.hpp"
 #include "mikudancestudio/ported_funcs.hpp"
+#include "mikudancestudio/viewport_bounds.hpp"
+#include "mikudancestudio/window_dpi_scope.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
@@ -433,7 +435,18 @@ int main(){
     curve_host::CreateControls(app.get(),parent);
     Check(GetParent(GetDlgItem(parent,curve_editor::kAccessoryCurve))==parent,"launcher created before app HWND assignment");
     app->Hwnd()=parent;app->state.optflag[0]=1;app->state.optflag[3]=1;
-    CheckScaleLabelRepaint(*app,parent);
+    {
+        // This CPU/Win32 fixture has no device to publish a viewport. Supply
+        // the same valid scene geometry from its actual client before asking
+        // the production panel layout for the scale caption's coordinates.
+        const WindowDpiScope dpi(parent);RECT client{};FrameViewportGeometry geometry{};
+        app->RenderWidth()=1280;app->RenderHeight()=720;
+        Check(GetClientRect(parent,&client)&&CalculateFrameViewport(client,app->SidebarWidth(),0,
+            FrameViewportMode::Docked,app->RenderWidth(),app->RenderHeight(),geometry),
+            "scale repaint fixture has positive output dimensions and actual-client scene geometry");
+        app->ViewportRect()=geometry.scene;
+        CheckScaleLabelRepaint(*app,parent);
+    }
     curve_host::LayoutControls(app.get());
     for(unsigned lang=0;lang<3;++lang){app->EnglishUI()=uint8_t(lang);curve_host::Localize(app.get());
         wchar_t text[64]{};GetWindowTextW(GetDlgItem(parent,472),text,64);Check(wcslen(text)>0,"localized load label");
