@@ -28,6 +28,7 @@
 
 #include "mikudancestudio/dshow_recorder.hpp"
 #include "mikudancestudio/mf_h264_recorder.hpp"
+#include "mikudancestudio/runtime_log.hpp"
 #include "mikudancestudio/ui_language.hpp"
 #include "mikudancestudio/wave_audio_context.hpp"
 
@@ -503,6 +504,51 @@ void CloseEncoderProbe(EncoderProbe& probe) {
     probe.started = false;
 }
 
+// Issue #34: the AMD hardware H.264 MFT (amdh264enc64) faults inside d3d9
+// while Media Foundation builds the DXVA surface chain for the Sink Writer,
+// and the editor dies with an access violation.  The encoder runs in-process
+// behind this app's d3d9 proxy, so its D3D9 usage is not something the export
+// path can fix; what it can do is refuse to keep using hardware transforms
+// after the first fault.  The flag below is session-wide, so a fault caught
+// while opening the settings window also keeps the later export on the
+// software encoder.
+bool g_hardwareEncoderUnsafe = false;
+
+bool CreateEncoderProbe(bool system, std::int32_t width, std::int32_t height,
+                        float fps, std::uint32_t averageBitrate,
+                        EncoderProbe& probe);
+
+// Drops a probe whose encoder MFT just faulted without releasing anything.
+// Releasing an MFT that crashed inside its own D3D9 call can fault again, so
+// the (bounded, once-per-session) leak is the safer option.
+void AbandonEncoderProbe(EncoderProbe& probe) noexcept {
+    probe.writer = nullptr;
+    probe.target.transform = nullptr;
+    probe.target.codec = nullptr;
+    probe.target.index = 0;
+    probe.target.transformCount = 0;
+    probe.target.surfaceHash = 0;
+    probe.file.clear();
+    probe.started = false;
+}
+
+// SEH wrapper: no local objects with destructors here, so the __try block does
+// not need C++ unwinding (the same idiom as the crash-backup handler).
+bool CreateEncoderProbeGuarded(bool system, std::int32_t width,
+                               std::int32_t height, float fps,
+                               std::uint32_t averageBitrate,
+                               EncoderProbe& probe) noexcept {
+    __try {
+        return CreateEncoderProbe(system, width, height, fps, averageBitrate,
+                                  probe);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        runtime_log::Write(
+            "H264 encoder probe faulted code=0x%08lX hardware=%d",
+            static_cast<unsigned long>(GetExceptionCode()), system ? 1 : 0);
+        return false;
+    }
+}
+
 bool CreateEncoderProbe(bool system, std::int32_t width, std::int32_t height,
                         float fps, std::uint32_t averageBitrate,
                         EncoderProbe& probe) {
@@ -910,9 +956,23 @@ bool ShowH264EncoderSettingsDialog(void* ownerWindow,
     // enumerate the encoder it selects, so the rows below are the options of
     // the encoder the export will actually use.
     EncoderProbe probe;
-    const bool probed = CreateEncoderProbe(enableSystemEncoders, exportWidth,
-                                           exportHeight, exportFps,
-                                           averageBitrate, probe);
+    bool probed = false;
+    if (enableSystemEncoders && !g_hardwareEncoderUnsafe) {
+        probed = CreateEncoderProbeGuarded(true, exportWidth, exportHeight,
+                                           exportFps, averageBitrate, probe);
+        if (!probed) {
+            // Either the hardware chain faulted inside the vendor MFT or it
+            // exposed no configurable encoder.  Drop whatever it left behind
+            // and enumerate the software MFT instead; the session stays on
+            // software so the export cannot hit the same fault.
+            g_hardwareEncoderUnsafe = true;
+            AbandonEncoderProbe(probe);
+        }
+    }
+    if (!probed) {
+        probed = CreateEncoderProbeGuarded(false, exportWidth, exportHeight,
+                                           exportFps, averageBitrate, probe);
+    }
 
     EncoderSettingsDialog state;
     state.owner = static_cast<HWND>(ownerWindow);
@@ -1043,8 +1103,14 @@ bool ShowH264EncoderSettingsDialog(void* ownerWindow,
     wchar_t bitrateText[48]{};
     swprintf_s(bitrateText, L"%.3f", averageBitrate / 1'000'000.0);
     SetWindowTextW(state.bitrate, bitrateText);
+    const bool hardwareBlocked = enableSystemEncoders && g_hardwareEncoderUnsafe;
     CreateWindowExW(0, L"STATIC",
-        probed
+        hardwareBlocked
+            ? UiText(state.uiLanguage,
+                L"Hardware encoder disabled after a driver fault; using the software H.264 encoder:",
+                L"硬件编码器在驱动故障后已停用，改用软件 H.264 编码器：",
+                L"ハードウェアエンコーダーはドライバー障害のため無効です。ソフトウェア H.264 エンコーダーを使用します：")
+        : probed
             ? UiText(state.uiLanguage,
                 L"Editable standard options supported by the selected encoder:",
                 L"所选编码器支持且可修改的标准属性：",
@@ -1169,6 +1235,55 @@ std::vector<std::wstring> EnumerateH264Encoders() {
     return names;
 }
 
+// Creates the Sink Writer and adds the H.264 video stream under an SEH guard.
+// Only scalars live in this frame, so the __try block does not need C++
+// unwinding.  See g_hardwareEncoderUnsafe above for why the hardware chain is
+// isolated instead of trusted.
+HRESULT OpenH264SinkWriterGuarded(IMFSinkWriter** writer, const wchar_t* path,
+                                  bool hardware, std::int32_t width,
+                                  std::int32_t height, float fps,
+                                  std::uint32_t averageBitrate,
+                                  DWORD* stream) noexcept {
+    __try {
+        IMFAttributes* attributes = nullptr;
+        HRESULT hr = MFCreateAttributes(&attributes, 1);
+        if (SUCCEEDED(hr))
+            hr = attributes->SetUINT32(
+                MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS,
+                hardware ? TRUE : FALSE);
+        if (SUCCEEDED(hr))
+            hr = MFCreateSinkWriterFromURL(path, nullptr, attributes, writer);
+        if (attributes != nullptr) attributes->Release();
+        if (SUCCEEDED(hr))
+            hr = AddH264VideoStream(*writer, width, height, fps,
+                                    averageBitrate, stream);
+        return hr;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        runtime_log::Write(
+            "H264 export writer faulted code=0x%08lX hardware=%d",
+            static_cast<unsigned long>(GetExceptionCode()), hardware ? 1 : 0);
+        return E_FAIL;
+    }
+}
+
+// Releases a Sink Writer whose encoder MFT faulted, swallowing a second fault
+// so the editor survives.  Reaching the writer's Release is worth attempting
+// because it closes the output file the hardware attempt created; if the
+// teardown faults too, the objects are leaked on purpose.
+void ReleaseSinkWriterQuietly(IMFSinkWriter*& writer) noexcept {
+    IMFSinkWriter* local = writer;
+    writer = nullptr;
+    if (local == nullptr)
+        return;
+    __try {
+        local->Release();
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        runtime_log::Write(
+            "H264 writer release faulted code=0x%08lX",
+            static_cast<unsigned long>(GetExceptionCode()));
+    }
+}
+
 bool StartBuiltInH264Recording(DShowRecorder* recorder, const wchar_t* path,
                                std::int32_t width, std::int32_t height,
                                float fps, const WaveAudioContext* audio,
@@ -1199,28 +1314,28 @@ bool StartBuiltInH264Recording(DShowRecorder* recorder, const wchar_t* path,
     HRESULT hr = MFStartup(MF_VERSION, MFSTARTUP_FULL);
     if (FAILED(hr)) return false;
     recording->mfStarted = true;
-    IMFAttributes* writerAttributes = nullptr;
-    hr = MFCreateAttributes(&writerAttributes, 1);
-    if (SUCCEEDED(hr))
-        hr = writerAttributes->SetUINT32(
-            MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS,
-            enableSystemEncoders ? TRUE : FALSE);
-    if (SUCCEEDED(hr))
-        hr = MFCreateSinkWriterFromURL(path, nullptr, writerAttributes,
-                                       &recording->writer);
-    if (writerAttributes != nullptr) writerAttributes->Release();
+    bool hardwareActive = enableSystemEncoders && !g_hardwareEncoderUnsafe;
+    hr = OpenH264SinkWriterGuarded(&recording->writer, path, hardwareActive,
+                                   width, height, fps, averageBitrate,
+                                   &recording->videoStream);
+    if (FAILED(hr) && hardwareActive) {
+        // Keep the session on the software encoder and try once more.  The
+        // hardware writer is released first so it lets go of the output file;
+        // if that teardown faults as well the writer is leaked and the retry
+        // simply reports the failure.
+        g_hardwareEncoderUnsafe = true;
+        hardwareActive = false;
+        ReleaseSinkWriterQuietly(recording->writer);
+        recording->videoStream = 0;
+        hr = OpenH264SinkWriterGuarded(&recording->writer, path, false, width,
+                                       height, fps, averageBitrate,
+                                       &recording->videoStream);
+    }
     if (FAILED(hr)) return false;
 
-    hr = AddH264VideoStream(recording->writer, width, height, fps,
-                            averageBitrate, &recording->videoStream);
-    ApplyResult settings;
-    if (SUCCEEDED(hr))
-        settings = ApplyConfiguredEncoderSettings(recording->writer,
-                                                  recording->videoStream,
-                                                  enableSystemEncoders,
-                                                  averageBitrate,
-                                                  recording->uiLanguage);
-    if (FAILED(hr)) return false;
+    ApplyResult settings = ApplyConfiguredEncoderSettings(
+        recording->writer, recording->videoStream, hardwareActive,
+        averageBitrate, recording->uiLanguage);
 
     if (audio != nullptr && audio->path[0] != L'\0' && audio->dataSize > 0) {
         if (audio->format.wFormatTag != WAVE_FORMAT_PCM ||
@@ -1288,7 +1403,7 @@ bool StartBuiltInH264Recording(DShowRecorder* recorder, const wchar_t* path,
         // BeginWriting; configure the encoder then, before the first frame.
         settings = ApplyConfiguredEncoderSettings(recording->writer,
                                                   recording->videoStream,
-                                                  enableSystemEncoders,
+                                                  hardwareActive,
                                                   averageBitrate,
                                                   recording->uiLanguage);
     }

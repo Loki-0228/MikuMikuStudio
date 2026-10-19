@@ -683,12 +683,26 @@ void ApplyGravitySettingDialog(MMDApp* app) {  // was Sub460080, VA 0x00460080
     RefreshRequest(-4);                                       // 0x440AC0
     PanelPaint(app);                                          // 0x414610
 }
-// VA 0x0041E7B0 - order-array builder: for order = 1..count-1 scan the 100
-// model slots for the model whose order byte (+0x2D7C) equals `order` and
-// store slotIndex+1 into the array at app+0xA0B1C.
+// VA 0x0041E7B0 - order-array builder: for order = 1..count-1 scan the model
+// slots for the model whose order byte (+0x2D7C) equals `order` and store
+// slotIndex+1 into the array at app+0xA0B1C.
+//
+// Issue #35: the byte a slot carries is not guaranteed to be a permutation of
+// 1..count-1.  A model that came in through a path which never assigned the
+// byte still has 0, a stale PMM can carry duplicates, and a model can hold an
+// order beyond the combo count.  The first pass leaves those rows at 0, and
+// the OK handler below then read slot -1 - writing the order byte through
+// whatever pointer sits in front of the slot table, which is how the model
+// names ended up not matching the models they were listed for.  The second
+// pass gives every unplaced model one of the remaining rows, in slot order,
+// so the array is always a complete permutation of the rows the dialog shows.
 void BuildModelOrderArray(MMDApp* app, int count) {  // was Sub41E7B0, VA 0x0041E7B0
     std::int32_t* order =
         static_cast<std::int32_t*>(app->AccessoryOrderArray());
+    if (order == nullptr || count <= 1)
+        return;
+    for (int ord = 1; ord < count; ++ord)
+        order[ord] = 0;
     for (int ord = 1; ord < count; ++ord) {
         // x64: no exact twin pinned for 0x41E7B0, but every slot/order scan
         // verified on the x64 binary so far runs the full 255-slot array
@@ -702,6 +716,25 @@ void BuildModelOrderArray(MMDApp* app, int count) {  // was Sub41E7B0, VA 0x0041
             }
         }
     }
+    int nextRow = 1;
+    for (int i = 0; i < kModelSlotCount; ++i) {
+        if (app->ModelSlot(i) == nullptr)
+            continue;
+        bool placed = false;
+        for (int ord = 1; ord < count; ++ord) {
+            if (order[ord] == i + 1) {
+                placed = true;
+                break;
+            }
+        }
+        if (placed)
+            continue;
+        while (nextRow < count && order[nextRow] != 0)
+            ++nextRow;
+        if (nextRow >= count)
+            break;  // more models than rows: the surplus keeps its old byte
+        order[nextRow] = i + 1;
+    }
 }
 // VA 0x0045EC80 - display-order apply (inverse direction of 0x41E910): for
 // i = 1..count-1 store i into model+0x2D7C.  The original addresses the
@@ -711,8 +744,15 @@ void ApplyModelDisplayOrderDialog(MMDApp* app, int count, HWND hDlg) {  // was S
     (void)hDlg;
     std::int32_t* order =
         static_cast<std::int32_t*>(app->AccessoryOrderArray());
+    if (order == nullptr)
+        return;
     for (int i = 1; i < count; ++i) {
-        unsigned char* model = app->ModelSlot(order[i] - 1);
+        const int slot = order[i] - 1;
+        if (slot < 0 || slot >= kModelSlotCount)
+            continue;
+        unsigned char* model = app->ModelSlot(slot);
+        if (model == nullptr)
+            continue;
         mdl::Mdl(model)->comboSelIndex = static_cast<unsigned char>(i);
     }
     ApplyModelComboSelection(app);                                       // 0x44D940
