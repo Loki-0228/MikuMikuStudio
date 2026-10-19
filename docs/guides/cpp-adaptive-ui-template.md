@@ -10,7 +10,7 @@
 python tools/package-adaptive-ui-template.py
 ```
 
-输出为 `build/packages/mms-adaptive-ui-template.zip` 和同名源码目录。已有输出不会默认覆盖；改用 `--output build/packages/其他名称`，或确认要更新后使用 `--refresh`。后者只更新文件集合完全匹配的既有源码包，不清理构建目录。
+输出为 `build/packages/mms-adaptive-ui-template.zip` 和同名源码目录。发布目录 `build/release` 中的 `mms-adaptive-ui-template.zip` 由 `scripts/package_abi_release.ps1` 从这里复制。已有输出不会默认覆盖；改用 `--output build/packages/其他名称`，或确认要更新后使用 `--refresh`。后者只更新文件集合完全匹配的既有源码包，不清理构建目录。
 
 `MANIFEST.json` 记录来源提交、打包脚本及每个文件的 SHA256。打包前要求原始 `native_ui` 和 `LICENSE` 没有未提交修改；源码和示例沿用随包许可。
 

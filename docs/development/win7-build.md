@@ -5,14 +5,22 @@
 从干净源码配置自己的构建目录：
 
 ```powershell
-conan install . --profile:host profiles/win7-x64 --profile:build profiles/win7-x64 --lockfile profiles/win7-x64.lock --output-folder build/release --build=missing
+conan install . --profile:host profiles/win7-x64 --profile:build profiles/win7-x64 --lockfile profiles/win7-x64.lock --output-folder build/win7-x64 --build=missing
 cmake --preset win7-x64
 cmake --build --preset win7-x64-release --target MikuDanceStudio
 ```
 
 依赖已在本机缓存时可用 `--no-remote` 代替 `--build=missing`。不要复制其他源码工作目录的 CMake 缓存。检查 `CMAKE_HOME_DIRECTORY` 和 `CMAKE_INSTALL_PREFIX`，验证产物放在独立目录，验收前不覆盖 `build/Release`。
 
-`build/release` 中是从 `build/win7-x64` 迁移过来的最终构建树，`CMakeCache.txt` 仍记录旧的绝对路径。需要重新配置时，先删除 `build/release/build` 下的缓存和生成文件，或另用一个空构建目录，再执行上面的 Conan 和 CMake 命令；不要直接在这个冻结目录上配置。
+构建树位于 `build/win7-x64/build`，`CMakeCache.txt` 记录的绝对路径与目录一致，可以继续增量构建。
+
+`build/release` 是发布目录，只放 `MikuMikuDance.exe`、`licenses/` 和 `mms-adaptive-ui-template.zip`。用下面的脚本重建：
+
+```powershell
+./scripts/package_abi_release.ps1 -Force
+```
+
+脚本默认读取 `build/win7-x64/build`，可用 `-BuildDirectory` 指向另一份完整档 x64 构建。构建树、测试产物和 `build/verification` 中的日志、证据都不进发布目录。`cmake --install` 还会写入 `PLUGINS/config.json`，因此发布目录由脚本直接复制文件，不使用安装规则。
 
 默认保留 Release PDB。只需验证且本机符号工具不可用时，可以在配置时使用 `-DMIKUDANCESTUDIO_DEBUG_SYMBOLS=OFF`；发布时仍应保留匹配程序的符号文件，不能把旧 PDB 与新 EXE 配对。
 

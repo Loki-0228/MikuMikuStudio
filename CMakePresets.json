@@ -7,8 +7,8 @@
       "displayName": "Win7 SP1 x64 CPU baseline",
       "generator": "Visual Studio 17 2022",
       "architecture": "x64",
-      "binaryDir": "${sourceDir}/build/release/build",
-      "toolchainFile": "${sourceDir}/build/release/build/generators/conan_toolchain.cmake",
+      "binaryDir": "${sourceDir}/build/win7-x64/build",
+      "toolchainFile": "${sourceDir}/build/win7-x64/build/generators/conan_toolchain.cmake",
       "cacheVariables": {
         "CMAKE_SYSTEM_VERSION": "10.0.19041.0",
         "CMAKE_TRY_COMPILE_CONFIGURATION": "Release",

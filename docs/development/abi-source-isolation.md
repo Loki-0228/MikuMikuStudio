@@ -7,7 +7,8 @@ ABI 开发使用独立 Git 工作目录。构建目录和源码目录都必须�
 | 用途 | 路径及状态 |
 | --- | --- |
 | 后续 ABI 开发 | `D:/MMD-Next/MMS-abi-dev`，分支 `codex/plugin-abi`，从 `eb7f711` 完整迁移。现从 ABI 基线 `8cb6c1d` 合入 main 提交 `04d3dec` 的已验证功能，合并后验证单独记录。临时分支名 `codex/plugin-abi-isolated` 已删除。 |
-| ABI 构建输出 | `D:/MMD-Next/MMS-abi-dev/build/release/build`。 |
+| ABI 构建输出 | `D:/MMD-Next/MMS-abi-dev/build/win7-x64/build`。 |
+| ABI 发布目录 | `D:/MMD-Next/MMS-abi-dev/build/release`，只放程序、`licenses` 和 GUI 模块压缩包，由 `scripts/package_abi_release.ps1` 重建。 |
 | 稳定版工作目录 | `D:/MMD-Next/MMS`，分支 `main`，当前提交 `04d3dec`。分离时基线为 `42d4a71`（`v2026.10.15.2`）；恢复的稳定版修改已完成审查、本机验证和提交。 |
 | 稳定版验证输出 | `D:/MMD-Next/MMS/build/main-review/build`，独立于现有稳定版产物。 |
 | 现有稳定版产物 | `D:/MMD-Next/MMS/build/Release`。本次开发不向该目录安装或复制程序。 |
@@ -22,7 +23,7 @@ main 的已验证功能通过 Git 合并进入 ABI 分支，两份源码和构�
 
 ```powershell
 	Set-Location D:/MMD-Next/MMS-abi-dev
-	conan install . --profile:host profiles/win7-x64 --profile:build profiles/win7-x64 --lockfile profiles/win7-x64.lock --output-folder build/release --no-remote
+	conan install . --profile:host profiles/win7-x64 --profile:build profiles/win7-x64 --lockfile profiles/win7-x64.lock --output-folder build/win7-x64 --no-remote
 	cmake --preset win7-x64
 	cmake --build --preset win7-x64-release --target MikuDanceStudio plugin_abi_tests
 ```
