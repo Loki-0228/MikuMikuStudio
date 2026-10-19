@@ -2,7 +2,7 @@
 
 `mms.ui.refresh.bind` 1.0 将插件准备的数据复制为宿主保留的不可变显示模型。C 定义见 [refresh_binding.h](include/mms/refresh_binding.h)，C++17 包装见 [data_refresh.hpp](include/mms/cpp/data_refresh.hpp)。它复用原 UI 元素、目标引用和 [mms.ui.refresh 票据](refresh.md)，不创建第二个控件或刷新队列。
 
-当前范围为本插件已挂载按钮或 surface 面板的 `DATA + SELF`。发布来源不会自动刷新；插件显式请求 DATA，按目标能力组合 STATE、LAYOUT 和 REPAINT。按钮状态回调或面板绘制通过 `acquireDisplay` 读取模型。面板的文字、图形和交互仍由插件实现。[保留布局的 LAYOUT](refresh.md#保留布局刷新)共用原刷新队列；依赖订阅、跨插件绑定、SUBTREE 和 DEPENDENTS 尚未开放。
+支持本插件已挂载目标的 `DATA + SELF`，以及通过注册父对象提交的 `DATA + SUBTREE`。发布来源不会自动刷新；插件显式请求 DATA，按目标能力组合 STATE、LAYOUT 和 REPAINT。按钮状态回调或面板绘制通过 `acquireDisplay` 读取模型。面板的文字、图形和交互仍由插件实现。[保留布局的 LAYOUT](refresh.md#保留布局刷新)共用原刷新队列；依赖订阅、跨插件绑定和 DEPENDENTS 尚未开放。
 
 ## 开发和协商
 
@@ -27,7 +27,7 @@
 
 revision 由宿主生成。成功发布不同字节增加 revision，相同字节保持不变；空字节也是有效模型。插件不能用布局修订或任意计数替代返回的来源版本。
 
-DATA 请求填写 `binding`、非零 `sourceRevision`、原目标引用和 SELF。入队时必须匹配来源的当前版本 N，宿主保留该版本的强引用。其后发布 N+1 不改变已接受的 N；尚未捕获的旧 N 返回 STALE。若 N+1 已先消费，旧 N 不得覆盖新显示。不同绑定或来源版本分组执行，每个票据仍独立取消、查询和释放。
+SELF + DATA 请求填写 `binding`、非零 `sourceRevision`、原目标引用和 SELF。入队时必须匹配来源的当前版本 N，宿主保留该版本的强引用。其后发布 N+1 不改变已接受的 N；尚未捕获的旧 N 返回 STALE。若 N+1 已先消费，旧 N 不得覆盖新显示。不同绑定或来源版本分组执行，每个票据仍独立取消、查询和释放。
 
 UI 安全点依次执行请求中的 DATA、STATE、LAYOUT、REPAINT。DATA 单独请求不隐含重绘、状态查询或布局。重复消费同一版本跳过 prepare；新版本得到相同显示字节时只推进来源版本，不增加 displayRevision。显式组合的其他阶段仍按请求执行，不能把 DATA 发布视为自动布局订阅。
 
@@ -91,3 +91,7 @@ MmsResult Publish(int value, uint64_t expectedRevision, mms::sdk::RefreshTicket&
 停止后拒绝新发布、绑定、显示 acquisition 和刷新，取消待执行贡献。已有租约继续可读；宿主在调用、票据或租约未释放时保留 context、实例和 DLL。插件停止生产数据、结束工作线程，释放票据与显示租约，并在 UI 线程清理绑定和来源；清理未完成返回 BUSY，不阻塞 UI。
 
 常见错误：ARGUMENT 为非法结构、跨 owner 或超描述容量；CONFLICT 为版本冲突、重复来源 id、目标已有绑定或重复写 builder；STALE 为失效身份或来源版本；THREAD 为线程错误；BUSY 为只读因果限制或配额；NOT_READY 为未发布、未挂载或停止；FAILED 为 prepare 未提供完整候选或其他准备失败。
+
+## 注册子树的数据刷新
+
+SUBTREE + DATA 使用同一绑定和不可变来源。请求的 binding/sourceRevision 均为 0，宿主在同一次绑定锁临界区捕获注册子树全部有效绑定的当前版本。无绑定成员跳过；任一已绑定来源尚未发布则整次不接受。新增绑定、解绑或重新绑定使旧子树 DATA 票据 STALE；入队后继续发布来源则保留已捕获版本。整树 DATA 成功后才进入整树 STATE。ticket.sourceRevision=0 表示版本集合，读取 completedKinds，并通过各绑定的显示查询检查消费版本。见[刷新范围契约](refresh.md#子树范围)和 [C++ 包装](cpp-refresh.md#同一注册树的子树刷新)。

@@ -209,14 +209,14 @@ void Evaluate(std::vector<std::unique_ptr<ModelCopy>>& models,const std::array<u
         AdvanceModelKeyframes(m->raw(),seconds,2);
         for(auto& bone:m->bones) RepairBonePose(bone.trans,bone.rotQuat);
     }
-    // Preserve model transform dependency order.
-    for(int order=0;order<kModelSlotCount;++order) for(auto& m:models) if(m->model->comboSelIndex2==order) {
+    // Preserve dependency order, including legacy zero and full-capacity row 255.
+    for(int order=0;order<=kModelSlotCount;++order) for(auto& m:models) if(m->model->comboSelIndex2==order) {
         ModelApplyMorphs(m->raw()); SetPhysicsMode(m->raw(),0,slots.data(),init?0:2);
     }
 }
 void Readback(std::vector<std::unique_ptr<ModelCopy>>& models,const std::array<unsigned char*,kModelSlotCount>& slots) {
     for(auto& m:models) ModelPhysicsReadback(m->raw());
-    for(int order=0;order<kModelSlotCount;++order) for(auto& m:models) if(m->model->comboSelIndex2==order)
+    for(int order=0;order<=kModelSlotCount;++order) for(auto& m:models) if(m->model->comboSelIndex2==order)
         { ModelApplyMorphs(m->raw()); SetPhysicsMode(m->raw(),1,slots.data(),2); }
 }
 void SetGravity(MMDApp& app,btDiscreteDynamicsWorld& world,double frame) {

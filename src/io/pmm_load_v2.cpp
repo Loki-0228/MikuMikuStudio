@@ -5,6 +5,7 @@
 #include "mikumikustudio/native_media.hpp"
 #include "mikumikustudio/ui_translation.hpp"
 #include "mikumikustudio/native_mesh.hpp"
+#include "mikumikustudio/draw_order.hpp"
 // ===========================================================================
 // VA 0x00450000 - LoadSceneV2  (was Sub450000; original: sub_450000,
 //                            0x9796 bytes - the v2 (.pmm "0002") loader body)
@@ -1849,18 +1850,15 @@ static void LoadSceneV2_ResetCombos(PmmV2LoadContext& ctx) {
     SendMessageA(GetDlgItem(main, panel::kBoneRegisterCombo), CB_RESETCONTENT, 0, 0);
     // x64 load twin sub_7FF7CB498E30: every post-read slot walk runs to 255
     // (0xFF counters at 0x7FF7CB49D33A..0x7FF7CB4A2A3A in the load tail).
-    for (int j = 0; j < kModelSlotCount; ++j) {                 // 0x454766
-        int found = 0;
-        while (found < kModelSlotCount &&
-               (slots[found] == nullptr ||
-                mdl::Mdl(slots[found])->comboSelIndex != j))
-            ++found;
-        // 0x45478A..0x454897: a missing display-order value advances to
-        // the next value; it does not terminate the rebuild.  PMM model IDs
-        // normally start at one because combo item zero is camera mode, so
-        // breaking here discarded every loaded model at the very first pass.
-        if (found >= kModelSlotCount) continue;
-        const auto name = text_encoding::ModelLabel(*mdl::Mdl(slots[found]), UiUsesEnglishNames(s->EnglishUI()));
+    const auto selectorModels = BuildDrawOrder<kModelSlotCount, kModelSlotCount + 1>(
+        [&](int slot) { return slots[slot]; },
+        [](unsigned char* model) { return mdl::Mdl(model)->comboSelIndex; });
+    for (const auto& entry : selectorModels) {                  // 0x454766
+        // Preserve the first occupied slot per order and continue over holes.
+        // Full one-based model lists also need row 255; legacy zero remains
+        // before those rows, after the selectors' camera/ground/none item.
+        if (!entry.model) continue;
+        const auto name = text_encoding::ModelLabel(*mdl::Mdl(entry.model), UiUsesEnglishNames(s->EnglishUI()));
         SendMessageW(GetDlgItem(main, panel::kMainComboModel), CB_ADDSTRING, 0,
                      reinterpret_cast<LPARAM>(name.c_str()));
         SendMessageW(GetDlgItem(main, panel::kMainComboGround), CB_ADDSTRING, 0,

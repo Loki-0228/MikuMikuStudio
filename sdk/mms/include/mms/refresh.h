@@ -6,6 +6,8 @@
 #define MMS_UI_REFRESH_STATE 4u
 #define MMS_UI_REFRESH_LAYOUT 8u
 #define MMS_UI_REFRESH_SELF 1u
+/* Original registered subtree, including a drawable root. GROUP exposes only
+   SUBTREE. This does not enumerate arbitrary native child windows. */
 #define MMS_UI_REFRESH_SUBTREE 2u
 #define MMS_UI_REFRESH_DEPENDENTS 4u
 #define MMS_UI_REFRESH_PENDING 1u
@@ -38,9 +40,12 @@ typedef struct MmsUiRefreshTargetV1 {
 typedef struct MmsUiRefreshRequestV1 {
 	MmsHeader h;
 	MmsUiTargetRefV1 target;
+    /* SELF+DATA: explicit binding and exact sourceRevision. SUBTREE+DATA:
+       both zero; atomically capture every bound member's current snapshot. */
 	MmsHandle binding;
 	uint32_t kinds, scope;
 	uint64_t sourceRevision, expectedGeometryRevision;
+    /* Local rectangles are SELF-only. SUBTREE requires count == 0. */
 	MmsSpan dirtyRects;
 	uint64_t coalesceKey;
 	uint32_t flags, reserved;
@@ -50,6 +55,8 @@ typedef struct MmsUiRefreshStateV1 {
 	uint32_t status, completedKinds;
 	MmsResult result;
 	uint32_t reserved;
+    /* SUBTREE's sourceRevision is zero for its version set, including after
+       DATA succeeds. completedKinds, not this scalar, indicates completion. */
 	uint64_t sourceRevision, geometryRevision;
 } MmsUiRefreshStateV1;
 typedef struct MmsUiRefreshApiV1 {

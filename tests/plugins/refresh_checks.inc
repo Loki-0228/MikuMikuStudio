@@ -168,11 +168,11 @@ static void Region(HWND window, std::initializer_list<RECT> rectangles) {
 static void CapabilitiesAndValidation() {
     Fixture x; MmsUiRefreshCapabilitiesV1 caps{}; caps.h = Header<MmsUiRefreshCapabilitiesV1>();
     CHECK(x.api.getCapabilities(x.api.context, &caps) == MMS_OK);
-    CHECK(caps.supportedKinds == (MMS_UI_REFRESH_REPAINT | MMS_UI_REFRESH_STATE | MMS_UI_REFRESH_DATA) && caps.supportedScopes == MMS_UI_REFRESH_SELF);
+    CHECK(caps.supportedKinds == (MMS_UI_REFRESH_REPAINT | MMS_UI_REFRESH_STATE | MMS_UI_REFRESH_DATA) && caps.supportedScopes == (MMS_UI_REFRESH_SELF | MMS_UI_REFRESH_SUBTREE));
     CHECK(caps.maxTicketsPerPlugin == 256 && caps.maxRectsPerRequest == 32 && caps.maxPendingBytesPerPlugin == 256 * 1024 && caps.maxContributionsPerDrain == 64);
     auto target = x.Target(); CHECK(target.target.element == x.element && target.target.instanceGeneration && target.target.projectEpoch && target.geometryRevision);
     CHECK(target.ready && target.visible && target.width == 300 && target.height == 120);
-    CHECK(target.supportedKinds == MMS_UI_REFRESH_REPAINT && target.supportedScopes == MMS_UI_REFRESH_SELF);
+    CHECK(target.supportedKinds == MMS_UI_REFRESH_REPAINT && target.supportedScopes == (MMS_UI_REFRESH_SELF | MMS_UI_REFRESH_SUBTREE));
     MmsUiRefreshTargetV1 wrong{}; wrong.h = Header<MmsUiRefreshTargetV1>();
     CHECK(x.otherApi.getTarget(x.otherApi.context, x.element, &wrong) != MMS_OK);
     CHECK(x.api.getTarget(x.api.context, x.command, &wrong) != MMS_OK);
@@ -182,7 +182,7 @@ static void CapabilitiesAndValidation() {
     CHECK(x.api.getTarget(x.api.context, menuHandle, &wrong) == MMS_E_UNSUPPORTED);
     auto group = x.Button("example.refresh.group"); group.kind = MMS_UI_GROUP; group.commandId = {}; group.capabilities |= MMS_UI_CONTAINER;
     MmsHandle groupHandle = 0; CHECK(x.ui.registerElement(x.ui.context, &group, &groupHandle) == MMS_OK);
-    CHECK(x.api.getTarget(x.api.context, groupHandle, &wrong) == MMS_E_UNSUPPORTED);
+    CHECK(x.api.getTarget(x.api.context, groupHandle, &wrong) == MMS_E_NOT_READY);
     CHECK(x.api.getTarget(x.api.context, x.registry.elements.at("mms.toolbar.main.extensions").handle, &wrong) == MMS_E_ARGUMENT);
     auto request = x.Request(target); MmsHandle handle = 0;
     CHECK(x.otherApi.request(x.otherApi.context, &request, &handle) != MMS_OK && handle == 0);
@@ -192,7 +192,7 @@ static void CapabilitiesAndValidation() {
     for (uint32_t kinds : {MMS_UI_REFRESH_DATA, MMS_UI_REFRESH_REPAINT | MMS_UI_REFRESH_DATA}) {
         auto r = request; r.kinds = kinds; CHECK(x.api.request(x.api.context, &r, &handle) == MMS_E_ARGUMENT && handle == 0);
     }
-    for (uint32_t scope : {MMS_UI_REFRESH_SUBTREE, MMS_UI_REFRESH_DEPENDENTS}) {
+    for (uint32_t scope : {MMS_UI_REFRESH_DEPENDENTS}) {
         auto r = request; r.scope = scope; CHECK(x.api.request(x.api.context, &r, &handle) == MMS_E_UNSUPPORTED && handle == 0);
     }
     for (unsigned change = 0; change < 9; ++change) {

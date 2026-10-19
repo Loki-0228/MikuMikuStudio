@@ -3,9 +3,11 @@
 #if !MMD_ORIGINAL_PROFILE
 #include <Windows.h>
 #include <mms/plugin.h>
+#include <memory>
 namespace mikumikustudio { class MMDApp; }
 namespace mikumikustudio::plugins {
 class SharedHistory;
+class HistoryChange;
 // Internal migration routes only. A bound route consumes failure/cancellation;
 // the caller must never continue into the legacy immediate-free deletion.
 bool TryDeleteBoundModel(MMDApp*, HWND) noexcept;
@@ -21,6 +23,9 @@ bool AcceptBoundAccessorySettings(MMDApp*, HWND) noexcept;
 // deferUi is only for the Manager's already-authorized top-level edit call.
 // The caller queues the normal deferred publication notification afterwards.
 MmsResult RunBoundObjectHistory(MMDApp&, SharedHistory&, bool redo, bool deferUi = false) noexcept;
+// Modal model-order plans are immutable and their scratch editor is closed.
+// A successful journal publication remains committed if UI refresh must retry.
+MmsResult CommitBoundModelOrder(MMDApp&, SharedHistory&, std::shared_ptr<HistoryChange>, bool calculate) noexcept;
 // The operation guard covers confirmation and post-publication Win32 calls.
 // Only its synchronous, message-free journal section receives authorization.
 bool NativeObjectOperationActive(const MMDApp*) noexcept;

@@ -41,6 +41,7 @@ static std::string ManifestText(std::string id = "org.example.hello", std::strin
 #include "manager_edit_checks.inc"
 #include "manager_refresh_checks.inc"
 #include "layout_refresh_checks.inc"
+#include "ui_refresh_subtree_checks.inc"
 #include "state_content_checks.inc"
 #include "overflow_menu_checks.inc"
 #include "overflow_validation_checks.inc"
@@ -350,6 +351,10 @@ static void LifecycleChecks(const fs::path& root, const fs::path& fixture) {
 int wmain(int argc, wchar_t** argv) {
     const fs::path root = fs::temp_directory_path() / (L"mms-abi-contract-" + std::to_wstring(GetCurrentProcessId()));
     try {
+        if (argc == 2 && std::wstring(argv[1]) == L"--subtree-refresh-only") {
+            UiRefreshSubtreeChecks();
+            std::cout << "PASS SUBTREE refresh checks=" << checks << "\n"; return 0;
+        }
         if (argc == 2 && std::wstring(argv[1]) == L"--state-content-only") {
             StateContentChecks();
             std::cout << "PASS STATE content checks=" << checks << "\n"; return 0;
@@ -378,6 +383,7 @@ int wmain(int argc, wchar_t** argv) {
             CppRefreshChecks();
             LayoutRefreshChecks();
             DataRefreshChecks(); CppDataRefreshChecks();
+            UiRefreshSubtreeChecks();
             if (argc == 3) ManagerRefreshChecks(root, fs::absolute(argv[2]));
             std::cout << "PASS refresh checks=" << checks << "\n"; fs::remove_all(root); return 0;
         }
@@ -385,6 +391,7 @@ int wmain(int argc, wchar_t** argv) {
         JsonChecks(); DiscoveryChecks(root); UiChecks(); UiPreferenceChecks(); UiPreferencesFileChecks(root); LayoutChecks(); TreeLayoutChecks(); LayoutServiceChecks(); OverflowValidationChecks(); OverflowMenuChecks(); UpdateChecks(); Win32HostChecks(); SurfaceChecks(); CppSdkChecks(); LoaderChecks(root, fs::absolute(argv[1]));
         LifecycleChecks(root, fs::absolute(argv[2])); TaskDispatchChecks(root, fs::absolute(argv[2]), fs::absolute(argv[3]));
         SceneChecks(); StorageChecks(root); EditChecks(); SharedHistoryChecks(); StateContentChecks();
+        UiRefreshSubtreeChecks();
         ManagerEditChecks(root, fs::absolute(argv[3]));
         std::cout << "PASS checks=" << checks << "\n"; fs::remove_all(root); return 0;
     } catch (const std::exception& e) { std::cerr << "FAIL after " << checks << ": " << e.what() << "\nfixtures=" << Utf8(root.native()) << "\n"; return 1; }

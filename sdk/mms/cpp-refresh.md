@@ -1,6 +1,6 @@
 # C++17 界面重绘 SDK
 
-`mms/cpp/refresh.hpp` 包装已有 `mms.ui.refresh` C 表，复用原元素、目标和票据，无需链接宿主库。开发环境与[界面注册 SDK](cpp-ui.md)相同。当前支持 SELF 范围的 REPAINT、按钮部分 STATE 及保留布局的 LAYOUT；[数据刷新 SDK](data-refresh.md)通过同一 Request 和 RefreshTicket 提交 DATA。实际目标能力和宿主行为见 [C 接口参考](refresh.md)。
+`mms/cpp/refresh.hpp` 包装已有 `mms.ui.refresh` C 表，复用原元素、目标和票据，无需链接宿主库。开发环境与[界面注册 SDK](cpp-ui.md)相同。当前支持 SELF 和 SUBTREE 范围的 REPAINT、按钮 STATE 及保留布局的 LAYOUT；[数据刷新 SDK](data-refresh.md)通过同一 Request 和 RefreshTicket 提交 DATA。实际目标能力和宿主行为见 [C 接口参考](refresh.md)。
 
 ## 类型与线程
 
@@ -50,11 +50,17 @@ MmsResult result = refresh.RepaintRect(target, dirty, ticket, 17);
 | `RelayoutCurrent(ref, ticket, key=0)` | 使用原目标引用提交 LAYOUT + SELF，几何修订为 0；按保留布局及缓存状态排版，不隐含 STATE 或 REPAINT。 |
 | `RefreshStateLayout(ref, ticket, key=0)` | 使用原目标引用提交 STATE、LAYOUT、REPAINT，范围为 SELF、几何修订为 0；支持按钮收缩空位及同一引用恢复零尺寸按钮。 |
 | `RepaintRects(target, rects, count, ticket, key=0)` | 多个局部 DIP 矩形；count=0 等同整目标请求。 |
+| `RefreshSubtree(ref, kinds, ticket, key=0)` | 注册子树；无局部矩形、几何约束为 0，DATA 原子捕获绑定版本集合。 |
+| `RepaintSubtree(ref, ticket, key=0)` | 子树实际呈现的整客户区失效。 |
+| `RefreshStateSubtree(ref, ticket, key=0)` | 子树宿主按钮的 STATE。 |
+| `RelayoutSubtree(ref, ticket, key=0)` | 保留树 LAYOUT，不隐含 STATE。 |
+| `RefreshDataSubtree(ref, ticket, key=0)` | 子树 DATA 与 REPAINT。 |
+| `RefreshSubtreeElement(element, kinds, ticket, key=0)` | UI 线程先按原 handle 查询目标，再提交同一请求。 |
 | `Request(request, ticket)` | 原样提交完整 C 请求，调用者填写结构头和字段。 |
 
 `key` 为原 coalesceKey。SDK 不合并、不重试，不在 STALE 后自动扩大损伤范围。矩形只需在调用期间有效，宿主复制其内容。旧几何被拒绝时，在 UI 线程重新捕获并计算矩形，不能只改代次。
 
-输出票据必须为空。已有票据时返回 BUSY，不向宿主提交或覆盖旧句柄。接受后直接保存原句柄，不再分配内存。未挂载、暂停或停止仍返回 NOT_READY；不支持 LAYOUT 的后端或目标、超出当前按钮范围的 STATE 返回 UNSUPPORTED；DATA 须使用有效数据绑定及来源版本。
+输出票据必须为空。已有票据时返回 BUSY，不向宿主提交或覆盖旧句柄。接受后直接保存原句柄，不再分配内存。未挂载、暂停或停止仍返回 NOT_READY；不支持 LAYOUT 的后端或目标、超出当前按钮范围的 STATE 返回 UNSUPPORTED；SELF + DATA 须使用有效数据绑定及来源版本；SUBTREE + DATA 由宿主捕获版本集合。
 
 提交返回 OK 只代表入队。不支持的显隐、回调失败或执行时过期由 Query 返回的终态和 result 表达，不能只检查提交结果。`RefreshStateCurrent` 不绕过实例、工程、ready 或有效布局提示检查；工程切换或实例重建后仍须重新取得目标。
 
@@ -86,6 +92,29 @@ MmsResult result = refresh.RefreshStateLayout(target.target, ticket);
 
 布局失败会暂停目标和新几何快照，已有快照租约仍可读。宿主不承诺回滚部分已移动的 HWND；后续正常宿主布局成功后恢复发布。
 
+## 同一注册树的子树刷新
+
+简单插件保留组注册得到的原 handle，即可查询 GROUP 目标。复杂插件继续操作同一批对象。
+
+```cpp
+MmsUiRefreshTargetV1 target{};
+MmsResult result = refresh.Target(groupHandle, target); // UI 线程
+mms::sdk::RefreshTicket ticket;
+if (result == MMS_OK) {
+    result = refresh.RefreshSubtree(target.target,
+        MMS_UI_REFRESH_STATE | MMS_UI_REFRESH_LAYOUT |
+        MMS_UI_REFRESH_REPAINT, ticket);
+}
+```
+
+GROUP 只开放 SUBTREE。supportedKinds 是开放范围的能力并集，提交时仍检查每个位是否有适用成员。需要 DATA 时可组合该位，或用 RefreshDataSubtree；没有有效绑定时返回 UNSUPPORTED。PANEL 内部的插件自有 HWND 不是注册后代。
+
+RefreshSubtree 在工作线程使用已捕获引用，不展开树或捕获版本。所有接收、配额、取消和合并由同一 C 队列处理。DATA 完成后的 ticket.sourceRevision=0 表示版本集合，读取 completedKinds 确认成功；各绑定消费版本从数据服务读取。
+
+阶段按整树 DATA、整树 STATE、一次布局、各目标 REPAINT 执行。跨所有者整次拒绝，拓扑或绑定集合变化使旧票据 STALE。PENDING 取消撤回全树；失败停止后续阶段，不回滚已经应用的 UI。完整规则见[子树 C 契约](refresh.md#子树范围)。
+
+便利接口不接收局部矩形。需要严格固定几何时，使用 Request 填 root 的非零 expectedGeometryRevision，宿主同时限制捕获的成员几何。不支持的坐标范围不会自动降级。
+
 ## 查询和清理
 
 | 方法 | 行为 |
@@ -111,4 +140,4 @@ COMPLETED 表示请求的各刷新阶段已完成，不保证像素已显示。�
 
 析构仅尝试 `Release()`，不会取消或等待 UI。析构无法报告释放失败，也不能保留已销毁的 SDK 对象。在 `stop` 中先停止生产请求、结束自己的后台任务，再显式清理全部票据。失败时保留对象并返回 BUSY 或错误供宿主重试，不能仅依赖析构完成停止。
 
-本封装不创建后台线程、轮询器、默认订阅或动画时钟。DATA 便利入口由同层的 `data_refresh.hpp` 组合本封装实现。完整 STATE、SUBTREE、DEPENDENTS、自动依赖和插件量测提供者尚未开放，普通 `mms.edit` 仍关闭。包装捕获意外 C++ 异常并返回错误码；插件仍须遵守 C ABI，不让异常跨 DLL。
+本封装不创建后台线程、轮询器、默认订阅或动画时钟。DATA 便利入口由同层的 `data_refresh.hpp` 组合本封装实现。属性 STATE、DEPENDENTS、子树局部坐标映射、自动依赖和插件量测提供者尚未开放，普通 `mms.edit` 仍关闭。包装捕获意外 C++ 异常并返回错误码；插件仍须遵守 C ABI，不让异常跨 DLL。

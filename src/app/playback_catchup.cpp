@@ -156,7 +156,8 @@ void OrderedMorphPhysicsPass(MMDApp* app, int count, bool selSkip) {
     // x64 pump sub_7FF7CB4474F0: both ordering passes run order and slot
     // walks to 255 (block 1 cmp edi/rbx, 0FFh at 0x7FF7CB44BB0E/0x7FF7CB44BADA;
     // block 2 at 0x7FF7CB44BDDA/0x7FF7CB44BD7D; comboSelIndex2 = model+0x3109).
-    for (int order = 0; order < kModelSlotCount; ++order) {
+    // Keep legacy zero, plus the one-based final order at full slot capacity.
+    for (int order = 0; order <= kModelSlotCount; ++order) {
         for (int j = 0; j < kModelSlotCount; ++j) {
             unsigned char* mdl = models[j];
             if (mdl == nullptr || mikumikustudio::mdl::Mdl(mdl)->comboSelIndex2 != order)

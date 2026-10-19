@@ -14,6 +14,12 @@ public:
     };
     struct DataContribution;
     using Contribution = std::shared_ptr<DataContribution>;
+    struct Captured {
+        MmsUiTargetRefV1 target{};
+        MmsHandle binding = 0;
+        uint64_t revision = 0;
+        Contribution data;
+    };
     explicit UiRefreshBindings(Hooks = {});
     ~UiRefreshBindings();
     UiRefreshBindings(const UiRefreshBindings&) = delete;
@@ -24,6 +30,11 @@ public:
     // not call hooks or touch HWND/registry, and are safe under the queue lock.
     MmsResult Capture(RefreshClient&, MmsHandle binding, const MmsUiTargetRefV1&,
         uint64_t requestedRevision, Contribution&);
+    // One binding-lock critical section captures the complete version cohort.
+    // Unbound targets are omitted; a bound source without a snapshot rejects all.
+    MmsResult CaptureSubtree(RefreshClient&, const std::vector<MmsUiTargetRefV1>&, std::vector<Captured>&);
+    MmsResult ValidateSubtree(const RefreshClient&, const std::vector<MmsUiTargetRefV1>&,
+        const std::vector<Captured>&) const;
     MmsResult Consume(const Contribution&, const std::function<MmsResult()>& revalidate,
         uint64_t& consumedRevision, bool& displayChanged);
     bool HasBinding(const RefreshClient&, const MmsUiTargetRefV1&) const;

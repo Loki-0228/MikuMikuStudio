@@ -1255,7 +1255,9 @@ void PhysicsFrame(MMDApp* app, unsigned char selActive) {
     // x64 pump sub_7FF7CB4474F0: both pose passes run order and slot walks
     // to 255 (pass 1: cmp rbx/edi, 0FFh at 0x7FF7CB44C69A/0x7FF7CB44C6DD;
     // pass 2: 0x7FF7CB44C89A/0x7FF7CB44C8CE; comboSelIndex2 = model+0x3109).
-    for (int order = 0; order < kModelSlotCount; ++order) {
+    // The order byte can also be 255 when all 255 one-based rows are occupied;
+    // retain order zero for older scenes while including that endpoint.
+    for (int order = 0; order <= kModelSlotCount; ++order) {
         for (int j = 0; j < kModelSlotCount; ++j) {
             unsigned char* mdl = models[j];
             if (mdl != nullptr && mdl::Mdl(mdl)->comboSelIndex2 == order) {
@@ -1416,7 +1418,7 @@ void PhysicsFrame(MMDApp* app, unsigned char selActive) {
     // 0x7FF7CB44C85F..0x7FF7CB44C8D4, morph call / SetPhysicsMode twin at
     // 0x7FF7CB44C8A8/0x7FF7CB44C8C7).  x64 keeps this pass INSIDE gate B -
     // it is skipped while the accessory-edit dialog holds physics.
-    for (int order = 0; order < kModelSlotCount; ++order) {
+    for (int order = 0; order <= kModelSlotCount; ++order) {
         for (int j = 0; j < kModelSlotCount; ++j) {
             unsigned char* mdl = models[j];
             if (mdl != nullptr && mdl::Mdl(mdl)->comboSelIndex2 == order) {

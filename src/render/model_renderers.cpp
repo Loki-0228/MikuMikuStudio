@@ -53,7 +53,7 @@ namespace {
 
 template <typename ResolveModel>
 auto BuildModelDrawOrder(MMDApp* app, ResolveModel resolveModel) {
-    return BuildDrawOrder<kModelSlotCount>(
+    return BuildDrawOrder<kModelSlotCount, kModelSlotCount + 1>(
         [&](int slot) { return resolveModel(app->ModelSlot(slot)); },
         [](unsigned char* model) { return mdl::Mdl(model)->comboSelIndex; });
 }
@@ -2447,7 +2447,7 @@ void RenderModelsFixed(MMDApp* app) {                         // 0x425D20
             app->AutoTransparentMaterialSortingEnabled() &&
             (RenderSplitOrderedAlpha(app, false) || RenderNativeOrderedAlpha(app, false))) continue;
 #endif
-        for (int order = 0; order < kModelSlotCount; ++order) {
+        for (int order = 0; order <= kModelSlotCount; ++order) {
             const auto& entry = orderedModels[order];
             auto* model = entry.model;
             if (model != nullptr) {
@@ -2623,7 +2623,7 @@ void RenderModelsEffect(MMDApp* app, const float frameMatrix[16]) { // 0x4277E0
             app->AutoTransparentMaterialSortingEnabled() &&
             (RenderSplitOrderedAlpha(app, true) || RenderNativeOrderedAlpha(app, true))) continue;
 #endif
-        for (int order = 0; order < kModelSlotCount; ++order) {
+        for (int order = 0; order <= kModelSlotCount; ++order) {
             const auto& entry = orderedModels[order];
             auto* model = entry.model;
             const int slot = entry.slot;

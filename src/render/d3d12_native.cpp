@@ -278,7 +278,7 @@ struct Native {
         packed.parameters.geometryRevision=geometryRevision;
         if(identity!=modelIdentity){WaitAll();textures.clear();modelIdentity=std::move(identity);}
         unsigned vertexBase=0;
-        for(int order=0;order<kModelSlotCount;++order)for(int slot=0;slot<kModelSlotCount;++slot){
+        for(int order=0;order<=kModelSlotCount;++order)for(int slot=0;slot<kModelSlotCount;++slot){
             auto* model=app->ModelSlot(slot);if(!model||mdl::Mdl(model)->comboSelIndex!=order)continue;
             auto& m=*mdl::Mdl(model);if(!m.loadComplete)break;
             if(!PrepareGpuModelInput(app,model,world,one,geometry))throw std::runtime_error("Native model has an unsupported skinning type");

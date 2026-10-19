@@ -151,6 +151,39 @@ public:
         request.scope = MMS_UI_REFRESH_SELF; request.coalesceKey = coalesceKey;
         return Request(request, out);
     }
+    // Same registration, service, queue and ticket as SELF. DATA captures the
+    // complete bound version set at acceptance; no per-child version is guessed.
+    // Worker-safe with an already captured target. No local rectangles.
+    MmsResult RefreshSubtree(const MmsUiTargetRefV1& target, std::uint32_t kinds,
+        RefreshTicket& out, std::uint64_t coalesceKey = 0) const noexcept {
+        MmsUiRefreshRequestV1 request{}; request.h = Header<MmsUiRefreshRequestV1>();
+        request.target = target; request.kinds = kinds; request.scope = MMS_UI_REFRESH_SUBTREE;
+        request.coalesceKey = coalesceKey; return Request(request, out);
+    }
+    MmsResult RepaintSubtree(const MmsUiTargetRefV1& target, RefreshTicket& out,
+        std::uint64_t coalesceKey = 0) const noexcept {
+        return RefreshSubtree(target, MMS_UI_REFRESH_REPAINT, out, coalesceKey);
+    }
+    MmsResult RefreshStateSubtree(const MmsUiTargetRefV1& target, RefreshTicket& out,
+        std::uint64_t coalesceKey = 0) const noexcept {
+        return RefreshSubtree(target, MMS_UI_REFRESH_STATE, out, coalesceKey);
+    }
+    MmsResult RelayoutSubtree(const MmsUiTargetRefV1& target, RefreshTicket& out,
+        std::uint64_t coalesceKey = 0) const noexcept {
+        return RefreshSubtree(target, MMS_UI_REFRESH_LAYOUT, out, coalesceKey);
+    }
+    MmsResult RefreshDataSubtree(const MmsUiTargetRefV1& target, RefreshTicket& out,
+        std::uint64_t coalesceKey = 0) const noexcept {
+        return RefreshSubtree(target, MMS_UI_REFRESH_DATA | MMS_UI_REFRESH_REPAINT, out, coalesceKey);
+    }
+    MmsResult RefreshSubtreeElement(MmsHandle element, std::uint32_t kinds, RefreshTicket& out,
+        std::uint64_t coalesceKey = 0) const noexcept {
+        if (const auto result = CheckThread()) return result;
+        if (out) return MMS_E_BUSY;
+        MmsUiRefreshTargetV1 target{};
+        if (const auto result = Target(element, target)) return result;
+        return RefreshSubtree(target.target, kinds, out, coalesceKey);
+    }
     // UI-only convenience for a simple command callback. Worker callers must
     // use an already captured target with Repaint/RepaintRects instead.
     MmsResult RepaintElement(MmsHandle element, RefreshTicket& out,

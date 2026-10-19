@@ -772,14 +772,24 @@ struct NativeUi::Impl {
         for (const auto& [id, element] : registry.elements) {
             const auto bounds = geometry.find(id);
             if (bounds == geometry.end() || String(element.desc.ownerPlugin) == "mms") continue;
-            if (element.desc.kind == MMS_UI_BUTTON) {
+            if (element.desc.kind == MMS_UI_BUTTON || element.desc.kind == MMS_UI_SEPARATOR) {
                 const auto control = controls.find(id);
                 if (control == controls.end() || control->second.element != element.handle || !control->second.window) continue;
                 if (!Presentation(element, control->second.window, control->second.instance, bounds->second.visible, out)) return false;
-                out.back().stateRefresh = true; out.back().stateVisible = control->second.stateVisible;
+                out.back().stateRefresh = element.desc.kind == MMS_UI_BUTTON; out.back().stateVisible = control->second.stateVisible;
                 out.back().stateVisibility = (element.effectiveHints.flags & MMS_HINT_PRESERVE_HIDDEN_SLOT) != 0;
                 out.back().layoutVisible = control->second.layoutVisible && visible && height > 0;
                 out.back().layoutRefresh = true;
+            } else if (element.desc.kind == MMS_UI_GROUP) {
+                // A retained group is an addressable registration, not another
+                // HWND. Its SUBTREE expands to the existing descendant views.
+                RefreshPresentation item; item.element = element.handle;
+                item.owner = String(element.desc.ownerPlugin); item.instance = element.handle;
+                item.window = toolbar; item.dpi = dpi; item.container = true;
+                item.x = bounds->second.x; item.y = bounds->second.y;
+                item.width = bounds->second.width; item.height = bounds->second.height;
+                item.visible = bounds->second.visible; item.layoutRefresh = true;
+                out.push_back(std::move(item));
             } else if (element.desc.kind == MMS_UI_PANEL && !panelErrors.count(id)) {
                 UiRegistry::SurfacePresentation view;
                 if (!registry.ExistingSurface(id, view)) continue;
@@ -928,9 +938,10 @@ struct NativeUi::Impl {
         if (refreshLayout || refreshing || !IsWindow(main) || revision != registry.Revision()) return MMS_E_NOT_READY;
         bool present = false;
         for (const auto& [id, e] : registry.elements) if (e.handle == element) {
-            if (e.desc.kind == MMS_UI_BUTTON) {
+            if (e.desc.kind == MMS_UI_BUTTON || e.desc.kind == MMS_UI_SEPARATOR) {
                 const auto c = controls.find(id); present = c != controls.end() && c->second.element == element && IsWindow(c->second.window);
             } else if (e.desc.kind == MMS_UI_PANEL) { UiRegistry::SurfacePresentation view; present = registry.ExistingSurface(id, view); }
+            else if (e.desc.kind == MMS_UI_GROUP) present = IsWindow(toolbar);
             break;
         }
         if (!present) return MMS_E_STALE;

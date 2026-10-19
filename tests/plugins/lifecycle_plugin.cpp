@@ -153,7 +153,14 @@ static MmsResult MMS_CALL Create(const MmsHostV1* host, const MmsCreateInfoV1* i
         if (r) { delete p; return r; }
         MmsUiRefreshCapabilitiesV1 capabilities{}; capabilities.h = H<MmsUiRefreshCapabilitiesV1>();
         r = p->refresh.Capabilities(capabilities);
-        if (r || !(capabilities.supportedKinds & MMS_UI_REFRESH_REPAINT) || capabilities.supportedScopes != MMS_UI_REFRESH_SELF) { delete p; return r ? r : MMS_E_FAILED; }
+        // This fixture consumes SELF. Additive scopes negotiated by another
+        // consumer must not make its existing SELF capability disappear.
+        if (r || !(capabilities.supportedKinds & MMS_UI_REFRESH_REPAINT) ||
+            !(capabilities.supportedScopes & MMS_UI_REFRESH_SELF)) {
+            const auto detail = std::string("REFRESH_SERVICE_FAILED result=") + std::to_string(r) +
+                " kinds=" + std::to_string(capabilities.supportedKinds) + " scopes=" + std::to_string(capabilities.supportedScopes);
+            Log(p, detail.c_str()); delete p; return r ? r : MMS_E_FAILED;
+        }
         if (host->queryService(host->context, S("mms.edit"), 1, 0, sizeof(buffer), buffer) != MMS_E_NOT_FOUND) { delete p; return MMS_E_FAILED; }
         Log(p, "REFRESH_SERVICE_PASS");
     }

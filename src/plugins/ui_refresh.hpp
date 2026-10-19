@@ -32,16 +32,30 @@ struct RefreshPresentation {
     bool stateRefresh = false, stateVisible = true;
     bool stateVisibility = false, layoutVisible = true;
     bool layoutRefresh = false;
+    // A retained GROUP uses its original registration identity but has no
+    // separate drawable client area. Only SUBTREE is exposed for it.
+    bool container = false;
 };
 class UiRefreshQueue {
     struct Target;
     struct Ticket;
+    struct TreeNode {
+        MmsHandle parent = 0;
+        std::string owner;
+        uint32_t kind = 0;
+        bool operator==(const TreeNode& other) const noexcept {
+            return parent == other.parent && owner == other.owner && kind == other.kind;
+        }
+    };
     UiRegistry& registry_;
     std::unique_ptr<UiRefreshBindings> bindings_;
     DWORD thread_ = GetCurrentThreadId();
     mutable std::mutex mutex_;
     std::map<MmsHandle, Target> targets_;
     std::map<MmsHandle, Ticket> tickets_;
+    std::map<MmsHandle, TreeNode> tree_;
+    uint64_t topologyRevision_ = 1;
+    bool topologyReady_ = false;
     std::uint64_t next_ = 1, nextGeneration_ = 1, nextGeometry_ = 1, epoch_ = 1;
     bool draining_ = false;
     const RefreshClient* evaluatingStateOwner_ = nullptr;
@@ -60,6 +74,8 @@ class UiRefreshQueue {
     MmsResult Cancel(RefreshClient&, MmsHandle);
     MmsResult Release(RefreshClient&, MmsHandle);
     bool ReadOnlyCauseLocked(const RefreshClient&) const noexcept;
+    std::vector<MmsHandle> SubtreeLocked(MmsHandle) const;
+    MmsResult ValidateTicketLocked(const Ticket&, bool geometry) const;
 public:
     explicit UiRefreshQueue(UiRegistry&);
     ~UiRefreshQueue();
@@ -82,6 +98,9 @@ public:
     bool CachedStateVisible(MmsHandle, bool fallback) const;
     MmsResult WithLayoutProvider(const UiClient&, const std::function<MmsResult()>&);
     void SyncTargets(const std::vector<RefreshPresentation>&);
+    // UI-only publication. Requests use this copy, never registry pointers.
+    // Failure closes SUBTREE acceptance until the next successful publication.
+    void SyncTopology() noexcept;
     void InvalidateTarget(MmsHandle) noexcept;
     // Pause before native moves, retaining the last geometry revision. Only
     // a successful publication may make a target ready again.

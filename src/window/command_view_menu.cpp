@@ -263,6 +263,9 @@
 #include "../plugins/native_pose_axis.hpp"
 #include "../plugins/native_pose_scope.hpp"
 #include "../plugins/native_global_commands.hpp"
+#include "../plugins/native_model_order.hpp"
+#include "../plugins/native_object_commands.hpp"
+#include "mikumikustudio/runtime_log.hpp"
 #endif
 #include "mikumikustudio/ui_language.hpp"
 
@@ -546,9 +549,16 @@ struct ModelOrderDialogState {
     bool uiNeedsRepair = false, listNeedsRepair = false, closeRequested = false;
     bool restoreCanUndo = false, restoreCanRedo = false;
     scene_history_ui::Selection restoreSelection{};
-    ~ModelOrderDialogState() {
+#if !MMD_ORIGINAL_PROFILE
+    plugins::NativeModelOrderPlan historyPlan;
+    bool bound = false;
+#endif
+    void ClearScratch() noexcept {
         if (app.AccessoryOrderArray() == order) app.AccessoryOrderArray() = nullptr;
-        std::free(order);
+        std::free(order); order = nullptr;
+    }
+    ~ModelOrderDialogState() {
+        ClearScratch();
     }
     bool IsCurrent() const noexcept {
         for (int slot = 0; slot < kModelSlotCount; ++slot) {
@@ -622,8 +632,10 @@ bool RepairModelOrderRows(ModelOrderDialogState& state, HWND dialog) {
     SendDlgItemMessageW(dialog, panel::kOrderListBox, LB_RESETCONTENT, 0, 0);
     try {
         for (int row = 1; row <= state.count; ++row) {
-            const int slot = state.order[row] - 1;
-            if (slot < 0 || slot >= kModelSlotCount || !state.models[slot]) return false;
+            const auto stored = state.order[row];
+            if (stored <= 0 || stored > kModelSlotCount) return false;
+            const auto slot = static_cast<unsigned>(stored - 1);
+            if (!state.models[slot]) return false;
             const auto name = text_encoding::ModelLabel(*mdl::Mdl(state.models[slot]),
                 UiUsesEnglishNames(state.app.EnglishUI()));
             if (SendDlgItemMessageW(dialog, panel::kOrderListBox, LB_INSERTSTRING, row - 1,
@@ -638,13 +650,21 @@ bool ApplyModelOrderDialog(ModelOrderDialogState& state) {
     auto& app = state.app;
     if (!ModelOrderEditReady(app) || !RepairModelOrderUi(state) || !state.IsCurrent()) return false;
     std::array<bool, kModelSlotCount> used{};
+    std::array<mdl::ModelRecord*, kModelSlotCount> targets{};
     bool changed = false;
     for (int row = 1; row <= state.count; ++row) {
-        const int slot = state.order[row] - 1;
-        if (slot < 0 || slot >= kModelSlotCount || !state.models[slot] || used[slot]) return false;
+        const auto stored = state.order[row];
+        if (stored <= 0 || stored > kModelSlotCount) return false;
+        const auto slot = static_cast<unsigned>(stored - 1);
+        if (!state.models[slot] || used[slot]) return false;
         used[slot] = true;
+        targets[static_cast<std::size_t>(row) - 1] = mdl::Mdl(state.models[slot]);
         changed |= (state.calculate ? state.calculation[slot] : state.draw[slot]) != row;
     }
+#if !MMD_ORIGINAL_PROFILE
+    if (state.bound)
+        return state.historyPlan.Read(state.order, static_cast<std::size_t>(state.count)) == MMS_OK;
+#endif
     // No callbacks occur between the order-byte writes. Native control reads
     // and refreshes share the guard against synchronous input/close reentry.
     bake::ScopedUiInputGate gate;
@@ -652,7 +672,7 @@ bool ApplyModelOrderDialog(ModelOrderDialogState& state) {
     const bool canUndo = IsWindowEnabled(GetDlgItem(app.MainWindow(), panel::kUndoButton)) != FALSE;
     const bool canRedo = IsWindowEnabled(GetDlgItem(app.MainWindow(), panel::kRedoButton)) != FALSE;
     for (int row = 1; row <= state.count; ++row) {
-        auto& model = *mdl::Mdl(state.models[state.order[row] - 1]);
+        auto& model = *targets[static_cast<std::size_t>(row) - 1];
         (state.calculate ? model.comboSelIndex2 : model.comboSelIndex) = static_cast<unsigned char>(row);
     }
     if (!state.calculate && scene_history_ui::RefreshObjectLists(app, selection, canUndo, canRedo) !=
@@ -675,6 +695,29 @@ bool ApplyModelOrderDialog(ModelOrderDialogState& state) {
     }
     return true;
 }
+
+#if !MMD_ORIGINAL_PROFILE
+bool BeginBoundModelOrder(ModelOrderDialogState& state) {
+    if (!plugins::BoundNativePoseHistory(&state.app)) return true;
+    const auto result = state.historyPlan.Begin(state.app,
+        state.calculate ? plugins::ModelOrderKind::Calculate : plugins::ModelOrderKind::Draw);
+    if (result != MMS_OK) {
+        runtime_log::Write("PLUGIN_ABI model order capture refused: %d", result); return false;
+    }
+    state.bound = true; return true;
+}
+void FinishBoundModelOrder(ModelOrderDialogState& state, INT_PTR response) {
+    if (!state.bound || response != IDOK) return;
+    state.ClearScratch();
+    std::shared_ptr<plugins::HistoryChange> change;
+    auto result = state.historyPlan.Take(change);
+    if (result == MMS_OK && change) {
+        auto* history = plugins::BoundNativePoseHistory(&state.app);
+        result = history ? plugins::CommitBoundModelOrder(state.app, *history, std::move(change), state.calculate) : MMS_E_STALE;
+    }
+    if (result != MMS_OK) runtime_log::Write("PLUGIN_ABI model order commit refused: %d", result);
+}
+#endif
 
 // VA 0x00466370 - gravity-setting dialog (266) edit subclass: WM_KEYDOWN +
 // VK_RETURN reads the edit (0x2C5..0x2C9 = 709..713) as a float and applies
@@ -1362,8 +1405,9 @@ INT_PTR ModelOrderDlgProc(HWND dialog, UINT message, WPARAM wp, LPARAM lp) {
     if (command == 630 || command == 631) {
         if (!RepairModelOrderRows(*state, dialog)) return TRUE;
         const int row = static_cast<int>(SendDlgItemMessageW(dialog, panel::kOrderListBox, LB_GETCURSEL, 0, 0));
+        if (row < 0 || row >= state->count) return TRUE;
         const int target = row + (command == 630 ? -1 : 1);
-        if (row < 0 || row >= state->count || target < 0 || target >= state->count) return TRUE;
+        if (target < 0 || target >= state->count) return TRUE;
         try {
             bake::ScopedUiInputGate gate;
             HWND list = GetDlgItem(dialog, panel::kOrderListBox);
@@ -2607,10 +2651,18 @@ void CmdViewMenu(MMDApp* app, HWND hwnd, std::uint16_t id,
     case 288: {
         if (app->AccessoryOrderArray() || !ModelOrderEditReady(*app)) return;
         ModelOrderDialogState state{*app, false};
+#if !MMD_ORIGINAL_PROFILE
+        if (!BeginBoundModelOrder(state)) return;
+#endif
         app->state.enterKeyState = 1;
-        UiDialogBoxParamA(hInst,
+        const auto response = UiDialogBoxParamA(hInst,
                         MAKEINTRESOURCEA(english ? 0x325 : 0x324),
                         hwnd, ModelDisplayOrderDlgProc, reinterpret_cast<LPARAM>(&state));
+#if !MMD_ORIGINAL_PROFILE
+        FinishBoundModelOrder(state, response);
+#else
+        (void)response;
+#endif
         return;
     }
 
@@ -2621,11 +2673,19 @@ void CmdViewMenu(MMDApp* app, HWND hwnd, std::uint16_t id,
     case 289: {
         if (app->AccessoryOrderArray() || !ModelOrderEditReady(*app)) return;
         ModelOrderDialogState state{*app, true};
+#if !MMD_ORIGINAL_PROFILE
+        if (!BeginBoundModelOrder(state)) return;
+#endif
         app->state.dialogFlags[2] = 1;
         app->state.enterKeyState = 1;
-        UiDialogBoxParamA(hInst,
+        const auto response = UiDialogBoxParamA(hInst,
                         MAKEINTRESOURCEA(english ? 0x32B : 0x32A),
                         hwnd, ModelCalculateOrderDlgProc, reinterpret_cast<LPARAM>(&state));
+#if !MMD_ORIGINAL_PROFILE
+        FinishBoundModelOrder(state, response);
+#else
+        (void)response;
+#endif
         return;
     }
 

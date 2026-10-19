@@ -6,7 +6,11 @@
 
 2026-10-20 完成 [main 名称与格式标记同步](records/abi-main-marker-sync-2026-10-20.md)：同步标准 19 字节 PMM 名称判断及所选命名修复；按用户要求仅识别 MMS 扩展标记，不保留旧 MDS 读取别名。独立镜头数值修复工具及启动器已从 ABI 分支移除。完整和基础配置构建、格式专项及六组相关共同历史专项通过；完整历史套件在真实光标定位处受本机环境限制，未声明整套通过。UI 框架已由用户确认修复完成，下列早期闪动描述保留为历史排查记录。
 
-[模型顺序修复](records/abi-model-order-2026-10-20.md)使模型名称、行数据、当前模型和父模型选择保持一致，计算顺序使用独立字段；列表写入失败恢复后才允许提交或退出。完整和基础配置各 13 个实际对话框场景通过。菜单 288／289 的共同历史迁移及同时加载 255 个模型的既有循环边界仍属后续工作。
+[模型顺序修复](records/abi-model-order-2026-10-20.md)使模型名称、行数据、当前模型和父模型选择保持一致，计算顺序使用独立字段。随后完成[排序共同历史与容量边界](records/abi-model-order-history-2026-10-20.md)：菜单 288／289 在受控绑定中一次确定形成一次显式事务，保留稳定身份、选择和未登记姿态；绘制、CPU 物理及相关加载遍历包含合法顺序 255。本批修复末项遗漏，没有扩大 255 个模型的总容量。
+
+[注册子树刷新](records/abi-subtree-refresh-2026-10-20.md)已加入原刷新 C ABI 和同对象 SDK。支持后台捕获同插件注册子树、整树 DATA→STATE→一次 LAYOUT→REPAINT、完整来源版本集合、阶段结果及拓扑失效。接口结构大小不变；跨插件树、SUBTREE 局部矩形及 DEPENDENTS 未开放。
+
+普通 `mms.edit` 仍未开放。[原生写入审计](records/abi-native-writer-audit-2026-10-20.md)确认部分旧命令既未迁移也未被统一拦截，早期“所有其余入口关闭”的描述不能作为保护保证。下一批继续迁移这些实际写入入口。
 
 工具栏命令溢出已接入现有布局与 NativeUi：`MMS_UI_OVERFLOW_MENU=3` 适用于工具栏扩展区的 BUTTON、GROUP、SEPARATOR，支持 keepTogether 整组折叠。原 HWND、handle 和命令身份保留，菜单状态更新及卸载使用原生命周期规则。**状态：本机已验证。** 完整配置 21／21、原始兼容配置 18／18 组通过，`plugin_abi_contract` 重复 6／6 通过；最终轮证据见 [UI 框架记录](records/abi-ui-framework-2026-10-19.md)。SDK 范围见[工具栏命令溢出](../sdk/mms/cpp-ui.md#工具栏命令溢出)。DOCK、INPUT、其他挂载点及普通 `mms.edit` 的开放状态不变。
 
@@ -91,12 +95,13 @@ R3 拖动与插件区域问题已由用户确认恢复。按需求归类的当�
 | P2 | 按钮启用/选中的 STATE 首阶段 | 本机已验证 | 同一票据支持后台 STATE 和 STATE/REPAINT 组合；只读查询目标命令，拒绝显隐变化，抑制 UI 回调中的 STATE 递归，旧刷新及布局延后到回调外。刷新专项累计 7,523 次断言、Enter/Space、真实 DLL 和混合历史回归通过，见[验证记录](records/abi-button-state-2026-10-17.md)。后续已支持保留槽位显隐、SELF DATA 和保留布局的 SELF LAYOUT；完整 STATE 与依赖范围仍待实现。 |
 | P2 | 保留槽位按钮显隐与后台 STATE SDK | 本机已验证 | 在有效 PRESERVE_HIDDEN_SLOT 槽位内更新原按钮显隐、焦点及公开几何，不重排或写入布局偏好。RefreshStateCurrent 组合原 C 请求；固定几何与当前几何贡献分组。刷新专项累计 7,764 次断言、真实 DLL、改名宿主、混合历史及调度回归通过，见[验证记录](records/abi-slot-visibility-2026-10-17.md)。SELF DATA 和保留布局的 SELF LAYOUT 已后续接入；完整 STATE 仍待实现。 |
 | P2 | SELF DATA、来源绑定及同对象 SDK | 本机已验证 | 精确来源版本、只读显示候选交换、不可变显示租约和有界保留；共用原队列与票据。回调及任务因果保护，双插件独立任务不误标。模块 666 项、真实 DLL/SDK 897 项通过，见[记录](records/abi-data-refresh-2026-10-19.md)。后续 LAYOUT 接入后，组合顺序为 DATA、STATE、LAYOUT、REPAINT。 |
-| P2 | 保留布局的 SELF LAYOUT 及 SDK | 本机已验证 | 已有按钮和已挂载 surface 使用保留树排版；纯 LAYOUT 使用缓存状态，STATE 与 LAYOUT 组合支持收缩空位及同引用恢复零尺寸按钮。失败暂停几何及目标，旧快照租约保持；局部旧矩形返回 STALE 并保留已完成阶段。SDK 的 RelayoutCurrent、RefreshStateLayout 共用原请求。实际 NativeUi 389 项、双真实 DLL 645 项及两路径真实 MMS 入口通过；无 SUBTREE、自动依赖或插件量测提供者，见[本批记录](records/abi-layout-follow-slider-2026-10-19.md)。 |
+| P2 | 保留布局的 SELF LAYOUT 及 SDK | 本机已验证 | 已有按钮和已挂载 surface 使用保留树排版；纯 LAYOUT 使用缓存状态，STATE 与 LAYOUT 组合支持收缩空位及同引用恢复零尺寸按钮。失败暂停几何及目标，旧快照租约保持；局部旧矩形返回 STALE 并保留已完成阶段。SDK 的 RelayoutCurrent、RefreshStateLayout 共用原请求。实际 NativeUi 389 项、双真实 DLL 645 项及两路径真实 MMS 入口通过；此批验证范围见[记录](records/abi-layout-follow-slider-2026-10-19.md)；SUBTREE 已随后接入，自动依赖及插件量测提供者仍未实现。 |
 | P2 | 按钮 STATE 内容与分层 SDK | 本机已验证 | `mms.ui.refresh.state` 1.0 在原 STATE 阶段准备文案、说明和禁用原因；单写 builder、旧显示计费、提供者代次及只读因果共用原刷新规则。V5 Unicode 工具提示、真实禁用命中、失败暂停及直接布局恢复通过；属性、菜单、面板内容及依赖范围仍未实现，见[记录](records/abi-state-model-hud-readout-2026-10-19.md)。 |
 | P3 | 模型与骨骼 HUD 20 类操作 | 受控路径本机已验证 | 独立副本运行原数学，完整手势一次调整，逐字段取消并保留外写，释放采样最终系统光标；普通骨骼、等比／轴向／投影缩放均覆盖。专项 31,357 项及两种真实文件宿主通过。原始兼容 profile 保留旧路径，普通公共编辑服务仍关闭，见[记录](records/abi-state-model-hud-readout-2026-10-19.md)。 |
 | P2 | 可写属性、声明式 INPUT | 未实现 | 依赖 P3 工程事务及撤销，当前返回 NOT_READY。 |
 | P2 | 左右侧栏、属性区、时间线、状态栏挂载 | 未实现 | 不枚举空壳挂载点。 |
 | P2 | 工具栏命令溢出菜单 | 本机已验证 | `MmsUiLayoutHintsV1.overflow=MMS_UI_OVERFLOW_MENU` 复用原布局服务。仅工具栏扩展区 BUTTON、GROUP、SEPARATOR 可选择；有效顺序、组继承与 keepTogether 决定折叠单位。保留原 HWND、handle 和刷新实例，空间恢复复用；真实菜单更新原标签、启用和选中状态，移除失效项，调用前重验原身份及所有者。完整配置 21／21、原始兼容配置 18／18、ABI 契约重复 6／6 通过；最终结果见 [UI 框架记录](records/abi-ui-framework-2026-10-19.md)。无独立溢出能力查询，旧宿主可能返回 UNSUPPORTED。 |
+| P2 | 注册 SUBTREE 刷新及 SDK | 本机已验证 | 原 C ABI 支持同插件注册子树、固定来源版本集合、整树阶段顺序与拓扑失效；615 项专项及两种配置整合通过。局部矩形与 DEPENDENTS 未实现，见[记录](records/abi-subtree-refresh-2026-10-20.md)。 |
 | P2 | DOCK | 未实现 | 返回 UNSUPPORTED。 |
 | P2 | 本体菜单、控件、业务命令全部语义登记 | 未实现 | 新注册表目前覆盖新 ABI 插件。 |
 | P2 | 布局持久化、缺失插件保留 | 本机已验证 | 用户覆盖按稳定 ID 保存到程序旁 `data/settings.json` 的 `pluginUi`，旧布局仅缺失时迁移；分区 CAS、其他设置合并、重启、关闭事件及 EXE 改名通过。 |

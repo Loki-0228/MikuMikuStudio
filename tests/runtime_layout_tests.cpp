@@ -294,6 +294,66 @@ void GlobalKeyTracks() {
 }
 }
 
+void FullModelPhysicsOrder() {
+    auto app = std::make_unique<MMDApp>();
+    app->state = MMDAppState{};
+    app->state.messageSeen = 1;
+    app->PlaybackPhysicsMode() = 0; // Exercise pose passes without advancing a simulation.
+    btDefaultCollisionConfiguration config;
+    btCollisionDispatcher dispatcher(&config);
+    btDbvtBroadphase broadphase;
+    btSequentialImpulseConstraintSolver solver;
+    btDiscreteDynamicsWorld world(&dispatcher, &broadphase, &solver, &config);
+    PhysicsScene scene{}; scene.world = &world; app->Physics() = &scene;
+    std::vector<mdl::ModelRecord> models(kModelSlotCount);
+    std::vector<std::array<mdl::BoneRecord, 2>> bones(kModelSlotCount);
+    std::vector<mdl::BoneOrderEntry> external(kModelSlotCount);
+    for (int slot = 0; slot < kModelSlotCount; ++slot) {
+        auto& model = models[slot];
+        model.comboSelIndex2 = static_cast<unsigned char>(slot + 1);
+        model.boneCount = 2; model.boneTable = bones[slot].data();
+        external[slot].linkedModel = -1;
+        model.boneOrderTable = &external[slot]; model.boneOrderCount = 1;
+        app->ModelSlot(slot) = reinterpret_cast<unsigned char*>(&model);
+        for (int phase = 0; phase != 2; ++phase) {
+            auto& bone = bones[slot][phase];
+            bone.parent = bone.slotIndex = bone.tailIdx = -1;
+            bone.rigidIdx = -296; bone.type = mdl::BoneType::RotateMove;
+            bone.flags = phase ? mdl::kBoneFlagAfterPhysics : 0;
+            bone.rotQuat[3] = bone.rotQuat2[3] = 1;
+            bone.trans[0] = static_cast<float>(slot * 2 + phase + 1);
+            for (int i = 0; i != 16; ++i)
+                bone.matInit[i] = bone.matLocal[i] = bone.matWorld[i] = bone.matExtra[i] = i % 5 == 0 ? 1.f : 0.f;
+            bone.matInit[12] = -999.f;
+        }
+    }
+    auto* previous = g_Block; g_Block = app.get();
+    PhysicsFrame(app.get(), 0);
+    for (int slot = 0; slot < kModelSlotCount; ++slot)
+        for (int phase = 0; phase != 2; ++phase)
+            Check(Near(bones[slot][phase].matInit[12], bones[slot][phase].trans[0]),
+                  "both actual CPU pose passes evaluate all 255 one-based model orders");
+    // Physics must visit every matching slot, unlike the renderer's first-slot
+    // duplicate policy. Keep the endpoint duplicated across distant slots.
+    models[0].comboSelIndex2 = 255;
+    for (int slot : {0, kModelSlotCount - 1})
+        for (auto& bone : bones[slot]) bone.matInit[12] = -999.f;
+    PhysicsFrame(app.get(), 0);
+    for (int slot : {0, kModelSlotCount - 1})
+        for (const auto& bone : bones[slot])
+            Check(Near(bone.matInit[12], bone.trans[0]), "CPU order 255 processes every duplicate instead of rendering-style deduplication");
+    models[0].comboSelIndex2 = 0;
+    app->ModelSlot(17) = nullptr;
+    for (int slot : {0, kModelSlotCount - 1})
+        for (auto& bone : bones[slot]) bone.matInit[12] = -999.f;
+    PhysicsFrame(app.get(), 0);
+    for (int slot : {0, kModelSlotCount - 1})
+        for (const auto& bone : bones[slot])
+            Check(Near(bone.matInit[12], bone.trans[0]), "CPU passes retain legacy order zero and order 255 with sparse slots");
+    g_Block = previous;
+    std::puts("PASS actual CPU PhysicsFrame: 255 models, both pose phases, duplicate endpoint, legacy zero and sparse slots");
+}
+
 void LargeFramePlayback() {
     auto app=std::make_unique<MMDApp>();
     app->CurrentFrame()=frame_limits::maximum;
@@ -321,6 +381,7 @@ void LargeFramePlayback() {
 }
 
 int main(int argc,char** argv) {
+    if(argc>1&&std::string(argv[1])=="--model-order-capacity"){FullModelPhysicsOrder();return 0;}
     LargeFramePlayback();
     if(argc>1&&std::string(argv[1])=="--timeline-readouts")return TimelineParameterReadouts();
     Check(TimelineParameterReadouts()==0,"timeline parameter readouts");
@@ -329,6 +390,8 @@ int main(int argc,char** argv) {
     ModelInitializationAndHistory();
     std::puts("runtime layouts: standard-pose bone traversal");
     StandardPoseBoneTraversal();
+    std::puts("runtime layouts: full model calculation order");
+    FullModelPhysicsOrder();
     std::puts("runtime layouts: sparse global selection");
     SparseGlobalSelection();
     std::puts("runtime layouts: accessory movement and ground collision");

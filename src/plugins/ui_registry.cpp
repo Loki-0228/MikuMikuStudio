@@ -528,7 +528,7 @@ bool UiRegistry::Own(UiClient& c, MmsString id, MmsString owner) const {
     const auto s = String(id); return ValidId(s) && String(owner) == c.id && s.rfind(c.id + ".", 0) == 0;
 }
 bool UiRegistry::Exists(const std::string& id) const { return commands.count(id) || elements.count(id) || properties.count(id) || surfaces.count(id); }
-void UiRegistry::Changed() { ++revision_; if (changed_) try { changed_(); } catch (...) {} }
+void UiRegistry::Changed() { ++revision_; refresh_.SyncTopology(); if (changed_) try { changed_(); } catch (...) {} }
 void UiRegistry::RequestPresentation() noexcept { if (changed_) try { changed_(); } catch (...) {} }
 MmsResult UiRegistry::Command(UiClient& c, const MmsCommandDescV1* input, MmsHandle* out, MmsHandle replace) {
     auto check = Check(c, true); if (check) return check;

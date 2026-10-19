@@ -288,6 +288,55 @@ MmsResult UiRefreshBindings::Capture(RefreshClient& client, MmsHandle handle, co
     b->owner->accounting->contributions.fetch_add(1); state.global->contributions.fetch_add(1); item->charged = true;
     out = std::move(item); return MMS_OK;
 }
+MmsResult UiRefreshBindings::CaptureSubtree(RefreshClient& client, const std::vector<MmsUiTargetRefV1>& targets,
+                                           std::vector<Captured>& out) {
+    auto& state = *impl_; std::lock_guard<std::mutex> lock(state.mutex);
+    if (client.stopping.load()) return MMS_E_NOT_READY;
+    std::vector<Captured> candidate; candidate.reserve(targets.size());
+    for (const auto& target : targets) {
+        if (!TargetValid(target) || target.projectEpoch != state.epoch) return MMS_E_STALE;
+        for (const auto& entry : state.bindings) {
+            const auto& b = entry.second;
+            if (b->owner->client != &client || !SameTarget(b->target, target)) continue;
+            if (!b->active || b->owner->retired) return MMS_E_STALE;
+            const auto source = state.sources.find(b->source);
+            if (source == state.sources.end()) return MMS_E_STALE;
+            if (!source->second.snapshot || !source->second.revision) return MMS_E_NOT_READY;
+            auto item = std::make_shared<DataContribution>(); item->binding = b;
+            item->snapshot = source->second.snapshot; item->revision = source->second.revision; item->global = state.global;
+            candidate.push_back({target, b->handle, item->revision, std::move(item)});
+        }
+    }
+    if (candidate.empty()) return MMS_E_UNSUPPORTED;
+    const auto accounting = candidate.front().data->binding->owner->accounting;
+    if (candidate.size() > kContributions - accounting->contributions.load() ||
+        candidate.size() > 4096 - state.global->contributions.load()) return MMS_E_BUSY;
+    // No allocation or failure remains once accounting is charged.
+    accounting->contributions.fetch_add(unsigned(candidate.size()));
+    state.global->contributions.fetch_add(unsigned(candidate.size()));
+    for (auto& item : candidate) item.data->charged = true;
+    out.swap(candidate); return MMS_OK;
+}
+MmsResult UiRefreshBindings::ValidateSubtree(const RefreshClient& client, const std::vector<MmsUiTargetRefV1>& targets,
+                                            const std::vector<Captured>& captured) const {
+    const auto& state = *impl_; std::lock_guard<std::mutex> lock(state.mutex);
+    if (client.stopping.load()) return MMS_E_CANCELLED;
+    size_t count = 0;
+    for (const auto& target : targets) {
+        if (target.projectEpoch != state.epoch) return MMS_E_STALE;
+        for (const auto& entry : state.bindings) {
+            const auto& b = entry.second;
+            if (b->owner->client != &client || !SameTarget(b->target, target)) continue;
+            const auto old = std::find_if(captured.begin(), captured.end(), [&](const auto& item) {
+                return item.binding == b->handle && SameTarget(item.target, target);
+            });
+            if (old == captured.end() || !b->active || b->owner->retired ||
+                old->data->binding != b || !state.sources.count(b->source)) return MMS_E_STALE;
+            ++count;
+        }
+    }
+    return count == captured.size() ? MMS_OK : MMS_E_STALE;
+}
 MmsResult UiRefreshBindings::Consume(const Contribution& contribution, const std::function<MmsResult()>& revalidate,
                                     uint64_t& consumedRevision, bool& displayChanged) {
     auto& state = *impl_;

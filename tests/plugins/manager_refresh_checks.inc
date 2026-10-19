@@ -57,17 +57,29 @@ static void Run(const fs::path& root, const fs::path& lifecycleDll, bool stopPen
     const auto count = [&](const char* value) { return std::count_if(logs.begin(), logs.end(), [&](const auto& s) { return s.find(value) != std::string::npos; }); };
     Manager manager(directory / "user", log); manager.SetRefreshGuard([&] { ++guardCalls; return allow; });
     manager.Load(package.parent_path());
-    const auto statuses = manager.Status(); CHECK(statuses.size() == 1 && statuses[0].stage == "started");
+    const auto statuses = manager.Status();
+    if (statuses.size() != 1 || statuses[0].stage != "started") {
+        for (const auto& status : statuses)
+            std::cerr << "REFRESH_MANAGER_START id=" << status.id << " stage=" << status.stage << " error=" << status.error << '\n';
+        for (const auto& entry : logs) std::cerr << "REFRESH_MANAGER_LOG " << entry << '\n';
+    }
+    CHECK(statuses.size() == 1 && statuses[0].stage == "started");
     CHECK(count("REFRESH_SERVICE_PASS") == 1);
     const auto module = GetModuleHandleW(L"refresh-lifecycle.dll"); Probe probe(module);
     Window window;
     auto native = std::make_unique<NativeUi>(manager.Ui(), window.value, log);
     native->Refresh(); CHECK(native->Layout(10, 500, 140, true) > 0);
-    HWND button = nullptr;
+    HWND button = nullptr; unsigned pluginButtons = 0;
     for (auto child = GetWindow(native->Toolbar(), GW_CHILD); child; child = GetWindow(child, GW_HWNDNEXT)) {
-        wchar_t name[32]{}; GetClassNameW(child, name, 32); if (!std::wcscmp(name, L"Button")) { button = child; break; }
+        wchar_t name[32]{}; GetClassNameW(child, name, 32);
+        // NativeUi also creates its own "more" button (ID 0). This fixture
+        // owns exactly one registered toolbar command in the dispatch range.
+        const int controlId = GetDlgCtrlID(child);
+        if (!std::wcscmp(name, L"Button") && controlId >= 0xa000 && controlId < 0xc000) {
+            button = child; ++pluginButtons;
+        }
     }
-    CHECK(button != nullptr);
+    CHECK(button != nullptr && pluginButtons == 1 && IsWindowVisible(button));
     const auto click = [&](unsigned keyboard = 0) {
         const auto before = count("REFRESH_WORKER_PENDING");
         if (keyboard == 1) {
@@ -78,6 +90,12 @@ static void Run(const fs::path& root, const fs::path& lifecycleDll, bool stopPen
             SendMessageW(button, WM_KEYDOWN, VK_SPACE, 1);
             SendMessageW(button, WM_KEYUP, VK_SPACE, LPARAM(1) | (LPARAM(3) << 30));
         } else SendMessageW(native->Toolbar(), WM_COMMAND, MAKEWPARAM(GetDlgCtrlID(button), BN_CLICKED), reinterpret_cast<LPARAM>(button));
+        if (count("REFRESH_TARGET_IN_COMMAND") != before + 1 || count("REFRESH_WORKER_PENDING") != before + 1) {
+            std::cerr << "REFRESH_MANAGER_CLICK keyboard=" << keyboard << " id=" << GetDlgCtrlID(button)
+                << " visible=" << IsWindowVisible(button) << " enabled=" << IsWindowEnabled(button)
+                << " focus=" << (GetFocus() == button) << " before=" << before << '\n';
+            for (const auto& entry : logs) std::cerr << "REFRESH_MANAGER_LOG " << entry << '\n';
+        }
         CHECK(count("REFRESH_TARGET_IN_COMMAND") == before + 1 && count("REFRESH_WORKER_PENDING") == before + 1);
         CHECK(count("REFRESH_WORKER_FAILED") == 0 && probe.Read().status == MMS_UI_REFRESH_PENDING);
     };

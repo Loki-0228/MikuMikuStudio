@@ -114,9 +114,10 @@ void PrepareUninitializedImageModels(MMDApp* app) {
         uninitialized[slot] = zero;
     }
     // Keep native dependency order without stepping physics or the output
-    // clock. The ordinary frame tail still owns those operations.
+    // clock. Include the final one-based row as well as legacy zero. The
+    // ordinary frame tail still owns those operations.
     for (int phase : {0, 1})
-        for (int order = 0; order < kModelSlotCount; ++order)
+        for (int order = 0; order <= kModelSlotCount; ++order)
             for (int slot = 0; slot < kModelSlotCount; ++slot) {
                 auto* model = app->ModelSlot(slot);
                 if (uninitialized[slot] && mdl::Mdl(model)->comboSelIndex2 == order) {

@@ -952,6 +952,8 @@ if (MIKUMIKUSTUDIO_BUILD_UI_TESTS)
             RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
         add_test(NAME ${ui_test} COMMAND ${ui_test})
     endforeach()
+    add_test(NAME model_order_cpu_capacity COMMAND runtime_layout_tests --model-order-capacity)
+    set_tests_properties(model_order_cpu_capacity PROPERTIES TIMEOUT 60)
     add_executable(bone_key_pool_tests EXCLUDE_FROM_ALL tests/bone_key_pool_tests.cpp src/model/bone_key_pool.cpp)
     target_include_directories(bone_key_pool_tests PRIVATE include)
     set_target_properties(bone_key_pool_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
@@ -1543,6 +1545,8 @@ install(TARGETS MMSNvidiaAAFix RUNTIME DESTINATION . COMPONENT NvidiaAAFix EXCLU
 install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/licenses/" DESTINATION licenses)
 
 include(cmake/plugin_abi.cmake)
+add_test(NAME ui_subtree_refresh_runtime COMMAND plugin_abi_tests --subtree-refresh-only)
+set_tests_properties(ui_subtree_refresh_runtime PROPERTIES TIMEOUT 120)
 
 if(Python3_Interpreter_FOUND)
     add_test(NAME project_open_identity

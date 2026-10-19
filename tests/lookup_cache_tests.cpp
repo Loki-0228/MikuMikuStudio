@@ -6,13 +6,82 @@
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
+#include <cstdint>
 
 using namespace mikumikustudio;
 void Check(bool value, const char* message) {
     if (!value) { std::fprintf(stderr, "FAIL: %s\n", message); std::exit(1); }
 }
 
+void FullModelDrawOrder() {
+    constexpr std::size_t capacity = 255;
+    struct Object { std::uint8_t order; };
+    std::array<Object, capacity> objects{};
+    std::array<Object*, capacity> slots{};
+    std::array<int, capacity> positions{};
+    for (std::size_t slot = 0; slot < capacity; ++slot) {
+        const auto identity = (slot * 73 + 19) % capacity;
+        objects[identity].order = static_cast<std::uint8_t>(identity + 1);
+        slots[slot] = &objects[identity];
+        positions[identity] = static_cast<int>(slot);
+    }
+    unsigned resolves = 0;
+    const auto build = [&] {
+        return BuildDrawOrder<capacity, capacity + 1>(
+            [&](int slot) { ++resolves; return slots[slot]; },
+            [](Object* object) { return object->order; });
+    };
+    auto entries = build();
+    Check(resolves == capacity && entries.size() == capacity + 1,
+          "255 model slots have 256 order entries including legacy zero");
+    unsigned visited = 0;
+    for (const auto& entry : entries) if (entry.model) ++visited;
+    Check(visited == capacity && !entries[0].model, "all 255 independently occupied model slots reach the draw traversal");
+    for (std::size_t order = 1; order <= capacity; ++order)
+        Check(entries[order].model == &objects[order - 1] && entries[order].slot == positions[order - 1],
+              "each one-based model order resolves its original identity and sparse-independent slot");
+    Check(entries[255].model == &objects[254], "the 255th model participates at full capacity");
+
+    objects[0].order = 0;
+    entries = build();
+    Check(entries[0].model == &objects[0] && !entries[1].model && entries[255].model == &objects[254],
+          "legacy zero order remains available beside the full one-based endpoint");
+    objects[1].order = 255;
+    entries = build();
+    const auto first = positions[1] < positions[254] ? 1 : 254;
+    Check(entries[255].model == &objects[first] && entries[255].slot == positions[first],
+          "duplicate order 255 keeps the first occupied physical slot");
+    slots[positions[first]] = nullptr;
+    entries = build();
+    const auto remaining = first == 1 ? 254 : 1;
+    Check(entries[255].model == &objects[remaining] && entries[255].slot == positions[remaining],
+          "deleting a sparse slot exposes the remaining order-255 model on the next traversal");
+
+    struct InvalidOrder { int order; } invalid[] = {{-1}, {256}, {255}};
+    std::array<InvalidOrder*, capacity> invalidSlots{};
+    invalidSlots[0] = &invalid[0]; invalidSlots[1] = &invalid[1]; invalidSlots[254] = &invalid[2];
+    const auto bounded = BuildDrawOrder<capacity, capacity + 1>(
+        [&](int slot) { return invalidSlots[slot]; }, [](InvalidOrder* object) { return object->order; });
+    Check(bounded[255].model == &invalid[2] && !bounded[0].model,
+          "negative and 256 model orders are rejected without hiding legal order 255");
+
+    for (std::size_t slot = 0; slot < capacity; ++slot) {
+        objects[slot].order = static_cast<std::uint8_t>(slot);
+        slots[slot] = &objects[slot];
+    }
+    const auto accessories = BuildDrawOrder<capacity>(
+        [&](int slot) { return slots[slot]; }, [](Object* object) { return object->order; });
+    Check(accessories.size() == capacity && accessories[254].model == &objects[254],
+          "all 255 accessory slots retain the zero-based default order range");
+    const auto accessoryInvalid = BuildDrawOrder<capacity>(
+        [&](int slot) { return invalidSlots[slot]; }, [](InvalidOrder* object) { return object->order; });
+    for (const auto& entry : accessoryInvalid)
+        Check(!entry.model, "the accessory default still rejects orders -1, 255 and 256");
+    std::puts("PASS all 255 model identities and order 255, legacy zero, duplicate/sparse traversal and accessory bounds");
+}
+
 int main() {
+    FullModelDrawOrder();
     auto renderer = std::make_unique<D3DRenderer>();
     *renderer = {};
     wchar_t first[] = L"纹理/A.png", same[] = L"纹理/A.png", lower[] = L"纹理/a.png";

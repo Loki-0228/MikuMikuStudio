@@ -10,6 +10,7 @@
 #include "scene_object_history.hpp"
 #include "mikumikustudio/animation_curve_editor.hpp"
 #include "mikumikustudio/autosave.hpp"
+#include "mikumikustudio/effect_api.hpp"
 #include "mikumikustudio/bake_ui_lock.hpp"
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/model.hpp"
@@ -465,6 +466,29 @@ bool RefreshBoundObjectUi(MMDApp& app, SharedHistory& history) noexcept {
         return RefreshPublishedUi(app, history, selection) ? MMS_OK : MMS_E_FAILED;
     }) == MMS_OK;
 }
+MmsResult CommitBoundModelOrder(MMDApp& app, SharedHistory& history,
+    std::shared_ptr<HistoryChange> change, bool calculate) noexcept {
+    if (!change) return MMS_OK;
+    if (BoundNativePoseHistory(&app) != &history || !Ready(app) || EditorsOpen(app) || NativeObjectUiPending(&app)) return MMS_E_BUSY;
+    if (!ValidOrder(app)) return MMS_E_STALE;
+    if (const auto result = history.CheckNativeEdit()) return result;
+    return Boundary([&]() -> MmsResult {
+        Operation scope(app);
+        const auto selection = CaptureSelectionToken(app);
+        if (!ValidOrder(app)) return MMS_E_STALE;
+        {
+            Publication allow(scope);
+            std::unique_ptr<SharedHistory::NativeTransaction> transaction;
+            if (auto result = history.PrepareNative(calculate ? "Model calculation order" : "Model draw order",
+                    std::move(change), transaction, SharedHistory::NativeIntent::ExplicitCommit)) return result;
+            if (auto result = history.CommitNative(std::move(transaction))) return result;
+        }
+        app.SceneModified() = 1;
+        if (!calculate) InvalidateEffectCurrentObjectCache();
+        RefreshPublishedUi(app, history, selection);
+        return MMS_OK;
+    });
+}
 MmsResult RunBoundObjectHistory(MMDApp& app, SharedHistory& history, bool redo, bool deferUi) noexcept {
     if (!Ready(app, deferUi) || EditorsOpen(app) || NativeObjectUiPending(&app)) return MMS_E_BUSY;
     return Boundary([&]() -> MmsResult {
@@ -474,11 +498,13 @@ MmsResult RunBoundObjectHistory(MMDApp& app, SharedHistory& history, bool redo, 
         Operation scope(app);
         const auto selection = CaptureSelectionToken(app);
         std::array<const void*, kModelSlotCount * 2> objects{};
+        std::array<std::uint8_t, kModelSlotCount> modelDrawOrder{};
         struct AccessoryUi { std::uint8_t order = 0; std::array<char, 100> name{}; };
         std::array<AccessoryUi, kModelSlotCount> accessoryUi{};
         const auto split = app.AccessoryRenderSplitOrder();
         for (unsigned i = 0; i < kModelSlotCount; ++i) {
             objects[i] = app.ModelSlot(i); objects[i + kModelSlotCount] = app.AccessorySlot(i);
+            if (const auto* model = mdl::Mdl(app.ModelSlot(i))) modelDrawOrder[i] = model->comboSelIndex;
             if (const auto* a = app.AccessorySlot(i)) {
                 accessoryUi[i].order = a->order;
                 std::memcpy(accessoryUi[i].name.data(), a->name, sizeof a->name);
@@ -492,6 +518,8 @@ MmsResult RunBoundObjectHistory(MMDApp& app, SharedHistory& history, bool redo, 
         for (unsigned i = 0; i < kModelSlotCount; ++i)
             changedObjects = changedObjects || objects[i] != app.ModelSlot(i) || objects[i + kModelSlotCount] != app.AccessorySlot(i);
         bool changedLists = changedObjects || split != app.AccessoryRenderSplitOrder();
+        for (unsigned i = 0; i < kModelSlotCount && !changedLists; ++i)
+            if (const auto* model = mdl::Mdl(app.ModelSlot(i))) changedLists = model->comboSelIndex != modelDrawOrder[i];
         for (unsigned i = 0; i < kModelSlotCount && !changedLists; ++i) if (const auto* a = app.AccessorySlot(i))
             changedLists = a->order != accessoryUi[i].order || std::memcmp(a->name, accessoryUi[i].name.data(), sizeof a->name);
         if (changedObjects) SafeSelection(app);

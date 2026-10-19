@@ -1,6 +1,12 @@
 // Real menu 288/289 resources, controls and dialog procedures. No synthetic
 // WM_INITDIALOG or private apply helper substitutes for the user-facing path.
 #include "mikumikustudio/scene_history_ui.hpp"
+#include <limits>
+#if !MMD_ORIGINAL_PROFILE
+#include "mikumikustudio/plugin_scene.hpp"
+#include "../src/plugins/native_model_order.hpp"
+#include "../src/plugins/edit_store.hpp"
+#endif
 
 namespace model_order_dialog_checks {
 constexpr std::array<int, 3> kSlots{2, 9, 254};
@@ -15,6 +21,8 @@ bool faultRound = false, rejectInserts = false;
 int faultStage = 0;
 int listFaultMode = 0, listFaultStage = 0, listInsertions = 0;
 bool listFaultEnabled = false;
+bool invalidScratchRound = false;
+std::int32_t invalidScratchValue = 0;
 constexpr UINT kFaultContinue = WM_APP + 0x135;
 constexpr UINT_PTR kFaultSubclass = 0x4d4f4435;
 
@@ -110,7 +118,10 @@ LRESULT CALLBACK DialogHook(int code, WPARAM wp, LPARAM lp) {
             Check(SendMessageW(list, LB_SETCURSEL, moveRow, 0) == moveRow, "choose actual reorder row");
             SendMessageW(dialog, WM_COMMAND, moveCommand, 0);
         }
-        if (listFaultMode == 2) {
+        if (invalidScratchRound) {
+            static_cast<std::int32_t*>(g_Block->AccessoryOrderArray())[1]=invalidScratchValue;
+            PostMessageW(dialog,WM_COMMAND,632,0);PostMessageW(dialog,WM_COMMAND,IDCANCEL,0);
+        } else if (listFaultMode == 2) {
             Check(SetWindowSubclass(dialog, ListFaultDialog, kFaultSubclass, 0) != FALSE,
                   "observe list repair before a successful modal exit");
             PostMessageW(dialog, kFaultContinue, 1, 0);
@@ -232,11 +243,94 @@ struct Fixture {
                SendDlgItemMessageW(app->MainWindow(),474,CB_GETCURSEL,0,0) == models[0]->comboSelIndex &&
                app->CameraParentModel() == kSlots[2] && accessory.parentModel == kSlots[0],
                "parent selectors retain their actual bound model identities after row movement");
-        Expect(IsWindowEnabled(GetDlgItem(app->MainWindow(), panel::kUndoButton)) &&
-               IsWindowEnabled(GetDlgItem(app->MainWindow(), panel::kRedoButton)),
+        bool canUndo=true,canRedo=true;
+#if !MMD_ORIGINAL_PROFILE
+        if(auto* journal=plugins::BoundNativePoseHistory(app)) {canUndo=journal->UndoCount()!=0;canRedo=journal->RedoCount()!=0;}
+#endif
+        Expect((IsWindowEnabled(GetDlgItem(app->MainWindow(), panel::kUndoButton))!=FALSE)==canUndo &&
+               (IsWindowEnabled(GetDlgItem(app->MainWindow(), panel::kRedoButton))!=FALSE)==canRedo,
                "order-only UI refresh preserves existing undo and redo availability");
     }
 };
+#if !MMD_ORIGINAL_PROFILE
+LRESULT CALLBACK ConfirmRetainedDeletion(int code,WPARAM wp,LPARAM lp) {
+    if(code==HCBT_CREATEWND) {
+        auto* created=reinterpret_cast<CBT_CREATEWNDW*>(lp);
+        if(!(created->lpcs->style&WS_CHILD)){created->lpcs->x=-32000;created->lpcs->y=-32000;}
+    }
+    if(code==HCBT_ACTIVATE) {
+        HWND dialog=reinterpret_cast<HWND>(wp);
+        Check(GetDlgItem(dialog,IDOK)&&GetDlgItem(dialog,IDCANCEL),"actual model deletion opens its confirmation dialog");
+        PostMessageW(dialog,WM_COMMAND,IDOK,0);return 1;
+    }
+    return CallNextHookEx(nullptr,code,wp,lp);
+}
+void BoundChecks(Fixture& f,const wchar_t* source) {
+    using namespace plugins;
+    for(auto mode:{SharedHistory::RecordingMode::AllOperations,SharedHistory::RecordingMode::ExplicitOnly}) {
+        f.Reset();StorageStore storage;SharedHistory history(storage);NativePoseTestBinding binding(*f.app,history);
+        Check(history.SetMode(mode)==MMS_OK,"actual modal chooses its common history recording mode");
+        f.Open(288,2,630,false);f.Verify("bound-display",{0,2,1},{0,1,2});
+        Expect(history.UndoCount()==1,"actual display-order OK creates exactly one explicit common node in either mode");
+        Check(RunBoundObjectHistory(*f.app,history,false)==MMS_OK,"actual modal draw undo");
+        f.Verify("bound-display-undo",{0,1,2},{0,1,2});
+        for(auto invalid:{std::numeric_limits<std::int32_t>::min(),std::numeric_limits<std::int32_t>::max(),0,256}) {
+            invalidScratchRound=true;invalidScratchValue=invalid;f.Open(288,-1,0,false);invalidScratchRound=false;
+            Expect(!history.UndoCount()&&history.RedoCount()==1,"invalid signed-boundary modal scratch cannot publish or trim redo");
+            f.Verify("bound-invalid-scratch",{0,1,2},{0,1,2});
+        }
+        f.Open(288,0,630,false);f.Open(288,0,631,true);
+        Expect(!history.UndoCount()&&history.RedoCount()==1,"actual no-op and cancelled dialogs retain existing redo");
+        Check(RunBoundObjectHistory(*f.app,history,true)==MMS_OK,"actual modal draw redo");
+        f.Open(289,2,630,false);f.Verify("bound-calculation",{0,2,1},{0,2,1});
+        Expect(history.UndoCount()==2,"actual calculation-order OK creates its own explicit node");
+        f.app->PhysicsResetPending()=0;
+        Check(RunBoundObjectHistory(*f.app,history,false)==MMS_OK&&RunBoundObjectHistory(*f.app,history,false)==MMS_OK,
+              "undo both actual modal order directions before releasing their owners");
+        Expect(!f.app->PhysicsResetPending(),"order-only history does not request a complete physics reset");
+        f.Verify("bound-both-restored",{0,1,2},{0,1,2});
+        Check(history.Reset()==MMS_OK,"release actual modal order journal before another binding");history.Collect();
+    }
+    f.Reset();StorageStore storage;SharedHistory history(storage);NativePoseTestBinding binding(*f.app,history);
+    const auto copy=std::filesystem::path(source).parent_path()/
+        (L"model-order-owned-import-"+std::to_wstring(GetCurrentProcessId())+L".pmx");
+    Check(CopyFileW(source,copy.c_str(),TRUE)!=FALSE,"create an owned copy for the real model import/readback regression");
+    LoadModelFile(f.app,copy.c_str(),false);
+    auto* imported=f.app->ModelSlot(0);
+    Check(imported&&history.UndoCount()==1,"real PMX private loader publishes an import into the same common journal");
+    const auto id=SceneObjectIdentity(imported).id;
+    Check(DeleteFileW(copy.c_str())!=FALSE,"remove only the owned source copy before any undo or redo");
+    std::array<std::int32_t,5> reverse{0,1,255,10,3};
+    NativeModelOrderPlan draw;std::shared_ptr<HistoryChange> change;
+    Check(draw.Begin(*f.app,ModelOrderKind::Draw)==MMS_OK&&draw.Read(reverse.data(),4)==MMS_OK&&draw.Take(change)==MMS_OK&&
+        CommitBoundModelOrder(*f.app,history,std::move(change),false)==MMS_OK&&history.UndoCount()==2,
+        "reorder the real imported model together with the three preexisting sparse-slot objects");
+    NativeModelOrderPlan calculate;
+    Check(calculate.Begin(*f.app,ModelOrderKind::Calculate)==MMS_OK&&calculate.Read(reverse.data(),4)==MMS_OK&&
+        calculate.Take(change)==MMS_OK,"capture model calculation order for the real plugin transaction path");
+    EditStore edits(history,storage);EditClient client;client.id="test.model-order-host";auto api=edits.Api(client);
+    constexpr char label[]="plugin calculation order";std::uint64_t revision=0;MmsHandle transaction=0;
+    Check(history.Revision(revision)==MMS_OK&&api.begin(api.context,{label,sizeof(label)-1},revision,&transaction)==MMS_OK&&
+        edits.JoinNative(client,transaction,std::move(change))==MMS_OK&&api.prepare(api.context,transaction)==MMS_OK&&
+        api.commit(api.context,transaction)==MMS_OK&&history.UndoCount()==3,
+        "an actual EditStore transaction follows import and native draw order in the same journal");
+    f.app->SetSelectedModelSlot(0);f.app->CameraMode()=0;
+    Check(scene_history_ui::RefreshObjectLists(*f.app,scene_history_ui::CaptureSelection(*f.app),true,false)==
+        scene_history_ui::Result::Ok,"select the imported identity without reevaluating other model poses");
+    HHOOK hook=SetWindowsHookExW(WH_CBT,ConfirmRetainedDeletion,nullptr,GetCurrentThreadId());
+    Check(hook!=nullptr,"install actual retained-model deletion confirmation driver");
+    TryDeleteBoundModel(f.app,f.app->MainWindow());UnhookWindowsHookEx(hook);
+    Check(!f.app->ModelSlot(0)&&history.UndoCount()==4,"actual native deletion follows the plugin and both order records");
+    for(int i=0;i<4;++i)Check(RunBoundObjectHistory(*f.app,history,false)==MMS_OK,"undo deletion, plugin order, native order and actual import in reverse sequence");
+    Expect(!f.app->ModelSlot(0)&&f.models[0]->comboSelIndex==1&&f.models[1]->comboSelIndex==2&&f.models[2]->comboSelIndex==3,
+        "undo interleaving restores the original three-model layout by stable identity");
+    for(int i=0;i<4;++i)Check(RunBoundObjectHistory(*f.app,history,true)==MMS_OK,"redo real import, orders and deletion without the source file");
+    Expect(!f.app->ModelSlot(0)&&!SceneObjectPresent(imported,id),"redo reaches the same deleted identity without rereading the removed PMX");
+    for(int i=0;i<4;++i)Check(RunBoundObjectHistory(*f.app,history,false)==MMS_OK,"restore fixture and park only the retained imported model before cleanup");
+    Check(history.Reset()==MMS_OK,"retire interleaved imported-model resources after all original objects are restored");history.Collect();
+    f.Reset();
+}
+#endif
 void Run(MMDApp* app, const wchar_t* modelPath) {
     Fixture f(app, modelPath);
     failures = 0;
@@ -276,6 +370,15 @@ void Run(MMDApp* app, const wchar_t* modelPath) {
     Expect(listFaultStage == 2, "incomplete list recovery prevents OK until its full scratch permutation is visible");
     f.Verify("list-delete-recovery", {0, 1, 2}, {0, 1, 2});
     Expect(app->SceneModified() == 0, "list deletion failure and repair never publish a partial order");
+    for(auto invalid:{std::numeric_limits<std::int32_t>::min(),std::numeric_limits<std::int32_t>::max(),0,256}) {
+        f.Reset();app->SceneModified()=0;invalidScratchRound=true;invalidScratchValue=invalid;
+        f.Open(288,-1,0,false);invalidScratchRound=false;
+        f.Verify("unbound-invalid-scratch",{0,1,2},{0,1,2});
+        Expect(!app->SceneModified(),"unbound signed-boundary rejection leaves source and dirty state intact");
+    }
+#if !MMD_ORIGINAL_PROFILE
+    BoundChecks(f,modelPath);
+#endif
     std::printf("MODEL-ORDER actual modal checks: %d failure(s)\n", failures);
     Check(failures == 0, "real 288/289 names, object identities, independent orders and cancellation");
     std::puts("PASS real model-order dialogs: names match resolved objects, independent calculation order, selection and parents preserved");
