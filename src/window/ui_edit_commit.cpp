@@ -792,6 +792,26 @@ LRESULT CALLBACK EditSubclassProc(HWND hWnd, UINT Msg, WPARAM wParam,
 LRESULT CALLBACK TrackbarSubclassProc(HWND hWnd, UINT Msg, WPARAM wParam,
                                       LPARAM lParam) {
     MMDApp* app = g_Block;
+#if !MMD_ORIGINAL_PROFILE
+    // Mouse dragging should not flash the keyboard focus rectangle around the
+    // complete slider. Preserve native focus/capture and restore the cue for
+    // keyboard or programmatic focus, including Tab navigation into this HWND.
+    static thread_local HWND mouseFocusTarget = nullptr;
+    struct RestoreMouseFocusTarget {
+        HWND& target; HWND previous;
+        ~RestoreMouseFocusTarget() { target = previous; }
+    } restoreMouseFocusTarget{mouseFocusTarget, mouseFocusTarget};
+    const bool mouseFocus = Msg == WM_LBUTTONDOWN || Msg == WM_LBUTTONDBLCLK;
+    if (mouseFocus) mouseFocusTarget = hWnd;
+    const bool keyboardNavigation = Msg == WM_KEYDOWN &&
+        (wParam == VK_LEFT || wParam == VK_RIGHT || wParam == VK_UP || wParam == VK_DOWN ||
+         wParam == VK_HOME || wParam == VK_END || wParam == VK_PRIOR || wParam == VK_NEXT || wParam == VK_TAB);
+    if (mouseFocus || keyboardNavigation || (Msg == WM_SETFOCUS && mouseFocusTarget != hWnd)) {
+        const bool hidden = (SendMessageW(hWnd, WM_QUERYUISTATE, 0, 0) & UISF_HIDEFOCUS) != 0;
+        if (hidden != mouseFocus)
+            SendMessageW(hWnd, WM_UPDATEUISTATE, MAKEWPARAM(mouseFocus ? UIS_SET : UIS_CLEAR, UISF_HIDEFOCUS), 0);
+    }
+#endif
     // The native WM_PAINT initializes themed track/thumb state. Substituting
     // WM_PRINTCLIENT here can leave the first paint blank until hover changes
     // that state. WS_CLIPCHILDREN already prevents the parent erasing sliders.

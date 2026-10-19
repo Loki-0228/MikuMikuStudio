@@ -28,11 +28,14 @@ void Install(void* target,void* detour,void** original=nullptr){
 }
 #include "plugins/small_viewport_host_checks.inc"
 #include "plugins/bake_mic_guard_checks.inc"
+#include "plugins/slider_paint_trace_host_checks.inc"
+#include "plugins/slider_focus_cues_host_checks.inc"
 
 int main(int argc,char** argv){
     std::setvbuf(stdout,nullptr,_IONBF,0);SetProcessDPIAware();
-    if(argc!=2||(std::strcmp(argv[1],"ordinary")&&std::strcmp(argv[1],"bound"))){
-        std::fprintf(stderr,"usage: small_viewport_host_tests ordinary|bound\n");return 2;
+    const bool focusCues=argc==3&&!std::strcmp(argv[2],"focus-cues");
+    if((argc!=2&&!focusCues)||(std::strcmp(argv[1],"ordinary")&&std::strcmp(argv[1],"bound"))){
+        std::fprintf(stderr,"usage: small_viewport_host_tests ordinary|bound [focus-cues]\n");return 2;
     }
     if(MH_Initialize()!=MH_OK)return 2;
     Install(reinterpret_cast<void*>(&ShowWindow),reinterpret_cast<void*>(Hidden),reinterpret_cast<void**>(&realShow));
@@ -50,8 +53,17 @@ int main(int argc,char** argv){
         const bool expectedBound=!std::strcmp(argv[1],"bound");
         small_viewport_host_checks::Require(bool(plugins::BoundNativePoseHistory(app))==expectedBound,
             "actual native editing binding matches the isolated viewport test mode");
-        small_viewport_host_checks::Run(app);
-        bake_mic_guard_checks::Run(app);
+        if(focusCues){
+            app->CameraMode()=1;PostLanguageSweep2(app);PostViewRefresh(app);
+            small_viewport_host_checks::ClientSize(*app,1200,820);
+            realShow(app->MainWindow(),SW_SHOWNOACTIVATE);
+            RedrawWindow(app->MainWindow(),nullptr,nullptr,RDW_INVALIDATE|RDW_ALLCHILDREN|RDW_UPDATENOW);
+            slider_focus_cues_host_checks::Run(app,std::filesystem::current_path()/"focus-cues",expectedBound);
+            realShow(app->MainWindow(),SW_HIDE);
+        }else{
+            small_viewport_host_checks::Run(app);
+            bake_mic_guard_checks::Run(app);
+        }
         std::printf("PASS SMALL_VIEWPORT_MODE actual_bound=%u\n",expectedBound?1u:0u);
     }catch(const std::exception& error){std::fprintf(stderr,"FAIL small viewport host: %s\n",error.what());result=1;}
     if(initialized)ShutdownCleanup(app);
