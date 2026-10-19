@@ -381,6 +381,7 @@ void CrossModelJournal(){
 #include "native_fov_slider_checks.inc"
 #include "native_light_slider_checks.inc"
 #include "native_morph_slider_checks.inc"
+#include "native_morph_reset_checks.inc"
 #include "native_slider_readout_checks.inc"
 #include "native_history_mode_checks.inc"
 #include "native_frame_line_checks.inc"
@@ -564,6 +565,10 @@ int main(int argc,char** argv){
         run("NativeLightSliderChecks",NativeLightSliderChecks);
         std::printf("PASS native light slider: %u checks\n",checks);return 0;
     }
+    if(argc==2&&!std::strcmp(argv[1],"--morph-reset-only")) {
+        run("NativeMorphResetChecks",NativeMorphResetChecks);
+        std::printf("PASS native all-morph reset: %u checks\n",checks);return 0;
+    }
     if(argc==2&&!std::strcmp(argv[1],"--morph-slider-only")) {
         run("NativeMorphSliderChecks",NativeMorphSliderChecks);
         std::printf("PASS native morph slider: %u checks\n",checks);return 0;
@@ -695,6 +700,7 @@ int main(int argc,char** argv){
     run("NativeFovSliderChecks",NativeFovSliderChecks);
     run("NativeLightSliderChecks",NativeLightSliderChecks);
     run("NativeMorphSliderChecks",NativeMorphSliderChecks);
+    run("NativeMorphResetChecks",NativeMorphResetChecks);
     run("NativeSliderReadoutChecks",NativeSliderReadoutChecks);
     run("NativeHistoryModeChecks",NativeHistoryModeChecks);
     run("NativeVmdImportChecks",NativeVmdImportChecks);

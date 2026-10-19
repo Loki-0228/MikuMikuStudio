@@ -136,6 +136,7 @@
 #include "../plugins/native_camera_follow.hpp"
 #include "../plugins/native_pose_scope.hpp"
 #include "../plugins/native_object_commands.hpp"
+#include "../plugins/native_morph_reset.hpp"
 #endif
 #include "mikudancestudio/ui_message.hpp"
 #include "mikudancestudio/ui_translation.hpp"
@@ -2440,6 +2441,9 @@ void CmdFileMenu(MMDApp* app, HWND hwnd, std::uint16_t id, std::uint16_t notify)
     // repaint - the case ends here (0x48DACB..0x48DBFA).
     // ------------------------------------------------------------------
     case 230: {
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::TryResetBoundMorphs(app)) return;
+#endif
         if (app->state.optflag[0] != 0) {  // 0x2F8
             break;
         }
