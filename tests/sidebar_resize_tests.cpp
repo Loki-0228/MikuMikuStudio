@@ -105,15 +105,21 @@ decltype(&RedrawWindow) originalRedraw = nullptr;
 unsigned redraws = 0, presents = 0;
 bool observe = false;
 BOOL WINAPI ObserveRedraw(HWND window, const RECT* rect, HRGN region, UINT flags) {
+    // Read the readiness before the native call: the synchronous part of
+    // RedrawWindow may enter a paint that temporarily owns the layout state.
+    const unsigned ready = g_Block ? unsigned(g_Block->WindowLayoutReady()) : 0;
     const BOOL result = originalRedraw(window, rect, region, flags);
-    if (observe && window == g_Block->MainWindow() && (flags & RDW_UPDATENOW)) {
+    // The shared layout batch invalidates the parent chrome and then calls
+    // UpdateWindow; it no longer asks RedrawWindow to paint synchronously.
+    // Count that one parent invalidation, verify its flags and exercise the
+    // real GDI + D3D paint path explicitly for this hidden host.
+    const UINT required = RDW_INVALIDATE | RDW_NOCHILDREN;
+    if (observe && window == g_Block->MainWindow() && (flags & required) == required &&
+        !(flags & (RDW_UPDATENOW|RDW_ERASE|RDW_FRAME|RDW_ALLCHILDREN))) {
         ++redraws;
-        const UINT required = RDW_INVALIDATE | RDW_NOCHILDREN;
-        Check(rect && !region && (flags & required) == required && !(flags & (RDW_ERASE|RDW_FRAME|RDW_ALLCHILDREN)),
+        Check(rect && !region,
               "live resize repaints exposed parent chrome without erasing every sibling");
-        Check(g_Block->WindowLayoutReady() != 0, "paint occurs only after layout is complete");
-        // Hidden hosts do not receive normal visible-window paints. Dispatch
-        // that paint explicitly to exercise the real GDI + D3D paint path.
+        Check(ready != 0, "paint occurs only after layout is complete");
         SendMessageW(window, WM_PAINT, 0, 0);
     }
     return result;
@@ -619,6 +625,16 @@ void CheckForcePasteControls(MMDApp* app) {
               "force paste caption follows the selected UI language");
         for (int sidebar : {250, 310, 328, 400, 600}) {
             app->SidebarWidth() = sidebar; RelayoutSidebarControls(app);
+            RECT client{}; GetClientRect(host, &client);
+            const int shift = panel::TimelinePanelShift(sidebar);
+            const RECT hscroll = ControlBounds(host, panel::kTimelineHScroll);
+            const RECT vscroll = ControlBounds(host, panel::kTimelineVScroll);
+            Check(hscroll.top == client.bottom - 247 - shift && hscroll.bottom == client.bottom - 231 - shift,
+                  "timeline scrollbar row follows the wrapped panel bottom");
+            Check(vscroll.top == 162 && vscroll.bottom == client.bottom - 248 - shift,
+                  "timeline vertical scrollbar ends at the wrapped panel bottom");
+            Check(hscroll.top == vscroll.bottom + 1,
+                  "wrapped horizontal and vertical scrollbars meet without overlap");
             const RECT rect = ControlBounds(host, panel::kForcePasteButton);
             HDC dc = GetDC(button); auto oldFont = SelectObject(dc, reinterpret_cast<HFONT>(SendMessageW(button, WM_GETFONT, 0, 0)));
             SIZE text{}; GetTextExtentPoint32W(dc, caption, static_cast<int>(std::wcslen(caption)), &text);

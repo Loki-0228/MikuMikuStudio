@@ -323,6 +323,7 @@ void PanelPaint(MMDApp* app) {
     // it, which is a no-op difference for display mode since a == b there).
     auto FinishPanel = [&](std::uint32_t a, std::uint32_t b) {
         const std::uint32_t pos = static_cast<std::uint32_t>(scroll);
+        const int wrapShift = panel::TimelinePanelShift(sidebar);
         // x64 @0x7FF7CB482963：SCROLLINFO 内嵌在 app+0x1430（cbSize=1Ch、
         // fMask=SIF_ALL），nPage/nPos 落在 app+0x1440/0x1444；HandleHScroll
         // （0x7FF7CB45E060）case 2/3/5 回读的就是这两格。x86 原版把这块临时
@@ -363,7 +364,7 @@ void PanelPaint(MMDApp* app) {
             if (x2 < kListLeft) x2 = kListLeft;
             if (y2 < 17) y2 = 17;
             if (x2 > sidebar - 28) x2 = sidebar - 28;
-            if (y2 > rc.bottom - 396) y2 = rc.bottom - 396;
+            if (y2 > rc.bottom - 396 - wrapShift) y2 = rc.bottom - 396 - wrapShift;
             const int ax = app->SelectionBoxAnchorX();
             const int ay = app->SelectionBoxAnchorY();
             MoveToEx(panel, ax, ay, nullptr);
@@ -378,7 +379,7 @@ void PanelPaint(MMDApp* app) {
         // Restoring editor layout after isolated sampling must not evaluate
         // scale transforms or replace authored readouts through this tail.
         if(!FrameEditorViewportRebuilding(app))PostViewRefresh(app);
-        rc.bottom -= 248;
+        rc.bottom -= 248 + wrapShift;
         rc.left = 6;
         rc.top = 145;
         rc.right = sidebar - 19;

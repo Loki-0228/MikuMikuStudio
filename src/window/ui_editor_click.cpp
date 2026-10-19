@@ -1229,7 +1229,8 @@ void HandleLButtonDown(MMDApp* app) {
     }
     // row gates used by every region below (0x446B01-0x446B3A):
     //   var_1A0 = y < bottom - 0xF8 (248) ; var_190 = y > 0xA0 (160)
-    const bool rowGateY = y > 0xA0 && y < rc.bottom - 0xF8;
+    const bool rowGateY = y > 0xA0 &&
+        y < rc.bottom - 0xF8 - panel::TimelinePanelShift(sidebar);
 
     // ---- S2: margin column (X in (4,20)): row-type display toggle
     if (rowGateY && x > 4 && x < 0x14) {

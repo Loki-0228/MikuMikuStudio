@@ -46,9 +46,9 @@ DOCK、声明式 INPUT 和新增侧栏、属性区、时间线、状态栏挂载
 - `build/abi-framework-regressions-20261019/ctest-full-menu-timeout.log` 保存 20/21 组通过及一次真实菜单选择超时。此前同一 ABI 契约单独运行通过，不能据此忽略超时。
 - `build/abi-layout-framework-final-ordinary/` 和 `build/abi-layout-framework-final-bound/` 在普通、共同历史绑定模式下各完成 86 次稳定画面对照，无失败或中断。各有 7 次真实 Present、480 个区域样本，覆盖 9 条可见滑杆和 2 个曲线入口。几何改变中的两次中间比较明确跳过，返回原几何后的比较必须完成。该结果早于最后的准备失败收尾修正，不作为最后二进制的验收记录。
 
-## 最终构建与回归（2026-10-20）
+## 最终构建与回归（2026-10-20，第一版）
 
-以下结果对应最终源码与二进制。本轮在框架记录之后又修改了原始兼容分支的侧栏布局和两个测试。
+以下结果对应第一版最终源码与二进制；窄侧栏时间线修正后的结果见下一节。本轮在框架记录之后又修改了原始兼容分支的侧栏布局和两个测试。
 
 - 完整配置：21／21 组通过，152.99 秒。日志 `build/abi-resume-20261020/ctest-full-final.log`。
 - 原始兼容配置：18／18 组通过，16.81 秒。日志 `build/abi-resume-20261020/ctest-original-1.log`。
@@ -67,6 +67,26 @@ DOCK、声明式 INPUT 和新增侧栏、属性区、时间线、状态栏挂载
 原始兼容配置的侧栏拖动在 `ApplySidebarGeometry` 中保留原有的立即移动和 `PanelPaint` 路径，共用布局事务只用于完整配置。该修改改变兼容配置构建形态下的代码路径；上表完整配置和原始兼容配置的结果都在修改后重新构建并运行。
 
 以上自动检查不是连续桌面呈现或 175% 人工拖动验收。侧栏、底部分隔线在 175% 下的用户视觉复验仍待完成；稳定边界比较不能替代该项人工结论。
+
+## 窄侧栏时间线布局修正（2026-10-20）
+
+用户提供的 175% 截图显示，侧栏逻辑宽度小于 328 像素时，换行后的“当前”和横滚动条行被上移 23 像素，压到橙色关键帧区域；纵向滚动条底端停在新位置之上，交界处还留下白条残影。根因是 `LayoutForcePasteRow` 只移动了子控件，面板位图 blit、底部 chrome 填充、损伤区域和命中测试仍使用原来的 `bottom - 248` 边界。
+
+修正内容：
+
+- [panel_controls.hpp](../../include/mikudancestudio/panel_controls.hpp) 新增 `TimelinePanelShift(sidebar)`，统一返回 0 或 23。控件布局、垂直滚动条高度、面板 blit 高度、chrome 填充顶部、损伤区域、选择框上限和点击命中范围使用同一偏移。
+- [ui_windowsize.cpp](../../src/window/ui_windowsize.cpp) 在 `HandleWindowSize`、`RelayoutSidebarControls` 和 `LayoutForcePasteRow` 中都使用该偏移，不再先按旧位置移动再改一次。
+- [wm_paint.cpp](../../src/window/wm_paint.cpp)、[ui_panel_paint.cpp](../../src/window/ui_panel_paint.cpp)、[ui_palette.cpp](../../src/window/ui_palette.cpp) 和 [ui_editor_click.cpp](../../src/window/ui_editor_click.cpp) 同步缩短或上移可见面板、失效区域、选择框和命中范围。
+- [native_ui.cpp](../../src/plugins/native_ui.cpp) 的插件布局在延迟模式下只把损伤交给外层批次，不再自行对父窗和子窗调用 `RedrawWindow`。外层 `RepaintLayout` 因此只做一次父窗失效，也不会在 `WindowLayoutReady=0` 时进入绘制；记录失败时仍直接失效并标记失败。
+
+验证：
+
+- `sidebar_resize_tests` 全部通过，输出 `Sidebar live resize regressions passed`。新增检查覆盖 250、310、328、400、600 五种侧栏宽度下的横、纵滚动条位置、面板底部和二者交接。
+- 完整配置 21／21 组通过，282.46 秒。原始兼容配置 18／18 组通过，14.08 秒。日志为 `build/abi-resume-20261020/ctest-full-final2.log` 和 `build/abi-resume-20261020/ctest-original-final2.log`。
+- 布局拖动稳定边界：普通和共同历史绑定模式各 86 次比较，0 失败、0 不完整。普通模式第一次运行因真实按键或鼠标键处于按下状态中止，第二次通过；绑定模式一次通过。证据在 `build/abi-layout-final2-20261020/ordinary/` 和 `bound/`。
+- 最终完整配置产品 `MikuMikuDance.exe` 的 SHA256 为 `DABFCF5919CAD736B02FCF84A5C7CEB9A2BE67F9A9EF2EFA937BAC944DBDF624`。布局回归宿主 `small_viewport_host_tests.exe` 的 SHA256 为 `F7784142884D5FA09CBF896F440BAB92D56B510CBF2C912FF8CF6229A0C17FB3`。
+
+以上自动检查仍不替代 175% 下的人工拖动复验。用于该复验的产品包在 `build/mms-abi-20261020-slider-check-r2/`。
 
 ## 兼容边界
 

@@ -365,6 +365,7 @@ void HandlePaletteChanged(HDC hdc) {
         mikudancestudio::FillPanelBottom(dc, l, t, r, b, c1, c2, edge);
     };
     const std::int32_t side = app->SidebarWidth();
+    const int timelineShift = panel::TimelinePanelShift(side);
     const COLORREF colA = app->ThemeColor(UiThemeColor::ControlLight);
     const COLORREF colB = app->ThemeColor(UiThemeColor::ControlDark);
 
@@ -391,10 +392,10 @@ void HandlePaletteChanged(HDC hdc) {
     FillPanelBottom(hdc, side - 19, 144, side - 3, 161, lerpNeg94, lerpNeg111, 1);  // 0x42CFF6
 
     // Row 4 (0x42CFFB..0x42D05C): t4 = ((50.0-bottom)-248.0)/((50.0-bottom)-161.0).
-    t = static_cast<float>(((50.0 - static_cast<double>(bottom)) - 248.0) /
+    t = static_cast<float>(((50.0 - static_cast<double>(bottom)) - 248.0 - timelineShift) /
                            ((50.0 - static_cast<double>(bottom)) - 161.0));
     lerp = ColorLerp(colA, colB, t);                        // 0x42D036
-    FillPanelBottom(hdc, 3, bottom - 248, side - 3, bottom - 161, lerp, colB, 1);  // 0x42D05C
+    FillPanelBottom(hdc, 3, bottom - 248 - timelineShift, side - 3, bottom - 161, lerp, colB, 1);  // 0x42D05C
 
     // Fixed rows from the colour-table pairs (colour.txt).
     FillPanelBottom(hdc, 3, bottom - 157, 215, bottom - 3,

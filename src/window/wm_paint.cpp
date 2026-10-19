@@ -476,7 +476,10 @@ void HandleWindowPaint(MMDApp* app) {
 
     BitBlt(hdc, 6, 95, side - 10, 50,
            app->TimelineDC(), 0, 0, SRCCOPY);
-    BitBlt(hdc, 6, 145, side - 25, rc.bottom - 393,
+    // The wrapped paste row shortens the visible timeline panel. Keep the
+    // blit, chrome fill and hit test on the same bottom edge.
+    const int panelHeight = rc.bottom - 393 - panel::TimelinePanelShift(side);
+    BitBlt(hdc, 6, 145, side - 25, panelHeight > 0 ? panelHeight : 0,
            app->PanelDC(), 0, 0, SRCCOPY);
     BitBlt(hdc, 8, rc.bottom - 135, 128, 128,
            app->CurveDC(), 0, 0, SRCCOPY);
@@ -512,7 +515,7 @@ void HandleWindowPaint(MMDApp* app) {
         app->state.scrollNPos =
             app->DisplayObjectListScrollPosition();
     }
-    const int page = (rc.bottom - 398) / 14 - 1;
+    const int page = (rc.bottom - 398 - panel::TimelinePanelShift(app->SidebarWidth())) / 14 - 1;
     app->state.scrollNMax += page;
     app->state.scrollNPage = page;
     const HWND scrollbar=GetDlgItem(hwnd,panel::kTimelineVScroll);

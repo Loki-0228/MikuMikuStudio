@@ -40,6 +40,15 @@ constexpr int kRangeStartEdit = 425;         // 0x1A9 range-select start edit (m
 constexpr int kRangeStopEdit = 426;          // 0x1AA range-select stop edit (mirror of dialog 687)
 constexpr int kTimelineVScroll = 427;        // 0x1AB timeline vertical scrollbar
 constexpr int kTimelineHScroll = 428;        // 0x1AC timeline horizontal scrollbar
+// A sidebar narrower than this wraps the paste row and moves the horizontal
+// timeline scrollbar up by kTimelineWrapShift pixels. The timeline panel,
+// chrome fill and hit testing share the same offset; changing only the control
+// positions makes the moved rows cover the keyframe grid.
+constexpr int kTimelineWrapSidebar = 328;
+constexpr int kTimelineWrapShift = 23;
+inline constexpr int TimelinePanelShift(int sidebarWidth) noexcept {
+    return sidebarWidth < kTimelineWrapSidebar ? kTimelineWrapShift : 0;
+}
 constexpr int kPasteButton = 421;            // 0x1A5 ペースト / paste (camera/light/acc)
 constexpr int kForcePasteButton = 250;       // Same command as F / Ctrl+F and the Edit menu.
 constexpr int kReversePasteButton = 422;     // 0x1A6 反転P / reverse paste

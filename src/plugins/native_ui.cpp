@@ -454,9 +454,19 @@ struct NativeUi::Impl {
                 } else if (saved.force || saved.visible != visible || !EqualRect(&saved.bounds, &after))
                     changes.push_back({saved.window, parent, saved.bounds, after});
             }
-            // Complete every parent and descendant invalidation before the
-            // first synchronous paint, including partial/rolled-back failures.
+            // Deferred changes are painted by the outer layout batch. Only an
+            // independent (or unrecordable) transaction invalidates here, so
+            // the outer batch keeps one repaint and owns the ready state.
             for (const auto& change : changes) {
+                bool recorded = true;
+                if (deferred) {
+                    recorded = ui::RecordLayoutChange(change);
+                    if (!recorded) {
+                        std::fprintf(stderr, "PLUGIN_LAYOUT_RECORD target=%p parent=%p failed=1\n", change.window, change.parent);
+                        owner.layoutResult = MMS_E_FAILED; owner.registry.SuspendGeometry(); owner.registry.Refresh().SuspendTargets();
+                    }
+                }
+                if (deferred && recorded) continue;
                 if (IsWindow(change.parent)) {
                     const WindowDpiScope dpi(change.parent);
                     RECT damage{}; UnionRect(&damage, &change.before, &change.after);
@@ -465,10 +475,6 @@ struct NativeUi::Impl {
                 if (IsWindow(change.window)) {
                     const WindowDpiScope dpi(change.window);
                     RedrawWindow(change.window, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN);
-                }
-                if (deferred && !ui::RecordLayoutChange(change)) {
-                    std::fprintf(stderr, "PLUGIN_LAYOUT_RECORD target=%p parent=%p failed=1\n", change.window, change.parent);
-                    owner.layoutResult = MMS_E_FAILED; owner.registry.SuspendGeometry(); owner.registry.Refresh().SuspendTargets();
                 }
             }
             if (!deferred && !changes.empty()) ui::RepaintLayout(owner.main, changes, {});

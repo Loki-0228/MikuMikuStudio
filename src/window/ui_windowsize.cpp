@@ -64,8 +64,11 @@ namespace {
 
 void LayoutForcePasteRow(HWND hwnd, int side, int bottom, bool deferPaint = false) {
     if (!GetDlgItem(hwnd, panel::kForcePasteButton)) return;
-    const bool wrap = side < 328;
-    const int y = bottom - 224 - (wrap ? 23 : 0);
+    // The wrap shift also shortens the timeline panel and vertical scrollbar;
+    // see panel::TimelinePanelShift consumers in the painters and hit tests.
+    const int shift = panel::TimelinePanelShift(side);
+    const bool wrap = shift != 0;
+    const int y = bottom - 224 - shift;
     const int start = wrap ? side / 2 - 119 : (std::min)(side / 2 - 119, side - 322);
     const int ids[] = {420, 421, 422, 416, 423};
     const int offsets[] = {0, 43, 86, 134, 189};
@@ -74,7 +77,6 @@ void LayoutForcePasteRow(HWND hwnd, int side, int bottom, bool deferPaint = fals
     ui::MoveLayoutControl(hwnd, panel::kForcePasteButton,
         wrap ? side / 2 + 48 : start + 244, bottom - 224, 72, 18, deferPaint);
     // At the minimum sidebar width, keep complete labels on a second row.
-    const int shift = wrap ? 23 : 0;
     ui::MoveLayoutControl(hwnd, 427, side - 19, 162, 16, bottom - 410 - shift, deferPaint);
     ui::MoveLayoutControl(hwnd, 428, 97, bottom - 247 - shift, side - 116, 16, deferPaint);
     ui::MoveLayoutControl(hwnd, 429, 8, bottom - 247 - shift, 80, 18, deferPaint);
@@ -163,9 +165,10 @@ void HandleWindowSize(MMDApp* app) {
     MoveCtrl(hwnd, 558, 15, 69, 20, 22);
 
     // --- main grid, anchored to the client bottom (0x443563..0x443B00) -----
-    MoveCtrl(hwnd, 427, side - 19, 162, 16, bottom - 410);
-    MoveCtrl(hwnd, 428, 97, bottom - 247, side - 116, 16);
-    MoveCtrl(hwnd, 429, 8, bottom - 247, 80, 18);
+    const int timelineShift = panel::TimelinePanelShift(side);
+    MoveCtrl(hwnd, 427, side - 19, 162, 16, bottom - 410 - timelineShift);
+    MoveCtrl(hwnd, 428, 97, bottom - 247 - timelineShift, side - 116, 16);
+    MoveCtrl(hwnd, 429, 8, bottom - 247 - timelineShift, 80, 18);
     MoveCtrl(hwnd, 416, side / 2 + 15, bottom - 224, 50, 18);
     MoveCtrl(hwnd, 423, side / 2 + 70, bottom - 224, 50, 18);
     MoveCtrl(hwnd, 420, side / 2 - 119, bottom - 224, 40, 18);
@@ -407,9 +410,10 @@ void RelayoutSidebarControls(MMDApp* app) {
     MoveCtrl(hwnd, 558, 15, 69, 20, 22);
 
     const int bottom = client.bottom;
-    MoveCtrl(hwnd, 427, side - 19, 162, 16, bottom - 410);
-    MoveCtrl(hwnd, 428, 97, bottom - 247, side - 116, 16);
-    MoveCtrl(hwnd, 429, 8, bottom - 247, 80, 18);
+    const int timelineShift = panel::TimelinePanelShift(side);
+    MoveCtrl(hwnd, 427, side - 19, 162, 16, bottom - 410 - timelineShift);
+    MoveCtrl(hwnd, 428, 97, bottom - 247 - timelineShift, side - 116, 16);
+    MoveCtrl(hwnd, 429, 8, bottom - 247 - timelineShift, 80, 18);
     MoveCtrl(hwnd, 416, side / 2 + 15, bottom - 224, 50, 18);
     MoveCtrl(hwnd, 423, side / 2 + 70, bottom - 224, 50, 18);
     MoveCtrl(hwnd, 420, side / 2 - 119, bottom - 224, 40, 18);
