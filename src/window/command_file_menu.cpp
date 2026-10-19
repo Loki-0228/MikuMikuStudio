@@ -137,6 +137,7 @@
 #include "../plugins/native_pose_scope.hpp"
 #include "../plugins/native_object_commands.hpp"
 #include "../plugins/native_morph_reset.hpp"
+#include "../plugins/native_center_offset.hpp"
 #endif
 #include "mikudancestudio/ui_message.hpp"
 #include "mikudancestudio/ui_translation.hpp"
@@ -1492,6 +1493,9 @@ void CmdFileMenu(MMDApp* app, HWND hwnd, std::uint16_t id, std::uint16_t notify)
     // frame counter exceeds the bone count.
     // ------------------------------------------------------------------
     case 219: {
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::TryEditBoundCenterOffset(app)) break;
+#endif
         if (app->state.optflag[0] != 0) {  // 0x2F8
             break;
         }

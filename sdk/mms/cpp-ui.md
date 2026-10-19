@@ -70,6 +70,33 @@ cmake --build build/hello --config Release
 
 只读属性和原生面板工厂可以通过 `RegistrationBundle` 注册。快照、值和 anchor 租约仍调用原 C API 获取及释放；本批没有增加租约类。原生窗口及 view context 的创建、重建和销毁规则继续遵循 [SDK 参考](README.md)。
 
-可写属性、声明式 INPUT、命令溢出菜单、统一四类刷新、复杂动画和新视口服务仍按宿主当前状态处理。便利 SDK 不提前开放这些能力，也不启用普通宿主的 `mms.edit`。`updateElement` 保留底层 handle，但可能更新 generation 并重建 view；不能将其当成无副作用的重绘请求。
+可写属性、声明式 INPUT、DOCK、其他挂载点、复杂动画和新视口服务仍未开放。便利 SDK 不启用普通宿主的 `mms.edit`。刷新种类按目标的 `supportedKinds` 检查，见[刷新 SDK](cpp-refresh.md)。`updateElement` 保留底层 handle，但可能更新 generation 并重建 view；不能将其当成无副作用的重绘请求。
+
+## 工具栏命令溢出
+
+`MMS_UI_OVERFLOW_MENU` 的值为 `3`，写入已有的 `MmsUiLayoutHintsV1.overflow`。当前支持 `mms.toolbar.main.extensions` 下的 `MMS_UI_BUTTON`、`MMS_UI_GROUP` 和 `MMS_UI_SEPARATOR`。嵌套祖先必须是 GROUP。菜单、工作区面板及其他位置使用此值返回 `MMS_E_UNSUPPORTED`。
+
+在前述 `Register(spec)` 调用前，设置按钮的默认提示：
+
+```cpp
+MmsUiLayoutHintsV1 hints{};
+hints.h = mms::sdk::Header<MmsUiLayoutHintsV1>();
+hints.overflow = MMS_UI_OVERFLOW_MENU;
+spec.button.hints = &hints;
+```
+
+该声明仍由 `CommandUi` 调用原 `setDefaultHints`，不创建第二个菜单元素或命令。直接使用 C ABI 的插件先为元素声明 `MMS_UI_LAYOUT`，再设置同一字段。`RegistrationBundle::AddElement` 也可注册 SEPARATOR，然后用 `SetDefaultHints` 设置提示；`CommandUiSpec` 没有单独的分隔符声明。
+
+布局按实际生效的 `order` 保留靠前元素，超出可见宽度或高度的后序候选进入「更多」菜单。GROUP 上的溢出提示由其后代继承。GROUP 同时设置 `MMS_HINT_KEEP_TOGETHER` 时，整组作为一个布局单元移动；组内任一可见后代选择菜单溢出，就会连同没有单独选择溢出的可见命令和分隔符一起移动。需要整组折叠时，将提示放在 `spec.group.hints`。用户保存的提示覆盖仍优先。
+
+菜单保留分组层级，清理首尾及连续分隔符。没有命令溢出时不预留「更多」区域。父区域没有可用宽度或高度时，入口随父区域隐藏，不越过父区域显示。未选择菜单溢出的元素继续使用原有换行、裁剪或滚动规则；该选项不会自动改变挂载位置。
+
+溢出只改变呈现。原按钮 HWND、元素 handle、命令和刷新目标实例继续保留；空间恢复后同一按钮回到工具栏。溢出按钮的布局快照为 `visible=0`、`overflowed=1`，`rect` 仍表示原 HWND 的几何，不是弹出菜单中的位置。宿主保留隐藏按钮的客户区尺寸，以便原 STATE 目标继续更新；纯 STATE 不会把溢出按钮显示在工具栏上。
+
+菜单项标签取原按钮的有效标签，启用、选中和显隐使用原命令状态。已打开的菜单可更新现有项的标签、启用及选中状态，并移除已隐藏、注销或失效的项目。调用前重新校验元素 handle、所有者生命周期和命令状态，沿用原调用入口。重新注册同名元素产生的新 handle 不接收旧菜单项的调用。插件停止及卸载遵循原注册清理和租约规则。
+
+此扩展不增加函数表版本，也没有独立的溢出能力查询。取得 `mms.ui.layout` 1.0 不代表旧宿主接受数值 `3`；检查 `Register`、`SetDefaultHints` 或底层 `stageHints` 的结果。返回 `MMS_E_UNSUPPORTED` 时，由插件明确注册受支持的菜单位置，或报告不支持。`CommandUi` 不会静默回退；注册失败后的清理规则不变。
+
+实现状态及本轮验收证据见 [UI 框架记录](../../docs/records/abi-ui-framework-2026-10-19.md)。工具栏溢出不开放 DOCK、INPUT、新挂载点、通用菜单内容提供者或普通 `mms.edit`。
 
 Win7 SP1 x64、CPU 基础路径和 AMD 继续作为发布约束。当前构建与本机测试不替代 Win7 和 AMD 真机验收。

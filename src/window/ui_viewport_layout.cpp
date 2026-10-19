@@ -124,14 +124,15 @@ void LayoutViewportPanels(MMDApp* app) {  // was Sub40CAC0, VA 0x0040CAC0
     const auto panels = FramePanelLayout(app);
     const RECT viewport = panels.overlay;
     if(!MMD_ORIGINAL_PROFILE&&IsRectEmpty(&viewport)){
-        const bool defer=app->SidebarResizeDragging()!=0||app->bottomPanelSizing.relayout;
+        const bool defer=app->SidebarResizeDragging()!=0||app->bottomPanelSizing.relayout||ui::LayoutBatch::IsCollecting();
         for(int id=536;id<=557;++id)ui::MoveLayoutControl(base,id,-9000,-9000,1,1,defer);
         for(int id=570;id<=577;++id)ui::MoveLayoutControl(base,id,-9000,-9000,1,1,defer);
         return;
     }
     const int stripY = viewport.bottom;                           // 658764
     const int rowY = viewport.top;                                // 658756
-    const bool deferPaint = app->SidebarResizeDragging() != 0 || app->bottomPanelSizing.relayout;
+    const bool deferPaint = app->SidebarResizeDragging() != 0 || app->bottomPanelSizing.relayout ||
+        (!MMD_ORIGINAL_PROFILE && ui::LayoutBatch::IsCollecting());
     auto move = [&](int id, int x, int y, int w, int h) {
         ui::MoveLayoutControl(base, id, x, y, w, h, deferPaint);
     };
@@ -139,9 +140,7 @@ void LayoutViewportPanels(MMDApp* app) {  // was Sub40CAC0, VA 0x0040CAC0
         if (MMD_ORIGINAL_PROFILE) return;
         const HWND control = GetDlgItem(base, id);
         if (!control) return;
-        ApplyUiFontToControl(app, control, id);
-        HFONT font = id == 570 ? ScaleLabelBoldFont(app) :
-            reinterpret_cast<HFONT>(SendMessageW(control, WM_GETFONT, 0, 0));
+        HFONT font = id == 570 ? ScaleLabelBoldFont(app) : UiFontForControl(app, control, id);
         if (!font) return;
         if (scale < 1.0f) {
             LOGFONTW definition{};
@@ -154,7 +153,7 @@ void LayoutViewportPanels(MMDApp* app) {  // was Sub40CAC0, VA 0x0040CAC0
                 if (scaled) font = scaled;
             }
         }
-        SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font), FALSE);
+        ui::SetLayoutFont(control, font);
     };
     const auto controlHeight = [&](int id, int requested) {
         const HWND control = GetDlgItem(base, id);
@@ -248,17 +247,8 @@ void LayoutViewportPanels(MMDApp* app) {  // was Sub40CAC0, VA 0x0040CAC0
 #if !MMD_ORIGINAL_PROFILE
     // Position, rotation and scale share the same adaptable field width.
     // The scale caption alone is sized from its localized text.
-    // Install the final font before MoveWindow repaints the caption. Drawing
-    // once with the control font and again with the bold font caused ghosts.
-    for (int id : {570, 571, 572, 574, 575, 576, 577}) {
-        HWND control = GetDlgItem(base, id);
-        if (!deferPaint && control != nullptr && app->state.hFontUI != nullptr) {
-            ApplyUiFontToControl(app, control, id);
-            if (id == 570)
-                SendMessageW(control, WM_SETFONT,
-                             reinterpret_cast<WPARAM>(ScaleLabelBoldFont(app)), FALSE);
-        }
-    }
+    // Each move below selects its final base/bold/scaled font once. The shared
+    // layout transaction records font-only damage even if its bounds stay put.
     const int scaleTitleWidth = ViewportScaleCaptionWidth(app);
     const int scaleTitleX = 640;
     const int scaleEditWidth = 53;

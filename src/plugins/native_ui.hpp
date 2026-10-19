@@ -17,6 +17,12 @@ public:
     // the application updates dependent viewport geometry without scene work.
     void SetLayoutPublished(std::function<MmsResult(int)>);
     HWND Toolbar() const;
+    // Native painting/layout and popup tracking own adapter stacks independently
+    // of plugin callback permissions. DeferClose coalesces requests while those
+    // stacks are active, then posts one WM_CLOSE after the outermost return.
+    // PopupActive reports popup tracking only, not general native work.
+    bool PopupActive() const noexcept;
+    bool DeferClose(WPARAM, LPARAM) noexcept;
     bool DialogMessage(MSG*);
 };
 }

@@ -1,6 +1,7 @@
 #include "mikudancestudio/undo_storage.hpp"
 #include "mikudancestudio/key_pool.hpp"
 #include "mikudancestudio/bone_curve.hpp"
+#include "../plugins/native_physics_toggle.hpp"
 // ===========================================================================
 // Misc dialog bodies: frame-control apply, reorder fill, accessory-edit init, physics ON/OFF apply
 // ===========================================================================
@@ -754,6 +755,9 @@ void InitGravityDialog(HWND hDlg) {  // was Sub423160, VA 0x00423160
 // =========================================================================//
 void ApplyPhysicsOnOff(int on) {  // was Sub4403C0, VA 0x004403C0
     MMDApp* app = g_Block;
+#if !MMD_ORIGINAL_PROFILE
+    if (plugins::TryApplyBoundPhysicsKeyToggle(app, on != 0)) return;
+#endif
     unsigned char* modelBytes = app->ModelSlot(app->state.slotIdx);
     if (modelBytes == nullptr)
         return;

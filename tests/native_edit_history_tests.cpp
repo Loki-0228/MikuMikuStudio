@@ -420,6 +420,8 @@ void CrossModelJournal(){
 #include "native_curve_write_checks.inc"
 #include "native_morph_curve_write_checks.inc"
 #include "native_bone_curve_write_checks.inc"
+#include "native_physics_toggle_checks.inc"
+#include "native_center_offset_checks.inc"
 #include "native_morph_vmd_curves_checks.inc"
 #include "native_bone_vmd_curves_checks.inc"
 #include "native_model_vmd_curves_checks.inc"
@@ -428,6 +430,14 @@ void CrossModelJournal(){
 int main(int argc,char** argv){
     std::setvbuf(stdout,nullptr,_IONBF,0);
     const auto run=[](const char* name,void(*test)()){std::printf("RUN %s\n",name);test();};
+    if(argc==2&&!std::strcmp(argv[1],"--physics-toggle-only")) {
+        run("NativePhysicsToggleChecks",NativePhysicsToggleChecks);
+        std::printf("PASS native physics key toggle: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--center-offset-only")) {
+        run("NativeCenterOffsetChecks",NativeCenterOffsetChecks);
+        std::printf("PASS native center offset: %u checks\n",checks);return 0;
+    }
     if(argc==2&&!std::strcmp(argv[1],"--vmd-curves-only")) {
         run("NativeMorphVmdCurvesChecks",NativeMorphVmdCurvesChecks);
         run("NativeBoneVmdCurvesChecks",NativeBoneVmdCurvesChecks);
@@ -785,6 +795,8 @@ int main(int argc,char** argv){
     run("NativeCurveWriteChecks",NativeCurveWriteChecks);
     run("NativeMorphCurveWriteChecks",NativeMorphCurveWriteChecks);
     run("NativeBoneCurveWriteChecks",NativeBoneCurveWriteChecks);
+    run("NativePhysicsToggleChecks",NativePhysicsToggleChecks);
+    run("NativeCenterOffsetChecks",NativeCenterOffsetChecks);
     run("NativeMorphVmdCurvesChecks",NativeMorphVmdCurvesChecks);
     run("NativeBoneVmdCurvesChecks",NativeBoneVmdCurvesChecks);
     run("NativeModelVmdCurvesChecks",NativeModelVmdCurvesChecks);

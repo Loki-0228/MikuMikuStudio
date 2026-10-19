@@ -45,7 +45,7 @@ cmake --build build/hello-menu --config Release
 | --- | --- |
 | `mms.ui` 1.0 | 命令、菜单项、工具栏按钮和组；元数据更新；只读属性；快照租约；命令参数、范围与选项校验；布局修订检查、指定顺序移动、创建与删除空组、显示、首选尺寸、快捷键及恢复。 |
 | `mms.ui.surface` 1.0 | 菜单、工具栏和工作区页签挂载位置；原生子窗口工厂、多个视图、尺寸、隐藏、焦点与销毁。 |
-| `mms.ui.layout` 1.0 | 默认布局提示、事务内用户覆盖、实际几何快照；行、列、换行和网格；伸缩、上下限、隐藏占位。 |
+| `mms.ui.layout` 1.0 | 默认布局提示、事务内用户覆盖、实际几何快照；行、列、换行和网格；伸缩、上下限、隐藏占位；工具栏 BUTTON、GROUP 和 SEPARATOR 可通过 `MMS_UI_OVERFLOW_MENU=3` 选择命令溢出菜单。 |
 | `mms.ui.refresh` 1.0 | 本插件已有按钮和原生 surface 的 REPAINT + SELF；按钮部分 STATE；原生布局后端为已有按钮和已挂载 surface 提供保留布局的 LAYOUT。STATE 与 LAYOUT 组合支持收缩空位和同引用恢复零尺寸按钮。UI 线程查询能力和目标，后台使用同一票据；有效绑定目标支持 DATA。组合依次执行 DATA、STATE、LAYOUT、REPAINT；SUBTREE、DEPENDENTS 等其他范围仍未开放。 |
 | `mms.ui.refresh.bind` 1.0 | 本插件不可变来源、来源版本、目标绑定、只读显示准备及显示租约；工作线程发布，原刷新队列消费。 |
 | `mms.ui.refresh.state` 1.0 | 本插件已有宿主按钮的文案、说明及禁用原因；短命 builder 单次复制，在原 STATE 阶段应用，原 LAYOUT 使用已发布文案量测。附加服务表不改变旧刷新 ABI。 |
@@ -53,11 +53,13 @@ cmake --build build/hello-menu --config Release
 | `mms.storage` 1.0 | 插件工程数据、两阶段加载、只读保存数据租约；PMM 与扩展文件成对保存和中断恢复。提供者名为 `mms.serializer`。 |
 | 其他服务 | 尚未接入，`queryService` 返回 NOT_FOUND。 |
 
-可写属性和工程编辑命令等待编辑事务服务，当前返回 NOT_READY。停靠和命令溢出菜单暂返回 UNSUPPORTED。INPUT、侧栏、属性区、时间线和状态栏挂载点尚未开放。布局撤销历史尚未接入。未支持的操作不会返回成功。
+可写属性和工程编辑命令等待编辑事务服务，当前返回 NOT_READY。普通宿主查询 `mms.edit` 仍返回 NOT_FOUND。DOCK 返回 UNSUPPORTED。INPUT、侧栏、属性区、时间线和状态栏挂载点尚未开放。布局撤销历史尚未接入。未支持的操作不会返回成功。
 
 布局事务的用户覆盖由宿主保存，重启或 EXE 改名后按稳定 ID 恢复。缺失插件的配置继续保留。保存位置、默认值合并和失败行为见[界面布局保存](ui-preferences.md)。
 
 需要布局提示时，元素声明 `MMS_UI_LAYOUT`，使用 `layout.setDefaultHints`。用户通过 `stageHints` 设置的覆盖值不会被后续默认值覆盖。布局快照仅枚举有 LAYOUT 能力的元素；新 UI 修订的 HWND 几何尚未完成或布局失败暂停时返回 NOT_READY。旧快照租约不会被后续布局修改，失败不承诺回滚已移动的 HWND。
+
+工具栏溢出使用 `MmsUiLayoutHintsV1.overflow=MMS_UI_OVERFLOW_MENU`，不增加服务表或注册对象。当前只接受 `mms.toolbar.main.extensions` 下的 BUTTON、GROUP、SEPARATOR，祖先只能是该工具栏及 GROUP。空间不足时，后序命令进入「更多」菜单；空间恢复时，原按钮 HWND 和元素 handle 继续使用。菜单项引用原命令，沿用状态、权限和卸载规则。分组、`MMS_HINT_KEEP_TOGETHER`、旧宿主回退及完整边界见 [C++17 布局参考](cpp-ui.md#工具栏命令溢出)。本轮实现与验收证据见 [UI 框架记录](../../docs/records/abi-ui-framework-2026-10-19.md)。
 
 刷新目标直接使用原元素 handle，按钮不要求 `MMS_UI_LAYOUT` 注册能力；具体刷新种类仍须检查目标的 supportedKinds。纯 LAYOUT 使用缓存状态，不重新查询所有命令。`getCapabilities`、`getTarget` 允许在 UI 线程的命令回调内纯读；只有 `request`、`query`、`cancel`、`release` 允许后台调用。局部矩形使用目标客户区 DIP，并带实际几何修订；同次布局改变几何后，旧矩形返回 STALE，保留已完成阶段。`release` 不取消已接受的请求，未释放票据会阻止插件卸载。完整错误和停止规则见[界面刷新接口参考](refresh.md)。
 

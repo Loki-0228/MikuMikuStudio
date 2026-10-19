@@ -98,6 +98,7 @@ void QueueProjectEvent(MMDApp* app, uint32_t kind, const wchar_t* path) {
 constexpr UINT kRefresh = WM_APP + 0x6a;
 void LogMessage(const std::string& s) { runtime_log::Write("PLUGIN_ABI %s", s.c_str()); }
 LRESULT CALLBACK Subclass(HWND hwnd, UINT message, WPARAM wp, LPARAM lp, UINT_PTR id, DWORD_PTR) {
+    if (message == WM_CLOSE && ui && ui->DeferClose(wp, lp)) return 0;
     if (message == WM_CLOSE && manager && manager->InCallback()) { PostMessageW(hwnd, WM_CLOSE, wp, lp); return 0; }
     if (message == kRefresh || (message == WM_TIMER && wp == kHistoryUiRetry)) {
         KillTimer(hwnd, kHistoryUiRetry);
@@ -198,6 +199,10 @@ bool InitializeHistoryTestRuntime(MMDApp* app) noexcept {
     return manager && owner == app && history;
 }
 void Shutdown() {
+    // Native painting/layout and popup loops can pump messages without plugin
+    // callback permissions. Retain their adapter until the outermost return;
+    // STATE remains usable and the pending close is posted at that boundary.
+    if (ui && ui->DeferClose(0, 0)) return;
     if (manager && manager->ExecutingCallback()) return;
 #if !MMD_ORIGINAL_PROFILE
     if (NativeObjectOperationActive(owner)) return;

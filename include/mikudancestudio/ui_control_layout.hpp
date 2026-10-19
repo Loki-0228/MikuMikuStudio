@@ -1,6 +1,9 @@
 #pragma once
 #include <Windows.h>
+#include <CommCtrl.h>
 #include <vector>
+#include "mikudancestudio/build_profile.hpp"
+#include "mikudancestudio/window_dpi_scope.hpp"
 
 namespace mikudancestudio::ui {
 struct LayoutChange {
@@ -9,6 +12,7 @@ struct LayoutChange {
 };
 namespace layout_detail {
 inline RECT ActualRect(HWND parent, HWND child) {
+    const WindowDpiScope dpi(parent ? parent : child);
     RECT rect{};
     if (GetWindowRect(child, &rect))
         MapWindowPoints(nullptr, parent, reinterpret_cast<POINT*>(&rect), 2);
@@ -19,6 +23,7 @@ inline bool Combo(HWND window) {
     return GetClassNameW(window, name, 32) && _wcsicmp(name, L"COMBOBOX") == 0;
 }
 inline int RequestedHeight(HWND window, const RECT& collapsed) {
+    const WindowDpiScope dpi(window);
     RECT dropped{};
     if (Combo(window) && SendMessageW(window, CB_GETDROPPEDCONTROLRECT, 0,
                                      reinterpret_cast<LPARAM>(&dropped)))
@@ -49,6 +54,86 @@ inline void RememberHeight(HWND window, int requested) {
     SetPropW(window, kComboActual, reinterpret_cast<HANDLE>(INT_PTR(RequestedHeight(window, rect)) + 1));
 }
 inline constexpr UINT kMoveFlags = SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_NOCOPYBITS;
+
+// Some native controls resize themselves again from WM_SIZE (notably Combo),
+// dropping the outer SWP_NOREDRAW flag. Keep those nested moves and display
+// paints inside the same transaction. Never use WM_SETREDRAW here: its default
+// implementation changes WS_VISIBLE, which breaks visibility and hit testing.
+class PendingPaint {
+    HWND window_ = nullptr;
+    static LRESULT CALLBACK Procedure(HWND window, UINT message, WPARAM wp, LPARAM lp,
+                                      UINT_PTR id, DWORD_PTR data) {
+        auto* self = reinterpret_cast<PendingPaint*>(data);
+        if (message == WM_NCDESTROY) {
+            self->window_ = nullptr; RemoveWindowSubclass(window, Procedure, id);
+        } else if (message == WM_WINDOWPOSCHANGING && lp) {
+            auto* position = reinterpret_cast<WINDOWPOS*>(lp);
+            position->flags |= SWP_NOREDRAW | SWP_NOCOPYBITS;
+            const auto result = DefSubclassProc(window, message, wp, lp);
+            // An existing subclass or the control itself can rewrite flags.
+            position->flags |= SWP_NOREDRAW | SWP_NOCOPYBITS;
+            return result;
+        } else if ((message == WM_PAINT && !wp) || message == WM_NCPAINT) {
+            // Do not BeginPaint/ValidateRect: the final repaint must still
+            // consume every invalidated pixel and the nonclient frame.
+            return 0;
+        } else if (message == WM_ERASEBKGND) {
+            const auto dc = reinterpret_cast<HDC>(wp);
+            if (dc && GetObjectType(dc) == OBJ_DC && WindowFromDC(dc) == window) return 1;
+        }
+        return DefSubclassProc(window, message, wp, lp);
+    }
+public:
+    PendingPaint() = default;
+    PendingPaint(const PendingPaint&) = delete;
+    PendingPaint& operator=(const PendingPaint&) = delete;
+    bool Attach(HWND window) noexcept {
+        if (!SetWindowSubclass(window, Procedure, reinterpret_cast<UINT_PTR>(this), reinterpret_cast<DWORD_PTR>(this))) return false;
+        window_ = window; return true;
+    }
+    void Release() noexcept {
+        if (window_) RemoveWindowSubclass(window_, Procedure, reinterpret_cast<UINT_PTR>(this));
+        window_ = nullptr;
+    }
+    ~PendingPaint() { Release(); }
+};
+
+// Native child painting can enter plugin code and its nested message pump.
+// Keep a requested host close queued until the whole synchronous repaint ends.
+class PaintCloseGuard {
+    HWND window_ = nullptr;
+    bool requested_ = false;
+    WPARAM wp_ = 0;
+    LPARAM lp_ = 0;
+    static LRESULT CALLBACK Procedure(HWND window, UINT message, WPARAM wp, LPARAM lp,
+                                      UINT_PTR id, DWORD_PTR data) {
+        auto& self = *reinterpret_cast<PaintCloseGuard*>(data);
+        if (message == WM_CLOSE) {
+            if (!self.requested_) { self.requested_ = true; self.wp_ = wp; self.lp_ = lp; }
+            return 0;
+        }
+        if (message == WM_NCDESTROY) {
+            self.window_ = nullptr;
+            RemoveWindowSubclass(window, Procedure, id);
+        }
+        return DefSubclassProc(window, message, wp, lp);
+    }
+public:
+    PaintCloseGuard() = default;
+    PaintCloseGuard(const PaintCloseGuard&) = delete;
+    PaintCloseGuard& operator=(const PaintCloseGuard&) = delete;
+    bool Attach(HWND parent) noexcept {
+        const HWND root = GetAncestor(parent, GA_ROOT);
+        if (!root || !SetWindowSubclass(root, Procedure, reinterpret_cast<UINT_PTR>(this),
+                                       reinterpret_cast<DWORD_PTR>(this))) return false;
+        window_ = root; return true;
+    }
+    ~PaintCloseGuard() {
+        if (!window_) return;
+        RemoveWindowSubclass(window_, Procedure, reinterpret_cast<UINT_PTR>(this));
+        if (requested_) PostMessageW(window_, WM_CLOSE, wp_, lp_);
+    }
+};
 }
 
 // UI-thread scope. Windows must remain alive until Commit returns. Destruction
@@ -66,11 +151,29 @@ class LayoutBatch {
     inline static thread_local LayoutBatch* active_ = nullptr;
     LayoutBatch* previous_ = nullptr;
     std::vector<Move> pending_;
+    struct FontChange { HWND window; HFONT before, after; };
+    std::vector<FontChange> fonts_;
     std::vector<LayoutChange> changes_;
+    std::vector<LayoutChange> external_;
     bool finished_ = false;
+    void RestoreFonts() noexcept {
+        // Preserve a different font committed by an independent nested scope.
+        for (const auto& font : fonts_)
+            if (IsWindow(font.window) && reinterpret_cast<HFONT>(SendMessageW(font.window, WM_GETFONT, 0, 0)) == font.after)
+                SendMessageW(font.window, WM_SETFONT, reinterpret_cast<WPARAM>(font.before), FALSE);
+        fonts_.clear();
+    }
+    static LayoutBatch* Collecting() noexcept {
+        for (auto* batch = active_; batch; batch = batch->previous_)
+            if (!batch->finished_) return batch;
+        return nullptr;
+    }
     friend RECT ReadLayoutRect(HWND, HWND);
     friend int ReadLayoutRequestedHeight(HWND);
     friend void MoveLayoutWindow(HWND, int, int, int, int, bool);
+    friend void SetLayoutFont(HWND, HFONT);
+    friend void ReserveLayoutChanges(std::size_t);
+    friend bool RecordLayoutChange(const LayoutChange&) noexcept;
     bool Queue(HWND window, int x, int y, int width, int height) {
         if (finished_) return false;
         for (auto& move : pending_) if (move.window == window) {
@@ -87,16 +190,36 @@ public:
     LayoutBatch() : previous_(active_) { active_ = this; }
     LayoutBatch(const LayoutBatch&) = delete;
     LayoutBatch& operator=(const LayoutBatch&) = delete;
-    ~LayoutBatch() { active_ = previous_; }
+    ~LayoutBatch() {
+        active_ = previous_;
+        // Measurements use the new font while geometry is still queued. An
+        // abandoned transaction must not leave that font on the old layout.
+        if (!finished_) RestoreFonts();
+    }
+    static bool IsCollecting() noexcept { return Collecting() != nullptr; }
     const std::vector<LayoutChange>& Changes() const { return changes_; }
     // False means at least one final move still failed after fallback. Changes
     // reports actual geometry even on partial failure and must still be repainted.
     bool Commit() {
         if (finished_) return false;
-        changes_.reserve(pending_.size());
+        // External hosts have already changed their windows. Preserve their
+        // repaint obligations even if allocation or guard installation fails.
+        changes_.swap(external_);
+        struct Preparation {
+            LayoutBatch& owner;
+            bool ready = false;
+            ~Preparation() {
+                if (!ready) { owner.finished_ = true; owner.RestoreFonts(); }
+            }
+        } preparation{*this};
+        changes_.reserve(pending_.size() + fonts_.size() + changes_.size());
         std::vector<std::vector<Move*>> groups;
         for (auto& move : pending_) {
             const RECT current = layout_detail::ActualRect(move.parent, move.window);
+            // An inner independent transaction may already have moved this
+            // window. Damage starts at its actual position at commit time.
+            move.before = current;
+            move.popupBefore = layout_detail::RequestedHeight(move.window, current);
             if (current.left == move.x && current.top == move.y &&
                 current.right - current.left == move.width &&
                 layout_detail::HeightMatches(move.window, current, move.height)) continue;
@@ -106,10 +229,21 @@ public:
             }
             if (!grouped) groups.push_back({&move});
         }
+        // Allocate and install guards before the first geometry mutation.
+        // Installation failure leaves queued geometry untouched and restores
+        // fonts before returning; no partial guard is allowed to escape.
+        std::size_t guardedCount = 0;
+        for (const auto& group : groups) guardedCount += group.size();
+        std::vector<layout_detail::PendingPaint> guards(guardedCount);
+        std::size_t guardIndex = 0;
+        for (const auto& group : groups) for (const auto* move : group)
+            if (!guards[guardIndex++].Attach(move->window)) return false;
         // All allocating preparation precedes the first geometry mutation.
         finished_ = true;
+        preparation.ready = true;
         bool success = true;
         for (auto& group : groups) {
+            const WindowDpiScope dpi(group.front()->parent);
             HDWP deferred = BeginDeferWindowPos(int(group.size()));
             if (deferred) for (const auto* move : group) {
                 deferred = DeferWindowPos(deferred, move->window, nullptr,
@@ -131,11 +265,37 @@ public:
                     changes_.push_back({move->window, move->parent, move->before, after});
             }
         }
+        // A font change can require painting even when final bounds match.
+        for (const auto& font : fonts_) {
+            const auto window = font.window;
+            bool recorded = false;
+            for (const auto& change : changes_) if (change.window == window) { recorded = true; break; }
+            if (!recorded && IsWindow(window)) {
+                const auto parent = GetParent(window);
+                const auto rect = layout_detail::ActualRect(parent, window);
+                changes_.push_back({window, parent, rect, rect});
+            }
+        }
         return success;
     }
 };
 
+// A host with its own geometry/publication transaction can hand its paint
+// obligations to an outer layout scope without delaying its native geometry.
+// Reserve before that host mutates any window; recording is allocation-free.
+inline void ReserveLayoutChanges(std::size_t count) {
+    if (auto* batch = LayoutBatch::Collecting())
+        batch->external_.reserve(batch->external_.capacity() + count);
+}
+inline bool RecordLayoutChange(const LayoutChange& change) noexcept {
+    auto* batch = LayoutBatch::Collecting();
+    if (!batch || batch->external_.size() == batch->external_.capacity()) return false;
+    batch->external_.push_back(change);
+    return true;
+}
+
 inline RECT ReadLayoutRect(HWND parent, HWND child) {
+    const WindowDpiScope dpi(parent ? parent : child);
     for (auto* batch = LayoutBatch::active_; batch; batch = batch->previous_)
         if (!batch->finished_) for (const auto& move : batch->pending_) if (move.window == child) {
             RECT rect{move.x, move.y, move.x + move.width,
@@ -157,12 +317,18 @@ inline int ReadLayoutRequestedHeight(HWND child) {
 }
 inline void MoveLayoutWindow(HWND control, int x, int y, int width, int height, bool deferPaint) {
     if (!control) return;
+    // The transaction owns all layout calls made in its scope, including
+    // callers that normally request an immediate repaint. Otherwise an inner
+    // helper can erase a control without recording it for the final repaint.
+    if (auto* batch = LayoutBatch::Collecting()) {
+        batch->Queue(control, x, y, width, height); return;
+    }
+    const auto parent = GetParent(control);
+    const WindowDpiScope dpi(parent ? parent : control);
+    const auto rect = layout_detail::ActualRect(parent, control);
+    if ((!build_profile::original || deferPaint) && rect.left == x && rect.top == y && rect.right - rect.left == width &&
+        layout_detail::HeightMatches(control, rect, height)) return;
     if (deferPaint) {
-        if (LayoutBatch::active_ && LayoutBatch::active_->Queue(control, x, y, width, height)) return;
-        const auto parent = GetParent(control);
-        const auto rect = layout_detail::ActualRect(parent, control);
-        if (rect.left == x && rect.top == y && rect.right - rect.left == width &&
-            layout_detail::HeightMatches(control, rect, height)) return;
         if (SetWindowPos(control, nullptr, x, y, width, height, layout_detail::kMoveFlags))
             layout_detail::RememberHeight(control, height);
     } else {
@@ -170,20 +336,71 @@ inline void MoveLayoutWindow(HWND control, int x, int y, int width, int height, 
             layout_detail::RememberHeight(control, height);
     }
 }
+inline void SetLayoutFont(HWND control, HFONT font) {
+    if (!control) return;
+    const auto before = reinterpret_cast<HFONT>(SendMessageW(control, WM_GETFONT, 0, 0));
+    if (before == font) return;
+    const bool deferred = LayoutBatch::IsCollecting();
+    if (deferred) {
+        // Reserve the repaint obligation before changing native state.
+        auto& fonts = LayoutBatch::Collecting()->fonts_;
+        bool found = false;
+        for (auto& item : fonts) if (item.window == control) { item.after = font; found = true; break; }
+        if (!found) fonts.push_back({control, before, font});
+    }
+    SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font), !deferred);
+}
 inline void MoveLayoutControl(HWND parent, int id, int x, int y, int width, int height, bool deferPaint) {
     MoveLayoutWindow(GetDlgItem(parent, id), x, y, width, height, deferPaint);
 }
 // The parent owns its exposed chrome; only controls whose final geometry changed
 // need native erasing/nonclient painting. Never erase every sibling on a drag.
 inline void RepaintLayout(HWND parent, const std::vector<LayoutChange>& changes, RECT damage) {
-    RECT client{};GetClientRect(parent,&client);
-    for(const auto& change:changes)if(change.parent==parent){
-        RECT clipped{};if(IntersectRect(&clipped,&client,&change.before))UnionRect(&damage,&damage,&clipped);
-        if(IntersectRect(&clipped,&client,&change.after))UnionRect(&damage,&damage,&clipped);
+    const WindowDpiScope dpi(parent);
+    const auto invalidateParent = [&](HWND owner, RECT bounds) {
+        if (!IsWindow(owner)) return;
+        const WindowDpiScope ownerDpi(owner);
+        RECT client{}; GetClientRect(owner, &client);
+        for (const auto& change : changes) if (change.parent == owner) {
+            RECT clipped{};
+            if (IntersectRect(&clipped, &client, &change.before)) UnionRect(&bounds, &bounds, &clipped);
+            if (IntersectRect(&clipped, &client, &change.after)) UnionRect(&bounds, &bounds, &clipped);
+        }
+        if (!IsRectEmpty(&bounds)) RedrawWindow(owner, &bounds, nullptr, RDW_INVALIDATE | RDW_NOCHILDREN);
+    };
+    const auto firstParent = [&](std::size_t index) {
+        const auto owner = changes[index].parent;
+        if (owner == parent) return false;
+        for (std::size_t before = 0; before < index; ++before)
+            if (changes[before].parent == owner) return false;
+        return true;
+    };
+    // Register the complete damage first. RDW_UPDATENOW sends standalone
+    // erase messages before WM_PAINT; that exposes intermediate backgrounds
+    // and bypasses buffering around BeginPaint. UpdateWindow lets each native
+    // paint consume its pending erase inside the paint transaction instead.
+    invalidateParent(parent, damage);
+    for (std::size_t i = 0; i < changes.size(); ++i)
+        if (firstParent(i)) invalidateParent(changes[i].parent, RECT{});
+    for(const auto& change:changes)if(IsWindow(change.window)) {
+        const WindowDpiScope childDpi(change.window);
+        RedrawWindow(change.window,nullptr,nullptr,RDW_INVALIDATE|RDW_ERASE|RDW_FRAME|RDW_ALLCHILDREN);
     }
-    RedrawWindow(parent,&damage,nullptr,RDW_INVALIDATE|RDW_NOCHILDREN|RDW_UPDATENOW);
-    for(const auto& change:changes)if(IsWindow(change.window))
-        RedrawWindow(change.window,nullptr,nullptr,RDW_INVALIDATE|RDW_ERASE|RDW_FRAME|RDW_ALLCHILDREN|RDW_UPDATENOW);
+    layout_detail::PaintCloseGuard close;
+    // On hook failure retain every update region for the normal message pump;
+    // do not synchronously enter arbitrary child code without a lifetime guard.
+    if (!build_profile::original && !close.Attach(parent)) return;
+    UpdateWindow(parent);
+    for (std::size_t i = 0; i < changes.size(); ++i) if (firstParent(i) && IsWindow(changes[i].parent)) {
+        const WindowDpiScope ownerDpi(changes[i].parent); UpdateWindow(changes[i].parent);
+    }
+    for(const auto& change:changes)if(IsWindow(change.window)) {
+        const WindowDpiScope childDpi(change.window);
+        UpdateWindow(change.window);
+        EnumChildWindows(change.window, [](HWND child, LPARAM) -> BOOL {
+            const WindowDpiScope dpi(child); UpdateWindow(child); return TRUE;
+        }, 0);
+    }
 }
 
 }

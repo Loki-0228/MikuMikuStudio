@@ -60,6 +60,11 @@ struct BoneInterpolationOptions {
 // on commit, undo or redo. Scale changes invalidate only derived transforms.
 MmsResult PlanBoneInterpolationEdit(MMDApp&, unsigned modelSlot,
     const BoneInterpolationOptions&, std::shared_ptr<HistoryChange>&) noexcept;
+// Menu 219: offset marked keys whose owning bone is a model root. Native
+// float additions and sparse free-curve reconciliation are prepared together.
+// Other key fields, scale authoring, later marks and timeline metadata remain.
+MmsResult PlanBoneCenterOffset(MMDApp&, unsigned modelSlot,
+    const std::array<float, 3>&, std::shared_ptr<HistoryChange>&) noexcept;
 // Production register-button route under the explicit migration binding only.
 // True also covers rejection/no-op: never fall through to the old ring.
 bool TryRegisterBoundBones(MMDApp*) noexcept;

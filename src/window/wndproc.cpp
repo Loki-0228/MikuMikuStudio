@@ -270,11 +270,25 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             return 0;
         }
 
-        case WM_SIZE:
+        case WM_SIZE: {
+            const auto previousReady = s.WindowLayoutReady();
             s.WindowLayoutReady() = 0;                            // 672812
+#if !MMD_ORIGINAL_PROFILE
+            if (!ui::LayoutBatch::IsCollecting()) {
+                const WindowDpiScope dpi(hwnd);
+                ui::LayoutBatch batch;
+                HandleWindowSize(app);
+                batch.Commit();
+                s.WindowLayoutReady() = 1;
+                RECT damage{}; GetClientRect(hwnd, &damage);
+                ui::RepaintLayout(hwnd, batch.Changes(), damage);
+                return 0;
+            }
+#endif
             HandleWindowSize(app);                                // 0x443300
-            s.WindowLayoutReady() = 1;
+            s.WindowLayoutReady() = MMD_ORIGINAL_PROFILE ? 1 : previousReady;
             return 0;
+        }
 
         case WM_PAINT:
             HandleWindowPaint(app);                               // 0x47C0A0

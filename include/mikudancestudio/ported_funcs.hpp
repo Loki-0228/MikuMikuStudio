@@ -273,6 +273,9 @@ int GetPmdNum(MMDApp* app);                                   // VA 0x0042A110
 // ---- font / texture subsystem (phase 4) ----------------------------------
 void CreateUiFont(MMDApp* app, HWND hwnd);        // from 0x00466D20 phases 21-23
 void ApplyUiFontToControl(MMDApp* app, HWND control, int id);
+// Select the shared/numeric base font without applying or repainting it.
+// Null means a class-default control, a missing HWND, or unavailable font.
+HFONT UiFontForControl(MMDApp* app, HWND control, int id);
 int  DrawGlyph(MMDApp*, const char*, HDC, int size, int x, int y,
                unsigned char r, unsigned char g, unsigned char b,
                int bold);                         // VA 0x0040E290

@@ -42,6 +42,8 @@ static std::string ManifestText(std::string id = "org.example.hello", std::strin
 #include "manager_refresh_checks.inc"
 #include "layout_refresh_checks.inc"
 #include "state_content_checks.inc"
+#include "overflow_menu_checks.inc"
+#include "overflow_validation_checks.inc"
 #include "manager_data_refresh_checks.inc"
 #include "manager_layout_refresh_checks.inc"
 #include "manager_data_refresh_concurrency_checks.inc"
@@ -220,7 +222,7 @@ static void UiPreferenceChecks() {
     reject(record(",\"size\":[32769,20]"), MMS_E_ARGUMENT);
     reject(record(",\"size\":[1e999,20]"), MMS_E_ARGUMENT);
     reject(record(",\"shortcut\":[256,0,0]"), MMS_E_ARGUMENT);
-    reject(record(",\"hints\":{\"overflow\":3}"), MMS_E_UNSUPPORTED);
+    reject(record(",\"hints\":{\"overflow\":4}"), MMS_E_ARGUMENT);
     reject(record(",\"parent\":\"mms.menu.plugins\""), MMS_E_ARGUMENT);
     reject("{\"schemaVersion\":1,\"elements\":[{\"id\":\"missing.a\",\"owner\":\"missing\",\"kind\":7,\"parent\":\"missing.b\"},{\"id\":\"missing.b\",\"owner\":\"missing\",\"kind\":7,\"parent\":\"missing.a\"}]}", MMS_E_ARGUMENT);
     MmsResult threadResult = MMS_OK; std::thread wrongThread([&] { threadResult = loaded.registry.ImportPreferences(saved); }); wrongThread.join(); CHECK(threadResult == MMS_E_THREAD);
@@ -380,7 +382,7 @@ int wmain(int argc, wchar_t** argv) {
             std::cout << "PASS refresh checks=" << checks << "\n"; fs::remove_all(root); return 0;
         }
         CHECK(argc == 4); CHECK(!fs::exists(root)); fs::create_directories(root);
-        JsonChecks(); DiscoveryChecks(root); UiChecks(); UiPreferenceChecks(); UiPreferencesFileChecks(root); LayoutChecks(); TreeLayoutChecks(); LayoutServiceChecks(); UpdateChecks(); Win32HostChecks(); SurfaceChecks(); CppSdkChecks(); LoaderChecks(root, fs::absolute(argv[1]));
+        JsonChecks(); DiscoveryChecks(root); UiChecks(); UiPreferenceChecks(); UiPreferencesFileChecks(root); LayoutChecks(); TreeLayoutChecks(); LayoutServiceChecks(); OverflowValidationChecks(); OverflowMenuChecks(); UpdateChecks(); Win32HostChecks(); SurfaceChecks(); CppSdkChecks(); LoaderChecks(root, fs::absolute(argv[1]));
         LifecycleChecks(root, fs::absolute(argv[2])); TaskDispatchChecks(root, fs::absolute(argv[2]), fs::absolute(argv[3]));
         SceneChecks(); StorageChecks(root); EditChecks(); SharedHistoryChecks(); StateContentChecks();
         ManagerEditChecks(root, fs::absolute(argv[3]));

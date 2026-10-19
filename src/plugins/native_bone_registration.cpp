@@ -1,6 +1,7 @@
 #include "native_bone_registration.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "native_bone_evaluation.hpp"
+#include "native_center_offset.hpp"
 #include "native_display_keys.hpp"
 #include "native_range_scale.hpp"
 #include "native_model_paste.hpp"
@@ -965,6 +966,46 @@ MmsResult PlanBoneInterpolationEdit(MMDApp& app, unsigned slot, const BoneInterp
         change->publishMetadata = false;
         change->preserveKeyMarks = true;
         if (changed) out = std::move(change);
+        return MMS_OK;
+    });
+}
+MmsResult PlanBoneCenterOffset(MMDApp& app, unsigned slot, const std::array<float, 3>& offset,
+    std::shared_ptr<HistoryChange>& out) noexcept {
+    out.reset();
+    for (float value : offset) if (!std::isfinite(value)) return MMS_E_ARGUMENT;
+    return Boundary([&]() -> MmsResult {
+        if (!ReadyForKeyPlan(app, slot)) return MMS_E_NOT_READY;
+        // Besides avoiding needless work, this preserves negative zero bits.
+        if (offset[0] == 0 && offset[1] == 0 && offset[2] == 0) return MMS_OK;
+        const auto& model = *mdl::Mdl(app.ModelSlot(slot));
+        if (!AnyMarks(model.boneKeys, mdl::BoneKeyCapacity(model.boneKeys))) return MMS_OK;
+        KeyPlan plan(model, true);
+        const auto owners = ValidateOwners(plan);
+        auto change = NewKeyChange(app, slot);
+        for (std::size_t index = 0; index < plan.capacity; ++index) {
+            if (!model.boneKeys[index].allocated) continue;
+            const auto owner = owners.find(unsigned(index));
+            if (owner == owners.end()) return MMS_E_ARGUMENT;
+            if (model.boneTable[owner->second].parent != -1) continue;
+            auto target = model.boneKeys[index];
+            for (unsigned axis = 0; axis < offset.size(); ++axis) {
+                if (offset[axis] == 0) continue;
+                // Keep the legacy float += rounding, without a double step.
+                target.position[axis] += offset[axis];
+                if (!std::isfinite(target.position[axis])) return MMS_E_ARGUMENT;
+            }
+            if (std::memcmp(target.position, model.boneKeys[index].position, sizeof(target.position)))
+                plan.Write(unsigned(index)) = target;
+        }
+        if (plan.patches.empty()) return MMS_OK;
+        const bool changed = FinishKeyPlan(plan, *change, owners);
+        change->publishMetadata = false;
+        change->preserveKeyMarks = true;
+        if (changed) {
+            std::shared_ptr<HistoryChange> guarded = std::move(change);
+            if (auto result = WrapCenterOffsetParentDependencies(app, slot, guarded)) return result;
+            out = std::move(guarded);
+        }
         return MMS_OK;
     });
 }

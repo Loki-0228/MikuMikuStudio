@@ -44,7 +44,7 @@ auto event = events.subscribe(topic, [=] { updateLayer(layer); });
 
 | 服务组 | 职责与状态 | 详细方案 |
 | --- | --- | --- |
-| `mms.ui`、`mms.ui.surface`、`mms.ui.layout` | 已有注册、挂载、只读属性和部分布局能力；更多挂载点、输入控件和溢出仍待开放。 | [UI 呈现](PLUGIN_UI_PRESENTATION.md) |
+| `mms.ui`、`mms.ui.surface`、`mms.ui.layout` | 已有注册、挂载、只读属性和部分布局能力。工具栏 BUTTON、GROUP、SEPARATOR 可用 `MMS_UI_OVERFLOW_MENU=3` 选择溢出菜单，keepTogether 支持整组折叠。DOCK、INPUT 及更多挂载点仍未开放。 | [UI 呈现](PLUGIN_UI_PRESENTATION.md)、[溢出 SDK](../sdk/mms/cpp-ui.md#工具栏命令溢出) |
 | `mms.ui.refresh`、`mms.ui.refresh.bind`、`mms.ui.refresh.state` 1.0 | 已有按钮及 surface 的 REPAINT + SELF；按钮部分 STATE、来源绑定的 SELF DATA、保留布局的 SELF LAYOUT。内容提供者在原 STATE 准备按钮文案、说明及禁用原因，同一对象、队列和票据。更多控件状态和依赖范围待实现。 | [刷新接口参考](../sdk/mms/refresh.md)、[状态内容](../sdk/mms/state-content.md) |
 | `mms.events`、`mms.tasks` | 提案：主题订阅、受预算约束的工作任务。 | 本文及 UI 呈现 |
 | `mms.ui.geometry`、`style`、`paint`、`presentation`、`input`、`overlay`、`layout.session` | 提案：坐标、样式、辅助绘制、临时外观、输入和可撤回布局。 | UI 呈现 |
@@ -56,6 +56,8 @@ auto event = events.subscribe(topic, [=] { updateLayer(layer); });
 
 表中的简称 `style`、`paint` 等均保留 `mms.ui.` 前缀，不是另一组服务。`mms.render.*` 的具体服务名见视口文档。
 现有 `registerProvider` 只接入 `mms.serializer`。格式、渲染及其他提供者需要逐项扩展白名单、能力查询和生命周期，不能仅凭函数名视为可用。
+
+工具栏溢出组合原布局树、元素 handle、按钮 HWND 和命令，不新增注册身份。空间恢复后同一按钮返回工具栏。菜单沿用原状态和调用检查，已打开的项目可更新或移除，卸载不会保留可调用的旧项目。该能力仅覆盖 `mms.toolbar.main.extensions` 及其 GROUP，不提供任意位置自动迁移、面板折叠或通用菜单状态内容服务。当前实现及本轮验收证据见 [UI 框架记录](records/abi-ui-framework-2026-10-19.md)。
 
 ## 对象身份与权限
 

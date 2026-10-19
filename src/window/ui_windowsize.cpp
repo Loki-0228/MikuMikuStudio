@@ -101,7 +101,7 @@ void HandleWindowSize(MMDApp* app) {
     if (!app->bottomPanelSizing.relayout) updates::RequestViewport(app, true);
     ui_metrics::Add(ui_metrics::Layout);
     auto& s = *app;
-    const bool deferPaint = s.bottomPanelSizing.relayout;
+    const bool deferPaint = s.bottomPanelSizing.relayout || (!MMD_ORIGINAL_PROFILE && ui::LayoutBatch::IsCollecting());
     const auto MoveCtrl = [deferPaint](HWND parent, int id, int x, int y, int w, int h) {
         ui::MoveLayoutControl(parent, id, x, y, w, h, deferPaint);
     };
@@ -129,7 +129,7 @@ void HandleWindowSize(MMDApp* app) {
     RECT cr1;
     GetClientRect(hwnd, &cr1);  // var_10 - only .right feeds the sidebar
     std::int32_t& sidebar = s.SidebarWidth();
-    if (deferPaint) {
+    if (s.bottomPanelSizing.relayout) {
         // A bottom splitter changes neither the client rectangle nor sidebar
         // geometry. Avoid a lossy ratio-to-pixel round trip during this batch.
     } else if (s.FloatingWindow() != nullptr) {
@@ -146,7 +146,7 @@ void HandleWindowSize(MMDApp* app) {
     }
     const std::int32_t side = sidebar;
     // Plugin mounts depend on client/sidebar geometry, not bottom extra widths.
-    if (!deferPaint) plugins::Layout(app);
+    if (!s.bottomPanelSizing.relayout) plugins::Layout(app);
     RECT cb;                                                   // var_30
     GetClientRect(hwnd, &cb);                                  // 0x443563
     const std::int32_t bottom = cb.bottom;
@@ -389,7 +389,7 @@ void RelayoutSidebarControls(MMDApp* app) {
     if (app->FullscreenMode() != 0) return;
     const HWND hwnd = static_cast<HWND>(app->Hwnd());
     const int side = app->SidebarWidth();
-    const bool deferPaint = app->SidebarResizeDragging() != 0;
+    const bool deferPaint = app->SidebarResizeDragging() != 0 || (!MMD_ORIGINAL_PROFILE && ui::LayoutBatch::IsCollecting());
     const auto MoveCtrl = [deferPaint](HWND parent, int id, int x, int y, int w, int h) {
         ui::MoveLayoutControl(parent, id, x, y, w, h, deferPaint);
     };
@@ -438,10 +438,18 @@ void ApplySidebarGeometry(MMDApp& app, int width, float ratio) {
     app.WindowLayoutReady() = 0;
     app.SidebarWidth() = width;
     app.SidebarRatio() = ratio;
+    // The compatibility profile keeps its original immediate moves and paints.
+    if (build_profile::original) {
+        plugins::Layout(&app);
+        RelayoutSidebarControls(&app);
+        PanelPaint(&app);
+        app.WindowLayoutReady() = 1;
+        return;
+    }
     // Plugin mounts use the same current sidebar/client geometry as the scene.
     // Their own layout applies before the viewport consumes its reserved height.
-    plugins::Layout(&app);
     ui::LayoutBatch batch;
+    plugins::Layout(&app);
     RelayoutSidebarControls(&app);
     batch.Commit();
     PanelPaint(&app);

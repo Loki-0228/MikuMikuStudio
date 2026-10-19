@@ -29,13 +29,31 @@ bool IsMenu(uint32_t kind) { return kind == MMS_UI_MENU || kind == MMS_UI_MENU_I
 MmsUiLayoutHintsV1 InitialHints() { MmsUiLayoutHintsV1 h{}; h.h = Header<MmsUiLayoutHintsV1>(); return h; }
 MmsResult ValidateHints(const MmsUiLayoutHintsV1* h) {
     if (!Valid(h) || h->flow > 4 || h->columns > 4096 || h->align > 3 || h->overflow > 3 || h->flags & ~7u) return MMS_E_ARGUMENT;
-    // Command overflow menus need an input-preserving adapter first.
-    if (h->overflow == 3) return MMS_E_UNSUPPORTED;
     for (const auto* values : {h->minimum, h->preferred, h->maximum, h->grow, h->shrink, h->gap})
         for (int axis = 0; axis < 2; ++axis) if (!std::isfinite(values[axis]) || values[axis] < 0 || values[axis] > 32768) return MMS_E_ARGUMENT;
     for (float value : h->padding) if (!std::isfinite(value) || value < 0 || value > 32768) return MMS_E_ARGUMENT;
     for (int axis = 0; axis < 2; ++axis) if (h->maximum[axis] && h->maximum[axis] < h->minimum[axis]) return MMS_E_ARGUMENT;
     return MMS_OK;
+}
+bool MenuOverflowAllowed(const MmsUiElementV1& element, const MmsUiLayoutHintsV1& hints,
+                         const std::map<std::string, ElementRecord>& tree) {
+    if (hints.overflow != MMS_UI_OVERFLOW_MENU) return true;
+    const auto root = std::string("mms.toolbar.main.extensions");
+    if (String(element.id) == root) return element.kind == MMS_UI_TOOLBAR;
+    if (element.kind != MMS_UI_BUTTON && element.kind != MMS_UI_SEPARATOR && element.kind != MMS_UI_GROUP) return false;
+    auto parent = String(element.parentId);
+    for (size_t depth = 0; depth <= tree.size(); ++depth) {
+        const auto found = tree.find(parent);
+        if (found == tree.end()) return false;
+        if (parent == root) return found->second.desc.kind == MMS_UI_TOOLBAR;
+        if (found->second.desc.kind != MMS_UI_GROUP) return false;
+        parent = String(found->second.desc.parentId);
+    }
+    return false;
+}
+bool MenuOverflowAllowed(const ElementRecord& element, const std::map<std::string, ElementRecord>& tree) {
+    return MenuOverflowAllowed(element.desc, element.defaultHints, tree) &&
+        MenuOverflowAllowed(element.desc, element.effectiveHints, tree);
 }
 void CloneElement(ElementRecord& e) {
     auto arena = std::make_shared<Arena>(); auto& d = e.desc;
@@ -421,6 +439,18 @@ MmsResult UiRegistry::MergePreferences(std::map<std::string, ElementRecord>& tre
             if (strict) return MMS_E_CONFLICT; e.key = e.modifiers = e.scope = 0;
         }
     }
+    // Restore invalid ancestor mounts first. A child may sort before its
+    // group; checking overflow in the loop above would discard its otherwise
+    // valid preference before the parent has returned to the toolbar.
+    for (auto& [id, e] : tree) if (!MenuOverflowAllowed(e, tree)) {
+        if (strict) return MMS_E_UNSUPPORTED;
+        // Keep unresolved saved entries while using a supported runtime mount.
+        if (!MenuOverflowAllowed(e.desc, e.defaultHints, tree)) {
+            CloneElement(e); e.desc.parentId = e.arena->Copy(Text(e.defaultParent));
+        }
+        if (!MenuOverflowAllowed(e.desc, e.effectiveHints, tree)) e.effectiveHints.overflow = e.defaultHints.overflow;
+        if (!MenuOverflowAllowed(e, tree)) return MMS_E_UNSUPPORTED;
+    }
     return MMS_OK;
 }
 std::unique_ptr<UiRegistry::Preferences> UiRegistry::CapturePreferences(
@@ -551,6 +581,7 @@ MmsResult UiRegistry::Element(UiClient& c, const MmsUiElementV1* input, MmsHandl
     d.commandId = r.arena->Copy(d.commandId); d.propertyId = r.arena->Copy(d.propertyId); d.surfaceId = r.arena->Copy(d.surfaceId); d.generation = generation_++;
     r.defaultParent = String(d.parentId); if (!replace) { r.order = r.handle; r.defaultHints = InitialHints(); r.defaultHints.order = int32_t(r.order); r.effectiveHints = r.defaultHints; }
     auto tree = elements; tree[id] = std::move(r); auto next = next_;
+    if (!MenuOverflowAllowed(tree.at(id), tree)) return MMS_E_UNSUPPORTED;
     auto merged = MergePreferences(tree, preferences_->entries, next, false); if (merged) return merged;
     for (auto& [key, element] : tree) element.desc.generation = generation_++;
     if (replace) { ForgetStateContent(replace); refresh_.InvalidateTarget(replace); DestroyView(id); }
@@ -912,6 +943,7 @@ MmsResult UiRegistry::Commit(UiClient& c, MmsHandle h) {
     std::set<std::tuple<uint32_t, uint32_t, uint32_t>> shortcuts;
     for (const auto& [id, e] : tree) {
         if ((String(e.desc.ownerPlugin) != "mms" || e.layoutGroup) && !Allowed(e.desc, tree)) return MMS_E_ARGUMENT;
+        if (!MenuOverflowAllowed(e, tree)) return MMS_E_UNSUPPORTED;
         // Hints are staged after SIZE operations. Validate their final state
         // together so every committed preference document can be imported.
         if ((e.width || e.height) &&
@@ -966,6 +998,7 @@ MmsResult UiRegistry::DefaultHints(UiClient& c, MmsString id, const MmsUiLayoutH
     auto it = elements.find(String(id)); if (it == elements.end()) return MMS_E_NOT_FOUND;
     if (String(it->second.desc.ownerPlugin) != c.id) return MMS_E_ARGUMENT;
     if (!(it->second.desc.capabilities & MMS_UI_LAYOUT)) return MMS_E_UNSUPPORTED;
+    if (!MenuOverflowAllowed(it->second.desc, *hints, elements)) return MMS_E_UNSUPPORTED;
     // A plugin can replace its defaults, but cannot silently drop an existing
     // user override when the new minimum makes that override invalid.
     auto effective = *hints;

@@ -29,6 +29,10 @@
 #include "mikudancestudio/mmd_app.hpp"
 #include "mikudancestudio/ported_funcs.hpp"
 #include "mikudancestudio/ui_language.hpp"
+#include "mikudancestudio/build_profile.hpp"
+#if !MMD_ORIGINAL_PROFILE
+#include "mikudancestudio/ui_control_layout.hpp"
+#endif
 namespace mikudancestudio {
 
 void CreateUiFont(MMDApp* app, HWND hwnd) {
@@ -58,38 +62,50 @@ void CreateUiFont(MMDApp* app, HWND hwnd) {
 
 }
 
-void ApplyUiFontToControl(MMDApp* app, HWND control, int id) {
+namespace {
+bool KeepClassFont(int id) {
     // Original sends WM_SETFONT immediately after each creation site.  The
     // frame edit and its six navigation buttons retain their class default.
-        switch (id) {
-        case 417:
-        case 418:
-        case 419:
-        case 532:
-        case 533:
-        case 558:
-        case 559:
-            return;
-        default:
-            break;
-        }
-        if (control != nullptr) {
-            HFONT font = app->state.hFontUI;
-            wchar_t className[32]{};
-            GetClassNameW(control, className, 32);
-            if (_wcsicmp(className, L"Edit") == 0) {
-                // Numeric fields are only 14px high. YaHei's 12px glyphs
-                // require a 17px cell, so keep their digits in a 13px cell.
-                static HFONT numericFont = CreateFontW(13, 0, 0, 0,
-                    FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-                    OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, PROOF_QUALITY,
-                    DEFAULT_PITCH | FF_DONTCARE, L"Tahoma");
-                if (numericFont) font = numericFont;
-            }
-            SendMessageA(control, WM_SETFONT,
-                         reinterpret_cast<WPARAM>(font),
-                         TRUE);
-        }
+    switch (id) {
+    case 417:
+    case 418:
+    case 419:
+    case 532:
+    case 533:
+    case 558:
+    case 559:
+        return true;
+    default:
+        return false;
+    }
+}
+}
+
+HFONT UiFontForControl(MMDApp* app, HWND control, int id) {
+    if (!app || !control || KeepClassFont(id)) return nullptr;
+    HFONT font = app->state.hFontUI;
+    wchar_t className[32]{};
+    GetClassNameW(control, className, 32);
+    if (_wcsicmp(className, L"Edit") == 0) {
+        // Numeric fields are only 14px high. YaHei's 12px glyphs
+        // require a 17px cell, so keep their digits in a 13px cell.
+        static HFONT numericFont = CreateFontW(13, 0, 0, 0,
+            FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+            OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, PROOF_QUALITY,
+            DEFAULT_PITCH | FF_DONTCARE, L"Tahoma");
+        if (numericFont) font = numericFont;
+    }
+    return font;
+}
+
+void ApplyUiFontToControl(MMDApp* app, HWND control, int id) {
+    if (!control || KeepClassFont(id)) return;
+    const auto font = UiFontForControl(app, control, id);
+#if MMD_ORIGINAL_PROFILE
+    SendMessageA(control, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+#else
+    ui::SetLayoutFont(control, font);
+#endif
 }
 
 }  // namespace mikudancestudio

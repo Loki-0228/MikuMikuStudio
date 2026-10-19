@@ -1406,8 +1406,9 @@ void CreateControls(MMDApp*app,void*window){
 }
 void LayoutControls(MMDApp*app){
     if(!app)return;HWND hwnd=app->MainWindow();if(!GetDlgItem(hwnd,curve_editor::kAccessoryCurve))return;
-    const auto Move=[app](HWND owner,int id,int x,int y,int w,int h){
-        ui::MoveLayoutControl(owner,id,x,y,w,h,app->bottomPanelSizing.relayout);
+    const bool deferPaint=app->bottomPanelSizing.relayout||(!MMD_ORIGINAL_PROFILE&&ui::LayoutBatch::IsCollecting());
+    const auto Move=[deferPaint](HWND owner,int id,int x,int y,int w,int h){
+        ui::MoveLayoutControl(owner,id,x,y,w,h,deferPaint);
     };
     RECT anchor=Rect(hwnd,474),combo=Rect(hwnd,471);
     const int x=anchor.left;
@@ -1429,14 +1430,14 @@ void LayoutControls(MMDApp*app){
         SendMessageW(GetDlgItem(hwnd,id),EM_SETMARGINS,EC_LEFTMARGIN|EC_RIGHTMARGIN,MAKELPARAM(4,4));
     }
     RECT last=Rect(hwnd,485);Move(hwnd,487,x+116,last.top-2,68,22);
-    if(!app->bottomPanelSizing.relayout)
+    if(!deferPaint)
         ShowControls(app,app->state.optflag[0]!=0&&app->state.optflag[3]!=0);
 }
 void LayoutMorphControls(MMDApp*app){
     if(app==nullptr)return;
     HWND hwnd=app->MainWindow();
     if(hwnd==nullptr)return;
-    const bool deferPaint=app->bottomPanelSizing.relayout;
+    const bool deferPaint=app->bottomPanelSizing.relayout||(!MMD_ORIGINAL_PROFILE&&ui::LayoutBatch::IsCollecting());
     const auto move=[&](int id,int x,int y,int w,int h){ui::MoveLayoutControl(hwnd,id,x,y,w,h,deferPaint);};
     for(int lane=0;lane<kMorphLaneCount;++lane){
         HWND button=GetDlgItem(hwnd,kMorphCurveLane[lane]);

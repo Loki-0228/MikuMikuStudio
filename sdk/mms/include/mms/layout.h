@@ -10,6 +10,9 @@
 #define MMS_HINT_KEEP_TOGETHER 1u
 #define MMS_HINT_PRESERVE_HIDDEN_SLOT 2u
 #define MMS_HINT_EXPLICIT_SPACING 4u
+/* Opt in to a command menu when toolbar space is insufficient. The existing
+   overflow field and object identity are used; panels and menus do not opt in. */
+#define MMS_UI_OVERFLOW_MENU 3u
 #pragma pack(push, 8)
 typedef struct MmsUiLayoutHintsV1 {
 	MmsHeader h;
