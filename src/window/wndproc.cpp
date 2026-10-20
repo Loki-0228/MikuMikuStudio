@@ -8,6 +8,7 @@
 #include "mikumikustudio/update_coordinator.hpp"
 #include "mikumikustudio/nvidia_antialias_menu.hpp"
 #include "mikumikustudio/system_settings_ui.hpp"
+#include "mikumikustudio/audio_menu.hpp"
 // ===========================================================================
 // VA 0x004C3A10 - MainWndProc  (original: sub_4C3A10, 0x8A6 bytes)
 // ===========================================================================
@@ -177,6 +178,9 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         // Keep the Help menu's current dock-corner label and UI language fresh.
         viewport_corner_menu::EnsureItem(app);
         system_settings_ui::EnsureItem(app);
+#if !MMD_ORIGINAL_PROFILE
+        audio_menu::EnsureItem(app);
+#endif
     }
     if (msg == WM_INITMENUPOPUP) autosave::RefreshMenu(app);
     if (msg == WM_NCPAINT || msg == WM_NCACTIVATE || msg == WM_SETTEXT || msg == WM_EXITMENULOOP) {

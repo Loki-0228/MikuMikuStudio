@@ -155,20 +155,13 @@ void WaveCtxReset(void* obj) {
     // Deliberate hardening: the original's inline reset (0x14006B484..0x14006B4A4 in the
     // app-level LoadWaveFile) merely clears these four fields and closes nothing: the previous
     // WAV's FILE*, its CreateFileW handle, and its DirectSound streaming buffer are simply
-    // dropped. CloseDataFile performs the closing (0x1400DA250, fclose at 0x1400DA2AB and
-    // CloseHandle at 0x1400DA2BD) but is reachable only when parseStream != 0, a condition
-    // this reset defeats. This port deviates in two steps: it calls CloseDataFile first, since
-    // that also waits for any in-flight feed thread before the handle goes away, then releases
-    // the streaming buffer, which CloseDataFile only clears. Afterwards the four fields below
-    // are already null, so a later reset finds nothing left to free.
+    // dropped. CloseDataFile now closes all read resources and releases an idle
+    // buffer, or waits for the active feed's own release. Cached PCM ownership
+    // is retired only after those handles have closed.
     // Defect CB-07.
-    IDirectSoundBuffer* const previousBuffer = audio->streamingBuffer;
-    const bool threadOwnsBuffer = audio->feedThread != 0;
     if (audio->parseStream != nullptr || audio->feedThread != 0 ||
-        audio->fileHandle != nullptr || previousBuffer != nullptr)
+        audio->fileHandle != nullptr || audio->streamingBuffer != nullptr)
         CloseDataFile(audio);                   // 0x1400DA250 path: thread, FILE*, handle
-    if (previousBuffer != nullptr && !threadOwnsBuffer)
-        previousBuffer->Release(); // An active feed thread releases its own buffer.
     audio->parseStream = nullptr;               // 0x4C2662 (+0x2C)
     audio->feedThread = 0;                      // 0x4C2665 (+0x234)
     audio->streamingBuffer = nullptr;           // 0x4C266B (+0x14)
@@ -293,7 +286,8 @@ bool WaveLoadFile(void* obj, const wchar_t* path,
     if (!original_import::Reference(paths.resolvedPath, hwnd, english)) return false;
 #endif
 
-    if (audio->parseStream != nullptr)                              // 0x4C2F8B
+    if (audio->parseStream != nullptr || audio->fileHandle != nullptr ||
+        audio->feedThread != 0 || audio->streamingBuffer != nullptr)
         CloseDataFile(audio);                                      // 0x4C2680
     std::memset(&audio->format, 0, sizeof audio->format);           // 0x4C2FA0
 
@@ -531,7 +525,8 @@ bool WaveStartPlayback(void* obj) {
     if (audio->path[0] == L'\0')
         return false;
     FILE*& stream = audio->parseStream;
-    if (stream != nullptr)                                          // 0x4C2779
+    if (stream != nullptr || audio->fileHandle != nullptr ||
+        audio->feedThread != 0 || audio->streamingBuffer != nullptr)
         CloseDataFile(audio);
 
     std::memset(&audio->format, 0, sizeof audio->format);            // 0x4C2782

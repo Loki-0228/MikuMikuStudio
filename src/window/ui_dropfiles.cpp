@@ -75,6 +75,7 @@
 #include "mikumikustudio/mmd_app.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "../plugins/native_vpd_import.hpp"
+#include "../plugins/native_audio_history.hpp"
 #endif
 #include "mikumikustudio/ui_message.hpp"
 #include "mikumikustudio/text_encoding.hpp"
@@ -266,6 +267,9 @@ void HandleDropFiles(HDROP hDrop) {
                   wcsstr(szFile, L".Jpg"))) {
                 // ---- .wav - wave audio ----
                 if (media::IsAudioPath(szFile)) {
+#if !MMD_ORIGINAL_PROFILE
+                    if(plugins::TryLoadBoundAudio(app,szFile,DirMenuChecked(app)))continue;
+#endif
                     wcscpy_s(app->state.wavPath, 0x100, szFile);  // 0xD0
                     if (DirMenuChecked(app)) {
                         wcscpy_s(app->DirWave(), 0x3E8, DirOf(app, szFile));  // 0xA3480

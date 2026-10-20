@@ -2,6 +2,7 @@
 #include "mikumikustudio/native_media.hpp"
 #include "mikumikustudio/wic_mov_recorder.hpp"
 #include "mikumikustudio/wave_audio_context.hpp"
+#include "mikumikustudio/local_data_path.hpp"
 #include <filesystem>
 #include <fstream>
 #include <cstdio>
@@ -13,6 +14,7 @@
 #include <chrono>
 #include <cstring>
 #include <thread>
+#include <set>
 using namespace mikumikustudio;
 namespace fs = std::filesystem;
 void Check(bool ok, const char* why) { if (!ok) { std::printf("FAIL %s\n", why); std::exit(1); } }
@@ -73,6 +75,15 @@ int wmain(int argc, wchar_t** argv) {
         const auto source = directory / (std::wstring(L"tone.") + extension);
         CheckResult(media::PrepareAudio(&audio, source.c_str(), playable, error), error, "native audio decode");
         Check(playable != source.wstring() && fs::exists(playable), "decoded cache exists");
+        const auto cacheDirectory=(local_data::File(L"audio-cache")/L"decoded").lexically_normal();
+        Check(fs::path(playable).parent_path().lexically_normal()==cacheDirectory,"decoded audio stays inside this executable's data directory");
+        const auto cacheFiles=[&](){std::set<fs::path> files;for(const auto& entry:fs::directory_iterator(cacheDirectory))files.insert(entry.path());return files;};
+        const auto beforeLimited=cacheFiles();
+        WaveAudioContext limited{};std::wstring limitedPlayable,limitedError;bool exceeded=false;
+        Check(!media::PrepareAudio(&limited,source.c_str(),limitedPlayable,limitedError,1024,&exceeded)&&exceeded&&!limitedError.empty()&&
+            !media::AudioSource(&limited)[0],"each actual compressed codec refuses PCM beyond the caller's byte limit without publishing a new audio source");
+        media::ReleaseAudio(&limited);
+        Check(cacheFiles()==beforeLimited&&fs::exists(playable),"budget-aborted compressed decoding removes its private partial file and preserves another active cache");
         Check(media::AudioSource(&audio) == source.wstring(), "source path preserved for PMM");
         std::ifstream input(fs::path(playable), std::ios::binary);
         std::array<unsigned char, 44> header{}; input.read(reinterpret_cast<char*>(header.data()), 44);

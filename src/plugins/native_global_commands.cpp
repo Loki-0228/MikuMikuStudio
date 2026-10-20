@@ -2,6 +2,7 @@
 #include "native_camera_follow_ui.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "native_global_registration.hpp"
+#include "native_physics_mode.hpp"
 #include "native_accessory_registration.hpp"
 #include "native_history_commands.hpp"
 #include "native_pose_scope.hpp"
@@ -994,6 +995,7 @@ void RefreshBoundGlobalReadout(MMDApp& app) noexcept {
     Boundary([&]() -> MmsResult {
         bake::ScopedUiInputGate input;
         RefreshProjectDisplayReadout(app);
+        RefreshBoundPhysicsModeReadout(app);
         RefreshShadowAmbientReadout(app);
         if (app.cameraProjectionRefreshPending && app.Renderer() && app.Renderer()->device) {
             // Consume current-state work at the UI boundary. A zero/tiny

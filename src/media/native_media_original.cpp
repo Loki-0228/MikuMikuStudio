@@ -24,9 +24,10 @@ namespace media {
 bool IsAudioPath(const wchar_t* path) { return Extension(path, L".wav"); }
 bool IsVideoPath(const wchar_t* path) { return Extension(path, L".avi"); }
 bool IsModernVideoPath(const wchar_t*) { return false; }
-bool PrepareAudio(WaveAudioContext*, const wchar_t* source, std::wstring& playable, std::wstring& error) {
+bool PrepareAudio(WaveAudioContext*, const wchar_t* source, std::wstring& playable, std::wstring& error, std::uint64_t, bool* byteLimitExceeded) {
     playable.clear();
     error.clear();
+    if(byteLimitExceeded)*byteLimitExceeded=false;
     if (!IsAudioPath(source)) { error = kUnavailable; return false; }
     // The existing RIFF/WAV loader still validates and opens the actual file.
     playable = source;
@@ -34,6 +35,7 @@ bool PrepareAudio(WaveAudioContext*, const wchar_t* source, std::wstring& playab
 }
 const wchar_t* AudioSource(WaveAudioContext* audio) { return audio ? audio->path : L""; }
 void ReleaseAudio(WaveAudioContext*) {}
+void SwapAudioCaches(WaveAudioContext*, WaveAudioContext*) noexcept {}
 bool OpenVideo(MMDApp*, const wchar_t*, int& width, int& height, double& duration, std::wstring& error, int) {
     width = height = 0;
     duration = 0;

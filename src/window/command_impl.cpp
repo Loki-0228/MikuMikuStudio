@@ -40,6 +40,7 @@
 #include "mikumikustudio/bone_key_pool.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "../plugins/native_vpd_import.hpp"
+#include "../plugins/native_audio_history.hpp"
 #endif
 
 namespace mikumikustudio {
@@ -347,6 +348,9 @@ void CmdOpenScene(MMDApp* app) {
 //   音频设备在实际导入后创建；取消对话框无需初始化 DirectSound。
 // ---------------------------------------------------------------------------
 void CmdOpenWave(MMDApp* app) {
+#if !MMD_ORIGINAL_PROFILE
+    if(plugins::TryPickBoundAudio(app))return;
+#endif
     app->state.enterKeyState = 1;               // 0x46B8BC [app+0xC0]
     SetCurrentDirectoryW(app->ExeDir());
     wchar_t path[kDialogPathLen];

@@ -1,6 +1,8 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include "mikumikustudio/native_media.hpp"
+#include "mikumikustudio/wave_audio_asset.hpp"
+#include "mikumikustudio/local_data_path.hpp"
 #include "mikumikustudio/wave_audio_context.hpp"
 #include <mfapi.h>
 #include <mfidl.h>
@@ -12,6 +14,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cwchar>
+#include <filesystem>
 #include <limits>
 #include <memory>
 #include <stdexcept>
@@ -59,13 +62,23 @@ bool IsAudioPath(const wchar_t* path) {
 }
 bool IsModernVideoPath(const wchar_t* path) { return Extension(path, L".mp4") || Extension(path, L".mov"); }
 bool IsVideoPath(const wchar_t* path) { return Extension(path, L".avi") || IsModernVideoPath(path); }
-void ReleaseAudio(WaveAudioContext* audio) { audioFiles.erase(audio); }
+void ReleaseAudio(WaveAudioContext* audio) { audioFiles.erase(audio);wave_audio::Forget(audio); }
+void SwapAudioCaches(WaveAudioContext* first, WaveAudioContext* second) noexcept {
+    if(first==second)return;
+    // Removing both nodes before reinserting preserves the map's existing
+    // bucket capacity, even when only one side owns a decoded file.
+    auto a=audioFiles.extract(first),b=audioFiles.extract(second);
+    if(!a.empty()){a.key()=second;audioFiles.insert(std::move(a));}
+    if(!b.empty()){b.key()=first;audioFiles.insert(std::move(b));}
+}
 const wchar_t* AudioSource(WaveAudioContext* audio) {
+    if(const auto* source=wave_audio::Source(audio))return source;
     const auto it = audioFiles.find(audio);
     return it == audioFiles.end() ? audio->path : it->second->source.c_str();
 }
-bool PrepareAudio(WaveAudioContext* audio, const wchar_t* source, std::wstring& playable, std::wstring& error) {
+bool PrepareAudio(WaveAudioContext* audio, const wchar_t* source, std::wstring& playable, std::wstring& error, std::uint64_t maximumBytes, bool* byteLimitExceeded) {
     playable = source; error.clear();
+    if(byteLimitExceeded)*byteLimitExceeded=false;
     if (Extension(source, L".wav")) return true;
     try {
         Runtime runtime;
@@ -87,11 +100,15 @@ bool PrepareAudio(WaveAudioContext* audio, const wchar_t* source, std::wstring& 
         Check(type->GetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, &bits), L"Audio bit depth");
         if (!rate || channels < 1 || channels > 2 || bits != 16)
             throw Failure{MF_E_INVALIDMEDIATYPE, L"Audio must decode to mono or stereo PCM16"};
-        wchar_t folder[MAX_PATH]{}, temporary[MAX_PATH]{};
-        if (!GetTempPathW(MAX_PATH, folder) || !GetTempFileNameW(folder, L"MMS", 0, temporary))
-            throw Failure{HRESULT_FROM_WIN32(GetLastError()), L"Create decoded audio cache"};
+        const auto directory=local_data::File(L"audio-cache")/L"decoded";
+        if(directory.parent_path().empty())throw Failure{E_ACCESSDENIED,L"Locate decoded audio cache"};
+        std::filesystem::create_directories(directory);
+        const auto folder=directory.wstring();wchar_t temporary[MAX_PATH]{};
         auto decoded = std::make_unique<DecodedAudio>();
-        decoded->temporary = temporary; decoded->source = source;
+        if (folder.size()>=MAX_PATH || !GetTempFileNameW(folder.c_str(), L"MMS", 0, temporary))
+            throw Failure{HRESULT_FROM_WIN32(GetLastError()), L"Create decoded audio cache"};
+        struct Unclaimed{const wchar_t* file;bool owned=false;~Unclaimed(){if(!owned)DeleteFileW(file);}} unclaimed{temporary};
+        decoded->temporary = temporary;unclaimed.owned=true;decoded->source = source;
         FILE* raw = nullptr;
         if (_wfopen_s(&raw, temporary, L"w+b") || !raw) throw Failure{E_ACCESSDENIED, L"Open audio cache"};
         std::unique_ptr<FILE, decltype(&std::fclose)> file(raw, &std::fclose);
@@ -112,10 +129,11 @@ bool PrepareAudio(WaveAudioContext* audio, const wchar_t* source, std::wstring& 
                 Check(sample->ConvertToContiguousBuffer(&buffer), L"PCM buffer");
                 BYTE* data = nullptr; DWORD count = 0;
                 Check(buffer->Lock(&data, nullptr, &count), L"Lock PCM buffer");
-                const bool fits = total + count <= INT32_MAX - 44;
+                const bool fits = total + count <= (std::min)(maximumBytes,std::uint64_t(INT32_MAX - 44));
+                if(!fits&&byteLimitExceeded)*byteLimitExceeded=true;
                 const bool written = fits && std::fwrite(data, 1, count, raw) == count;
                 buffer->Unlock();
-                if (!written) throw Failure{E_FAIL, fits ? L"Write audio cache" : L"Decoded audio exceeds 2 GiB"};
+                if (!written) throw Failure{E_FAIL, fits ? L"Write audio cache" : L"Decoded audio exceeds the configured byte limit"};
                 total += count;
             }
             if (flags & MF_SOURCE_READERF_ENDOFSTREAM) break;

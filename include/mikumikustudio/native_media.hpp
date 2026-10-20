@@ -1,5 +1,6 @@
 #pragma once
 #include <Windows.h>
+#include <cstdint>
 #include <string>
 
 namespace mikumikustudio {
@@ -10,9 +11,13 @@ bool IsAudioPath(const wchar_t* path);
 bool IsVideoPath(const wchar_t* path);
 bool IsModernVideoPath(const wchar_t* path);
 // The source path survives project save/reload; only playback uses the temporary PCM file.
-bool PrepareAudio(WaveAudioContext*, const wchar_t* source, std::wstring& playable, std::wstring& error);
+bool PrepareAudio(WaveAudioContext*, const wchar_t* source, std::wstring& playable, std::wstring& error,
+    std::uint64_t maximumBytes = 0x7fffffffull - 44, bool* byteLimitExceeded = nullptr);
 const wchar_t* AudioSource(WaveAudioContext*);
 void ReleaseAudio(WaveAudioContext*);
+// UI-thread ownership transfer accompanying a prepared context resource swap.
+// Both keys remain valid; no decoder, file access or allocation is performed.
+void SwapAudioCaches(WaveAudioContext*, WaveAudioContext*) noexcept;
 bool OpenVideo(MMDApp*, const wchar_t* path, int& width, int& height, double& duration, std::wstring& error, int maxDimension = 0);
 bool HasVideo(MMDApp*);
 // UI-thread API. The bottom-up RGB32 DIB survives worker updates until the

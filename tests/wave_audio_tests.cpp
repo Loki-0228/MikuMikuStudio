@@ -23,6 +23,13 @@ using namespace mikumikustudio;
 namespace fs = std::filesystem;
 namespace {
 unsigned creates = 0, errors = 0;
+IDirectSoundBuffer* shutdownBuffer = nullptr;
+unsigned shutdownBufferReleases = 0;
+ULONG (WINAPI* realBufferRelease)(IDirectSoundBuffer*) = nullptr;
+ULONG WINAPI ObserveBufferRelease(IDirectSoundBuffer* buffer) {
+    if (buffer == shutdownBuffer) ++shutdownBufferReleases;
+    return realBufferRelease(buffer);
+}
 bool failDevice = false;
 std::uintptr_t __cdecl FailFeedThread(void (__cdecl*)(void*), unsigned, void*) {
     return static_cast<std::uintptr_t>(-1);
@@ -215,8 +222,21 @@ int wmain(int argc, wchar_t** argv) {
     Loaded(app);
     Check(creates == 5, "repeated imports reuse initialized device");
     Check(!IsWindowVisible(app->MainWindow()), "all checks kept main window hidden");
-    ResetAppState(app);
+    // Keep a real idle clip loaded through shutdown. A pinned reference lets
+    // this test observe the host's Release without accessing a freed object.
+    shutdownBuffer = app->Audio()->streamingBuffer;
+    Check(shutdownBuffer != nullptr, "shutdown fixture retains a real idle sound buffer");
+    shutdownBuffer->AddRef();
+    void* releaseEntry = (*reinterpret_cast<void***>(shutdownBuffer))[2];
+    Hook(releaseEntry, reinterpret_cast<void*>(&ObserveBufferRelease),
+         reinterpret_cast<void**>(&realBufferRelease));
     ShutdownCleanup(app);
+    Check(app->Audio() == nullptr && shutdownBufferReleases == 1,
+          "shutdown releases its idle sound buffer exactly once before freeing the audio context");
+    MH_DisableHook(releaseEntry); MH_RemoveHook(releaseEntry);
+    shutdownBuffer->Release(); shutdownBuffer = nullptr;
+    Check(DeleteFileW(wave.c_str()) != FALSE,
+          "shutdown closes every source read handle after repeated WAV starts");
     delete app;
     g_Block = nullptr;
     MH_Uninitialize();

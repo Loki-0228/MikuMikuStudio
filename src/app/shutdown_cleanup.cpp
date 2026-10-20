@@ -239,16 +239,14 @@ void DisposePhysicsWorld(PhysicsScene* scene) {
 // VA 0x004C2C40 - DisposeAudioContext  (original: sub_4C2C40, __thiscall)
 // ===========================================================================
 // this = the 0x25C audio/data context at app+0xCC (kPtrSub025c).  Waits out
-// any in-flight async read (inside CloseDataFile), closes the stream and
-// thread handle, releases the two COM members at +20/+16 (no nulling), then
-// frees the two heap buffers at +0/+4 (no nulling) - exactly like the
-// original, which leaves the object fields dangling for the caller's free().
+// any in-flight async read, closes its file resources, releases both COM
+// members and frees the two waveform buffers before the caller frees audio.
 // =========================================================================//
 void DisposeAudioContext(WaveAudioContext* audio) {
-    CloseDataFile(audio);                                       // 0x4C2C43
-    media::ReleaseAudio(audio);
-    if (audio->streamingBuffer != nullptr)
-        audio->streamingBuffer->Release();                      // 0x4C2C57
+    // CloseDataFile clears the buffer pointer. WaveCtxReset preserves the
+    // idle buffer long enough to release it, while an active feed releases
+    // its own buffer before publishing its completion flag.
+    WaveCtxReset(audio);
     if (audio->directSound != nullptr)
         audio->directSound->Release();                          // 0x4C2C68
     std::free(audio->waveformMax);                              // 0x4C2C71

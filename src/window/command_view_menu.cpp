@@ -266,6 +266,7 @@
 #include "../plugins/native_global_commands.hpp"
 #include "../plugins/native_model_order.hpp"
 #include "../plugins/native_model_multiply.hpp"
+#include "../plugins/native_physics_mode.hpp"
 #include "../plugins/native_history_commands.hpp"
 #include "../plugins/native_object_commands.hpp"
 #include "mikumikustudio/runtime_log.hpp"
@@ -2206,6 +2207,9 @@ void CmdViewMenu(MMDApp* app, HWND hwnd, std::uint16_t id,
     // over the 100 model slots.  Cases 265/269/270 set 0x9EDB5 = 1.
     // ------------------------------------------------------------------
     case 265: {
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::TrySetBoundPhysicsMode(app, 1)) return;
+#endif
         app->PlaybackPhysicsMode() = 1;
         CheckMenuItem(GetMenu(hwnd), 0x10D, MF_UNCHECKED);
         CheckMenuItem(GetMenu(hwnd), 0x109, MF_CHECKED);
@@ -2224,6 +2228,9 @@ void CmdViewMenu(MMDApp* app, HWND hwnd, std::uint16_t id,
     }
 
     case 269: {
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::TrySetBoundPhysicsMode(app, 2)) return;
+#endif
         app->PlaybackPhysicsMode() = 2;
         CheckMenuItem(GetMenu(hwnd), 0x10D, MF_CHECKED);
         CheckMenuItem(GetMenu(hwnd), 0x109, MF_UNCHECKED);
@@ -2240,6 +2247,9 @@ void CmdViewMenu(MMDApp* app, HWND hwnd, std::uint16_t id,
     }
 
     case 270: {
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::TrySetBoundPhysicsMode(app, 3)) return;
+#endif
         app->PlaybackPhysicsMode() = 3;
         CheckMenuItem(GetMenu(hwnd), 0x10D, MF_UNCHECKED);
         CheckMenuItem(GetMenu(hwnd), 0x109, MF_UNCHECKED);
@@ -2256,6 +2266,9 @@ void CmdViewMenu(MMDApp* app, HWND hwnd, std::uint16_t id,
     }
 
     case 272: {
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::TrySetBoundPhysicsMode(app, 0)) return;
+#endif
         app->PlaybackPhysicsMode() = 0;
         CheckMenuItem(GetMenu(hwnd), 0x10D, MF_UNCHECKED);
         CheckMenuItem(GetMenu(hwnd), 0x109, MF_UNCHECKED);

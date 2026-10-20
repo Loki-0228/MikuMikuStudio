@@ -427,6 +427,8 @@ void CrossModelJournal(){
 #include "native_morph_category_checks.inc"
 #include "native_model_multiply_checks.inc"
 #include "native_morph_tools_checks.inc"
+#include "native_physics_mode_checks.inc"
+#include "native_audio_history_checks.inc"
 #include "native_bone_curve_write_checks.inc"
 #include "native_physics_toggle_checks.inc"
 #include "native_center_offset_checks.inc"
@@ -437,6 +439,17 @@ void CrossModelJournal(){
 #include "retained_bookkeeping_checks.inc"
 int main(int argc,char** argv){
     std::setvbuf(stdout,nullptr,_IONBF,0);
+    if(argc==3&&!std::strcmp(argv[1],"--compressed-audio")) {
+        const auto directory = plugins::Wide(argv[2]);
+        NativeCompressedAudioHistoryChecks(directory.c_str());
+        std::printf("PASS compressed audio history: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--audio-history-only")) {
+        NativeAudioHistoryChecks();std::printf("PASS audio history: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--physics-mode-only")) {
+        NativePhysicsModeChecks();std::printf("PASS physics mode: %u checks\n",checks);return 0;
+    }
     if(argc==2&&!std::strcmp(argv[1],"--model-multiply-only")) {
         NativeModelMultiplyChecks();std::printf("PASS model multiply: %u checks\n",checks);return 0;
     }
@@ -832,6 +845,8 @@ int main(int argc,char** argv){
     run("NativeMorphCategoryChecks",NativeMorphCategoryChecks);
     run("NativeModelMultiplyChecks",NativeModelMultiplyChecks);
     run("NativeMorphToolsChecks",NativeMorphToolsChecks);
+    run("NativePhysicsModeChecks",NativePhysicsModeChecks);
+    run("NativeAudioHistoryChecks",NativeAudioHistoryChecks);
     run("NativeModelRangeChecks",NativeModelRangeChecks);
     run("NativeObjectCommandChecks",NativeObjectCommandChecks);
     run("NativeAccessorySettingsChecks",NativeAccessorySettingsChecks);

@@ -154,10 +154,12 @@ void RefreshRequest(int area) {
 // =========================================================================//
 void CloseDataFile(void* file) {
     auto* audio = static_cast<WaveAudioContext*>(file);
+    const bool threadOwnsBuffer=audio->feedThread!=0;
+    IDirectSoundBuffer* const idleBuffer=threadOwnsBuffer?nullptr:audio->streamingBuffer;
 
     // ---- step 1: wait for an in-flight async read to finish --------------
     // 0x004C2683 cmp [esi+234h], 0 / 0x004C268C test [esi+248h]
-    if (audio->feedThread != 0) {
+    if (threadOwnsBuffer) {
         // The worker can finish between reading its state and requesting stop.
         // An unconditional store of 1 used to erase its final 2 and hang the UI.
         RequestWaveStop(audio);
@@ -166,24 +168,30 @@ void CloseDataFile(void* file) {
         Sleep(0);                           // 0x004C26C1
     }
 
-    // ---- step 2: close the FILE* stream ----------------------------------
+    // Detach first: a release callback cannot dispose these same resources
+    // again. The feed worker owns its buffer through its final stopFlag=2.
     FILE* stream = audio->parseStream;
+    HANDLE hFile = audio->fileHandle;
+    audio->parseStream = nullptr;
+    audio->feedThread = 0;
+    audio->streamingBuffer = nullptr;
+    audio->fileHandle = nullptr;
+
+    // ---- step 2: close the FILE* stream ----------------------------------
     if (stream != nullptr)
         std::fclose(stream);                // 0x004C26CE (original imports
                                             // _fclose; same CRT function)
 
     // ---- step 3: close the file handle -----------------------------------
-    HANDLE hFile = audio->fileHandle;
-    if (hFile != nullptr)
+    if (hFile != nullptr && hFile != INVALID_HANDLE_VALUE)
         CloseHandle(hFile);                 // 0x004C26E1
 
     // ---- step 4: reset context fields (tail call to sub_4C2660) ----------
     // 0x004C2660: xor eax,eax; mov [ecx+2Ch],eax; mov [ecx+234h],eax;
     //             mov [ecx+14h],eax; mov [ecx+244h],eax; retn
-    audio->parseStream = nullptr;
-    audio->feedThread = 0;
-    audio->streamingBuffer = nullptr;
-    audio->fileHandle = nullptr;
+    // Native seek/reload can close a prepared but never-started buffer too.
+    // Clearing its pointer without releasing it leaks its device reference.
+    if(idleBuffer)idleBuffer->Release();
 }
 
 }  // namespace mikumikustudio

@@ -4,6 +4,7 @@
 #include "native_history_commands.hpp"
 #include "native_camera_follow_ui.hpp"
 #include "native_global_commands.hpp"
+#include "native_audio_history.hpp"
 #include "native_morph_commands.hpp"
 #include "native_pose_scope.hpp"
 #include "history_runtime.hpp"
@@ -240,10 +241,11 @@ bool RefreshUi(MMDApp& app, SharedHistory& history, const scene_history_ui::Sele
     InvalidateRect(main, nullptr, FALSE);
     RefreshBoundPoseReadout(app);
     RefreshBoundGlobalReadout(app);
+    const bool audioReady = RefreshBoundAudioUi(app);
     RefreshBoundMorphReadout(app);
     curve_editor::NotifyOwnedChanged(main);
-    if (pendingUi == &app) { pendingUi = nullptr; hasPendingSelection = false; }
-    return true;
+    if (audioReady && pendingUi == &app) { pendingUi = nullptr; hasPendingSelection = false; }
+    return audioReady;
 }
 bool RefreshPublishedUi(MMDApp& app, SharedHistory& history, const SelectionToken& selection) noexcept {
     const auto result = Boundary([&]() -> MmsResult { return RefreshUi(app, history, ResolveSelection(app, selection)) ? MMS_OK : MMS_E_FAILED; });
@@ -536,6 +538,7 @@ MmsResult RunBoundObjectHistory(MMDApp& app, SharedHistory& history, bool redo, 
                 // Refresh values without seeking, while Operation still blocks
                 // control notifications from starting another scene edit.
                 RefreshBoundGlobalReadout(app);
+                if (!RefreshBoundAudioUi(app)) ScheduleUi(app, &selection);
                 RefreshBoundMorphReadout(app);
                 const auto notified = Boundary([&]() -> MmsResult {
                     curve_editor::NotifyOwnedChanged(app.MainWindow()); return MMS_OK;
