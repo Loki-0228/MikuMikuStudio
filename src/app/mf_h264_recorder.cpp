@@ -446,14 +446,17 @@ void FpsToRatio(float fps, std::uint32_t& numerator, std::uint32_t& denominator)
     }
 }
 
-// BGRA (top-down) -> NV12, BT.709 with the 16..235 / 16..240 studio range that
+// Packed bottom-up BGRA -> top-down NV12, BT.709 with the 16..235 / 16..240 studio range that
 // H.264 normally carries.  The hardware encoder asks for NV12 (AMD answer in
 // AMF issue #470: the H.264 core only runs pre-analysis on NV12), so the
 // conversion happens here on the CPU instead of inside the encoder's D3D9
-// colour-conversion path.
+// colour-conversion path. The shared DirectShow readback buffer stores the
+// bottom scanline first; NV12 requires top-down rows in both planes. RGB32
+// keeps its existing negative stride and must not be flipped a second time.
 void ConvertBgraToNv12(const unsigned char* bgra, int width, int height,
                        unsigned char* nv12) {
     const std::size_t pixelCount = static_cast<std::size_t>(width) * height;
+    const std::size_t rowBytes = static_cast<std::size_t>(width) * 4;
     unsigned char* luma = nv12;
     unsigned char* chroma = nv12 + pixelCount;
     const auto clampTo = [](int value, int low, int high) {
@@ -461,7 +464,7 @@ void ConvertBgraToNv12(const unsigned char* bgra, int width, int height,
     };
     for (int y = 0; y < height; ++y) {
         const unsigned char* source =
-            bgra + static_cast<std::size_t>(y) * width * 4;
+            bgra + static_cast<std::size_t>(height - 1 - y) * rowBytes;
         unsigned char* destination = luma + static_cast<std::size_t>(y) * width;
         for (int x = 0; x < width; ++x) {
             const int b = source[x * 4 + 0];
@@ -473,8 +476,8 @@ void ConvertBgraToNv12(const unsigned char* bgra, int width, int height,
     }
     for (int y = 0; y < height; y += 2) {
         const unsigned char* row0 =
-            bgra + static_cast<std::size_t>(y) * width * 4;
-        const unsigned char* row1 = row0 + static_cast<std::size_t>(width) * 4;
+            bgra + static_cast<std::size_t>(height - 1 - y) * rowBytes;
+        const unsigned char* row1 = row0 - rowBytes;
         unsigned char* destination =
             chroma + static_cast<std::size_t>(y / 2) * width;
         for (int x = 0; x < width; x += 2) {
