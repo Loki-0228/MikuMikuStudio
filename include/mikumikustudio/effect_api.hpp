@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 
 namespace mikumikustudio {
 
@@ -24,8 +25,12 @@ bool InstallEffectMaterialNameCompatibility();
 void InstallEffectPathCompatibility();
 // Retain relative EMM entries before MME expands them against the EXE folder.
 // Reads the sidecar only; the user's assignment file is never rewritten.
-// A null/empty project retires aliases when the workspace is reset.
+// A null/empty project retires relative assignments when the workspace resets.
+// Notification aliases remain stable until exit for already queued MME work.
 void PrepareEffectProjectPaths(const wchar_t* project);
+// Use a process-local, explicitly mapped EMM alias for retained PMM suffixes.
+// Empty means no safe notification alias is available; never use a guessed path.
+std::wstring EffectProjectNotificationPath(const wchar_t* project) noexcept;
 
 // MME rebuilds its object/order table inside IDirect3DDevice9::BeginScene.
 void BeginEffectObjectRegistration();

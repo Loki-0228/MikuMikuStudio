@@ -1,4 +1,5 @@
 #include "mikumikustudio/background_save.hpp"
+#include "mikumikustudio/pmm_paths.hpp"
 #include "mikumikustudio/native_media.hpp"
 #include "mikumikustudio/ui_translation.hpp"
 // ===========================================================================
@@ -161,8 +162,7 @@ void HandleDropFiles(HDROP hDrop) {
         DragQueryFileW(hDrop, iFile, szFile, _countof(szFile));
 
         // ---- .pmm - project file -----------------------------------------
-        if (wcsstr(szFile, L".pmm") || wcsstr(szFile, L".PMM") ||
-            wcsstr(szFile, L".Pmm")) {
+        if (pmm_paths::IsProject(szFile)) {
             background_save::Wait(app);
             if (SceneSaveInProgress()) { DragFinish(hDrop); return; }
             if (app->SceneModified() != 0) {

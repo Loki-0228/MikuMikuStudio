@@ -18,5 +18,6 @@ PluginProject ReadPluginProject(const fs::path& target);
 // stagedMain is a complete, closed PMM in the target directory. This function
 // does not delete it. step is a fault-injection hook used only by tests.
 void PublishProjectPair(const fs::path& target, const fs::path& stagedMain,
-    PluginProject& data, bool createOnly, const std::function<void(unsigned)>& step = {});
+    PluginProject& data, bool createOnly, const std::function<void(unsigned)>& step = {},
+    bool keepPrevious = false);
 }

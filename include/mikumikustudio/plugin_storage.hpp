@@ -13,7 +13,7 @@ public:
     ~ProjectSave();
     // One disk publication per snapshot. May run on a worker; the caller keeps
     // this object alive and joins that worker before Complete or destruction.
-    bool PublishDisk(const wchar_t* staged, const wchar_t* destination, bool copy) noexcept;
+    bool PublishDisk(const wchar_t* staged, const wchar_t* destination, bool copy, bool keepPrevious = false) noexcept;
     // UI thread only, using the same destination/copy arguments as PublishDisk.
     // False means the runtime changed or completion is not ready; an already
     // published pair remains valid. The caller separately checks its scene

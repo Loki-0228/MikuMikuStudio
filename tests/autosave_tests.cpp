@@ -210,6 +210,21 @@ void Configure(MMDApp* app, const as::Settings& value) {
     std::wstring error;
     Check(as::Configure(app, value, error), "persist autosave settings in isolated profile");
 }
+void SettingsCodecChecks() {
+    const auto path = root / L"settings-codec.ini";
+    for (bool enabled : {false, true}) for (bool keepPrevious : {false, true}) {
+        as::Settings value; value.directory = crashDirectory.wstring();
+        value.enabled = enabled; value.keepPrevious = keepPrevious;
+        Check(as::SaveSettings(path, value), "serialize independent periodic and previous-version preferences");
+        const auto decoded = as::LoadSettings(path);
+        Check(decoded.enabled == enabled && decoded.keepPrevious == keepPrevious,
+            "legacy override roundtrip preserves every periodic and previous-version combination");
+    }
+    { std::ofstream out(path); out << "[autosave]\nenabled=1\ndirectoryMode=executable\n"; }
+    WritePrivateProfileStringW(nullptr, nullptr, nullptr, path.c_str());
+    const auto old = as::LoadSettings(path);
+    Check(old.enabled && !old.keepPrevious, "legacy settings without the previous-version key keep it disabled");
+}
 pmm_extension::Document Extension(const fs::path& path, bool manual = false) {
     int fd = -1;
     Check(!_wsopen_s(&fd, path.c_str(), _O_BINARY | _O_RDONLY, _SH_DENYWR, 0), "read snapshot");
@@ -229,6 +244,16 @@ INT_PTR CALLBACK Probe(HWND dialog, UINT msg, WPARAM wp, LPARAM lp) {
     Check(!IsWindowVisible(dialog), "settings dialog never becomes visible during test");
     Check(GetDlgItemInt(dialog, as::Interval, nullptr, FALSE) == c->value.intervalMinutes, "interval is displayed in minutes");
     Check((IsDlgButtonChecked(dialog, as::Enabled) == BST_CHECKED) == c->value.enabled, "enabled checkbox reflects saved setting");
+    Check((IsDlgButtonChecked(dialog, as::KeepPrevious) == BST_CHECKED) == c->value.keepPrevious,
+        "PMM1 checkbox reflects saved setting");
+    const auto keep = GetDlgItem(dialog, as::KeepPrevious);
+    RECT bounds{}; GetClientRect(keep, &bounds);
+    HDC labelDc = GetDC(keep); SIZE labelSize{};
+    auto labelFont = SelectObject(labelDc, reinterpret_cast<HFONT>(SendMessageW(keep, WM_GETFONT, 0, 0)));
+    const auto keepText = Title(keep);
+    GetTextExtentPoint32W(labelDc, keepText.c_str(), static_cast<int>(keepText.size()), &labelSize);
+    SelectObject(labelDc, labelFont); ReleaseDC(keep, labelDc);
+    Check(labelSize.cx + 24 <= bounds.right, "PMM1 label fits in every language");
     Check(Title(GetDlgItem(dialog, as::Enabled)) == as::Text(c->app, L"启用定时自动保存", L"Enable periodic autosave", L"定期的な自動保存を有効にする"),
         "checkbox controls periodic saving only");
     const HWND explanation = GetDlgItem(dialog, as::Explanation);
@@ -243,15 +268,19 @@ INT_PTR CALLBACK Probe(HWND dialog, UINT msg, WPARAM wp, LPARAM lp) {
     if (dialogAction == 0) {
         SetDlgItemInt(dialog, as::Interval, 22, FALSE);
         CheckDlgButton(dialog, as::Enabled, BST_UNCHECKED);
+        CheckDlgButton(dialog, as::KeepPrevious, c->value.keepPrevious ? BST_UNCHECKED : BST_CHECKED);
         as::DialogProc(dialog, WM_COMMAND, IDCANCEL, 0);
     } else {
-        SetDlgItemInt(dialog, as::Interval, 0, FALSE);
-        expectedWarning = true; as::DialogProc(dialog, WM_COMMAND, IDOK, 0); expectedWarning = false;
-        Check(as::Current().intervalMinutes != 0, "invalid zero interval is not committed");
+        if (dialogAction == 1) {
+            SetDlgItemInt(dialog, as::Interval, 0, FALSE);
+            expectedWarning = true; as::DialogProc(dialog, WM_COMMAND, IDOK, 0); expectedWarning = false;
+            Check(as::Current().intervalMinutes != 0, "invalid zero interval is not committed");
+        }
         SetDlgItemInt(dialog, as::Interval, 2, FALSE);
         SetDlgItemInt(dialog, as::Limit, 3, FALSE);
         CheckDlgButton(dialog, as::Overwrite, BST_CHECKED);
-        CheckDlgButton(dialog, as::Enabled, BST_CHECKED);
+        CheckDlgButton(dialog, as::Enabled, dialogAction == 1 ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(dialog, as::KeepPrevious, BST_CHECKED);
         as::DialogProc(dialog, WM_COMMAND, IDOK, 0);
     }
     return TRUE;
@@ -269,15 +298,15 @@ void DialogTests(MMDApp* app) {
         const auto count = GetMenuItemCount(help);
         for (int n = 0; n < 3; ++n) as::RefreshMenu(app);
         Check(count == GetMenuItemCount(help), "refresh never duplicates menu item");
-        for (dialogAction = 0; dialogAction < 2; ++dialogAction) {
+        for (dialogAction = 0; dialogAction < 3; ++dialogAction) {
             as::DialogContext c{app, as::Current()};
             const auto before = as::Current();
             const auto result = UiDialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(as::kDialog),
                 app->MainWindow(), Probe, reinterpret_cast<LPARAM>(&c));
             Check(result == (dialogAction ? IDOK : IDCANCEL), "settings dialog commits or cancels correctly");
-            Check(dialogAction ? as::Current().intervalMinutes == 2 && as::Current().maxBackups == 3 && as::Current().overwriteOldest :
-                as::Current().enabled == before.enabled && as::Current().intervalMinutes == before.intervalMinutes,
-                "canceled edits leave settings unchanged");
+            Check(dialogAction ? as::Current().enabled == (dialogAction == 1) && as::Current().intervalMinutes == 2 && as::Current().maxBackups == 3 && as::Current().overwriteOldest && as::Current().keepPrevious :
+                as::Current().enabled == before.enabled && as::Current().intervalMinutes == before.intervalMinutes && as::Current().keepPrevious == before.keepPrevious,
+                "settings commit independent switches while cancel preserves both preferences");
         }
     }
     app->EnglishUI() = 2;
@@ -349,7 +378,9 @@ int wmain(int argc, wchar_t** argv) {
         std::printf("PASS backup full warning checks=%u\n", checks);
         return 0;
     }
-    Check(!as::Current().enabled && as::Current().intervalMinutes == 1, "default off with one minute interval");
+    Check(!as::Current().enabled && !as::Current().keepPrevious && as::Current().intervalMinutes == 1,
+        "periodic and previous-version saving both default off with one minute interval");
+    SettingsCodecChecks();
     std::wstring aaError;
     SetEnvironmentVariableW(L"MMS_ANTIALIAS_CONFIG", nullptr);
     Check(antialias::Select(app, antialias::Algorithm::MmdOriginal, aaError),
@@ -511,7 +542,7 @@ int wmain(int argc, wchar_t** argv) {
     CheckManualPluginData();
     value.maxBackups = 3; Configure(app, value);
     const auto persisted = as::LoadSettings(config);
-    Check(!persisted.enabled && persisted.intervalMinutes == 2 && persisted.maxBackups == 3 && persisted.overwriteOldest,
+    Check(!persisted.enabled && persisted.keepPrevious && persisted.intervalMinutes == 2 && persisted.maxBackups == 3 && persisted.overwriteOldest,
         "all settings survive profile reload");
     auto invalid = value; invalid.intervalMinutes = 0; std::wstring error;
     Check(!as::Configure(app, invalid, error), "zero minutes cannot be saved");

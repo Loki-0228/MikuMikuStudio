@@ -1,3 +1,4 @@
+#include "mikumikustudio/pmm_paths.hpp"
 struct SerializerFixture {
     int value=0, candidate=0, prepares=0, commits=0, cancels=0, saves=0, releases=0;
     bool fail=false, badBytes=false;
@@ -23,6 +24,75 @@ struct SerializerFixture {
 };
 static StoredData StoredInt(int value){StoredData d;d.schema=7;d.bytes.resize(sizeof(value));std::memcpy(d.bytes.data(),&value,sizeof(value));return d;}
 static int SavedInt(const StoredData& v){int value=-1;CHECK(v.bytes.size()==sizeof(value));std::memcpy(&value,v.bytes.data(),sizeof(value));return value;}
+static void VersionStorageChecks(const fs::path& root){
+    const auto directory=root/L"retained-pair-recovery";fs::create_directories(directory);
+    const auto group=[](const fs::path& project){return std::vector<fs::path>{project,mikumikustudio::pmm_paths::Effect(project),PluginSidecar(project)};};
+    const auto bytes=[&](const fs::path& project){std::vector<std::string> result;for(const auto& file:group(project))result.push_back(ReadFile(file,96*1024*1024));return result;};
+    const auto absent=[&](const fs::path& project){for(const auto& file:group(project))if(fs::exists(file))return false;return true;};
+    for(unsigned fail=0;fail<4;++fail){
+        const auto target=directory/(L"checkpoint-"+std::to_wstring(fail)+L".pmm"),stage=directory/L"stage.pmm";
+        const auto prior=fs::path(target.native()+L"1"),older=fs::path(target.native()+L"11");
+        PluginProject project;project.projectId=StorageId();project.records["example.a"]=StoredInt(901);
+        Write(stage,"oldest retained PMM");PublishProjectPair(target,stage,project,true);
+        Write(mikumikustudio::pmm_paths::Effect(target),"oldest EMM");
+        const auto oldest=bytes(target);const auto oldestSave=ReadPluginProject(target).saveId;
+        Write(stage,"middle retained PMM");project.records["example.a"]=StoredInt(902);
+        PublishProjectPair(target,stage,project,false,{},true);
+        Write(mikumikustudio::pmm_paths::Effect(target),"middle EMM");
+        const auto middle=bytes(target);const auto middleSave=ReadPluginProject(target).saveId;
+        CHECK(bytes(prior)==oldest && absent(older));
+        Write(stage,"new interrupted PMM");project.records["example.a"]=StoredInt(903);
+        bool interrupted=false;
+        CHECK(Throws([&]{PublishProjectPair(target,stage,project,false,[&](unsigned n){if(n==fail){
+            interrupted=true;throw std::runtime_error("retained save interruption");}},true);}));
+        CHECK(interrupted);
+        if(!fail){
+            CHECK(bytes(target)==middle && bytes(prior)==oldest && absent(older));
+            CHECK(!fs::exists(target.native()+L".mms-save.json"));
+        }else{
+            CHECK(fs::exists(target.native()+L".mms-save.json"));
+            CHECK(bytes(prior)==middle && bytes(older)==oldest);
+        }
+        RecoverProjectPair(target);const auto loaded=ReadPluginProject(target);
+        CHECK(!fs::exists(target.native()+L".mms-save.json"));
+        if(!fail){
+            CHECK(bytes(target)==middle && bytes(prior)==oldest && loaded.saveId==middleSave && absent(older));
+        }else{
+            CHECK(FileHash(target)==FileHash(stage) && SavedInt(loaded.records.at("example.a"))==903);
+            CHECK(bytes(prior)==middle && bytes(older)==oldest && absent(target.native()+L"111"));
+            const auto p=ReadPluginProject(prior),o=ReadPluginProject(older);
+            CHECK(p.saveId==middleSave && o.saveId==oldestSave && p.projectId==loaded.projectId && o.projectId==loaded.projectId);
+            CHECK(p.mainHash==FileHash(prior) && o.mainHash==FileHash(older));
+        }
+    }
+    const auto target=directory/L"active.pmm",stage=directory/L"locked-stage.pmm";
+    const auto prior=fs::path(target.native()+L"1"),older=fs::path(target.native()+L"11");
+    PluginProject project;project.projectId=StorageId();project.records["example.a"]=StoredInt(910);
+    Write(stage,"first lock fixture");PublishProjectPair(target,stage,project,true);
+    Write(mikumikustudio::pmm_paths::Effect(target),"first lock EMM");
+    Write(stage,"second lock fixture");PublishProjectPair(target,stage,project,false,{},true);
+    Write(mikumikustudio::pmm_paths::Effect(target),"second lock EMM");
+    const auto activeBytes=bytes(target),priorBytes=bytes(prior);
+    const auto lockPath=prior.native()+L".mms-save.lock";
+    HANDLE held=CreateFileW(lockPath.c_str(),GENERIC_READ|GENERIC_WRITE,0,nullptr,OPEN_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL|FILE_FLAG_DELETE_ON_CLOSE,nullptr);
+    CHECK(held!=INVALID_HANDLE_VALUE);
+    Write(stage,"must wait for other version owner");
+    CHECK(Throws([&]{PublishProjectPair(target,stage,project,false,{},true);}));
+    CHECK(bytes(target)==activeBytes && bytes(prior)==priorBytes && absent(older));
+    CHECK(!fs::exists(target.native()+L".mms-save.json"));
+    CHECK(CloseHandle(held)!=FALSE && !fs::exists(lockPath));
+    // A prior version with its own interrupted publication must also be left
+    // untouched; its journal belongs to that version's recovery path.
+    const auto recovery=prior.native()+L".mms-save.json";
+    Write(recovery,"version owner's recovery evidence");
+    CHECK(Throws([&]{PublishProjectPair(target,stage,project,false,{},true);}));
+    CHECK(bytes(target)==activeBytes && bytes(prior)==priorBytes && absent(older) && ReadFile(recovery)=="version owner's recovery evidence");
+    CHECK(DeleteFileW(recovery.c_str())!=FALSE);
+    PublishProjectPair(target,stage,project,false,{},true);
+    CHECK(bytes(prior)==activeBytes && bytes(older)==priorBytes && FileHash(target)==FileHash(stage));
+    CHECK(ReadPluginProject(prior).mainHash==FileHash(prior) && ReadPluginProject(older).mainHash==FileHash(older));
+}
 static void StorageChecks(const fs::path& root){
     StorageStore store;StorageClient a,b,other;a.id="example.a";b.id="example.b";other.id="example.other";
     auto api=store.Api(a),apiOther=store.Api(other);SerializerFixture first,second;first.store=&store;second.store=&store;
@@ -134,5 +204,6 @@ static void StorageChecks(const fs::path& root){
     RecoverProjectPair(target);CHECK(FileHash(target)==rollbackHash && ReadPluginProject(target).saveId==rollbackSave);
     const auto sideBefore=ReadFile(PluginSidecar(target),96*1024*1024);Write(target,"external replacement");
     CHECK(Throws([&]{ReadPluginProject(target);}));CHECK(Throws([&]{PublishProjectPair(target,stage,project,false);}));CHECK(ReadFile(PluginSidecar(target),96*1024*1024)==sideBefore);
+    VersionStorageChecks(root);
     std::cout<<"storage and paired-save recovery PASS\n";
 }

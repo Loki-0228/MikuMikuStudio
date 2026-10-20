@@ -1,4 +1,5 @@
 #include "window_settings.hpp"
+#include "mikumikustudio/pmm_paths.hpp"
 #include "mikumikustudio/local_data_path.hpp"
 #include "mikumikustudio/mmv4mms.hpp"
 #include "mikumikustudio/plugin_menu.hpp"
@@ -461,7 +462,7 @@ bool InitMainWindowAndD3D(MMDApp* app, void* hInstanceIn, int nShowCmd) {
         // desktop runtime testing: use a dedicated dir buffer instead of
         // truncating `destination` in place (docs/ARCHITECTURE.md §8).
         wchar_t dirBuf[1000];
-        if (wcsstr(destination, L".pmm") || wcsstr(destination, L".PMM")) {
+        if (pmm_paths::IsProject(destination)) {
             // The startup command line is a candidate, not an active project.
             app->EnvFileName()[0] = L'\0';
             if (LoadSceneFile(destination))

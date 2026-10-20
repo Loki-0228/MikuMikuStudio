@@ -69,6 +69,8 @@
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/effect_api.hpp"
+#include "mikumikustudio/pmm_paths.hpp"
+#include "mikumikustudio/runtime_log.hpp"
 #include "mikumikustudio/text_encoding.hpp"
 
 // VA 0x0042A110 - model-slot count; real body in src/unported/stubs.cpp.
@@ -550,7 +552,9 @@ void NotifyEffectFileOpen(const wchar_t* path) {
         return;
     InstallEffectPathCompatibility();
     PrepareEffectProjectPaths(path);
-    HANDLE file = CreateFileW(path, GENERIC_READ,
+    const auto notification = EffectProjectNotificationPath(path);
+    if (notification.empty()) return;
+    HANDLE file = CreateFileW(notification.c_str(), GENERIC_READ,
                              FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
                              OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file != INVALID_HANDLE_VALUE)
@@ -560,14 +564,18 @@ void NotifyEffectFileOpen(const wchar_t* path) {
 void NotifyEffectFileSave(const wchar_t* path) {
     if (path == nullptr || *path == L'\0' || GetModuleHandleW(L"MMHack.dll") == nullptr)
         return;
-    const wchar_t* extension = std::wcsrchr(path, L'.');
-    if (extension == nullptr || _wcsicmp(extension, L".pmm") != 0)
-        return;
+    // Notifications follow a completed disk publication. Failure to prepare an
+    // optional native-MME notification must not fail that already committed save.
+    try { if (!pmm_paths::IsProject(path)) return; }
+    catch (...) { runtime_log::Write("MME save notification path preparation failed"); return; }
+    InstallEffectPathCompatibility();
+    const auto notification = EffectProjectNotificationPath(path);
+    if (notification.empty()) return;
     // MMHack watches the host's CreateFileW import for GENERIC_WRITE PMM
     // opens and queues their paths for MME. UCRT's _wsopen_s bypasses that
     // import. Preserve the completed PMM and let MME honor its live setting
     // when it consumes the notification; do not reload effect assignments.
-    HANDLE file = CreateFileW(path, GENERIC_WRITE,
+    HANDLE file = CreateFileW(notification.c_str(), GENERIC_WRITE,
                              FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
                              OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file != INVALID_HANDLE_VALUE)

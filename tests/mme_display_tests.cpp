@@ -12,6 +12,8 @@
 #include "mikumikustudio/scene_sampling.hpp"
 #include "mikumikustudio/d3d12_native.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/pmm_paths.hpp"
+#include "mikumikustudio/image_sequence_export.hpp"
 #include "mikumikustudio/text_encoding.hpp"
 #include "mikumikustudio/ui_language.hpp"
 #include "mikumikustudio/effect_display.hpp"
@@ -31,8 +33,11 @@
 #include <atomic>
 #include <MinHook.h>
 #include <commctrl.h>
+#include <commdlg.h>
+#include <wincodec.h>
 #include <cstdio>
 #include <cstdlib>
+#include <cmath>
 #include <vector>
 #include <cstdint>
 #include <algorithm>
@@ -44,7 +49,7 @@
 #include <cwctype>
 
 using namespace mikumikustudio;
-namespace mikumikustudio { void LayoutViewportPanels(MMDApp*); int ViewportToolAtPointForTest(MMDApp*); }
+namespace mikumikustudio { void RegisterCameraState(MMDApp*, int); void RegisterSelfShadowState(MMDApp*, int); void LayoutViewportPanels(MMDApp*); int ViewportToolAtPointForTest(MMDApp*); }
 extern "C" char* ExpGetPmdFilename(int);
 namespace {
 void Check(bool ok, const char* label) {
@@ -510,6 +515,8 @@ void CALLBACK Probe(HWND, UINT, UINT_PTR timer, DWORD) {
 #include "outline_coverage_scene_checks.hpp"
 #include "mme_ground_shadow_checks.hpp"
 #include "effect_file_watch_checks.hpp"
+#include "pmm_version_effect_checks.hpp"
+#include "image_visibility_checks.hpp"
 #include "camera_motion_scene_checks.hpp"
 ULONGLONG startupClock = 0;
 void StartupLog(const char* format, ...) noexcept {
@@ -547,6 +554,9 @@ int wmain(int argc, wchar_t** argv) {
     app->state = MMDAppState{}; app->InitDefaults();
     Check(InitMainWindowAndD3D(app, GetModuleHandleW(nullptr), SW_HIDE), "start production host");
     if (argc == 4 && std::wcscmp(argv[2], L"--mme-scene-capture") == 0) {
+        auto* compile = reinterpret_cast<void*>(GetProcAddress(d3dx::Get().module, "D3DXCreateEffectFromFileW"));
+        Check(compile && MH_CreateHook(compile, &ObserveCompile, reinterpret_cast<void**>(&originalCompile)) == MH_OK &&
+            MH_EnableHook(compile) == MH_OK, "observe actual MME capture effect compilation");
         int result = 0;
         try { mme_scene_capture::Run(app, argv[1], argv[3]); }
         catch (const std::exception& error) { std::fprintf(stderr, "FAIL MME_CAPTURE %s\n", error.what()); result = 2; }
@@ -591,6 +601,7 @@ int wmain(int argc, wchar_t** argv) {
     const bool fileWatch = argc == 4 && std::wcscmp(argv[2], L"--file-watch") == 0;
     const bool emmLoad = argc == 4 && std::wcscmp(argv[2], L"--emm-load") == 0;
     const bool aaScene = argc == 4 && std::wcscmp(argv[2], L"--antialias-scene") == 0;
+    const bool imageVisibility = argc == 4 && std::wcscmp(argv[2], L"--image-visibility") == 0;
     const bool groundShadow = argc == 4 && std::wcscmp(argv[2], L"--ground-shadow") == 0;
     const bool sequenceClock = argc == 4 && std::wcscmp(argv[2], L"--sequence-clock") == 0;
     if (sequenceClock || emdAutoload || fileWatch || emmLoad || aaScene || groundShadow || (argc == 4 && std::wcscmp(argv[2], L"--surface-grid") == 0)) {
@@ -608,9 +619,8 @@ int wmain(int argc, wchar_t** argv) {
         skinning::SetPreference({skinning::Mode::Adapter,adapters.front().id,adapters.front().name});
     }
     if ((aaScene || (argc == 4 && std::wcscmp(argv[2], L"--viewport-scale") == 0)) &&
-        std::filesystem::path(argv[1]).extension() == L".pmm") {
-        wcscpy_s(app->EnvFileName(), kPathFieldCapacity, argv[1]);
-        LoadSceneFile();
+        pmm_paths::IsProject(argv[1])) {
+        Check(LoadSceneFile(argv[1]), "load the requested project before scene verification");
         app->SetSelectedModelSlot(0);
         std::set<const void*> loadedModels;
         for (int slot=0;slot<kModelSlotCount;++slot)if(auto* model=app->ModelSlot(slot))
@@ -624,6 +634,7 @@ int wmain(int argc, wchar_t** argv) {
     }
     // Test-only second model and accessory slots: insert them into the scene
     // instead of replacing the base model.
+    if (imageVisibility) PrepareImageVisibilityScene(app);
     if (const wchar_t* extra = _wgetenv(L"MMS_EXTRA_MODEL")) {
         LoadModelFile(app, extra, false);
         for (int i = 0; i < 3; ++i) {
@@ -639,6 +650,22 @@ int wmain(int argc, wchar_t** argv) {
         }
     }
     Check(app->SelectedModel() != nullptr, "load textured PMX");
+    if (imageVisibility) {
+        PrepareImageVisibilityScene(app);
+        if (const auto* project = _wgetenv(L"MMS_IMAGE_EFFECT_PROJECT")) {
+            wcscpy_s(app->EnvFileName(), kPathFieldCapacity, project);
+            Check(SaveSceneFile(app), "save image visibility effect project");
+            auto fixture = std::filesystem::path(project); fixture.replace_extension(L".fixture.emm");
+            const auto emm = pmm_paths::Effect(project);
+            std::filesystem::copy_file(fixture, emm, std::filesystem::copy_options::overwrite_existing);
+            ApplyImageVisibilitySelfShadow(app);
+            NotifyEffectFileOpen(project);
+            for (int i = 0; i < 3; ++i) { app->state.messageSeen = 1; FrameDriver(app); }
+        }
+        CheckImageVisibility(app, argv[3]);
+        ResetAppState(app);
+        ShutdownCleanup(app); delete app; g_Block = nullptr; UnhookWindowsHookEx(guard); return 0;
+    }
     if (argc == 4 && std::wcscmp(argv[2], L"--camera-motion") == 0) {
         CheckCameraMotionScene(app, argv[3]);
         ShutdownCleanup(app); delete app; g_Block = nullptr; UnhookWindowsHookEx(guard); return 0;
@@ -687,6 +714,7 @@ int wmain(int argc, wchar_t** argv) {
               "assigned EMM effect renders magenta pixels on the real model");
         Check(effectPathDiagnostics > 0, "effect file is recorded before native D3DX compilation");
         MH_DisableHook(vtable[17]);
+        if (std::getenv("MMS_PMM_VERSION_TEST")) CheckVersionEffectSave(app, argv[3]);
         Check(!IsWindowVisible(app->MainWindow()), "host stays hidden");
         ShutdownCleanup(app); delete app; g_Block = nullptr; UnhookWindowsHookEx(guard); return 0;
     }

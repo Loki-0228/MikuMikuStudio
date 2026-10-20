@@ -91,6 +91,7 @@ std::string SettingsJson(const Settings& value) {
         ",\"intervalMinutes\":" + std::to_string(value.intervalMinutes) +
         ",\"maxBackups\":" + std::to_string(value.maxBackups) +
         ",\"overwriteOldest\":" + settings_json::Bool(value.overwriteOldest) +
+        ",\"keepPrevious\":" + settings_json::Bool(value.keepPrevious) +
         ",\"directoryMode\":" + settings_json::Quote(besideExecutable ? "executable" : "custom") +
         ",\"directory\":" + settings_json::Quote(besideExecutable ? std::wstring(L"data/backups") : value.directory) + "}";
 }
@@ -114,6 +115,7 @@ Settings LoadCurrentSettings() {
         value.intervalMinutes = settings_json::UInt(object, "intervalMinutes", 1);
         value.maxBackups = settings_json::UInt(object, "maxBackups", 100);
         value.overwriteOldest = settings_json::Bool(object, "overwriteOldest", false);
+        value.keepPrevious = settings_json::Bool(object, "keepPrevious", false);
         if (settings_json::String(object, "directoryMode", "executable") != "executable")
             value.directory = plugins::Wide(settings_json::String(object, "directory"));
         std::wstring error;
@@ -258,6 +260,7 @@ Settings LoadSettings(const fs::path& path) {
     value.intervalMinutes = GetPrivateProfileIntW(L"autosave", L"intervalMinutes", 1, path.c_str());
     value.maxBackups = GetPrivateProfileIntW(L"autosave", L"maxBackups", 100, path.c_str());
     value.overwriteOldest = GetPrivateProfileIntW(L"autosave", L"overwriteOldest", 0, path.c_str()) == 1;
+    value.keepPrevious = GetPrivateProfileIntW(L"autosave", L"keepPrevious", 0, path.c_str()) == 1;
     std::wstring error;
     return Validate(value, error) ? value : Defaults();
 }
@@ -281,6 +284,7 @@ bool SaveSettings(const fs::path& path, const Settings& value) {
     const std::wstring body = L"\xfeff[autosave]\r\nenabled=" + std::to_wstring(value.enabled) +
         L"\r\nintervalMinutes=" + std::to_wstring(value.intervalMinutes) + L"\r\nmaxBackups=" +
         std::to_wstring(value.maxBackups) + L"\r\noverwriteOldest=" + std::to_wstring(value.overwriteOldest) +
+        L"\r\nkeepPrevious=" + std::to_wstring(value.keepPrevious) +
         L"\r\ndirectoryMode=" + (besideExecutable ? L"executable" : L"custom") +
         L"\r\ndirectory=" + (besideExecutable ? std::wstring(L"data/backups") : value.directory) + L"\r\n";
     HANDLE file = CreateFileW(temporary.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);

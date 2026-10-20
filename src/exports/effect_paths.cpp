@@ -6,6 +6,7 @@
 #include "mikumikustudio/effect_api.hpp"
 #include "mikumikustudio/text_encoding.hpp"
 #include "mikumikustudio/runtime_log.hpp"
+#include "mikumikustudio/pmm_paths.hpp"
 #include <atomic>
 #include <cstring>
 #include <cwchar>
@@ -15,6 +16,7 @@
 #include <vector>
 #include <algorithm>
 #include <set>
+#include <limits>
 
 namespace mikumikustudio {
 namespace {
@@ -25,6 +27,65 @@ struct RelativeAssignment {
 };
 std::mutex assignmentMutex;
 std::vector<RelativeAssignment> assignments;
+// MMHack consumes notifications on a later frame. Never recycle a published
+// alias for another project while that notification may still be queued.
+// Refuse new aliases at the bound instead of retaining unbounded session data.
+constexpr std::size_t kMaxProjectAliases = 4096;
+std::vector<RelativeAssignment> projectAliases;
+std::uint64_t projectAliasSequence = 0;
+
+struct PreserveLastError {
+    DWORD value = GetLastError();
+    ~PreserveLastError() { SetLastError(value); }
+};
+bool AvailableAlias(const fs::path& path) {
+    return GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES &&
+        GetLastError() == ERROR_FILE_NOT_FOUND;
+}
+enum class AliasResult { None, Mapped, Conflict };
+AliasResult ProjectAlias(const wchar_t* filename, std::wstring& result) {
+    if (!filename || !*filename) return AliasResult::None;
+    const wchar_t* leaf = filename;
+    for (const wchar_t* p = filename; *p; ++p) if (*p == L'\\' || *p == L'/') leaf = p + 1;
+    if (_wcsnicmp(leaf, L"~mms-", 5) != 0) return AliasResult::None;
+    const auto path = fs::absolute(filename).lexically_normal();
+    std::lock_guard<std::mutex> lock(assignmentMutex);
+    for (const auto& entry : projectAliases) {
+        if (_wcsicmp(path.c_str(), entry.legacy.c_str()) == 0) {
+            auto notification = entry.legacy;
+            notification.replace_extension(L".pmm");
+            // A file created under a formerly virtual name must not make a
+            // delayed notification overwrite either that file or its effects.
+            if (!AvailableAlias(entry.legacy) || !AvailableAlias(notification)) return AliasResult::Conflict;
+            result = entry.local.wstring();
+            return AliasResult::Mapped;
+        }
+    }
+    return AliasResult::None;
+}
+AliasResult ProjectAliasBytes(const char* filename, std::wstring& result, UINT* codePage = nullptr) {
+    if (!filename || !*filename) return AliasResult::None;
+    // Published aliases have an ASCII basename. This is only a negative
+    // filter; decode the full path before interpreting any path separator.
+    bool candidate = false;
+    for (const char* p = filename; *p; ++p)
+        if (*p == '~' && _strnicmp(p, "~mms-", 5) == 0) { candidate = true; break; }
+    if (!candidate) return AliasResult::None;
+    {
+        std::lock_guard<std::mutex> lock(assignmentMutex);
+        if (projectAliases.empty()) return AliasResult::None;
+    }
+    for (UINT cp : {GetACP(), 932u, 936u, 950u, 949u, 65001u}) {
+        std::wstring decoded;
+        if (!text_encoding::Decode(filename, cp, decoded)) continue;
+        const auto found = ProjectAlias(decoded.c_str(), result);
+        if (found != AliasResult::None) {
+            if (codePage) *codePage = cp;
+            return found;
+        }
+    }
+    return AliasResult::None;
+}
 
 bool RegularFile(const fs::path& path) {
     const DWORD attributes = GetFileAttributesW(path.c_str());
@@ -147,7 +208,7 @@ HANDLE TrackAssignmentRead(HANDLE file, bool readOnly, DWORD attributes) noexcep
             std::wstring path(filename, size);
             if (path.compare(0, 8, L"\\\\?\\UNC\\") == 0) path = L"\\\\" + path.substr(8);
             else if (path.compare(0, 4, L"\\\\?\\") == 0) path.erase(0, 4);
-            if (_wcsicmp(fs::path(path).extension().c_str(), L".emm") == 0) {
+            if (pmm_paths::IsEffect(path)) {
                 if (attributes & FILE_FLAG_OVERLAPPED) {
                     // Never issue synchronous reads on an asynchronous handle.
                     std::lock_guard<std::mutex> lock(assignmentMutex);
@@ -178,6 +239,7 @@ HANDLE TrackAssignmentRead(HANDLE file, bool readOnly, DWORD attributes) noexcep
 bool ExistingPath(const char* bytes, std::wstring& path, UINT& codePage,
                   bool allowProjectAliases = true) {
     if (!bytes || !*bytes) return false;
+    if (allowProjectAliases && ProjectAliasBytes(bytes, path, &codePage) == AliasResult::Mapped) return true;
     if (allowProjectAliases) for (UINT cp : {GetACP(), 932u, 936u, 950u, 949u, 65001u}) {
         std::wstring decoded;
         if (text_encoding::Decode(bytes, cp, decoded) && RelativePath(decoded.c_str(), path)) {
@@ -210,6 +272,18 @@ DWORD WINAPI EffectFileAttributes(LPCSTR filename) {
     const DWORD incomingError = GetLastError();
     try {
         std::wstring preferred;
+        const auto alias = ProjectAliasBytes(filename, preferred);
+        if (alias == AliasResult::Conflict) { SetLastError(ERROR_FILE_EXISTS); return INVALID_FILE_ATTRIBUTES; }
+        if (alias == AliasResult::Mapped) {
+            SetLastError(incomingError);
+            return GetFileAttributesW(preferred.c_str());
+        }
+    } catch (...) {
+        SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+        return INVALID_FILE_ATTRIBUTES;
+    }
+    try {
+        std::wstring preferred;
         UINT preferredCp = 0;
         if (ExistingPath(filename, preferred, preferredCp)) {
             SetLastError(incomingError);
@@ -238,6 +312,23 @@ HANDLE WINAPI OpenEffectFile(LPCSTR filename, DWORD access, DWORD share,
     const bool readOnly = creation == OPEN_EXISTING &&
         (access == GENERIC_READ || access == 0) && !(attributes & FILE_FLAG_DELETE_ON_CLOSE);
     const DWORD incomingError = GetLastError();
+    try {
+        std::wstring preferred;
+        const auto alias = ProjectAliasBytes(filename, preferred);
+        if (alias == AliasResult::Conflict) { SetLastError(ERROR_FILE_EXISTS); return INVALID_HANDLE_VALUE; }
+        if (alias == AliasResult::Mapped) {
+            // Writes and creates redirect only through this exact registration,
+            // never through filename/encoding/relative-assignment guesses.
+            SetLastError(incomingError);
+            return TrackAssignmentRead(CreateFileW(preferred.c_str(), access, share, security,
+                creation, attributes, templateFile), readOnly, attributes);
+        }
+    } catch (...) {
+        // Do not fall through to a physical file under a virtual spelling if
+        // allocating the exact mapping failed, for either reads or writes.
+        SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+        return INVALID_HANDLE_VALUE;
+    }
     try {
         std::wstring preferred;
         UINT preferredCp = 0;
@@ -453,18 +544,13 @@ void InstallEffectPathCompatibility() {
 }
 
 void PrepareEffectProjectPaths(const wchar_t* project) {
-    const DWORD incomingError = GetLastError();
-    if (project && *project) {
-        const wchar_t* extension = std::wcsrchr(project, L'.');
-        // Model-load notifications share the legacy hook with project opens.
-        // They must not replace the current project's relative assignments.
-        if (!extension || (_wcsicmp(extension, L".pmm") != 0 && _wcsicmp(extension, L".emm") != 0)) return;
-    }
+    const PreserveLastError error;
     try {
         if (project && *project) {
-            auto emm = fs::absolute(project);
-            emm.replace_extension(L".emm");
-            ReadAssignments(emm);
+            // Model-load notifications share the legacy hook with project opens.
+            // They must not replace the current project's relative assignments.
+            if (!pmm_paths::IsProject(project) && !pmm_paths::IsEffect(project)) return;
+            ReadAssignments(pmm_paths::Effect(fs::absolute(project)));
         } else {
             std::lock_guard<std::mutex> lock(assignmentMutex);
             assignments.clear();
@@ -473,6 +559,46 @@ void PrepareEffectProjectPaths(const wchar_t* project) {
         std::lock_guard<std::mutex> lock(assignmentMutex);
         assignments.clear();
     }
-    SetLastError(incomingError);
+}
+
+std::wstring EffectProjectNotificationPath(const wchar_t* project) noexcept {
+    const PreserveLastError error;
+    try {
+        if (!project || !*project) return {};
+        const auto path = fs::absolute(project).lexically_normal();
+        if (!pmm_paths::IsProject(path) || path.extension().wstring().size() == 4) return path.wstring();
+        const auto local = pmm_paths::Effect(path);
+        std::lock_guard<std::mutex> lock(assignmentMutex);
+        for (const auto& entry : projectAliases) {
+            if (_wcsicmp(entry.local.c_str(), local.c_str()) == 0) {
+                auto notification = entry.legacy;
+                notification.replace_extension(L".pmm");
+                if (AvailableAlias(entry.legacy) && AvailableAlias(notification)) return notification.wstring();
+            }
+        }
+        if (projectAliases.size() >= kMaxProjectAliases) {
+            runtime_log::Write("MME project notification alias capacity reached");
+            return {};
+        }
+        // Both virtual spellings must be absent. Bound collision retries and
+        // the old MME filename capacity; never reuse a sequence after wrap.
+        for (unsigned attempt = 0; attempt < 256; ++attempt) {
+            if (projectAliasSequence == std::numeric_limits<std::uint64_t>::max()) break;
+            auto notification = path.parent_path() / (L"~mms-" + std::to_wstring(GetCurrentProcessId()) +
+                L"-" + std::to_wstring(++projectAliasSequence) + L".pmm");
+            auto legacy = notification;
+            legacy.replace_extension(L".emm");
+            if (notification.native().size() >= MAX_PATH) break;
+            if (!AvailableAlias(notification) || !AvailableAlias(legacy)) continue;
+            // Construct the return value before publishing the registration.
+            auto result = notification.wstring();
+            projectAliases.push_back({legacy, local});
+            return result;
+        }
+        runtime_log::Write("MME project notification alias unavailable");
+    } catch (...) {
+        runtime_log::Write("MME project notification alias preparation failed");
+    }
+    return {};
 }
 }  // namespace mikumikustudio

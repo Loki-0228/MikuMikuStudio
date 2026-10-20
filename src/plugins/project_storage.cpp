@@ -1,6 +1,7 @@
 #include "project_storage.hpp"
 #include "json.hpp"
 #include "scene_digest.hpp"
+#include "../io/pmm_save_versions.hpp"
 #include <array>
 #include <fstream>
 
@@ -114,7 +115,7 @@ PluginProject ReadPluginProject(const fs::path& target){
     RecoverProjectPair(target);if(!fs::exists(PluginSidecar(target))){PluginProject p;p.projectId=StorageId();return p;}
     auto p=DecodeProject(ReadFile(PluginSidecar(target),kMaxSidecar));if(FileHash(target)!=p.mainHash)throw std::runtime_error("PMM and plugin sidecar hashes differ; explicit association required");return p;
 }
-void PublishProjectPair(const fs::path& target,const fs::path& stagedMain,PluginProject& data,bool createOnly,const std::function<void(unsigned)>& step){
+void PublishProjectPair(const fs::path& target,const fs::path& stagedMain,PluginProject& data,bool createOnly,const std::function<void(unsigned)>& step,bool keepPrevious){
     Lock lock(target);Recover(target);
     if(!SamePath(fs::absolute(target).parent_path(),fs::absolute(stagedMain).parent_path()))throw std::invalid_argument("staged PMM must share directory");
     if(createOnly&&(fs::exists(target)||fs::exists(PluginSidecar(target))))throw std::runtime_error("project already exists");
@@ -122,6 +123,7 @@ void PublishProjectPair(const fs::path& target,const fs::path& stagedMain,Plugin
     if(fs::exists(PluginSidecar(target))){auto previous=DecodeProject(ReadFile(PluginSidecar(target),kMaxSidecar));if(!Matches(target,previous.mainHash))throw std::runtime_error("existing plugin sidecar does not match PMM");}
     if(data.projectId.empty())data.projectId=StorageId();data.saveId=StorageId();data.mainHash=FileHash(stagedMain);
     const Paths p(target,data.saveId);bool journal=false,firstMoveAttempted=false,destinationChanged=false;
+    pmm_versions::Retention retention;
     std::string oldMain,oldSide;
     auto checkpoint=[&](unsigned n){if(step)step(n);};
     try{
@@ -133,10 +135,12 @@ void PublishProjectPair(const fs::path& target,const fs::path& stagedMain,Plugin
         const auto newSideHash=FileHash(p.newSide);
         Check(Matches(p.newMain,data.mainHash),"verify staged PMM");
         const auto record="{\"schemaVersion\":1,\"saveId\":\""+data.saveId+"\",\"newMain\":\""+data.mainHash+"\",\"newSide\":\""+newSideHash+"\",\"oldMain\":\""+oldMain+"\",\"oldSide\":\""+oldSide+"\"}";
+        if(keepPrevious&&!createOnly)Check(retention.Prepare(target,true),"retain previous project version");
         WriteDurable(p.tempJournal,record);Move(p.tempJournal,p.journal,false);journal=true;checkpoint(1);
         firstMoveAttempted=true;
         Move(p.newMain,p.main,!createOnly);destinationChanged=true;checkpoint(2);Move(p.newSide,p.side,!createOnly);checkpoint(3);
         Check(Matches(p.main,data.mainHash)&&Matches(p.side,newSideHash),"verify published pair");
+        retention.Commit();
         Cleanup(p);checkpoint(4);
     }catch(...){
         // A failed first Move can leave the complete old pair untouched. Abort
@@ -146,12 +150,13 @@ void PublishProjectPair(const fs::path& target,const fs::path& stagedMain,Plugin
         if(journal&&firstMoveAttempted&&!destinationChanged){
             try{
                 const auto intact=[](const fs::path& f,const std::string& hash){return hash.empty()?!fs::exists(f):Matches(f,hash);};
-                if(intact(p.main,oldMain)&&intact(p.side,oldSide))Cleanup(p);
+                if(intact(p.main,oldMain)&&intact(p.side,oldSide)){Cleanup(p);journal=false;}
             }catch(...){/* Keep recovery evidence when verification/cleanup is uncertain. */}
         }
         // Before journal publication no destination changed. Otherwise retain
         // recovery artifacts unless the verified, untouched attempt was aborted.
         if(!journal)for(const auto* f:{&p.newMain,&p.newSide,&p.oldMain,&p.oldSide,&p.tempJournal})DeleteFileW(f->c_str());
+        else retention.Commit(); // The recovery journal may still publish the new pair.
         throw;
     }
 }

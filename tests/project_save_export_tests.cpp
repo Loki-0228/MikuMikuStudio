@@ -4,6 +4,7 @@
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/autosave.hpp"
 #include "mikumikustudio/background_save.hpp"
+#include "mikumikustudio/pmm_paths.hpp"
 #include "mikumikustudio/pmm_extension.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/panel_controls.hpp"
@@ -16,6 +17,9 @@
 #endif
 #include <MinHook.h>
 #include <commdlg.h>
+#include <shellapi.h>
+#include <shlobj.h>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <vector>
@@ -24,6 +28,7 @@
 #include <cstdlib>
 #include <atomic>
 #include <memory>
+#include <utility>
 
 using namespace mikumikustudio;
 namespace fs = std::filesystem;
@@ -145,6 +150,7 @@ std::vector<char> Bytes(const fs::path& path) {
     std::ifstream file(path, std::ios::binary);
     return {std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
 }
+#include "pmm_versions_checks.hpp"
 WNDPROC realMain = nullptr;
 unsigned deferredCloses = 0;
 LRESULT CALLBACK WatchClose(HWND window, UINT msg, WPARAM wp, LPARAM lp) {
@@ -545,8 +551,10 @@ INT_PTR CALLBACK Probe(HWND dialog, UINT msg, WPARAM wp, LPARAM lp) {
     return TRUE;
 }
 }
+#include "model_load_view_checks.hpp"
 int wmain(int argc, wchar_t** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
+    std::puts("SAVE_TEST phase=start");
     Check(argc == 2, "isolated artifact directory required");
     root = fs::absolute(argv[1]); fs::create_directories(root);
     history = root / L"recent-pmm.txt";
@@ -563,13 +571,21 @@ int wmain(int argc, wchar_t** argv) {
     const auto hook = SetWindowsHookExW(WH_CBT, HideCreated, nullptr, GetCurrentThreadId());
     Check(hook != nullptr, "prevent activation");
     auto* app = new MMDApp; g_Block = app; app->state = MMDAppState{}; app->InitDefaults();
+    std::puts("SAVE_TEST phase=initialize-host");
     Check(InitMainWindowAndD3D(app, GetModuleHandleW(nullptr), SW_HIDE), "initialize hidden production app");
-    SaveTests(app);
-    AsyncTests(app);
+    if (const auto* modelPath = _wgetenv(L"MMS_MODEL_LOAD_VIEW_TEST")) {
+        CheckModelLoadView(app, modelPath);
+        ShutdownCleanup(app); g_Block = nullptr; delete app; UnhookWindowsHookEx(hook);
+        return 0;
+    }
+    std::puts("SAVE_TEST phase=save-commands"); SaveTests(app);
+    std::puts("SAVE_TEST phase=async"); AsyncTests(app);
 #if !MMD_ORIGINAL_PROFILE
-    AbiTransactionTests(app);
+    std::puts("SAVE_TEST phase=abi-transactions"); AbiTransactionTests(app);
 #endif
-    SaveOpenAliasTests(app);
+    std::puts("SAVE_TEST phase=save-open-alias"); SaveOpenAliasTests(app);
+    VersionTests(app);
+    std::puts("SAVE_TEST phase=export-dialogs");
     for (int language : {0, 1, 2}) {
         app->EnglishUI() = static_cast<unsigned char>(language);
         for (bool sequence : {false, true}) {

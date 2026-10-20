@@ -85,6 +85,183 @@ std::string Read(const char* path) {
     Check(ReadFile(file, bytes.data(), DWORD(bytes.size()), &count, nullptr) != FALSE, "read actual resolved file");
     CloseHandle(file); return {bytes.data(), count};
 }
+void ProjectSuffixPaths(const fs::path& root) {
+    for (const auto* suffix : {L".pmm", L".pmm1", L".PmM1111", L".pmm-recovery"}) {
+        const auto project = root / (std::wstring(L"suffix") + suffix);
+        const auto expected = root / (L"suffix.emm" + std::wstring(suffix).substr(4));
+        Check(pmm_paths::IsProject(project) && pmm_paths::Effect(project) == expected,
+            "PMM filename suffix pairs with the same EMM suffix without selecting a format version");
+    }
+    for (const auto* suffix : {L".emm", L".emm1", L".EmM1111", L".emm-recovery"}) {
+        const auto effect = root / (std::wstring(L"explicit") + suffix);
+        Check(pmm_paths::IsEffect(effect) && !pmm_paths::IsProject(effect) && pmm_paths::Effect(effect) == effect,
+            "an explicitly chosen EMM retains its exact suffix and spelling");
+    }
+    Check(!pmm_paths::IsProject(root / L"folder.pmm" / L"picture.png") &&
+        !pmm_paths::IsProject(root / L"scene.pmm1.txt") && !pmm_paths::IsEffect(root / L"scene.emm1.fx"),
+        "only the final extension routes project and assignment files");
+}
+void ProjectNotificationAliases(const fs::path& root) {
+    const auto folder = root / (L"notification-alias-" + std::to_wstring(GetCurrentProcessId()));
+    const auto project = folder / L"scene.pmm1";
+    const auto effect = pmm_paths::Effect(project);
+    const auto baseEffect = folder / L"scene.emm";
+    const auto local = folder / L"notification-effects" / L"assigned.fx";
+    const auto legacy = root / L"notification-effects" / L"assigned.fx";
+    const std::string assignment = "[Effect]\nPmd1=notification-effects/assigned.fx\n";
+    Write(project, "PMM suffix routing fixture"); Write(effect, assignment);
+    Write(baseEffect, "base-effect-must-stay"); Write(local, "version-project"); Write(legacy, "version-exe");
+    const auto before = projectAliases.size();
+    const auto baseProject = folder / L"scene.pmm";
+    SetLastError(6611);
+    Check(EffectProjectNotificationPath(baseProject.c_str()) == baseProject.wstring() && GetLastError() == 6611 &&
+        projectAliases.size() == before, "plain PMM notifications use their own path without consuming an alias");
+    SetLastError(6612);
+    Check(EffectProjectNotificationPath(nullptr).empty() && EffectProjectNotificationPath(L"").empty() && GetLastError() == 6612,
+        "empty notification input neither registers an alias nor changes last error");
+    SetLastError(6613);
+    const fs::path notification = EffectProjectNotificationPath(project.c_str());
+    const DWORD preparedError = GetLastError();
+    auto virtualEffect = notification; virtualEffect.replace_extension(L".emm");
+    Check(!notification.empty() && notification.extension() == L".pmm" && notification.parent_path() == folder &&
+        projectAliases.size() == before + 1 && preparedError == 6613 && !fs::exists(notification) && !fs::exists(virtualEffect),
+        "versioned project registers one absent virtual PMM and EMM without materializing either file");
+    const auto alternate = folder / L"." / project.filename();
+    SetLastError(6614);
+    Check(EffectProjectNotificationPath(alternate.c_str()) == notification.wstring() && GetLastError() == 6614 &&
+        projectAliases.size() == before + 1, "repeated normalized project notifications reuse the same stable alias");
+    SetLastError(6615);
+    Check(EffectProjectNotificationPath(effect.c_str()) == effect.wstring() && GetLastError() == 6615 &&
+        projectAliases.size() == before + 1, "explicit versioned EMM notification remains its exact file");
+    const auto alias = NativeBytes(virtualEffect), expanded = NativeBytes(legacy);
+    PrepareEffectProjectPaths(project.c_str());
+    Check(Read(expanded.c_str()) == "version-project", "PMM1 preparation uses EMM1 relative assignments");
+    PrepareEffectProjectPaths(effect.c_str());
+    Check(Read(expanded.c_str()) == "version-project", "explicit EMM1 preparation keeps its own assignment suffix");
+    PrepareEffectProjectPaths(nullptr);
+    Check(Read(expanded.c_str()) == "version-exe", "workspace reset still retires only relative assignments");
+    Check(Read(alias.c_str()) == assignment && Read(expanded.c_str()) == "version-project",
+        "queued notification alias survives reset and parsing the actual EMM1 restores its relative effects");
+    Check(EffectFileAttributes(alias.c_str()) == GetFileAttributesW(effect.c_str()),
+        "registered virtual EMM attributes describe its exact retained file");
+    HANDLE file = OpenEffectFile(alias.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    Check(file != INVALID_HANDLE_VALUE, "mapped EMM1 can be opened exclusively for a same-handle cursor check");
+    LARGE_INTEGER zero{}, seven{}, position{}; seven.QuadPart = 7;
+    Check(SetFilePointerEx(file, zero, &position, FILE_CURRENT) && position.QuadPart == 0 &&
+        SetFilePointerEx(file, seven, nullptr, FILE_BEGIN), "mapped EMM1 begins at byte zero and permits a nonzero cursor");
+    SetLastError(6616);
+    Check(TrackAssignmentRead(file, true, FILE_ATTRIBUTE_NORMAL) == file && GetLastError() == 6616 &&
+        SetFilePointerEx(file, zero, &position, FILE_CURRENT) && position.QuadPart == 7,
+        "versioned same-handle parsing preserves caller cursor and last error");
+    CloseHandle(file);
+    std::array<wchar_t, 32768> converted{};
+    SetLastError(6617);
+    Check(DecodeEffectPath(CP_ACP, 0, alias.c_str(), -1, converted.data(), int(converted.size())) > 0 &&
+        fs::path(converted.data()) == virtualEffect && GetLastError() == 6617,
+        "generic byte conversion preserves the virtual spelling rather than applying a write alias");
+    file = CreateFileW(converted.data(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    Check(file == INVALID_HANDLE_VALUE && GetLastError() == ERROR_FILE_NOT_FOUND && Bytes(effect) == assignment,
+        "ordinary wide opens remain outside the MMEffect ANSI import mapping");
+    file = OpenEffectFile(alias.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    Check(file != INVALID_HANDLE_VALUE, "explicitly registered notification permits native MME to create its EMM1");
+    DWORD written = 0;
+    Check(WriteFile(file, "mapped-save", 11, &written, nullptr) && written == 11, "write native MME bytes to registered destination");
+    CloseHandle(file);
+    Check(Bytes(effect) == "mapped-save" && Bytes(baseEffect) == "base-effect-must-stay" && !fs::exists(virtualEffect),
+        "registered write changes only the retained EMM and never the base EMM or virtual filename");
+    Write(effect, assignment);
+    const auto unregistered = folder / L"~mms-unregistered.emm";
+    Write(unregistered, "unregistered"); const auto unregisteredBytes = NativeBytes(unregistered);
+    file = OpenEffectFile(unregisteredBytes.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    Check(file != INVALID_HANDLE_VALUE && WriteFile(file, "native", 6, &written, nullptr) && written == 6,
+        "an unregistered lookalike remains an ordinary native write"); CloseHandle(file);
+    Check(Bytes(unregistered) == "native" && Bytes(effect) == assignment && Bytes(baseEffect) == "base-effect-must-stay",
+        "lookalike virtual names cannot redirect writes to any project EMM");
+    HANDLE locked = CreateFileW(effect.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    Check(locked != INVALID_HANDLE_VALUE, "lock retained EMM against a registered read");
+    file = OpenEffectFile(alias.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    Check(file == INVALID_HANDLE_VALUE && GetLastError() == ERROR_SHARING_VIOLATION,
+        "a registered read preserves its destination sharing failure instead of falling back"); CloseHandle(locked);
+    const auto unallocatedProject = folder / L"unallocated.pmm11";
+    failAllocation = true; SetLastError(6618);
+    const auto unavailable = EffectProjectNotificationPath(unallocatedProject.c_str());
+    const DWORD unavailableError = GetLastError(); failAllocation = false;
+    Check(unavailable.empty() && unavailableError == 6618 && projectAliases.size() == before + 1,
+        "allocation failure returns an empty notification without publishing a partial alias or changing last error");
+    for (const DWORD access : {DWORD(GENERIC_READ), DWORD(GENERIC_WRITE)}) {
+        failAllocation = true;
+        file = OpenEffectFile(alias.c_str(), access, 0, nullptr, access == GENERIC_READ ? OPEN_EXISTING : CREATE_ALWAYS,
+            FILE_ATTRIBUTE_NORMAL, nullptr);
+        const DWORD error = GetLastError(); failAllocation = false;
+        Check(file == INVALID_HANDLE_VALUE && error == ERROR_NOT_ENOUGH_MEMORY && Bytes(effect) == assignment &&
+            !fs::exists(virtualEffect), "failed mapped-read or mapped-write allocation cannot access a physical virtual file");
+    }
+    failAllocation = true;
+    const auto failedAttributes = EffectFileAttributes(alias.c_str());
+    const DWORD attributesError = GetLastError(); failAllocation = false;
+    Check(failedAttributes == INVALID_FILE_ATTRIBUTES && attributesError == ERROR_NOT_ENOUGH_MEMORY,
+        "failed exact alias allocation retains the Win32 attribute error contract");
+    Write(virtualEffect, "unrelated-virtual-file");
+    for (const DWORD access : {DWORD(GENERIC_READ), DWORD(GENERIC_WRITE)}) {
+        file = OpenEffectFile(alias.c_str(), access, 0, nullptr, access == GENERIC_READ ? OPEN_EXISTING : CREATE_ALWAYS,
+            FILE_ATTRIBUTE_NORMAL, nullptr);
+        Check(file == INVALID_HANDLE_VALUE && GetLastError() == ERROR_FILE_EXISTS,
+            "a real file occupying a registered virtual EMM refuses both reads and writes");
+    }
+    Check(EffectFileAttributes(alias.c_str()) == INVALID_FILE_ATTRIBUTES && GetLastError() == ERROR_FILE_EXISTS &&
+        Bytes(virtualEffect) == "unrelated-virtual-file" && Bytes(effect) == assignment,
+        "virtual EMM conflict preserves both the real occupant and retained effects");
+    const fs::path replacement = EffectProjectNotificationPath(project.c_str());
+    Check(!replacement.empty() && replacement != notification && projectAliases.size() == before + 2,
+        "collision recovery publishes a new alias without retargeting a queued old alias");
+    Check(DeleteFileW(virtualEffect.c_str()) != FALSE, "remove only this test's colliding EMM file");
+    Write(notification, "unrelated-virtual-project");
+    file = OpenEffectFile(alias.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    Check(file == INVALID_HANDLE_VALUE && GetLastError() == ERROR_FILE_EXISTS && Bytes(effect) == assignment &&
+        Bytes(notification) == "unrelated-virtual-project", "a real virtual-PMM occupant also prevents derived EMM writes");
+    Check(DeleteFileW(notification.c_str()) != FALSE && Read(alias.c_str()) == assignment,
+        "an original queued alias still resolves its original EMM after the external collision is removed");
+    const auto nextSequence = projectAliasSequence + 1;
+    const auto collisionName = [&](std::uint64_t sequence, const wchar_t* extension) {
+        return folder / (L"~mms-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(sequence) + extension);
+    };
+    const auto occupiedPmm = collisionName(nextSequence, L".pmm"), occupiedEmm = collisionName(nextSequence + 1, L".emm");
+    Write(occupiedPmm, "existing-pmm"); Write(occupiedEmm, "existing-emm");
+    const fs::path afterCollisions = EffectProjectNotificationPath((folder / L"other.pmm111").c_str());
+    auto afterCollisionEffect = afterCollisions; afterCollisionEffect.replace_extension(L".emm");
+    Check(!afterCollisions.empty() && afterCollisions != occupiedPmm && afterCollisionEffect != occupiedEmm &&
+        Bytes(occupiedPmm) == "existing-pmm" && Bytes(occupiedEmm) == "existing-emm",
+        "alias registration skips existing PMM and EMM spellings without changing either occupant");
+    Write(folder / L"other.emm111", "independent-other-version");
+    Check(Read(NativeBytes(afterCollisionEffect).c_str()) == "independent-other-version" && Read(alias.c_str()) == assignment,
+        "separately queued suffix notifications retain distinct original EMM destinations");
+    Check(DeleteFileW(occupiedPmm.c_str()) && DeleteFileW(occupiedEmm.c_str()), "remove only owned initial-collision fixtures");
+    const auto retained = projectAliases.size();
+    // White-box capacity injection avoids thousands of disk probes while the
+    // public boundary still executes its real refusal and stable-reuse paths.
+    while (projectAliases.size() < kMaxProjectAliases) {
+        const auto number = std::to_wstring(projectAliases.size());
+        projectAliases.push_back({folder / (L"~mms-capacity-" + number + L".emm"), folder / (L"capacity-" + number + L".emm1")});
+    }
+    SetLastError(6619);
+    const auto full = EffectProjectNotificationPath((folder / L"over-capacity.pmm1").c_str());
+    const DWORD fullError = GetLastError();
+    Check(full.empty() && fullError == 6619 && projectAliases.size() == kMaxProjectAliases &&
+        EffectProjectNotificationPath(project.c_str()) == notification.wstring(),
+        "full alias capacity refuses new registrations but preserves a previously queued stable mapping");
+    projectAliases.resize(retained);
+    const auto sequence = projectAliasSequence;
+    projectAliasSequence = std::numeric_limits<std::uint64_t>::max();
+    const auto exhaustedProject = folder / L"sequence-exhausted.pmm1";
+    SetLastError(6620);
+    const auto exhausted = EffectProjectNotificationPath(exhaustedProject.c_str());
+    const DWORD exhaustedError = GetLastError();
+    Check(exhausted.empty() && exhaustedError == 6620 && projectAliases.size() == retained &&
+        projectAliasSequence == std::numeric_limits<std::uint64_t>::max(),
+        "exhausted alias sequence fails without wrapping into an earlier queued identity");
+    projectAliasSequence = sequence;
+    PrepareEffectProjectPaths(nullptr);
+}
 void AssignmentPaths(const fs::path& root) {
     const auto project = root / L"projects" / L"scene.pmm";
     auto emm = project; emm.replace_extension(L".emm");
@@ -357,6 +534,7 @@ int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     const auto root = ExecutableDirectory(); const auto cwd = fs::current_path();
     Check(!GetModuleHandleW(L"MMEffect.dll") && !GetModuleHandleW(L"MMHack.dll"), "no third-party MME module loaded");
+    ProjectSuffixPaths(root); ProjectNotificationAliases(root);
     AssignmentPaths(root); CompilerDiagnostics(root); ImportScope(); fs::current_path(cwd);
     Check(!GetModuleHandleW(L"MMEffect.dll") && !GetModuleHandleW(L"MMHack.dll"), "tests did not load optional third-party DLLs");
     std::printf("PASS effect path compatibility: %u checks\n", checks);

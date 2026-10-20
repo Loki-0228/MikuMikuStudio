@@ -3,6 +3,7 @@
 #include <stdexcept>
 #include <iomanip>
 #include "mikumikustudio/build_profile.hpp"
+#include "mikumikustudio/pmm_paths.hpp"
 
 namespace mme_scene_capture {
 void Need(bool ok, const char* message) {
@@ -85,7 +86,7 @@ void Run(MMDApp* app, const wchar_t* project, const wchar_t* output) {
     std::puts("MME_CAPTURE stage=validate-input");
     const auto input = std::filesystem::absolute(project);
     const auto directory = std::filesystem::absolute(output);
-    Need(input.extension() == L".pmm" && std::filesystem::is_regular_file(input), "MME capture requires an existing PMM");
+    Need(pmm_paths::IsProject(input) && std::filesystem::is_regular_file(input), "MME capture requires an existing PMM or retained version");
     const int width = Option("MMS_MME_CAPTURE_WIDTH", 1280, 64, 8192);
     const int height = Option("MMS_MME_CAPTURE_HEIGHT", 720, 64, 8192);
     const int warmup = Option("MMS_MME_CAPTURE_WARMUP", 32, 0, 10000);
@@ -125,6 +126,9 @@ void Run(MMDApp* app, const wchar_t* project, const wchar_t* output) {
     renderer->presentParameters.BackBufferHeight = unsigned(height);
     std::puts("MME_CAPTURE stage=reset-device");
     Need(PostDeviceReset(app), "MME capture resets the device to fixed resolution");
+    app->ViewportRect() = RECT{0, 0, width, height};
+    const D3DVIEWPORT9 viewport{0, 0, unsigned(width), unsigned(height), 0.f, 1.f};
+    Need(SUCCEEDED(renderer->device->SetViewport(&viewport)), "MME capture selects the whole export viewport");
     std::puts("MME_CAPTURE stage=device-ready");
     Need(!IsWindowVisible(app->MainWindow()) && !IsWindowVisible(app->RecordingWindow()), "MME capture windows stay hidden");
     const auto frameIndex = app->CurrentFrame();
@@ -140,6 +144,8 @@ void Run(MMDApp* app, const wchar_t* project, const wchar_t* output) {
         app->CameraDistance() = camera[3]; app->CameraPitch() = camera[4]; app->CameraYaw() = camera[5];
         app->CameraRoll() = camera[6]; app->CameraFov() = camera[7];
         app->DeltaTime() = 1.f / 30; app->state.messageSeen = 10;
+        app->ViewportRect() = RECT{0, 0, width, height};
+        Need(SUCCEEDED(renderer->device->SetViewport(&viewport)), "MME capture retains the whole export viewport");
         RenderFrameScene(app);
         if (submission >= warmup) {
             wchar_t name[40]{}; swprintf_s(name, L"frame-%04d.bgra", submission - warmup);
