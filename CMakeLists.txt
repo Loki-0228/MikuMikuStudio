@@ -230,6 +230,8 @@ set_target_properties(animation_curve_editor_tests PROPERTIES RUNTIME_OUTPUT_DIR
 add_test(NAME animation_curve_editor_tests COMMAND animation_curve_editor_tests)
 add_test(NAME animation_curve_source_lifetime COMMAND animation_curve_editor_tests --source-lifetime)
 set_tests_properties(animation_curve_source_lifetime PROPERTIES TIMEOUT 180)
+add_test(NAME animation_curve_write_lifetime COMMAND animation_curve_editor_tests --write-lifetime)
+set_tests_properties(animation_curve_write_lifetime PROPERTIES TIMEOUT 180)
 add_executable(animation_curve_sidebar_tests EXCLUDE_FROM_ALL tests/animation_curve_sidebar_tests.cpp)
 target_link_libraries(animation_curve_sidebar_tests PRIVATE mikumikustudio_curve_editor)
 set_target_properties(animation_curve_sidebar_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")

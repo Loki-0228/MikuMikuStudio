@@ -35,10 +35,27 @@
 #include <cwchar>
 #include <functional>
 #include <memory>
+#include <new>
 #include <set>
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+// Armed only after the host has accepted a dedicated write-lifetime fixture.
+// Fail exactly one C++ allocation on this thread, then restore the allocator
+// before the editor reports the failure or the fixture inspects its state.
+thread_local bool g_curveFailNextAllocation=false;
+thread_local unsigned g_curveAllocationFailures=0;
+void* operator new(std::size_t size){
+    if(g_curveFailNextAllocation){g_curveFailNextAllocation=false;++g_curveAllocationFailures;throw std::bad_alloc();}
+    if(void* value=std::malloc(size?size:1))return value;
+    throw std::bad_alloc();
+}
+void* operator new[](std::size_t size){return ::operator new(size);}
+void operator delete(void* value)noexcept{std::free(value);}
+void operator delete[](void* value)noexcept{std::free(value);}
+void operator delete(void* value,std::size_t)noexcept{std::free(value);}
+void operator delete[](void* value,std::size_t)noexcept{std::free(value);}
 
 namespace ce = mikumikustudio::curve_editor;
 namespace ac = mikumikustudio::animation_curve;
@@ -3330,7 +3347,405 @@ void CurveModeButtons() {
 
 #include "curve_native_editor_checks.inc"
 #include "animation_curve_external_history_checks.inc"
+
+namespace {
+struct WriteLifetimeFixture {
+    // Commit, local undo, local redo, external commit, external undo/redo.
+    int route;
+    HostSource local,replacement;
+    ExternalCurveJournal journal;
+    explicit WriteLifetimeFixture(int value):route(value){
+        local.data.push_back(MakeChannel("x",L"Original",{MakeKey(0,1),MakeKey(10,5)}));
+        replacement.data.push_back(MakeChannel("x",L"Replacement",{MakeKey(0,91),MakeKey(20,99)}));
+    }
+    ce::Session Session(){return route<3 ? MakeSession(local) : journal.Session();}
+    void Seed(HWND window){
+        ClickKey(window,1);
+        if(route==1||route==2||route==4||route==5)Click(window,kIdDeleteKey);
+        if(route==2||route==5)Click(window,kIdUndo);
+    }
+    int Command()const{return route==0||route==3 ? kIdDeleteKey : route==1||route==4 ? kIdUndo : kIdRedo;}
+    const std::vector<ce::Channel>& Data()const{return route<3 ? local.data : journal.sources[0].data;}
+    unsigned Applies()const{return route<3 ? unsigned(local.applyCalls) : journal.applies;}
+    unsigned Traversals()const{return journal.traversals;}
+    int Reads()const{return route<3 ? local.readCalls : journal.sources[0].readCalls;}
+    unsigned Queries()const{return journal.queries;}
+};
+
+bool SameWritePayload(const std::vector<ce::Channel>& first,const std::vector<ce::Channel>& second){
+    if(first.size()!=second.size())return false;
+    for(std::size_t c=0;c<first.size();++c){
+        const auto& a=first[c];const auto& b=second[c];
+        if(a.id!=b.id||a.label!=b.label||a.group!=b.group||a.selected!=b.selected||
+            a.track.discrete!=b.track.discrete||a.track.keys.size()!=b.track.keys.size()||
+            a.nativeControls!=b.nativeControls||a.controlGeometry!=b.controlGeometry)return false;
+        for(std::size_t k=0;k<a.track.keys.size();++k){
+            const auto& x=a.track.keys[k];const auto& y=b.track.keys[k];
+            if(x.frame!=y.frame||x.value!=y.value||x.inSlope!=y.inSlope||x.outSlope!=y.outSlope||
+                x.inWeight!=y.inWeight||x.outWeight!=y.outWeight||
+                x.interpolation!=y.interpolation||x.tangent!=y.tangent)return false;
+        }
+    }
+    return true;
+}
+
+struct WriteRetirementState {
+    int phase=0,response=0; // Copy, invocation, callable-copy destruction.
+    bool armed=false,copying=false;
+    const void* copyingOriginal=nullptr;
+    int calls=0,retireCalls=0,destroyedDuringCopy=0;
+    const std::vector<ce::Channel>* input=nullptr;
+    const ce::Channel* channelStorage=nullptr;
+    const ac::Key* keyStorage=nullptr;
+    std::vector<ce::Channel> inputSnapshot;
+    std::wstring* errorOutput=nullptr;
+    decltype(ce::Source::apply) apply;
+    decltype(ce::ExternalHistory::traverse) traverse;
+    std::function<void()> retire;
+    void CheckArguments(){
+        if(input)Check(input->data()==channelStorage&&!input->empty()&&
+            (*input)[0].track.keys.data()==keyStorage&&SameWritePayload(*input,inputSnapshot),
+            "apply keeps detached channels, names, key storage and values through provider retirement");
+        if(errorOutput){*errorOutput=L"retired write callback";
+            Check(*errorOutput==L"retired write callback","write error output remains valid through retirement");}
+    }
+    void Retire(){armed=false;++retireCalls;retire();CheckArguments();}
+    bool Result(){if(response==2)throw std::runtime_error("retired write callback");return response==0;}
+};
+
+struct WriteRetirementProvider {
+    WriteRetirementState* state;
+    int marker=37;
+    mutable bool invoked=false;
+    explicit WriteRetirementProvider(WriteRetirementState& value):state(&value){}
+    WriteRetirementProvider(const WriteRetirementProvider& other):state(other.state),marker(other.marker){
+        if(!state->armed||state->phase!=0)return;
+        state->copying=true;state->copyingOriginal=&other;state->Retire();
+        Check(state->destroyedDuringCopy==0&&other.marker==37,
+            "write provider's original callable stays alive throughout a reentrant copy");
+        state->copying=false;
+        if(state->response==2)throw std::runtime_error("retired write provider copy");
+    }
+    ~WriteRetirementProvider(){
+        if(state->copying&&state->copyingOriginal==this)++state->destroyedDuringCopy;
+        if(invoked&&state->armed&&state->phase==2)state->Retire();
+    }
+    bool operator()(const std::vector<ce::Channel>& next,std::wstring& error)const{
+        invoked=true;++state->calls;
+        if(!state->armed)return state->apply(next,error);
+        state->input=&next;state->channelStorage=next.data();
+        state->keyStorage=next.empty()?nullptr:next[0].track.keys.data();
+        state->inputSnapshot=next;state->errorOutput=&error;
+        if(state->response==0)Check(state->apply(next,error),"write fixture publishes its accepted edit");
+        if(state->phase==1)state->Retire();
+        return state->Result();
+    }
+    bool operator()(bool redo,std::wstring& error)const{
+        invoked=true;++state->calls;
+        if(!state->armed)return state->traverse(redo,error);
+        state->errorOutput=&error;
+        if(state->response==0)Check(state->traverse(redo,error),"write fixture commits its accepted traversal");
+        if(state->phase==1)state->Retire();
+        return state->Result();
+    }
+};
+
+void WriteCallbackLifetime(){
+    for(int route=0;route!=6;++route)for(int phase=0;phase!=3;++phase)
+    for(int action=0;action!=3;++action)for(int response=0;response!=3;++response){
+        std::printf("write lifetime route=%d phase=%d action=%d response=%d\n",route,phase,action,response);
+        WriteLifetimeFixture fixture(route);
+        WriteRetirementState state;state.phase=phase;state.response=response;
+        HWND replacementWindow=nullptr;
+        std::wstring replacementStatus;
+        int readsAfterRetirement=-1;unsigned queriesAfterRetirement=0;
+        state.retire=[&]{
+            if(action!=1)ce::CloseOwned(nullptr);
+            if(action!=0){
+                replacementWindow=static_cast<HWND>(ce::Open(nullptr,MakeSession(fixture.replacement),false));
+                Check(IsWindow(replacementWindow),"write retirement creates a live replacement session");
+                replacementStatus=GetText(replacementWindow,kIdStatus);
+            }
+            readsAfterRetirement=fixture.Reads();queriesAfterRetirement=fixture.Queries();
+        };
+        auto session=fixture.Session();
+        if(route<4){state.apply=session.sources[0].apply;session.sources[0].apply=WriteRetirementProvider(state);}
+        else{state.traverse=session.history.traverse;session.history.traverse=WriteRetirementProvider(state);}
+        HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
+        Check(IsWindow(window),"write lifetime fixture opens unarmed");
+        fixture.Seed(window);
+        const auto applies=fixture.Applies(),traversals=fixture.Traversals();
+        const auto keys=fixture.Data()[0].track.keys.size(),cursor=fixture.journal.cursor;
+        const auto calls=state.calls;
+        auto token=ce::CaptureWindowSession(window);auto retained=token.lock();
+        state.armed=true;Click(window,fixture.Command());
+        const bool committed=phase!=0&&response==0;
+        Check(state.retireCalls==1&&state.destroyedDuringCopy==0&&
+            state.calls==calls+(phase!=0),"write retirement stops the exact old invocation without another callback");
+        Check(fixture.Applies()==applies+unsigned(committed&&route<4)&&
+            fixture.Traversals()==traversals+unsigned(committed&&route>=4),
+            "retired write preserves one completed publication and never repeats or reverses it");
+        Check(fixture.Data()[0].track.keys.size()==(committed ? std::size_t(route==1||route==4?2:1) : keys),
+            "host data keeps the accepted write or the unchanged rejected baseline");
+        const auto expectedCursor=committed&&route>=3 ? (route==4?cursor-1:cursor+1) : cursor;
+        Check(fixture.journal.cursor==expectedCursor&&fixture.Reads()==readsAfterRetirement&&
+            fixture.Queries()==queriesAfterRetirement,"old write performs no canonical read or history query after retirement");
+        Check(bool(retained)&&!ce::IsWindowSessionCurrent(window,token),
+            "write retirement invalidates registration while the old token is retained");
+        if(replacementWindow){
+            Check(IsWindow(replacementWindow)&&GetText(replacementWindow,kIdStatus)==replacementStatus&&
+                KeyCount(replacementWindow)==2&&fixture.replacement.applyCalls==0,
+                "old commit, snapshot and traversal continuations cannot overwrite replacement state");
+            ClickKey(replacementWindow,1);Click(replacementWindow,kIdDeleteKey);
+            Check(fixture.replacement.applyCalls==1&&KeyCount(replacementWindow)==1,
+                "replacement stays editable after the retired write guards finish");
+        }else Check(OwnedCurveWindow()==nullptr,"closed write session leaves no registered editor");
+        ce::CloseOwned(nullptr);
+    }
+    Note("apply and traversal copy, invocation and final release preserve session and publication lifetime");
+}
+
+void WritePostCommitReadRetirement(){
+    for(int route=0;route!=6;++route)for(int action=0;action!=3;++action){
+        WriteLifetimeFixture fixture(route);
+        bool armed=false,readPending=false;
+        int retired=0;
+        HWND replacementWindow=nullptr;
+        auto session=fixture.Session();
+        const auto read=session.sources[0].read;
+        session.sources[0].read=[&,read](auto& next,auto& error){
+            const bool accepted=read(next,error);
+            if(readPending){
+                readPending=false;++retired;
+                if(action!=1)ce::CloseOwned(nullptr);
+                if(action!=0)replacementWindow=static_cast<HWND>(ce::Open(nullptr,MakeSession(fixture.replacement),false));
+            }
+            return accepted;
+        };
+        if(route<4){
+            const auto apply=session.sources[0].apply;
+            session.sources[0].apply=[&,apply](const auto& next,auto& error){
+                const bool accepted=apply(next,error);if(armed&&accepted)readPending=true;return accepted;
+            };
+        }else{
+            const auto traverse=session.history.traverse;
+            session.history.traverse=[&,traverse](bool redo,auto& error){
+                const bool accepted=traverse(redo,error);if(armed&&accepted)readPending=true;return accepted;
+            };
+        }
+        HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
+        Check(IsWindow(window),"post-write canonical read fixture opens");fixture.Seed(window);
+        const auto applies=fixture.Applies(),traversals=fixture.Traversals();
+        armed=true;Click(window,fixture.Command());
+        Check(retired==1&&fixture.Applies()==applies+unsigned(route<4)&&
+            fixture.Traversals()==traversals+unsigned(route>=4),
+            "retirement in the canonical read never reverses or repeats the completed write");
+        Check(fixture.Data()[0].track.keys.size()==std::size_t(route==1||route==4?2:1),
+            "accepted host data survives canonical-read retirement during commit, undo and redo");
+        if(replacementWindow){
+            Check(IsWindow(replacementWindow)&&KeyCount(replacementWindow)==2,
+                "post-write retirement leaves replacement channels intact");
+            ClickKey(replacementWindow,1);Click(replacementWindow,kIdDeleteKey);
+            Check(fixture.replacement.applyCalls==1,"replacement remains editable after post-write canonical retirement");
+        }else Check(OwnedCurveWindow()==nullptr,"post-write canonical retirement removes its closed editor");
+        ce::CloseOwned(nullptr);
+    }
+    Note("post-publication canonical retirement does not retry apply or traverse");
+}
+
+std::array<std::uint64_t,2> LocalWriteHistory(HWND window){
+    std::uint64_t state[5]{};
+    Check(SendMessageW(window,WM_APP+397,0,reinterpret_cast<LPARAM>(state))!=0,
+        "local write exposes its retained history counts");
+    return {state[0],state[1]};
+}
+
+struct WriteFailureState {
+    decltype(ce::Source::apply) apply;
+    int kind=0,failures=0;
+    bool armed=false;
+};
+struct WriteFailureProvider {
+    WriteFailureState* state;
+    explicit WriteFailureProvider(WriteFailureState& value):state(&value){}
+    WriteFailureProvider(const WriteFailureProvider& other):state(other.state){
+        if(state->armed&&state->kind==0){state->armed=false;++state->failures;throw std::bad_alloc();}
+    }
+    bool operator()(const std::vector<ce::Channel>& channels,std::wstring& error)const{
+        if(!state->armed)return state->apply(channels,error);
+        state->armed=false;++state->failures;
+        if(state->kind==1){error=L"write rejected";return false;}
+        if(state->kind==2)throw std::runtime_error("write failed");
+        throw std::bad_alloc();
+    }
+};
+
+void WriteFailureKeepsLocalHistory(){
+    for(int route=0;route!=3;++route)for(int kind=0;kind!=4;++kind){
+        WriteLifetimeFixture fixture(route);WriteFailureState state;state.kind=kind;
+        auto session=fixture.Session();state.apply=session.sources[0].apply;
+        session.sources[0].apply=WriteFailureProvider(state);
+        HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
+        Check(IsWindow(window),"failed local write fixture opens");fixture.Seed(window);
+        // New authoring failure must preserve an already available redo too.
+        if(route==0){Click(window,kIdDeleteKey);Click(window,kIdUndo);}
+        const auto before=fixture.local.data;const auto history=LocalWriteHistory(window);
+        const int applies=fixture.local.applyCalls;state.armed=true;
+        Click(window,fixture.Command());
+        Check(state.failures==1&&fixture.local.applyCalls==applies&&
+            SameWritePayload(fixture.local.data,before)&&LocalWriteHistory(window)==history,
+            "copy allocation failure, rejection and exceptions keep both local history stacks and host data");
+        Check(KeyCount(window)==int(before[0].track.keys.size())&&
+            IsWindowEnabled(GetDlgItem(window,fixture.Command())),
+            "failed local replay restores visible channels and keeps the original operation retryable");
+        Click(window,fixture.Command());
+        Check(fixture.local.applyCalls==applies+1&&KeyCount(window)==(route==1?2:1),
+            "retry publishes the retained local commit, undo or redo exactly once");
+        const auto after=LocalWriteHistory(window);
+        Check(after[0]==(route==1?history[0]-1:history[0]+1)&&
+            after[1]==(route==0?0:route==1?history[1]+1:history[1]-1),
+            "a successful retry transfers only its own retained node");
+        ce::CloseOwned(nullptr);
+    }
+    Note("local history survives provider-copy allocation failure, rejection and callback exceptions");
+}
+
+void WriteCanonicalFailureKeepsPublication(){
+    for(int route=0;route!=3;++route){
+        WriteLifetimeFixture fixture(route);bool armed=false;
+        auto session=fixture.Session();const auto apply=session.sources[0].apply;
+        session.sources[0].apply=[&,apply](const auto& next,auto& error){
+            const bool accepted=apply(next,error);
+            if(armed&&accepted)fixture.local.failRead=true;
+            return accepted;
+        };
+        HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
+        Check(IsWindow(window),"canonical failure fixture opens");fixture.Seed(window);
+        const auto history=LocalWriteHistory(window);const int applies=fixture.local.applyCalls;
+        armed=true;Click(window,fixture.Command());
+        const auto accepted=LocalWriteHistory(window);
+        Check(fixture.local.applyCalls==applies+1&&KeyCount(window)==(route==1?2:1)&&
+            !IsWindowEnabled(GetDlgItem(window,kIdAddKey)),
+            "post-commit read failure preserves the accepted fallback and suspends further authoring");
+        Check(accepted[0]==(route==1?history[0]-1:history[0]+1)&&
+            accepted[1]==(route==0?0:route==1?history[1]+1:history[1]-1),
+            "accepted local history advances once before canonical read failure");
+        armed=false;fixture.local.failRead=false;
+        ce::NotifySourceChanged(nullptr,"source");SendMessageW(window,WM_APP+401,0,0);
+        Check(fixture.local.applyCalls==applies+1&&LocalWriteHistory(window)==accepted&&
+            IsWindowEnabled(GetDlgItem(window,kIdAddKey)),
+            "canonical retry recovers the accepted state without applying or transferring history again");
+        Click(window,route==1?kIdRedo:kIdUndo);
+        Check(fixture.local.applyCalls==applies+2,
+            "the opposite local traversal remains usable after canonical recovery");
+        ce::CloseOwned(nullptr);
+    }
+    Note("accepted local publications retain their fallback and history through canonical read failure");
+}
+
+void WriteAcceptedAllocationFailure(){
+    for(int route=0;route!=3;++route){
+        WriteLifetimeFixture fixture(route);bool armed=false;
+        auto session=fixture.Session();const auto apply=session.sources[0].apply;
+        session.sources[0].apply=[&,apply](const auto& next,auto& error){
+            const bool accepted=apply(next,error);
+            if(armed&&accepted)g_curveFailNextAllocation=true;
+            return accepted;
+        };
+        HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
+        Check(IsWindow(window),"post-acceptance allocator fixture opens");fixture.Seed(window);
+        const auto history=LocalWriteHistory(window);const int applies=fixture.local.applyCalls;
+        const unsigned failures=g_curveAllocationFailures;armed=true;Click(window,fixture.Command());
+        Check(!g_curveFailNextAllocation&&g_curveAllocationFailures==failures+1,
+            "the first actual C++ allocation after host acceptance is injected once");
+        const auto accepted=LocalWriteHistory(window);
+        Check(fixture.local.applyCalls==applies+1&&KeyCount(window)==(route==1?2:1)&&
+            accepted[0]==(route==1?history[0]-1:history[0]+1)&&
+            accepted[1]==(route==0?0:route==1?history[1]+1:history[1]-1),
+            "allocation failure after acceptance cannot lose the completed edit or its transferred history node");
+        armed=false;ce::NotifySourceChanged(nullptr,"source");SendMessageW(window,WM_APP+401,0,0);
+        Check(fixture.local.applyCalls==applies+1&&LocalWriteHistory(window)==accepted,
+            "recovering from post-acceptance allocation failure never republishes or duplicates history");
+        Click(window,route==1?kIdRedo:kIdUndo);
+        Check(fixture.local.applyCalls==applies+2,
+            "post-allocation-failure history still supports its opposite traversal");
+        ce::CloseOwned(nullptr);
+    }
+    Note("real allocation failure after an accepted write cannot drop retained local history");
+}
+
+struct NestedWriteState {
+    decltype(ce::Source::apply) apply;
+    std::function<void()> pump;
+    int phase=0,pumps=0;
+    bool armed=false,written=false;
+    void Pump(){armed=false;++pumps;pump();}
+};
+struct NestedWriteProvider {
+    NestedWriteState* state;
+    mutable bool invoked=false;
+    explicit NestedWriteProvider(NestedWriteState& value):state(&value){}
+    NestedWriteProvider(const NestedWriteProvider& other):state(other.state){
+        if(state->armed&&state->phase==1)state->Pump();
+    }
+    ~NestedWriteProvider(){if(invoked&&state->armed&&state->phase==3)state->Pump();}
+    bool operator()(const std::vector<ce::Channel>& next,std::wstring& error)const{
+        invoked=true;
+        if(state->armed&&state->phase==2)state->Pump();
+        const bool result=state->apply(next,error);if(result)state->written=true;return result;
+    }
+};
+
+void WriteRejectsNestedAuthoring(){
+    for(int route=0;route!=3;++route)for(int phase=0;phase!=5;++phase){
+        WriteLifetimeFixture fixture(route);NestedWriteState state;state.phase=phase;
+        HWND window=nullptr;bool pumping=false;int nestedSelectionWrites=0;
+        auto session=fixture.Session();state.apply=session.sources[0].apply;
+        session.sources[0].apply=NestedWriteProvider(state);
+        const auto read=session.sources[0].read;
+        session.sources[0].read=[&,read](auto& next,auto& error){
+            const bool result=read(next,error);
+            if(state.armed&&(phase==0||(phase==4&&state.written)))state.Pump();
+            return result;
+        };
+        session.sources[0].writeKeySelection=[&](const auto&,const auto&){if(pumping)++nestedSelectionWrites;};
+        state.pump=[&]{
+            pumping=true;const int applies=fixture.local.applyCalls,reads=fixture.local.readCalls;
+            for(int id:{kIdDeleteKey,kIdAddKey,kIdUndo,kIdRedo,kIdApplyKey})Click(window,id);
+            HWND canvas=GetDlgItem(window,kIdCanvas),panel=GetDlgItem(window,kIdMmdPanel);
+            for(UINT message:{WM_LBUTTONDOWN,WM_MOUSEMOVE,WM_LBUTTONUP,WM_LBUTTONDBLCLK})
+                SendMessageW(canvas,message,MK_LBUTTON,MAKELPARAM(80,80));
+            for(UINT message:{WM_LBUTTONDOWN,WM_MOUSEMOVE,WM_LBUTTONUP})
+                SendMessageW(panel,message,MK_LBUTTON,MAKELPARAM(40,40));
+            SendMessageW(GetDlgItem(window,kIdFrameEdit),WM_KEYDOWN,VK_RETURN,0);
+            SendMessageW(GetDlgItem(window,kIdChannelList),WM_KEYDOWN,VK_SPACE,0);
+            ce::NotifySourceChanged(nullptr,"source");SendMessageW(window,WM_APP+401,0,0);
+            Check(fixture.local.applyCalls==applies&&fixture.local.readCalls==reads&&nestedSelectionWrites==0,
+                "busy copy, write, release and canonical read reject nested commands, drags and selection publication");
+            pumping=false;
+        };
+        window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
+        Check(IsWindow(window),"same-session nested authoring fixture opens");fixture.Seed(window);
+        const int applies=fixture.local.applyCalls;state.written=false;state.armed=true;
+        Click(window,fixture.Command());
+        Check(state.pumps==1&&fixture.local.applyCalls==applies+1&&KeyCount(window)==(route==1?2:1),
+            "one local commit or traversal survives nested UI input with exactly one publication");
+        SendMessageW(window,WM_APP+401,0,0);
+        Check(fixture.local.applyCalls==applies+1&&IsWindowEnabled(GetDlgItem(window,kIdAddKey)),
+            "deferred source notification reads the completed result without another write");
+        ce::CloseOwned(nullptr);
+    }
+    Note("local preflight, provider copy, write, final release and readback reject recursive authoring");
+}
+} // namespace
+
 int main(int argc,char** argv) {
+    if(argc>1&&std::string(argv[1])=="--write-lifetime"){
+        WriteCallbackLifetime();WritePostCommitReadRetirement();WriteFailureKeepsLocalHistory();
+        WriteCanonicalFailureKeepsPublication();WriteAcceptedAllocationFailure();
+        WriteRejectsNestedAuthoring();ExternalHistoryRefreshFailures();
+        std::printf("curve write lifetime: %d checks\n",g_checks);return 0;
+    }
     if(argc>1&&std::string(argv[1])=="--source-lifetime"){
         SourceCallbackLifetime();SourceCallbackFinalRelease();OriginalSessionFinalRelease();
         ProviderCopyRetirement();SourceLanguageAndOpenFailures();
@@ -3387,6 +3802,8 @@ int main(int argc,char** argv) {
     MotionCallbackLifetime();
     SourceCallbackLifetime();SourceCallbackFinalRelease();OriginalSessionFinalRelease();
     ProviderCopyRetirement();SourceLanguageAndOpenFailures();
+    WriteCallbackLifetime();WritePostCommitReadRetirement();WriteFailureKeepsLocalHistory();
+    WriteCanonicalFailureKeepsPublication();WriteAcceptedAllocationFailure();WriteRejectsNestedAuthoring();
     BakeSelectedChannels();
     NativeSubdivisionRoute();NativeSampleBake();
     DuplicateFrameSelectsExisting();

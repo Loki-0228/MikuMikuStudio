@@ -650,8 +650,10 @@ struct SourceState {
     std::vector<Channel> channels;
     std::size_t active = 0;
     std::set<std::size_t> selection;
-    std::vector<Snapshot> undo;
-    std::vector<Snapshot> redo;
+    // Keep history payloads at stable addresses. In particular MSVC's set move
+    // constructor can allocate a sentinel, while moving a node owner cannot.
+    std::vector<std::unique_ptr<Snapshot>> undo;
+    std::vector<std::unique_ptr<Snapshot>> redo;
     std::wstring status;
     bool statusError = false;
     HistoryState externalState{};
@@ -824,8 +826,9 @@ public:
             !session_.owner_before(editor_->motionSession)&&!editor_->motionSession.owner_before(session_);
     }
     void RequireSession()const {if(!CurrentSession())throw RetiredContinuation{};}
+    bool CurrentSource()const noexcept{return CurrentSession()&&source_==editor_->sourceIndex;}
     void RequireCurrent()const {
-        if(!CurrentSession()||source_!=editor_->sourceIndex)throw RetiredContinuation{};
+        if(!CurrentSource())throw RetiredContinuation{};
     }
 };
 
@@ -893,6 +896,7 @@ struct ExternalOperation {
 Source& CurrentSource(Editor& editor);
 bool ReadSource(Editor& editor,std::vector<Channel>& channels,std::wstring& error) {
     const auto language=editor.session->language;
+    ExternalOperation callbackGuard(editor,&Editor::externalCallbackActive);
     try {
         const auto& callback=CurrentSource(editor).read;
         return callback&&InvokeProvider(editor,callback,channels,error);
@@ -986,7 +990,7 @@ void UpdateKeyFields(Editor &editor);
 void UpdateBakeFields(Editor &editor);
 void UpdateEnabledState(Editor &editor);
 bool PullKeySelection(Editor &editor, bool publishUi = true);
-void PublishKeySelection(Editor &editor);
+void PublishKeySelection(Editor &editor,bool ownedOperation=false);
 
 // ---------------------------------------------------------------------------
 // Hover help.  The hint line is a control of its own above the status line:
@@ -1234,7 +1238,7 @@ int HandleAtPoint(Editor &editor, POINT point, double radius, bool &outSide) {
 // Editing transactions.
 // ---------------------------------------------------------------------------
 bool ReadRegisteredSource(Editor &editor, bool publishUi = true);
-bool RefreshExternalSource(Editor& editor, bool report = true);
+bool RefreshExternalSource(Editor& editor, bool report = true, bool ownedOperation = false);
 void PollExternalHistory(Editor& editor);
 
 bool QueryExternalHistory(Editor& editor, bool report) {
@@ -1254,9 +1258,9 @@ bool QueryExternalHistory(Editor& editor, bool report) {
 }
 
 bool CheckSourceCurrent(Editor &editor) {
+    if(editor.externalOperationActive||editor.externalCallbackActive)return false;
     Source &source = CurrentSource(editor);
     if(source.externalHistory){
-        if(editor.externalOperationActive||editor.externalCallbackActive)return false;
         if(!QueryExternalHistory(editor,true)){UpdateEnabledState(editor);return false;}
         if(CurrentState(editor).externalReadPending){
             RefreshExternalSource(editor);return false;
@@ -1266,10 +1270,7 @@ bool CheckSourceCurrent(Editor &editor) {
     std::wstring error;
     bool accepted=false;
     try{
-        if(source.externalHistory){
-            ExternalOperation callback(editor,&Editor::externalCallbackActive);
-            accepted=ReadSource(editor,latest,error);
-        }else accepted=ReadSource(editor,latest,error);
+        accepted=ReadSource(editor,latest,error);
     }catch(const RetiredContinuation&){throw;}
     catch(...){error.clear();}
     if (!accepted) {
@@ -1290,31 +1291,123 @@ bool CheckSourceCurrent(Editor &editor) {
 }
 
 void AdoptWrittenChannels(Editor &editor, std::vector<Channel> channels) {
+    EditorLease continuation(editor);
     SourceState &state = CurrentState(editor);
-    std::vector<Channel> canonical;
-    std::wstring error;
-    if (ReadSource(editor,canonical,error)) {
-        std::map<std::string, bool> display;
-        for (const auto &channel : channels) display[channel.id] = channel.selected;
-        for (auto &channel : canonical) {
-            const auto found = display.find(channel.id);
-            if (found != display.end()) channel.selected = found->second;
-        }
-        channels = std::move(canonical);
-        state.valid = true;
-        state.reason.clear();
-    } else {
-        state.valid = false;
-        state.reason = std::wstring(T(editor.session->language, StrReadFailed)) + error;
+    {
+        auto retired=std::move(state.channels);
+        state.channels=std::move(channels);
     }
-    // Native controls can be quantized on write. Keep the accepted data as
-    // the next comparison baseline, so our own write is not an external edit.
-    state.channels = std::move(channels);
+    continuation.RequireCurrent();
+    // Publication already succeeded. Keep its detached channels as a fallback
+    // before any canonical read or display-map allocation can fail.
+    state.valid=false;
+    try {
+        std::vector<Channel> canonical;
+        std::wstring error;
+        if (ReadSource(editor,canonical,error)) {
+            std::map<std::string, bool> display;
+            for (const auto &channel : state.channels) display[channel.id] = channel.selected;
+            for (auto &channel : canonical) {
+                const auto found = display.find(channel.id);
+                if (found != display.end()) channel.selected = found->second;
+            }
+            {
+                auto retired=std::move(state.channels);
+                state.channels=std::move(canonical);
+            }
+            continuation.RequireCurrent();
+            state.valid=true;state.reason.clear();
+        }else{
+            state.reason=std::wstring(T(editor.session->language,StrReadFailed))+error;
+        }
+    }catch(const RetiredContinuation&){throw;}
+    catch(...){
+        continuation.RequireCurrent();
+        state.valid=false;state.reason.clear();
+    }
+}
+
+// All payloads move without invoking Channel.sample's user copy constructor.
+// Keep a moved source slot until acceptance, so failure restores without an
+// allocation and never puts an old node into a replacement Session.
+using SnapshotOwner=std::unique_ptr<Snapshot>;
+static_assert(std::is_nothrow_move_constructible_v<SnapshotOwner>);
+static_assert(std::is_nothrow_move_assignable_v<SnapshotOwner>);
+static_assert(noexcept(std::declval<Snapshot&>().channels.swap(std::declval<Snapshot&>().channels)));
+static_assert(noexcept(std::declval<Snapshot&>().selection.swap(std::declval<Snapshot&>().selection)));
+class LocalWriteRollback {
+    Editor& editor_;
+    EditorLease lease_;
+    Snapshot& before_;
+    SnapshotOwner* requested_;
+    std::vector<SnapshotOwner>* source_;
+    bool active_=true,valid_;
+public:
+    LocalWriteRollback(Editor& editor,Snapshot& before,SnapshotOwner* requested=nullptr,
+        std::vector<SnapshotOwner>* source=nullptr) noexcept : editor_(editor),lease_(editor),before_(before),
+        requested_(requested),source_(source),valid_(CurrentState(editor).valid) {}
+    ~LocalWriteRollback(){Restore();}
+    void Restore()noexcept{
+        if(!active_)return;
+        active_=false;
+        if(!lease_.CurrentSource())return;
+        auto& state=CurrentState(editor_);
+        state.channels.swap(before_.channels);
+        state.active=before_.active;state.selection.swap(before_.selection);state.valid=valid_;
+        if(source_&&requested_)(*source_).back()=std::move(*requested_);
+    }
+    void Accepted()noexcept{active_=false;}
+    void RequireCurrent()const{lease_.RequireCurrent();}
+};
+
+bool CommitLocalChannels(Editor& editor,std::vector<Channel> next,const std::wstring& success){
+    auto& state=CurrentState(editor);
+    auto previous=std::make_unique<Snapshot>();previous->active=state.active;previous->selection=state.selection;
+    state.undo.reserve(state.undo.size()+1);
+    previous->channels.swap(state.channels);
+    LocalWriteRollback rollback(editor,*previous);
+    bool published=false;
+    try{
+        std::wstring error;
+        const bool accepted=InvokeProvider(editor,CurrentSource(editor).apply,std::as_const(next),error);
+        if(!accepted){
+            rollback.Restore();rollback.RequireCurrent();
+            RefreshEditorsUi(editor);
+            SetStatus(editor,std::wstring(T(editor.session->language,StrApplyRejected))+error,true);
+            return false;
+        }
+        published=true;rollback.Accepted();
+        {
+            auto retiredRedo=std::move(state.redo);
+            SnapshotOwner retiredOldest;
+            state.undo.push_back(std::move(previous));
+            if(state.undo.size()>static_cast<std::size_t>(kUndoDepth)){
+                retiredOldest=std::move(state.undo.front());
+                state.undo.erase(state.undo.begin());
+            }
+            AdoptWrittenChannels(editor,std::move(next));
+        }
+        rollback.RequireCurrent();
+        ClampState(state);
+        if(state.valid)PublishKeySelection(editor,true);
+        RefreshEditorsUi(editor);
+        SetStatus(editor,state.valid?success:state.reason,!state.valid);
+        return true;
+    }catch(const RetiredContinuation&){throw;}
+    catch(...){
+        if(!published)rollback.Restore();
+        rollback.RequireCurrent();
+        if(published){state.valid=false;state.reason.clear();}
+        RefreshEditorsUi(editor);
+        SetStatus(editor,T(editor.session->language,StrHistoryFailed),true);
+        return published;
+    }
 }
 
 bool CommitChannels(Editor &editor, std::vector<Channel> next, const std::wstring &success,
                     bool linkMmdHandles = false) {
     if (!CheckSourceCurrent(editor)) return false;
+    ExternalOperation operation(editor,&Editor::externalOperationActive);
     SourceState &state = CurrentState(editor);
     Source &source = CurrentSource(editor);
     // Value-curve tangents are governed by Free/Aligned, not the legacy
@@ -1396,10 +1489,13 @@ bool CommitChannels(Editor &editor, std::vector<Channel> next, const std::wstrin
     if(source.externalHistory&&SameCurveData(state.channels,next)){
         SetStatus(editor,success,false);return true;
     }
+    if(!source.externalHistory)return CommitLocalChannels(editor,std::move(next),success);
     std::wstring error;
-    ExternalOperation finish(editor,&Editor::externalOperationActive,source.externalHistory);
     bool accepted=false;
-    try{accepted=source.apply(next,error);}catch(const RetiredContinuation&){throw;}
+    // next is owned by this call, so a provider can retire the source without
+    // invalidating its input. Retirement unwinds before local history or the
+    // canonical read can act on an already-published host edit.
+    try{accepted=InvokeProvider(editor,source.apply,std::as_const(next),error);}catch(const RetiredContinuation&){throw;}
     catch(...){error=T(editor.session->language,StrHistoryFailed);}
     if (!accepted) {
         std::wstring message = T(editor.session->language, StrApplyRejected);
@@ -1408,21 +1504,12 @@ bool CommitChannels(Editor &editor, std::vector<Channel> next, const std::wstrin
         SetStatus(editor, message, true);
         return false;
     }
-    if(!source.externalHistory){
-        state.undo.push_back(Snapshot{state.channels, state.active, state.selection});
-        if (state.undo.size() > static_cast<std::size_t>(kUndoDepth)) state.undo.erase(state.undo.begin());
-        state.redo.clear();
-        AdoptWrittenChannels(editor, std::move(next));
-    }else{
-        // A successful host write is already committed. Canonical refresh is
-        // read-only and may be retried; never retain a second undo snapshot.
-        state.valid=false;state.externalReadPending=true;
-        editor.externalOperationActive=false;
-        RefreshExternalSource(editor);
-        editor.externalOperationActive=true;
-    }
+    // A successful host write is already committed. Canonical refresh is
+    // read-only and may be retried; never retain a second undo snapshot.
+    state.valid=false;state.externalReadPending=true;
+    RefreshExternalSource(editor,true,true);
     ClampState(state);
-    if(state.valid)PublishKeySelection(editor);
+    if(state.valid)PublishKeySelection(editor,true);
     RefreshEditorsUi(editor);
     SetStatus(editor, state.valid ? success : state.reason, !state.valid);
     return true;
@@ -1430,28 +1517,10 @@ bool CommitChannels(Editor &editor, std::vector<Channel> next, const std::wstrin
 
 std::vector<Channel> CopyChannels(Editor &editor) { return CurrentState(editor).channels; }
 
-bool ApplySnapshot(Editor &editor, Snapshot snapshot, Snapshot &previous) {
-    if (!CheckSourceCurrent(editor)) return false;
-    SourceState &state = CurrentState(editor);
-    Source &source = CurrentSource(editor);
-    if (!source.apply) {
-        SetStatus(editor, T(editor.session->language, StrNoApply), true);
-        return false;
-    }
-    previous = Snapshot{state.channels, state.active, state.selection};
-    std::wstring error;
-    if (!source.apply(snapshot.channels, error)) {
-        std::wstring message = T(editor.session->language, StrApplyRejected);
-        if (!error.empty()) message += error;
-        SetStatus(editor, message, true);
-        return false;
-    }
-    AdoptWrittenChannels(editor, std::move(snapshot.channels));
-    state.active = snapshot.active;
-    state.selection = snapshot.selection;
-    ClampState(state);
-    PublishKeySelection(editor);
-    return true;
+bool ApplySnapshot(Editor& editor,const Snapshot& snapshot,std::wstring& error){
+    // snapshot is privately moved out of its retained stack slot. Its channels
+    // remain independent of both the live source and a replacement Session.
+    return InvokeProvider(editor,CurrentSource(editor).apply,snapshot.channels,error);
 }
 
 void TraverseExternalHistory(Editor& editor,bool redo){
@@ -1462,11 +1531,11 @@ void TraverseExternalHistory(Editor& editor,bool redo){
     if(!(redo?state.externalState.canRedo:state.externalState.canUndo)){
         SetStatus(editor,T(editor.session->language,redo?StrNothingRedo:StrNothingUndo),true);UpdateEnabledState(editor);return;
     }
+    ExternalOperation operation(editor,&Editor::externalOperationActive);
     bool committed=false;std::wstring error;
     {
-        ExternalOperation operation(editor,&Editor::externalOperationActive);
         ExternalOperation callback(editor,&Editor::externalCallbackActive);
-        try{committed=editor.session->history.traverse(redo,error);}catch(const RetiredContinuation&){throw;}
+        try{committed=InvokeProvider(editor,editor.session->history.traverse,redo,error);}catch(const RetiredContinuation&){throw;}
         catch(...){error=T(editor.session->language,StrHistoryFailed);}
     }
     if(!committed){
@@ -1476,40 +1545,55 @@ void TraverseExternalHistory(Editor& editor,bool redo){
     // The operation has succeeded even if the following read fails. Disable
     // further edits until a timer/Refresh canonical read succeeds.
     state.valid=false;state.externalReadPending=true;
-    if(RefreshExternalSource(editor))SetStatus(editor,T(editor.session->language,redo?StrRedone:StrUndone),false);
+    if(RefreshExternalSource(editor,true,true))SetStatus(editor,T(editor.session->language,redo?StrRedone:StrUndone),false);
+}
+void TraverseLocalHistory(Editor& editor,bool redo){
+    if (!CheckSourceCurrent(editor)) return;
+    ExternalOperation operation(editor,&Editor::externalOperationActive);
+    auto& state=CurrentState(editor);
+    auto& source=redo?state.redo:state.undo;
+    auto& destination=redo?state.undo:state.redo;
+    if(source.empty()||!CurrentSource(editor).apply){
+        SetStatus(editor,T(editor.session->language,redo?StrNothingRedo:StrNothingUndo),true);
+        return;
+    }
+    auto previous=std::make_unique<Snapshot>();previous->active=state.active;previous->selection=state.selection;
+    destination.reserve(destination.size()+1);
+    SnapshotOwner requested=std::move(source.back()); // Leave an empty restoration slot.
+    previous->channels.swap(state.channels);
+    LocalWriteRollback rollback(editor,*previous,&requested,&source);
+    bool published=false;
+    try{
+        std::wstring error;
+        if(!ApplySnapshot(editor,*requested,error)){
+            rollback.Restore();rollback.RequireCurrent();
+            RefreshEditorsUi(editor);
+            SetStatus(editor,std::wstring(T(editor.session->language,StrApplyRejected))+error,true);return;
+        }
+        published=true;rollback.Accepted();
+        source.pop_back();destination.push_back(std::move(previous));
+        state.active=requested->active;state.selection.swap(requested->selection);
+        AdoptWrittenChannels(editor,std::move(requested->channels));
+        rollback.RequireCurrent();ClampState(state);
+        if(state.valid)PublishKeySelection(editor,true);
+        RefreshEditorsUi(editor);
+        SetStatus(editor,state.valid?T(editor.session->language,redo?StrRedone:StrUndone):state.reason,!state.valid);
+    }catch(const RetiredContinuation&){throw;}
+    catch(...){
+        if(!published)rollback.Restore();
+        rollback.RequireCurrent();
+        if(published){state.valid=false;state.reason.clear();}
+        RefreshEditorsUi(editor);SetStatus(editor,T(editor.session->language,StrHistoryFailed),true);
+    }
 }
 void UndoOnce(Editor &editor) {
     if(CurrentSource(editor).externalHistory){TraverseExternalHistory(editor,false);return;}
-    if (!CheckSourceCurrent(editor)) return;
-    SourceState &state = CurrentState(editor);
-    if (state.undo.empty()) {
-        SetStatus(editor, T(editor.session->language, StrNothingUndo), true);
-        return;
-    }
-    Snapshot snapshot = std::move(state.undo.back());
-    state.undo.pop_back();
-    Snapshot previous;
-    if (!ApplySnapshot(editor, std::move(snapshot), previous)) return;
-    state.redo.push_back(std::move(previous));
-    RefreshEditorsUi(editor);
-    SetStatus(editor, T(editor.session->language, StrUndone), false);
+    TraverseLocalHistory(editor,false);
 }
 
 void RedoOnce(Editor &editor) {
     if(CurrentSource(editor).externalHistory){TraverseExternalHistory(editor,true);return;}
-    if (!CheckSourceCurrent(editor)) return;
-    SourceState &state = CurrentState(editor);
-    if (state.redo.empty()) {
-        SetStatus(editor, T(editor.session->language, StrNothingRedo), true);
-        return;
-    }
-    Snapshot snapshot = std::move(state.redo.back());
-    state.redo.pop_back();
-    Snapshot previous;
-    if (!ApplySnapshot(editor, std::move(snapshot), previous)) return;
-    state.undo.push_back(std::move(previous));
-    RefreshEditorsUi(editor);
-    SetStatus(editor, T(editor.session->language, StrRedone), false);
+    TraverseLocalHistory(editor,true);
 }
 
 // Reads the current source.  `adopted` reports whether the freshly read data
@@ -1625,9 +1709,9 @@ bool ReadRegisteredSource(Editor &editor, bool publishUi) {
     return changed;
 }
 
-bool RefreshExternalSource(Editor& editor,bool report){
+bool RefreshExternalSource(Editor& editor,bool report,bool ownedOperation){
     auto& state=CurrentState(editor);
-    if(editor.externalOperationActive||editor.externalCallbackActive)return false;
+    if((editor.externalOperationActive&&!ownedOperation)||editor.externalCallbackActive)return false;
     if(!QueryExternalHistory(editor,report)){UpdateEnabledState(editor);return false;}
     const auto revision=state.externalState.revision;
     bool changed=false;
@@ -3161,7 +3245,8 @@ void UpdatePlayheadTimer(Editor &editor) {
     }
 }
 
-void PublishKeySelection(Editor& editor){
+void PublishKeySelection(Editor& editor,bool ownedOperation){
+    if(!ownedOperation&&(editor.externalOperationActive||editor.externalCallbackActive))return;
     auto* channel=ActiveChannel(editor);auto& source=CurrentSource(editor);
     if(!channel||!source.writeKeySelection)return;
     std::vector<int> frames;
@@ -3228,6 +3313,7 @@ void SeekAdjacentKey(Editor& editor,bool next){
     OnPlayheadTimer(editor);
 }
 void OnPlayheadTimer(Editor &editor) {
+    if(editor.externalOperationActive||editor.externalCallbackActive)return;
     // A hidden editor does no work at all: no frame query, no repaint.
     if (!editor.window || IsWindowVisible(editor.window) == FALSE) return;
     PollExternalHistory(editor);
@@ -4090,6 +4176,7 @@ void CanvasMouseDown(Editor &editor, UINT flags, POINT point) {
 }
 
 void CanvasMouseMove(Editor &editor, POINT point) {
+    if(editor.externalOperationActive||editor.externalCallbackActive)return;
     if(editor.drag==Drag::Seek){SeekAtPoint(editor,point);return;}
     if (editor.drag == Drag::None) {
         const int hit = KeyAtPoint(editor, point, kHandleHitRadius * editor.dpi / 96.0 + 2.0);
@@ -4252,6 +4339,7 @@ void CanvasMouseMove(Editor &editor, POINT point) {
 }
 
 void CanvasMouseUp(Editor &editor, POINT point) {
+    if(editor.externalOperationActive||editor.externalCallbackActive)return;
     const Drag drag = editor.drag;
     // A native host rejects publications while a mouse gesture owns capture.
     // Finish ownership first, but keep its detached preview/base/deltas until
@@ -4649,6 +4737,10 @@ bool ChannelListKey(Editor &editor, HWND tree, WPARAM key) {
 LRESULT CALLBACK ChannelListSubclassProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
     EditorLease lease(EditorForChild(hwnd));
     try {
+    if(auto* busy=EditorForChild(hwnd))
+        if((busy->externalOperationActive||busy->externalCallbackActive)&&
+            (message==WM_KEYDOWN||message==WM_SYSKEYDOWN||message==WM_LBUTTONDOWN||
+             message==WM_LBUTTONUP||message==WM_LBUTTONDBLCLK))return 0;
     WNDPROC previous=PreviousSubclassProc(hwnd);
     LRESULT shared=0;
     if(HandleChildMessage(hwnd,message,wparam,lparam,shared))return shared;
@@ -4756,6 +4848,7 @@ void MmdMouseDown(Editor &editor, POINT point) {
 }
 
 void MmdMouseMove(Editor &editor, POINT point) {
+    if(editor.externalOperationActive||editor.externalCallbackActive)return;
     if (editor.mmdDragHandle < 0 || !editor.mmdEnabled) return;
     const RECT square = MmdSquare(editor);
     const int side = std::max(1, static_cast<int>(square.right - square.left));
@@ -4774,6 +4867,7 @@ void MmdMouseMove(Editor &editor, POINT point) {
 }
 
 void ApplyMmdCoordinateFields(Editor &editor) {
+    if(editor.externalOperationActive||editor.externalCallbackActive)return;
     SourceState &state=CurrentState(editor);
     if(!editor.mmdEnabled || !state.valid || !CurrentSource(editor).apply ||
        editor.drag!=Drag::None || editor.mmdDragHandle>=0)return;
@@ -4809,6 +4903,7 @@ void ApplyMmdCoordinateFields(Editor &editor) {
 }
 
 void MmdMouseUp(Editor &editor) {
+    if(editor.externalOperationActive||editor.externalCallbackActive)return;
     if (editor.mmdDragHandle < 0) return;
     const int handle = editor.mmdDragHandle;
     editor.mmdDragHandle = -1;
@@ -5427,6 +5522,7 @@ void BufferedPaint(Editor& editor,HWND hwnd,HDC dc,const RECT& dirty,bool miniat
     BitBlt(dc,dirty.left,dirty.top,dirty.right-dirty.left,dirty.bottom-dirty.top,surface.dc,dirty.left,dirty.top,SRCCOPY);
 }
 void InsertCurveKeyAtPoint(Editor& editor,POINT point,UINT flags) {
+    if(editor.externalOperationActive||editor.externalCallbackActive)return;
     CanvasMetrics(editor);
     if(!PtInRect(&editor.plot,point) || editor.tool==1 ||
        (flags&(MK_CONTROL|MK_SHIFT)) || (GetKeyState(VK_SPACE)&0x8000) || (GetKeyState(VK_MENU)&0x8000))return;
@@ -6011,6 +6107,7 @@ LRESULT CALLBACK EditorProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpara
         return 0;
     }
     case WM_COMMAND:
+        if(editor->externalOperationActive||editor->externalCallbackActive)return 0;
         if(LOWORD(wparam)==1090){editor->advancedExpanded=!editor->advancedExpanded;LayoutEditor(*editor);return 0;}
         HandleCommand(*editor, wparam);
         if(LOWORD(wparam)>=kIdAddKey&&LOWORD(wparam)<=kIdRedo)PublishKeySelection(*editor);
@@ -6257,7 +6354,7 @@ void *Open(void *owner, Session session, bool visible) {
     editor->session = std::move(nextSession);
     editor->sourceIndex =
         editor->session->initialSource < editor->session->sources.size() ? editor->session->initialSource : 0;
-    editor->states.assign(editor->session->sources.size(), SourceState());
+    editor->states=std::vector<SourceState>(editor->session->sources.size());
     {
         std::lock_guard<std::mutex> guard(g_registryMutex);
         g_editors.push_back(editor);
