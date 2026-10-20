@@ -53,7 +53,7 @@ cmake --build build/hello-menu --config Release
 | `mms.storage` 1.0 | 插件工程数据、两阶段加载、只读保存数据租约；PMM 与扩展文件成对保存和中断恢复。提供者名为 `mms.serializer`。 |
 | 其他服务 | 尚未接入，`queryService` 返回 NOT_FOUND。 |
 
-可写属性和工程编辑命令等待编辑事务服务，当前返回 NOT_READY。普通宿主查询 `mms.edit` 仍返回 NOT_FOUND。DOCK 返回 UNSUPPORTED。INPUT、侧栏、属性区、时间线和状态栏挂载点尚未开放。布局撤销历史尚未接入。未支持的操作不会返回成功。
+可写属性的[暂存及事务桥](property-stage.md)已在受控编辑宿主中实现，仍使用原 `mms.ui` 表及属性身份。普通宿主查询 `mms.edit` 返回 NOT_FOUND，属性暂存返回 NOT_READY。DOCK 返回 UNSUPPORTED。INPUT、侧栏、属性区、时间线和状态栏挂载点尚未开放。布局撤销历史尚未接入。未支持的操作不会返回成功。
 
 布局事务的用户覆盖由宿主保存，重启或 EXE 改名后按稳定 ID 恢复。缺失插件的配置继续保留。保存位置、默认值合并和失败行为见[界面布局保存](ui-preferences.md)。
 

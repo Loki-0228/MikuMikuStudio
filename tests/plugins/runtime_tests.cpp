@@ -34,6 +34,7 @@ static void Write(const fs::path& path, const std::string& bytes) { fs::create_d
 #include "ui_preferences_file_checks.inc"
 #include "storage_checks.inc"
 #include "edit_checks.inc"
+#include "ui_property_stage_checks.inc"
 #include "shared_history_checks.inc"
 static std::string ManifestText(std::string id = "org.example.hello", std::string entry = "hello_menu.dll") {
     return "{\"schemaVersion\":1,\"id\":\"" + id + "\",\"name\":\"测试\",\"version\":\"1.0.0\",\"kind\":\"native\",\"abi\":{\"major\":1,\"minMinor\":0},\"entry\":\"" + entry + "\",\"architecture\":\"x64\",\"minWindows\":\"6.1.7601\",\"capabilities\":[\"ui.command\"],\"requiresServices\":[{\"id\":\"mms.ui\",\"major\":1,\"minMinor\":0}],\"dependencies\":[],\"nativeDependencies\":[],\"reloadPolicy\":\"restart\"}";
@@ -352,6 +353,13 @@ static void LifecycleChecks(const fs::path& root, const fs::path& fixture) {
 int wmain(int argc, wchar_t** argv) {
     const fs::path root = fs::temp_directory_path() / (L"mms-abi-contract-" + std::to_wstring(GetCurrentProcessId()));
     try {
+        if (argc == 3 && std::wstring(argv[1]) == L"--property-stage-only") {
+            CHECK(!fs::exists(root)); fs::create_directories(root);
+            PropertyStageChecks(); UiPropertyStageChecks();
+            ManagerProviderCallbackChecks(root, fs::absolute(argv[2]));
+            ManagerPropertyStageChecks(root, fs::absolute(argv[2]));
+            std::cout << "PASS property stage checks=" << checks << "\n"; fs::remove_all(root); return 0;
+        }
         if (argc == 2 && std::wstring(argv[1]) == L"--subtree-refresh-only") {
             UiRefreshSubtreeChecks(); UiRefreshSubtreeRectChecks();
             std::cout << "PASS SUBTREE refresh checks=" << checks << "\n"; return 0;
@@ -391,7 +399,7 @@ int wmain(int argc, wchar_t** argv) {
         CHECK(argc == 4); CHECK(!fs::exists(root)); fs::create_directories(root);
         JsonChecks(); DiscoveryChecks(root); UiChecks(); UiPreferenceChecks(); UiPreferencesFileChecks(root); LayoutChecks(); TreeLayoutChecks(); LayoutServiceChecks(); OverflowValidationChecks(); OverflowMenuChecks(); UpdateChecks(); Win32HostChecks(); SurfaceChecks(); CppSdkChecks(); LoaderChecks(root, fs::absolute(argv[1]));
         LifecycleChecks(root, fs::absolute(argv[2])); TaskDispatchChecks(root, fs::absolute(argv[2]), fs::absolute(argv[3]));
-        SceneChecks(); StorageChecks(root); EditChecks(); SharedHistoryChecks(); StateContentChecks();
+        SceneChecks(); StorageChecks(root); EditChecks(); UiPropertyStageChecks(); SharedHistoryChecks(); StateContentChecks();
         UiRefreshSubtreeChecks(); UiRefreshSubtreeRectChecks();
         ManagerEditChecks(root, fs::absolute(argv[3]));
         std::cout << "PASS checks=" << checks << "\n"; fs::remove_all(root); return 0;

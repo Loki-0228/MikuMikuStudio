@@ -22,6 +22,7 @@ struct Arena {
 };
 struct CommandRecord { MmsHandle handle = 0; UiClient* owner = nullptr; std::shared_ptr<Arena> arena; MmsCommandDescV1 desc{}; };
 struct PropertyRecord { MmsHandle handle = 0; UiClient* owner = nullptr; std::shared_ptr<Arena> arena; MmsPropertyDescV1 desc{}; };
+struct PropertyStageFrame;
 struct ElementRecord {
     MmsHandle handle = 0;
     std::shared_ptr<Arena> arena;
@@ -59,6 +60,9 @@ class UiRegistry {
     uint64_t revision_ = 1, next_ = 1, generation_ = 1, nextPresentation_ = 1;
     unsigned callbackDepth_ = 0;
     UiClient* invoking_ = nullptr;
+    const PropertyStageFrame* propertyStage_ = nullptr;
+    std::function<MmsResult(UiClient&, MmsHandle, const std::shared_ptr<PropertyRecord>&,
+        MmsObjectRef, const MmsValue&)> propertyStageBridge_;
     std::function<void(UiClient&, MmsResult)> commandFinished_;
     std::map<MmsHandle, std::unique_ptr<Lease>> leases_;
     std::map<MmsHandle, std::unique_ptr<Layout>> layouts_;
@@ -99,6 +103,7 @@ class UiRegistry {
     MmsResult Snapshot(UiClient&, uint32_t, MmsUiSnapshotV1*);
     MmsResult State(UiClient&, MmsString, MmsObjectRef, MmsCommandStateV1*, MmsHandle*);
     MmsResult Read(UiClient&, MmsString, MmsObjectRef, MmsValue*, MmsHandle*);
+    MmsResult Stage(UiClient&, MmsHandle, MmsString, MmsObjectRef, const MmsValue*);
     MmsResult Begin(UiClient&, uint64_t, MmsHandle*);
     MmsResult Apply(UiClient&, MmsHandle, const MmsLayoutOpV1*);
     MmsResult Commit(UiClient&, MmsHandle);
@@ -109,6 +114,8 @@ class UiRegistry {
     std::unique_ptr<Preferences> CapturePreferences(const std::map<std::string, ElementRecord>&,
         const std::map<std::string, Json>&) const;
 public:
+    using PropertyStageBridge = std::function<MmsResult(UiClient&, MmsHandle,
+        const std::shared_ptr<PropertyRecord>&, MmsObjectRef, const MmsValue&)>;
     std::map<std::string, std::shared_ptr<CommandRecord>> commands;
     std::map<std::string, std::shared_ptr<PropertyRecord>> properties;
     std::map<std::string, ElementRecord> elements;
@@ -127,6 +134,12 @@ public:
     // DATA preparation is a read-only UI callback too. Keep the same mutation,
     // dispatch and unload gates as command/property state queries.
     MmsResult WithReadOnlyCallback(const std::function<MmsResult()>&);
+    MmsResult WithReadOnlyCallback(MmsResult (*)(void*), void*);
+    void SetPropertyStageBridge(PropertyStageBridge bridge) { propertyStageBridge_ = std::move(bridge); }
+    MmsResult WithPropertyStage(const std::shared_ptr<PropertyRecord>&, MmsHandle,
+        const std::function<MmsResult(const PropertyStageFrame&)>&);
+    bool IsPropertyStageCurrent(const PropertyStageFrame&) const noexcept;
+    bool IsPropertyCurrent(const std::string& cachedId, const PropertyRecord*, const UiClient*) const noexcept;
     // Keep the read-only callback guard through native state application.
     MmsResult WithElementState(MmsHandle, const std::function<MmsResult(const MmsCommandStateV1&)>&);
     MmsResult WithElementStateContent(const MmsUiTargetRefV1&, uint64_t providerRevision,

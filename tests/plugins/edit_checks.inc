@@ -37,19 +37,20 @@ struct EditParticipantFixture {
     SerializerFixture* state;
     int before=0,after=0,prepares=0,commits=0,cancels=0,releases=0,reads=0;
     bool failPrepare=false,failRead=false,badBytes=false,throwCommit=false,throwCancel=false;
-    std::function<void()> onCancel,onCommit;
+    std::function<void()> onCancel,onCommit,onPrepare,onRead,onRelease,onLeasedRead;
     MmsEditApiV1 api{};MmsHandle transaction=0;
     MmsTransactionParticipantV1 Api(const char* id){
         MmsTransactionParticipantV1 p{Header<MmsTransactionParticipantV1>(),this,S(id)};
         p.prepare=[](void* context)->MmsResult{auto& f=*static_cast<EditParticipantFixture*>(context);++f.prepares;
             if(f.api.prepare)CHECK(f.api.prepare(f.api.context,f.transaction)==MMS_E_BUSY);
+            if(f.onPrepare)f.onPrepare();
             return f.failPrepare?MMS_E_NOT_READY:MMS_OK;};
         p.commit=[](void* context){auto& f=*static_cast<EditParticipantFixture*>(context);++f.commits;f.state->value=f.after;if(f.onCommit)f.onCommit();if(f.throwCommit)throw std::runtime_error("nonconforming plugin");};
         p.cancel=[](void* context){auto& f=*static_cast<EditParticipantFixture*>(context);++f.cancels;if(f.onCancel)f.onCancel();if(f.throwCancel)throw std::runtime_error("nonconforming cancel");};
         p.getUndoState=[](void* context,MmsBytes* before,MmsBytes* after,uint32_t* schema,MmsHandle* lease)->MmsResult{
-            auto& f=*static_cast<EditParticipantFixture*>(context);++f.reads;if(f.failRead)return MMS_E_FAILED;
-            *before={&f.before,sizeof(int)};*after={f.badBytes?nullptr:&f.after,sizeof(int)};*schema=7;*lease=77;return MMS_OK;};
-        p.releaseUndoState=[](void* context,MmsHandle h){auto& f=*static_cast<EditParticipantFixture*>(context);CHECK(h==77);++f.releases;};return p;
+            auto& f=*static_cast<EditParticipantFixture*>(context);++f.reads;if(f.onRead)f.onRead();if(f.failRead)return MMS_E_FAILED;
+            *before={&f.before,sizeof(int)};*after={f.badBytes?nullptr:&f.after,sizeof(int)};*schema=7;*lease=77;if(f.onLeasedRead)f.onLeasedRead();return MMS_OK;};
+        p.releaseUndoState=[](void* context,MmsHandle h){auto& f=*static_cast<EditParticipantFixture*>(context);CHECK(h==77);++f.releases;if(f.onRelease)f.onRelease();};return p;
     }
 };
 static void EditLifecycleChecks(){
@@ -107,7 +108,220 @@ static void EditLifecycleChecks(){
     }
     CHECK(!host.attached && host.attaches==2 && host.detaches==2 && !host.detachedPending);
 }
+struct PropertyStageHostFixture:EditHostFixture {
+    unsigned callbacks=0,callbackDepth=0;
+    std::function<void()> onReserve;
+    explicit PropertyStageHostFixture(StorageStore& storage):EditHostFixture(storage){}
+    MmsResult WithParticipantCallback(MmsResult (*call)(void*),void* context) override {
+        CHECK(attached&&attached->InCallback());++callbacks;++callbackDepth;
+        const auto result=Boundary([&]{return call(context);});--callbackDepth;return result;
+    }
+    MmsResult Reserve(std::shared_ptr<const EditRecord> record,std::unique_ptr<EditPublication>& out) override {
+        const auto result=EditHostFixture::Reserve(std::move(record),out);if(!result&&onReserve)onReserve();return result;
+    }
+};
+struct PropertyStageCase {
+    StorageStore storage;StorageClient sa,sb;SerializerFixture stateA,stateB;
+    EditClient a,b;PropertyStageHostFixture host;EditStore store;
+    MmsEditApiV1 api,other;MmsHandle providerA=0,providerB=0;
+    PropertyStageCase():host(storage),store(host,storage){
+        sa.id="example.stage.a";sb.id="example.stage.b";storage.Api(sa);storage.Api(sb);a.id=sa.id;b.id=sb.id;
+        auto serialA=stateA.Api(),serialB=stateB.Api();
+        CHECK(storage.Register(sa,S("example.stage.a"),&serialA,sizeof(serialA),&providerA)==MMS_OK);
+        CHECK(storage.Register(sb,S("example.stage.b"),&serialB,sizeof(serialB),&providerB)==MMS_OK);
+        api=store.Api(a);other=store.Api(b);
+    }
+    MmsHandle Begin(){MmsHandle tx=0;CHECK(api.begin(api.context,S("property stage"),host.revision,&tx)==MMS_OK);return tx;}
+    void ReplaceSerializer(){auto serial=stateA.Api();CHECK(storage.Unregister(sa,providerA)==MMS_OK);
+        CHECK(storage.Register(sa,S("example.stage.a"),&serial,sizeof(serial),&providerA)==MMS_OK);}
+};
+struct PropertyRegistrationGuard:EditStageGuard {
+    const bool& current;std::function<void()> released;
+    explicit PropertyRegistrationGuard(const bool& value):current(value){}
+    ~PropertyRegistrationGuard(){if(released)released();}
+    bool IsCurrent()const noexcept override{return current;}
+};
+struct PropertyStageCapture {
+    EditStore& store;PropertyStageHostFixture& host;MmsEditApiV1 api;unsigned& released;
+    PropertyStageCapture(EditStore& value,PropertyStageHostFixture& owner,MmsEditApiV1 calls,unsigned& result):store(value),host(owner),api(calls),released(result){}
+    ~PropertyStageCapture(){released=(store.InCallback()?1u:0u)|(host.locked?2u:0u);MmsHandle output=317;
+        if(api.begin(api.context,S("capture destructor"),host.revision,&output)==MMS_E_BUSY&&output==317)released|=4;}
+};
+static void PropertyStageChecks(){
+    {
+        PropertyStageCase c;bool current=true;unsigned guardReleased=0,captureReleased=0;
+        auto registration=std::make_shared<PropertyRegistrationGuard>(current);
+        registration->released=[&]{guardReleased=(c.store.InCallback()?1u:0u)|(c.host.locked?2u:0u);};
+        std::weak_ptr<const EditStageGuard> retained=registration;
+        EditParticipantFixture participant{&c.stateA,0,10};auto p=participant.Api("example.stage.a");
+        const auto tx=c.Begin(),untouched=c.Begin();
+        auto capture=std::make_shared<PropertyStageCapture>(c.store,c.host,c.api,captureReleased);
+        std::function<MmsResult(PropertyStageToken&)> stage=[&,capture](PropertyStageToken& token)->MmsResult {
+            CHECK(c.store.InCallback()&&c.host.locked);
+            MmsHandle output=713;
+            CHECK(c.api.begin(c.api.context,S("stage reentry"),c.host.revision,&output)==MMS_E_BUSY&&output==713);
+            CHECK(c.api.join(c.api.context,tx,&p)==MMS_E_BUSY);
+            CHECK(c.api.prepare(c.api.context,tx)==MMS_E_BUSY&&c.api.commit(c.api.context,tx)==MMS_E_BUSY);
+            CHECK(c.api.undo(c.api.context)==MMS_E_BUSY&&c.api.redo(c.api.context)==MMS_E_BUSY);
+            c.api.cancel(c.api.context,tx);CHECK(c.store.HasPending());
+            CHECK(c.store.StageProperty(c.a,untouched,registration,[](PropertyStageToken&){return MMS_OK;})==MMS_E_BUSY);
+            CHECK(c.store.JoinPropertyStage(token,c.b,&p)==MMS_E_STALE);
+            CHECK(c.store.JoinPropertyStage(token,c.a,&p)==MMS_OK);
+            CHECK(c.store.JoinPropertyStage(token,c.a,&p)==MMS_E_CONFLICT);
+            return MMS_OK;
+        };
+        capture.reset();CHECK(c.store.StageProperty(c.a,tx,registration,std::move(stage))==MMS_OK);
+        CHECK(captureReleased==7&&!c.host.locked&&!c.store.InCallback()&&c.stateA.value==0&&!c.host.entries);
+        CHECK(c.store.StageProperty(c.a,tx,registration,[&](PropertyStageToken&){participant.after=20;return MMS_OK;})==MMS_OK);
+        registration.reset();CHECK(!retained.expired()&&!guardReleased);
+        CHECK(c.api.prepare(c.api.context,tx)==MMS_OK&&c.host.callbacks==3&&!retained.expired());
+        auto another=std::make_shared<PropertyRegistrationGuard>(current);
+        CHECK(c.store.StageProperty(c.a,tx,another,[](PropertyStageToken&){return MMS_OK;})==MMS_E_CONFLICT);
+        CHECK(c.api.commit(c.api.context,tx)==MMS_OK&&c.host.callbacks==4&&retained.expired()&&guardReleased==3);
+        CHECK(c.stateA.value==20&&participant.commits==1&&!participant.cancels&&c.host.entries==1);
+        CHECK(c.api.prepare(c.api.context,untouched)==MMS_E_STALE); // its expected revision became stale, not cancelled by stage.
+        CHECK(!c.store.HasPending()&&c.api.undo(c.api.context)==MMS_OK&&c.stateA.value==0);
+        CHECK(c.api.redo(c.api.context)==MMS_OK&&c.stateA.value==20);
+    }
+    {
+        PropertyStageCase c;bool current=true;unsigned released=0,captureReleased=0;auto registration=std::make_shared<PropertyRegistrationGuard>(current);
+        registration->released=[&]{MmsHandle output=177;released=(c.store.InCallback()?1u:0u)|(c.host.locked?2u:0u);
+            if(c.api.begin(c.api.context,S("guard destructor"),c.host.revision,&output)==MMS_E_BUSY&&output==177)released|=4;};
+        std::weak_ptr<const EditStageGuard> retained=registration;
+        EditParticipantFixture first{&c.stateA,0,11},foreign{&c.stateB,0,12},second{&c.stateA,0,13};
+        auto p=first.Api("example.stage.a"),q=foreign.Api("example.stage.b"),r=second.Api("example.stage.a");
+        const auto tx=c.Begin(),other=c.Begin();CHECK(c.api.join(c.api.context,tx,&p)==MMS_OK);
+        CHECK(c.other.join(c.other.context,tx,&q)==MMS_OK&&c.api.join(c.api.context,other,&r)==MMS_OK);
+        CHECK(c.store.StageProperty(c.a,tx,registration,[](PropertyStageToken&){return MMS_OK;})==MMS_OK);
+        unsigned blocked=0;first.onCancel=[&]{blocked=(c.store.InCallback()?1u:0u)|(c.host.locked?2u:0u);
+            CHECK(c.host.callbackDepth==1&&c.store.CancelPending()==MMS_E_BUSY);};
+        auto capture=std::make_shared<PropertyStageCapture>(c.store,c.host,c.api,captureReleased);
+        std::function<MmsResult(PropertyStageToken&)> failure=[capture](PropertyStageToken&){return MMS_E_ARGUMENT;};capture.reset();
+        CHECK(c.store.StageProperty(c.a,tx,std::move(registration),std::move(failure))==MMS_E_ARGUMENT);
+        CHECK(retained.expired()&&released==7&&captureReleased==7);
+        CHECK(first.cancels==1&&foreign.cancels==1&&!second.cancels&&blocked==3&&c.host.callbacks==2);
+        CHECK(c.api.prepare(c.api.context,tx)==MMS_E_STALE&&c.api.prepare(c.api.context,other)==MMS_OK);
+        CHECK(c.api.commit(c.api.context,other)==MMS_OK&&c.stateA.value==13&&c.host.entries==1);
+    }
+    {
+        PropertyStageCase c;bool current=true;auto guard=std::make_shared<PropertyRegistrationGuard>(current);
+        EditParticipantFixture participant{&c.stateA,0,1};auto p=participant.Api("example.stage.a");const auto tx=c.Begin();
+        CHECK(c.api.join(c.api.context,tx,&p)==MMS_OK);
+        const auto noop=[](PropertyStageToken&){return MMS_OK;};EditClient alias;alias.id=c.a.id;c.store.Api(alias);
+        CHECK(c.store.StageProperty(c.b,tx,guard,noop)==MMS_E_STALE);
+        CHECK(c.store.StageProperty(alias,tx,guard,noop)==MMS_E_STALE);
+        CHECK(c.store.StageProperty(c.a,tx+71,guard,noop)==MMS_E_STALE);
+        CHECK(c.store.StageProperty(c.a,tx,{},noop)==MMS_E_ARGUMENT);
+        CHECK(c.store.StageProperty(c.a,tx,guard,{})==MMS_E_ARGUMENT);
+        MmsResult worker=MMS_OK;std::thread thread([&]{worker=c.store.StageProperty(c.a,tx,guard,noop);});thread.join();
+        CHECK(worker==MMS_E_THREAD&&!participant.cancels);
+        CHECK(c.api.prepare(c.api.context,tx)==MMS_OK&&c.api.commit(c.api.context,tx)==MMS_OK);
+    }
+    // A stage must have its own participant. A native/empty candidate or a
+    // different plugin's participant cannot satisfy that requirement.
+    for(unsigned scenario=0;scenario<2;++scenario){
+        PropertyStageCase c;bool current=true;auto guard=std::make_shared<PropertyRegistrationGuard>(current);
+        EditParticipantFixture foreign{&c.stateB,0,1};auto p=foreign.Api("example.stage.b");const auto tx=c.Begin();
+        if(scenario)CHECK(c.other.join(c.other.context,tx,&p)==MMS_OK);
+        CHECK(c.store.StageProperty(c.a,tx,guard,[](PropertyStageToken&){return MMS_OK;})==MMS_E_ARGUMENT);
+        CHECK(!c.store.HasPending()&&!c.host.entries&&foreign.cancels==int(scenario));
+    }
+    // Registration identity is checked throughout preparation and again before
+    // the first void commit. No stale phase may publish or advance history.
+    for(unsigned phase=0;phase<8;++phase){
+        PropertyStageCase c;bool current=phase!=6;auto guard=std::make_shared<PropertyRegistrationGuard>(current);
+        EditParticipantFixture participant{&c.stateA,0,9};auto p=participant.Api("example.stage.a");const auto tx=c.Begin();
+        CHECK(c.api.join(c.api.context,tx,&p)==MMS_OK);
+        const auto staged=c.store.StageProperty(c.a,tx,guard,[&](PropertyStageToken&){if(phase==7)current=false;return MMS_OK;});
+        if(phase>=6)CHECK(staged==MMS_E_STALE);
+        else{
+            CHECK(staged==MMS_OK);
+            if(phase==0)current=false;
+            if(phase==1)participant.onPrepare=[&]{current=false;};
+            if(phase==2)participant.onRead=[&]{current=false;};
+            if(phase==3)participant.onRelease=[&]{current=false;};
+            if(phase==4)c.host.onReserve=[&]{current=false;};
+            if(phase==5){CHECK(c.api.prepare(c.api.context,tx)==MMS_OK);current=false;
+                CHECK(c.api.commit(c.api.context,tx)==MMS_E_STALE);}
+            else CHECK(c.api.prepare(c.api.context,tx)==MMS_E_STALE);
+        }
+        CHECK(participant.cancels==1&&!participant.commits&&!c.store.HasPending()&&!c.host.entries&&c.stateA.value==0);
+        CHECK(!c.host.locked&&!c.store.InCallback());
+    }
+    for(unsigned phase=0;phase<4;++phase){
+        PropertyStageCase c;bool current=true;auto guard=std::make_shared<PropertyRegistrationGuard>(current);
+        EditParticipantFixture participant{&c.stateA,0,9};auto p=participant.Api("example.stage.a");const auto tx=c.Begin();
+        CHECK(c.api.join(c.api.context,tx,&p)==MMS_OK);
+        if(phase==0)c.ReplaceSerializer();
+        const auto staged=c.store.StageProperty(c.a,tx,guard,[&](PropertyStageToken&){if(phase==3)c.ReplaceSerializer();return MMS_OK;});
+        if(phase==0||phase==3)CHECK(staged==MMS_E_STALE);
+        else{CHECK(staged==MMS_OK);if(phase==2)CHECK(c.api.prepare(c.api.context,tx)==MMS_OK);
+            c.ReplaceSerializer();CHECK((phase==1?c.api.prepare(c.api.context,tx):c.api.commit(c.api.context,tx))==MMS_E_STALE);}
+        CHECK(participant.cancels==1&&!participant.commits&&!c.store.HasPending()&&!c.host.entries);
+    }
+    for(unsigned scenario=0;scenario<5;++scenario){
+        PropertyStageCase c;bool current=true;auto guard=std::make_shared<PropertyRegistrationGuard>(current);
+        EditParticipantFixture participant{&c.stateA,0,9};auto p=participant.Api("example.stage.a");const auto tx=c.Begin();
+        CHECK(c.api.join(c.api.context,tx,&p)==MMS_OK);if(scenario==0)++c.host.revision;
+        const auto result=c.store.StageProperty(c.a,tx,guard,[&](PropertyStageToken&)->MmsResult {
+            if(scenario==1)++c.host.revision;
+            if(scenario==2)c.a.stopping=true;
+            if(scenario==3)throw std::bad_alloc();
+            if(scenario==4)throw std::runtime_error("stage exception");
+            return MMS_OK;
+        });
+        CHECK(result==(scenario<2?MMS_E_STALE:scenario==2?MMS_E_NOT_READY:scenario==3?MMS_E_MEMORY:MMS_E_FAILED));
+        CHECK(participant.cancels==1&&!participant.commits&&!c.store.HasPending()&&!c.host.entries&&!c.host.poisoned);
+    }
+    {
+        PropertyStageCase c;bool current=true;auto guard=std::make_shared<PropertyRegistrationGuard>(current);
+        EditParticipantFixture participant{&c.stateA,0,9};auto p=participant.Api("example.stage.a");const auto tx=c.Begin();
+        CHECK(c.api.join(c.api.context,tx,&p)==MMS_OK);
+        CHECK(c.store.StageProperty(c.a,tx,guard,[](PropertyStageToken&){return MMS_OK;})==MMS_OK);
+        participant.onLeasedRead=[] {throw std::runtime_error("read after acquired lease");};
+        CHECK(c.api.prepare(c.api.context,tx)==MMS_E_FAILED&&participant.releases==1&&participant.cancels==1);
+        CHECK(c.host.callbacks==4&&!c.store.HasPending()&&!c.host.entries&&!c.host.poisoned);
+    }
+    {
+        PropertyStageCase c;bool current=true;auto guard=std::make_shared<PropertyRegistrationGuard>(current);
+        EditParticipantFixture participant{&c.stateA,0,9};auto p=participant.Api("example.stage.a");const auto tx=c.Begin();
+        CHECK(c.api.join(c.api.context,tx,&p)==MMS_OK);
+        CHECK(c.store.StageProperty(c.a,tx,guard,[](PropertyStageToken&){return MMS_OK;})==MMS_OK);
+        participant.onCommit=[] {throw std::bad_alloc();};
+        CHECK(c.api.prepare(c.api.context,tx)==MMS_OK&&c.api.commit(c.api.context,tx)==MMS_E_FAILED);
+        CHECK(participant.commits==1&&!participant.cancels&&c.host.poisoned&&!c.store.HasPending()&&!c.host.entries);
+        CHECK(c.stateA.value==9&&c.host.callbacks==4); // A violated void commit freezes history; its context is already consumed.
+    }
+    {
+        PropertyStageCase c;bool current=true;auto guard=std::make_shared<PropertyRegistrationGuard>(current);
+        EditParticipantFixture participant{&c.stateA,0,1};auto p=participant.Api("example.stage.a");const auto tx=c.Begin(),other=c.Begin();
+        CHECK(c.api.join(c.api.context,tx,&p)==MMS_OK);c.host.locked=true;
+        participant.onCancel=[&]{CHECK(c.store.InCallback()&&c.host.locked&&c.host.callbackDepth==1);};
+        CHECK(c.store.StageProperty(c.a,tx,guard,[](PropertyStageToken&){return MMS_OK;})==MMS_E_BUSY);
+        CHECK(c.host.locked&&participant.cancels==1&&c.store.HasPending());c.host.locked=false;
+        c.api.cancel(c.api.context,other);CHECK(!c.store.HasPending());
+    }
+    {
+        PropertyStageCase c;bool current=true;auto guard=std::make_shared<PropertyRegistrationGuard>(current);
+        EditParticipantFixture first{&c.stateA,0,1},second{&c.stateB,0,2};first.throwCancel=true;
+        auto p=first.Api("example.stage.a"),q=second.Api("example.stage.b");const auto tx=c.Begin();
+        CHECK(c.api.join(c.api.context,tx,&p)==MMS_OK&&c.other.join(c.other.context,tx,&q)==MMS_OK);
+        CHECK(c.store.StageProperty(c.a,tx,guard,[](PropertyStageToken&){return MMS_E_MEMORY;})==MMS_E_FAILED);
+        CHECK(first.cancels==1&&second.cancels==1&&c.host.poisoned&&!c.store.HasPending()&&!c.host.entries);
+        MmsHandle output=99;CHECK(c.api.begin(c.api.context,S("poisoned stage"),c.host.revision,&output)==MMS_E_NOT_READY&&output==99);
+    }
+    {
+        PropertyStageCase c;bool current=true;auto guard=std::make_shared<PropertyRegistrationGuard>(current);
+        EditParticipantFixture participant{&c.stateA,0,1};auto p=participant.Api("example.stage.a");const auto tx=c.Begin();
+        CHECK(c.api.join(c.api.context,tx,&p)==MMS_OK);
+        for(unsigned n=0;n<4096;++n)CHECK(c.store.StageProperty(c.a,tx,guard,[](PropertyStageToken&){return MMS_OK;})==MMS_OK);
+        CHECK(c.store.StageProperty(c.a,tx,guard,[](PropertyStageToken&){return MMS_OK;})==MMS_E_BUSY);
+        CHECK(participant.cancels==1&&!c.store.HasPending()&&!c.host.entries);
+    }
+    std::cout<<"property stage exact transaction/guard/callback lifetime PASS\n";
+}
 static void EditChecks(){
+    PropertyStageChecks();
     EditLifecycleChecks();
     StorageStore storage;StorageClient sa,sb;sa.id="example.a";sb.id="example.b";storage.Api(sa);storage.Api(sb);
     SerializerFixture stateA,stateB;auto serialA=stateA.Api(),serialB=stateB.Api();MmsHandle providerA=0,providerB=0;

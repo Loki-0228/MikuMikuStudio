@@ -8,6 +8,9 @@ struct ManagerEditProbe {
     uint64_t (*Pending)() = nullptr;
     uint64_t (*ProviderFlags)() = nullptr;
     void (*ProviderMask)(uint64_t) = nullptr;
+    void (*PropertyMode)(uint32_t)=nullptr;
+    uint64_t (*PropertyFlags)()=nullptr,(*PropertyCalls)()=nullptr,(*PropertyCandidates)()=nullptr,(*PropertyOther)()=nullptr;
+    MmsResult (*PropertyFailure)()=nullptr;
     explicit ManagerEditProbe(const fs::path& path) {
         module = LoadLibraryW(path.c_str()); CHECK(module != nullptr);
         Value = reinterpret_cast<decltype(Value)>(GetProcAddress(module, "GetProbeValue"));
@@ -16,7 +19,13 @@ struct ManagerEditProbe {
         Pending = reinterpret_cast<decltype(Pending)>(GetProcAddress(module, "GetProbePending"));
         ProviderFlags=reinterpret_cast<decltype(ProviderFlags)>(GetProcAddress(module,"GetProviderProbeFlags"));
         ProviderMask=reinterpret_cast<decltype(ProviderMask)>(GetProcAddress(module,"SetProviderProbeMask"));
-        if (!Value || !Flags || !Cancels || !Pending || !ProviderFlags || !ProviderMask) { FreeLibrary(module); module = nullptr; CHECK(false); }
+        PropertyMode=reinterpret_cast<decltype(PropertyMode)>(GetProcAddress(module,"SetPropertyStageMode"));
+        PropertyFlags=reinterpret_cast<decltype(PropertyFlags)>(GetProcAddress(module,"GetPropertyStageFlags"));
+        PropertyCalls=reinterpret_cast<decltype(PropertyCalls)>(GetProcAddress(module,"GetPropertyStageCalls"));
+        PropertyCandidates=reinterpret_cast<decltype(PropertyCandidates)>(GetProcAddress(module,"GetPropertyCandidateCount"));
+        PropertyOther=reinterpret_cast<decltype(PropertyOther)>(GetProcAddress(module,"GetPropertyOther"));
+        PropertyFailure=reinterpret_cast<decltype(PropertyFailure)>(GetProcAddress(module,"GetPropertyStageFailure"));
+        if (!Value || !Flags || !Cancels || !Pending || !ProviderFlags || !ProviderMask || !PropertyMode || !PropertyFlags || !PropertyCalls || !PropertyCandidates || !PropertyOther || !PropertyFailure) { FreeLibrary(module); module = nullptr; CHECK(false); }
     }
     ~ManagerEditProbe() { if (module) FreeLibrary(module); }
     ManagerEditProbe(const ManagerEditProbe&) = delete;
@@ -100,7 +109,7 @@ static void ManagerProviderCallbackChecks(const fs::path& root,const fs::path& d
         const auto result=f.Invoke(id,queued?(phase==4?"queue-throw":"queue"):(phase==4?"prepare-fail":"once"),revision);
         CHECK(result==(!queued&&phase==4?MMS_E_FAILED:MMS_OK));
         if(queued){f.manager->Drain();CHECK((p.Flags()&512)==(phase==4?0:512));}
-        CHECK(p.ProviderFlags()==(phase|(phase<<8))&&f.manager->Storage().RestoreToken(id)==token);
+        CHECK(p.ProviderFlags()==(phase|(phase<<8)|(phase<<16))&&f.manager->Storage().RestoreToken(id)==token);
         CHECK(p.Value()==(phase==4?0:1)&&f.Revision()==revision+(phase==4?0:1)&&f.host->history.UndoCount()==(phase==4?0:1));
         CHECK(!f.host->attached->HasPending()&&f.observations->published==(phase==4?0u:1u)&&f.observations->clean);
         if(phase==4)CHECK(p.Cancels()==1);
@@ -116,6 +125,132 @@ static void ManagerProviderCallbackChecks(const fs::path& root,const fs::path& d
         CHECK(!f.host->history.UndoCount()&&!f.observations->published);f.Close();
     }
     std::cout<<"provider mutations rejected inside five edit callbacks; between-phase replacement remains checked PASS\n";
+}
+static void ManagerPropertyStageChecks(const fs::path& root,const fs::path& dll){
+    const std::string id="org.example.property-probe";
+    // Flags 0..13 prove every forbidden operation was attempted, while the
+    // exact join succeeded. The upper flags prove nested read/state ran.
+    constexpr uint64_t probes=16383|65536|131072;
+    {
+        ManagerEditCase f(root/"property-default",false);ManagerEditProbe p(f.Package(dll,id));f.Load();
+        CHECK(f.Invoke(id,"property-once")==MMS_E_NOT_READY&&p.PropertyCalls()==0);
+        const auto record=f.manager->Ui().properties.at(id+".editable");auto api=f.manager->Ui().Api(*record->owner);
+        MmsValue value{};value.type=MMS_VALUE_INT;value.value.signedValue=7;
+        CHECK(api.stageProperty(api.context,1,Text(id+".editable"),{},&value)==MMS_E_NOT_READY&&p.PropertyCalls()==0);
+        f.Close();
+    }
+    {
+        ManagerEditCase f(root/"property-coalesce");ManagerEditProbe p(f.Package(dll,id));f.Load();const auto revision=f.Revision();
+        CHECK(f.Invoke(id,"property-once",revision)==MMS_OK);
+        CHECK(p.PropertyCalls()==2&&p.PropertyFlags()==probes&&p.PropertyCandidates()==0&&p.Value()==9);
+        CHECK(f.Revision()==revision+1&&f.host->history.UndoCount()==1&&f.observations->published==1&&f.observations->clean);
+        CHECK(f.Invoke(id,"undo")==MMS_OK&&p.Value()==0);CHECK(f.Invoke(id,"redo")==MMS_OK&&p.Value()==9);
+        CHECK(f.Invoke(id,"once",f.Revision())==MMS_OK&&p.Value()==10);
+        CHECK(f.Invoke(id,"property-once",f.Revision())==MMS_OK&&p.Value()==9&&f.host->history.UndoCount()==3);
+        CHECK(f.Invoke(id,"undo")==MMS_OK&&p.Value()==10);CHECK(f.Invoke(id,"redo")==MMS_OK&&p.Value()==9);
+        CHECK(p.PropertyCalls()==4&&!f.host->attached->HasPending()&&p.PropertyCandidates()==0);f.Close();
+    }
+    {
+        ManagerEditCase f(root/"property-pending-cancel");ManagerEditProbe p(f.Package(dll,id));f.Load();const auto revision=f.Revision();
+        CHECK(f.Invoke(id,"property-pending",revision)==MMS_OK);const auto tx=p.Pending();CHECK(tx&&p.PropertyCandidates()==1&&p.Value()==0);
+        CHECK(f.Invoke(id,"property-stage",revision,tx)==MMS_OK&&p.PropertyCalls()==2&&p.Value()==0);
+        CHECK(f.Invoke(id,"prepare-pending",revision,tx)==MMS_OK&&p.PropertyCandidates()==1&&p.Value()==0);
+        CHECK(!f.host->history.UndoCount()&&f.Revision()==revision&&!f.observations->published);
+        CHECK(f.Invoke(id,"property-cancel",revision,tx)==MMS_OK&&p.Cancels()==1&&p.PropertyCandidates()==0&&!p.Pending());
+        CHECK(!f.host->attached->HasPending()&&p.Value()==0&&f.Revision()==revision&&!f.host->history.UndoCount());
+        CHECK(f.Invoke(id,"property-pending",revision)==MMS_OK&&f.Invoke(id,"finish")==MMS_OK&&p.Value()==7);
+        CHECK(f.Invoke(id,"undo")==MMS_OK&&p.Value()==0);CHECK(f.Invoke(id,"redo")==MMS_OK&&p.Value()==7);f.Close();
+    }
+    for(uint32_t mode:{1u,2u,3u,4u}){
+        ManagerEditCase f(root/("property-failed-"+std::to_string(mode)));ManagerEditProbe p(f.Package(dll,id));f.Load();
+        const auto revision=f.Revision();p.PropertyMode(mode);
+        CHECK(f.Invoke(id,"property-once",revision)==(mode==1||mode==3?MMS_E_FAILED:MMS_E_ARGUMENT));
+        CHECK(p.PropertyCalls()==1&&p.PropertyFlags()==(mode==1||mode==4?probes&~uint64_t(8192):probes));
+        CHECK(p.Cancels()==(mode==2||mode==3?1:0)&&p.PropertyCandidates()==0&&p.Value()==0);
+        CHECK(!f.host->attached->HasPending()&&!f.host->history.UndoCount()&&!f.observations->published&&f.Revision()==revision);
+        p.PropertyMode(0);CHECK(f.Invoke(id,"property-once",revision)==MMS_OK&&p.Value()==9&&p.PropertyCalls()==2);f.Close();
+    }
+    {
+        ManagerEditCase f(root/"property-queue");ManagerEditProbe p(f.Package(dll,id));f.Load();const auto revision=f.Revision();
+        CHECK(f.Invoke(id,"property-queue",revision)==MMS_OK&&p.Value()==0&&p.PropertyCalls()==0&&!f.host->history.UndoCount());
+        f.manager->Drain();CHECK(p.PropertyCalls()==2&&p.PropertyFlags()==(probes|16384)&&p.Value()==9&&p.PropertyCandidates()==0);
+        CHECK(f.Revision()==revision+1&&f.host->history.UndoCount()==1&&f.observations->published==1&&f.observations->clean);
+        CHECK(f.Invoke(id,"undo")==MMS_OK&&p.Value()==0);CHECK(f.Invoke(id,"redo")==MMS_OK&&p.Value()==9);f.Close();
+    }
+    {
+        ManagerEditCase f(root/"property-exact-failure");ManagerEditProbe p(f.Package(dll,id));f.Load();const auto revision=f.Revision();
+        CHECK(f.Invoke(id,"property-fail-keep",revision)==MMS_OK&&p.PropertyFailure()==MMS_E_ARGUMENT);
+        CHECK(p.PropertyCalls()==3&&(p.PropertyFlags()&32768)&&p.Pending()&&p.PropertyOther()&&p.Pending()!=p.PropertyOther());
+        CHECK(p.Cancels()==1&&p.PropertyCandidates()==1&&p.Value()==0&&f.host->attached->HasPending());
+        CHECK(f.Revision()==revision&&!f.host->history.UndoCount()&&!f.observations->published);
+        CHECK(f.Invoke(id,"property-try",revision,p.PropertyOther())==MMS_OK&&p.PropertyFailure()==MMS_E_STALE);
+        CHECK(p.PropertyCandidates()==1&&p.Cancels()==1&&p.PropertyCalls()==3);
+        CHECK(f.Invoke(id,"finish")==MMS_OK&&p.Value()==7&&p.PropertyCandidates()==0&&f.host->history.UndoCount()==1);
+        CHECK(f.Invoke(id,"undo")==MMS_OK&&p.Value()==0);CHECK(f.Invoke(id,"redo")==MMS_OK&&p.Value()==7);f.Close();
+    }
+    {
+        ManagerEditCase f(root/"property-empty-transaction");ManagerEditProbe p(f.Package(dll,id));f.Load();const auto revision=f.Revision();
+        CHECK(f.Invoke(id,"property-empty",revision)==MMS_OK&&p.Pending()&&p.PropertyCandidates()==0);
+        CHECK(f.Invoke(id,"property-stage",revision)==MMS_OK&&p.PropertyCandidates()==1&&p.Value()==0);
+        CHECK(f.Invoke(id,"finish")==MMS_OK&&p.Value()==9&&f.host->history.UndoCount()==1);f.Close();
+    }
+    // Replacing the same public handle creates a new registration identity.
+    for(bool prepared:{false,true}){
+        ManagerEditCase f(root/(prepared?"property-replaced-commit":"property-replaced-prepare"));ManagerEditProbe p(f.Package(dll,id));f.Load();
+        const auto revision=f.Revision();CHECK(f.Invoke(id,"property-pending",revision)==MMS_OK);
+        if(prepared)CHECK(f.Invoke(id,"prepare-pending")==MMS_OK);
+        const auto record=f.manager->Ui().properties.at(id+".editable");auto api=f.manager->Ui().Api(*record->owner);auto desc=record->desc;
+        desc.info.label=S("replacement registration");CHECK(api.updateProperty(api.context,record->handle,&desc)==MMS_OK);
+        const auto replacement=f.manager->Ui().properties.at(id+".editable");CHECK(replacement.get()!=record.get()&&replacement->handle==record->handle);
+        CHECK(f.Invoke(id,prepared?"commit-pending":"prepare-pending")==MMS_E_STALE);
+        CHECK(p.Cancels()==1&&p.PropertyCandidates()==0&&p.Value()==0&&!f.host->attached->HasPending()&&f.Revision()==revision);
+        CHECK(!f.host->history.UndoCount()&&!f.observations->published);f.Close();
+    }
+    {
+        ManagerEditCase f(root/"property-unrelated-ui");ManagerEditProbe p(f.Package(dll,id));f.Load();
+        CHECK(f.Invoke(id,"property-pending",f.Revision())==MMS_OK);
+        for(bool prepared:{false,true}){
+            if(prepared)CHECK(f.Invoke(id,"prepare-pending")==MMS_OK);
+            const auto record=f.manager->Ui().properties.at(id+".value");auto api=f.manager->Ui().Api(*record->owner);auto desc=record->desc;
+            desc.info.label=prepared?S("after prepare"):S("before prepare");CHECK(api.updateProperty(api.context,record->handle,&desc)==MMS_OK);
+        }
+        CHECK(f.Invoke(id,"commit-pending")==MMS_OK&&p.Value()==7&&!p.Cancels()&&p.PropertyCandidates()==0&&f.host->history.UndoCount()==1);f.Close();
+    }
+    {
+        ManagerEditCase f(root/"property-replaced-serializer");ManagerEditProbe p(f.Package(dll,id));f.Load();const auto revision=f.Revision();
+        CHECK(f.Invoke(id,"property-pending",revision)==MMS_OK&&f.Invoke(id,"prepare-pending")==MMS_OK);
+        const auto token=f.manager->Storage().RestoreToken(id);CHECK(f.Invoke(id,"replace-provider")==MMS_OK&&f.manager->Storage().RestoreToken(id)!=token);
+        CHECK(f.Invoke(id,"commit-pending")==MMS_E_STALE&&p.Cancels()==1&&p.PropertyCandidates()==0&&p.Value()==0);
+        CHECK(!f.host->attached->HasPending()&&!f.host->history.UndoCount()&&f.Revision()==revision&&!f.observations->published);f.Close();
+    }
+    {
+        ManagerEditCase f(root/"property-owner-target");const std::string a="org.example.property-a",b="org.example.property-b";
+        ManagerEditProbe pa(f.Package(dll,a)),pb(f.Package(dll,b));f.Load();const auto revision=f.Revision();
+        CHECK(f.Invoke(a,"property-pending",revision)==MMS_OK&&f.Invoke(b,"property-empty",revision)==MMS_OK);const auto tx=pa.Pending();
+        const auto ar=f.manager->Ui().properties.at(a+".editable"),br=f.manager->Ui().properties.at(b+".editable");
+        auto aa=f.manager->Ui().Api(*ar->owner),ba=f.manager->Ui().Api(*br->owner);MmsValue value{};value.type=MMS_VALUE_INT;value.value.signedValue=9;
+        CHECK(ba.stageProperty(ba.context,tx,Text(a+".editable"),{},&value)==MMS_E_ARGUMENT);
+        MmsObjectRef target{};target.id.lo=1;CHECK(aa.stageProperty(aa.context,tx,Text(a+".editable"),target,&value)==MMS_E_ARGUMENT);
+        CHECK(aa.stageProperty(aa.context,tx,Text(a+".editable"),{},&value)==MMS_E_BUSY); // No command/task authorization.
+        CHECK(pa.PropertyCalls()==1&&pa.PropertyCandidates()==1&&!pa.Cancels()&&pb.PropertyCalls()==0);
+        CHECK(f.Invoke(b,"property-stage",revision,tx)==MMS_E_STALE);
+        CHECK(pa.Pending()==tx&&pa.PropertyCandidates()==1&&!pa.Cancels()&&pb.PropertyCalls()==0);
+        CHECK(f.Invoke(a,"finish")==MMS_OK&&pa.Value()==7&&pb.Value()==0&&f.host->history.UndoCount()==1);f.Close();
+    }
+    for(bool prepared:{false,true}){
+        ManagerEditCase f(root/(prepared?"property-stop-prepared":"property-stop-staged"));ManagerEditProbe p(f.Package(dll,id));f.Load();
+        CHECK(f.Invoke(id,"property-pending",f.Revision())==MMS_OK);if(prepared)CHECK(f.Invoke(id,"prepare-pending")==MMS_OK);
+        CHECK(p.PropertyCandidates()==1&&p.Value()==0&&!f.host->history.UndoCount());f.Close();
+        CHECK(p.Cancels()==1&&p.PropertyCandidates()==0&&p.PropertyCalls()==1);
+    }
+    {
+        ManagerEditCase f(root/"property-cancel-violation");ManagerEditProbe p(f.Package(dll,id));f.Load();p.PropertyMode(5);
+        CHECK(f.Invoke(id,"property-pending",f.Revision())==MMS_OK&&f.Invoke(id,"property-cancel")==MMS_OK);
+        CHECK(p.Cancels()==1&&p.PropertyCandidates()==0&&p.Value()==0&&f.host->poisoned&&!f.host->attached->HasPending());
+        CHECK(!f.host->history.UndoCount()&&!f.observations->published);
+        CHECK(f.manager->DetachEditHost()==MMS_OK);f.Close();
+    }
+    std::cout<<"real DLL property stage/coalescing/authorization/identity/cancellation/history PASS\n";
 }
 static void ManagerEditChecks(const fs::path& root, const fs::path& dll) {
     const std::string id = "org.example.edit-probe";
@@ -220,5 +355,6 @@ static void ManagerEditChecks(const fs::path& root, const fs::path& dll) {
         CHECK(!f.host->attached->HasPending() && f.manager->Storage().RestoreToken(failedId) == 0 && f.manager->Ui().commands.empty()); f.Close();
     }
     ManagerProviderCallbackChecks(root,dll);
+    ManagerPropertyStageChecks(root,dll);
     std::cout << "manager edit callback/lifetime checks PASS\n";
 }

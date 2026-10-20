@@ -70,7 +70,7 @@ cmake --build build/hello --config Release
 
 只读属性和原生面板工厂可以通过 `RegistrationBundle` 注册。快照、值和 anchor 租约仍调用原 C API 获取及释放；本批没有增加租约类。原生窗口及 view context 的创建、重建和销毁规则继续遵循 [SDK 参考](README.md)。
 
-可写属性、声明式 INPUT、DOCK、其他挂载点、复杂动画和新视口服务仍未开放。便利 SDK 不启用普通宿主的 `mms.edit`。刷新种类按目标的 `supportedKinds` 检查，见[刷新 SDK](cpp-refresh.md)。`updateElement` 保留底层 handle，但可能更新 generation 并重建 view；不能将其当成无副作用的重绘请求。
+可写属性的[底层暂存接口](property-stage.md)已在受控编辑宿主中接入，专用便利封装及声明式 INPUT 尚未实现。DOCK、其他挂载点、复杂动画和新视口服务仍未开放。便利 SDK 不启用普通宿主的 `mms.edit`。刷新种类按目标的 `supportedKinds` 检查，见[刷新 SDK](cpp-refresh.md)。`updateElement` 保留底层 handle，但可能更新 generation 并重建 view；不能将其当成无副作用的重绘请求。
 
 ## 工具栏命令溢出
 

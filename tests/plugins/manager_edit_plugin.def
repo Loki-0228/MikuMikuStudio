@@ -6,3 +6,9 @@ EXPORTS
     GetProbePending
     GetProviderProbeFlags
     SetProviderProbeMask
+    SetPropertyStageMode
+    GetPropertyStageFlags
+    GetPropertyStageCalls
+    GetPropertyCandidateCount
+    GetPropertyOther
+    GetPropertyStageFailure

@@ -1,4 +1,5 @@
 #include "ui_registry.hpp"
+#include "ui_property_value.hpp"
 #include "json.hpp"
 #include <array>
 #include <charconv>
@@ -7,6 +8,20 @@
 #include <set>
 
 namespace mikumikustudio::plugins {
+// This token exists only while the accepted store stage calls the descriptor.
+// It cannot be copied into another callback or used after that exact scope.
+struct PropertyStageFrame {
+    UiRegistry* registry;
+    const PropertyRecord* record;
+    UiClient* owner;
+    MmsHandle transaction;
+    unsigned depth;
+    std::string id;
+    PropertyStageFrame(UiRegistry* r, const std::shared_ptr<PropertyRecord>& p, MmsHandle t, unsigned d, std::string identifier)
+        : registry(r), record(p.get()), owner(p->owner), transaction(t), depth(d), id(std::move(identifier)) {}
+    PropertyStageFrame(const PropertyStageFrame&) = delete;
+    PropertyStageFrame& operator=(const PropertyStageFrame&) = delete;
+};
 namespace {
 template<class T, class F> MmsSpan CopySpan(Arena& arena, MmsSpan in, F copy) {
     if (in.count == 0) return {nullptr, 0, sizeof(T), 1};
@@ -202,6 +217,33 @@ bool Fits(const MmsValue& value, uint32_t type, uint32_t components, const MmsVa
         if (EqualValue(value, choice.value)) return true;
     }
     return false;
+}
+MmsResult ValidateWritableProperty(const MmsPropertyInfoV1& info) {
+    if (info.valueType == MMS_VALUE_VECTOR ? info.components < 1 || info.components > 4 : info.components != 0)
+        return MMS_E_ARGUMENT;
+    const auto validate = [&](const MmsValue& value, bool optional) -> MmsResult {
+        if (value.type == MMS_VALUE_EMPTY)
+            return optional && value.components == 0 ? MMS_OK : MMS_E_ARGUMENT;
+        if (value.type != info.valueType || value.components != info.components) return MMS_E_ARGUMENT;
+        UiPropertyValue copy;
+        return UiPropertyValue::Copy(value, copy);
+    };
+    const bool numeric = info.valueType == MMS_VALUE_INT || info.valueType == MMS_VALUE_UINT ||
+        info.valueType == MMS_VALUE_NUMBER || info.valueType == MMS_VALUE_VECTOR;
+    if (!numeric && (info.minimum.type != MMS_VALUE_EMPTY || info.maximum.type != MMS_VALUE_EMPTY)) return MMS_E_ARGUMENT;
+    if (const auto result = validate(info.minimum, true)) return result;
+    if (const auto result = validate(info.maximum, true)) return result;
+    if (info.minimum.type != MMS_VALUE_EMPTY && info.maximum.type != MMS_VALUE_EMPTY &&
+        !Range(info.minimum, info.maximum, false)) return MMS_E_ARGUMENT;
+    for (size_t i = 0; i < info.choices.count; ++i) {
+        const auto& choice = *reinterpret_cast<const MmsChoiceV1*>(static_cast<const unsigned char*>(info.choices.data) + info.choices.stride * i);
+        if (const auto result = validate(choice.value, false)) return result;
+        if (!Fits(choice.value, info.valueType, info.components, info.minimum, info.maximum, {})) return MMS_E_ARGUMENT;
+    }
+    if (const auto result = validate(info.defaultValue, true)) return result;
+    if (info.defaultValue.type != MMS_VALUE_EMPTY &&
+        !Fits(info.defaultValue, info.valueType, info.components, info.minimum, info.maximum, info.choices)) return MMS_E_ARGUMENT;
+    return MMS_OK;
 }
 bool SameArguments(MmsSpan a, MmsSpan b) {
     if (a.count != b.count) return false;
@@ -591,12 +633,15 @@ MmsResult UiRegistry::Property(UiClient& c, const MmsPropertyDescV1* input, MmsH
     auto check = Check(c, true); if (check) return check;
     if (!input || input->info.h.size < sizeof(*input) || input->info.h.major != 1 || input->info.h.minor != 0 || !out || !Own(c, input->info.id, input->info.ownerPlugin) ||
         !input->read || !input->releaseValue || input->info.reserved || input->info.flags & ~15u || input->info.valueType < 1 || input->info.valueType > 8 || input->info.components > 4) return MMS_E_ARGUMENT;
-    if (!(input->info.flags & MMS_PROPERTY_READ_ONLY) || input->info.flags & (MMS_PROPERTY_OBJECT | MMS_PROPERTY_ANIMATABLE)) return MMS_E_NOT_READY;
+    if (input->info.flags & (MMS_PROPERTY_OBJECT | MMS_PROPERTY_ANIMATABLE)) return MMS_E_NOT_READY;
+    const bool writable = !(input->info.flags & MMS_PROPERTY_READ_ONLY);
+    if (writable && (!(input->info.flags & MMS_PROPERTY_UNDOABLE) || !input->stage)) return MMS_E_NOT_READY;
     const auto id = String(input->info.id); auto found = properties.find(id);
     if (replace ? found == properties.end() || found->second->handle != replace : Exists(id)) return replace ? MMS_E_NOT_FOUND : MMS_E_CONFLICT;
     auto r = std::make_shared<PropertyRecord>(); r->owner = &c; r->handle = replace ? replace : next_++; r->arena = std::make_shared<Arena>(); r->desc = *input;
     auto& d = r->desc.info; d.h = Header<MmsPropertyDescV1>(); d.id = r->arena->Copy(d.id); d.ownerPlugin = r->arena->Copy(d.ownerPlugin); d.label = r->arena->Copy(d.label); d.unit = r->arena->Copy(d.unit);
     d.defaultValue = r->arena->Copy(d.defaultValue); d.minimum = r->arena->Copy(d.minimum); d.maximum = r->arena->Copy(d.maximum); d.choices = r->arena->Choices(d.choices);
+    if (writable) if (const auto result = ValidateWritableProperty(d)) return result;
     if (replace && (found->second->desc.context != input->context || found->second->desc.info.valueType != d.valueType || found->second->desc.info.components != d.components)) return MMS_E_ARGUMENT;
     properties[id] = r; *out = r->handle; Changed(); return MMS_OK;
 }
@@ -654,6 +699,37 @@ MmsResult UiRegistry::WithReadOnlyCallback(const std::function<MmsResult()>& cal
     if (!callback) return MMS_E_ARGUMENT;
     Callback guard(callbackDepth_);
     return Boundary(callback);
+}
+MmsResult UiRegistry::WithReadOnlyCallback(MmsResult (*callback)(void*), void* context) {
+    if (GetCurrentThreadId() != thread_) return MMS_E_THREAD;
+    if (!callback) return MMS_E_ARGUMENT;
+    Callback guard(callbackDepth_);
+    return Boundary([&] { return callback(context); });
+}
+bool UiRegistry::IsPropertyCurrent(const std::string& id, const PropertyRecord* record, const UiClient* owner) const noexcept {
+    if (GetCurrentThreadId() != thread_ || !record || !owner || owner->registry != this || owner->stopping) return false;
+    const auto found = properties.find(id);
+    return found != properties.end() && found->second.get() == record && record->owner == owner;
+}
+bool UiRegistry::IsPropertyStageCurrent(const PropertyStageFrame& frame) const noexcept {
+    return GetCurrentThreadId() == thread_ && propertyStage_ == &frame && frame.registry == this &&
+        frame.transaction && callbackDepth_ == frame.depth && IsPropertyCurrent(frame.id, frame.record, frame.owner);
+}
+MmsResult UiRegistry::WithPropertyStage(const std::shared_ptr<PropertyRecord>& record, MmsHandle transaction,
+        const std::function<MmsResult(const PropertyStageFrame&)>& callback) {
+    if (GetCurrentThreadId() != thread_) return MMS_E_THREAD;
+    if (propertyStage_) return MMS_E_BUSY;
+    if (!record || !record->owner || !transaction || !callback) return MMS_E_ARGUMENT;
+    if (record->owner->stopping) return MMS_E_NOT_READY;
+    return Boundary([&]() -> MmsResult {
+        std::string id = String(record->desc.info.id);
+        if (!IsPropertyCurrent(id, record.get(), record->owner)) return MMS_E_STALE;
+        Callback guard(callbackDepth_);
+        PropertyStageFrame frame(this, record, transaction, callbackDepth_, std::move(id));
+        propertyStage_ = &frame;
+        struct Clear { const PropertyStageFrame*& value; ~Clear() { value = nullptr; } } clear{propertyStage_};
+        return callback(frame);
+    });
 }
 MmsResult UiRegistry::WithElementState(MmsHandle handle, const std::function<MmsResult(const MmsCommandStateV1&)>& apply) {
     if (GetCurrentThreadId() != thread_) return MMS_E_THREAD;
@@ -828,12 +904,31 @@ MmsResult UiRegistry::Read(UiClient& c, MmsString id, MmsObjectRef target, MmsVa
     auto found = properties.find(String(id)); if (found == properties.end()) return MMS_E_NOT_FOUND; auto record = found->second;
     if (record->owner->stopping) return MMS_E_NOT_READY;
     Callback guard(callbackDepth_); MmsValue value{}; MmsHandle providerLease = 0;
+    struct ReleaseProvider { MmsPropertyDescV1& d; MmsHandle& h; ~ReleaseProvider() { if (h) try { d.releaseValue(d.context, h); } catch (...) {} } } release{record->desc, providerLease};
     auto result = record->desc.read(record->desc.context, target, &value, &providerLease);
-    struct ReleaseProvider { MmsPropertyDescV1& d; MmsHandle h; ~ReleaseProvider() { if (h) try { d.releaseValue(d.context, h); } catch (...) {} } } release{record->desc, providerLease};
     if (result) return result;
     if (value.type != record->desc.info.valueType || value.components != record->desc.info.components) return MMS_E_FAILED;
     auto lease = std::make_unique<Lease>(); lease->owner = c.id; lease->kind = 2; value = lease->arena.Copy(value);
     auto h = next_++; leases_.emplace(h, std::move(lease)); *out = value; *handle = h; return MMS_OK;
+}
+MmsResult UiRegistry::Stage(UiClient& c, MmsHandle transaction, MmsString id, MmsObjectRef target, const MmsValue* value) {
+    auto check = Check(c); if (check) return check;
+    if (c.stopping) return MMS_E_NOT_READY;
+    const auto found = properties.find(String(id)); if (found == properties.end()) return MMS_E_NOT_FOUND;
+    auto record = found->second;
+    if (record->owner != &c) return MMS_E_ARGUMENT;
+    if (!Null(target)) return MMS_E_ARGUMENT;
+    const auto& info = record->desc.info;
+    if ((info.flags & MMS_PROPERTY_READ_ONLY) || !record->desc.stage || !propertyStageBridge_) return MMS_E_NOT_READY;
+    if (!transaction || !value) return MMS_E_ARGUMENT;
+    if (value->type != info.valueType || value->components != info.components) return MMS_E_ARGUMENT;
+    UiPropertyValue copy;
+    if (const auto result = UiPropertyValue::Copy(*value, copy)) return result;
+    const auto owned = copy.View();
+    if (!Fits(owned, info.valueType, info.components, info.minimum, info.maximum, info.choices)) return MMS_E_ARGUMENT;
+    // Authorization belongs to the store bridge. It needs the original
+    // command/task depth; only WithPropertyStage enters the read-only scope.
+    return propertyStageBridge_(c, transaction, record, target, owned);
 }
 MmsResult UiRegistry::Begin(UiClient& c, uint64_t revision, MmsHandle* out) {
     auto check = Check(c, true); if (check) return check; if (!out) return MMS_E_ARGUMENT; if (revision != revision_) return MMS_E_STALE;
@@ -985,7 +1080,7 @@ MmsUiApiV1 UiRegistry::Api(UiClient& client) {
     a.invoke = [](void* p, MmsString id, MmsObjectRef t, MmsSpan v) { UI_BEGIN { return r.Invoke(c, id, t, v); }); };
     a.readProperty = [](void* p, MmsString id, MmsObjectRef t, MmsValue* out, MmsHandle* h) { UI_BEGIN { return r.Read(c, id, t, out, h); }); };
     a.releaseValue = [](void* p, MmsHandle h) { auto& c = *static_cast<UiClient*>(p); c.registry->Release(c, h, 2); };
-    a.stageProperty = [](void* p, MmsHandle, MmsString, MmsObjectRef, const MmsValue*) { UI_BEGIN { auto result = r.Check(c, true); return result ? result : MMS_E_NOT_READY; }); };
+    a.stageProperty = [](void* p, MmsHandle t, MmsString id, MmsObjectRef target, const MmsValue* value) { UI_BEGIN { return r.Stage(c, t, id, target, value); }); };
     a.beginLayout = [](void* p, uint64_t rev, MmsHandle* out) { UI_BEGIN { return r.Begin(c, rev, out); }); };
     a.applyLayout = [](void* p, MmsHandle h, const MmsLayoutOpV1* op) { UI_BEGIN { return r.Apply(c, h, op); }); };
     a.commitLayout = [](void* p, MmsHandle h) { UI_BEGIN { return r.Commit(c, h); }); };

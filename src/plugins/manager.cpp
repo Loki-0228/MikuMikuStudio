@@ -63,6 +63,9 @@ struct Manager::Impl {
             struct Reset { bool& value; ~Reset() { value = false; } } reset{manager.forwardingEdit};
             return target.History(redo);
         }
+        MmsResult WithParticipantCallback(MmsResult (*callback)(void*), void* context) override {
+            return manager.registry.WithReadOnlyCallback(callback, context);
+        }
         void Poison() noexcept override { target.Poison(); }
     };
     // Destroy the store before its forwarding host, clients and storage.
@@ -70,6 +73,13 @@ struct Manager::Impl {
     std::unique_ptr<EditStore> edits;
     Instance* runningEditTask = nullptr;
     Instance* editCallOwner = nullptr;
+    struct StageGrant {
+        Instance* owner;
+        MmsHandle transaction;
+        PropertyStageToken* token;
+        const PropertyStageFrame* frame;
+    };
+    StageGrant* stageGrant = nullptr;
     bool forwardingEdit = false, loadAttempted = false, notifyingEdit = false;
     std::function<void()> editPublished;
     std::vector<PluginStatus> failed;
@@ -95,6 +105,10 @@ struct Manager::Impl {
         wake = CreateWindowExW(0, wc.lpszClassName, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, wc.hInstance, this);
         if (!wake) throw std::runtime_error("plugin dispatcher window");
         registry.Refresh().SetWake([this] { return PostMessageW(wake, kRefreshDrain, 0, 0) != FALSE; });
+        registry.SetPropertyStageBridge([this](UiClient& client, MmsHandle transaction,
+            const std::shared_ptr<PropertyRecord>& record, MmsObjectRef target, const MmsValue& value) {
+            return StageProperty(client, transaction, record, target, value);
+        });
     }
     ~Impl() { if (wake) DestroyWindow(wake); }
     bool EditOrigin(const Instance& i) const noexcept {
@@ -113,6 +127,45 @@ struct Manager::Impl {
         struct Reset { Instance*& value; ~Reset() { value = nullptr; } } reset{editCallOwner};
         auto api = edits->Api(i.edit);
         return call(api);
+    }
+    struct PropertyGuard final : EditStageGuard {
+        UiRegistry& registry;
+        std::shared_ptr<PropertyRecord> record;
+        std::string id;
+        PropertyGuard(UiRegistry& ui, std::shared_ptr<PropertyRecord> property):
+            registry(ui), record(std::move(property)), id(String(record->desc.info.id)) {}
+        bool IsCurrent() const noexcept override {
+            return registry.IsPropertyCurrent(id, record.get(), record->owner);
+        }
+    };
+    MmsResult StageProperty(UiClient& client, MmsHandle transaction,
+        const std::shared_ptr<PropertyRecord>& record, MmsObjectRef target, const MmsValue& value) {
+        auto owner = std::find_if(instances.begin(), instances.end(),
+            [&](const auto& instance) { return &instance->ui == &client; });
+        if (owner == instances.end()) return MMS_E_NOT_READY;
+        auto& instance = **owner;
+        return EditCall(instance, [&](auto&) {
+            auto guard = std::make_shared<PropertyGuard>(registry, record);
+            return edits->StageProperty(instance.edit, transaction, std::move(guard),
+                [&](PropertyStageToken& token) {
+                    return registry.WithPropertyStage(record, transaction, [&](const PropertyStageFrame& frame) {
+                        StageGrant grant{&instance, transaction, &token, &frame};
+                        auto* previous = stageGrant;
+                        stageGrant = &grant;
+                        struct Reset { StageGrant*& slot; StageGrant* prior; ~Reset() { slot = prior; } } reset{stageGrant, previous};
+                        return record->desc.stage(record->desc.context, transaction, target, &value);
+                    });
+                });
+        });
+    }
+    MmsResult JoinEdit(Instance& instance, MmsHandle transaction, const MmsTransactionParticipantV1* participant) {
+        if (GetCurrentThreadId() != thread) return MMS_E_THREAD;
+        if (!edits || instance.stopping || closing) return MMS_E_NOT_READY;
+        if (stageGrant && stageGrant->owner == &instance && stageGrant->transaction == transaction &&
+            editCallOwner == &instance && !notifyingEdit && !storage.InCallback() && !storage.Prepared() &&
+            registry.IsPropertyStageCurrent(*stageGrant->frame))
+            return edits->JoinPropertyStage(*stageGrant->token, instance.edit, participant);
+        return EditCall(instance, [&](auto& api) { return api.join(api.context, transaction, participant); });
     }
     void CancelFailedEdit(Instance& i) noexcept {
         if (!edits) return;
@@ -133,8 +186,7 @@ struct Manager::Impl {
                 [&](auto& a) { return a.begin(a.context, label, revision, out); }); });
         };
         api.join = [](void* p, MmsHandle tx, const MmsTransactionParticipantV1* participant) {
-            return Boundary([&] { auto& i = *static_cast<Instance*>(p); return i.host->EditCall(i,
-                [&](auto& a) { return a.join(a.context, tx, participant); }); });
+            return Boundary([&] { auto& i = *static_cast<Instance*>(p); return i.host->JoinEdit(i, tx, participant); });
         };
         api.prepare = [](void* p, MmsHandle tx) {
             return Boundary([&] { auto& i = *static_cast<Instance*>(p); return i.host->EditCall(i,

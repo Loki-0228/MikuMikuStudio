@@ -6,6 +6,14 @@ namespace mikumikustudio::plugins {
 class HistoryChange;
 class EditStore;
 class SharedHistory;
+class PropertyStageToken;
+// Internal registration identity retained until a staged transaction is
+// consumed. IsCurrent is a host-only, allocation-free query, never a plugin
+// callback and never a global UI revision comparison.
+struct EditStageGuard {
+    virtual ~EditStageGuard() = default;
+    virtual bool IsCurrent() const noexcept = 0;
+};
 struct EditRecord {
     std::string label;
     StoredRecords before, after;
@@ -30,6 +38,11 @@ public:
     virtual void Leave() noexcept = 0;
     virtual MmsResult Reserve(std::shared_ptr<const EditRecord>, std::unique_ptr<EditPublication>&) = 0;
     virtual MmsResult History(bool redo) = 0;
+    // The manager supplies the same read-only UI boundary for every phase.
+    // A pointer/context runner keeps commit and cancellation allocation-free.
+    virtual MmsResult WithParticipantCallback(MmsResult (*call)(void*), void* context) {
+        return call ? Boundary([&] { return call(context); }) : MMS_E_ARGUMENT;
+    }
     // A participant violated a void callback contract. Freeze native history
     // too, because the scene can now contain a partly published operation.
     virtual void Poison() noexcept {}
@@ -45,6 +58,8 @@ class EditStore {
         std::vector<Participant> participants;
         std::shared_ptr<HistoryChange> native;
         std::unique_ptr<EditPublication> publication;
+        std::vector<std::shared_ptr<const EditStageGuard>> stageGuards;
+        MmsHandle stageSerializer=0;
         bool prepared=false;
     };
     DWORD thread_=GetCurrentThreadId();
@@ -53,9 +68,12 @@ class EditStore {
     bool busy_=false,poisoned_=false,historyRequest_=false;
     MmsHandle next_=1;
     std::map<MmsHandle,std::unique_ptr<Transaction>> transactions_;
+    PropertyStageToken* activeStage_=nullptr;
     MmsResult Ready(EditClient&) const;
     MmsResult Begin(EditClient&,MmsString,uint64_t,MmsHandle*);
     MmsResult Join(EditClient&,MmsHandle,const MmsTransactionParticipantV1*);
+    MmsResult JoinInto(Transaction&,EditClient&,const MmsTransactionParticipantV1*);
+    MmsResult Current(const Transaction&) noexcept;
     MmsResult Prepare(EditClient&,MmsHandle);
     MmsResult Commit(EditClient&,MmsHandle);
     void Cancel(EditClient&,MmsHandle);
@@ -74,6 +92,10 @@ public:
     // Internal scene/UI services attach their aggregate native candidate to
     // the same transaction; this pointer never crosses the public C ABI.
     MmsResult JoinNative(EditClient&, MmsHandle, std::shared_ptr<HistoryChange>);
+    MmsResult StageProperty(EditClient&, MmsHandle,
+        std::shared_ptr<const EditStageGuard>, std::function<MmsResult(PropertyStageToken&)>);
+    MmsResult JoinPropertyStage(PropertyStageToken&, EditClient&,
+        const MmsTransactionParticipantV1*);
     bool Retire(EditClient&);
     // Failed initiating callbacks cancel their own transactions only. They
     // cannot cancel another owner's transaction merely by joining it.
