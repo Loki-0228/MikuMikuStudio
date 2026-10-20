@@ -164,6 +164,16 @@ INT_PTR CALLBACK Probe(HWND dialog, UINT msg, WPARAM wp, LPARAM lp) {
     Check(!IsWindowVisible(dialog), "settings dialog never becomes visible during test");
     Check(GetDlgItemInt(dialog, as::Interval, nullptr, FALSE) == c->value.intervalMinutes, "interval is displayed in minutes");
     Check((IsDlgButtonChecked(dialog, as::Enabled) == BST_CHECKED) == c->value.enabled, "enabled checkbox reflects saved setting");
+    Check((IsDlgButtonChecked(dialog, as::KeepPrevious) == BST_CHECKED) == c->value.keepPrevious,
+        "PMM1 checkbox reflects saved setting");
+    const auto keep = GetDlgItem(dialog, as::KeepPrevious);
+    RECT bounds{}; GetClientRect(keep, &bounds);
+    HDC labelDc = GetDC(keep); SIZE labelSize{};
+    auto labelFont = SelectObject(labelDc, reinterpret_cast<HFONT>(SendMessageW(keep, WM_GETFONT, 0, 0)));
+    const auto keepText = Title(keep);
+    GetTextExtentPoint32W(labelDc, keepText.c_str(), static_cast<int>(keepText.size()), &labelSize);
+    SelectObject(labelDc, labelFont); ReleaseDC(keep, labelDc);
+    Check(labelSize.cx + 24 <= bounds.right, "PMM1 label fits in every language");
     Check(Title(GetDlgItem(dialog, as::Enabled)) == as::Text(c->app, L"启用定时自动保存", L"Enable periodic autosave", L"定期的な自動保存を有効にする"),
         "checkbox controls periodic saving only");
     const HWND explanation = GetDlgItem(dialog, as::Explanation);
@@ -187,6 +197,7 @@ INT_PTR CALLBACK Probe(HWND dialog, UINT msg, WPARAM wp, LPARAM lp) {
         SetDlgItemInt(dialog, as::Limit, 3, FALSE);
         CheckDlgButton(dialog, as::Overwrite, BST_CHECKED);
         CheckDlgButton(dialog, as::Enabled, BST_CHECKED);
+        CheckDlgButton(dialog, as::KeepPrevious, BST_CHECKED);
         as::DialogProc(dialog, WM_COMMAND, IDOK, 0);
     }
     return TRUE;
@@ -210,8 +221,8 @@ void DialogTests(MMDApp* app) {
             const auto result = UiDialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(as::kDialog),
                 app->MainWindow(), Probe, reinterpret_cast<LPARAM>(&c));
             Check(result == (dialogAction ? IDOK : IDCANCEL), "settings dialog commits or cancels correctly");
-            Check(dialogAction ? as::Current().intervalMinutes == 2 && as::Current().maxBackups == 3 && as::Current().overwriteOldest :
-                as::Current().enabled == before.enabled && as::Current().intervalMinutes == before.intervalMinutes,
+            Check(dialogAction ? as::Current().intervalMinutes == 2 && as::Current().maxBackups == 3 && as::Current().overwriteOldest && as::Current().keepPrevious :
+                as::Current().enabled == before.enabled && as::Current().intervalMinutes == before.intervalMinutes && as::Current().keepPrevious == before.keepPrevious,
                 "canceled edits leave settings unchanged");
         }
     }

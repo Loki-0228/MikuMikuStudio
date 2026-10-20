@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 
 namespace mikumikustudio {
 
@@ -25,6 +26,7 @@ void InstallEffectPathCompatibility();
 // Retain relative EMM entries before MME expands them against the EXE folder.
 // Reads the sidecar only; the user's assignment file is never rewritten.
 void PrepareEffectProjectPaths(const wchar_t* project);
+std::wstring EffectProjectNotificationPath(const wchar_t* project);
 
 // MME rebuilds its object/order table inside IDirect3DDevice9::BeginScene.
 void BeginEffectObjectRegistration();

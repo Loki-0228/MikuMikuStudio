@@ -59,9 +59,9 @@ void Run(MMDApp* app, const wchar_t* project, const wchar_t* output) {
     const int frames = Option("MMS_MME_CAPTURE_FRAMES", 4, 1, 10000);
     std::filesystem::create_directories(directory);
     Need(GetModuleHandleW(L"MMEffect.dll") && GetModuleHandleW(L"MMHack.dll"), "MME DLLs are loaded");
-    wcscpy_s(app->EnvFileName(), kPathFieldCapacity, input.c_str());
-    LoadSceneFile();
-    if (const auto* effects = _wgetenv(L"MMS_MME_CAPTURE_EMM")) NotifyEffectFileOpen(effects);
+    // The shared main path already loaded the PMM, notified MME and drove
+    // three initialization frames, exactly as the established AA scene test.
+    std::puts("MME_CAPTURE phase=initialize_saved_pose");
     int models = 0, accessories = 0;
     std::set<const void*> modelPointers;
     for (int slot = 0; slot < kModelSlotCount; ++slot) if (const auto* model = app->ModelSlot(slot)) {
@@ -71,10 +71,14 @@ void Run(MMDApp* app, const wchar_t* project, const wchar_t* output) {
     Need(models || accessories, "MME capture loaded scene objects");
     app->SetSelectedModelSlot(0);
     app->PlaybackActive() = 1;
+    for (int frame = 0; frame < 3; ++frame) {
+        app->DeltaTime() = 1.f / 30; app->state.messageSeen = 10; FrameDriver(app);
+    }
     app->PlaybackPhysicsMode() = 0;
     app->CameraMode() = 1;
     app->EditMode() = ViewportEditMode::None;
     app->FpsOverlayEnabled() = 0;
+    std::puts("MME_CAPTURE phase=select_original_aa");
     std::wstring error;
     Need(antialias::Select(app, antialias::Algorithm::MmdOriginal, error), "MME capture selects original host AA");
     if (!app->antialiasing.enabled) Need(antialias::Toggle(app, error), "MME capture enables original host AA");
@@ -86,7 +90,11 @@ void Run(MMDApp* app, const wchar_t* project, const wchar_t* output) {
     renderer->screenWidth = width; renderer->screenHeight = height;
     renderer->presentParameters.BackBufferWidth = unsigned(width);
     renderer->presentParameters.BackBufferHeight = unsigned(height);
+    std::puts("MME_CAPTURE phase=fixed_resolution_reset");
     Need(PostDeviceReset(app), "MME capture resets the device to fixed resolution");
+    app->ViewportRect() = RECT{0, 0, width, height};
+    const D3DVIEWPORT9 viewport{0, 0, unsigned(width), unsigned(height), 0.f, 1.f};
+    Need(SUCCEEDED(renderer->device->SetViewport(&viewport)), "MME capture selects the whole export viewport");
     Need(!IsWindowVisible(app->MainWindow()) && !IsWindowVisible(app->RecordingWindow()), "MME capture windows stay hidden");
     const auto frameIndex = app->CurrentFrame();
     const float camera[] = {app->CameraPositionX(), app->CameraPositionY(), app->CameraPositionZ(),
@@ -94,13 +102,15 @@ void Run(MMDApp* app, const wchar_t* project, const wchar_t* output) {
     std::printf("MME_CAPTURE begin models=%d accessories=%d size=%dx%d frame=%d warmup=%d captures=%d\n",
         models, accessories, width, height, frameIndex, warmup, frames);
     for (int submission = 0; submission < warmup + frames; ++submission) {
-        // Render the saved pose directly. FrameDriver would advance playback,
-        // recording, physics and camera keys while comparing temporal effects.
+        // The scene and pose were initialized with FrameDriver above. Direct
+        // rendering now freezes that evaluated pose while effects warm up.
         app->CurrentFrame() = frameIndex;
         app->CameraPositionX() = camera[0]; app->CameraPositionY() = camera[1]; app->CameraPositionZ() = camera[2];
         app->CameraDistance() = camera[3]; app->CameraPitch() = camera[4]; app->CameraYaw() = camera[5];
         app->CameraRoll() = camera[6]; app->CameraFov() = camera[7];
         app->DeltaTime() = 1.f / 30; app->state.messageSeen = 10;
+        app->ViewportRect() = RECT{0, 0, width, height};
+        Need(SUCCEEDED(renderer->device->SetViewport(&viewport)), "MME capture retains the whole export viewport");
         RenderFrameScene(app);
         if (submission >= warmup) {
             wchar_t name[40]{}; swprintf_s(name, L"frame-%04d.bgra", submission - warmup);

@@ -1,3 +1,4 @@
+#include "mikumikustudio/pmm_paths.hpp"
 #include "mikumikustudio/mmv4mms.hpp"
 #include "mikumikustudio/plugin_menu.hpp"
 #include "mikumikustudio/ui_translation.hpp"
@@ -426,7 +427,7 @@ bool InitMainWindowAndD3D(MMDApp* app, void* hInstanceIn, int nShowCmd) {
         // desktop runtime testing: use a dedicated dir buffer instead of
         // truncating `destination` in place (docs/ARCHITECTURE.md §8).
         wchar_t dirBuf[1000];
-        if (wcsstr(destination, L".pmm") || wcsstr(destination, L".PMM")) {
+        if (pmm_paths::IsProject(destination)) {
             wcscpy_s(app->DirUser(), 0x3E8,
                      ExtractDirFromPath(dirBuf, destination, 1000));
             wcscpy_s(app->EnvFileName(), 0x100, destination);

@@ -1,3 +1,4 @@
+#include "mikumikustudio/pmm_paths.hpp"
 #include "mikumikustudio/background_save.hpp"
 #include "mikumikustudio/recent_projects.hpp"
 #include "mikumikustudio/local_data_path.hpp"
@@ -95,7 +96,7 @@ void Attach(MMDApp* app) {
 }
 void Record(MMDApp* app,const wchar_t* path) {
 #if !MMD_ORIGINAL_PROFILE
-    if(!app || !path || !*path || _wcsicmp(std::filesystem::path(path).extension().c_str(),L".pmm"))return;
+    if(!app || !path || !*path || !pmm_paths::IsProject(path))return;
     wchar_t full[32768]{};DWORD size=GetFullPathNameW(path,32768,full,nullptr);if(!size || size>=32768)return;
     Read();paths.erase(std::remove_if(paths.begin(),paths.end(),[&](auto& p){return !_wcsicmp(p.c_str(),full);}),paths.end());
     paths.insert(paths.begin(),full);if(paths.size()>10)paths.resize(10);Write();

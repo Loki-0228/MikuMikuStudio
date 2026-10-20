@@ -1,3 +1,4 @@
+#include "mikumikustudio/pmm_paths.hpp"
 // MAINTENANCE: regression-keep; hidden real-MME display, EMD and material-order checks.
 // Exercise the real mapping dialog without displaying or activating a window.
 #define NOMINMAX
@@ -33,6 +34,7 @@
 #include <commctrl.h>
 #include <cstdio>
 #include <cstdlib>
+#include <cmath>
 #include <vector>
 #include <cstdint>
 #include <algorithm>
@@ -46,7 +48,7 @@
 #include <cwctype>
 
 using namespace mikumikustudio;
-namespace mikumikustudio { void RegisterCameraState(MMDApp*, int); void RefreshAfterFrameApply(MMDApp*); void LayoutViewportPanels(MMDApp*); int ViewportToolAtPointForTest(MMDApp*); }
+namespace mikumikustudio { void RegisterCameraState(MMDApp*, int); void RegisterSelfShadowState(MMDApp*, int); void RefreshAfterFrameApply(MMDApp*); void LayoutViewportPanels(MMDApp*); int ViewportToolAtPointForTest(MMDApp*); }
 extern "C" char* ExpGetPmdFilename(int);
 namespace {
 void Check(bool ok, const char* label) {
@@ -519,6 +521,7 @@ void CALLBACK Probe(HWND, UINT, UINT_PTR timer, DWORD) {
 #include "outline_coverage_scene_checks.hpp"
 #include "mme_ground_shadow_checks.hpp"
 #include "effect_file_watch_checks.hpp"
+#include "pmm_version_effect_checks.hpp"
 #include "camera_motion_scene_checks.hpp"
 #include "mme_model_adapt_checks.hpp"
 #include "project_import_checks.hpp"
@@ -559,15 +562,6 @@ int wmain(int argc, wchar_t** argv) {
     auto* app = new MMDApp; g_Block = app;
     app->state = MMDAppState{}; app->InitDefaults();
     Check(InitMainWindowAndD3D(app, GetModuleHandleW(nullptr), SW_HIDE), "start production host");
-    if (argc == 4 && std::wcscmp(argv[2], L"--mme-scene-capture") == 0) {
-        int result = 0;
-        try { mme_scene_capture::Run(app, argv[1], argv[3]); }
-        catch (const std::exception& error) { std::fprintf(stderr, "FAIL MME_CAPTURE %s\n", error.what()); result = 2; }
-        mme_scene_capture::Release(app);
-        ShutdownCleanup(app); delete app; g_Block = nullptr; UnhookWindowsHookEx(guard);
-        std::printf("MME_CAPTURE cleanup complete result=%d\n", result);
-        return result;
-    }
     if (argc == 4 && std::wcscmp(argv[2], L"--project-import") == 0) {
         CheckProjectImport(app, argv[1], argv[3]);
         ShutdownCleanup(app); delete app; g_Block = nullptr; UnhookWindowsHookEx(guard); return 0;
@@ -628,9 +622,11 @@ int wmain(int argc, wchar_t** argv) {
     const bool fileWatch = argc == 4 && std::wcscmp(argv[2], L"--file-watch") == 0;
     const bool emmLoad = argc == 4 && std::wcscmp(argv[2], L"--emm-load") == 0;
     const bool aaScene = argc == 4 && std::wcscmp(argv[2], L"--antialias-scene") == 0;
+    const bool mmeSceneCapture = argc == 4 && std::wcscmp(argv[2], L"--mme-scene-capture") == 0;
+    const bool imageVisibility = argc == 4 && std::wcscmp(argv[2], L"--image-visibility") == 0;
     const bool groundShadow = argc == 4 && std::wcscmp(argv[2], L"--ground-shadow") == 0;
     const bool sequenceClock = argc == 4 && std::wcscmp(argv[2], L"--sequence-clock") == 0;
-    if (sequenceClock || emdAutoload || fileWatch || emmLoad || aaScene || groundShadow || (argc == 4 && std::wcscmp(argv[2], L"--surface-grid") == 0)) {
+    if (sequenceClock || emdAutoload || fileWatch || emmLoad || aaScene || mmeSceneCapture || groundShadow || (argc == 4 && std::wcscmp(argv[2], L"--surface-grid") == 0)) {
         auto* compile = reinterpret_cast<void*>(GetProcAddress(d3dx::Get().module, "D3DXCreateEffectFromFileW"));
         Check(compile && MH_CreateHook(compile, &ObserveCompile, reinterpret_cast<void**>(&originalCompile)) == MH_OK &&
               MH_EnableHook(compile) == MH_OK, "observe actual MME effect compilation");
@@ -644,7 +640,7 @@ int wmain(int argc, wchar_t** argv) {
         const auto& adapters=skinning::AvailableAdapters();Check(!adapters.empty(),"GPU skinning adapter available");
         skinning::SetPreference({skinning::Mode::Adapter,adapters.front().id,adapters.front().name});
     }
-    if ((aaScene || (argc == 4 && std::wcscmp(argv[2], L"--viewport-scale") == 0)) &&
+    if ((aaScene || mmeSceneCapture || (argc == 4 && std::wcscmp(argv[2], L"--viewport-scale") == 0)) &&
         std::filesystem::path(argv[1]).extension() == L".pmm") {
         wcscpy_s(app->EnvFileName(), kPathFieldCapacity, argv[1]);
         LoadSceneFile();
@@ -652,7 +648,12 @@ int wmain(int argc, wchar_t** argv) {
         std::set<const void*> loadedModels;
         for (int slot=0;slot<kModelSlotCount;++slot)if(auto* model=app->ModelSlot(slot))
             Check(loadedModels.insert(model).second,"loaded project model slots retain distinct ownership");
-        if (const wchar_t* effects = _wgetenv(L"MMS_AA_EMM")) NotifyEffectFileOpen(effects);
+        const auto* effects = mmeSceneCapture ? _wgetenv(L"MMS_MME_CAPTURE_EMM") : nullptr;
+        if (!effects) effects = _wgetenv(L"MMS_AA_EMM");
+        if (effects) {
+            if (mmeSceneCapture) std::printf("MME_CAPTURE explicit effects=%ls\n", effects);
+            NotifyEffectFileOpen(effects);
+        }
     } else LoadModelFile(app, argv[1], false);
     if (argc == 4 && std::wcscmp(argv[2], L"--model-edit-controls") == 0) {
         CheckModelEditControls(app, argv[3]);
@@ -661,6 +662,7 @@ int wmain(int argc, wchar_t** argv) {
     }
     // Test-only second model and accessory slots: insert them into the scene
     // instead of replacing the base model.
+    if (imageVisibility) PrepareImageVisibilityScene(app);
     if (const wchar_t* extra = _wgetenv(L"MMS_EXTRA_MODEL")) {
         LoadModelFile(app, extra, false);
         for (int i = 0; i < 3; ++i) {
@@ -676,7 +678,8 @@ int wmain(int argc, wchar_t** argv) {
         }
     }
     Check(app->SelectedModel() != nullptr, "load textured PMX");
-    if (argc == 4 && std::wcscmp(argv[2], L"--image-visibility") == 0) {
+    if (imageVisibility) {
+        PrepareImageVisibilityScene(app);
         if (const auto* project = _wgetenv(L"MMS_IMAGE_EFFECT_PROJECT")) {
             wcscpy_s(app->EnvFileName(), kPathFieldCapacity, project);
             SaveSceneFile(app);
@@ -684,6 +687,7 @@ int wmain(int argc, wchar_t** argv) {
             auto fixture = std::filesystem::path(project); fixture.replace_extension(L".fixture.emm");
             auto emm = std::filesystem::path(project); emm.replace_extension(L".emm");
             std::filesystem::copy_file(fixture, emm, std::filesystem::copy_options::overwrite_existing);
+            ApplyImageVisibilitySelfShadow(app);
             NotifyEffectFileOpen(project);
             for (int i = 0; i < 3; ++i) { app->state.messageSeen = 1; FrameDriver(app); }
         }
@@ -695,6 +699,15 @@ int wmain(int argc, wchar_t** argv) {
         ShutdownCleanup(app); delete app; g_Block = nullptr; UnhookWindowsHookEx(guard); return 0;
     }
     for (int i = 0; i < 3; ++i) { app->DeltaTime() = 1.f / 30; app->state.messageSeen = 10; FrameDriver(app); }
+    if (mmeSceneCapture) {
+        int result = 0;
+        try { mme_scene_capture::Run(app, argv[1], argv[3]); }
+        catch (const std::exception& error) { std::fprintf(stderr, "FAIL MME_CAPTURE %s\n", error.what()); result = 2; }
+        mme_scene_capture::Release(app);
+        ShutdownCleanup(app); delete app; g_Block = nullptr; UnhookWindowsHookEx(guard);
+        std::printf("MME_CAPTURE cleanup complete result=%d\n", result);
+        return result;
+    }
     if (argc == 4 && std::wcscmp(argv[2], L"--model-adapt") == 0) {
         CheckMmeModelAdapt(app, argv[3]);
         ShutdownCleanup(app); delete app; g_Block = nullptr; UnhookWindowsHookEx(guard); return 0;
@@ -741,6 +754,7 @@ int wmain(int argc, wchar_t** argv) {
               "assigned EMM effect renders magenta pixels on the real model");
         Check(effectPathDiagnostics > 0, "effect file is recorded before entering native D3DX compilation");
         MH_DisableHook(vtable[17]);
+          if (std::getenv("MMS_PMM_VERSION_TEST")) CheckVersionEffectSave(app, argv[3]);
         Check(!IsWindowVisible(app->MainWindow()), "host stays hidden");
         ShutdownCleanup(app); delete app; g_Block = nullptr; UnhookWindowsHookEx(guard); return 0;
     }

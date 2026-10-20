@@ -17,6 +17,7 @@ struct Settings {
     unsigned intervalMinutes = 1;
     unsigned maxBackups = 100;
     bool overwriteOldest = false;
+    bool keepPrevious = false; // Preserve same-directory PMM1 and paired EMM versions.
     std::wstring directory; // Periodic copies only. Crash copies use data/backups.
 };
 enum class Result { Saved, Disabled, Busy, Full, Failed };

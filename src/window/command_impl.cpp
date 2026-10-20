@@ -310,7 +310,7 @@ void CmdOpenScene(MMDApp* app) {
     ofn.hwndOwner = app->FloatingWindow() != nullptr
                         ? app->FloatingWindow()
                         : MainHwnd(app);
-    ofn.lpstrFilter = L"PolygonMovieMaker files(*.pmm)\0*.pmm\0";
+    ofn.lpstrFilter = L"PolygonMovieMaker files(*.pmm*)\0*.pmm*\0All files(*.*)\0*.*\0";
     ofn.lpstrFile = path;
     ofn.nMaxFile = kDialogPathLen;
     ofn.Flags = OFN_FILEMUSTEXIST;              // 0x1000

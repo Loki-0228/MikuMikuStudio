@@ -6,6 +6,7 @@
 #include "mikumikustudio/effect_api.hpp"
 #include "mikumikustudio/text_encoding.hpp"
 #include "mikumikustudio/runtime_log.hpp"
+#include "mikumikustudio/pmm_paths.hpp"
 #include <atomic>
 #include <cstring>
 #include <string>
@@ -23,6 +24,19 @@ struct RelativeAssignment {
 };
 std::mutex assignmentMutex;
 std::vector<RelativeAssignment> assignments;
+std::vector<RelativeAssignment> projectAliases;
+
+bool ProjectAlias(const wchar_t* filename, std::wstring& result) {
+    if (!filename || !*filename) return false;
+    const auto path = fs::absolute(filename).lexically_normal();
+    std::lock_guard<std::mutex> lock(assignmentMutex);
+    for (const auto& entry : projectAliases) {
+        if (_wcsicmp(path.c_str(), entry.legacy.c_str()) == 0) {
+            result = entry.local.wstring(); return true;
+        }
+    }
+    return false;
+}
 
 bool RegularFile(const fs::path& path) {
     const DWORD attributes = GetFileAttributesW(path.c_str());
@@ -128,6 +142,9 @@ bool ExistingPath(const char* bytes, std::wstring& path, UINT& codePage) {
     if (!bytes || !*bytes) return false;
     for (UINT cp : {GetACP(), 932u, 936u, 950u, 949u, 65001u}) {
         std::wstring decoded;
+        if (text_encoding::Decode(bytes, cp, decoded) && ProjectAlias(decoded.c_str(), path)) {
+            codePage = cp; return true;
+        }
         if (text_encoding::Decode(bytes, cp, decoded) && RelativePath(decoded.c_str(), path)) {
             codePage = cp;
             return true;
@@ -174,6 +191,14 @@ HANDLE WINAPI OpenEffectFile(LPCSTR filename, DWORD access, DWORD share,
                             LPSECURITY_ATTRIBUTES security, DWORD creation,
                             DWORD attributes, HANDLE templateFile) {
     const bool readOnly = creation == OPEN_EXISTING && (access == GENERIC_READ || access == 0);
+    // Only our explicitly registered notification aliases can redirect writes.
+    // In particular, missing effect/texture files never redirect a write.
+    for (UINT cp : {GetACP(), 932u, 936u, 950u, 949u, 65001u}) {
+        std::wstring decoded, mapped;
+        if (text_encoding::Decode(filename, cp, decoded) && ProjectAlias(decoded.c_str(), mapped))
+            return TrackAssignmentRead(CreateFileW(mapped.c_str(), access, share, security,
+                creation, attributes, templateFile), readOnly);
+    }
     std::wstring preferred;
     UINT preferredCp = 0;
     if (readOnly && ExistingPath(filename, preferred, preferredCp)) {
@@ -364,12 +389,36 @@ void InstallEffectPathCompatibility() {
 void PrepareEffectProjectPaths(const wchar_t* project) {
     if (!project || !*project) return;
     try {
-        auto emm = fs::absolute(project);
-        emm.replace_extension(L".emm");
+        const auto emm = pmm_paths::Effect(fs::absolute(project));
         ReadAssignments(emm);
     } catch (...) {
         std::lock_guard<std::mutex> lock(assignmentMutex);
         assignments.clear();
+    }
+}
+
+std::wstring EffectProjectNotificationPath(const wchar_t* project) {
+    const auto path = fs::absolute(project).lexically_normal();
+    if (!pmm_paths::IsProject(path) || path.extension().wstring().size() == 4) return path.wstring();
+    const auto local = pmm_paths::Effect(path);
+    std::lock_guard<std::mutex> lock(assignmentMutex);
+    for (const auto& entry : projectAliases) {
+        if (_wcsicmp(entry.local.c_str(), local.c_str()) == 0) {
+            auto notification = entry.legacy; notification.replace_extension(L".pmm");
+            return notification.wstring();
+        }
+    }
+    // A unique virtual filename avoids colliding with a real scene.pmm1.pmm.
+    // MMHack queues notifications before checking whether CreateFile succeeds.
+    static unsigned sequence = 0;
+    for (;;) {
+        auto notification = path.parent_path() / (L"~mms-" + std::to_wstring(GetCurrentProcessId()) +
+            L"-" + std::to_wstring(++sequence) + L".pmm");
+        auto legacy = notification; legacy.replace_extension(L".emm");
+        if (GetFileAttributesW(notification.c_str()) != INVALID_FILE_ATTRIBUTES ||
+            GetFileAttributesW(legacy.c_str()) != INVALID_FILE_ATTRIBUTES) continue;
+        projectAliases.push_back({legacy, local});
+        return notification.wstring();
     }
 }
 }  // namespace mikumikustudio

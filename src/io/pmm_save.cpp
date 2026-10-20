@@ -11,6 +11,7 @@
 #include <thread>
 #include <memory>
 #include "mikumikustudio/background_save.hpp"
+#include "pmm_save_versions.hpp"
 #include "mikumikustudio/frame_presentation.hpp"
 #include <filesystem>
 #include "mikumikustudio/mmv4mms.hpp"
@@ -1115,6 +1116,7 @@ bool SceneSaveInProgress() noexcept { return saveInProgress.load(); }
 struct SceneSnapshot {
     std::wstring target;
     bool backup = false;
+    bool keepPrevious = false;
     std::vector<unsigned char> bytes;
     pmm_extension::Document extensions;
     mesh_bake_cache::SaveSnapshot meshCache;
@@ -1267,6 +1269,7 @@ static bool CaptureScene(MMDApp* app, const wchar_t* target, bool backup, SceneS
     snapshot.target = std::filesystem::absolute(target).wstring();
     if (snapshot.target.size() >= kPathFieldCapacity) return false;
     snapshot.backup = backup;
+    snapshot.keepPrevious = !backup && pmm_paths::IsProject(target) && autosave::Current().keepPrevious;
     snapshot.compatibility = compatibility;
     struct Sink {
         explicit Sink(std::vector<unsigned char>& bytes) { pmmSnapshotSink = &bytes; }
@@ -1328,7 +1331,10 @@ static bool WriteSnapshot(SceneSnapshot& snapshot) {
 #endif
         _commit(fd) == 0;
     const bool closed = _close(fd) == 0; fd = -1;
-    if (!written || !closed || !MoveFileExW(temporary, destination,
+    if (!written || !closed) return false;
+    if (snapshot.keepPrevious) {
+        if (!pmm_versions::Publish(temporary, destination)) return false;
+    } else if (!MoveFileExW(temporary, destination,
         (backup ? 0 : MOVEFILE_REPLACE_EXISTING) | MOVEFILE_WRITE_THROUGH)) return false;
 #if !MMD_ORIGINAL_PROFILE
     if (!backup && snapshot.compatibility.namesNeedExtension && snapshot.compatibility.canCopyLegacy) {
