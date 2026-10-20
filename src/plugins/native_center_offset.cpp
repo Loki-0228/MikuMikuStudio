@@ -32,7 +32,7 @@ bool Ready(MMDApp& app) noexcept {
     return !app.CameraMode() && app.SelectedModelSlot() < kModelSlotCount &&
         app.ModelSlot(app.SelectedModelSlot()) && !app.PlaybackActive() && !app.FrameStepPlayback() &&
         !app.state.recordPlaybackStartPending && !app.SceneMutationInProgress() && !bake::UiLocked() &&
-        !SceneSaveInProgress() && !GetCapture() && !app.FrameRangeDialog() && !app.state.frameCopyDialog &&
+        !SceneSaveBlocksEdits() && !GetCapture() && !app.FrameRangeDialog() && !app.state.frameCopyDialog &&
         !app.RecordingWindow() && !app.GravitySettingDialog() && !app.GroundShadowColorDialog() &&
         !app.AccessoryOrderArray() && !app.state.accessoryEditDialogOpen && !app.state.edgeThicknessDialog;
 }

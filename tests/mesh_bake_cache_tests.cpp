@@ -36,6 +36,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace mikumikustudio {
@@ -494,7 +495,8 @@ void CacheBasics(const std::filesystem::path& directory, Scene& scene,
     scene.BindAccessory2();
 
     std::string error;
-    Check(Install(scene.app, archive, error), "install the first archive: " + error);
+    const bool installed = Install(scene.app, archive, error);
+    Check(installed, "install the first archive: " + error);
     Check(Has(scene.Model0()), "the model object is cached");
     Check(Has(scene.Accessory2()), "the accessory object is cached");
     Check(!Has(nullptr), "a null object is never cached");
@@ -1574,6 +1576,67 @@ void CutoffGenerations(const std::filesystem::path& directory, Scene& scene) {
     Trace("per-object cutoff layers and generation bindings");
 }
 
+void SnapshotLifetime(const std::filesystem::path& directory, Scene& scene) {
+    namespace cache = mikumikustudio::mesh_bake_cache;
+    Clear(); ResetSlots(scene.app); scene.BindModel0();
+    const auto archive = directory / L"snapshot-source.abc";
+    WriteArchive(archive, {{kModelChild, 42.0f}}, 4, 30.0, 0.0);
+    std::string error;
+    Check(Install(scene.app, archive, error), "install snapshot source: " + error);
+    auto snapshot = cache::CaptureSave(scene.app);
+    Clear(); ResetSlots(scene.app);
+    Check(Empty(), "live cache can be cleared and its model removed while the snapshot owns its files");
+    extension::Document document;
+    const auto path = directory / L"snapshot-project.pmm";
+    bool published = false;
+    std::thread worker([&] { published = snapshot(path, document, error); });
+    worker.join();
+    Check(published, "a worker publishes the captured cache after live objects were removed: " + error);
+    Check(extension::Find(document, kRecordKey) != nullptr, "snapshot retains the original slot mapping");
+    scene.BindModel0();
+    Check(Load(scene.app, path, document, error), "reload snapshot cache: " + error);
+    Check(Has(scene.Model0()) && SampleAt(scene.Model0(), 0, "snapshot sample")[0].positions[0][0] == 42.0f,
+          "saved snapshot restores its original archive contents");
+    Clear();
+    Check(Install(scene.app, archive, error, {}, 2), "install layered snapshot source: " + error);
+    cache::TimeScalePlanPtr doubled;std::size_t count = 0;
+    Check(cache::PrepareTimeScale(2, doubled, count, error) && count == 1 && cache::CommitTimeScale(doubled, error),
+          "prepare captured time scale independently of future live edits");
+    Check(BindGeneration(scene.Model0(), 123), "bind session identity before capturing the layered cache");
+    auto layered = cache::CaptureSave(scene.app);
+    cache::TimeScalePlanPtr changed;
+    Check(cache::PrepareTimeScale(3, changed, count, error) && cache::CommitTimeScale(changed, error),
+          "live cache can change time scale after snapshot capture");
+    const auto replacement = directory / L"snapshot-replacement.abc";
+    WriteArchive(replacement, {{kModelChild, 99.0f}}, 4, 30.0, 0.0);
+    Check(Install(scene.app, replacement, error, {}, 7), "live model cache can be replaced after capture: " + error);
+    extension::Set(document, "test.snapshot.keep", {1,2,3});
+    const auto layeredPath = directory / L"snapshot-layered.pmm";
+    Check(layered(layeredPath, document, error), "publish captured cutoff/time scale rather than live replacement: " + error);
+    Check(extension::Find(document, cache::kRecordKeyV3) && !extension::Find(document, kRecordKey) &&
+          !extension::Find(document, cache::kRecordKeyV2), "snapshot uses the existing layered record format exclusively");
+    Clear();
+    Check(Load(scene.app, layeredPath, document, error), "reload layered snapshot: " + error);
+    EntryInfo info;
+    Check(Info(scene.Model0(), info) && info.cutoffLayer == 2 && info.sourceGeneration == 0,
+          "snapshot freezes cutoff while leaving session generation unbound on disk");
+    Check(SampleAt(scene.Model0(), 4.0/30.0, "captured time scale")[0].positions[0][0] == 44.0f,
+          "snapshot freezes the original archive and its doubled time scale");
+    Clear();
+    auto empty = cache::CaptureSave(scene.app);
+    Check(Install(scene.app, replacement, error), "populate live cache after capturing an empty scene");
+    Check(empty(layeredPath, document, error) && !extension::Find(document, kRecordKey) &&
+          !extension::Find(document, cache::kRecordKeyV2) && !extension::Find(document, cache::kRecordKeyV3) &&
+          extension::Find(document, "test.snapshot.keep"), "empty snapshot erases only its own stale records, regardless of new live entries");
+    Check(Has(scene.Model0()) && SampleAt(scene.Model0(), 0, "unchanged live replacement")[0].positions[0][0] == 99.0f,
+          "publishing an empty snapshot does not clear the current live cache");
+    const auto retained = document;
+    Check(!snapshot({}, document, error) && document.records.size() == retained.records.size() &&
+          extension::Find(document, "test.snapshot.keep"), "invalid snapshot destination cannot partially change the document");
+    snapshot = {}; layered = {}; empty = {}; Clear();
+    Trace("immutable save snapshots, worker publication and archive lifetime");
+}
+
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
@@ -1608,6 +1671,7 @@ int wmain(int argc, wchar_t** argv) {
     NativeRange(project, scene);
     TimeScale(project, scene);
     CutoffGenerations(unicode, scene);
+    SnapshotLifetime(unicode, scene);
 
     Clear();
     Check(Empty(), "the cache is empty at the end");

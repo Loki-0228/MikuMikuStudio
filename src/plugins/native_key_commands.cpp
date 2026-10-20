@@ -33,7 +33,7 @@ bool ModelReady(const MMDApp& app) noexcept {
 bool CameraInterpolationReady(MMDApp& app) noexcept {
     return !app.PlaybackActive() && !app.FrameStepPlayback() &&
         !app.state.recordPlaybackStartPending && !app.SceneMutationInProgress() &&
-        !bake::UiLocked() && !SceneSaveInProgress() && !GetCapture() &&
+        !bake::UiLocked() && !SceneSaveBlocksEdits() && !GetCapture() &&
         !app.FrameRangeDialog() && !app.state.frameCopyDialog && !app.RecordingWindow() &&
         !app.GravitySettingDialog() && !app.GroundShadowColorDialog() && !app.AccessoryOrderArray() &&
         !app.state.accessoryEditDialogOpen && !app.state.edgeThicknessDialog;

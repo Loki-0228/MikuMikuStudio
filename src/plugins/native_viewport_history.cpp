@@ -44,7 +44,7 @@ bool ViewportReady(MMDApp& a,bool allowAuthorizedHistory=false) noexcept {
     return !a.PlaybackActive() && !a.FrameStepPlayback() &&
         !a.state.recordPlaybackStartPending && (!a.SceneMutationInProgress()||authorizedHistory) &&
         (!bake::UiLocked()||authorizedHistory) &&
-        !SceneSaveInProgress() && !a.FrameRangeDialog() && !a.state.frameCopyDialog &&
+        !SceneSaveBlocksEdits() && !a.FrameRangeDialog() && !a.state.frameCopyDialog &&
         !a.RecordingWindow() && !a.GravitySettingDialog() && !a.GroundShadowColorDialog() &&
         !a.AccessoryOrderArray() && !a.state.accessoryEditDialogOpen && !a.state.edgeThicknessDialog;
 }

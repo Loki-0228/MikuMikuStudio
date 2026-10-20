@@ -1,3 +1,4 @@
+#include "mikumikustudio/background_save.hpp"
 #include "mikumikustudio/build_profile.hpp"
 #include "mikumikustudio/plugin_storage.hpp"
 #include "mikumikustudio/plugin_runtime.hpp"
@@ -112,6 +113,7 @@ static void KeyPoolLoadFailed(MMDApp* app, pmm_io::Input& input, bool replaced) 
 }
 
 void AcceptProjectSceneReplacement(MMDApp* app) {
+    app->AdvanceSceneGeneration();
     NotifyEffectFileOpen(app->EnvFileName());
     app->SceneModified() = 0;
     app->WindowLayoutReady() = 0;
@@ -133,6 +135,8 @@ bool LoadSceneFile(const wchar_t* candidate) {
     // The input can alias EnvFileName. Freeze it before assigning read context.
     wchar_t path[0x100]{};
     std::wmemcpy(path, candidate, length + 1);
+    background_save::Wait(app);
+    if (SceneSaveInProgress()) return false;
     bool replaced = false;
     struct RestoreIdentity {
         MMDApp* app;

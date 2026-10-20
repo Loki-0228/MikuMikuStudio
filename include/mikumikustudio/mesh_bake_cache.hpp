@@ -243,6 +243,12 @@ bool Empty();
 // of this module is erased so that one project never carries two records of it.
 // Records of other modules, including unknown "mds.mesh_cache.vN" keys this
 // build does not know, are left exactly as they are.
+// Capture on the scene/UI thread. The returned writer owns immutable slot,
+// timing and cutoff bindings plus the archives' private-file lifetimes; it
+// neither reads the app nor holds the live-store lock while publishing files.
+using SaveSnapshot = std::function<bool(const std::filesystem::path&,
+    pmm_extension::Document&, std::string&)>;
+SaveSnapshot CaptureSave(MMDApp& app);
 bool Save(MMDApp& app, const std::filesystem::path& pmm,
           pmm_extension::Document& document, std::string& error);
 

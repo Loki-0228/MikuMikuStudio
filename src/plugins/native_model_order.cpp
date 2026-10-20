@@ -18,7 +18,7 @@ bool Ready(MMDApp& app, bool replay) noexcept {
     const bool authorized = replay && NativeObjectPublicationAuthorized(&app);
     return (!bake::UiLocked() || authorized) && (!app.SceneMutationInProgress() || authorized) &&
         !app.PlaybackActive() && !app.FrameStepPlayback() && !app.state.recordPlaybackStartPending &&
-        !SceneSaveInProgress() && !GetCapture() && !NativeObjectUiPending(&app) &&
+        !SceneSaveBlocksEdits() && !GetCapture() && !NativeObjectUiPending(&app) &&
         !app.FrameRangeDialog() && !app.state.frameCopyDialog && !app.RecordingWindow() &&
         !app.GravitySettingDialog() && !app.GroundShadowColorDialog() &&
         !app.state.accessoryEditDialogOpen && !app.state.edgeThicknessDialog;

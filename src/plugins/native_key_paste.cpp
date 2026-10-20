@@ -25,7 +25,7 @@ bool TryPasteBoundKeys(MMDApp* app, HWND window, bool mirror) noexcept {
     if ((global ? mirror : (mirror ? !copied.bones : !families)) ||
         app->PlaybackActive() || app->FrameStepPlayback() ||
         app->state.recordPlaybackStartPending || app->SceneMutationInProgress() ||
-        bake::UiLocked() || SceneSaveInProgress() || GetCapture() ||
+        bake::UiLocked() || SceneSaveBlocksEdits() || GetCapture() ||
         app->FrameRangeDialog() || app->state.frameCopyDialog || app->RecordingWindow() ||
         app->GravitySettingDialog() || app->GroundShadowColorDialog() || app->AccessoryOrderArray() ||
         app->state.accessoryEditDialogOpen || app->state.edgeThicknessDialog ||

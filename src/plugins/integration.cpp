@@ -8,6 +8,7 @@
 #include "native_history_commands.hpp"
 #include "native_object_commands.hpp"
 #include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/autosave.hpp"
 #include "mikumikustudio/animation_curve_editor.hpp"
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/plugin_storage.hpp"
@@ -22,6 +23,7 @@
 #include "../window/ui_control_layout.hpp"
 #include <ShlObj.h>
 #include <commctrl.h>
+#include <atomic>
 #include <cwchar>
 
 namespace mikumikustudio { void LayoutViewportPanels(MMDApp*); }
@@ -57,6 +59,7 @@ std::unique_ptr<NativePoseTestBinding> migrationBinding;
 #endif
 std::unique_ptr<SharedHistory::ResetTransaction> projectHistoryReset;
 MMDApp* owner = nullptr;
+std::uint64_t runtimeBinding = 0;
 int toolbarHeight = 0;
 bool refreshing = false, closing = false;
 bool historyUiPending = false;
@@ -131,6 +134,8 @@ LRESULT CALLBACK Subclass(HWND hwnd, UINT message, WPARAM wp, LPARAM lp, UINT_PT
 static void InitializeRuntime(MMDApp* app, bool migrationTest) {
     if (build_profile::original || !app || manager) return;
     const auto initialized = Boundary([&] {
+        if (runtimeBinding == UINT64_MAX) throw std::runtime_error("plugin runtime binding exhausted");
+        ++runtimeBinding;
         owner = app; closing = false;
         const auto data = local_data::File(L"plugins");
         if (data.empty()) throw std::runtime_error("plugin data directory unavailable");
@@ -140,6 +145,7 @@ static void InitializeRuntime(MMDApp* app, bool migrationTest) {
         if (manager->Storage().Prepare(currentProject.records) != MMS_OK || !manager->Storage().Commit()) throw std::runtime_error("initialize plugin project data");
         history = std::make_unique<SharedHistory>(manager->Storage(), [app] {
             if (closing || owner != app) return MMS_E_NOT_READY;
+            if (SceneSaveBlocksEdits()) return MMS_E_BUSY;
             bool objectPublication = false;
 #if !MMD_ORIGINAL_PROFILE
             objectPublication = NativeObjectPublicationAuthorized(app);
@@ -279,14 +285,36 @@ bool HandleShortcut(unsigned key, bool viewportFocused) {
 bool HandleDialogMessage(MSG* message) { return ui && !closing && ui->DialogMessage(message); }
 bool InCallback() { return manager && manager->InCallback(); }
 
-struct ProjectSave::Impl { MMDApp* app; PluginProject data; StoredRecords storeRecords; };
+struct ProjectSave::Impl {
+    enum class Stage { Captured, Publishing, Published, Failed, Completed };
+    MMDApp* app = nullptr;
+    MMDApp* runtimeOwner = nullptr;
+    Manager* capturedManager = nullptr;
+    DWORD thread = GetCurrentThreadId();
+    std::uint64_t binding = 0;
+    PluginProject data;
+    StoredRecords storeRecords;
+    std::wstring destination;
+    bool copy = false;
+    std::atomic<Stage> stage{Stage::Captured};
+};
 ProjectSave::ProjectSave(MMDApp* app) : impl_(std::make_unique<Impl>()) {
+    if (!app || (app->MainWindow() && GetWindowThreadProcessId(app->MainWindow(), nullptr) != impl_->thread))
+        throw std::runtime_error("project save capture requires the UI thread");
     if(app->SceneMutationInProgress() || (manager && owner==app && manager->InCallback()))throw std::runtime_error("project save during callback or scene mutation");
+    auto* journal = owner == app ? history.get() : nullptr;
 #if !MMD_ORIGINAL_PROFILE
+    if (!journal) journal = BoundNativePoseHistory(app);
     if (NativeObjectOperationActive(app) || NativeObjectUiPending(app)) throw std::runtime_error("object UI refresh pending");
 #endif
+    // Capture may run under the save edit gate, so use the read-only admission
+    // probe. A pending applied native edit can already have temporary live
+    // values which are still cancellable and must never reach a saved pair.
+    if (journal && journal->CheckNativeNavigation() != MMS_OK)
+        throw std::runtime_error("project save during a pending history transaction");
     if(currentProject.projectId.empty())currentProject.projectId=StorageId();
     impl_->app = app; impl_->data = currentProject;
+    impl_->runtimeOwner = owner; impl_->capturedManager = manager.get(); impl_->binding = runtimeBinding;
     if (manager && owner == app) {
         const auto r = manager->Storage().Capture(impl_->data.records);
         if (r) throw std::runtime_error("plugin serializer save returned " + std::to_string(r));
@@ -294,20 +322,50 @@ ProjectSave::ProjectSave(MMDApp* app) : impl_(std::make_unique<Impl>()) {
     }
 }
 ProjectSave::~ProjectSave() = default;
-bool ProjectSave::Publish(const wchar_t* staged, const wchar_t* destination, bool copy) {
+bool ProjectSave::PublishDisk(const wchar_t* staged, const wchar_t* destination, bool copy) noexcept {
+    if (!staged || !*staged || !destination || !*destination) return false;
+    auto expected = Impl::Stage::Captured;
+    if (!impl_->stage.compare_exchange_strong(expected, Impl::Stage::Publishing)) return false;
     try {
+        impl_->destination = destination; impl_->copy = copy;
         PublishProjectPair(fs::absolute(destination),fs::absolute(staged),impl_->data,copy);
-        if (!copy) {
-            if (manager && owner == impl_->app) manager->Storage().Saved(impl_->storeRecords);
-            currentProject=std::move(impl_->data);
-        }
+        impl_->stage.store(Impl::Stage::Published, std::memory_order_release);
         return true;
     } catch (const std::exception& e) {
-        LogMessage(std::string("project save failed: ")+e.what());
+        runtime_log::Write("PLUGIN_ABI project save failed: %s", e.what());
         try { RecoverProjectPair(fs::absolute(destination)); }
-        catch (const std::exception& recovery) { LogMessage(std::string("project recovery pending: ")+recovery.what()); }
-        return false;
+        catch (const std::exception& recovery) { runtime_log::Write("PLUGIN_ABI project recovery pending: %s", recovery.what()); }
+        catch (...) { runtime_log::Write("PLUGIN_ABI project recovery pending after an unknown exception"); }
+    } catch (...) {
+        runtime_log::Write("PLUGIN_ABI project save failed with an unknown exception");
     }
+    impl_->stage.store(Impl::Stage::Failed, std::memory_order_release);
+    return false;
+}
+bool ProjectSave::Complete(const wchar_t* destination, bool copy) noexcept {
+    if (GetCurrentThreadId() != impl_->thread || !destination) return false;
+    const auto stage = impl_->stage.load(std::memory_order_acquire);
+    if (stage != Impl::Stage::Published && stage != Impl::Stage::Completed) return false;
+    if (copy != impl_->copy || _wcsicmp(destination, impl_->destination.c_str())) return false;
+    if (stage == Impl::Stage::Completed) return true;
+    // Compare the runtime token before following any captured native pointer.
+    // In particular, allocator address reuse after unload/reload is not enough
+    // to admit an old snapshot into the new manager's last-saved baseline.
+    if (runtimeBinding != impl_->binding || owner != impl_->runtimeOwner || manager.get() != impl_->capturedManager ||
+        (manager && (owner != impl_->app || closing || manager->InCallback() || manager->Storage().Prepared()))) return false;
+    if (!copy) {
+        // Saved is a last-saved byte baseline, not prepareLoad/commitLoad.
+        // Newer live edits and the common journal remain untouched.
+        if (manager) manager->Storage().Saved(impl_->storeRecords);
+        currentProject = std::move(impl_->data);
+    }
+    impl_->stage.store(Impl::Stage::Completed, std::memory_order_release);
+    return true;
+}
+bool ProjectSave::Publish(const wchar_t* staged, const wchar_t* destination, bool copy) {
+    if (GetCurrentThreadId() != impl_->thread || !PublishDisk(staged, destination, copy)) return false;
+    Complete(destination, copy);
+    return true;
 }
 bool PrepareProjectLoad(MMDApp* app, const wchar_t* path) {
     if (build_profile::original) return true;
@@ -397,6 +455,7 @@ bool ResetPluginProject(MMDApp* app) {
 }
 void PluginProjectSaved(MMDApp* app,const wchar_t* path){QueueProjectEvent(app,MMS_EVENT_PROJECT_SAVED,path);}
 bool DeletePluginBackup(const wchar_t* path) {
+    if (!path || !*path) return false;
     if(build_profile::original)return DeleteFileW(path)!=FALSE;
     // Caller has already checked the native PMM ownership marker. Only remove
     // an accompanying extension if its hash proves it belongs to this PMM.

@@ -30,7 +30,7 @@ namespace {
 bool Ready(MMDApp& a,bool history=false) noexcept {
     const bool authorized=history&&NativeObjectPublicationAuthorized(&a);
     return !a.PlaybackActive()&&!a.FrameStepPlayback()&&!a.state.recordPlaybackStartPending&&
-        (!a.SceneMutationInProgress()||authorized)&&(!bake::UiLocked()||authorized)&&!SceneSaveInProgress()&&
+        (!a.SceneMutationInProgress()||authorized)&&(!bake::UiLocked()||authorized)&&!SceneSaveBlocksEdits()&&
         !GetCapture()&&!a.FrameRangeDialog()&&!a.state.frameCopyDialog&&!a.RecordingWindow()&&
         !a.GravitySettingDialog()&&!a.GroundShadowColorDialog()&&!a.AccessoryOrderArray()&&
         !a.state.accessoryEditDialogOpen&&!a.state.edgeThicknessDialog&&

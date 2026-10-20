@@ -62,7 +62,7 @@ bool Finite(const Pose& value)noexcept{
 bool Ready(MMDApp& app,bool replay=false)noexcept{
     const bool authorized=replay&&NativeObjectPublicationAuthorized(&app);
     return !app.PlaybackActive()&&!app.FrameStepPlayback()&&!app.state.recordPlaybackStartPending&&
-        (!app.SceneMutationInProgress()||authorized)&&(!bake::UiLocked()||authorized)&&!SceneSaveInProgress()&&
+        (!app.SceneMutationInProgress()||authorized)&&(!bake::UiLocked()||authorized)&&!SceneSaveBlocksEdits()&&
         !app.FrameRangeDialog()&&!app.state.frameCopyDialog&&!app.RecordingWindow()&&!app.GravitySettingDialog()&&
         !app.GroundShadowColorDialog()&&!app.AccessoryOrderArray()&&!app.state.accessoryEditDialogOpen&&!app.state.edgeThicknessDialog;
 }

@@ -38,7 +38,7 @@ bool Ready(MMDApp& app, HWND shadowDialog = nullptr, HWND authorSlider = nullptr
           authorSlider == GetDlgItem(app.MainWindow(), GetDlgCtrlID(authorSlider))));
     return !app.PlaybackActive() && !app.FrameStepPlayback() &&
         !app.state.recordPlaybackStartPending && !app.SceneMutationInProgress() &&
-        !bake::UiLocked() && !SceneSaveInProgress() &&
+        !bake::UiLocked() && !SceneSaveBlocksEdits() &&
         (!capture || (ownShadow && capture == GetDlgItem(shadowDialog, panel::kGroundShadowSlider)) ||
             (ownAuthorSlider && capture == authorSlider)) &&
         !app.FrameRangeDialog() && !app.state.frameCopyDialog && !app.RecordingWindow() &&

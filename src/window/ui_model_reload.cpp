@@ -361,6 +361,30 @@ void RebuildCameraModePanel(MMDApp* app) {  // was Sub44D780, 0x44D780
     ApplyCurrentCameraView(app);
 }
 
+int ResolveModelComboSelection(MMDApp* app) {
+    if (!app) return 0;
+    const auto order = model_order::Project<kModelSlotCount>([&](std::size_t slot) noexcept {
+        const auto* model = app->ModelSlot(static_cast<int>(slot));
+        return model ? int(mdl::Mdl(model)->comboSelIndex) : -1;
+    });
+    if (!order.count) { app->MainModelComboSelection() = 0; return 0; }
+    const auto combo = MainControl(app, panel::kMainComboModel);
+    const auto count = SendMessageW(combo, CB_GETCOUNT, 0, 0);
+    const auto item = [&](std::size_t row) noexcept { return SendMessageW(combo, CB_GETITEMDATA, row, 0); };
+    // A partial managed list must not turn "To model" into a load-file action
+    // or map a caption to a different object. Leave its remembered row intact.
+    if (model_order::Resolve(order, 1, count, item) < 0) return -1;
+    int row = static_cast<int>(app->MainModelComboSelection());
+    if (model_order::Resolve(order, row, count, item) < 0) {
+        const unsigned selected = app->SelectedModelSlot();
+        row = selected < kModelSlotCount && app->ModelSlot(static_cast<int>(selected))
+            ? model_order::FindRow(order, selected, count, item) : -1;
+        if (row < 1) row = 1;
+    }
+    app->MainModelComboSelection() = row;
+    return row;
+}
+
 void ApplyModelComboSelection(MMDApp* app) {  // was Sub44D940, 0x44D940
     HWND hwnd = static_cast<HWND>(app->Hwnd());
     const int selection = static_cast<int>(
@@ -374,6 +398,9 @@ void ApplyModelComboSelection(MMDApp* app) {  // was Sub44D940, 0x44D940
     };
 
     if (selection == 0) {
+        // A PMM can start in camera mode before selecting a model row. Keep
+        // the loaded object target without changing the visible camera mode.
+        ResolveModelComboSelection(app);
         if (app->state.optflag[0] == 0) {
             SendMessageA(GetDlgItem(hwnd, panel::kIkChainCombo), CB_RESETCONTENT, 0, 0);
             HWND frameCombo = GetDlgItem(hwnd, panel::kRegisterScopeCombo);

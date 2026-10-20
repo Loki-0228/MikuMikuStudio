@@ -34,7 +34,7 @@ bool Ready(MMDApp& app, HWND slider = nullptr) noexcept {
     const auto capture=GetCapture();
     return !app.CameraMode() && !app.PlaybackActive() && !app.FrameStepPlayback() &&
         !app.state.recordPlaybackStartPending && !app.SceneMutationInProgress() &&
-        !bake::UiLocked() && !SceneSaveInProgress() && (!capture || (ownSlider && capture==slider)) &&
+        !bake::UiLocked() && !SceneSaveBlocksEdits() && (!capture || (ownSlider && capture==slider)) &&
         !app.FrameRangeDialog() && !app.state.frameCopyDialog && !app.RecordingWindow() &&
         !app.GravitySettingDialog() && !app.GroundShadowColorDialog() && !app.AccessoryOrderArray() &&
         !app.state.accessoryEditDialogOpen && !app.state.edgeThicknessDialog;

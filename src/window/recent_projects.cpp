@@ -1,3 +1,4 @@
+#include "mikumikustudio/background_save.hpp"
 #include "mikumikustudio/recent_projects.hpp"
 #include "settings_json.hpp"
 #include "mikumikustudio/local_data_path.hpp"
@@ -172,6 +173,8 @@ bool HandleMessage(MMDApp* app,UINT msg,WPARAM wp,LPARAM lp) {
             if(path.size()>=kPathFieldCapacity || attributes==INVALID_FILE_ATTRIBUTES || (attributes&FILE_ATTRIBUTE_DIRECTORY)) {
                 ShowUiMessage(app,app->MainWindow(),UiMessage::OpenProjectError,MB_OK|MB_ICONERROR,path.c_str());return true;
             }
+            background_save::Wait(app);
+            if (SceneSaveInProgress()) return true;
             if(app->SceneModified() && ShowUiMessage(app,app->MainWindow(),UiMessage::OpenUnsaved,MB_OKCANCEL|MB_TOPMOST)!=IDOK)return true;
             if(path.size()>=kPathFieldCapacity)return true;
             (void)LoadSceneFile(path.c_str());return true;

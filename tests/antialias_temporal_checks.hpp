@@ -157,6 +157,22 @@ void CheckTemporalResolveShader() {
     nearSurface[0]=1.f/side;
     motion->UnlockRect(0);
     Check(std::abs(render()-128)<=1,"moving occluder cannot be mistaken for stationary jitter coverage");
+    const auto fringeMotion=[&](unsigned distance,float displacement,bool visibleUntracked=false) {
+        Check(SUCCEEDED(motion->LockRect(0,&adjacent,nullptr,0)),"write softened silhouette motion footprint");
+        for(unsigned y=0;y<side;++y)std::memset(static_cast<char*>(adjacent.pBits)+y*adjacent.Pitch,0,side*4*sizeof(float));
+        auto* tracked=reinterpret_cast<float*>(static_cast<char*>(adjacent.pBits)+16*adjacent.Pitch)+(16-distance)*4;
+        tracked[0]=displacement;tracked[2]=5;tracked[3]=3;
+        if(visibleUntracked)reinterpret_cast<float*>(static_cast<char*>(adjacent.pBits)+16*adjacent.Pitch)[16*4+2]=5;
+        motion->UnlockRect(0);
+    };
+    previousPlane(8);fringeMotion(2,0);
+    Check(std::abs(render()-72)<=1,"two-pixel softened fringe retains stationary silhouette history");
+    fringeMotion(3,0);
+    Check(std::abs(render()-128)<=1,"background beyond the softened footprint cannot borrow distant history");
+    fringeMotion(2,0,true);
+    Check(std::abs(render()-128)<=1,"visible untracked fragment rejects the outer silhouette neighbor");
+    previousPlane(1);fringeMotion(2,-4.f/side);
+    Check(std::abs(render()-128)<=1,"moving softened fringe still rejects occluded history");
     for(unsigned sampler=0;sampler<4;++sampler)device->SetTexture(sampler,nullptr);
     device->SetPixelShader(nullptr);
     cpu.Reset();target.Reset();scene.Reset();history.Reset();motion.Reset();depth.Reset();shader.Reset();

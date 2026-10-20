@@ -1,3 +1,4 @@
+#include "mikumikustudio/background_save.hpp"
 #include "mikumikustudio/update_coordinator.hpp"
 #include "mikumikustudio/key_pool.hpp"
 #include "mikumikustudio/autosave.hpp"
@@ -464,6 +465,7 @@ void TeardownDShowGraphCoUninit(DShowRecorder* rec) {
 // VA 0x00462C40 - ShutdownCleanup  (original: sub_462C40, __thiscall, app)
 // =========================================================================//
 void ShutdownCleanup(MMDApp* app) {
+    background_save::Shutdown(app);
     updates::Shutdown(app);
     viewport_render_scale::Release(app);
     antialias::Release(app);

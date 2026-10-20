@@ -61,7 +61,7 @@ bool Ready(MMDApp& app, bool replay = false) noexcept {
     const bool ownReplay = replay && NativeObjectPublicationAuthorized(&app);
     return !app.PlaybackActive() && !app.FrameStepPlayback() && !app.state.recordPlaybackStartPending &&
         (!app.SceneMutationInProgress() || ownReplay) && (!bake::UiLocked() || ownReplay) &&
-        !SceneSaveInProgress() && !GetCapture() && !app.FrameRangeDialog() && !app.state.frameCopyDialog &&
+        !SceneSaveBlocksEdits() && !GetCapture() && !app.FrameRangeDialog() && !app.state.frameCopyDialog &&
         !app.RecordingWindow() && !app.GravitySettingDialog() && !app.GroundShadowColorDialog() &&
         !app.AccessoryOrderArray() && !app.state.accessoryEditDialogOpen && !app.state.edgeThicknessDialog;
 }

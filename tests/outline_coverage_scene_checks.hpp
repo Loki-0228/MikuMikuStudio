@@ -134,6 +134,22 @@ void CheckOutlineStability(MMDApp* app,const wchar_t* directory) {
         } else if(mode!=antialias::Algorithm::MmdOriginal) {
             Check(changed==0 && worst==0,"spatial AA stays identical across a frozen sequence");
         }
+        if(mode==antialias::Algorithm::Taa||mode==antialias::Algorithm::SmaaT2xStandard||mode==antialias::Algorithm::SmaaT2xEnhanced) {
+            const float originalYaw=app->CameraYaw();
+            const auto samples=antialias::AccumulatedSamples(app);
+            float maxMotion=0;
+            for(unsigned frame=0;frame<8;++frame) {
+                app->CameraYaw()=originalYaw+(frame+1)*.004f;
+                captureRequested=true;app->DeltaTime()=0;app->state.messageSeen=10;FrameDriver(app);
+                Check(!captureRequested,"capture moving softened silhouette");
+                maxMotion=std::max(maxMotion,ReadAntialiasMotionField(app).MaximumPixels());
+            }
+            Check(maxMotion>.01f && antialias::AccumulatedSamples(app)>=samples+8 && previous!=capturedPixels,
+                "softened temporal outlines retain live camera motion and advancing history");
+            std::printf("OUTLINE_MOTION mode=%u max_pixels=%.6f samples=%u\n",
+                unsigned(mode),maxMotion,antialias::AccumulatedSamples(app));
+            app->CameraYaw()=originalYaw;
+        }
     }
     MH_DisableHook(vtable[17]);
 }

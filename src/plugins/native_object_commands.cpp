@@ -53,7 +53,7 @@ thread_local AccessorySettingsSession* accessorySettings = nullptr;
 constexpr UINT_PTR kOperationSubclass = 0x4d4d536e;
 
 bool Ready(MMDApp& app, bool pluginCall = false) noexcept {
-    return !operation && !bake::UiLocked() && !SceneSaveInProgress() &&
+    return !operation && !bake::UiLocked() && !SceneSaveBlocksEdits() &&
         !app.SceneMutationInProgress() && (!InCallback() || pluginCall) &&
         !app.PlaybackActive() && !app.FrameStepPlayback() && !app.state.recordPlaybackStartPending &&
         !app.FrameRangeDialog() && !app.state.frameCopyDialog && !app.RecordingWindow() &&

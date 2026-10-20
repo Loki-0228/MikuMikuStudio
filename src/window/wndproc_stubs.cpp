@@ -16,6 +16,7 @@
 #include "mikumikustudio/build_profile.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "../plugins/native_pose_axis.hpp"
+#include "../plugins/native_pose_scope.hpp"
 #include "../plugins/native_global_commands.hpp"
 #endif
 #include <Windows.h>
@@ -138,8 +139,13 @@ void DispatchSeparateWindowCommand(MMDApp* app, unsigned short id) {  // was Sub
     char text[0x100];
     switch (id) {
     case 0x218: {                                                // 0x4620D5
+#if !MMD_ORIGINAL_PROFILE
+        if (const auto* history = plugins::BoundNativePoseHistory(app))
+            if (history->CheckNativeNavigation() != MMS_OK) break;
+#endif
         if (s.CameraMode() != 0) {
-            const std::int32_t sel = s.MainModelComboSelection();
+            const std::int32_t sel = ResolveModelComboSelection(app);
+            if (sel < 0) break;
             if (sel != 0) {
                 SendMessageA(GetDlgItem(main, panel::kMainComboModel), CB_SETCURSEL,
                              static_cast<WPARAM>(sel), 0);

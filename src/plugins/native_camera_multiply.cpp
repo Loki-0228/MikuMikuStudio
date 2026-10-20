@@ -43,7 +43,7 @@ bool Ready(MMDApp& app, bool replay) noexcept {
     const bool authorized = replay && NativeObjectPublicationAuthorized(&app);
     return (!bake::UiLocked() || authorized) && (!app.SceneMutationInProgress() || authorized) &&
         !app.PlaybackActive() && !app.FrameStepPlayback() && !app.state.recordPlaybackStartPending &&
-        !SceneSaveInProgress() && !NativeObjectUiPending(&app) && !GetCapture();
+        !SceneSaveBlocksEdits() && !NativeObjectUiPending(&app) && !GetCapture();
 }
 Pose ReadPose(MMDApp& app) noexcept {
     Pose pose{};

@@ -386,6 +386,65 @@ LRESULT CALLBACK ResetPanelProc(HWND window, UINT message, WPARAM wp, LPARAM lp)
 // Exercise native edit focus loss and native button notifications without a
 // render device. Bind coordinates are intentionally nonzero: reset means the
 // bind pose, not moving the child bone onto the parent's origin.
+void ModelToggleSelection() {
+    using namespace mikumikustudio;
+    auto app = std::make_unique<MMDApp>();
+    ::new (static_cast<void*>(&app->state)) MMDAppState{};
+    HWND window = CreateWindowW(L"STATIC", L"model toggle regression", WS_POPUP,
+        0, 0, 400, 200, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    Check(window != nullptr, "create hidden model selection panel");
+    app->Hwnd() = window;
+    HWND combo = CreateWindowW(L"COMBOBOX", L"", WS_CHILD | CBS_DROPDOWNLIST,
+        0, 0, 200, 100, window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(panel::kMainComboModel)),
+        GetModuleHandleW(nullptr), nullptr);
+    Check(combo != nullptr, "create native model selection combo");
+    for (const auto* label : {L"camera/light/accessory", L"同名模型", L"同名模型"})
+        SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label));
+    auto first = std::make_unique<mdl::ModelRecord>(), second = std::make_unique<mdl::ModelRecord>();
+    first->comboSelIndex = 2; second->comboSelIndex = 1;
+    app->ModelSlot(3) = reinterpret_cast<unsigned char*>(first.get());
+    app->ModelSlot(9) = reinterpret_cast<unsigned char*>(second.get());
+    app->SetSelectedModelSlot(3); app->CameraMode() = 1; app->CurrentFrame() = 37;
+    app->CameraPositionX() = 17.25f;
+    SendMessageW(combo, CB_SETCURSEL, 0, 0);
+    Check(ResolveModelComboSelection(app.get()) == 2,
+          "camera-mode target uses loaded model identity independently of display order");
+    Check(SendMessageW(combo, CB_GETCURSEL, 0, 0) == 0 && app->CameraMode() == 1 &&
+          app->SelectedModelSlot() == 3 && app->CurrentFrame() == 37 && app->CameraPositionX() == 17.25f,
+          "remembering a model neither switches camera mode nor evaluates the current pose");
+    app->MainModelComboSelection() = 1;
+    Check(ResolveModelComboSelection(app.get()) == 1, "valid previously remembered model row wins");
+    app->MainModelComboSelection() = 255;
+    Check(ResolveModelComboSelection(app.get()) == 2, "stale remembered row falls back to the selected loaded object");
+    SendMessageW(combo, CB_SETITEMDATA, 0, -1);
+    SendMessageW(combo, CB_SETITEMDATA, 1, 3);SendMessageW(combo, CB_SETITEMDATA, 2, 9);
+    app->MainModelComboSelection() = 0;
+    Check(ResolveModelComboSelection(app.get()) == 1,
+          "managed item data maps the selected object even when its native rank differs");
+    app->SetSelectedModelSlot(255);app->MainModelComboSelection() = 0;
+    Check(ResolveModelComboSelection(app.get()) == 1, "invalid selected slot never indexes outside the model slot array");
+    app->SetSelectedModelSlot(3);
+    SendMessageW(combo, CB_SETITEMDATA, 1, 9);SendMessageW(combo, CB_SETITEMDATA, 2, 3);
+    app->ModelSlot(3) = nullptr; app->ModelSlot(254) = reinterpret_cast<unsigned char*>(first.get());
+    app->SetSelectedModelSlot(254);SendMessageW(combo, CB_SETITEMDATA, 2, 254);app->MainModelComboSelection() = 0;
+    Check(ResolveModelComboSelection(app.get()) == 2, "remembered camera-mode model target supports slot 254");
+    app->ModelSlot(254) = nullptr; app->ModelSlot(3) = reinterpret_cast<unsigned char*>(first.get());
+    app->SetSelectedModelSlot(3);SendMessageW(combo, CB_SETITEMDATA, 2, 9);app->MainModelComboSelection() = 2;
+    Check(ResolveModelComboSelection(app.get()) == -1 && app->MainModelComboSelection() == 2,
+          "duplicate managed item data refuses navigation without changing the remembered target");
+    CmdControl500(app.get(), window, panel::kModelEditToggle, BN_CLICKED);
+    DispatchSeparateWindowCommand(app.get(), panel::kModelEditToggle);
+    Check(SendMessageW(combo, CB_GETCURSEL, 0, 0) == 0 && app->CameraMode() == 1 && app->SelectedModelSlot() == 3,
+          "main and detached toggles reject incomplete model mapping before changing camera mode or opening a picker");
+    SendMessageW(combo, CB_SETITEMDATA, 2, 3);
+    app->ModelSlot(3) = nullptr;SendMessageW(combo, CB_DELETESTRING, 2, 0);
+    Check(ResolveModelComboSelection(app.get()) == 1, "removed selected model falls back to another loaded object");
+    app->ModelSlot(9) = nullptr;SendMessageW(combo, CB_DELETESTRING, 1, 0);
+    Check(ResolveModelComboSelection(app.get()) == 0, "an empty scene still permits model loading");
+    DestroyWindow(window); app->Hwnd() = nullptr;
+    std::puts("PASS model toggle restores loaded object identity without changing camera mode");
+}
+
 void BoneTranslationReset() {
     using namespace mikumikustudio;
     for (bool separate : {false, true})
@@ -615,10 +674,12 @@ int main(int argc, char** argv) {
     // Unbuffered so a hang (or a crash) still shows which case was running.
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     if (argc > 1 && std::strcmp(argv[1], "--bone-translation-reset") == 0) {
+        ModelToggleSelection();
         BoneTranslationReset();
         return 0;
     }
     std::puts("panel_key_tests: start");
+    ModelToggleSelection();
     std::puts("  case 1/5 FOV data flow");
     FovDataFlow();
     std::puts("  case 2/5 Delete preconditions");

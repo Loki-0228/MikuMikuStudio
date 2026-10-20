@@ -121,11 +121,12 @@ void PublishProjectPair(const fs::path& target,const fs::path& stagedMain,Plugin
     // Reject mismatched existing sidecars even when overwriting a different project.
     if(fs::exists(PluginSidecar(target))){auto previous=DecodeProject(ReadFile(PluginSidecar(target),kMaxSidecar));if(!Matches(target,previous.mainHash))throw std::runtime_error("existing plugin sidecar does not match PMM");}
     if(data.projectId.empty())data.projectId=StorageId();data.saveId=StorageId();data.mainHash=FileHash(stagedMain);
-    const Paths p(target,data.saveId);bool journal=false;
+    const Paths p(target,data.saveId);bool journal=false,firstMoveAttempted=false,destinationChanged=false;
+    std::string oldMain,oldSide;
     auto checkpoint=[&](unsigned n){if(step)step(n);};
     try{
         CopyDurable(stagedMain,p.newMain);WriteDurable(p.newSide,EncodeProject(data));
-        const auto oldMain=fs::exists(target)?FileHash(target):std::string{},oldSide=fs::exists(p.side)?FileHash(p.side):std::string{};
+        oldMain=fs::exists(target)?FileHash(target):std::string{};oldSide=fs::exists(p.side)?FileHash(p.side):std::string{};
         if(!oldMain.empty())CopyDurable(target,p.oldMain);if(!oldSide.empty())CopyDurable(p.side,p.oldSide);
         Check((oldMain.empty()||Matches(p.oldMain,oldMain))&&(oldSide.empty()||Matches(p.oldSide,oldSide)),"verify previous pair backup");
         checkpoint(0);
@@ -133,12 +134,23 @@ void PublishProjectPair(const fs::path& target,const fs::path& stagedMain,Plugin
         Check(Matches(p.newMain,data.mainHash),"verify staged PMM");
         const auto record="{\"schemaVersion\":1,\"saveId\":\""+data.saveId+"\",\"newMain\":\""+data.mainHash+"\",\"newSide\":\""+newSideHash+"\",\"oldMain\":\""+oldMain+"\",\"oldSide\":\""+oldSide+"\"}";
         WriteDurable(p.tempJournal,record);Move(p.tempJournal,p.journal,false);journal=true;checkpoint(1);
-        Move(p.newMain,p.main,!createOnly);checkpoint(2);Move(p.newSide,p.side,!createOnly);checkpoint(3);
+        firstMoveAttempted=true;
+        Move(p.newMain,p.main,!createOnly);destinationChanged=true;checkpoint(2);Move(p.newSide,p.side,!createOnly);checkpoint(3);
         Check(Matches(p.main,data.mainHash)&&Matches(p.side,newSideHash),"verify published pair");
         Cleanup(p);checkpoint(4);
     }catch(...){
-        // Before journal publication no destination changed. Once published,
-        // retain every recovery artifact; the host retries recovery on failure.
+        // A failed first Move can leave the complete old pair untouched. Abort
+        // that live attempt rather than silently publishing its rejected new
+        // pair on a later read. Never infer this from a checkpoint interruption
+        // or after any successful destination move: those retain crash recovery.
+        if(journal&&firstMoveAttempted&&!destinationChanged){
+            try{
+                const auto intact=[](const fs::path& f,const std::string& hash){return hash.empty()?!fs::exists(f):Matches(f,hash);};
+                if(intact(p.main,oldMain)&&intact(p.side,oldSide))Cleanup(p);
+            }catch(...){/* Keep recovery evidence when verification/cleanup is uncertain. */}
+        }
+        // Before journal publication no destination changed. Otherwise retain
+        // recovery artifacts unless the verified, untouched attempt was aborted.
         if(!journal)for(const auto* f:{&p.newMain,&p.newSide,&p.oldMain,&p.oldSide,&p.tempJournal})DeleteFileW(f->c_str());
         throw;
     }

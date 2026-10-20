@@ -478,71 +478,31 @@ unsigned CheckNativeMask(Gpu& gpu,IWICImagingFactory* wic,const fs::path& direct
            <<m.changed<<','<<m.missing<<','<<m.maxOutsideError<<'\n';
         Verify(m.nonfinite==0 && m.outOfRange==0 && m.premultViolations==0,c.name+": finite normalized premultiplied RGBA");
         Verify(m.missing==0 && m.minimumTracePeak>0,c.name+": every covered pixel and every line cross-section survives");
-        // The filter conserves ink by construction on the hulls it softens.
-        // Resolved coverage is returned untouched, so the only residual there is
-        // a rim whose stencil cannot tell a resolved ramp from a hull alpha.
-        Verify(m.maxMassError<(variant==0?.0005:.0001),c.name+": each interior cross-section conserves every RGBA ink channel in float output");
-        Verify(m.maxOutsideError<.00002,c.name+": line-only pass preserves pixels beyond the native mask neighborhood");
-        // MSAA and TAA never move the outline they resolve; the FXAA outline
-        // resolve has to match that, including at the strongest strength.
-        Verify(m.maxCentroidShift<.002,c.name+": filter keeps the measured line position");
+        // Direct softening redistributes coverage across the contour. Its
+        // spatial mass and centroid must remain unchanged, and it must create
+        // a visible transition rather than returning the old hard hull.
+        Verify(m.maxMassError<.0005,c.name+": soft profile preserves integrated RGBA coverage");
+        Verify(m.maxOutsideError<.00002,c.name+": unrelated material pixels remain unchanged");
+        Verify(m.maxCentroidShift<.002,c.name+": softening keeps the contour centered");
         Verify(m.maxCentroidErrorOutput<=m.maxCentroidErrorInput+.002,
-            c.name+": filter does not move the line away from its MSAA position");
+            c.name+": softening does not shift the authored contour");
+        Verify(m.varianceGain>.45 && m.varianceGain<.55,
+            c.name+": direct softening adds a half-pixel-squared transition in every direction");
+        Verify(m.peakRetention>.30 && m.peakRetention<1.001,
+            c.name+": line remains visible without darkening");
         Verify(std::memcmp(output.data(),repeat.data(),output.size()*sizeof(Pixel))==0,c.name+": static input repeats bit for bit");
-        if(variant!=0) {
-            // The resolve carries ink along the stroke and never across it, so
-            // a straight hull keeps the profile the rasteriser wrote: no
-            // cross-normal spread, no outward bleed. Continuity on real
-            // contours comes from the along-stroke weight, which a straight
-            // uniform-colour fixture cannot show.
-            if(widths[width]>=1) {
-                Verify(m.varianceGain<.0001,
-                    c.name+": straight hull gains no cross-normal spread");
-                Verify(m.outputIdealRmse<=m.inputIdealRmse+.0005,
-                    c.name+": filtering never pushes the hull away from the coverage reference");
-            } else {
-                // A quarter-pixel hull carries too little ink for a spread to
-                // recover, so the property that matters is that it keeps its
-                // density instead of fading out.
-                Verify(m.peakRetention>=.85,
-                    c.name+": thin widened hull keeps at least 85 percent of its peak density");
-            }
-        } else {
-            // This input already equals what MSAA resolves, so any change is
-            // distance from the reference. It must stay near identity and keep
-            // most of its density.
-            Verify(m.outputIdealRmse<.02,c.name+": already resolved coverage stays close to the MSAA reference");
-            Verify(m.peakRetention>=.85,c.name+": already resolved coverage keeps at least 85 percent of its peak density");
-        }
         std::printf("NATIVE %-48s peak %.6f->%.6f ideal %.6f retention=%.4f variance=%.6f shift=%+.5f rmse %.6f->%.6f missing=%u\n",
             c.name.c_str(),m.basePeak,m.outputPeak,m.idealPeak,m.peakRetention,m.varianceGain,m.maxCentroidShift,
             m.inputIdealRmse,m.outputIdealRmse,m.missing);
         ++count;
     }
-    for(unsigned transparent=0;transparent<2;++transparent) for(unsigned variant=0;variant<3;++variant) {
-        for(unsigned width=0;width<3;++width) {
-            // Quarter-pixel resolved coverage is byte-identical to the widened
-            // hull of the same width, so it is softened like one and its peak
-            // follows direction as the hull's does. Wider resolved coverage is
-            // left untouched, so only it can hold this directional agreement.
-            if(variant==0 && width==0)continue;
-            double low=1,high=0;
-            for(const auto& m:measurements[transparent][variant][width]) { low=std::min(low,m.peakRetention); high=std::max(high,m.peakRetention); }
-            Verify(high-low<.12,"native "+std::string(transparent?"premult":"opaque")+" "+inputs[variant]+" width "+
-                std::to_string(widths[width])+": horizontal, vertical and 45-degree peak retention differ by less than 12 points");
+    for(unsigned transparent=0;transparent<2;++transparent) for(unsigned variant=0;variant<3;++variant)
+    for(unsigned width=0;width<3;++width) {
+        double low=1,high=0;
+        for(const auto& m:measurements[transparent][variant][width]) {
+            low=std::min(low,m.varianceGain); high=std::max(high,m.varianceGain);
         }
-        for(unsigned direction=0;direction<3;++direction) {
-            const auto& thin=measurements[transparent][variant][0][direction];
-            const auto& one=measurements[transparent][variant][1][direction];
-            const auto& thick=measurements[transparent][variant][2][direction];
-            // No authored width may earn cross-normal spread: ink stays inside
-            // the drawn stroke, so the outline cannot grow outward.
-            if(variant==0)continue;
-            Verify(std::abs(thin.varianceGain)<=1e-3 && std::abs(one.varianceGain)<=1e-3 &&
-                std::abs(thick.varianceGain)<=1e-3,
-                "native "+std::string(transparent?"premult-":"opaque-")+inputs[variant]+"-"+directions[direction]+
-                ": no authored width gains cross-normal spread");
-        }
+        Verify(high-low<.01,"direct outline transition has the same spread on axes and diagonals");
     }
     Case textureCase; textureCase.shape=Shape::Strip; textureCase.width=1;
     auto texture=NativeCoverage(textureCase,0);
@@ -560,6 +520,20 @@ unsigned CheckNativeMask(Gpu& gpu,IWICImagingFactory* wic,const fs::path& direct
     Verify(outsideError<.00002 && outsideByteChanges==0,"native line-only mode leaves unrelated high-contrast material texture unchanged");
     SavePng(wic,root/L"line-only-texture-input.png",texture.input,false);
     SavePng(wic,root/L"line-only-texture-output.png",textureOutput,false); ++count;
+    // Match the production order: localized native-line preparation, then
+    // ordinary FXAA on the whole scene. The second upload models the 8-bit
+    // intermediate render target, including its quantization.
+    const auto wholeScene=gpu.Render(textureOutput,texture.test);
+    const auto ordinaryFxaa=gpu.Render(texture.input,texture.test);
+    unsigned materialChanges=0,ordinaryDifferences=0;
+    for(unsigned y=20;y<kHeight-20;++y)for(unsigned x=20;x<60;++x)for(unsigned channel=0;channel<3;++channel) {
+        const auto at=y*kWidth+x;
+        materialChanges+=Byte(wholeScene[at].data()[channel])!=Byte(texture.input[at].data()[channel]);
+        ordinaryDifferences+=Byte(wholeScene[at].data()[channel])!=Byte(ordinaryFxaa[at].data()[channel]);
+    }
+    Verify(materialChanges>100,"final FXAA filters material edges outside the native outline mask");
+    Verify(ordinaryDifferences==0,"unrelated material uses ordinary full-scene FXAA without extra blur");
+    SavePng(wic,root/L"whole-scene-texture-output.png",wholeScene,false); ++count;
     const auto protectedOutput=gpu.Render(texture.input,texture.test,&texture.mask,true,true);
     CompareRgb(texture.input,protectedOutput,texture.test.viewport,true,"MSAA-covered native layer is protected from a second FXAA softening"); ++count;
     Case edge; edge.shape=Shape::Strip; edge.width=1; edge.transparent=true; edge.nx=std::sqrt(.5f); edge.ny=-edge.nx;
@@ -567,7 +541,12 @@ unsigned CheckNativeMask(Gpu& gpu,IWICImagingFactory* wic,const fs::path& direct
     const auto control=NativeCoverage(edge,0); edge.poison=true; const auto poison=NativeCoverage(edge,0);
     const auto controlOutput=gpu.Render(control.input,control.test,&control.mask,true);
     const auto poisonOutput=gpu.Render(poison.input,poison.test,&poison.mask,true);
-    CompareRgb(controlOutput,poisonOutput,edge.viewport,true,"native tensor and flux taps clamp both source and mask viewport poison");
+    CompareRgb(controlOutput,poisonOutput,edge.viewport,true,"direct softening clamps both source and mask viewport poison");
+    const auto finalControl=gpu.Render(controlOutput,control.test),finalPoison=gpu.Render(poisonOutput,poison.test);
+    CompareRgb(finalControl,finalPoison,edge.viewport,true,"whole-scene FXAA after line preparation still clamps viewport poison");
+    const auto finalMetrics=AnalyzeNative(control,finalControl,root/L"whole-scene-transparent-cross-section.csv");
+    Verify(finalMetrics.nonfinite==0 && finalMetrics.outOfRange==0 && finalMetrics.premultViolations==0 &&
+        finalMetrics.missing==0,"whole-scene FXAA preserves continuous premultiplied transparent outlines");
     SavePng(wic,root/L"viewport-poison-output.png",poisonOutput,true,true); ++count;
     return count;
 }

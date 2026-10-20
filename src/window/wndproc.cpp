@@ -1,3 +1,4 @@
+#include "mikumikustudio/background_save.hpp"
 #include "window_settings.hpp"
 #include "mikumikustudio/recording_state.hpp"
 #include "mikumikustudio/autosave.hpp"
@@ -140,7 +141,12 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             reinterpret_cast<std::uintptr_t>(hwnd));
         return 0;
     }
-    if (bake::UiLocked() || finishingRecording || drainingRecording) {
+    if (SceneSaveBlocksEdits() &&
+        (msg == WM_CLOSE || (msg == WM_SYSCOMMAND && (wParam & 0xfff0) == SC_CLOSE))) {
+        background_save::DeferClose(app);
+        return 0;
+    }
+    if (bake::UiLocked() || SceneSaveBlocksEdits() || finishingRecording || drainingRecording) {
         if (msg == WM_DROPFILES) { DragFinish(reinterpret_cast<HDROP>(wParam)); return 0; }
         if (msg == WM_COMMAND || msg == WM_NOTIFY || msg == WM_CLOSE ||
             msg == WM_HSCROLL || msg == WM_VSCROLL ||
@@ -148,6 +154,7 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST) ||
             (msg == WM_SYSCOMMAND && (wParam & 0xfff0) == SC_CLOSE)) return 0;
     }
+    if (background_save::HandleMessage(app, msg, wParam)) return 0;
     if (recent_projects::HandleMessage(app, msg, wParam, lParam)) return 0;
     if (antialias::HandleMessage(app, msg, wParam, lParam)) return 0;
     if (nvidia_antialias_menu::HandleMessage(app, msg, wParam, lParam)) return 0;
@@ -295,8 +302,9 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             return 0;
 
         case WM_CLOSE:
+            if (background_save::DeferClose(app)) return 0;
             runtime_log::Write("WM_CLOSE received enhancedDirty=%d sceneModified=%d",
-                               s.EnhancedModelDirty(), s.SceneModified());
+                               s.EnhancedModelDirty(), static_cast<int>(s.SceneModified()));
             // Each branch below ends at DefWindowProcW once the user accepted
             // the close (or when there is nothing unsaved).  From that point
             // the program is exiting: teardown faults must not raise the modal

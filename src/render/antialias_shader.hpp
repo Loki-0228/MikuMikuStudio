@@ -37,6 +37,19 @@ float4 temporal(float2 uv : TEXCOORD0) : COLOR0 {
             fixedPriorDepth>0 && abs(candidate.w-fixedPriorDepth)<=coverageTolerance);
         if(uncovered && candidate.z>0 && (velocity.z<=0 || candidate.z<velocity.z)) velocity=candidate;
     }
+    // Native-line preparation spreads coverage one pixel beyond geometry.
+    // With jitter and bilinear reconstruction the outer fringe can be two
+    // pixels from a tracked surface. Search that ring only if the ordinary
+    // neighborhood found nothing; never replace a visible surface's motion.
+    if(uncovered && velocity.z<=0) {
+        [unroll] for(int y=-2;y<=2;++y) [unroll] for(int x=-2;x<=2;++x) {
+            if(abs(x)==2 || abs(y)==2) {
+                float2 at=clamp(currentUV+float2(x,y)*pixel.xy,bounds.xy,bounds.zw);
+                float4 candidate=tex2D(motion,at);
+                if(candidate.z>0 && (velocity.z<=0 || candidate.z<velocity.z)) velocity=candidate;
+            }
+        }
+    }
     float2 previous=uv+velocity.xy;
     if(velocity.z<=0 || velocity.w<=0 || any(previous<bounds.xy) || any(previous>bounds.zw)) return current;
     float tolerance=max(reproject.z,abs(velocity.w)*reproject.w);

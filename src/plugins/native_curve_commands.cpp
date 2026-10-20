@@ -31,7 +31,7 @@ bool Ready(MMDApp& app) noexcept {
         GetWindowThreadProcessId(main, nullptr) == GetCurrentThreadId() &&
         !InCallback() && !NativeObjectOperationActive(&app) && !NativeObjectUiPending(&app) &&
         !app.PlaybackActive() && !app.FrameStepPlayback() && !app.state.recordPlaybackStartPending &&
-        !app.SceneMutationInProgress() && !bake::UiLocked() && !SceneSaveInProgress() && !GetCapture() &&
+        !app.SceneMutationInProgress() && !bake::UiLocked() && !SceneSaveBlocksEdits() && !GetCapture() &&
         !app.FrameRangeDialog() && !app.state.frameCopyDialog && !app.RecordingWindow() &&
         !app.GravitySettingDialog() && !app.GroundShadowColorDialog() && !app.AccessoryOrderArray() &&
         !app.state.accessoryEditDialogOpen && !app.state.edgeThicknessDialog;

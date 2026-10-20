@@ -402,6 +402,7 @@ void RefreshModelSelectorNames(MMDApp* app) {
             [&](std::size_t i) noexcept { return SendMessageW(combo, CB_GETITEMDATA, i, 0); });
         return LRESULT(slot < 0 ? -1 : order.Row(static_cast<unsigned>(slot)));
     };
+    const auto rememberedModel = previousRow(combo436, static_cast<LRESULT>(s.MainModelComboSelection()));
     sel436 = previousRow(combo436, sel436); sel474 = previousRow(combo474, sel474); sel449 = previousRow(combo449, sel449);
     SendMessageA(combo436, CB_RESETCONTENT, 0, 0);
     SendMessageA(combo474, CB_RESETCONTENT, 0, 0);
@@ -467,8 +468,14 @@ void RefreshModelSelectorNames(MMDApp* app) {
         InvalidateRect(combo, nullptr, FALSE);
         return static_cast<int>(selected);
     };
-    s.state.mainModelComboSelection = restore(combo436, sel436,
+    const int visibleModel = restore(combo436, sel436,
         s.CameraMode() == 0 ? modelRow(s.SelectedModelSlot()) : 0);
+    // Row zero is the visible camera mode, not the remembered "To model"
+    // target. Carry that target by its validated object mapping across the
+    // rebuild; choosing a fallback does not select it or evaluate its pose.
+    s.MainModelComboSelection() = static_cast<std::uint32_t>(
+        visibleModel > 0 ? visibleModel : rememberedModel > 0 ? rememberedModel : 0);
+    if (visibleModel == 0) ResolveModelComboSelection(app);
     const auto* accessory = s.AccessorySlot(s.SelectedAccessorySlot());
     restore(combo474, sel474, accessory ? modelRow(accessory->parentModel) : 0);
     restore(combo449, sel449, modelRow(s.CameraParentModel()));

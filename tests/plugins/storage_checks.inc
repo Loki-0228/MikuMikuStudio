@@ -78,6 +78,55 @@ static void StorageChecks(const fs::path& root){
         if(!fail)CHECK(FileHash(target)==oldHash && loaded.saveId==oldSave);
         else CHECK(FileHash(target)==FileHash(stage) && SavedInt(loaded.records.at("example.a"))==100+int(fail));
     }
+    // An ordinary, reported IO failure is different from the durable crash
+    // checkpoints above. If the first replacement never happened, opening the
+    // old pair later must not commit the save which the caller saw fail.
+    const auto rejectedHash=FileHash(target),rejectedSide=ReadFile(PluginSidecar(target),96*1024*1024);
+    const auto rejectedSave=ReadPluginProject(target).saveId;
+    Write(stage,"rejected replacement must stay rejected");project.records["example.a"]=StoredInt(701);
+    HANDLE locked=CreateFileW(target.c_str(),GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
+    CHECK(locked!=INVALID_HANDLE_VALUE);
+    CHECK(Throws([&]{PublishProjectPair(target,stage,project,false);}));
+    CHECK(FileHash(target)==rejectedHash && ReadFile(PluginSidecar(target),96*1024*1024)==rejectedSide);
+    CHECK(!fs::exists(target.native()+L".mms-save.json"));
+    const auto rejectedBase=target.native()+L".mms-"+Wide(project.saveId);
+    for(const auto* suffix:{L".new-pmm",L".new-json",L".old-pmm",L".old-json",L".journal"})CHECK(!fs::exists(rejectedBase+suffix));
+    CHECK(CloseHandle(locked)!=FALSE);
+    RecoverProjectPair(target);loaded=ReadPluginProject(target);
+    CHECK(FileHash(target)==rejectedHash && loaded.saveId==rejectedSave && SavedInt(loaded.records.at("example.a"))!=701);
+    CHECK(ReadFile(stage)=="rejected replacement must stay rejected");
+
+    // A legacy PMM without a plugin sidecar is a valid previous state too.
+    const auto legacy=dir/L"legacy-without-sidecar.pmm";
+    Write(legacy,"legacy old PMM");const auto legacyHash=FileHash(legacy);
+    locked=CreateFileW(legacy.c_str(),GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
+    CHECK(locked!=INVALID_HANDLE_VALUE);
+    CHECK(Throws([&]{PublishProjectPair(legacy,stage,project,false);}));
+    CHECK(!fs::exists(legacy.native()+L".mms-save.json") && !fs::exists(PluginSidecar(legacy)));
+    CHECK(CloseHandle(locked)!=FALSE);RecoverProjectPair(legacy);
+    CHECK(FileHash(legacy)==legacyHash && ReadPluginProject(legacy).saveId.empty() && !fs::exists(PluginSidecar(legacy)));
+
+    // No previous files: remove only the private staged copy immediately before
+    // the first Move, producing a real FILE_NOT_FOUND error after journaling.
+    const auto absent=dir/L"first-save-rejected.pmm";
+    CHECK(Throws([&]{PublishProjectPair(absent,stage,project,true,[&](unsigned n){if(n==1)
+        CHECK(DeleteFileW((absent.native()+L".mms-"+Wide(project.saveId)+L".new-pmm").c_str())!=FALSE);});}));
+    CHECK(!fs::exists(absent) && !fs::exists(PluginSidecar(absent)) && !fs::exists(absent.native()+L".mms-save.json"));
+    RecoverProjectPair(absent);
+    CHECK(!fs::exists(absent) && !fs::exists(PluginSidecar(absent)));
+
+    // If an external writer changed a destination, the failed attempt must
+    // retain its evidence. Recovery must refuse, rather than erase that file.
+    const auto uncertain=dir/L"uncertain-first-move.pmm";
+    PublishProjectPair(uncertain,stage,project,true);
+    Write(stage,"new uncertain snapshot");
+    bool removedUncertainSource=false;
+    CHECK(Throws([&]{PublishProjectPair(uncertain,stage,project,false,[&](unsigned n){if(n==1){
+        Write(uncertain,"unrelated external bytes");
+        removedUncertainSource=DeleteFileW((uncertain.native()+L".mms-"+Wide(project.saveId)+L".new-pmm").c_str())!=FALSE;
+    }});}));
+    CHECK(removedUncertainSource && fs::exists(uncertain.native()+L".mms-save.json"));
+    CHECK(Throws([&]{RecoverProjectPair(uncertain);}) && ReadFile(uncertain)=="unrelated external bytes");
     const auto rollbackHash=FileHash(target),rollbackSave=ReadPluginProject(target).saveId;
     Write(stage,"must roll back");
     CHECK(Throws([&]{PublishProjectPair(target,stage,project,false,[&](unsigned n){if(n==2){

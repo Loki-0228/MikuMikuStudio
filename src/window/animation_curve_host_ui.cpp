@@ -116,7 +116,7 @@ bool TransportReady(MMDApp& app){
 #endif
     return IsWindow(app.MainWindow())&&IsWindowEnabled(app.MainWindow())&&
         GetWindowThreadProcessId(app.MainWindow(),nullptr)==GetCurrentThreadId()&&
-        !bake::UiLocked()&&!SceneSaveInProgress()&&!app.SceneMutationInProgress()&&
+        !bake::UiLocked()&&!SceneSaveBlocksEdits()&&!app.SceneMutationInProgress()&&
         !app.FrameStepPlayback()&&!app.state.recordPlaybackStartPending&&
         !app.FrameRangeDialog()&&!app.state.frameCopyDialog&&!app.RecordingWindow()&&
         !app.GravitySettingDialog()&&!app.GroundShadowColorDialog()&&!app.AccessoryOrderArray()&&

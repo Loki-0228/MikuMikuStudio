@@ -166,6 +166,7 @@
 #include "mikumikustudio/build_profile.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "../plugins/native_pose_axis.hpp"
+#include "../plugins/native_pose_scope.hpp"
 #include "../plugins/native_bone_registration.hpp"
 #include "../plugins/native_key_commands.hpp"
 #include "../plugins/native_global_commands.hpp"
@@ -699,11 +700,15 @@ void CmdControl500(MMDApp* app, HWND hwnd, std::uint16_t id, std::uint16_t notif
 
     // ---- 536: accessory-combo sync 0x218 (combo 0x1B4) ------------------
     case 536: {  // 0x48BF6F
+#if !MMD_ORIGINAL_PROFILE
+        if (const auto* history = plugins::BoundNativePoseHistory(app))
+            if (history->CheckNativeNavigation() != MMS_OK) break;
+#endif
         if (app->state.optflag[0] != 0) {
             // display mode: selected accessory index 0xA042C; when zero the
             // original re-dispatches WM_COMMAND 0x1B3 on the main window.
-            const std::int32_t sel =
-                app->state.mainModelComboSelection;
+            const std::int32_t sel = ResolveModelComboSelection(app);
+            if (sel < 0) break;
             if (sel == 0) {
                 SendMessageA(hwnd, WM_COMMAND, 0x1B3, 0);
                 break;

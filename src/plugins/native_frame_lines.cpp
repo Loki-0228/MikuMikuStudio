@@ -293,7 +293,7 @@ bool TryBoundFrameLineCommand(MMDApp* app,unsigned command,int& affected) noexce
     if(!app)return false;auto* history=BoundNativePoseHistory(app);if(!history)return false;
     affected=0;
     if(command<255||command>258||app->PlaybackActive()||app->FrameStepPlayback()||app->state.recordPlaybackStartPending||
-        app->SceneMutationInProgress()||bake::UiLocked()||SceneSaveInProgress()||GetCapture()||history->CheckNativeEdit()!=MMS_OK)return true;
+        app->SceneMutationInProgress()||bake::UiLocked()||SceneSaveBlocksEdits()||GetCapture()||history->CheckNativeEdit()!=MMS_OK)return true;
     Boundary([&]() -> MmsResult {
         const bool insert=command==255||command==257;const bool boneOrCamera=command<=256;
         std::shared_ptr<HistoryChange> change;MmsResult result;

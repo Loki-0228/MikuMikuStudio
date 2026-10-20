@@ -228,6 +228,24 @@ int main() {
     Check(close(temporalPixels[48*side+48],0x80606060),"T2x aligns current and previous raw images using separate jitter offsets");
     velocity(0,0,10);temporalPixels=render();
     Check(close(temporalPixels[48*side+48],0x80646464),"T2x history rejection still removes current jitter");
+    currentJitter=previousJitter=0;
+    const auto fringe=[&](unsigned distance,float displacement,float priorDepth,bool visibleUntracked=false) {
+        submitted=0;velocity(0,10,priorDepth);solid(0x80800000,0x80800000);render();
+        solid(0x80000080,0x80000080);
+        D3DLOCKED_RECT lock{};Check(SUCCEEDED(motion->LockRect(0,&lock,nullptr,0)),"write softened T2x silhouette footprint");
+        for(unsigned y=0;y<side;++y)std::memset(static_cast<char*>(lock.pBits)+y*lock.Pitch,0,side*4*sizeof(float));
+        auto* tracked=reinterpret_cast<float*>(static_cast<char*>(lock.pBits)+48*lock.Pitch)+(48-distance)*4;
+        tracked[0]=displacement/side;tracked[2]=tracked[3]=10;
+        if(visibleUntracked)reinterpret_cast<float*>(static_cast<char*>(lock.pBits)+48*lock.Pitch)[48*4+2]=10;
+        motion->UnlockRect(0);
+        return render()[48*side+48];
+    };
+    for(selectedVariant=2;selectedVariant<4;++selectedVariant) {
+        Check(close(fringe(2,0,20),0x80400040),"T2x matches the two-pixel softened fringe across stationary phases");
+        Check(close(fringe(3,0,20),0x80000080),"T2x cannot borrow history beyond the softened footprint");
+        Check(close(fringe(2,0,20,true),0x80000080),"T2x visible untracked fragments reject outer neighbor history");
+        Check(close(fringe(2,4,5),0x80000080),"T2x moving softened fringe still rejects a previous occluder");
+    }
     for(unsigned i=0;i<6;++i)device->SetTexture(i,nullptr);
     device->SetPixelShader(nullptr);device.Reset();DestroyWindow(window);
     std::puts("SMAA GPU regression checks passed");return 0;

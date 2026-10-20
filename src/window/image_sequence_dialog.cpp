@@ -2,6 +2,7 @@
 #define NOMINMAX
 #include "image_sequence_dialog.hpp"
 #include "dialog_scaffold.hpp"
+#include "export_save_prompt.hpp"
 #include "mikumikustudio/panel_controls.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/ui_translation.hpp"
@@ -132,11 +133,13 @@ INT_PTR CALLBACK DialogProc(HWND dialog, UINT message, WPARAM wp, LPARAM lp) {
         wchar_t fps[32]{}; swprintf_s(fps, L"%g", c->options.fps);
         SetDlgItemTextW(dialog, panel::kAviFpsEdit, fps);
         CheckDlgButton(dialog, panel::kAviCloseAfterExportCheckbox, c->options.closeAfterExport ? BST_CHECKED : BST_UNCHECKED);
+        export_save_prompt::Initialize(dialog, c->app);
         c->updating = false;
         UpdateExample(dialog, *c);
         return TRUE;
     }
     if (!c) return FALSE;
+    if (const auto handled = export_save_prompt::HandleMessage(dialog, c->app, message, wp, lp)) return handled;
     if (message == WM_CLOSE) { EndDialog(dialog, IDCANCEL); return TRUE; }
     if (message != WM_COMMAND) return FALSE;
     const int id = LOWORD(wp), notification = HIWORD(wp);
