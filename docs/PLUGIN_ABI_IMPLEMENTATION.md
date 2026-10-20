@@ -36,7 +36,7 @@
 
 随后[扩展 WAV 位深及共同历史](records/abi-wave-format-history-2026-10-20.md)，补入 PCM24／32、float32／64 及 EXTENSIBLE 的规范化播放，菜单、拖放与 PMM 共用实现。新增专项 1,216 项、八种真实 PMM 保存重开通过；高位深转为 PCM16 播放，不声明无损高位深编辑。原生完整历史已越过[修正后的表情输入断言](records/abi-morph-input-fixture-2026-10-20.md)，仍停在系统拒绝真实鼠标定位的 HUD 检查。
 
-[曲线模态生命周期](records/abi-curve-modal-lifetime-2026-10-20.md)修复文件选择期间销毁或替换编辑器后的悬空访问。完整编辑器 2,538 项、真实 PMX／PMD 原名／改名宿主及最终保存 419 项通过；通用非 motion 来源回调的自毁仍为后续范围。
+[曲线模态生命周期](records/abi-curve-modal-lifetime-2026-10-20.md)修复文件选择期间销毁或替换编辑器后的悬空访问。原批次完整编辑器 2,538 项、真实 PMX／PMD 原名／改名宿主及最终保存 419 项通过。随后[统一来源读取、历史查询及标签回调的会话保护](records/abi-curve-source-lifetime-2026-10-21.md)：共享会话版本覆盖闭包复制、调用和释放中的重入，旧调用不写入新会话。完整配置来源专项 2,463 项、motion 专项 278 项和编辑器全集 5,001 项通过，两套产品构建通过。运行继承 `Default` 桌面，显示由夹具控制，不是隔离、IME 或多 DPI 验收。`apply`、`traverse`、选择、比较模式、帧与播放控制、`subdivide`、`Channel.sample` 仍待统一；正式 release 未更新。
 
 普通 `mms.edit` 仍未开放。[原生写入审计](records/abi-native-writer-audit-2026-10-20.md)确认部分旧命令既未迁移也未被统一拦截，早期“所有其余入口关闭”的描述不能作为保护保证。下一批继续迁移这些实际写入入口。
 

@@ -161,6 +161,8 @@
 #include <mutex>
 #include <set>
 #include <string>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 #include "curve_editor_theme.hpp"
@@ -686,12 +688,14 @@ struct PaintSurface {
 };
 struct Editor {
     std::shared_ptr<void> motionSession = std::make_shared<char>();
+    unsigned activeCalls = 0;
+    bool windowDestroyed = false;
     HWND window = nullptr;
     HWND canvas = nullptr;
     HWND mmd = nullptr;
     PaintSurface canvasSurface,mmdSurface;
     void *owner = nullptr;
-    Session session;
+    std::shared_ptr<Session> session = std::make_shared<Session>();
     std::size_t sourceIndex = 0;
     std::vector<SourceState> states;
     std::set<std::string> pendingSources;
@@ -789,10 +793,117 @@ struct Editor {
 std::mutex g_registryMutex;
 std::vector<Editor *> g_editors;
 
+// DestroyWindow is synchronous, including when a provider calls it. Keep the
+// Editor allocation until every native/public entry and provider call unwinds.
+// The session token separately retires continuations after same-window Open.
+struct RetiredContinuation {};
+class EditorLease {
+    Editor* editor_;
+    std::shared_ptr<void> session_;
+    std::shared_ptr<Session> storage_;
+    std::size_t source_;
+public:
+    explicit EditorLease(Editor* editor) noexcept : editor_(editor),
+        session_(editor ? editor->motionSession : nullptr), storage_(editor ? editor->session : nullptr),
+        source_(editor ? editor->sourceIndex : 0) {
+        if(editor_)++editor_->activeCalls;
+    }
+    explicit EditorLease(Editor& editor) noexcept : EditorLease(&editor) {}
+    EditorLease(const EditorLease&)=delete;
+    EditorLease& operator=(const EditorLease&)=delete;
+    ~EditorLease(){
+        // Releasing a retired Session can run user capture destructors. Keep
+        // the Editor allocation leased through those callbacks as well.
+        storage_.reset();
+        if(editor_&&!--editor_->activeCalls&&editor_->windowDestroyed)delete editor_;
+    }
+    void ReleaseStorage()noexcept{storage_.reset();}
+    void PinCurrentStorage()noexcept{storage_=editor_ ? editor_->session : nullptr;}
+    bool CurrentSession()const noexcept {
+        return editor_&&!editor_->windowDestroyed&&
+            !session_.owner_before(editor_->motionSession)&&!editor_->motionSession.owner_before(session_);
+    }
+    void RequireSession()const {if(!CurrentSession())throw RetiredContinuation{};}
+    void RequireCurrent()const {
+        if(!CurrentSession()||source_!=editor_->sourceIndex)throw RetiredContinuation{};
+    }
+};
+
+class OpenAttempt {
+    Editor& editor_;
+    EditorLease lease_;
+    bool complete_=false;
+public:
+    explicit OpenAttempt(Editor& editor) noexcept : editor_(editor),lease_(editor) {}
+    ~OpenAttempt(){
+        if(complete_||!lease_.CurrentSession())return;
+        // Failed setup owns only this exact session. A nested replacement is
+        // already someone else's successful Open and must survive our unwind.
+        if(editor_.window&&IsWindow(editor_.window))DestroyWindow(editor_.window);
+        if(lease_.CurrentSession()&&(!editor_.window||!IsWindow(editor_.window))){
+            std::lock_guard<std::mutex> guard(g_registryMutex);
+            g_editors.erase(std::remove(g_editors.begin(),g_editors.end(),&editor_),g_editors.end());
+            editor_.windowDestroyed=true;
+        }
+    }
+    void Complete()noexcept{complete_=true;}
+    void PinCurrentStorage()noexcept{lease_.PinCurrentStorage();}
+};
+
+// Pin the original Session through callable copying: a user copy constructor
+// may Open/Close too. Check identity before invocation, and destroy the local
+// copy plus its storage pin before the final check, since either release can
+// retire the window.
+template<class Callback,class... Args>
+auto InvokeProvider(Editor& editor,const Callback& callback,Args&&... args)
+    -> decltype(callback(std::forward<Args>(args)...)) {
+    EditorLease lease(editor);
+    try {
+        if constexpr(std::is_void_v<decltype(callback(std::forward<Args>(args)...))>) {
+            {
+                auto owned=callback;
+                lease.RequireCurrent();
+                owned(std::forward<Args>(args)...);
+            }
+            lease.ReleaseStorage();
+            lease.RequireCurrent();
+        }else{
+            auto result=[&]{
+                auto owned=callback;
+                lease.RequireCurrent();
+                return owned(std::forward<Args>(args)...);
+            }();
+            lease.ReleaseStorage();
+            lease.RequireCurrent();
+            return result;
+        }
+    }catch(...){lease.ReleaseStorage();lease.RequireCurrent();throw;}
+}
+
+struct ExternalOperation {
+    Editor& editor;
+    EditorLease lease;
+    bool Editor::*member;
+    bool previous;
+    ExternalOperation(Editor& value,bool Editor::*field,bool activate=true) noexcept : editor(value),lease(value),
+        member(field),previous(value.*field) {if(activate)editor.*member=true;}
+    ~ExternalOperation(){if(lease.CurrentSession())editor.*member=previous;}
+};
+
+Source& CurrentSource(Editor& editor);
+bool ReadSource(Editor& editor,std::vector<Channel>& channels,std::wstring& error) {
+    const auto language=editor.session->language;
+    try {
+        const auto& callback=CurrentSource(editor).read;
+        return callback&&InvokeProvider(editor,callback,channels,error);
+    }catch(const RetiredContinuation&){throw;}
+    catch(...){error=T(language,StrReadFailed);return false;}
+}
+
 Source &CurrentSource(Editor &editor) {
     static Source empty;
-    if (editor.sourceIndex >= editor.session.sources.size()) return empty;
-    return editor.session.sources[editor.sourceIndex];
+    if (editor.sourceIndex >= editor.session->sources.size()) return empty;
+    return editor.session->sources[editor.sourceIndex];
 }
 
 SourceState &CurrentState(Editor &editor) {
@@ -921,7 +1032,7 @@ int HoverHintCode(int hint) {
 }
 
 void ApplyHoverHintText(Editor &editor) {
-    const std::wstring text = editor.hoverHint >= 0 ? T(editor.session.language, static_cast<Str>(editor.hoverHint))
+    const std::wstring text = editor.hoverHint >= 0 ? T(editor.session->language, static_cast<Str>(editor.hoverHint))
                                                     : std::wstring();
     SetControlText(editor.window, kIdHoverHint, text);
 }
@@ -949,8 +1060,8 @@ void TrackMouseLeave(HWND window) {
 // mode switch never writes anything back to the source.
 // ---------------------------------------------------------------------------
 bool ComparisonSupported(Editor &editor) {
-    if (editor.sourceIndex >= editor.session.sources.size()) return false;
-    const Source &source = editor.session.sources[editor.sourceIndex];
+    if (editor.sourceIndex >= editor.session->sources.size()) return false;
+    const Source &source = editor.session->sources[editor.sourceIndex];
     return source.comparisonEnabled || source.readComparisonMode != nullptr ||
            source.writeComparisonMode != nullptr;
 }
@@ -1126,22 +1237,19 @@ bool ReadRegisteredSource(Editor &editor, bool publishUi = true);
 bool RefreshExternalSource(Editor& editor, bool report = true);
 void PollExternalHistory(Editor& editor);
 
-struct ExternalOperation {
-    bool& active;
-    explicit ExternalOperation(bool& value) : active(value) { active=true; }
-    ~ExternalOperation(){active=false;}
-};
 bool QueryExternalHistory(Editor& editor, bool report) {
     auto& state=CurrentState(editor);
     if(editor.externalCallbackActive)return false;
     std::wstring error;HistoryState current{};bool accepted=false;
-    if(editor.session.history.query&&editor.session.history.traverse){
-        ExternalOperation callback(editor.externalCallbackActive);
-        try{accepted=editor.session.history.query(current,error);}catch(...){error=T(editor.session.language,StrHistoryUnavailable);}
-    }else error=T(editor.session.language,StrHistoryUnavailable);
+    if(editor.session->history.query&&editor.session->history.traverse){
+        ExternalOperation callback(editor,&Editor::externalCallbackActive);
+        try{accepted=InvokeProvider(editor,editor.session->history.query,current,error);}
+        catch(const RetiredContinuation&){throw;}
+        catch(...){error=T(editor.session->language,StrHistoryUnavailable);}
+    }else error=T(editor.session->language,StrHistoryUnavailable);
     state.externalReady=accepted;
     if(accepted)state.externalState=current;
-    else if(report)SetStatus(editor,error.empty()?T(editor.session.language,StrHistoryUnavailable):error,true);
+    else if(report)SetStatus(editor,error.empty()?T(editor.session->language,StrHistoryUnavailable):error,true);
     return accepted;
 }
 
@@ -1159,16 +1267,17 @@ bool CheckSourceCurrent(Editor &editor) {
     bool accepted=false;
     try{
         if(source.externalHistory){
-            ExternalOperation callback(editor.externalCallbackActive);
-            accepted=source.read&&source.read(latest,error);
-        }else accepted=source.read&&source.read(latest,error);
-    }catch(...){error.clear();}
+            ExternalOperation callback(editor,&Editor::externalCallbackActive);
+            accepted=ReadSource(editor,latest,error);
+        }else accepted=ReadSource(editor,latest,error);
+    }catch(const RetiredContinuation&){throw;}
+    catch(...){error.clear();}
     if (!accepted) {
         if(source.externalHistory){
             auto& state=CurrentState(editor);state.valid=false;state.externalReadPending=true;
-            state.reason=std::wstring(T(editor.session.language,StrReadFailed))+error;UpdateEnabledState(editor);
+            state.reason=std::wstring(T(editor.session->language,StrReadFailed))+error;UpdateEnabledState(editor);
         }
-        SetStatus(editor, std::wstring(T(editor.session.language, StrReadFailed)) + error, true);
+        SetStatus(editor, std::wstring(T(editor.session->language, StrReadFailed)) + error, true);
         return false;
     }
     editor.pendingSources.erase(source.id);
@@ -1176,7 +1285,7 @@ bool CheckSourceCurrent(Editor &editor) {
     // Native keyboard/mouse edits may bypass the menu notification. Compare
     // with the host before every write, including undo and redo.
     if(source.externalHistory)RefreshExternalSource(editor);else ReadRegisteredSource(editor);
-    SetStatus(editor, T(editor.session.language, StrSourceChanged), true);
+    SetStatus(editor, T(editor.session->language, StrSourceChanged), true);
     return false;
 }
 
@@ -1184,7 +1293,7 @@ void AdoptWrittenChannels(Editor &editor, std::vector<Channel> channels) {
     SourceState &state = CurrentState(editor);
     std::vector<Channel> canonical;
     std::wstring error;
-    if (CurrentSource(editor).read(canonical, error)) {
+    if (ReadSource(editor,canonical,error)) {
         std::map<std::string, bool> display;
         for (const auto &channel : channels) display[channel.id] = channel.selected;
         for (auto &channel : canonical) {
@@ -1196,7 +1305,7 @@ void AdoptWrittenChannels(Editor &editor, std::vector<Channel> channels) {
         state.reason.clear();
     } else {
         state.valid = false;
-        state.reason = std::wstring(T(editor.session.language, StrReadFailed)) + error;
+        state.reason = std::wstring(T(editor.session->language, StrReadFailed)) + error;
     }
     // Native controls can be quantized on write. Keep the accepted data as
     // the next comparison baseline, so our own write is not an external edit.
@@ -1270,32 +1379,32 @@ bool CommitChannels(Editor &editor, std::vector<Channel> next, const std::wstrin
         }
     }
     if (!state.valid) {
-        SetStatus(editor, state.reason.empty() ? T(editor.session.language, StrNoRead) : state.reason, true);
+        SetStatus(editor, state.reason.empty() ? T(editor.session->language, StrNoRead) : state.reason, true);
         return false;
     }
     for (const Channel &channel : next) {
         std::string error;
         if (!animation_curve::Validate(channel.track, error)) {
-            SetStatus(editor, std::wstring(T(editor.session.language, StrInvalidTrack)) + Widen(error), true);
+            SetStatus(editor, std::wstring(T(editor.session->language, StrInvalidTrack)) + Widen(error), true);
             return false;
         }
     }
     if (!source.apply) {
-        SetStatus(editor, T(editor.session.language, StrNoApply), true);
+        SetStatus(editor, T(editor.session->language, StrNoApply), true);
         return false;
     }
     if(source.externalHistory&&SameCurveData(state.channels,next)){
         SetStatus(editor,success,false);return true;
     }
     std::wstring error;
-    if(source.externalHistory)editor.externalOperationActive=true;
-    struct FinishExternal { Editor& editor; ~FinishExternal(){editor.externalOperationActive=false;} } finish{editor};
+    ExternalOperation finish(editor,&Editor::externalOperationActive,source.externalHistory);
     bool accepted=false;
-    try{accepted=source.apply(next,error);}catch(...){error=T(editor.session.language,StrHistoryFailed);}
+    try{accepted=source.apply(next,error);}catch(const RetiredContinuation&){throw;}
+    catch(...){error=T(editor.session->language,StrHistoryFailed);}
     if (!accepted) {
-        std::wstring message = T(editor.session.language, StrApplyRejected);
+        std::wstring message = T(editor.session->language, StrApplyRejected);
         if (!error.empty()) message += error;
-        else if (state.reason.empty()) message += T(editor.session.language, StrReady);
+        else if (state.reason.empty()) message += T(editor.session->language, StrReady);
         SetStatus(editor, message, true);
         return false;
     }
@@ -1326,13 +1435,13 @@ bool ApplySnapshot(Editor &editor, Snapshot snapshot, Snapshot &previous) {
     SourceState &state = CurrentState(editor);
     Source &source = CurrentSource(editor);
     if (!source.apply) {
-        SetStatus(editor, T(editor.session.language, StrNoApply), true);
+        SetStatus(editor, T(editor.session->language, StrNoApply), true);
         return false;
     }
     previous = Snapshot{state.channels, state.active, state.selection};
     std::wstring error;
     if (!source.apply(snapshot.channels, error)) {
-        std::wstring message = T(editor.session.language, StrApplyRejected);
+        std::wstring message = T(editor.session->language, StrApplyRejected);
         if (!error.empty()) message += error;
         SetStatus(editor, message, true);
         return false;
@@ -1351,29 +1460,30 @@ void TraverseExternalHistory(Editor& editor,bool redo){
     if(!QueryExternalHistory(editor,true)){UpdateEnabledState(editor);return;}
     if(state.externalReadPending){RefreshExternalSource(editor);return;}
     if(!(redo?state.externalState.canRedo:state.externalState.canUndo)){
-        SetStatus(editor,T(editor.session.language,redo?StrNothingRedo:StrNothingUndo),true);UpdateEnabledState(editor);return;
+        SetStatus(editor,T(editor.session->language,redo?StrNothingRedo:StrNothingUndo),true);UpdateEnabledState(editor);return;
     }
     bool committed=false;std::wstring error;
     {
-        ExternalOperation operation(editor.externalOperationActive);
-        ExternalOperation callback(editor.externalCallbackActive);
-        try{committed=editor.session.history.traverse(redo,error);}catch(...){error=T(editor.session.language,StrHistoryFailed);}
+        ExternalOperation operation(editor,&Editor::externalOperationActive);
+        ExternalOperation callback(editor,&Editor::externalCallbackActive);
+        try{committed=editor.session->history.traverse(redo,error);}catch(const RetiredContinuation&){throw;}
+        catch(...){error=T(editor.session->language,StrHistoryFailed);}
     }
     if(!committed){
         QueryExternalHistory(editor,false);UpdateEnabledState(editor);
-        SetStatus(editor,error.empty()?T(editor.session.language,StrHistoryFailed):error,true);return;
+        SetStatus(editor,error.empty()?T(editor.session->language,StrHistoryFailed):error,true);return;
     }
     // The operation has succeeded even if the following read fails. Disable
     // further edits until a timer/Refresh canonical read succeeds.
     state.valid=false;state.externalReadPending=true;
-    if(RefreshExternalSource(editor))SetStatus(editor,T(editor.session.language,redo?StrRedone:StrUndone),false);
+    if(RefreshExternalSource(editor))SetStatus(editor,T(editor.session->language,redo?StrRedone:StrUndone),false);
 }
 void UndoOnce(Editor &editor) {
     if(CurrentSource(editor).externalHistory){TraverseExternalHistory(editor,false);return;}
     if (!CheckSourceCurrent(editor)) return;
     SourceState &state = CurrentState(editor);
     if (state.undo.empty()) {
-        SetStatus(editor, T(editor.session.language, StrNothingUndo), true);
+        SetStatus(editor, T(editor.session->language, StrNothingUndo), true);
         return;
     }
     Snapshot snapshot = std::move(state.undo.back());
@@ -1382,7 +1492,7 @@ void UndoOnce(Editor &editor) {
     if (!ApplySnapshot(editor, std::move(snapshot), previous)) return;
     state.redo.push_back(std::move(previous));
     RefreshEditorsUi(editor);
-    SetStatus(editor, T(editor.session.language, StrUndone), false);
+    SetStatus(editor, T(editor.session->language, StrUndone), false);
 }
 
 void RedoOnce(Editor &editor) {
@@ -1390,7 +1500,7 @@ void RedoOnce(Editor &editor) {
     if (!CheckSourceCurrent(editor)) return;
     SourceState &state = CurrentState(editor);
     if (state.redo.empty()) {
-        SetStatus(editor, T(editor.session.language, StrNothingRedo), true);
+        SetStatus(editor, T(editor.session->language, StrNothingRedo), true);
         return;
     }
     Snapshot snapshot = std::move(state.redo.back());
@@ -1399,7 +1509,7 @@ void RedoOnce(Editor &editor) {
     if (!ApplySnapshot(editor, std::move(snapshot), previous)) return;
     state.undo.push_back(std::move(previous));
     RefreshEditorsUi(editor);
-    SetStatus(editor, T(editor.session.language, StrRedone), false);
+    SetStatus(editor, T(editor.session->language, StrRedone), false);
 }
 
 // Reads the current source.  `adopted` reports whether the freshly read data
@@ -1409,15 +1519,15 @@ bool ReadCurrentSource(Editor &editor, bool *adopted) {
     SourceState &state = CurrentState(editor);
     if (!source.read) {
         state.valid = false;
-        state.reason = T(editor.session.language, StrNoRead);
+        state.reason = T(editor.session->language, StrNoRead);
         if (adopted) *adopted = false;
         return false;
     }
     std::vector<Channel> channels;
     std::wstring error;
-    if (!source.read(channels, error)) {
+    if (!ReadSource(editor,channels,error)) {
         state.valid = false;
-        state.reason = std::wstring(T(editor.session.language, StrReadFailed)) + (error.empty() ? std::wstring() : error);
+        state.reason = std::wstring(T(editor.session->language, StrReadFailed)) + (error.empty() ? std::wstring() : error);
         if (adopted) *adopted = false;
         return false;
     }
@@ -1462,7 +1572,7 @@ void ReadAndAdopt(Editor &editor, bool dropHistoryOnChange) {
     UpdateWindowTitle(editor);
     FillSourceCombo(editor);
     FitAll(editor);
-    if (state.status.empty()) SetStatus(editor, T(editor.session.language, StrReady), false);
+    if (state.status.empty()) SetStatus(editor, T(editor.session->language, StrReady), false);
 }
 
 // External registration changes data, while the editor's view remains local.
@@ -1510,7 +1620,7 @@ bool ReadRegisteredSource(Editor &editor, bool publishUi) {
         UpdateWindowTitle(editor);
         FillSourceCombo(editor);
         InvalidateCanvas(editor);
-        if (changed || state.statusError) SetStatus(editor, T(editor.session.language, StrReady), false);
+        if (changed || state.statusError) SetStatus(editor, T(editor.session->language, StrReady), false);
     }
     return changed;
 }
@@ -1522,22 +1632,23 @@ bool RefreshExternalSource(Editor& editor,bool report){
     const auto revision=state.externalState.revision;
     bool changed=false;
     {
-        ExternalOperation operation(editor.externalOperationActive);
+        ExternalOperation operation(editor,&Editor::externalOperationActive);
         // Publish the controls only after the canonical read and its revision
         // have both been validated. A successful write is pending during this
         // read; disabling then re-enabling its focused edit would lose focus.
-        try{changed=ReadRegisteredSource(editor,false);}catch(...){
-            state.valid=false;state.reason=T(editor.session.language,StrHistoryRefreshPending);
+        try{changed=ReadRegisteredSource(editor,false);}catch(const RetiredContinuation&){throw;}
+        catch(...){
+            state.valid=false;state.reason=T(editor.session->language,StrHistoryRefreshPending);
         }
     }
     const bool queried=QueryExternalHistory(editor,report);
     if(state.valid&&queried&&state.externalState.revision==revision){
         state.observedHistoryRevision=revision;state.externalObserved=true;state.externalReadPending=false;
-        if(changed||state.statusError)SetStatus(editor,T(editor.session.language,StrReady),false);
+        if(changed||state.statusError)SetStatus(editor,T(editor.session->language,StrReady),false);
     }else{
         state.externalReadPending=true;
-        if(state.valid){state.valid=false;state.reason=T(editor.session.language,StrHistoryRefreshChanged);}
-        if(report)SetStatus(editor,state.reason.empty()?T(editor.session.language,StrHistoryRefreshPending):state.reason,true);
+        if(state.valid){state.valid=false;state.reason=T(editor.session->language,StrHistoryRefreshChanged);}
+        if(report)SetStatus(editor,state.reason.empty()?T(editor.session->language,StrHistoryRefreshPending):state.reason,true);
     }
     RefreshEditorsUi(editor);
     UpdateWindowTitle(editor);
@@ -1563,8 +1674,8 @@ void ProcessSourceChanges(Editor &editor) {
     KillTimer(editor.window, kSourceChangedTimer);
     std::set<std::string> pending;
     pending.swap(editor.pendingSources);
-    for (std::size_t index = 0; index < editor.session.sources.size(); ++index) {
-        if (!pending.count(editor.session.sources[index].id)) continue;
+    for (std::size_t index = 0; index < editor.session->sources.size(); ++index) {
+        if (!pending.count(editor.session->sources[index].id)) continue;
         if (index == editor.sourceIndex) {
             if(CurrentSource(editor).externalHistory)RefreshExternalSource(editor);else ReadRegisteredSource(editor);
         }
@@ -1745,10 +1856,10 @@ bool MouseCoordinates(Editor& editor,double& frame,double& value) {
 }
 
 void RefreshMouseReadout(Editor& editor) {
-    const bool zh=editor.session.language==2,en=editor.session.language==1;
+    const bool zh=editor.session->language==2,en=editor.session->language==1;
     const wchar_t* mouse=zh?L"鼠标":en?L"Mouse":L"マウス";
     const wchar_t* frameLabel=zh?L"帧":en?L"Frame":L"フレーム";
-    const wchar_t* valueLabel=T(editor.session.language,editor.viewMode==0?StrViewValue:StrViewSpeed);
+    const wchar_t* valueLabel=T(editor.session->language,editor.viewMode==0?StrViewValue:StrViewSpeed);
     double frame=0,value=0;
     wchar_t text[256]{};
     if(MouseCoordinates(editor,frame,value))
@@ -2003,8 +2114,8 @@ void DrawTangents(Editor &editor, HDC dc) {
 }
 
 void DrawPlayhead(Editor &editor, HDC dc) {
-    if (!editor.session.currentFrame) return;
-    const double frame = editor.session.currentFrame();
+    if (!editor.session->currentFrame) return;
+    const double frame = editor.session->currentFrame();
     if (!std::isfinite(frame)) return;
     double x = 0;
     if (!TimeToX(editor, frame, x)) return;
@@ -2256,9 +2367,9 @@ void PaintCanvas(Editor &editor, HDC dc) {
 
     const Track *track = ActiveTrack(editor);
     std::wstring notice;
-    if (track && !ActiveChannelVisible(editor)) notice = T(editor.session.language, StrHiddenCurve);
-    else if (!track || track->keys.empty()) notice = T(editor.session.language, StrNoKeys);
-    else if (editor.viewMode == 1 && track->discrete) notice = T(editor.session.language, StrDiscreteNoSpeed);
+    if (track && !ActiveChannelVisible(editor)) notice = T(editor.session->language, StrHiddenCurve);
+    else if (!track || track->keys.empty()) notice = T(editor.session->language, StrNoKeys);
+    else if (editor.viewMode == 1 && track->discrete) notice = T(editor.session->language, StrDiscreteNoSpeed);
     if (!notice.empty()) {
         SetTextColor(dc, curve_editor_theme::muted);
         RECT text = editor.plot;
@@ -2294,31 +2405,31 @@ void ComputeMmdControls(Editor &editor) {
     editor.mmdEndKey = -1;
     SourceState &state = CurrentState(editor);
     if (state.channels.empty()) {
-        editor.mmdReason = T(editor.session.language, StrNeedChannel);
+        editor.mmdReason = T(editor.session->language, StrNeedChannel);
         return;
     }
     const Track &track = state.channels[state.active].track;
     if (state.selection.empty() && !editor.mmdFollowPlayhead) {
-        editor.mmdReason = T(editor.session.language, StrNoSelection);
+        editor.mmdReason = T(editor.session->language, StrNoSelection);
         return;
     }
     std::size_t endKey = ActiveKeyIndex(editor);
-    if(editor.mmdFollowPlayhead && track.keys.size()>1 && editor.session.currentFrame){
-        const double frame=editor.session.currentFrame();
+    if(editor.mmdFollowPlayhead && track.keys.size()>1 && editor.session->currentFrame){
+        const double frame=editor.session->currentFrame();
         if(std::isfinite(frame)){
             auto at=std::lower_bound(track.keys.begin()+1,track.keys.end(),frame,[](const Key& key,double f){return key.frame<f;});
             endKey=at==track.keys.end()?track.keys.size()-1:std::size_t(at-track.keys.begin());
         }
     }
     if (endKey == 0 || endKey >= track.keys.size()) {
-        editor.mmdReason = T(editor.session.language, StrMmdNoInterval);
+        editor.mmdReason = T(editor.session->language, StrMmdNoInterval);
         return;
     }
     const Key &start = track.keys[endKey - 1];
     const Key &end = track.keys[endKey];
     editor.mmdEndKey = static_cast<int>(endKey);
     if (track.discrete) {
-        editor.mmdReason = T(editor.session.language, StrMmdDiscrete);
+        editor.mmdReason = T(editor.session->language, StrMmdDiscrete);
         return;
     }
     const Channel &channel = state.channels[state.active];
@@ -2331,11 +2442,11 @@ void ComputeMmdControls(Editor &editor) {
         }
     }
     if (end.interpolation == Interpolation::Step) {
-        editor.mmdReason = T(editor.session.language, StrMmdStep);
+        editor.mmdReason = T(editor.session->language, StrMmdStep);
         return;
     }
     if (end.value == start.value) {
-        editor.mmdReason = T(editor.session.language, StrMmdEqual);
+        editor.mmdReason = T(editor.session->language, StrMmdEqual);
         return;
     }
     std::array<double, 4> controls = {{0, 0, 0, 0}};
@@ -2352,11 +2463,11 @@ void ComputeMmdControls(Editor &editor) {
             editor.mmdEnabled = true;
             return;
         }
-        editor.mmdReason = T(editor.session.language, StrMmdOvershoot);
+        editor.mmdReason = T(editor.session->language, StrMmdOvershoot);
         return;
     }
     if (!animation_curve::GetMmdControls(track, endKey, controls)) {
-        editor.mmdReason = T(editor.session.language, StrMmdOvershoot);
+        editor.mmdReason = T(editor.session->language, StrMmdOvershoot);
         return;
     }
     editor.mmdControls = controls;
@@ -2448,11 +2559,11 @@ std::wstring SourceLabel(const Session &session, std::size_t index) {
 }
 
 void UpdateWindowTitle(Editor &editor) {
-    std::wstring title = T(editor.session.language, StrTitle);
-    const std::wstring label = SourceLabel(editor.session, editor.sourceIndex);
+    std::wstring title = T(editor.session->language, StrTitle);
+    const std::wstring label = SourceLabel(*editor.session, editor.sourceIndex);
     if (!label.empty()) title += L" — " + label;
-    if (editor.sourceIndex < editor.session.sources.size()) {
-        const std::string &id = editor.session.sources[editor.sourceIndex].id;
+    if (editor.sourceIndex < editor.session->sources.size()) {
+        const std::string &id = editor.session->sources[editor.sourceIndex].id;
         if (!id.empty()) title += L" [" + Widen(id) + L"]";
     }
     SetWindowTextW(editor.window, title.c_str());
@@ -2471,9 +2582,9 @@ void UpdateMmdPanel(Editor &editor) {
     if (editor.mmdEnabled) {
         if (const Track* track=ActiveTrack(editor);track && editor.mmdEndKey>0 &&
             std::size_t(editor.mmdEndKey)<track->keys.size())
-            readout=std::wstring(editor.session.language==2?L"区间 ":editor.session.language==1?L"Range ":L"区間 ")+
+            readout=std::wstring(editor.session->language==2?L"区间 ":editor.session->language==1?L"Range ":L"区間 ")+
                 FormatInteger(track->keys[editor.mmdEndKey-1].frame)+L"–"+FormatInteger(track->keys[editor.mmdEndKey].frame)+
-                (editor.session.language==2?L" 帧":L"");
+                (editor.session->language==2?L" 帧":L"");
     } else {
         readout = editor.mmdReason;
     }
@@ -2488,8 +2599,8 @@ void UpdateKeyFields(Editor &editor) {
     const bool hasKey = track && index != static_cast<std::size_t>(-1) && index < track->keys.size();
     long long frame = 0;
     double value = 0;
-    if (editor.session.currentFrame) {
-        const double current = editor.session.currentFrame();
+    if (editor.session->currentFrame) {
+        const double current = editor.session->currentFrame();
         if (std::isfinite(current)) frame = static_cast<long long>(std::llround(current));
     }
     if (hasKey) {
@@ -2640,7 +2751,7 @@ void FillSourceCombo(Editor &editor) {
     HWND combo = GetDlgItem(editor.window, kIdSourceCombo);
     if (!combo) return;
     SendMessageW(combo, CB_RESETCONTENT, 0, 0);
-    for (const Source &source : editor.session.sources) {
+    for (const Source &source : editor.session->sources) {
         const std::wstring text = source.label.empty() ? Widen(source.id) : source.label;
         SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(text.c_str()));
     }
@@ -2650,10 +2761,10 @@ void FillSourceCombo(Editor &editor) {
 // The optional Source::localizedLabel owns the displayed source name; a source
 // without it keeps the plain label, which is what the current MMV plugin does.
 void RefreshSourceLabels(Editor &editor) {
-    const unsigned language = editor.session.language;
-    for (Source &source : editor.session.sources) {
+    const unsigned language = editor.session->language;
+    for (Source &source : editor.session->sources) {
         if (!source.localizedLabel) continue;
-        std::wstring localized = source.localizedLabel(language);
+        std::wstring localized = InvokeProvider(editor,source.localizedLabel,language);
         if (!localized.empty()) source.label = std::move(localized);
     }
 }
@@ -2717,9 +2828,9 @@ void UpdateEnabledState(Editor &editor) {
 // ---------------------------------------------------------------------------
 std::wstring CompareModeLabel(Editor &editor, int mode) {
     switch (mode) {
-    case kCompareAllGroups: return T(editor.session.language, StrCompareAllGroups);
-    case kCompareFree: return T(editor.session.language, StrCompareFree);
-    default: return T(editor.session.language, StrCompareSameGroup);
+    case kCompareAllGroups: return T(editor.session->language, StrCompareAllGroups);
+    case kCompareFree: return T(editor.session->language, StrCompareFree);
+    default: return T(editor.session->language, StrCompareSameGroup);
     }
 }
 
@@ -2905,13 +3016,13 @@ void ChangeCompareMode(Editor &editor, int mode) {
     }
     std::wstring error;
     if (!SetCompareMode(editor, mode, error)) {
-        std::wstring message = T(editor.session.language, StrCompareModeFailed);
+        std::wstring message = T(editor.session->language, StrCompareModeFailed);
         if (!error.empty()) message += error;
         SetStatus(editor, message, true);
         UpdateCompareUi(editor);
         return;
     }
-    SetStatus(editor, std::wstring(T(editor.session.language, StrCompareModeHead)) + CompareModeLabel(editor, mode),
+    SetStatus(editor, std::wstring(T(editor.session->language, StrCompareModeHead)) + CompareModeLabel(editor, mode),
               false);
 }
 
@@ -2926,7 +3037,7 @@ bool EnterFreeForManualDisplay(Editor &editor) {
     if (state.compareMode == kCompareOff || state.compareMode == kCompareFree) return true;
     std::wstring error;
     if (SetCompareMode(editor, kCompareFree, error)) return true;
-    std::wstring message = T(editor.session.language, StrCompareModeFailed);
+    std::wstring message = T(editor.session->language, StrCompareModeFailed);
     if (!error.empty()) message += error;
     SetStatus(editor, message, true);
     UpdateCompareUi(editor);
@@ -2939,7 +3050,7 @@ bool EnterFreeForManualDisplay(Editor &editor) {
 // only the view flag Channel::selected changes, so no curve data is written.
 void RunCompareFilter(Editor &editor) {
     SourceState &state = CurrentState(editor);
-    const unsigned language = editor.session.language;
+    const unsigned language = editor.session->language;
     double first = 0, last = 0;
     int source = kSpanNone;
     if (!CompareSpan(editor, first, last, source)) {
@@ -3039,7 +3150,7 @@ void InvalidatePlayhead(Editor &editor) {
 // The playhead timer exists only while the window is on screen and the session
 // reports a current frame: a hidden editor costs nothing and never repaints.
 void UpdatePlayheadTimer(Editor &editor) {
-    const bool wanted = editor.window && (editor.session.currentFrame || editor.session.history.query) &&
+    const bool wanted = editor.window && (editor.session->currentFrame || editor.session->history.query) &&
                         IsWindowVisible(editor.window) != FALSE;
     if (wanted && !editor.playheadTimerRunning) {
         if (SetTimer(editor.window, kPlayheadTimer, kPlayheadIntervalMs, nullptr) != 0)
@@ -3083,14 +3194,14 @@ bool PullKeySelection(Editor& editor,bool publishUi){
     return true;
 }
 const wchar_t* PlayCaption(Editor& editor){
-    const bool playing=editor.session.isPlaying&&editor.session.isPlaying();
-    return editor.session.language==0?(playing?L"停止":L"再生"):editor.session.language==1?(playing?L"Stop":L"Play"):(playing?L"停止":L"播放");
+    const bool playing=editor.session->isPlaying&&editor.session->isPlaying();
+    return editor.session->language==0?(playing?L"停止":L"再生"):editor.session->language==1?(playing?L"Stop":L"Play"):(playing?L"停止":L"播放");
 }
 void SeekTimeline(Editor& editor,int frame){
     frame=std::clamp(frame,0,int(kMaximumFrame));
-    const bool playing=editor.session.isPlaying&&editor.session.isPlaying();
-    if(!playing&&editor.session.currentFrame&&editor.session.currentFrame()==frame)return;
-    if(editor.session.seek)editor.session.seek(frame);
+    const bool playing=editor.session->isPlaying&&editor.session->isPlaying();
+    if(!playing&&editor.session->currentFrame&&editor.session->currentFrame()==frame)return;
+    if(editor.session->seek)editor.session->seek(frame);
     OnPlayheadTimer(editor);
     editor.mmdFollowPlayhead=true;
     UpdateMmdPanel(editor);
@@ -3102,8 +3213,8 @@ void SeekAtPoint(Editor& editor,POINT point){
 }
 void SeekAdjacentKey(Editor& editor,bool next){
     const Track* track=ActiveTrack(editor);
-    if(!track || track->keys.empty() || !editor.session.currentFrame || !editor.session.seek)return;
-    const double frame=editor.session.currentFrame();
+    if(!track || track->keys.empty() || !editor.session->currentFrame || !editor.session->seek)return;
+    const double frame=editor.session->currentFrame();
     if(!std::isfinite(frame))return;
     if(next){
         const auto it=std::upper_bound(track->keys.begin(),track->keys.end(),frame,
@@ -3120,11 +3231,11 @@ void OnPlayheadTimer(Editor &editor) {
     // A hidden editor does no work at all: no frame query, no repaint.
     if (!editor.window || IsWindowVisible(editor.window) == FALSE) return;
     PollExternalHistory(editor);
-    if (!editor.session.currentFrame) return;
+    if (!editor.session->currentFrame) return;
     PullKeySelection(editor);
     SetControlText(editor.window,kIdPlay,PlayCaption(editor));
     ++editor.playheadTicks;
-    const double frame = editor.session.currentFrame();
+    const double frame = editor.session->currentFrame();
     if (!std::isfinite(frame)) return;
     if(GetFocus()!=GetDlgItem(editor.window,kIdTimelineFrame))
         SetControlText(editor.window,kIdTimelineFrame,FormatInteger(static_cast<long long>(std::lround(frame))));
@@ -3143,17 +3254,17 @@ void AddKey(Editor &editor) {
     if (!CheckSourceCurrent(editor)) return;
     Track *track = ActiveTrack(editor);
     if (!track) {
-        SetStatus(editor, T(editor.session.language, StrNeedChannel), true);
+        SetStatus(editor, T(editor.session->language, StrNeedChannel), true);
         return;
     }
     long long frame = 0;
     double value = 0;
     if (!ParseIntegerText(ControlText(editor.window, kIdFrameEdit), frame) || frame < 0 || frame > kMaximumFrame) {
-        SetStatus(editor, T(editor.session.language, StrInvalidFrame), true);
+        SetStatus(editor, T(editor.session->language, StrInvalidFrame), true);
         return;
     }
     if (!ParseDoubleText(ControlText(editor.window, kIdValueEdit), value)) {
-        SetStatus(editor, T(editor.session.language, StrInvalidNumber), true);
+        SetStatus(editor, T(editor.session->language, StrInvalidNumber), true);
         return;
     }
     for (std::size_t existing = 0; existing < track->keys.size(); ++existing) {
@@ -3168,7 +3279,7 @@ void AddKey(Editor &editor) {
             UpdateEnabledState(editor);
             InvalidateCanvas(editor);
             SetStatus(editor,
-                      std::wstring(T(editor.session.language, StrFrameSelected)) + FormatInteger(frame), false);
+                      std::wstring(T(editor.session->language, StrFrameSelected)) + FormatInteger(frame), false);
             return;
         }
     }
@@ -3182,7 +3293,7 @@ void AddKey(Editor &editor) {
     const std::size_t index = static_cast<std::size_t>(position - working.keys.begin());
     working.keys.insert(position, key);
     animation_curve::UpdateAutomatic(working);
-    const std::wstring message = std::wstring(T(editor.session.language, StrAdded)) + FormatInteger(frame);
+    const std::wstring message = std::wstring(T(editor.session->language, StrAdded)) + FormatInteger(frame);
     if (CommitChannels(editor, std::move(next), message)) {
         SourceState &state = CurrentState(editor);
         state.selection.clear();
@@ -3200,7 +3311,7 @@ void DeleteSelectedKeys(Editor &editor) {
     SourceState &state = CurrentState(editor);
     Track *track = ActiveTrack(editor);
     if (!track || state.selection.empty()) {
-        SetStatus(editor, T(editor.session.language, StrNoSelection), true);
+        SetStatus(editor, T(editor.session->language, StrNoSelection), true);
         return;
     }
     std::vector<Channel> next = CopyChannels(editor);
@@ -3216,7 +3327,7 @@ void DeleteSelectedKeys(Editor &editor) {
     // Removing a key changes the neighbourhood of the remaining automatic keys,
     // so their slopes are recomputed before the transaction is committed.
     animation_curve::UpdateAutomatic(working);
-    const std::wstring message = std::wstring(T(editor.session.language, StrDeleted)) + FormatInteger(static_cast<long long>(removed));
+    const std::wstring message = std::wstring(T(editor.session->language, StrDeleted)) + FormatInteger(static_cast<long long>(removed));
     if (CommitChannels(editor, std::move(next), message)) {
         state.selection.clear();
         UpdateKeyFields(editor);
@@ -3290,7 +3401,7 @@ void ApplyCurveChoice(Editor& editor, int id) {
     // an undo entry or discard redo. Compare every selected key's result, not
     // just the highlighted row, because a multi-selection can contain different modes.
     if (!SameTrack(*track, working))
-        CommitChannels(editor, std::move(next), T(editor.session.language, StrReady));
+        CommitChannels(editor, std::move(next), T(editor.session->language, StrReady));
     // A refusal must restore the highlight too; presets never stay selected.
     UpdateKeyFields(editor);
     UpdateMmdPanel(editor);
@@ -3300,17 +3411,17 @@ void ApplyCurveChoice(Editor& editor, int id) {
 void ApplyKeyFields(Editor &editor) {
     if (!CheckSourceCurrent(editor)) return;
     if (PullKeySelection(editor)) {
-        SetStatus(editor, T(editor.session.language, StrSelectionChanged), true);
+        SetStatus(editor, T(editor.session->language, StrSelectionChanged), true);
         return;
     }
     SourceState &state = CurrentState(editor);
     Track *track = ActiveTrack(editor);
     if (!track) {
-        SetStatus(editor, T(editor.session.language, StrNeedChannel), true);
+        SetStatus(editor, T(editor.session->language, StrNeedChannel), true);
         return;
     }
     if (state.selection.size() != 1) {
-        SetStatus(editor, T(editor.session.language, StrSingleKeyForFrame), true);
+        SetStatus(editor, T(editor.session->language, StrSingleKeyForFrame), true);
         return;
     }
     const std::size_t index = *state.selection.begin();
@@ -3318,7 +3429,7 @@ void ApplyKeyFields(Editor &editor) {
     long long frame = 0;
     double value = 0, inSlope = 0, outSlope = 0, inWeight = 0, outWeight = 0;
     if (!ParseIntegerText(ControlText(editor.window, kIdFrameEdit), frame) || frame < 0 || frame > kMaximumFrame) {
-        SetStatus(editor, T(editor.session.language, StrInvalidFrame), true);
+        SetStatus(editor, T(editor.session->language, StrInvalidFrame), true);
         return;
     }
     if (!ParseDoubleText(ControlText(editor.window, kIdValueEdit), value) ||
@@ -3326,7 +3437,7 @@ void ApplyKeyFields(Editor &editor) {
         !ParseDoubleText(ControlText(editor.window, kIdOutSlopeEdit), outSlope) ||
         !ParseDoubleText(ControlText(editor.window, kIdInWeightEdit), inWeight) ||
         !ParseDoubleText(ControlText(editor.window, kIdOutWeightEdit), outWeight)) {
-        SetStatus(editor, T(editor.session.language, StrInvalidNumber), true);
+        SetStatus(editor, T(editor.session->language, StrInvalidNumber), true);
         return;
     }
 
@@ -3335,7 +3446,7 @@ void ApplyKeyFields(Editor &editor) {
     for (std::size_t other = 0; other < working.keys.size(); ++other) {
         if (other == index) continue;
         if (working.keys[other].frame == static_cast<std::int32_t>(frame)) {
-            SetStatus(editor, std::wstring(T(editor.session.language, StrFrameExists)) + FormatInteger(frame), true);
+            SetStatus(editor, std::wstring(T(editor.session->language, StrFrameExists)) + FormatInteger(frame), true);
             return;
         }
     }
@@ -3381,7 +3492,7 @@ void ApplyKeyFields(Editor &editor) {
         working.keys[insertion].tangent = moved.tangent;
     }
     animation_curve::UpdateAutomatic(working);
-    if (CommitChannels(editor, std::move(next), T(editor.session.language, StrReady))) {
+    if (CommitChannels(editor, std::move(next), T(editor.session->language, StrReady))) {
         state.selection.clear();
         state.selection.insert(insertion);
         UpdateKeyFields(editor);
@@ -3395,7 +3506,7 @@ void SelectAllChannels(Editor &editor) {
     if(!EnterFreeForManualDisplay(editor))return;
     for (Channel &channel : state.channels) channel.selected = !ComparisonSupported(editor)||curve_comparison::IsRegistered(channel.track);
     SyncVisibilityToList(editor);UpdateCompareUi(editor);InvalidateCanvas(editor);
-    SetStatus(editor, T(editor.session.language, StrReady), false);
+    SetStatus(editor, T(editor.session->language, StrReady), false);
 }
 
 void InvertChannels(Editor &editor) {
@@ -3406,26 +3517,26 @@ void InvertChannels(Editor &editor) {
         if(ComparisonSupported(editor)&&!curve_comparison::IsRegistered(channel.track))channel.selected=false;
     }
     SyncVisibilityToList(editor);UpdateCompareUi(editor);InvalidateCanvas(editor);
-    SetStatus(editor,T(editor.session.language,StrReady),false);
+    SetStatus(editor,T(editor.session->language,StrReady),false);
 }
 
 void RunBake(Editor &editor) {
     SourceState &state = CurrentState(editor);
     if (state.channels.empty()) {
-        SetStatus(editor, T(editor.session.language, StrNeedChannel), true);
+        SetStatus(editor, T(editor.session->language, StrNeedChannel), true);
         return;
     }
     long long first = 0, last = 0, step = 0;
     if (!ParseIntegerText(ControlText(editor.window, kIdBakeFirstEdit), first) ||
         !ParseIntegerText(ControlText(editor.window, kIdBakeLastEdit), last) ||
         !ParseIntegerText(ControlText(editor.window, kIdBakeStepEdit), step)) {
-        SetStatus(editor, T(editor.session.language, StrInvalidNumber), true);
+        SetStatus(editor, T(editor.session->language, StrInvalidNumber), true);
         return;
     }
     bool any = false;
     for (const Channel &channel : state.channels) any = any || channel.selected;
     if (!any) {
-        SetStatus(editor, T(editor.session.language, StrNoChannels), true);
+        SetStatus(editor, T(editor.session->language, StrNoChannels), true);
         return;
     }
     std::vector<Channel> next = CopyChannels(editor);
@@ -3438,14 +3549,14 @@ void RunBake(Editor &editor) {
         // verbatim instead of being replaced by a generic failure text.
         if (!animation_curve::Bake(channel.track, static_cast<std::int32_t>(first), static_cast<std::int32_t>(last),
                                    static_cast<std::int32_t>(step), output, error)) {
-            SetStatus(editor, std::wstring(T(editor.session.language, StrBakeFailed)) + Widen(error), true);
+            SetStatus(editor, std::wstring(T(editor.session->language, StrBakeFailed)) + Widen(error), true);
             return;
         }
         if (channel.sample) {
             for (auto& key : output.keys) {
                 key.value = channel.sample(channel, key.frame).value;
                 if (!std::isfinite(key.value)) {
-                    SetStatus(editor, T(editor.session.language, StrBakeFailed), true); return;
+                    SetStatus(editor, T(editor.session->language, StrBakeFailed), true); return;
                 }
                 key.inSlope = key.outSlope = 0;
             }
@@ -3461,7 +3572,7 @@ void RunBake(Editor &editor) {
         channel.preservedCameraIntervals.clear();
         ++baked;
     }
-    const std::wstring message = std::wstring(T(editor.session.language, StrBakeDone)) + FormatInteger(baked);
+    const std::wstring message = std::wstring(T(editor.session->language, StrBakeDone)) + FormatInteger(baked);
     if (CommitChannels(editor, std::move(next), message)) {
         UpdateBakeFields(editor);
         InvalidateCanvas(editor);
@@ -3473,10 +3584,10 @@ void RunReadMotion(Editor &editor) {
     if(external&&!CheckSourceCurrent(editor))return;
     decltype(Source::readMotion) callback;
     try{callback=CurrentSource(editor).readMotion;}
-    catch(...){SetDlgItemTextW(editor.window,kIdStatus,T(editor.session.language,StrHistoryFailed));return;}
+    catch(...){SetDlgItemTextW(editor.window,kIdStatus,T(editor.session->language,StrHistoryFailed));return;}
     if (!callback) return;
     const std::weak_ptr<void> lifetime = editor.motionSession;
-    const auto language = editor.session.language;
+    const auto language = editor.session->language;
     const auto window = editor.window;
     const bool previous = editor.externalOperationActive;
     editor.externalOperationActive = true;
@@ -3487,12 +3598,12 @@ void RunReadMotion(Editor &editor) {
     if(!IsWindowSessionCurrent(window,lifetime))return;
     editor.externalOperationActive = previous;
     if (!accepted) {
-        SetStatus(editor, std::wstring(T(editor.session.language, StrMotionFailed)) + error, true);
+        SetStatus(editor, std::wstring(T(editor.session->language, StrMotionFailed)) + error, true);
         return;
     }
     if(external){CurrentState(editor).valid=false;CurrentState(editor).externalReadPending=true;}
     ReadAndAdopt(editor, true);
-    if(CurrentState(editor).valid)SetStatus(editor, T(editor.session.language, StrMotionReadDone), false);
+    if(CurrentState(editor).valid)SetStatus(editor, T(editor.session->language, StrMotionReadDone), false);
 }
 
 void RunWriteMotion(Editor &editor) {
@@ -3502,9 +3613,9 @@ void RunWriteMotion(Editor &editor) {
     decltype(Source::writeMotion) callback;
     std::vector<Channel> channels;
     try{callback=CurrentSource(editor).writeMotion;if(!callback)return;channels=CurrentState(editor).channels;}
-    catch(...){SetDlgItemTextW(editor.window,kIdStatus,T(editor.session.language,StrHistoryFailed));return;}
+    catch(...){SetDlgItemTextW(editor.window,kIdStatus,T(editor.session->language,StrHistoryFailed));return;}
     const std::weak_ptr<void> lifetime = editor.motionSession;
-    const auto language = editor.session.language;
+    const auto language = editor.session->language;
     const auto window = editor.window;
     const bool previous = editor.externalOperationActive;
     editor.externalOperationActive = true;
@@ -3514,17 +3625,17 @@ void RunWriteMotion(Editor &editor) {
     if(!IsWindowSessionCurrent(window,lifetime))return;
     editor.externalOperationActive = previous;
     if (!accepted) {
-        SetStatus(editor, std::wstring(T(editor.session.language, StrMotionFailed)) + error, true);
+        SetStatus(editor, std::wstring(T(editor.session->language, StrMotionFailed)) + error, true);
         return;
     }
-    SetStatus(editor, T(editor.session.language, StrMotionWriteDone), false);
+    SetStatus(editor, T(editor.session->language, StrMotionWriteDone), false);
 }
 
 // ---------------------------------------------------------------------------
 // Source switching and refresh.
 // ---------------------------------------------------------------------------
 void SwitchSource(Editor &editor, std::size_t index) {
-    if (index >= editor.session.sources.size()) return;
+    if (index >= editor.session->sources.size()) return;
     HWND tree=GetDlgItem(editor.window,kIdChannelList);
     for(const auto&entry:editor.collectionItems)
         CurrentState(editor).expandedCollections[entry.second]=(TreeView_GetItemState(tree,entry.first,TVIS_EXPANDED)&TVIS_EXPANDED)!=0;
@@ -3658,11 +3769,11 @@ void CommitKeyDrag(Editor &editor) {
         if (editor.dragSelection.count(index)) {
             const long long frame = static_cast<long long>(working.keys[index].frame) + editor.dragFrameDelta;
             if (frame < 0 || frame > kMaximumFrame) {
-                SetStatus(editor, T(editor.session.language, StrInvalidFrame), true);
+                SetStatus(editor, T(editor.session->language, StrInvalidFrame), true);
                 return;
             }
             if (!targets.insert(static_cast<std::int32_t>(frame)).second) {
-                SetStatus(editor, T(editor.session.language, StrDragConflict), true);
+                SetStatus(editor, T(editor.session->language, StrDragConflict), true);
                 return;
             }
         }
@@ -3670,7 +3781,7 @@ void CommitKeyDrag(Editor &editor) {
     for (std::size_t index = 0; index < working.keys.size(); ++index) {
         if (editor.dragSelection.count(index)) continue;
         if (targets.count(working.keys[index].frame)) {
-            SetStatus(editor, T(editor.session.language, StrDragConflict), true);
+            SetStatus(editor, T(editor.session->language, StrDragConflict), true);
             return;
         }
     }
@@ -3708,7 +3819,7 @@ void CommitKeyDrag(Editor &editor) {
         if (found != movedIndex.end()) keep.insert(found->second);
     }
     const std::wstring message =
-        std::wstring(T(editor.session.language, StrMoved)) + FormatInteger(static_cast<long long>(keep.size()));
+        std::wstring(T(editor.session->language, StrMoved)) + FormatInteger(static_cast<long long>(keep.size()));
     if (CommitChannels(editor, std::move(next), message)) {
         state.selection = keep;
         UpdateKeyFields(editor);
@@ -3727,7 +3838,7 @@ void EditKeyShape(Editor &editor, std::size_t key, Edit edit) {
     Track &working = next[state.active].track;
     if (key >= working.keys.size()) return;
     edit(working);
-    if (CommitChannels(editor, std::move(next), T(editor.session.language, StrReady))) {
+    if (CommitChannels(editor, std::move(next), T(editor.session->language, StrReady))) {
         state.selection.clear();
         state.selection.insert(key);
         UpdateKeyFields(editor);
@@ -3768,7 +3879,7 @@ void SelectKeyRange(Editor &editor, const RECT &box, bool additive) {
     UpdateMmdPanel(editor);
     UpdateEnabledState(editor);
     InvalidateCanvas(editor);
-    SetStatus(editor, std::wstring(T(editor.session.language, StrSelectedKeys)) +
+    SetStatus(editor, std::wstring(T(editor.session->language, StrSelectedKeys)) +
                           FormatInteger(static_cast<long long>(state.selection.size())),
               false);
 }
@@ -3844,7 +3955,7 @@ void CanvasMouseDown(Editor &editor, UINT flags, POINT point) {
 
     if (editor.mmdDragHandle >= 0) editor.mmdDragHandle = -1;
 
-    if(editor.session.seek&&point.x>=editor.plot.left&&point.x<=editor.plot.right&&
+    if(editor.session->seek&&point.x>=editor.plot.left&&point.x<=editor.plot.right&&
        point.y>=editor.plot.top-Scale(24,editor.dpi)&&point.y<editor.plot.top){
         editor.drag=Drag::Seek;SetCapture(editor.canvas);SeekAtPoint(editor,point);return;
     }
@@ -3965,7 +4076,7 @@ void CanvasMouseDown(Editor &editor, UINT flags, POINT point) {
         UpdateMmdPanel(editor);
         UpdateEnabledState(editor);
         InvalidateCanvas(editor);
-        SetStatus(editor, std::wstring(T(editor.session.language, StrSelectedKeys)) +
+        SetStatus(editor, std::wstring(T(editor.session->language, StrSelectedKeys)) +
                               FormatInteger(static_cast<long long>(state.selection.size())),
                   false);
         return;
@@ -4158,7 +4269,7 @@ void CanvasMouseUp(Editor &editor, POINT point) {
                 UpdateMmdPanel(editor);
                 UpdateEnabledState(editor);
                 InvalidateCanvas(editor);
-                SetStatus(editor, T(editor.session.language, StrCleared), false);
+                SetStatus(editor, T(editor.session->language, StrCleared), false);
             }
         } else {
             SelectKeyRange(editor, editor.rubber, editor.rubberAdd);
@@ -4175,7 +4286,7 @@ void CanvasMouseUp(Editor &editor, POINT point) {
             track->keys = editor.dragBase;
             std::vector<Channel> next = CopyChannels(editor);
             next[CurrentState(editor).active].track.keys = std::move(moved);
-            if (CommitChannels(editor, std::move(next), T(editor.session.language, StrReady))) {
+            if (CommitChannels(editor, std::move(next), T(editor.session->language, StrReady))) {
                 UpdateKeyFields(editor);
                 UpdateMmdPanel(editor);
             }
@@ -4478,7 +4589,7 @@ void ToggleChannelVisible(Editor &editor, int item) {
     // held to this: for a plain source the tick is the bake scope.
     if (ComparisonSupported(editor) && state.compareMode != kCompareOff &&
         !curve_comparison::IsRegistered(channel.track) && !channel.selected) {
-        SetStatus(editor, T(editor.session.language, StrCompareEmptyCurve), true);
+        SetStatus(editor, T(editor.session->language, StrCompareEmptyCurve), true);
         return;
     }
     if (!EnterFreeForManualDisplay(editor)) return;
@@ -4492,7 +4603,7 @@ void ToggleChannelVisible(Editor &editor, int item) {
     if (list && caret) TreeView_SelectItem(list, caret);
     UpdateCompareUi(editor);
     InvalidateCanvas(editor);
-    SetStatus(editor, T(editor.session.language, channel.selected ? StrChannelShown : StrChannelHidden) +
+    SetStatus(editor, T(editor.session->language, channel.selected ? StrChannelShown : StrChannelHidden) +
                           ChannelRowText(channel, false),
               false);
 }
@@ -4516,7 +4627,7 @@ void ActivateChannel(Editor &editor, int item) {
     UpdateBakeFields(editor);
     UpdateEnabledState(editor);
     FitAll(editor);
-    SetStatus(editor, T(editor.session.language, StrActiveCurve) + ChannelRowText(state.channels[index], false), false);
+    SetStatus(editor, T(editor.session->language, StrActiveCurve) + ChannelRowText(state.channels[index], false), false);
 }
 
 // Keyboard parity with the mouse: the arrow keys only move the caret, Space
@@ -4536,6 +4647,8 @@ bool ChannelListKey(Editor &editor, HWND tree, WPARAM key) {
     return false;
 }
 LRESULT CALLBACK ChannelListSubclassProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
+    EditorLease lease(EditorForChild(hwnd));
+    try {
     WNDPROC previous=PreviousSubclassProc(hwnd);
     LRESULT shared=0;
     if(HandleChildMessage(hwnd,message,wparam,lparam,shared))return shared;
@@ -4565,9 +4678,13 @@ LRESULT CALLBACK ChannelListSubclassProc(HWND hwnd, UINT message, WPARAM wparam,
         if(states)ImageList_Destroy(states);
     }
     return previous?CallWindowProcW(previous,hwnd,message,wparam,lparam):DefWindowProcW(hwnd,message,wparam,lparam);
+    }catch(const RetiredContinuation&){return 0;}
+    catch(...){return 0;}
 }
 
 LRESULT CALLBACK TabSubclassProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
+    EditorLease lease(EditorForChild(hwnd));
+    try {
     WNDPROC previous = PreviousSubclassProc(hwnd);
     LRESULT shared = 0;
     if (HandleChildMessage(hwnd, message, wparam, lparam, shared)) return shared;
@@ -4577,6 +4694,8 @@ LRESULT CALLBACK TabSubclassProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM 
     }
     if (!previous) return DefWindowProcW(hwnd, message, wparam, lparam);
     return CallWindowProcW(previous, hwnd, message, wparam, lparam);
+    }catch(const RetiredContinuation&){return 0;}
+    catch(...){return 0;}
 }
 
 void SubclassControl(Editor &editor, int id, WNDPROC procedure) {
@@ -4681,10 +4800,10 @@ void ApplyMmdCoordinateFields(Editor &editor) {
     std::vector<Channel> next=CopyChannels(editor);
     std::string error;
     if(!SetChannelControls(next[state.active],endKey,controls,error)){
-        SetStatus(editor,std::wstring(T(editor.session.language,StrApplyRejected))+Widen(error),true);
+        SetStatus(editor,std::wstring(T(editor.session->language,StrApplyRejected))+Widen(error),true);
         return;
     }
-    if(CommitChannels(editor,std::move(next),T(editor.session.language,StrReady),true)){
+    if(CommitChannels(editor,std::move(next),T(editor.session->language,StrReady),true)){
         UpdateKeyFields(editor);UpdateMmdPanel(editor);UpdateEnabledState(editor);
     }
 }
@@ -4712,11 +4831,11 @@ void MmdMouseUp(Editor &editor) {
     Track &working = next[state.active].track;
     std::string error;
     if (!SetChannelControls(next[state.active], endKey, controls, error)) {
-        SetStatus(editor, std::wstring(T(editor.session.language, StrApplyRejected)) + Widen(error), true);
+        SetStatus(editor, std::wstring(T(editor.session->language, StrApplyRejected)) + Widen(error), true);
         UpdateMmdPanel(editor);
         return;
     }
-    if (CommitChannels(editor, std::move(next), T(editor.session.language, StrReady), true)) {
+    if (CommitChannels(editor, std::move(next), T(editor.session->language, StrReady), true)) {
         UpdateKeyFields(editor);
         UpdateMmdPanel(editor);
         UpdateEnabledState(editor);
@@ -4777,6 +4896,8 @@ int ChannelWidthLimit(const Editor& editor) {
 
 LRESULT CALLBACK ChannelSplitterProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp, UINT_PTR id, DWORD_PTR data) {
     auto& editor = *reinterpret_cast<Editor*>(data);
+    EditorLease lease(editor);
+    try {
     auto setWidth = [&](int width) {
         const int next = std::clamp(width, 180, ChannelWidthLimit(editor));
         if (editor.channelWidth == next) return;
@@ -4833,6 +4954,8 @@ LRESULT CALLBACK ChannelSplitterProc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
     LRESULT shared = 0;
     if (HandleChildMessage(hwnd, message, wp, lp, shared)) return shared;
     return DefSubclassProc(hwnd, message, wp, lp);
+    }catch(const RetiredContinuation&){return 0;}
+    catch(...){return 0;}
 }
 
 void LayoutEditor(Editor &editor) {
@@ -4871,7 +4994,7 @@ void LayoutEditor(Editor &editor) {
     put(kIdFitAll,action,y,actionWidth,height);
     put(kIdFitRange,action+actionWidth+gap,y,actionWidth,height);
     y+=pitch;
-    bool transport=editor.session.seek!=nullptr;
+    bool transport=editor.session->seek!=nullptr;
     int x=first;
     const int transportIds[]={kIdPreviousKey,kIdPreviousFrame,kIdNextFrame,kIdNextKey,kIdPlay,kIdTimelineFrame,kIdSeekFrame};
     for(int id:transportIds)ShowWindow(GetDlgItem(editor.window,id),transport?SW_SHOW:SW_HIDE);
@@ -4886,7 +5009,7 @@ void LayoutEditor(Editor &editor) {
         put(kIdPlay,right-playWidth,margin,playWidth,height);
         put(kIdTimelineFrame,transportLeft,margin+pitch,navigationWidth,height);
         put(kIdSeekFrame,right-playWidth,margin+pitch,playWidth,height);
-        EnableWindow(GetDlgItem(editor.window,kIdPlay),editor.session.setPlaying!=nullptr);
+        EnableWindow(GetDlgItem(editor.window,kIdPlay),editor.session->setPlaying!=nullptr);
     }
     bool compare=ComparisonSupported(editor);
     for(int id:{kIdCompareLabel,kIdCompareSameGroup,kIdCompareFree,kIdCompareAllGroups,kIdCompareFilter})ShowWindow(GetDlgItem(editor.window,id),compare?SW_SHOW:SW_HIDE);
@@ -4947,7 +5070,7 @@ void LayoutEditor(Editor &editor) {
     tag(1094,left+S(148),moreY,std::max(S(100),width-S(148)),S(22));
     const int lids[]={kIdInSlopeLabel,kIdOutSlopeLabel,kIdInWeightLabel,kIdOutWeightLabel};
     const int cids[]={kIdInSlopeEdit,kIdOutSlopeEdit,kIdInWeightEdit,kIdOutWeightEdit};
-    const int applyWidth=S(editor.session.language==1?60:32),fieldsRight=right-applyWidth-gap;
+    const int applyWidth=S(editor.session->language==1?60:32),fieldsRight=right-applyWidth-gap;
     int cell=(fieldsRight-left-(columns-1)*fieldGap)/columns;
     for(int i=0;i<4;++i){
         ShowWindow(GetDlgItem(editor.window,lids[i]),editor.advancedExpanded?SW_SHOW:SW_HIDE);
@@ -4978,7 +5101,7 @@ void LayoutEditor(Editor &editor) {
 
 
 void FillCombos(Editor &editor) {
-    const unsigned language = editor.session.language;
+    const unsigned language = editor.session->language;
     if (HWND combo = GetDlgItem(editor.window, kIdViewCombo)) {
         const int previous = static_cast<int>(SendMessageW(combo, CB_GETCURSEL, 0, 0));
         SendMessageW(combo, CB_RESETCONTENT, 0, 0);
@@ -5018,7 +5141,7 @@ void FillCombos(Editor &editor) {
 }
 
 void ApplyLanguage(Editor &editor) {
-    const unsigned language = editor.session.language;
+    const unsigned language = editor.session->language;
     SetControlText(editor.window,kIdPlay,PlayCaption(editor));
     SetControlText(editor.window,kIdSeekFrame,language==0?L"移動":language==1?L"Go":L"跳转");
     // A source that offers localizedLabel renames itself for this language; a
@@ -5099,7 +5222,7 @@ HWND MakeControl(Editor &editor, const wchar_t *className, const wchar_t *text, 
 }
 
 void CreateControls(Editor &editor) {
-    const unsigned language = editor.session.language;
+    const unsigned language = editor.session->language;
     MakeControl(editor,L"BUTTON",PlayCaption(editor),WS_TABSTOP|BS_PUSHBUTTON,kIdPlay);
     MakeControl(editor,L"BUTTON",L"上一关键帧",WS_TABSTOP|BS_PUSHBUTTON,kIdPreviousKey);
     MakeControl(editor,L"BUTTON",L"上一帧",WS_TABSTOP|BS_PUSHBUTTON,kIdPreviousFrame);
@@ -5243,11 +5366,11 @@ void HandleCommand(Editor &editor, WPARAM wparam) {
     case kIdUndo: UndoOnce(editor); return;
     case kIdRedo: RedoOnce(editor); return;
     case kIdPlay:
-        if(editor.session.setPlaying)editor.session.setPlaying(!(editor.session.isPlaying&&editor.session.isPlaying()));
+        if(editor.session->setPlaying)editor.session->setPlaying(!(editor.session->isPlaying&&editor.session->isPlaying()));
         SetControlText(editor.window,kIdPlay,PlayCaption(editor));return;
     case kIdPreviousFrame: case kIdNextFrame:
-        if(editor.session.currentFrame){
-            const double current=editor.session.currentFrame();
+        if(editor.session->currentFrame){
+            const double current=editor.session->currentFrame();
             if(std::isfinite(current))SeekTimeline(editor,int(std::clamp(std::round(current)+(id==kIdNextFrame?1:-1),0.0,double(kMaximumFrame))));
         }
         OnPlayheadTimer(editor);
@@ -5355,7 +5478,7 @@ void InsertCurveKeyAtPoint(Editor& editor,POINT point,UINT flags) {
             SetStatus(editor,L"此位置无法在当前权重限制内保持原曲线，请选择其他帧。",true);return;
         }
         if(!CommitChannels(editor,std::move(next),L"已添加关键帧，原曲线形状保持不变。"))return;
-    }else SetStatus(editor,T(editor.session.language,StrFrameSelected)+FormatInteger(frame),false);
+    }else SetStatus(editor,T(editor.session->language,StrFrameSelected)+FormatInteger(frame),false);
     state.active=hit;state.selection={index};
     RefreshEditorsUi(editor);PublishKeySelection(editor);SeekTimeline(editor,frame);OnPlayheadTimer(editor);
 }
@@ -5363,6 +5486,8 @@ void InsertCurveKeyAtPoint(Editor& editor,POINT point,UINT flags) {
 LRESULT CALLBACK CanvasProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
     auto *editor = reinterpret_cast<Editor *>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
     if (!editor) return DefWindowProcW(hwnd, message, wparam, lparam);
+    EditorLease lease(editor);
+    try {
     const auto arrow = [] { return LoadCursorW(nullptr, reinterpret_cast<LPCWSTR>(IDC_ARROW)); };
     const auto sizeAll = [] { return LoadCursorW(nullptr, reinterpret_cast<LPCWSTR>(IDC_SIZEALL)); };
     const auto hand = [] { return LoadCursorW(nullptr, reinterpret_cast<LPCWSTR>(IDC_HAND)); };
@@ -5532,11 +5657,15 @@ LRESULT CALLBACK CanvasProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpara
         break;
     }
     return DefWindowProcW(hwnd, message, wparam, lparam);
+    }catch(const RetiredContinuation&){return 0;}
+    catch(...){return 0;}
 }
 
 LRESULT CALLBACK MmdProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
     auto *editor = reinterpret_cast<Editor *>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
     if (!editor) return DefWindowProcW(hwnd, message, wparam, lparam);
+    EditorLease lease(editor);
+    try {
     switch (message) {
     case WM_KEYDOWN:
         if(EditingShortcut(*editor,hwnd,message,wparam,lparam))return 0;
@@ -5588,6 +5717,8 @@ LRESULT CALLBACK MmdProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) 
         break;
     }
     return DefWindowProcW(hwnd, message, wparam, lparam);
+    }catch(const RetiredContinuation&){return 0;}
+    catch(...){return 0;}
 }
 
 LRESULT HandleHook(Editor &editor, UINT message, WPARAM wparam, LPARAM lparam) {
@@ -5807,6 +5938,8 @@ LRESULT CALLBACK EditorProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpara
     }
     if (!editor) return DefWindowProcW(hwnd, message, wparam, lparam);
 
+    EditorLease lease(editor);
+    try {
     switch (message) {
     case WM_NOTIFY:{
         auto*header=reinterpret_cast<NMHDR*>(lparam);
@@ -5834,7 +5967,7 @@ LRESULT CALLBACK EditorProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpara
     case WM_CREATE:
         editor->dpi = ResolveDpi(hwnd);
         editor->font = CreateUiFont(editor->dpi);
-        curve_editor_theme::Load(editor->session.theme);
+        curve_editor_theme::Load(editor->session->theme);
         editor->themeShell = CreateSolidBrush(curve_editor_theme::shell);
         CreateControls(*editor);
         curve_editor_theme::Apply(hwnd);
@@ -5851,7 +5984,7 @@ LRESULT CALLBACK EditorProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpara
         UpdateBakeFields(*editor);
         SetControlText(editor->window, kIdBakeStepEdit, L"1");
         LayoutEditor(*editor);
-        SetStatus(*editor, T(editor->session.language, StrReady), false);
+        SetStatus(*editor, T(editor->session->language, StrReady), false);
         UpdatePlayheadTimer(*editor);
         return 0;
     case WM_SHOWWINDOW:
@@ -5931,13 +6064,14 @@ LRESULT CALLBACK EditorProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpara
         }
         if (editor->font) DeleteObject(editor->font);
         if (editor->themeShell) DeleteObject(editor->themeShell);
+        editor->font=nullptr;editor->themeShell=nullptr;
         {
             std::lock_guard<std::mutex> guard(g_registryMutex);
             g_editors.erase(std::remove(g_editors.begin(), g_editors.end(), editor), g_editors.end());
             if(g_editors.empty())curve_editor_theme::Release();
         }
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
-        delete editor;
+        editor->windowDestroyed=true;
         return 0;
     }
     default:
@@ -5945,6 +6079,11 @@ LRESULT CALLBACK EditorProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpara
     }
     if (message >= WM_APP && message <= WM_APP + 400) return HandleHook(*editor, message, wparam, lparam);
     return DefWindowProcW(hwnd, message, wparam, lparam);
+    }catch(const RetiredContinuation&){
+        // A nested Open may have installed a healthy new session on this very
+        // HWND during WM_CREATE. Returning -1 would destroy that replacement.
+        return message==WM_CREATE&&editor->windowDestroyed ? -1 : 0;
+    }catch(...){return message==WM_CREATE ? -1 : 0;}
 }
 
 HINSTANCE ModuleHandleFor(void *address) {
@@ -6042,6 +6181,7 @@ bool SetChannelControls(Channel &channel, std::size_t end, const std::array<doub
     return true;
 }
 void *Open(void *owner, Session session, bool visible) {
+    try {
     INITCOMMONCONTROLSEX common = {};
     common.dwSize = sizeof(common);
     common.dwICC = ICC_LISTVIEW_CLASSES | ICC_TREEVIEW_CLASSES | ICC_STANDARD_CLASSES;
@@ -6049,48 +6189,82 @@ void *Open(void *owner, Session session, bool visible) {
     GdiPlusToken();
     if (!RegisterEditorClasses()) return nullptr;
 
+    auto nextSession=std::make_shared<Session>(std::move(session));
+
     if (Editor *existing = FindEditor(owner)) {
+        EditorLease allocation(existing);
+        auto nextToken=std::make_shared<char>();
+        std::vector<SourceState> nextStates(nextSession->sources.size());
         // Invalidate continuations belonging to the previous session before
         // replacing callbacks or channel storage under a nested modal loop.
-        existing->motionSession = std::make_shared<char>();
+        existing->motionSession = std::move(nextToken);
+        EditorLease continuation(existing);
+        OpenAttempt attempt(*existing);
         existing->externalOperationActive = existing->externalCallbackActive = false;
         KillTimer(existing->window, kSourceChangedTimer);
         existing->pendingSources.clear();
-        existing->session = std::move(session);
-        curve_editor_theme::Load(existing->session.theme);
+        {
+            // Destroy old providers only after the live containers have been
+            // replaced. A final capture release may synchronously Close/Open;
+            // it must never reenter assignment of that same live Session (or
+            // destruction of the same channel/sample vector).
+            auto retiredSession=std::move(existing->session);
+            auto retiredStates=std::move(existing->states);
+            existing->session=std::move(nextSession);
+            existing->sourceIndex=existing->session->initialSource<existing->session->sources.size()
+                ? existing->session->initialSource : 0;
+            existing->states=std::move(nextStates);
+            continuation.PinCurrentStorage();
+            attempt.PinCurrentStorage();
+            // The allocation lease started on the old version; do not retain
+            // its last captures until after a successful Open's final check.
+            allocation.ReleaseStorage();
+        }
+        continuation.RequireSession();
+        curve_editor_theme::Load(existing->session->theme);
         if(existing->themeShell)DeleteObject(existing->themeShell);
         existing->themeShell=CreateSolidBrush(curve_editor_theme::shell);
         curve_editor_theme::Apply(existing->window);
-        existing->sourceIndex = existing->session.initialSource < existing->session.sources.size()
-                                    ? existing->session.initialSource
-                                    : 0;
-        existing->states.assign(existing->session.sources.size(), SourceState());
+        continuation.RequireSession();
         existing->channelTreeSource.clear();
         PopulateChannels(*existing);
+        continuation.RequireSession();
         ApplyLanguage(*existing);
+        continuation.RequireSession();
         ReadAndAdopt(*existing, false);
+        continuation.RequireSession();
         // Re-opening an existing window is how the host hands it a new morph,
         // so the initial main channel and the remembered mode are re-read here.
         EnterSource(*existing);
+        continuation.RequireSession();
         UpdateBakeFields(*existing);
+        continuation.RequireSession();
         SetControlText(existing->window, kIdBakeStepEdit, L"1");
+        continuation.RequireSession();
         if (visible) {
             ShowWindow(existing->window, SW_SHOW);
+            continuation.RequireSession();
             SetForegroundWindow(existing->window);
+            continuation.RequireSession();
         }
+        attempt.Complete();
         return existing->window;
     }
 
-    auto *editor = new Editor();
+    auto prepared = std::make_unique<Editor>();
+    auto *editor = prepared.get();
     editor->owner = owner;
-    editor->session = std::move(session);
+    editor->session = std::move(nextSession);
     editor->sourceIndex =
-        editor->session.initialSource < editor->session.sources.size() ? editor->session.initialSource : 0;
-    editor->states.assign(editor->session.sources.size(), SourceState());
+        editor->session->initialSource < editor->session->sources.size() ? editor->session->initialSource : 0;
+    editor->states.assign(editor->session->sources.size(), SourceState());
     {
         std::lock_guard<std::mutex> guard(g_registryMutex);
         g_editors.push_back(editor);
     }
+    prepared.release(); // Registry owns it until WM_NCDESTROY; leases defer delete.
+    EditorLease continuation(editor);
+    OpenAttempt attempt(*editor);
 
     const HINSTANCE instance = ModuleHandleFor(reinterpret_cast<void *>(&EditorProc));
     const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
@@ -6101,19 +6275,28 @@ void *Open(void *owner, Session session, bool visible) {
                                   Scale(kDefaultClientHeight, dpi) + Scale(39, dpi), static_cast<HWND>(owner), nullptr,
                                   instance, editor);
     if (!window) {
-        std::lock_guard<std::mutex> guard(g_registryMutex);
-        g_editors.erase(std::remove(g_editors.begin(), g_editors.end(), editor), g_editors.end());
-        delete editor;
+        if(!editor->windowDestroyed){
+            std::lock_guard<std::mutex> guard(g_registryMutex);
+            g_editors.erase(std::remove(g_editors.begin(), g_editors.end(), editor), g_editors.end());
+            editor->windowDestroyed=true;
+        }
         return nullptr;
     }
+    continuation.RequireSession();
     // WM_CREATE already read the source; this is where its initial main channel
     // and its remembered comparison mode are applied.
     EnterSource(*editor);
+    continuation.RequireSession();
     if (visible) {
         ShowWindow(window, SW_SHOW);
+        continuation.RequireSession();
         SetForegroundWindow(window);
+        continuation.RequireSession();
     }
+    attempt.Complete();
     return window;
+    }catch(const RetiredContinuation&){return nullptr;}
+    catch(...){return nullptr;}
 }
 
 void CloseOwned(void *owner) {
@@ -6144,9 +6327,13 @@ bool IsWindowSessionCurrent(void* window, const std::weak_ptr<void>& session) {
 void SetLanguage(void *owner, unsigned language) {
     Editor *editor = FindEditor(owner);
     if (!editor) return;
+    EditorLease lease(editor);
+    try {
     if (language > 2) language = 2;
-    editor->session.language = language;
+    editor->session->language = language;
     ApplyLanguage(*editor);
+    }catch(const RetiredContinuation&){}
+    catch(...){}
 }
 
 bool OwnsWindow(void* owner, void* window) {
@@ -6160,9 +6347,9 @@ void NotifySourceChanged(void *owner, const std::string &sourceId) {
     Editor *editor = FindEditor(owner);
     if (!editor || !IsWindow(editor->window)) return;
     if (GetWindowThreadProcessId(editor->window, nullptr) != GetCurrentThreadId()) return;
-    const auto match = std::find_if(editor->session.sources.begin(), editor->session.sources.end(),
+    const auto match = std::find_if(editor->session->sources.begin(), editor->session->sources.end(),
                                    [&](const Source &source) { return source.id == sourceId; });
-    if (match == editor->session.sources.end()) return;
+    if (match == editor->session->sources.end()) return;
     editor->pendingSources.insert(sourceId);
     if (!editor->sourceChangePosted)
         editor->sourceChangePosted = PostMessageW(editor->window, kSourceChangedMessage, 0, 0) != FALSE;
@@ -6171,7 +6358,7 @@ void NotifyOwnedChanged(void *owner) noexcept {
     try {
         Editor *editor = FindEditor(owner);
         if (!editor) return;
-        for (const Source &source : editor->session.sources) NotifySourceChanged(owner, source.id);
+        for (const Source &source : editor->session->sources) NotifySourceChanged(owner, source.id);
     } catch (...) {
         // Native commands also notify from a destructor. A failed allocation
         // may defer the redraw, but must not turn a completed edit into a crash.

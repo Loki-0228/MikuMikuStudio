@@ -33,6 +33,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cwchar>
+#include <functional>
+#include <memory>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -1028,6 +1030,356 @@ void MotionCallbackLifetime() {
         ce::CloseOwned(nullptr);
     }
     Note("motion callback destruction, replacement and exceptions preserve session lifetime");
+}
+
+void SourceCallbackLifetime() {
+    // kind: local canonical read, shared-history canonical read, history query.
+    // phase: WM_CREATE, posted source refresh, parent command, canvas shortcut,
+    // a subclassed button shortcut, or the numeric MMD child editor. All
+    // retire the real registered window.
+    for(int kind=0;kind!=3;++kind)for(int phase=0;phase!=6;++phase)
+    for(int action=0;action!=3;++action)for(int response=0;response!=3;++response){
+        std::printf("source lifetime kind=%d phase=%d action=%d response=%d\n",kind,phase,action,response);
+        HostSource host,replacement;
+        host.data.push_back(MakeChannel("pos.x",L"Original",{
+            MakeKey(0,1,ac::Interpolation::Linear,ac::Tangent::Linear),
+            MakeKey(10,5,ac::Interpolation::Linear,ac::Tangent::Linear)}));
+        replacement.data.push_back(MakeChannel("pos.x",L"Replacement",{MakeKey(0,91),MakeKey(20,99)}));
+        auto session=MakeSession(host);
+        session.sources[0].externalHistory=kind!=0;
+        bool armed=phase==0;
+        int retiredCalls=0;
+        HWND replacementWindow=nullptr;
+        std::wstring replacementStatus;
+        auto payload=std::make_shared<int>(17);
+        const std::weak_ptr<int> weakPayload=payload;
+        auto retire=[&]{
+            armed=false;++retiredCalls;
+            if(action!=1)ce::CloseOwned(nullptr);
+            if(action!=0){
+                replacementWindow=static_cast<HWND>(ce::Open(nullptr,MakeSession(replacement),false));
+                Check(IsWindow(replacementWindow),"a source callback installs a live replacement session");
+                replacementStatus=GetText(replacementWindow,kIdStatus);
+            }
+        };
+        if(kind!=2){
+            session.sources[0].read=[&,payload](std::vector<ce::Channel>& out,std::wstring&) {
+                ++host.readCalls;
+                if(armed){
+                    retire();
+                    Check(!weakPayload.expired()&&*payload==17,"read callable captures survive replacement while executing");
+                    if(response==2)throw std::runtime_error("retired canonical read");
+                    if(response==1)return false;
+                }
+                out=host.data;return true;
+            };
+        }
+        if(kind!=0){
+            if(kind==2){
+                session.history.query=[&,payload](ce::HistoryState& out,std::wstring&) {
+                    if(armed){
+                        retire();
+                        Check(!weakPayload.expired()&&*payload==17,"query callable captures survive replacement while executing");
+                        if(response==2)throw std::runtime_error("retired history query");
+                        if(response==1)return false;
+                    }
+                    out={1,true,true};return true;
+                };
+            }else session.history.query=[](ce::HistoryState& out,std::wstring&){out={1,true,true};return true;};
+            session.history.traverse=[](bool,std::wstring&){return false;};
+        }
+        payload.reset();
+        HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
+        std::weak_ptr<void> oldSession;
+        std::shared_ptr<void> retainedToken;
+        if(phase==0)Check(window==nullptr,"an initial Open never reports its retired session as successful");
+        else{
+            Check(IsWindow(window),"source lifetime fixture opens before its callback is armed");
+            oldSession=ce::CaptureWindowSession(window);retainedToken=oldSession.lock();
+            Check(bool(retainedToken),"the old session token can be held independently of its editor");
+            if(phase>=2)ClickKey(window,1);
+            if(phase==5){
+                Check(IsWindowEnabled(GetDlgItem(window,1096)),"numeric MMD source lifetime fixture is editable");
+                SetText(window,1096,L"21");SetText(window,1097,L"42");
+                SetText(window,1098,L"86");SetText(window,1099,L"101");
+            }
+            armed=true;
+            if(phase==1){ce::NotifySourceChanged(nullptr,"source");SendMessageW(window,WM_APP+401,0,0);}
+            if(phase==2)Click(window,kIdDeleteKey);
+            if(phase==3)SendMessageW(GetDlgItem(window,kIdCanvas),WM_KEYDOWN,VK_DELETE,0);
+            if(phase==4)SendMessageW(GetDlgItem(window,kIdDeleteKey),WM_KEYDOWN,VK_DELETE,0);
+            if(phase==5)SendMessageW(GetDlgItem(window,1096),WM_KEYDOWN,VK_RETURN,0);
+            Check(!ce::IsWindowSessionCurrent(window,oldSession)&&!oldSession.expired(),
+                "registry identity retires the old continuation even with a retained strong token");
+        }
+        Check(retiredCalls==1&&host.applyCalls==0,"retired read or query prevents the old edit exactly once");
+        Check(weakPayload.expired(),"retired callable captures are released after the native/public call unwinds");
+        if(replacementWindow){
+            Check(IsWindow(replacementWindow)&&GetText(replacementWindow,kIdStatus)==replacementStatus&&
+                KeyCount(replacementWindow)==2&&replacement.applyCalls==0,
+                "old read/query and guards cannot overwrite replacement controls or channels");
+            ClickKey(replacementWindow,1);Click(replacementWindow,kIdDeleteKey);
+            Check(replacement.applyCalls==1&&KeyCount(replacementWindow)==1,
+                "replacement remains editable after old source and operation guards unwind");
+        }else Check(!ce::OwnsWindow(nullptr,window),"closed source sessions leave no registered editor");
+        ce::CloseOwned(nullptr);
+    }
+    Note("source reads and history queries retire safely through create, refresh and native child entries");
+}
+
+// An invoked std::function copy can release a capture which retires the editor.
+// Its destructor must run before InvokeProvider's final session check.
+struct ProviderCopyFinalizer {
+    HostSource* host;
+    bool* armed;
+    std::function<void()>* retire;
+    mutable bool invoked=false;
+    ProviderCopyFinalizer(HostSource& h,bool& a,std::function<void()>& r):host(&h),armed(&a),retire(&r){}
+    ProviderCopyFinalizer(const ProviderCopyFinalizer&)=default;
+    ~ProviderCopyFinalizer(){if(invoked&&*armed){*armed=false;(*retire)();}}
+    bool operator()(std::vector<ce::Channel>& out,std::wstring&)const{
+        invoked=true;++host->readCalls;out=host->data;return true;
+    }
+    bool operator()(ce::HistoryState& out,std::wstring&)const{
+        invoked=true;out={1,true,true};return true;
+    }
+};
+
+void SourceCallbackFinalRelease() {
+    for(bool query:{false,true})for(int action=0;action!=3;++action){
+        HostSource host,replacement;
+        host.data.push_back(MakeChannel("pos.x",L"Original",{MakeKey(0,1),MakeKey(10,5)}));
+        replacement.data.push_back(MakeChannel("pos.x",L"Replacement",{MakeKey(0,91),MakeKey(20,99)}));
+        bool armed=false;
+        int calls=0;
+        HWND replacementWindow=nullptr;
+        std::wstring replacementStatus;
+        std::function<void()> retire=[&]{
+            ++calls;
+            if(action!=1)ce::CloseOwned(nullptr);
+            if(action!=0){
+                replacementWindow=static_cast<HWND>(ce::Open(nullptr,MakeSession(replacement),false));
+                replacementStatus=GetText(replacementWindow,kIdStatus);
+            }
+        };
+        auto session=MakeSession(host);
+        if(query){
+            session.sources[0].externalHistory=true;
+            session.history.query=ProviderCopyFinalizer(host,armed,retire);
+            session.history.traverse=[](bool,std::wstring&){return false;};
+        }else session.sources[0].read=ProviderCopyFinalizer(host,armed,retire);
+        HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
+        Check(IsWindow(window),"a final-release source opens before being armed");
+        ClickKey(window,1);armed=true;Click(window,kIdDeleteKey);
+        Check(calls==1&&host.applyCalls==0,"callable copy destruction retires the edit before any old apply");
+        if(replacementWindow){
+            Check(IsWindow(replacementWindow)&&GetText(replacementWindow,kIdStatus)==replacementStatus,
+                "final release cannot resume into replacement status");
+            ClickKey(replacementWindow,1);Click(replacementWindow,kIdDeleteKey);
+            Check(replacement.applyCalls==1,"replacement survives a source copy's final release");
+        }
+        ce::CloseOwned(nullptr);
+    }
+    Note("provider copy final release runs before the continuation validity check");
+}
+
+HWND OwnedCurveWindow() {
+    HWND found=nullptr;
+    EnumThreadWindows(GetCurrentThreadId(),[](HWND window,LPARAM data)->BOOL{
+        if(!ce::OwnsWindow(nullptr,window))return TRUE;
+        *reinterpret_cast<HWND*>(data)=window;return FALSE;
+    },reinterpret_cast<LPARAM>(&found));
+    return found;
+}
+
+void OriginalSessionFinalRelease() {
+    // This releases the original Session's last capture without invoking or
+    // copying that provider. It is distinct from ProviderCopyFinalizer above.
+    for(int kind=0;kind!=3;++kind)for(int action=0;action!=3;++action){
+        HostSource original,intermediate,replacement;
+        original.data.push_back(MakeChannel("pos.x",L"Original",{MakeKey(0,1),MakeKey(10,5)}));
+        intermediate.data.push_back(MakeChannel("pos.x",L"Intermediate",{MakeKey(0,31),MakeKey(10,35)}));
+        replacement.data.push_back(MakeChannel("pos.x",L"Replacement",{MakeKey(0,91),MakeKey(20,99)}));
+        bool armed=false;
+        int releases=0;
+        HWND replacementWindow=nullptr;
+        std::wstring replacementStatus;
+        auto payload=std::shared_ptr<int>(new int(17),[&](int* value){
+            delete value;
+            if(!armed)return;
+            armed=false;++releases;
+            if(action!=1)ce::CloseOwned(nullptr);
+            if(action!=0){
+                replacementWindow=static_cast<HWND>(ce::Open(nullptr,MakeSession(replacement),false));
+                Check(IsWindow(replacementWindow),"original Session release can install a nested replacement");
+                replacementStatus=GetText(replacementWindow,kIdStatus);
+            }
+        });
+        auto session=MakeSession(original);
+        if(kind==0)session.sources[0].read=[&,payload](std::vector<ce::Channel>& out,std::wstring&){
+            ++original.readCalls;out=original.data;return true;
+        };
+        if(kind==1){
+            session.sources[0].externalHistory=true;
+            session.history.query=[payload](ce::HistoryState& out,std::wstring&){out={1,true,true};return true;};
+            session.history.traverse=[](bool,std::wstring&){return false;};
+        }
+        if(kind==2)session.currentFrame=[payload]{return 30.0;};
+        payload.reset();
+        HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
+        Check(IsWindow(window),"original Session final-release fixture opens unarmed");
+        auto token=ce::CaptureWindowSession(window);auto retainedToken=token.lock();
+        armed=true;
+        Check(ce::Open(nullptr,MakeSession(intermediate),false)==nullptr&&releases==1,
+            "original Session destruction retires exactly the intermediate Open attempt");
+        Check(!ce::IsWindowSessionCurrent(window,token)&&bool(retainedToken)&&!token.expired(),
+            "token retention does not keep original Session provider storage alive");
+        Check(intermediate.readCalls==0&&intermediate.applyCalls==0&&original.applyCalls==0,
+            "original Session releases before the retired intermediate session reads or edits");
+        if(replacementWindow){
+            Check(IsWindow(replacementWindow)&&GetText(replacementWindow,kIdStatus)==replacementStatus&&
+                KeyCount(replacementWindow)==2,"outer Open cleanup preserves the exact nested session");
+            ClickKey(replacementWindow,1);Click(replacementWindow,kIdDeleteKey);
+            Check(replacement.applyCalls==1,"nested replacement remains editable after original Session destruction");
+        }else Check(OwnedCurveWindow()==nullptr,"original Session final release leaves no ghost window");
+        ce::CloseOwned(nullptr);
+    }
+    Note("original Session final capture release never reenters live Session assignment");
+}
+
+struct ProviderCopyState {
+    bool armed=false,copying=false,throwCopy=false;
+    const void* original=nullptr;
+    int retireCalls=0,destroyedDuringCopy=0,bodyCalls=0;
+    std::function<void()> retire;
+};
+struct CopyRetirementProvider {
+    ProviderCopyState* state;
+    HostSource* host;
+    int marker=23;
+    CopyRetirementProvider(ProviderCopyState& s,HostSource& h):state(&s),host(&h){}
+    CopyRetirementProvider(const CopyRetirementProvider& other):state(other.state),host(other.host),marker(other.marker){
+        if(!state->armed)return;
+        state->armed=false;state->copying=true;state->original=&other;
+        ++state->retireCalls;state->retire();
+        Check(state->destroyedDuringCopy==0&&other.marker==23,
+            "provider's original function remains alive throughout a reentrant copy constructor");
+        state->copying=false;
+        if(state->throwCopy)throw std::runtime_error("retired provider copy");
+    }
+    ~CopyRetirementProvider(){if(state->copying&&state->original==this)++state->destroyedDuringCopy;}
+    bool operator()(std::vector<ce::Channel>& out,std::wstring&)const{
+        ++state->bodyCalls;++host->readCalls;out=host->data;return true;
+    }
+    bool operator()(ce::HistoryState& out,std::wstring&)const{
+        ++state->bodyCalls;out={1,true,true};return true;
+    }
+    std::wstring operator()(unsigned)const{++state->bodyCalls;return L"Copy source";}
+};
+
+void ProviderCopyRetirement() {
+    for(int kind=0;kind!=3;++kind)for(int action=0;action!=3;++action)
+    for(bool throwing:{false,true})for(bool initial:{false,true}){
+        HostSource host,replacement;
+        host.data.push_back(MakeChannel("pos.x",L"Original",{MakeKey(0,1),MakeKey(10,5)}));
+        replacement.data.push_back(MakeChannel("pos.x",L"Replacement",{MakeKey(0,91),MakeKey(20,99)}));
+        ProviderCopyState state;
+        state.throwCopy=throwing;
+        HWND replacementWindow=nullptr;
+        std::wstring replacementStatus;
+        state.retire=[&]{
+            if(action!=1)ce::CloseOwned(nullptr);
+            if(action!=0){
+                replacementWindow=static_cast<HWND>(ce::Open(nullptr,MakeSession(replacement),false));
+                Check(IsWindow(replacementWindow),"provider copy constructor installs a live nested replacement");
+                replacementStatus=GetText(replacementWindow,kIdStatus);
+            }
+        };
+        auto session=MakeSession(host);
+        if(kind==0)session.sources[0].read=CopyRetirementProvider(state,host);
+        if(kind==1){
+            session.sources[0].externalHistory=true;
+            session.history.query=CopyRetirementProvider(state,host);
+            session.history.traverse=[](bool,std::wstring&){return false;};
+        }
+        if(kind==2)session.sources[0].localizedLabel=CopyRetirementProvider(state,host);
+        state.armed=initial;
+        HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
+        int calls=0;
+        std::weak_ptr<void> token;
+        std::shared_ptr<void> retainedToken;
+        if(initial)Check(window==nullptr,"copy-time retirement prevents initial Open from reporting success");
+        else{
+            Check(IsWindow(window),"provider-copy retirement fixture opens unarmed");
+            if(kind!=2)ClickKey(window,1);
+            calls=state.bodyCalls;
+            token=ce::CaptureWindowSession(window);retainedToken=token.lock();
+            state.armed=true;
+            if(kind==2)ce::SetLanguage(nullptr,1);else Click(window,kIdDeleteKey);
+        }
+        Check(state.retireCalls==1&&state.destroyedDuringCopy==0&&state.bodyCalls==calls&&host.applyCalls==0,
+            "retirement while copying prevents invocation of the retired provider body");
+        if(!initial)Check(!ce::IsWindowSessionCurrent(window,token)&&bool(retainedToken),
+            "provider copying retires registry identity independently of token ownership");
+        if(replacementWindow){
+            Check(IsWindow(replacementWindow)&&GetText(replacementWindow,kIdStatus)==replacementStatus,
+                "copy failure cannot write replacement status or let outer cleanup destroy it");
+            ClickKey(replacementWindow,1);Click(replacementWindow,kIdDeleteKey);
+            Check(replacement.applyCalls==1,"replacement remains editable after provider-copy retirement");
+        }else Check(OwnedCurveWindow()==nullptr,"provider-copy closure leaves no ghost editor");
+        ce::CloseOwned(nullptr);
+    }
+    Note("read/query/label copy constructors retain original storage and abort retired invocation");
+}
+
+void SourceLanguageAndOpenFailures() {
+    for(int action=0;action!=3;++action){
+        HostSource host,replacement;
+        host.data.push_back(MakeChannel("pos.x",L"Original",{MakeKey(0,1),MakeKey(10,5)}));
+        replacement.data.push_back(MakeChannel("pos.x",L"Replacement",{MakeKey(0,91),MakeKey(20,99)}));
+        bool armed=false;
+        HWND replacementWindow=nullptr;
+        auto session=MakeSession(host);
+        session.sources[0].localizedLabel=[&](unsigned){
+            if(armed){
+                armed=false;
+                if(action!=1)ce::CloseOwned(nullptr);
+                if(action!=0)replacementWindow=static_cast<HWND>(ce::Open(nullptr,MakeSession(replacement),false));
+                throw std::runtime_error("retired language callback");
+            }
+            return std::wstring(L"Original source");
+        };
+        HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
+        Check(IsWindow(window),"language lifetime fixture opens unarmed");
+        armed=true;ce::SetLanguage(nullptr,1);
+        Check(host.applyCalls==0,"language callback retirement never edits source data");
+        if(replacementWindow){
+            Check(IsWindow(replacementWindow)&&GetText(replacementWindow,kIdSourceLabel)==L"源",
+                "old SetLanguage cannot localize the new session after retirement");
+            ClickKey(replacementWindow,1);Click(replacementWindow,kIdDeleteKey);
+            Check(replacement.applyCalls==1,"new session remains editable after public SetLanguage unwinds");
+        }else Check(!IsWindow(window),"language callback can close its editor safely");
+        ce::CloseOwned(nullptr);
+    }
+    // EnterSource runs after CreateWindowEx returns. An ordinary callback
+    // exception must fail Open and close only the window owned by that attempt.
+    for(bool replacing:{false,true}){
+        HostSource host;
+        host.compareEnabled=true;
+        host.data.push_back(MakeChannel("pos.x",L"Original",{MakeKey(0,1),MakeKey(10,5)}));
+        if(replacing)Check(IsWindow(static_cast<HWND>(ce::Open(nullptr,MakeSession(host),false))),
+            "existing Open failure fixture creates its prior session");
+        auto session=MakeSession(host);
+        HWND created=nullptr;
+        session.sources[0].readComparisonMode=[&]()->int{
+            created=OwnedCurveWindow();throw std::runtime_error("post-create setup failure");
+        };
+        Check(ce::Open(nullptr,std::move(session),false)==nullptr&&created&&!IsWindow(created),
+            "ordinary post-create setup failure closes its exact Open attempt");
+        Check(OwnedCurveWindow()==nullptr,"failed setup leaves no registered hidden editor");
+        ce::CloseOwned(nullptr);
+    }
+    Note("language retirement and post-create setup exceptions keep public entry ownership exact");
 }
 
 void MotionButtons() {
@@ -2979,6 +3331,11 @@ void CurveModeButtons() {
 #include "curve_native_editor_checks.inc"
 #include "animation_curve_external_history_checks.inc"
 int main(int argc,char** argv) {
+    if(argc>1&&std::string(argv[1])=="--source-lifetime"){
+        SourceCallbackLifetime();SourceCallbackFinalRelease();OriginalSessionFinalRelease();
+        ProviderCopyRetirement();SourceLanguageAndOpenFailures();
+        std::printf("curve source lifetime: %d checks\n",g_checks);return 0;
+    }
     if(argc>1&&std::string(argv[1])=="--motion-lifetime"){
         MotionButtons();MotionCallbackLifetime();
         std::printf("curve motion lifetime: %d checks\n",g_checks);return 0;
@@ -3028,6 +3385,8 @@ int main(int argc,char** argv) {
     MmdPanel();
     MotionButtons();
     MotionCallbackLifetime();
+    SourceCallbackLifetime();SourceCallbackFinalRelease();OriginalSessionFinalRelease();
+    ProviderCopyRetirement();SourceLanguageAndOpenFailures();
     BakeSelectedChannels();
     NativeSubdivisionRoute();NativeSampleBake();
     DuplicateFrameSelectsExisting();
