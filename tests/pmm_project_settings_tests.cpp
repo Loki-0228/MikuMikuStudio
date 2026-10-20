@@ -766,6 +766,37 @@ void AutomaticCameraRoundtrip(MMDApp& app, const std::filesystem::path& director
     std::puts("PASS real legacy-first and expanded PMM camera roundtrip");
 }
 
+void ModelCommentRoundtrip(MMDApp& app, const std::filesystem::path& directory) {
+    Check(app.ModelSlot(0) != nullptr, "model comment roundtrip requires an actually loaded model");
+    const std::wstring local = L"完整本地备注 😀\n" + std::wstring(600, L'文');
+    const std::wstring english = L"Complete English comment 𝄞\n" + std::wstring(700, L'e');
+    auto assign = [&](const std::wstring& a, const std::wstring& b) {
+        auto& model = *mdl::Mdl(app.ModelSlot(0));
+        Check(extended_names::Assign(model.pmxTextBuffers[2], a) &&
+              extended_names::Assign(model.pmxTextBuffers[3], b), "set complete canonical comments on the loaded model");
+    };
+    assign(local, english);
+    const auto first = directory / L"model-comments.pmm", second = directory / L"model-comments-save-as.pmm";
+    for (const auto& path : {first, second}) {
+        Check(SaveSceneCopy(&app, path.c_str()), "production PMM backup/save-as captures both complete comments");
+        int fd = Open(path, _O_RDONLY); ext::Document document; std::uint64_t boundary = 0;
+        Check(ext::Read(fd, document, boundary) == ext::ReadResult::Loaded && boundary > 64,
+              "actual PMM body has a readable MMS extension");
+        _close(fd);
+        const auto* record = ext::Find(document, "org.mikumikustudio.model.0.comments.v1");
+        Check(record && record->value.size() > 1000 && record->value[0] == 1 && record->value[4] == 3,
+              "actual project writer emits the versioned two-language comments record");
+        assign(L"transient local value", L"transient English value");
+        Load(app, path);
+        Check(app.ModelSlot(0) != nullptr, "actual PMM reload recreates its model from the source file");
+        auto& model = *mdl::Mdl(app.ModelSlot(0));
+        Check(model.pmxTextBuffers[2] && model.pmxTextBuffers[3] &&
+              std::wstring(model.pmxTextBuffers[2]) == local && std::wstring(model.pmxTextBuffers[3]) == english,
+              "actual PMM reload restores both long Unicode comments instead of transient or source-model text");
+    }
+    std::puts("PASS real model PMM Unicode comments, source reload and save-as");
+}
+
 int wmain(int argc, wchar_t** argv) {
     if(argc>=2 && wcscmp(argv[1],L"--metadata-only")==0) {
         if(argc!=2)return 2;
@@ -776,7 +807,8 @@ int wmain(int argc, wchar_t** argv) {
     if((pmxBoundary || measuredNames) && argc!=3)return 2;
     if (argc < 2 || argc > 4) return 2;
     const bool capacityOnly = argc == 4 && wcscmp(argv[3], L"--key-capacity") == 0;
-    if (argc == 4 && !capacityOnly) return 2;
+    const bool commentsOnly = argc == 4 && wcscmp(argv[3], L"--model-comments") == 0;
+    if (argc == 4 && !capacityOnly && !commentsOnly) return 2;
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     SetWindowsHookExW(WH_CBT,[](int code,WPARAM wp,LPARAM lp)->LRESULT {
         if(code==HCBT_ACTIVATE){
@@ -830,6 +862,11 @@ int wmain(int argc, wchar_t** argv) {
     if (argc >= 3) {
         LoadModelFile(app, argv[2], false);
         Check(app->ModelSlot(0) != nullptr, "load optional real model fixture");
+    }
+    if (commentsOnly) {
+        ModelCommentRoundtrip(*app, directory);
+        ShutdownCleanup(app); delete app; g_Block = nullptr;
+        return 0;
     }
 
 

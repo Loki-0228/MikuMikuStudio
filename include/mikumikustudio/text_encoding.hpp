@@ -4,6 +4,9 @@
 #include <string>
 #include <vector>
 #include <array>
+#include <cstdint>
+#include <memory>
+#include <utility>
 
 namespace mikumikustudio::mdl { struct ModelRecord; struct MorphRecord; struct BoneRecord; struct DisplayGroup; }
 namespace mikumikustudio::text_encoding {
@@ -30,6 +33,34 @@ std::wstring BoneName(const mdl::BoneRecord& bone, bool english);
 void SetDisplayGroupName(const mdl::ModelRecord& model, const mdl::DisplayGroup& group,
                          const wchar_t* native, const wchar_t* english);
 void ForgetDisplayGroupNames(const mdl::ModelRecord& model);
+// Exact internal sidecar state, including absence and the legacy-name cache.
+// These helpers do not change the fixed native model or public plugin ABI.
+struct DisplayGroupTextState {
+    bool present = false;
+    std::array<std::wstring, 2> names;
+    std::array<std::string, 2> legacy;
+};
+bool CaptureDisplayGroupText(const mdl::ModelRecord&, const mdl::DisplayGroup&, DisplayGroupTextState&);
+bool MatchesDisplayGroupText(const mdl::ModelRecord&, const mdl::DisplayGroup&, const DisplayGroupTextState&) noexcept;
+class PreparedDisplayGroupTextBatch {
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+public:
+    PreparedDisplayGroupTextBatch() noexcept;
+    ~PreparedDisplayGroupTextBatch();
+    PreparedDisplayGroupTextBatch(PreparedDisplayGroupTextBatch&&) noexcept;
+    PreparedDisplayGroupTextBatch& operator=(PreparedDisplayGroupTextBatch&&) noexcept;
+    PreparedDisplayGroupTextBatch(const PreparedDisplayGroupTextBatch&) = delete;
+    PreparedDisplayGroupTextBatch& operator=(const PreparedDisplayGroupTextBatch&) = delete;
+    // UI-thread preparation may allocate. Invalid, duplicate and foreign-owned
+    // targets return false without changing any sidecar or an existing batch.
+    bool Prepare(const mdl::ModelRecord&, const std::vector<std::pair<const mdl::DisplayGroup*, DisplayGroupTextState>>&);
+    bool IsCurrent() const noexcept;
+    // Requires IsCurrent at the final publication boundary. Exchanges prepared
+    // map nodes without allocation; old nodes are released with this object.
+    void Publish() noexcept;
+    std::uint64_t RetainedBytes() const noexcept;
+};
 std::wstring DisplayGroupName(const mdl::DisplayGroup& group, bool english);
 // Display-only dictionary translation. Raw name accessors above remain suitable
 // for file formats, motion matching, and plugin identities.

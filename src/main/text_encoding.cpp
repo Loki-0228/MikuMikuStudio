@@ -7,6 +7,10 @@
 #include <cstring>
 #include <cwchar>
 #include <unordered_map>
+#include <algorithm>
+#include <map>
+#include <exception>
+#include <limits>
 
 namespace mikumikustudio::text_encoding {
 namespace {
@@ -16,7 +20,8 @@ struct DisplayGroupText {
     std::array<std::wstring, 2> names;
     std::array<std::string, 2> legacy;
 };
-std::unordered_map<const mdl::DisplayGroup*, DisplayGroupText> displayGroupNames;
+using DisplayGroupTextMap = std::map<const mdl::DisplayGroup*, DisplayGroupText>;
+DisplayGroupTextMap displayGroupNames;
 
 std::wstring LegacyName(const char* text, std::size_t capacity, bool repair) {
     const std::string bounded(text, strnlen_s(text, capacity));
@@ -230,6 +235,102 @@ void ForgetDisplayGroupNames(const mdl::ModelRecord& model) {
         else ++it;
     }
 }
+
+bool CaptureDisplayGroupText(const mdl::ModelRecord& model, const mdl::DisplayGroup& group, DisplayGroupTextState& out) {
+    const auto found = displayGroupNames.find(&group);
+    if (found != displayGroupNames.end() && found->second.owner != &model) return false;
+    DisplayGroupTextState next;
+    if (found != displayGroupNames.end()) {
+        next.present = true; next.names = found->second.names; next.legacy = found->second.legacy;
+    }
+    out = std::move(next); return true;
+}
+bool MatchesDisplayGroupText(const mdl::ModelRecord& model, const mdl::DisplayGroup& group,
+                             const DisplayGroupTextState& state) noexcept {
+    const auto found = displayGroupNames.find(&group);
+    if (!state.present) return found == displayGroupNames.end();
+    return found != displayGroupNames.end() && found->second.owner == &model &&
+        found->second.names == state.names && found->second.legacy == state.legacy;
+}
+struct PreparedDisplayGroupTextBatch::Impl {
+    struct Entry {
+        const mdl::DisplayGroup* group;
+        DisplayGroupTextState before;
+        DisplayGroupTextMap::node_type after, retired;
+    };
+    const mdl::ModelRecord* model = nullptr;
+    std::vector<Entry> entries;
+    std::uint64_t bytes = 0;
+    bool consumed = false;
+    void Add(std::uint64_t count, std::uint64_t stride) noexcept {
+        const auto maximum = (std::numeric_limits<std::uint64_t>::max)();
+        if (stride && count > (maximum - bytes) / stride) bytes = maximum;
+        else bytes += count * stride;
+    }
+    template<class Text> void TextBytes(const Text& value) noexcept {
+        // Include the terminator and conservatively charge inline text twice,
+        // as in the existing retained-resource collector.
+        Add(value.capacity(), sizeof(typename Text::value_type)); Add(1, sizeof(typename Text::value_type));
+    }
+    void StateBytes(const DisplayGroupTextState& state) noexcept {
+        for (const auto& value : state.names) TextBytes(value);
+        for (const auto& value : state.legacy) TextBytes(value);
+    }
+    void NodeBytes(const DisplayGroupText& value) noexcept {
+        Add(1, sizeof(DisplayGroupTextMap::value_type) + 4 * sizeof(void*));
+        for (const auto& text : value.names) TextBytes(text);
+        for (const auto& text : value.legacy) TextBytes(text);
+    }
+};
+PreparedDisplayGroupTextBatch::PreparedDisplayGroupTextBatch() noexcept = default;
+PreparedDisplayGroupTextBatch::~PreparedDisplayGroupTextBatch() = default;
+PreparedDisplayGroupTextBatch::PreparedDisplayGroupTextBatch(PreparedDisplayGroupTextBatch&&) noexcept = default;
+PreparedDisplayGroupTextBatch& PreparedDisplayGroupTextBatch::operator=(PreparedDisplayGroupTextBatch&&) noexcept = default;
+bool PreparedDisplayGroupTextBatch::Prepare(const mdl::ModelRecord& model,
+    const std::vector<std::pair<const mdl::DisplayGroup*, DisplayGroupTextState>>& targets) {
+    if (impl_) return false;
+    std::vector<const mdl::DisplayGroup*> keys; keys.reserve(targets.size());
+    for (const auto& item : targets) { if (!item.first) return false; keys.push_back(item.first); }
+    std::sort(keys.begin(), keys.end(), std::less<const mdl::DisplayGroup*>{});
+    if (std::adjacent_find(keys.begin(), keys.end()) != keys.end()) return false;
+    auto next = std::make_unique<Impl>(); next->model = &model; next->entries.reserve(targets.size());
+    DisplayGroupTextMap prepared;
+    for (const auto& item : targets) {
+        Impl::Entry entry{}; entry.group = item.first;
+        if (!CaptureDisplayGroupText(model, *item.first, entry.before)) return false;
+        if (item.second.present) {
+            prepared.emplace(item.first, DisplayGroupText{&model, item.second.names, item.second.legacy});
+            entry.after = prepared.extract(item.first);
+        }
+        next->StateBytes(entry.before);
+        // Publication will retain the actual old node outside the live map.
+        if (entry.before.present) next->NodeBytes(displayGroupNames.find(item.first)->second);
+        if (entry.after) next->NodeBytes(entry.after.mapped());
+        next->entries.push_back(std::move(entry));
+    }
+    next->Add(1, sizeof(Impl)); next->Add(next->entries.capacity(), sizeof(Impl::Entry));
+    impl_ = std::move(next); return true;
+}
+bool PreparedDisplayGroupTextBatch::IsCurrent() const noexcept {
+    if (!impl_ || impl_->consumed) return false;
+    for (const auto& entry : impl_->entries)
+        if (!MatchesDisplayGroupText(*impl_->model, *entry.group, entry.before)) return false;
+    return true;
+}
+void PreparedDisplayGroupTextBatch::Publish() noexcept {
+    if (!IsCurrent()) std::terminate();
+    try {
+        for (auto& entry : impl_->entries) {
+            entry.retired = displayGroupNames.extract(entry.group);
+            if (entry.after) {
+                auto result = displayGroupNames.insert(std::move(entry.after));
+                if (!result.inserted) std::terminate();
+            }
+        }
+        impl_->consumed = true;
+    } catch (...) { std::terminate(); }
+}
+std::uint64_t PreparedDisplayGroupTextBatch::RetainedBytes() const noexcept { return impl_ ? impl_->bytes : 0; }
 
 std::wstring DisplayGroupName(const mdl::DisplayGroup& group, bool english) {
     const auto found = displayGroupNames.find(&group);

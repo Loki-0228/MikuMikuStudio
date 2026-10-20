@@ -6,6 +6,7 @@
 #include "native_global_commands.hpp"
 #include "native_audio_history.hpp"
 #include "native_morph_commands.hpp"
+#include "native_model_names.hpp"
 #include "native_pose_scope.hpp"
 #include "history_runtime.hpp"
 #include "scene_object_history.hpp"
@@ -505,6 +506,7 @@ MmsResult RunBoundObjectHistory(MMDApp& app, SharedHistory& history, bool redo, 
         struct AccessoryUi { std::uint8_t order = 0; std::array<char, 100> name{}; };
         std::array<AccessoryUi, kModelSlotCount> accessoryUi{};
         const auto split = app.AccessoryRenderSplitOrder();
+        const auto namesUiRevision = NativeModelNamesUiRevision();
         for (unsigned i = 0; i < kModelSlotCount; ++i) {
             objects[i] = app.ModelSlot(i); objects[i + kModelSlotCount] = app.AccessorySlot(i);
             if (const auto* model = mdl::Mdl(app.ModelSlot(i))) modelDrawOrder[i] = model->comboSelIndex;
@@ -520,7 +522,8 @@ MmsResult RunBoundObjectHistory(MMDApp& app, SharedHistory& history, bool redo, 
         bool changedObjects = false;
         for (unsigned i = 0; i < kModelSlotCount; ++i)
             changedObjects = changedObjects || objects[i] != app.ModelSlot(i) || objects[i + kModelSlotCount] != app.AccessorySlot(i);
-        bool changedLists = changedObjects || split != app.AccessoryRenderSplitOrder();
+        bool changedLists = changedObjects || split != app.AccessoryRenderSplitOrder() ||
+            namesUiRevision != NativeModelNamesUiRevision();
         for (unsigned i = 0; i < kModelSlotCount && !changedLists; ++i)
             if (const auto* model = mdl::Mdl(app.ModelSlot(i))) changedLists = model->comboSelIndex != modelDrawOrder[i];
         for (unsigned i = 0; i < kModelSlotCount && !changedLists; ++i) if (const auto* a = app.AccessorySlot(i))

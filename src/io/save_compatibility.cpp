@@ -140,7 +140,7 @@ bool CanSavePmd(const mdl::ModelRecord& m) {
     const auto fixedGroups = m.displayRootBone ? 3u : 2u;
     if (mdl::DisplayGroupCount(m) > 255 || mdl::FacialFrameCount(m) > 255 ||
         m.boneCount > 65535 || m.morphCount > 65535 ||
-        !extended_names::LegacyNamesFit(m, false)) return false;
+        !extended_names::CanSavePmdNames(m)) return false;
     const auto* rows = static_cast<const mdl::FrameGroup*>(m.rbGroups);
     for (std::uint32_t i = 0; rows && i < m.rigidBodyCount; ++i)
         if (mdl::FrameGroupIndex(rows[i]) >= 255 + fixedGroups ||

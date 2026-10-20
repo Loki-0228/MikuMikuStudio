@@ -10,8 +10,19 @@ namespace extended_names {
 // Replaces an owned Unicode string only after its replacement is allocated.
 bool Assign(wchar_t*& destination, const std::wstring& value) noexcept;
 void CapturePmm(const MMDApp&, pmm_extension::Document&);
+// Names v1 and the independent comments v1 records are fully parsed and all
+// replacements prepared across models before publishing any live field.
+// Comment payload: u32 version=1, u32 presence (bit0 local, bit1 English),
+// then length-prefixed UTF-8 strings for the set bits, in language order.
+// Invalid raw text without Unicode, or registered Unicode with a nonzero
+// allocation tail after its first NUL, is omitted independently per language;
+// missing records/bits leave the corresponding source-model comment intact.
 void LoadPmm(MMDApp&, const pmm_extension::Document&);
 bool LegacyNamesFit(const mdl::ModelRecord&, bool motion);
+// Exact fidelity of the fields actually written by the standard PMD writer.
+// Each language is checked independently, without display-name fallbacks.
+// Full-width legacy fields are valid; Unicode with a stale raw mirror is not.
+bool CanSavePmdNames(const mdl::ModelRecord&);
 struct MotionNames {
     std::wstring model;
     std::vector<std::wstring> bones, morphs;

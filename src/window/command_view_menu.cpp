@@ -268,6 +268,7 @@
 #include "../plugins/native_model_order.hpp"
 #include "../plugins/native_model_outline_ui.hpp"
 #include "../plugins/native_model_outline_color.hpp"
+#include "../plugins/native_model_names.hpp"
 #include "../plugins/native_model_multiply.hpp"
 #include "../plugins/native_physics_mode.hpp"
 #include "../plugins/native_history_commands.hpp"
@@ -2082,6 +2083,9 @@ void CmdViewMenu(MMDApp* app, HWND hwnd, std::uint16_t id,
     // sub_464BD0) at app+0xA0B50.
     // ------------------------------------------------------------------
     case 259: {
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::TryEditBoundModelNames(app, hwnd)) return;
+#endif
         if (app->FrameRangeDialog() != nullptr) {
             break;
         }

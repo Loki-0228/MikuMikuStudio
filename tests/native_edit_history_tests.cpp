@@ -434,6 +434,8 @@ void CrossModelJournal(){
 #include "native_model_outline_checks.inc"
 #include "native_model_outline_ui_checks.inc"
 #include "native_model_outline_color_checks.inc"
+#include "native_model_names_checks.inc"
+#include "native_model_names_persistence_checks.inc"
 #include "native_bone_curve_write_checks.inc"
 #include "native_physics_toggle_checks.inc"
 #include "native_center_offset_checks.inc"
@@ -444,6 +446,12 @@ void CrossModelJournal(){
 #include "retained_bookkeeping_checks.inc"
 int main(int argc,char** argv){
     std::setvbuf(stdout,nullptr,_IONBF,0);
+    if(argc==2&&!std::strcmp(argv[1],"--model-names-only")) {
+        NativeModelNamesChecks();std::printf("PASS model names: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--model-names-persistence-only")) {
+        NativeModelNamesPersistenceChecks();std::printf("PASS model names persistence: %u checks\n",checks);return 0;
+    }
     if(argc==2&&!std::strcmp(argv[1],"--physics-membership-only")) {
         PhysicsRetention(); PhysicsExchangeChecks(); PhysicsImportChecks();
         std::printf("PASS physics membership and import: %u checks\n",checks);return 0;
@@ -876,6 +884,8 @@ int main(int argc,char** argv){
     run("NativeModelOutlineChecks",NativeModelOutlineChecks);
     run("NativeModelOutlineUiChecks",NativeModelOutlineUiChecks);
     run("NativeModelOutlineColorChecks",NativeModelOutlineColorChecks);
+    run("NativeModelNamesChecks",NativeModelNamesChecks);
+    run("NativeModelNamesPersistenceChecks",NativeModelNamesPersistenceChecks);
     run("NativeModelRangeChecks",NativeModelRangeChecks);
     run("NativeObjectCommandChecks",NativeObjectCommandChecks);
     run("NativeAccessorySettingsChecks",NativeAccessorySettingsChecks);

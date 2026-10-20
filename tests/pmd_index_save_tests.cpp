@@ -17,6 +17,11 @@
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/build_profile.hpp"
+#if !MMD_ORIGINAL_PROFILE
+#include "mikumikustudio/extended_names.hpp"
+#include "mikumikustudio/owned_text.hpp"
+#endif
 
 namespace {
 using namespace mikumikustudio;
@@ -192,6 +197,45 @@ void FailedSave(Files& files, Fixture& fixture) {
     Check(Read(files.path) == previous && std::wstring(fixture.model->path) == files.path.wstring(),
           "save succeeds again with identical PMD bytes after all faults are removed");
 }
+#if !MMD_ORIGINAL_PROFILE
+void NameFidelity() {
+    Files files; Fixture fixture; auto& model = *fixture.model;
+    struct TextCleanup {
+        mdl::ModelRecord& model;
+        ~TextCleanup() { for (auto*& value : model.pmxTextBuffers) { owned_text::Free(value); value = nullptr; } }
+    } cleanup{model};
+    const std::string name(20, 'n'), english(20, 'e'), localComment(256, 'c'), englishComment(256, 'd');
+    std::memcpy(model.name, name.data(), name.size()); std::memcpy(model.nameEn, english.data(), english.size());
+    std::memcpy(model.comment, localComment.data(), localComment.size());
+    std::memcpy(model.commentEn, englishComment.data(), englishComment.size());
+    Check(extended_names::Assign(model.pmxTextBuffers[1], std::wstring(20, L'e')) &&
+          extended_names::Assign(model.pmxTextBuffers[2], std::wstring(256, L'c')) &&
+          extended_names::Assign(model.pmxTextBuffers[3], std::wstring(256, L'd')),
+          "prepare matching full-width Unicode and raw PMD metadata");
+    SaveEnhancedModel(fixture.app.get(), files.path.c_str());
+    const auto original = Read(files.path);
+    // Walk the standard triangle body through the English-presence byte.
+    constexpr std::size_t englishOffset = 283 + 4 + 3 * 38 + 4 + 3 * 2 + 4 + 70 + 2 + 39 + 2 + 2 + 1 + 1 + 4 + 1;
+    Check(original.size() == 1841 &&
+          !std::memcmp(original.data() + 7, name.data(), 20) &&
+          !std::memcmp(original.data() + 27, localComment.data(), 256) &&
+          !std::memcmp(original.data() + englishOffset, english.data(), 20) &&
+          !std::memcmp(original.data() + englishOffset + 20, englishComment.data(), 256),
+          "production PMD writer preserves all twenty-byte names and 256-byte comments without a terminator");
+    std::wcscpy(model.path, L"previous-names.pmd");
+    for (unsigned invalid = 0; invalid != 3; ++invalid) {
+        Check(extended_names::Assign(model.pmxTextBuffers[1], invalid == 0 ? std::wstring(20, L'x') : std::wstring(20, L'e')) &&
+              extended_names::Assign(model.pmxTextBuffers[3], invalid == 1 ? L"outside CP932 😀" :
+                  invalid == 2 ? std::wstring(257, L'd') : std::wstring(256, L'd')),
+              "prepare an unexportable canonical name or comment with unchanged raw fields");
+        SetLastError(ERROR_SUCCESS); SaveEnhancedModel(fixture.app.get(), files.path.c_str());
+        Check(GetLastError() == ERROR_INVALID_DATA && Read(files.path) == original &&
+              std::wstring(model.path) == L"previous-names.pmd" &&
+              std::distance(fs::directory_iterator(files.directory), fs::directory_iterator{}) == 1,
+              "actual PMD save refuses stale or unrepresentable metadata without modifying destination, path or leaving temporary files");
+    }
+}
+#endif
 }
 
 int main() {
@@ -225,6 +269,9 @@ int main() {
     }
     Check(std::wstring(fixture.model->path) == files.path.wstring(), "successful save records the output path");
     FailedSave(files, fixture);
+#if !MMD_ORIGINAL_PROFILE
+    NameFidelity();
+#endif
     std::printf("pmd_index_save_tests: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
