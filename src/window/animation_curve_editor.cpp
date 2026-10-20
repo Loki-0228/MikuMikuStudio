@@ -989,7 +989,7 @@ void MaterializeCompareMask(Editor &editor);
 void UpdateKeyFields(Editor &editor);
 void UpdateBakeFields(Editor &editor);
 void UpdateEnabledState(Editor &editor);
-bool PullKeySelection(Editor &editor, bool publishUi = true);
+bool PullKeySelection(Editor &editor, bool publishUi = true, bool ownedOperation = false);
 void PublishKeySelection(Editor &editor,bool ownedOperation=false);
 
 // ---------------------------------------------------------------------------
@@ -1575,7 +1575,6 @@ void TraverseLocalHistory(Editor& editor,bool redo){
         state.active=requested->active;state.selection.swap(requested->selection);
         AdoptWrittenChannels(editor,std::move(requested->channels));
         rollback.RequireCurrent();ClampState(state);
-        if(state.valid)PublishKeySelection(editor,true);
         RefreshEditorsUi(editor);
         SetStatus(editor,state.valid?T(editor.session->language,redo?StrRedone:StrUndone):state.reason,!state.valid);
     }catch(const RetiredContinuation&){throw;}
@@ -1698,7 +1697,7 @@ bool ReadRegisteredSource(Editor &editor, bool publishUi) {
         for (std::size_t index = 0; index < keys.size(); ++index)
             if (selectedFrames.count(keys[index].frame)) state.selection.insert(index);
     }
-    PullKeySelection(editor,publishUi);
+    PullKeySelection(editor,publishUi,true);
     if (publishUi) {
         RefreshEditorsUi(editor);
         UpdateWindowTitle(editor);
@@ -3246,35 +3245,51 @@ void UpdatePlayheadTimer(Editor &editor) {
 }
 
 void PublishKeySelection(Editor& editor,bool ownedOperation){
-    if(!ownedOperation&&(editor.externalOperationActive||editor.externalCallbackActive))return;
-    auto* channel=ActiveChannel(editor);auto& source=CurrentSource(editor);
-    if(!channel||!source.writeKeySelection)return;
+    if(editor.externalCallbackActive||(!ownedOperation&&editor.externalOperationActive))return;
+    const auto* channel=ActiveChannel(editor);
+    if(!channel||!CurrentSource(editor).writeKeySelection)return;
+    // Both arguments belong to this call. Never pass a live Channel string or
+    // selection container through a provider's nested message loop.
+    const std::string channelId=channel->id;
     std::vector<int> frames;
     for(auto index:CurrentState(editor).selection)
         if(index<channel->track.keys.size())frames.push_back(channel->track.keys[index].frame);
-    source.writeKeySelection(channel->id,frames);
+    ExternalOperation callback(editor,&Editor::externalCallbackActive);
+    InvokeProvider(editor,CurrentSource(editor).writeKeySelection,channelId,std::as_const(frames));
 }
-bool PullKeySelection(Editor& editor,bool publishUi){
+bool PullKeySelection(Editor& editor,bool publishUi,bool ownedOperation){
+    if(editor.externalCallbackActive||(!ownedOperation&&editor.externalOperationActive))return false;
     if(editor.drag!=Drag::None||editor.mmdDragHandle>=0)return false;
-    auto* channel=ActiveChannel(editor);auto& source=CurrentSource(editor);
-    if(!channel||!source.readKeySelection)return false;
-    const auto frames=source.readKeySelection(channel->id);
+    const auto* channel=ActiveChannel(editor);
+    if(!channel||!CurrentSource(editor).readKeySelection)return false;
+    const std::string channelId=channel->id;
+    const auto active=CurrentState(editor).active;
+    const auto keyCount=channel->track.keys.size();
+    ExternalOperation callback(editor,&Editor::externalCallbackActive);
+    const auto frames=InvokeProvider(editor,CurrentSource(editor).readKeySelection,channelId);
     auto& state=CurrentState(editor);
+    // No live Channel is used across the call. Authoring/source refresh is
+    // gated while it runs; Open retires InvokeProvider's Session. Reacquire
+    // and validate the lane before comparing returned frames, without copying
+    // every dense VMD key on each unchanged playhead tick.
+    if(state.active!=active||active>=state.channels.size()||state.channels[active].id!=channelId||
+        state.channels[active].track.keys.size()!=keyCount)throw RetiredContinuation{};
+    const auto& keys=state.channels[active].track.keys;
     // The usual timer tick observes the same selection. Compare its frame
     // addresses directly, without allocating another set of every baked key.
     if(frames.size()==state.selection.size()){
         auto frame=frames.begin();bool same=true;
         for(auto index:state.selection){
-            if(index>=channel->track.keys.size()||channel->track.keys[index].frame!=*frame++){same=false;break;}
+            if(index>=keys.size()||keys[index].frame!=*frame++){same=false;break;}
         }
         if(same)return false;
     }
     FrameSelectionCursor wanted(frames);
     std::set<std::size_t> selected;
-    for(std::size_t index=0;index<channel->track.keys.size();++index)
-        if(wanted.Contains(channel->track.keys[index].frame))selected.emplace_hint(selected.end(),index);
+    for(std::size_t index=0;index<keys.size();++index)
+        if(wanted.Contains(keys[index].frame))selected.emplace_hint(selected.end(),index);
     if(selected==state.selection)return false;
-    state.selection=std::move(selected);
+    state.selection.swap(selected);
     if(publishUi){UpdateKeyFields(editor);UpdateMmdPanel(editor);UpdateEnabledState(editor);InvalidateCanvas(editor);}
     return true;
 }
@@ -5584,6 +5599,10 @@ LRESULT CALLBACK CanvasProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpara
     if (!editor) return DefWindowProcW(hwnd, message, wparam, lparam);
     EditorLease lease(editor);
     try {
+    if((editor->externalOperationActive||editor->externalCallbackActive)&&
+        (message==WM_KEYDOWN||message==WM_SYSKEYDOWN||message==WM_LBUTTONDOWN||
+         message==WM_LBUTTONUP||message==WM_LBUTTONDBLCLK||message==WM_MBUTTONDOWN||
+         message==WM_MBUTTONUP||message==WM_RBUTTONUP||message==WM_MOUSEMOVE))return 0;
     const auto arrow = [] { return LoadCursorW(nullptr, reinterpret_cast<LPCWSTR>(IDC_ARROW)); };
     const auto sizeAll = [] { return LoadCursorW(nullptr, reinterpret_cast<LPCWSTR>(IDC_SIZEALL)); };
     const auto hand = [] { return LoadCursorW(nullptr, reinterpret_cast<LPCWSTR>(IDC_HAND)); };

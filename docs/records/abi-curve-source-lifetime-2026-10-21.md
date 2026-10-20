@@ -51,9 +51,10 @@
 
 随后已完成 [`Source.apply` 和 `Session.history.traverse` 的写入保护](abi-curve-write-lifetime-2026-10-21.md)，并将本地历史改为稳定节点，覆盖拒绝恢复、成功后的读取失败及同会话嵌套输入。两套配置写入专项各 3,259 项、编辑器全集各 8,222 项通过。
 
+随后也已完成[选择读写回调保护](abi-curve-selection-lifetime-2026-10-21.md)，两套配置选择专项各 5,158 项、编辑器全集各 13,380 项通过。其稳定时钟检查不因轨道增大而复制完整关键帧数组。
+
 尚未统一到本批复制与会话检查流程的回调包括：
 
-- 选择回调 `readKeySelection`、`writeKeySelection`。
 - 比较模式回调 `readComparisonMode`、`writeComparisonMode`，以及相邻控制开关 `linkAdjacentControls`。
 - 帧与播放控制回调 `Session.currentFrame`、`seek`、`isPlaying`、`setPlaying`。
 - `Source.subdivide` 和 `Channel.sample`。

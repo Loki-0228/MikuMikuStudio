@@ -48,7 +48,7 @@
 
 这些保护期间，父窗口命令、命令尾部的选择发布、画布拖拽预览及提交、双击插帧、MMD 操纵器和数值提交、通道树的编辑输入均停止写入。来源变更通知保留为待处理请求，不递归读取临时移空的状态。写入结束后，通知读取已完成的结果。
 
-拥有当前写入的内部规范值刷新和选择发布可继续执行。此处只拦截同来源的嵌套编辑，不表示选择回调本身已完成统一生命周期迁移。
+拥有当前写入的内部规范值刷新和选择发布可继续执行。随后已另行完成[选择回调生命周期迁移](abi-curve-selection-lifetime-2026-10-21.md)，本地撤销和重做改由实际命令尾部各发布一次选择，避免重复通知。
 
 ## 验证
 
@@ -85,7 +85,6 @@
 
 以下回调尚未统一到 `InvokeProvider` 的复制、调用和释放检查：
 
-- `readKeySelection`、`writeKeySelection`。
 - `readComparisonMode`、`writeComparisonMode`、`linkAdjacentControls`。
 - `Session.currentFrame`、`seek`、`isPlaying`、`setPlaying`。
 - `Source.subdivide`、`Channel.sample`。

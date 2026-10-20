@@ -29,6 +29,7 @@
 #include "mikumikustudio/animation_curve_editor.hpp"
 #include "../src/window/curve_editor_axis.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -46,8 +47,12 @@
 // before the editor reports the failure or the fixture inspects its state.
 thread_local bool g_curveFailNextAllocation=false;
 thread_local unsigned g_curveAllocationFailures=0;
+thread_local bool g_curveMeasureAllocations=false;
+thread_local std::size_t g_curveAllocationBytes=0,g_curveLargestAllocation=0;
 void* operator new(std::size_t size){
     if(g_curveFailNextAllocation){g_curveFailNextAllocation=false;++g_curveAllocationFailures;throw std::bad_alloc();}
+    if(g_curveMeasureAllocations){g_curveAllocationBytes+=size;
+        g_curveLargestAllocation=std::max(g_curveLargestAllocation,size);}
     if(void* value=std::malloc(size?size:1))return value;
     throw std::bad_alloc();
 }
@@ -3737,9 +3742,331 @@ void WriteRejectsNestedAuthoring(){
     }
     Note("local preflight, provider copy, write, final release and readback reject recursive authoring");
 }
+
+struct SelectionLifetimeFixture {
+    HostSource local,replacement;
+    ExternalCurveJournal journal;
+    bool external;
+    explicit SelectionLifetimeFixture(bool value):external(value){
+        local.data.push_back(MakeChannel("selection.original.channel.with.owned.name",L"Original",{MakeKey(0,1),MakeKey(10,5)}));
+        journal.sources[0].data=local.data;
+        replacement.data.push_back(MakeChannel("replacement",L"Replacement",{MakeKey(0,91),MakeKey(20,99)}));
+    }
+    ce::Session Session(){return external?journal.Session():MakeSession(local);}
+    int Applies()const{return external?int(journal.applies):local.applyCalls;}
+    int Reads()const{return external?journal.sources[0].readCalls:local.readCalls;}
+};
+
+struct SelectionRetirementState {
+    int phase=0,response=0,calls=0,writes=0,retireCalls=0,destroyedDuringCopy=0;
+    bool armed=false,copying=false;
+    const void* copyingOriginal=nullptr;
+    const std::string* inputId=nullptr;
+    const char* inputIdStorage=nullptr;
+    const std::vector<int>* inputFrames=nullptr;
+    const int* inputFrameStorage=nullptr;
+    std::string expectedId;
+    std::vector<int> expectedFrames,hostFrames{10};
+    std::function<void()> retire;
+    void CheckArguments(){
+        if(inputId)Check(*inputId==expectedId&&inputId->data()==inputIdStorage,
+            "selection provider keeps its privately owned channel name through window retirement");
+        if(inputFrames)Check(*inputFrames==expectedFrames&&inputFrames->data()==inputFrameStorage,
+            "selection writer keeps its privately owned frame addresses through window retirement");
+    }
+    void Retire(){armed=false;++retireCalls;retire();CheckArguments();}
+};
+struct SelectionRetirementProvider {
+    SelectionRetirementState* state;
+    int marker=73;
+    mutable bool invoked=false;
+    explicit SelectionRetirementProvider(SelectionRetirementState& value):state(&value){}
+    SelectionRetirementProvider(const SelectionRetirementProvider& other):state(other.state),marker(other.marker){
+        if(!state->armed||state->phase!=0)return;
+        state->copying=true;state->copyingOriginal=&other;state->Retire();
+        Check(state->destroyedDuringCopy==0&&other.marker==73,
+            "selection provider storage remains alive throughout a reentrant callable copy");
+        state->copying=false;if(state->response==2)throw std::bad_alloc();
+    }
+    ~SelectionRetirementProvider(){
+        if(state->copying&&state->copyingOriginal==this)++state->destroyedDuringCopy;
+        if(invoked&&state->armed&&state->phase==2)state->Retire();
+    }
+    void Arguments(const std::string& id)const{
+        state->inputId=&id;state->inputIdStorage=id.data();state->expectedId=id;
+    }
+    std::vector<int> operator()(const std::string& id)const{
+        invoked=true;++state->calls;
+        if(!state->armed)return state->hostFrames;
+        Arguments(id);
+        if(state->phase==1)state->Retire();
+        if(state->response==2)throw std::runtime_error("selection read retired");
+        return state->response==1?std::vector<int>{}:state->hostFrames;
+    }
+    void operator()(const std::string& id,const std::vector<int>& frames)const{
+        invoked=true;++state->calls;
+        if(!state->armed){state->hostFrames=frames;++state->writes;return;}
+        Arguments(id);state->inputFrames=&frames;state->inputFrameStorage=frames.data();state->expectedFrames=frames;
+        if(state->response==0){state->hostFrames=frames;++state->writes;}
+        if(state->phase==1)state->Retire();
+        if(state->response==1)throw std::runtime_error("selection write retired");
+        if(state->response==2)throw std::bad_alloc();
+    }
+};
+
+void TriggerSelectionRead(HWND window,int entry){
+    if(entry==1){ce::NotifySourceChanged(nullptr,"source");SendMessageW(window,WM_APP+401,0,0);}
+    if(entry==2){SetWindowLongPtrW(window,GWL_STYLE,GetWindowLongPtrW(window,GWL_STYLE)|WS_VISIBLE);
+        SendMessageW(window,WM_TIMER,kPlayheadTimerId,0);}
+    if(entry==3)Click(window,kIdDeleteKey);
+    if(entry==4)SendMessageW(GetDlgItem(window,kIdCanvas),WM_KEYDOWN,VK_DELETE,0);
+    if(entry==5)SendMessageW(GetDlgItem(window,kIdDeleteKey),WM_KEYDOWN,VK_DELETE,0);
+    if(entry==6)SendMessageW(GetDlgItem(window,kIdValueEdit),WM_KEYDOWN,VK_RETURN,0);
+    if(entry==7){HWND tree=GetDlgItem(window,kIdChannelList);TreeView_SelectItem(tree,ChannelItem(window,0));
+        SendMessageW(tree,WM_KEYDOWN,VK_RETURN,0);}
+}
+void TriggerSelectionWrite(HWND window,int entry){
+    if(entry==0)ClickKey(window,1);
+    if(entry==1){const auto point=AskPoint(window,kHookPointForKey,1);
+        SendMessageW(GetDlgItem(window,kIdCanvas),WM_LBUTTONDOWN,MK_LBUTTON|MK_CONTROL,MAKELPARAM(point.x,point.y));}
+    if(entry==2)Click(window,kIdUndo);
+    if(entry==3||entry==6)Click(window,kIdApplyKey);
+    if(entry==4){KeyboardModifiers keys;keys.Set(true);
+        SendMessageW(GetDlgItem(window,kIdFitAll),WM_KEYDOWN,'Y',0);}
+    if(entry==5){const auto point=AskPoint(window,kHookPointForKey,1);CurveEditorAxisState axis{};
+        Check(SendMessageW(window,WM_APP+394,0,reinterpret_cast<LPARAM>(&axis))!=0&&PtInRect(&axis.plot,point),
+            "selection doubleclick targets an existing interior key, inside the curve hit-test rectangle");
+        SendMessageW(GetDlgItem(window,kIdCanvas),WM_LBUTTONDBLCLK,0,MAKELPARAM(point.x,point.y));}
+}
+
+void SelectionCallbackLifetime(){
+    // Read entries: initial external creation, local posted refresh, visible
+    // timer, parent/button/canvas authoring, value EDIT and tree activation.
+    // Write entries: canvas click/deselect, undo/redo, existing-key doubleclick,
+    // and owned local/external publication.
+    for(bool writing:{false,true})for(int entry=0;entry!=(writing?7:8);++entry)
+    for(int phase=0;phase!=3;++phase)for(int action=0;action!=3;++action)for(int response=0;response!=3;++response){
+        std::printf("selection lifetime write=%d entry=%d phase=%d action=%d response=%d\n",writing,entry,phase,action,response);
+        const bool initial=!writing&&entry==0;
+        SelectionLifetimeFixture fixture(initial||(writing&&entry==6));SelectionRetirementState state;
+        // FitAll places the last key on plot.right, excluded by PtInRect in
+        // the doubleclick route. Keep the target key inside the real plot.
+        if(writing&&entry==5)fixture.local.data[0].track.keys.push_back(MakeKey(20,9));
+        state.phase=phase;state.response=response;
+        HWND replacementWindow=nullptr,retiredWindow=nullptr;
+        std::weak_ptr<void> token;std::shared_ptr<void> retained;
+        std::wstring replacementStatus;int readsAfter=-1;
+        state.retire=[&]{
+            retiredWindow=OwnedCurveWindow();
+            if(retiredWindow){token=ce::CaptureWindowSession(retiredWindow);retained=token.lock();}
+            if(action!=1)ce::CloseOwned(nullptr);
+            if(action!=0){replacementWindow=static_cast<HWND>(ce::Open(nullptr,MakeSession(fixture.replacement),false));
+                Check(IsWindow(replacementWindow),"selection retirement creates a live replacement");
+                replacementStatus=GetText(replacementWindow,kIdStatus);}
+            readsAfter=fixture.Reads();
+        };
+        auto session=fixture.Session();
+        if(writing)session.sources[0].writeKeySelection=SelectionRetirementProvider(state);
+        else session.sources[0].readKeySelection=SelectionRetirementProvider(state);
+        state.armed=initial;
+        HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
+        int applies=0,calls=0,writes=0;
+        if(initial)Check(window==nullptr,"initial creation does not report a retired selection session as successful");
+        else{
+            Check(IsWindow(window),"selection callback fixture opens before arming");
+            if(!writing||entry!=0)ClickKey(window,1);
+            if(writing&&entry==5){const int priorCalls=state.calls,priorWrites=state.writes,priorApplies=fixture.Applies();
+                TriggerSelectionWrite(window,entry);
+                Check(state.calls==priorCalls+1&&state.writes==priorWrites+1&&fixture.Applies()==priorApplies&&KeyCount(window)==3,
+                    "unarmed real existing-key doubleclick publishes selection once without editing the curve");}
+            if(writing&&(entry==2||entry==4)){Click(window,kIdDeleteKey);if(entry==4)Click(window,kIdUndo);}
+            if(writing&&(entry==3||entry==6))SetText(window,kIdValueEdit,L"7");
+            applies=fixture.Applies();calls=state.calls;writes=state.writes;state.armed=true;
+            if(writing)TriggerSelectionWrite(window,entry);else TriggerSelectionRead(window,entry);
+        }
+        const bool hostEdit=writing&&(entry==2||entry==3||entry==4||entry==6);
+        if(state.retireCalls!=1||state.destroyedDuringCopy!=0||state.calls!=calls+int(phase!=0))
+            std::fprintf(stderr,"SELECTION_LIFETIME write=%d entry=%d phase=%d action=%d response=%d calls=%d before=%d retires=%d destroyedDuringCopy=%d writes=%d beforeWrites=%d applies=%d beforeApplies=%d armed=%d\n",
+                writing,entry,phase,action,response,state.calls,calls,state.retireCalls,state.destroyedDuringCopy,
+                state.writes,writes,fixture.Applies(),applies,state.armed);
+        Check(state.retireCalls==1&&state.destroyedDuringCopy==0&&
+            state.calls==calls+int(phase!=0),
+            "selection copy, invocation and final release retire exactly one original callback");
+        Check(state.writes==writes+int(writing&&phase!=0&&response==0)&&
+            fixture.Applies()==applies+int(hostEdit)&&fixture.Reads()==readsAfter,
+            "selection retirement preserves completed edits without repeated selection writes, old reads or later apply");
+        if(!initial)Check(bool(retained)&&!ce::IsWindowSessionCurrent(retiredWindow,token),
+            "retaining the old token cannot revive a selection continuation");
+        if(replacementWindow){
+            Check(IsWindow(replacementWindow)&&KeyCount(replacementWindow)==2&&
+                GetText(replacementWindow,kIdStatus)==replacementStatus&&fixture.replacement.applyCalls==0,
+                "retired selection results cannot change replacement selection, status or channels");
+            ClickKey(replacementWindow,1);Click(replacementWindow,kIdDeleteKey);
+            Check(fixture.replacement.applyCalls==1&&KeyCount(replacementWindow)==1,
+                "replacement remains editable after selection callbacks and guards unwind");
+        }else Check(OwnedCurveWindow()==nullptr,"closed selection callback leaves no registered window");
+        ce::CloseOwned(nullptr);
+    }
+    Note("selection read/write entries protect private arguments and session lifetime through copying, invocation and release");
+}
+
+void SelectionFailuresAndEcho(){
+    for(bool writing:{false,true})for(int failure=0;failure!=3;++failure){
+        SelectionLifetimeFixture fixture(false);bool armed=false;int failures=0,reads=0,writes=0;
+        std::vector<int> nativeFrames{10};
+        auto session=fixture.Session();
+        struct Failure {
+            bool* armed;int* failures;int kind;
+            Failure(bool& a,int& f,int k):armed(&a),failures(&f),kind(k){}
+            Failure(const Failure& other):armed(other.armed),failures(other.failures),kind(other.kind){
+                if(*armed&&kind==0){*armed=false;++*failures;throw std::bad_alloc();}
+            }
+            void Run()const{if(!*armed)return;*armed=false;++*failures;
+                if(kind==1)throw std::runtime_error("selection provider unavailable");throw std::bad_alloc();}
+        };
+        const Failure fault(armed,failures,failure);
+        session.sources[0].readKeySelection=[&,fault](const std::string&){
+            if(!writing)fault.Run();++reads;return nativeFrames;
+        };
+        session.sources[0].writeKeySelection=[&,fault](const std::string&,const std::vector<int>& frames){
+            if(writing)fault.Run();++writes;nativeFrames=frames;
+        };
+        HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
+        Check(IsWindow(window),"selection failure fixture opens");ClickKey(window,1);
+        const auto history=LocalWriteHistory(window);const int beforeWrites=writes,beforeApplies=fixture.Applies();
+        armed=true;
+        if(writing)ClickKey(window,0);else{SetText(window,kIdValueEdit,L"7");Click(window,kIdApplyKey);}
+        Check(failures==1&&fixture.Applies()==beforeApplies&&LocalWriteHistory(window)==history&&writes==beforeWrites,
+            "selection callable copy failure and exceptions do not publish data, history or another selection write");
+        if(!writing)Check(GetText(window,kIdFrameEdit)==L"10", "failed selection read preserves the existing selected key");
+        // Native state can change independently. A normal explicit read adopts
+        // it once, without synthesizing a selection write or an apply.
+        nativeFrames={0};const int beforeReads=reads;
+        ce::NotifySourceChanged(nullptr,"source");SendMessageW(window,WM_APP+401,0,0);
+        Check(reads==beforeReads+1&&writes==beforeWrites&&fixture.Applies()==beforeApplies&&
+            GetText(window,kIdFrameEdit)==L"0", "selection reading recovers independently without write-to-read recursion");
+        nativeFrames.clear();ce::NotifySourceChanged(nullptr,"source");SendMessageW(window,WM_APP+401,0,0);
+        Check(!IsWindowEnabled(GetDlgItem(window,kIdDeleteKey))&&writes==beforeWrites,
+            "an empty native selection is a valid clear rather than a failed read");
+        ClickKey(window,1);Check(writes==beforeWrites+1&&nativeFrames==std::vector<int>{10},
+            "selection writing recovers with one explicit user action");
+        const int acceptedWrites=writes;ce::NotifySourceChanged(nullptr,"source");SendMessageW(window,WM_APP+401,0,0);
+        Check(writes==acceptedWrites&&GetText(window,kIdFrameEdit)==L"10",
+            "later readback confirms an accepted write without another write");
+        ce::CloseOwned(nullptr);
+    }
+    Note("selection exceptions preserve the current path, empty reads clear selection and explicit readback stays read-only");
+}
+
+void SelectionNestedAndHistory(){
+    for(bool writing:{false,true}){
+        SelectionLifetimeFixture fixture(false);bool armed=false,pumping=false;int callbacks=0,nested=0,writes=0;
+        std::vector<int> nativeFrames{10};HWND window=nullptr;
+        auto pump=[&]{
+            armed=false;pumping=true;const int before=fixture.Applies();
+            for(int id:{kIdDeleteKey,kIdAddKey,kIdUndo,kIdRedo,kIdApplyKey})Click(window,id);
+            ce::NotifySourceChanged(nullptr,"source");SendMessageW(window,WM_APP+401,0,0);
+            SetWindowLongPtrW(window,GWL_STYLE,GetWindowLongPtrW(window,GWL_STYLE)|WS_VISIBLE);
+            SendMessageW(window,WM_TIMER,kPlayheadTimerId,0);
+            HWND canvas=GetDlgItem(window,kIdCanvas);
+            for(UINT message:{WM_MBUTTONDOWN,WM_MOUSEMOVE,WM_MBUTTONUP,WM_LBUTTONDOWN,WM_LBUTTONUP,WM_LBUTTONDBLCLK})
+                SendMessageW(canvas,message,MK_LBUTTON,MAKELPARAM(90,90));
+            SendMessageW(GetDlgItem(window,kIdChannelList),WM_KEYDOWN,VK_RETURN,0);
+            Check(nested==0&&fixture.Applies()==before,
+                "selection callbacks cannot recursively author, read, write or switch their active channel");
+            pumping=false;
+        };
+        auto session=fixture.Session();
+        session.sources[0].readKeySelection=[&](const std::string&){
+            ++callbacks;if(pumping)++nested;if(armed&&!writing)pump();return nativeFrames;
+        };
+        session.sources[0].writeKeySelection=[&](const std::string&,const std::vector<int>& frames){
+            ++callbacks;++writes;if(pumping)++nested;if(armed&&writing)pump();nativeFrames=frames;
+        };
+        window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
+        Check(IsWindow(window),"selection recursion fixture opens");ClickKey(window,1);armed=true;
+        if(writing)ClickKey(window,0);else{ce::NotifySourceChanged(nullptr,"source");SendMessageW(window,WM_APP+401,0,0);}
+        Check(!armed&&nested==0&&fixture.Applies()==0,"one selection request completes after blocked nested UI input");
+        SendMessageW(window,WM_APP+401,0,0);
+        ClickKey(window,1);Click(window,kIdDeleteKey);
+        int previousWrites=writes;Click(window,kIdUndo);
+        Check(writes==previousWrites+1&&KeyCount(window)==2,
+            "one local Undo publishes its restored selection exactly once");
+        previousWrites=writes;Click(window,kIdRedo);
+        Check(writes==previousWrites+1&&KeyCount(window)==1,
+            "one local Redo publishes its restored selection exactly once");
+        Check(nested==0&&callbacks>0,"deferred normal reads remain usable after selection callback protection");
+        ce::CloseOwned(nullptr);
+    }
+    Note("selection callback recursion is gated and local history publishes restored selection once");
+}
+
+void SelectionReadSemantics(){
+    SelectionLifetimeFixture fixture(false);std::vector<int> nativeFrames{10};int reads=0,writes=0;
+    auto session=fixture.Session();
+    session.sources[0].readKeySelection=[&](const std::string&){++reads;return nativeFrames;};
+    session.sources[0].writeKeySelection=[&](const std::string&,const std::vector<int>& frames){++writes;nativeFrames=frames;};
+    HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
+    Check(IsWindow(window),"selection result semantics fixture opens");ClickKey(window,1);
+    SetText(window,kIdValueEdit,L"7");Click(window,kIdApplyKey);
+    Check(fixture.Applies()==1&&FindKey(fixture.local.data,0,10)->value==7,
+        "an unchanged selection returns the ordinary no-change result and permits its intended edit");
+    nativeFrames={0};SetText(window,kIdValueEdit,L"9");const int beforeWrites=writes;
+    Click(window,kIdApplyKey);
+    Check(fixture.Applies()==1&&GetText(window,kIdFrameEdit)==L"0"&&
+        FindKey(fixture.local.data,0,0)->value==1,
+        "a changed selection adopts the native key and rejects the stale numeric edit");
+    // The command tail may confirm the new selection. It must not submit data.
+    Check(writes==beforeWrites+1,"a rejected stale edit confirms the adopted selection exactly once without recursive publication");
+    SetText(window,kIdValueEdit,L"9");Click(window,kIdApplyKey);
+    Check(fixture.Applies()==2&&FindKey(fixture.local.data,0,0)->value==9,
+        "retrying against the adopted selection edits the intended native key once");
+    nativeFrames.clear();Click(window,kIdDeleteKey);
+    Check(fixture.Applies()==2&&!IsWindowEnabled(GetDlgItem(window,kIdDeleteKey))&&reads>0,
+        "a valid empty selection cannot fall through into deleting the previously selected key");
+    ce::CloseOwned(nullptr);
+    Note("unchanged, changed and empty selection reads preserve numeric-edit refusal semantics");
+}
+
+void SelectionDenseStableTick(){
+    std::array<std::size_t,2> bytes{},largest{};
+    for(int dense=0;dense!=2;++dense){
+        HostSource host;std::vector<ac::Key> keys;
+        const int count=dense?100000:2;keys.reserve(count);
+        for(int index=0;index<count;++index)keys.push_back(MakeKey(index,double(index%11)));
+        host.data.push_back(MakeChannel("dense",L"Dense",std::move(keys)));
+        int reads=0,writes=0;auto session=MakeSession(host);session.currentFrame=[](){return 0.0;};
+        session.sources[0].readKeySelection=[&](const std::string&){++reads;return std::vector<int>{};};
+        session.sources[0].writeKeySelection=[&](const std::string&,const std::vector<int>&){++writes;};
+        HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
+        Check(IsWindow(window),"dense stable-selection timer fixture opens");
+        SetWindowLongPtrW(window,GWL_STYLE,GetWindowLongPtrW(window,GWL_STYLE)|WS_VISIBLE);
+        SendMessageW(window,WM_TIMER,kPlayheadTimerId,0);SendMessageW(window,WM_TIMER,kPlayheadTimerId,0);
+        const int oldReads=reads,oldHostReads=host.readCalls;
+        g_curveAllocationBytes=g_curveLargestAllocation=0;g_curveMeasureAllocations=true;
+        for(int tick=0;tick!=8;++tick)SendMessageW(window,WM_TIMER,kPlayheadTimerId,0);
+        g_curveMeasureAllocations=false;bytes[dense]=g_curveAllocationBytes;largest[dense]=g_curveLargestAllocation;
+        bool unchanged=true;
+        for(int index=0;index<count;++index){const auto& key=host.data[0].track.keys[index];
+            if(key.frame!=index||key.value!=double(index%11)){unchanged=false;break;}}
+        Check(reads==oldReads+8&&host.readCalls==oldHostReads&&writes==0&&host.applyCalls==0&&
+            KeyCount(window)==count&&unchanged,
+            "stable selection ticks read only selection and preserve dense source contents");
+        std::printf("DENSE_SELECTION keys=%d ticks=8 bytes=%zu largest=%zu\n",count,bytes[dense],largest[dense]);
+        ce::CloseOwned(nullptr);
+    }
+    Check(largest[1]<100000*sizeof(int)&&bytes[1]<=bytes[0]+4096,
+        "unchanged dense VMD selection ticks do not allocate a full key-address array or per-key containers");
+    Note("stable selection ticks preserve the common path without dense-track-sized allocation");
+}
 } // namespace
 
 int main(int argc,char** argv) {
+    if(argc>1&&std::string(argv[1])=="--selection-lifetime"){
+        SelectionCallbackLifetime();SelectionFailuresAndEcho();SelectionNestedAndHistory();
+        SelectionReadSemantics();SelectionDenseStableTick();
+        std::printf("curve selection lifetime: %d checks\n",g_checks);return 0;
+    }
     if(argc>1&&std::string(argv[1])=="--write-lifetime"){
         WriteCallbackLifetime();WritePostCommitReadRetirement();WriteFailureKeepsLocalHistory();
         WriteCanonicalFailureKeepsPublication();WriteAcceptedAllocationFailure();
@@ -3804,6 +4131,8 @@ int main(int argc,char** argv) {
     ProviderCopyRetirement();SourceLanguageAndOpenFailures();
     WriteCallbackLifetime();WritePostCommitReadRetirement();WriteFailureKeepsLocalHistory();
     WriteCanonicalFailureKeepsPublication();WriteAcceptedAllocationFailure();WriteRejectsNestedAuthoring();
+    SelectionCallbackLifetime();SelectionFailuresAndEcho();SelectionNestedAndHistory();
+    SelectionReadSemantics();SelectionDenseStableTick();
     BakeSelectedChannels();
     NativeSubdivisionRoute();NativeSampleBake();
     DuplicateFrameSelectsExisting();

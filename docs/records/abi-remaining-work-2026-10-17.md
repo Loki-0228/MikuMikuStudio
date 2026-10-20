@@ -18,7 +18,7 @@
 
 已[同步 main 已提交功能](abi-main-feature-sync-2026-10-20.md)，随后[补齐备份与日志修复](abi-main-backup-settings-sync-2026-10-20.md)至 `acbddb4`；核对时最新的 `1b9acad` 仅为发布文档。保留 ABI 共同历史、集中设置和 MMS-only 文件标记。曲线文件选择期间的窗口销毁和会话替换已按[模态生命周期记录](abi-curve-modal-lifetime-2026-10-20.md)修复并完成真实宿主验收。
 
-2026-10-21 已完成[来源读取、历史查询及标签回调的会话保护](abi-curve-source-lifetime-2026-10-21.md)。共享会话版本覆盖闭包复制、调用和最终释放中的重入，初始化失败只清理本次会话。完整配置来源专项 2,463 项、motion 专项 278 项、编辑器全集 5,001 项及两套产品构建通过。运行继承 `Default` 桌面，窗口显示由夹具控制，不代表隔离、真实 IME 或多 DPI 验收。选择、比较模式、帧与播放控制、`subdivide`、`Channel.sample` 仍未统一，正式 release 未更新。
+2026-10-21 已完成[来源读取、历史查询及标签回调的会话保护](abi-curve-source-lifetime-2026-10-21.md)。共享会话版本覆盖闭包复制、调用和最终释放中的重入，初始化失败只清理本次会话。完整配置来源专项 2,463 项、motion 专项 278 项、编辑器全集 5,001 项及两套产品构建通过。运行继承 `Default` 桌面，窗口显示由夹具控制，不代表隔离、真实 IME 或多 DPI 验收。比较模式、帧与播放控制、`subdivide`、`Channel.sample` 仍未统一，正式 release 未更新。
 
 随后 main 新增的 `ff7616e` 已按[H.264 导出方向记录](abi-h264-orientation-2026-10-20.md)同步，两套配置的真实 RGB32、NV12 软件编码与解码方向通过。再核对 `c147454`，其默认目录移出 data 的变更不符合本会话约定，ABI 保留默认 `data/backups`，见[核对记录](abi-main-backup-path-review-2026-10-20.md)。main 未提交的其他修改未纳入。
 
@@ -30,7 +30,9 @@
 
 [工程地面 285](abi-floor-history-2026-10-21.md)已用同一候选恢复工程字节和真实碰撞 flags，两种模式、预算、来源失效及实际 CPU 下一步对照通过。该专项 1,370 项；完整配置产品与原生测试均重新构建通过。普通公共编辑服务仍关闭，原始兼容保留旧入口。
 
-[曲线 apply/traverse 写入保护](abi-curve-write-lifetime-2026-10-21.md)随后完成；稳定历史节点、拒绝恢复、成功后的读取失败以及同会话嵌套输入均已覆盖。两套配置写入专项各 3,259 项、编辑器全集各 8,222 项通过。选择、比较模式、帧与播放控制、subdivide 和 Channel.sample 仍未统一，不能据此视为所有回调完成。
+[曲线 apply/traverse 写入保护](abi-curve-write-lifetime-2026-10-21.md)随后完成；稳定历史节点、拒绝恢复、成功后的读取失败以及同会话嵌套输入均已覆盖。两套配置写入专项各 3,259 项、编辑器全集各 8,222 项通过。比较模式、帧与播放控制、subdivide 和 Channel.sample 仍未统一，不能据此视为所有回调完成。
+
+[选择回调保护](abi-curve-selection-lifetime-2026-10-21.md)已补齐 readKeySelection/writeKeySelection，不改变 vector<int>/void 协议及空选择语义。两套配置专项各 5,158 项、全集各 13,380 项通过，密集轨道稳定时钟未增加全轨数组分配。比较、帧与播放控制、subdivide 和 Channel.sample 生命周期仍待迁移。
 
 ## 早期批次记录
 
