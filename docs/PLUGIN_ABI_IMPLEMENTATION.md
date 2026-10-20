@@ -4,6 +4,8 @@
 
 状态分为 **未实现**、**已实现未验证**、**本机已验证**、**缺其他系统/硬件环境**。代码、本机结果和平台结果分别列出。
 
+本轮 INPUT、刷新服务、属性事务及轮廓颜色专项通过，最终 ABI 程序的原名和中文改名产品检查通过。最终完整契约仍在既有原生溢出菜单自动选择处超时，尚未归因，不声明全套通过；失败及专项范围见 [INPUT DATA 验收](records/abi-property-data-2026-10-20.md#验证)。
+
 [属性事务暂存](records/abi-property-stage-2026-10-20.md)已接入受控编辑宿主，使用原 `mms.ui.stageProperty`、插件 owner 和属性记录。连续暂存可以共用一个 participant；失败精确取消事务，替换注册、序列化器及工程修订变化会使候选失效。五类参与者回调具有统一只读 UI 边界。随后接入[声明式 INPUT](records/abi-declarative-input-2026-10-20.md)及[默认属性 DATA](records/abi-property-data-2026-10-20.md)，普通生产编辑服务仍未开放。
 
 [模型轮廓粗细](records/abi-model-outline-history-2026-10-20.md)已接入共同历史绑定宿主，覆盖实际 646 文本、647 滑杆、精确原位还原、窗口关闭、删除恢复及混合插件事务。最终底层和真实控件专项共 6,493 项通过；随后接入[轮廓颜色](records/abi-outline-color-history-2026-10-20.md)的 PMD 资源恢复及实际菜单 286。普通公共 `mms.edit` 仍关闭，其他模型资源编辑继续列为未完成。
