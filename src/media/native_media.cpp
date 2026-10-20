@@ -49,6 +49,7 @@ bool Extension(const wchar_t* path, const wchar_t* extension) {
 }
 struct DecodedAudio {
     std::wstring source, temporary;
+    wave_audio::AssetPtr normalized;
     ~DecodedAudio() { if (!temporary.empty()) DeleteFileW(temporary.c_str()); }
 };
 std::unordered_map<WaveAudioContext*, std::unique_ptr<DecodedAudio>> audioFiles;
@@ -79,8 +80,17 @@ const wchar_t* AudioSource(WaveAudioContext* audio) {
 bool PrepareAudio(WaveAudioContext* audio, const wchar_t* source, std::wstring& playable, std::wstring& error, std::uint64_t maximumBytes, bool* byteLimitExceeded) {
     playable = source; error.clear();
     if(byteLimitExceeded)*byteLimitExceeded=false;
-    if (Extension(source, L".wav")) return true;
     try {
+        if (Extension(source, L".wav")) {
+            // Keep canonical PCM8/16 on the original path. Other supported
+            // RIFF layouts and bit depths use the same private PCM decoder as
+            // common history, including PMM open and ordinary imports.
+            auto normalized=wave_audio::Asset::DecodeWave(source,maximumBytes,true);
+            if(!normalized){audioFiles.erase(audio);return true;}
+            auto decoded=std::make_unique<DecodedAudio>();decoded->source=source;
+            decoded->normalized=std::move(normalized);
+            playable=decoded->normalized->CachePath();audioFiles[audio]=std::move(decoded);return true;
+        }
         Runtime runtime;
         ComPtr<IMFSourceReader> reader;
         Check(MFCreateSourceReaderFromURL(source, nullptr, &reader), L"Open audio");
@@ -147,6 +157,8 @@ bool PrepareAudio(WaveAudioContext* audio, const wchar_t* source, std::wstring& 
         audioFiles[audio] = std::move(decoded);
         return true;
     } catch (const Failure& failure) { error = Describe(failure); }
+      catch (const std::bad_alloc&) { if(byteLimitExceeded)*byteLimitExceeded=true;error=L"音频解码内存不足或超过字节上限。"; }
+      catch (const std::invalid_argument&) { error=L"无效或不支持的 WAVE 音频格式。"; }
       catch (const std::exception&) { error = L"音频解码内存不足。"; }
     return false;
 }

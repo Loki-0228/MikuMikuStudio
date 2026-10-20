@@ -17,8 +17,13 @@ class Asset {
 public:
     ~Asset();
     static AssetPtr Decode(const wchar_t* source, std::uint64_t maximumBytes);
+    // Direct RIFF path, independent of Media Foundation. Native pass-through
+    // returns null only for a validated layout the native PCM8/16 reader
+    // handles, including metadata before the actual data chunk.
+    static AssetPtr DecodeWave(const wchar_t* source, std::uint64_t maximumBytes, bool nativePassThrough = false);
     static AssetPtr Capture(const WaveAudioContext&, const wchar_t* source, std::uint64_t maximumBytes);
     const wchar_t* Source() const noexcept;
+    const wchar_t* CachePath() const noexcept;
     std::uint64_t RetainedBytes() const noexcept;
     bool Equals(const Asset&) const noexcept;
     friend class Prepared;

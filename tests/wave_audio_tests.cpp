@@ -2,6 +2,7 @@
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/ui_message.hpp"
+#include "mikumikustudio/native_media.hpp"
 #include <MinHook.h>
 #include <commdlg.h>
 #include <shellapi.h>
@@ -104,6 +105,29 @@ void Save(MMDApp* app, const fs::path& path) {
 void Open(MMDApp* app, const fs::path& path) {
     wcscpy_s(app->EnvFileName(), 256, path.c_str());
     LoadSceneFile();
+}
+void WideWave(const fs::path& path,unsigned tag,unsigned bits,bool extensible) {
+    std::ofstream out(path,std::ios::binary);const auto align=2*(bits/8),count=8000*align,fmt=extensible?40u:16u;
+    const auto u16=[&](std::uint16_t value){out.write(reinterpret_cast<const char*>(&value),2);};
+    const auto u32=[&](std::uint32_t value){out.write(reinterpret_cast<const char*>(&value),4);};
+    out.write("RIFF",4);u32(20+fmt+count);out.write("WAVEfmt ",8);u32(fmt);u16(extensible?0xfffe:tag);u16(2);
+    u32(8000);u32(8000*align);u16(std::uint16_t(align));u16(std::uint16_t(bits));
+    if(extensible){u16(22);u16(std::uint16_t(bits));u32(3);u32(tag);const unsigned char tail[]={0,0,0x10,0,0x80,0,0,0xaa,0,0x38,0x9b,0x71};out.write(reinterpret_cast<const char*>(tail),sizeof tail);}
+    out.write("data",4);u32(count);const std::vector<char> silence(count);out.write(silence.data(),silence.size());Check(bool(out),"write extended WAV PMM fixture");
+}
+void WidePmmRoundTrips(MMDApp* app,const fs::path& directory) {
+    for(const auto tag:{1u,3u})for(const auto bits:(tag==1?std::vector<unsigned>{24,32}:std::vector<unsigned>{32,64}))for(bool extensible:{false,true}){
+        ResetAppState(app);const auto source=directory/(L"wide-"+std::to_wstring(tag)+L"-"+std::to_wstring(bits)+L"-"+std::to_wstring(extensible)+L".wav");
+        WideWave(source,tag,bits,extensible);const auto previous=creates;Drop(source);Loaded(app);
+        Check(app->Audio()->format.wBitsPerSample==16&&app->Audio()->format.nSamplesPerSec==8000&&app->Audio()->dataSize==32000,
+            "actual file drop normalizes extended WAV with rate and frames preserved");
+        const auto project=directory/L"wide-audio.pmm";Save(app,project);ResetAppState(app);Open(app,project);Loaded(app);
+        Check(creates==previous+2&&std::wcscmp(app->WavePath(),source.c_str())==0&&media::AudioSource(app->Audio())==source.native()&&
+            app->Audio()->format.wBitsPerSample==16&&app->Audio()->dataSize==32000&&std::wcscmp(app->Audio()->path,source.c_str())!=0,
+            "actual PMM save and reopen retains external source and recreates normalized playback cache");
+        WaveSeekAndFeed(app->Audio(),0);Sleep(15);Check(app->Audio()->feedThread!=0,"reopened PMM extended WAV starts real feed");
+        CloseDataFile(app->Audio());
+    }
 }
 }
 int wmain(int argc, wchar_t** argv) {
@@ -221,6 +245,8 @@ int wmain(int argc, wchar_t** argv) {
     Drop(wave);
     Loaded(app);
     Check(creates == 5, "repeated imports reuse initialized device");
+    WidePmmRoundTrips(app,directory);
+    ResetAppState(app);Drop(wave);Loaded(app);
     Check(!IsWindowVisible(app->MainWindow()), "all checks kept main window hidden");
     // Keep a real idle clip loaded through shutdown. A pinned reference lets
     // this test observe the host's Release without accessing a freed object.

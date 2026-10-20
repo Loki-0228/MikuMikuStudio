@@ -59,6 +59,116 @@ void Format(const WAVEFORMATEX& f) {
         average != f.nAvgBytesPerSec || average > unsigned(DSBSIZE_MAX) / 2)
         throw std::invalid_argument("unsupported or inconsistent PCM audio format");
 }
+struct WaveSource {
+    WAVEFORMATEX format{};
+    unsigned encoding=0, validBits=0;
+    std::uint64_t offset=0;
+    std::uint32_t bytes=0;
+    bool canonical=false;
+};
+bool LegacyDataHeader(HANDLE file,std::uint64_t dataOffset) {
+    if(dataOffset<44)return false;
+    // The original reader searches for the first literal data marker after
+    // the fixed PCM header. Preserve metadata-bearing PCM files only when
+    // that search reaches the actual validated chunk, not metadata contents.
+    Seek(file,36);std::array<unsigned char,65536> bytes{};unsigned phase=0;
+    for(std::uint64_t at=36;at<dataOffset-4;){
+        const auto count=DWORD((std::min)(std::uint64_t(bytes.size()),dataOffset-4-at));Read(file,bytes.data(),count);
+        for(DWORD n=0;n<count;++n){
+            if(!phase){if(bytes[n]=='d')phase=1;}
+            else if(bytes[n]==(phase==2?'t':'a')){
+                if(++phase==4)return at+n-3==dataOffset-8;
+            }else phase=0; // The old getc scanner consumes a mismatched byte.
+        }
+        at+=count;
+    }return false;
+}
+WaveSource InspectWave(HANDLE file) {
+    const auto length=Length(file);std::array<unsigned char,12> header{};Seek(file,0);Read(file,header.data(),12);
+    if(std::memcmp(header.data(),"RIFF",4)||std::memcmp(header.data()+8,"WAVE",4))throw std::invalid_argument("not RIFF WAVE audio");
+    const auto limit=std::uint64_t(U32(header.data()+4))+8;
+    if(limit>length||limit<12)throw std::invalid_argument("invalid RIFF WAVE size");
+    WaveSource result;bool format=false,data=false,canonicalFormat=false;
+    for(std::uint64_t offset=12;offset<limit;){
+        if(limit-offset<8)throw std::invalid_argument("truncated WAVE chunk");
+        std::array<unsigned char,8> chunk{};Seek(file,offset);Read(file,chunk.data(),8);
+        const auto size=U32(chunk.data()+4);const auto start=offset+8;
+        if(size>limit-start)throw std::invalid_argument("WAVE chunk exceeds RIFF bounds");
+        if(!std::memcmp(chunk.data(),"fmt ",4)){
+            if(format||size<16)throw std::invalid_argument("invalid WAVE format chunk");
+            std::array<unsigned char,40> bytes{};Read(file,bytes.data(),(std::min)(size,std::uint32_t(bytes.size())));
+            auto& f=result.format;f.wFormatTag=U16(bytes.data());f.nChannels=U16(bytes.data()+2);
+            f.nSamplesPerSec=U32(bytes.data()+4);f.nAvgBytesPerSec=U32(bytes.data()+8);
+            f.nBlockAlign=U16(bytes.data()+12);f.wBitsPerSample=U16(bytes.data()+14);
+            result.encoding=f.wFormatTag;result.validBits=f.wBitsPerSample;
+            if(size==17||(size>=18&&U16(bytes.data()+16)>size-18))throw std::invalid_argument("invalid WAVE format extension length");
+            if(f.wFormatTag==0xfffe){
+                if(size<40||U16(bytes.data()+16)<22)throw std::invalid_argument("incomplete extensible WAVE format");
+                static const unsigned char tail[]={0,0,0x10,0,0x80,0,0,0xaa,0,0x38,0x9b,0x71};
+                if(std::memcmp(bytes.data()+28,tail,sizeof tail))throw std::invalid_argument("unknown extensible WAVE subtype");
+                result.encoding=U32(bytes.data()+24);result.validBits=U16(bytes.data()+18);
+                const auto mask=U32(bytes.data()+20);
+                if(mask&&mask!=(f.nChannels==1?4u:3u))throw std::invalid_argument("unsupported WAVE channel layout");
+            }
+            const auto bits=f.wBitsPerSample,channels=f.nChannels;
+            const bool pcm=result.encoding==1&&(bits==8||bits==16||bits==24||bits==32);
+            const bool floating=result.encoding==3&&(bits==32||bits==64);
+            const auto align=unsigned(channels)*unsigned(bits/8);const auto average=std::uint64_t(f.nSamplesPerSec)*align;
+            if((channels!=1&&channels!=2)||(!pcm&&!floating)||!f.nSamplesPerSec||f.nBlockAlign!=align||
+                average!=f.nAvgBytesPerSec||!result.validBits||result.validBits>bits||(floating&&result.validBits!=bits))
+                throw std::invalid_argument("unsupported or inconsistent WAVE format");
+            canonicalFormat=offset==12&&(size==16||(size==18&&!U16(bytes.data()+16)))&&f.wFormatTag==1&&(bits==8||bits==16);
+            format=true;
+        }else if(!std::memcmp(chunk.data(),"data",4)){
+            if(data||size>INT_MAX-44)throw std::invalid_argument("invalid WAVE data chunk");
+            data=true;result.offset=start;result.bytes=size;
+        }
+        const auto padded=std::uint64_t(size)+(size&1u);
+        if(padded>limit-start)throw std::invalid_argument("missing WAVE chunk padding");offset=start+padded;
+    }
+    if(!format||!data||result.bytes%result.format.nBlockAlign)throw std::invalid_argument("missing or unaligned WAVE audio");
+    result.canonical=canonicalFormat&&LegacyDataHeader(file,result.offset);
+    return result;
+}
+// Only playback is converted. Source paths still identify the original file.
+// No whole-source allocation or Media Foundation codec is needed for WAV.
+void ReadPcm(HANDLE file,const WaveSource& source,WAVEFORMATEX& format,std::vector<unsigned char>& pcm,std::uint64_t budget) {
+    format=source.format;format.wFormatTag=1;format.cbSize=0;
+    const bool copy=source.encoding==1&&source.validBits==format.wBitsPerSample&&(format.wBitsPerSample==8||format.wBitsPerSample==16);
+    const auto frames=std::uint64_t(source.bytes)/source.format.nBlockAlign;
+    if(!copy){format.wBitsPerSample=16;format.nBlockAlign=format.nChannels*2;
+        const auto average=std::uint64_t(format.nSamplesPerSec)*format.nBlockAlign;
+        if(average>UINT32_MAX)throw std::invalid_argument("PCM byte rate overflow");format.nAvgBytesPerSec=DWORD(average);}
+    Format(format);
+    const auto count=frames*format.nBlockAlign;
+    if(count>INT_MAX-44)throw std::bad_alloc();
+    Budget(Sum(count,count+44+(count&1u)),budget);pcm.resize(std::size_t(count));Seek(file,source.offset);
+    if(copy){if(count)Read(file,pcm.data(),DWORD(count));return;}
+    std::array<unsigned char,65536> scratch{};std::size_t written=0;auto remaining=source.bytes;
+    const auto inputBytes=unsigned(source.format.wBitsPerSample/8),align=unsigned(source.format.nBlockAlign);
+    const auto block=unsigned(scratch.size())/align*align;
+    while(remaining){
+        const auto bytes=(std::min)(remaining,block);Read(file,scratch.data(),bytes);remaining-=bytes;
+        for(unsigned at=0;at<bytes;at+=inputBytes){
+            std::int64_t sample=0;
+            if(source.encoding==3){
+                double value=0;
+                if(inputBytes==4){float single;std::memcpy(&single,scratch.data()+at,4);value=single;}
+                else std::memcpy(&value,scratch.data()+at,8);
+                if(!std::isfinite(value))throw std::invalid_argument("non-finite WAVE sample");
+                sample=value>=1?32767:value<=-1?-32768:std::int64_t(value*32768.0);
+            }else{
+                std::uint64_t raw=0;for(unsigned n=0;n<inputBytes;++n)raw|=std::uint64_t(scratch[at+n])<<(n*8);
+                const auto bits=source.format.wBitsPerSample;const auto padding=unsigned(bits)-source.validBits;
+                if(padding&&(raw&((std::uint64_t(1)<<padding)-1)))throw std::invalid_argument("nonzero WAVE sample padding");
+                if(bits==8)sample=(std::int64_t(raw)-128)*256;
+                else if(bits==16)sample=raw>=0x8000?std::int64_t(raw)-0x10000:std::int64_t(raw);
+                else {const auto high=raw>>(bits-16);sample=high>=0x8000?std::int64_t(high)-0x10000:std::int64_t(high);}
+            }
+            Put16(pcm.data()+written,unsigned(std::uint16_t(sample)));written+=2;
+        }
+    }
+}
 void Dispose(WaveAudioContext& audio) noexcept {
     WaveCtxReset(&audio);
     std::free(audio.waveformMax); std::free(audio.waveformMin);
@@ -147,6 +257,7 @@ struct Asset::Impl {
 Asset::Asset(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 Asset::~Asset() = default;
 const wchar_t* Asset::Source() const noexcept { return impl_->source.c_str(); }
+const wchar_t* Asset::CachePath() const noexcept { return impl_->cache.c_str(); }
 std::uint64_t Asset::RetainedBytes() const noexcept {
     std::uint64_t bytes = sizeof(*this)+sizeof(Impl)+4*sizeof(void*);
     for (const auto* vector : {&impl_->pcm, &impl_->maximum, &impl_->minimum}) bytes=Sum(bytes, vector->capacity());
@@ -160,54 +271,37 @@ bool Asset::Equals(const Asset& other) const noexcept {
         a.format.nBlockAlign==b.format.nBlockAlign && a.format.wBitsPerSample==b.format.wBitsPerSample &&
         a.pcm==b.pcm && a.maximum==b.maximum && a.minimum==b.minimum;
 }
+AssetPtr Asset::DecodeWave(const wchar_t* source,std::uint64_t maximumBytes,bool nativePassThrough) {
+    if(!source||!*source||wcsnlen_s(source,256)>=256)throw std::invalid_argument("audio source path too long");
+    File input(CreateFileW(source,GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr));
+    if(input.value==INVALID_HANDLE_VALUE)throw std::invalid_argument("audio file unavailable");
+    const auto wave=InspectWave(input.value);
+    if(nativePassThrough&&wave.canonical){Format(wave.format);return {};}
+    auto result=std::make_unique<Impl>();result->source=source;
+    ReadPcm(input.value,wave,result->format,result->pcm,maximumBytes);
+    result->Waveform(maximumBytes);result->Cache();
+    auto asset=AssetPtr(new Asset(std::move(result)));Budget(asset->RetainedBytes(),maximumBytes);return asset;
+}
 AssetPtr Asset::Decode(const wchar_t* source, std::uint64_t maximumBytes) {
     if (!source || !*source || wcsnlen_s(source,256)>=256) throw std::invalid_argument("audio source path too long");
+    const auto* dot=std::wcsrchr(source,L'.');if(dot&&_wcsicmp(dot,L".wav")==0)return DecodeWave(source,maximumBytes);
     WaveAudioContext decoding{};
     struct Cleanup { WaveAudioContext& audio; ~Cleanup() { Dispose(audio); } } cleanup{decoding};
     std::wstring playable,error;bool exceeded=false;
     if (!media::PrepareAudio(&decoding,source,playable,error,maximumBytes/2,&exceeded)) {
         if(exceeded)throw std::bad_alloc();throw std::invalid_argument("audio decode failed");
     }
-    File input(CreateFileW(playable.c_str(),GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr));
-    if(input.value==INVALID_HANDLE_VALUE)throw std::invalid_argument("audio file unavailable");
-    const auto length=Length(input.value);std::array<unsigned char,12> header{};
-    Read(input.value,header.data(),DWORD(header.size()));
-    if(std::memcmp(header.data(),"RIFF",4)||std::memcmp(header.data()+8,"WAVE",4))throw std::invalid_argument("not RIFF WAVE audio");
-    const auto limit=std::uint64_t(U32(header.data()+4))+8;
-    if(limit>length||limit<12)throw std::invalid_argument("invalid RIFF WAVE size");
-    auto result=std::make_unique<Impl>();result->source=source;
-    bool format=false,data=false;std::uint64_t dataOffset=0;std::uint32_t dataBytes=0;
-    for(std::uint64_t offset=12;offset<limit;){
-        if(limit-offset<8)throw std::invalid_argument("truncated WAVE chunk");
-        std::array<unsigned char,8> chunk{};Seek(input.value,offset);Read(input.value,chunk.data(),8);
-        const auto size=U32(chunk.data()+4);const auto start=offset+8;
-        if(size>limit-start)throw std::invalid_argument("WAVE chunk exceeds RIFF bounds");
-        if(!std::memcmp(chunk.data(),"fmt ",4)){
-            if(format||size<16)throw std::invalid_argument("invalid WAVE format chunk");
-            std::array<unsigned char,16> bytes{};Read(input.value,bytes.data(),16);auto& f=result->format;
-            f.wFormatTag=U16(bytes.data());f.nChannels=U16(bytes.data()+2);f.nSamplesPerSec=U32(bytes.data()+4);f.nAvgBytesPerSec=U32(bytes.data()+8);
-            f.nBlockAlign=U16(bytes.data()+12);f.wBitsPerSample=U16(bytes.data()+14);Format(f);format=true;
-        }else if(!std::memcmp(chunk.data(),"data",4)){
-            if(data||size>INT_MAX-44)throw std::invalid_argument("invalid WAVE data chunk");data=true;dataOffset=start;dataBytes=size;
-        }
-        const auto padded=std::uint64_t(size)+(size&1u);
-        if(padded>limit-start)throw std::invalid_argument("missing WAVE chunk padding");offset=start+padded;
-    }
-    if(!format||!data||dataBytes%result->format.nBlockAlign)throw std::invalid_argument("missing or unaligned PCM audio");
-    Budget(Sum(dataBytes,std::uint64_t(dataBytes)+44),maximumBytes);result->pcm.resize(dataBytes);
-    Seek(input.value,dataOffset);if(dataBytes)Read(input.value,result->pcm.data(),dataBytes);
-    result->Waveform(maximumBytes);result->Cache();auto asset=AssetPtr(new Asset(std::move(result)));Budget(asset->RetainedBytes(),maximumBytes);return asset;
+    auto asset=DecodeWave(playable.c_str(),maximumBytes);
+    // The source is metadata, never a dependency of history playback.
+    asset->impl_->source=source;
+    Budget(asset->RetainedBytes(),maximumBytes);return asset;
 }
 AssetPtr Asset::Capture(const WaveAudioContext& audio,const wchar_t* source,std::uint64_t maximumBytes) {
     if(auto asset=Active(&audio))return asset;
     if(!Stopped(audio)||!source||!*source||wcsnlen_s(source,256)>=256)throw std::invalid_argument("audio source is not stopped");
-    Format(audio.format);
-    if(audio.dataSize<0||audio.dataOffset<0||audio.dataSize%audio.format.nBlockAlign||audio.waveformColumns<0||
+    if(audio.dataSize<0||audio.dataOffset<0||!audio.format.nBlockAlign||audio.dataSize%audio.format.nBlockAlign||audio.waveformColumns<0||
         (audio.waveformColumns&&(!audio.waveformMax||!audio.waveformMin)))throw std::invalid_argument("invalid live PCM audio");
-    Budget(Sum(std::uint64_t(audio.dataSize)*2+44,std::uint64_t(audio.waveformColumns)*2),maximumBytes);
     auto result=std::make_unique<Impl>();result->source=source;result->format=audio.format;result->format.cbSize=0;
-    result->pcm.resize(unsigned(audio.dataSize));
-    if(audio.waveformColumns){result->maximum.assign(audio.waveformMax,audio.waveformMax+audio.waveformColumns);result->minimum.assign(audio.waveformMin,audio.waveformMin+audio.waveformColumns);}
     // Use an independent read handle. Capturing a stopped legacy clip must
     // preserve its read cursor even when later allocations or file IO fail.
     std::array<wchar_t,32768> finalPath{};const wchar_t* path=audio.path;
@@ -220,7 +314,14 @@ AssetPtr Asset::Capture(const WaveAudioContext& audio,const wchar_t* source,std:
     if(audio.fileHandle&&audio.fileHandle!=INVALID_HANDLE_VALUE){BY_HANDLE_FILE_INFORMATION a{},b{};
         if(!GetFileInformationByHandle(audio.fileHandle,&a)||!GetFileInformationByHandle(opened.value,&b)||a.dwVolumeSerialNumber!=b.dwVolumeSerialNumber||
             a.nFileIndexHigh!=b.nFileIndexHigh||a.nFileIndexLow!=b.nFileIndexLow)throw std::invalid_argument("live PCM backing identity changed");}
-    Seek(opened.value,unsigned(audio.dataOffset));if(audio.dataSize)Read(opened.value,result->pcm.data(),unsigned(audio.dataSize));
+    const auto wave=InspectWave(opened.value);
+    if(wave.offset!=unsigned(audio.dataOffset)||wave.bytes!=unsigned(audio.dataSize)||
+        wave.format.nChannels!=audio.format.nChannels||wave.format.nSamplesPerSec!=audio.format.nSamplesPerSec||
+        wave.format.nBlockAlign!=audio.format.nBlockAlign||wave.format.nAvgBytesPerSec!=audio.format.nAvgBytesPerSec||
+        wave.format.wBitsPerSample!=audio.format.wBitsPerSample)throw std::invalid_argument("live PCM format changed");
+    const auto waveformBytes=std::uint64_t(audio.waveformColumns)*2;
+    Budget(waveformBytes,maximumBytes);ReadPcm(opened.value,wave,result->format,result->pcm,maximumBytes-waveformBytes);
+    if(audio.waveformColumns){result->maximum.assign(audio.waveformMax,audio.waveformMax+audio.waveformColumns);result->minimum.assign(audio.waveformMin,audio.waveformMin+audio.waveformColumns);}
     result->Cache();auto asset=AssetPtr(new Asset(std::move(result)));Budget(asset->RetainedBytes(),maximumBytes);return asset;
 }
 struct Prepared::Impl {
