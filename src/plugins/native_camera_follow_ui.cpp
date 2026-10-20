@@ -1,4 +1,5 @@
 #include "native_camera_follow_ui.hpp"
+#include "native_camera_parent_history.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "shared_history.hpp"
 #include "mikumikustudio/bake_ui_lock.hpp"
@@ -224,6 +225,7 @@ void RefreshBoundCameraFollowFlags(MMDApp& app) noexcept {
 }
 void RefreshBoundCameraFollowReadout(MMDApp& app) noexcept {
     RefreshBoundCameraFollowFlags(app);
+    RefreshBoundCameraParentBoneReadout(app);
     Boundary([&]() -> MmsResult {
         bake::ScopedUiInputGate input;
         const auto main = app.MainWindow();

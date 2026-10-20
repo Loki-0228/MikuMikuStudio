@@ -451,6 +451,7 @@ void CrossModelJournal(){
 #include "native_bone_vmd_curves_checks.inc"
 #include "native_model_vmd_curves_checks.inc"
 #include "native_camera_follow_checks.inc"
+#include "native_camera_parent_history_checks.inc"
 #include "retained_bookkeeping_checks.inc"
 int main(int argc,char** argv){
     std::setvbuf(stdout,nullptr,_IONBF,0);
@@ -611,6 +612,10 @@ int main(int argc,char** argv){
     if(argc==2&&!std::strcmp(argv[1],"--camera-follow-only")) {
         run("NativeCameraFollowChecks",NativeCameraFollowChecks);
         std::printf("PASS native camera follow: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--camera-parent-only")) {
+        run("NativeCameraParentHistoryChecks",NativeCameraParentHistoryChecks);
+        std::printf("PASS native camera parent: %u checks\n",checks);return 0;
     }
     if(argc==2&&!std::strcmp(argv[1],"--numpad-only")) {
         run("NativeNumpadViewChecks",NativeNumpadViewChecks);
@@ -954,6 +959,7 @@ int main(int argc,char** argv){
     run("NativeBoneVmdCurvesChecks",NativeBoneVmdCurvesChecks);
     run("NativeModelVmdCurvesChecks",NativeModelVmdCurvesChecks);
     run("NativeCameraFollowChecks",NativeCameraFollowChecks);
+    run("NativeCameraParentHistoryChecks",NativeCameraParentHistoryChecks);
     run("NativeCameraHudHistoryChecks",NativeCameraHudHistoryChecks);
     run("NativeAccessoryHudHistoryChecks",NativeAccessoryHudHistoryChecks);
     run("NativeModelHudHistoryChecks",NativeModelHudHistoryChecks);

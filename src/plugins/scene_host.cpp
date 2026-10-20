@@ -155,6 +155,12 @@ void ForgetSceneObject(const void* token) {
     if (visible) { ++revision; previous.clear(); }
 }
 MmsObjectRef SceneObjectIdentity(const void* token) { return identities.Get(token).object; }
+bool FindSceneObjectIdentity(const void* token, MmsObjectRef& out) noexcept {
+    const auto* entry = identities.Retained(token);
+    if (!entry || !entry->present || !entry->published) return false;
+    out = entry->object;
+    return true;
+}
 MmsObjectRef CreateAbsentSceneObject(const void* token) { return identities.CreateAbsent(token).object; }
 bool SceneObjectPresent(const void* token, MmsId id) noexcept {
     const auto* entry = identities.Retained(token);

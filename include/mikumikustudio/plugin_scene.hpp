@@ -9,6 +9,9 @@ class SceneStore;
 std::shared_ptr<SceneStore> CreateSceneStore(MMDApp*);
 void ForgetSceneObject(const void*);
 MmsObjectRef SceneObjectIdentity(const void*);
+// Inspect an existing live identity without creating one or allocating.
+// Failure leaves the caller's output unchanged.
+bool FindSceneObjectIdentity(const void*, MmsObjectRef&) noexcept;
 MmsObjectRef CreateAbsentSceneObject(const void*);
 bool SceneObjectPresent(const void*, MmsId) noexcept;
 void ResetSceneIdentity();

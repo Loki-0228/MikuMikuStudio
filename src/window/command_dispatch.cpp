@@ -15,6 +15,7 @@
 #include "mikumikustudio/system_settings_ui.hpp"
 #include "mikumikustudio/native_media.hpp"
 #include "mikumikustudio/audio_menu.hpp"
+#include "../plugins/native_camera_parent_history.hpp"
 // ===========================================================================
 // VA 0x0047E8A0 - CommandDispatch  (original: sub_47E8A0, 0x10A6A = 68KB)
 // ===========================================================================
@@ -281,6 +282,9 @@ bool DefaultSelChangeChain(MMDApp* app, HWND hwnd, HWND ctrl) {
     // item data stores the bone index into the parent-bone field (0xA0434) and
     // refreshes the timeline row selection.
     if (ctrl == GetDlgItem(hwnd, panel::kBoneRegisterCombo)) {
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::TrySelectBoundCameraParentBone(app, ctrl)) return true;
+#endif
         const std::int32_t parent = app->CameraParentModel();
         if (parent >= 0 && parent < kModelSlotCount) {
             const std::int32_t index =
