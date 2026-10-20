@@ -1,24 +1,24 @@
-# 按钮状态内容与 C++17 SDK
+# 控件状态内容与 C++17 SDK
 
-`mms.ui.refresh.state` 1.0 为本插件已有的宿主按钮注册只读内容提供者。它更新同一 HWND 的显示文案和提示说明，包括禁用原因。状态内容通过原 `mms.ui.refresh` 的 STATE 阶段执行，不创建控件、第二条刷新队列或独立票据。
+`mms.ui.refresh.state` 1.0 为本插件已有的宿主按钮及声明式 INPUT 注册只读状态提供者。它更新原控件的显示文案和提示说明，包括禁用原因。状态内容通过原 `mms.ui.refresh` 的 STATE 阶段执行，不创建控件、第二条刷新队列或独立票据。
 
 C 定义见 [refresh_state.h](include/mms/refresh_state.h)，C++17 封装见 [state_content.hpp](include/mms/cpp/state_content.hpp)。开发环境沿用 [SDK README](README.md#开发环境)。旧刷新表、请求和票据状态结构仍分别为 64、112、40 字节；本服务是独立协商的附加表，不修改旧结构。
 
-当前只支持已挂载的宿主 `MMS_UI_BUTTON`。菜单、surface 内容、属性、INPUT 和完整 STATE 尚未开放。按钮的 enabled、checked、visible 继续由原命令 getState 决定；内容提供者不能改写这些值。
+当前支持已挂载的宿主 `MMS_UI_BUTTON` 和 `MMS_UI_INPUT`。按钮的 enabled、checked、visible 继续由原命令 getState 决定；内容提供者不能改写这些值。INPUT 可额外收紧启用、只读和可见状态，规则见下文。菜单、surface 内容及其他控件的完整 STATE 尚未开放。
 
 ## 服务和原目标
 
-插件清单的 `requiresServices` 声明 `mms.ui.refresh.state` 和 `mms.ui.refresh` 1.0。注册按钮仍使用原 `mms.ui`。在宿主 UI 线程查询服务、取得原按钮的刷新目标，再注册提供者。
+插件清单的 `requiresServices` 声明 `mms.ui.refresh.state` 和 `mms.ui.refresh` 1.0。注册控件仍使用原 `mms.ui`。在宿主 UI 线程查询服务、取得原控件的刷新目标，再注册提供者。
 
 `getCapabilities` 返回当前字段能力和配额。尚无原生内容后端时，supportedFields 为 0。调用前检查服务能力、原目标的 STATE 能力；服务存在不表示窗口已经挂载。
 
-提供者描述包含原 `MmsUiTargetRefV1`、context、prepare 回调和允许覆盖的 fields。每个目标最多一个提供者。只能注册自己的按钮；目标引用须来自 `getTarget`，不能用 HWND、UI generation 或布局修订代替。
+提供者描述包含原 `MmsUiTargetRefV1`、context、prepare 回调和允许覆盖的 fields。每个目标最多一个提供者。只能注册自己的按钮或 INPUT；目标引用须来自 `getTarget`，不能用 HWND、UI generation 或布局修订代替。
 
 | C 函数 | 行为 |
 | --- | --- |
 | `getCapabilities` | 查询字段及当前配额，失败保留输出。 |
-| `registerProvider` | 注册一个提供者并返回句柄；不立即查询或刷新按钮。 |
-| `updateProvider` | 用同一提供者句柄替换回调、context、字段及该按钮的新目标引用；不能迁移到另一个元素。 |
+| `registerProvider` | 注册一个提供者并返回句柄；不立即查询或刷新控件。 |
+| `updateProvider` | 用同一提供者句柄替换回调、context、字段及该控件的新目标引用；不能迁移到另一个元素。 |
 | `unregisterProvider` | 注销提供者；停止期间仍允许清理。 |
 | `writePrepared` | 在 prepare 回调中向短期 builder 写入一次完整候选；函数返回前已复制文本。 |
 
@@ -42,7 +42,7 @@ prepare 必须调用一次 `writePrepared` 并快速返回。没有写入、重�
 
 按钮启用时，原生提示显示 description；禁用时组合 description 和 disabledReason。宿主为禁用按钮保留父区域命中入口。提示使用宿主持有的文本，按钮文案可通过正常 Windows 控件接口读取；本服务没有新增公共显示快照租约。
 
-未注册内容提供者时，原 STATE 也可以显示命令的说明和禁用原因。旧注册信息或旧命令原因超出本服务显示上限时，提示按有效 UTF-8 边界截取；这不改变原命令状态查询接口的结果。提供者显式写入超限文本则返回 ARGUMENT，不截断其候选。
+未注册内容提供者时，原 STATE 也可以显示命令的说明和禁用原因。旧注册信息或旧命令原因超出本服务显示上限时，宿主按有效 UTF-8 边界截取显示文本；INPUT 默认标签也遵守该上限。这不改变原注册信息或命令状态查询接口的结果。提供者显式写入超限文本则返回 ARGUMENT，不截断其候选。
 
 ## C++17 用法
 
@@ -93,15 +93,44 @@ struct ButtonPresentation {
 
 `contents.Write(builder, label, description, disabledReason)` 设置全部三个位。只覆盖部分字段时，构造 `MmsUiStateContentV1`，填写结构头及字段位，再调用 `contents.Write(builder, content)`；未设置字段保持上述回退规则。
 
+## INPUT 状态
+
+INPUT 使用同一提供者、builder、目标和 STATE 票据。原 64 字节 `MmsUiStateContentV1` 可继续更新文本；标签回退为注册元素的 label，空标签再回退到属性 label。说明及禁用原因默认为空。设置只读仍可显示禁用原因，宿主保留真实子 EDIT 和禁用区域的提示命中。
+
+`MmsUiInputStateContentV1` 在旧结构后追加四个 u32，共 80 字节。`content.h` 使用整个新结构的大小，major=1、minor=0。服务表仍为 56 字节，服务仍为 1.0。开发者通过 `getCapabilities().supportedFields` 协商新增字段。宿主不读取旧 64 字节结构的尾部；声明完整新结构时会校验全部尾部，包括未使用字段及 reserved。
+
+| 新字段位 | 尾部字段 | 有效值与宿主基线 |
+| --- | --- | --- |
+| `MMS_UI_STATE_ENABLED` | enabled | 0 或 1；与宿主基线取 AND。 |
+| `MMS_UI_STATE_READ_ONLY` | readOnly | 0 或 1；与宿主基线取 OR。 |
+| `MMS_UI_STATE_VISIBLE` | visible | 0 或 1；与注册可见性取 AND，继续遵守祖先布局。 |
+
+设置任一新位时，必须提供完整 80 字节结构。未设置的标量及两个 reserved 均为 0。新位只适用于 INPUT，不能覆盖按钮命令状态。未设置新位表示回到本次宿主基线；不会保留上次提供者的限制。
+
+只读属性、缺少 stage 回调或普通宿主未提供编辑能力时，readOnly=false 不能使输入框可写。STATE 只读取属性描述及宿主编辑可用性，不调用属性 read；需要值变化时另行请求 DATA。标签更新保留活动草稿、选区、IME 状态和原始编辑基线。禁用、隐藏或设为只读会先撤销该输入框的待提交意图并取消草稿，再处理焦点或原生可用性，避免失焦提交。
+
+便利 SDK 继续包装原服务：
+
+```cpp
+// 在已有 prepare 回调中使用原 builder。
+return contents.WriteInput(builder,
+	"强度", "调整所选对象的强度", "当前操作暂不允许编辑",
+	true, false, true);
+```
+
+后三项是 `std::optional<bool>`，省略表示不覆盖。显式 false 也会设置对应字段位。`WriteInput` 每次查询实际能力，再调用原 `writePrepared`；旧宿主缺少所请求字段时返回 UNSUPPORTED。仅改部分字段时，填写新结构并调用 typed `WriteInput(builder, input)`。此 typed 包装要求完整 80 字节结构；旧 64 字节调用继续使用 `Write`。
+
+INPUT 显隐沿用按钮的保留槽位及 STATE 与 LAYOUT 组合规则。仅 STATE 不会自动收缩布局；需要重新量测标签或隐藏后重新排版时请求 STATE、LAYOUT、REPAINT。后台请求通过同一队列合并，消费前后核对准确的属性注册记录；属性或提供者替换使旧贡献失效。注册快照、工程数据、播放头及共同历史不因状态显示变化而修改。
+
 输出票据必须为空。提交成功只代表入队，插件仍须查询 `RefreshTicket` 的 status、result 和 completedKinds。需要撤回时先 Cancel，再 Release；单独 Release 不取消贡献。
 
 ## 布局与失败
 
-STATE 先准备内容，再应用按钮状态和原生显示。文案成功写入并读回核对后，才进入保留布局的量测数据。纯 LAYOUT 使用已发布的文案与缓存可见性，不回调内容提供者或所有命令。更改插件变量不会自动更新文案，须显式请求 STATE。
+STATE 先准备内容，再应用控件状态和原生显示。文案成功写入并读回核对后，才进入保留布局的量测数据。纯 LAYOUT 使用已发布的文案与缓存可见性，不回调内容提供者或所有命令。更改插件变量不会自动更新文案，须显式请求 STATE。
 
 注册表快照仍描述注册的默认元数据；内容刷新不修改其修订号，也不把显示文案写回默认标签。当前没有覆盖全部控件的通用状态查询服务。
 
-STATE 与 LAYOUT 组合允许按钮隐藏并收缩空位。已收缩的按钮可以保持同一目标引用、尺寸为零及 ready=0；未暂停且支持 LAYOUT 时，组合请求可重新读取状态并恢复。未挂载目标、暂停布局或停止中的目标不能通过该例外恢复。
+STATE 与 LAYOUT 组合允许按钮或 INPUT 隐藏并收缩空位。已收缩的控件可以保持同一目标引用、尺寸为零及 ready=0；未暂停且支持 LAYOUT 时，组合请求可重新读取状态并恢复。用户布局设置隐藏可能卸载控件，使旧提供者和票据失效；这与 STATE 暂时隐藏不同。未挂载目标、暂停布局或停止中的目标不能通过该例外恢复。
 
 组合仍按 DATA、STATE、LAYOUT、REPAINT 执行。布局改变几何后，旧局部矩形以 STALE 结束，completedKinds 保留已成功阶段；不自动扩大损伤范围。需要随布局重绘时优先使用上例的无坐标整目标组合。
 

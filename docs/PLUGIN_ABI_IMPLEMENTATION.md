@@ -10,9 +10,11 @@
 
 [模型轮廓粗细](records/abi-model-outline-history-2026-10-20.md)已接入共同历史绑定宿主，覆盖实际 646 文本、647 滑杆、精确原位还原、窗口关闭、删除恢复及混合插件事务。最终底层和真实控件专项共 6,493 项通过；随后接入[轮廓颜色](records/abi-outline-color-history-2026-10-20.md)的 PMD 资源恢复及实际菜单 286。普通公共 `mms.edit` 仍关闭，其他模型资源编辑继续列为未完成。
 
-[模型英文名称及备注](records/abi-model-names-history-2026-10-21.md)随后接入菜单 259 的私有草稿和一次显式事务，名称专项 9,514 项、保存专项 11,634 项及真实 PMX／PMD 工程保存重开通过。标准短字段保持，完整备注使用独立 MMS 记录；损坏原始备注和非零 Unicode 尾数据按语言保留源模型内容。已保留物理对象的[混合成员交换](records/abi-physics-exchange-2026-10-21.md)也已实现，原成员、导入和新增交换共 4,255 项通过；尚不支持菜单 262 的首次资源替换或私有物理编辑会话。
+[模型英文名称及备注](records/abi-model-names-history-2026-10-21.md)随后接入菜单 259 的私有草稿和一次显式事务，名称专项 9,514 项、保存专项 11,634 项及真实 PMX／PMD 工程保存重开通过。标准短字段保持，完整备注使用独立 MMS 记录；损坏原始备注和非零 Unicode 尾数据按语言保留源模型内容。已保留物理对象的[混合成员交换](records/abi-physics-exchange-2026-10-21.md)及私有 ImportScene 的[首次替换候选](records/abi-physics-first-replacement-2026-10-21.md)均已实现；最新成员专项 6,118 项通过。菜单 262 的模型资源版本及私有编辑会话仍待迁移。
 
 [模型 Toon 文件表](records/abi-model-toon-history-2026-10-21.md)已接入菜单 261 的 Unicode 私有草稿、真实纹理保活与缓存原子发布。11,062 项、真实 D3DX 两种模式重放和满 100 字节 CP932 导入通过。DX9 纹理与效果颜色使用同一解析规则；可选 DX12 源文件启用编译通过，正式产物仍为 Win7 CPU 基线。旧缓存缺失、全局 278 重载及外部渲染器的资源版本仍待迁移，普通 `mms.edit` 继续关闭。
+
+[INPUT STATE](records/abi-input-state-2026-10-21.md)复用原内容提供者、队列及票据，可更新标签、说明和原因，或收紧启用、只读和可见状态。旧 64 字节前缀保持，完整 80 字节扩展结构按能力协商。真实原生控件、提示回滚和保护页边界专项在两套配置各通过 1,559 项，完整 ABI 契约各通过 16,869 项。普通启动仍只读；自动依赖及更多挂载点未开放。历史菜单自动选择超时仍按原记录保留，未声称修复。
 
 [main 备份与日志同步](records/abi-main-backup-settings-sync-2026-10-20.md)已适配至 `acbddb4`，核对 main 的 `1b9acad` 仅为发布文档。空工程定时备份过滤、三语言设置、可移植相对路径和自定义错误日志目录均完成专项验证，设置继续集中保存在 `data/settings.json`。
 
@@ -24,7 +26,7 @@
 
 [口型、眨眼和模型乘加](records/abi-morph-model-menu-history-2026-10-20.md)补齐 225、227、251、252 的受控共同历史。新增两组专项共 3,567 项、相关既有历史六组 18,457 项通过。随机结果只生成一次，键、作者层、缩放和未登记姿态在同一事务中处理。普通编辑服务继续关闭。
 
-[物理模式与音频资源](records/abi-physics-audio-history-2026-10-20.md)加入全局模式和受控音频导入／替换／移除历史，分别通过 1,809 与 364 项。修复旧 WAV 重开及退出的句柄／缓冲泄漏，源文件移走后的真实播放通过。音频位深覆盖仍有限，其他媒体未迁移。属性值解析已连接受控事务暂存，原生 INPUT 尚未实现。
+[物理模式与音频资源](records/abi-physics-audio-history-2026-10-20.md)加入全局模式和受控音频导入／替换／移除历史，分别通过 1,809 与 364 项。修复旧 WAV 重开及退出的句柄／缓冲泄漏，源文件移走后的真实播放通过。音频位深覆盖仍有限，其他媒体未迁移。该批仅连接属性值解析和受控事务暂存；原生 INPUT 已在后续批次接入，范围见上文。
 
 随后[扩展 WAV 位深及共同历史](records/abi-wave-format-history-2026-10-20.md)，补入 PCM24／32、float32／64 及 EXTENSIBLE 的规范化播放，菜单、拖放与 PMM 共用实现。新增专项 1,216 项、八种真实 PMM 保存重开通过；高位深转为 PCM16 播放，不声明无损高位深编辑。原生完整历史已越过[修正后的表情输入断言](records/abi-morph-input-fixture-2026-10-20.md)，仍停在系统拒绝真实鼠标定位的 HUD 检查。
 
@@ -116,12 +118,12 @@ R3 拖动与插件区域问题已由用户确认恢复。按需求归类的当�
 | P2 | 保留槽位按钮显隐与后台 STATE SDK | 本机已验证 | 在有效 PRESERVE_HIDDEN_SLOT 槽位内更新原按钮显隐、焦点及公开几何，不重排或写入布局偏好。RefreshStateCurrent 组合原 C 请求；固定几何与当前几何贡献分组。刷新专项累计 7,764 次断言、真实 DLL、改名宿主、混合历史及调度回归通过，见[验证记录](records/abi-slot-visibility-2026-10-17.md)。SELF DATA 和保留布局的 SELF LAYOUT 已后续接入；完整 STATE 仍待实现。 |
 | P2 | SELF DATA、来源绑定及同对象 SDK | 本机已验证 | 精确来源版本、只读显示候选交换、不可变显示租约和有界保留；共用原队列与票据。回调及任务因果保护，双插件独立任务不误标。模块 666 项、真实 DLL/SDK 897 项通过，见[记录](records/abi-data-refresh-2026-10-19.md)。后续 LAYOUT 接入后，组合顺序为 DATA、STATE、LAYOUT、REPAINT。 |
 | P2 | 保留布局的 SELF LAYOUT 及 SDK | 本机已验证 | 已有按钮和已挂载 surface 使用保留树排版；纯 LAYOUT 使用缓存状态，STATE 与 LAYOUT 组合支持收缩空位及同引用恢复零尺寸按钮。失败暂停几何及目标，旧快照租约保持；局部旧矩形返回 STALE 并保留已完成阶段。SDK 的 RelayoutCurrent、RefreshStateLayout 共用原请求。实际 NativeUi 389 项、双真实 DLL 645 项及两路径真实 MMS 入口通过；此批验证范围见[记录](records/abi-layout-follow-slider-2026-10-19.md)；SUBTREE 已随后接入，自动依赖及插件量测提供者仍未实现。 |
-| P2 | 按钮 STATE 内容与分层 SDK | 本机已验证 | `mms.ui.refresh.state` 1.0 在原 STATE 阶段准备文案、说明和禁用原因；单写 builder、旧显示计费、提供者代次及只读因果共用原刷新规则。V5 Unicode 工具提示、真实禁用命中、失败暂停及直接布局恢复通过；属性、菜单、面板内容及依赖范围仍未实现，见[记录](records/abi-state-model-hud-readout-2026-10-19.md)。 |
+| P2 | 按钮及 INPUT STATE 内容与分层 SDK | 本机已验证 | `mms.ui.refresh.state` 1.0 在原 STATE 阶段准备文案、说明和禁用原因；INPUT 尾部可收紧启用、只读和可见状态，不读取属性值或提交草稿。单写 builder、旧显示计费、提供者代次及只读因果共用原刷新规则。旧按钮 748 项及新增 INPUT STATE 1,559 项在两套配置通过；菜单、面板内容及依赖范围仍未实现，见[INPUT 记录](records/abi-input-state-2026-10-21.md)。 |
 | P3 | 模型与骨骼 HUD 20 类操作 | 受控路径本机已验证 | 独立副本运行原数学，完整手势一次调整，逐字段取消并保留外写，释放采样最终系统光标；普通骨骼、等比／轴向／投影缩放均覆盖。专项 31,357 项及两种真实文件宿主通过。原始兼容 profile 保留旧路径，普通公共编辑服务仍关闭，见[记录](records/abi-state-model-hud-readout-2026-10-19.md)。 |
-| P2 | 可写属性、声明式 INPUT | 受控路径本机已验证 | 原属性、元素、事务与共同历史共用身份，工具栏及 GROUP 支持原生输入、草稿、取消、重绑及同对象 C++ SDK。随后接入[默认属性 DATA](records/abi-property-data-2026-10-20.md)，支持消费时读回、首次读取失败恢复、保留草稿及显式绑定优先；两套配置 INPUT 专项各 5,981 项通过。普通启动暂存仍返回 NOT_READY，输入框只读；自动订阅、INPUT STATE、其他挂载点及真机 IME 尚待完成，见[初始记录](records/abi-declarative-input-2026-10-20.md)。 |
+| P2 | 可写属性、声明式 INPUT | 受控路径本机已验证 | 原属性、元素、事务与共同历史共用身份，工具栏及 GROUP 支持原生输入、草稿、取消、重绑及同对象 C++ SDK。随后接入[默认属性 DATA](records/abi-property-data-2026-10-20.md)和[STATE](records/abi-input-state-2026-10-21.md)，支持消费时读回、草稿保留、显式绑定优先及只读状态限制；最新两套配置 INPUT 专项各 6,022 项通过。普通启动暂存仍返回 NOT_READY，输入框只读；自动订阅、其他挂载点及真机 IME 尚待完成，见[初始记录](records/abi-declarative-input-2026-10-20.md)。 |
 | P2 | 左右侧栏、属性区、时间线、状态栏挂载 | 未实现 | 不枚举空壳挂载点。 |
 | P2 | 工具栏命令溢出菜单 | 本机已验证 | `MmsUiLayoutHintsV1.overflow=MMS_UI_OVERFLOW_MENU` 复用原布局服务。仅工具栏扩展区 BUTTON、GROUP、SEPARATOR 可选择；有效顺序、组继承与 keepTogether 决定折叠单位。保留原 HWND、handle 和刷新实例，空间恢复复用；真实菜单更新原标签、启用和选中状态，移除失效项，调用前重验原身份及所有者。完整配置 21／21、原始兼容配置 18／18、ABI 契约重复 6／6 通过；最终结果见 [UI 框架记录](records/abi-ui-framework-2026-10-19.md)。无独立溢出能力查询，旧宿主可能返回 UNSUPPORTED。 |
-| P2 | 注册 SUBTREE 刷新及 SDK | 本机已验证 | 原 C ABI 支持同插件注册子树、固定来源版本集合、整树阶段顺序与拓扑失效；615 项专项及两种配置整合通过。局部矩形与 DEPENDENTS 未实现，见[记录](records/abi-subtree-refresh-2026-10-20.md)。 |
+| P2 | 注册 SUBTREE 刷新及 SDK | 本机已验证 | 原 C ABI 支持同插件注册子树、固定来源版本集合、整树阶段顺序与拓扑失效；615 项专项及两种配置整合通过。随后接入[局部矩形](records/abi-subtree-local-rect-2026-10-20.md)和 INPUT STATE；DEPENDENTS 未实现，初始范围见[记录](records/abi-subtree-refresh-2026-10-20.md)。 |
 | P2 | DOCK | 未实现 | 返回 UNSUPPORTED。 |
 | P2 | 本体菜单、控件、业务命令全部语义登记 | 未实现 | 新注册表目前覆盖新 ABI 插件。 |
 | P2 | 布局持久化、缺失插件保留 | 本机已验证 | 用户覆盖按稳定 ID 保存到程序旁 `data/settings.json` 的 `pluginUi`，旧布局仅缺失时迁移；分区 CAS、其他设置合并、重启、关闭事件及 EXE 改名通过。 |

@@ -334,10 +334,12 @@ struct UiRegistry::StateBuilder {
     uint32_t fields = 0;
     bool written = false;
     MmsResult failure = MMS_OK;
-    std::shared_ptr<const ButtonStateContent> candidate;
+    std::shared_ptr<ButtonStateContent> candidate;
 };
 namespace {
-constexpr uint32_t kStateFields = MMS_UI_STATE_LABEL | MMS_UI_STATE_DESCRIPTION | MMS_UI_STATE_DISABLED_REASON;
+constexpr uint32_t kStateTextFields = MMS_UI_STATE_LABEL | MMS_UI_STATE_DESCRIPTION | MMS_UI_STATE_DISABLED_REASON;
+constexpr uint32_t kStateInputFields = MMS_UI_STATE_ENABLED | MMS_UI_STATE_READ_ONLY | MMS_UI_STATE_VISIBLE;
+constexpr uint32_t kStateFields = kStateTextFields | kStateInputFields;
 constexpr uint32_t kStateProviders = 128, kStateGlobalProviders = 4096;
 constexpr uint64_t kStateFieldBytes = 4096, kStateOwnerBytes = 1024 * 1024, kStateGlobalBytes = 8 * 1024 * 1024;
 bool StateReserve(std::atomic<uint64_t>& value, uint64_t amount, uint64_t maximum) noexcept {
@@ -752,6 +754,17 @@ bool UiRegistry::IsPropertyInputCurrent(const PropertyInputSnapshot& snapshot) c
     return found->second.handle == snapshot.element && desc.kind == MMS_UI_INPUT &&
         equal(desc.propertyId, snapshot.propertyId) && equal(desc.ownerPlugin, snapshot.property->owner->id);
 }
+bool UiRegistry::IsPropertyInputTargetCurrent(MmsHandle handle, const PropertyRecord* property) const noexcept {
+    if (!property || !property->owner || property->owner->stopping) return false;
+    const auto current = std::find_if(properties.begin(), properties.end(), [&](const auto& item) { return item.second.get() == property; });
+    if (current == properties.end()) return false;
+    const auto element = std::find_if(elements.begin(), elements.end(), [&](const auto& item) { return item.second.handle == handle; });
+    const auto equal = [](MmsString a, const std::string& b) noexcept {
+        return a.bytes == b.size() && (!a.bytes || (a.data && !std::memcmp(a.data, b.data(), b.size())));
+    };
+    return element != elements.end() && element->second.desc.kind == MMS_UI_INPUT &&
+        equal(element->second.desc.propertyId, current->first) && equal(element->second.desc.ownerPlugin, property->owner->id);
+}
 MmsResult UiRegistry::CapturePropertyInput(const std::string& id, PropertyInputSnapshot& out) {
     if (GetCurrentThreadId() != thread_) return MMS_E_THREAD;
     return Boundary([&]() -> MmsResult {
@@ -861,6 +874,9 @@ MmsResult UiRegistry::StateContentProvider(UiClient& client, const MmsUiStateCon
     if (const auto check = Check(client, true)) return check;
     if (!Valid(desc) || !out || !desc->prepare || !desc->fields || (desc->fields & ~kStateFields) || desc->reserved) return MMS_E_ARGUMENT;
     if (const auto check = refresh_.CheckStateContentTarget(client.id, desc->target)) return check;
+    const auto element = std::find_if(elements.begin(), elements.end(), [&](const auto& item) { return item.second.handle == desc->target.element; });
+    if (element == elements.end()) return MMS_E_STALE;
+    if ((desc->fields & kStateInputFields) && element->second.desc.kind != MMS_UI_INPUT) return MMS_E_UNSUPPORTED;
     auto old = stateProviders_.find(replace);
     if (replace && (old == stateProviders_.end() || old->second->owner != &client)) return MMS_E_NOT_FOUND;
     if (replace && old->second->desc.target.element != desc->target.element) return MMS_E_ARGUMENT;
@@ -912,7 +928,20 @@ MmsResult UiRegistry::WriteStateContent(UiClient& client, MmsHandle handle, cons
             (!(content->fields & MMS_UI_STATE_DISABLED_REASON) && content->disabledReason.bytes)) return MMS_E_ARGUMENT;
         auto next = std::make_shared<ButtonStateContent>();
         next->fields = content->fields;
-        next->label = content->fields & MMS_UI_STATE_LABEL ? StateText(content->label) : std::wstring{};
+        next->input = builder.candidate->input;
+        if ((content->fields & kStateInputFields) && (!next->input || content->h.size < sizeof(MmsUiInputStateContentV1))) return MMS_E_ARGUMENT;
+        if (next->input && content->h.size >= sizeof(MmsUiInputStateContentV1)) {
+            const auto& input = *reinterpret_cast<const MmsUiInputStateContentV1*>(content);
+            if (input.reserved || input.enabled > 1 || input.readOnly > 1 || input.visible > 1 ||
+                (!(content->fields & MMS_UI_STATE_ENABLED) && input.enabled) ||
+                (!(content->fields & MMS_UI_STATE_READ_ONLY) && input.readOnly) ||
+                (!(content->fields & MMS_UI_STATE_VISIBLE) && input.visible)) return MMS_E_ARGUMENT;
+            next->enabled = !(content->fields & MMS_UI_STATE_ENABLED) || input.enabled;
+            next->readOnly = (content->fields & MMS_UI_STATE_READ_ONLY) && input.readOnly;
+            next->visible = !(content->fields & MMS_UI_STATE_VISIBLE) || input.visible;
+        }
+        next->label = content->fields & MMS_UI_STATE_LABEL ? StateText(content->label) :
+            next->input ? builder.candidate->label : std::wstring{};
         next->description = content->fields & MMS_UI_STATE_DESCRIPTION ? StateText(content->description) : builder.candidate->description;
         next->disabledReason = content->fields & MMS_UI_STATE_DISABLED_REASON ? StateText(content->disabledReason) : builder.candidate->disabledReason;
         if (const auto check = StateCharge(next, builder.candidate->owner, stateContentGlobal_)) return check;
@@ -921,11 +950,15 @@ MmsResult UiRegistry::WriteStateContent(UiClient& client, MmsHandle handle, cons
 }
 MmsResult UiRegistry::WithElementStateContent(const MmsUiTargetRefV1& target, uint64_t providerRevision,
     const std::function<MmsResult(const MmsCommandStateV1&, const std::shared_ptr<const ButtonStateContent>&)>& apply) {
-    return WithElementState(target.element, [&](const MmsCommandStateV1& state) -> MmsResult {
+    if (GetCurrentThreadId() != thread_) return MMS_E_THREAD;
+    if (callbackDepth_) return MMS_E_BUSY;
+    const auto prepare = [&](const MmsCommandStateV1& state, const std::shared_ptr<PropertyRecord>& property,
+                             bool baselineReadOnly) -> MmsResult {
         auto element = std::find_if(elements.begin(), elements.end(), [&](const auto& e) { return e.second.handle == target.element; });
         if (element == elements.end()) return MMS_E_STALE;
+        const auto elementId = element->first;
         const auto command = commands.find(String(element->second.desc.commandId));
-        if (command == commands.end()) return MMS_E_STALE;
+        if (!property && command == commands.end()) return MMS_E_STALE;
         const auto owner = String(element->second.desc.ownerPlugin);
         const auto entry = stateProviderElements_.find(target.element);
         std::shared_ptr<StateProvider> provider;
@@ -935,7 +968,10 @@ MmsResult UiRegistry::WithElementStateContent(const MmsUiTargetRefV1& target, ui
         if (provider) if (const auto check = refresh_.CheckStateContentTarget(owner, target)) return check;
         auto& budget = stateContentOwners_[owner]; if (!budget) budget = std::make_shared<StateContentBudget>();
         auto baseline = std::make_shared<ButtonStateContent>();
-        baseline->description = LegacyStateText(command->second->desc.info.description);
+        baseline->input = bool(property);
+        if (property) {
+            baseline->label = LegacyStateText(element->second.desc.label.bytes ? element->second.desc.label : property->desc.info.label);
+        } else baseline->description = LegacyStateText(command->second->desc.info.description);
         baseline->disabledReason = LegacyStateText(state.disabledReason);
         if (const auto check = StateCharge(baseline, budget, stateContentGlobal_)) return check;
         StateBuilder builder; builder.owner = provider ? provider->owner : nullptr;
@@ -951,8 +987,40 @@ MmsResult UiRegistry::WithElementStateContent(const MmsUiTargetRefV1& target, ui
             if (!builder.written) return MMS_E_FAILED;
             if (provider->owner->stopping) return MMS_E_NOT_READY;
         }
-        return apply(state, builder.candidate);
-    });
+        auto effective = state;
+        if (property) {
+            const auto current = elements.find(elementId);
+            if (current == elements.end() || current->second.handle != target.element ||
+                current->second.desc.kind != MMS_UI_INPUT || String(current->second.desc.propertyId) != String(property->desc.info.id) ||
+                String(current->second.desc.ownerPlugin) != property->owner->id ||
+                !IsPropertyCurrent(String(property->desc.info.id), property.get(), property->owner)) return MMS_E_STALE;
+            builder.candidate->enabled = state.enabled && builder.candidate->enabled;
+            builder.candidate->visible = state.visible && builder.candidate->visible;
+            builder.candidate->readOnly = baselineReadOnly || builder.candidate->readOnly;
+            effective.enabled = builder.candidate->enabled; effective.visible = builder.candidate->visible;
+        }
+        return apply(effective, builder.candidate);
+    };
+    const auto found = std::find_if(elements.begin(), elements.end(), [&](const auto& item) { return item.second.handle == target.element; });
+    if (found == elements.end()) return MMS_E_STALE;
+    if (found->second.desc.kind != MMS_UI_INPUT)
+        return WithElementState(target.element, [&](const auto& state) { return prepare(state, {}, false); });
+    if (GetCurrentThreadId() != thread_) return MMS_E_THREAD;
+    if (callbackDepth_) return MMS_E_BUSY;
+    const auto property = properties.find(String(found->second.desc.propertyId));
+    if (property == properties.end()) return MMS_E_NOT_FOUND;
+    auto record = property->second;
+    if (!record->owner || record->owner->stopping) return MMS_E_NOT_READY;
+    if (String(found->second.desc.ownerPlugin) != record->owner->id) return MMS_E_ARGUMENT;
+    const bool visible = found->second.visible;
+    Callback guard(callbackDepth_);
+    uint64_t revision = 0;
+    const auto revisionResult = propertyInputRevision_ ? propertyInputRevision_(*record->owner, revision) : MMS_E_NOT_READY;
+    if (revisionResult && revisionResult != MMS_E_NOT_READY) return revisionResult;
+    const bool readOnly = revisionResult || !revision || !propertyInputEdit_ ||
+        (record->desc.info.flags & MMS_PROPERTY_READ_ONLY) || !record->desc.stage;
+    MmsCommandStateV1 state{Header<MmsCommandStateV1>(), 1, 0, visible ? 1u : 0u, 0, {}};
+    return prepare(state, record, readOnly);
 }
 MmsUiRefreshStateContentApiV1 UiRegistry::StateContentApi(UiClient& client) {
     MmsUiRefreshStateContentApiV1 api{}; api.h = Header<MmsUiRefreshStateContentApiV1>(); api.context = &client;

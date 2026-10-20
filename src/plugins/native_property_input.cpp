@@ -12,7 +12,7 @@ struct NativePropertyInput::Impl {
     static constexpr unsigned kFirstField = 0x7201;
     UiRegistry& registry;
     std::string elementId;
-    std::wstring cachedLabel;
+    std::wstring cachedLabel, stateLabel;
     std::function<void(bool)> nativeWork;
     Log log;
     DWORD thread = GetCurrentThreadId();
@@ -26,6 +26,7 @@ struct NativePropertyInput::Impl {
     std::array<bool, 4> invalid{};
     bool haveSnapshot = false, destroying = false, updating = false, oversized = false;
     bool refreshing = false, readingBack = false, submitting = false, visible = true, imeEnter = false, focusQueued = false;
+    bool applyingState = false, haveState = false, stateEnabled = true, stateReadOnly = false, stateVisible = true;
     UINT_PTR focusSerial = 0;
     uint64_t displayGeneration = 1;
 
@@ -77,6 +78,9 @@ struct NativePropertyInput::Impl {
         draft.Cancel(); draftOrigin = {}; invalid.fill(false); imeEnter = false; focusQueued = false; ++focusSerial; ++displayGeneration;
     }
     bool Contains(HWND focus) const noexcept { return focus && (focus == window || IsChild(window, focus)); }
+    const std::wstring& DisplayLabel() const noexcept { return haveState ? stateLabel : cachedLabel; }
+    bool StateEditable() const noexcept { return stateEnabled && !stateReadOnly && stateVisible; }
+    bool EffectiveReadOnly(bool base) const noexcept { return base || !StateEditable(); }
     int Scale(int value) const noexcept { return MulDiv(value, int(dpi ? dpi : 96), 96); }
     void Font(uint32_t value) {
         value = value ? std::min(value, 960u) : 96;
@@ -117,6 +121,7 @@ struct NativePropertyInput::Impl {
         }
     }
     void ReadOnly(bool readOnly) noexcept {
+        readOnly = EffectiveReadOnly(readOnly);
         if (readOnly && draft.Active()) CancelInternal();
         for (HWND field : fields) if (bool(GetWindowLongPtrW(field, GWL_STYLE) & ES_READONLY) != readOnly)
             SendMessageW(field, EM_SETREADONLY, readOnly ? TRUE : FALSE, 0);
@@ -128,7 +133,11 @@ struct NativePropertyInput::Impl {
             const int read = GetWindowTextW(target, current.data(), int(current.size()));
             if (read == count && std::wstring_view(current.data(), size_t(read)) == text) return;
         }
-        if (!SetWindowTextW(target, text.c_str())) throw std::runtime_error("property input caption");
+        std::wstring actual(std::max(size_t(std::max(0, count)), text.size()) + 1, L'\0');
+        if (!SendMessageW(target, WM_SETTEXT, 0, reinterpret_cast<LPARAM>(text.c_str())) || !IsWindow(target) ||
+            GetWindowTextLengthW(target) != int(text.size()) ||
+            GetWindowTextW(target, actual.data(), int(actual.size())) != int(text.size()) ||
+            std::wstring_view(actual.data(), text.size()) != text) throw std::runtime_error("property input caption");
     }
     void Build(size_t count) {
         if (count == fields.size()) return;
@@ -194,7 +203,7 @@ struct NativePropertyInput::Impl {
         for (size_t n = 0; n < fields.size(); ++n) {
             Caption(fields[n], text[n]);
         }
-        Caption(label, cachedLabel);
+        Caption(label, DisplayLabel());
         invalid.fill(false); Layout();
     }
     void CancelInternal() noexcept {
@@ -228,14 +237,13 @@ struct NativePropertyInput::Impl {
         // A registered type determines the native shape before the first
         // successful read. This binding owns no canonical value or revision.
         ClearDraft(); haveSnapshot = false; snapshot = std::move(binding); oversized = false;
-        cachedLabel.swap(caption);
         Flag writing(updating); Build(count);
         for (HWND field : fields) Caption(field, std::wstring{});
-        Caption(label, cachedLabel); ReadOnly(true); Layout();
+        Caption(label, haveState ? stateLabel : caption); cachedLabel.swap(caption); ReadOnly(true); Layout();
         return registry.IsPropertyInputCurrent(snapshot) ? MMS_OK : MMS_E_STALE;
     }
     void Refresh(uint32_t value) {
-        Work guard(*this); if (destroying || refreshing || readingBack || !window) return; Flag refresh(refreshing);
+        Work guard(*this); if (destroying || refreshing || readingBack || applyingState || !window) return; Flag refresh(refreshing);
         const auto result = Boundary([&]() -> MmsResult {
             Font(value);
             if (haveSnapshot && !registry.IsPropertyInputCurrent(snapshot)) {
@@ -252,11 +260,11 @@ struct NativePropertyInput::Impl {
             auto labelText = String(element->second.desc.label);
             if (labelText.empty()) labelText = String(next.property->desc.info.label);
             auto caption = Wide(labelText);
-            cachedLabel.swap(caption);
-            if (draft.Active() && next.property == snapshot.property && next.element == snapshot.element && next.editable) {
+            Caption(label, haveState ? stateLabel : caption); cachedLabel.swap(caption);
+            if (draft.Active() && next.property == snapshot.property && next.element == snapshot.element && next.editable && StateEditable()) {
                 // Advance the latest canonical cache without replacing the
                 // draft's original value/revision or its unfinished raw text.
-                Caption(label, cachedLabel); ReadOnly(false); Layout();
+                Caption(label, DisplayLabel()); ReadOnly(false); Layout();
                 snapshot = std::move(next); ++displayGeneration; return MMS_OK;
             }
             ClearDraft(); snapshot = std::move(next); haveSnapshot = true;
@@ -283,7 +291,7 @@ struct NativePropertyInput::Impl {
         Work work(*this);
         if (destroying || !window || !snapshot.property || !snapshot.element ||
             fields.size() != FieldCount(snapshot)) return MMS_E_STALE;
-        if (readingBack || refreshing || updating || submitting) return MMS_E_BUSY;
+        if (readingBack || refreshing || updating || submitting || applyingState) return MMS_E_BUSY;
         Flag reading(readingBack);
         return Boundary([&]() -> MmsResult {
             const auto generation = displayGeneration;
@@ -337,7 +345,7 @@ struct NativePropertyInput::Impl {
             // The active session owns its raw fields, including invalid or IME
             // text. DATA advances only the latest canonical cache in that case.
             if (active) {
-                if (!next.editable) return MMS_E_STALE;
+                if (!next.editable || !StateEditable()) return MMS_E_STALE;
                 if (const auto result = validate()) return result;
                 const auto revision = next.sceneRevision;
                 snapshot = std::move(next); ++displayGeneration; sourceRevision = revision; return MMS_OK;
@@ -352,7 +360,7 @@ struct NativePropertyInput::Impl {
             if (const auto result = validate()) return result;
             Flag writing(updating);
             size_t attempted = 0;
-            const bool readonly = !next.editable || tooLong;
+            const bool readonly = EffectiveReadOnly(!next.editable || tooLong);
             auto result = Boundary([&]() -> MmsResult {
                 for (auto& field : prepared) {
                     if (!current()) return MMS_E_STALE;
@@ -389,8 +397,150 @@ struct NativePropertyInput::Impl {
             return MMS_OK;
         });
     }
+    MmsResult ApplyStateContent(const std::wstring& caption, bool enabled, bool readOnly, bool shown,
+        const std::function<MmsResult()>& revalidate) {
+        if (GetCurrentThreadId() != thread) return MMS_E_THREAD;
+        Work work(*this);
+        if (destroying || !window || !label || !snapshot.property || !snapshot.element) return MMS_E_STALE;
+        if (applyingState || refreshing || readingBack || updating) return MMS_E_BUSY;
+        Flag applying(applyingState);
+        return Boundary([&]() -> MmsResult {
+            const auto binding = snapshot;
+            const HWND root = window, target = label;
+            const auto windows = fields;
+            auto generation = displayGeneration;
+            auto requested = intent;
+            const auto current = [&]() noexcept {
+                if (destroying || window != root || label != target || fields != windows ||
+                    displayGeneration != generation || intent != requested || !IsWindow(root) || !IsWindow(target) ||
+                    GetParent(target) != root || !registry.IsPropertyInputCurrent(binding)) return false;
+                for (HWND field : windows) if (!IsWindow(field) || GetParent(field) != root) return false;
+                return true;
+            };
+            const auto validate = [&]() -> MmsResult {
+                if (!current()) return MMS_E_STALE;
+                if (revalidate) if (const auto result = revalidate()) return result;
+                return current() ? MMS_OK : MMS_E_STALE;
+            };
+            if (const auto result = validate()) return result;
+            const auto read = [&](HWND field) {
+                const int length = GetWindowTextLengthW(field);
+                if (length < 0 || size_t(length) > UiPropertyDraft::kMaxFieldBytes) throw std::invalid_argument("property state caption extent");
+                std::wstring text(size_t(length) + 1, L'\0');
+                if (GetWindowTextW(field, text.data(), int(text.size())) != length) throw std::runtime_error("property state caption read");
+                text.resize(size_t(length)); return text;
+            };
+            auto beforeLabel = read(target); auto nextLabel = caption;
+            std::wstring labelScratch(std::max(beforeLabel.size(), nextLabel.size()) + 1, L'\0');
+            const bool cancelling = (!enabled || readOnly || !shown) && (draft.Active() || draft.Composing() || intent);
+            UiPropertyDraft savedDraft;
+            PropertyInputSnapshot savedOrigin;
+            std::shared_ptr<std::atomic<bool>> restoredIntent;
+            const auto savedInvalid = invalid; const bool savedImeEnter = imeEnter;
+            if (cancelling) {
+                savedDraft = draft; savedOrigin = draftOrigin;
+                if (draft.Active()) restoredIntent = std::make_shared<std::atomic<bool>>(true);
+            }
+            bool tooLong = oversized;
+            std::vector<std::wstring> canonical;
+            if (cancelling && haveSnapshot) canonical = FormatFields(snapshot, tooLong);
+            if (cancelling && haveSnapshot && canonical.size() != windows.size()) return MMS_E_STALE;
+            const bool readonly = !haveSnapshot || !snapshot.editable || tooLong || readOnly || !enabled || !shown;
+            struct Field {
+                HWND window; bool readonly, text = false;
+                std::wstring before, after, scratch;
+                DWORD begin = 0, end = 0;
+            };
+            std::vector<Field> changes; changes.reserve(windows.size());
+            for (size_t n = 0; n < windows.size(); ++n) {
+                const bool previous = (GetWindowLongPtrW(windows[n], GWL_STYLE) & ES_READONLY) != 0;
+                if (!cancelling && previous == readonly) continue;
+                Field field{windows[n], previous};
+                if (cancelling && haveSnapshot) {
+                    field.text = true; field.before = read(field.window); field.after = std::move(canonical[n]);
+                    field.scratch.resize(std::max(field.before.size(), field.after.size()) + 1);
+                }
+                SendMessageW(field.window, EM_GETSEL, reinterpret_cast<WPARAM>(&field.begin), reinterpret_cast<LPARAM>(&field.end));
+                if (const auto result = validate()) return result;
+                changes.push_back(std::move(field));
+            }
+            if (const auto result = validate()) return result;
+            const auto same = [](HWND field, const std::wstring& text, std::wstring& scratch) noexcept {
+                const int length = GetWindowTextLengthW(field);
+                return length >= 0 && size_t(length) == text.size() &&
+                    GetWindowTextW(field, scratch.data(), int(scratch.size())) == length &&
+                    std::wstring_view(scratch.data(), size_t(length)) == text;
+            };
+            const auto write = [&](HWND field, const std::wstring& text, std::wstring& scratch) -> MmsResult {
+                const auto written = SendMessageW(field, WM_SETTEXT, 0, reinterpret_cast<LPARAM>(text.c_str()));
+                if (const auto result = validate()) return result;
+                if (!written) return MMS_E_FAILED;
+                return same(field, text, scratch) ? validate() : MMS_E_FAILED;
+            };
+            Flag writing(updating);
+            bool labelAttempted = false, cancelled = false;
+            size_t attempted = 0;
+            const auto result = Boundary([&]() -> MmsResult {
+                if (beforeLabel != nextLabel) {
+                    labelAttempted = true;
+                    if (const auto result = write(target, nextLabel, labelScratch)) return result;
+                }
+                // Revoke the old request before any native operation can
+                // transfer focus or end IME composition. A rollback can create
+                // a fresh intent, but can never resurrect that old request.
+                if (cancelling) { ClearDraft(); generation = displayGeneration; requested = intent; cancelled = true; }
+                for (auto& field : changes) {
+                    ++attempted;
+                    if (field.text && field.before != field.after)
+                        if (const auto result = write(field.window, field.after, field.scratch)) return result;
+                    if (field.readonly != readonly) {
+                        const auto written = SendMessageW(field.window, EM_SETREADONLY, readonly ? TRUE : FALSE, 0);
+                        if (const auto result = validate()) return result;
+                        if (!written) return MMS_E_FAILED;
+                        if (bool(GetWindowLongPtrW(field.window, GWL_STYLE) & ES_READONLY) != readonly) return MMS_E_FAILED;
+                    }
+                }
+                for (auto& field : changes) {
+                    if ((field.text && !same(field.window, field.after, field.scratch)) ||
+                        bool(GetWindowLongPtrW(field.window, GWL_STYLE) & ES_READONLY) != readonly) return MMS_E_FAILED;
+                    if (const auto result = validate()) return result;
+                }
+                if (!same(target, nextLabel, labelScratch)) return MMS_E_FAILED;
+                return validate();
+            });
+            if (result) {
+                bool restored = current();
+                if (restored) for (size_t n = attempted; n;) {
+                    auto& field = changes[--n];
+                    if (field.text && !same(field.window, field.before, field.scratch)) {
+                        if (!same(field.window, field.after, field.scratch) ||
+                            !SendMessageW(field.window, WM_SETTEXT, 0, reinterpret_cast<LPARAM>(field.before.c_str()))) { restored = false; break; }
+                    }
+                    if (bool(GetWindowLongPtrW(field.window, GWL_STYLE) & ES_READONLY) != field.readonly &&
+                        !SendMessageW(field.window, EM_SETREADONLY, field.readonly ? TRUE : FALSE, 0)) { restored = false; break; }
+                    SendMessageW(field.window, EM_SETSEL, field.begin, field.end);
+                    if (!current() || (field.text && !same(field.window, field.before, field.scratch)) ||
+                        bool(GetWindowLongPtrW(field.window, GWL_STYLE) & ES_READONLY) != field.readonly) { restored = false; break; }
+                }
+                if (restored && labelAttempted && !same(target, beforeLabel, labelScratch)) {
+                    restored = SendMessageW(target, WM_SETTEXT, 0, reinterpret_cast<LPARAM>(beforeLabel.c_str())) &&
+                        current() && same(target, beforeLabel, labelScratch);
+                }
+                if (!restored) { registry.SuspendGeometry(); registry.Refresh().SuspendTargets(); return MMS_E_FAILED; }
+                if (cancelled) {
+                    draft = std::move(savedDraft); draftOrigin = std::move(savedOrigin); intent = std::move(restoredIntent);
+                    invalid = savedInvalid; imeEnter = savedImeEnter; focusQueued = false; ++focusSerial; ++displayGeneration;
+                }
+                return result;
+            }
+            stateLabel.swap(nextLabel); haveState = true;
+            stateEnabled = enabled; stateReadOnly = readOnly; stateVisible = shown; oversized = tooLong;
+            ++displayGeneration;
+            return MMS_OK;
+        });
+    }
     bool Start() {
-        if (destroying || updating || !haveSnapshot || !snapshot.editable || oversized || !visible || !IsWindowEnabled(window)) return false;
+        if (destroying || updating || applyingState || !StateEditable() || !haveSnapshot || !snapshot.editable || oversized || !visible || !IsWindowEnabled(window)) return false;
         if (draft.Active()) return true;
         const auto result = Boundary([&]() -> MmsResult {
             auto origin = snapshot;
@@ -433,7 +583,7 @@ struct NativePropertyInput::Impl {
     }
     void Submit() {
         Work guard(*this);
-        if (destroying || submitting || updating || !draft.Active() || draft.Composing()) return;
+        if (destroying || submitting || updating || applyingState || !StateEditable() || !draft.Active() || draft.Composing()) return;
         Flag submission(submitting);
         if (!intent || !intent->load(std::memory_order_relaxed)) NewInputIntent();
         const auto request = intent;
@@ -490,8 +640,14 @@ struct NativePropertyInput::Impl {
                 if (wp == self.focusSerial) { self.focusQueued = false; if (!self.Contains(GetFocus())) self.Submit(); }
                 handled = true;
             } else if (message == WM_SIZE) self.Layout();
-            else if (message == WM_SHOWWINDOW) { self.visible = wp != 0; if (!wp) self.CancelInternal(); }
-            else if (message == WM_ENABLE) { if (!wp) self.CancelInternal(); for (HWND field : self.fields) EnableWindow(field, wp != 0); }
+            else if (message == WM_SHOWWINDOW) {
+                self.visible = wp != 0;
+                if (!wp && (self.draft.Active() || self.draft.Composing() || self.intent)) self.CancelInternal();
+            }
+            else if (message == WM_ENABLE) {
+                if (!wp && (self.draft.Active() || self.draft.Composing() || self.intent)) self.CancelInternal();
+                for (HWND field : self.fields) EnableWindow(field, wp != 0);
+            }
             else if (message == WM_SETFONT) {
                 if (self.label) SendMessageW(self.label, WM_SETFONT, wp, lp);
                 for (HWND field : self.fields) SendMessageW(field, WM_SETFONT, wp, lp);
@@ -514,14 +670,19 @@ struct NativePropertyInput::Impl {
         }
         if (message == WM_IME_ENDCOMPOSITION) {
             const auto answer = DefSubclassProc(hwnd, message, wp, lp);
-            self.imeEnter = self.imeEnter || (GetKeyState(VK_RETURN) & 0x8000) != 0;
-            self.draft.SetComposing(false); ++self.displayGeneration; self.QueueFocus(); return answer;
+            if (self.draft.Active() || self.draft.Composing()) {
+                self.imeEnter = self.imeEnter || (GetKeyState(VK_RETURN) & 0x8000) != 0;
+                self.draft.SetComposing(false); ++self.displayGeneration; self.QueueFocus();
+            }
+            return answer;
         }
         bool handled = false;
         const auto result = Boundary([&]() -> MmsResult {
             if (message == WM_IME_STARTCOMPOSITION) {
-                if (self.Start() && self.submitting) self.NewInputIntent();
-                self.draft.SetComposing(true); ++self.displayGeneration;
+                if (self.Start()) {
+                    if (self.submitting) self.NewInputIntent();
+                    self.draft.SetComposing(true); ++self.displayGeneration;
+                }
             }
             if (message == WM_IME_KEYDOWN && wp == VK_RETURN && self.draft.Composing()) self.imeEnter = true;
             if (message == WM_KEYDOWN && wp == VK_RETURN) {
@@ -547,6 +708,16 @@ HWND NativePropertyInput::Window() const { return impl_->window; }
 void NativePropertyInput::Refresh(uint32_t dpi) { impl_->Refresh(dpi); }
 MmsResult NativePropertyInput::Readback(const std::function<MmsResult()>& revalidate, uint64_t& sourceRevision) {
     return impl_->Readback(revalidate, sourceRevision);
+}
+MmsResult NativePropertyInput::ApplyStateContent(const std::wstring& label, bool enabled, bool readOnly,
+    bool visible, const std::function<MmsResult()>& revalidate) {
+    return impl_->ApplyStateContent(label, enabled, readOnly, visible, revalidate);
+}
+const std::wstring& NativePropertyInput::DisplayLabel() const noexcept { return impl_->DisplayLabel(); }
+MmsResult NativePropertyInput::RepairLabel() {
+    Impl::Work work(*impl_);
+    if (impl_->destroying || !impl_->window || !impl_->label) return MMS_E_STALE;
+    return Boundary([&]() -> MmsResult { const auto caption = impl_->DisplayLabel(); Impl::Caption(impl_->label, caption); return MMS_OK; });
 }
 void NativePropertyInput::Cancel() noexcept { Impl::Work work(*impl_); impl_->CancelInternal(); }
 void NativePropertyInput::LayoutVisible(bool visible) noexcept {

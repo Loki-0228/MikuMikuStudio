@@ -169,4 +169,6 @@ set_target_properties(mms_plugin_edit_probe PROPERTIES OUTPUT_NAME manager_edit_
 add_dependencies(plugin_abi_tests mms_plugin_edit_probe)
 add_test(NAME plugin_abi_contract COMMAND plugin_abi_tests "$<TARGET_FILE_DIR:mms_hello_plugin>" "$<TARGET_FILE:mms_lifecycle_plugin>" "$<TARGET_FILE:mms_plugin_edit_probe>")
 set_tests_properties(plugin_abi_contract PROPERTIES TIMEOUT 90)
+add_test(NAME ui_input_state_runtime COMMAND plugin_abi_tests --input-state-only)
+set_tests_properties(ui_input_state_runtime PROPERTIES TIMEOUT 90)
 install(FILES PLUGINS/config.json DESTINATION PLUGINS)

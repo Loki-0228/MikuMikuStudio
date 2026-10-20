@@ -148,7 +148,7 @@ static void ToolInfoPrefixCompatibility(){
 static void NativeContentAndLayout(){
     Fixture x;const auto handle=x.controls[0];const auto revision=x.registry.Revision(),preferences=x.registry.PreferencesRevision();
     MmsUiStateContentCapabilitiesV1 caps{};caps.h=Header<MmsUiStateContentCapabilitiesV1>();
-    CHECK(x.content.getCapabilities(x.content.context,&caps)==MMS_OK&&caps.supportedFields==7&&caps.maxBytesPerField==4096);
+    CHECK(x.content.getCapabilities(x.content.context,&caps)==MMS_OK&&caps.supportedFields==63&&caps.maxBytesPerField==4096);
     auto legacy=x.Submit(x.Request());x.enabled=0;x.queue.Drain();x.Complete(legacy,5);
     CHECK(x.Help()==L"Registered description\nLegacy disabled reason"&&x.Help(true)==x.Help());
     x.HitDisabled("legacy");

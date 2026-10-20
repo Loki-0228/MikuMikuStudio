@@ -1,9 +1,9 @@
 # 插件扩展统一架构方案
 
-本文是 UI、交互、视口、数据格式和编辑工具的设计约定。基础 C++17 UI 包装、声明式 INPUT、SELF／注册 SUBTREE 刷新及按钮 STATE 已实现，其余新增能力按表中状态区分。INPUT 编辑仅在受控共同历史宿主启用，普通启动仍为只读。当前可用接口以 [SDK README](../sdk/mms/README.md) 和[实施记录](PLUGIN_ABI_IMPLEMENTATION.md)为准。
+本文是 UI、交互、视口、数据格式和编辑工具的设计约定。基础 C++17 UI 包装、声明式 INPUT、SELF／注册 SUBTREE 刷新、按钮及 INPUT STATE 已实现，其余新增能力按表中状态区分。INPUT 编辑仅在受控共同历史宿主启用，普通启动仍为只读。当前可用接口以 [SDK README](../sdk/mms/README.md) 和[实施记录](PLUGIN_ABI_IMPLEMENTATION.md)为准。
 现有 `MmsHostV1`、各 V1 函数表和已发布结构保持兼容。本文不开放普通宿主的 `mms.edit`，也不把内部 C++ 计划器视为公共编辑接口。
 
-基础 UI 的类型化及声明式包装见 [C++17 界面注册 SDK](../sdk/mms/cpp-ui.md)。`UiServices`、`RegistrationBundle`、`CommandUi` 及 [INPUT 包装](../sdk/mms/input.md)均组合已有 C 服务。原元素 handle 可直接用于[界面重绘服务](../sdk/mms/refresh.md)；来源自动订阅、INPUT STATE、绘制层和工具封装仍为后续设计。
+基础 UI 的类型化及声明式包装见 [C++17 界面注册 SDK](../sdk/mms/cpp-ui.md)。`UiServices`、`RegistrationBundle`、`CommandUi` 及 [INPUT 包装](../sdk/mms/input.md)均组合已有 C 服务。原元素 handle 可直接用于[界面重绘服务](../sdk/mms/refresh.md)，按钮及 INPUT 共用[状态内容服务](../sdk/mms/state-content.md)。来源自动订阅、绘制层和工具封装仍为后续设计。
 
 [C++17 重绘 SDK](../sdk/mms/cpp-refresh.md)继续包装相同目标和票据，提供整目标、局部矩形、移动所有权与失败重试清理。后台请求与低层 C 使用同一服务 context，不创建独立队列。
 
@@ -45,7 +45,7 @@ auto event = events.subscribe(topic, [=] { updateLayer(layer); });
 | 服务组 | 职责与状态 | 详细方案 |
 | --- | --- | --- |
 | `mms.ui`、`mms.ui.surface`、`mms.ui.layout` | 已有注册、挂载、属性和部分布局能力。工具栏 BUTTON、GROUP、SEPARATOR 可用 `MMS_UI_OVERFLOW_MENU=3` 选择溢出菜单，keepTogether 支持整组折叠。工具栏及 GROUP 的 INPUT 已接入，普通启动只读。DOCK、面板内折叠及更多挂载点仍未开放。 | [UI 呈现](PLUGIN_UI_PRESENTATION.md)、[INPUT SDK](../sdk/mms/input.md)、[溢出 SDK](../sdk/mms/cpp-ui.md#工具栏命令溢出) |
-| `mms.ui.refresh`、`mms.ui.refresh.bind`、`mms.ui.refresh.state` 1.0 | 已有 SELF／注册 SUBTREE 的 REPAINT、按钮 STATE、绑定 DATA、未绑定 INPUT 的属性 DATA，以及保留布局 LAYOUT，复用同一对象、队列和票据。内容提供者准备按钮文案、说明及禁用原因；INPUT STATE、DEPENDENTS 和来源自动订阅仍待实现。 | [刷新接口参考](../sdk/mms/refresh.md)、[状态内容](../sdk/mms/state-content.md) |
+| `mms.ui.refresh`、`mms.ui.refresh.bind`、`mms.ui.refresh.state` 1.0 | 已有 SELF／注册 SUBTREE 的 REPAINT、按钮及 INPUT STATE、绑定 DATA、未绑定 INPUT 的属性 DATA，以及保留布局 LAYOUT，复用同一对象、队列和票据。原内容提供者准备文案、说明及禁用原因，INPUT 可进一步收紧启用、只读和可见状态；DEPENDENTS 和来源自动订阅仍待实现。 | [刷新接口参考](../sdk/mms/refresh.md)、[状态内容](../sdk/mms/state-content.md) |
 | `mms.events`、`mms.tasks` | 提案：主题订阅、受预算约束的工作任务。 | 本文及 UI 呈现 |
 | `mms.ui.geometry`、`style`、`paint`、`presentation`、`input`、`overlay`、`layout.session` | 提案：坐标、样式、辅助绘制、临时外观、输入和可撤回布局。 | UI 呈现 |
 | `mms.scene`、`mms.storage` | 已有绑定快照和插件工程序列化；不提供任意时间求值或模型拓扑写入。 | SDK 参考 |

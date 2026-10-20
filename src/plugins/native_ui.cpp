@@ -33,6 +33,8 @@ struct NativeUi::Impl {
         bool tooltipEnabled = true;
         std::shared_ptr<const ButtonStateContent> content, tooltipContent;
         std::unique_ptr<NativePropertyInput> input;
+        std::vector<HWND> inputTipWindows;
+        bool inputTips = false;
     };
     std::map<std::string, Control> controls;
     std::vector<std::string> toolbarOrder;
@@ -73,14 +75,15 @@ struct NativeUi::Impl {
         if (!overflowButton) { DestroyWindow(tooltip); DestroyWindow(workspace); DestroyWindow(toolbar); throw std::runtime_error("plugin overflow button"); }
         SendMessageW(overflowButton, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), FALSE);
         registry.Refresh().SetLayout([this](MmsHandle element) { return Relayout(element); });
-        registry.Refresh().SetStateContent([this](MmsHandle element, const std::shared_ptr<const ButtonStateContent>& content, bool enabled) {
-            return ApplyStateContent(element, content, enabled);
+        registry.Refresh().SetValidatedStateContent([this](MmsHandle element, const std::shared_ptr<const ButtonStateContent>& content,
+            bool enabled, const std::function<MmsResult()>& revalidate) {
+            return ApplyStateContent(element, content, enabled, revalidate);
         });
         registry.Refresh().SetPropertyData([this](MmsHandle element, const std::function<MmsResult()>& revalidate, uint64_t& revision) {
             return ReadPropertyData(element, revalidate, revision);
         });
         if (!SetWindowSubclass(main, Lifetime, reinterpret_cast<UINT_PTR>(this), reinterpret_cast<DWORD_PTR>(this))) {
-            registry.Refresh().SetLayout({}); registry.Refresh().SetStateContent({}); registry.Refresh().SetPropertyData({});
+            registry.Refresh().SetLayout({}); registry.Refresh().SetValidatedStateContent({}); registry.Refresh().SetPropertyData({});
             DestroyWindow(tooltip); DestroyWindow(workspace); DestroyWindow(toolbar);
             throw std::runtime_error("plugin popup lifetime hook");
         }
@@ -88,7 +91,7 @@ struct NativeUi::Impl {
     ~Impl() {
         if (IsWindow(main)) RemoveWindowSubclass(main, Lifetime, reinterpret_cast<UINT_PTR>(this));
         registry.Refresh().SetLayout({});
-        registry.Refresh().SetStateContent({});
+        registry.Refresh().SetValidatedStateContent({});
         registry.Refresh().SetPropertyData({});
         registry.SuspendGeometry();
         registry.Refresh().SuspendTargets();
@@ -129,16 +132,20 @@ struct NativeUi::Impl {
                 auto tool = Tool(control, rectangle);
                 SendMessageW(tooltip, TTM_DELTOOLW, 0, reinterpret_cast<LPARAM>(&tool));
             }
+            for (HWND child : control.inputTipWindows) if (child != control.window) {
+                auto tool = Tool(control, false, child);
+                SendMessageW(tooltip, TTM_DELTOOLW, 0, reinterpret_cast<LPARAM>(&tool));
+            }
         }
         if (control.input) { control.input.reset(); control.window = nullptr; }
         if (control.window) DestroyWindow(control.window);
         control = {};
     }
-    TOOLINFOW Tool(const Control& control, bool rectangle) const noexcept {
+    TOOLINFOW Tool(const Control& control, bool rectangle, HWND child = nullptr) const noexcept {
         // v5 (unmanifested hosts) rejects the modern lpReserved tail. We only
         // use the common prefix through lpszText; keep Unicode in both hosts.
         TOOLINFOW tool{}; tool.cbSize = TTTOOLINFOW_V1_SIZE; tool.hwnd = toolbar;
-        tool.uId = rectangle ? UINT_PTR(control.element) : reinterpret_cast<UINT_PTR>(control.window);
+        tool.uId = rectangle ? UINT_PTR(control.element) : reinterpret_cast<UINT_PTR>(child ? child : control.window);
         tool.uFlags = TTF_SUBCLASS | (rectangle ? 0 : TTF_IDISHWND);
         return tool;
     }
@@ -149,12 +156,50 @@ struct NativeUi::Impl {
         }
         return true;
     }
-    bool TipsRect(const Control& control) {
+    MmsResult SyncInputTips(Control& control, const std::function<MmsResult()>& revalidate = {}) {
+        if (!control.input || !IsWindow(control.window) || !IsWindow(tooltip)) return MMS_E_STALE;
+        const HWND root = control.window;
+        const auto check = [&]() -> MmsResult {
+            if (!IsWindow(root) || control.window != root || !control.input) return MMS_E_STALE;
+            return revalidate ? revalidate() : MMS_OK;
+        };
+        std::vector<HWND> next{root}, added;
+        for (HWND child = GetWindow(root, GW_CHILD); child; child = GetWindow(child, GW_HWNDNEXT)) next.push_back(child);
+        added.reserve(next.size());
+        bool rectangleAdded = false;
+        const auto result = Boundary([&]() -> MmsResult {
+            for (HWND child : next) if (std::find(control.inputTipWindows.begin(), control.inputTipWindows.end(), child) == control.inputTipWindows.end()) {
+                auto tool = Tool(control, false, child); tool.lpszText = LPSTR_TEXTCALLBACKW;
+                if (!SendMessageW(tooltip, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&tool))) return MMS_E_FAILED;
+                added.push_back(child);
+                if (const auto result = check()) return result;
+            }
+            if (!control.inputTips) {
+                auto tool = Tool(control, true); tool.lpszText = LPSTR_TEXTCALLBACKW;
+                if (!SendMessageW(tooltip, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&tool))) return MMS_E_FAILED;
+                rectangleAdded = true;
+                if (const auto result = check()) return result;
+            }
+            return MMS_OK;
+        });
+        if (result) {
+            for (HWND child : added) { auto tool = Tool(control, false, child); SendMessageW(tooltip, TTM_DELTOOLW, 0, reinterpret_cast<LPARAM>(&tool)); }
+            if (rectangleAdded) { auto tool = Tool(control, true); SendMessageW(tooltip, TTM_DELTOOLW, 0, reinterpret_cast<LPARAM>(&tool)); }
+            return result;
+        }
+        control.inputTipWindows.swap(next); control.inputTips = true;
+        for (HWND child : next) if (std::find(control.inputTipWindows.begin(), control.inputTipWindows.end(), child) == control.inputTipWindows.end()) {
+            auto tool = Tool(control, false, child); SendMessageW(tooltip, TTM_DELTOOLW, 0, reinterpret_cast<LPARAM>(&tool));
+            if (const auto result = check()) return result;
+        }
+        return check();
+    }
+    bool TipsRect(const Control& control, int logicalVisible = -1) {
         auto tool = Tool(control, true);
         if (!GetWindowRect(control.window, &tool.rect)) return false;
         SetLastError(ERROR_SUCCESS);
         if (!MapWindowPoints(nullptr, toolbar, reinterpret_cast<POINT*>(&tool.rect), 2) && GetLastError()) return false;
-        if (!(GetWindowLongPtrW(control.window, GWL_STYLE) & WS_VISIBLE)) SetRectEmpty(&tool.rect);
+        if (logicalVisible == 0 || (logicalVisible < 0 && !(GetWindowLongPtrW(control.window, GWL_STYLE) & WS_VISIBLE))) SetRectEmpty(&tool.rect);
         auto previous = Tool(control, true); wchar_t existing[8194]{}; previous.lpszText = existing;
         if (!SendMessageW(tooltip, TTM_GETTOOLINFOW, 0, reinterpret_cast<LPARAM>(&previous))) return false;
         if (!EqualRect(&previous.rect, &tool.rect)) SendMessageW(tooltip, TTM_NEWTOOLRECTW, 0, reinterpret_cast<LPARAM>(&tool));
@@ -168,6 +213,7 @@ struct NativeUi::Impl {
         text.resize(size_t(std::max(0, copied))); return text;
     }
     std::wstring EffectiveCaption(const ElementRecord& element, const Control* control) const {
+        if (control && control->input) return control->input->DisplayLabel();
         return control && control->content && (control->content->fields & MMS_UI_STATE_LABEL)
             ? control->content->label : Wide(String(element.desc.label));
     }
@@ -197,13 +243,124 @@ struct NativeUi::Impl {
         if (element == registry.elements.end() || element->second.handle != handle || element->second.desc.kind != MMS_UI_INPUT) return MMS_E_STALE;
         return found->second.input->Readback(revalidate, revision);
     }
-    MmsResult ApplyStateContent(MmsHandle handle, const std::shared_ptr<const ButtonStateContent>& content, bool enabled) {
+    MmsResult ApplyStateContent(MmsHandle handle, const std::shared_ptr<const ButtonStateContent>& content, bool enabled,
+        const std::function<MmsResult()>& revalidate) {
         const NativeWork work(*this);
         auto found = std::find_if(controls.begin(), controls.end(), [&](const auto& item) { return item.second.element == handle; });
         if (found == controls.end() || !IsWindow(found->second.window) || !content || !IsWindow(tooltip)) return MMS_E_STALE;
         auto element = registry.elements.find(found->first);
-        if (element == registry.elements.end() || element->second.handle != handle || element->second.desc.kind != MMS_UI_BUTTON) return MMS_E_STALE;
+        if (element == registry.elements.end() || element->second.handle != handle ||
+            (element->second.desc.kind != MMS_UI_BUTTON && element->second.desc.kind != MMS_UI_INPUT)) return MMS_E_STALE;
         auto& control = found->second; const HWND window = control.window;
+        const auto instance = control.instance;
+        const auto id = found->first;
+        const auto check = [&]() -> MmsResult {
+            const auto live = controls.find(id);
+            const auto registered = registry.elements.find(id);
+            if (live == controls.end() || live->second.element != handle || live->second.instance != instance ||
+                live->second.window != window || !IsWindow(window) || registered == registry.elements.end() ||
+                registered->second.handle != handle) return MMS_E_STALE;
+            return revalidate ? revalidate() : MMS_OK;
+        };
+        if (const auto result = check()) return result;
+        if (control.input) {
+            if (element->second.desc.kind != MMS_UI_INPUT || !content->input) return MMS_E_ARGUMENT;
+            if (const auto result = SyncInputTips(control, check)) return result;
+            // Callback tools read only the published host snapshot. Hide an
+            // already displayed tip before releasing its former text owner.
+            SendMessageW(tooltip, TTM_POP, 0, 0);
+            if (const auto result = check()) return result;
+            // The rectangle is a candidate too: a rejected STATIC caption must
+            // not hide the old disabled tip or expose a hidden target's tip.
+            const HWND tips = tooltip;
+            const auto* input = control.input.get();
+            const auto previousContent = control.content, previousTips = control.tooltipContent;
+            const bool previousVisible = control.stateVisible;
+            const auto identity = Tool(control, true);
+            const auto sameToolOwner = [&]() noexcept {
+                const auto live = controls.find(id);
+                return tooltip == tips && IsWindow(tips) && live != controls.end() &&
+                    live->second.element == handle && live->second.instance == instance &&
+                    live->second.window == window && IsWindow(window) && live->second.input.get() == input &&
+                    live->second.content == previousContent && live->second.tooltipContent == previousTips &&
+                    live->second.stateVisible == previousVisible;
+            };
+            const auto readRectangle = [&](RECT& rectangle) {
+                if (!sameToolOwner()) return false;
+                auto tool = identity; wchar_t text[8194]{}; tool.lpszText = text;
+                if (!SendMessageW(tips, TTM_GETTOOLINFOW, 0, reinterpret_cast<LPARAM>(&tool)) || !sameToolOwner()) return false;
+                if (tool.hwnd != identity.hwnd || tool.uId != identity.uId || (tool.uFlags & TTF_IDISHWND)) return false;
+                rectangle = tool.rect; return true;
+            };
+            RECT before{}, candidate{};
+            if (!readRectangle(before)) return MMS_E_FAILED;
+            if (const auto result = check()) return result;
+            if (!GetWindowRect(window, &candidate)) return MMS_E_FAILED;
+            SetLastError(ERROR_SUCCESS);
+            if (!MapWindowPoints(nullptr, toolbar, reinterpret_cast<POINT*>(&candidate), 2) && GetLastError()) return MMS_E_FAILED;
+            if (!(content->visible && control.layoutVisible && visible && height > 0)) SetRectEmpty(&candidate);
+            if (const auto result = check()) return result;
+            bool attempted = false;
+            const auto result = Boundary([&]() -> MmsResult {
+                if (!EqualRect(&before, &candidate)) {
+                    auto tool = identity; tool.rect = candidate; attempted = true;
+                    SendMessageW(tips, TTM_NEWTOOLRECTW, 0, reinterpret_cast<LPARAM>(&tool));
+                }
+                if (const auto current = check()) return current;
+                RECT actual{};
+                if (!readRectangle(actual)) return MMS_E_FAILED;
+                if (const auto current = check()) return current;
+                if (!EqualRect(&actual, &candidate)) return MMS_E_FAILED;
+                return control.input->ApplyStateContent(content->label, content->enabled,
+                    content->readOnly, content->visible, check);
+            });
+            if (result) {
+                if (attempted && sameToolOwner()) {
+                    RECT actual{};
+                    if (readRectangle(actual) && (EqualRect(&actual, &candidate) || EqualRect(&actual, &before))) {
+                        // An expired provider cannot restore a formerly visible
+                        // region. Clear only this still-owned candidate; never
+                        // touch a replacement control or a newer published tip.
+                        const auto current = check();
+                        if (!sameToolOwner()) return result;
+                        const RECT restore = current ? RECT{} : before;
+                        if (!EqualRect(&actual, &restore)) {
+                            auto tool = identity; tool.rect = restore;
+                            SendMessageW(tips, TTM_NEWTOOLRECTW, 0, reinterpret_cast<LPARAM>(&tool));
+                        }
+                        if (!sameToolOwner()) return result;
+                        if (!readRectangle(actual) || !EqualRect(&actual, &restore)) {
+                            registry.SuspendGeometry(); registry.Refresh().SuspendTargets(); return MMS_E_FAILED;
+                        }
+                        // TOOL queries and writes may themselves reenter. If
+                        // the source expired during restoration, remove the
+                        // just-restored region while its exact owner still
+                        // matches, rather than leaving a stale visible tool.
+                        const auto after = check();
+                        if (!sameToolOwner()) return result;
+                        if (after && !IsRectEmpty(&actual)) {
+                            auto tool = identity; SetRectEmpty(&tool.rect);
+                            SendMessageW(tips, TTM_NEWTOOLRECTW, 0, reinterpret_cast<LPARAM>(&tool));
+                            if (!sameToolOwner()) return result;
+                            if (!readRectangle(actual) || !IsRectEmpty(&actual)) {
+                                registry.SuspendGeometry(); registry.Refresh().SuspendTargets(); return MMS_E_FAILED;
+                            }
+                        }
+                        if (current || after) { registry.SuspendGeometry(); registry.Refresh().SuspendTargets(); }
+                    } else {
+                        if (!sameToolOwner()) return result;
+                        registry.SuspendGeometry(); registry.Refresh().SuspendTargets(); return MMS_E_FAILED;
+                    }
+                }
+                return result;
+            }
+            // The view verified its real STATIC before either cache changes.
+            // No native call or allocation follows this publication.
+            control.content = content; control.tooltipContent = content;
+            control.tooltipEnabled = content->enabled && !content->readOnly;
+            control.stateVisible = content->visible;
+            return MMS_OK;
+        }
         // Tool registration and allocations precede caption mutation. Both the
         // child tool and its parent rectangle are needed for disabled controls.
         for (bool rectangle : {false, true}) {
@@ -213,6 +370,7 @@ struct NativeUi::Impl {
         }
         auto caption = content->fields & MMS_UI_STATE_LABEL ? content->label : Wide(String(element->second.desc.label));
         if (const auto result = WriteCaption(window, caption)) return result;
+        if (const auto result = check()) return result;
         if (!control.content || control.content->fields != content->fields || control.content->label != content->label ||
             control.content->description != content->description || control.content->disabledReason != content->disabledReason)
             control.content = content;
@@ -227,10 +385,12 @@ struct NativeUi::Impl {
             for (bool rectangle : {false, true}) {
                 auto tool = Tool(control, rectangle); tool.lpszText = const_cast<wchar_t*>(text.c_str());
                 SendMessageW(tooltip, TTM_UPDATETIPTEXTW, 0, reinterpret_cast<LPARAM>(&tool));
+                if (const auto result = check()) return result;
             }
         }
         if (!IsWindow(window)) return MMS_E_STALE;
         if (!TipsRect(control)) { registry.SuspendGeometry(); registry.Refresh().SuspendTargets(); return MMS_E_FAILED; }
+        if (const auto result = check()) return result;
         return UpdateOverflowItem(found->first);
     }
     static LRESULT CALLBACK Window(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -238,6 +398,20 @@ struct NativeUi::Impl {
         if (msg == WM_NCCREATE) { self = static_cast<Impl*>(reinterpret_cast<CREATESTRUCTW*>(lp)->lpCreateParams); SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self)); }
         if (!self) return DefWindowProcW(hwnd, msg, wp, lp);
         const NativeWork work(*self);
+        if (msg == WM_NOTIFY && lp && reinterpret_cast<NMHDR*>(lp)->hwndFrom == self->tooltip &&
+            reinterpret_cast<NMHDR*>(lp)->code == TTN_GETDISPINFOW) {
+            auto& info = *reinterpret_cast<NMTTDISPINFOW*>(lp);
+            info.lpszText = const_cast<wchar_t*>(L"");
+            for (const auto& [id, control] : self->controls) if (control.input &&
+                ((info.uFlags & TTF_IDISHWND) ?
+                    std::find(control.inputTipWindows.begin(), control.inputTipWindows.end(), reinterpret_cast<HWND>(info.hdr.idFrom)) != control.inputTipWindows.end() :
+                    info.hdr.idFrom == UINT_PTR(control.element))) {
+                if (control.tooltipContent) info.lpszText = const_cast<wchar_t*>((control.tooltipEnabled ?
+                    control.tooltipContent->description : control.tooltipContent->help).c_str());
+                break;
+            }
+            return 0;
+        }
         // Overflow uses TPM_RETURNCMD: only OpenOverflow's validated return
         // dispatches. Never treat menu notification as a second button click.
         if (hwnd == self->toolbar && msg == WM_COMMAND && !lp) return 0;
@@ -322,6 +496,13 @@ struct NativeUi::Impl {
     bool State(const ElementRecord& e, MmsCommandStateV1& out) {
         out = {}; out.h = Header<MmsCommandStateV1>();
         if (!e.visible) return false;
+        if (e.desc.kind == MMS_UI_INPUT) {
+            const auto control = controls.find(String(e.desc.id));
+            const auto content = control != controls.end() ? control->second.content : nullptr;
+            out.enabled = !content || !content->input || content->enabled;
+            out.visible = registry.Refresh().CachedStateVisible(e.handle, !content || !content->input || content->visible);
+            return out.visible != 0;
+        }
         if (!e.desc.commandId.bytes) { out.enabled = out.visible = 1; return true; }
         auto api = registry.Api(client); MmsHandle lease = 0; auto result = api.getCommandState(api.context, e.desc.commandId, {}, &out, &lease);
         api.releaseValue(api.context, lease); out.disabledReason = {};
@@ -644,7 +825,9 @@ struct NativeUi::Impl {
                     control.window = control.input->Window();
                 }
                 control.input->Refresh(dpi);
+                if (const auto result = SyncInputTips(control)) { registry.SuspendGeometry(); registry.Refresh().SuspendTargets(); throw std::runtime_error("cannot create plugin input tips"); }
                 control.input->LayoutVisible(show && visible && !overflowIds.count(id));
+                if (bool(IsWindowEnabled(control.window)) != bool(state.enabled)) EnableWindow(control.window, state.enabled);
                 ShowWindow(control.window, show && !overflowIds.count(id) ? SW_SHOWNA : SW_HIDE);
                 control.stateVisible = state.visible != 0;
                 continue;
@@ -820,6 +1003,7 @@ struct NativeUi::Impl {
                 if (element.desc.kind == MMS_UI_INPUT && control->second.input) {
                     const auto property = registry.properties.find(String(element.desc.propertyId));
                     if (property != registry.properties.end()) {
+                        out.back().stateRefresh = true;
                         out.back().propertyDataRefresh = true; out.back().propertyRecord = property->second;
                     }
                 }
@@ -929,7 +1113,7 @@ struct NativeUi::Impl {
             const WindowDpiScope toolbarDpi(toolbar);
             applied = native_ui::ApplyWindows(moves) == native_ui::ApplyResult::Applied && applied;
         }
-        for (const auto& [id, control] : controls) if (registry.elements.at(id).desc.kind == MMS_UI_BUTTON)
+        for (const auto& [id, control] : controls) if (registry.elements.at(id).desc.kind == MMS_UI_BUTTON || control.input)
             applied = TipsRect(control) && applied;
         applied = paint.Visible(toolbar, height > 0) && applied;
         workspaceHeight = panelWidth = panelHeight = 0;
@@ -964,8 +1148,8 @@ struct NativeUi::Impl {
         if (applied) for (const auto& [id, control] : controls) {
             const auto element = registry.elements.find(id);
             if (element == registry.elements.end() || element->second.handle != control.element) { layoutResult = MMS_E_STALE; applied = false; break; }
-            if (element->second.desc.kind != MMS_UI_BUTTON) continue;
-            const auto result = WriteCaption(control.window, EffectiveCaption(element->second, &control));
+            if (element->second.desc.kind != MMS_UI_BUTTON && !control.input) continue;
+            const auto result = control.input ? control.input->RepairLabel() : WriteCaption(control.window, EffectiveCaption(element->second, &control));
             if (result) { layoutResult = result; applied = false; break; }
         }
         if (applied) {

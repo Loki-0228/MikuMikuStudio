@@ -3,6 +3,9 @@
 #include <mms/refresh_binding.h>
 #include <mms/refresh_state.h>
 _Static_assert(sizeof(MmsUiStateContentV1) == 64, "STATE content");
+_Static_assert(sizeof(MmsUiInputStateContentV1) == 80, "INPUT STATE content");
+_Static_assert(offsetof(MmsUiInputStateContentV1, content) == 0, "INPUT STATE prefix");
+_Static_assert(offsetof(MmsUiInputStateContentV1, enabled) == 64, "INPUT STATE tail");
 _Static_assert(sizeof(MmsUiStateContentDescV1) == 64, "STATE provider descriptor");
 _Static_assert(sizeof(MmsUiStateContentCapabilitiesV1) == 40, "STATE content capabilities");
 _Static_assert(sizeof(MmsUiRefreshStateContentApiV1) == 56, "STATE content API");

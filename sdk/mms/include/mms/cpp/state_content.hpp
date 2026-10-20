@@ -1,7 +1,8 @@
 #pragma once
-// Button content providers feed the original STATE phase. No private queue.
+// Button and property INPUT providers feed the original STATE phase.
 #include <mms/cpp/refresh.hpp>
 #include <mms/refresh_state.h>
+#include <optional>
 
 namespace mms::sdk {
 class StateContentServices;
@@ -91,6 +92,26 @@ public:
         if (const auto check = CheckThread()) return check;
         return detail::Call([&] { return api_.writePrepared(api_.context, builder, &content); });
     }
+    // This typed overload requires the complete 80-byte structure, including
+    // text-only writes. The original Write keeps accepting the 64-byte prefix.
+    // Scalar bits are INPUT-only; target/owner checks stay in the host builder.
+    MmsResult WriteInput(MmsHandle builder, const MmsUiInputStateContentV1& input) const noexcept {
+        if (const auto check = CheckThread()) return check;
+        const auto& content = input.content;
+        if (content.h.size < sizeof(input)) return MMS_E_ARGUMENT;
+        if (content.h.major != 1 || content.h.minor != 0) return MMS_E_VERSION;
+        constexpr uint32_t fields = MMS_UI_STATE_LABEL | MMS_UI_STATE_DESCRIPTION | MMS_UI_STATE_DISABLED_REASON |
+            MMS_UI_STATE_ENABLED | MMS_UI_STATE_READ_ONLY | MMS_UI_STATE_VISIBLE;
+        if ((content.fields & ~fields) || content.reserved || input.reserved ||
+            input.enabled > 1 || input.readOnly > 1 || input.visible > 1 ||
+            (!(content.fields & MMS_UI_STATE_ENABLED) && input.enabled) ||
+            (!(content.fields & MMS_UI_STATE_READ_ONLY) && input.readOnly) ||
+            (!(content.fields & MMS_UI_STATE_VISIBLE) && input.visible)) return MMS_E_ARGUMENT;
+        MmsUiStateContentCapabilitiesV1 capabilities{};
+        if (const auto result = Capabilities(capabilities)) return result;
+        if (content.fields & ~capabilities.supportedFields) return MMS_E_UNSUPPORTED;
+        return detail::Call([&] { return api_.writePrepared(api_.context, builder, &content); });
+    }
     // The host copies before return. Stack strings and temporary UTF-8 buffers
     // are valid here; the builder can only be used inside its prepare callback.
     MmsResult Write(MmsHandle builder, std::string_view label, std::string_view description, std::string_view disabledReason) const noexcept {
@@ -100,6 +121,18 @@ public:
         content.description = {description.data(), uint64_t(description.size())};
         content.disabledReason = {disabledReason.data(), uint64_t(disabledReason.size())};
         return Write(builder, content);
+    }
+    MmsResult WriteInput(MmsHandle builder, std::string_view label, std::string_view description, std::string_view disabledReason,
+        std::optional<bool> enabled = {}, std::optional<bool> readOnly = {}, std::optional<bool> visible = {}) const noexcept {
+        MmsUiInputStateContentV1 input{}; input.content.h = Header<MmsUiInputStateContentV1>();
+        input.content.fields = MMS_UI_STATE_LABEL | MMS_UI_STATE_DESCRIPTION | MMS_UI_STATE_DISABLED_REASON;
+        input.content.label = {label.data(), uint64_t(label.size())};
+        input.content.description = {description.data(), uint64_t(description.size())};
+        input.content.disabledReason = {disabledReason.data(), uint64_t(disabledReason.size())};
+        if (enabled.has_value()) { input.content.fields |= MMS_UI_STATE_ENABLED; input.enabled = *enabled ? 1u : 0u; }
+        if (readOnly.has_value()) { input.content.fields |= MMS_UI_STATE_READ_ONLY; input.readOnly = *readOnly ? 1u : 0u; }
+        if (visible.has_value()) { input.content.fields |= MMS_UI_STATE_VISIBLE; input.visible = *visible ? 1u : 0u; }
+        return WriteInput(builder, input);
     }
 };
 }

@@ -1,6 +1,6 @@
 # 插件界面样式、绘制与动画接口方案
 
-本文固定界面需求和建议接口。基础 C++17 包装、声明式 INPUT、工具栏命令溢出、SELF／注册 SUBTREE 刷新、按钮 STATE、绑定 DATA 与显示租约、INPUT 默认属性 DATA，以及保留布局 LAYOUT 已接入，实际接口以 SDK 为准。INPUT 编辑仅在受控共同历史宿主启用，普通启动只读。按钮状态内容服务提供文案、说明和禁用原因；INPUT、通用菜单及面板内容的完整 STATE、自动依赖、绘制层和动画函数仍为提案。
+本文固定界面需求和建议接口。基础 C++17 包装、声明式 INPUT、工具栏命令溢出、SELF／注册 SUBTREE 刷新、按钮及 INPUT STATE、绑定 DATA 与显示租约、INPUT 默认属性 DATA，以及保留布局 LAYOUT 已接入，实际接口以 SDK 为准。INPUT 编辑仅在受控共同历史宿主启用，普通启动只读。原状态内容服务提供文案、说明和禁用原因，并允许收紧 INPUT 的启用、只读和可见状态；通用菜单及面板内容的完整 STATE、自动依赖、绘制层和动画函数仍为提案。
 本方案不改变普通宿主的 `mms.edit` 开放状态，也不把界面动画记入场景撤销历史。
 跨 UI、视口和数据工具的分层封装以[统一扩展架构](PLUGIN_EXTENSION_ARCHITECTURE.md)为准；本页重点规定 UI 对象、刷新和交互。
 
@@ -25,11 +25,11 @@ Win7 SP1 x64、CPU 绘制和 AMD 兼容是基础约束；不以 CUDA、NVAPI、A
 
 基础类型化和声明式注册已有 [C++17 SDK](../sdk/mms/cpp-ui.md)：`CommandUi` 用 `RegistrationBundle` 组合现有命令、菜单、按钮、分组和默认布局。原始 C 表、handle、权限及生命周期规则继续生效。失败回收受阻时保留引用，插件在 `stop` 中显式关闭并重试。数据刷新另由同层的 `data_refresh.hpp` 包装原来源、绑定和显示租约。
 
-工具栏 BUTTON、GROUP 和 SEPARATOR 可在原布局提示中选择 `MMS_UI_OVERFLOW_MENU=3`。空间不足时，宿主将后序命令呈现为「更多」菜单；空间恢复后使用原按钮 HWND 和 handle。分组可继承该策略，`MMS_HINT_KEEP_TOGETHER` 保持整组折叠。菜单使用原命令的状态和调用入口，STATE 更新已有项，注销或失效时移除对应项。该范围仅限 `mms.toolbar.main.extensions` 及其 GROUP，完整语义见 [SDK 工具栏命令溢出](../sdk/mms/cpp-ui.md#工具栏命令溢出)。DOCK、INPUT、侧栏、属性区、时间线和状态栏挂载仍未开放。状态：**本机已验证**；完整配置 21／21、原始兼容配置 18／18、ABI 契约重复 6／6。实现与验收证据见 [UI 框架记录](records/abi-ui-framework-2026-10-19.md)。
+工具栏 BUTTON、GROUP 和 SEPARATOR 可在原布局提示中选择 `MMS_UI_OVERFLOW_MENU=3`。空间不足时，宿主将后序命令呈现为「更多」菜单；空间恢复后使用原按钮 HWND 和 handle。分组可继承该策略，`MMS_HINT_KEEP_TOGETHER` 保持整组折叠。菜单使用原命令的状态和调用入口，STATE 更新已有项，注销或失效时移除对应项。该范围仅限 `mms.toolbar.main.extensions` 及其 GROUP，完整语义见 [SDK 工具栏命令溢出](../sdk/mms/cpp-ui.md#工具栏命令溢出)。INPUT 已支持工具栏及 GROUP 挂载，但不支持溢出菜单；DOCK、侧栏、属性区、时间线和状态栏挂载仍未开放。状态：**本机已验证**；完整配置 21／21、原始兼容配置 18／18、ABI 契约重复 6／6。实现与验收证据见 [UI 框架记录](records/abi-ui-framework-2026-10-19.md)。
 
 [重绘 SDK](../sdk/mms/cpp-refresh.md)用 `RefreshServices` 和 `RefreshTicket` 包装同一刷新 C 表，提供局部矩形便利方法、跨线程所有权移交及显式清理。原始票据可继续用于 C 接口，没有额外宿主实现。
 
-[界面刷新接口](../sdk/mms/refresh.md)直接使用这些原始元素句柄，当前覆盖同插件已有按钮和原生 surface 面板的重绘、按钮部分 STATE、有效绑定目标的 DATA 及保留布局的 SELF LAYOUT。完成不表示像素已显示。纯重绘不查询命令状态；STATE 只读查询目标命令和可选[内容提供者](../sdk/mms/state-content.md)；DATA 先准备完整显示候选再交换模型。只有显式请求 LAYOUT 才重新排版，纯 LAYOUT 使用缓存状态和已发布文案，不回调提供者。这些阶段不触发整个场景求值。
+[界面刷新接口](../sdk/mms/refresh.md)直接使用这些原始元素句柄，当前覆盖同插件已有按钮、INPUT 和原生 surface 面板的重绘、按钮及 INPUT STATE、有效绑定目标的 DATA 及保留布局的 SELF LAYOUT。完成不表示像素已显示。纯重绘不查询命令状态；按钮 STATE 只读查询目标命令和可选[内容提供者](../sdk/mms/state-content.md)，INPUT STATE 只读属性元数据和编辑可用性，不读取属性值。DATA 先准备完整显示候选再交换模型。只有显式请求 LAYOUT 才重新排版，纯 LAYOUT 使用缓存状态和已发布文案，不回调提供者。这些阶段不触发整个场景求值。
 
 | 已有能力 | 实际范围与代码依据 |
 | --- | --- |
@@ -40,7 +40,7 @@ Win7 SP1 x64、CPU 绘制和 AMD 兼容是基础约束；不以 CUDA、NVAPI、A
 | 子窗口约束 | `UiRegistry::ShowSurface` 校验父窗口、`WS_CHILD` 和 UI 线程；换父窗口会销毁重建。插件可在自己的窗口内自行绘制。 |
 | 布局与实际几何 | `layout.h` 分开记录 UI 和几何修订；`UiRegistry::PublishGeometry` 仅发布已应用的几何，未就绪返回 `NOT_READY`。 |
 | 工具栏命令溢出 | `layout.h` 的 `MMS_UI_OVERFLOW_MENU` 复用原 `overflow` 字段；`native_ui_overflow.hpp` 按可用空间、有效顺序及 keepTogether 生成布局，`NativeUi` 用真实原生菜单调用原命令。 |
-| `mms.ui.refresh` 1.0 | `refresh.h`、`src/plugins/ui_refresh.cpp` 提供能力和目标查询、四项跨线程票据操作。支持 SELF／注册 SUBTREE 的 REPAINT、按钮 STATE、绑定 DATA、INPUT 默认属性 DATA 和保留布局 LAYOUT；状态内容通过附加表在原 STATE 阶段准备。 |
+| `mms.ui.refresh` 1.0 | `refresh.h`、`src/plugins/ui_refresh.cpp` 提供能力和目标查询、四项跨线程票据操作。支持 SELF／注册 SUBTREE 的 REPAINT、按钮及 INPUT STATE、绑定 DATA、INPUT 默认属性 DATA 和保留布局 LAYOUT；状态内容通过附加表在原 STATE 阶段准备。 |
 | `mms.ui.refresh.bind` 1.0 | `refresh_binding.h` 提供来源、精确版本、单目标绑定、只读 prepare、完整显示交换及不可变显示租约；复用原票据。 |
 | 刷新目标 | `NativeUi` 发布原元素 handle、独立窗口实例和实际客户区几何。非 LAYOUT 按钮也支持；未创建 surface 不因查询或重绘而挂载。 |
 | 局部缓冲 | `src/plugins/native_ui.cpp` 使用 GDI 背景缓冲；工具栏按钮仍为系统 `BUTTON`。 |
@@ -73,7 +73,7 @@ Win7 SP1 x64、CPU 绘制和 AMD 兼容是基础约束；不以 CUDA、NVAPI、A
 | 服务 ID | 当前或建议函数 | 用途 |
 | --- | --- | --- |
 | `mms.events` | `subscribe(filter, callback, context, outToken)`、`unsubscribe(token)`、`publish(topic, payload)` | 按主题和可选对象筛选事件，支持非控件触发。 |
-| `mms.ui.refresh` | 已实现 `getCapabilities`、`getTarget`、`request`、`query`、`cancel`、`release` | 当前合并本插件目标和注册子树的受支持阶段；INPUT 默认属性 DATA 已接入，INPUT STATE 和自动依赖仍待实现。 |
+| `mms.ui.refresh` | 已实现 `getCapabilities`、`getTarget`、`request`、`query`、`cancel`、`release` | 当前合并本插件目标和注册子树的受支持阶段；INPUT 默认属性 DATA 和 STATE 已接入，自动依赖仍待实现。 |
 | `mms.ui.refresh.bind` | 已实现 `getCapabilities`、`registerSource`、`publishSource`、`getSource`、`unregisterSource`、`bind`、`unbind`、`writePrepared`、`acquireDisplay`、`releaseDisplay` | 本插件来源和单目标显示模型；线程、配额与失效规则见[SDK](../sdk/mms/data-refresh.md)。 |
 | `mms.ui.geometry` | `resolve(elementId, outTarget)`、`acquire(targets, outSnapshot)`、`releaseSnapshot(lease)`、`mapPoints(snapshot, from, to, points, outPoints)` | 查询目标、不可变几何和跨区域坐标。 |
 | `mms.ui.style` | `getCapabilities(target, outCaps)`、`acquireComputed(target, outStyle)`、`releaseStyle(lease)`、`createOverride(desc, outHandle)`、`updateOverride(handle, desc)`、`removeOverride(handle)` | 查询和覆盖可用样式，不直接替换窗口过程。 |
@@ -138,13 +138,13 @@ C 包装返回同一底层句柄的带类型引用，C++ 包装增加可移动 R
 
 ## 统一刷新请求
 
-当前 `mms.ui.refresh` 1.0 支持 SELF 和同插件注册 SUBTREE 的 REPAINT、按钮 STATE、有效绑定目标 DATA、未绑定 INPUT 的属性 DATA，以及保留布局 LAYOUT；GROUP 仅支持 SUBTREE。绑定见[数据刷新 SDK](../sdk/mms/data-refresh.md)，子树及局部矩形见[刷新范围](../sdk/mms/refresh.md#子树范围)。INPUT STATE、DEPENDENTS 和来源自动订阅尚未实现。宿主逐目标及成员检查组合能力；执行时 completedKinds 记录已完成阶段，字段、配额及错误码以 SDK 为准。
+当前 `mms.ui.refresh` 1.0 支持 SELF 和同插件注册 SUBTREE 的 REPAINT、按钮及 INPUT STATE、有效绑定目标 DATA、未绑定 INPUT 的属性 DATA，以及保留布局 LAYOUT；GROUP 仅支持 SUBTREE。绑定见[数据刷新 SDK](../sdk/mms/data-refresh.md)，子树及局部矩形见[刷新范围](../sdk/mms/refresh.md#子树范围)。DEPENDENTS 和来源自动订阅尚未实现。宿主逐目标及成员检查组合能力；执行时 completedKinds 记录已完成阶段，字段、配额及错误码以 SDK 为准。
 
 | 请求位 | 当前状态与语义 | 不隐含的动作 |
 | --- | --- | --- |
 | `REPAINT` | 已实现：标记目标客户区的损伤区域，由窗口正常绘制。 | 不重新取数据、不求值场景、不推进时间。 |
 | `DATA` | 已实现 SELF：捕获来源精确版本，准备完整候选后交换不可变显示模型；失败保留旧结果。 | 不写工程，不同步读取大文件，不自动计算整个场景。 |
-| `STATE` | 已实现按钮启用、选中、受支持的显隐及文案、说明、禁用原因。溢出菜单的已有项复用原按钮标签和命令状态。属性、通用菜单、面板内容与自动依赖待接入。 | 不调用命令，不在查询中提交编辑，不单独重排控件。 |
+| `STATE` | 已实现按钮启用、选中、受支持的显隐及文案、说明、禁用原因；INPUT 复用内容服务并可收紧启用、只读和可见状态。溢出菜单的已有项复用原按钮标签和命令状态。通用菜单、面板内容与自动依赖待接入。 | 不调用命令、不读取 INPUT 属性值，不在查询中提交编辑，不单独重排控件。 |
 | `LAYOUT` | 已实现 SELF：使用保留树、缓存状态和已发布文案重新量测，排列已有按钮及已挂载 surface，发布完成的几何。 | 不保存一次新的用户布局，不自动增加历史。 |
 
 ### 已实现的重绘与票据

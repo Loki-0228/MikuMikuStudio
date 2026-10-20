@@ -29,7 +29,8 @@ struct RefreshPresentation {
     std::uint32_t dpi = 96;
     float x = 0, y = 0, width = 0, height = 0;
     bool visible = false;
-    // Host-owned buttons opt in. Visibility is mutable only in a reserved slot.
+    // Host-owned buttons and property inputs opt in. Visibility changes need
+    // either a retained slot or an accompanying LAYOUT request.
     bool stateRefresh = false, stateVisible = true;
     bool stateVisibility = false, layoutVisible = true;
     bool layoutRefresh = false;
@@ -77,7 +78,8 @@ class UiRefreshQueue {
     const RefreshClient* inheritedReadOnlyCause_ = nullptr;
     std::function<bool()> wake_;
     std::function<MmsResult(MmsHandle)> layout_;
-    std::function<MmsResult(MmsHandle, const std::shared_ptr<const ButtonStateContent>&, bool)> stateContent_;
+    std::function<MmsResult(MmsHandle, const std::shared_ptr<const ButtonStateContent>&, bool,
+        const std::function<MmsResult()>&)> stateContent_;
     std::function<MmsResult(MmsHandle, const std::function<MmsResult()>&, uint64_t&)> propertyData_;
     MmsResult Capabilities(RefreshClient&, MmsUiRefreshCapabilitiesV1*);
     MmsResult GetTarget(RefreshClient&, MmsHandle, MmsUiRefreshTargetV1*);
@@ -104,6 +106,8 @@ public:
     // callback and must never evaluate scene data or save user preferences.
     void SetLayout(std::function<MmsResult(MmsHandle)>);
     void SetStateContent(std::function<MmsResult(MmsHandle, const std::shared_ptr<const ButtonStateContent>&, bool)>);
+    void SetValidatedStateContent(std::function<MmsResult(MmsHandle, const std::shared_ptr<const ButtonStateContent>&,
+        bool, const std::function<MmsResult()>&)>);
     void SetPropertyData(std::function<MmsResult(MmsHandle, const std::function<MmsResult()>&, uint64_t&)>);
     bool HasStateContent() const;
     MmsResult CheckStateContentTarget(const std::string&, const MmsUiTargetRefV1&) const;

@@ -148,6 +148,13 @@ void UiRefreshQueue::SetLayout(std::function<MmsResult(MmsHandle)> layout) {
     std::lock_guard<std::mutex> lock(mutex_); layout_ = std::move(layout);
 }
 void UiRefreshQueue::SetStateContent(std::function<MmsResult(MmsHandle, const std::shared_ptr<const ButtonStateContent>&, bool)> callback) {
+    SetValidatedStateContent(callback ? std::function<MmsResult(MmsHandle, const std::shared_ptr<const ButtonStateContent>&,
+        bool, const std::function<MmsResult()>&)>([callback = std::move(callback)](auto element, const auto& content, bool enabled, const auto&) {
+            return callback(element, content, enabled);
+        }) : nullptr);
+}
+void UiRefreshQueue::SetValidatedStateContent(std::function<MmsResult(MmsHandle, const std::shared_ptr<const ButtonStateContent>&,
+    bool, const std::function<MmsResult()>&)> callback) {
     if (GetCurrentThreadId() != thread_) throw std::invalid_argument("refresh content thread");
     std::lock_guard<std::mutex> lock(mutex_); stateContent_ = std::move(callback);
 }
@@ -292,6 +299,7 @@ MmsResult UiRefreshQueue::Request(RefreshClient& client, const MmsUiRefreshReque
         if (target->second.presentation.container) return MMS_E_UNSUPPORTED;
         if ((ticket.kinds & MMS_UI_REFRESH_STATE) && !target->second.presentation.stateRefresh) return MMS_E_UNSUPPORTED;
         if (ticket.kinds & MMS_UI_REFRESH_STATE) ticket.stateProviderRevision = target->second.stateProviderRevision;
+        if (ticket.kinds & MMS_UI_REFRESH_STATE) ticket.propertyRecord = target->second.presentation.propertyRecord;
         if ((ticket.kinds & MMS_UI_REFRESH_LAYOUT) && (!layout_ || !target->second.presentation.layoutRefresh)) return MMS_E_UNSUPPORTED;
         // Preserve SELF's original error precedence: an unsupported phase is
         // rejected before inspecting another target's geometry or readiness.
@@ -322,7 +330,7 @@ MmsResult UiRefreshQueue::Request(RefreshClient& client, const MmsUiRefreshReque
             if (kind != MMS_UI_BUTTON && kind != MMS_UI_PANEL && kind != MMS_UI_SEPARATOR && kind != MMS_UI_INPUT) continue;
             const auto current = targets_.find(handle);
             const uint32_t potential = MMS_UI_REFRESH_REPAINT | MMS_UI_REFRESH_LAYOUT |
-                (kind == MMS_UI_BUTTON ? MMS_UI_REFRESH_STATE : 0) | (kind == MMS_UI_INPUT ? MMS_UI_REFRESH_DATA : 0);
+                ((kind == MMS_UI_BUTTON || kind == MMS_UI_INPUT) ? MMS_UI_REFRESH_STATE : 0) | (kind == MMS_UI_INPUT ? MMS_UI_REFRESH_DATA : 0);
             if (current == targets_.end()) {
                 if (ticket.kinds & potential) return MMS_E_NOT_READY;
                 continue; // An unmounted target cannot have a valid DATA binding.
@@ -337,6 +345,7 @@ MmsResult UiRefreshQueue::Request(RefreshClient& client, const MmsUiRefreshReque
             // LAYOUT may restore a zero-sized member during the same request.
             if (kinds && !t.ReadyFor(kinds)) return MMS_E_NOT_READY;
             ticket.members.push_back({ref, t.geometry, t.stateProviderRevision, kinds});
+            if (kinds & MMS_UI_REFRESH_STATE) ticket.members.back().propertyRecord = p.propertyRecord;
             if ((ticket.kinds & MMS_UI_REFRESH_DATA) && p.propertyDataRefresh && p.propertyRecord && propertyData_) {
                 ticket.members.back().propertyData = true;
                 ticket.members.back().propertyRecord = p.propertyRecord;
@@ -349,7 +358,8 @@ MmsResult UiRefreshQueue::Request(RefreshClient& client, const MmsUiRefreshReque
                 if (result != MMS_E_UNSUPPORTED || !nativeData) return result;
             for (const auto& captured : ticket.captured)
                 for (auto& member : ticket.members) if (SameRef(member.ref, captured.target)) {
-                    member.kinds |= MMS_UI_REFRESH_DATA; member.propertyData = false; member.propertyRecord.reset();
+                    member.kinds |= MMS_UI_REFRESH_DATA; member.propertyData = false;
+                    if (!(member.kinds & MMS_UI_REFRESH_STATE)) member.propertyRecord.reset();
                 }
             // The explicit bindings form one atomic cohort. Native properties
             // are its unbound complement, never a separate HasBinding scan.
@@ -442,7 +452,7 @@ MmsResult UiRefreshQueue::ValidateTicketLocked(const Ticket& ticket, bool geomet
         (root->second.suspended || !root->second.presentation.window)) return MMS_E_NOT_READY;
     if (ticket.scope == MMS_UI_REFRESH_SELF) {
         if (ticket.propertyData && (!root->second.presentation.propertyDataRefresh || !propertyData_)) return MMS_E_NOT_READY;
-        if (ticket.propertyData && root->second.presentation.propertyRecord != ticket.propertyRecord) return MMS_E_STALE;
+        if (ticket.propertyRecord && root->second.presentation.propertyRecord != ticket.propertyRecord) return MMS_E_STALE;
         if (ticket.propertyData && bindings_->HasBinding(*ticket.owner, ticket.target)) return MMS_E_STALE;
         if ((ticket.kinds & MMS_UI_REFRESH_STATE) && root->second.stateProviderRevision != ticket.stateProviderRevision) return MMS_E_STALE;
         return MMS_OK;
@@ -455,7 +465,7 @@ MmsResult UiRefreshQueue::ValidateTicketLocked(const Ticket& ticket, bool geomet
             ((member.kinds & MMS_UI_REFRESH_STATE) && found->second.stateProviderRevision != member.stateProviderRevision)) return MMS_E_STALE;
         if (member.kinds && !found->second.ReadyFor(member.kinds)) return MMS_E_NOT_READY;
         if (member.propertyData && (!found->second.presentation.propertyDataRefresh || !propertyData_)) return MMS_E_NOT_READY;
-        if (member.propertyData && found->second.presentation.propertyRecord != member.propertyRecord) return MMS_E_STALE;
+        if (member.propertyRecord && found->second.presentation.propertyRecord != member.propertyRecord) return MMS_E_STALE;
     }
     return ticket.kinds & MMS_UI_REFRESH_DATA ? bindings_->ValidateSubtree(*ticket.owner, ticket.dataTargets, ticket.captured) : MMS_OK;
 }
@@ -633,9 +643,9 @@ void UiRefreshQueue::Drain() {
                 if (work.kinds && !target->second.ReadyFor(work.kinds)) return MMS_E_NOT_READY;
                 if (work.kinds && !IsWindow(target->second.presentation.window)) return MMS_E_STALE;
                 if (work.propertyData && (!target->second.presentation.propertyDataRefresh || !propertyData_)) return MMS_E_NOT_READY;
-                if (work.propertyData && target->second.presentation.propertyRecord != work.propertyRecord) return MMS_E_STALE;
-                if (work.propertyData && (!work.propertyRecord || !registry_.IsPropertyCurrent(
-                    String(work.propertyRecord->desc.info.id), work.propertyRecord.get(), work.propertyRecord->owner))) return MMS_E_STALE;
+                if (work.propertyRecord && target->second.presentation.propertyRecord != work.propertyRecord) return MMS_E_STALE;
+                if ((work.propertyData || work.propertyRecord) &&
+                    !registry_.IsPropertyInputTargetCurrent(work.ref.element, work.propertyRecord.get())) return MMS_E_STALE;
                 if (work.propertyData && bindings_->HasBinding(*work.owner, work.ref)) return MMS_E_STALE;
                 if ((work.kinds & MMS_UI_REFRESH_STATE) && !target->second.presentation.stateRefresh) return MMS_E_UNSUPPORTED;
                 if ((work.kinds & MMS_UI_REFRESH_STATE) && target->second.stateProviderRevision != work.stateProviderRevision) return MMS_E_STALE;
@@ -672,6 +682,7 @@ void UiRefreshQueue::Drain() {
                 for (const auto& item : registry_.elements) if (item.second.handle == group.ref.element) {
                     const auto command = registry_.commands.find(String(item.second.desc.commandId));
                     if (command != registry_.commands.end()) provider = command->second->owner;
+                    else if (group.propertyRecord) provider = group.propertyRecord->owner;
                     break;
                 }
                 { std::lock_guard<std::mutex> lock(mutex_);
@@ -695,16 +706,25 @@ void UiRefreshQueue::Drain() {
                     if (visibilityChanged) if (const auto check = registry_.CheckVisibilityPublication(group.ref.element)) return check;
                     HWND window = group.target.presentation.window;
                     if (!IsWindow(window)) return MMS_E_STALE;
+                    const bool input = content && content->input;
+                    // Cancel/revoke input intent before any focus, enable or
+                    // visibility message can produce EN_KILLFOCUS submission.
+                    if (input) {
+                        if (!stateContent_) return MMS_E_NOT_READY;
+                        if (const auto result = stateContent_(group.ref.element, content, state.enabled != 0, [&] { return validate(true); })) return result;
+                        if (const auto result = validate(true)) return result;
+                    }
+                    const auto contains = [&](HWND focus) { return focus && (focus == window || (input && IsChild(window, focus))); };
                     const bool losingAvailability = !state.enabled || !(state.visible && group.target.presentation.layoutVisible);
                     const auto relocateFocus = [&]() -> MmsResult {
                         const HWND focus = GetFocus();
                         // Keep an explicit new focus chosen by a provider/native
                         // callback, but recover focus that USER32 cleared itself.
-                        if ((focus != window && (focus || focusedBeforeState != window)) ||
+                        if ((!contains(focus) && (focus || !contains(focusedBeforeState))) ||
                             (!losingAvailability && IsWindowEnabled(window) && IsWindowVisible(window))) return MMS_OK;
                         const HWND parent = GetParent(window);
                         const auto eligible = [&](HWND candidate) {
-                            return candidate && candidate != window && IsWindow(candidate) &&
+                            return candidate && !contains(candidate) && IsWindow(candidate) &&
                                 IsWindowVisible(candidate) && IsWindowEnabled(candidate) &&
                                 (GetWindowLongPtrW(candidate, GWL_STYLE) & WS_TABSTOP);
                         };
@@ -727,10 +747,10 @@ void UiRefreshQueue::Drain() {
                         }
                         if (const auto check = validate(true)) return check;
                         if (!IsWindow(window)) return MMS_E_STALE;
-                        if (GetFocus() == window || (!GetFocus() && focusedBeforeState == window)) SetFocus(next);
+                        if (contains(GetFocus()) || (!GetFocus() && contains(focusedBeforeState))) SetFocus(next);
                         if (const auto check = validate(true)) return check;
                         if (!IsWindow(window)) return MMS_E_STALE;
-                        return GetFocus() == window || (next && !GetFocus()) ? MMS_E_FAILED : MMS_OK;
+                        return contains(GetFocus()) || (next && !GetFocus()) ? MMS_E_FAILED : MMS_OK;
                     };
                     // Choose a valid keyboard target while the old HWND is still
                     // enabled. EnableWindow/ShowWindow are allowed to clear its
@@ -740,7 +760,7 @@ void UiRefreshQueue::Drain() {
                     if (const auto check = validate(true)) return check;
                     if (!IsWindow(window)) return MMS_E_STALE;
                     const auto checked = state.checked ? BST_CHECKED : BST_UNCHECKED;
-                    if (SendMessageW(window, BM_GETCHECK, 0, 0) != checked) SendMessageW(window, BM_SETCHECK, checked, 0);
+                    if (!input && SendMessageW(window, BM_GETCHECK, 0, 0) != checked) SendMessageW(window, BM_SETCHECK, checked, 0);
                     if (const auto check = validate(true)) return check;
                     if (!IsWindow(window)) return MMS_E_STALE;
                     if (visibilityChanged) {
@@ -766,12 +786,13 @@ void UiRefreshQueue::Drain() {
                         if (group.ref.element == batch.ref.element) batch.root = target;
                     }
                     if (const auto check = relocateFocus()) return check;
-                    if (stateContent_) {
-                        const auto contentResult = stateContent_(group.ref.element, content, state.enabled != 0);
+                    if (!input && stateContent_) {
+                        const auto contentResult = stateContent_(group.ref.element, content, state.enabled != 0, [&] { return validate(true); });
                         if (contentResult) return contentResult;
                         if (const auto check = validate(true)) return check;
                     }
-                    const bool applied = bool(IsWindowEnabled(window)) == bool(state.enabled) && SendMessageW(window, BM_GETCHECK, 0, 0) == checked;
+                    const bool applied = bool(IsWindowEnabled(window)) == bool(state.enabled) &&
+                        (input || SendMessageW(window, BM_GETCHECK, 0, 0) == checked);
                     if (const auto check = validate(true)) return check;
                     return IsWindow(window) ? (applied ? MMS_OK : MMS_E_FAILED) : MMS_E_STALE;
                 });

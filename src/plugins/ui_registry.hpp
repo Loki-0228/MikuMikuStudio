@@ -58,6 +58,8 @@ struct SurfaceRecord {
 struct StateContentBudget { std::atomic<uint64_t> bytes{0}; };
 struct ButtonStateContent {
     uint32_t fields = 0;
+    // INPUT shares the same provider, builder, ownership and STATE queue.
+    bool input = false, enabled = true, readOnly = false, visible = true;
     std::wstring label, description, disabledReason, help;
     std::shared_ptr<StateContentBudget> owner, global;
     uint64_t charge = 0;
@@ -162,6 +164,7 @@ public:
     // Trusted native adapter entry points. They are not part of MmsUiApiV1.
     MmsResult CapturePropertyInput(const std::string&, PropertyInputSnapshot&);
     bool IsPropertyInputCurrent(const PropertyInputSnapshot&) const noexcept;
+    bool IsPropertyInputTargetCurrent(MmsHandle, const PropertyRecord*) const noexcept;
     MmsResult CommitPropertyInput(const PropertyInputSnapshot&, const MmsValue&);
     // Keep the read-only callback guard through native state application.
     MmsResult WithElementState(MmsHandle, const std::function<MmsResult(const MmsCommandStateV1&)>&);
