@@ -46,3 +46,9 @@ PMM 继续使用既有 `org.mikumikustudio.model.<slot>.unicode.v1` 名称记录
 实际窗口测试仅拦截资源模板创建边界，仍执行正式菜单、对话框过程和真实 Unicode 控件；没有进行屏幕外观判断。格式故障专项使用正式 MMS trailer 编解码和完整模型夹具，另由真实隐藏应用执行 PMX／PMD 工程保存重开。直接 malloc 失败尚未注入，已覆盖 C++ 分配及 owned_text 登记失败。Win7 SP1 x64、AMD 及 GPU 真机范围不因本批扩大。
 
 菜单 261 Toon、262 物理模型和其他资源写入仍按[原生写入核对](abi-native-writer-audit-2026-10-20.md)继续迁移。物理混合成员交换是内部准备能力，不能当作 262 已完成。
+
+## 最终 ABI 程序
+
+源码提交 `b220ab3` 的完整配置程序已复制到 `build/release/MikuMikuDance.exe`，大小 9,175,040 字节，SHA-256 为 `319590957A00DA5CFD389FA6FD573D0FE6884F0FBFDA45C24E62A57C37C9AF59`。源构建与发布副本哈希一致；记录为证据根目录的 `release.json`。
+
+旧 ABI 程序已保存在同目录的 `previous-abi-MikuMikuDance.exe`，SHA-256 为 `84D7008CC2E460B2A39F2365119AA2C23A7E2C85FB5D928D5172681BE8F41323`。复制后的原名与中文改名隐藏产品检查通过，覆盖菜单、工具栏、两个面板、实时侧栏布局及关闭清理，见 `final-product-smoke.log`。没有操作用户正在使用的编辑器，main 和稳定版程序未改动。

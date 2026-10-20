@@ -48,3 +48,5 @@ SUBTREE 一次捕获全部显式绑定及其不可变版本，再将未绑定的
 源码提交 `3309607` 对应的完整配置程序已复制到 `build/release/MikuMikuDance.exe`，大小 9,102,336 字节，SHA-256 为 `84D7008CC2E460B2A39F2365119AA2C23A7E2C85FB5D928D5172681BE8F41323`。源构建和发布副本哈希一致，校验记录为本证据根目录中的 `release.json`。
 
 旧 ABI 程序保存在同证据根目录的 `previous-abi-MikuMikuDance.exe`。复制后的原名与中文改名隐藏产品检查通过，包括真实工具栏、两个面板、侧栏布局跟随及关闭清理，见 `final-product-smoke.log`；main 和稳定版程序未改动。原始兼容普通产品仍按既有配置跳过 ABI 初始化，不以其独立宿主测试冒充产品插件验收。
+
+上述为该批次的程序记录；后续已由[名称与备注迁移批次](abi-model-names-history-2026-10-21.md#最终-abi-程序)更新 ABI 发布程序，旧副本保留在后续证据目录。
