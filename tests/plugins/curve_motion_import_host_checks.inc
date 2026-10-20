@@ -8,10 +8,13 @@ namespace curve_motion_import_host_checks {
 std::wstring selected;
 HWND expectedOwner=nullptr;
 unsigned picked=0;
+std::function<void()> duringPicker;
 BOOL WINAPI Pick(LPOPENFILENAMEW parameters){
     ++picked;Check(parameters&&parameters->hwndOwner==expectedOwner,"curve action uses the editor as its actual file-dialog owner");
     Check(selected.size()+1<parameters->nMaxFile,"owned Unicode curve motion path fits the picker buffer");
-    wcscpy_s(parameters->lpstrFile,parameters->nMaxFile,selected.c_str());return TRUE;
+    wcscpy_s(parameters->lpstrFile,parameters->nMaxFile,selected.c_str());
+    const auto action=std::move(duringPicker);duringPicker={};if(action)action();
+    return TRUE;
 }
 struct Wire {
     std::vector<std::uint8_t> data;
@@ -52,6 +55,44 @@ std::uint32_t U32(const std::vector<std::uint8_t>& bytes,std::size_t offset){
 }
 void Click(HWND editor,int id){const auto button=GetDlgItem(editor,id);Check(button!=nullptr,"real curve motion/history button exists");
     SendMessageW(editor,WM_COMMAND,MAKEWPARAM(id,BN_CLICKED),reinterpret_cast<LPARAM>(button));}
+void ModalLifetime(MMDApp* app,plugins::SharedHistory& history){
+    using Mode=plugins::SharedHistory::RecordingMode;
+    for(const auto mode:{Mode::AllOperations,Mode::ExplicitOnly})for(bool save:{false,true})for(int action=0;action<5;++action){
+        std::printf("  real curve picker lifecycle mode%u save%d action%d\n",unsigned(mode),int(save),action);std::fflush(stdout);
+        numpad_view_host_checks::Original original(*app,history);
+        Check(history.SetMode(mode)==MMS_OK,"modal lifecycle keeps the selected recording mode");
+        app->CameraMode()=1;app->CurrentFrame()=7;app->CameraPositionZ()=123;
+        const auto tag=std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(GetTickCount64())+L"-"+std::to_wstring(unsigned(mode))+L"-"+std::to_wstring(save)+L"-"+std::to_wstring(action);
+        const auto file=(std::filesystem::temp_directory_path()/(L"MMS-模态生命周期-"+tag+L".vmd")).native();
+        if(!save)Write(file,Input(false,false));
+        curve_editor::CloseOwned(app->MainWindow());curve_host::Open(app,false);
+        const auto editor=FindWindowW(L"MikuMikuStudioCurveEditorWindow",nullptr);
+        Check(editor!=nullptr,"open real curve editor for nested file selection");
+        const auto session=curve_editor::CaptureWindowSession(editor);
+        const auto retained=session.lock(); // An opaque token must not keep a retired window/session valid.
+        const auto before=numpad_view_host_checks::Read(*app);
+        const auto beforeKey=*app->CameraKeys();
+        curve_host::AuthoringTable author;std::wstring error;
+        Check(curve_host::CaptureAuthoring(*app,author,error),"capture authoring before nested picker retirement");
+        expectedOwner=editor;selected=file;const auto beforePicked=picked;
+        duringPicker=[&]{
+            if(action==0||action==2)curve_editor::CloseOwned(app->MainWindow());
+            if(action==1||action==2)curve_host::Open(app,false);
+            if(action==3)app->AdvanceSceneGeneration();
+            if(action==4)app->SceneModified()=app->SceneModified();
+        };
+        Click(editor,save?1004:1003);
+        Check(picked==beforePicked+1&&!duringPicker,"real file wrapper executes the nested retirement once");
+        Check(curve_editor::IsWindowSessionCurrent(editor,session)==(action>=3),"nested replacement invalidates the original window session even while retaining its token");
+        Check(!history.UndoCount()&&!history.RedoCount()&&
+            numpad_view_host_checks::Same(before,numpad_view_host_checks::Read(*app))&&
+            !std::memcmp(&beforeKey,app->CameraKeys(),sizeof beforeKey)&&curve_host::AuthoringUnchanged(*app,author)&&app->CurrentFrame()==7,
+            "retired picker does not publish imported keys, authoring, pose, playhead or history");
+        if(save)Check(!std::filesystem::exists(file),"retired export does not create an output file");
+        else Check(DeleteFileW(file.c_str())!=FALSE,"remove only the owned modal input fixture");
+        curve_editor::CloseOwned(app->MainWindow());
+    }
+}
 void V2RoundTrip(MMDApp* app,plugins::SharedHistory& history){
     namespace fixture=curve_v2_fixture;using Mode=plugins::SharedHistory::RecordingMode;
     const auto source=fixture::Source();const auto bytes=fixture::Bytes(source);
@@ -158,6 +199,7 @@ void Run(MMDApp* app,plugins::SharedHistory& history){
         curve_editor::CloseOwned(app->MainWindow());Check(DeleteFileW(input.c_str())&&DeleteFileW(output.c_str()),"remove only the owned raw camera input/export fixtures");
     }
     V2RoundTrip(app,history);
+    ModalLifetime(app,history);
     MH_DisableHook(reinterpret_cast<void*>(&GetUiOpenFileNameW));MH_RemoveHook(reinterpret_cast<void*>(&GetUiOpenFileNameW));
     MH_DisableHook(reinterpret_cast<void*>(&GetUiSaveFileNameW));MH_RemoveHook(reinterpret_cast<void*>(&GetUiSaveFileNameW));selected.clear();expectedOwner=nullptr;
     std::puts("PASS actual curve-window VMD1/2 raw import/export, crossed/endpoint controls and common history");

@@ -201,6 +201,19 @@ std::wstring Wide(const std::string&text){
     if(n)MultiByteToWideChar(CP_UTF8,0,text.data(),int(text.size()),out.data(),n);return out;
 }
 bool Motion(MMDApp&app,Kind kind,int slot,HWND owner,bool save,const std::vector<curve_editor::Channel>*supplied,std::wstring&error){
+    const auto main = app.MainWindow();
+    const auto generation = app.SceneGeneration();
+    const auto revision = app.SceneRevision();
+    const auto editorSession = curve_editor::CaptureWindowSession(owner);
+    const bool ownedEditor = !editorSession.expired();
+    const auto accessory = kind==Kind::Accessory ? app.AccessorySlot(slot) : nullptr;
+    const auto language = app.EnglishUI();
+#if !MMD_ORIGINAL_PROFILE
+    const auto history = plugins::BoundNativePoseHistory(&app);
+    const auto historyGeneration = plugins::BoundNativePoseGeneration(&app);
+    std::uint64_t historyRevision=0;
+    if(history&&history->Revision(historyRevision)!=MMS_OK)return false;
+#endif
     std::vector<curve_editor::Channel> channels;
     if(supplied)channels=*supplied;else if(!Read(app,kind,slot,channels,error))return false;
     wchar_t path[32768]{};OPENFILENAMEW dialog{sizeof(dialog)};dialog.hwndOwner=owner;
@@ -209,6 +222,26 @@ bool Motion(MMDApp&app,Kind kind,int slot,HWND owner,bool save,const std::vector
     if(kind==Kind::Accessory&&app.AccessorySlot(slot))title+=L" · "+text_encoding::Display(app.AccessorySlot(slot)->name);
     dialog.lpstrTitle=title.c_str();dialog.Flags=OFN_NOCHANGEDIR|OFN_PATHMUSTEXIST|(save?OFN_OVERWRITEPROMPT:OFN_FILEMUSTEXIST);
     if(!(save?GetUiSaveFileNameW(&dialog):GetUiOpenFileNameW(&dialog)))return false;
+    // File pickers run nested message loops. Reset/close can retire the editor,
+    // replace an accessory or create a new scene before they return.
+    if((ownedEditor&&!curve_editor::IsWindowSessionCurrent(owner,editorSession))||!IsWindow(owner)||!IsWindow(main))return false;
+    if(app.SceneGeneration()!=generation||app.SceneRevision()!=revision||(kind==Kind::Accessory&&app.AccessorySlot(slot)!=accessory)||
+#if !MMD_ORIGINAL_PROFILE
+       plugins::BoundNativePoseHistory(&app)!=history||plugins::BoundNativePoseGeneration(&app)!=historyGeneration||
+#endif
+       !TransportReady(app)||app.PlaybackActive()){
+        error=Text(language,L"読み込み元が変更されました。カーブウィンドウを開き直してください。",
+            L"The source changed. Reopen the curve window.",L"来源已改变，请重新打开曲线窗口。");
+        return false;
+    }
+#if !MMD_ORIGINAL_PROFILE
+    std::uint64_t currentRevision=0;
+    if(history&&(history->Revision(currentRevision)!=MMS_OK||currentRevision!=historyRevision)){
+        error=Text(language,L"履歴が変更されました。もう一度実行してください。",
+            L"The history changed. Retry the operation.",L"历史已改变，请重试操作。");
+        return false;
+    }
+#endif
     curve_motion::Motion motion;motion.kind=static_cast<curve_motion::Kind>(kind);std::string detail;
     if(save){
         std::vector<curve_editor::Channel> prepared;

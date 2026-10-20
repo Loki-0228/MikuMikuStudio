@@ -685,6 +685,7 @@ struct PaintSurface {
     }
 };
 struct Editor {
+    std::shared_ptr<void> motionSession = std::make_shared<char>();
     HWND window = nullptr;
     HWND canvas = nullptr;
     HWND mmd = nullptr;
@@ -3468,32 +3469,51 @@ void RunBake(Editor &editor) {
 }
 
 void RunReadMotion(Editor &editor) {
-    Source &source = CurrentSource(editor);
-    if (!source.readMotion) return;
-    if(source.externalHistory&&!CheckSourceCurrent(editor))return;
+    const bool external = CurrentSource(editor).externalHistory;
+    if(external&&!CheckSourceCurrent(editor))return;
+    decltype(Source::readMotion) callback;
+    try{callback=CurrentSource(editor).readMotion;}
+    catch(...){SetDlgItemTextW(editor.window,kIdStatus,T(editor.session.language,StrHistoryFailed));return;}
+    if (!callback) return;
+    const std::weak_ptr<void> lifetime = editor.motionSession;
+    const auto language = editor.session.language;
+    const auto window = editor.window;
+    const bool previous = editor.externalOperationActive;
+    editor.externalOperationActive = true;
     std::wstring error;bool accepted=false;
-    {
-        const bool previous=editor.externalOperationActive;
-        if(source.externalHistory)editor.externalOperationActive=true;
-        struct Restore { bool& value;bool old;~Restore(){value=old;} } restore{editor.externalOperationActive,previous};
-        try{accepted=source.readMotion(editor.window,error);}catch(...){error=T(editor.session.language,StrHistoryFailed);}
-    }
+    try{accepted=callback(window,error);}catch(...){error=T(language,StrHistoryFailed);}
+    // Do not even restore the old guard through a reference after a callback
+    // destroyed the editor or Open replaced its session during a modal loop.
+    if(!IsWindowSessionCurrent(window,lifetime))return;
+    editor.externalOperationActive = previous;
     if (!accepted) {
         SetStatus(editor, std::wstring(T(editor.session.language, StrMotionFailed)) + error, true);
         return;
     }
-    if(source.externalHistory){CurrentState(editor).valid=false;CurrentState(editor).externalReadPending=true;}
+    if(external){CurrentState(editor).valid=false;CurrentState(editor).externalReadPending=true;}
     ReadAndAdopt(editor, true);
     if(CurrentState(editor).valid)SetStatus(editor, T(editor.session.language, StrMotionReadDone), false);
 }
 
 void RunWriteMotion(Editor &editor) {
     if (!CheckSourceCurrent(editor)) return;
-    Source &source = CurrentSource(editor);
-    if (!source.writeMotion) return;
-    SourceState &state = CurrentState(editor);
+    // The callback may destroy the source vector and channels it was called
+    // from. Keep both callable and export snapshot independent of that owner.
+    decltype(Source::writeMotion) callback;
+    std::vector<Channel> channels;
+    try{callback=CurrentSource(editor).writeMotion;if(!callback)return;channels=CurrentState(editor).channels;}
+    catch(...){SetDlgItemTextW(editor.window,kIdStatus,T(editor.session.language,StrHistoryFailed));return;}
+    const std::weak_ptr<void> lifetime = editor.motionSession;
+    const auto language = editor.session.language;
+    const auto window = editor.window;
+    const bool previous = editor.externalOperationActive;
+    editor.externalOperationActive = true;
     std::wstring error;
-    if (!source.writeMotion(editor.window, state.channels, error)) {
+    bool accepted = false;
+    try{accepted=callback(window, channels, error);}catch(...){error=T(language,StrHistoryFailed);}
+    if(!IsWindowSessionCurrent(window,lifetime))return;
+    editor.externalOperationActive = previous;
+    if (!accepted) {
         SetStatus(editor, std::wstring(T(editor.session.language, StrMotionFailed)) + error, true);
         return;
     }
@@ -6030,6 +6050,10 @@ void *Open(void *owner, Session session, bool visible) {
     if (!RegisterEditorClasses()) return nullptr;
 
     if (Editor *existing = FindEditor(owner)) {
+        // Invalidate continuations belonging to the previous session before
+        // replacing callbacks or channel storage under a nested modal loop.
+        existing->motionSession = std::make_shared<char>();
+        existing->externalOperationActive = existing->externalCallbackActive = false;
         KillTimer(existing->window, kSourceChangedTimer);
         existing->pendingSources.clear();
         existing->session = std::move(session);
@@ -6103,6 +6127,18 @@ void CloseOwned(void *owner) {
     for (HWND window : windows) {
         if (IsWindow(window)) DestroyWindow(window);
     }
+}
+
+std::weak_ptr<void> CaptureWindowSession(void* window) {
+    std::lock_guard<std::mutex> guard(g_registryMutex);
+    for(const auto* editor:g_editors)if(editor->window==window)return editor->motionSession;
+    return {};
+}
+bool IsWindowSessionCurrent(void* window, const std::weak_ptr<void>& session) {
+    std::lock_guard<std::mutex> guard(g_registryMutex);
+    for(const auto* editor:g_editors)if(editor->window==window)
+        return !session.owner_before(editor->motionSession)&&!editor->motionSession.owner_before(session);
+    return false;
 }
 
 void SetLanguage(void *owner, unsigned language) {

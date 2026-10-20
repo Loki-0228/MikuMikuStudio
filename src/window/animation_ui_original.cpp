@@ -31,6 +31,8 @@ bool Command(MMDApp*, unsigned id) {
 namespace mikumikustudio::curve_editor {
 void* Open(void*, Session, bool) { return nullptr; }
 void CloseOwned(void*) {}
+std::weak_ptr<void> CaptureWindowSession(void*) { return {}; }
+bool IsWindowSessionCurrent(void*, const std::weak_ptr<void>&) { return false; }
 bool OwnsWindow(void*, void*) { return false; }
 void SetLanguage(void*, unsigned) {}
 void NotifySourceChanged(void*, const std::string&) {}

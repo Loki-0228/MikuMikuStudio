@@ -2,6 +2,7 @@
 #include "mikumikustudio/animation_curve.hpp"
 #include <functional>
 #include <limits>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -155,6 +156,11 @@ struct Session {
 // Modeless Win32 window. Background tests may create it hidden.
 void* Open(void* owner, Session session, bool visible = true);
 void CloseOwned(void* owner);
+// An editor session can be replaced while a native file picker pumps messages.
+// An empty token means window is not a registered editor. Locking it never
+// owns an editor or extends validity; compare against the current registration.
+std::weak_ptr<void> CaptureWindowSession(void* window);
+bool IsWindowSessionCurrent(void* window, const std::weak_ptr<void>& session);
 // Includes the modeless editor and its child controls. Its keyboard messages
 // must not also reach the owner's per-frame editing shortcuts.
 bool OwnsWindow(void* owner, void* window);

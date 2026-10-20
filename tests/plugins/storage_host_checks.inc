@@ -17,7 +17,7 @@ void Run(MMDApp* app){
     Pump();const auto command=FindCommand(GetMenu(app->MainWindow()));Check(command!=0,"actual plugin menu registered");
     SendMessageW(app->MainWindow(),WM_COMMAND,command,0);
     const auto copy=std::filesystem::absolute(L"copy.pmm"),manual=std::filesystem::absolute(L"manual.pmm"),restored=std::filesystem::absolute(L"restored.pmm");
-    const auto dirty=app->SceneModified(),layout=app->WindowLayoutReady();
+    const auto dirty=static_cast<std::uint8_t>(app->SceneModified()),layout=app->WindowLayoutReady();
     Check(SaveSceneCopy(app,copy.c_str()),"save real PMM and serializer sidecar");
     auto p=ReadPluginProject(copy);Check(Value(p)==1,"menu changed serialized plugin value");
     Check(app->SceneModified()==dirty && app->WindowLayoutReady()==layout,"copy preserves native dirty/layout state");

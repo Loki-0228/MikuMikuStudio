@@ -100,7 +100,7 @@ void Run(MMDApp* app, const wchar_t* modelPath) {
     std::memcpy(cache.data(), &pool, sizeof pool);
     const auto cwd = std::filesystem::current_path();
     const auto workspace = app->PathWorkspace();
-    const auto dirty = app->SceneModified(), recorded = app->RecordedFrameCountByte1();
+    const auto dirty = static_cast<std::uint8_t>(app->SceneModified()), recorded = app->RecordedFrameCountByte1();
     const auto selectedModel = app->SelectedModelSlot(), selectedAccessory = app->SelectedAccessorySlot();
     const auto camera = app->CameraMode();
     auto unchanged = [&] {

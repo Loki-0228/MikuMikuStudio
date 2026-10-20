@@ -34,6 +34,7 @@
 #include <cstdlib>
 #include <cwchar>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -976,6 +977,59 @@ void LayoutThreeLanguages() {
 // ---------------------------------------------------------------------------
 // 9. Motion callbacks gate their buttons.
 // ---------------------------------------------------------------------------
+void MotionCallbackLifetime() {
+    Check(ce::CaptureWindowSession(nullptr).expired(), "unknown windows do not acquire an editor session");
+    for(bool keepToken:{false,true})for(bool external:{false,true})for(bool writing:{false,true})for(int action=0;action<4;++action){
+        std::printf("motion lifetime external=%d write=%d action=%d\n",int(external),int(writing),action);
+        HostSource host,replacement;
+        host.data.push_back(MakeChannel("pos.x",L"Original",{MakeKey(0,1),MakeKey(10,5)}));
+        replacement.data.push_back(MakeChannel("pos.x",L"Replacement",{MakeKey(0,91),MakeKey(20,99)}));
+        auto session=MakeSession(host);
+        session.sources[0].externalHistory=external;
+        if(external){
+            session.history.query=[](ce::HistoryState& state,std::wstring&){state={1,true,true};return true;};
+            session.history.traverse=[](bool,std::wstring&){return false;};
+        }
+        HWND replacementWindow=nullptr;
+        std::wstring replacementStatus;
+        int calls=0,readsAfterCallback=-1;
+        auto replace=[&]{
+            if(action!=1)ce::CloseOwned(nullptr);
+            if(action==1||action==2){
+                replacementWindow=static_cast<HWND>(ce::Open(nullptr,MakeSession(replacement),false));
+                Check(IsWindow(replacementWindow),"a nested callback creates or replaces the editor session");
+                replacementStatus=GetText(replacementWindow,kIdStatus);
+            }
+            readsAfterCallback=host.readCalls;
+            if(action==3)throw std::runtime_error("callback retired its window");
+        };
+        session.sources[0].readMotion=[&](void*,std::wstring&){++calls;replace();return true;};
+        session.sources[0].writeMotion=[&](void*,const std::vector<ce::Channel>& channels,std::wstring&){
+            ++calls;replace();
+            Check(channels.size()==1&&channels[0].track.keys[0].value==1&&channels[0].track.keys[1].value==5,
+                "motion export keeps its channel snapshot after its editor session retires");
+            return true;
+        };
+        HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
+        const auto lifetime=ce::CaptureWindowSession(window);
+        const auto retained=keepToken?lifetime.lock():std::shared_ptr<void>{};
+        Check(!lifetime.expired(),"registered editor exposes its current weak session");
+        Click(window,writing?kIdWriteMotion:kIdReadMotion);
+        Check(calls==1&&!ce::IsWindowSessionCurrent(window,lifetime),"close or replacement retires exactly the original motion session");
+        Check(keepToken?!lifetime.expired():lifetime.expired(),"holding a token never extends editor session validity");
+        Check(host.readCalls==readsAfterCallback&&host.applyCalls==0,"retired motion continuation does not read or apply the original source");
+        if(replacementWindow){
+            Check(GetText(replacementWindow,kIdStatus)==replacementStatus&&replacement.applyCalls==0,
+                "old callback cannot alter replacement status or data");
+            // The old operation's guard must not disable the newly opened editor.
+            ClickKey(replacementWindow,1);Click(replacementWindow,kIdDeleteKey);
+            Check(replacement.applyCalls==1,"replacement session remains editable after the retired operation returns");
+        }
+        ce::CloseOwned(nullptr);
+    }
+    Note("motion callback destruction, replacement and exceptions preserve session lifetime");
+}
+
 void MotionButtons() {
     HostSource host;
     host.data.push_back(MakeChannel("pos.x", L"Position X", {MakeKey(0, 0.0), MakeKey(10, 5.0)}));
@@ -2925,6 +2979,10 @@ void CurveModeButtons() {
 #include "curve_native_editor_checks.inc"
 #include "animation_curve_external_history_checks.inc"
 int main(int argc,char** argv) {
+    if(argc>1&&std::string(argv[1])=="--motion-lifetime"){
+        MotionButtons();MotionCallbackLifetime();
+        std::printf("curve motion lifetime: %d checks\n",g_checks);return 0;
+    }
     if(argc>1&&std::string(argv[1])=="--external-history"){
         ExternalHistoryChecks();std::printf("external curve history: %d checks\n",g_checks);return 0;
     }
@@ -2969,6 +3027,7 @@ int main(int argc,char** argv) {
     RefusedApply();
     MmdPanel();
     MotionButtons();
+    MotionCallbackLifetime();
     BakeSelectedChannels();
     NativeSubdivisionRoute();NativeSampleBake();
     DuplicateFrameSelectsExisting();
