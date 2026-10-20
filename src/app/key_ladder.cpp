@@ -58,6 +58,7 @@
 #include "mikumikustudio/plugin_input_focus.hpp"
 #include "mikumikustudio/runtime_log.hpp"
 #include "../plugins/native_history_commands.hpp"
+#include "../plugins/native_global_commands.hpp"
 
 namespace mikumikustudio {
 
@@ -139,6 +140,9 @@ void DispatchLetterHotkeys(MMDApp* app, HWND focus) {
     // Body = command case 282 minus its dialogFlags[4] write: flip
     // app+0xA0194 and mirror menu item 0x11A.
     if (focusOK && !focusInEdit && pressed(kSlotB)) {
+#if !MMD_ORIGINAL_PROFILE
+        if (!plugins::TryToggleBoundBlackBackground(app)) {
+#endif
         HMENU menu = GetMenu(main);
         if (state.blackBackgroundEnabled != 0) {
             state.blackBackgroundEnabled = 0;
@@ -147,6 +151,9 @@ void DispatchLetterHotkeys(MMDApp* app, HWND focus) {
             state.blackBackgroundEnabled = 1;
             CheckMenuItem(menu, 0x11A, MF_CHECKED);
         }
+#if !MMD_ORIGINAL_PROFILE
+        }
+#endif
     }
 
     // ---- 'V' (0x471F37): transparent models / outline / paste ------------

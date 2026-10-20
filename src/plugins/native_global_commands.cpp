@@ -17,6 +17,7 @@
 #include "mikumikustudio/panel_controls.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/plugin_scene.hpp"
+#include "mikumikustudio/update_coordinator.hpp"
 #include <CommCtrl.h>
 #include <algorithm>
 #include <array>
@@ -49,16 +50,17 @@ bool Ready(MMDApp& app, HWND shadowDialog = nullptr, HWND authorSlider = nullptr
 std::uint8_t& ProjectDisplayField(MMDApp& app,unsigned field) noexcept {
     if(field==1)return app.GroundShadowEnabled();
     if(field==2)return app.ProjectedShadowBlendEnabled();
+    if(field==3)return app.state.blackBackgroundEnabled;
     return app.GroundGridEnabled();
 }
-std::array<std::uint8_t,3> ProjectDisplayValues(MMDApp& app) noexcept {
-    return {app.GroundGridEnabled(),app.GroundShadowEnabled(),app.ProjectedShadowBlendEnabled()};
+std::array<std::uint8_t,4> ProjectDisplayValues(MMDApp& app) noexcept {
+    return {app.GroundGridEnabled(),app.GroundShadowEnabled(),app.ProjectedShadowBlendEnabled(),app.state.blackBackgroundEnabled};
 }
 void RefreshProjectDisplayReadout(MMDApp& app) noexcept {
     const auto flags=ProjectDisplayValues(app);
     const auto main=app.MainWindow();if(!main)return;
-    const UINT menus[]={0xD7,0xDD,0xFE};
-    for(unsigned i=0;i<3;++i)CheckMenuItem(GetMenu(main),menus[i],MF_BYCOMMAND|(flags[i]?MF_CHECKED:MF_UNCHECKED));
+    const UINT menus[]={0xD7,0xDD,0xFE,0x11A};
+    for(unsigned i=0;i<4;++i)CheckMenuItem(GetMenu(main),menus[i],MF_BYCOMMAND|(flags[i]?MF_CHECKED:MF_UNCHECKED));
     const HWND windows[]={main,app.FloatingWindow()};
     for(unsigned i=0;i<2;++i){
         if(!windows[i] || (i && windows[i]==main))continue;
@@ -71,7 +73,7 @@ struct ProjectDisplayChange final : HistoryChange, std::enable_shared_from_this<
     MMDApp& app;
     const unsigned field;
     const std::uint64_t pool;
-    const std::array<std::uint8_t,3> before;
+    const std::array<std::uint8_t,4> before;
     const std::uint8_t after;
     std::uint64_t generation=1;
     bool applied=false,published=false;
@@ -81,7 +83,7 @@ struct ProjectDisplayChange final : HistoryChange, std::enable_shared_from_this<
         const bool forward;
         const std::uint64_t generation;
         const int frame;
-        const std::array<std::uint8_t,3> expected;
+        const std::array<std::uint8_t,4> expected;
         bool consumed=false;
         Candidate(std::shared_ptr<ProjectDisplayChange> value,bool direction) : source(std::move(value)),forward(direction),generation(source->generation),frame(source->app.CurrentFrame()),expected(ProjectDisplayValues(source->app)) {}
         bool IsCurrent() const noexcept override {
@@ -102,6 +104,7 @@ struct ProjectDisplayChange final : HistoryChange, std::enable_shared_from_this<
         });
     }
     std::uint64_t RetainedBytes() const noexcept override {return sizeof(*this)+4*sizeof(void*);}
+    bool RequiresPhysicsReset() const noexcept override { return field != 3; }
 };
 using AmbientValues = std::array<float,4>;
 AmbientValues ShadowAmbientValues(MMDApp& app) noexcept {
@@ -623,16 +626,31 @@ MmsResult ApplyProjectDisplayFlag(MMDApp& app,unsigned field,bool enabled,bool& 
     changed=false;return Boundary([&]() -> MmsResult {
         auto* history=BoundNativePoseHistory(&app);
         if(!history || !Ready(app) || !mdl::KeyPoolIdentity(app.CameraKeys()))return MMS_E_NOT_READY;
-        if(field>=3)return MMS_E_ARGUMENT;
+        if(field>=4)return MMS_E_ARGUMENT;
         if(const auto result=history->CheckNativeEdit())return result;
-        if(ProjectDisplayField(app,field)==(enabled?1:0))return MMS_OK;
+        const auto current=ProjectDisplayField(app,field);
+        if(field==3 ? ((current!=0)==enabled) : current==(enabled?1:0))return MMS_OK;
         auto change=std::make_shared<ProjectDisplayChange>(app,field,enabled);
-        const char* labels[]={"Coordinate axis display","Projected ground shadow","Transparent ground shadow"};
+        const char* labels[]={"Coordinate axis display","Projected ground shadow","Transparent ground shadow","Black background"};
         std::unique_ptr<SharedHistory::NativeTransaction> transaction;
         if(const auto result=history->PrepareNative(labels[field],std::move(change),transaction, SharedHistory::NativeIntent::Adjustment))return result;
         if(const auto result=history->CommitNative(std::move(transaction)))return result;
         changed=true;
-        Boundary([&]() -> MmsResult {PublishBoundPoseEdit(app,*history,false);RefreshProjectDisplayReadout(app);return MMS_OK;});
+        Boundary([&]() -> MmsResult {
+            if(field==3) {
+                // A clear-colour edit needs no key evaluation or pose readout.
+                // Every notification is after the committed scalar write.
+                app.SceneModified()=1;app.RecordedFrameCountByte1()=1;
+                const bool undo=history->UndoCount()!=0,redo=history->RedoCount()!=0;
+                if(const auto main=app.MainWindow()) {
+                    EnableWindow(GetDlgItem(main,panel::kUndoButton),undo);
+                    EnableWindow(GetDlgItem(main,panel::kRedoButton),redo);
+                }
+                RefreshProjectDisplayReadout(app);
+                updates::RequestViewport(&app,false);
+            } else {PublishBoundPoseEdit(app,*history,false);RefreshProjectDisplayReadout(app);}
+            return MMS_OK;
+        });
         return MMS_OK;
     });
 }
@@ -654,6 +672,15 @@ bool TryToggleBoundProjectedShadowFlag(MMDApp* app,unsigned field) noexcept {
     if(!app || !BoundNativePoseHistory(app))return false;
     bool changed=false;
     if(field<2)ApplyBoundProjectedShadowFlag(*app,field,ProjectDisplayField(*app,field+1)==0,changed);
+    if(!changed)RefreshProjectDisplayReadout(*app);
+    return true;
+}
+MmsResult ApplyBoundBlackBackground(MMDApp& app,bool enabled,bool& changed) noexcept {
+    return ApplyProjectDisplayFlag(app,3,enabled,changed);
+}
+bool TryToggleBoundBlackBackground(MMDApp* app) noexcept {
+    if(!app || !BoundNativePoseHistory(app))return false;
+    bool changed=false;ApplyBoundBlackBackground(*app,app->state.blackBackgroundEnabled==0,changed);
     if(!changed)RefreshProjectDisplayReadout(*app);
     return true;
 }

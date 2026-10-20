@@ -1286,6 +1286,7 @@ if (MIKUMIKUSTUDIO_BUILD_UI_TESTS)
         add_test(NAME native_model_physics_resources COMMAND native_edit_history_tests --model-physics-resources-only)
         add_test(NAME native_model_physics_preparation COMMAND native_edit_history_tests --model-physics-preparation-only)
         add_test(NAME native_model_physics_ui COMMAND native_edit_history_tests --model-physics-ui-only)
+        add_test(NAME native_black_background_history COMMAND native_edit_history_tests --black-background-only)
     endif()
 
     # Viewport scale handles: hit testing, the merged mode button's cycle and

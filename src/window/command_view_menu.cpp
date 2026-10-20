@@ -2678,6 +2678,9 @@ void CmdViewMenu(MMDApp* app, HWND hwnd, std::uint16_t id,
     // Case 285 additionally stores 1 / -1 into scene->groundBody -> +0xD4.
     // ------------------------------------------------------------------
     case 282: {
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::TryToggleBoundBlackBackground(app)) return;
+#endif
         app->state.dialogFlags[4] = 1;
         if (app->state.blackBackgroundEnabled != 0) {
             app->state.blackBackgroundEnabled = 0;

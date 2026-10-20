@@ -372,6 +372,7 @@ void CrossModelJournal(){
 #include "native_accessory_flag_checks.inc"
 #include "native_shadow_parameter_checks.inc"
 #include "native_grid_display_checks.inc"
+#include "native_black_background_checks.inc"
 #include "native_projected_shadow_checks.inc"
 #include "native_model_key_checks.inc"
 #include "native_unused_key_checks.inc"
@@ -452,6 +453,9 @@ void CrossModelJournal(){
 #include "retained_bookkeeping_checks.inc"
 int main(int argc,char** argv){
     std::setvbuf(stdout,nullptr,_IONBF,0);
+    if(argc==2&&!std::strcmp(argv[1],"--black-background-only")) {
+        NativeBlackBackgroundChecks();std::printf("PASS black background: %u checks\n",checks);return 0;
+    }
     if(argc==2&&!std::strcmp(argv[1],"--import-textures-only")) {
         ImportTextureCacheChecks();std::printf("PASS import textures: %u checks\n",checks);return 0;
     }
@@ -907,6 +911,7 @@ int main(int argc,char** argv){
     run("NativeAccessoryFlagChecks",NativeAccessoryFlagChecks);
     run("NativeShadowParameterChecks",NativeShadowParameterChecks);
     run("NativeGridDisplayChecks",NativeGridDisplayChecks);
+    run("NativeBlackBackgroundChecks",NativeBlackBackgroundChecks);
     run("NativeProjectedShadowChecks",NativeProjectedShadowChecks);
     run("NativeCameraInterpolationChecks",NativeCameraInterpolationChecks);
     run("NativeCameraMultiplyChecks",NativeCameraMultiplyChecks);

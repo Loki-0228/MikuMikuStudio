@@ -39,6 +39,10 @@ bool TryToggleBoundGridDisplay(MMDApp*) noexcept;
 // Projected shadow flags: visibility 0, alpha blending 1. Independent deltas.
 MmsResult ApplyBoundProjectedShadowFlag(MMDApp&, unsigned field, bool enabled, bool& changed) noexcept;
 bool TryToggleBoundProjectedShadowFlag(MMDApp*, unsigned field) noexcept;
+// Project background black/white display. Menu 282 and the eligible B-key
+// snapshot share this adjustment; a bound rejection is consumed as well.
+MmsResult ApplyBoundBlackBackground(MMDApp&, bool enabled, bool& changed) noexcept;
+bool TryToggleBoundBlackBackground(MMDApp*) noexcept;
 // Projected shadow ambient RGBA is one authored scalar edit with four mirrors.
 // Only the owning modeless dialog may use its own slider's mouse capture.
 MmsResult ApplyBoundProjectedShadowAmbient(MMDApp&, float value, bool& changed, HWND dialog = nullptr) noexcept;
