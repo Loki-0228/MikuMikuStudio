@@ -4,6 +4,8 @@
 
 支持本插件已挂载目标的 `DATA + SELF`，以及通过注册父对象提交的 `DATA + SUBTREE`。发布来源不会自动刷新；插件显式请求 DATA，按目标能力组合 STATE、LAYOUT 和 REPAINT。按钮状态回调或面板绘制通过 `acquireDisplay` 读取模型。面板的文字、图形和交互仍由插件实现。[保留布局的 LAYOUT](refresh.md#保留布局刷新)共用原刷新队列；依赖订阅、跨插件绑定和 DEPENDENTS 尚未开放。
 
+未显式绑定的原生 INPUT 可以使用[默认属性读回](input.md)，无需建立本页的来源或字节模型。显式绑定 INPUT 后，SUBTREE 优先消费本页的准确版本，默认 SELF 请求返回 CONFLICT；绑定字节不会自动解释为原生输入字段。
+
 ## 开发和协商
 
 沿用 [SDK 开发环境](README.md#开发环境)：Windows x64、C11 或 C++17、Win7 SP1 最低目标；示例插件使用 `/MT`，不链接宿主库。服务表使用 `MMS_CALL`、`MmsHeader` 和 8 字节对齐，大小为 96 字节。清单同时声明 `mms.ui.refresh.bind` 和 `mms.ui.refresh` 1.0；在 UI 线程通过 `host.queryService` 查询。旧刷新表仍为 64 字节。

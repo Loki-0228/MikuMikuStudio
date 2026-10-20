@@ -4,9 +4,9 @@
 
 状态分为 **未实现**、**已实现未验证**、**本机已验证**、**缺其他系统/硬件环境**。代码、本机结果和平台结果分别列出。
 
-[属性事务暂存](records/abi-property-stage-2026-10-20.md)已接入受控编辑宿主，使用原 `mms.ui.stageProperty`、插件 owner 和属性记录。连续暂存可以共用一个 participant；失败精确取消事务，替换注册、序列化器及工程修订变化会使候选失效。五类参与者回调具有统一只读 UI 边界。声明式 INPUT 与普通生产编辑服务仍未开放。
+[属性事务暂存](records/abi-property-stage-2026-10-20.md)已接入受控编辑宿主，使用原 `mms.ui.stageProperty`、插件 owner 和属性记录。连续暂存可以共用一个 participant；失败精确取消事务，替换注册、序列化器及工程修订变化会使候选失效。五类参与者回调具有统一只读 UI 边界。随后接入[声明式 INPUT](records/abi-declarative-input-2026-10-20.md)及[默认属性 DATA](records/abi-property-data-2026-10-20.md)，普通生产编辑服务仍未开放。
 
-[模型轮廓粗细](records/abi-model-outline-history-2026-10-20.md)已接入共同历史绑定宿主，覆盖实际 646 文本、647 滑杆、精确原位还原、窗口关闭、删除恢复及混合插件事务。最终底层和真实控件专项共 6,493 项通过；普通公共 `mms.edit` 仍关闭，其他模型资源编辑和属性 INPUT 继续列为未完成。
+[模型轮廓粗细](records/abi-model-outline-history-2026-10-20.md)已接入共同历史绑定宿主，覆盖实际 646 文本、647 滑杆、精确原位还原、窗口关闭、删除恢复及混合插件事务。最终底层和真实控件专项共 6,493 项通过；随后接入[轮廓颜色](records/abi-outline-color-history-2026-10-20.md)的 PMD 资源恢复及实际菜单 286。普通公共 `mms.edit` 仍关闭，其他模型资源编辑继续列为未完成。
 
 [main 备份与日志同步](records/abi-main-backup-settings-sync-2026-10-20.md)已适配至 `acbddb4`，核对 main 的 `1b9acad` 仅为发布文档。空工程定时备份过滤、三语言设置、可移植相对路径和自定义错误日志目录均完成专项验证，设置继续集中保存在 `data/settings.json`。
 
@@ -112,7 +112,7 @@ R3 拖动与插件区域问题已由用户确认恢复。按需求归类的当�
 | P2 | 保留布局的 SELF LAYOUT 及 SDK | 本机已验证 | 已有按钮和已挂载 surface 使用保留树排版；纯 LAYOUT 使用缓存状态，STATE 与 LAYOUT 组合支持收缩空位及同引用恢复零尺寸按钮。失败暂停几何及目标，旧快照租约保持；局部旧矩形返回 STALE 并保留已完成阶段。SDK 的 RelayoutCurrent、RefreshStateLayout 共用原请求。实际 NativeUi 389 项、双真实 DLL 645 项及两路径真实 MMS 入口通过；此批验证范围见[记录](records/abi-layout-follow-slider-2026-10-19.md)；SUBTREE 已随后接入，自动依赖及插件量测提供者仍未实现。 |
 | P2 | 按钮 STATE 内容与分层 SDK | 本机已验证 | `mms.ui.refresh.state` 1.0 在原 STATE 阶段准备文案、说明和禁用原因；单写 builder、旧显示计费、提供者代次及只读因果共用原刷新规则。V5 Unicode 工具提示、真实禁用命中、失败暂停及直接布局恢复通过；属性、菜单、面板内容及依赖范围仍未实现，见[记录](records/abi-state-model-hud-readout-2026-10-19.md)。 |
 | P3 | 模型与骨骼 HUD 20 类操作 | 受控路径本机已验证 | 独立副本运行原数学，完整手势一次调整，逐字段取消并保留外写，释放采样最终系统光标；普通骨骼、等比／轴向／投影缩放均覆盖。专项 31,357 项及两种真实文件宿主通过。原始兼容 profile 保留旧路径，普通公共编辑服务仍关闭，见[记录](records/abi-state-model-hud-readout-2026-10-19.md)。 |
-| P2 | 可写属性、声明式 INPUT | 受控路径本机已验证 | 原属性、元素、事务与共同历史共用身份，工具栏及 GROUP 支持原生输入、草稿、取消、重绑及同对象 C++ SDK。两套配置 INPUT 专项各 1,917 项通过。普通启动暂存仍返回 NOT_READY，输入框只读；自动属性 DATA、INPUT STATE、其他挂载点及真机 IME 尚待完成，见[记录](records/abi-declarative-input-2026-10-20.md)。 |
+| P2 | 可写属性、声明式 INPUT | 受控路径本机已验证 | 原属性、元素、事务与共同历史共用身份，工具栏及 GROUP 支持原生输入、草稿、取消、重绑及同对象 C++ SDK。随后接入[默认属性 DATA](records/abi-property-data-2026-10-20.md)，支持消费时读回、首次读取失败恢复、保留草稿及显式绑定优先；两套配置 INPUT 专项各 5,981 项通过。普通启动暂存仍返回 NOT_READY，输入框只读；自动订阅、INPUT STATE、其他挂载点及真机 IME 尚待完成，见[初始记录](records/abi-declarative-input-2026-10-20.md)。 |
 | P2 | 左右侧栏、属性区、时间线、状态栏挂载 | 未实现 | 不枚举空壳挂载点。 |
 | P2 | 工具栏命令溢出菜单 | 本机已验证 | `MmsUiLayoutHintsV1.overflow=MMS_UI_OVERFLOW_MENU` 复用原布局服务。仅工具栏扩展区 BUTTON、GROUP、SEPARATOR 可选择；有效顺序、组继承与 keepTogether 决定折叠单位。保留原 HWND、handle 和刷新实例，空间恢复复用；真实菜单更新原标签、启用和选中状态，移除失效项，调用前重验原身份及所有者。完整配置 21／21、原始兼容配置 18／18、ABI 契约重复 6／6 通过；最终结果见 [UI 框架记录](records/abi-ui-framework-2026-10-19.md)。无独立溢出能力查询，旧宿主可能返回 UNSUPPORTED。 |
 | P2 | 注册 SUBTREE 刷新及 SDK | 本机已验证 | 原 C ABI 支持同插件注册子树、固定来源版本集合、整树阶段顺序与拓扑失效；615 项专项及两种配置整合通过。局部矩形与 DEPENDENTS 未实现，见[记录](records/abi-subtree-refresh-2026-10-20.md)。 |

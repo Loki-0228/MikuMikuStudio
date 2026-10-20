@@ -12,6 +12,7 @@ struct UiClient;
 class UiRefreshQueue;
 class UiRefreshBindings;
 struct ButtonStateContent;
+struct PropertyRecord;
 struct RefreshClient {
     UiRefreshQueue* queue;
     std::string owner;
@@ -41,6 +42,10 @@ struct RefreshPresentation {
     HWND coordinateWindow = nullptr;
     LONG pixelX = 0, pixelY = 0;
     bool pixelOrigin = false;
+    // Native property fields can reread their original property on the UI
+    // thread without registering another public source or binding.
+    bool propertyDataRefresh = false;
+    std::shared_ptr<const PropertyRecord> propertyRecord;
 };
 class UiRefreshQueue {
     struct Target;
@@ -73,6 +78,7 @@ class UiRefreshQueue {
     std::function<bool()> wake_;
     std::function<MmsResult(MmsHandle)> layout_;
     std::function<MmsResult(MmsHandle, const std::shared_ptr<const ButtonStateContent>&, bool)> stateContent_;
+    std::function<MmsResult(MmsHandle, const std::function<MmsResult()>&, uint64_t&)> propertyData_;
     MmsResult Capabilities(RefreshClient&, MmsUiRefreshCapabilitiesV1*);
     MmsResult GetTarget(RefreshClient&, MmsHandle, MmsUiRefreshTargetV1*);
     MmsResult Request(RefreshClient&, const MmsUiRefreshRequestV1*, MmsHandle*);
@@ -98,6 +104,7 @@ public:
     // callback and must never evaluate scene data or save user preferences.
     void SetLayout(std::function<MmsResult(MmsHandle)>);
     void SetStateContent(std::function<MmsResult(MmsHandle, const std::shared_ptr<const ButtonStateContent>&, bool)>);
+    void SetPropertyData(std::function<MmsResult(MmsHandle, const std::function<MmsResult()>&, uint64_t&)>);
     bool HasStateContent() const;
     MmsResult CheckStateContentTarget(const std::string&, const MmsUiTargetRefV1&) const;
     void SetStateProviderRevision(MmsHandle, uint64_t) noexcept;

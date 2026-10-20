@@ -76,8 +76,11 @@ struct NativeUi::Impl {
         registry.Refresh().SetStateContent([this](MmsHandle element, const std::shared_ptr<const ButtonStateContent>& content, bool enabled) {
             return ApplyStateContent(element, content, enabled);
         });
+        registry.Refresh().SetPropertyData([this](MmsHandle element, const std::function<MmsResult()>& revalidate, uint64_t& revision) {
+            return ReadPropertyData(element, revalidate, revision);
+        });
         if (!SetWindowSubclass(main, Lifetime, reinterpret_cast<UINT_PTR>(this), reinterpret_cast<DWORD_PTR>(this))) {
-            registry.Refresh().SetLayout({}); registry.Refresh().SetStateContent({});
+            registry.Refresh().SetLayout({}); registry.Refresh().SetStateContent({}); registry.Refresh().SetPropertyData({});
             DestroyWindow(tooltip); DestroyWindow(workspace); DestroyWindow(toolbar);
             throw std::runtime_error("plugin popup lifetime hook");
         }
@@ -86,6 +89,7 @@ struct NativeUi::Impl {
         if (IsWindow(main)) RemoveWindowSubclass(main, Lifetime, reinterpret_cast<UINT_PTR>(this));
         registry.Refresh().SetLayout({});
         registry.Refresh().SetStateContent({});
+        registry.Refresh().SetPropertyData({});
         registry.SuspendGeometry();
         registry.Refresh().SuspendTargets();
         Boundary([&] { registry.Refresh().SyncTargets({}); return MMS_OK; });
@@ -182,6 +186,16 @@ struct NativeUi::Impl {
             return MMS_E_FAILED;
         }
         return MMS_OK;
+    }
+    MmsResult ReadPropertyData(MmsHandle handle, const std::function<MmsResult()>& revalidate, uint64_t& revision) {
+        const NativeWork work(*this);
+        if (!revalidate) return MMS_E_ARGUMENT;
+        if (const auto result = revalidate()) return result;
+        const auto found = std::find_if(controls.begin(), controls.end(), [&](const auto& item) { return item.second.element == handle; });
+        if (found == controls.end() || !found->second.input || !IsWindow(found->second.window)) return MMS_E_STALE;
+        const auto element = registry.elements.find(found->first);
+        if (element == registry.elements.end() || element->second.handle != handle || element->second.desc.kind != MMS_UI_INPUT) return MMS_E_STALE;
+        return found->second.input->Readback(revalidate, revision);
     }
     MmsResult ApplyStateContent(MmsHandle handle, const std::shared_ptr<const ButtonStateContent>& content, bool enabled) {
         const NativeWork work(*this);
@@ -803,6 +817,12 @@ struct NativeUi::Impl {
                 if (control == controls.end() || control->second.element != element.handle || !control->second.window) continue;
                 if (!Presentation(element, control->second.window, control->second.instance, bounds->second.visible, out)) return false;
                 out.back().stateRefresh = element.desc.kind == MMS_UI_BUTTON; out.back().stateVisible = control->second.stateVisible;
+                if (element.desc.kind == MMS_UI_INPUT && control->second.input) {
+                    const auto property = registry.properties.find(String(element.desc.propertyId));
+                    if (property != registry.properties.end()) {
+                        out.back().propertyDataRefresh = true; out.back().propertyRecord = property->second;
+                    }
+                }
                 out.back().stateVisibility = (element.effectiveHints.flags & MMS_HINT_PRESERVE_HIDDEN_SLOT) != 0;
                 out.back().layoutVisible = control->second.layoutVisible && visible && height > 0;
                 out.back().layoutRefresh = true;

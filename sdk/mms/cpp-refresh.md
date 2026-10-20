@@ -47,6 +47,8 @@ MmsResult result = refresh.RepaintRect(target, dirty, ticket, 17);
 | `RepaintRect(target, rect, ticket, key=0)` | SELF 范围的一个局部 DIP 矩形，自动填写捕获时的几何修订。 |
 | `RefreshState(target, ticket, key=0)` | 请求按钮状态刷新，严格匹配捕获的几何修订。支持启用、选中及保留槽位内的显隐。 |
 | `RefreshStateCurrent(ref, ticket, key=0)` | 使用原目标引用提交无坐标 STATE，接受执行时的有效几何。适合工作线程在显隐变化后继续使用同一实例及工程引用。 |
+| `RefreshPropertyCurrent(ref, ticket, key=0)` | 对未显式绑定且开放 DATA 的原生 INPUT 提交 DATA 和 REPAINT。工作线程使用已捕获目标，宿主在 UI 线程消费时读取当前属性。 |
+| `RefreshPropertyElementCurrent(element, ticket, key=0)` | UI 线程通过原元素句柄查询能力并调用上述方法，不注册来源或绑定。 |
 | `RelayoutCurrent(ref, ticket, key=0)` | 使用原目标引用提交 LAYOUT + SELF，几何修订为 0；按保留布局及缓存状态排版，不隐含 STATE 或 REPAINT。 |
 | `RefreshStateLayout(ref, ticket, key=0)` | 使用原目标引用提交 STATE、LAYOUT、REPAINT，范围为 SELF、几何修订为 0；支持按钮收缩空位及同一引用恢复零尺寸按钮。 |
 | `RepaintRects(target, rects, count, ticket, key=0)` | SELF 范围的多个局部 DIP 矩形；count=0 等同整目标请求。 |
@@ -62,7 +64,7 @@ MmsResult result = refresh.RepaintRect(target, dirty, ticket, 17);
 
 `key` 为原 coalesceKey。SDK 不合并、不重试，不在 STALE 后自动扩大损伤范围。矩形只需在调用期间有效，宿主复制其内容。旧几何被拒绝时，在 UI 线程重新捕获并计算矩形，不能只改代次。
 
-输出票据必须为空。已有票据时返回 BUSY，不向宿主提交或覆盖旧句柄。接受后直接保存原句柄，不再分配内存。未挂载、暂停或停止仍返回 NOT_READY；不支持 LAYOUT 的后端或目标、超出当前按钮范围的 STATE 返回 UNSUPPORTED；SELF + DATA 须使用有效数据绑定及来源版本；SUBTREE + DATA 由宿主捕获版本集合。
+输出票据必须为空。已有票据时返回 BUSY，不向宿主提交或覆盖旧句柄。接受后直接保存原句柄，不再分配内存。未挂载、暂停或停止仍返回 NOT_READY；不支持 LAYOUT 的后端或目标、超出当前按钮范围的 STATE 返回 UNSUPPORTED。显式 SELF + DATA 使用有效绑定和来源版本，默认 INPUT 则同时置零；SUBTREE + DATA 由宿主捕获版本集合及未绑定 INPUT 的属性读回。
 
 提交返回 OK 只代表入队。不支持的显隐、回调失败或执行时过期由 Query 返回的终态和 result 表达，不能只检查提交结果。`RefreshStateCurrent` 不绕过实例、工程、ready 或有效布局提示检查；工程切换或实例重建后仍须重新取得目标。
 
@@ -156,4 +158,4 @@ COMPLETED 表示请求的各刷新阶段已完成，不保证像素已显示。�
 
 析构仅尝试 `Release()`，不会取消或等待 UI。析构无法报告释放失败，也不能保留已销毁的 SDK 对象。在 `stop` 中先停止生产请求、结束自己的后台任务，再显式清理全部票据。失败时保留对象并返回 BUSY 或错误供宿主重试，不能仅依赖析构完成停止。
 
-本封装不创建后台线程、轮询器、默认订阅或动画时钟。DATA 便利入口由同层的 `data_refresh.hpp` 组合本封装实现。属性 STATE、DEPENDENTS、自动依赖和插件量测提供者尚未开放，普通 `mms.edit` 仍关闭。包装捕获意外 C++ 异常并返回错误码；插件仍须遵守 C ABI，不让异常跨 DLL。
+本封装不创建后台线程、轮询器、默认订阅或动画时钟。默认 INPUT 属性读回使用上述两个方法，结果 sourceRevision 为 0；不能仅凭全局 DATA 位判断目标支持该模式。[INPUT 参考](input.md)说明草稿、首次读取失败恢复及显式绑定冲突。显式 DATA 便利入口由同层的 `data_refresh.hpp` 组合本封装实现。属性 STATE、DEPENDENTS、自动依赖和插件量测提供者尚未开放，普通 `mms.edit` 仍关闭。包装捕获意外 C++ 异常并返回错误码；插件仍须遵守 C ABI，不让异常跨 DLL。

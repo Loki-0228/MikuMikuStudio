@@ -40,6 +40,6 @@ C++ `InputSpec`、`PropertyInputSpec`、`PropertyInput` 和 `RegistrationBundle`
 
 ## 剩余范围
 
-普通生产编辑服务仍关闭。INPUT 的自动属性 DATA、STATE、自动来源订阅、其他挂载点和其他类型的专用编辑器尚未完成。现有 REPAINT 与 LAYOUT 不会触发场景求值、工程写入或新增历史。
+普通生产编辑服务仍关闭。INPUT 的[默认属性 DATA](abi-property-data-2026-10-20.md)已随后接入，仍需显式请求刷新。STATE、自动来源订阅、其他挂载点和其他类型的专用编辑器尚未完成。现有刷新不会触发场景求值、工程写入或新增历史。
 
 IME 验证使用合成窗口消息，微软拼音真机、真实多显示器 DPI、Win7 SP1 x64 和 AMD 验收仍待完成。原生窗口实现和两套构建不替代这些验收。

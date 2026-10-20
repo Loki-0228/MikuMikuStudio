@@ -40,8 +40,10 @@ typedef struct MmsUiRefreshTargetV1 {
 typedef struct MmsUiRefreshRequestV1 {
 	MmsHeader h;
 	MmsUiTargetRefV1 target;
-    /* SELF+DATA: explicit binding and exact sourceRevision. SUBTREE+DATA:
-       both zero; atomically capture every bound member's current snapshot. */
+    /* SELF+DATA: explicit binding and exact sourceRevision, or both zero for
+       an unbound native INPUT that advertises DATA. The latter rereads its
+       property at UI consumption time. SUBTREE+DATA: both zero; atomically
+       capture bound snapshots, then reread unbound native INPUT members. */
 	MmsHandle binding;
 	uint32_t kinds, scope;
 	uint64_t sourceRevision, expectedGeometryRevision;
@@ -60,8 +62,9 @@ typedef struct MmsUiRefreshStateV1 {
 	uint32_t status, completedKinds;
 	MmsResult result;
 	uint32_t reserved;
-    /* SUBTREE's sourceRevision is zero for its version set, including after
-       DATA succeeds. completedKinds, not this scalar, indicates completion. */
+    /* SUBTREE and unbound native INPUT readback report sourceRevision zero.
+       Neither represents one explicit source version. completedKinds, not
+       this scalar, indicates completion. */
 	uint64_t sourceRevision, geometryRevision;
 } MmsUiRefreshStateV1;
 typedef struct MmsUiRefreshApiV1 {

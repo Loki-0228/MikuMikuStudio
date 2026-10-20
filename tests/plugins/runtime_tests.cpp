@@ -43,6 +43,8 @@ static std::string ManifestText(std::string id = "org.example.hello", std::strin
 #include "manager_edit_checks.inc"
 #include "ui_input_broker_checks.inc"
 #include "native_property_input_checks.inc"
+#include "property_data_refresh_checks.inc"
+#include "native_property_data_checks.inc"
 #include "manager_refresh_checks.inc"
 #include "layout_refresh_checks.inc"
 #include "ui_refresh_subtree_checks.inc"
@@ -356,10 +358,16 @@ static void LifecycleChecks(const fs::path& root, const fs::path& fixture) {
 int wmain(int argc, wchar_t** argv) {
     const fs::path root = fs::temp_directory_path() / (L"mms-abi-contract-" + std::to_wstring(GetCurrentProcessId()));
     try {
+        if (argc == 3 && std::wstring(argv[1]) == L"--property-data-only") {
+            CHECK(!fs::exists(root)); fs::create_directories(root);
+            PropertyDataRefreshChecks(); NativePropertyDataChecks(root, fs::absolute(argv[2]));
+            std::cout << "PASS property DATA checks=" << checks << "\n"; fs::remove_all(root); return 0;
+        }
         if (argc == 3 && std::wstring(argv[1]) == L"--input-only") {
             CHECK(!fs::exists(root)); fs::create_directories(root);
             CppInputSdkChecks(); UiInputBrokerChecks(root, fs::absolute(argv[2]));
             NativePropertyInputChecks(root, fs::absolute(argv[2]));
+            PropertyDataRefreshChecks(); NativePropertyDataChecks(root, fs::absolute(argv[2]));
             std::cout << "PASS INPUT checks=" << checks << "\n"; fs::remove_all(root); return 0;
         }
         if (argc == 3 && std::wstring(argv[1]) == L"--property-stage-only") {
@@ -413,6 +421,7 @@ int wmain(int argc, wchar_t** argv) {
         ManagerEditChecks(root, fs::absolute(argv[3]));
         UiInputBrokerChecks(root, fs::absolute(argv[3]));
         NativePropertyInputChecks(root, fs::absolute(argv[3]));
+        PropertyDataRefreshChecks(); NativePropertyDataChecks(root, fs::absolute(argv[3]));
         std::cout << "PASS checks=" << checks << "\n"; fs::remove_all(root); return 0;
     } catch (const std::exception& e) { std::cerr << "FAIL after " << checks << ": " << e.what() << "\nfixtures=" << Utf8(root.native()) << "\n"; return 1; }
 }

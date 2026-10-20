@@ -8,6 +8,8 @@
 
 [按钮状态内容 SDK](state-content.md)在原按钮和 STATE 阶段上包装文案、说明与禁用原因提供者，复用相同目标和票据。简单插件注册提供者后提交 STATE 与 LAYOUT 组合，需要低层控制时继续使用同一 C 表。
 
+[INPUT 默认 DATA](input.md#布局刷新和卸载)直接重读已注册属性，无需另建来源绑定。活动草稿、最新规范值与草稿起点分别保留，临时失败不丢输入。`RefreshPropertyCurrent` 和 `RefreshPropertyElementCurrent` 仍调用原刷新 C 表。
+
 界面异步刷新已提供 [mms.ui.refresh 参考](refresh.md)，支持 SELF 和 SUBTREE 的 REPAINT、按钮 STATE、保留布局 LAYOUT，以及[绑定 DATA 和分层 SDK](data-refresh.md)，复用同一刷新票据。GROUP 使用原 handle 开放 SUBTREE。后续设计以[统一插件扩展架构](../../docs/PLUGIN_EXTENSION_ARCHITECTURE.md)为准，另见 [UI 呈现与刷新扩展](../../docs/PLUGIN_UI_PRESENTATION.md)、[多视口与洋葱皮](../../docs/PLUGIN_VIEWPORT_RENDERING.md)及[数据格式与编辑工具](../../docs/PLUGIN_DATA_EXTENSIONS.md)。各页标明已实现范围，其余服务及工具封装仍为提案。
 
 ## 开发环境

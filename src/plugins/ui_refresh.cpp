@@ -92,6 +92,8 @@ struct UiRefreshQueue::Ticket {
         MmsUiTargetRefV1 ref{};
         uint64_t geometry = 0, stateProviderRevision = 0;
         uint32_t kinds = 0;
+        bool propertyData = false;
+        std::shared_ptr<const PropertyRecord> propertyRecord;
     };
     RefreshClient* owner = nullptr;
     MmsUiTargetRefV1 target{};
@@ -103,6 +105,8 @@ struct UiRefreshQueue::Ticket {
     std::uint64_t sourceRevision = 0;
     std::uint64_t stateProviderRevision = 0;
     UiRefreshBindings::Contribution data;
+    bool propertyData = false;
+    std::shared_ptr<const PropertyRecord> propertyRecord;
     std::vector<Member> members;
     std::vector<MmsUiTargetRefV1> dataTargets;
     std::vector<UiRefreshBindings::Captured> captured;
@@ -116,6 +120,7 @@ struct UiRefreshQueue::Ticket {
         state.status = status; state.result = result; state.geometryRevision = geometry;
         state.completedKinds = status == MMS_UI_REFRESH_COMPLETED ? kinds : completed;
         data.reset();
+        propertyRecord.reset();
         std::vector<MmsUiDirtyRectV1>().swap(rects);
         std::vector<Member>().swap(members);
         std::vector<MmsUiTargetRefV1>().swap(dataTargets);
@@ -145,6 +150,10 @@ void UiRefreshQueue::SetLayout(std::function<MmsResult(MmsHandle)> layout) {
 void UiRefreshQueue::SetStateContent(std::function<MmsResult(MmsHandle, const std::shared_ptr<const ButtonStateContent>&, bool)> callback) {
     if (GetCurrentThreadId() != thread_) throw std::invalid_argument("refresh content thread");
     std::lock_guard<std::mutex> lock(mutex_); stateContent_ = std::move(callback);
+}
+void UiRefreshQueue::SetPropertyData(std::function<MmsResult(MmsHandle, const std::function<MmsResult()>&, uint64_t&)> callback) {
+    if (GetCurrentThreadId() != thread_) throw std::invalid_argument("refresh property data thread");
+    std::lock_guard<std::mutex> lock(mutex_); propertyData_ = std::move(callback);
 }
 bool UiRefreshQueue::HasStateContent() const { std::lock_guard<std::mutex> lock(mutex_); return bool(stateContent_); }
 MmsResult UiRefreshQueue::CheckStateContentTarget(const std::string& owner, const MmsUiTargetRefV1& ref) const {
@@ -234,7 +243,7 @@ MmsResult UiRefreshQueue::GetTarget(RefreshClient& client, MmsHandle handle, Mms
         const MmsUiTargetRefV1 memberRef{Header<MmsUiTargetRefV1>(), member, current->second.generation, epoch_};
         kinds |= MMS_UI_REFRESH_REPAINT | (p.stateRefresh ? MMS_UI_REFRESH_STATE : 0) |
             (p.layoutRefresh && layout_ ? MMS_UI_REFRESH_LAYOUT : 0) |
-            (bindings_->HasBinding(client, memberRef) ? MMS_UI_REFRESH_DATA : 0);
+            (bindings_->HasBinding(client, memberRef) || (p.propertyDataRefresh && p.propertyRecord && propertyData_) ? MMS_UI_REFRESH_DATA : 0);
     }
     *out = {Header<MmsUiRefreshTargetV1>(), ref, t.geometry,
         kinds, uint32_t((t.presentation.container ? 0 : MMS_UI_REFRESH_SELF) | MMS_UI_REFRESH_SUBTREE), std::uint32_t(t.Ready()), std::uint32_t(t.presentation.visible),
@@ -250,7 +259,7 @@ MmsResult UiRefreshQueue::Request(RefreshClient& client, const MmsUiRefreshReque
         return request->scope == MMS_UI_REFRESH_DEPENDENTS ? MMS_E_UNSUPPORTED : MMS_E_ARGUMENT;
     if (request->kinds & MMS_UI_REFRESH_DATA) {
         if (request->scope == MMS_UI_REFRESH_SELF) {
-            if (!request->binding || !request->sourceRevision) return MMS_E_ARGUMENT;
+            if (bool(request->binding) != bool(request->sourceRevision)) return MMS_E_ARGUMENT;
         } else if (request->binding || request->sourceRevision) return MMS_E_ARGUMENT;
     } else if (request->binding || request->sourceRevision) return MMS_E_ARGUMENT;
     const auto& span = request->dirtyRects;
@@ -288,8 +297,14 @@ MmsResult UiRefreshQueue::Request(RefreshClient& client, const MmsUiRefreshReque
         // rejected before inspecting another target's geometry or readiness.
         if (ticket.expectedGeometry && ticket.expectedGeometry != target->second.geometry) return MMS_E_STALE;
         if (!target->second.ReadyFor(ticket.kinds)) return MMS_E_NOT_READY;
-        if (ticket.kinds & MMS_UI_REFRESH_DATA)
-            if (auto result = bindings_->Capture(client, ticket.binding, ticket.target, ticket.sourceRevision, ticket.data)) return result;
+        if (ticket.kinds & MMS_UI_REFRESH_DATA) {
+            if (!ticket.binding) {
+                if (!target->second.presentation.propertyDataRefresh || !target->second.presentation.propertyRecord || !propertyData_) return MMS_E_ARGUMENT;
+                if (bindings_->HasBinding(client, ticket.target)) return MMS_E_CONFLICT;
+                ticket.propertyData = true;
+                ticket.propertyRecord = target->second.presentation.propertyRecord;
+            } else if (auto result = bindings_->Capture(client, ticket.binding, ticket.target, ticket.sourceRevision, ticket.data)) return result;
+        }
     } else {
         if (ticket.expectedGeometry && ticket.expectedGeometry != target->second.geometry) return MMS_E_STALE;
         if (target->second.suspended || !target->second.presentation.window) return MMS_E_NOT_READY;
@@ -307,7 +322,7 @@ MmsResult UiRefreshQueue::Request(RefreshClient& client, const MmsUiRefreshReque
             if (kind != MMS_UI_BUTTON && kind != MMS_UI_PANEL && kind != MMS_UI_SEPARATOR && kind != MMS_UI_INPUT) continue;
             const auto current = targets_.find(handle);
             const uint32_t potential = MMS_UI_REFRESH_REPAINT | MMS_UI_REFRESH_LAYOUT |
-                (kind == MMS_UI_BUTTON ? MMS_UI_REFRESH_STATE : 0);
+                (kind == MMS_UI_BUTTON ? MMS_UI_REFRESH_STATE : 0) | (kind == MMS_UI_INPUT ? MMS_UI_REFRESH_DATA : 0);
             if (current == targets_.end()) {
                 if (ticket.kinds & potential) return MMS_E_NOT_READY;
                 continue; // An unmounted target cannot have a valid DATA binding.
@@ -322,12 +337,23 @@ MmsResult UiRefreshQueue::Request(RefreshClient& client, const MmsUiRefreshReque
             // LAYOUT may restore a zero-sized member during the same request.
             if (kinds && !t.ReadyFor(kinds)) return MMS_E_NOT_READY;
             ticket.members.push_back({ref, t.geometry, t.stateProviderRevision, kinds});
+            if ((ticket.kinds & MMS_UI_REFRESH_DATA) && p.propertyDataRefresh && p.propertyRecord && propertyData_) {
+                ticket.members.back().propertyData = true;
+                ticket.members.back().propertyRecord = p.propertyRecord;
+            }
             ticket.dataTargets.push_back(ref); applicable |= kinds;
         }
         if (ticket.kinds & MMS_UI_REFRESH_DATA) {
-            if (const auto result = bindings_->CaptureSubtree(client, ticket.dataTargets, ticket.captured)) return result;
+            const bool nativeData = std::any_of(ticket.members.begin(), ticket.members.end(), [](const auto& member) { return member.propertyData; });
+            if (const auto result = bindings_->CaptureSubtree(client, ticket.dataTargets, ticket.captured))
+                if (result != MMS_E_UNSUPPORTED || !nativeData) return result;
             for (const auto& captured : ticket.captured)
-                for (auto& member : ticket.members) if (SameRef(member.ref, captured.target)) member.kinds |= MMS_UI_REFRESH_DATA;
+                for (auto& member : ticket.members) if (SameRef(member.ref, captured.target)) {
+                    member.kinds |= MMS_UI_REFRESH_DATA; member.propertyData = false; member.propertyRecord.reset();
+                }
+            // The explicit bindings form one atomic cohort. Native properties
+            // are its unbound complement, never a separate HasBinding scan.
+            for (auto& member : ticket.members) if (member.propertyData) member.kinds |= MMS_UI_REFRESH_DATA;
             applicable |= MMS_UI_REFRESH_DATA;
         }
         for (const auto& member : ticket.members) if (member.kinds && !targets_.at(member.ref.element).ReadyFor(member.kinds)) return MMS_E_NOT_READY;
@@ -415,6 +441,9 @@ MmsResult UiRefreshQueue::ValidateTicketLocked(const Ticket& ticket, bool geomet
     if (ticket.scope == MMS_UI_REFRESH_SELF ? !root->second.ReadyFor(ticket.kinds) :
         (root->second.suspended || !root->second.presentation.window)) return MMS_E_NOT_READY;
     if (ticket.scope == MMS_UI_REFRESH_SELF) {
+        if (ticket.propertyData && (!root->second.presentation.propertyDataRefresh || !propertyData_)) return MMS_E_NOT_READY;
+        if (ticket.propertyData && root->second.presentation.propertyRecord != ticket.propertyRecord) return MMS_E_STALE;
+        if (ticket.propertyData && bindings_->HasBinding(*ticket.owner, ticket.target)) return MMS_E_STALE;
         if ((ticket.kinds & MMS_UI_REFRESH_STATE) && root->second.stateProviderRevision != ticket.stateProviderRevision) return MMS_E_STALE;
         return MMS_OK;
     }
@@ -425,6 +454,8 @@ MmsResult UiRefreshQueue::ValidateTicketLocked(const Ticket& ticket, bool geomet
             (geometry && ticket.expectedGeometry && found->second.geometry != member.geometry) ||
             ((member.kinds & MMS_UI_REFRESH_STATE) && found->second.stateProviderRevision != member.stateProviderRevision)) return MMS_E_STALE;
         if (member.kinds && !found->second.ReadyFor(member.kinds)) return MMS_E_NOT_READY;
+        if (member.propertyData && (!found->second.presentation.propertyDataRefresh || !propertyData_)) return MMS_E_NOT_READY;
+        if (member.propertyData && found->second.presentation.propertyRecord != member.propertyRecord) return MMS_E_STALE;
     }
     return ticket.kinds & MMS_UI_REFRESH_DATA ? bindings_->ValidateSubtree(*ticket.owner, ticket.dataTargets, ticket.captured) : MMS_OK;
 }
@@ -487,6 +518,8 @@ void UiRefreshQueue::Drain() {
     struct Work {
         Target target; RefreshClient* owner = nullptr; MmsUiTargetRefV1 ref{}; uint32_t kinds = 0;
         uint64_t stateProviderRevision = 0; UiRefreshBindings::Contribution data;
+        bool propertyData = false;
+        std::shared_ptr<const PropertyRecord> propertyRecord;
         std::vector<MmsUiDirtyRectV1> rects; bool whole = true, fixedGeometry = false;
         RectangleGeometry region;
     };
@@ -520,11 +553,12 @@ void UiRefreshQueue::Drain() {
                     g.binding != ticket.binding || g.sourceRevision != ticket.sourceRevision ||
                     g.fixedGeometry != (ticket.expectedGeometry != 0)) return false;
                 if (g.scope == MMS_UI_REFRESH_SELF)
-                    return g.members.front().stateProviderRevision == ticket.stateProviderRevision;
+                    return g.members.front().stateProviderRevision == ticket.stateProviderRevision &&
+                        g.members.front().propertyData == ticket.propertyData && g.members.front().propertyRecord == ticket.propertyRecord;
                 if (g.members.size() != ticket.members.size() || g.captured.size() != ticket.captured.size()) return false;
                 for (size_t i = 0; i < g.members.size(); ++i) {
                     const auto& w = g.members[i]; const auto& m = ticket.members[i];
-                    if (!SameRef(w.ref, m.ref) || w.kinds != m.kinds || w.stateProviderRevision != m.stateProviderRevision ||
+                    if (!SameRef(w.ref, m.ref) || w.kinds != m.kinds || w.propertyData != m.propertyData || w.propertyRecord != m.propertyRecord || w.stateProviderRevision != m.stateProviderRevision ||
                         (g.fixedGeometry && w.target.geometry != m.geometry)) return false;
                 }
                 for (size_t i = 0; i < g.captured.size(); ++i)
@@ -543,11 +577,15 @@ void UiRefreshQueue::Drain() {
                 if (ticket.scope == MMS_UI_REFRESH_SELF) {
                     Work work; work.target = candidate.root; work.owner = ticket.owner; work.ref = ticket.target;
                     work.kinds = ticket.kinds; work.stateProviderRevision = ticket.stateProviderRevision; work.data = ticket.data;
+                    work.propertyData = ticket.propertyData;
+                    work.propertyRecord = ticket.propertyRecord;
                     work.whole = false; work.fixedGeometry = candidate.fixedGeometry;
                     candidate.members.push_back(std::move(work));
                 } else for (const auto& member : ticket.members) {
                     Work work; work.target = targets_.at(member.ref.element); work.owner = ticket.owner; work.ref = member.ref;
                     work.kinds = member.kinds; work.stateProviderRevision = member.stateProviderRevision; work.fixedGeometry = candidate.fixedGeometry;
+                    work.propertyData = member.propertyData;
+                    work.propertyRecord = member.propertyRecord;
                     work.region = RectangleGeometry(work.target.presentation);
                     for (const auto& data : ticket.captured) if (SameRef(data.target, member.ref)) work.data = data.data;
                     candidate.members.push_back(std::move(work));
@@ -594,6 +632,11 @@ void UiRefreshQueue::Drain() {
                     (strict && target->second.geometry != work.target.geometry)) return MMS_E_STALE;
                 if (work.kinds && !target->second.ReadyFor(work.kinds)) return MMS_E_NOT_READY;
                 if (work.kinds && !IsWindow(target->second.presentation.window)) return MMS_E_STALE;
+                if (work.propertyData && (!target->second.presentation.propertyDataRefresh || !propertyData_)) return MMS_E_NOT_READY;
+                if (work.propertyData && target->second.presentation.propertyRecord != work.propertyRecord) return MMS_E_STALE;
+                if (work.propertyData && (!work.propertyRecord || !registry_.IsPropertyCurrent(
+                    String(work.propertyRecord->desc.info.id), work.propertyRecord.get(), work.propertyRecord->owner))) return MMS_E_STALE;
+                if (work.propertyData && bindings_->HasBinding(*work.owner, work.ref)) return MMS_E_STALE;
                 if ((work.kinds & MMS_UI_REFRESH_STATE) && !target->second.presentation.stateRefresh) return MMS_E_UNSUPPORTED;
                 if ((work.kinds & MMS_UI_REFRESH_STATE) && target->second.stateProviderRevision != work.stateProviderRevision) return MMS_E_STALE;
                 if (!strict) work.target = target->second;
@@ -610,8 +653,15 @@ void UiRefreshQueue::Drain() {
                     std::lock_guard<std::mutex> lock(queue.mutex_); queue.evaluatingDataOwner_ = nullptr;
                 } } guard{*this};
                 bool displayChanged = false;
-                const auto result = bindings_->Consume(group.data, [&] { return validate(group.fixedGeometry); },
-                    consumedRevision, displayChanged);
+                const auto result = group.propertyData ? registry_.WithReadOnlyCallback([&]() -> MmsResult {
+                    if (!propertyData_) return MMS_E_NOT_READY;
+                    uint64_t currentRevision = 0;
+                    const auto refreshed = propertyData_(group.ref.element, [&] { return validate(group.fixedGeometry); }, currentRevision);
+                    // This mode reads current data at consumption. It does not
+                    // claim to have consumed a versioned binding snapshot.
+                    if (!refreshed) consumedRevision = 0;
+                    return refreshed;
+                }) : bindings_->Consume(group.data, [&] { return validate(group.fixedGeometry); }, consumedRevision, displayChanged);
                 if (result) return result;
             }
             if (phase == MMS_UI_REFRESH_STATE) {

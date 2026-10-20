@@ -53,7 +53,11 @@ Escape、隐藏和禁用取消草稿。输入法组合期间不提交，确认�
 
 INPUT 使用原布局提示自适应宽度，保留原元素句柄。自身不能进入命令溢出菜单；含 INPUT 的 `keepTogether` 组不会仅折叠其中的按钮。空逻辑 GROUP 不阻止其他按钮折叠。
 
-原刷新服务支持 INPUT 的 REPAINT 和保留布局的 LAYOUT，可指定 SELF 或已注册 SUBTREE。DATA 仅按显式来源绑定提供，不会自动重新读取属性。INPUT 的 STATE、自动属性订阅及其他挂载点尚未实现，能力以目标查询结果为准。
+原刷新服务支持 INPUT 的 REPAINT、默认属性 DATA 和保留布局的 LAYOUT，可指定 SELF 或已注册 SUBTREE。未建立显式 DATA 绑定时，SELF 请求的 `binding` 与 `sourceRevision` 都为 0，宿主在消费时重新读取属性。成功票据的 `sourceRevision` 仍为 0，不表示已消费某个发布快照。C++ 的 `RefreshPropertyCurrent` 和 `RefreshPropertyElementCurrent` 组合原请求与票据，见[刷新 SDK](cpp-refresh.md)。
+
+显式绑定继续使用准确来源版本。SELF 默认属性请求遇到显式绑定返回 CONFLICT；SUBTREE 中显式绑定优先，未绑定 INPUT 才读取属性。显式绑定的字节是插件自己的显示模型，不会自动解释为原生字段内容。INPUT 的 STATE、自动属性订阅及其他挂载点尚未实现，能力以目标查询结果为准。
+
+DATA 成功更新最新规范值缓存，活动草稿仍保留起始值和原始文本。过期草稿不能提交，Escape 恢复最新缓存。首次读取暂时失败时，宿主保留按类型创建的只读空字段；后续 DATA 成功后才建立真实值和编辑基线。准备或原生写入失败保留旧显示，回滚也失败时暂停该呈现并返回失败。
 
 移除或重绑属性使旧草稿失效。停止、销毁和隐藏后的清理只读取宿主持有的规范值，不再调用已停止提供者。输入框内产生的窗口关闭请求延后到原生回调退出后处理。
 

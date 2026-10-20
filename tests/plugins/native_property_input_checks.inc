@@ -1,5 +1,12 @@
 #include "native_property_input.hpp"
+#include "ui_property_draft.hpp"
 #include <mms/refresh.h>
+
+// The executable's allocation injector is defined by overflow_menu_checks.inc.
+namespace overflow_allocation_fault {
+extern thread_local std::size_t bytes;
+extern thread_local unsigned hits;
+}
 
 namespace native_property_input_checks {
 void Pump(unsigned milliseconds = 8) {
@@ -323,7 +330,9 @@ void ReentrantInput(const fs::path& root, const fs::path& dll) {
 }
 void ReboundFocus() {
     ui_input_broker_checks::Fixture f; Window window; f.Bridges();
-    NativePropertyInput input(f.registry, f.elementId, window.value, 0xb002, {}, {}); input.Refresh(96);
+    std::vector<std::string> logs;
+    NativePropertyInput input(f.registry, f.elementId, window.value, 0xb002, {},
+        [&](const std::string& value) { logs.push_back(value); }); input.Refresh(96);
     SetWindowPos(input.Window(), nullptr, 5, 5, 500, 28, SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
     const auto old = FindField(input.Window()); SetFocus(window.sink);
     const std::string newId = "example.input.vector";
@@ -335,6 +344,14 @@ void ReboundFocus() {
     f.value = {}; f.value.type = MMS_VALUE_VECTOR; f.value.components = 2; f.value.value.vector[0] = 1; f.value.value.vector[1] = 2;
     // Deliberately focus the still displayed scalar before NativeUi refreshes.
     SetFocus(old); Pump(); auto x = FindField(input.Window()), y = FindField(input.Window(), 0x7202);
+    if (GetFocus() != x || f.registry.elements.at(f.elementId).handle != f.element) {
+        std::cerr << "rebound old=" << old << " oldLive=" << IsWindow(old) << " focus=" << GetFocus()
+            << " parent=" << GetParent(GetFocus()) << " wrapper=" << input.Window() << " x=" << x << " y=" << y
+            << " enabled=" << IsWindowEnabled(x) << " visible=" << IsWindowVisible(x)
+            << " element=" << f.element << " current=" << f.registry.elements.at(f.elementId).handle
+            << " reads=" << f.reads << " releases=" << f.releases << " edits=" << f.edits << '\n';
+        for (const auto& line : logs) std::cerr << "rebound " << line << '\n';
+    }
     CHECK(GetFocus() == x && f.registry.elements.at(f.elementId).handle == f.element);
     Text(x, L"5"); Text(y, L"6"); Enter(y);
     CHECK(f.edits == 1 && f.value.value.vector[0] == 5 && f.value.value.vector[1] == 6);
@@ -379,6 +396,359 @@ void VectorFocus() {
     Text(y, L"6"); SetFocus(window.sink); CHECK(GetFocus() == window.sink); Pump();
     CHECK(f.edits == 1 && f.value.value.vector[0] == 5 && f.value.value.vector[1] == 6);
 }
+struct TransientReadProbe {
+    MmsPropertyDescV1 original{};
+    MmsResult failure = MMS_E_BUSY;
+    unsigned throwMode = 0, failures = 0;
+    bool failNext = false;
+    std::function<void()> duringRead;
+    inline static thread_local TransientReadProbe* active = nullptr;
+    TransientReadProbe() { CHECK(!active); active = this; }
+    ~TransientReadProbe() { active = nullptr; }
+    void Arm(unsigned mode) {
+        failure = mode == 0 ? MMS_E_BUSY : MMS_E_FAILED;
+        throwMode = mode >= 2 ? mode : 0; failNext = true;
+    }
+    static MmsResult MMS_CALL Read(void* context, MmsObjectRef target, MmsValue* value, MmsHandle* lease) {
+        CHECK(active && active->original.context == context); auto& probe = *active;
+        const auto result = probe.original.read(context, target, value, lease); if (result) return result;
+        if (probe.failNext) {
+            probe.failNext = false; ++probe.failures;
+            if (probe.throwMode == 2) throw std::runtime_error("temporary property read failure");
+            if (probe.throwMode == 3) throw std::bad_alloc();
+            return probe.failure;
+        }
+        auto callback = std::move(probe.duringRead); if (callback) callback();
+        return MMS_OK;
+    }
+};
+void TransientRefreshFailures(const fs::path& root, const fs::path& dll) {
+    for (unsigned mode = 0; mode != 4; ++mode) for (bool invalid : {false, true}) {
+        Fixture f(root / ("native-input-read-retry-" + std::to_string(mode) + (invalid ? "-invalid" : "-valid")), dll);
+        TransientReadProbe probe; const auto record = f.edit.manager->Ui().properties.at(f.id + ".editable"); probe.original = record->desc;
+        auto desc = record->desc; desc.read = TransientReadProbe::Read; auto api = f.OwnerApi();
+        CHECK(api.updateProperty(api.context, record->handle, &desc) == MMS_OK); f.Refresh();
+        const auto revision = f.edit.Revision(); const auto raw = invalid ? L"-" : L"7"; Text(f.field, raw);
+        probe.Arm(mode); f.Refresh();
+        CHECK(probe.failures == 1 && Caption(f.field) == raw && !(GetWindowLongPtrW(f.field, GWL_STYLE) & ES_READONLY));
+        const auto expected = mode == 0 ? MMS_E_BUSY : mode == 3 ? MMS_E_MEMORY : MMS_E_FAILED;
+        const auto marker = "result=" + std::to_string(expected);
+        CHECK(std::any_of(f.logs.begin(), f.logs.end(), [&](const auto& line) { return line.find(marker) != std::string::npos; }));
+        f.Clean(0, 0, 0); CHECK(f.edit.Revision() == revision && !f.edit.observations->published);
+        f.Refresh(); CHECK(Caption(f.field) == raw && !(GetWindowLongPtrW(f.field, GWL_STYLE) & ES_READONLY));
+        if (invalid) { Enter(f.field); f.Clean(0, 0, 0); CHECK(Caption(f.field) == raw); Text(f.field, L"7"); }
+        Enter(f.field); f.Clean(1, 7, 1); CHECK(f.edit.Revision() == revision + 1); f.Close();
+    }
+    {
+        Fixture f(root / "native-input-read-retry-noop", dll); TransientReadProbe probe;
+        const auto record = f.edit.manager->Ui().properties.at(f.id + ".editable"); probe.original = record->desc;
+        auto desc = record->desc; desc.read = TransientReadProbe::Read; auto api = f.OwnerApi();
+        CHECK(api.updateProperty(api.context, record->handle, &desc) == MMS_OK); f.Refresh(); const auto revision = f.edit.Revision();
+        Text(f.field, L"00"); probe.Arm(0); f.Refresh(); CHECK(Caption(f.field) == L"00"); Enter(f.field);
+        f.Clean(0, 0, 0); CHECK(Caption(f.field) == L"0" && f.edit.Revision() == revision); f.Close();
+    }
+    {
+        Fixture f(root / "native-input-read-retry-inactive", dll); TransientReadProbe probe;
+        const auto record = f.edit.manager->Ui().properties.at(f.id + ".editable"); probe.original = record->desc;
+        auto desc = record->desc; desc.read = TransientReadProbe::Read; auto api = f.OwnerApi();
+        CHECK(api.updateProperty(api.context, record->handle, &desc) == MMS_OK); f.Refresh();
+        probe.Arm(0); f.Refresh(); CHECK(GetWindowLongPtrW(f.field, GWL_STYLE) & ES_READONLY);
+        f.Refresh(); CHECK(!(GetWindowLongPtrW(f.field, GWL_STYLE) & ES_READONLY)); Text(f.field, L"7"); Enter(f.field); f.Clean(1, 7, 1); f.Close();
+    }
+    {
+        Fixture f(root / "native-input-caption-allocation-retry", dll); Text(f.field, L"7"); const auto revision = f.edit.Revision();
+        const std::string label(1016, 'L'); auto element = f.edit.manager->Ui().elements.at(f.id + ".input").desc;
+        element.label = mikumikustudio::plugins::Text(label); auto api = f.OwnerApi(); CHECK(api.updateElement(api.context, f.element, &element) == MMS_OK);
+        const auto targetBytes = (std::wstring(label.size(), L'\0').capacity() + 1) * sizeof(wchar_t);
+        const auto hits = overflow_allocation_fault::hits; overflow_allocation_fault::bytes = targetBytes;
+        f.Refresh(); overflow_allocation_fault::bytes = 0;
+        CHECK(overflow_allocation_fault::hits == hits + 1 && Caption(f.field) == L"7"); f.Clean(0, 0, 0);
+        CHECK(f.edit.Revision() == revision); Enter(f.field); f.Clean(1, 7, 1); f.Close();
+    }
+}
+void TransientVectorDraft() {
+    ui_input_broker_checks::Fixture f; Window window; CHECK(f.ui.unregisterItem(f.ui.context, f.element) == MMS_OK);
+    CHECK(f.ui.unregisterItem(f.ui.context, f.property) == MMS_OK);
+    f.value = {}; f.value.type = MMS_VALUE_VECTOR; f.value.components = 2; f.value.value.vector[0] = 1; f.value.value.vector[1] = 2;
+    auto desc = f.desc; desc.info.valueType = MMS_VALUE_VECTOR; desc.info.components = 2; desc.info.minimum = {}; desc.info.maximum = {};
+    CHECK(f.ui.registerProperty(f.ui.context, &desc, &f.property) == MMS_OK);
+    auto element = ui_input_broker_checks::Input(f.elementId, f.owner.id, f.propertyId); CHECK(f.ui.registerElement(f.ui.context, &element, &f.element) == MMS_OK); f.Bridges();
+    TransientReadProbe probe; probe.original = desc; desc.read = TransientReadProbe::Read;
+    CHECK(f.ui.updateProperty(f.ui.context, f.property, &desc) == MMS_OK);
+    NativePropertyInput input(f.registry, f.elementId, window.value, 0xb004, {}, {}); input.Refresh(96);
+    SetWindowPos(input.Window(), nullptr, 5, 5, 500, 28, SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    const auto x = FindField(input.Window(), 0x7201), y = FindField(input.Window(), 0x7202);
+    Text(x, L"-"); Text(y, L"6"); probe.Arm(0); input.Refresh(96);
+    CHECK(probe.failures == 1 && Caption(x) == L"-" && Caption(y) == L"6" && !f.edits);
+    Enter(y); CHECK(!f.edits && Caption(x) == L"-" && Caption(y) == L"6"); Text(x, L"5"); Enter(y);
+    CHECK(f.edits == 1 && f.value.value.vector[0] == 5 && f.value.value.vector[1] == 6);
+    Text(x, L"05"); probe.Arm(1); input.Refresh(96); CHECK(Caption(x) == L"05" && Caption(y) == L"6"); Enter(x);
+    CHECK(f.edits == 1 && probe.failures == 2 && Caption(x) == L"5" && Caption(y) == L"6" && f.reads == f.releases);
+}
+void FailedRefreshRevokesSubmit(const fs::path& root, const fs::path& dll) {
+    for (unsigned mode : {0u, 2u}) {
+        Window window; ManagerEditCase edit(root / ("native-input-refresh-revokes-" + std::to_string(mode)));
+        const std::string id = "org.example.native-retry"; ManagerEditProbe plugin(edit.Package(dll, id)); edit.Load();
+        ui_input_broker_checks::RegisterInput(edit, id); TransientReadProbe probe;
+        const auto record = edit.manager->Ui().properties.at(id + ".editable"); probe.original = record->desc;
+        auto desc = record->desc; desc.read = TransientReadProbe::Read; auto api = edit.manager->Ui().Api(*record->owner);
+        CHECK(api.updateProperty(api.context, record->handle, &desc) == MMS_OK);
+        NativePropertyInput input(edit.manager->Ui(), id + ".input", window.value, 0xb005, {}, {}); input.Refresh(96);
+        SetWindowPos(input.Window(), nullptr, 5, 5, 500, 28, SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        const auto field = FindField(input.Window()); Text(field, L"7"); const auto revision = edit.Revision(); unsigned nested = 0;
+        probe.duringRead = [&] { ++nested; probe.Arm(mode); input.Refresh(96); };
+        Enter(field); CHECK(nested == 1 && probe.failures == 1 && Caption(field) == L"7");
+        CHECK(!plugin.Value() && !plugin.PropertyCalls() && !plugin.PropertyCandidates() && !edit.host->attached->HasPending());
+        CHECK(edit.Revision() == revision && !edit.host->history.UndoCount() && !edit.observations->published);
+        Enter(field); CHECK(plugin.Value() == 7 && plugin.PropertyCalls() == 1 && !plugin.PropertyCandidates());
+        CHECK(edit.Revision() == revision + 1 && edit.host->history.UndoCount() == 1 && edit.observations->published == 1);
+    }
+}
+struct ReadbackFixture {
+    ui_input_broker_checks::Fixture source;
+    Window window;
+    std::unique_ptr<NativePropertyInput> input;
+    HWND field = nullptr;
+    explicit ReadbackFixture(bool host = true, bool readonly = false): source(readonly) {
+        if (host) source.Bridges();
+        SetFocus(window.sink);
+        input = std::make_unique<NativePropertyInput>(source.registry, source.elementId, window.value, 0xb006,
+            std::function<void(bool)>{}, Log{});
+        input->Refresh(96);
+        SetWindowPos(input->Window(), nullptr, 5, 5, 500, 28, SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        field = FindField(input->Window()); CHECK(Caption(field) == L"2");
+    }
+};
+struct ReadbackCaptionProbe {
+    HWND field;
+    unsigned writes = 0;
+    explicit ReadbackCaptionProbe(HWND target): field(target) {
+        CHECK(SetWindowSubclass(field, Proc, reinterpret_cast<UINT_PTR>(this), reinterpret_cast<DWORD_PTR>(this)));
+    }
+    ~ReadbackCaptionProbe() { if (IsWindow(field)) RemoveWindowSubclass(field, Proc, reinterpret_cast<UINT_PTR>(this)); }
+    static LRESULT CALLBACK Proc(HWND field, UINT message, WPARAM wp, LPARAM lp, UINT_PTR, DWORD_PTR context) {
+        if (message == WM_SETTEXT) ++reinterpret_cast<ReadbackCaptionProbe*>(context)->writes;
+        return DefSubclassProc(field, message, wp, lp);
+    }
+};
+void ReadbackCanonicalAndDraft() {
+    ReadbackFixture f; auto& source = f.source; const auto wrapper = f.input->Window();
+    ReadbackCaptionProbe probe(f.field); uint64_t revision = 0x9988;
+    SendMessageW(f.field, EM_SETSEL, 0, 1); RECT before{}; CHECK(GetWindowRect(f.field, &before));
+    source.value = ui_input_broker_checks::Integer(5);
+    CHECK(f.input->Readback([] { return MMS_OK; }, revision) == MMS_OK && revision == source.revision);
+    CHECK(Caption(f.field) == L"5" && f.input->Window() == wrapper && FindField(wrapper) == f.field && !source.edits);
+    RECT after{}; CHECK(GetWindowRect(f.field, &after) && EqualRect(&before, &after));
+    const auto writes = probe.writes; DWORD begin = 0, end = 0;
+    CHECK(f.input->Readback({}, revision) == MMS_OK && probe.writes == writes);
+    SendMessageW(f.field, EM_GETSEL, reinterpret_cast<WPARAM>(&begin), reinterpret_cast<LPARAM>(&end));
+    CHECK(!begin && end == 1 && GetFocus() == f.window.sink);
+    MmsResult wrongThread = MMS_OK; const auto reads = source.reads;
+    std::thread worker([&] { uint64_t untouched = 0x8877; wrongThread = f.input->Readback({}, untouched); CHECK(untouched == 0x8877); });
+    worker.join(); CHECK(wrongThread == MMS_E_THREAD && source.reads == reads);
+
+    Text(f.field, L"7"); source.value = ui_input_broker_checks::Integer(6); ++source.revision;
+    CHECK(f.input->Readback({}, revision) == MMS_OK && revision == source.revision && Caption(f.field) == L"7");
+    Escape(f.field); CHECK(Caption(f.field) == L"6" && !source.edits);
+    Text(f.field, L"9"); source.value = ui_input_broker_checks::Integer(8);
+    CHECK(f.input->Readback({}, revision) == MMS_OK && Caption(f.field) == L"9");
+    Enter(f.field); CHECK(!source.edits && Caption(f.field) == L"8"); // The draft still started at 6.
+    Text(f.field, L"08"); CHECK(f.input->Readback({}, revision) == MMS_OK); Enter(f.field);
+    CHECK(!source.edits && Caption(f.field) == L"8");
+    Text(f.field, L"-"); source.value = ui_input_broker_checks::Integer(10); f.input->Refresh(96);
+    CHECK(Caption(f.field) == L"-"); Escape(f.field); CHECK(Caption(f.field) == L"10" && !source.edits);
+    CHECK(source.reads == source.releases && !source.registry.HasLeases(source.owner));
+    for (bool host : {false, true}) {
+        ReadbackFixture display(host, true); const auto readonly = GetWindowLongPtrW(display.field, GWL_STYLE) & ES_READONLY;
+        display.source.value = ui_input_broker_checks::Integer(4); uint64_t actual = 0x9988;
+        CHECK(display.input->Readback({}, actual) == MMS_OK && Caption(display.field) == L"4");
+        CHECK(readonly && (GetWindowLongPtrW(display.field, GWL_STYLE) & ES_READONLY) && !display.source.edits);
+        CHECK(actual == (host ? display.source.revision : 0));
+    }
+}
+void ReadbackReentrantDraft() {
+    for (unsigned mode = 0; mode != 5; ++mode) {
+        ReadbackFixture f; auto& source = f.source;
+        if (mode != 4) Text(f.field, L"7");
+        bool fired = false;
+        source.duringRead = [&] {
+            if (fired) return; fired = true;
+            if (mode == 0) CHECK(SetWindowTextW(f.field, L"8"));
+            if (mode == 1) SendMessageW(f.field, WM_IME_STARTCOMPOSITION, 0, 0);
+            if (mode == 2) Escape(f.field);
+            if (mode == 3) f.input->Cancel();
+            if (mode == 4) { SetFocus(f.field); CHECK(GetFocus() == f.field); }
+        };
+        uint64_t revision = 0x9988;
+        CHECK(f.input->Readback({}, revision) == MMS_E_STALE && fired && revision == 0x9988);
+        source.duringRead = {}; CHECK(!source.edits && source.reads == source.releases);
+        if (mode == 0) {
+            CHECK(Caption(f.field) == L"8"); Enter(f.field); CHECK(source.edits == 1 && source.value.value.signedValue == 8);
+        } else if (mode == 1) {
+            CHECK(Caption(f.field) == L"7"); Enter(f.field); CHECK(!source.edits);
+            SendMessageW(f.field, WM_IME_ENDCOMPOSITION, 0, 0); SendMessageW(f.field, WM_KEYUP, VK_RETURN, 0);
+            Enter(f.field); CHECK(source.edits == 1 && source.value.value.signedValue == 7);
+        } else {
+            CHECK(Caption(f.field) == L"2"); Enter(f.field); CHECK(!source.edits);
+        }
+    }
+}
+void ReadbackFailures() {
+    for (unsigned mode = 0; mode != 4; ++mode) for (const auto* raw : {L"7", L"-"}) {
+        ReadbackFixture f; TransientReadProbe probe; probe.original = f.source.desc;
+        auto desc = probe.original; desc.read = TransientReadProbe::Read;
+        CHECK(f.source.ui.updateProperty(f.source.ui.context, f.source.property, &desc) == MMS_OK); f.input->Refresh(96);
+        Text(f.field, raw); probe.Arm(mode); uint64_t revision = 0x9988;
+        const auto expected = mode == 0 ? MMS_E_BUSY : mode == 3 ? MMS_E_MEMORY : MMS_E_FAILED;
+        CHECK(f.input->Readback({}, revision) == expected && probe.failures == 1 && revision == 0x9988);
+        CHECK(Caption(f.field) == raw && !(GetWindowLongPtrW(f.field, GWL_STYLE) & ES_READONLY) && !f.source.edits);
+        CHECK(f.input->Readback({}, revision) == MMS_OK && Caption(f.field) == raw);
+        Enter(f.field);
+        if (std::wcscmp(raw, L"7") == 0) CHECK(f.source.edits == 1 && f.source.value.value.signedValue == 7);
+        else { CHECK(!f.source.edits && Caption(f.field) == raw); Escape(f.field); CHECK(Caption(f.field) == L"2"); }
+        CHECK(f.source.reads == f.source.releases);
+    }
+    {
+        ReadbackFixture f; Text(f.field, L"02"); unsigned checks = 0; uint64_t revision = 0x9988;
+        const auto hits = overflow_allocation_fault::hits;
+        CHECK(f.input->Readback([&]() -> MmsResult {
+            if (++checks == 2) overflow_allocation_fault::bytes = sizeof(std::string);
+            return MMS_OK;
+        }, revision) == MMS_E_MEMORY);
+        overflow_allocation_fault::bytes = 0;
+        CHECK(overflow_allocation_fault::hits == hits + 1 && revision == 0x9988 && Caption(f.field) == L"02" && !f.source.edits);
+        Enter(f.field); CHECK(!f.source.edits && Caption(f.field) == L"2");
+    }
+    for (bool mutate : {false, true}) {
+        ReadbackFixture f; f.source.value = ui_input_broker_checks::Integer(5); ReadbackCaptionProbe probe(f.field);
+        bool fired = false; uint64_t revision = 0x9988;
+        const auto result = f.input->Readback([&]() -> MmsResult {
+            if (probe.writes && !fired) {
+                fired = true;
+                if (mutate) { CHECK(SetWindowTextW(f.field, L"9")); return MMS_OK; }
+                return MMS_E_FAILED;
+            }
+            return MMS_OK;
+        }, revision);
+        CHECK(result == (mutate ? MMS_E_STALE : MMS_E_FAILED) && fired && revision == 0x9988 && Caption(f.field) == L"2");
+        CHECK(!f.source.edits); CHECK(f.input->Readback({}, revision) == MMS_OK && Caption(f.field) == L"5");
+    }
+}
+void ReadbackInitialFailure() {
+    for (bool vector : {false, true}) for (bool host : {false, true}) for (unsigned mode = 0; mode != 4; ++mode) {
+        ui_input_broker_checks::Fixture source; Window window;
+        auto desc = source.desc;
+        if (vector) {
+            CHECK(source.ui.unregisterItem(source.ui.context, source.element) == MMS_OK);
+            CHECK(source.ui.unregisterItem(source.ui.context, source.property) == MMS_OK);
+            desc.info.valueType = MMS_VALUE_VECTOR; desc.info.components = 2; desc.info.minimum = {}; desc.info.maximum = {};
+            CHECK(source.ui.registerProperty(source.ui.context, &desc, &source.property) == MMS_OK);
+            auto element = ui_input_broker_checks::Input(source.elementId, source.owner.id, source.propertyId);
+            CHECK(source.ui.registerElement(source.ui.context, &element, &source.element) == MMS_OK);
+            source.value = {}; source.value.type = MMS_VALUE_VECTOR; source.value.components = 2;
+            source.value.value.vector[0] = 2; source.value.value.vector[1] = 3;
+        }
+        if (host) source.Bridges();
+        TransientReadProbe probe; probe.original = desc; desc.read = TransientReadProbe::Read;
+        CHECK(source.ui.updateProperty(source.ui.context, source.property, &desc) == MMS_OK);
+        NativePropertyInput input(source.registry, source.elementId, window.value, 0xb007, {}, {});
+        SetFocus(window.sink); probe.Arm(mode); input.Refresh(96);
+        SetWindowPos(input.Window(), nullptr, 5, 5, 500, 28, SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        const auto x = FindField(input.Window()), y = vector ? FindField(input.Window(), 0x7202) : nullptr;
+        const auto readonly = [](HWND field) { return (GetWindowLongPtrW(field, GWL_STYLE) & ES_READONLY) != 0; };
+        CHECK(probe.failures == 1 && Caption(x).empty() && readonly(x));
+        if (vector) CHECK(Caption(y).empty() && readonly(y));
+        const auto reads = source.reads;
+        SendMessageW(x, WM_CHAR, L'7', 1); Enter(x);
+        CHECK(Caption(x).empty() && source.reads == reads && !source.edits); // No canonical baseline exists yet.
+        RECT before{}; CHECK(GetWindowRect(x, &before)); uint64_t revision = 0x9988;
+        probe.Arm(1); CHECK(input.Readback({}, revision) == MMS_E_FAILED && revision == 0x9988 && Caption(x).empty() && readonly(x));
+        bool rejected = false;
+        CHECK(input.Readback([&]() -> MmsResult {
+            if (GetWindowTextLengthW(x)) { rejected = true; return MMS_E_FAILED; }
+            return MMS_OK;
+        }, revision) == MMS_E_FAILED);
+        CHECK(rejected && revision == 0x9988 && Caption(x).empty() && readonly(x));
+        if (vector) CHECK(Caption(y).empty() && readonly(y));
+        CHECK(input.Readback({}, revision) == MMS_OK && revision == (host ? source.revision : 0));
+        RECT after{}; CHECK(GetWindowRect(x, &after) && EqualRect(&before, &after));
+        CHECK(FindField(input.Window()) == x && GetFocus() == window.sink && Caption(x) == L"2" && readonly(x) == !host && !source.edits);
+        if (vector) CHECK(FindField(input.Window(), 0x7202) == y && Caption(y) == L"3" && readonly(y) == !host);
+        Enter(x); CHECK(!source.edits);
+        if (host) {
+            Text(x, L"5"); Enter(x);
+            CHECK(source.edits == 1 && (vector ? source.value.value.vector[0] == 5 : source.value.value.signedValue == 5));
+        }
+        CHECK(source.reads == source.releases && !source.registry.HasLeases(source.owner));
+    }
+}
+struct ReadonlyFocusNotificationProbe {
+    HWND field;
+    unsigned notifications = 0;
+    explicit ReadonlyFocusNotificationProbe(HWND target): field(target) {
+        CHECK(SetWindowSubclass(field, Proc, reinterpret_cast<UINT_PTR>(this), reinterpret_cast<DWORD_PTR>(this)));
+    }
+    ~ReadonlyFocusNotificationProbe() { if (IsWindow(field)) RemoveWindowSubclass(field, Proc, reinterpret_cast<UINT_PTR>(this)); }
+    static LRESULT CALLBACK Proc(HWND field, UINT message, WPARAM wp, LPARAM lp, UINT_PTR, DWORD_PTR context) {
+        auto& probe = *reinterpret_cast<ReadonlyFocusNotificationProbe*>(context);
+        if (message == EM_SETREADONLY) {
+            ++probe.notifications;
+            // Native edit style changes may pump focus/IME notifications. A
+            // host presentation write must not start a new refresh or draft.
+            SendMessageW(GetParent(field), WM_COMMAND, MAKEWPARAM(GetDlgCtrlID(field), EN_SETFOCUS), reinterpret_cast<LPARAM>(field));
+        }
+        return DefSubclassProc(field, message, wp, lp);
+    }
+};
+void ReadbackOversizedCancel() {
+    for (bool host : {false, true}) for (bool readonly : {false, true}) {
+        ui_input_broker_checks::Fixture source; Window window;
+        CHECK(source.ui.unregisterItem(source.ui.context, source.element) == MMS_OK);
+        CHECK(source.ui.unregisterItem(source.ui.context, source.property) == MMS_OK);
+        auto desc = source.desc; desc.info.valueType = MMS_VALUE_BYTES; desc.info.minimum = {}; desc.info.maximum = {};
+        desc.info.flags = readonly ? MMS_PROPERTY_READ_ONLY : MMS_PROPERTY_UNDOABLE;
+        CHECK(source.ui.registerProperty(source.ui.context, &desc, &source.property) == MMS_OK);
+        auto element = ui_input_broker_checks::Input(source.elementId, source.owner.id, source.propertyId);
+        CHECK(source.ui.registerElement(source.ui.context, &element, &source.element) == MMS_OK);
+        const std::array<unsigned char, 1> small{{0x12}};
+        const std::vector<unsigned char> large(UiPropertyDraft::kMaxFieldBytes / 2 + 1, 0xab);
+        source.value = {}; source.value.type = MMS_VALUE_BYTES; source.value.value.bytes = {small.data(), small.size()};
+        if (host) source.Bridges();
+        SetFocus(window.sink); NativePropertyInput input(source.registry, source.elementId, window.value, 0xb008, {}, {});
+        input.Refresh(96); SetWindowPos(input.Window(), nullptr, 5, 5, 500, 28, SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        const auto field = FindField(input.Window());
+        const auto isReadonly = [&] { return (GetWindowLongPtrW(field, GWL_STYLE) & ES_READONLY) != 0; };
+        const bool editable = host && !readonly; const auto originalRevision = source.revision;
+        CHECK(Caption(field) == L"12" && isReadonly() == !editable);
+        if (editable) Text(field, L"34");
+        source.value.value.bytes = {large.data(), large.size()}; uint64_t revision = 0x9988;
+        CHECK(input.Readback({}, revision) == MMS_OK && revision == (host ? originalRevision : 0));
+        if (editable) CHECK(Caption(field) == L"34" && !isReadonly());
+        ReadonlyFocusNotificationProbe focusProbe(field); const auto readsBeforeCancel = source.reads;
+        Escape(field); const auto summary = Caption(field);
+        CHECK(source.reads == readsBeforeCancel);
+        if (editable) CHECK(focusProbe.notifications == 1);
+        CHECK(!summary.empty() && summary != L"12" && summary != L"34" && summary.size() < 512 && isReadonly());
+        SendMessageW(field, WM_CHAR, L'9', 1); Enter(field); Pump();
+        CHECK(Caption(field) == summary && isReadonly() && !source.edits && !source.finished);
+        CHECK(source.value.value.bytes.data == large.data() && source.value.value.bytes.bytes == large.size());
+        source.value.value.bytes = {small.data(), small.size()};
+        CHECK(input.Readback({}, revision) == MMS_OK && FindField(input.Window()) == field && Caption(field) == L"12");
+        CHECK(isReadonly() == !editable);
+        if (editable) {
+            Text(field, L"56"); Escape(field); CHECK(Caption(field) == L"12" && !isReadonly());
+            Text(field, L"78"); auto replacement = desc; replacement.info.flags = MMS_PROPERTY_READ_ONLY;
+            CHECK(source.ui.updateProperty(source.ui.context, source.property, &replacement) == MMS_OK);
+            CHECK(input.Readback({}, revision) == MMS_E_STALE); input.Refresh(96); Escape(field);
+            CHECK(Caption(field) == L"12" && isReadonly());
+            CHECK(source.ui.updateProperty(source.ui.context, source.property, &desc) == MMS_OK); input.Refresh(96);
+            CHECK(Caption(field) == L"12" && !isReadonly());
+        }
+        CHECK(!source.edits && !source.finished && source.revision == originalRevision);
+        CHECK(source.value.value.bytes.data == small.data() && source.value.value.bytes.bytes == small.size());
+        CHECK(source.reads == source.releases && !source.registry.HasLeases(source.owner));
+    }
+}
 } // namespace native_property_input_checks
 
 static void NativePropertyInputChecks(const fs::path& root, const fs::path& dll) {
@@ -393,5 +763,13 @@ static void NativePropertyInputChecks(const fs::path& root, const fs::path& dll)
     native_property_input_checks::ReboundFocus();
     native_property_input_checks::LargeFields();
     native_property_input_checks::VectorFocus();
+    native_property_input_checks::TransientRefreshFailures(root, dll);
+    native_property_input_checks::TransientVectorDraft();
+    native_property_input_checks::FailedRefreshRevokesSubmit(root, dll);
+    native_property_input_checks::ReadbackCanonicalAndDraft();
+    native_property_input_checks::ReadbackReentrantDraft();
+    native_property_input_checks::ReadbackFailures();
+    native_property_input_checks::ReadbackInitialFailure();
+    native_property_input_checks::ReadbackOversizedCancel();
     std::cout << "native property INPUT messages/history/stale/IME sequence/layout/retirement PASS\n";
 }

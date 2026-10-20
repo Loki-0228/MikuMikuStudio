@@ -137,6 +137,29 @@ public:
         request.scope = MMS_UI_REFRESH_SELF; request.coalesceKey = coalesceKey;
         return Request(request, out);
     }
+    // Read an original native INPUT's current property when the UI queue
+    // consumes this request. No source or binding is created. A target with
+    // an explicit DATA binding keeps that binding's exact-version contract
+    // and rejects this form. Query the target's DATA support on the UI thread
+    // before publishing its reference to a worker; older hosts may reject it.
+    MmsResult RefreshPropertyCurrent(const MmsUiTargetRefV1& target, RefreshTicket& out,
+        std::uint64_t coalesceKey = 0) const noexcept {
+        MmsUiRefreshRequestV1 request{}; request.h = Header<MmsUiRefreshRequestV1>();
+        request.target = target; request.kinds = MMS_UI_REFRESH_DATA | MMS_UI_REFRESH_REPAINT;
+        request.scope = MMS_UI_REFRESH_SELF; request.coalesceKey = coalesceKey;
+        return Request(request, out);
+    }
+    // UI-only convenience over the same element, target, queue and ticket.
+    // Global service DATA support does not establish support for this INPUT.
+    MmsResult RefreshPropertyElementCurrent(MmsHandle element, RefreshTicket& out,
+        std::uint64_t coalesceKey = 0) const noexcept {
+        if (const auto result = CheckThread()) return result;
+        if (out) return MMS_E_BUSY;
+        MmsUiRefreshTargetV1 target{};
+        if (const auto result = Target(element, target)) return result;
+        if (!(target.supportedKinds & MMS_UI_REFRESH_DATA)) return MMS_E_UNSUPPORTED;
+        return RefreshPropertyCurrent(target.target, out, coalesceKey);
+    }
     MmsResult RelayoutCurrent(const MmsUiTargetRefV1& target, RefreshTicket& out,
         std::uint64_t coalesceKey = 0) const noexcept {
         MmsUiRefreshRequestV1 request{}; request.h = Header<MmsUiRefreshRequestV1>();

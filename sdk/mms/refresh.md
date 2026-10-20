@@ -1,8 +1,8 @@
 # 界面刷新接口参考
 
-`mms.ui.refresh` 1.0 为插件自己的按钮、分隔线、注册 GROUP 和原生 surface 面板安排异步刷新。接口定义见 [refresh.h](include/mms/refresh.h)。结构使用 `MmsHeader`、`MMS_CALL` 和 8 字节对齐，调用失败不修改输出参数。
+`mms.ui.refresh` 1.0 为插件自己的按钮、INPUT、分隔线、注册 GROUP 和原生 surface 面板安排异步刷新。接口定义见 [refresh.h](include/mms/refresh.h)。结构使用 `MmsHeader`、`MMS_CALL` 和 8 字节对齐，调用失败不修改输出参数。
 
-当前支持 SELF 和 SUBTREE 范围的 REPAINT、按钮 STATE、已绑定目标 DATA，以及保留布局的 LAYOUT；GROUP 只开放 SUBTREE。两种范围均接受局部矩形，各阶段共用同一票据及队列。DATA 使用[已有绑定](data-refresh.md)。DEPENDENTS、来源订阅、自动依赖、插件量测提供者和动画帧尚未提供。SUBTREE 不遍历插件自行创建的任意 HWND。
+当前支持 SELF 和 SUBTREE 范围的 REPAINT、按钮 STATE、已绑定目标 DATA、未绑定 INPUT 的属性 DATA，以及保留布局的 LAYOUT；GROUP 只开放 SUBTREE。两种范围均接受局部矩形，各阶段共用同一票据及队列。显式 DATA 使用[已有绑定](data-refresh.md)，默认属性读回见 [INPUT](input.md)。DEPENDENTS、来源订阅、自动依赖、插件量测提供者和动画帧尚未提供。SUBTREE 不遍历插件自行创建的任意 HWND。
 
 组合请求在同一队列中按 DATA、STATE、LAYOUT、REPAINT 执行。DATA 准备并交换不可变显示模型；STATE 只读查询目标按钮的 getState，并可通过[状态内容服务](state-content.md)准备显示文案和提示；LAYOUT 使用已保留的描述、提示和状态排版；REPAINT 调用 `InvalidateRect` 或 `InvalidateRgn`，不直接执行绘制。刷新不调用 `FrameDriver`，不修改播放头、工程 dirty 或撤销历史，也不保存布局偏好。插件窗口后续的正常 `WM_PAINT` 仍由插件处理。
 
@@ -29,7 +29,7 @@
 
 ## 目标身份与几何
 
-`getTarget` 接受本插件 BUTTON、SEPARATOR、PANEL 或已发布工具栏 GROUP 的原注册 `MmsHandle`。命令、surface 工厂和菜单项不是刷新目标。GROUP 使用同一注册 handle 的保留容器身份，没有独立 HWND；不能绑定 DATA 或请求 SELF。尚未发布的 GROUP 返回 NOT_READY。按钮无需声明 MMS_UI_LAYOUT。
+`getTarget` 接受本插件 BUTTON、INPUT、SEPARATOR、PANEL 或已发布工具栏 GROUP 的原注册 `MmsHandle`。命令、surface 工厂和菜单项不是刷新目标。GROUP 使用同一注册 handle 的保留容器身份，没有独立 HWND；不能绑定 DATA 或请求 SELF。尚未发布的 GROUP 返回 NOT_READY。按钮无需声明 MMS_UI_LAYOUT。
 
 `MmsUiRefreshTargetV1` 的字段如下。
 
@@ -39,7 +39,7 @@
 | `target.instanceGeneration` | 宿主分配的呈现实例代次。销毁、重建或失效后重新发布会改变该值。 |
 | `target.projectEpoch` | 当前工程上下文代次。场景替换或重置后旧值失效。 |
 | `geometryRevision` | 当前实际几何修订，包括位置、客户区尺寸、窗口坐标空间 DPI 和逻辑可见性。 |
-| `supportedKinds`、`supportedScopes` | 开放范围的能力并集。普通目标报告 SELF 和 SUBTREE；GROUP 只报告 SUBTREE。REPAINT 对应实际呈现，STATE 对应按钮，DATA 对应有效绑定，LAYOUT 对应保留布局后端。并集不表示各范围或后代都支持全部位，request 仍逐范围和成员检查。 |
+| `supportedKinds`、`supportedScopes` | 开放范围的能力并集。普通目标报告 SELF 和 SUBTREE；GROUP 只报告 SUBTREE。REPAINT 对应实际呈现，STATE 对应按钮，DATA 对应有效绑定或原生 INPUT 属性读回，LAYOUT 对应保留布局后端。并集不表示各范围或后代都支持全部位，request 仍逐范围和成员检查。 |
 | `ready` | 普通目标已有窗口、布局发布成功且客户区宽高均大于零时为 1；GROUP 表示容器已发布。子树请求还检查各实际参与成员。 |
 | `visible` | 目标在插件布局中的逻辑可见性。此值不表示窗口无遮挡，也不要求宿主顶层窗口已显示。 |
 | `width`、`height` | 普通目标客户区 DIP 尺寸；GROUP 为保留布局中的逻辑容器尺寸。 |
@@ -61,7 +61,7 @@
 | 字段 | 当前要求 |
 | --- | --- |
 | `target` | 完整复制 `getTarget` 返回的引用。 |
-| `binding`、`sourceRevision` | SELF + DATA 填写有效绑定及非零来源版本；SUBTREE + DATA 两者必须为 0，由宿主原子捕获绑定版本集合。不含 DATA 时也必须为 0。 |
+| `binding`、`sourceRevision` | SELF + DATA 使用有效绑定及非零来源版本，或均为 0 表达未绑定 INPUT 的消费时属性读回。默认读回只对查询到 DATA 能力的原生 INPUT 开放，已有显式绑定时返回 CONFLICT。SUBTREE + DATA 两者必须为 0，由宿主捕获绑定版本集合及未绑定 INPUT。不含 DATA 时也必须为 0。 |
 | `kinds` | REPAINT、STATE、DATA、LAYOUT 或组合。SELF 要求目标支持全部位；SUBTREE 要求每个位至少有一个适用成员。 |
 | `scope` | SELF 或 SUBTREE，按目标报告范围使用。DEPENDENTS 返回 UNSUPPORTED。 |
 | `expectedGeometryRevision` | 局部矩形请求必须填写取得矩形时的非零几何修订。整目标请求可填 0，表示接受执行时的有效几何；填写非零值时仍严格检查。 |
@@ -83,10 +83,10 @@ SUBTREE 展开入队时的 `mms.ui` 注册树，包含有实际呈现的根及�
 
 | 阶段 | 适用成员 |
 | --- | --- |
-| DATA | 具有本插件有效绑定的实际目标；无绑定成员跳过。 |
+| DATA | 具有本插件有效绑定的实际目标，以及未绑定的原生 INPUT；其他无绑定成员跳过。 |
 | STATE | 已创建、支持 STATE 的宿主按钮；GROUP、面板和分隔线跳过。 |
 | LAYOUT | 支持保留布局的成员。整树 STATE 后只调用一次现有后端，解决同容器及相邻区域的布局依赖。 |
-| REPAINT | 实际呈现的按钮、分隔线和面板。无矩形时使整个客户区失效；有矩形时只使根区域映射后的交集失效。 |
+| REPAINT | 实际呈现的按钮、INPUT、分隔线和面板。无矩形时使整个客户区失效；有矩形时只使根区域映射后的交集失效。 |
 
 某一请求位没有任何适用成员时，整次返回 UNSUPPORTED，不返回成功空操作。任一注册后代属于其他插件时，整次返回 ARGUMENT，不能借父容器代它刷新。按钮仍可引用另一插件的公开命令，执行 STATE 时会保护实际命令提供者。
 
@@ -94,7 +94,7 @@ SUBTREE 展开入队时的 `mms.ui` 注册树，包含有实际呈现的根及�
 
 当前采用保守拓扑代次：任何注册树的新增、删除、重新挂载或种类/所有者变化，都会使既有 SUBTREE 票据 STALE；单纯命令或属性更新，以及树未变化的布局不改变此代次。成员注销或重建、卸载、工程切换、状态提供者替换同样使相关票据失效。执行阶段及回调后重新检查，不把新后代加入旧票据。
 
-SUBTREE + DATA 的 binding/sourceRevision 均为 0。宿主在同一次绑定锁临界区中捕获所有已绑定成员的当前非零版本与不可变字节快照；任一已绑定来源尚未发布、失效或超配额时，整次不接受。入队后继续发布来源不会改变已捕获快照。解绑、重新绑定或在捕获范围内新增绑定会使旧 DATA 票据 STALE；每阶段都核对完整绑定集合。ticket.sourceRevision=0 表示版本集合，**不表示没有 DATA**。读取 completedKinds 的 DATA 位确认成功；单个绑定的消费版本仍从数据服务查询。
+SUBTREE + DATA 的 binding/sourceRevision 均为 0。宿主在同一次绑定锁临界区中捕获所有已绑定成员的当前非零版本与不可变字节快照；任一已绑定来源尚未发布、失效或超配额时，整次不接受。未绑定的原生 INPUT 加入默认属性读回，显式绑定优先，不重复读取其属性。默认成员也保留在绑定集合检查范围内，入队后新增绑定会使旧请求过期。入队后继续发布来源不会改变已捕获快照。解绑或重新绑定同样使旧 DATA 票据 STALE；每阶段核对完整绑定集合和默认属性的准确提供者身份。ticket.sourceRevision=0 表示版本集合或消费时读回，**不表示没有 DATA**。读取 completedKinds 的 DATA 位确认成功；单个绑定的消费版本仍从数据服务查询。
 
 只有全部成员接收检查、DATA 捕获、配额检查和唤醒成功后才发布票据。取消 PENDING 票据撤回全部成员，RUNNING 返回 BUSY。合并要求原根、范围、拓扑、成员实例/阶段/状态提供者及完整绑定版本集合一致。SELF 与 SUBTREE 不合并，不同版本集合不合并。
 
@@ -116,7 +116,7 @@ SUBTREE + DATA 的 binding/sourceRevision 均为 0。宿主在同一次绑定锁
 | `CANCELLED` | 在执行前取消，`result=MMS_E_CANCELLED`。 |
 | `FAILED` | 校验或窗口失效操作失败；`result` 保存错误码。 |
 
-完成不表示像素已显示，也不等待 WM_PAINT。隐藏或被遮挡的窗口遵循 Windows 的正常绘制时机，服务不保证隐藏窗口保留可查询的更新区域。SELF 的 sourceRevision 在 DATA 成功时记录消费版本，否则为 0；SUBTREE 始终为 0，表示版本集合；geometryRevision 记录处理时的目标几何，执行前即失败的票据可为 0。
+完成不表示像素已显示，也不等待 WM_PAINT。隐藏或被遮挡的窗口遵循 Windows 的正常绘制时机，服务不保证隐藏窗口保留可查询的更新区域。显式绑定 SELF 的 sourceRevision 在 DATA 成功时记录消费版本，否则为 0；默认属性 SELF 与 SUBTREE 始终为 0，分别表示消费时读取及版本集合；geometryRevision 记录处理时的目标几何，执行前即失败的票据可为 0。
 
 合并只处理本批待执行贡献，要求相同插件、目标、范围、coalesceKey、kinds、binding、sourceRevision 和几何约束策略；SUBTREE 还要求上述成员及版本集合一致。固定修订请求与接受当前几何的请求分组处理，避免过期局部请求使合法整目标请求失败。同组 STATE 只计算一次；任一整目标重绘贡献会覆盖同组局部矩形。不同 kinds 独立处理，STATE 失败不会吞掉另一张纯 REPAINT 票据。取消一个 PENDING 票据仅撤回自身贡献。cancel 对终态票据返回成功，不改变既有结果。
 
@@ -176,10 +176,11 @@ LAYOUT 使用现有布局树中的元素描述、布局提示、文字量测和�
 | 错误 | 典型原因 |
 | --- | --- |
 | `THREAD` | 在工作线程调用 `getCapabilities` 或 `getTarget`。 |
-| `ARGUMENT` | 非法结构、未知标志、非法矩形、局部矩形缺少非零几何修订、缺少 DATA 绑定及版本、非 DATA 请求的非零 binding 或 sourceRevision、访问其他插件目标。 |
+| `ARGUMENT` | 非法结构、未知标志、非法矩形、局部矩形缺少非零几何修订、不匹配的 DATA 绑定与版本、非默认 INPUT 的零绑定 SELF DATA、非 DATA 请求的非零 binding 或 sourceRevision、访问其他插件目标。 |
+| `CONFLICT` | 已建立显式 DATA 绑定的 INPUT 又请求默认属性读回。 |
 | `UNSUPPORTED` | DEPENDENTS、GROUP 的 SELF 或 DATA 绑定、阶段无适用成员、后端不支持该阶段、单独 STATE 无保留槽位的显隐变化，或查询非刷新目标。 |
 | `NOT_READY` | 停止中、目标未挂载、布局暂停、子树区域的共同坐标空间尚不一致、零尺寸目标请求不含可用的 LAYOUT，或显隐需要的布局尚未重新发布。 |
-| `STALE` | 元素注销、实例重建、工程或要求的几何修订不匹配、局部子树请求的空间映射改变，以及子树拓扑或 DATA 绑定集合变化。 |
+| `STALE` | 元素注销、实例重建、工程或要求的几何修订不匹配、局部子树请求的空间映射改变，以及子树拓扑、默认属性记录或 DATA 绑定集合变化。 |
 | `NOT_FOUND` | 票据不存在、已释放或属于其他插件。 |
 | `BUSY` | 配额已满、取消执行中的贡献，或在同插件的 DATA/STATE/LAYOUT 只读因果链中再次提交 DATA/STATE/LAYOUT。 |
 | `MEMORY`、`FAILED` | 内存、GDI 区域、调度唤醒或窗口失效操作失败。 |
