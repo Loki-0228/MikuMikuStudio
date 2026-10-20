@@ -18,6 +18,7 @@ add_library(mms_plugin_runtime STATIC
     src/plugins/manifest.cpp
     src/plugins/loader_win32.cpp
     src/plugins/ui_registry.cpp
+    src/plugins/ui_property_value.cpp
     src/plugins/ui_refresh.cpp
     src/plugins/ui_refresh_binding.cpp
     src/plugins/ui_preferences_file.cpp
@@ -70,6 +71,13 @@ add_custom_command(TARGET mms_hello_plugin POST_BUILD COMMAND ${CMAKE_COMMAND} -
     "${CMAKE_CURRENT_SOURCE_DIR}/sdk/mms/examples/hello_menu/plugin.json" "$<TARGET_FILE_DIR:mms_hello_plugin>/plugin.json")
 
 add_executable(plugin_abi_tests EXCLUDE_FROM_ALL tests/plugins/runtime_tests.cpp tests/plugins/abi_layout.cpp)
+add_executable(ui_property_value_tests EXCLUDE_FROM_ALL tests/plugins/ui_property_value_tests.cpp)
+target_link_libraries(ui_property_value_tests PRIVATE mms_plugin_runtime)
+target_include_directories(ui_property_value_tests PRIVATE src/plugins)
+target_link_options(ui_property_value_tests PRIVATE /SUBSYSTEM:CONSOLE,6.01 /DEBUG:NONE)
+set_target_properties(ui_property_value_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_test(NAME ui_property_value_contract COMMAND ui_property_value_tests)
+set_tests_properties(ui_property_value_contract PROPERTIES TIMEOUT 60)
 add_executable(ui_refresh_binding_tests EXCLUDE_FROM_ALL tests/plugins/ui_refresh_binding_tests.cpp)
 target_include_directories(ui_refresh_binding_tests PRIVATE src/plugins sdk/mms/include)
 target_compile_features(ui_refresh_binding_tests PRIVATE cxx_std_17)
