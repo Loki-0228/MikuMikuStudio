@@ -6,13 +6,17 @@ struct ManagerEditProbe {
     uint64_t (*Flags)() = nullptr;
     int (*Cancels)() = nullptr;
     uint64_t (*Pending)() = nullptr;
+    uint64_t (*ProviderFlags)() = nullptr;
+    void (*ProviderMask)(uint64_t) = nullptr;
     explicit ManagerEditProbe(const fs::path& path) {
         module = LoadLibraryW(path.c_str()); CHECK(module != nullptr);
         Value = reinterpret_cast<decltype(Value)>(GetProcAddress(module, "GetProbeValue"));
         Flags = reinterpret_cast<decltype(Flags)>(GetProcAddress(module, "GetProbeFlags"));
         Cancels = reinterpret_cast<decltype(Cancels)>(GetProcAddress(module, "GetProbeCancels"));
         Pending = reinterpret_cast<decltype(Pending)>(GetProcAddress(module, "GetProbePending"));
-        if (!Value || !Flags || !Cancels || !Pending) { FreeLibrary(module); module = nullptr; CHECK(false); }
+        ProviderFlags=reinterpret_cast<decltype(ProviderFlags)>(GetProcAddress(module,"GetProviderProbeFlags"));
+        ProviderMask=reinterpret_cast<decltype(ProviderMask)>(GetProcAddress(module,"SetProviderProbeMask"));
+        if (!Value || !Flags || !Cancels || !Pending || !ProviderFlags || !ProviderMask) { FreeLibrary(module); module = nullptr; CHECK(false); }
     }
     ~ManagerEditProbe() { if (module) FreeLibrary(module); }
     ManagerEditProbe(const ManagerEditProbe&) = delete;
@@ -88,6 +92,31 @@ struct ManagerEditCase {
     }
     void Close() { CHECK(manager->Stop()); CHECK(manager->DetachEditHost() == MMS_OK); CHECK(host->attached == nullptr); }
 };
+static void ManagerProviderCallbackChecks(const fs::path& root,const fs::path& dll){
+    const std::string id="org.example.provider-probe";
+    for(bool queued:{false,true})for(uint64_t phase:{1ull,2ull,4ull,8ull,16ull}){
+        ManagerEditCase f(root/((queued?"provider-task-":"provider-callback-")+std::to_string(phase)));ManagerEditProbe p(f.Package(dll,id));f.Load();
+        const auto token=f.manager->Storage().RestoreToken(id),revision=f.Revision();p.ProviderMask(phase);
+        const auto result=f.Invoke(id,queued?(phase==4?"queue-throw":"queue"):(phase==4?"prepare-fail":"once"),revision);
+        CHECK(result==(!queued&&phase==4?MMS_E_FAILED:MMS_OK));
+        if(queued){f.manager->Drain();CHECK((p.Flags()&512)==(phase==4?0:512));}
+        CHECK(p.ProviderFlags()==(phase|(phase<<8))&&f.manager->Storage().RestoreToken(id)==token);
+        CHECK(p.Value()==(phase==4?0:1)&&f.Revision()==revision+(phase==4?0:1)&&f.host->history.UndoCount()==(phase==4?0:1));
+        CHECK(!f.host->attached->HasPending()&&f.observations->published==(phase==4?0u:1u)&&f.observations->clean);
+        if(phase==4)CHECK(p.Cancels()==1);
+        p.ProviderMask(0);
+        if(phase!=4){CHECK(f.Invoke(id,"undo")==MMS_OK&&p.Value()==0);CHECK(f.Invoke(id,"redo")==MMS_OK&&p.Value()==1);}
+        f.Close();
+    }
+    {
+        ManagerEditCase f(root/"provider-between-phases");ManagerEditProbe p(f.Package(dll,id));f.Load();
+        CHECK(f.Invoke(id,"prepared",f.Revision())==MMS_OK);const auto token=f.manager->Storage().RestoreToken(id),revision=f.Revision();
+        CHECK(f.Invoke(id,"replace-provider")==MMS_OK&&f.manager->Storage().RestoreToken(id)!=token&&f.host->attached->HasPending());
+        CHECK(f.Invoke(id,"commit-pending")==MMS_E_STALE&&p.Cancels()==1&&p.Value()==0&&f.Revision()==revision&&!f.host->attached->HasPending());
+        CHECK(!f.host->history.UndoCount()&&!f.observations->published);f.Close();
+    }
+    std::cout<<"provider mutations rejected inside five edit callbacks; between-phase replacement remains checked PASS\n";
+}
 static void ManagerEditChecks(const fs::path& root, const fs::path& dll) {
     const std::string id = "org.example.edit-probe";
     {
@@ -190,5 +219,6 @@ static void ManagerEditChecks(const fs::path& root, const fs::path& dll) {
         CHECK((p.Flags() & (1 | 4 | 256)) == (1 | 4 | 256));
         CHECK(!f.host->attached->HasPending() && f.manager->Storage().RestoreToken(failedId) == 0 && f.manager->Ui().commands.empty()); f.Close();
     }
+    ManagerProviderCallbackChecks(root,dll);
     std::cout << "manager edit callback/lifetime checks PASS\n";
 }

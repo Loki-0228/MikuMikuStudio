@@ -20,6 +20,8 @@ struct Plugin {
     MmsHostV1 host{}; MmsUiApiV1 ui{}; MmsEditApiV1 edit{}; MmsSceneApiV1 scene{};
     std::string id; int value = 0, staged = 0, cancels = 0;
     uint64_t revision = 1, flags = 0; MmsHandle pending = 0; bool explicitRevision = false;
+    MmsSerializerV1 serializer{}; MmsHandle provider=0;
+    uint64_t providerProbeMask=0,providerProbeFlags=0;
 };
 Plugin* current = nullptr;
 uint64_t stoppedFlags = 0; int stoppedCancels = 0;
@@ -30,24 +32,41 @@ void ProbeDenied(Plugin& p, uint64_t flag) {
     const auto r = p.edit.begin(p.edit.context, S("forbidden callback"), p.revision, &untouched);
     if (Denied(r) && untouched == 0x123456) p.flags |= flag;
 }
+void ProbeProvider(Plugin& p,uint64_t phase) {
+    if(!(p.providerProbeMask&phase))return;
+    const auto removed=p.host.unregisterProvider(p.host.context,p.provider);
+    if(removed==MMS_E_BUSY)p.providerProbeFlags|=phase;
+    MmsHandle replacement=0x789123;
+    const auto added=p.host.registerProvider(p.host.context,S("mms.serializer"),S(p.id),&p.serializer,sizeof p.serializer,&replacement);
+    if(added==MMS_E_BUSY&&replacement==0x789123)p.providerProbeFlags|=phase<<8;
+    // A failing implementation may have accepted replacement. Retain its
+    // actual handle so the diagnostic DLL remains safely unloadable.
+    if(!added)p.provider=replacement;
+}
 MmsResult MMS_CALL Prepare(void* context) {
     auto& t = *static_cast<Pending*>(context); ProbeDenied(*t.owner, 32);
+    ProbeProvider(*t.owner,1);
     return t.fail ? MMS_E_FAILED : MMS_OK;
 }
 void MMS_CALL Commit(void* context) {
     std::unique_ptr<Pending> t(static_cast<Pending*>(context)); ProbeDenied(*t->owner, 64); t->owner->value = t->after;
+    ProbeProvider(*t->owner,2);
     if (t->owner->pending == t->transaction) t->owner->pending = 0;
 }
 void MMS_CALL Cancel(void* context) {
     std::unique_ptr<Pending> t(static_cast<Pending*>(context)); ++t->owner->cancels; ProbeDenied(*t->owner, 8192);
+    ProbeProvider(*t->owner,4);
     if (t->owner->pending == t->transaction) t->owner->pending = 0;
     if (t->cancelThrows) throw std::runtime_error("cancel contract violation");
 }
 MmsResult MMS_CALL UndoState(void* context, MmsBytes* before, MmsBytes* after, uint32_t* schema, MmsHandle* lease) {
     auto& t = *static_cast<Pending*>(context); ProbeDenied(*t.owner, 16384);
+    ProbeProvider(*t.owner,8);
     *before = {&t.before, sizeof(int)}; *after = {&t.after, sizeof(int)}; *schema = 1; *lease = 1; return MMS_OK;
 }
-void MMS_CALL ReleaseUndo(void* context, MmsHandle) { ProbeDenied(*static_cast<Pending*>(context)->owner, 32768); }
+void MMS_CALL ReleaseUndo(void* context, MmsHandle) {
+    auto& p=*static_cast<Pending*>(context)->owner;ProbeDenied(p,32768);ProbeProvider(p,16);
+}
 MmsResult Join(Plugin& p, MmsHandle tx, bool fail = false, bool cancelThrows = false) {
     auto pending = std::make_unique<Pending>(Pending{&p, p.value, p.value + 1, tx, fail, cancelThrows});
     MmsTransactionParticipantV1 t{H<MmsTransactionParticipantV1>(), pending.get(), S(p.id)};
@@ -109,6 +128,13 @@ MmsResult MMS_CALL Invoke(void* context, MmsObjectRef, MmsSpan args, MmsHandle) 
     }
     if (!p.edit.begin) return MMS_E_NOT_READY;
     const std::string name = command.name;
+    if(name=="replace-provider"){
+        const auto removed=p.host.unregisterProvider(p.host.context,p.provider);if(removed)return removed;
+        return p.host.registerProvider(p.host.context,S("mms.serializer"),S(p.id),&p.serializer,sizeof p.serializer,&p.provider);
+    }
+    if(name=="commit-pending"){
+        const auto result=p.edit.commit(p.edit.context,p.pending);p.pending=0;if(!result)++p.revision;return result;
+    }
     if (name == "once") return Once(p);
     if (name == "pump-once") {
         const auto result = Once(p); if (result) return result;
@@ -173,9 +199,11 @@ MmsResult MMS_CALL Start(void* context) {
         auto& p = *static_cast<Plugin*>(c); ProbeDenied(p, 128); *bytes = {&p.value, sizeof(int)}; *schema = 1; *lease = 1; return MMS_OK;
     };
     serializer.releaseBytes = [](void* c, MmsHandle) { ProbeDenied(*static_cast<Plugin*>(c), 128); };
+    p.serializer=serializer;
     MmsHandle handle = 0;
     auto r = p.host.registerProvider(p.host.context, S("mms.serializer"), S(p.id), &serializer, sizeof(serializer), &handle); if (r) return r;
-    static const char* names[] = {"once","pump-once","twice","prepare-fail","pending","prepared","throw","join-fail","finish","cancel","queue","queue-throw","undo","redo","nested","cancel-throw-pending"};
+    p.provider=handle;
+    static const char* names[] = {"once","pump-once","twice","prepare-fail","pending","prepared","throw","join-fail","finish","cancel","queue","queue-throw","undo","redo","nested","cancel-throw-pending","replace-provider","commit-pending"};
     p.commands = std::make_unique<Command[]>(sizeof(names) / sizeof(names[0]));
     MmsArgumentV1 arguments[2]{};
     for (auto& a : arguments) { a.h = H<MmsArgumentV1>(); a.valueType = MMS_VALUE_INT; a.minimum.type = a.maximum.type = a.defaultValue.type = MMS_VALUE_INT; a.maximum.value.signedValue = INT64_MAX; }
@@ -213,3 +241,5 @@ extern "C" int GetProbeValue() { return current ? current->value : -1; }
 extern "C" uint64_t GetProbeFlags() { return current ? current->flags : stoppedFlags; }
 extern "C" int GetProbeCancels() { return current ? current->cancels : stoppedCancels; }
 extern "C" uint64_t GetProbePending() { return current ? current->pending : 0; }
+extern "C" uint64_t GetProviderProbeFlags() { return current ? current->providerProbeFlags : 0; }
+extern "C" void SetProviderProbeMask(uint64_t mask) { if(current){current->providerProbeMask=mask;current->providerProbeFlags=0;} }

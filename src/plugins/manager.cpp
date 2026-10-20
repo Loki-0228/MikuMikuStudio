@@ -234,11 +234,19 @@ struct Manager::Impl {
             return Boundary([&]() -> MmsResult {
                 auto& i = *static_cast<Instance*>(p); if (GetCurrentThreadId() != i.host->thread) return MMS_E_THREAD;
                 if (i.stopping) return MMS_E_NOT_READY;
-                if (String(service) == "mms.serializer") return i.host->storage.Register(i.storage,id,table,bytes,out);
+                if (String(service) == "mms.serializer") {
+                    if (i.host->edits && i.host->edits->InCallback()) return MMS_E_BUSY;
+                    return i.host->storage.Register(i.storage,id,table,bytes,out);
+                }
                 return MMS_E_UNSUPPORTED;
             });
         };
-        h.unregisterProvider = [](void* p, MmsHandle h) { return Boundary([&] { auto& i = *static_cast<Instance*>(p); return i.host->storage.Unregister(i.storage,h); }); };
+        h.unregisterProvider = [](void* p, MmsHandle h) { return Boundary([&]() -> MmsResult {
+            auto& i = *static_cast<Instance*>(p);
+            if (GetCurrentThreadId() != i.host->thread) return MMS_E_THREAD;
+            if (i.host->edits && i.host->edits->InCallback()) return MMS_E_BUSY;
+            return i.host->storage.Unregister(i.storage,h);
+        }); };
         h.log = [](void* p, uint32_t severity, MmsString s) {
             Boundary([&] { auto& i = *static_cast<Instance*>(p); if (severity > 3) return MMS_E_ARGUMENT;
                 i.host->Write(i.ui.id + " [" + std::to_string(severity) + "] " + String(s)); return MMS_OK; });
