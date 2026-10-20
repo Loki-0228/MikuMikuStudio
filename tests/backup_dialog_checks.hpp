@@ -37,8 +37,26 @@ void BackupDialogChecks(HWND dialog,const as::DialogContext& context) {
 void BackupDirectoryChecks(MMDApp* app,const fs::path& config) {
     const auto before=as::Current();std::wstring error;
     const auto executable=local_data::ExecutableDirectory();
-    Check(as::DisplayDirectory((executable/L"data"/L"backups").wstring())==L"data\\backups",
+    Check(as::DisplayDirectory((executable/L"backups").wstring())==L"backups",
         "default backup folder is displayed relatively");
+    Check(before.directory==(executable/L"backups").wstring(),
+        "fresh installation defaults to backups beside data");
+    const auto legacy=config.parent_path()/L"legacy-default.ini";
+    const auto oldDirectory=executable/L"data"/L"backups";
+    fs::create_directories(oldDirectory);
+    const auto retained=oldDirectory/L"existing-backup.pmm";
+    std::ofstream(retained)<<"retain existing backup";
+    Check(WritePrivateProfileStringW(L"autosave",L"directoryMode",L"executable",legacy.c_str()) &&
+        WritePrivateProfileStringW(L"autosave",L"directory",L"data/backups",legacy.c_str()),
+        "seed the previous version's default folder setting");
+    Check(as::LoadSettings(legacy).directory==before.directory,
+        "previous default setting follows the new EXE-level backups folder");
+    Check(Bytes(retained)=="retain existing backup","changing the default preserves existing backup files");
+    Check(WritePrivateProfileStringW(L"autosave",L"directoryMode",L"custom",legacy.c_str()) &&
+        WritePrivateProfileStringW(L"autosave",L"directory",oldDirectory.c_str(),legacy.c_str()),
+        "seed an explicitly selected custom folder at the old location");
+    Check(as::LoadSettings(legacy).directory==oldDirectory.wstring(),
+        "explicit custom directories retain their selected location");
     auto custom=before;custom.directory=(executable/L"custom"/L"中文备份").wstring();
     Check(as::Configure(app,custom,error),"configure an EXE-contained custom backup folder");
     wchar_t stored[512]{};GetPrivateProfileStringW(L"autosave",L"directory",L"",stored,512,config.c_str());

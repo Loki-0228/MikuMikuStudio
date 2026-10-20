@@ -4,7 +4,7 @@
 // Normal diagnostics stay in a bounded in-memory ring. Anything that would
 // kill the process (unhandled exception, std::terminate, abort, invalid
 // parameter, failed startup) saves an error log in the configured backup
-// folder (default: data/backups beside the EXE) and shows the ring in a modal
+// folder (default: backups beside the EXE) and shows the ring in a modal
 // "last error" window.
 // MessageBoxW blocks the failing thread, so the process stays alive until the
 // user presses OK - a silent flash-exit becomes a readable error report.
@@ -60,7 +60,6 @@ std::atomic<CrashBackup> crashBackup{nullptr};
 ULONGLONG lastHeartbeat = 0;
 wchar_t dialogText[kDialogChars];
 wchar_t crashDirectory[32768];
-wchar_t dataDirectory[32768];
 SRWLOCK errorDirectoryLock = SRWLOCK_INIT;
 wchar_t configuredErrorDirectory[32768];
 wchar_t errorLogPath[32768];
@@ -81,13 +80,11 @@ void PrepareCrashDirectory() noexcept {
     }
     wchar_t* separator = std::wcsrchr(crashDirectory, L'\\');
     if (!separator || wcscpy_s(separator + 1,
-        _countof(crashDirectory) - (separator + 1 - crashDirectory), L"data\\backups")) {
+        _countof(crashDirectory) - (separator + 1 - crashDirectory), L"backups")) {
         crashDirectory[0] = L'\0';
         errorLogFailure = ERROR_BAD_PATHNAME;
         return;
     }
-    wcscpy_s(dataDirectory, crashDirectory);
-    *std::wcsrchr(dataDirectory, L'\\') = L'\0';
 }
 
 void Append(const char* text, size_t size) noexcept {
@@ -545,10 +542,6 @@ void SaveErrorLog(const char* reason, const EXCEPTION_RECORD* record,
     struct Unlock { bool held; ~Unlock() { if (held) ReleaseSRWLockShared(&errorDirectoryLock); } } unlock{locked};
     const wchar_t* directory = locked && *configuredErrorDirectory ? configuredErrorDirectory : crashDirectory;
     if (!*directory) return;
-    if (_wcsicmp(directory, crashDirectory) == 0 && !CreateDirectoryW(dataDirectory, nullptr) && GetLastError() != ERROR_ALREADY_EXISTS) {
-        errorLogFailure = GetLastError();
-        return;
-    }
     if (!CreateDirectoryW(directory, nullptr) && GetLastError() != ERROR_ALREADY_EXISTS) {
         errorLogFailure = GetLastError();
         return;

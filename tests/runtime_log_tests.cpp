@@ -111,7 +111,7 @@ void FaultWhileWriting() noexcept {
 }
 int WINAPI HiddenMessage(HWND, LPCWSTR text, LPCWSTR, UINT) {
     const bool ok = text && (blocked ? wcsstr(text, L"could not save error log") :
-        wcsstr(text, L"error log:") && wcsstr(text, customLog ? customLogDirectory : L"\\data\\backups\\error-"));
+        wcsstr(text, L"error log:") && wcsstr(text, customLog ? customLogDirectory : L"\\backups\\error-"));
     if (!ok) TerminateProcess(GetCurrentProcess(), 251);
     if (nullExecute && (!wcsstr(text, L"fault context registers:") ||
         !wcsstr(text, L"null execute callsite:") || !wcsstr(text, L"bytes[-16,+8)")))
@@ -225,9 +225,9 @@ int wmain(int argc, wchar_t** argv) {
         const auto child = directory / L"runtime_log_tests.exe";
         fs::copy_file(executable, child);
         const bool custom=std::wstring(mode)==L"custom-log" || std::wstring(mode)==L"custom-log-outside";
-        const auto logFolder=custom ? (std::wstring(mode)==L"custom-log" ? directory/L"用户备份" : root/L"external-logs"/mode) : directory/L"data"/L"backups";
+        const auto logFolder=custom ? (std::wstring(mode)==L"custom-log" ? directory/L"用户备份" : root/L"external-logs"/mode) : directory/L"backups";
         if(custom)fs::create_directories(logFolder);
-        if (std::wstring(mode) == L"blocked") { fs::create_directories(directory / L"data"); std::ofstream(directory / L"data" / L"backups") << "keep this file"; }
+        if (std::wstring(mode) == L"blocked") { std::ofstream(directory / L"backups") << "keep this file"; }
         std::wstring command = L"\"" + child.wstring() + L"\" --child " + mode;
         STARTUPINFOW start{sizeof(start)}; start.dwFlags = STARTF_USESHOWWINDOW; start.wShowWindow = SW_HIDE;
         PROCESS_INFORMATION process{};
@@ -245,13 +245,13 @@ int wmain(int argc, wchar_t** argv) {
         const DWORD expected = value == L"normal" ? 0 :
             value == L"seh" || value == L"shutdown" || insideWrite || nullCall || custom ? EXCEPTION_ACCESS_VIOLATION : 0xE0000004;
         Check(code == expected, "child exits through expected production fatal path");
-        Check(!fs::exists(cwd / L"data" / L"backups"), "working directory never receives crash files");
-        if (value == L"normal") { Check(!fs::exists(directory / L"data" / L"backups"), "normal run creates no crash folder"); continue; }
-        if (value == L"blocked") { Check(Bytes(directory / L"data" / L"backups") == "keep this file", "failed log creation preserves existing file"); continue; }
+        Check(!fs::exists(cwd / L"backups"), "working directory never receives crash files");
+        if (value == L"normal") { Check(!fs::exists(directory / L"backups"), "normal run creates no crash folder"); continue; }
+        if (value == L"blocked") { Check(Bytes(directory / L"backups") == "keep this file", "failed log creation preserves existing file"); continue; }
         if (concurrent || insideWrite) Check(fs::exists(cwd / L"validated-dialog.ok"),
             "fault handler reaches a consistent dialog after concurrent or interrupted writes");
         unsigned logs = 0;
-        if(custom)Check(!fs::exists(directory/L"data"/L"backups"),"configured error logs do not spill into the default folder");
+        if(custom)Check(!fs::exists(directory/L"backups"),"configured error logs do not spill into the default folder");
         for (const auto& entry : fs::directory_iterator(logFolder)) {
             ++logs;
             Check(entry.path().extension() == L".log" && entry.path().filename().wstring().find(L"error-") == 0,

@@ -263,7 +263,7 @@ int wmain(int argc, wchar_t** argv) {
     Check(argc >= 2, "disposable artifact folder required"); root = fs::absolute(argv[1]);
     wchar_t executable[32768]{};
     Check(GetModuleFileNameW(nullptr, executable, 32768) != 0, "find actual test EXE");
-    crashDirectory = fs::path(executable).parent_path() / L"data" / L"backups";
+    crashDirectory = fs::path(executable).parent_path() / L"backups";
     const std::wstring mode = argc == 3 ? argv[2] : L"";
     if(mode.find(L"--settings-")==0){SettingsLocationChecks(executable,mode);return 0;}
     const bool fullWarningMode = mode.find(L"--full-") == 0;
@@ -314,7 +314,7 @@ int wmain(int argc, wchar_t** argv) {
         "actual antialias selection persists in this EXE Data folder");
     as::Settings value; value.enabled = true; value.directory = (root / L"自动备份").wstring(); value.maxBackups = 2;
     if (!defaultCrash) Configure(app, value);
-    else Check(!fs::exists(config) && as::Current().directory == (fs::path(app->ExeDir()) / L"data" / L"backups").wstring(),
+    else Check(!fs::exists(config) && as::Current().directory == (fs::path(app->ExeDir()) / L"backups").wstring(),
         "first-run crash recovery uses backups beside the executable with no saved configuration");
     const auto manual = root / L"工程原稿.pmm";
     LoadModelFile(app, (root / L"fixture" / L"fixture.pmd").c_str(), false);

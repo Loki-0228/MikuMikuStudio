@@ -56,8 +56,8 @@ fs::path ResolveDirectory(const fs::path& path) {
 }
 Settings Defaults() {
     Settings value;
-    const auto directory = local_data::File(L"backups");
-    if (!directory.empty()) value.directory = directory.wstring();
+    const auto executable = local_data::ExecutableDirectory();
+    if (!executable.empty()) value.directory = (executable / L"backups").wstring();
     return value;
 }
 bool Regular(const fs::path& path) {
@@ -245,7 +245,7 @@ bool SaveSettings(const fs::path& path, const Settings& value) {
         std::to_wstring(value.maxBackups) + L"\r\noverwriteOldest=" + std::to_wstring(value.overwriteOldest) +
         L"\r\nkeepPrevious=" + std::to_wstring(value.keepPrevious) +
         L"\r\ndirectoryMode=" + (besideExecutable ? L"executable" : relative ? L"relative" : L"custom") +
-        L"\r\ndirectory=" + (besideExecutable ? std::wstring(L"data/backups") : storedDirectory) + L"\r\n";
+        L"\r\ndirectory=" + (besideExecutable ? std::wstring(L"backups") : storedDirectory) + L"\r\n";
     HANDLE file = CreateFileW(temporary.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file == INVALID_HANDLE_VALUE) return false;
     DWORD written = 0;

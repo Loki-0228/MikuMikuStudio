@@ -26,8 +26,8 @@ void SettingsLocationChecks(const fs::path& executable,const std::wstring& mode)
     }
 
     if(mode==L"--settings-fresh" || mode==L"--settings-default" || overrideMode){
-        Check(!current.enabled && current.intervalMinutes==1 && current.maxBackups==100 && current.directory==(folder/L"data"/L"backups").wstring(),
-            "installation uses its own data/backups and ignores the shared legacy profile");
+        Check(!current.enabled && current.intervalMinutes==1 && current.maxBackups==100 && current.directory==(folder/L"backups").wstring(),
+            "installation uses its own EXE/backups and ignores the shared legacy profile");
     }
     if(mode==L"--settings-fresh" || overrideMode){
         Check(as::Configure(nullptr,current,error),"save settings without system profile dependency");
@@ -36,7 +36,7 @@ void SettingsLocationChecks(const fs::path& executable,const std::wstring& mode)
         wchar_t value[64]{};GetPrivateProfileStringW(L"autosave",L"directoryMode",L"",value,64,target.c_str());
         Check(!wcscmp(value,L"executable"),"default directory persists as an executable-relative mode");
         GetPrivateProfileStringW(L"autosave",L"directory",L"",value,64,target.c_str());
-        Check(!wcscmp(value,L"data/backups"),"default backup setting stores no previous EXE absolute address");
+        Check(!wcscmp(value,L"backups"),"default backup setting stores no previous EXE absolute address");
         if(overrideMode)Check(!fs::exists(config),"test override does not write production data settings");
 
         auto trailingSeparator=current;
