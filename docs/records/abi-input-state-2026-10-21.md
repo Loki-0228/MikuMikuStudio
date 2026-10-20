@@ -42,6 +42,12 @@ STATE 隐藏后可与 LAYOUT 组合收缩空位，并使用原引用恢复。用
 
 `product-smoke.log` 记录完整配置正式构建的原名及中文改名启动、原生工具栏、两个面板、侧栏实时跟随和关闭检查通过。它验证产品集成，不替代新 INPUT 的受控编辑夹具。`pe-inventory.json` 确认两套正式程序为 x64、子系统版本 6.1，无直接可选新渲染后端导入；正式构建仍为 Win7 基线、DX12 关闭。
 
+## 最终 ABI 程序
+
+物理首次替换提交为 `b06bf4d`，INPUT STATE 源码提交为 `9d879c82d7ec84b9a6b3b4258d6dba1cf7b9eabe`。最终完整配置程序已复制到 ABI 工作区的 `build/release/MikuMikuDance.exe`，9,233,408 字节，SHA-256 为 `180DB2580C99A3578F30B2539451FF82605AEBDEC337DAEBCE8B77EDF86CF65A`。
+
+复制后对最终文件再次执行原名及中文改名的产品检查，结果均通过，见 `release-smoke.log`。`release.json` 记录来源提交、路径、长度及散列。上一版 Toon 程序保存在同证据目录的 `previous-abi-MikuMikuDance.exe`，散列为 `D6579C8D790683C002D91F1CCEAE8E606354DE3D7EDCEC830FF695EA78EAC515`。本任务未修改 main 工作区或稳定版程序。
+
 ## 验收边界
 
 INPUT 夹具使用最小共同历史 participant，未构造实际 MMS 场景。历史及修订断言证明该夹具的显示刷新不提交编辑；实际工程播放头及场景求值仍需对应集成验收。合成 IME 消息不能代替微软拼音、跨屏多 DPI 或正式鼠标验收。
