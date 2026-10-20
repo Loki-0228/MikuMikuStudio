@@ -35,6 +35,12 @@ struct RefreshPresentation {
     // A retained GROUP uses its original registration identity but has no
     // separate drawable client area. Only SUBTREE is exposed for it.
     bool container = false;
+    // x/y share this host coordinate space. Native publication also retains
+    // exact client origins so a DIP roundtrip cannot enlarge damage by a pixel.
+    uint32_t coordinateDpi = 96;
+    HWND coordinateWindow = nullptr;
+    LONG pixelX = 0, pixelY = 0;
+    bool pixelOrigin = false;
 };
 class UiRefreshQueue {
     struct Target;

@@ -153,7 +153,7 @@ public:
     }
     // Same registration, service, queue and ticket as SELF. DATA captures the
     // complete bound version set at acceptance; no per-child version is guessed.
-    // Worker-safe with an already captured target. No local rectangles.
+    // Worker-safe with an already captured target.
     MmsResult RefreshSubtree(const MmsUiTargetRefV1& target, std::uint32_t kinds,
         RefreshTicket& out, std::uint64_t coalesceKey = 0) const noexcept {
         MmsUiRefreshRequestV1 request{}; request.h = Header<MmsUiRefreshRequestV1>();
@@ -163,6 +163,22 @@ public:
     MmsResult RepaintSubtree(const MmsUiTargetRefV1& target, RefreshTicket& out,
         std::uint64_t coalesceKey = 0) const noexcept {
         return RefreshSubtree(target, MMS_UI_REFRESH_REPAINT, out, coalesceKey);
+    }
+    // Rectangles use the captured root's local DIP space, including GROUP's
+    // logical bounds. They restrict REPAINT only; other phases keep the whole
+    // registered subtree. A later spatial change fails rather than remapping.
+    MmsResult RefreshSubtreeRects(const MmsUiRefreshTargetV1& target, std::uint32_t kinds,
+        const MmsUiDirtyRectV1* rects, std::size_t count, RefreshTicket& out,
+        std::uint64_t coalesceKey = 0) const noexcept {
+        MmsUiRefreshRequestV1 request{}; request.h = Header<MmsUiRefreshRequestV1>();
+        request.target = target.target; request.kinds = kinds; request.scope = MMS_UI_REFRESH_SUBTREE;
+        request.expectedGeometryRevision = count ? target.geometryRevision : 0;
+        request.dirtyRects = {rects, static_cast<std::uint64_t>(count), sizeof(MmsUiDirtyRectV1), 1};
+        request.coalesceKey = coalesceKey; return Request(request, out);
+    }
+    MmsResult RepaintSubtreeRects(const MmsUiRefreshTargetV1& target, const MmsUiDirtyRectV1* rects,
+        std::size_t count, RefreshTicket& out, std::uint64_t coalesceKey = 0) const noexcept {
+        return RefreshSubtreeRects(target, MMS_UI_REFRESH_REPAINT, rects, count, out, coalesceKey);
     }
     MmsResult RefreshStateSubtree(const MmsUiTargetRefV1& target, RefreshTicket& out,
         std::uint64_t coalesceKey = 0) const noexcept {

@@ -762,6 +762,8 @@ struct NativeUi::Impl {
         if (!MapWindowPoints(window, main, &origin, 1) && GetLastError() != ERROR_SUCCESS) return false;
         RefreshPresentation item; item.element = element.handle; item.owner = String(element.desc.ownerPlugin);
         item.instance = instance; item.window = window; item.dpi = WindowDpi(window);
+        item.coordinateDpi = dpi; item.coordinateWindow = main;
+        item.pixelX = origin.x; item.pixelY = origin.y; item.pixelOrigin = true;
         item.x = origin.x * 96.0f / dpi; item.y = origin.y * 96.0f / dpi;
         item.width = (client.right - client.left) * 96.0f / item.dpi;
         item.height = (client.bottom - client.top) * 96.0f / item.dpi; item.visible = shown;
@@ -786,6 +788,9 @@ struct NativeUi::Impl {
                 RefreshPresentation item; item.element = element.handle;
                 item.owner = String(element.desc.ownerPlugin); item.instance = element.handle;
                 item.window = toolbar; item.dpi = dpi; item.container = true;
+                item.coordinateDpi = dpi; item.coordinateWindow = main;
+                item.pixelX = LONG(std::lround(double(bounds->second.x) * dpi / 96));
+                item.pixelY = LONG(std::lround(double(bounds->second.y) * dpi / 96)); item.pixelOrigin = true;
                 item.x = bounds->second.x; item.y = bounds->second.y;
                 item.width = bounds->second.width; item.height = bounds->second.height;
                 item.visible = bounds->second.visible; item.layoutRefresh = true;

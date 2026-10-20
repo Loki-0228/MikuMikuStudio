@@ -121,7 +121,7 @@ static void PipelineAndScopes() {
     auto bad = x.Tree(MMS_UI_REFRESH_REPAINT); bad.scope = MMS_UI_REFRESH_SELF;
     MmsHandle out = 777; CHECK(x.api.request(x.api.context, &bad, &out) == MMS_E_UNSUPPORTED && out == 777);
     MmsUiDirtyRectV1 rect{0,0,5,5}; bad = x.Tree(MMS_UI_REFRESH_REPAINT); bad.dirtyRects = {&rect,1,sizeof(rect),1};
-    CHECK(x.api.request(x.api.context, &bad, &out) == MMS_E_UNSUPPORTED && out == 777);
+    CHECK(x.api.request(x.api.context, &bad, &out) == MMS_E_ARGUMENT && out == 777);
     bad = x.Tree(MMS_UI_REFRESH_DATA); bad.binding = x.bindings[0]; bad.sourceRevision = x.revisions[0];
     CHECK(x.api.request(x.api.context, &bad, &out) == MMS_E_ARGUMENT && out == 777);
     bad = x.Tree(MMS_UI_REFRESH_STATE, x.panelElement);

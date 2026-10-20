@@ -19,7 +19,29 @@ struct Flight {
     explicit Flight(RefreshClient& c) : client(c) { client.inFlight.fetch_add(1); }
     ~Flight() { client.inFlight.fetch_sub(1); }
 };
-MmsResult Invalidate(const RefreshPresentation& target, bool whole, const std::vector<MmsUiDirtyRectV1>& rects) {
+struct RectangleGeometry {
+    float x = 0, y = 0, width = 0, height = 0;
+    uint32_t dpi = 96, coordinateDpi = 96;
+    HWND coordinateWindow = nullptr;
+    LONG pixelX = 0, pixelY = 0;
+    bool pixelOrigin = false;
+    RectangleGeometry() noexcept = default;
+    explicit RectangleGeometry(const RefreshPresentation& p) noexcept : x(p.x), y(p.y), width(p.width), height(p.height),
+        dpi(p.dpi), coordinateDpi(p.coordinateDpi), coordinateWindow(p.coordinateWindow), pixelX(p.pixelX), pixelY(p.pixelY), pixelOrigin(p.pixelOrigin) {}
+    bool Same(const RefreshPresentation& p) const noexcept {
+        return x == p.x && y == p.y && width == p.width && height == p.height && dpi == p.dpi &&
+            coordinateDpi == p.coordinateDpi && coordinateWindow == p.coordinateWindow && pixelOrigin == p.pixelOrigin &&
+            (!pixelOrigin || (pixelX == p.pixelX && pixelY == p.pixelY));
+    }
+};
+bool SameCoordinateSpace(const RefreshPresentation& a, const RefreshPresentation& b) noexcept {
+    return a.coordinateDpi == b.coordinateDpi && a.coordinateWindow == b.coordinateWindow;
+}
+double Origin(const RefreshPresentation& p, bool vertical) noexcept {
+    return p.pixelOrigin ? double(vertical ? p.pixelY : p.pixelX) : double(vertical ? p.y : p.x) * p.coordinateDpi / 96;
+}
+MmsResult Invalidate(const RefreshPresentation& target, bool whole, const std::vector<MmsUiDirtyRectV1>& rects,
+    const RefreshPresentation* root = nullptr) {
     if (!IsWindow(target.window)) return MMS_E_STALE;
     if (whole) return InvalidateRect(target.window, nullptr, FALSE) ? MMS_OK : MMS_E_FAILED;
     HRGN region = CreateRectRgn(0, 0, 0, 0);
@@ -28,13 +50,22 @@ MmsResult Invalidate(const RefreshPresentation& target, bool whole, const std::v
     const double scale = target.dpi / 96.0;
     bool any = false;
     for (const auto& r : rects) {
-        const double left = std::clamp(double(r.x), 0.0, double(target.width));
-        const double top = std::clamp(double(r.y), 0.0, double(target.height));
-        const double right = std::clamp(double(r.x) + r.width, 0.0, double(target.width));
-        const double bottom = std::clamp(double(r.y) + r.height, 0.0, double(target.height));
+        const auto& source = root ? *root : target;
+        double left = std::clamp(double(r.x), 0.0, double(source.width));
+        double top = std::clamp(double(r.y), 0.0, double(source.height));
+        double right = std::clamp(double(r.x) + r.width, 0.0, double(source.width));
+        double bottom = std::clamp(double(r.y) + r.height, 0.0, double(source.height));
         if (r.width == 0 || r.height == 0 || right <= left || bottom <= top) continue;
-        HRGN part = CreateRectRgn(int(std::floor(left * scale)), int(std::floor(top * scale)),
-            int(std::ceil(right * scale)), int(std::ceil(bottom * scale)));
+        if (root) {
+            const double dx = Origin(source, false) - Origin(target, false), dy = Origin(source, true) - Origin(target, true);
+            const double rootScale = source.dpi / 96.0;
+            left = std::clamp(dx + left * rootScale, 0.0, double(target.width) * scale);
+            top = std::clamp(dy + top * rootScale, 0.0, double(target.height) * scale);
+            right = std::clamp(dx + right * rootScale, 0.0, double(target.width) * scale);
+            bottom = std::clamp(dy + bottom * rootScale, 0.0, double(target.height) * scale);
+        } else { left *= scale; top *= scale; right *= scale; bottom *= scale; }
+        if (right <= left || bottom <= top) continue;
+        HRGN part = CreateRectRgn(int(std::floor(left)), int(std::floor(top)), int(std::ceil(right)), int(std::ceil(bottom)));
         if (!part) return MMS_E_MEMORY;
         const auto combined = CombineRgn(region, region, part, RGN_OR); DeleteObject(part);
         if (combined == ERROR) return MMS_E_MEMORY;
@@ -224,7 +255,6 @@ MmsResult UiRefreshQueue::Request(RefreshClient& client, const MmsUiRefreshReque
     } else if (request->binding || request->sourceRevision) return MMS_E_ARGUMENT;
     const auto& span = request->dirtyRects;
     if (!(request->kinds & MMS_UI_REFRESH_REPAINT) && span.count) return MMS_E_ARGUMENT;
-    if (request->scope == MMS_UI_REFRESH_SUBTREE && span.count) return MMS_E_UNSUPPORTED;
     if (span.count > kRects) return MMS_E_BUSY;
     if (span.count && (!span.data || span.stride < sizeof(MmsUiDirtyRectV1) || span.recordVersion != 1 ||
         !request->expectedGeometryRevision)) return MMS_E_ARGUMENT;
@@ -284,6 +314,7 @@ MmsResult UiRefreshQueue::Request(RefreshClient& client, const MmsUiRefreshReque
             }
             const auto& t = current->second; const auto& p = t.presentation;
             if (p.owner != client.owner || p.container) return MMS_E_STALE;
+            if (!ticket.whole && !SameCoordinateSpace(target->second.presentation, p)) return MMS_E_NOT_READY;
             const MmsUiTargetRefV1 ref{Header<MmsUiTargetRefV1>(), handle, t.generation, epoch_};
             uint32_t supported = MMS_UI_REFRESH_REPAINT | (p.stateRefresh ? MMS_UI_REFRESH_STATE : 0) |
                 (p.layoutRefresh && layout_ ? MMS_UI_REFRESH_LAYOUT : 0);
@@ -405,6 +436,7 @@ void UiRefreshQueue::SyncTargets(const std::vector<RefreshPresentation>& present
     std::map<MmsHandle, Target> candidate;
     for (const auto& p : presentations) {
         if (!p.element || !p.instance || p.owner.empty() || !p.window || p.dpi < 48 || p.dpi > 960 ||
+            p.coordinateDpi < 48 || p.coordinateDpi > 960 ||
             !std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.width) || !std::isfinite(p.height) ||
             p.width < 0 || p.height < 0 || p.width > 1048576 || p.height > 1048576) throw std::invalid_argument("refresh presentation");
         const auto old = targets_.find(p.element);
@@ -414,9 +446,7 @@ void UiRefreshQueue::SyncTargets(const std::vector<RefreshPresentation>& present
         if (!nextGeneration_ || !nextGeometry_) throw std::bad_alloc();
         target.generation = sameInstance ? old->second.generation : nextGeneration_++;
         target.stateProviderRevision = sameInstance ? old->second.stateProviderRevision : 0;
-        const bool sameGeometry = sameInstance && old->second.presentation.x == p.x && old->second.presentation.y == p.y &&
-            old->second.presentation.width == p.width && old->second.presentation.height == p.height &&
-            old->second.presentation.dpi == p.dpi && old->second.presentation.visible == p.visible;
+        const bool sameGeometry = sameInstance && RectangleGeometry(old->second.presentation).Same(p) && old->second.presentation.visible == p.visible;
         target.geometry = sameGeometry ? old->second.geometry : nextGeometry_++;
         if (!candidate.emplace(p.element, std::move(target)).second) throw std::invalid_argument("duplicate refresh target");
     }
@@ -458,6 +488,7 @@ void UiRefreshQueue::Drain() {
         Target target; RefreshClient* owner = nullptr; MmsUiTargetRefV1 ref{}; uint32_t kinds = 0;
         uint64_t stateProviderRevision = 0; UiRefreshBindings::Contribution data;
         std::vector<MmsUiDirtyRectV1> rects; bool whole = true, fixedGeometry = false;
+        RectangleGeometry region;
     };
     struct Group {
         Target root; RefreshClient* owner = nullptr; MmsUiTargetRefV1 ref{};
@@ -465,6 +496,9 @@ void UiRefreshQueue::Drain() {
         uint32_t kinds = 0, scope = MMS_UI_REFRESH_SELF; bool fixedGeometry = false;
         std::vector<Work> members; std::vector<MmsHandle> tickets;
         std::vector<MmsUiTargetRefV1> dataTargets; std::vector<UiRefreshBindings::Captured> captured;
+        RectangleGeometry region;
+        std::vector<MmsUiDirtyRectV1> rects;
+        bool whole = false;
     };
     std::vector<Group> groups;
     {
@@ -501,6 +535,7 @@ void UiRefreshQueue::Drain() {
             });
             if (group == groups.end()) {
                 Group candidate; candidate.root = targets_.at(ticket.target.element); candidate.owner = ticket.owner;
+                candidate.region = RectangleGeometry(candidate.root.presentation);
                 candidate.ref = ticket.target; candidate.key = ticket.key; candidate.topology = ticket.topology;
                 candidate.sourceRevision = ticket.sourceRevision; candidate.binding = ticket.binding;
                 candidate.kinds = ticket.kinds; candidate.scope = ticket.scope; candidate.fixedGeometry = ticket.expectedGeometry != 0;
@@ -513,6 +548,7 @@ void UiRefreshQueue::Drain() {
                 } else for (const auto& member : ticket.members) {
                     Work work; work.target = targets_.at(member.ref.element); work.owner = ticket.owner; work.ref = member.ref;
                     work.kinds = member.kinds; work.stateProviderRevision = member.stateProviderRevision; work.fixedGeometry = candidate.fixedGeometry;
+                    work.region = RectangleGeometry(work.target.presentation);
                     for (const auto& data : ticket.captured) if (SameRef(data.target, member.ref)) work.data = data.data;
                     candidate.members.push_back(std::move(work));
                 }
@@ -522,6 +558,9 @@ void UiRefreshQueue::Drain() {
             if (ticket.scope == MMS_UI_REFRESH_SELF) {
                 auto& work = group->members.front(); work.whole |= ticket.whole;
                 work.rects.insert(work.rects.end(), ticket.rects.begin(), ticket.rects.end());
+            } else {
+                group->whole |= ticket.whole;
+                group->rects.insert(group->rects.end(), ticket.rects.begin(), ticket.rects.end());
             }
             ++it;
         }
@@ -691,7 +730,9 @@ void UiRefreshQueue::Drain() {
             }
             if (phase == MMS_UI_REFRESH_REPAINT) {
                 if (const auto r = validate(group.fixedGeometry || (group.kinds & MMS_UI_REFRESH_STATE))) return r;
-                const auto r = Invalidate(group.target.presentation, group.whole, group.rects);
+                const auto r = batch.scope == MMS_UI_REFRESH_SUBTREE ?
+                    Invalidate(group.target.presentation, batch.whole, batch.rects, &batch.root.presentation) :
+                    Invalidate(group.target.presentation, group.whole, group.rects);
                 return r;
             }
             return MMS_OK;
@@ -700,6 +741,15 @@ void UiRefreshQueue::Drain() {
             if (const auto check = validateAll(batch.fixedGeometry)) return check;
             for (const uint32_t phase : {MMS_UI_REFRESH_DATA, MMS_UI_REFRESH_STATE, MMS_UI_REFRESH_LAYOUT, MMS_UI_REFRESH_REPAINT}) {
                 if (!(batch.kinds & phase)) continue;
+                if (phase == MMS_UI_REFRESH_REPAINT && batch.scope == MMS_UI_REFRESH_SUBTREE && !batch.whole) {
+                    if (const auto check = validateAll(batch.fixedGeometry)) return check;
+                    // Successful preceding phases may publish new geometry. A
+                    // root-local region still belongs to its captured mapping;
+                    // check every member before invalidating even the first.
+                    if (!batch.region.Same(batch.root.presentation)) return MMS_E_STALE;
+                    for (const auto& work : batch.members) if ((work.kinds & MMS_UI_REFRESH_REPAINT) &&
+                        !work.region.Same(work.target.presentation)) return MMS_E_STALE;
+                }
                 if (phase == MMS_UI_REFRESH_LAYOUT) {
                     if (const auto check = validateAll(batch.fixedGeometry)) return check;
                     { std::lock_guard<std::mutex> lock(mutex_); evaluatingLayoutOwner_ = batch.owner; }

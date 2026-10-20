@@ -2,7 +2,7 @@
 
 `mms.ui.refresh` 1.0 为插件自己的按钮、分隔线、注册 GROUP 和原生 surface 面板安排异步刷新。接口定义见 [refresh.h](include/mms/refresh.h)。结构使用 `MmsHeader`、`MMS_CALL` 和 8 字节对齐，调用失败不修改输出参数。
 
-当前支持 SELF 和 SUBTREE 范围的 REPAINT、按钮 STATE、已绑定目标 DATA，以及保留布局的 LAYOUT；GROUP 只开放 SUBTREE。各阶段按实际成员能力执行，共用同一票据及队列。DATA 使用[已有绑定](data-refresh.md)。DEPENDENTS、来源订阅、自动依赖、插件量测提供者和动画帧尚未提供。SUBTREE 暂不接受局部矩形，也不遍历插件自行创建的任意 HWND。
+当前支持 SELF 和 SUBTREE 范围的 REPAINT、按钮 STATE、已绑定目标 DATA，以及保留布局的 LAYOUT；GROUP 只开放 SUBTREE。两种范围均接受局部矩形，各阶段共用同一票据及队列。DATA 使用[已有绑定](data-refresh.md)。DEPENDENTS、来源订阅、自动依赖、插件量测提供者和动画帧尚未提供。SUBTREE 不遍历插件自行创建的任意 HWND。
 
 组合请求在同一队列中按 DATA、STATE、LAYOUT、REPAINT 执行。DATA 准备并交换不可变显示模型；STATE 只读查询目标按钮的 getState，并可通过[状态内容服务](state-content.md)准备显示文案和提示；LAYOUT 使用已保留的描述、提示和状态排版；REPAINT 调用 `InvalidateRect` 或 `InvalidateRgn`，不直接执行绘制。刷新不调用 `FrameDriver`，不修改播放头、工程 dirty 或撤销历史，也不保存布局偏好。插件窗口后续的正常 `WM_PAINT` 仍由插件处理。
 
@@ -65,13 +65,15 @@
 | `kinds` | REPAINT、STATE、DATA、LAYOUT 或组合。SELF 要求目标支持全部位；SUBTREE 要求每个位至少有一个适用成员。 |
 | `scope` | SELF 或 SUBTREE，按目标报告范围使用。DEPENDENTS 返回 UNSUPPORTED。 |
 | `expectedGeometryRevision` | 局部矩形请求必须填写取得矩形时的非零几何修订。整目标请求可填 0，表示接受执行时的有效几何；填写非零值时仍严格检查。 |
-| `dirtyRects` | SELF + REPAINT 局部数组，非空时 stride 至少为结构大小、recordVersion=1。count=0 表示整目标。SUBTREE 必须 count=0，局部数组返回 UNSUPPORTED。不含 REPAINT 时也必须 count=0。 |
+| `dirtyRects` | 含 REPAINT 时可填写局部数组，非空时 stride 至少为结构大小、recordVersion=1。SELF 使用目标客户区坐标；SUBTREE 使用根客户区坐标，GROUP 使用逻辑容器坐标。count=0 表示各适用目标的整个客户区。不含 REPAINT 时必须 count=0。 |
 | `coalesceKey` | 插件自定的合并键。同一插件、目标实例及工程代次内，相同键的待执行贡献可以合并。0 也是有效键。 |
 | `flags`、`reserved` | 必须为 0。 |
 
-矩形的 `x`、`y` 是目标客户区左上角起算的局部 DIP，`width`、`height` 是非负 DIP。每个值必须有限且绝对值不超过 1,048,576。负的起点可以表示被客户区裁剪的区域。
+矩形的 `x`、`y` 是目标或子树根左上角起算的局部 DIP，`width`、`height` 是非负 DIP。每个值必须有限且绝对值不超过 1,048,576。负的起点可以表示被范围裁剪的区域。
 
 宿主把矩形裁剪到目标客户区，再按该窗口坐标空间的 DPI 向外取整为像素区域。多个矩形取并集；零面积或完全位于客户区外的矩形不产生损伤。没有矩形表示整个目标，不表示整个 MMS 窗口或场景。
+
+SUBTREE 先裁剪到根客户区或 GROUP 逻辑范围，再按根 DPI 转到宿主共同坐标空间，平移到每个实际成员的客户区，裁剪后向外取整。宿主保留实际客户区的整数像素原点，避免 DIP 往返引入边界误差。成员 DPI 可以不同，但必须属于同一个已发布坐标空间，否则整次返回 NOT_READY。无交集的成员不产生损伤，GROUP 借用的父窗口也不整块重绘。
 
 宿主在接收和执行时都检查实例、工程代次及非零的几何修订。带旧修订的矩形返回 `STALE`，不会自动改成全窗口重绘。零几何修订只免除整目标请求的几何匹配，不能绕过实例、工程或布局暂停检查；零尺寸恢复仅适用上述含 LAYOUT 的请求。
 
@@ -84,7 +86,7 @@ SUBTREE 展开入队时的 `mms.ui` 注册树，包含有实际呈现的根及�
 | DATA | 具有本插件有效绑定的实际目标；无绑定成员跳过。 |
 | STATE | 已创建、支持 STATE 的宿主按钮；GROUP、面板和分隔线跳过。 |
 | LAYOUT | 支持保留布局的成员。整树 STATE 后只调用一次现有后端，解决同容器及相邻区域的布局依赖。 |
-| REPAINT | 实际呈现的按钮、分隔线和面板，各自整个客户区。 |
+| REPAINT | 实际呈现的按钮、分隔线和面板。无矩形时使整个客户区失效；有矩形时只使根区域映射后的交集失效。 |
 
 某一请求位没有任何适用成员时，整次返回 UNSUPPORTED，不返回成功空操作。任一注册后代属于其他插件时，整次返回 ARGUMENT，不能借父容器代它刷新。按钮仍可引用另一插件的公开命令，执行 STATE 时会保护实际命令提供者。
 
@@ -98,7 +100,9 @@ SUBTREE + DATA 的 binding/sourceRevision 均为 0。宿主在同一次绑定锁
 
 执行顺序为整棵子树 DATA → 整棵子树 STATE → 一次 LAYOUT → 整棵子树 REPAINT，兄弟 STATE 不会先于另一个兄弟 DATA。阶段的全部适用成员成功后才写 completedKinds。阶段内失败停止剩余成员及后续阶段，但不回滚已更新显示模型或原生控件。准备、状态、布局及因果 UI 任务沿用同一只读门，不能借另一个后代递归提交 DATA、STATE 或 LAYOUT。
 
-非零 expectedGeometryRevision 限制根的捕获几何，并固定入队时所有实际成员的几何；不匹配则 STALE。零值允许采用处理时的有效几何。成功 STATE 自身发布的显隐及成功 LAYOUT 产生的新几何供本次后续阶段使用，不能绕过外部实例、工程和拓扑变化。SUBTREE 不接受局部矩形；跨坐标空间局部映射仍未开放。
+非零 expectedGeometryRevision 限制根的捕获几何，并固定入队时所有实际成员的几何，包括区域外的成员。不匹配则 STALE。零值只适用于无矩形请求，允许采用处理时的有效几何。成功 STATE 自身发布的显隐及成功 LAYOUT 产生的新几何供本次后续阶段使用，不能绕过外部实例、工程和拓扑变化。
+
+局部矩形只限制 REPAINT，不缩小 DATA、STATE 或 LAYOUT 的成员范围。STATE 只改变显隐而未改变空间映射时，同次请求可继续使用原矩形。若 LAYOUT 改变根或成员的原点、尺寸、DPI 或坐标空间，宿主在 REPAINT 前检查整树并返回 STALE，不先使部分兄弟区域失效。票据保留已完成阶段，旧矩形不会自动改成全控件重绘。零面积或无交集矩形仍可成功完成 REPAINT，但不免除成员、权限、就绪和几何检查。
 
 ## 票据状态与合并
 
@@ -146,7 +150,7 @@ LAYOUT 使用现有布局树中的元素描述、布局提示、文字量测和�
 
 布局失败可能发生在部分 HWND 已移动之后。宿主暂停目标和新几何快照，不把部分结果发布为就绪，也不承诺回滚已移动窗口。后续正常宿主布局成功后恢复发布；旧快照租约保持可读。
 
-局部矩形使用捕获时的目标坐标。若同一请求的 LAYOUT 改变几何，旧矩形不能用于新布局，票据以 FAILED/STALE 结束，保留已成功的 completedKinds，不自动扩大为整目标重绘。需要随布局重绘时应提交无局部矩形、几何修订为 0 的整目标请求；完成后再重新查询几何以计算下一次局部损伤。
+局部矩形使用捕获时的目标坐标。SELF 请求的 LAYOUT 改变几何修订时，旧矩形以 FAILED/STALE 结束；SUBTREE 按上述整树空间映射检查。两种范围均保留已成功的 completedKinds，不自动扩大为整目标重绘。需要随布局重绘时应提交无局部矩形、几何修订为 0 的整目标或整子树请求；完成后再重新查询几何以计算下一次局部损伤。
 
 `release` 成功后，该句柄再用于 `query`、`cancel` 或 `release` 返回 `NOT_FOUND`。已释放的待执行贡献继续运行并占用配额，终止后才回收。需要撤回贡献时先 `cancel`，再 `release`。
 
@@ -172,10 +176,10 @@ LAYOUT 使用现有布局树中的元素描述、布局提示、文字量测和�
 | 错误 | 典型原因 |
 | --- | --- |
 | `THREAD` | 在工作线程调用 `getCapabilities` 或 `getTarget`。 |
-| `ARGUMENT` | 非法结构、未知标志、非法矩形、缺少 DATA 绑定及版本、非 DATA 请求的非零 binding 或 sourceRevision、访问其他插件目标。 |
-| `UNSUPPORTED` | DEPENDENTS、SUBTREE 局部矩形、GROUP 的 SELF 或 DATA 绑定、阶段无适用成员、后端不支持该阶段、单独 STATE 无保留槽位的显隐变化，或查询非刷新目标。 |
-| `NOT_READY` | 停止中、目标未挂载、布局暂停、零尺寸目标请求不含可用的 LAYOUT，或显隐需要的布局尚未重新发布。 |
-| `STALE` | 元素注销、实例重建、工程或要求的几何修订不匹配，以及子树拓扑或 DATA 绑定集合变化。 |
+| `ARGUMENT` | 非法结构、未知标志、非法矩形、局部矩形缺少非零几何修订、缺少 DATA 绑定及版本、非 DATA 请求的非零 binding 或 sourceRevision、访问其他插件目标。 |
+| `UNSUPPORTED` | DEPENDENTS、GROUP 的 SELF 或 DATA 绑定、阶段无适用成员、后端不支持该阶段、单独 STATE 无保留槽位的显隐变化，或查询非刷新目标。 |
+| `NOT_READY` | 停止中、目标未挂载、布局暂停、子树区域的共同坐标空间尚不一致、零尺寸目标请求不含可用的 LAYOUT，或显隐需要的布局尚未重新发布。 |
+| `STALE` | 元素注销、实例重建、工程或要求的几何修订不匹配、局部子树请求的空间映射改变，以及子树拓扑或 DATA 绑定集合变化。 |
 | `NOT_FOUND` | 票据不存在、已释放或属于其他插件。 |
 | `BUSY` | 配额已满、取消执行中的贡献，或在同插件的 DATA/STATE/LAYOUT 只读因果链中再次提交 DATA/STATE/LAYOUT。 |
 | `MEMORY`、`FAILED` | 内存、GDI 区域、调度唤醒或窗口失效操作失败。 |

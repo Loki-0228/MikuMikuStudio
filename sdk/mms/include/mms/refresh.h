@@ -45,7 +45,12 @@ typedef struct MmsUiRefreshRequestV1 {
 	MmsHandle binding;
 	uint32_t kinds, scope;
 	uint64_t sourceRevision, expectedGeometryRevision;
-    /* Local rectangles are SELF-only. SUBTREE requires count == 0. */
+    /* With REPAINT, local DIP rectangles are relative to the root client area
+       (GROUP: retained logical bounds). A nonempty span requires the root's
+       exact expectedGeometryRevision. SUBTREE clips/maps to each registered
+       drawable member; native child windows are not enumerated. Geometry
+       changes before its REPAINT stage fail STALE instead of repainting all.
+       count == 0 requests each applicable target's whole client area. */
 	MmsSpan dirtyRects;
 	uint64_t coalesceKey;
 	uint32_t flags, reserved;
