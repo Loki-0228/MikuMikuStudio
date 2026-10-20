@@ -2,15 +2,15 @@
 
 [English](#english) | [中文](#中文) | [日本語](#日本語)
 
-[Release notes / 发布日志 / リリースノート](https://github.com/Loki-0228/MikuMikuStudio/releases/tag/v2026.10.19.1)
+[Release notes / 发布日志 / リリースノート](https://github.com/Loki-0228/MikuMikuStudio/releases/tag/v2026.10.20.1)
 
 [Documentation / 文档导航 / ドキュメント](docs/README.md)
 
-[v2026.10.19.1 Release / 正式版 / 正式版](docs/records/releases.md#release-v2026-10-19-1)
+[v2026.10.20.1 Release / 正式版 / 正式版](docs/records/releases.md#release-v2026-10-20-1)
 
 ## Downloads and package differences
 
-[GitHub Releases](https://github.com/Loki-0228/MikuMikuStudio/releases/tag/v2026.10.19.1) provides Windows x64 packages with `full` or `minimal` in the filename and lists their contents in the release notes. The table below describes the released build profiles. The minimal build uses the `mmd932` build profile:
+[GitHub Releases](https://github.com/Loki-0228/MikuMikuStudio/releases/tag/v2026.10.20.1) provides Windows x64 packages with `full` or `minimal` in the filename and lists their contents in the release notes. The table below describes the released build profiles. The minimal build uses the `mmd932` build profile:
 
 | Area | Full `full` | Minimal `minimal` |
 | --- | --- | --- |
@@ -53,7 +53,7 @@ startup. They are not stored in project files.
 
 ## 下载与版本区别
 
-[GitHub Releases](https://github.com/Loki-0228/MikuMikuStudio/releases/tag/v2026.10.19.1) 同时提供 Windows x64 完整包和最小包，实际收录内容见发布页面的日志。需要 MMS 新增功能时选择文件名含 `full` 的 ZIP；主要使用 MMD 原有功能时选择含 `minimal` 的 ZIP。下表描述已发布的两种构建档，两档均保留 `MikuMikuDance.exe` 文件名。
+[GitHub Releases](https://github.com/Loki-0228/MikuMikuStudio/releases/tag/v2026.10.20.1) 同时提供 Windows x64 完整包和最小包，实际收录内容见发布页面的日志。需要 MMS 新增功能时选择文件名含 `full` 的 ZIP；主要使用 MMD 原有功能时选择含 `minimal` 的 ZIP。下表描述已发布的两种构建档，两档均保留 `MikuMikuDance.exe` 文件名。
 
 | 项目 | 完整包 `full` | 最小包 `minimal`（构建档 `mmd932`） |
 | --- | --- | --- |
@@ -99,7 +99,7 @@ PMM `0002` 在保留标准文件头的前提下，通过扩展保存骨骼曲线
 
 ## ダウンロードとパッケージの違い
 
-[GitHub Releases](https://github.com/Loki-0228/MikuMikuStudio/releases/tag/v2026.10.19.1) では、ファイル名に `full` または `minimal` を含む Windows x64 パッケージを配布しています。収録内容は公開ページのリリースノートを参照してください。下表は公開済みのビルド構成です。最小版は `mmd932` ビルドプロファイルを使用します。
+[GitHub Releases](https://github.com/Loki-0228/MikuMikuStudio/releases/tag/v2026.10.20.1) では、ファイル名に `full` または `minimal` を含む Windows x64 パッケージを配布しています。収録内容は公開ページのリリースノートを参照してください。下表は公開済みのビルド構成です。最小版は `mmd932` ビルドプロファイルを使用します。
 
 | 項目 | 完全版 `full` | 最小版 `minimal` |
 | --- | --- | --- |

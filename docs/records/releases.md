@@ -4,7 +4,7 @@
 
 ## 记录索引
 
-- [v2026.10.20.1-pre.1 本地预发布说明](#release-v2026-10-20-1-pre-1)
+- [v2026.10.20.1 正式发布说明](#release-v2026-10-20-1)
 
 - [v2026.10.19.1 正式发布说明](#release-v2026-10-19-1)
 - [v2026.10.18.2 正式发布说明](#release-v2026-10-18-2)
@@ -24,19 +24,19 @@
 - [v2026.10.11.2 构建与发布记录](#record-release-2)
 - [MMS 原生媒体导入与导出](#record-native-media)
 
-<a id="release-v2026-10-20-1-pre-1"></a>
+<a id="release-v2026-10-20-1"></a>
 
-本节为本地预发布说明，对照 GitHub 正式版 v2026.10.19.1 整理。
+本节为正式发布说明，对照 GitHub 正式版 v2026.10.19.1 整理。
 
-<!-- release-notes:v2026.10.20.1-pre.1:begin -->
+<!-- release-notes:v2026.10.20.1:begin -->
 
-## MikuMikuStudio v2026.10.20.1-pre.1
+## MikuMikuStudio v2026.10.20.1
 
-Windows x64 prerelease
+Windows x64
 
-[English](#release-v2026-10-20-1-pre-1-en) | [中文](#release-v2026-10-20-1-pre-1-zh) | [日本語](#release-v2026-10-20-1-pre-1-ja)
+[English](#release-v2026-10-20-1-en) | [中文](#release-v2026-10-20-1-zh) | [日本語](#release-v2026-10-20-1-ja)
 
-<a id="release-v2026-10-20-1-pre-1-en"></a>
+<a id="release-v2026-10-20-1-en"></a>
 
 ### English
 
@@ -68,7 +68,7 @@ Choose the full package for extended editing, antialiasing, and modern media fea
 
 Neither application package includes the NVIDIA fix. If needed, place the separate `MMSNvidiaAAFix.dll` beside the full build's EXE, install it from Help, and restart MMS. Use Help to uninstall it. Deleting the DLL does not remove an installed setting.
 
-<a id="release-v2026-10-20-1-pre-1-zh"></a>
+<a id="release-v2026-10-20-1-zh"></a>
 
 ### 中文
 
@@ -100,7 +100,7 @@ Neither application package includes the NVIDIA fix. If needed, place the separa
 
 两个主程序包均不包含 NVIDIA 修复插件。需要时将独立的 `MMSNvidiaAAFix.dll` 放在完整包 EXE 旁，在「帮助」菜单安装后重启 MMS。卸载也在「帮助」菜单操作，直接删除 DLL 不会移除已安装的设置。
 
-<a id="release-v2026-10-20-1-pre-1-ja"></a>
+<a id="release-v2026-10-20-1-ja"></a>
 
 ### 日本語
 
@@ -132,7 +132,7 @@ Neither application package includes the NVIDIA fix. If needed, place the separa
 
 両パッケージに NVIDIA 修正 DLL は含まれません。必要な場合は、別添の `MMSNvidiaAAFix.dll` を完全版の EXE と同じ場所に配置し、ヘルプからインストールして MMS を再起動してください。アンインストールもヘルプから行います。DLL の削除だけでは設定を解除できません。
 
-<!-- release-notes:v2026.10.20.1-pre.1:end -->
+<!-- release-notes:v2026.10.20.1:end -->
 
 <a id="release-v2026-10-19-1"></a>
 
