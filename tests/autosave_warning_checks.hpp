@@ -13,6 +13,7 @@ void CheckFullWarnings(MMDApp* app, const fs::path& config, const std::wstring& 
         value.maxBackups = 1;
         value.overwriteOldest = rotation;
         Configure(app, value);
+        app->SceneModified() = 1; // Seed with a real edit; pristine empty scenes are intentionally skipped.
         if (!crashOnly) Check(as::BackupNow(app) == as::Result::Saved, "seed periodic folder to its capacity");
         Check(as::BackupNow(app, true) == as::Result::Saved, "seed crash folder to its capacity");
         value.enabled = false;

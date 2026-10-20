@@ -20,7 +20,7 @@ struct Settings {
     bool keepPrevious = false; // Preserve same-directory PMM1 and paired EMM versions.
     std::wstring directory; // Periodic copies only. Crash copies use data/backups.
 };
-enum class Result { Saved, Disabled, Busy, Full, Failed };
+enum class Result { Saved, Disabled, Busy, Full, Failed, Empty };
 // Production settings live in data/autosave.ini; the default backup
 // directory is resolved in data beside the current EXE instead of persisting its path.
 Settings LoadSettings(const std::filesystem::path&);

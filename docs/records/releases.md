@@ -44,6 +44,7 @@ Changes since `v2026.10.19.1`.
 
 #### What's new
 
+- Pristine unnamed projects no longer trigger periodic backups, including after New or scrubbing an empty timeline. Camera or light edits, deletion of all models, and explicitly saved projects remain eligible for backup. Crash recovery and the once-per-launch backup-limit warning remain available.
 - Autosave settings now include an optional PMM1 version history. Before replacing a saved project, MMS preserves the old PMM and paired EMM in the same folder. Existing versions move to `.pmm11`, `.pmm111`, and matching EMM names. Failed writes restore the previous files. The option is off by default.
 - Open, drag-and-drop, and recent projects accept extensions that start with `.pmm`, including `.pmm1` and `.pmm11`. File headers and project contents still determine whether loading succeeds. MME loads and saves the matching `.emm1` or `.emm11`.
 - Manual saves, Save As, and periodic backups capture the scene in memory and write it on a background thread. One shared save task prevents concurrent writes. Edits made during saving remain marked as unsaved. Closing waits for the active save, and a failed manual save keeps MMS open.
@@ -73,6 +74,7 @@ Neither application package includes the NVIDIA fix. If needed, place the separa
 
 #### 更新内容
 
+- 未修改、未命名的空工程不再触发定时备份，新建工程或只在空时间轴上跳帧也不会生成备份。相机、灯光编辑，删除全部模型后的改动，以及明确保存过的工程仍会备份。崩溃备份和每次启动一次的备份满额提醒保持可用。
 - 自动保存设置新增「同时保存 PMM1」选项，默认关闭。覆盖保存前，在同目录保留旧 PMM 及配套 EMM。已有旧版本依次后移为 `.pmm11`、`.pmm111` 及对应的 EMM 文件；写入失败时恢复原文件。
 - 打开、拖入和最近工程支持扩展名以 `.pmm` 开头的文件，包括 `.pmm1`、`.pmm11`。能否加载仍取决于文件头与实际工程内容。MME 会读取并保存对应的 `.emm1`、`.emm11`。
 - 手动保存、另存为和定时备份先在内存中固定工程数据，再由后台线程写入。所有保存共用一个任务，避免并发写入；保存期间的新修改保留未保存标记。关闭窗口会等待当前保存结束，手动保存失败时保持 MMS 打开。
@@ -102,6 +104,7 @@ Neither application package includes the NVIDIA fix. If needed, place the separa
 
 #### 更新内容
 
+- 未編集で名前のない空プロジェクトは定期バックアップを作成しません。新規作成や空のタイムラインのシークでも作成しません。カメラや照明の編集、全モデル削除後の変更、明示的に保存したプロジェクトは引き続きバックアップします。クラッシュ時の復旧と、起動ごとに一度の上限通知も保持します。
 - 自動保存の設定に、任意の PMM1 履歴保存を追加しました。初期状態は無効です。上書き前に同じフォルダーへ旧 PMM と対応する EMM を残します。既存の履歴は `.pmm11`、`.pmm111` と対応する EMM 名へ移動し、書き込みに失敗した場合は元のファイルを復元します。
 - 開く、ドラッグ＆ドロップ、最近使ったプロジェクトで、`.pmm1`、`.pmm11` など拡張子が `.pmm` で始まるファイルを扱えます。読み込み時はヘッダーとプロジェクト内容を引き続き検証します。MME は対応する `.emm1`、`.emm11` を読み書きします。
 - 通常保存、名前を付けて保存、定期バックアップは、メモリ内にシーンのスナップショットを作成してからバックグラウンドで書き込みます。保存タスクは同時に一つだけ実行します。保存中の編集は未保存のまま保持し、終了時は保存完了を待ちます。通常保存に失敗した場合は MMS を終了しません。

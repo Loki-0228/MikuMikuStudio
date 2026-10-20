@@ -252,6 +252,7 @@ unsigned RedMenuPixels(MMDApp* app) {
 }
 #include "installation_settings_checks.inc"
 #include "autosave_warning_checks.hpp"
+#include "autosave_empty_checks.hpp"
 }
 int wmain(int argc, wchar_t** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
@@ -288,6 +289,12 @@ int wmain(int argc, wchar_t** argv) {
     app->EnglishUI() = 2; RefreshMenuLanguage(app);
     SetWindowPos(app->MainWindow(), nullptr, 0, 0, 1600, 800, SWP_NOACTIVATE | SWP_NOZORDER);
     as::Initialize(app);
+    if (mode == L"--empty-project") {
+        CheckEmptyProjectBackup(app);
+        as::Shutdown(); ShutdownCleanup(app); g_Block = nullptr; delete app; UnhookWindowsHookEx(hook);
+        std::printf("PASS empty-project autosave checks=%u\n", checks);
+        return 0;
+    }
     if (fullWarningMode) {
         CheckFullWarnings(app, config, mode);
         Check(!IsWindowVisible(app->MainWindow()), "warning test stays hidden");

@@ -112,6 +112,15 @@ bool Ready(MMDApp* app, bool crash) {
         (crash || (IsWindowEnabled(app->MainWindow()) && !app->RecordingWindow() &&
             !app->PlaybackActive() && !app->FrameStepPlayback() && !GetCapture()));
 }
+bool HasRecoveryContent(MMDApp* app) {
+    // No filename does not mean no work: camera/light edits and deletion of
+    // the last model must still be recoverable. Also retain loaded scenes
+    // whose dirty flag has been cleared by a manual save.
+    if (*app->EnvFileName() || app->SceneModified()) return true;
+    for (int slot = 0; slot < kModelSlotCount; ++slot)
+        if (app->ModelSlot(slot) || app->AccessorySlot(slot)) return true;
+    return false;
+}
 void WarnIfFull(MMDApp* app) noexcept {
     if (!full || fullWarningShown || saving.load() || !Ready(app, false)) return;
     try {
@@ -278,6 +287,7 @@ bool FolderFull() noexcept { return full; }
 bool QueueBackup(MMDApp* app) noexcept {
     try {
         if (!Current().enabled || !Ready(app, false)) return false;
+        if (!HasRecoveryContent(app)) return false;
         struct BackupWork {
             Settings settings;
             fs::path destination, active;
@@ -343,7 +353,9 @@ bool QueueBackup(MMDApp* app) noexcept {
 Result BackupNow(MMDApp* app, bool crash) noexcept {
     try {
         if (!Current().enabled && !crash) return Result::Disabled;
-        if (!Ready(app, crash) || saving.exchange(true)) return Result::Busy;
+        if (!Ready(app, crash)) return Result::Busy;
+        if (!crash && !HasRecoveryContent(app)) return Result::Empty;
+        if (saving.exchange(true)) return Result::Busy;
         struct Release { ~Release() { saving.store(false); } } release;
         const fs::path directory = crash ? Defaults().directory : settings.directory;
         if (directory.empty()) return Result::Failed;
@@ -415,6 +427,7 @@ void Tick(MMDApp* app, ULONGLONG now) noexcept {
         WarnIfFull(app);
         if (!settings.enabled || now < nextSave || !Ready(app, false)) return;
         nextSave = now + ULONGLONG(settings.intervalMinutes) * 60000;
+        if (!HasRecoveryContent(app)) return;
         if (!QueueBackup(app)) runtime_log::Write("AUTOSAVE could not start backup");
         WarnIfFull(app);
     } catch (...) {
