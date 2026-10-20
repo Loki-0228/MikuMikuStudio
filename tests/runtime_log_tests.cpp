@@ -27,6 +27,8 @@ namespace {
 unsigned checks = 0;
 bool blocked = false;
 bool stress = false, writerFault = false, nullExecute = false;
+bool customLog = false;
+wchar_t customLogDirectory[32768]{};
 bool shutdownMode = false, guardBoundary = false, mutateCallsite = false;
 bool guardModule = false;
 HMODULE protectedModule = nullptr;
@@ -126,7 +128,7 @@ __declspec(noinline) void ExhaustStack(unsigned depth) {
 int WINAPI HiddenMessage(HWND, LPCWSTR text, LPCWSTR, UINT) {
     if (shutdownMode) TerminateProcess(GetCurrentProcess(), 245);
     const bool ok = text && (blocked ? wcsstr(text, L"could not save error log") :
-        wcsstr(text, L"error log:") && wcsstr(text, L"\\data\\backups\\error-"));
+        wcsstr(text, L"error log:") && wcsstr(text, customLog ? customLogDirectory : L"\\data\\backups\\error-"));
     if (!ok) TerminateProcess(GetCurrentProcess(), 251);
     if (nullExecute && (!wcsstr(text, L"fault context registers:") ||
         !wcsstr(text, L"null execute callsite:") || !wcsstr(text, L"bytes[-16,+8)")))
@@ -240,6 +242,15 @@ int Child(const std::wstring& mode) {
         MH_CreateHook(reinterpret_cast<void*>(&MessageBoxW), reinterpret_cast<void*>(&HiddenMessage), nullptr) == MH_OK &&
         MH_EnableHook(MH_ALL_HOOKS) == MH_OK, "hide disposable child crash dialogs");
     diagnostics::Initialize(); diagnostics::SetCrashBackup(Recovery);
+    customLog = mode == L"custom-log" || mode == L"custom-log-outside";
+    if (customLog) {
+        wchar_t image[32768]{}; GetModuleFileNameW(nullptr, image, 32768);
+        const auto folder = fs::path(image).parent_path();
+        const auto target = mode == L"custom-log" ? folder / L"用户备份" :
+            folder.parent_path().parent_path() / L"external-logs" / mode;
+        wcscpy_s(customLogDirectory, target.c_str());
+        diagnostics::SetErrorLogDirectory(customLogDirectory);
+    }
     if (mode == L"normal") { diagnostics::NormalExit(0); return 0; }
     for (int i = 0; i < 220; ++i) diagnostics::Write("history %d", i);
     diagnostics::WritePath("unicode", L"中文镜头.vmd");
@@ -367,12 +378,17 @@ int wmain(int argc, wchar_t** argv) {
         L"execute-null-guard", L"execute-null-recovery", L"execute-null-shutdown",
         L"read-noaccess", L"write-noaccess", L"execute-nonzero", L"in-page",
         L"unreadable-context", L"unreadable-record", L"unreadable-pointers", L"stack-overflow",
-        L"module-header-noaccess", L"module-header-guard", L"module-header-damaged"}) {
+        L"module-header-noaccess", L"module-header-guard", L"module-header-damaged",
+        L"custom-log", L"custom-log-outside"}) {
         const auto directory = root / L"中文程序" / mode;
         const auto cwd = root / L"different-working-folder" / mode;
         fs::create_directories(directory); fs::create_directories(cwd);
         const auto child = directory / L"runtime_log_tests.exe";
         fs::copy_file(executable, child);
+        const bool custom = std::wstring(mode) == L"custom-log" || std::wstring(mode) == L"custom-log-outside";
+        const auto logFolder = custom ? (std::wstring(mode) == L"custom-log" ? directory / L"用户备份" :
+            root / L"external-logs" / mode) : directory / L"data" / L"backups";
+        if (custom) fs::create_directories(logFolder);
         if (std::wstring(mode) == L"blocked") { fs::create_directories(directory / L"data"); std::ofstream(directory / L"data" / L"backups") << "keep this file"; }
         std::wstring command = L"\"" + child.wstring() + L"\" --child " + mode;
         STARTUPINFOW start{sizeof(start)}; start.dwFlags = STARTF_USESHOWWINDOW; start.wShowWindow = SW_HIDE;
@@ -395,7 +411,7 @@ int wmain(int argc, wchar_t** argv) {
         const DWORD expected = value == L"normal" ? 0 :
             unreadable ? 0xE1234567 : value == L"in-page" ? EXCEPTION_IN_PAGE_ERROR :
             value == L"stack-overflow" ? EXCEPTION_STACK_OVERFLOW :
-            value == L"seh" || closing || insideWrite || nullCall || memoryFault || protectedHeader ? EXCEPTION_ACCESS_VIOLATION : 0xE0000004;
+            value == L"seh" || closing || insideWrite || nullCall || memoryFault || protectedHeader || custom ? EXCEPTION_ACCESS_VIOLATION : 0xE0000004;
         Check(code == expected, "child exits through expected production fatal path");
         Check(!fs::exists(cwd / L"data" / L"backups"), "working directory never receives crash files");
         if (value == L"normal") { Check(!fs::exists(directory / L"data" / L"backups"), "normal run creates no crash folder"); continue; }
@@ -405,7 +421,7 @@ int wmain(int argc, wchar_t** argv) {
         if (concurrent || insideWrite) Check(fs::exists(cwd / L"validated-dialog.ok"),
             "fault handler reaches a consistent dialog after concurrent or interrupted writes");
         unsigned logs = 0;
-        for (const auto& entry : fs::directory_iterator(directory / L"data" / L"backups")) {
+        for (const auto& entry : fs::directory_iterator(logFolder)) {
             ++logs;
             Check(entry.path().extension() == L".log" && entry.path().filename().wstring().find(L"error-") == 0,
                 "crash file uses timestamped error name");

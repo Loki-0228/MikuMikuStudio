@@ -22,11 +22,14 @@ struct Settings {
     bool keepPrevious = false; // Preserve same-directory PMM1 and paired EMM versions.
     std::wstring directory; // Periodic copies only. Crash copies use data/backups.
 };
-enum class Result { Saved, Disabled, Busy, Full, Failed };
+enum class Result { Saved, Disabled, Busy, Full, Failed, Empty };
 // Production settings use the autosave section in data/settings.json.
 // These explicit INI helpers support tests and one-time legacy migration.
 // The default backup directory is resolved beside the current EXE.
 Settings LoadSettings(const std::filesystem::path&);
+// Display and store installation-contained folders relative to the EXE;
+// the live Settings directory remains absolute.
+std::wstring DisplayDirectory(const std::wstring&);
 bool SaveSettings(const std::filesystem::path&, const Settings&);
 bool Validate(const Settings&, std::wstring& error);
 const Settings& Current();

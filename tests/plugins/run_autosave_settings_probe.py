@@ -57,7 +57,7 @@ def run(executable, folder, mode, *, override=False, no_profile=False):
             assert document["sections"]["history"] == {"recordAdjustments": True, "steps": 47, "memoryMiB": 96}
             assert document["sections"]["recentProjects"]["paths"] == [str(folder / "example.pmm")]
             assert not (folder / "data" / "recent-pmm.txt").exists(), "production recent projects use central settings"
-        if mode != "--settings-migrate":
+        if mode not in ("--settings-migrate", "--settings-migrate-relative"):
             assert not (folder / "data" / "autosave.ini").exists(), "production must not recreate separate autosave INI"
 
 a, exe_a = install("stable")
@@ -70,6 +70,9 @@ renamed = a / "\u81ea\u5b9a\u4e49\u540d\u79f0.exe"
 exe_a.rename(renamed)
 run(renamed, a, "--settings-check-custom")
 run(renamed, a, "--settings-readonly")
+portable, portable_exe = install("copied-custom")
+shutil.copytree(a / "data", portable / "data")
+run(portable_exe, portable, "--settings-check-custom")
 c, exe_c = install("copied-default")
 shutil.copytree(b / "data", c / "data")
 run(exe_c, c, "--settings-default")
@@ -79,6 +82,8 @@ e, exe_e = install("no-system-profile")
 run(exe_e, e, "--settings-fresh", no_profile=True)
 f, exe_f = install("legacy-local-migration")
 run(exe_f, f, "--settings-migrate")
+relative, relative_exe = install("legacy-relative-migration")
+run(relative_exe, relative, "--settings-migrate-relative")
 central = json.loads((f / "data" / "settings.json").read_text(encoding="utf-8"))["sections"]
 assert central["autosave"]["intervalMinutes"] == 3 and central["autosave"]["maxBackups"] == 9
 assert central["antialias"]["algorithm"] == 4 and central["antialias"]["enabled"] is False

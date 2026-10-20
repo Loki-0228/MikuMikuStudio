@@ -98,7 +98,8 @@ void OutlineModeSettingsChecks(MMDApp& probe,const fs::path& folder,bool migrati
 void SettingsLocationChecks(const fs::path& executable,const std::wstring& mode) {
     const auto folder=executable.parent_path();const auto config=folder/L"data"/L"settings.json";
     const bool overrideMode=mode==L"--settings-override";
-    const bool migrationMode=mode==L"--settings-migrate";
+    const bool migrationMode=mode==L"--settings-migrate" || mode==L"--settings-migrate-relative";
+    const bool relativeMigration=mode==L"--settings-migrate-relative";
     if(!overrideMode)SetEnvironmentVariableW(L"MIKUMIKUSTUDIO_AUTOSAVE_CONFIG",nullptr);
     const auto legacyAutosave=folder/L"data"/L"autosave.ini";
     if(mode==L"--settings-fresh"){
@@ -110,7 +111,8 @@ void SettingsLocationChecks(const fs::path& executable,const std::wstring& mode)
     if (migrationMode) {
         Check(!fs::exists(config), "migration fixture starts without central settings");
         fs::create_directories(config.parent_path());
-        { std::ofstream out(legacyAutosave); out << "[autosave]\nenabled=0\nintervalMinutes=3\nmaxBackups=9\nkeepPrevious=1\ndirectoryMode=executable\n"; }
+        { std::ofstream out(legacyAutosave); out << "[autosave]\nenabled=0\nintervalMinutes=3\nmaxBackups=9\nkeepPrevious=1\n";
+            out << (relativeMigration ? "directoryMode=relative\ndirectory=data/portable-legacy\n" : "directoryMode=executable\n"); }
         { std::ofstream out(folder/L"data"/L"antialias.ini"); out << "[Antialias]\nAlgorithm=4\nEnabled=0\nOutlineMode=1\n"; }
         { std::ofstream out(folder/L"data"/L"processor.ini"); out << "[Vertices]\nMode=cpu\n"; }
         { std::ofstream out(folder/L"data"/L"viewport.ini"); out << "[viewport]\ncorner=tl\n"; }
@@ -130,11 +132,14 @@ void SettingsLocationChecks(const fs::path& executable,const std::wstring& mode)
         antialias::ReloadUserSettings(probe.get());
         if (migrationMode) {
             Check(!current.enabled && current.keepPrevious && current.intervalMinutes==3 && current.maxBackups==9 &&
-                current.directory==(folder/L"data"/L"backups").wstring(), "autosave imports local INI once");
+                current.directory==(folder/L"data"/(relativeMigration?L"portable-legacy":L"backups")).wstring(), "autosave imports local INI once");
             std::string migrated;
             Check(system_settings::ReadSection("autosave",migrated)==system_settings::Result::Ok&&
                 settings_json::Bool(settings_json::Object(migrated),"keepPrevious",false),
                 "INI migration stores previous-version preservation in the central autosave section even with periodic saving disabled");
+            if(relativeMigration){const auto saved=settings_json::Object(migrated);
+                Check(settings_json::String(saved,"directoryMode")=="relative" && settings_json::String(saved,"directory")=="data\\portable-legacy",
+                    "local relative INI migration preserves an EXE-relative directory in centralized JSON");}
             Check(probe->antialiasing.algorithm==antialias::Algorithm::Fxaa && !probe->antialiasing.enabled&&
                 probe->antialiasing.outlineMode==antialias::OutlineMode::FxaaAdaptive,
                 "antialias imports the local INI algorithm and enable state while retiring the independent outline choice");
@@ -225,7 +230,9 @@ void SettingsLocationChecks(const fs::path& executable,const std::wstring& mode)
         std::string body;
         Check(system_settings::ReadSection("autosave",body)==system_settings::Result::Ok,"reload central autosave section");
         const auto saved=settings_json::Object(body);
-        Check(as::Current().enabled&&as::Current().keepPrevious&&settings_json::Bool(saved,"enabled",false)&&settings_json::Bool(saved,"keepPrevious",false) && plugins::Wide(settings_json::String(saved,"directory"))==(root/L"custom").wstring() &&
+        Check(as::Current().enabled&&as::Current().keepPrevious&&settings_json::Bool(saved,"enabled",false)&&settings_json::Bool(saved,"keepPrevious",false) &&
+            as::Current().directory==(root/L"custom").wstring() && settings_json::String(saved,"directoryMode")=="relative" &&
+            plugins::Wide(settings_json::String(saved,"directory"))==as::DisplayDirectory((root/L"custom").wstring()) &&
             settings_json::UInt(saved,"intervalMinutes",0)==2 && settings_json::UInt(saved,"maxBackups",0)==7,
             "same installation reloads its custom directory and preferences after EXE rename");
     }

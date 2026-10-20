@@ -6,7 +6,7 @@
 
 同一批增加属性值解析模块，完整和基础配置均通过 617 项检查；它尚未连接 `MMS_UI_INPUT`、原插件事务授权和原生输入生命周期，不能记为可写属性 UI 已实现。
 
-已[同步 main 已提交功能](abi-main-feature-sync-2026-10-20.md)至 `9500a26`，保留 ABI 共同历史、集中设置和 MMS-only 文件标记。曲线文件选择期间的窗口销毁和会话替换已按[模态生命周期记录](abi-curve-modal-lifetime-2026-10-20.md)修复并完成真实宿主验收。其他通用来源回调的自毁尚未整体迁移。
+已[同步 main 已提交功能](abi-main-feature-sync-2026-10-20.md)，随后[补齐备份与日志修复](abi-main-backup-settings-sync-2026-10-20.md)至 `acbddb4`；核对时最新的 `1b9acad` 仅为发布文档。保留 ABI 共同历史、集中设置和 MMS-only 文件标记。曲线文件选择期间的窗口销毁和会话替换已按[模态生命周期记录](abi-curve-modal-lifetime-2026-10-20.md)修复并完成真实宿主验收。其他通用来源回调的自毁尚未整体迁移。
 
 已补齐[模型排序共同历史与第 255 项](abi-model-order-history-2026-10-20.md)及[注册子树刷新](abi-subtree-refresh-2026-10-20.md)。随后完成[SUBTREE 局部坐标映射](abi-subtree-local-rect-2026-10-20.md)，继续复用原刷新票据、同对象 SDK、完整 DATA 版本集合与整树阶段顺序。模型总数扩容和 DEPENDENTS 尚未实现。
 

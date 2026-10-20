@@ -23,6 +23,7 @@
 #include "../src/plugins/project_storage.hpp"
 #endif
 #include <MinHook.h>
+#include <commctrl.h>
 #include <filesystem>
 #include <fstream>
 #include <thread>
@@ -140,7 +141,7 @@ int WINAPI MessageW(HWND owner, LPCWSTR text, LPCWSTR title, UINT flags) {
         Check(fs::path(as::Current().directory) == crashDirectory || as::Backups(as::Current().directory).empty(),
             "crash backup ignores the periodic autosave folder override");
         unsigned logs = 0;
-        for (const auto& entry : fs::directory_iterator(crashDirectory)) {
+        for (const auto& entry : fs::directory_iterator(as::Current().directory)) {
             if (entry.path().extension() != L".log") continue;
             const auto log = Bytes(entry.path());
             Check(entry.path().filename().wstring().find(L"error-") == 0 &&
@@ -149,7 +150,7 @@ int WINAPI MessageW(HWND owner, LPCWSTR text, LPCWSTR title, UINT flags) {
             Check(text && wcsstr(text, entry.path().c_str()), "fatal dialog identifies the saved error log");
             ++logs;
         }
-        Check(logs == 1, "one timestamped error log saved in EXE backups");
+        Check(logs == 1, "one timestamped error log saved in the configured backup folder");
 #if !MMD_ORIGINAL_PROFILE
         // This child raises a deliberate non-corrupting exception. Restore its
         // actual crash pair, then serialize the live state to prove adoption.
@@ -236,11 +237,14 @@ pmm_extension::Document Extension(const fs::path& path, bool manual = false) {
     _close(fd); return document;
 }
 std::wstring Title(HWND window) { wchar_t text[512]{}; GetWindowTextW(window, text, 512); return text; }
+#include "backup_dialog_checks.hpp"
 int dialogAction = 0;
 INT_PTR CALLBACK Probe(HWND dialog, UINT msg, WPARAM wp, LPARAM lp) {
     if (msg != WM_INITDIALOG) return as::DialogProc(dialog, msg, wp, lp);
     as::DialogProc(dialog, msg, wp, lp);
     const auto* c = reinterpret_cast<as::DialogContext*>(lp);
+    BackupDialogChecks(dialog, *c);
+    if (!dialogAction) CaptureBackupDialog(dialog, c->app->EnglishUI());
     Check(!IsWindowVisible(dialog), "settings dialog never becomes visible during test");
     Check(GetDlgItemInt(dialog, as::Interval, nullptr, FALSE) == c->value.intervalMinutes, "interval is displayed in minutes");
     Check((IsDlgButtonChecked(dialog, as::Enabled) == BST_CHECKED) == c->value.enabled, "enabled checkbox reflects saved setting");
@@ -254,7 +258,7 @@ INT_PTR CALLBACK Probe(HWND dialog, UINT msg, WPARAM wp, LPARAM lp) {
     GetTextExtentPoint32W(labelDc, keepText.c_str(), static_cast<int>(keepText.size()), &labelSize);
     SelectObject(labelDc, labelFont); ReleaseDC(keep, labelDc);
     Check(labelSize.cx + 24 <= bounds.right, "PMM1 label fits in every language");
-    Check(Title(GetDlgItem(dialog, as::Enabled)) == as::Text(c->app, L"启用定时自动保存", L"Enable periodic autosave", L"定期的な自動保存を有効にする"),
+    Check(Title(GetDlgItem(dialog, as::Enabled)) == as::Text(c->app, L"启用定时自动备份", L"Enable automatic backups", L"定期バックアップを有効にする"),
         "checkbox controls periodic saving only");
     const HWND explanation = GetDlgItem(dialog, as::Explanation);
     const auto text = Title(explanation);
@@ -264,7 +268,7 @@ INT_PTR CALLBACK Probe(HWND dialog, UINT msg, WPARAM wp, LPARAM lp) {
     const auto oldFont = SelectObject(dc, font);
     DrawTextW(dc, text.c_str(), -1, &measured, DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX);
     SelectObject(dc, oldFont); ReleaseDC(explanation, dc);
-    Check(measured.bottom <= available.bottom, "always-on crash backup explanation fits without previewing dialog");
+    Check(measured.bottom <= available.bottom, "concise backup explanation fits in all languages");
     if (dialogAction == 0) {
         SetDlgItemInt(dialog, as::Interval, 22, FALSE);
         CheckDlgButton(dialog, as::Enabled, BST_UNCHECKED);
@@ -293,7 +297,7 @@ void DialogTests(MMDApp* app) {
         Check(help != nullptr, "settings belongs to Help menu");
         wchar_t caption[80]{};
         GetMenuStringW(help, as::kSettingsCommand, caption, 80, MF_BYCOMMAND);
-        Check(std::wstring(caption) == (language == 2 ? L"自动保存设置…" : language == 0 ? L"自動保存の設定…" : L"Autosave settings…"), "single settings item translated");
+        Check(std::wstring(caption) == (language == 2 ? L"自动备份设置…" : language == 0 ? L"自動バックアップ設定…" : L"Automatic backup settings…"), "single settings item translated");
         Check(GetMenuState(help, 32812, MF_BYCOMMAND) == UINT(-1), "no separate toggle menu item");
         const auto count = GetMenuItemCount(help);
         for (int n = 0; n < 3; ++n) as::RefreshMenu(app);
@@ -335,6 +339,7 @@ unsigned RedMenuPixels(MMDApp* app) {
 }
 #include "installation_settings_checks.inc"
 #include "autosave_warning_checks.hpp"
+#include "autosave_empty_checks.hpp"
 }
 int wmain(int argc, wchar_t** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
@@ -371,6 +376,12 @@ int wmain(int argc, wchar_t** argv) {
     app->EnglishUI() = 2; RefreshMenuLanguage(app);
     SetWindowPos(app->MainWindow(), nullptr, 0, 0, 1600, 800, SWP_NOACTIVATE | SWP_NOZORDER);
     as::Initialize(app);
+    if (mode == L"--empty-project") {
+        CheckEmptyProjectBackup(app);
+        as::Shutdown(); ShutdownCleanup(app); g_Block = nullptr; delete app; UnhookWindowsHookEx(hook);
+        std::printf("PASS empty-project autosave checks=%u\n", checks);
+        return 0;
+    }
     if (fullWarningMode) {
         CheckFullWarnings(app, config, mode);
         Check(!IsWindowVisible(app->MainWindow()), "warning test stays hidden");
@@ -381,6 +392,7 @@ int wmain(int argc, wchar_t** argv) {
     Check(!as::Current().enabled && !as::Current().keepPrevious && as::Current().intervalMinutes == 1,
         "periodic and previous-version saving both default off with one minute interval");
     SettingsCodecChecks();
+    BackupDirectoryChecks(app, config);
     std::wstring aaError;
     SetEnvironmentVariableW(L"MMS_ANTIALIAS_CONFIG", nullptr);
     Check(antialias::Select(app, antialias::Algorithm::MmdOriginal, aaError),
@@ -490,7 +502,7 @@ int wmain(int argc, wchar_t** argv) {
     Check(fullWarnings == 1 && as::FolderFull(), "timer warns immediately when its new backup fills the folder");
     as::TryCrashBackup(EXCEPTION_STACK_OVERFLOW); as::TryCrashBackup(0xC0000374);
     std::thread worker([] { as::TryCrashBackup(EXCEPTION_ACCESS_VIOLATION); }); worker.join();
-    Check(as::Backups(value.directory).size() == 1 && !fs::exists(crashDirectory), "unsafe heap/stack and foreign-thread faults skip crash serialization");
+    Check(as::Backups(value.directory).size() == 1 && as::Backups(crashDirectory).empty(), "unsafe heap/stack and foreign-thread faults skip crash serialization");
     as::TryCrashBackup(EXCEPTION_ACCESS_VIOLATION);
     backups = as::Backups(crashDirectory);
     Check(backups.size() == 1 && backups.back().filename().wstring().find(L"_crash") != std::wstring::npos &&

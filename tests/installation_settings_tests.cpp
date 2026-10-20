@@ -30,6 +30,6 @@ int wmain(int argc,wchar_t** argv){
     const std::wstring mode=argv[2];
     Check(mode==L"--settings-fresh" || mode==L"--settings-default" || mode==L"--settings-custom" ||
         mode==L"--settings-check-custom" || mode==L"--settings-readonly" || mode==L"--settings-override" ||
-        mode==L"--settings-migrate","known settings probe mode");
+        mode==L"--settings-migrate" || mode==L"--settings-migrate-relative","known settings probe mode");
     SettingsLocationChecks(executable,mode);return 0;
 }
