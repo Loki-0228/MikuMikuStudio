@@ -78,6 +78,15 @@ public:
     // The input order does not affect restored simulation order. Conflicting
     // historical/current order, including an external reorder, is rejected.
     static std::unique_ptr<Transition> PrepareBatch(const std::vector<Retained*>& objects, bool present);
+    struct PresenceChange { Retained* object; bool present; };
+    // One atomic mixed presence exchange between already-retained bundles.
+    // Each owner must switch from present to parked or parked to present;
+    // duplicate owners, overlapping resources and different worlds reject.
+    // Incoming historical order is projected after removing outgoing members.
+    // Live peers keep their relative order; conflicting anchors reject before
+    // publication. This does not publish a private ImportScene for the first
+    // time and does not replace model tables or their resource ownership.
+    static std::unique_ptr<Transition> PrepareExchange(const std::vector<PresenceChange>&);
 };
 
 // Loading uses an isolated world, with no ground, renderer resources or steps.

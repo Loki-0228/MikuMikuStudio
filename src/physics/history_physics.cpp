@@ -278,14 +278,15 @@ struct Retained::Transition::Impl {
     struct Entry {
         std::shared_ptr<Retained::Impl> owner;
         std::uint64_t generation;
+        bool present;
         std::unique_ptr<Saved> saved;
-        explicit Entry(std::shared_ptr<Retained::Impl> o) : owner(std::move(o)), generation(owner->generation) {}
-        const Saved& State(bool present) const { return present ? *owner->saved : *saved; }
+        Entry(std::shared_ptr<Retained::Impl> o, bool p) : owner(std::move(o)), generation(owner->generation), present(p) {}
+        const Saved& State() const { return present ? *owner->saved : *saved; }
     };
     std::vector<Entry> entries;
     DynamicsWorld& world;
     Broadphase& broadphase;
-    bool present, consumed = false;
+    bool consumed = false;
     std::uint64_t step;
     PairCache* source;
     std::unique_ptr<PairCache> cache;
@@ -296,24 +297,28 @@ struct Retained::Transition::Impl {
     std::vector<btTypedConstraint*> beforeConstraints, afterConstraints;
     std::vector<ProxyState> proxies;
     std::vector<BodyState> bodies;
-    Impl(std::vector<std::shared_ptr<Retained::Impl>> retained, bool p)
-        : world(retained.front()->world), broadphase(retained.front()->broadphase), present(p),
+    Impl(std::vector<std::pair<std::shared_ptr<Retained::Impl>, bool>> retained)
+        : world(retained.front().first->world), broadphase(retained.front().first->broadphase),
           step(world.StepSerial()), source(broadphase.Cache()) {
         if (world.getBroadphase() != &broadphase || world.HasActions() || source->getOverlapFilterCallback() ||
             source->HasGhostCallback() || broadphase.getOverlappingPairUserCallback())
             throw std::invalid_argument("unsupported physics membership transition");
         std::unordered_set<Retained::Impl*> owners;
         std::unordered_set<btRigidBody*> ownedBodies;
+        std::unordered_set<btRigidBody*> outgoingBodies;
         std::unordered_set<btTypedConstraint*> ownedConstraints;
         entries.reserve(retained.size());
-        for (auto& owner : retained) {
-            if (&owner->world != &world || owner->importPending || owner->present == p || !owners.insert(owner.get()).second)
+        for (auto& change : retained) {
+            auto& owner = change.first;
+            if (&owner->world != &world || owner->importPending || owner->present == change.second || !owners.insert(owner.get()).second)
                 throw std::invalid_argument("incompatible physics membership batch");
-            for (auto* body : owner->bodies)
+            for (auto* body : owner->bodies) {
                 if (!ownedBodies.insert(body).second) throw std::invalid_argument("overlapping retained bodies");
+                if (!change.second) outgoingBodies.insert(body);
+            }
             for (auto* constraint : owner->constraints)
                 if (!ownedConstraints.insert(constraint).second) throw std::invalid_argument("overlapping retained constraints");
-            entries.emplace_back(std::move(owner));
+            entries.emplace_back(std::move(owner), change.second);
         }
         beforeObjects = Copy(world.getCollisionObjectArray());
         beforeMoving = Copy(world.HistoryBodies()); beforeConstraints = Copy(world.HistoryConstraints());
@@ -327,7 +332,8 @@ struct Retained::Transition::Impl {
                 !ownedConstraints.count(joint)) throw std::invalid_argument("external retained constraint");
         }
         std::shared_ptr<OrderSnapshot> order;
-        if (!p) order = std::make_shared<OrderSnapshot>(OrderSnapshot{
+        if (std::any_of(entries.begin(), entries.end(), [](const auto& entry) { return !entry.present; }))
+            order = std::make_shared<OrderSnapshot>(OrderSnapshot{
             nextOrderSerial.fetch_add(1, std::memory_order_relaxed), beforeObjects, beforeMoving, beforeConstraints});
         std::vector<BodyState> restored;
         std::vector<const Removed<btCollisionObject*>*> objectGroups;
@@ -346,7 +352,7 @@ struct Retained::Transition::Impl {
                 if (!body->isStaticObject()) moving.push_back(body);
             }
             bodies.insert(bodies.end(), currentBodies.begin(), currentBodies.end());
-            if (!p) {
+            if (!entry.present) {
                 entry.saved = std::make_unique<Saved>(); entry.saved->bodies = std::move(currentBodies);
                 entry.saved->order = order;
                 entry.saved->objects.Capture(beforeObjects, objects); entry.saved->moving.Capture(beforeMoving, moving);
@@ -356,14 +362,22 @@ struct Retained::Transition::Impl {
                 for (const auto& body : o.saved->bodies)
                     if (!history_physics::Current(body, true)) throw std::invalid_argument("parked physics body was changed");
                 restored.insert(restored.end(), o.saved->bodies.begin(), o.saved->bodies.end());
+                objectGroups.push_back(&o.saved->objects); movingGroups.push_back(&o.saved->moving);
+                constraintGroups.push_back(&o.saved->constraints); orders.push_back(o.saved->order.get());
             }
-            const auto& state = entry.State(p);
-            objectGroups.push_back(&state.objects); movingGroups.push_back(&state.moving);
-            constraintGroups.push_back(&state.constraints); orders.push_back(state.order.get());
         }
         std::sort(orders.begin(), orders.end(), [](const auto* a, const auto* b) { return a->serial < b->serial; });
         orders.erase(std::unique(orders.begin(), orders.end()), orders.end());
-        if (p) {
+        // Project historical incoming anchors onto the final membership. An
+        // outgoing peer can appear in an incoming Saved order, but must not
+        // re-enter either the output or its relative-order constraints.
+        afterObjects = beforeObjects; afterMoving = beforeMoving; afterConstraints = beforeConstraints;
+        for (const auto& entry : entries) if (!entry.present) {
+            afterObjects = entry.saved->objects.Apply(afterObjects, false);
+            afterMoving = entry.saved->moving.Apply(afterMoving, false);
+            afterConstraints = entry.saved->constraints.Apply(afterConstraints, false);
+        }
+        if (!orders.empty()) {
             std::vector<const std::vector<btCollisionObject*>*> objectOrders;
             std::vector<const std::vector<btRigidBody*>*> movingOrders;
             std::vector<const std::vector<btTypedConstraint*>*> constraintOrders;
@@ -371,27 +385,20 @@ struct Retained::Transition::Impl {
                 objectOrders.push_back(&savedOrder->objects); movingOrders.push_back(&savedOrder->moving);
                 constraintOrders.push_back(&savedOrder->constraints);
             }
-            afterObjects = RestoreOrder(beforeObjects, objectGroups, objectOrders);
-            afterMoving = RestoreOrder(beforeMoving, movingGroups, movingOrders);
-            afterConstraints = RestoreOrder(beforeConstraints, constraintGroups, constraintOrders);
-        } else {
-            afterObjects = beforeObjects; afterMoving = beforeMoving; afterConstraints = beforeConstraints;
-            for (const auto& entry : entries) {
-                afterObjects = entry.saved->objects.Apply(afterObjects, false);
-                afterMoving = entry.saved->moving.Apply(afterMoving, false);
-                afterConstraints = entry.saved->constraints.Apply(afterConstraints, false);
-            }
+            afterObjects = RestoreOrder(afterObjects, objectGroups, objectOrders);
+            afterMoving = RestoreOrder(afterMoving, movingGroups, movingOrders);
+            afterConstraints = RestoreOrder(afterConstraints, constraintGroups, constraintOrders);
         }
         cache = std::make_unique<PairCache>();
         pairs = Copy(source->getOverlappingPairArray());
         Filter filter(restored);
-        if (p) cache->setOverlapFilterCallback(&filter);
+        if (!restored.empty()) cache->setOverlapFilterCallback(&filter);
         for (const auto& pair : pairs) {
-            const bool target = ownedBodies.count(btRigidBody::upcast(static_cast<btCollisionObject*>(pair.m_pProxy0->m_clientObject))) ||
-                                ownedBodies.count(btRigidBody::upcast(static_cast<btCollisionObject*>(pair.m_pProxy1->m_clientObject)));
-            if (p || !target) cache->addOverlappingPair(pair.m_pProxy0, pair.m_pProxy1);
+            const bool outgoing = outgoingBodies.count(btRigidBody::upcast(static_cast<btCollisionObject*>(pair.m_pProxy0->m_clientObject))) ||
+                                  outgoingBodies.count(btRigidBody::upcast(static_cast<btCollisionObject*>(pair.m_pProxy1->m_clientObject)));
+            if (!outgoing) cache->addOverlappingPair(pair.m_pProxy0, pair.m_pProxy1);
         }
-        if (p) for (const auto& body : restored) for (auto* other : afterObjects) {
+        for (const auto& body : restored) for (auto* other : afterObjects) {
             auto* proxy = other->getBroadphaseHandle();
             if (proxy != body.proxy && broadphase.testAabbOverlap(body.proxy, proxy))
                 cache->addOverlappingPair(body.proxy, proxy);
@@ -402,6 +409,9 @@ struct Retained::Transition::Impl {
                 transfers.emplace_back(i, target - cache->getOverlappingPairArrayPtr());
         }
         // These operations may allocate; publication only writes reserved slots.
+        const auto maximum = static_cast<std::size_t>((std::numeric_limits<int>::max)());
+        if (afterObjects.size() > maximum || afterMoving.size() > maximum || afterConstraints.size() > maximum)
+            throw std::bad_alloc();
         world.getCollisionObjectArray().reserve(static_cast<int>(afterObjects.size()));
         world.HistoryBodies().reserve(static_cast<int>(afterMoving.size()));
         world.HistoryConstraints().reserve(static_cast<int>(afterConstraints.size()));
@@ -417,9 +427,12 @@ struct Retained::Transition::Impl {
             source->getOverlapFilterCallback() || source->HasGhostCallback() || broadphase.getOverlappingPairUserCallback() ||
             !Equal(world.getCollisionObjectArray(), beforeObjects) ||
             !Equal(world.HistoryBodies(), beforeMoving) || !Equal(world.HistoryConstraints(), beforeConstraints) ||
+            world.getCollisionObjectArray().capacity() < static_cast<int>(afterObjects.size()) ||
+            world.HistoryBodies().capacity() < static_cast<int>(afterMoving.size()) ||
+            world.HistoryConstraints().capacity() < static_cast<int>(afterConstraints.size()) ||
             source->getNumOverlappingPairs() != static_cast<int>(pairs.size())) return false;
         for (const auto& entry : entries)
-            if (entry.owner->generation != entry.generation || entry.owner->present == present) return false;
+            if (entry.owner->generation != entry.generation || entry.owner->present == entry.present) return false;
         for (const auto& proxy : proxies) if (!proxy.Current()) return false;
         for (const auto& b : bodies) if (!history_physics::Current(b)) return false;
         for (size_t i = 0; i < pairs.size(); ++i) {
@@ -437,16 +450,16 @@ struct Retained::Transition::Impl {
             to.m_algorithm = from.m_algorithm; to.m_internalInfo1 = from.m_internalInfo1;
             from.m_algorithm = nullptr; from.m_internalInfo1 = nullptr;
         }
-        for (const auto& entry : entries) for (const auto& body : entry.State(present).bodies) {
-            Broadphase::SetMask(body.proxy, present ? body.mask : 0);
-            body.body->forceActivationState(present ? body.activation : DISABLE_SIMULATION);
+        for (const auto& entry : entries) for (const auto& body : entry.State().bodies) {
+            Broadphase::SetMask(body.proxy, entry.present ? body.mask : 0);
+            body.body->forceActivationState(entry.present ? body.activation : DISABLE_SIMULATION);
         }
         Replace(world.getCollisionObjectArray(), afterObjects);
         Replace(world.HistoryBodies(), afterMoving); Replace(world.HistoryConstraints(), afterConstraints);
         cache.reset(broadphase.Exchange(cache.release()));
         for (auto& entry : entries) {
-            if (!present) entry.owner->saved.swap(entry.saved);
-            entry.owner->present = present; ++entry.owner->generation;
+            if (!entry.present) entry.owner->saved.swap(entry.saved);
+            entry.owner->present = entry.present; ++entry.owner->generation;
         }
         consumed = true;
         return true;
@@ -463,13 +476,18 @@ std::unique_ptr<Retained::Transition> Retained::Prepare(bool present) {
     return PrepareBatch({this}, present);
 }
 std::unique_ptr<Retained::Transition> Retained::PrepareBatch(const std::vector<Retained*>& objects, bool present) {
-    if (objects.empty()) throw std::invalid_argument("empty physics membership batch");
-    std::vector<std::shared_ptr<Impl>> retained; retained.reserve(objects.size());
-    for (auto* object : objects) {
-        if (!object) throw std::invalid_argument("null retained physics object");
-        retained.push_back(object->impl_);
+    std::vector<PresenceChange> changes; changes.reserve(objects.size());
+    for (auto* object : objects) changes.push_back({object, present});
+    return PrepareExchange(changes);
+}
+std::unique_ptr<Retained::Transition> Retained::PrepareExchange(const std::vector<PresenceChange>& changes) {
+    if (changes.empty()) throw std::invalid_argument("empty physics membership batch");
+    std::vector<std::pair<std::shared_ptr<Impl>, bool>> retained; retained.reserve(changes.size());
+    for (const auto& change : changes) {
+        if (!change.object) throw std::invalid_argument("null retained physics object");
+        retained.emplace_back(change.object->impl_, change.present);
     }
-    return std::unique_ptr<Transition>(new Transition(std::make_unique<Transition::Impl>(std::move(retained), present)));
+    return std::unique_ptr<Transition>(new Transition(std::make_unique<Transition::Impl>(std::move(retained))));
 }
 Retained::Transition::Transition(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 Retained::Transition::~Transition() = default;
@@ -478,9 +496,9 @@ bool Retained::Transition::MeasureTargetResources(plugins::resource_budget::Coll
     if (!impl_->Current()) return false;
     // Validate the complete target before the first Collector write.
     for (const auto& entry : impl_->entries)
-        if (!(impl_->present ? entry.owner->saved : entry.saved)) return false;
+        if (!(entry.present ? entry.owner->saved : entry.saved)) return false;
     for (const auto& entry : impl_->entries)
-        entry.owner->MeasureResources(out, &entry.State(impl_->present));
+        entry.owner->MeasureResources(out, &entry.State());
     return true;
 }
 bool Retained::Transition::Publish() noexcept { return impl_->Publish(); }

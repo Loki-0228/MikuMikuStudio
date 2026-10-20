@@ -325,6 +325,7 @@ void CrossModelJournal(){
 }
 }
 #include "history_physics_checks.inc"
+#include "history_physics_exchange_checks.inc"
 #include "physics_import_checks.inc"
 #include "import_texture_cache_checks.inc"
 #include "accessory_import_checks.inc"
@@ -443,6 +444,13 @@ void CrossModelJournal(){
 #include "retained_bookkeeping_checks.inc"
 int main(int argc,char** argv){
     std::setvbuf(stdout,nullptr,_IONBF,0);
+    if(argc==2&&!std::strcmp(argv[1],"--physics-membership-only")) {
+        PhysicsRetention(); PhysicsExchangeChecks(); PhysicsImportChecks();
+        std::printf("PASS physics membership and import: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--physics-exchange-only")) {
+        PhysicsExchangeChecks();std::printf("PASS physics exchange: %u checks\n",checks);return 0;
+    }
     if(argc==3&&!std::strcmp(argv[1],"--compressed-audio")) {
         const auto directory = plugins::Wide(argv[2]);
         NativeCompressedAudioHistoryChecks(directory.c_str());
@@ -809,6 +817,7 @@ int main(int argc,char** argv){
     run("NativeGravitySparseRegistrationChecks",NativeGravitySparseRegistrationChecks);
     run("NativeBoneCurveSyncChecks",NativeBoneCurveSyncChecks);
     run("PhysicsImportChecks",PhysicsImportChecks);
+    run("PhysicsExchangeChecks",PhysicsExchangeChecks);
     run("ImportTextureCacheChecks",ImportTextureCacheChecks);
     run("AccessoryImportChecks",AccessoryImportChecks);
     run("PrivateImportHistoryChecks",PrivateImportHistoryChecks);
