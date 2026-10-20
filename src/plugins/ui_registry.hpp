@@ -8,8 +8,12 @@
 #include <mms/refresh_state.h>
 #include <map>
 #include <deque>
+#include <string_view>
 
 namespace mikumikustudio::plugins {
+inline bool NativeControlAnchor(std::string_view id) noexcept {
+    return id == "mms.toolbar.main.extensions" || id == "mms.properties.main.extensions";
+}
 struct Json;
 class UiRegistry;
 struct UiClient { UiRegistry* registry; std::string id; bool stopping = false, unsafeToUnload = false; };

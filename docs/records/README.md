@@ -40,6 +40,7 @@
 
 ## 开发与维护
 
+- [属性区插件扩展行与验证边界（2026-10-21）](abi-property-mount-2026-10-21.md)
 - [ABI 分支合入 main 功能记录（2026-10-17）](abi-main-merge-2026-10-17.md)
 - [main 源码审查与本地验收记录（2026-10-17）](main-source-review-2026-10-17.md)
 - [代码审查与缺陷记录](development/audits.md)

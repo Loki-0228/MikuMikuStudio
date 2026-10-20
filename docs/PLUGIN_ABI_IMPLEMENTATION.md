@@ -14,7 +14,9 @@
 
 [模型 Toon 文件表](records/abi-model-toon-history-2026-10-21.md)已接入菜单 261 的 Unicode 私有草稿、真实纹理保活与缓存原子发布。11,062 项、真实 D3DX 两种模式重放和满 100 字节 CP932 导入通过。DX9 纹理与效果颜色使用同一解析规则；可选 DX12 源文件启用编译通过，正式产物仍为 Win7 CPU 基线。旧缓存缺失、全局 278 重载及外部渲染器的资源版本仍待迁移，普通 `mms.edit` 继续关闭。
 
-[INPUT STATE](records/abi-input-state-2026-10-21.md)复用原内容提供者、队列及票据，可更新标签、说明和原因，或收紧启用、只读和可见状态。旧 64 字节前缀保持，完整 80 字节扩展结构按能力协商。真实原生控件、提示回滚和保护页边界专项在两套配置各通过 1,559 项，完整 ABI 契约各通过 16,869 项。普通启动仍只读；自动依赖及更多挂载点未开放。历史菜单自动选择超时仍按原记录保留，未声称修复。
+[INPUT STATE](records/abi-input-state-2026-10-21.md)复用原内容提供者、队列及票据，可更新标签、说明和原因，或收紧启用、只读和可见状态。旧 64 字节前缀保持，完整 80 字节扩展结构按能力协商。真实原生控件、提示回滚和保护页边界专项在两套配置各通过 1,559 项，完整 ABI 契约各通过 16,869 项。普通启动仍只读；自动依赖、侧栏、时间线和状态栏挂载未开放。历史菜单自动选择超时仍按原记录保留，未声称修复。
+
+[属性扩展行](records/abi-property-mount-2026-10-21.md) `mms.properties.main.extensions` 已接入原 BUTTON、GROUP、SEPARATOR 和 INPUT。它与工具栏共用原身份、布局及 DATA、STATE、LAYOUT、REPAINT 队列；空区域不占高度，停靠视口与覆盖区同时避让。跨根移动保留元素 handle，取消草稿并重建视图。双配置挂载专项各 681 项、INPUT STATE 各 1,559 项、SUBTREE 各 1,268 项、完整 ABI 契约各 17,565 项通过。本批未执行产品启动、正式产物及真实 IME、多屏 DPI 验收，普通 `mms.edit` 不因此开放。
 
 [main 备份与日志同步](records/abi-main-backup-settings-sync-2026-10-20.md)已适配至 `acbddb4`，核对 main 的 `1b9acad` 仅为发布文档。空工程定时备份过滤、三语言设置、可移植相对路径和自定义错误日志目录均完成专项验证，设置继续集中保存在 `data/settings.json`。
 
@@ -34,7 +36,7 @@
 
 普通 `mms.edit` 仍未开放。[原生写入审计](records/abi-native-writer-audit-2026-10-20.md)确认部分旧命令既未迁移也未被统一拦截，早期“所有其余入口关闭”的描述不能作为保护保证。下一批继续迁移这些实际写入入口。
 
-工具栏命令溢出已接入现有布局与 NativeUi：`MMS_UI_OVERFLOW_MENU=3` 适用于工具栏扩展区的 BUTTON、GROUP、SEPARATOR，支持 keepTogether 整组折叠。原 HWND、handle 和命令身份保留，菜单状态更新及卸载使用原生命周期规则。**状态：本机已验证。** 完整配置 21／21、原始兼容配置 18／18 组通过，`plugin_abi_contract` 重复 6／6 通过；最终轮证据见 [UI 框架记录](records/abi-ui-framework-2026-10-19.md)。SDK 范围见[工具栏命令溢出](../sdk/mms/cpp-ui.md#工具栏命令溢出)。DOCK、INPUT、其他挂载点及普通 `mms.edit` 的开放状态不变。
+工具栏命令溢出已接入现有布局与 NativeUi：`MMS_UI_OVERFLOW_MENU=3` 适用于工具栏扩展区的 BUTTON、GROUP、SEPARATOR，支持 keepTogether 整组折叠。原 HWND、handle 和命令身份保留，菜单状态更新及卸载使用原生命周期规则。**状态：本机已验证。** 完整配置 21／21、原始兼容配置 18／18 组通过，`plugin_abi_contract` 重复 6／6 通过；最终轮证据见 [UI 框架记录](records/abi-ui-framework-2026-10-19.md)。SDK 范围见[工具栏命令溢出](../sdk/mms/cpp-ui.md#工具栏命令溢出)。INPUT 及属性扩展行不支持此溢出策略；DOCK 和普通 `mms.edit` 仍未开放。
 
 布局框架的最终构建为完整配置 21／21、原始兼容配置 18／18 组通过；布局拖动稳定边界普通和共同历史绑定模式各 86 次比较，0 失败、0 不完整。用户在 2026-10-20 的 175% 复验中确认窄侧栏“当前”行和滚动条交界已修复；连续滑杆白闪的屏幕表现仍以[UI 框架记录](records/abi-ui-framework-2026-10-19.md#窄侧栏时间线布局修正2026-10-20)为准。早期局部滑杆缓冲和失败证据保留在[布局候选记录](records/abi-light-slider-flicker-2026-10-19.md#布局拖动候选与本轮验证)。
 
@@ -120,8 +122,9 @@ R3 拖动与插件区域问题已由用户确认恢复。按需求归类的当�
 | P2 | 保留布局的 SELF LAYOUT 及 SDK | 本机已验证 | 已有按钮和已挂载 surface 使用保留树排版；纯 LAYOUT 使用缓存状态，STATE 与 LAYOUT 组合支持收缩空位及同引用恢复零尺寸按钮。失败暂停几何及目标，旧快照租约保持；局部旧矩形返回 STALE 并保留已完成阶段。SDK 的 RelayoutCurrent、RefreshStateLayout 共用原请求。实际 NativeUi 389 项、双真实 DLL 645 项及两路径真实 MMS 入口通过；此批验证范围见[记录](records/abi-layout-follow-slider-2026-10-19.md)；SUBTREE 已随后接入，自动依赖及插件量测提供者仍未实现。 |
 | P2 | 按钮及 INPUT STATE 内容与分层 SDK | 本机已验证 | `mms.ui.refresh.state` 1.0 在原 STATE 阶段准备文案、说明和禁用原因；INPUT 尾部可收紧启用、只读和可见状态，不读取属性值或提交草稿。单写 builder、旧显示计费、提供者代次及只读因果共用原刷新规则。旧按钮 748 项及新增 INPUT STATE 1,559 项在两套配置通过；菜单、面板内容及依赖范围仍未实现，见[INPUT 记录](records/abi-input-state-2026-10-21.md)。 |
 | P3 | 模型与骨骼 HUD 20 类操作 | 受控路径本机已验证 | 独立副本运行原数学，完整手势一次调整，逐字段取消并保留外写，释放采样最终系统光标；普通骨骼、等比／轴向／投影缩放均覆盖。专项 31,357 项及两种真实文件宿主通过。原始兼容 profile 保留旧路径，普通公共编辑服务仍关闭，见[记录](records/abi-state-model-hud-readout-2026-10-19.md)。 |
-| P2 | 可写属性、声明式 INPUT | 受控路径本机已验证 | 原属性、元素、事务与共同历史共用身份，工具栏及 GROUP 支持原生输入、草稿、取消、重绑及同对象 C++ SDK。随后接入[默认属性 DATA](records/abi-property-data-2026-10-20.md)和[STATE](records/abi-input-state-2026-10-21.md)，支持消费时读回、草稿保留、显式绑定优先及只读状态限制；最新两套配置 INPUT 专项各 6,022 项通过。普通启动暂存仍返回 NOT_READY，输入框只读；自动订阅、其他挂载点及真机 IME 尚待完成，见[初始记录](records/abi-declarative-input-2026-10-20.md)。 |
-| P2 | 左右侧栏、属性区、时间线、状态栏挂载 | 未实现 | 不枚举空壳挂载点。 |
+| P2 | 可写属性、声明式 INPUT | 受控路径本机已验证 | 原属性、元素、事务与共同历史共用身份，工具栏、属性扩展行及其 GROUP 支持原生输入、草稿、取消、重绑及同对象 C++ SDK。随后接入[默认属性 DATA](records/abi-property-data-2026-10-20.md)和[STATE](records/abi-input-state-2026-10-21.md)，支持消费时读回、草稿保留、显式绑定优先及只读状态限制；两套配置 INPUT 专项各 6,022 项，新增属性挂载专项各 681 项通过。普通启动暂存仍返回 NOT_READY，输入框只读；自动订阅、其余挂载点及真机 IME 尚待完成，见[初始记录](records/abi-declarative-input-2026-10-20.md)。 |
+| P2 | 属性扩展行挂载 | 本机已验证 | `mms.properties.main.extensions` 是真实主窗口扩展行，支持原 BUTTON、GROUP、SEPARATOR、INPUT，使用同一布局和刷新队列。空行高度为 0，停靠视口及覆盖区避让；移动、草稿取消、同实例零高恢复和卸载纳入双配置各 681 项专项，完整 ABI 契约各 17,565 项通过，见[记录](records/abi-property-mount-2026-10-21.md)。本批不含产品集成及真实 IME、多屏 DPI 验收。 |
+| P2 | 左右侧栏、时间线、状态栏挂载 | 未实现 | 属性扩展行不代表其他本体区域已开放；不枚举空壳挂载点。 |
 | P2 | 工具栏命令溢出菜单 | 本机已验证 | `MmsUiLayoutHintsV1.overflow=MMS_UI_OVERFLOW_MENU` 复用原布局服务。仅工具栏扩展区 BUTTON、GROUP、SEPARATOR 可选择；有效顺序、组继承与 keepTogether 决定折叠单位。保留原 HWND、handle 和刷新实例，空间恢复复用；真实菜单更新原标签、启用和选中状态，移除失效项，调用前重验原身份及所有者。完整配置 21／21、原始兼容配置 18／18、ABI 契约重复 6／6 通过；最终结果见 [UI 框架记录](records/abi-ui-framework-2026-10-19.md)。无独立溢出能力查询，旧宿主可能返回 UNSUPPORTED。 |
 | P2 | 注册 SUBTREE 刷新及 SDK | 本机已验证 | 原 C ABI 支持同插件注册子树、固定来源版本集合、整树阶段顺序与拓扑失效；615 项专项及两种配置整合通过。随后接入[局部矩形](records/abi-subtree-local-rect-2026-10-20.md)和 INPUT STATE；DEPENDENTS 未实现，初始范围见[记录](records/abi-subtree-refresh-2026-10-20.md)。 |
 | P2 | DOCK | 未实现 | 返回 UNSUPPORTED。 |

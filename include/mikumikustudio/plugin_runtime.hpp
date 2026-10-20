@@ -8,6 +8,7 @@ void Shutdown();
 void Refresh(MMDApp*);
 void Layout(MMDApp*);
 int ToolbarHeight(MMDApp*);
+int PropertyAreaHeight(MMDApp*);
 bool HandleCommand(unsigned id);
 bool HandleShortcut(unsigned key, bool viewportFocused);
 bool HandleDialogMessage(tagMSG*);

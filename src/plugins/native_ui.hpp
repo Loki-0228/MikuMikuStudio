@@ -13,6 +13,12 @@ public:
     bool Shortcut(unsigned key, unsigned modifiers, bool viewportFocused);
     // Returns reserved height. Coordinates use the parent window's DPI space.
     int Layout(int x, int width, int maximumHeight, bool visible);
+    // Configure the real strip immediately above the native property panels.
+    // bottom is in main-window coordinates; zero capacity reserves no space.
+    // The next ordinary/queued layout publishes both mounts together.
+    void SetPropertyArea(int bottom, int maximumHeight, bool visible);
+    int PropertyAreaHeight() const noexcept;
+    HWND PropertyArea() const noexcept;
     // The refresh LAYOUT path calls this before publishing ready geometry;
     // the application updates dependent viewport geometry without scene work.
     void SetLayoutPublished(std::function<MmsResult(int)>);

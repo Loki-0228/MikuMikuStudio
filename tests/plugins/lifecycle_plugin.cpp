@@ -3,6 +3,7 @@
 #include <mms/scene.h>
 #include <mms/storage.h>
 #include <mms/cpp/refresh.hpp>
+#include <array>
 #include <string>
 #include <cstring>
 #include <thread>
@@ -14,7 +15,10 @@ static MmsString S(const char* s) { return {s, std::strlen(s)}; }
 struct Plugin { MmsHostV1 host; MmsUiApiV1 ui{}; MmsUiSurfaceApiV1 surface{}; MmsSceneApiV1 scene{};
     mms::sdk::RefreshServices refresh; mms::sdk::RefreshTicket refreshTicket;
     uint32_t enabled = 1, checked = 0, visible = 1;
-    MmsHandle snapshot=0; std::string id; MmsHandle command = 0, menu = 0, button = 0, factory = 0, panel = 0, panel2 = 0, serializer = 0; int stops = 0, projectValue = 0, candidateValue = 0; };
+    MmsHandle snapshot=0; std::string id; MmsHandle command = 0, menu = 0, button = 0, factory = 0, panel = 0, panel2 = 0, serializer = 0;
+    MmsHandle propertyGroup = 0; std::array<MmsHandle, 4> propertyButtons{};
+    int stops = 0, projectValue = 0, candidateValue = 0; };
+static bool PropertiesMode(const Plugin* p) { return p->id == "org.example.gui-properties-panel"; }
 static Plugin* refreshProbe = nullptr;
 static void Log(Plugin* p, const char* s) {
     p->host.log(p->host.context, 1, S(s));
@@ -194,6 +198,34 @@ static MmsResult MMS_CALL Start(void* context) {
             hints.preferred[0] = 100; hints.preferred[1] = 24;
             r = layout.setDefaultHints(layout.context, {buttonId.data(), buttonId.size()}, &hints); if (r) return r;
         }
+        if (PropertiesMode(p)) {
+            MmsUiLayoutApiV1 layout{};
+            r = p->host.queryService(p->host.context, S("mms.ui.layout"), 1, 0, sizeof(layout), &layout); if (r) return r;
+            const auto groupId = p->id + ".properties";
+            MmsUiElementV1 group{}; group.h = H<MmsUiElementV1>();
+            group.id = {groupId.data(), groupId.size()}; group.ownerPlugin = command.info.ownerPlugin;
+            group.label = S("Property commands"); group.parentId = S("mms.properties.main.extensions");
+            group.kind = MMS_UI_GROUP; group.capabilities = MMS_UI_CONTAINER | MMS_UI_LAYOUT | MMS_UI_MOVE | MMS_UI_HIDE;
+            r = p->ui.registerElement(p->ui.context, &group, &p->propertyGroup); if (r) return r;
+            MmsUiLayoutHintsV1 wrap{}; wrap.h = H<MmsUiLayoutHintsV1>(); wrap.flow = MMS_FLOW_WRAP;
+            wrap.grow[0] = wrap.shrink[0] = 1;
+            r = layout.setDefaultHints(layout.context, group.id, &wrap); if (r) return r;
+            for (size_t index = 0; index < p->propertyButtons.size(); ++index) {
+                const auto itemId = p->id + ".property-button-" + std::to_string(index);
+                const auto label = std::string("Property command ") + std::to_string(index + 1);
+                MmsUiElementV1 item{}; item.h = H<MmsUiElementV1>(); item.id = {itemId.data(), itemId.size()};
+                item.ownerPlugin = command.info.ownerPlugin; item.parentId = group.id;
+                item.label = {label.data(), label.size()}; item.commandId = command.info.id;
+                item.kind = MMS_UI_BUTTON; item.capabilities = MMS_UI_LAYOUT | MMS_UI_MOVE | MMS_UI_HIDE;
+                r = p->ui.registerElement(p->ui.context, &item, &p->propertyButtons[index]); if (r) return r;
+                MmsUiLayoutHintsV1 hints{}; hints.h = H<MmsUiLayoutHintsV1>();
+                hints.minimum[0] = hints.preferred[0] = hints.maximum[0] = 180;
+                hints.minimum[1] = hints.preferred[1] = hints.maximum[1] = 28;
+                hints.order = int32_t(index);
+                r = layout.setDefaultHints(layout.context, item.id, &hints); if (r) return r;
+            }
+            Log(p, "PROPERTIES_REGISTERED");
+        }
     }
     if (p->id.find("queue") != std::string::npos) {
         auto* run = new Task{p}; auto* cancel = new Task{p};
@@ -254,6 +286,11 @@ static MmsResult MMS_CALL Stop(void* context) {
     }
     if (p->id.find("busy") != std::string::npos && p->stops < 3) { Log(p, "STOP_BUSY"); return MMS_E_BUSY; }
     if(p->serializer){auto r=p->host.unregisterProvider(p->host.context,p->serializer);if(r)return r;p->serializer=0;}
+    if (PropertiesMode(p)) {
+        for (auto& item : p->propertyButtons) if (item) { auto r = p->ui.unregisterItem(p->ui.context, item); if (r) return r; item = 0; }
+        if (p->propertyGroup) { auto r = p->ui.unregisterItem(p->ui.context, p->propertyGroup); if (r) return r; p->propertyGroup = 0; }
+        Log(p, "PROPERTIES_UNREGISTERED");
+    }
     for (auto* item : {&p->panel, &p->panel2, &p->button, &p->menu}) if (*item) { auto r = p->ui.unregisterItem(p->ui.context, *item); if (r) return r; *item = 0; }
     if (p->factory) { auto r = p->surface.unregisterSurface(p->surface.context, p->factory); if (r) return r; p->factory = 0; }
     if (p->command) { auto r = p->ui.unregisterItem(p->ui.context, p->command); if (r) return r; p->command = 0; }

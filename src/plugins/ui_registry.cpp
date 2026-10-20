@@ -381,7 +381,7 @@ bool StateSameRef(const MmsUiTargetRefV1& a, const MmsUiTargetRefV1& b) noexcept
 }
 UiRegistry::UiRegistry(std::function<void()> change, std::function<void(UiClient&, MmsResult)> finished):
     commandFinished_(std::move(finished)), refresh_(*this), preferences_(std::make_unique<Preferences>()), changed_(std::move(change)) {
-    for (const auto& [id, label, kind] : {std::tuple<const char*, const char*, uint32_t>{"mms.menu.plugins", "插件", MMS_UI_MENU}, {"mms.toolbar.main.extensions", "插件工具栏", MMS_UI_TOOLBAR}, {"mms.workspace.tabs.extensions", "插件工作区", MMS_UI_GROUP}}) {
+    for (const auto& [id, label, kind] : {std::tuple<const char*, const char*, uint32_t>{"mms.menu.plugins", "插件", MMS_UI_MENU}, {"mms.toolbar.main.extensions", "插件工具栏", MMS_UI_TOOLBAR}, {"mms.workspace.tabs.extensions", "插件工作区", MMS_UI_GROUP}, {"mms.properties.main.extensions", "属性区扩展", MMS_UI_TOOLBAR}}) {
         ElementRecord e; e.handle = next_++; e.arena = std::make_shared<Arena>(); e.desc.h = Header<MmsUiElementV1>();
         e.desc.id = e.arena->Copy(Text(id)); e.desc.ownerPlugin = e.arena->Copy(Text("mms")); e.desc.label = e.arena->Copy(Text(label));
         e.desc.kind = kind; e.desc.capabilities = MMS_UI_CONTAINER | (kind == MMS_UI_MENU ? 0 : MMS_UI_LAYOUT); e.desc.generation = generation_++;
@@ -594,7 +594,7 @@ bool UiRegistry::Allowed(const MmsUiElementV1& e, const std::map<std::string, El
     while (p != tree.end()) {
         auto id = p->first; if (!visited.insert(id).second) return false;
         if (id == "mms.menu.plugins") return IsMenu(e.kind);
-        if (id == "mms.toolbar.main.extensions") return e.kind == MMS_UI_BUTTON || e.kind == MMS_UI_SEPARATOR || e.kind == MMS_UI_GROUP || e.kind == MMS_UI_INPUT;
+        if (NativeControlAnchor(id)) return e.kind == MMS_UI_BUTTON || e.kind == MMS_UI_SEPARATOR || e.kind == MMS_UI_GROUP || e.kind == MMS_UI_INPUT;
         if (id == "mms.workspace.tabs.extensions") return e.kind == MMS_UI_PANEL;
         if (p->second.desc.kind != MMS_UI_MENU && p->second.desc.kind != MMS_UI_GROUP) return false;
         p = tree.find(String(p->second.desc.parentId));
@@ -817,7 +817,7 @@ MmsResult UiRegistry::CommitPropertyInput(const PropertyInputSnapshot& snapshot,
         auto current = element;
         for (size_t depth = 0; depth <= elements.size(); ++depth) {
             if (current == elements.end() || !current->second.visible) return MMS_E_NOT_READY;
-            if (current->first == "mms.toolbar.main.extensions") break;
+            if (NativeControlAnchor(current->first)) break;
             current = elements.find(String(current->second.desc.parentId));
             if (depth == elements.size()) return MMS_E_STALE;
         }
@@ -1350,7 +1350,7 @@ MmsUiSurfaceApiV1 UiRegistry::SurfaceApi(UiClient& client) {
         auto lease = std::make_unique<Lease>(); lease->owner = c.id; lease->kind = 3;
         for (const auto& [id, e] : r.elements) if (String(e.desc.ownerPlugin) == "mms") {
             MmsUiAnchorV1 anchor{}; anchor.h = Header<MmsUiAnchorV1>(); anchor.id = lease->arena.Copy(e.desc.id); anchor.label = lease->arena.Copy(e.desc.label);
-            anchor.allowedKinds = id == "mms.menu.plugins" ? (1ull << MMS_UI_MENU) | (1ull << MMS_UI_MENU_ITEM) | (1ull << MMS_UI_SEPARATOR) : id == "mms.workspace.tabs.extensions" ? (1ull << MMS_UI_PANEL) : (1ull << MMS_UI_BUTTON) | (1ull << MMS_UI_SEPARATOR) | (1ull << MMS_UI_GROUP);
+            anchor.allowedKinds = id == "mms.menu.plugins" ? (1ull << MMS_UI_MENU) | (1ull << MMS_UI_MENU_ITEM) | (1ull << MMS_UI_SEPARATOR) : id == "mms.workspace.tabs.extensions" ? (1ull << MMS_UI_PANEL) : (1ull << MMS_UI_BUTTON) | (1ull << MMS_UI_SEPARATOR) | (1ull << MMS_UI_GROUP) | (1ull << MMS_UI_INPUT);
             if (id == "mms.workspace.tabs.extensions") anchor.flags = MMS_ANCHOR_NATIVE_CHILD;
             lease->anchors.push_back(anchor);
         }

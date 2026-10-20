@@ -65,13 +65,15 @@ cmake --build build/hello --config Release
 
 ## 布局和能力边界
 
-工具栏按钮和分组可以提供默认尺寸、伸缩、排列方向、间距及顺序。宿主使用现有布局服务处理这些提示，用户保存的布局覆盖仍优先。菜单项按实际登记顺序排列；本接口未增加菜单专用的排序字段。
+工具栏和属性扩展行的按钮、分组及 INPUT 可以提供默认尺寸、伸缩、排列方向、间距及顺序。宿主使用现有布局服务处理这些提示，用户保存的布局覆盖仍优先。菜单项按实际登记顺序排列；本接口未增加菜单专用的排序字段。
 
 位置使用已有挂载点。更多挂载点应先通过 `mms.ui.surface.acquireAnchors` 查询；缺失位置必须返回错误或由插件明确选择备用位置。包装不会把不支持的位置静默替换成菜单。
 
+`mms.properties.main.extensions` 是主视口下方、本体底部参数区上方的属性扩展行，支持原 BUTTON、GROUP、SEPARATOR 和 INPUT。它与 `mms.toolbar.main.extensions` 共用原 C 表、布局树、刷新队列和票据。直接注册时填写元素的 `parentId`；便利声明填写 `InputSpec.parent`、`button.parent` 或 `group.parent`。使用分组时将组放入目标根，子项继续引用该组。属性扩展行按内容换行，空区域不占高度；命令溢出菜单仍只支持原工具栏。范围和验证见[属性扩展行记录](../../docs/records/abi-property-mount-2026-10-21.md)。
+
 只读属性和原生面板工厂可以通过 `RegistrationBundle` 注册。快照、值和 anchor 租约仍调用原 C API 获取及释放；本批没有增加租约类。原生窗口及 view context 的创建、重建和销毁规则继续遵循 [SDK 参考](README.md)。
 
-可写属性的[底层暂存接口](property-stage.md)及[声明式 INPUT 和便利封装](input.md)已在受控编辑宿主中接入。普通宿主的 INPUT 为只读，便利 SDK 不启用 `mms.edit`。DOCK、其他挂载点、复杂动画和新视口服务仍未开放。刷新种类按目标的 `supportedKinds` 检查，见[刷新 SDK](cpp-refresh.md)。`updateElement` 保留底层 handle，但可能更新 generation 并重建 view；不能将其当成无副作用的重绘请求。
+可写属性的[底层暂存接口](property-stage.md)及[声明式 INPUT 和便利封装](input.md)已在受控编辑宿主中接入。普通宿主的 INPUT 为只读，便利 SDK 不启用 `mms.edit`。DOCK、侧栏、时间线和状态栏挂载、复杂动画和新视口服务仍未开放。刷新种类按目标的 `supportedKinds` 检查，见[刷新 SDK](cpp-refresh.md)。`updateElement` 保留底层 handle，但可能更新 generation 并重建 view；不能将其当成无副作用的重绘请求。
 
 ## 工具栏命令溢出
 
@@ -98,6 +100,6 @@ spec.button.hints = &hints;
 
 此扩展不增加函数表版本，也没有独立的溢出能力查询。取得 `mms.ui.layout` 1.0 不代表旧宿主接受数值 `3`；检查 `Register`、`SetDefaultHints` 或底层 `stageHints` 的结果。返回 `MMS_E_UNSUPPORTED` 时，由插件明确注册受支持的菜单位置，或报告不支持。`CommandUi` 不会静默回退；注册失败后的清理规则不变。
 
-实现状态：**本机已验证**（完整配置 21／21、原始兼容配置 18／18、ABI 契约重复 6／6）。验收证据见 [UI 框架记录](../../docs/records/abi-ui-framework-2026-10-19.md)。INPUT 走原工具栏布局，自身不进入命令溢出菜单。工具栏溢出不开放 DOCK、新挂载点、通用菜单内容提供者或普通 `mms.edit`。
+实现状态：**本机已验证**（完整配置 21／21、原始兼容配置 18／18、ABI 契约重复 6／6）。验收证据见 [UI 框架记录](../../docs/records/abi-ui-framework-2026-10-19.md)。INPUT 自身不进入命令溢出菜单；属性扩展行也不支持该溢出策略。DOCK、通用菜单内容提供者和普通 `mms.edit` 仍未开放。
 
 Win7 SP1 x64、CPU 基础路径和 AMD 继续作为发布约束。当前构建与本机测试不替代 Win7 和 AMD 真机验收。

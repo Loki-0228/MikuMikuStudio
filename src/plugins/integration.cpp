@@ -60,7 +60,7 @@ std::unique_ptr<NativePoseTestBinding> migrationBinding;
 std::unique_ptr<SharedHistory::ResetTransaction> projectHistoryReset;
 MMDApp* owner = nullptr;
 std::uint64_t runtimeBinding = 0;
-int toolbarHeight = 0;
+int toolbarHeight = 0, propertyAreaHeight = 0;
 bool refreshing = false, closing = false;
 bool historyUiPending = false;
 PluginProject currentProject, pendingProject;
@@ -179,6 +179,7 @@ static void InitializeRuntime(MMDApp* app, bool migrationTest) {
         ui->SetLayoutPublished([app](int height) -> MmsResult {
             if (closing || owner != app || !app->WindowLayoutReady() || app->SceneMutationInProgress()) return MMS_E_NOT_READY;
             toolbarHeight = height;
+            propertyAreaHeight = ui->PropertyAreaHeight();
             // Only the geometry that depends on the plugin strip changes.
             // Do not enter HandleWindowSize, FrameDriver or scene evaluation.
             return Boundary([&] {
@@ -245,7 +246,7 @@ void Shutdown() {
 #if !MMD_ORIGINAL_PROFILE
     historyCommandHost.reset();
 #endif
-    history.reset(); manager.reset(); projectEvents.clear(); toolbarHeight = 0; owner = nullptr; historyUiPending = false;
+    history.reset(); manager.reset(); projectEvents.clear(); toolbarHeight = propertyAreaHeight = 0; owner = nullptr; historyUiPending = false;
 }
 SharedHistory* NativeHistory(MMDApp* app) noexcept { return app == owner && !closing ? history.get() : nullptr; }
 void RequestBoundHistoryUiRefresh(MMDApp* app) noexcept {
@@ -258,16 +259,21 @@ void Layout(MMDApp* app) {
     Boundary([&] {
         RECT rect{}; GetClientRect(app->MainWindow(), &rect);
         int left = app->SidebarWidth() + 9;
-        toolbarHeight = ui->Layout(left, std::max(0L, rect.right - left), std::max(0L, (rect.bottom - 217) / 3), !app->FullscreenMode() && !app->FloatingWindow());
+        const bool shown = !app->FullscreenMode() && !app->FloatingWindow();
+        const int maximum = std::max(0L, (rect.bottom - 217) / 3);
+        ui->SetPropertyArea(std::max(0L, rect.bottom - 160), maximum, shown);
+        toolbarHeight = ui->Layout(left, std::max(0L, rect.right - left), maximum, shown);
+        propertyAreaHeight = ui->PropertyAreaHeight();
         return MMS_OK;
     });
 }
 int ToolbarHeight(MMDApp* app) { return app == owner && !app->FullscreenMode() && !app->FloatingWindow() ? toolbarHeight : 0; }
+int PropertyAreaHeight(MMDApp* app) { return app && app == owner && !app->FullscreenMode() && !app->FloatingWindow() ? propertyAreaHeight : 0; }
 void Refresh(MMDApp* app) {
     if (!ui || app != owner || refreshing || closing) return;
     if (manager && manager->InCallback()) { SetTimer(app->MainWindow(), kHistoryUiRetry, 16, nullptr); return; }
-    refreshing = true; auto old = toolbarHeight;
-    Boundary([&] { ui->Refresh(); Layout(app); if (toolbarHeight != old) HandleWindowSize(app);
+    refreshing = true; const auto old = toolbarHeight, oldProperties = propertyAreaHeight;
+    Boundary([&] { ui->Refresh(); Layout(app); if (toolbarHeight != old || propertyAreaHeight != oldProperties) HandleWindowSize(app);
 #if !MMD_ORIGINAL_PROFILE
         if (historyUiPending && history && manager && !manager->InCallback() && !app->SceneMutationInProgress()) {
             historyUiPending = !RefreshBoundObjectUi(*app, *history);

@@ -171,4 +171,6 @@ add_test(NAME plugin_abi_contract COMMAND plugin_abi_tests "$<TARGET_FILE_DIR:mm
 set_tests_properties(plugin_abi_contract PROPERTIES TIMEOUT 90)
 add_test(NAME ui_input_state_runtime COMMAND plugin_abi_tests --input-state-only)
 set_tests_properties(ui_input_state_runtime PROPERTIES TIMEOUT 90)
+add_test(NAME ui_property_mount_runtime COMMAND plugin_abi_tests --property-mount-only)
+set_tests_properties(ui_property_mount_runtime PROPERTIES TIMEOUT 90)
 install(FILES PLUGINS/config.json DESTINATION PLUGINS)

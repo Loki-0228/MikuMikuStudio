@@ -248,20 +248,21 @@ void RefreshMainWindowViewport(MMDApp* app) {  // was Sub42C810
     }
 
     const int pluginHeight = plugins::ToolbarHeight(app);
+    const int propertyHeight = plugins::PropertyAreaHeight(app);
     if(editor){
         FrameViewportGeometry geometry;
         if(IsIconic(hwnd)||!CalculateFrameViewport(view,s.SidebarWidth(),pluginHeight,FrameViewportMode::Docked,
-            renderWidth,renderHeight,geometry)){view={};return;}
+            renderWidth,renderHeight,geometry,propertyHeight)){view={};return;}
         view=geometry.scene;
     }else{
-    const int availableHeight = std::max(1L, view.bottom - 217 - pluginHeight);
+    const int availableHeight = std::max(1L, view.bottom - 217 - pluginHeight - propertyHeight);
     const int sidebar = s.SidebarWidth();
     const int availableWidth = view.right - sidebar - 9;
     const int fittedWidth = availableHeight * renderWidth / renderHeight;
 
     if (availableWidth >= fittedWidth) {                // 0x42C8DD
         view.top += 25 + pluginHeight;
-        view.bottom -= 192;
+        view.bottom -= 192 + propertyHeight;
         const int center = availableWidth / 2 + sidebar + 9;
         view.left = center - fittedWidth / 2;
         view.right = center + fittedWidth / 2;

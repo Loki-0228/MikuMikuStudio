@@ -18,7 +18,7 @@ inline bool FrameRectWithin(const RECT& rect,const RECT& bounds) noexcept {
 // Full-profile editor geometry only. Keep the original integer centering when
 // it yields real pixels; insufficient room has no substitute 1px viewport.
 inline bool CalculateFrameViewport(const RECT& client,int sidebar,int toolbar,FrameViewportMode mode,
-        int renderWidth,int renderHeight,FrameViewportGeometry& result) noexcept {
+        int renderWidth,int renderHeight,FrameViewportGeometry& result,int propertyExtensions = 0) noexcept {
     result={};
     if(client.left||client.top||client.right<=0||client.bottom<=0||renderWidth<=0||renderHeight<=0)return false;
     using Wide=std::int64_t;
@@ -26,13 +26,14 @@ inline bool CalculateFrameViewport(const RECT& client,int sidebar,int toolbar,Fr
     const bool docked=mode==FrameViewportMode::Docked,fullscreen=mode==FrameViewportMode::Fullscreen;
     const Wide left=docked?std::max<Wide>(0,Wide(sidebar)+9):0;
     const Wide top=fullscreen?0:25+(docked?std::max<Wide>(0,toolbar):0);
-    const Wide bottom=height-(fullscreen?0:docked?192:32);
+    const Wide property=docked?std::max<Wide>(0,propertyExtensions):0;
+    const Wide bottom=height-(fullscreen?0:docked?192:32)-property;
     if(left>=width||top>=bottom)return false;
     FrameViewportGeometry next;
     next.available={LONG(left),LONG(top),LONG(width),LONG(bottom)};
     // The native bottom panels begin at clientHeight-160. A compressed
     // viewport strip may reclaim up to 8px of its own 32px row, never this band.
-    next.presentationBounds={LONG(left),LONG(top),LONG(width),LONG(height-(docked?160:0))};
+    next.presentationBounds={LONG(left),LONG(top),LONG(width),LONG(height-(docked?160:0)-property)};
     const Wide availableWidth=width-left,availableHeight=bottom-top;
     const Wide fittedWidth=availableHeight*Wide(renderWidth)/renderHeight;
     Wide sceneLeft=left,sceneRight=width,sceneTop=top,sceneBottom=bottom;

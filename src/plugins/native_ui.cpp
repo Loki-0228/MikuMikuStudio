@@ -14,12 +14,14 @@ struct NativeUi::Impl {
     UiRegistry& registry;
     UiClient client;
     Log log;
-    HWND main, toolbar = nullptr, workspace = nullptr, tabs = nullptr, body = nullptr, failure = nullptr, tooltip = nullptr, overflowButton = nullptr;
+    HWND main, toolbar = nullptr, properties = nullptr, workspace = nullptr, tabs = nullptr, body = nullptr, failure = nullptr, tooltip = nullptr, overflowButton = nullptr;
     HMENU root = nullptr, popup = nullptr;
     unsigned nextId = 0xa000;
     uint64_t revision = 0;
     uint64_t layoutContext = 1;
     int x = 0, width = 0, maximum = 120, height = 0, scroll = 0, contentHeight = 0;
+    int propertyBottom = 0, propertyMaximum = 0, propertyHeight = 0, propertyScroll = 0, propertyContentHeight = 0;
+    bool propertyVisible = false;
     bool visible = true, refreshing = false, presentationPending = false;
     bool refreshLayout = false;
     MmsResult layoutResult = MMS_E_NOT_READY;
@@ -28,7 +30,7 @@ struct NativeUi::Impl {
     std::map<std::string, unsigned> ids;
     std::map<unsigned, std::pair<std::string, uint64_t>> dispatch;
     struct Control {
-        HWND window = nullptr; MmsHandle element = 0; uint64_t instance = 0;
+        HWND window = nullptr, parent = nullptr; MmsHandle element = 0; uint64_t instance = 0;
         bool stateVisible = true, layoutVisible = true;
         bool tooltipEnabled = true;
         std::shared_ptr<const ButtonStateContent> content, tooltipContent;
@@ -49,7 +51,7 @@ struct NativeUi::Impl {
     std::string activePanel;
     std::map<std::string, MmsResult> panelErrors;
     uint32_t dpi = 96;
-    native_ui::PanelBuffer toolbarBuffer, workspaceBuffer, bodyBuffer;
+    native_ui::PanelBuffer toolbarBuffer, propertyBuffer, workspaceBuffer, bodyBuffer;
     int workspaceHeight = 0, panelScrollX = 0, panelScrollY = 0, panelWidth = 0, panelHeight = 0;
     Impl(UiRegistry& r, HWND window, Log output): registry(r), client{&r, "mms"}, log(std::move(output)), main(window) {
         WNDCLASSW wc{}; wc.hInstance = GetModuleHandleW(nullptr); wc.lpszClassName = L"MMS.PluginAbi.Toolbar.V1"; wc.lpfnWndProc = Window; wc.hCursor = LoadCursor(nullptr, IDC_ARROW); wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
@@ -74,6 +76,13 @@ struct NativeUi::Impl {
             0, 0, 0, 0, toolbar, nullptr, wc.hInstance, nullptr);
         if (!overflowButton) { DestroyWindow(tooltip); DestroyWindow(workspace); DestroyWindow(toolbar); throw std::runtime_error("plugin overflow button"); }
         SendMessageW(overflowButton, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), FALSE);
+        wc.lpszClassName = L"MMS.PluginAbi.Properties.V1";
+        if (!RegisterClassW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+            DestroyWindow(tooltip); DestroyWindow(workspace); DestroyWindow(toolbar); throw std::runtime_error("plugin property strip class");
+        }
+        properties = CreateWindowExW(WS_EX_CONTROLPARENT, wc.lpszClassName, L"属性区扩展", WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS | WS_VSCROLL,
+            0, 0, 0, 0, main, nullptr, wc.hInstance, this);
+        if (!properties) { DestroyWindow(tooltip); DestroyWindow(workspace); DestroyWindow(toolbar); throw std::runtime_error("plugin property strip"); }
         registry.Refresh().SetLayout([this](MmsHandle element) { return Relayout(element); });
         registry.Refresh().SetValidatedStateContent([this](MmsHandle element, const std::shared_ptr<const ButtonStateContent>& content,
             bool enabled, const std::function<MmsResult()>& revalidate) {
@@ -84,7 +93,7 @@ struct NativeUi::Impl {
         });
         if (!SetWindowSubclass(main, Lifetime, reinterpret_cast<UINT_PTR>(this), reinterpret_cast<DWORD_PTR>(this))) {
             registry.Refresh().SetLayout({}); registry.Refresh().SetValidatedStateContent({}); registry.Refresh().SetPropertyData({});
-            DestroyWindow(tooltip); DestroyWindow(workspace); DestroyWindow(toolbar);
+            DestroyWindow(tooltip); DestroyWindow(properties); DestroyWindow(workspace); DestroyWindow(toolbar);
             throw std::runtime_error("plugin popup lifetime hook");
         }
     }
@@ -99,7 +108,7 @@ struct NativeUi::Impl {
         Boundary([&] { registry.DestroyViews(); return MMS_OK; });
         for (auto& [id, control] : controls) DestroyControl(control);
         if (IsWindow(tooltip)) DestroyWindow(tooltip);
-        Detach(); if (IsWindow(workspace)) DestroyWindow(workspace); if (IsWindow(toolbar)) DestroyWindow(toolbar);
+        Detach(); if (IsWindow(properties)) DestroyWindow(properties); if (IsWindow(workspace)) DestroyWindow(workspace); if (IsWindow(toolbar)) DestroyWindow(toolbar);
     }
     void ReplayClose() noexcept {
         if (nativeWorkDepth || overflowOpen || !closePending) return;
@@ -127,6 +136,9 @@ struct NativeUi::Impl {
     }
     void DestroyControl(Control& control) noexcept {
         registry.Refresh().InvalidateTarget(control.element);
+        if (control.input) control.input->Cancel();
+        const HWND focus = GetFocus();
+        if (focus && (focus == control.window || IsChild(control.window, focus))) SetFocus(main);
         if (tooltip && control.window) {
             for (bool rectangle : {false, true}) {
                 auto tool = Tool(control, rectangle);
@@ -144,7 +156,7 @@ struct NativeUi::Impl {
     TOOLINFOW Tool(const Control& control, bool rectangle, HWND child = nullptr) const noexcept {
         // v5 (unmanifested hosts) rejects the modern lpReserved tail. We only
         // use the common prefix through lpszText; keep Unicode in both hosts.
-        TOOLINFOW tool{}; tool.cbSize = TTTOOLINFOW_V1_SIZE; tool.hwnd = toolbar;
+        TOOLINFOW tool{}; tool.cbSize = TTTOOLINFOW_V1_SIZE; tool.hwnd = control.parent ? control.parent : toolbar;
         tool.uId = rectangle ? UINT_PTR(control.element) : reinterpret_cast<UINT_PTR>(child ? child : control.window);
         tool.uFlags = TTF_SUBCLASS | (rectangle ? 0 : TTF_IDISHWND);
         return tool;
@@ -198,7 +210,7 @@ struct NativeUi::Impl {
         auto tool = Tool(control, true);
         if (!GetWindowRect(control.window, &tool.rect)) return false;
         SetLastError(ERROR_SUCCESS);
-        if (!MapWindowPoints(nullptr, toolbar, reinterpret_cast<POINT*>(&tool.rect), 2) && GetLastError()) return false;
+        if (!MapWindowPoints(nullptr, tool.hwnd, reinterpret_cast<POINT*>(&tool.rect), 2) && GetLastError()) return false;
         if (logicalVisible == 0 || (logicalVisible < 0 && !(GetWindowLongPtrW(control.window, GWL_STYLE) & WS_VISIBLE))) SetRectEmpty(&tool.rect);
         auto previous = Tool(control, true); wchar_t existing[8194]{}; previous.lpszText = existing;
         if (!SendMessageW(tooltip, TTM_GETTOOLINFOW, 0, reinterpret_cast<LPARAM>(&previous))) return false;
@@ -246,6 +258,7 @@ struct NativeUi::Impl {
     MmsResult ApplyStateContent(MmsHandle handle, const std::shared_ptr<const ButtonStateContent>& content, bool enabled,
         const std::function<MmsResult()>& revalidate) {
         const NativeWork work(*this);
+        const WindowDpiScope stateDpi(main);
         auto found = std::find_if(controls.begin(), controls.end(), [&](const auto& item) { return item.second.element == handle; });
         if (found == controls.end() || !IsWindow(found->second.window) || !content || !IsWindow(tooltip)) return MMS_E_STALE;
         auto element = registry.elements.find(found->first);
@@ -297,8 +310,8 @@ struct NativeUi::Impl {
             if (const auto result = check()) return result;
             if (!GetWindowRect(window, &candidate)) return MMS_E_FAILED;
             SetLastError(ERROR_SUCCESS);
-            if (!MapWindowPoints(nullptr, toolbar, reinterpret_cast<POINT*>(&candidate), 2) && GetLastError()) return MMS_E_FAILED;
-            if (!(content->visible && control.layoutVisible && visible && height > 0)) SetRectEmpty(&candidate);
+            if (!MapWindowPoints(nullptr, identity.hwnd, reinterpret_cast<POINT*>(&candidate), 2) && GetLastError()) return MMS_E_FAILED;
+            if (!(content->visible && control.layoutVisible && HostVisible(control))) SetRectEmpty(&candidate);
             if (const auto result = check()) return result;
             bool attempted = false;
             const auto result = Boundary([&]() -> MmsResult {
@@ -414,7 +427,7 @@ struct NativeUi::Impl {
         }
         // Overflow uses TPM_RETURNCMD: only OpenOverflow's validated return
         // dispatches. Never treat menu notification as a second button click.
-        if (hwnd == self->toolbar && msg == WM_COMMAND && !lp) return 0;
+        if ((hwnd == self->toolbar || hwnd == self->properties) && msg == WM_COMMAND && !lp) return 0;
         if (hwnd == self->toolbar && (msg == WM_ENTERMENULOOP || msg == WM_EXITMENULOOP ||
             msg == WM_INITMENU || msg == WM_INITMENUPOPUP || msg == WM_UNINITMENUPOPUP || msg == WM_MENUSELECT)) return 0;
         if (msg == WM_ERASEBKGND || msg == WM_PRINTCLIENT) {
@@ -446,19 +459,23 @@ struct NativeUi::Impl {
             if (position != next) ++self->layoutContext;
             position = next; Boundary([&] { self->Layout(); return MMS_OK; }); return 0;
         }
-        if (hwnd == self->toolbar && (msg == WM_VSCROLL || msg == WM_MOUSEWHEEL)) {
+        if ((hwnd == self->toolbar || hwnd == self->properties) && (msg == WM_VSCROLL || msg == WM_MOUSEWHEEL)) {
             SCROLLINFO info{sizeof(info), SIF_ALL}; GetScrollInfo(hwnd, SB_VERT, &info);
-            int to = self->scroll;
+            const bool property = hwnd == self->properties;
+            int& position = property ? self->propertyScroll : self->scroll;
+            const int extent = property ? self->propertyHeight : self->height;
+            const int content = property ? self->propertyContentHeight : self->contentHeight;
+            int to = position;
             if (msg == WM_MOUSEWHEEL) to -= GET_WHEEL_DELTA_WPARAM(wp) / WHEEL_DELTA * 28;
-            else switch (LOWORD(wp)) { case SB_LINEUP: to -= 28; break; case SB_LINEDOWN: to += 28; break; case SB_PAGEUP: to -= self->height; break; case SB_PAGEDOWN: to += self->height; break; case SB_THUMBTRACK: to = info.nTrackPos; break; default: break; }
-            const int next = std::clamp(to, 0, std::max(0, self->contentHeight - self->height));
-            if (self->scroll != next) ++self->layoutContext;
-            self->scroll = next;
+            else switch (LOWORD(wp)) { case SB_LINEUP: to -= 28; break; case SB_LINEDOWN: to += 28; break; case SB_PAGEUP: to -= extent; break; case SB_PAGEDOWN: to += extent; break; case SB_THUMBTRACK: to = info.nTrackPos; break; default: break; }
+            const int next = std::clamp(to, 0, std::max(0, content - extent));
+            if (position != next) ++self->layoutContext;
+            position = next;
             Boundary([&] { self->Layout(); return MMS_OK; }); return 0;
         }
         if (msg == WM_PAINT) {
             PAINTSTRUCT ps{}; HDC dc = BeginPaint(hwnd, &ps); RECT rect{}; GetClientRect(hwnd, &rect);
-            auto& buffer = hwnd == self->toolbar ? self->toolbarBuffer : hwnd == self->body ? self->bodyBuffer : self->workspaceBuffer;
+            auto& buffer = hwnd == self->toolbar ? self->toolbarBuffer : hwnd == self->properties ? self->propertyBuffer : hwnd == self->body ? self->bodyBuffer : self->workspaceBuffer;
             const auto color = GetSysColor(COLOR_BTNFACE); uint64_t key = (uint64_t(self->dpi) << 32) | color;
             HDC memory = buffer.Begin(dc, rect.right, rect.bottom, key, color);
             if (memory) { FillRect(memory, &ps.rcPaint, reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1)); if (!buffer.Copy(dc, ps.rcPaint)) FillRect(dc, &ps.rcPaint, reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1)); }
@@ -524,10 +541,24 @@ struct NativeUi::Impl {
         for (const auto& id : Children(parent)) { const auto& e = registry.elements.at(id); if (!e.visible) continue;
             if (e.desc.kind == MMS_UI_GROUP) Gather(id, out, depth + 1); else out.push_back(id); }
     }
+    HWND ControlHost(const ElementRecord& element) const {
+        auto parent = String(element.desc.parentId);
+        for (size_t depth = 0; depth <= registry.elements.size(); ++depth) {
+            if (parent == "mms.toolbar.main.extensions") return toolbar;
+            if (parent == "mms.properties.main.extensions") return properties;
+            const auto found = registry.elements.find(parent);
+            if (found == registry.elements.end() || found->second.desc.kind != MMS_UI_GROUP) return nullptr;
+            parent = String(found->second.desc.parentId);
+        }
+        return nullptr;
+    }
+    bool HostVisible(const Control& control) const noexcept {
+        return visible && (control.parent == properties ? propertyVisible && propertyHeight > 0 : height > 0);
+    }
     bool AvailableAncestors(const ElementRecord& element) const {
         auto parent = String(element.desc.parentId);
         for (unsigned depth = 0; depth <= 64; ++depth) {
-            if (parent == "mms.toolbar.main.extensions") return true;
+            if (NativeControlAnchor(parent)) return true;
             const auto found = registry.elements.find(parent);
             if (found == registry.elements.end() || !found->second.visible) return false;
             parent = String(found->second.desc.parentId);
@@ -541,11 +572,11 @@ struct NativeUi::Impl {
         std::vector<ui::LayoutChange> changes;
         std::vector<ui::layout_detail::PendingPaint> guards;
         bool deferred;
-        explicit HostLayoutPaint(Impl& value): owner(value), guards(value.controls.size() + 6), deferred(ui::LayoutBatch::IsCollecting()) {
-            const auto count = owner.controls.size() + 6;
+        explicit HostLayoutPaint(Impl& value): owner(value), guards(value.controls.size() + 7), deferred(ui::LayoutBatch::IsCollecting()) {
+            const auto count = owner.controls.size() + 7;
             snapshots.reserve(count); changes.reserve(count * 2);
             ui::ReserveLayoutChanges(count * 2);
-            for (HWND window : {owner.toolbar, owner.workspace, owner.tabs, owner.body, owner.failure, owner.overflowButton}) Add(window);
+            for (HWND window : {owner.toolbar, owner.properties, owner.workspace, owner.tabs, owner.body, owner.failure, owner.overflowButton}) Add(window);
             for (const auto& [id, control] : owner.controls) Add(control.window);
             for (size_t i = 0; i < snapshots.size(); ++i) if (!guards[i].Attach(snapshots[i].window))
                 throw std::runtime_error("plugin layout paint guard");
@@ -800,7 +831,7 @@ struct NativeUi::Impl {
         if (!hasMenu && popup) { Detach(); changed = true; }
         if (popup) { while (GetMenuItemCount(popup) > 0) DeleteMenu(popup, 0, MF_BYPOSITION); Menu(popup, "mms.menu.plugins"); }
         if (changed) DrawMenuBar(main);
-        std::vector<std::string> wanted; Gather("mms.toolbar.main.extensions", wanted);
+        std::vector<std::string> wanted; Gather("mms.toolbar.main.extensions", wanted); Gather("mms.properties.main.extensions", wanted);
         std::set<std::string> keep(wanted.begin(), wanted.end());
         for (auto it = controls.begin(); it != controls.end();) if (!keep.count(it->first)) { DestroyControl(it->second); it = controls.erase(it); } else ++it;
         for (auto it = ids.begin(); it != ids.end();) {
@@ -816,17 +847,20 @@ struct NativeUi::Impl {
             const auto commandId = Id(id, e);
             auto& control = controls[id];
             const bool input = e.desc.kind == MMS_UI_INPUT;
-            if (control.window && input != bool(control.input)) DestroyControl(control);
+            const HWND parent = ControlHost(e);
+            if (!parent) throw std::runtime_error("unavailable plugin control mount");
+            if (control.window && (input != bool(control.input) || control.parent != parent)) DestroyControl(control);
+            control.parent = parent;
             if (input) {
                 if (!control.input) {
                     control.element = e.handle; control.instance = registry.NewPresentationInstance();
-                    control.input = std::make_unique<NativePropertyInput>(registry, id, toolbar, commandId,
+                    control.input = std::make_unique<NativePropertyInput>(registry, id, parent, commandId,
                         [this](bool enter) { if (enter) ++nativeWorkDepth; else { --nativeWorkDepth; ReplayClose(); } }, log);
                     control.window = control.input->Window();
                 }
                 control.input->Refresh(dpi);
                 if (const auto result = SyncInputTips(control)) { registry.SuspendGeometry(); registry.Refresh().SuspendTargets(); throw std::runtime_error("cannot create plugin input tips"); }
-                control.input->LayoutVisible(show && visible && !overflowIds.count(id));
+                control.input->LayoutVisible(show && HostVisible(control) && !overflowIds.count(id));
                 if (bool(IsWindowEnabled(control.window)) != bool(state.enabled)) EnableWindow(control.window, state.enabled);
                 ShowWindow(control.window, show && !overflowIds.count(id) ? SW_SHOWNA : SW_HIDE);
                 control.stateVisible = state.visible != 0;
@@ -837,7 +871,7 @@ struct NativeUi::Impl {
                 const bool separator = e.desc.kind == MMS_UI_SEPARATOR;
                 control.element = e.handle; control.instance = registry.NewPresentationInstance();
                 control.window = CreateWindowExW(0, separator ? L"STATIC" : L"BUTTON", caption.c_str(), WS_CHILD | (separator ? SS_ETCHEDVERT : WS_TABSTOP | BS_CHECKBOX | BS_PUSHLIKE), 0, 0, 0, 0,
-                    toolbar, reinterpret_cast<HMENU>(UINT_PTR(commandId)), GetModuleHandleW(nullptr), nullptr);
+                    parent, reinterpret_cast<HMENU>(UINT_PTR(commandId)), GetModuleHandleW(nullptr), nullptr);
                 if (!control.window) throw std::runtime_error("cannot create plugin button");
                 SendMessageW(control.window, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), FALSE);
                 if (!separator && !AddTips(control)) { DestroyControl(control); throw std::runtime_error("cannot create plugin button tips"); }
@@ -1008,14 +1042,15 @@ struct NativeUi::Impl {
                     }
                 }
                 out.back().stateVisibility = (element.effectiveHints.flags & MMS_HINT_PRESERVE_HIDDEN_SLOT) != 0;
-                out.back().layoutVisible = control->second.layoutVisible && visible && height > 0;
+                out.back().layoutVisible = control->second.layoutVisible && HostVisible(control->second);
                 out.back().layoutRefresh = true;
             } else if (element.desc.kind == MMS_UI_GROUP) {
                 // A retained group is an addressable registration, not another
                 // HWND. Its SUBTREE expands to the existing descendant views.
                 RefreshPresentation item; item.element = element.handle;
                 item.owner = String(element.desc.ownerPlugin); item.instance = element.handle;
-                item.window = toolbar; item.dpi = dpi; item.container = true;
+                item.window = ControlHost(element); item.dpi = dpi; item.container = true;
+                if (!item.window) return false;
                 item.coordinateDpi = dpi; item.coordinateWindow = main;
                 item.pixelX = LONG(std::lround(double(bounds->second.x) * dpi / 96));
                 item.pixelY = LONG(std::lround(double(bounds->second.y) * dpi / 96)); item.pixelOrigin = true;
@@ -1039,6 +1074,7 @@ struct NativeUi::Impl {
         const WindowDpiScope layoutDpi(main);
         const auto context = layoutContext;
         const int priorHeight = height + workspaceHeight;
+        const int priorPropertyHeight = propertyHeight;
         layoutResult = MMS_E_NOT_READY;
         if (registry.InCallback() && !fromRefresh) { DeferPresentation(); return height + workspaceHeight; }
         if (overflowLayout) { layoutResult = MMS_E_NOT_READY; return height + workspaceHeight; }
@@ -1048,14 +1084,15 @@ struct NativeUi::Impl {
         presentationPending = false;
         dpi = WindowDpi(main);
         const uint64_t uiRevision = registry.Revision(); bool applied = true; std::map<std::string, UiRegistry::Geometry> geometry;
-        auto tree = [&] {
+        const auto measureTree = [&](const char* root, HWND host) {
             struct MeasureDc {
                 HWND window; HDC dc; HGDIOBJ old;
                 explicit MeasureDc(HWND value): window(value), dc(GetDC(value)), old(dc ? SelectObject(dc, GetStockObject(DEFAULT_GUI_FONT)) : nullptr) {}
                 ~MeasureDc() { if (dc) { if (old && old != HGDI_ERROR) SelectObject(dc, old); ReleaseDC(window, dc); } }
-            } measure{toolbar};
-            return LayoutNode("mms.toolbar.main.extensions", measure.dc);
-        }();
+            } measure{host};
+            return LayoutNode(root, measure.dc);
+        };
+        auto tree = measureTree("mms.toolbar.main.extensions", toolbar);
         std::map<std::string, toolbar_overflow::Policy> policies;
         for (const auto& [id, e] : registry.elements) policies[id] = {e.effectiveHints.overflow == 3,
             e.desc.kind == MMS_UI_BUTTON, e.desc.kind == MMS_UI_SEPARATOR, (e.desc.capabilities & MMS_UI_CONTAINER) != 0};
@@ -1066,6 +1103,20 @@ struct NativeUi::Impl {
         contentHeight = int(std::ceil(std::max(flow.content.height, overflow.menu ? 32.0f : 0.0f) * dpi / 96));
         height = visible && width > 0 ? std::min(contentHeight, maximum) : 0;
         scroll = std::clamp(scroll, 0, std::max(0, contentHeight - height));
+        // Both mounts use the same tree measurement and retained objects. The
+        // property strip does not opt into the toolbar-only overflow menu.
+        auto propertyTree = measureTree("mms.properties.main.extensions", properties);
+        auto propertyFlow = native_ui::Arrange(propertyTree, {float(layoutWidth) * 96 / dpi, 0});
+        const bool propertySlots = std::any_of(propertyFlow.items.begin(), propertyFlow.items.end(), [&](const auto& item) {
+            const auto control = controls.find(item.id);
+            return control != controls.end() && control->second.parent == properties && item.rect.height > 0 &&
+                (item.visible || (registry.elements.at(item.id).effectiveHints.flags & MMS_HINT_PRESERVE_HIDDEN_SLOT));
+        });
+        propertyContentHeight = propertySlots ? int(std::ceil(propertyFlow.content.height * dpi / 96)) : 0;
+        propertyHeight = visible && propertyVisible && width > 0 ?
+            std::min({propertyContentHeight, propertyMaximum, propertyBottom}) : 0;
+        propertyScroll = std::clamp(propertyScroll, 0, std::max(0, propertyContentHeight - propertyHeight));
+        const int propertyTop = propertyBottom - propertyHeight;
         // A partial move or allocation failure must not leave old rectangles
         // advertised as ready. Only the final successful snapshot resumes them.
         registry.Refresh().SuspendTargets();
@@ -1079,6 +1130,11 @@ struct NativeUi::Impl {
         applied = paint.Move(toolbar, x, 0, std::max(0, width), height) && applied;
         SCROLLINFO info{sizeof(info), SIF_RANGE | SIF_PAGE | SIF_POS}; info.nMin = 0; info.nMax = std::max(0, contentHeight - 1); info.nPage = height; info.nPos = scroll;
         applied = paint.Scroll(toolbar, SB_VERT, info) && applied;
+        applied = paint.Move(properties, x, propertyTop, std::max(0, width), propertyHeight) && applied;
+        SCROLLINFO propertyInfo{sizeof(propertyInfo), SIF_RANGE | SIF_PAGE | SIF_POS};
+        propertyInfo.nMin = 0; propertyInfo.nMax = std::max(0, propertyContentHeight - 1);
+        propertyInfo.nPage = propertyHeight; propertyInfo.nPos = propertyScroll;
+        applied = paint.Scroll(properties, SB_VERT, propertyInfo) && applied;
         RECT toolbarClient{}; applied = GetClientRect(toolbar, &toolbarClient) && applied;
         const int menuRight = std::max(0L, toolbarClient.right);
         const int menuWidth = std::min(menuRight, MulDiv(32, dpi, 96));
@@ -1087,35 +1143,50 @@ struct NativeUi::Impl {
         applied = paint.Queue(moves, overflowButton, {menuRight - menuWidth, 0, menuRight, menuHeight}) && applied;
         if (!menuVisible && GetFocus() == overflowButton) SetFocus(main);
         applied = paint.Visible(overflowButton, menuVisible) && applied;
-        for (const auto& item : flow.items) {
+        const auto place = [&](const native_ui::TreeResult& arranged, HWND host, int hostTop, int extent, int offset, bool property) {
+        for (const auto& item : arranged.items) {
             auto rect = item.rect; auto control = controls.find(item.id);
             // The hidden HWND is still the STATE/provider target. Keep its
             // measured client extent so refresh can update the menu without
             // manufacturing a second presentation or a second command object.
-            if (overflowIds.count(item.id)) {
+            if (!property && overflowIds.count(item.id)) {
                 rect = overflow.retained.at(item.id);
                 rect.width = std::max(1.0f, rect.width); rect.height = std::max(1.0f, rect.height);
             }
-            int left = int(std::lround(rect.x * dpi / 96)), top = int(std::lround(rect.y * dpi / 96)) - scroll;
-            int right = int(std::lround((rect.x + rect.width) * dpi / 96)), bottom = int(std::lround((rect.y + rect.height) * dpi / 96)) - scroll;
+            int left = int(std::lround(rect.x * dpi / 96)), top = int(std::lround(rect.y * dpi / 96)) - offset;
+            int right = int(std::lround((rect.x + rect.width) * dpi / 96)), bottom = int(std::lround((rect.y + rect.height) * dpi / 96)) - offset;
             if (control != controls.end()) {
-                const bool hidden = overflowIds.count(item.id) != 0;
-                if (control->second.input) control->second.input->LayoutVisible(item.visible && !hidden && visible && height > 0);
+                if (control->second.parent != host) { applied = false; continue; }
+                const bool hidden = !property && overflowIds.count(item.id) != 0;
+                const bool shown = item.visible && !hidden && visible && extent > 0;
+                if (control->second.input) control->second.input->LayoutVisible(shown);
                 if (hidden) control->second.layoutVisible = false;
-                if (hidden && GetFocus() == control->second.window) SetFocus(menuVisible ? overflowButton : main);
+                const HWND focused = GetFocus();
+                if (!shown && focused && (focused == control->second.window || IsChild(control->second.window, focused)))
+                    SetFocus(hidden && menuVisible ? overflowButton : main);
                 applied = paint.Queue(moves, control->second.window, {left, top, right, bottom}) && applied;
                 applied = paint.Visible(control->second.window, item.visible && !hidden) && applied;
             }
-            geometry[item.id] = {(x + left) * 96.0f / dpi, top * 96.0f / dpi, (right - left) * 96.0f / dpi, (bottom - top) * 96.0f / dpi,
-                item.visible && height > 0 && !overflowIds.count(item.id), overflowIds.count(item.id) || item.overflowed || top < 0 || bottom > height};
+            geometry[item.id] = {(x + left) * 96.0f / dpi, (hostTop + top) * 96.0f / dpi, (right - left) * 96.0f / dpi, (bottom - top) * 96.0f / dpi,
+                item.visible && extent > 0 && (property || !overflowIds.count(item.id)),
+                (!property && overflowIds.count(item.id)) || item.overflowed || top < 0 || bottom > extent};
         }
+        };
+        place(flow, toolbar, 0, height, scroll, false);
+        place(propertyFlow, properties, propertyTop, propertyHeight, propertyScroll, true);
         {
             const WindowDpiScope toolbarDpi(toolbar);
             applied = native_ui::ApplyWindows(moves) == native_ui::ApplyResult::Applied && applied;
         }
         for (const auto& [id, control] : controls) if (registry.elements.at(id).desc.kind == MMS_UI_BUTTON || control.input)
             applied = TipsRect(control) && applied;
+        const auto leaveHiddenHost = [&](HWND host, int extent) {
+            const HWND focus = GetFocus();
+            if (!extent && focus && (focus == host || IsChild(host, focus))) SetFocus(main);
+        };
+        leaveHiddenHost(toolbar, height); leaveHiddenHost(properties, propertyHeight);
         applied = paint.Visible(toolbar, height > 0) && applied;
+        applied = paint.Visible(properties, propertyHeight > 0) && applied;
         workspaceHeight = panelWidth = panelHeight = 0;
         if (visible && width > 0 && !activePanel.empty() && registry.elements.count(activePanel)) {
             const auto& e = registry.elements.at(activePanel); const auto factory = registry.surfaces.find(String(e.desc.surfaceId));
@@ -1132,12 +1203,14 @@ struct NativeUi::Impl {
         applied = paint.Move(workspace, x, height, std::max(0, width), workspaceHeight, fromRefresh) && applied;
         applied = paint.Visible(workspace, workspaceHeight > 0) && applied;
         geometry["mms.toolbar.main.extensions"] = {x * 96.0f / dpi, 0, width * 96.0f / dpi, height * 96.0f / dpi, height > 0, overflow.menu || contentHeight > height};
+        geometry["mms.properties.main.extensions"] = {x * 96.0f / dpi, propertyTop * 96.0f / dpi,
+            width * 96.0f / dpi, propertyHeight * 96.0f / dpi, propertyHeight > 0, propertyContentHeight > propertyHeight};
         const RECT workspaceBounds = ui::layout_detail::ActualRect(main, workspace);
         geometry["mms.workspace.tabs.extensions"] = {workspaceBounds.left * 96.0f / dpi, workspaceBounds.top * 96.0f / dpi,
             (workspaceBounds.right - workspaceBounds.left) * 96.0f / dpi, (workspaceBounds.bottom - workspaceBounds.top) * 96.0f / dpi, workspaceHeight > 0, false};
         LayoutPanels(geometry, applied, paint);
         if (fromRefresh && context != layoutContext) { layoutResult = MMS_E_STALE; applied = false; }
-        if (applied && fromRefresh && layoutPublished && height + workspaceHeight != priorHeight) {
+        if (applied && fromRefresh && layoutPublished && (height + workspaceHeight != priorHeight || propertyHeight != priorPropertyHeight)) {
             const auto dependencyResult = Boundary([&] { return layoutPublished(height + workspaceHeight); });
             if (dependencyResult) { layoutResult = dependencyResult; applied = false; }
             if (context != layoutContext) { layoutResult = MMS_E_STALE; applied = false; }
@@ -1175,7 +1248,7 @@ struct NativeUi::Impl {
             if (e.desc.kind == MMS_UI_BUTTON || e.desc.kind == MMS_UI_SEPARATOR || e.desc.kind == MMS_UI_INPUT) {
                 const auto c = controls.find(id); present = c != controls.end() && c->second.element == element && IsWindow(c->second.window);
             } else if (e.desc.kind == MMS_UI_PANEL) { UiRegistry::SurfacePresentation view; present = registry.ExistingSurface(id, view); }
-            else if (e.desc.kind == MMS_UI_GROUP) present = IsWindow(toolbar);
+            else if (e.desc.kind == MMS_UI_GROUP) present = IsWindow(ControlHost(e));
             break;
         }
         if (!present) return MMS_E_STALE;
@@ -1213,6 +1286,17 @@ int NativeUi::Layout(int x, int width, int maximum, bool visible) {
     impl_->x = x; impl_->width = width; impl_->maximum = maximum; impl_->visible = visible;
     return impl_->Layout();
 }
+void NativeUi::SetPropertyArea(int bottom, int maximumHeight, bool visible) {
+    const Impl::NativeWork work(*impl_);
+    const WindowDpiScope dpi(impl_->main);
+    RECT client{}; GetClientRect(impl_->main, &client);
+    bottom = std::clamp(bottom, 0, std::max(0, int(client.bottom)));
+    maximumHeight = std::clamp(maximumHeight, 0, bottom);
+    if (impl_->propertyBottom != bottom || impl_->propertyMaximum != maximumHeight || impl_->propertyVisible != visible) ++impl_->layoutContext;
+    impl_->propertyBottom = bottom; impl_->propertyMaximum = maximumHeight; impl_->propertyVisible = visible;
+}
+int NativeUi::PropertyAreaHeight() const noexcept { return impl_->propertyHeight; }
+HWND NativeUi::PropertyArea() const noexcept { return impl_->properties; }
 void NativeUi::SetLayoutPublished(std::function<MmsResult(int)> callback) { impl_->layoutPublished = std::move(callback); }
 HWND NativeUi::Toolbar() const { return impl_->toolbar; }
 bool NativeUi::PopupActive() const noexcept { return impl_->overflowOpen; }
@@ -1234,7 +1318,7 @@ bool NativeUi::DialogMessage(MSG* message) {
             }
         }
     }
-    for (HWND window : {impl_->toolbar, impl_->workspace})
+    for (HWND window : {impl_->toolbar, impl_->properties, impl_->workspace})
         if (message->hwnd == window || IsChild(window, message->hwnd)) return IsDialogMessageW(window, message) != FALSE;
     return false;
 }

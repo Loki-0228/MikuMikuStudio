@@ -9,6 +9,7 @@
 | 检查提交并生成完整、最小预发布包 | [整理预发布包](prerelease.md) |
 | 测量顶点阶段或整帧耗时 | [帧基准](benchmarks.md) |
 | 注册原生插件菜单 | [插件菜单接口](plugin-menus.md) |
+| 开发 ABI 插件，注册工具栏或属性扩展行 | [插件 SDK](../../sdk/mms/README.md)、[C++17 界面注册](../../sdk/mms/cpp-ui.md)、[属性输入](../../sdk/mms/input.md) |
 | 修改工程文件格式 | [PMM 扩展参考](../reference/pmm-extensions.md) |
 | 更新文档 | [文档组织规则](documentation.md) |
 

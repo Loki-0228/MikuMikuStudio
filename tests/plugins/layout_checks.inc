@@ -132,7 +132,7 @@ static void LayoutServiceChecks() {
     HWND window = CreateWindowExW(0, L"STATIC", L"布局验证", WS_OVERLAPPEDWINDOW, 0, 0, 600, 400, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr); CHECK(window != nullptr);
     {
         NativeUi ui(registry, window, {}); ui.Refresh(); const auto reservedHeight = ui.Layout(100, 400, 180, true);
-        CHECK(layout.acquireSnapshot(layout.context, &old) == MMS_OK && old.items.count == 5);
+        CHECK(layout.acquireSnapshot(layout.context, &old) == MMS_OK && old.items.count == 6);
         auto geometryRevision = old.geometryRevision; auto uiRevision = old.uiRevision;
         MmsUiLayoutSnapshotV1 current{}; current.h = Header<MmsUiLayoutSnapshotV1>(); ui.Layout(100, 400, 180, true);
         CHECK(layout.acquireSnapshot(layout.context, &current) == MMS_OK && current.geometryRevision == geometryRevision); layout.releaseSnapshot(layout.context, current.handle);
