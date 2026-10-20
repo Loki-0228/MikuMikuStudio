@@ -123,14 +123,14 @@ bool EditorsOpen(MMDApp& app) noexcept {
         app.GravitySettingDialog() || app.GroundShadowColorDialog() || app.AccessoryOrderArray() ||
         app.state.accessoryEditDialogOpen || app.state.edgeThicknessDialog;
 }
-bool ValidOrder(const MMDApp& app) noexcept {
+bool ValidOrder(const MMDApp& app, bool repairModelRanks = false) noexcept {
     std::array<bool, kModelSlotCount + 1> models{};
     std::array<bool, kModelSlotCount> accessories{};
     unsigned modelCount = 0, accessoryCount = 0;
     for (unsigned slot = 0; slot < kModelSlotCount; ++slot) {
         if (const auto* model = mdl::Mdl(app.ModelSlot(slot))) {
             const auto order = model->comboSelIndex;
-            if (order < 1 || order > kModelSlotCount || models[order]) return false;
+            if (!repairModelRanks && (order < 1 || order > kModelSlotCount || models[order])) return false;
             models[order] = true; ++modelCount;
         }
         if (const auto* accessory = app.AccessorySlot(slot)) {
@@ -139,7 +139,8 @@ bool ValidOrder(const MMDApp& app) noexcept {
             accessories[order] = true; ++accessoryCount;
         }
     }
-    for (unsigned order = 1; order <= modelCount; ++order) if (!models[order]) return false;
+    if (!repairModelRanks)
+        for (unsigned order = 1; order <= modelCount; ++order) if (!models[order]) return false;
     for (unsigned order = 0; order < accessoryCount; ++order) if (!accessories[order]) return false;
     return true;
 }
@@ -470,12 +471,12 @@ MmsResult CommitBoundModelOrder(MMDApp& app, SharedHistory& history,
     std::shared_ptr<HistoryChange> change, bool calculate) noexcept {
     if (!change) return MMS_OK;
     if (BoundNativePoseHistory(&app) != &history || !Ready(app) || EditorsOpen(app) || NativeObjectUiPending(&app)) return MMS_E_BUSY;
-    if (!ValidOrder(app)) return MMS_E_STALE;
+    if (!ValidOrder(app, true)) return MMS_E_STALE;
     if (const auto result = history.CheckNativeEdit()) return result;
     return Boundary([&]() -> MmsResult {
         Operation scope(app);
         const auto selection = CaptureSelectionToken(app);
-        if (!ValidOrder(app)) return MMS_E_STALE;
+        if (!ValidOrder(app, true)) return MMS_E_STALE;
         {
             Publication allow(scope);
             std::unique_ptr<SharedHistory::NativeTransaction> transaction;

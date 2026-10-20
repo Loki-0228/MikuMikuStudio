@@ -31,10 +31,12 @@ enum class Result {
 Selection CaptureSelection(const MMDApp&) noexcept;
 
 // Call after native publication, outside its no-fail Publish method. Native
-// model comboSelIndex must be 1..N; accessory order must be 0..N-1. The helper
-// validates both and never renumbers objects or modifies bindings/poses/keys.
-// On success, combo 436 has N+1 rows and combo 471 has one row per accessory,
-// in the same order used by native selection handlers and PMM serialization.
+// model comboSelIndex normally is 1..N. Damaged model ranks use a deterministic
+// read-only row projection; the stored bytes are never renumbered here.
+// Accessory order must still be 0..N-1. No bindings/poses/keys are modified.
+// On success, combo 436 has N+1 rows with model-slot item data; combo 471 has
+// one row per accessory in native serialized order. Raw model rank bytes are
+// unchanged even when their displayed projection differs after an undo.
 //
 // Only selection/mode fields and the object/parent/scope combos are refreshed.
 // A deleted selected model falls back to camera; a deleted selected accessory

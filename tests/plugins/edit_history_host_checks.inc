@@ -451,7 +451,7 @@ void ObjectMenuDeletion(MMDApp* app, plugins::SharedHistory& history, const MmsS
 #include "sparse_registration_host_checks.inc"
 #include "bone_curve_sync_host_checks.inc"
 #include "vmd_model_curves_host_checks.inc"
-void Run(MMDApp* app) {
+void Run(MMDApp* app, bool curveMotionOnly = false) {
     using namespace plugins;
     const auto initial = GetModuleHandleW(L"manager_edit_probe.dll");
     Check(initial != nullptr, "normal startup loads the edit probe DLL");
@@ -484,6 +484,10 @@ void Run(MMDApp* app) {
     auto flags = reinterpret_cast<uint64_t(*)()>(GetProcAddress(library, "GetProbeFlags"));
     auto cancels = reinterpret_cast<int(*)()>(GetProcAddress(library, "GetProbeCancels"));
     Check(value && flags && cancels && (flags() & 1) && !(flags() & 2), "controlled host negotiates edit service");
+    if(curveMotionOnly) {
+        curve_motion_import_host_checks::Run(app,*history);
+        return;
+    }
     system_settings_host_checks::Run(app,*history,value);
     frame_line_host_checks::Run(app,*history,value);
     frame_line_curve_host_checks::Run(app,*history,value);

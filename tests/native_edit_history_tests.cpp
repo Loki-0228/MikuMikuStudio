@@ -364,6 +364,7 @@ void CrossModelJournal(){
 #include "native_fov_text_checks.inc"
 #include "native_camera_projection_checks.inc"
 #include "native_camera_interpolation_checks.inc"
+#include "native_camera_multiply_checks.inc"
 #include "native_accessory_registration_checks.inc"
 #include "native_accessory_text_checks.inc"
 #include "native_accessory_flag_checks.inc"
@@ -371,6 +372,9 @@ void CrossModelJournal(){
 #include "native_grid_display_checks.inc"
 #include "native_projected_shadow_checks.inc"
 #include "native_model_key_checks.inc"
+#include "native_unused_key_checks.inc"
+#include "native_unused_display_checks.inc"
+#include "native_unused_curve_checks.inc"
 #include "native_model_range_checks.inc"
 #include "native_object_command_checks.inc"
 #include "native_accessory_settings_checks.inc"
@@ -420,6 +424,7 @@ void CrossModelJournal(){
 #include "native_same_model_follow_checks.inc"
 #include "native_curve_write_checks.inc"
 #include "native_morph_curve_write_checks.inc"
+#include "native_morph_category_checks.inc"
 #include "native_bone_curve_write_checks.inc"
 #include "native_physics_toggle_checks.inc"
 #include "native_center_offset_checks.inc"
@@ -431,6 +436,24 @@ void CrossModelJournal(){
 int main(int argc,char** argv){
     std::setvbuf(stdout,nullptr,_IONBF,0);
     const auto run=[](const char* name,void(*test)()){std::printf("RUN %s\n",name);test();};
+    if(argc==2&&!std::strcmp(argv[1],"--pose-axis-only")) {
+        run("NativePoseAxisChecks",NativePoseAxisChecks);
+        std::printf("PASS native pose axis: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--unused-keys-only")) {
+        run("NativeUnusedKeyChecks",NativeUnusedKeyChecks);
+        run("NativeUnusedDisplayChecks",NativeUnusedDisplayChecks);
+        run("NativeUnusedCurveChecks",NativeUnusedCurveChecks);
+        std::printf("PASS native unused keys: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--camera-multiply-only")) {
+        run("NativeCameraMultiplyChecks",NativeCameraMultiplyChecks);
+        std::printf("PASS native camera multiply: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--morph-category-only")) {
+        run("NativeMorphCategoryChecks",NativeMorphCategoryChecks);
+        std::printf("PASS native morph category: %u checks\n",checks);return 0;
+    }
     if(argc==2&&!std::strcmp(argv[1],"--model-order-only")) {
         run("NativeModelOrderChecks",NativeModelOrderChecks);
         std::printf("PASS native model order history: %u checks\n",checks);return 0;
@@ -792,8 +815,13 @@ int main(int argc,char** argv){
     run("NativeGridDisplayChecks",NativeGridDisplayChecks);
     run("NativeProjectedShadowChecks",NativeProjectedShadowChecks);
     run("NativeCameraInterpolationChecks",NativeCameraInterpolationChecks);
+    run("NativeCameraMultiplyChecks",NativeCameraMultiplyChecks);
     run("NativeAccessoryRegistrationChecks",NativeAccessoryRegistrationChecks);
     run("NativeModelKeyChecks",NativeModelKeyChecks);
+    run("NativeUnusedKeyChecks",NativeUnusedKeyChecks);
+    run("NativeUnusedDisplayChecks",NativeUnusedDisplayChecks);
+    run("NativeUnusedCurveChecks",NativeUnusedCurveChecks);
+    run("NativeMorphCategoryChecks",NativeMorphCategoryChecks);
     run("NativeModelRangeChecks",NativeModelRangeChecks);
     run("NativeObjectCommandChecks",NativeObjectCommandChecks);
     run("NativeAccessorySettingsChecks",NativeAccessorySettingsChecks);

@@ -172,6 +172,30 @@ bool TryDeleteBoundKeys(MMDApp* app, bool selectedAtCurrentFrame) noexcept {
     });
     return true;
 }
+bool TryDeleteUnusedBoundKeys(MMDApp* app, std::uint32_t& deleted, MmsResult& result) noexcept {
+    deleted = 0; result = MMS_E_NOT_READY;
+    if (!app) return false;
+    auto* history = BoundNativePoseHistory(app);
+    if (!history) return false;
+    if (!ModelReady(*app) || !CameraInterpolationReady(*app)) { result = MMS_E_BUSY; return true; }
+    if ((result = history->CheckNativeEdit()) != MMS_OK) return true;
+    result = Boundary([&]() -> MmsResult {
+        bake::ScopedUiInputGate gate;
+        const bool automatic = IsDlgButtonChecked(app->MainWindow(), panel::kPhysicsFrameCheckbox) == BST_CHECKED;
+        std::shared_ptr<HistoryChange> change; std::uint32_t count = 0;
+        if (auto r = PlanUnusedModelKeyDeletion(*app, app->SelectedModelSlot(), automatic, change, count)) return r;
+        if (!change) return MMS_OK;
+        std::unique_ptr<SharedHistory::NativeTransaction> transaction;
+        if (auto r = history->PrepareNative("Delete unused model keys", std::move(change), transaction,
+            SharedHistory::NativeIntent::ExplicitCommit)) return r;
+        if (auto r = history->CommitNative(std::move(transaction))) return r;
+        deleted = count;
+        PublishBoundPoseEdit(*app, *history, false);
+        try { curve_host::NotifyModelRegistered(app, false); curve_host::NotifyModelRegistered(app, true); } catch (...) {}
+        return MMS_OK;
+    });
+    return true;
+}
 bool TryScaleBoundBoneRange(MMDApp* app, HWND dialog) noexcept {
     if (!app) return false;
     auto* history = BoundNativePoseHistory(app);

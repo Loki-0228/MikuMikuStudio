@@ -49,6 +49,7 @@ void ReleaseVideo(MMDApp*) {}
 // Recording lifecycle callers remain shared with the native AVI graph. No
 // encoder, decoded file, COM object or capture session is owned here.
 std::vector<std::wstring> EnumerateH264Encoders() { return {}; }
+void ResetH264HardwareEncoderState() {}
 bool ShowH264EncoderSettingsDialog(void*, bool, std::uint32_t&, int, int, float, unsigned char, void*) { return false; }
 bool StartBuiltInH264Recording(DShowRecorder*, const wchar_t*, std::int32_t, std::int32_t,
     float, const WaveAudioContext*, bool, std::uint32_t, void*, unsigned char) { return false; }

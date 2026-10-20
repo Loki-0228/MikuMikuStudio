@@ -49,9 +49,10 @@ struct Hooks {
 };
 State* active=nullptr;
 std::unique_ptr<Hooks> hooks;
-DrawObserver* observer=nullptr;
-DWORD observerThread=0;
+struct ObserverRegistration { DrawObserver* value=nullptr;DWORD thread=0; };
+std::array<ObserverRegistration,2> observers{};
 thread_local bool observing=false;
+thread_local unsigned observerSilence=0;
 thread_local const void* sourceObject=nullptr;
 thread_local unsigned sourceMaterial=0;
 thread_local bool sourceOpaqueCoverage=false;
@@ -179,10 +180,10 @@ void Capture(State& s,IDirect3DDevice9* device,D3DPRIMITIVETYPE type,INT base,UI
     mesh.name=prefix+std::to_string(ordinal);s.meshes.push_back(std::move(mesh));
 }
 HRESULT WINAPI Hook(IDirect3DDevice9* device,D3DPRIMITIVETYPE type,INT base,UINT min,UINT count,UINT start,UINT primitives) {
-    if(observing)return fallbackIndexed(device,type,base,min,count,start,primitives);
+    if(observing||observerSilence)return fallbackIndexed(device,type,base,min,count,start,primitives);
     observing=true;
-    if(observer&&observerThread==GetCurrentThreadId())
-        observer->Indexed(device,type,base,min,count,start,primitives,sourceObject,sourceMaterial);
+    for(const auto& observer:observers)if(observer.value&&observer.thread==GetCurrentThreadId())
+        observer.value->Indexed(device,type,base,min,count,start,primitives,sourceObject,sourceMaterial);
     auto* s=active;
     if(s&&s->collecting&&!s->busy&&s->thread==GetCurrentThreadId()&&sourceObject&&s->error.empty()) {
         s->busy=true;
@@ -193,10 +194,11 @@ HRESULT WINAPI Hook(IDirect3DDevice9* device,D3DPRIMITIVETYPE type,INT base,UINT
     return fallbackIndexed(device,type,base,min,count,start,primitives);
 }
 void UnsupportedDraw(IDirect3DDevice9* device,D3DPRIMITIVETYPE type,UINT count) {
-    if(observing)return;
-    if(observer&&observerThread==GetCurrentThreadId()) {
-        observing=true;observer->Unsupported(device,type,count);observing=false;
-    }
+    if(observing||observerSilence)return;
+    observing=true;
+    for(const auto& observer:observers)if(observer.value&&observer.thread==GetCurrentThreadId())
+        observer.value->Unsupported(device,type,count);
+    observing=false;
     auto* s=active;
     if(!s||!count||type<D3DPT_TRIANGLELIST||!s->collecting||s->busy||s->thread!=GetCurrentThreadId()||!sourceObject||!s->error.empty())return;
     try{if(!ObjectName(*s).empty()&&MeshInput(device))s->error="The effect uses a non-indexed or user-memory draw that cannot be exported";}
@@ -241,7 +243,12 @@ void Hooks::Unhook() noexcept {
         if(MH_ApplyQueued()==MH_OK)for(unsigned i=0;i<installed;++i)MH_RemoveHook(targets[i]);
         installed=0;
 }
-void DropUnusedHooks(){if(!active&&!observer)hooks.reset();}
+void DropUnusedHooks(){
+    const bool registered=std::any_of(observers.begin(),observers.end(),[](const auto& entry){return entry.value!=nullptr;});
+    // A callback may unregister itself. Never free the trampoline while its
+    // native hook is still on the stack; the next outside teardown can drop it.
+    if(!active&&!registered&&!observing)hooks.reset();
+}
 }
 struct Session::Impl:State {
     Impl(MMDApp& app,bool selected):State(app,selected) {
@@ -252,12 +259,23 @@ struct Session::Impl:State {
     ~Impl(){if(active==this)active=nullptr;DropUnusedHooks();}
 };
 bool Observe(MMDApp& app,DrawObserver* value,std::string& error) {
-    if(observer&&observer!=value){error="A native draw observer is already active";return false;}
+    error.clear();
+    if(!value){error="The native draw observer is null";return false;}
+    for(auto& registered:observers)if(registered.value==value) {
+        registered.thread=GetCurrentThreadId();return true;
+    }
+    const auto free=std::find_if(observers.begin(),observers.end(),[](const auto& entry){return entry.value==nullptr;});
+    if(free==observers.end()){error="Two native draw observers are already active";return false;}
     try{if(!hooks)hooks=std::make_unique<Hooks>(app);}
     catch(const std::exception& e){error=e.what();return false;}
-    observer=value;observerThread=GetCurrentThreadId();return true;
+    *free={value,GetCurrentThreadId()};return true;
 }
-void StopObserving(DrawObserver* value){if(observer==value)observer=nullptr;DropUnusedHooks();}
+void StopObserving(DrawObserver* value){
+    for(auto& registered:observers)if(registered.value==value)registered={};
+    DropUnusedHooks();
+}
+ObserverSilenceScope::ObserverSilenceScope():previous_(observerSilence){++observerSilence;}
+ObserverSilenceScope::~ObserverSilenceScope(){observerSilence=previous_;}
 Session::Session(MMDApp& app,bool selectedOnly):impl_(new Impl(app,selectedOnly)){}
 Session::~Session()=default;
 void Session::BeginFrame(){impl_->meshes.clear();impl_->camera=false;impl_->collecting=true;}

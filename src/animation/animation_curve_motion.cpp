@@ -10,7 +10,8 @@
 //   5. light section       : u32 count, count *  28 bytes
 //   6. self-shadow section : u32 count, count *   9 bytes
 //   7. display/IK section  : u32 count, count * (9 bytes + 21 per IK entry)
-//   8. optional curve tail : MMVCURV1 footer (40 bytes) + animation_curve payload
+//   8. optional curve payload + 40-byte MMVCURV1 / MMVCURV2 footer; V2 wraps
+//      the MMSC scalar payload in MMSN with independent camera interval timing.
 //
 // Every standard section is written, in that order, before the tail, so a
 // reader that knows nothing about the curve extension still sees a complete
@@ -89,6 +90,7 @@ constexpr std::size_t kShadowRecordBytes = 9;
 constexpr std::size_t kIkMasterBytes = 9;
 constexpr std::size_t kIkEntryBytes = 21;
 constexpr char kFooterMagic[8] = {'M', 'M', 'V', 'C', 'U', 'R', 'V', '1'};
+constexpr char kNativeFooterMagic[8] = {'M', 'M', 'V', 'C', 'U', 'R', 'V', '2'};
 constexpr char kVmd2Signature[] = "Vocaloid Motion Data 0002";
 constexpr char kVmd1Signature[] = "Vocaloid Motion Data file";
 // "カメラ・照明" in Shift-JIS: the marker the original camera/light/shadow
@@ -119,6 +121,10 @@ struct Writer {
     void u64(std::uint64_t value) {
         u32(std::uint32_t(value));
         u32(std::uint32_t(value >> 32));
+    }
+
+    void f64(double value) {
+        std::uint64_t bits=0; std::memcpy(&bits,&value,sizeof bits); u64(bits);
     }
 
     // The original stores every motion value as a 32-bit float.
@@ -169,6 +175,12 @@ struct Reader {
     std::uint64_t u64() {
         const std::uint64_t low = u32();
         return low | (std::uint64_t(u32()) << 32);
+    }
+
+    double f64() {
+        const auto bits=u64(); double value=0; std::memcpy(&value,&bits,sizeof value);
+        if(!std::isfinite(value))throw std::runtime_error("a native timing value is not finite");
+        return value;
     }
 
     double f() {
@@ -738,9 +750,88 @@ float CameraTime(const std::array<double,4>& controls,float time) noexcept {
     const float v=1-u,v3=v*3;
     return (v3*v*u)*float(controls[1])/127.f+(v3*u*u)*float(controls[3])/127.f+u*u*u;
 }
+bool TransportControls(const std::array<double,4>& controls) noexcept {
+    return ValidLane(controls);
+}
+std::array<double,6> TimingGeometry(const ac::Key& a,const ac::Key& b) noexcept {
+    return {a.value,a.outWeight,a.outSlope,b.value,b.inWeight,b.inSlope};
+}
+bool IntervalCurrent(const curve_editor::Channel& channel,const curve_editor::NativeCameraInterval& interval) noexcept {
+    const auto& keys=channel.track.keys;
+    const auto at=std::lower_bound(keys.begin(),keys.end(),interval.last,[](const auto& key,int frame){return key.frame<frame;});
+    return at!=keys.end()&&at!=keys.begin()&&at->frame==interval.last&&(at-1)->frame==interval.first&&
+        at->interpolation==ac::Interpolation::Bezier&&TimingGeometry(*(at-1),*at)==interval.geometry;
+}
+// A source-domain slice cannot be described by four independent destination
+// controls without changing the player's fixed-step inverse. Only full MMSN
+// intervals use this transport; all other slices keep the host's bake path.
+bool ReadChannelTiming(const curve_editor::Channel& channel,std::size_t end,
+                       std::array<double,4>& controls,bool& hold,bool& transported) noexcept {
+    if(!end||end>=channel.track.keys.size()||channel.track.discrete)return false;
+    const auto& a=channel.track.keys[end-1];const auto& b=channel.track.keys[end];
+    const curve_editor::NativeCameraInterval* source=nullptr;
+    const auto& intervals=channel.preservedCameraIntervals;
+    auto at=std::lower_bound(intervals.begin(),intervals.end(),a.frame,[](const auto& interval,int frame){return interval.first<frame;});
+    for(;at!=intervals.end()&&at->first==a.frame;++at){
+        const auto& interval=*at;
+        if(interval.last!=b.frame||!IntervalCurrent(channel,interval))continue;
+        if(source)return false; // The host may choose the later overlapping row.
+        source=&interval;
+    }
+    if(source){
+        const auto& interval=*source;
+        if(!interval.transportTiming||interval.sourceFirst!=a.frame||interval.sourceLast!=b.frame||
+           interval.sampleFirst!=a.frame||interval.sampleLast!=b.frame||interval.sourceValueFirst!=a.value||
+           interval.sourceValueLast!=b.value||!TransportControls(interval.controls))return false;
+        controls=interval.controls;hold=interval.oneFrameHold;transported=true;return true;
+    }
+    if(!NativeGeometry(channel,end)||!ValidLane(channel.nativeControls[end]))return false;
+    const auto& native=channel.nativeControls[end];
+    if(std::abs(native[0]-native[1])<=1e-12&&std::abs(native[2]-native[3])<=1e-12&&
+       !(native[0]==native[1]&&native[2]==native[3]))return false;
+    controls=channel.nativeControls[end];hold=true;transported=false;return true;
+}
+ac::Sample TimingSample(const ac::Key& a,const ac::Key& b,const std::array<double,4>& controls,
+                        bool hold,double frame) noexcept {
+    const double span=double(b.frame)-a.frame,time=(frame-a.frame)/span;
+    const bool cut=span==1&&hold;
+    const float ratio=float(time);
+    // This tolerance belongs to MMSN's subdivision transport, never to the
+    // ordinary native-camera sampler or its original raw VMD records.
+    const float eased=std::abs(controls[0]-controls[1])<=1e-12&&std::abs(controls[2]-controls[3])<=1e-12?
+        ratio:CameraTime(controls,ratio);
+    const double value=frame==a.frame?a.value:frame==b.frame?b.value:cut?a.value:a.value+(b.value-a.value)*eased;
+    return {value,cut?0:(b.value-a.value)/span*native_curve_sample::Evaluate(controls,time).slope};
+}
+void ValidateTiming(const Motion& motion) {
+    if(motion.nativeTiming.empty())return;
+    if(motion.kind!=Kind::Camera||motion.nativeCamera)throw std::runtime_error("native timing requires one camera authority");
+    std::map<std::string,const ac::Track*> tracks;
+    for(const auto& named:motion.tracks)if(!tracks.emplace(named.id,&named.track).second)
+        throw std::runtime_error("native timing identifies an ambiguous source track");
+    std::set<const ac::Track*> checked;
+    std::set<std::pair<std::string,int>> seen;
+    for(const auto& timing:motion.nativeTiming){
+        const auto found=tracks.find(timing.id);const auto* track=found==tracks.end()?nullptr:found->second;
+        if(timing.id.empty()||timing.id.size()>1024||timing.id.find('\0')!=std::string::npos||timing.endFrame<0||timing.endFrame>frame_limits::maximum||
+           !track||track->discrete||!TransportControls(timing.controls)||!seen.emplace(timing.id,timing.endFrame).second)
+            throw std::runtime_error("native camera timing does not identify a unique finite interval");
+        if(checked.insert(track).second){std::string detail;if(!ac::Validate(*track,detail))throw std::runtime_error(detail);}
+        const auto at=std::lower_bound(track->keys.begin(),track->keys.end(),timing.endFrame,[](const auto& key,int frame){return key.frame<frame;});
+        if(at==track->keys.end()||at==track->keys.begin()||at->frame!=timing.endFrame||at->interpolation!=ac::Interpolation::Bezier)
+            throw std::runtime_error("native camera timing does not match a Bezier interval");
+    }
+}
 ac::Sample ImportedCameraSample(const curve_editor::Channel& channel,double frame) {
     const auto& keys=channel.track.keys;
     if(keys.size()<2||!std::isfinite(frame))return ac::Evaluate(channel.track,frame);
+    if(frame>=keys.front().frame&&frame<=keys.back().frame){
+        const auto bound=std::upper_bound(keys.begin(),keys.end(),frame,[](double f,const auto& key){return f<key.frame;});
+        const auto end=std::min(std::size_t(bound-keys.begin()),keys.size()-1);
+        std::array<double,4> controls{};bool hold=true,transported=false;
+        if(ReadChannelTiming(channel,end,controls,hold,transported)&&transported)
+            return TimingSample(keys[end-1],keys[end],controls,hold,frame);
+    }
     const auto sample=[&](double at){
         if(at<=keys.front().frame)return keys.front().value;if(at>=keys.back().frame)return keys.back().value;
         const auto bound=std::upper_bound(keys.begin(),keys.end(),at,[](double f,const ac::Key& key){return f<key.frame;});
@@ -811,10 +902,38 @@ bool CanCaptureNativeCamera(const std::vector<curve_editor::Channel>& channels,b
     }
     return true;
 }
+bool CanTransportCameraTiming(const curve_editor::Channel& channel) noexcept {
+    if(!channel.sample||channel.track.discrete||channel.track.keys.size()<2)return false;
+    if(!std::is_sorted(channel.preservedCameraIntervals.begin(),channel.preservedCameraIntervals.end(),
+                       [](const auto& a,const auto& b){return a.first<b.first;}))return false;
+    bool found=false;
+    for(const auto& interval:channel.preservedCameraIntervals){
+        if(!IntervalCurrent(channel,interval))continue;
+        const auto at=std::lower_bound(channel.track.keys.begin(),channel.track.keys.end(),interval.last,
+            [](const auto& key,int frame){return key.frame<frame;});
+        std::array<double,4> controls{};bool hold=true,transported=false;
+        if(!ReadChannelTiming(channel,std::size_t(at-channel.track.keys.begin()),controls,hold,transported))return false;
+    }
+    for(std::size_t end=1;end<channel.track.keys.size();++end){
+        std::array<double,4> controls{};bool hold=true,transported=false;
+        if(ReadChannelTiming(channel,end,controls,hold,transported))found=true;
+        else if(NativeGeometry(channel,end))return false;
+    }
+    return found;
+}
 Motion CaptureChannels(Kind kind,const std::vector<curve_editor::Channel>& channels) {
     Motion motion;motion.kind=kind;
     for(const auto& channel:channels)if(channel.selected)motion.tracks.push_back({channel.id,channel.track});
-    if(kind!=Kind::Camera||!CanCaptureNativeCamera(channels))return motion;
+    if(kind!=Kind::Camera)return motion;
+    if(!CanCaptureNativeCamera(channels)){
+        for(const auto& channel:channels)if(channel.selected&&CanTransportCameraTiming(channel))
+            for(std::size_t end=1;end<channel.track.keys.size();++end){
+                std::array<double,4> controls{};bool hold=true,transported=false;
+                if(ReadChannelTiming(channel,end,controls,hold,transported))
+                    motion.nativeTiming.push_back({channel.id,channel.track.keys[end].frame,controls,hold});
+            }
+        return motion;
+    }
     std::array<const curve_editor::Channel*,9> found{};CameraChannels(channels,true,found);
     auto native=std::make_shared<NativeCameraData>();native->modelName=std::string(kCameraLightName,12);native->baseline=motion.tracks;
     for(std::size_t key=0;key<found[0]->track.keys.size();++key){CameraFrame row;row.frame=std::uint32_t(found[0]->track.keys[key].frame);
@@ -828,6 +947,7 @@ Motion CaptureChannels(Kind kind,const std::vector<curve_editor::Channel>& chann
 }
 bool RestoreChannels(const Motion& motion,std::vector<curve_editor::Channel>& channels,std::string& error) {
     try{
+        ValidateTiming(motion);
         auto candidate=channels;
         for(auto& channel:candidate){const auto* track=FindTrack(motion.tracks,channel.id);if(!track)continue;
             channel.track=*track;channel.sample={};channel.nativeControls.clear();channel.controlGeometry.clear();
@@ -850,11 +970,39 @@ bool RestoreChannels(const Motion& motion,std::vector<curve_editor::Channel>& ch
             if(native)channel.sample=ImportedCameraSample;
             if(index>=3&&index<6)channel.interpolationGroup="camera/rotation";
         }
+        for(auto& channel:candidate){
+            for(const auto& timing:motion.nativeTiming)if(timing.id==channel.id){
+                const auto at=std::lower_bound(channel.track.keys.begin(),channel.track.keys.end(),timing.endFrame,
+                    [](const auto& key,int frame){return key.frame<frame;});
+                const auto end=std::size_t(at-channel.track.keys.begin());
+                if(channel.nativeControls.empty())channel.nativeControls.resize(channel.track.keys.size());
+                if(channel.controlGeometry.empty())channel.controlGeometry.assign(channel.track.keys.size(),{-1,0,-1,0});
+                const auto& a=channel.track.keys[end-1];const auto& b=channel.track.keys[end];
+                channel.nativeControls[end]=timing.controls;
+                channel.controlGeometry[end]={a.outWeight,a.outSlope,b.inWeight,b.inSlope};
+                curve_editor::NativeCameraInterval interval;
+                interval.first=interval.sourceFirst=a.frame;interval.last=interval.sourceLast=b.frame;
+                interval.sampleFirst=a.frame;interval.sampleLast=b.frame;interval.sourceValueFirst=a.value;interval.sourceValueLast=b.value;
+                interval.controls=timing.controls;interval.geometry=TimingGeometry(a,b);
+                interval.oneFrameHold=timing.oneFrameHold;interval.transportTiming=true;
+                channel.preservedCameraIntervals.push_back(interval);channel.sample=ImportedCameraSample;
+                if(channel.id=="rx"||channel.id=="ry"||channel.id=="rz")channel.interpolationGroup="camera/rotation";
+            }
+            std::sort(channel.preservedCameraIntervals.begin(),channel.preservedCameraIntervals.end(),
+                [](const auto& a,const auto& b){return a.first<b.first;});
+        }
         channels.swap(candidate);error.clear();return true;
     }catch(const std::exception& caught){error=caught.what();return false;}
 }
 ac::Sample Evaluate(const Motion& motion,const std::string& id,double frame) {
     const auto* track=FindTrack(motion.tracks,id);if(!track)return {};
+    if(!motion.nativeTiming.empty()&&track->keys.size()>1&&std::isfinite(frame)&&
+       frame>=track->keys.front().frame&&frame<=track->keys.back().frame){
+        const auto at=std::upper_bound(track->keys.begin(),track->keys.end(),frame,[](double f,const auto& key){return f<key.frame;});
+        const auto end=std::min(std::size_t(at-track->keys.begin()),track->keys.size()-1);
+        for(const auto& timing:motion.nativeTiming)if(timing.id==id&&timing.endFrame==track->keys[end].frame)
+            return TimingSample(track->keys[end-1],track->keys[end],timing.controls,timing.oneFrameHold,frame);
+    }
     if(!motion.nativeCamera||motion.kind!=Kind::Camera)return ac::Evaluate(*track,frame);
     const auto* before=FindTrack(motion.nativeCamera->baseline,id);
     unsigned index=0;while(index<8&&id!=kCameraIds[index])++index;
@@ -880,6 +1028,7 @@ bool Encode(const Motion& motion, std::vector<std::uint8_t>& out, std::string& e
         // is built (and validated) before anything is written.
         std::vector<std::uint8_t> payload;
         if (!ac::Encode(motion.tracks, payload, error)) return false;
+        ValidateTiming(motion);
         if(NativeBodyCurrent(motion)){
             WriteNativeCamera(*motion.nativeCamera,motion.tracks,out);return true;
         }
@@ -905,8 +1054,22 @@ bool Encode(const Motion& motion, std::vector<std::uint8_t>& out, std::string& e
             return Encode(prepared,out,error);
         }
 
+        if(!motion.nativeTiming.empty()){
+            if(motion.nativeTiming.size()>kMaximumRecords)throw std::runtime_error("too many native timing records");
+            Writer envelope;envelope.raw("MMSN",4);envelope.u64(std::uint64_t(payload.size()));envelope.raw(payload.data(),payload.size());
+            envelope.u32(std::uint32_t(motion.nativeTiming.size()));
+            for(const auto& timing:motion.nativeTiming){
+                envelope.u32(std::uint32_t(timing.id.size()));envelope.raw(timing.id.data(),timing.id.size());
+                envelope.u32(std::uint32_t(timing.endFrame));envelope.u32(timing.oneFrameHold?1u:0u);
+                for(double value:timing.controls)envelope.f64(value);
+            }
+            payload.swap(envelope.bytes);
+        }
+
         std::map<std::string, const ac::Track*> lookup;
         for (const ac::NamedTrack& named : motion.tracks) lookup[named.id] = &named.track;
+        std::map<std::string,std::map<int,const NativeTiming*>,std::less<>> timingLookup;
+        for(const auto& timing:motion.nativeTiming)timingLookup[timing.id].emplace(timing.endFrame,&timing);
 
         std::int64_t first = 0;
         std::int64_t last = -1;
@@ -968,9 +1131,16 @@ bool Encode(const Motion& motion, std::vector<std::uint8_t>& out, std::string& e
                                      std::to_string(kMaximumBytes));
         }
 
-        const auto value = [&lookup](const char* id, std::int32_t frame, double fallback) {
+        const auto value = [&lookup,&timingLookup](const char* id, std::int32_t frame, double fallback) {
             const auto found = lookup.find(id);
             if (found == lookup.end() || found->second->keys.empty()) return fallback;
+            const auto& keys=found->second->keys;const auto timing=timingLookup.find(id);
+            if(timing!=timingLookup.end()&&keys.size()>1&&frame>=keys.front().frame&&frame<=keys.back().frame){
+                const auto at=std::upper_bound(keys.begin(),keys.end(),frame,[](int f,const auto& key){return f<key.frame;});
+                const auto end=std::min(std::size_t(at-keys.begin()),keys.size()-1);
+                const auto interval=timing->second.find(keys[end].frame);
+                if(interval!=timing->second.end())return TimingSample(keys[end-1],keys[end],interval->second->controls,interval->second->oneFrameHold,double(frame)).value;
+            }
             return ac::Evaluate(*found->second, double(frame)).value;
         };
         const auto tracked = [&lookup](const std::string& id, std::int32_t frame) {
@@ -1056,7 +1226,7 @@ bool Encode(const Motion& motion, std::vector<std::uint8_t>& out, std::string& e
 
         const std::size_t prefixBytes = writer.bytes.size();
         writer.raw(payload.data(), payload.size());
-        writer.raw(kFooterMagic, sizeof(kFooterMagic));
+        writer.raw(motion.nativeTiming.empty()?kFooterMagic:kNativeFooterMagic, sizeof(kFooterMagic));
         writer.u64(std::uint64_t(prefixBytes));
         writer.u64(std::uint64_t(payload.size()));
         writer.u32(Crc32(writer.bytes.data(), prefixBytes));
@@ -1096,8 +1266,9 @@ bool Decode(const std::uint8_t* data, std::size_t size, Kind requested, Motion& 
 
         // A valid curve tail makes the standard proxy redundant, so the proxy
         // records are only materialised when they will actually be used.
-        const bool hasTail =
-            size >= kFooterBytes && std::memcmp(data + size - kFooterBytes, kFooterMagic, 8) == 0;
+        const bool nativeTail=size>=kFooterBytes&&std::memcmp(data+size-kFooterBytes,kNativeFooterMagic,8)==0;
+        const bool hasTail = nativeTail ||
+            (size >= kFooterBytes && std::memcmp(data + size - kFooterBytes, kFooterMagic, 8) == 0);
         const bool store = !hasTail;
         const bool wantBones = store && requested == Kind::Accessory;
         const bool wantParameters = store && (requested == Kind::Accessory || requested == Kind::Effect ||
@@ -1213,8 +1384,34 @@ bool Decode(const std::uint8_t* data, std::size_t size, Kind requested, Motion& 
             }
             Motion candidate;
             candidate.kind = requested;
-            if (!ac::Decode(data + standardEnd, std::size_t(curveBytes), candidate.tracks, error)) return false;
-            if(requested==Kind::Camera&&cameraCount&&std::none_of(candidate.tracks.begin(),candidate.tracks.end(),
+            const auto* scalar=data+standardEnd;auto scalarBytes=std::size_t(curveBytes);
+            Reader envelope{scalar,scalarBytes};
+            if(nativeTail){
+                if(envelope.text(4)!="MMSN")throw std::runtime_error("the native timing envelope does not start with MMSN");
+                const auto length=envelope.u64();
+                if(length>envelope.remaining())throw std::runtime_error("the native timing scalar length is invalid");
+                scalar+=envelope.pos;scalarBytes=std::size_t(length);envelope.skip(scalarBytes);
+            }
+            if (!ac::Decode(scalar, scalarBytes, candidate.tracks, error)) return false;
+            if(nativeTail){
+                const auto count=envelope.u32();
+                if(count>envelope.remaining()/45)throw std::runtime_error("the native timing count is invalid");
+                candidate.nativeTiming.reserve(count);
+                for(std::uint32_t i=0;i<count;++i){
+                    const auto length=envelope.u32();
+                    if(!length||length>1024)throw std::runtime_error("the native timing id is invalid");
+                    NativeTiming timing;timing.id=envelope.text(length);
+                    if(timing.id.size()!=length)throw std::runtime_error("the native timing id contains a null byte");
+                    timing.endFrame=CheckedFrame(envelope.u32());
+                    const auto hold=envelope.u32();if(hold>1)throw std::runtime_error("the native timing hold flag is invalid");
+                    timing.oneFrameHold=hold!=0;for(double& value:timing.controls)value=envelope.f64();
+                    candidate.nativeTiming.push_back(std::move(timing));
+                }
+                if(envelope.remaining())throw std::runtime_error("the native timing payload has trailing bytes");
+                if(requested!=Kind::Camera)throw std::runtime_error("native timing requires a camera motion");
+                ValidateTiming(candidate);
+            }
+            if(!nativeTail&&requested==Kind::Camera&&cameraCount&&std::none_of(candidate.tracks.begin(),candidate.tracks.end(),
                 [](const auto& track){return CameraId(track.id);})){
                 // Native standard body plus only nonstandard scalar fields.
                 // Existing complete scalar tails retain their old precedence.
@@ -1233,11 +1430,13 @@ bool Decode(const std::uint8_t* data, std::size_t size, Kind requested, Motion& 
         // appear in the trailing region: a shifted footer, or a curve payload
         // whose footer was cut off, means the tail is damaged and the standard
         // proxy must not silently take its place.
-        if (size - standardEnd >= 4 && std::memcmp(data + standardEnd, "MMSC", 4) == 0) {
+        if (size - standardEnd >= 4 && (std::memcmp(data + standardEnd, "MMSC", 4) == 0 ||
+                                      std::memcmp(data + standardEnd, "MMSN", 4) == 0)) {
             throw std::runtime_error("the curve payload is present but its footer is missing or damaged");
         }
         for (std::size_t at = standardEnd; at + sizeof(kFooterMagic) <= size; ++at) {
-            if (std::memcmp(data + at, kFooterMagic, sizeof(kFooterMagic)) == 0) {
+            if (std::memcmp(data + at, kFooterMagic, sizeof(kFooterMagic)) == 0 ||
+                std::memcmp(data + at, kNativeFooterMagic, sizeof(kNativeFooterMagic)) == 0) {
                 throw std::runtime_error("the curve tail is damaged or misplaced");
             }
         }

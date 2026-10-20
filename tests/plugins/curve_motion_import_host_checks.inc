@@ -2,6 +2,7 @@
 // Read/Save actions, production file wrappers and bound native publication.
 #include "mikumikustudio/animation_curve_motion.hpp"
 #include "mikumikustudio/ui_translation.hpp"
+#include "../curve_motion_v2_fixture.hpp"
 #include <filesystem>
 namespace curve_motion_import_host_checks {
 std::wstring selected;
@@ -51,6 +52,62 @@ std::uint32_t U32(const std::vector<std::uint8_t>& bytes,std::size_t offset){
 }
 void Click(HWND editor,int id){const auto button=GetDlgItem(editor,id);Check(button!=nullptr,"real curve motion/history button exists");
     SendMessageW(editor,WM_COMMAND,MAKEWPARAM(id,BN_CLICKED),reinterpret_cast<LPARAM>(button));}
+void V2RoundTrip(MMDApp* app,plugins::SharedHistory& history){
+    namespace fixture=curve_v2_fixture;using Mode=plugins::SharedHistory::RecordingMode;
+    const auto source=fixture::Source();const auto bytes=fixture::Bytes(source);
+    for(const auto mode:{Mode::AllOperations,Mode::ExplicitOnly}){
+        std::printf("  real MMSN curve import/export mode%u\n",unsigned(mode));std::fflush(stdout);
+        numpad_view_host_checks::Original original(*app,history);
+        std::memset(app->CameraKeys(),0,mdl::KeyPoolCapacity(app->CameraKeys())*sizeof(mdl::CameraKey));
+        auto& root=app->CameraKeys()[0];root.parentModel=-1;root.fov=45;root.distance=-45;
+        app->CameraMode()=1;app->CurrentFrame()=7;app->CameraParentModel()=-1;app->state.followCameraEnabled=0;app->CameraPositionZ()=321;
+        Check(history.SetMode(mode)==MMS_OK,"V2 import is one explicit common commit in either history recording mode");
+        const auto tag=std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(GetTickCount64());
+        const auto directory=std::filesystem::temp_directory_path();
+        const auto input=(directory/(L"MMS-作者输入-"+tag+L".vmd")).native(),output=(directory/(L"MMS-作者输出-"+tag+L".vmd")).native();
+        const auto invalid=(directory/(L"MMS-作者拒绝-"+tag+L".vmd")).native();
+        Write(input,bytes);auto damaged=bytes;const auto prefix=std::size_t(fixture::U64(damaged,damaged.size()-32));
+        damaged[prefix+1]='D';fixture::PayloadCrc(damaged);Write(invalid,damaged);
+        curve_editor::CloseOwned(app->MainWindow());curve_host::Open(app,false);
+        const auto editor=FindWindowW(L"MikuMikuStudioCurveEditorWindow",nullptr);Check(editor!=nullptr,"open real curve editor for MMSN import");
+        const auto sources=GetDlgItem(editor,1002);SendMessageW(sources,CB_SETCURSEL,0,0);
+        SendMessageW(editor,WM_COMMAND,MAKEWPARAM(1002,CBN_SELCHANGE),reinterpret_cast<LPARAM>(sources));
+        const auto before=*app->CameraKeys();curve_host::AuthoringTable author;std::wstring wide;
+        Check(curve_host::CaptureAuthoring(*app,author,wide),"capture original authoring before actual V2 Read");
+        expectedOwner=editor;selected=input;const auto calls=picked;Click(editor,1003);
+        Check(picked==calls+1&&history.UndoCount()==1&&app->CurrentFrame()==7&&app->CameraPositionZ()==321,
+            "actual V2 Read commits once and preserves the playhead and unrelated unregistered pose");
+        const auto verify=[&](){std::vector<curve_editor::Channel> channels;
+            Check(curve_host::Read(*app,curve_host::Kind::Camera,0,channels,wide),"read actual V2 author channels");
+            Check(channels[0].track.keys.size()==3&&channels[1].track.keys.size()==2&&channels[0].preservedCameraIntervals.size()==2&&
+                !channels[0].preservedCameraIntervals[0].oneFrameHold&&channels[0].preservedCameraIntervals[0].transportTiming,
+                "real editor retains sparse keys and explicit continuous one-frame timing");
+            for(double frame:{0.0,.125,.5,.875,1.0,2.25,7.125,12.875,13.0}){
+                Check(channels[0].sample&&channels[0].sample(channels[0],frame).value==fixture::ExpectedX(source,frame),
+                    "real host canonical sampler matches imported fractional V2 timing exactly");
+                Check(animation_curve::Evaluate(channels[1].track,frame).value==animation_curve::Evaluate(source.tracks[1].track,frame).value,
+                    "real host preserves neighboring Free author handles");}
+        };verify();app->CameraPositionX()=777;
+        const auto live=numpad_view_host_checks::Read(*app);const auto undo=history.UndoCount(),redo=history.RedoCount();
+        selected=output;Click(editor,1004);const auto saved=Read(output);curve_motion::Motion reopened;std::string error;
+        Check(saved.size()>40&&std::memcmp(saved.data()+saved.size()-40,"MMVCURV2",8)==0&&
+              curve_motion::Decode(saved.data(),saved.size(),curve_motion::Kind::Camera,reopened,error),"actual Save emits a readable MMSN V2 author tail");
+        for(unsigned tick=0;tick<=104;++tick)Check(curve_motion::Evaluate(reopened,"x",tick*.125).value==fixture::ExpectedX(source,tick*.125),
+            "actual Read/Save preserves fractional motion without dense-author baking");
+        Check(numpad_view_host_checks::Same(live,numpad_view_host_checks::Read(*app))&&app->CurrentFrame()==7&&
+              history.UndoCount()==undo&&history.RedoCount()==redo,"actual V2 Save does not evaluate the scene, overwrite dirty pose, or add history");
+        Click(editor,1059);auto restored=*app->CameraKeys();restored.selected=before.selected;
+        Check(history.UndoCount()==0&&history.RedoCount()==1&&!std::memcmp(&restored,&before,sizeof before)&&
+              curve_host::AuthoringUnchanged(*app,author)&&app->CurrentFrame()==7&&app->CameraPositionZ()==321,
+            "real editor Undo restores the original V2 import source without seeking or touching an unrelated pose");
+        selected=invalid;Click(editor,1003);
+        Check(!history.UndoCount()&&history.RedoCount()==1&&curve_host::AuthoringUnchanged(*app,author),
+            "actual Read rejects MDSN without dropping redo or installing partial authoring");
+        Click(editor,1060);Check(history.UndoCount()==1&&!history.RedoCount(),"real editor Redo restores the same retained V2 commit");verify();
+        curve_editor::CloseOwned(app->MainWindow());
+        Check(DeleteFileW(input.c_str())&&DeleteFileW(output.c_str())&&DeleteFileW(invalid.c_str()),"remove only owned V2 input/output/rejection files");
+    }
+}
 void Run(MMDApp* app,plugins::SharedHistory& history){
     using Mode=plugins::SharedHistory::RecordingMode;
     Check(!history.UndoCount()&&!history.RedoCount(),"curve raw import fixture begins with empty common history");
@@ -100,6 +157,7 @@ void Run(MMDApp* app,plugins::SharedHistory& history){
             "actual editor Redo restores the explicit raw VMD import from history");
         curve_editor::CloseOwned(app->MainWindow());Check(DeleteFileW(input.c_str())&&DeleteFileW(output.c_str()),"remove only the owned raw camera input/export fixtures");
     }
+    V2RoundTrip(app,history);
     MH_DisableHook(reinterpret_cast<void*>(&GetUiOpenFileNameW));MH_RemoveHook(reinterpret_cast<void*>(&GetUiOpenFileNameW));
     MH_DisableHook(reinterpret_cast<void*>(&GetUiSaveFileNameW));MH_RemoveHook(reinterpret_cast<void*>(&GetUiSaveFileNameW));selected.clear();expectedOwner=nullptr;
     std::puts("PASS actual curve-window VMD1/2 raw import/export, crossed/endpoint controls and common history");

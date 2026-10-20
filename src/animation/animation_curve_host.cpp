@@ -140,7 +140,8 @@ template<class K> bool Native(K* pool,Kind kind,std::vector<Channel>& out){
     }return false;
 }
 // Match the native camera's single-precision, 12-step time inversion.
-float CameraCurveTime(const std::array<double,4>& control,float t){
+float CameraCurveTime(const std::array<double,4>& control,float t,bool transport=false){
+    if(transport&&std::abs(control[0]-control[1])<=1e-12&&std::abs(control[2]-control[3])<=1e-12)return t;
     if(control[0]==control[1]&&control[2]==control[3])return t;
     const float x1=float(control[0])/127.0f,x2=float(control[2])/127.0f;
     float u=0.5f,half=0.25f;
@@ -779,6 +780,7 @@ bool PrepareMotionChannels(const std::vector<Channel>& input,std::vector<Channel
             if((selectedOnly&&!channel.selected)||channel.track.keys.empty())return false;
             if(channel.sample&&!CanonicalCameraTiming(channel))return true;
             if(raw)return false;
+            if(CanonicalCameraTiming(channel)&&curve_motion::CanTransportCameraTiming(channel))return false;
             if(exactSlice(channel)){
                 if(!channel.sample)throw std::invalid_argument("native camera slice has no sampler");
                 return true;
@@ -1058,6 +1060,7 @@ std::uint64_t AuthoringDigest(const State& state) {
                 const auto number=[&](double value){std::uint64_t bits=0;std::memcpy(&bits,&value,sizeof bits);mix(bits);};
                 for(double value:{interval.sampleFirst,interval.sampleLast,interval.sourceValueFirst,interval.sourceValueLast})number(value);
                 for(double value:interval.controls)number(value);for(double value:interval.geometry)number(value);
+                mix(interval.oneFrameHold?1u:0u);mix(interval.transportTiming?1u:0u);
             }
             for (const ac::Key& key : channel.track.keys) {
                 mix(static_cast<std::uint64_t>(static_cast<std::uint32_t>(key.frame)));

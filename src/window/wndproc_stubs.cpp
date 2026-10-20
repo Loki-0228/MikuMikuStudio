@@ -163,6 +163,10 @@ void DispatchSeparateWindowCommand(MMDApp* app, unsigned short id) {  // was Sub
         if (plugins::TryResetBoundPoseAxis(app, plugins::NativePoseAxisKind::Position,
             static_cast<int>(axis), plugins::NativePoseAxisSource::FloatingWindow)) break;
 #endif
+        // Reset replaces the pending coordinate draft even when keyboard
+        // focus stays on that edit throughout the forwarded command.
+        const HWND owner = separate ? separate : main;
+        SendDlgItemMessageA(owner, panel::kReadoutPosXEdit + static_cast<int>(axis), EM_SETMODIFY, FALSE, 0);
         if (s.CameraMode() != 0) {
             s.CameraPositionAxis(axis) = 0.0f;
             RefreshRequest(-1);                                  // 0x440AC0

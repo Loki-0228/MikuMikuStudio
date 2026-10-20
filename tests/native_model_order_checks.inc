@@ -1,5 +1,6 @@
 #include "../src/plugins/native_model_order.hpp"
 #include "../src/plugins/edit_store.hpp"
+#include "mikumikustudio/model_order_projection.hpp"
 #include <limits>
 namespace {
 namespace native_model_order_checks {
@@ -226,9 +227,74 @@ void StaleAndPluginTransactions() {
     Check(f.history.Reset()==MMS_OK,"retire mixed plugin nodes before unregistering their live serializer");f.history.Collect();
     Check(f.storage.Unregister(storageClient,provider)==MMS_OK,"unregister the test-only plugin serializer after history cleanup");
 }
+void DamagedSourceOrders() {
+    const std::array<std::array<std::uint8_t,2>,5> damaged{{{0,0},{2,2},{1,3},{255,1},{2,0}}};
+    const std::array<std::array<std::uint8_t,2>,5> repaired{{{1,2},{2,1},{1,2},{2,1},{2,1}}};
+    for(auto mode:{SharedHistory::RecordingMode::AllOperations,SharedHistory::RecordingMode::ExplicitOnly})
+    for(auto kind:{ModelOrderKind::Draw,ModelOrderKind::Calculate})for(std::size_t sample=0;sample<damaged.size();++sample) {
+        Scene x;auto& f=x.f;NativePoseTestBinding binding(*f.app,f.history);
+        Check(f.history.SetMode(mode)==MMS_OK,"damaged order uses either shared history mode");
+        Check(CommitBoundModelOrder(*f.app,f.history,x.Change(ModelOrderKind::Draw),false)==MMS_OK&&
+            RunBoundObjectHistory(*f.app,f.history,false)==MMS_OK&&f.history.RedoCount()==1,
+            "retain a real redo branch before opening damaged order");
+        auto& a=*mdl::Mdl(f.app->ModelSlot(0));auto& b=*mdl::Mdl(f.app->ModelSlot(254));
+        if(kind==ModelOrderKind::Draw) {
+            a.comboSelIndex=damaged[sample][0];b.comboSelIndex=damaged[sample][1];
+            a.comboSelIndex2=0;b.comboSelIndex2=255;
+        } else {
+            a.comboSelIndex2=damaged[sample][0];b.comboSelIndex2=damaged[sample][1];
+            a.comboSelIndex=b.comboSelIndex=2;
+        }
+        const auto before=x.Orders();f.app->SceneModified()=0;
+        {NativeModelOrderPlan cancelled;Check(cancelled.Begin(*f.app,kind)==MMS_OK,"capture damaged source without renumbering either family");}
+        Check(x.Orders()==before&&!f.history.UndoCount()&&f.history.RedoCount()==1&&!f.app->SceneModified(),
+            "cancelled damaged order preserves original bytes and redo");
+        std::array<std::int32_t,3> slots{0,repaired[sample][0]==1?1:255,repaired[sample][0]==1?255:1};
+        NativeModelOrderPlan plan;std::shared_ptr<HistoryChange> change;
+        Check(plan.Begin(*f.app,kind)==MMS_OK&&plan.Read(slots.data(),2)==MMS_OK&&plan.Take(change)==MMS_OK&&change,
+            "valid complete private permutation can repair zero duplicate gapped and excessive source ranks");
+        Check(x.Orders()==before&&!f.history.UndoCount()&&f.history.RedoCount()==1,
+            "preparing repaired ranks does not alter the live damaged permutation");
+        std::unique_ptr<SharedHistory::NativeTransaction> refused;
+        failAfter=0;const auto allocation=f.history.PrepareNative("damaged order",change,refused);failAfter=-1;
+        Check(allocation==MMS_E_MEMORY&&!refused&&x.Orders()==before&&!f.history.UndoCount()&&f.history.RedoCount()==1,
+            "failed damaged-order preparation preserves bytes and redo");
+        Check(CommitBoundModelOrder(*f.app,f.history,change,kind==ModelOrderKind::Calculate)==MMS_OK&&
+            f.history.UndoCount()==1&&!f.history.RedoCount()&&!NativeObjectUiPending(f.app.get()),
+            "repair publishes exactly one explicit node with a complete usable selector mapping");
+        auto after=before;after[kind==ModelOrderKind::Draw?0:2]=repaired[sample][0];
+        after[kind==ModelOrderKind::Draw?1:3]=repaired[sample][1];
+        Check(x.Orders()==after,"repair changes only the selected order family");x.Untouched();
+        Check(RunBoundObjectHistory(*f.app,f.history,false)==MMS_OK&&x.Orders()==before&&
+            !NativeObjectUiPending(f.app.get())&&!f.history.UndoCount()&&f.history.RedoCount()==1,
+            "undo restores exact damaged ranks while retaining a complete selector projection");
+        const bool aDrawFirst=before[0]==1||(before[1]!=1&&before[0]!=2);
+        Check(SendDlgItemMessageW(f.app->MainWindow(),436,CB_GETITEMDATA,1,0)==(aDrawFirst?0:254)&&
+            SendDlgItemMessageW(f.app->MainWindow(),436,CB_GETITEMDATA,2,0)==(aDrawFirst?254:0)&&
+            SendDlgItemMessageW(f.app->MainWindow(),449,CB_GETCURSEL,0,0)==(aDrawFirst?2:1)&&
+            SendDlgItemMessageW(f.app->MainWindow(),474,CB_GETCURSEL,0,0)==(aDrawFirst?2:1),
+            "undone damaged ranks still show every identity and both bound parents including slot 254");
+        Check(RunBoundObjectHistory(*f.app,f.history,true)==MMS_OK&&x.Orders()==after&&!NativeObjectUiPending(f.app.get()),
+            "redo repairs the same retained objects without source IO or another family mutation");x.Untouched();
+    }
+    Scene x;auto& f=x.f;NativePoseTestBinding binding(*f.app,f.history);
+    auto* other=f.app->ModelSlot(254);f.app->ModelSlot(254)=f.app->ModelSlot(0);
+    {NativeModelOrderPlan alias;Check(alias.Begin(*f.app,ModelOrderKind::Draw)==MMS_E_STALE,
+        "rank repair cannot reinterpret one model aliased in two slots as two stable objects");}
+    f.app->ModelSlot(254)=other;
+    Check(CommitBoundModelOrder(*f.app,f.history,x.Change(ModelOrderKind::Draw),false)==MMS_OK&&
+        RunBoundObjectHistory(*f.app,f.history,false)==MMS_OK&&f.history.RedoCount()==1,
+        "seed redo for unrelated damaged-family no-op");
+    mdl::Mdl(f.app->ModelSlot(0))->comboSelIndex2=0;mdl::Mdl(f.app->ModelSlot(254))->comboSelIndex2=255;
+    NativeModelOrderPlan noOp;std::shared_ptr<HistoryChange> empty;std::array<std::int32_t,3> same{0,1,255};
+    Check(noOp.Begin(*f.app,ModelOrderKind::Draw)==MMS_OK&&noOp.Read(same.data(),2)==MMS_OK&&noOp.Take(empty)==MMS_OK&&!empty&&
+        !f.history.UndoCount()&&f.history.RedoCount()==1,
+        "healthy chosen family stays a no-op when the unrelated calculation order is damaged");
+}
 }
 void NativeModelOrderChecks() {
     native_model_order_checks::ModesAndUi();native_model_order_checks::BudgetAndFailures();
     native_model_order_checks::StaleAndPluginTransactions();
+    native_model_order_checks::DamagedSourceOrders();
 }
 }

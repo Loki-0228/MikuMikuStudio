@@ -13,17 +13,32 @@ enum class Kind : uint32_t { Camera, Light, Shadow, Gravity, Accessory, Effect, 
 //             parentModel, parentBone
 //   Effect / Morph  arbitrary parameter ids, stored verbatim in the tail
 struct NativeCameraData;
+// Per-interval timing transported by the MMSN camera extension. This is
+// independent of the original sparse VMD rows retained by NativeCameraData.
+// Controls are finite doubles in 0..127; fractional subdivision values survive
+// unchanged. Only one of nativeCamera and nativeTiming can be authoritative.
+struct NativeTiming {
+    std::string id;
+    std::int32_t endFrame = 0;
+    std::array<double,4> controls{};
+    bool oneFrameHold = true;
+};
 struct Motion {
     Kind kind=Kind::Accessory;
     std::vector<animation_curve::NamedTrack> tracks;
     // In-memory source data only. Ordinary native camera files retain their
     // raw timing and version without adding or changing a wire extension.
     std::shared_ptr<const NativeCameraData> nativeCamera;
+    std::vector<NativeTiming> nativeTiming;
 };
 // A complete, synchronized native camera can be written as sparse standard
 // records. The caller must also establish that its samplers are native, not
 // arbitrary callbacks. This query neither allocates nor changes channels.
 bool CanCaptureNativeCamera(const std::vector<curve_editor::Channel>&, bool selectedOnly=true) noexcept;
+// Structural eligibility only: the host must establish its canonical sampler
+// before allowing this path. Exact slices with a different source domain and
+// opaque callbacks retain the existing budgeted bake path.
+bool CanTransportCameraTiming(const curve_editor::Channel&) noexcept;
 Motion CaptureChannels(Kind, const std::vector<curve_editor::Channel>&);
 // Replaces matching tracks and their old metadata transactionally. The host
 // installs its canonical camera sampler after restoring raw timing.

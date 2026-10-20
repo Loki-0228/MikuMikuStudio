@@ -35,6 +35,56 @@ void SettingsDirectoryNormalizationChecks(const fs::path& folder,const as::Setti
         "directory normalization preserves a custom drive root instead of walking above it");
 }
 
+// The runner places this EXE in a disposable installation. Exercise the real
+// public preference writer/reader with no HWND, renderer or shader compiler.
+void OutlineModeSettingsChecks(MMDApp& probe,const fs::path& folder,bool migrationMode){
+    using Mode=antialias::OutlineMode;
+    Check(probe.antialiasing.outlineMode==(migrationMode?Mode::Multisample:Mode::FxaaAdaptive),
+        "legacy JSON without outlineMode defaults to FXAA; a present local INI choice migrates");
+    std::string autosaveBefore,body;
+    Check(system_settings::ReadSection("autosave",autosaveBefore)==system_settings::Result::Ok,
+        "capture another central section before updating the outline preference");
+    Check(system_settings::WriteSection("antialias","{\"futureOutlineKey\":{\"value\":19}}")==system_settings::Result::Ok,
+        "schema accepts an additional antialias object field without replacing unknown metadata");
+    probe.CameraMode()=1;probe.CameraParentModel()=-1;probe.SceneModified()=0;
+    probe.CurrentFrame()=47;probe.LastRegisteredFrame()=91;
+    std::wstring error;
+    Check(!probe.antialiasing.enabled&&antialias::SelectOutlineMode(&probe,Mode::FxaaAdaptive,error)&&
+        antialias::SelectOutlineMode(&probe,Mode::Multisample,error),
+        "outline preference remains writable while scene antialiasing is disabled and no GPU is present");
+    Check(system_settings::ReadSection("antialias",body)==system_settings::Result::Ok,
+        "the public outline selector writes the production centralized setting");
+    auto saved=settings_json::Object(body);
+    Check(settings_json::UInt(saved,"outlineMode",99)==1&&settings_json::UInt(saved,"algorithm",99)==4&&
+        !settings_json::Bool(saved,"enabled",true)&&saved.At("futureOutlineKey").At("value").UInt()==19,
+        "outline writes preserve the disabled algorithm and unknown fields under schema version one");
+    std::string autosaveAfter;
+    Check(system_settings::ReadSection("autosave",autosaveAfter)==system_settings::Result::Ok&&autosaveAfter==autosaveBefore&&
+        !probe.SceneModified()&&probe.CurrentFrame()==47&&probe.LastRegisteredFrame()==91,
+        "outline preferences change neither unrelated settings nor project dirty state or transport");
+    auto restarted=std::make_unique<MMDApp>();::new(static_cast<void*>(&restarted->state)) MMDAppState{};
+    antialias::ReloadUserSettings(restarted.get());
+    Check(restarted->antialiasing.outlineMode==Mode::Multisample&&restarted->antialiasing.algorithm==antialias::Algorithm::Fxaa&&
+        !restarted->antialiasing.enabled,"a fresh application instance reads the persisted outline choice without GPU initialization");
+    Check(system_settings::WriteSection("antialias","{\"outlineMode\":99}")==system_settings::Result::Ok,
+        "future numeric outline values are valid schema data");
+    antialias::ReloadUserSettings(restarted.get());
+    Check(restarted->antialiasing.outlineMode==Mode::FxaaAdaptive&&system_settings::ReadSection("antialias",body)==system_settings::Result::Ok&&
+        settings_json::UInt(settings_json::Object(body),"outlineMode",0)==99,
+        "an unknown outline enum uses the safe display default without rewriting the stored future value");
+    // Leave a known non-default choice for the runner's later process/re-name
+    // checks. Reading invalid future data did not mutate the earlier instance.
+    Check(antialias::SelectOutlineMode(&probe,Mode::FxaaAdaptive,error)&&antialias::SelectOutlineMode(&probe,Mode::Multisample,error),
+        "restore a persisted non-default outline choice for process restart checks");
+    Check(system_settings::ReadSection("antialias",body)==system_settings::Result::Ok,"capture persisted valid outline before an invalid public request");
+    const auto persisted=body;
+    Check(!antialias::SelectOutlineMode(&probe,Mode(99),error)&&!error.empty()&&probe.antialiasing.outlineMode==Mode::Multisample&&
+        system_settings::ReadSection("antialias",body)==system_settings::Result::Ok&&body==persisted,
+        "an invalid public outline selection cannot change the current preference");
+    if(!migrationMode)Check(!fs::exists(folder/L"data"/L"antialias.ini"),"outline preference updates never create a separate production INI");
+    antialias::Release(restarted.get());antialias::Release(&probe);
+}
+
 // Run before app initialization and before the ordinary suite's test override.
 void SettingsLocationChecks(const fs::path& executable,const std::wstring& mode) {
     const auto folder=executable.parent_path();const auto config=folder/L"data"/L"settings.json";
@@ -45,7 +95,7 @@ void SettingsLocationChecks(const fs::path& executable,const std::wstring& mode)
         Check(!fs::exists(config), "migration fixture starts without central settings");
         fs::create_directories(config.parent_path());
         { std::ofstream out(folder/L"data"/L"autosave.ini"); out << "[autosave]\nenabled=0\nintervalMinutes=3\nmaxBackups=9\ndirectoryMode=executable\n"; }
-        { std::ofstream out(folder/L"data"/L"antialias.ini"); out << "[Antialias]\nAlgorithm=4\nEnabled=0\n"; }
+        { std::ofstream out(folder/L"data"/L"antialias.ini"); out << "[Antialias]\nAlgorithm=4\nEnabled=0\nOutlineMode=1\n"; }
         { std::ofstream out(folder/L"data"/L"processor.ini"); out << "[Vertices]\nMode=cpu\n"; }
         { std::ofstream out(folder/L"data"/L"viewport.ini"); out << "[viewport]\ncorner=tl\n"; }
         { std::ofstream out(folder/L"data"/L"adaptive_shadow.ini"); out << "1 9999\n"; }
@@ -61,7 +111,8 @@ void SettingsLocationChecks(const fs::path& executable,const std::wstring& mode)
         if (migrationMode) {
             Check(!current.enabled && current.intervalMinutes==3 && current.maxBackups==9 &&
                 current.directory==(folder/L"data"/L"backups").wstring(), "autosave imports local INI once");
-            Check(probe->antialiasing.algorithm==antialias::Algorithm::Fxaa && !probe->antialiasing.enabled,
+            Check(probe->antialiasing.algorithm==antialias::Algorithm::Fxaa && !probe->antialiasing.enabled&&
+                probe->antialiasing.outlineMode==antialias::OutlineMode::Multisample,
                 "antialias imports local INI once");
             Check(processor::Initialize(error) && processor::Requested().vertices.mode==processor::Mode::Cpu,
                 "processor imports local INI once");
@@ -74,9 +125,10 @@ void SettingsLocationChecks(const fs::path& executable,const std::wstring& mode)
             LoadShadowResolutionPreference(probe.get());
             Check(probe->AdaptiveShadowResolution() && !probe->ShadowFilterEnhanced(),
                 "central shadow settings take precedence over later legacy changes");
-            { std::ofstream out(folder/L"data"/L"antialias.ini"); out << "[Antialias]\nAlgorithm=0\nEnabled=1\n"; }
+            { std::ofstream out(folder/L"data"/L"antialias.ini"); out << "[Antialias]\nAlgorithm=0\nEnabled=1\nOutlineMode=0\n"; }
             antialias::ReloadUserSettings(probe.get());
-            Check(probe->antialiasing.algorithm==antialias::Algorithm::Fxaa && !probe->antialiasing.enabled,
+            Check(probe->antialiasing.algorithm==antialias::Algorithm::Fxaa && !probe->antialiasing.enabled&&
+                probe->antialiasing.outlineMode==antialias::OutlineMode::Multisample,
                 "central antialias settings take precedence over later legacy changes");
         } else {
             Check(probe->antialiasing.algorithm==antialias::Algorithm::MmdOriginal && probe->antialiasing.enabled,
@@ -102,6 +154,15 @@ void SettingsLocationChecks(const fs::path& executable,const std::wstring& mode)
                 !fs::exists(folder/L"data"/L"viewport.ini") && !fs::exists(folder/L"data"/L"antialias.ini"),
                 "fresh settings do not recreate separate preference files");
         }
+        OutlineModeSettingsChecks(*probe,folder,migrationMode);
+    }
+    if(mode==L"--settings-default"||mode==L"--settings-check-custom"){
+        SetEnvironmentVariableW(L"MMS_ANTIALIAS_CONFIG",nullptr);
+        auto restarted=std::make_unique<MMDApp>();::new(static_cast<void*>(&restarted->state)) MMDAppState{};
+        antialias::ReloadUserSettings(restarted.get());
+        Check(restarted->antialiasing.outlineMode==antialias::OutlineMode::Multisample&&!restarted->antialiasing.enabled,
+            "a later process including an EXE rename restores its installation's outline preference");
+        antialias::Release(restarted.get());
     }
     if(mode==L"--settings-fresh" || mode==L"--settings-default" || overrideMode){
         Check(!current.enabled && current.intervalMinutes==1 && current.maxBackups==100 && current.directory==(folder/L"data"/L"backups").wstring(),

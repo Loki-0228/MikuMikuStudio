@@ -31,7 +31,8 @@ bool FinishCameraBakeChannel(const curve_editor::Channel& source,
 bool InsertPreservingShape(std::vector<curve_editor::Channel>&, std::size_t channel, int frame,
                            std::size_t& index, std::wstring& error);
 // Keeps complete canonical native cameras eligible for sparse raw VMD output.
-// Mixed/scalar motions sample native or opaque callbacks at integer frames.
+// Mixed/scalar canonical camera timing keeps an MMSN authoring tail. Opaque
+// callbacks and native slices not expressible by that tail sample at integers.
 // maximumSampleBytes retains the explicit-slice/opaque preparation budget;
 // ordinary native motions keep the standard codec's existing frame limits.
 bool PrepareMotionChannels(const std::vector<curve_editor::Channel>&,

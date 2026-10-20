@@ -130,17 +130,15 @@ MmsResult NativeModelOrderPlan::Begin(MMDApp& app, ModelOrderKind kind) noexcept
         if (const auto result = history->CheckNativeEdit()) return result;
         if (!Ready(app, false) || app.AccessoryOrderArray()) return MMS_E_BUSY;
         auto state = std::make_shared<State>(app, *history, kind);
-        std::array<bool, kModelSlotCount + 1> draw{}, calculate{};
         for (unsigned slot = 0; slot < kModelSlotCount; ++slot) if (auto* object = app.ModelSlot(slot)) {
+            if (std::any_of(state->entries.begin(), state->entries.end(),
+                    [&](const auto& entry) { return entry.object == object; })) return MMS_E_STALE;
             const auto& model = *mdl::Mdl(object);
-            if (!model.comboSelIndex || !model.comboSelIndex2 || draw[model.comboSelIndex] || calculate[model.comboSelIndex2]) return MMS_E_STALE;
-            draw[model.comboSelIndex] = calculate[model.comboSelIndex2] = true;
             State::Entry entry{}; entry.slot = slot; entry.object = object;
             entry.owner = RetainSceneObject(app, MMS_OBJECT_MODEL, slot); entry.initial = SceneObjectIdentity(object);
             entry.before = {model.comboSelIndex, model.comboSelIndex2}; entry.after = entry.before;
             state->entries.push_back(std::move(entry));
         }
-        for (std::size_t i = 1; i <= state->entries.size(); ++i) if (!draw[i] || !calculate[i]) return MMS_E_STALE;
         resource_budget::Collector resources;
         for (const auto& e : state->entries) if (auto result = e.owner->MeasureBookkeeping(resources)) return result;
         if (!resources.Result().Complete()) return MMS_E_NOT_READY;

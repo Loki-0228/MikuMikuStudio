@@ -1,7 +1,11 @@
 // Include after native_pose_scope_checks.inc; call NativePoseAxisChecks().
 // Runs the real command dispatchers against PoseNumericFixture's hidden UI.
 #include "../src/plugins/native_pose_axis.hpp"
+#include "../src/plugins/native_global_commands.hpp"
 #include "mikumikustudio/scene_ownership.hpp"
+#include "../src/plugins/edit_store.hpp"
+#include "mikumikustudio/bake_ui_lock.hpp"
+#include <commctrl.h>
 namespace mikumikustudio {
 void CmdControl500(MMDApp*, HWND, std::uint16_t, std::uint16_t);
 void DispatchSeparateWindowCommand(MMDApp*, unsigned short);
@@ -310,6 +314,193 @@ void PoseAxisLegacyChecks() {
             "unbound main/floating position and scale reset retain ordinary ring behavior");
     }
 }
+struct PositionDraftPanel {
+    PoseNumericFixture& fixture;
+    HWND owner, previous;
+    bool floating;
+    PositionDraftPanel(PoseNumericFixture& f, bool separate) : fixture(f), owner(f.app->MainWindow()),
+        previous(f.app->FloatingWindow()), floating(separate) {
+        if (floating) {
+            owner = CreateWindowExA(0, "STATIC", "axis draft floating panel", WS_OVERLAPPED,
+                0, 0, 360, 120, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+            Check(owner != nullptr, "create real separate draft panel"); fixture.app->FloatingWindow() = owner;
+            for (int axis = 0; axis < 3; ++axis)
+                Check(CreateWindowExA(0, "EDIT", "0", WS_CHILD, axis * 90, 0, 80, 20, owner,
+                    reinterpret_cast<HMENU>(INT_PTR(panel::kReadoutPosXEdit + axis)), GetModuleHandleW(nullptr), nullptr) != nullptr,
+                    "create separate coordinate draft field");
+        }
+        for (int axis = 0; axis < 3; ++axis) InstallControlSubclass(fixture.app.get(), Field(axis), panel::kReadoutPosXEdit + axis);
+    }
+    ~PositionDraftPanel() {
+        SetFocus(fixture.app->MainWindow()); fixture.app->FloatingWindow() = previous;
+        if (floating) DestroyWindow(owner);
+    }
+    HWND Field(int axis) const { return GetDlgItem(owner, panel::kReadoutPosXEdit + axis); }
+    void Draft(int axis, const char* value) {
+        SetFocus(Field(axis)); Check(GetFocus() == Field(axis), "position draft keeps actual native keyboard focus");
+        SetWindowTextA(Field(axis), value); SendMessageA(Field(axis), EM_SETMODIFY, TRUE, 0);
+    }
+    bool Text(int axis, const char* expected) const {
+        char text[64]{}; GetWindowTextA(Field(axis), text, sizeof text); return !std::strcmp(text, expected);
+    }
+    void Reset(int axis) { PoseAxisCommand(fixture, AxisKind::Position, axis, floating); }
+    void LoseFocus() { SetFocus(owner); }
+};
+void PoseAxisPendingDraftChecks() {
+    using Mode = plugins::SharedHistory::RecordingMode;
+    for (auto mode : {Mode::AllOperations, Mode::ExplicitOnly}) for (bool floating : {false, true})
+        for (int axis = 0; axis < 3; ++axis) for (bool camera : {false, true}) {
+            PoseNumericFixture f; plugins::NativePoseTestBinding binding(*f.app, f.history); PositionDraftPanel panel(f, floating);
+            Check(f.history.SetMode(mode) == MMS_OK, "configure pending-position reset recording mode");
+            if (camera) {
+                f.app->CameraMode() = 1; f.app->CameraKeys() = mdl::KeyPoolCreate<mdl::CameraKey>(4);
+                f.app->CameraPositionAxis(axis) = 2.5f; f.app->CameraDistance() = -45; f.app->CameraFov() = 45;
+                f.app->CameraParentModel() = -1;
+            } else {
+                f.first.m->selectedBone = 1; f.first.bones[1].parent = 0;
+                f.first.bones[0].position[axis] = 2; f.first.bones[1].position[axis] = 5;
+                f.first.bones[1].trans[axis] = 2.5f;
+            }
+            const std::vector<mdl::BoneKey> sourceKeys(f.first.m->boneKeys,
+                f.first.m->boneKeys + mdl::BoneKeyCapacity(f.first.m->boneKeys));
+            const auto ring = PoseRingDigest(f.first);
+            const char* expected = camera ? "0.00" : "3.00";
+            const int other = (axis + 1) % 3;
+            SetWindowTextA(panel.Field(other), "unrelated pending"); SendMessageA(panel.Field(other), EM_SETMODIFY, TRUE, 0);
+            panel.Draft(axis, "123.75"); panel.Reset(axis);
+            Check((camera ? f.app->CameraPositionAxis(axis) : f.first.bones[1].trans[axis]) == 0 &&
+                panel.Text(axis, expected) && !SendMessageA(panel.Field(axis), EM_GETMODIFY, 0, 0) &&
+                panel.Text(other, "unrelated pending") && SendMessageA(panel.Field(other), EM_GETMODIFY, 0, 0),
+                "successful actual main/separate reset discards only its focused coordinate draft and echoes the native bind or camera coordinate");
+            const auto count = mode == Mode::AllOperations ? 1u : 0u;
+            Check(f.history.UndoCount() == count && mdl::BoneKeyCapacity(f.first.m->boneKeys) == sourceKeys.size() &&
+                !std::memcmp(f.first.m->boneKeys, sourceKeys.data(), sourceKeys.size() * sizeof(mdl::BoneKey)) && PoseRingDigest(f.first) == ring,
+                "pending-text reset retains the existing recording policy and never edits registered keys or legacy rings");
+            panel.LoseFocus();
+            Check((camera ? f.app->CameraPositionAxis(axis) : f.first.bones[1].trans[axis]) == 0 && f.history.UndoCount() == count,
+                "real later WM_KILLFOCUS cannot reapply the pre-reset typed displacement or add another history step");
+            // A repeated explicit reset still discards the pending text even
+            // though the authored pose is already zero and no node is needed.
+            if (count) Check(f.history.History(false) == MMS_OK, "seed a retained redo before zero-position draft reset");
+            if (camera) f.app->CameraPositionAxis(axis) = 0; else f.first.bones[1].trans[axis] = 0;
+            const auto redo = f.history.RedoCount(); std::uint64_t revision = 0, after = 0; f.history.Revision(revision);
+            f.app->SceneModified() = f.app->RecordedFrameCountByte1() = 0;
+            panel.Draft(axis, "456.5"); panel.Reset(axis); f.history.Revision(after);
+            Check(panel.Text(axis, expected) && !SendMessageA(panel.Field(axis), EM_GETMODIFY, 0, 0) && revision == after &&
+                f.history.RedoCount() == redo && !f.app->SceneModified() && !f.app->RecordedFrameCountByte1(),
+                "zero-position reset discards the requested field draft without a data revision dirty flag or redo loss");
+            panel.LoseFocus();
+            Check((camera ? f.app->CameraPositionAxis(axis) : f.first.bones[1].trans[axis]) == 0 && f.history.RedoCount() == redo,
+                "no-op reset also prevents a later focus-loss commit of stale text");
+            if (camera) { f.history.Reset(); f.history.Collect(); mdl::KeyPoolDestroy(f.app->CameraKeys()); f.app->CameraKeys() = nullptr; }
+        }
+}
+void PoseAxisRejectedDraftChecks() {
+    for (bool floating : {false, true}) for (bool zero : {false, true}) for (unsigned reason = 0; reason < 6; ++reason) {
+        PoseNumericFixture f; plugins::NativePoseTestBinding binding(*f.app, f.history); PositionDraftPanel panel(f, floating);
+        f.first.bones[0].trans[0] = zero ? 0 : 2.5f;
+        panel.Draft(0, "pending 88.5");
+        std::unique_ptr<bake::ScopedUiInputGate> input;
+        std::unique_ptr<plugins::EditStore> edits;
+        plugins::EditClient client; MmsEditApiV1 api{}; MmsHandle transaction = 0;
+        if (reason == 0) Check(f.history.Enter() == MMS_OK, "hold journal during position draft rejection");
+        if (reason == 1) f.app->PlaybackActive() = 1;
+        if (reason == 2) input = std::make_unique<bake::ScopedUiInputGate>();
+        if (reason == 3) {
+            edits = std::make_unique<plugins::EditStore>(f.history, f.storage); client.id = "test.position-draft"; api = edits->Api(client);
+            std::uint64_t revision = 0; f.history.Revision(revision); constexpr char label[] = "pending plugin edit";
+            Check(api.begin(api.context, {label, sizeof label - 1}, revision, &transaction) == MMS_OK,
+                "hold actual plugin draft before native zero-position reset");
+        }
+        if (reason == 4) Check(f.history.Configure(plugins::SharedHistory::RecordingMode::AllOperations, 128, 1) == MMS_OK,
+            "configure insufficient retained budget before focused reset");
+        if (reason == 5) failAfter = 0;
+        panel.Reset(0); failAfter = -1;
+        // A data no-op needs no history allocation or byte budget, and can
+        // legitimately discard text. Busy UI and plugin/journal locks cannot.
+        const bool admittedNoop = zero && reason >= 4;
+        Check(panel.Text(0, admittedNoop ? "0.00" : "pending 88.5") &&
+            bool(SendMessageA(panel.Field(0), EM_GETMODIFY, 0, 0)) == !admittedNoop &&
+            f.first.bones[0].trans[0] == (zero ? 0 : 2.5f) && !f.history.UndoCount(),
+            "rejected busy plugin budget and preparation failures retain the exact pending text while valid allocation-free no-op still discards it");
+        if (reason == 0) f.history.Leave(); if (reason == 1) f.app->PlaybackActive() = 0;
+        if (transaction) api.cancel(api.context, transaction);
+        // Keep destruction focus loss from intentionally committing the draft
+        // whose preservation was just tested.
+        SendMessageA(panel.Field(0), EM_SETMODIFY, FALSE, 0);
+    }
+}
+void PoseAxisDraftReadoutFailureChecks() {
+    {
+        PoseNumericFixture f; plugins::NativePoseTestBinding binding(*f.app, f.history); PositionDraftPanel panel(f, false);
+        Check(bone_scale::SetPose(f.first.raw(), 0, Scale(2)), "seed unapplied scale before a zero-position draft reset");
+        panel.Draft(0, "88.25"); const auto before = f.first.Digest();
+        const auto applied = bone_scale::TransformsApplied(f.first.raw());
+        panel.Reset(0);
+        Check(panel.Text(0, "0.00") && !SendMessageA(panel.Field(0), EM_GETMODIFY, 0, 0) && f.first.Digest() == before &&
+            bone_scale::TransformsApplied(f.first.raw()) == applied && bone_scale::Pose(f.first.raw(), 0) == Scale(2) && !f.history.UndoCount(),
+            "zero-position draft replacement does not install pending scale transforms or evaluate other pose fields");
+    }
+    struct TextFault {
+        bool reject = false;
+        static LRESULT CALLBACK Procedure(HWND window, UINT message, WPARAM wp, LPARAM lp, UINT_PTR, DWORD_PTR data) {
+            auto& self = *reinterpret_cast<TextFault*>(data);
+            if (message == WM_SETTEXT && self.reject) return FALSE;
+            return DefSubclassProc(window, message, wp, lp);
+        }
+    };
+    for (bool floating : {false, true}) {
+        PoseNumericFixture f; plugins::NativePoseTestBinding binding(*f.app, f.history); PositionDraftPanel panel(f, floating);
+        f.first.bones[0].trans[0] = 2.5f; panel.Draft(0, "123.75"); TextFault fault;
+        Check(SetWindowSubclass(panel.Field(0), TextFault::Procedure, 1993, reinterpret_cast<DWORD_PTR>(&fault)) != FALSE,
+            "observe actual reset text publication failure");
+        fault.reject = true; panel.Reset(0);
+        Check(f.first.bones[0].trans[0] == 0 && f.history.UndoCount() == 1 && panel.Text(0, "123.75") &&
+            !SendMessageA(panel.Field(0), EM_GETMODIFY, 0, 0),
+            "successful reset still discards stale text authorization when its optional caption write is refused");
+        panel.LoseFocus(); Check(f.first.bones[0].trans[0] == 0 && f.history.UndoCount() == 1,
+            "focus loss cannot revive old displacement after a failed caption echo");
+        fault.reject = false; panel.Reset(0);
+        Check(panel.Text(0, "0.00") && f.history.UndoCount() == 1,
+            "a later no-op reset repairs the stale caption without repeating the committed pose change");
+        RemoveWindowSubclass(panel.Field(0), TextFault::Procedure, 1993);
+    }
+}
+void PoseAxisPreparedDraftChecks() {
+    using Mode = plugins::SharedHistory::RecordingMode;
+    for (auto mode : {Mode::AllOperations, Mode::ExplicitOnly}) for (bool floating : {false, true})
+        for (bool camera : {false, true}) {
+            PoseNumericFixture f; plugins::NativePoseTestBinding binding(*f.app, f.history); PositionDraftPanel panel(f, floating);
+            Check(f.history.SetMode(mode) == MMS_OK, "configure prepared-publication position reset mode");
+            f.app->CameraKeys() = mdl::KeyPoolCreate<mdl::CameraKey>(4);
+            Check(f.app->CameraKeys() != nullptr, "create a registered camera pool for a real pending native publication");
+            f.app->CameraMode() = camera; f.app->CameraPitch() = .25f;
+            f.app->CameraDistance() = -45; f.app->CameraFov() = 45; f.app->CameraParentModel() = -1;
+            panel.Draft(0, "pending 88.5");
+            std::shared_ptr<plugins::HistoryChange> change;
+            std::unique_ptr<plugins::SharedHistory::NativeTransaction> transaction;
+            Check(plugins::PlanCameraRotationReset(*f.app, change) == MMS_OK && change &&
+                f.history.PrepareNative("pending camera rotation", std::move(change), transaction) == MMS_OK && transaction,
+                "reserve an actual camera rotation candidate before the zero-position reset");
+            Check(f.history.CheckNativeNavigation() == MMS_E_BUSY,
+                "the prepared native publication excludes data-no-op draft changes");
+            panel.Reset(0);
+            Check(panel.Text(0, "pending 88.5") && SendMessageA(panel.Field(0), EM_GETMODIFY, 0, 0) &&
+                f.app->CameraPitch() == .25f && f.app->CameraPositionX() == 0 && f.first.bones[0].trans[0] == 0 &&
+                f.history.UndoCount() == 0,
+                "main and separate bone/camera zero-position reset preserve drafts while another native publication is prepared");
+            Check(f.history.CommitNative(std::move(transaction)) == MMS_OK && f.app->CameraPitch() == 0 &&
+                f.history.UndoCount() == 1,
+                "refused zero-position reset leaves the original prepared camera candidate valid and publishable");
+            panel.Reset(0);
+            Check(panel.Text(0, "0.00") && !SendMessageA(panel.Field(0), EM_GETMODIFY, 0, 0) && f.history.UndoCount() == 1,
+                "the same no-op reset discards its draft after the prepared publication finishes without adding a history entry");
+            panel.LoseFocus();
+            Check(f.app->CameraPositionX() == 0 && f.first.bones[0].trans[0] == 0 && f.history.UndoCount() == 1,
+                "focus loss after the retried no-op cannot recreate the previously blocked draft");
+            f.history.Reset(); f.history.Collect(); mdl::KeyPoolDestroy(f.app->CameraKeys()); f.app->CameraKeys() = nullptr;
+        }
+}
 }
 void NativePoseAxisChecks() {
     std::puts("RUN PoseAxisPositionChecks"); PoseAxisPositionChecks();
@@ -318,4 +509,8 @@ void NativePoseAxisChecks() {
     std::puts("RUN PoseAxisNoopAndGuardChecks"); PoseAxisNoopAndGuardChecks();
     std::puts("RUN PoseAxisFailureChecks"); PoseAxisFailureChecks();
     std::puts("RUN PoseAxisLegacyChecks"); PoseAxisLegacyChecks();
+    std::puts("RUN PoseAxisPendingDraftChecks"); PoseAxisPendingDraftChecks();
+    std::puts("RUN PoseAxisRejectedDraftChecks"); PoseAxisRejectedDraftChecks();
+    std::puts("RUN PoseAxisDraftReadoutFailureChecks"); PoseAxisDraftReadoutFailureChecks();
+    std::puts("RUN PoseAxisPreparedDraftChecks"); PoseAxisPreparedDraftChecks();
 }

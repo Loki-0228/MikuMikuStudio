@@ -312,8 +312,25 @@ void InvalidNativeData() {
         before.Verify(f, false);ui.Verify(f);
         Check(f.observed.Writes() == 0, "invalid order and bone data are rejected before control writes");
     };
-    for (unsigned char order : {0, 1, 3}) { f.modelA->comboSelIndex = order;rejected(history_ui::Result::InvalidOrder); }
+    for (unsigned char order : {0, 1, 3, 255}) {
+        f.modelA->comboSelIndex = order;AuthoringSnapshot before(f);f.observed.Clear();
+        Refresh(f,selection,false,true);before.Verify(f);
+        const int aRow=order==1?1:2,bRow=3-aRow;
+        Check(f.modelA->comboSelIndex==order&&f.modelB->comboSelIndex==1,
+            "damaged model rank projection preserves every original stored byte");
+        for(int id:{436,449,474})
+            Check(f.Count(id)==3&&f.Data(id,0)==-1&&f.Data(id,aRow)==2&&f.Data(id,bRow)==9&&
+                f.Text(id,aRow)==modelAName&&f.Text(id,bRow)==modelBName,
+                "zero duplicate gapped and excessive model ranks retain complete matching captions and item identities");
+        Check(f.Selected(436)==aRow&&f.Selected(449)==bRow&&f.Selected(474)==bRow&&
+            f.app->SelectedModelSlot()==2&&f.app->CameraParentModel()==9&&f.accessoryA->parentModel==9&&
+            !IsWindowEnabled(f.Control(400))&&IsWindowEnabled(f.Control(401)),
+            "damaged rank refresh preserves selected and parent object identities and supplied common history state");
+    }
     f.modelA->comboSelIndex = 2;
+    Refresh(f,selection);
+    f.app->ModelSlot(9)=Fixture::Raw(f.modelA.get());rejected(history_ui::Result::InvalidData);
+    f.app->ModelSlot(9)=Fixture::Raw(f.modelB.get());
     for (unsigned char order : {0, 2}) { f.accessoryA->order = order;rejected(history_ui::Result::InvalidOrder); }
     f.accessoryA->order = 1;
     f.modelB->boneTable = nullptr;rejected(history_ui::Result::InvalidData);f.modelB->boneTable = f.bonesB.data();

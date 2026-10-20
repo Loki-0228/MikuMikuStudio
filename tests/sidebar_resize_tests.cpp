@@ -826,6 +826,9 @@ int main(int argc, char** argv) {
     if(argc==2 && std::string(argv[1])=="--edit-history-only") {
         edit_history_host_checks::Run(app);ShutdownCleanup(app);g_Block=nullptr;delete app;return 0;
     }
+    if(argc==2 && std::string(argv[1])=="--curve-motion-only") {
+        edit_history_host_checks::Run(app,true);ShutdownCleanup(app);g_Block=nullptr;delete app;return 0;
+    }
     if(argc==2 && std::string(argv[1])=="--object-history-only") {
         object_history_checks::Run(app);ShutdownCleanup(app);g_Block=nullptr;delete app;return 0;
     }

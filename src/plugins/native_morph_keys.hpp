@@ -35,7 +35,8 @@ MmsResult PlanMorphKeyPaste(MMDApp&, unsigned modelSlot, std::shared_ptr<History
 MmsResult PlanMorphKeyPaste(MMDApp&,unsigned modelSlot,const ModelPasteSource&,
     std::shared_ptr<HistoryChange>&,ModelPasteFamilyResult* aggregate=nullptr) noexcept;
 MmsResult PlanMorphKeyDeletion(MMDApp&, unsigned modelSlot,
-    std::shared_ptr<HistoryChange>& out, bool allowOtherMarks = false) noexcept;
+    std::shared_ptr<HistoryChange>& out, bool allowOtherMarks = false,
+    const std::vector<unsigned>* selectedSlots = nullptr) noexcept;
 MmsResult PlanMorphFrameLine(MMDApp&, unsigned modelSlot, int frame, bool insert,
     std::shared_ptr<HistoryChange>& out) noexcept;
 struct BoneRangeScaleOptions;

@@ -65,12 +65,12 @@ inline std::wstring NormalizePath(std::wstring path) {
     for (auto& c : path) c = c == L'\\' ? L'/' : wchar_t(towlower(c));
     return path;
 }
-inline std::wstring ProfileName(const std::wstring& path) {
+inline std::wstring ProfileName(const std::wstring& path, bool legacy = false) {
     std::uint64_t hash = 14695981039346656037ull;
     for (wchar_t c : NormalizePath(path)) { hash ^= unsigned(c); hash *= 1099511628211ull; }
     wchar_t suffix[32]{};
     swprintf_s(suffix, L"%016llx", static_cast<unsigned long long>(hash));
-    return std::wstring(L"MikuMikuStudio AA fix ") + suffix;
+    return std::wstring(legacy ? L"MikuDanceStudio AA fix " : L"MikuMikuStudio AA fix ") + suffix;
 }
 inline bool InspectEffective(Api& api, const std::wstring& path, State& state) {
     state = {};
@@ -134,9 +134,16 @@ inline bool Execute(Api& api, const std::wstring& path, const bool* enabled, Sta
     if (!check(api.createSession(&session.value), L"CreateSession") ||
         !check(api.load(session.value), L"LoadSettings")) return false;
     state.available = true;
-    const auto name = ProfileName(path);
+    auto name = ProfileName(path);
     Handle profile = nullptr;
     int status = api.findProfile(session.value, name.c_str(), &profile);
+    if (status == kProfileNotFound) {
+        // Retain ownership of profiles installed before the host rename. The
+        // same exclusive-profile checks below apply to both names.
+        const auto legacyName = ProfileName(path, true);
+        status = api.findProfile(session.value, legacyName.c_str(), &profile);
+        if (status == 0) name = legacyName;
+    }
     if (status == kProfileNotFound) {
         if (!enabled || !*enabled) return true;
         Profile info; wcscpy_s(info.name, name.c_str());

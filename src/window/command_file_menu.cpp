@@ -138,6 +138,13 @@
 #include "../plugins/native_object_commands.hpp"
 #include "../plugins/native_morph_reset.hpp"
 #include "../plugins/native_center_offset.hpp"
+#include "../plugins/native_key_commands.hpp"
+#include "../plugins/native_history_commands.hpp"
+#include "../plugins/native_camera_multiply.hpp"
+#include "../plugins/native_morph_category.hpp"
+#include "mikumikustudio/bake_ui_lock.hpp"
+#include "mikumikustudio/animation_curve_editor.hpp"
+#include "mikumikustudio/runtime_log.hpp"
 #endif
 #include "mikumikustudio/ui_message.hpp"
 #include "mikumikustudio/ui_translation.hpp"
@@ -730,6 +737,8 @@ INT_PTR __stdcall AviOutDlgProc(HWND hDlg, UINT msg, WPARAM wParam,
                     const LRESULT codec = SendMessageW(
                         GetDlgItem(hDlg, panel::kAviCodecCombo), CB_GETITEMDATA,
                         sel, 0);
+                    if (codec == kSystemH264Codec)
+                        ResetH264HardwareEncoderState();
                     const WaveAudioContext* audio = app->Audio();
                     const bool audioAvailable = codec != kNativePngMovCodec &&
                         audio != nullptr && audio->dataSize > 0 && audio->path[0] != L'\0';
@@ -803,9 +812,21 @@ INT_PTR __stdcall AviOutDlgProc(HWND hDlg, UINT msg, WPARAM wParam,
 // select-all on 0x2AE.  OK: ApplyCameraFrameMultiplyDialog (reads the 16
 // edits into the camera frame transform scale/offset) then EndDialog(1).
 // Cancel: EndDialog(2).
+#if !MMD_ORIGINAL_PROFILE
+struct CameraMultiplySession {
+    MMDApp* app;
+    plugins::NativeCameraMultiplyPlan* plan;
+};
+#endif
 INT_PTR __stdcall CameraFrameMultiplyDlgProc(HWND hDlg, UINT msg, WPARAM wParam,
                                              LPARAM lParam) {  // was Sub44D2D0, VA 0x0044D2D0
     MMDApp* app = g_Block;
+#if !MMD_ORIGINAL_PROFILE
+    auto* session = msg == WM_INITDIALOG ? reinterpret_cast<CameraMultiplySession*>(lParam) :
+        reinterpret_cast<CameraMultiplySession*>(GetWindowLongPtrW(hDlg, DWLP_USER));
+    if (msg == WM_INITDIALOG) SetWindowLongPtrW(hDlg, DWLP_USER, reinterpret_cast<LONG_PTR>(session));
+    if (session) app = session->app;
+#endif
     (void)lParam;
     if (msg == WM_INITDIALOG) {
         MakeDialogTopmostIfRequested(app, hDlg);
@@ -818,6 +839,20 @@ INT_PTR __stdcall CameraFrameMultiplyDlgProc(HWND hDlg, UINT msg, WPARAM wParam,
         SelectAllEdit(hDlg, panel::kCamMulPosXScaleEdit);
     } else if (msg == WM_COMMAND) {
         if (LOWORD(wParam) == 1) {  // IDOK
+#if !MMD_ORIGINAL_PROFILE
+            if (session) {
+                if (const auto result = session->plan->ReadDialog(hDlg)) {
+                    runtime_log::Write("PLUGIN_ABI camera multiply input refused: %d", result);
+                    const wchar_t* message[] = {L"値が無効か、編集中のデータが変更されました。データは変更されていません。",
+                        L"The values are invalid or the source changed while editing. No data was changed.",
+                        L"输入值无效，或编辑期间源数据已改变。数据未改变。"};
+                    MessageBoxW(hDlg, message[app->EnglishUI() <= 2 ? app->EnglishUI() : 1], L"MMS", MB_OK | MB_ICONERROR);
+                    return 0;
+                }
+                EndDialog(hDlg, 1);
+                return 0;
+            }
+#endif
             ApplyCameraFrameMultiplyDialog(app, hDlg);
             EndDialog(hDlg, 1);
             return 0;
@@ -1583,6 +1618,22 @@ void CmdFileMenu(MMDApp* app, HWND hwnd, std::uint16_t id, std::uint16_t notify)
         if (app->state.optflag[0] != 0) {  // 0x2F8
             break;
         }
+#if !MMD_ORIGINAL_PROFILE
+        std::uint32_t boundDeleted = 0; MmsResult boundResult = MMS_OK;
+        if (plugins::TryDeleteUnusedBoundKeys(app, boundDeleted, boundResult)) {
+            if (boundResult == MMS_OK) {
+                app->state.enterKeyState = 1;
+                char text[0x100];
+                sprintf_s(text, sizeof text, app->EnglishUI() ? "%u point was deleted." : kFmtPointsDeletedJp, boundDeleted);
+                LegacyUiMessageBoxA(MainHwnd(app), text, app->EnglishUI() ? "delete unused frame" : kCaptionDelUnusedJp, MB_TOPMOST);
+            } else if (boundResult != MMS_E_BUSY) {
+                const wchar_t* message[] = {L"不要フレームを削除できませんでした。データは変更されていません。",
+                    L"Unused frames could not be deleted. No data was changed.", L"无法删除多余帧，数据未改变。"};
+                MessageBoxW(MainHwnd(app), message[app->EnglishUI() <= 2 ? app->EnglishUI() : 1], L"MMS", MB_OK | MB_ICONERROR);
+            }
+            break;
+        }
+#endif
         app->state.dialogFlags[4] = 1;
         // clear the used flags of all three frame tables
         {
@@ -2017,6 +2068,9 @@ void CmdFileMenu(MMDApp* app, HWND hwnd, std::uint16_t id, std::uint16_t notify)
     // MB_TOPMOST, then PurgeMorphFrames(app, 3) and the shared purge tail.
     // ------------------------------------------------------------------
     case 226: {
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::TryPurgeBoundMorphCategory(app, 3)) break;
+#endif
         if (app->state.optflag[0] != 0) {  // 0x2F8
             break;
         }
@@ -2138,6 +2192,9 @@ void CmdFileMenu(MMDApp* app, HWND hwnd, std::uint16_t id, std::uint16_t notify)
     // 228 (0x004890A7): delete all eyes frames - PurgeMorphFrames(app, 2).
     // ------------------------------------------------------------------
     case 228: {
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::TryPurgeBoundMorphCategory(app, 2)) break;
+#endif
         if (app->state.optflag[0] != 0) {  // 0x2F8
             break;
         }
@@ -2477,6 +2534,9 @@ void CmdFileMenu(MMDApp* app, HWND hwnd, std::uint16_t id, std::uint16_t notify)
     // PurgeMorphFrames(app, 1).
     // ------------------------------------------------------------------
     case 231: {
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::TryPurgeBoundMorphCategory(app, 1)) break;
+#endif
         if (app->state.optflag[0] != 0) {  // 0x2F8
             break;
         }
@@ -2698,6 +2758,45 @@ void CmdFileMenu(MMDApp* app, HWND hwnd, std::uint16_t id, std::uint16_t notify)
         if (app->state.optflag[0] == 0) {  // 0x2F8
             break;
         }
+#if !MMD_ORIGINAL_PROFILE
+        if (auto* history = plugins::BoundNativePoseHistory(app)) {
+            static bool dialogActive = false;
+            if (dialogActive) break;
+            const auto result = plugins::Boundary([&]() -> MmsResult {
+                plugins::NativeCameraMultiplyPlan plan;
+                if (auto status = plan.Begin(*app)) return status;
+                const auto generation = plugins::BoundNativePoseGeneration(app);
+                struct DialogScope {
+                    bool& active;
+                    explicit DialogScope(bool& value) : active(value) { active = true; }
+                    ~DialogScope() { active = false; }
+                } scope(dialogActive);
+                CameraMultiplySession session{app, &plan};
+                app->state.enterKeyState = 1;
+                const auto response = UiDialogBoxParamA(static_cast<HINSTANCE>(app->HInstance()),
+                    MAKEINTRESOURCEA(app->EnglishUI() != 0 ? 0x291 : 0x26F), MainHwnd(app),
+                    CameraFrameMultiplyDlgProc, reinterpret_cast<LPARAM>(&session));
+                if (response == -1) return MMS_E_FAILED;
+                if (response != 1) return MMS_OK;
+                if (plugins::BoundNativePoseHistory(app) != history ||
+                    plugins::BoundNativePoseGeneration(app) != generation) return MMS_E_STALE;
+                std::shared_ptr<plugins::HistoryChange> change;
+                if (auto status = plan.Take(change)) return status;
+                if (!change) return MMS_OK;
+                std::unique_ptr<plugins::SharedHistory::NativeTransaction> transaction;
+                if (auto status = history->PrepareNative("Multiply camera keyframes", std::move(change), transaction,
+                    plugins::SharedHistory::NativeIntent::ExplicitCommit)) return status;
+                if (auto status = history->CommitNative(std::move(transaction))) return status;
+                bake::ScopedUiInputGate gate;
+                plugins::PublishBoundPoseEdit(*app, *history, false);
+                plugins::RefreshBoundGlobalReadout(*app);
+                curve_editor::NotifyOwnedChanged(app->Hwnd());
+                return MMS_OK;
+            });
+            if (result != MMS_OK) runtime_log::Write("PLUGIN_ABI camera multiply refused: %d", result);
+            break;
+        }
+#endif
         app->state.enterKeyState = 1;
         UiDialogBoxParamA(
             static_cast<HINSTANCE>(app->HInstance()),

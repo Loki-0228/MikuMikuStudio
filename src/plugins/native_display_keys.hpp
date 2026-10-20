@@ -12,6 +12,8 @@ struct ModelPasteSource;
 class DisplayKeyDeletion : public HistoryChange {
 public:
     // Re-evaluate at the current playhead without writing live selectors.
+    // A private deletion's first forward target preserves live drafts and is
+    // identical to its display publication; undo/redo sample registered keys.
     // Failure leaves out unchanged. Other selector fields retain live values.
     virtual MmsResult TargetSelectors(bool forward,
         std::vector<mdl::BoneOrderEntry>& out) const noexcept = 0;
@@ -26,9 +28,12 @@ public:
 // Planning and the first Prepare share one serialized editing scope. The
 // record retains the model owner. The app must outlive records and candidates.
 // Resident model resources are budgeted by the caller, separately from payload.
+// A nonnull private slot set preserves current visibility, IK and complete
+// external-parent selectors only on first forward publication. It never stages
+// live marks; later undo/redo retain the normal current-time evaluation rules.
 MmsResult PlanDisplayKeyDeletion(MMDApp&, unsigned modelSlot,
     std::shared_ptr<HistoryChange>& out, bool allowOtherMarks = false,
-    bool evaluateBones = true) noexcept;
+    bool evaluateBones = true, const std::vector<unsigned>* selectedSlots = nullptr) noexcept;
 // Private display-family range plan. The aggregate owns final selection marks
 // and shared cursor/max-frame publication and supplies bone reevaluation.
 // Name mapping matches the native registrar, including duplicate/empty names

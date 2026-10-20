@@ -13,6 +13,8 @@
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/accessory_layout.hpp"
 #include "mikumikustudio/wave_audio_context.hpp"
+#include "mikumikustudio/deformed_mesh_capture.hpp"
+#include "mikumikustudio/mf_h264_recorder.hpp"
 #include "../src/model/vmd_read_guard.hpp"
 #include "../src/io/pmm_io_common.hpp"
 
@@ -63,7 +65,8 @@ struct Files {
         Check(out.good(), "write fixture");
     }
 };
-void Load(Files& files, const Bytes& bytes, bool accepted) {
+void Load(Files& files, const Bytes& bytes, bool accepted,
+          const wchar_t* expectedName = nullptr, const wchar_t* expectedBone = nullptr) {
     files.Write(bytes);
     auto model = std::make_unique<mdl::ModelRecord>();
     auto renderer = std::make_unique<D3DRenderer>();
@@ -71,7 +74,15 @@ void Load(Files& files, const Bytes& bytes, bool accepted) {
     auto* raw = reinterpret_cast<unsigned char*>(model.get());
     ModelInitDefaults(raw);
     const bool loaded = ModelLoadPMD(raw, nullptr, files.path.c_str(), renderer.get(), 1, 0, 1, nullptr, paths);
+    if (loaded != accepted) std::fprintf(stderr, "model import mismatch: %zu bytes, expected=%d actual=%d name=%ls bone=%ls\n",
+        bytes.size(), accepted, loaded, expectedName ? expectedName : L"", expectedBone ? expectedBone : L"");
     Check(loaded == accepted, "production model loader accepts/rejects at import");
+    if (loaded && expectedName) Check(model->pmxTextBuffers[0] &&
+        std::wcscmp(model->pmxTextBuffers[0], expectedName) == 0,
+        "accepted PMX keeps the complete source model name");
+    if (loaded && expectedBone) Check(model->boneCount && model->boneTable[0].jpText &&
+        std::wcscmp(model->boneTable[0].jpText, expectedBone) == 0,
+        "accepted PMX keeps the complete source bone name");
     ModelDispose(raw);
     if (!accepted) {
         auto app = std::make_unique<MMDApp>();
@@ -98,7 +109,7 @@ void Pmd(Files& files) {
     Check(bytes.size() > 300 && bytes[0] == 'P', "create PMD with production writer");
     Load(files, bytes, true);
     bytes[7] = 0x82; bytes[8] = 0;
-    Load(files, bytes, !build_profile::original);
+    Load(files, bytes, true);
 }
 void MotionNames(Files& files) {
     Bytes bytes(50, 0);
@@ -114,6 +125,23 @@ void MotionNames(Files& files) {
     check(true); bytes[bone] = 0x82; bytes[bone + 1] = 0; check(false);
     bytes[bone] = 'A'; bytes[bone + 1] = 0;
     bytes[30] = 0xef; bytes[31] = 0xbb; bytes[32] = 0xbf; check(false);
+}
+void ModelPaths(Files& files) {
+    const auto original = files.path;
+    for (const std::wstring& filename : {std::wstring(L"model-\U0001f31f.pmx"), std::wstring(100, L'あ') + L".pmx"}) {
+        files.path = files.directory / filename;
+        Check(!original_import::Text(files.path.c_str()), "fixture exceeds original CP932 path representation");
+        Load(files, Pmx(L"model", L"bone"), true, L"model", L"bone");
+        fs::remove(files.path);
+    }
+    files.path = original;
+    auto model = std::make_unique<mdl::ModelRecord>();
+    auto renderer = std::make_unique<D3DRenderer>();
+    PathResolutionWorkspace paths{};
+    std::wstring tooLong(256, L'A');
+    Check(!ModelLoadPMD(reinterpret_cast<unsigned char*>(model.get()), nullptr, tooLong.c_str(),
+        renderer.get(), 1, 0, 1, nullptr, paths) && GetLastError() == ERROR_FILENAME_EXCED_RANGE,
+        "path beyond the host buffer fails cleanly before CRT copying");
 }
 void ProjectNames(Files& files) {
     for (const Bytes& bytes : {Bytes{'o','k',0}, Bytes{0x82,0,0}}) {
@@ -198,22 +226,49 @@ void AtomicMotionImport(Files& files) {
         !model->undoDirty && !model->undoState[0], "invalid late VMD name leaves keys and undo state unchanged");
     g_Block = previous;
 }
+void OriginalProviderInterfaces() {
+#if MMD_ORIGINAL_PROFILE
+    struct Observer final : deformed_mesh_capture::DrawObserver {
+        void Indexed(IDirect3DDevice9*, D3DPRIMITIVETYPE, INT, UINT, UINT, UINT, UINT, const void*, unsigned) noexcept override {}
+        void Unsupported(IDirect3DDevice9*, D3DPRIMITIVETYPE, UINT) noexcept override {}
+    } observer;
+    auto app = std::make_unique<MMDApp>();
+    std::memset(&app->state, 0, sizeof app->state);
+    std::string error;
+    deformed_mesh_capture::ObserverSilenceScope outer;
+    {
+        deformed_mesh_capture::ObserverSilenceScope inner;
+        Check(!deformed_mesh_capture::Observe(*app, &observer, error) && !error.empty(),
+            "original draw observer entry reports unavailable without attaching hooks or a renderer");
+    }
+    deformed_mesh_capture::StopObserving(&observer);
+    deformed_mesh_capture::StopObserving(nullptr);
+    ResetH264HardwareEncoderState();
+    Check(EnumerateH264Encoders().empty(), "original encoder reset remains an inert lifecycle entry without Media Foundation");
+#endif
+}
 }
 int main() {
     Files files;
     Load(files, Pmx(L"初音ミク", L"センター"), true);
     Load(files, Pmx(L"model", L"abcdefghijklmno"), true);
-    Load(files, Pmx(L"model", L"abcdefghijklmnop"), !build_profile::original);
+    Load(files, Pmx(L"model", L"abcdefghijklmnop"), true, L"model", L"abcdefghijklmnop");
+    Load(files, Pmx(L"model", L"abcdefghijklmnopqrst"), true, L"model", L"abcdefghijklmnopqrst");
+    Load(files, Pmx(L"abcdefghijklmnopqrstu", L"bone"), true, L"abcdefghijklmnopqrstu", L"bone");
     Load(files, Pmx(L"model", L"あいうえおかきA"), true);
-    Load(files, Pmx(L"model", L"あいうえおかきく"), !build_profile::original);
-    Load(files, Pmx(L"\U0001f31f", L"bone"), !build_profile::original);
-    Load(files, Pmx(L"model", L"\U0001f31f"), !build_profile::original);
-    Load(files, Pmx(L"model", L"bone", L"\U0001f31f.png"), !build_profile::original);
+    Load(files, Pmx(L"model", L"あいうえおかきく"), true, L"model", L"あいうえおかきく");
+    Load(files, Pmx(L"\U0001f31f", L"bone"), true, L"\U0001f31f", L"bone");
+    Load(files, Pmx(L"model", L"\U0001f31f"), true, L"model", L"\U0001f31f");
+    Load(files, Pmx(L"model", L"bone", L"\U0001f31f.png"), true);
+    auto truncated = Pmx(L"model", L"bone"); truncated.resize(23); // incomplete model-name text
+    Load(files, truncated, false);
     Pmd(files);
+    ModelPaths(files);
     MotionNames(files);
     ProjectNames(files);
     Editor();
     References();
     AtomicMotionImport(files);
+    OriginalProviderInterfaces();
     std::printf("original_import_tests: %d checks, profile=%s\n", checks, build_profile::original ? "minimal" : "full");
 }

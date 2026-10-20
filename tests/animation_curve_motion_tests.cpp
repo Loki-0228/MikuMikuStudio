@@ -2,6 +2,7 @@
 // (src/animation/animation_curve_motion.cpp).  Pure CPU: no GUI, no GPU and no
 // window; the file test only creates a temporary directory.
 #include "mikumikustudio/animation_curve_motion.hpp"
+#include "curve_motion_v2_fixture.hpp"
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -14,6 +15,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -432,7 +434,8 @@ bool ParseBody(const std::vector<std::uint8_t>& bytes, BodyCounts& counts, std::
 constexpr char kFooterMagic[8] = {'M', 'M', 'V', 'C', 'U', 'R', 'V', '1'};
 
 std::vector<std::uint8_t> WithoutTail(const std::vector<std::uint8_t>& bytes) {
-    if (bytes.size() < 40 || std::memcmp(bytes.data() + bytes.size() - 40, kFooterMagic, 8) != 0) return bytes;
+    if (bytes.size() < 40 || (std::memcmp(bytes.data() + bytes.size() - 40, kFooterMagic, 8) != 0&&
+                            std::memcmp(bytes.data() + bytes.size() - 40, "MMVCURV2", 8) != 0)) return bytes;
     std::uint64_t prefix = 0;
     std::memcpy(&prefix, bytes.data() + bytes.size() - 32, 8);
     return std::vector<std::uint8_t>(bytes.begin(), bytes.begin() + std::ptrdiff_t(prefix));
@@ -1135,6 +1138,7 @@ void TestDefaultInterpolationBytes() {
 
 #include "curve_motion_camera_compat_checks.inc"
 #include "curve_motion_native_controls_checks.inc"
+#include "curve_motion_v2_checks.inc"
 
 }  // namespace
 
@@ -1157,6 +1161,7 @@ int main() {
     TestCameraCompatibilityMatrix();
     TestLegacyCameraLayoutAndBoundaries();
     TestNativeRawControlCompatibility();
+    TestNativeTimingV2Transport();
     if (g_failures == 0) {
         std::printf("animation_curve_motion_tests: all checks passed\n");
         return 0;

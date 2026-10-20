@@ -36,6 +36,7 @@ namespace {
 const std::wstring path=L"D:\\MMS only\\MikuMikuDance.exe";
 struct Database {
     bool exists=false, present=false, failSave=false, mismatched=false;
+    bool legacy=false;
     bool appFound=true, globalPresent=false, basePresent=false;
     U32 value=1, apps=1, predefined=0;
     U32 globalValue=1, baseValue=1, location=0, valuePredefined=0;
@@ -50,14 +51,14 @@ int __cdecl Destroy(Handle){++db.destroys;return 0;}
 int __cdecl Load(Handle){return 0;}
 int __cdecl Save(Handle){++db.saves;return db.failSave?-137:0;}
 int __cdecl Find(Handle,const wchar_t* name,Handle* p){
-    Check(name==ProfileName(path),"only own path-hashed profile requested");
-    *p=target;return db.exists?0:kProfileNotFound;
+    Check(name==ProfileName(path)||name==ProfileName(path,true),"only own path-hashed profiles requested");
+    *p=target;return db.exists&&name==ProfileName(path,db.legacy)?0:kProfileNotFound;
 }
 int __cdecl CreateProfile(Handle,Profile* p,Handle* h){
     Check(p->name==ProfileName(path),"new profile has scoped name");db.exists=true;*h=target;return 0;
 }
 int __cdecl Info(Handle,Handle h,Profile* p){
-    Check(h==target,"never global profile");wcscpy_s(p->name,ProfileName(path).c_str());
+    Check(h==target,"never global profile");wcscpy_s(p->name,ProfileName(path,db.legacy).c_str());
     p->apps=db.apps;p->predefined=db.predefined;return 0;
 }
 int __cdecl Enum(Handle,Handle,U32 first,U32* count,Application* p){
@@ -143,6 +144,18 @@ int main(int argc,char** argv){
     Check(Execute(api,path,&off,state)&&!state.enabled&&db.removes==1&&db.saves==2,"restore preserves profile and unrelated settings");
     Check(Execute(api,path,nullptr,state)&&!state.enabled&&db.saves==2,"post-uninstall query selects install again");
     Check(Execute(api,path,&off,state)&&db.removes==1&&db.saves==2,"repeated uninstall is idempotent");
+    db.legacy=true;db.present=true;db.value=0;
+    Check(Execute(api,path,nullptr,state)&&state.enabled&&db.saves==2,"legacy installation remains discoverable without writes");
+    Check(Execute(api,path,&on,state)&&db.saves==2,"legacy installation is reused without creating a conflicting application");
+    Check(Execute(api,path,&off,state)&&!state.enabled&&db.removes==2&&db.saves==3,"legacy uninstall removes and persists the old override");
+    Check(Execute(api,path,&on,state)&&state.enabled&&db.saves==4,"legacy profile can be enabled again");
+    db.apps=2;
+    Check(!Execute(api,path,&off,state)&&db.saves==4,"shared legacy profile is never changed");
+    db.apps=1;db.predefined=1;
+    Check(!Execute(api,path,&off,state)&&db.saves==4,"predefined legacy profile is never changed");
+    db.predefined=0;db.mismatched=true;
+    Check(!Execute(api,path,&off,state)&&db.saves==4,"legacy profile for another executable is never changed");
+    db.legacy=false;db.mismatched=false;db.saves=2;db.present=false;
     db.apps=2;state={};Check(!Execute(api,path,&on,state)&&db.saves==2,"shared profile is never changed");
     db.apps=1;db.predefined=1;Check(!Execute(api,path,&on,state)&&db.saves==2,"predefined profile is never changed");
     db.predefined=0;db.mismatched=true;Check(!Execute(api,path,&on,state)&&db.saves==2,"wrong application is never changed");

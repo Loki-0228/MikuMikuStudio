@@ -30,6 +30,9 @@ bool StartBuiltInH264Recording(DShowRecorder* recorder, const wchar_t* path,
                                std::uint32_t averageBitrate,
                                void* ownerWindow,
                                unsigned char uiLanguage);
+// An explicit re-selection of the system encoder allows a guarded hardware
+// retry after a driver failure disabled it for this process.
+void ResetH264HardwareEncoderState();
 bool IsBuiltInH264Recording(const DShowRecorder* recorder);
 bool WriteBuiltInH264Frame(DShowRecorder* recorder, const void* bgra,
                            std::size_t bytes);

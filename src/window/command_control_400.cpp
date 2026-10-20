@@ -7,6 +7,7 @@
 #include "mikumikustudio/display_capacity.hpp"
 #include "mikumikustudio/key_pool.hpp"
 #include "mikumikustudio/ui_translation.hpp"
+#include "mikumikustudio/model_order_projection.hpp"
 // ===========================================================================
 // CommandDispatch family: control notifications 400..449 (0x47E8A0)
 // ===========================================================================
@@ -2773,15 +2774,16 @@ static void Cmd400_DeleteModel(MMDApp* app, HWND hwnd) {
     const LRESULT sel =
         SendMessageA(GetDlgItem(hwnd, panel::kMainComboModel), CB_GETCURSEL, 0, 0);
     app->state.enterKeyState = 1;
-    std::int32_t found = -1;
-    // 槽查找环：x64 0x7FF7CB460A73 mov r13d,0FFh（界 255）
-    for (std::int32_t i = 0; i < kModelSlotCount; ++i) {
-        unsigned char* m = app->ModelSlot(i);
-        if (m != nullptr && mdl::Mdl(m)->comboSelIndex == sel) {
-            found = i;
-            break;
-        }
-    }
+    const auto order = model_order::Project<kModelSlotCount>([&](std::size_t slot) noexcept {
+        const auto* model = app->ModelSlot(static_cast<int>(slot));
+        return model ? int(mdl::Mdl(model)->comboSelIndex) : -1;
+    });
+    // The legacy destructive path decrements stored ranks. Until the user
+    // explicitly repairs them it cannot safely remove a damaged permutation.
+    if (!order.originalValid || sel > kModelSlotCount) return;
+    const auto combo = GetDlgItem(hwnd, panel::kMainComboModel);
+    const int found = model_order::Resolve(order, static_cast<int>(sel), SendMessageW(combo, CB_GETCOUNT, 0, 0),
+        [&](std::size_t row) noexcept { return SendMessageW(combo, CB_GETITEMDATA, row, 0); });
     if (found < 0) {
         return;  // was: break (switch exit)
     }

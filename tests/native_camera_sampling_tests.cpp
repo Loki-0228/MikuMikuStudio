@@ -7,6 +7,7 @@
 #include "mikumikustudio/key_pool.hpp"
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
+#include "curve_motion_v2_fixture.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "../src/plugins/native_frame_lines.hpp"
 #endif
@@ -107,14 +108,18 @@ void MixedExport(){
     source[1].sample={};source[1].nativeControls.clear();source[1].controlGeometry.clear();
     source[1].track.keys[0].outSlope=1.25;
     Channels output;Check(curve_host::PrepareMotionChannels(source,output,error),"prepare mixed native and authored scalar camera export");
-    Check(output[0].track.keys.size()==81&&!output[0].sample,"mixed export samples actual native timing instead of scalar canvas handles");
+    Check(output[0].track.keys.size()==3&&output[0].sample,"mixed export keeps canonical sparse timing for the V2 author tail");
     Check(output[1].track.keys.size()==source[1].track.keys.size()&&output[1].track.keys[0].outSlope==1.25,
         "mixed export retains the authored Free curve rather than replacing it with native timing");
-    for(int frame=0;frame<=80;++frame)Check(ac::Evaluate(output[0].track,frame).value==Value(source[0],frame),"mixed export integer proxy matches canonical native sampling exactly");
+    auto motion=curve_motion::CaptureChannels(curve_motion::Kind::Camera,output);std::vector<std::uint8_t> bytes;std::string detail;
+    Check(!motion.nativeCamera&&!motion.nativeTiming.empty()&&curve_motion::Encode(motion,bytes,detail),"mixed canonical camera produces explicit V2 timing");
+    curve_motion::Motion decoded;Check(curve_motion::Decode(bytes.data(),bytes.size(),curve_motion::Kind::Camera,decoded,detail),"mixed native/Free V2 export decodes");
+    for(int tick=0;tick<=320;++tick)Check(curve_motion::Evaluate(decoded,"x",tick*.25).value==Value(source[0],tick*.25),"mixed export retains fractional canonical native sampling exactly");
     auto opaque=source;opaque[0].sample=[](const curve_editor::Channel&,double frame)->ac::Sample{return {frame*.125+3.0,.125};};
     Check(curve_host::PrepareMotionChannels(opaque,output,error),"prepare a camera with an opaque non-native sampler");
     for(int frame=0;frame<=80;++frame)Check(ac::Evaluate(output[0].track,frame).value==3+frame*.125,"opaque callback is sampled instead of being mistaken for raw native metadata");
 }
+#include "curve_motion_v2_host_checks.inc"
 void ReconciledRoot(){
     Fixture f({100,10,20,115});auto source=f.Read();std::wstring error;
     Check(curve_host::Write(*f.app,curve_host::Kind::Camera,0,source,error),"seed an authored camera without changing native controls");
@@ -259,7 +264,7 @@ int main(){
     for(const auto controls:{std::array<unsigned char,4>{100,10,20,115},{0,127,127,0},{20,20,107,107},{57,0,44,127}}){
         NativeExport(controls);Bake(controls,0,80,1);Bake(controls,7,29,2);Bake(controls,1,1,1);
     }
-    MixedExport();ReconciledRoot();PreparationFailures();
+    MixedExport();ReconciledRoot();PreparationFailures();V2HostRoundTrip();
 #if !MMD_ORIGINAL_PROFILE
     DeletedRootExport();
 #endif

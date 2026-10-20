@@ -1,4 +1,5 @@
 #include "native_model_keys.hpp"
+#include "native_key_selection.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "native_bone_registration.hpp"
 #include "native_display_keys.hpp"
@@ -7,6 +8,7 @@
 #include "native_model_paste.hpp"
 #include "scene_object_history.hpp"
 #include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/bone_curve.hpp"
 #include "mikumikustudio/clipboard_layout.hpp"
 #include "mikumikustudio/frame_limits.hpp"
 #include "mikumikustudio/key_pool.hpp"
@@ -315,9 +317,45 @@ template<class Key> bool Marked(const Key* keys, std::size_t count) noexcept {
     for (std::size_t index = 0; index < count; ++index) if (keys[index].allocated) return true;
     return false;
 }
+template<class Key> std::vector<std::vector<unsigned>> KeyTracks(const Key* keys, std::size_t capacity, unsigned roots) {
+    if (roots > capacity || (roots && !keys)) throw std::invalid_argument("missing model key roots");
+    std::vector<std::vector<unsigned>> tracks(roots);
+    std::vector<bool> visited(capacity);
+    for (unsigned root = 0; root < roots; ++root) {
+        unsigned current = root, previous = 0, frame = 0;
+        for (;;) {
+            if (current >= capacity || visited[current] || (!tracks[root].empty() && current < roots))
+                throw std::invalid_argument("invalid or shared model key chain");
+            const auto& key = keys[current];
+            if (key.next >= capacity || key.previous >= capacity || key.frame > unsigned(frame_limits::maximum) ||
+                (tracks[root].empty() ? key.frame != 0 : key.previous != previous || key.frame <= frame))
+                throw std::invalid_argument("invalid model key frame or link");
+            visited[current] = true; tracks[root].push_back(current);
+            if (!key.next) break;
+            previous = current; frame = key.frame; current = key.next;
+        }
+    }
+    return tracks;
+}
+bool ConstantCurveRange(const animation_curve::Track& track, unsigned first, unsigned last) {
+    std::string error;
+    if (track.keys.empty() || !animation_curve::Validate(track, error)) return false;
+    const auto value = animation_curve::Evaluate(track, first).value;
+    if (!std::isfinite(value) || animation_curve::Evaluate(track, last).value != value) return false;
+    for (std::size_t i = 1; i < track.keys.size(); ++i) {
+        const auto& a = track.keys[i - 1]; const auto& b = track.keys[i];
+        if (b.frame <= int(first) || a.frame >= int(last)) continue;
+        // On any nonempty open subinterval a constant polynomial has all
+        // value control points equal. Endpoint samples alone miss overshoot.
+        if (a.value != value || b.value != value) return false;
+        if (!track.discrete && b.interpolation == animation_curve::Interpolation::Bezier &&
+            ((a.outWeight != 0 && a.outSlope != 0) || (b.inWeight != 0 && b.inSlope != 0))) return false;
+    }
+    return true;
+}
 }
 MmsResult PlanModelKeyDeletion(MMDApp& app, unsigned slot, bool automatic,
-    std::shared_ptr<HistoryChange>& out, bool fallback) noexcept {
+    std::shared_ptr<HistoryChange>& out, bool fallback, const ModelKeySelection* privateSelection) noexcept {
     out.reset();
     if (slot >= kModelSlotCount || !app.ModelSlot(slot) || app.PlaybackActive() || app.FrameStepPlayback() ||
         app.state.recordPlaybackStartPending || app.SceneMutationInProgress()) return MMS_E_NOT_READY;
@@ -327,20 +365,96 @@ MmsResult PlanModelKeyDeletion(MMDApp& app, unsigned slot, bool automatic,
             (model.morphKeys && !mdl::MorphKeyPoolIdentity(model.morphKeys)) ||
             (model.displayKeys && !mdl::KeyPoolIdentity(model.displayKeys))) return MMS_E_NOT_READY;
         Layout check(model);check.ValidatePeers(app,slot);
-        const bool bones = Marked(model.boneKeys, mdl::BoneKeyCapacity(model.boneKeys));
-        const bool morphs = Marked(model.morphKeys, mdl::MorphKeyCapacity(model.morphKeys));
-        const bool displays = Marked(model.displayKeys, mdl::KeyPoolCapacity(model.displayKeys));
+        if (privateSelection && (!ValidKeySelection(privateSelection->bones, mdl::BoneKeyCapacity(model.boneKeys)) ||
+            !ValidKeySelection(privateSelection->morphs, mdl::MorphKeyCapacity(model.morphKeys)) ||
+            !ValidKeySelection(privateSelection->displays, mdl::KeyPoolCapacity(model.displayKeys)))) return MMS_E_ARGUMENT;
+        const bool bones = privateSelection ? !privateSelection->bones.empty() : Marked(model.boneKeys, mdl::BoneKeyCapacity(model.boneKeys));
+        const bool morphs = privateSelection ? !privateSelection->morphs.empty() : Marked(model.morphKeys, mdl::MorphKeyCapacity(model.morphKeys));
+        const bool displays = privateSelection ? !privateSelection->displays.empty() : Marked(model.displayKeys, mdl::KeyPoolCapacity(model.displayKeys));
+        if (privateSelection) fallback = false;
         auto change = std::make_shared<ModelKeyChange>(app, slot);
         std::shared_ptr<DisplayKeyDeletion> display;
         if (displays) {
-            if (auto result = PlanDisplayKeyDeletion(app, slot, change->parts[2], true, false)) return result;
+            if (auto result = PlanDisplayKeyDeletion(app, slot, change->parts[2], true, false,
+                privateSelection ? &privateSelection->displays : nullptr)) return result;
             display = std::static_pointer_cast<DisplayKeyDeletion>(change->parts[2]);
         }
         if (bones || (model.boneCount && display) || (fallback && !morphs && !displays && model.boneCount)) {
-            if (auto result = PlanBoneKeyDeletion(app, slot, automatic, change->parts[0], fallback, true, display)) return result;
+            if (auto result = PlanBoneKeyDeletion(app, slot, automatic, change->parts[0], fallback, true, display,
+                privateSelection ? &privateSelection->bones : nullptr)) return result;
         }
-        if (morphs) if (auto result = PlanMorphKeyDeletion(app, slot, change->parts[1], true)) return result;
+        if (morphs) if (auto result = PlanMorphKeyDeletion(app, slot, change->parts[1], true,
+            privateSelection ? &privateSelection->morphs : nullptr)) return result;
+        if (privateSelection && (bones || morphs || displays)) {
+            auto metadata = std::make_shared<RangeMetadata>(app, slot);
+            metadata->requireInitialMarks = true;
+            change->parts[3] = std::move(metadata);
+        }
         for (const auto& part : change->parts) if (part) { out = std::move(change); break; }
+        return MMS_OK;
+    });
+}
+MmsResult PlanUnusedModelKeyDeletion(MMDApp& app, unsigned slot, bool automatic,
+    std::shared_ptr<HistoryChange>& out, std::uint32_t& deleted) noexcept {
+    out.reset(); deleted = 0;
+    if (slot >= kModelSlotCount || app.SelectedModelSlot() != slot || app.CameraMode() || !app.ModelSlot(slot) ||
+        app.PlaybackActive() || app.FrameStepPlayback() || app.state.recordPlaybackStartPending || app.SceneMutationInProgress())
+        return MMS_E_NOT_READY;
+    return Boundary([&]() -> MmsResult {
+        const auto* raw = app.ModelSlot(slot); const auto& m = *mdl::Mdl(raw);
+        if ((m.boneKeys && !mdl::BoneKeyPoolIdentity(m.boneKeys)) ||
+            (m.morphKeys && !mdl::MorphKeyPoolIdentity(m.morphKeys)) ||
+            (m.displayKeys && !mdl::KeyPoolIdentity(m.displayKeys)) || (m.boneCount && !m.boneTable)) return MMS_E_NOT_READY;
+        Layout layout(m); layout.ValidatePeers(app, slot);
+        const auto bones = KeyTracks(m.boneKeys, mdl::BoneKeyCapacity(m.boneKeys), m.boneCount);
+        const auto morphs = KeyTracks(m.morphKeys, mdl::MorphKeyCapacity(m.morphKeys), m.morphCount);
+        const auto displays = KeyTracks(m.displayKeys, mdl::KeyPoolCapacity(m.displayKeys), 1);
+        ModelKeySelection selection;
+        for (unsigned bone = 0; bone < m.boneCount; ++bone) {
+            if (m.boneTable[bone].type == mdl::BoneType::InertTip || m.boneTable[bone].type == mdl::BoneType::Effector) continue;
+            bone_curve::Tracks authored; const bool hasAuthoring = bone_curve::ReadDetached(raw, int(bone), authored);
+            const auto& chain = bones[bone];
+            for (std::size_t i = 1; i + 1 < chain.size(); ++i) {
+                const auto& p = m.boneKeys[chain[i - 1]]; const auto& k = m.boneKeys[chain[i]]; const auto& n = m.boneKeys[chain[i + 1]];
+                bool same = k.physicsDisabled == p.physicsDisabled && k.physicsDisabled == n.physicsDisabled;
+                for (unsigned lane = 0; lane < 3; ++lane) same = same && k.position[lane] == p.position[lane] && k.position[lane] == n.position[lane];
+                for (unsigned lane = 0; lane < 4; ++lane) same = same && k.rotation[lane] == p.rotation[lane] && k.rotation[lane] == n.rotation[lane];
+                const auto scale = bone_scale::Key(raw, int(chain[i]));
+                same = same && scale.v == bone_scale::Key(raw, int(chain[i - 1])).v && scale.v == bone_scale::Key(raw, int(chain[i + 1])).v;
+                if (same && hasAuthoring) for (const auto& track : authored) same = same && ConstantCurveRange(track, p.frame, n.frame);
+                if (same) selection.bones.push_back(chain[i]);
+            }
+        }
+        std::vector<int> morphIds;
+        for (unsigned morph = 0; morph < m.morphCount; ++morph) if (morphs[morph].size() > 2) morphIds.push_back(int(morph));
+        std::vector<animation_curve::Track> morphTracks; std::wstring error;
+        if (!morphIds.empty() && !morph_curve::ReadManyDetached(app, morphIds, morphTracks, error)) return MMS_E_ARGUMENT;
+        for (std::size_t index = 0; index < morphIds.size(); ++index) {
+            const auto& chain = morphs[unsigned(morphIds[index])];
+            for (std::size_t i = 1; i + 1 < chain.size(); ++i) {
+                const auto& p = m.morphKeys[chain[i - 1]]; const auto& k = m.morphKeys[chain[i]]; const auto& n = m.morphKeys[chain[i + 1]];
+                if (k.value == p.value && k.value == n.value && ConstantCurveRange(morphTracks[index], p.frame, n.frame))
+                    selection.morphs.push_back(chain[i]);
+            }
+        }
+        const auto& chain = displays[0];
+        for (std::size_t i = 1; i + 1 < chain.size(); ++i) {
+            const auto& p = m.displayKeys[chain[i - 1]]; const auto& k = m.displayKeys[chain[i]]; const auto& n = m.displayKeys[chain[i + 1]];
+            if ((m.ikChainCount && (!p.ikStates || !k.ikStates || !n.ikStates)) ||
+                (m.boneOrderCount && (!p.selectorStates || !k.selectorStates || !n.selectorStates))) return MMS_E_ARGUMENT;
+            bool same = k.visible == p.visible && k.visible == n.visible;
+            for (unsigned j = 0; j < m.ikChainCount; ++j) same = same && k.ikStates[j] == p.ikStates[j] && k.ikStates[j] == n.ikStates[j];
+            for (unsigned j = 0; j < m.boneOrderCount; ++j) same = same &&
+                k.selectorStates[j].modelIndex == p.selectorStates[j].modelIndex && k.selectorStates[j].boneIndex == p.selectorStates[j].boneIndex &&
+                k.selectorStates[j].modelIndex == n.selectorStates[j].modelIndex && k.selectorStates[j].boneIndex == n.selectorStates[j].boneIndex;
+            if (same) selection.displays.push_back(chain[i]);
+        }
+        for (auto* selected : {&selection.bones, &selection.morphs, &selection.displays}) std::sort(selected->begin(), selected->end());
+        const auto count = std::uint64_t(selection.bones.size()) + selection.morphs.size() + selection.displays.size();
+        if (count > UINT32_MAX) return MMS_E_ARGUMENT;
+        if (!count) return MMS_OK;
+        if (auto result = PlanModelKeyDeletion(app, slot, automatic, out, false, &selection)) return result;
+        deleted = out ? std::uint32_t(count) : 0;
         return MMS_OK;
     });
 }

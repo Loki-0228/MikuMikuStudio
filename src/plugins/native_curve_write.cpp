@@ -122,7 +122,8 @@ bool EquivalentNativeFreeze(const curve_editor::Channel& before,const curve_edit
         if(at==before.track.keys.end()||!index||at->frame!=interval.last||(at-1)->frame!=interval.first||
            index>=before.nativeControls.size()||index>=before.controlGeometry.size())return false;
         const auto& a=*(at-1);const auto& b=*at;
-        if(interval.sourceFirst!=a.frame||interval.sourceLast!=b.frame||interval.sampleFirst!=a.frame||interval.sampleLast!=b.frame||
+        if(!interval.oneFrameHold||interval.transportTiming||
+           interval.sourceFirst!=a.frame||interval.sourceLast!=b.frame||interval.sampleFirst!=a.frame||interval.sampleLast!=b.frame||
            interval.sourceValueFirst!=a.value||interval.sourceValueLast!=b.value||interval.controls!=before.nativeControls[index]||
            before.controlGeometry[index]!=std::array<double,4>{a.outWeight,a.outSlope,b.inWeight,b.inSlope}||
            interval.geometry!=std::array<double,6>{a.value,a.outWeight,a.outSlope,b.value,b.inWeight,b.inSlope})return false;

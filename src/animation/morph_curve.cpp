@@ -1946,7 +1946,7 @@ std::uint64_t LayerBytes(const State& state)noexcept{
 template<class Map>void CopyLayerEntry(Map& target,const Map& source,int morph){const auto at=source.find(morph);if(at==source.end())target.erase(morph);else target[morph]=at->second;}
 }
 struct AuthoredReplacement::Impl{
-    unsigned char* model;Identity identity;bool beforePresent=false,published=false,forwardState=false;std::uint64_t generation=1,initialDigest=0;
+    unsigned char* model;Identity identity;bool beforePresent=false,published=false,forwardState=false,erasing=false,erasureChanged=false;std::uint64_t generation=1,initialDigest=0;
     State before,after;MorphPool target;std::vector<unsigned> changed;
     Impl(unsigned char* value,const NativeKeyView& future,const std::uint8_t* block,std::size_t size,int offset,const std::vector<int>* targets)
         :model(value),identity(IdentityOf(value)){
@@ -1983,6 +1983,32 @@ struct AuthoredReplacement::Impl{
             SetInstalled(after,match,merged,chain);installed.insert(unsigned(match));
         }
         for(auto morph:installed)if(!OwnedAuthorEqual(before,after,morph))changed.push_back(morph);
+    }
+    struct EraseTag {};
+    Impl(unsigned char* value,const std::vector<unsigned>& morphs,EraseTag):model(value),identity(IdentityOf(value)){
+        if(!model||!identity.keyPoolIdentity||!identity.morphs||!identity.morphCount||morphs.empty())
+            throw std::invalid_argument("unowned morph curve erasure");
+        const auto& record=*mdl::Mdl(model);const auto capacity=mdl::MorphKeyCapacity(record);
+        target.assign(record.morphKeys,record.morphKeys+capacity);(void)ValidatedChains(target,record.morphCount);
+        const auto found=States().find(model);
+        if(found!=States().end()){
+            if(!Matches(found->second.identity,model))throw std::invalid_argument("stale morph curve layers");
+            beforePresent=true;before=found->second;initialDigest=LayersDigest(before);
+        }
+        after=before;after.identity=identity;erasing=true;std::set<unsigned> seen;
+        for(unsigned morph:morphs){
+            if(morph>=identity.morphCount||!seen.insert(morph).second)throw std::invalid_argument("invalid morph curve erasure");
+            const int index=int(morph);
+            // Clearing a channel performs no numeric conversion. Keep every
+            // pristine slope and handle in before, even when the old native
+            // float mirror cannot express its finite double control hull.
+            const auto removed=after.authored.erase(index)|after.effective.erase(index)|
+                after.mirror.erase(index)|after.observed.erase(index);
+            erasureChanged|=removed!=0;
+            // Absence is owned too: replay must refuse a foreign author added
+            // to a cleared channel instead of retaining it over a zero pool.
+            changed.push_back(morph);
+        }
     }
     Impl(unsigned char* value,const std::vector<ac::NamedTrack>& input):model(value),identity(IdentityOf(value)){
         if(!model||!identity.keyPoolIdentity||!identity.morphs||!identity.morphCount||input.empty())throw std::invalid_argument("unowned morph curve replacement");
@@ -2048,9 +2074,10 @@ struct AuthoredReplacement::Target::Impl{
         const auto found=States().find(source->model);const auto* now=found==States().end()?nullptr:&found->second;return now==previous&&(!now||LayersDigest(*now)==digest);}
 };
 AuthoredReplacement::AuthoredReplacement(unsigned char* model,const std::vector<ac::NamedTrack>& tracks):impl_(std::make_shared<Impl>(model,tracks)){}
+AuthoredReplacement AuthoredReplacement::Erase(unsigned char* model,const std::vector<unsigned>& morphs){return AuthoredReplacement(std::make_shared<Impl>(model,morphs,Impl::EraseTag{}));}
 AuthoredReplacement::AuthoredReplacement(std::shared_ptr<Impl> impl):impl_(std::move(impl)){}
 AuthoredReplacement::~AuthoredReplacement()=default;
-bool AuthoredReplacement::Changed()const noexcept{return !impl_->changed.empty();}
+bool AuthoredReplacement::Changed()const noexcept{return impl_->erasing?impl_->erasureChanged:!impl_->changed.empty();}
 bool AuthoredReplacement::IsCurrent()const noexcept{return impl_->Current(!impl_->forwardState);}
 NativeKeyView AuthoredReplacement::TargetKeys()const noexcept{return PoolView(impl_->target);}
 const std::vector<unsigned>& AuthoredReplacement::ChangedMorphs()const noexcept{return impl_->changed;}

@@ -33,10 +33,15 @@ struct NativeCameraInterval {
     double sampleFirst = 0, sampleLast = 0, sourceValueFirst = 0, sourceValueLast = 0;
     std::array<double,4> controls{};
     std::array<double,6> geometry{}; // a.value/outWeight/outSlope, b.value/inWeight/inSlope
+    // Old/native intervals hold across a one-frame cut. MMSN can explicitly
+    // retain a continuous authored interval and its near-diagonal timing rule.
+    bool oneFrameHold = true;
+    bool transportTiming = false;
     bool operator==(const NativeCameraInterval& other) const noexcept {
         return first==other.first&&last==other.last&&sourceFirst==other.sourceFirst&&sourceLast==other.sourceLast&&
             sampleFirst==other.sampleFirst&&sampleLast==other.sampleLast&&sourceValueFirst==other.sourceValueFirst&&
-            sourceValueLast==other.sourceValueLast&&controls==other.controls&&geometry==other.geometry;
+            sourceValueLast==other.sourceValueLast&&controls==other.controls&&geometry==other.geometry&&
+            oneFrameHold==other.oneFrameHold&&transportTiming==other.transportTiming;
     }
 };
 struct Channel {

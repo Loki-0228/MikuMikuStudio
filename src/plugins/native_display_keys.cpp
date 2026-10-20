@@ -1,4 +1,5 @@
 #include "native_display_keys.hpp"
+#include "native_key_selection.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "scene_object_history.hpp"
 #include "native_bone_evaluation.hpp"
@@ -187,7 +188,8 @@ struct DisplayDeletion final : DisplayKeyDeletion,std::enable_shared_from_this<D
     };
     std::vector<PasteReference> pasteReferences;
     std::vector<Patch> patches;
-    bool registration=false,paste=false,aggregatePaste=false,publishedOnce=false;std::uint64_t generation=1;
+    bool registration=false,paste=false,aggregatePaste=false,publishedOnce=false;
+    bool preserveInitialState=false;std::uint64_t generation=1;
     unsigned registeredSlot=0;
     std::vector<unsigned char> boneMarks,morphMarks,displayMarks;
     std::uint64_t boneMarkIdentity=0,morphMarkIdentity=0;
@@ -234,6 +236,18 @@ struct DisplayDeletion final : DisplayKeyDeletion,std::enable_shared_from_this<D
         const auto liveCapacity=mdl::KeyPoolCapacity(m.displayKeys);
         const auto cap=patches.empty()?liveCapacity:(std::max)(liveCapacity,std::size_t(patches.back().slot)+1);
         std::vector<DeepDependency> chain;std::set<unsigned> seen,referenced;
+        const auto reference=[&](int modelIndex,int boneIndex)->MmsResult {
+            if(modelIndex< -1||modelIndex>=int(kModelSlotCount))return MMS_E_ARGUMENT;
+            if(modelIndex>=0) {
+                const auto* target=app.ModelSlot(unsigned(modelIndex));
+                if(!target)return MMS_E_NOT_READY;
+                const auto& other=*mdl::Mdl(target);
+                if(boneIndex<0||unsigned(boneIndex)>=other.boneCount)return MMS_E_ARGUMENT;
+                if(!other.boneTable)return MMS_E_NOT_READY;
+                referenced.insert(unsigned(modelIndex));
+            }
+            return MMS_OK;
+        };
         unsigned slot=0,previous=0,frame=0;
         for(std::size_t hops=0;;++hops) {
             if(hops>=cap||slot>=cap||!seen.insert(slot).second)return MMS_E_ARGUMENT;
@@ -245,17 +259,8 @@ struct DisplayDeletion final : DisplayKeyDeletion,std::enable_shared_from_this<D
             const auto& value=payload.value;
             if(value.previous>=cap||value.next>=cap||value.frame>unsigned(frame_limits::maximum)||
                 (!hops&&value.frame)||(hops&&(value.previous!=previous||value.frame<=frame)))return MMS_E_ARGUMENT;
-            for(const auto& pair:payload.parents) {
-                if(pair.modelIndex< -1||pair.modelIndex>=int(kModelSlotCount))return MMS_E_ARGUMENT;
-                if(pair.modelIndex>=0) {
-                    const auto* target=app.ModelSlot(unsigned(pair.modelIndex));
-                    if(!target)return MMS_E_NOT_READY;
-                    const auto& other=*mdl::Mdl(target);
-                    if(pair.boneIndex<0||unsigned(pair.boneIndex)>=other.boneCount)return MMS_E_ARGUMENT;
-                    if(!other.boneTable)return MMS_E_NOT_READY;
-                    referenced.insert(unsigned(pair.modelIndex));
-                }
-            }
+            for(const auto& pair:payload.parents)
+                if(const auto status=reference(pair.modelIndex,pair.boneIndex))return status;
             const auto next=value.next;frame=value.frame;previous=slot;
             chain.push_back({slot,std::move(payload)});
             if(!next)break;slot=next;
@@ -263,7 +268,6 @@ struct DisplayDeletion final : DisplayKeyDeletion,std::enable_shared_from_this<D
         const auto current=unsigned(app.CurrentFrame());std::size_t lower=0;
         while(lower+1<chain.size()&&chain[lower+1].payload.value.frame<=current)++lower;
         FrameState sampled;sampled.visible=chain[lower].payload.value.visible;sampled.ik=chain[lower].payload.ik;
-        sampled.references.assign(referenced.begin(),referenced.end());
         if(parentCount) {
             const auto* selectors=static_cast<const mdl::BoneOrderEntry*>(m.boneOrderTable);
             sampled.selectors.assign(selectors,selectors+parentCount);
@@ -280,6 +284,22 @@ struct DisplayDeletion final : DisplayKeyDeletion,std::enable_shared_from_this<D
             auto end=lower+1;while(end<chain.size()&&same(end))++end;
             selector.windowEnd=end<chain.size()?chain[end].payload.value.frame:0;
         }
+        if(preserveInitialState&&forward&&!publishedOnce) {
+            // A private cleanup removes redundant keys, not the user's live
+            // display/IK/parent drafts. Use this same target for both the bone
+            // participant and display publication. Undo/redo continue sampling.
+            sampled.visible=m.loadComplete;
+            for(unsigned index=0;index<ikCount;++index)sampled.ik[index]=m.ikChains[index].enabled;
+            if(parentCount) {
+                const auto* selectors=static_cast<const mdl::BoneOrderEntry*>(m.boneOrderTable);
+                sampled.selectors.assign(selectors,selectors+parentCount);
+                for(const auto& selector:sampled.selectors)
+                    if(const auto status=reference(selector.linkedModel,selector.linkedBone))return status;
+            }
+        }
+        // Preserve leases for the complete source track and any additional
+        // draft target. A draft reference is validated before it can be read.
+        sampled.references.assign(referenced.begin(),referenced.end());
         out=std::move(sampled);return MMS_OK;
     }
     MmsResult TargetSelectors(bool forward,std::vector<mdl::BoneOrderEntry>& out) const noexcept override {
@@ -498,7 +518,8 @@ struct DisplayDeletion final : DisplayKeyDeletion,std::enable_shared_from_this<D
     }
 };
 }
-MmsResult PlanDisplayKeyDeletion(MMDApp& app,unsigned slot,std::shared_ptr<HistoryChange>& out,bool allowOtherMarks,bool evaluateBones) noexcept {
+MmsResult PlanDisplayKeyDeletion(MMDApp& app,unsigned slot,std::shared_ptr<HistoryChange>& out,bool allowOtherMarks,bool evaluateBones,
+    const std::vector<unsigned>* selectedSlots) noexcept {
     out.reset();
     if(slot>=kModelSlotCount||!app.ModelSlot(slot)||app.PlaybackActive()||app.FrameStepPlayback()||
         app.state.recordPlaybackStartPending||app.SceneMutationInProgress())return MMS_E_NOT_READY;
@@ -510,10 +531,12 @@ MmsResult PlanDisplayKeyDeletion(MMDApp& app,unsigned slot,std::shared_ptr<Histo
         if(!allowOtherMarks&&(Marked(model.boneKeys,mdl::BoneKeyCapacity(model.boneKeys))||
             Marked(model.morphKeys,mdl::MorphKeyCapacity(model.morphKeys))))return MMS_E_NOT_READY;
         const auto capacity=mdl::KeyPoolCapacity(model.displayKeys);
-        if(!Marked(model.displayKeys,capacity))return MMS_OK;
+        if(selectedSlots&&!ValidKeySelection(*selectedSlots,capacity))return MMS_E_ARGUMENT;
+        if(selectedSlots?selectedSlots->empty():!Marked(model.displayKeys,capacity))return MMS_OK;
         const auto chain=Chain(model);CheckPayloadStorage(model);
         std::set<unsigned> reachable;for(const auto& dependency:chain)reachable.insert(dependency.slot);
         auto change=std::make_shared<DisplayDeletion>(app,slot,evaluateBones);
+        change->preserveInitialState=selectedSlots!=nullptr;
         std::map<unsigned,Patch> planned;
         const auto write=[&](unsigned index)->Payload& {
             auto found=planned.find(index);
@@ -523,7 +546,8 @@ MmsResult PlanDisplayKeyDeletion(MMDApp& app,unsigned slot,std::shared_ptr<Histo
             }
             return found->second.after;
         };
-        for(std::size_t index=0;index<capacity;++index)if(model.displayKeys[index].allocated) {
+        for(std::size_t index=0;index<capacity;++index)if(selectedSlots?
+            SelectedKeySlot(*selectedSlots,unsigned(index)):model.displayKeys[index].allocated!=0) {
             if(!reachable.count(unsigned(index)))return MMS_E_ARGUMENT;
             auto& payload=write(unsigned(index));auto& key=payload.value;
             const auto previous=key.previous,next=key.next;

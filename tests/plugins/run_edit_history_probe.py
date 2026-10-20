@@ -8,7 +8,10 @@ import subprocess
 import sys
 from run_geometry_probe import pmd, pmx, accessory
 
-binary, plugin, output = [Path(value).resolve() for value in sys.argv[1:]]
+binary, plugin, output = [Path(value).resolve() for value in sys.argv[1:4]]
+case = sys.argv[4] if len(sys.argv) == 5 else "--edit-history-only"
+if case not in ("--edit-history-only", "--curve-motion-only"):
+    raise ValueError("unsupported edit host case")
 output.mkdir(exist_ok=False)
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from pmd_selection_fixtures import make_fixture
@@ -41,7 +44,7 @@ for kind, filename in (("pmx", "MikuMikuDance.exe"), ("pmd", "自定义名称.ex
     startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
     startup.wShowWindow = 0
     with (root / "result.log").open("w", encoding="utf-8") as log:
-        result = subprocess.run([str(root / filename), "--edit-history-only"], cwd=root, env=env,
+        result = subprocess.run([str(root / filename), case], cwd=root, env=env,
                                 startupinfo=startup, stdout=log, stderr=subprocess.STDOUT, timeout=120)
     print(kind, (root / "result.log").read_text(encoding="utf-8", errors="replace"))
     report["cases"].append({"kind": kind, "name": filename, "exitCode": result.returncode})

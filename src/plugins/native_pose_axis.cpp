@@ -10,11 +10,15 @@
 #include "mikumikustudio/d3dx_dyn.hpp"
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/model.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/panel_controls.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/plugin_scene.hpp"
+#include "mikumikustudio/ui_control_readout.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <cstdio>
 
 namespace mikumikustudio::plugins {
 namespace {
@@ -26,6 +30,30 @@ bool PoseMenuReady(MMDApp& app) noexcept {
         !app.GravitySettingDialog() && !app.GroundShadowColorDialog() && !app.AccessoryOrderArray() &&
         !app.state.accessoryEditDialogOpen && !app.state.edgeThicknessDialog &&
         !app.CameraMode() && app.SelectedModelSlot() < kModelSlotCount;
+}
+void ReplacePositionDraft(MMDApp& app, int axis) noexcept {
+    if (axis < 0 || axis > 2) return;
+    float value = 0;
+    if (app.CameraMode()) value = app.CameraPositionAxis(axis);
+    else {
+        auto* model = app.SelectedModel(); const auto* record = mdl::Mdl(model);
+        if (!record || !record->boneTable || record->selectedBone < 0 ||
+            unsigned(record->selectedBone) >= record->boneCount) return;
+        const auto& bone = record->boneTable[record->selectedBone];
+        const float* display = app.PlaybackPhysicsMode() == 3 && bone.hasRigidBody ? bone.ikBackup : bone.trans;
+        value = display[axis] + BoneParentBindOffset(model, record->selectedBone, axis);
+    }
+    if (!std::isfinite(value)) return;
+    const HWND owner = app.FloatingWindow() ? app.FloatingWindow() : app.MainWindow();
+    const HWND edit = GetDlgItem(owner, panel::kReadoutPosXEdit + axis);
+    char text[64]{}; sprintf_s(text, sizeof text, "%1.2f", double(value));
+    // This is a successful explicit discard, including a data no-op. Avoid a
+    // full pose refresh: nonidentity scale may still have private transforms,
+    // and unrelated coordinate drafts must remain untouched. Discard the bit
+    // even if a later optional text write fails; a normal readout refresh can
+    // retry its caption, and focus loss must not revive the discarded draft.
+    SendMessageA(edit, EM_SETMODIFY, FALSE, 0);
+    ui::SetReadoutTextIfChangedA(edit, text);
 }
 MmsResult RotationTarget(MMDApp& app, int axis, NativePoseAxisSource source,
                          float target[4]) {
@@ -118,13 +146,11 @@ MmsResult ResetAxis(MMDApp& app, SharedHistory& history, NativePoseAxisKind kind
                    int axis, NativePoseAxisSource source, bool& changed) {
     changed = false;
     if (axis < 0 || axis > 2) return MMS_E_ARGUMENT;
-    if (app.PlaybackActive() || app.FrameStepPlayback() ||
-        app.state.recordPlaybackStartPending || app.SceneMutationInProgress() ||
-        app.SelectedModelSlot() >= kModelSlotCount) return MMS_E_NOT_READY;
+    if (!PoseMenuReady(app)) return MMS_E_NOT_READY;
     // Scale readout preparation can rebuild derived caches. Refuse a reserved
     // journal before doing that work, as well as before authoring the pose.
-    if (const auto result = history.Enter()) return result;
-    history.Leave();
+    if (const auto result = history.CheckNativeNavigation()) return result;
+    if (const auto result = history.CheckNativeEdit()) return result;
     auto* model = app.SelectedModel();
     auto* record = mdl::Mdl(model);
     if (!record || !record->boneTable || !record->bonePhysicsState ||
@@ -285,7 +311,24 @@ bool TryResetBoundPoseAxis(MMDApp* app, NativePoseAxisKind kind, int axis,
                           NativePoseAxisSource source) noexcept {
     if (!app) return false;
     if (app->CameraMode()) {
-        if (kind == NativePoseAxisKind::Position || kind == NativePoseAxisKind::Rotation)
+        if (kind == NativePoseAxisKind::Position) {
+            auto* history = BoundNativePoseHistory(app); if (!history) return false;
+            if (axis < 0 || axis > 2) return true;
+            if (history->CheckNativeNavigation() != MMS_OK) return true;
+            const auto binding = BoundNativePoseGeneration(app);
+            const auto pool = mdl::KeyPoolIdentity(app->CameraKeys()); const auto frame = app->CurrentFrame();
+            bool changed = false;
+            const auto result = ApplyBoundCameraField(*app, unsigned(axis), 0.0f, changed);
+            // Camera publication already sends its normal hints. Recheck the
+            // context after those callbacks before replacing one pending edit.
+            if (result == MMS_OK && BoundNativePoseHistory(app) == history && BoundNativePoseGeneration(app) == binding &&
+                app->CameraMode() && mdl::KeyPoolIdentity(app->CameraKeys()) == pool && app->CurrentFrame() == frame &&
+                app->CameraPositionAxis(axis) == 0) {
+                bake::ScopedUiInputGate gate; ReplacePositionDraft(*app, axis);
+            }
+            return true;
+        }
+        if (kind == NativePoseAxisKind::Rotation)
             return TryResetBoundCameraField(app, axis >= 0 && axis < 3 ?
                 unsigned(axis) + (kind == NativePoseAxisKind::Rotation ? 3u : 0u) : 7u);
         return false;
@@ -294,7 +337,11 @@ bool TryResetBoundPoseAxis(MMDApp* app, NativePoseAxisKind kind, int axis,
     if (!history) return false;
     bool changed = false;
     const auto result = Boundary([&] { return ResetAxis(*app, *history, kind, axis, source, changed); });
-    if (result == MMS_OK && changed) PublishBoundPoseEdit(*app, *history);
+    if (result == MMS_OK) {
+        bake::ScopedUiInputGate gate;
+        if (kind == NativePoseAxisKind::Position) ReplacePositionDraft(*app, axis);
+        if (changed) PublishBoundPoseEdit(*app, *history);
+    }
     return true;
 }
 bool TryResetBoundBoneRotation(MMDApp* app) noexcept {

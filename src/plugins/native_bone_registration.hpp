@@ -30,7 +30,8 @@ MmsResult PlanBoneRegistration(MMDApp&, unsigned modelSlot,
 // none of the three families has an explicit mark; frame zero is not implied.
 MmsResult PlanBoneKeyDeletion(MMDApp&, unsigned modelSlot, bool automaticInterpolation,
     std::shared_ptr<HistoryChange>&, bool selectedAtCurrentFrame = false,
-    bool allowOtherMarks = false, std::shared_ptr<DisplayKeyDeletion> display = {}) noexcept;
+    bool allowOtherMarks = false, std::shared_ptr<DisplayKeyDeletion> display = {},
+    const std::vector<unsigned>* selectedSlots = nullptr) noexcept;
 MmsResult PlanBoneFrameLine(MMDApp&, unsigned modelSlot, int frame, bool insert, bool automaticInterpolation,
     std::shared_ptr<HistoryChange>& out) noexcept;
 struct BoneRangeScaleOptions {

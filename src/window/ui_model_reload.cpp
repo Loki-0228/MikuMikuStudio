@@ -19,7 +19,11 @@
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/ui_translation.hpp"
 #include "mikumikustudio/model.hpp"
+#include "mikumikustudio/model_order_projection.hpp"
 #include "mikumikustudio/panel_controls.hpp"
+#if !MMD_ORIGINAL_PROFILE
+#include "../plugins/native_pose_scope.hpp"
+#endif
 
 namespace mikumikustudio {
 
@@ -43,14 +47,13 @@ unsigned char* ModelAt(MMDApp* app, int slot) {
 }
 
 int FindModelSlotByComboId(MMDApp* app, int comboId) {
-    // x64 twin sub_7FF7CB486B0: both comboSelIndex (model+0x3108/x86 11644)
-    // scans run to 255 (cmp ecx, 0FFh at 0x7FF7CB48724D and 0x7FF7CB48735A).
-    for (int slot = 0; slot < kModelSlotCount; ++slot) {
-        unsigned char* model = ModelAt(app, slot);
-        if (model != nullptr && mdl::Mdl(model)->comboSelIndex == comboId)
-            return slot;
-    }
-    return -1;
+    const auto order = model_order::Project<kModelSlotCount>([&](std::size_t slot) noexcept {
+        const auto* model = app->ModelSlot(static_cast<int>(slot));
+        return model ? int(mdl::Mdl(model)->comboSelIndex) : -1;
+    });
+    const auto combo = MainControl(app, panel::kMainComboModel);
+    return model_order::Resolve(order, comboId, SendMessageW(combo, CB_GETCOUNT, 0, 0),
+        [&](std::size_t row) noexcept { return SendMessageW(combo, CB_GETITEMDATA, row, 0); });
 }
 
 void EnableMenuCommands(HMENU menu, const int* ids, std::size_t count,
@@ -362,6 +365,9 @@ void ApplyModelComboSelection(MMDApp* app) {  // was Sub44D940, 0x44D940
     HWND hwnd = static_cast<HWND>(app->Hwnd());
     const int selection = static_cast<int>(
         SendMessageA(GetDlgItem(hwnd, panel::kMainComboModel), CB_GETCURSEL, 0, 0));
+    if (selection < 0) return;
+    const int mappedSelection = selection > 0 ? FindModelSlotByComboId(app, selection) : -1;
+    if (selection > 0 && mappedSelection < 0) return;
     static constexpr int kModeCommands[] = {
         0xFD, 0xD9, 0xDC, 0xDA, 0xCA, 0xCB, 0xDB, 0xDE,
         0xFB, 0xFC,
@@ -442,7 +448,7 @@ void ApplyModelComboSelection(MMDApp* app) {  // was Sub44D940, 0x44D940
         }
         SetModelExtensionMenuEnabled(app, false);
     } else {
-        const int selectedSlot = FindModelSlotByComboId(app, selection);
+        const int selectedSlot = mappedSelection;
         if (selectedSlot >= 0) {
             app->SetSelectedModelSlot(static_cast<std::uint8_t>(selectedSlot));
             unsigned char* model = ModelAt(app, selectedSlot);
@@ -530,6 +536,14 @@ void ApplyModelComboSelection(MMDApp* app) {  // was Sub44D940, 0x44D940
         SetModelExtensionMenuEnabled(app, model != nullptr);
     }
 
+    // A model selection must not replace the shared journal's availability
+    // with the unrelated per-model legacy undo ring flags.
+#if !MMD_ORIGINAL_PROFILE
+    if (const auto* history = plugins::BoundNativePoseHistory(app)) {
+        EnableWindow(GetDlgItem(hwnd, panel::kUndoButton), history->UndoCount() != 0);
+        EnableWindow(GetDlgItem(hwnd, panel::kRedoButton), history->RedoCount() != 0);
+    } else
+#endif
     if (app->state.optflag[0] != 0) {
         EnableWindow(GetDlgItem(hwnd, panel::kUndoButton), FALSE);
         EnableWindow(GetDlgItem(hwnd, panel::kRedoButton), FALSE);

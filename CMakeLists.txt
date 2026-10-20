@@ -12,6 +12,8 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+include(cmake/LegacyOptions.cmake)
+
 set(MIKUMIKUSTUDIO_PROFILE "full" CACHE STRING "Build profile: full or mmd932")
 set_property(CACHE MIKUMIKUSTUDIO_PROFILE PROPERTY STRINGS full mmd932)
 if(NOT MIKUMIKUSTUDIO_PROFILE STREQUAL "full" AND NOT MIKUMIKUSTUDIO_PROFILE STREQUAL "mmd932")
@@ -116,6 +118,10 @@ string(REPLACE "${MMS_SMAA_LATIN1_DOT}" "·" MMS_SMAA_REFERENCE "${MMS_SMAA_REFE
 string(REPLACE "\n" "\n)smaa\"\nR\"smaa(" MMS_SMAA_REFERENCE "${MMS_SMAA_REFERENCE}")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS third_party/smaa/SMAA.hlsl)
 configure_file(src/render/smaa_reference.in.hpp generated/smaa_reference.hpp @ONLY)
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/third_party/fxaa/FXAA.hlsl" MMS_FXAA_REFERENCE)
+string(REPLACE "\n" "\n)fxaa\"\nR\"fxaa(" MMS_FXAA_REFERENCE "${MMS_FXAA_REFERENCE}")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS third_party/fxaa/FXAA.hlsl)
+configure_file(src/render/fxaa_reference.in.hpp generated/fxaa_reference.hpp @ONLY)
 
 if (MIKUMIKUSTUDIO_ENABLE_DX12)
     file(READ "${CMAKE_CURRENT_SOURCE_DIR}/src/render/d3d12_skinning.hlsl" MMD_D3D12_SKINNING_HLSL)
@@ -164,6 +170,19 @@ add_executable(animation_curve_tests EXCLUDE_FROM_ALL tests/animation_curve_test
 target_link_libraries(animation_curve_tests PRIVATE mikumikustudio_animation_curve)
 set_target_properties(animation_curve_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
 enable_testing()
+foreach(_case IN ITEMS legacy override fresh)
+    set(_legacy_options)
+    if(NOT _case STREQUAL "fresh")
+        list(APPEND _legacy_options -DMIKUDANCESTUDIO_PROFILE=mmd932
+            -DMIKUDANCESTUDIO_ENABLE_DX12=OFF -DMIKUDANCESTUDIO_WIN7_BASELINE=ON)
+    endif()
+    if(_case STREQUAL "override")
+        list(APPEND _legacy_options -DMIKUMIKUSTUDIO_PROFILE=full
+            -DMIKUMIKUSTUDIO_ENABLE_DX12=ON -DMIKUMIKUSTUDIO_WIN7_BASELINE=OFF)
+    endif()
+    add_test(NAME legacy_build_options_${_case} COMMAND ${CMAKE_COMMAND}
+        -DCASE=${_case} ${_legacy_options} -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/legacy_cmake_options_tests.cmake)
+endforeach()
 
 add_executable(native_shadow_tests EXCLUDE_FROM_ALL tests/native_shadow_tests.cpp)
 target_include_directories(native_shadow_tests PRIVATE include)
@@ -373,6 +392,7 @@ add_library(mikumikustudio_core STATIC
     src/window/viewport_render_scale_dialog.cpp
     src/render/viewport_render_scale.cpp
     src/render/antialias.cpp
+    src/render/outline_multisample.cpp
     src/render/frame_sampling.cpp
     src/render/antialias_motion.cpp
     src/render/nvidia_antialias_fix.cpp
@@ -805,6 +825,14 @@ if (MIKUMIKUSTUDIO_BUILD_EFFECT_TESTS)
     set_target_properties(smaa_shader_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
     add_test(NAME smaa_shader_checks COMMAND smaa_shader_tests)
     set_tests_properties(smaa_shader_checks PROPERTIES LABELS "hardware-manual" TIMEOUT 60)
+    add_executable(fxaa_shader_tests EXCLUDE_FROM_ALL tests/fxaa_shader_tests.cpp)
+    target_compile_features(fxaa_shader_tests PRIVATE cxx_std_17)
+    target_link_libraries(fxaa_shader_tests PRIVATE ole32 windowscodecs user32)
+    set_target_properties(fxaa_shader_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+    add_test(NAME fxaa_shader_checks COMMAND fxaa_shader_tests
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/fxaa/FXAA.hlsl"
+        "${CMAKE_BINARY_DIR}/tests/fxaa-captures" --strict-quality)
+    set_tests_properties(fxaa_shader_checks PROPERTIES LABELS "hardware-manual" TIMEOUT 60)
     add_executable(d3d12_interop_tests EXCLUDE_FROM_ALL tests/d3d12_interop_tests.cpp)
     add_executable(sequential_file_reader_tests EXCLUDE_FROM_ALL tests/sequential_file_reader_tests.cpp)
     target_include_directories(sequential_file_reader_tests PRIVATE include)
@@ -842,6 +870,11 @@ if (MIKUMIKUSTUDIO_BUILD_EFFECT_TESTS)
     target_link_libraries(outline_coverage_tests PRIVATE mikumikustudio_core winmm dsound)
     set_target_properties(outline_coverage_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
     add_test(NAME outline_coverage_regressions COMMAND outline_coverage_tests)
+    add_executable(outline_multisample_tests EXCLUDE_FROM_ALL tests/outline_multisample_tests.cpp)
+    target_link_libraries(outline_multisample_tests PRIVATE mikumikustudio_core winmm dsound)
+    set_target_properties(outline_multisample_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+    add_test(NAME outline_multisample_regressions COMMAND outline_multisample_tests)
+    set_tests_properties(outline_multisample_regressions PROPERTIES LABELS "hardware-manual" TIMEOUT 90)
     add_executable(model_vertex_cache_tests EXCLUDE_FROM_ALL tests/model_vertex_cache_tests.cpp)
     target_link_libraries(model_vertex_cache_tests PRIVATE mikumikustudio_core winmm dsound)
     set_target_properties(model_vertex_cache_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
@@ -939,6 +972,14 @@ endif()
 # ---------------------------------------------------------------------------
 option(MIKUMIKUSTUDIO_BUILD_UI_TESTS "Build user-acceptance regression tests" OFF)
 if (MIKUMIKUSTUDIO_BUILD_UI_TESTS)
+    add_executable(mf_h264_startup_tests EXCLUDE_FROM_ALL tests/mf_h264_startup_tests.cpp)
+    target_include_directories(mf_h264_startup_tests PRIVATE include)
+    target_compile_options(mf_h264_startup_tests PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/Ob0>)
+    target_link_libraries(mf_h264_startup_tests PRIVATE minhook::minhook mikumikustudio_runtime_log
+        mfplat mfreadwrite mfuuid ole32 oleaut32 strmiids user32 gdi32)
+    set_target_properties(mf_h264_startup_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+    add_test(NAME mf_h264_startup_tests COMMAND mf_h264_startup_tests)
+    set_tests_properties(mf_h264_startup_tests PROPERTIES TIMEOUT 30)
     add_executable(native_media_tests EXCLUDE_FROM_ALL tests/native_media_tests.cpp
         src/media/native_media.cpp src/media/native_video.cpp src/media/wic_mov_recorder.cpp)
     target_include_directories(native_media_tests PRIVATE include)
@@ -1227,7 +1268,9 @@ if (MIKUMIKUSTUDIO_BUILD_UI_TESTS)
         target_link_libraries(model_load_ui_tests PRIVATE mikumikustudio_core winmm dsound)
         set_target_properties(model_load_ui_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
         add_test(NAME model_load_ui_regressions COMMAND model_load_ui_tests)
-        add_executable(native_edit_history_tests EXCLUDE_FROM_ALL tests/native_edit_history_tests.cpp)
+        add_executable(native_edit_history_tests EXCLUDE_FROM_ALL tests/native_edit_history_tests.cpp
+            res/MMD.rc ${MIKUMIKUSTUDIO_GEN_RES})
+        target_link_options(native_edit_history_tests PRIVATE "/MANIFEST:NO" "${MIKUMIKUSTUDIO_GEN_RES}")
         target_link_libraries(native_edit_history_tests PRIVATE mikumikustudio_core winmm dsound)
         set_target_properties(native_edit_history_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
         add_test(NAME native_edit_history_regressions COMMAND native_edit_history_tests)
@@ -1345,6 +1388,14 @@ if (MIKUMIKUSTUDIO_BUILD_UI_TESTS)
     target_compile_features(pmm_extension_tests PRIVATE cxx_std_17)
     set_target_properties(pmm_extension_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
     add_test(NAME pmm_extension_tests COMMAND pmm_extension_tests)
+    add_executable(pmm_container_tests EXCLUDE_FROM_ALL tests/pmm_container_tests.cpp src/io/pmm_container.cpp)
+    target_include_directories(pmm_container_tests PRIVATE include)
+    target_compile_features(pmm_container_tests PRIVATE cxx_std_17)
+    set_target_properties(pmm_container_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+    add_test(NAME pmm_container_tests COMMAND pmm_container_tests)
+    file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/tests/pmm-container-tmp")
+    set_tests_properties(pmm_container_tests PROPERTIES
+        ENVIRONMENT "TEMP=${CMAKE_BINARY_DIR}/tests/pmm-container-tmp;TMP=${CMAKE_BINARY_DIR}/tests/pmm-container-tmp")
     add_executable(pmm_project_settings_tests EXCLUDE_FROM_ALL tests/pmm_project_settings_tests.cpp
         res/MMD.rc ${MIKUMIKUSTUDIO_GEN_RES})
     target_link_libraries(pmm_project_settings_tests PRIVATE mikumikustudio_core winmm dsound)

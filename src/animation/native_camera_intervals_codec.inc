@@ -8,7 +8,12 @@ struct CameraIntervalWriter {
     void F64(double value){std::uint64_t bits=0;std::memcpy(&bits,&value,sizeof bits);U32(std::uint32_t(bits));U32(std::uint32_t(bits>>32));}
 };
 std::vector<std::uint8_t> EncodePreservedCamera(const PreservedCameraTable& table) {
-    CameraIntervalWriter out;out.U32(0x4953434d);out.U32(1);out.U32(std::uint32_t(table.size()));
+    bool extended=false;
+    for(const auto& entry:table)for(const auto& value:entry.second)
+        if(!value.oneFrameHold||value.transportTiming)extended=true;
+    // Ordinary/native PMM records keep their existing v1 bytes. V2 adds only
+    // the explicit MMSN semantics; its reader also accepts all old v1 records.
+    CameraIntervalWriter out;out.U32(0x4953434d);out.U32(extended?2u:1u);out.U32(std::uint32_t(table.size()));
     for(const auto& entry:table) {
         if(entry.second.size()>UINT32_MAX)throw std::invalid_argument("native camera interval count");
         out.U32(std::get<0>(entry.first));out.U32(std::get<1>(entry.first));out.U32(std::get<2>(entry.first));out.U32(std::uint32_t(entry.second.size()));
@@ -17,6 +22,7 @@ std::vector<std::uint8_t> EncodePreservedCamera(const PreservedCameraTable& tabl
             out.F64(value.sampleFirst);out.F64(value.sampleLast);out.F64(value.sourceValueFirst);out.F64(value.sourceValueLast);
             for(double component:value.controls)out.F64(component);
             for(double component:value.geometry)out.F64(component);
+            if(extended)out.U32((value.oneFrameHold?1u:0u)|(value.transportTiming?2u:0u));
         }
     }
     return std::move(out.bytes);
@@ -28,12 +34,13 @@ bool DecodePreservedCamera(const std::vector<std::uint8_t>& bytes,PreservedCamer
             std::uint32_t value=0;for(unsigned i=0;i<4;++i)value|=std::uint32_t(bytes[position++])<<(8*i);return value;};
         const auto f64=[&](){const auto low=u32(),high=u32();const std::uint64_t bits=low|(std::uint64_t(high)<<32);
             double value;std::memcpy(&value,&bits,sizeof value);return value;};
-        if(u32()!=0x4953434d||u32()!=1)return false;
+        if(u32()!=0x4953434d)return false;
+        const auto version=u32();if(version!=1&&version!=2)return false;
         const auto count=u32();if(count>(bytes.size()-position)/16)return false;
         PreservedCameraTable table;
         for(std::uint32_t i=0;i<count;++i) {
             const auto kind=u32(),slot=u32(),channel=u32(),size=u32();
-            if(kind!=std::uint32_t(Kind::Camera)||slot!=0||channel>=8||!size||size>(bytes.size()-position)/128)return false;
+            if(kind!=std::uint32_t(Kind::Camera)||slot!=0||channel>=8||!size||size>(bytes.size()-position)/(version==1?128u:132u))return false;
             auto inserted=table.try_emplace(PreservedCameraAddress{int(kind),int(slot),int(channel)});
             if(!inserted.second)return false;
             auto& values=inserted.first->second;values.reserve(size);
@@ -41,6 +48,8 @@ bool DecodePreservedCamera(const std::vector<std::uint8_t>& bytes,PreservedCamer
                 PreservedCameraInterval value;value.first=int(u32());value.last=int(u32());value.sourceFirst=int(u32());value.sourceLast=int(u32());
                 value.sampleFirst=f64();value.sampleLast=f64();value.sourceValueFirst=f64();value.sourceValueLast=f64();
                 for(double& component:value.controls)component=f64();for(double& component:value.geometry)component=f64();
+                if(version==2){const auto flags=u32();if(flags&~3u)return false;
+                    value.oneFrameHold=(flags&1u)!=0;value.transportTiming=(flags&2u)!=0;}
                 if(!ValidPreservedData(value))return false;values.push_back(value);
             }
             std::sort(values.begin(),values.end(),[](const auto& a,const auto& b){return a.first<b.first;});

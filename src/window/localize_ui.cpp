@@ -33,6 +33,7 @@
 #include "mikumikustudio/text_encoding.hpp"
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/model.hpp"
+#include "mikumikustudio/model_order_projection.hpp"
 #include "mikumikustudio/bone_combo.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/ui_language.hpp"
@@ -390,6 +391,18 @@ void RefreshModelSelectorNames(MMDApp* app) {
     LRESULT sel436 = SendMessageA(combo436, CB_GETCURSEL, 0, 0);
     LRESULT sel474 = SendMessageA(combo474, CB_GETCURSEL, 0, 0);
     LRESULT sel449 = SendMessageA(combo449, CB_GETCURSEL, 0, 0);
+    const auto order = model_order::Project<kModelSlotCount>([&](std::size_t slot) noexcept {
+        const auto* model = s.ModelSlot(static_cast<int>(slot));
+        return model ? int(mdl::Mdl(model)->comboSelIndex) : -1;
+    });
+    const auto previousRow = [&](HWND combo, LRESULT row) {
+        if (row <= 0) return row;
+        if (row > kModelSlotCount) return LRESULT(-1);
+        const int slot = model_order::Resolve(order, static_cast<int>(row), SendMessageW(combo, CB_GETCOUNT, 0, 0),
+            [&](std::size_t i) noexcept { return SendMessageW(combo, CB_GETITEMDATA, i, 0); });
+        return LRESULT(slot < 0 ? -1 : order.Row(static_cast<unsigned>(slot)));
+    };
+    sel436 = previousRow(combo436, sel436); sel474 = previousRow(combo474, sel474); sel449 = previousRow(combo449, sel449);
     SendMessageA(combo436, CB_RESETCONTENT, 0, 0);
     SendMessageA(combo474, CB_RESETCONTENT, 0, 0);
     SendMessageA(combo449, CB_RESETCONTENT, 0, 0);
@@ -413,29 +426,20 @@ void RefreshModelSelectorNames(MMDApp* app) {
                      (LPARAM)L"\x306a\x3057");                           // 0x52D360
     }
 
-    // add every loaded model's name to all three selectors; x64 twin
-    // sub_7FF7CB438E70 runs the comboSelIndex (model+0x3108) slot scan and
-    // the order walk to 255 (cmp edx, 0FFh at 0x7FF7CB43A96C / cmp ebp,
-    // 0FFh at 0x7FF7CB43AA8D) - same family as model_edge_dialog.cpp.
+    // The same read-only projection is used by the order dialog and history
+    // refresh. Captions and item identity always come from that actual object.
+    for (const auto combo : {combo436, combo474, combo449}) SendMessageW(combo, CB_SETITEMDATA, 0, -1);
     int rowBySlot[kModelSlotCount]{};
-    for (int order = 1; order <= kModelSlotCount; ++order) {
-        int slotIdx = -1;
-        for (int i = 0; i < kModelSlotCount; ++i) {
-            unsigned char* slot = s.ModelSlot(i);
-            if (slot != nullptr &&
-                mikumikustudio::mdl::Mdl(slot)->comboSelIndex == order) {
-                slotIdx = i;
-                break;
-            }
-        }
-        if (slotIdx < 0)
-            continue;
+    for (std::size_t row = 1; row <= order.count; ++row) {
+        const int slotIdx = order.rows[row] - 1;
         unsigned char* slot = s.ModelSlot(slotIdx);
         const auto label = text_encoding::ModelLabel(*mdl::Mdl(slot), englishNames);
         const LPARAM name = reinterpret_cast<LPARAM>(label.c_str());
-        rowBySlot[slotIdx] = static_cast<int>(SendMessageW(combo436, CB_ADDSTRING, 0, name));
-        SendMessageW(combo474, CB_ADDSTRING, 0, name);
-        SendMessageW(combo449, CB_ADDSTRING, 0, name);
+        for (const auto combo : {combo436, combo474, combo449}) {
+            const auto added = SendMessageW(combo, CB_ADDSTRING, 0, name);
+            if (added >= 0) SendMessageW(combo, CB_SETITEMDATA, added, slotIdx);
+            if (combo == combo436) rowBySlot[slotIdx] = static_cast<int>(added);
+        }
     }
 
     const int parentSlot = s.CameraParentModel();

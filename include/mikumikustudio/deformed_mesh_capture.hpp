@@ -63,5 +63,16 @@ public:
 };
 bool Observe(MMDApp& app, DrawObserver* observer, std::string& error);
 void StopObserving(DrawObserver* observer);
+// Screen composition is not source geometry. Exclude scoped synthetic draws
+// from native draw observers and geometry export.
+class ObserverSilenceScope {
+public:
+    ObserverSilenceScope();
+    ~ObserverSilenceScope();
+    ObserverSilenceScope(const ObserverSilenceScope&) = delete;
+    ObserverSilenceScope& operator=(const ObserverSilenceScope&) = delete;
+private:
+    unsigned previous_;
+};
 }
 }

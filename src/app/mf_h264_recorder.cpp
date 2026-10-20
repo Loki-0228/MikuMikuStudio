@@ -28,10 +28,12 @@
 
 #include "mikumikustudio/dshow_recorder.hpp"
 #include "mikumikustudio/mf_h264_recorder.hpp"
+#include "mikumikustudio/runtime_log.hpp"
 #include "mikumikustudio/ui_language.hpp"
 #include "mikumikustudio/wave_audio_context.hpp"
 
 namespace mikumikustudio {
+void ReleaseSinkWriterQuietly(IMFSinkWriter*& writer) noexcept;
 namespace {
 
 struct Recording {
@@ -48,6 +50,11 @@ struct Recording {
     std::uint64_t frameIndex = 0;
     std::uint64_t frameDuration = 0;
     std::uint64_t frameBytes = 0;
+    std::int32_t width = 0;
+    std::int32_t height = 0;
+    // Set when the export runs on the hardware encoder: the Sink Writer then
+    // takes NV12 and every BGRA frame is converted in WriteBuiltInH264Frame.
+    bool nv12Input = false;
     std::uint32_t fpsNumerator = 30;
     std::uint32_t fpsDenominator = 1;
     HWND owner = nullptr;
@@ -57,8 +64,7 @@ struct Recording {
     ~Recording() {
         if (audioFile != INVALID_HANDLE_VALUE)
             CloseHandle(audioFile);
-        if (writer != nullptr)
-            writer->Release();
+        ReleaseSinkWriterQuietly(writer);
         if (mfStarted)
             MFShutdown();
     }
@@ -439,16 +445,74 @@ void FpsToRatio(float fps, std::uint32_t& numerator, std::uint32_t& denominator)
     }
 }
 
-// Builds the H.264 output type + RGB32 input type exactly the way the export
-// does and adds the video stream to the Sink Writer.  Shared so the settings
-// probe configures the same chain the export will use.
+// BGRA (top-down) -> NV12, BT.709 with the 16..235 / 16..240 studio range that
+// H.264 normally carries.  The hardware encoder asks for NV12 (AMD answer in
+// AMF issue #470: the H.264 core only runs pre-analysis on NV12), so the
+// conversion happens here on the CPU instead of inside the encoder's D3D9
+// colour-conversion path.
+void ConvertBgraToNv12(const unsigned char* bgra, int width, int height,
+                       unsigned char* nv12) {
+    const std::size_t pixelCount = static_cast<std::size_t>(width) * height;
+    unsigned char* luma = nv12;
+    unsigned char* chroma = nv12 + pixelCount;
+    const auto clampTo = [](int value, int low, int high) {
+        return static_cast<unsigned char>(std::clamp(value, low, high));
+    };
+    for (int y = 0; y < height; ++y) {
+        const unsigned char* source =
+            bgra + static_cast<std::size_t>(y) * width * 4;
+        unsigned char* destination = luma + static_cast<std::size_t>(y) * width;
+        for (int x = 0; x < width; ++x) {
+            const int b = source[x * 4 + 0];
+            const int g = source[x * 4 + 1];
+            const int r = source[x * 4 + 2];
+            const int full = (54 * r + 183 * g + 19 * b + 128) >> 8;
+            destination[x] = clampTo(16 + ((219 * full + 128) >> 8), 16, 235);
+        }
+    }
+    for (int y = 0; y < height; y += 2) {
+        const unsigned char* row0 =
+            bgra + static_cast<std::size_t>(y) * width * 4;
+        const unsigned char* row1 = row0 + static_cast<std::size_t>(width) * 4;
+        unsigned char* destination =
+            chroma + static_cast<std::size_t>(y / 2) * width;
+        for (int x = 0; x < width; x += 2) {
+            int b = 0;
+            int g = 0;
+            int r = 0;
+            for (int dy = 0; dy < 2; ++dy) {
+                const unsigned char* row = dy == 0 ? row0 : row1;
+                for (int dx = 0; dx < 2; ++dx) {
+                    const unsigned char* pixel = row + (x + dx) * 4;
+                    b += pixel[0];
+                    g += pixel[1];
+                    r += pixel[2];
+                }
+            }
+            b /= 4;
+            g /= 4;
+            r /= 4;
+            const int full = (54 * r + 183 * g + 19 * b + 128) >> 8;
+            destination[x] = clampTo(128 + (((b - full) * 121) >> 8), 16, 240);
+            destination[x + 1] =
+                clampTo(128 + (((r - full) * 143) >> 8), 16, 240);
+        }
+    }
+}
+
+// Builds the H.264 output type and the input type, then adds the video stream
+// to the Sink Writer.  Shared so the settings probe configures the same chain
+// the export will use: the hardware path takes NV12 (what the AMD encoder asks
+// for), the software path keeps RGB32 and lets Media Foundation convert.
 HRESULT AddH264VideoStream(IMFSinkWriter* writer, std::int32_t width,
                            std::int32_t height, float fps,
-                           std::uint32_t averageBitrate, DWORD* stream) {
+                           std::uint32_t averageBitrate, bool nv12Input,
+                           DWORD* stream) {
     std::uint32_t fpsNumerator = 30;
     std::uint32_t fpsDenominator = 1;
     FpsToRatio(fps, fpsNumerator, fpsDenominator);
     const std::uint64_t frameBytes = std::uint64_t(width) * height * 4;
+    const std::uint64_t nv12Bytes = std::uint64_t(width) * height * 3 / 2;
 
     IMFMediaType* output = nullptr;
     IMFMediaType* input = nullptr;
@@ -463,12 +527,27 @@ HRESULT AddH264VideoStream(IMFSinkWriter* writer, std::int32_t width,
     }
     if (SUCCEEDED(hr)) hr = MFCreateMediaType(&input);
     if (SUCCEEDED(hr)) {
-        SetVideoAttributes(input, MFVideoFormat_RGB32, width, height,
-                           fpsNumerator, fpsDenominator);
-        input->SetUINT32(MF_MT_DEFAULT_STRIDE,
-                         static_cast<UINT32>(-std::int32_t(width * 4)));
-        input->SetUINT32(MF_MT_SAMPLE_SIZE, static_cast<UINT32>(frameBytes));
-        input->SetUINT32(MF_MT_FIXED_SIZE_SAMPLES, TRUE);
+        if (nv12Input) {
+            SetVideoAttributes(input, MFVideoFormat_NV12, width, height,
+                               fpsNumerator, fpsDenominator);
+            input->SetUINT32(MF_MT_DEFAULT_STRIDE,
+                             static_cast<UINT32>(width));
+            input->SetUINT32(MF_MT_SAMPLE_SIZE,
+                             static_cast<UINT32>(nv12Bytes));
+            input->SetUINT32(MF_MT_FIXED_SIZE_SAMPLES, TRUE);
+            input->SetUINT32(MF_MT_YUV_MATRIX, MFVideoTransferMatrix_BT709);
+            input->SetUINT32(MF_MT_VIDEO_NOMINAL_RANGE, MFNominalRange_16_235);
+            input->SetUINT32(MF_MT_VIDEO_PRIMARIES, MFVideoPrimaries_BT709);
+            input->SetUINT32(MF_MT_TRANSFER_FUNCTION, MFVideoTransFunc_709);
+        } else {
+            SetVideoAttributes(input, MFVideoFormat_RGB32, width, height,
+                               fpsNumerator, fpsDenominator);
+            input->SetUINT32(MF_MT_DEFAULT_STRIDE,
+                             static_cast<UINT32>(-std::int32_t(width * 4)));
+            input->SetUINT32(MF_MT_SAMPLE_SIZE,
+                             static_cast<UINT32>(frameBytes));
+            input->SetUINT32(MF_MT_FIXED_SIZE_SAMPLES, TRUE);
+        }
         hr = writer->SetInputMediaType(*stream, input, nullptr);
     }
     if (input != nullptr) input->Release();
@@ -501,6 +580,80 @@ void CloseEncoderProbe(EncoderProbe& probe) {
         probe.file.clear();
     }
     probe.started = false;
+}
+
+// Issue #34: the AMD hardware H.264 MFT (amdh264enc64) faults inside d3d9
+// while Media Foundation builds the DXVA surface chain for the Sink Writer,
+// and the editor dies with an access violation.  The encoder runs in-process
+// behind this app's d3d9 proxy, so its D3D9 usage is not something the export
+// path can fix; what it can do is refuse to keep using hardware transforms
+// after the first fault.  The flag below is session-wide, so a fault caught
+// while opening the settings window also keeps the later export on the
+// software encoder.
+bool g_hardwareEncoderUnsafe = false;
+bool g_hardwareFallbackNoticeShown = false;
+
+// Tells the user once per session that the export fell back to software.  The
+// fault itself happens inside the vendor MFT, so there is no HRESULT to show;
+// this notice is the only signal the user gets that the quality/speed differs
+// from the "system H.264" they picked.
+void ReportHardwareFallbackOnce(void* ownerWindow, unsigned char language) {
+    if (g_hardwareFallbackNoticeShown)
+        return;
+    g_hardwareFallbackNoticeShown = true;
+    MessageBoxW(static_cast<HWND>(ownerWindow),
+                UiText(language,
+                       L"The system hardware encoder stopped with a driver fault "
+                       L"while starting the MP4/H.264 export.\n\n"
+                       L"This export continues with the software H.264 encoder. "
+                       L"Pick \"System H.264 auto\" in the export dialog again if "
+                       L"you want to retry the hardware encoder.",
+                       L"系统硬件编码器在启动 MP4/H.264 导出时发生驱动故障。\n\n"
+                       L"本次导出已改用软件 H.264 编码器继续。"
+                       L"如需重试硬件编码器，请在导出对话框里重新选择"
+                       L"「系统自动 H.264」。",
+                       L"システムのハードウェアエンコーダーが MP4/H.264 "
+                       L"書き出しの開始時にドライバー障害を起こしました。\n\n"
+                       L"この書き出しはソフトウェア H.264 エンコーダーで続行します。"
+                       L"ハードウェアエンコーダーを再試行するには、"
+                       L"書き出しダイアログで「系统自动 H.264」を選び直してください。"),
+                UiText(language, L"MP4 Export", L"MP4 导出", L"MP4 書き出し"),
+                MB_OK | MB_ICONWARNING);
+}
+
+bool CreateEncoderProbe(bool system, std::int32_t width, std::int32_t height,
+                        float fps, std::uint32_t averageBitrate,
+                        EncoderProbe& probe);
+
+// Drops a probe whose encoder MFT just faulted without releasing anything.
+// Releasing an MFT that crashed inside its own D3D9 call can fault again, so
+// the (bounded, once-per-session) leak is the safer option.
+void AbandonEncoderProbe(EncoderProbe& probe) noexcept {
+    probe.writer = nullptr;
+    probe.target.transform = nullptr;
+    probe.target.codec = nullptr;
+    probe.target.index = 0;
+    probe.target.transformCount = 0;
+    probe.target.surfaceHash = 0;
+    probe.file.clear();
+    probe.started = false;
+}
+
+// SEH wrapper: no local objects with destructors here, so the __try block does
+// not need C++ unwinding (the same idiom as the crash-backup handler).
+bool CreateEncoderProbeGuarded(bool system, std::int32_t width,
+                               std::int32_t height, float fps,
+                               std::uint32_t averageBitrate,
+                               EncoderProbe& probe) noexcept {
+    __try {
+        return CreateEncoderProbe(system, width, height, fps, averageBitrate,
+                                  probe);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        runtime_log::Write(
+            "H264 encoder probe faulted code=0x%08lX hardware=%d",
+            static_cast<unsigned long>(GetExceptionCode()), system ? 1 : 0);
+        return false;
+    }
 }
 
 bool CreateEncoderProbe(bool system, std::int32_t width, std::int32_t height,
@@ -538,7 +691,7 @@ bool CreateEncoderProbe(bool system, std::int32_t width, std::int32_t height,
 
     DWORD stream = 0;
     hr = AddH264VideoStream(probe.writer, width, height, fps,
-                            averageBitrate, &stream);
+                            averageBitrate, system, &stream);
     if (SUCCEEDED(hr) &&
         !ResolveSinkWriterEncoder(probe.writer, stream, probe.target)) {
         // Some Sink Writer builds only instantiate the chain on BeginWriting.
@@ -910,9 +1063,23 @@ bool ShowH264EncoderSettingsDialog(void* ownerWindow,
     // enumerate the encoder it selects, so the rows below are the options of
     // the encoder the export will actually use.
     EncoderProbe probe;
-    const bool probed = CreateEncoderProbe(enableSystemEncoders, exportWidth,
-                                           exportHeight, exportFps,
-                                           averageBitrate, probe);
+    bool probed = false;
+    if (enableSystemEncoders && !g_hardwareEncoderUnsafe) {
+        probed = CreateEncoderProbeGuarded(true, exportWidth, exportHeight,
+                                           exportFps, averageBitrate, probe);
+        if (!probed) {
+            // Either the hardware chain faulted inside the vendor MFT or it
+            // exposed no configurable encoder.  Drop whatever it left behind
+            // and enumerate the software MFT instead; the session stays on
+            // software so the export cannot hit the same fault.
+            g_hardwareEncoderUnsafe = true;
+            AbandonEncoderProbe(probe);
+        }
+    }
+    if (!probed) {
+        probed = CreateEncoderProbeGuarded(false, exportWidth, exportHeight,
+                                           exportFps, averageBitrate, probe);
+    }
 
     EncoderSettingsDialog state;
     state.owner = static_cast<HWND>(ownerWindow);
@@ -920,7 +1087,7 @@ bool ShowH264EncoderSettingsDialog(void* ownerWindow,
     state.uiLanguage = uiLanguage;
     state.codec = probe.target.codec;
     state.averageBitrate = &averageBitrate;
-    state.group = enableSystemEncoders ? 1 : 0;
+    state.group = enableSystemEncoders && !g_hardwareEncoderUnsafe ? 1 : 0;
     state.surfaceHash = probe.target.surfaceHash;
     state.hasSurfaceHash = probed;
 
@@ -1043,8 +1210,14 @@ bool ShowH264EncoderSettingsDialog(void* ownerWindow,
     wchar_t bitrateText[48]{};
     swprintf_s(bitrateText, L"%.3f", averageBitrate / 1'000'000.0);
     SetWindowTextW(state.bitrate, bitrateText);
+    const bool hardwareBlocked = enableSystemEncoders && g_hardwareEncoderUnsafe;
     CreateWindowExW(0, L"STATIC",
-        probed
+        hardwareBlocked
+            ? UiText(state.uiLanguage,
+                L"Hardware encoder disabled after a driver fault; using the software H.264 encoder:",
+                L"硬件编码器在驱动故障后已停用，改用软件 H.264 编码器：",
+                L"ハードウェアエンコーダーはドライバー障害のため無効です。ソフトウェア H.264 エンコーダーを使用します：")
+        : probed
             ? UiText(state.uiLanguage,
                 L"Editable standard options supported by the selected encoder:",
                 L"所选编码器支持且可修改的标准属性：",
@@ -1169,64 +1342,67 @@ std::vector<std::wstring> EnumerateH264Encoders() {
     return names;
 }
 
-bool StartBuiltInH264Recording(DShowRecorder* recorder, const wchar_t* path,
-                               std::int32_t width, std::int32_t height,
-                               float fps, const WaveAudioContext* audio,
-                               bool enableSystemEncoders,
-                               std::uint32_t averageBitrate,
-                               void* ownerWindow,
-                               unsigned char uiLanguage) {
-    if (recorder == nullptr || path == nullptr || width <= 0 || height <= 0 ||
-        width > 16384 || height > 16384 || (width & 1) != 0 ||
-        (height & 1) != 0 || !std::isfinite(fps) || fps <= 0.0f)
-        return false;
+// Creates the Sink Writer and adds the H.264 video stream under an SEH guard.
+// Only scalars live in this frame, so the __try block does not need C++
+// unwinding.  See g_hardwareEncoderUnsafe above for why the hardware chain is
+// isolated instead of trusted.
+HRESULT OpenH264SinkWriterGuarded(IMFSinkWriter** writer, const wchar_t* path,
+                                  bool hardware, std::int32_t width,
+                                  std::int32_t height, float fps,
+                                  std::uint32_t averageBitrate,
+                                  bool nv12Input, DWORD* stream) noexcept {
+    __try {
+        IMFAttributes* attributes = nullptr;
+        HRESULT hr = MFCreateAttributes(&attributes, 1);
+        if (SUCCEEDED(hr))
+            hr = attributes->SetUINT32(
+                MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS,
+                hardware ? TRUE : FALSE);
+        if (SUCCEEDED(hr))
+            hr = MFCreateSinkWriterFromURL(path, nullptr, attributes, writer);
+        if (attributes != nullptr) attributes->Release();
+        if (SUCCEEDED(hr))
+            hr = AddH264VideoStream(*writer, width, height, fps,
+                                    averageBitrate, nv12Input, stream);
+        return hr;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        runtime_log::Write(
+            "H264 export writer faulted code=0x%08lX hardware=%d",
+            static_cast<unsigned long>(GetExceptionCode()), hardware ? 1 : 0);
+        return E_FAIL;
+    }
+}
 
-    auto recording = std::make_unique<Recording>();
-    recording->owner = static_cast<HWND>(ownerWindow);
-    recording->uiLanguage = uiLanguage;
-    recording->frameBytes = std::uint64_t(width) * height * 4;
-    if (recording->frameBytes > MAXDWORD)
-        return false;
-    recording->fpsNumerator = static_cast<std::uint32_t>(std::lround(fps * 1000.0));
-    recording->fpsDenominator = 1000;
-    const std::uint32_t divisor = std::gcd(recording->fpsNumerator,
-                                           recording->fpsDenominator);
-    recording->fpsNumerator /= divisor;
-    recording->fpsDenominator /= divisor;
-    recording->frameDuration = 10'000'000ull * recording->fpsDenominator /
-                               recording->fpsNumerator;
+// Releases a Sink Writer whose encoder MFT faulted, swallowing a second fault
+// so the editor survives.  Reaching the writer's Release is worth attempting
+// because it closes the output file the hardware attempt created; if the
+// teardown faults too, the objects are leaked on purpose.
+void ReleaseSinkWriterQuietly(IMFSinkWriter*& writer) noexcept {
+    IMFSinkWriter* local = writer;
+    writer = nullptr;
+    if (local == nullptr)
+        return;
+    __try {
+        local->Release();
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        runtime_log::Write(
+            "H264 writer release faulted code=0x%08lX",
+            static_cast<unsigned long>(GetExceptionCode()));
+    }
+}
 
-    HRESULT hr = MFStartup(MF_VERSION, MFSTARTUP_FULL);
-    if (FAILED(hr)) return false;
-    recording->mfStarted = true;
-    IMFAttributes* writerAttributes = nullptr;
-    hr = MFCreateAttributes(&writerAttributes, 1);
-    if (SUCCEEDED(hr))
-        hr = writerAttributes->SetUINT32(
-            MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS,
-            enableSystemEncoders ? TRUE : FALSE);
-    if (SUCCEEDED(hr))
-        hr = MFCreateSinkWriterFromURL(path, nullptr, writerAttributes,
-                                       &recording->writer);
-    if (writerAttributes != nullptr) writerAttributes->Release();
-    if (FAILED(hr)) return false;
-
-    hr = AddH264VideoStream(recording->writer, width, height, fps,
-                            averageBitrate, &recording->videoStream);
-    ApplyResult settings;
-    if (SUCCEEDED(hr))
-        settings = ApplyConfiguredEncoderSettings(recording->writer,
-                                                  recording->videoStream,
-                                                  enableSystemEncoders,
-                                                  averageBitrate,
-                                                  recording->uiLanguage);
-    if (FAILED(hr)) return false;
-
-    if (audio != nullptr && audio->path[0] != L'\0' && audio->dataSize > 0) {
-        if (audio->format.wFormatTag != WAVE_FORMAT_PCM ||
-            audio->format.nChannels == 0 || audio->format.nSamplesPerSec == 0 ||
-            audio->format.nBlockAlign == 0 || audio->format.wBitsPerSample == 0)
-            return false;
+// Initialize the entire encoder chain before accepting an export attempt.
+// BeginWriting and ICodecAPI can instantiate vendor code just like AddStream.
+HRESULT StartH264SinkWriter(Recording* recording, const wchar_t* path,
+                           std::int32_t width, std::int32_t height, float fps,
+                           const WaveAudioContext* audio, bool hardwareActive,
+                           std::uint32_t averageBitrate, ApplyResult& settings) {
+    HRESULT hr = OpenH264SinkWriterGuarded(&recording->writer, path, hardwareActive,
+        width, height, fps, averageBitrate, hardwareActive, &recording->videoStream);
+    if (FAILED(hr)) return hr;
+    settings = ApplyConfiguredEncoderSettings(recording->writer,
+        recording->videoStream, hardwareActive, averageBitrate, recording->uiLanguage);
+    if (recording->hasAudio) {
         IMFMediaType* audioOutput = nullptr;
         IMFMediaType* audioInput = nullptr;
         hr = MFCreateMediaType(&audioOutput);
@@ -1263,8 +1439,74 @@ bool StartBuiltInH264Recording(DShowRecorder* recorder, const wchar_t* path,
         }
         if (audioInput != nullptr) audioInput->Release();
         if (audioOutput != nullptr) audioOutput->Release();
-        if (FAILED(hr)) return false;
+        if (FAILED(hr)) return hr;
 
+    }
+    hr = recording->writer->BeginWriting();
+    if (FAILED(hr)) return hr;
+    if (!settings.encoderFound) {
+        // Some Sink Writer builds instantiate the encoder chain only at
+        // BeginWriting; configure the encoder then, before the first frame.
+        settings = ApplyConfiguredEncoderSettings(recording->writer,
+                                                  recording->videoStream,
+                                                  hardwareActive,
+                                                  averageBitrate,
+                                                  recording->uiLanguage);
+    }
+    return S_OK;
+}
+
+HRESULT StartH264SinkWriterGuarded(Recording* recording, const wchar_t* path,
+                                  std::int32_t width, std::int32_t height, float fps,
+                                  const WaveAudioContext* audio, bool hardwareActive,
+                                  std::uint32_t averageBitrate, ApplyResult& settings) noexcept {
+    __try {
+        return StartH264SinkWriter(recording, path, width, height, fps, audio,
+                                  hardwareActive, averageBitrate, settings);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        runtime_log::Write("H264 export initialization faulted code=0x%08lX hardware=%d",
+            static_cast<unsigned long>(GetExceptionCode()), hardwareActive ? 1 : 0);
+        return E_FAIL;
+    }
+}
+
+bool StartBuiltInH264Recording(DShowRecorder* recorder, const wchar_t* path,
+                               std::int32_t width, std::int32_t height,
+                               float fps, const WaveAudioContext* audio,
+                               bool enableSystemEncoders,
+                               std::uint32_t averageBitrate,
+                               void* ownerWindow,
+                               unsigned char uiLanguage) {
+    if (recorder == nullptr || path == nullptr || width <= 0 || height <= 0 ||
+        width > 16384 || height > 16384 || (width & 1) != 0 ||
+        (height & 1) != 0 || !std::isfinite(fps) || fps <= 0.0f)
+        return false;
+
+    auto recording = std::make_unique<Recording>();
+    recording->owner = static_cast<HWND>(ownerWindow);
+    recording->uiLanguage = uiLanguage;
+    recording->frameBytes = std::uint64_t(width) * height * 4;
+    if (recording->frameBytes > MAXDWORD)
+        return false;
+    recording->fpsNumerator = static_cast<std::uint32_t>(std::lround(fps * 1000.0));
+    recording->fpsDenominator = 1000;
+    const std::uint32_t divisor = std::gcd(recording->fpsNumerator,
+                                           recording->fpsDenominator);
+    recording->fpsNumerator /= divisor;
+    recording->fpsDenominator /= divisor;
+    recording->frameDuration = 10'000'000ull * recording->fpsDenominator /
+                               recording->fpsNumerator;
+
+    HRESULT hr = MFStartup(MF_VERSION, MFSTARTUP_FULL);
+    if (FAILED(hr)) return false;
+    recording->mfStarted = true;
+    // Validate/open the source audio once. A bad input file must not disable
+    // hardware encoding, and a retry must not leak or advance its file handle.
+    if (audio != nullptr && audio->path[0] != L'\0' && audio->dataSize > 0) {
+        if (audio->format.wFormatTag != WAVE_FORMAT_PCM ||
+            audio->format.nChannels == 0 || audio->format.nSamplesPerSec == 0 ||
+            audio->format.nBlockAlign == 0 || audio->format.wBitsPerSample == 0)
+            return false;
         recording->audioFile = CreateFileW(audio->path, GENERIC_READ,
                                             FILE_SHARE_READ, nullptr, OPEN_EXISTING,
                                             FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -1281,17 +1523,26 @@ bool StartBuiltInH264Recording(DShowRecorder* recorder, const wchar_t* path,
         recording->hasAudio = true;
     }
 
-    hr = recording->writer->BeginWriting();
-    if (FAILED(hr)) return false;
-    if (!settings.encoderFound) {
-        // Some Sink Writer builds instantiate the encoder chain only at
-        // BeginWriting; configure the encoder then, before the first frame.
-        settings = ApplyConfiguredEncoderSettings(recording->writer,
-                                                  recording->videoStream,
-                                                  enableSystemEncoders,
-                                                  averageBitrate,
-                                                  recording->uiLanguage);
+    recording->width = width;
+    recording->height = height;
+    bool hardwareActive = enableSystemEncoders && !g_hardwareEncoderUnsafe;
+    ApplyResult settings;
+    hr = StartH264SinkWriterGuarded(recording.get(), path, width, height, fps,
+                                  audio, hardwareActive, averageBitrate, settings);
+    if (FAILED(hr) && hardwareActive) {
+        g_hardwareEncoderUnsafe = true;
+        hardwareActive = false;
+        ReleaseSinkWriterQuietly(recording->writer);
+        recording->videoStream = 0;
+        recording->audioStream = 0;
+        settings = ApplyResult{};
+        hr = StartH264SinkWriterGuarded(recording.get(), path, width, height, fps,
+                                      audio, false, averageBitrate, settings);
+        if (SUCCEEDED(hr))
+            ReportHardwareFallbackOnce(recording->owner, recording->uiLanguage);
     }
+    if (FAILED(hr)) return false;
+    recording->nv12Input = hardwareActive;
     ReportApplyResult(recording->owner, settings, recording->uiLanguage);
     std::lock_guard<std::mutex> lock(gRecordingsMutex);
     gRecordings[recorder] = std::move(recording);
@@ -1314,14 +1565,26 @@ bool WriteBuiltInH264Frame(DShowRecorder* recorder, const void* bgra,
 
     IMFMediaBuffer* buffer = nullptr;
     IMFSample* sample = nullptr;
-    HRESULT hr = MFCreateMemoryBuffer(static_cast<DWORD>(bytes), &buffer);
+    const std::uint64_t sampleBytes = recording.nv12Input
+        ? std::uint64_t(recording.width) * recording.height * 3 / 2
+        : recording.frameBytes;
+    HRESULT hr = MFCreateMemoryBuffer(static_cast<DWORD>(sampleBytes), &buffer);
     BYTE* destination = nullptr;
     DWORD maximum = 0;
     if (SUCCEEDED(hr)) hr = buffer->Lock(&destination, &maximum, nullptr);
     if (SUCCEEDED(hr)) {
-        memcpy(destination, bgra, bytes);
+        if (recording.nv12Input) {
+            // The MF buffer already owns exactly sampleBytes writable bytes.
+            // Convert in place instead of allocating another frame while it
+            // is locked; allocation failure must never skip Unlock/Release.
+            ConvertBgraToNv12(static_cast<const unsigned char*>(bgra),
+                              recording.width, recording.height,
+                              destination);
+        } else {
+            memcpy(destination, bgra, bytes);
+        }
         buffer->Unlock();
-        hr = buffer->SetCurrentLength(static_cast<DWORD>(bytes));
+        hr = buffer->SetCurrentLength(static_cast<DWORD>(sampleBytes));
     }
     if (SUCCEEDED(hr)) hr = MFCreateSample(&sample);
     if (SUCCEEDED(hr)) hr = sample->AddBuffer(buffer);
@@ -1369,6 +1632,14 @@ bool FinishBuiltInH264Recording(DShowRecorder* recorder,
     if (SUCCEEDED(hr)) hr = recording->writer->Finalize();
     if (FAILED(hr)) ReportFailure(recording->owner, hr);
     return SUCCEEDED(hr) && completeFrameCount;
+}
+
+void ResetH264HardwareEncoderState() {
+    if (!g_hardwareEncoderUnsafe && !g_hardwareFallbackNoticeShown)
+        return;
+    g_hardwareEncoderUnsafe = false;
+    g_hardwareFallbackNoticeShown = false;
+    runtime_log::Write("H264 hardware encoder re-enabled by the user");
 }
 
 }  // namespace mikumikustudio

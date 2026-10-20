@@ -306,6 +306,11 @@ void BonePosEdit(MMDApp* app, std::size_t axis) {
     if (plugins::TryResetBoundPoseAxis(app, plugins::NativePoseAxisKind::Position,
                                      static_cast<int>(axis))) return;
 #endif
+    // A forwarded reset can arrive while the coordinate edit keeps focus.
+    // Discard its old pending displacement before the native refresh so a
+    // later WM_KILLFOCUS cannot commit that text over the reset pose.
+    const HWND owner = app->FloatingWindow() ? app->FloatingWindow() : app->MainWindow();
+    SendDlgItemMessageA(owner, panel::kReadoutPosXEdit + static_cast<int>(axis), EM_SETMODIFY, FALSE, 0);
     if (app->state.optflag[0] != 0) {
         app->CameraPositionAxis(axis) = 0.0f;
         RefreshRequest(-1);

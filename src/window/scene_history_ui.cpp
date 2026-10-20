@@ -13,6 +13,7 @@
 
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/model.hpp"
+#include "mikumikustudio/model_order_projection.hpp"
 #include "mikumikustudio/panel_controls.hpp"
 #include "mikumikustudio/text_encoding.hpp"
 #include "mikumikustudio/ui_language.hpp"
@@ -134,14 +135,18 @@ Result RefreshObjectLists(MMDApp& app, const Selection& selection, bool canUndo,
     try {
         std::vector<ModelRow> models;
         std::vector<AccessoryRow> accessories;
-        for (int slot = 0; slot < kModelSlotCount; ++slot)
-            if (const auto* model = app.ModelSlot(slot)) models.push_back({slot, mdl::Mdl(model)->comboSelIndex, model, {}});
+        const auto projected = model_order::Project<kModelSlotCount>([&](std::size_t slot) noexcept {
+            const auto* model = app.ModelSlot(static_cast<int>(slot));
+            return model ? int(mdl::Mdl(model)->comboSelIndex) : -1;
+        });
+        for (std::size_t row = 1; row <= projected.count; ++row) {
+            const int slot = projected.rows[row] - 1;
+            for (const auto& previous : models) if (previous.object == app.ModelSlot(slot)) return Result::InvalidData;
+            models.push_back({slot, static_cast<int>(row), app.ModelSlot(slot), {}});
+        }
         for (int slot = 0; slot < kAccessorySlots; ++slot)
             if (const auto* accessory = app.AccessorySlot(slot)) accessories.push_back({slot, accessory->order, accessory, {}});
-        std::sort(models.begin(), models.end(), [](const auto& a, const auto& b) { return a.order < b.order; });
         std::sort(accessories.begin(), accessories.end(), [](const auto& a, const auto& b) { return a.order < b.order; });
-        for (std::size_t i = 0; i < models.size(); ++i)
-            if (models[i].order != static_cast<int>(i) + 1) return Result::InvalidOrder;
         for (std::size_t i = 0; i < accessories.size(); ++i)
             if (accessories[i].order != static_cast<int>(i)) return Result::InvalidOrder;
         const auto language = app.EnglishUI();

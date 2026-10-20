@@ -9,6 +9,8 @@ namespace mikumikustudio::plugins {
 enum class ModelOrderKind { Draw, Calculate };
 // Capture before opening the editor. Read its slot+1 scratch permutation
 // without publishing; Take is consumed only after the modal has closed.
+// Source ranks may be damaged. Capture their exact bytes for undo; Read must
+// still supply every retained model once and changes only the chosen family.
 class NativeModelOrderPlan {
     struct State;
     std::shared_ptr<State> state_;

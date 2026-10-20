@@ -2,6 +2,8 @@
 #include "mikumikustudio/build_profile.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include <Windows.h>
+#include <cstdint>
+#include <mms/plugin.h>
 namespace mikumikustudio { class MMDApp; }
 namespace mikumikustudio::plugins {
 // True means the explicit migration binding owns the command, including
@@ -9,6 +11,7 @@ namespace mikumikustudio::plugins {
 // Camera mode deletes the five global key families in one explicit node;
 // current-frame fallback is limited to selected rows with no explicit marks.
 bool TryDeleteBoundKeys(MMDApp*, bool selectedAtCurrentFrame = false) noexcept;
+bool TryDeleteUnusedBoundKeys(MMDApp*, std::uint32_t& deleted, MmsResult& result) noexcept;
 bool TryScaleBoundBoneRange(MMDApp*, HWND dialog) noexcept;
 bool TryApplyBoundInterpolation(MMDApp*, HWND window, bool reset) noexcept;
 // Current-state registration. lane is the native morph selector row (0..3),

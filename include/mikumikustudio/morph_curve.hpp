@@ -247,6 +247,12 @@ class AuthoredReplacement {
     friend class AuthoredImport;
 public:
     AuthoredReplacement(unsigned char*, const std::vector<animation_curve::NamedTrack>&);
+    // Removes only these authored entries. The native target remains the
+    // caller's private plan; old double controls are retained without any
+    // conversion to a float mirror, including controls outside its hull.
+    // ChangedMorphs owns all requested entries, including their absence;
+    // Changed reports whether any author data was actually removed.
+    static AuthoredReplacement Erase(unsigned char*, const std::vector<unsigned>& morphs);
     ~AuthoredReplacement();
     bool Changed() const noexcept;
     bool IsCurrent() const noexcept;

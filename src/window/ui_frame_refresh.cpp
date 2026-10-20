@@ -38,6 +38,7 @@
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/ui_control_readout.hpp"
 #include "mikumikustudio/model.hpp"
+#include "mikumikustudio/model_order_projection.hpp"
 #include "mikumikustudio/bone_combo.hpp"
 #include "mikumikustudio/accessory_layout.hpp"
 #include "mikumikustudio/panel_controls.hpp"
@@ -405,8 +406,13 @@ void SyncAccessoryEditPanel(MMDApp* app) {
     const std::int32_t parentSlot = accessory->parentModel;
     const auto* model = parentSlot >= 0 && parentSlot < kModelSlotCount
         ? mdl::Mdl(app->ModelSlot(parentSlot)) : nullptr;
-    const LRESULT parentRow = model != nullptr ? model->comboSelIndex
-        : parentSlot < 0 ? 0 : -1;
+    const auto order = model_order::Project<kModelSlotCount>([&](std::size_t slot) noexcept {
+        const auto* object = app->ModelSlot(static_cast<int>(slot));
+        return object ? int(mdl::Mdl(object)->comboSelIndex) : -1;
+    });
+    const LRESULT parentRow = model != nullptr ? model_order::FindRow(order, unsigned(parentSlot),
+        SendMessageW(modelCombo, CB_GETCOUNT, 0, 0),
+        [&](std::size_t row) noexcept { return SendMessageW(modelCombo, CB_GETITEMDATA, row, 0); }) : parentSlot < 0 ? 0 : -1;
     const HWND boneCombo = GetDlgItem(main, panel::kAttachBoneCombo);
     const bool english = UiUsesEnglishNames(app->EnglishUI());
     try {

@@ -9,6 +9,7 @@ bool ValidPreservedData(const PreservedCameraInterval& value) noexcept {
        !std::isfinite(value.sampleFirst)||!std::isfinite(value.sampleLast)||
        value.sampleFirst<value.sourceFirst||value.sampleLast>value.sourceLast||value.sampleFirst>=value.sampleLast||
        !std::isfinite(value.sourceValueFirst)||!std::isfinite(value.sourceValueLast))return false;
+    if(!value.oneFrameHold&&!value.transportTiming)return false;
     for(double component:value.controls)if(!std::isfinite(component)||component<0||component>127)return false;
     for(double component:value.geometry)if(!std::isfinite(component))return false;
     return true;
@@ -30,12 +31,13 @@ ac::Sample SamplePreservedSource(const PreservedCameraInterval& interval,double 
         interval.sampleFirst+(frame-interval.first):interval.sampleFirst+(frame-interval.first)/(interval.last-interval.first)*
         (interval.sampleLast-interval.sampleFirst);
     const double span=double(interval.sourceLast)-interval.sourceFirst;
+    const bool cut=span==1.0&&interval.oneFrameHold;
     const double ratio=(source-interval.sourceFirst)/span;
     double value=interval.sourceValueFirst;
     if(source>=interval.sourceLast)value=interval.sourceValueLast;
-    else if(source>interval.sourceFirst&&span!=1.0)value+=(interval.sourceValueLast-interval.sourceValueFirst)*
-        CameraCurveTime(interval.controls,float(ratio));
-    const double derivative=span==1.0?0:(interval.sourceValueLast-interval.sourceValueFirst)/span*
+    else if(source>interval.sourceFirst&&!cut)value+=(interval.sourceValueLast-interval.sourceValueFirst)*
+        CameraCurveTime(interval.controls,float(ratio),interval.transportTiming);
+    const double derivative=cut?0:(interval.sourceValueLast-interval.sourceValueFirst)/span*
         native_curve_sample::Evaluate(interval.controls,ratio).slope*
         (interval.sampleLast-interval.sampleFirst)/(interval.last-interval.first);
     return {value,derivative};

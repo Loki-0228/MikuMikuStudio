@@ -1,4 +1,5 @@
 #include "native_morph_keys.hpp"
+#include "native_key_selection.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "native_bone_registration.hpp"
 #include "native_range_scale.hpp"
@@ -80,7 +81,7 @@ struct MorphDeletion final : HistoryChange, std::enable_shared_from_this<MorphDe
     std::size_t capacity;
     std::vector<Patch> patches;
     std::vector<Rule> rules;
-    bool frameLine = false;
+    bool frameLine = false, preserveEditedValues = false;
     std::uint32_t maxBefore = 0, maxAfter = 0;
     MorphDeletion(MMDApp& owner, unsigned slot) : app(owner), modelSlot(slot), model(app.ModelSlot(slot)),
         lifetime(RetainSceneObject(app, MMS_OBJECT_MODEL, slot)), morphs(mdl::Mdl(model)->morphs),
@@ -163,7 +164,7 @@ struct MorphDeletion final : HistoryChange, std::enable_shared_from_this<MorphDe
                 float value = 0;
                 if (!morph_curve::SampleLayersTarget(candidate->layers, view, int(rule.morph), candidate->frame, value, error))
                     return MMS_E_ARGUMENT;
-                if (frameLine) {
+                if (frameLine || preserveEditedValues) {
                     morph_curve::NativeKeyView currentView;
                     currentView.context = candidate->pool; currentView.capacity = candidate->capacity;
                     currentView.key = [](const void* context, std::uint32_t index) noexcept {
@@ -790,7 +791,8 @@ MmsResult PlanMorphKeyPaste(MMDApp& app,unsigned slot,const ModelPasteSource& in
     });
 }
 
-MmsResult PlanMorphKeyDeletion(MMDApp& app, unsigned slot, std::shared_ptr<HistoryChange>& out, bool allowOtherMarks) noexcept {
+MmsResult PlanMorphKeyDeletion(MMDApp& app, unsigned slot, std::shared_ptr<HistoryChange>& out, bool allowOtherMarks,
+    const std::vector<unsigned>* selectedSlots) noexcept {
     out.reset();
     if (slot >= kModelSlotCount || !app.ModelSlot(slot) || app.PlaybackActive() || app.FrameStepPlayback() ||
         app.state.recordPlaybackStartPending || app.SceneMutationInProgress()) return MMS_E_NOT_READY;
@@ -804,7 +806,8 @@ MmsResult PlanMorphKeyDeletion(MMDApp& app, unsigned slot, std::shared_ptr<Histo
                 Marked(model.displayKeys, mdl::KeyPoolCapacity(model.displayKeys))) return MMS_E_NOT_READY;
         }
         const auto capacity = mdl::MorphKeyCapacity(model.morphKeys);
-        if (!Marked(model.morphKeys, capacity)) return MMS_OK;
+        if (selectedSlots && !ValidKeySelection(*selectedSlots, capacity)) return MMS_E_ARGUMENT;
+        if (selectedSlots ? selectedSlots->empty() : !Marked(model.morphKeys, capacity)) return MMS_OK;
         Owners owners; Chains(model, owners);
         std::map<unsigned, Patch> planned; std::set<unsigned> affected;
         const auto write = [&](unsigned index) -> mdl::MorphKey& {
@@ -814,7 +817,8 @@ MmsResult PlanMorphKeyDeletion(MMDApp& app, unsigned slot, std::shared_ptr<Histo
             }
             return found->second.after;
         };
-        for (std::size_t index = 0; index < capacity; ++index) if (model.morphKeys[index].allocated) {
+        for (std::size_t index = 0; index < capacity; ++index) if (selectedSlots ?
+            SelectedKeySlot(*selectedSlots, unsigned(index)) : model.morphKeys[index].allocated != 0) {
             const auto owner = owners.find(unsigned(index)); if (owner == owners.end()) return MMS_E_ARGUMENT;
             affected.insert(owner->second);
             auto& key = write(unsigned(index)); const auto previous = key.previous, next = key.next;
@@ -825,6 +829,7 @@ MmsResult PlanMorphKeyDeletion(MMDApp& app, unsigned slot, std::shared_ptr<Histo
             key.previous = 0;
         }
         auto change = std::make_shared<MorphDeletion>(app, slot); change->patches.reserve(planned.size());
+        change->preserveEditedValues = selectedSlots != nullptr;
         for (const auto& patch : planned) change->patches.push_back(patch.second);
         change->rules.reserve(affected.size());
         for (auto morph : affected) {

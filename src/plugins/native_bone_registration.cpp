@@ -1,4 +1,5 @@
 #include "native_bone_registration.hpp"
+#include "native_key_selection.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "native_bone_evaluation.hpp"
 #include "native_center_offset.hpp"
@@ -1073,7 +1074,8 @@ MmsResult PlanBoneFrameLine(MMDApp& app, unsigned slot, int frame, bool insert, 
 
 MmsResult PlanBoneKeyDeletion(MMDApp& app, unsigned slot, bool automaticInterpolation,
     std::shared_ptr<HistoryChange>& out, bool selectedAtCurrentFrame,
-    bool allowOtherMarks, std::shared_ptr<DisplayKeyDeletion> display) noexcept {
+    bool allowOtherMarks, std::shared_ptr<DisplayKeyDeletion> display,
+    const std::vector<unsigned>* selectedSlots) noexcept {
     out.reset();
     return Boundary([&]() -> MmsResult {
         if (!ReadyForKeyPlan(app, slot)) return MMS_E_NOT_READY;
@@ -1082,8 +1084,9 @@ MmsResult PlanBoneKeyDeletion(MMDApp& app, unsigned slot, bool automaticInterpol
             AnyMarks(model.displayKeys, mdl::KeyPoolCapacity(model.displayKeys));
         if (otherMarks && !allowOtherMarks) return MMS_E_NOT_READY;
         const auto capacity = mdl::BoneKeyCapacity(model.boneKeys);
-        const bool explicitMarks = AnyMarks(model.boneKeys, capacity);
-        const bool fallback = !explicitMarks && !otherMarks && selectedAtCurrentFrame && app.CurrentFrame() != 0;
+        if (selectedSlots && !ValidKeySelection(*selectedSlots, capacity)) return MMS_E_ARGUMENT;
+        const bool explicitMarks = selectedSlots ? !selectedSlots->empty() : AnyMarks(model.boneKeys, capacity);
+        const bool fallback = !selectedSlots && !explicitMarks && !otherMarks && selectedAtCurrentFrame && app.CurrentFrame() != 0;
         if (!explicitMarks && !fallback && !display) return MMS_OK;
         if (fallback) {
             if (!model.boneSelection) return MMS_E_NOT_READY;
@@ -1098,7 +1101,7 @@ MmsResult PlanBoneKeyDeletion(MMDApp& app, unsigned slot, bool automaticInterpol
         for (std::size_t index = 0; index < capacity; ++index) {
             const auto& key = model.boneKeys[index];
             const auto owner = owners.find(unsigned(index));
-            const bool wanted = explicitMarks ? key.allocated != 0 : fallback &&
+            const bool wanted = selectedSlots ? SelectedKeySlot(*selectedSlots, unsigned(index)) : explicitMarks ? key.allocated != 0 : fallback &&
                 owner != owners.end() && model.boneSelection[owner->second] && key.frame == unsigned(app.CurrentFrame());
             if (!wanted) continue;
             if (owner == owners.end()) return MMS_E_ARGUMENT;

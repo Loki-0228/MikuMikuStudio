@@ -245,6 +245,7 @@
 #include "mikumikustudio/bake_ui_lock.hpp"
 #include "mikumikustudio/effect_api.hpp"
 #include "mikumikustudio/scene_history_ui.hpp"
+#include "mikumikustudio/model_order_projection.hpp"
 #include "mikumikustudio/accessory_layout.hpp"
 #include "mikumikustudio/global_key_layout.hpp"
 #include "mikumikustudio/mmd_app.hpp"
@@ -589,6 +590,7 @@ bool InitModelOrderRows(ModelOrderDialogState& state, HWND dialog) {
         auto* model = state.app.ModelSlot(slot);
         state.models[slot] = model;
         if (!model) continue;
+        for (int previous = 0; previous < slot; ++previous) if (state.models[previous] == model) return false;
         ++state.count;
         state.draw[slot] = mdl::Mdl(model)->comboSelIndex;
         state.calculation[slot] = mdl::Mdl(model)->comboSelIndex2;
@@ -598,16 +600,13 @@ bool InitModelOrderRows(ModelOrderDialogState& state, HWND dialog) {
     if (!state.order) return false;
     state.app.AccessoryOrderArray() = state.order;
     try {
+        const auto projected = model_order::Project<kModelSlotCount>([&](std::size_t slot) noexcept {
+            return state.models[slot] ? int(state.calculate ? state.calculation[slot] : state.draw[slot]) : -1;
+        });
+        if (projected.count != static_cast<std::size_t>(state.count)) return false;
         for (int row = 1; row <= state.count; ++row) {
-            int found = -1;
-            for (int slot = 0; slot < kModelSlotCount; ++slot) {
-                if (!state.models[slot] || (state.calculate ? state.calculation[slot] : state.draw[slot]) != row)
-                    continue;
-                if (found >= 0) return false;
-                found = slot;
-            }
-            if (found < 0) return false;
-            state.order[row] = found + 1;
+            const int found = projected.rows[row] - 1;
+            state.order[row] = projected.rows[row];
             const auto name = text_encoding::ModelLabel(*mdl::Mdl(state.models[found]),
                 UiUsesEnglishNames(state.app.EnglishUI()));
             if (SendDlgItemMessageW(dialog, panel::kOrderListBox, LB_ADDSTRING, 0,

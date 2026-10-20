@@ -53,7 +53,7 @@ if(MIKUMIKUSTUDIO_PROFILE STREQUAL "full")
     target_sources(mikumikustudio_core PRIVATE src/plugins/native_morph_reset.cpp)
     target_sources(mikumikustudio_core PRIVATE src/plugins/native_physics_toggle.cpp src/plugins/native_center_offset.cpp)
     target_sources(mikumikustudio_core PRIVATE src/plugins/native_camera_follow.cpp src/plugins/native_camera_follow_sample.cpp src/plugins/native_camera_follow_ui.cpp)
-    target_sources(mikumikustudio_core PRIVATE src/plugins/native_global_registration.cpp src/plugins/native_accessory_registration.cpp src/plugins/native_global_commands.cpp src/plugins/native_camera_interpolation.cpp)
+    target_sources(mikumikustudio_core PRIVATE src/plugins/native_global_registration.cpp src/plugins/native_accessory_registration.cpp src/plugins/native_global_commands.cpp src/plugins/native_camera_interpolation.cpp src/plugins/native_camera_multiply.cpp src/plugins/native_morph_category.cpp)
     target_sources(mikumikustudio_core PRIVATE src/physics/history_physics.cpp src/plugins/scene_object_history.cpp src/plugins/scene_resource_budget.cpp src/plugins/native_pose_scope.cpp src/plugins/native_history_commands.cpp src/plugins/native_pose_axis.cpp src/plugins/native_bone_registration.cpp src/plugins/native_key_commands.cpp src/plugins/native_bone_evaluation.cpp src/plugins/native_display_keys.cpp src/plugins/native_morph_keys.cpp src/plugins/native_morph_commands.cpp src/plugins/native_vpd_import.cpp src/plugins/native_model_keys.cpp)
 endif()
 

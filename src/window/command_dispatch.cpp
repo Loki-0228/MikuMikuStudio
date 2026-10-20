@@ -6,6 +6,7 @@
 #include "mikumikustudio/plugin_menu.hpp"
 #include "mikumikustudio/plugin_runtime.hpp"
 #include "mikumikustudio/ui_translation.hpp"
+#include "mikumikustudio/model_order_projection.hpp"
 #include "mikumikustudio/native_mesh.hpp"
 #include "mikumikustudio/animation_curve_editor.hpp"
 #include "mikumikustudio/frame_rate_correction.hpp"
@@ -100,6 +101,16 @@ void RepopulateBoneCombo(MMDApp* app, HWND combo, std::int32_t modelSlot) {
     FillBoneCombo(combo, mdl::Mdl(app->ModelSlot(modelSlot)),
                   UiUsesEnglishNames(app->EnglishUI()));
     SendMessageW(combo, CB_SETCURSEL, 0, 0);
+}
+
+int SelectedModelSlot(MMDApp& app, HWND combo, LRESULT row) noexcept {
+    const auto order = model_order::Project<kModelSlotCount>([&](std::size_t slot) noexcept {
+        const auto* model = app.ModelSlot(static_cast<int>(slot));
+        return model ? int(mdl::Mdl(model)->comboSelIndex) : -1;
+    });
+    if (row <= 0 || row > kModelSlotCount) return -1;
+    return model_order::Resolve(order, static_cast<int>(row), SendMessageW(combo, CB_GETCOUNT, 0, 0),
+        [&](std::size_t item) noexcept { return SendMessageW(combo, CB_GETITEMDATA, item, 0); });
 }
 
 // Shared body of the four facial morph-row combos 0x1F8/0x1FD/0x202/0x207
@@ -207,23 +218,13 @@ bool DefaultSelChangeChain(MMDApp* app, HWND hwnd, HWND ctrl) {
     if (ctrl == GetDlgItem(hwnd, panel::kMainComboNormal)) {
         const LRESULT sel = SendMessageA(GetDlgItem(hwnd, panel::kMainComboNormal),
                                          CB_GETCURSEL, 0, 0);
+        if (sel < 0) return true;
+        const int slot = sel > 0 ? SelectedModelSlot(*app, ctrl, sel) : -1;
+        if (sel > 0 && slot < 0) return true;
         HWND boneCombo = GetDlgItem(hwnd, panel::kBoneRegisterCombo);
         SendMessageA(boneCombo, CB_RESETCONTENT, 0, 0);
         if (sel > 0) {
-            std::int32_t slot = 0;
-            bool found = false;
-            // 槽扫描界 255：x64 0x7FF7CB472E70 处 mov r13d,0FFh 后按 8 字节
-            // 步进扫槽数组（x86 原版才是 0x64）
-            for (; slot < kModelSlotCount; ++slot) {
-                unsigned char* model = app->ModelSlot(slot);
-                if (model != nullptr &&
-                    mdl::Mdl(model)->comboSelIndex ==
-                        static_cast<int>(sel)) {
-                    found = true;
-                    break;
-                }
-            }
-            if (found) {
+            if (slot >= 0) {
                 if (app->CameraParentModel() < 0) {
                     // Start at a visible distance from the bone. A zero relative
                     // Z puts the eye on its origin and clips the binding target.
@@ -304,22 +305,13 @@ bool DefaultSelChangeChain(MMDApp* app, HWND hwnd, HWND ctrl) {
         }
         const LRESULT sel = SendMessageA(GetDlgItem(hwnd, panel::kMainComboGround),
                                          CB_GETCURSEL, 0, 0);
+        if (sel < 0) return true;
+        const int slot = sel > 0 ? SelectedModelSlot(*app, ctrl, sel) : -1;
+        if (sel > 0 && slot < 0) return true;
         HWND boneCombo = GetDlgItem(hwnd, panel::kAttachBoneCombo);
         SendMessageA(boneCombo, CB_RESETCONTENT, 0, 0);
         if (sel > 0) {
-            std::int32_t slot = 0;
-            bool found = false;
-            // 槽扫描界 255：x64 0x7FF7CB4732F7 处 mov r13d,0FFh（同 0x1C1）
-            for (; slot < kModelSlotCount; ++slot) {
-                unsigned char* model = app->ModelSlot(slot);
-                if (model != nullptr &&
-                    mdl::Mdl(model)->comboSelIndex ==
-                        static_cast<int>(sel)) {
-                    found = true;
-                    break;
-                }
-            }
-            if (found) {
+            if (slot >= 0) {
                 acc->parentModel = slot;
                 RepopulateBoneCombo(app, boneCombo, slot);
                 acc->parentBone = 0;

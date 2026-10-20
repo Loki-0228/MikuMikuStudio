@@ -1,7 +1,9 @@
 // Real menu 288/289 resources, controls and dialog procedures. No synthetic
 // WM_INITDIALOG or private apply helper substitutes for the user-facing path.
 #include "mikumikustudio/scene_history_ui.hpp"
+#include "mikumikustudio/model_order_projection.hpp"
 #include <limits>
+namespace mikumikustudio { void RefreshModelSelectorNames(MMDApp*); }
 #if !MMD_ORIGINAL_PROFILE
 #include "mikumikustudio/plugin_scene.hpp"
 #include "../src/plugins/native_model_order.hpp"
@@ -109,6 +111,15 @@ LRESULT CALLBACK DialogHook(int code, WPARAM wp, LPARAM lp) {
         Check(SendMessageW(list, LB_GETCOUNT, 0, 0) == 3, "model-order dialog contains all three models");
         for (int i = 0; i != 3; ++i)
             initialLabels[i] = Text(list, LB_GETTEXTLEN, LB_GETTEXT, i);
+        const auto* scratch=static_cast<const std::int32_t*>(g_Block->AccessoryOrderArray());
+        std::array<bool,kModelSlotCount> seen{};
+        for(int row=1;row<=3;++row) {
+            Check(scratch[row]>0&&scratch[row]<=kModelSlotCount,"actual dialog rows have bounded slot identities");
+            const int slot=scratch[row]-1;
+            Check(g_Block->ModelSlot(slot)&&!seen[slot],"actual dialog rows cover each live model exactly once");seen[slot]=true;
+            Check(initialLabels[row-1]==text_encoding::ModelLabel(*mdl::Mdl(g_Block->ModelSlot(slot)),UiUsesEnglishNames(g_Block->EnglishUI())),
+                "actual dialog caption belongs to its repaired scratch identity");
+        }
         if (listFaultMode) {
             listFaultEnabled = true; listInsertions = 0; listFaultStage = 0;
             Check(SetWindowSubclass(list, RejectListWrite, kFaultSubclass, 0) != FALSE,
@@ -252,7 +263,127 @@ struct Fixture {
                "order-only UI refresh preserves existing undo and redo availability");
     }
 };
+struct DamagedCase {
+    std::array<unsigned char,3> ranks;
+    std::array<int,3> rows;
+};
+constexpr std::array<DamagedCase,5> kDamaged{{
+    {{{2,2,255}},{{1,0,2}}}, {{{0,3,0}},{{0,2,1}}}, {{{1,1,1}},{{0,1,2}}},
+    {{{0,0,0}},{{0,1,2}}}, {{{255,0,4}},{{0,1,2}}}
+}};
+std::array<unsigned char,6> Ranks(const Fixture& f) {
+    std::array<unsigned char,6> result{};
+    for(int i=0;i<3;++i){result[i]=f.models[i]->comboSelIndex;result[i+3]=f.models[i]->comboSelIndex2;}
+    return result;
+}
+void SetDamaged(Fixture& f,bool calculate,const DamagedCase& sample) {
+    for(int i=0;i<3;++i)(calculate?f.models[i]->comboSelIndex2:f.models[i]->comboSelIndex)=sample.ranks[i];
+}
+void ExpectProjectedUi(const Fixture& f,const std::array<int,3>& rows) {
+    for(int row=1;row<=3;++row)for(int id:kCombos) {
+        const HWND combo=GetDlgItem(f.app->MainWindow(),id);
+        Expect(SendMessageW(combo,CB_GETCOUNT,0,0)==4&&SendMessageW(combo,CB_GETITEMDATA,0,0)==-1,
+            "damaged rank UI has a complete explicitly mapped model selector");
+        Expect(SendMessageW(combo,CB_GETITEMDATA,row,0)==kSlots[rows[row-1]]&&
+            Text(combo,CB_GETLBTEXTLEN,CB_GETLBTEXT,row)==f.labels[rows[row-1]],
+            "damaged ranks project to matching object labels and slots without renumbering");
+    }
+}
+void ProjectionRules() {
+    std::array<int,255> ranks;ranks.fill(-1);ranks[0]=2;ranks[7]=2;ranks[254]=255;
+    const auto damaged=model_order::Project<255>([&](std::size_t slot)noexcept{return ranks[slot];});
+    Check(!damaged.originalValid&&damaged.count==3&&damaged.rows[1]==8&&damaged.rows[2]==1&&damaged.rows[3]==255,
+        "projection preserves the first valid rank then fills duplicate and excessive gaps in slot order");
+    for(int slot=0;slot<255;++slot)ranks[slot]=255-slot;
+    const auto full=model_order::Project<255>([&](std::size_t slot)noexcept{return ranks[slot];});
+    Check(full.originalValid&&full.count==255&&full.rows[1]==255&&full.rows[255]==1,
+        "healthy full 255-row permutation retains both boundary slots and ranks");
+    std::array<std::int64_t,256> items{};items[0]=-1;
+    for(std::size_t row=1;row<=full.count;++row)items[row]=full.rows[row]-1;
+    const auto item=[&](std::size_t row)noexcept{return items[row];};
+    Check(model_order::Resolve(full,1,256,item)==254&&model_order::Resolve(full,255,256,item)==0,
+        "complete managed mapping distinguishes real slot zero from unregistered default-zero data");
+    items[1]=0;Check(model_order::Resolve(full,1,256,item)==-1,"duplicate managed item identities are refused");
+    items[1]=-1;Check(model_order::Resolve(full,1,256,item)==-1,"CB_ERR is never read as a model identity");
+    items.fill(0);Check(model_order::Resolve(full,1,256,item)==254,
+        "healthy older combos without registered identity metadata retain native-rank fallback");
+    Check(model_order::Resolve(damaged,1,4,item)==-1&&model_order::Resolve(full,1,255,item)==-1,
+        "unmapped damaged order and incomplete combo cannot select an arbitrary model");
+}
+void DamagedUnboundChecks(Fixture& f) {
+    for(bool calculate:{false,true})for(const auto& sample:kDamaged) {
+        f.Reset();SetDamaged(f,calculate,sample);const auto before=Ranks(f);f.app->SceneModified()=0;
+        f.Open(calculate?289:288,0,631,true);
+        Expect(initialLabels==std::array<std::wstring,3>{f.labels[sample.rows[0]],f.labels[sample.rows[1]],f.labels[sample.rows[2]]},
+            "damaged rank dialog initializes every row from repaired identities rather than stale combo captions");
+        Expect(Ranks(f)==before&&!f.app->SceneModified(),"unbound damaged order and moved scratch cancel without any live renumbering");
+        f.Open(calculate?289:288,-1,0,false);
+        auto expected=before;for(int row=1;row<=3;++row)expected[(calculate?3:0)+sample.rows[row-1]]=static_cast<unsigned char>(row);
+        Expect(Ranks(f)==expected&&f.app->SceneModified(),"unbound OK publishes only its chosen complete repaired family");
+        ExpectProjectedUi(f,calculate?std::array<int,3>{0,1,2}:sample.rows);
+    }
+    f.Reset();
+}
 #if !MMD_ORIGINAL_PROFILE
+void ExerciseMappedSelectors(Fixture& f,const std::array<int,3>& rows,plugins::SharedHistory& history) {
+    const auto ranks=Ranks(f);const auto undo=history.UndoCount(),redo=history.RedoCount();
+    for(int row=1;row<=3;++row) {
+        for(int id:kCombos) {
+            HWND combo=GetDlgItem(f.app->MainWindow(),id);
+            Check(SendMessageW(combo,CB_SETCURSEL,row,0)==row,"select an actual projected model row");
+            CommandDispatch(combo,MAKEWPARAM(id,CBN_SELCHANGE));
+            const auto expected=kSlots[rows[row-1]];
+            Expect(id==436?f.app->SelectedModelSlot()==expected:id==449?f.app->CameraParentModel()==expected:f.accessory.parentModel==expected,
+                "actual model and both parent selection handlers resolve item identity after damaged-rank undo");
+        }
+        Expect(Ranks(f)==ranks&&history.UndoCount()==undo&&history.RedoCount()==redo,
+            "selecting projected identities does not implicitly repair ranks or append a history record");
+        Expect((IsWindowEnabled(GetDlgItem(f.app->MainWindow(),panel::kUndoButton))!=FALSE)==(undo!=0)&&
+            (IsWindowEnabled(GetDlgItem(f.app->MainWindow(),panel::kRedoButton))!=FALSE)==(redo!=0),
+            "actual model selection keeps shared undo and redo availability");
+    }
+    // Reject a corrupted managed mapping before clearing a parent bone list or
+    // selecting default slot zero. Restore it before the next refresh.
+    for(int id:kCombos) {
+        HWND combo=GetDlgItem(f.app->MainWindow(),id);const auto saved=SendMessageW(combo,CB_GETITEMDATA,1,0);
+        const auto selected=f.app->SelectedModelSlot();const auto camera=f.app->CameraParentModel();const auto parent=f.accessory.parentModel;
+        SendMessageW(combo,CB_SETITEMDATA,1,-1);SendMessageW(combo,CB_SETCURSEL,1,0);
+        CommandDispatch(combo,MAKEWPARAM(id,CBN_SELCHANGE));
+        Expect(f.app->SelectedModelSlot()==selected&&f.app->CameraParentModel()==camera&&f.accessory.parentModel==parent,
+            "CB_ERR item data in a managed selector cannot select or bind the wrong object");
+        SendMessageW(combo,CB_SETITEMDATA,1,saved);
+    }
+}
+void DamagedBoundChecks(Fixture& f) {
+    using namespace plugins;
+    for(auto mode:{SharedHistory::RecordingMode::AllOperations,SharedHistory::RecordingMode::ExplicitOnly})
+    for(bool calculate:{false,true})for(const auto& sample:kDamaged) {
+        f.Reset();StorageStore storage;SharedHistory history(storage);NativePoseTestBinding binding(*f.app,history);
+        Check(history.SetMode(mode)==MMS_OK,"damaged actual modal supports either recording mode");
+        f.Open(288,2,630,false);Check(RunBoundObjectHistory(*f.app,history,false)==MMS_OK&&history.RedoCount()==1,
+            "create a genuine redo branch before damaged modal cancellation");
+        SetDamaged(f,calculate,sample);const auto before=Ranks(f);f.app->SceneModified()=0;
+        f.Open(calculate?289:288,0,631,true);
+        Expect(Ranks(f)==before&&!f.app->SceneModified()&&!history.UndoCount()&&history.RedoCount()==1,
+            "bound damaged-order cancellation retains exact native bytes dirty state and redo");
+        f.Open(calculate?289:288,-1,0,false);
+        auto expected=before;for(int row=1;row<=3;++row)expected[(calculate?3:0)+sample.rows[row-1]]=static_cast<unsigned char>(row);
+        Expect(Ranks(f)==expected&&history.UndoCount()==1&&!history.RedoCount()&&!NativeObjectUiPending(f.app),
+            "actual damaged modal OK creates one shared node and publishes a complete selector mapping");
+        Check(RunBoundObjectHistory(*f.app,history,false)==MMS_OK,"actual damaged modal undo succeeds");
+        Expect(Ranks(f)==before&&!NativeObjectUiPending(f.app)&&!history.UndoCount()&&history.RedoCount()==1,
+            "actual undo restores abnormal rank bytes without creating a permanent UI repair gate");
+        const auto drawRows=calculate?std::array<int,3>{0,1,2}:sample.rows;
+        ExpectProjectedUi(f,drawRows);RefreshModelSelectorNames(f.app);ExpectProjectedUi(f,drawRows);
+        Expect(Ranks(f)==before,"language/name refresh retains every damaged rank while rebuilding all identities");
+        ExerciseMappedSelectors(f,drawRows,history);
+        Check(RunBoundObjectHistory(*f.app,history,true)==MMS_OK,"actual damaged modal redo succeeds after selector interaction");
+        Expect(Ranks(f)==expected&&!NativeObjectUiPending(f.app)&&history.UndoCount()==1,
+            "actual redo repairs the same family after user selection and parent changes");
+        Check(history.Reset()==MMS_OK,"release damaged actual modal records before the next fixture");history.Collect();
+    }
+    f.Reset();
+}
 LRESULT CALLBACK ConfirmRetainedDeletion(int code,WPARAM wp,LPARAM lp) {
     if(code==HCBT_CREATEWND) {
         auto* created=reinterpret_cast<CBT_CREATEWNDW*>(lp);
@@ -334,6 +465,7 @@ void BoundChecks(Fixture& f,const wchar_t* source) {
 void Run(MMDApp* app, const wchar_t* modelPath) {
     Fixture f(app, modelPath);
     failures = 0;
+    ProjectionRules();DamagedUnboundChecks(f);
     f.Open(288, 2, 630, false); f.Verify("display-up", {0, 2, 1}, {0, 1, 2});
     f.Open(288, 1, 631, false); f.Verify("display-down", {0, 1, 2}, {0, 1, 2});
     f.Open(288, 0, 630, false); f.Verify("display-boundary", {0, 1, 2}, {0, 1, 2});
@@ -378,6 +510,7 @@ void Run(MMDApp* app, const wchar_t* modelPath) {
     }
 #if !MMD_ORIGINAL_PROFILE
     BoundChecks(f,modelPath);
+    DamagedBoundChecks(f);
 #endif
     std::printf("MODEL-ORDER actual modal checks: %d failure(s)\n", failures);
     Check(failures == 0, "real 288/289 names, object identities, independent orders and cancellation");
