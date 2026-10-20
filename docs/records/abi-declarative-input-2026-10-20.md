@@ -28,11 +28,15 @@ C++ `InputSpec`、`PropertyInputSpec`、`PropertyInput` 和 `RegistrationBundle`
 | INPUT 焦点隔离与旧键盘行为 | 两套通过 | `focused-04/full-keyboard`、`focused-05/original-keyboard` |
 | 曲线同步与原登记按键回归 | 通过 | `focused-04/curve-sync/result.log` |
 | 完整 ABI 契约 | 完整配置 11,335 项、原始兼容配置 11,347 项通过 | `contract-01/report.json` |
-| 隐藏产品启动、工具栏、面板、实时侧栏布局及 EXE 改名 | 两种名称通过 | `product-smoke.log` |
+| 完整配置隐藏产品启动、工具栏、面板、实时侧栏布局及 EXE 改名 | 两种名称通过 | `product-smoke.log` |
 
 后五项相对证据路径均以 `build/verification/abi-input-20261020/` 为根。真实消息测试覆盖 participant 加入后、prepare 后和 Reserve 内触发取消，也覆盖提交期间的新输入与 IME 组合。取消后无正式值变化、无历史节点、无残留候选，新草稿可在随后 Enter 正常提交。
 
 早期失败证据保留。首轮发现测试描述借用注册表字符串后注销，现改为测试自己持有字符串。另修正测试对 IsDialogMessage 返回值的假设，按真实消息泵消费规则验证焦点保持。TEXT 超过 1 MiB 已被 codec 拒绝，超长只读摘要用合法大 BYTES 验证。未放宽产品权限或失败断言来通过测试。
+
+原始兼容配置普通产品按 `InitializeRuntime` 的 `build_profile::original` 分支跳过 ABI 插件加载。把要求 GUI_REGISTERED 的产品烟测用于该配置会超时，保留 `original-product-smoke.log`，不记为通过。其独立 ABI 宿主契约及 INPUT 验收均已通过，不能据此声称原始兼容产品启用了新插件服务。
+
+同步独立 H.264 修复并重建后，最终 ABI 程序已更新到 `build/release/MikuMikuDance.exe`。最终文件的原名与中文改名产品烟测再次通过，见 `final-product-smoke.log`。文件为 9,065,472 字节，SHA-256 为 `EDCC2A43E2DDC0F4A5AB0CBBDE751CCAFA407D54FAF15F5B4F4147F7262C631E`。旧 ABI 程序备份为同证据目录中的 `previous-abi-MikuMikuDance.exe`，main 和稳定版程序未改动。
 
 ## 剩余范围
 
