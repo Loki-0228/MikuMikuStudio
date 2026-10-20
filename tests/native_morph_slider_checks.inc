@@ -3,7 +3,21 @@
 #include "../src/plugins/native_object_commands.hpp"
 namespace {
 struct MorphSliderFixture : MorphTextFixture {
-    MorphSliderFixture(){first.m->physicsMode=second.m->physicsMode=2;}
+    MorphSliderFixture(){
+        first.m->physicsMode=second.m->physicsMode=2;
+        // The base captured the native ANSI EDIT cookie while the four fields
+        // were still plain class windows. Install the actual production handler
+        // on every lane so the fixture matches the running UI.
+        const auto nativeEditProc=app->OriginalEditProc();
+        for(unsigned lane=0;lane<4;++lane){
+            const int id=506+int(lane)*5;const auto field=Field(lane);
+            InstallControlSubclass(app.get(),field,id);
+            Check(!IsWindowUnicode(field),"morph slider fixture installs one ANSI EDIT per lane");
+            Check(reinterpret_cast<WNDPROC>(GetWindowLongPtrA(field,GWLP_WNDPROC))==EditSubclassProc,
+                "morph slider fixture installs the actual production EDIT subclass");
+            Check(app->OriginalEditProc()==nativeEditProc,"installing the production EDIT subclass preserves the base ANSI cookie");
+        }
+    }
     HWND Slider(unsigned lane){return GetDlgItem(app->MainWindow(),505+int(lane)*5);}
     void Scroll(unsigned lane,int tick,unsigned code=TB_THUMBTRACK){
         g_Block=app.get();SendMessageW(Slider(lane),TBM_SETPOS,TRUE,tick);
@@ -117,25 +131,26 @@ struct MorphEnterControl {
         auto& self=*active;
         if(message==WM_KILLFOCUS){++self.lostFocus;self.nextFocus=reinterpret_cast<HWND>(wp);
             self.modifyAtLoss=SendMessageA(window,EM_GETMODIFY,0,0);}
-        const auto result=CallWindowProcA(EditSubclassProc,window,message,wp,lp);
+        const auto result=CallWindowProcA(self.previous,window,message,wp,lp);
         if(message==WM_KILLFOCUS)self.modifyAfterLoss=SendMessageA(window,EM_GETMODIFY,0,0);
         return result;
     }
     explicit MorphEnterControl(MorphSliderFixture& f,unsigned lane):fixture(f),edit(f.Field(lane)),focus(GetFocus()),
         previous(reinterpret_cast<WNDPROC>(GetWindowLongPtrA(edit,GWLP_WNDPROC))),saved(f.app->OriginalEditProc()){
         Check(!active&&!IsWindowUnicode(edit),"morph Enter starts with one original ANSI EDIT on the current thread");
-        Check(previous!=nullptr,"morph Enter fixture retains the real native EDIT procedure");fixture.app->OriginalEditProc()=previous;
+        Check(previous==EditSubclassProc&&saved!=nullptr,"morph Enter fixture retains the installed production EDIT subclass above the native ANSI cookie");
         active=this;
         Check(SetWindowLongPtrA(edit,GWLP_WNDPROC,reinterpret_cast<LONG_PTR>(ObserveFocus))==reinterpret_cast<LONG_PTR>(previous),
             "install ANSI focus observer forwarding every message once through the actual production EDIT handler");
-        Check(!IsWindowUnicode(edit)&&fixture.app->OriginalEditProc()==previous,
+        Check(!IsWindowUnicode(edit)&&fixture.app->OriginalEditProc()==saved,
             "ANSI focus observer preserves EDIT encoding and the original native ANSI procedure");
     }
-    ~MorphEnterControl(){Check(!IsWindowUnicode(edit)&&fixture.app->OriginalEditProc()==previous,
+    ~MorphEnterControl(){Check(!IsWindowUnicode(edit)&&fixture.app->OriginalEditProc()==saved,
             "morph Enter leaves the original ANSI encoding and native procedure intact");
         SetWindowLongPtrA(edit,GWLP_WNDPROC,reinterpret_cast<LONG_PTR>(previous));active=nullptr;
-        Check(!IsWindowUnicode(edit)&&reinterpret_cast<WNDPROC>(GetWindowLongPtrA(edit,GWLP_WNDPROC))==previous,
-            "removing the focus observer restores exactly the native ANSI EDIT procedure");fixture.app->OriginalEditProc()=saved;
+        Check(!IsWindowUnicode(edit)&&reinterpret_cast<WNDPROC>(GetWindowLongPtrA(edit,GWLP_WNDPROC))==previous&&
+            fixture.app->OriginalEditProc()==saved,
+            "removing the focus observer restores exactly the production ANSI EDIT subclass above the native cookie");
         if(focus&&IsWindow(focus))SetFocus(focus);else SetFocus(nullptr);}
     void Focus(){
         // Use only this thread's hidden fixture. Never show or activate a
@@ -144,12 +159,12 @@ struct MorphEnterControl {
     }
     void PressEnter(){
         Check(GetFocus()==edit,"real morph EDIT retains focus immediately before Enter");
-        Check(!IsWindowUnicode(edit)&&fixture.app->OriginalEditProc()==previous,"Enter starts with the unchanged native ANSI EDIT chain");
+        Check(!IsWindowUnicode(edit)&&fixture.app->OriginalEditProc()==saved,"Enter starts with the unchanged native ANSI EDIT chain");
         lostFocus=0;nextFocus=nullptr;
         modifyBeforeEnter=SendMessageA(edit,EM_GETMODIFY,0,0);GetWindowTextA(edit,textBeforeEnter,sizeof(textBeforeEnter));
         SendMessageA(edit,WM_KEYDOWN,VK_RETURN,0);
         modifyAfterEnter=SendMessageA(edit,EM_GETMODIFY,0,0);
-        Check(!IsWindowUnicode(edit)&&fixture.app->OriginalEditProc()==previous,"Enter preserves the native ANSI EDIT chain");
+        Check(!IsWindowUnicode(edit)&&fixture.app->OriginalEditProc()==saved,"Enter preserves the native ANSI EDIT chain");
         Check(GetFocus()==fixture.app->MainWindow(),"production Enter transfers native focus to the main window");
         Check(lostFocus==1&&nextFocus==fixture.app->MainWindow(),
             "production Enter causes exactly one real WM_KILLFOCUS to commit the morph edit");
