@@ -73,7 +73,7 @@ enum : int {
     kIdReadMotion = 1003, kIdWriteMotion = 1004, kIdRefresh = 1005,
     kIdViewLabel = 1006, kIdViewCombo = 1007, kIdToolLabel = 1008, kIdToolCombo = 1009,
     kIdFitAll = 1010, kIdFitRange = 1011, kIdShortcutToggle = 1012, kIdShortcutText = 1013,
-    kIdChannelLabel = 1014, kIdChannelList = 1015, kIdChannelAll = 1016,
+    kIdChannelLabel = 1014, kIdChannelList = 1015, kIdChannelAll = 1016, kIdChannelInvert = 1017,
     kIdCanvas = 1020,
     kIdMmdLabel = 1030, kIdMmdPanel = 1031, kIdMmdReadout = 1032,
     kIdFrameLabel = 1040, kIdFrameEdit = 1041,
@@ -4059,9 +4059,403 @@ void SelectionDenseStableTick(){
         "unchanged dense VMD selection ticks do not allocate a full key-address array or per-key containers");
     Note("stable selection ticks preserve the common path without dense-track-sized allocation");
 }
+
+HostSource ComparisonLifetimeHost(bool link=false){
+    HostSource host;
+    if(link){
+        for(const char* id:{"rotation.x","rotation.y","rotation.z"}){
+            auto channel=MakeChannel(id,L"Rotation",{MakeKey(0,0),MakeKey(10,1),MakeKey(20,2),MakeKey(30,3)});
+            channel.interpolationGroup="rotation";std::string error;
+            for(std::size_t end=1;end!=4;++end)Check(ce::SetChannelControls(channel,end,{20,20,107,107},error),
+                "prepare real adjacent-control intervals");
+            host.data.push_back(std::move(channel));
+        }
+    }else{
+        host.compareEnabled=true;host.initialMain="main";
+        host.data.push_back(MakeGroupChannel("main",L"Main",0,{MakeKey(0,0),MakeKey(10,0),MakeKey(20,0)}));
+        host.data.push_back(MakeGroupChannel("local",L"Local",0,{MakeKey(0,0),MakeKey(10,1),MakeKey(20,0)}));
+        host.data.push_back(MakeGroupChannel("outside",L"Outside",-1,{MakeKey(0,0),MakeKey(10,2),MakeKey(20,0)}));
+        host.data.push_back(MakeGroupChannel("flat",L"Flat",1,{MakeKey(0,1),MakeKey(20,1)}));
+        for(auto& channel:host.data)channel.collections.push_back({"collection",L"Collection"});
+    }
+    return host;
+}
+
+void SetComparisonLinkFields(HWND window){
+    Check(IsWindowEnabled(GetDlgItem(window,1096)),"real MMD coordinate fields are editable");
+    for(int index=0;index!=4;++index)SetText(window,1096+index,index<2?L"20":index==2?L"90":L"100");
+}
+void TriggerComparisonLink(HWND window,bool mouse){
+    if(!mouse){SendMessageW(GetDlgItem(window,1098),WM_KEYDOWN,VK_RETURN,0);return;}
+    HWND panel=GetDlgItem(window,kIdMmdPanel);double controls[4]{};
+    Check(SendMessageW(window,kHookMmdControls,0,reinterpret_cast<LPARAM>(controls))!=0,
+        "adjacent-control lifetime fixture has a real editable MMD handle");
+    const auto getDpi=reinterpret_cast<UINT(WINAPI*)(HWND)>(GetProcAddress(GetModuleHandleW(L"user32.dll"),"GetDpiForWindow"));
+    UINT dpi=getDpi?getDpi(panel):0;
+    if(!dpi){HDC dc=GetDC(panel);dpi=dc?UINT(GetDeviceCaps(dc,LOGPIXELSX)):96;if(dc)ReleaseDC(panel,dc);}
+    RECT client{};GetClientRect(panel,&client);const int margin=MulDiv(6,dpi?dpi:96,96);
+    const int side=std::min(int(client.right),int(client.bottom))-2*margin;
+    const auto point=[&](double x,double y){return MAKELPARAM(margin+int(std::lround(x*side/127)),
+        margin+side-int(std::lround(y*side/127)));};
+    SendMessageW(panel,WM_LBUTTONDOWN,MK_LBUTTON,point(controls[2],controls[3]));
+    SendMessageW(panel,WM_MOUSEMOVE,MK_LBUTTON,point(90,100));
+    SendMessageW(panel,WM_LBUTTONUP,0,point(90,100));
+}
+
+struct ComparisonRetirementState {
+    int kind=0,phase=0,response=0,calls=0,writes=0,retireCalls=0,destroyedDuringCopy=0;
+    int hostMode=ce::kCompareSameGroup;
+    bool armed=false,copying=false;
+    const void* copyingOriginal=nullptr;
+    std::wstring* errorOutput=nullptr;
+    std::function<void()> retire;
+    void Retire(){armed=false;++retireCalls;retire();
+        if(errorOutput){*errorOutput=L"comparison callback retired";
+            Check(*errorOutput==L"comparison callback retired","comparison writer error output survives retirement");}}
+};
+struct ComparisonProviderBase {
+    ComparisonRetirementState* state;int marker=67;mutable bool invoked=false;
+    explicit ComparisonProviderBase(ComparisonRetirementState& value):state(&value){}
+    ComparisonProviderBase(const ComparisonProviderBase& other):state(other.state),marker(other.marker){
+        if(!state->armed||state->phase!=0)return;
+        state->copying=true;state->copyingOriginal=&other;state->Retire();
+        Check(state->destroyedDuringCopy==0&&other.marker==67,
+            "comparison and link provider originals stay alive through reentrant callable copying");
+        state->copying=false;if(state->response==2)throw std::bad_alloc();
+    }
+    ~ComparisonProviderBase(){
+        if(state->copying&&state->copyingOriginal==this)++state->destroyedDuringCopy;
+        if(invoked&&state->armed&&state->phase==2)state->Retire();
+    }
+    void Called()const{invoked=true;++state->calls;}
+};
+template<int Kind>struct ComparisonRetirementProvider:ComparisonProviderBase {
+    explicit ComparisonRetirementProvider(ComparisonRetirementState& value):ComparisonProviderBase(value){}
+    auto operator()()const{
+        Called();
+        if(state->armed&&state->phase==1)state->Retire();
+        if(state->response==2)throw std::runtime_error("comparison or link callback failed");
+        if constexpr(Kind==0)return state->response==1?-7:ce::kCompareAllGroups;
+        else return state->response==0;
+    }
+    bool operator()(int mode,std::wstring& error)const{
+        Called();state->errorOutput=&error;
+        if(state->response==0){state->hostMode=mode;++state->writes;}
+        if(state->armed&&state->phase==1)state->Retire();
+        if(state->response==2)throw std::runtime_error("comparison writer failed");
+        if(state->response==1)error=L"mode write refused";
+        return state->response==0;
+    }
+};
+
+void ComparisonCallbackLifetime(){
+    for(int route=0;route!=4;++route)for(int phase=0;phase!=3;++phase)
+    for(int action=0;action!=3;++action)for(int response=0;response!=3;++response){
+        const int kind=std::min(route,2);
+        std::printf("comparison lifetime kind=%d mouse=%d phase=%d action=%d response=%d\n",kind,route==3,phase,action,response);
+        auto host=ComparisonLifetimeHost(kind==2);HostSource replacement;
+        replacement.data.push_back(MakeChannel("replacement",L"Replacement",{MakeKey(0,91),MakeKey(20,99)}));
+        ComparisonRetirementState state;state.kind=kind;state.phase=phase;state.response=response;
+        HWND retiredWindow=nullptr,replacementWindow=nullptr;std::wstring replacementStatus;
+        std::weak_ptr<void> token;std::shared_ptr<void> retained;int readsAfter=-1;
+        state.retire=[&]{retiredWindow=OwnedCurveWindow();token=ce::CaptureWindowSession(retiredWindow);retained=token.lock();
+            if(action!=1)ce::CloseOwned(nullptr);
+            if(action!=0){replacementWindow=static_cast<HWND>(ce::Open(nullptr,MakeSession(replacement),false));
+                Check(IsWindow(replacementWindow),"comparison retirement installs a real replacement session");
+                replacementStatus=GetText(replacementWindow,kIdStatus);}
+            readsAfter=host.readCalls;
+        };
+        auto session=MakeSession(host);
+        if(kind==0)session.sources[0].readComparisonMode=ComparisonRetirementProvider<0>(state);
+        if(kind==1)session.sources[0].writeComparisonMode=ComparisonRetirementProvider<1>(state);
+        if(kind==2)session.sources[0].linkAdjacentControls=ComparisonRetirementProvider<2>(state);
+        state.armed=kind==0;
+        HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
+        if(kind==0)Check(window==nullptr,"initial comparison read cannot return a retired Open as successful");
+        else{Check(IsWindow(window),"comparison lifetime fixture opens before arming");
+            if(kind==2){ClickKey(window,2);SetComparisonLinkFields(window);}
+            state.armed=true;
+            if(kind==1)ClickCompareMode(window,ce::kCompareAllGroups);else TriggerComparisonLink(window,route==3);
+        }
+        Check(state.retireCalls==1&&state.calls==int(phase!=0)&&state.destroyedDuringCopy==0,
+            "comparison read, write and link callbacks retire exactly once through copying, invocation and release");
+        Check(state.writes==int(kind==1&&phase!=0&&response==0)&&host.applyCalls==0&&host.readCalls==readsAfter,
+            "comparison retirement neither repeats an accepted mode write nor continues into old source reads or apply");
+        Check(bool(retained)&&!ce::IsWindowSessionCurrent(retiredWindow,token),
+            "strong old tokens cannot make comparison continuations current");
+        if(replacementWindow){Check(KeyCount(replacementWindow)==2&&GetText(replacementWindow,kIdStatus)==replacementStatus&&replacement.applyCalls==0,
+                "comparison results and operation guards leave replacement state untouched");
+            ClickKey(replacementWindow,1);Click(replacementWindow,kIdDeleteKey);
+            Check(replacement.applyCalls==1,"replacement stays editable after comparison and link retirement");}
+        else Check(OwnedCurveWindow()==nullptr,"closed comparison session is no longer registered");
+        ce::CloseOwned(nullptr);
+    }
+    Note("comparison read/write and link callbacks use the shared copy, invocation and release lifetime boundary");
+}
+
+void ComparisonWriteEntry(HWND window,int entry){
+    if(entry==0)ClickCompareMode(window,ce::kCompareAllGroups);
+    if(entry==1)ClickChannelOnce(window,2);
+    if(entry==2){
+        // Isolate the real doubleclick dispatch. A full DOWN/UP/DBLCLK/UP
+        // gesture activates twice, so a one-shot failure on DOWN would be
+        // followed by a legitimate successful retry on DBLCLK.
+        HWND tree=GetDlgItem(window,kIdChannelList);const POINT point=ChannelRowPoint(window,2,false);
+        SendMessageW(tree,WM_LBUTTONDBLCLK,MK_LBUTTON,MAKELPARAM(point.x,point.y));
+        SendMessageW(tree,WM_LBUTTONUP,0,MAKELPARAM(point.x,point.y));
+    }
+    if(entry==3){HWND tree=GetDlgItem(window,kIdChannelList);HTREEITEM collection=TreeView_GetRoot(tree);
+        Check(collection&&ChannelItemIndex(tree,collection)<0,"comparison fixture has a real collection row");
+        TreeView_SelectItem(tree,collection);SendMessageW(tree,WM_KEYDOWN,VK_SPACE,0);}
+    if(entry==4)Click(window,kIdChannelAll);
+    if(entry==5)Click(window,kIdChannelInvert);
+    if(entry==6)ClickButton(window,kIdCompareFilter);
+}
+
+struct ComparisonFailureState {bool armed=false;int failure=0,failures=0;HWND* observedWindow=nullptr;};
+struct ComparisonFailure {
+    ComparisonFailureState* state;
+    explicit ComparisonFailure(ComparisonFailureState& value):state(&value){}
+    ComparisonFailure(const ComparisonFailure& other):state(other.state){
+        if(state->armed&&state->failure==0){if(state->observedWindow)*state->observedWindow=OwnedCurveWindow();
+            state->armed=false;++state->failures;throw std::bad_alloc();}}
+    bool Fail()const{if(!state->armed)return false;state->armed=false;++state->failures;
+        if(state->observedWindow)*state->observedWindow=OwnedCurveWindow();
+        if(state->failure==1)return true;
+        if(state->failure==2)throw std::runtime_error("comparison provider unavailable");
+        throw std::bad_alloc();}
+};
+
+void ComparisonWriterAtomicity(){
+    for(int entry=0;entry!=7;++entry)for(int failure=0;failure!=4;++failure){
+        std::printf("comparison atomicity entry=%d failure=%d\n",entry,failure);std::fflush(stdout);
+        auto host=ComparisonLifetimeHost();ComparisonFailureState state;state.failure=failure;
+        const ComparisonFailure fault(state);int writes=0;auto session=MakeSession(host);
+        session.sources[0].writeComparisonMode=[&,fault](int mode,std::wstring& error){
+            if(fault.Fail()){error=L"mode refused";return false;}host.storedMode=mode;++writes;return true;};
+        HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
+        Check(IsWindow(window),"comparison refusal fixture opens");
+        SetText(window,kIdBakeFirstEdit,L"0");SetText(window,kIdBakeLastEdit,L"20");
+        int before[12]{};ReadCompare(window,before);const auto history=LocalWriteHistory(window);const auto data=host.data;
+        std::array<int,4> flags{};for(int index=0;index!=4;++index)flags[index]=ChannelVisible(window,index);
+        state.armed=true;ComparisonWriteEntry(window,entry);
+        int after[12]{};ReadCompare(window,after);bool sameFlags=true;
+        for(int index=0;index!=4;++index)sameFlags&=flags[index]==ChannelVisible(window,index);
+        const auto actualHistory=LocalWriteHistory(window);const bool sameData=SameWritePayload(host.data,data);
+        const int checked=CheckedCompareMode(window);
+        const bool unchanged=state.failures==1&&writes==0&&before[0]==after[0]&&before[1]==after[1]&&sameFlags&&
+            checked==before[0]&&host.storedMode==ce::kCompareSameGroup&&host.applyCalls==0&&sameData&&actualHistory==history;
+        if(!unchanged)std::fprintf(stderr,"COMPARISON_ATOMICITY entry=%d failure=%d failures=%d writes=%d mode=%d/%d active=%d/%d checked=%d stored=%d flagsSame=%d dataSame=%d applies=%d history=%llu,%llu/%llu,%llu armed=%d\n",
+            entry,failure,state.failures,writes,before[0],after[0],before[1],after[1],checked,host.storedMode,sameFlags,sameData,
+            host.applyCalls,static_cast<unsigned long long>(history[0]),static_cast<unsigned long long>(history[1]),
+            static_cast<unsigned long long>(actualHistory[0]),static_cast<unsigned long long>(actualHistory[1]),state.armed);
+        Check(unchanged,
+            "mode refusal, exception and copy failure keep mode, active curve, display mask, data and history unchanged");
+        CheckTicksMatchCanvas(window,4,"comparison writer refusal preserves native list ticks");
+        ComparisonWriteEntry(window,entry);
+        Check(writes==1&&CheckedCompareMode(window)==(entry==0?ce::kCompareAllGroups:ce::kCompareFree)&&host.applyCalls==0,
+            "each real comparison entry recovers with exactly one accepted mode write and no curve apply");
+        ce::CloseOwned(nullptr);
+    }
+    Note("all comparison writer entries preserve atomic display state through rejection and exceptions");
+}
+
+void ComparisonFilterAcceptedAllocation(){
+    auto host=ComparisonLifetimeHost();bool armed=false;int writes=0;auto session=MakeSession(host);
+    session.sources[0].writeComparisonMode=[&](int mode,std::wstring&){host.storedMode=mode;++writes;
+        if(armed)g_curveFailNextAllocation=true;return true;};
+    HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
+    Check(IsWindow(window),"accepted filter allocation fixture opens");
+    SetText(window,kIdBakeFirstEdit,L"0");SetText(window,kIdBakeLastEdit,L"20");
+    Check(ChannelVisible(window,2)==0,"automatic comparison initially hides the ungrouped varying curve");
+    const auto history=LocalWriteHistory(window);const auto failures=g_curveAllocationFailures;
+    armed=true;ClickButton(window,kIdCompareFilter);
+    int accepted[12]{};ReadCompare(window,accepted);
+    Check(!g_curveFailNextAllocation&&g_curveAllocationFailures==failures+1&&writes==1&&
+        host.storedMode==ce::kCompareFree&&accepted[0]==ce::kCompareFree&&
+        ChannelVisible(window,0)==1&&ChannelVisible(window,1)==1&&ChannelVisible(window,2)==1&&ChannelVisible(window,3)==0&&
+        host.applyCalls==0&&LocalWriteHistory(window)==history,
+        "allocation failure after writer acceptance preserves the complete accepted mode and private filter mask");
+    armed=false;ce::NotifySourceChanged(nullptr,"source");SendMessageW(window,WM_APP+401,0,0);
+    Check(writes==1&&ChannelVisible(window,2)==1&&CheckedCompareMode(window)==ce::kCompareFree,
+        "filter UI recovery does not repeat the accepted mode write");
+    CheckTicksMatchCanvas(window,4,"accepted filter mask survives subsequent native UI refresh");
+    ce::CloseOwned(nullptr);
+    Note("accepted filter mode and mask publish together before allocating UI work");
+}
+
+void ComparisonReadFailuresAndEntries(){
+    for(bool replacing:{false,true})for(int failure:{0,2,3}){
+        auto host=ComparisonLifetimeHost();
+        if(replacing)Check(IsWindow(static_cast<HWND>(ce::Open(nullptr,MakeSession(host),false))),
+            "comparison read failure starts from a real existing session");
+        ComparisonFailureState state;state.failure=failure;HWND attemptedWindow=nullptr;state.observedWindow=&attemptedWindow;
+        const ComparisonFailure fault(state);auto session=MakeSession(host);
+        session.sources[0].readComparisonMode=[fault]{fault.Fail();return ce::kCompareAllGroups;};
+        state.armed=true;
+        Check(ce::Open(nullptr,std::move(session),false)==nullptr&&state.failures==1&&attemptedWindow&&
+            !IsWindow(attemptedWindow)&&OwnedCurveWindow()==nullptr&&host.applyCalls==0,
+            "comparison read copy failure and exceptions close the exact failed Open rather than fabricating a fallback mode");
+        ce::CloseOwned(nullptr);
+    }
+    for(bool external:{false,true}){
+        auto host=ComparisonLifetimeHost();ExternalCurveJournal journal;int reads=0;
+        auto session=external?journal.Session():MakeSession(host);
+        if(!external)session.sources.push_back(host.Make("second",L"Second"));
+        session.sources[1].comparisonEnabled=true;
+        session.sources[1].readComparisonMode=[&]{++reads;return ce::kCompareAllGroups;};
+        HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
+        Check(IsWindow(window),"comparison source-switch fixture opens");
+        const auto select=[&](int index){SendMessageW(GetDlgItem(window,kIdSourceCombo),CB_SETCURSEL,index,0);
+            SendMessageW(window,WM_COMMAND,MAKEWPARAM(kIdSourceCombo,CBN_SELCHANGE),0);};
+        select(1);
+        Check(reads==1&&CheckedCompareMode(window)==ce::kCompareAllGroups,
+            "first entry into a local or shared-history source reads its real comparison mode");
+        select(0);select(1);
+        Check(reads==(external?2:1)&&host.applyCalls==0&&journal.applies==0,
+            "cached local and shared-history source revisits retain the original mode-read frequency");
+        ce::CloseOwned(nullptr);
+    }
+    // Manual callers retain Channel/state references before EnterFree. A real
+    // same-window replacement must unwind each caller before it uses them.
+    for(int entry=1;entry!=7;++entry){
+        auto host=ComparisonLifetimeHost();HostSource replacement;
+        replacement.data.push_back(MakeChannel("new",L"New",{MakeKey(0,91),MakeKey(20,99)}));
+        bool armed=false;int writes=0;HWND replacementWindow=nullptr;std::wstring status;
+        auto session=MakeSession(host);
+        session.sources[0].writeComparisonMode=[&](int mode,std::wstring&){host.storedMode=mode;++writes;
+            if(armed){armed=false;replacementWindow=static_cast<HWND>(ce::Open(nullptr,MakeSession(replacement),false));
+                status=GetText(replacementWindow,kIdStatus);}return true;};
+        HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
+        Check(IsWindow(window),"manual comparison replacement fixture opens");
+        SetText(window,kIdBakeFirstEdit,L"0");SetText(window,kIdBakeLastEdit,L"20");
+        auto token=ce::CaptureWindowSession(window);auto retained=token.lock();armed=true;
+        ComparisonWriteEntry(window,entry);
+        Check(writes==1&&host.applyCalls==0&&bool(retained)&&!ce::IsWindowSessionCurrent(window,token)&&
+            IsWindow(replacementWindow)&&KeyCount(replacementWindow)==2&&GetText(replacementWindow,kIdStatus)==status,
+            "manual comparison and filter callers never publish old state into a same-window replacement");
+        ClickKey(replacementWindow,1);Click(replacementWindow,kIdDeleteKey);
+        Check(replacement.applyCalls==1,"manual comparison replacement remains editable after old caller references unwind");
+        ce::CloseOwned(nullptr);
+    }
+    Note("comparison read errors preserve exact Open cleanup and all manual writer callers unwind after replacement");
+}
+
+void ComparisonReadAndLinkSemantics(){
+    for(int raw:{-1,0,ce::kCompareSameGroup,ce::kCompareAllGroups,ce::kCompareFree,99}){
+        auto host=ComparisonLifetimeHost();int reads=0;auto session=MakeSession(host);
+        session.sources[0].readComparisonMode=[&]{++reads;return raw;};
+        HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
+        Check(IsWindow(window)&&reads==1&&CheckedCompareMode(window)==
+            (raw>=ce::kCompareSameGroup&&raw<=ce::kCompareFree?raw:ce::kCompareSameGroup),
+            "normal comparison integers retain the original valid-mode and fallback rules");
+        ce::CloseOwned(nullptr);
+    }
+    for(bool mouse:{false,true})for(int result=0;result!=5;++result){
+        auto host=ComparisonLifetimeHost(true);ComparisonFailureState state;state.failure=result==2?0:result==3?2:3;
+        const ComparisonFailure fault(state);int calls=0;auto session=MakeSession(host);
+        session.sources[0].linkAdjacentControls=[&,fault]{++calls;if(result>=2)fault.Fail();return result==0;};
+        HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
+        Check(IsWindow(window),"link result fixture opens");ClickKey(window,2);
+        // Keep a redo branch so a failed flag read cannot silently clear it.
+        SetText(window,kIdValueEdit,L"2.5");Click(window,kIdApplyKey);Click(window,kIdUndo);
+        Check(calls==0,"ordinary value fields and local undo never query the legacy adjacent-control flag");
+        const auto history=LocalWriteHistory(window);const auto before=host.data;const int applies=host.applyCalls;
+        std::array<double,4> neighbor{};Check(ce::ReadChannelControls(host.data[0],3,neighbor),"read original adjacent interval");
+        if(!mouse)SetComparisonLinkFields(window);state.armed=result>=2;
+        TriggerComparisonLink(window,mouse);
+        std::array<double,4> after{};Check(ce::ReadChannelControls(host.data[0],3,after),"read resulting adjacent interval");
+        if(result<2)Check(calls==1&&host.applyCalls==applies+1&&(result==0?after!=neighbor:after==neighbor),
+            "link true mirrors the adjacent interval while false still accepts one unlinked edit");
+        else Check(state.failures==1&&host.applyCalls==applies&&SameWritePayload(host.data,before)&&
+            LocalWriteHistory(window)==history,
+            "link exceptions and copy failures reject the complete edit without changing data or the redo branch");
+        ce::CloseOwned(nullptr);
+    }
+    Note("comparison integer fallback and link false retain their original non-error meaning");
+}
+
+void ComparisonValueHandlesDoNotQueryLink(){
+    HostSource host;int links=0;
+    auto channel=MakeChannel("value",L"Value",{MakeKey(0,0,ac::Interpolation::Bezier,ac::Tangent::Free),
+        MakeKey(20,5,ac::Interpolation::Bezier,ac::Tangent::Free),MakeKey(40,10,ac::Interpolation::Bezier,ac::Tangent::Free)});
+    channel.track.keys[1].inWeight=channel.track.keys[1].outWeight=.3;host.data.push_back(std::move(channel));
+    auto session=MakeSession(host);session.sources[0].linkAdjacentControls=[&]()->bool{++links;throw std::runtime_error("not an MMD-panel edit");};
+    HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
+    Check(IsWindow(window),"ordinary value handle fixture opens");ClickKey(window,1);
+    const auto key=AskPoint(window,kHookPointForKey,1),handle=AskPoint(window,kHookPointForFrame,26),target=AskPoint(window,kHookPointForFrame,30);
+    HWND canvas=GetDlgItem(window,kIdCanvas);
+    SendMessageW(canvas,WM_LBUTTONDOWN,MK_LBUTTON,MAKELPARAM(handle.x,key.y));
+    SendMessageW(canvas,WM_MOUSEMOVE,MK_LBUTTON,MAKELPARAM(target.x,key.y-20));
+    SendMessageW(canvas,WM_LBUTTONUP,0,MAKELPARAM(target.x,key.y-20));
+    Check(links==0&&host.applyCalls==1&&std::abs(host.data[0].track.keys[1].outSlope)>.01,
+        "value handle authoring remains independent and never invokes the legacy MMD link provider");
+    ce::CloseOwned(nullptr);
+}
+
+void ComparisonNestedAndGeometryCopy(){
+    for(int kind=0;kind!=3;++kind){
+        auto host=ComparisonLifetimeHost(kind==2);HWND window=nullptr;bool armed=false,pumping=false;
+        int calls=0,nested=0,writes=0;
+        auto pump=[&]{armed=false;pumping=true;const int before=host.applyCalls;
+            std::array<int,12> beforeCompare{},afterCompare{};ReadCompare(window,beforeCompare.data());
+            std::vector<int> beforeFlags;for(std::size_t index=0;index<host.data.size();++index)
+                beforeFlags.push_back(ChannelVisible(window,int(index)));
+            const auto beforeHistory=LocalWriteHistory(window);
+            const auto beforeFrame=GetText(window,kIdFrameEdit),beforeValue=GetText(window,kIdValueEdit);
+            for(int id:{kIdCompareAllGroups,kIdCompareFree,kIdChannelAll,kIdCompareFilter,kIdDeleteKey})Click(window,id);
+            SendMessageW(GetDlgItem(window,kIdChannelList),WM_KEYDOWN,VK_RETURN,0);
+            ce::NotifySourceChanged(nullptr,"source");SendMessageW(window,WM_APP+401,0,0);
+            Check(nested==0&&host.applyCalls==before,"comparison and link callback busy state rejects nested mode, selection and curve edits");
+            ReadCompare(window,afterCompare.data());bool sameFlags=true;
+            for(std::size_t index=0;index<beforeFlags.size();++index)
+                sameFlags&=ChannelVisible(window,int(index))==beforeFlags[index];
+            Check(beforeCompare==afterCompare&&sameFlags&&LocalWriteHistory(window)==beforeHistory&&
+                GetText(window,kIdFrameEdit)==beforeFrame&&GetText(window,kIdValueEdit)==beforeValue,
+                "nested UI messages preserve mode, active curve, display flags, selected-key fields and local history before the outer comparison callback resumes");
+            pumping=false;};
+        auto session=MakeSession(host);
+        if(kind==0)session.sources[0].readComparisonMode=[&]{++calls;if(pumping)++nested;if(armed)pump();return ce::kCompareSameGroup;};
+        if(kind==1)session.sources[0].writeComparisonMode=[&](int mode,std::wstring&){++calls;if(pumping)++nested;if(armed)pump();
+            host.storedMode=mode;++writes;return true;};
+        if(kind==2)session.sources[0].linkAdjacentControls=[&]{++calls;if(pumping)++nested;if(armed)pump();return true;};
+        window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
+        Check(IsWindow(window),"comparison recursion fixture opens");
+        if(kind==0){armed=true;auto next=MakeSession(host);next.sources[0].readComparisonMode=[&]{++calls;if(pumping)++nested;if(armed)pump();return ce::kCompareSameGroup;};
+            Check(ce::Open(nullptr,std::move(next),false)==window,"read comparison recursion is exercised through real existing Open");}
+        else if(kind==1){armed=true;ClickCompareMode(window,ce::kCompareAllGroups);}
+        else{ClickKey(window,2);SetComparisonLinkFields(window);armed=true;TriggerComparisonLink(window,false);}
+        Check(!armed&&nested==0&&host.applyCalls==(kind==2?1:0)&&writes==(kind==1?1:0)&&calls>0,
+            "one owning comparison or link operation completes after nested UI messages are rejected");
+        ce::CloseOwned(nullptr);
+    }
+    auto host=ComparisonLifetimeHost(true);bool armed=false;int sampleCopies=0,linkCalls=0;
+    struct Sample {
+        bool* armed;int* copies;
+        Sample(bool& a,int& c):armed(&a),copies(&c){}
+        Sample(const Sample& other):armed(other.armed),copies(other.copies){if(*armed){++*copies;throw std::bad_alloc();}}
+        ac::Sample operator()(const ce::Channel& channel,double frame)const{return ac::Evaluate(channel.track,frame);}
+    };
+    for(auto& channel:host.data)channel.sample=Sample(armed,sampleCopies);
+    auto session=MakeSession(host);const auto apply=session.sources[0].apply;
+    session.sources[0].apply=[&,apply](const auto& next,auto& error){armed=false;return apply(next,error);};
+    session.sources[0].linkAdjacentControls=[&]{++linkCalls;armed=true;return true;};
+    HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
+    Check(IsWindow(window),"pure geometry comparison snapshot fixture opens");ClickKey(window,2);SetComparisonLinkFields(window);
+    TriggerComparisonLink(window,false);
+    Check(linkCalls==1&&sampleCopies==0&&host.applyCalls==1&&!armed,
+        "adjacent-link geometry preparation never copies an unrelated Channel.sample closure");
+    ce::CloseOwned(nullptr);
+    Note("comparison recursion is gated and adjacent geometry preparation copies only required plain data");
+}
 } // namespace
 
 int main(int argc,char** argv) {
+    if(argc>1&&std::string(argv[1])=="--comparison-lifetime"){
+        ComparisonCallbackLifetime();ComparisonWriterAtomicity();ComparisonFilterAcceptedAllocation();
+        ComparisonReadFailuresAndEntries();ComparisonReadAndLinkSemantics();ComparisonValueHandlesDoNotQueryLink();ComparisonNestedAndGeometryCopy();
+        std::printf("curve comparison lifetime: %d checks\n",g_checks);return 0;
+    }
     if(argc>1&&std::string(argv[1])=="--selection-lifetime"){
         SelectionCallbackLifetime();SelectionFailuresAndEcho();SelectionNestedAndHistory();
         SelectionReadSemantics();SelectionDenseStableTick();
@@ -4133,6 +4527,8 @@ int main(int argc,char** argv) {
     WriteCanonicalFailureKeepsPublication();WriteAcceptedAllocationFailure();WriteRejectsNestedAuthoring();
     SelectionCallbackLifetime();SelectionFailuresAndEcho();SelectionNestedAndHistory();
     SelectionReadSemantics();SelectionDenseStableTick();
+    ComparisonCallbackLifetime();ComparisonWriterAtomicity();ComparisonFilterAcceptedAllocation();
+    ComparisonReadFailuresAndEntries();ComparisonReadAndLinkSemantics();ComparisonValueHandlesDoNotQueryLink();ComparisonNestedAndGeometryCopy();
     BakeSelectedChannels();
     NativeSubdivisionRoute();NativeSampleBake();
     DuplicateFrameSelectsExisting();

@@ -83,9 +83,8 @@
 
 最终两套产品的 PE 清单见 `build/verification/abi-panel-background-lifetime-20261021/pe-inventory-final.json`：均为 x64、子系统 6.1，未新增可选图形后端或厂商 DLL 的直接导入。清单只核对所列 PE 项，不替代逐 API、运行库部署或 Win7 真机验收。正式 `build/release/MikuMikuDance.exe` 的 SHA-256 仍为 `180DB2580C99A3578F30B2539451FF82605AEBDEC337DAEBCE8B77EDF86CF65A`，没有被本批构建覆盖。
 
-以下回调尚未统一到 `InvokeProvider` 的复制、调用和释放检查：
+比较模式与相邻控制开关已由[后续批次](abi-curve-comparison-lifetime-2026-10-21.md)统一到现有保护。以下回调仍未统一到 `InvokeProvider` 的复制、调用和释放检查：
 
-- `readComparisonMode`、`writeComparisonMode`、`linkAdjacentControls`。
 - `Session.currentFrame`、`seek`、`isPlaying`、`setPlaying`。
 - `Source.subdivide`、`Channel.sample`。
 

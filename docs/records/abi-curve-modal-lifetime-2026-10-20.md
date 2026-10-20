@@ -18,7 +18,7 @@
 - 真实 PMX 原名、PMD 中文改名宿主均通过文件选择期间关闭、重建、替换会话、改变工程代次及修订的检查，并复验 VMD1／2 原始控制、MMS 作者尾段、两种历史模式和撤销重做。日志 `test-real-curve.log` 及 `real-curve/report.json`，两个子进程退出码均为 0。
 - 子任务只读交叉审查发现并促成修正了“强引用旧 token 使 expired 不再可靠”的问题，最终按注册表身份核对。
 
-本记录限于文件选择与 motion 回调的返回过程。2026-10-21 已另行完成 [`Source.read`、`history.query` 和 `localizedLabel` 的会话保护](abi-curve-source-lifetime-2026-10-21.md)，随后完成 [`apply` 和 `traverse` 的写入及失败恢复保护](abi-curve-write-lifetime-2026-10-21.md)。这些保护包含闭包复制、调用和最终释放中的重入。比较模式、帧与播放控制、`subdivide`、`Channel.sample` 尚未统一，不能认定全部来源回调均可任意重入或销毁窗口。
+本记录限于文件选择与 motion 回调的返回过程。2026-10-21 已另行完成 [`Source.read`、`history.query` 和 `localizedLabel` 的会话保护](abi-curve-source-lifetime-2026-10-21.md)，随后完成 [`apply` 和 `traverse` 的写入及失败恢复保护](abi-curve-write-lifetime-2026-10-21.md)，以及[比较模式与相邻控制开关保护](abi-curve-comparison-lifetime-2026-10-21.md)。这些保护包含闭包复制、调用和最终释放中的重入。帧与播放控制、`subdivide`、`Channel.sample` 尚未统一，不能认定全部来源回调均可任意重入或销毁窗口。
 
 实现没有引入新系统或显卡依赖。基础配置提供对应空实现，继续保留 Win7 SP1 x64、CPU 基础路径和 AMD 兼容要求。
 

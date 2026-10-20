@@ -1412,10 +1412,25 @@ bool CommitChannels(Editor &editor, std::vector<Channel> next, const std::wstrin
     Source &source = CurrentSource(editor);
     // Value-curve tangents are governed by Free/Aligned, not the legacy
     // 0..127 panel's automatic adjacent-control setting.
-    if (linkMmdHandles && source.linkAdjacentControls && source.linkAdjacentControls()) {
+    bool linkAdjacent=false;
+    if(linkMmdHandles&&source.linkAdjacentControls){
+        try{
+            ExternalOperation callback(editor,&Editor::externalCallbackActive);
+            linkAdjacent=InvokeProvider(editor,source.linkAdjacentControls);
+        }catch(const RetiredContinuation&){throw;}
+        catch(...){SetStatus(editor,T(editor.session->language,StrHistoryFailed),true);return false;}
+    }
+    if (linkAdjacent) {
         // Detect explicit edits before linking: derived neighbour changes must
         // not cascade along the entire track or overwrite another edited handle.
-        const auto explicitChannels = next;
+        // Only interpolation geometry is needed here. Copying whole Channels
+        // would also run an unrelated user Channel.sample copy constructor.
+        std::vector<Channel> explicitChannels(next.size());
+        for(std::size_t c=0;c<next.size();++c){
+            explicitChannels[c].track=next[c].track;
+            explicitChannels[c].nativeControls=next[c].nativeControls;
+            explicitChannels[c].controlGeometry=next[c].controlGeometry;
+        }
         for (std::size_t c=0;c<next.size()&&c<state.channels.size();++c) {
             const auto& old=state.channels[c].track;const auto& edited=explicitChannels[c].track;
             if(old.discrete||old.keys.size()!=edited.keys.size())continue;
@@ -3036,17 +3051,19 @@ void MaterializeCompareMask(Editor &editor) {
 }
 
 void LoadCompareMode(Editor &editor) {
-    SourceState &state = CurrentState(editor);
-    Source &source = CurrentSource(editor);
     if (!ComparisonSupported(editor)) {
-        state.compareMode = kCompareOff;
+        CurrentState(editor).compareMode = kCompareOff;
         return;
     }
     // The window offers no "off" mode, so a host that has nothing stored, or
     // stored the internal off state, starts on the same-group display.
-    int mode = source.readComparisonMode ? source.readComparisonMode() : -1;
+    int mode=-1;
+    if(CurrentSource(editor).readComparisonMode){
+        ExternalOperation callback(editor,&Editor::externalCallbackActive);
+        mode=InvokeProvider(editor,CurrentSource(editor).readComparisonMode);
+    }
     if (mode < kCompareSameGroup || mode >= kCompareModeCount) mode = kCompareSameGroup;
-    state.compareMode = mode;
+    CurrentState(editor).compareMode = mode;
 }
 
 void EnterSource(Editor &editor) {
@@ -3066,15 +3083,24 @@ void EnterSource(Editor &editor) {
 // into the display flags.  The free display keeps the active curve and the
 // display set the user has: it is the mode a manual show/hide and a double click
 // enter, and neither of those may be undone by picking the segment.
-bool SetCompareMode(Editor &editor, int mode, std::wstring &error) {
+bool SetCompareMode(Editor &editor, int mode, std::wstring &error,
+                    const std::vector<unsigned char>* preparedMask=nullptr) {
     error.clear();
     if (mode < kCompareSameGroup || mode >= kCompareModeCount) return false;
     if (!ComparisonSupported(editor)) return false;
-    SourceState &state = CurrentState(editor);
-    Source &source = CurrentSource(editor);
-    if (mode != state.compareMode && source.writeComparisonMode && !source.writeComparisonMode(mode, error))
-        return false;
+    if(preparedMask&&preparedMask->size()!=CurrentState(editor).channels.size())return false;
+    if(mode!=CurrentState(editor).compareMode&&CurrentSource(editor).writeComparisonMode){
+        try{
+            ExternalOperation callback(editor,&Editor::externalCallbackActive);
+            if(!InvokeProvider(editor,CurrentSource(editor).writeComparisonMode,mode,error))return false;
+        }catch(const RetiredContinuation&){throw;}
+        catch(...){error=T(editor.session->language,StrCompareModeFailed);return false;}
+    }
+    auto& state=CurrentState(editor);
+    // Provider acceptance is final. Publish the mode and prepared display set
+    // together, before an allocating or reentrant native UI update can fail.
     state.compareMode = mode;
+    if(preparedMask)for(std::size_t c=0;c<preparedMask->size();++c)state.channels[c].selected=(*preparedMask)[c]!=0;
     if (mode == kCompareFree) {
         UpdateCompareUi(editor);
         InvalidateCanvas(editor);
@@ -3142,37 +3168,34 @@ void RunCompareFilter(Editor &editor) {
     }
 
     const std::size_t main = state.channels.empty() ? 0 : std::min(state.active, state.channels.size() - 1);
+    std::vector<unsigned char> mask(state.channels.size());
     int kept = 0;
     for (std::size_t index = 0; index < state.channels.size(); ++index) {
-        Channel &channel = state.channels[index];
+        const Channel &channel = state.channels[index];
         double held = 0;
         const bool registered = curve_comparison::IsRegistered(channel.track);
         const bool constant = registered && IsConstantOverRange(channel.track, first, last, held);
         // The main curve keeps its tick whatever the span says; a curve without
         // keys has nothing to draw and is never ticked into the display, so a
         // tick keeps meaning "this curve is on screen".
-        channel.selected = (index == main) || (registered && !constant);
+        mask[index] = (index == main) || (registered && !constant);
         if (index != main && registered && !constant) ++kept;
     }
-    SyncSelectionToList(editor);
-
     const std::wstring head = T(language, StrCompareRangeHead) + FormatNumber(first) + L" – " +
                               FormatNumber(last) +
                               T(language, source == kSpanKeys ? StrCompareFromKeys : StrCompareFromFields);
-    std::wstring message = head + T(language, StrCompareKeptHead) + FormatInteger(kept) +
-                           T(language, StrCompareKeptTail);
+    const std::wstring message = head + T(language, StrCompareKeptHead) + FormatInteger(kept) +
+                                T(language, StrCompareKeptTail);
+    const std::wstring acceptedMessage=message+T(language,StrCompareFilterFree);
     // The filter result is exactly what the free mode shows, so the display
     // follows it; a host that refuses to store that mode keeps the previous one
     // and the message says so instead of pretending the switch happened.
     std::wstring error;
-    if (SetCompareMode(editor, kCompareFree, error)) {
-        message += T(language, StrCompareFilterFree);
-        SetStatus(editor, message, false);
-    } else if (!error.empty()) {
-        message += std::wstring(T(language, StrCompareModeFailed)) + error;
-        SetStatus(editor, message, true);
+    if (SetCompareMode(editor, kCompareFree, error, &mask)) {
+        SyncSelectionToList(editor);
+        SetStatus(editor, acceptedMessage, false);
     } else {
-        SetStatus(editor, message, false);
+        SetStatus(editor, message+T(language, StrCompareModeFailed)+error, true);
     }
     UpdateCompareUi(editor);
     InvalidateCanvas(editor);

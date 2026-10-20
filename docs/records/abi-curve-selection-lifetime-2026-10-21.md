@@ -70,12 +70,12 @@
 
 两套曲线源码构建及最终测试构建均成功，主任务记录退出码均为 `0`。日志分别为 [build-selection-full-01.log](../../build/verification/abi-menu-selection-20261021/build-selection-full-01.log)、[build-selection-original-01.log](../../build/verification/abi-menu-selection-20261021/build-selection-original-01.log)、[build-selection-tests-full-04.log](../../build/verification/abi-menu-selection-20261021/build-selection-tests-full-04.log)和 [build-selection-tests-original-04.log](../../build/verification/abi-menu-selection-20261021/build-selection-tests-original-04.log)。
 
-本轮产品构建 [build-menu-full-05.log](../../build/verification/abi-menu-selection-20261021/build-menu-full-05.log)及 [build-menu-original-05.log](../../build/verification/abi-menu-selection-20261021/build-menu-original-05.log)也以退出码 `0` 结束。菜单状态仍在独立验收，不计入本记录的曲线完成范围。
+本轮产品构建 [build-menu-full-05.log](../../build/verification/abi-menu-selection-20261021/build-menu-full-05.log)及 [build-menu-original-05.log](../../build/verification/abi-menu-selection-20261021/build-menu-original-05.log)也以退出码 `0` 结束。菜单状态已在[后续菜单记录](abi-menu-state-2026-10-21.md)中独立验收，不计入本记录的曲线完成范围。
 
 运行继承桌面 `Default`，`realPrivateDesktop=false`。`SW_HIDE` 只是进程启动请求，窗口显示由夹具控制，不能称为独立桌面隔离或整轮隐藏窗口验收。本批没有完成真实 IME、多 DPI 或目标硬件验收，详见[本机窗口回归更正](abi-verification-desktops-2026-10-21.md)。
 
 ## 剩余范围
 
-`readComparisonMode`、`writeComparisonMode`、`linkAdjacentControls`、`Session.currentFrame`、`seek`、`isPlaying`、`setPlaying`、`Source.subdivide` 和 `Channel.sample` 尚未统一到同一复制、调用及最终释放检查。选择回调保护不表示这些回调也支持任意重入或自毁。
+`readComparisonMode`、`writeComparisonMode` 和 `linkAdjacentControls` 已在[后续批次](abi-curve-comparison-lifetime-2026-10-21.md)接入同一保护。`Session.currentFrame`、`seek`、`isPlaying`、`setPlaying`、`Source.subdivide` 和 `Channel.sample` 仍未统一到同一复制、调用及最终释放检查，不能据此认为这些回调也支持任意重入或自毁。
 
 本批不改变曲线或 VMD 格式兼容规则，不开放普通生产宿主的 `mms.edit`。Win7 SP1 x64、CPU 基础路径、AMD 兼容及程序旁 `data` 的要求保持不变。正式 release 未更新。

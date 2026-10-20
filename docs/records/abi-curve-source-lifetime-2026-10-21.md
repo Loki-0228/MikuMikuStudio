@@ -53,9 +53,8 @@
 
 随后也已完成[选择读写回调保护](abi-curve-selection-lifetime-2026-10-21.md)，两套配置选择专项各 5,158 项、编辑器全集各 13,380 项通过。其稳定时钟检查不因轨道增大而复制完整关键帧数组。
 
-尚未统一到本批复制与会话检查流程的回调包括：
+比较模式与相邻控制开关由[后续批次](abi-curve-comparison-lifetime-2026-10-21.md)接入同一保护，并修复筛选拒绝时的部分显示发布。当前仍未统一的回调包括：
 
-- 比较模式回调 `readComparisonMode`、`writeComparisonMode`，以及相邻控制开关 `linkAdjacentControls`。
 - 帧与播放控制回调 `Session.currentFrame`、`seek`、`isPlaying`、`setPlaying`。
 - `Source.subdivide` 和 `Channel.sample`。
 
