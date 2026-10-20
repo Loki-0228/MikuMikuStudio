@@ -267,6 +267,7 @@
 #include "../plugins/native_global_commands.hpp"
 #include "../plugins/native_model_order.hpp"
 #include "../plugins/native_model_outline_ui.hpp"
+#include "../plugins/native_model_outline_color.hpp"
 #include "../plugins/native_model_multiply.hpp"
 #include "../plugins/native_physics_mode.hpp"
 #include "../plugins/native_history_commands.hpp"
@@ -2722,6 +2723,9 @@ void CmdViewMenu(MMDApp* app, HWND hwnd, std::uint16_t id,
     // via SetModelColor(model, r, g, b) over the 100 model slots.
     // ------------------------------------------------------------------
     case 286: {
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::TryEditBoundModelOutlineColor(app, hwnd)) return;
+#endif
         app->state.dialogFlags[6] = 1;
         app->state.enterKeyState = 1;
         CHOOSECOLORA cc;
@@ -2736,12 +2740,21 @@ void CmdViewMenu(MMDApp* app, HWND hwnd, std::uint16_t id,
             app->state.modelOutlineColorBlue;
         cc.rgbResult = (static_cast<COLORREF>(b) << 16) |
                        (static_cast<COLORREF>(g) << 8) | r;
-        cc.lpCustColors =
-            reinterpret_cast<COLORREF*>(app->state.customColorTable);
+        // Keep the original sixteen custom colors without indexing across the
+        // separate twelve-item array and its four-item trailing storage.
+        std::array<COLORREF, 16> customColors{};
+        static_assert(sizeof(app->state.customColorTable) <= sizeof(customColors));
+        std::memcpy(customColors.data(), app->state.customColorTable, sizeof(app->state.customColorTable));
+        static_assert(sizeof(app->state.customColorTable) + sizeof(app->state.pad209) == sizeof(customColors));
+        std::memcpy(reinterpret_cast<unsigned char*>(customColors.data()) + sizeof(app->state.customColorTable),
+            &app->state.pad209, sizeof(app->state.pad209));
+        cc.lpCustColors = customColors.data();
         cc.Flags = 3;  // CC_RGBINIT | CC_FULLOPEN
         if (!ChooseColorA(&cc)) {
             return;
         }
+        std::memcpy(app->state.customColorTable, customColors.data(), sizeof(app->state.customColorTable));
+        std::memcpy(&app->state.pad209, reinterpret_cast<const unsigned char*>(customColors.data()) + sizeof(app->state.customColorTable), sizeof(app->state.pad209));
         const std::uint8_t nr = cc.rgbResult & 0xFF;
         const std::uint8_t ng = (cc.rgbResult >> 8) & 0xFF;
         const std::uint8_t nb = (cc.rgbResult >> 16) & 0xFF;
