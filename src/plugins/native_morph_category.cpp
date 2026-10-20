@@ -63,7 +63,7 @@ bool Ready(MMDApp& app, bool replay = false) noexcept {
         (!app.SceneMutationInProgress() || ownReplay) && (!bake::UiLocked() || ownReplay) &&
         !SceneSaveBlocksEdits() && !GetCapture() && !app.FrameRangeDialog() && !app.state.frameCopyDialog &&
         !app.RecordingWindow() && !app.GravitySettingDialog() && !app.GroundShadowColorDialog() &&
-        !app.AccessoryOrderArray() && !app.state.accessoryEditDialogOpen && !app.state.edgeThicknessDialog;
+        !app.AccessoryOrderArray() && !app.state.accessoryEditDialogOpen && !NativeModelOutlineDialogBlocks(app);
 }
 std::vector<std::vector<unsigned>> Chains(const Pool& keys, unsigned count) {
     if (!count || count > keys.size()) throw std::invalid_argument("missing morph category tracks");

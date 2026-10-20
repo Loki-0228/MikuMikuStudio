@@ -430,6 +430,8 @@ void CrossModelJournal(){
 #include "native_physics_mode_checks.inc"
 #include "native_audio_history_checks.inc"
 #include "native_audio_format_checks.inc"
+#include "native_model_outline_checks.inc"
+#include "native_model_outline_ui_checks.inc"
 #include "native_bone_curve_write_checks.inc"
 #include "native_physics_toggle_checks.inc"
 #include "native_center_offset_checks.inc"
@@ -450,6 +452,12 @@ int main(int argc,char** argv){
     }
     if(argc==2&&!std::strcmp(argv[1],"--audio-format-only")) {
         NativeAudioFormatChecks();std::printf("PASS WAVE formats and history: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--model-outline-only")) {
+        NativeModelOutlineChecks();std::printf("PASS model outline: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--model-outline-ui-only")) {
+        NativeModelOutlineUiChecks();std::printf("PASS model outline UI: %u checks\n",checks);return 0;
     }
     if(argc==2&&!std::strcmp(argv[1],"--physics-mode-only")) {
         NativePhysicsModeChecks();std::printf("PASS physics mode: %u checks\n",checks);return 0;
@@ -852,6 +860,8 @@ int main(int argc,char** argv){
     run("NativePhysicsModeChecks",NativePhysicsModeChecks);
     run("NativeAudioHistoryChecks",NativeAudioHistoryChecks);
     run("NativeAudioFormatChecks",NativeAudioFormatChecks);
+    run("NativeModelOutlineChecks",NativeModelOutlineChecks);
+    run("NativeModelOutlineUiChecks",NativeModelOutlineUiChecks);
     run("NativeModelRangeChecks",NativeModelRangeChecks);
     run("NativeObjectCommandChecks",NativeObjectCommandChecks);
     run("NativeAccessorySettingsChecks",NativeAccessorySettingsChecks);

@@ -44,7 +44,7 @@ bool Ready(MMDApp& app, HWND shadowDialog = nullptr, HWND authorSlider = nullptr
             (ownAuthorSlider && capture == authorSlider)) &&
         !app.FrameRangeDialog() && !app.state.frameCopyDialog && !app.RecordingWindow() &&
         !app.GravitySettingDialog() && (!app.GroundShadowColorDialog() || ownShadow) && !app.AccessoryOrderArray() &&
-        !app.state.accessoryEditDialogOpen && !app.state.edgeThicknessDialog;
+        !app.state.accessoryEditDialogOpen && !NativeModelOutlineDialogBlocks(app);
 }
 std::uint8_t& ProjectDisplayField(MMDApp& app,unsigned field) noexcept {
     if(field==1)return app.GroundShadowEnabled();

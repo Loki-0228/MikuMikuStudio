@@ -28,7 +28,7 @@ bool TryPasteBoundKeys(MMDApp* app, HWND window, bool mirror) noexcept {
         bake::UiLocked() || SceneSaveBlocksEdits() || GetCapture() ||
         app->FrameRangeDialog() || app->state.frameCopyDialog || app->RecordingWindow() ||
         app->GravitySettingDialog() || app->GroundShadowColorDialog() || app->AccessoryOrderArray() ||
-        app->state.accessoryEditDialogOpen || app->state.edgeThicknessDialog ||
+        app->state.accessoryEditDialogOpen || NativeModelOutlineDialogBlocks(*app) ||
         history->CheckNativeEdit() != MMS_OK) return true;
     Boundary([&]() -> MmsResult {
         std::shared_ptr<HistoryChange> change;

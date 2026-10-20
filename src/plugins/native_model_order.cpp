@@ -21,7 +21,7 @@ bool Ready(MMDApp& app, bool replay) noexcept {
         !SceneSaveBlocksEdits() && !GetCapture() && !NativeObjectUiPending(&app) &&
         !app.FrameRangeDialog() && !app.state.frameCopyDialog && !app.RecordingWindow() &&
         !app.GravitySettingDialog() && !app.GroundShadowColorDialog() &&
-        !app.state.accessoryEditDialogOpen && !app.state.edgeThicknessDialog;
+        !app.state.accessoryEditDialogOpen && !NativeModelOutlineDialogBlocks(app);
 }
 }
 struct NativeModelOrderPlan::State final : HistoryChange, std::enable_shared_from_this<State> {

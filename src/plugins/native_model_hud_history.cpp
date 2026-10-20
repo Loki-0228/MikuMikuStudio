@@ -64,7 +64,7 @@ bool Ready(MMDApp& app,bool replay=false)noexcept{
     return !app.PlaybackActive()&&!app.FrameStepPlayback()&&!app.state.recordPlaybackStartPending&&
         (!app.SceneMutationInProgress()||authorized)&&(!bake::UiLocked()||authorized)&&!SceneSaveBlocksEdits()&&
         !app.FrameRangeDialog()&&!app.state.frameCopyDialog&&!app.RecordingWindow()&&!app.GravitySettingDialog()&&
-        !app.GroundShadowColorDialog()&&!app.AccessoryOrderArray()&&!app.state.accessoryEditDialogOpen&&!app.state.edgeThicknessDialog;
+        !app.GroundShadowColorDialog()&&!app.AccessoryOrderArray()&&!app.state.accessoryEditDialogOpen&&!NativeModelOutlineDialogBlocks(app);
 }
 std::uint64_t Metadata(const mdl::ModelRecord& model)noexcept{
     std::uint64_t hash=14695981039346656037ull;

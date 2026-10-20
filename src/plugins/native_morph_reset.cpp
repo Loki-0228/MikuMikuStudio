@@ -31,7 +31,7 @@ bool Ready(MMDApp& app,bool replay=false) noexcept {
         (!app.SceneMutationInProgress()||ownReplay)&&(!bake::UiLocked()||ownReplay)&&!SceneSaveBlocksEdits()&&!GetCapture()&&
         !app.FrameRangeDialog()&&!app.state.frameCopyDialog&&!app.RecordingWindow()&&
         !app.GravitySettingDialog()&&!app.GroundShadowColorDialog()&&!app.AccessoryOrderArray()&&
-        !app.state.accessoryEditDialogOpen&&!app.state.edgeThicknessDialog;
+        !app.state.accessoryEditDialogOpen&&!NativeModelOutlineDialogBlocks(app);
 }
 struct Source {
     std::array<char,20> name{};

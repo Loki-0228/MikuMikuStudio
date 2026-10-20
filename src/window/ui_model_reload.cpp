@@ -23,6 +23,7 @@
 #include "mikumikustudio/panel_controls.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "../plugins/native_pose_scope.hpp"
+#include "../plugins/native_model_outline_ui.hpp"
 #endif
 
 namespace mikumikustudio {
@@ -548,7 +549,11 @@ void ApplyModelComboSelection(MMDApp* app) {  // was Sub44D940, 0x44D940
 
         unsigned char* model = app->SelectedModel();
         HWND optionWindow = app->state.edgeThicknessDialog;
-        if (optionWindow != nullptr && model != nullptr) {
+        bool controlledOutline=false;
+#if !MMD_ORIGINAL_PROFILE
+        controlledOutline=plugins::RefreshBoundModelOutline(*app);
+#endif
+        if (!controlledOutline && optionWindow != nullptr && model != nullptr) {
             char text[256]{};
             sprintf_s(text, "%3.2f", mikumikustudio::mdl::Mdl(model)->edgeScale);
             HWND edit = GetDlgItem(optionWindow, panel::kEdgeThicknessEdit);

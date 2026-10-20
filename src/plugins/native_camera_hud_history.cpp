@@ -47,7 +47,7 @@ bool Ready(MMDApp& app, bool replay = false) noexcept {
         (!app.SceneMutationInProgress() || authorized) && (!bake::UiLocked() || authorized) &&
         !SceneSaveBlocksEdits() && !app.FrameRangeDialog() && !app.state.frameCopyDialog &&
         !app.RecordingWindow() && !app.GravitySettingDialog() && !app.GroundShadowColorDialog() &&
-        !app.AccessoryOrderArray() && !app.state.accessoryEditDialogOpen && !app.state.edgeThicknessDialog;
+        !app.AccessoryOrderArray() && !app.state.accessoryEditDialogOpen && !NativeModelOutlineDialogBlocks(app);
 }
 struct Change final : HistoryChange, std::enable_shared_from_this<Change> {
     MMDApp& app;

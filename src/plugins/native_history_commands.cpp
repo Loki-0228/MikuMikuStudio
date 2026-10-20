@@ -1,6 +1,7 @@
 #include "native_history_commands.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "native_pose_scope.hpp"
+#include "native_model_outline_ui.hpp"
 #include "native_object_commands.hpp"
 #include "native_camera_follow_ui.hpp"
 #include "mikumikustudio/animation_curve_editor.hpp"
@@ -30,6 +31,7 @@ void RefreshBoundPoseReadout(MMDApp& app) noexcept {
         bake::ScopedUiInputGate input;
         if (canRead) PostViewRefresh(&app);
         RefreshBoundCameraFollowReadout(app);
+        RefreshBoundModelOutline(app);
         return MMS_OK;
     });
 }
@@ -48,6 +50,7 @@ bool TryBoundHistoryCommand(MMDApp* app, bool redo) noexcept {
     if (!app) return false;
     auto* history = BoundNativePoseHistory(app);
     if (!history) return false;
+    CancelBoundModelOutlineGesture(*app);
     RunBoundObjectHistory(*app, *history, redo);
     return true;
 }

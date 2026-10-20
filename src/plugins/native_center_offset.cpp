@@ -34,7 +34,7 @@ bool Ready(MMDApp& app) noexcept {
         !app.state.recordPlaybackStartPending && !app.SceneMutationInProgress() && !bake::UiLocked() &&
         !SceneSaveBlocksEdits() && !GetCapture() && !app.FrameRangeDialog() && !app.state.frameCopyDialog &&
         !app.RecordingWindow() && !app.GravitySettingDialog() && !app.GroundShadowColorDialog() &&
-        !app.AccessoryOrderArray() && !app.state.accessoryEditDialogOpen && !app.state.edgeThicknessDialog;
+        !app.AccessoryOrderArray() && !app.state.accessoryEditDialogOpen && !NativeModelOutlineDialogBlocks(app);
 }
 struct ParentDependencies final : HistoryChange, std::enable_shared_from_this<ParentDependencies> {
     MMDApp& app;

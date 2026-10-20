@@ -34,7 +34,7 @@ bool Ready(MMDApp& app,bool replay=false)noexcept{
     return !app.PlaybackActive()&&!app.FrameStepPlayback()&&!app.state.recordPlaybackStartPending&&
         (!app.SceneMutationInProgress()||authorized)&&(!bake::UiLocked()||authorized)&&!SceneSaveBlocksEdits()&&
         !app.FrameRangeDialog()&&!app.state.frameCopyDialog&&!app.RecordingWindow()&&!app.GravitySettingDialog()&&
-        !app.GroundShadowColorDialog()&&!app.AccessoryOrderArray()&&!app.state.accessoryEditDialogOpen&&!app.state.edgeThicknessDialog;
+        !app.GroundShadowColorDialog()&&!app.AccessoryOrderArray()&&!app.state.accessoryEditDialogOpen&&!NativeModelOutlineDialogBlocks(app);
 }
 struct Change final:HistoryChange,std::enable_shared_from_this<Change>{
     MMDApp& app;const unsigned slot;mdl::AccessoryRecord* const object;const MmsObjectRef identity;

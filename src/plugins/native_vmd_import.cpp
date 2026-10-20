@@ -30,7 +30,7 @@ bool ImportControlsReady(MMDApp& app) noexcept {
     return !app.PlaybackActive()&&!app.FrameStepPlayback()&&!app.state.recordPlaybackStartPending&&!app.SceneMutationInProgress()&&
         !bake::UiLocked()&&!SceneSaveBlocksEdits()&&!GetCapture()&&!app.FrameRangeDialog()&&!app.state.frameCopyDialog&&
         !app.RecordingWindow()&&!app.GravitySettingDialog()&&!app.GroundShadowColorDialog()&&!app.AccessoryOrderArray()&&
-        !app.state.accessoryEditDialogOpen&&!app.state.edgeThicknessDialog;
+        !app.state.accessoryEditDialogOpen&&!NativeModelOutlineDialogBlocks(app);
 }
 bool ImportReady(MMDApp& app,SharedHistory& history) noexcept {
     return ImportControlsReady(app)&&history.CheckNativeEdit()==MMS_OK&&ImportControlsReady(app);

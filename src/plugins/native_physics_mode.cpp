@@ -28,7 +28,7 @@ bool Ready(MMDApp& app, bool replay) noexcept {
         !app.PlaybackActive() && !app.FrameStepPlayback() && !app.state.recordPlaybackStartPending &&
         !app.FrameRangeDialog() && !app.state.frameCopyDialog && !app.RecordingWindow() &&
         !app.GravitySettingDialog() && !app.GroundShadowColorDialog() && !app.AccessoryOrderArray() &&
-        !app.state.accessoryEditDialogOpen && !app.state.edgeThicknessDialog;
+        !app.state.accessoryEditDialogOpen && !NativeModelOutlineDialogBlocks(app);
 }
 void Charge(std::uint64_t& bytes, std::uint64_t count, std::uint64_t stride) noexcept {
     bytes = stride && count > (UINT64_MAX - bytes) / stride ? UINT64_MAX : bytes + count * stride;

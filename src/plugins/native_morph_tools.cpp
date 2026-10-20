@@ -83,7 +83,7 @@ bool Ready(MMDApp& app,bool replay=false)noexcept{
     return (!app.SceneMutationInProgress()||own)&&(!bake::UiLocked()||own)&&!SceneSaveBlocksEdits()&&
         !NativeObjectUiPending(&app)&&!app.PlaybackActive()&&!app.FrameStepPlayback()&&!app.state.recordPlaybackStartPending&&
         !GetCapture()&&!app.RecordingWindow()&&!app.FrameRangeDialog()&&!app.state.frameCopyDialog&&!app.GravitySettingDialog()&&
-        !app.GroundShadowColorDialog()&&!app.AccessoryOrderArray()&&!app.state.accessoryEditDialogOpen&&!app.state.edgeThicknessDialog;
+        !app.GroundShadowColorDialog()&&!app.AccessoryOrderArray()&&!app.state.accessoryEditDialogOpen&&!NativeModelOutlineDialogBlocks(app);
 }
 std::vector<std::vector<unsigned>> Chains(const Pool& pool,unsigned count){
     if(!count||count>pool.size())throw std::invalid_argument("missing morph tool roots");

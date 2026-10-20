@@ -30,7 +30,7 @@ bool Ready(MMDApp& app) noexcept {
         !bake::UiLocked() && !SceneSaveBlocksEdits() && !GetCapture() &&
         !app.FrameRangeDialog() && !app.state.frameCopyDialog && !app.RecordingWindow() &&
         !app.GravitySettingDialog() && !app.GroundShadowColorDialog() && !app.AccessoryOrderArray() &&
-        !app.state.accessoryEditDialogOpen && !app.state.edgeThicknessDialog && !app.CameraMode();
+        !app.state.accessoryEditDialogOpen && !NativeModelOutlineDialogBlocks(app) && !app.CameraMode();
 }
 void Charge(std::uint64_t& bytes, std::uint64_t count, std::uint64_t stride = 1) noexcept {
     bytes = stride && count > (UINT64_MAX - bytes) / stride ? UINT64_MAX : bytes + count * stride;

@@ -37,7 +37,7 @@ bool Ready(MMDApp& app, HWND slider = nullptr) noexcept {
         !bake::UiLocked() && !SceneSaveBlocksEdits() && (!capture || (ownSlider && capture==slider)) &&
         !app.FrameRangeDialog() && !app.state.frameCopyDialog && !app.RecordingWindow() &&
         !app.GravitySettingDialog() && !app.GroundShadowColorDialog() && !app.AccessoryOrderArray() &&
-        !app.state.accessoryEditDialogOpen && !app.state.edgeThicknessDialog;
+        !app.state.accessoryEditDialogOpen && !NativeModelOutlineDialogBlocks(app);
 }
 // Non-owning scalar history follows the same chronological object lifetime
 // rules as accessory scalars. Controlled import/delete nodes retain resources.

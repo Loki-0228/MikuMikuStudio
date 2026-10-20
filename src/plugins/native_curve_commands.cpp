@@ -34,7 +34,7 @@ bool Ready(MMDApp& app) noexcept {
         !app.SceneMutationInProgress() && !bake::UiLocked() && !SceneSaveBlocksEdits() && !GetCapture() &&
         !app.FrameRangeDialog() && !app.state.frameCopyDialog && !app.RecordingWindow() &&
         !app.GravitySettingDialog() && !app.GroundShadowColorDialog() && !app.AccessoryOrderArray() &&
-        !app.state.accessoryEditDialogOpen && !app.state.edgeThicknessDialog;
+        !app.state.accessoryEditDialogOpen && !NativeModelOutlineDialogBlocks(app);
 }
 template<class Plan>
 bool CommitCurveWrite(MMDApp& app, const char* label, Plan&& plan, std::wstring& error) noexcept {

@@ -47,5 +47,8 @@ SharedHistory* BoundNativePoseHistory(MMDApp*) noexcept;
 // restores the same pointers. Modal callers must validate before dereferencing
 // a journal captured before dispatching messages.
 std::uint64_t BoundNativePoseGeneration(MMDApp*) noexcept;
+// A registered outline property window holds no writable scene scratch while
+// idle. Unregistered dialogs and active/reentrant previews retain the old gate.
+bool NativeModelOutlineDialogBlocks(const MMDApp&) noexcept;
 }
 #endif

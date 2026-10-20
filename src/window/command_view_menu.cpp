@@ -230,6 +230,7 @@
 #include <commdlg.h>
 
 #include <array>
+#include <algorithm>
 #include <cmath>
 #include <cctype>
 #include <limits>
@@ -265,6 +266,7 @@
 #include "../plugins/native_pose_scope.hpp"
 #include "../plugins/native_global_commands.hpp"
 #include "../plugins/native_model_order.hpp"
+#include "../plugins/native_model_outline_ui.hpp"
 #include "../plugins/native_model_multiply.hpp"
 #include "../plugins/native_physics_mode.hpp"
 #include "../plugins/native_history_commands.hpp"
@@ -459,7 +461,14 @@ void SetGravityChannel(MMDApp* app, int channel, float value);  // VA 0x0045FD80
 // original procedure (app+0xA0B48, captured when case 253 subclasses).
 LRESULT CALLBACK EdgeThicknessEditSubclassProc(  // was Sub42E270, VA 0x0042E270
     HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    MMDApp* app = g_Block;
+    const auto dialog=GetParent(hwnd);
+    auto* app=reinterpret_cast<MMDApp*>(GetWindowLongPtrW(dialog,DWLP_USER));
+    if(!app)app=g_Block;
+#if !MMD_ORIGINAL_PROFILE
+    // The registered controller handles Enter before this legacy procedure.
+    // Failed controller initialization must never fall back to a direct write.
+    if((plugins::BoundNativePoseHistory(app)||plugins::ControlledModelOutlineDialog(dialog))&&msg==WM_KEYDOWN&&wParam==VK_RETURN)return 0;
+#endif
     if (msg == WM_KEYDOWN && wParam == VK_RETURN) {  // 0x100 / 0x0D
         const HWND dlg = app->state.edgeThicknessDialog;
         if (hwnd == GetDlgItem(dlg, panel::kEdgeThicknessEdit /*646*/)) {
@@ -490,6 +499,9 @@ float GetEdgeThickness(MMDApp* app) {  // was Sub41E950, VA 0x0041E950
 // in-dialog and dirty flags, then stores into the active model's thickness
 // float (+0x31C0).
 void SetEdgeThickness(MMDApp* app, float thickness) {  // was Sub41E980, VA 0x0041E980
+#if !MMD_ORIGINAL_PROFILE
+    if(plugins::BoundNativePoseHistory(app)||plugins::ControlledModelOutlineDialog(app->state.edgeThicknessDialog))return; // No legacy write-through after a controlled refusal.
+#endif
     if (app->state.optflag[0] != 0)
         return;
     app->state.messageSeen = 1;
@@ -1187,8 +1199,14 @@ void LayoutEdgeThicknessScale(HWND dialog) {
 }
 INT_PTR CALLBACK EdgeThicknessDlgProc(HWND hDlg, UINT msg, WPARAM wParam,
                                       LPARAM lParam) {  // was Sub44C7F0, VA 0x0044C7F0
-    (void)lParam;
-    MMDApp* app = g_Block;
+    auto* app=reinterpret_cast<MMDApp*>(GetWindowLongPtrW(hDlg,DWLP_USER));
+    if(msg==WM_INITDIALOG){app=lParam?reinterpret_cast<MMDApp*>(lParam):g_Block;SetWindowLongPtrW(hDlg,DWLP_USER,reinterpret_cast<LONG_PTR>(app));app->state.edgeThicknessDialog=hDlg;}
+    if(!app)return 0;
+#if !MMD_ORIGINAL_PROFILE
+    INT_PTR controlled=0;
+    if(plugins::HandleBoundModelOutlineDialog(*app,hDlg,msg,wParam,lParam,controlled))return controlled;
+#endif
+    if(msg==WM_DESTROY&&app->state.edgeThicknessDialog==hDlg)app->state.edgeThicknessDialog=nullptr;
     switch (msg) {
     case WM_INITDIALOG: {
         MakeDialogTopmostIfRequested(app, hDlg);
@@ -1205,8 +1223,11 @@ INT_PTR CALLBACK EdgeThicknessDlgProc(HWND hDlg, UINT msg, WPARAM wParam,
         SendMessageA(GetDlgItem(hDlg, panel::kEdgeThicknessSlider), TBM_SETRANGEMAX, 0, 200);
         SendMessageA(GetDlgItem(hDlg, panel::kEdgeThicknessSlider), TBM_SETTICFREQ, 0x64, 0);
         SendMessageA(GetDlgItem(hDlg, panel::kEdgeThicknessSlider), TBM_SETPOS, 1,
-                     (int)(fps * 100.0));
+                     std::isfinite(fps)?int((std::clamp)(double(fps)*100.0,0.0,200.0)):0);
         LayoutEdgeThicknessScale(hDlg);
+#if !MMD_ORIGINAL_PROFILE
+        plugins::InitializeBoundModelOutline(*app,hDlg);
+#endif
         break;
     }
     case WM_SIZE:
@@ -1217,10 +1238,12 @@ INT_PTR CALLBACK EdgeThicknessDlgProc(HWND hDlg, UINT msg, WPARAM wParam,
     case WM_COMMAND:
         if (LOWORD(wParam) == 2) {
             DestroyWindow(hDlg);
-            app->state.edgeThicknessDialog = nullptr;
             return 1;
         }
         break;
+    case WM_CLOSE:
+        DestroyWindow(hDlg);
+        return 1;
     case WM_HSCROLL: {
         const double v =
             static_cast<double>(
@@ -1994,8 +2017,9 @@ void CmdViewMenu(MMDApp* app, HWND hwnd, std::uint16_t id,
         }
         HWND dlg = CreateUiDialogParamA(
             hInst, MAKEINTRESOURCEA(english ? 0x296 : 0x285),
-            hwnd, EdgeThicknessDlgProc, 0);
-        app->state.edgeThicknessDialog = dlg;
+            hwnd, EdgeThicknessDlgProc, reinterpret_cast<LPARAM>(app));
+        app->state.edgeThicknessDialog = IsWindow(dlg)?dlg:nullptr;
+        if(!app->state.edgeThicknessDialog)break;
         ShowWindow(dlg, SW_SHOW);
         UpdateWindow(dlg);
         break;

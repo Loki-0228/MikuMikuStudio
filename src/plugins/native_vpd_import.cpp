@@ -32,7 +32,7 @@ bool Ready(MMDApp& app) noexcept {
     return !app.CameraMode() && !app.PlaybackActive() && !app.FrameStepPlayback() && !app.state.recordPlaybackStartPending &&
         !app.SceneMutationInProgress() && !bake::UiLocked() && !SceneSaveBlocksEdits() && !GetCapture() &&
         !app.FrameRangeDialog() && !app.state.frameCopyDialog && !app.RecordingWindow() && !app.GravitySettingDialog() &&
-        !app.GroundShadowColorDialog() && !app.AccessoryOrderArray() && !app.state.accessoryEditDialogOpen && !app.state.edgeThicknessDialog;
+        !app.GroundShadowColorDialog() && !app.AccessoryOrderArray() && !app.state.accessoryEditDialogOpen && !NativeModelOutlineDialogBlocks(app);
 }
 struct BoneSource {
     std::array<char,20> name{};

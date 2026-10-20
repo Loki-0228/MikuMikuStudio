@@ -36,7 +36,7 @@ bool CameraInterpolationReady(MMDApp& app) noexcept {
         !bake::UiLocked() && !SceneSaveBlocksEdits() && !GetCapture() &&
         !app.FrameRangeDialog() && !app.state.frameCopyDialog && !app.RecordingWindow() &&
         !app.GravitySettingDialog() && !app.GroundShadowColorDialog() && !app.AccessoryOrderArray() &&
-        !app.state.accessoryEditDialogOpen && !app.state.edgeThicknessDialog;
+        !app.state.accessoryEditDialogOpen && !NativeModelOutlineDialogBlocks(app);
 }
 bool ReadNumber(HWND dialog, int id, double& value) noexcept {
     const auto edit = GetDlgItem(dialog, id);

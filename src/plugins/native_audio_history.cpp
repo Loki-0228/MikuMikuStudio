@@ -26,7 +26,7 @@ bool Ready(MMDApp& app,bool replay=false)noexcept{
     return (!app.SceneMutationInProgress()||own)&&(!bake::UiLocked()||own)&&!SceneSaveBlocksEdits()&&
         !NativeObjectUiPending(&app)&&!app.PlaybackActive()&&!app.FrameStepPlayback()&&!app.state.recordPlaybackStartPending&&
         !GetCapture()&&!app.RecordingWindow()&&!app.FrameRangeDialog()&&!app.state.frameCopyDialog&&!app.GravitySettingDialog()&&
-        !app.GroundShadowColorDialog()&&!app.AccessoryOrderArray()&&!app.state.accessoryEditDialogOpen&&!app.state.edgeThicknessDialog&&
+        !app.GroundShadowColorDialog()&&!app.AccessoryOrderArray()&&!app.state.accessoryEditDialogOpen&&!NativeModelOutlineDialogBlocks(app)&&
         app.Audio()&&wave_audio::Stopped(*app.Audio());
 }
 bool Remember(MMDApp& app){const auto state=GetMenuState(GetMenu(app.MainWindow()),0x12D,MF_BYCOMMAND);return state!=UINT(-1)&&(state&MF_CHECKED);}

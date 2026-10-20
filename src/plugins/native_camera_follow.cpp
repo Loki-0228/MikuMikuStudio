@@ -33,7 +33,7 @@ bool Ready(MMDApp& a,bool history=false) noexcept {
         (!a.SceneMutationInProgress()||authorized)&&(!bake::UiLocked()||authorized)&&!SceneSaveBlocksEdits()&&
         !GetCapture()&&!a.FrameRangeDialog()&&!a.state.frameCopyDialog&&!a.RecordingWindow()&&
         !a.GravitySettingDialog()&&!a.GroundShadowColorDialog()&&!a.AccessoryOrderArray()&&
-        !a.state.accessoryEditDialogOpen&&!a.state.edgeThicknessDialog&&
+        !a.state.accessoryEditDialogOpen&&!NativeModelOutlineDialogBlocks(a)&&
         (!NativeObjectOperationActive(&a)||authorized)&&!NativeObjectUiPending(&a);
 }
 ViewportPresetState View(MMDApp& a) noexcept {

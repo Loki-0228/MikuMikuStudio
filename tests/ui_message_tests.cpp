@@ -119,6 +119,7 @@ void EdgeThicknessRegression(MMDApp* app,HWND owner){
     INITCOMMONCONTROLSEX controls{sizeof controls,ICC_BAR_CLASSES};InitCommonControlsEx(&controls);
     const auto exceptionHandler=AddVectoredExceptionHandler(1,EdgeCrash);
     HHOOK hide=SetWindowsHookExW(WH_CBT,HideEdgeDialog,nullptr,GetCurrentThreadId());Check(hide!=nullptr,"hide actual edge dialog");
+    unsigned closeCycle=0;
     for(unsigned char language : {0,1,2,0,1,2}){
         app->EnglishUI()=language;model->edgeScale=0.75f;
         CmdViewMenu(app,owner,253,0);
@@ -130,7 +131,9 @@ void EdgeThicknessRegression(MMDApp* app,HWND owner){
         SendMessageW(slider,TBM_SETPOS,TRUE,50);SendMessageW(dialog,WM_HSCROLL,TB_THUMBPOSITION,reinterpret_cast<LPARAM>(slider));
         char value[32]{};GetWindowTextA(edit,value,32);
         Check(std::fabs(model->edgeScale-0.5f)<0.001f&&std::fabs(std::atof(value)-0.5)<0.001,"edge slider updates model and edit");
-        SendMessageW(dialog,WM_COMMAND,IDCANCEL,0);Check(app->state.edgeThicknessDialog==nullptr&&!IsWindow(dialog),"edge dialog closes without stale callback");
+        const bool viaClose=closeCycle++>=3;
+        SendMessageW(dialog,viaClose?WM_CLOSE:WM_COMMAND,viaClose?0:IDCANCEL,0);
+        Check(app->state.edgeThicknessDialog==nullptr&&!IsWindow(dialog),"edge dialog closes by Cancel or titlebar without stale callback");
     }
     UnhookWindowsHookEx(hide);RemoveVectoredExceptionHandler(exceptionHandler);app->ModelSlot(0)=nullptr;g_Block=previous;
     std::puts("PASS hidden edge thickness dialog: typing, slider, close and reopen in three languages");

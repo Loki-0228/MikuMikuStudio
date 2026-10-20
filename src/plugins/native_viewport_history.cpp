@@ -1,6 +1,7 @@
 #include "native_viewport_history.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "native_pose_scope.hpp"
+#include "native_model_outline_ui.hpp"
 #include "native_camera_hud_history.hpp"
 #include "native_accessory_hud_history.hpp"
 #include "native_model_hud_history.hpp"
@@ -46,7 +47,7 @@ bool ViewportReady(MMDApp& a,bool allowAuthorizedHistory=false) noexcept {
         (!bake::UiLocked()||authorizedHistory) &&
         !SceneSaveBlocksEdits() && !a.FrameRangeDialog() && !a.state.frameCopyDialog &&
         !a.RecordingWindow() && !a.GravitySettingDialog() && !a.GroundShadowColorDialog() &&
-        !a.AccessoryOrderArray() && !a.state.accessoryEditDialogOpen && !a.state.edgeThicknessDialog;
+        !a.AccessoryOrderArray() && !a.state.accessoryEditDialogOpen && !NativeModelOutlineDialogBlocks(a);
 }
 bool Ready(MMDApp& a) noexcept {return a.CameraMode()!=0&&ViewportReady(a);}
 struct CameraGestureChange final:HistoryChange,std::enable_shared_from_this<CameraGestureChange>{
@@ -349,15 +350,16 @@ MmsResult BeginViewportCameraGesture(MMDApp& a,SharedHistory& h,HWND owner,UINT 
     });
 }
 bool CancelViewportCameraGesture(MMDApp& a) noexcept {
+    const bool outlineRestored=CancelBoundModelOutlineGesture(a);
     const bool boneHudRestored=CancelModelHudGesture(a);
     const bool hudRestored=CancelCameraHudGesture(a);
     const bool accessoryRestored=CancelAccessoryHudGesture(a);
     const bool modelRestored=CancelViewportModelGesture(a);
-    if(!gesture || gesture->app!=&a)return modelRestored||hudRestored||accessoryRestored||boneHudRestored;
+    if(!gesture || gesture->app!=&a)return modelRestored||hudRestored||accessoryRestored||boneHudRestored||outlineRestored;
     auto current=std::move(gesture);const bool restored=current->Rollback();current->transaction.reset();
     a.state.rightMouseButtonState=0;a.state.middleMouseButtonState=0;
     if(current->owner && GetCapture()==current->owner)ReleaseCapture();
-    return restored||modelRestored||hudRestored||accessoryRestored||boneHudRestored;
+    return restored||modelRestored||hudRestored||accessoryRestored||boneHudRestored||outlineRestored;
 }
 bool AllowViewportCameraPreview(MMDApp& a,UINT button) noexcept {
     if(modelGesture&&modelGesture->app==&a)return AllowViewportModelPreview(a,button);

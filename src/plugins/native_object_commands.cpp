@@ -122,7 +122,7 @@ bool EditorsOpen(MMDApp& app) noexcept {
     // curve editor uses checked identities and receives a read notification.
     return app.FrameRangeDialog() || app.state.frameCopyDialog ||
         app.GravitySettingDialog() || app.GroundShadowColorDialog() || app.AccessoryOrderArray() ||
-        app.state.accessoryEditDialogOpen || app.state.edgeThicknessDialog;
+        app.state.accessoryEditDialogOpen || NativeModelOutlineDialogBlocks(app);
 }
 bool ValidOrder(const MMDApp& app, bool repairModelRanks = false) noexcept {
     std::array<bool, kModelSlotCount + 1> models{};
