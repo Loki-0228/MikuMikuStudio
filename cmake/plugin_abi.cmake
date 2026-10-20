@@ -104,6 +104,8 @@ add_custom_command(TARGET mms_hello_plugin POST_BUILD COMMAND ${CMAKE_COMMAND} -
     "${CMAKE_CURRENT_SOURCE_DIR}/sdk/mms/examples/hello_menu/plugin.json" "$<TARGET_FILE_DIR:mms_hello_plugin>/plugin.json")
 
 add_executable(plugin_abi_tests EXCLUDE_FROM_ALL tests/plugins/runtime_tests.cpp tests/plugins/abi_layout.cpp)
+add_test(NAME plugin_abi_panel_state COMMAND plugin_abi_tests --panel-state-only)
+set_tests_properties(plugin_abi_panel_state PROPERTIES TIMEOUT 90)
 add_executable(ui_property_value_tests EXCLUDE_FROM_ALL tests/plugins/ui_property_value_tests.cpp)
 target_link_libraries(ui_property_value_tests PRIVATE mms_plugin_runtime)
 target_include_directories(ui_property_value_tests PRIVATE src/plugins)

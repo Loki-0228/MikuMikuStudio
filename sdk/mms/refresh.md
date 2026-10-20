@@ -2,9 +2,9 @@
 
 `mms.ui.refresh` 1.0 为插件自己的按钮、INPUT、分隔线、注册 GROUP 和原生 surface 面板安排异步刷新。接口定义见 [refresh.h](include/mms/refresh.h)。结构使用 `MmsHeader`、`MMS_CALL` 和 8 字节对齐，调用失败不修改输出参数。
 
-当前支持 SELF 和 SUBTREE 范围的 REPAINT、按钮及 INPUT 的 STATE、已绑定目标 DATA、未绑定 INPUT 的属性 DATA，以及保留布局的 LAYOUT；GROUP 只开放 SUBTREE。两种范围均接受局部矩形，各阶段共用同一票据及队列。显式 DATA 使用[已有绑定](data-refresh.md)，默认属性读回见 [INPUT](input.md)。DEPENDENTS、来源订阅、自动依赖、插件量测提供者和动画帧尚未提供。SUBTREE 不遍历插件自行创建的任意 HWND。
+当前支持 SELF 和 SUBTREE 范围的 REPAINT、按钮、INPUT 及已挂载 PANEL 的 STATE、已绑定目标 DATA、未绑定 INPUT 的属性 DATA，以及保留布局的 LAYOUT；GROUP 只开放 SUBTREE。两种范围均接受局部矩形，各阶段共用同一票据及队列。显式 DATA 使用[已有绑定](data-refresh.md)，默认属性读回见 [INPUT](input.md)。DEPENDENTS、来源订阅、自动依赖、插件量测提供者和动画帧尚未提供。SUBTREE 不遍历插件自行创建的任意 HWND。
 
-组合请求在同一队列中按 DATA、STATE、LAYOUT、REPAINT 执行。DATA 准备并交换不可变显示模型；STATE 只读查询按钮的 getState，或 INPUT 的属性元数据及编辑可用性，并可通过[状态内容服务](state-content.md)准备文案和提示。INPUT STATE 不读取属性值。LAYOUT 使用已保留的描述、提示和状态排版；REPAINT 调用 `InvalidateRect` 或 `InvalidateRgn`，不直接执行绘制。刷新不调用 `FrameDriver`，不修改播放头、工程 dirty 或撤销历史，也不保存布局偏好。插件窗口后续的正常 `WM_PAINT` 仍由插件处理。
+组合请求在同一队列中按 DATA、STATE、LAYOUT、REPAINT 执行。DATA 准备并交换不可变显示模型；STATE 只读查询按钮或 PANEL 的原命令状态，或 INPUT 的属性元数据及编辑可用性，并可通过[状态内容服务](state-content.md)准备文案和提示。没有命令的 PANEL 使用注册元数据作为基线。INPUT STATE 不读取属性值。LAYOUT 使用已保留的描述、提示和状态排版；REPAINT 调用 `InvalidateRect` 或 `InvalidateRgn`，不直接执行绘制。刷新不调用 `FrameDriver`，不修改播放头、工程 dirty 或撤销历史，也不保存布局偏好。插件窗口后续的正常 `WM_PAINT` 仍由插件处理。
 
 ## 服务查询与线程
 
@@ -39,7 +39,7 @@
 | `target.instanceGeneration` | 宿主分配的呈现实例代次。销毁、重建或失效后重新发布会改变该值。 |
 | `target.projectEpoch` | 当前工程上下文代次。场景替换或重置后旧值失效。 |
 | `geometryRevision` | 当前实际几何修订，包括位置、客户区尺寸、窗口坐标空间 DPI 和逻辑可见性。 |
-| `supportedKinds`、`supportedScopes` | 开放范围的能力并集。普通目标报告 SELF 和 SUBTREE；GROUP 只报告 SUBTREE。REPAINT 对应实际呈现，STATE 对应按钮或原生 INPUT，DATA 对应有效绑定或原生 INPUT 属性读回，LAYOUT 对应保留布局后端。并集不表示各范围或后代都支持全部位，request 仍逐范围和成员检查。 |
+| `supportedKinds`、`supportedScopes` | 开放范围的能力并集。普通目标报告 SELF 和 SUBTREE；GROUP 只报告 SUBTREE。REPAINT 对应实际呈现，STATE 对应按钮、原生 INPUT 或已挂载 PANEL，DATA 对应有效绑定或原生 INPUT 属性读回，LAYOUT 对应保留布局后端。并集不表示各范围或后代都支持全部位，request 仍逐范围和成员检查。 |
 | `ready` | 普通目标已有窗口、布局发布成功且客户区宽高均大于零时为 1；GROUP 表示容器已发布。子树请求还检查各实际参与成员。 |
 | `visible` | 目标在插件布局中的逻辑可见性。此值不表示窗口无遮挡，也不要求宿主顶层窗口已显示。 |
 | `width`、`height` | 普通目标客户区 DIP 尺寸；GROUP 为保留布局中的逻辑容器尺寸。 |
@@ -84,7 +84,7 @@ SUBTREE 展开入队时的 `mms.ui` 注册树，包含有实际呈现的根及�
 | 阶段 | 适用成员 |
 | --- | --- |
 | DATA | 具有本插件有效绑定的实际目标，以及未绑定的原生 INPUT；其他无绑定成员跳过。 |
-| STATE | 已创建、支持 STATE 的宿主按钮及 INPUT；GROUP、面板和分隔线跳过。 |
+| STATE | 已创建、支持 STATE 的宿主按钮、INPUT 及 PANEL；GROUP 和分隔线跳过。 |
 | LAYOUT | 支持保留布局的成员。整树 STATE 后只调用一次现有后端，解决同容器及相邻区域的布局依赖。 |
 | REPAINT | 实际呈现的按钮、INPUT、分隔线和面板。无矩形时使整个客户区失效；有矩形时只使根区域映射后的交集失效。 |
 

@@ -850,9 +850,14 @@ MmsResult UiRegistry::WithElementState(MmsHandle handle, const std::function<Mms
     if (callbackDepth_) return MMS_E_BUSY;
     auto element = std::find_if(elements.begin(), elements.end(), [&](const auto& e) { return e.second.handle == handle; });
     if (element == elements.end()) return MMS_E_STALE;
-    if (element->second.desc.kind != MMS_UI_BUTTON) return MMS_E_UNSUPPORTED;
+    const bool panel = element->second.desc.kind == MMS_UI_PANEL;
+    if (element->second.desc.kind != MMS_UI_BUTTON && !panel) return MMS_E_UNSUPPORTED;
     auto found = commands.find(String(element->second.desc.commandId));
-    if (found == commands.end()) return MMS_E_NOT_FOUND;
+    if (found == commands.end()) {
+        if (!panel || element->second.desc.commandId.bytes) return MMS_E_NOT_FOUND;
+        const MmsCommandStateV1 state{Header<MmsCommandStateV1>(),1,0,element->second.visible?1u:0u,0,{}};
+        Callback guard(callbackDepth_); return apply(state);
+    }
     auto record = found->second;
     if (record->owner->stopping) return MMS_E_NOT_READY;
     Callback guard(callbackDepth_);
@@ -958,7 +963,8 @@ MmsResult UiRegistry::WithElementStateContent(const MmsUiTargetRefV1& target, ui
         if (element == elements.end()) return MMS_E_STALE;
         const auto elementId = element->first;
         const auto command = commands.find(String(element->second.desc.commandId));
-        if (!property && command == commands.end()) return MMS_E_STALE;
+        const bool panel = element->second.desc.kind == MMS_UI_PANEL;
+        if (!property && command == commands.end() && (!panel || element->second.desc.commandId.bytes)) return MMS_E_STALE;
         const auto owner = String(element->second.desc.ownerPlugin);
         const auto entry = stateProviderElements_.find(target.element);
         std::shared_ptr<StateProvider> provider;
@@ -971,7 +977,7 @@ MmsResult UiRegistry::WithElementStateContent(const MmsUiTargetRefV1& target, ui
         baseline->input = bool(property);
         if (property) {
             baseline->label = LegacyStateText(element->second.desc.label.bytes ? element->second.desc.label : property->desc.info.label);
-        } else baseline->description = LegacyStateText(command->second->desc.info.description);
+        } else if (command != commands.end()) baseline->description = LegacyStateText(command->second->desc.info.description);
         baseline->disabledReason = LegacyStateText(state.disabledReason);
         if (const auto check = StateCharge(baseline, budget, stateContentGlobal_)) return check;
         StateBuilder builder; builder.owner = provider ? provider->owner : nullptr;
@@ -998,6 +1004,15 @@ MmsResult UiRegistry::WithElementStateContent(const MmsUiTargetRefV1& target, ui
             builder.candidate->visible = state.visible && builder.candidate->visible;
             builder.candidate->readOnly = baselineReadOnly || builder.candidate->readOnly;
             effective.enabled = builder.candidate->enabled; effective.visible = builder.candidate->visible;
+        } else if (panel) {
+            const auto current = elements.find(elementId);
+            if (current == elements.end() || current->second.handle != target.element || current->second.desc.kind != MMS_UI_PANEL)
+                return MMS_E_STALE;
+            // PANEL providers remain text-only. Availability is still the
+            // original command state intersected with registered visibility.
+            builder.candidate->enabled = state.enabled != 0;
+            builder.candidate->visible = state.visible && current->second.visible;
+            effective.visible = builder.candidate->visible; effective.checked = 0;
         }
         return apply(effective, builder.candidate);
     };
@@ -1404,12 +1419,13 @@ bool UiRegistry::ExistingSurface(const std::string& id, SurfacePresentation& out
     if (element == elements.end() || element->second.handle != view.element || element->second.desc.kind != MMS_UI_PANEL ||
         view.surface->owner->stopping || !IsWindow(view.child) || GetParent(view.child) != view.parent ||
         GetWindowThreadProcessId(view.child, nullptr) != thread_) return false;
-    out = {view.child, view.instance, view.visible};
+    out = {view.child, view.instance, view.visible, view.bounds, view.dpi};
     return true;
 }
-MmsResult UiRegistry::ShowSurface(const std::string& id, HWND parent, const MmsUiRectV1& bounds, uint32_t dpi, bool visible) {
-    return Boundary([&]() -> MmsResult {
-        if (GetCurrentThreadId() != thread_) return MMS_E_THREAD;
+MmsResult UiRegistry::ShowSurface(const std::string& id, HWND parent, const MmsUiRectV1& bounds, uint32_t dpi, bool visible,
+    bool deferFailureSuspension) {
+    if (GetCurrentThreadId() != thread_) return MMS_E_THREAD;
+    const auto result = Boundary([&]() -> MmsResult {
         auto element = elements.find(id); if (element == elements.end() || element->second.desc.kind != MMS_UI_PANEL) return MMS_E_NOT_FOUND;
         auto surface = surfaces.find(String(element->second.desc.surfaceId)); if (surface == surfaces.end()) return MMS_E_NOT_FOUND;
         if (surface->second->owner->stopping) return MMS_E_NOT_READY;
@@ -1435,23 +1451,55 @@ MmsResult UiRegistry::ShowSurface(const std::string& id, HWND parent, const MmsU
             }
             found = inserted;
         }
-        auto& v = *found->second; Callback guard(callbackDepth_);
-        if (std::memcmp(&v.bounds, &bounds, sizeof(bounds)) || v.dpi != dpi) {
-            const auto result = refresh_.WithLayoutProvider(*v.surface->owner, [&] {
-                v.surface->desc.resizeView(v.context, &bounds, dpi); return MMS_OK;
-            });
-            if (result) return result;
-            v.bounds = bounds; v.dpi = dpi;
+        auto* expected = found->second.get();
+        const auto retained = expected->surface;
+        const HWND child = expected->child;
+        const auto instance = expected->instance, handle = expected->element;
+        const auto current = [&]() {
+            const auto live = views_.find(id); const auto e = elements.find(id);
+            return live != views_.end() && live->second.get() == expected &&
+                live->second->instance == instance && live->second->child == child &&
+                live->second->surface == retained && e != elements.end() && e->second.handle == handle &&
+                e->second.desc.kind == MMS_UI_PANEL && !retained->owner->stopping &&
+                IsWindow(child) && GetParent(child) == parent && GetWindowThreadProcessId(child, nullptr) == thread_;
+        };
+        const auto fail = [&](MmsResult result) {
+            if (!deferFailureSuspension) { SuspendGeometry(); refresh_.SuspendTargets(); } return result;
+        };
+        const auto actualBoundsMatch = [&]() {
+            RECT actual{};
+            if (!GetWindowRect(child, &actual)) return false;
+            SetLastError(ERROR_SUCCESS);
+            if (!MapWindowPoints(nullptr, parent, reinterpret_cast<POINT*>(&actual), 2) && GetLastError() != ERROR_SUCCESS) return false;
+            return actual.left == bounds.x && actual.top == bounds.y &&
+                int64_t(actual.right) - actual.left == bounds.width && int64_t(actual.bottom) - actual.top == bounds.height;
+        };
+        Callback guard(callbackDepth_);
+        if (!current()) return fail(MMS_E_STALE);
+        // A callback may have moved/hidden its HWND before throwing. Cached
+        // metadata alone cannot decide whether a later layout must repair it.
+        if (std::memcmp(&expected->bounds, &bounds, sizeof(bounds)) || expected->dpi != dpi || !actualBoundsMatch()) {
+            const auto result = Boundary([&] { return refresh_.WithLayoutProvider(*retained->owner, [&] {
+                retained->desc.resizeView(expected->context, &bounds, dpi); return MMS_OK;
+            }); });
+            if (result) return fail(result);
+            if (!current()) return fail(MMS_E_STALE);
+            if (!actualBoundsMatch()) return fail(MMS_E_FAILED);
+            expected->bounds = bounds; expected->dpi = dpi;
         }
-        if (v.visible != visible) {
-            const auto result = refresh_.WithLayoutProvider(*v.surface->owner, [&] {
-                v.surface->desc.showView(v.context, visible ? 1 : 0); return MMS_OK;
-            });
-            if (result) return result;
-            v.visible = visible;
+        if (expected->visible != visible || bool(GetWindowLongPtrW(child, GWL_STYLE) & WS_VISIBLE) != visible) {
+            const auto result = Boundary([&] { return refresh_.WithLayoutProvider(*retained->owner, [&] {
+                retained->desc.showView(expected->context, visible ? 1 : 0); return MMS_OK;
+            }); });
+            if (result) return fail(result);
+            if (!current()) return fail(MMS_E_STALE);
+            if (bool(GetWindowLongPtrW(child, GWL_STYLE) & WS_VISIBLE) != visible) return fail(MMS_E_FAILED);
+            expected->visible = visible;
         }
         return MMS_OK;
     });
+    if (result && !deferFailureSuspension) { SuspendGeometry(); refresh_.SuspendTargets(); }
+    return result;
 }
 MmsResult UiRegistry::FocusSurface(const std::string& id) {
     return Boundary([&]() -> MmsResult { if (GetCurrentThreadId() != thread_) return MMS_E_THREAD;

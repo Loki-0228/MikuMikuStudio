@@ -330,7 +330,7 @@ MmsResult UiRefreshQueue::Request(RefreshClient& client, const MmsUiRefreshReque
             if (kind != MMS_UI_BUTTON && kind != MMS_UI_PANEL && kind != MMS_UI_SEPARATOR && kind != MMS_UI_INPUT) continue;
             const auto current = targets_.find(handle);
             const uint32_t potential = MMS_UI_REFRESH_REPAINT | MMS_UI_REFRESH_LAYOUT |
-                ((kind == MMS_UI_BUTTON || kind == MMS_UI_INPUT) ? MMS_UI_REFRESH_STATE : 0) | (kind == MMS_UI_INPUT ? MMS_UI_REFRESH_DATA : 0);
+                ((kind == MMS_UI_BUTTON || kind == MMS_UI_INPUT || kind == MMS_UI_PANEL) ? MMS_UI_REFRESH_STATE : 0) | (kind == MMS_UI_INPUT ? MMS_UI_REFRESH_DATA : 0);
             if (current == targets_.end()) {
                 if (ticket.kinds & potential) return MMS_E_NOT_READY;
                 continue; // An unmounted target cannot have a valid DATA binding.
@@ -707,6 +707,7 @@ void UiRefreshQueue::Drain() {
                     HWND window = group.target.presentation.window;
                     if (!IsWindow(window)) return MMS_E_STALE;
                     const bool input = content && content->input;
+                    const bool panel = group.target.presentation.kind == MMS_UI_PANEL;
                     // Cancel/revoke input intent before any focus, enable or
                     // visibility message can produce EN_KILLFOCUS submission.
                     if (input) {
@@ -714,7 +715,7 @@ void UiRefreshQueue::Drain() {
                         if (const auto result = stateContent_(group.ref.element, content, state.enabled != 0, [&] { return validate(true); })) return result;
                         if (const auto result = validate(true)) return result;
                     }
-                    const auto contains = [&](HWND focus) { return focus && (focus == window || (input && IsChild(window, focus))); };
+                    const auto contains = [&](HWND focus) { return focus && (focus == window || ((input || panel) && IsChild(window, focus))); };
                     const bool losingAvailability = !state.enabled || !(state.visible && group.target.presentation.layoutVisible);
                     const auto relocateFocus = [&]() -> MmsResult {
                         const HWND focus = GetFocus();
@@ -756,16 +757,21 @@ void UiRefreshQueue::Drain() {
                     // enabled. EnableWindow/ShowWindow are allowed to clear its
                     // focus; their callbacks may subsequently choose another one.
                     if (losingAvailability) if (const auto check = relocateFocus()) return check;
-                    if (bool(IsWindowEnabled(window)) != bool(state.enabled)) EnableWindow(window, state.enabled);
+                    if (panel) {
+                        if (!stateContent_) return MMS_E_NOT_READY;
+                        if (const auto r = stateContent_(group.ref.element, content, state.enabled != 0, [&] { return validate(true); })) return r;
+                        if (const auto r = validate(true)) return r;
+                    }
+                    if (!panel && bool(IsWindowEnabled(window)) != bool(state.enabled)) EnableWindow(window, state.enabled);
                     if (const auto check = validate(true)) return check;
                     if (!IsWindow(window)) return MMS_E_STALE;
                     const auto checked = state.checked ? BST_CHECKED : BST_UNCHECKED;
-                    if (!input && SendMessageW(window, BM_GETCHECK, 0, 0) != checked) SendMessageW(window, BM_SETCHECK, checked, 0);
+                    if (!input && !panel && SendMessageW(window, BM_GETCHECK, 0, 0) != checked) SendMessageW(window, BM_SETCHECK, checked, 0);
                     if (const auto check = validate(true)) return check;
                     if (!IsWindow(window)) return MMS_E_STALE;
                     if (visibilityChanged) {
                         const bool shown = state.visible && group.target.presentation.layoutVisible;
-                        if (bool(GetWindowLongPtrW(window, GWL_STYLE) & WS_VISIBLE) != shown) ShowWindow(window, shown ? SW_SHOWNA : SW_HIDE);
+                        if (!panel && bool(GetWindowLongPtrW(window, GWL_STYLE) & WS_VISIBLE) != shown) ShowWindow(window, shown ? SW_SHOWNA : SW_HIDE);
                         const auto focusResult = relocateFocus();
                         if (const auto check = focusResult ? focusResult : validate(true)) {
                             std::lock_guard<std::mutex> lock(mutex_);
@@ -774,7 +780,7 @@ void UiRefreshQueue::Drain() {
                             return check;
                         }
                         if (!IsWindow(window)) return MMS_E_STALE;
-                        if (bool(GetWindowLongPtrW(window, GWL_STYLE) & WS_VISIBLE) != shown) return MMS_E_FAILED;
+                        if (!panel && bool(GetWindowLongPtrW(window, GWL_STYLE) & WS_VISIBLE) != shown) return MMS_E_FAILED;
                         std::lock_guard<std::mutex> lock(mutex_);
                         auto& target = targets_.at(group.ref.element);
                         const auto result = registry_.PublishVisibility(group.ref.element, shown);
@@ -786,13 +792,13 @@ void UiRefreshQueue::Drain() {
                         if (group.ref.element == batch.ref.element) batch.root = target;
                     }
                     if (const auto check = relocateFocus()) return check;
-                    if (!input && stateContent_) {
+                    if (!input && !panel && stateContent_) {
                         const auto contentResult = stateContent_(group.ref.element, content, state.enabled != 0, [&] { return validate(true); });
                         if (contentResult) return contentResult;
                         if (const auto check = validate(true)) return check;
                     }
                     const bool applied = bool(IsWindowEnabled(window)) == bool(state.enabled) &&
-                        (input || SendMessageW(window, BM_GETCHECK, 0, 0) == checked);
+                        (input || panel || SendMessageW(window, BM_GETCHECK, 0, 0) == checked);
                     if (const auto check = validate(true)) return check;
                     return IsWindow(window) ? (applied ? MMS_OK : MMS_E_FAILED) : MMS_E_STALE;
                 });

@@ -8,6 +8,10 @@
 
 证据保存在 `build/verification/abi-physics-property-20261021/encoding-original-01` 至 `encoding-original-03` 和 `native-private-02`。第一轮由测试内的桌面名称守卫拒绝；后两轮使用真实 Win32 启动接口。目录内的早期 `realPrivateDesktop` 字段表示启动意图，失败进程没有提供成功的实际桌面证明。
 
-后续使用明确命名的隐藏窗口运行器，报告写入 `realPrivateDesktop=false`，继承 `WinSta0\Default`。物理窗口专项用 CBT 钩子阻止顶层窗口显示和激活，编码专项另拦截本进程的 `ShowWindow`、`MessageBoxA/W`；不发送全局鼠标或键盘输入。编码专项须显式选择 `--hidden-windows-only`，禁止同时用于性能测量或指定独立桌面；默认独立桌面守卫仍保留。
+后续运行器报告写入 `realPrivateDesktop=false`，并读取实际继承的桌面名称。`STARTF_USESHOWWINDOW/SW_HIDE` 只是进程启动时的隐藏请求，后续窗口是否显示由各夹具决定。例如刷新夹具会显式调用 `SW_SHOWNOACTIVATE` 显示自己的窗口，不能统称为隐藏窗口测试。
 
-这些结果属于隐藏窗口的功能回归，不代替独立桌面隔离、微软拼音、真实前台焦点、多屏 DPI、硬件或最终产品画面验收。新属性区域的生产宿主探针仍强制核对实际隔离桌面，未为绕过环境问题而放宽该要求。
+物理窗口专项的 CBT 钩子移除顶层窗口创建时的 `WS_VISIBLE`，将其移至屏幕外并拒绝激活；夹具取得窗口后再隐藏。这不能保证生产入口后续的 `ShowWindow(SW_SHOW)` 从未设置可见样式。编码专项另拦截本进程的 `ShowWindow`、`MessageBoxA/W`，须显式选择 `--hidden-windows-only`，禁止同时用于性能测量或指定独立桌面；默认独立桌面守卫仍保留。上述测试均不发送全局鼠标或键盘输入。
+
+2026-10-21 追加核验中，直接继承已有 `CodexSandboxDesktop` 运行旧属性挂载夹具也在 240 秒后超时，没有测试输出。该结果只说明本轮环境不可用于此夹具，不计为功能通过；运行器只按自身子进程句柄回收。记录位于 `build/verification/abi-panel-background-lifetime-20261021/baseline-ui-sandbox-01/report.json`。
+
+这些结果属于夹具窗口的功能回归，不代替独立桌面隔离、微软拼音、真实前台焦点、多屏 DPI、硬件或最终产品画面验收。新属性区域的生产宿主探针仍强制核对实际隔离桌面，未为绕过环境问题而放宽该要求。

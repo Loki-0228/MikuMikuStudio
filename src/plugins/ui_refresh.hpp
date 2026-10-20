@@ -47,6 +47,8 @@ struct RefreshPresentation {
     // thread without registering another public source or binding.
     bool propertyDataRefresh = false;
     std::shared_ptr<const PropertyRecord> propertyRecord;
+    // Native publication kind; surface HWNDs must never receive button messages.
+    uint32_t kind = 0;
 };
 class UiRefreshQueue {
     struct Target;

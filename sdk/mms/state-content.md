@@ -1,10 +1,10 @@
 # 控件状态内容与 C++17 SDK
 
-`mms.ui.refresh.state` 1.0 为本插件已有的宿主按钮及声明式 INPUT 注册只读状态提供者。它更新原控件的显示文案和提示说明，包括禁用原因。状态内容通过原 `mms.ui.refresh` 的 STATE 阶段执行，不创建控件、第二条刷新队列或独立票据。
+`mms.ui.refresh.state` 1.0 为本插件已有的宿主按钮、声明式 INPUT 及已挂载 PANEL 注册只读状态提供者。它更新原控件的显示文案和提示说明，包括禁用原因。状态内容通过原 `mms.ui.refresh` 的 STATE 阶段执行，不创建控件、第二条刷新队列或独立票据。
 
 C 定义见 [refresh_state.h](include/mms/refresh_state.h)，C++17 封装见 [state_content.hpp](include/mms/cpp/state_content.hpp)。开发环境沿用 [SDK README](README.md#开发环境)。旧刷新表、请求和票据状态结构仍分别为 64、112、40 字节；本服务是独立协商的附加表，不修改旧结构。
 
-当前支持已挂载的宿主 `MMS_UI_BUTTON` 和 `MMS_UI_INPUT`。按钮的 enabled、checked、visible 继续由原命令 getState 决定；内容提供者不能改写这些值。INPUT 可额外收紧启用、只读和可见状态，规则见下文。菜单、surface 内容及其他控件的完整 STATE 尚未开放。
+当前支持已挂载的宿主 `MMS_UI_BUTTON`、`MMS_UI_INPUT` 和 `MMS_UI_PANEL`。按钮的 enabled、checked、visible 继续由原命令 getState 决定；内容提供者不能改写这些值。INPUT 可额外收紧启用、只读和可见状态，规则见下文。PANEL 更新页签和可用性，不接管插件自绘内容。菜单及其他控件的完整 STATE 尚未开放。
 
 ## 服务和原目标
 
@@ -12,7 +12,7 @@ C 定义见 [refresh_state.h](include/mms/refresh_state.h)，C++17 封装见 [st
 
 `getCapabilities` 返回当前字段能力和配额。尚无原生内容后端时，supportedFields 为 0。调用前检查服务能力、原目标的 STATE 能力；服务存在不表示窗口已经挂载。
 
-提供者描述包含原 `MmsUiTargetRefV1`、context、prepare 回调和允许覆盖的 fields。每个目标最多一个提供者。只能注册自己的按钮或 INPUT；目标引用须来自 `getTarget`，不能用 HWND、UI generation 或布局修订代替。
+提供者描述包含原 `MmsUiTargetRefV1`、context、prepare 回调和允许覆盖的 fields。每个目标最多一个提供者。只能注册自己的按钮、INPUT 或 PANEL；目标引用须来自 `getTarget`，不能用 HWND、UI generation 或布局修订代替。
 
 | C 函数 | 行为 |
 | --- | --- |
@@ -92,6 +92,16 @@ struct ButtonPresentation {
 `provider.Refresh(refresh, ticket, true)` 组合原 STATE、LAYOUT、REPAINT，使用原 SELF 目标、几何修订 0。它适合文案长度或可见性变化后重新排版。最后一个 bool 为 false 时，只请求原 STATE。也可以用 `RefreshServices::Request` 组合 DATA；规则与 [C 刷新参考](refresh.md)相同。
 
 `contents.Write(builder, label, description, disabledReason)` 设置全部三个位。只覆盖部分字段时，构造 `MmsUiStateContentV1`，填写结构头及字段位，再调用 `contents.Write(builder, content)`；未设置字段保持上述回退规则。
+
+## PANEL 状态
+
+PANEL 使用原 64 字节内容结构、提供者和 STATE 票据。label 更新原页签文本，description 和 disabledReason 用于页签提示，不改写元素注册的默认标签。未设置 label 时恢复注册标签；没有 commandId 的面板默认启用，按注册可见性显示，说明及禁用原因默认为空。填写 commandId 时，可用性和提示基线来自原命令 getState；注册可见性仍限制显示。
+
+checked 不表示当前页签，也不会向 surface 窗口发送按钮勾选消息。禁用会影响面板内交互并移走其子控件的焦点。可见性变化必须组合 STATE 与 LAYOUT，宿主据此调整页签和工作区；纯 STATE 不重排。切换页签、隐藏恢复和后续布局保留已成功显示的文案及同一 surface view。PANEL 不接受 INPUT 专用标量字段。
+
+只有已创建并发布的 surface view 才有刷新目标。尚未首次打开的页签返回 NOT_READY，getTarget 不创建窗口。已隐藏但保留 view 的面板可继续使用同一有效目标引用；零尺寸时使用含 LAYOUT 的组合请求。重建 view 或切换工程后，重新查询目标并更新提供者。
+
+本服务不扫描或修改插件自行创建的子 HWND。自绘内容和属性值仍通过原 DATA 绑定、插件绘制及控件接口更新。
 
 ## INPUT 状态
 

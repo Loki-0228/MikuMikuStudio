@@ -185,12 +185,18 @@ public:
     bool InCallback() const { return callbackDepth_ != 0; }
     // Read-only callbacks nested inside invoke never inherit its permission.
     const UiClient* InvokingClient() const noexcept { return callbackDepth_ == 1 ? invoking_ : nullptr; }
-    MmsResult ShowSurface(const std::string& element, HWND parent, const MmsUiRectV1&, uint32_t dpi, bool visible);
+    // The native STATE adapter defers suspension only until its exact-view
+    // compensation finishes; it must suspend every failed publication itself.
+    MmsResult ShowSurface(const std::string& element, HWND parent, const MmsUiRectV1&, uint32_t dpi, bool visible,
+        bool deferFailureSuspension = false);
     MmsResult FocusSurface(const std::string& element);
     void DestroyViews();
     // UI-adapter identity. Never derived from description/layout generations.
     uint64_t NewPresentationInstance();
-    struct SurfacePresentation { HWND window = nullptr; uint64_t instance = 0; bool visible = false; };
+    struct SurfacePresentation {
+        HWND window = nullptr; uint64_t instance = 0; bool visible = false;
+        MmsUiRectV1 bounds{}; uint32_t dpi = 96;
+    };
     // UI-thread read only: does not create a view or invoke plugin callbacks.
     bool ExistingSurface(const std::string& element, SurfacePresentation&) const noexcept;
     struct Geometry { float x, y, width, height; bool visible, overflowed; };

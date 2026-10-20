@@ -39,6 +39,12 @@ struct NativeUi::Impl {
         bool inputTips = false;
     };
     std::map<std::string, Control> controls;
+    struct PanelState {
+        MmsHandle element = 0; HWND window = nullptr; uint64_t instance = 0;
+        bool enabled = true, visible = true, tip = false;
+        std::shared_ptr<const ButtonStateContent> content, tooltipContent;
+    };
+    std::map<std::string, PanelState> panelStates;
     std::vector<std::string> toolbarOrder;
     std::set<std::string> overflowIds;
     HMENU overflowPopup = nullptr;
@@ -259,6 +265,8 @@ struct NativeUi::Impl {
         const std::function<MmsResult()>& revalidate) {
         const NativeWork work(*this);
         const WindowDpiScope stateDpi(main);
+        for (const auto& [id, element] : registry.elements) if (element.handle == handle && element.desc.kind == MMS_UI_PANEL)
+            return ApplyPanelState(id, content, enabled, revalidate);
         auto found = std::find_if(controls.begin(), controls.end(), [&](const auto& item) { return item.second.element == handle; });
         if (found == controls.end() || !IsWindow(found->second.window) || !content || !IsWindow(tooltip)) return MMS_E_STALE;
         auto element = registry.elements.find(found->first);
@@ -447,7 +455,9 @@ struct NativeUi::Impl {
         if (msg == WM_NOTIFY && reinterpret_cast<NMHDR*>(lp)->hwndFrom == self->tabs && reinterpret_cast<NMHDR*>(lp)->code == TCN_SELCHANGE) {
             int index = TabCtrl_GetCurSel(self->tabs); if (index >= 0 && size_t(index) < self->panelOrder.size()) {
                 if (self->activePanel != self->panelOrder[index]) ++self->layoutContext;
-                self->activePanel = self->panelOrder[index]; Boundary([&] { self->Layout(); return self->registry.FocusSurface(self->activePanel); });
+                self->activePanel = self->panelOrder[index]; Boundary([&] {
+                    self->Layout(); return self->PanelEnabled(self->activePanel) ? self->registry.FocusSurface(self->activePanel) : MMS_OK;
+                });
             } return 0;
         }
         if (hwnd == self->body && (msg == WM_VSCROLL || msg == WM_HSCROLL || msg == WM_MOUSEWHEEL)) {
@@ -525,6 +535,251 @@ struct NativeUi::Impl {
         api.releaseValue(api.context, lease); out.disabledReason = {};
         if (result) { out.enabled = 0; out.visible = 1; }
         return out.visible != 0;
+    }
+    bool CurrentPanel(const std::string& id, const PanelState& state) const {
+        const auto element = registry.elements.find(id); UiRegistry::SurfacePresentation view;
+        return element != registry.elements.end() && element->second.handle == state.element &&
+            element->second.desc.kind == MMS_UI_PANEL && registry.ExistingSurface(id, view) &&
+            view.window == state.window && view.instance == state.instance;
+    }
+    bool PanelVisible(const std::string& id) const {
+        const auto element = registry.elements.find(id); if (element == registry.elements.end() || !element->second.visible) return false;
+        const auto state = panelStates.find(id);
+        return state == panelStates.end() || !CurrentPanel(id, state->second) || state->second.visible;
+    }
+    bool PanelEnabled(const std::string& id) const {
+        const auto state = panelStates.find(id); return state == panelStates.end() || !CurrentPanel(id, state->second) || state->second.enabled;
+    }
+    std::wstring PanelCaption(const std::string& id) const {
+        const auto state = panelStates.find(id);
+        if (state != panelStates.end() && CurrentPanel(id, state->second) && state->second.content &&
+            (state->second.content->fields & MMS_UI_STATE_LABEL)) return state->second.content->label;
+        return Wide(String(registry.elements.at(id).desc.label));
+    }
+    TOOLINFOW PanelTool(const std::string& id, const PanelState& state) const {
+        TOOLINFOW tool{}; tool.cbSize = TTTOOLINFOW_V1_SIZE; tool.hwnd = workspace;
+        tool.uId = UINT_PTR(state.element); tool.uFlags = TTF_SUBCLASS;
+        const auto position = std::find(panelOrder.begin(), panelOrder.end(), id);
+        if (position != panelOrder.end() && workspaceHeight > 0 && PanelVisible(id) &&
+            TabCtrl_GetItemRect(tabs, int(position - panelOrder.begin()), &tool.rect))
+            MapWindowPoints(tabs, workspace, reinterpret_cast<POINT*>(&tool.rect), 2);
+        return tool;
+    }
+    bool PanelToolMatches(const TOOLINFOW& expected, std::wstring_view text) const {
+        wchar_t actual[8194]{}; auto observed = expected; observed.lpszText = actual;
+        if (!SendMessageW(tooltip, TTM_GETTOOLINFOW, 0, reinterpret_cast<LPARAM>(&observed)) ||
+            observed.hwnd != expected.hwnd || observed.uId != expected.uId ||
+            (observed.uFlags & TTF_IDISHWND) || !EqualRect(&observed.rect, &expected.rect)) return false;
+        observed = expected; observed.lpszText = actual;
+        SendMessageW(tooltip, TTM_GETTEXTW, std::size(actual), reinterpret_cast<LPARAM>(&observed));
+        return std::wstring_view(actual) == text;
+    }
+    MmsResult SyncPanelTips() {
+        for (auto it = panelStates.begin(); it != panelStates.end();) {
+            auto& state = it->second;
+            if (!CurrentPanel(it->first, state)) {
+                if (state.tip) { auto tool = PanelTool(it->first, state); SendMessageW(tooltip, TTM_DELTOOLW, 0, reinterpret_cast<LPARAM>(&tool)); }
+                it = panelStates.erase(it); continue;
+            }
+            if (state.tip) {
+                const auto content = state.content;
+                const std::wstring_view text = content ? std::wstring_view(state.enabled ? content->description : content->help) : std::wstring_view(L"");
+                auto tool = PanelTool(it->first, state);
+                tool.lpszText = const_cast<wchar_t*>(text.data());
+                // Repair a stale candidate's tooltip as well as its tab text.
+                // Keep its former backing snapshot alive until USER32 replaces
+                // the retained pointer and the exact source is checked again.
+                SendMessageW(tooltip, TTM_UPDATETIPTEXTW, 0, reinterpret_cast<LPARAM>(&tool));
+                if (!CurrentPanel(it->first, state) || state.content != content) return MMS_E_STALE;
+                SendMessageW(tooltip, TTM_NEWTOOLRECTW, 0, reinterpret_cast<LPARAM>(&tool));
+                if (!CurrentPanel(it->first, state) || state.content != content) return MMS_E_STALE;
+                if (!PanelToolMatches(tool, text)) return MMS_E_FAILED;
+                if (!CurrentPanel(it->first, state) || state.content != content) return MMS_E_STALE;
+                state.tooltipContent = content;
+            }
+            ++it;
+        }
+        return MMS_OK;
+    }
+    MmsResult WritePanelCaption(const std::string& id, const std::wstring& before, const std::wstring& caption,
+        const std::function<MmsResult()>& check, std::vector<wchar_t>& buffer, bool repair = false) {
+        const auto position = std::find(panelOrder.begin(), panelOrder.end(), id);
+        if (position == panelOrder.end()) return check(); // hidden retained surface has no tab yet
+        const int index = int(position - panelOrder.begin());
+        const auto matches = [&](const std::wstring& text) {
+            std::fill(buffer.begin(), buffer.end(), L'\0');
+            TCITEMW item{}; item.mask = TCIF_TEXT; item.pszText = buffer.data(); item.cchTextMax = int(buffer.size());
+            return SendMessageW(tabs, TCM_GETITEMW, index, reinterpret_cast<LPARAM>(&item)) && std::wstring_view(buffer.data()) == text;
+        };
+        if (const auto r = check()) return r;
+        const bool wasBefore = matches(before);
+        if (!wasBefore && !repair) return MMS_E_FAILED;
+        if (const auto r = check()) return r;
+        if (wasBefore && before == caption) return MMS_OK;
+        TCITEMW item{}; item.mask = TCIF_TEXT; item.pszText = const_cast<wchar_t*>(caption.c_str());
+        const bool accepted = SendMessageW(tabs, TCM_SETITEMW, index, reinterpret_cast<LPARAM>(&item)) != FALSE;
+        if (const auto r = check()) { registry.SuspendGeometry(); registry.Refresh().SuspendTargets(); return r; }
+        if (accepted && matches(caption)) {
+            const auto r = check(); if (r) { registry.SuspendGeometry(); registry.Refresh().SuspendTargets(); } return r;
+        }
+        if (const auto r = check()) { registry.SuspendGeometry(); registry.Refresh().SuspendTargets(); return r; }
+        if (repair) { registry.SuspendGeometry(); registry.Refresh().SuspendTargets(); return MMS_E_FAILED; }
+        item.pszText = const_cast<wchar_t*>(before.c_str());
+        const bool restored = SendMessageW(tabs, TCM_SETITEMW, index, reinterpret_cast<LPARAM>(&item)) != FALSE;
+        const auto current = check();
+        if (!current && (!restored || !matches(before))) { registry.SuspendGeometry(); registry.Refresh().SuspendTargets(); }
+        return current ? current : MMS_E_FAILED;
+    }
+    MmsResult ApplyPanelState(const std::string& id, const std::shared_ptr<const ButtonStateContent>& content, bool enabled,
+        const std::function<MmsResult()>& revalidate) {
+        struct PublicationGuard {
+            UiRegistry& registry; bool completed = false;
+            ~PublicationGuard() { if (!completed) { registry.SuspendGeometry(); registry.Refresh().SuspendTargets(); } }
+        } publication{registry};
+        UiRegistry::SurfacePresentation view;
+        if (!content || content->input || !registry.ExistingSurface(id, view)) return MMS_E_STALE;
+        const auto element = registry.elements.find(id); if (element == registry.elements.end()) return MMS_E_STALE;
+        const auto handle = element->second.handle;
+        auto& state = panelStates[id];
+        if (!CurrentPanel(id, state)) state = {handle, view.window, view.instance};
+        const auto previous = state.content, previousTips = state.tooltipContent;
+        const bool oldEnabled = state.enabled, enabledBefore = IsWindowEnabled(view.window) != FALSE, hadTip = state.tip;
+        const auto before = PanelCaption(id), caption = (content->fields & MMS_UI_STATE_LABEL) ? content->label : Wide(String(element->second.desc.label));
+        // Allocate all text verification/callback storage before native writes.
+        // The same buffer also serves compensation; failure cannot strand a
+        // committed HWND because allocating rollback storage failed.
+        std::vector<wchar_t> captionBuffer(std::max(before.size(), caption.size()) + 2);
+        const std::function<MmsResult()> check = [&]() -> MmsResult {
+            const auto live = panelStates.find(id);
+            if (!IsWindow(tabs) || !IsWindow(tooltip) || live == panelStates.end() || live->second.element != handle ||
+                live->second.window != view.window || live->second.instance != view.instance ||
+                live->second.content != previous || !CurrentPanel(id, live->second)) return MMS_E_STALE;
+            return revalidate ? revalidate() : MMS_OK;
+        };
+        if (const auto r = check()) return r;
+        auto tool = PanelTool(id, state);
+        if (!content->visible) SetRectEmpty(&tool.rect);
+        const auto& text = enabled ? content->description : content->help; tool.lpszText = const_cast<wchar_t*>(text.c_str());
+        bool wroteCaption = false, addedTip = false, changedView = false;
+        // Native tooltip APIs retain the pointer, including across a nested
+        // provider retirement. Keep its candidate owner until removal/repair.
+        state.tooltipContent = content;
+        const auto result = Boundary([&]() -> MmsResult {
+            SendMessageW(tooltip, TTM_POP, 0, 0); if (const auto r = check()) return r;
+            if (!hadTip) {
+                if (!SendMessageW(tooltip, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&tool))) return MMS_E_FAILED;
+                addedTip = true;
+            } else SendMessageW(tooltip, TTM_UPDATETIPTEXTW, 0, reinterpret_cast<LPARAM>(&tool));
+            if (const auto r = check()) return r;
+            SendMessageW(tooltip, TTM_NEWTOOLRECTW, 0, reinterpret_cast<LPARAM>(&tool));
+            if (const auto r = check()) return r;
+            if (!PanelToolMatches(tool, text)) return MMS_E_FAILED;
+            if (const auto r = check()) return r;
+            if (const auto r = WritePanelCaption(id, before, caption, check, captionBuffer)) return r;
+            wroteCaption = before != caption;
+            if (const auto r = check()) return r;
+            if (bool(IsWindowEnabled(view.window)) != enabled) EnableWindow(view.window, enabled);
+            if (const auto r = check()) return r;
+            if (bool(IsWindowEnabled(view.window)) != enabled) return MMS_E_FAILED;
+            const bool shown = content->visible && visible && workspaceHeight > 0 && activePanel == id;
+            changedView = shown != view.visible;
+            if (const auto r = registry.ShowSurface(id, GetParent(view.window), view.bounds, view.dpi, shown, true)) return r;
+            if (const auto r = check()) return r;
+            if (bool(GetWindowLongPtrW(view.window, GWL_STYLE) & WS_VISIBLE) != shown) return MMS_E_FAILED;
+            return MMS_OK;
+        });
+        if (result) {
+            if (addedTip) {
+                const auto live = panelStates.find(id);
+                if (live != panelStates.end() && live->second.element == handle && live->second.window == view.window &&
+                    live->second.instance == view.instance) {
+                    SendMessageW(tooltip, TTM_DELTOOLW, 0, reinterpret_cast<LPARAM>(&tool));
+                    if (!hadTip) live->second.tooltipContent = previousTips;
+                    addedTip = false;
+                }
+            }
+            if (!check()) {
+                if (wroteCaption && WritePanelCaption(id, caption, before, check, captionBuffer, true)) {
+                    registry.SuspendGeometry(); registry.Refresh().SuspendTargets();
+                }
+                if (addedTip) SendMessageW(tooltip, TTM_DELTOOLW, 0, reinterpret_cast<LPARAM>(&tool));
+                else if (hadTip) {
+                    tool = PanelTool(id, state); tool.lpszText = const_cast<wchar_t*>(previousTips ? (oldEnabled ? previousTips->description : previousTips->help).c_str() : L"");
+                    SendMessageW(tooltip, TTM_UPDATETIPTEXTW, 0, reinterpret_cast<LPARAM>(&tool));
+                    SendMessageW(tooltip, TTM_NEWTOOLRECTW, 0, reinterpret_cast<LPARAM>(&tool));
+                    const std::wstring_view priorText = previousTips ? std::wstring_view(oldEnabled ? previousTips->description : previousTips->help) : std::wstring_view(L"");
+                    if (!PanelToolMatches(tool, priorText)) { registry.SuspendGeometry(); registry.Refresh().SuspendTargets(); }
+                }
+                if (!check()) state.tooltipContent = previousTips;
+                if (!check() && bool(IsWindowEnabled(view.window)) != enabledBefore) EnableWindow(view.window, enabledBefore);
+                if (changedView && !check()) if (registry.ShowSurface(id, GetParent(view.window), view.bounds, view.dpi, view.visible, true)) {
+                    registry.SuspendGeometry(); registry.Refresh().SuspendTargets();
+                }
+            }
+            return result;
+        }
+        state.content = content; state.enabled = enabled; state.visible = content->visible; state.tip = hadTip || addedTip;
+        // PANEL visibility is retained by this original surface instance.
+        // retainedVisibility belongs to toolbar/property LayoutNode trees.
+        publication.completed = true;
+        return MMS_OK;
+    }
+    MmsResult SyncPanelTabs() {
+        std::vector<std::string> wanted; std::vector<std::wstring> labels;
+        for (const auto& id : Children("mms.workspace.tabs.extensions")) if (PanelVisible(id)) { wanted.push_back(id); labels.push_back(PanelCaption(id)); }
+        // Prepare replacement ownership and verification buffers before any
+        // tab message. Publication below uses only swaps and existing nodes.
+        auto nextOrder = wanted;
+        std::string nextActive = std::find(wanted.begin(), wanted.end(), activePanel) != wanted.end() ? activePanel : wanted.empty() ? "" : wanted.front();
+        std::vector<std::vector<wchar_t>> buffers; buffers.reserve(labels.size());
+        for (const auto& label : labels) buffers.emplace_back(label.size() + 2);
+        const auto sourceRevision = registry.Revision(), sourceContext = layoutContext;
+        const HWND sourceTabs = tabs;
+        struct Source { MmsHandle element; UiRegistry::SurfacePresentation view; bool mounted; };
+        std::vector<Source> sources; sources.reserve(wanted.size());
+        for (const auto& id : wanted) {
+            UiRegistry::SurfacePresentation view; const bool mounted = registry.ExistingSurface(id, view);
+            sources.push_back({registry.elements.at(id).handle, view, mounted});
+        }
+        const std::function<MmsResult()> check = [&]() -> MmsResult {
+            if (!IsWindow(sourceTabs) || tabs != sourceTabs || registry.Revision() != sourceRevision || layoutContext != sourceContext) return MMS_E_STALE;
+            for (size_t i = 0; i < wanted.size(); ++i) {
+                const auto e = registry.elements.find(wanted[i]); UiRegistry::SurfacePresentation view;
+                if (e == registry.elements.end() || e->second.handle != sources[i].element || e->second.desc.kind != MMS_UI_PANEL) return MMS_E_STALE;
+                const bool mounted = registry.ExistingSurface(wanted[i], view);
+                if (mounted != sources[i].mounted || (mounted && (view.window != sources[i].view.window || view.instance != sources[i].view.instance))) return MMS_E_STALE;
+            }
+            return MMS_OK;
+        };
+        if (const auto r = check()) return r;
+        struct PublicationGuard {
+            UiRegistry& registry; bool completed = false;
+            ~PublicationGuard() { if (!completed) { registry.SuspendGeometry(); registry.Refresh().SuspendTargets(); } }
+        } publication{registry};
+        if (wanted != panelOrder || revision != sourceRevision || TabCtrl_GetItemCount(tabs) != int(wanted.size())) {
+            if (const auto r = check()) return r;
+            if (!TabCtrl_DeleteAllItems(tabs)) return MMS_E_FAILED;
+            if (const auto r = check()) return r;
+            for (size_t i = 0; i < wanted.size(); ++i) {
+                TCITEMW item{}; item.mask = TCIF_TEXT; item.pszText = labels[i].data();
+                if (SendMessageW(tabs, TCM_INSERTITEMW, i, reinterpret_cast<LPARAM>(&item)) != LRESULT(i)) return MMS_E_FAILED;
+                if (const auto r = check()) return r;
+            }
+            panelOrder.swap(nextOrder);
+        }
+        for (size_t i = 0; i < wanted.size(); ++i) {
+            // A stale ticket may already have changed the native text. A new
+            // ordinary layout repairs it from current retained content, while
+            // preserving the exact panel/surface identity captured above.
+            if (const auto r = WritePanelCaption(wanted[i], labels[i], labels[i], check, buffers[i], true)) return r;
+        }
+        activePanel.swap(nextActive);
+        if (!activePanel.empty()) TabCtrl_SetCurSel(tabs, int(std::find(panelOrder.begin(), panelOrder.end(), activePanel) - panelOrder.begin()));
+        if (const auto r = check()) return r;
+        if (const auto r = SyncPanelTips()) return r;
+        if (const auto r = check()) return r;
+        publication.completed = true;
+        return MMS_OK;
     }
     void Menu(HMENU parent, const std::string& parentId, unsigned depth = 0) {
         if (depth > 64) return;
@@ -903,15 +1158,7 @@ struct NativeUi::Impl {
         for (const auto& id : menuIds) if (const auto result = UpdateOverflowItem(id))
             if (log) log("overflow state returned " + std::to_string(result));
         PruneOverflow(overflowPopup);
-        if (revision != registry.Revision()) {
-            panelOrder.clear(); TabCtrl_DeleteAllItems(tabs);
-            for (const auto& id : Children("mms.workspace.tabs.extensions")) if (registry.elements.at(id).visible) {
-                auto caption = Wide(String(registry.elements.at(id).desc.label)); TCITEMW item{}; item.mask = TCIF_TEXT; item.pszText = caption.data();
-                SendMessageW(tabs, TCM_INSERTITEMW, panelOrder.size(), reinterpret_cast<LPARAM>(&item)); panelOrder.push_back(id);
-            }
-            if (std::find(panelOrder.begin(), panelOrder.end(), activePanel) == panelOrder.end()) activePanel = panelOrder.empty() ? "" : panelOrder.front();
-            if (!activePanel.empty()) TabCtrl_SetCurSel(tabs, int(std::find(panelOrder.begin(), panelOrder.end(), activePanel) - panelOrder.begin()));
-        }
+        if (const auto r = SyncPanelTabs()) throw std::runtime_error("cannot publish plugin panel tabs");
         revision = registry.Revision(); Layout();
     }
     void LayoutPanels(std::map<std::string, UiRegistry::Geometry>& geometry, bool& applied, HostLayoutPaint& paint) {
@@ -930,7 +1177,7 @@ struct NativeUi::Impl {
         panelScrollX = std::clamp(panelScrollX, 0, std::max(0, panelWidth - availableWidth)); panelScrollY = std::clamp(panelScrollY, 0, std::max(0, panelHeight - availableHeight));
         bool failed = false;
         for (const auto& id : Children("mms.workspace.tabs.extensions")) {
-            bool shown = workspaceHeight > 0 && id == activePanel && registry.elements.at(id).visible;
+            bool shown = workspaceHeight > 0 && id == activePanel && PanelVisible(id);
             auto size = PanelSize(registry.elements.at(id));
             MmsUiRectV1 rect{-panelScrollX, -panelScrollY, uint32_t(std::max(int(std::ceil(size.width * dpi / 96)), availableWidth)), uint32_t(std::max(int(std::ceil(size.height * dpi / 96)), availableHeight))};
             MmsResult result = MMS_OK;
@@ -946,10 +1193,18 @@ struct NativeUi::Impl {
                 if (panelErrors[id] != result && log) log("surface " + id + " returned " + std::to_string(result));
                 panelErrors[id] = result;
                 if (shown) { failed = true; SetWindowTextW(failure, (L"无法打开插件面板（" + std::to_wstring(result) + L"），切换页签后重试。").c_str()); }
-            } else if (attempted) panelErrors.erase(id);
+            } else if (attempted) {
+                panelErrors.erase(id); UiRegistry::SurfacePresentation view;
+                if (registry.ExistingSurface(id, view)) {
+                    auto& state = panelStates[id];
+                    if (!CurrentPanel(id, state)) state = {registry.elements.at(id).handle, view.window, view.instance};
+                    if (bool(IsWindowEnabled(view.window)) != state.enabled) EnableWindow(view.window, state.enabled);
+                }
+            }
         }
         applied = paint.Move(failure, 8, 8, std::max(0, availableWidth - 16), std::max(0, availableHeight - 16)) && applied;
         applied = paint.Visible(failure, failed) && applied;
+        if (SyncPanelTips()) applied = false;
     }
     native_ui::Size PanelSize(const ElementRecord& e) {
         const auto factory = registry.surfaces.find(String(e.desc.surfaceId)); if (factory == registry.surfaces.end()) return {};
@@ -1062,6 +1317,9 @@ struct NativeUi::Impl {
                 UiRegistry::SurfacePresentation view;
                 if (!registry.ExistingSurface(id, view)) continue;
                 if (!Presentation(element, view.window, view.instance, view.visible && bounds->second.visible, out)) return false;
+                out.back().kind = MMS_UI_PANEL;
+                out.back().stateRefresh = true; out.back().stateVisible = PanelVisible(id);
+                out.back().layoutVisible = visible && workspaceHeight > 0 && activePanel == id;
                 out.back().layoutRefresh = true;
             }
         }
@@ -1187,6 +1445,7 @@ struct NativeUi::Impl {
         leaveHiddenHost(toolbar, height); leaveHiddenHost(properties, propertyHeight);
         applied = paint.Visible(toolbar, height > 0) && applied;
         applied = paint.Visible(properties, propertyHeight > 0) && applied;
+        if (const auto r = SyncPanelTabs()) { layoutResult = r; return height + workspaceHeight; }
         workspaceHeight = panelWidth = panelHeight = 0;
         if (visible && width > 0 && !activePanel.empty() && registry.elements.count(activePanel)) {
             const auto& e = registry.elements.at(activePanel); const auto factory = registry.surfaces.find(String(e.desc.surfaceId));
