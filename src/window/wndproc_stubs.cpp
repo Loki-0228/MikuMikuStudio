@@ -132,7 +132,7 @@ void DispatchSeparateWindowCommand(MMDApp* app, unsigned short id) {  // was Sub
     switch (id) {
     case 0x218: {                                                // 0x4620D5
         if (s.CameraMode() != 0) {
-            const std::int32_t sel = s.MainModelComboSelection();
+            const std::int32_t sel = ResolveModelComboSelection(app);
             if (sel != 0) {
                 SendMessageA(GetDlgItem(main, panel::kMainComboModel), CB_SETCURSEL,
                              static_cast<WPARAM>(sel), 0);

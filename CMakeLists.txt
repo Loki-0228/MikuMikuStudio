@@ -1029,6 +1029,12 @@ if (MIKUMIKUSTUDIO_BUILD_UI_TESTS)
     target_link_options(image_sequence_tests PRIVATE "/MANIFEST:NO" "${MIKUMIKUSTUDIO_GEN_RES}")
     set_target_properties(image_sequence_tests PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+    add_executable(project_save_export_tests EXCLUDE_FROM_ALL
+        tests/project_save_export_tests.cpp res/MMD.rc ${MIKUMIKUSTUDIO_GEN_RES})
+    target_link_libraries(project_save_export_tests PRIVATE mikumikustudio_core minhook::minhook winmm dsound)
+    target_link_options(project_save_export_tests PRIVATE "/MANIFEST:NO" "${MIKUMIKUSTUDIO_GEN_RES}")
+    set_target_properties(project_save_export_tests PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
     foreach(review_test kinect_pose_math_tests path_resolve_tests)
         add_executable(${review_test} EXCLUDE_FROM_ALL tests/${review_test}.cpp)
         target_link_libraries(${review_test} PRIVATE mikumikustudio_core winmm dsound)

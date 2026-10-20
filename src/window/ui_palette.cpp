@@ -1,3 +1,4 @@
+#include "mikumikustudio/background_save.hpp"
 // ===========================================================================
 // VA 0x0042CEB0 - HandlePaletteChanged  (original: sub_42CEB0, ~0x4ED bytes)
 // ===========================================================================
@@ -571,7 +572,25 @@ void HandlePaletteChanged2(HDC hdc) {
            0xCC0020u);                                           // 0x42C226 (SRCCOPY)
     DeleteDC(compat);                                            // 0x42C22D
 
+    const wchar_t* saveStatus = background_save::StatusText(app);
+    const bool savingText = saveStatus && *saveStatus;
+    if (savingText) {
+        const int saved = SaveDC(hdc);
+        RECT band{panels.topBand.left, panels.topBand.top, panels.TitleRight(), panels.topBand.top + 25};
+        IntersectClipRect(hdc, band.left, band.top, band.right, band.bottom);
+        const HBRUSH surface = CreateSolidBrush(RGB(255, 241, 241));
+        FillRect(hdc, &band, surface); DeleteObject(surface);
+        HFONT font = CreateFontW(-18, 0, 0, 0, FW_MEDIUM, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+            DEFAULT_PITCH, L"Microsoft YaHei UI");
+        const auto old = SelectObject(hdc, font);
+        SetTextColor(hdc, RGB(180, 20, 20)); SetBkMode(hdc, TRANSPARENT);
+        band.left += 10; band.right -= 6;
+        DrawTextW(hdc, saveStatus, -1, &band, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+        SelectObject(hdc, old); DeleteObject(font); RestoreDC(hdc, saved);
+    }
     const auto paint = [&](int size, int x, int y, auto draw) {
+        if (savingText && y < hideBottom) return 0;
         if (MMD_ORIGINAL_PROFILE) return draw(size, x, y);
         const bool bottom = y >= hideBottom;
         const float scale = bottom ? panels.bottomScale : panels.topScale;

@@ -1,3 +1,4 @@
+#include "mikumikustudio/background_save.hpp"
 #include "mikumikustudio/key_pool.hpp"
 #include "mikumikustudio/ui_translation.hpp"
 // ===========================================================================
@@ -272,6 +273,7 @@ void CmdSavePose(MMDApp* app) {
 //   ==IDOK 才走 ResetAppState；之后无标志写。
 // ---------------------------------------------------------------------------
 void CmdResetState(MMDApp* app) {
+    background_save::Wait(app);
     app->state.enterKeyState = 1;               // 0x46DE02 [app+0xC0]
     const int r = ShowUiMessage(app, MainHwnd(app), UiMessage::NewScene,
                                 MB_OKCANCEL | MB_TOPMOST);
@@ -289,6 +291,7 @@ void CmdResetState(MMDApp* app) {
 //   LoadSceneFile 之后派发层无任何标志写（不置脏）。
 // ---------------------------------------------------------------------------
 void CmdOpenScene(MMDApp* app) {
+    background_save::Wait(app);
     app->state.enterKeyState = 1;               // 0x46DE5C [app+0xC0]
     if (app->SceneModified() != 0) {            // 0x46DE66 脏场景确认
         const int r = ShowUiMessage(app, MainHwnd(app), UiMessage::OpenUnsaved,
@@ -389,6 +392,14 @@ void CmdOpenWave(MMDApp* app) {
 //   SaveSceneFile 内部处理）。
 // ---------------------------------------------------------------------------
 void CmdSaveScene(MMDApp* app) {
+    SaveSceneAs(app, MainHwnd(app));
+}
+
+bool SaveSceneAs(MMDApp* app, HWND owner) {
+    if (SceneSaveInProgress()) {
+        background_save::SetStatus(app, background_save::Status::Busy, true);
+        return false;
+    }
     app->state.dialogFlags[5] = 1;              // 0x46E05F [app+0x48]
     app->state.enterKeyState = 1;               // 0x46E066 [app+0xC0]
     SetCurrentDirectoryW(app->ExeDir());
@@ -398,7 +409,7 @@ void CmdSaveScene(MMDApp* app) {
     OPENFILENAMEW ofn;
     memset(&ofn, 0, sizeof(ofn));
     ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner = MainHwnd(app);              // 保存框 owner 恒为主窗
+    ofn.hwndOwner = owner;
     ofn.lpstrFilter = L"PolygonMovieMaker files(*.pmm)\0*.pmm\0";
     ofn.lpstrFile = path;
     ofn.nFilterIndex = 1;
@@ -414,15 +425,18 @@ void CmdSaveScene(MMDApp* app) {
                          ? L"save file"
                          : kTitleSaveFileJp;
     if (!GetUiSaveFileNameW(&ofn)) {
-        return;
+        return false;
     }
-    if (RememberFileDialogDirs(app)) {
-        wchar_t* dir = ExtractDirFromPath(
-            app->PathWorkspace().projectDirectory, path, kPathFieldCapacity);
-        CopyDirPathW(app->DirUser(), dir);
-    }
-    wcscpy_s(app->EnvFileName(), kDialogPathLen, path);  // 0x46E1CE
-    SaveSceneFile(app);                         // 0x46E1EA -> 0x4950A0，无标志写
+    background_save::Options options;
+    const auto generation = app->SceneGeneration();
+    options.completed = [app, destination = std::wstring(path), generation](bool success) {
+        if (success && app->SceneGeneration() == generation && RememberFileDialogDirs(app)) {
+            wchar_t* dir = ExtractDirFromPath(
+                app->PathWorkspace().projectDirectory, destination.c_str(), kPathFieldCapacity);
+            CopyDirPathW(app->DirUser(), dir);
+        }
+    };
+    return background_save::Request(app, path, std::move(options));
 }
 
 // ---------------------------------------------------------------------------

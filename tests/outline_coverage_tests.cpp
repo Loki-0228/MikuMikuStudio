@@ -219,6 +219,35 @@ int wmain(int argc,wchar_t** argv) {
     }
     std::printf("COVERAGE cases=%u legacy_missing_rows=%u fixed_missing_rows=%u max_opacity_error=%.6f\n",cases,oldGaps,newGaps,maxError);
     Check(oldGaps>1000&&newGaps==0,"thin outlines remain continuous across slopes and subpixel phases");
+    unsigned paleCases=0,paleGaps=0;double maxPaleWeightError=0,maxPaleMeanWeightError=0;
+    // Native geometry, width-dependent alpha, the line preparation target and
+    // final full-scene FXAA all participate. Include low-contrast and authored
+    // translucent lines: a black-only fixture can hide disappearing coverage.
+    for(DWORD color:{0xffbbbbbbu,0xffeeeeeeu,0x4080a0c0u})for(float width:{.25f,.5f,1.f,2.f}) {
+    double totalWeight=0,totalReference=0;unsigned samples=0;
+    for(float slope:{-.5f,0.f,.25f,.5f,1.f})for(float phase:{.125f,.375f,.625f,.875f}) {
+        const auto resolved=f.Draw(width,slope,phase,true,false,false,false,color,true);
+        const auto reference=f.Draw(width,slope,phase,false,false,false,false,color,false,8);
+        double weight=0,expected=0;
+        for(unsigned y=24;y<104;++y) {
+            const double row=Ink(resolved,y);paleGaps+=row<=0;
+            weight+=row;expected+=Ink(reference,y);
+        }
+        const double difference=std::abs(weight-expected)/80;
+        maxPaleWeightError=std::max(maxPaleWeightError,difference);
+        totalWeight+=weight;totalReference+=expected;++samples;++paleCases;
+    }
+    // A single MSAA subpixel phase can contain fewer samples than another.
+    // Compare phase-averaged ink, as for the opaque reference above.
+    const double weightError=std::abs(totalWeight-totalReference)/(samples*80);
+    maxPaleMeanWeightError=std::max(maxPaleMeanWeightError,weightError);
+    std::printf("PALE_WEIGHT color=%08lx width=%.2f fxaa=%.6f msaa8=%.6f error=%.6f\n",
+        color,width,totalWeight/(samples*80),totalReference/(samples*80),weightError);
+    Check(weightError<.025,"phase-averaged pale and translucent line weight stays close to original MSAA");
+    }
+    std::printf("PALE_OUTLINES cases=%u missing_rows=%u max_msaa_phase_error=%.6f max_msaa_mean_error=%.6f\n",
+        paleCases,paleGaps,maxPaleWeightError,maxPaleMeanWeightError);
+    Check(paleGaps==0,"pale and translucent outlines remain continuous after full-scene FXAA");
     Check(f.Draw(2,.25f,.5f,false)==f.Draw(2,.25f,.5f,true),"thick authored outlines remain pixel identical");
     Check(f.Draw(.25f,.25f,.5f,true)==f.Draw(.25f,.25f,.5f,true,true),"fixed and effect colors receive the same coverage");
     const auto reference=f.Draw(.25f,.25f,.5f,true);

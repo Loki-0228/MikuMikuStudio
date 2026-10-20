@@ -15,6 +15,137 @@ HRESULT WINAPI RejectAntialiasFloatTarget(IDirect3D9* d3d,UINT adapter,D3DDEVTYP
     }
     return originalAntialiasCheckFormat(d3d,adapter,type,adapterFormat,usage,resource,format);
 }
+void CheckAntialiasMenus(MMDApp* app) {
+    Check(app->antialiasing.outlineMode==antialias::OutlineMode::FxaaAdaptive,
+        "legacy outline preference uses direct softening on restart");
+    const auto select=[&](antialias::Algorithm mode) {
+        SendMessageW(app->MainWindow(),WM_COMMAND,antialias::kFirstCommand+unsigned(mode),0);
+        Check(app->antialiasing.algorithm==mode,"menu selects actual algorithm");
+    };
+    select(antialias::Algorithm::MmdOriginal);
+    select(antialias::Algorithm::Fxaa);
+    for(int language=0;language<3;++language) {
+        app->EnglishUI()=language;RefreshMenuLanguage(app);
+        SendMessageW(app->MainWindow(),WM_ENTERMENULOOP,0,0);
+        HMENU bar=GetMenu(app->MainWindow()),parent=nullptr,popup=nullptr;int index=-1;
+        for(int i=0;i<GetMenuItemCount(bar);++i) {
+            auto child=GetSubMenu(bar,i);
+            for(int j=0;j<GetMenuItemCount(child);++j) {
+                MENUITEMINFOW item{sizeof(item)};item.fMask=MIIM_ID|MIIM_SUBMENU|MIIM_STATE;
+                GetMenuItemInfoW(child,j,TRUE,&item);
+                if(item.wID==277){parent=child;popup=item.hSubMenu;index=j;}
+            }
+        }
+        Check(popup && GetMenuItemCount(popup)==5,
+            "AA flyout contains only Off and algorithm choices");
+        wchar_t offLabel[32]{};GetMenuStringW(popup,antialias::kOffCommand,offLabel,32,MF_BYCOMMAND);
+        Check(std::wcscmp(offLabel,language==2?L"关闭":language==1?L"Off":L"オフ")==0,"Off is localized in every UI language");
+        const auto commandPosition=[&](unsigned command) {
+            for(int i=0;i<GetMenuItemCount(popup);++i) {
+                MENUITEMINFOW item{sizeof(item)};item.fMask=MIIM_ID;
+                if(GetMenuItemInfoW(popup,i,TRUE,&item) && item.wID==command)return i;
+            }
+            return -1;
+        };
+        const int smaaPosition=commandPosition(antialias::kSmaaCommand);
+        auto smaaPopup=GetSubMenu(popup,smaaPosition);
+        Check(smaaPopup && GetMenuItemCount(smaaPopup)==4,"four SMAA variants are available in the right-hand submenu");
+        const auto checkOutlineSelection=[&]() {
+            for(const auto retired:{antialias::kOutlineCommand,antialias::kOutlineFxaaCommand,antialias::kOutlineMsaaCommand})
+                Check(GetMenuState(popup,retired,MF_BYCOMMAND)==UINT(-1),"independent outline commands are absent in every language");
+            Check(app->antialiasing.outlineMode==antialias::OutlineMode::FxaaAdaptive,
+                "outline softening remains automatic when switching or toggling AA");
+        };
+        const auto checkSmaaSelection=[&](antialias::Algorithm active) {
+            // Selecting a variant refreshes the native submenu, so do not keep
+            // the old handle between command dispatches.
+            const auto child=GetSubMenu(popup,smaaPosition);
+            const bool enabled=app->antialiasing.enabled;
+            Check(((GetMenuState(parent,277,MF_BYCOMMAND)&MF_CHECKED)!=0)==enabled,"main item mirrors enabled state");
+            Check(((GetMenuState(popup,antialias::kOffCommand,MF_BYCOMMAND)&MF_CHECKED)!=0)==!enabled,
+                "Off is marked exactly when the main item is disabled");
+            const bool smaaActive=enabled && active>=antialias::Algorithm::Smaa && active<antialias::Algorithm::Count;
+            Check(((GetMenuState(popup,antialias::kSmaaCommand,MF_BYCOMMAND)&MF_CHECKED)!=0)==smaaActive,
+                "SMAA parent is marked only when a SMAA variant is selected");
+            Check(GetMenuDefaultItem(child,FALSE,0)==UINT(-1),"SMAA submenu has no default choice");
+            for(const auto variant:{antialias::Algorithm::SmaaStandard,antialias::Algorithm::Smaa,
+                                   antialias::Algorithm::SmaaT2xStandard,antialias::Algorithm::SmaaT2xEnhanced}) {
+                Check(((GetMenuState(child,antialias::kFirstCommand+unsigned(variant),MF_BYCOMMAND)&MF_CHECKED)!=0)==(enabled && active==variant),
+                    "SMAA child marks the current algorithm instead of the remembered variant");
+            }
+            for(const auto other:{antialias::Algorithm::MmdOriginal,antialias::Algorithm::Fxaa,antialias::Algorithm::Taa}) {
+                Check(((GetMenuState(popup,antialias::kFirstCommand+unsigned(other),MF_BYCOMMAND)&MF_CHECKED)!=0)==(enabled && active==other),
+                    "the algorithm submenu marks only the selected family");
+            }
+            checkOutlineSelection();
+        };
+        checkSmaaSelection(antialias::Algorithm::Fxaa);
+        for(const auto retired:{antialias::kOutlineCommand,antialias::kOutlineFxaaCommand,antialias::kOutlineMsaaCommand}) {
+            SendMessageW(app->MainWindow(),WM_COMMAND,retired,0);
+            Check(app->antialiasing.outlineMode==antialias::OutlineMode::FxaaAdaptive &&
+                app->antialiasing.enabled && app->antialiasing.algorithm==antialias::Algorithm::Fxaa,
+                "retired outline commands cannot change activation or the automatic strategy");
+        }
+        Check((GetMenuState(popup,antialias::kFirstCommand+unsigned(antialias::Algorithm::Fxaa),MF_BYCOMMAND)&MF_CHECKED)!=0,
+            "selected algorithm has radio check");
+        SendMessageW(app->MainWindow(),WM_MENUSELECT,MAKEWPARAM(smaaPosition,MF_POPUP),reinterpret_cast<LPARAM>(popup));
+        MSG smaaEnter{};smaaEnter.message=WM_KEYDOWN;smaaEnter.wParam=VK_RETURN;
+        Check(antialias::MenuFilter(MSGF_MENU,0,reinterpret_cast<LPARAM>(&smaaEnter))==0,
+            "Enter on the SMAA label is left to native submenu navigation");
+        MSG smaaPending{};
+        Check(!PeekMessageW(&smaaPending,app->MainWindow(),WM_COMMAND,WM_COMMAND,PM_REMOVE),
+            "opening the SMAA submenu does not post a selection command");
+        Check(app->antialiasing.algorithm==antialias::Algorithm::Fxaa,
+            "opening the SMAA submenu preserves the current algorithm");
+        for(const auto active:{antialias::Algorithm::SmaaStandard,antialias::Algorithm::Smaa,
+                               antialias::Algorithm::SmaaT2xStandard,antialias::Algorithm::SmaaT2xEnhanced,
+                               antialias::Algorithm::Taa,antialias::Algorithm::MmdOriginal,antialias::Algorithm::Fxaa}) {
+            select(active);checkSmaaSelection(active);
+            Check(app->antialiasing.outlineMode==antialias::OutlineMode::FxaaAdaptive,
+                "changing the AA algorithm retains automatic outline processing");
+            CommandDispatch(nullptr,MAKEWPARAM(277,0));
+            Check(!app->antialiasing.enabled && app->antialiasing.algorithm==active,"main Off remembers the selected algorithm");
+            checkSmaaSelection(active);
+            SendMessageW(app->MainWindow(),WM_COMMAND,antialias::kOutlineFxaaCommand,0);
+            Check(!app->antialiasing.enabled && app->antialiasing.algorithm==active &&
+                app->antialiasing.outlineMode==antialias::OutlineMode::FxaaAdaptive,
+                "a disabled outline command cannot enable AA or change its remembered strategy");
+            CommandDispatch(nullptr,MAKEWPARAM(277,0));
+            Check(app->antialiasing.enabled && app->antialiasing.algorithm==active,"main On restores the selected algorithm");
+            checkSmaaSelection(active);
+            SendMessageW(app->MainWindow(),WM_COMMAND,antialias::kOffCommand,0);
+            Check(!app->antialiasing.enabled && app->antialiasing.algorithm==active,"submenu Off disables without forgetting the algorithm");
+            checkSmaaSelection(active);
+            SendMessageW(app->MainWindow(),WM_COMMAND,antialias::kOffCommand,0);
+            Check(!app->antialiasing.enabled,"selecting Off twice remains disabled");
+            select(active);
+            Check(app->antialiasing.enabled,"selecting an algorithm turns AA back on");
+            checkSmaaSelection(active);
+        }
+        for(const auto active:{antialias::Algorithm::MmdOriginal,antialias::Algorithm::Msaa2,
+                               antialias::Algorithm::Msaa4,antialias::Algorithm::Msaa8}) {
+            select(active);checkOutlineSelection();
+            SendMessageW(app->MainWindow(),WM_COMMAND,antialias::kOutlineFxaaCommand,0);
+            Check(app->antialiasing.enabled && app->antialiasing.algorithm==active &&
+                app->antialiasing.outlineMode==antialias::OutlineMode::FxaaAdaptive,
+                "original and explicit MSAA ignore unavailable outline strategy commands");
+        }
+        select(antialias::Algorithm::Fxaa);
+        SendMessageW(app->MainWindow(),WM_COMMAND,antialias::kOutlineFxaaCommand,0);
+        checkOutlineSelection();
+        SendMessageW(app->MainWindow(),WM_MENUSELECT,MAKEWPARAM(index,MF_POPUP),reinterpret_cast<LPARAM>(parent));
+        MSG enter{};enter.message=WM_KEYDOWN;enter.wParam=VK_RETURN;
+        Check(antialias::MenuFilter(MSGF_MENU,0,reinterpret_cast<LPARAM>(&enter))==1,"Enter on parent keeps toggle action");
+        MSG pending{};
+        Check(PeekMessageW(&pending,app->MainWindow(),WM_COMMAND,WM_COMMAND,PM_REMOVE) && LOWORD(pending.wParam)==277,
+            "split menu posts original AA toggle command");
+        SendMessageW(app->MainWindow(),WM_EXITMENULOOP,0,0);
+        Check(GetSubMenu(parent,index)==nullptr,"flyout detached on exit without changing original item");
+        DispatchMessageW(&pending);Check(!app->antialiasing.enabled,"keyboard activates toggle");
+        CommandDispatch(nullptr,MAKEWPARAM(277,0));
+    }
+    std::puts("PASS AA menus with automatic outlines in Japanese, English and Chinese");
+}
 void CheckAntialiasScene(MMDApp* app, const wchar_t* directory) {
     if(std::getenv("MMS_AA_STABILITY")) { CheckAntialiasStability(app,directory);return; }
     Check(antialias::Settings{}.outlineMode==antialias::OutlineMode::FxaaAdaptive,
@@ -22,6 +153,10 @@ void CheckAntialiasScene(MMDApp* app, const wchar_t* directory) {
     CheckTemporalResolveShader();
     captureDirectory = directory;
     std::filesystem::create_directories(captureDirectory);
+    // TEMPORARY: native outlines only draw in the camera/playback path.
+    app->PlaybackActive()=1;
+    for(int warm=0;warm<3;++warm) { app->DeltaTime()=1.f/30; app->state.messageSeen=10; FrameDriver(app); }
+
     auto* r = app->Renderer();
     // Freeze this saved pose so algorithm comparisons do not include hair
     // physics evolving while the test traverses the menu.
@@ -34,7 +169,7 @@ void CheckAntialiasScene(MMDApp* app, const wchar_t* directory) {
     Check(MH_CreateHook(vtable[17], &ObservePresent, reinterpret_cast<void**>(&originalPresent)) == MH_OK &&
         MH_EnableHook(vtable[17]) == MH_OK, "capture saved PMM view");
     const auto capture=[&](const char* name,int frames=4) {
-        const auto until=GetTickCount64()+10000;
+        const auto until=GetTickCount64()+90000;
         const bool wasEnabled=app->antialiasing.enabled;
         while(antialias::Initializing(app) && GetTickCount64()<until) {
             app->DeltaTime()=1.f/30;app->state.messageSeen=10;FrameDriver(app);Sleep(1);
@@ -353,165 +488,7 @@ void CheckAntialiasScene(MMDApp* app, const wchar_t* directory) {
         Check(antialias::SelectOutlineMode(app,antialias::OutlineMode::FxaaAdaptive,outlineError),
             "restore pure FXAA outline preference before menu and restart checks");
     }
-    select(antialias::Algorithm::MmdOriginal);
-    select(antialias::Algorithm::Fxaa);
-    for(int language=0;language<3;++language) {
-        app->EnglishUI()=language;RefreshMenuLanguage(app);
-        SendMessageW(app->MainWindow(),WM_ENTERMENULOOP,0,0);
-        HMENU bar=GetMenu(app->MainWindow()),parent=nullptr,popup=nullptr;int index=-1;
-        for(int i=0;i<GetMenuItemCount(bar);++i) {
-            auto child=GetSubMenu(bar,i);
-            for(int j=0;j<GetMenuItemCount(child);++j) {
-                MENUITEMINFOW item{sizeof(item)};item.fMask=MIIM_ID|MIIM_SUBMENU|MIIM_STATE;
-                GetMenuItemInfoW(child,j,TRUE,&item);
-                if(item.wID==277){parent=child;popup=item.hSubMenu;index=j;}
-            }
-        }
-        Check(popup && GetMenuItemCount(popup)==7,
-            "AA flyout has the algorithm choices, separator and independent outline processing submenu");
-        wchar_t offLabel[32]{};GetMenuStringW(popup,antialias::kOffCommand,offLabel,32,MF_BYCOMMAND);
-        Check(std::wcscmp(offLabel,language==2?L"关闭":language==1?L"Off":L"オフ")==0,"Off is localized in every UI language");
-        const auto commandPosition=[&](unsigned command) {
-            for(int i=0;i<GetMenuItemCount(popup);++i) {
-                MENUITEMINFOW item{sizeof(item)};item.fMask=MIIM_ID;
-                if(GetMenuItemInfoW(popup,i,TRUE,&item) && item.wID==command)return i;
-            }
-            return -1;
-        };
-        const int smaaPosition=commandPosition(antialias::kSmaaCommand);
-        const int outlinePosition=commandPosition(antialias::kOutlineCommand);
-        auto smaaPopup=GetSubMenu(popup,smaaPosition);
-        Check(smaaPopup && GetMenuItemCount(smaaPopup)==4,"four SMAA variants are available in the right-hand submenu");
-        auto outlinePopup=GetSubMenu(popup,outlinePosition);
-        Check(outlinePopup && GetMenuItemCount(outlinePopup)==2,"outline processing offers exactly two independent strategies");
-        wchar_t outlineLabel[96]{},fxaaOutlineLabel[96]{},msaaOutlineLabel[96]{};
-        GetMenuStringW(popup,antialias::kOutlineCommand,outlineLabel,96,MF_BYCOMMAND);
-        GetMenuStringW(outlinePopup,antialias::kOutlineFxaaCommand,fxaaOutlineLabel,96,MF_BYCOMMAND);
-        GetMenuStringW(outlinePopup,antialias::kOutlineMsaaCommand,msaaOutlineLabel,96,MF_BYCOMMAND);
-        Check(std::wcscmp(outlineLabel,language==2?L"描边处理":language==1?L"Outline processing":L"輪郭線処理")==0 &&
-            std::wcscmp(fxaaOutlineLabel,language==2?L"FXAA 自适应柔化":language==1?L"FXAA adaptive softening":L"FXAA 適応平滑化")==0 &&
-            std::wcscmp(msaaOutlineLabel,language==2?L"MSAA 覆盖＋自适应柔化":language==1?L"MSAA coverage + adaptive softening":L"MSAA カバレッジ＋適応平滑化")==0,
-            "outline processing and both strategies are localized in every UI language");
-        const auto checkOutlineSelection=[&]() {
-            // RefreshMenu replaces descendant menus after each selection.
-            const auto child=GetSubMenu(popup,outlinePosition);
-            const auto& settings=app->antialiasing;
-            const bool editable=settings.enabled && settings.algorithm>=antialias::Algorithm::Fxaa &&
-                settings.algorithm<antialias::Algorithm::Count;
-            Check(((GetMenuState(popup,antialias::kOutlineCommand,MF_BYCOMMAND)&(MF_DISABLED|MF_GRAYED))==0)==editable,
-                "outline strategy submenu is enabled only for active post-process AA");
-            Check(GetMenuDefaultItem(child,FALSE,0)==UINT(-1),"outline submenu has no implicit default action");
-            for(const auto mode:{antialias::OutlineMode::FxaaAdaptive,antialias::OutlineMode::Multisample}) {
-                const unsigned command=mode==antialias::OutlineMode::FxaaAdaptive?
-                    antialias::kOutlineFxaaCommand:antialias::kOutlineMsaaCommand;
-                MENUITEMINFOW item{sizeof(item)};item.fMask=MIIM_STATE|MIIM_FTYPE;
-                Check(GetMenuItemInfoW(child,command,FALSE,&item)!=FALSE,"outline strategy item exists");
-                Check((item.fType&MFT_RADIOCHECK)!=0 && ((item.fState&MFS_CHECKED)!=0)==(settings.outlineMode==mode),
-                    "exactly the remembered outline strategy has a radio check even while disabled");
-                Check(((item.fState&(MFS_DISABLED|MFS_GRAYED))==0)==editable,
-                    "outline child availability follows post-process AA activation");
-            }
-        };
-        const auto checkSmaaSelection=[&](antialias::Algorithm active) {
-            // Selecting a variant refreshes the native submenu, so do not keep
-            // the old handle between command dispatches.
-            const auto child=GetSubMenu(popup,smaaPosition);
-            const bool enabled=app->antialiasing.enabled;
-            Check(((GetMenuState(parent,277,MF_BYCOMMAND)&MF_CHECKED)!=0)==enabled,"main item mirrors enabled state");
-            Check(((GetMenuState(popup,antialias::kOffCommand,MF_BYCOMMAND)&MF_CHECKED)!=0)==!enabled,
-                "Off is marked exactly when the main item is disabled");
-            const bool smaaActive=enabled && active>=antialias::Algorithm::Smaa && active<antialias::Algorithm::Count;
-            Check(((GetMenuState(popup,antialias::kSmaaCommand,MF_BYCOMMAND)&MF_CHECKED)!=0)==smaaActive,
-                "SMAA parent is marked only when a SMAA variant is selected");
-            Check(GetMenuDefaultItem(child,FALSE,0)==UINT(-1),"SMAA submenu has no default choice");
-            for(const auto variant:{antialias::Algorithm::SmaaStandard,antialias::Algorithm::Smaa,
-                                   antialias::Algorithm::SmaaT2xStandard,antialias::Algorithm::SmaaT2xEnhanced}) {
-                Check(((GetMenuState(child,antialias::kFirstCommand+unsigned(variant),MF_BYCOMMAND)&MF_CHECKED)!=0)==(enabled && active==variant),
-                    "SMAA child marks the current algorithm instead of the remembered variant");
-            }
-            for(const auto other:{antialias::Algorithm::MmdOriginal,antialias::Algorithm::Fxaa,antialias::Algorithm::Taa}) {
-                Check(((GetMenuState(popup,antialias::kFirstCommand+unsigned(other),MF_BYCOMMAND)&MF_CHECKED)!=0)==(enabled && active==other),
-                    "the algorithm submenu marks only the selected family");
-            }
-            checkOutlineSelection();
-        };
-        checkSmaaSelection(antialias::Algorithm::Fxaa);
-        for(const auto mode:{antialias::OutlineMode::FxaaAdaptive,antialias::OutlineMode::Multisample}) {
-            const auto command=mode==antialias::OutlineMode::FxaaAdaptive?
-                antialias::kOutlineFxaaCommand:antialias::kOutlineMsaaCommand;
-            SendMessageW(app->MainWindow(),WM_COMMAND,command,0);
-            Check(app->antialiasing.outlineMode==mode && app->antialiasing.enabled &&
-                app->antialiasing.algorithm==antialias::Algorithm::Fxaa,
-                "choosing an outline strategy preserves the selected AA algorithm and activation");
-            checkOutlineSelection();
-        }
-        Check((GetMenuState(popup,antialias::kFirstCommand+unsigned(antialias::Algorithm::Fxaa),MF_BYCOMMAND)&MF_CHECKED)!=0,
-            "selected algorithm has radio check");
-        SendMessageW(app->MainWindow(),WM_MENUSELECT,MAKEWPARAM(smaaPosition,MF_POPUP),reinterpret_cast<LPARAM>(popup));
-        MSG smaaEnter{};smaaEnter.message=WM_KEYDOWN;smaaEnter.wParam=VK_RETURN;
-        Check(antialias::MenuFilter(MSGF_MENU,0,reinterpret_cast<LPARAM>(&smaaEnter))==0,
-            "Enter on the SMAA label is left to native submenu navigation");
-        MSG smaaPending{};
-        Check(!PeekMessageW(&smaaPending,app->MainWindow(),WM_COMMAND,WM_COMMAND,PM_REMOVE),
-            "opening the SMAA submenu does not post a selection command");
-        Check(app->antialiasing.algorithm==antialias::Algorithm::Fxaa,
-            "opening the SMAA submenu preserves the current algorithm");
-        SendMessageW(app->MainWindow(),WM_MENUSELECT,MAKEWPARAM(outlinePosition,MF_POPUP),reinterpret_cast<LPARAM>(popup));
-        Check(antialias::MenuFilter(MSGF_MENU,0,reinterpret_cast<LPARAM>(&smaaEnter))==0,
-            "Enter on the outline label is left to native submenu navigation");
-        Check(!PeekMessageW(&smaaPending,app->MainWindow(),WM_COMMAND,WM_COMMAND,PM_REMOVE),
-            "opening the outline submenu posts neither an AA toggle nor a strategy command");
-        SendMessageW(app->MainWindow(),WM_COMMAND,antialias::kOutlineCommand,0);
-        Check(app->antialiasing.enabled && app->antialiasing.algorithm==antialias::Algorithm::Fxaa &&
-            app->antialiasing.outlineMode==antialias::OutlineMode::Multisample,
-            "a stale outline parent command changes neither activation, algorithm nor strategy");
-        for(const auto active:{antialias::Algorithm::SmaaStandard,antialias::Algorithm::Smaa,
-                               antialias::Algorithm::SmaaT2xStandard,antialias::Algorithm::SmaaT2xEnhanced,
-                               antialias::Algorithm::Taa,antialias::Algorithm::MmdOriginal,antialias::Algorithm::Fxaa}) {
-            select(active);checkSmaaSelection(active);
-            Check(app->antialiasing.outlineMode==antialias::OutlineMode::Multisample,
-                "changing the AA algorithm retains the independent outline strategy");
-            CommandDispatch(nullptr,MAKEWPARAM(277,0));
-            Check(!app->antialiasing.enabled && app->antialiasing.algorithm==active,"main Off remembers the selected algorithm");
-            checkSmaaSelection(active);
-            SendMessageW(app->MainWindow(),WM_COMMAND,antialias::kOutlineFxaaCommand,0);
-            Check(!app->antialiasing.enabled && app->antialiasing.algorithm==active &&
-                app->antialiasing.outlineMode==antialias::OutlineMode::Multisample,
-                "a disabled outline command cannot enable AA or change its remembered strategy");
-            CommandDispatch(nullptr,MAKEWPARAM(277,0));
-            Check(app->antialiasing.enabled && app->antialiasing.algorithm==active,"main On restores the selected algorithm");
-            checkSmaaSelection(active);
-            SendMessageW(app->MainWindow(),WM_COMMAND,antialias::kOffCommand,0);
-            Check(!app->antialiasing.enabled && app->antialiasing.algorithm==active,"submenu Off disables without forgetting the algorithm");
-            checkSmaaSelection(active);
-            SendMessageW(app->MainWindow(),WM_COMMAND,antialias::kOffCommand,0);
-            Check(!app->antialiasing.enabled,"selecting Off twice remains disabled");
-            select(active);
-            Check(app->antialiasing.enabled,"selecting an algorithm turns AA back on");
-            checkSmaaSelection(active);
-        }
-        for(const auto active:{antialias::Algorithm::MmdOriginal,antialias::Algorithm::Msaa2,
-                               antialias::Algorithm::Msaa4,antialias::Algorithm::Msaa8}) {
-            select(active);checkOutlineSelection();
-            SendMessageW(app->MainWindow(),WM_COMMAND,antialias::kOutlineFxaaCommand,0);
-            Check(app->antialiasing.enabled && app->antialiasing.algorithm==active &&
-                app->antialiasing.outlineMode==antialias::OutlineMode::Multisample,
-                "original and explicit MSAA ignore unavailable outline strategy commands");
-        }
-        select(antialias::Algorithm::Fxaa);
-        SendMessageW(app->MainWindow(),WM_COMMAND,antialias::kOutlineFxaaCommand,0);
-        checkOutlineSelection();
-        SendMessageW(app->MainWindow(),WM_MENUSELECT,MAKEWPARAM(index,MF_POPUP),reinterpret_cast<LPARAM>(parent));
-        MSG enter{};enter.message=WM_KEYDOWN;enter.wParam=VK_RETURN;
-        Check(antialias::MenuFilter(MSGF_MENU,0,reinterpret_cast<LPARAM>(&enter))==1,"Enter on parent keeps toggle action");
-        MSG pending{};
-        Check(PeekMessageW(&pending,app->MainWindow(),WM_COMMAND,WM_COMMAND,PM_REMOVE) && LOWORD(pending.wParam)==277,
-            "split menu posts original AA toggle command");
-        SendMessageW(app->MainWindow(),WM_EXITMENULOOP,0,0);
-        Check(GetSubMenu(parent,index)==nullptr,"flyout detached on exit without changing original item");
-        DispatchMessageW(&pending);Check(!app->antialiasing.enabled,"keyboard activates toggle");
-        CommandDispatch(nullptr,MAKEWPARAM(277,0));
-    }
+    CheckAntialiasMenus(app);
     if(std::getenv("MMS_SURFACE_MISSING_DX12")) {
         const auto status=skinning::GetStatus();
         Check(blockedSurfaceDx12>0 && status.gpuUpdates==0 && status.cpuUpdates>0,

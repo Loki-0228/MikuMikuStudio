@@ -223,6 +223,7 @@ void ApplyCurrentCameraView(MMDApp*);                  // use the current camera
 void RebuildModelModePanel(MMDApp*);     // was Sub44D610, VA 0x0044D610
 void RebuildCameraModePanel(MMDApp*);    // was Sub44D780, VA 0x0044D780
 void ApplyModelComboSelection(MMDApp*);  // was Sub44D940, VA 0x0044D940
+int ResolveModelComboSelection(MMDApp*);
 
 // ---- window procedures ----------------------------------------------------
 LRESULT CALLBACK MainWndProc(HWND, UINT, WPARAM, LPARAM);  // VA 0x004C3A10 (ported)
@@ -425,6 +426,7 @@ void CmdResetState(MMDApp*);                      // 0xCC -> 0x0044E540
 void CmdOpenScene(MMDApp*);                       // 0xCD -> 0x00458F80
 void CmdOpenWave(MMDApp*);                        // 0xCE -> 0x00418500
 void CmdSaveScene(MMDApp*);                       // 0xD0 -> 0x0041B080
+bool SaveSceneAs(MMDApp*, HWND owner);            // Accepted background Save As; explicit picker owner
 void CmdLoadMotion(MMDApp*);                      // 0xD1 -> 0x00434B60
 void CmdSaveMotion(MMDApp*);                      // 0xD2 -> 0x00419370
 void CmdLoadAvi(MMDApp*);                         // 0xD5 -> 0x00433250
@@ -446,7 +448,7 @@ void ResetAppState(MMDApp*);                      // VA 0x0044E540
 // Real bodies (src/media/): __thiscall(app) like the original - the path is
 // read from app storage (+0xD0 WAV, +0x9E1EC AVI, +0x9E448 picture).
 void LoadWaveFile(MMDApp* app);                   // VA 0x00418500 (real)
-void SaveSceneFile(MMDApp* app);                  // VA 0x0041B080 (src/io/pmm_save.cpp)
+bool SaveSceneFile(MMDApp* app);                  // VA 0x0041B080 (src/io/pmm_save.cpp)
 void PathToProjectDir(wchar_t* destination, const wchar_t* source);  // VA 0x00408870
 void LoadSceneV2(MMDApp* app, int fd);             // VA 0x00450000 (v2 loader body,
                                                   //  phase 1), was Sub450000

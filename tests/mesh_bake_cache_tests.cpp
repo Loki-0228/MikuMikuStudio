@@ -15,6 +15,7 @@
 
 #include "mikumikustudio/mesh_bake_cache.hpp"
 #include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/frame_limits.hpp"
 
 #include <Alembic/AbcCoreOgawa/All.h>
 #include <Alembic/AbcGeom/All.h>
@@ -493,7 +494,8 @@ void CacheBasics(const std::filesystem::path& directory, Scene& scene,
     scene.BindAccessory2();
 
     std::string error;
-    Check(Install(scene.app, archive, error), "install the first archive: " + error);
+    const bool installed = Install(scene.app, archive, error);
+    Check(installed, "install the first archive: " + error);
     Check(Has(scene.Model0()), "the model object is cached");
     Check(Has(scene.Accessory2()), "the accessory object is cached");
     Check(!Has(nullptr), "a null object is never cached");
@@ -1456,7 +1458,8 @@ void TimeScale(const std::filesystem::path& directory, Scene& scene) {
     cache::TimeScalePlanPtr huge;
     std::size_t hugeCount = 12345;
     error.clear();
-    Check(!cache::PrepareTimeScale(4000.0, huge, hugeCount, error),
+    const double outsideTimeline = double(mikumikustudio::frame_limits::maximum) / 99999.0 + 1.0;
+    Check(!cache::PrepareTimeScale(outsideTimeline, huge, hugeCount, error),
           "a retime past the last timeline frame is refused");
     Check(!error.empty() && huge == nullptr && hugeCount == 0,
           "the refused retime leaves no plan behind");
@@ -1564,6 +1567,24 @@ void CutoffGenerations(const std::filesystem::path& directory, Scene& scene) {
     Trace("per-object cutoff layers and generation bindings");
 }
 
+void SnapshotLifetime(const std::filesystem::path& directory, Scene& scene) {
+    Clear(); scene.BindModel0();
+    const auto archive = directory / L"snapshot-source.abc";
+    WriteArchive(archive, {{kModelChild, 42.0f}}, 4, 30.0, 0.0);
+    std::string error;
+    Check(Install(scene.app, archive, error), "install snapshot source: " + error);
+    auto snapshot = mikumikustudio::mesh_bake_cache::CaptureSave(scene.app);
+    Clear();
+    Check(Empty(), "live cache can be cleared while snapshot owns its files");
+    extension::Document document;
+    const auto path = directory / L"snapshot-project.pmm";
+    Check(snapshot(path, document, error), "snapshot publishes after live cache was cleared: " + error);
+    Check(extension::Find(document, kRecordKey) != nullptr, "snapshot retains the original cache mapping");
+    Check(Load(scene.app, path, document, error), "reload snapshot cache: " + error);
+    Check(Has(scene.Model0()), "saved snapshot restores its original model cache");
+    snapshot = {}; Clear();
+}
+
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
@@ -1598,6 +1619,7 @@ int wmain(int argc, wchar_t** argv) {
     NativeRange(project, scene);
     TimeScale(project, scene);
     CutoffGenerations(unicode, scene);
+    SnapshotLifetime(unicode, scene);
 
     Clear();
     Check(Empty(), "the cache is empty at the end");

@@ -795,114 +795,24 @@ FxaaFloat MMSSelectAlpha(FxaaTex tex, FxaaFloat2 at, FxaaFloat2 rcp) {
 }
 #define FxaaLuma(rgba) MMSLumaChannel((rgba), mmsUseAlpha)
 
-// Native coverage describes line geometry rather than arbitrary MME alpha.
-// The covariance's minor axis is the local line normal; retaining the whole
-// projector avoids unstable angle/sign changes on stair-stepped diagonals.
-// The covered mass over the same window is the visible width. The spread of
-// the fractional samples tells a resolved ramp apart from a hard edge: an
-// edge the rasteriser already antialiased carries several different fractional
-// values, while a single-sample hull carries one flat value or none.
-FxaaFloat4 MMSOutlineTensor(FxaaFloat2 at,FxaaFloat2 rcp) {
-    FxaaFloat mass=0, mx=0, my=0, xx=0, xy=0, yy=0;
-    FxaaFloat partialLow=1, partialHigh=0, peak=0;
+// Soften native outlines directly in screen space. The mask only limits the
+// affected neighborhood; it does not estimate width, reconstruct ink, or infer
+// a background color. A normalized binomial kernel preserves premultiplied
+// RGBA and leaves material detail outside the one-pixel outline fringe alone.
+FxaaFloat4 MMSOutlineFilter(FxaaTex tex,FxaaFloat2 at,FxaaFloat2 rcp,
+                           out FxaaFloat covered) {
+    FxaaFloat4 result=FxaaFloat4(0,0,0,0);
+    covered=0;
     [unroll] for(int y=-1;y<=1;++y) {
         [unroll] for(int x=-1;x<=1;++x) {
-            FxaaFloat coverage=FxaaTexTop(nativeOutline,at+FxaaFloat2(x,y)*rcp).r;
-            mass+=coverage; mx+=x*coverage; my+=y*coverage;
-            xx+=x*x*coverage; xy+=x*y*coverage; yy+=y*y*coverage;
-            peak=max(peak,coverage);
-            [branch] if(coverage>1.5/255.0 && coverage<1.0-1.5/255.0) {
-                partialLow=min(partialLow,coverage); partialHigh=max(partialHigh,coverage);
-            }
-        }
-    }
-    [branch] if(mass<=0) return FxaaFloat4(0,0,0,0);
-    xx=max(0,xx-mx*mx/mass); xy-=mx*my/mass; yy=max(0,yy-my*my/mass);
-    FxaaFloat delta=xx-yy;
-    FxaaFloat inverseAnisotropy=rsqrt(max(delta*delta+4*xy*xy,1e-8));
-    FxaaFloat projectorX=0.5-0.5*delta*inverseAnisotropy;
-    // The covered mass grows with the band's rasterised width and with its
-    // alpha, and a diagonal band covers more of the window than an
-    // axis-aligned one. Divide both out to recover the width on its own.
-    FxaaFloat extent=sqrt(projectorX)+sqrt(max(1.0-projectorX,0.0));
-    FxaaFloat density=max(peak,1.5/255.0);
-    return FxaaFloat4(projectorX,-xy*inverseAnisotropy,
-        mass/(3.0*extent*density),partialHigh-partialLow);
-}
-// An edge the rasteriser already antialiased carries a graded coverage ramp:
-// several different fractional values across the line. The single-sample hull
-// production supplies instead carries one flat authored alpha, or none. Seven
-// taps on each centre axis span the cross-section of a band up to six pixels
-// wide, so the ramp is recognised on the whole band and in every direction.
-// Resolved coverage is then left exactly as the rasteriser wrote it, which is
-// the outline MSAA and TAA resolve for the same geometry.
-FxaaFloat MMSOutlineAxisRamp(FxaaFloat2 at,FxaaFloat2 rcp,FxaaFloat2 axis) {
-    FxaaFloat low=1, high=0;
-    [unroll] for(int i=-3;i<=3;++i) {
-        FxaaFloat coverage=FxaaTexTop(nativeOutline,at+axis*FxaaFloat(i)*rcp).r;
-        [branch] if(coverage>1.5/255.0 && coverage<1.0-1.5/255.0) {
-            low=min(low,coverage); high=max(high,coverage);
-        }
-    }
-    return high-low;
-}
-FxaaFloat MMSOutlineResolvedRamp(FxaaFloat2 at,FxaaFloat2 rcp) {
-    // Both axes are tested: a diagonal band grades along x and along y, and one
-    // axis alone can miss the rim of the cross-section.
-    return max(MMSOutlineAxisRamp(at,rcp,FxaaFloat2(1,0)),MMSOutlineAxisRamp(at,rcp,FxaaFloat2(0,1)));
-}
-FxaaFloat4 MMSOutlineFilter(FxaaTex tex,FxaaFloat2 at,FxaaFloat2 rcp,FxaaFloat4 centerTensor) {
-    FxaaFloat4 center=FxaaTexTop(tex,at), result=center;
-    FxaaFloat centerCoverage=FxaaTexTop(nativeOutline,at).r;
-    // Coverage the rasteriser resolved is already a transition; pushing it
-    // again is what moved a strong filter's outline off its authored place.
-    [branch] if(max(centerTensor.w,MMSOutlineResolvedRamp(at,rcp))>1.0/255.0) return center;
-    [unroll] for(int y=-1;y<=1;++y) {
-        [unroll] for(int x=-1;x<=1;++x) {
-            if(x!=0 || y!=0) {
-                FxaaFloat2 there=at+FxaaFloat2(x,y)*rcp;
-                FxaaFloat4 neighborTensor=MMSOutlineTensor(there,rcp);
-                if(neighborTensor.z<=0)neighborTensor=centerTensor;
-                // Both ends of an edge share the averaged projector, so they
-                // apply the same coefficient and the line keeps its ink.
-                FxaaFloat3 projector=(
-                    FxaaFloat3(centerTensor.x,centerTensor.y,1.0-centerTensor.x)+
-                    FxaaFloat3(neighborTensor.x,neighborTensor.y,1.0-neighborTensor.x))*0.5;
-                FxaaFloat distanceSquared=x*x+y*y;
-                FxaaFloat across=saturate((projector.x*x*x+2*projector.y*x*y+projector.z*y*y)/distanceSquared);
-                // The measured width decides how much density the filtered edge
-                // keeps. A line narrower than a pixel already sits at its
-                // authored coverage, so spreading it only dilutes it; a wider
-                // line gains a transition without reading lighter. Both terms
-                // take the pair maximum so the coefficient is the same in both
-                // directions and total ink stays conserved.
-                FxaaFloat width=max(centerTensor.z,neighborTensor.z);
-                FxaaFloat ramp=max(centerTensor.w,neighborTensor.w);
-                FxaaFloat strength=lerp(0.036,0.130,smoothstep(0.80,2.0,width));
-                strength*=1.0-saturate(ramp*3.0);
-                // Only rebalance ink between pixels the outline itself covers.
-                // Blending into an uncovered neighbour paints ink outside the
-                // drawn stroke, which is what made a strong filter widen the
-                // outline outward along the whole contour.
-                FxaaFloat neighborCoverage=FxaaTexTop(nativeOutline,there).r;
-                FxaaFloat coverageMatch=saturate(min(centerCoverage,neighborCoverage)*32.0);
-                // Continuity comes from carrying ink along the stroke, not from
-                // spreading it across the edge: the along-contour weight keeps a
-                // thin outline connected and cannot move its outer boundary.
-                FxaaFloat along=saturate(1.0-across);
-                FxaaFloat weight=strength*(0.2+0.8*along)*coverageMatch/distanceSquared;
-                // All four RGBA channels move together, so a contour keeps its
-                // colour balance while its ink settles along the stroke.
-                result+=(FxaaTexTop(tex,there)-center)*weight;
-            }
+            FxaaFloat2 there=at+FxaaFloat2(x,y)*rcp;
+            covered=max(covered,FxaaTexTop(nativeOutline,there).r);
+            FxaaFloat weight=(x==0?2.0:1.0)*(y==0?2.0:1.0)/16.0;
+            result+=FxaaTexTop(tex,there)*weight;
         }
     }
     return result;
 }
-
-
-
-
 
 /*============================================================================
 
@@ -1089,25 +999,13 @@ FxaaFloat4 FxaaPixelShader(
         }
         [branch] if(coverage > 0.5 / 255.0) return FxaaTexTop(tex,pos);
     }
-    // Pure FXAA outline softening uses width-aware pair-symmetric diffusion.
-    // Unlike a fixed four-neighbor kernel, the line-normal projector does not
-    // dilute diagonal lines much more strongly than horizontal/vertical ones.
+    // Prepare the native line profile in a separate pass. Production then
+    // feeds this softened scene to full-scene FXAA with outlineFlags cleared,
+    // so the final edge search also includes these lines and their neighbors.
     [branch] if(outlineFlags.x > 0.5) {
-        FxaaFloat4 tensor=MMSOutlineTensor(pos,fxaaQualityRcpFrame);
-        [branch] if(tensor.z>0) return MMSOutlineFilter(tex,pos,fxaaQualityRcpFrame,tensor);
-    }
-    // Beside the stroke the generic sub-pixel blur would pull stroke colour
-    // into uncovered background: the outline would spread outward and thin out
-    // in its own gaps. Those pixels keep what the rasteriser wrote.
-    [branch] if(outlineFlags.x > 0.5) {
-        FxaaFloat halo=0.0;
-        [unroll] for(int my=-1;my<=1;++my) {
-            [unroll] for(int mx=-1;mx<=1;++mx) {
-                halo=max(halo,FxaaTexTop(nativeOutline,
-                    pos + FxaaFloat2(mx,my)*fxaaQualityRcpFrame*1.5).r);
-            }
-        }
-        [branch] if(halo > 0.5/255.0) return FxaaTexTop(tex,pos);
+        FxaaFloat covered;
+        FxaaFloat4 softened=MMSOutlineFilter(tex,pos,fxaaQualityRcpFrame,covered);
+        [branch] if(covered > 0.5/255.0) return softened;
     }
     [branch] if(outlineFlags.z>0.5) return FxaaTexTop(tex,pos);
     FxaaFloat mmsUseAlpha = MMSSelectAlpha(tex, pos, fxaaQualityRcpFrame);

@@ -34,6 +34,8 @@ void Shutdown() noexcept;
 // or the fatal-error callback. A failed attempt can be retried later.
 void Tick(MMDApp*, ULONGLONG now) noexcept;
 Result BackupNow(MMDApp*, bool crash = false) noexcept;
+// Periodic UI path: captures now and writes through the shared save worker.
+bool QueueBackup(MMDApp*) noexcept;
 void TryCrashBackup(unsigned long exceptionCode) noexcept;
 std::vector<std::filesystem::path> Backups(const std::filesystem::path&);
 bool FolderFull() noexcept;

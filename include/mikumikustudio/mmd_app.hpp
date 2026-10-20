@@ -581,9 +581,25 @@ public:
     std::uint8_t TimelineSelectionChanged() const {
         return state.timelineSelectionChanged;
     }
-    std::uint8_t& SceneModified() {
-        return state.sceneModified;
-    }
+    class ModifiedFlag {
+        MMDApp& app_;
+        std::uint8_t value_;
+    public:
+        explicit ModifiedFlag(MMDApp& app) : app_(app), value_(app.state.sceneModified) {}
+        operator std::uint8_t() const { return value_; }
+        ModifiedFlag& operator=(std::uint8_t value) {
+            app_.state.sceneModified = value_ = value;
+            ++app_.m_sceneRevision;
+            return *this;
+        }
+        ModifiedFlag& operator=(const ModifiedFlag& other) {
+            return *this = static_cast<std::uint8_t>(other);
+        }
+    };
+    ModifiedFlag SceneModified() { return ModifiedFlag(*this); }
+    std::uint64_t SceneRevision() const { return m_sceneRevision; }
+    std::uint64_t SceneGeneration() const { return m_sceneGeneration; }
+    void AdvanceSceneGeneration() { ++m_sceneGeneration; }
     std::uint8_t SceneModified() const {
         return state.sceneModified;
     }
@@ -1537,6 +1553,7 @@ public:
 private:
     friend class ScopedSceneMutation;
     unsigned int m_sceneMutationDepth = 0;
+    std::uint64_t m_sceneRevision = 0, m_sceneGeneration = 0;
     // Port settings use the PMM v2 extension, outside the legacy state layout.
     pmm_settings::State m_pmmProjectSettings;
     bool m_transparentMaterialIndexOrderDirty = false;

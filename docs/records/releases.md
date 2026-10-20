@@ -4,6 +4,8 @@
 
 ## 记录索引
 
+- [v2026.10.20.1-pre.1 本地预发布说明](#release-v2026-10-20-1-pre-1)
+
 - [v2026.10.19.1 正式发布说明](#release-v2026-10-19-1)
 - [v2026.10.18.2 正式发布说明](#release-v2026-10-18-2)
 
@@ -21,6 +23,101 @@
 - [v2026.10.11.3 构建与发布记录](#record-release-3)
 - [v2026.10.11.2 构建与发布记录](#record-release-2)
 - [MMS 原生媒体导入与导出](#record-native-media)
+
+<a id="release-v2026-10-20-1-pre-1"></a>
+
+本节为本地预发布说明，对照 GitHub 正式版 v2026.10.19.1 整理。
+
+<!-- release-notes:v2026.10.20.1-pre.1:begin -->
+
+## MikuMikuStudio v2026.10.20.1-pre.1
+
+Windows x64 prerelease
+
+[English](#release-v2026-10-20-1-pre-1-en) | [中文](#release-v2026-10-20-1-pre-1-zh) | [日本語](#release-v2026-10-20-1-pre-1-ja)
+
+<a id="release-v2026-10-20-1-pre-1-en"></a>
+
+### English
+
+Changes since `v2026.10.19.1`.
+
+#### What's new
+
+- Manual saves, Save As, and periodic backups capture the scene in memory and write it on a background thread. One shared save task prevents concurrent writes. Edits made during saving remain marked as unsaved. Closing waits for the active save, and a failed manual save keeps MMS open.
+- The existing top status banner reports saving, backup progress, completion, and failures. When a backup reaches its limit and overwriting is enabled, it reports that an old backup will be replaced, then confirms the replacement. Snapshot capture still runs on the main thread, so large scenes can pause briefly.
+- Successful first saves and Save As now enter the recent-project list. Cancellation and failed saves retain the previous project identity and history.
+- Video and image-sequence export dialogs show a red warning and a Save project button when automatic closing is selected with unsaved changes. Saving retains the export settings. Pristine empty projects do not show this warning.
+- FXAA applies native-outline softening before filtering the whole image. TAA and SMAA use the same outline preparation. The separate outline-processing submenu has been removed, and outline preparation applies automatically. Temporal reconstruction also tracks the softened outer fringe.
+- Opening a PMM in camera mode retains a valid loaded-model target. The To model control can switch to that model without requiring a manual selection in the model list. Changing model draw order keeps the model labels and selected objects consistent.
+- System H.264 settings and export initialization guard against encoder faults. Hardware export feeds NV12 to the encoder. Failed hardware initialization retries with software encoding, reports the fallback, and uses the corresponding encoder settings.
+- Reduced unnecessary PMM v3 compatibility warnings for names that fit the legacy binding fields. Added save-and-reopen coverage for these names and documented original MMD name and path limits. The sectioned PMM 0003 container remains a codec and format design, not the active project-save layout.
+- The minimal build accepts parseable PMD and PMX inputs that exceed legacy output-field limits, retains their data, and warns about those limits. Legacy output restrictions remain checked when saving.
+- Renamed the application display name and C++ namespace to MikuMikuStudio and `mikumikustudio`. MMS extension markers replace the former MDS markers while older extension data remains readable. Existing NVIDIA profile names and older CMake option names retain compatibility.
+
+#### Download and use
+
+Choose the full package for extended editing, antialiasing, and modern media features. The minimal package retains the original MMD feature range and output limits. Extract the packages into separate folders and run `MikuMikuDance.exe`. Models, personal settings, MME, MMV, FFmpeg, and the separate curve-repair launcher are not included.
+
+#### Optional NVIDIA fix
+
+Neither application package includes the NVIDIA fix. If needed, place the separate `MMSNvidiaAAFix.dll` beside the full build's EXE, install it from Help, and restart MMS. Use Help to uninstall it. Deleting the DLL does not remove an installed setting.
+
+<a id="release-v2026-10-20-1-pre-1-zh"></a>
+
+### 中文
+
+相较 `v2026.10.19.1` 的更新。
+
+#### 更新内容
+
+- 手动保存、另存为和定时备份先在内存中固定工程数据，再由后台线程写入。所有保存共用一个任务，避免并发写入；保存期间的新修改保留未保存标记。关闭窗口会等待当前保存结束，手动保存失败时保持 MMS 打开。
+- 原有顶部状态横幅显示保存、备份进度及成功或失败结果。备份达到上限且允许覆盖时，提示即将覆盖旧备份，完成后确认覆盖结果。快照采集仍在主线程，大工程可能短暂停顿。
+- 首次保存和另存为成功后加入最近工程列表。取消或保存失败时保留原来的工程路径与历史记录。
+- 视频和图片序列导出勾选「导出后关闭」且工程有未保存修改时，显示红字提示及「保存工程」按钮。保存过程保留导出设置，未修改的空工程不显示该提示。
+- FXAA 先柔化原生描边，再对整体画面滤波；TAA、SMAA 使用相同的描边预处理。移除单独的描边处理子菜单，默认自动应用；时域重建补充柔化后外缘的运动匹配。
+- PMM 以相机模式打开后，保留有效的已加载模型目标。「到模型」无需先手动点击模型列表即可切换到该模型。修改模型绘制顺序后，模型名称与实际选择对象保持一致。
+- 系统 H.264 设置窗口和导出初始化保护编码器异常。硬件导出向编码器提供 NV12；硬件初始化失败时重试软件编码，提示回退结果并使用对应的编码设置。
+- 减少符合旧绑定字段限制的名称误触发 PMM v3 兼容提示，补充保存重开回归，并记录原版 MMD 的名称与路径限制。分节 PMM 0003 仍属于编解码器与格式设计，尚未替换实际工程保存布局。
+- 最小包允许读取可解析但超出旧输出字段限制的 PMD、PMX，保留数据并提示限制，保存时继续检查旧格式的输出边界。
+- 程序显示名称与 C++ 命名空间统一为 MikuMikuStudio 和 `mikumikustudio`。工程、动作等扩展标记由 MDS 改为 MMS，仍可读取旧扩展；兼容已有 NVIDIA 配置名称及旧 CMake 选项。
+
+#### 下载与使用
+
+完整包包含扩展编辑、抗锯齿及现代媒体功能，最小包保留原版 MMD 的功能范围和输出限制。两个包分别解压后运行 `MikuMikuDance.exe`。包内不包含模型、个人设置、MME、MMV、FFmpeg 或独立曲线修复启动器。
+
+#### 可选 NVIDIA 修复
+
+两个主程序包均不包含 NVIDIA 修复插件。需要时将独立的 `MMSNvidiaAAFix.dll` 放在完整包 EXE 旁，在「帮助」菜单安装后重启 MMS。卸载也在「帮助」菜单操作，直接删除 DLL 不会移除已安装的设置。
+
+<a id="release-v2026-10-20-1-pre-1-ja"></a>
+
+### 日本語
+
+`v2026.10.19.1` からの変更点です。
+
+#### 更新内容
+
+- 通常保存、名前を付けて保存、定期バックアップは、メモリ内にシーンのスナップショットを作成してからバックグラウンドで書き込みます。保存タスクは同時に一つだけ実行します。保存中の編集は未保存のまま保持し、終了時は保存完了を待ちます。通常保存に失敗した場合は MMS を終了しません。
+- 既存の上部ステータス表示に保存とバックアップの進捗、成功、失敗を表示します。保存数の上限に達し、上書きが有効な場合は、古いバックアップの上書きを事前に通知し、完了後に結果を表示します。スナップショット作成はメインスレッドで行うため、大きなシーンでは短時間停止する場合があります。
+- 初回保存と名前を付けて保存の成功時に、最近使ったプロジェクトへ追加します。キャンセルや保存失敗時は、元のプロジェクトパスと履歴を保持します。
+- 動画と連番画像の出力で終了オプションを選択し、未保存の変更がある場合は、赤い注意文と保存ボタンを表示します。保存しても出力設定を保持します。未編集の空プロジェクトには注意文を表示しません。
+- FXAA はネイティブ輪郭線を平滑化してから画面全体を処理します。TAA と SMAA も同じ輪郭線の前処理を使用します。個別の輪郭線処理サブメニューを削除し、自動で適用します。時間方向の再構成では、平滑化した輪郭線の外縁も追跡します。
+- PMM をカメラモードで開いた場合も、読み込み済みモデルへの切り替え先を保持します。モデル一覧を手動で選択し直さずにモデルモードへ切り替えられます。モデルの描画順を変更した後も、表示名と選択対象を一致させます。
+- システム H.264 の設定画面と出力初期化で、エンコーダーの例外を保護します。ハードウェア出力には NV12 を渡します。初期化に失敗した場合はソフトウェアエンコードを再試行し、切り替えを通知して対応する設定を使用します。
+- 旧形式のバインド名フィールドに収まる名前で、不要な PMM v3 互換性通知が出る問題を修正しました。保存と再読み込みの検証を追加し、元の MMD の名前とパスの制限を記録しました。セクション形式の PMM 0003 はコーデックと形式設計の段階で、通常保存のレイアウトは置き換えていません。
+- 最小版は、読み取り可能で旧出力フィールドの制限を超える PMD と PMX を読み込み、データを保持して制限を通知します。保存時は旧形式の出力制限を確認します。
+- アプリの表示名と C++ 名前空間を MikuMikuStudio と `mikumikustudio` に統一しました。拡張マーカーを MDS から MMS に変更し、旧拡張データの読み込みも保持します。既存の NVIDIA プロファイル名と旧 CMake オプションも引き続き使用できます。
+
+#### ダウンロードと使用方法
+
+拡張編集、アンチエイリアス、新しいメディア機能を使う場合は完全版を選択してください。最小版は元の MMD の機能範囲と出力制限を保持します。各パッケージを別々のフォルダーに展開し、`MikuMikuDance.exe` を実行します。モデル、個人設定、MME、MMV、FFmpeg、単体のカーブ修復ランチャーは含まれません。
+
+#### 任意の NVIDIA 修正
+
+両パッケージに NVIDIA 修正 DLL は含まれません。必要な場合は、別添の `MMSNvidiaAAFix.dll` を完全版の EXE と同じ場所に配置し、ヘルプからインストールして MMS を再起動してください。アンインストールもヘルプから行います。DLL の削除だけでは設定を解除できません。
+
+<!-- release-notes:v2026.10.20.1-pre.1:end -->
 
 <a id="release-v2026-10-19-1"></a>
 

@@ -1,3 +1,4 @@
+#include "mikumikustudio/background_save.hpp"
 #include "mikumikustudio/display_capacity.hpp"
 #include "mikumikustudio/autosave.hpp"
 #include "mikumikustudio/viewport_render_scale.hpp"
@@ -468,7 +469,7 @@ void CommandDispatch(HWND ctrl, WPARAM wParam) {
     case 0xCF:      // File: save PMM (0x489AF7) - overwrite via stored path,
         //          falling into the save-as flow (case 0xD0) when unnamed
         if (app->EnvFileName()[0] != L'\0') {
-            SaveSceneFile(app);
+            background_save::Request(app, app->EnvFileName());
         } else {
             CmdSaveScene(app);
         }

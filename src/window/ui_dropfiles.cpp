@@ -1,3 +1,4 @@
+#include "mikumikustudio/background_save.hpp"
 #include "mikumikustudio/native_media.hpp"
 #include "mikumikustudio/ui_translation.hpp"
 // ===========================================================================
@@ -159,6 +160,7 @@ void HandleDropFiles(HDROP hDrop) {
         // ---- .pmm - project file -----------------------------------------
         if (wcsstr(szFile, L".pmm") || wcsstr(szFile, L".PMM") ||
             wcsstr(szFile, L".Pmm")) {
+            background_save::Wait(app);
             if (app->SceneModified() != 0) {
                 const int r = ShowUiMessage(app, MainHwnd(app), UiMessage::OpenUnsaved,
                                             MB_OKCANCEL);

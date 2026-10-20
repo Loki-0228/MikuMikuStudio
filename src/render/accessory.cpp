@@ -917,7 +917,7 @@ void LoadAccessoryFile(const wchar_t* path) {                   // 0x460B30
     }
 
     HWND hwnd = static_cast<HWND>(app->Hwnd());
-    app->state.sceneModified = 1;
+    app->SceneModified() = 1;
     const auto name = text_encoding::Display(mdl::Accessory(accessory)->name);
     LRESULT displayIndex = SendDlgItemMessageW(
         hwnd, panel::kAccessoryCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(name.c_str()));

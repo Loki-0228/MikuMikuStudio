@@ -142,6 +142,7 @@
 #include "mikumikustudio/panel_controls.hpp"
 
 #include "dialog_scaffold.hpp"
+#include "export_save_prompt.hpp"
 
 namespace mikumikustudio {
 
@@ -569,6 +570,7 @@ INT_PTR __stdcall BlinkRegisterDlgProc(HWND hDlg, UINT msg, WPARAM wParam,
 INT_PTR __stdcall AviOutDlgProc(HWND hDlg, UINT msg, WPARAM wParam,
                                 LPARAM lParam) {  // was Sub40F2F0, VA 0x0040F2F0
     MMDApp* app = g_Block;
+    if (const auto handled = export_save_prompt::HandleMessage(hDlg, app, msg, wParam, lParam)) return handled;
     if (msg == WM_INITDIALOG) {
         MakeDialogTopmostIfRequested(app, hDlg);
         LocalizeChineseDialog(app, hDlg);
@@ -597,6 +599,7 @@ INT_PTR __stdcall AviOutDlgProc(HWND hDlg, UINT msg, WPARAM wParam,
         SetWindowTextW(GetDlgItem(hDlg, panel::kAviCloseAfterExportCheckbox),
                        closeText);
         CheckDlgButton(hDlg, panel::kAviCloseAfterExportCheckbox, BST_UNCHECKED);
+        export_save_prompt::Initialize(hDlg, app);
         const WaveAudioContext* audio = app->Audio();
         const bool audioAvailable = audio != nullptr && audio->dataSize > 0 &&
                                     audio->path[0] != L'\0';
@@ -1220,7 +1223,7 @@ void ApplyCameraFrameMultiplyDialog(MMDApp* app, HWND hDlg) {  // was Sub43DAD0,
     }
     ReloadModels(app);                                          // 0x42E640
     PostViewRefresh(app);                                       // 0x40D130
-    s.state.sceneModified = 1;                            // 0xA0B4D dirty
+    s.SceneModified() = 1;                            // 0xA0B4D dirty
 }
 // VA 0x00439C90 - thiscall app method (this = Block): rebuilds the
 // accessory order index array (app+0xA0B1C) from the 255 accessory

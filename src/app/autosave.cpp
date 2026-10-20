@@ -1,3 +1,4 @@
+#include "mikumikustudio/background_save.hpp"
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include "mikumikustudio/autosave.hpp"
@@ -272,6 +273,71 @@ std::vector<fs::path> Backups(const fs::path& directory) {
     return result;
 }
 bool FolderFull() noexcept { return full; }
+bool QueueBackup(MMDApp* app) noexcept {
+    try {
+        if (!Current().enabled || !Ready(app, false)) return false;
+        struct BackupWork {
+            Settings settings;
+            fs::path destination, active;
+            std::vector<fs::path> old;
+            HANDLE lock = INVALID_HANDLE_VALUE;
+            bool full = false, overwritten = false;
+            ~BackupWork() { if (lock != INVALID_HANDLE_VALUE) CloseHandle(lock); }
+        };
+        auto work = std::make_shared<BackupWork>();
+        work->settings = settings;
+        work->destination = NewName(app, false, settings.directory);
+        if (work->destination.empty()) return false;
+        if (*app->EnvFileName()) work->active = fs::absolute(app->EnvFileName());
+        background_save::Options options;
+        options.backup = true;
+        options.beforeWrite = [work] {
+            fs::create_directories(work->settings.directory);
+            const auto lockPath = fs::path(work->settings.directory) / L".mms-autosave.lock";
+            work->lock = CreateFileW(lockPath.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+                OPEN_ALWAYS, FILE_ATTRIBUTE_HIDDEN | FILE_FLAG_DELETE_ON_CLOSE, nullptr);
+            if (work->lock == INVALID_HANDLE_VALUE) return false;
+            work->old = Backups(work->settings.directory);
+            work->full = work->old.size() >= work->settings.maxBackups && !work->settings.overwriteOldest;
+            if (!work->full && work->old.size() >= work->settings.maxBackups)
+                background_save::ReportBackupOverwrite();
+            return !work->full;
+        };
+        options.afterWrite = [work] {
+            // Publish the new snapshot before removing anything. Protect the
+            // active recovery project, and delete only owned PMM/EMM pairs.
+            while (work->old.size() >= work->settings.maxBackups) {
+                auto victim = std::find_if(work->old.begin(), work->old.end(), [&](const auto& path) {
+                    std::error_code error;
+                    return _wcsicmp(path.c_str(), work->active.c_str()) != 0 &&
+                        (work->active.empty() || !fs::equivalent(path, work->active, error));
+                });
+                if (victim == work->old.end() || !Owned(*victim) || !DeleteFileW(victim->c_str())) {
+                    DeleteFileW(work->destination.c_str());
+                    work->full = true;
+                    return false;
+                }
+                auto sidecar = *victim; sidecar.replace_extension(L".emm");
+                DeleteFileW(sidecar.c_str());
+                work->old.erase(victim);
+                work->overwritten = true;
+            }
+            return true;
+        };
+        options.completed = [app, work](bool success) {
+            if (work->full) background_save::SetStatus(app, background_save::Status::Full);
+            else if (success && work->overwritten)
+                background_save::SetStatus(app, background_save::Status::Overwritten);
+            nextScan = 0;
+            if (success) runtime_log::WritePath("autosave", work->destination.c_str());
+        };
+        return background_save::Request(app, work->destination.c_str(), std::move(options));
+    } catch (...) {
+        background_save::SetStatus(app, background_save::Status::BackupFailed);
+        runtime_log::Write("AUTOSAVE could not capture backup snapshot");
+        return false;
+    }
+}
 Result BackupNow(MMDApp* app, bool crash) noexcept {
     try {
         if (!Current().enabled && !crash) return Result::Disabled;
@@ -340,15 +406,14 @@ void Shutdown() noexcept {
 void Tick(MMDApp* app, ULONGLONG now) noexcept {
     try {
         Current();
-        if (now >= nextScan) {
+        if (now >= nextScan && !SceneSaveInProgress()) {
             nextScan = now + 5000;
             RefreshCapacity(app);
         }
         WarnIfFull(app);
         if (!settings.enabled || now < nextSave || !Ready(app, false)) return;
         nextSave = now + ULONGLONG(settings.intervalMinutes) * 60000;
-        const auto result = BackupNow(app);
-        if (result == Result::Failed) runtime_log::Write("AUTOSAVE could not save backup");
+        if (!QueueBackup(app)) runtime_log::Write("AUTOSAVE could not start backup");
         WarnIfFull(app);
     } catch (...) {
         runtime_log::Write("AUTOSAVE idle work deferred after an exception");

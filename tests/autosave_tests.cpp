@@ -2,6 +2,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include "mikumikustudio/autosave.hpp"
+#include "mikumikustudio/background_save.hpp"
 #include "mikumikustudio/local_data_path.hpp"
 #include "mikumikustudio/antialias.hpp"
 #include "mikumikustudio/processor_settings.hpp"
@@ -352,6 +353,9 @@ int wmain(int argc, wchar_t** argv) {
     as::Tick(app, now + 59900); Check(as::Backups(value.directory).empty(), "one-minute timer does not save early");
     expectedFullWarning = true;
     as::Tick(app, now + 60001);
+    Check(SceneSaveInProgress(), "timer schedules a background snapshot");
+    background_save::Wait(app);
+    as::Tick(app, now + 60002);
     expectedFullWarning = false;
     Check(as::Backups(value.directory).size() == 1, "one-minute timer writes a backup when due");
     Check(fullWarnings == 1 && as::FolderFull(), "timer warns immediately when its new backup fills the folder");

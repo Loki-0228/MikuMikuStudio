@@ -358,6 +358,26 @@ void RebuildCameraModePanel(MMDApp* app) {  // was Sub44D780, 0x44D780
     ApplyCurrentCameraView(app);
 }
 
+int ResolveModelComboSelection(MMDApp* app) {
+    if (!app) return 0;
+    const int count = static_cast<int>(SendMessageW(
+        MainControl(app, panel::kMainComboModel), CB_GETCOUNT, 0, 0));
+    const auto valid = [&](int row) {
+        return row > 0 && row < count && FindModelSlotByComboId(app, row) >= 0;
+    };
+    int row = static_cast<int>(app->MainModelComboSelection());
+    if (!valid(row)) {
+        const auto* selected = app->SelectedModel();
+        row = selected ? mdl::Mdl(selected)->comboSelIndex : 0;
+        if (!valid(row)) {
+            for (row = 1; row < count && !valid(row); ++row) {}
+            if (row >= count) row = 0;
+        }
+    }
+    app->MainModelComboSelection() = row;
+    return row;
+}
+
 void ApplyModelComboSelection(MMDApp* app) {  // was Sub44D940, 0x44D940
     HWND hwnd = static_cast<HWND>(app->Hwnd());
     const int selection = static_cast<int>(
@@ -368,6 +388,9 @@ void ApplyModelComboSelection(MMDApp* app) {  // was Sub44D940, 0x44D940
     };
 
     if (selection == 0) {
+        // PMM can open in camera mode without ever selecting a model row.
+        // Remember a loaded model for the viewport's "To model" command.
+        ResolveModelComboSelection(app);
         if (app->state.optflag[0] == 0) {
             SendMessageA(GetDlgItem(hwnd, panel::kIkChainCombo), CB_RESETCONTENT, 0, 0);
             HWND frameCombo = GetDlgItem(hwnd, panel::kRegisterScopeCombo);

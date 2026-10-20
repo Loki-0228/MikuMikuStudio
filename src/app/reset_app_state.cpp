@@ -92,6 +92,7 @@ static void ReplaceEditText(HWND parent, int id, const char* text) {
 }
 
 void ResetAppState(MMDApp* app) {
+    app->AdvanceSceneGeneration();
     app->PlaybackStartSeconds() = app->PlaybackCursorSeconds() = app->PlaybackEndSeconds() = 0;
     app->SyncPlaybackTimeCompatibility();
     ClearWaveAudio(app);

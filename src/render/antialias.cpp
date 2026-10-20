@@ -140,8 +140,9 @@ void ReadUserPreferences(Settings& settings) {
     settings.enabled=GetPrivateProfileIntW(L"Antialias",L"Enabled",1,path.c_str())!=0;
     const auto last=Algorithm(GetPrivateProfileIntW(L"Antialias",L"LastSmaaAlgorithm",unsigned(Algorithm::Smaa),path.c_str()));
     settings.lastSmaaAlgorithm=Smaa(last)?last:Algorithm::Smaa;
-    const auto outline=GetPrivateProfileIntW(L"Antialias",L"OutlineMode",unsigned(OutlineMode::FxaaAdaptive),path.c_str());
-    settings.outlineMode=outline<=unsigned(OutlineMode::Multisample)?OutlineMode(outline):OutlineMode::FxaaAdaptive;
+    // The independent MSAA outline experiment is retired. Native MSAA remains
+    // an AA algorithm; post-process outlines now use the direct soft profile.
+    settings.outlineMode=OutlineMode::FxaaAdaptive;
 }
 void ResolveUnsupported(MMDApp* app) {
     if(!app->Renderer() || !app->Renderer()->device)return;
@@ -216,7 +217,7 @@ HRESULT Ensure(MMDApp* app) {
     const bool useSmaa=Smaa(algorithm),useTemporal=Temporal(algorithm);
     const unsigned shaderBase=2+4*SmaaVariant(algorithm);
     auto fxaa=useSmaa?nullptr:RequestShader(0);
-    auto nativeFilter=algorithm!=Algorithm::Fxaa && app->antialiasing.outlineMode==OutlineMode::FxaaAdaptive?
+    auto nativeFilter=app->antialiasing.outlineMode==OutlineMode::FxaaAdaptive?
         RequestShader(0):nullptr;
     auto temporal=algorithm==Algorithm::Taa?RequestShader(1):nullptr;
     auto edges=useSmaa?RequestShader(shaderBase):nullptr;
@@ -839,11 +840,13 @@ bool FrameScope::Complete() {
             t.historyJitterX,t.historyJitterY,0,0};
         IDirect3DTexture9* currentScene=t.scene.Get();
         FullscreenState(device);
-        if(t.algorithm!=Algorithm::Fxaa && p.app->antialiasing.outlineMode==OutlineMode::FxaaAdaptive &&
+        bool nativePrefiltered=false;
+        if(p.app->antialiasing.outlineMode==OutlineMode::FxaaAdaptive &&
            t.nativeFilterPixel && t.filteredScene && t.outlineMaskValid && t.outlineMaskWritten) {
-            // The same native-line filter is applied before TAA/SMAA. Keep
-            // scene identity unchanged for draw observation and use this
-            // transient source only for the subsequent color resolve.
+            // Resolve the continuous, width-weighted native hull first. All
+            // post-process algorithms, including FXAA, then see the same
+            // softened scene instead of bypassing their edge search on lines.
+            // Keep scene identity unchanged for draw observation.
             const float noJitter[]={0,0,0,0};
             const float lineOnly[]={1,0,1,0};
             device->SetDepthStencilSurface(nullptr);
@@ -859,7 +862,7 @@ bool FrameScope::Complete() {
             remember(device->SetRenderTarget(0,p.previous.Get()));
             remember(device->SetViewport(&v));
             remember(device->SetPixelShaderConstantF(4,noJitter,1));
-            if(SUCCEEDED(hr))currentScene=t.filteredScene.Get();
+            if(SUCCEEDED(hr)) {currentScene=t.filteredScene.Get();nativePrefiltered=true;}
             else {
                 runtime_log::Write("AA native-line prefilter failed hr=0x%08lX",hr);
                 runtime_log::Trace("AA native-line prefilter failed frame=%d algorithm=%u hr=0x%08lX",
@@ -944,7 +947,8 @@ bool FrameScope::Complete() {
             t.samples=0;motion::Cancel(p.app);
             device->SetDepthStencilSurface(nullptr);device->SetRenderTarget(0,p.previous.Get());
             auto* nativeLines=t.algorithm==Algorithm::Fxaa?outline_multisample::GetTexture(p.app):nullptr;
-            const bool mask=!nativeLines && t.algorithm==Algorithm::Fxaa && t.outlineMaskValid && t.outlineMaskWritten && t.outlineMask;
+            const bool mask=!nativePrefiltered && !nativeLines && t.algorithm==Algorithm::Fxaa &&
+                t.outlineMaskValid && t.outlineMaskWritten && t.outlineMask;
             const float maskConstants[]={mask?1.f:0.f,nativeLines?1.f:0.f,0,0};
             hr=device->SetTexture(1,nativeLines?nativeLines:mask?t.outlineMask.Get():nullptr);
             if(FAILED(hr) && (mask || nativeLines)) {

@@ -311,7 +311,7 @@ void HandleMouseActivate(MMDApp* app) {
         // mode row: keep the combo selection in sync with the panel state
         if (fg == cached || app->MouseY() <= rect.bottom - 158) {
             SendMessageA(GetDlgItem(hwnd, panel::kMainComboModel), CB_SETCURSEL,
-                         app->MainModelComboSelection(), 0);     // 656428 (0xA042C)
+                         ResolveModelComboSelection(app), 0);
             ApplyModelComboSelection(app);                                       // 0x44D940 (ui_model_reload.cpp)
             return;
         }

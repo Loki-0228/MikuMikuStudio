@@ -171,6 +171,7 @@ void LoadSceneFile(const wchar_t* candidate) {
     // An unreadable or unsupported file must not change the current scene's
     // dirty state, path base or MME assignments.
     accepted = true;
+    app->AdvanceSceneGeneration();
     NotifyEffectFileOpen(app->EnvFileName());
     app->SceneModified() = 0;
     PathToProjectDir(app->PathWorkspace().projectDirectory, app->EnvFileName());

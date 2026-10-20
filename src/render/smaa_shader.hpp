@@ -112,6 +112,18 @@ float4 smaaTemporal(float2 uv : TEXCOORD0) : COLOR0 {
             fixedPriorDepth>0 && abs(candidate.w-fixedPriorDepth)<=coverageTolerance);
         if(uncovered && candidate.z>0 && (velocity.z<=0 || candidate.z<velocity.z))velocity=candidate;
     }
+    // The native-line prefilter plus reconstruction can reach two pixels
+    // beyond the tracked hull. Match this fringe across the two phases too,
+    // while retaining the ordinary neighborhood for visible geometry.
+    if(uncovered && velocity.z<=0) {
+        [unroll] for(int y=-2;y<=2;++y) [unroll] for(int x=-2;x<=2;++x) {
+            if(abs(x)==2 || abs(y)==2) {
+                float2 at=clamp(currentUV+float2(x,y)*smaaMetrics.xy,smaaBounds.xy,smaaBounds.zw);
+                float4 candidate=tex2D(smaaSearch,at);
+                if(candidate.z>0 && (velocity.z<=0 || candidate.z<velocity.z))velocity=candidate;
+            }
+        }
+    }
     float2 previous=uv+velocity.xy+smaaSampleOffsets.zw;
     if(velocity.z<=0 || velocity.w<=0 || any(previous<smaaBounds.xy) || any(previous>smaaBounds.zw))return current;
     float tolerance=max(smaaTemporalState.y,abs(velocity.w)*smaaTemporalState.z);

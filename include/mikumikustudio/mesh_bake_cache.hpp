@@ -109,6 +109,7 @@
 // loads.  Sample reads the sample from disk while it holds that mutex.
 
 #pragma once
+#include <functional>
 
 #include <filesystem>
 #include <functional>
@@ -244,6 +245,9 @@ bool Empty();
 // of this module is erased so that one project never carries two records of it.
 // Records of other modules, including unknown "mds.mesh_cache.vN" keys this
 // build does not know, are left exactly as they are.
+using SaveSnapshot = std::function<bool(const std::filesystem::path&,
+    pmm_extension::Document&, std::string&)>;
+SaveSnapshot CaptureSave(MMDApp& app);
 bool Save(MMDApp& app, const std::filesystem::path& pmm,
           pmm_extension::Document& document, std::string& error);
 

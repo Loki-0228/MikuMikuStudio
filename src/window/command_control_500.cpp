@@ -680,8 +680,7 @@ void CmdControl500(MMDApp* app, HWND hwnd, std::uint16_t id, std::uint16_t notif
         if (app->state.optflag[0] != 0) {
             // display mode: selected accessory index 0xA042C; when zero the
             // original re-dispatches WM_COMMAND 0x1B3 on the main window.
-            const std::int32_t sel =
-                app->state.mainModelComboSelection;
+            const std::int32_t sel = ResolveModelComboSelection(app);
             if (sel == 0) {
                 SendMessageA(hwnd, WM_COMMAND, 0x1B3, 0);
                 break;

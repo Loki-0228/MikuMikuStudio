@@ -1,9 +1,17 @@
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include "mikumikustudio/pmm_key_map.hpp"
 #include "mikumikustudio/save_compatibility.hpp"
 #include "mikumikustudio/frame_limits.hpp"
 #include "mikumikustudio/key_pool.hpp"
 #include "mikumikustudio/autosave.hpp"
+#include "mikumikustudio/recent_projects.hpp"
 #include <atomic>
+#include <thread>
+#include <memory>
+#include "mikumikustudio/background_save.hpp"
+#include "mikumikustudio/frame_presentation.hpp"
 #include <filesystem>
 #include "mikumikustudio/mmv4mms.hpp"
 #include "mikumikustudio/ui_translation.hpp"
@@ -158,8 +166,12 @@ namespace {
 
 // Preserve the legacy byte sequence, but do not report a partial save as success.
 thread_local bool pmmWriteFailed = false;
+thread_local std::vector<unsigned char>* pmmSnapshotSink = nullptr;
 inline void W(int fd, const void* buf, unsigned int count) {
-    if (_write(fd, buf, count) != static_cast<int>(count)) pmmWriteFailed = true;
+    if (pmmSnapshotSink) {
+        const auto* bytes = static_cast<const unsigned char*>(buf);
+        if (count) pmmSnapshotSink->insert(pmmSnapshotSink->end(), bytes, bytes + count);
+    } else if (_write(fd, buf, count) != static_cast<int>(count)) pmmWriteFailed = true;
 }
 
 bool EncodePmmPath(char* out, std::size_t capacity, const wchar_t* value) {
@@ -1100,9 +1112,17 @@ void WritePmmModelTail(int fd, unsigned char** const slots) {
 
 namespace { std::atomic<bool> saveInProgress{false}; }
 bool SceneSaveInProgress() noexcept { return saveInProgress.load(); }
-static bool SaveSceneFileImpl(MMDApp* app, const wchar_t* target, bool backup) {
-    if (saveInProgress.exchange(true)) return false;
-    struct Release { ~Release() { saveInProgress.store(false); } } release;
+struct SceneSnapshot {
+    std::wstring target;
+    bool backup = false;
+    std::vector<unsigned char> bytes;
+    pmm_extension::Document extensions;
+    mesh_bake_cache::SaveSnapshot meshCache;
+    save_compatibility::Report compatibility;
+    std::wstring compatibleCopy;
+    std::uint64_t revision = 0, generation = 0;
+};
+static bool CaptureScene(MMDApp* app, const wchar_t* target, bool backup, SceneSnapshot& snapshot) {
     auto* s = app;
 
     // The scratch CHAR buffer (stack "Text").  The original leaves this
@@ -1224,11 +1244,7 @@ static bool SaveSceneFileImpl(MMDApp* app, const wchar_t* target, bool backup) {
         MessageBoxW(main,message.c_str(),captions[language],MB_OK|MB_ICONERROR);
         return false;
     }
-    std::string meshCacheError;
-    if(!mesh_bake_cache::Save(*s,target,extensions,meshCacheError)){
-        if (backup) return false;
-        s->SceneModified()=1;LegacyUiMessageBoxA(main,meshCacheError.c_str(),"Mesh cache / PMM",MB_OK|MB_ICONERROR);return false;
-    }
+    snapshot.meshCache = mesh_bake_cache::CaptureSave(*s);
     if (!pmm_extension::Representable(extensions)) {
         if (backup) return false;
         s->SceneModified() = 1;
@@ -1248,36 +1264,15 @@ static bool SaveSceneFileImpl(MMDApp* app, const wchar_t* target, bool backup) {
         pmm_extension::Set(extensions, autosave::kOwnershipKey, {name.begin(), name.end()});
     }
     pmmWriteFailed = false;
-    int fd = -1;
-    // Write beside the destination, then publish only a complete, flushed
-    // file. An interrupted write must not truncate the previous project.
-    wchar_t destination[MAX_PATH]{},directory[MAX_PATH]{},temporary[MAX_PATH]{};
-    wchar_t* filename=nullptr;
-    const DWORD pathLength=GetFullPathNameW(target,MAX_PATH,destination,&filename);
-    errno_t err=EINVAL;
-    if(pathLength>0&&pathLength<MAX_PATH&&filename){
-        wcscpy_s(directory,destination);directory[filename-destination]=L'\0';
-        if(GetTempFileNameW(directory,L"mms",0,temporary))
-            err=_wsopen_s(&fd,temporary,0x8301,0x40,0x80);
-    }
-    if (err != 0) {
-        if(*temporary)DeleteFileW(temporary);
-        if (backup) return false;
-        if (s->EnglishUI() == 0)
-            sprintf_s(hdr, 0x100, kJpSaveFailFmt, err);
-        else
-            sprintf_s(hdr, 0x100, "Cannot save file:%d", err);
-        LegacyUiMessageBoxA(main, hdr,
-                    s->EnglishUI() == 0 ? kJpSaveFailCaption : "save file",
-                    0);
-        return false;
-    }
-
-    struct TemporaryFile {
-        int& fd; const wchar_t* path;
-        ~TemporaryFile() { if (fd >= 0) _close(fd); DeleteFileW(path); }
-    } cleanup{fd, temporary};
-    if (!backup) s->state.windowLayoutReady = 0;
+    snapshot.target = std::filesystem::absolute(target).wstring();
+    if (snapshot.target.size() >= kPathFieldCapacity) return false;
+    snapshot.backup = backup;
+    snapshot.compatibility = compatibility;
+    struct Sink {
+        explicit Sink(std::vector<unsigned char>& bytes) { pmmSnapshotSink = &bytes; }
+        ~Sink() { pmmSnapshotSink = nullptr; }
+    } sink(snapshot.bytes);
+    const int fd = -1;
     WritePmmFileHeader(fd, s, main, hdr, compatibility.needsNewPmm);                   // 1. 0x41B1B3..0x41B355
     WritePmmModelBlocks(fd, slots, text);                   // 2. 0x41B355..0x41C981
     WritePmmCameraSection(fd, s);                           // 3. 0x41C9AE..0x41CF3E
@@ -1288,68 +1283,266 @@ static bool SaveSceneFileImpl(MMDApp* app, const wchar_t* target, bool backup) {
     WritePmmSelectionSection(fd, s);                        // 8. 0x41DF7C..0x41E25E
     WritePmmShadowAndConfig2(fd, s, main, text);            // 9+10. 0x41E284..0x41E6E5
     WritePmmModelTail(fd, slots);                           // 11. 0x41E70D
+    snapshot.extensions = std::move(extensions);
+    snapshot.revision = s->SceneRevision();
+    snapshot.generation = s->SceneGeneration();
+    return !pmmWriteFailed;
+}
 
-
-    const auto standardBytes = _telli64(fd);
-    // ---- 12. success tail (0x41E747) --------------------------------------
-    const bool written = !pmmWriteFailed &&
+// No live scene, window, MME, or graphics access below this boundary.
+static bool WriteSnapshot(SceneSnapshot& snapshot) {
+    const wchar_t* target = snapshot.target.c_str();
+    const bool backup = snapshot.backup;
+    auto& extensions = snapshot.extensions;
+    if (snapshot.meshCache) {
+        std::string error;
+        if (!snapshot.meshCache(target, extensions, error)) {
+            runtime_log::Write("SAVE mesh cache failed: %s", error.c_str());
+            return false;
+        }
+    }
+    int fd = -1;
+    wchar_t destination[MAX_PATH]{}, directory[MAX_PATH]{}, temporary[MAX_PATH]{};
+    wchar_t* filename = nullptr;
+    const DWORD length = GetFullPathNameW(target, MAX_PATH, destination, &filename);
+    if (!length || length >= MAX_PATH || !filename) return false;
+    wcscpy_s(directory, destination); directory[filename - destination] = L'\0';
+    if (!GetTempFileNameW(directory, L"mms", 0, temporary)) return false;
+    struct TemporaryFile {
+        int& fd; const wchar_t* path;
+        ~TemporaryFile() { if (fd >= 0) _close(fd); DeleteFileW(path); }
+    } cleanup{fd, temporary};
+    if (_wsopen_s(&fd, temporary, 0x8301, 0x40, 0x80)) return false;
+    for (std::size_t offset = 0; offset < snapshot.bytes.size();) {
+        const auto count = static_cast<unsigned>(std::min<std::size_t>(
+            snapshot.bytes.size() - offset, 0x40000000));
+        if (_write(fd, snapshot.bytes.data() + offset, count) != static_cast<int>(count)) return false;
+        offset += count;
+    }
+    const auto standardBytes = snapshot.bytes.size();
+    const bool written =
 #if !MMD_ORIGINAL_PROFILE
         pmm_extension::Append(fd, extensions) &&
 #else
         (!backup || pmm_extension::Append(fd, extensions)) &&
 #endif
-        _commit(fd)==0;
-    const bool closed = _close(fd) == 0;
-    fd = -1;
-    const bool published=written&&closed&&MoveFileExW(temporary,destination,
-        (backup ? 0 : MOVEFILE_REPLACE_EXISTING)|MOVEFILE_WRITE_THROUGH)!=FALSE;
-    if (!published) {
-        DeleteFileW(temporary);
-        if (backup) return false;
-        s->SceneModified() = 1;
-        const wchar_t* messages[] = {
-            L"PMM ファイルを完全に保存できませんでした。保存先の空き容量とアクセス権を確認してください。",
-            L"The PMM file could not be saved completely. Check free space and write access.",
-            L"PMM 文件未能完整保存。请检查保存位置的剩余空间和写入权限。"};
-        MessageBoxW(main, messages[s->EnglishUI() <= 2 ? s->EnglishUI() : 1],
-                    L"PMM", MB_OK | MB_ICONERROR);
-        return false;
-    }
-    if (backup) return true;
+        _commit(fd) == 0;
+    const bool closed = _close(fd) == 0; fd = -1;
+    if (!written || !closed || !MoveFileExW(temporary, destination,
+        (backup ? 0 : MOVEFILE_REPLACE_EXISTING) | MOVEFILE_WRITE_THROUGH)) return false;
 #if !MMD_ORIGINAL_PROFILE
-    std::wstring compatibleCopy;
-    const bool attemptCopy=compatibility.namesNeedExtension&&compatibility.canCopyLegacy;
-    if(attemptCopy&&standardBytes>=0)save_compatibility::CopyPrefix(target,static_cast<std::uint64_t>(standardBytes),compatibleCopy);
-    save_compatibility::Notify(*s,compatibility,compatibleCopy,attemptCopy);
+    if (!backup && snapshot.compatibility.namesNeedExtension && snapshot.compatibility.canCopyLegacy) {
+        try { save_compatibility::CopyPrefix(target, standardBytes, snapshot.compatibleCopy); }
+        catch (...) { runtime_log::Write("SAVE compatibility copy failed; complete PMM already saved"); }
+    }
 #endif
-#if MMD_ORIGINAL_PROFILE
-    s->PmmProjectSettings().document = {};
-#else
-    s->PmmProjectSettings().document = std::move(extensions);
-#endif
-    s->PmmProjectSettings().processorEdited = false;
-    s->PmmProjectSettings().sortingPrecisionEdited = false;
-    s->PmmProjectSettings().antialiasEdited = false;
-    NotifyEffectFileSave(target);
-    mmv4mms::ProjectSaved(s, target);
-    pmm_io::SetProjectWindowTitle(main, target);
-    s->SceneModified() = 0;
-    MessageBeep(0x40);
-    s->state.windowLayoutReady = 1;
     return true;
 }
 
-void SaveSceneFile(MMDApp* app) {
-    try { SaveSceneFileImpl(app, app->EnvFileName(), false); }
-    catch (const std::exception&) {
-        app->SceneModified() = 1;
-        const wchar_t* messages[] = {L"プロジェクトを完全に保存できませんでした。メモリとキーフレームの参照を確認してください。", L"The project could not be saved completely. Check available memory and keyframe references.", L"无法完整保存工程，请检查可用内存和关键帧引用。"};
-        if (app->MainWindow()) MessageBoxW(app->MainWindow(), messages[app->EnglishUI() <= 2 ? app->EnglishUI() : 1], L"PMM", MB_OK | MB_ICONERROR);
+static void SaveFailure(MMDApp* app) {
+    const wchar_t* messages[] = {
+        L"PMM ファイルを完全に保存できませんでした。保存先の空き容量とアクセス権を確認してください。",
+        L"The PMM file could not be saved completely. Check free space and write access.",
+        L"PMM 文件未能完整保存。请检查保存位置的剩余空间和写入权限。"};
+    if (app->MainWindow()) MessageBoxW(app->MainWindow(), messages[app->EnglishUI() <= 2 ? app->EnglishUI() : 1],
+        L"PMM", MB_OK | MB_ICONERROR);
+}
+
+static void CompleteSave(MMDApp* s, SceneSnapshot& snapshot) {
+    const wchar_t* target = snapshot.target.c_str();
+    // A snapshot may outlive its scene. Never change the replacement scene's
+    // filename, dirty flag, settings, or effect assignments on its completion.
+    if (s->SceneGeneration() != snapshot.generation) return;
+    if (snapshot.backup) { NotifyEffectFileSave(target); return; }
+    const bool unchanged = s->SceneRevision() == snapshot.revision;
+    wcscpy_s(s->EnvFileName(), kPathFieldCapacity, target);
+    if (unchanged) {
+#if MMD_ORIGINAL_PROFILE
+        s->PmmProjectSettings().document = {};
+#else
+        s->PmmProjectSettings().document = std::move(snapshot.extensions);
+#endif
+        s->PmmProjectSettings().processorEdited = false;
+        s->PmmProjectSettings().sortingPrecisionEdited = false;
+        s->PmmProjectSettings().antialiasEdited = false;
+        s->SceneModified() = 0;
+    }
+    NotifyEffectFileSave(target);
+    mmv4mms::ProjectSaved(s, target);
+    pmm_io::SetProjectWindowTitle(s->MainWindow(), target);
+    try { recent_projects::Record(s, target); }
+    catch (const std::exception&) { runtime_log::Write("PMM saved; could not update recent projects"); }
+    MessageBeep(0x40);
+#if !MMD_ORIGINAL_PROFILE
+    save_compatibility::Notify(*s, snapshot.compatibility, snapshot.compatibleCopy,
+        snapshot.compatibility.namesNeedExtension && snapshot.compatibility.canCopyLegacy);
+#endif
+}
+
+static bool SaveSynchronously(MMDApp* app, const wchar_t* target, bool backup) {
+    if (saveInProgress.exchange(true)) return false;
+    struct Release { ~Release() { saveInProgress.store(false); } } release;
+    try {
+        SceneSnapshot snapshot;
+        if (!CaptureScene(app, target, backup, snapshot)) return false;
+        if (!WriteSnapshot(snapshot)) { if (!backup) SaveFailure(app); return false; }
+        // Synchronous copies retain the historical contract: their caller owns
+        // the effect notification and rotation, including emergency backups.
+        if (!backup) CompleteSave(app, snapshot);
+        return true;
+    } catch (...) { if (!backup) SaveFailure(app); return false; }
+}
+bool SaveSceneFile(MMDApp* app) { return SaveSynchronously(app, app->EnvFileName(), false); }
+bool SaveSceneCopy(MMDApp* app, const wchar_t* target) { return SaveSynchronously(app, target, true); }
+
+namespace background_save {
+namespace {
+struct Job {
+    SceneSnapshot snapshot;
+    Options options;
+    std::thread worker;
+    std::atomic<bool> done{false};
+    bool success = false;
+    ~Job() { if (worker.joinable()) worker.join(); }
+};
+std::unique_ptr<Job> job;
+Status currentStatus = Status::Saved;
+ULONGLONG statusUntil = 0;
+bool closePending = false;
+std::atomic<bool> backupOverwriting{false};
+
+void Repaint(MMDApp* app) {
+    if (!app) return;
+    const HWND window = app->FloatingWindow() ? app->FloatingWindow() : app->MainWindow();
+    const RECT band = FramePanelLayout(app).topBand;
+    if (IsWindow(window)) InvalidateRect(window, &band, FALSE);
+}
+void Finish(MMDApp* app) {
+    if (!job || !job->done.load()) return;
+    // Keep the gate held through all main-thread completion hooks and nested
+    // modal messages. A callback must not start a second writer here.
+    auto finished = std::move(job);
+    if (finished->worker.joinable()) finished->worker.join();
+    const bool backup = finished->snapshot.backup;
+    const bool success = finished->success;
+    const bool requestedClose = closePending;
+    closePending = false;
+    try {
+        if (success) CompleteSave(app, finished->snapshot);
+        SetStatus(app, success ? (backup ? Status::BackedUp : Status::Saved)
+                              : (backup ? Status::BackupFailed : Status::Failed));
+        if (finished->options.completed) finished->options.completed(success);
+        if (!success && !backup) SaveFailure(app);
+    } catch (...) {
+        runtime_log::Write("SAVE completion notification failed; disk result=%d", success);
+        SetStatus(app, success ? Status::Saved : Status::Failed);
+    }
+    const bool shouldClose = requestedClose || closePending;
+    closePending = false;
+    saveInProgress.store(false);
+    // A failed manual save must leave the application open, including a
+    // previously clean unnamed project. Never implicitly discard it on exit.
+    if (shouldClose && (success || backup)) PostMessageW(app->MainWindow(), WM_CLOSE, 0, 0);
+}
+}
+
+void SetStatus(MMDApp* app, Status value, bool persistent) {
+    currentStatus = value;
+    statusUntil = persistent ? ~ULONGLONG(0) : GetTickCount64() + 7000;
+    if (app && IsWindow(app->MainWindow())) SetTimer(app->MainWindow(), kStatusTimer, 200, nullptr);
+    Repaint(app);
+}
+const wchar_t* StatusText(MMDApp* app) {
+    if (!statusUntil) return L"";
+    if (currentStatus == Status::BackingUp && backupOverwriting.load()) {
+        return autosave::Text(app, L"正在备份，将覆盖旧备份…",
+            L"Backing up; replacing oldest backup…",
+            L"バックアップ中。古いバックアップを上書きします…");
+    }
+    // English, Chinese and Japanese share the same status lifetime and layout.
+    static const wchar_t* const text[][3] = {
+        {L"保存中…", L"Saving…", L"正在保存…"},
+        {L"バックアップ中…", L"Backing up…", L"正在备份…"},
+        {L"保存中です。お待ちください。", L"Save in progress; please wait", L"已有保存任务正在进行，请稍候。"},
+        {L"保存しました", L"Saved", L"保存完成"},
+        {L"バックアップしました", L"Backup saved", L"备份完成"},
+        {L"古いバックアップを置換しました", L"Old backup replaced", L"备份完成，已覆盖旧备份"},
+        {L"保存できませんでした。保存先を確認してください。", L"Save failed. Check the destination.", L"保存失败，请检查保存位置。"},
+        {L"バックアップできませんでした。保存先を確認してください。", L"Backup failed. Check the destination.", L"备份失败，请检查备份位置。"},
+        {L"バックアップ先が上限に達しました。", L"Backup limit reached; no backup replaced", L"备份数量已满，未覆盖旧备份。"},
+        {L"保存完了後に終了します…", L"Saving; will close when done…", L"正在等待保存完成，随后关闭…"}
+    };
+    return text[static_cast<unsigned>(currentStatus)][app->EnglishUI() <= 2 ? app->EnglishUI() : 1];
+}
+void ReportBackupOverwrite() noexcept { backupOverwriting.store(true); }
+bool Request(MMDApp* app, const wchar_t* destination, Options options) {
+    if (!app || !destination || !*destination || app->SceneMutationInProgress()) return false;
+    if (GetWindowThreadProcessId(app->MainWindow(), nullptr) != GetCurrentThreadId()) return false;
+    if (saveInProgress.exchange(true)) {
+        SetStatus(app, Status::Busy, true);
+        return false;
+    }
+    const bool backup = options.backup;
+    try {
+        backupOverwriting.store(false);
+        const auto capturedAt = GetTickCount64();
+        auto pending = std::make_unique<Job>();
+        pending->options = std::move(options);
+        SetStatus(app, backup ? Status::BackingUp : Status::Saving, true);
+        if (!CaptureScene(app, destination, backup, pending->snapshot)) {
+            saveInProgress.store(false);
+            SetStatus(app, backup ? Status::BackupFailed : Status::Failed);
+            return false;
+        }
+        const HWND owner = app->MainWindow();
+        runtime_log::Write("SAVE snapshot bytes=%llu elapsed_ms=%llu",
+            static_cast<unsigned long long>(pending->snapshot.bytes.size()), GetTickCount64() - capturedAt);
+        Job* work = pending.get();
+        job = std::move(pending);
+        work->worker = std::thread([work, owner] {
+            const auto started = GetTickCount64();
+            try {
+                work->success = (!work->options.beforeWrite || work->options.beforeWrite()) &&
+                    WriteSnapshot(work->snapshot) &&
+                    (!work->options.afterWrite || work->options.afterWrite());
+            } catch (const std::exception& error) {
+                runtime_log::Write("SAVE worker failed: %s", error.what());
+            } catch (...) { runtime_log::Write("SAVE worker failed with an unknown exception"); }
+            runtime_log::Write("SAVE worker result=%d bytes=%llu elapsed_ms=%llu", work->success,
+                static_cast<unsigned long long>(work->snapshot.bytes.size()), GetTickCount64() - started);
+            work->done.store(true);
+            PostMessageW(owner, kComplete, 0, 0);
+        });
+        return true;
+    } catch (...) {
+        job.reset();
+        saveInProgress.store(false);
+        SetStatus(app, backup ? Status::BackupFailed : Status::Failed);
+        if (!backup) SaveFailure(app);
+        return false;
     }
 }
-bool SaveSceneCopy(MMDApp* app, const wchar_t* target) {
-    try { return SaveSceneFileImpl(app, target, true); }
-    catch (...) { return false; }
+bool HandleMessage(MMDApp* app, UINT message, WPARAM wp) {
+    if (message != kComplete && (message != WM_TIMER || wp != kStatusTimer)) return false;
+    Finish(app); // Timer is also a fallback if the posted message queue was full.
+    if (SceneSaveInProgress() && backupOverwriting.load()) Repaint(app);
+    if (statusUntil && GetTickCount64() >= statusUntil && !SceneSaveInProgress()) {
+        statusUntil = 0;
+        KillTimer(app->MainWindow(), kStatusTimer);
+        Repaint(app);
+    }
+    return true;
 }
+void Wait(MMDApp* app) {
+    if (job && job->worker.joinable()) job->worker.join();
+    Finish(app);
+}
+bool DeferClose(MMDApp* app) {
+    if (!SceneSaveInProgress()) return false;
+    closePending = true;
+    SetStatus(app, Status::WaitingToClose, true);
+    return true;
+}
+} // namespace background_save
 
 }  // namespace mikumikustudio

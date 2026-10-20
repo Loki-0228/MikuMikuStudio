@@ -384,6 +384,43 @@ LRESULT CALLBACK ResetPanelProc(HWND window, UINT message, WPARAM wp, LPARAM lp)
 // Exercise native edit focus loss and native button notifications without a
 // render device. Bind coordinates are intentionally nonzero: reset means the
 // bind pose, not moving the child bone onto the parent's origin.
+void ModelToggleSelection() {
+    using namespace mikumikustudio;
+    auto app = std::make_unique<MMDApp>();
+    app->state = MMDAppState{};
+    HWND window = CreateWindowW(L"STATIC", L"model toggle regression", WS_POPUP,
+        0, 0, 400, 200, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    Check(window != nullptr, "create hidden model selection panel");
+    app->Hwnd() = window;
+    HWND combo = CreateWindowW(L"COMBOBOX", L"", WS_CHILD | CBS_DROPDOWNLIST,
+        0, 0, 200, 100, window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(panel::kMainComboModel)),
+        GetModuleHandleW(nullptr), nullptr);
+    for (const auto* label : {L"camera/light/accessory", L"Model B", L"Model A"})
+        SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label));
+    Fixture first(1), second(1);
+    first.record->comboSelIndex = 2;
+    second.record->comboSelIndex = 1;
+    app->ModelSlot(3) = first.bytes;
+    app->ModelSlot(9) = second.bytes;
+    app->SetSelectedModelSlot(3);
+    app->CameraMode() = 1;
+    SendMessageW(combo, CB_SETCURSEL, 0, 0);
+    Check(ResolveModelComboSelection(app.get()) == 2,
+          "camera-mode PMM restores selected model independently of slot/display order");
+    Check(SendMessageW(combo, CB_GETCURSEL, 0, 0) == 0 && app->CameraMode() == 1,
+          "remembering model does not switch loaded camera mode");
+    app->MainModelComboSelection() = 1;
+    Check(ResolveModelComboSelection(app.get()) == 1, "valid previous model wins");
+    app->MainModelComboSelection() = 255;
+    Check(ResolveModelComboSelection(app.get()) == 2, "stale row falls back to selected model");
+    app->ModelSlot(3) = nullptr;
+    Check(ResolveModelComboSelection(app.get()) == 1, "removed selected model falls back to loaded model");
+    app->ModelSlot(9) = nullptr;
+    Check(ResolveModelComboSelection(app.get()) == 0, "empty scene still permits model loading");
+    DestroyWindow(window);
+    std::puts("PASS model toggle restores loaded model selection");
+}
+
 void BoneTranslationReset() {
     using namespace mikumikustudio;
     for (bool separate : {false, true})
@@ -613,6 +650,7 @@ int main(int argc, char** argv) {
     // Unbuffered so a hang (or a crash) still shows which case was running.
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     if (argc > 1 && std::strcmp(argv[1], "--bone-translation-reset") == 0) {
+        ModelToggleSelection();
         BoneTranslationReset();
         return 0;
     }

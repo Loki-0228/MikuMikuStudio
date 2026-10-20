@@ -531,6 +531,8 @@ void StartupLog(const char* format, ...) noexcept {
 }
 }
 #include "mme_sequence_clock_checks.hpp"
+#include "model_edit_controls_checks.hpp"
+#include "mme_scene_capture.hpp"
 int wmain(int argc, wchar_t** argv) {
     Check(argc >= 2 && argc <= 4, "model path supplied");
     bilingualFixture = argc == 3 && std::wcscmp(argv[2], L"--bilingual") == 0;
@@ -557,6 +559,15 @@ int wmain(int argc, wchar_t** argv) {
     auto* app = new MMDApp; g_Block = app;
     app->state = MMDAppState{}; app->InitDefaults();
     Check(InitMainWindowAndD3D(app, GetModuleHandleW(nullptr), SW_HIDE), "start production host");
+    if (argc == 4 && std::wcscmp(argv[2], L"--mme-scene-capture") == 0) {
+        int result = 0;
+        try { mme_scene_capture::Run(app, argv[1], argv[3]); }
+        catch (const std::exception& error) { std::fprintf(stderr, "FAIL MME_CAPTURE %s\n", error.what()); result = 2; }
+        mme_scene_capture::Release(app);
+        ShutdownCleanup(app); delete app; g_Block = nullptr; UnhookWindowsHookEx(guard);
+        std::printf("MME_CAPTURE cleanup complete result=%d\n", result);
+        return result;
+    }
     if (argc == 4 && std::wcscmp(argv[2], L"--project-import") == 0) {
         CheckProjectImport(app, argv[1], argv[3]);
         ShutdownCleanup(app); delete app; g_Block = nullptr; UnhookWindowsHookEx(guard); return 0;
@@ -605,6 +616,14 @@ int wmain(int argc, wchar_t** argv) {
             "restart restores selected algorithm and enable state");
         ShutdownCleanup(app); delete app; g_Block = nullptr; UnhookWindowsHookEx(guard); return 0;
     }
+    if (argc == 3 && std::wcscmp(argv[2], L"--antialias-menu") == 0) {
+        CheckAntialiasMenus(app);
+        ShutdownCleanup(app); delete app; g_Block = nullptr; UnhookWindowsHookEx(guard); return 0;
+    }
+    if (argc == 3 && std::wcscmp(argv[2], L"--antialias-temporal") == 0) {
+        CheckTemporalResolveShader();
+        ShutdownCleanup(app); delete app; g_Block = nullptr; UnhookWindowsHookEx(guard); return 0;
+    }
     const bool emdAutoload = argc == 3 && std::wcscmp(argv[2], L"--emd-autoload") == 0;
     const bool fileWatch = argc == 4 && std::wcscmp(argv[2], L"--file-watch") == 0;
     const bool emmLoad = argc == 4 && std::wcscmp(argv[2], L"--emm-load") == 0;
@@ -635,6 +654,27 @@ int wmain(int argc, wchar_t** argv) {
             Check(loadedModels.insert(model).second,"loaded project model slots retain distinct ownership");
         if (const wchar_t* effects = _wgetenv(L"MMS_AA_EMM")) NotifyEffectFileOpen(effects);
     } else LoadModelFile(app, argv[1], false);
+    if (argc == 4 && std::wcscmp(argv[2], L"--model-edit-controls") == 0) {
+        CheckModelEditControls(app, argv[3]);
+        ShutdownCleanup(app); delete app; g_Block = nullptr; UnhookWindowsHookEx(guard);
+        return 0;
+    }
+    // Test-only second model and accessory slots: insert them into the scene
+    // instead of replacing the base model.
+    if (const wchar_t* extra = _wgetenv(L"MMS_EXTRA_MODEL")) {
+        LoadModelFile(app, extra, false);
+        for (int i = 0; i < 3; ++i) {
+            app->state.messageSeen = 1;
+            FrameDriver(app);
+        }
+    }
+    if (const wchar_t* accessory = _wgetenv(L"MMS_EXTRA_ACCESSORY")) {
+        LoadAccessoryFile(accessory);
+        for (int i = 0; i < 3; ++i) {
+            app->state.messageSeen = 1;
+            FrameDriver(app);
+        }
+    }
     Check(app->SelectedModel() != nullptr, "load textured PMX");
     if (argc == 4 && std::wcscmp(argv[2], L"--image-visibility") == 0) {
         if (const auto* project = _wgetenv(L"MMS_IMAGE_EFFECT_PROJECT")) {

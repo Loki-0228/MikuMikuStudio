@@ -1113,23 +1113,8 @@ bool Empty() {
     return store.objects.empty();
 }
 
-bool Save(MMDApp& app, const std::filesystem::path& pmm,
-          pmm_extension::Document& document, std::string& error) {
-    error.clear();
-    if (pmm.empty()) {
-        error = "The project path is required to publish the mesh cache";
-        return false;
-    }
-    const auto directory = std::filesystem::absolute(pmm).parent_path();
-    const auto stem = pmm.stem();
-    if (directory.empty() || stem.empty()) {
-        error = "The project path " + Quoted(pmm) +
-                " has no directory or file name to publish the mesh cache next to";
-        return false;
-    }
-
+SaveSnapshot CaptureSave(MMDApp& app) {
     std::lock_guard<std::mutex> lock(GetStore().mutex);
-
     // Resolve through the live slots: an object that has been unloaded since it
     // was baked is not recorded, and the slot number always matches the scene.
     struct Live {
@@ -1154,6 +1139,21 @@ bool Save(MMDApp& app, const std::filesystem::path& pmm,
         if (found == GetStore().objects.end() || !found->second) continue;
         live.push_back({found->second->key, found->second->source,
                         found->second->timeScale, found->second->cutoffLayer});
+    }
+
+    return [live = std::move(live)](const std::filesystem::path& pmm,
+            pmm_extension::Document& document, std::string& error) {
+    error.clear();
+    if (pmm.empty()) {
+        error = "The project path is required to publish the mesh cache";
+        return false;
+    }
+    const auto directory = std::filesystem::absolute(pmm).parent_path();
+    const auto stem = pmm.stem();
+    if (directory.empty() || stem.empty()) {
+        error = "The project path " + Quoted(pmm) +
+                " has no directory or file name to publish the mesh cache next to";
+        return false;
     }
 
     if (live.empty()) {
@@ -1218,6 +1218,12 @@ bool Save(MMDApp& app, const std::filesystem::path& pmm,
         pmm_extension::Erase(document, kRecordKeyV3);
     }
     return true;
+    };
+}
+
+bool Save(MMDApp& app, const std::filesystem::path& pmm,
+          pmm_extension::Document& document, std::string& error) {
+    return CaptureSave(app)(pmm, document, error);
 }
 
 bool Load(MMDApp& app, const std::filesystem::path& pmm,
