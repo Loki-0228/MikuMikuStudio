@@ -45,7 +45,7 @@ PMM 继续使用既有 `org.mikumikustudio.model.<slot>.unicode.v1` 名称记录
 
 实际窗口测试仅拦截资源模板创建边界，仍执行正式菜单、对话框过程和真实 Unicode 控件；没有进行屏幕外观判断。格式故障专项使用正式 MMS trailer 编解码和完整模型夹具，另由真实隐藏应用执行 PMX／PMD 工程保存重开。直接 malloc 失败尚未注入，已覆盖 C++ 分配及 owned_text 登记失败。Win7 SP1 x64、AMD 及 GPU 真机范围不因本批扩大。
 
-菜单 261 Toon、262 物理模型和其他资源写入仍按[原生写入核对](abi-native-writer-audit-2026-10-20.md)继续迁移。物理混合成员交换是内部准备能力，不能当作 262 已完成。
+菜单 261 Toon 随后接入[私有草稿及纹理历史](abi-model-toon-history-2026-10-21.md)。262 物理模型和其他资源写入仍按[原生写入核对](abi-native-writer-audit-2026-10-20.md)继续迁移。物理混合成员交换是内部准备能力，不能当作 262 已完成。
 
 ## 最终 ABI 程序
 

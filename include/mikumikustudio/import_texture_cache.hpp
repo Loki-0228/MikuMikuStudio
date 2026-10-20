@@ -16,6 +16,11 @@ namespace detail { struct State; }
 // the legacy D3DX format, pool, retry and colour-sampling policy.
 using TextureLoader = HRESULT (*)(IDirect3DDevice9*, const wchar_t*, IDirect3DTexture9** out);
 
+// Measures the same COM identity and texture payload used by Retained.
+// A required resource cannot silently disappear: null explicitly marks the
+// report incomplete. Retained still skips null optional cache dependencies.
+void MeasureTextureResources(IUnknown*, plugins::resource_budget::Collector&);
+
 class Retained final {
     std::shared_ptr<detail::State> state_;
     explicit Retained(std::shared_ptr<detail::State>);
@@ -64,6 +69,10 @@ public:
     // Memory/capacity/device errors, stale state or exceptions are sticky fatal
     // errors: the importer must inspect Status before accepting its object.
     int Load(const wchar_t*) noexcept;
+    // Uses the same private batch, cache identity and publication as Load,
+    // but requires a nonempty path and a nonnull IDirect3DTexture9 interface.
+    // Missing images and unusable cache objects become sticky fatal errors.
+    MmsResult LoadRequired(const wchar_t*) noexcept;
     MmsResult Status() const noexcept;
     bool IsFor(const D3DRenderer&) const noexcept;
     // Freezes without publishing. Both outputs stay unchanged on failure.

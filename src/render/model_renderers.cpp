@@ -42,6 +42,7 @@
 #include "mikumikustudio/texture_lookup.hpp"
 #include "mikumikustudio/shared_toon.hpp"
 #include "mikumikustudio/draw_order.hpp"
+#include "model_toon.hpp"
 #include "mikumikustudio/adaptive_shadow.hpp"
 #include "mikumikustudio/build_profile.hpp"
 #if !MMD_ORIGINAL_PROFILE
@@ -532,46 +533,78 @@ void ModelVertexFormat(unsigned char* model, DWORD* fvf, UINT* stride) {
     }
 }
 
-IDirect3DTexture9* ToonTexture(MMDApp* app, D3DRenderer* sub,
-                               unsigned char* model,
-                               unsigned char* material) {
+bool ModelToonTablePath(const mdl::ModelRecord& model, int index, wchar_t (&path)[512]) {
+#if !MMD_ORIGINAL_PROFILE
+    // File-table strings are CP932, independent of the Windows ACP. Keep
+    // every fixed source bounded and avoid per-frame string allocations.
+    const auto* name = model.pmdToonFileNames[index];
+    const auto length = strnlen_s(name, sizeof model.pmdToonFileNames[index]);
+    const auto directory = wcsnlen_s(model.modelDirectory, sizeof model.modelDirectory / sizeof(wchar_t));
+    if (!length || directory == sizeof model.modelDirectory / sizeof(wchar_t)) return false;
+    std::memcpy(path, model.modelDirectory, directory * sizeof(wchar_t));
+    return MultiByteToWideChar(932, MB_ERR_INVALID_CHARS, name, static_cast<int>(length),
+        path + directory, static_cast<int>(std::size(path) - directory - 1)) > 0;
+#else
+    wchar_t converted[256]{};
+    ConvertAnsiToWide(nullptr, model.pmdToonFileNames[index], converted, 0x100);
+    return swprintf_s(path, 0x200, L"%s%s", model.modelDirectory, converted) >= 0;
+#endif
+}
+} // namespace
+IDirect3DTexture9* ResolveModelToonTexture(MMDApp* app, D3DRenderer* sub,
+                               const mdl::ModelRecord& model,
+                               const mdl::ModelMaterialRecord& material) {
     // 0x491E8B..0x492163: toonReference == -1 -> shared table slot 0; a
     // model whose indexed toon file name IS "toonNN.bmp" -> shared slot NN; any
-    // other name resolves the texture itself (PMX: the material toon path
-    // at +0x4C0; PMD: modelDirectory + converted file name).
+    // other name resolves the texture itself. Own PMX toons have a negative
+    // index; shared-table overrides use modelDirectory plus the table filename.
     const int index = static_cast<std::int8_t>(
-        mdl::Material(material).toonReference);
+        material.toonReference);
     if (index == -1)
         return app->ToonTexture(0);
     if (index >= 0 && index < 10) {
-        const int shared = SharedToonSlot(mdl::PmdToonFileNames(model)[index]);
+        const int shared = SharedToonSlot(model.pmdToonFileNames[index]);
         if (shared != 0)
             return app->ToonTexture(shared);
     }
-    if (mdl::Mdl(model)->physicsMode == 2) {
+    if (model.physicsMode == 2
+#if !MMD_ORIGINAL_PROFILE
+        && index < 0
+#endif
+    ) {
         // PMX custom toon (0x4920D7): cached texture for material+0x4C0.
         return FindCachedTexture(sub,
-                                 mdl::Material(material).toonPath);
+                                 material.toonPath);
     }
     if (index >= 0 && index < 10) {
-        // PMD custom toon (0x492111..0x492157): model directory + the
-        // converted (SJIS -> wide) toon file name.
-        wchar_t converted[256] = {};
-        // The directory field alone is 256 wide characters, and the converted
-        // toon name adds up to 100 more, so the old 256-character buffer could
-        // only hold both by failing the format call (the original keeps
-        // the same undersized destination at x64 0x1400B8D93, MSVCR90
-        // swprintf_s with a count of 0x100).  Size the buffer for the whole path.
-        // Defect RB-10.
-        wchar_t path[512] = {};
-        ConvertAnsiToWide(sub, mdl::PmdToonFileNames(model)[index],
-                          converted, 0x100);
-        swprintf_s(path, 0x200, L"%s%s",
-                   mdl::Mdl(model)->modelDirectory, converted);
-        return FindCachedTexture(sub, path);
+        wchar_t path[512]{};
+        return ModelToonTablePath(model, index, path) ? FindCachedTexture(sub, path) : nullptr;
     }
     return app->ToonTexture(0);
 }
+void ResolveModelToonColor(MMDApp* app, D3DRenderer* sub, const mdl::ModelRecord& model,
+                          const mdl::ModelMaterialRecord& material, float out[4]) {
+    std::fill_n(out, 4, 1.0f);
+    const int index = static_cast<std::int8_t>(material.toonReference);
+    if (index == -1) return;
+    if (index >= 0 && index < 10) {
+        const int shared = SharedToonSlot(model.pmdToonFileNames[index]);
+        if (shared) {
+            std::copy_n(app->state.toonEdgeTable + 3 * (shared - 1), 3, out);
+            return;
+        }
+    }
+    if (model.physicsMode == 2
+#if !MMD_ORIGINAL_PROFILE
+        && index < 0
+#endif
+    ) CachedTextureColor(sub, material.toonPath, out);
+    else if (index >= 0 && index < 10) {
+        wchar_t path[512]{};
+        if (ModelToonTablePath(model, index, path)) CachedTextureColor(sub, path, out);
+    }
+}
+namespace {
 
 bool HasSuffix(const wchar_t* value, const wchar_t* lower,
                const wchar_t* upper);
@@ -852,7 +885,7 @@ void ConfigureMaterialStages(MMDApp* app, D3DRenderer* sub,
                                  D3DTSS_TCI_CAMERASPACENORMAL);
     device->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
     device->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
-    device->SetTexture(0, ToonTexture(app, sub, model, material));
+    device->SetTexture(0, ResolveModelToonTexture(app, sub, *mdl::Mdl(model), mdl::Material(material)));
 }
 
 // Loop-tail stage-1 reset for ".sp*" main paths: 0x4925CE..0x4925E5.
@@ -1004,39 +1037,8 @@ void ConfigureEffectMaterial(MMDApp* app, D3DRenderer* sub,
     SetEffectColor(effect, "MatEmsColor", emissive);
     SetEffectColor(effect, "MatSpcColor", specular);
 
-    float toon[4] = {1.0f, 1.0f, 1.0f, 1.0f};
-    const int toonIndex = static_cast<std::int8_t>(record.toonReference);
-    if (toonIndex != -1) {
-        bool standard = false;
-        if (toonIndex >= 0 && toonIndex < 10) {
-            const int shared = SharedToonSlot(mdl::PmdToonFileNames(model)[toonIndex]);
-            standard = shared != 0;
-            if (standard) {
-                const float* table = app->state.toonEdgeTable;
-                toon[0] = table[3 * (shared - 1) + 0];
-                toon[1] = table[3 * (shared - 1) + 1];
-                toon[2] = table[3 * (shared - 1) + 2];
-            }
-        }
-        if (!standard) {
-            if (mdl::Mdl(model)->physicsMode == 2) {
-                CachedTextureColor(sub, record.toonPath, toon);
-            } else if (toonIndex >= 0 && toonIndex < 10) {
-                wchar_t converted[256] = {};
-                // Same 256-character destination as the toon lookup above; it
-                // cannot hold a 256-character directory plus the converted
-                // name, which is what this path builds. Size the buffer for both.
-                // Defect RB-10.
-                wchar_t path[512] = {};
-                ConvertAnsiToWide(sub, mdl::PmdToonFileNames(model)[toonIndex],
-                                  converted, 0x100);
-                swprintf_s(path, 0x200, L"%s%s",
-                    mdl::Mdl(model)->modelDirectory,
-                    converted);
-                CachedTextureColor(sub, path, toon);
-            }
-        }
-    }
+    float toon[4];
+    ResolveModelToonColor(app, sub, *mdl::Mdl(model), record, toon);
     if (mdl::Mdl(model)->physicsMode == 2) {
         const mdl::MaterialMorphChannels& add =
             mdl::MaterialMorphAdd(model)[materialIndex].channels;

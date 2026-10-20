@@ -435,7 +435,9 @@ void CrossModelJournal(){
 #include "native_model_outline_ui_checks.inc"
 #include "native_model_outline_color_checks.inc"
 #include "native_model_names_checks.inc"
+#include "native_model_toon_checks.inc"
 #include "native_model_names_persistence_checks.inc"
+#include "native_toon_resolution_checks.inc"
 #include "native_bone_curve_write_checks.inc"
 #include "native_physics_toggle_checks.inc"
 #include "native_center_offset_checks.inc"
@@ -446,6 +448,15 @@ void CrossModelJournal(){
 #include "retained_bookkeeping_checks.inc"
 int main(int argc,char** argv){
     std::setvbuf(stdout,nullptr,_IONBF,0);
+    if(argc==2&&!std::strcmp(argv[1],"--import-textures-only")) {
+        ImportTextureCacheChecks();std::printf("PASS import textures: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--toon-resolution-only")) {
+        NativeToonResolutionChecks();std::printf("PASS native toon resolution: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--model-toon-only")) {
+        NativeModelToonChecks();std::printf("PASS native model toon: %u checks\n",checks);return 0;
+    }
     if(argc==2&&!std::strcmp(argv[1],"--model-names-only")) {
         NativeModelNamesChecks();std::printf("PASS model names: %u checks\n",checks);return 0;
     }
@@ -827,6 +838,7 @@ int main(int argc,char** argv){
     run("PhysicsImportChecks",PhysicsImportChecks);
     run("PhysicsExchangeChecks",PhysicsExchangeChecks);
     run("ImportTextureCacheChecks",ImportTextureCacheChecks);
+    run("NativeToonResolutionChecks",NativeToonResolutionChecks);
     run("AccessoryImportChecks",AccessoryImportChecks);
     run("PrivateImportHistoryChecks",PrivateImportHistoryChecks);
     run("NativePoseHistoryChecks",NativePoseHistoryChecks);
@@ -885,6 +897,7 @@ int main(int argc,char** argv){
     run("NativeModelOutlineUiChecks",NativeModelOutlineUiChecks);
     run("NativeModelOutlineColorChecks",NativeModelOutlineColorChecks);
     run("NativeModelNamesChecks",NativeModelNamesChecks);
+    run("NativeModelToonChecks",NativeModelToonChecks);
     run("NativeModelNamesPersistenceChecks",NativeModelNamesPersistenceChecks);
     run("NativeModelRangeChecks",NativeModelRangeChecks);
     run("NativeObjectCommandChecks",NativeObjectCommandChecks);

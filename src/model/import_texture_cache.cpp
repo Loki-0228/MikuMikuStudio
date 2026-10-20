@@ -78,13 +78,23 @@ bool LevelBytes(const D3DSURFACE_DESC& desc, uint64_t& bytes) {
 }
 
 void MeasureTexture(IUnknown* object, Collector& out) {
-    if (!object) return;
+    if (!object) { out.MissingResource(plugins::resource_budget::RenderQuery); return; }
     IDirect3DTexture9* raw = nullptr;
-    const auto result = object->QueryInterface(__uuidof(IDirect3DTexture9), reinterpret_cast<void**>(&raw));
+    HRESULT result;
+    try { result = object->QueryInterface(__uuidof(IDirect3DTexture9), reinterpret_cast<void**>(&raw)); }
+    catch (...) {
+        if (raw) raw->Release();
+        out.MissingResource(plugins::resource_budget::ExternalRenderer); throw;
+    }
     Com<IDirect3DTexture9> texture(raw);
     if (FAILED(result) || !texture) { out.MissingResource(plugins::resource_budget::ExternalRenderer); return; }
     IUnknown* token = nullptr;
-    const auto query = texture->QueryInterface(IID_IUnknown, reinterpret_cast<void**>(&token));
+    HRESULT query;
+    try { query = texture->QueryInterface(IID_IUnknown, reinterpret_cast<void**>(&token)); }
+    catch (...) {
+        if (token) token->Release();
+        out.MissingResource(plugins::resource_budget::RenderQuery); throw;
+    }
     Com<IUnknown> identity(token);
     if (FAILED(query) || !identity) { out.MissingResource(plugins::resource_budget::RenderQuery); return; }
     const auto levels = texture->GetLevelCount();
@@ -126,6 +136,10 @@ void MeasureTexture(IUnknown* object, Collector& out) {
     if (cpu) out.Add(identity.get(), cpu, 1);
     if (d3d) out.Add(identity.get(), d3d, 1, true);
 }
+}
+
+void MeasureTextureResources(IUnknown* object, Collector& out) {
+    MeasureTexture(object, out);
 }
 
 namespace detail {
@@ -192,7 +206,7 @@ void Retained::MeasureResources(Collector& out) const {
         // The renderer owns published names. Their measured allocation remains
         // attributable to this import while its exact cache slot is current.
         if (entry.added) out.Add(entry.name, entry.nameBytes, 1);
-        MeasureTexture(entry.retainedTexture.get(), out);
+        if (entry.retainedTexture) MeasureTextureResources(entry.retainedTexture.get(), out);
     }
     if (!IsCurrent()) out.MissingResource(plugins::resource_budget::NativeOpaque);
 }
@@ -275,6 +289,32 @@ int Preparation::Load(const wchar_t* path) noexcept {
     } catch (const std::bad_alloc&) { state_->Fail(MMS_E_MEMORY); }
     catch (...) { state_->Fail(MMS_E_FAILED); }
     return 0;
+}
+MmsResult Preparation::LoadRequired(const wchar_t* path) noexcept {
+    if (GetCurrentThreadId() != state_->thread) return MMS_E_THREAD;
+    if (state_->status != MMS_OK) return state_->status;
+    if (state_->sealed) return state_->Fail(MMS_E_BUSY);
+    if (!path || !*path) return state_->Fail(MMS_E_ARGUMENT);
+    if (!Load(path)) return state_->Fail(state_->status == MMS_OK ? MMS_E_FAILED : state_->status);
+    try {
+        // Load retained this exact cache/private entry, even for an optional
+        // named-null or external COM entry. Validate the interface separately
+        // so optional callers keep their existing missing-image semantics.
+        IUnknown* object = nullptr;
+        for (const auto& entry : state_->entries)
+            if (entry.path == path) { object = entry.retainedTexture.get(); break; }
+        if (!object) return state_->Fail(MMS_E_NOT_READY);
+        IDirect3DTexture9* raw = nullptr;
+        HRESULT result;
+        try { result = object->QueryInterface(__uuidof(IDirect3DTexture9), reinterpret_cast<void**>(&raw)); }
+        catch (...) { if (raw) raw->Release(); throw; }
+        Com<IDirect3DTexture9> texture(raw);
+        if (FAILED(result) || !texture)
+            return state_->Fail(result == E_OUTOFMEMORY || result == D3DERR_OUTOFVIDEOMEMORY ? MMS_E_MEMORY : MMS_E_NOT_READY);
+        if (!state_->PreparationCurrent()) return state_->Fail(MMS_E_STALE);
+        return MMS_OK;
+    } catch (const std::bad_alloc&) { return state_->Fail(MMS_E_MEMORY); }
+    catch (...) { return state_->Fail(MMS_E_FAILED); }
 }
 MmsResult Preparation::Finish(std::shared_ptr<Retained>& retained, std::unique_ptr<Publication>& publication) noexcept {
     if (const auto error = Status()) return error;

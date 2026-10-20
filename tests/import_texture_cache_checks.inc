@@ -17,6 +17,9 @@ public:
     UINT width = 4, height = 4, levels = 2;
     DWORD usage = 0;
     D3DFORMAT format = D3DFMT_A8R8G8B8;
+    HRESULT textureQueryResult = S_OK;
+    bool nullTextureQuery = false, throwTextureQuery = false, invalidateTextureQuery = false, throwIdentityQuery = false;
+    ULONG ReferenceCount() const noexcept { return references_; }
     ImportTestTexture(ImportTextureTestState& state, bool badDescription = false, bool badFormat = false)
         : state_(state), badDescription_(badDescription), badFormat_(badFormat) {
         ++state_.live;
@@ -29,7 +32,15 @@ public:
         *out = nullptr;
         if (id != IID_IUnknown && id != __uuidof(IDirect3DTexture9) &&
             id != __uuidof(IDirect3DBaseTexture9) && id != __uuidof(IDirect3DResource9)) return E_NOINTERFACE;
-        *out = static_cast<IDirect3DTexture9*>(this); AddRef(); return S_OK;
+        if (id == __uuidof(IDirect3DTexture9)) {
+            if (invalidateTextureQuery) InvalidateTextureLookup();
+            if (!nullTextureQuery) { *out = static_cast<IDirect3DTexture9*>(this); AddRef(); }
+            if (throwTextureQuery) throw std::bad_alloc();
+            return textureQueryResult;
+        }
+        *out = static_cast<IDirect3DTexture9*>(this); AddRef();
+        if (id == IID_IUnknown && throwIdentityQuery) throw std::bad_alloc();
+        return S_OK;
     }
     ULONG STDMETHODCALLTYPE AddRef() override { return ++references_; }
     ULONG STDMETHODCALLTYPE Release() override { const auto count = --references_; if (!count) delete this; return count; }
@@ -79,6 +90,7 @@ HRESULT ImportTestTextureLoader(IDirect3DDevice9*, const wchar_t* path, IDirect3
     auto& state = *importTextureTestState; ++state.calls; *out = nullptr;
     if (std::wcsstr(path, L"missing")) return HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
     if (std::wcsstr(path, L"device-lost")) return D3DERR_DEVICELOST;
+    if (std::wcsstr(path, L"null-success")) return S_OK;
     *out = new ImportTestTexture(state, std::wcsstr(path, L"bad-query") != nullptr,
         std::wcsstr(path, L"bad-format") != nullptr);
     if (std::wcsstr(path, L"failure-out")) return HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
@@ -365,11 +377,149 @@ void ImportTextureCaptureChecks() {
     }
 }
 
+void ImportTextureRequiredChecks() {
+    using namespace import_texture_cache;
+    for (const auto* path : {static_cast<const wchar_t*>(nullptr), L""}) {
+        ImportTextureFixture f; Preparation p(*f.renderer, ImportTestTextureLoader);
+        Check(p.LoadRequired(path) == MMS_E_ARGUMENT && p.Status() == MMS_E_ARGUMENT &&
+            p.LoadRequired(L"later.png") == MMS_E_ARGUMENT && !f.state.calls,
+            "required texture rejects null/empty paths before any loader call and preserves the first error");
+    }
+    for (const auto* path : {L"required-missing.png", L"required-failure-out.png", L"null-success.png"}) {
+        ImportTextureFixture f;
+        {
+            Preparation optional(*f.renderer, ImportTestTextureLoader);
+            const auto status = std::wcsstr(path, L"null-success") ? MMS_E_FAILED : MMS_OK;
+            Check(!optional.Load(path) && optional.Status() == status && !f.state.live,
+                "required support preserves optional missing-image and loader-success-null policies");
+        }
+        const auto calls = f.state.calls;
+        Preparation required(*f.renderer, ImportTestTextureLoader);
+        std::shared_ptr<Retained> retained; std::unique_ptr<Publication> publication;
+        Check(required.LoadRequired(path) == MMS_E_FAILED && required.Status() == MMS_E_FAILED &&
+            !required.Load(L"later.png") && required.LoadRequired(L"later.png") == MMS_E_FAILED &&
+            required.Finish(retained, publication) == MMS_E_FAILED && !retained && !publication &&
+            f.state.calls == calls + 1 && !f.state.live && !f.renderer->resourcePool[0].heapBuffer,
+            "missing required images make the private batch fatal without leaking failure output or publishing");
+    }
+    {
+        ImportTextureFixture f; f.External(L"named-null.png", nullptr);
+        Preparation optional(*f.renderer, ImportTestTextureLoader);
+        std::shared_ptr<Retained> retained; std::unique_ptr<Publication> publication;
+        Check(optional.Load(L"named-null.png") == 1 && optional.Finish(retained, publication) == MMS_OK,
+            "optional named-null cache entries retain their legacy acceptance");
+        plugins::resource_budget::Collector optionalBudget; retained->MeasureResources(optionalBudget);
+        Check(optionalBudget.Result().Complete() && !optionalBudget.Result().d3d9Bytes,
+            "optional retained null cache entries remain outside required-resource missing flags");
+        Preparation required(*f.renderer, ImportTestTextureLoader);
+        Check(required.LoadRequired(L"named-null.png") == MMS_E_NOT_READY && required.Status() == MMS_E_NOT_READY &&
+            !f.state.calls && !f.renderer->resourcePool[0].comObject,
+            "a cache name alone cannot satisfy a required texture or trigger a speculative reload");
+        plugins::resource_budget::Collector requiredBudget; MeasureTextureResources(nullptr, requiredBudget);
+        Check(!requiredBudget.Result().Complete() && (requiredBudget.Result().missing & plugins::resource_budget::RenderQuery),
+            "direct required null-resource measurement explicitly reports missing data");
+    }
+    {
+        ImportTextureFixture f; f.External(L"unknown-required.png", new ImportUnknownTexture(f.state));
+        {
+            Preparation required(*f.renderer, ImportTestTextureLoader);
+            Check(required.LoadRequired(L"unknown-required.png") == MMS_E_NOT_READY && required.Status() == MMS_E_NOT_READY &&
+                !f.state.calls && f.state.live == 1,
+                "IUnknown-only cache entries cannot satisfy the texture interface requirement");
+            plugins::resource_budget::Collector budget; MeasureTextureResources(f.renderer->resourcePool[0].comObject, budget);
+            Check(!budget.Result().Complete() && (budget.Result().missing & plugins::resource_budget::ExternalRenderer),
+                "direct unknown-COM measurement uses the same incomplete budget rule as retained owners");
+        }
+        f.Clear(); Check(!f.state.live && f.state.destroyed == 1, "failed required cache reuse releases its retained COM reference");
+    }
+    for (unsigned failure = 0; failure != 4; ++failure) {
+        ImportTextureFixture f; auto* texture = new ImportTestTexture(f.state); f.External(L"unusable-required.png", texture);
+        texture->nullTextureQuery = failure == 0;
+        texture->textureQueryResult = failure == 1 ? E_NOINTERFACE : S_OK;
+        texture->throwTextureQuery = failure == 2;
+        texture->invalidateTextureQuery = failure == 3;
+        {
+            Preparation required(*f.renderer, ImportTestTextureLoader);
+            const auto expected = failure == 2 ? MMS_E_MEMORY : failure == 3 ? MMS_E_STALE : MMS_E_NOT_READY;
+            Check(required.LoadRequired(L"unusable-required.png") == expected && required.Status() == expected &&
+                required.LoadRequired(L"later.png") == expected && !f.state.calls && texture->ReferenceCount() == 2,
+                "required QI null/failure/exception and identity changes are sticky and release every temporary interface");
+        }
+        Check(texture->ReferenceCount() == 1, "required rejection releases private retained ownership but leaves the cache owner intact");
+        f.Clear(); Check(!f.state.live && f.state.destroyed == 1, "unusable required cache resources release exactly once at final ownership exit");
+    }
+    for (bool identity : {false, true}) {
+        ImportTextureFixture f; auto* texture = new ImportTestTexture(f.state); f.External(L"query-exception.png", texture);
+        texture->throwTextureQuery = !identity; texture->throwIdentityQuery = identity;
+        const auto references = texture->ReferenceCount();
+        plugins::resource_budget::Collector budget; bool thrown = false;
+        try { MeasureTextureResources(texture, budget); } catch (const std::bad_alloc&) { thrown = true; }
+        const auto missing = identity ? plugins::resource_budget::RenderQuery : plugins::resource_budget::ExternalRenderer;
+        Check(thrown && texture->ReferenceCount() == references && !budget.Result().Complete() &&
+            (budget.Result().missing & missing) && !budget.Result().totalBytes,
+            "texture/interface identity QI exceptions release nonnull out references and explicitly invalidate incomplete measurement");
+        texture->throwTextureQuery = texture->throwIdentityQuery = false;
+        plugins::resource_budget::Collector recovered; MeasureTextureResources(texture, recovered);
+        Check(recovered.Result().Complete() && recovered.Result().d3d9Bytes == 160 && texture->ReferenceCount() == references,
+            "measurement can recover after either QI exception without leaked COM references");
+        f.Clear(); Check(!f.state.live && f.state.destroyed == 1,
+            "both query exception paths return to sole source ownership and release its final reference exactly once");
+    }
+    {
+        ImportTextureFixture f; auto* texture = new ImportTestTexture(f.state); f.External(L"existing-required.png", texture);
+        std::shared_ptr<Retained> retained; std::unique_ptr<Publication> publication;
+        {
+            Preparation required(*f.renderer, ImportTestTextureLoader);
+            Check(required.LoadRequired(L"existing-required.png") == MMS_OK && required.LoadRequired(L"existing-required.png") == MMS_OK &&
+                required.Finish(retained, publication) == MMS_OK && !f.state.calls && texture->ReferenceCount() == 2,
+                "real fake IDirect3DTexture9 cache reuse succeeds without disk reads or duplicate retained references");
+        }
+        plugins::resource_budget::Collector budget;
+        retained->MeasureResources(budget); const auto before = budget.Result().totalBytes;
+        MeasureTextureResources(texture, budget);
+        Check(budget.Result().Complete() && budget.Result().d3d9Bytes == 160 && budget.Result().totalBytes == before &&
+            texture->ReferenceCount() == 2, "public texture measurement shares COM identity and mip accounting with retained measurement");
+        bool memory = false; plugins::resource_budget::Collector failedBudget;
+        failAfter = 0;
+        try { MeasureTextureResources(texture, failedBudget); } catch (const std::bad_alloc&) { memory = true; }
+        failAfter = -1;
+        Check(memory && texture->ReferenceCount() == 2, "budget allocation failure releases both queried COM interfaces");
+        const auto generation = texture_lookup_detail::generation.load();
+        failAfter = 0; const bool current = publication->IsCurrent(); if (current) publication->Publish(); failAfter = -1;
+        Check(current && retained->IsCurrent() && texture_lookup_detail::generation.load() == generation,
+            "required reuse shares the original allocation-free no-rewrite publication");
+        publication.reset(); retained.reset(); Check(texture->ReferenceCount() == 1 && !f.state.calls,
+            "required reused resource returns to sole renderer ownership after cancelling holders");
+    }
+    {
+        ImportTextureFixture f;
+        {
+            Preparation required(*f.renderer, ImportTestTextureLoader);
+            Check(required.LoadRequired(L"private-required.png") == MMS_OK && required.LoadRequired(L"private-required.png") == MMS_OK &&
+                f.state.calls == 1 && f.state.live == 1 && !f.renderer->resourcePool[0].heapBuffer,
+                "required private duplicates use the same unpublished batch and load only once");
+            std::shared_ptr<Retained> retained; std::unique_ptr<Publication> publication;
+            Check(required.Finish(retained, publication) == MMS_OK && publication->IsCurrent(), "freeze a required private texture for cancellation");
+        }
+        Check(!f.state.live && f.state.destroyed == 1 && !f.renderer->resourcePool[0].heapBuffer && !f.renderer->resourcePool[0].comObject,
+            "cancelled required preparation releases both private COM references without publishing the renderer cache");
+    }
+    for (const auto* path : {L"throw-oom.png", L"memory-out.png", L"throw-error.png", L"device-lost.png"}) {
+        ImportTextureFixture f; Preparation p(*f.renderer, ImportTestTextureLoader);
+        const auto expected = std::wcsstr(path, L"oom") || std::wcsstr(path, L"memory") ? MMS_E_MEMORY :
+            std::wcsstr(path, L"device") ? MMS_E_NOT_READY : MMS_E_FAILED;
+        Check(p.LoadRequired(path) == expected && p.Status() == expected && !f.state.live &&
+            p.LoadRequired(L"later.png") == expected && f.state.calls == 1,
+            "required loading preserves existing device/memory/exception codes and their sticky cleanup");
+    }
+}
+
 void ImportTextureCacheChecks() {
     ImportTexturePrivateChecks();
     ImportTexturePublicationChecks();
     ImportTextureRejectionChecks();
     ImportTextureAllocationChecks();
     ImportTextureCaptureChecks();
+    ImportTextureRequiredChecks();
 }
 }

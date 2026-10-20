@@ -269,6 +269,7 @@
 #include "../plugins/native_model_outline_ui.hpp"
 #include "../plugins/native_model_outline_color.hpp"
 #include "../plugins/native_model_names.hpp"
+#include "../plugins/native_model_toon.hpp"
 #include "../plugins/native_model_multiply.hpp"
 #include "../plugins/native_physics_mode.hpp"
 #include "../plugins/native_history_commands.hpp"
@@ -2123,6 +2124,9 @@ void CmdViewMenu(MMDApp* app, HWND hwnd, std::uint16_t id,
         if (app->state.optflag[0] != 0) {
             return;
         }
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::TryEditBoundModelToon(app, hwnd)) return;
+#endif
         app->state.enterKeyState = 1;
         const INT_PTR r = UiDialogBoxParamA(
             hInst, MAKEINTRESOURCEA(english ? 0x2AA : 0x2A9),

@@ -747,6 +747,19 @@ bool ModelLoadPMD(unsigned char* m, HWND hwnd, const wchar_t* path,
                     matched = 1;
             }
             if (!matched) {
+#if !MMD_ORIGINAL_PROFILE
+                // PMD filename fields are CP932 even on a non-Japanese ACP.
+                // Match the renderer/private editor's exact source identity.
+                // The fixed field may use all 100 bytes without a terminator.
+                // Add one outside the source field before the string decoder.
+                char terminated[sizeof(toon[i]) + 1]{};
+                std::memcpy(terminated, toon[i], sizeof(toon[i]));
+                std::wstring decoded;
+                const bool valid = text_encoding::Decode(terminated, 932, decoded);
+                std::wstring path = valid ? std::wstring(model.modelDirectory) + decoded : std::wstring{};
+                if (!valid || !LoadTextureShared(reinterpret_cast<unsigned char*>(sub), path.data()))
+                    strcpy_s(toon[i], sizeof(toon[i]), text);
+#else
                 ConvertAnsiToWide(reinterpret_cast<unsigned char*>(sub),
                                   toon[i], wide1, 0x100);
                 swprintf_s(wide2, 0x180, L"%s%s",
@@ -755,6 +768,7 @@ bool ModelLoadPMD(unsigned char* m, HWND hwnd, const wchar_t* path,
                 if (!LoadTextureShared(
                         reinterpret_cast<unsigned char*>(sub), wide2))
                     strcpy_s(toon[i], sizeof(toon[i]), text);
+#endif
             }
         }
     } else {

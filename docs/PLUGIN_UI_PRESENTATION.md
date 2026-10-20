@@ -1,6 +1,6 @@
 # 插件界面样式、绘制与动画接口方案
 
-本文固定界面需求和建议接口。基础 C++17 包装、工具栏命令溢出、REPAINT + SELF、按钮部分 STATE、SELF DATA 来源绑定与显示租约，以及保留布局的 SELF LAYOUT 已接入，实际接口以 SDK 为准。按钮状态内容服务提供文案、说明和禁用原因。属性、通用菜单及面板内容的完整 STATE、依赖范围、绘制层和动画函数仍为提案。
+本文固定界面需求和建议接口。基础 C++17 包装、声明式 INPUT、工具栏命令溢出、SELF／注册 SUBTREE 刷新、按钮 STATE、绑定 DATA 与显示租约、INPUT 默认属性 DATA，以及保留布局 LAYOUT 已接入，实际接口以 SDK 为准。INPUT 编辑仅在受控共同历史宿主启用，普通启动只读。按钮状态内容服务提供文案、说明和禁用原因；INPUT、通用菜单及面板内容的完整 STATE、自动依赖、绘制层和动画函数仍为提案。
 本方案不改变普通宿主的 `mms.edit` 开放状态，也不把界面动画记入场景撤销历史。
 跨 UI、视口和数据工具的分层封装以[统一扩展架构](PLUGIN_EXTENSION_ARCHITECTURE.md)为准；本页重点规定 UI 对象、刷新和交互。
 
@@ -33,14 +33,14 @@ Win7 SP1 x64、CPU 绘制和 AMD 兼容是基础约束；不以 CUDA、NVAPI、A
 
 | 已有能力 | 实际范围与代码依据 |
 | --- | --- |
-| `mms.ui` 1.0 | 命令、元素、只读属性和布局事务。`sdk/mms/include/mms/ui.h:99–120` 没有样式、画笔、绘制回调或帧请求。 |
+| `mms.ui` 1.0 | 命令、元素、属性注册、声明式 INPUT 和布局事务；属性写入仅在受控编辑宿主启用。该表没有样式、画笔、绘制回调或帧请求。 |
 | 元素 ID 和代次 | `ui.h:74–84` 提供 ID、generation 和注册表快照；不是完整的本体控件树。 |
 | 插件挂载 | `src/plugins/ui_registry.cpp` 只开放插件菜单、工具栏扩展区和工作区页签。 |
 | `mms.ui.surface` 1.0 | `surface.h:22–40` 提供创建、尺寸、显示、焦点和销毁回调；返回插件拥有的原生子窗口。 |
 | 子窗口约束 | `UiRegistry::ShowSurface` 校验父窗口、`WS_CHILD` 和 UI 线程；换父窗口会销毁重建。插件可在自己的窗口内自行绘制。 |
 | 布局与实际几何 | `layout.h` 分开记录 UI 和几何修订；`UiRegistry::PublishGeometry` 仅发布已应用的几何，未就绪返回 `NOT_READY`。 |
 | 工具栏命令溢出 | `layout.h` 的 `MMS_UI_OVERFLOW_MENU` 复用原 `overflow` 字段；`native_ui_overflow.hpp` 按可用空间、有效顺序及 keepTogether 生成布局，`NativeUi` 用真实原生菜单调用原命令。 |
-| `mms.ui.refresh` 1.0 | `refresh.h`、`src/plugins/ui_refresh.cpp` 提供能力和目标查询、四项跨线程票据操作。支持 REPAINT、按钮部分 STATE、有效绑定目标的 DATA 和保留布局的 LAYOUT，范围为 SELF；状态内容通过附加表在原 STATE 阶段准备。 |
+| `mms.ui.refresh` 1.0 | `refresh.h`、`src/plugins/ui_refresh.cpp` 提供能力和目标查询、四项跨线程票据操作。支持 SELF／注册 SUBTREE 的 REPAINT、按钮 STATE、绑定 DATA、INPUT 默认属性 DATA 和保留布局 LAYOUT；状态内容通过附加表在原 STATE 阶段准备。 |
 | `mms.ui.refresh.bind` 1.0 | `refresh_binding.h` 提供来源、精确版本、单目标绑定、只读 prepare、完整显示交换及不可变显示租约；复用原票据。 |
 | 刷新目标 | `NativeUi` 发布原元素 handle、独立窗口实例和实际客户区几何。非 LAYOUT 按钮也支持；未创建 surface 不因查询或重绘而挂载。 |
 | 局部缓冲 | `src/plugins/native_ui.cpp` 使用 GDI 背景缓冲；工具栏按钮仍为系统 `BUTTON`。 |
@@ -73,7 +73,7 @@ Win7 SP1 x64、CPU 绘制和 AMD 兼容是基础约束；不以 CUDA、NVAPI、A
 | 服务 ID | 当前或建议函数 | 用途 |
 | --- | --- | --- |
 | `mms.events` | `subscribe(filter, callback, context, outToken)`、`unsubscribe(token)`、`publish(topic, payload)` | 按主题和可选对象筛选事件，支持非控件触发。 |
-| `mms.ui.refresh` | 已实现 `getCapabilities`、`getTarget`、`request`、`query`、`cancel`、`release` | 当前合并本插件目标自身的重绘、受支持的按钮状态和有效绑定的 DATA；自动依赖刷新仍待实现。 |
+| `mms.ui.refresh` | 已实现 `getCapabilities`、`getTarget`、`request`、`query`、`cancel`、`release` | 当前合并本插件目标和注册子树的受支持阶段；INPUT 默认属性 DATA 已接入，INPUT STATE 和自动依赖仍待实现。 |
 | `mms.ui.refresh.bind` | 已实现 `getCapabilities`、`registerSource`、`publishSource`、`getSource`、`unregisterSource`、`bind`、`unbind`、`writePrepared`、`acquireDisplay`、`releaseDisplay` | 本插件来源和单目标显示模型；线程、配额与失效规则见[SDK](../sdk/mms/data-refresh.md)。 |
 | `mms.ui.geometry` | `resolve(elementId, outTarget)`、`acquire(targets, outSnapshot)`、`releaseSnapshot(lease)`、`mapPoints(snapshot, from, to, points, outPoints)` | 查询目标、不可变几何和跨区域坐标。 |
 | `mms.ui.style` | `getCapabilities(target, outCaps)`、`acquireComputed(target, outStyle)`、`releaseStyle(lease)`、`createOverride(desc, outHandle)`、`updateOverride(handle, desc)`、`removeOverride(handle)` | 查询和覆盖可用样式，不直接替换窗口过程。 |
@@ -119,7 +119,7 @@ C 包装返回同一底层句柄的带类型引用，C++ 包装增加可移动 R
 移交所有权必须显式完成，借用引用不能再次销毁；原生 `MmsHandle` 兼容保留，由宿主校验对象类型和 owner。
 局部注册失败时按逆序撤回本组已注册项目；这只是统一对象的批量清理，不建立第二套生命周期。
 插件停止时宿主仍负责最终回收，不能仅依赖 C++ 析构。便利层不得偷偷创建后台线程或替插件运行重任务。
-当前注册、布局、显式选择的工具栏溢出及受支持的刷新 ABI 可用；DOCK、INPUT、侧栏、属性区、时间线和状态栏挂载仍未开放，见 [SDK 当前服务](../sdk/mms/README.md#当前服务)。
+当前注册、布局、INPUT、显式选择的工具栏溢出及受支持的刷新 ABI 可用；INPUT 不进入命令溢出菜单。DOCK、侧栏、属性区、时间线和状态栏挂载仍未开放，见 [SDK 当前服务](../sdk/mms/README.md#当前服务)。
 新增功能先检查服务及目标能力。溢出没有独立能力查询，旧宿主即使提供布局 1.0 也可能拒绝 `overflow=3`；须检查设置提示的结果，再由插件明确选择受支持菜单或报告不支持。
 上下文菜单依据目标身份和只读状态生成；异步结果到达后更新注册描述，不在菜单绘制或状态查询中等待计算。
 
@@ -138,7 +138,7 @@ C 包装返回同一底层句柄的带类型引用，C++ 包装增加可移动 R
 
 ## 统一刷新请求
 
-当前 `mms.ui.refresh` 1.0 实现 REPAINT、按钮部分 STATE、有效绑定目标的 DATA，以及原生布局后端已有按钮和已挂载 surface 的 LAYOUT，范围均为 SELF。绑定见[数据刷新 SDK](../sdk/mms/data-refresh.md)。SUBTREE、DEPENDENTS 返回 UNSUPPORTED。提交时要求目标支持组合中的全部种类；执行时 completedKinds 记录已完成阶段。字段、配额及错误码以 [SDK 参考](../sdk/mms/refresh.md)为准。
+当前 `mms.ui.refresh` 1.0 支持 SELF 和同插件注册 SUBTREE 的 REPAINT、按钮 STATE、有效绑定目标 DATA、未绑定 INPUT 的属性 DATA，以及保留布局 LAYOUT；GROUP 仅支持 SUBTREE。绑定见[数据刷新 SDK](../sdk/mms/data-refresh.md)，子树及局部矩形见[刷新范围](../sdk/mms/refresh.md#子树范围)。INPUT STATE、DEPENDENTS 和来源自动订阅尚未实现。宿主逐目标及成员检查组合能力；执行时 completedKinds 记录已完成阶段，字段、配额及错误码以 SDK 为准。
 
 | 请求位 | 当前状态与语义 | 不隐含的动作 |
 | --- | --- | --- |

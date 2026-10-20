@@ -25,6 +25,7 @@
 #include <string>
 #include <numeric>
 #include "d3d12_native_shaders.hpp"
+#include "model_toon.hpp"
 
 namespace mikumikustudio {
 namespace {
@@ -300,9 +301,13 @@ struct Native {
                 draw.sphereMode=pmx?mat.sphereMode:(!sphere?0:wcsstr(mat.spherePath,L".spa")?2:1);
                 if(!sphere)draw.sphereMode=0;
                 if(draw.sphereMode)draw.alpha|=alpha;
+#if !MMD_ORIGINAL_PROFILE
+                auto* toon=ResolveModelToonTexture(app,app->Renderer(),m,mat);
+#else
                 IDirect3DTexture9* toon=app->ToonTexture(0);
                 if(mat.toonPath[0])toon=FindTexture(app,mat.toonPath);
                 else if(mat.toonReference<10)toon=app->ToonTexture(mat.toonReference+1);
+#endif
                 Descriptor(tex,f,draw.textureSlot);Descriptor(sphere,f,draw.textureSlot+1);Descriptor(toon,f,draw.textureSlot+2);
                 memcpy(draw.diffuse,mat.diffuse,16);memcpy(draw.ambient,mat.ambient,12);memcpy(draw.specular,mat.specular,12);draw.specular[3]=mat.specularPower;
                 if(m.displayState)draw.diffuse[3]=.5f;
