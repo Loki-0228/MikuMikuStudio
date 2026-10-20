@@ -113,7 +113,9 @@ void Run(MMDApp* app, const wchar_t* project, const wchar_t* output) {
     manifest << std::setprecision(9) << "{\n  \"width\": " << width << ",\n  \"height\": " << height
         << ",\n  \"warmup_submissions\": " << warmup << ",\n  \"captured_submissions\": " << frames
         << ",\n  \"pmm_frame\": " << frameIndex << ",\n  \"fps\": 30,\n  \"models\": " << models
-        << ",\n  \"accessories\": " << accessories << ",\n  \"host_aa\": \"MmdOriginal\",\n  \"camera\": [";
+        << ",\n  \"accessories\": " << accessories
+        << ",\n  \"pixel_format\": \"BGRA8\",\n  \"alpha_mode\": \"opaque_backbuffer\""
+        << ",\n  \"host_aa\": \"MmdOriginal\",\n  \"camera\": [";
     for (unsigned i = 0; i < 8; ++i) manifest << (i ? ", " : "") << camera[i];
     manifest << "]\n}\n"; manifest.close();
     Need(bool(manifest), "MME capture writes its manifest");
