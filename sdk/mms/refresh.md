@@ -124,6 +124,8 @@ SUBTREE + DATA 的 binding/sourceRevision 均为 0。宿主在同一次绑定锁
 
 ## 控件状态刷新
 
+已挂载 PANEL 的 STATE 更新页签标签、提示及原 surface 的可用性，保持原 view、输入值和实例。checked 不用于选择活动页签；没有命令的 PANEL 使用注册元数据基线。显隐变化应与 LAYOUT 组合，未实例化页签仍返回 NOT_READY。完整规则见 [PANEL 状态](state-content.md#panel-状态)。
+
 INPUT 的 STATE 使用[原状态内容服务](state-content.md#input-状态)，只查询属性元数据和编辑可用性，不读取属性值。它更新真实标签、提示及只能收紧的 enabled、readOnly、visible，保留原句柄和活动草稿；限制生效前先取消输入意图。INPUT 不使用按钮的 checked 消息。SELF 和 SUBTREE 贡献均固定准确的属性注册记录，属性替换使旧请求失效。
 
 STATE 重新查询目标按钮的命令，更新原 HWND 的 enabled、checked 和受支持的 visible。可选的 `mms.ui.refresh.state` 1.0 在同一阶段准备文案、说明和禁用原因，见[状态内容与 SDK](state-content.md)。未注册提供者时，文案使用元素标签，说明使用命令描述，禁用原因使用命令 getState 的结果。不调用命令，不刷新共享同一命令的菜单，也不读取属性。单独 STATE 不改变尺寸和布局；文案长度变化后重排需显式组合 LAYOUT。按钮以手动选中、推按钮外观呈现；点击不会自行切换选中来源，命令 getState 仍是启用、选中及显隐的来源。Enter 和普通命令激活保留。
