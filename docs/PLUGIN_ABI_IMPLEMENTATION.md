@@ -96,7 +96,9 @@ R3 拖动与插件区域问题已由用户确认恢复。按需求归类的当�
 
 [按钮 STATE 焦点](records/abi-refresh-next-2026-10-18.md)补齐禁用与原生回调的安全转移，独立桌面刷新 7,961 项通过；SELF DATA 和保留布局的 SELF LAYOUT 已由后续批次实现。当前范围以[本批记录](records/abi-layout-follow-slider-2026-10-19.md)为准，旧记录保留当时结果。
 
-[已挂载 PANEL 的 STATE](records/abi-panel-state-2026-10-21.md)已复用原内容提供者、刷新票据和 surface 实例，支持页签标签、说明、禁用原因及原命令可用性。显隐与 LAYOUT 组合重排，原窗口及输入值保留；未实例化页签仍返回 NOT_READY。两套配置面板专项各 530 项、完整 ABI 契约各 18,095 项通过。测试继承 Default，显示由夹具控制，不能代替隔离或真实输入验收；菜单 STATE 及自动依赖仍待实现。
+[已挂载 PANEL 的 STATE](records/abi-panel-state-2026-10-21.md)已复用原内容提供者、刷新票据和 surface 实例，支持页签标签、说明、禁用原因及原命令可用性。显隐与 LAYOUT 组合重排，原窗口及输入值保留；未实例化页签仍返回 NOT_READY。两套配置面板专项各 530 项、完整 ABI 契约各 18,095 项通过。测试继承 Default，显示由夹具控制，不能代替隔离或真实输入验收；自动依赖仍待实现。
+
+[MENU 和 MENU_ITEM 的 STATE](records/abi-menu-state-2026-10-21.md)随后接入同一队列、内容提供者及 SDK，更新原生菜单标签和原命令可用性。保留菜单身份，跟踪循环期间延后菜单票据；工具栏和 INPUT 仍可刷新。菜单仅支持无几何的 STATE、同插件 SELF/SUBTREE 和 LABEL 内容字段，尚未挂载返回 NOT_READY，菜单提示及自动依赖未开放。专项在两套配置各通过 1,088 项，完整 ABI 契约各通过 19,195 项；正式 release 未更新。
 
 [黑白背景的菜单 282 和 B 键](records/abi-black-background-history-2026-10-21.md)已接入同一 Adjustment 事务：全部操作模式新增共同历史节点，仅显式提交模式直接调整并保留 redo。同值保留原始非零字节，撤销精确恢复；PMM 标准单字节布尔写入保持。专项 1,463 项、坐标显示 492 项和地面阴影 540 项通过；首次提交只请求绘制，普通公共编辑服务仍关闭。
 
@@ -134,7 +136,7 @@ R3 拖动与插件区域问题已由用户确认恢复。按需求归类的当�
 | P2 | 保留槽位按钮显隐与后台 STATE SDK | 本机已验证 | 在有效 PRESERVE_HIDDEN_SLOT 槽位内更新原按钮显隐、焦点及公开几何，不重排或写入布局偏好。RefreshStateCurrent 组合原 C 请求；固定几何与当前几何贡献分组。刷新专项累计 7,764 次断言、真实 DLL、改名宿主、混合历史及调度回归通过，见[验证记录](records/abi-slot-visibility-2026-10-17.md)。SELF DATA 和保留布局的 SELF LAYOUT 已后续接入；完整 STATE 仍待实现。 |
 | P2 | SELF DATA、来源绑定及同对象 SDK | 本机已验证 | 精确来源版本、只读显示候选交换、不可变显示租约和有界保留；共用原队列与票据。回调及任务因果保护，双插件独立任务不误标。模块 666 项、真实 DLL/SDK 897 项通过，见[记录](records/abi-data-refresh-2026-10-19.md)。后续 LAYOUT 接入后，组合顺序为 DATA、STATE、LAYOUT、REPAINT。 |
 | P2 | 保留布局的 SELF LAYOUT 及 SDK | 本机已验证 | 已有按钮和已挂载 surface 使用保留树排版；纯 LAYOUT 使用缓存状态，STATE 与 LAYOUT 组合支持收缩空位及同引用恢复零尺寸按钮。失败暂停几何及目标，旧快照租约保持；局部旧矩形返回 STALE 并保留已完成阶段。SDK 的 RelayoutCurrent、RefreshStateLayout 共用原请求。实际 NativeUi 389 项、双真实 DLL 645 项及两路径真实 MMS 入口通过；此批验证范围见[记录](records/abi-layout-follow-slider-2026-10-19.md)；SUBTREE 已随后接入，自动依赖及插件量测提供者仍未实现。 |
-| P2 | 按钮、INPUT 及已挂载 PANEL STATE 内容与分层 SDK | 本机已验证 | `mms.ui.refresh.state` 1.0 在原 STATE 阶段准备文案、说明和禁用原因；INPUT 尾部可收紧启用、只读和可见状态，不读取属性值或提交草稿。单写 builder、旧显示计费、提供者代次及只读因果共用原刷新规则。随后 PANEL 已保留原 surface 窗口和实例，支持标签、提示及可用性；双配置面板专项各 530 项，完整契约各 18,095 项通过。未实例化面板仍 NOT_READY，菜单及依赖范围未实现，见[PANEL 记录](records/abi-panel-state-2026-10-21.md)。 |
+| P2 | 按钮、INPUT、已挂载 PANEL 及菜单 STATE 内容与分层 SDK | 本机已验证 | `mms.ui.refresh.state` 1.0 在原 STATE 阶段准备文案；窗口目标支持说明和禁用原因，INPUT 尾部可收紧可用性，不读取属性值或提交草稿。PANEL 保留原 surface，菜单保留原生身份；MENU/MENU_ITEM 仅接受 LABEL 及无几何的 STATE，跟踪期间延后消费。两套配置菜单专项各 1,088 项通过；菜单提示、未实例化面板状态及依赖服务未开放。见[PANEL 记录](records/abi-panel-state-2026-10-21.md)、[菜单记录](records/abi-menu-state-2026-10-21.md)。 |
 | P3 | 模型与骨骼 HUD 20 类操作 | 受控路径本机已验证 | 独立副本运行原数学，完整手势一次调整，逐字段取消并保留外写，释放采样最终系统光标；普通骨骼、等比／轴向／投影缩放均覆盖。专项 31,357 项及两种真实文件宿主通过。原始兼容 profile 保留旧路径，普通公共编辑服务仍关闭，见[记录](records/abi-state-model-hud-readout-2026-10-19.md)。 |
 | P2 | 可写属性、声明式 INPUT | 受控路径本机已验证 | 原属性、元素、事务与共同历史共用身份，工具栏、属性扩展行及其 GROUP 支持原生输入、草稿、取消、重绑及同对象 C++ SDK。随后接入[默认属性 DATA](records/abi-property-data-2026-10-20.md)和[STATE](records/abi-input-state-2026-10-21.md)，支持消费时读回、草稿保留、显式绑定优先及只读状态限制；两套配置 INPUT 专项各 6,022 项，新增属性挂载专项各 681 项通过。普通启动暂存仍返回 NOT_READY，输入框只读；自动订阅、其余挂载点及真机 IME 尚待完成，见[初始记录](records/abi-declarative-input-2026-10-20.md)。 |
 | P2 | 属性扩展行挂载 | 本机已验证 | `mms.properties.main.extensions` 是真实主窗口扩展行，支持原 BUTTON、GROUP、SEPARATOR、INPUT，使用同一布局和刷新队列。空行高度为 0，停靠视口及覆盖区避让；移动、草稿取消、同实例零高恢复和卸载纳入双配置各 681 项专项，完整 ABI 契约各 17,565 项通过，见[记录](records/abi-property-mount-2026-10-21.md)。本批不含产品集成及真实 IME、多屏 DPI 验收。 |

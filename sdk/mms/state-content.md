@@ -1,18 +1,18 @@
 # 控件状态内容与 C++17 SDK
 
-`mms.ui.refresh.state` 1.0 为本插件已有的宿主按钮、声明式 INPUT 及已挂载 PANEL 注册只读状态提供者。它更新原控件的显示文案和提示说明，包括禁用原因。状态内容通过原 `mms.ui.refresh` 的 STATE 阶段执行，不创建控件、第二条刷新队列或独立票据。
+`mms.ui.refresh.state` 1.0 为本插件已有的宿主按钮、声明式 INPUT、已挂载 PANEL 及菜单注册只读状态提供者。窗口控件支持显示文案及提示说明，菜单只支持 LABEL。状态内容通过原 `mms.ui.refresh` 的 STATE 阶段执行，不创建控件、第二条刷新队列或独立票据。
 
 C 定义见 [refresh_state.h](include/mms/refresh_state.h)，C++17 封装见 [state_content.hpp](include/mms/cpp/state_content.hpp)。开发环境沿用 [SDK README](README.md#开发环境)。旧刷新表、请求和票据状态结构仍分别为 64、112、40 字节；本服务是独立协商的附加表，不修改旧结构。
 
-当前支持已挂载的宿主 `MMS_UI_BUTTON`、`MMS_UI_INPUT` 和 `MMS_UI_PANEL`。按钮的 enabled、checked、visible 继续由原命令 getState 决定；内容提供者不能改写这些值。INPUT 可额外收紧启用、只读和可见状态，规则见下文。PANEL 更新页签和可用性，不接管插件自绘内容。菜单及其他控件的完整 STATE 尚未开放。
+当前支持已挂载的宿主 `MMS_UI_BUTTON`、`MMS_UI_INPUT`、`MMS_UI_PANEL`、`MMS_UI_MENU` 和 `MMS_UI_MENU_ITEM`。按钮及菜单的 enabled、checked、visible 继续由原命令 getState 决定；内容提供者不能改写这些值。INPUT 可额外收紧启用、只读和可见状态，规则见下文。PANEL 更新页签和可用性，不接管插件自绘内容。菜单提示和其他控件的完整 STATE 尚未开放。
 
 ## 服务和原目标
 
 插件清单的 `requiresServices` 声明 `mms.ui.refresh.state` 和 `mms.ui.refresh` 1.0。注册控件仍使用原 `mms.ui`。在宿主 UI 线程查询服务、取得原控件的刷新目标，再注册提供者。
 
-`getCapabilities` 返回当前字段能力和配额。尚无原生内容后端时，supportedFields 为 0。调用前检查服务能力、原目标的 STATE 能力；服务存在不表示窗口已经挂载。
+`getCapabilities` 返回当前字段能力和配额。尚无原生内容后端时，supportedFields 为 0。调用前检查服务能力、原目标的 STATE 能力；服务存在不表示目标已经挂载。
 
-提供者描述包含原 `MmsUiTargetRefV1`、context、prepare 回调和允许覆盖的 fields。每个目标最多一个提供者。只能注册自己的按钮、INPUT 或 PANEL；目标引用须来自 `getTarget`，不能用 HWND、UI generation 或布局修订代替。
+提供者描述包含原 `MmsUiTargetRefV1`、context、prepare 回调和允许覆盖的 fields。每个目标最多一个提供者。只能注册自己的按钮、INPUT、PANEL、MENU 或 MENU_ITEM；目标引用须来自 `getTarget`，不能用 HWND、HMENU、UI generation 或布局修订代替。能力表报告全局字段并集，注册时仍按目标类型检查。
 
 | C 函数 | 行为 |
 | --- | --- |
@@ -102,6 +102,24 @@ checked 不表示当前页签，也不会向 surface 窗口发送按钮勾选消
 只有已创建并发布的 surface view 才有刷新目标。尚未首次打开的页签返回 NOT_READY，getTarget 不创建窗口。已隐藏但保留 view 的面板可继续使用同一有效目标引用；零尺寸时使用含 LAYOUT 的组合请求。重建 view 或切换工程后，重新查询目标并更新提供者。
 
 本服务不扫描或修改插件自行创建的子 HWND。自绘内容和属性值仍通过原 DATA 绑定、插件绘制及控件接口更新。
+
+## 菜单状态
+
+MENU、MENU_ITEM 沿用原内容表、提供者和 builder，但描述的 fields 只能为 `MMS_UI_STATE_LABEL`。注册 DESCRIPTION、DISABLED_REASON 或 INPUT 标量字段返回 UNSUPPORTED。菜单没有本服务可用的提示消费者，不能用全局字段能力推定这些字段适用。
+
+在 prepare 回调中构造原 64 字节结构，只写 LABEL，再调用 typed `Write`：
+
+```cpp
+MmsUiStateContentV1 text{};
+text.h = mms::sdk::Header<MmsUiStateContentV1>();
+text.fields = MMS_UI_STATE_LABEL;
+text.label = mms::sdk::Text(label); // label 为本回调有效期内的 UTF-8 字符串。
+return contents.Write(builder, text);
+```
+
+不要使用同时设置三种文本位的 `Write(builder, label, description, reason)` 重载。写入未在提供者描述中声明的字段返回 ARGUMENT。未设置 LABEL 时回退到注册标签，显式空 LABEL 则清空文本。
+
+通过原 `StateContentServices::Register(target, MMS_UI_STATE_LABEL, prepare, context, provider)` 注册，随后调用 `provider.Refresh(refresh, ticket)`。默认只请求 STATE，适用于菜单；显式指定 layout=true 会因菜单不支持 LAYOUT 而被拒绝。简单插件和复杂插件操作的是同一批原对象，没有额外菜单包装对象。菜单目标无客户区几何，循环期间延后与失效规则见[菜单 STATE](refresh.md#菜单-state)。
 
 ## INPUT 状态
 

@@ -1,10 +1,10 @@
 # 界面刷新接口参考
 
-`mms.ui.refresh` 1.0 为插件自己的按钮、INPUT、分隔线、注册 GROUP 和原生 surface 面板安排异步刷新。接口定义见 [refresh.h](include/mms/refresh.h)。结构使用 `MmsHeader`、`MMS_CALL` 和 8 字节对齐，调用失败不修改输出参数。
+`mms.ui.refresh` 1.0 为插件自己的按钮、INPUT、分隔线、注册 GROUP、原生 surface 面板及菜单安排异步刷新。接口定义见 [refresh.h](include/mms/refresh.h)。结构使用 `MmsHeader`、`MMS_CALL` 和 8 字节对齐，调用失败不修改输出参数。
 
-当前支持 SELF 和 SUBTREE 范围的 REPAINT、按钮、INPUT 及已挂载 PANEL 的 STATE、已绑定目标 DATA、未绑定 INPUT 的属性 DATA，以及保留布局的 LAYOUT；GROUP 只开放 SUBTREE。两种范围均接受局部矩形，各阶段共用同一票据及队列。显式 DATA 使用[已有绑定](data-refresh.md)，默认属性读回见 [INPUT](input.md)。DEPENDENTS、来源订阅、自动依赖、插件量测提供者和动画帧尚未提供。SUBTREE 不遍历插件自行创建的任意 HWND。
+当前支持 SELF 和 SUBTREE 范围的 REPAINT、按钮、INPUT、已挂载 PANEL 及菜单的 STATE、已绑定目标 DATA、未绑定 INPUT 的属性 DATA，以及保留布局的 LAYOUT；GROUP 只开放 SUBTREE。窗口目标的两种范围均接受局部矩形；菜单只接受无矩形的 STATE。各阶段共用同一票据及队列。显式 DATA 使用[已有绑定](data-refresh.md)，默认属性读回见 [INPUT](input.md)。DEPENDENTS、来源订阅、自动依赖、插件量测提供者和动画帧尚未提供。SUBTREE 不遍历插件自行创建的任意 HWND。
 
-组合请求在同一队列中按 DATA、STATE、LAYOUT、REPAINT 执行。DATA 准备并交换不可变显示模型；STATE 只读查询按钮或 PANEL 的原命令状态，或 INPUT 的属性元数据及编辑可用性，并可通过[状态内容服务](state-content.md)准备文案和提示。没有命令的 PANEL 使用注册元数据作为基线。INPUT STATE 不读取属性值。LAYOUT 使用已保留的描述、提示和状态排版；REPAINT 调用 `InvalidateRect` 或 `InvalidateRgn`，不直接执行绘制。刷新不调用 `FrameDriver`，不修改播放头、工程 dirty 或撤销历史，也不保存布局偏好。插件窗口后续的正常 `WM_PAINT` 仍由插件处理。
+组合请求在同一队列中按 DATA、STATE、LAYOUT、REPAINT 执行。DATA 准备并交换不可变显示模型；STATE 只读查询按钮、PANEL 或菜单的原命令状态，或 INPUT 的属性元数据及编辑可用性，并可通过[状态内容服务](state-content.md)准备支持的文案和提示。没有命令的 PANEL 和 MENU 使用注册元数据作为基线。INPUT STATE 不读取属性值。LAYOUT 使用已保留的描述、提示和状态排版；REPAINT 调用 `InvalidateRect` 或 `InvalidateRgn`，不直接执行绘制。刷新不调用 `FrameDriver`，不修改播放头、工程 dirty 或撤销历史，也不保存布局偏好。插件窗口后续的正常 `WM_PAINT` 仍由插件处理。
 
 ## 服务查询与线程
 
@@ -29,7 +29,7 @@
 
 ## 目标身份与几何
 
-`getTarget` 接受本插件 BUTTON、INPUT、SEPARATOR、PANEL 或已发布工具栏 GROUP 的原注册 `MmsHandle`。命令、surface 工厂和菜单项不是刷新目标。GROUP 使用同一注册 handle 的保留容器身份，没有独立 HWND；不能绑定 DATA 或请求 SELF。尚未发布的 GROUP 返回 NOT_READY。按钮无需声明 MMS_UI_LAYOUT。
+`getTarget` 接受本插件 BUTTON、INPUT、SEPARATOR、PANEL、MENU、MENU_ITEM 或已发布工具栏 GROUP 的原注册 `MmsHandle`。命令和 surface 工厂不是刷新目标。GROUP 使用同一注册 handle 的保留容器身份，没有独立 HWND；不能绑定 DATA 或请求 SELF。尚未发布的 GROUP 返回 NOT_READY。按钮无需声明 MMS_UI_LAYOUT。MENU 和 MENU_ITEM 只开放下述菜单 STATE，没有客户区几何。
 
 `MmsUiRefreshTargetV1` 的字段如下。
 
@@ -38,11 +38,11 @@
 | `target.element` | 原 `mms.ui` 元素注册句柄。 |
 | `target.instanceGeneration` | 宿主分配的呈现实例代次。销毁、重建或失效后重新发布会改变该值。 |
 | `target.projectEpoch` | 当前工程上下文代次。场景替换或重置后旧值失效。 |
-| `geometryRevision` | 当前实际几何修订，包括位置、客户区尺寸、窗口坐标空间 DPI 和逻辑可见性。 |
-| `supportedKinds`、`supportedScopes` | 开放范围的能力并集。普通目标报告 SELF 和 SUBTREE；GROUP 只报告 SUBTREE。REPAINT 对应实际呈现，STATE 对应按钮、原生 INPUT 或已挂载 PANEL，DATA 对应有效绑定或原生 INPUT 属性读回，LAYOUT 对应保留布局后端。并集不表示各范围或后代都支持全部位，request 仍逐范围和成员检查。 |
-| `ready` | 普通目标已有窗口、布局发布成功且客户区宽高均大于零时为 1；GROUP 表示容器已发布。子树请求还检查各实际参与成员。 |
+| `geometryRevision` | 窗口或布局目标的实际几何修订，包括位置、客户区尺寸、窗口坐标空间 DPI 和逻辑可见性。MENU、MENU_ITEM 固定为 0。 |
+| `supportedKinds`、`supportedScopes` | 开放范围的能力并集。普通目标报告 SELF 和 SUBTREE；GROUP 只报告 SUBTREE。REPAINT 对应实际呈现，STATE 对应按钮、原生 INPUT、已挂载 PANEL 或菜单，DATA 对应有效绑定或原生 INPUT 属性读回，LAYOUT 对应保留布局后端。并集不表示各范围或后代都支持全部位，request 仍逐范围和成员检查。 |
+| `ready` | 窗口目标已挂载、布局发布成功且客户区宽高均大于零时为 1；GROUP 表示容器已发布。MENU、MENU_ITEM 表示保留的原生菜单记录有效，不要求弹出或正尺寸。子树请求还检查各实际参与成员。 |
 | `visible` | 目标在插件布局中的逻辑可见性。此值不表示窗口无遮挡，也不要求宿主顶层窗口已显示。 |
-| `width`、`height` | 普通目标客户区 DIP 尺寸；GROUP 为保留布局中的逻辑容器尺寸。 |
+| `width`、`height` | 窗口目标客户区 DIP 尺寸；GROUP 为保留布局中的逻辑容器尺寸；MENU、MENU_ITEM 均为 0。 |
 
 目标引用必须从 `getTarget` 取得。`MmsUiElementV1.generation`、布局快照修订和原生 HWND 都不能代替 `instanceGeneration`。
 
@@ -84,7 +84,7 @@ SUBTREE 展开入队时的 `mms.ui` 注册树，包含有实际呈现的根及�
 | 阶段 | 适用成员 |
 | --- | --- |
 | DATA | 具有本插件有效绑定的实际目标，以及未绑定的原生 INPUT；其他无绑定成员跳过。 |
-| STATE | 已创建、支持 STATE 的宿主按钮、INPUT 及 PANEL；GROUP 和分隔线跳过。 |
+| STATE | 已挂载、支持 STATE 的宿主按钮、INPUT、PANEL、MENU 及 MENU_ITEM；GROUP 和分隔线跳过。 |
 | LAYOUT | 支持保留布局的成员。整树 STATE 后只调用一次现有后端，解决同容器及相邻区域的布局依赖。 |
 | REPAINT | 实际呈现的按钮、INPUT、分隔线和面板。无矩形时使整个客户区失效；有矩形时只使根区域映射后的交集失效。 |
 
@@ -123,6 +123,18 @@ SUBTREE + DATA 的 binding/sourceRevision 均为 0。宿主在同一次绑定锁
 组合请求在某一阶段失败后停止后续阶段，FAILED 票据的 completedKinds 保留已成功的阶段位。例如 DATA 和 LAYOUT 已成功、后续局部重绘因几何变化返回 STALE 时，仍保留这些完成位。UI 状态不属于工程事务，不承诺对已发生的原生窗口变化执行事务回滚。
 
 ## 控件状态刷新
+
+### 菜单 STATE
+
+已挂载的 MENU、MENU_ITEM 使用原注册句柄、命令、内容提供者和票据。菜单目标的 `supportedKinds=STATE`，`geometryRevision`、`width`、`height` 均为 0。`ready=1` 表示保留的原生菜单记录有效，不要求菜单正在弹出或该项当前可见。尚未挂载、暂停或已失效的目标仍不能接受请求。
+
+SELF 更新本项；SUBTREE 更新同插件注册的菜单根及后代，继续核对完整拓扑和所有者。菜单请求的 `kinds` 必须恰为 STATE，`binding`、`sourceRevision`、`expectedGeometryRevision` 均为 0，`dirtyRects.count=0`。REPAINT、DATA、LAYOUT 和非零几何约束返回 UNSUPPORTED；仅 STATE 携带脏矩形时先按公共参数规则返回 ARGUMENT。不借用主窗口客户区。
+
+STATE 只读查询原命令的 enabled、checked 和 visible；没有命令的 MENU 使用注册元数据基线。内容提供者仅能覆盖 LABEL，见[菜单内容](state-content.md#菜单状态)。隐藏后恢复保留原元素、菜单及呈现实例。原生菜单处于跟踪循环时，菜单票据保留 PENDING；后台仍可提交、合并、取消和释放。宿主退出菜单循环后恢复消费，工具栏和 INPUT 请求继续独立调度。完成表示原生菜单状态已读回核对，不表示用户已看见该项，也不调用命令或写入工程数据。
+
+元素或提供者替换、卸载及工程代次变化仍使旧票据失效。失去原生项身份时不能用旧 ID 调用替代命令；不能确认显示一致的失败会暂停菜单目标，普通宿主刷新核对并修复原记录后才重新发布。
+
+### 窗口控件 STATE
 
 已挂载 PANEL 的 STATE 更新页签标签、提示及原 surface 的可用性，保持原 view、输入值和实例。checked 不用于选择活动页签；没有命令的 PANEL 使用注册元数据基线。显隐变化应与 LAYOUT 组合，未实例化页签仍返回 NOT_READY。完整规则见 [PANEL 状态](state-content.md#panel-状态)。
 

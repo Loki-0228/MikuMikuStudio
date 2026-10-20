@@ -54,6 +54,7 @@ static std::string ManifestText(std::string id = "org.example.hello", std::strin
 #include "input_state_prefix_checks.inc"
 #include "property_mount_checks.inc"
 #include "panel_state_refresh_checks.inc"
+#include "menu_state_refresh_checks.inc"
 #include "overflow_menu_checks.inc"
 #include "overflow_validation_checks.inc"
 #include "manager_data_refresh_checks.inc"
@@ -362,6 +363,9 @@ static void LifecycleChecks(const fs::path& root, const fs::path& fixture) {
 int wmain(int argc, wchar_t** argv) {
     const fs::path root = fs::temp_directory_path() / (L"mms-abi-contract-" + std::to_wstring(GetCurrentProcessId()));
     try {
+        if (argc == 2 && std::wstring(argv[1]) == L"--menu-state-only") {
+            MenuStateRefreshChecks(); std::cout << "PASS MENU STATE checks=" << checks << "\n"; return 0;
+        }
         if (argc == 2 && std::wstring(argv[1]) == L"--panel-state-only") {
             PanelStateRefreshChecks(); std::cout << "PASS PANEL STATE checks=" << checks << "\n"; return 0;
         }
@@ -430,7 +434,7 @@ int wmain(int argc, wchar_t** argv) {
         CHECK(argc == 4); CHECK(!fs::exists(root)); fs::create_directories(root);
         JsonChecks(); DiscoveryChecks(root); UiChecks(); UiPreferenceChecks(); UiPreferencesFileChecks(root); LayoutChecks(); TreeLayoutChecks(); LayoutServiceChecks(); OverflowValidationChecks(); OverflowMenuChecks(); UpdateChecks(); Win32HostChecks(); SurfaceChecks(); CppSdkChecks(); CppInputSdkChecks(); LoaderChecks(root, fs::absolute(argv[1]));
         LifecycleChecks(root, fs::absolute(argv[2])); TaskDispatchChecks(root, fs::absolute(argv[2]), fs::absolute(argv[3]));
-        SceneChecks(); StorageChecks(root); EditChecks(); UiPropertyStageChecks(); SharedHistoryChecks(); StateContentChecks(); InputStateContentChecks(); InputStatePrefixChecks(); PropertyMountChecks(); PanelStateRefreshChecks();
+        SceneChecks(); StorageChecks(root); EditChecks(); UiPropertyStageChecks(); SharedHistoryChecks(); StateContentChecks(); InputStateContentChecks(); InputStatePrefixChecks(); PropertyMountChecks(); PanelStateRefreshChecks(); MenuStateRefreshChecks();
         UiRefreshSubtreeChecks(); UiRefreshSubtreeRectChecks();
         ManagerEditChecks(root, fs::absolute(argv[3]));
         UiInputBrokerChecks(root, fs::absolute(argv[3]));

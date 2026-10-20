@@ -64,6 +64,8 @@ struct ButtonStateContent {
     uint32_t fields = 0;
     // INPUT shares the same provider, builder, ownership and STATE queue.
     bool input = false, enabled = true, readOnly = false, visible = true;
+    // Command-owned state, never writable by the text provider.
+    bool checked = false;
     std::wstring label, description, disabledReason, help;
     std::shared_ptr<StateContentBudget> owner, global;
     uint64_t charge = 0;

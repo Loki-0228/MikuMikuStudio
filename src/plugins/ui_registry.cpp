@@ -851,10 +851,11 @@ MmsResult UiRegistry::WithElementState(MmsHandle handle, const std::function<Mms
     auto element = std::find_if(elements.begin(), elements.end(), [&](const auto& e) { return e.second.handle == handle; });
     if (element == elements.end()) return MMS_E_STALE;
     const bool panel = element->second.desc.kind == MMS_UI_PANEL;
-    if (element->second.desc.kind != MMS_UI_BUTTON && !panel) return MMS_E_UNSUPPORTED;
+    const bool menu = element->second.desc.kind == MMS_UI_MENU;
+    if (element->second.desc.kind != MMS_UI_BUTTON && element->second.desc.kind != MMS_UI_MENU_ITEM && !panel && !menu) return MMS_E_UNSUPPORTED;
     auto found = commands.find(String(element->second.desc.commandId));
     if (found == commands.end()) {
-        if (!panel || element->second.desc.commandId.bytes) return MMS_E_NOT_FOUND;
+        if ((!panel && !menu) || element->second.desc.commandId.bytes) return MMS_E_NOT_FOUND;
         const MmsCommandStateV1 state{Header<MmsCommandStateV1>(),1,0,element->second.visible?1u:0u,0,{}};
         Callback guard(callbackDepth_); return apply(state);
     }
@@ -882,6 +883,8 @@ MmsResult UiRegistry::StateContentProvider(UiClient& client, const MmsUiStateCon
     const auto element = std::find_if(elements.begin(), elements.end(), [&](const auto& item) { return item.second.handle == desc->target.element; });
     if (element == elements.end()) return MMS_E_STALE;
     if ((desc->fields & kStateInputFields) && element->second.desc.kind != MMS_UI_INPUT) return MMS_E_UNSUPPORTED;
+    if ((element->second.desc.kind == MMS_UI_MENU || element->second.desc.kind == MMS_UI_MENU_ITEM) &&
+        (desc->fields & ~MMS_UI_STATE_LABEL)) return MMS_E_UNSUPPORTED;
     auto old = stateProviders_.find(replace);
     if (replace && (old == stateProviders_.end() || old->second->owner != &client)) return MMS_E_NOT_FOUND;
     if (replace && old->second->desc.target.element != desc->target.element) return MMS_E_ARGUMENT;
@@ -964,7 +967,8 @@ MmsResult UiRegistry::WithElementStateContent(const MmsUiTargetRefV1& target, ui
         const auto elementId = element->first;
         const auto command = commands.find(String(element->second.desc.commandId));
         const bool panel = element->second.desc.kind == MMS_UI_PANEL;
-        if (!property && command == commands.end() && (!panel || element->second.desc.commandId.bytes)) return MMS_E_STALE;
+        const bool menu = element->second.desc.kind == MMS_UI_MENU || element->second.desc.kind == MMS_UI_MENU_ITEM;
+        if (!property && command == commands.end() && ((!panel && !menu) || element->second.desc.commandId.bytes)) return MMS_E_STALE;
         const auto owner = String(element->second.desc.ownerPlugin);
         const auto entry = stateProviderElements_.find(target.element);
         std::shared_ptr<StateProvider> provider;
@@ -1004,15 +1008,18 @@ MmsResult UiRegistry::WithElementStateContent(const MmsUiTargetRefV1& target, ui
             builder.candidate->visible = state.visible && builder.candidate->visible;
             builder.candidate->readOnly = baselineReadOnly || builder.candidate->readOnly;
             effective.enabled = builder.candidate->enabled; effective.visible = builder.candidate->visible;
-        } else if (panel) {
+        } else if (panel || menu) {
             const auto current = elements.find(elementId);
-            if (current == elements.end() || current->second.handle != target.element || current->second.desc.kind != MMS_UI_PANEL)
+            if (current == elements.end() || current->second.handle != target.element ||
+                (menu ? current->second.desc.kind != MMS_UI_MENU && current->second.desc.kind != MMS_UI_MENU_ITEM : current->second.desc.kind != MMS_UI_PANEL))
                 return MMS_E_STALE;
             // PANEL providers remain text-only. Availability is still the
             // original command state intersected with registered visibility.
             builder.candidate->enabled = state.enabled != 0;
             builder.candidate->visible = state.visible && current->second.visible;
-            effective.visible = builder.candidate->visible; effective.checked = 0;
+            effective.visible = builder.candidate->visible;
+            builder.candidate->checked = menu && state.checked;
+            if (panel) effective.checked = 0;
         }
         return apply(effective, builder.candidate);
     };

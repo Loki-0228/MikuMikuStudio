@@ -81,4 +81,4 @@ Get-Content build/verification/abi-panel-background-lifetime-20261021/panel-orig
 
 尚未实例化的页签没有真实 surface HWND，`getTarget` 继续返回 `MMS_E_NOT_READY`。宿主不会借用共享 tabs HWND 伪造面板目标。首次选择并创建 surface 后，才能查询和使用该面板的 STATE 能力。
 
-通用菜单 STATE 仍未实现。本批不增加菜单、DOCK 或其他挂载根的刷新能力，也不扩大编辑权限。Win7 SP1 x64、CPU 基础路径及 AMD 兼容要求保留，本轮没有新增对应真机或 GPU 渲染验收。
+本 PANEL 批次没有增加菜单、DOCK 或其他挂载根的刷新能力，也不扩大编辑权限。MENU/MENU_ITEM 的无几何 STATE 由后续[菜单批次](abi-menu-state-2026-10-21.md)单独实现及验证。Win7 SP1 x64、CPU 基础路径及 AMD 兼容要求保留，本轮没有新增对应真机或 GPU 渲染验收。

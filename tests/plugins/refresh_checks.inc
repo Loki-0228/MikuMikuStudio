@@ -179,7 +179,8 @@ static void CapabilitiesAndValidation() {
     CHECK(x.api.getTarget(x.api.context, x.factory, &wrong) != MMS_OK);
     auto menu = x.Button("example.refresh.menu"); menu.kind = MMS_UI_MENU_ITEM; menu.parentId = S("mms.menu.plugins");
     MmsHandle menuHandle = 0; CHECK(x.ui.registerElement(x.ui.context, &menu, &menuHandle) == MMS_OK);
-    CHECK(x.api.getTarget(x.api.context, menuHandle, &wrong) == MMS_E_UNSUPPORTED);
+    // MENU_ITEM supports STATE once NativeUi publishes its real presentation.
+    CHECK(x.api.getTarget(x.api.context, menuHandle, &wrong) == MMS_E_NOT_READY);
     auto group = x.Button("example.refresh.group"); group.kind = MMS_UI_GROUP; group.commandId = {}; group.capabilities |= MMS_UI_CONTAINER;
     MmsHandle groupHandle = 0; CHECK(x.ui.registerElement(x.ui.context, &group, &groupHandle) == MMS_OK);
     CHECK(x.api.getTarget(x.api.context, groupHandle, &wrong) == MMS_E_NOT_READY);

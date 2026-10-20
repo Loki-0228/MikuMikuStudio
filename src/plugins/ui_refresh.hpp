@@ -49,6 +49,11 @@ struct RefreshPresentation {
     std::shared_ptr<const PropertyRecord> propertyRecord;
     // Native publication kind; surface HWNDs must never receive button messages.
     uint32_t kind = 0;
+    // Non-client menus have no HWND client rectangle. These identities are
+    // published by NativeUi and revalidated by its STATE consumer.
+    HMENU menu = nullptr;
+    ULONG_PTR menuCookie = 0;
+    unsigned menuItem = 0;
 };
 class UiRefreshQueue {
     struct Target;
@@ -72,6 +77,7 @@ class UiRefreshQueue {
     bool topologyReady_ = false;
     std::uint64_t next_ = 1, nextGeneration_ = 1, nextGeometry_ = 1, epoch_ = 1;
     bool draining_ = false;
+    bool menuTracking_ = false;
     const RefreshClient* evaluatingStateOwner_ = nullptr;
     const UiClient* evaluatingStateProvider_ = nullptr;
     const RefreshClient* evaluatingDataOwner_ = nullptr;
@@ -92,6 +98,7 @@ class UiRefreshQueue {
     bool ReadOnlyCauseLocked(const RefreshClient&) const noexcept;
     std::vector<MmsHandle> SubtreeLocked(MmsHandle) const;
     MmsResult ValidateTicketLocked(const Ticket&, bool geometry) const;
+    void SyncTargets(const std::vector<RefreshPresentation>&, bool menus);
 public:
     explicit UiRefreshQueue(UiRegistry&);
     ~UiRefreshQueue();
@@ -117,6 +124,9 @@ public:
     bool CachedStateVisible(MmsHandle, bool fallback) const;
     MmsResult WithLayoutProvider(const UiClient&, const std::function<MmsResult()>&);
     void SyncTargets(const std::vector<RefreshPresentation>&);
+    void SyncMenuTargets(const std::vector<RefreshPresentation>&);
+    void SetMenuTracking(bool) noexcept;
+    void SuspendMenuTargets() noexcept;
     // UI-only publication. Requests use this copy, never registry pointers.
     // Failure closes SUBTREE acceptance until the next successful publication.
     void SyncTopology() noexcept;

@@ -45,6 +45,28 @@ struct NativeUi::Impl {
         std::shared_ptr<const ButtonStateContent> content, tooltipContent;
     };
     std::map<std::string, PanelState> panelStates;
+    struct MenuState {
+        MmsHandle element = 0;
+        std::shared_ptr<Arena> arena;
+        uint64_t instance = 0;
+        HMENU parent = nullptr, submenu = nullptr;
+        ULONG_PTR parentCookie = 0;
+        unsigned id = 0;
+        uint32_t kind = 0;
+        bool present = false, enabled = true, checked = false, visible = true;
+        std::wstring caption;
+        std::shared_ptr<const ButtonStateContent> content;
+        ~MenuState() {
+            MENUINFO owner{sizeof(owner)}; owner.fMask = MIM_MENUDATA;
+            if (IsMenu(submenu) && GetMenuInfo(submenu, &owner) && owner.dwMenuData == reinterpret_cast<ULONG_PTR>(this)) {
+                while (GetMenuItemCount(submenu) > 0) if (!RemoveMenu(submenu, 0, MF_BYPOSITION)) break;
+                DestroyMenu(submenu);
+            }
+        }
+    };
+    std::map<std::string, std::shared_ptr<MenuState>> menuStates;
+    unsigned menuLoopDepth = 0;
+    bool menuPresentationPending = false;
     std::vector<std::string> toolbarOrder;
     std::set<std::string> overflowIds;
     HMENU overflowPopup = nullptr;
@@ -111,13 +133,14 @@ struct NativeUi::Impl {
         registry.SuspendGeometry();
         registry.Refresh().SuspendTargets();
         Boundary([&] { registry.Refresh().SyncTargets({}); return MMS_OK; });
+        Boundary([&] { registry.Refresh().SyncMenuTargets({}); return MMS_OK; });
         Boundary([&] { registry.DestroyViews(); return MMS_OK; });
         for (auto& [id, control] : controls) DestroyControl(control);
         if (IsWindow(tooltip)) DestroyWindow(tooltip);
         Detach(); if (IsWindow(properties)) DestroyWindow(properties); if (IsWindow(workspace)) DestroyWindow(workspace); if (IsWindow(toolbar)) DestroyWindow(toolbar);
     }
     void ReplayClose() noexcept {
-        if (nativeWorkDepth || overflowOpen || !closePending) return;
+        if (nativeWorkDepth || overflowOpen || menuLoopDepth || !closePending) return;
         if (!IsWindow(main)) { closePending = false; return; }
         if (PostMessageW(main, WM_CLOSE, closeWParam, closeLParam)) closePending = false;
     }
@@ -129,13 +152,23 @@ struct NativeUi::Impl {
         NativeWork& operator=(const NativeWork&) = delete;
     };
     bool DeferClose(WPARAM wp, LPARAM lp) noexcept {
-        if (!nativeWorkDepth && !overflowOpen) return false;
+        if (!nativeWorkDepth && !overflowOpen && !menuLoopDepth) return false;
         if (!closePending) { closePending = true; closeWParam = wp; closeLParam = lp; }
-        if (overflowOpen) EndMenu();
+        if (overflowOpen || menuLoopDepth) EndMenu();
         return true;
     }
     static LRESULT CALLBACK Lifetime(HWND window, UINT message, WPARAM wp, LPARAM lp, UINT_PTR id, DWORD_PTR data) {
         auto* self = reinterpret_cast<Impl*>(data);
+        if (message == WM_ENTERMENULOOP) {
+            ++self->menuLoopDepth; self->registry.Refresh().SetMenuTracking(true);
+        } else if (message == WM_EXITMENULOOP) {
+            if (self->menuLoopDepth) --self->menuLoopDepth;
+            if (!self->menuLoopDepth) {
+                self->registry.Refresh().SetMenuTracking(false);
+                if (self->menuPresentationPending) self->DeferPresentation();
+                self->ReplayClose();
+            }
+        }
         if (message == WM_CLOSE && self->DeferClose(wp, lp)) return 0;
         if (message == WM_NCDESTROY) RemoveWindowSubclass(window, Lifetime, id);
         return DefSubclassProc(window, message, wp, lp);
@@ -265,6 +298,10 @@ struct NativeUi::Impl {
         const std::function<MmsResult()>& revalidate) {
         const NativeWork work(*this);
         const WindowDpiScope stateDpi(main);
+        for (const auto& item : menuStates) if (item.second->element == handle) {
+            const auto id = item.first; const auto state = item.second;
+            return ApplyMenuState(id, state, content, enabled, revalidate);
+        }
         for (const auto& [id, element] : registry.elements) if (element.handle == handle && element.desc.kind == MMS_UI_PANEL)
             return ApplyPanelState(id, content, enabled, revalidate);
         auto found = std::find_if(controls.begin(), controls.end(), [&](const auto& item) { return item.second.element == handle; });
@@ -502,7 +539,92 @@ struct NativeUi::Impl {
         }
         return -1;
     }
-    void Detach() { if (Position() >= 0) { RemoveMenu(root, Position(), MF_BYPOSITION); DestroyMenu(popup); } root = popup = nullptr; }
+    static bool MenuOwner(HMENU menu, ULONG_PTR cookie) noexcept {
+        MENUINFO info{sizeof(info)}; info.fMask = MIM_MENUDATA;
+        return IsMenu(menu) && GetMenuInfo(menu, &info) && info.dwMenuData == cookie;
+    }
+    static bool SetMenuOwner(HMENU menu, ULONG_PTR cookie) noexcept {
+        MENUINFO info{sizeof(info)}; info.fMask = MIM_MENUDATA; info.dwMenuData = cookie;
+        return SetMenuInfo(menu, &info) != FALSE;
+    }
+    int MenuPosition(const MenuState& state) const noexcept {
+        if (!MenuOwner(state.parent, state.parentCookie)) return -2;
+        int found = -1;
+        for (int i = 0, n = GetMenuItemCount(state.parent); i < n; ++i) {
+            MENUITEMINFOW item{sizeof(item)}; item.fMask = MIIM_DATA | MIIM_ID | MIIM_SUBMENU;
+            if (!GetMenuItemInfoW(state.parent, i, TRUE, &item)) return -2;
+            if (item.dwItemData == reinterpret_cast<ULONG_PTR>(&state) || item.wID == state.id) {
+                if (found >= 0 || item.dwItemData != reinterpret_cast<ULONG_PTR>(&state) || item.wID != state.id || item.hSubMenu != state.submenu) return -2;
+                found = i;
+            }
+        }
+        return found;
+    }
+    bool CurrentMenu(const std::string& id, const std::shared_ptr<MenuState>& state) const noexcept {
+        const auto item = menuStates.find(id);
+        if (item == menuStates.end() || item->second != state || !IsWindow(main) || GetMenu(main) != root || Position() < 0) return false;
+        const auto e = registry.elements.find(id);
+        return e != registry.elements.end() && e->second.handle == state->element && e->second.arena == state->arena &&
+            e->second.desc.kind == state->kind && MenuOwner(state->parent, state->parentCookie) &&
+            (!state->submenu || MenuOwner(state->submenu, reinterpret_cast<ULONG_PTR>(state.get())));
+    }
+    bool MenuMatches(const MenuState& state, bool visible, const std::wstring& caption, bool enabled, bool checked) const noexcept {
+        const int position = MenuPosition(state);
+        if (position < -1 || (position >= 0) != visible) return false;
+        if (!visible) return true;
+        wchar_t text[8194]{};
+        MENUITEMINFOW item{sizeof(item)}; item.fMask = MIIM_STATE | MIIM_FTYPE | MIIM_STRING;
+        item.dwTypeData = text; item.cch = unsigned(std::size(text));
+        if (!GetMenuItemInfoW(state.parent, position, TRUE, &item)) return false;
+        if (state.kind == MMS_UI_SEPARATOR) return (item.fType & MFT_SEPARATOR) != 0;
+        return !(item.fType & (MFT_SEPARATOR | MFT_OWNERDRAW)) && caption == text &&
+            bool(!(item.fState & (MFS_DISABLED | MFS_GRAYED))) == enabled && bool(item.fState & MFS_CHECKED) == checked;
+    }
+    unsigned MenuInsertion(const std::string& id, const MenuState& state) const {
+        const auto element = registry.elements.find(id);
+        if (element == registry.elements.end()) return unsigned(GetMenuItemCount(state.parent));
+        const auto children = Children(String(element->second.desc.parentId));
+        bool after = false;
+        for (const auto& child : children) {
+            if (child == id) { after = true; continue; }
+            if (!after) continue;
+            const auto item = menuStates.find(child);
+            if (item != menuStates.end() && item->second->parent == state.parent) {
+                const int position = MenuPosition(*item->second);
+                if (position >= 0) return unsigned(position);
+            }
+        }
+        return unsigned(GetMenuItemCount(state.parent));
+    }
+    bool WriteMenu(MenuState& state, bool visible, const std::wstring& caption, bool enabled, bool checked, unsigned insertion) noexcept {
+        const int position = MenuPosition(state);
+        if (position < -1) return false;
+        if (!visible) return position < 0 || RemoveMenu(state.parent, position, MF_BYPOSITION);
+        MENUITEMINFOW item{sizeof(item)};
+        item.fMask = MIIM_ID | MIIM_DATA | MIIM_SUBMENU | MIIM_FTYPE | MIIM_STATE;
+        item.wID = state.id; item.dwItemData = reinterpret_cast<ULONG_PTR>(&state); item.hSubMenu = state.submenu;
+        item.fType = state.kind == MMS_UI_SEPARATOR ? MFT_SEPARATOR : MFT_STRING;
+        item.fState = (enabled ? MFS_ENABLED : MFS_DISABLED | MFS_GRAYED) | (checked ? MFS_CHECKED : MFS_UNCHECKED);
+        if (state.kind != MMS_UI_SEPARATOR) { item.fMask |= MIIM_STRING; item.dwTypeData = const_cast<wchar_t*>(caption.c_str()); }
+        return position < 0 ? InsertMenuItemW(state.parent, insertion, TRUE, &item) != FALSE : SetMenuItemInfoW(state.parent, position, TRUE, &item) != FALSE;
+    }
+    void RemoveMenuState(const std::string& id, const std::shared_ptr<MenuState>& state) noexcept {
+        registry.Refresh().InvalidateTarget(state->element);
+        const int position = MenuPosition(*state); if (position >= 0) RemoveMenu(state->parent, position, MF_BYPOSITION);
+        const auto old = ids.find(id);
+        if (old != ids.end() && old->second == state->id) { dispatch.erase(old->second); ids.erase(old); }
+    }
+    void Detach() {
+        for (const auto& item : menuStates) RemoveMenuState(item.first, item.second);
+        // Detach every ownership edge before any submenu owner is destroyed.
+        if (MenuOwner(popup, reinterpret_cast<ULONG_PTR>(this))) while (GetMenuItemCount(popup) > 0) if (!RemoveMenu(popup, 0, MF_BYPOSITION)) break;
+        for (const auto& item : menuStates) if (MenuOwner(item.second->submenu, reinterpret_cast<ULONG_PTR>(item.second.get())))
+            while (GetMenuItemCount(item.second->submenu) > 0) if (!RemoveMenu(item.second->submenu, 0, MF_BYPOSITION)) break;
+        menuStates.clear();
+        if (Position() >= 0) RemoveMenu(root, Position(), MF_BYPOSITION);
+        if (MenuOwner(popup, reinterpret_cast<ULONG_PTR>(this))) DestroyMenu(popup);
+        root = popup = nullptr;
+    }
     unsigned Id(const std::string& id, const ElementRecord& e) {
         auto it = ids.find(id);
         if (it != ids.end()) {
@@ -781,15 +903,135 @@ struct NativeUi::Impl {
         publication.completed = true;
         return MMS_OK;
     }
-    void Menu(HMENU parent, const std::string& parentId, unsigned depth = 0) {
-        if (depth > 64) return;
-        for (const auto& id : Children(parentId)) {
-            const auto& e = registry.elements.at(id); MmsCommandStateV1 state{}; if (!State(e, state)) continue;
-            if (e.desc.kind == MMS_UI_SEPARATOR) { AppendMenuW(parent, MF_SEPARATOR, 0, nullptr); continue; }
-            auto caption = Wide(String(e.desc.label));
-            if (e.desc.kind == MMS_UI_MENU) { HMENU sub = CreatePopupMenu(); Menu(sub, id, depth + 1); if (!AppendMenuW(parent, MF_POPUP | MF_STRING, reinterpret_cast<UINT_PTR>(sub), caption.c_str())) DestroyMenu(sub); }
-            else AppendMenuW(parent, MF_STRING | (state.enabled ? MF_ENABLED : MF_GRAYED) | (state.checked ? MF_CHECKED : MF_UNCHECKED), Id(id, e), caption.c_str());
+    MmsResult ApplyMenuState(const std::string& id, const std::shared_ptr<MenuState>& state,
+        const std::shared_ptr<const ButtonStateContent>& content, bool enabled, const std::function<MmsResult()>& revalidate) {
+        if (!content || (content->fields & ~MMS_UI_STATE_LABEL)) return MMS_E_UNSUPPORTED;
+        if (menuLoopDepth) return MMS_E_BUSY;
+        const auto check = [&]() -> MmsResult {
+            if (!CurrentMenu(id, state)) return MMS_E_STALE;
+            return revalidate ? revalidate() : MMS_OK;
+        };
+        if (const auto result = check()) return result;
+        const auto e = registry.elements.find(id);
+        auto caption = content->fields & MMS_UI_STATE_LABEL ? content->label : Wide(String(e->second.desc.label));
+        // Prepare all owned text and order data before touching USER32.
+        const auto oldCaption = state->caption;
+        const bool oldVisible = state->visible, oldEnabled = state->enabled, oldChecked = state->checked;
+        const unsigned insertion = MenuInsertion(id, *state);
+        if (const auto result = check()) return result;
+        if (!MenuMatches(*state, oldVisible, oldCaption, oldEnabled, oldChecked)) { registry.Refresh().SuspendMenuTargets(); return MMS_E_FAILED; }
+        if (const auto result = check()) return result;
+        const bool visible = content->visible, checked = content->checked;
+        if (caption == oldCaption && visible == oldVisible && enabled == oldEnabled && checked == oldChecked) {
+            state->content = content; return MMS_OK;
         }
+        // A forwarding native call can mutate and then fail. Compensate only
+        // this exact retained item, including after an epoch changed in USER32.
+        bool completed = false;
+        struct FailureGuard { Impl& self; bool& completed; ~FailureGuard() { if (!completed) self.registry.Refresh().SuspendMenuTargets(); } } failure{*this, completed};
+        const auto result = Boundary([&]() -> MmsResult {
+            if (!WriteMenu(*state, visible, caption, enabled, checked, insertion)) return MMS_E_FAILED;
+            if (const auto r = check()) return r;
+            if (!MenuMatches(*state, visible, caption, enabled, checked)) return MMS_E_FAILED;
+            if (!DrawMenuBar(main)) return MMS_E_FAILED;
+            if (const auto r = check()) return r;
+            const bool matches = MenuMatches(*state, visible, caption, enabled, checked);
+            if (const auto r = check()) return r;
+            return matches ? MMS_OK : MMS_E_FAILED;
+        });
+        if (result) {
+            if (CurrentMenu(id, state)) {
+                WriteMenu(*state, oldVisible, oldCaption, oldEnabled, oldChecked, insertion);
+                DrawMenuBar(main);
+            }
+            return result;
+        }
+        state->caption.swap(caption); state->visible = state->present = visible;
+        state->enabled = enabled; state->checked = checked; state->content = content;
+        completed = true; return MMS_OK;
+    }
+    void Menu(HMENU parent, ULONG_PTR parentCookie, const std::string& parentId, unsigned depth = 0) {
+        if (depth > 64) throw std::runtime_error("plugin menu depth");
+        unsigned position = 0;
+        for (const auto& id : Children(parentId)) {
+            // Keep an owning registration snapshot across command callbacks.
+            const auto e = registry.elements.at(id);
+            auto found = menuStates.find(id);
+            if (found != menuStates.end() && (found->second->element != e.handle || found->second->arena != e.arena || found->second->kind != e.desc.kind)) {
+                RemoveMenuState(id, found->second); menuStates.erase(found); found = menuStates.end();
+            }
+            if (found == menuStates.end()) {
+                auto state = std::make_shared<MenuState>(); state->element = e.handle; state->arena = e.arena;
+                state->kind = e.desc.kind; state->id = Id(id, e); state->instance = registry.NewPresentationInstance();
+                if (state->kind == MMS_UI_MENU) {
+                    const HMENU created = CreatePopupMenu();
+                    if (!created) throw std::runtime_error("plugin submenu allocation");
+                    // This handle is private to this construction until its
+                    // cookie is installed. Failure owns this fresh allocation,
+                    // unlike cleanup of an old, possibly reused native handle.
+                    if (!SetMenuOwner(created, reinterpret_cast<ULONG_PTR>(state.get()))) { DestroyMenu(created); throw std::runtime_error("plugin submenu identity"); }
+                    state->submenu = created;
+                }
+                found = menuStates.emplace(id, std::move(state)).first;
+            }
+            auto state = found->second;
+            if (state->parent != parent || state->parentCookie != parentCookie) {
+                const int old = MenuPosition(*state); if (old >= 0 && !RemoveMenu(state->parent, old, MF_BYPOSITION)) throw std::runtime_error("plugin menu reparent");
+                state->parent = parent; state->parentCookie = parentCookie;
+            }
+            MmsCommandStateV1 command{}; const bool show = State(e, command);
+            if (!CurrentMenu(id, state)) throw std::runtime_error("stale plugin menu source");
+            auto caption = state->content && (state->content->fields & MMS_UI_STATE_LABEL) ? state->content->label : Wide(String(e.desc.label));
+            const int oldPosition = MenuPosition(*state);
+            if (oldPosition < -1) throw std::runtime_error("plugin menu item identity");
+            if (show && oldPosition >= 0 && unsigned(oldPosition) != position)
+                if (!RemoveMenu(parent, oldPosition, MF_BYPOSITION)) throw std::runtime_error("plugin menu order");
+            if (!MenuMatches(*state, show, caption, command.enabled != 0, command.checked != 0))
+                if (!WriteMenu(*state, show, caption, command.enabled != 0, command.checked != 0, position)) throw std::runtime_error("plugin menu publication");
+            if (!MenuMatches(*state, show, caption, command.enabled != 0, command.checked != 0)) throw std::runtime_error("plugin menu readback");
+            state->caption.swap(caption); state->visible = state->present = show;
+            state->enabled = command.enabled != 0; state->checked = command.checked != 0;
+            if (show) ++position;
+            if (state->submenu) Menu(state->submenu, reinterpret_cast<ULONG_PTR>(state.get()), id, depth + 1);
+        }
+    }
+    void RefreshMenus() {
+        if (menuLoopDepth) { menuPresentationPending = true; return; }
+        menuPresentationPending = false;
+        registry.Refresh().SuspendMenuTargets();
+        for (auto it = menuStates.begin(); it != menuStates.end();) {
+            const auto e = registry.elements.find(it->first);
+            if (e == registry.elements.end() || e->second.handle != it->second->element || e->second.arena != it->second->arena) {
+                RemoveMenuState(it->first, it->second); it = menuStates.erase(it);
+            } else ++it;
+        }
+        const HMENU menu = GetMenu(main); const bool hasMenu = !Children("mms.menu.plugins").empty();
+        if (menu != root || Position() < 0) {
+            Detach();
+            if (menu && hasMenu) {
+                const HMENU created = CreatePopupMenu();
+                if (!created) throw std::runtime_error("plugin root menu allocation");
+                if (!SetMenuOwner(created, reinterpret_cast<ULONG_PTR>(this))) { DestroyMenu(created); throw std::runtime_error("plugin root menu identity"); }
+                root = menu; popup = created;
+                MENUITEMINFOW item{sizeof(item)}; item.fMask = MIIM_SUBMENU | MIIM_STRING | MIIM_DATA;
+                item.hSubMenu = popup; item.dwTypeData = const_cast<wchar_t*>(L"插件 (&P)"); item.dwItemData = reinterpret_cast<ULONG_PTR>(this);
+                if (!InsertMenuItemW(root, GetMenuItemCount(root), TRUE, &item)) throw std::runtime_error("plugin root menu publication");
+            }
+        }
+        if (!hasMenu && popup) Detach();
+        if (popup) Menu(popup, reinterpret_cast<ULONG_PTR>(this), "mms.menu.plugins");
+        std::vector<RefreshPresentation> targets; targets.reserve(menuStates.size());
+        for (const auto& [id, state] : menuStates) {
+            if (state->kind != MMS_UI_MENU && state->kind != MMS_UI_MENU_ITEM) continue;
+            if (!CurrentMenu(id, state)) throw std::runtime_error("stale plugin menu target");
+            RefreshPresentation p; p.element = state->element; p.instance = state->instance;
+            p.owner = String(registry.elements.at(id).desc.ownerPlugin); p.kind = state->kind;
+            p.menu = state->parent; p.menuCookie = reinterpret_cast<ULONG_PTR>(state.get()); p.menuItem = state->id;
+            p.stateRefresh = p.stateVisibility = true; p.visible = p.stateVisible = state->visible;
+            targets.push_back(std::move(p));
+        }
+        if (root && !DrawMenuBar(main)) throw std::runtime_error("plugin menu bar redraw");
+        registry.Refresh().SyncMenuTargets(targets);
     }
     void Gather(const std::string& parent, std::vector<std::string>& out, unsigned depth = 0) {
         if (depth > 64) return;
@@ -1076,16 +1318,7 @@ struct NativeUi::Impl {
         refreshing = true; struct Guard { bool& v; ~Guard() { v = false; } } guard{refreshing};
         for (auto it = retainedVisibility.begin(); it != retainedVisibility.end();)
             if (registry.elements.find(it->first) == registry.elements.end()) it = retainedVisibility.erase(it); else ++it;
-        HMENU menu = GetMenu(main); bool changed = false;
-        const bool hasMenu = !Children("mms.menu.plugins").empty();
-        if (menu != root || Position() < 0) { Detach(); if (menu && hasMenu) {
-            root = menu; popup = CreatePopupMenu(); MENUITEMINFOW item{sizeof(item)}; item.fMask = MIIM_SUBMENU | MIIM_STRING | MIIM_DATA;
-            item.hSubMenu = popup; item.dwTypeData = const_cast<wchar_t*>(L"插件 (&P)"); item.dwItemData = reinterpret_cast<ULONG_PTR>(this);
-            if (!InsertMenuItemW(root, GetMenuItemCount(root), TRUE, &item)) { DestroyMenu(popup); root = popup = nullptr; } else changed = true;
-        } }
-        if (!hasMenu && popup) { Detach(); changed = true; }
-        if (popup) { while (GetMenuItemCount(popup) > 0) DeleteMenu(popup, 0, MF_BYPOSITION); Menu(popup, "mms.menu.plugins"); }
-        if (changed) DrawMenuBar(main);
+        RefreshMenus();
         std::vector<std::string> wanted; Gather("mms.toolbar.main.extensions", wanted); Gather("mms.properties.main.extensions", wanted);
         std::set<std::string> keep(wanted.begin(), wanted.end());
         for (auto it = controls.begin(); it != controls.end();) if (!keep.count(it->first)) { DestroyControl(it->second); it = controls.erase(it); } else ++it;
@@ -1524,6 +1757,27 @@ struct NativeUi::Impl {
         auto item = dispatch.find(id); if (item == dispatch.end()) return false;
         auto it = registry.elements.find(item->second.first);
         if (it == registry.elements.end() || it->second.handle != item->second.second) return true;
+        if (it->second.desc.kind == MMS_UI_MENU_ITEM || it->second.desc.kind == MMS_UI_MENU) {
+            auto current = menuStates.find(item->second.first);
+            if (current == menuStates.end() || current->second->id != id || !it->second.visible || !CurrentMenu(current->first, current->second) ||
+                !current->second->visible || !current->second->enabled || !MenuMatches(*current->second, true,
+                    current->second->caption, current->second->enabled, current->second->checked)) return true;
+            auto parent = String(it->second.desc.parentId);
+            for (unsigned depth = 0; parent != "mms.menu.plugins"; ++depth) {
+                const auto ancestor = menuStates.find(parent);
+                if (depth > 64 || ancestor == menuStates.end() || !CurrentMenu(parent, ancestor->second) ||
+                    !ancestor->second->visible || !ancestor->second->enabled || !MenuMatches(*ancestor->second, true,
+                        ancestor->second->caption, ancestor->second->enabled, ancestor->second->checked)) return true;
+                const auto source = registry.elements.find(parent); if (source == registry.elements.end() || !source->second.visible) return true;
+                const auto snapshot = source->second; const auto state = ancestor->second;
+                MmsCommandStateV1 live{};
+                if (!State(snapshot, live) || !live.enabled || !CurrentMenu(parent, state) ||
+                    !MenuMatches(*state, true, state->caption, state->enabled, state->checked)) return true;
+                parent = String(snapshot.desc.parentId);
+            }
+            if (!CurrentMenu(current->first, current->second) || !MenuMatches(*current->second, true,
+                current->second->caption, current->second->enabled, current->second->checked)) return true;
+        }
         const auto command = String(it->second.desc.commandId); auto api = registry.Api(client);
         auto result = api.invoke(api.context, Text(command), {}, {}); if (result && log) log("UI command " + command + " returned " + std::to_string(result));
         Refresh(); return true;

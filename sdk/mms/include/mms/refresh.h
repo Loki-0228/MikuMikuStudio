@@ -30,6 +30,9 @@ typedef struct MmsUiRefreshCapabilitiesV1 {
 	uint64_t maxPendingBytesPerPlugin;
 	uint32_t maxContributionsPerDrain, reserved;
 } MmsUiRefreshCapabilitiesV1;
+/* Native MENU/MENU_ITEM targets expose STATE only, with zero geometry revision
+   and dimensions. ready denotes a retained menu presentation, not an open
+   popup or a client rectangle. Query per-target capabilities before use. */
 typedef struct MmsUiRefreshTargetV1 {
 	MmsHeader h;
 	MmsUiTargetRefV1 target;
