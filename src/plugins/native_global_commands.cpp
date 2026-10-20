@@ -3,6 +3,7 @@
 #if !MMD_ORIGINAL_PROFILE
 #include "native_global_registration.hpp"
 #include "native_physics_mode.hpp"
+#include "native_floor_history.hpp"
 #include "native_accessory_registration.hpp"
 #include "native_history_commands.hpp"
 #include "native_pose_scope.hpp"
@@ -1023,6 +1024,7 @@ void RefreshBoundGlobalReadout(MMDApp& app) noexcept {
         bake::ScopedUiInputGate input;
         RefreshProjectDisplayReadout(app);
         RefreshBoundPhysicsModeReadout(app);
+        RefreshBoundFloorReadout(app);
         RefreshShadowAmbientReadout(app);
         if (app.cameraProjectionRefreshPending && app.Renderer() && app.Renderer()->device) {
             // Consume current-state work at the UI boundary. A zero/tiny

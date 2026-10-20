@@ -1278,6 +1278,7 @@ if (MIKUMIKUSTUDIO_BUILD_UI_TESTS)
         add_test(NAME model_load_ui_regressions COMMAND model_load_ui_tests)
         add_executable(native_edit_history_tests EXCLUDE_FROM_ALL tests/native_edit_history_tests.cpp
             res/MMD.rc ${MIKUMIKUSTUDIO_GEN_RES})
+        target_compile_options(native_edit_history_tests PRIVATE "$<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/bigobj>")
         target_link_options(native_edit_history_tests PRIVATE "/MANIFEST:NO" "${MIKUMIKUSTUDIO_GEN_RES}")
         target_link_libraries(native_edit_history_tests PRIVATE mikumikustudio_core minhook::minhook winmm dsound)
         set_target_properties(native_edit_history_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
@@ -1287,6 +1288,7 @@ if (MIKUMIKUSTUDIO_BUILD_UI_TESTS)
         add_test(NAME native_model_physics_preparation COMMAND native_edit_history_tests --model-physics-preparation-only)
         add_test(NAME native_model_physics_ui COMMAND native_edit_history_tests --model-physics-ui-only)
         add_test(NAME native_black_background_history COMMAND native_edit_history_tests --black-background-only)
+        add_test(NAME native_floor_history COMMAND native_edit_history_tests --floor-only)
     endif()
 
     # Viewport scale handles: hit testing, the merged mode button's cycle and

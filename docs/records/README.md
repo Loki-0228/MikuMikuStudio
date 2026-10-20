@@ -20,6 +20,7 @@
 
 ## 动画与物理
 
+- [工程地面开关共同历史（2026-10-21）](abi-floor-history-2026-10-21.md)
 - [黑白背景共同历史（2026-10-21）](abi-black-background-history-2026-10-21.md)
 - [模型物理资源、私有编辑与共同历史（2026-10-21）](abi-model-physics-history-2026-10-21.md)
 - [烘焙与导出验证记录](animation/baking.md)

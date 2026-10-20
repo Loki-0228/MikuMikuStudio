@@ -2,6 +2,7 @@
 #include "mikumikustudio/image_sequence_export.hpp"
 #include "mikumikustudio/key_pool.hpp"
 #include "../plugins/native_model_physics.hpp"
+#include "../plugins/native_floor_history.hpp"
 // ===========================================================================
 // CommandDispatch family: View/Edit option-menu cases 251..303 (0x47E8A0)
 // ===========================================================================
@@ -2717,6 +2718,9 @@ void CmdViewMenu(MMDApp* app, HWND hwnd, std::uint16_t id,
     }
 
     case 285: {
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::TryToggleBoundFloor(app)) return;
+#endif
         app->state.dialogFlags[15] = 1;
         auto* target = app->Physics()->groundBody;
         if (app->state.floorVisible != 0) {

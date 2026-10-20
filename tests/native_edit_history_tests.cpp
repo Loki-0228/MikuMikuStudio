@@ -431,6 +431,7 @@ void CrossModelJournal(){
 #include "native_model_multiply_checks.inc"
 #include "native_morph_tools_checks.inc"
 #include "native_physics_mode_checks.inc"
+#include "native_floor_history_checks.inc"
 #include "native_audio_history_checks.inc"
 #include "native_audio_format_checks.inc"
 #include "native_model_outline_checks.inc"
@@ -515,6 +516,9 @@ int main(int argc,char** argv){
     }
     if(argc==2&&!std::strcmp(argv[1],"--physics-mode-only")) {
         NativePhysicsModeChecks();std::printf("PASS physics mode: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--floor-only")) {
+        NativeFloorHistoryChecks();std::printf("PASS floor history: %u checks\n",checks);return 0;
     }
     if(argc==2&&!std::strcmp(argv[1],"--model-multiply-only")) {
         NativeModelMultiplyChecks();std::printf("PASS model multiply: %u checks\n",checks);return 0;
@@ -924,6 +928,7 @@ int main(int argc,char** argv){
     run("NativeModelMultiplyChecks",NativeModelMultiplyChecks);
     run("NativeMorphToolsChecks",NativeMorphToolsChecks);
     run("NativePhysicsModeChecks",NativePhysicsModeChecks);
+    run("NativeFloorHistoryChecks",NativeFloorHistoryChecks);
     run("NativeAudioHistoryChecks",NativeAudioHistoryChecks);
     run("NativeAudioFormatChecks",NativeAudioFormatChecks);
     run("NativeModelOutlineChecks",NativeModelOutlineChecks);
