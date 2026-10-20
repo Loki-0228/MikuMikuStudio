@@ -72,6 +72,7 @@
 #include "mikumikustudio/bone_key_pool.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/plugin_input_focus.hpp"
 #include "device_lost_wait.hpp"
 #include "../plugins/native_key_commands.hpp"
 
@@ -354,7 +355,8 @@ bool DeleteShortcutAllowed(const MMDApp* app, bool focusAcceptsKeys,
 void PumpDeleteRebuild(MMDApp* app, HWND focus, bool focusNotInPanelEdit) {
     const HWND main = static_cast<HWND>(app->Hwnd());
     const HWND current = GetFocus();                      // 0x44F13F
-    if (curve_editor::OwnsWindow(main, focus) || curve_editor::OwnsWindow(main, current)) return;
+    if (curve_editor::OwnsWindow(main, focus) || curve_editor::OwnsWindow(main, current) ||
+        plugins::OwnsPropertyInput(focus) || plugins::OwnsPropertyInput(current)) return;
     static const int kFrameEdits[] = {0x1AA, 0x1A9, 0x1A1, 0x19A, 0x199};
     bool inFrameEdit = false;
     for (int id : kFrameEdits) {
@@ -469,7 +471,7 @@ void PumpEnterRegisterFrame(MMDApp* app, HWND focus,
                             bool focusNotInPanelEdit) {
     auto& state = app->state;
     const HWND main = static_cast<HWND>(app->Hwnd());
-    if (curve_editor::OwnsWindow(main, focus)) return;
+    if (curve_editor::OwnsWindow(main, focus) || plugins::OwnsPropertyInput(focus)) return;
     const bool enterPressed = state.enterKeyState == 1;               // +0xBC cell
     const bool altHeld = state.menuKeyState == 3;          // +0xC4 cell
 
@@ -540,7 +542,7 @@ void ConsumeEditKeys(MMDApp* app) {
     const HWND focus = GetFocus();                         // 0x44DEF8
     // The curve editor owns Enter/Delete/Tab itself. The legacy viewport flag
     // can remain set after it opens, so FocusOk alone cannot isolate input.
-    if (curve_editor::OwnsWindow(app->Hwnd(), focus) ||
+    if (plugins::OwnsPropertyInput(focus) || curve_editor::OwnsWindow(app->Hwnd(), focus) ||
         curve_editor::OwnsWindow(app->Hwnd(), GetForegroundWindow())) return;
     const bool focusNotInPanelEdit =
         !PumpPanelFocusChain(app, focus);                  // r13 @ 0x44ED2E

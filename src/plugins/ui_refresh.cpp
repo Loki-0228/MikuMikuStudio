@@ -219,7 +219,7 @@ MmsResult UiRefreshQueue::GetTarget(RefreshClient& client, MmsHandle handle, Mms
     if (!element) return MMS_E_STALE;
     if (String(element->desc.ownerPlugin) != client.owner || client.owner == "mms") return MMS_E_ARGUMENT;
     if (element->desc.kind != MMS_UI_BUTTON && element->desc.kind != MMS_UI_PANEL &&
-        element->desc.kind != MMS_UI_GROUP && element->desc.kind != MMS_UI_SEPARATOR) return MMS_E_UNSUPPORTED;
+        element->desc.kind != MMS_UI_GROUP && element->desc.kind != MMS_UI_SEPARATOR && element->desc.kind != MMS_UI_INPUT) return MMS_E_UNSUPPORTED;
     std::lock_guard<std::mutex> lock(mutex_);
     const auto found = targets_.find(handle); if (found == targets_.end()) return MMS_E_NOT_READY;
     const auto& t = found->second;
@@ -304,7 +304,7 @@ MmsResult UiRefreshQueue::Request(RefreshClient& client, const MmsUiRefreshReque
             if (node == tree_.end()) return MMS_E_STALE;
             if (node->second.owner != client.owner) return MMS_E_ARGUMENT;
             const auto kind = node->second.kind;
-            if (kind != MMS_UI_BUTTON && kind != MMS_UI_PANEL && kind != MMS_UI_SEPARATOR) continue;
+            if (kind != MMS_UI_BUTTON && kind != MMS_UI_PANEL && kind != MMS_UI_SEPARATOR && kind != MMS_UI_INPUT) continue;
             const auto current = targets_.find(handle);
             const uint32_t potential = MMS_UI_REFRESH_REPAINT | MMS_UI_REFRESH_LAYOUT |
                 (kind == MMS_UI_BUTTON ? MMS_UI_REFRESH_STATE : 0);

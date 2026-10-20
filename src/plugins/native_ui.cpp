@@ -1,5 +1,6 @@
 #include "native_ui.hpp"
 #include "native_ui_overflow.hpp"
+#include "native_property_input.hpp"
 #include <native_ui/layout.hpp>
 #include <native_ui/win32_host.hpp>
 #include <cmath>
@@ -31,6 +32,7 @@ struct NativeUi::Impl {
         bool stateVisible = true, layoutVisible = true;
         bool tooltipEnabled = true;
         std::shared_ptr<const ButtonStateContent> content, tooltipContent;
+        std::unique_ptr<NativePropertyInput> input;
     };
     std::map<std::string, Control> controls;
     std::vector<std::string> toolbarOrder;
@@ -124,6 +126,7 @@ struct NativeUi::Impl {
                 SendMessageW(tooltip, TTM_DELTOOLW, 0, reinterpret_cast<LPARAM>(&tool));
             }
         }
+        if (control.input) { control.input.reset(); control.window = nullptr; }
         if (control.window) DestroyWindow(control.window);
         control = {};
     }
@@ -617,6 +620,21 @@ struct NativeUi::Impl {
             const auto& e = registry.elements.at(id); MmsCommandStateV1 state{}; bool show = State(e, state);
             const auto commandId = Id(id, e);
             auto& control = controls[id];
+            const bool input = e.desc.kind == MMS_UI_INPUT;
+            if (control.window && input != bool(control.input)) DestroyControl(control);
+            if (input) {
+                if (!control.input) {
+                    control.element = e.handle; control.instance = registry.NewPresentationInstance();
+                    control.input = std::make_unique<NativePropertyInput>(registry, id, toolbar, commandId,
+                        [this](bool enter) { if (enter) ++nativeWorkDepth; else { --nativeWorkDepth; ReplayClose(); } }, log);
+                    control.window = control.input->Window();
+                }
+                control.input->Refresh(dpi);
+                control.input->LayoutVisible(show && visible && !overflowIds.count(id));
+                ShowWindow(control.window, show && !overflowIds.count(id) ? SW_SHOWNA : SW_HIDE);
+                control.stateVisible = state.visible != 0;
+                continue;
+            }
             auto caption = EffectiveCaption(e, &control);
             if (!control.window) {
                 const bool separator = e.desc.kind == MMS_UI_SEPARATOR;
@@ -741,6 +759,12 @@ struct NativeUi::Impl {
             auto label = EffectiveCaption(e, control == controls.end() ? nullptr : &control->second); SIZE size{};
             if (dc) GetTextExtentPoint32W(dc, label.c_str(), int(label.size()), &size);
             node.measuredMinimum = {separator ? 5.0f : 60.0f, 24}; node.measuredPreferred = {separator ? 5.0f : float(size.cx) * 96 / dpi + 20, 24};
+            if (e.desc.kind == MMS_UI_INPUT) {
+                const auto property = registry.properties.find(String(e.desc.propertyId));
+                const auto fields = property == registry.properties.end() ? 1u : std::max(1u, property->second->desc.info.components);
+                node.measuredMinimum = {48.0f + fields * 32.0f, 28};
+                node.measuredPreferred = {std::max(220.0f, float(size.cx) * 96 / dpi + 16 + fields * 76.0f), 28};
+            }
         }
         return node;
     }
@@ -774,7 +798,7 @@ struct NativeUi::Impl {
         for (const auto& [id, element] : registry.elements) {
             const auto bounds = geometry.find(id);
             if (bounds == geometry.end() || String(element.desc.ownerPlugin) == "mms") continue;
-            if (element.desc.kind == MMS_UI_BUTTON || element.desc.kind == MMS_UI_SEPARATOR) {
+            if (element.desc.kind == MMS_UI_BUTTON || element.desc.kind == MMS_UI_SEPARATOR || element.desc.kind == MMS_UI_INPUT) {
                 const auto control = controls.find(id);
                 if (control == controls.end() || control->second.element != element.handle || !control->second.window) continue;
                 if (!Presentation(element, control->second.window, control->second.instance, bounds->second.visible, out)) return false;
@@ -830,7 +854,7 @@ struct NativeUi::Impl {
         }();
         std::map<std::string, toolbar_overflow::Policy> policies;
         for (const auto& [id, e] : registry.elements) policies[id] = {e.effectiveHints.overflow == 3,
-            e.desc.kind == MMS_UI_BUTTON, e.desc.kind == MMS_UI_SEPARATOR};
+            e.desc.kind == MMS_UI_BUTTON, e.desc.kind == MMS_UI_SEPARATOR, (e.desc.capabilities & MMS_UI_CONTAINER) != 0};
         const int layoutWidth = std::max(0, width - GetSystemMetrics(SM_CXVSCROLL));
         auto overflow = toolbar_overflow::Arrange(tree, policies, float(layoutWidth) * 96 / dpi, float(maximum) * 96 / dpi);
         auto& flow = overflow.layout;
@@ -872,6 +896,7 @@ struct NativeUi::Impl {
             int right = int(std::lround((rect.x + rect.width) * dpi / 96)), bottom = int(std::lround((rect.y + rect.height) * dpi / 96)) - scroll;
             if (control != controls.end()) {
                 const bool hidden = overflowIds.count(item.id) != 0;
+                if (control->second.input) control->second.input->LayoutVisible(item.visible && !hidden && visible && height > 0);
                 if (hidden) control->second.layoutVisible = false;
                 if (hidden && GetFocus() == control->second.window) SetFocus(menuVisible ? overflowButton : main);
                 applied = paint.Queue(moves, control->second.window, {left, top, right, bottom}) && applied;
@@ -943,7 +968,7 @@ struct NativeUi::Impl {
         if (refreshLayout || refreshing || !IsWindow(main) || revision != registry.Revision()) return MMS_E_NOT_READY;
         bool present = false;
         for (const auto& [id, e] : registry.elements) if (e.handle == element) {
-            if (e.desc.kind == MMS_UI_BUTTON || e.desc.kind == MMS_UI_SEPARATOR) {
+            if (e.desc.kind == MMS_UI_BUTTON || e.desc.kind == MMS_UI_SEPARATOR || e.desc.kind == MMS_UI_INPUT) {
                 const auto c = controls.find(id); present = c != controls.end() && c->second.element == element && IsWindow(c->second.window);
             } else if (e.desc.kind == MMS_UI_PANEL) { UiRegistry::SurfacePresentation view; present = registry.ExistingSurface(id, view); }
             else if (e.desc.kind == MMS_UI_GROUP) present = IsWindow(toolbar);

@@ -1,6 +1,7 @@
 // MAINTENANCE: regression-keep; purpose and cleanup conditions in tests/README.md.
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/model.hpp"
+#include "mikumikustudio/plugin_input_focus.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -117,6 +118,33 @@ int main() {
     Check(app->state.blackBackgroundEnabled == 0, "consumer accepts cleared focus");
     pressB(edit);
     Check(app->state.blackBackgroundEnabled == 0, "consumer rejects text-field focus");
+    HWND wrapper = CreateWindowExW(WS_EX_CONTROLPARENT, L"STATIC", L"property input", WS_CHILD | WS_VISIBLE,
+                                   0, 50, 200, 50, owner, nullptr, GetModuleHandleW(nullptr), nullptr);
+    HWND nested = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE,
+                                  0, 0, 180, 40, wrapper, nullptr, GetModuleHandleW(nullptr), nullptr);
+    HWND field = CreateWindowExW(0, L"EDIT", L"draft", WS_CHILD | WS_VISIBLE,
+                                 0, 0, 100, 20, nested, nullptr, GetModuleHandleW(nullptr), nullptr);
+    HWND insideButton = CreateWindowExW(0, L"BUTTON", L"input child", WS_CHILD | WS_VISIBLE,
+                                        100, 0, 70, 20, nested, nullptr, GetModuleHandleW(nullptr), nullptr);
+    Check(wrapper && nested && field && insideButton, "create native property input descendants");
+    Check(SetPropW(wrapper, plugins::kPropertyInputWindowMarker, reinterpret_cast<HANDLE>(1)) != FALSE,
+          "attach a presence-only native input marker");
+    Check(plugins::OwnsPropertyInput(wrapper) && plugins::OwnsPropertyInput(nested) &&
+              plugins::OwnsPropertyInput(field) && plugins::OwnsPropertyInput(insideButton),
+          "native input ownership follows the wrapper and descendant HWNDs");
+    Check(!plugins::OwnsPropertyInput(nullptr) && !plugins::OwnsPropertyInput(owner) && !plugins::OwnsPropertyInput(edit),
+          "the marker does not claim the owner or an ordinary panel edit");
+    pressB(insideButton); pressB(wrapper); pressB(field);
+    Check(app->state.blackBackgroundEnabled == 0, "all native INPUT descendants keep the letter ladder inactive");
+    Check(RemovePropW(wrapper, plugins::kPropertyInputWindowMarker) == reinterpret_cast<HANDLE>(1),
+          "remove the native input marker without dereferencing its value");
+    Check(!plugins::OwnsPropertyInput(field) && !plugins::OwnsPropertyInput(insideButton),
+          "removing a marker releases descendant keyboard ownership");
+    pressB(insideButton);
+    Check(app->state.blackBackgroundEnabled == 1, "the original button shortcut resumes after marker removal");
+    pressB(edit);
+    Check(app->state.blackBackgroundEnabled == 1, "ordinary native EDIT retains its existing shortcut exclusion");
+    DestroyWindow(wrapper);
     DestroyWindow(owner);
     app->Hwnd() = nullptr;
     std::puts("PASS focus rule for the letter ladder");

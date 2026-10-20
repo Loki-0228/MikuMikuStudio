@@ -404,8 +404,79 @@ static void NativeGroupAndStateContent() {
     for (auto control : x.controls) CHECK(x.Shown(control));
     CHECK(Fixture::Caption(x.controls[2]) == L"Updated overflow caption");
 }
+static void GroupLeafContracts() {
+    using native_ui::Node;
+    Node root; root.id = "root"; root.hints.flow = native_ui::Flow::Row;
+    for (float& value : root.hints.padding) value = 0;
+    root.hints.gap[0] = root.hints.gap[1] = 0;
+    Node group = root; group.id = "group"; group.hints.keepTogether = true;
+    Node button = root; button.id = "button"; button.measuredMinimum = button.measuredPreferred = {90, 24};
+    Node extra = root; extra.id = "extra";
+    group.children = {button, extra}; root.children = {group};
+    std::map<std::string, toolbar_overflow::Policy> policy;
+    policy[root.id] = {false, false, false, true}; policy[group.id] = {true, false, false, true};
+    policy[button.id] = {false, true, false}; policy[extra.id] = {false, false, false, true};
+    auto folded = toolbar_overflow::Arrange(root, policy, 80, 32);
+    CHECK(folded.menu && folded.hidden.size() == 1 && folded.hidden.count(button.id) && !folded.hidden.count(extra.id));
+    // Container identity, rather than zero measurement, makes the exception.
+    policy[extra.id].container = false;
+    auto unknown = toolbar_overflow::Arrange(root, policy, 80, 32);
+    CHECK(!unknown.menu && unknown.hidden.empty());
+    root.children[0].children[1].measuredMinimum = root.children[0].children[1].measuredPreferred = {100, 28};
+    auto input = toolbar_overflow::Arrange(root, policy, 80, 32);
+    CHECK(!input.menu && input.hidden.empty());
+    CHECK(root.children[0].children[0].id == button.id && root.children[0].children[1].id == extra.id);
+}
+static void NativeEmptyGroupAndInput() {
+    {
+        Fixture x(true); const auto windows = x.controls; const auto handles = x.buttons;
+        MmsUiElementV1 empty{}; empty.h = Header<MmsUiElementV1>(); empty.id = S("example.overflow.empty");
+        empty.ownerPlugin = Text(x.owner.id); empty.parentId = S("example.overflow.group"); empty.label = S("Empty logical group");
+        empty.kind = MMS_UI_GROUP; empty.capabilities = MMS_UI_CONTAINER | MMS_UI_LAYOUT; MmsHandle handle = 0;
+        CHECK(x.api.registerElement(x.api.context, &empty, &handle) == MMS_OK);
+        x.native->Refresh(); x.native->Layout(0, 190, 48, true);
+        CHECK(x.Shown(x.More()) && x.registry.elements.at("example.overflow.empty").handle == handle);
+        for (size_t index = 0; index < windows.size(); ++index) {
+            CHECK(x.controls[index] == windows[index] && IsWindow(windows[index]) && !x.Shown(windows[index]));
+            CHECK(x.registry.elements.at(x.owner.id + ".button" + std::to_string(index)).handle == handles[index]);
+        }
+        MenuLoop loop(x, [&](HMENU menu) { CHECK(GetMenuItemCount(menu) == 1); const auto group = GetSubMenu(menu, 0); CHECK(group && GetMenuItemCount(group) == 3); });
+        loop.Run(); x.native->Layout(0, 500, 48, true); CHECK(!x.Shown(x.More()));
+        for (const auto window : windows) CHECK(IsWindow(window) && x.Shown(window));
+    }
+    {
+        Fixture x(true); const auto windows = x.controls; const auto handles = x.buttons;
+        MmsPropertyDescV1 property{}; property.info.h = Header<MmsPropertyDescV1>();
+        property.info.id = S("example.overflow.property"); property.info.ownerPlugin = Text(x.owner.id); property.info.label = S("Read-only field");
+        property.info.valueType = MMS_VALUE_INT; property.info.flags = MMS_PROPERTY_READ_ONLY;
+        property.read = [](void*, MmsObjectRef, MmsValue* out, MmsHandle* lease) -> MmsResult {
+            *out = {}; out->type = MMS_VALUE_INT; out->value.signedValue = 4; *lease = 0; return MMS_OK;
+        };
+        property.releaseValue = [](void*, MmsHandle) {};
+        MmsHandle provider = 0; CHECK(x.api.registerProperty(x.api.context, &property, &provider) == MMS_OK);
+        MmsUiElementV1 element{}; element.h = Header<MmsUiElementV1>(); element.id = S("example.overflow.input");
+        element.ownerPlugin = Text(x.owner.id); element.parentId = S("example.overflow.group"); element.label = S("Read-only field");
+        element.kind = MMS_UI_INPUT; element.propertyId = property.info.id; element.capabilities = MMS_UI_LAYOUT | MMS_UI_HIDE | MMS_UI_MOVE | MMS_UI_RESIZE;
+        MmsHandle handle = 0; CHECK(x.api.registerElement(x.api.context, &element, &handle) == MMS_OK);
+        x.native->Refresh(); x.native->Layout(0, 190, 48, true);
+        CHECK(!x.Shown(x.More()));
+        HWND wrapper = nullptr;
+        for (auto child = GetWindow(x.native->Toolbar(), GW_CHILD); child; child = GetWindow(child, GW_HWNDNEXT))
+            if (GetDlgItem(child, 0x7201)) { CHECK(!wrapper); wrapper = child; }
+        CHECK(wrapper && x.Shown(wrapper));
+        for (size_t index = 0; index < windows.size(); ++index) {
+            CHECK(x.controls[index] == windows[index] && IsWindow(windows[index]) && x.Shown(windows[index]));
+            CHECK(x.registry.elements.at(x.owner.id + ".button" + std::to_string(index)).handle == handles[index]);
+        }
+        x.native->Layout(0, 650, 48, true); CHECK(!x.Shown(x.More()) && x.Shown(wrapper));
+        CHECK(x.registry.elements.at("example.overflow.input").handle == handle && x.registry.properties.at("example.overflow.property")->handle == provider);
+        CHECK(String(x.registry.elements.at("example.overflow.input").desc.propertyId) == "example.overflow.property");
+    }
+}
 }
 static void OverflowMenuChecks() {
+    overflow_menu_checks::GroupLeafContracts();
+    overflow_menu_checks::NativeEmptyGroupAndInput();
     overflow_menu_checks::NativeResizeIdentity();
     overflow_menu_checks::NativeMenuStateAndLifetime();
     overflow_menu_checks::NativeMenuSingleSelection();

@@ -9,6 +9,7 @@
 | `UiServices` | 查询并验证服务。`mms.ui` 为必需服务，布局和 surface 按需查询。 |
 | `RegistrationBundle` | 管理命令、元素、属性及 surface 工厂的注册所有权；返回原始注册句柄。 |
 | `CommandUi` | 组合上述注册操作，为一个命令创建可选菜单项、按钮、工具栏分组及默认布局提示。 |
+| `PropertyInput` | 通过原元素与属性注册创建输入框，复用原句柄、布局和编辑事务。 |
 
 这些类型不创建第二套控件树。便利层的 `command()`、`menu()`、`button()`、`group()` 都借用同一批底层注册引用。复杂插件可以取得原 C 表，再更新这些注册对象；宿主继续检查权限、代次和能力。
 
@@ -70,7 +71,7 @@ cmake --build build/hello --config Release
 
 只读属性和原生面板工厂可以通过 `RegistrationBundle` 注册。快照、值和 anchor 租约仍调用原 C API 获取及释放；本批没有增加租约类。原生窗口及 view context 的创建、重建和销毁规则继续遵循 [SDK 参考](README.md)。
 
-可写属性的[底层暂存接口](property-stage.md)已在受控编辑宿主中接入，专用便利封装及声明式 INPUT 尚未实现。DOCK、其他挂载点、复杂动画和新视口服务仍未开放。便利 SDK 不启用普通宿主的 `mms.edit`。刷新种类按目标的 `supportedKinds` 检查，见[刷新 SDK](cpp-refresh.md)。`updateElement` 保留底层 handle，但可能更新 generation 并重建 view；不能将其当成无副作用的重绘请求。
+可写属性的[底层暂存接口](property-stage.md)及[声明式 INPUT 和便利封装](input.md)已在受控编辑宿主中接入。普通宿主的 INPUT 为只读，便利 SDK 不启用 `mms.edit`。DOCK、其他挂载点、复杂动画和新视口服务仍未开放。刷新种类按目标的 `supportedKinds` 检查，见[刷新 SDK](cpp-refresh.md)。`updateElement` 保留底层 handle，但可能更新 generation 并重建 view；不能将其当成无副作用的重绘请求。
 
 ## 工具栏命令溢出
 
@@ -97,6 +98,6 @@ spec.button.hints = &hints;
 
 此扩展不增加函数表版本，也没有独立的溢出能力查询。取得 `mms.ui.layout` 1.0 不代表旧宿主接受数值 `3`；检查 `Register`、`SetDefaultHints` 或底层 `stageHints` 的结果。返回 `MMS_E_UNSUPPORTED` 时，由插件明确注册受支持的菜单位置，或报告不支持。`CommandUi` 不会静默回退；注册失败后的清理规则不变。
 
-实现状态：**本机已验证**（完整配置 21／21、原始兼容配置 18／18、ABI 契约重复 6／6）。验收证据见 [UI 框架记录](../../docs/records/abi-ui-framework-2026-10-19.md)。工具栏溢出不开放 DOCK、INPUT、新挂载点、通用菜单内容提供者或普通 `mms.edit`。
+实现状态：**本机已验证**（完整配置 21／21、原始兼容配置 18／18、ABI 契约重复 6／6）。验收证据见 [UI 框架记录](../../docs/records/abi-ui-framework-2026-10-19.md)。INPUT 走原工具栏布局，自身不进入命令溢出菜单。工具栏溢出不开放 DOCK、新挂载点、通用菜单内容提供者或普通 `mms.edit`。
 
 Win7 SP1 x64、CPU 基础路径和 AMD 继续作为发布约束。当前构建与本机测试不替代 Win7 和 AMD 真机验收。

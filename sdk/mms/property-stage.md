@@ -1,6 +1,6 @@
 # 属性暂存接口
 
-`MmsUiApiV1::stageProperty` 在已挂接编辑宿主的受控环境中，将插件自己的可撤销属性加入指定事务。普通 MMS 启动尚未开放 `mms.edit`，暂存返回 `MMS_E_NOT_READY`。本接口不创建输入控件，`MMS_UI_INPUT` 仍未实现。开发环境和 DLL 入口见 [SDK 参考](README.md)，事务流程见[编辑事务](edit.md)。
+`MmsUiApiV1::stageProperty` 在已挂接编辑宿主的受控环境中，将插件自己的可撤销属性加入指定事务。普通 MMS 启动尚未开放 `mms.edit`，暂存返回 `MMS_E_NOT_READY`。本接口不创建输入控件；[声明式 INPUT](input.md)复用该暂存过程。开发环境和 DLL 入口见 [SDK 参考](README.md)，事务流程见[编辑事务](edit.md)。
 
 ## 属性描述
 

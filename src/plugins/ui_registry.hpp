@@ -1,6 +1,7 @@
 #pragma once
 #include "common.hpp"
 #include "ui_refresh.hpp"
+#include "ui_property_value.hpp"
 #include <mms/ui.h>
 #include <mms/surface.h>
 #include <mms/layout.h>
@@ -23,6 +24,17 @@ struct Arena {
 struct CommandRecord { MmsHandle handle = 0; UiClient* owner = nullptr; std::shared_ptr<Arena> arena; MmsCommandDescV1 desc{}; };
 struct PropertyRecord { MmsHandle handle = 0; UiClient* owner = nullptr; std::shared_ptr<Arena> arena; MmsPropertyDescV1 desc{}; };
 struct PropertyStageFrame;
+struct PropertyInputSnapshot {
+    std::string elementId, propertyId;
+    MmsHandle element = 0;
+    std::shared_ptr<PropertyRecord> property;
+    UiPropertyValue value;
+    uint64_t sceneRevision = 0;
+    bool editable = false;
+    // A native draft revokes only its own in-flight request. Legacy internal
+    // callers can omit the token; it never crosses the public C ABI.
+    std::shared_ptr<const std::atomic<bool>> intent;
+};
 struct ElementRecord {
     MmsHandle handle = 0;
     std::shared_ptr<Arena> arena;
@@ -63,6 +75,8 @@ class UiRegistry {
     const PropertyStageFrame* propertyStage_ = nullptr;
     std::function<MmsResult(UiClient&, MmsHandle, const std::shared_ptr<PropertyRecord>&,
         MmsObjectRef, const MmsValue&)> propertyStageBridge_;
+    std::function<MmsResult(UiClient&, uint64_t&)> propertyInputRevision_;
+    std::function<MmsResult(UiClient&, const PropertyInputSnapshot&, const MmsValue&)> propertyInputEdit_;
     std::function<void(UiClient&, MmsResult)> commandFinished_;
     std::map<MmsHandle, std::unique_ptr<Lease>> leases_;
     std::map<MmsHandle, std::unique_ptr<Layout>> layouts_;
@@ -116,6 +130,8 @@ class UiRegistry {
 public:
     using PropertyStageBridge = std::function<MmsResult(UiClient&, MmsHandle,
         const std::shared_ptr<PropertyRecord>&, MmsObjectRef, const MmsValue&)>;
+    using PropertyInputRevisionBridge = std::function<MmsResult(UiClient&, uint64_t&)>;
+    using PropertyInputEditBridge = std::function<MmsResult(UiClient&, const PropertyInputSnapshot&, const MmsValue&)>;
     std::map<std::string, std::shared_ptr<CommandRecord>> commands;
     std::map<std::string, std::shared_ptr<PropertyRecord>> properties;
     std::map<std::string, ElementRecord> elements;
@@ -140,6 +156,13 @@ public:
         const std::function<MmsResult(const PropertyStageFrame&)>&);
     bool IsPropertyStageCurrent(const PropertyStageFrame&) const noexcept;
     bool IsPropertyCurrent(const std::string& cachedId, const PropertyRecord*, const UiClient*) const noexcept;
+    void SetPropertyInputBridges(PropertyInputRevisionBridge revision, PropertyInputEditBridge edit) {
+        propertyInputRevision_ = std::move(revision); propertyInputEdit_ = std::move(edit);
+    }
+    // Trusted native adapter entry points. They are not part of MmsUiApiV1.
+    MmsResult CapturePropertyInput(const std::string&, PropertyInputSnapshot&);
+    bool IsPropertyInputCurrent(const PropertyInputSnapshot&) const noexcept;
+    MmsResult CommitPropertyInput(const PropertyInputSnapshot&, const MmsValue&);
     // Keep the read-only callback guard through native state application.
     MmsResult WithElementState(MmsHandle, const std::function<MmsResult(const MmsCommandStateV1&)>&);
     MmsResult WithElementStateContent(const MmsUiTargetRefV1&, uint64_t providerRevision,

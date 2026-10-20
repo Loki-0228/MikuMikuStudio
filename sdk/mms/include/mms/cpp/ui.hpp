@@ -130,10 +130,14 @@ inline bool operator==(RegistrationRef a, RegistrationRef b) noexcept {
 }
 inline bool operator!=(RegistrationRef a, RegistrationRef b) noexcept { return !(a == b); }
 
+struct InputSpec;
+struct PropertyInputSpec;
+
 class RegistrationBundle {
     UiServices services_;
     std::vector<RegistrationRef> registrations_;
     bool active_ = false;
+    MmsResult compositionCleanup_ = MMS_OK;
 
     template<class F> MmsResult Add(RegistrationKind kind, RegistrationRef* out, F&& call) noexcept {
         if (out) *out = {};
@@ -168,12 +172,38 @@ class RegistrationBundle {
         registrations_.erase(registrations_.begin() + static_cast<std::ptrdiff_t>(index));
         return MMS_OK;
     }
+    MmsResult RollbackSince(std::size_t first) noexcept {
+        if (active_) return MMS_E_BUSY;
+        if (const auto result = services_.CheckThread()) return result;
+        detail::ActiveCall guard(active_);
+        // A composition owns only its suffix. Earlier registrations, including
+        // properties referenced by a new input, never enter this rollback.
+        for (;;) {
+            bool elements = false, progress = false;
+            for (std::size_t i = registrations_.size(); i > first;) {
+                --i;
+                if (registrations_[i].kind != RegistrationKind::Element) continue;
+                elements = true;
+                const auto result = Remove(i);
+                if (!result) progress = true;
+                else if (result != MMS_E_BUSY) return result;
+            }
+            if (!elements) break;
+            if (!progress) return MMS_E_BUSY;
+        }
+        for (std::size_t i = registrations_.size(); i > first;) {
+            --i;
+            if (const auto result = Remove(i)) return result;
+        }
+        return MMS_OK;
+    }
 public:
     explicit RegistrationBundle(UiServices services) noexcept : services_(std::move(services)) {}
     RegistrationBundle(const RegistrationBundle&) = delete;
     RegistrationBundle& operator=(const RegistrationBundle&) = delete;
     RegistrationBundle(RegistrationBundle&& other) noexcept
-        : services_(std::move(other.services_)), registrations_(std::move(other.registrations_)) {
+        : services_(std::move(other.services_)), registrations_(std::move(other.registrations_)),
+          compositionCleanup_(other.compositionCleanup_) {
         // Moving is an ownership operation on the same UI thread, outside a
         // registration/Close callback. Callback context addresses never move.
         other.registrations_.clear();
@@ -193,6 +223,12 @@ public:
         for (const auto& value : registrations_) if (value == reference) return true;
         return false;
     }
+    // Result of rollback for the most recent AddInput/AddPropertyInput call.
+    // The registration result remains the original error.
+    MmsResult cleanup_result() const noexcept { return compositionCleanup_; }
+    MmsResult AddInput(const InputSpec&, RegistrationRef* out = nullptr) noexcept;
+    MmsResult AddPropertyInput(const PropertyInputSpec&, RegistrationRef* property = nullptr,
+        RegistrationRef* input = nullptr) noexcept;
     // Explicitly transfer the ORIGINAL registration. The caller assumes its
     // cleanup and dependency ordering. Failure returns an empty reference.
     RegistrationRef detach(RegistrationRef reference) noexcept {
@@ -274,13 +310,123 @@ public:
 
 struct UiPlacementSpec {
     std::string_view id, parent, label;
-    // Menu items do not support layout hints. Toolbar button hints are copied
+    // Menu items do not support layout hints. Input/button hints are copied
     // synchronously by the host; they need only live through Register().
     const MmsUiLayoutHintsV1* hints = nullptr;
 };
 struct UiGroupSpec {
     std::string_view id, parent, label;
     const MmsUiLayoutHintsV1* hints = nullptr;
+};
+// Mount an input for an existing property. The host resolves the original
+// propertyId, validates ownership and places the field in its normal layout.
+struct InputSpec {
+    std::string_view id, owner, label, parent, propertyId;
+    const MmsUiLayoutHintsV1* hints = nullptr;
+    std::int32_t order = 0;
+};
+// Register a property and its field through the same C tables as direct use.
+// Descriptor strings, choices and layout hints are copied synchronously. The
+// callback context remains borrowed through the normal plugin lifecycle.
+struct PropertyInputSpec {
+    std::string_view id, owner, label, unit;
+    std::uint32_t valueType = MMS_VALUE_NUMBER, components = 0, flags = MMS_PROPERTY_UNDOABLE;
+    MmsValue defaultValue{}, minimum{}, maximum{};
+    MmsSpan choices{};
+    void* context = nullptr;
+    decltype(MmsPropertyDescV1::read) read = nullptr;
+    decltype(MmsPropertyDescV1::releaseValue) releaseValue = nullptr;
+    decltype(MmsPropertyDescV1::stage) stage = nullptr;
+    UiPlacementSpec input;
+    std::int32_t order = 0;
+};
+
+inline MmsResult RegistrationBundle::AddInput(const InputSpec& spec, RegistrationRef* out) noexcept {
+    if (out) *out = {};
+    if (active_) return MMS_E_BUSY;
+    if (const auto result = services_.CheckThread()) return result;
+    compositionCleanup_ = MMS_OK;
+    if (spec.id.empty() || spec.owner.empty() || spec.propertyId.empty()) return MMS_E_ARGUMENT;
+    // Negotiate optional layout while protecting this bundle against a host
+    // query callback that tries to reenter Add/Close on the same instance.
+    if (spec.hints || spec.order) {
+        detail::ActiveCall guard(active_);
+        if (const auto result = services_.RequireLayout()) return result;
+    }
+    const auto first = registrations_.size();
+    MmsUiElementV1 element{}; element.h = Header<MmsUiElementV1>();
+    element.id = Text(spec.id); element.ownerPlugin = Text(spec.owner); element.label = Text(spec.label);
+    element.parentId = Text(spec.parent.empty() ? "mms.toolbar.main.extensions" : spec.parent);
+    element.propertyId = Text(spec.propertyId); element.kind = MMS_UI_INPUT;
+    element.capabilities = MMS_UI_MOVE | MMS_UI_HIDE | MMS_UI_RESIZE | MMS_UI_LAYOUT;
+    RegistrationRef registered;
+    auto result = AddElement(element, &registered);
+    if (!result && (spec.hints || spec.order)) {
+        auto hints = spec.hints ? *spec.hints : MmsUiLayoutHintsV1{};
+        if (!spec.hints) hints.h = Header<MmsUiLayoutHintsV1>();
+        if (spec.order) hints.order = spec.order;
+        result = SetDefaultHints(spec.id, hints);
+    }
+    if (result) { compositionCleanup_ = RollbackSince(first); return result; }
+    if (out) *out = registered;
+    return MMS_OK;
+}
+inline MmsResult RegistrationBundle::AddPropertyInput(const PropertyInputSpec& spec,
+        RegistrationRef* property, RegistrationRef* input) noexcept {
+    if (property) *property = {};
+    if (input) *input = {};
+    if (active_) return MMS_E_BUSY;
+    if (const auto result = services_.CheckThread()) return result;
+    compositionCleanup_ = MMS_OK;
+    if ((property && property == input) || spec.id.empty() || spec.owner.empty() ||
+        spec.input.id.empty() || !spec.read || !spec.releaseValue) return MMS_E_ARGUMENT;
+    const auto first = registrations_.size();
+    MmsPropertyDescV1 desc{}; desc.info.h = Header<MmsPropertyDescV1>();
+    desc.info.id = Text(spec.id); desc.info.ownerPlugin = Text(spec.owner); desc.info.label = Text(spec.label); desc.info.unit = Text(spec.unit);
+    desc.info.valueType = spec.valueType; desc.info.components = spec.components; desc.info.flags = spec.flags;
+    desc.info.defaultValue = spec.defaultValue; desc.info.minimum = spec.minimum; desc.info.maximum = spec.maximum; desc.info.choices = spec.choices;
+    desc.context = spec.context; desc.read = spec.read; desc.releaseValue = spec.releaseValue; desc.stage = spec.stage;
+    RegistrationRef registeredProperty, registeredInput;
+    auto result = AddProperty(desc, &registeredProperty);
+    if (!result) result = AddInput({spec.input.id, spec.owner, spec.input.label.empty() ? spec.label : spec.input.label,
+        spec.input.parent, spec.id, spec.input.hints, spec.order}, &registeredInput);
+    if (result) { compositionCleanup_ = RollbackSince(first); return result; }
+    if (property) *property = registeredProperty;
+    if (input) *input = registeredInput;
+    return MMS_OK;
+}
+
+class PropertyInput {
+    RegistrationBundle registrations_;
+    RegistrationRef property_{}, input_{};
+    MmsResult cleanupResult_ = MMS_OK;
+    RegistrationRef Borrow(RegistrationRef value) const noexcept {
+        return registrations_.owns(value) ? value : RegistrationRef{};
+    }
+public:
+    explicit PropertyInput(UiServices services) noexcept : registrations_(std::move(services)) {}
+    PropertyInput(const PropertyInput&) = delete;
+    PropertyInput& operator=(const PropertyInput&) = delete;
+    PropertyInput(PropertyInput&&) noexcept = default;
+    PropertyInput& operator=(PropertyInput&&) = delete;
+    MmsResult Register(const PropertyInputSpec& spec) noexcept {
+        if (property() || input() || cleanupResult_ != MMS_OK) return MMS_E_BUSY;
+        const auto result = registrations_.AddPropertyInput(spec, &property_, &input_);
+        cleanupResult_ = registrations_.cleanup_result();
+        return result;
+    }
+    MmsResult Register(const InputSpec& spec) noexcept {
+        if (property() || input() || cleanupResult_ != MMS_OK) return MMS_E_BUSY;
+        const auto result = registrations_.AddInput(spec, &input_);
+        cleanupResult_ = registrations_.cleanup_result();
+        return result;
+    }
+    MmsResult Close() noexcept { return cleanupResult_ = registrations_.Close(); }
+    MmsResult cleanup_result() const noexcept { return cleanupResult_; }
+    RegistrationRef property() const noexcept { return Borrow(property_); }
+    RegistrationRef input() const noexcept { return Borrow(input_); }
+    RegistrationBundle& registrations() noexcept { return registrations_; }
+    const RegistrationBundle& registrations() const noexcept { return registrations_; }
 };
 struct CommandUiSpec {
     std::string_view id, owner, label, description;

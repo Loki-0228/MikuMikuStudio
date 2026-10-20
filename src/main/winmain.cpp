@@ -1,6 +1,7 @@
 #include "mikumikustudio/autosave.hpp"
 #include "mikumikustudio/plugin_menu.hpp"
 #include "mikumikustudio/plugin_runtime.hpp"
+#include "mikumikustudio/plugin_input_focus.hpp"
 #include "mikumikustudio/bake_ui_lock.hpp"
 // ===========================================================================
 // VA 0x004C4460 - WinMain  (original: _WinMain@16)
@@ -165,6 +166,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
                     static_cast<unsigned long long>(msg.wParam));
             if (!bake::UiLocked() && msg.message==WM_KEYDOWN && !(msg.lParam&(1LL<<30)) &&
                 (msg.hwnd==app->MainWindow()||IsChild(app->MainWindow(),msg.hwnd)) &&
+                !plugins::OwnsPropertyInput(msg.hwnd) &&
                 (plugin_menu::HandleShortcut(app,unsigned(msg.wParam)) ||
                  plugins::HandleShortcut(unsigned(msg.wParam), msg.hwnd == app->MainWindow()))) continue;
             // Forward system shortcuts from focused child/floating controls.

@@ -5,7 +5,7 @@
 #include <set>
 
 namespace mikumikustudio::plugins::toolbar_overflow {
-struct Policy { bool menu = false; bool command = false; bool separator = false; };
+struct Policy { bool menu = false; bool command = false; bool separator = false; bool container = false; };
 struct Result {
     native_ui::TreeResult layout;
     std::set<std::string> hidden;
@@ -15,15 +15,18 @@ struct Result {
 namespace detail {
 struct Unit { std::vector<std::string> leaves; bool command = false; };
 inline void Leaves(const native_ui::Node& node, const std::map<std::string, Policy>& policies,
-    std::vector<std::string>& leaves, bool& command, bool inherited, bool& requested) {
+    std::vector<std::string>& leaves, bool& command, bool inherited, bool& requested, bool& blocked) {
     if (!node.visible) return;
     const auto found = policies.find(node.id);
     const Policy policy = found == policies.end() ? Policy{} : found->second;
     inherited = inherited || policy.menu; requested = requested || inherited;
     if (node.children.empty()) {
         if (policy.command || policy.separator) leaves.push_back(node.id);
+        // An empty logical group has no drawable presentation to preserve.
+        // Unknown leaves remain blockers even when their measured size is zero.
+        else if (!policy.container) blocked = true;
         command = command || policy.command;
-    } else for (const auto& child : node.children) Leaves(child, policies, leaves, command, inherited, requested);
+    } else for (const auto& child : node.children) Leaves(child, policies, leaves, command, inherited, requested, blocked);
 }
 inline void Units(const native_ui::Node& node, const std::map<std::string, Policy>& policies,
     std::vector<Unit>& units, bool inherited = false, bool root = true) {
@@ -32,11 +35,11 @@ inline void Units(const native_ui::Node& node, const std::map<std::string, Polic
     const Policy policy = found == policies.end() ? Policy{} : found->second;
     inherited = inherited || policy.menu;
     if (!root && !node.children.empty() && node.hints.keepTogether) {
-        Unit unit; bool requested = false;
-        Leaves(node, policies, unit.leaves, unit.command, inherited, requested);
+        Unit unit; bool requested = false, blocked = false;
+        Leaves(node, policies, unit.leaves, unit.command, inherited, requested, blocked);
         // A keep-together group is one presentation unit, including siblings
         // without their own opt-in. Its commands keep their original identity.
-        if (requested && !unit.leaves.empty()) units.push_back(std::move(unit));
+        if (requested && !blocked && !unit.leaves.empty()) units.push_back(std::move(unit));
     } else if (node.children.empty()) {
         if (inherited && (policy.command || policy.separator)) units.push_back({{node.id}, policy.command});
     } else for (const auto& child : node.children) Units(child, policies, units, inherited, false);

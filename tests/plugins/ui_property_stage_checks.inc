@@ -157,7 +157,8 @@ void ValuesAndOwnership() {
     MmsUiElementV1 input{}; input.h = Header<MmsUiElementV1>(); input.id = S("example.property.input");
     input.ownerPlugin = f.desc.info.ownerPlugin; input.parentId = S("mms.toolbar.main.extensions");
     input.kind = MMS_UI_INPUT; input.propertyId = f.desc.info.id; MmsHandle inputHandle = 400;
-    CHECK(f.ui.registerElement(f.ui.context, &input, &inputHandle) == MMS_E_NOT_READY && inputHandle == 400);
+    CHECK(f.ui.registerElement(f.ui.context, &input, &inputHandle) == MMS_OK && inputHandle != 400);
+    CHECK(f.registry.elements.at("example.property.input").handle == inputHandle);
 }
 void Frames() {
     Fixture f; f.Register(); const auto record = f.registry.properties.at("example.property.value");

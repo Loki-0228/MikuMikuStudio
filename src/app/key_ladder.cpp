@@ -55,6 +55,7 @@
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/plugin_input_focus.hpp"
 #include "mikumikustudio/runtime_log.hpp"
 #include "../plugins/native_history_commands.hpp"
 
@@ -120,6 +121,7 @@ void SendMenuCommand(MMDApp* app, int id) {
 // below; keeping focus explicit also lets tests exercise the real I/K/F routes
 // without activating a window over the user's current application.
 void DispatchLetterHotkeys(MMDApp* app, HWND focus) {
+    if (plugins::OwnsPropertyInput(focus)) return;
     auto& state = app->state;
     const HWND main = static_cast<HWND>(app->Hwnd());
     const bool focusOK = FocusAllowsLetterHotkeys(main, app->FloatingWindow(), focus);
@@ -406,6 +408,7 @@ void DispatchLetterHotkeys(MMDApp* app, HWND focus) {
 }
 
 void ConsumeLetterHotkeys(MMDApp* app) {
+    if (plugins::OwnsPropertyInput(GetFocus())) return;
     if (!LetterHotkeyInputAllowed(app)) return;
     DispatchLetterHotkeys(app, GetFocus());
 }

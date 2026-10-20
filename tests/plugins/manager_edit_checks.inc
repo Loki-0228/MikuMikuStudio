@@ -34,6 +34,7 @@ struct ManagerEditHost final : EditHost {
     SharedHistory history;
     EditStore* attached = nullptr;
     bool poisoned = false, entered = false;
+    std::function<void()> onReserve;
     ManagerEditHost(StorageStore& storage, std::function<MmsResult()> gate) : history(storage, std::move(gate)) {}
     void AttachStore(EditStore* store) override { history.AttachStore(store); attached = store; }
     void DetachStore(EditStore* store) noexcept override { history.DetachStore(store); if (attached == store) attached = nullptr; }
@@ -41,7 +42,9 @@ struct ManagerEditHost final : EditHost {
     MmsResult Enter() override { const auto result = history.Enter(); if (!result) entered = true; return result; }
     void Leave() noexcept override { entered = false; history.Leave(); }
     MmsResult Reserve(std::shared_ptr<const EditRecord> record, std::unique_ptr<EditPublication>& out) override {
-        return history.Reserve(std::move(record), out);
+        const auto result = history.Reserve(std::move(record), out);
+        if (!result && onReserve) onReserve();
+        return result;
     }
     MmsResult History(bool redo) override { return history.History(redo); }
     void Poison() noexcept override { poisoned = true; history.Poison(); }

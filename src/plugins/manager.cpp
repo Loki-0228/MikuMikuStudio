@@ -80,6 +80,12 @@ struct Manager::Impl {
         const PropertyStageFrame* frame;
     };
     StageGrant* stageGrant = nullptr;
+    struct InputRequest {
+        Instance* owner;
+        MmsHandle transaction;
+        std::shared_ptr<const std::atomic<bool>> intent;
+    };
+    InputRequest* inputRequest = nullptr;
     bool forwardingEdit = false, loadAttempted = false, notifyingEdit = false;
     std::function<void()> editPublished;
     std::vector<PluginStatus> failed;
@@ -109,6 +115,11 @@ struct Manager::Impl {
             const std::shared_ptr<PropertyRecord>& record, MmsObjectRef target, const MmsValue& value) {
             return StageProperty(client, transaction, record, target, value);
         });
+        registry.SetPropertyInputBridges([this](UiClient& client, uint64_t& revision) {
+            return InputReadRevision(client, revision);
+        }, [this](UiClient& client, const PropertyInputSnapshot& snapshot, const MmsValue& value) {
+            return InputEdit(client, snapshot, value);
+        });
     }
     ~Impl() { if (wake) DestroyWindow(wake); }
     bool EditOrigin(const Instance& i) const noexcept {
@@ -132,10 +143,13 @@ struct Manager::Impl {
         UiRegistry& registry;
         std::shared_ptr<PropertyRecord> record;
         std::string id;
-        PropertyGuard(UiRegistry& ui, std::shared_ptr<PropertyRecord> property):
-            registry(ui), record(std::move(property)), id(String(record->desc.info.id)) {}
+        std::shared_ptr<const std::atomic<bool>> intent;
+        PropertyGuard(UiRegistry& ui, std::shared_ptr<PropertyRecord> property,
+                std::shared_ptr<const std::atomic<bool>> requested = {}):
+            registry(ui), record(std::move(property)), id(String(record->desc.info.id)), intent(std::move(requested)) {}
         bool IsCurrent() const noexcept override {
-            return registry.IsPropertyCurrent(id, record.get(), record->owner);
+            return (!intent || intent->load(std::memory_order_acquire)) &&
+                registry.IsPropertyCurrent(id, record.get(), record->owner);
         }
     };
     MmsResult StageProperty(UiClient& client, MmsHandle transaction,
@@ -145,7 +159,9 @@ struct Manager::Impl {
         if (owner == instances.end()) return MMS_E_NOT_READY;
         auto& instance = **owner;
         return EditCall(instance, [&](auto&) {
-            auto guard = std::make_shared<PropertyGuard>(registry, record);
+            const auto intent = inputRequest && inputRequest->owner == &instance && inputRequest->transaction == transaction
+                ? inputRequest->intent : std::shared_ptr<const std::atomic<bool>>{};
+            auto guard = std::make_shared<PropertyGuard>(registry, record, intent);
             return edits->StageProperty(instance.edit, transaction, std::move(guard),
                 [&](PropertyStageToken& token) {
                     return registry.WithPropertyStage(record, transaction, [&](const PropertyStageFrame& frame) {
@@ -166,6 +182,59 @@ struct Manager::Impl {
             registry.IsPropertyStageCurrent(*stageGrant->frame))
             return edits->JoinPropertyStage(*stageGrant->token, instance.edit, participant);
         return EditCall(instance, [&](auto& api) { return api.join(api.context, transaction, participant); });
+    }
+    MmsResult InputReadRevision(UiClient& client, uint64_t& revision) {
+        if (GetCurrentThreadId() != thread) return MMS_E_THREAD;
+        const auto owner = std::find_if(instances.begin(), instances.end(),
+            [&](const auto& instance) { return &instance->ui == &client; });
+        if (owner == instances.end() || !edits || !editHost || closing || (*owner)->stopping || client.stopping)
+            return MMS_E_NOT_READY;
+        // Pure query only. Capturing a draft never acquires an edit gate or
+        // grants the property read callback the command's edit authority.
+        return editHost->Revision(revision);
+    }
+    MmsResult InputEdit(UiClient& client, const PropertyInputSnapshot& snapshot, const MmsValue& value) {
+        if (GetCurrentThreadId() != thread) return MMS_E_THREAD;
+        const auto owner = std::find_if(instances.begin(), instances.end(),
+            [&](const auto& instance) { return &instance->ui == &client; });
+        if (owner == instances.end() || !edits || closing || (*owner)->stopping) return MMS_E_NOT_READY;
+        auto& instance = **owner;
+        if (!EditOrigin(instance)) return MMS_E_BUSY;
+        const auto intent = snapshot.intent;
+        const auto intended = [&]() noexcept { return !intent || intent->load(std::memory_order_acquire); };
+        auto api = EditApi(instance); auto ui = registry.Api(instance.ui);
+        MmsHandle transaction = 0; bool committed = false;
+        struct Cancel {
+            MmsEditApiV1& api; MmsHandle& transaction; bool& committed;
+            ~Cancel() { if (transaction && !committed) api.cancel(api.context, transaction); }
+        } cancel{api, transaction, committed};
+        const auto current = [&]() -> MmsResult {
+            if (!intended() || !registry.IsPropertyInputCurrent(snapshot)) return MMS_E_STALE;
+            PropertyInputSnapshot fresh;
+            const auto captured = registry.CapturePropertyInput(snapshot.elementId, fresh);
+            if (!intended()) return MMS_E_STALE;
+            if (captured) return captured;
+            if (!fresh.editable) return MMS_E_NOT_READY;
+            return registry.IsPropertyInputCurrent(snapshot) && fresh.sceneRevision == snapshot.sceneRevision &&
+                fresh.value.Equals(snapshot.value) ? MMS_OK : MMS_E_STALE;
+        };
+        if (const auto result = current()) return result;
+        const auto& info = snapshot.property->desc.info;
+        const auto label = info.label.bytes ? info.label : info.id;
+        if (const auto result = api.begin(api.context, label, snapshot.sceneRevision, &transaction)) return result;
+        if (const auto result = current()) return result;
+        InputRequest request{&instance, transaction, intent};
+        auto* previous = inputRequest; inputRequest = &request;
+        struct ResetRequest {
+            InputRequest*& value; InputRequest* previous;
+            ~ResetRequest() { value = previous; }
+        } resetRequest{inputRequest, previous};
+        if (const auto result = ui.stageProperty(ui.context, transaction, Text(snapshot.propertyId), {}, &value)) return result;
+        if (const auto result = current()) return result;
+        if (const auto result = api.prepare(api.context, transaction)) return result;
+        if (const auto result = current()) return result;
+        const auto result = api.commit(api.context, transaction);
+        committed = result == MMS_OK; return result;
     }
     void CancelFailedEdit(Instance& i) noexcept {
         if (!edits) return;

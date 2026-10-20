@@ -19,6 +19,7 @@ add_library(mms_plugin_runtime STATIC
     src/plugins/loader_win32.cpp
     src/plugins/ui_registry.cpp
     src/plugins/ui_property_value.cpp
+    src/plugins/ui_property_draft.cpp
     src/plugins/ui_refresh.cpp
     src/plugins/ui_refresh_binding.cpp
     src/plugins/ui_preferences_file.cpp
@@ -29,7 +30,7 @@ add_library(mms_plugin_runtime STATIC
     src/plugins/edit_store.cpp
     src/plugins/shared_history.cpp
     src/plugins/project_storage.cpp
-    src/plugins/native_ui.cpp)
+    src/plugins/native_ui.cpp src/plugins/native_property_input.cpp)
 target_include_directories(mms_plugin_runtime PUBLIC sdk/mms/include include PRIVATE src/plugins)
 target_link_libraries(mms_plugin_runtime PUBLIC mms_system_settings native_ui::win32 user32 gdi32 comctl32 bcrypt)
 target_compile_definitions(mms_plugin_runtime PRIVATE _WIN32_WINNT=0x0601 WINVER=0x0601)
@@ -81,6 +82,13 @@ target_link_options(ui_property_value_tests PRIVATE /SUBSYSTEM:CONSOLE,6.01 /DEB
 set_target_properties(ui_property_value_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
 add_test(NAME ui_property_value_contract COMMAND ui_property_value_tests)
 set_tests_properties(ui_property_value_contract PROPERTIES TIMEOUT 60)
+add_executable(ui_property_draft_tests EXCLUDE_FROM_ALL tests/plugins/ui_property_draft_tests.cpp)
+target_link_libraries(ui_property_draft_tests PRIVATE mms_plugin_runtime)
+target_include_directories(ui_property_draft_tests PRIVATE src/plugins)
+target_link_options(ui_property_draft_tests PRIVATE /SUBSYSTEM:CONSOLE,6.01 /DEBUG:NONE)
+set_target_properties(ui_property_draft_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_test(NAME ui_property_draft_contract COMMAND ui_property_draft_tests)
+set_tests_properties(ui_property_draft_contract PROPERTIES TIMEOUT 60)
 add_executable(ui_refresh_binding_tests EXCLUDE_FROM_ALL tests/plugins/ui_refresh_binding_tests.cpp)
 target_include_directories(ui_refresh_binding_tests PRIVATE src/plugins sdk/mms/include)
 target_compile_features(ui_refresh_binding_tests PRIVATE cxx_std_17)

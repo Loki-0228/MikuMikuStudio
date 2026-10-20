@@ -9,6 +9,7 @@
 #include "mikumikustudio/clipboard_layout.hpp"
 #include "mikumikustudio/panel_controls.hpp"
 #include "mikumikustudio/bake_ui_lock.hpp"
+#include "mikumikustudio/plugin_input_focus.hpp"
 #include "../src/window/curve_editor_axis.hpp"
 #include "../src/plugins/native_pose_scope.hpp"
 #include <algorithm>
@@ -26,6 +27,7 @@ namespace mc = morph_curve;
 namespace mikumikustudio {
 void PumpEnterRegisterFrame(MMDApp*, HWND, bool);
 void PumpDeleteRebuild(MMDApp*, HWND, bool);
+void ConsumeEditKeys(MMDApp*);
 void RegisterCameraState(MMDApp*, int);
 int RegisterLightKey(MMDApp*, const void*);
 int RegisterSelfShadowKey(MMDApp*, const void*);
@@ -212,6 +214,43 @@ void CameraEditorCommands() {
     Check(mainRegistrations==1,"Enter in the main window still registers once");
     ce::CloseOwned(owner);DestroyWindow(owner);app->Hwnd()=nullptr;
 }
+void PropertyInputKeyboardOwnership() {
+    WNDCLASSW type{}; type.lpfnWndProc = InputHost; type.hInstance = GetModuleHandleW(nullptr);
+    type.lpszClassName = L"MmsPropertyInputPumpTest"; RegisterClassW(&type);
+    HWND owner = CreateWindowW(type.lpszClassName, L"", WS_OVERLAPPED, 0, 0, 400, 300, nullptr, nullptr, type.hInstance, nullptr);
+    HWND wrapper = CreateWindowExW(WS_EX_CONTROLPARENT, L"STATIC", L"", WS_CHILD | WS_VISIBLE,
+                                   0, 0, 300, 60, owner, nullptr, type.hInstance, nullptr);
+    HWND group = CreateWindowW(L"STATIC", L"", WS_CHILD | WS_VISIBLE, 0, 0, 280, 50, wrapper, nullptr, type.hInstance, nullptr);
+    HWND field = CreateWindowW(L"EDIT", L"draft", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+                               0, 0, 120, 22, group, nullptr, type.hInstance, nullptr);
+    HWND ordinary = CreateWindowW(L"EDIT", L"old panel", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+                                  0, 70, 120, 22, owner, nullptr, type.hInstance, nullptr);
+    Check(owner && wrapper && group && field && ordinary, "create hidden property input pump fixture");
+    Check(SetPropW(wrapper, plugins::kPropertyInputWindowMarker, reinterpret_cast<HANDLE>(1)) != FALSE,
+          "attach real wrapper marker for the native pump");
+    auto app = std::make_unique<MMDApp>(); std::memset(&app->state, 0, sizeof app->state); app->Hwnd() = owner;
+    app->state.enterKeyState = 1; app->state.deleteKeyState = 1; app->state.tabKeyState = 1;
+    app->ViewportInputActive() = 1; app->CurrentFrame() = 29;
+    const auto beforeRegistrations = mainRegistrations;
+    PumpEnterRegisterFrame(app.get(), field, true); PumpEnterRegisterFrame(app.get(), wrapper, true);
+    Check(mainRegistrations == beforeRegistrations && !app->SceneModified(),
+          "direct Enter gates reject INPUT root and nested edit without authoring the scene");
+    // SetFocus needs a visible top-level style, without showing a desktop window.
+    const auto style = GetWindowLongPtrW(owner, GWL_STYLE); SetWindowLongPtrW(owner, GWL_STYLE, style | WS_VISIBLE);
+    SetFocus(field); Check(GetFocus() == field, "focus the real INPUT field on the calling UI thread");
+    ConsumeEditKeys(app.get());
+    Check(GetFocus() == field && mainRegistrations == beforeRegistrations && !app->SceneModified() && app->CurrentFrame() == 29,
+          "polled Return Delete and Tab leave an INPUT draft and the scene unchanged");
+    PumpDeleteRebuild(app.get(), field, true);
+    Check(mainRegistrations == beforeRegistrations && !app->SceneModified(), "the direct Delete gate also excludes INPUT");
+    Check(!plugins::OwnsPropertyInput(ordinary), "legacy panel EDIT is outside INPUT ownership");
+    PumpEnterRegisterFrame(app.get(), ordinary, true);
+    Check(mainRegistrations == beforeRegistrations + 1, "legacy panel Enter keeps its original registration behavior");
+    Check(RemovePropW(wrapper, plugins::kPropertyInputWindowMarker) == reinterpret_cast<HANDLE>(1), "remove the pump fixture marker");
+    PumpEnterRegisterFrame(app.get(), field, true);
+    Check(mainRegistrations == beforeRegistrations + 2, "the original Enter route resumes after marker removal");
+    SetWindowLongPtrW(owner, GWL_STYLE, style); DestroyWindow(owner); app->Hwnd() = nullptr;
+}
 void CameraSelectionAfterCurveWrite() {
     auto app=std::make_unique<MMDApp>();std::memset(&app->state,0,sizeof app->state);app->EnglishUI()=2;
     auto* keys=mdl::KeyPoolCreate<mdl::CameraKey>();app->CameraKeys()=keys;
@@ -388,5 +427,5 @@ void SceneRulerSynchronization() {
 int main(int argc,char** argv) {
     if(argc==2&&std::strcmp(argv[1],"--bound-history")==0){bound_curve_history_checks::Run();std::puts("PASS: bound curve history");return 0;}
     if(argc==2&&std::strcmp(argv[1],"--bound-model-history")==0){bound_model_curve_history_checks::Run();std::puts("PASS: bound model curve history");return 0;}
-    SceneRulerSynchronization();bound_curve_history_checks::Run();bound_model_curve_history_checks::Run();CameraSparseRegistration();CameraEditorCommands();CameraSelectionAfterCurveWrite();CameraFrameZeroRegistration();GlobalFrameZeroRegistrations();MorphSync();SelectionSync();std::puts("PASS: curve synchronization");
+    SceneRulerSynchronization();bound_curve_history_checks::Run();bound_model_curve_history_checks::Run();CameraSparseRegistration();CameraEditorCommands();PropertyInputKeyboardOwnership();CameraSelectionAfterCurveWrite();CameraFrameZeroRegistration();GlobalFrameZeroRegistrations();MorphSync();SelectionSync();std::puts("PASS: curve synchronization");
 }

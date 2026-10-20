@@ -398,7 +398,7 @@ static void PropertySurfaceLeaseChecks() {
     auto badProperty = x.Property(); badProperty.info.flags = 0;
     CHECK(gates.AddProperty(badProperty) == MMS_E_NOT_READY && gates.size() == 0);
     auto input = x.Button("example.cppsdk.input"); input.kind = MMS_UI_INPUT; input.commandId = {};
-    CHECK(gates.AddElement(input) == MMS_E_NOT_READY && gates.size() == 0);
+    CHECK(gates.AddElement(input) == MMS_E_ARGUMENT && gates.size() == 0);
     CHECK(gates.Close() == MMS_OK && x.registry.elements.size() == 3);
 }
 } // namespace cpp_sdk_checks

@@ -1,6 +1,6 @@
 # 属性暂存与准确事务授权
 
-`mms.ui.stageProperty` 已在受控编辑宿主中实现，使用原 C ABI、插件上下文、属性记录和共同历史。普通启动仍不提供 `mms.edit`，属性暂存返回 `MMS_E_NOT_READY`。声明式 INPUT、IME 草稿、原生输入生命周期和专用便利封装仍未实现。调用契约见 [SDK 属性暂存参考](../../sdk/mms/property-stage.md)。
+`mms.ui.stageProperty` 已在受控编辑宿主中实现，使用原 C ABI、插件上下文、属性记录和共同历史。普通启动仍不提供 `mms.edit`，属性暂存返回 `MMS_E_NOT_READY`。声明式 INPUT、草稿、原生输入生命周期和便利封装已随后接入，见[声明式 INPUT 记录](abi-declarative-input-2026-10-20.md)。调用契约见 [SDK 属性暂存参考](../../sdk/mms/property-stage.md)。
 
 ## 实现范围
 

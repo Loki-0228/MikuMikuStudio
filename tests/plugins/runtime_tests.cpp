@@ -24,6 +24,7 @@ static MmsString S(const char* s) { return {s, std::strlen(s)}; }
 #include "win32_checks.inc"
 #include "scene_checks.inc"
 #include "cpp_sdk_checks.inc"
+#include "cpp_input_sdk_checks.inc"
 #include "refresh_checks.inc"
 #include "state_refresh_checks.inc"
 #include "visibility_refresh_checks.inc"
@@ -40,6 +41,8 @@ static std::string ManifestText(std::string id = "org.example.hello", std::strin
     return "{\"schemaVersion\":1,\"id\":\"" + id + "\",\"name\":\"测试\",\"version\":\"1.0.0\",\"kind\":\"native\",\"abi\":{\"major\":1,\"minMinor\":0},\"entry\":\"" + entry + "\",\"architecture\":\"x64\",\"minWindows\":\"6.1.7601\",\"capabilities\":[\"ui.command\"],\"requiresServices\":[{\"id\":\"mms.ui\",\"major\":1,\"minMinor\":0}],\"dependencies\":[],\"nativeDependencies\":[],\"reloadPolicy\":\"restart\"}";
 }
 #include "manager_edit_checks.inc"
+#include "ui_input_broker_checks.inc"
+#include "native_property_input_checks.inc"
 #include "manager_refresh_checks.inc"
 #include "layout_refresh_checks.inc"
 #include "ui_refresh_subtree_checks.inc"
@@ -353,6 +356,12 @@ static void LifecycleChecks(const fs::path& root, const fs::path& fixture) {
 int wmain(int argc, wchar_t** argv) {
     const fs::path root = fs::temp_directory_path() / (L"mms-abi-contract-" + std::to_wstring(GetCurrentProcessId()));
     try {
+        if (argc == 3 && std::wstring(argv[1]) == L"--input-only") {
+            CHECK(!fs::exists(root)); fs::create_directories(root);
+            CppInputSdkChecks(); UiInputBrokerChecks(root, fs::absolute(argv[2]));
+            NativePropertyInputChecks(root, fs::absolute(argv[2]));
+            std::cout << "PASS INPUT checks=" << checks << "\n"; fs::remove_all(root); return 0;
+        }
         if (argc == 3 && std::wstring(argv[1]) == L"--property-stage-only") {
             CHECK(!fs::exists(root)); fs::create_directories(root);
             PropertyStageChecks(); UiPropertyStageChecks();
@@ -397,11 +406,13 @@ int wmain(int argc, wchar_t** argv) {
             std::cout << "PASS refresh checks=" << checks << "\n"; fs::remove_all(root); return 0;
         }
         CHECK(argc == 4); CHECK(!fs::exists(root)); fs::create_directories(root);
-        JsonChecks(); DiscoveryChecks(root); UiChecks(); UiPreferenceChecks(); UiPreferencesFileChecks(root); LayoutChecks(); TreeLayoutChecks(); LayoutServiceChecks(); OverflowValidationChecks(); OverflowMenuChecks(); UpdateChecks(); Win32HostChecks(); SurfaceChecks(); CppSdkChecks(); LoaderChecks(root, fs::absolute(argv[1]));
+        JsonChecks(); DiscoveryChecks(root); UiChecks(); UiPreferenceChecks(); UiPreferencesFileChecks(root); LayoutChecks(); TreeLayoutChecks(); LayoutServiceChecks(); OverflowValidationChecks(); OverflowMenuChecks(); UpdateChecks(); Win32HostChecks(); SurfaceChecks(); CppSdkChecks(); CppInputSdkChecks(); LoaderChecks(root, fs::absolute(argv[1]));
         LifecycleChecks(root, fs::absolute(argv[2])); TaskDispatchChecks(root, fs::absolute(argv[2]), fs::absolute(argv[3]));
         SceneChecks(); StorageChecks(root); EditChecks(); UiPropertyStageChecks(); SharedHistoryChecks(); StateContentChecks();
         UiRefreshSubtreeChecks(); UiRefreshSubtreeRectChecks();
         ManagerEditChecks(root, fs::absolute(argv[3]));
+        UiInputBrokerChecks(root, fs::absolute(argv[3]));
+        NativePropertyInputChecks(root, fs::absolute(argv[3]));
         std::cout << "PASS checks=" << checks << "\n"; fs::remove_all(root); return 0;
     } catch (const std::exception& e) { std::cerr << "FAIL after " << checks << ": " << e.what() << "\nfixtures=" << Utf8(root.native()) << "\n"; return 1; }
 }

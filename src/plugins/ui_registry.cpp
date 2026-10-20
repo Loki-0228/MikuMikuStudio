@@ -592,7 +592,7 @@ bool UiRegistry::Allowed(const MmsUiElementV1& e, const std::map<std::string, El
     while (p != tree.end()) {
         auto id = p->first; if (!visited.insert(id).second) return false;
         if (id == "mms.menu.plugins") return IsMenu(e.kind);
-        if (id == "mms.toolbar.main.extensions") return e.kind == MMS_UI_BUTTON || e.kind == MMS_UI_SEPARATOR || e.kind == MMS_UI_GROUP;
+        if (id == "mms.toolbar.main.extensions") return e.kind == MMS_UI_BUTTON || e.kind == MMS_UI_SEPARATOR || e.kind == MMS_UI_GROUP || e.kind == MMS_UI_INPUT;
         if (id == "mms.workspace.tabs.extensions") return e.kind == MMS_UI_PANEL;
         if (p->second.desc.kind != MMS_UI_MENU && p->second.desc.kind != MMS_UI_GROUP) return false;
         p = tree.find(String(p->second.desc.parentId));
@@ -602,7 +602,16 @@ bool UiRegistry::Allowed(const MmsUiElementV1& e, const std::map<std::string, El
 MmsResult UiRegistry::Element(UiClient& c, const MmsUiElementV1* input, MmsHandle* out, MmsHandle replace) {
     auto check = Check(c, true); if (check) return check;
     if (!Valid(input) || !out || !Own(c, input->id, input->ownerPlugin) || input->kind < MMS_UI_MENU || input->kind > MMS_UI_GROUP || (input->capabilities & ~127u)) return MMS_E_ARGUMENT;
-    if (input->kind == MMS_UI_INPUT || input->propertyId.bytes) return MMS_E_NOT_READY;
+    if (input->kind == MMS_UI_INPUT) {
+        if (!input->propertyId.bytes || input->commandId.bytes || input->surfaceId.bytes ||
+            (input->capabilities & (MMS_UI_SHORTCUT | MMS_UI_CONTAINER))) return MMS_E_ARGUMENT;
+        const auto property = properties.find(String(input->propertyId));
+        if (property == properties.end()) return MMS_E_NOT_FOUND;
+        if (property->second->owner != &c) return MMS_E_ARGUMENT;
+        const auto& info = property->second->desc.info;
+        if (info.valueType == MMS_VALUE_VECTOR ? info.components < 1 || info.components > 4 : info.components != 0)
+            return MMS_E_ARGUMENT;
+    } else if (input->propertyId.bytes) return MMS_E_NOT_READY;
     if (input->kind == MMS_UI_PANEL) {
         auto surface = surfaces.find(String(input->surfaceId));
         if (surface == surfaces.end()) return MMS_E_NOT_FOUND;
@@ -729,6 +738,98 @@ MmsResult UiRegistry::WithPropertyStage(const std::shared_ptr<PropertyRecord>& r
         propertyStage_ = &frame;
         struct Clear { const PropertyStageFrame*& value; ~Clear() { value = nullptr; } } clear{propertyStage_};
         return callback(frame);
+    });
+}
+bool UiRegistry::IsPropertyInputCurrent(const PropertyInputSnapshot& snapshot) const noexcept {
+    if (GetCurrentThreadId() != thread_ || !snapshot.property || !snapshot.element ||
+        !IsPropertyCurrent(snapshot.propertyId, snapshot.property.get(), snapshot.property->owner)) return false;
+    const auto found = elements.find(snapshot.elementId);
+    if (found == elements.end()) return false;
+    const auto& desc = found->second.desc;
+    const auto equal = [](MmsString text, const std::string& expected) noexcept {
+        return text.bytes == expected.size() && (!text.bytes || (text.data && !std::memcmp(text.data, expected.data(), expected.size())));
+    };
+    return found->second.handle == snapshot.element && desc.kind == MMS_UI_INPUT &&
+        equal(desc.propertyId, snapshot.propertyId) && equal(desc.ownerPlugin, snapshot.property->owner->id);
+}
+MmsResult UiRegistry::CapturePropertyInput(const std::string& id, PropertyInputSnapshot& out) {
+    if (GetCurrentThreadId() != thread_) return MMS_E_THREAD;
+    return Boundary([&]() -> MmsResult {
+        const auto element = elements.find(id);
+        if (element == elements.end()) return MMS_E_NOT_FOUND;
+        if (element->second.desc.kind != MMS_UI_INPUT) return MMS_E_ARGUMENT;
+        PropertyInputSnapshot snapshot;
+        snapshot.elementId = id; snapshot.element = element->second.handle;
+        snapshot.propertyId = String(element->second.desc.propertyId);
+        const auto property = properties.find(snapshot.propertyId);
+        if (property == properties.end()) return MMS_E_NOT_FOUND;
+        snapshot.property = property->second;
+        auto* owner = snapshot.property->owner;
+        if (!owner || owner->stopping) return MMS_E_NOT_READY;
+        if (!IsPropertyInputCurrent(snapshot)) return MMS_E_STALE;
+        uint64_t before = 0;
+        const auto revisionResult = propertyInputRevision_ ? propertyInputRevision_(*owner, before) : MMS_E_NOT_READY;
+        if (revisionResult && revisionResult != MMS_E_NOT_READY) return revisionResult;
+        MmsValue value{}; MmsHandle lease = 0;
+        struct ReleaseValue {
+            UiRegistry& registry; UiClient& client; MmsHandle& handle;
+            ~ReleaseValue() { registry.Release(client, handle, 2); }
+        } release{*this, *owner, lease};
+        if (const auto result = Read(*owner, Text(snapshot.propertyId), {}, &value, &lease)) return result;
+        if (const auto result = UiPropertyValue::Copy(value, snapshot.value)) return result;
+        if (!IsPropertyInputCurrent(snapshot)) return MMS_E_STALE;
+        if (!revisionResult) {
+            uint64_t after = 0;
+            const auto result = propertyInputRevision_(*owner, after);
+            if (result) return result;
+            if (!before || after != before) return MMS_E_STALE;
+            snapshot.sceneRevision = before;
+            snapshot.editable = propertyInputEdit_ && !(snapshot.property->desc.info.flags & MMS_PROPERTY_READ_ONLY) &&
+                snapshot.property->desc.stage;
+        }
+        out = std::move(snapshot); return MMS_OK;
+    });
+}
+MmsResult UiRegistry::CommitPropertyInput(const PropertyInputSnapshot& snapshot, const MmsValue& value) {
+    if (GetCurrentThreadId() != thread_) return MMS_E_THREAD;
+    if (callbackDepth_) return MMS_E_BUSY;
+    const auto intent = snapshot.intent;
+    const auto intended = [&]() noexcept { return !intent || intent->load(std::memory_order_acquire); };
+    return Boundary([&]() -> MmsResult {
+        if (!intended() || !IsPropertyInputCurrent(snapshot)) return MMS_E_STALE;
+        if (!snapshot.editable || !snapshot.sceneRevision || !propertyInputEdit_ || !propertyInputRevision_)
+            return MMS_E_NOT_READY;
+        const auto element = elements.find(snapshot.elementId);
+        // Hiding a field or any containing group cancels its pending edit.
+        auto current = element;
+        for (size_t depth = 0; depth <= elements.size(); ++depth) {
+            if (current == elements.end() || !current->second.visible) return MMS_E_NOT_READY;
+            if (current->first == "mms.toolbar.main.extensions") break;
+            current = elements.find(String(current->second.desc.parentId));
+            if (depth == elements.size()) return MMS_E_STALE;
+        }
+        const auto& info = snapshot.property->desc.info;
+        if (value.type != info.valueType || value.components != info.components) return MMS_E_ARGUMENT;
+        UiPropertyValue owned;
+        if (const auto result = UiPropertyValue::Copy(value, owned)) return result;
+        const auto staged = owned.View();
+        if (!Fits(staged, info.valueType, info.components, info.minimum, info.maximum, info.choices)) return MMS_E_ARGUMENT;
+        if (!intended()) return MMS_E_STALE;
+        PropertyInputSnapshot fresh;
+        const auto captured = CapturePropertyInput(snapshot.elementId, fresh);
+        if (!intended()) return MMS_E_STALE;
+        if (captured) return captured;
+        if (!fresh.editable) return MMS_E_NOT_READY;
+        if (!IsPropertyInputCurrent(snapshot) || fresh.sceneRevision != snapshot.sceneRevision || !fresh.value.Equals(snapshot.value))
+            return MMS_E_STALE;
+        if (owned.Equals(fresh.value)) return MMS_OK;
+        auto* owner = snapshot.property->owner;
+        Callback guard(callbackDepth_); invoking_ = owner;
+        struct Clear { UiClient*& value; ~Clear() { value = nullptr; } } clear{invoking_};
+        if (!intended()) return MMS_E_STALE;
+        // This is a host-owned edit, not a failed plugin command. The bridge
+        // cancels only the transaction it creates; commandFinished_ is not run.
+        return propertyInputEdit_(*owner, snapshot, staged);
     });
 }
 MmsResult UiRegistry::WithElementState(MmsHandle handle, const std::function<MmsResult(const MmsCommandStateV1&)>& apply) {
