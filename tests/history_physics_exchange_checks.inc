@@ -1,5 +1,6 @@
 // Include after history_physics_checks.inc. This exercises already-retained
 // present/parked bundles, not private ImportScene publication or menu 262.
+#include "../src/physics/bullet_import_storage.hpp"
 namespace {
 namespace physics_exchange_checks {
 using Retained = history_physics::Retained;
@@ -220,6 +221,9 @@ void FailureAndTargetResources() {
 struct JournalChange final : plugins::HistoryChange {
     Retained& oldBundle;
     Retained& newBundle;
+    // A separately retained test payload can grow before journal admission.
+    // This forces the real undo budget gate after native preparation succeeds.
+    std::uint64_t additionalTargetBytes = 0;
     JournalChange(Retained& a, Retained& b): oldBundle(a), newBundle(b) {}
     struct Prepared final : plugins::PreparedHistoryChange {
         std::unique_ptr<Retained::Transition> transition;
@@ -234,7 +238,8 @@ struct JournalChange final : plugins::HistoryChange {
             auto transition = Retained::PrepareExchange({{&oldBundle, !forward}, {&newBundle, forward}});
             rb::Collector target; if (!transition->MeasureTargetResources(target)) return MMS_E_STALE;
             if (!target.Result().Complete()) return MMS_E_NOT_READY;
-            const auto bytes = rb::Collector::Sum(target.Result().totalBytes, sizeof(JournalChange) + sizeof(Prepared));
+            const auto bytes = rb::Collector::Sum(rb::Collector::Sum(target.Result().totalBytes,
+                sizeof(JournalChange) + sizeof(Prepared)), additionalTargetBytes);
             auto prepared = std::make_unique<Prepared>(std::move(transition), bytes); out = std::move(prepared); return MMS_OK;
         });
     }
@@ -261,6 +266,186 @@ void JournalBudget() {
         Check(history.History(true) == MMS_OK && history.UndoCount() == 1, "common redo restores both mixed bundle directions"); f.Order(true);
     }
 }
+struct WorldStorage {
+    struct Array { const void* pointer; int size, capacity; };
+    Array objects, moving, constraints;
+    static WorldStorage Read(DynamicsWorld& world) noexcept {
+        namespace storage = history_physics::import_storage;
+        auto& objects = world.getCollisionObjectArray(); auto& moving = world.HistoryBodies();
+        auto& constraints = world.HistoryConstraints();
+        // Read storage even at size zero, without indexing an empty array.
+        return {{objects.*Access(storage::ObjectsData{}), objects.size(), objects.capacity()},
+            {moving.*Access(storage::BodiesData{}), moving.size(), moving.capacity()},
+            {constraints.*Access(storage::ConstraintsData{}), constraints.size(), constraints.capacity()}};
+    }
+    bool Same(DynamicsWorld& world) const noexcept {
+        const auto now = Read(world);
+        const auto equal = [](const Array& a, const Array& b) {
+            return a.pointer == b.pointer && a.size == b.size && a.capacity == b.capacity;
+        };
+        return equal(objects, now.objects) && equal(moving, now.moving) && equal(constraints, now.constraints);
+    }
+};
+struct ShrunkFixture {
+    PhysicsFixture physics;
+    std::unique_ptr<btGeneric6DofConstraint> peerJoint;
+    std::unique_ptr<Retained> oldBundle;
+    PhysicsScene live{};
+    std::unique_ptr<history_physics::ImportScene> scene;
+    std::shared_ptr<Retained> emptyBundle;
+    bool peers;
+    explicit ShrunkFixture(bool keepPeers, bool importEmpty = true): peers(keepPeers) {
+        if (!peers) for (unsigned i = 2; i != 5; ++i) physics.world.removeRigidBody(physics.bodies[i].get());
+        else {
+            peerJoint = std::make_unique<btGeneric6DofConstraint>(*physics.bodies[3], *physics.bodies[4],
+                btTransform::getIdentity(), btTransform::getIdentity(), true);
+            physics.world.addConstraint(peerJoint.get(), false);
+        }
+        oldBundle = physics.Capture();
+        if (importEmpty) {
+            live.world = &physics.world; live.dispatcher = &physics.dispatcher; live.constraintId = 17;
+            scene = std::make_unique<history_physics::ImportScene>(live);
+            auto publication = scene->PrepareReplacing({oldBundle.get()}); emptyBundle = publication->RetainedOwner();
+            bulletAllocations = 0; trackBulletAlloc = true; failAfter = 0;
+            const bool published = publication->Publish();
+            failAfter = -1; trackBulletAlloc = false;
+            Check(published && !bulletAllocations, "empty first import publishes without allocation before replay storage checks");
+            publication.reset(); Order(false);
+            const auto arrays = WorldStorage::Read(physics.world);
+            Check(arrays.objects.capacity == (peers ? 3 : 0) && arrays.moving.capacity == (peers ? 3 : 0) &&
+                arrays.constraints.capacity == (peers ? 1 : 0), "first empty import leaves exactly the surviving world array capacities");
+        } else {
+            emptyBundle = std::make_shared<Retained>(physics.world, std::vector<btRigidBody*>{}, std::vector<btTypedConstraint*>{});
+            PublishPhysicsBatch(emptyBundle->Prepare(false)); Order(true);
+        }
+    }
+    ~ShrunkFixture() {
+        emptyBundle.reset(); oldBundle.reset(); scene.reset();
+        if (peerJoint) physics.world.removeConstraint(peerJoint.get());
+    }
+    Changes Restore() { return {{oldBundle.get(), true}, {emptyBundle.get(), false}}; }
+    Changes Shrink() { return {{oldBundle.get(), false}, {emptyBundle.get(), true}}; }
+    void Order(bool restored) {
+        CheckPhysicsOrder(physics, restored ? (peers ? std::vector<unsigned>{0, 1, 2, 3, 4} : std::vector<unsigned>{0, 1}) :
+            (peers ? std::vector<unsigned>{2, 3, 4} : std::vector<unsigned>{}));
+        Check(physics.world.getNumConstraints() == (restored ? 1 : 0) + (peers ? 1 : 0) &&
+            (!restored || physics.world.getConstraint(0) == physics.joint.get()) &&
+            (!peers || physics.world.getConstraint(restored ? 1 : 0) == peerJoint.get()) &&
+            oldBundle->Present() == restored && emptyBundle->Present() != restored,
+            "zero-member replay restores exact owner, joint and unaffected peer order");
+    }
+    btCollisionAlgorithm* PeerAlgorithm() {
+        if (!peers) return nullptr;
+        auto* pair = physics.broadphase.Cache()->findPair(physics.bodies[3]->getBroadphaseHandle(), physics.bodies[4]->getBroadphaseHandle());
+        Check(pair && pair->m_algorithm, "zero-member replay fixture retains a real peer contact algorithm"); return pair->m_algorithm;
+    }
+};
+long privateArrayFailAfter = -1;
+unsigned privateArrayAllocations = 0;
+bool privateArrayFailed = false;
+void PrivateArrayAllocation() {
+    ++privateArrayAllocations;
+    if (privateArrayFailAfter == 0) { privateArrayFailed = true; throw std::bad_alloc(); }
+    if (privateArrayFailAfter > 0) --privateArrayFailAfter;
+}
+void* PrivateArrayAlloc(size_t bytes) { PrivateArrayAllocation(); return HistoryAlloc(bytes); }
+void* PrivateArrayAlignedAlloc(size_t bytes, int alignment) { PrivateArrayAllocation(); return HistoryAlignedAlloc(bytes, alignment); }
+struct PrivateArrayAllocator {
+    PrivateArrayAllocator() {
+        btAlignedAllocSetCustom(PrivateArrayAlloc, HistoryFree);
+        btAlignedAllocSetCustomAligned(PrivateArrayAlignedAlloc, HistoryAlignedFree);
+    }
+    ~PrivateArrayAllocator() {
+        privateArrayFailAfter = -1;
+        btAlignedAllocSetCustom(HistoryAlloc, HistoryFree);
+        btAlignedAllocSetCustomAligned(HistoryAlignedAlloc, HistoryAlignedFree);
+    }
+};
+void ShrunkWorldPreparation() {
+    for (bool peers : {false, true}) {
+        ShrunkFixture f(peers); const auto storage = WorldStorage::Read(f.physics.world);
+        auto* const cache = f.physics.broadphase.Cache(); auto* const algorithm = f.PeerAlgorithm();
+        const auto peerVelocity = f.physics.bodies[3]->getLinearVelocity();
+        const auto peerTransform = f.physics.bodies[3]->getWorldTransform();
+        rb::Collector baseline; f.oldBundle->MeasureResources(baseline); f.emptyBundle->MeasureResources(baseline);
+        auto canceled = Retained::PrepareExchange(f.Restore());
+        Check(canceled->IsCurrent() && storage.Same(f.physics.world), "undo preparation after an empty import leaves live storage and capacities unchanged");
+        canceled.reset();
+        Check(storage.Same(f.physics.world) && cache == f.physics.broadphase.Cache() && algorithm == f.PeerAlgorithm(),
+            "canceling zero-member undo releases private arrays without changing live contacts or storage");
+        bool reached = false; unsigned failures = 0;
+        for (long limit = 0; limit != 1024 && !reached; ++limit) {
+            std::unique_ptr<Retained::Transition> candidate; failAfter = limit;
+            try { candidate = Retained::PrepareExchange(f.Restore()); reached = true; }
+            catch (const std::bad_alloc&) { ++failures; }
+            failAfter = -1; candidate.reset();
+            Check(storage.Same(f.physics.world) && cache == f.physics.broadphase.Cache() && algorithm == f.PeerAlgorithm() &&
+                !f.physics.RayHitsFirst(), "each zero-member undo allocation failure preserves storage, capacities, cache and parked masks"); f.Order(false);
+        }
+        Check(reached && failures > 20, "zero-member undo allocation sweep reaches complete preparation without live reserve");
+        {
+            PrivateArrayAllocator allocations; privateArrayAllocations = 0;
+            auto candidate = Retained::PrepareExchange(f.Restore()); const auto count = privateArrayAllocations; candidate.reset();
+            Check(count >= 3, "restoration prepares three nonempty private Bullet world arrays");
+            // These are the final three Bullet allocations in Transition prepare;
+            // fail each array after every preceding cache/allocation has succeeded.
+            for (unsigned index = count - 3; index != count; ++index) {
+                privateArrayAllocations = 0; privateArrayFailed = false; privateArrayFailAfter = index;
+                bool rejected = false;
+                try { candidate = Retained::PrepareExchange(f.Restore()); }
+                catch (const std::bad_alloc&) { rejected = true; }
+                privateArrayFailAfter = -1; candidate.reset();
+                Check(rejected && privateArrayFailed && privateArrayAllocations == index + 1 && storage.Same(f.physics.world) &&
+                    cache == f.physics.broadphase.Cache() && algorithm == f.PeerAlgorithm(),
+                    "failure preparing each private Bullet array retains exact zero-member source storage and algorithms"); f.Order(false);
+            }
+        }
+        rb::Collector canceledResources; f.oldBundle->MeasureResources(canceledResources); f.emptyBundle->MeasureResources(canceledResources);
+        Check(SamePhysicsResources(baseline.Result(), canceledResources.Result()), "failed restoration retains the same owner and saved-state budget identities");
+        for (unsigned iteration = 0; iteration != 12; ++iteration) {
+            auto candidate = Retained::PrepareExchange(f.Restore()); rb::Collector target;
+            Check(candidate->MeasureTargetResources(target) && target.Result().Complete(), "zero-member undo has a complete prepared bookkeeping charge");
+            PublishPhysicsBatch(std::move(candidate)); f.Order(true);
+            rb::Collector actual; f.oldBundle->MeasureResources(actual); f.emptyBundle->MeasureResources(actual);
+            Check(SamePhysicsResources(target.Result(), actual.Result()), "zero-member restore publishes exactly its measured bookkeeping identities");
+            Check(f.physics.RayHitsFirst() && algorithm == f.PeerAlgorithm(), "restoration preserves peer contact algorithms and restores parked ray masks");
+            PublishPhysicsBatch(Retained::PrepareExchange(f.Shrink())); f.Order(false);
+            const auto arrays = WorldStorage::Read(f.physics.world);
+            Check(arrays.objects.capacity == (peers ? 3 : 0) && arrays.moving.capacity == (peers ? 3 : 0) &&
+                arrays.constraints.capacity == (peers ? 1 : 0) && algorithm == f.PeerAlgorithm() &&
+                f.physics.bodies[3]->getLinearVelocity() == peerVelocity && f.physics.bodies[3]->getWorldTransform() == peerTransform,
+                "repeated empty-version replay retains exact smaller capacities and unparticipating peer state");
+        }
+    }
+}
+void ShrunkWorldJournalBudget() {
+    using Mode = plugins::SharedHistory::RecordingMode;
+    for (Mode mode : {Mode::AllOperations, Mode::ExplicitOnly}) for (bool peers : {false, true}) {
+        ShrunkFixture f(peers, false); plugins::StorageStore storage; plugins::SharedHistory history(storage, {}, 128, 1024 * 1024);
+        Check(history.SetMode(mode) == MMS_OK, "zero-member exchange uses both common history recording modes");
+        auto change = std::make_shared<JournalChange>(*f.oldBundle, *f.emptyBundle);
+        std::unique_ptr<plugins::SharedHistory::NativeTransaction> token;
+        Check(history.PrepareNative("empty physics version", change, token) == MMS_OK &&
+            history.CommitNative(std::move(token)) == MMS_OK, "one explicit history node records shrinking the physics version to no members"); f.Order(false);
+        const auto source = WorldStorage::Read(f.physics.world); const auto* cache = f.physics.broadphase.Cache();
+        const auto* algorithm = f.PeerAlgorithm(); const auto retained = history.RetainedBytes();
+        uint64_t revision = 0, after = 0; Check(history.Revision(revision) == MMS_OK, "read zero-member history source revision");
+        change->additionalTargetBytes = history.MaxBytes();
+        Check(history.History(false) == MMS_E_MEMORY && source.Same(f.physics.world) && cache == f.physics.broadphase.Cache() &&
+            algorithm == f.PeerAlgorithm() && history.UndoCount() == 1 && !history.RedoCount() && history.RetainedBytes() == retained &&
+            history.Revision(after) == MMS_OK && after == revision,
+            "actual undo budget refusal after restoration preparation leaves source arrays, capacities, contacts and journal unchanged"); f.Order(false);
+        change->additionalTargetBytes = 0;
+        Check(history.History(false) == MMS_OK, "zero-member undo recovers after budget admission is available"); f.Order(true);
+        const auto restored = WorldStorage::Read(f.physics.world);
+        Check(history.PrepareNative("cancel empty version", change, token) == MMS_OK && token,
+            "prepare a new shrink while the previous version is available in redo");
+        token.reset();
+        Check(restored.Same(f.physics.world) && !history.UndoCount() && history.RedoCount() == 1,
+            "canceling a prepared empty-version transaction preserves storage and the existing redo branch");
+        Check(history.History(true) == MMS_OK, "zero-member redo remains replayable after cancellation"); f.Order(false);
+    }
+}
 } // namespace physics_exchange_checks
 void PhysicsExchangeChecks() {
     btAlignedAllocSetCustom(HistoryAlloc, HistoryFree);
@@ -269,6 +454,8 @@ void PhysicsExchangeChecks() {
     physics_exchange_checks::InvalidAndConflictingSources();
     physics_exchange_checks::FailureAndTargetResources();
     physics_exchange_checks::JournalBudget();
+    physics_exchange_checks::ShrunkWorldPreparation();
+    physics_exchange_checks::ShrunkWorldJournalBudget();
     btAlignedAllocSetCustomAligned(nullptr, nullptr); btAlignedAllocSetCustom(nullptr, nullptr);
 }
 } // namespace

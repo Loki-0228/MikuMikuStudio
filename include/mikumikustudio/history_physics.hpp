@@ -77,6 +77,9 @@ public:
     // the requested presence. Body/constraint ownership must not overlap.
     // The input order does not affect restored simulation order. Conflicting
     // historical/current order, including an external reorder, is rejected.
+    // Preparation/cancellation never replace or reserve live world arrays.
+    // Publication exchanges complete private arrays without allocation; the
+    // consumed transition releases the displaced storage on destruction.
     static std::unique_ptr<Transition> PrepareBatch(const std::vector<Retained*>& objects, bool present);
     struct PresenceChange { Retained* object; bool present; };
     // One atomic mixed presence exchange between already-retained bundles.

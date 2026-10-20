@@ -85,11 +85,6 @@ template<class T> bool Equal(const btAlignedObjectArray<T>& actual, const std::v
     for (int i = 0; i < actual.size(); ++i) if (actual[i] != expected[i]) return false;
     return true;
 }
-template<class T> void Replace(btAlignedObjectArray<T>& target, const std::vector<T>& values) noexcept {
-    // Capacity was reserved in prepare. T is a pointer, with no destructor.
-    target.resize(static_cast<int>(values.size()));
-    for (int i = 0; i < target.size(); ++i) target[i] = values[i];
-}
 template<class T> struct Removed {
     std::vector<T> values;
     std::vector<int> positions;
@@ -295,6 +290,9 @@ struct Retained::Transition::Impl {
     std::vector<btCollisionObject*> beforeObjects, afterObjects;
     std::vector<btRigidBody*> beforeMoving, afterMoving;
     std::vector<btTypedConstraint*> beforeConstraints, afterConstraints;
+    btAlignedObjectArray<btCollisionObject*> preparedObjects;
+    btAlignedObjectArray<btRigidBody*> preparedMoving;
+    btAlignedObjectArray<btTypedConstraint*> preparedConstraints;
     std::vector<ProxyState> proxies;
     std::vector<BodyState> bodies;
     Impl(std::vector<std::pair<std::shared_ptr<Retained::Impl>, bool>> retained)
@@ -408,13 +406,14 @@ struct Retained::Transition::Impl {
             if (auto* target = cache->findPair(pairs[i].m_pProxy0, pairs[i].m_pProxy1))
                 transfers.emplace_back(i, target - cache->getOverlappingPairArrayPtr());
         }
-        // These operations may allocate; publication only writes reserved slots.
-        const auto maximum = static_cast<std::size_t>((std::numeric_limits<int>::max)());
-        if (afterObjects.size() > maximum || afterMoving.size() > maximum || afterConstraints.size() > maximum)
-            throw std::bad_alloc();
-        world.getCollisionObjectArray().reserve(static_cast<int>(afterObjects.size()));
-        world.HistoryBodies().reserve(static_cast<int>(afterMoving.size()));
-        world.HistoryConstraints().reserve(static_cast<int>(afterConstraints.size()));
+        // A previous import can have replaced all three live arrays with empty
+        // storage. Restoring its old members must not reserve live capacity in
+        // prepare: cancellation or budget refusal would otherwise leak a live
+        // mutation. Prepare complete private arrays, then exchange ownership at
+        // publication, exactly as the first ImportScene publication does.
+        import_storage::Prepare(preparedObjects, afterObjects);
+        import_storage::Prepare(preparedMoving, afterMoving);
+        import_storage::Prepare(preparedConstraints, afterConstraints);
     }
     ~Impl() {
         // After publication this is the old cache. Surviving algorithms were
@@ -427,9 +426,8 @@ struct Retained::Transition::Impl {
             source->getOverlapFilterCallback() || source->HasGhostCallback() || broadphase.getOverlappingPairUserCallback() ||
             !Equal(world.getCollisionObjectArray(), beforeObjects) ||
             !Equal(world.HistoryBodies(), beforeMoving) || !Equal(world.HistoryConstraints(), beforeConstraints) ||
-            world.getCollisionObjectArray().capacity() < static_cast<int>(afterObjects.size()) ||
-            world.HistoryBodies().capacity() < static_cast<int>(afterMoving.size()) ||
-            world.HistoryConstraints().capacity() < static_cast<int>(afterConstraints.size()) ||
+            !Equal(preparedObjects, afterObjects) || !Equal(preparedMoving, afterMoving) ||
+            !Equal(preparedConstraints, afterConstraints) ||
             source->getNumOverlappingPairs() != static_cast<int>(pairs.size())) return false;
         for (const auto& entry : entries)
             if (entry.owner->generation != entry.generation || entry.owner->present == entry.present) return false;
@@ -454,8 +452,9 @@ struct Retained::Transition::Impl {
             Broadphase::SetMask(body.proxy, entry.present ? body.mask : 0);
             body.body->forceActivationState(entry.present ? body.activation : DISABLE_SIMULATION);
         }
-        Replace(world.getCollisionObjectArray(), afterObjects);
-        Replace(world.HistoryBodies(), afterMoving); Replace(world.HistoryConstraints(), afterConstraints);
+        import_storage::Exchange(world.getCollisionObjectArray(), preparedObjects);
+        import_storage::Exchange(world.HistoryBodies(), preparedMoving);
+        import_storage::Exchange(world.HistoryConstraints(), preparedConstraints);
         cache.reset(broadphase.Exchange(cache.release()));
         for (auto& entry : entries) {
             if (!entry.present) entry.owner->saved.swap(entry.saved);
