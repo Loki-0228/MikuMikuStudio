@@ -34,6 +34,8 @@ bool StartBuiltInH264Recording(DShowRecorder* recorder, const wchar_t* path,
 // retry after a driver failure disabled it for this process.
 void ResetH264HardwareEncoderState();
 bool IsBuiltInH264Recording(const DShowRecorder* recorder);
+// Packed bottom-up BGRA, matching the shared AVI/MOV readback buffer.
+// The NV12 hardware path converts it to top-down planes before submission.
 bool WriteBuiltInH264Frame(DShowRecorder* recorder, const void* bgra,
                            std::size_t bytes);
 bool FinishBuiltInH264Recording(DShowRecorder* recorder,

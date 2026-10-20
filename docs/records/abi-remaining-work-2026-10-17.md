@@ -14,6 +14,8 @@
 
 已[同步 main 已提交功能](abi-main-feature-sync-2026-10-20.md)，随后[补齐备份与日志修复](abi-main-backup-settings-sync-2026-10-20.md)至 `acbddb4`；核对时最新的 `1b9acad` 仅为发布文档。保留 ABI 共同历史、集中设置和 MMS-only 文件标记。曲线文件选择期间的窗口销毁和会话替换已按[模态生命周期记录](abi-curve-modal-lifetime-2026-10-20.md)修复并完成真实宿主验收。其他通用来源回调的自毁尚未整体迁移。
 
+随后 main 新增的 `ff7616e` 已按[H.264 导出方向记录](abi-h264-orientation-2026-10-20.md)同步，两套配置的真实 RGB32、NV12 软件编码与解码方向通过。main 未提交的其他修改未纳入。
+
 已补齐[模型排序共同历史与第 255 项](abi-model-order-history-2026-10-20.md)及[注册子树刷新](abi-subtree-refresh-2026-10-20.md)。随后完成[SUBTREE 局部坐标映射](abi-subtree-local-rect-2026-10-20.md)，继续复用原刷新票据、同对象 SDK、完整 DATA 版本集合与整树阶段顺序。模型总数扩容和 DEPENDENTS 尚未实现。
 
 ## 早期批次记录

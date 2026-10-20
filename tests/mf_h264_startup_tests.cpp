@@ -1,5 +1,6 @@
-// Exercise production retry/SEH control flow with a failing encoder boundary.
-// No vendor driver or output MP4 is touched by these fault-injection cases.
+// Exercise production retry/SEH control flow and the encoder pixel contract.
+// Default checks use no vendor driver or MP4 output. --orientation also encodes
+// and decodes real MP4s through software, covering hardware's NV12 input format.
 #include "../src/app/mf_h264_recorder.cpp"
 #include <MinHook.h>
 #include <cstdio>
@@ -16,6 +17,9 @@ DWORD sampleBytes = 0;
 enum class Fault { None, BeginException, BeginFailure, SettingsBefore, SettingsAfter, Release };
 Fault fault = Fault::None;
 bool failSoftware = false, probeFails = false;
+bool captureFrame = false;
+std::vector<unsigned char> capturedFrame;
+LONG capturedStride = 0;
 void Check(bool ok, const char* name) {
     ++checks;
     if (!ok) { std::printf("FAIL: %s\n", name); std::exit(1); }
@@ -27,13 +31,23 @@ struct Writer final : IMFSinkWriter {
     ULONG STDMETHODCALLTYPE AddRef() override { return 2; }
     ULONG STDMETHODCALLTYPE Release() override { ++releases; if (hardware && fault==Fault::Release) Crash(); return 1; }
     HRESULT STDMETHODCALLTYPE AddStream(IMFMediaType*, DWORD* id) override { *id=1; ++audioStreams; return S_OK; }
-    HRESULT STDMETHODCALLTYPE SetInputMediaType(DWORD, IMFMediaType*, IMFAttributes*) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE SetInputMediaType(DWORD, IMFMediaType* type, IMFAttributes*) override {
+        if(captureFrame){UINT32 stride=0;Check(SUCCEEDED(type->GetUINT32(MF_MT_DEFAULT_STRIDE,&stride)),"input type declares its row order");capturedStride=static_cast<LONG>(stride);}
+        return S_OK;
+    }
     HRESULT STDMETHODCALLTYPE BeginWriting() override {
         if ((hardware && fault==Fault::BeginException) || (!hardware && failSoftware)) Crash();
         if (hardware && (fault==Fault::BeginFailure || fault==Fault::Release)) return E_FAIL;
         begun=true; return S_OK;
     }
-    HRESULT STDMETHODCALLTYPE WriteSample(DWORD, IMFSample* sample) override { return sample->GetTotalLength(&sampleBytes); }
+    HRESULT STDMETHODCALLTYPE WriteSample(DWORD, IMFSample* sample) override {
+        if(captureFrame){
+            IMFMediaBuffer* buffer=nullptr;Check(SUCCEEDED(sample->ConvertToContiguousBuffer(&buffer)),"read actual encoder input");
+            BYTE* bytes=nullptr;DWORD size=0;Check(SUCCEEDED(buffer->Lock(&bytes,nullptr,&size)),"lock actual encoder input");
+            capturedFrame.assign(bytes,bytes+size);buffer->Unlock();buffer->Release();
+        }
+        return sample->GetTotalLength(&sampleBytes);
+    }
     HRESULT STDMETHODCALLTYPE SendStreamTick(DWORD,LONGLONG) override { return S_OK; }
     HRESULT STDMETHODCALLTYPE PlaceMarker(DWORD,LPVOID) override { return S_OK; }
     HRESULT STDMETHODCALLTYPE NotifyEndOfSegment(DWORD) override { return S_OK; }
@@ -111,8 +125,8 @@ void Conversion() {
     }
     std::array<unsigned char,16> rows{0,0,255,255,0,0,255,255,255,0,0,255,255,0,0,255};
     std::array<unsigned char,6> nv12{};ConvertBgraToNv12(rows.data(),2,2,nv12.data());
-    Check(nv12[0]==62&&nv12[1]==62&&nv12[2]==32&&nv12[3]==32&&nv12[4]==171&&nv12[5]==178,
-        "NV12 preserves top-down luma rows and averages chroma over each two-by-two block");
+    Check(nv12[0]==32&&nv12[1]==32&&nv12[2]==62&&nv12[3]==62&&nv12[4]==171&&nv12[5]==178,
+        "NV12 reverses bottom-up source luma rows and averages chroma over each two-by-two block");
 }
 void HealthyFrame(bool hardware) {
     fault=Fault::None;failSoftware=false;opens=releases=notices=0;sampleBytes=0;
@@ -137,9 +151,17 @@ void InvalidAudio() {
         !opens&&!g_hardwareEncoderUnsafe&&!IsBuiltInH264Recording(&recorder),
         "invalid source audio refuses before creating an encoder and never disables hardware");
 }
+
+#include "h264_orientation_checks.hpp"
 }
-int main() {
+int main(int argc,char** argv) {
     Check(SUCCEEDED(CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED)),"COM initialized");
+    Check(SUCCEEDED(MFStartup(MF_VERSION)),"MF initialized for encoder input checks");
+    H264InputOrientation();
+    if(argc==3&&std::string(argv[1])=="--orientation"){
+        H264EncodedOrientation(std::filesystem::absolute(argv[2]));
+        MFShutdown();CoUninitialize();std::printf("h264 orientation: %d checks passed\n",checks);return 0;
+    }
     Check(MH_Initialize()==MH_OK,"hooks initialized");
     Hook(OpenH264SinkWriterGuarded,Open); Hook(ApplyConfiguredEncoderSettings,Apply);
     Hook(ReportHardwareFallbackOnce,Notice); Hook(CreateEncoderProbeGuarded,Probe);
@@ -163,6 +185,6 @@ int main() {
         ShowH264EncoderSettingsDialog(nullptr,hardware,bitrate,16,16,30.f,1,nullptr);
         Check(observedGroup==(hardware&&!blocked&&!failProbe?1:0),"settings group follows the encoder actually probed");
     }
-    MH_DisableHook(MH_ALL_HOOKS); MH_Uninitialize(); CoUninitialize();
+    MH_DisableHook(MH_ALL_HOOKS); MH_Uninitialize(); MFShutdown(); CoUninitialize();
     std::printf("mf_h264_startup_tests: %d checks passed\n",checks);
 }
