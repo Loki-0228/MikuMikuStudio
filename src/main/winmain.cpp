@@ -48,6 +48,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     using namespace mikumikustudio;
 
     runtime_log::Initialize();
+    // Read the backup directory before device/window startup can fail.
+    // The logger keeps its prepared default if settings cannot be read.
+    try { autosave::Current(); }
+    catch (...) { runtime_log::Write("BACKUP settings unavailable during startup; using default error log folder"); }
     // The legacy UI uses fixed 96-DPI coordinates for both GDI drawing and
     // child controls. Keep Windows bitmap scaling active before any window
     // or screen metric is created/read. The manifest sets the process default;

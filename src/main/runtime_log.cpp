@@ -3,8 +3,9 @@
 // ===========================================================================
 // Normal diagnostics stay in a bounded in-memory ring. Anything that would
 // kill the process (unhandled exception, std::terminate, abort, invalid
-// parameter, failed startup) saves an error log in data/backups beside the EXE
-// and turns that ring into a modal "last error" window.
+// parameter, failed startup) saves an error log in the configured backup
+// folder (default: data/backups beside the EXE) and shows the ring in a modal
+// "last error" window.
 // MessageBoxW blocks the failing thread, so the process stays alive until the
 // user presses OK - a silent flash-exit becomes a readable error report.
 //
@@ -60,6 +61,8 @@ ULONGLONG lastHeartbeat = 0;
 wchar_t dialogText[kDialogChars];
 wchar_t crashDirectory[32768];
 wchar_t dataDirectory[32768];
+SRWLOCK errorDirectoryLock = SRWLOCK_INIT;
+wchar_t configuredErrorDirectory[32768];
 wchar_t errorLogPath[32768];
 char reportUtf8[kDialogChars * 3];
 DWORD errorLogFailure = ERROR_SUCCESS;
@@ -536,12 +539,17 @@ bool WriteHistory(HANDLE file, unsigned long long first) noexcept {
 
 void SaveErrorLog(const char* reason, const EXCEPTION_RECORD* record,
                   const FaultEvidence* evidence = nullptr) noexcept {
-    if (!*crashDirectory) return;
-    if (!CreateDirectoryW(dataDirectory, nullptr) && GetLastError() != ERROR_ALREADY_EXISTS) {
+    // Never wait on a lock held by a faulting thread. Early-startup errors and
+    // a fault during a settings update retain the prepared default folder.
+    const bool locked = TryAcquireSRWLockShared(&errorDirectoryLock) != FALSE;
+    struct Unlock { bool held; ~Unlock() { if (held) ReleaseSRWLockShared(&errorDirectoryLock); } } unlock{locked};
+    const wchar_t* directory = locked && *configuredErrorDirectory ? configuredErrorDirectory : crashDirectory;
+    if (!*directory) return;
+    if (_wcsicmp(directory, crashDirectory) == 0 && !CreateDirectoryW(dataDirectory, nullptr) && GetLastError() != ERROR_ALREADY_EXISTS) {
         errorLogFailure = GetLastError();
         return;
     }
-    if (!CreateDirectoryW(crashDirectory, nullptr) && GetLastError() != ERROR_ALREADY_EXISTS) {
+    if (!CreateDirectoryW(directory, nullptr) && GetLastError() != ERROR_ALREADY_EXISTS) {
         errorLogFailure = GetLastError();
         return;
     }
@@ -549,7 +557,7 @@ void SaveErrorLog(const char* reason, const EXCEPTION_RECORD* record,
     HANDLE file = INVALID_HANDLE_VALUE;
     for (unsigned collision = 0; collision < 32; ++collision) {
         if (_snwprintf_s(errorLogPath, _countof(errorLogPath), _TRUNCATE,
-            L"%ls\\error-%04u%02u%02u-%02u%02u%02u-%03u-%lu-%u.log", crashDirectory,
+            L"%ls\\error-%04u%02u%02u-%02u%02u%02u-%03u-%lu-%u.log", directory,
             now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond,
             now.wMilliseconds, GetCurrentProcessId(), collision) < 0) {
             errorLogFailure = ERROR_FILENAME_EXCED_RANGE;
@@ -681,6 +689,12 @@ void OnNextWriteClaimed(void (*probe)() noexcept) noexcept { writeClaimProbe.sto
 #endif
 
 void SetCrashBackup(CrashBackup callback) noexcept { crashBackup.store(callback); }
+void SetErrorLogDirectory(const wchar_t* directory) noexcept {
+    if (!directory || wcsnlen_s(directory, _countof(configuredErrorDirectory)) >= _countof(configuredErrorDirectory)) return;
+    AcquireSRWLockExclusive(&errorDirectoryLock);
+    wcscpy_s(configuredErrorDirectory, directory);
+    ReleaseSRWLockExclusive(&errorDirectoryLock);
+}
 
 void Initialize() noexcept {
     // Resolve the real EXE before a crash, without creating a directory or file.

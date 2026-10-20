@@ -24,6 +24,9 @@ enum class Result { Saved, Disabled, Busy, Full, Failed, Empty };
 // Production settings live in data/autosave.ini; the default backup
 // directory is resolved in data beside the current EXE instead of persisting its path.
 Settings LoadSettings(const std::filesystem::path&);
+// EXE-contained folders use a relative display/storage path; live settings
+// retain absolute paths so file pickers cannot change the backup destination.
+std::wstring DisplayDirectory(const std::wstring&);
 bool SaveSettings(const std::filesystem::path&, const Settings&);
 bool Validate(const Settings&, std::wstring& error);
 const Settings& Current();

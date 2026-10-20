@@ -38,6 +38,7 @@ fs::path SettingsPath() {
 }
 fs::path NormalizeDirectoryPath(fs::path path) {
     path = path.lexically_normal();
+    path.make_preferred();
     // filesystem::path treats a trailing separator as an empty filename.
     // Remove those empty components without walking above a volume/share root.
     while (!path.empty() && path != path.root_path() && path.filename().empty()) {
@@ -46,6 +47,12 @@ fs::path NormalizeDirectoryPath(fs::path path) {
         path = parent;
     }
     return path;
+}
+fs::path ResolveDirectory(const fs::path& path) {
+    if (path.empty()) return {};
+    if (path.is_absolute()) return NormalizeDirectoryPath(path);
+    const auto base = local_data::ExecutableDirectory();
+    return base.empty() ? fs::path{} : NormalizeDirectoryPath(base / path);
 }
 Settings Defaults() {
     Settings value;
@@ -132,9 +139,9 @@ void WarnIfFull(MMDApp* app) noexcept {
                 L"已开启覆盖旧备份，后续备份将尝试替换最旧的备份。",
                 L"Overwrite oldest is enabled. Future backups will try to replace the oldest backup.",
                 L"古いバックアップの上書きが有効です。次回は最も古いバックアップの置き換えを試みます。") : Text(app,
-                L"已关闭覆盖旧备份，这些文件夹暂时无法保存新备份。请清理不再需要的备份，或在“自动保存设置”中增加上限、开启覆盖旧备份。",
-                L"Overwrite oldest is disabled, so new backups cannot be saved in these folders. Remove unneeded backups, or raise the limit or enable overwriting in Autosave settings.",
-                L"古いバックアップの上書きが無効なため、これらのフォルダーには新しく保存できません。不要なバックアップを削除するか、「自動保存の設定」で上限を増やすか上書きを有効にしてください。")) +
+                L"已关闭覆盖旧备份，这些文件夹暂时无法保存新备份。请清理不再需要的备份，或在“自动备份设置”中增加上限、开启覆盖旧备份。",
+                L"Overwrite oldest is disabled, so new backups cannot be saved in these folders. Remove unneeded backups, or raise the limit or enable overwriting in Automatic backup settings.",
+                L"古いバックアップの上書きが無効なため、これらのフォルダーには新しく保存できません。不要なバックアップを削除するか、「自動バックアップ設定」で上限を増やすか上書きを有効にしてください。")) +
             Text(app, L"\n\n本次启动不再提示。", L"\n\nThis warning will not appear again until you restart MMS.",
                 L"\n\nMMS を再起動するまで、この警告は再表示されません。");
         // Set before entering the modal loop, including any reentrant idle work.
@@ -188,7 +195,7 @@ Settings LoadSettings(const fs::path& path) {
     GetPrivateProfileStringW(L"autosave", L"directoryMode", L"custom", directoryMode, 32, path.c_str());
     if (wcscmp(directoryMode, L"executable") != 0) {
         GetPrivateProfileStringW(L"autosave", L"directory", value.directory.c_str(), directory, 32768, path.c_str());
-        value.directory = directory;
+        value.directory = ResolveDirectory(directory).wstring();
     }
     value.enabled = GetPrivateProfileIntW(L"autosave", L"enabled", 0, path.c_str()) == 1;
     value.intervalMinutes = GetPrivateProfileIntW(L"autosave", L"intervalMinutes", 1, path.c_str());
@@ -198,9 +205,21 @@ Settings LoadSettings(const fs::path& path) {
     std::wstring error;
     return Validate(value, error) ? value : Defaults();
 }
+std::wstring DisplayDirectory(const std::wstring& directory) {
+    const auto path = ResolveDirectory(directory);
+    const auto base = local_data::ExecutableDirectory();
+    if (path.empty() || base.empty()) return directory;
+    const auto absolute = path.wstring();
+    auto prefix = base.wstring();
+    if (_wcsicmp(absolute.c_str(), prefix.c_str()) == 0) return L".";
+    prefix += L"\\";
+    if (absolute.size() > prefix.size() && _wcsnicmp(absolute.c_str(), prefix.c_str(), prefix.size()) == 0)
+        return absolute.substr(prefix.size());
+    return absolute;
+}
 bool Validate(const Settings& value, std::wstring& error) {
     error.clear();
-    if (value.intervalMinutes < 1 || value.intervalMinutes > 1440) error = L"保存间隔须为 1 至 1440 分钟。 / Interval: 1–1440 minutes.";
+    if (value.intervalMinutes < 1 || value.intervalMinutes > 1440) error = L"备份间隔须为 1 至 1440 分钟。 / Interval: 1–1440 minutes.";
     else if (value.maxBackups < 1 || value.maxBackups > 100000) error = L"备份上限须为 1 至 100000 份。 / Backup limit: 1–100000.";
     else if (value.directory.empty() || !fs::path(value.directory).is_absolute() ||
         value.directory.size() > 200 || value.directory.find_first_of(L"\r\n") != std::wstring::npos)
@@ -219,12 +238,14 @@ bool SaveSettings(const fs::path& path, const Settings& value) {
     const auto defaultDirectoryPath = NormalizeDirectoryPath(defaultDirectory);
     const bool besideExecutable = !defaultDirectory.empty() && _wcsicmp(
         directoryPath.c_str(), defaultDirectoryPath.c_str()) == 0;
+    const auto storedDirectory = DisplayDirectory(value.directory);
+    const bool relative = !fs::path(storedDirectory).is_absolute();
     const std::wstring body = L"\xfeff[autosave]\r\nenabled=" + std::to_wstring(value.enabled) +
         L"\r\nintervalMinutes=" + std::to_wstring(value.intervalMinutes) + L"\r\nmaxBackups=" +
         std::to_wstring(value.maxBackups) + L"\r\noverwriteOldest=" + std::to_wstring(value.overwriteOldest) +
         L"\r\nkeepPrevious=" + std::to_wstring(value.keepPrevious) +
-        L"\r\ndirectoryMode=" + (besideExecutable ? L"executable" : L"custom") +
-        L"\r\ndirectory=" + (besideExecutable ? std::wstring(L"data/backups") : value.directory) + L"\r\n";
+        L"\r\ndirectoryMode=" + (besideExecutable ? L"executable" : relative ? L"relative" : L"custom") +
+        L"\r\ndirectory=" + (besideExecutable ? std::wstring(L"data/backups") : storedDirectory) + L"\r\n";
     HANDLE file = CreateFileW(temporary.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file == INVALID_HANDLE_VALUE) return false;
     DWORD written = 0;
@@ -238,7 +259,10 @@ bool SaveSettings(const fs::path& path, const Settings& value) {
     return ok;
 }
 const Settings& Current() {
-    if (!loaded) { settings = LoadSettings(SettingsPath()); loaded = true; }
+    if (!loaded) {
+        settings = LoadSettings(SettingsPath()); loaded = true;
+        runtime_log::SetErrorLogDirectory(settings.directory.c_str());
+    }
     return settings;
 }
 bool Configure(MMDApp* app, const Settings& value, std::wstring& error) {
@@ -256,9 +280,10 @@ bool Configure(MMDApp* app, const Settings& value, std::wstring& error) {
         DeleteFileW(probe);
     }
     if (!SaveSettings(SettingsPath(), value)) {
-        error = L"无法保存自动保存设置。 / Cannot save autosave settings."; return false;
+        error = L"无法保存自动备份设置。 / Cannot save automatic backup settings."; return false;
     }
     settings = value; loaded = true;
+    runtime_log::SetErrorLogDirectory(settings.directory.c_str());
     nextSave = GetTickCount64() + ULONGLONG(settings.intervalMinutes) * 60000;
     nextScan = 0;
     RefreshCapacity(app);

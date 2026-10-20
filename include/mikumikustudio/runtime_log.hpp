@@ -5,14 +5,17 @@
 namespace mikumikustudio::runtime_log {
 // Runtime diagnostics for the shipped build.  Always enabled, independently
 // of the porting-era DIAG probes. The newest messages stay in a bounded
-// in-memory ring. A fatal fault saves error-*.log in data/backups beside the actual
-// executable and shows a modal report. Project recovery has its own callback.
+// in-memory ring. A fatal fault saves error-*.log in the configured backup
+// folder (data/backups beside the EXE by default) and shows a modal report.
 // The process only ends after the user presses OK.
 void Initialize() noexcept;
 // Optional application-owned, best-effort recovery before showing a fatal error.
 // Diagnostics itself remains independent of project serialization.
 using CrashBackup = void (*)(unsigned long exceptionCode) noexcept;
 void SetCrashBackup(CrashBackup callback) noexcept;
+// Publish a validated absolute folder before a fault. No application/settings
+// access or heap allocation is needed to retrieve it from the crash handler.
+void SetErrorLogDirectory(const wchar_t* directory) noexcept;
 void Write(const char* format, ...) noexcept;
 void WritePath(const char* label, const wchar_t* path) noexcept;
 // The phase must be a string literal (no allocation or application-state

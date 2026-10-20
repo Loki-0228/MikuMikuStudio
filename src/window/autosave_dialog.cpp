@@ -4,6 +4,7 @@
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/ui_translation.hpp"
 #include <ShObjIdl.h>
+#include <commctrl.h>
 #include <wrl/client.h>
 #include <algorithm>
 
@@ -14,7 +15,21 @@ const wchar_t* Text(MMDApp* app, const wchar_t* zh, const wchar_t* en, const wch
 }
 namespace {
 const wchar_t* Title(MMDApp* app) {
-    return Text(app, L"自动保存设置", L"Autosave Settings", L"自動保存の設定");
+    return Text(app, L"自动备份设置", L"Automatic backup settings", L"自動バックアップ設定");
+}
+const wchar_t* PreviousTip(MMDApp* app) {
+    return Text(app,
+        L"保存时，旧文件追加“1”作为备份（.pmm → .pmm1，.pmm1 → .pmm11）。\r\n.emm 仅在 MME 启用随 .pmm 保存时生成。",
+        L"Saving backs up the old file by appending \"1\" (.pmm → .pmm1, .pmm1 → .pmm11).\r\nNew .emm files require MME's Save with .pmm option.",
+        L"保存時、旧ファイルの末尾に「1」を付けてバックアップします（.pmm → .pmm1、.pmm1 → .pmm11）。\r\n.emm は MME の .pmm 同時保存が有効な場合のみ保存します。");
+}
+void AddTip(HWND dialog, DialogContext& c, int id) {
+    TOOLINFOW tool{sizeof(tool)};
+    tool.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
+    tool.hwnd = dialog;
+    tool.uId = reinterpret_cast<UINT_PTR>(GetDlgItem(dialog, id));
+    tool.lpszText = LPSTR_TEXTCALLBACKW;
+    SendMessageW(c.tooltip, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&tool));
 }
 void Error(HWND owner, MMDApp* app, const std::wstring& detail) {
     MessageBoxW(owner, detail.c_str(), Title(app), MB_OK | MB_ICONWARNING);
@@ -26,7 +41,7 @@ void PickFolder(HWND dialog, DialogContext& c) {
         DWORD flags = 0;
         hr = picker->GetOptions(&flags);
         if (SUCCEEDED(hr)) hr = picker->SetOptions(flags | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST | FOS_NOCHANGEDIR);
-        picker->SetTitle(Text(c.app, L"选择自动保存文件夹", L"Choose autosave folder", L"自動保存フォルダーを選択"));
+        picker->SetTitle(Text(c.app, L"选择备份文件夹", L"Choose backup folder", L"バックアップフォルダーを選択"));
         Microsoft::WRL::ComPtr<IShellItem> item;
         if (SUCCEEDED(SHCreateItemFromParsingName(c.value.directory.c_str(), nullptr, IID_PPV_ARGS(&item)))) picker->SetFolder(item.Get());
         if (SUCCEEDED(hr)) hr = picker->Show(dialog);
@@ -35,7 +50,10 @@ void PickFolder(HWND dialog, DialogContext& c) {
             item.Reset(); hr = picker->GetResult(&item);
             PWSTR path = nullptr;
             if (SUCCEEDED(hr)) hr = item->GetDisplayName(SIGDN_FILESYSPATH, &path);
-            if (SUCCEEDED(hr)) { c.value.directory = path; SetDlgItemTextW(dialog, Folder, path); }
+            if (SUCCEEDED(hr)) {
+                c.value.directory = path;
+                SetDlgItemTextW(dialog, Folder, DisplayDirectory(c.value.directory).c_str());
+            }
             CoTaskMemFree(path);
         }
     }
@@ -56,18 +74,18 @@ INT_PTR CALLBACK DialogProc(HWND dialog, UINT msg, WPARAM wp, LPARAM lp) {
         const auto label = [&](int id, const wchar_t* zh, const wchar_t* en, const wchar_t* ja) {
             SetDlgItemTextW(dialog, id, Text(c->app, zh, en, ja));
         };
-        label(FolderLabel, L"自动保存文件夹", L"Backup folder", L"自動保存フォルダー");
-        label(Enabled, L"启用定时自动保存", L"Enable periodic autosave", L"定期的な自動保存を有効にする");
+        label(FolderLabel, L"备份文件夹", L"Backup folder", L"バックアップフォルダー");
+        label(Enabled, L"启用定时自动备份", L"Enable automatic backups", L"定期バックアップを有効にする");
         label(Browse, L"选择…", L"Browse…", L"参照…");
-        label(IntervalLabel, L"保存间隔（分钟）", L"Interval (minutes)", L"保存間隔（分）");
-        label(LimitLabel, L"备份数量上限（份）", L"Maximum backups", L"バックアップの上限（件）");
+        label(IntervalLabel, L"备份间隔（分钟）", L"Interval (minutes)", L"バックアップ間隔（分）");
+        label(LimitLabel, L".pmm 备份上限（份）", L".pmm backup limit", L".pmm バックアップ上限（件）");
         label(Overwrite, L"达到上限时覆盖最旧的备份", L"Replace oldest backups when the limit is reached", L"上限に達したら最も古いバックアップを置き換える");
-        label(KeepPrevious, L"同时保存 PMM1（含配套 EMM，保存时保留旧版本）", L"Keep previous PMM1 and EMM versions on save", L"保存時に前の PMM1 と EMM を残す");
-        label(Explanation, L"崩溃备份和错误日志保存在程序旁的 data/backups 文件夹。\r\n备份保留原工程名和时间戳，不影响手动保存。\r\nPMM 数量上限按文件夹分别计算，其他文件保留。",
-            L"Crash copies and error logs go to data/backups beside the EXE.\r\nCopies keep the project name and timestamp; manual saves stay separate.\r\nThe PMM limit applies per folder. Other files are kept.",
-            L"クラッシュ時のコピーとログは EXE 横の data/backups に保存します。\r\n元の名前に日時を付け、手動保存したファイルは上書きしません。\r\nPMM の上限は各フォルダーに適用します。他のファイルは残します。");
+        label(KeepPrevious, L"同时保存 .pmm1", L"Also keep .pmm1", L".pmm1 も保存する");
+        label(Explanation, L"备份保留工程名和时间戳。\r\nMME 启用随 .pmm 保存时，同时保存 .emm。",
+            L"Backups include the project name and timestamp.\r\nThe .emm file follows MME's Save with .pmm setting.",
+            L"元の名前と日時を付けてバックアップします。\r\n.emm は MME の .pmm 同時保存設定に従います。");
         label(IDOK, L"确定", L"OK", L"OK"); label(IDCANCEL, L"取消", L"Cancel", L"キャンセル");
-        SetDlgItemTextW(dialog, Folder, c->value.directory.c_str());
+        SetDlgItemTextW(dialog, Folder, DisplayDirectory(c->value.directory).c_str());
         SetDlgItemInt(dialog, Interval, c->value.intervalMinutes, FALSE);
         SetDlgItemInt(dialog, Limit, c->value.maxBackups, FALSE);
         SendDlgItemMessageW(dialog, Interval, EM_SETLIMITTEXT, 4, 0);
@@ -75,9 +93,28 @@ INT_PTR CALLBACK DialogProc(HWND dialog, UINT msg, WPARAM wp, LPARAM lp) {
         CheckDlgButton(dialog, Overwrite, c->value.overwriteOldest ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(dialog, Enabled, c->value.enabled ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(dialog, KeepPrevious, c->value.keepPrevious ? BST_CHECKED : BST_UNCHECKED);
+        c->tooltip = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr,
+            WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX, CW_USEDEFAULT, CW_USEDEFAULT,
+            CW_USEDEFAULT, CW_USEDEFAULT, dialog, nullptr, GetModuleHandleW(nullptr), nullptr);
+        if (c->tooltip) {
+            RECT width{0, 0, 240, 0}; MapDialogRect(dialog, &width);
+            SendMessageW(c->tooltip, TTM_SETMAXTIPWIDTH, 0, width.right);
+            SendMessageW(c->tooltip, TTM_SETDELAYTIME, TTDT_AUTOPOP, 15000);
+            AddTip(dialog, *c, KeepPrevious);
+            AddTip(dialog, *c, Folder);
+        }
         return TRUE;
     }
     if (!c) return FALSE;
+    if (msg == WM_NOTIFY) {
+        auto* tip = reinterpret_cast<NMTTDISPINFOW*>(lp);
+        if (tip && tip->hdr.hwndFrom == c->tooltip && tip->hdr.code == TTN_GETDISPINFOW) {
+            tip->lpszText = tip->hdr.idFrom == reinterpret_cast<UINT_PTR>(GetDlgItem(dialog, KeepPrevious))
+                ? const_cast<wchar_t*>(PreviousTip(c->app)) : c->value.directory.data();
+            return TRUE;
+        }
+    }
+    if (msg == WM_DESTROY && c->tooltip) { DestroyWindow(c->tooltip); c->tooltip = nullptr; }
     if (msg == WM_CLOSE) { EndDialog(dialog, IDCANCEL); return TRUE; }
     if (msg != WM_COMMAND) return FALSE;
     switch (LOWORD(wp)) {
@@ -92,7 +129,7 @@ INT_PTR CALLBACK DialogProc(HWND dialog, UINT msg, WPARAM wp, LPARAM lp) {
         value.enabled = IsDlgButtonChecked(dialog, Enabled) == BST_CHECKED;
         value.keepPrevious = IsDlgButtonChecked(dialog, KeepPrevious) == BST_CHECKED;
         std::wstring error;
-        if (!a || !b) error = Text(c->app, L"请填写有效的保存间隔和备份数量。", L"Enter a valid interval and backup limit.", L"有効な保存間隔と上限を入力してください。");
+        if (!a || !b) error = Text(c->app, L"请填写有效的备份间隔和数量上限。", L"Enter a valid interval and backup limit.", L"有効なバックアップ間隔と上限を入力してください。");
         if (!error.empty() || !Configure(c->app, value, error)) { Error(dialog, c->app, error); return TRUE; }
         c->value = value; EndDialog(dialog, IDOK); return TRUE;
     }
@@ -107,10 +144,10 @@ void RefreshMenu(MMDApp* app) {
         if (!help || GetMenuState(help, 201, MF_BYCOMMAND) == UINT(-1)) continue;
         if (GetMenuState(help, kSettingsCommand, MF_BYCOMMAND) == UINT(-1)) {
             AppendMenuW(help, MF_SEPARATOR, 0, nullptr);
-            AppendMenuW(help, MF_STRING, kSettingsCommand, L"Autosave settings…");
+            AppendMenuW(help, MF_STRING, kSettingsCommand, L"Automatic backup settings…");
         }
         ModifyMenuW(help, kSettingsCommand, MF_BYCOMMAND | MF_STRING | (Current().enabled ? MF_CHECKED : MF_UNCHECKED), kSettingsCommand,
-            Text(app, L"自动保存设置…", L"Autosave settings…", L"自動保存の設定…"));
+            Text(app, L"自动备份设置…", L"Automatic backup settings…", L"自動バックアップ設定…"));
         break;
     }
 }
