@@ -253,6 +253,12 @@ public:
     // ChangedMorphs owns all requested entries, including their absence;
     // Changed reports whether any author data was actually removed.
     static AuthoredReplacement Erase(unsigned char*, const std::vector<unsigned>& morphs);
+    // Internal native tools: shift every positive-time author key and its
+    // mirror/observed baselines, clipping keys at/before zero while retaining
+    // the frame-zero anchor and exact double handles. Native keys stay under
+    // the caller's private plan. A zero shift owns/preserves these layers
+    // without replacing their curves or rebuilding a float mirror.
+    static AuthoredReplacement ShiftNative(unsigned char*, const std::vector<unsigned>& morphs, int shift);
     ~AuthoredReplacement();
     bool Changed() const noexcept;
     bool IsCurrent() const noexcept;
@@ -297,6 +303,9 @@ public:
     AuthoredLayers& operator=(AuthoredLayers&&) noexcept;
     AuthoredLayers(const AuthoredLayers&) = delete;
     AuthoredLayers& operator=(const AuthoredLayers&) = delete;
+#if !MMD_ORIGINAL_PROFILE
+    std::uint64_t RetainedBytes() const noexcept;
+#endif
 
 private:
     struct Impl;

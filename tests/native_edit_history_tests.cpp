@@ -425,6 +425,8 @@ void CrossModelJournal(){
 #include "native_curve_write_checks.inc"
 #include "native_morph_curve_write_checks.inc"
 #include "native_morph_category_checks.inc"
+#include "native_model_multiply_checks.inc"
+#include "native_morph_tools_checks.inc"
 #include "native_bone_curve_write_checks.inc"
 #include "native_physics_toggle_checks.inc"
 #include "native_center_offset_checks.inc"
@@ -435,6 +437,12 @@ void CrossModelJournal(){
 #include "retained_bookkeeping_checks.inc"
 int main(int argc,char** argv){
     std::setvbuf(stdout,nullptr,_IONBF,0);
+    if(argc==2&&!std::strcmp(argv[1],"--model-multiply-only")) {
+        NativeModelMultiplyChecks();std::printf("PASS model multiply: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--morph-tools-only")) {
+        NativeMorphToolsChecks();std::printf("PASS morph tools: %u checks\n",checks);return 0;
+    }
     const auto run=[](const char* name,void(*test)()){std::printf("RUN %s\n",name);test();};
     if(argc==2&&!std::strcmp(argv[1],"--pose-axis-only")) {
         run("NativePoseAxisChecks",NativePoseAxisChecks);
@@ -822,6 +830,8 @@ int main(int argc,char** argv){
     run("NativeUnusedDisplayChecks",NativeUnusedDisplayChecks);
     run("NativeUnusedCurveChecks",NativeUnusedCurveChecks);
     run("NativeMorphCategoryChecks",NativeMorphCategoryChecks);
+    run("NativeModelMultiplyChecks",NativeModelMultiplyChecks);
+    run("NativeMorphToolsChecks",NativeMorphToolsChecks);
     run("NativeModelRangeChecks",NativeModelRangeChecks);
     run("NativeObjectCommandChecks",NativeObjectCommandChecks);
     run("NativeAccessorySettingsChecks",NativeAccessorySettingsChecks);

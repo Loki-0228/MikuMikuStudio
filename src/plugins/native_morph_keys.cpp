@@ -1,4 +1,5 @@
 #include "native_morph_keys.hpp"
+#include "native_model_multiply.hpp"
 #include "native_key_selection.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "native_bone_registration.hpp"
@@ -81,7 +82,7 @@ struct MorphDeletion final : HistoryChange, std::enable_shared_from_this<MorphDe
     std::size_t capacity;
     std::vector<Patch> patches;
     std::vector<Rule> rules;
-    bool frameLine = false, preserveEditedValues = false;
+    bool frameLine = false, preserveEditedValues = false, preserveKeyMarks = false;
     std::uint32_t maxBefore = 0, maxAfter = 0;
     MorphDeletion(MMDApp& owner, unsigned slot) : app(owner), modelSlot(slot), model(app.ModelSlot(slot)),
         lifetime(RetainSceneObject(app, MMS_OBJECT_MODEL, slot)), morphs(mdl::Mdl(model)->morphs),
@@ -133,7 +134,11 @@ struct MorphDeletion final : HistoryChange, std::enable_shared_from_this<MorphDe
             // The enclosing journal/aggregate validates every participant
             // before publication; other families must not write these fields.
             if (!IsCurrent()) std::terminate();
-            for (const auto& patch : source->patches) pool[patch.slot] = forward ? patch.after : patch.before;
+            for (const auto& patch : source->patches) {
+                const auto mark = pool[patch.slot].allocated;
+                pool[patch.slot] = forward ? patch.after : patch.before;
+                if (source->preserveKeyMarks) pool[patch.slot].allocated = mark;
+            }
             for (std::size_t i = 0; i < source->rules.size(); ++i)
                 source->morphs[source->rules[i].morph].value = afterValues[i];
             if (source->frameLine) mdl::Mdl(source->model)->maxFrame = forward ? source->maxAfter : source->maxBefore;
@@ -791,6 +796,38 @@ MmsResult PlanMorphKeyPaste(MMDApp& app,unsigned slot,const ModelPasteSource& in
     });
 }
 
+MmsResult PlanMorphKeyMultiply(MMDApp& app, unsigned slot, const MorphMultiplyOptions& options,
+    std::shared_ptr<HistoryChange>& out) noexcept {
+    out.reset();
+    if (!std::isfinite(options.scale) || !std::isfinite(options.offset)) return MMS_E_ARGUMENT;
+    if (slot >= kModelSlotCount || !app.ModelSlot(slot) || app.PlaybackActive() || app.FrameStepPlayback() ||
+        app.state.recordPlaybackStartPending || app.SceneMutationInProgress()) return MMS_E_NOT_READY;
+    return Boundary([&]() -> MmsResult {
+        const auto& model = *mdl::Mdl(app.ModelSlot(slot));
+        if (!mdl::MorphKeyPoolIdentity(model.morphKeys)) return MMS_E_NOT_READY;
+        const auto capacity = mdl::MorphKeyCapacity(model.morphKeys);
+        if ((options.scale == 1.f && options.offset == 0.f) || !Marked(model.morphKeys, capacity)) return MMS_OK;
+        Owners owners; Chains(model, owners);
+        auto change = std::make_shared<MorphDeletion>(app, slot);
+        change->preserveEditedValues = true; change->preserveKeyMarks = true;
+        std::set<unsigned> affected;
+        for (std::size_t index = 0; index < capacity; ++index) {
+            const auto before = model.morphKeys[index];
+            if (!before.allocated) continue;
+            const auto owner = owners.find(unsigned(index)); if (owner == owners.end()) return MMS_E_ARGUMENT;
+            auto after = before; after.value = float(options.scale * before.value) + options.offset;
+            if (!std::isfinite(after.value)) return MMS_E_ARGUMENT;
+            if (SameFloat(before.value, after.value)) continue;
+            change->patches.push_back({unsigned(index), before, after}); affected.insert(owner->second);
+        }
+        for (unsigned index : affected) {
+            const auto& morph = model.morphs[index]; Rule rule{index, {}, morph.panel, morph.type};
+            std::memcpy(rule.name.data(), morph.name, rule.name.size()); change->rules.push_back(rule);
+        }
+        if (!change->patches.empty()) out = std::move(change);
+        return MMS_OK;
+    });
+}
 MmsResult PlanMorphKeyDeletion(MMDApp& app, unsigned slot, std::shared_ptr<HistoryChange>& out, bool allowOtherMarks,
     const std::vector<unsigned>* selectedSlots) noexcept {
     out.reset();

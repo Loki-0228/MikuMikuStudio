@@ -3,6 +3,7 @@
 #if !MMD_ORIGINAL_PROFILE
 #include "native_bone_evaluation.hpp"
 #include "native_center_offset.hpp"
+#include "native_model_multiply.hpp"
 #include "native_display_keys.hpp"
 #include "native_range_scale.hpp"
 #include "native_model_paste.hpp"
@@ -967,6 +968,84 @@ MmsResult PlanBoneInterpolationEdit(MMDApp& app, unsigned slot, const BoneInterp
         change->publishMetadata = false;
         change->preserveKeyMarks = true;
         if (changed) out = std::move(change);
+        return MMS_OK;
+    });
+}
+MmsResult PlanBoneKeyMultiply(MMDApp& app, unsigned slot, const BoneMultiplyOptions& options,
+    std::shared_ptr<HistoryChange>& out) noexcept {
+    out.reset();
+    bool changed = false, rotate = false, resize = false;
+    for (unsigned lane = 0; lane < 9; ++lane) {
+        if (!std::isfinite(options.scale[lane]) || !std::isfinite(options.offset[lane])) return MMS_E_ARGUMENT;
+        if (options.scale[lane] != 1.f || options.offset[lane] != 0.f) {
+            changed = true; rotate |= lane >= 3 && lane < 6; resize |= lane >= 6;
+        }
+    }
+    return Boundary([&]() -> MmsResult {
+        if (!ReadyForKeyPlan(app, slot)) return MMS_E_NOT_READY;
+        const auto& model = *mdl::Mdl(app.ModelSlot(slot));
+        if (!changed || !AnyMarks(model.boneKeys, mdl::BoneKeyCapacity(model.boneKeys))) return MMS_OK;
+        KeyPlan plan(model, true); const auto owners = ValidateOwners(plan);
+        auto change = NewKeyChange(app, slot);
+        auto& api = d3dx::Get();
+        if (rotate && !api.Load()) return MMS_E_NOT_READY;
+        constexpr float pi = 3.141592f;
+        auto add = options.offset;
+        add[3] *= pi / 180.f; add[4] *= -pi / 180.f; add[5] *= -pi / 180.f;
+        for (std::size_t index = 0; index < plan.capacity; ++index) {
+            const auto original = model.boneKeys[index];
+            if (!original.allocated) continue;
+            if (!owners.count(unsigned(index))) return MMS_E_ARGUMENT;
+            auto target = original;
+            for (unsigned axis = 0; axis < 3; ++axis) {
+                if (options.scale[axis] != 1.f || add[axis] != 0.f)
+                    target.position[axis] = target.position[axis] * options.scale[axis] + add[axis];
+                if (!std::isfinite(target.position[axis])) return MMS_E_ARGUMENT;
+            }
+            auto stretch = change->scaleBefore.Key(int(index));
+            if (resize) {
+                for (unsigned axis = 0; axis < 3; ++axis) {
+                    if (options.scale[axis + 6] == 1.f && add[axis + 6] == 0.f) continue;
+                    double length = 0;
+                    for (unsigned column = 0; column < 3; ++column)
+                        length += double(stretch.v[axis * 3 + column]) * stretch.v[axis * 3 + column];
+                    length = std::sqrt(length);
+                    const double result = length * options.scale[axis + 6] + add[axis + 6];
+                    if (!(length > 0) || !(result > 0) || !std::isfinite(result)) return MMS_E_ARGUMENT;
+                    for (unsigned column = 0; column < 3; ++column)
+                        stretch.v[axis * 3 + column] = float(stretch.v[axis * 3 + column] * result / length);
+                }
+                if (!bone_scale::Valid(stretch)) return MMS_E_ARGUMENT;
+            }
+            if (rotate) {
+                for (float value : target.rotation) if (!std::isfinite(value)) return MMS_E_ARGUMENT;
+                d3dx::D3DXMATRIXF matrix{}, rotation{}, axisMatrix{};
+                api.matrixRotationQuaternion(&matrix, target.rotation);
+                const float x = std::asin(std::fmax(-1.f, std::fmin(1.f, -matrix.m[2][1])));
+                float y = std::atan2(matrix.m[2][0], matrix.m[2][2]);
+                float z = std::atan2(matrix.m[0][1], matrix.m[1][1]);
+                if (std::fabs(std::cos(x)) < 1e-6f) {
+                    z += matrix.m[0][1] > 0.f ? pi : -pi;
+                    y += matrix.m[2][0] > 0.f ? pi : -pi;
+                }
+                api.rotZ(&rotation, z * options.scale[5] + add[5]);
+                api.rotX(&axisMatrix, x * options.scale[3] + add[3]);
+                api.multiply(&rotation, &rotation, &axisMatrix);
+                api.rotY(&axisMatrix, y * options.scale[4] + add[4]);
+                api.multiply(&rotation, &rotation, &axisMatrix);
+                api.quatFromMatrix(target.rotation, &rotation);
+                for (float value : target.rotation) if (!std::isfinite(value)) return MMS_E_ARGUMENT;
+            }
+            const bool scaleChanged = stretch != change->scaleBefore.Key(int(index));
+            if (!std::memcmp(&original, &target, sizeof(target)) && !scaleChanged) continue;
+            plan.Write(unsigned(index)) = target;
+            if (scaleChanged && !change->scaleAfter.SetKey(int(index), stretch)) return MMS_E_ARGUMENT;
+        }
+        if (plan.patches.empty()) return MMS_OK;
+        const bool authored = FinishKeyPlan(plan, *change, owners);
+        change->publishMetadata = false; change->preserveKeyMarks = true;
+        CaptureRules(*change, std::set<unsigned>(change->evaluationBones.begin(), change->evaluationBones.end()));
+        if (authored) out = std::move(change);
         return MMS_OK;
     });
 }

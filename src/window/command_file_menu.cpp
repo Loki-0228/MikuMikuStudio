@@ -142,6 +142,7 @@
 #include "../plugins/native_history_commands.hpp"
 #include "../plugins/native_camera_multiply.hpp"
 #include "../plugins/native_morph_category.hpp"
+#include "../plugins/native_morph_tools.hpp"
 #include "mikumikustudio/bake_ui_lock.hpp"
 #include "mikumikustudio/animation_curve_editor.hpp"
 #include "mikumikustudio/runtime_log.hpp"
@@ -150,6 +151,8 @@
 #include "mikumikustudio/ui_translation.hpp"
 #include <algorithm>
 #include <cmath>
+#include <cerrno>
+#include <limits>
 #include "mikumikustudio/accessory_layout.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/mf_h264_recorder.hpp"
@@ -529,9 +532,28 @@ INT_PTR __stdcall ModelOffsetDlgProc(HWND hDlg, UINT msg, WPARAM wParam,
 // 0x267).  WM_INITDIALOG: topmost, edit 0x268 pre-filled "0", focus +
 // select-all.  OK: app+0xA08F4 = atol(edit 0x268) and EndDialog(1).
 // Cancel: EndDialog(2).
+#if !MMD_ORIGINAL_PROFILE
+struct MorphToolSession {
+    MMDApp* app;
+    plugins::NativeMorphToolsPlan* plan;
+    int shift=0,start=0,end=0;
+};
+static bool ReadMorphToolInteger(HWND dialog,int id,int& value) {
+    char text[64]{};const auto length=GetDlgItemTextA(dialog,id,text,int(sizeof text));
+    if(length<=0||length>=int(sizeof text)-1)return false;
+    errno=0;char* end=nullptr;const auto number=std::strtoll(text,&end,10);
+    if(errno==ERANGE||end==text||*end||number<(std::numeric_limits<int>::min)()||number>(std::numeric_limits<int>::max)())return false;
+    value=int(number);return true;
+}
+#endif
 INT_PTR __stdcall FrameShiftDlgProc(HWND hDlg, UINT msg, WPARAM wParam,
                                     LPARAM lParam) {  // was Sub40F0B0, VA 0x0040F0B0
     MMDApp* app = g_Block;
+#if !MMD_ORIGINAL_PROFILE
+    auto* session=msg==WM_INITDIALOG?reinterpret_cast<MorphToolSession*>(lParam):reinterpret_cast<MorphToolSession*>(GetWindowLongPtrW(hDlg,DWLP_USER));
+    if(msg==WM_INITDIALOG&&session)SetWindowLongPtrW(hDlg,DWLP_USER,lParam);
+    if(session)app=session->app;
+#endif
     (void)lParam;
     if (msg == WM_INITDIALOG) {
         MakeDialogTopmostIfRequested(app, hDlg);
@@ -539,6 +561,11 @@ INT_PTR __stdcall FrameShiftDlgProc(HWND hDlg, UINT msg, WPARAM wParam,
         SelectAllEdit(hDlg, panel::kShiftFramesEdit);
     } else if (msg == WM_COMMAND) {
         if (LOWORD(wParam) == 1) {  // IDOK
+#if !MMD_ORIGINAL_PROFILE
+            if(session){int shift=0;const auto status=ReadMorphToolInteger(hDlg,panel::kShiftFramesEdit,shift)?session->plan->ReadShift(shift):MMS_E_ARGUMENT;
+                if(status!=MMS_OK){runtime_log::Write("PLUGIN_ABI mouth shift input refused: %d",status);MessageBeep(MB_ICONWARNING);return TRUE;}
+                session->shift=shift;EndDialog(hDlg,1);return TRUE;}
+#endif
             app->MorphFrameShift() = ReadIntFromEdit(hDlg, panel::kShiftFramesEdit);
             EndDialog(hDlg, 1);
         } else if (LOWORD(wParam) == 2) {  // IDCANCEL
@@ -554,11 +581,22 @@ INT_PTR __stdcall FrameShiftDlgProc(HWND hDlg, UINT msg, WPARAM wParam,
 INT_PTR __stdcall BlinkRegisterDlgProc(HWND hDlg, UINT msg, WPARAM wParam,
                                        LPARAM lParam) {  // was Sub40F1E0, VA 0x0040F1E0
     MMDApp* app = g_Block;
+#if !MMD_ORIGINAL_PROFILE
+    auto* session=msg==WM_INITDIALOG?reinterpret_cast<MorphToolSession*>(lParam):reinterpret_cast<MorphToolSession*>(GetWindowLongPtrW(hDlg,DWLP_USER));
+    if(msg==WM_INITDIALOG&&session)SetWindowLongPtrW(hDlg,DWLP_USER,lParam);
+    if(session)app=session->app;
+#endif
     (void)lParam;
     if (msg == WM_INITDIALOG) {
         MakeDialogTopmostIfRequested(app, hDlg);
     } else if (msg == WM_COMMAND) {
         if (LOWORD(wParam) == 1) {  // IDOK
+#if !MMD_ORIGINAL_PROFILE
+            if(session){int start=0,end=0;const auto status=ReadMorphToolInteger(hDlg,panel::kBlinkStartEdit,start)&&ReadMorphToolInteger(hDlg,panel::kBlinkEndEdit,end)?
+                    session->plan->ReadBlink(start,end):MMS_E_ARGUMENT;
+                if(status!=MMS_OK){runtime_log::Write("PLUGIN_ABI random blink input refused: %d",status);MessageBeep(MB_ICONWARNING);return TRUE;}
+                session->start=start;session->end=end;EndDialog(hDlg,1);return TRUE;}
+#endif
             app->BlinkStartFrame() = ReadIntFromEdit(hDlg, panel::kBlinkStartEdit);
             app->BlinkEndFrame() = ReadIntFromEdit(hDlg, panel::kBlinkEndEdit);
             EndDialog(hDlg, 1);
@@ -568,6 +606,41 @@ INT_PTR __stdcall BlinkRegisterDlgProc(HWND hDlg, UINT msg, WPARAM wParam,
     }
     return 0;
 }
+
+#if !MMD_ORIGINAL_PROFILE
+static bool TryBoundMorphTool(MMDApp* app,plugins::NativeMorphTool tool) noexcept {
+    auto* history=plugins::BoundNativePoseHistory(app);if(!history)return false;
+    static thread_local bool dialogActive=false;if(dialogActive||app->state.optflag[0])return true;
+    const auto result=plugins::Boundary([&]()->MmsResult{
+        plugins::NativeMorphToolsPlan plan;const auto begin=plan.Begin(*app,tool);
+        if(begin==MMS_E_NOT_FOUND&&tool==plugins::NativeMorphTool::RandomBlink){
+            LegacyUiMessageBoxA(MainHwnd(app),app->EnglishUI()?"You cannot register blinking because this model has not facial motion of 'blink'.":kMsgNoBlinkMorphJp,
+                app->EnglishUI()?"randomly register blinking":kCaptionRegBlinkJp,MB_TOPMOST);return MMS_OK;}
+        if(begin!=MMS_OK)return begin;const auto binding=plugins::BoundNativePoseGeneration(app);
+        struct Scope{bool& active;Scope(bool& value):active(value){active=true;}~Scope(){active=false;}} scope(dialogActive);
+        const bool blink=tool==plugins::NativeMorphTool::RandomBlink;MorphToolSession session{app,&plan};app->state.enterKeyState=1;
+        const auto response=UiDialogBoxParamA(static_cast<HINSTANCE>(app->HInstance()),
+            MAKEINTRESOURCEA(blink?(app->EnglishUI()?0x290:0x269):(app->EnglishUI()?0x28F:0x267)),MainHwnd(app),
+            blink?BlinkRegisterDlgProc:FrameShiftDlgProc,reinterpret_cast<LPARAM>(&session));
+        if(response==-1)return MMS_E_FAILED;if(response!=IDOK)return MMS_OK;
+        if(plugins::BoundNativePoseHistory(app)!=history||plugins::BoundNativePoseGeneration(app)!=binding)return MMS_E_STALE;
+        std::shared_ptr<plugins::HistoryChange> change;if(auto status=plan.Take(change))return status;
+        if(change){std::unique_ptr<plugins::SharedHistory::NativeTransaction> transaction;
+            if(auto status=history->PrepareNative(blink?"Randomly register blinking":"Shift lip keyframes",std::move(change),transaction,plugins::SharedHistory::NativeIntent::ExplicitCommit))return status;
+            if(auto status=history->CommitNative(std::move(transaction)))return status;
+            // The native edit is already committed. Optional Win32/curve UI
+            // work cannot turn that publication into a reported refusal.
+            plugins::Boundary([&]()->MmsResult{bake::ScopedUiInputGate gate;plugins::PublishBoundPoseEdit(*app,*history,false);
+                curve_editor::NotifyOwnedChanged(app->MainWindow());return MMS_OK;});}
+        if(blink){app->BlinkStartFrame()=session.start;app->BlinkEndFrame()=session.end;
+            plugins::Boundary([&]()->MmsResult{char text[0x100]{};if(app->EnglishUI())sprintf_s(text,"%u blinking is registerd",plan.BlinkCount());else sprintf_s(text,kFmtBlinksAddedJp,int(plan.BlinkCount()));
+                LegacyUiMessageBoxA(MainHwnd(app),text,app->EnglishUI()?"register blinking":kCaptionBlinkCntJp,MB_TOPMOST);return MMS_OK;});
+        }else app->MorphFrameShift()=session.shift;
+        return MMS_OK;
+    });
+    if(result!=MMS_OK)runtime_log::Write("PLUGIN_ABI native morph tool refused: %d",result);return true;
+}
+#endif
 
 // VA 0x0040F2F0 - AVI-output options dialog proc (case 223, tpl 0x28E/
 // 0x260).  WM_INITDIALOG: topmost; edits 0x261/0x262 copy the main-window
@@ -1981,6 +2054,9 @@ void CmdFileMenu(MMDApp* app, HWND hwnd, std::uint16_t id, std::uint16_t notify)
     // the shifted value turns positive; the chain tail ends the walk.
     // ------------------------------------------------------------------
     case 225: {
+#if !MMD_ORIGINAL_PROFILE
+        if(TryBoundMorphTool(app,plugins::NativeMorphTool::MouthShift))break;
+#endif
         if (app->state.optflag[0] != 0) {  // 0x2F8
             break;
         }
@@ -2098,6 +2174,9 @@ void CmdFileMenu(MMDApp* app, HWND hwnd, std::uint16_t id, std::uint16_t notify)
     // morph via RegisterMorphKeyCurrent, using the app+0x9EB7F blink-phase byte.
     // ------------------------------------------------------------------
     case 227: {
+#if !MMD_ORIGINAL_PROFILE
+        if(TryBoundMorphTool(app,plugins::NativeMorphTool::RandomBlink))break;
+#endif
         if (app->state.optflag[0] != 0) {  // 0x2F8
             break;
         }

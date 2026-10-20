@@ -1985,6 +1985,36 @@ struct AuthoredReplacement::Impl{
         for(auto morph:installed)if(!OwnedAuthorEqual(before,after,morph))changed.push_back(morph);
     }
     struct EraseTag {};
+    struct ShiftTag {};
+    Impl(unsigned char* value,const std::vector<unsigned>& morphs,int shift,ShiftTag):model(value),identity(IdentityOf(value)){
+        if(!model||!identity.keyPoolIdentity||!identity.morphs||!identity.morphCount||morphs.empty())
+            throw std::invalid_argument("unowned native morph shift");
+        const auto found=States().find(model);
+        if(found!=States().end()){
+            if(!Matches(found->second.identity,model))throw std::invalid_argument("stale native morph shift layers");
+            beforePresent=true;before=found->second;initialDigest=LayersDigest(before);
+        }
+        after=before;after.identity=identity;erasing=true;std::set<unsigned> seen;
+        const auto retime=[&](auto& keys){
+            std::size_t kept=0;
+            for(auto key:keys){
+                if(key.frame){const auto frame=std::int64_t(key.frame)+shift;if(frame<=0)continue;
+                    if(frame>kMaximumFrame)throw std::invalid_argument("native morph author shift overflow");key.frame=int(frame);}
+                keys[kept++]=key;
+            }
+            keys.resize(kept);
+        };
+        for(unsigned morph:morphs){
+            if(morph>=identity.morphCount||!seen.insert(morph).second)throw std::invalid_argument("invalid native morph shift target");
+            changed.push_back(morph);if(!shift)continue;
+            const int index=int(morph);
+            for(auto* map:{&after.authored,&after.effective}){auto entry=map->find(index);if(entry==map->end())continue;
+                retime(entry->second.keys);std::string error;
+                if(!ac::Validate(entry->second,error))throw std::invalid_argument("invalid shifted native morph author");}
+            for(auto* map:{&after.mirror,&after.observed}){auto entry=map->find(index);if(entry!=map->end())retime(entry->second);}
+            erasureChanged|=!OwnedAuthorEqual(before,after,morph);
+        }
+    }
     Impl(unsigned char* value,const std::vector<unsigned>& morphs,EraseTag):model(value),identity(IdentityOf(value)){
         if(!model||!identity.keyPoolIdentity||!identity.morphs||!identity.morphCount||morphs.empty())
             throw std::invalid_argument("unowned morph curve erasure");
@@ -2074,7 +2104,13 @@ struct AuthoredReplacement::Target::Impl{
         const auto found=States().find(source->model);const auto* now=found==States().end()?nullptr:&found->second;return now==previous&&(!now||LayersDigest(*now)==digest);}
 };
 AuthoredReplacement::AuthoredReplacement(unsigned char* model,const std::vector<ac::NamedTrack>& tracks):impl_(std::make_shared<Impl>(model,tracks)){}
+std::uint64_t AuthoredLayers::RetainedBytes()const noexcept{
+    std::uint64_t bytes=sizeof(*this);if(!impl_)return bytes;
+    LayerAdd(bytes,sizeof(Impl));const auto state=LayerBytes(impl_->state);
+    LayerAdd(bytes,state==UINT64_MAX?state:state-sizeof(State));return bytes;
+}
 AuthoredReplacement AuthoredReplacement::Erase(unsigned char* model,const std::vector<unsigned>& morphs){return AuthoredReplacement(std::make_shared<Impl>(model,morphs,Impl::EraseTag{}));}
+AuthoredReplacement AuthoredReplacement::ShiftNative(unsigned char* model,const std::vector<unsigned>& morphs,int shift){return AuthoredReplacement(std::make_shared<Impl>(model,morphs,shift,Impl::ShiftTag{}));}
 AuthoredReplacement::AuthoredReplacement(std::shared_ptr<Impl> impl):impl_(std::move(impl)){}
 AuthoredReplacement::~AuthoredReplacement()=default;
 bool AuthoredReplacement::Changed()const noexcept{return impl_->erasing?impl_->erasureChanged:!impl_->changed.empty();}

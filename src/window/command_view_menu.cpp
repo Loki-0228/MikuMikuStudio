@@ -265,6 +265,8 @@
 #include "../plugins/native_pose_scope.hpp"
 #include "../plugins/native_global_commands.hpp"
 #include "../plugins/native_model_order.hpp"
+#include "../plugins/native_model_multiply.hpp"
+#include "../plugins/native_history_commands.hpp"
 #include "../plugins/native_object_commands.hpp"
 #include "mikumikustudio/runtime_log.hpp"
 #endif
@@ -1029,11 +1031,36 @@ static void AddBoneMultiplyScaleRows(MMDApp* app, HWND dialog) {
     }
 }
 
+#if !MMD_ORIGINAL_PROFILE
+struct ModelMultiplySession { MMDApp* app; plugins::NativeModelMultiplyPlan* plan; };
+static ModelMultiplySession* MultiplySession(HWND dialog, UINT message, LPARAM parameter) {
+    auto* session = message == WM_INITDIALOG ? reinterpret_cast<ModelMultiplySession*>(parameter) :
+        reinterpret_cast<ModelMultiplySession*>(GetWindowLongPtrW(dialog, DWLP_USER));
+    if (message == WM_INITDIALOG) SetWindowLongPtrW(dialog, DWLP_USER, reinterpret_cast<LONG_PTR>(session));
+    return session;
+}
+static void MultiplyRefused(MMDApp* app, HWND dialog, MmsResult result) {
+    const int language = app->EnglishUI();
+    const bool argument = result == MMS_E_ARGUMENT;
+    const wchar_t* text = language == kUiChinese ? (argument ? L"请输入有效数字。计算结果必须有限，且在当前通道支持范围内。" :
+        L"当前编辑状态已改变或暂时不可用。请取消本次调整后重试。") : language ?
+        (argument ? L"Enter finite valid numbers within the channel's supported range." :
+        L"The editing state has changed or is unavailable. Cancel this adjustment and try again.") :
+        (argument ? L"チャンネルの対応範囲内で、有限の有効な数値を入力してください。" :
+        L"編集状態が変更されたか、現在利用できません。キャンセルしてから再試行してください。");
+    MessageBoxW(dialog, text, language == kUiChinese ? L"关键帧调整" : language ? L"Keyframe adjustment" : L"フレーム補正",
+        MB_OK | MB_ICONWARNING);
+}
+#endif
 INT_PTR CALLBACK BoneFrameMultiplyDlgProc(HWND hDlg, UINT msg, WPARAM wParam,
                                           LPARAM lParam) {  // was Sub44D3F0, VA 0x0044D3F0
     (void)lParam;
+    MMDApp* app = g_Block;
+#if !MMD_ORIGINAL_PROFILE
+    auto* session = MultiplySession(hDlg, msg, lParam);
+    if (session) app = session->app;
+#endif
     if (msg == WM_INITDIALOG) {
-        MMDApp* app = g_Block;
         MakeDialogTopmostIfRequested(app, hDlg);
         LocalizeChineseDialog(app, hDlg);
         AddBoneMultiplyScaleRows(app, hDlg);
@@ -1049,8 +1076,13 @@ INT_PTR CALLBACK BoneFrameMultiplyDlgProc(HWND hDlg, UINT msg, WPARAM wParam,
     if (msg == WM_COMMAND) {
         const WORD id = LOWORD(wParam);
         if (id == 1) {
-            if (!ApplyBoneFrameScaleAdd(g_Block, hDlg)) {
-                const int language = g_Block->EnglishUI();
+#if !MMD_ORIGINAL_PROFILE
+            if (session) {
+                if (const auto result = session->plan->ReadDialog(hDlg)) { MultiplyRefused(app, hDlg, result); return TRUE; }
+            } else
+#endif
+            if (!ApplyBoneFrameScaleAdd(app, hDlg)) {
+                const int language = app->EnglishUI();
                 MessageBoxW(hDlg, language == kUiChinese ?
                     L"请输入有效数字。所有选中帧的缩放结果必须大于 0，且在支持范围内。" :
                     language ? L"Enter valid numbers. The resulting scale of every selected key must be positive and within the supported range." :
@@ -1081,8 +1113,12 @@ INT_PTR CALLBACK BoneFrameMultiplyDlgProc(HWND hDlg, UINT msg, WPARAM wParam,
 INT_PTR CALLBACK FacialMultiplyDlgProc(HWND hDlg, UINT msg, WPARAM wParam,
                                        LPARAM lParam) {  // was Sub44D510, VA 0x0044D510
     (void)lParam;
+    MMDApp* app = g_Block;
+#if !MMD_ORIGINAL_PROFILE
+    auto* session = MultiplySession(hDlg, msg, lParam);
+    if (session) app = session->app;
+#endif
     if (msg == WM_INITDIALOG) {
-        MMDApp* app = g_Block;
         MakeDialogTopmostIfRequested(app, hDlg);
         PrefillEdit(hDlg, panel::kMorphMulScaleEdit, "1.0");
         PrefillEdit(hDlg, panel::kMorphMulOffsetEdit, "0.0");
@@ -1092,7 +1128,12 @@ INT_PTR CALLBACK FacialMultiplyDlgProc(HWND hDlg, UINT msg, WPARAM wParam,
     if (msg == WM_COMMAND) {
         const WORD id = LOWORD(wParam);
         if (id == 1) {
-            ApplyMorphScaleAdd(g_Block, hDlg);  // 0x43E680
+#if !MMD_ORIGINAL_PROFILE
+            if (session) {
+                if (const auto result = session->plan->ReadDialog(hDlg)) { MultiplyRefused(app, hDlg, result); return TRUE; }
+            } else
+#endif
+            ApplyMorphScaleAdd(app, hDlg);  // 0x43E680
             EndDialog(hDlg, 1);
             return 0;
         }
@@ -1834,6 +1875,52 @@ bool TryEditBoundPoseNumeric(MMDApp* app, HWND owner) noexcept {
 }
 #endif
 
+#if !MMD_ORIGINAL_PROFILE
+static void RunBoundModelMultiply(MMDApp& app, HWND owner, plugins::ModelMultiplyKind kind) {
+    static thread_local bool dialogActive = false;
+    if (dialogActive) return;
+    const auto result = plugins::Boundary([&]() -> MmsResult {
+        auto* history = plugins::BoundNativePoseHistory(&app);
+        if (!history) return MMS_E_NOT_READY;
+        plugins::NativeModelMultiplyPlan plan;
+        if (auto status = plan.Begin(app, kind)) return status;
+        const auto generation = plugins::BoundNativePoseGeneration(&app);
+        struct DialogScope {
+            bool& active;
+            explicit DialogScope(bool& value) : active(value) { active = true; }
+            ~DialogScope() { active = false; }
+        } scope(dialogActive);
+        ModelMultiplySession session{&app, &plan};
+        const bool bone = kind == plugins::ModelMultiplyKind::Bone;
+        app.state.enterKeyState = 1;
+        const auto response = UiDialogBoxParamA(static_cast<HINSTANCE>(app.HInstance()),
+            MAKEINTRESOURCEA(bone ? (app.EnglishUI() ? 0x294 : 0x27C) : (app.EnglishUI() ? 0x295 : 0x283)),
+            owner, bone ? BoneFrameMultiplyDlgProc : FacialMultiplyDlgProc, reinterpret_cast<LPARAM>(&session));
+        if (response == -1) return MMS_E_FAILED;
+        if (response != 1) return MMS_OK;
+        if (plugins::BoundNativePoseHistory(&app) != history || plugins::BoundNativePoseGeneration(&app) != generation)
+            return MMS_E_STALE;
+        std::shared_ptr<plugins::HistoryChange> change;
+        if (auto status = plan.Take(change)) return status;
+        if (!change) return MMS_OK;
+        std::unique_ptr<plugins::SharedHistory::NativeTransaction> transaction;
+        if (auto status = history->PrepareNative(bone ? "Multiply bone keyframes" : "Multiply morph keyframes", std::move(change),
+            transaction, plugins::SharedHistory::NativeIntent::ExplicitCommit)) return status;
+        if (auto status = history->CommitNative(std::move(transaction))) return status;
+        // Refresh after publication is optional and may dispatch Win32 work.
+        // Its failure must not report a committed multiply as an aborted edit.
+        plugins::Boundary([&]() -> MmsResult {
+            bake::ScopedUiInputGate gate;
+            plugins::PublishBoundPoseEdit(app, *history, history->LastPublicationRequiresPhysicsReset());
+            curve_host::NotifyModelRegistered(&app, !bone);
+            if (app.Renderer() && app.PanelDC()) { PanelPaint(&app); SelectionReeval(&app); }
+            return MMS_OK;
+        });
+        return MMS_OK;
+    });
+    if (result != MMS_OK) runtime_log::Write("PLUGIN_ABI model multiply refused: %d", result);
+}
+#endif
 void CmdViewMenu(MMDApp* app, HWND hwnd, std::uint16_t id,
                  std::uint16_t notify) {
     (void)notify;  // see header: the default handler's notify gate can never
@@ -1861,6 +1948,9 @@ void CmdViewMenu(MMDApp* app, HWND hwnd, std::uint16_t id,
         if (app->state.optflag[0] != 0) {
             return;
         }
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::BoundNativePoseHistory(app)) { RunBoundModelMultiply(*app, hwnd, plugins::ModelMultiplyKind::Bone); return; }
+#endif
         app->state.enterKeyState = 1;
         if (UiDialogBoxParamA(hInst,
                             MAKEINTRESOURCEA(english ? 0x294 : 0x27C),
@@ -1878,6 +1968,9 @@ void CmdViewMenu(MMDApp* app, HWND hwnd, std::uint16_t id,
         if (app->state.optflag[0] != 0) {
             return;
         }
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::BoundNativePoseHistory(app)) { RunBoundModelMultiply(*app, hwnd, plugins::ModelMultiplyKind::Morph); return; }
+#endif
         app->state.enterKeyState = 1;
         if (UiDialogBoxParamA(hInst,
                             MAKEINTRESOURCEA(english ? 0x295 : 0x283),
