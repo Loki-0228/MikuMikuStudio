@@ -28,8 +28,15 @@
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/model.hpp"
+#include "../plugins/native_model_physics.hpp"
 
 namespace mikumikustudio {
+#if !MMD_ORIGINAL_PROFILE
+namespace plugins {
+bool PhysicsDraftPreviewBone(const MMDApp*, int, float[3], float[16]) noexcept;
+bool PhysicsDraftPreviewCurrent(const MMDApp*) noexcept;
+}
+#endif
 
 // Shared with bone dragging so the gizmo and the actual edit operation use
 // the same view-space basis.
@@ -292,6 +299,18 @@ void OrthonormalizeGizmoBasis(Matrix* world) {
 
 void AttachToBone(MMDApp* app, Matrix* world, int boneIndex) {
     auto& api = d3dx::Get();
+#if !MMD_ORIGINAL_PROFILE
+    if (plugins::BoundPhysicsModelDraft(app)) {
+        float position[3], matrix[16];
+        if (plugins::PhysicsDraftPreviewBone(app, boneIndex, position, matrix)) {
+            Matrix translation;
+            api.translation(&translation, position[0], position[1], position[2]);
+            api.multiply(world, world, &translation);
+            api.multiply(world, world, reinterpret_cast<const Matrix*>(matrix));
+        }
+        return;
+    }
+#endif
     unsigned char* model = CurrentModel(app);
     auto* bones = mikumikustudio::mdl::Bones(model);
     // The bone index on a rigid-body record comes from the loaded file, and the
@@ -419,6 +438,9 @@ constexpr int kDebugRecordCapacity = 10000;
 #endif
 
 void DrawAccessoryDebug(MMDApp* app) {
+#if !MMD_ORIGINAL_PROFILE
+    if (plugins::BoundPhysicsModelDraft(app) && !plugins::PhysicsDraftPreviewCurrent(app)) return;
+#endif
     auto& api = d3dx::Get();
     PhysicsScene* scene = app->Physics();   // +650672 (kPtrSub048)
     // The physics-model editor's scratch arrays double as the draw source:

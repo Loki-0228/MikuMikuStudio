@@ -20,6 +20,7 @@
 
 ## 动画与物理
 
+- [模型物理资源、私有编辑与共同历史（2026-10-21）](abi-model-physics-history-2026-10-21.md)
 - [烘焙与导出验证记录](animation/baking.md)
 - [骨骼、曲线与镜头编辑记录](animation/editing.md)
 - [物理状态与关节验证记录](animation/physics.md)

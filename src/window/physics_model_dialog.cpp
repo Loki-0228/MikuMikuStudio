@@ -74,7 +74,16 @@
 #include <cstdlib>
 #include <cstring>
 #include <cwchar>
+#include <climits>
+#include <cfloat>
+#include <cwctype>
+#include <array>
+#include <map>
+#include <memory>
+#include <stdexcept>
 #include <string>
+#include <type_traits>
+#include <vector>
 
 #include "btBulletDynamicsCommon.h"
 
@@ -88,13 +97,22 @@
 #include "mikumikustudio/panel_controls.hpp"
 #include "mikumikustudio/text_encoding.hpp"
 #include "mikumikustudio/owned_text.hpp"
+#include "mikumikustudio/runtime_log.hpp"
+#include "mikumikustudio/update_coordinator.hpp"
+#include "../plugins/native_model_physics.hpp"
+#include "../plugins/native_pose_scope.hpp"
 
 namespace mikumikustudio {
+
+#if !MMD_ORIGINAL_PROFILE
+void FinishPhysicsDraftInteraction(MMDApp*) noexcept;
+#endif
 
 // Forward declarations (twins of the block in command_view_menu.cpp - the
 // helpers are defined in this file).
 void AddRigidBody(HWND hDlg);                                // was Sub45F480, VA 0x0045F480
 LRESULT CALLBACK PhysicsEditSubclassProc(HWND, UINT, WPARAM, LPARAM);  // was Sub41EC50, VA 0x0041EC50
+INT_PTR CALLBACK PhysicsModelDlgProc(HWND, UINT, WPARAM, LPARAM);
 void InitPhysicsModelDialog(HWND hDlg);                      // was Sub45F670, VA 0x0045F670
 void CollectBodyEdits(MMDApp* app);                          // was Sub41FF30, VA 0x0041FF30
 void CollectJointEdits(MMDApp* app);                         // was Sub4204F0, VA 0x004204F0
@@ -236,6 +254,148 @@ namespace {
 using Rigid = mdl::RigidRecord;
 using Joint = mdl::JointRecord;
 
+#if !MMD_ORIGINAL_PROFILE
+struct PhysicsDialogDraft {
+    MMDApp& app;
+    plugins::NativeModelPhysicsPlan plan;
+    plugins::ModelPhysicsDraft source;
+    std::vector<bool> originalBodies;
+    plugins::SharedHistory* history = nullptr;
+    std::uint64_t binding = 0;
+    unsigned char* object = nullptr;
+    std::vector<mdl::BoneRecord> previewBones;
+    std::vector<std::wstring> boneLabels;
+    std::unique_ptr<mdl::ModelRecord> previewModel;
+    Rigid* bodies = nullptr;
+    Joint* joints = nullptr;
+    HWND window = nullptr;
+    HWND composing = nullptr;
+    std::map<int, std::wstring> shown;
+    int oldRigid = -1, oldJoint = -1;
+    unsigned char oldPage = 0;
+    WNDPROC oldEditProc = nullptr;
+    bool oldModelEnabled = false, oldPlayEnabled = false;
+    bool attached = false, closing = false, retired = false;
+    bool previewRetired = false;
+    unsigned calls = 0;
+    explicit PhysicsDialogDraft(MMDApp& value) : app(value), history(plugins::BoundNativePoseHistory(&value)),
+        binding(plugins::BoundNativePoseGeneration(&value)), object(value.SelectedModel()),
+        oldRigid(value.state.selectedRigidIndex), oldJoint(value.state.selectedJointIndex),
+        oldPage(value.state.physicsEditorJointPage), oldEditProc(value.FrameCopyEditProc()) {}
+    bool Current() const noexcept {
+        return !closing && g_Block == &app && app.SelectedModel() == object &&
+            plugins::BoundNativePoseGeneration(&app) == binding &&
+            plugins::BoundNativePoseHistory(&app) == history && plan.IsCurrent();
+    }
+    void Release() noexcept {
+        if (attached) {
+            attached = false;
+            if (app.state.rigidScratchArray == bodies) app.state.rigidScratchArray = nullptr;
+            if (app.state.jointScratchArray == joints) app.state.jointScratchArray = nullptr;
+            if (app.state.frameCopyDialog == window) app.state.frameCopyDialog = nullptr;
+            app.state.selectedRigidIndex = oldRigid; app.state.selectedJointIndex = oldJoint;
+            app.state.physicsEditorJointPage = oldPage; app.FrameCopyEditProc() = oldEditProc;
+            if (IsWindow(app.MainWindow())) {
+                EnableWindow(GetDlgItem(app.MainWindow(), panel::kMainComboModel), oldModelEnabled);
+                EnableWindow(GetDlgItem(app.MainWindow(), panel::kPlayButton), oldPlayEnabled);
+            }
+        }
+        // WM_SETTEXT/EnableWindow can synchronously destroy the dialog while
+        // an outer collector still has a reference into these arrays.
+        if (!calls) { std::free(bodies); bodies = nullptr; std::free(joints); joints = nullptr; }
+    }
+    ~PhysicsDialogDraft() { Release(); }
+};
+struct PhysicsDialogCall {
+    std::shared_ptr<PhysicsDialogDraft> state;
+    explicit PhysicsDialogCall(std::shared_ptr<PhysicsDialogDraft> s) noexcept : state(std::move(s)) { ++state->calls; }
+    ~PhysicsDialogCall() { if (--state->calls == 0 && state->retired) state->Release(); }
+};
+thread_local std::shared_ptr<PhysicsDialogDraft> physicsDraft;
+void ClosePhysicsDraft(const std::shared_ptr<PhysicsDialogDraft>&) noexcept;
+MmsResult ConfirmPhysicsDraft(HWND, const std::shared_ptr<PhysicsDialogDraft>&);
+std::shared_ptr<PhysicsDialogDraft> DraftFor(const MMDApp* app, HWND window = nullptr) noexcept {
+    auto s = physicsDraft;
+    return s && &s->app == app && (!window || !s->window || s->window == window) ? s : nullptr;
+}
+void RequestPhysicsDraftPreview(MMDApp& app) noexcept {
+    // This queues drawing only. It must not turn a display allocation failure
+    // during noexcept window teardown into a failed edit or process exit.
+    try { updates::RequestViewport(&app, false); }
+    catch (...) { runtime_log::Trace("PLUGIN_ABI physics draft preview request failed"); }
+}
+void RetirePhysicsDraftPreview(PhysicsDialogDraft& draft) noexcept {
+    if (draft.previewRetired) return;
+    draft.previewRetired = true;
+    RequestPhysicsDraftPreview(draft.app);
+}
+bool PhysicsDraftPreviewCommand(WPARAM command) noexcept {
+    const auto id = LOWORD(command), notification = HIWORD(command);
+    // Native field fills send focus/change notifications synchronously. They
+    // are not accepted edits and must not schedule another preview from paint.
+    if (notification == BN_CLICKED) {
+        switch (id) {
+        case kAddBodyButton: case kDeleteBodyButton:
+        case kAddJointButton: case kDeleteJointButton:
+        case kCopyBodyButton: case kPasteBodyButton:
+        case kCopyJointButton: case kPasteJointButton:
+        case kShapeSphereRadio: case kShapeBoxRadio: case kShapeCapsuleRadio:
+        case kPhysicalRadio: case kBoneFollowRadio: case kBoneAlignCheckbox:
+        case kBodyPageRadio: case kJointPageRadio: return true;
+        default: return false;
+        }
+    }
+    if (notification == CBN_SELCHANGE) {
+        switch (id) {
+        case kBodyListCombo: case kJointListCombo: case kBoneCombo:
+        case kGroupCombo: case kBodyACombo: case kBodyBCombo:
+        case kPivotBoneCombo: return true;
+        default: return false;
+        }
+    }
+    return false;
+}
+std::wstring PhysicsControlText(HWND edit) {
+    const int length = GetWindowTextLengthW(edit);
+    if (length < 0 || length == INT_MAX) throw std::bad_alloc();
+    std::wstring result(static_cast<std::size_t>(length) + 1, L'\0');
+    const int copied = GetWindowTextW(edit, result.data(), length + 1);
+    result.resize(static_cast<std::size_t>(copied)); return result;
+}
+void RememberPhysicsText(HWND edit) {
+    if (auto s = DraftFor(g_Block, GetParent(edit))) s->shown[GetDlgCtrlID(edit)] = PhysicsControlText(edit);
+}
+bool PhysicsTextChanged(HWND edit) {
+    auto s = DraftFor(g_Block, GetParent(edit));
+    if (!s) return true;
+    const auto text = PhysicsControlText(edit);
+    const auto old = s->shown.find(GetDlgCtrlID(edit));
+    if (old != s->shown.end() && old->second == text) return false;
+    s->shown[GetDlgCtrlID(edit)] = text; return true;
+}
+float PhysicsNumericValue(HWND edit) {
+    const auto text = PhysicsControlText(edit); wchar_t* end = nullptr;
+    const double value = std::wcstod(text.c_str(), &end);
+    if (end == text.c_str()) throw std::invalid_argument("physics numeric input");
+    while (*end && std::iswspace(*end)) ++end;
+    if (*end || !std::isfinite(value) || value > FLT_MAX || value < -FLT_MAX)
+        throw std::invalid_argument("physics numeric input");
+    return static_cast<float>(value);
+}
+#endif
+void SetPhysicsTextA(HWND edit, const char* text) {
+#if !MMD_ORIGINAL_PROFILE
+    if (auto draft = DraftFor(g_Block, GetParent(edit))) {
+        const std::string bytes(text);
+        const std::wstring expected(bytes.begin(), bytes.end());
+        if (!SetWindowTextA(edit, text) || !draft->Current() || PhysicsControlText(edit) != expected)
+            throw std::runtime_error("physics numeric field display");
+        RememberPhysicsText(edit); return;
+    }
+#endif
+    SetWindowTextA(edit, text);
+}
+
 Rigid* EditBodies() {
     MMDApp* app = g_Block;
     return static_cast<Rigid*>(app->state.rigidScratchArray);
@@ -254,15 +414,17 @@ void SetBodyComboIndex(Rigid& rb, int index) {
     rb.keyData = reinterpret_cast<void*>(static_cast<std::intptr_t>(index));
 }
 int BodySlotForCombo(int row) {
-    if (row < 0) return -1;
+    const auto* bodies = EditBodies();
+    if (row < 0 || !bodies) return -1;
     for (int i = 0; i < kMaxEditRecords; ++i)
-        if (BodyComboIndex(EditBodies()[i]) == row) return i;
+        if (BodyComboIndex(bodies[i]) == row) return i;
     return -1;
 }
 int JointSlotForCombo(int row) {
-    if (row < 0) return -1;
+    const auto* joints = EditJoints();
+    if (row < 0 || !joints) return -1;
     for (int i = 0; i < kMaxEditRecords; ++i)
-        if (EditJoints()[i].constraint == row) return i;
+        if (joints[i].constraint == row) return i;
     return -1;
 }
 bool LiveBodySlot(int slot) {
@@ -279,6 +441,7 @@ void SyncBodyMode(Rigid& body) {
 }
 bool ValidatePhysicsEdits(HWND dialog) {
     const Joint* joints = EditJoints();
+    if (!joints) return false;
     for (int i = 0; i < kMaxEditRecords; ++i) {
         if (joints[i].constraint < 0) continue;
         if (LiveBodySlot(joints[i].rigidA) && LiveBodySlot(joints[i].rigidB)) continue;
@@ -342,20 +505,36 @@ void TransformPoint(float out[3], const float point[3], const float m[16]) {
 
 // ---- edit-box float commits (subclass proc 0x41EC50 / collect paths) ------
 void ReadEditFloat(HWND hWnd, float& field) {
+#if !MMD_ORIGINAL_PROFILE
+    if (!PhysicsTextChanged(hWnd)) return;
+    if (DraftFor(g_Block, GetParent(hWnd))) { field = PhysicsNumericValue(hWnd); return; }
+#endif
     char text[256];
     GetWindowTextA(hWnd, text, 256);
     field = static_cast<float>(atof(text));
 }
 void ReadEditFloatClamped(HWND hWnd, float& field) {
+#if !MMD_ORIGINAL_PROFILE
+    if (!PhysicsTextChanged(hWnd)) return;
+    if (DraftFor(g_Block, GetParent(hWnd))) {
+        field = PhysicsNumericValue(hWnd);
+        if (field < .1f) { field = .1f; SetPhysicsTextA(hWnd, "0.1"); }
+        return;
+    }
+#endif
     char text[256];
     GetWindowTextA(hWnd, text, 256);
     if (atof(text) < 0.1) {
-        SetWindowTextA(hWnd, "0.1");
+        SetPhysicsTextA(hWnd, "0.1");
         GetWindowTextA(hWnd, text, 256);
     }
     field = static_cast<float>(atof(text));
 }
 void ReadEditDegrees(HWND hWnd, float& field) {
+#if !MMD_ORIGINAL_PROFILE
+    if (!PhysicsTextChanged(hWnd)) return;
+    if (DraftFor(g_Block, GetParent(hWnd))) { field = PhysicsNumericValue(hWnd) / 180.0f * kPiF; return; }
+#endif
     char text[256];
     GetWindowTextA(hWnd, text, 256);
     field = static_cast<float>(atof(text)) / 180.0f * kPiF;
@@ -390,13 +569,27 @@ std::wstring PhysicsNameWide(const Record& record) {
 template <typename Record>
 void AddPhysicsName(HWND combo, const Record& record) {
     const std::wstring wide = PhysicsNameWide(record);
-    SendMessageW(combo, CB_ADDSTRING, 0,
-                 reinterpret_cast<LPARAM>(wide.c_str()));
+#if !MMD_ORIGINAL_PROFILE
+    const auto draft = DraftFor(g_Block, GetParent(combo));
+#endif
+    const auto result = SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(wide.c_str()));
+#if !MMD_ORIGINAL_PROFILE
+    if (draft && (result < 0 || !draft->Current())) throw std::runtime_error("physics name list display");
+#else
+    (void)result;
+#endif
 }
 
 template <typename Record>
 void SetPhysicsNameEdit(HWND edit, const Record& record) {
     const std::wstring wide = PhysicsNameWide(record);
+#if !MMD_ORIGINAL_PROFILE
+    if (auto draft = DraftFor(g_Block, GetParent(edit))) {
+        if (!SendMessageW(edit, WM_SETTEXT, 0, reinterpret_cast<LPARAM>(wide.c_str())) || !draft->Current() || PhysicsControlText(edit) != wide)
+            throw std::runtime_error("physics name field display");
+        return;
+    }
+#endif
     SetWindowTextW(edit, wide.c_str());
 }
 
@@ -431,6 +624,31 @@ bool CollectPhysicsName(HWND edit, Record& record) {
     // Opening, changing pages and OK must not rewrite the PMX mirror or lose
     // the full Unicode source name, including names longer than 256 units.
     if (requested == previous) return false;
+#if !MMD_ORIGINAL_PROFILE
+    if (auto s = DraftFor(g_Block, GetParent(edit))) {
+        // Only a real rename replaces the complete private UTF-16 allocation.
+        // An unchanged PMX name keeps its terminator and any raw tail intact.
+        const auto slot = [&]() -> std::size_t {
+            if constexpr (std::is_same_v<Record, Rigid>) return static_cast<std::size_t>(&record - s->bodies);
+            else return static_cast<std::size_t>(&record - s->joints);
+        }();
+        auto& names = [&]() -> std::vector<plugins::PhysicsDraftNames>& {
+            if constexpr (std::is_same_v<Record, Rigid>) return s->source.rigidNames;
+            else return s->source.jointNames;
+        }();
+        plugins::PhysicsDraftNames replacement;
+        replacement[0].assign(requested.begin(), requested.end()); replacement[0].push_back(L'\0');
+        std::string mirror;
+        const bool exactMirror = PhysicsNameNarrow(requested.c_str(), sizeof(record.name), mirror);
+        if (names.size() <= slot) names.resize(slot + 1);
+        names[slot] = std::move(replacement);
+        record.jpText = names[slot][0].data(); record.enText = nullptr;
+        if (exactMirror) {
+            std::memset(record.name, 0, sizeof(record.name)); std::memcpy(record.name, mirror.data(), mirror.size());
+        }
+        SetPhysicsNameEdit(edit, record); return true;
+    }
+#endif
     std::string encoded;
     if (!PhysicsNameNarrow(requested.c_str(), sizeof(record.name), encoded)) {
         SetWindowTextW(edit, previous.c_str());
@@ -499,7 +717,7 @@ float CheckYAngleLimit(HWND hDlg, HWND hEdit, float value) {
             value = -80.0f;
             strcpy_s(text, sizeof text, "-80.00");
         }
-        SetWindowTextA(hEdit, text);
+        SetPhysicsTextA(hEdit, text);
     }
     return value;
 }
@@ -514,14 +732,17 @@ float CheckYAngleLimit(HWND hDlg, HWND hEdit, float value) {
 // entry in their list combos (and the joint body-A/B combos for bodies).
 // Everything else forwards to the saved edit proc of 705.
 // ---------------------------------------------------------------------------
-LRESULT CALLBACK PhysicsEditSubclassProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {  // was Sub41EC50, VA 0x0041EC50
+static LRESULT PhysicsEditSubclassProcImpl(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {  // was Sub41EC50, VA 0x0041EC50
     MMDApp* app = g_Block;
     if (msg != WM_KEYDOWN || wParam != VK_RETURN)
         return CallWindowProcW(app->FrameCopyEditProc(), hWnd, msg, wParam,
                                lParam);
     // dirty write: invalidates the cached time like every WM_COMMAND of
     // the dialog (original app+663064 = state.timeNowHigh)
-    app->state.timeNowHigh = 1;
+#if !MMD_ORIGINAL_PROFILE
+    if (!DraftFor(app, GetParent(hWnd)))
+#endif
+        app->state.timeNowHigh = 1;
     HWND hDlg = app->state.frameCopyDialog;
     Rigid* bodies = EditBodies();
     Joint* joints = EditJoints();
@@ -580,17 +801,29 @@ LRESULT CALLBACK PhysicsEditSubclassProc(HWND hWnd, UINT msg, WPARAM wParam, LPA
 
     // edits 765 / 764 (y-axis angular limits) validate against +-90 here too
     if (hWnd == GetDlgItem(hDlg, kAngUpperYEdit)) {
+#if !MMD_ORIGINAL_PROFILE
+        if (!PhysicsTextChanged(hWnd)) return 0;
+#endif
         char text[256];
         GetWindowTextA(hWnd, text, 256);
         float value = static_cast<float>(atof(text));
+#if !MMD_ORIGINAL_PROFILE
+        if (DraftFor(app, hDlg)) value = PhysicsNumericValue(hWnd);
+#endif
         value = CheckYAngleLimit(hDlg, hWnd, value);
         jt.limits[7] = value / 180.0f * kPiShort;
         return 0;
     }
     if (hWnd == GetDlgItem(hDlg, kAngLowerYEdit)) {
+#if !MMD_ORIGINAL_PROFILE
+        if (!PhysicsTextChanged(hWnd)) return 0;
+#endif
         char text[256];
         GetWindowTextA(hWnd, text, 256);
         float value = static_cast<float>(atof(text));
+#if !MMD_ORIGINAL_PROFILE
+        if (DraftFor(app, hDlg)) value = PhysicsNumericValue(hWnd);
+#endif
         value = CheckYAngleLimit(hDlg, hWnd, value);
         jt.limits[10] = value / 180.0f * kPiShort;
         return 0;
@@ -610,18 +843,26 @@ LRESULT CALLBACK PhysicsEditSubclassProc(HWND hWnd, UINT msg, WPARAM wParam, LPA
 void InitPhysicsModelDialog(HWND hDlg) {  // was Sub45F670, VA 0x0045F670
     MMDApp* app = g_Block;
     mdl::ModelRecord* model = mdl::Mdl(app->SelectedModel());
+#if !MMD_ORIGINAL_PROFILE
+    const auto draft = DraftFor(app, hDlg);
+    if (draft) model = draft->previewModel.get();
+#endif
 
     EnableWindow(GetDlgItem(app->state.hwnd, panel::kPlayButton), FALSE);
 
-    app->state.rigidScratchArray =
-        std::calloc(kMaxEditRecords, sizeof(Rigid));
+#if !MMD_ORIGINAL_PROFILE
+    if (!draft)
+#endif
+        app->state.rigidScratchArray = std::calloc(kMaxEditRecords, sizeof(Rigid));
     Rigid* bodies = EditBodies();
     for (int i = 0; i < kMaxEditRecords; ++i) {
         SetBodyComboIndex(bodies[i], -1);
         bodies[i].body = nullptr;
     }
-    app->state.jointScratchArray =
-        std::calloc(kMaxEditRecords, sizeof(Joint));
+#if !MMD_ORIGINAL_PROFILE
+    if (!draft)
+#endif
+        app->state.jointScratchArray = std::calloc(kMaxEditRecords, sizeof(Joint));
     Joint* joints = EditJoints();
     for (int i = 0; i < kMaxEditRecords; ++i) {
         joints[i].rigidA = 0;
@@ -633,20 +874,38 @@ void InitPhysicsModelDialog(HWND hDlg) {  // was Sub45F670, VA 0x0045F670
         ShowWindow(GetDlgItem(hDlg, id), SW_HIDE);
     CheckRadioButton(hDlg, kBodyPageRadio, kJointPageRadio, kBodyPageRadio);
     s_jointPageVisible = 0;
+#if !MMD_ORIGINAL_PROFILE
+    if (draft) app->state.physicsEditorJointPage = 0;
+#endif
 
     SendMessageA(GetDlgItem(hDlg, kBodyListCombo), CB_RESETCONTENT,
                  0, 0);
     for (std::uint32_t i = 0; i < model->rigidCount; ++i) {
+#if !MMD_ORIGINAL_PROFILE
+        if (draft && !draft->Current()) throw std::runtime_error("closed physics initialization");
+#endif
         Rigid& dst = bodies[i];
-        std::memcpy(&dst, &model->rigidTable[i], sizeof(Rigid));
+#if !MMD_ORIGINAL_PROFILE
+        const auto& source = draft ? draft->source.rigids[i] : model->rigidTable[i];
+#else
+        const auto& source = model->rigidTable[i];
+#endif
+        std::memcpy(&dst, &source, sizeof(Rigid));
         // model flags -> editor mode byte (0 bone-follow / 1 physical /
         // 2 physical + bone alignment)
-        if (model->rigidTable[i].staticFlag != 0)
+#if !MMD_ORIGINAL_PROFILE
+        if (!draft) {
+#endif
+        if (source.staticFlag != 0)
             dst.mode = 0;
-        else if (model->rigidTable[i].kinematicFlag != 0)
+        else if (source.kinematicFlag != 0)
             dst.mode = 2;
         else
             dst.mode = 1;
+#if !MMD_ORIGINAL_PROFILE
+        }
+        if (draft) dst.body = nullptr;
+#endif
         // PMD no-collapse mask -> positive collision mask for editing
         dst.noCollapse = static_cast<std::uint16_t>(~dst.noCollapse);
         AddPhysicsName(GetDlgItem(hDlg, kBodyListCombo), dst);
@@ -657,10 +916,19 @@ void InitPhysicsModelDialog(HWND hDlg) {  // was Sub45F670, VA 0x0045F670
     int firstJoint = -1;
     int jointComboIndex = 0;
     for (std::uint32_t i = 0; i < model->jointCount; ++i) {
-        if (model->jointTable[i].constraint < 0) continue;
+#if !MMD_ORIGINAL_PROFILE
+        if (draft && !draft->Current()) throw std::runtime_error("closed physics initialization");
+#endif
+#if !MMD_ORIGINAL_PROFILE
+        const auto& source = draft ? draft->source.joints[i] : model->jointTable[i];
+        if (source.constraint < 0) continue;
+#else
+        const auto& source = model->jointTable[i];
+        if (source.constraint < 0) continue;
+#endif
         if (firstJoint < 0) firstJoint = static_cast<int>(i);
         Joint& dst = joints[i];
-        std::memcpy(&dst, &model->jointTable[i], sizeof(Joint));
+        std::memcpy(&dst, &source, sizeof(Joint));
         AddPhysicsName(GetDlgItem(hDlg, kJointListCombo), dst);
         dst.constraint = jointComboIndex++;
     }
@@ -680,11 +948,17 @@ void InitPhysicsModelDialog(HWND hDlg) {  // was Sub45F670, VA 0x0045F670
                  reinterpret_cast<LPARAM>(noBone));
     mdl::BoneRecord* bones = model->boneTable;
     for (std::uint32_t b = 0; b < model->boneCount; ++b) {
+#if !MMD_ORIGINAL_PROFILE
+        if (draft && !draft->Current()) throw std::runtime_error("closed physics initialization");
+#endif
         // Names follow the shared rule (only the English UI takes nameEn):
         // `englishUI != 0` made the Chinese UI list English bone names here
         // while the main panel's morph combos showed the model's own names.
-        const std::wstring wideName = text_encoding::BoneLabel(
-            bones[b], UiUsesEnglishNames(app->state.englishUI));
+        const std::wstring wideName =
+#if !MMD_ORIGINAL_PROFILE
+            draft ? draft->boneLabels[b] :
+#endif
+            text_encoding::BoneLabel(bones[b], UiUsesEnglishNames(app->state.englishUI));
         SendMessageW(GetDlgItem(hDlg, kBoneCombo), CB_ADDSTRING, 0,
                      reinterpret_cast<LPARAM>(wideName.c_str()));
         SendMessageW(GetDlgItem(hDlg, kPivotBoneCombo), CB_ADDSTRING, 0,
@@ -705,6 +979,9 @@ void InitPhysicsModelDialog(HWND hDlg) {  // was Sub45F670, VA 0x0045F670
                  reinterpret_cast<LPARAM>(group16.c_str()));
 
     // neutralize every bone's edit transform before the first refresh
+#if !MMD_ORIGINAL_PROFILE
+    if (!draft)
+#endif
     for (std::uint32_t b = 0; b < model->boneCount; ++b) {
         bones[b].trans[0] = bones[b].trans[1] = bones[b].trans[2] = 0.0f;
         bones[b].rotQuat[0] = bones[b].rotQuat[1] = bones[b].rotQuat[2] = 0.0f;
@@ -712,17 +989,35 @@ void InitPhysicsModelDialog(HWND hDlg) {  // was Sub45F670, VA 0x0045F670
     }
 
     if (model->rigidCount != 0) {
+#if !MMD_ORIGINAL_PROFILE
+        if (draft) app->state.selectedRigidIndex = 0;
+#endif
         ApplyBodyRecordToEdits(hDlg, 0);
+#if !MMD_ORIGINAL_PROFILE
+        if (draft && !draft->Current()) throw std::runtime_error("closed physics initialization");
+#endif
         app->state.selectedRigidIndex = 0;
     } else {
         ApplyBodyRecordToEdits(hDlg, -1);
+#if !MMD_ORIGINAL_PROFILE
+        if (draft && !draft->Current()) throw std::runtime_error("closed physics initialization");
+#endif
         app->state.selectedRigidIndex = -1;
     }
     if (firstJoint >= 0) {
+#if !MMD_ORIGINAL_PROFILE
+        if (draft) app->state.selectedJointIndex = firstJoint;
+#endif
         ApplyJointRecordToEdits(hDlg, firstJoint);
+#if !MMD_ORIGINAL_PROFILE
+        if (draft && !draft->Current()) throw std::runtime_error("closed physics initialization");
+#endif
         app->state.selectedJointIndex = firstJoint;
     } else {
         ApplyJointRecordToEdits(hDlg, -1);
+#if !MMD_ORIGINAL_PROFILE
+        if (draft && !draft->Current()) throw std::runtime_error("closed physics initialization");
+#endif
         app->state.selectedJointIndex = -1;
     }
 }
@@ -738,6 +1033,9 @@ void InitPhysicsModelDialog(HWND hDlg) {  // was Sub45F670, VA 0x0045F670
 // Defect B2-06.
 // ---------------------------------------------------------------------------
 void ReleasePhysicsEditScratch(MMDApp* app) {
+#if !MMD_ORIGINAL_PROFILE
+    if (auto draft = DraftFor(app)) { ClosePhysicsDraft(draft); return; }
+#endif
     if (app->state.rigidScratchArray != nullptr) {
         std::free(app->state.rigidScratchArray);
         app->state.rigidScratchArray = nullptr;
@@ -778,6 +1076,9 @@ void CollectBodyEdits(MMDApp* app) {  // was Sub41FF30, VA 0x0041FF30
     ReadEditFloat(GetDlgItem(hDlg, kRestitutionEdit), rb.restitution);
     ReadEditFloat(GetDlgItem(hDlg, kFrictionEdit), rb.friction);
 
+#if !MMD_ORIGINAL_PROFILE
+    if (!PhysicsTextChanged(GetDlgItem(hDlg, kGroupTextEdit))) return;
+#endif
     GetWindowTextA(GetDlgItem(hDlg, kGroupTextEdit), text, 100);
     std::uint16_t mask = 0;
     char* cursor = text;
@@ -870,18 +1171,36 @@ void CollectJointEdits(MMDApp* app) {  // was Sub4204F0, VA 0x004204F0
 
     ReadEditDegrees(GetDlgItem(hDlg, kAngUpperXEdit), jt.limits[6]);
     {   // 765: angular y - validated
+#if !MMD_ORIGINAL_PROFILE
+        if (PhysicsTextChanged(GetDlgItem(hDlg, kAngUpperYEdit))) {
+#endif
         GetWindowTextA(GetDlgItem(hDlg, kAngUpperYEdit), text, 10);
         float value = static_cast<float>(atof(text));
+#if !MMD_ORIGINAL_PROFILE
+        if (DraftFor(app, hDlg)) value = PhysicsNumericValue(GetDlgItem(hDlg, kAngUpperYEdit));
+#endif
         value = CheckYAngleLimit(hDlg, GetDlgItem(hDlg, kAngUpperYEdit), value);
         jt.limits[7] = value / 180.0f * kPiShort;
+#if !MMD_ORIGINAL_PROFILE
+        }
+#endif
     }
     ReadEditDegrees(GetDlgItem(hDlg, kAngUpperZEdit), jt.limits[8]);
     ReadEditDegrees(GetDlgItem(hDlg, kAngLowerXEdit), jt.limits[9]);
     {   // 764: angular y - validated
+#if !MMD_ORIGINAL_PROFILE
+        if (PhysicsTextChanged(GetDlgItem(hDlg, kAngLowerYEdit))) {
+#endif
         GetWindowTextA(GetDlgItem(hDlg, kAngLowerYEdit), text, 10);
         float value = static_cast<float>(atof(text));
+#if !MMD_ORIGINAL_PROFILE
+        if (DraftFor(app, hDlg)) value = PhysicsNumericValue(GetDlgItem(hDlg, kAngLowerYEdit));
+#endif
         value = CheckYAngleLimit(hDlg, GetDlgItem(hDlg, kAngLowerYEdit), value);
         jt.limits[10] = value / 180.0f * kPiShort;
+#if !MMD_ORIGINAL_PROFILE
+        }
+#endif
     }
     ReadEditDegrees(GetDlgItem(hDlg, kAngLowerZEdit), jt.limits[11]);
 
@@ -915,7 +1234,14 @@ void AddJoint(HWND hDlg) {  // was Sub43CA50, VA 0x0043CA50
     }
 
     int slot = 0;
-    while (slot < kMaxEditRecords && joints[slot].constraint >= 0)
+#if !MMD_ORIGINAL_PROFILE
+    const auto draft = DraftFor(app, hDlg);
+#endif
+    while (slot < kMaxEditRecords && (joints[slot].constraint >= 0
+#if !MMD_ORIGINAL_PROFILE
+        || (draft && static_cast<std::size_t>(slot) < draft->source.joints.size() && draft->source.joints[slot].constraint < 0)
+#endif
+        ))
         ++slot;
     if (slot == kMaxEditRecords) return;
 
@@ -966,6 +1292,18 @@ void UpdateShapeControls(HWND hDlg, int shape, int idx) {  // was Sub421CE0, VA 
     Rigid* bodies = EditBodies();
     char text[256];
 
+#if !MMD_ORIGINAL_PROFILE
+    if (DraftFor(app, hDlg) && LiveBodySlot(idx)) {
+        // The collector preserves an unchanged field by comparing its last
+        // host fill. Seed the hidden dimensions too: a sphere never showed
+        // Y/Z, but their empty resource captions are not user edits.
+        for (int axis = 0; axis < 3; ++axis) {
+            sprintf_s(text, sizeof text, "%3.2f", bodies[idx].size[axis]);
+            SetPhysicsTextA(GetDlgItem(hDlg, kSizeXEdit + axis), text);
+        }
+    }
+#endif
+
     if (shape == 0) {          // sphere: radius only
         CheckRadioButton(hDlg, kShapeSphereRadio, kShapeCapsuleRadio,
                          kShapeSphereRadio);
@@ -976,9 +1314,9 @@ void UpdateShapeControls(HWND hDlg, int shape, int idx) {  // was Sub421CE0, VA 
         ShowWindow(GetDlgItem(hDlg, kSizeZEdit), SW_HIDE);
         if (idx != -1) {
             sprintf_s(text, sizeof text, "%3.2f", bodies[idx].size[0]);
-            SetWindowTextA(GetDlgItem(hDlg, kSizeXEdit), text);
+            SetPhysicsTextA(GetDlgItem(hDlg, kSizeXEdit), text);
         } else {
-            SetWindowTextA(GetDlgItem(hDlg, kSizeXEdit), "");
+            SetPhysicsTextA(GetDlgItem(hDlg, kSizeXEdit), "");
         }
         return;
     }
@@ -994,11 +1332,11 @@ void UpdateShapeControls(HWND hDlg, int shape, int idx) {  // was Sub421CE0, VA 
         ShowWindow(GetDlgItem(hDlg, kSizeZEdit), SW_SHOW);
         if (idx >= 0 && idx < kMaxEditRecords) {
             sprintf_s(text, sizeof text, "%3.2f", bodies[idx].size[0]);
-            SetWindowTextA(GetDlgItem(hDlg, kSizeXEdit), text);
+            SetPhysicsTextA(GetDlgItem(hDlg, kSizeXEdit), text);
             sprintf_s(text, sizeof text, "%3.2f", bodies[idx].size[1]);
-            SetWindowTextA(GetDlgItem(hDlg, kSizeYEdit), text);
+            SetPhysicsTextA(GetDlgItem(hDlg, kSizeYEdit), text);
             sprintf_s(text, sizeof text, "%3.2f", bodies[idx].size[2]);
-            SetWindowTextA(GetDlgItem(hDlg, kSizeZEdit), text);
+            SetPhysicsTextA(GetDlgItem(hDlg, kSizeZEdit), text);
         }
         return;
     }
@@ -1013,9 +1351,9 @@ void UpdateShapeControls(HWND hDlg, int shape, int idx) {  // was Sub421CE0, VA 
     ShowWindow(GetDlgItem(hDlg, kSizeZEdit), SW_HIDE);
     if (idx >= 0 && idx < kMaxEditRecords) {
         sprintf_s(text, sizeof text, "%3.2f", bodies[idx].size[0]);
-        SetWindowTextA(GetDlgItem(hDlg, kSizeXEdit), text);
+        SetPhysicsTextA(GetDlgItem(hDlg, kSizeXEdit), text);
         sprintf_s(text, sizeof text, "%3.2f", bodies[idx].size[1]);
-        SetWindowTextA(GetDlgItem(hDlg, kSizeYEdit), text);
+        SetPhysicsTextA(GetDlgItem(hDlg, kSizeYEdit), text);
     }
 }
 
@@ -1024,6 +1362,9 @@ void UpdateShapeControls(HWND hDlg, int shape, int idx) {  // was Sub421CE0, VA 
 // control range (685..734 body, 735..799 joint) and hides the other.
 // ---------------------------------------------------------------------------
 void FlipPhysicsDialogPage(HWND hDlg, int bodyPage) {  // was Sub421C20, VA 0x00421C20
+#if !MMD_ORIGINAL_PROFILE
+    if (auto draft = DraftFor(g_Block, hDlg)) draft->app.state.physicsEditorJointPage = bodyPage ? 0 : 1;
+#endif
     if (bodyPage != 0) {
         for (int id = kJointPageFirst; id <= kJointPageLast; ++id)
             ShowWindow(GetDlgItem(hDlg, id), SW_HIDE);
@@ -1047,8 +1388,15 @@ void FlipPhysicsDialogPage(HWND hDlg, int bodyPage) {  // was Sub421C20, VA 0x00
 void PickPivotBone(HWND hDlg) {  // was Sub420DC0, VA 0x00420DC0
     MMDApp* app = g_Block;
     mdl::ModelRecord* model = mdl::Mdl(app->SelectedModel());
+#if !MMD_ORIGINAL_PROFILE
+    const auto draft = DraftFor(app, hDlg);
+    if (draft) model = draft->previewModel.get();
+#endif
     const int sel = static_cast<int>(
         SendMessageA(GetDlgItem(hDlg, kPivotBoneCombo), CB_GETCURSEL, 0, 0));
+#if !MMD_ORIGINAL_PROFILE
+    if (draft && !draft->Current()) return;
+#endif
     if (!LiveJointSlot(app->state.selectedJointIndex) || !model || !model->boneTable ||
         sel < 0 || static_cast<std::uint32_t>(sel) >= model->boneCount) return;
     Joint& jt = EditJoints()[app->state.selectedJointIndex];
@@ -1059,7 +1407,7 @@ void PickPivotBone(HWND hDlg) {  // was Sub420DC0, VA 0x00420DC0
     char text[256];
     for (int axis = 0; axis < 3; ++axis) {
         sprintf_s(text, sizeof text, "%5.4f", jt.position[axis]);
-        SetWindowTextA(GetDlgItem(hDlg, kJointPosXEdit + axis), text);
+        SetPhysicsTextA(GetDlgItem(hDlg, kJointPosXEdit + axis), text);
     }
 }
 
@@ -1079,12 +1427,12 @@ void ApplyBodyRecordToEdits(HWND hDlg, int idx) {  // was Sub43CCD0, VA 0x0043CC
     if (!LiveBodySlot(idx)) {
         for (int id = kBodyNameEdit; id <= kBoneAlignCheckbox; ++id)
             EnableWindow(GetDlgItem(hDlg, id), FALSE);
-        SetWindowTextA(GetDlgItem(hDlg, kBodyNameEdit), "");
+        SetPhysicsTextA(GetDlgItem(hDlg, kBodyNameEdit), "");
         SendMessageA(GetDlgItem(hDlg, kBoneCombo), CB_SETCURSEL, 1, 0);
         SendMessageA(GetDlgItem(hDlg, kGroupCombo), CB_SETCURSEL, 0, 0);
         UpdateShapeControls(hDlg, 0, -1);
         for (int id = kPosXEdit; id <= kFrictionEdit; ++id)
-            SetWindowTextA(GetDlgItem(hDlg, id), "");
+            SetPhysicsTextA(GetDlgItem(hDlg, id), "");
         CheckRadioButton(hDlg, kPhysicalRadio, kBoneFollowRadio,
                          kBoneFollowRadio);
         return;
@@ -1100,21 +1448,21 @@ void ApplyBodyRecordToEdits(HWND hDlg, int idx) {  // was Sub43CCD0, VA 0x0043CC
 
     for (int axis = 0; axis < 3; ++axis) {
         sprintf_s(text, sizeof text, "%3.2f", rb.position[axis]);
-        SetWindowTextA(GetDlgItem(hDlg, kPosXEdit + axis), text);
+        SetPhysicsTextA(GetDlgItem(hDlg, kPosXEdit + axis), text);
         sprintf_s(text, sizeof text, "%3.2f",
                   rb.rotation[axis] / kPiShort * 180.0f);
-        SetWindowTextA(GetDlgItem(hDlg, kRotXEdit + axis), text);
+        SetPhysicsTextA(GetDlgItem(hDlg, kRotXEdit + axis), text);
     }
     sprintf_s(text, sizeof text, "%4.3f", rb.mass);
-    SetWindowTextA(GetDlgItem(hDlg, kMassEdit), text);
+    SetPhysicsTextA(GetDlgItem(hDlg, kMassEdit), text);
     sprintf_s(text, sizeof text, "%4.3f", rb.linearDamping);
-    SetWindowTextA(GetDlgItem(hDlg, kLinDampEdit), text);
+    SetPhysicsTextA(GetDlgItem(hDlg, kLinDampEdit), text);
     sprintf_s(text, sizeof text, "%4.3f", rb.angularDamping);
-    SetWindowTextA(GetDlgItem(hDlg, kAngDampEdit), text);
+    SetPhysicsTextA(GetDlgItem(hDlg, kAngDampEdit), text);
     sprintf_s(text, sizeof text, "%4.3f", rb.restitution);
-    SetWindowTextA(GetDlgItem(hDlg, kRestitutionEdit), text);
+    SetPhysicsTextA(GetDlgItem(hDlg, kRestitutionEdit), text);
     sprintf_s(text, sizeof text, "%4.3f", rb.friction);
-    SetWindowTextA(GetDlgItem(hDlg, kFrictionEdit), text);
+    SetPhysicsTextA(GetDlgItem(hDlg, kFrictionEdit), text);
 
     // group list text: "1 5 9 " for every set collision-mask bit
     text[0] = '\0';
@@ -1124,7 +1472,7 @@ void ApplyBodyRecordToEdits(HWND hDlg, int idx) {  // was Sub43CCD0, VA 0x0043CC
         if ((rb.noCollapse & (1u << bit)) != 0)
             strcat_s(text, sizeof text, group);
     }
-    SetWindowTextA(GetDlgItem(hDlg, kGroupTextEdit), text);
+    SetPhysicsTextA(GetDlgItem(hDlg, kGroupTextEdit), text);
 
     if (rb.mode != 0) {
         CheckRadioButton(hDlg, kPhysicalRadio, kBoneFollowRadio,
@@ -1161,7 +1509,7 @@ void ApplyJointRecordToEdits(HWND hDlg, int idx) {  // was Sub4214A0, VA 0x00421
         SendMessageA(GetDlgItem(hDlg, kPivotBoneCombo), CB_SETCURSEL, -1, 0);
         SetWindowTextW(GetDlgItem(hDlg, kJointNameEdit), L"");
         for (int id = kJointPosXEdit; id <= kAngUpperZEdit; ++id)
-            SetWindowTextA(GetDlgItem(hDlg, id), "");
+            SetPhysicsTextA(GetDlgItem(hDlg, id), "");
         return;
     }
 
@@ -1176,10 +1524,10 @@ void ApplyJointRecordToEdits(HWND hDlg, int idx) {  // was Sub4214A0, VA 0x00421
 
     for (int axis = 0; axis < 3; ++axis) {
         sprintf_s(text, sizeof text, "%5.4f", jt.position[axis]);
-        SetWindowTextA(GetDlgItem(hDlg, kJointPosXEdit + axis), text);
+        SetPhysicsTextA(GetDlgItem(hDlg, kJointPosXEdit + axis), text);
         sprintf_s(text, sizeof text, "%3.2f",
                   jt.rotation[axis] / kPiShort * 180.0f);
-        SetWindowTextA(GetDlgItem(hDlg, kJointRotXEdit + axis), text);
+        SetPhysicsTextA(GetDlgItem(hDlg, kJointRotXEdit + axis), text);
     }
     // linear upper (757/759/761), linear lower (747/758/760)
     const int kLinearUpperEdits[3] = {kLinUpperXEdit, kLinUpperYEdit,
@@ -1188,9 +1536,9 @@ void ApplyJointRecordToEdits(HWND hDlg, int idx) {  // was Sub4214A0, VA 0x00421
                                       kLinLowerZEdit};
     for (int axis = 0; axis < 3; ++axis) {
         sprintf_s(text, sizeof text, "%3.2f", jt.limits[axis]);
-        SetWindowTextA(GetDlgItem(hDlg, kLinearUpperEdits[axis]), text);
+        SetPhysicsTextA(GetDlgItem(hDlg, kLinearUpperEdits[axis]), text);
         sprintf_s(text, sizeof text, "%3.2f", jt.limits[3 + axis]);
-        SetWindowTextA(GetDlgItem(hDlg, kLinearLowerEdits[axis]), text);
+        SetPhysicsTextA(GetDlgItem(hDlg, kLinearLowerEdits[axis]), text);
     }
     // angular upper (763/765/767), angular lower (762/764/766) - degrees
     const int kAngUpperEdits[3] = {kAngUpperXEdit, kAngUpperYEdit,
@@ -1200,17 +1548,17 @@ void ApplyJointRecordToEdits(HWND hDlg, int idx) {  // was Sub4214A0, VA 0x00421
     for (int axis = 0; axis < 3; ++axis) {
         sprintf_s(text, sizeof text, "%3.2f",
                   jt.limits[6 + axis] / kPiShort * 180.0f);
-        SetWindowTextA(GetDlgItem(hDlg, kAngUpperEdits[axis]), text);
+        SetPhysicsTextA(GetDlgItem(hDlg, kAngUpperEdits[axis]), text);
         sprintf_s(text, sizeof text, "%3.2f",
                   jt.limits[9 + axis] / kPiShort * 180.0f);
-        SetWindowTextA(GetDlgItem(hDlg, kAngLowerEdits[axis]), text);
+        SetPhysicsTextA(GetDlgItem(hDlg, kAngLowerEdits[axis]), text);
     }
     // spring linear (748..750), spring angular (751..753)
     for (int axis = 0; axis < 3; ++axis) {
         sprintf_s(text, sizeof text, "%3.2f", jt.springs[axis]);
-        SetWindowTextA(GetDlgItem(hDlg, kSpringLinXEdit + axis), text);
+        SetPhysicsTextA(GetDlgItem(hDlg, kSpringLinXEdit + axis), text);
         sprintf_s(text, sizeof text, "%3.2f", jt.springs[3 + axis]);
-        SetWindowTextA(GetDlgItem(hDlg, kSpringAngXEdit + axis), text);
+        SetPhysicsTextA(GetDlgItem(hDlg, kSpringAngXEdit + axis), text);
     }
 }
 
@@ -1462,14 +1810,26 @@ void CommitPhysicsEdits(HWND hDlg) {  // was Sub4220F0, VA 0x004220F0
 //   dirty flag
 //   id 2 (Cancel): seek+re-eval, free, close, re-enable
 // ---------------------------------------------------------------------------
-INT_PTR CALLBACK PhysicsModelDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam) {  // was Sub465020, VA 0x00465020
+static INT_PTR PhysicsModelDlgProcImpl(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam) {  // was Sub465020, VA 0x00465020
     MMDApp* app = g_Block;
+#if !MMD_ORIGINAL_PROFILE
+    const auto controlled = DraftFor(app, hDlg);
+    const auto continued = [&]() noexcept { return !controlled || controlled->Current(); };
+#endif
     if (msg == WM_INITDIALOG) {
         LocalizeChineseDialog(app, hDlg);
         if (app->state.floatingWindow != 0)
             SetWindowPos(hDlg, HWND_TOPMOST, 0, 0, 0, 0,
                          SWP_NOSIZE | SWP_NOMOVE);  // x64 0x7FF7CB4AE84E: or rdx,-1, flags 3
         HWND nameEdit = GetDlgItem(hDlg, kBodyNameEdit);
+#if !MMD_ORIGINAL_PROFILE
+        if (DraftFor(app, hDlg)) {
+            if (!nameEdit || !IsWindowUnicode(nameEdit) || !GetDlgItem(hDlg, IDOK) || !GetDlgItem(hDlg, IDCANCEL))
+                throw std::runtime_error("physics dialog controls");
+            SendMessageW(nameEdit, EM_SETLIMITTEXT, 0, 0);
+            SendDlgItemMessageW(hDlg, kJointNameEdit, EM_SETLIMITTEXT, 0, 0);
+        }
+#endif
         app->FrameCopyEditProc() = reinterpret_cast<WNDPROC>(
             GetWindowLongPtrW(nameEdit, GWLP_WNDPROC));
         SetWindowLongPtrW(nameEdit, GWLP_WNDPROC,
@@ -1489,7 +1849,10 @@ INT_PTR CALLBACK PhysicsModelDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
         return 0;
 
     // dirty write: the dialog deliberately invalidates the cached time
-    app->state.timeNowHigh = 1;
+#if !MMD_ORIGINAL_PROFILE
+    if (!DraftFor(app, hDlg))
+#endif
+        app->state.timeNowHigh = 1;
 
     const HWND hCtrl = reinterpret_cast<HWND>(lParam);
     Rigid* bodies = EditBodies();
@@ -1506,10 +1869,16 @@ INT_PTR CALLBACK PhysicsModelDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
     switch (LOWORD(wParam)) {
     case 0x2AD:  // add body
         CollectBodyEdits(app);
+#if !MMD_ORIGINAL_PROFILE
+        if (!continued()) return 1;
+#endif
         AddRigidBody(hDlg);
         return 0;
     case 0x2DF:  // add joint
         CollectJointEdits(app);
+#if !MMD_ORIGINAL_PROFILE
+        if (!continued()) return 1;
+#endif
         AddJoint(hDlg);
         return 0;
     case 0x2C2: {  // delete body (also deletes its joints)
@@ -1517,6 +1886,9 @@ INT_PTR CALLBACK PhysicsModelDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
             SendMessageA(GetDlgItem(hDlg, kBodyListCombo), CB_GETCURSEL, 0, 0));
         const int deleted = BodySlotForCombo(sel);
         if (deleted < 0) return 0;
+#if !MMD_ORIGINAL_PROFILE
+        if (controlled && static_cast<std::size_t>(deleted) < controlled->originalBodies.size()) controlled->originalBodies[deleted] = false;
+#endif
         // A later new body may reuse this slot. A previously copied joint
         // must not acquire the replacement body by an old numeric endpoint.
         if (s_jointCopyScratch.rigidA == deleted) s_jointCopyScratch.rigidA = -1;
@@ -1524,6 +1896,9 @@ INT_PTR CALLBACK PhysicsModelDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
         SendMessageA(GetDlgItem(hDlg, kBodyListCombo), CB_DELETESTRING, sel, 0);
         SendMessageA(GetDlgItem(hDlg, kBodyACombo), CB_DELETESTRING, sel, 0);
         SendMessageA(GetDlgItem(hDlg, kBodyBCombo), CB_DELETESTRING, sel, 0);
+#if !MMD_ORIGINAL_PROFILE
+        if (!continued()) return 1;
+#endif
         for (int i = 0; i < kMaxEditRecords; ++i) {
             if (joints[i].constraint >= 0 &&
                 (joints[i].rigidA == deleted || joints[i].rigidB == deleted)) {
@@ -1539,6 +1914,9 @@ INT_PTR CALLBACK PhysicsModelDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
         for (int n = 0; n < kMaxEditRecords; ++n)
             if (BodyComboIndex(bodies[n]) > sel)
                 SetBodyComboIndex(bodies[n], BodyComboIndex(bodies[n]) - 1);
+#if !MMD_ORIGINAL_PROFILE
+        if (!continued()) return 1;
+#endif
         app->state.selectedRigidIndex = BodySlotForCombo(0);
         SendMessageA(GetDlgItem(hDlg, kBodyListCombo), CB_SETCURSEL, 0, 0);
         ApplyBodyRecordToEdits(hDlg, app->state.selectedRigidIndex);
@@ -1553,6 +1931,9 @@ INT_PTR CALLBACK PhysicsModelDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
         const int deleted = JointSlotForCombo(sel);
         if (deleted < 0) return 0;
         SendMessageA(GetDlgItem(hDlg, kJointListCombo), CB_DELETESTRING, sel, 0);
+#if !MMD_ORIGINAL_PROFILE
+        if (!continued()) return 1;
+#endif
         joints[deleted].constraint = -1;
         for (int i = 0; i < kMaxEditRecords; ++i)
             if (joints[i].constraint > sel)
@@ -1564,6 +1945,9 @@ INT_PTR CALLBACK PhysicsModelDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
     }
     case 0x2D4:  // copy body
         CollectBodyEdits(app);
+#if !MMD_ORIGINAL_PROFILE
+        if (!continued()) return 1;
+#endif
         std::memcpy(&s_bodyCopyScratch, &bodies[app->state.selectedRigidIndex],
                     sizeof(Rigid));
         return 0;
@@ -1588,6 +1972,9 @@ INT_PTR CALLBACK PhysicsModelDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
     }
     case 0x2E2:  // copy joint
         CollectJointEdits(app);
+#if !MMD_ORIGINAL_PROFILE
+        if (!continued()) return 1;
+#endif
         std::memcpy(&s_jointCopyScratch, &joints[app->state.selectedJointIndex],
                     sizeof(Joint));
         return 0;
@@ -1667,7 +2054,18 @@ INT_PTR CALLBACK PhysicsModelDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
             // the newly committed physics records before returning to main.
             CollectBodyEdits(app);
             CollectJointEdits(app);
+#if !MMD_ORIGINAL_PROFILE
+            if (!continued()) return 1;
+#endif
             if (!ValidatePhysicsEdits(hDlg)) return 1;
+#if !MMD_ORIGINAL_PROFILE
+            if (controlled) {
+                if (controlled->composing) return 1;
+                const auto result = ConfirmPhysicsDraft(hDlg, controlled);
+                if (result) runtime_log::Write("PLUGIN_ABI physics model confirmation refused: %d", result);
+                return 1;
+            }
+#endif
             CommitPhysicsEdits(hDlg);
             SeekSelectedModelToCurrentFrame(app);   // 0x4220C0 = x64 sub_7FF7CB4B3D00
             app->PhysicsResetPending() = 1;
@@ -1689,6 +2087,9 @@ INT_PTR CALLBACK PhysicsModelDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
             return 1;
         }
         if (LOWORD(wParam) == 2) {
+#if !MMD_ORIGINAL_PROFILE
+            if (auto draft = DraftFor(app, hDlg)) { ClosePhysicsDraft(draft); return 1; }
+#endif
             // Cancel: seek, close (the editor arrays are simply dropped)
             SeekSelectedModelToCurrentFrame(app);   // 0x4220C0 corresponds to x64 sub_7FF7CB4B3D00
             ReleasePhysicsEditScratch(app);
@@ -1704,8 +2105,14 @@ INT_PTR CALLBACK PhysicsModelDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
     if (hCtrl == GetDlgItem(hDlg, kBodyListCombo)) {
         // body list selection
         CollectBodyEdits(app);
+#if !MMD_ORIGINAL_PROFILE
+        if (!continued()) return 1;
+#endif
         const int sel = static_cast<int>(
             SendMessageA(GetDlgItem(hDlg, kBodyListCombo), CB_GETCURSEL, 0, 0));
+#if !MMD_ORIGINAL_PROFILE
+        if (!continued()) return 1;
+#endif
         app->state.selectedRigidIndex = BodySlotForCombo(sel);
         ApplyBodyRecordToEdits(hDlg, app->state.selectedRigidIndex);
         return 0;
@@ -1713,8 +2120,14 @@ INT_PTR CALLBACK PhysicsModelDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
     if (hCtrl == GetDlgItem(hDlg, kJointListCombo)) {
         // joint list selection
         CollectJointEdits(app);
+#if !MMD_ORIGINAL_PROFILE
+        if (!continued()) return 1;
+#endif
         const int sel = static_cast<int>(
             SendMessageA(GetDlgItem(hDlg, kJointListCombo), CB_GETCURSEL, 0, 0));
+#if !MMD_ORIGINAL_PROFILE
+        if (!continued()) return 1;
+#endif
         app->state.selectedJointIndex = JointSlotForCombo(sel);
         ApplyJointRecordToEdits(hDlg, app->state.selectedJointIndex);
         return 0;
@@ -1756,6 +2169,273 @@ INT_PTR CALLBACK PhysicsModelDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
         return 0;
     }
     return 0;
+}
+
+#if !MMD_ORIGINAL_PROFILE
+namespace {
+void ClosePhysicsDraft(const std::shared_ptr<PhysicsDialogDraft>& draft) noexcept {
+    if (!draft) return;
+    draft->closing = true;
+    FinishPhysicsDraftInteraction(&draft->app);
+    if (draft->window && IsWindow(draft->window)) DestroyWindow(draft->window);
+    draft->Release();
+    if (physicsDraft == draft) physicsDraft.reset();
+    // Take() may already have consumed the plan. Clearing its auxiliary
+    // geometry consequently cannot depend on draft.Current().
+    RetirePhysicsDraftPreview(*draft);
+}
+plugins::PhysicsDraftNames DraftNames(const plugins::PhysicsDraftNames* original,
+                                     const wchar_t* jp, const wchar_t* en) {
+    plugins::PhysicsDraftNames result;
+    const wchar_t* pointers[2] = {jp, en};
+    for (unsigned language = 0; language < 2; ++language) if (pointers[language]) {
+        if (!original || (*original)[language].empty() || pointers[language] != (*original)[language].data())
+            throw std::invalid_argument("foreign physics draft name");
+        result[language] = (*original)[language];
+    }
+    return result;
+}
+MmsResult ConfirmPhysicsDraft(HWND, const std::shared_ptr<PhysicsDialogDraft>& s) {
+    if (!s->Current()) {
+        runtime_log::Trace("PLUGIN_ABI physics confirmation stage=current result=%d", MMS_E_STALE);
+        return MMS_E_STALE;
+    }
+    runtime_log::Trace("PLUGIN_ABI physics confirmation stage=compact begin");
+    plugins::ModelPhysicsDraft value;
+    std::vector<int> compact(kMaxEditRecords, -1);
+    for (int slot = 0; slot < kMaxEditRecords; ++slot) if (BodyComboIndex(s->bodies[slot]) >= 0) {
+        auto record = s->bodies[slot];
+        compact[slot] = static_cast<int>(value.rigids.size());
+        value.rigidNames.push_back(DraftNames(static_cast<std::size_t>(slot) < s->source.rigidNames.size()
+            ? &s->source.rigidNames[slot] : nullptr, record.jpText, record.enText));
+        record.jpText = record.enText = nullptr; record.body = record.keyData = nullptr;
+        record.noCollapse = static_cast<std::uint16_t>(~record.noCollapse);
+        value.rigids.push_back(record);
+    }
+    for (int slot = 0; slot < kMaxEditRecords; ++slot) {
+        const bool disabled = static_cast<std::size_t>(slot) < s->source.joints.size() && s->source.joints[slot].constraint < 0;
+        if (disabled) {
+            auto record = s->source.joints[slot];
+            const auto endpoint = [&](int old) {
+                if (old < 0) return old;
+                if (static_cast<std::size_t>(old) < s->originalBodies.size())
+                    return s->originalBodies[old] ? compact[old] : -1;
+                return static_cast<std::size_t>(old) < value.rigids.size() ? -1 : old;
+            };
+            record.rigidA = endpoint(record.rigidA); record.rigidB = endpoint(record.rigidB);
+            record.jpText = record.enText = nullptr; record.constraint = -1;
+            value.joints.push_back(record); value.jointNames.push_back(s->source.jointNames[slot]);
+            continue;
+        }
+        if (s->joints[slot].constraint < 0) continue;
+        auto record = s->joints[slot];
+        if (record.rigidA < 0 || record.rigidB < 0 || record.rigidA >= kMaxEditRecords ||
+            record.rigidB >= kMaxEditRecords || compact[record.rigidA] < 0 || compact[record.rigidB] < 0)
+            return MMS_E_ARGUMENT;
+        value.jointNames.push_back(DraftNames(static_cast<std::size_t>(slot) < s->source.jointNames.size()
+            ? &s->source.jointNames[slot] : nullptr, record.jpText, record.enText));
+        record.jpText = record.enText = nullptr; record.constraint = 0;
+        record.rigidA = compact[record.rigidA]; record.rigidB = compact[record.rigidB];
+        value.joints.push_back(record);
+    }
+    if (const auto r = s->plan.Set(value)) {
+        runtime_log::Trace("PLUGIN_ABI physics confirmation stage=set result=%d", r);
+        return r;
+    }
+    runtime_log::Trace("PLUGIN_ABI physics confirmation stage=set result=0 rigids=%llu joints=%llu",
+        static_cast<unsigned long long>(value.rigids.size()), static_cast<unsigned long long>(value.joints.size()));
+    std::shared_ptr<plugins::HistoryChange> change;
+    if (const auto r = s->plan.Take(change)) {
+        runtime_log::Trace("PLUGIN_ABI physics confirmation stage=take result=%d", r);
+        return r;
+    }
+    runtime_log::Trace("PLUGIN_ABI physics confirmation stage=take result=0 changed=%d", int(bool(change)));
+    const auto history = s->history;
+    ClosePhysicsDraft(s);
+    if (!change) return MMS_OK;
+    if (plugins::BoundNativePoseGeneration(&s->app) != s->binding || plugins::BoundNativePoseHistory(&s->app) != history) {
+        runtime_log::Trace("PLUGIN_ABI physics confirmation stage=closed-binding result=%d", MMS_E_STALE);
+        return MMS_E_STALE;
+    }
+    const auto result = history ? plugins::CommitBoundModelPhysics(s->app, *history, std::move(change))
+                                : plugins::CommitUnboundModelPhysics(s->app, std::move(change));
+    runtime_log::Trace("PLUGIN_ABI physics confirmation stage=commit bound=%d result=%d", int(history != nullptr), result);
+    return result;
+}
+}
+
+namespace plugins {
+bool BoundPhysicsModelDraft(const MMDApp* app) noexcept { return bool(DraftFor(app)); }
+// A view-only frozen copy keeps debug drawing independent from the author's
+// live bones. No temporary neutral pose is installed in the scene.
+bool PhysicsDraftPreviewBone(const MMDApp* app, int index, float position[3], float matrix[16]) noexcept {
+    const auto s = DraftFor(app);
+    if (!s || !s->Current() || s->previewBones.empty()) return false;
+    if (index < 0 || static_cast<std::size_t>(index) >= s->previewBones.size()) index = 0;
+    const auto& bone = s->previewBones[static_cast<std::size_t>(index)];
+    std::memcpy(position, bone.position, sizeof bone.position); std::memcpy(matrix, bone.matInit, sizeof bone.matInit);
+    return true;
+}
+bool PhysicsDraftPreviewCurrent(const MMDApp* app) noexcept {
+    const auto s = DraftFor(app); return s && s->Current() && s->bodies && s->joints;
+}
+void PhysicsDraftFieldFilled(MMDApp* app, HWND field) {
+    if (DraftFor(app, GetParent(field))) RememberPhysicsText(field);
+}
+bool StepPhysicsModelDraft(MMDApp* app) noexcept {
+    auto s = DraftFor(app); if (!s) return false;
+    PhysicsDialogCall call(s);
+    const auto result = Boundary([&]() -> MmsResult {
+        if (!s->Current()) return MMS_E_STALE;
+        const int mode = static_cast<int>(app->InteractionDragMode());
+        if (!((mode >= 4 && mode <= 6) || (mode >= 10 && mode <= 12))) return MMS_OK;
+        bool changed = false;
+        if (app->state.physicsEditorJointPage) {
+            const int slot = app->state.selectedJointIndex;
+            if (!LiveJointSlot(slot)) return MMS_OK;
+            Joint before; std::memcpy(&before, &s->joints[slot], sizeof before);
+            BoneEditModes(app);
+            if (!s->Current()) return MMS_E_STALE;
+            changed = std::memcmp(&before, &s->joints[slot], sizeof before) != 0;
+        } else {
+            const int slot = app->state.selectedRigidIndex;
+            if (!LiveBodySlot(slot)) return MMS_OK;
+            Rigid before; std::memcpy(&before, &s->bodies[slot], sizeof before);
+            BoneEditModes(app);
+            if (!s->Current()) return MMS_E_STALE;
+            changed = std::memcmp(&before, &s->bodies[slot], sizeof before) != 0;
+        }
+        if (changed) RequestPhysicsDraftPreview(*app);
+        return MMS_OK;
+    });
+    if (result) ClosePhysicsDraft(s);
+    return true;
+}
+bool TryEditBoundModelPhysics(MMDApp* app, void* ownerWindow) noexcept {
+    if (!app) return false;
+    if (physicsDraft) return true;
+    const auto result = Boundary([&]() -> MmsResult {
+        if (g_Block != app || app->state.optflag[0] != 0 || !app->SelectedModel() || app->state.frameCopyDialog ||
+            app->state.rigidScratchArray || app->state.jointScratchArray) return MMS_E_BUSY;
+        auto s = std::make_shared<PhysicsDialogDraft>(*app);
+        if (const auto r = s->plan.Begin(*app, app->SelectedModelSlot())) return r;
+        if (const auto r = s->plan.Read(s->source)) return r;
+        s->originalBodies.assign(s->source.rigids.size(), true);
+        if (s->source.rigids.size() > kMaxEditRecords || s->source.joints.size() > kMaxEditRecords ||
+            s->source.rigidNames.size() != s->source.rigids.size() || s->source.jointNames.size() != s->source.joints.size())
+            return MMS_E_ARGUMENT;
+        const auto& m = *mdl::Mdl(s->object);
+        if (m.rigidCount != s->source.rigids.size() || m.jointCount != s->source.joints.size() ||
+            (m.boneCount && !m.boneTable)) return MMS_E_STALE;
+        if (m.boneCount) s->previewBones.assign(m.boneTable, m.boneTable + m.boneCount);
+        for (const auto& bone : s->previewBones)
+            s->boneLabels.push_back(text_encoding::BoneLabel(bone, UiUsesEnglishNames(app->EnglishUI())));
+        s->previewModel = std::make_unique<mdl::ModelRecord>();
+        s->previewModel->rigidCount = static_cast<unsigned>(s->source.rigids.size());
+        s->previewModel->jointCount = static_cast<unsigned>(s->source.joints.size());
+        s->previewModel->boneCount = static_cast<unsigned>(s->previewBones.size());
+        s->previewModel->boneTable = s->previewBones.data();
+        s->previewModel->rigidTable = s->source.rigids.data(); s->previewModel->jointTable = s->source.joints.data();
+        for (std::size_t i = 0; i < s->source.rigids.size(); ++i) {
+            auto& r = s->source.rigids[i]; auto& n = s->source.rigidNames[i];
+            r.jpText = n[0].empty() ? nullptr : n[0].data(); r.enText = n[1].empty() ? nullptr : n[1].data();
+        }
+        for (std::size_t i = 0; i < s->source.joints.size(); ++i) {
+            auto& r = s->source.joints[i]; auto& n = s->source.jointNames[i];
+            r.jpText = n[0].empty() ? nullptr : n[0].data(); r.enText = n[1].empty() ? nullptr : n[1].data();
+        }
+        s->bodies = static_cast<Rigid*>(std::calloc(kMaxEditRecords, sizeof(Rigid)));
+        s->joints = static_cast<Joint*>(std::calloc(kMaxEditRecords, sizeof(Joint)));
+        if (!s->bodies || !s->joints) return MMS_E_MEMORY;
+        s->oldModelEnabled = IsWindowEnabled(GetDlgItem(app->MainWindow(), panel::kMainComboModel)) != FALSE;
+        s->oldPlayEnabled = IsWindowEnabled(GetDlgItem(app->MainWindow(), panel::kPlayButton)) != FALSE;
+        physicsDraft = s;
+        app->state.rigidScratchArray = s->bodies; app->state.jointScratchArray = s->joints; s->attached = true;
+        EnableWindow(GetDlgItem(app->MainWindow(), panel::kMainComboModel), FALSE);
+        const HWND window = CreateUiDialogParamW(static_cast<HINSTANCE>(app->HInstance()),
+            MAKEINTRESOURCEW(app->EnglishUI() ? 0x2AC : 0x2AB), static_cast<HWND>(ownerWindow), PhysicsModelDlgProc,
+            reinterpret_cast<LPARAM>(s.get()));
+        if (!window || !IsWindow(window) || s->closing) { ClosePhysicsDraft(s); return MMS_E_FAILED; }
+        s->window = window; app->state.frameCopyDialog = window;
+        ShowWindow(window, SW_SHOW); UpdateWindow(window);
+        if (s->Current()) RequestPhysicsDraftPreview(*app);
+        return MMS_OK;
+    });
+    if (result) {
+        if (auto s = DraftFor(app)) ClosePhysicsDraft(s);
+        runtime_log::Write("PLUGIN_ABI physics model editor refused: %d", result);
+    }
+    return true;
+}
+}
+#endif
+
+LRESULT CALLBACK PhysicsEditSubclassProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+#if !MMD_ORIGINAL_PROFILE
+    auto s = physicsDraft;
+    if (s && s->window == GetParent(hWnd)) {
+        PhysicsDialogCall call(s);
+        if (msg == WM_NCDESTROY) return CallWindowProcW(s->app.FrameCopyEditProc(), hWnd, msg, wParam, lParam);
+        if (s->closing) return CallWindowProcW(s->app.FrameCopyEditProc(), hWnd, msg, wParam, lParam);
+        if (msg == WM_IME_STARTCOMPOSITION) s->composing = hWnd;
+        if (msg == WM_IME_ENDCOMPOSITION && s->composing == hWnd) s->composing = nullptr;
+        if (msg == WM_GETDLGCODE && (wParam == VK_RETURN || s->composing == hWnd))
+            return CallWindowProcW(s->app.FrameCopyEditProc(), hWnd, msg, wParam, lParam) | DLGC_WANTALLKEYS;
+        if (msg == WM_KEYDOWN && wParam == VK_RETURN && s->composing) return 0;
+        if (msg == WM_KEYDOWN && wParam == VK_ESCAPE && !s->composing) { ClosePhysicsDraft(s); return 0; }
+        if (msg == WM_CHAR && (wParam == L'\r' || wParam == L'\n')) return 0;
+        LRESULT answer = 0;
+        const auto result = plugins::Boundary([&]() -> MmsResult {
+            if (!s->Current()) return MMS_E_STALE;
+            answer = PhysicsEditSubclassProcImpl(hWnd, msg, wParam, lParam); return MMS_OK;
+        });
+        if (result) ClosePhysicsDraft(s);
+        else if (msg == WM_KEYDOWN && wParam == VK_RETURN && !s->composing && s->Current())
+            RequestPhysicsDraftPreview(s->app);
+        return answer;
+    }
+#endif
+    return PhysicsEditSubclassProcImpl(hWnd, msg, wParam, lParam);
+}
+
+INT_PTR CALLBACK PhysicsModelDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam) {
+#if !MMD_ORIGINAL_PROFILE
+    auto s = physicsDraft;
+    if (s && s->window && s->window != hDlg) s.reset();
+    if (s) {
+        PhysicsDialogCall call(s);
+        if (msg == WM_INITDIALOG) { s->window = hDlg; s->app.state.frameCopyDialog = hDlg; }
+        if (msg == WM_NCDESTROY) {
+            s->closing = s->retired = true; s->Release(); if (physicsDraft == s) physicsDraft.reset();
+            RetirePhysicsDraftPreview(*s); return 0;
+        }
+        if (msg == WM_DESTROY) {
+            s->closing = true; FinishPhysicsDraftInteraction(&s->app);
+            RetirePhysicsDraftPreview(*s); return 0;
+        }
+        if (msg == WM_CLOSE || (msg == WM_SYSCOMMAND && (wParam & 0xfff0) == SC_CLOSE)) {
+            ClosePhysicsDraft(s); return 1;
+        }
+        if (msg == WM_KEYDOWN && wParam == VK_ESCAPE && !s->composing) { ClosePhysicsDraft(s); return 1; }
+        if (s->closing) return 0;
+        INT_PTR answer = 0;
+        const auto result = plugins::Boundary([&]() -> MmsResult {
+            if (!s->Current()) return MMS_E_STALE;
+            if (msg == WM_COMMAND && LOWORD(wParam) == IDOK && s->composing) { answer = 1; return MMS_OK; }
+            answer = PhysicsModelDlgProcImpl(hDlg, msg, wParam, lParam); return MMS_OK;
+        });
+        if (result) {
+            runtime_log::Write("PLUGIN_ABI physics model dialog failed: %d", result);
+            runtime_log::Trace("PLUGIN_ABI physics model dialog failed message=%u control=%u result=%d",
+                msg, unsigned(LOWORD(wParam)), result);
+            ClosePhysicsDraft(s);
+        }
+        else if (msg == WM_COMMAND && !s->composing && PhysicsDraftPreviewCommand(wParam) && s->Current())
+            RequestPhysicsDraftPreview(s->app);
+        return answer;
+    }
+#endif
+    return PhysicsModelDlgProcImpl(hDlg, msg, wParam, lParam);
 }
 
 }  // namespace mikumikustudio

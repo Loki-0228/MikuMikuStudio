@@ -60,12 +60,17 @@
 #include "../plugins/native_camera_hud_history.hpp"
 #include "../plugins/native_accessory_hud_history.hpp"
 #include "../plugins/native_model_hud_history.hpp"
+#include "../plugins/native_model_physics.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "../plugins/native_history_commands.hpp"
 #include "../plugins/native_global_commands.hpp"
 #endif
 
 namespace mikumikustudio {
+#if !MMD_ORIGINAL_PROFILE
+void FinishPhysicsDraftInteraction(MMDApp*) noexcept;
+namespace plugins { bool StepPhysicsModelDraft(MMDApp*) noexcept; }
+#endif
 
 // Exact doubles from the original image.  These stay double until the final
 // store, matching the x87 instruction stream at 0x470E4B..0x470EDF.
@@ -659,6 +664,17 @@ void DragBackground(MMDApp* app, bool zoom, int dx, int dy) {
 
 void BeginOrEndViewportToolDrag(MMDApp* app, int operation) {
 #if !MMD_ORIGINAL_PROFILE
+    if (plugins::BoundPhysicsModelDraft(app)) {
+        if (app->LeftMouseButtonState() == 1) {
+            // The six native axis buttons manipulate the private physics
+            // records. They never open a bone/camera history gesture.
+            if (operation < 9 || operation > 14) return;
+            g_viewportPressHandled = true;
+            BeginCenteredDrag(app, operation);
+            app->InteractionDragMode() = static_cast<ViewportDragMode>(operation < 12 ? operation - 5 : operation - 2);
+        } else if (app->LeftMouseButtonState() == 2) FinishPhysicsDraftInteraction(app);
+        return;
+    }
     try {
     // Native pose axes and scale use one complete prepared HUD gesture.
     if (plugins::BoundNativePoseHistory(app) && app->LeftMouseButtonState() == 1 &&
@@ -856,6 +872,15 @@ void BeginOrEndViewportToolDrag(MMDApp* app, int operation) {
 }  // namespace
 
 #if !MMD_ORIGINAL_PROFILE
+void FinishPhysicsDraftInteraction(MMDApp* app) noexcept {
+    const int operation = static_cast<int>(app->ViewToolDragOperation());
+    if (operation >= 9 && operation <= 14) RestoreViewportToolCursor(app, operation);
+    if (operation >= 9 && operation <= 14 && GetCapture() == ViewportWindow(app)) ReleaseCapture();
+    if (operation >= 9 && operation <= 14) app->ViewToolDragOperation() = ViewportToolAction::None;
+    app->InteractionDragMode() = ViewportDragMode::None;
+    app->LeftMouseButtonState() = LeftButtonPhysicallyDown(app) ? 3 : 0;
+    g_viewportPressHandled = false;
+}
 void FinishCameraHudInteraction(MMDApp* app) noexcept {
     const int operation = static_cast<int>(app->ViewToolDragOperation());
     if (operation >= 15 && operation <= 20) RestoreViewportToolCursor(app, operation);
@@ -981,7 +1006,11 @@ int ViewportToolAtPointForTest(MMDApp* app) {
 }
 
 bool HandleViewportToolPress(MMDApp* app) {
-    return PressViewportTool(app, 0);
+    const bool handled = PressViewportTool(app, 0);
+#if !MMD_ORIGINAL_PROFILE
+    if (plugins::BoundPhysicsModelDraft(app)) return true;
+#endif
+    return handled;
 }
 
 bool HandleCoordinateStripPress(MMDApp* app) {
@@ -1022,6 +1051,9 @@ void ReleaseLeftButtonState(MMDApp* app, bool physicallyHeld) {
 }
 
 void HandleViewportToolRelease(MMDApp* app) {
+#if !MMD_ORIGINAL_PROFILE
+    if (plugins::BoundPhysicsModelDraft(app)) { ReleaseLeftButtonState(app, LeftButtonPhysicallyDown(app)); return; }
+#endif
     // Include the release position even when the last move was coalesced.
     UpdateBoneBoxSelection(app);
     ReleaseLeftButtonState(app, LeftButtonPhysicallyDown(app));
@@ -1418,6 +1450,7 @@ void ModeAngleAdjust(MMDApp* app, int axis) {
 
 void ModeRotate(MMDApp* app, int /*axis*/) {
 #if !MMD_ORIGINAL_PROFILE
+    if (plugins::StepPhysicsModelDraft(app)) return;
     if(plugins::BoundNativePoseHistory(app)){
         if(!plugins::ApplyModelHudSample(*app,plugins::ModelHudOperationForMode(int(app->InteractionDragMode()))))ViewRefreshGate(app);
         return;
@@ -1430,6 +1463,7 @@ void ModeRotate(MMDApp* app, int /*axis*/) {
 
 void ModeTranslate(MMDApp* app, int /*axis*/) {
 #if !MMD_ORIGINAL_PROFILE
+    if (plugins::StepPhysicsModelDraft(app)) return;
     if(plugins::BoundNativePoseHistory(app)){
         if(!plugins::ApplyModelHudSample(*app,plugins::ModelHudOperationForMode(int(app->InteractionDragMode()))))ViewRefreshGate(app);
         return;
@@ -1442,6 +1476,7 @@ void ModeTranslate(MMDApp* app, int /*axis*/) {
 
 void ModeScale(MMDApp* app) {
 #if !MMD_ORIGINAL_PROFILE
+    if (plugins::StepPhysicsModelDraft(app)) return;
     if(plugins::BoundNativePoseHistory(app)){
         if(!plugins::ApplyModelHudSample(*app,plugins::ModelHudOperationForMode(int(app->InteractionDragMode()))))ViewRefreshGate(app);
         return;
@@ -1454,6 +1489,7 @@ void ModeScale(MMDApp* app) {
 
 void ModeBoneRotate(MMDApp* app, int) {
 #if !MMD_ORIGINAL_PROFILE
+    if (plugins::StepPhysicsModelDraft(app)) return;
     if(plugins::BoundNativePoseHistory(app)){
         if(!plugins::ApplyModelHudSample(*app,plugins::ModelHudOperationForMode(int(app->InteractionDragMode()))))ViewRefreshGate(app);
         return;
@@ -1466,6 +1502,7 @@ void ModeBoneRotate(MMDApp* app, int) {
 
 void ModePhysicsBody(MMDApp* app, int) {
 #if !MMD_ORIGINAL_PROFILE
+    if (plugins::StepPhysicsModelDraft(app)) return;
     if(plugins::BoundNativePoseHistory(app)){
         if(!plugins::ApplyModelHudSample(*app,plugins::ModelHudOperationForMode(int(app->InteractionDragMode()))))ViewRefreshGate(app);
         return;

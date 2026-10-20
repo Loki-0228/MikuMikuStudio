@@ -1,6 +1,7 @@
 #include "mikumikustudio/original_import.hpp"
 #include "mikumikustudio/image_sequence_export.hpp"
 #include "mikumikustudio/key_pool.hpp"
+#include "../plugins/native_model_physics.hpp"
 // ===========================================================================
 // CommandDispatch family: View/Edit option-menu cases 251..303 (0x47E8A0)
 // ===========================================================================
@@ -2152,6 +2153,9 @@ void CmdViewMenu(MMDApp* app, HWND hwnd, std::uint16_t id,
     // sub_465020) at app+0xA0B74.
     // ------------------------------------------------------------------
     case 262: {
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::TryEditBoundModelPhysics(app, hwnd)) return;
+#endif
         if (app->state.frameCopyDialog != nullptr) {
             break;
         }

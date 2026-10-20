@@ -1,5 +1,7 @@
 // MAINTENANCE: regression-keep; real menu 262, resources and edit subclasses.
-// Run on a private MMS_REPAIR_ desktop. No D3D device or renderer is created.
+// Default: private MMS_REPAIR_ desktop. Explicit --hidden-windows-only uses
+// in-process visibility/message-box hooks without claiming desktop isolation.
+// A zero-device wrapper satisfies the PMD loader; no D3D device is created.
 // --expect-acp checks the actual process ACP selected by an external manifest;
 // this test never mocks GetACP or changes a machine/user language setting.
 #define WIN32_LEAN_AND_MEAN
@@ -12,9 +14,15 @@
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/path_workspace.hpp"
 #include "mikumikustudio/physics_scene.hpp"
+#include "mikumikustudio/d3d_wrapper.hpp"
+#if !MMD_ORIGINAL_PROFILE
+#include "mikumikustudio/dynamics_world.hpp"
+#include "mikumikustudio/history_physics.hpp"
+#endif
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/text_encoding.hpp"
 #include "mikumikustudio/owned_text.hpp"
+#include "mikumikustudio/original_import.hpp"
 #include "mikumikustudio/ui_language.hpp"
 #include <array>
 #include <cstdint>
@@ -122,11 +130,17 @@ Names UnicodeNames() {
             {{L"骨_中文_😀", L"関連骨_髪_中文_😀"}}};
 }
 Names LegacyNames() {
-    return {{{std::wstring(18, L'A') + L"塔", L"右腕"}},
-            {{std::wstring(18, L'J') + L"塔", L"左腕接点"}},
+    // The minimal profile's PMD editor reserves a terminating byte. The full
+    // profile also exercises a valid character ending at the 20-byte boundary.
+    constexpr unsigned prefix = MMD_ORIGINAL_PROFILE ? 17 : 18;
+    return {{{std::wstring(prefix, L'A') + L"塔", L"右腕"}},
+            {{std::wstring(prefix, L'J') + L"塔", L"左腕接点"}},
             {{L"センター", L"右腕"}}};
 }
 Names AsciiNames() { return {{{L"body-A", L"body-B"}}, {{L"joint-A", L"joint-B"}}, {{L"bone-A", L"bone-B"}}}; }
+std::wstring WithTail(const std::wstring& name) {
+    auto value = name; value.push_back(L'\0'); value += L"尾部"; return value;
+}
 Bytes Pmx(const Names& names) {
     Bytes bytes{'P','M','X',' '}; Put(bytes, 2.f);
     // UTF-16, no extra UV, one-byte vertex/texture/material/bone/morph/rigid indices.
@@ -144,7 +158,7 @@ Bytes Pmx(const Names& names) {
     Put(bytes, 0u); Put(bytes, 0u); // morphs/display groups
     Put(bytes, 2u);
     for (int i = 0; i < 2; ++i) {
-        Text(bytes, names.bodies[i]); Text(bytes, i ? L"body-English-B" : L"body-English-A");
+        Text(bytes, WithTail(names.bodies[i])); Text(bytes, WithTail(i ? L"body-English-B" : L"body-English-A"));
         Put(bytes, static_cast<signed char>(i)); Put(bytes, static_cast<unsigned char>(0));
         Put(bytes, static_cast<unsigned short>(0)); Put(bytes, static_cast<unsigned char>(0));
         for (int axis = 0; axis < 3; ++axis) Put(bytes, 1.f);
@@ -155,21 +169,80 @@ Bytes Pmx(const Names& names) {
     }
     Put(bytes, 2u);
     for (int i = 0; i < 2; ++i) {
-        Text(bytes, names.joints[i]); Text(bytes, i ? L"joint-English-B" : L"joint-English-A");
+        Text(bytes, WithTail(names.joints[i])); Text(bytes, WithTail(i ? L"joint-English-B" : L"joint-English-A"));
         Put(bytes, static_cast<unsigned char>(0));
         Put(bytes, static_cast<signed char>(i)); Put(bytes, static_cast<signed char>(1 - i));
         for (int field = 0; field < 24; ++field) Put(bytes, 0.f);
     }
     return bytes;
 }
+void Fixed(Bytes& bytes, const std::wstring& text, std::size_t capacity) {
+    std::string encoded;
+    Check(text_encoding::EncodeExact(text.c_str(),932,encoded)&&encoded.size()<=capacity,
+        "real PMD fixture field fits complete CP932 bytes");
+    const auto start=bytes.size();bytes.resize(start+capacity,0);
+    if(encoded.size()<=capacity)std::memcpy(bytes.data()+start,encoded.data(),encoded.size());
+}
+Bytes Pmd(const Names& names) {
+    Bytes bytes{'P','m','d'};Put(bytes,1.f);
+    Fixed(bytes,L"physics-test",20);Fixed(bytes,L"",256);
+    Put(bytes,0u);Put(bytes,0u);Put(bytes,0u); // no GPU vertices, indices or materials
+    Put(bytes,static_cast<unsigned short>(2));
+    for(int i=0;i<2;++i) {
+        Fixed(bytes,names.bones[i],20);
+        Put(bytes,static_cast<short>(-1));Put(bytes,static_cast<short>(-1));
+        Put(bytes,static_cast<unsigned char>(1));Put(bytes,static_cast<short>(0));
+        for(int axis=0;axis<3;++axis)Put(bytes,0.f);
+    }
+    Put(bytes,static_cast<unsigned short>(0)); // IK
+    Put(bytes,static_cast<unsigned short>(0)); // morphs
+    Put(bytes,static_cast<unsigned char>(0)); // facial display entries
+    Put(bytes,static_cast<unsigned char>(0)); // custom display groups
+    Put(bytes,0u); // bone display entries
+    Put(bytes,static_cast<unsigned char>(1)); // English section
+    Fixed(bytes,L"physics-test",20);Fixed(bytes,L"",256);
+    Fixed(bytes,L"bone-English-A",20);Fixed(bytes,L"bone-English-B",20);
+    for(unsigned i=0;i<10;++i) {
+        wchar_t toon[24]{};swprintf_s(toon,L"toon%02u.bmp",i+1);Fixed(bytes,toon,100);
+    }
+    Put(bytes,2u);
+    for(int i=0;i<2;++i) {
+        Fixed(bytes,names.bodies[i],20);Put(bytes,static_cast<short>(i));
+        Put(bytes,static_cast<unsigned char>(0));Put(bytes,static_cast<unsigned short>(0));
+        Put(bytes,static_cast<unsigned char>(0));
+        for(int axis=0;axis<3;++axis)Put(bytes,1.f);
+        for(int axis=0;axis<3;++axis)Put(bytes,axis==0?float(i):0.f);
+        for(int axis=0;axis<3;++axis)Put(bytes,0.f);
+        for(float value:{float(i+1),.5f,.5f,0.f,.5f})Put(bytes,value);
+        Put(bytes,static_cast<unsigned char>(1));
+    }
+    Put(bytes,2u);
+    for(int i=0;i<2;++i) {
+        Fixed(bytes,names.joints[i],20);Put(bytes,i);Put(bytes,1-i);
+        for(int field=0;field<24;++field)Put(bytes,0.f);
+    }
+    return bytes;
+}
 struct World {
     btDefaultCollisionConfiguration config;
     btCollisionDispatcher dispatcher{&config};
+#if MMD_ORIGINAL_PROFILE
     btDbvtBroadphase broadphase;
+#else
+    history_physics::Broadphase broadphase{btVector3(-100,-100,-100),btVector3(100,100,100),256};
+#endif
     btSequentialImpulseConstraintSolver solver;
+#if MMD_ORIGINAL_PROFILE
     btDiscreteDynamicsWorld world{&dispatcher, &broadphase, &solver, &config};
+#else
+    DynamicsWorld world{&dispatcher, &broadphase, &solver, &config};
+#endif
     PhysicsScene scene{};
-    World() { scene.world = &world; world.setGravity(btVector3(0,0,0)); }
+    World() { scene.world = &world; world.setGravity(btVector3(0,0,0));
+#if !MMD_ORIGINAL_PROFILE
+        scene.broadphase=&broadphase;scene.dispatcher=&dispatcher;scene.solver=&solver;scene.collisionConfig=&config;
+#endif
+    }
 };
 template<class Record> void SetLegacyName(Record& record, const std::wstring& name) {
     owned_text::Free(record.jpText); record.jpText = nullptr;
@@ -181,15 +254,58 @@ template<class Record> void SetLegacyName(Record& record, const std::wstring& na
     std::memcpy(record.name, bytes.data(), bytes.size());
 }
 struct NameState {
+    enum class Storage { FormalRetained, PrivateScratch, FormalVersion };
     std::array<char, 20> raw{};
     wchar_t* jp = nullptr;
     wchar_t* en = nullptr;
     std::wstring jpValue, enValue;
+    std::vector<unsigned char> jpAllocation, enAllocation;
     template<class Record> explicit NameState(const Record& record) : jp(record.jpText), en(record.enText),
-        jpValue(jp ? jp : L""), enValue(en ? en : L"") { std::memcpy(raw.data(), record.name, raw.size()); }
-    template<class Record> void ExpectUnchanged(const Record& record, const char* label) const {
+        jpValue(jp ? jp : L""), enValue(en ? en : L"") {
+        std::memcpy(raw.data(), record.name, raw.size());
+#if !MMD_ORIGINAL_PROFILE
+        for(auto pair : {std::pair{jp,&jpAllocation},std::pair{en,&enAllocation}})if(pair.first) {
+            owned_text::Allocation info;
+            if(Check(owned_text::Find(pair.first,info),"formal source name has registered complete allocation")) {
+                const auto* first=reinterpret_cast<const unsigned char*>(pair.first);pair.second->assign(first,first+info.bytes);
+            }
+        }
+#endif
+    }
+    template<class Record> void ExpectUnchanged(const Record& record, const char* label,
+                                               Storage storage=Storage::FormalRetained) const {
         Check(!std::memcmp(raw.data(), record.name, raw.size()), label);
-        Check(record.jpText == jp && record.enText == en, "unchanged name transfers original wide ownership");
+#if MMD_ORIGINAL_PROFILE
+        // This profile has no owned_text capacity registry. Its legacy editor
+        // borrows/transfers the same pointers; only the terminated text is
+        // observable here. Do not infer allocation capacity from its length.
+        Check(storage==Storage::FormalRetained,"original editor retains legacy name storage rather than claiming registered version ownership");
+        Check(record.jpText==jp&&record.enText==en,"original editor preserves the exact borrowed or transferred wide pointers");
+#else
+        const wchar_t* actual[]{record.jpText,record.enText};
+        const wchar_t* source[]{jp,en};
+        const std::vector<unsigned char>* allocation[]{&jpAllocation,&enAllocation};
+        for(unsigned language=0;language<2;++language) {
+            owned_text::Allocation info;
+            if(allocation[language]->empty()) {
+                Check(!source[language]&&!actual[language],"absent wide name remains absent in this storage class");
+                continue;
+            }
+            if(storage==Storage::FormalRetained)
+                Check(actual[language]==source[language],"unchanged formal name retains its exact original owned pointer");
+            else
+                Check(actual[language]&&actual[language]!=source[language],"private scratch and new versions never alias the source wide allocation");
+            if(storage==Storage::PrivateScratch) {
+                Check(actual[language]&&!owned_text::Find(actual[language],info),"private scratch name uses vector storage rather than model-owned text");
+                Check(actual[language]&&!std::memcmp(actual[language],allocation[language]->data(),allocation[language]->size()),
+                    "private scratch copies every source allocation byte including text after NUL");
+            } else {
+                Check(actual[language]&&owned_text::Find(actual[language],info)&&info.bytes==allocation[language]->size()&&
+                    !std::memcmp(actual[language],allocation[language]->data(),info.bytes),
+                    "formal name retains registered exact allocation capacity and all tail bytes");
+            }
+        }
+#endif
         ExpectText(record.jpText ? record.jpText : L"", jpValue, "original full Japanese text survives");
         ExpectText(record.enText ? record.enText : L"", enValue, "original full English text survives");
     }
@@ -198,6 +314,9 @@ struct Fixture {
     World world;
     std::unique_ptr<MMDApp> app = std::make_unique<MMDApp>();
     std::unique_ptr<mdl::ModelRecord> model = std::make_unique<mdl::ModelRecord>();
+    // ModelLoadPMD requires the native wrapper even for a zero-mesh file, but
+    // this value-initialized wrapper owns no device or other GPU resource.
+    std::unique_ptr<D3DRenderer> loaderRenderer = std::make_unique<D3DRenderer>();
     Names names;
     bool ready = false;
     explicit Fixture(bool legacy, bool ascii = false) : names(ascii ? AsciiNames() : legacy ? LegacyNames() : UnicodeNames()) {
@@ -211,33 +330,36 @@ struct Fixture {
         app->state.optflag[0] = 0;
         g_Block = app.get();
         model->scenePtr = &world.scene;
-        const Bytes bytes = Pmx(names);
+        const Bytes bytes = legacy ? Pmd(names) : Pmx(names);
         wchar_t temp[MAX_PATH]{}, path[MAX_PATH]{};
         if (!Check(GetTempPathW(MAX_PATH, temp) && GetTempFileNameW(temp, L"pec", 0, path), "create fixture file")) return;
         int fd = _wopen(path, _O_BINARY | _O_WRONLY | _O_TRUNC);
         if (!Check(fd >= 0, "open fixture for writing")) { DeleteFileW(path); return; }
         const int written = _write(fd, bytes.data(), static_cast<unsigned>(bytes.size())); _close(fd);
         if (!Check(written == static_cast<int>(bytes.size()), "write full fixture")) { DeleteFileW(path); return; }
-        fd = _wopen(path, _O_BINARY | _O_RDONLY);
-        if (!Check(fd >= 0, "open fixture for production loader")) { DeleteFileW(path); return; }
-        _lseek(fd, 3, SEEK_SET);
         PathResolutionWorkspace paths{};
-        ready = LoadPMX(reinterpret_cast<unsigned char*>(model.get()), nullptr, 0, 0, paths, fd) != 0;
-        Check(ready, "real PMX loader completes without a renderer");
+        if(legacy) {
+            wchar_t previousDirectory[32768]{};
+            const auto length=GetCurrentDirectoryW(static_cast<DWORD>(std::size(previousDirectory)),previousDirectory);
+            if(!Check(length&&length<std::size(previousDirectory),"capture working directory before actual PMD loader")) { DeleteFileW(path);return; }
+            Check(!loaderRenderer->device&&!loaderRenderer->d3d9,"PMD fixture uses an empty loader wrapper without creating a GPU device");
+            ready=ModelLoadPMD(reinterpret_cast<unsigned char*>(model.get()),nullptr,path,loaderRenderer.get(),0,0,0,&world.scene,paths);
+            Check(SetCurrentDirectoryW(previousDirectory)!=FALSE,"restore working directory after actual PMD loader");
+            Check(ready,"real PMD loader completes without a GPU device");
+        } else {
+            fd = _wopen(path, _O_BINARY | _O_RDONLY);
+            if (!Check(fd >= 0, "open fixture for production loader")) { DeleteFileW(path); return; }
+            _lseek(fd, 3, SEEK_SET);
+            ready = LoadPMX(reinterpret_cast<unsigned char*>(model.get()), nullptr, 0, 0, paths, fd) != 0;
+            Check(ready, "real PMX loader completes without a renderer");
+        }
         Check(DeleteFileW(path) != FALSE, "loader closes fixture file");
         if (!ready) return;
         ready = Check(model->boneCount == 2 && model->rigidCount == 2 && model->jointCount == 2 &&
             world.world.getNumCollisionObjects() == 2 && world.world.getNumConstraints() == 2,
             "fixture has complete real bone/body/joint/keyframe state");
-        if (legacy) {
-            // A complete loaded Record fixture with PMD's fixed CP932 name
-            // representation. This does not claim to exercise the PMD loader.
-            for (int i = 0; i < 2; ++i) {
-                SetLegacyName(model->rigidTable[i], names.bodies[i]);
-                SetLegacyName(model->jointTable[i], names.joints[i]);
-                SetLegacyName(model->boneTable[i], names.bones[i]);
-            }
-        }
+        if (legacy) Check(model->physicsMode!=2&&!model->pmxVertices&&original_import::CanEdit(*model),
+            "actual PMD fixture is structurally saveable and admitted by the production editor gate");
     }
     ~Fixture() {
         if (app->state.frameCopyDialog) SendMessageW(app->state.frameCopyDialog, WM_COMMAND, IDCANCEL, 0);
@@ -254,7 +376,8 @@ struct Fixture {
         if (!Check(dialog && IsWindow(dialog), "menu 262 creates actual physics resource dialog")) return nullptr;
         ++opened;
         Check(!IsWindowVisible(dialog), "real modeless dialog stays hidden");
-        Check(app->Renderer() == nullptr, "physics editor test never creates a renderer");
+        Check(app->Renderer()==nullptr&&!loaderRenderer->device&&!loaderRenderer->d3d9,
+            "physics editor test attaches no renderer and creates no GPU device");
         if (!quiet) std::printf("DIALOG language=%u unicode=%d body_edit_unicode=%d\n", language,
             IsWindowUnicode(dialog), IsWindowUnicode(GetDlgItem(dialog, 705)));
         return dialog;
@@ -268,6 +391,56 @@ struct Fixture {
     mdl::RigidRecord* Bodies() { return static_cast<mdl::RigidRecord*>(app->state.rigidScratchArray); }
     mdl::JointRecord* Joints() { return static_cast<mdl::JointRecord*>(app->state.jointScratchArray); }
 };
+
+#if MMD_ORIGINAL_PROFILE
+void ExpectEditorRefused(Fixture& fixture,const char* label) {
+    Check(!original_import::CanEdit(*fixture.model),label);
+    auto* const bodies=fixture.model->rigidTable;auto* const joints=fixture.model->jointTable;
+    std::array<unsigned char,sizeof(mdl::RigidRecord)*2> bodyBytes{};
+    std::array<unsigned char,sizeof(mdl::JointRecord)*2> jointBytes{};
+    std::array<unsigned char,sizeof(mdl::BoneRecord)*2> boneBytes{};
+    std::memcpy(bodyBytes.data(),bodies,bodyBytes.size());std::memcpy(jointBytes.data(),joints,jointBytes.size());
+    std::memcpy(boneBytes.data(),fixture.model->boneTable,boneBytes.size());
+    const std::array<NameState,2> bodyNames{{NameState(bodies[0]),NameState(bodies[1])}};
+    const std::array<NameState,2> jointNames{{NameState(joints[0]),NameState(joints[1])}};
+    const std::array<btCollisionObject*,2> objects{{fixture.world.world.getCollisionObjectArray()[0],fixture.world.world.getCollisionObjectArray()[1]}};
+    const std::array<btTypedConstraint*,2> constraints{{fixture.world.world.getConstraint(0),fixture.world.world.getConstraint(1)}};
+    const auto texts=owned_text::Count();const auto time=fixture.app->state.timeNowHigh;
+    const std::uint8_t dirty=fixture.app->SceneModified(),enhanced=fixture.app->EnhancedModelDirty(),reset=fixture.app->PhysicsResetPending();
+    for(unsigned char language:{kUiJapanese,kUiEnglish,kUiChinese}) {
+        const auto warnings=messages;fixture.app->EnglishUI()=language;
+        CommandDispatch(nullptr,MAKEWPARAM(262,0));
+        Check(messages==warnings+1,"unsupported original-profile editor request emits one explicit compatibility refusal");
+        Check(!fixture.app->state.frameCopyDialog&&!fixture.app->state.rigidScratchArray&&!fixture.app->state.jointScratchArray&&
+            fixture.model->rigidTable==bodies&&fixture.model->jointTable==joints&&
+            !std::memcmp(bodyBytes.data(),bodies,sizeof(bodyBytes))&&!std::memcmp(jointBytes.data(),joints,sizeof(jointBytes))&&
+            !std::memcmp(boneBytes.data(),fixture.model->boneTable,sizeof(boneBytes))&&owned_text::Count()==texts&&
+            fixture.app->state.timeNowHigh==time&&fixture.app->SceneModified()==dirty&&
+            fixture.app->EnhancedModelDirty()==enhanced&&fixture.app->PhysicsResetPending()==reset,
+            "compatibility refusal creates no editor or scratch and leaves formal records, pose, ownership and flags intact");
+        Check(fixture.world.world.getNumCollisionObjects()==2&&fixture.world.world.getNumConstraints()==2&&
+            fixture.world.world.getCollisionObjectArray()[0]==objects[0]&&fixture.world.world.getCollisionObjectArray()[1]==objects[1]&&
+            fixture.world.world.getConstraint(0)==constraints[0]&&fixture.world.world.getConstraint(1)==constraints[1],
+            "refused editor request leaves exact live Bullet members and order intact");
+        for(unsigned i=0;i<2;++i) {
+            bodyNames[i].ExpectUnchanged(bodies[i],"refused edit retains every body-name byte and original allocation");
+            jointNames[i].ExpectUnchanged(joints[i],"refused edit retains every joint-name byte and original allocation");
+        }
+    }
+}
+void OriginalRefusals() {
+    context="original-reject-PMX";
+    { Fixture fixture(false);if(fixture.ready)ExpectEditorRefused(fixture,"PMX source is outside the original-profile PMD-only editor contract"); }
+    context="original-reject-PMD-full-width-name";
+    {
+        Fixture fixture(true);if(!fixture.ready)return;
+        SetLegacyName(fixture.model->rigidTable[0],std::wstring(18,L'A')+L"塔");
+        Check(strnlen_s(fixture.model->rigidTable[0].name,20)==20,
+            "rejection boundary is a complete valid 20-byte CP932 raw name, not broken DBCS");
+        ExpectEditorRefused(fixture,"minimal PMD editor refuses a full-width raw name that leaves no terminator for its standard writer");
+    }
+}
+#endif
 
 void Lists(Fixture& fixture, HWND dialog, const Names& names, unsigned char language) {
     const wchar_t* caption = language == kUiJapanese ? L"物理演算モデル" :
@@ -304,6 +477,21 @@ void Lists(Fixture& fixture, HWND dialog, const Names& names, unsigned char lang
           !(GetWindowLongPtrW(GetDlgItem(dialog,734),GWL_STYLE)&WS_VISIBLE),"sphere hides height and depth labels");
 }
 void Unchanged(Fixture& fixture) {
+#if !MMD_ORIGINAL_PROFILE
+    {
+        auto* const rigids=fixture.model->rigidTable;auto* const joints=fixture.model->jointTable;
+        auto* const body=rigids[0].body;
+        const NameState bodyName(rigids[0]),jointName(joints[0]);
+        const auto dialog=fixture.Open(kUiEnglish);
+        if(dialog) {
+            fixture.Close(true);
+            Check(fixture.model->rigidTable==rigids&&fixture.model->jointTable==joints&&rigids[0].body==body,
+                "unchanged private OK retains the exact formal tables and native body rather than publishing a new version");
+            bodyName.ExpectUnchanged(fixture.model->rigidTable[0],"no-op OK retains original rigid name storage");
+            jointName.ExpectUnchanged(fixture.model->jointTable[0],"no-op OK retains original joint name storage");
+        }
+    }
+#endif
     for (unsigned char language : {kUiJapanese, kUiEnglish, kUiChinese}) {
         const std::array<NameState,2> body{{NameState(fixture.model->rigidTable[0]),NameState(fixture.model->rigidTable[1])}};
         const std::array<NameState,2> joint{{NameState(fixture.model->jointTable[0]),NameState(fixture.model->jointTable[1])}};
@@ -315,10 +503,15 @@ void Unchanged(Fixture& fixture) {
             ExpectText(WindowText(GetDlgItem(dialog,740)), fixture.names.joints[i], "joint edit preserves full original name");
             Enter(dialog,705); Enter(dialog,740);
             Command(dialog,801); Command(dialog,800); // both production Collect paths
-            body[i].ExpectUnchanged(fixture.Bodies()[i], "unchanged Enter/Collect preserves every body-name byte");
-            joint[i].ExpectUnchanged(fixture.Joints()[i], "unchanged Enter/Collect preserves every joint-name byte");
+            constexpr auto scratchStorage=MMD_ORIGINAL_PROFILE?NameState::Storage::FormalRetained:NameState::Storage::PrivateScratch;
+            body[i].ExpectUnchanged(fixture.Bodies()[i], "unchanged Enter/Collect preserves every body-name byte",scratchStorage);
+            joint[i].ExpectUnchanged(fixture.Joints()[i], "unchanged Enter/Collect preserves every joint-name byte",scratchStorage);
         }
         // Production copy/paste buttons copy physics parameters, not names.
+        // Change the source parameter explicitly so every language iteration
+        // requires a new formal version in the full profile.
+        Type(dialog,718,std::to_wstring(3u+language));Enter(dialog,718);
+        Check(fixture.Bodies()[1].mass==float(3u+language),"copy source has a real edited parameter before paste");
         Command(dialog,724); Select(dialog,704,0); Command(dialog,725);
         ExpectText(WindowText(GetDlgItem(dialog,705)), fixture.names.bodies[0], "body parameter paste keeps destination name");
         Check(fixture.Bodies()[0].mass == fixture.Bodies()[1].mass, "body parameter paste actually ran");
@@ -326,9 +519,12 @@ void Unchanged(Fixture& fixture) {
         ExpectText(WindowText(GetDlgItem(dialog,740)), fixture.names.joints[0], "joint parameter paste keeps destination name");
         fixture.Close(true);
         for (int i=0;i<2;++i) {
-            body[i].ExpectUnchanged(fixture.model->rigidTable[i], "OK preserves unchanged body raw name");
-            joint[i].ExpectUnchanged(fixture.model->jointTable[i], "OK preserves unchanged joint raw name");
+            constexpr auto publishedStorage=MMD_ORIGINAL_PROFILE?NameState::Storage::FormalRetained:NameState::Storage::FormalVersion;
+            body[i].ExpectUnchanged(fixture.model->rigidTable[i], "OK preserves unchanged body raw name",publishedStorage);
+            joint[i].ExpectUnchanged(fixture.model->jointTable[i], "OK preserves unchanged joint raw name",publishedStorage);
         }
+        Check(fixture.model->rigidTable[0].mass==float(3u+language)&&fixture.model->rigidTable[1].mass==float(3u+language),
+            "OK really publishes the changed copy/paste parameters while retaining the unchanged names");
         Check(fixture.world.world.getNumCollisionObjects()==2 && fixture.world.world.getNumConstraints()==2,
             "real OK rebuild keeps complete physics state");
     }
@@ -346,43 +542,73 @@ void Renames(Fixture& fixture) {
     oldJoint.ExpectUnchanged(fixture.model->jointTable[0], "Cancel preserves joint name and wide ownership");
 
     dialog = fixture.Open(kUiJapanese); if (!dialog) return;
-    const std::wstring full = std::wstring(18,L'R') + L"塔";
+    const std::wstring full = std::wstring(MMD_ORIGINAL_PROFILE?17:18,L'R') + L"塔";
     std::string fullBytes; text_encoding::EncodeExact(full.c_str(),932,fullBytes);
-    Check(fullBytes.size()==20 && static_cast<unsigned char>(fullBytes.back())==0x83,
-        "boundary fixture has a valid DBCS trail byte in lead-byte range at byte 20");
+    Check(fullBytes.size()==(MMD_ORIGINAL_PROFILE?19u:20u) && static_cast<unsigned char>(fullBytes.back())==0x83,
+        "accepted boundary fixture ends with a complete DBCS character whose trail byte is in the lead-byte range");
     Type(dialog,705,full); Enter(dialog,705);
-    Check(RawName(fixture.Bodies()[0].name)==fullBytes, "Enter stores full 20-byte name without splitting valid DBCS pair");
+    Check(RawName(fixture.Bodies()[0].name)==fullBytes, "Enter stores the complete accepted CP932 name without splitting its DBCS pair");
+#if MMD_ORIGINAL_PROFILE
     Check(!fixture.Bodies()[0].jpText && !fixture.Bodies()[0].enText, "rename clears stale wide aliases only in scratch");
+#else
+    ExpectText(fixture.Bodies()[0].jpText,full,"private rename retains the full Unicode name alongside its CP932 mirror");
+    Check(!fixture.Bodies()[0].enText,"a real rename clears the old English alias in private scratch");
+#endif
     for (int id:{704,741,742}) ExpectText(ItemText(dialog,id,0),full,"Enter updates rigid list and joint A/B names");
     const int beforeBodyWarning=messages;
     Type(dialog,705,L"无法保存_😀"); Enter(dialog,705);
+#if MMD_ORIGINAL_PROFILE
     Check(messages>beforeBodyWarning,"unrepresentable body rename reports rejection");
     Check(RawName(fixture.Bodies()[0].name)==fullBytes,"rejected body rename retains old bytes");
     ExpectText(WindowText(GetDlgItem(dialog,705)),full,"rejected body input restores previous displayed name");
+#else
+    Check(messages==beforeBodyWarning&&RawName(fixture.Bodies()[0].name)==fullBytes,
+          "Unicode body rename keeps the valid legacy mirror without claiming a lossy replacement");
+    ExpectText(fixture.Bodies()[0].jpText,L"无法保存_😀","private Unicode body rename retains non-BMP characters");
+    ExpectText(WindowText(GetDlgItem(dialog,705)),L"无法保存_😀","body input displays its actual Unicode draft");
+    Type(dialog,705,full); Enter(dialog,705);
+#endif
 
     Type(dialog,740,L"関節_塔"); Enter(dialog,740);
     std::string jointBytes; text_encoding::EncodeExact(L"関節_塔",932,jointBytes);
     const int beforeJointWarning=messages;
     Type(dialog,740,L"拒否_🦴"); Command(dialog,800); // CollectJointEdits, not only Enter
+#if MMD_ORIGINAL_PROFILE
     Check(messages>beforeJointWarning,"unrepresentable joint Collect reports rejection");
     Check(RawName(fixture.Joints()[0].name)==jointBytes,"rejected joint Collect retains old bytes");
     ExpectText(WindowText(GetDlgItem(dialog,740)),L"関節_塔","rejected joint input restores previous displayed name");
+#else
+    Check(messages==beforeJointWarning&&RawName(fixture.Joints()[0].name)==jointBytes,
+          "Unicode joint collection keeps its original representable mirror");
+    ExpectText(fixture.Joints()[0].jpText,L"拒否_🦴","joint Collect retains its complete Unicode draft");
+    ExpectText(WindowText(GetDlgItem(dialog,740)),L"拒否_🦴","joint input displays the Unicode draft after page collection");
+    Type(dialog,740,L"関節_塔"); Enter(dialog,740);
+#endif
     Select(dialog,704,1);
     Type(dialog,705,std::wstring(19,L'T')+L"塔"); Enter(dialog,705);
     Check(RawName(fixture.Bodies()[1].name)==std::string(19,'T'),"overlong CP932 rename truncates at a complete character boundary");
-    ExpectText(WindowText(GetDlgItem(dialog,705)),std::wstring(19,L'T'),"truncated rename shows exactly stored name");
+    ExpectText(WindowText(GetDlgItem(dialog,705)),std::wstring(19,L'T')+
+        (MMD_ORIGINAL_PROFILE?L"":L"塔"),"display follows the active profile's stored name representation");
     Select(dialog,704,0); Select(dialog,736,1); Select(dialog,736,0);
-    ExpectText(WindowText(GetDlgItem(dialog,705)),full,"selection round trip keeps full 20-byte renamed body");
+    ExpectText(WindowText(GetDlgItem(dialog,705)),full,"selection round trip keeps the complete accepted renamed body");
     ExpectText(WindowText(GetDlgItem(dialog,740)),L"関節_塔","selection round trip keeps renamed joint");
     Type(dialog,740,L"確定_塔"); // final name is collected by actual OK
     fixture.Close(true);
     std::string finalJoint; text_encoding::EncodeExact(L"確定_塔",932,finalJoint);
-    Check(RawName(fixture.model->rigidTable[0].name)==fullBytes,"OK commits 20-byte body name");
+    Check(RawName(fixture.model->rigidTable[0].name)==fullBytes,"OK commits the complete accepted CP932 body name");
     Check(RawName(fixture.model->rigidTable[1].name)==std::string(19,'T'),"OK commits truncated name at a complete character boundary");
     Check(RawName(fixture.model->jointTable[0].name)==finalJoint,"OK directly collects and commits renamed joint");
+#if MMD_ORIGINAL_PROFILE
     Check(!fixture.model->rigidTable[0].jpText && !fixture.model->rigidTable[0].enText &&
           !fixture.model->jointTable[0].jpText && !fixture.model->jointTable[0].enText,
           "OK removes stale wide aliases for renamed records");
+#else
+    ExpectText(fixture.model->rigidTable[0].jpText,full,"OK commits the renamed body's full Unicode allocation");
+    ExpectText(fixture.model->rigidTable[1].jpText,std::wstring(19,L'T')+L"塔","OK keeps the Unicode suffix beyond its legacy mirror");
+    ExpectText(fixture.model->jointTable[0].jpText,L"確定_塔","OK collects the final Unicode joint name");
+    Check(!fixture.model->rigidTable[0].enText&&!fixture.model->jointTable[0].enText,
+          "OK never restores obsolete English aliases after real renames");
+#endif
     dialog=fixture.Open(kUiChinese); if (!dialog) return;
     ExpectText(WindowText(GetDlgItem(dialog,705)),full,"reopening uses committed body name");
     ExpectText(WindowText(GetDlgItem(dialog,740)),L"確定_塔","reopening uses committed joint name");
@@ -610,8 +836,9 @@ void TopologyAndModes(bool legacy) {
               fixture.model->jointTable[0].rigidA == 0 && fixture.model->jointTable[0].rigidB == 0 &&
               fixture.model->jointTable[0].position[0] == 4.75f,
               "surviving independent joint compacts and retains its actual edit");
-        survivingBody.ExpectUnchanged(fixture.model->rigidTable[0],"body compaction transfers surviving wide text ownership");
-        survivingJoint.ExpectUnchanged(fixture.model->jointTable[0],"joint compaction transfers surviving wide text ownership");
+        constexpr auto publishedStorage=MMD_ORIGINAL_PROFILE?NameState::Storage::FormalRetained:NameState::Storage::FormalVersion;
+        survivingBody.ExpectUnchanged(fixture.model->rigidTable[0],"body compaction retains surviving wide text",publishedStorage);
+        survivingJoint.ExpectUnchanged(fixture.model->jointTable[0],"joint compaction retains surviving wide text",publishedStorage);
     }
     {
         Fixture fixture(legacy,true); if (!fixture.ready) return;
@@ -661,20 +888,31 @@ void Benchmark(unsigned iterations) {
 
 int main(int argc,char** argv) {
     std::setvbuf(stdout,nullptr,_IONBF,0);
-    bool benchmark=false; unsigned iterations=3,expectedAcp=0;
+    bool benchmark=false,hiddenWindowsOnly=false; unsigned iterations=3,expectedAcp=0;
+    std::wstring expectedDesktop;
     for(int i=1;i<argc;++i) {
         if(!std::strcmp(argv[i],"--benchmark"))benchmark=true;
+        else if(!std::strcmp(argv[i],"--hidden-windows-only"))hiddenWindowsOnly=true;
         else if(!std::strcmp(argv[i],"--expect-acp")&&i+1<argc)expectedAcp=static_cast<unsigned>(std::strtoul(argv[++i],nullptr,10));
+        else if(!std::strcmp(argv[i],"--expect-desktop")&&i+1<argc) {
+            const std::string name=argv[++i];expectedDesktop.assign(name.begin(),name.end());
+        }
         else if(!std::strcmp(argv[i],"--iterations")&&i+1<argc)iterations=static_cast<unsigned>(std::strtoul(argv[++i],nullptr,10));
-        else {Check(false,"usage: [--expect-acp 932|936|1252|65001] [--benchmark] [--iterations 1..10]");return 2;}
+        else {Check(false,"usage: [--expect-acp 932|936|1252|65001] [--expect-desktop PRIVATE_NAME | --hidden-windows-only] [--benchmark] [--iterations 1..10]");return 2;}
     }
     if(!Check(iterations>=1&&iterations<=10,"bounded benchmark iteration count"))return 2;
     std::printf("ENV actual_acp=%u expected_acp=%u gpu=0 entry=CommandDispatch-262\n",GetACP(),expectedAcp);
     if(expectedAcp&&!Check(GetACP()==expectedAcp,"actual process ACP matches external manifest"))return 2;
+    if(!Check(!hiddenWindowsOnly||(!benchmark&&expectedDesktop.empty()),
+        "explicit hidden-window mode is separate from private-desktop tests and benchmarks"))return 2;
     wchar_t desktop[256]{};DWORD needed=0;
-    if(!Check(GetUserObjectInformationW(GetThreadDesktop(GetCurrentThreadId()),UOI_NAME,desktop,sizeof desktop,&needed)&&
-        std::wcsncmp(desktop,L"MMS_REPAIR_",11)==0,"require a real private MMS_REPAIR_ desktop"))return 2;
-    std::printf("PRIVATE_DESKTOP name=%s\n",Utf8(desktop).c_str());
+    const bool namedPrivate=expectedDesktop.empty()||expectedDesktop.rfind(L"MMS_REPAIR_",0)==0||
+        expectedDesktop.rfind(L"CodexSandboxDesktop-",0)==0;
+    if(!Check(namedPrivate&&GetUserObjectInformationW(GetThreadDesktop(GetCurrentThreadId()),UOI_NAME,desktop,sizeof desktop,&needed)&&
+        (hiddenWindowsOnly||(expectedDesktop.empty()?std::wcsncmp(desktop,L"MMS_REPAIR_",11)==0:expectedDesktop==desktop)),
+        "require the actual named private test desktop, never Default"))return 2;
+    std::printf("TEST_DESKTOP name=%s private_guard=%d hidden_windows_only=%d\n",Utf8(desktop).c_str(),
+        int(!hiddenWindowsOnly),int(hiddenWindowsOnly));
     SetErrorMode(SEM_FAILCRITICALERRORS|SEM_NOGPFAULTERRORBOX);
     if(!Check(MH_Initialize()==MH_OK,"initialize hidden-window hooks"))return 2;
     if(!Check(MH_CreateHook(&ShowWindow,&HideTopLevel,reinterpret_cast<void**>(&realShowWindow))==MH_OK&&
@@ -687,10 +925,18 @@ int main(int argc,char** argv) {
     SetModelInfoLanguagePreference(kModelInfoLanguageAuto);
     SetModelNameAutoTranslation(false);
     if(benchmark)Benchmark(iterations);
-    else for(bool legacy:{false,true}) {
-        context=legacy?"PMD-CP932-records":"PMX-Unicode";
-        { Fixture fixture(legacy); if(fixture.ready){Unchanged(fixture);Renames(fixture);} }
-        TopologyAndModes(legacy);
+    else {
+#if MMD_ORIGINAL_PROFILE
+        OriginalRefusals();
+        constexpr bool formats[]{true};
+#else
+        constexpr bool formats[]{false,true};
+#endif
+        for(bool legacy:formats) {
+            context=legacy?"PMD-CP932-loader":"PMX-Unicode";
+            { Fixture fixture(legacy); if(fixture.ready){Unchanged(fixture);Renames(fixture);} }
+            TopologyAndModes(legacy);
+        }
     }
     UnhookWindowsHookEx(guard);MH_DisableHook(MH_ALL_HOOKS);MH_Uninitialize();
     std::printf("RESULT checks=%d failures=%d dialogs=%d messages=%d actual_acp=%u gpu=0\n",checks,failures,opened,messages,GetACP());

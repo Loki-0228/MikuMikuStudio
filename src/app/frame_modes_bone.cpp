@@ -42,6 +42,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include "../plugins/native_model_physics.hpp"
 
 #include "mikumikustudio/d3dx_dyn.hpp"
 #include "mikumikustudio/globals.hpp"
@@ -50,6 +51,9 @@
 #include "mikumikustudio/ported_funcs.hpp"
 
 namespace mikumikustudio {
+#if !MMD_ORIGINAL_PROFILE
+namespace plugins { void PhysicsDraftFieldFilled(MMDApp*, HWND); }
+#endif
 
 void ViewWorldAxis(MMDApp* app, int axis, float out[3]);
 namespace {
@@ -220,6 +224,13 @@ void EchoRecord(HWND dialog, int id, const char* format, float value) {
     char text[256]{};
     sprintf_s(text, sizeof(text), format, value);
     SetWindowTextA(GetDlgItem(dialog, id), text);
+#if !MMD_ORIGINAL_PROFILE
+    if (plugins::BoundPhysicsModelDraft(g_Block)) {
+        // The rendered numeric echo is not a new user edit. Preserve the
+        // higher precision scratch value on a later OK/selection change.
+        plugins::PhysicsDraftFieldFilled(g_Block, GetDlgItem(dialog, id));
+    }
+#endif
 }
 
 bool EditModeRecord(MMDApp* app, int mode) {

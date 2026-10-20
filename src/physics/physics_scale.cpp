@@ -12,6 +12,8 @@
 #include <cmath>
 #include <cstring>
 #include <memory>
+#include <map>
+#include <stdexcept>
 #include <unordered_map>
 #include <vector>
 
@@ -107,7 +109,8 @@ struct State {
     bone_scale::Values authoredPose;
     std::vector<Mat> geometryBaseline;
 };
-std::unordered_map<const unsigned char *, State> states;
+using States = std::map<const unsigned char*, State>;
+States states;
 std::unordered_map<const btRigidBody *, Rigid *> bodies;
 std::unordered_map<const btGeneric6DofConstraint *, Joint *> constraints;
 void Refresh(btDiscreteDynamicsWorld &world, btRigidBody &body) {
@@ -369,14 +372,13 @@ void FinishReadback(unsigned char *model) {
         it->second.pose = bone_scale::PoseValues(model);
 }
 #if !MMD_ORIGINAL_PROFILE
-void MeasureResources(const unsigned char* model, plugins::resource_budget::Collector& out) {
-    const auto found = states.find(model); if (found == states.end()) return;
-    const auto& s = found->second;
-    out.Add(&*found, 1, sizeof(*found) + 4 * sizeof(void*));
+namespace {
+void MeasureState(const State& s, plugins::resource_budget::Collector& out,bool nativeShapes=true) {
+    out.Add(&s, 1, sizeof(States::value_type) + 4 * sizeof(void*));
     out.Vector(s.rigids); out.Vector(s.joints); out.Vector(s.geometryBaseline);
     out.Nodes(s.pose); out.Nodes(s.authoredPose);
     for (const auto& r : s.rigids) {
-        plugins::resource_budget::Shape(r.base, out); plugins::resource_budget::Shape(r.shape.get(), out);
+        if(nativeShapes){plugins::resource_budget::Shape(r.base, out); plugins::resource_budget::Shape(r.shape.get(), out);}
         const auto entry = bodies.find(r.body);
         if (entry != bodies.end()) out.Add(&*entry, 1, sizeof(*entry) + 4 * sizeof(void*));
     }
@@ -385,6 +387,111 @@ void MeasureResources(const unsigned char* model, plugins::resource_budget::Coll
         if (entry != constraints.end()) out.Add(&*entry, 1, sizeof(*entry) + 4 * sizeof(void*));
     }
 }
+void ReleaseState(State& s) noexcept {
+    // These bodies are about to be disposed by the resource version. Do not
+    // refresh broadphase/contacts or restore mass/frames in a live world.
+    for(auto& r:s.rigids) {
+        if(r.body&&r.shape&&r.body->getCollisionShape()==r.shape.get()) r.body->setCollisionShape(r.base);
+        const auto found=bodies.find(r.body);
+        if(found!=bodies.end()&&found->second==&r) bodies.erase(found);
+    }
+    for(auto& j:s.joints) {
+        const auto found=constraints.find(j.joint);
+        if(found!=constraints.end()&&found->second==&j) constraints.erase(found);
+    }
+}
+}
+void MeasureResources(const unsigned char* model, plugins::resource_budget::Collector& out) {
+    const auto found = states.find(model); if(found!=states.end()) MeasureState(found->second,out);
+}
+struct ResourceState::Impl {
+    unsigned char* model;
+    bool active;
+    States::node_type parked;
+    Impl(unsigned char* m,bool a):model(m),active(a){}
+    const State* Node()const noexcept {
+        if(!active)return parked.empty()?nullptr:&parked.mapped();
+        const auto found=states.find(model);return found==states.end()?nullptr:&found->second;
+    }
+};
+struct ResourceState::Exchange::Impl {
+    std::shared_ptr<ResourceState> from,to;
+    const State* source;
+    const State* target;
+    bool consumed=false;
+    Impl(std::shared_ptr<ResourceState> a,std::shared_ptr<ResourceState> b):from(std::move(a)),to(std::move(b)),
+        source(from->impl_->Node()),target(to->impl_->Node()) {
+        if(from==to||from->impl_->model!=to->impl_->model||!from->impl_->active||to->impl_->active||!from->impl_->parked.empty())
+            throw std::invalid_argument("incompatible physics scale versions");
+    }
+    bool Current()const noexcept {
+        return !consumed&&from->impl_->active&&!to->impl_->active&&from->impl_->parked.empty()&&
+            from->impl_->Node()==source&&to->impl_->Node()==target;
+    }
+    void Publish()noexcept {
+        if(!Current())std::terminate();
+        auto& a=*from->impl_;auto& b=*to->impl_;
+        a.parked=states.extract(a.model);
+        if(!b.parked.empty()) {
+            const auto inserted=states.insert(std::move(b.parked));
+            if(!inserted.inserted)std::terminate();
+        }
+        a.active=false;b.active=true;consumed=true;
+    }
+};
+ResourceState::ResourceState(std::unique_ptr<Impl> value):impl_(std::move(value)){}
+ResourceState::~ResourceState() {
+    // An active wrapper can be a failed, still-borrowed capture. Its map node
+    // remains owned by the live model until an explicit Retire/exchange.
+    if(!impl_->active&&!impl_->parked.empty())ReleaseState(impl_->parked.mapped());
+}
+std::shared_ptr<ResourceState> ResourceState::Capture(unsigned char* model) {
+    if(!model)throw std::invalid_argument("null scale version model");
+    return std::shared_ptr<ResourceState>(new ResourceState(std::make_unique<Impl>(model,true)));
+}
+std::shared_ptr<ResourceState> ResourceState::Empty(unsigned char* model) {
+    if(!model)throw std::invalid_argument("null scale version model");
+    return std::shared_ptr<ResourceState>(new ResourceState(std::make_unique<Impl>(model,false)));
+}
+std::shared_ptr<ResourceState> ResourceState::TakePrivate(unsigned char* scratch,unsigned char* model) {
+    if(!scratch||scratch==model)throw std::invalid_argument("invalid private scale version");
+    auto result=Empty(model);
+    result->impl_->parked=states.extract(scratch);
+    if(!result->impl_->parked.empty())result->impl_->parked.key()=model;
+    return result;
+}
+void ResourceState::PreparePrivate(const unsigned char* source,unsigned char* scratch) {
+    if(!source||!scratch||source==scratch)throw std::invalid_argument("invalid private physics scale preparation");
+    if(states.find(scratch)!=states.end())throw std::invalid_argument("private scale state already prepared");
+    bone_scale::CopyPoseRuntime(source,scratch);
+    const auto before=states.find(source);
+    if(before!=states.end()) {
+        auto& next=Create(scratch);
+        next.geometryBaseline=before->second.geometryBaseline;
+        next.authoredPose=before->second.authoredPose;
+        next.pose=before->second.pose;
+    }
+    Sync(scratch,true);
+}
+std::unique_ptr<ResourceState::Exchange> ResourceState::PrepareExchange(const std::shared_ptr<ResourceState>& target) {
+    if(!target)throw std::invalid_argument("null scale version target");
+    return std::unique_ptr<Exchange>(new Exchange(std::make_unique<Exchange::Impl>(shared_from_this(),target)));
+}
+void ResourceState::Retire()noexcept {
+    if(impl_->active) {impl_->parked=states.extract(impl_->model);impl_->active=false;}
+}
+void ResourceState::MeasureResources(plugins::resource_budget::Collector& out)const {
+    out.Array(this,1);out.Array(impl_.get(),1);
+    if(const auto* node=impl_->Node())MeasureState(*node,out);
+}
+void ResourceState::MeasureBookkeeping(plugins::resource_budget::Collector& out)const {
+    out.Array(this,1);out.Array(impl_.get(),1);
+    if(const auto* node=impl_->Node())MeasureState(*node,out,false);
+}
+ResourceState::Exchange::Exchange(std::unique_ptr<Impl> value):impl_(std::move(value)){}
+ResourceState::Exchange::~Exchange()=default;
+bool ResourceState::Exchange::IsCurrent()const noexcept{return impl_->Current();}
+void ResourceState::Exchange::Publish()noexcept{impl_->Publish();}
 #endif
 void Forget(unsigned char *model) {
     const auto it = states.find(model);

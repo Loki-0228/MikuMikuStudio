@@ -40,7 +40,7 @@ public:
     static MmsResult MeasureResourcesBatch(const Objects&, resource_budget::Report&) noexcept;
     // Measure allocations retained by this published holder, excluding the
     // active object's model/mesh/Bullet resources. Includes parked accessory
-    // keys, authoring state and physics lifetime containers. Reuse one Collector
+    // keys, authoring state and current physics-version/scale containers. Reuse one Collector
     // across all holders in a change so shared allocation identities count once.
     // Call on the owning UI thread while native edits/teardown are excluded.
     // No seek, evaluation, plugin callback or graphics-resource query is made.

@@ -8,6 +8,7 @@
 #include "mikumikustudio/owned_text.hpp"
 #include "mikumikustudio/undo_storage.hpp"
 #include "mikumikustudio/physics_scale.hpp"
+#include "mikumikustudio/model_physics_resource_owner.hpp"
 // ===========================================================================
 // VA 0x0048F830 - ModelDispose  (original: sub_48F830, 2099 bytes)
 // ===========================================================================
@@ -141,7 +142,7 @@ static void DisposeModelResources(unsigned char* m, bool published) {
     text_encoding::ForgetDisplayGroupNames(*mdl::Mdl(m));
     mmv4mms::Forget(m);
     native_mesh::Forget(m);
-    physics_scale::Forget(m);
+    if (!model_physics_resource_owner::Release(m)) physics_scale::Forget(m);
     bone_scale::Forget(m);
     morph_curve::Forget(m);
     skinning::ForgetModel(m);

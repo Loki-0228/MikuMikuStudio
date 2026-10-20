@@ -327,6 +327,7 @@ void CrossModelJournal(){
 #include "history_physics_checks.inc"
 #include "history_physics_exchange_checks.inc"
 #include "physics_import_checks.inc"
+#include "model_physics_resource_checks.inc"
 #include "import_texture_cache_checks.inc"
 #include "accessory_import_checks.inc"
 #include "private_import_history_checks.inc"
@@ -436,6 +437,9 @@ void CrossModelJournal(){
 #include "native_model_outline_color_checks.inc"
 #include "native_model_names_checks.inc"
 #include "native_model_toon_checks.inc"
+#include "native_model_physics_checks.inc"
+#include "native_model_physics_preparation_checks.inc"
+#include "native_model_physics_ui_checks.inc"
 #include "native_model_names_persistence_checks.inc"
 #include "native_toon_resolution_checks.inc"
 #include "native_bone_curve_write_checks.inc"
@@ -456,6 +460,18 @@ int main(int argc,char** argv){
     }
     if(argc==2&&!std::strcmp(argv[1],"--model-toon-only")) {
         NativeModelToonChecks();std::printf("PASS native model toon: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--model-physics-only")) {
+        NativeModelPhysicsChecks();std::printf("PASS native model physics: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--model-physics-resources-only")) {
+        ModelPhysicsResourceChecks();std::printf("PASS model physics resources: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--model-physics-preparation-only")) {
+        NativeModelPhysicsPreparationChecks();std::printf("PASS model physics preparation: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--model-physics-ui-only")) {
+        NativeModelPhysicsUiChecks();std::printf("PASS model physics UI: %u checks\n",checks);return 0;
     }
     if(argc==2&&!std::strcmp(argv[1],"--model-names-only")) {
         NativeModelNamesChecks();std::printf("PASS model names: %u checks\n",checks);return 0;
@@ -574,6 +590,15 @@ int main(int argc,char** argv){
     if(argc==2&&!std::strcmp(argv[1],"--retained-bookkeeping-only")) {
         run("RetainedBookkeepingChecks",RetainedBookkeepingChecks);
         std::printf("PASS retained owner bookkeeping: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--scene-resource-history-only")) {
+        run("SceneResourceBudgetChecks",SceneResourceBudgetChecks);
+        run("SceneObjectBudgetChecks",SceneObjectBudgetChecks);
+        run("SceneObjectInsertionChecks",SceneObjectInsertionChecks);
+        run("RetainedBookkeepingChecks",RetainedBookkeepingChecks);
+        run("PrivateImportHistoryChecks",PrivateImportHistoryChecks);
+        run("ObjectRetention",ObjectRetention);
+        std::printf("PASS scene resource history: %u checks\n",checks);return 0;
     }
     if(argc==2&&!std::strcmp(argv[1],"--camera-follow-only")) {
         run("NativeCameraFollowChecks",NativeCameraFollowChecks);
@@ -901,6 +926,10 @@ int main(int argc,char** argv){
     run("NativeModelOutlineColorChecks",NativeModelOutlineColorChecks);
     run("NativeModelNamesChecks",NativeModelNamesChecks);
     run("NativeModelToonChecks",NativeModelToonChecks);
+    run("NativeModelPhysicsChecks",NativeModelPhysicsChecks);
+    run("NativeModelPhysicsPreparationChecks",NativeModelPhysicsPreparationChecks);
+    run("NativeModelPhysicsUiChecks",NativeModelPhysicsUiChecks);
+    run("ModelPhysicsResourceChecks",ModelPhysicsResourceChecks);
     run("NativeModelNamesPersistenceChecks",NativeModelNamesPersistenceChecks);
     run("NativeModelRangeChecks",NativeModelRangeChecks);
     run("NativeObjectCommandChecks",NativeObjectCommandChecks);

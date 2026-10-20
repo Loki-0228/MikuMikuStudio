@@ -1280,6 +1280,10 @@ if (MIKUMIKUSTUDIO_BUILD_UI_TESTS)
         target_link_libraries(native_edit_history_tests PRIVATE mikumikustudio_core minhook::minhook winmm dsound)
         set_target_properties(native_edit_history_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
         add_test(NAME native_edit_history_regressions COMMAND native_edit_history_tests)
+        add_test(NAME native_model_physics_history COMMAND native_edit_history_tests --model-physics-only)
+        add_test(NAME native_model_physics_resources COMMAND native_edit_history_tests --model-physics-resources-only)
+        add_test(NAME native_model_physics_preparation COMMAND native_edit_history_tests --model-physics-preparation-only)
+        add_test(NAME native_model_physics_ui COMMAND native_edit_history_tests --model-physics-ui-only)
     endif()
 
     # Viewport scale handles: hit testing, the merged mode button's cycle and

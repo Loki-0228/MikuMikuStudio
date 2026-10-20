@@ -1,4 +1,5 @@
 #include "scene_object_history.hpp"
+#include "model_physics_resources.hpp"
 #include "mikumikustudio/animation_curve_host.hpp"
 #include "mikumikustudio/dynamics_world.hpp"
 #include "mikumikustudio/history_physics.hpp"
@@ -28,20 +29,16 @@ struct RetainedSceneObject::Impl {
     void* object;
     MmsId id;
     bool present = true;
-    std::shared_ptr<history_physics::Retained> physics;
     std::shared_ptr<history_physics::ImportScene> importScene;
+    std::shared_ptr<ModelPhysicsResources> modelPhysics;
     bool owned = true, publishedOnce = true;
-    std::vector<btTypedConstraint*> joints;
     std::unique_ptr<curve_host::AccessoryAuthoring> curves;
     mdl::AccessoryKey* inactiveKeys = nullptr;
     uint32_t inactiveCursor = 0;
     uint8_t inactiveActive = 0;
-    const mdl::RigidRecord* rigidTable = nullptr;
-    const mdl::JointRecord* jointTable = nullptr;
-    uint32_t rigidCount = 0, jointCount = 0;
     Impl(MMDApp& a, uint32_t k, unsigned s, void* p, mdl::AccessoryKey* keys,
          std::shared_ptr<history_physics::ImportScene> scene, std::shared_ptr<history_physics::Retained> retained)
-        : app(a), kind(k), slot(s), object(p), present(false), physics(std::move(retained)),
+        : app(a), kind(k), slot(s), object(p), present(false),
           importScene(std::move(scene)), owned(false), publishedOnce(false) {
         if (!p || s >= 255 || (k != MMS_OBJECT_MODEL && k != MMS_OBJECT_ACCESSORY) ||
             (k == MMS_OBJECT_MODEL ? static_cast<void*>(app.ModelSlot(s)) : app.AccessorySlot(s)))
@@ -52,12 +49,9 @@ struct RetainedSceneObject::Impl {
             inactiveKeys = keys;
         } else {
             const auto& model = *mdl::Mdl(static_cast<unsigned char*>(object));
-            if (!importScene || !physics || model.scenePtr != &importScene->Scene())
+            if (!importScene || !retained || !app.Physics() || model.scenePtr != &importScene->Scene())
                 throw std::invalid_argument("import physics owner");
-            rigidTable = model.rigidTable; jointTable = model.jointTable;
-            rigidCount = model.rigidCount; jointCount = model.jointCount;
-            for (int i = 0; i < model.scenePtr->world->getNumConstraints(); ++i)
-                joints.push_back(model.scenePtr->world->getConstraint(i));
+            modelPhysics = ModelPhysicsResources::CaptureImport(static_cast<unsigned char*>(object), *app.Physics(), importScene, std::move(retained));
         }
         id = CreateAbsentSceneObject(p).id;
     }
@@ -69,26 +63,7 @@ struct RetainedSceneObject::Impl {
             inactiveKeys[0].visible = 1; inactiveKeys[0].parentModel = -1;
             inactiveKeys[0].scale = inactiveKeys[0].opacity = 1;
         } else {
-            const auto& model = *mdl::Mdl(static_cast<unsigned char*>(object));
-            rigidTable = model.rigidTable; jointTable = model.jointTable;
-            rigidCount = model.rigidCount; jointCount = model.jointCount;
-            if (rigidCount || jointCount) {
-                if (!model.scenePtr || !model.scenePtr->world || (rigidCount && !rigidTable) || (jointCount && !jointTable))
-                    throw std::invalid_argument("model physics ownership");
-                auto& world = dynamic_cast<DynamicsWorld&>(*model.scenePtr->world);
-                std::vector<btRigidBody*> bodies;
-                for (uint32_t i = 0; i < rigidCount; ++i) {
-                    if (rigidTable[i].body) bodies.push_back(static_cast<btRigidBody*>(rigidTable[i].body));
-                }
-                for (uint32_t i = 0; i < jointCount; ++i) {
-                    // Missing-body joints are not constructed by the importer.
-                    for (int n = 0; n < world.getNumConstraints(); ++n)
-                        if (world.getConstraint(n)->getUid() == jointTable[i].constraint) {
-                            joints.push_back(world.getConstraint(n)); break;
-                        }
-                }
-                physics = std::make_unique<history_physics::Retained>(world, std::move(bodies), joints);
-            }
+            modelPhysics = ModelPhysicsResources::Capture(static_cast<unsigned char*>(object));
         }
     }
     ~Impl() {
@@ -102,10 +77,7 @@ struct RetainedSceneObject::Impl {
         else {
             auto* model = static_cast<unsigned char*>(object);
             if (!publishedOnce) { model_import::DisposePrivate(model); std::free(model); return; }
-            // Scale authoring holds joint pointers; forget it while the
-            // retained joints are alive, before normal model disposal.
-            physics_scale::Forget(model);
-            for (auto* joint : joints) delete joint;
+            if (modelPhysics) modelPhysics->ReleaseBorrowedParkedJoints();
             DeleteModel(model, 1);
         }
     }
@@ -113,8 +85,7 @@ struct RetainedSceneObject::Impl {
         if (kind == MMS_OBJECT_ACCESSORY)
             return app.AccessorySlot(slot) == (present ? object : nullptr);
         if (app.ModelSlot(slot) != (present ? object : nullptr)) return false;
-        const auto& m = *mdl::Mdl(static_cast<unsigned char*>(object));
-        return m.rigidTable == rigidTable && m.jointTable == jointTable && m.rigidCount == rigidCount && m.jointCount == jointCount;
+        return modelPhysics && modelPhysics->IsCurrent(modelPhysics->Current());
     }
     struct Candidate final : PreparedHistoryChange {
         std::shared_ptr<RetainedSceneObject> lifetime;
@@ -122,6 +93,7 @@ struct RetainedSceneObject::Impl {
         bool present;
         std::unique_ptr<PreparedHistoryChange> identity;
         std::unique_ptr<history_physics::Retained::Transition> physics;
+        std::shared_ptr<ModelPhysicsVersion> physicsVersion;
         std::unique_ptr<curve_host::AccessoryAuthoring::Exchange> curves;
         mdl::AccessoryKey* keys;
         size_t keyCapacity;
@@ -129,7 +101,8 @@ struct RetainedSceneObject::Impl {
             : lifetime(std::move(value)), owner(*lifetime->impl_), present(p), keys(nullptr), keyCapacity(0) {
             if (owner.present == p || !owner.MembershipCurrent()) throw std::invalid_argument("scene object membership");
             identity = PrepareObjectPresence(owner.object, owner.id, p);
-            if (preparePhysics && owner.physics) physics = owner.physics->Prepare(p);
+            if (owner.modelPhysics) physicsVersion = owner.modelPhysics->Current();
+            if (preparePhysics && physicsVersion && physicsVersion->Membership()) physics = physicsVersion->Membership()->Prepare(p);
             if (owner.curves) {
                 curves = owner.curves->Prepare(p); keys = owner.app.AccessoryKeys(owner.slot);
                 keyCapacity = mdl::KeyPoolCapacity(keys);
@@ -137,6 +110,7 @@ struct RetainedSceneObject::Impl {
         }
         bool IsCurrent() const noexcept override {
             return owner.present != present && owner.MembershipCurrent() && identity->IsCurrent() &&
+                (!physicsVersion || owner.modelPhysics->IsCurrent(physicsVersion)) &&
                 (!physics || physics->IsCurrent()) && (!curves || (curves->IsCurrent() &&
                     owner.app.AccessoryKeys(owner.slot) == keys && mdl::KeyPoolCapacity(keys) == keyCapacity));
         }
@@ -177,7 +151,6 @@ MmsResult RetainedSceneObject::MeasureBookkeepingImpl(resource_budget::Collector
     measured.Array(this, 1); measured.Array(&owner, 1);
     const auto registry = retainedObjects.find({&owner.app, owner.object});
     if (registry != retainedObjects.end()) measured.Add(&*registry, 1, sizeof(*registry) + 4 * sizeof(void*));
-    measured.Vector(owner.joints);
     if (includeParkedKeys && owner.inactiveKeys) {
         // This pool is owned, so a borrowed legacy-sized fallback would invent
         // an allocation extent. Count the same tracked node used by full native
@@ -189,7 +162,7 @@ MmsResult RetainedSceneObject::MeasureBookkeepingImpl(resource_budget::Collector
         measured.Array(owner.inactiveKeys, found->second.capacity);
         measured.Add(&*found, 1, sizeof(*found) + 4 * sizeof(void*));
     }
-    if (includePhysics && owner.physics) owner.physics->MeasureResources(measured);
+    if (owner.modelPhysics) owner.modelPhysics->MeasureBookkeeping(measured, includePhysics);
     if (owner.curves) owner.curves->MeasureResources(measured);
     return MMS_OK;
 }
@@ -226,7 +199,7 @@ MmsResult RetainedSceneObject::MeasureNativeResources(const Objects& objects,
                 const auto* exchange = owner.present ? owner.inactiveKeys : owner.app.AccessoryKeys(owner.slot);
                 resource_budget::Accessory(*static_cast<const mdl::AccessoryRecord*>(owner.object), exchange, measured);
             }
-            for (auto* joint : owner.joints) resource_budget::Joint(joint, measured);
+            if (owner.modelPhysics) owner.modelPhysics->MeasureResources(measured, false);
             // Accessory() above already measures both exchanged key pools with
             // its established native/borrowed-pool policy. Keep that full-object
             // import/removal path unchanged; the new holder-only API instead
@@ -279,7 +252,7 @@ std::unique_ptr<PreparedHistoryChange> RetainedSceneObject::PreparePresenceBatch
     // or preparing curves: separate absent owners can have reused one slot.
     for (const auto& object : objects) {
         auto& owner = *object->impl_;
-        if (owner.physics) physics.push_back(owner.physics.get());
+        if (owner.modelPhysics) if (auto membership = owner.modelPhysics->Current()->Membership()) physics.push_back(membership.get());
         next->members.push_back(std::make_unique<Impl::Candidate>(object, present, false));
     }
     if (!physics.empty()) next->physics = history_physics::Retained::PrepareBatch(physics, present);
@@ -466,6 +439,7 @@ std::shared_ptr<HistoryChange> RetainedSceneObject::MakeImport(std::shared_ptr<R
                     owner->initialTextures->Publish();
                     if (native.kind == MMS_OBJECT_MODEL)
                         mdl::Mdl(static_cast<unsigned char*>(native.object))->scenePtr = native.app.Physics();
+                    if (native.modelPhysics) native.modelPhysics->PublishedImport();
                 }
                 presence->Publish();
                 if (first) {
@@ -534,6 +508,6 @@ std::shared_ptr<HistoryChange> RetainedSceneObject::ImportModel(MMDApp& app, uns
         app, MMS_OBJECT_MODEL, slot, prepared.Object(), nullptr, scene, physics->RetainedOwner())));
     auto result = MakeImport(owner, std::move(textures), std::move(publication), std::move(physics));
     retainedObjects[{&app, prepared.Object()}] = owner;
-    prepared.Release(); owner->impl_->owned = true; return result;
+    prepared.Release(); owner->impl_->owned = true; owner->impl_->modelPhysics->AdoptOwnership(); return result;
 }
 }
