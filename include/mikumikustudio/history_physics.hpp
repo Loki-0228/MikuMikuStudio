@@ -109,9 +109,11 @@ public:
         // Pending owner can be measured before publication, but cannot prepare
         // ordinary presence changes. Success makes it a normal present owner.
         std::shared_ptr<Retained> RetainedOwner() const noexcept;
-        // Published present owners have no Saved/order allocation. This is the
-        // same bookkeeping charge as RetainedOwner()->MeasureResources().
-        // Native bodies/joints are measured by the enclosing model resource pass.
+        // Published incoming owners have no Saved/order allocation. Replacement
+        // additionally measures each outgoing owner's prepared Saved and shared
+        // order allocation. Uses the same identities as the published owners'
+        // MeasureResources, without including temporary caches/world arrays.
+        // Native bodies/joints are measured by the enclosing resource version.
         bool MeasureTargetResources(plugins::resource_budget::Collector&) const;
         // No allocation, resource destruction or callbacks. Rebind the loaded
         // model's scenePtr to the live scene in the same enclosing commit.
@@ -126,6 +128,15 @@ public:
     // A candidate freezes both worlds. Cancellation changes neither world.
     // Repeated preparation is allowed until one candidate publishes.
     std::unique_ptr<Publication> Prepare();
+    // First publication of this private scene and parking of existing bundles
+    // share one world/cache transition. Outgoing owners must be distinct,
+    // present, nonpending and belong to this scene's live world. Their native
+    // bodies/joints remain caller-owned and must outlive owners/candidates.
+    // Surviving live members keep their order; private members follow them in
+    // private order. An empty list is ordinary Prepare(). No live array storage
+    // or capacity is changed by preparation/cancellation. After success use
+    // Retained::PrepareExchange for both directions, without reimporting.
+    std::unique_ptr<Publication> PrepareReplacing(const std::vector<Retained*>& outgoing);
 };
 }
 }

@@ -470,6 +470,9 @@ int main(int argc,char** argv){
     if(argc==2&&!std::strcmp(argv[1],"--physics-exchange-only")) {
         PhysicsExchangeChecks();std::printf("PASS physics exchange: %u checks\n",checks);return 0;
     }
+    if(argc==2&&!std::strcmp(argv[1],"--physics-import-replace-only")) {
+        PhysicsImportReplaceChecks();std::printf("PASS private physics replacement: %u checks\n",checks);return 0;
+    }
     if(argc==3&&!std::strcmp(argv[1],"--compressed-audio")) {
         const auto directory = plugins::Wide(argv[2]);
         NativeCompressedAudioHistoryChecks(directory.c_str());
