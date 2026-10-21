@@ -71,9 +71,11 @@ cmake --build build/hello --config Release
 
 `mms.properties.main.extensions` 是主视口下方、本体底部参数区上方的属性扩展行，支持原 BUTTON、GROUP、SEPARATOR 和 INPUT。它与 `mms.toolbar.main.extensions` 共用原 C 表、布局树、刷新队列和票据。直接注册时填写元素的 `parentId`；便利声明填写 `InputSpec.parent`、`button.parent` 或 `group.parent`。使用分组时将组放入目标根，子项继续引用该组。属性扩展行按内容换行，空区域不占高度；命令溢出菜单仍只支持原工具栏。范围和验证见[属性扩展行记录](../../docs/records/abi-property-mount-2026-10-21.md)。
 
+`mms.sidebar.left.extensions` 和 `mms.sidebar.right.extensions` 使用相同的声明字段及原生控件。两列默认纵向排布，空列宽度为零，视口和中央区域使用剩余宽度。具体位置、草稿、跨根重建及清理规则见[左右侧栏挂载](side-mounts.md)。
+
 只读属性和原生面板工厂可以通过 `RegistrationBundle` 注册。快照、值和 anchor 租约仍调用原 C API 获取及释放；本批没有增加租约类。原生窗口及 view context 的创建、重建和销毁规则继续遵循 [SDK 参考](README.md)。
 
-可写属性的[底层暂存接口](property-stage.md)及[声明式 INPUT 和便利封装](input.md)已在受控编辑宿主中接入。普通宿主的 INPUT 为只读，便利 SDK 不启用 `mms.edit`。DOCK、侧栏、时间线和状态栏挂载、复杂动画和新视口服务仍未开放。刷新种类按目标的 `supportedKinds` 检查，见[刷新 SDK](cpp-refresh.md)。`updateElement` 保留底层 handle，但可能更新 generation 并重建 view；不能将其当成无副作用的重绘请求。
+可写属性的[底层暂存接口](property-stage.md)及[声明式 INPUT 和便利封装](input.md)已在受控编辑宿主中接入。普通宿主的 INPUT 为只读，便利 SDK 不启用 `mms.edit`。DOCK、时间线内部和状态栏挂载、复杂动画和新视口服务仍未开放。刷新种类按目标的 `supportedKinds` 检查，见[刷新 SDK](cpp-refresh.md)。`updateElement` 保留底层 handle，但可能更新 generation 并重建 view；不能将其当成无副作用的重绘请求。
 
 ## 工具栏命令溢出
 

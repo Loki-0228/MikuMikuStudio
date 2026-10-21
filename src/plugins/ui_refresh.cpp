@@ -83,10 +83,14 @@ struct UiRefreshQueue::Target {
     bool Ready() const noexcept { return !suspended && (MenuTarget(presentation) ?
         presentation.menu && presentation.menuCookie && presentation.menuItem : presentation.window &&
         (presentation.container || (presentation.width > 0 && presentation.height > 0))); }
-    bool ReadyFor(uint32_t kinds) const noexcept {
+    bool ReadyFor(uint32_t kinds, bool allowSuspendedLayout = false) const noexcept {
         // A published collapsed button can request STATE|LAYOUT to regain its
         // slot; pure REPAINT/STATE keep their original positive-size rule.
-        return Ready() || ((kinds & MMS_UI_REFRESH_LAYOUT) && !suspended &&
+        // After a failed geometry publication, only a layout repair (with an
+        // optional repaint after it) may reuse the still-live exact instance.
+        // DATA and STATE must wait until that repair publishes ready geometry.
+        const bool layoutRepair = !suspended || (allowSuspendedLayout && !(kinds & (MMS_UI_REFRESH_DATA | MMS_UI_REFRESH_STATE)));
+        return Ready() || ((kinds & MMS_UI_REFRESH_LAYOUT) && layoutRepair &&
             presentation.window && presentation.layoutRefresh);
     }
 };
@@ -523,7 +527,7 @@ MmsResult UiRefreshQueue::Request(RefreshClient& client, const MmsUiRefreshReque
         // Preserve SELF's original error precedence: an unsupported phase is
         // rejected before inspecting another target's geometry or readiness.
         if (ticket.expectedGeometry && ticket.expectedGeometry != target->second.geometry) return MMS_E_STALE;
-        if (!target->second.ReadyFor(ticket.kinds)) return MMS_E_NOT_READY;
+        if (!target->second.ReadyFor(ticket.kinds, true)) return MMS_E_NOT_READY;
         if (ticket.kinds & MMS_UI_REFRESH_DATA) {
             if (!ticket.binding) {
                 if (!target->second.presentation.propertyDataRefresh || !target->second.presentation.propertyRecord || !propertyData_) return MMS_E_ARGUMENT;
@@ -697,7 +701,7 @@ MmsResult UiRefreshQueue::ValidateTicketLocked(const Ticket& ticket, bool geomet
     const auto root = targets_.find(ticket.target.element);
     if (ticket.target.projectEpoch != epoch_ || root == targets_.end() || root->second.generation != ticket.target.instanceGeneration ||
         (geometry && ticket.expectedGeometry && root->second.geometry != ticket.expectedGeometry)) return MMS_E_STALE;
-    if (ticket.scope == MMS_UI_REFRESH_SELF ? !root->second.ReadyFor(ticket.kinds) :
+    if (ticket.scope == MMS_UI_REFRESH_SELF ? !root->second.ReadyFor(ticket.kinds, true) :
         (root->second.suspended || (!MenuTarget(root->second.presentation) && !root->second.presentation.window))) return MMS_E_NOT_READY;
     if (ticket.scope == MMS_UI_REFRESH_SELF) {
         if (ticket.propertyData && (!root->second.presentation.propertyDataRefresh || !propertyData_)) return MMS_E_NOT_READY;
@@ -939,7 +943,7 @@ void UiRefreshQueue::Drain() {
                 const auto target = targets_.find(work.ref.element);
                 if (target == targets_.end() || target->second.generation != work.ref.instanceGeneration ||
                     (strict && target->second.geometry != work.target.geometry)) return MMS_E_STALE;
-                if (work.kinds && !target->second.ReadyFor(work.kinds)) return MMS_E_NOT_READY;
+                if (work.kinds && !target->second.ReadyFor(work.kinds, batch.scope == MMS_UI_REFRESH_SELF)) return MMS_E_NOT_READY;
                 if ((work.kinds || batch.scope == MMS_UI_REFRESH_DEPENDENTS) && !MenuTarget(target->second.presentation) &&
                     !IsWindow(target->second.presentation.window)) return MMS_E_STALE;
                 if (work.propertyData && (!target->second.presentation.propertyDataRefresh || !propertyData_)) return MMS_E_NOT_READY;

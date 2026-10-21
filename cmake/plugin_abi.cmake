@@ -232,4 +232,21 @@ add_test(NAME ui_input_state_runtime COMMAND plugin_abi_tests --input-state-only
 set_tests_properties(ui_input_state_runtime PROPERTIES TIMEOUT 90)
 add_test(NAME ui_property_mount_runtime COMMAND plugin_abi_tests --property-mount-only)
 set_tests_properties(ui_property_mount_runtime PROPERTIES TIMEOUT 90)
+add_test(NAME ui_side_mount_runtime COMMAND plugin_abi_tests --side-mount-only)
+set_tests_properties(ui_side_mount_runtime PROPERTIES TIMEOUT 90)
+add_test(NAME ui_refresh_recovery_runtime COMMAND plugin_abi_tests --recovery-only)
+set_tests_properties(ui_refresh_recovery_runtime PROPERTIES TIMEOUT 90)
+if(TARGET side_mount_host_tests)
+    add_library(mms_side_mount_host_probe MODULE EXCLUDE_FROM_ALL
+        tests/plugins/side_mount_host_plugin.cpp tests/plugins/side_mount_host_plugin.def)
+    target_include_directories(mms_side_mount_host_probe PRIVATE sdk/mms/include)
+    target_compile_features(mms_side_mount_host_probe PRIVATE cxx_std_17)
+    target_compile_definitions(mms_side_mount_host_probe PRIVATE _WIN32_WINNT=0x0601 WINVER=0x0601)
+    target_link_options(mms_side_mount_host_probe PRIVATE /SUBSYSTEM:WINDOWS,6.01 /DEBUG:NONE)
+    set_target_properties(mms_side_mount_host_probe PROPERTIES OUTPUT_NAME side_mount_host_probe
+        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/plugins/side_mounts/$<CONFIG>"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/plugins/side_mounts/$<CONFIG>"
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    add_dependencies(side_mount_host_tests mms_side_mount_host_probe)
+endif()
 install(FILES PLUGINS/config.json DESTINATION PLUGINS)

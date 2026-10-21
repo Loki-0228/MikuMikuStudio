@@ -6,7 +6,7 @@
 
 ## 注册与位置
 
-C 接口先注册属性，再注册 `MmsUiElementV1`。元素的 `kind` 为 `MMS_UI_INPUT`，`propertyId` 指向同插件的原属性。`commandId` 和 `surfaceId` 必须为空。当前支持 `mms.toolbar.main.extensions`、`mms.properties.main.extensions` 及这两个根下的 GROUP。INPUT 不支持快捷键能力、容器能力或菜单挂载。
+C 接口先注册属性，再注册 `MmsUiElementV1`。元素的 `kind` 为 `MMS_UI_INPUT`，`propertyId` 指向同插件的原属性。`commandId` 和 `surfaceId` 必须为空。当前支持 `mms.toolbar.main.extensions`、`mms.properties.main.extensions`、[左右侧栏](side-mounts.md)及这些根下的 GROUP。INPUT 不支持快捷键能力、容器能力或菜单挂载。
 
 属性扩展行位于主视口下方、本体底部参数区上方。它按内容换行，受可用高度限制并支持滚动；空行不占高度。先通过 `mms.ui.surface.acquireAnchors` 查询位置和 `allowedKinds`，不能只凭服务版本假定旧宿主已有该位置。
 
@@ -58,7 +58,7 @@ Escape、隐藏和禁用取消草稿。输入法组合期间不提交，确认�
 
 原刷新服务支持 INPUT 的 REPAINT、默认属性 DATA 和保留布局的 LAYOUT，可指定 SELF 或已注册 SUBTREE。未建立显式 DATA 绑定时，SELF 请求的 `binding` 与 `sourceRevision` 都为 0，宿主在消费时重新读取属性。成功票据的 `sourceRevision` 仍为 0，不表示已消费某个发布快照。C++ 的 `RefreshPropertyCurrent` 和 `RefreshPropertyElementCurrent` 组合原请求与票据，见[刷新 SDK](cpp-refresh.md)。
 
-显式绑定继续使用准确来源版本。SELF 默认属性请求遇到显式绑定返回 CONFLICT；SUBTREE 中显式绑定优先，未绑定 INPUT 才读取属性。显式绑定的字节是插件自己的显示模型，不会自动解释为原生字段内容。INPUT 的 [STATE](state-content.md#input-状态)使用原提供者及队列，支持标签、提示和只能收紧的可用性。两个挂载根共用这些规则，能力以目标查询结果为准；自动属性订阅、侧栏、时间线和状态栏挂载尚未实现。
+显式绑定继续使用准确来源版本。SELF 默认属性请求遇到显式绑定返回 CONFLICT；SUBTREE 中显式绑定优先，未绑定 INPUT 才读取属性。显式绑定的字节是插件自己的显示模型，不会自动解释为原生字段内容。INPUT 的 [STATE](state-content.md#input-状态)使用原提供者及队列，支持标签、提示和只能收紧的可用性。四个原生控件挂载根共用这些规则，能力以目标查询结果为准；原属性自动订阅、时间线内部和状态栏挂载尚未实现。
 
 DATA 成功更新最新规范值缓存，活动草稿仍保留起始值和原始文本。过期草稿不能提交，Escape 恢复最新缓存。首次读取暂时失败时，宿主保留按类型创建的只读空字段；后续 DATA 成功后才建立真实值和编辑基线。准备或原生写入失败保留旧显示，回滚也失败时暂停该呈现并返回失败。
 

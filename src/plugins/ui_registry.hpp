@@ -12,7 +12,8 @@
 
 namespace mikumikustudio::plugins {
 inline bool NativeControlAnchor(std::string_view id) noexcept {
-    return id == "mms.toolbar.main.extensions" || id == "mms.properties.main.extensions";
+    return id == "mms.toolbar.main.extensions" || id == "mms.properties.main.extensions" ||
+        id == "mms.sidebar.left.extensions" || id == "mms.sidebar.right.extensions";
 }
 struct Json;
 class UiRegistry;

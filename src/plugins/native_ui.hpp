@@ -2,6 +2,9 @@
 #include "ui_registry.hpp"
 
 namespace mikumikustudio::plugins {
+struct LayoutReservations {
+    int toolbarHeight = 0, propertyHeight = 0, leftWidth = 0, rightWidth = 0;
+};
 class NativeUi {
     struct Impl;
     std::unique_ptr<Impl> impl_;
@@ -19,8 +22,16 @@ public:
     void SetPropertyArea(int bottom, int maximumHeight, bool visible);
     int PropertyAreaHeight() const noexcept;
     HWND PropertyArea() const noexcept;
+    // Main-window coordinates. Each side measures its original retained tree;
+    // an empty tree reserves zero width. Configure before the next Layout.
+    void SetSideAreas(RECT bounds, int maximumWidth, bool visible);
+    int LeftAreaWidth() const noexcept;
+    int RightAreaWidth() const noexcept;
+    HWND SideArea(bool right) const noexcept;
     // The refresh LAYOUT path calls this before publishing ready geometry;
     // the application updates dependent viewport geometry without scene work.
+    void SetLayoutPublished(std::function<MmsResult(const LayoutReservations&)>);
+    // Existing internal callers only consume the toolbar/workspace height.
     void SetLayoutPublished(std::function<MmsResult(int)>);
     HWND Toolbar() const;
     // Native painting/layout and popup tracking own adapter stacks independently

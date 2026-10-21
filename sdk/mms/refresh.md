@@ -160,11 +160,13 @@ request 返回 OK 只表示成功入队，不在后台调用 getState。面板�
 
 LAYOUT 使用现有布局树中的元素描述、布局提示、文字量测和已缓存的命令可见性重新排版。纯 LAYOUT 不查询所有命令状态，也不读取属性或准备 DATA。它不会创建尚未挂载的 surface；已有 surface 只收到必要的尺寸及显隐回调。失败面板的错误提示不会因布局请求而被清除。
 
-按钮 STATE 与 LAYOUT 组合可以在没有保留槽位提示时隐藏并收缩空位，也可以用同一目标引用恢复零尺寸按钮。需要重新查询命令可见性时，不能只发 LAYOUT。SELF 指状态和数据的单目标范围，保留树重排可能移动相邻元素。SUBTREE 选择注册后代；[DEPENDENTS](refresh-dependencies.md)选择显式图的可达目标。来源自动订阅未开放。
+按钮 STATE 与 LAYOUT 组合可以在没有保留槽位提示时隐藏并收缩空位，也可以用同一目标引用恢复零尺寸按钮。需要重新查询命令可见性时，不能只发 LAYOUT。SELF 指状态和数据的单目标范围，保留树重排可能移动相邻元素。SUBTREE 选择注册后代；[DEPENDENTS](refresh-dependencies.md)选择显式图的可达目标。已有显式 DATA binding 支持 [SELF 自动订阅](refresh-subscriptions.md)，依赖图自动传播尚未开放。
 
 宿主先应用原生布局，更新依赖该区域的视口几何，再发布目标和布局快照。此路径不调用 `HandleWindowSize`、`FrameDriver` 或偏好保存。布局回调处于只读保护，surface 提供者及其因果任务也受保护。它们不能借本次回调执行编辑、注册或递归 DATA/STATE/LAYOUT。
 
 布局失败可能发生在部分 HWND 已移动之后。宿主暂停目标和新几何快照，不把部分结果发布为就绪，也不承诺回滚已移动窗口。后续正常宿主布局成功后恢复发布；旧快照租约保持可读。
+
+仍挂载、实例未变化且支持 LAYOUT 的暂停目标，可以用原精确引用提交 SELF 的纯 LAYOUT 或 `LAYOUT | REPAINT` 进行修复。此时纯 REPAINT、STATE、DATA，以及含 STATE 或 DATA 的组合仍返回 NOT_READY。修复请求宜使用整目标、`expectedGeometryRevision=0`，成功后再查询几何。宿主会重试尚未成功的区域保留发布，即使测量宽高没有再次变化；只有原生应用和宿主同步均成功才恢复 ready。SUBTREE 和 DEPENDENTS 的暂停门禁保持不变，失效实例仍须重新取得目标。
 
 局部矩形使用捕获时的目标坐标。SELF 请求的 LAYOUT 改变几何修订时，旧矩形以 FAILED/STALE 结束；SUBTREE 按上述整树空间映射检查。两种范围均保留已成功的 completedKinds，不自动扩大为整目标重绘。需要随布局重绘时应提交无局部矩形、几何修订为 0 的整目标或整子树请求；完成后再重新查询几何以计算下一次局部损伤。
 
@@ -195,7 +197,7 @@ LAYOUT 使用现有布局树中的元素描述、布局提示、文字量测和�
 | `ARGUMENT` | 非法结构、未知标志、非法矩形、局部矩形缺少非零几何修订、不匹配的 DATA 绑定与版本、非默认 INPUT 的零绑定 SELF DATA、非 DATA 请求的非零 binding 或 sourceRevision、访问其他插件目标。 |
 | `CONFLICT` | 已建立显式 DATA 绑定的 INPUT 又请求默认属性读回。 |
 | `UNSUPPORTED` | DEPENDENTS 无可达目标或使用非空矩形、GROUP 的 SELF 或 DATA 绑定、阶段无适用成员、后端不支持该阶段、单独 STATE 无保留槽位的显隐变化，或查询非刷新目标。 |
-| `NOT_READY` | 停止中、目标未挂载、布局暂停、子树区域的共同坐标空间尚不一致、零尺寸目标请求不含可用的 LAYOUT，或显隐需要的布局尚未重新发布。 |
+| `NOT_READY` | 停止中、目标未挂载、布局暂停时请求不属于上述 SELF 布局修复、子树区域的共同坐标空间尚不一致、零尺寸目标请求不含可用的 LAYOUT，或显隐需要的布局尚未重新发布。 |
 | `STALE` | 元素注销、实例重建、工程或要求的几何修订不匹配、局部子树请求的空间映射改变，以及子树拓扑、默认属性记录或 DATA 绑定集合变化。 |
 | `NOT_FOUND` | 票据不存在、已释放或属于其他插件。 |
 | `BUSY` | 配额已满、取消执行中的贡献，或在同插件的 DATA/STATE/LAYOUT 只读因果链中再次提交 DATA/STATE/LAYOUT。 |

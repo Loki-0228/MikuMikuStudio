@@ -25,9 +25,11 @@ Win7 SP1 x64、CPU 绘制和 AMD 兼容是基础约束；不以 CUDA、NVAPI、A
 
 基础类型化和声明式注册已有 [C++17 SDK](../sdk/mms/cpp-ui.md)：`CommandUi` 用 `RegistrationBundle` 组合现有命令、菜单、按钮、分组和默认布局。原始 C 表、handle、权限及生命周期规则继续生效。失败回收受阻时保留引用，插件在 `stop` 中显式关闭并重试。数据刷新另由同层的 `data_refresh.hpp` 包装原来源、绑定和显示租约。
 
-工具栏 BUTTON、GROUP 和 SEPARATOR 可在原布局提示中选择 `MMS_UI_OVERFLOW_MENU=3`。空间不足时，宿主将后序命令呈现为「更多」菜单；空间恢复后使用原按钮 HWND 和 handle。分组可继承该策略，`MMS_HINT_KEEP_TOGETHER` 保持整组折叠。菜单使用原命令的状态和调用入口，STATE 更新已有项，注销或失效时移除对应项。该范围仅限 `mms.toolbar.main.extensions` 及其 GROUP，完整语义见 [SDK 工具栏命令溢出](../sdk/mms/cpp-ui.md#工具栏命令溢出)。INPUT 和属性扩展行不支持溢出菜单。DOCK、侧栏、时间线和状态栏挂载仍未开放。状态：**本机已验证**；完整配置 21／21、原始兼容配置 18／18、ABI 契约重复 6／6。实现与验收证据见 [UI 框架记录](records/abi-ui-framework-2026-10-19.md)。
+工具栏 BUTTON、GROUP 和 SEPARATOR 可在原布局提示中选择 `MMS_UI_OVERFLOW_MENU=3`。空间不足时，宿主将后序命令呈现为「更多」菜单；空间恢复后使用原按钮 HWND 和 handle。分组可继承该策略，`MMS_HINT_KEEP_TOGETHER` 保持整组折叠。菜单使用原命令的状态和调用入口，STATE 更新已有项，注销或失效时移除对应项。该范围仅限 `mms.toolbar.main.extensions` 及其 GROUP，完整语义见 [SDK 工具栏命令溢出](../sdk/mms/cpp-ui.md#工具栏命令溢出)。INPUT、属性扩展行和左右侧栏不支持溢出菜单。DOCK、时间线内部和状态栏挂载仍未开放。状态：**本机已验证**；该阶段完整配置 21／21、原始兼容配置 18／18、ABI 契约重复 6／6。实现与验收证据见 [UI 框架记录](records/abi-ui-framework-2026-10-19.md)。
 
 `mms.properties.main.extensions` 已在主视口下方、本体底部参数区上方提供真实扩展行，支持原 BUTTON、GROUP、SEPARATOR 和 INPUT。两个挂载根共享注册表、布局树、刷新队列及票据，插件按 `acquireAnchors` 和目标能力选择位置。属性行按内容换行和滚动，无内容时不占高度；停靠视口、覆盖区及使用该视口几何的交互同时避让。跨根移动保留原元素 handle 和属性记录，取消草稿并重建呈现实例。双配置挂载专项各 681 项、完整 ABI 契约各 17,565 项通过，验收边界见[属性扩展行记录](records/abi-property-mount-2026-10-21.md)。
+
+左右侧栏已增加 `mms.sidebar.left.extensions`、`mms.sidebar.right.extensions` 两个真实根，承载同一 BUTTON、GROUP、SEPARATOR、INPUT。宿主按内容测量列宽，中央挂载、视口、覆盖层及命中使用扣除两列后的区域。空组不占宽度，普通缩放保留原控件和草稿；跨根移动重建呈现实例。规则见[侧栏 SDK](../sdk/mms/side-mounts.md)，验证范围见[实现记录](records/abi-side-mounts-2026-10-22.md)。
 
 [重绘 SDK](../sdk/mms/cpp-refresh.md)用 `RefreshServices` 和 `RefreshTicket` 包装同一刷新 C 表，提供局部矩形便利方法、跨线程所有权移交及显式清理。原始票据可继续用于 C 接口，没有额外宿主实现。
 
@@ -122,7 +124,7 @@ C 包装返回同一底层句柄的带类型引用，C++ 包装增加可移动 R
 移交所有权必须显式完成，借用引用不能再次销毁；原生 `MmsHandle` 兼容保留，由宿主校验对象类型和 owner。
 局部注册失败时按逆序撤回本组已注册项目；这只是统一对象的批量清理，不建立第二套生命周期。
 插件停止时宿主仍负责最终回收，不能仅依赖 C++ 析构。便利层不得偷偷创建后台线程或替插件运行重任务。
-当前注册、工具栏及属性扩展行布局、INPUT、显式选择的工具栏溢出及受支持的刷新 ABI 可用。INPUT 和属性行不进入命令溢出菜单。DOCK、侧栏、时间线和状态栏挂载仍未开放，见 [SDK 当前服务](../sdk/mms/README.md#当前服务)。
+当前注册、工具栏及属性扩展行布局、[左右侧栏](../sdk/mms/side-mounts.md)、INPUT、显式选择的工具栏溢出及受支持的刷新 ABI 可用。INPUT、属性行和左右侧栏不进入命令溢出菜单。DOCK、时间线内部和状态栏挂载仍未开放，见 [SDK 当前服务](../sdk/mms/README.md#当前服务)。
 新增功能先检查服务及目标能力。溢出没有独立能力查询，旧宿主即使提供布局 1.0 也可能拒绝 `overflow=3`；须检查设置提示的结果，再由插件明确选择受支持菜单或报告不支持。
 上下文菜单依据目标身份和只读状态生成；异步结果到达后更新注册描述，不在菜单绘制或状态查询中等待计算。
 

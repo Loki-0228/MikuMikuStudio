@@ -381,7 +381,7 @@ bool StateSameRef(const MmsUiTargetRefV1& a, const MmsUiTargetRefV1& b) noexcept
 }
 UiRegistry::UiRegistry(std::function<void()> change, std::function<void(UiClient&, MmsResult)> finished):
     commandFinished_(std::move(finished)), refresh_(*this), preferences_(std::make_unique<Preferences>()), changed_(std::move(change)) {
-    for (const auto& [id, label, kind] : {std::tuple<const char*, const char*, uint32_t>{"mms.menu.plugins", "插件", MMS_UI_MENU}, {"mms.toolbar.main.extensions", "插件工具栏", MMS_UI_TOOLBAR}, {"mms.workspace.tabs.extensions", "插件工作区", MMS_UI_GROUP}, {"mms.properties.main.extensions", "属性区扩展", MMS_UI_TOOLBAR}}) {
+    for (const auto& [id, label, kind] : {std::tuple<const char*, const char*, uint32_t>{"mms.menu.plugins", "插件", MMS_UI_MENU}, {"mms.toolbar.main.extensions", "插件工具栏", MMS_UI_TOOLBAR}, {"mms.workspace.tabs.extensions", "插件工作区", MMS_UI_GROUP}, {"mms.properties.main.extensions", "属性区扩展", MMS_UI_TOOLBAR}, {"mms.sidebar.left.extensions", "左侧扩展", MMS_UI_TOOLBAR}, {"mms.sidebar.right.extensions", "右侧扩展", MMS_UI_TOOLBAR}}) {
         ElementRecord e; e.handle = next_++; e.arena = std::make_shared<Arena>(); e.desc.h = Header<MmsUiElementV1>();
         e.desc.id = e.arena->Copy(Text(id)); e.desc.ownerPlugin = e.arena->Copy(Text("mms")); e.desc.label = e.arena->Copy(Text(label));
         e.desc.kind = kind; e.desc.capabilities = MMS_UI_CONTAINER | (kind == MMS_UI_MENU ? 0 : MMS_UI_LAYOUT); e.desc.generation = generation_++;

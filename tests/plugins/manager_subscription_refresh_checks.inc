@@ -168,7 +168,7 @@ static void Run(const fs::path& root, const fs::path& library, bool oldSnapshot)
     edits.Clean(historyRevision, historyBytes, undo, redo);
     CHECK(probe.releaseHold() == MMS_OK && manager.Stop() && manager.Status()[0].stage == "stopped");
     CHECK(count("SUBSCRIPTION_PROBE_DESTROY") == 1 && GetModuleHandleW(L"subscription-refresh-probe.dll") == nullptr);
-    CHECK(manager.Ui().commands.empty() && manager.Ui().elements.size() == 4);
+    CHECK(manager.Ui().commands.empty() && manager.Ui().elements.size() == 6);
     native.reset(); CHECK(manager.Stop()); edits.Close();
 }
 } // namespace manager_subscription_refresh_checks

@@ -138,7 +138,7 @@ static void Run(const fs::path& root, const fs::path& lifecycleDll, bool stopPen
     probe.ReleaseWorker();
     CHECK(manager.Stop() && manager.Status()[0].stage == "stopped" && count("DESTROY") == 1);
     CHECK(GetModuleHandleW(L"refresh-lifecycle.dll") == nullptr);
-    CHECK(manager.Ui().commands.empty() && manager.Ui().elements.size() == 4);
+    CHECK(manager.Ui().commands.empty() && manager.Ui().elements.size() == 6);
     native.reset(); CHECK(manager.Stop());
 }
 } // namespace manager_refresh_checks

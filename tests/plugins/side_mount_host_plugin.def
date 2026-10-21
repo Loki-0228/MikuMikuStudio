@@ -1,0 +1,6 @@
+EXPORTS
+    MMSPluginGetApi
+    SideMountProbeQuery
+    SideMountProbeHandle
+    SideMountProbeChange
+    SideMountProbeTarget

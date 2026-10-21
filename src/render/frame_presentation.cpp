@@ -75,7 +75,8 @@ static bool ReadFrameGeometry(MMDApp* app,FrameViewportGeometry& geometry) {
     if(!window||IsIconic(window)||!GetClientRect(window,&client)){geometry={};return false;}
     return CalculateFrameViewport(client,app->SidebarWidth(),plugins::ToolbarHeight(app),
         fullscreen?FrameViewportMode::Fullscreen:app->FloatingWindow()?FrameViewportMode::Floating:FrameViewportMode::Docked,
-        app->RenderWidth(),app->RenderHeight(),geometry,plugins::PropertyAreaHeight(app));
+        app->RenderWidth(),app->RenderHeight(),geometry,plugins::PropertyAreaHeight(app),
+        plugins::LeftAreaWidth(app),plugins::RightAreaWidth(app));
 }
 
 static RECT BasePresentationRect(MMDApp* app) {

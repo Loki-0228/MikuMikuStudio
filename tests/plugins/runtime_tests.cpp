@@ -55,10 +55,12 @@ static std::string ManifestText(std::string id = "org.example.hello", std::strin
 #include "input_state_content_checks.inc"
 #include "input_state_prefix_checks.inc"
 #include "property_mount_checks.inc"
+#include "side_mount_checks.inc"
 #include "panel_state_refresh_checks.inc"
 #include "menu_state_refresh_checks.inc"
 #include "overflow_menu_checks.inc"
 #include "ui_refresh_dependency_checks.inc"
+#include "ui_refresh_recovery_checks.inc"
 #include "cpp_refresh_dependency_checks.inc"
 #include "manager_dependency_refresh_checks.inc"
 #include "overflow_validation_checks.inc"
@@ -271,7 +273,7 @@ static void UiPreferenceChecks() {
     CHECK(loaded.registry.ExportPreferences().find("example.preferences.a") == std::string::npos);
     op = {}; op.operation = MMS_LAYOUT_RESTORE; loaded.Commit(op); CHECK(loaded.registry.ExportPreferences() == empty && loaded.registry.elements.count("example.editor.group") == 0);
     Fixture dormant; CHECK(dormant.registry.ImportPreferences(saved) == MMS_OK); dormant.Commit(op);
-    CHECK(dormant.registry.ExportPreferences() == empty && dormant.registry.elements.size() == 4);
+    CHECK(dormant.registry.ExportPreferences() == empty && dormant.registry.elements.size() == 6);
     Fixture constrained; constrained.Register();
     op = {}; op.operation = MMS_LAYOUT_SIZE; op.elementId = S("example.preferences.a"); op.value.size = {100, 40}; constrained.Commit(op);
     const auto sizeSaved = constrained.registry.ExportPreferences();
@@ -383,6 +385,12 @@ int wmain(int argc, wchar_t** argv) {
         if (argc == 2 && std::wstring(argv[1]) == L"--property-mount-only") {
             PropertyMountChecks(); std::cout << "PASS property mount checks=" << checks << "\n"; return 0;
         }
+        if (argc == 2 && std::wstring(argv[1]) == L"--side-mount-only") {
+            SideMountChecks(); std::cout << "PASS side mount checks=" << checks << "\n"; return 0;
+        }
+        if (argc == 2 && std::wstring(argv[1]) == L"--recovery-only") {
+            UiRefreshRecoveryChecks(); std::cout << "PASS refresh recovery checks=" << checks << "\n"; return 0;
+        }
         if (argc == 3 && std::wstring(argv[1]) == L"--property-data-only") {
             CHECK(!fs::exists(root)); fs::create_directories(root);
             PropertyDataRefreshChecks(); NativePropertyDataChecks(root, fs::absolute(argv[2]));
@@ -459,9 +467,10 @@ int wmain(int argc, wchar_t** argv) {
         CHECK(argc == 4); CHECK(!fs::exists(root)); fs::create_directories(root);
         JsonChecks(); DiscoveryChecks(root); UiChecks(); UiPreferenceChecks(); UiPreferencesFileChecks(root); LayoutChecks(); TreeLayoutChecks(); LayoutServiceChecks(); OverflowValidationChecks(); OverflowMenuChecks(); UpdateChecks(); Win32HostChecks(); SurfaceChecks(); CppSdkChecks(); CppInputSdkChecks(); LoaderChecks(root, fs::absolute(argv[1]));
         LifecycleChecks(root, fs::absolute(argv[2])); TaskDispatchChecks(root, fs::absolute(argv[2]), fs::absolute(argv[3]));
-        SceneChecks(); StorageChecks(root); EditChecks(); UiPropertyStageChecks(); SharedHistoryChecks(); StateContentChecks(); InputStateContentChecks(); InputStatePrefixChecks(); PropertyMountChecks(); PanelStateRefreshChecks(); MenuStateRefreshChecks();
+        SceneChecks(); StorageChecks(root); EditChecks(); UiPropertyStageChecks(); SharedHistoryChecks(); StateContentChecks(); InputStateContentChecks(); InputStatePrefixChecks(); PropertyMountChecks(); SideMountChecks(); PanelStateRefreshChecks(); MenuStateRefreshChecks();
         UiRefreshSubtreeChecks(); UiRefreshSubtreeRectChecks();
         UiRefreshDependencyChecks(); CppRefreshDependencyChecks();
+        UiRefreshRecoveryChecks();
         UiRefreshSubscriptionChecks(); CppRefreshSubscriptionChecks();
         ManagerEditChecks(root, fs::absolute(argv[3]));
         UiInputBrokerChecks(root, fs::absolute(argv[3]));

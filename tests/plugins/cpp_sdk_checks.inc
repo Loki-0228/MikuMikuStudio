@@ -1,4 +1,5 @@
 #include <mms/cpp/ui.hpp>
+#include <set>
 #include <type_traits>
 
 namespace cpp_sdk_checks {
@@ -215,7 +216,7 @@ static void LayeredChecks() {
     CHECK(services.ui().updateElement(services.ui().context, control.button().handle, &element) == MMS_OK);
     CHECK(x.registry.elements.at("example.cppsdk.button").handle == control.button().handle);
     CHECK(control.Close() == MMS_OK && control.Close() == MMS_OK && control.registrations().size() == 0);
-    CHECK(x.registry.commands.empty() && x.registry.elements.size() == 4);
+    CHECK(x.registry.commands.empty() && x.registry.elements.size() == 6);
     CHECK(x.removed.size() == 4 && x.removed.back() == x.added.front());
     const auto child = std::find(x.removed.begin(), x.removed.end(), x.added.back());
     CHECK(child != x.removed.end());
@@ -304,7 +305,7 @@ static void FailureChecks() {
         Host x; auto services = x.Services(); sdk::CommandUi control(services); x.failRegistration = failure;
         CHECK(control.Register(x.Spec()) == MMS_E_FAILED);
         CHECK(control.cleanup_result() == MMS_OK && control.registrations().size() == 0);
-        CHECK(x.registry.commands.empty() && x.registry.elements.size() == 4);
+        CHECK(x.registry.commands.empty() && x.registry.elements.size() == 6);
         CHECK(x.added.size() == failure - 1 && x.removed.size() == x.added.size());
         CHECK(std::equal(x.removed.begin(), x.removed.end(), x.added.rbegin()));
     }
@@ -366,7 +367,23 @@ static void PropertySurfaceLeaseChecks() {
     CHECK(services.ui().getCommandState(services.ui().context, sdk::Text("example.cppsdk.command"), {}, &state, &stateLease) == MMS_OK);
     CHECK(stateLease != 0 && String(state.disabledReason) == x.reason);
     MmsSpan anchors{}; MmsHandle anchorLease = 0;
-    CHECK(services.surface().acquireAnchors(services.surface().context, &anchors, &anchorLease) == MMS_OK && anchors.count == 4);
+    CHECK(services.surface().acquireAnchors(services.surface().context, &anchors, &anchorLease) == MMS_OK && anchors.count == 6);
+    const uint64_t controls = (1ull << MMS_UI_BUTTON) | (1ull << MMS_UI_GROUP) | (1ull << MMS_UI_SEPARATOR) | (1ull << MMS_UI_INPUT);
+    const std::map<std::string, uint64_t> expectedAnchors{
+        {"mms.menu.plugins", (1ull << MMS_UI_MENU) | (1ull << MMS_UI_MENU_ITEM) | (1ull << MMS_UI_SEPARATOR)},
+        {"mms.toolbar.main.extensions", controls}, {"mms.properties.main.extensions", controls},
+        {"mms.sidebar.left.extensions", controls}, {"mms.sidebar.right.extensions", controls},
+        {"mms.workspace.tabs.extensions", 1ull << MMS_UI_PANEL}};
+    std::set<std::string> anchorIds;
+    for (uint64_t i = 0; i < anchors.count; ++i) {
+        const auto& anchor = *reinterpret_cast<const MmsUiAnchorV1*>(static_cast<const unsigned char*>(anchors.data) + size_t(i * anchors.stride));
+        const auto id = String(anchor.id); CHECK(expectedAnchors.count(id) && anchorIds.insert(id).second);
+        CHECK(anchor.allowedKinds == expectedAnchors.at(id) && !anchor.reserved);
+        CHECK(anchor.flags == (id == "mms.workspace.tabs.extensions" ? MMS_ANCHOR_NATIVE_CHILD : 0));
+        if (id == "mms.sidebar.left.extensions" || id == "mms.sidebar.right.extensions")
+            CHECK(x.registry.elements.at(id).desc.kind == MMS_UI_TOOLBAR &&
+                x.registry.elements.at(id).desc.capabilities == (MMS_UI_CONTAINER | MMS_UI_LAYOUT));
+    }
     std::map<std::string, UiRegistry::Geometry> geometry;
     for (const auto& entry : x.registry.elements) geometry.emplace(entry.first, UiRegistry::Geometry{1, 2, 190, 80, true, false});
     CHECK(x.registry.PublishGeometry(geometry, x.registry.Revision()));
@@ -381,7 +398,7 @@ static void PropertySurfaceLeaseChecks() {
     const auto* properties = static_cast<const MmsPropertyInfoV1*>(snapshot.properties.data);
     CHECK(String(properties[0].id) == "example.cppsdk.text");
     CHECK(static_cast<const MmsUiAnchorV1*>(anchors.data)[0].id.bytes != 0);
-    CHECK(layoutSnapshot.items.count == 4 && static_cast<const MmsUiLayoutItemV1*>(layoutSnapshot.items.data)[0].elementId.bytes != 0);
+    CHECK(layoutSnapshot.items.count == 6 && static_cast<const MmsUiLayoutItemV1*>(layoutSnapshot.items.data)[0].elementId.bytes != 0);
     CHECK(x.removed.back() == surface.handle);
     CHECK(std::find(x.removed.begin(), x.removed.end(), panel.handle) < std::find(x.removed.begin(), x.removed.end(), surface.handle));
     services.ui().releaseSnapshot(services.ui().context, snapshot.handle);
@@ -399,7 +416,7 @@ static void PropertySurfaceLeaseChecks() {
     CHECK(gates.AddProperty(badProperty) == MMS_E_NOT_READY && gates.size() == 0);
     auto input = x.Button("example.cppsdk.input"); input.kind = MMS_UI_INPUT; input.commandId = {};
     CHECK(gates.AddElement(input) == MMS_E_ARGUMENT && gates.size() == 0);
-    CHECK(gates.Close() == MMS_OK && x.registry.elements.size() == 4);
+    CHECK(gates.Close() == MMS_OK && x.registry.elements.size() == 6);
 }
 } // namespace cpp_sdk_checks
 

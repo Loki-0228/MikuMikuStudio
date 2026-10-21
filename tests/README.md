@@ -235,3 +235,11 @@ MME 测试需在独立目录放入三个 MME DLL，日志必须显示 `PLUGINS m
 `legacy_pose_match_tests`、`legacy_model_paste_tests`、`legacy_bone_curve_history_tests` 使用真实未绑定入口，分别验证姿态／VPD 唯一匹配及准备故障、模型三族七种粘贴组合、自动插值邻键与 Free 范围伸缩。两个构建配置均保留；Free 和 Scale 仅在完整配置验收。内存预算扫描保留 before-image 失败不变及范围收尾失败标脏、Undo 恢复断言，不将普通登记当作整体原子事务。
 
 `legacy_mme_save_checks` 由 `project_open_identity_runner.py` 复制到独立 EXE／data 目录，真实执行 PMM 保存和轮换，通过原创队列 mock 检查通知和同名 EMM 清理。它不加载第三方 MME，也不证明其效果分配或落盘完成。详细范围及后续关闭需求见[本批记录](../docs/records/abi-ordinary-edit-history-2026-10-19.md)。这些测试保留为回归；相关行为移除后再评估清理。
+
+## 左右插件侧栏和布局恢复
+
+`plugin_abi_tests --side-mount-only` 使用真实 Registry、NativeUi、INPUT 和小型共同历史夹具，验证左右列布局、命令调用、草稿、滚动、跨根实例失效及失败后直接重试。`--recovery-only` 使用真实 STATE 显隐发布失败构造单子控件暂停，检查 SUBTREE、DEPENDENTS 的接收和执行门禁。两项均加入默认 ABI 契约及 CTest，完整和原始兼容配置都可运行。
+
+完整配置另提供 `side_mount_host_tests` 目标，并依赖原创 `mms_side_mount_host_probe` DLL。先将该 EXE 复制到全新目录，再运行 `side_mount_host_tests <probe DLL绝对路径> ordinary`；共同历史模式将末尾改为 `bound`，每次使用新的 EXE 目录。程序只在自己的目录创建 PLUGINS 包，遇到已有目录即拒绝，不覆盖或删除旧夹具。该目标不直接加入 CTest，避免默认执行向固定 EXE 目录反复写入。
+
+实际宿主专项检查 Present 参数、覆盖层及控件边界、分隔线、两档 resize、浮动／全屏和移除恢复，并核对实际场景、键池及历史。它按同一 DPI 坐标系的 max-track 边界选择尺寸，仍要求精确客户区尺寸和最低拖拽余量。运行继承当前桌面，隐藏保护仅作用于自有顶层窗口，不发送全局鼠标或键盘输入；不作为私有桌面、肉眼无闪烁或真实 IME 验收。结果与边界见[本批记录](../docs/records/abi-side-mounts-2026-10-22.md)。

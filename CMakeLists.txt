@@ -637,6 +637,12 @@ if(MIKUMIKUSTUDIO_PROFILE STREQUAL "full")
     target_link_libraries(small_viewport_host_tests PRIVATE mikumikustudio_core minhook::minhook winmm dsound)
     set_target_properties(small_viewport_host_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/viewport/$<CONFIG>")
 
+    add_executable(side_mount_host_tests EXCLUDE_FROM_ALL tests/side_mount_host_tests.cpp
+        exports/MikuMikuDance.def)
+    target_link_options(side_mount_host_tests PRIVATE "/MANIFEST:NO")
+    target_link_libraries(side_mount_host_tests PRIVATE mikumikustudio_core minhook::minhook winmm dsound)
+    set_target_properties(side_mount_host_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/side-mount-host/$<CONFIG>")
+
     add_executable(trackbar_buffer_tests EXCLUDE_FROM_ALL tests/trackbar_buffer_tests.cpp)
     target_compile_definitions(trackbar_buffer_tests PRIVATE _WIN32_WINNT=0x0601 WINVER=0x0601)
     target_link_libraries(trackbar_buffer_tests PRIVATE user32 gdi32 comctl32 uxtheme)
@@ -1086,6 +1092,10 @@ target_link_options(pmm_input_host_tests PRIVATE "/MANIFEST:NO" "${MIKUMIKUSTUDI
 if(TARGET small_viewport_host_tests)
     target_sources(small_viewport_host_tests PRIVATE res/MMD.rc ${MIKUMIKUSTUDIO_GEN_RES})
     target_link_options(small_viewport_host_tests PRIVATE "${MIKUMIKUSTUDIO_GEN_RES}")
+endif()
+if(TARGET side_mount_host_tests)
+    target_sources(side_mount_host_tests PRIVATE res/MMD.rc ${MIKUMIKUSTUDIO_GEN_RES})
+    target_link_options(side_mount_host_tests PRIVATE "${MIKUMIKUSTUDIO_GEN_RES}")
 endif()
 target_sources(legacy_mme_save_checks PRIVATE res/MMD.rc ${MIKUMIKUSTUDIO_GEN_RES})
 target_link_options(legacy_mme_save_checks PRIVATE "/MANIFEST:NO" "${MIKUMIKUSTUDIO_GEN_RES}")

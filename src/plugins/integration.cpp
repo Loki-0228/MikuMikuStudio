@@ -60,7 +60,7 @@ std::unique_ptr<NativePoseTestBinding> migrationBinding;
 std::unique_ptr<SharedHistory::ResetTransaction> projectHistoryReset;
 MMDApp* owner = nullptr;
 std::uint64_t runtimeBinding = 0;
-int toolbarHeight = 0, propertyAreaHeight = 0;
+int toolbarHeight = 0, propertyAreaHeight = 0, leftAreaWidth = 0, rightAreaWidth = 0;
 bool refreshing = false, closing = false;
 bool historyUiPending = false;
 PluginProject currentProject, pendingProject;
@@ -176,10 +176,12 @@ static void InitializeRuntime(MMDApp* app, bool migrationTest) {
         }
 #endif
         ui = std::make_unique<NativeUi>(manager->Ui(), app->MainWindow(), LogMessage);
-        ui->SetLayoutPublished([app](int height) -> MmsResult {
+        ui->SetLayoutPublished([app](const LayoutReservations& areas) -> MmsResult {
             if (closing || owner != app || !app->WindowLayoutReady() || app->SceneMutationInProgress()) return MMS_E_NOT_READY;
-            toolbarHeight = height;
-            propertyAreaHeight = ui->PropertyAreaHeight();
+            toolbarHeight = areas.toolbarHeight;
+            propertyAreaHeight = areas.propertyHeight;
+            leftAreaWidth = areas.leftWidth;
+            rightAreaWidth = areas.rightWidth;
             // Only the geometry that depends on the plugin strip changes.
             // Do not enter HandleWindowSize, FrameDriver or scene evaluation.
             return Boundary([&] {
@@ -246,7 +248,9 @@ void Shutdown() {
 #if !MMD_ORIGINAL_PROFILE
     historyCommandHost.reset();
 #endif
-    history.reset(); manager.reset(); projectEvents.clear(); toolbarHeight = propertyAreaHeight = 0; owner = nullptr; historyUiPending = false;
+    history.reset(); manager.reset(); projectEvents.clear();
+    toolbarHeight = propertyAreaHeight = leftAreaWidth = rightAreaWidth = 0;
+    owner = nullptr; historyUiPending = false;
 }
 SharedHistory* NativeHistory(MMDApp* app) noexcept { return app == owner && !closing ? history.get() : nullptr; }
 void RequestBoundHistoryUiRefresh(MMDApp* app) noexcept {
@@ -261,19 +265,28 @@ void Layout(MMDApp* app) {
         int left = app->SidebarWidth() + 9;
         const bool shown = !app->FullscreenMode() && !app->FloatingWindow();
         const int maximum = std::max(0L, (rect.bottom - 217) / 3);
+        const int availableWidth = std::max(0L, rect.right - left);
+        ui->SetSideAreas({left, 25, rect.right, std::max(25L, rect.bottom - 192)}, availableWidth / 3, shown);
         ui->SetPropertyArea(std::max(0L, rect.bottom - 160), maximum, shown);
-        toolbarHeight = ui->Layout(left, std::max(0L, rect.right - left), maximum, shown);
+        toolbarHeight = ui->Layout(left, availableWidth, maximum, shown);
         propertyAreaHeight = ui->PropertyAreaHeight();
+        leftAreaWidth = ui->LeftAreaWidth();
+        rightAreaWidth = ui->RightAreaWidth();
         return MMS_OK;
     });
 }
-int ToolbarHeight(MMDApp* app) { return app == owner && !app->FullscreenMode() && !app->FloatingWindow() ? toolbarHeight : 0; }
+int ToolbarHeight(MMDApp* app) { return app && app == owner && !app->FullscreenMode() && !app->FloatingWindow() ? toolbarHeight : 0; }
 int PropertyAreaHeight(MMDApp* app) { return app && app == owner && !app->FullscreenMode() && !app->FloatingWindow() ? propertyAreaHeight : 0; }
+int LeftAreaWidth(MMDApp* app) { return app && app == owner && !app->FullscreenMode() && !app->FloatingWindow() ? leftAreaWidth : 0; }
+int RightAreaWidth(MMDApp* app) { return app && app == owner && !app->FullscreenMode() && !app->FloatingWindow() ? rightAreaWidth : 0; }
 void Refresh(MMDApp* app) {
     if (!ui || app != owner || refreshing || closing) return;
     if (manager && manager->InCallback()) { SetTimer(app->MainWindow(), kHistoryUiRetry, 16, nullptr); return; }
-    refreshing = true; const auto old = toolbarHeight, oldProperties = propertyAreaHeight;
-    Boundary([&] { ui->Refresh(); Layout(app); if (toolbarHeight != old || propertyAreaHeight != oldProperties) HandleWindowSize(app);
+    refreshing = true;
+    const auto old = toolbarHeight, oldProperties = propertyAreaHeight, oldLeft = leftAreaWidth, oldRight = rightAreaWidth;
+    Boundary([&] { ui->Refresh(); Layout(app);
+        if (toolbarHeight != old || propertyAreaHeight != oldProperties || leftAreaWidth != oldLeft || rightAreaWidth != oldRight)
+            HandleWindowSize(app);
 #if !MMD_ORIGINAL_PROFILE
         if (historyUiPending && history && manager && !manager->InCallback() && !app->SceneMutationInProgress()) {
             historyUiPending = !RefreshBoundObjectUi(*app, *history);

@@ -555,10 +555,11 @@ void HandlePaletteChanged2(HDC hdc) {
         GetClientRect(hwnd, &rc);
         xBase = app->SidebarWidth() + 9;
     }
-    const LONG right = rc.right;   // ebp
+    const auto panels = FramePanelLayout(app);
+    if (!MMD_ORIGINAL_PROFILE) xBase = panels.overlay.left;
+    const LONG right = MMD_ORIGINAL_PROFILE ? rc.right : panels.overlay.right;   // ebp
     const LONG blitX = rc.right;   // v26 (BitBlt x base)
 
-    const auto panels = FramePanelLayout(app);
     // Existing text positions remain logical single-row coordinates. The
     // shared layout maps each group into its final row below.
     const std::int32_t hideTop = panels.topBand.top + 25;

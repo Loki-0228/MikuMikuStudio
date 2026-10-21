@@ -252,7 +252,7 @@ void RefreshMainWindowViewport(MMDApp* app) {  // was Sub42C810
     if(editor){
         FrameViewportGeometry geometry;
         if(IsIconic(hwnd)||!CalculateFrameViewport(view,s.SidebarWidth(),pluginHeight,FrameViewportMode::Docked,
-            renderWidth,renderHeight,geometry,propertyHeight)){view={};return;}
+            renderWidth,renderHeight,geometry,propertyHeight,plugins::LeftAreaWidth(app),plugins::RightAreaWidth(app))){view={};return;}
         view=geometry.scene;
     }else{
     const int availableHeight = std::max(1L, view.bottom - 217 - pluginHeight - propertyHeight);

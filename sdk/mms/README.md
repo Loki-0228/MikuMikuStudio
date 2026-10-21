@@ -14,6 +14,8 @@
 
 [属性扩展行](../../docs/records/abi-property-mount-2026-10-21.md) `mms.properties.main.extensions` 已支持 BUTTON、GROUP、SEPARATOR 和 INPUT。它位于主视口下方、本体底部参数区上方，与原工具栏共用对象身份、布局及刷新队列。C 接口填写 `parentId`，C++ 声明填写对应 `parent`；先通过 `acquireAnchors` 查询实际位置。空区域不占高度，命令溢出菜单仍只支持原工具栏。
 
+[左右侧栏](side-mounts.md)提供 `mms.sidebar.left.extensions` 和 `mms.sidebar.right.extensions`，承载同一批原生控件。宿主测量列宽并为中央区域和视口避让；空列不占宽度，普通缩放保留 INPUT 草稿和原实例。
+
 界面异步刷新已提供 [mms.ui.refresh 参考](refresh.md)，支持 SELF 和 SUBTREE 的 REPAINT、按钮及 INPUT STATE、保留布局 LAYOUT，以及[绑定 DATA 和分层 SDK](data-refresh.md)，复用同一刷新票据。GROUP 使用原 handle 开放 SUBTREE。后续设计以[统一插件扩展架构](../../docs/PLUGIN_EXTENSION_ARCHITECTURE.md)为准，另见 [UI 呈现与刷新扩展](../../docs/PLUGIN_UI_PRESENTATION.md)、[多视口与洋葱皮](../../docs/PLUGIN_VIEWPORT_RENDERING.md)及[数据格式与编辑工具](../../docs/PLUGIN_DATA_EXTENSIONS.md)。各页标明已实现范围，其余服务及工具封装仍为提案。
 
 ## 开发环境
@@ -60,7 +62,7 @@ cmake --build build/hello-menu --config Release
 | `mms.storage` 1.0 | 插件工程数据、两阶段加载、只读保存数据租约；PMM 与扩展文件成对保存和中断恢复。提供者名为 `mms.serializer`。 |
 | 其他服务 | 尚未接入，`queryService` 返回 NOT_FOUND。 |
 
-可写属性的[暂存及事务桥](property-stage.md)已在受控编辑宿主中实现，仍使用原 `mms.ui` 表及属性身份。[声明式 INPUT](input.md)及同对象 C++ 包装已接入工具栏、属性扩展行和这两个根下的 GROUP，包含草稿、取消、重绑和共同历史。普通宿主查询 `mms.edit` 返回 NOT_FOUND，属性暂存返回 NOT_READY，INPUT 显示为只读。DOCK 返回 UNSUPPORTED。侧栏、时间线和状态栏挂载点尚未开放，全部本体控件及命令也尚未登记。布局撤销历史尚未接入。未支持的操作不会返回成功。
+可写属性的[暂存及事务桥](property-stage.md)已在受控编辑宿主中实现，仍使用原 `mms.ui` 表及属性身份。[声明式 INPUT](input.md)及同对象 C++ 包装已接入工具栏、属性扩展行、左右侧栏及各根下的 GROUP，包含草稿、取消、重绑和共同历史。普通宿主查询 `mms.edit` 返回 NOT_FOUND，属性暂存返回 NOT_READY，INPUT 显示为只读。DOCK 返回 UNSUPPORTED。时间线内部和状态栏挂载点尚未开放，全部本体控件及命令也尚未登记。布局撤销历史尚未接入。未支持的操作不会返回成功。
 
 布局事务的用户覆盖由宿主保存，重启或 EXE 改名后按稳定 ID 恢复。缺失插件的配置继续保留。保存位置、默认值合并和失败行为见[界面布局保存](ui-preferences.md)。
 
