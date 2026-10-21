@@ -66,6 +66,7 @@ static std::string ManifestText(std::string id = "org.example.hello", std::strin
 #include "ui_refresh_dependency_checks.inc"
 #include "scoped_subscription_checks.inc"
 #include "scoped_property_checks.inc"
+#include "binding_observation_checks.inc"
 #include "ui_refresh_recovery_checks.inc"
 #include "cpp_refresh_dependency_checks.inc"
 #include "manager_dependency_refresh_checks.inc"
@@ -381,6 +382,10 @@ static void LifecycleChecks(const fs::path& root, const fs::path& fixture) {
 int wmain(int argc, wchar_t** argv) {
     const fs::path root = fs::temp_directory_path() / (L"mms-abi-contract-" + std::to_wstring(GetCurrentProcessId()));
     try {
+        if (argc == 2 && std::wstring(argv[1]) == L"--binding-observation-only") {
+            BindingObservationChecks();
+            std::cout << "PASS binding observation checks=" << checks << "\n"; return 0;
+        }
         if ((argc == 2 || argc == 3) && std::wstring(argv[1]) == L"--scoped-subscription-only") {
             CHECK(!fs::exists(root)); fs::create_directories(root);
             CppScopedRefreshSubscriptionChecks(); ScopedSubscriptionChecks();
@@ -492,6 +497,7 @@ int wmain(int argc, wchar_t** argv) {
         if ((argc == 2 || argc == 3) && std::wstring(argv[1]) == L"--scoped-property-only") {
             CHECK(!fs::exists(root)); fs::create_directories(root);
             CppScopedPropertyRefreshChecks(); ScopedPropertyChecks();
+            BindingObservationChecks();
             if (argc == 3) ManagerScopedPropertyChecks(root, fs::absolute(argv[2]));
             std::cout << "PASS scoped property checks=" << checks << "\n"; fs::remove_all(root); return 0;
         }
@@ -506,6 +512,7 @@ int wmain(int argc, wchar_t** argv) {
         CppPropertyRefreshChecks(); PropertyRefreshChecks();
         CppScopedRefreshSubscriptionChecks(); ScopedSubscriptionChecks();
         CppScopedPropertyRefreshChecks(); ScopedPropertyChecks();
+        BindingObservationChecks();
         ManagerEditChecks(root, fs::absolute(argv[3]));
         UiInputBrokerChecks(root, fs::absolute(argv[3]));
         NativePropertyInputChecks(root, fs::absolute(argv[3]));

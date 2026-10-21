@@ -58,6 +58,12 @@ struct UiPropertyRefresh::Impl {
         // source observation lands, the cached sourceMissing describes the old
         // binding set and must not suppress the one re-capture the event needs.
         bool bindingObservationPending = false;
+        // The work generation whose claim owned that one capture, and a real
+        // capacity retry opportunity for the same still-pending capture. Only
+        // those two may re-open it; a plain catch-up observation installs the
+        // watch and keeps the original Request result and park.
+        uint64_t bindingClaimedWork = 0;
+        bool bindingRetryOpportunity = false;
         std::array<MmsUiTargetRefV1, 256> members{};
         size_t memberCount = 0, sourceCount = 0;
         std::array<UiRefreshBindings::PropertySource, 128> sources{};
@@ -95,6 +101,13 @@ struct UiPropertyRefresh::Impl {
     }
     bool Current(const Owner& owner) const noexcept { return owner.ui && !owner.retired && !owner.client->stopping.load(); }
     static bool Scoped(const Subscription& sub) noexcept { return sub.scope != MMS_UI_REFRESH_SELF; }
+    // A pending real binding capture is fresh only for a newer real work
+    // generation or for a real capacity retry opportunity. The work a claim
+    // already consumed can never re-open itself.
+    static bool FreshBinding(const Subscription& sub) noexcept {
+        return sub.bindingObservationPending &&
+            (sub.bindingClaimedWork < sub.workGeneration || sub.bindingRetryOpportunity);
+    }
     void ArmScoped(Subscription& sub) noexcept {
         if (sub.ticket || sub.claimed) return;
         if (sub.structurePending && !sub.structureProbe) {
@@ -103,8 +116,9 @@ struct UiPropertyRefresh::Impl {
             sub.waiting = 0; sub.armed = true; return;
         }
         // A pending real binding event makes the cached sourceMissing stale.
-        // Re-capture once, while a real scope block still parks the mailbox.
-        const bool missing = sub.sourceMissing && !sub.bindingObservationPending;
+        // Only its fresh opportunity may use that bypass; a spent event keeps
+        // the cached park. A real scope block still parks the mailbox.
+        const bool missing = sub.sourceMissing && !FreshBinding(sub);
         sub.waiting = sub.scopeBlock | (missing ? MMS_UI_PROPERTY_REFRESH_WAIT_SOURCE : 0);
         sub.armed = !sub.waiting;
     }
@@ -143,20 +157,34 @@ struct UiPropertyRefresh::Impl {
             publication |= old != sub.sources.begin() + sub.sourceCount && source.revision > old->revision;
         }
         sub.sourceCount = sources.size(); std::copy(sources.begin(), sources.end(), sub.sources.begin()); sub.sourceMissing = missing;
-        // A complete observation is the handshake the binding event awaited.
-        // The cached missing state now describes the current binding set, so
-        // parks are decided again from these sources and the real scope block.
+        // This complete observation installs the watch and consumes the real
+        // binding event it belongs to. A fresh opportunity arms from these
+        // sources and the real block; an ordinary catch-up observation only
+        // corrects metadata and keeps the original Request park. Counting the
+        // captured binding set again as another change would replay the one
+        // work generation ScopedBindingPublished already recorded.
         const bool bindingEvent = sub.bindingObservationPending;
+        const bool freshBinding = FreshBinding(sub);
         const bool hostWake = (sub.waiting & MMS_UI_PROPERTY_REFRESH_WAIT_HOST_WAKE) != 0;
-        sub.bindingObservationPending = false;
+        sub.bindingObservationPending = false; sub.bindingRetryOpportunity = false;
         if (publication && sub.sourcePublication != UINT64_MAX) ++sub.sourcePublication;
-        if (bindingEvent && hostWake) {
-            // The real binding event already recorded this work and the host
-            // wake really failed. A successful observation that only installs
-            // the missing watch is not another event: keep that park and only
-            // refresh the captured source/block state. Only a later real
-            // publication or notify whose host wake is delivered may recover it.
-            ReparkScoped(sub, true);
+        if (bindingEvent) {
+            if (sub.ticket || sub.claimed) {
+                // The claim or ticket owns the schedule; only the metadata lands.
+            } else if (!freshBinding && !sub.armed) {
+                // A spent event's catch-up observation must not start work or
+                // clear a real park. Keep the original Request result and its
+                // CONSUMER/CAPACITY/DISPLAY/HOST_WAKE park; only the real
+                // TARGET/GRAPH/SOURCE bits follow these members and sources.
+                sub.waiting = (sub.waiting & ~(MMS_UI_PROPERTY_REFRESH_WAIT_TARGET |
+                    MMS_UI_PROPERTY_REFRESH_WAIT_GRAPH | MMS_UI_PROPERTY_REFRESH_WAIT_SOURCE)) | sub.scopeBlock |
+                    (sub.sourceMissing ? MMS_UI_PROPERTY_REFRESH_WAIT_SOURCE : 0);
+                sub.armed = false;
+            } else if (hostWake) {
+                // The event already recorded this work and the host wake really
+                // failed: only a later delivered event may recover that park.
+                ReparkScoped(sub, true);
+            } else ArmScoped(sub);
         } else {
             // A structure-event observation owns its own generation step and
             // must not count the same real change twice.
@@ -166,9 +194,6 @@ struct UiPropertyRefresh::Impl {
                 if (sub.waiting & MMS_UI_PROPERTY_REFRESH_WAIT_HOST_WAKE) { sub.waiting |= missing ? MMS_UI_PROPERTY_REFRESH_WAIT_SOURCE : 0; sub.armed = false; }
                 else ArmScoped(sub);
             }
-            // Without a failed wake the handshake still re-decides the park from
-            // these sources and blocks; a real change above already records it.
-            if (bindingEvent) ReparkScoped(sub, hostWake);
         }
         sub.sourcesObserved = true;
         if (captured) sub.claimedSourcePublication = sub.sourcePublication;
@@ -503,6 +528,9 @@ bool UiPropertyRefresh::Take(MmsHandle after, Work& out) noexcept {
         out.scope = sub.scope; out.workGeneration = sub.workGeneration; out.dependencyRevision = sub.dependencyRevision;
         out.sourcePublication = sub.sourcePublication;
         if (sub.structurePending) sub.structureProbe = true;
+        // This claim owns the pending binding capture once: record its work
+        // generation and spend any real capacity retry opportunity.
+        if (sub.bindingObservationPending) { sub.bindingClaimedWork = sub.workGeneration; sub.bindingRetryOpportunity = false; }
         sub.armed = false; sub.claimed = true; return true;
     }
     return false;
@@ -589,6 +617,9 @@ bool UiPropertyRefresh::RetryCapacity(uint64_t revision) noexcept {
             // still-pending metadata, so clear only its spent probe before
             // the normal arm decision.
             if (sub.structurePending) sub.structureProbe = false;
+            // The same strict advance is the only retry opportunity a still
+            // pending binding capture may get; it never advances public work.
+            if (sub.bindingObservationPending) sub.bindingRetryOpportunity = true;
             impl_->ArmScoped(sub);
         } else { sub.waiting = 0; sub.armed = true; }
         wake |= sub.armed;
@@ -725,6 +756,9 @@ bool UiPropertyRefresh::RetryDisplayCapacity(uint64_t displayRevision, uint64_t 
         // Same as the queue-capacity clock: only the strict real advance asks
         // for a new request while the structure metadata is still pending.
         if (sub.structurePending) sub.structureProbe = false;
+        // It is also the only retry opportunity for a still pending binding
+        // capture; a plain observation never creates one.
+        if (sub.bindingObservationPending) sub.bindingRetryOpportunity = true;
         impl_->ArmScoped(sub); wake |= sub.armed;
     }
     return wake;
