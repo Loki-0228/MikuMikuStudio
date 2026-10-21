@@ -116,6 +116,7 @@ struct UiRefreshQueue::Ticket {
     MmsHandle subscription = 0, handle = 0;
     uint64_t subscriptionWorkGeneration = 0;
     MmsHandle propertySubscription = 0;
+    uint64_t propertyWorkGeneration = 0;
     uint64_t propertySequence = 0;
     std::uint64_t sourceRevision = 0;
     std::uint64_t stateProviderRevision = 0;
@@ -152,14 +153,24 @@ struct UiRefreshQueue::Ticket {
             // Cancel/provider invalidation can finish outside Drain. Clearing
             // the final accepted contribution may free a retained snapshot.
             subscriptionHost->RetrySubscriptions(UiRefreshBindings::RetryDisplayCapacity);
-            if (propertySubscriptionHost) propertySubscriptionHost->RetryCapacity(capacityRevision ? *capacityRevision : 0);
+            if (propertySubscriptionHost) {
+                propertySubscriptionHost->RetryCapacity(capacityRevision ? *capacityRevision : 0);
+                propertySubscriptionHost->RetryDisplayCapacity(subscriptionHost->DisplayCapacityRevision(), subscriptionHost->ResourceCapacityRevision());
+            }
             // Record this ticket's own BUSY/NOT_READY only after that event;
             // its cleanup must not immediately retry the same failed work.
             if (subscription) subscriptionHost->CompleteSubscription(subscription, handle, sourceRevision, result,
                 subscriptionWait, subscriptionCapacityRevision, subscriptionWorkGeneration);
         }
-        if (propertySubscription && propertySubscriptionHost)
-            propertySubscriptionHost->Complete(propertySubscription, handle, propertySequence, result, propertyWait);
+        if (propertySubscription && propertySubscriptionHost) {
+            if (scope != MMS_UI_REFRESH_SELF) {
+                if (subscriptionWait & UiRefreshBindings::RetryDisplayCapacity) propertyWait = MMS_UI_PROPERTY_REFRESH_WAIT_DISPLAY_CAPACITY;
+                else if (subscriptionWait & UiRefreshBindings::RetryQueueCapacity) propertyWait = MMS_UI_PROPERTY_REFRESH_WAIT_CAPACITY;
+                else if (subscriptionWait & UiRefreshBindings::RetryTargetPublication) propertyWait = MMS_UI_PROPERTY_REFRESH_WAIT_TARGET;
+            }
+            propertySubscriptionHost->Complete(propertySubscription, handle, propertySequence, result, propertyWait,
+                propertyWorkGeneration, subscriptionCapacityRevision == UINT64_MAX && subscriptionHost ? subscriptionHost->DisplayCapacityRevision() : subscriptionCapacityRevision);
+        }
     }
     void FinishValidation(MmsResult result) noexcept {
         Finish(result == MMS_E_CANCELLED ? MMS_UI_REFRESH_CANCELLED : MMS_UI_REFRESH_FAILED, result, 0, 0,
@@ -209,6 +220,14 @@ UiRefreshQueue::UiRefreshQueue(UiRegistry& registry) : registry_(registry),
             if (MenuTarget(t.presentation) && (!t.Ready() || scope == MMS_UI_REFRESH_SUBTREE)) return MMS_E_UNSUPPORTED;
             if ((kinds & MMS_UI_REFRESH_LAYOUT) && !layout_) return MMS_E_UNSUPPORTED;
             return MMS_OK;
+        }, [this](RefreshClient& client, MmsHandle source, uint64_t revision) {
+            propertyRefresh_->SourcePublished(client, source, revision);
+        }, [this](RefreshClient& client, const MmsUiTargetRefV1& ref) {
+            // The binding store reports this only after releasing its lock.
+            // Queue -> property is the normal nested order, and the original
+            // cleanup that follows the same mutation performs the one wake.
+            std::lock_guard<std::mutex> lock(mutex_);
+            propertyRefresh_->ScopedBindingPublished(client, ref);
         }})),
     dependencies_(std::make_unique<UiRefreshDependencies>()), propertyRefresh_(std::make_unique<UiPropertyRefresh>(*this, registry)) {}
 UiRefreshQueue::~UiRefreshQueue() = default;
@@ -218,6 +237,7 @@ std::map<MmsHandle, UiRefreshQueue::Ticket>::iterator UiRefreshQueue::EraseTicke
     bindings_->RetrySubscriptions(UiRefreshBindings::RetryQueueCapacity, subscriptionCapacityRevision_);
     bindings_->RetrySubscriptions(UiRefreshBindings::RetryDisplayCapacity);
     propertyRefresh_->RetryCapacity(subscriptionCapacityRevision_);
+    propertyRefresh_->RetryDisplayCapacity(bindings_->DisplayCapacityRevision(), bindings_->ResourceCapacityRevision());
     return next;
 }
 void UiRefreshQueue::WakeSubscriptions() noexcept {
@@ -241,7 +261,7 @@ void UiRefreshQueue::CleanupSubscriptions() noexcept {
     for (auto it = tickets_.begin(); it != tickets_.end();) {
         auto& t = it->second;
         const bool deadBinding = t.subscription && !bindings_->SubscriptionAlive(*t.owner, t.subscription, t.subscriptionWorkGeneration);
-        const bool deadProperty = t.propertySubscription && !propertyRefresh_->Alive(*t.owner, t.propertySubscription);
+        const bool deadProperty = t.propertySubscription && !propertyRefresh_->Alive(*t.owner, t.propertySubscription, t.propertyWorkGeneration);
         if (!deadBinding && !deadProperty) { ++it; continue; }
         if (t.state.status == MMS_UI_REFRESH_PENDING) t.Finish(MMS_UI_REFRESH_CANCELLED, MMS_E_CANCELLED);
         if (t.state.status != MMS_UI_REFRESH_RUNNING) { it = EraseTicketLocked(it); freed = true; }
@@ -251,6 +271,7 @@ void UiRefreshQueue::CleanupSubscriptions() noexcept {
     // UnregisterSource/Unbind can release an unsubscribed retained snapshot
     // before invoking cleanup, without leaving any internal ticket to erase.
     bindings_->RetrySubscriptions(UiRefreshBindings::RetryDisplayCapacity);
+    propertyRefresh_->RetryDisplayCapacity(bindings_->DisplayCapacityRevision(), bindings_->ResourceCapacityRevision());
     if (PendingSubscriptionsLocked()) SignalSubscriptionWakeLocked();
 }
 bool UiRefreshQueue::PendingSubscriptionsLocked() const noexcept {
@@ -271,23 +292,29 @@ void UiRefreshQueue::PropertyBindingsChanged() noexcept {
 }
 void UiRefreshQueue::SchedulePropertySubscriptions() {
     propertyRefresh_->DrainHistory();
+    { std::lock_guard<std::mutex> lock(mutex_); RefreshScopedPropertySubscriptionsLocked(); }
     UiPropertyRefresh::Work work; MmsHandle after = 0;
     while (true) {
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (!propertyRefresh_->Take(after, work)) break;
             work.capacityRevision = subscriptionCapacityRevision_;
+            work.displayCapacityRevision = bindings_->DisplayCapacityRevision();
+            work.resourceCapacityRevision = bindings_->ResourceCapacityRevision();
         }
         after = work.subscription;
         MmsUiRefreshRequestV1 request{}; request.h = Header<MmsUiRefreshRequestV1>();
-        request.target = work.target; request.kinds = work.kinds; request.scope = MMS_UI_REFRESH_SELF;
+        request.target = work.target; request.kinds = work.kinds; request.scope = work.scope;
         MmsHandle ticket = 0;
-        const auto result = Boundary([&] { return Request(*work.client, &request, &ticket, 0, work.subscription, work.sequence); });
+        const auto result = Boundary([&] { return Request(*work.client, &request, &ticket, 0, work.subscription, work.sequence, nullptr, &work); });
         bool retained = false;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             retained = propertyRefresh_->Submit(work, ticket, result);
-            if (result) propertyRefresh_->RetryCapacity(subscriptionCapacityRevision_);
+            if (result) {
+                propertyRefresh_->RetryCapacity(subscriptionCapacityRevision_);
+                propertyRefresh_->RetryDisplayCapacity(bindings_->DisplayCapacityRevision(), bindings_->ResourceCapacityRevision());
+            }
         }
         if (!retained && !result) CleanupSubscriptions();
     }
@@ -314,7 +341,9 @@ bool UiRefreshQueue::PropertyReadOnlyCause(const RefreshClient& client, const Ui
 }
 void UiRefreshQueue::RetrySubscriptions() noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (bindings_->RetrySubscriptions(UiRefreshBindings::RetryDisplayCapacity)) SignalSubscriptionWakeLocked();
+    const bool data = bindings_->RetrySubscriptions(UiRefreshBindings::RetryDisplayCapacity);
+    const bool property = propertyRefresh_->RetryDisplayCapacity(bindings_->DisplayCapacityRevision(), bindings_->ResourceCapacityRevision());
+    if (data || property) SignalSubscriptionWakeLocked();
 }
 void UiRefreshQueue::ScheduleSubscriptions() {
     // Each handle is considered at most once per drain. A racing publisher
@@ -353,41 +382,74 @@ void UiRefreshQueue::RefreshScopedSubscriptionsLocked() noexcept {
     UiRefreshBindings::SubscriptionWork work; MmsHandle after = 0;
     while (bindings_->NextScopedSubscription(after, work)) {
         after = work.subscription;
-        const auto seed = targets_.find(work.seed.element);
-        if (work.seed.projectEpoch != epoch_ || seed == targets_.end() || seed->second.generation != work.seed.instanceGeneration ||
-            seed->second.presentation.owner != work.client->owner ||
-            (!MenuTarget(seed->second.presentation) && !IsWindow(seed->second.presentation.window))) {
-            bindings_->InvalidateTarget(work.seed.element); continue;
-        }
         std::vector<MmsUiTargetRefV1> members; uint64_t dependencyRevision = 0; uint32_t blocked = 0;
-        const auto result = Boundary([&]() -> MmsResult {
-            if (!topologyReady_ || seed->second.suspended) blocked |= MMS_UI_REFRESH_SUBSCRIPTION_WAIT_TARGET;
-            if (work.scope == MMS_UI_REFRESH_DEPENDENTS) {
-                const auto result = dependencies_->Capture(*work.client, work.seed, members, dependencyRevision);
-                if (result == MMS_E_UNSUPPORTED) { blocked |= MMS_UI_REFRESH_SUBSCRIPTION_WAIT_GRAPH; return MMS_OK; }
-                if (result) return result;
-            } else {
-                const auto handles = SubtreeLocked(work.seed.element);
-                if (handles.size() > kSubtreeMembers) return MMS_E_BUSY;
-                members.reserve(handles.size());
-                for (const auto handle : handles) {
-                    const auto target = targets_.find(handle);
-                    members.push_back({Header<MmsUiTargetRefV1>(), handle, target == targets_.end() ? 0 : target->second.generation, epoch_});
-                }
-            }
-            for (const auto& member : members) {
-                const auto target = targets_.find(member.element);
-                const auto node = tree_.find(member.element);
-                if (node == tree_.end() || node->second.owner != work.client->owner) { blocked |= MMS_UI_REFRESH_SUBSCRIPTION_WAIT_GRAPH; continue; }
-                if (work.scope == MMS_UI_REFRESH_SUBTREE && node->second.kind == MMS_UI_GROUP) continue;
-                if (target == targets_.end() || target->second.suspended ||
-                    (!MenuTarget(target->second.presentation) && !IsWindow(target->second.presentation.window))) blocked |= MMS_UI_REFRESH_SUBSCRIPTION_WAIT_TARGET;
-            }
-            return MMS_OK;
-        });
+        const auto result = Boundary([&] { return CollectScopedTargetsLocked(*work.client, work.seed, work.scope, members, dependencyRevision, blocked); });
+        if (result == MMS_E_STALE) { bindings_->InvalidateTarget(work.seed.element); continue; }
         if (result) blocked |= MMS_UI_REFRESH_SUBSCRIPTION_WAIT_GRAPH;
         bindings_->ObserveScopedSubscription(work, members, dependencyRevision, blocked);
     }
+    RefreshScopedPropertySubscriptionsLocked();
+}
+MmsResult UiRefreshQueue::CollectScopedTargetsLocked(RefreshClient& client, const MmsUiTargetRefV1& ref, uint32_t scope,
+    std::vector<MmsUiTargetRefV1>& members, uint64_t& dependencyRevision, uint32_t& blocked) const {
+    const auto seed = targets_.find(ref.element);
+    if (ref.projectEpoch != epoch_ || seed == targets_.end() || seed->second.generation != ref.instanceGeneration ||
+        seed->second.presentation.owner != client.owner || (!MenuTarget(seed->second.presentation) && !IsWindow(seed->second.presentation.window))) return MMS_E_STALE;
+    if (!topologyReady_ || seed->second.suspended) blocked |= MMS_UI_REFRESH_SUBSCRIPTION_WAIT_TARGET;
+    if (scope == MMS_UI_REFRESH_DEPENDENTS) {
+        const auto result = dependencies_->Capture(client, ref, members, dependencyRevision);
+        if (result == MMS_E_UNSUPPORTED) { blocked |= MMS_UI_REFRESH_SUBSCRIPTION_WAIT_GRAPH; return MMS_OK; }
+        if (result) return result;
+    } else {
+        const auto handles = SubtreeLocked(ref.element);
+        if (handles.size() > kSubtreeMembers) return MMS_E_BUSY;
+        members.reserve(handles.size());
+        for (const auto handle : handles) {
+            const auto target = targets_.find(handle);
+            members.push_back({Header<MmsUiTargetRefV1>(), handle, target == targets_.end() ? 0 : target->second.generation, epoch_});
+        }
+    }
+    for (const auto& member : members) {
+        const auto target = targets_.find(member.element); const auto node = tree_.find(member.element);
+        if (node == tree_.end() || node->second.owner != client.owner) { blocked |= MMS_UI_REFRESH_SUBSCRIPTION_WAIT_GRAPH; continue; }
+        if (scope == MMS_UI_REFRESH_SUBTREE && node->second.kind == MMS_UI_GROUP) continue;
+        if (target == targets_.end() || target->second.suspended || (!MenuTarget(target->second.presentation) && !IsWindow(target->second.presentation.window))) blocked |= MMS_UI_REFRESH_SUBSCRIPTION_WAIT_TARGET;
+    }
+    return MMS_OK;
+}
+void UiRefreshQueue::RefreshScopedPropertySubscriptionsLocked() noexcept {
+    UiPropertyRefresh::Work work; MmsHandle after = 0;
+    while (propertyRefresh_->NextScoped(after, work)) {
+        after = work.subscription;
+        std::vector<MmsUiTargetRefV1> members; uint64_t dependencyRevision = 0; uint32_t blocked = 0;
+        const auto result = Boundary([&] { return CollectScopedTargetsLocked(*work.client, work.target, work.scope, members, dependencyRevision, blocked); });
+        if (result == MMS_E_STALE) { propertyRefresh_->InvalidateTarget(work.target.element); continue; }
+        // A temporary capture failure describes nothing about the retained
+        // graph. Committing partial members or a synthetic GRAPH block here
+        // would later be mistaken for a real graph recovery and retry a parked
+        // consumer, so the stored subscription stays exactly as it was.
+        if (result) continue;
+        uint32_t propertyBlock = blocked & MMS_UI_REFRESH_SUBSCRIPTION_WAIT_TARGET ? MMS_UI_PROPERTY_REFRESH_WAIT_TARGET : 0;
+        if (blocked & MMS_UI_REFRESH_SUBSCRIPTION_WAIT_GRAPH) propertyBlock |= MMS_UI_PROPERTY_REFRESH_WAIT_GRAPH;
+        // ObservePropertySources finishes every temporary allocation before it
+        // invokes this trusted observer, which commits members, dependency
+        // revision, real blocks and sources atomically under the property lock.
+        // A failed observation therefore leaves waiting/armed/watch generation
+        // and work generation untouched and creates no fake GRAPH event.
+        (void)Boundary([&] { return bindings_->ObservePropertySources(*work.client, members,
+            [&](const auto& sources) { propertyRefresh_->ObserveScope(work, members, dependencyRevision, propertyBlock, sources); }); });
+    }
+}
+MmsResult UiRefreshQueue::CheckPropertyScopedSeed(RefreshClient& client, const MmsUiTargetRefV1& ref, uint32_t scope, uint32_t kinds) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto found = targets_.find(ref.element);
+    if (ref.projectEpoch != epoch_ || found == targets_.end() || found->second.generation != ref.instanceGeneration) return MMS_E_STALE;
+    const auto& target = found->second; const auto& p = target.presentation;
+    if (client.owner == "mms" || p.owner != client.owner) return MMS_E_ARGUMENT;
+    if (target.suspended || (!MenuTarget(p) && !p.window)) return MMS_E_NOT_READY;
+    if (!MenuTarget(p) && !IsWindow(p.window)) return MMS_E_STALE;
+    if (MenuTarget(p) && (!target.Ready() || scope == MMS_UI_REFRESH_SUBTREE)) return MMS_E_UNSUPPORTED;
+    return (kinds & MMS_UI_REFRESH_LAYOUT) && !layout_ ? MMS_E_UNSUPPORTED : MMS_OK;
 }
 void UiRefreshQueue::PruneInvalidSubscriptionTargets() {
     // UI-only safe point. A plugin may destroy a surface HWND before the
@@ -412,6 +474,7 @@ void UiRefreshQueue::PruneInvalidSubscriptionTargets() {
             it = EraseTicketLocked(it); else ++it;
     }
     bindings_->RetrySubscriptions(UiRefreshBindings::RetryDisplayCapacity);
+    propertyRefresh_->RetryDisplayCapacity(bindings_->DisplayCapacityRevision(), bindings_->ResourceCapacityRevision());
     if (PendingSubscriptionsLocked()) SignalSubscriptionWakeLocked();
 }
 void UiRefreshQueue::SetWake(std::function<bool()> wake) { wake_ = std::move(wake); }
@@ -537,6 +600,7 @@ MmsResult UiRefreshQueue::RegisterDependency(RefreshClient& client, const MmsUiR
     MmsHandle candidate = 0;
     if (const auto result = dependencies_->Add(client, desc->upstream, desc->dependent, candidate)) return result;
     bindings_->ScopedGraphChanged(client, desc->upstream);
+    propertyRefresh_->GraphChanged(client, desc->upstream);
     RefreshScopedSubscriptionsLocked();
     InvalidateDependencyTicketsLocked(); *out = candidate; return MMS_OK;
 }
@@ -550,6 +614,7 @@ MmsResult UiRefreshQueue::UnregisterDependency(RefreshClient& client, MmsHandle 
     MmsUiTargetRefV1 upstream{};
     if (const auto result = dependencies_->Remove(client, handle, &upstream)) return result;
     bindings_->ScopedGraphChanged(client, upstream);
+    propertyRefresh_->GraphChanged(client, upstream);
     RefreshScopedSubscriptionsLocked();
     InvalidateDependencyTicketsLocked(); return MMS_OK;
 }
@@ -558,6 +623,7 @@ void UiRefreshQueue::InvalidateDependencyTicketsLocked() noexcept {
         auto& ticket = it->second;
         if (ticket.scope == MMS_UI_REFRESH_DEPENDENTS && ticket.state.status == MMS_UI_REFRESH_PENDING &&
             (ticket.subscription ? !bindings_->SubscriptionAlive(*ticket.owner, ticket.subscription, ticket.subscriptionWorkGeneration) :
+                ticket.propertySubscription ? !propertyRefresh_->Alive(*ticket.owner, ticket.propertySubscription, ticket.propertyWorkGeneration) :
                 ticket.dependencyRevision != dependencies_->Revision(*ticket.owner))) ticket.Finish(MMS_UI_REFRESH_FAILED, MMS_E_STALE);
         if (ticket.released && ticket.state.status != MMS_UI_REFRESH_PENDING && ticket.state.status != MMS_UI_REFRESH_RUNNING)
             it = EraseTicketLocked(it); else ++it;
@@ -624,7 +690,8 @@ MmsResult UiRefreshQueue::GetTarget(RefreshClient& client, MmsHandle handle, Mms
     return MMS_OK;
 }
 MmsResult UiRefreshQueue::Request(RefreshClient& client, const MmsUiRefreshRequestV1* request, MmsHandle* out,
-    MmsHandle subscription, MmsHandle propertySubscription, uint64_t propertySequence, UiRefreshSubscriptionWork* scoped) {
+    MmsHandle subscription, MmsHandle propertySubscription, uint64_t propertySequence, UiRefreshSubscriptionWork* scoped,
+    UiPropertyRefreshWork* propertyScoped) {
     if (!Valid(request) || !Valid(&request->target) || !out || !request->target.element ||
         !request->target.instanceGeneration || !request->target.projectEpoch || !request->kinds ||
         request->kinds & ~15u || request->flags || request->reserved) return MMS_E_ARGUMENT;
@@ -651,6 +718,7 @@ MmsResult UiRefreshQueue::Request(RefreshClient& client, const MmsUiRefreshReque
     ticket.subscriptionHost = bindings_.get(); ticket.subscription = subscription; ticket.released = subscription != 0;
     ticket.propertySubscriptionHost = propertyRefresh_.get(); ticket.propertySubscription = propertySubscription;
     ticket.propertySequence = propertySequence; ticket.released |= propertySubscription != 0;
+    if (propertyScoped) { ticket.propertyWorkGeneration = propertyScoped->workGeneration; propertyScoped->waitingFor = 0; }
     ticket.capacityRevision = &subscriptionCapacityRevision_;
     ticket.kinds = request->kinds;
     ticket.scope = request->scope;
@@ -706,9 +774,11 @@ MmsResult UiRefreshQueue::Request(RefreshClient& client, const MmsUiRefreshReque
         if (ticket.scope == MMS_UI_REFRESH_DEPENDENTS) {
             if (const auto result = dependencies_->Capture(client, ticket.target, dependentRefs, ticket.dependencyRevision)) {
                 if (scoped && result == MMS_E_UNSUPPORTED) scoped->waitingFor = MMS_UI_REFRESH_SUBSCRIPTION_WAIT_GRAPH;
+                if (propertyScoped && result == MMS_E_UNSUPPORTED) propertyScoped->waitingFor = MMS_UI_PROPERTY_REFRESH_WAIT_GRAPH;
                 return result;
             }
             if (scoped) scoped->dependencyRevision = ticket.dependencyRevision;
+            if (propertyScoped) propertyScoped->dependencyRevision = ticket.dependencyRevision;
             handles.reserve(dependentRefs.size());
             for (const auto& ref : dependentRefs) handles.push_back(ref.element);
         } else handles = SubtreeLocked(ticket.target.element);
@@ -756,7 +826,25 @@ MmsResult UiRefreshQueue::Request(RefreshClient& client, const MmsUiRefreshReque
         }
         if (ticket.kinds & MMS_UI_REFRESH_DATA) {
             const bool nativeData = std::any_of(ticket.members.begin(), ticket.members.end(), [](const auto& member) { return member.propertyData; });
-            if (scoped) {
+            if (propertyScoped) {
+                // The cohort allocator and contribution quota use real accepted
+                // resource releases. Display preparation below has a separate
+                // snapshot-only clock, so its own contribution cleanup cannot
+                // make a failing display consumer retry itself indefinitely.
+                propertyScoped->waitingFor = MMS_UI_PROPERTY_REFRESH_WAIT_DISPLAY_CAPACITY;
+                propertyScoped->resourceCapacity = true;
+                const auto result = bindings_->CaptureProperty(client, ticket.dataTargets, ticket.captured,
+                    [&](const auto& sources) { propertyRefresh_->ObserveSources(propertySubscription, sources, true); },
+                    &propertyScoped->resourceCapacityRevision);
+                if (result != MMS_E_BUSY && result != MMS_E_MEMORY) {
+                    propertyScoped->waitingFor = 0; propertyScoped->resourceCapacity = false;
+                }
+                if (result && (result != MMS_E_UNSUPPORTED || !nativeData)) {
+                    if (result == MMS_E_NOT_READY) propertyScoped->waitingFor = MMS_UI_PROPERTY_REFRESH_WAIT_SOURCE;
+                    if (result == MMS_E_UNSUPPORTED) propertyScoped->waitingFor = MMS_UI_PROPERTY_REFRESH_WAIT_BINDING;
+                    return result;
+                }
+            } else if (scoped) {
                 if (const auto result = bindings_->CaptureScoped(client, subscription, scoped->binding, scoped->revision,
                     ticket.dataTargets, ticket.triggerPin, ticket.captured)) {
                     if (result == MMS_E_NOT_READY) scoped->waitingFor = MMS_UI_REFRESH_SUBSCRIPTION_WAIT_SOURCE;
@@ -798,6 +886,8 @@ MmsResult UiRefreshQueue::Request(RefreshClient& client, const MmsUiRefreshReque
         propertyRefresh_->HistoryWakeResult(signalled);
     }
     if (!signalled) { tickets_.erase(handle); return MMS_E_FAILED; }
+    const auto& accepted = tickets_.at(handle);
+    bindings_->AcceptContributions(accepted.data, accepted.captured);
     *out = handle; return MMS_OK;
 }
 MmsResult UiRefreshQueue::Query(RefreshClient& client, MmsHandle handle, MmsUiRefreshStateV1* out) {
@@ -862,7 +952,8 @@ void UiRefreshQueue::SyncTopology() noexcept {
         for (auto it = tickets_.begin(); it != tickets_.end();) {
             auto& t = it->second;
             if (t.scope == MMS_UI_REFRESH_SUBTREE && t.state.status == MMS_UI_REFRESH_PENDING &&
-                (t.subscription ? !bindings_->SubscriptionAlive(*t.owner, t.subscription, t.subscriptionWorkGeneration) : t.topology != topologyRevision_))
+                (t.subscription ? !bindings_->SubscriptionAlive(*t.owner, t.subscription, t.subscriptionWorkGeneration) :
+                    t.propertySubscription ? !propertyRefresh_->Alive(*t.owner, t.propertySubscription, t.propertyWorkGeneration) : t.topology != topologyRevision_))
                 t.Finish(MMS_UI_REFRESH_FAILED, MMS_E_STALE);
             if (t.released && t.state.status != MMS_UI_REFRESH_PENDING && t.state.status != MMS_UI_REFRESH_RUNNING)
                 it = EraseTicketLocked(it); else ++it;
@@ -876,7 +967,7 @@ MmsResult UiRefreshQueue::ValidateTicketLocked(const Ticket& ticket, bool geomet
     if (ticket.owner->stopping.load()) return MMS_E_CANCELLED;
     if (ticket.subscription && !bindings_->SubscriptionAlive(*ticket.owner, ticket.subscription, ticket.subscriptionWorkGeneration)) return MMS_E_CANCELLED;
     if (ticket.triggerPin) if (const auto result = bindings_->ValidateTrigger(*ticket.owner, ticket.triggerPin)) return result;
-    if (ticket.propertySubscription && !propertyRefresh_->Alive(*ticket.owner, ticket.propertySubscription)) return MMS_E_CANCELLED;
+    if (ticket.propertySubscription && !propertyRefresh_->Alive(*ticket.owner, ticket.propertySubscription, ticket.propertyWorkGeneration)) return MMS_E_CANCELLED;
     const auto root = targets_.find(ticket.target.element);
     if (ticket.target.projectEpoch != epoch_ || root == targets_.end() || root->second.generation != ticket.target.instanceGeneration ||
         (geometry && ticket.expectedGeometry && root->second.geometry != ticket.expectedGeometry)) return MMS_E_STALE;
@@ -890,8 +981,8 @@ MmsResult UiRefreshQueue::ValidateTicketLocked(const Ticket& ticket, bool geomet
         return MMS_OK;
     }
     if (ticket.scope == MMS_UI_REFRESH_DEPENDENTS) {
-        if (!ticket.subscription && ticket.dependencyRevision != dependencies_->Revision(*ticket.owner)) return MMS_E_STALE;
-    } else if (!topologyReady_ || (!ticket.subscription && ticket.topology != topologyRevision_)) return MMS_E_STALE;
+        if (!ticket.subscription && !ticket.propertySubscription && ticket.dependencyRevision != dependencies_->Revision(*ticket.owner)) return MMS_E_STALE;
+    } else if (!topologyReady_ || (!ticket.subscription && !ticket.propertySubscription && ticket.topology != topologyRevision_)) return MMS_E_STALE;
     for (const auto& member : ticket.members) {
         const auto found = targets_.find(member.ref.element);
         if (found == targets_.end() || found->second.generation != member.ref.instanceGeneration ||
@@ -955,9 +1046,12 @@ void UiRefreshQueue::SyncTargets(const std::vector<RefreshPresentation>& present
     }
     bindings_->RetrySubscriptions(UiRefreshBindings::RetryTargetPublication);
     bindings_->RetrySubscriptions(UiRefreshBindings::RetryDisplayCapacity);
+    propertyRefresh_->RetryDisplayCapacity(bindings_->DisplayCapacityRevision(), bindings_->ResourceCapacityRevision());
     for (const auto& entry : targets_) {
         const auto old = candidate.find(entry.first);
-        const bool providerChanged = old != candidate.end() && !old->second.presentation.propertyDataRefresh && entry.second.presentation.propertyDataRefresh;
+        const bool providerChanged = old != candidate.end() &&
+            ((!old->second.presentation.propertyDataRefresh && entry.second.presentation.propertyDataRefresh) ||
+                old->second.presentation.propertyRecord != entry.second.presentation.propertyRecord);
         propertyRefresh_->TargetPublished(entry.first, entry.second.Ready(), providerChanged);
         if (entry.second.Ready()) bindings_->ScopedTargetPublished(entry.first, providerChanged);
     }
@@ -979,6 +1073,7 @@ void UiRefreshQueue::InvalidateTarget(MmsHandle element) noexcept {
             it = EraseTicketLocked(it); else ++it;
     }
     bindings_->RetrySubscriptions(UiRefreshBindings::RetryDisplayCapacity);
+    propertyRefresh_->RetryDisplayCapacity(bindings_->DisplayCapacityRevision(), bindings_->ResourceCapacityRevision());
     if (PendingSubscriptionsLocked()) SignalSubscriptionWakeLocked();
 }
 void UiRefreshQueue::SuspendTargets() noexcept {
@@ -1012,10 +1107,11 @@ void UiRefreshQueue::Drain() {
     { std::lock_guard<std::mutex> lock(mutex_); if (draining_) return; draining_ = true; }
     struct DrainGuard { UiRefreshQueue& queue; ~DrainGuard() {
         std::lock_guard<std::mutex> lock(queue.mutex_); queue.draining_ = false;
-        // groups are destroyed before this guard. Only a retained source or
-        // display snapshot actually freed since parking can trigger this path.
+        // Groups die before this guard. DATA's snapshot clock stays unchanged;
+        // property cohort pressure also observes accepted contribution releases.
         const bool sourceRetry = queue.bindings_->RetrySubscriptions(UiRefreshBindings::RetryDisplayCapacity);
-        if (sourceRetry || queue.propertyRefresh_->Pending() || queue.bindings_->PendingScopedSubscriptions()) queue.SignalSubscriptionWakeLocked();
+        const bool propertyRetry = queue.propertyRefresh_->RetryDisplayCapacity(queue.bindings_->DisplayCapacityRevision(), queue.bindings_->ResourceCapacityRevision());
+        if (sourceRetry || propertyRetry || queue.propertyRefresh_->Pending() || queue.bindings_->PendingScopedSubscriptions()) queue.SignalSubscriptionWakeLocked();
     } } drainGuard{*this};
     PruneInvalidSubscriptionTargets();
     ScheduleSubscriptions();
@@ -1032,6 +1128,7 @@ void UiRefreshQueue::Drain() {
         Target root; RefreshClient* owner = nullptr; MmsUiTargetRefV1 ref{};
         uint64_t key = 0, topology = 0, dependencyRevision = 0, sourceRevision = 0; MmsHandle binding = 0, subscription = 0;
         MmsHandle propertySubscription = 0; uint64_t propertySequence = 0;
+        uint64_t propertyWorkGeneration = 0;
         uint64_t subscriptionWorkGeneration = 0;
         UiRefreshBindings::Contribution triggerPin;
         uint32_t kinds = 0, scope = MMS_UI_REFRESH_SELF; bool fixedGeometry = false;
@@ -1062,6 +1159,7 @@ void UiRefreshQueue::Drain() {
                     g.binding != ticket.binding || g.sourceRevision != ticket.sourceRevision || g.subscription != ticket.subscription ||
                     g.subscriptionWorkGeneration != ticket.subscriptionWorkGeneration ||
                     g.propertySubscription != ticket.propertySubscription || g.propertySequence != ticket.propertySequence ||
+                    g.propertyWorkGeneration != ticket.propertyWorkGeneration ||
                     g.fixedGeometry != (ticket.expectedGeometry != 0)) return false;
                 if (g.scope == MMS_UI_REFRESH_SELF)
                     return g.members.front().stateProviderRevision == ticket.stateProviderRevision &&
@@ -1085,6 +1183,7 @@ void UiRefreshQueue::Drain() {
                 candidate.sourceRevision = ticket.sourceRevision; candidate.binding = ticket.binding; candidate.subscription = ticket.subscription;
                 candidate.subscriptionWorkGeneration = ticket.subscriptionWorkGeneration; candidate.triggerPin = ticket.triggerPin;
                 candidate.propertySubscription = ticket.propertySubscription; candidate.propertySequence = ticket.propertySequence;
+                candidate.propertyWorkGeneration = ticket.propertyWorkGeneration;
                 candidate.kinds = ticket.kinds; candidate.scope = ticket.scope; candidate.fixedGeometry = ticket.expectedGeometry != 0;
                 candidate.dataTargets = ticket.dataTargets; candidate.captured = ticket.captured;
                 if (ticket.scope == MMS_UI_REFRESH_SELF) {
@@ -1133,13 +1232,13 @@ void UiRefreshQueue::Drain() {
             if (batch.owner->stopping.load()) return MMS_E_CANCELLED;
             if (batch.subscription && !bindings_->SubscriptionAlive(*batch.owner, batch.subscription, batch.subscriptionWorkGeneration)) return MMS_E_CANCELLED;
             if (batch.triggerPin) if (const auto result = bindings_->ValidateTrigger(*batch.owner, batch.triggerPin)) return result;
-            if (batch.propertySubscription && !propertyRefresh_->Alive(*batch.owner, batch.propertySubscription)) return MMS_E_CANCELLED;
+            if (batch.propertySubscription && !propertyRefresh_->Alive(*batch.owner, batch.propertySubscription, batch.propertyWorkGeneration)) return MMS_E_CANCELLED;
             const auto root = targets_.find(batch.ref.element);
             if (batch.ref.projectEpoch != epoch_ || root == targets_.end() || root->second.generation != batch.ref.instanceGeneration)
                 return MMS_E_STALE;
             if (batch.scope != MMS_UI_REFRESH_SELF) {
-                if (batch.scope == MMS_UI_REFRESH_DEPENDENTS ? !batch.subscription && batch.dependencyRevision != dependencies_->Revision(*batch.owner) :
-                    (!topologyReady_ || (!batch.subscription && batch.topology != topologyRevision_))) return MMS_E_STALE;
+                if (batch.scope == MMS_UI_REFRESH_DEPENDENTS ? !batch.subscription && !batch.propertySubscription && batch.dependencyRevision != dependencies_->Revision(*batch.owner) :
+                    (!topologyReady_ || (!batch.subscription && !batch.propertySubscription && batch.topology != topologyRevision_))) return MMS_E_STALE;
                 if (strict && root->second.geometry != batch.root.geometry) return MMS_E_STALE;
                 if (root->second.suspended || (!MenuTarget(root->second.presentation) && !root->second.presentation.window)) return targetNotReady();
                 if (!MenuTarget(root->second.presentation) && !IsWindow(root->second.presentation.window)) return MMS_E_STALE;
@@ -1433,6 +1532,7 @@ void UiRefreshQueue::Retire(RefreshClient& client) noexcept {
         if (t.released && t.state.status != MMS_UI_REFRESH_PENDING && t.state.status != MMS_UI_REFRESH_RUNNING) it = EraseTicketLocked(it); else ++it;
     }
     bindings_->RetrySubscriptions(UiRefreshBindings::RetryDisplayCapacity);
+    propertyRefresh_->RetryDisplayCapacity(bindings_->DisplayCapacityRevision(), bindings_->ResourceCapacityRevision());
     if (PendingSubscriptionsLocked()) SignalSubscriptionWakeLocked();
 }
 bool UiRefreshQueue::HasLeases(const RefreshClient& client) const {

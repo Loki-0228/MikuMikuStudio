@@ -1,6 +1,7 @@
 #include "ui_property_refresh.hpp"
 #include "ui_registry.hpp"
 #include "ui_refresh_binding.hpp"
+#include <array>
 
 namespace mikumikustudio::plugins {
 namespace {
@@ -44,6 +45,18 @@ struct UiPropertyRefresh::Impl {
         uint64_t latest = 1, submitted = 0, completed = 0, capacity = 0, hostWake = 0;
         MmsResult result = MMS_OK;
         bool dirty = true, armed = true, claimed = false, bound = false;
+        uint32_t scope = MMS_UI_REFRESH_SELF, scopeBlock = 0;
+        uint64_t workGeneration = 1, invalidationGeneration = 1, submittedWorkGeneration = 0, completedWorkGeneration = 0;
+        uint64_t dependencyRevision = 0, submittedDependencyRevision = 0;
+        uint64_t sourcePublication = 0, claimedSourcePublication = 0, submittedSourcePublication = 0, displayCapacity = 0;
+        bool observed = false, sourcesObserved = false, sourceMissing = false, resourceCapacity = false;
+        // Set only by a real public binding identity event. Until a complete
+        // source observation lands, the cached sourceMissing describes the old
+        // binding set and must not suppress the one re-capture the event needs.
+        bool bindingObservationPending = false;
+        std::array<MmsUiTargetRefV1, 256> members{};
+        size_t memberCount = 0, sourceCount = 0;
+        std::array<UiRefreshBindings::PropertySource, 128> sources{};
     };
     UiPropertyRefresh& self;
     UiRefreshQueue& queue;
@@ -77,7 +90,92 @@ struct UiPropertyRefresh::Impl {
         return *found->second;
     }
     bool Current(const Owner& owner) const noexcept { return owner.ui && !owner.retired && !owner.client->stopping.load(); }
+    static bool Scoped(const Subscription& sub) noexcept { return sub.scope != MMS_UI_REFRESH_SELF; }
+    void ArmScoped(Subscription& sub) noexcept {
+        if (sub.ticket || sub.claimed) return;
+        // A pending real binding event makes the cached sourceMissing stale.
+        // Re-capture once, while a real scope block still parks the mailbox.
+        const bool missing = sub.sourceMissing && !sub.bindingObservationPending;
+        sub.waiting = sub.scopeBlock | (missing ? MMS_UI_PROPERTY_REFRESH_WAIT_SOURCE : 0);
+        sub.armed = !sub.waiting;
+    }
+    // Re-decide a parked scope from the just-observed sources and the real
+    // scope block. A failed host wake stays parked; an accepted ticket or
+    // claim keeps its existing decision. Only the binding-event handshake uses
+    // this, never an ordinary observation or a temporary observation failure.
+    void ReparkScoped(Subscription& sub, bool hostWake) noexcept {
+        if (sub.ticket || sub.claimed) return;
+        const uint32_t park = sub.scopeBlock | (sub.sourceMissing ? MMS_UI_PROPERTY_REFRESH_WAIT_SOURCE : 0);
+        sub.waiting = park | (hostWake ? MMS_UI_PROPERTY_REFRESH_WAIT_HOST_WAKE : 0);
+        sub.armed = !sub.waiting;
+    }
+    void Change(Subscription& sub, bool invalidate) noexcept {
+        if (sub.workGeneration == UINT64_MAX) {
+            sub.armed = false; sub.waiting = MMS_UI_PROPERTY_REFRESH_WAIT_CONSUMER; sub.result = MMS_E_BUSY; return;
+        }
+        ++sub.workGeneration; sub.dirty = true;
+        if (invalidate) sub.invalidationGeneration = sub.workGeneration;
+        ArmScoped(sub);
+    }
     void Wake(bool pending) noexcept { if (pending) queue.WakeSubscriptions(); }
+    void ObserveSourcesLocked(Subscription& sub, const std::vector<UiRefreshBindings::PropertySource>& sources, bool captured) noexcept {
+        if (sources.size() > sub.sources.size()) { sub.armed = false; sub.waiting = MMS_UI_PROPERTY_REFRESH_WAIT_CAPACITY; return; }
+        bool bindingsChanged = sub.sourceCount != sources.size(), publication = false, missing = false;
+        for (size_t i = 0; i < sources.size(); ++i) {
+            const auto& source = sources[i]; missing |= source.revision == 0;
+            if (i >= sub.sourceCount || sub.sources[i].binding != source.binding || sub.sources[i].source != source.source || !Same(sub.sources[i].target, source.target)) bindingsChanged = true;
+            const auto old = std::find_if(sub.sources.begin(), sub.sources.begin() + sub.sourceCount, [&](const auto& item) { return item.binding == source.binding && item.source == source.source; });
+            publication |= old != sub.sources.begin() + sub.sourceCount && source.revision > old->revision;
+        }
+        sub.sourceCount = sources.size(); std::copy(sources.begin(), sources.end(), sub.sources.begin()); sub.sourceMissing = missing;
+        // A complete observation is the handshake the binding event awaited.
+        // The cached missing state now describes the current binding set, so
+        // parks are decided again from these sources and the real scope block.
+        const bool bindingEvent = sub.bindingObservationPending;
+        const bool hostWake = (sub.waiting & MMS_UI_PROPERTY_REFRESH_WAIT_HOST_WAKE) != 0;
+        sub.bindingObservationPending = false;
+        if (publication && sub.sourcePublication != UINT64_MAX) ++sub.sourcePublication;
+        if (bindingEvent && hostWake) {
+            // The real binding event already recorded this work and the host
+            // wake really failed. A successful observation that only installs
+            // the missing watch is not another event: keep that park and only
+            // refresh the captured source/block state. Only a later real
+            // publication or notify whose host wake is delivered may recover it.
+            ReparkScoped(sub, true);
+        } else {
+            if (sub.sourcesObserved && bindingsChanged) Change(sub, true);
+            else if (publication && !sub.ticket && !sub.claimed && (sub.waiting & (MMS_UI_PROPERTY_REFRESH_WAIT_SOURCE | MMS_UI_PROPERTY_REFRESH_WAIT_CONSUMER))) Change(sub, false);
+            else if (!sub.sourcesObserved) {
+                if (sub.waiting & MMS_UI_PROPERTY_REFRESH_WAIT_HOST_WAKE) { sub.waiting |= missing ? MMS_UI_PROPERTY_REFRESH_WAIT_SOURCE : 0; sub.armed = false; }
+                else ArmScoped(sub);
+            }
+            // Without a failed wake the handshake still re-decides the park from
+            // these sources and blocks; a real change above already records it.
+            if (bindingEvent) ReparkScoped(sub, hostWake);
+        }
+        sub.sourcesObserved = true;
+        if (captured) sub.claimedSourcePublication = sub.sourcePublication;
+    }
+    // One trusted commit for a complete observation. A temporary collection or
+    // allocation failure must never write half of this state: a synthetic graph
+    // block would later look like a real graph recovery and retry a parked
+    // consumer. Members and source watches are therefore written together.
+    void ObserveLocked(Subscription& sub, const std::vector<MmsUiTargetRefV1>& members,
+        uint64_t dependencyRevision, uint32_t blocked, const std::vector<UiRefreshBindings::PropertySource>& sources) noexcept {
+        if (members.size() > sub.members.size() || sources.size() > sub.sources.size()) return;
+        bool changed = sub.memberCount != members.size();
+        for (size_t i = 0; !changed && i < members.size(); ++i) changed = !Same(sub.members[i], members[i]);
+        const auto oldBlock = sub.scopeBlock; sub.scopeBlock = blocked; sub.dependencyRevision = dependencyRevision;
+        sub.memberCount = members.size(); std::copy(members.begin(), members.end(), sub.members.begin());
+        if (sub.observed && changed) Change(sub, true);
+        else if (sub.observed && oldBlock && !blocked) Change(sub, false);
+        else if (!sub.observed || blocked) {
+            if (sub.waiting & MMS_UI_PROPERTY_REFRESH_WAIT_HOST_WAKE) { sub.waiting |= blocked; sub.armed = false; }
+            else ArmScoped(sub);
+        }
+        sub.observed = true;
+        ObserveSourcesLocked(sub, sources, false);
+    }
     MmsResult Capabilities(Owner& owner, MmsUiPropertyRefreshCapabilitiesV1* out) {
         if (!Valid(out)) return MMS_E_ARGUMENT;
         if (const auto result = self.CheckUi(*owner.client, owner.ui)) return result;
@@ -85,6 +183,14 @@ struct UiPropertyRefresh::Impl {
         if (!Current(owner)) return MMS_E_STALE;
         *out = {Header<MmsUiPropertyRefreshCapabilitiesV1>(), kOwnerLimit, kKinds,
             historyAvailable.load() ? MMS_UI_PROPERTY_REFRESH_FOLLOW_HISTORY : 0u, 0, 0};
+        return MMS_OK;
+    }
+    MmsResult ScopedCapabilities(Owner& owner, MmsUiPropertyRefreshScopedCapabilitiesV1* out) {
+        if (!Valid(out)) return MMS_E_ARGUMENT;
+        MmsUiPropertyRefreshCapabilitiesV1 caps{}; caps.h = Header<MmsUiPropertyRefreshCapabilitiesV1>();
+        if (const auto result = Capabilities(owner, &caps)) return result;
+        *out = {Header<MmsUiPropertyRefreshScopedCapabilitiesV1>(), caps.maxSubscriptionsPerPlugin, caps.supportedKinds,
+            caps.supportedFlags, caps.flags, caps.reserved, MMS_UI_REFRESH_SELF | MMS_UI_REFRESH_SUBTREE | MMS_UI_REFRESH_DEPENDENTS, 0};
         return MMS_OK;
     }
     MmsResult GetRef(Owner& owner, MmsHandle handle, MmsUiPropertyRefV1* out) {
@@ -131,7 +237,7 @@ struct UiPropertyRefresh::Impl {
             size_t count = 0;
             for (const auto& entry : subscriptions) {
                 const auto& sub = entry.second;
-                if (sub.target.element == desc->target.element) return MMS_E_CONFLICT;
+                if (sub.scope == MMS_UI_REFRESH_SELF && sub.target.element == desc->target.element) return MMS_E_CONFLICT;
                 count += sub.owner == &owner;
             }
             if (count >= kOwnerLimit || subscriptions.size() >= kGlobalLimit || next == UINT64_MAX) return MMS_E_BUSY;
@@ -145,6 +251,43 @@ struct UiPropertyRefresh::Impl {
         // A failed host wake parks the accepted subscription; registration is
         // still concrete and queryable, with no half-created output identity.
         Wake(wake); *out = handle; return MMS_OK;
+    }
+    MmsResult SubscribeScoped(Owner& owner, const MmsUiPropertyRefreshScopedSubscriptionDescV1* desc, MmsHandle* out) {
+        if (!Valid(desc) || !out || !ValidRef(&desc->property) || !Valid(&desc->seed) || !desc->seed.element ||
+            !desc->seed.instanceGeneration || !desc->seed.projectEpoch || desc->reserved || desc->reservedTail ||
+            desc->flags & ~MMS_UI_PROPERTY_REFRESH_FOLLOW_HISTORY || !(desc->kinds & MMS_UI_REFRESH_DATA) || desc->kinds & ~kKinds ||
+            (desc->scope != MMS_UI_REFRESH_SELF && desc->scope != MMS_UI_REFRESH_SUBTREE && desc->scope != MMS_UI_REFRESH_DEPENDENTS)) return MMS_E_ARGUMENT;
+        if (desc->scope == MMS_UI_REFRESH_SELF) {
+            const MmsUiPropertyRefreshSubscriptionDescV1 legacy{Header<MmsUiPropertyRefreshSubscriptionDescV1>(), desc->seed, desc->property, desc->kinds, desc->flags, 0};
+            return Subscribe(owner, &legacy, out);
+        }
+        if (const auto result = self.CheckUi(*owner.client, owner.ui)) return result;
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            if (!Current(owner)) return MMS_E_STALE;
+            const auto property = properties.find(desc->property.property);
+            if (property == properties.end() || !Same(property->second.ref, desc->property)) return MMS_E_STALE;
+            if (property->second.owner != &owner) return MMS_E_ARGUMENT;
+            if ((desc->flags & MMS_UI_PROPERTY_REFRESH_FOLLOW_HISTORY) && !historyAvailable.load()) return MMS_E_UNSUPPORTED;
+        }
+        if (const auto result = queue.CheckPropertyScopedSeed(*owner.client, desc->seed, desc->scope, desc->kinds)) return result;
+        MmsHandle handle = 0;
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            if (!Current(owner)) return MMS_E_STALE;
+            const auto property = properties.find(desc->property.property);
+            if (property == properties.end() || property->second.owner != &owner || !Same(property->second.ref, desc->property)) return MMS_E_STALE;
+            size_t count = 0;
+            for (const auto& entry : subscriptions) {
+                const auto& sub = entry.second; count += sub.owner == &owner;
+                if (sub.owner == &owner && Same(sub.property, desc->property) && Same(sub.target, desc->seed) && sub.scope == desc->scope) return MMS_E_CONFLICT;
+            }
+            if (count >= kOwnerLimit || subscriptions.size() >= kGlobalLimit || next == UINT64_MAX) return MMS_E_BUSY;
+            Subscription sub; sub.owner = &owner; sub.handle = next; sub.target = desc->seed; sub.property = desc->property;
+            sub.scope = desc->scope; sub.kinds = desc->kinds; sub.flags = desc->flags; sub.latest = property->second.sequence;
+            handle = next; subscriptions.emplace(handle, std::move(sub)); ++next;
+        }
+        Wake(true); *out = handle; return MMS_OK;
     }
     MmsResult Notify(Owner& owner, const MmsUiPropertyRefV1* ref) {
         if (!ValidRef(ref)) return MMS_E_ARGUMENT;
@@ -162,6 +305,8 @@ struct UiPropertyRefresh::Impl {
                 auto& sub = entry.second;
                 if (sub.owner != &owner || !Same(sub.property, *ref)) continue;
                 sub.latest = sequence; sub.dirty = true;
+                if (Scoped(sub)) { const bool armed = sub.armed; Change(sub, false); wake |= !armed && sub.armed && !sub.ticket && !sub.claimed; continue; }
+                if (sub.workGeneration != UINT64_MAX) ++sub.workGeneration;
                 if (sub.bound) { sub.waiting = MMS_UI_PROPERTY_REFRESH_WAIT_BINDING; continue; }
                 sub.waiting = 0;
                 if (!sub.ticket && !sub.claimed) { wake |= !sub.armed; sub.armed = true; }
@@ -169,19 +314,31 @@ struct UiPropertyRefresh::Impl {
         }
         Wake(wake); return MMS_OK;
     }
+    void State(const Subscription& sub, MmsUiPropertyRefreshSubscriptionStateV1& out) const noexcept {
+        const bool deferredHistory = (sub.flags & MMS_UI_PROPERTY_REFRESH_FOLLOW_HISTORY) && historyAvailable.load(std::memory_order_acquire) &&
+            historyPending.load(std::memory_order_acquire) && historyRevision.load(std::memory_order_acquire) != consumedHistory;
+        const uint32_t historyWait = deferredHistory && historyWakeFailed.load(std::memory_order_acquire) ? MMS_UI_PROPERTY_REFRESH_WAIT_HOST_WAKE : 0;
+        out = {Header<MmsUiPropertyRefreshSubscriptionStateV1>(), sub.handle, sub.target, sub.property,
+            sub.latest, sub.submitted, sub.completed, historyWait ? MMS_E_FAILED : sub.result,
+            uint32_t(sub.dirty || sub.claimed || sub.ticket || deferredHistory), sub.waiting | historyWait, 0};
+    }
     MmsResult Query(Owner& owner, MmsHandle handle, MmsUiPropertyRefreshSubscriptionStateV1* out) {
         if (!handle || !Valid(out)) return MMS_E_ARGUMENT;
         std::lock_guard<std::mutex> lock(mutex);
         const auto found = subscriptions.find(handle);
         if (!Current(owner) || found == subscriptions.end() || found->second.owner != &owner) return MMS_E_STALE;
-        const auto& sub = found->second;
-        const bool deferredHistory = (sub.flags & MMS_UI_PROPERTY_REFRESH_FOLLOW_HISTORY) && historyAvailable.load(std::memory_order_acquire) &&
-            historyPending.load(std::memory_order_acquire) && historyRevision.load(std::memory_order_acquire) != consumedHistory;
-        const uint32_t historyWait = deferredHistory && historyWakeFailed.load(std::memory_order_acquire) ? MMS_UI_PROPERTY_REFRESH_WAIT_HOST_WAKE : 0;
-        *out = {Header<MmsUiPropertyRefreshSubscriptionStateV1>(), handle, sub.target, sub.property,
-            sub.latest, sub.submitted, sub.completed, historyWait ? MMS_E_FAILED : sub.result,
-            uint32_t(sub.dirty || sub.claimed || sub.ticket || deferredHistory), sub.waiting | historyWait, 0};
-        return MMS_OK;
+        State(found->second, *out); return MMS_OK;
+    }
+    MmsResult QueryScoped(Owner& owner, MmsHandle handle, MmsUiPropertyRefreshScopedSubscriptionStateV1* out) {
+        if (!handle || !Valid(out)) return MMS_E_ARGUMENT;
+        std::lock_guard<std::mutex> lock(mutex);
+        const auto found = subscriptions.find(handle);
+        if (!Current(owner) || found == subscriptions.end() || found->second.owner != &owner) return MMS_E_STALE;
+        const auto& sub = found->second; MmsUiPropertyRefreshSubscriptionStateV1 state{}; State(sub, state);
+        *out = {Header<MmsUiPropertyRefreshScopedSubscriptionStateV1>(), state.subscription, state.target, state.property,
+            state.latestSequence, state.submittedSequence, state.completedSequence, state.lastResult, state.pending, state.waitingFor, state.reserved,
+            sub.scope, sub.kinds, sub.flags, 0, sub.workGeneration, sub.submittedWorkGeneration, sub.completedWorkGeneration,
+            sub.submittedDependencyRevision, 0}; return MMS_OK;
     }
     MmsResult Unsubscribe(Owner& owner, MmsHandle handle) {
         if (!handle) return MMS_E_ARGUMENT;
@@ -241,6 +398,19 @@ MmsUiPropertyRefreshApiV1 UiPropertyRefresh::Api(RefreshClient& client) {
 #undef PROPERTY_CALL
     return api;
 }
+MmsUiPropertyRefreshApiV1_1 UiPropertyRefresh::ScopedApi(RefreshClient& client) {
+    const auto legacy = Api(client); MmsUiPropertyRefreshApiV1_1 api{}; api.h = {sizeof(api), 1, 1}; api.context = legacy.context;
+    api.getCapabilities = legacy.getCapabilities; api.getPropertyRef = legacy.getPropertyRef; api.subscribe = legacy.subscribe;
+    api.notify = legacy.notify; api.query = legacy.query; api.unsubscribe = legacy.unsubscribe;
+#define SCOPED_PROPERTY_CALL(body) auto& o = *static_cast<Impl::Owner*>(p); o.client->inFlight.fetch_add(1); \
+    struct Guard { RefreshClient& client; ~Guard() { client.inFlight.fetch_sub(1); } } guard{*o.client}; \
+    return Boundary([&]() -> MmsResult { body; })
+    api.getScopedCapabilities = [](void* p, MmsUiPropertyRefreshScopedCapabilitiesV1* out) { SCOPED_PROPERTY_CALL(return o.store->ScopedCapabilities(o, out)); };
+    api.subscribeScoped = [](void* p, const MmsUiPropertyRefreshScopedSubscriptionDescV1* desc, MmsHandle* out) { SCOPED_PROPERTY_CALL(return o.store->SubscribeScoped(o, desc, out)); };
+    api.queryScoped = [](void* p, MmsHandle h, MmsUiPropertyRefreshScopedSubscriptionStateV1* out) { SCOPED_PROPERTY_CALL(return o.store->QueryScoped(o, h, out)); };
+#undef SCOPED_PROPERTY_CALL
+    return api;
+}
 void UiPropertyRefresh::SetHistoryAvailable(bool available) {
     if (GetCurrentThreadId() != impl_->thread) throw std::invalid_argument("property history thread");
     impl_->historyAvailable.store(available, std::memory_order_release);
@@ -262,8 +432,8 @@ void UiPropertyRefresh::DrainHistory() noexcept {
     std::lock_guard<std::mutex> lock(impl_->mutex);
     for (auto& item : impl_->subscriptions) {
         auto& sub = item.second;
-        if (sub.waiting == MMS_UI_PROPERTY_REFRESH_WAIT_HOST_WAKE && sub.hostWake != hostWake && !sub.bound && !sub.ticket && !sub.claimed) {
-            sub.waiting = 0; sub.armed = true;
+        if ((sub.waiting & MMS_UI_PROPERTY_REFRESH_WAIT_HOST_WAKE) && sub.hostWake != hostWake && !sub.bound && !sub.ticket && !sub.claimed) {
+            if (Impl::Scoped(sub)) impl_->ArmScoped(sub); else { sub.waiting = 0; sub.armed = true; }
         }
     }
     if (!pending || revision == impl_->consumedHistory) return;
@@ -277,6 +447,8 @@ void UiPropertyRefresh::DrainHistory() noexcept {
             if (!(sub.flags & MMS_UI_PROPERTY_REFRESH_FOLLOW_HISTORY) || !Same(sub.property, property.ref)) continue;
             if (!changed) { if (property.sequence == UINT64_MAX) break; ++property.sequence; changed = true; }
             sub.latest = property.sequence; sub.dirty = true;
+            if (Impl::Scoped(sub)) { impl_->Change(sub, false); continue; }
+            if (sub.workGeneration != UINT64_MAX) ++sub.workGeneration;
             if (sub.bound) { sub.waiting = MMS_UI_PROPERTY_REFRESH_WAIT_BINDING; continue; }
             sub.waiting = 0;
             if (!sub.ticket && !sub.claimed) sub.armed = true;
@@ -289,6 +461,8 @@ bool UiPropertyRefresh::Take(MmsHandle after, Work& out) noexcept {
         auto& sub = it->second;
         if (!sub.armed || sub.ticket || sub.claimed || sub.bound || !impl_->Current(*sub.owner)) continue;
         out = {sub.owner->client, sub.handle, sub.target, sub.kinds, sub.latest, 0};
+        out.scope = sub.scope; out.workGeneration = sub.workGeneration; out.dependencyRevision = sub.dependencyRevision;
+        out.sourcePublication = sub.sourcePublication;
         sub.armed = false; sub.claimed = true; return true;
     }
     return false;
@@ -300,7 +474,24 @@ bool UiPropertyRefresh::Submit(const Work& work, MmsHandle ticket, MmsResult res
     auto& sub = found->second; sub.claimed = false; sub.result = result;
     if (!result) {
         sub.ticket = ticket; sub.submitted = work.sequence; sub.dirty = sub.latest != work.sequence;
+        sub.submittedWorkGeneration = work.workGeneration; sub.submittedDependencyRevision = work.dependencyRevision;
+        sub.submittedSourcePublication = sub.claimedSourcePublication;
         sub.waiting = sub.bound ? MMS_UI_PROPERTY_REFRESH_WAIT_BINDING : 0;
+    } else if (Impl::Scoped(sub)) {
+        sub.dirty = true; sub.capacity = work.capacityRevision;
+        sub.resourceCapacity = work.resourceCapacity;
+        sub.displayCapacity = work.resourceCapacity ? work.resourceCapacityRevision : work.displayCapacityRevision;
+        if (sub.latest != work.sequence || sub.workGeneration > work.workGeneration) impl_->ArmScoped(sub);
+        else {
+            sub.waiting = work.waitingFor ? work.waitingFor : result == MMS_E_MEMORY ?
+                MMS_UI_PROPERTY_REFRESH_WAIT_CAPACITY | MMS_UI_PROPERTY_REFRESH_WAIT_DISPLAY_CAPACITY : WaitFor(result);
+            if (result == MMS_E_FAILED && impl_->historyWakeFailed.load(std::memory_order_acquire)) {
+                sub.waiting = MMS_UI_PROPERTY_REFRESH_WAIT_HOST_WAKE; sub.hostWake = impl_->hostWakeRevision.load(std::memory_order_acquire);
+            }
+            sub.armed = false;
+            if (sub.sourcePublication > work.sourcePublication && !sub.sourceMissing &&
+                (sub.waiting & (MMS_UI_PROPERTY_REFRESH_WAIT_SOURCE | MMS_UI_PROPERTY_REFRESH_WAIT_CONSUMER))) impl_->Change(sub, false);
+        }
     } else {
         sub.dirty = true; sub.capacity = work.capacityRevision;
         sub.waiting = sub.bound ? MMS_UI_PROPERTY_REFRESH_WAIT_BINDING : WaitFor(result);
@@ -312,21 +503,32 @@ bool UiPropertyRefresh::Submit(const Work& work, MmsHandle ticket, MmsResult res
     }
     return true;
 }
-void UiPropertyRefresh::Complete(MmsHandle subscription, MmsHandle ticket, uint64_t sequence, MmsResult result, uint32_t waiting) noexcept {
+void UiPropertyRefresh::Complete(MmsHandle subscription, MmsHandle ticket, uint64_t sequence, MmsResult result, uint32_t waiting,
+    uint64_t workGeneration, uint64_t displayCapacityRevision) noexcept {
     std::lock_guard<std::mutex> lock(impl_->mutex);
     const auto found = impl_->subscriptions.find(subscription);
     if (found == impl_->subscriptions.end() || found->second.ticket != ticket) return;
     auto& sub = found->second; sub.ticket = 0; sub.result = result;
     if (!result) sub.completed = std::max(sub.completed, sequence);
+    if (!result) sub.completedWorkGeneration = std::max(sub.completedWorkGeneration, workGeneration ? workGeneration : sub.submittedWorkGeneration);
+    if (Impl::Scoped(sub)) {
+        if (result && sub.sourcePublication > sub.submittedSourcePublication && sub.workGeneration == workGeneration) impl_->Change(sub, false);
+        if (sub.latest != sequence || sub.workGeneration > workGeneration) { sub.dirty = true; impl_->ArmScoped(sub); }
+        else if (result) { sub.dirty = true; sub.waiting = waiting | sub.scopeBlock; sub.armed = false; }
+        else { sub.dirty = false; sub.waiting = 0; sub.armed = false; }
+        sub.resourceCapacity = false; sub.displayCapacity = displayCapacityRevision;
+        return;
+    }
     if (sub.bound) { sub.dirty = true; sub.waiting = MMS_UI_PROPERTY_REFRESH_WAIT_BINDING; sub.armed = false; }
     else if (sub.latest != sequence) { sub.dirty = true; sub.waiting = 0; sub.armed = true; }
     else if (result) { sub.dirty = true; sub.waiting = waiting; sub.armed = false; }
     else { sub.dirty = false; sub.waiting = 0; sub.armed = false; }
 }
-bool UiPropertyRefresh::Alive(const RefreshClient& client, MmsHandle handle) const noexcept {
+bool UiPropertyRefresh::Alive(const RefreshClient& client, MmsHandle handle, uint64_t workGeneration) const noexcept {
     std::lock_guard<std::mutex> lock(impl_->mutex);
     const auto found = impl_->subscriptions.find(handle);
-    return found != impl_->subscriptions.end() && found->second.owner->client == &client && !found->second.bound && impl_->Current(*found->second.owner);
+    return found != impl_->subscriptions.end() && found->second.owner->client == &client && !found->second.bound && impl_->Current(*found->second.owner) &&
+        (!workGeneration || !Impl::Scoped(found->second) || workGeneration >= found->second.invalidationGeneration);
 }
 bool UiPropertyRefresh::Pending() const noexcept {
     if (impl_->historyAvailable.load(std::memory_order_acquire) && impl_->historyPending.load(std::memory_order_acquire) &&
@@ -339,8 +541,10 @@ bool UiPropertyRefresh::RetryCapacity(uint64_t revision) noexcept {
     std::lock_guard<std::mutex> lock(impl_->mutex); bool wake = false;
     for (auto& item : impl_->subscriptions) {
         auto& sub = item.second;
-        if (sub.waiting != MMS_UI_PROPERTY_REFRESH_WAIT_CAPACITY || sub.capacity == revision || sub.bound || sub.ticket || sub.claimed) continue;
-        sub.waiting = 0; sub.armed = true; wake = true;
+        const bool capacity = Impl::Scoped(sub) ? (sub.waiting & MMS_UI_PROPERTY_REFRESH_WAIT_CAPACITY) != 0 : sub.waiting == MMS_UI_PROPERTY_REFRESH_WAIT_CAPACITY;
+        if (!capacity || sub.capacity == revision || sub.bound || sub.ticket || sub.claimed) continue;
+        if (Impl::Scoped(sub)) impl_->ArmScoped(sub); else { sub.waiting = 0; sub.armed = true; }
+        wake |= sub.armed;
     }
     return wake;
 }
@@ -349,9 +553,14 @@ bool UiPropertyRefresh::TargetPublished(MmsHandle element, bool ready, bool prov
     std::lock_guard<std::mutex> lock(impl_->mutex); bool wake = false;
     for (auto& item : impl_->subscriptions) {
         auto& sub = item.second;
-        if (sub.target.element != element || sub.bound || sub.ticket || sub.claimed ||
-            (sub.waiting != MMS_UI_PROPERTY_REFRESH_WAIT_TARGET && !(providerChanged && sub.waiting == MMS_UI_PROPERTY_REFRESH_WAIT_CONSUMER))) continue;
-        sub.waiting = 0; sub.armed = true; wake = true;
+        bool member = sub.target.element == element;
+        if (Impl::Scoped(sub)) for (size_t i = 0; !member && i < sub.memberCount; ++i) member = sub.members[i].element == element;
+        const bool scoped = Impl::Scoped(sub);
+        const bool waitingTarget = scoped ? (sub.waiting & MMS_UI_PROPERTY_REFRESH_WAIT_TARGET) != 0 : sub.waiting == MMS_UI_PROPERTY_REFRESH_WAIT_TARGET;
+        const bool waitingProvider = scoped ? (sub.waiting & (MMS_UI_PROPERTY_REFRESH_WAIT_CONSUMER | MMS_UI_PROPERTY_REFRESH_WAIT_BINDING)) != 0 : sub.waiting == MMS_UI_PROPERTY_REFRESH_WAIT_CONSUMER;
+        if (!member || sub.bound || sub.ticket || sub.claimed || (!waitingTarget && !(providerChanged && waitingProvider))) continue;
+        if (Impl::Scoped(sub)) impl_->Change(sub, false); else { sub.waiting = 0; sub.armed = true; }
+        wake |= sub.armed;
     }
     return wake;
 }
@@ -359,17 +568,101 @@ bool UiPropertyRefresh::BindingChanged(const RefreshClient& client, const MmsUiT
     std::lock_guard<std::mutex> lock(impl_->mutex); bool wake = false;
     for (auto& item : impl_->subscriptions) {
         auto& sub = item.second;
-        if (sub.owner->client != &client || !Same(sub.target, ref) || sub.bound == bound) continue;
+        if (Impl::Scoped(sub) || sub.owner->client != &client || !Same(sub.target, ref) || sub.bound == bound) continue;
         sub.bound = bound; sub.dirty = true; sub.waiting = bound ? MMS_UI_PROPERTY_REFRESH_WAIT_BINDING : 0;
         sub.armed = !bound && !sub.ticket && !sub.claimed; wake |= sub.armed;
     }
     return wake;
 }
+void UiPropertyRefresh::ScopedBindingPublished(const RefreshClient& client, const MmsUiTargetRefV1& ref) noexcept {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    for (auto& entry : impl_->subscriptions) {
+        auto& sub = entry.second;
+        if (!Impl::Scoped(sub) || sub.owner->client != &client || !impl_->Current(*sub.owner)) continue;
+        // Only the scope's captured member list may trigger a DEPENDENTS
+        // event: its seed is just the anchor. SUBTREE includes its root, so an
+        // exact seed ref may also match that scope directly.
+        bool affected = sub.scope == MMS_UI_REFRESH_SUBTREE && Same(sub.target, ref);
+        for (size_t i = 0; !affected && i < sub.memberCount; ++i) affected = Same(sub.members[i], ref);
+        if (!affected) continue;
+        sub.bindingObservationPending = true;
+        impl_->Change(sub, true);
+    }
+}
 bool UiPropertyRefresh::NextTarget(MmsHandle after, Work& out) const noexcept {
     std::lock_guard<std::mutex> lock(impl_->mutex);
     const auto found = impl_->subscriptions.upper_bound(after);
     if (found == impl_->subscriptions.end()) return false;
-    const auto& sub = found->second; out = {sub.owner->client, sub.handle, sub.target, sub.kinds, sub.latest, 0}; return true;
+    const auto& sub = found->second; out = {sub.owner->client, sub.handle, sub.target, sub.kinds, sub.latest, 0};
+    out.scope = sub.scope; out.workGeneration = sub.workGeneration; out.dependencyRevision = sub.dependencyRevision; return true;
+}
+bool UiPropertyRefresh::NextScoped(MmsHandle after, Work& out) const noexcept {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    for (auto it = impl_->subscriptions.upper_bound(after); it != impl_->subscriptions.end(); ++it) {
+        const auto& sub = it->second;
+        if (!Impl::Scoped(sub) || !impl_->Current(*sub.owner)) continue;
+        out = {sub.owner->client, sub.handle, sub.target, sub.kinds, sub.latest, 0};
+        out.scope = sub.scope; out.workGeneration = sub.workGeneration; out.dependencyRevision = sub.dependencyRevision;
+        out.sourcePublication = sub.sourcePublication; return true;
+    }
+    return false;
+}
+void UiPropertyRefresh::ObserveScope(const Work& work, const std::vector<MmsUiTargetRefV1>& members,
+    uint64_t dependencyRevision, uint32_t blocked, const std::vector<UiRefreshBindings::PropertySource>& sources) noexcept {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    const auto found = impl_->subscriptions.find(work.subscription);
+    if (found == impl_->subscriptions.end() || found->second.owner->client != work.client || !Impl::Scoped(found->second)) return;
+    impl_->ObserveLocked(found->second, members, dependencyRevision, blocked, sources);
+}
+void UiPropertyRefresh::ObserveSources(MmsHandle subscription, const std::vector<UiRefreshBindings::PropertySource>& sources, bool captured) noexcept {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    const auto found = impl_->subscriptions.find(subscription);
+    if (found == impl_->subscriptions.end() || !Impl::Scoped(found->second)) return;
+    impl_->ObserveSourcesLocked(found->second, sources, captured);
+}
+void UiPropertyRefresh::SourcePublished(RefreshClient& client, MmsHandle source, uint64_t revision) noexcept {
+    bool wake = false;
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        for (auto& entry : impl_->subscriptions) {
+            auto& sub = entry.second;
+            if (!Impl::Scoped(sub) || sub.owner->client != &client || !impl_->Current(*sub.owner)) continue;
+            bool changed = false, missing = false;
+            for (size_t i = 0; i < sub.sourceCount; ++i) {
+                auto& watch = sub.sources[i];
+                if (watch.source == source && revision > watch.revision) { watch.revision = revision; changed = true; }
+                missing |= watch.revision == 0;
+            }
+            if (!changed) continue;
+            sub.sourceMissing = missing;
+            if (sub.sourcePublication != UINT64_MAX) ++sub.sourcePublication;
+            if (!sub.ticket && !sub.claimed && (sub.waiting & (MMS_UI_PROPERTY_REFRESH_WAIT_SOURCE | MMS_UI_PROPERTY_REFRESH_WAIT_CONSUMER))) {
+                const bool armed = sub.armed; impl_->Change(sub, false); wake |= !armed && sub.armed;
+            }
+        }
+    }
+    impl_->Wake(wake);
+}
+void UiPropertyRefresh::GraphChanged(const RefreshClient& client, const MmsUiTargetRefV1& upstream) noexcept {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    for (auto& entry : impl_->subscriptions) {
+        auto& sub = entry.second;
+        if (sub.owner->client != &client || sub.scope != MMS_UI_REFRESH_DEPENDENTS) continue;
+        bool affected = Same(sub.target, upstream);
+        for (size_t i = 0; !affected && i < sub.memberCount; ++i) affected = Same(sub.members[i], upstream);
+        if (affected) impl_->Change(sub, true);
+    }
+}
+bool UiPropertyRefresh::RetryDisplayCapacity(uint64_t displayRevision, uint64_t resourceRevision) noexcept {
+    std::lock_guard<std::mutex> lock(impl_->mutex); bool wake = false;
+    for (auto& entry : impl_->subscriptions) {
+        auto& sub = entry.second;
+        const auto revision = sub.resourceCapacity ? resourceRevision : displayRevision;
+        if (!Impl::Scoped(sub) || !(sub.waiting & MMS_UI_PROPERTY_REFRESH_WAIT_DISPLAY_CAPACITY) ||
+            revision == UINT64_MAX || sub.displayCapacity == revision || sub.ticket || sub.claimed) continue;
+        impl_->ArmScoped(sub); wake |= sub.armed;
+    }
+    return wake;
 }
 void UiPropertyRefresh::FailScheduling(MmsResult result) noexcept {
     std::lock_guard<std::mutex> lock(impl_->mutex);

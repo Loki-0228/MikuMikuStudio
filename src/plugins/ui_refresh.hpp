@@ -35,6 +35,17 @@ struct UiRefreshSubscriptionWork {
     uint64_t sourcePublication = 0;
     uint32_t waitingFor = 0;
 };
+struct UiPropertyRefreshWork {
+    RefreshClient* client = nullptr;
+    MmsHandle subscription = 0;
+    MmsUiTargetRefV1 target{};
+    uint32_t kinds = 0;
+    uint64_t sequence = 0, capacityRevision = 0;
+    uint32_t scope = MMS_UI_REFRESH_SELF, waitingFor = 0;
+    uint64_t workGeneration = 0, dependencyRevision = 0, sourcePublication = 0, displayCapacityRevision = 0;
+    uint64_t resourceCapacityRevision = 0;
+    bool resourceCapacity = false;
+};
 // Only the UI adapter supplies these. No HWND or registry access occurs in
 // request/query/cancel/release, even when called from a background thread.
 struct RefreshPresentation {
@@ -113,7 +124,8 @@ class UiRefreshQueue {
     MmsResult Capabilities(RefreshClient&, MmsUiRefreshCapabilitiesV1*);
     MmsResult GetTarget(RefreshClient&, MmsHandle, MmsUiRefreshTargetV1*);
     MmsResult Request(RefreshClient&, const MmsUiRefreshRequestV1*, MmsHandle*, MmsHandle subscription = 0,
-        MmsHandle propertySubscription = 0, uint64_t propertySequence = 0, UiRefreshSubscriptionWork* scoped = nullptr);
+        MmsHandle propertySubscription = 0, uint64_t propertySequence = 0, UiRefreshSubscriptionWork* scoped = nullptr,
+        UiPropertyRefreshWork* propertyScoped = nullptr);
     MmsResult Query(RefreshClient&, MmsHandle, MmsUiRefreshStateV1*);
     MmsResult Cancel(RefreshClient&, MmsHandle);
     MmsResult Release(RefreshClient&, MmsHandle);
@@ -133,6 +145,10 @@ class UiRefreshQueue {
     void RetrySubscriptions() noexcept;
     void ScheduleSubscriptions();
     void RefreshScopedSubscriptionsLocked() noexcept;
+    void RefreshScopedPropertySubscriptionsLocked() noexcept;
+    MmsResult CollectScopedTargetsLocked(RefreshClient&, const MmsUiTargetRefV1&, uint32_t,
+        std::vector<MmsUiTargetRefV1>&, uint64_t&, uint32_t&) const;
+    MmsResult CheckPropertyScopedSeed(RefreshClient&, const MmsUiTargetRefV1&, uint32_t, uint32_t) const;
     void SchedulePropertySubscriptions();
     void PropertyBindingsChanged() noexcept;
     MmsResult CheckPropertyRefreshTarget(RefreshClient&, const UiClient*, const MmsUiTargetRefV1&,

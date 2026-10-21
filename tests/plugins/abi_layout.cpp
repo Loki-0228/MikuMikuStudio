@@ -131,3 +131,71 @@ static_assert(MMS_ABI_MAJOR == 1u && MMS_ABI_MINOR == 0u, "service minor 1 keeps
 static_assert(sizeof(MmsUiRefreshSubscriptionApiV1_1) == sizeof(MmsUiRefreshSubscriptionApiV1) + 2u * sizeof(void*), "service minor 1 only appends its own table");
 static_assert(std::is_same<decltype(((MmsUiRefreshSubscriptionApiV1_1*)nullptr)->subscribeScoped), MmsResult (MMS_CALL *)(void*, const MmsUiRefreshScopedSubscriptionDescV1*, MmsHandle*)>::value, "scoped subscribe exact signature");
 static_assert(std::is_same<decltype(((MmsUiRefreshSubscriptionApiV1_1*)nullptr)->queryScoped), MmsResult (MMS_CALL *)(void*, MmsHandle, MmsUiRefreshScopedSubscriptionStateV1*)>::value, "scoped query exact signature");
+/* mms.ui.refresh.property 1.1 compile-time ABI: scoped capabilities, descriptor,
+   state and API append-only layouts, POD properties, 8-byte natural alignment,
+   frozen WAIT bits and exact callback types. All 1.0 assertions above remain in force. */
+static_assert(sizeof(MmsUiPropertyRefreshScopedCapabilitiesV1) == 40, "scoped property refresh capabilities");
+static_assert(alignof(MmsUiPropertyRefreshScopedCapabilitiesV1) == 8, "scoped property refresh capabilities alignment");
+static_assert(offsetof(MmsUiPropertyRefreshScopedCapabilitiesV1, supportedScopes) == 32, "scoped property refresh capabilities scopes offset");
+static_assert(offsetof(MmsUiPropertyRefreshScopedCapabilitiesV1, reservedTail) == 36, "scoped property refresh capabilities tail offset");
+#define MMS_PROPERTY_SCOPED_CAPS_PREFIX(field) static_assert(offsetof(MmsUiPropertyRefreshScopedCapabilitiesV1, field) == offsetof(MmsUiPropertyRefreshCapabilitiesV1, field), "scoped property refresh capabilities prefix " #field)
+MMS_PROPERTY_SCOPED_CAPS_PREFIX(h); MMS_PROPERTY_SCOPED_CAPS_PREFIX(maxSubscriptionsPerPlugin);
+MMS_PROPERTY_SCOPED_CAPS_PREFIX(supportedKinds); MMS_PROPERTY_SCOPED_CAPS_PREFIX(supportedFlags);
+MMS_PROPERTY_SCOPED_CAPS_PREFIX(flags); MMS_PROPERTY_SCOPED_CAPS_PREFIX(reserved);
+#undef MMS_PROPERTY_SCOPED_CAPS_PREFIX
+static_assert(std::is_standard_layout<MmsUiPropertyRefreshScopedCapabilitiesV1>::value && std::is_trivially_copyable<MmsUiPropertyRefreshScopedCapabilitiesV1>::value, "scoped property refresh capabilities POD");
+static_assert(sizeof(MmsUiPropertyRefreshScopedSubscriptionDescV1) == 96, "scoped property refresh descriptor");
+static_assert(alignof(MmsUiPropertyRefreshScopedSubscriptionDescV1) == 8, "scoped property refresh descriptor alignment");
+static_assert(offsetof(MmsUiPropertyRefreshScopedSubscriptionDescV1, h) == 0, "scoped property refresh descriptor header offset");
+static_assert(offsetof(MmsUiPropertyRefreshScopedSubscriptionDescV1, property) == 8, "scoped property refresh descriptor property offset");
+static_assert(offsetof(MmsUiPropertyRefreshScopedSubscriptionDescV1, seed) == 40, "scoped property refresh descriptor seed offset");
+static_assert(offsetof(MmsUiPropertyRefreshScopedSubscriptionDescV1, scope) == 72, "scoped property refresh descriptor scope offset");
+static_assert(offsetof(MmsUiPropertyRefreshScopedSubscriptionDescV1, kinds) == 76, "scoped property refresh descriptor kinds offset");
+static_assert(offsetof(MmsUiPropertyRefreshScopedSubscriptionDescV1, flags) == 80, "scoped property refresh descriptor flags offset");
+static_assert(offsetof(MmsUiPropertyRefreshScopedSubscriptionDescV1, reserved) == 84, "scoped property refresh descriptor reserved offset");
+static_assert(offsetof(MmsUiPropertyRefreshScopedSubscriptionDescV1, reservedTail) == 88, "scoped property refresh descriptor tail offset");
+static_assert(std::is_standard_layout<MmsUiPropertyRefreshScopedSubscriptionDescV1>::value && std::is_trivially_copyable<MmsUiPropertyRefreshScopedSubscriptionDescV1>::value, "scoped property refresh descriptor POD");
+static_assert(sizeof(MmsUiPropertyRefreshScopedSubscriptionStateV1) == 176, "scoped property refresh state");
+static_assert(alignof(MmsUiPropertyRefreshScopedSubscriptionStateV1) == 8, "scoped property refresh state alignment");
+#define MMS_PROPERTY_SCOPED_STATE_PREFIX(field) static_assert(offsetof(MmsUiPropertyRefreshScopedSubscriptionStateV1, field) == offsetof(MmsUiPropertyRefreshSubscriptionStateV1, field), "scoped property refresh state prefix " #field)
+MMS_PROPERTY_SCOPED_STATE_PREFIX(h); MMS_PROPERTY_SCOPED_STATE_PREFIX(subscription);
+MMS_PROPERTY_SCOPED_STATE_PREFIX(target); MMS_PROPERTY_SCOPED_STATE_PREFIX(property);
+MMS_PROPERTY_SCOPED_STATE_PREFIX(latestSequence); MMS_PROPERTY_SCOPED_STATE_PREFIX(submittedSequence);
+MMS_PROPERTY_SCOPED_STATE_PREFIX(completedSequence); MMS_PROPERTY_SCOPED_STATE_PREFIX(lastResult);
+MMS_PROPERTY_SCOPED_STATE_PREFIX(pending); MMS_PROPERTY_SCOPED_STATE_PREFIX(waitingFor);
+MMS_PROPERTY_SCOPED_STATE_PREFIX(reserved);
+#undef MMS_PROPERTY_SCOPED_STATE_PREFIX
+static_assert(offsetof(MmsUiPropertyRefreshScopedSubscriptionStateV1, scope) == 120, "scoped property refresh state scope offset");
+static_assert(offsetof(MmsUiPropertyRefreshScopedSubscriptionStateV1, kinds) == 124, "scoped property refresh state kinds offset");
+static_assert(offsetof(MmsUiPropertyRefreshScopedSubscriptionStateV1, flags) == 128, "scoped property refresh state flags offset");
+static_assert(offsetof(MmsUiPropertyRefreshScopedSubscriptionStateV1, reservedTail0) == 132, "scoped property refresh state reserved tail0 offset");
+static_assert(offsetof(MmsUiPropertyRefreshScopedSubscriptionStateV1, workGeneration) == 136, "scoped property refresh state work generation offset");
+static_assert(offsetof(MmsUiPropertyRefreshScopedSubscriptionStateV1, submittedWorkGeneration) == 144, "scoped property refresh state submitted work generation offset");
+static_assert(offsetof(MmsUiPropertyRefreshScopedSubscriptionStateV1, completedWorkGeneration) == 152, "scoped property refresh state completed work generation offset");
+static_assert(offsetof(MmsUiPropertyRefreshScopedSubscriptionStateV1, submittedDependencyRevision) == 160, "scoped property refresh state dependency revision offset");
+static_assert(offsetof(MmsUiPropertyRefreshScopedSubscriptionStateV1, reservedTail) == 168, "scoped property refresh state tail offset");
+static_assert(std::is_standard_layout<MmsUiPropertyRefreshScopedSubscriptionStateV1>::value && std::is_trivially_copyable<MmsUiPropertyRefreshScopedSubscriptionStateV1>::value, "scoped property refresh state POD");
+static_assert(sizeof(MmsUiPropertyRefreshApiV1_1) == 88, "scoped property refresh API");
+static_assert(sizeof(MmsUiPropertyRefreshApiV1_1) == sizeof(MmsUiPropertyRefreshApiV1) + 3u * sizeof(void*), "scoped property refresh API appends exactly three slots");
+static_assert(alignof(MmsUiPropertyRefreshApiV1_1) == 8, "scoped property refresh API alignment");
+#define MMS_PROPERTY_SCOPED_API_PREFIX(field) static_assert(offsetof(MmsUiPropertyRefreshApiV1_1, field) == offsetof(MmsUiPropertyRefreshApiV1, field), "scoped property refresh API prefix " #field)
+MMS_PROPERTY_SCOPED_API_PREFIX(h); MMS_PROPERTY_SCOPED_API_PREFIX(context);
+MMS_PROPERTY_SCOPED_API_PREFIX(getCapabilities); MMS_PROPERTY_SCOPED_API_PREFIX(getPropertyRef);
+MMS_PROPERTY_SCOPED_API_PREFIX(subscribe); MMS_PROPERTY_SCOPED_API_PREFIX(notify);
+MMS_PROPERTY_SCOPED_API_PREFIX(query); MMS_PROPERTY_SCOPED_API_PREFIX(unsubscribe);
+#undef MMS_PROPERTY_SCOPED_API_PREFIX
+static_assert(offsetof(MmsUiPropertyRefreshApiV1_1, getScopedCapabilities) == 64, "scoped property refresh API getScopedCapabilities offset");
+static_assert(offsetof(MmsUiPropertyRefreshApiV1_1, subscribeScoped) == 72, "scoped property refresh API subscribeScoped offset");
+static_assert(offsetof(MmsUiPropertyRefreshApiV1_1, queryScoped) == 80, "scoped property refresh API queryScoped offset");
+static_assert(std::is_standard_layout<MmsUiPropertyRefreshApiV1_1>::value && std::is_trivially_copyable<MmsUiPropertyRefreshApiV1_1>::value, "scoped property refresh API POD");
+static_assert(MMS_UI_PROPERTY_REFRESH_WAIT_BINDING == 1u, "property WAIT binding bit");
+static_assert(MMS_UI_PROPERTY_REFRESH_WAIT_TARGET == 2u, "property WAIT target bit");
+static_assert(MMS_UI_PROPERTY_REFRESH_WAIT_CAPACITY == 4u, "property WAIT capacity bit");
+static_assert(MMS_UI_PROPERTY_REFRESH_WAIT_CONSUMER == 8u, "property WAIT consumer bit");
+static_assert(MMS_UI_PROPERTY_REFRESH_WAIT_HOST_WAKE == 16u, "property WAIT host wake bit");
+static_assert(MMS_UI_PROPERTY_REFRESH_WAIT_GRAPH == 32u, "property WAIT graph bit");
+static_assert(MMS_UI_PROPERTY_REFRESH_WAIT_SOURCE == 64u, "property WAIT source bit");
+static_assert(MMS_UI_PROPERTY_REFRESH_WAIT_DISPLAY_CAPACITY == 128u, "property WAIT display capacity bit");
+static_assert(std::is_same<decltype(((MmsUiPropertyRefreshApiV1_1*)nullptr)->getScopedCapabilities), MmsResult (MMS_CALL *)(void*, MmsUiPropertyRefreshScopedCapabilitiesV1*)>::value, "scoped property getScopedCapabilities exact signature");
+static_assert(std::is_same<decltype(((MmsUiPropertyRefreshApiV1_1*)nullptr)->subscribeScoped), MmsResult (MMS_CALL *)(void*, const MmsUiPropertyRefreshScopedSubscriptionDescV1*, MmsHandle*)>::value, "scoped property subscribeScoped exact signature");
+static_assert(std::is_same<decltype(((MmsUiPropertyRefreshApiV1_1*)nullptr)->queryScoped), MmsResult (MMS_CALL *)(void*, MmsHandle, MmsUiPropertyRefreshScopedSubscriptionStateV1*)>::value, "scoped property queryScoped exact signature");

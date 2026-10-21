@@ -1,0 +1,16 @@
+LIBRARY scoped_property_probe
+EXPORTS
+    MMSPluginGetApi
+    ScopedPropertyBegin
+    ScopedPropertySet
+    ScopedPropertyNotify
+    ScopedPropertyBurst
+    ScopedPropertyGraph
+    ScopedPropertyBindInput
+    ScopedPropertyFailReads
+    ScopedPropertyCheckThreads
+    ScopedPropertyReplaceTrigger
+    ScopedPropertyRemoveSeed
+    ScopedPropertyQuery
+    ScopedPropertyAcquireHold
+    ScopedPropertyReleaseHold

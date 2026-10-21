@@ -19,6 +19,11 @@ public:
         // UI binding mutations call this only after releasing the store lock.
         std::function<void()> bindingChanged;
         std::function<MmsResult(RefreshClient&, const MmsUiTargetRefV1&, uint32_t, uint32_t)> scopedSubscriptionTarget;
+        std::function<void(RefreshClient&, MmsHandle source, uint64_t revision)> sourcePublished;
+        // A successful public Bind/Unbind/UnregisterSource reports the exact
+        // target after releasing the binding lock. Internal invalidation and
+        // retirement never call it, so no nested store lock can be re-entered.
+        std::function<void(RefreshClient&, const MmsUiTargetRefV1&)> propertyBindingPublished;
     };
     struct DataContribution;
     using Contribution = std::shared_ptr<DataContribution>;
@@ -28,6 +33,14 @@ public:
         uint64_t revision = 0;
         Contribution data;
     };
+    struct PropertySource {
+        MmsUiTargetRefV1 target{};
+        MmsHandle binding = 0, source = 0;
+        uint64_t revision = 0;
+    };
+    // Trusted observer only, under queue -> binding -> property. It must not
+    // call the queue, a binding API, a plugin or a wake while the lock is held.
+    using PropertySourcesObserver = std::function<void(const std::vector<PropertySource>&)>;
     explicit UiRefreshBindings(Hooks = {});
     ~UiRefreshBindings();
     UiRefreshBindings(const UiRefreshBindings&) = delete;
@@ -63,6 +76,14 @@ public:
     // One binding-lock critical section captures the complete version cohort.
     // Unbound targets are omitted; a bound source without a snapshot rejects all.
     MmsResult CaptureSubtree(RefreshClient&, const std::vector<MmsUiTargetRefV1>&, std::vector<Captured>&);
+    MmsResult ObservePropertySources(RefreshClient&, const std::vector<MmsUiTargetRefV1>&, const PropertySourcesObserver&);
+    MmsResult CaptureProperty(RefreshClient&, const std::vector<MmsUiTargetRefV1>&, std::vector<Captured>&, const PropertySourcesObserver&,
+        uint64_t* resourceCapacityRevision = nullptr);
+    // Only an accepted queue ticket contributes a real contribution-capacity
+    // release event; rejected temporary captures must not wake each other.
+    void AcceptContributions(const Contribution&, const std::vector<Captured>&) noexcept;
+    uint64_t DisplayCapacityRevision() const noexcept;
+    uint64_t ResourceCapacityRevision() const noexcept;
     MmsResult CaptureScoped(RefreshClient&, MmsHandle subscription, MmsHandle trigger, uint64_t triggerRevision,
         const std::vector<MmsUiTargetRefV1>&, Contribution& triggerPin, std::vector<Captured>&);
     MmsResult ValidateTrigger(const RefreshClient&, const Contribution&) const;

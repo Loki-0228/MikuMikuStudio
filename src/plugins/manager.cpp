@@ -350,6 +350,12 @@ struct Manager::Impl {
         }
         if (id == "mms.ui.refresh.property") {
             if (closing || i.stopping.load()) return MMS_E_NOT_READY;
+            if (minor == 1) {
+                if (!out || bytes < sizeof(MmsUiPropertyRefreshApiV1_1)) return MMS_E_ARGUMENT;
+                if (major != 1) return MMS_E_VERSION;
+                const auto api = registry.Refresh().PropertyRefresh().ScopedApi(i.refresh);
+                std::memcpy(out, &api, sizeof(api)); return MMS_OK;
+            }
             return Table(major, minor, bytes, out, registry.Refresh().PropertyRefresh().Api(i.refresh));
         }
         if (id == "mms.ui.refresh.dependencies") {

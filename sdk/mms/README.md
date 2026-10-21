@@ -10,6 +10,8 @@
 
 [原属性自动刷新](property-refresh.md)为原生 INPUT 监听原属性通知，也可按实际能力跟随共同历史。C++17 `PropertyRefreshServices` 组合原目标与属性引用；显式 DATA binding 仍优先。
 
+[原属性范围刷新](scoped-property-refresh.md)通过同一服务 1.1，将原属性通知和明确选择的共同历史发布传播到注册子树或显式依赖图。`ScopedPropertyRefreshServices` 操作同一属性、种子及订阅句柄，成员 INPUT 读取各自当前属性，显式 DATA binding 按成员优先。
+
 [C++17 刷新 SDK](cpp-refresh.md)提供 `RefreshServices` 和可移动的 `RefreshTicket`，封装目标查询、整目标或局部矩形重绘及取消、释放。`RelayoutCurrent` 和 `RefreshStateLayout` 组合原 C 请求，实现保留布局的重排及按钮收缩恢复；`RefreshSubtree` 及便利方法使用同一注册树提交子树请求。票据仍为原 C 句柄，可以移交给低层代码。
 
 [控件状态内容 SDK](state-content.md)在原按钮及 INPUT 的 STATE 阶段包装标签、说明与禁用原因提供者。INPUT 的 `WriteInput` 继续包装同一 C 表、builder 和票据，并可收紧启用、只读和可见状态。简单插件注册提供者后提交 STATE 与 LAYOUT 组合，需要低层控制时继续使用同一对象。
@@ -61,7 +63,7 @@ cmake --build build/hello-menu --config Release
 | `mms.ui.refresh` 1.0 | 同插件注册对象的 SELF、SUBTREE、显式 DEPENDENTS 异步刷新。GROUP 无 SELF 绘制区；各成员按 DATA、STATE、一次 LAYOUT、REPAINT 执行，使用原 handle、票据和队列。SUBTREE 支持局部坐标映射；DEPENDENTS 排除种子、按拓扑顺序处理可达目标，使用整目标损伤。两种集合 DATA 原子捕获来源版本，sourceRevision=0 表示集合。 |
 | `mms.ui.refresh.dependencies` 1.0 | 同客户端原目标间的显式 DAG。循环检测、配额、图版本及生命周期失效共用原刷新队列；[C ABI 与 C++17 封装](refresh-dependencies.md)使用同一边句柄。显式 DATA 来源可通过订阅服务 1.1 自动传播。 |
 | `mms.ui.refresh.subscribe` 1.0、1.1 | 1.0 为原 binding 提供 SELF 自动刷新。1.1 追加范围登记及扩展状态，使用原 GROUP 或其他目标作种子，按 SUBTREE 或 DEPENDENTS 执行单张复合票据；已接受来源集合不受后续发布改写。见[范围参考](scoped-refresh-subscriptions.md)。 |
-| `mms.ui.refresh.property` 1.0 | 原 INPUT 的属性通知及共同历史跟随，显式 binding 优先。见[属性刷新参考](property-refresh.md)。属性与历史通知的自动图传播尚未实现。 |
+| `mms.ui.refresh.property` 1.0、1.1 | 1.0 提供原 INPUT 的 SELF 通知和共同历史跟随。1.1 追加独立种子的 SUBTREE、DEPENDENTS 及工作代次查询；成员显式 binding 优先。见[原属性范围刷新](scoped-property-refresh.md)。 |
 | `mms.ui.refresh.bind` 1.0 | 本插件不可变来源、来源版本、目标绑定、只读显示准备及显示租约；工作线程发布，原刷新队列消费。 |
 | `mms.ui.refresh.state` 1.0 | 本插件已有宿主按钮及 INPUT 的文案、说明及禁用原因；INPUT 可进一步限制启用、只读与可见状态。短命 builder 单次复制，在原 STATE 阶段应用，原 LAYOUT 使用已发布文案量测。附加服务表不改变旧刷新 ABI。 |
 | `mms.scene` 1.0 | 阶段 0 的对象、骨骼、网格、绑定、刚体、关节、形状、Morph、材质和纹理路径；独立 ID、运行时代次、不可变快照及 PMM 身份保存。阶段 1–4 返回 UNSUPPORTED。 |

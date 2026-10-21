@@ -35,6 +35,7 @@ static MmsString S(const char* s) { return {s, std::strlen(s)}; }
 #include "cpp_refresh_subscription_checks.inc"
 #include "cpp_scoped_refresh_subscription_checks.inc"
 #include "cpp_property_refresh_checks.inc"
+#include "cpp_scoped_property_refresh_checks.inc"
 static void Write(const fs::path& path, const std::string& bytes) { fs::create_directories(path.parent_path()); std::ofstream f(path, std::ios::binary); f << bytes; if (!f) throw std::runtime_error("fixture write failed"); }
 #include "ui_preferences_file_checks.inc"
 #include "storage_checks.inc"
@@ -64,6 +65,7 @@ static std::string ManifestText(std::string id = "org.example.hello", std::strin
 #include "overflow_menu_checks.inc"
 #include "ui_refresh_dependency_checks.inc"
 #include "scoped_subscription_checks.inc"
+#include "scoped_property_checks.inc"
 #include "ui_refresh_recovery_checks.inc"
 #include "cpp_refresh_dependency_checks.inc"
 #include "manager_dependency_refresh_checks.inc"
@@ -76,6 +78,7 @@ static std::string ManifestText(std::string id = "org.example.hello", std::strin
 #include "task_dispatch_checks.inc"
 #include "manager_property_refresh_checks.inc"
 #include "manager_scoped_subscription_checks.inc"
+#include "manager_scoped_property_checks.inc"
 static void JsonChecks() {
     CHECK(Json::Parse("{\"a\":1}").At("a").UInt() == 1);
     CHECK(Throws([] { Json::Parse("{\"a\":1,\"a\":2}"); }));
@@ -486,6 +489,12 @@ int wmain(int argc, wchar_t** argv) {
             if (argc == 3) ManagerRefreshChecks(root, fs::absolute(argv[2]));
             std::cout << "PASS refresh checks=" << checks << "\n"; fs::remove_all(root); return 0;
         }
+        if ((argc == 2 || argc == 3) && std::wstring(argv[1]) == L"--scoped-property-only") {
+            CHECK(!fs::exists(root)); fs::create_directories(root);
+            CppScopedPropertyRefreshChecks(); ScopedPropertyChecks();
+            if (argc == 3) ManagerScopedPropertyChecks(root, fs::absolute(argv[2]));
+            std::cout << "PASS scoped property checks=" << checks << "\n"; fs::remove_all(root); return 0;
+        }
         CHECK(argc == 4); CHECK(!fs::exists(root)); fs::create_directories(root);
         JsonChecks(); DiscoveryChecks(root); UiChecks(); UiPreferenceChecks(); UiPreferencesFileChecks(root); LayoutChecks(); TreeLayoutChecks(); LayoutServiceChecks(); OverflowValidationChecks(); OverflowMenuChecks(); UpdateChecks(); Win32HostChecks(); SurfaceChecks(); CppSdkChecks(); CppInputSdkChecks(); LoaderChecks(root, fs::absolute(argv[1]));
         LifecycleChecks(root, fs::absolute(argv[2])); TaskDispatchChecks(root, fs::absolute(argv[2]), fs::absolute(argv[3]));
@@ -496,6 +505,7 @@ int wmain(int argc, wchar_t** argv) {
         UiRefreshSubscriptionChecks(); CppRefreshSubscriptionChecks();
         CppPropertyRefreshChecks(); PropertyRefreshChecks();
         CppScopedRefreshSubscriptionChecks(); ScopedSubscriptionChecks();
+        CppScopedPropertyRefreshChecks(); ScopedPropertyChecks();
         ManagerEditChecks(root, fs::absolute(argv[3]));
         UiInputBrokerChecks(root, fs::absolute(argv[3]));
         NativePropertyInputChecks(root, fs::absolute(argv[3]));

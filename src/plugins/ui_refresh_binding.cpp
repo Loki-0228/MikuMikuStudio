@@ -20,6 +20,7 @@ struct Accounting {
     std::atomic<uint64_t> bytes{0};
     std::atomic<unsigned> contributions{0};
     std::atomic<uint64_t> releasedRevision{0};
+    std::atomic<uint64_t> resourcesReleasedRevision{0};
 };
 bool Reserve(std::atomic<uint64_t>& value, uint64_t amount, uint64_t maximum) noexcept {
     auto previous = value.load();
@@ -37,7 +38,10 @@ struct Snapshot {
     std::vector<unsigned char> bytes;
     ~Snapshot() { if (charge) {
         owner->bytes.fetch_sub(charge); global->bytes.fetch_sub(charge);
-        if (retained) global->releasedRevision.fetch_add(1);
+        if (retained) {
+            global->releasedRevision.fetch_add(1);
+            global->resourcesReleasedRevision.fetch_add(1);
+        }
     } }
     MmsBytes View() const noexcept { return {bytes.empty() ? nullptr : bytes.data(), bytes.size()}; }
 };
@@ -229,7 +233,7 @@ struct UiRefreshBindings::Impl {
     MmsResult Publish(Owner& owner, const MmsUiDataSourcePublishV1* update, MmsUiDataSourceStateV1* out) {
         if (!Valid(update) || !Valid(out) || update->flags || update->reserved || (update->bytes.bytes && !update->bytes.data)) return MMS_E_ARGUMENT;
         if (const auto r = Mutation(owner, false)) return r;
-        bool wake = false, capacityReleased = false;
+        bool wake = false, capacityReleased = false, published = false;
         std::unique_lock<std::mutex> lock(mutex);
         if (owner.retired || owner.client->stopping.load()) return MMS_E_NOT_READY;
         auto found = sources.find(update->source); if (found == sources.end()) return MMS_E_STALE;
@@ -243,6 +247,7 @@ struct UiRefreshBindings::Impl {
             if (const auto r = CopySnapshot(owner.accounting, global, update->bytes, s.maximum, candidate)) return r;
             const auto releasedBefore = global->releasedRevision.load();
             candidate->retained = true; s.snapshot = std::move(candidate); ++s.revision;
+            published = true;
             capacityReleased = global->releasedRevision.load() != releasedBefore;
             // All slots were allocated at subscription time. Publishing only
             // updates bounded scalar mailboxes while holding this lock.
@@ -275,7 +280,9 @@ struct UiRefreshBindings::Impl {
             }
         }
         *out = {Header<MmsUiDataSourceStateV1>(), s.handle, s.revision, s.epoch, s.snapshot->bytes.size()};
+        const auto publishedSource = s.handle, publishedRevision = s.revision;
         lock.unlock();
+        if (published && hooks.sourcePublished) hooks.sourcePublished(*owner.client, publishedSource, publishedRevision);
         if (wake && hooks.wakeSubscriptions) hooks.wakeSubscriptions();
         // Replacing an unsubscribed source can free the retained bytes that
         // another binding's display is waiting for. Notify only after the
@@ -298,10 +305,22 @@ struct UiRefreshBindings::Impl {
         std::unique_lock<std::mutex> lock(mutex);
         auto found = sources.find(handle); if (found == sources.end()) return MMS_E_STALE;
         if (found->second.owner.get() != &owner) return MMS_E_ARGUMENT;
+        // Bounded by this owner's binding quota. The removed identities are
+        // collected before erasure so the real events can be reported after
+        // the binding lock is released, without a second allocation.
+        std::array<MmsUiTargetRefV1, kBindings> removed{};
+        size_t removedCount = 0;
         for (auto it = bindings.begin(); it != bindings.end();) {
-            if (it->second->source == handle) { auto erase = it++; RemoveBinding(erase); } else ++it;
+            if (it->second->source == handle) {
+                if (removedCount < removed.size()) removed[removedCount++] = it->second->target;
+                auto erase = it++; RemoveBinding(erase);
+            } else ++it;
         }
         --owner.sources; sources.erase(found); lock.unlock();
+        // Report the real identities before the no-argument notification: its
+        // scoped observation is the complete handshake that may resolve them.
+        for (size_t i = 0; i < removedCount; ++i)
+            if (hooks.propertyBindingPublished) hooks.propertyBindingPublished(*owner.client, removed[i]);
         if (hooks.bindingChanged) hooks.bindingChanged();
         if (hooks.cleanupSubscriptions) hooks.cleanupSubscriptions();
         if (hooks.capacityReleased) hooks.capacityReleased();
@@ -324,8 +343,13 @@ struct UiRefreshBindings::Impl {
         binding->handle = Next(); binding->source = desc->source; binding->owner = source->second.owner;
         binding->target = desc->target; binding->context = desc->context; binding->prepare = desc->prepare; binding->maximum = desc->maxDisplayBytes;
         bindings.emplace(binding->handle, binding); ++owner.bindings; *out = binding->handle;
-        BindingPublication(binding->target);
-        lock.unlock(); if (hooks.bindingChanged) hooks.bindingChanged();
+        const auto target = binding->target;
+        BindingPublication(target);
+        lock.unlock();
+        // Report the real identity before the no-argument notification: its
+        // scoped observation is the complete handshake that may resolve it.
+        if (hooks.propertyBindingPublished) hooks.propertyBindingPublished(*owner.client, target);
+        if (hooks.bindingChanged) hooks.bindingChanged();
         if (hooks.cleanupSubscriptions) hooks.cleanupSubscriptions(); return MMS_OK;
     }
     MmsResult Unbind(Owner& owner, MmsHandle handle) {
@@ -334,7 +358,11 @@ struct UiRefreshBindings::Impl {
         std::unique_lock<std::mutex> lock(mutex);
         auto found = bindings.find(handle); if (found == bindings.end()) return MMS_E_STALE;
         if (found->second->owner.get() != &owner) return MMS_E_ARGUMENT;
+        const auto target = found->second->target;
         RemoveBinding(found); lock.unlock();
+        // Report the real identity before the no-argument notification: its
+        // scoped observation is the complete handshake that may resolve it.
+        if (hooks.propertyBindingPublished) hooks.propertyBindingPublished(*owner.client, target);
         if (hooks.bindingChanged) hooks.bindingChanged();
         if (hooks.cleanupSubscriptions) hooks.cleanupSubscriptions();
         if (hooks.capacityReleased) hooks.capacityReleased();
@@ -503,9 +531,12 @@ struct UiRefreshBindings::DataContribution {
     std::shared_ptr<const Snapshot> snapshot;
     std::shared_ptr<Accounting> global;
     uint64_t revision = 0;
-    bool charged = false;
+    bool charged = false, accepted = false;
     ~DataContribution() {
-        if (charged) { binding->owner->accounting->contributions.fetch_sub(1); global->contributions.fetch_sub(1); }
+        if (charged) {
+            binding->owner->accounting->contributions.fetch_sub(1); global->contributions.fetch_sub(1);
+            if (accepted) global->resourcesReleasedRevision.fetch_add(1);
+        }
     }
 };
 
@@ -784,6 +815,70 @@ MmsResult UiRefreshBindings::CaptureSubtree(RefreshClient& client, const std::ve
     for (auto& item : candidate) item.data->charged = true;
     out.swap(candidate); return MMS_OK;
 }
+MmsResult UiRefreshBindings::ObservePropertySources(RefreshClient& client, const std::vector<MmsUiTargetRefV1>& targets,
+    const PropertySourcesObserver& observe) {
+    auto& state = *impl_; std::lock_guard<std::mutex> lock(state.mutex);
+    if (client.stopping.load()) return MMS_E_NOT_READY;
+    std::vector<PropertySource> sources; sources.reserve(std::min(targets.size(), size_t(kBindings)));
+    for (const auto& target : targets) {
+        if (target.projectEpoch != state.epoch) return MMS_E_STALE;
+        for (const auto& entry : state.bindings) {
+            const auto& b = entry.second;
+            if (b->owner->client != &client || !SameTarget(b->target, target)) continue;
+            if (!b->active || b->owner->retired) return MMS_E_STALE;
+            const auto source = state.sources.find(b->source);
+            if (source == state.sources.end()) return MMS_E_STALE;
+            sources.push_back({target, b->handle, b->source, source->second.snapshot ? source->second.revision : 0});
+        }
+    }
+    if (observe) observe(sources);
+    return MMS_OK;
+}
+MmsResult UiRefreshBindings::CaptureProperty(RefreshClient& client, const std::vector<MmsUiTargetRefV1>& targets,
+    std::vector<Captured>& out, const PropertySourcesObserver& observe, uint64_t* resourceCapacityRevision) {
+    auto& state = *impl_; std::lock_guard<std::mutex> lock(state.mutex);
+    if (resourceCapacityRevision) *resourceCapacityRevision = state.global->resourcesReleasedRevision.load();
+    if (client.stopping.load()) return MMS_E_NOT_READY;
+    std::vector<PropertySource> sources; sources.reserve(std::min(targets.size(), size_t(kBindings)));
+    for (const auto& target : targets) {
+        if (!TargetValid(target) || target.projectEpoch != state.epoch) return MMS_E_STALE;
+        for (const auto& entry : state.bindings) {
+            const auto& b = entry.second;
+            if (b->owner->client != &client || !SameTarget(b->target, target)) continue;
+            if (!b->active || b->owner->retired) return MMS_E_STALE;
+            const auto source = state.sources.find(b->source);
+            if (source == state.sources.end()) return MMS_E_STALE;
+            sources.push_back({target, b->handle, b->source, source->second.snapshot ? source->second.revision : 0});
+        }
+    }
+    // Install the watch before releasing this lock, even when an unprepared
+    // source makes the capture fail. Its first publication cannot fall into
+    // an unobserved capture/park gap.
+    if (observe) observe(sources);
+    std::vector<Captured> candidate; candidate.reserve(sources.size());
+    for (const auto& source : sources) {
+        if (!source.revision) return MMS_E_NOT_READY;
+        const auto binding = state.bindings.find(source.binding);
+        const auto current = state.sources.find(source.source);
+        auto item = std::make_shared<DataContribution>(); item->binding = binding->second;
+        item->snapshot = current->second.snapshot; item->revision = source.revision; item->global = state.global;
+        candidate.push_back({source.target, source.binding, source.revision, std::move(item)});
+    }
+    if (candidate.empty()) return MMS_E_UNSUPPORTED;
+    const auto accounting = candidate.front().data->binding->owner->accounting;
+    if (candidate.size() > kContributions - accounting->contributions.load() ||
+        candidate.size() > 4096 - state.global->contributions.load()) return MMS_E_BUSY;
+    accounting->contributions.fetch_add(unsigned(candidate.size()));
+    state.global->contributions.fetch_add(unsigned(candidate.size()));
+    for (auto& item : candidate) item.data->charged = true;
+    out.swap(candidate); return MMS_OK;
+}
+void UiRefreshBindings::AcceptContributions(const Contribution& data, const std::vector<Captured>& captured) noexcept {
+    if (data) data->accepted = true;
+    for (const auto& item : captured) if (item.data) item.data->accepted = true;
+}
+uint64_t UiRefreshBindings::DisplayCapacityRevision() const noexcept { return impl_->global->releasedRevision.load(); }
+uint64_t UiRefreshBindings::ResourceCapacityRevision() const noexcept { return impl_->global->resourcesReleasedRevision.load(); }
 MmsResult UiRefreshBindings::ValidateSubtree(const RefreshClient& client, const std::vector<MmsUiTargetRefV1>& targets,
                                             const std::vector<Captured>& captured) const {
     const auto& state = *impl_; std::lock_guard<std::mutex> lock(state.mutex);

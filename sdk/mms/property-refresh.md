@@ -2,6 +2,8 @@
 
 `mms.ui.refresh.property` 1.0 监听已注册属性的变化，为原生 INPUT 安排 SELF 刷新。定义见 [C 头文件](include/mms/property_refresh.h)和 [C++17 封装](include/mms/cpp/property_refresh.hpp)。它使用原属性、原元素、原目标身份及现有刷新队列，不创建 DATA source、binding 或第二套控件。
 
+需要原属性或共同历史驱动注册子树及显式依赖图时，查询[范围刷新 1.1](scoped-property-refresh.md)。原 1.0 表、SELF 描述与查询结构保持，两个版本共用订阅额度和句柄。
+
 插件改变自身数据后调用 `notify`。宿主在 UI 安全点执行默认属性 DATA，重新调用原属性的 `read`，再按请求执行 STATE、LAYOUT、REPAINT。通知时不读取属性。通知序号表达待处理变化的合并次数，不保存该时刻的属性值；读取结果以实际消费时为准。需要准确版本快照的插件使用[显式 DATA 绑定及订阅](refresh-subscriptions.md)。
 
 ## 服务及线程

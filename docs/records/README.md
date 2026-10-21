@@ -47,6 +47,7 @@
 
 ## 开发与维护
 
+- [原属性与共同历史的范围自动刷新（2026-10-22）](abi-scoped-property-2026-10-22.md)
 - [曲线普通采样的会话保护（2026-10-21）](abi-curve-sampler-lifetime-2026-10-21.md)
 - [曲线原始兼容配置的堆故障现场（2026-10-21）](abi-curve-heap-observation-2026-10-21.md)
 - [曲线测试按构建配置注册（2026-10-21）](abi-profile-curve-tests-2026-10-21.md)
