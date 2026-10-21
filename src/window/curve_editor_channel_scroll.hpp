@@ -7,10 +7,18 @@
 namespace curve_editor_channel_scroll {
 constexpr int kId = 1110;
 constexpr UINT_PTR kSubclass = 0x43534352;
+// Timer messages may outlive cancellation and even a native HWND. Never
+// reuse an ID on this UI thread; exhaustion refuses a new interaction.
+inline thread_local UINT_PTR lastInteraction = 0;
+inline UINT_PTR AllocateInteraction(UINT_PTR& last) noexcept {
+    if(last==~UINT_PTR(0))return 0;
+    return ++last;
+}
 struct State : curve_editor_control_lifetime::State {
     HWND tree = nullptr, bar = nullptr, parent = nullptr;
     bool initializing = true, dragging = false, hover = false;
     int grab = 0, repeat = -1;
+    UINT_PTR interaction = 0, timerId = 0;
     std::uint64_t content = 0;
 };
 struct Metrics {
@@ -26,14 +34,23 @@ inline bool Current(const State& state) noexcept {
         curve_editor_control_lifetime::Exact(state.bar,BarProc,kSubclass,&state) &&
         GetParent(state.tree)==state.parent && GetParent(state.bar)==state.parent;
 }
+inline bool Interaction(const State& state,UINT_PTR ticket) noexcept {
+    return ticket&&Current(state)&&state.interaction==ticket;
+}
+inline void CancelInteraction(State& state) noexcept {
+    const auto timer=state.timerId;
+    state.interaction=state.timerId=0;
+    state.dragging=false;state.repeat=-1;
+    if(timer&&curve_editor_control_lifetime::Exact(state.bar,BarProc,kSubclass,&state))KillTimer(state.bar,timer);
+}
 inline void Retire(State& state,HWND closing=nullptr) noexcept {
     if(state.retired)return;
     state.retired=true;
     const bool ownTree=curve_editor_control_lifetime::Exact(state.tree,TreeProc,kSubclass,&state);
     const bool ownBar=curve_editor_control_lifetime::Exact(state.bar,BarProc,kSubclass,&state);
+    CancelInteraction(state);
     if(ownTree)RemoveWindowSubclass(state.tree,TreeProc,kSubclass);
     if(ownBar){
-        KillTimer(state.bar,1);
         RemoveWindowSubclass(state.bar,BarProc,kSubclass);
         if(closing!=state.bar)DestroyWindow(state.bar);
     }
@@ -43,6 +60,27 @@ struct Scope {
     explicit Scope(State& value)noexcept:state(value),pin(value){}
     ~Scope(){if(!state.initializing&&!state.retired&&!Current(state))Retire(state);}
 };
+inline UINT_PTR BeginInteraction(State& state) noexcept {
+    CancelInteraction(state);
+    if(!Current(state)||state.interaction)return 0;
+    const auto ticket=AllocateInteraction(lastInteraction);
+    if(!ticket){
+        if(GetCapture()==state.bar)ReleaseCapture();
+        return 0;
+    }
+    state.interaction=ticket;
+    return ticket;
+}
+inline bool ArmRepeat(State& state,UINT_PTR ticket,UINT delay) {
+    if(!Interaction(state,ticket)||GetCapture()!=state.bar||state.repeat<0)return false;
+    state.timerId=ticket;
+    // With an HWND, wParam uses our request ID, not SetTimer's return value.
+    if(!SetTimer(state.bar,ticket,delay,nullptr)){
+        if(Interaction(state,ticket)&&state.timerId==ticket)CancelInteraction(state);
+        return false;
+    }
+    return Interaction(state,ticket)&&state.timerId==ticket;
+}
 inline State* ForTree(HWND tree)noexcept {
     DWORD_PTR data=0;
     return GetWindowSubclass(tree,TreeProc,kSubclass,&data)?reinterpret_cast<State*>(data):nullptr;
@@ -85,9 +123,9 @@ inline void Paint(HWND bar,State& state,HDC dc) {
         SelectObject(dc,oldPen);SelectObject(dc,oldBrush);DeleteObject(brush);
     }
 }
-inline void ScrollTo(State& state,int position) {
+inline void ScrollTo(State& state,int position,UINT_PTR ticket) {
     const auto content=state.content;
-    const auto current=[&]{return Current(state)&&state.content==content;};
+    const auto current=[&]{return Interaction(state,ticket)&&state.content==content;};
     SCROLLINFO info{sizeof(SCROLLINFO),SIF_ALL};GetScrollInfo(state.tree,SB_VERT,&info);if(!current())return;
     position=std::clamp(position,info.nMin,std::max(info.nMin,info.nMax-int(info.nPage)+1));
     HTREEITEM item=TreeView_GetFirstVisible(state.tree);if(!current())return;
@@ -99,10 +137,10 @@ inline void ScrollTo(State& state,int position) {
     }
     if(item&&current())TreeView_SelectSetFirstVisible(state.tree,item);
 }
-inline void Step(HWND bar,State& state) {
-    if(!Current(state)||state.repeat<0)return;
+inline void Step(HWND bar,State& state,UINT_PTR ticket) {
+    if(!Interaction(state,ticket)||bar!=state.bar||GetCapture()!=bar||state.repeat<0)return;
     SendMessageW(state.tree,WM_VSCROLL,state.repeat,0);
-    if(Current(state))InvalidateRect(bar,nullptr,FALSE);
+    if(Interaction(state,ticket))InvalidateRect(bar,nullptr,FALSE);
 }
 inline LRESULT CALLBACK TreeProc(HWND tree,UINT message,WPARAM wp,LPARAM lp,UINT_PTR,DWORD_PTR data) {
     auto& state=*reinterpret_cast<State*>(data);Scope scope(state);
@@ -134,48 +172,59 @@ inline LRESULT CALLBACK BarProc(HWND bar,UINT message,WPARAM wp,LPARAM lp,UINT_P
     case WM_PRINTCLIENT:Paint(bar,state,reinterpret_cast<HDC>(wp));return 0;
     case WM_LBUTTONDOWN:
     case WM_LBUTTONDBLCLK:{
+        const auto ticket=BeginInteraction(state);if(!ticket)return 0;
         const auto m=Measure(bar,state);
-        if(!Current(state)||m.maximum<=m.info.nMin||!IsWindowEnabled(state.tree))return 0;
-        SetFocus(state.tree);if(!Current(state))return 0;
-        SetCapture(bar);if(!Current(state)||GetCapture()!=bar)return 0;
+        if(!Interaction(state,ticket))return 0;
+        if(m.maximum<=m.info.nMin||!IsWindowEnabled(state.tree)){CancelInteraction(state);return 0;}
+        SetFocus(state.tree);if(!Interaction(state,ticket))return 0;
+        if(GetCapture()!=bar)SetCapture(bar);
+        if(!Interaction(state,ticket))return 0;
+        if(GetCapture()!=bar){CancelInteraction(state);return 0;}
         const int y=GET_Y_LPARAM(lp);
         state.dragging=y>=m.thumb.top&&y<m.thumb.bottom;
         if(state.dragging)state.grab=y-m.thumb.top;
         else{
             state.repeat=y<m.arrow?SB_LINEUP:y>=m.bounds.bottom-m.arrow?SB_LINEDOWN:
                 y<m.thumb.top?SB_PAGEUP:SB_PAGEDOWN;
-            Step(bar,state);if(!Current(state))return 0;
-            SetTimer(bar,1,400,nullptr);if(!Current(state))return 0;
+            Step(bar,state,ticket);if(!Interaction(state,ticket))return 0;
+            if(!ArmRepeat(state,ticket,400))return 0;
         }
         InvalidateRect(bar,nullptr,FALSE);return 0;
     }
     case WM_MOUSEMOVE:{
         if(!state.hover){state.hover=true;TRACKMOUSEEVENT t{sizeof(t),TME_LEAVE,bar,0};TrackMouseEvent(&t);if(!Current(state))return 0;}
         if(state.dragging){
-            const auto m=Measure(bar,state);if(!Current(state))return 0;
-            if(m.travel>0)ScrollTo(state,m.info.nMin+MulDiv(std::clamp(GET_Y_LPARAM(lp)-state.grab-m.arrow,0,m.travel),m.maximum-m.info.nMin,m.travel));
-            if(!Current(state))return 0;
+            const auto ticket=state.interaction;
+            const auto m=Measure(bar,state);if(!Interaction(state,ticket)||GetCapture()!=bar)return 0;
+            if(m.travel>0)ScrollTo(state,m.info.nMin+MulDiv(std::clamp(GET_Y_LPARAM(lp)-state.grab-m.arrow,0,m.travel),m.maximum-m.info.nMin,m.travel),ticket);
+            if(!Interaction(state,ticket))return 0;
         }
         InvalidateRect(bar,nullptr,FALSE);return 0;
     }
     case WM_MOUSELEAVE:state.hover=false;InvalidateRect(bar,nullptr,FALSE);return 0;
-    case WM_TIMER:
-        if(wp==1){
-            SetTimer(bar,1,60,nullptr);if(!Current(state))return 0;
+    case WM_TIMER:{
+        if(wp&&wp==state.timerId){
+            const auto ticket=state.interaction;
+            if(!Interaction(state,ticket))return 0;
+            if(GetCapture()!=bar||state.repeat<0){CancelInteraction(state);return 0;}
             POINT point{};GetCursorPos(&point);ScreenToClient(bar,&point);
-            const auto m=Measure(bar,state);if(!Current(state))return 0;
+            const auto m=Measure(bar,state);if(!Interaction(state,ticket))return 0;
+            if(GetCapture()!=bar||state.repeat<0){CancelInteraction(state);return 0;}
             if(PtInRect(&m.bounds,point)&&
                ((state.repeat==SB_LINEUP&&point.y<m.arrow)||
                 (state.repeat==SB_LINEDOWN&&point.y>=m.bounds.bottom-m.arrow)||
                 (state.repeat==SB_PAGEUP&&point.y>=m.arrow&&point.y<m.thumb.top)||
                 (state.repeat==SB_PAGEDOWN&&point.y>=m.thumb.bottom&&point.y<m.bounds.bottom-m.arrow)))
-                Step(bar,state);
+                Step(bar,state,ticket);
+            if(!Interaction(state,ticket))return 0;
+            ArmRepeat(state,ticket,60);
             return 0;
-        }break;
+        }return 0;
+    }
     case WM_LBUTTONUP:if(GetCapture()==bar)ReleaseCapture();return 0;
     case WM_CAPTURECHANGED:
     case WM_CANCELMODE:
-        state.dragging=false;state.repeat=-1;KillTimer(bar,1);if(!Current(state))return 0;
+        CancelInteraction(state);if(!Current(state)||state.interaction)return 0;
         if(message==WM_CANCELMODE&&GetCapture()==bar)ReleaseCapture();
         if(Current(state))InvalidateRect(bar,nullptr,FALSE);return 0;
     case WM_MOUSEWHEEL:return SendMessageW(state.tree,message,wp,lp);

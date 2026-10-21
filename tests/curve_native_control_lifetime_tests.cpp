@@ -24,7 +24,35 @@
 
 #include "../src/window/curve_editor_theme.hpp"
 #include "../src/window/curve_editor_segments.hpp"
+namespace repeat_timer_calls {
+thread_local HWND watched = nullptr;
+thread_local unsigned calls = 0, kills = 0;
+thread_local UINT interval = 0;
+thread_local UINT_PTR requestedId = 0, killedId = 0, result = 0;
+thread_local std::array<UINT_PTR, 64> owned{};
+thread_local std::size_t ownedCount = 0;
+// Observe all this translation unit's IDs on the exact owned bar. The Win32
+// call retains its original delay and return value; no global hook is used.
+UINT_PTR WINAPI Forward(HWND window, UINT_PTR id, UINT delay, TIMERPROC callback) {
+    const auto timer = ::SetTimer(window, id, delay, callback);
+    if (window == watched) {
+        ++calls; interval = delay; requestedId = id; result = timer;
+        const auto end = owned.begin() + ownedCount;
+        if (std::find(owned.begin(), end, id) == end && ownedCount < owned.size()) owned[ownedCount++] = id;
+    }
+    return timer;
+}
+BOOL WINAPI ForwardKill(HWND window, UINT_PTR id) {
+    const auto removed = ::KillTimer(window, id);
+    if (window == watched) { ++kills; killedId = id; }
+    return removed;
+}
+}
+#define SetTimer repeat_timer_calls::Forward
+#define KillTimer repeat_timer_calls::ForwardKill
 #include "../src/window/curve_editor_channel_scroll.hpp"
+#undef KillTimer
+#undef SetTimer
 
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "gdi32.lib")
@@ -219,13 +247,19 @@ struct Windows {
 
 // Installed below the production helper, so destruction happens inside its
 // real DefSubclassProc/SendMessage continuation, not after that helper exits.
+LPARAM RepeatPoint(const curve_editor_channel_scroll::Metrics&, bool);
 struct NativeBoundary {
-    enum class Action { Host, Tree, ReplaceSegments, ReplaceScroll } action = Action::Host;
+    enum class Action { Host, Tree, ReplaceSegments, ReplaceScroll, RedirectCapture, RestartRepeat } action = Action::Host;
     Windows* fixture = nullptr; HWND window = nullptr; UINT trigger = 0;
+    HWND captureTarget = nullptr, captureBefore = nullptr, captureAfter = nullptr;
     bool armed = false, replaced = false, actionDone = false, exception = false;
-    unsigned fired = 0, obsoleteMessages = 0; DWORD_PTR replacement = 0;
+    unsigned fired = 0, obsoleteMessages = 0, scrolls = 0, timerCallsAtCancellation = 0; DWORD_PTR replacement = 0;
+    HWND restartBar = nullptr, captureAfterRestart = nullptr; LPARAM restartPoint = 0; bool restartPage = false;
+    DWORD_PTR restartState = 0; unsigned timerCallsAfterRestart = 0, timerKillsAfterRestart = 0;
+    UINT intervalAfterRestart = 0; UINT_PTR timerAfterRestart = 0, requestAfterRestart = 0;
     static LRESULT CALLBACK Observe(HWND window,UINT message,WPARAM w,LPARAM l,UINT_PTR id,DWORD_PTR data) {
         auto& self=*reinterpret_cast<NativeBoundary*>(data);
+        if(message==WM_VSCROLL)++self.scrolls;
         if(self.replaced&&lifetime_storage::outerMessage&&(message==CB_GETCOUNT||message==CB_SETCURSEL))++self.obsoleteMessages;
         if(message==WM_NCDESTROY){RemoveWindowSubclass(window,Observe,id);self.window=nullptr;}
         const auto result=DefSubclassProc(window,message,w,l);
@@ -246,6 +280,23 @@ struct NativeBoundary {
                         curve_editor_channel_scroll::kSubclass,&self.replacement)&&self.replacement;
                     if(self.actionDone){auto& state=*reinterpret_cast<curve_editor_channel_scroll::State*>(self.replacement);
                         SetWindowPos(state.bar,nullptr,300,100,13,70,SWP_NOZORDER|SWP_NOACTIVATE);}
+                }else if(self.action==Action::RedirectCapture||self.action==Action::RestartRepeat){
+                    self.captureBefore=GetCapture();SetCapture(self.captureTarget);
+                    self.captureAfter=GetCapture();self.actionDone=self.captureTarget&&self.captureAfter==self.captureTarget;
+                    self.timerCallsAtCancellation=repeat_timer_calls::calls;
+                    if(self.action==Action::RestartRepeat&&self.actionDone){
+                        DWORD_PTR current=0;
+                        if(GetWindowSubclass(self.restartBar,curve_editor_channel_scroll::BarProc,curve_editor_channel_scroll::kSubclass,&current)&&current){
+                            const auto metrics=curve_editor_channel_scroll::Measure(self.restartBar,*reinterpret_cast<curve_editor_channel_scroll::State*>(current));
+                            self.restartPoint=RepeatPoint(metrics,self.restartPage);
+                            SendMessageW(self.restartBar,WM_LBUTTONDOWN,MK_LBUTTON,self.restartPoint);
+                        }
+                        self.captureAfterRestart=GetCapture();
+                        GetWindowSubclass(self.restartBar,curve_editor_channel_scroll::BarProc,curve_editor_channel_scroll::kSubclass,&self.restartState);
+                        self.timerCallsAfterRestart=repeat_timer_calls::calls;self.timerKillsAfterRestart=repeat_timer_calls::kills;
+                        self.intervalAfterRestart=repeat_timer_calls::interval;self.timerAfterRestart=repeat_timer_calls::result;
+                        self.requestAfterRestart=repeat_timer_calls::requestedId;
+                    }
                 }else if(self.action==Action::Tree){
                     self.actionDone=DestroyWindow(window)!=FALSE;
                 }else {
@@ -325,6 +376,469 @@ struct Scroll : Windows {
         return tree && bar && state && metrics.maximum > metrics.info.nMin && metrics.travel > 0;
     }
 };
+
+struct RepeatTimerWatch {
+    HWND bar;
+    explicit RepeatTimerWatch(HWND window) : bar(window) {
+        repeat_timer_calls::watched = bar; repeat_timer_calls::ownedCount = 0; Reset();
+    }
+    void Reset() const noexcept {
+        repeat_timer_calls::calls = repeat_timer_calls::kills = 0; repeat_timer_calls::interval = 0; repeat_timer_calls::result = 0;
+        repeat_timer_calls::requestedId = repeat_timer_calls::killedId = 0;
+    }
+    ~RepeatTimerWatch() {
+        repeat_timer_calls::watched = nullptr;
+        if (IsWindow(bar)) for (std::size_t i = 0; i < repeat_timer_calls::ownedCount; ++i) KillTimer(bar, repeat_timer_calls::owned[i]);
+    }
+};
+struct CaptureEvents {
+    const HWND root, host, bar, third;
+    const DWORD start = GetTickCount();
+    const char* phase = "setup";
+    unsigned barCaptureChanges = 0;
+    explicit CaptureEvents(const Scroll& f, HWND destination) : root(f.root), host(f.host), bar(f.bar), third(destination) {
+        for (const auto window : {root, host, bar, third})
+            Check(SetWindowSubclass(window, Observe, reinterpret_cast<UINT_PTR>(this), reinterpret_cast<DWORD_PTR>(this)) != FALSE,
+                "observe capture and cancellation only on this fixture's own root, host, bar and third window");
+    }
+    const char* Role(HWND window) const noexcept {
+        return window == root ? "root" : window == host ? "host" : window == bar ? "bar" : "third";
+    }
+    static const char* Name(UINT message) noexcept {
+        switch (message) {
+        case WM_CAPTURECHANGED: return "WM_CAPTURECHANGED";
+        case WM_CANCELMODE: return "WM_CANCELMODE";
+        case WM_KILLFOCUS: return "WM_KILLFOCUS";
+        case WM_SETFOCUS: return "WM_SETFOCUS";
+        case WM_ACTIVATE: return "WM_ACTIVATE";
+        case WM_ACTIVATEAPP: return "WM_ACTIVATEAPP";
+        case WM_DESTROY: return "WM_DESTROY";
+        case WM_NCDESTROY: return "WM_NCDESTROY";
+        default: return nullptr;
+        }
+    }
+    void Log(HWND window, UINT message, WPARAM w, LPARAM l, const char* edge) const {
+        if (const auto name = Name(message))
+            std::printf("CAPTURE_EVENT phase=%s elapsed_ms=%lu role=%s window=%p edge=%s message=%s w=0x%llx l=0x%llx capture=%p focus=%p\n",
+                phase, static_cast<unsigned long>(GetTickCount() - start), Role(window), static_cast<void*>(window), edge, name,
+                static_cast<unsigned long long>(w), static_cast<unsigned long long>(l), static_cast<void*>(GetCapture()), static_cast<void*>(GetFocus()));
+    }
+    static LRESULT CALLBACK Observe(HWND window, UINT message, WPARAM w, LPARAM l, UINT_PTR id, DWORD_PTR data) {
+        auto& self = *reinterpret_cast<CaptureEvents*>(data);
+        if (window == self.bar && message == WM_CAPTURECHANGED) ++self.barCaptureChanges;
+        self.Log(window, message, w, l, "enter");
+        const auto result = DefSubclassProc(window, message, w, l);
+        self.Log(window, message, w, l, "leave");
+        if (message == WM_NCDESTROY) RemoveWindowSubclass(window, Observe, id);
+        return result;
+    }
+    void Mark(const char* next) {
+        phase = next;
+        std::printf("CAPTURE_PHASE phase=%s elapsed_ms=%lu capture=%p focus=%p root=%p bar=%p third=%p\n", phase,
+            static_cast<unsigned long>(GetTickCount() - start), static_cast<void*>(GetCapture()), static_cast<void*>(GetFocus()),
+            static_cast<void*>(root), static_cast<void*>(bar), static_cast<void*>(third));
+    }
+    ~CaptureEvents() {
+        for (const auto window : {root, host, bar, third})
+            if (curve_editor_control_lifetime::Exact(window, Observe, reinterpret_cast<UINT_PTR>(this), this))
+                RemoveWindowSubclass(window, Observe, reinterpret_cast<UINT_PTR>(this));
+    }
+};
+unsigned PumpOwnBarTimers(HWND bar) {
+    unsigned delivered = 0; const auto start = GetTickCount();
+    while (GetTickCount() - start < 250) {
+        MSG message{};
+        if (PeekMessageW(&message, bar, WM_TIMER, WM_TIMER, PM_REMOVE)) {
+            ++delivered; DispatchMessageW(&message);
+        } else Sleep(1);
+    }
+    return delivered;
+}
+LPARAM RepeatPoint(const curve_editor_channel_scroll::Metrics& metrics, bool page) {
+    const int bottom = metrics.bounds.bottom - metrics.arrow;
+    return MAKELPARAM(metrics.bounds.right / 2,
+        page ? (metrics.thumb.bottom + bottom) / 2 : metrics.bounds.bottom - std::max(1, metrics.arrow / 2));
+}
+void RepeatCancelledInsideNativeStep() {
+    for (bool page : {false, true}) {
+        NativeBoundary boundary; Scroll f(&boundary);
+        if (!f.CanDrag() || !f.FocusPrevious()) continue;
+        const HWND third = CreateWindowExW(0, L"EDIT", L"repeat capture owner", WS_CHILD | WS_VISIBLE,
+            200, 0, 180, 24, f.root, reinterpret_cast<HMENU>(INT_PTR(413)), GetModuleHandleW(nullptr), nullptr);
+        if (!Check(third && IsChild(f.root, third), "create the repeat step's independent fixture-owned capture target")) continue;
+        if (!Check(!page || f.metrics.thumb.bottom < f.metrics.bounds.bottom - f.metrics.arrow,
+            "the real overflowing bar has a page-down area outside its thumb and arrow")) continue;
+        boundary.action = NativeBoundary::Action::RedirectCapture; boundary.captureTarget = third;
+        boundary.trigger = WM_VSCROLL; boundary.armed = true;
+        CaptureEvents captureEvents(f, third);
+        const auto before = TreeView_GetFirstVisible(f.tree); RepeatTimerWatch timers(f.bar);
+        captureEvents.Mark("native-arrow-page-step");
+        f.SendMouse(f.bar, RepeatPoint(f.metrics, page), false);
+        const auto captureAtReturn = GetCapture();
+        captureEvents.Mark("outer-send-return");
+        DWORD_PTR current = 0;
+        if (!Check(GetWindowSubclass(f.bar, curve_editor_channel_scroll::BarProc, curve_editor_channel_scroll::kSubclass, &current) &&
+            current == f.state && curve_editor_channel_scroll::ForTree(f.tree) == reinterpret_cast<curve_editor_channel_scroll::State*>(current) &&
+            IsWindow(f.host) && IsWindow(f.tree) && IsWindow(f.bar) && IsWindow(third) && !f.destroys && !f.nonclientDestroys,
+            "native repeat capture cancellation preserves the tree, all owned windows and the original paired State")) continue;
+        auto& state = *reinterpret_cast<curve_editor_channel_scroll::State*>(current);
+        Check(boundary.fired == 1 && boundary.actionDone && !boundary.exception && boundary.captureBefore == f.bar && boundary.captureAfter == third &&
+            boundary.scrolls == 1 && captureAtReturn == third && !state.dragging && state.repeat == -1 && TreeView_GetFirstVisible(f.tree) != before,
+            "one real arrow/page tree scroll transfers capture and synchronously cancels the repeat without destroying anything");
+        const auto after = TreeView_GetFirstVisible(f.tree); const auto scrolls = boundary.scrolls;
+        captureEvents.Mark("observe-own-repeat-timers");
+        const auto delivered = PumpOwnBarTimers(f.bar);
+        const auto captureAfterPump = GetCapture(); captureEvents.Mark("own-timer-observation-ended");
+        std::printf("OBSERVE helper=scroll-repeat-cancel page=%u timer_calls=%u last_interval=%u timer_result=%llu delivered=%u native_scrolls=%u repeat=%d callback_before=%p callback_after=%p capture_at_send_return=%p capture=%p third=%p\n",
+            page ? 1u : 0u, repeat_timer_calls::calls, repeat_timer_calls::interval, static_cast<unsigned long long>(repeat_timer_calls::result),
+            delivered, boundary.scrolls, state.repeat, static_cast<void*>(boundary.captureBefore), static_cast<void*>(boundary.captureAfter),
+            static_cast<void*>(captureAtReturn), static_cast<void*>(captureAfterPump), static_cast<void*>(third));
+        // Transfer is asserted synchronously above. During the wait a later
+        // native cancellation may release third; the helper must never regain
+        // capture, restart its timer or scroll in response to that release.
+        Check(repeat_timer_calls::calls == 0 && delivered == 0 && boundary.scrolls == scrolls && TreeView_GetFirstVisible(f.tree) == after,
+            "returning from a cancelled native repeat step never starts even the 400-ms timer or scrolls again");
+        Check(captureAfterPump != f.bar, "the cancelled repeat bar never reacquires capture during native timer observation");
+        Check(!state.dragging && state.repeat == -1 && curve_editor_channel_scroll::Current(state),
+            "the same surviving helper remains fully cancelled after native timer observation");
+
+        // Keep the original State and use a genuinely new captured gesture.
+        captureEvents.Mark("fresh-owned-gesture");
+        if (GetCapture() == third) ReleaseCapture();
+        if (!f.FocusPrevious()) continue;
+        f.metrics = curve_editor_channel_scroll::Measure(f.bar, state);
+        const auto freshBefore = TreeView_GetFirstVisible(f.tree);
+        f.SendMouse(f.bar, f.ThumbPoint(), false);
+        Check(GetCapture() == f.bar && state.dragging && state.repeat == -1,
+            "the surviving cancelled-repeat State admits a fresh real thumb gesture");
+        const int delta = std::max(1, f.metrics.travel / 2) * (f.metrics.info.nPos > f.metrics.info.nMin ? -1 : 1);
+        SendMessageW(f.bar, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(f.metrics.bounds.right / 2,
+            (f.metrics.thumb.top + f.metrics.thumb.bottom) / 2 + delta));
+        Check(GetCapture() == f.bar && TreeView_GetFirstVisible(f.tree) != freshBefore,
+            "a new thumb movement scrolls the actual tree after repeat capture cancellation");
+        SendMessageW(f.bar, WM_LBUTTONUP, 0, 0);
+        Check(!GetCapture() && !state.dragging && state.repeat == -1 &&
+            GetWindowSubclass(f.bar, curve_editor_channel_scroll::BarProc, curve_editor_channel_scroll::kSubclass, &current) && current == f.state,
+            "the fresh gesture releases capture normally and retains the same usable helper identity");
+    }
+}
+void QueuedRepeatAfterCancellation() {
+    for (bool page : {false, true}) {
+        NativeBoundary boundary; Scroll f(&boundary);
+        if (!f.CanDrag() || !f.FocusPrevious()) continue;
+        if (!Check(!page || f.metrics.thumb.bottom < f.metrics.bounds.bottom - f.metrics.arrow,
+            "the queued-repeat fixture has a real page-down hit region")) continue;
+        RepeatTimerWatch timers(f.bar); f.SendMouse(f.bar, RepeatPoint(f.metrics, page), false);
+        DWORD_PTR current = 0;
+        if (!Check(GetWindowSubclass(f.bar, curve_editor_channel_scroll::BarProc, curve_editor_channel_scroll::kSubclass, &current) && current == f.state,
+            "the normal repeat uses the actual original bar State before cancellation")) continue;
+        auto& state = *reinterpret_cast<curve_editor_channel_scroll::State*>(current);
+        Check(GetCapture() == f.bar && !state.dragging && state.repeat == (page ? SB_PAGEDOWN : SB_LINEDOWN) && boundary.scrolls == 1 &&
+            repeat_timer_calls::calls == 1 && repeat_timer_calls::interval == 400 && repeat_timer_calls::result != 0,
+            "a normal real arrow/page step arms its unmodified 400-ms native repeat timer");
+        f.SendNative(f.bar, WM_CANCELMODE);
+        Check(!GetCapture() && !state.dragging && state.repeat == -1,
+            "normal cancellation clears capture and repeat before the already-queued timer arrives");
+        const auto oldTimerId = repeat_timer_calls::requestedId;
+        const auto before = TreeView_GetFirstVisible(f.tree); const auto scrolls = boundary.scrolls; timers.Reset();
+        Check(oldTimerId && PostMessageW(f.bar, WM_TIMER, oldTimerId, 0) != FALSE, "post one old timer message only to the fixture's own cancelled bar");
+        MSG queued{};
+        if (!Check(PeekMessageW(&queued, f.bar, WM_TIMER, WM_TIMER, PM_REMOVE) && queued.hwnd == f.bar && queued.message == WM_TIMER &&
+            queued.wParam == oldTimerId && queued.lParam == 0, "remove and identify the exact local queued timer before observing any subsequent native timer")) continue;
+        DispatchMessageW(&queued);
+        const auto delivered = PumpOwnBarTimers(f.bar);
+        std::printf("OBSERVE helper=scroll-stale-repeat page=%u timer_calls=%u last_interval=%u timer_result=%llu delivered_after_post=%u native_scrolls=%u repeat=%d capture=%p\n",
+            page ? 1u : 0u, repeat_timer_calls::calls, repeat_timer_calls::interval, static_cast<unsigned long long>(repeat_timer_calls::result),
+            delivered, boundary.scrolls, state.repeat, static_cast<void*>(GetCapture()));
+        Check(repeat_timer_calls::calls == 0 && delivered == 0 && boundary.scrolls == scrolls && TreeView_GetFirstVisible(f.tree) == before &&
+            !GetCapture() && !state.dragging && state.repeat == -1 && curve_editor_channel_scroll::Current(state),
+            "one stale queued timer cannot resurrect the 60-ms timer, repeat interaction or native tree scrolling after cancellation");
+    }
+}
+void RepeatCancelledInsideTimerStep() {
+    NativeBoundary boundary; Scroll f(&boundary);
+    if (!f.CanDrag() || !f.FocusPrevious()) return;
+    const HWND third = CreateWindowExW(0, L"EDIT", L"timer-step capture owner", WS_CHILD | WS_VISIBLE,
+        200, 0, 180, 24, f.root, reinterpret_cast<HMENU>(INT_PTR(414)), GetModuleHandleW(nullptr), nullptr);
+    if (!Check(third && IsChild(f.root, third), "create an owned capture target for cancellation inside the repeat timer's native scroll")) return;
+    CaptureEvents captureEvents(f, third);
+    RepeatTimerWatch timers(f.bar); f.SendMouse(f.bar, RepeatPoint(f.metrics, false), false);
+    DWORD_PTR current = 0;
+    if (!Check(GetWindowSubclass(f.bar, curve_editor_channel_scroll::BarProc, curve_editor_channel_scroll::kSubclass, &current) &&
+        current == f.state && GetCapture() == f.bar && boundary.scrolls == 1 && repeat_timer_calls::result != 0,
+        "begin one real captured arrow repeat before testing its later timer callback")) return;
+    auto& state = *reinterpret_cast<curve_editor_channel_scroll::State*>(current);
+    // Only move/resize this hidden child. Do not move the desktop cursor or
+    // inject input. A broad arrow area keeps the actual cursor lookup away
+    // from a boundary while the production WM_TIMER hit-test runs unchanged.
+    POINT cursor{};
+    if (!Check(!IsWindowVisible(f.root) && GetCursorPos(&cursor) && ScreenToClient(f.host, &cursor) &&
+        SetWindowPos(f.bar, nullptr, cursor.x - 2048, cursor.y - 3072, 4096, 4096, SWP_NOZORDER | SWP_NOACTIVATE),
+        "place only the fixture's hidden bar around the current cursor without global input or a visible window")) return;
+    POINT hit{}; const auto metrics = curve_editor_channel_scroll::Measure(f.bar, state);
+    if (!Check(GetCursorPos(&hit) && ScreenToClient(f.bar, &hit) && PtInRect(&metrics.bounds, hit) &&
+        hit.y >= metrics.bounds.bottom - metrics.arrow && state.repeat == SB_LINEDOWN,
+        "the unmodified timer hit-test genuinely addresses the active lower arrow")) return;
+    const auto activeTimerId = repeat_timer_calls::requestedId;
+    const auto before = TreeView_GetFirstVisible(f.tree); const auto scrolls = boundary.scrolls; timers.Reset();
+    boundary.action = NativeBoundary::Action::RedirectCapture; boundary.captureTarget = third; boundary.trigger = WM_VSCROLL; boundary.armed = true;
+    Check(activeTimerId && PostMessageW(f.bar, WM_TIMER, activeTimerId, 0) != FALSE, "post an active repeat tick only to this fixture's captured bar");
+    MSG tick{};
+    if (!Check(PeekMessageW(&tick, f.bar, WM_TIMER, WM_TIMER, PM_REMOVE) && tick.hwnd == f.bar && tick.wParam == activeTimerId,
+        "dispatch the exact local active-repeat tick through the production native procedure")) return;
+    captureEvents.Mark("native-timer-step");
+    DispatchMessageW(&tick);
+    const auto captureAtReturn = GetCapture(); captureEvents.Mark("outer-timer-dispatch-return");
+    Check(boundary.fired == 1 && boundary.actionDone && !boundary.exception && boundary.captureBefore == f.bar && boundary.captureAfter == third &&
+        captureAtReturn == third && state.repeat == -1 && !state.dragging && boundary.scrolls == scrolls + 1 && TreeView_GetFirstVisible(f.tree) != before,
+        "the timer's actual native Step scrolls once and then synchronously transfers capture to cancel repeat");
+    const auto after = TreeView_GetFirstVisible(f.tree); captureEvents.Mark("observe-own-repeat-timers");
+    const auto delivered = PumpOwnBarTimers(f.bar);
+    const auto captureAfterPump = GetCapture(); captureEvents.Mark("own-timer-observation-ended");
+    std::printf("OBSERVE helper=scroll-cancel-inside-timer calls_at_cancel=%u timer_calls=%u delivered=%u native_scrolls=%u repeat=%d callback_before=%p callback_after=%p capture_at_dispatch_return=%p capture=%p third=%p\n",
+        boundary.timerCallsAtCancellation, repeat_timer_calls::calls, delivered, boundary.scrolls, state.repeat,
+        static_cast<void*>(boundary.captureBefore), static_cast<void*>(boundary.captureAfter), static_cast<void*>(captureAtReturn),
+        static_cast<void*>(captureAfterPump), static_cast<void*>(third));
+    Check(repeat_timer_calls::calls == boundary.timerCallsAtCancellation && delivered == 0 && boundary.scrolls == scrolls + 1 &&
+        TreeView_GetFirstVisible(f.tree) == after,
+        "returning from native cancellation inside a timer Step never rearms a timer or repeats the scroll");
+    Check(captureAfterPump != f.bar, "the bar cancelled inside its native timer Step never takes capture back during observation");
+    Check(state.repeat == -1 && !state.dragging && curve_editor_channel_scroll::Current(state),
+        "native cancellation inside a timer Step leaves the same live State fully cancelled");
+}
+bool PlaceCursorOverHiddenRepeatArrow(Scroll& f, curve_editor_channel_scroll::State& state) {
+    POINT cursor{};
+    if (!Check(!IsWindowVisible(f.root) && GetCursorPos(&cursor) && ScreenToClient(f.host, &cursor) &&
+        SetWindowPos(f.bar, nullptr, cursor.x - 256, cursor.y - 3840, 512, 4096, SWP_NOZORDER | SWP_NOACTIVATE),
+        "position only the owned hidden bar so both a broad arrow and a separate page region remain real native hit targets")) return false;
+    f.metrics = curve_editor_channel_scroll::Measure(f.bar, state); POINT hit{};
+    return Check(GetCursorPos(&hit) && ScreenToClient(f.bar, &hit) && PtInRect(&f.metrics.bounds, hit) &&
+        hit.y >= f.metrics.bounds.bottom - f.metrics.arrow && f.metrics.thumb.bottom < f.metrics.bounds.bottom - f.metrics.arrow,
+        "the unchanged real timer cursor hit-test selects the lower arrow while nested page-down remains available");
+}
+bool DispatchOwnRepeatTick(HWND bar, UINT_PTR timerId) {
+    if (!Check(timerId && PostMessageW(bar, WM_TIMER, timerId, 0) != FALSE, "post a repeat tick to only this fixture's own bar using its recorded real request ID")) return false;
+    MSG tick{};
+    if (!Check(PeekMessageW(&tick, bar, WM_TIMER, WM_TIMER, PM_REMOVE) && tick.hwnd == bar && tick.message == WM_TIMER && tick.wParam == timerId && !tick.lParam,
+        "identify the exact locally posted repeat tick before dispatching its real native continuation")) return false;
+    DispatchMessageW(&tick); return true;
+}
+void InteractionTicketBoundaries() {
+    const auto processTicket = curve_editor_channel_scroll::lastInteraction;
+    UINT_PTR local = 0;
+    Check(curve_editor_channel_scroll::AllocateInteraction(local) == 1 && local == 1,
+        "the first isolated interaction ticket is nonzero");
+    Check(curve_editor_channel_scroll::AllocateInteraction(local) == 2 && local == 2,
+        "isolated interaction tickets increase instead of reusing the prior ID");
+    const auto maximum = ~UINT_PTR(0); local = maximum - 1;
+    Check(curve_editor_channel_scroll::AllocateInteraction(local) == maximum && local == maximum,
+        "the final representable interaction ticket remains a valid native timer request ID");
+    for (unsigned retry = 0; retry < 3; ++retry)
+        Check(!curve_editor_channel_scroll::AllocateInteraction(local) && local == maximum,
+            "exhaustion permanently refuses an isolated ticket without wrapping to an earlier ID");
+    Check(curve_editor_channel_scroll::lastInteraction == processTicket,
+        "ticket exhaustion coverage does not consume or mutate the actual UI thread's gesture sequence");
+}
+void SameStateRepeatReplacement() {
+    for (bool inTimer : {false, true}) for (bool page : {false, true}) {
+        NativeBoundary boundary; Scroll f(&boundary);
+        if (!f.CanDrag() || !f.FocusPrevious()) continue;
+        const HWND third = CreateWindowExW(0, L"EDIT", L"repeat replacement owner", WS_CHILD | WS_VISIBLE,
+            200, 0, 180, 24, f.root, reinterpret_cast<HMENU>(INT_PTR(415)), GetModuleHandleW(nullptr), nullptr);
+        if (!Check(third && IsChild(f.root, third), "create a separate owned capture destination for a same-State replacement gesture")) continue;
+        auto& state = *reinterpret_cast<curve_editor_channel_scroll::State*>(f.state);
+        if (!PlaceCursorOverHiddenRepeatArrow(f, state)) continue;
+        RepeatTimerWatch timers(f.bar);
+        if (inTimer) {
+            f.SendMouse(f.bar, RepeatPoint(f.metrics, false), false);
+            if (!Check(GetCapture() == f.bar && state.repeat == SB_LINEDOWN && boundary.scrolls == 1 &&
+                repeat_timer_calls::calls == 1 && repeat_timer_calls::interval == 400 && repeat_timer_calls::result != 0,
+                "prepare the real captured initial repeat before replacing it inside its next timer Step")) continue;
+            if (!PlaceCursorOverHiddenRepeatArrow(f, state)) continue;
+        }
+        const auto oldTimerId = repeat_timer_calls::requestedId;
+        const auto scrolls = boundary.scrolls; const auto before = TreeView_GetFirstVisible(f.tree); timers.Reset();
+        boundary.action = NativeBoundary::Action::RestartRepeat; boundary.captureTarget = third; boundary.restartBar = f.bar;
+        boundary.restartPage = page; boundary.trigger = WM_VSCROLL; boundary.armed = true;
+        if (inTimer) { if (!DispatchOwnRepeatTick(f.bar, oldTimerId)) continue; }
+        else f.SendMouse(f.bar, RepeatPoint(f.metrics, false), false);
+        const auto captureAtReturn = GetCapture(); DWORD_PTR current = 0;
+        if (!Check(GetWindowSubclass(f.bar, curve_editor_channel_scroll::BarProc, curve_editor_channel_scroll::kSubclass, &current) && current == f.state &&
+            curve_editor_channel_scroll::ForTree(f.tree) == reinterpret_cast<curve_editor_channel_scroll::State*>(current),
+            "the old and nested gestures retain exactly the same live native State allocation")) continue;
+        std::printf("OBSERVE helper=scroll-repeat-replacement outer=%s nested=%s callback=%u scrolls=%u calls_at_cancel=%u calls_after_new=%u calls_after_old=%u kills_after_new=%u kills_after_old=%u interval_after_new=%u interval_after_old=%u timer_after_new=%llu old_request_id=%llu new_request_id=%llu last_kill_id=%llu repeat=%d before_capture=%p cancelled_capture=%p new_capture=%p returned_capture=%p state=%p nested_state=%p\n",
+            inTimer ? "timer" : "down", page ? "page" : "arrow", boundary.fired, boundary.scrolls,
+            boundary.timerCallsAtCancellation, boundary.timerCallsAfterRestart, repeat_timer_calls::calls,
+            boundary.timerKillsAfterRestart, repeat_timer_calls::kills, boundary.intervalAfterRestart, repeat_timer_calls::interval,
+            static_cast<unsigned long long>(boundary.timerAfterRestart), static_cast<unsigned long long>(oldTimerId),
+            static_cast<unsigned long long>(boundary.requestAfterRestart), static_cast<unsigned long long>(repeat_timer_calls::killedId),
+            state.repeat, static_cast<void*>(boundary.captureBefore),
+            static_cast<void*>(boundary.captureAfter), static_cast<void*>(boundary.captureAfterRestart), static_cast<void*>(captureAtReturn),
+            reinterpret_cast<void*>(f.state), reinterpret_cast<void*>(boundary.restartState));
+        Check(boundary.fired == 1 && boundary.actionDone && !boundary.exception && boundary.captureBefore == f.bar && boundary.captureAfter == third &&
+            boundary.captureAfterRestart == f.bar && boundary.restartState == f.state && captureAtReturn == f.bar &&
+            !state.dragging && state.repeat == (page ? SB_PAGEDOWN : SB_LINEDOWN) && boundary.scrolls == scrolls + 2 && TreeView_GetFirstVisible(f.tree) != before,
+            "the real native callback cancels the old gesture and synchronously starts one new arrow/page gesture on the same State");
+        Check(boundary.timerCallsAfterRestart == boundary.timerCallsAtCancellation + 1 && boundary.intervalAfterRestart == 400 && boundary.timerAfterRestart != 0 &&
+            boundary.requestAfterRestart != 0 && (!inTimer || boundary.requestAfterRestart != oldTimerId),
+            "the nested new gesture starts exactly its own successful 400-ms native timer");
+        Check(repeat_timer_calls::calls == boundary.timerCallsAfterRestart && repeat_timer_calls::interval == 400 && repeat_timer_calls::result == boundary.timerAfterRestart &&
+            repeat_timer_calls::requestedId == boundary.requestAfterRestart,
+            "the superseded outer down/timer continuation cannot reset or accelerate the new gesture's 400-ms timer");
+        Check(repeat_timer_calls::kills == boundary.timerKillsAfterRestart,
+            "the superseded outer continuation cannot kill the new gesture's native timer");
+        f.SendNative(f.bar, WM_CANCELMODE);
+        Check(GetCapture() != f.bar && state.repeat == -1 && !state.dragging && !state.interaction && !state.timerId &&
+            curve_editor_channel_scroll::Current(state),
+            "explicitly cancelling only the surviving new gesture leaves its original State usable and releases capture");
+    }
+}
+void NormalRepeatTimerCadence() {
+    NativeBoundary boundary; Scroll f(&boundary);
+    if (!f.CanDrag() || !f.FocusPrevious()) return;
+    auto& state = *reinterpret_cast<curve_editor_channel_scroll::State*>(f.state);
+    if (!PlaceCursorOverHiddenRepeatArrow(f, state)) return;
+    RepeatTimerWatch timers(f.bar); f.SendMouse(f.bar, RepeatPoint(f.metrics, false), false);
+    if (!Check(GetCapture() == f.bar && state.repeat == SB_LINEDOWN && boundary.scrolls == 1 &&
+        repeat_timer_calls::calls == 1 && repeat_timer_calls::interval == 400 && repeat_timer_calls::result != 0,
+        "normal repeat first starts the unchanged successful 400-ms native timer")) return;
+    if (!PlaceCursorOverHiddenRepeatArrow(f, state)) return;
+    const auto activeTimerId = repeat_timer_calls::requestedId, ticket = state.interaction;
+    Check(ticket && ticket == activeTimerId && state.timerId == activeTimerId,
+        "the active gesture owns precisely its recorded native timer request ID");
+    const auto before = TreeView_GetFirstVisible(f.tree); timers.Reset();
+    if (!DispatchOwnRepeatTick(f.bar, activeTimerId)) return;
+    std::printf("OBSERVE helper=scroll-normal-repeat timer_calls=%u kills=%u interval=%u result=%llu request_id=%llu scrolls=%u repeat=%d capture=%p bar=%p\n",
+        repeat_timer_calls::calls, repeat_timer_calls::kills, repeat_timer_calls::interval, static_cast<unsigned long long>(repeat_timer_calls::result),
+        static_cast<unsigned long long>(repeat_timer_calls::requestedId), boundary.scrolls, state.repeat,
+        static_cast<void*>(GetCapture()), static_cast<void*>(f.bar));
+    Check(repeat_timer_calls::calls == 1 && repeat_timer_calls::interval == 60 && repeat_timer_calls::result != 0 && !repeat_timer_calls::kills &&
+        repeat_timer_calls::requestedId == activeTimerId &&
+        boundary.scrolls == 2 && TreeView_GetFirstVisible(f.tree) != before && GetCapture() == f.bar && state.repeat == SB_LINEDOWN &&
+        !state.dragging && state.interaction == ticket && state.timerId == activeTimerId && curve_editor_channel_scroll::Current(state),
+        "a still-current captured repeat really scrolls once and arms the unchanged 60-ms native timer");
+
+    // Position only this hidden child so the unchanged global cursor lookup
+    // falls outside the active lower arrow. A live repeat still checks at
+    // 60 ms, then resumes immediately when that same region is re-entered.
+    POINT cursor{};
+    if (!Check(!IsWindowVisible(f.root) && GetCursorPos(&cursor) && ScreenToClient(f.host, &cursor) &&
+        SetWindowPos(f.bar, nullptr, cursor.x - 256, cursor.y - 256, 512, 4096, SWP_NOZORDER | SWP_NOACTIVATE),
+        "move only the owned hidden bar to place the actual cursor outside the active repeat arrow")) return;
+    const auto outsideMetrics = curve_editor_channel_scroll::Measure(f.bar, state); POINT outside{};
+    if (!Check(GetCursorPos(&outside) && ScreenToClient(f.bar, &outside) && PtInRect(&outsideMetrics.bounds, outside) &&
+        outside.y < outsideMetrics.bounds.bottom - outsideMetrics.arrow && state.repeat == SB_LINEDOWN,
+        "the real native timer hit-test is outside the current lower arrow without ending capture")) return;
+    const auto pausedAt = TreeView_GetFirstVisible(f.tree); const auto pausedScrolls = boundary.scrolls; timers.Reset();
+    if (!DispatchOwnRepeatTick(f.bar, activeTimerId)) return;
+    std::printf("OBSERVE helper=scroll-repeat-outside request_id=%llu calls=%u interval=%u kills=%u scrolls_before=%u scrolls_after=%u ticket=%llu capture=%p\n",
+        static_cast<unsigned long long>(repeat_timer_calls::requestedId), repeat_timer_calls::calls, repeat_timer_calls::interval,
+        repeat_timer_calls::kills, pausedScrolls, boundary.scrolls, static_cast<unsigned long long>(state.interaction), static_cast<void*>(GetCapture()));
+    Check(repeat_timer_calls::calls == 1 && repeat_timer_calls::interval == 60 && repeat_timer_calls::result != 0 &&
+        repeat_timer_calls::requestedId == activeTimerId && !repeat_timer_calls::kills && boundary.scrolls == pausedScrolls &&
+        TreeView_GetFirstVisible(f.tree) == pausedAt && GetCapture() == f.bar && state.repeat == SB_LINEDOWN &&
+        state.interaction == ticket && state.timerId == activeTimerId,
+        "outside the active arrow the same captured gesture keeps its 60-ms checks without scrolling or restarting 400 ms");
+    if (!PlaceCursorOverHiddenRepeatArrow(f, state)) return;
+    timers.Reset();
+    if (!DispatchOwnRepeatTick(f.bar, activeTimerId)) return;
+    Check(repeat_timer_calls::calls == 1 && repeat_timer_calls::interval == 60 && repeat_timer_calls::result != 0 &&
+        repeat_timer_calls::requestedId == activeTimerId && !repeat_timer_calls::kills && boundary.scrolls == pausedScrolls + 1 &&
+        TreeView_GetFirstVisible(f.tree) != pausedAt && GetCapture() == f.bar && state.repeat == SB_LINEDOWN &&
+        state.interaction == ticket && state.timerId == activeTimerId,
+        "re-entering the active arrow resumes one scroll on the same 60-ms timer without a fresh 400-ms wait");
+    f.SendNative(f.bar, WM_CANCELMODE);
+    Check(GetCapture() != f.bar && state.repeat == -1 && !state.dragging && !state.interaction && !state.timerId &&
+        repeat_timer_calls::kills == 1 && repeat_timer_calls::killedId == activeTimerId,
+        "normal 60-ms repeat still ends through the real owned cancellation path");
+}
+void QueuedOldTickAfterNewGesture() {
+    for (bool page : {false, true}) {
+        NativeBoundary boundary; Scroll f(&boundary);
+        if (!f.CanDrag() || !f.FocusPrevious()) continue;
+        auto& state = *reinterpret_cast<curve_editor_channel_scroll::State*>(f.state);
+        if (!PlaceCursorOverHiddenRepeatArrow(f, state)) continue;
+        RepeatTimerWatch timers(f.bar); f.SendMouse(f.bar, RepeatPoint(f.metrics, false), false);
+        if (!Check(GetCapture() == f.bar && state.repeat == SB_LINEDOWN && repeat_timer_calls::calls == 1 &&
+            repeat_timer_calls::interval == 400 && repeat_timer_calls::result != 0,
+            "establish the original captured gesture and its actual native timer before saving a queued tick")) continue;
+        const auto oldTimerId = repeat_timer_calls::requestedId;
+        Check(oldTimerId && PostMessageW(f.bar, WM_TIMER, oldTimerId, 0) != FALSE, "queue one old gesture timer on only this owned bar");
+        MSG old{};
+        if (!Check(PeekMessageW(&old, f.bar, WM_TIMER, WM_TIMER, PM_REMOVE) && old.hwnd == f.bar && old.message == WM_TIMER && old.wParam == oldTimerId && !old.lParam,
+            "save the old native-request-ID timer message before cancelling, without dispatching it yet")) continue;
+        f.SendNative(f.bar, WM_CANCELMODE);
+        if (!Check(GetCapture() != f.bar && state.repeat == -1 && !state.dragging,
+            "actually cancel the old gesture before any replacement is started")) continue;
+        f.metrics = curve_editor_channel_scroll::Measure(f.bar, state);
+        f.SendMouse(f.bar, RepeatPoint(f.metrics, page), false);
+        DWORD_PTR current = 0;
+        if (!Check(GetWindowSubclass(f.bar, curve_editor_channel_scroll::BarProc, curve_editor_channel_scroll::kSubclass, &current) && current == f.state &&
+            GetCapture() == f.bar && state.repeat == (page ? SB_PAGEDOWN : SB_LINEDOWN) && !state.dragging &&
+            repeat_timer_calls::interval == 400 && repeat_timer_calls::result != 0 && repeat_timer_calls::requestedId && repeat_timer_calls::requestedId != oldTimerId,
+            "a genuinely new arrow/page gesture owns capture and a successful 400-ms timer on the same State")) continue;
+        if (!PlaceCursorOverHiddenRepeatArrow(f, state)) continue;
+        const auto calls = repeat_timer_calls::calls, kills = repeat_timer_calls::kills, scrolls = boundary.scrolls;
+        const auto timer = repeat_timer_calls::result, newTimerId = repeat_timer_calls::requestedId; const auto before = TreeView_GetFirstVisible(f.tree);
+        DispatchMessageW(&old);
+        std::printf("OBSERVE helper=scroll-old-tick-new-gesture nested=%s old_message_id=%llu new_request_id=%llu last_kill_id=%llu calls_before=%u calls_after=%u kills_before=%u kills_after=%u interval_after=%u scrolls_before=%u scrolls_after=%u repeat=%d capture=%p bar=%p\n",
+            page ? "page" : "arrow", static_cast<unsigned long long>(old.wParam), static_cast<unsigned long long>(newTimerId),
+            static_cast<unsigned long long>(repeat_timer_calls::killedId), calls, repeat_timer_calls::calls, kills,
+            repeat_timer_calls::kills, repeat_timer_calls::interval, scrolls, boundary.scrolls, state.repeat, static_cast<void*>(GetCapture()), static_cast<void*>(f.bar));
+        Check(repeat_timer_calls::calls == calls && repeat_timer_calls::kills == kills && repeat_timer_calls::interval == 400 && repeat_timer_calls::result == timer &&
+            repeat_timer_calls::requestedId == newTimerId &&
+            boundary.scrolls == scrolls && TreeView_GetFirstVisible(f.tree) == before && GetCapture() == f.bar &&
+            state.repeat == (page ? SB_PAGEDOWN : SB_LINEDOWN) && !state.dragging && curve_editor_channel_scroll::Current(state),
+            "a saved old timer cannot act as a fresh tick, kill or accelerate the replacement gesture's 400-ms timer");
+        f.SendNative(f.bar, WM_CANCELMODE);
+        Check(GetCapture() != f.bar && state.repeat == -1 && !state.dragging && !state.interaction && !state.timerId &&
+            repeat_timer_calls::killedId == newTimerId,
+            "the replacement gesture remains normally cancellable after the obsolete timer arrives");
+    }
+}
+void NewDownWhileAlreadyCaptured() {
+    for (bool page : {false, true}) {
+        NativeBoundary boundary; Scroll f(&boundary);
+        if (!f.CanDrag() || !f.FocusPrevious()) continue;
+        auto& state = *reinterpret_cast<curve_editor_channel_scroll::State*>(f.state);
+        if (!PlaceCursorOverHiddenRepeatArrow(f, state)) continue;
+        RepeatTimerWatch timers(f.bar); f.SendMouse(f.bar, RepeatPoint(f.metrics, false), false);
+        const auto oldTimerId = repeat_timer_calls::requestedId;
+        if (!Check(GetCapture() == f.bar && state.repeat == SB_LINEDOWN && boundary.scrolls == 1 && oldTimerId &&
+            state.interaction == oldTimerId && state.timerId == oldTimerId && repeat_timer_calls::interval == 400 && repeat_timer_calls::result,
+            "the original gesture already owns the bar's capture and one real 400-ms timer")) continue;
+        CaptureEvents captureEvents(f, f.previousFocus);
+        if (!Check(PostMessageW(f.bar, WM_TIMER, oldTimerId, 0) != FALSE,
+            "queue the existing captured gesture's recorded timer message before starting another down")) continue;
+        MSG old{};
+        if (!Check(PeekMessageW(&old, f.bar, WM_TIMER, WM_TIMER, PM_REMOVE) && old.hwnd == f.bar && old.message == WM_TIMER &&
+            old.wParam == oldTimerId && !old.lParam, "save the exact old timer while the bar still owns capture")) continue;
+        f.metrics = curve_editor_channel_scroll::Measure(f.bar, state); timers.Reset();
+        captureEvents.Mark("new-down-while-already-captured");
+        f.SendMouse(f.bar, RepeatPoint(f.metrics, page), false);
+        DWORD_PTR current = 0; const auto newTimerId = repeat_timer_calls::requestedId;
+        std::printf("OBSERVE helper=scroll-new-down-already-captured nested=%s old_request_id=%llu new_request_id=%llu killed_id=%llu calls=%u kills=%u capture_changes=%u interval=%u scrolls=%u capture=%p bar=%p\n",
+            page ? "page" : "arrow", static_cast<unsigned long long>(oldTimerId), static_cast<unsigned long long>(newTimerId),
+            static_cast<unsigned long long>(repeat_timer_calls::killedId), repeat_timer_calls::calls, repeat_timer_calls::kills,
+            captureEvents.barCaptureChanges, repeat_timer_calls::interval, boundary.scrolls, static_cast<void*>(GetCapture()), static_cast<void*>(f.bar));
+        if (!Check(GetWindowSubclass(f.bar, curve_editor_channel_scroll::BarProc, curve_editor_channel_scroll::kSubclass, &current) && current == f.state &&
+            GetCapture() == f.bar && !captureEvents.barCaptureChanges && boundary.scrolls == 2 && !state.dragging &&
+            state.repeat == (page ? SB_PAGEDOWN : SB_LINEDOWN) && newTimerId && newTimerId != oldTimerId &&
+            state.interaction == newTimerId && state.timerId == newTimerId && repeat_timer_calls::calls == 1 && repeat_timer_calls::interval == 400 &&
+            repeat_timer_calls::result && repeat_timer_calls::kills == 1 && repeat_timer_calls::killedId == oldTimerId,
+            "a new down on the already-captured bar changes only the gesture ticket and exact timer without releasing capture")) continue;
+        const auto before = TreeView_GetFirstVisible(f.tree); const auto calls = repeat_timer_calls::calls, kills = repeat_timer_calls::kills;
+        DispatchMessageW(&old);
+        Check(repeat_timer_calls::calls == calls && repeat_timer_calls::kills == kills && repeat_timer_calls::requestedId == newTimerId &&
+            repeat_timer_calls::interval == 400 && boundary.scrolls == 2 && TreeView_GetFirstVisible(f.tree) == before &&
+            GetCapture() == f.bar && !captureEvents.barCaptureChanges && state.interaction == newTimerId && state.timerId == newTimerId,
+            "the old tick cannot scroll, accelerate, cancel or release the replacement that inherited the bar's capture");
+        f.SendNative(f.bar, WM_CANCELMODE);
+        Check(GetCapture() != f.bar && !state.interaction && !state.timerId && !state.dragging && state.repeat == -1 &&
+            repeat_timer_calls::kills == kills + 1 && repeat_timer_calls::killedId == newTimerId,
+            "normal cancellation kills precisely the replacement timer and clears its interaction after same-capture reuse");
+    }
+}
 
 void NormalSegments() {
     Segments f;
@@ -533,7 +1047,7 @@ void ScrollNativeBoundaries() {
 }
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     std::setvbuf(stderr, nullptr, _IONBF, 0);
     // Standard EDIT/COMBOBOX classes already exist. ICC_STANDARD_CLASSES
@@ -542,15 +1056,40 @@ int main() {
     if (!Check(InitCommonControlsEx(&common) != FALSE, "initialize actual native common controls")) return 1;
     GdiPlus gdi;
     if (!gdi.token) return 1;
+    const bool repeatOnly = argc == 2 && !std::strcmp(argv[1], "--repeat-cancel-only");
+    const bool interleaveOnly = argc == 2 && !std::strcmp(argv[1], "--repeat-interleave-only");
+    const bool queuedNewOnly = argc == 2 && !std::strcmp(argv[1], "--repeat-old-tick-new-gesture-only");
+    const bool cadenceOnly = argc == 2 && !std::strcmp(argv[1], "--repeat-cadence-only");
+    if (argc != 1 && !repeatOnly && !interleaveOnly && !queuedNewOnly && !cadenceOnly) {
+        std::fputs("usage: curve_native_control_lifetime_tests [--repeat-cancel-only|--repeat-interleave-only|--repeat-old-tick-new-gesture-only|--repeat-cadence-only]\n", stderr); return 2;
+    }
     try {
-        std::puts("CASE normal segments"); NormalSegments();
-        std::puts("CASE normal scroll"); NormalScroll();
-        std::puts("CASE retired segments after real kill-focus"); RetiredSegments();
-        std::puts("CASE retired scroll after real kill-focus"); RetiredScroll();
-        std::puts("CASE retired scroll after real capture transfer"); RetiredAfterCapture();
-        std::puts("CASE capture redirected while all native windows and State remain alive"); RedirectedCaptureKeepsStateAlive();
-        std::puts("CASE segmented default/read boundaries and exact State replacement"); SegmentedNativeBoundaries();
-        std::puts("CASE tree default boundaries and exact paired State replacement"); ScrollNativeBoundaries();
+        std::puts("CASE interaction ticket monotonicity and permanent exhaustion"); InteractionTicketBoundaries();
+        if (argc == 1) {
+            std::puts("CASE normal segments"); NormalSegments();
+            std::puts("CASE normal scroll"); NormalScroll();
+            std::puts("CASE retired segments after real kill-focus"); RetiredSegments();
+            std::puts("CASE retired scroll after real kill-focus"); RetiredScroll();
+            std::puts("CASE retired scroll after real capture transfer"); RetiredAfterCapture();
+            std::puts("CASE capture redirected while all native windows and State remain alive"); RedirectedCaptureKeepsStateAlive();
+            std::puts("CASE segmented default/read boundaries and exact State replacement"); SegmentedNativeBoundaries();
+            std::puts("CASE tree default boundaries and exact paired State replacement"); ScrollNativeBoundaries();
+        }
+        if (argc == 1 || repeatOnly) {
+            std::puts("CASE arrow/page native step cancels capture without restarting repeat"); RepeatCancelledInsideNativeStep();
+            std::puts("CASE queued repeat timer arrives after normal cancellation"); QueuedRepeatAfterCancellation();
+            std::puts("CASE repeat timer native Step transfers capture and cancels before rearming"); RepeatCancelledInsideTimerStep();
+        }
+        if (argc == 1 || repeatOnly || interleaveOnly) {
+            std::puts("CASE old down/timer resumes after the same State starts a new arrow/page gesture"); SameStateRepeatReplacement();
+            std::puts("CASE new arrow/page down reuses existing bar capture while retiring only the old ticket"); NewDownWhileAlreadyCaptured();
+        }
+        if (argc == 1 || repeatOnly || queuedNewOnly) {
+            std::puts("CASE saved old timer arrives after a new gesture starts on the same State"); QueuedOldTickAfterNewGesture();
+        }
+        if (argc == 1 || repeatOnly || cadenceOnly) {
+            std::puts("CASE normal current repeat retains its real 400-to-60-ms timer cadence"); NormalRepeatTimerCadence();
+        }
     } catch (const std::exception& error) {
         ++failures;
         std::fprintf(stderr, "ERROR %s\n", error.what());
