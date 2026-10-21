@@ -1,23 +1,62 @@
 // Segmented presentation of the existing combo selections.
 // Keep CB_* and CBN_SELCHANGE routes. Interpolation and handle choices commit
 // immediately; handle modes are followed by four non-sticky preset actions.
+#include "curve_editor_control_lifetime.hpp"
 namespace curve_editor_segments {
-struct State { HWND tips=nullptr; int hover=-1, focus=-1; std::vector<std::wstring> labels; };
+constexpr UINT_PTR kSubclass=0x5345474d,kTipsSubclass=0x53475450;
+struct State : curve_editor_control_lifetime::State {
+    HWND window=nullptr,tips=nullptr; int hover=-1, focus=-1;
+    bool updatingTips=false; std::vector<std::wstring> labels;
+};
+inline LRESULT CALLBACK Proc(HWND,UINT,WPARAM,LPARAM,UINT_PTR,DWORD_PTR);
+inline LRESULT CALLBACK TipProc(HWND,UINT,WPARAM,LPARAM,UINT_PTR,DWORD_PTR);
+inline bool Current(HWND window,const State& state) noexcept {
+    return !state.retired&&state.window==window&&
+        curve_editor_control_lifetime::Exact(window,Proc,kSubclass,&state);
+}
+inline void Retire(State& state) noexcept {
+    if(state.retired)return;
+    state.retired=true;
+    const HWND tips=state.tips;state.tips=nullptr;
+    if(tips&&curve_editor_control_lifetime::Exact(tips,TipProc,kTipsSubclass,&state))DestroyWindow(tips);
+    if(curve_editor_control_lifetime::Exact(state.window,Proc,kSubclass,&state))
+        RemoveWindowSubclass(state.window,Proc,kSubclass);
+}
+struct Scope {
+    State& state;curve_editor_control_lifetime::Pin<State> pin;
+    explicit Scope(State& value) noexcept:state(value),pin(value){}
+    ~Scope(){if(!state.retired&&!Current(state.window,state))Retire(state);}
+};
+inline LRESULT CALLBACK TipProc(HWND window,UINT message,WPARAM w,LPARAM l,UINT_PTR id,DWORD_PTR data){
+    auto& state=*reinterpret_cast<State*>(data);Scope scope(state);
+    if(message==WM_NCDESTROY){
+        if(state.tips==window)state.tips=nullptr;
+        RemoveWindowSubclass(window,TipProc,id);
+    }
+    return DefSubclassProc(window,message,w,l);
+}
 inline bool Target(int id){return id==1007||id==1009||id==1045||id==1047;}
 inline int Gap(HWND hwnd){return GetDlgCtrlID(hwnd)==1047?6:0;}
-inline RECT Cell(HWND hwnd,int index) {
+inline RECT Cell(HWND hwnd,int index,State& state) {
     RECT r{};GetClientRect(hwnd,&r);
     int count=int(SendMessageW(hwnd,CB_GETCOUNT,0,0));
-    if(count<=0)return r;
+    if(!Current(hwnd,state)||count<=0)return {};
     int width=r.right-Gap(hwnd);
     r.left=width*index/count;r.right=width*(index+1)/count;
     if(GetDlgCtrlID(hwnd)==1047&&index>=3){r.left+=Gap(hwnd);r.right+=Gap(hwnd);}
     return r;
 }
-inline int Hit(HWND hwnd,LPARAM lp) {
+inline RECT Cell(HWND hwnd,int index){
+    DWORD_PTR data=0;if(!GetWindowSubclass(hwnd,Proc,kSubclass,&data)||!data)return {};
+    auto& state=*reinterpret_cast<State*>(data);Scope scope(state);
+    if(!Current(hwnd,state))return {};
+    return Cell(hwnd,index,state);
+}
+inline int Hit(HWND hwnd,LPARAM lp,State& state) {
     POINT point{GET_X_LPARAM(lp),GET_Y_LPARAM(lp)};
     int count=int(SendMessageW(hwnd,CB_GETCOUNT,0,0));
-    for(int i=0;i<count;++i){RECT r=Cell(hwnd,i);if(PtInRect(&r,point))return i;}
+    if(!Current(hwnd,state))return -1;
+    for(int i=0;i<count;++i){RECT r=Cell(hwnd,i,state);if(!Current(hwnd,state))return -1;if(PtInRect(&r,point))return i;}
     return -1;
 }
 inline void Icon(HDC dc,int id,int index,float x,float y,COLORREF color) {
@@ -54,13 +93,29 @@ inline void Icon(HDC dc,int id,int index,float x,float y,COLORREF color) {
     }
 }
 inline void Tips(HWND hwnd,State& state) {
-    if(!state.tips)state.tips=CreateWindowExW(WS_EX_TOPMOST,TOOLTIPS_CLASSW,nullptr,
-        WS_POPUP|TTS_ALWAYSTIP|TTS_NOPREFIX,CW_USEDEFAULT,CW_USEDEFAULT,CW_USEDEFAULT,CW_USEDEFAULT,
-        hwnd,nullptr,GetModuleHandleW(nullptr),nullptr);
-    for(std::size_t i=0;i<state.labels.size();++i){TOOLINFOW t{sizeof(t)};t.hwnd=hwnd;t.uId=i+1;SendMessageW(state.tips,TTM_DELTOOLW,0,reinterpret_cast<LPARAM>(&t));}
-    int count=int(SendMessageW(hwnd,CB_GETCOUNT,0,0));state.labels.clear();
+    if(!Current(hwnd,state)||state.updatingTips)return;
+    struct Updating {bool& value;explicit Updating(bool& v):value(v){value=true;}~Updating(){value=false;}} updating(state.updatingTips);
+    if(!state.tips){
+        const HWND created=CreateWindowExW(WS_EX_TOPMOST,TOOLTIPS_CLASSW,nullptr,
+            WS_POPUP|TTS_ALWAYSTIP|TTS_NOPREFIX,CW_USEDEFAULT,CW_USEDEFAULT,CW_USEDEFAULT,CW_USEDEFAULT,
+            hwnd,nullptr,GetModuleHandleW(nullptr),nullptr);
+        if(!Current(hwnd,state)){if(created&&IsWindow(created))DestroyWindow(created);return;}
+        if(!created)return;
+        if(!SetWindowSubclass(created,TipProc,kTipsSubclass,reinterpret_cast<DWORD_PTR>(&state))){DestroyWindow(created);return;}
+        if(!Current(hwnd,state)||!curve_editor_control_lifetime::Exact(created,TipProc,kTipsSubclass,&state)){
+            if(curve_editor_control_lifetime::Exact(created,TipProc,kTipsSubclass,&state))DestroyWindow(created);
+            return;
+        }
+        state.tips=created;
+    }
+    const HWND tips=state.tips;
+    const auto current=[&]{return Current(hwnd,state)&&state.tips==tips&&
+        curve_editor_control_lifetime::Exact(tips,TipProc,kTipsSubclass,&state);};
+    int count=int(SendMessageW(hwnd,CB_GETCOUNT,0,0));if(!current())return;
+    std::vector<std::wstring> labels;
     for(int i=0;i<count;++i){
         wchar_t label[256]{};SendMessageW(hwnd,CB_GETLBTEXT,i,reinterpret_cast<LPARAM>(label));
+        if(!current())return;
         std::wstring description=label;
         if(GetDlgCtrlID(hwnd)==1047){
             const auto language=reinterpret_cast<ULONG_PTR>(GetPropW(hwnd,L"CurveLanguage"));
@@ -69,30 +124,36 @@ inline void Tips(HWND hwnd,State& state) {
             const wchar_t* ja[]={L"モード：両側を独立して編集します。即時適用。",L"モード：片側を編集すると両側の傾きを揃えます。即時適用。",L"モード：隣接キーから傾きを自動計算します。即時適用。",L"プリセット：両側のハンドルを一度だけ水平にします。",L"プリセット：前後の区間を一度だけ直線化します。",L"プリセット：入る側を水平に曲げ、出る側を直線化します。",L"プリセット：出る側を水平に曲げ、入る側を直線化します。"};
             if(i<7)description=language==2?zh[i]:language==1?en[i]:ja[i];
         }
-        state.labels.push_back(std::move(description));
+        labels.push_back(std::move(description));
     }
+    for(std::size_t i=0;i<state.labels.size();++i){
+        TOOLINFOW t{sizeof(t)};t.hwnd=hwnd;t.uId=i+1;
+        SendMessageW(tips,TTM_DELTOOLW,0,reinterpret_cast<LPARAM>(&t));if(!current())return;
+    }
+    state.labels.swap(labels);
     for(int i=0;i<count;++i){
-        TOOLINFOW t{sizeof(t)};t.hwnd=hwnd;t.uId=i+1;t.uFlags=TTF_SUBCLASS;t.rect=Cell(hwnd,i);
-        t.lpszText=state.labels[i].data();SendMessageW(state.tips,TTM_ADDTOOLW,0,reinterpret_cast<LPARAM>(&t));
+        TOOLINFOW t{sizeof(t)};t.hwnd=hwnd;t.uId=i+1;t.uFlags=TTF_SUBCLASS;t.rect=Cell(hwnd,i,state);if(!current())return;
+        t.lpszText=state.labels[i].data();SendMessageW(tips,TTM_ADDTOOLW,0,reinterpret_cast<LPARAM>(&t));if(!current())return;
     }
-    SendMessageW(state.tips,TTM_SETDELAYTIME,TTDT_INITIAL,350);
-    SendMessageW(state.tips,TTM_SETMAXTIPWIDTH,0,400);
+    SendMessageW(tips,TTM_SETDELAYTIME,TTDT_INITIAL,350);if(!current())return;
+    SendMessageW(tips,TTM_SETMAXTIPWIDTH,0,400);
 }
 inline void Paint(HWND hwnd,HDC dc,State& state) {
     using namespace curve_editor_theme;
     RECT all{};GetClientRect(hwnd,&all);Fill(dc,all,shell);
-    int count=int(SendMessageW(hwnd,CB_GETCOUNT,0,0));
-    int selected=int(SendMessageW(hwnd,CB_GETCURSEL,0,0));
-    int id=GetDlgCtrlID(hwnd),saved=SaveDC(dc);
-    HFONT font=reinterpret_cast<HFONT>(SendMessageW(hwnd,WM_GETFONT,0,0));if(font)SelectObject(dc,font);
+    int count=int(SendMessageW(hwnd,CB_GETCOUNT,0,0));if(!Current(hwnd,state))return;
+    int selected=int(SendMessageW(hwnd,CB_GETCURSEL,0,0));if(!Current(hwnd,state))return;
+    int id=GetDlgCtrlID(hwnd);curve_editor_control_lifetime::Dc saved(dc);
+    HFONT font=reinterpret_cast<HFONT>(SendMessageW(hwnd,WM_GETFONT,0,0));if(!Current(hwnd,state))return;if(font)SelectObject(dc,font);
     SetBkMode(dc,TRANSPARENT);
     bool enabled=IsWindowEnabled(hwnd)!=FALSE;
     for(int i=0;i<count;++i){
-        RECT r=Cell(hwnd,i);bool active=i==selected && (id!=1047 || i<3);
+        RECT r=Cell(hwnd,i,state);if(!Current(hwnd,state))return;bool active=i==selected && (id!=1047 || i<3);
         Fill(dc,r,active?selection:(i==state.hover?Mix(control,paper,0.6):paper));
         Frame(dc,r,active?accent:border);
         if(active){RECT line{r.left+1,r.bottom-3,r.right-1,r.bottom-1};Fill(dc,line,accent);}
         wchar_t label[256]{};SendMessageW(hwnd,CB_GETLBTEXT,i,reinterpret_cast<LPARAM>(label));
+        if(!Current(hwnd,state))return;
         SIZE extent{};GetTextExtentPoint32W(dc,label,int(wcslen(label)),&extent);
         const int iconSize=18,gap=3;
         bool showLabel=r.right-r.left>=iconSize+gap+extent.cx+4;
@@ -103,50 +164,63 @@ inline void Paint(HWND hwnd,HDC dc,State& state) {
         if(showLabel){RECT textRect{x+iconSize+gap,r.top,r.right-2,r.bottom-1};SetTextColor(dc,ink);DrawTextW(dc,label,-1,&textRect,DT_SINGLELINE|DT_VCENTER|DT_NOPREFIX);}
         if(GetFocus()==hwnd&&i==(state.focus<0?selected:state.focus)){RECT focus=r;InflateRect(&focus,-4,-4);DrawFocusRect(dc,&focus);}
     }
-    RestoreDC(dc,saved);
 }
-inline void Choose(HWND hwnd,int index) {
+inline void Choose(HWND hwnd,int index,State& state) {
     if(!IsWindowEnabled(hwnd))return;
-    int count=int(SendMessageW(hwnd,CB_GETCOUNT,0,0));if(index<0||index>=count)return;
-    SendMessageW(hwnd,CB_SETCURSEL,index,0);InvalidateRect(hwnd,nullptr,FALSE);
+    int count=int(SendMessageW(hwnd,CB_GETCOUNT,0,0));if(!Current(hwnd,state)||index<0||index>=count)return;
+    SendMessageW(hwnd,CB_SETCURSEL,index,0);if(!Current(hwnd,state))return;InvalidateRect(hwnd,nullptr,FALSE);
     SendMessageW(GetParent(hwnd),WM_COMMAND,MAKEWPARAM(GetDlgCtrlID(hwnd),CBN_SELCHANGE),reinterpret_cast<LPARAM>(hwnd));
 }
 inline LRESULT CALLBACK Proc(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp,UINT_PTR id,DWORD_PTR data){
-    auto& state=*reinterpret_cast<State*>(data);
-    if(msg==WM_NCDESTROY){if(state.tips)DestroyWindow(state.tips);RemoveWindowSubclass(hwnd,Proc,id);delete &state;return DefSubclassProc(hwnd,msg,wp,lp);}
-    if(msg==WM_PAINT){PAINTSTRUCT ps{};HDC dc=BeginPaint(hwnd,&ps);Paint(hwnd,dc,state);EndPaint(hwnd,&ps);return 0;}
+    auto& state=*reinterpret_cast<State*>(data);Scope scope(state);
+    try {
+    if(msg==WM_NCDESTROY){Retire(state);return DefSubclassProc(hwnd,msg,wp,lp);}
+    if(!Current(hwnd,state))return 0;
+    if(msg==WM_PAINT){curve_editor_control_lifetime::Paint paint(hwnd);if(Current(hwnd,state))Paint(hwnd,paint.dc,state);return 0;}
     if(msg==WM_PRINTCLIENT){Paint(hwnd,reinterpret_cast<HDC>(wp),state);return 0;}
     if(msg==WM_ERASEBKGND)return 1;
-    if(msg==WM_LBUTTONDOWN){SetFocus(hwnd);state.focus=Hit(hwnd,lp);Choose(hwnd,state.focus);return 0;}
+    if(msg==WM_LBUTTONDOWN){SetFocus(hwnd);if(!Current(hwnd,state))return 0;
+        const int hit=Hit(hwnd,lp,state);if(!Current(hwnd,state))return 0;
+        state.focus=hit;Choose(hwnd,state.focus,state);return 0;}
     if(msg==WM_LBUTTONUP||msg==WM_LBUTTONDBLCLK)return 0;
     // Activation is handled on key-down; do not let the native combo perform
     // a second action when TranslateMessage delivers its character message.
     if(msg==WM_CHAR&&(wp==L'\r'||wp==L' '))return 0;
     if(msg==CB_SHOWDROPDOWN)return 0;
-    if(msg==WM_MOUSEMOVE){int hover=Hit(hwnd,lp);if(hover!=state.hover){state.hover=hover;InvalidateRect(hwnd,nullptr,FALSE);}TRACKMOUSEEVENT t{sizeof(t),TME_LEAVE,hwnd,0};TrackMouseEvent(&t);return 0;}
+    if(msg==WM_MOUSEMOVE){int hover=Hit(hwnd,lp,state);if(!Current(hwnd,state))return 0;
+        if(hover!=state.hover){state.hover=hover;InvalidateRect(hwnd,nullptr,FALSE);}TRACKMOUSEEVENT t{sizeof(t),TME_LEAVE,hwnd,0};TrackMouseEvent(&t);return 0;}
     if(msg==WM_MOUSELEAVE){state.hover=-1;InvalidateRect(hwnd,nullptr,FALSE);return 0;}
     if(msg==WM_KEYDOWN){
         int current=state.focus<0?int(SendMessageW(hwnd,CB_GETCURSEL,0,0)):state.focus;
-        int count=int(SendMessageW(hwnd,CB_GETCOUNT,0,0));
+        if(!Current(hwnd,state))return 0;
+        int count=int(SendMessageW(hwnd,CB_GETCOUNT,0,0));if(!Current(hwnd,state))return 0;
         if(wp==VK_LEFT||wp==VK_UP)state.focus=std::max(0,current-1);
         else if(wp==VK_RIGHT||wp==VK_DOWN)state.focus=std::min(count-1,current+1);
         else if(wp==VK_HOME)state.focus=0;
         else if(wp==VK_END)state.focus=count-1;
         else if(wp==VK_SPACE||wp==VK_RETURN||wp==VK_F4)state.focus=current;
         else return DefSubclassProc(hwnd,msg,wp,lp);
-        Choose(hwnd,state.focus);return 0;
+        Choose(hwnd,state.focus,state);return 0;
     }
     if(msg==WM_SYSKEYDOWN&&wp==VK_DOWN)return 0;
     LRESULT result=DefSubclassProc(hwnd,msg,wp,lp);
+    if(!Current(hwnd,state))return result;
     if(msg==WM_SIZE||msg==CB_ADDSTRING||msg==CB_RESETCONTENT)Tips(hwnd,state);
+    if(!Current(hwnd,state))return result;
     if(msg==CB_SETCURSEL||msg==WM_ENABLE||msg==WM_SETFOCUS||msg==WM_KILLFOCUS)InvalidateRect(hwnd,nullptr,FALSE);
     return result;
+    }catch(...){return 0;}
 }
 inline void Apply(HWND root) {
     for(int id:{1007,1009,1045,1047}){
         HWND hwnd=GetDlgItem(root,id);if(!hwnd)continue;
+        DWORD_PTR existing=0;if(GetWindowSubclass(hwnd,Proc,kSubclass,&existing))continue;
         RemoveWindowSubclass(hwnd,curve_editor_theme::ControlProc,0x434f4c52);
-        SetWindowSubclass(hwnd,Proc,0x5345474d,reinterpret_cast<DWORD_PTR>(new State));
+        auto* state=new State;state->window=hwnd;
+        curve_editor_control_lifetime::Pin<State> construction(*state);
+        if(!SetWindowSubclass(hwnd,Proc,kSubclass,reinterpret_cast<DWORD_PTR>(state))||!Current(hwnd,*state)){
+            Retire(*state);return;
+        }
     }
 }
 }
