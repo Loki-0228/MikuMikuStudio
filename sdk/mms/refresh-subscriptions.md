@@ -28,7 +28,7 @@
 
 每客户端最多 128 个订阅，宿主共 2,048 个。同一 binding 只能有一个订阅，重复注册返回 `CONFLICT`，超额返回 `BUSY`。注册失败不留下半个订阅或唤醒请求。订阅属于精确插件客户端；相同插件 ID 不转移所有权。
 
-`kinds` 必须包含 `MMS_UI_REFRESH_DATA`。可以组合 `STATE`、`LAYOUT` 和 `REPAINT`，每一项都须为该绑定目标当前支持的能力。默认 SDK 组合为 `DATA | REPAINT`。本服务只支持 `SELF`；不会自动展开注册子树或显式依赖图。菜单及没有独立显示区的 GROUP 不接受订阅。
+`kinds` 必须包含 `MMS_UI_REFRESH_DATA`。可以组合 `STATE`、`LAYOUT` 和 `REPAINT`，每一项都须为该绑定目标当前支持的能力。默认 SDK 组合为 `DATA | REPAINT`。本页的 1.0 表只支持 `SELF`，不会展开注册子树或显式依赖图。菜单及没有独立显示区的 GROUP 不接受 SELF 订阅。需要以 GROUP 为种子驱动其他目标时，使用[范围自动订阅 1.1](scoped-refresh-subscriptions.md)。
 
 ## 发布和执行
 

@@ -76,4 +76,4 @@ if (!result) result = dependencies.ConnectElements(refresh, sourceButton, previe
 
 `RefreshServices::RefreshDependents` 接受已捕获的引用，允许后台请求；`RefreshDependentElements` 先解析原元素，因此只能在 UI 线程调用。二者继续返回原 `RefreshTicket`。
 
-此服务只提供显式图。已有显式 DATA binding 可以另用[自动订阅](refresh-subscriptions.md)安排 SELF 刷新；订阅不会自动展开此依赖图。自动依赖传播、插件量测提供者、动画时钟及更多控件能力仍属后续需求。
+此服务提供显式图。已有显式 DATA binding 可以通过[SELF 自动订阅](refresh-subscriptions.md)刷新自身，也可通过[范围自动订阅 1.1](scoped-refresh-subscriptions.md)驱动本图。范围订阅沿用同一边、目标和队列；受影响图变化可以按同一触发版本重新安排工作，其规则区别于本页显式请求的保守图修订失效。原属性、历史和通用事件的自动图传播、插件量测提供者、动画时钟及更多控件能力仍属后续需求。

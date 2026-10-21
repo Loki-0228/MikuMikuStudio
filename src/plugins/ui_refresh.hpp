@@ -22,6 +22,19 @@ struct RefreshClient {
     std::atomic<bool> stopping{false};
     std::atomic<unsigned> inFlight{0};
 };
+struct UiRefreshSubscriptionWork {
+    RefreshClient* client = nullptr;
+    MmsHandle subscription = 0, binding = 0;
+    MmsUiTargetRefV1 target{};
+    uint32_t kinds = 0;
+    uint64_t revision = 0;
+    uint64_t capacityRevision = 0, queueCapacityRevision = 0;
+    MmsUiTargetRefV1 seed{};
+    uint32_t scope = MMS_UI_REFRESH_SELF;
+    uint64_t workGeneration = 0, dependencyRevision = 0;
+    uint64_t sourcePublication = 0;
+    uint32_t waitingFor = 0;
+};
 // Only the UI adapter supplies these. No HWND or registry access occurs in
 // request/query/cancel/release, even when called from a background thread.
 struct RefreshPresentation {
@@ -100,7 +113,7 @@ class UiRefreshQueue {
     MmsResult Capabilities(RefreshClient&, MmsUiRefreshCapabilitiesV1*);
     MmsResult GetTarget(RefreshClient&, MmsHandle, MmsUiRefreshTargetV1*);
     MmsResult Request(RefreshClient&, const MmsUiRefreshRequestV1*, MmsHandle*, MmsHandle subscription = 0,
-        MmsHandle propertySubscription = 0, uint64_t propertySequence = 0);
+        MmsHandle propertySubscription = 0, uint64_t propertySequence = 0, UiRefreshSubscriptionWork* scoped = nullptr);
     MmsResult Query(RefreshClient&, MmsHandle, MmsUiRefreshStateV1*);
     MmsResult Cancel(RefreshClient&, MmsHandle);
     MmsResult Release(RefreshClient&, MmsHandle);
@@ -119,6 +132,7 @@ class UiRefreshQueue {
     void CleanupSubscriptions() noexcept;
     void RetrySubscriptions() noexcept;
     void ScheduleSubscriptions();
+    void RefreshScopedSubscriptionsLocked() noexcept;
     void SchedulePropertySubscriptions();
     void PropertyBindingsChanged() noexcept;
     MmsResult CheckPropertyRefreshTarget(RefreshClient&, const UiClient*, const MmsUiTargetRefV1&,

@@ -92,3 +92,42 @@ static_assert(offsetof(MmsUiPropertyRefreshApiV1, query) == 48, "property refres
 static_assert(offsetof(MmsUiPropertyRefreshApiV1, unsubscribe) == 56, "property refresh API unsubscribe offset");
 static_assert(std::is_standard_layout<MmsUiPropertyRefreshApiV1>::value, "property refresh API standard layout");
 static_assert(std::is_trivially_copyable<MmsUiPropertyRefreshApiV1>::value, "property refresh API copyable ABI");
+
+static_assert(sizeof(MmsUiRefreshScopedSubscriptionDescV1) == 80, "scoped subscription descriptor");
+static_assert(offsetof(MmsUiRefreshScopedSubscriptionDescV1, binding) == 8 && offsetof(MmsUiRefreshScopedSubscriptionDescV1, seed) == 16, "scoped trigger and seed identity");
+static_assert(offsetof(MmsUiRefreshScopedSubscriptionDescV1, scope) == 48 && offsetof(MmsUiRefreshScopedSubscriptionDescV1, kinds) == 52, "scoped request fields");
+static_assert(offsetof(MmsUiRefreshScopedSubscriptionDescV1, flags) == 56 && offsetof(MmsUiRefreshScopedSubscriptionDescV1, reserved) == 60 && offsetof(MmsUiRefreshScopedSubscriptionDescV1, reservedTail) == 64, "scoped request reserved fields");
+static_assert(sizeof(MmsUiRefreshScopedSubscriptionStateV1) == 160 && offsetof(MmsUiRefreshScopedSubscriptionStateV1, seed) == sizeof(MmsUiRefreshSubscriptionStateV1), "scoped state append");
+#define MMS_SCOPED_STATE_PREFIX(field) static_assert(offsetof(MmsUiRefreshScopedSubscriptionStateV1, field) == offsetof(MmsUiRefreshSubscriptionStateV1, field), "scoped state prefix " #field)
+MMS_SCOPED_STATE_PREFIX(h); MMS_SCOPED_STATE_PREFIX(subscription); MMS_SCOPED_STATE_PREFIX(binding);
+MMS_SCOPED_STATE_PREFIX(projectEpoch); MMS_SCOPED_STATE_PREFIX(latestRevision); MMS_SCOPED_STATE_PREFIX(submittedRevision);
+MMS_SCOPED_STATE_PREFIX(completedRevision); MMS_SCOPED_STATE_PREFIX(lastResult); MMS_SCOPED_STATE_PREFIX(pending); MMS_SCOPED_STATE_PREFIX(reserved);
+#undef MMS_SCOPED_STATE_PREFIX
+static_assert(offsetof(MmsUiRefreshScopedSubscriptionStateV1, scope) == 104 && offsetof(MmsUiRefreshScopedSubscriptionStateV1, kinds) == 108, "scoped state request fields");
+static_assert(offsetof(MmsUiRefreshScopedSubscriptionStateV1, workGeneration) == 112 && offsetof(MmsUiRefreshScopedSubscriptionStateV1, submittedWorkGeneration) == 120, "scoped work identities");
+static_assert(offsetof(MmsUiRefreshScopedSubscriptionStateV1, completedWorkGeneration) == 128 && offsetof(MmsUiRefreshScopedSubscriptionStateV1, submittedDependencyRevision) == 136, "scoped completion identities");
+static_assert(offsetof(MmsUiRefreshScopedSubscriptionStateV1, waitingFor) == 144 && offsetof(MmsUiRefreshScopedSubscriptionStateV1, flags) == 148 && offsetof(MmsUiRefreshScopedSubscriptionStateV1, reservedTail) == 152, "scoped state status fields");
+static_assert(sizeof(MmsUiRefreshSubscriptionApiV1_1) == 64, "scoped subscription API");
+#define MMS_SCOPED_API_PREFIX(field) static_assert(offsetof(MmsUiRefreshSubscriptionApiV1_1, field) == offsetof(MmsUiRefreshSubscriptionApiV1, field), "scoped API prefix " #field)
+MMS_SCOPED_API_PREFIX(h); MMS_SCOPED_API_PREFIX(context); MMS_SCOPED_API_PREFIX(getCapabilities);
+MMS_SCOPED_API_PREFIX(subscribe); MMS_SCOPED_API_PREFIX(query); MMS_SCOPED_API_PREFIX(unsubscribe);
+#undef MMS_SCOPED_API_PREFIX
+static_assert(offsetof(MmsUiRefreshSubscriptionApiV1_1, subscribeScoped) == 48 && offsetof(MmsUiRefreshSubscriptionApiV1_1, queryScoped) == 56, "scoped API appended slots");
+static_assert(std::is_standard_layout<MmsUiRefreshScopedSubscriptionDescV1>::value && std::is_trivially_copyable<MmsUiRefreshScopedSubscriptionDescV1>::value, "scoped descriptor POD");
+static_assert(std::is_standard_layout<MmsUiRefreshScopedSubscriptionStateV1>::value && std::is_trivially_copyable<MmsUiRefreshScopedSubscriptionStateV1>::value, "scoped state POD");
+static_assert(std::is_standard_layout<MmsUiRefreshSubscriptionApiV1_1>::value && std::is_trivially_copyable<MmsUiRefreshSubscriptionApiV1_1>::value, "scoped API POD");
+
+/* mms.ui.refresh.subscribe 1.1 compile-time compatibility: natural alignment,
+   scope and WAIT-bit values, unchanged global ABI minor, exact callback types. */
+static_assert(alignof(MmsUiRefreshScopedSubscriptionDescV1) == 8, "scoped descriptor natural alignment");
+static_assert(alignof(MmsUiRefreshScopedSubscriptionStateV1) == 8, "scoped state natural alignment");
+static_assert(alignof(MmsUiRefreshSubscriptionApiV1_1) == 8, "scoped API natural alignment");
+static_assert(offsetof(MmsUiRefreshScopedSubscriptionDescV1, h) == 0, "scoped descriptor header offset");
+static_assert(MMS_UI_REFRESH_SELF == 1u && MMS_UI_REFRESH_SUBTREE == 2u && MMS_UI_REFRESH_DEPENDENTS == 4u, "refresh scope values");
+static_assert(MMS_UI_REFRESH_SUBSCRIPTION_WAIT_GRAPH == 1u && MMS_UI_REFRESH_SUBSCRIPTION_WAIT_TARGET == 2u && MMS_UI_REFRESH_SUBSCRIPTION_WAIT_QUEUE_CAPACITY == 4u, "scoped wait bits 1-3");
+static_assert(MMS_UI_REFRESH_SUBSCRIPTION_WAIT_SOURCE == 8u && MMS_UI_REFRESH_SUBSCRIPTION_WAIT_CONSUMER == 16u && MMS_UI_REFRESH_SUBSCRIPTION_WAIT_BINDING == 32u, "scoped wait bits 4-6");
+static_assert(MMS_UI_REFRESH_SUBSCRIPTION_WAIT_HOST_WAKE == 64u && MMS_UI_REFRESH_SUBSCRIPTION_WAIT_DISPLAY_CAPACITY == 128u, "scoped wait bits 7-8");
+static_assert(MMS_ABI_MAJOR == 1u && MMS_ABI_MINOR == 0u, "service minor 1 keeps ABI minor 0");
+static_assert(sizeof(MmsUiRefreshSubscriptionApiV1_1) == sizeof(MmsUiRefreshSubscriptionApiV1) + 2u * sizeof(void*), "service minor 1 only appends its own table");
+static_assert(std::is_same<decltype(((MmsUiRefreshSubscriptionApiV1_1*)nullptr)->subscribeScoped), MmsResult (MMS_CALL *)(void*, const MmsUiRefreshScopedSubscriptionDescV1*, MmsHandle*)>::value, "scoped subscribe exact signature");
+static_assert(std::is_same<decltype(((MmsUiRefreshSubscriptionApiV1_1*)nullptr)->queryScoped), MmsResult (MMS_CALL *)(void*, MmsHandle, MmsUiRefreshScopedSubscriptionStateV1*)>::value, "scoped query exact signature");

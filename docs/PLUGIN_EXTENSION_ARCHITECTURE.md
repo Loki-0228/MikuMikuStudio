@@ -3,7 +3,7 @@
 本文是 UI、交互、视口、数据格式和编辑工具的设计约定。基础 C++17 UI 包装、声明式 INPUT、工具栏及属性扩展行、SELF／注册 SUBTREE 刷新、按钮及 INPUT STATE 已实现，其余新增能力按表中状态区分。INPUT 编辑仅在受控共同历史宿主启用，普通启动仍为只读。当前可用接口以 [SDK README](../sdk/mms/README.md) 和[实施记录](PLUGIN_ABI_IMPLEMENTATION.md)为准。
 现有 `MmsHostV1`、各 V1 函数表和已发布结构保持兼容。本文不开放普通宿主的 `mms.edit`，也不把内部 C++ 计划器视为公共编辑接口。
 
-基础 UI 的类型化及声明式包装见 [C++17 界面注册 SDK](../sdk/mms/cpp-ui.md)。`UiServices`、`RegistrationBundle`、`CommandUi` 及 [INPUT 包装](../sdk/mms/input.md)均组合已有 C 服务。原元素 handle 可直接用于[界面重绘服务](../sdk/mms/refresh.md)，按钮及 INPUT 共用[状态内容服务](../sdk/mms/state-content.md)。显式 DATA binding 已支持[来源自动订阅](../sdk/mms/refresh-subscriptions.md)；[原属性自动刷新](../sdk/mms/property-refresh.md)使用原 INPUT 和属性引用，可跟随真实共同历史发布。绘制层和工具封装仍待实现。
+基础 UI 的类型化及声明式包装见 [C++17 界面注册 SDK](../sdk/mms/cpp-ui.md)。`UiServices`、`RegistrationBundle`、`CommandUi` 及 [INPUT 包装](../sdk/mms/input.md)均组合已有 C 服务。原元素 handle 可直接用于[界面重绘服务](../sdk/mms/refresh.md)，按钮及 INPUT 共用[状态内容服务](../sdk/mms/state-content.md)。显式 DATA binding 已支持[SELF 来源自动订阅](../sdk/mms/refresh-subscriptions.md)及[子树、依赖图自动传播](../sdk/mms/scoped-refresh-subscriptions.md)；触发与目标可以分开，底层使用同一订阅句柄和复合票据。[原属性自动刷新](../sdk/mms/property-refresh.md)使用原 INPUT 和属性引用，可跟随真实共同历史发布。绘制层和工具封装仍待实现。
 
 [C++17 重绘 SDK](../sdk/mms/cpp-refresh.md)继续包装相同目标和票据，提供整目标、局部矩形、移动所有权与失败重试清理。后台请求与低层 C 使用同一服务 context，不创建独立队列。
 
@@ -45,7 +45,7 @@ auto event = events.subscribe(topic, [=] { updateLayer(layer); });
 | 服务组 | 职责与状态 | 详细方案 |
 | --- | --- | --- |
 | `mms.ui`、`mms.ui.surface`、`mms.ui.layout` | 已有注册、挂载、属性和部分布局能力。工具栏、`mms.properties.main.extensions` 及左右侧栏支持原 BUTTON、GROUP、SEPARATOR、INPUT，共用注册身份、布局和刷新队列；普通 INPUT 只读。左右列测量内容后为中央区域及视口避让，空列不占宽度。`MMS_UI_OVERFLOW_MENU=3` 及 keepTogether 命令折叠仍仅支持原工具栏。DOCK、时间线内部、状态栏挂载及面板内折叠未开放。 | [UI 呈现](PLUGIN_UI_PRESENTATION.md)、[左右侧栏 SDK](../sdk/mms/side-mounts.md)、[属性扩展行](records/abi-property-mount-2026-10-21.md)、[INPUT SDK](../sdk/mms/input.md)、[溢出 SDK](../sdk/mms/cpp-ui.md#工具栏命令溢出) |
-| `mms.ui.refresh`、`mms.ui.refresh.bind`、`mms.ui.refresh.state`、`mms.ui.refresh.dependencies`、`mms.ui.refresh.subscribe` 1.0 | 已有 SELF、注册 SUBTREE 及显式 DEPENDENTS，复用同一对象、队列和票据。依成员实际能力执行 DATA、STATE、LAYOUT、REPAINT；显式 DATA binding 可按发布版本自动刷新 SELF，依赖图自动传播仍待实现。 | [刷新接口参考](../sdk/mms/refresh.md)、[显式依赖图](../sdk/mms/refresh-dependencies.md)、[自动订阅](../sdk/mms/refresh-subscriptions.md)、[状态内容](../sdk/mms/state-content.md) |
+| `mms.ui.refresh`、`mms.ui.refresh.bind`、`mms.ui.refresh.state`、`mms.ui.refresh.dependencies` 1.0；`mms.ui.refresh.subscribe` 1.0、1.1 | 已有 SELF、注册 SUBTREE 及显式 DEPENDENTS，复用同一对象、队列和票据。依成员实际能力执行 DATA、STATE、一次 LAYOUT、REPAINT。显式 DATA binding 可按发布版本自动刷新自身、子树或依赖图；原属性、历史和通用事件的自动图传播仍待实现。 | [刷新接口参考](../sdk/mms/refresh.md)、[显式依赖图](../sdk/mms/refresh-dependencies.md)、[范围订阅](../sdk/mms/scoped-refresh-subscriptions.md)、[状态内容](../sdk/mms/state-content.md) |
 | `mms.ui.refresh.property` 1.0 | 原属性通知和可查询的共同历史跟随复用原 INPUT、队列及阶段；显式 DATA binding 优先。 | [原属性刷新参考](../sdk/mms/property-refresh.md) |
 | `mms.events`、`mms.tasks` | 提案：主题订阅、受预算约束的工作任务。 | 本文及 UI 呈现 |
 | `mms.ui.geometry`、`style`、`paint`、`presentation`、`input`、`overlay`、`layout.session` | 提案：坐标、样式、辅助绘制、临时外观、输入和可撤回布局。 | UI 呈现 |

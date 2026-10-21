@@ -33,6 +33,7 @@ static MmsString S(const char* s) { return {s, std::strlen(s)}; }
 #include "cpp_data_refresh_checks.inc"
 #include "ui_refresh_subscription_checks.inc"
 #include "cpp_refresh_subscription_checks.inc"
+#include "cpp_scoped_refresh_subscription_checks.inc"
 #include "cpp_property_refresh_checks.inc"
 static void Write(const fs::path& path, const std::string& bytes) { fs::create_directories(path.parent_path()); std::ofstream f(path, std::ios::binary); f << bytes; if (!f) throw std::runtime_error("fixture write failed"); }
 #include "ui_preferences_file_checks.inc"
@@ -62,6 +63,7 @@ static std::string ManifestText(std::string id = "org.example.hello", std::strin
 #include "menu_state_refresh_checks.inc"
 #include "overflow_menu_checks.inc"
 #include "ui_refresh_dependency_checks.inc"
+#include "scoped_subscription_checks.inc"
 #include "ui_refresh_recovery_checks.inc"
 #include "cpp_refresh_dependency_checks.inc"
 #include "manager_dependency_refresh_checks.inc"
@@ -73,6 +75,7 @@ static std::string ManifestText(std::string id = "org.example.hello", std::strin
 #include "manager_data_refresh_concurrency_checks.inc"
 #include "task_dispatch_checks.inc"
 #include "manager_property_refresh_checks.inc"
+#include "manager_scoped_subscription_checks.inc"
 static void JsonChecks() {
     CHECK(Json::Parse("{\"a\":1}").At("a").UInt() == 1);
     CHECK(Throws([] { Json::Parse("{\"a\":1,\"a\":2}"); }));
@@ -375,6 +378,12 @@ static void LifecycleChecks(const fs::path& root, const fs::path& fixture) {
 int wmain(int argc, wchar_t** argv) {
     const fs::path root = fs::temp_directory_path() / (L"mms-abi-contract-" + std::to_wstring(GetCurrentProcessId()));
     try {
+        if ((argc == 2 || argc == 3) && std::wstring(argv[1]) == L"--scoped-subscription-only") {
+            CHECK(!fs::exists(root)); fs::create_directories(root);
+            CppScopedRefreshSubscriptionChecks(); ScopedSubscriptionChecks();
+            if (argc == 3) ManagerScopedSubscriptionChecks(root, fs::absolute(argv[2]));
+            std::cout << "PASS scoped subscription checks=" << checks << "\n"; fs::remove_all(root); return 0;
+        }
         if (argc == 2 && std::wstring(argv[1]) == L"--property-refresh-recovery-only") {
             property_refresh_checks::TargetDuringConsumption();
             std::cout << "PASS original property recovery checks=" << checks << "\n"; return 0;
@@ -486,6 +495,7 @@ int wmain(int argc, wchar_t** argv) {
         UiRefreshRecoveryChecks();
         UiRefreshSubscriptionChecks(); CppRefreshSubscriptionChecks();
         CppPropertyRefreshChecks(); PropertyRefreshChecks();
+        CppScopedRefreshSubscriptionChecks(); ScopedSubscriptionChecks();
         ManagerEditChecks(root, fs::absolute(argv[3]));
         UiInputBrokerChecks(root, fs::absolute(argv[3]));
         NativePropertyInputChecks(root, fs::absolute(argv[3]));

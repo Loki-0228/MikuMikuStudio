@@ -1,0 +1,10 @@
+LIBRARY scoped_subscription_probe
+EXPORTS
+    MMSPluginGetApi
+    ScopedProbeBegin
+    ScopedProbePublish
+    ScopedProbeGraph
+    ScopedProbeQuery
+    ScopedProbeAcquireHold
+    ScopedProbeReleaseHold
+    ScopedProbeRemoveSeed

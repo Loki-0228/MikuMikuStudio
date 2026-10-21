@@ -20,7 +20,7 @@ public:
     uint64_t Revision(const RefreshClient&) const noexcept;
     bool HasDependents(const RefreshClient&, const MmsUiTargetRefV1&) const noexcept;
     MmsResult Add(const RefreshClient&, const MmsUiTargetRefV1&, const MmsUiTargetRefV1&, MmsHandle&);
-    MmsResult Remove(const RefreshClient&, MmsHandle);
+    MmsResult Remove(const RefreshClient&, MmsHandle, MmsUiTargetRefV1* removedUpstream = nullptr);
     MmsResult Capture(const RefreshClient&, const MmsUiTargetRefV1&,
         std::vector<MmsUiTargetRefV1>&, uint64_t&) const;
     void InvalidateTarget(MmsHandle) noexcept;

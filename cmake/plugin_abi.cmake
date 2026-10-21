@@ -212,6 +212,19 @@ set_target_properties(mms_property_refresh_probe PROPERTIES OUTPUT_NAME property
 add_dependencies(plugin_abi_tests mms_property_refresh_probe)
 add_test(NAME ui_property_refresh_runtime COMMAND plugin_abi_tests --property-refresh-only "$<TARGET_FILE:mms_property_refresh_probe>")
 set_tests_properties(ui_property_refresh_runtime PROPERTIES TIMEOUT 90)
+add_library(mms_scoped_subscription_probe MODULE EXCLUDE_FROM_ALL
+    tests/plugins/scoped_subscription_plugin.cpp tests/plugins/scoped_subscription_plugin.def)
+target_include_directories(mms_scoped_subscription_probe PRIVATE sdk/mms/include)
+target_compile_features(mms_scoped_subscription_probe PRIVATE cxx_std_17)
+target_compile_definitions(mms_scoped_subscription_probe PRIVATE _WIN32_WINNT=0x0601 WINVER=0x0601)
+target_link_options(mms_scoped_subscription_probe PRIVATE /SUBSYSTEM:WINDOWS,6.01 /DEBUG:NONE)
+set_target_properties(mms_scoped_subscription_probe PROPERTIES OUTPUT_NAME scoped_subscription_probe
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/plugins/scoped_subscription/$<CONFIG>"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/plugins/scoped_subscription/$<CONFIG>"
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+add_dependencies(plugin_abi_tests mms_scoped_subscription_probe)
+add_test(NAME ui_scoped_refresh_subscription_runtime COMMAND plugin_abi_tests --scoped-subscription-only "$<TARGET_FILE:mms_scoped_subscription_probe>")
+set_tests_properties(ui_scoped_refresh_subscription_runtime PROPERTIES TIMEOUT 120)
 add_library(mms_auto_refresh_example MODULE EXCLUDE_FROM_ALL
     sdk/mms/examples/auto_refresh/plugin.cpp sdk/mms/examples/auto_refresh/plugin.def)
 target_include_directories(mms_auto_refresh_example PRIVATE sdk/mms/include)

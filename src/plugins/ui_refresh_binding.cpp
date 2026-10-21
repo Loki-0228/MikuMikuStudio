@@ -2,6 +2,7 @@
 #include <map>
 #include <mutex>
 #include <limits>
+#include <array>
 
 namespace mikumikustudio::plugins {
 namespace {
@@ -91,6 +92,16 @@ struct UiRefreshBindings::Impl {
         bool armed = false, claimed = false;
         uint32_t waitEvents = 0;
         uint64_t waitCapacityRevision = 0, waitQueueCapacityRevision = 0;
+        MmsUiTargetRefV1 seed{};
+        uint32_t scope = MMS_UI_REFRESH_SELF, waitingFor = 0, scopeBlock = 0;
+        uint64_t workGeneration = 1, submittedWorkGeneration = 0, completedWorkGeneration = 0;
+        uint64_t invalidationGeneration = 1, dependencyRevision = 0, submittedDependencyRevision = 0;
+        uint64_t sourcePublication = 0, claimedSourcePublication = 0, submittedSourcePublication = 0;
+        bool observed = false;
+        std::array<MmsUiTargetRefV1, 256> members{};
+        size_t memberCount = 0;
+        std::array<MmsHandle, kSources> watchedSources{};
+        size_t sourceCount = 0;
     };
     struct Builder {
         std::shared_ptr<Owner> owner;
@@ -120,6 +131,55 @@ struct UiRefreshBindings::Impl {
     std::map<MmsHandle, Builder*> builders;
 
     explicit Impl(Hooks value) : hooks(std::move(value)) {}
+    static bool Scoped(const Subscription& s) noexcept { return s.scope != MMS_UI_REFRESH_SELF; }
+    static bool Watches(const Subscription& s, const MmsUiTargetRefV1& ref) noexcept {
+        if (SameTarget(s.seed, ref)) return true;
+        for (size_t i = 0; i < s.memberCount; ++i) if (SameTarget(s.members[i], ref)) return true;
+        return false;
+    }
+    void WatchSources(Subscription& s) noexcept {
+        s.sourceCount = 0;
+        const auto add = [&](MmsHandle source) {
+            if (std::find(s.watchedSources.begin(), s.watchedSources.begin() + s.sourceCount, source) == s.watchedSources.begin() + s.sourceCount &&
+                s.sourceCount < s.watchedSources.size()) s.watchedSources[s.sourceCount++] = source;
+        };
+        const auto trigger = bindings.find(s.binding); if (trigger != bindings.end()) add(trigger->second->source);
+        for (const auto& entry : bindings) {
+            if (entry.second->owner != s.owner) continue;
+            for (size_t i = 0; i < s.memberCount; ++i) if (SameTarget(s.members[i], entry.second->target)) { add(entry.second->source); break; }
+        }
+    }
+    bool SourcesReady(const Subscription& s) const noexcept {
+        for (size_t i = 0; i < s.sourceCount; ++i) {
+            const auto source = sources.find(s.watchedSources[i]);
+            if (source == sources.end() || !source->second.snapshot || !source->second.revision) return false;
+        }
+        return s.latest != 0;
+    }
+    void ArmScoped(Subscription& s) noexcept {
+        const auto block = s.scopeBlock | (SourcesReady(s) ? 0u : MMS_UI_REFRESH_SUBSCRIPTION_WAIT_SOURCE);
+        if (s.ticket || s.claimed) return;
+        s.armed = !block; s.waitingFor = block;
+        s.waitEvents = block & MMS_UI_REFRESH_SUBSCRIPTION_WAIT_TARGET ? RetryTargetPublication : 0;
+    }
+    void ChangeScoped(Subscription& s, bool invalidate) noexcept {
+        if (s.workGeneration == UINT64_MAX) {
+            s.armed = false; s.waitEvents = 0; s.waitingFor = MMS_UI_REFRESH_SUBSCRIPTION_WAIT_CONSUMER; s.lastResult = MMS_E_BUSY; return;
+        }
+        ++s.workGeneration;
+        if (invalidate) s.invalidationGeneration = s.workGeneration;
+        ArmScoped(s);
+    }
+    void BindingPublication(const MmsUiTargetRefV1& target) noexcept {
+        for (auto& entry : subscriptions) {
+            auto& sub = entry.second;
+            if (!Scoped(sub)) continue;
+            bool member = false;
+            for (size_t i = 0; !member && i < sub.memberCount; ++i) member = SameTarget(sub.members[i], target);
+            if (!member) continue;
+            WatchSources(sub); ChangeScoped(sub, true);
+        }
+    }
     bool ReadOnly() const { return GetCurrentThreadId() == thread && hooks.inCallback && hooks.inCallback(); }
     MmsResult Mutation(Owner& owner, bool ui) const {
         if (ui && GetCurrentThreadId() != thread) return MMS_E_THREAD;
@@ -189,8 +249,25 @@ struct UiRefreshBindings::Impl {
             for (auto& entry : subscriptions) {
                 auto& sub = entry.second;
                 const auto binding = bindings.find(sub.binding);
-                if (binding == bindings.end() || binding->second->source != s.handle) continue;
+                if (binding == bindings.end()) continue;
+                if (binding->second->source != s.handle) {
+                    if (!Scoped(sub) || sub.owner.get() != &owner ||
+                        std::find(sub.watchedSources.begin(), sub.watchedSources.begin() + sub.sourceCount, s.handle) == sub.watchedSources.begin() + sub.sourceCount) continue;
+                    if (sub.sourcePublication != UINT64_MAX) ++sub.sourcePublication;
+                    // A contextual source is not another trigger. Its real
+                    // publication only recovers missing/failed consumption.
+                    if (!sub.ticket && !sub.claimed && (sub.waitingFor &
+                        (MMS_UI_REFRESH_SUBSCRIPTION_WAIT_SOURCE | MMS_UI_REFRESH_SUBSCRIPTION_WAIT_CONSUMER))) {
+                        const bool armed = sub.armed; ChangeScoped(sub, false); wake |= !armed && sub.armed;
+                    }
+                    continue;
+                }
                 sub.latest = s.revision;
+                if (Scoped(sub)) {
+                    const bool armed = sub.armed; ChangeScoped(sub, false); wake |= !armed && sub.armed && !sub.claimed && !sub.ticket;
+                    continue;
+                }
+                if (sub.workGeneration != UINT64_MAX) ++sub.workGeneration;
                 if (!sub.ticket) {
                     wake |= !sub.armed && !sub.claimed;
                     sub.armed = true; sub.waitEvents = 0;
@@ -207,11 +284,13 @@ struct UiRefreshBindings::Impl {
         return MMS_OK;
     }
     void RemoveBinding(std::map<MmsHandle, std::shared_ptr<Binding>>::iterator found) noexcept {
+        const auto target = found->second->target;
         for (auto it = subscriptions.begin(); it != subscriptions.end();) {
             if (it->second.binding == found->first) { --it->second.owner->subscriptions; it = subscriptions.erase(it); }
             else ++it;
         }
         found->second->active = false; --found->second->owner->bindings; bindings.erase(found);
+        BindingPublication(target);
     }
     MmsResult Unregister(Owner& owner, MmsHandle handle) {
         if (GetCurrentThreadId() != thread) return MMS_E_THREAD;
@@ -245,6 +324,7 @@ struct UiRefreshBindings::Impl {
         binding->handle = Next(); binding->source = desc->source; binding->owner = source->second.owner;
         binding->target = desc->target; binding->context = desc->context; binding->prepare = desc->prepare; binding->maximum = desc->maxDisplayBytes;
         bindings.emplace(binding->handle, binding); ++owner.bindings; *out = binding->handle;
+        BindingPublication(binding->target);
         lock.unlock(); if (hooks.bindingChanged) hooks.bindingChanged();
         if (hooks.cleanupSubscriptions) hooks.cleanupSubscriptions(); return MMS_OK;
     }
@@ -260,12 +340,13 @@ struct UiRefreshBindings::Impl {
         if (hooks.capacityReleased) hooks.capacityReleased();
         return MMS_OK;
     }
-    MmsResult SubscriptionCaps(Owner& owner, MmsUiRefreshSubscriptionCapabilitiesV1* out) {
+    MmsResult SubscriptionCaps(Owner& owner, MmsUiRefreshSubscriptionCapabilitiesV1* out, bool scoped = false) {
         if (!Valid(out)) return MMS_E_ARGUMENT;
         if (const auto r = Mutation(owner, true)) return r;
         std::lock_guard<std::mutex> lock(mutex);
         if (owner.retired || owner.client->stopping.load()) return MMS_E_NOT_READY;
-        *out = {Header<MmsUiRefreshSubscriptionCapabilitiesV1>(), kSubscriptions, kSubscriptionKinds, MMS_UI_REFRESH_SELF, 0, {0, 0}};
+        *out = {Header<MmsUiRefreshSubscriptionCapabilitiesV1>(), kSubscriptions, kSubscriptionKinds,
+            uint32_t(MMS_UI_REFRESH_SELF | (scoped && hooks.scopedSubscriptionTarget ? MMS_UI_REFRESH_SUBTREE | MMS_UI_REFRESH_DEPENDENTS : 0)), 0, {0, 0}};
         return MMS_OK;
     }
     MmsResult Subscribe(Owner& owner, const MmsUiRefreshSubscriptionDescV1* desc, MmsHandle* out) {
@@ -293,12 +374,69 @@ struct UiRefreshBindings::Impl {
         const auto source = sources.find(binding->second->source);
         if (source == sources.end() || source->second.epoch != epoch) return MMS_E_STALE;
         Subscription sub; sub.handle = Next(); sub.binding = desc->binding; sub.owner = binding->second->owner;
+        sub.seed = target;
         sub.kinds = desc->kinds; sub.latest = source->second.revision; sub.armed = bool(source->second.snapshot);
         const auto handle = sub.handle; const auto wake = sub.armed;
         subscriptions.emplace(handle, std::move(sub)); ++owner.subscriptions; *out = handle;
         lock.unlock();
         if (wake && hooks.wakeSubscriptions) hooks.wakeSubscriptions();
         return MMS_OK;
+    }
+    MmsResult SubscribeScoped(Owner& owner, const MmsUiRefreshScopedSubscriptionDescV1* desc, MmsHandle* out) {
+        if (!Valid(desc) || !out || !desc->binding || !TargetValid(desc->seed) || desc->flags || desc->reserved ||
+            desc->reservedTail[0] || desc->reservedTail[1] || !(desc->kinds & MMS_UI_REFRESH_DATA) || desc->kinds & ~kSubscriptionKinds ||
+            (desc->scope != MMS_UI_REFRESH_SELF && desc->scope != MMS_UI_REFRESH_SUBTREE && desc->scope != MMS_UI_REFRESH_DEPENDENTS)) return MMS_E_ARGUMENT;
+        if (const auto result = Mutation(owner, true)) return result;
+        MmsUiTargetRefV1 trigger{};
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            const auto binding = bindings.find(desc->binding);
+            if (binding == bindings.end()) return MMS_E_STALE;
+            if (binding->second->owner.get() != &owner) return MMS_E_ARGUMENT;
+            trigger = binding->second->target;
+        }
+        if (desc->scope == MMS_UI_REFRESH_SELF) {
+            if (!SameTarget(desc->seed, trigger)) return MMS_E_ARGUMENT;
+            const MmsUiRefreshSubscriptionDescV1 legacy{Header<MmsUiRefreshSubscriptionDescV1>(), desc->binding, desc->kinds, 0, 0};
+            return Subscribe(owner, &legacy, out);
+        }
+        if (!hooks.scopedSubscriptionTarget) return MMS_E_NOT_READY;
+        if (const auto result = hooks.scopedSubscriptionTarget(*owner.client, desc->seed, desc->scope, desc->kinds)) return result;
+        std::unique_lock<std::mutex> lock(mutex);
+        if (owner.retired || owner.client->stopping.load()) return MMS_E_NOT_READY;
+        const auto binding = bindings.find(desc->binding);
+        if (binding == bindings.end() || !binding->second->active || !SameTarget(trigger, binding->second->target) || desc->seed.projectEpoch != epoch) return MMS_E_STALE;
+        if (binding->second->owner.get() != &owner) return MMS_E_ARGUMENT;
+        for (const auto& entry : subscriptions) if (entry.second.binding == desc->binding && entry.second.scope == desc->scope && SameTarget(entry.second.seed, desc->seed)) return MMS_E_CONFLICT;
+        if (owner.subscriptions >= kSubscriptions || subscriptions.size() >= kGlobalSubscriptions) return MMS_E_BUSY;
+        const auto source = sources.find(binding->second->source);
+        if (source == sources.end() || source->second.epoch != epoch) return MMS_E_STALE;
+        Subscription sub; sub.handle = Next(); sub.binding = desc->binding; sub.owner = binding->second->owner;
+        sub.seed = desc->seed; sub.scope = desc->scope; sub.kinds = desc->kinds; sub.latest = source->second.revision;
+        WatchSources(sub); ArmScoped(sub);
+        const auto handle = sub.handle; const bool wake = sub.armed;
+        subscriptions.emplace(handle, std::move(sub)); ++owner.subscriptions; *out = handle;
+        lock.unlock(); if (wake && hooks.wakeSubscriptions) hooks.wakeSubscriptions(); return MMS_OK;
+    }
+    static uint32_t WaitingFor(const Subscription& s) noexcept {
+        if (Scoped(s)) return s.waitingFor;
+        return (s.waitEvents & RetryQueueCapacity ? MMS_UI_REFRESH_SUBSCRIPTION_WAIT_QUEUE_CAPACITY : 0) |
+            (s.waitEvents & RetryTargetPublication ? MMS_UI_REFRESH_SUBSCRIPTION_WAIT_TARGET : 0) |
+            (s.waitEvents & RetryDisplayCapacity ? MMS_UI_REFRESH_SUBSCRIPTION_WAIT_DISPLAY_CAPACITY : 0) |
+            (s.waitEvents & RetryConsumerPublication ? MMS_UI_REFRESH_SUBSCRIPTION_WAIT_CONSUMER : 0) |
+            (s.waitEvents & RetryHostWake ? MMS_UI_REFRESH_SUBSCRIPTION_WAIT_HOST_WAKE : 0);
+    }
+    MmsResult QueryScoped(Owner& owner, MmsHandle handle, MmsUiRefreshScopedSubscriptionStateV1* out) {
+        if (!Valid(out)) return MMS_E_ARGUMENT;
+        std::lock_guard<std::mutex> lock(mutex);
+        const auto found = subscriptions.find(handle); if (found == subscriptions.end()) return MMS_E_STALE;
+        const auto& s = found->second;
+        if (s.owner.get() != &owner) return MMS_E_ARGUMENT;
+        if (owner.retired || owner.client->stopping.load() || !bindings.count(s.binding)) return MMS_E_STALE;
+        *out = {Header<MmsUiRefreshScopedSubscriptionStateV1>(), s.handle, s.binding, s.seed.projectEpoch,
+            s.latest, s.submitted, s.completed, s.lastResult, uint32_t(s.ticket || s.armed || s.waitEvents || s.claimed || s.waitingFor), 0,
+            s.seed, s.scope, s.kinds, s.workGeneration, s.submittedWorkGeneration, s.completedWorkGeneration,
+            s.submittedDependencyRevision, WaitingFor(s), 0, 0}; return MMS_OK;
     }
     MmsResult QuerySubscription(Owner& owner, MmsHandle handle, MmsUiRefreshSubscriptionStateV1* out) {
         if (!Valid(out)) return MMS_E_ARGUMENT;
@@ -311,7 +449,7 @@ struct UiRefreshBindings::Impl {
         const auto binding = bindings.find(s.binding);
         if (binding == bindings.end()) return MMS_E_STALE;
         *out = {Header<MmsUiRefreshSubscriptionStateV1>(), s.handle, s.binding, binding->second->target.projectEpoch,
-            s.latest, s.submitted, s.completed, s.lastResult, uint32_t(s.ticket || s.armed || s.waitEvents || s.claimed), 0};
+            s.latest, s.submitted, s.completed, s.lastResult, uint32_t(s.ticket || s.armed || s.waitEvents || s.claimed || s.waitingFor), 0};
         return MMS_OK;
     }
     MmsResult Unsubscribe(Owner& owner, MmsHandle handle) {
@@ -407,6 +545,17 @@ MmsUiRefreshSubscriptionApiV1 UiRefreshBindings::SubscriptionApi(RefreshClient& 
 #undef SUBSCRIPTION_CALL
     return api;
 }
+MmsUiRefreshSubscriptionApiV1_1 UiRefreshBindings::ScopedSubscriptionApi(RefreshClient& client) {
+    const auto legacy = SubscriptionApi(client);
+    MmsUiRefreshSubscriptionApiV1_1 api{}; api.h = {sizeof(api), 1, 1}; api.context = legacy.context;
+    api.subscribe = legacy.subscribe; api.query = legacy.query; api.unsubscribe = legacy.unsubscribe;
+#define SCOPED_CALL(body) auto& o = *static_cast<Impl::Owner*>(p); Impl::Flight flight(o); return Boundary([&]() -> MmsResult { body; })
+    api.getCapabilities = [](void* p, MmsUiRefreshSubscriptionCapabilitiesV1* out) { SCOPED_CALL(return o.host->SubscriptionCaps(o, out, true)); };
+    api.subscribeScoped = [](void* p, const MmsUiRefreshScopedSubscriptionDescV1* desc, MmsHandle* out) { SCOPED_CALL(return o.host->SubscribeScoped(o, desc, out)); };
+    api.queryScoped = [](void* p, MmsHandle handle, MmsUiRefreshScopedSubscriptionStateV1* out) { SCOPED_CALL(return o.host->QueryScoped(o, handle, out)); };
+#undef SCOPED_CALL
+    return api;
+}
 bool UiRefreshBindings::TakeSubscription(MmsHandle after, SubscriptionWork& out) noexcept {
     auto& state = *impl_; std::lock_guard<std::mutex> lock(state.mutex);
     for (auto it = state.subscriptions.upper_bound(after); it != state.subscriptions.end(); ++it) {
@@ -415,6 +564,8 @@ bool UiRefreshBindings::TakeSubscription(MmsHandle after, SubscriptionWork& out)
         const auto binding = state.bindings.find(s.binding);
         if (binding == state.bindings.end()) continue;
         out = {s.owner->client, s.handle, s.binding, binding->second->target, s.kinds, s.latest, state.global->releasedRevision.load(), 0};
+        out.seed = s.seed; out.scope = s.scope; out.workGeneration = s.workGeneration; out.dependencyRevision = s.dependencyRevision;
+        out.sourcePublication = s.sourcePublication;
         s.armed = false; s.claimed = true; return true;
     }
     return false;
@@ -426,6 +577,27 @@ bool UiRefreshBindings::SubmitSubscription(const SubscriptionWork& work, MmsHand
     auto& s = found->second; s.claimed = false; s.lastResult = result;
     if (!result) {
         s.ticket = ticket; s.submitted = work.revision; s.armed = false; s.waitEvents = 0;
+        s.submittedWorkGeneration = work.workGeneration; s.submittedDependencyRevision = work.dependencyRevision;
+        s.submittedSourcePublication = s.claimedSourcePublication; s.waitingFor = 0;
+    } else if (Impl::Scoped(s)) {
+        s.waitCapacityRevision = work.capacityRevision; s.waitQueueCapacityRevision = work.queueCapacityRevision;
+        if (s.workGeneration > work.workGeneration || s.latest > work.revision) state.ArmScoped(s);
+        else {
+            s.armed = false;
+            s.waitingFor = work.waitingFor ? work.waitingFor : result == MMS_E_BUSY ? MMS_UI_REFRESH_SUBSCRIPTION_WAIT_QUEUE_CAPACITY :
+                result == MMS_E_NOT_READY ? MMS_UI_REFRESH_SUBSCRIPTION_WAIT_TARGET : result == MMS_E_MEMORY ?
+                MMS_UI_REFRESH_SUBSCRIPTION_WAIT_QUEUE_CAPACITY | MMS_UI_REFRESH_SUBSCRIPTION_WAIT_DISPLAY_CAPACITY :
+                result == MMS_E_FAILED ? MMS_UI_REFRESH_SUBSCRIPTION_WAIT_HOST_WAKE : MMS_UI_REFRESH_SUBSCRIPTION_WAIT_CONSUMER;
+            s.waitEvents = (s.waitingFor & MMS_UI_REFRESH_SUBSCRIPTION_WAIT_QUEUE_CAPACITY ? RetryQueueCapacity : 0) |
+                (s.waitingFor & MMS_UI_REFRESH_SUBSCRIPTION_WAIT_DISPLAY_CAPACITY ? RetryDisplayCapacity : 0) |
+                (s.waitingFor & MMS_UI_REFRESH_SUBSCRIPTION_WAIT_TARGET ? RetryTargetPublication : 0) |
+                (s.waitingFor & MMS_UI_REFRESH_SUBSCRIPTION_WAIT_CONSUMER ? RetryConsumerPublication : 0) |
+                (s.waitingFor & MMS_UI_REFRESH_SUBSCRIPTION_WAIT_HOST_WAKE ? RetryHostWake : 0);
+            // A source can publish after a failed cohort capture and before
+            // this mailbox is parked. Replay only that newer relevant event.
+            if (s.sourcePublication > work.sourcePublication && state.SourcesReady(s) &&
+                (s.waitingFor & (MMS_UI_REFRESH_SUBSCRIPTION_WAIT_SOURCE | MMS_UI_REFRESH_SUBSCRIPTION_WAIT_CONSUMER))) state.ChangeScoped(s, false);
+        }
     } else if (s.latest > work.revision) {
         s.armed = true; s.waitEvents = 0;
     } else {
@@ -437,22 +609,99 @@ bool UiRefreshBindings::SubmitSubscription(const SubscriptionWork& work, MmsHand
     return true;
 }
 void UiRefreshBindings::CompleteSubscription(MmsHandle handle, MmsHandle ticket, uint64_t revision, MmsResult result,
-                                             uint32_t waitEvents, uint64_t capacityRevision) noexcept {
+                                             uint32_t waitEvents, uint64_t capacityRevision, uint64_t workGeneration) noexcept {
     auto& state = *impl_; std::lock_guard<std::mutex> lock(state.mutex);
     const auto found = state.subscriptions.find(handle);
     if (found == state.subscriptions.end() || found->second.ticket != ticket) return;
     auto& s = found->second; s.ticket = 0; s.lastResult = result;
     if (!result) s.completed = std::max(s.completed, revision);
+    if (!result) s.completedWorkGeneration = std::max(s.completedWorkGeneration, workGeneration ? workGeneration : s.submittedWorkGeneration);
+    if (Impl::Scoped(s)) {
+        if (result && s.sourcePublication > s.submittedSourcePublication && s.workGeneration == workGeneration) state.ChangeScoped(s, false);
+        if (s.workGeneration > workGeneration || s.latest > revision) state.ArmScoped(s);
+        else if (result) {
+            s.armed = false;
+            s.waitEvents = waitEvents ? waitEvents : RetryConsumerPublication;
+            s.waitingFor = (s.waitEvents & RetryDisplayCapacity ? MMS_UI_REFRESH_SUBSCRIPTION_WAIT_DISPLAY_CAPACITY : 0) |
+                (s.waitEvents & RetryQueueCapacity ? MMS_UI_REFRESH_SUBSCRIPTION_WAIT_QUEUE_CAPACITY : 0) |
+                (s.waitEvents & RetryTargetPublication ? MMS_UI_REFRESH_SUBSCRIPTION_WAIT_TARGET : 0) |
+                (s.waitEvents & RetryHostWake ? MMS_UI_REFRESH_SUBSCRIPTION_WAIT_HOST_WAKE : 0) |
+                (s.waitEvents & RetryConsumerPublication ? MMS_UI_REFRESH_SUBSCRIPTION_WAIT_CONSUMER : 0);
+            s.waitingFor |= s.scopeBlock;
+        } else { s.armed = false; s.waitEvents = 0; s.waitingFor = 0; }
+        s.waitCapacityRevision = capacityRevision == UINT64_MAX ? state.global->releasedRevision.load() : capacityRevision;
+        return;
+    }
     s.armed = s.latest > s.submitted;
     s.waitEvents = !s.armed && (result == MMS_E_BUSY || result == MMS_E_NOT_READY || result == MMS_E_MEMORY) ?
         (waitEvents ? waitEvents : result == MMS_E_NOT_READY ? RetryTargetPublication : RetryConsumerPublication) : 0;
     s.waitCapacityRevision = capacityRevision == UINT64_MAX ? state.global->releasedRevision.load() : capacityRevision;
 }
-bool UiRefreshBindings::SubscriptionAlive(const RefreshClient& client, MmsHandle handle) const noexcept {
+bool UiRefreshBindings::SubscriptionAlive(const RefreshClient& client, MmsHandle handle, uint64_t workGeneration) const noexcept {
     auto& state = *impl_; std::lock_guard<std::mutex> lock(state.mutex);
     const auto found = state.subscriptions.find(handle);
     return found != state.subscriptions.end() && found->second.owner->client == &client &&
-        !found->second.owner->retired && !client.stopping.load();
+        !found->second.owner->retired && !client.stopping.load() &&
+        (!workGeneration || !Impl::Scoped(found->second) || workGeneration >= found->second.invalidationGeneration);
+}
+bool UiRefreshBindings::NextScopedSubscription(MmsHandle after, SubscriptionWork& out) const noexcept {
+    const auto& state = *impl_; std::lock_guard<std::mutex> lock(state.mutex);
+    for (auto it = state.subscriptions.upper_bound(after); it != state.subscriptions.end(); ++it) {
+        const auto& s = it->second;
+        if (!Impl::Scoped(s) || s.owner->retired || s.owner->client->stopping.load()) continue;
+        out = {}; out.client = s.owner->client; out.subscription = s.handle; out.binding = s.binding;
+        out.seed = s.seed; out.scope = s.scope; out.kinds = s.kinds; out.revision = s.latest;
+        out.workGeneration = s.workGeneration; out.dependencyRevision = s.dependencyRevision; return true;
+    }
+    return false;
+}
+void UiRefreshBindings::ObserveScopedSubscription(const SubscriptionWork& work, const std::vector<MmsUiTargetRefV1>& members,
+    uint64_t dependencyRevision, uint32_t blocked) noexcept {
+    auto& state = *impl_; std::lock_guard<std::mutex> lock(state.mutex);
+    const auto found = state.subscriptions.find(work.subscription);
+    if (found == state.subscriptions.end() || found->second.owner->client != work.client || !Impl::Scoped(found->second)) return;
+    auto& s = found->second;
+    if (members.size() > s.members.size()) { s.armed = false; s.waitEvents = 0; s.waitingFor = MMS_UI_REFRESH_SUBSCRIPTION_WAIT_GRAPH; return; }
+    bool changed = members.size() != s.memberCount;
+    for (size_t i = 0; !changed && i < members.size(); ++i) changed = !SameTarget(members[i], s.members[i]);
+    const auto oldBlock = s.scopeBlock;
+    s.scopeBlock = blocked; s.dependencyRevision = dependencyRevision;
+    s.memberCount = members.size(); std::copy(members.begin(), members.end(), s.members.begin()); state.WatchSources(s);
+    if (s.observed && changed) state.ChangeScoped(s, true);
+    else if (s.observed && oldBlock && !blocked) state.ChangeScoped(s, false);
+    else if (!s.observed && (s.waitEvents & RetryHostWake)) {
+        // The first UI observation is bookkeeping, not a new publication.
+        // In particular it must not resurrect an initial failed host wake.
+        s.waitingFor |= blocked | (state.SourcesReady(s) ? 0u : MMS_UI_REFRESH_SUBSCRIPTION_WAIT_SOURCE);
+        s.armed = false;
+    } else if (!s.observed || blocked) state.ArmScoped(s);
+    s.observed = true;
+}
+void UiRefreshBindings::ScopedGraphChanged(const RefreshClient& client, const MmsUiTargetRefV1& upstream) noexcept {
+    auto& state = *impl_; std::lock_guard<std::mutex> lock(state.mutex);
+    for (auto& entry : state.subscriptions) {
+        auto& s = entry.second;
+        if (s.owner->client == &client && s.scope == MMS_UI_REFRESH_DEPENDENTS && Impl::Watches(s, upstream)) state.ChangeScoped(s, true);
+    }
+}
+void UiRefreshBindings::ScopedTargetPublished(MmsHandle element, bool providerChanged) noexcept {
+    auto& state = *impl_; std::lock_guard<std::mutex> lock(state.mutex);
+    for (auto& entry : state.subscriptions) {
+        auto& s = entry.second;
+        if (!Impl::Scoped(s) || s.ticket || s.claimed ||
+            !(s.waitingFor & (MMS_UI_REFRESH_SUBSCRIPTION_WAIT_TARGET | (providerChanged ? MMS_UI_REFRESH_SUBSCRIPTION_WAIT_CONSUMER : 0)))) continue;
+        bool member = s.seed.element == element;
+        for (size_t i = 0; !member && i < s.memberCount; ++i) member = s.members[i].element == element;
+        if (member) state.ChangeScoped(s, false);
+    }
+}
+bool UiRefreshBindings::PendingScopedSubscriptions() const noexcept {
+    const auto& state = *impl_; std::lock_guard<std::mutex> lock(state.mutex);
+    for (const auto& entry : state.subscriptions) {
+        const auto& s = entry.second;
+        if (Impl::Scoped(s) && s.armed && !s.ticket && !s.claimed && !s.owner->retired && !s.owner->client->stopping.load()) return true;
+    }
+    return false;
 }
 bool UiRefreshBindings::PendingSubscriptions() const noexcept {
     auto& state = *impl_; std::lock_guard<std::mutex> lock(state.mutex);
@@ -467,11 +716,13 @@ bool UiRefreshBindings::RetrySubscriptions(uint32_t events, uint64_t queueCapaci
     for (auto& entry : state.subscriptions) {
         auto& s = entry.second;
         const auto matching = s.waitEvents & events;
+        if (Impl::Scoped(s) && (matching & (RetryTargetPublication | RetryConsumerPublication))) continue;
         const bool actualCapacity = (matching & ~(RetryDisplayCapacity | RetryQueueCapacity)) ||
             ((matching & RetryQueueCapacity) && queueCapacityRevision > s.waitQueueCapacityRevision) ||
             ((matching & RetryDisplayCapacity) && state.global->releasedRevision.load() > s.waitCapacityRevision);
         if (actualCapacity && !s.ticket && !s.claimed && !s.owner->retired && !s.owner->client->stopping.load()) {
-            s.armed = true; s.waitEvents = 0; changed = true;
+            if (Impl::Scoped(s)) state.ArmScoped(s); else { s.armed = true; s.waitEvents = 0; }
+            changed |= s.armed;
         }
     }
     return changed;
@@ -480,7 +731,10 @@ void UiRefreshBindings::FailSubscriptionScheduling(MmsResult result) noexcept {
     auto& state = *impl_; std::lock_guard<std::mutex> lock(state.mutex);
     for (auto& entry : state.subscriptions) {
         auto& s = entry.second;
-        if (s.armed && !s.ticket && !s.claimed) { s.armed = false; s.waitEvents = RetryHostWake; s.lastResult = result; }
+        if (s.armed && !s.ticket && !s.claimed) {
+            s.armed = false; s.waitEvents = RetryHostWake; s.lastResult = result;
+            if (Impl::Scoped(s)) s.waitingFor = MMS_UI_REFRESH_SUBSCRIPTION_WAIT_HOST_WAKE;
+        }
     }
 }
 MmsResult UiRefreshBindings::Capture(RefreshClient& client, MmsHandle handle, const MmsUiTargetRefV1& target,
@@ -549,6 +803,57 @@ MmsResult UiRefreshBindings::ValidateSubtree(const RefreshClient& client, const 
         }
     }
     return count == captured.size() ? MMS_OK : MMS_E_STALE;
+}
+MmsResult UiRefreshBindings::CaptureScoped(RefreshClient& client, MmsHandle subscription, MmsHandle trigger,
+    uint64_t revision, const std::vector<MmsUiTargetRefV1>& targets, Contribution& triggerPin, std::vector<Captured>& out) {
+    auto& state = *impl_; std::lock_guard<std::mutex> lock(state.mutex);
+    if (client.stopping.load()) return MMS_E_NOT_READY;
+    const auto sub = state.subscriptions.find(subscription);
+    if (sub == state.subscriptions.end() || sub->second.owner->client != &client || sub->second.binding != trigger) return MMS_E_STALE;
+    const auto binding = state.bindings.find(trigger);
+    if (binding == state.bindings.end() || !binding->second->active || binding->second->owner->client != &client) return MMS_E_STALE;
+    const auto source = state.sources.find(binding->second->source);
+    if (source == state.sources.end() || source->second.epoch != state.epoch || source->second.owner != binding->second->owner) return MMS_E_STALE;
+    if (source->second.revision != revision) return MMS_E_STALE;
+    if (!source->second.snapshot || !revision) return MMS_E_NOT_READY;
+    auto pin = std::make_shared<DataContribution>(); pin->binding = binding->second;
+    pin->snapshot = source->second.snapshot; pin->revision = revision; pin->global = state.global;
+    std::vector<Captured> candidate; candidate.reserve(targets.size());
+    for (const auto& target : targets) {
+        if (!TargetValid(target) || target.projectEpoch != state.epoch) return MMS_E_STALE;
+        for (const auto& entry : state.bindings) {
+            const auto& b = entry.second;
+            if (b->owner->client != &client || !SameTarget(b->target, target)) continue;
+            if (!b->active || b->owner->retired) return MMS_E_STALE;
+            const auto current = state.sources.find(b->source);
+            if (current == state.sources.end() || current->second.epoch != state.epoch) return MMS_E_STALE;
+            if (!current->second.snapshot || !current->second.revision) return MMS_E_NOT_READY;
+            auto item = std::make_shared<DataContribution>(); item->binding = b; item->global = state.global;
+            // All sources are captured under this one lock. In particular,
+            // members sharing the trigger source must use its exact version.
+            item->snapshot = b->source == binding->second->source ? pin->snapshot : current->second.snapshot;
+            item->revision = b->source == binding->second->source ? revision : current->second.revision;
+            candidate.push_back({target, b->handle, item->revision, std::move(item)});
+        }
+    }
+    const auto accounting = binding->second->owner->accounting;
+    if (candidate.size() > kContributions - accounting->contributions.load() ||
+        candidate.size() > 4096 - state.global->contributions.load()) return MMS_E_BUSY;
+    accounting->contributions.fetch_add(unsigned(candidate.size()));
+    state.global->contributions.fetch_add(unsigned(candidate.size()));
+    for (auto& item : candidate) item.data->charged = true;
+    // The trigger pin is not another display consumer/contribution. Its
+    // existing retained source bytes remain charged until the whole ticket
+    // and its in-progress group have released it.
+    sub->second.claimedSourcePublication = sub->second.sourcePublication;
+    triggerPin = std::move(pin); out.swap(candidate); return MMS_OK;
+}
+MmsResult UiRefreshBindings::ValidateTrigger(const RefreshClient& client, const Contribution& pin) const {
+    if (!pin) return MMS_E_STALE;
+    const auto& state = *impl_; std::lock_guard<std::mutex> lock(state.mutex);
+    const auto& binding = pin->binding;
+    return !client.stopping.load() && binding->active && !binding->owner->retired && binding->owner->client == &client &&
+        binding->target.projectEpoch == state.epoch && state.sources.count(binding->source) ? MMS_OK : MMS_E_STALE;
 }
 MmsResult UiRefreshBindings::Consume(const Contribution& contribution, const std::function<MmsResult()>& revalidate,
                                     uint64_t& consumedRevision, bool& displayChanged, uint32_t* subscriptionWait,
@@ -621,6 +926,9 @@ bool UiRefreshBindings::HasBinding(const RefreshClient& client, const MmsUiTarge
 }
 void UiRefreshBindings::InvalidateTarget(MmsHandle element) noexcept {
     auto& state = *impl_; std::lock_guard<std::mutex> lock(state.mutex);
+    for (auto it = state.subscriptions.begin(); it != state.subscriptions.end();) {
+        if (it->second.seed.element == element) { --it->second.owner->subscriptions; it = state.subscriptions.erase(it); } else ++it;
+    }
     for (auto it = state.bindings.begin(); it != state.bindings.end();) {
         if (it->second->target.element == element) { auto erase = it++; state.RemoveBinding(erase); } else ++it;
     }

@@ -44,12 +44,15 @@ MmsResult UiRefreshDependencies::Add(const RefreshClient& client, const MmsUiTar
     catch (...) { if (inserted.second) owners_.erase(inserted.first); throw; }
     ++next_; ++inserted.first->second.count; Advance(inserted.first->second); out = handle; return MMS_OK;
 }
-MmsResult UiRefreshDependencies::Remove(const RefreshClient& client, MmsHandle handle) {
+MmsResult UiRefreshDependencies::Remove(const RefreshClient& client, MmsHandle handle, MmsUiTargetRefV1* removedUpstream) {
     const auto edge = edges_.find(handle);
     if (edge == edges_.end()) return MMS_E_NOT_FOUND;
     if (edge->second.owner != &client) return MMS_E_ARGUMENT;
+    const auto upstream = edge->second.upstream;
     auto& owner = owners_.at(&client);
-    edges_.erase(edge); --owner.count; Advance(owner); return MMS_OK;
+    edges_.erase(edge); --owner.count; Advance(owner);
+    if (removedUpstream) *removedUpstream = upstream;
+    return MMS_OK;
 }
 MmsResult UiRefreshDependencies::Capture(const RefreshClient& client, const MmsUiTargetRefV1& upstream,
     std::vector<MmsUiTargetRefV1>& out, uint64_t& revision) const {
