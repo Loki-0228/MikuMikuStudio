@@ -161,6 +161,7 @@
 #include <limits>
 #include <locale.h>
 #include <map>
+#include <optional>
 #include <mutex>
 #include <set>
 #include <stdexcept>
@@ -648,6 +649,7 @@ struct Snapshot {
 };
 
 struct SourceState {
+    std::uint64_t channelGeneration = 0;
     bool loaded = false;
     bool valid = false;
     std::wstring reason;
@@ -712,6 +714,20 @@ struct NativePaint {
     explicit NativePaint(HWND value)noexcept:window(value),dc(BeginPaint(value,&paint)){}
     ~NativePaint(){EndPaint(window,&paint);}
 };
+class SamplingBatch;
+struct DeferredCanvasPaint {
+    std::weak_ptr<void> session;
+    HWND window=nullptr;
+    bool pending=false;
+};
+struct DeferredHandleRestore {
+    std::weak_ptr<void> session;
+    std::size_t source=0;
+    Channel* channel=nullptr;
+    std::uint64_t generation=0;
+    std::vector<Key> keys;
+    bool pending=false;
+};
 struct Editor {
     std::shared_ptr<void> motionSession = std::make_shared<char>();
     unsigned activeCalls = 0;
@@ -730,6 +746,13 @@ struct Editor {
     std::set<std::string> pendingSources;
     bool sourceChangePosted = false;
     bool externalCallbackActive = false, externalOperationActive = false;
+    SamplingBatch* samplingBatch = nullptr;
+    // Separate from cache association: owned callable destruction and the
+    // final Session-pin release still borrow the old Channel storage.
+    SamplingBatch* samplingBorrow = nullptr;
+    DeferredHandleRestore deferredHandleRestore;
+    DeferredCanvasPaint deferredCanvasPaint,deferredMmdPaint;
+    std::uint64_t deferredPaintSerial=0;
     // Display-only query caches belong to this exact Session version. They
     // never authorize navigation or stand in for a failed provider query.
     bool transportFrameKnown=false,transportPlayingKnown=false;
@@ -968,6 +991,29 @@ auto InvokeProvider(Editor& editor,const Callback& callback,Args&&... args)
     }catch(...){lease.ReleaseStorage();lease.RequireCurrent();throw;}
 }
 
+bool SameSessionOwner(const std::weak_ptr<void>& token,const std::shared_ptr<void>& current)noexcept{
+    return !token.owner_before(current)&&!current.owner_before(token);
+}
+void DeferCanvasPaint(Editor& editor,HWND window)noexcept{
+    DeferredCanvasPaint* pending=window==editor.canvas?&editor.deferredCanvasPaint:
+        window==editor.mmd?&editor.deferredMmdPaint:nullptr;
+    if(!pending||!window)return;
+    pending->session=editor.motionSession;pending->window=window;pending->pending=true;
+    ++editor.deferredPaintSerial;
+}
+void FlushDeferredCanvasPaint(Editor& editor)noexcept{
+    if(editor.externalCallbackActive||editor.samplingBorrow)return;
+    for(auto* pending:{&editor.deferredCanvasPaint,&editor.deferredMmdPaint}){
+        if(!pending->pending)continue;
+        const bool current=!editor.windowDestroyed&&SameSessionOwner(pending->session,editor.motionSession)&&
+            pending->window&&(pending->window==editor.canvas||pending->window==editor.mmd)&&IsWindow(pending->window);
+        const HWND window=pending->window;pending->pending=false;
+        pending->session.reset();pending->window=nullptr;
+        // Invalidate only: pumping WM_PAINT here would reenter the provider.
+        if(current)InvalidateRect(window,nullptr,FALSE);
+    }
+}
+
 struct ExternalOperation {
     Editor& editor;
     EditorLease lease;
@@ -975,7 +1021,11 @@ struct ExternalOperation {
     bool previous;
     ExternalOperation(Editor& value,bool Editor::*field,bool activate=true) noexcept : editor(value),lease(value),
         member(field),previous(value.*field) {if(activate)editor.*member=true;}
-    ~ExternalOperation(){if(lease.CurrentSession())editor.*member=previous;}
+    ~ExternalOperation(){
+        if(lease.CurrentSession())editor.*member=previous;
+        lease.ReleaseStorage();
+        if(lease.CurrentSession())FlushDeferredCanvasPaint(editor);
+    }
 };
 
 void ReleaseChannelPayload(Editor& editor,EditorLease& continuation,std::vector<Channel>& channels){
@@ -1073,6 +1123,164 @@ SourceState &CurrentState(Editor &editor) {
     return (*editor.states)[editor.sourceIndex];
 }
 
+bool RestoreDeferredHandle(Editor& editor)noexcept{
+    auto& pending=editor.deferredHandleRestore;
+    if(!pending.pending)return false;
+    const bool current=SameSessionOwner(pending.session,editor.motionSession)&&
+        pending.source==editor.sourceIndex&&pending.generation==CurrentState(editor).channelGeneration;
+    Channel* target=nullptr;
+    if(current)for(auto& channel:CurrentState(editor).channels)if(&channel==pending.channel){target=&channel;break;}
+    pending.pending=false;pending.session.reset();pending.channel=nullptr;
+    if(target){
+        target->track.keys.swap(pending.keys);
+        ++CurrentState(editor).channelGeneration;
+        DeferCanvasPaint(editor,editor.canvas);
+    }
+    pending.keys.clear();return target!=nullptr;
+}
+
+struct SamplingView {
+    RECT plot{},timeBar{},valueBar{},canvasClient{},windowClient{};
+    int dpi=0,mode=0;
+    Drag drag=Drag::None;
+    long long frameDelta=0;
+    std::array<std::uint64_t,7> numbers{};
+    static std::uint64_t Bits(double value)noexcept{std::uint64_t bits;std::memcpy(&bits,&value,sizeof bits);return bits;}
+    explicit SamplingView(const Editor& editor)noexcept:plot(editor.plot),timeBar(editor.timeBar),valueBar(editor.valueBar),
+        dpi(editor.dpi),mode(editor.viewMode),drag(editor.drag),frameDelta(editor.dragFrameDelta),
+        numbers{Bits(editor.timeStart),Bits(editor.timeEnd),Bits(editor.valueLow),Bits(editor.valueHigh),
+            Bits(editor.speedLow),Bits(editor.speedHigh),Bits(editor.dragValueDelta)}{
+        if(editor.canvas)GetClientRect(editor.canvas,&canvasClient);
+        if(editor.window)GetClientRect(editor.window,&windowClient);
+    }
+    bool Matches(const Editor& editor)const noexcept{
+        const SamplingView other(editor);
+        return EqualRect(&plot,&other.plot)&&EqualRect(&timeBar,&other.timeBar)&&EqualRect(&valueBar,&other.valueBar)&&
+            EqualRect(&canvasClient,&other.canvasClient)&&EqualRect(&windowClient,&other.windowClient)&&
+            dpi==other.dpi&&mode==other.mode&&drag==other.drag&&frameDelta==other.frameDelta&&numbers==other.numbers;
+    }
+};
+
+// A batch belongs only to one read-only slice. It never survives channel
+// adoption or a write. The cache key is the actual Channel address, including
+// detached bake inputs; equal ids are not interchangeable storage.
+class SamplingBatch {
+    Editor& editor_;
+    EditorLease lease_;
+    SamplingBatch* parent_=nullptr;
+    std::uint64_t generation_;
+    bool geometryRetired_=false;
+    bool finished_=false;
+    // MSVC's empty map allocates its head node. Pure CPU slices, including
+    // no-allocation gesture cancellation, must not construct this cache.
+    std::optional<std::map<const Channel*,decltype(Channel::sample)>> callbacks_;
+    void RequireCurrent()const{
+        lease_.RequireCurrent();
+        if(CurrentState(editor_).channelGeneration!=generation_)throw RetiredContinuation{};
+        if(geometryRetired_){
+            DeferCanvasPaint(editor_,editor_.canvas);
+            FlushDeferredCanvasPaint(editor_);
+            throw RetiredContinuation{};
+        }
+    }
+    void ObserveView(const SamplingView& before){
+        lease_.RequireCurrent();
+        if(!before.Matches(editor_)){geometryRetired_=true;DeferCanvasPaint(editor_,editor_.canvas);}
+    }
+public:
+    explicit SamplingBatch(Editor& editor):editor_(editor),lease_(editor),generation_(CurrentState(editor).channelGeneration){
+        if(editor.externalCallbackActive)throw std::logic_error("nested curve sampling");
+        parent_=editor.samplingBatch;
+        if(parent_)parent_->RequireCurrent();else editor.samplingBatch=editor.samplingBorrow=this;
+    }
+    SamplingBatch(const SamplingBatch&)=delete;
+    ~SamplingBatch(){if(!finished_)try{Finish();}catch(...){}}
+    Sample Evaluate(const Channel& channel,double frame){
+        if(finished_)throw std::logic_error("finished curve sampling batch");
+        RequireCurrent();
+        if(editor_.externalCallbackActive)throw std::logic_error("nested curve sampling");
+        if(parent_)return parent_->Evaluate(channel,frame);
+        if(!channel.sample)return animation_curve::Evaluate(channel.track,frame);
+        if(!callbacks_)callbacks_.emplace();
+        auto found=callbacks_->find(&channel);
+        if(found==callbacks_->end()){
+            // Install an empty node before copying a user target. Allocation
+            // failure cannot strand a copied callback outside the guarded cache.
+            found=callbacks_->try_emplace(&channel).first;
+            const SamplingView before(editor_);
+            try{
+            {
+                ExternalOperation operation(editor_,&Editor::externalOperationActive);
+                ExternalOperation callback(editor_,&Editor::externalCallbackActive);
+                found->second=channel.sample;
+                RequireCurrent();
+            }
+            }catch(...){ObserveView(before);throw;}
+            ObserveView(before);
+            RequireCurrent();
+        }
+        Sample result;
+        const SamplingView before(editor_);
+        try{
+        {
+            ExternalOperation operation(editor_,&Editor::externalOperationActive);
+            ExternalOperation callback(editor_,&Editor::externalCallbackActive);
+            result=found->second(channel,frame);
+            RequireCurrent();
+        }
+        }catch(...){ObserveView(before);throw;}
+        ObserveView(before);
+        RequireCurrent();
+        if(!std::isfinite(result.value)||!std::isfinite(result.derivative))
+            throw std::runtime_error("invalid native curve sample");
+        return result;
+    }
+    void Finish(){
+        if(finished_)return;
+        finished_=true;
+        if(!parent_){
+            const SamplingView before(editor_);
+            if(editor_.samplingBatch==this)editor_.samplingBatch=nullptr;
+            if(lease_.CurrentSource()){
+                ExternalOperation operation(editor_,&Editor::externalOperationActive);
+                ExternalOperation callback(editor_,&Editor::externalCallbackActive);
+                callbacks_.reset();
+            }else callbacks_.reset();
+            lease_.ReleaseStorage();
+            if(lease_.CurrentSource()&&!before.Matches(editor_)){
+                geometryRetired_=true;DeferCanvasPaint(editor_,editor_.canvas);
+            }
+        }
+        else lease_.ReleaseStorage();
+        if(!parent_){
+            if(editor_.samplingBorrow==this)editor_.samplingBorrow=nullptr;
+            if(lease_.CurrentSource())RestoreDeferredHandle(editor_);
+            FlushDeferredCanvasPaint(editor_);
+        }
+        RequireCurrent();
+    }
+};
+
+// Work locals and every nested slice unwind before owned samplers and pins
+// are released. A retirement during that final release supersedes the body's
+// exception, so a caller cannot continue an old result under a new Session.
+template<class Work>
+auto WithSamplingSlice(Editor& editor,Work&& work)->decltype(work()){
+    SamplingBatch samples(editor);
+    try{
+        if constexpr(std::is_void_v<decltype(work())>){
+            work();samples.Finish();return;
+        }else{
+            auto result=work();samples.Finish();return result;
+        }
+    }catch(...){samples.Finish();throw;}
+}
+
+Sample SampleChannel(Editor& editor,const Channel& channel,double frame){
+    if(editor.samplingBatch)return editor.samplingBatch->Evaluate(channel,frame);
+    return WithSamplingSlice(editor,[&]{return editor.samplingBatch->Evaluate(channel,frame);});
+}
+
 Channel *ActiveChannel(Editor &editor) {
     SourceState &state = CurrentState(editor);
     if (state.channels.empty()) return nullptr;
@@ -1141,7 +1349,6 @@ void SyncSelectionToList(Editor &editor);
 void UpdateWindowTitle(Editor &editor);
 void FillSourceCombo(Editor &editor);
 void UpdateCompareUi(Editor &editor);
-void DrawComparisonCurves(Editor &editor, HDC dc);
 void MaterializeCompareMask(Editor &editor);
 void UpdateKeyFields(Editor &editor);
 void UpdateBakeFields(Editor &editor);
@@ -1302,7 +1509,7 @@ bool YToValue(const Editor &editor, double y, double &value) {
 }
 
 // Key position including the live drag preview.
-POINT KeyPoint(const Editor &editor, std::size_t index) {
+POINT KeyPoint(Editor &editor, std::size_t index) {
     POINT point = {-1, -1};
     if (!editor.states||editor.sourceIndex >= editor.states->size()) return point;
     SourceState &state = (*editor.states)[editor.sourceIndex];
@@ -1319,8 +1526,7 @@ POINT KeyPoint(const Editor &editor, std::size_t index) {
     if (editor.viewMode == 0) {
         if (!ValueToY(editor, key.value, y)) return point;
     } else {
-        const Sample sample = active.sample ? active.sample(active, static_cast<double>(key.frame))
-                                            : animation_curve::Evaluate(active.track, static_cast<double>(key.frame));
+        const Sample sample = SampleChannel(editor,active,static_cast<double>(key.frame));
         if (!ValueToY(editor, sample.derivative * kFramesPerSecond, y)) return point;
     }
     point.x = static_cast<LONG>(std::lround(x));
@@ -1329,6 +1535,7 @@ POINT KeyPoint(const Editor &editor, std::size_t index) {
 }
 
 int KeyAtPoint(Editor &editor, POINT point, double radius) {
+    return WithSamplingSlice(editor,[&]{
     SourceState &state = CurrentState(editor);
     if (state.channels.empty()) return -1;
     const Channel &active = state.channels[state.active];
@@ -1346,6 +1553,7 @@ int KeyAtPoint(Editor &editor, POINT point, double radius) {
         }
     }
     return best;
+    });
 }
 
 // Screen point of a key's Bezier handle on one side (value view only).  False
@@ -1463,6 +1671,7 @@ void AdoptWrittenChannels(Editor &editor, std::vector<Channel> channels) {
     SourceState &state = CurrentState(editor);
     {
         auto retired=std::move(state.channels);
+        ++state.channelGeneration;
         state.channels=std::move(channels);
     }
     continuation.RequireCurrent();
@@ -1481,6 +1690,7 @@ void AdoptWrittenChannels(Editor &editor, std::vector<Channel> channels) {
             }
             {
                 auto retired=std::move(state.channels);
+                ++state.channelGeneration;
                 state.channels=std::move(canonical);
             }
             continuation.RequireCurrent();
@@ -1520,6 +1730,7 @@ public:
         active_=false;
         if(!lease_.CurrentSource())return;
         auto& state=CurrentState(editor_);
+        ++state.channelGeneration;
         state.channels.swap(before_.channels);
         state.active=before_.active;state.selection.swap(before_.selection);state.valid=valid_;
         if(source_&&requested_)(*source_).back()=std::move(*requested_);
@@ -1533,6 +1744,7 @@ bool CommitLocalChannels(Editor& editor,std::vector<Channel> next,const std::wst
     auto previous=std::make_unique<Snapshot>();previous->active=state.active;previous->selection=state.selection;
     state.undo.reserve(state.undo.size()+1);
     previous->channels.swap(state.channels);
+    ++state.channelGeneration;
     LocalWriteRollback rollback(editor,*previous);
     bool published=false;
     try{
@@ -1780,6 +1992,7 @@ void TraverseLocalHistory(Editor& editor,bool redo){
     destination.reserve(destination.size()+1);
     SnapshotOwner requested=std::move(source.back()); // Leave an empty restoration slot.
     previous->channels.swap(state.channels);
+    ++state.channelGeneration;
     LocalWriteRollback rollback(editor,*previous,&requested,&source);
     bool published=false;
     try{
@@ -1841,6 +2054,7 @@ bool ReadCurrentSource(Editor &editor, bool *adopted) {
     {
         ExternalOperation callback(editor,&Editor::externalCallbackActive);
         auto retired=std::move(state.channels);
+        ++state.channelGeneration;
         state.channels=std::move(channels);
     }
     continuation.RequireCurrent();
@@ -2005,7 +2219,7 @@ const Channel *ChannelForTrack(Editor &editor, const Track &track) {
 }
 Sample SampleTrack(Editor &editor, const Track &track, double frame) {
     const Channel *channel = ChannelForTrack(editor, track);
-    return channel && channel->sample ? channel->sample(*channel, frame) : animation_curve::Evaluate(track, frame);
+    return channel ? SampleChannel(editor,*channel,frame) : animation_curve::Evaluate(track, frame);
 }
 struct TrackExtent {
     bool valid = false;
@@ -2014,7 +2228,8 @@ struct TrackExtent {
     double speedLow = -1, speedHigh = 1;
 };
 
-TrackExtent ExtentOf(const Track &track, const Channel *channel = nullptr) {
+TrackExtent ExtentOf(Editor& editor,const Track &track, const Channel *channel = nullptr) {
+    return WithSamplingSlice(editor,[&]{
     TrackExtent extent;
     if (track.keys.empty()) return extent;
     extent.valid = true;
@@ -2030,8 +2245,8 @@ TrackExtent ExtentOf(const Track &track, const Channel *channel = nullptr) {
     for (const Key &key : track.keys) {
         low = std::min(low, key.value);
         high = std::max(high, key.value);
-        const Sample sample = channel && channel->sample ? channel->sample(*channel, static_cast<double>(key.frame))
-                                                        : animation_curve::Evaluate(track, static_cast<double>(key.frame));
+        const Sample sample = channel ? SampleChannel(editor,*channel,static_cast<double>(key.frame))
+                                     : animation_curve::Evaluate(track,static_cast<double>(key.frame));
         const double speed = sample.derivative * kFramesPerSecond;
         if (first) {
             speedLow = speedHigh = speed;
@@ -2045,8 +2260,7 @@ TrackExtent ExtentOf(const Track &track, const Channel *channel = nullptr) {
     const double span = extent.last - extent.first;
     for (int step = 0; step <= 32; ++step) {
         const double frame = extent.first + span * step / 32.0;
-        const Sample sample = channel && channel->sample ? channel->sample(*channel, frame)
-                                                        : animation_curve::Evaluate(track, frame);
+        const Sample sample = channel ? SampleChannel(editor,*channel,frame) : animation_curve::Evaluate(track,frame);
         low = std::min(low, sample.value);
         high = std::max(high, sample.value);
         const double speed = sample.derivative * kFramesPerSecond;
@@ -2060,9 +2274,11 @@ TrackExtent ExtentOf(const Track &track, const Channel *channel = nullptr) {
     extent.speedLow = speedLow - speedPadding;
     extent.speedHigh = speedHigh + speedPadding;
     return extent;
+    });
 }
 
 TrackExtent VisibleExtent(Editor &editor) {
+    return WithSamplingSlice(editor,[&]{
     TrackExtent extent;
     const auto merge = [&](const TrackExtent &other) {
         if (!other.valid) return;
@@ -2075,15 +2291,17 @@ TrackExtent VisibleExtent(Editor &editor) {
         extent.speedHigh = std::max(extent.speedHigh, other.speedHigh);
     };
     const Track *active = ActiveTrack(editor);
-    if (active && ActiveChannelVisible(editor)) merge(ExtentOf(*active, ChannelForTrack(editor, *active)));
+    if (active && ActiveChannelVisible(editor)) merge(ExtentOf(editor,*active, ChannelForTrack(editor, *active)));
     const SourceState &state = CurrentState(editor);
     for (const std::size_t index : ComparedChannels(editor))
-        merge(ExtentOf(state.channels[index].track, &state.channels[index]));
-    if (!extent.valid && active) merge(ExtentOf(*active, ChannelForTrack(editor, *active)));
+        merge(ExtentOf(editor,state.channels[index].track, &state.channels[index]));
+    if (!extent.valid && active) merge(ExtentOf(editor,*active, ChannelForTrack(editor, *active)));
     return extent;
+    });
 }
 
 void FitAll(Editor &editor) {
+    WithSamplingSlice(editor,[&]{
     const TrackExtent extent = VisibleExtent(editor);
     if (!extent.valid) {
         editor.timeStart = 0;
@@ -2101,9 +2319,11 @@ void FitAll(Editor &editor) {
         editor.speedHigh = extent.speedHigh;
     }
     InvalidateCanvas(editor);
+    });
 }
 
 void FitRange(Editor &editor) {
+    WithSamplingSlice(editor,[&]{
     SourceState &state = CurrentState(editor);
     Track *track = ActiveTrack(editor);
     if (!track || track->keys.empty() || state.selection.empty()) {
@@ -2115,7 +2335,7 @@ void FitRange(Editor &editor) {
     for (const std::size_t index : state.selection) {
         if (index >= track->keys.size()) continue;
         const Key &key = track->keys[index];
-        const double speed = SampleTrack(editor, *track, static_cast<double>(key.frame)).derivative * kFramesPerSecond;
+        const double speed = SampleChannel(editor,state.channels[state.active],static_cast<double>(key.frame)).derivative * kFramesPerSecond;
         if (first) {
             low = high = key.value;
             speedLow = speedHigh = speed;
@@ -2142,6 +2362,7 @@ void FitRange(Editor &editor) {
     editor.speedLow = speedLow - speedPad;
     editor.speedHigh = speedHigh + speedPad;
     InvalidateCanvas(editor);
+    });
 }
 
 void CanvasMetrics(Editor &editor) {
@@ -2195,7 +2416,8 @@ void UpdateMouseReadout(Editor& editor,POINT point,bool inside=true) {
 // Builds the screen polyline of one track.  The main curve and every
 // background comparison curve go through this one function, so they can never
 // drift apart in how they are sampled.
-bool CurvePoints(Editor &editor, const Track &track, std::vector<POINT> &points) {
+bool CurvePoints(Editor &editor, const Channel& channel, std::vector<POINT> &points) {
+    const Track& track=channel.track;
     points.clear();
     if (track.keys.empty()) return false;
     if (editor.viewMode == 1 && track.discrete) return false;
@@ -2206,7 +2428,7 @@ bool CurvePoints(Editor &editor, const Track &track, std::vector<POINT> &points)
         const double x = editor.plot.left + offset;
         double frame = 0;
         if (!XToTime(editor, x, frame)) continue;
-        const Sample sample = SampleTrack(editor, track, frame);
+        const Sample sample = SampleChannel(editor,channel,frame);
         const double value = editor.viewMode == 0 ? sample.value : sample.derivative * kFramesPerSecond;
         double y = 0;
         if (!ValueToY(editor, value, y)) continue;
@@ -2247,14 +2469,13 @@ COLORREF ChannelColour(const Channel&channel){
     return RGB(std::lround((r+m)*255.0),std::lround((g+m)*255.0),std::lround((b+m)*255.0));
 }
 
-void DrawCurve(Editor &editor, HDC dc) {
-    if (!ActiveChannelVisible(editor)) return;
-    Track *track = ActiveTrack(editor);
-    if (!track) return;
+struct PreparedCurve {
+    COLORREF colour=0;
     std::vector<POINT> points;
-    if (!CurvePoints(editor, *track, points)) return;
-    const auto&state=CurrentState(editor);
-    const COLORREF colour=ChannelColour(state.channels[state.active]);
+};
+void DrawCurve(Editor &editor, HDC dc,const PreparedCurve& curve) {
+    if(curve.points.size()<2)return;
+    const auto& points=curve.points;const auto colour=curve.colour;
     GdiFlush();
     Gdiplus::Graphics graphics(dc);
     graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
@@ -2274,10 +2495,8 @@ void DrawCurve(Editor &editor, HDC dc) {
 // opaque main curve stays in front.  The translucency is real GDI+ alpha
 // blending (SourceOver) over the inherited DC content, clipped to the plot
 // rect so nothing leaks into the bars.
-void DrawComparisonCurves(Editor &editor, HDC dc) {
-    const std::vector<std::size_t> compared = ComparedChannels(editor);
-    if (compared.empty()) return;
-    SourceState &state = CurrentState(editor);
+void DrawComparisonCurves(Editor &editor, HDC dc,const std::vector<PreparedCurve>& curves) {
+    if (curves.empty()) return;
     GdiPlusToken();  // idempotent: make sure GDI+ is up before the first stroke
     GdiFlush();      // commit earlier GDI drawing (grid) so it shows through
     Gdiplus::Graphics graphics(dc);
@@ -2287,12 +2506,10 @@ void DrawComparisonCurves(Editor &editor, HDC dc) {
     graphics.SetClip(Gdiplus::Rect(editor.plot.left, editor.plot.top,
                                    editor.plot.right - editor.plot.left,
                                    editor.plot.bottom - editor.plot.top));
-    std::vector<POINT> points;
     std::vector<Gdiplus::Point> line;
-    for (const std::size_t index : compared) {
-        if (index >= state.channels.size()) continue;
-        if (!CurvePoints(editor, state.channels[index].track, points)) continue;
-        const COLORREF colour=ChannelColour(state.channels[index]);
+    for (const auto& curve:curves) {
+        const auto& points=curve.points;if(points.size()<2)continue;
+        const COLORREF colour=curve.colour;
         Gdiplus::Pen pen(Gdiplus::Color(172,GetRValue(colour),GetGValue(colour),GetBValue(colour)),1.2f);
         line.clear();
         line.reserve(points.size());
@@ -2359,13 +2576,10 @@ void DrawGrid(Editor &editor, HDC dc) {
     DeleteObject(zero);
 }
 
-void DrawKeys(Editor &editor, HDC dc) {
-    SourceState &state = CurrentState(editor);
-    if (state.channels.empty()) return;
-    if (!ActiveChannelVisible(editor)) return;
-    const Track &track = state.channels[state.active].track;
+struct PreparedKey {POINT centre{};bool selected=false,hover=false;};
+void DrawKeys(Editor &editor, HDC dc,const std::vector<PreparedKey>& keys,COLORREF colour) {
+    if(keys.empty())return;
     const float radius=float(Scale(kHandleSize,editor.dpi))/2.0f;
-    const COLORREF colour=ChannelColour(state.channels[state.active]);
     GdiFlush();Gdiplus::Graphics graphics(dc);
     graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
     graphics.SetClip(Gdiplus::Rect(editor.plot.left-Scale(4,editor.dpi),editor.plot.top-Scale(4,editor.dpi),
@@ -2375,29 +2589,25 @@ void DrawKeys(Editor &editor, HDC dc) {
     Gdiplus::SolidBrush paper(Gdiplus::Color(255,GetRValue(curve_editor_theme::paper),GetGValue(curve_editor_theme::paper),GetBValue(curve_editor_theme::paper)));
     Gdiplus::SolidBrush selectedFill(Gdiplus::Color(255,255,210,69));
     Gdiplus::Pen hoverOutline(Gdiplus::Color(255,80,101,133),1.0f);
-    for (std::size_t index = 0; index < track.keys.size(); ++index) {
-        const POINT centre = KeyPoint(editor, index);
+    for (const auto& key:keys) {
+        const POINT centre = key.centre;
         if (centre.x < 0) continue;
-        const bool selected = state.selection.count(index) != 0;
+        const bool selected = key.selected;
         const Gdiplus::RectF shape(float(centre.x)-radius,float(centre.y)-radius,radius*2,radius*2);
         graphics.FillEllipse(selected?&selectedFill:&paper,shape);
         graphics.DrawEllipse(selected?&selectedOutline:&outline,shape);
     }
-    if (editor.hoverKey >= 0 && static_cast<std::size_t>(editor.hoverKey) < track.keys.size() &&
-        !state.selection.count(static_cast<std::size_t>(editor.hoverKey))) {
-        const POINT centre = KeyPoint(editor, static_cast<std::size_t>(editor.hoverKey));
+    for(const auto& key:keys)if(key.hover&&!key.selected){
+        const POINT centre = key.centre;
         if (centre.x >= 0) {
             graphics.DrawEllipse(&hoverOutline,float(centre.x)-radius-2,float(centre.y)-radius-2,radius*2+4,radius*2+4);
         }
     }
 }
 
-void DrawTangents(Editor &editor, HDC dc) {
-    SourceState &state = CurrentState(editor);
-    if (state.channels.empty()) return;
-    if (!ActiveChannelVisible(editor)) return;
-    const Track &track = state.channels[state.active].track;
-    if (editor.viewMode != 0) return;
+struct PreparedTangent {POINT key{},handle{};};
+void DrawTangents(Editor &editor, HDC dc,const std::vector<PreparedTangent>& tangents) {
+    if(tangents.empty())return;
     // Each selected key shows the handle of every curved side: a line from the
     // key and a round grip.  Drag a grip to shape that side; Alt-click it to
     // straighten the side.
@@ -2406,17 +2616,11 @@ void DrawTangents(Editor &editor, HDC dc) {
     HGDIOBJ oldPen = SelectObject(dc, pen);
     HGDIOBJ oldBrush = SelectObject(dc, fill);
     const int radius = std::max(3, Scale(kHandleSize, editor.dpi) / 2);
-    for (const std::size_t index : state.selection) {
-        if (index >= track.keys.size()) continue;
-        const POINT key = KeyPoint(editor, index);
-        if (key.x < 0) continue;
-        for (bool outSide : {false, true}) {
-            POINT handle{};
-            if (!HandlePoint(editor, track, index, outSide, handle)) continue;
-            MoveToEx(dc, key.x, key.y, nullptr);
-            LineTo(dc, handle.x, handle.y);
-            Ellipse(dc, handle.x - radius, handle.y - radius, handle.x + radius + 1, handle.y + radius + 1);
-        }
+    for(const auto& tangent:tangents){
+        const auto key=tangent.key,handle=tangent.handle;
+        MoveToEx(dc, key.x, key.y, nullptr);
+        LineTo(dc, handle.x, handle.y);
+        Ellipse(dc, handle.x - radius, handle.y - radius, handle.x + radius + 1, handle.y + radius + 1);
     }
     SelectObject(dc, oldBrush);
     SelectObject(dc, oldPen);
@@ -2519,10 +2723,10 @@ double MapFromBar(double position, double low, double high, int first, int last)
 
 // Screen rows of the value bar window: `top` carries the upper view value and
 // `bottom` the lower one, so the mapping descends as the value rises.
-void ValueBarEdges(const Editor &editor, int &top, int &bottom) {
+void ValueBarEdges(const Editor &editor, int &top, int &bottom,const BarRange* prepared=nullptr) {
     RECT inner = editor.valueBar;
     InflateRect(&inner, -Scale(3, editor.dpi), -Scale(2, editor.dpi));
-    const BarRange range = ValueBarRange(editor);
+    const BarRange range = prepared?*prepared:ValueBarRange(editor);
     double low = 0, high = 0;
     ValueRange(editor, low, high);
     int first = 0, last = 0;
@@ -2534,9 +2738,8 @@ void ValueBarEdges(const Editor &editor, int &top, int &bottom) {
 // The range bars are overview rulers: ticks cover the complete data/view
 // range, rather than repeating the zoomed plot scale. Choose 1/2/5 intervals
 // from the pixel length and the widest label so resizing never crowds labels.
-void DrawBarTicks(Editor& editor,HDC dc,bool time){
+void DrawBarTicks(Editor& editor,HDC dc,bool time,const BarRange& range){
     const RECT& bar=time?editor.timeBar:editor.valueBar;
-    const BarRange range=time?TimeBarRange(editor):ValueBarRange(editor);
     const double span=range.fullHigh-range.fullLow;
     if(!(span>0)||!std::isfinite(span))return;
     int first=0,last=0;BarPixels(editor,time,first,last);
@@ -2599,7 +2802,7 @@ void DrawBarTicks(Editor& editor,HDC dc,bool time){
     if(horizontal)DeleteObject(horizontal);
     DeleteObject(pen);
 }
-void DrawTimeBar(Editor &editor, HDC dc) {
+void DrawTimeBar(Editor &editor, HDC dc,const BarRange& range) {
     const RECT &bar = editor.timeBar;
     RECT inner = bar;
     inner.bottom=inner.top+Scale(16,editor.dpi);
@@ -2608,7 +2811,6 @@ void DrawTimeBar(Editor &editor, HDC dc) {
     DeleteObject(back);
     FrameRect(dc, &inner, GetSysColorBrush(COLOR_3DSHADOW));
 
-    const BarRange range = TimeBarRange(editor);
     int first = 0, last = 0;
     BarPixels(editor, true, first, last);
     const int left = static_cast<int>(std::lround(MapToBar(editor.timeStart, range.fullLow, range.fullHigh, first, last)));
@@ -2625,10 +2827,10 @@ void DrawTimeBar(Editor &editor, HDC dc) {
     FillRect(dc, &lowGrip, gripBrush);
     FillRect(dc, &highGrip, gripBrush);
     DeleteObject(gripBrush);
-    DrawBarTicks(editor,dc,true);
+    DrawBarTicks(editor,dc,true,range);
 }
 
-void DrawValueBar(Editor &editor, HDC dc) {
+void DrawValueBar(Editor &editor, HDC dc,const BarRange& range) {
     const RECT &bar = editor.valueBar;
     RECT inner = bar;
     inner.right=inner.left+Scale(16,editor.dpi);
@@ -2637,10 +2839,8 @@ void DrawValueBar(Editor &editor, HDC dc) {
     DeleteObject(back);
     FrameRect(dc, &inner, GetSysColorBrush(COLOR_3DSHADOW));
 
-    const BarRange range = ValueBarRange(editor);
-    (void)range;
     int top = 0, bottom = 0;
-    ValueBarEdges(editor, top, bottom);
+    ValueBarEdges(editor, top, bottom,&range);
     RECT window = {inner.left + 1, top, inner.right - 1, std::max(bottom, top + 2)};
     HBRUSH fill = CreateSolidBrush(curve_editor_theme::selection);
     FillRect(dc, &window, fill);
@@ -2653,10 +2853,47 @@ void DrawValueBar(Editor &editor, HDC dc) {
     FillRect(dc, &lowGrip, gripBrush);
     FillRect(dc, &highGrip, gripBrush);
     DeleteObject(gripBrush);
-    DrawBarTicks(editor,dc,false);
+    DrawBarTicks(editor,dc,false,range);
 }
 
-void PaintCanvas(Editor &editor, HDC dc,double playhead) {
+struct PreparedCanvas {
+    PreparedCurve active;
+    std::vector<PreparedCurve> compared;
+    std::vector<PreparedKey> keys;
+    std::vector<PreparedTangent> tangents;
+    BarRange timeRange,valueRange;
+};
+PreparedCanvas PrepareCanvas(Editor& editor){
+    return WithSamplingSlice(editor,[&]{
+    PreparedCanvas prepared;CanvasMetrics(editor);
+    const auto& state=CurrentState(editor);
+    for(const auto index:ComparedChannels(editor)){
+        if(index>=state.channels.size())continue;
+        PreparedCurve curve;curve.colour=ChannelColour(state.channels[index]);
+        if(CurvePoints(editor,state.channels[index],curve.points))prepared.compared.push_back(std::move(curve));
+    }
+    if(ActiveChannelVisible(editor)&&state.active<state.channels.size()){
+        const auto& active=state.channels[state.active];prepared.active.colour=ChannelColour(active);
+        CurvePoints(editor,active,prepared.active.points);
+        prepared.keys.reserve(active.track.keys.size());
+        for(std::size_t index=0;index<active.track.keys.size();++index)
+            prepared.keys.push_back({KeyPoint(editor,index),state.selection.count(index)!=0,
+                editor.hoverKey>=0&&std::size_t(editor.hoverKey)==index});
+        if(editor.viewMode==0)for(const auto index:state.selection){
+            if(index>=prepared.keys.size()||prepared.keys[index].centre.x<0)continue;
+            for(const bool outSide:{false,true}){POINT handle{};
+                if(HandlePoint(editor,active.track,index,outSide,handle))
+                    prepared.tangents.push_back({prepared.keys[index].centre,handle});}
+        }
+    }
+    prepared.timeRange=TimeBarRange(editor);prepared.valueRange=ValueBarRange(editor);
+    // User closure destruction and all its Session pins precede BeginPaint,
+    // surface allocation, font selection, Graphics construction and BitBlt.
+    return prepared;
+    });
+}
+
+void PaintCanvas(Editor &editor, HDC dc,double playhead,const PreparedCanvas& prepared) {
     ScopedDcState dcState(dc);
     RECT client = {};
     GetClientRect(editor.canvas, &client);
@@ -2669,11 +2906,11 @@ void PaintCanvas(Editor &editor, HDC dc,double playhead) {
     curve_editor_theme::Fill(dc,editor.plot,curve_editor_theme::paper);
     ScopedSelectedObject selectedFont(dc,editor.font ? editor.font : GetStockObject(DEFAULT_GUI_FONT));
     DrawGrid(editor, dc);
-    DrawComparisonCurves(editor, dc);
-    DrawTangents(editor, dc);
-    DrawCurve(editor, dc);
+    DrawComparisonCurves(editor, dc,prepared.compared);
+    DrawTangents(editor, dc,prepared.tangents);
+    DrawCurve(editor, dc,prepared.active);
     DrawPlayhead(editor, dc,playhead);
-    DrawKeys(editor, dc);
+    DrawKeys(editor, dc,prepared.keys,prepared.active.colour);
 
     const Track *track = ActiveTrack(editor);
     std::wstring notice;
@@ -2698,8 +2935,8 @@ void PaintCanvas(Editor &editor, HDC dc,double playhead) {
         DeleteObject(pen);
     }
 
-    DrawTimeBar(editor, dc);
-    DrawValueBar(editor, dc);
+    DrawTimeBar(editor, dc,prepared.timeRange);
+    DrawValueBar(editor, dc,prepared.valueRange);
 
     RECT frame = client;
     FrameRect(dc, &frame, GetSysColorBrush(COLOR_3DSHADOW));
@@ -3506,13 +3743,24 @@ void PublishKeySelection(Editor& editor,bool ownedOperation){
 bool PullKeySelection(Editor& editor,bool publishUi,bool ownedOperation){
     if(editor.externalCallbackActive||(!ownedOperation&&editor.externalOperationActive))return false;
     if(editor.drag!=Drag::None||editor.mmdDragHandle>=0)return false;
+    EditorLease continuation(editor);
     const auto* channel=ActiveChannel(editor);
     if(!channel||!CurrentSource(editor).readKeySelection)return false;
     const std::string channelId=channel->id;
     const auto active=CurrentState(editor).active;
     const auto keyCount=channel->track.keys.size();
-    ExternalOperation callback(editor,&Editor::externalCallbackActive);
-    const auto frames=InvokeProvider(editor,CurrentSource(editor).readKeySelection,channelId);
+    std::vector<int> frames;
+    try{
+        {
+            ExternalOperation callback(editor,&Editor::externalCallbackActive);
+            frames=InvokeProvider(editor,CurrentSource(editor).readKeySelection,channelId);
+        }
+        // UI publication may sample an unselected curve. Leave the provider's
+        // callback gate and release every read pin before reacquiring its lane.
+        continuation.ReleaseStorage();continuation.RequireCurrent();
+    }catch(...){
+        continuation.ReleaseStorage();continuation.RequireCurrent();throw;
+    }
     auto& state=CurrentState(editor);
     // No live Channel is used across the call. Authoring/source refresh is
     // gated while it runs; Open retires InvokeProvider's Session. Reacquire
@@ -3890,6 +4138,7 @@ void InvertChannels(Editor &editor) {
 }
 
 void RunBake(Editor &editor) {
+    EditorLease continuation(editor);
     SourceState &state = CurrentState(editor);
     if (state.channels.empty()) {
         SetStatus(editor, T(editor.session->language, StrNeedChannel), true);
@@ -3908,9 +4157,14 @@ void RunBake(Editor &editor) {
         SetStatus(editor, T(editor.session->language, StrNoChannels), true);
         return;
     }
-    std::vector<Channel> next = CopyChannels(editor);
-    int baked = 0;
-    for (Channel &channel : next) {
+    std::vector<Channel> next;
+    try{
+    next=CopyChannels(editor);
+    std::vector<std::pair<std::size_t,Track>> baked;
+    std::wstring failure;
+    const bool ready=WithSamplingSlice(editor,[&]{
+    for (std::size_t index=0;index<next.size();++index) {
+        const Channel& channel=next[index];
         if (!channel.selected) continue;
         Track output;
         std::string error;
@@ -3918,14 +4172,14 @@ void RunBake(Editor &editor) {
         // verbatim instead of being replaced by a generic failure text.
         if (!animation_curve::Bake(channel.track, static_cast<std::int32_t>(first), static_cast<std::int32_t>(last),
                                    static_cast<std::int32_t>(step), output, error)) {
-            SetStatus(editor, std::wstring(T(editor.session->language, StrBakeFailed)) + Widen(error), true);
-            return;
+            failure=std::wstring(T(editor.session->language, StrBakeFailed))+Widen(error);
+            return false;
         }
         if (channel.sample) {
             for (auto& key : output.keys) {
-                key.value = channel.sample(channel, key.frame).value;
+                key.value = SampleChannel(editor,channel,key.frame).value;
                 if (!std::isfinite(key.value)) {
-                    SetStatus(editor, T(editor.session->language, StrBakeFailed), true); return;
+                    failure=T(editor.session->language, StrBakeFailed);return false;
                 }
                 key.inSlope = key.outSlope = 0;
             }
@@ -3935,16 +4189,37 @@ void RunBake(Editor &editor) {
                 output.keys[i - 1].outSlope = output.keys[i].inSlope = slope;
             }
         }
-        channel.track = std::move(output);
-        channel.sample = {};
+        baked.emplace_back(index,std::move(output));
+    }
+    return true;
+    });
+    if(!ready){
+        ReleaseChannelPayload(editor,continuation,next);
+        SetStatus(editor,failure,true);return;
+    }
+    for(auto& output:baked){
+        auto& channel=next[output.first];
+        {
+            ExternalOperation operation(editor,&Editor::externalOperationActive);
+            ExternalOperation callback(editor,&Editor::externalCallbackActive);
+            channel.sample={};
+        }
+        continuation.RequireCurrent();
+        channel.track = std::move(output.second);
         channel.nativeControls.clear(); channel.controlGeometry.clear();
         channel.preservedCameraIntervals.clear();
-        ++baked;
     }
-    const std::wstring message = std::wstring(T(editor.session->language, StrBakeDone)) + FormatInteger(baked);
+    const std::wstring message = std::wstring(T(editor.session->language, StrBakeDone)) + FormatInteger(baked.size());
     if (CommitChannels(editor, std::move(next), message)) {
+        continuation.RequireCurrent();
         UpdateBakeFields(editor);
         InvalidateCanvas(editor);
+    }
+    ReleaseChannelPayload(editor,continuation,next);
+    continuation.ReleaseStorage();continuation.RequireCurrent();
+    }catch(...){
+        ReleaseChannelPayload(editor,continuation,next);
+        continuation.ReleaseStorage();continuation.RequireCurrent();throw;
     }
 }
 
@@ -4088,8 +4363,10 @@ void ClampValueView(Editor &editor) {
 }
 
 void ClampView(Editor &editor) {
+    WithSamplingSlice(editor,[&]{
     ClampTimeView(editor);
     ClampValueView(editor);
+    });
 }
 
 void ZoomTime(Editor &editor, double anchorFrame, double factor) {
@@ -4219,13 +4496,23 @@ void EditKeyShape(Editor &editor, std::size_t key, Edit edit) {
 
 void CancelDrag(Editor &editor) {
     EditorLease continuation(editor);
-    if (editor.drag == Drag::Keys && editor.dragMoved) InvalidateCanvas(editor);
+    const bool samplingCallback=editor.samplingBorrow!=nullptr;
+    if (editor.drag == Drag::Keys && editor.dragMoved&&!samplingCallback) InvalidateCanvas(editor);
     if (editor.drag == Drag::Handle) {
         // The handle drag previews in place; put the original keys back.
         // The saved keys already own the complete pre-gesture value. Restore
         // them without allocating, including while Open prepares a replacement.
-        if (Track *track = ActiveTrack(editor)) track->keys.swap(editor.dragBase);
-        InvalidateCanvas(editor);
+        if(samplingCallback){
+            // Keep the preview's key buffer stable until copying, invocation,
+            // callable destruction and the last sampling pin have all ended.
+            // Moving the saved plain keys into this record cannot allocate.
+            auto& pending=editor.deferredHandleRestore;
+            pending.keys.swap(editor.dragBase);
+            pending.session=editor.motionSession;pending.source=editor.sourceIndex;
+            pending.channel=ActiveChannel(editor);pending.generation=CurrentState(editor).channelGeneration;
+            pending.pending=true;
+        }else if (Track *track = ActiveTrack(editor)) track->keys.swap(editor.dragBase);
+        if(!samplingCallback)InvalidateCanvas(editor);
     }
     editor.drag = Drag::None;
     editor.dragMoved = false;
@@ -4241,13 +4528,17 @@ void SelectKeyRange(Editor &editor, const RECT &box, bool additive) {
     SourceState &state = CurrentState(editor);
     Track *track = ActiveTrack(editor);
     if (!track) return;
-    if (!additive) state.selection.clear();
+    auto selected=WithSamplingSlice(editor,[&]{
+    auto selected=additive?state.selection:std::set<std::size_t>{};
     for (std::size_t index = 0; index < track->keys.size(); ++index) {
         const POINT centre = KeyPoint(editor, index);
         if (centre.x < 0) continue;
         if (centre.x >= box.left && centre.x <= box.right && centre.y >= box.top && centre.y <= box.bottom)
-            state.selection.insert(index);
+            selected.insert(index);
     }
+    return selected;
+    });
+    state.selection.swap(selected);
     UpdateKeyFields(editor);
     UpdateMmdPanel(editor);
     UpdateEnabledState(editor);
@@ -5849,16 +6140,17 @@ void HandleCommand(Editor &editor, WPARAM wparam) {
 // ---------------------------------------------------------------------------
 // Window procedures.
 // ---------------------------------------------------------------------------
-void BufferedPaint(Editor& editor,HWND hwnd,HDC dc,const RECT& dirty,bool miniature,double playhead){
+void BufferedPaint(Editor& editor,HWND hwnd,HDC dc,const RECT& dirty,bool miniature,double playhead,
+    const PreparedCanvas* prepared=nullptr){
     RECT client{};GetClientRect(hwnd,&client);
     auto& surface=miniature?editor.mmdSurface:editor.canvasSurface;
     if(!surface.Resize(dc,std::max(1L,client.right),std::max(1L,client.bottom))){
-        if(miniature)PaintMmd(editor,dc);else PaintCanvas(editor,dc,playhead);return;
+        if(miniature)PaintMmd(editor,dc);else PaintCanvas(editor,dc,playhead,*prepared);return;
     }
     const HDC originalDc=surface.dc;
     ScopedDcState dcState(originalDc);
     IntersectClipRect(originalDc,dirty.left,dirty.top,dirty.right,dirty.bottom);
-    if(miniature)PaintMmd(editor,originalDc);else PaintCanvas(editor,originalDc,playhead);
+    if(miniature)PaintMmd(editor,originalDc);else PaintCanvas(editor,originalDc,playhead,*prepared);
     BitBlt(dc,dirty.left,dirty.top,dirty.right-dirty.left,dirty.bottom-dirty.top,originalDc,dirty.left,dirty.top,SRCCOPY);
 }
 struct PreparedInsertion {
@@ -6012,20 +6304,36 @@ LRESULT CALLBACK CanvasProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpara
     const auto hand = [] { return LoadCursorW(nullptr, reinterpret_cast<LPCWSTR>(IDC_HAND)); };
     switch (message) {
     case WM_PAINT: {
+        if(editor->externalCallbackActive){DeferCanvasPaint(*editor,hwnd);NativePaint paint(hwnd);return 0;}
         // Query before BeginPaint, surface Resize/SaveDC, or selecting a font.
         // A provider can retire this window without invalidating a borrowed DC.
+        const auto deferredBefore=editor->deferredPaintSerial;
+        try{
         const double playhead=DisplayCurrentFrame(*editor);
+        const PreparedCanvas prepared=PrepareCanvas(*editor);
         NativePaint paint(hwnd);
-        BufferedPaint(*editor,hwnd,paint.dc,paint.paint.rcPaint,false,playhead);
+        BufferedPaint(*editor,hwnd,paint.dc,paint.paint.rcPaint,false,playhead,&prepared);
+        }catch(...){
+            if(lease.CurrentSession()&&editor->canvas==hwnd){
+                const bool deferred=editor->deferredPaintSerial!=deferredBefore;
+                ValidateRect(hwnd,nullptr);
+                // A nested paint or geometry retirement may already have
+                // flushed its invalidation. Do not erase that replacement work.
+                if(deferred){DeferCanvasPaint(*editor,hwnd);FlushDeferredCanvasPaint(*editor);}
+            }
+            throw;
+        }
         return 0;
     }
     case WM_ERASEBKGND:
         return 1;
     case WM_PRINTCLIENT: {
+        if(editor->externalCallbackActive)return 0;
         // Standard repaint-into-a-DC entry point: the host can composite the
         // canvas and the hidden regression exercises the whole painting path.
         const double playhead=DisplayCurrentFrame(*editor);
-        PaintCanvas(*editor, reinterpret_cast<HDC>(wparam),playhead);
+        const PreparedCanvas prepared=PrepareCanvas(*editor);
+        PaintCanvas(*editor, reinterpret_cast<HDC>(wparam),playhead,prepared);
         return 0;
     }
     case WM_SIZE:
@@ -6147,12 +6455,8 @@ LRESULT CALLBACK CanvasProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpara
         // Losing the capture always clears the transient drag state so the next
         // press cannot continue a stale gesture.
         if (editor->drag != Drag::None) {
-            editor->drag = Drag::None;
-            editor->dragMoved = false;
-            editor->dragSelection.clear();
-            editor->dragFrameDelta = 0;
-            editor->dragValueDelta = 0;
-            InvalidateCanvas(*editor);
+            CancelDrag(*editor);
+            if(!editor->samplingBorrow)InvalidateCanvas(*editor);
         }
         return 0;
     case WM_KILLFOCUS:
@@ -6200,13 +6504,16 @@ LRESULT CALLBACK MmdProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) 
         }
         break;
     case WM_PAINT: {
+        if(editor->externalCallbackActive)DeferCanvasPaint(*editor,hwnd);
         NativePaint paint(hwnd);
+        if(editor->externalCallbackActive)return 0;
         BufferedPaint(*editor,hwnd,paint.dc,paint.paint.rcPaint,true,std::numeric_limits<double>::quiet_NaN());
         return 0;
     }
     case WM_ERASEBKGND:
         return 1;
     case WM_PRINTCLIENT:
+        if(editor->externalCallbackActive)return 0;
         PaintMmd(*editor, reinterpret_cast<HDC>(wparam));
         return 0;
     case WM_LBUTTONDOWN:
@@ -6243,6 +6550,8 @@ LRESULT CALLBACK MmdProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) 
 }
 
 LRESULT HandleHook(Editor &editor, UINT message, WPARAM wparam, LPARAM lparam) {
+    if(editor.externalCallbackActive&&(message==WM_APP+396||message==WM_APP+394||
+        message==kHookPointForKey||message==kHookPointForFrame||message==kHookBarPoint))return 0;
     switch (message) {
     case WM_APP+397: {
         if(!lparam)return FALSE;
@@ -6257,13 +6566,14 @@ LRESULT HandleHook(Editor &editor, UINT message, WPARAM wparam, LPARAM lparam) {
         const auto index=std::size_t(wparam);if(index>=channels.size())return FALSE;
         auto* values=reinterpret_cast<double*>(lparam);
         const auto& channel=channels[index];
-        const auto sample=channel.sample?channel.sample(channel,values[0]):animation_curve::Evaluate(channel.track,values[0]);
+        const auto sample=WithSamplingSlice(editor,[&]{return SampleChannel(editor,channel,values[0]);});
         values[1]=sample.value;values[2]=sample.derivative;return TRUE;
     }
     case WM_APP+394: {
         if(!lparam)return FALSE;
         CanvasMetrics(editor);
-        auto& out=*reinterpret_cast<CurveEditorAxisState*>(lparam);
+        const auto out=WithSamplingSlice(editor,[&]{
+        CurveEditorAxisState out{};
         out.plot=editor.plot;out.timeBar=editor.timeBar;out.valueBar=editor.valueBar;
         BarPixels(editor,true,out.timeFirst,out.timeLast);
         BarPixels(editor,false,out.valueFirst,out.valueLast);
@@ -6274,22 +6584,28 @@ LRESULT HandleHook(Editor &editor, UINT message, WPARAM wparam, LPARAM lparam) {
         ValueRange(editor,out.viewLow,out.viewHigh);
         out.mouseValid=MouseCoordinates(editor,out.mouseFrame,out.mouseValue);
         out.viewMode=editor.viewMode;
+        return out;
+        });
+        *reinterpret_cast<CurveEditorAxisState*>(lparam)=out;
         return TRUE;
     }
     case kHookPointForKey: {
         CanvasMetrics(editor);
-        const POINT point = KeyPoint(editor, static_cast<std::size_t>(wparam));
+        const POINT point=WithSamplingSlice(editor,[&]{return KeyPoint(editor,static_cast<std::size_t>(wparam));});
         return MAKELPARAM(point.x, point.y);
     }
     case kHookPointForFrame: {
         CanvasMetrics(editor);
+        const POINT point=WithSamplingSlice(editor,[&]{
         double value = 0;
         if (Track *track = ActiveTrack(editor))
             value = SampleTrack(editor, *track, static_cast<double>(static_cast<long long>(wparam))).value;
         double x = 0, y = 0;
         if (!TimeToX(editor, static_cast<double>(static_cast<long long>(wparam)), x) || !ValueToY(editor, value, y))
-            return MAKELPARAM(-1, -1);
-        return MAKELPARAM(static_cast<LONG>(std::lround(x)), static_cast<LONG>(std::lround(y)));
+            return POINT{-1,-1};
+        return POINT{static_cast<LONG>(std::lround(x)), static_cast<LONG>(std::lround(y))};
+        });
+        return MAKELPARAM(point.x,point.y);
     }
     case kHookMmdControls: {
         ComputeMmdControls(editor);
@@ -6321,6 +6637,7 @@ LRESULT HandleHook(Editor &editor, UINT message, WPARAM wparam, LPARAM lparam) {
         return static_cast<LRESULT>(editor.viewMode);
     }
     case kHookBarPoint: {
+        return WithSamplingSlice(editor,[&]() -> LRESULT {
         // wParam = 1 time bar / 2 value bar, lParam = 0 centre, 1 low end,
         // 2 high end.  Returns the canvas client point of that segment.
         CanvasMetrics(editor);
@@ -6347,6 +6664,7 @@ LRESULT HandleHook(Editor &editor, UINT message, WPARAM wparam, LPARAM lparam) {
             return MAKELPARAM((editor.valueBar.left + editor.valueBar.right) / 2, y);
         }
         return MAKELPARAM(-1, -1);
+        });
     }
     case kHookCompare: {
         // Read-only view of the comparison state; see the header comment for
@@ -6741,6 +7059,11 @@ void *Open(void *owner, Session session, bool visible) {
         // Invalidate continuations belonging to the previous session before
         // replacing callbacks or channel storage under a nested modal loop.
         existing->motionSession = std::move(nextToken);
+        existing->samplingBatch=nullptr;
+        existing->samplingBorrow=nullptr;
+        existing->deferredHandleRestore=DeferredHandleRestore{};
+        existing->deferredCanvasPaint=DeferredCanvasPaint{};
+        existing->deferredMmdPaint=DeferredCanvasPaint{};
         EditorLease continuation(existing);
         OpenAttempt attempt(*existing);
         existing->externalOperationActive = existing->externalCallbackActive = false;

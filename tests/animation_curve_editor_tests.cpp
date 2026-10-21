@@ -35,6 +35,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cwchar>
+#include <cstring>
 #include <functional>
 #include <memory>
 #include <limits>
@@ -73,7 +74,7 @@ namespace {
 // Control ids, mirrored from src/window/animation_curve_editor.cpp.
 enum : int {
     kIdSourceLabel = 1001, kIdSourceCombo = 1002,
-    kIdReadMotion = 1003, kIdWriteMotion = 1004, kIdRefresh = 1005,
+    kIdReadMotion = 1003, kIdWriteMotion = 1004,
     kIdViewLabel = 1006, kIdViewCombo = 1007, kIdToolLabel = 1008, kIdToolCombo = 1009,
     kIdFitAll = 1010, kIdFitRange = 1011, kIdShortcutToggle = 1012, kIdShortcutText = 1013,
     kIdChannelLabel = 1014, kIdChannelList = 1015, kIdChannelAll = 1016, kIdChannelInvert = 1017,
@@ -5121,6 +5122,531 @@ HostSource TransportHost(){
     HostSource host;host.data.push_back(MakeChannel("transport",L"Transport",
         {MakeKey(0,1),MakeKey(10,3),MakeKey(20,2)}));return host;
 }
+// Phase-A ordinary sampler probes never retire a Session or publish data.
+struct SamplerCopyBoundaryState {
+    bool armed=false,failCopy=false;
+    std::array<unsigned,2> copies{},bodies{},liveBodies{};
+};
+struct SamplerCopyBoundaryProvider {
+    SamplerCopyBoundaryState* state;unsigned lane;bool owned=false;
+    SamplerCopyBoundaryProvider(SamplerCopyBoundaryState& value,unsigned index):state(&value),lane(index){}
+    SamplerCopyBoundaryProvider(const SamplerCopyBoundaryProvider& other):state(other.state),lane(other.lane){
+        owned=state->armed;
+        if(owned){++state->copies[lane];if(state->failCopy)throw std::bad_alloc();}
+    }
+    ac::Sample operator()(const ce::Channel&,double frame)const{
+        if(state->armed){++state->bodies[lane];if(!owned)++state->liveBodies[lane];}
+        return {frame*frame/20.0+lane,frame/10.0+lane};
+    }
+};
+void SamplerCopyBoundary(){
+    struct Observation {
+        unsigned route=0;bool failCopy=false,unchanged=false,output=false,cleanup=false;
+        std::array<unsigned,2> copies{},bodies{},liveBodies{};
+    };
+    std::vector<Observation> observed;
+    // Ordinary scalars only: no callback closes/replaces the editor or writes
+    // host data. Collect every raw-call observation before the first red Check.
+    for(unsigned route=0;route<5;++route)for(bool failCopy:{true,false}){
+        SamplerCopyBoundaryState state;state.failCopy=failCopy;HostSource host;
+        for(unsigned lane=0;lane<2;++lane){
+            host.data.push_back(MakeChannel("sample."+std::to_string(lane),L"Sampler",
+                {MakeKey(0,0),MakeKey(10,5),MakeKey(20,9)}));
+            host.data.back().sample=SamplerCopyBoundaryProvider(state,lane);
+        }
+        auto session=MakeSession(host);const HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
+        Check(IsWindow(window)&&KeyCount(window)==3,"safe sampler copy probe opens real channels before arming");
+        const HWND canvas=GetDlgItem(window,kIdCanvas),view=GetDlgItem(window,kIdViewCombo);
+        Check(IsWindow(canvas)&&IsWindow(view),"safe sampler probe owns its canvas and view control");
+        if(route!=0){SendMessageW(view,CB_SETCURSEL,1,0);
+            SendMessageW(window,WM_COMMAND,MAKEWPARAM(kIdViewCombo,CBN_SELCHANGE),reinterpret_cast<LPARAM>(view));}
+        const int width=route==4?613:379,height=247;
+        HDC dc=nullptr;HBITMAP bitmap=nullptr;HGDIOBJ previous=nullptr;void* bits=nullptr;
+        if(route>=3){
+            Check(SetWindowPos(canvas,nullptr,0,0,width,height,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE)!=FALSE,
+                "safe sampler print probe prepares its own child width before arming");
+            dc=CreateCompatibleDC(nullptr);BITMAPINFO info{};info.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);
+            info.bmiHeader.biWidth=width;info.bmiHeader.biHeight=-height;info.bmiHeader.biPlanes=1;
+            info.bmiHeader.biBitCount=32;info.bmiHeader.biCompression=BI_RGB;
+            bitmap=CreateDIBSection(dc,&info,DIB_RGB_COLORS,&bits,nullptr,0);
+            Check(dc&&bitmap&&bits,"safe sampler print probe owns a memory DC and DIB without reading the desktop");
+            previous=SelectObject(dc,bitmap);Check(previous&&previous!=HGDI_ERROR,"select the sampler probe's owned bitmap");
+            GdiFlush();
+            std::fill_n(static_cast<unsigned*>(bits),std::size_t(width)*height,0x005a13c7u);
+        }
+        const auto token=ce::CaptureWindowSession(window);
+        const auto history=LocalWriteHistory(window);const auto payload=host.data;
+        double sample[3]{5.0,-1234.0,-5678.0};CurveEditorAxisState axis{};
+        // Set each named field to a non-result sentinel without relying on
+        // unspecified structure padding when checking an aborted output.
+        axis.plot={-71,-72,-73,-74};axis.timeBar=axis.valueBar=axis.plot;
+        axis.timeFirst=axis.timeLast=axis.valueFirst=axis.valueLast=-75;
+        axis.timeLow=axis.timeHigh=axis.valueLow=axis.valueHigh=-76;
+        axis.timeStart=axis.timeEnd=axis.viewLow=axis.viewHigh=-77;
+        axis.mouseFrame=axis.mouseValue=-78;axis.mouseValid=true;axis.viewMode=-79;
+        const auto originalAxis=axis;LRESULT result=0;state.armed=true;
+        if(route==0)result=SendMessageW(window,WM_APP+396,0,reinterpret_cast<LPARAM>(sample));
+        else if(route==1)result=SendMessageW(window,kHookPointForKey,1,0);
+        else if(route==2)result=SendMessageW(window,WM_APP+394,0,reinterpret_cast<LPARAM>(&axis));
+        else result=SendMessageW(canvas,WM_PRINTCLIENT,reinterpret_cast<WPARAM>(dc),PRF_CLIENT);
+        state.armed=false;Observation entry;entry.route=route;entry.failCopy=failCopy;
+        entry.copies=state.copies;entry.bodies=state.bodies;entry.liveBodies=state.liveBodies;
+        entry.unchanged=IsWindow(window)&&ce::IsWindowSessionCurrent(window,token)&&host.applyCalls==0&&
+            SameWritePayload(host.data,payload)&&LocalWriteHistory(window)==history&&KeyCount(window)==3;
+        if(route==0)entry.output=failCopy?(sample[0]==5&&sample[1]==-1234&&sample[2]==-5678):
+            (result!=0&&sample[0]==5&&sample[1]==1.25&&sample[2]==0.5);
+        else if(route==1)entry.output=failCopy?(result==0||result==MAKELPARAM(-1,-1)):
+            (static_cast<short>(LOWORD(result))>0&&static_cast<short>(HIWORD(result))>0);
+        else if(route==2)entry.output=failCopy?
+            (EqualRect(&axis.plot,&originalAxis.plot)&&EqualRect(&axis.timeBar,&originalAxis.timeBar)&&
+             EqualRect(&axis.valueBar,&originalAxis.valueBar)&&axis.timeFirst==-75&&axis.timeLast==-75&&
+             axis.valueFirst==-75&&axis.valueLast==-75&&axis.timeLow==-76&&axis.timeHigh==-76&&
+             axis.valueLow==-76&&axis.valueHigh==-76&&axis.timeStart==-77&&axis.timeEnd==-77&&
+             axis.viewLow==-77&&axis.viewHigh==-77&&axis.mouseFrame==-78&&axis.mouseValue==-78&&axis.mouseValid&&axis.viewMode==-79):
+            (result!=0&&axis.viewMode==1&&axis.plot.right>axis.plot.left&&axis.viewHigh>axis.viewLow);
+        else {GdiFlush();bool untouched=true;const auto* pixels=static_cast<const unsigned*>(bits);
+            for(std::size_t i=0;i<std::size_t(width)*height&&untouched;++i)untouched=pixels[i]==0x005a13c7u;
+            entry.output=failCopy?untouched:!untouched;}
+        entry.cleanup=true;
+        if(dc){entry.cleanup=SelectObject(dc,previous)!=HGDI_ERROR;entry.cleanup&=DeleteObject(bitmap)!=FALSE;entry.cleanup&=DeleteDC(dc)!=FALSE;}
+        ce::CloseOwned(nullptr);for(auto& channel:host.data)channel.sample={};host.applied.clear();
+        entry.unchanged&=!IsWindow(window);observed.push_back(entry);
+        std::printf("sampler copy route=%u fail_copy=%u copies=%u,%u bodies=%u,%u live=%u,%u output=%u unchanged=%u cleanup=%u\n",
+            route,unsigned(failCopy),entry.copies[0],entry.copies[1],entry.bodies[0],entry.bodies[1],
+            entry.liveBodies[0],entry.liveBodies[1],unsigned(entry.output),unsigned(entry.unchanged),unsigned(entry.cleanup));std::fflush(stdout);
+    }
+    bool failuresOwned=true,successOwned=true,outputs=true,unchanged=true;
+    for(const auto& entry:observed){
+        const unsigned copies=entry.copies[0]+entry.copies[1],bodies=entry.bodies[0]+entry.bodies[1];
+        if(entry.failCopy)failuresOwned&=copies==1&&bodies==0&&!entry.liveBodies[0]&&!entry.liveBodies[1];
+        else {successOwned&=bodies>0&&!entry.liveBodies[0]&&!entry.liveBodies[1];
+            for(unsigned lane=0;lane<2;++lane)successOwned&=entry.copies[lane]<=1&&(!entry.bodies[lane]||entry.copies[lane]==1);
+            if(entry.route>=2)for(unsigned lane=0;lane<2;++lane)successOwned&=entry.bodies[lane]>0&&entry.copies[lane]==1;}
+        outputs&=entry.output;unchanged&=entry.unchanged&&entry.cleanup;
+    }
+    Check(observed.size()==10&&unchanged,"all safe sampler operations retain source, payload, history and owned GDI cleanup");
+    Check(failuresOwned,"a failed owned Channel.sample copy aborts every read-only operation before any body");
+    Check(successOwned,"each read-only operation copies each participating Channel.sample once and never invokes the live closure");
+    Check(outputs,"sampling and axis failures leave caller outputs untouched while successful reads and prints produce results");
+    Note("safe sampler copy observations precede all lifetime-changing sampler cases");
+}
+struct SamplerLifetimeState;
+struct SamplerOwnedRelease {
+    SamplerLifetimeState* state;
+    explicit SamplerOwnedRelease(SamplerLifetimeState& value):state(&value){}
+    ~SamplerOwnedRelease();
+};
+struct SamplerLifetimeState {
+    int phase=0,response=0;bool armed=false,observing=false,copying=false,bake=false,previewAware=false;
+    unsigned copies=0,bodies=0,liveBodies=0,actions=0,releases=0,created=0,destroyedOriginal=0;
+    const void* original=nullptr;const void* firstOwned=nullptr;const void* secondOwned=nullptr;
+    unsigned cacheFromPrivate=0,firstDestroyed=0,secondDestroyed=0;
+    const ce::Channel* bodyChannel=nullptr;std::weak_ptr<SamplerOwnedRelease> capture;
+    std::function<void()> action;
+    void Fire(){armed=false;++actions;action();}
+    void Throw()const{if(response==1)throw std::runtime_error("native sampler unavailable");if(response==2)throw std::bad_alloc();}
+};
+SamplerOwnedRelease::~SamplerOwnedRelease(){
+    Check(state->capture.expired(),"sampler final-release observer holds only a weak capture");
+    ++state->releases;if(state->armed&&state->phase==2){
+        if(state->bake)Check(state->copies==2&&state->cacheFromPrivate==1&&state->firstDestroyed==1&&state->secondDestroyed==1,
+            "Bake releases its SamplingBatch cache first and the last shared capture only when the private channel.sample is cleared");
+        state->Fire();}
+}
+bool SamplerTailIntact(const ce::Channel& channel){
+    if(channel.collections.size()!=2||channel.preservedCameraIntervals.size()!=1)return false;
+    const auto& root=channel.collections[0];const auto& leaf=channel.collections[1];
+    const auto& interval=channel.preservedCameraIntervals[0];
+    return root.id=="sample.collection"&&root.label==L"Sampler collection"&&leaf.id=="sample.child"&&leaf.label==L"Sampler child"&&
+        interval.first==0&&interval.last==10&&interval.sourceFirst==0&&interval.sourceLast==10&&interval.sampleFirst==0&&interval.sampleLast==10&&
+        interval.sourceValueFirst==0&&interval.sourceValueLast==5&&interval.controls==std::array<double,4>{127.0/3,0,254.0/3,127.0/3}&&
+        !interval.oneFrameHold&&interval.transportTiming&&interval.geometry==std::array<double,6>{0,1.0/3,0,5,1.0/3,0};
+}
+struct SamplerLifetimeProvider {
+    SamplerLifetimeState* state;bool owned=false;int marker=191;
+    std::shared_ptr<SamplerOwnedRelease> capture;
+    explicit SamplerLifetimeProvider(SamplerLifetimeState& value):state(&value){}
+    SamplerLifetimeProvider(const SamplerLifetimeProvider& other):state(other.state),marker(other.marker){
+        if(!state->observing)return;owned=true;++state->copies;
+        if(state->copies==1)state->firstOwned=this;
+        else if(state->copies==2){state->secondOwned=this;if(other.owned)++state->cacheFromPrivate;}
+        if(state->phase==2){
+            capture=other.capture?other.capture:std::make_shared<SamplerOwnedRelease>(*state);
+            if(!other.capture)++state->created;state->capture=capture;
+        }
+        if(state->armed&&state->phase==0){state->copying=true;state->original=&other;state->Fire();
+            Check(!state->destroyedOriginal&&other.marker==191,"sampling copy retains its original callable through synchronous retirement");
+            state->copying=false;state->Throw();}
+    }
+    ~SamplerLifetimeProvider(){
+        if(state->copying&&state->original==this)++state->destroyedOriginal;
+        if(state->observing&&owned){if(state->firstOwned==this)++state->firstDestroyed;if(state->secondOwned==this)++state->secondDestroyed;}
+    }
+    ac::Sample operator()(const ce::Channel& channel,double frame)const{
+        state->bodyChannel=&channel;
+        if(state->observing){++state->bodies;if(!owned)++state->liveBodies;}
+        if(state->armed){
+            Check(owned&&channel.id=="sample.native"&&channel.track.keys.size()==3&&SamplerTailIntact(channel),
+                "sampling body receives the original Channel including metadata stored after sample");
+            if(state->phase==1){
+                state->bodyChannel=&channel;const auto* collections=channel.collections.data();
+                const auto* intervals=channel.preservedCameraIntervals.data();state->Fire();
+                Check(marker==191 && &channel==state->bodyChannel&&channel.id=="sample.native"&&channel.track.keys.size()==3&&
+                    channel.track.keys[1].frame==10&&channel.collections.data()==collections&&channel.preservedCameraIntervals.data()==intervals&&SamplerTailIntact(channel),
+                    "retired sampling keeps the exact Channel address and its complete trailing collection and camera-interval storage readable");state->Throw();}
+            // Destructors never throw. These failures unwind the real final
+            // owned capture, whose noexcept destructor then retires the source.
+            if(state->phase>=2)state->Throw();
+        }
+        if(state->previewAware)return ac::Evaluate(channel.track,frame);
+        return {frame*frame/20.0,frame/10.0};
+    }
+};
+struct SamplerMemoryPrint {
+    HDC dc=nullptr;HBITMAP bitmap=nullptr;HGDIOBJ previous=nullptr;
+    void* bits=nullptr;int width=0,height=0;bool cleaned=false;
+    SamplerMemoryPrint()=default;
+    SamplerMemoryPrint(const SamplerMemoryPrint&)=delete;
+    void Prepare(HWND canvas,int w=379,int h=247){
+        width=w;height=h;
+        Check(SetWindowPos(canvas,nullptr,0,0,w,h,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE)!=FALSE,"prepare an owned sampler print canvas before arming");
+        dc=CreateCompatibleDC(nullptr);BITMAPINFO info{};info.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);
+        info.bmiHeader.biWidth=w;info.bmiHeader.biHeight=-h;info.bmiHeader.biPlanes=1;info.bmiHeader.biBitCount=32;info.bmiHeader.biCompression=BI_RGB;
+        bitmap=CreateDIBSection(dc,&info,DIB_RGB_COLORS,&bits,nullptr,0);
+        Check(dc&&bitmap&&bits,"allocate the sampler matrix's own memory DC and bitmap");previous=SelectObject(dc,bitmap);
+        Check(previous&&previous!=HGDI_ERROR,"select the matrix's owned print bitmap");Clear();
+    }
+    void Clear(){if(bits){GdiFlush();std::fill_n(static_cast<unsigned*>(bits),std::size_t(width)*height,0x005a13c7u);}}
+    bool Untouched()const{GdiFlush();const auto* pixels=static_cast<const unsigned*>(bits);
+        for(std::size_t i=0;i<std::size_t(width)*height;++i)if(pixels[i]!=0x005a13c7u)return false;return true;}
+    void Close(){if(cleaned||!dc)return;cleaned=true;
+        Check(SelectObject(dc,previous)!=HGDI_ERROR&&DeleteObject(bitmap)&&DeleteDC(dc),"restore and delete only sampler-owned GDI objects");dc=nullptr;bitmap=nullptr;}
+    ~SamplerMemoryPrint(){Close();}
+};
+HostSource SamplerLifetimeHost(SamplerLifetimeState& state){
+    HostSource host;host.data.push_back(MakeChannel("sample.native",L"Native sampler",
+        {MakeKey(0,0),MakeKey(10,5),MakeKey(20,20)}));
+    auto& channel=host.data[0];channel.collections={{"sample.collection",L"Sampler collection"},{"sample.child",L"Sampler child"}};
+    ce::NativeCameraInterval interval;interval.first=interval.sourceFirst=0;interval.last=interval.sourceLast=10;
+    interval.sampleFirst=0;interval.sampleLast=10;interval.sourceValueFirst=0;interval.sourceValueLast=5;
+    interval.controls={127.0/3,0,254.0/3,127.0/3};interval.oneFrameHold=false;interval.transportTiming=true;
+    const auto& first=channel.track.keys[0];const auto& last=channel.track.keys[1];
+    interval.geometry={first.value,first.outWeight,first.outSlope,last.value,last.inWeight,last.inSlope};
+    channel.preservedCameraIntervals.push_back(interval);channel.sample=SamplerLifetimeProvider(state);return host;
+}
+void PrepareSamplerEntry(HWND window,int entry,SamplerMemoryPrint& print){
+    if(entry>=1&&entry<=3){const HWND view=GetDlgItem(window,kIdViewCombo);SendMessageW(view,CB_SETCURSEL,1,0);
+        SendMessageW(window,WM_COMMAND,MAKEWPARAM(kIdViewCombo,CBN_SELCHANGE),reinterpret_cast<LPARAM>(view));}
+    if(entry==3)print.Prepare(GetDlgItem(window,kIdCanvas));
+    if(entry==4){SetText(window,kIdBakeFirstEdit,L"0");SetText(window,kIdBakeLastEdit,L"20");SetText(window,kIdBakeStepEdit,L"5");}
+}
+struct SamplerOutput {
+    double values[3]{5,-1234,-5678};CurveEditorAxisState axis{};
+    std::array<unsigned char,sizeof(CurveEditorAxisState)> original{};LRESULT result=0;
+    SamplerOutput(){std::memset(&axis,0xa5,sizeof axis);std::memcpy(original.data(),&axis,sizeof axis);}
+    bool Untouched(int entry)const{
+        if(entry==0)return values[0]==5&&values[1]==-1234&&values[2]==-5678;
+        if(entry==1)return result==0||result==MAKELPARAM(-1,-1);
+        if(entry==2)return std::memcmp(original.data(),&axis,sizeof axis)==0;
+        return true;
+    }
+};
+void InvokeSamplerEntry(HWND window,int entry,SamplerMemoryPrint& print,SamplerOutput& out){
+    if(entry==0)out.result=SendMessageW(window,WM_APP+396,0,reinterpret_cast<LPARAM>(out.values));
+    else if(entry==1)out.result=SendMessageW(window,kHookPointForKey,1,0);
+    else if(entry==2)out.result=SendMessageW(window,WM_APP+394,0,reinterpret_cast<LPARAM>(&out.axis));
+    else if(entry==3)out.result=SendMessageW(GetDlgItem(window,kIdCanvas),WM_PRINTCLIENT,reinterpret_cast<WPARAM>(print.dc),PRF_CLIENT);
+    else Click(window,kIdBakeRun);
+}
+void SamplerReadAndBakeLifetime(){
+    for(int entry=0;entry<5;++entry)for(int phase=0;phase<3;++phase)
+    for(int action=0;action<3;++action)for(int response=0;response<3;++response){
+        std::printf("sampler lifetime entry=%d phase=%d action=%d response=%d\n",entry,phase,action,response);std::fflush(stdout);
+        SamplerLifetimeState state;state.phase=phase;state.response=response;state.bake=entry==4;auto host=SamplerLifetimeHost(state),replacement=TransportHost();
+        auto session=MakeSession(host);const HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
+        Check(IsWindow(window)&&KeyCount(window)==3,"sampler matrix opens before arming any lifetime action");
+        SamplerMemoryPrint print;PrepareSamplerEntry(window,entry,print);const auto token=ce::CaptureWindowSession(window);
+        const auto payload=host.data;HWND next=nullptr;
+        std::wstring status,field;int readsAfter=-1;bool releaseBeforeDrawing=true;
+        state.action=[&]{
+            if(entry==3)releaseBeforeDrawing&=print.Untouched()&&GetCurrentObject(print.dc,OBJ_BITMAP)==print.bitmap;
+            if(action!=1)ce::CloseOwned(nullptr);
+            if(action!=0){next=static_cast<HWND>(ce::Open(nullptr,MakeSession(replacement),false));
+                Check(IsWindow(next),"sampler retirement creates a real replacement editor");
+                if(action==1)Check(next==window,"sampler same-owner replacement preserves its native HWND");
+                status=GetText(next,kIdStatus);field=GetText(next,kIdFrameEdit);}
+            readsAfter=host.readCalls;
+        };
+        SamplerOutput output;state.armed=state.observing=true;InvokeSamplerEntry(window,entry,print,output);state.observing=false;
+        const unsigned expectedCopies=entry==4&&phase!=0?2u:1u;
+        Check(state.actions==1&&state.copies==expectedCopies&&!state.liveBodies&&!state.destroyedOriginal&&
+            !ce::IsWindowSessionCurrent(window,token)&&host.applyCalls==0&&host.readCalls==readsAfter&&SameWritePayload(host.data,payload),
+            "copy, body and final owned release stop retired sampling before authoring or old-source continuation");
+        Check(output.Untouched(entry),"retired sampler cannot partially publish hook or axis output");
+        if(phase==0)Check(!state.bodies,"copy retirement never invokes the sampled body");
+        else Check(state.bodies>0,"body and final-release retirement execute the real private sampler");
+        if(phase==2)Check(state.created==1&&state.releases==1&&state.capture.expired(),entry==4?
+            "the last CopyChannels private bake-payload capture retires before commit":
+            "the actual last read-only sampler cache capture retires before output publication");
+        if(entry==3)Check(releaseBeforeDrawing&&print.Untouched(),"retired sampling and final release finish before any actual print drawing");
+        if(next){Check(KeyCount(next)==3&&replacement.applyCalls==0&&GetText(next,kIdStatus)==status&&GetText(next,kIdFrameEdit)==field&&
+                LocalWriteHistory(next)==std::array<std::uint64_t,2>{0,0},"old sampling cannot alter replacement controls, data or history");
+            ClickKey(next,1);Click(next,kIdDeleteKey);Check(replacement.applyCalls==1&&KeyCount(next)==2,"replacement remains editable after sampler guards and releases unwind");}
+        else Check(OwnedCurveWindow()==nullptr,"closed sampling leaves no registered ghost window");
+        state.armed=false;ce::CloseOwned(nullptr);for(auto& channel:host.data)channel.sample={};host.applied.clear();
+    }
+    Note("108 read-only sampler cache cases and 27 CopyChannels private bake-payload cases retain parameters and stop retired continuations");
+}
+void SamplerNestedOperations(){
+    for(int entry:{0,3,4})for(int phase=0;phase<3;++phase){
+        std::printf("sampler nested entry=%d phase=%d\n",entry,phase);std::fflush(stdout);
+        SamplerLifetimeState state;state.phase=phase;state.bake=entry==4;auto host=SamplerLifetimeHost(state);
+        unsigned preflightReads=0,preflightCopies=0;auto session=MakeSession(host);const auto read=session.sources[0].read;
+        session.sources[0].read=[&,read](auto& out,auto& error){
+            const bool preflight=state.observing&&entry==4&&host.applyCalls==0;
+            const auto copies=state.copies;const bool accepted=read(out,error);
+            if(preflight){++preflightReads;preflightCopies+=state.copies-copies;}return accepted;
+        };
+        const HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));Check(IsWindow(window),"nested sampler fixture opens before guards are tested");
+        ClickKey(window,1);SamplerMemoryPrint print,nestedPrint;PrepareSamplerEntry(window,entry,print);nestedPrint.Prepare(GetDlgItem(window,kIdCanvas),613);
+        const auto history=LocalWriteHistory(window);const auto payload=host.data;unsigned pumps=0;
+        state.action=[&]{
+            ++pumps;const auto copies=state.copies,bodies=state.bodies;const int reads=host.readCalls,applies=host.applyCalls;
+            SamplerOutput nested;SamplerMemoryPrint unused;InvokeSamplerEntry(window,0,unused,nested);
+            Check(nested.Untouched(0),"nested sample hooks cannot publish a value through an active read-only operation");
+            CurveEditorAxisState axis{};SendMessageW(window,WM_APP+394,0,reinterpret_cast<LPARAM>(&axis));
+            const HWND canvas=GetDlgItem(window,kIdCanvas);InvalidateRect(canvas,nullptr,FALSE);SendMessageW(canvas,WM_PAINT,0,0);
+            SendMessageW(canvas,WM_PRINTCLIENT,reinterpret_cast<WPARAM>(nestedPrint.dc),PRF_CLIENT);
+            Check(nestedPrint.Untouched(),"nested print cannot draw scalar fallback, a white background or any pixel into its caller's DIB");
+            for(int id:{kIdAddKey,kIdDeleteKey,kIdApplyKey,kIdUndo,kIdRedo,kIdBakeRun})Click(window,id);
+            SendMessageW(canvas,WM_KEYDOWN,VK_DELETE,0);ce::NotifySourceChanged(nullptr,"source");SendMessageW(window,WM_APP+401,0,0);
+            Check(state.copies==copies&&state.bodies==bodies&&host.readCalls==reads&&host.applyCalls==applies&&
+                LocalWriteHistory(window)==history&&SameWritePayload(host.data,payload),
+                "nested paint, print, hooks, edit commands and refresh cannot recurse or author through a sampler");
+        };
+        const int readsBefore=host.readCalls;SamplerOutput out;state.armed=state.observing=true;InvokeSamplerEntry(window,entry,print,out);state.observing=false;
+        const unsigned expectedPreflight=entry==4?1u:0u;
+        const bool isolated=pumps==1&&state.actions==1&&state.copies==unsigned(entry==4?3:1)&&!state.liveBodies&&
+            state.cacheFromPrivate==unsigned(entry==4)&&preflightReads==expectedPreflight&&preflightCopies==expectedPreflight;
+        if(!isolated){
+            std::printf("sampler nested failure entry=%d phase=%d pumps=%u actions=%u copies=%u bodies=%u live=%u host_reads=%d read_delta=%d expected_preflight=%u preflight_reads=%u preflight_copies=%u cache_from_private=%u\n",
+                entry,phase,pumps,state.actions,state.copies,state.bodies,state.liveBodies,host.readCalls,host.readCalls-readsBefore,
+                expectedPreflight,preflightReads,preflightCopies,state.cacheFromPrivate);std::fflush(stdout);
+        }
+        Check(isolated,"each sampler stage rejects recursion; accepted Bake owns one private payload, one sampling cache and one host preflight copy");
+        if(entry==4)Check(host.applyCalls==1&&host.data[0].track.keys.size()==5&&LocalWriteHistory(window)==std::array<std::uint64_t,2>{1,0},
+            "nested authoring refusal still permits the one original prepared bake commit");
+        else Check(host.applyCalls==0&&LocalWriteHistory(window)==history&&SameWritePayload(host.data,payload),"nested read-only sampling keeps both history stacks and canonical data");
+        Check(!g_curveFailNextAllocation,"nested sampler cases leave no armed allocation fault");
+        state.armed=false;ce::CloseOwned(nullptr);for(auto& channel:host.data)channel.sample={};host.applied.clear();
+    }
+    Note("sampler copy, body and final-release guards reject recursive readonly work and nested edits");
+}
+void SamplerFailuresFallbackAndRedo(){
+    for(int entry:{0,3})for(int response:{1,2}){
+        SamplerLifetimeState state;state.phase=3;state.response=response;auto host=SamplerLifetimeHost(state);
+        const HWND window=static_cast<HWND>(ce::Open(nullptr,MakeSession(host),false));Check(IsWindow(window),"native failure fixture opens with its real sampler");
+        SamplerMemoryPrint print;PrepareSamplerEntry(window,entry,print);const auto history=LocalWriteHistory(window);
+        SamplerOutput out;state.armed=state.observing=true;InvokeSamplerEntry(window,entry,print,out);state.armed=state.observing=false;
+        Check(state.copies==1&&state.bodies==1&&!state.liveBodies&&out.Untouched(entry)&&host.applyCalls==0&&LocalWriteHistory(window)==history,
+            "native runtime or OOM sampling failure cannot silently fall back to scalar Evaluate");
+        if(entry==3)Check(print.Untouched(),"native body runtime or OOM without retirement leaves every caller print pixel untouched");
+        ce::CloseOwned(nullptr);host.data[0].sample={};host.applied.clear();
+    }
+    {
+        auto host=TransportHost();const HWND window=static_cast<HWND>(ce::Open(nullptr,MakeSession(host),false));
+        const auto expected=ac::Evaluate(host.data[0].track,5);double sample[3]{5,-1234,-5678};
+        Check(SendMessageW(window,WM_APP+396,0,reinterpret_cast<LPARAM>(sample))!=0&&sample[1]==expected.value&&sample[2]==expected.derivative,
+            "an absent native sampler retains the ordinary scalar Evaluate fallback");ce::CloseOwned(nullptr);
+    }
+    for(int response:{0,1,2}){
+        SamplerLifetimeState state;state.phase=3;state.response=response;auto host=SamplerLifetimeHost(state);
+        const HWND window=static_cast<HWND>(ce::Open(nullptr,MakeSession(host),false));
+        ClickKey(window,1);Click(window,kIdDeleteKey);Click(window,kIdUndo);
+        Check(KeyCount(window)==3&&LocalWriteHistory(window)==std::array<std::uint64_t,2>{0,1},"failed sampler bake starts with its original three keys and one real redo");
+        SamplerMemoryPrint print;PrepareSamplerEntry(window,4,print);const auto history=LocalWriteHistory(window);const auto data=host.data;const int applies=host.applyCalls;
+        host.failApply=response==0;SamplerOutput out;state.armed=state.observing=true;InvokeSamplerEntry(window,4,print,out);state.armed=state.observing=false;
+        Check((response==0?state.bodies>=5:state.bodies==1)&&!state.liveBodies&&host.applyCalls==applies+int(response==0)&&
+            SameWritePayload(host.data,data)&&LocalWriteHistory(window)==history,
+            "a refused apply or failed private bake sampler keeps canonical data and the retained redo node");
+        const int refusedApplies=host.applyCalls;host.failApply=false;
+        Click(window,kIdRedo);Check(host.applyCalls==refusedApplies+1&&LocalWriteHistory(window)==std::array<std::uint64_t,2>{1,0},"rejected bake sampling leaves its original redo usable once");
+        ce::CloseOwned(nullptr);host.data[0].sample={};host.applied.clear();
+    }
+    Note("native failure is distinct from scalar fallback and rejected bake sampling preserves redo");
+}
+void SamplerAcceptedBakeRecovery(){
+    for(int failure=0;failure<3;++failure){
+        SamplerLifetimeState state;state.phase=3;auto host=SamplerLifetimeHost(state);bool armed=false,failSelection=false;unsigned selectionFailures=0;
+        auto session=MakeSession(host);const auto apply=session.sources[0].apply;
+        session.sources[0].readKeySelection=[](const std::string&){return std::vector<int>{10};};
+        session.sources[0].writeKeySelection=[&](const auto&,const auto&){if(failSelection){failSelection=false;++selectionFailures;throw std::runtime_error("accepted bake selection UI failed");}};
+        session.sources[0].apply=[&,apply](const auto& data,auto& error){const bool accepted=apply(data,error);
+            if(armed&&accepted){if(failure==0)host.failRead=true;else if(failure==1)g_curveFailNextAllocation=true;else failSelection=true;}return accepted;};
+        const HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));SamplerMemoryPrint print;PrepareSamplerEntry(window,4,print);
+        const auto failures=g_curveAllocationFailures;SamplerOutput out;armed=state.observing=true;InvokeSamplerEntry(window,4,print,out);armed=state.observing=false;
+        Check(host.applyCalls==1&&host.data[0].track.keys.size()==5&&LocalWriteHistory(window)==std::array<std::uint64_t,2>{1,0}&&!g_curveFailNextAllocation,
+            "accepted bake retains its five prepared keys and one history node through canonical read or post-apply OOM failure");
+        if(failure==1)Check(g_curveAllocationFailures==failures+1,"accepted bake consumes the one real post-publication allocation failure");
+        if(failure==2)Check(selectionFailures==1&&!failSelection,"accepted bake actually reaches and contains its native selection-display callback failure");
+        host.failRead=false;ce::NotifySourceChanged(nullptr,"source");SendMessageW(window,WM_APP+401,0,0);
+        Check(host.applyCalls==1&&LocalWriteHistory(window)==std::array<std::uint64_t,2>{1,0},"read-only bake recovery never retries the accepted apply");
+        Click(window,kIdUndo);Check(host.applyCalls==2&&host.data[0].track.keys.size()==3,"accepted bake remains one complete undo step");
+        ce::CloseOwned(nullptr);host.data[0].sample={};host.applied.clear();
+    }
+    Note("accepted native bake sampling does not retry apply after display recovery failures");
+}
+bool SamplerKeysEqual(const std::vector<ac::Key>& a,const std::vector<ac::Key>& b){
+    if(a.size()!=b.size())return false;
+    for(std::size_t i=0;i<a.size();++i)if(a[i].frame!=b[i].frame||a[i].value!=b[i].value||a[i].inSlope!=b[i].inSlope||a[i].outSlope!=b[i].outSlope||
+        a[i].inWeight!=b[i].inWeight||a[i].outWeight!=b[i].outWeight||a[i].tangent!=b[i].tangent||a[i].interpolation!=b[i].interpolation)return false;
+    return true;
+}
+void SamplerHandleCancellation(){
+    for(int entry:{0,2})for(int phase=0;phase<3;++phase)for(int action=0;action<4;++action){
+        std::printf("sampler preview entry=%d phase=%d action=%d\n",entry,phase,action);std::fflush(stdout);
+        SamplerLifetimeState state;state.phase=phase;state.previewAware=true;auto host=SamplerLifetimeHost(state),replacement=TransportHost();
+        for(auto& key:host.data[0].track.keys)key.tangent=ac::Tangent::Free;
+        host.data[0].track.keys[1].outWeight=0.3;const auto canonical=host.data[0].track.keys;
+        const HWND window=static_cast<HWND>(ce::Open(nullptr,MakeSession(host),false));ClickKey(window,1);
+        const HWND canvas=GetDlgItem(window,kIdCanvas);const POINT key=AskPoint(window,kHookPointForKey,1);
+        const POINT handle=AskPoint(window,kHookPointForFrame,13),target=AskPoint(window,kHookPointForFrame,16);
+        SendMessageW(canvas,WM_LBUTTONDOWN,MK_LBUTTON,MAKELPARAM(handle.x,key.y));
+        SendMessageW(canvas,WM_MOUSEMOVE,MK_LBUTTON,MAKELPARAM(target.x,key.y-20));
+        double previewValue[3]{15,0,0};Check(SendMessageW(window,WM_APP+396,0,reinterpret_cast<LPARAM>(previewValue))!=0,
+            "read the actual native sampler's in-place Handle preview before arming");
+        Check(GetCapture()==canvas&&state.bodyChannel&&state.bodyChannel->id=="sample.native"&&
+            !SamplerKeysEqual(state.bodyChannel->track.keys,canonical),"real handle mouse messages prepare an unpublished in-place preview");
+        const auto* borrowed=state.bodyChannel;const auto* storage=borrowed->track.keys.data();const auto preview=borrowed->track.keys;
+        ac::Track baseTrack;baseTrack.keys=canonical;const auto base=ac::Evaluate(baseTrack,15),actual=ac::Evaluate(borrowed->track,15);
+        Check(previewValue[1]==actual.value&&previewValue[2]==actual.derivative&&(actual.value!=base.value||actual.derivative!=base.derivative)&&host.applyCalls==0,
+            "the native sampler reads the real preview geometry rather than a synthetic value or the unchanged host base");
+        const auto token=ce::CaptureWindowSession(window);const auto history=LocalWriteHistory(window);HWND next=nullptr;
+        state.action=[&]{
+            Check(borrowed->track.keys.data()==storage&&SamplerKeysEqual(borrowed->track.keys,preview),"sampler callback enters with the borrowed preview key storage");
+            if(action==0)SendMessageW(canvas,WM_KILLFOCUS,0,0);
+            else if(action==1){SetCapture(GetDlgItem(window,kIdFrameEdit));Check(GetCapture()!=canvas,"a real owned capture transfer cancels the original preview");}
+            else {if(action==3)ce::CloseOwned(nullptr);next=static_cast<HWND>(ce::Open(nullptr,MakeSession(replacement),false));Check(IsWindow(next),"preview retirement installs its replacement source");}
+            Check(borrowed->track.keys.data()==storage&&SamplerKeysEqual(borrowed->track.keys,preview),
+                "focus, capture cancellation or Open cannot swap keys while a sampler borrows the preview");
+        };
+        SamplerMemoryPrint print;SamplerOutput output;state.armed=state.observing=true;InvokeSamplerEntry(window,entry,print,output);state.observing=false;
+        Check(state.actions==1&&state.copies==1&&!state.liveBodies&&output.Untouched(entry)&&host.applyCalls==0,
+            "cancelled direct or nested-extent handle sampling does not publish its old hook result or prepared edit");
+        if(action<2){
+            Check(ce::IsWindowSessionCurrent(window,token)&&LocalWriteHistory(window)==history&&SamplerKeysEqual(host.data[0].track.keys,canonical),
+                "same-session cancellation keeps canonical data and both history stacks");
+            double sample[3]{5,0,0};SendMessageW(window,WM_APP+396,0,reinterpret_cast<LPARAM>(sample));
+            Check(state.bodyChannel&&SamplerKeysEqual(state.bodyChannel->track.keys,canonical),"deferred preview restore occurs only after the sampling borrow ends");
+            SendMessageW(canvas,WM_MOUSEMOVE,MK_LBUTTON,MAKELPARAM(target.x+7,key.y-33));SendMessageW(canvas,WM_LBUTTONUP,0,0);
+            Check(host.applyCalls==0&&LocalWriteHistory(window)==history,"old mouse continuation cannot commit a cancelled preview");
+        }else{
+            Check(!ce::IsWindowSessionCurrent(window,token)&&next&&KeyCount(next)==3&&replacement.applyCalls==0&&
+                replacement.data[0].track.keys[0].value==1&&replacement.data[0].track.keys[1].value==3,
+                "old dragBase is never restored into a same-HWND or recreated replacement source");
+            ClickKey(next,1);Click(next,kIdDeleteKey);Check(replacement.applyCalls==1&&KeyCount(next)==2,"replacement remains editable after preview borrow retirement");
+        }
+        state.armed=false;ce::CloseOwned(nullptr);host.data[0].sample={};host.applied.clear();
+    }
+    Note("sampler borrows defer same-session preview restoration and never restore old dragBase into a replacement");
+}
+struct SamplerPaintCounter {
+    HWND canvas=nullptr;unsigned paints=0;
+    static LRESULT CALLBACK Observe(HWND h,UINT m,WPARAM w,LPARAM l,UINT_PTR,DWORD_PTR data){
+        if(m==WM_PAINT)++reinterpret_cast<SamplerPaintCounter*>(data)->paints;return DefSubclassProc(h,m,w,l);
+    }
+    explicit SamplerPaintCounter(HWND h):canvas(h){Check(SetWindowSubclass(h,Observe,0x73b8,reinterpret_cast<DWORD_PTR>(this))!=FALSE,"observe only the owned sampler canvas paint messages");}
+    ~SamplerPaintCounter(){if(IsWindow(canvas))RemoveWindowSubclass(canvas,Observe,0x73b8);}
+};
+void SamplerDeferredRedrawAndGeometry(){
+    for(int phase=0;phase<3;++phase){
+        std::printf("sampler deferred entry=0 phase=%d\n",phase);std::fflush(stdout);
+        SamplerLifetimeState state;state.phase=phase;auto host=SamplerLifetimeHost(state);
+        const HWND window=static_cast<HWND>(ce::Open(nullptr,MakeSession(host),false));const HWND canvas=GetDlgItem(window,kIdCanvas);
+        SamplerPaintCounter paints(canvas);SamplerMemoryPrint baselinePrint;baselinePrint.Prepare(canvas);SamplerOutput baseline;
+        ShowWindow(window,SW_SHOWNOACTIVATE);
+        Check(IsWindowVisible(window)&&IsWindowVisible(canvas),"native deferred paint exercises a visible owned editor and canvas");
+        UpdateWindow(window);UpdateWindow(canvas);
+        InvokeSamplerEntry(window,0,baselinePrint,baseline);Check(baseline.result!=0,"establish the unarmed sampler/redraw baseline");
+        SendMessageW(canvas,WM_PAINT,0,0);ValidateRect(canvas,nullptr);const auto history=LocalWriteHistory(window);
+        RECT probeDamage{4,4,29,31},observedDamage{};
+        const BOOL probeInvalidated=InvalidateRect(canvas,&probeDamage,FALSE);
+        const BOOL probeUpdated=GetUpdateRect(canvas,&observedDamage,FALSE);
+        const BOOL probeValidated=ValidateRect(canvas,nullptr);
+        const BOOL probeAfter=GetUpdateRect(canvas,nullptr,FALSE);
+        std::printf("sampler native damage phase=%d invalidate=%u update=%u rect=%ld,%ld,%ld,%ld validate=%u after=%u window_visible=%u canvas_visible=%u paints=%u\n",
+            phase,unsigned(probeInvalidated!=FALSE),unsigned(probeUpdated!=FALSE),observedDamage.left,observedDamage.top,observedDamage.right,observedDamage.bottom,
+            unsigned(probeValidated!=FALSE),unsigned(probeAfter!=FALSE),unsigned(IsWindowVisible(window)!=FALSE),unsigned(IsWindowVisible(canvas)!=FALSE),paints.paints);
+        std::fflush(stdout);
+        state.action=[&]{
+            const auto bodies=state.bodies;const auto before=paints.paints;RECT damage{4,4,29,31};
+            Check(InvalidateRect(canvas,&damage,FALSE)!=FALSE,"callback explicitly requests owned canvas damage");UpdateWindow(canvas);
+            if(paints.paints==before)SendMessageW(canvas,WM_PAINT,0,0);
+            Check(paints.paints>before&&state.bodies==bodies,"nested native paint validates damage without recursively sampling");
+        };
+        SamplerMemoryPrint print;SamplerOutput output;state.armed=state.observing=true;InvokeSamplerEntry(window,0,print,output);state.armed=state.observing=false;
+        const BOOL deferredUpdate=GetUpdateRect(canvas,nullptr,FALSE);
+        const bool deferredComplete=state.actions==1&&state.copies==1&&!state.liveBodies&&output.result!=0&&deferredUpdate;
+        if(!deferredComplete){
+            std::printf("sampler deferred failure entry=0 phase=%d actions=%u copies=%u bodies=%u live=%u output=%lld update=%u paints=%u window_visible=%u canvas_visible=%u\n",
+                phase,state.actions,state.copies,state.bodies,state.liveBodies,static_cast<long long>(output.result),unsigned(deferredUpdate!=FALSE),
+                paints.paints,unsigned(IsWindowVisible(window)!=FALSE),unsigned(IsWindowVisible(canvas)!=FALSE));std::fflush(stdout);
+        }
+        Check(deferredComplete,
+            "the outer sampler preserves a deferred redraw requested and pumped by its callback");
+        const auto before=paints.paints,copies=state.copies,bodies=state.bodies,live=state.liveBodies;
+        state.observing=true;UpdateWindow(canvas);if(paints.paints==before)SendMessageW(canvas,WM_PAINT,0,0);state.observing=false;
+        Check(paints.paints>before&&!GetUpdateRect(canvas,nullptr,FALSE)&&state.copies==copies+1&&state.bodies>bodies&&state.liveBodies==live&&
+            host.applyCalls==0&&LocalWriteHistory(window)==history,
+            "the deferred normal paint actually resamples its owned curve after guards unwind rather than merely validating damage");
+        baselinePrint.Clear();SamplerOutput printed;const auto printBodies=state.bodies;state.observing=true;
+        InvokeSamplerEntry(window,3,baselinePrint,printed);state.observing=false;
+        Check(state.bodies>printBodies&&!baselinePrint.Untouched(),"the resumed native print path samples and renders into its owned DIB");
+        ce::CloseOwned(nullptr);host.data[0].sample={};host.applied.clear();
+    }
+    for(int entry:{1,2,3})for(int phase=0;phase<3;++phase){
+        std::printf("sampler geometry entry=%d phase=%d\n",entry,phase);std::fflush(stdout);
+        SamplerLifetimeState state;state.phase=phase;auto host=SamplerLifetimeHost(state);
+        const HWND window=static_cast<HWND>(ce::Open(nullptr,MakeSession(host),false));SamplerMemoryPrint print;PrepareSamplerEntry(window,entry,print);
+        const HWND canvas=GetDlgItem(window,kIdCanvas);const auto token=ce::CaptureWindowSession(window);const auto history=LocalWriteHistory(window);
+        RECT baselineClient{};Check(GetClientRect(canvas,&baselineClient)!=FALSE,"capture the actual canvas client before arming resize");
+        CurveEditorAxisState baselineAxis{};Check(SendMessageW(window,WM_APP+394,0,reinterpret_cast<LPARAM>(&baselineAxis))!=0,"capture baseline axes before arming resize");
+        SamplerOutput baseline;InvokeSamplerEntry(window,entry,print,baseline);
+        Check(entry==3?!print.Untouched():baseline.result!=0,"establish unarmed key/axis/print geometry before resizing callbacks");
+        std::vector<unsigned> baselinePixels;if(entry==3){GdiFlush();const auto* pixels=static_cast<const unsigned*>(print.bits);baselinePixels.assign(pixels,pixels+std::size_t(print.width)*print.height);}print.Clear();
+        state.action=[&]{RECT client{};GetClientRect(canvas,&client);
+            Check(SetWindowPos(canvas,nullptr,0,0,client.right+71,client.bottom+17,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE)!=FALSE,
+                "sampler callback resizes the same native canvas without replacing its Session");};
+        SamplerOutput output;state.armed=state.observing=true;InvokeSamplerEntry(window,entry,print,output);state.armed=state.observing=false;
+        Check(state.actions==1&&state.copies==1&&ce::IsWindowSessionCurrent(window,token)&&output.Untouched(entry)&&
+            host.applyCalls==0&&LocalWriteHistory(window)==history,"geometry changes abort old key/axis coordinates without a mixed-revision result");
+        if(entry==3)Check(print.Untouched(),"same-HWND resize during copy, body or final release publishes no mixed-geometry print pixels");
+        RECT freshClient{};Check(GetClientRect(canvas,&freshClient)!=FALSE&&freshClient.right==baselineClient.right+71&&freshClient.bottom==baselineClient.bottom+17,
+            "the same native canvas retains the callback's exact larger client dimensions");
+        CurveEditorAxisState freshAxis{};Check(SendMessageW(window,WM_APP+394,0,reinterpret_cast<LPARAM>(&freshAxis))!=0,"read the current post-resize coordinate system");
+        Check(freshAxis.plot.left==baselineAxis.plot.left&&freshAxis.plot.top==baselineAxis.plot.top&&
+            freshAxis.plot.right-baselineAxis.plot.right==freshClient.right-baselineClient.right&&
+            freshAxis.plot.bottom-baselineAxis.plot.bottom==freshClient.bottom-baselineClient.bottom,
+            "fresh axis right and bottom follow the measured client changes exactly");
+        SamplerOutput fresh;InvokeSamplerEntry(window,entry,print,fresh);
+        if(entry==1){const int oldX=static_cast<short>(LOWORD(baseline.result)),newX=static_cast<short>(LOWORD(fresh.result));
+            const double ratio=double(oldX-baselineAxis.plot.left)/(baselineAxis.plot.right-baselineAxis.plot.left);
+            const double expectedX=freshAxis.plot.left+ratio*(freshAxis.plot.right-freshAxis.plot.left);
+            Check(fresh.result!=0&&newX>oldX&&std::fabs(newX-expectedX)<=2,
+                "fresh KeyPoint moves with the larger plot rather than returning its cached baseline coordinate");}
+        else if(entry==2)Check(fresh.result!=0&&fresh.axis.plot.right==freshAxis.plot.right&&fresh.axis.plot.bottom==freshAxis.plot.bottom,
+            "the fresh public axis hook publishes the new measured plot bounds");
+        else {GdiFlush();const auto* pixels=static_cast<const unsigned*>(print.bits);
+            Check(!print.Untouched()&&!std::equal(baselinePixels.begin(),baselinePixels.end(),pixels),
+                "fresh native print renders the changed geometry rather than replaying the original DIB");}
+        ce::CloseOwned(nullptr);host.data[0].sample={};host.applied.clear();
+    }
+    Note("nested redraw is deferred and same-HWND geometry changes invalidate prepared sampling output");
+}
+void SamplerLifetime(){
+    SamplerCopyBoundary();SamplerReadAndBakeLifetime();SamplerNestedOperations();
+    SamplerFailuresFallbackAndRedo();SamplerAcceptedBakeRecovery();SamplerHandleCancellation();SamplerDeferredRedrawAndGeometry();
+}
 // Phase-A transport writer probe: deliberately no lifetime-changing callback.
 // The old direct std::function call is safe here and must fail the contract
 // because it skips this copy constructor, including its prearranged failure.
@@ -6309,6 +6835,18 @@ int main(int argc,char** argv) {
     // Optional same-order diagnostic for a prior 0xC0000374 full-suite exit.
     // It retains every assertion and validates the process heap at group ends.
     g_validateHeap=argc>1&&std::string(argv[1])=="--heap-validate-all";
+    if(argc>1&&std::string(argv[1])=="--sampler-handle-only"){
+        SamplerHandleCancellation();std::printf("curve sampler handle: %d checks\n",g_checks);return 0;
+    }
+    if(argc>1&&std::string(argv[1])=="--sampler-rendering-only"){
+        SamplerDeferredRedrawAndGeometry();std::printf("curve sampler rendering: %d checks\n",g_checks);return 0;
+    }
+    if(argc>1&&std::string(argv[1])=="--sampler-lifetime"){
+        SamplerLifetime();std::printf("curve sampler lifetime: %d checks\n",g_checks);return 0;
+    }
+    if(argc>1&&std::string(argv[1])=="--sampler-copy-boundary"){
+        SamplerCopyBoundary();std::printf("curve sampler copy boundary: %d checks\n",g_checks);return 0;
+    }
     if(argc>1&&std::string(argv[1])=="--subdivision-lifetime"){
         SubdivisionLifetime();
         std::printf("curve subdivision lifetime: %d checks\n",g_checks);return 0;
@@ -6407,6 +6945,7 @@ int main(int argc,char** argv) {
     TransportCallbackLifetime();TransportFailuresAndMissing();TransportNestedAndSessionCache();TransportInvalidFramesAndMmdSource();TransportPaintStateAndDenseTicks();
     TransportWriteLifetime();
     SubdivisionLifetime();
+    SamplerLifetime();
     BakeSelectedChannels();
     NativeSubdivisionRoute();NativeSampleBake();
     DuplicateFrameSelectsExisting();
