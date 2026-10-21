@@ -4561,6 +4561,385 @@ void SeedSubdivisionRedo(HWND window){
     Check(KeyCount(window)==2&&LocalWriteHistory(window)==std::array<std::uint64_t,2>{0,1},
         "subdivision rejection fixture starts with a real retained redo node");
 }
+// Safe geometry Phase A changes only the width of its own canvas. It never
+// closes/replaces a Session or writes host data from a provider callback.
+struct SubdivisionGeometryState {
+    int route=-1;bool armed=false,observing=false,parameters=true,resized=false;
+    HWND canvas=nullptr;HostSource* host=nullptr;
+    unsigned actions=0,sampleCopies=0,sampleBodies=0,liveSamples=0;
+    unsigned subdivisionCopies=0,subdivisionBodies=0,liveSubdivisions=0,subdivisionReleases=0;
+    unsigned sampleCopiesAtResize=0,sampleBodiesAtResize=0,subdivisionCopiesAtResize=0,subdivisionBodiesAtResize=0;
+    unsigned paints=0,paintsAtResize=0;int readsAtResize=-1,lastFrame=-1;
+    std::size_t lastChannel=static_cast<std::size_t>(-1);RECT before{},after{};
+    void Resize()noexcept{
+        armed=false;++actions;sampleCopiesAtResize=sampleCopies;sampleBodiesAtResize=sampleBodies;
+        subdivisionCopiesAtResize=subdivisionCopies;subdivisionBodiesAtResize=subdivisionBodies;
+        paintsAtResize=paints;readsAtResize=host->readCalls;
+        const BOOL queried=GetClientRect(canvas,&before);
+        const BOOL moved=SetWindowPos(canvas,nullptr,0,0,before.right+71,before.bottom,
+            SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
+        const BOOL measured=GetClientRect(canvas,&after);
+        resized=queried&&moved&&measured&&after.right==before.right+71&&after.bottom==before.bottom;
+    }
+};
+struct SubdivisionGeometrySample {
+    SubdivisionGeometryState* state;bool owned=false;
+    explicit SubdivisionGeometrySample(SubdivisionGeometryState& value):state(&value){}
+    SubdivisionGeometrySample(const SubdivisionGeometrySample& other):state(other.state),owned(state->observing){
+        if(state->observing)++state->sampleCopies;
+        if(state->armed&&state->route==0)state->Resize();
+    }
+    ac::Sample operator()(const ce::Channel& channel,double frame)const{
+        if(state->observing){++state->sampleBodies;if(!owned)++state->liveSamples;
+            state->parameters&=channel.id=="native"&&channel.track.keys.size()>=2&&
+                channel.track.keys.front().frame==0&&channel.track.keys.back().frame==20;
+            for(const auto& key:channel.track.keys)state->parameters&=key.value==7;}
+        if(state->armed&&state->route==1)state->Resize();
+        return ac::Evaluate(channel.track,frame);
+    }
+};
+struct SubdivisionGeometryProvider {
+    SubdivisionGeometryState* state;bool owned=false;mutable bool invoked=false;
+    explicit SubdivisionGeometryProvider(SubdivisionGeometryState& value):state(&value){}
+    SubdivisionGeometryProvider(const SubdivisionGeometryProvider& other):state(other.state),owned(state->observing){
+        if(state->observing)++state->subdivisionCopies;
+        if(state->armed&&state->route==2)state->Resize();
+    }
+    ~SubdivisionGeometryProvider(){
+        if(state->observing&&owned&&invoked)++state->subdivisionReleases;
+        if(state->armed&&state->route==4&&owned&&invoked)state->Resize();
+    }
+    bool operator()(std::vector<ce::Channel>& channels,std::size_t channel,int frame,
+        std::size_t& index,std::wstring& error)const{
+        invoked=true;if(state->observing){++state->subdivisionBodies;if(!owned)++state->liveSubdivisions;
+            state->lastChannel=channel;state->lastFrame=frame;}
+        const bool valid=channel<channels.size()&&channel==0&&channels[channel].id=="native"&&frame>0&&frame<20;
+        state->parameters&=valid;if(!valid){error=L"flat native geometry fixture received a different target";return false;}
+        const auto nativeValue=ac::Evaluate(channels[channel].track,frame);std::string detail;
+        if(ac::InsertPreservingShape(channels[channel].track,frame,index,detail)!=ac::InsertResult::Inserted){
+            error=L"flat native geometry fixture could not prepare its key";return false;}
+        channels[channel].track.keys[index].value=nativeValue.value;
+        state->parameters&=index<channels[channel].track.keys.size()&&channels[channel].track.keys[index].frame==frame&&
+            channels[channel].track.keys[index].value==7&&nativeValue.derivative==0;
+        if(state->armed&&state->route==3)state->Resize();return true;
+    }
+};
+struct SubdivisionGeometryPaintCounter {
+    SubdivisionGeometryState& state;
+    static LRESULT CALLBACK Observe(HWND h,UINT m,WPARAM w,LPARAM l,UINT_PTR,DWORD_PTR data){
+        if(m==WM_PAINT)++reinterpret_cast<SubdivisionGeometryState*>(data)->paints;return DefSubclassProc(h,m,w,l);
+    }
+    explicit SubdivisionGeometryPaintCounter(SubdivisionGeometryState& value):state(value){
+        Check(SetWindowSubclass(state.canvas,Observe,0x73c9,reinterpret_cast<DWORD_PTR>(&state))!=FALSE,
+            "observe paint messages of only the safe geometry fixture's own canvas");
+    }
+    ~SubdivisionGeometryPaintCounter(){if(IsWindow(state.canvas))RemoveWindowSubclass(state.canvas,Observe,0x73c9);}
+};
+HostSource SubdivisionGeometryHost(SubdivisionGeometryState& state){
+    auto host=SubdivisionHost();for(auto& key:host.data[0].track.keys){key.value=7;key.interpolation=ac::Interpolation::Linear;key.tangent=ac::Tangent::Free;key.inSlope=key.outSlope=0;}
+    host.data[0].sample=SubdivisionGeometrySample(state);return host;
+}
+bool SubdivisionGeometryWriterBoundary(){
+    bool all=true;
+    // Once apply has been entered, a view-only change must not undo, retry or
+    // hide an accepted data write. Post-accept canonical reads share that rule.
+    for(int phase=0;phase<3;++phase){
+        std::printf("subdivision writer geometry phase=%d\n",phase);std::fflush(stdout);
+        SubdivisionGeometryState state;state.route=6;auto host=SubdivisionGeometryHost(state);state.host=&host;
+        unsigned writerCalls=0,acceptedWrites=0,postWriteReads=0;bool writerAccepted=false,inputValid=true;
+        auto session=MakeSession(host);const auto apply=session.sources[0].apply;const auto read=session.sources[0].read;
+        session.sources[0].subdivide=SubdivisionGeometryProvider(state);
+        session.sources[0].apply=[&,apply](const auto& channels,auto& error){
+            const bool probe=state.observing;
+            if(probe){++writerCalls;inputValid&=channels.size()==1&&channels[0].id=="native"&&channels[0].track.keys.size()==3;
+                if(inputValid){const auto& keys=channels[0].track.keys;inputValid&=keys[0].frame==0&&keys[1].frame==10&&keys[2].frame==20&&
+                    keys[0].value==7&&keys[1].value==7&&keys[2].value==7;}
+                if(state.armed&&phase==0)state.Resize();}
+            const bool accepted=apply(channels,error);
+            if(probe&&accepted){++acceptedWrites;writerAccepted=true;if(state.armed&&phase==1)state.Resize();}
+            return accepted;
+        };
+        session.sources[0].read=[&,read](auto& channels,auto& error){
+            const bool accepted=read(channels,error);
+            if(state.observing&&writerAccepted){++postWriteReads;if(accepted&&state.armed&&phase==2)state.Resize();}
+            return accepted;
+        };
+        const HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
+        Check(IsWindow(window)&&KeyCount(window)==2,"writer geometry boundary opens its original native two-key source");
+        state.canvas=GetDlgItem(window,kIdCanvas);Check(IsWindow(state.canvas),"writer geometry boundary owns its canvas");
+        SubdivisionGeometryPaintCounter paints(state);ShowWindow(window,SW_SHOWNOACTIVATE);
+        Check(IsWindowVisible(window)&&IsWindowVisible(state.canvas),"writer boundary paints only its own visible windows");
+        UpdateWindow(window);UpdateWindow(state.canvas);ClickKey(window,0);Click(window,kIdDeleteKey);Click(window,kIdUndo);
+        Check(KeyCount(window)==2&&LocalWriteHistory(window)==std::array<std::uint64_t,2>{0,1},
+            "writer boundary starts with the original native data and one real redo");
+        const auto data=host.data;const int applies=host.applyCalls;const auto token=ce::CaptureWindowSession(window);
+        const POINT point=AskPoint(window,kHookPointForFrame,10);UpdateWindow(state.canvas);ValidateRect(state.canvas,nullptr);
+        state.armed=state.observing=true;TriggerSubdivision(window,point);state.armed=state.observing=false;
+        const auto history=LocalWriteHistory(window);
+        const bool exact=host.data.size()==1&&host.data[0].id=="native"&&host.data[0].track.keys.size()==3&&
+            host.data[0].track.keys[0].frame==0&&host.data[0].track.keys[1].frame==10&&host.data[0].track.keys[2].frame==20&&
+            host.data[0].track.keys[0].value==7&&host.data[0].track.keys[1].value==7&&host.data[0].track.keys[2].value==7;
+        const auto acceptedData=host.data;
+        const bool committed=ce::IsWindowSessionCurrent(window,token)&&state.actions==1&&state.resized&&state.parameters&&inputValid&&
+            writerCalls==1&&acceptedWrites==1&&postWriteReads==1&&host.applyCalls==applies+1&&KeyCount(window)==3&&exact&&
+            history==std::array<std::uint64_t,2>{1,0};
+        ce::NotifySourceChanged(nullptr,"source");SendMessageW(window,WM_APP+401,0,0);UpdateWindow(state.canvas);
+        const bool noRetry=host.applyCalls==applies+1&&LocalWriteHistory(window)==history&&SameWritePayload(host.data,acceptedData);
+        const int beforeUndo=host.applyCalls;Click(window,kIdUndo);
+        const bool undone=host.applyCalls==beforeUndo+1&&KeyCount(window)==2&&SameWritePayload(host.data,data)&&
+            LocalWriteHistory(window)==std::array<std::uint64_t,2>{0,1};
+        Click(window,kIdRedo);
+        const bool redone=host.applyCalls==beforeUndo+2&&KeyCount(window)==3&&SameWritePayload(host.data,acceptedData)&&
+            LocalWriteHistory(window)==std::array<std::uint64_t,2>{1,0};
+        std::printf("subdivision writer observation phase=%d actions=%u resized=%u writers=%u accepted=%u canonical_reads=%u width=%ld,%ld height=%ld,%ld history=%llu,%llu committed=%u no_retry=%u undo=%u redo=%u parameters=%u\n",
+            phase,state.actions,unsigned(state.resized),writerCalls,acceptedWrites,postWriteReads,state.before.right,state.after.right,state.before.bottom,state.after.bottom,
+            static_cast<unsigned long long>(history[0]),static_cast<unsigned long long>(history[1]),unsigned(committed),unsigned(noRetry),unsigned(undone),unsigned(redone),unsigned(inputValid&&state.parameters));
+        std::fflush(stdout);all&=committed&&noRetry&&undone&&redone;
+        ce::CloseOwned(nullptr);host.data[0].sample={};host.applied.clear();
+    }
+    return all;
+}
+struct SubdivisionWriterCopyFixture {
+    bool external;
+    SubdivisionGeometryState geometry;
+    HostSource local;
+    ExternalCurveJournal journal;
+    unsigned copies=0,bodies=0,liveBodies=0;bool inputValid=true;
+    explicit SubdivisionWriterCopyFixture(bool value):external(value),local(SubdivisionGeometryHost(geometry)){
+        geometry.route=6;
+        if(external)journal.sources[0].data=std::move(local.data);
+        geometry.host=external?&journal.sources[0]:&local;
+    }
+    const std::vector<ce::Channel>& Data()const{return external?journal.sources[0].data:local.data;}
+    unsigned Applies()const{return external?journal.applies:static_cast<unsigned>(local.applyCalls);}
+    std::array<std::uint64_t,2> History(HWND window)const{
+        if(!external)return LocalWriteHistory(window);
+        return {static_cast<std::uint64_t>(journal.cursor),static_cast<std::uint64_t>(journal.nodes.size()-journal.cursor)};
+    }
+    bool ExactInsertion()const{
+        const auto& data=Data();
+        return data.size()==1&&data[0].id=="native"&&data[0].track.keys.size()==3&&
+            data[0].track.keys[0].frame==0&&data[0].track.keys[1].frame==10&&data[0].track.keys[2].frame==20&&
+            data[0].track.keys[0].value==7&&data[0].track.keys[1].value==7&&data[0].track.keys[2].value==7;
+    }
+};
+struct SubdivisionWriterCopyProvider {
+    SubdivisionWriterCopyFixture* fixture;
+    decltype(ce::Source::apply) apply;
+    bool owned=false;
+    SubdivisionWriterCopyProvider(SubdivisionWriterCopyFixture& value,decltype(ce::Source::apply) callback)
+        :fixture(&value),apply(std::move(callback)){}
+    SubdivisionWriterCopyProvider(const SubdivisionWriterCopyProvider& other)
+        :fixture(other.fixture),apply(other.apply),owned(fixture->geometry.observing){
+        if(fixture->geometry.observing)++fixture->copies;
+        // The writer body has not been dispatched. Only copying its private
+        // std::function target changes the existing canvas; the Session lives.
+        if(fixture->geometry.armed)fixture->geometry.Resize();
+    }
+    bool operator()(const std::vector<ce::Channel>& channels,std::wstring& error)const{
+        if(fixture->geometry.observing){
+            ++fixture->bodies;if(!owned)++fixture->liveBodies;
+            bool exact=channels.size()==1&&channels[0].id=="native"&&channels[0].track.keys.size()==3;
+            if(exact){const auto& keys=channels[0].track.keys;exact=keys[0].frame==0&&keys[1].frame==10&&keys[2].frame==20&&
+                keys[0].value==7&&keys[1].value==7&&keys[2].value==7;}
+            fixture->inputValid&=exact;
+        }
+        return apply(channels,error);
+    }
+};
+void SubdivisionWriterCopySafe(){
+    struct Observation {
+        bool external=false,armed=false,current=false,resized=false,unchanged=false,journalUnchanged=false;
+        bool parameters=false,owned=false,redo=false,recovery=false,normal=false,pending=false,noPaint=false,repaint=false;
+        unsigned copies=0,bodies=0,applies=0,actions=0;int keys=0,frame=-1;
+        std::array<std::uint64_t,2> history{};
+    };
+    std::vector<Observation> observations;
+    for(bool external:{false,true})for(bool armed:{false,true}){
+        std::printf("subdivision writer copy safe external=%u armed=%u\n",unsigned(external),unsigned(armed));std::fflush(stdout);
+        SubdivisionWriterCopyFixture fixture(external);auto& state=fixture.geometry;
+        auto session=external?fixture.journal.Session():MakeSession(fixture.local);
+        const std::string sourceId=session.sources[0].id;
+        session.sources[0].subdivide=SubdivisionGeometryProvider(state);
+        session.sources[0].apply=SubdivisionWriterCopyProvider(fixture,std::move(session.sources[0].apply));
+        const HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
+        Check(IsWindow(window)&&KeyCount(window)==2,"writer-copy geometry fixture opens its original native source unarmed");
+        if(external)fixture.journal.window=window;
+        state.canvas=GetDlgItem(window,kIdCanvas);Check(IsWindow(state.canvas),"writer-copy geometry fixture owns its canvas");
+        SubdivisionGeometryPaintCounter paints(state);ShowWindow(window,SW_SHOWNOACTIVATE);
+        Check(IsWindowVisible(window)&&IsWindowVisible(state.canvas),"writer-copy geometry fixture paints only its own visible windows");
+        UpdateWindow(window);UpdateWindow(state.canvas);
+        ClickKey(window,0);Click(window,kIdDeleteKey);Click(window,kIdUndo);
+        const auto history=fixture.History(window);
+        Check(KeyCount(window)==2&&history==std::array<std::uint64_t,2>{0,1}&&IsWindowEnabled(GetDlgItem(window,kIdRedo)),
+            "writer-copy geometry fixture retains a real local or shared redo node before arming");
+        if(external)fixture.journal.NoLocalHistory();
+        const auto data=fixture.Data();const auto otherSource=fixture.journal.sources[1].data;
+        const auto journalNodes=fixture.journal.nodes;
+        const auto cursor=fixture.journal.cursor;const auto revision=fixture.journal.revision;
+        const unsigned traversals=fixture.journal.traversals,applies=fixture.Applies();
+        const auto token=ce::CaptureWindowSession(window);const POINT point=AskPoint(window,kHookPointForFrame,10);
+        double sampled[3]{10,-1234,-5678};
+        Check(point.x>0&&point.y>0&&SendMessageW(window,WM_APP+396,0,reinterpret_cast<LPARAM>(sampled))&&sampled[1]==7&&sampled[2]==0,
+            "writer-copy probe targets the actual flat continuous native curve through the read-only geometry hook");
+        UpdateWindow(state.canvas);ValidateRect(state.canvas,nullptr);
+        state.observing=true;state.armed=armed;TriggerSubdivision(window,point);state.armed=state.observing=false;
+        Observation entry;entry.external=external;entry.armed=armed;entry.current=ce::IsWindowSessionCurrent(window,token);
+        entry.actions=state.actions;entry.resized=state.resized;entry.copies=fixture.copies;entry.bodies=fixture.bodies;
+        entry.applies=fixture.Applies()-applies;entry.keys=KeyCount(window);entry.history=fixture.History(window);entry.frame=state.lastFrame;
+        entry.parameters=state.parameters&&fixture.inputValid;entry.owned=!fixture.liveBodies&&!state.liveSamples&&!state.liveSubdivisions;
+        entry.journalUnchanged=fixture.journal.cursor==cursor&&fixture.journal.revision==revision&&fixture.journal.traversals==traversals&&
+            fixture.journal.nodes.size()==journalNodes.size()&&SameWritePayload(fixture.journal.sources[1].data,otherSource);
+        if(entry.journalUnchanged)for(std::size_t n=0;n<journalNodes.size();++n){const auto& before=journalNodes[n];const auto& after=fixture.journal.nodes[n];
+            entry.journalUnchanged&=before.source==after.source&&SameWritePayload(before.before,after.before)&&SameWritePayload(before.after,after.after);}
+        entry.unchanged=entry.applies==0&&entry.bodies==0&&entry.keys==2&&entry.history==history&&SameWritePayload(fixture.Data(),data)&&
+            IsWindowEnabled(GetDlgItem(window,kIdRedo))&&entry.journalUnchanged;
+        entry.normal=!armed&&!state.actions&&entry.copies==1&&entry.bodies==1&&entry.applies==1&&entry.keys==3&&
+            entry.history==std::array<std::uint64_t,2>{1,0}&&fixture.ExactInsertion()&&fixture.journal.traversals==traversals&&
+            (!external||(fixture.journal.cursor==1&&fixture.journal.nodes.size()==1&&fixture.journal.revision==revision+1));
+        entry.pending=GetUpdateRect(state.canvas,nullptr,FALSE)!=FALSE;entry.noPaint=state.paints==state.paintsAtResize;
+        std::printf("subdivision writer copy observation external=%u armed=%u current=%u copies=%u bodies=%u live_bodies=%u actions=%u resized=%u width=%ld,%ld height=%ld,%ld applies=%u keys=%d frame=%d history=%llu,%llu cursor=%zu revision=%llu nodes=%zu traversals=%u unchanged=%u journal_unchanged=%u normal=%u pending=%u no_paint=%u parameters=%u owned=%u\n",
+            unsigned(external),unsigned(armed),unsigned(entry.current),entry.copies,entry.bodies,fixture.liveBodies,entry.actions,unsigned(entry.resized),
+            state.before.right,state.after.right,state.before.bottom,state.after.bottom,entry.applies,entry.keys,entry.frame,
+            static_cast<unsigned long long>(entry.history[0]),static_cast<unsigned long long>(entry.history[1]),fixture.journal.cursor,
+            static_cast<unsigned long long>(fixture.journal.revision),fixture.journal.nodes.size(),fixture.journal.traversals,
+            unsigned(entry.unchanged),unsigned(entry.journalUnchanged),unsigned(entry.normal),unsigned(entry.pending),unsigned(entry.noPaint),unsigned(entry.parameters),unsigned(entry.owned));
+        std::fflush(stdout);
+        const auto beforePaint=state.paints,beforeBodies=state.sampleBodies,beforePaintApplies=fixture.Applies();
+        const auto beforePaintHistory=fixture.History(window);const auto beforePaintData=fixture.Data();
+        state.observing=true;UpdateWindow(state.canvas);state.observing=false;
+        entry.repaint=state.paints>beforePaint&&state.sampleBodies>beforeBodies&&fixture.Applies()==beforePaintApplies&&
+            fixture.History(window)==beforePaintHistory&&SameWritePayload(fixture.Data(),beforePaintData);
+        if(armed&&entry.unchanged){
+            const auto beforeRedo=fixture.Applies(),beforeTraversal=fixture.journal.traversals;
+            Click(window,kIdRedo);
+            entry.redo=KeyCount(window)==1&&fixture.History(window)==std::array<std::uint64_t,2>{1,0}&&
+                (external?fixture.Applies()==beforeRedo&&fixture.journal.traversals==beforeTraversal+1:fixture.Applies()==beforeRedo+1);
+            Click(window,kIdUndo);
+            entry.redo&=KeyCount(window)==2&&fixture.History(window)==history&&SameWritePayload(fixture.Data(),data)&&
+                (external?fixture.Applies()==beforeRedo&&fixture.journal.traversals==beforeTraversal+2:fixture.Applies()==beforeRedo+2);
+        }else if(entry.applies==1){
+            // Retain every old-code observation, then use genuine undo so one
+            // failing route cannot prevent collecting the next safe fixture.
+            Click(window,kIdUndo);
+        }
+        const auto beforeRecovery=fixture.Applies();const auto beforeRecoveryTraversal=fixture.journal.traversals;
+        const POINT fresh=AskPoint(window,kHookPointForFrame,10);TriggerSubdivision(window,fresh);
+        entry.recovery=ce::IsWindowSessionCurrent(window,token)&&fixture.Applies()==beforeRecovery+1&&fixture.ExactInsertion()&&KeyCount(window)==3&&
+            fixture.History(window)==std::array<std::uint64_t,2>{1,0}&&fixture.journal.traversals==beforeRecoveryTraversal;
+        ce::NotifySourceChanged(nullptr,sourceId);SendMessageW(window,WM_APP+401,0,0);UpdateWindow(state.canvas);
+        entry.recovery&=fixture.Applies()==beforeRecovery+1&&fixture.ExactInsertion()&&fixture.History(window)==std::array<std::uint64_t,2>{1,0};
+        if(external)fixture.journal.NoLocalHistory();
+        std::printf("subdivision writer copy recovery external=%u armed=%u redo=%u repaint=%u recovery=%u\n",
+            unsigned(external),unsigned(armed),unsigned(entry.redo),unsigned(entry.repaint),unsigned(entry.recovery));std::fflush(stdout);
+        observations.push_back(entry);ce::CloseOwned(nullptr);
+    }
+    const bool writerBoundary=SubdivisionGeometryWriterBoundary();
+    bool controls=observations.size()==4,changed=true,rejected=true,recovered=true;
+    for(const auto& entry:observations){
+        controls&=entry.current&&entry.parameters&&entry.owned&&entry.frame==10;
+        if(!entry.armed)controls&=entry.normal;
+        else{changed&=entry.actions==1&&entry.resized&&entry.copies==1;
+            rejected&=entry.unchanged&&entry.redo;}
+        recovered&=entry.recovery;
+    }
+    Check(controls,"independent local and real external-journal controls each dispatch one owned writer for the exact native frame/value");
+    Check(changed,"late writer-copy probes change only their original canvas width while retaining the same Session");
+    Check(rejected,"writer callable copy geometry changes stop before its body and preserve canonical data, complete history and usable local/shared redo");
+    Check(recovered,"disarmed writer-copy fixtures insert once with fresh geometry and deferred refresh never retries their publication");
+    Check(writerBoundary,"the three existing writer-body and accepted-read geometry changes still commit once with complete undo and redo");
+    Note("safe subdivision writer-copy geometry preserves local and shared history before writer dispatch");
+}
+void SubdivisionGeometrySafe(){
+    struct Observation {
+        int route=-1,applies=0,keys=0,frame=-1;std::array<std::uint64_t,2> history{};
+        bool current=false,resized=false,unchanged=false,stopped=false,pending=false,noPaint=false;
+        bool parameters=false,owned=false,redo=false,recovery=false,repaint=false;
+        unsigned actions=0,sampleCopies=0,sampleBodies=0,subdivisionCopies=0,subdivisionBodies=0;
+    };
+    std::vector<Observation> observations;
+    // The first independent, unarmed fixture proves the physical flat-curve
+    // point reaches the real subdivision/apply/history path before any red case.
+    for(int route=-1;route<6;++route){
+        std::printf("subdivision geometry safe route=%d\n",route);std::fflush(stdout);
+        SubdivisionGeometryState state;state.route=route;auto host=SubdivisionGeometryHost(state);state.host=&host;
+        auto session=MakeSession(host);session.sources[0].subdivide=SubdivisionGeometryProvider(state);const auto read=session.sources[0].read;
+        session.sources[0].read=[&,read](auto& channels,auto& error){
+            const bool accepted=read(channels,error);
+            if(accepted&&state.armed&&state.route==5)state.Resize();return accepted;
+        };
+        const HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
+        Check(IsWindow(window)&&KeyCount(window)==2,"safe geometry probe opens its real two-key native source");
+        state.canvas=GetDlgItem(window,kIdCanvas);Check(IsWindow(state.canvas),"safe geometry probe owns its native canvas");
+        SubdivisionGeometryPaintCounter paints(state);ShowWindow(window,SW_SHOWNOACTIVATE);
+        Check(IsWindowVisible(window)&&IsWindowVisible(state.canvas),"safe geometry damage evidence uses visible owned windows");
+        UpdateWindow(window);UpdateWindow(state.canvas);
+        // The right endpoint lies on the value-bar boundary in this flat
+        // fitted view. Select the left key through the real canvas instead.
+        ClickKey(window,0);Click(window,kIdDeleteKey);Click(window,kIdUndo);
+        const auto seeded=LocalWriteHistory(window);
+        Check(KeyCount(window)==2&&seeded==std::array<std::uint64_t,2>{0,1},"safe geometry fixture starts with a real retained redo node");
+        const POINT point=AskPoint(window,kHookPointForFrame,10);double sampled[3]{10,-1234,-5678};
+        Check(point.x>0&&point.y>0&&SendMessageW(window,WM_APP+396,0,reinterpret_cast<LPARAM>(sampled))&&sampled[1]==7&&sampled[2]==0,
+            "safe geometry probe targets the actual horizontal continuous native curve");
+        UpdateWindow(state.canvas);ValidateRect(state.canvas,nullptr);
+        const auto token=ce::CaptureWindowSession(window);const auto history=LocalWriteHistory(window);const auto data=host.data;
+        const int applies=host.applyCalls;state.observing=true;state.armed=route>=0;TriggerSubdivision(window,point);state.armed=state.observing=false;
+        Observation entry;entry.route=route;entry.applies=host.applyCalls-applies;entry.keys=KeyCount(window);
+        entry.history=LocalWriteHistory(window);entry.frame=state.lastFrame;entry.actions=state.actions;
+        entry.sampleCopies=state.sampleCopies;entry.sampleBodies=state.sampleBodies;
+        entry.subdivisionCopies=state.subdivisionCopies;entry.subdivisionBodies=state.subdivisionBodies;
+        entry.current=ce::IsWindowSessionCurrent(window,token);entry.resized=state.resized;
+        entry.unchanged=SameWritePayload(host.data,data)&&entry.history==history&&entry.keys==2&&entry.applies==0;
+        entry.stopped=state.sampleCopies==state.sampleCopiesAtResize&&state.sampleBodies==state.sampleBodiesAtResize&&
+            state.subdivisionCopies==state.subdivisionCopiesAtResize&&state.subdivisionBodies==state.subdivisionBodiesAtResize&&host.readCalls==state.readsAtResize;
+        entry.pending=GetUpdateRect(state.canvas,nullptr,FALSE)!=FALSE;entry.noPaint=state.paints==state.paintsAtResize;
+        entry.parameters=state.parameters;entry.owned=!state.liveSamples&&!state.liveSubdivisions;
+        std::printf("subdivision geometry observation route=%d actions=%u resized=%u width=%ld,%ld height=%ld,%ld sample_copies=%u sample_bodies=%u subdivide_copies=%u subdivide_bodies=%u subdivide_releases=%u frame=%d applies=%d keys=%d history=%llu,%llu unchanged=%u stopped=%u pending=%u no_paint=%u parameters=%u owned=%u\n",
+            route,state.actions,unsigned(entry.resized),state.before.right,state.after.right,state.before.bottom,state.after.bottom,
+            state.sampleCopies,state.sampleBodies,state.subdivisionCopies,state.subdivisionBodies,state.subdivisionReleases,entry.frame,entry.applies,entry.keys,
+            static_cast<unsigned long long>(entry.history[0]),static_cast<unsigned long long>(entry.history[1]),unsigned(entry.unchanged),unsigned(entry.stopped),
+            unsigned(entry.pending),unsigned(entry.noPaint),unsigned(entry.parameters),unsigned(entry.owned));std::fflush(stdout);
+        const auto beforePaint=state.paints,beforeBodies=state.sampleBodies;const int beforePaintApplies=host.applyCalls;
+        const auto beforePaintHistory=LocalWriteHistory(window);state.observing=true;UpdateWindow(state.canvas);state.observing=false;
+        entry.repaint=state.paints>beforePaint&&state.sampleBodies>beforeBodies&&host.applyCalls==beforePaintApplies&&LocalWriteHistory(window)==beforePaintHistory;
+        if(route>=0&&entry.unchanged){
+            const int beforeRedo=host.applyCalls;Click(window,kIdRedo);
+            entry.redo=host.applyCalls==beforeRedo+1&&KeyCount(window)==1&&LocalWriteHistory(window)==std::array<std::uint64_t,2>{1,0};
+            Click(window,kIdUndo);entry.redo&=host.applyCalls==beforeRedo+2&&KeyCount(window)==2&&
+                LocalWriteHistory(window)==history&&SameWritePayload(host.data,data);
+        }else if(entry.applies>0){
+            // Restore through the real editor history only, so an old-code red
+            // observation does not prevent collecting the later recovery case.
+            Click(window,kIdUndo);
+        }
+        const int beforeRecovery=host.applyCalls;const POINT fresh=AskPoint(window,kHookPointForFrame,10);TriggerSubdivision(window,fresh);
+        entry.recovery=ce::IsWindowSessionCurrent(window,token)&&host.applyCalls==beforeRecovery+1&&KeyCount(window)==3&&
+            host.data.size()==1&&host.data[0].id=="native"&&host.data[0].track.keys.size()==3&&
+            host.data[0].track.keys[0].frame==0&&host.data[0].track.keys[1].frame==10&&host.data[0].track.keys[2].frame==20&&
+            host.data[0].track.keys[0].value==7&&host.data[0].track.keys[1].value==7&&host.data[0].track.keys[2].value==7&&
+            LocalWriteHistory(window)==std::array<std::uint64_t,2>{1,0};
+        std::printf("subdivision geometry recovery route=%d redo=%u repaint=%u recovery=%u\n",route,unsigned(entry.redo),unsigned(entry.repaint),unsigned(entry.recovery));std::fflush(stdout);
+        ce::CloseOwned(nullptr);host.data[0].sample={};host.applied.clear();observations.push_back(entry);
+    }
+    const bool writerBoundary=SubdivisionGeometryWriterBoundary();const auto& baseline=observations.front();
+    Check(observations.size()==7&&baseline.current&&baseline.parameters&&baseline.owned&&!baseline.actions&&
+        baseline.applies==1&&baseline.keys==3&&baseline.frame==10&&baseline.history==std::array<std::uint64_t,2>{1,0}&&baseline.recovery,
+        "an independent unarmed flat native fixture really inserts frame 10 and commits one complete history step");
+    bool changed=true,unchanged=true,stopped=true,redraw=true,recovered=true;
+    for(std::size_t i=1;i<observations.size();++i){const auto& entry=observations[i];
+        changed&=entry.current&&entry.actions==1&&entry.resized&&entry.parameters&&entry.owned;
+        unchanged&=entry.unchanged&&entry.redo;stopped&=entry.stopped;
+        redraw&=entry.pending&&entry.noPaint&&entry.repaint;recovered&=entry.recovery;
+    }
+    Check(changed,"every safe geometry route resizes only its original canvas width once and retains exact native parameters");
+    Check(unchanged,"same-session geometry changes stop native insertion before apply and retain the original canonical data and usable redo");
+    Check(stopped,"geometry retirement prevents every later sampler, subdivision callback and source preflight from continuing");
+    Check(redraw,"geometry retirement queues a normal later paint without recursively painting inside the provider callback");
+    Check(recovered,"disarmed insertion rereads the fresh geometry and commits its exact native target and value once");
+    Check(writerBoundary,"a view change after writer dispatch retains exactly one real data/history commit and one complete undo/redo without retrying apply");
+    Note("safe native insertion geometry covers sampler copy/body, subdivision copy/body/final release, preflight read and the accepted writer boundary");
+}
 struct SubdivisionRetirementState {
     int phase=0,response=0;bool armed=false,copying=false;
     unsigned copies=0,bodies=0,actions=0,destroyedDuringCopy=0;
@@ -6847,6 +7226,12 @@ int main(int argc,char** argv) {
     if(argc>1&&std::string(argv[1])=="--sampler-copy-boundary"){
         SamplerCopyBoundary();std::printf("curve sampler copy boundary: %d checks\n",g_checks);return 0;
     }
+    if(argc>1&&std::string(argv[1])=="--subdivision-geometry-safe"){
+        SubdivisionGeometrySafe();std::printf("curve subdivision geometry safe: %d checks\n",g_checks);return 0;
+    }
+    if(argc>1&&std::string(argv[1])=="--subdivision-writer-copy-safe"){
+        SubdivisionWriterCopySafe();std::printf("curve subdivision writer copy safe: %d checks\n",g_checks);return 0;
+    }
     if(argc>1&&std::string(argv[1])=="--subdivision-lifetime"){
         SubdivisionLifetime();
         std::printf("curve subdivision lifetime: %d checks\n",g_checks);return 0;
@@ -6945,6 +7330,7 @@ int main(int argc,char** argv) {
     TransportCallbackLifetime();TransportFailuresAndMissing();TransportNestedAndSessionCache();TransportInvalidFramesAndMmdSource();TransportPaintStateAndDenseTicks();
     TransportWriteLifetime();
     SubdivisionLifetime();
+    SubdivisionGeometrySafe();SubdivisionWriterCopySafe();
     SamplerLifetime();
     BakeSelectedChannels();
     NativeSubdivisionRoute();NativeSampleBake();

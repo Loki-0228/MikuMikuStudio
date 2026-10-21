@@ -1161,6 +1161,46 @@ struct SamplingView {
     }
 };
 
+void RequireInsertionView(Editor& editor,const EditorLease& continuation,const SamplingView& view){
+    continuation.RequireCurrent();
+    if(!view.Matches(editor)){
+        // The input point belongs to the original view. Request a fresh paint,
+        // but never pump it while an insertion provider is still on the stack.
+        DeferCanvasPaint(editor,editor.canvas);FlushDeferredCanvasPaint(editor);
+        throw RetiredContinuation{};
+    }
+}
+
+struct InsertionWriteBoundary {
+    const SamplingView* view=nullptr;
+    bool started=false;
+};
+
+bool InvokeInsertionWriter(Editor& editor,const decltype(Source::apply)& callback,
+    const std::vector<Channel>& channels,std::wstring& error,InsertionWriteBoundary* insertion){
+    if(!insertion||!insertion->view)return InvokeProvider(editor,callback,channels,error);
+    if(!editor.nativeCreateReturned)throw std::logic_error("curve provider entered during native construction");
+    EditorLease continuation(editor);
+    try{
+        const bool accepted=[&]{
+            auto owned=callback;
+            // A copy constructor is still preparation. Only entry into the
+            // actual writer body ends the input geometry requirement.
+            RequireInsertionView(editor,continuation,*insertion->view);
+            insertion->started=true;
+            return owned(channels,error);
+        }();
+        continuation.ReleaseStorage();continuation.RequireCurrent();
+        return accepted;
+    }catch(...){
+        // A rejected or throwing copy releases its owned target before this
+        // check. Its final capture and Session pins may change the view too.
+        continuation.ReleaseStorage();continuation.RequireCurrent();
+        if(!insertion->started)RequireInsertionView(editor,continuation,*insertion->view);
+        throw;
+    }
+}
+
 // A batch belongs only to one read-only slice. It never survives channel
 // adoption or a write. The cache key is the actual Channel address, including
 // detached bake inputs; equal ids are not interchangeable storage.
@@ -1739,7 +1779,8 @@ public:
     void RequireCurrent()const{lease_.RequireCurrent();}
 };
 
-bool CommitLocalChannels(Editor& editor,std::vector<Channel> next,const std::wstring& success){
+bool CommitLocalChannels(Editor& editor,std::vector<Channel> next,const std::wstring& success,
+    InsertionWriteBoundary* insertion){
     auto& state=CurrentState(editor);
     auto previous=std::make_unique<Snapshot>();previous->active=state.active;previous->selection=state.selection;
     state.undo.reserve(state.undo.size()+1);
@@ -1749,7 +1790,7 @@ bool CommitLocalChannels(Editor& editor,std::vector<Channel> next,const std::wst
     bool published=false;
     try{
         std::wstring error;
-        const bool accepted=InvokeProvider(editor,CurrentSource(editor).apply,std::as_const(next),error);
+        const bool accepted=InvokeInsertionWriter(editor,CurrentSource(editor).apply,std::as_const(next),error,insertion);
         if(!accepted){
             rollback.Restore();rollback.RequireCurrent();
             RefreshEditorsUi(editor);
@@ -1785,7 +1826,7 @@ bool CommitLocalChannels(Editor& editor,std::vector<Channel> next,const std::wst
 }
 
 bool CommitPreparedChannels(Editor &editor, std::vector<Channel>& next, const std::wstring &success,
-                            bool linkMmdHandles) {
+                            bool linkMmdHandles,InsertionWriteBoundary* insertion) {
     SourceState &state = CurrentState(editor);
     Source &source = CurrentSource(editor);
     // Value-curve tangents are governed by Free/Aligned, not the legacy
@@ -1882,13 +1923,13 @@ bool CommitPreparedChannels(Editor &editor, std::vector<Channel>& next, const st
     if(source.externalHistory&&SameCurveData(state.channels,next)){
         SetStatus(editor,success,false);return true;
     }
-    if(!source.externalHistory)return CommitLocalChannels(editor,std::move(next),success);
+    if(!source.externalHistory)return CommitLocalChannels(editor,std::move(next),success,insertion);
     std::wstring error;
     bool accepted=false;
     // next is owned by this call, so a provider can retire the source without
     // invalidating its input. Retirement unwinds before local history or the
     // canonical read can act on an already-published host edit.
-    try{accepted=InvokeProvider(editor,source.apply,std::as_const(next),error);}catch(const RetiredContinuation&){throw;}
+    try{accepted=InvokeInsertionWriter(editor,source.apply,std::as_const(next),error,insertion);}catch(const RetiredContinuation&){throw;}
     catch(...){error=T(editor.session->language,StrHistoryFailed);}
     if (!accepted) {
         std::wstring message = T(editor.session->language, StrApplyRejected);
@@ -1909,26 +1950,34 @@ bool CommitPreparedChannels(Editor &editor, std::vector<Channel>& next, const st
 }
 
 bool CommitChannels(Editor &editor, std::vector<Channel> next, const std::wstring &success,
-                    bool linkMmdHandles = false) {
+                    bool linkMmdHandles = false,const SamplingView* insertionView = nullptr) {
     EditorLease continuation(editor);
+    InsertionWriteBoundary insertion{insertionView};
     try{
         // CheckSourceCurrent's latest channels can run capture destructors on
         // either return path. Do not hand old prepared data to a new Session.
         const bool current=CheckSourceCurrent(editor);
         continuation.RequireCurrent();
+        if(insertionView)RequireInsertionView(editor,continuation,*insertionView);
         bool accepted=false;
         {
             ExternalOperation operation(editor,&Editor::externalOperationActive);
-            if(current)accepted=CommitPreparedChannels(editor,next,success,linkMmdHandles);
+            if(current){
+                if(insertionView)RequireInsertionView(editor,continuation,*insertionView);
+                accepted=CommitPreparedChannels(editor,next,success,linkMmdHandles,insertionView?&insertion:nullptr);
+            }
             // Parameters otherwise outlive our local leases. Empty this one
             // explicitly and validate after its last sample capture release.
             ReleaseChannelPayload(editor,continuation,next);
         }
         continuation.ReleaseStorage();continuation.RequireCurrent();
+        if(insertionView&&!insertion.started)RequireInsertionView(editor,continuation,*insertionView);
         return accepted;
     }catch(...){
         ReleaseChannelPayload(editor,continuation,next);
-        continuation.ReleaseStorage();continuation.RequireCurrent();throw;
+        continuation.ReleaseStorage();continuation.RequireCurrent();
+        if(insertionView&&!insertion.started)RequireInsertionView(editor,continuation,*insertionView);
+        throw;
     }
 }
 
@@ -6165,20 +6214,29 @@ struct PreparedInsertion {
 // Insertion owns one complete channel copy for the entire hit-test operation.
 // Its sampler is therefore already private: do not copy a std::function at
 // every pixel. This does not change the separate painting/sample entry points.
-Sample SampleInsertionChannel(Editor& editor,const Channel& channel,double frame){
+Sample SampleInsertionChannel(Editor& editor,const Channel& channel,double frame,const SamplingView& view){
     EditorLease continuation(editor);Sample result;
-    {
-        ExternalOperation callback(editor,&Editor::externalCallbackActive);
-        result=channel.sample ? channel.sample(channel,frame) : animation_curve::Evaluate(channel.track,frame);
+    try{
+        RequireInsertionView(editor,continuation,view);
+        {
+            ExternalOperation callback(editor,&Editor::externalCallbackActive);
+            result=channel.sample ? channel.sample(channel,frame) : animation_curve::Evaluate(channel.track,frame);
+            RequireInsertionView(editor,continuation,view);
+        }
+        continuation.ReleaseStorage();RequireInsertionView(editor,continuation,view);
+    }catch(...){
+        continuation.ReleaseStorage();RequireInsertionView(editor,continuation,view);throw;
     }
-    continuation.ReleaseStorage();continuation.RequireCurrent();
     if(!std::isfinite(result.value)||(editor.viewMode==1&&!std::isfinite(result.derivative)))
         throw std::runtime_error("invalid insertion sample");
     return result;
 }
 
-bool PrepareInsertionPayload(Editor& editor,POINT point,PreparedInsertion& prepared,EditorLease& continuation){
+bool PrepareInsertionPayload(Editor& editor,POINT point,PreparedInsertion& prepared,EditorLease& continuation,
+    const SamplingView& view){
+    RequireInsertionView(editor,continuation,view);
     prepared.channels=CopyChannels(editor);
+    RequireInsertionView(editor,continuation,view);
     const auto& state=CurrentState(editor);
     std::vector<std::size_t> candidates=ComparedChannels(editor);
     if(ActiveChannelVisible(editor))candidates.insert(candidates.begin(),state.active);
@@ -6193,8 +6251,8 @@ bool PrepareInsertionPayload(Editor& editor,POINT point,PreparedInsertion& prepa
         if(track.keys.empty() || (editor.viewMode==1&&track.discrete))continue;
         for(int x=std::max(int(editor.plot.left),int(point.x)-radius);x<=std::min(int(editor.plot.right),int(point.x)+radius);++x){
             double frame=0,y=0;if(!XToTime(editor,x,frame))continue;
-            const Sample value=SampleInsertionChannel(editor,channel,frame);
-            continuation.RequireCurrent();
+            const Sample value=SampleInsertionChannel(editor,channel,frame,view);
+            RequireInsertionView(editor,continuation,view);
             if(!ValueToY(editor,editor.viewMode?value.derivative*kFramesPerSecond:value.value,y)||!std::isfinite(y))continue;
             const double distance=double(x-point.x)*(x-point.x)+(y-point.y)*(y-point.y);
             if(distance+.25<best){best=distance;hitFrame=frame;hit=c;}
@@ -6206,8 +6264,8 @@ bool PrepareInsertionPayload(Editor& editor,POINT point,PreparedInsertion& prepa
     // A visible key wins over neighbouring rounded frames when zoomed out.
     for(const Key& key:channel.track.keys){
         double x=0,y=0;
-        const Sample sample=SampleInsertionChannel(editor,channel,key.frame);
-        continuation.RequireCurrent();
+        const Sample sample=SampleInsertionChannel(editor,channel,key.frame,view);
+        RequireInsertionView(editor,continuation,view);
         if(TimeToX(editor,key.frame,x)&&ValueToY(editor,editor.viewMode?sample.derivative*kFramesPerSecond:key.value,y)&&
            std::hypot(x-point.x,y-point.y)<=radius){frame=key.frame;break;}
     }
@@ -6224,9 +6282,15 @@ bool PrepareInsertionPayload(Editor& editor,POINT point,PreparedInsertion& prepa
             const auto& subdivide=CurrentSource(editor).subdivide;
             if(subdivide){
                 ExternalOperation callback(editor,&Editor::externalCallbackActive);
-                accepted=InvokeProvider(editor,subdivide,prepared.channels,hit,frame,prepared.index,detail);
+                if(!editor.nativeCreateReturned)throw std::logic_error("curve provider entered during native construction");
+                // Copy once for this subdivision. Its copy constructor may
+                // change the view, so validate before entering the body too.
+                auto owned=subdivide;
+                RequireInsertionView(editor,continuation,view);
+                accepted=owned(prepared.channels,hit,frame,prepared.index,detail);
+                RequireInsertionView(editor,continuation,view);
             }
-            continuation.RequireCurrent();
+            RequireInsertionView(editor,continuation,view);
             if(!accepted){
                 SetStatus(editor,detail.empty()?L"当前来源没有提供原生曲线细分。骨骼可切换到自由曲线。":detail,true);return false;
             }
@@ -6245,31 +6309,46 @@ bool PrepareInsertionPayload(Editor& editor,POINT point,PreparedInsertion& prepa
     prepared.selection.insert(prepared.index);return true;
 }
 
-bool PrepareInsertion(Editor& editor,POINT point,PreparedInsertion& prepared){
+bool PrepareInsertion(Editor& editor,POINT point,PreparedInsertion& prepared,const SamplingView& view){
     EditorLease continuation(editor);bool ready=false;
-    {
-        ExternalOperation operation(editor,&Editor::externalOperationActive);
-        ready=PrepareInsertionPayload(editor,point,prepared,continuation);
+    try{
+        RequireInsertionView(editor,continuation,view);
+        {
+            ExternalOperation operation(editor,&Editor::externalOperationActive);
+            ready=PrepareInsertionPayload(editor,point,prepared,continuation,view);
+        }
+        continuation.ReleaseStorage();RequireInsertionView(editor,continuation,view);return ready;
+    }catch(...){
+        continuation.ReleaseStorage();RequireInsertionView(editor,continuation,view);throw;
     }
-    continuation.ReleaseStorage();continuation.RequireCurrent();return ready;
 }
 
 void InsertCurveKeyAtPoint(Editor& editor,POINT point,UINT flags) {
     if(editor.externalOperationActive||editor.externalCallbackActive)return;
     EditorLease continuation(editor);PreparedInsertion prepared;
+    std::optional<SamplingView> inputView;
+    bool commitOwnsPreflight=false;
     try{
     CanvasMetrics(editor);
+    inputView.emplace(editor);
     if(!PtInRect(&editor.plot,point) || editor.tool==1 ||
        (flags&(MK_CONTROL|MK_SHIFT)) || (GetKeyState(VK_SPACE)&0x8000) || (GetKeyState(VK_MENU)&0x8000))return;
-    CancelDrag(editor);SetFocus(editor.canvas);continuation.RequireCurrent();
+    CancelDrag(editor);RequireInsertionView(editor,continuation,*inputView);
+    SetFocus(editor.canvas);RequireInsertionView(editor,continuation,*inputView);
     if(!CurrentState(editor).valid || !CurrentSource(editor).apply)return;
-    if(!PrepareInsertion(editor,point,prepared)){
-        ReleaseChannelPayload(editor,continuation,prepared.channels);return;
+    if(!PrepareInsertion(editor,point,prepared,*inputView)){
+        ReleaseChannelPayload(editor,continuation,prepared.channels);
+        RequireInsertionView(editor,continuation,*inputView);return;
     }
     if(prepared.inserted){
-        if(!CommitChannels(editor,std::move(prepared.channels),L"已添加关键帧，原曲线形状保持不变。"))return;
+        // CommitChannels owns the remaining preflight and validates the view
+        // again immediately before its writer handoff.
+        const std::wstring success=L"已添加关键帧，原曲线形状保持不变。";
+        commitOwnsPreflight=true;
+        if(!CommitChannels(editor,std::move(prepared.channels),success,false,&*inputView))return;
     }else{
         ReleaseChannelPayload(editor,continuation,prepared.channels);
+        RequireInsertionView(editor,continuation,*inputView);
         SetStatus(editor,T(editor.session->language,StrFrameSelected)+FormatInteger(prepared.frame),false);
     }
     continuation.RequireCurrent();
@@ -6285,7 +6364,9 @@ void InsertCurveKeyAtPoint(Editor& editor,POINT point,UINT flags) {
     RefreshEditorsUi(editor);PublishKeySelection(editor);SeekTimeline(editor,prepared.frame);OnPlayheadTimer(editor);
     }catch(...){
         ReleaseChannelPayload(editor,continuation,prepared.channels);
-        continuation.ReleaseStorage();continuation.RequireCurrent();throw;
+        continuation.ReleaseStorage();continuation.RequireCurrent();
+        if(inputView&&!commitOwnsPreflight)RequireInsertionView(editor,continuation,*inputView);
+        throw;
     }
 }
 

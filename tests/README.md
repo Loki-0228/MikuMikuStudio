@@ -4,6 +4,8 @@
 
 ## 曲线、备份及崩溃日志回归
 
+`--subdivision-geometry-safe` 与 `--subdivision-writer-copy-safe` 分别验证同会话尺寸变化和晚期写入复制。两项均使用自身窗口，先验证正常写入，再验证失败保留 redo，并检查正文开始后的尺寸变化不会重复写入；也已纳入默认全集。两配置各通过 36,281 项全集，范围和失败记录见[插帧几何记录](../docs/records/abi-curve-insertion-geometry-2026-10-22.md)。
+
 `animation_curve_editor_tests` 全量测试包含插值和切线按钮立即生效、多选一次撤销、重复操作保留重做、手柄模式和一次性预设。可用 `--curve-modes` 单独运行按钮回归，用 `--curve-ui-compat` 运行手柄、布局、提示及键盘导航。`animation_curve_host_tests` 验证原生相机精确键值、单帧保持和阶跃，以及 PMM 往返。
 
 `autosave_tests <独立输出目录>` 需要位于全新的独立 EXE 目录，避免误用已有 `backups`。它覆盖实际 PMM 备份、轮换、未登记姿态恢复和故障路径。追加 `--full-zh`、`--full-en`、`--full-ja`、`--full-rotate` 或 `--full-crash` 检查容量告警；每种模式在同一测试目录启动两次，核对重启后再次提示、进程内仅一次、两种备份目录、分配失败和弹窗创建失败后重试。测试窗口须隐藏或放在专用桌面。
