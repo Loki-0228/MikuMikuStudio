@@ -54,6 +54,9 @@
 #include <cstdint>
 #include <cmath>
 #include <cstring>
+#include <array>
+#include <string>
+#include <vector>
 
 #include "mikumikustudio/accessory_layout.hpp"
 #include "mikumikustudio/mmd_app.hpp"
@@ -219,13 +222,104 @@ bool DefaultSelChangeChain(MMDApp* app, HWND hwnd, HWND ctrl) {
     // and setting the distance to -20.0f (0x52F0B4).  Tail:
     // RefreshRequest(-1) + PostViewRefresh.
     if (ctrl == GetDlgItem(hwnd, panel::kMainComboNormal)) {
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::TrySelectBoundCameraParentModel(app, ctrl)) return true;
+#endif
+        try {
         const LRESULT sel = SendMessageA(GetDlgItem(hwnd, panel::kMainComboNormal),
                                          CB_GETCURSEL, 0, 0);
         if (sel < 0) return true;
         const int slot = sel > 0 ? SelectedModelSlot(*app, ctrl, sel) : -1;
         if (sel > 0 && slot < 0) return true;
+        // Validate every dereferenced source before changing a field or list.
+        // Original/unbound routing retains its authoring semantics, but a
+        // stale saved parent or an empty/filtered target must not crash or
+        // leave a partially detached camera.
+        const auto parent = app->CameraParentModel();
+        auto* const oldRaw = parent >= 0 && parent < kModelSlotCount ? app->ModelSlot(parent) : nullptr;
+        const mdl::ModelRecord* oldModel = nullptr;
+        if (parent >= 0) {
+            if (parent >= kModelSlotCount || !app->ModelSlot(parent)) return true;
+            oldModel = mdl::Mdl(app->ModelSlot(parent));
+            if (!oldModel->boneTable || !oldModel->boneCount) return true;
+        }
+        auto* const targetRaw = slot >= 0 ? app->ModelSlot(slot) : nullptr;
+        const auto* const target = mdl::Mdl(targetRaw);
+        int firstBone = -1;
+        struct LegacyBoneRow { std::wstring label; std::uint32_t bone; };
+        std::vector<LegacyBoneRow> rows;
+        if (sel > 0) {
+            if (!target || !target->boneTable) return true;
+            for (std::uint32_t i = 0; i < target->boneCount; ++i)
+                if (target->boneTable[i].type < mdl::BoneType::InertTip || target->boneTable[i].type == mdl::BoneType::FixedAxis) {
+                    if (firstBone < 0) firstBone = static_cast<int>(i);
+                    rows.push_back({text_encoding::BoneLabel(target->boneTable[i], UiUsesEnglishNames(app->EnglishUI())), i});
+                }
+            if (firstBone < 0) return true;
+        } else if (oldModel && (app->CameraParentBone() < 0 ||
+                   std::uint32_t(app->CameraParentBone()) >= oldModel->boneCount)) return true;
+        float detached[3]{}; std::array<float, 19> oldPivot{};
+        const auto oldIndex = app->CameraParentBone();
+        if (sel <= 0 && oldModel) {
+            const auto& bone = oldModel->boneTable[oldIndex];
+            std::memcpy(oldPivot.data(), bone.position, sizeof(float) * 3);
+            std::memcpy(oldPivot.data() + 3, bone.matInit, sizeof(float) * 16);
+            const double px = bone.position[0], py = bone.position[1], pz = bone.position[2];
+            for (unsigned i = 0; i < 3; ++i) detached[i] = static_cast<float>(
+                py * bone.matInit[4 + i] + px * bone.matInit[i] +
+                pz * bone.matInit[8 + i] + bone.matInit[12 + i]);
+        }
         HWND boneCombo = GetDlgItem(hwnd, panel::kBoneRegisterCombo);
-        SendMessageA(boneCombo, CB_RESETCONTENT, 0, 0);
+        if (!boneCombo) return true;
+        const auto scene = app->SceneGeneration(); const auto frame = app->CurrentFrame();
+        const auto capture = GetCapture(); const auto language = app->EnglishUI();
+        auto* const oldBones = oldModel ? oldModel->boneTable : nullptr;
+        const auto oldCount = oldModel ? oldModel->boneCount : 0;
+        auto* const targetBones = target ? target->boneTable : nullptr;
+        const auto targetCount = target ? target->boneCount : 0;
+        const auto values = [&]() noexcept {
+            std::array<std::uint32_t, 9> value{};
+            std::memcpy(&value[0], &app->CameraParentModel(), 4); std::memcpy(&value[1], &app->CameraParentBone(), 4);
+            for (unsigned i = 0; i < 3; ++i) {
+                std::memcpy(&value[2+i], &app->CameraPositionAxis(i), 4);
+                std::memcpy(&value[5+i], &app->CameraRotation()[i], 4);
+            }
+            std::memcpy(&value[8], &app->CameraDistance(), 4); return value;
+        };
+        const auto before = values();
+        const auto current = [&]() noexcept {
+            if (app->MainWindow() != hwnd || GetDlgItem(hwnd, panel::kMainComboNormal) != ctrl ||
+                GetDlgItem(hwnd, panel::kBoneRegisterCombo) != boneCombo || app->SceneGeneration() != scene ||
+                app->CurrentFrame() != frame || GetCapture() != capture || app->EnglishUI() != language || values() != before) return false;
+            if (oldModel && (app->ModelSlot(parent) != oldRaw || mdl::Mdl(oldRaw)->boneTable != oldBones || mdl::Mdl(oldRaw)->boneCount != oldCount)) return false;
+            if (sel <= 0 && oldModel && (std::memcmp(oldPivot.data(), oldBones[oldIndex].position, sizeof(float) * 3) ||
+                std::memcmp(oldPivot.data() + 3, oldBones[oldIndex].matInit, sizeof(float) * 16))) return false;
+            if (target && (app->ModelSlot(slot) != targetRaw || mdl::Mdl(targetRaw)->boneTable != targetBones || mdl::Mdl(targetRaw)->boneCount != targetCount)) return false;
+            if (target) {
+                int first = -1;
+                for (std::uint32_t i = 0; i < targetCount; ++i)
+                    if (targetBones[i].type < mdl::BoneType::InertTip || targetBones[i].type == mdl::BoneType::FixedAxis) { first = int(i); break; }
+                if (first != firstBone) return false;
+            }
+            return true;
+        };
+        const auto send = [&](UINT message, WPARAM w = 0, LPARAM l = 0) {
+            if (!current()) throw 0;
+            const auto result = SendMessageW(boneCombo, message, w, l);
+            if (!current()) throw 0;
+            return result;
+        };
+        // Private labels survive arbitrary native message reentry. Do not
+        // FillBoneCombo through a borrowed live model across CB_* callbacks.
+        send(CB_RESETCONTENT);
+        if (send(CB_GETCOUNT) != 0) return true;
+        for (const auto& row : rows) {
+            const auto index = send(CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(row.label.c_str()));
+            if (index < 0 || send(CB_SETITEMDATA, index, row.bone) == CB_ERR) return true;
+        }
+        if (send(CB_GETCOUNT) != LRESULT(rows.size())) return true;
+        if (!rows.empty() && (send(CB_SETCURSEL, 0) != 0 || send(CB_GETITEMDATA, 0) != firstBone)) return true;
+        if (!current()) return true;
         if (sel > 0) {
             if (slot >= 0) {
                 if (app->CameraParentModel() < 0) {
@@ -241,41 +335,25 @@ bool DefaultSelChangeChain(MMDApp* app, HWND hwnd, HWND ctrl) {
                     app->CameraRotation()[2] = 0.0f;
                 }
                 app->CameraParentModel() = slot;
-                RepopulateBoneCombo(app, boneCombo, slot);
-                const int bone=SelectedComboBone(boneCombo,mdl::Mdl(app->ModelSlot(slot)));
-                app->CameraParentBone() = bone>=0?bone:0;
+                app->CameraParentBone() = firstBone;
             }
         } else {
-            const std::int32_t parent = app->CameraParentModel();
             if (parent >= 0) {
-                const mdl::BoneRecord& bone =
-                    mdl::Mdl(app->ModelSlot(parent))
-                        ->boneTable[app->CameraParentBone()];
-                const double px = bone.position[0];
-                const double py = bone.position[1];
-                const double pz = bone.position[2];
-                app->CameraPositionAxis(0) = static_cast<float>(
-                    py * bone.matInit[4] + px * bone.matInit[0] +
-                    pz * bone.matInit[8] + bone.matInit[12]);
-                app->CameraPositionAxis(1) = static_cast<float>(
-                    py * bone.matInit[5] + px * bone.matInit[1] +
-                    pz * bone.matInit[9] + bone.matInit[13]);
-                app->CameraPositionAxis(2) = static_cast<float>(
-                    py * bone.matInit[6] + px * bone.matInit[2] +
-                    pz * bone.matInit[10] + bone.matInit[14]);
+                // The source was sampled before CB_RESETCONTENT could reenter
+                // a custom control and retire the old model or bone storage.
+                for (unsigned i = 0; i < 3; ++i) app->CameraPositionAxis(i) = detached[i];
                 app->CameraDistance() = -20.0f;
                 app->CameraRotation()[0] = 0.0f;
                 app->CameraRotation()[1] = 0.0f;
                 app->CameraRotation()[2] = 0.0f;
             }
-            SendMessageA(GetDlgItem(hwnd, panel::kBoneRegisterCombo),
-                         CB_RESETCONTENT, 0, 0);
             app->CameraParentModel() = -1;
         }
         RefreshRequest(-1);    // 0x440AC0 (x64 sub_7FF7CB4BF4F0)
         PostViewRefresh(app);  // 0x40D130 (x64 sub_7FF7CB440DD0)
         SetFocus(hwnd);
         return true;
+        } catch (...) { return true; }
     }
 
     // ---- 0x1C2 (0x48e62f): camera manipulation parent BONE combo.  The

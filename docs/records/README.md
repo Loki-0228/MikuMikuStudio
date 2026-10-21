@@ -22,6 +22,8 @@
 
 - [相机父骨骼共同历史迁移原计划（2026-10-21）](abi-camera-parent-bone-plan-2026-10-21.md)
 - [相机父骨骼共同历史实现与验收（2026-10-21）](abi-camera-parent-bone-history-2026-10-21.md)
+- [相机父模型共同历史实现与验收（2026-10-21）](abi-camera-parent-model-history-2026-10-21.md)
+- [曲线原生控件回调寿命与捕获验收（2026-10-21）](abi-curve-native-control-lifetime-2026-10-21.md)
 - [工程地面开关共同历史（2026-10-21）](abi-floor-history-2026-10-21.md)
 - [黑白背景共同历史（2026-10-21）](abi-black-background-history-2026-10-21.md)
 - [模型物理资源、私有编辑与共同历史（2026-10-21）](abi-model-physics-history-2026-10-21.md)

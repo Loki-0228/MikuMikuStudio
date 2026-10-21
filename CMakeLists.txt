@@ -1306,6 +1306,8 @@ if (MIKUMIKUSTUDIO_BUILD_UI_TESTS)
         add_test(NAME native_black_background_history COMMAND native_edit_history_tests --black-background-only)
         add_test(NAME native_floor_history COMMAND native_edit_history_tests --floor-only)
         add_test(NAME native_camera_parent_history COMMAND native_edit_history_tests --camera-parent-only)
+        add_test(NAME native_camera_parent_model_history COMMAND native_edit_history_tests --camera-parent-model-only)
+        set_tests_properties(native_camera_parent_model_history PROPERTIES TIMEOUT 180)
     endif()
 
     # Viewport scale handles: hit testing, the merged mode button's cycle and

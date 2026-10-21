@@ -476,6 +476,7 @@ MSVC 的某些容器移动构造会分配内存，因此包含 `std::map` 的状
 | --- | --- |
 | `bone_edit_undo.cpp::PushBoneEditUndo` | 未注册骨骼姿势；分配及捕获须先完成，再登记共同历史。 |
 | `command_view_menu.cpp::300/302` | 两者的骨骼和相机模式均已受控迁移。数值输入处理模态期间的身份、结构、姿态与历史过期，禁止旧指针直接写回；其他菜单写入仍待逐项迁移。 |
+| `command_dispatch.cpp::449/450` | 父模型与父骨骼下拉框已按 Adjustment 接入。父模型变化保存完整绑定对，解除结果只采样一次；登记求值及对象删除交错见[父模型验收记录](records/abi-camera-parent-model-history-2026-10-21.md)。公共服务仍未开放。 |
 | `model_keyframe_edit.cpp::AdvanceUndo`、注册/删除 | 旧环类型 1–4、7 的恢复已整体准备；骨骼当前帧登记、模型三族删键、混合范围缩放及模型插值按钮已通过独立计划受控接入。其余登记和写入入口待迁移，见[骨骼关键帧迁移顺序](#骨骼关键帧迁移顺序)。 |
 | `model_keyframe_edit.cpp` 物理烘焙 | 类型 5，同时含关键帧、姿势、容量及搜索游标。须与骨骼缩放和曲线侧表一起恢复。 |
 | `sequence_scatter.cpp` | 类型 6，持有完整 Morph 池及曲线状态的 before/after。不得退化为只恢复当前值。 |

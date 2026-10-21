@@ -452,6 +452,7 @@ void CrossModelJournal(){
 #include "native_model_vmd_curves_checks.inc"
 #include "native_camera_follow_checks.inc"
 #include "native_camera_parent_history_checks.inc"
+#include "native_camera_parent_model_history_checks.inc"
 #include "retained_bookkeeping_checks.inc"
 int main(int argc,char** argv){
     std::setvbuf(stdout,nullptr,_IONBF,0);
@@ -616,6 +617,38 @@ int main(int argc,char** argv){
     if(argc==2&&!std::strcmp(argv[1],"--camera-parent-only")) {
         run("NativeCameraParentHistoryChecks",NativeCameraParentHistoryChecks);
         std::printf("PASS native camera parent: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--camera-parent-model-only")) {
+        run("NativeCameraParentModelHistoryChecks",NativeCameraParentModelHistoryChecks);
+        std::printf("PASS native camera parent model: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--camera-parent-model-no-parent-recovery-only")) {
+        run("NativeCameraParentModelNoParentMappingRecoveryChecks",NativeCameraParentModelNoParentMappingRecoveryChecks);
+        std::printf("PASS native camera parent model no-parent mapping recovery: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--camera-parent-model-accepted-swap-only")) {
+        run("NativeCameraParentModelAcceptedMappingSwapChecks",NativeCameraParentModelAcceptedMappingSwapChecks);
+        std::printf("PASS native camera parent model accepted mapping swap: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--camera-parent-model-removal-only")) {
+        run("NativeCameraParentModelRemovalChecks",NativeCameraParentModelRemovalChecks);
+        std::printf("PASS native camera parent model removal: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--camera-parent-model-registration-only")) {
+        run("NativeCameraParentModelRegistrationChecks",NativeCameraParentModelRegistrationChecks);
+        std::printf("PASS native camera parent model registration: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--camera-parent-model-registration-pair-only")) {
+        run("NativeCameraParentModelRegistrationPairChecks",NativeCameraParentModelRegistrationPairChecks);
+        std::printf("PASS native camera parent model registration pair: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--camera-parent-model-registration-pair-out-of-range-only")) {
+        run("NativeCameraParentModelRegistrationPairOutOfRangeChecks",NativeCameraParentModelRegistrationPairOutOfRangeChecks);
+        std::printf("PASS native camera parent model out-of-range registration pair: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--camera-parent-model-registration-pair-in-range-only")) {
+        run("NativeCameraParentModelRegistrationPairInRangeChecks",NativeCameraParentModelRegistrationPairInRangeChecks);
+        std::printf("PASS native camera parent model in-range registration pair: %u checks\n",checks);return 0;
     }
     if(argc==2&&!std::strcmp(argv[1],"--numpad-only")) {
         run("NativeNumpadViewChecks",NativeNumpadViewChecks);
@@ -960,6 +993,7 @@ int main(int argc,char** argv){
     run("NativeModelVmdCurvesChecks",NativeModelVmdCurvesChecks);
     run("NativeCameraFollowChecks",NativeCameraFollowChecks);
     run("NativeCameraParentHistoryChecks",NativeCameraParentHistoryChecks);
+    run("NativeCameraParentModelHistoryChecks",NativeCameraParentModelHistoryChecks);
     run("NativeCameraHudHistoryChecks",NativeCameraHudHistoryChecks);
     run("NativeAccessoryHudHistoryChecks",NativeAccessoryHudHistoryChecks);
     run("NativeModelHudHistoryChecks",NativeModelHudHistoryChecks);
