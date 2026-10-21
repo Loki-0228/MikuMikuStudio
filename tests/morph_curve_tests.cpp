@@ -783,6 +783,10 @@ void AuthoredFallbackAndRestore() {
 
 void PmmRoundTrip() {
     mikumikustudio::MMDApp app;
+    // The restored constructor does not initialize the original state block.
+    // PMM capture/load and Reset scan the complete model-slot table.
+    app.ClearModelSlots();
+    app.SetSelectedModelSlot(0);
     FakeModel first = MakeModel({{"eye", 2}, {"mouth", 3}});
     FakeModel second = MakeModel({{"eye", 2}}, "other");
     app.ModelSlot(0) = first.raw();
@@ -1193,6 +1197,7 @@ void DenseWriteAndGrowthIdentity() {
           "install an authored curve before growth");
     const auto identity = mdl::MorphKeyPoolIdentity(record.morphKeys);
     auto app = std::make_unique<mikumikustudio::MMDApp>();
+    app->ClearModelSlots();
     app->ModelSlot(0) = model.raw(); app->SetSelectedModelSlot(0);
     const auto editorIdentity = mikumikustudio::curve_host::MorphIdentityOf(*app, model.raw());
     ac::Track dense;
