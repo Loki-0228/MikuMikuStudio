@@ -53,11 +53,15 @@
 
 随后也已完成[选择读写回调保护](abi-curve-selection-lifetime-2026-10-21.md)，两套配置选择专项各 5,158 项、编辑器全集各 13,380 项通过。其稳定时钟检查不因轨道增大而复制完整关键帧数组。
 
-比较模式与相邻控制开关由[后续批次](abi-curve-comparison-lifetime-2026-10-21.md)接入同一保护，并修复筛选拒绝时的部分显示发布。当前仍未统一的回调包括：
+比较模式与相邻控制开关由[后续批次](abi-curve-comparison-lifetime-2026-10-21.md)接入同一保护，并修复筛选拒绝时的部分显示发布。`Session.currentFrame` 和 `Session.isPlaying` 随后完成[只读查询保护](abi-curve-transport-query-lifetime-2026-10-21.md)，两套配置查询专项各 8,566 项、完整配置编辑器全集 24,620 项通过。
 
-- 帧与播放控制回调 `Session.currentFrame`、`seek`、`isPlaying`、`setPlaying`。
+原始兼容配置全集首次以 `0xC0000374` 退出，堆损坏根因尚未解释。单独比较专项 2,674 项、ASan 全集及逐组堆校验全集各 24,620 项随后通过，均不代表该问题已修复。后续诊断结果见查询记录。
+
+当前仍未统一的回调包括：
+
+- 帧与播放控制的写回调 `Session.seek` 和 `Session.setPlaying`。
 - `Source.subdivide` 和 `Channel.sample`。
 
-编辑器分配保活不能代替这些回调的参数快照和返回后校验，不能认定全部来源都支持任意重入或窗口自毁。
+编辑器分配保活不能代替这些回调的参数快照和返回后校验，不能认定全部来源都支持任意重入或窗口自毁。实际宿主停止与跳帧路径的重复场景求值也仍待处理。
 
 本批不改变曲线与 VMD 格式兼容规则。普通生产宿主的 `mms.edit` 仍未开放，正式 release 未更新。Win7 SP1 x64、CPU 基础路径、AMD 兼容及程序旁 `data` 的要求保持不变。

@@ -76,6 +76,10 @@
 
 ## 剩余范围
 
-`readComparisonMode`、`writeComparisonMode` 和 `linkAdjacentControls` 已在[后续批次](abi-curve-comparison-lifetime-2026-10-21.md)接入同一保护。`Session.currentFrame`、`seek`、`isPlaying`、`setPlaying`、`Source.subdivide` 和 `Channel.sample` 仍未统一到同一复制、调用及最终释放检查，不能据此认为这些回调也支持任意重入或自毁。
+`readComparisonMode`、`writeComparisonMode` 和 `linkAdjacentControls` 已在[后续批次](abi-curve-comparison-lifetime-2026-10-21.md)接入同一保护。`Session.currentFrame` 和 `Session.isPlaying` 随后完成[只读查询保护](abi-curve-transport-query-lifetime-2026-10-21.md)，两套配置查询专项各 8,566 项、完整配置编辑器全集 24,620 项通过。
+
+原始兼容配置全集首次以 `0xC0000374` 退出，堆损坏根因尚未解释。单独比较专项 2,674 项、ASan 全集及逐组堆校验全集各 24,620 项随后通过，均不代表该问题已修复。后续诊断结果见查询记录。
+
+`Session.seek` 和 `Session.setPlaying` 写回调、`Source.subdivide` 及一般 `Channel.sample` 调用仍未统一到同一复制、调用及最终释放检查，不能据此认为这些回调也支持任意重入或自毁。实际宿主停止与跳帧路径的重复场景求值也仍待处理。
 
 本批不改变曲线或 VMD 格式兼容规则，不开放普通生产宿主的 `mms.edit`。Win7 SP1 x64、CPU 基础路径、AMD 兼容及程序旁 `data` 的要求保持不变。正式 release 未更新。

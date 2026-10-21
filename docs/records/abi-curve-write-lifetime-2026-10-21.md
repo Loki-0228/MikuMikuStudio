@@ -83,11 +83,15 @@
 
 最终两套产品的 PE 清单见 `build/verification/abi-panel-background-lifetime-20261021/pe-inventory-final.json`：均为 x64、子系统 6.1，未新增可选图形后端或厂商 DLL 的直接导入。清单只核对所列 PE 项，不替代逐 API、运行库部署或 Win7 真机验收。正式 `build/release/MikuMikuDance.exe` 的 SHA-256 仍为 `180DB2580C99A3578F30B2539451FF82605AEBDEC337DAEBCE8B77EDF86CF65A`，没有被本批构建覆盖。
 
-比较模式与相邻控制开关已由[后续批次](abi-curve-comparison-lifetime-2026-10-21.md)统一到现有保护。以下回调仍未统一到 `InvokeProvider` 的复制、调用和释放检查：
+比较模式与相邻控制开关已由[后续批次](abi-curve-comparison-lifetime-2026-10-21.md)统一到现有保护。`Session.currentFrame` 和 `Session.isPlaying` 随后完成[只读查询保护](abi-curve-transport-query-lifetime-2026-10-21.md)，两套配置查询专项各 8,566 项、完整配置编辑器全集 24,620 项通过。
 
-- `Session.currentFrame`、`seek`、`isPlaying`、`setPlaying`。
+原始兼容配置全集首次以 `0xC0000374` 退出，堆损坏根因尚未解释。单独比较专项 2,674 项、ASan 全集及逐组堆校验全集各 24,620 项随后通过，均不代表该问题已修复。后续诊断结果见查询记录。
+
+以下回调仍未统一到 `InvokeProvider` 的复制、调用和释放检查：
+
+- `Session.seek` 和 `Session.setPlaying` 写回调。
 - `Source.subdivide`、`Channel.sample`。
 
-稳定历史节点避免了栈扩容时复制 `Channel.sample`，不代表任意采样调用已具备同样的会话保护。编辑器分配保活也不能替代这些回调各自的参数快照及返回后校验。
+稳定历史节点避免了栈扩容时复制 `Channel.sample`，不代表任意采样调用已具备同样的会话保护。编辑器分配保活也不能替代这些回调各自的参数快照及返回后校验。实际宿主停止与跳帧路径的重复场景求值仍待处理。
 
 本批不改变曲线及 VMD 格式兼容规则，不开放普通生产宿主的 `mms.edit`。Win7 SP1 x64、CPU 基础路径、AMD 兼容及程序旁 `data` 的要求保持不变。正式 release 未更新。

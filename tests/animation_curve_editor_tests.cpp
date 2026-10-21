@@ -1,8 +1,8 @@
 // MAINTENANCE: regression-keep; purpose and cleanup conditions in tests/README.md.
 // Background regression for the shared modeless curve editor
 // (src/window/animation_curve_editor.cpp).  Everything runs without a message
-// loop: the editor window is created hidden, no window is ever shown, no
-// desktop pixel is read, no GPU device is created and no message box is
+// loop: most fixtures create hidden windows; visible timer and focus cases
+// control visibility explicitly. No desktop pixel is read, no GPU device is created and no message box is
 // expected.  Real callbacks are verified through the real WM_COMMAND path.
 //
 // The control ids and the WM_APP test hooks are mirrored from the comment block
@@ -30,12 +30,14 @@
 #include "../src/window/curve_editor_axis.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cwchar>
 #include <functional>
 #include <memory>
+#include <limits>
 #include <new>
 #include <set>
 #include <stdexcept>
@@ -74,7 +76,8 @@ enum : int {
     kIdViewLabel = 1006, kIdViewCombo = 1007, kIdToolLabel = 1008, kIdToolCombo = 1009,
     kIdFitAll = 1010, kIdFitRange = 1011, kIdShortcutToggle = 1012, kIdShortcutText = 1013,
     kIdChannelLabel = 1014, kIdChannelList = 1015, kIdChannelAll = 1016, kIdChannelInvert = 1017,
-    kIdCanvas = 1020,
+    kIdCanvas = 1020, kIdPlay = 1021, kIdPreviousFrame = 1022, kIdNextFrame = 1023,
+    kIdTimelineFrame = 1024, kIdSeekFrame = 1025, kIdPreviousKey = 1026, kIdNextKey = 1027,
     kIdMmdLabel = 1030, kIdMmdPanel = 1031, kIdMmdReadout = 1032,
     kIdFrameLabel = 1040, kIdFrameEdit = 1041,
     kIdValueLabel = 1042, kIdValueEdit = 1043,
@@ -108,6 +111,7 @@ constexpr UINT kHookCompare = WM_APP + 308;
 constexpr UINT kHookCompareRange = WM_APP + 309;
 constexpr UINT kHookChannelVisible = WM_APP + 310;
 constexpr UINT kHookHoverHint = WM_APP + 311;
+constexpr UINT kHookNativeConstruction = WM_APP + 398;
 constexpr UINT kPlayheadTimerId = 1;
 constexpr double kMinimumTimeSpan = 1.0;
 constexpr double kMinimumValueSpan = 1.0e-5;
@@ -123,7 +127,13 @@ void Check(bool condition, const char *description) {
     }
 }
 
-void Note(const char *description) { std::printf("PASS %s\n", description); }
+bool g_validateHeap=false;
+void Note(const char *description) {
+    if(g_validateHeap&&!HeapValidate(GetProcessHeap(),0,nullptr)){
+        std::fprintf(stderr,"FAIL process heap after %s\n",description);std::fflush(stderr);std::exit(1);
+    }
+    std::printf("PASS %s\n", description);std::fflush(stdout);
+}
 
 // ---------------------------------------------------------------------------
 // Host-side stub source.
@@ -1056,7 +1066,7 @@ void MotionCallbackLifetime() {
 
 void SourceCallbackLifetime() {
     // kind: local canonical read, shared-history canonical read, history query.
-    // phase: WM_CREATE, posted source refresh, parent command, canvas shortcut,
+    // phase: initial post-native setup, posted source refresh, parent command, canvas shortcut,
     // a subclassed button shortcut, or the numeric MMD child editor. All
     // retire the real registered window.
     for(int kind=0;kind!=3;++kind)for(int phase=0;phase!=6;++phase)
@@ -3901,8 +3911,25 @@ void SelectionCallbackLifetime(){
             Check(IsWindow(replacementWindow)&&KeyCount(replacementWindow)==2&&
                 GetText(replacementWindow,kIdStatus)==replacementStatus&&fixture.replacement.applyCalls==0,
                 "retired selection results cannot change replacement selection, status or channels");
-            ClickKey(replacementWindow,1);Click(replacementWindow,kIdDeleteKey);
-            Check(fixture.replacement.applyCalls==1&&KeyCount(replacementWindow)==1,
+            const auto recoveryCanvas=GetDlgItem(replacementWindow,kIdCanvas);
+            const auto recoveryPoint=AskPoint(replacementWindow,kHookPointForKey,1);
+            const auto captureBefore=GetCapture();
+            const std::array<SHORT,4> modifiersBefore{GetKeyState(VK_SPACE),GetKeyState(VK_MENU),GetKeyState(VK_CONTROL),GetKeyState(VK_SHIFT)};
+            ClickKey(replacementWindow,1);
+            const auto selectedFrame=GetText(replacementWindow,kIdFrameEdit);
+            const bool deleteEnabled=IsWindowEnabled(GetDlgItem(replacementWindow,kIdDeleteKey))!=FALSE;
+            Click(replacementWindow,kIdDeleteKey);
+            const int recoveryKeys=KeyCount(replacementWindow);
+            if(fixture.replacement.applyCalls!=1||recoveryKeys!=1){
+                CurveEditorAxisState geometry{};SendMessageW(replacementWindow,WM_APP+394,0,reinterpret_cast<LPARAM>(&geometry));
+                std::fprintf(stderr,"SELECTION_RECOVERY write=%d entry=%d phase=%d action=%d response=%d applies=%d keys=%d frame=%ls deleteEnabled=%d hwnd=%p canvas=%p point=%ld,%ld plot=%ld,%ld,%ld,%ld focus=%p captureBefore=%p captureAfter=%p modifiers=%04x,%04x,%04x,%04x status=%ls\n",
+                    writing,entry,phase,action,response,fixture.replacement.applyCalls,recoveryKeys,selectedFrame.c_str(),deleteEnabled,
+                    replacementWindow,recoveryCanvas,recoveryPoint.x,recoveryPoint.y,geometry.plot.left,geometry.plot.top,geometry.plot.right,geometry.plot.bottom,
+                    GetFocus(),captureBefore,GetCapture(),unsigned(static_cast<unsigned short>(modifiersBefore[0])),unsigned(static_cast<unsigned short>(modifiersBefore[1])),
+                    unsigned(static_cast<unsigned short>(modifiersBefore[2])),unsigned(static_cast<unsigned short>(modifiersBefore[3])),GetText(replacementWindow,kIdStatus).c_str());
+                std::fflush(stderr);
+            }
+            Check(fixture.replacement.applyCalls==1&&recoveryKeys==1,
                 "replacement remains editable after selection callbacks and guards unwind");
         }else Check(OwnedCurveWindow()==nullptr,"closed selection callback leaves no registered window");
         ce::CloseOwned(nullptr);
@@ -4153,6 +4180,7 @@ void ComparisonCallbackLifetime(){
     for(int action=0;action!=3;++action)for(int response=0;response!=3;++response){
         const int kind=std::min(route,2);
         std::printf("comparison lifetime kind=%d mouse=%d phase=%d action=%d response=%d\n",kind,route==3,phase,action,response);
+        std::fflush(stdout);
         auto host=ComparisonLifetimeHost(kind==2);HostSource replacement;
         replacement.data.push_back(MakeChannel("replacement",L"Replacement",{MakeKey(0,91),MakeKey(20,99)}));
         ComparisonRetirementState state;state.kind=kind;state.phase=phase;state.response=response;
@@ -4448,9 +4476,697 @@ void ComparisonNestedAndGeometryCopy(){
     ce::CloseOwned(nullptr);
     Note("comparison recursion is gated and adjacent geometry preparation copies only required plain data");
 }
+HostSource TransportHost(){
+    HostSource host;host.data.push_back(MakeChannel("transport",L"Transport",
+        {MakeKey(0,1),MakeKey(10,3),MakeKey(20,2)}));return host;
+}
+int TransportControlCount(HWND window){
+    int count=0;EnumChildWindows(window,[](HWND,LPARAM value)->BOOL{++*reinterpret_cast<int*>(value);return TRUE;},
+        reinterpret_cast<LPARAM>(&count));return count;
+}
+void TransportControlsReady(HWND window,int count){
+    Check(SendMessageW(window,kHookNativeConstruction,0,0)==3,"transport providers run only after native CreateWindowEx returns");
+    Check(TransportControlCount(window)==count,"a getter sees the complete control tree after native creation returns");
+    for(int id:{kIdCanvas,kIdMmdPanel,kIdChannelList,kIdFrameEdit,kIdValueEdit,kIdStatus,
+        kIdPlay,kIdTimelineFrame,kIdSeekFrame,kIdPreviousFrame,kIdNextFrame,kIdPreviousKey,kIdNextKey})
+        Check(IsWindow(GetDlgItem(window,id)),"all transport and editor controls exist before the first transport query");
+}
+void TransportRefreshSource(HWND window,const std::string& sourceId="source"){
+    Check(IsWindow(window),"transport source notification targets a real editor");
+    const auto session=ce::CaptureWindowSession(window);
+    ce::NotifySourceChanged(nullptr,sourceId);
+    MSG message{};bool dispatched=false;
+    // Deliver the real notification posted by the public entry. Stop at the
+    // exact Session boundary, so a nested replacement never receives an old
+    // continuation's queued source work.
+    while(ce::IsWindowSessionCurrent(window,session)&&
+        PeekMessageW(&message,window,WM_APP+401,WM_APP+401,PM_REMOVE)){
+        dispatched=true;DispatchMessageW(&message);
+    }
+    Check(dispatched,"transport refresh consumes an actual posted source-change message");
+}
+struct TransportRetirementState {
+    int phase=0,response=0,calls=0,retireCalls=0,destroyedDuringCopy=0,skipBodies=0;
+    bool armed=false,copying=false;const void* original=nullptr;
+    std::function<void()> retire;
+    void Retire(){armed=false;++retireCalls;retire();}
+};
+template<bool Playing>struct TransportRetirementProvider {
+    TransportRetirementState* state;int marker=83;mutable bool invoked=false;
+    explicit TransportRetirementProvider(TransportRetirementState& value):state(&value){}
+    TransportRetirementProvider(const TransportRetirementProvider& other):state(other.state),marker(other.marker){
+        if(!state->armed||state->skipBodies||state->phase!=0)return;
+        state->copying=true;state->original=&other;state->Retire();
+        Check(state->destroyedDuringCopy==0&&other.marker==83,
+            "transport callable storage stays alive during a copy constructor that replaces its Session");
+        state->copying=false;if(state->response)throw std::bad_alloc();
+    }
+    ~TransportRetirementProvider(){
+        if(state->copying&&state->original==this)++state->destroyedDuringCopy;
+        if(invoked&&state->armed&&state->phase==2)state->Retire();
+    }
+    auto operator()()const{
+        ++state->calls;
+        if(state->armed&&state->skipBodies){--state->skipBodies;if constexpr(Playing)return false;else return 5.0;}
+        invoked=state->armed;const bool fail=state->armed&&state->response;
+        if(state->armed&&state->phase==1)state->Retire();
+        if(fail)throw std::runtime_error("transport query failed");
+        if constexpr(Playing)return false;else return 5.0;
+    }
+};
+void TransportEntry(HWND window,int entry){
+    if(entry==2)RenderInk(GetDlgItem(window,kIdCanvas));
+    if(entry==3){HWND canvas=GetDlgItem(window,kIdCanvas);InvalidateRect(canvas,nullptr,FALSE);SendMessageW(canvas,WM_PAINT,0,0);}
+    if(entry==4)TransportRefreshSource(window);
+    if(entry==5||entry==9||entry==13){SetWindowLongPtrW(window,GWL_STYLE,GetWindowLongPtrW(window,GWL_STYLE)|WS_VISIBLE);
+        SendMessageW(window,WM_TIMER,kPlayheadTimerId,0);}
+    if(entry==6)Click(window,kIdNextFrame);
+    if(entry==7)Click(window,kIdNextKey);
+    if(entry==8)ce::SetLanguage(nullptr,1);
+    if(entry==10)Click(window,kIdPlay);
+    if(entry==11||entry==12){SetText(window,kIdTimelineFrame,L"8");Click(window,kIdSeekFrame);}
+}
+void TransportCallbackLifetime(){
+    auto baseline=TransportHost();HWND probe=static_cast<HWND>(ce::Open(nullptr,MakeSession(baseline),false));
+    Check(IsWindow(probe),"transport control-count baseline opens");const int count=TransportControlCount(probe);ce::CloseOwned(nullptr);
+    for(int entry=0;entry!=14;++entry)for(int phase=0;phase!=3;++phase)
+    for(int action=0;action!=3;++action)for(int response=0;response!=2;++response){
+        std::printf("transport query lifetime entry=%d phase=%d action=%d response=%d\n",entry,phase,action,response);
+        std::fflush(stdout);
+        auto host=TransportHost(),replacement=TransportHost();TransportRetirementState state;
+        state.phase=phase;state.response=response;int seeks=0,toggles=0;const int skipped=entry==13?1:0;
+        HWND retiredWindow=nullptr,replacementWindow=nullptr;std::wstring replacementStatus;
+        std::weak_ptr<void> token;std::shared_ptr<void> retained;int readsAfter=-1;
+        state.retire=[&]{retiredWindow=OwnedCurveWindow();TransportControlsReady(retiredWindow,count);
+            token=ce::CaptureWindowSession(retiredWindow);retained=token.lock();
+            if(action!=1)ce::CloseOwned(nullptr);
+            if(action!=0){replacementWindow=static_cast<HWND>(ce::Open(nullptr,MakeSession(replacement),false));
+                Check(IsWindow(replacementWindow),"transport callback installs a real replacement editor");
+                replacementStatus=GetText(replacementWindow,kIdStatus);}
+            readsAfter=host.readCalls;
+        };
+        auto session=MakeSession(host);session.currentFrame=[](){return 5.0;};session.isPlaying=[](){return false;};
+        session.seek=[&](int){++seeks;};session.setPlaying=[&](bool){++toggles;};
+        const bool playing=entry==1||(entry>=8&&entry<=11);
+        if(playing)session.isPlaying=TransportRetirementProvider<true>(state);
+        else session.currentFrame=TransportRetirementProvider<false>(state);
+        const bool initial=entry<2;state.armed=initial;
+        HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));int beforeCalls=0;
+        if(initial)Check(window==nullptr,"retired startup query cannot return an old Open as successful");
+        else{Check(IsWindow(window),"transport lifetime fixture opens before arming");beforeCalls=state.calls;
+            state.skipBodies=skipped;state.armed=true;TransportEntry(window,entry);}
+        if(state.retireCalls!=1||state.calls!=beforeCalls+skipped+int(phase!=0))
+            std::fprintf(stderr,"TRANSPORT_RETIRE entry=%d phase=%d action=%d response=%d calls=%d before=%d retires=%d\n",
+                entry,phase,action,response,state.calls,beforeCalls,state.retireCalls);
+        Check(state.retireCalls==1&&state.calls==beforeCalls+skipped+int(phase!=0)&&state.destroyedDuringCopy==0,
+            "transport query copying, invocation and final release retire precisely one original callback");
+        Check(seeks==0&&toggles==0&&host.applyCalls==0&&host.readCalls==readsAfter,
+            "retired read-only transport queries never continue into seeking, playback, source reads or apply");
+        Check(retained&&!ce::IsWindowSessionCurrent(retiredWindow,token),"a strong old token cannot validate a retired transport query");
+        if(replacementWindow){TransportControlsReady(replacementWindow,count);
+            Check(GetText(replacementWindow,kIdStatus)==replacementStatus&&KeyCount(replacementWindow)==3,
+                "retired query continuation leaves replacement controls, data and status unchanged");
+            ClickKey(replacementWindow,1);Click(replacementWindow,kIdDeleteKey);
+            Check(replacement.applyCalls==1&&KeyCount(replacementWindow)==2,
+                "replacement Session remains editable after startup, paint, timer and navigation retirement");}
+        else Check(OwnedCurveWindow()==nullptr,"transport retirement leaves no registered ghost editor");
+        ce::CloseOwned(nullptr);
+    }
+    Note("frame and playing getters share the Session copy, invocation and final-release lifetime boundary");
+}
+
+struct TransportFailureState{bool armed=false;int failure=0,copies=0,calls=0;};
+template<bool Playing>struct TransportFailureProvider{
+    TransportFailureState* state;
+    explicit TransportFailureProvider(TransportFailureState& value):state(&value){}
+    TransportFailureProvider(const TransportFailureProvider& other):state(other.state){
+        if(state->armed&&state->failure==0){++state->copies;throw std::bad_alloc();}}
+    auto operator()()const{
+        ++state->calls;if(state->armed&&state->failure==1)throw std::runtime_error("transport unavailable");
+        if constexpr(Playing)return false;
+        else{if(state->armed&&state->failure==2)return std::numeric_limits<double>::quiet_NaN();
+            if(state->armed&&state->failure==3)return std::numeric_limits<double>::infinity();
+            if(state->armed&&state->failure==4)return (std::numeric_limits<double>::max)();return 5.0;}
+    }
+};
+void TransportFailuresAndMissing(){
+    for(bool playing:{false,true})for(int failure=0;failure!=(playing?2:5);++failure){
+        std::printf("transport query failure playing=%d failure=%d\n",playing,failure);std::fflush(stdout);
+        auto host=TransportHost();TransportFailureState state;state.failure=failure;int seeks=0,toggles=0;
+        auto session=MakeSession(host);session.currentFrame=[](){return 5.0;};session.isPlaying=[](){return false;};
+        session.seek=[&](int){++seeks;};session.setPlaying=[&](bool){++toggles;};
+        if(playing)session.isPlaying=TransportFailureProvider<true>(state);
+        else session.currentFrame=TransportFailureProvider<false>(state);
+        HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));Check(IsWindow(window),"query failure fixture opens with valid initial cache");
+        const auto history=LocalWriteHistory(window);const auto frame=GetText(window,kIdFrameEdit),value=GetText(window,kIdValueEdit);
+        const auto caption=GetText(window,kIdPlay);const int applies=host.applyCalls;
+        state.armed=true;SetText(window,kIdTimelineFrame,L"8");
+        for(int id:{kIdPreviousFrame,kIdNextFrame,kIdPreviousKey,kIdNextKey,kIdSeekFrame})Click(window,id);
+        if(playing)Click(window,kIdPlay);
+        else{TransportRefreshSource(window);RenderInk(GetDlgItem(window,kIdCanvas));}
+        ce::SetLanguage(nullptr,2);
+        Check(seeks==0&&toggles==0&&host.applyCalls==applies&&LocalWriteHistory(window)==history,
+            "failed or invalid fresh queries cannot authorize navigation using an older cached value");
+        Check(GetText(window,kIdFrameEdit)==frame&&GetText(window,kIdValueEdit)==value&&GetText(window,kIdPlay)==caption,
+            "query failure preserves the last valid fields and caption without inventing a new stopped state");
+        if(failure==0)Check(state.copies>0,"ordinary transport callable copy allocation failures reach the guarded failure path");
+        state.armed=false;Click(window,kIdNextFrame);Check(seeks==1,"navigation resumes after the provider becomes available");
+        ce::CloseOwned(nullptr);
+    }
+    auto host=TransportHost();int seeks=0,toggles=0;bool lastPlaying=false;auto session=MakeSession(host);
+    session.currentFrame={};session.isPlaying={};session.seek=[&](int frame){++seeks;Check(frame==8,"missing query explicit seek keeps its entered frame");};
+    session.setPlaying=[&](bool playing){++toggles;lastPlaying=playing;};
+    HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));Check(IsWindow(window),"optional transport getter fixture opens");
+    Click(window,kIdNextFrame);Click(window,kIdNextKey);Check(seeks==0,"missing frame getter disables frame-relative navigation");
+    SetText(window,kIdTimelineFrame,L"8");Click(window,kIdSeekFrame);Click(window,kIdPlay);
+    Check(seeks==1&&toggles==1&&lastPlaying&&host.applyCalls==0,
+        "missing optional getters retain explicit seek and default-stopped play behavior");
+    ce::CloseOwned(nullptr);
+    Note("missing, busy, failed and invalid queries retain distinct navigation semantics");
+}
+
+void TransportNestedAndSessionCache(){
+    for(bool playing:{false,true}){
+        std::printf("transport query nested playing=%d\n",playing);std::fflush(stdout);
+        auto host=TransportHost(),other=TransportHost();other.data[0].id="other";HWND window=nullptr;
+        bool armed=false,pumping=false;int frames=0,states=0,nested=0,seeks=0,toggles=0;
+        const auto pump=[&]{armed=false;pumping=true;const int oldFrames=frames,oldStates=states;
+            const auto history=LocalWriteHistory(window);const auto frame=GetText(window,kIdFrameEdit),value=GetText(window,kIdValueEdit);
+            const int active=ActiveChannelIndex(window);const int reads=host.readCalls;
+            RenderInk(GetDlgItem(window,kIdCanvas));InvalidateRect(GetDlgItem(window,kIdCanvas),nullptr,FALSE);
+            SendMessageW(GetDlgItem(window,kIdCanvas),WM_PAINT,0,0);
+            SendMessageW(window,WM_TIMER,kPlayheadTimerId,0);ce::SetLanguage(nullptr,1);
+            for(int id:{kIdNextFrame,kIdPlay,kIdDeleteKey})Click(window,id);
+            HWND combo=GetDlgItem(window,kIdSourceCombo);SendMessageW(combo,CB_SETCURSEL,1,0);
+            SendMessageW(window,WM_COMMAND,MAKEWPARAM(kIdSourceCombo,CBN_SELCHANGE),reinterpret_cast<LPARAM>(combo));
+            TransportRefreshSource(window);
+            Check(frames==oldFrames&&states==oldStates&&nested==0,"nested paint, fields, language and timer messages never recursively query transport");
+            Check(seeks==0&&toggles==0&&host.applyCalls==0&&host.readCalls==reads&&LocalWriteHistory(window)==history&&
+                other.readCalls==0&&GetText(window,kIdFrameEdit)==frame&&GetText(window,kIdValueEdit)==value&&ActiveChannelIndex(window)==active&&KeyCount(window)==3,
+                "busy transport queries preserve selection, source, fields, history and data before their outer call returns");
+            pumping=false;};
+        auto session=MakeSession(host);session.sources.push_back(other.Make("other",L"Other source"));
+        session.currentFrame=[&]{++frames;if(pumping)++nested;if(armed&&!playing)pump();return 5.0;};
+        session.isPlaying=[&]{++states;if(pumping)++nested;if(armed&&playing)pump();return false;};
+        session.seek=[&](int){++seeks;};session.setPlaying=[&](bool){++toggles;};
+        window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));Check(IsWindow(window),"transport recursion fixture opens");
+        SetWindowLongPtrW(window,GWL_STYLE,GetWindowLongPtrW(window,GWL_STYLE)|WS_VISIBLE);
+        SendMessageW(window,WM_TIMER,kPlayheadTimerId,0);armed=true;
+        if(playing)ce::SetLanguage(nullptr,2);else RenderInk(GetDlgItem(window,kIdCanvas));
+        Check(!armed&&nested==0&&seeks==0&&toggles==0,"the owning transport query completes once after nested authoring is rejected");
+        // A Session-wide getter can be used normally by either source after the callback has returned.
+        HWND combo=GetDlgItem(window,kIdSourceCombo);SendMessageW(combo,CB_SETCURSEL,1,0);
+        SendMessageW(window,WM_COMMAND,MAKEWPARAM(kIdSourceCombo,CBN_SELCHANGE),reinterpret_cast<LPARAM>(combo));
+        Check(other.readCalls>0&&host.applyCalls==0,"source switching resumes after the transport callback guard releases");
+        auto replacement=MakeSession(other);int failed=0;bool sawOldField=false;
+        replacement.currentFrame=[&]()->double{++failed;
+            sawOldField|=GetText(window,kIdFrameEdit)==L"5";
+            ce::SetLanguage(nullptr,2);RenderInk(GetDlgItem(window,kIdCanvas));
+            throw std::runtime_error("new Session has no current frame");};
+        replacement.isPlaying=[]()->bool{throw std::runtime_error("new Session has no playing state");};
+        Check(ce::Open(nullptr,std::move(replacement),false)==window,"cache reset is exercised through same-window Open");
+        Check(failed>0&&!sawOldField&&GetText(window,kIdFrameEdit).empty()&&GetText(window,kIdValueEdit).empty()&&GetText(window,kIdPlay)==L"播放",
+            "display caches and fields are not inherited by a replacement Session whose first query fails or reenters");
+        ce::CloseOwned(nullptr);
+    }
+    Note("transport callback busy state uses only current-Session display caches and gates recursive editing");
+}
+
+void TransportInvalidFramesAndMmdSource(){
+    const double edge=double((std::numeric_limits<long long>::min)());
+    const std::array<double,7> values{{std::numeric_limits<double>::quiet_NaN(),
+        std::numeric_limits<double>::infinity(),-std::numeric_limits<double>::infinity(),-edge,
+        std::nextafter(edge,-std::numeric_limits<double>::infinity()),edge,std::nextafter(-edge,0.0)}};
+    for(std::size_t test=0;test<values.size();++test){
+        std::printf("transport query invalid-frame case=%zu\n",test);std::fflush(stdout);
+        auto host=TransportHost();double frame=5.0;int seeks=0;auto session=MakeSession(host);
+        session.currentFrame=[&]{return frame;};session.seek=[&](int){++seeks;};
+        HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));Check(IsWindow(window),"invalid-frame selected-key fixture opens");
+        const auto oldFrame=GetText(window,kIdFrameEdit),oldValue=GetText(window,kIdValueEdit);frame=values[test];TransportRefreshSource(window);
+        const bool valid=test>=5;
+        if(valid)Check(GetText(window,kIdFrameEdit)==std::to_wstring(static_cast<long long>(std::llround(frame))),
+            "representable signed 64-bit frame boundaries round without Win32 long overflow");
+        else Check(GetText(window,kIdFrameEdit)==oldFrame&&GetText(window,kIdValueEdit)==oldValue,
+            "a nonfinite or out-of-range clock does not overwrite fields when no key is selected");
+        ClickKey(window,1);
+        Check(GetText(window,kIdFrameEdit)==L"10"&&GetText(window,kIdValueEdit)==L"3"&&host.applyCalls==0,
+            "a selected key displays its own frame and value independently of an invalid or extreme clock");
+        if(!valid){Click(window,kIdNextFrame);SetText(window,kIdTimelineFrame,L"8");Click(window,kIdSeekFrame);
+            Check(seeks==0,"invalid clock navigation does not use the selected key or cached frame as authorization");}
+        SetText(window,kIdValueEdit,L"9");Click(window,kIdApplyKey);
+        Check(host.applyCalls==1&&FindKey(host.data,0,10)->value==9,
+            "an explicit edit of the selected key remains available when the unrelated clock is invalid");
+        ce::CloseOwned(nullptr);
+    }
+    for(int failure=0;failure!=2;++failure){
+        std::printf("transport query cross-source MMD failure=%d\n",failure);std::fflush(stdout);
+        auto first=TransportHost(),second=TransportHost();second.data[0].id="second";
+        std::string error;const std::array<double,4> a{{20,30,90,110}},b{{40,10,100,80}};
+        Check(ce::SetChannelControls(first.data[0],1,a,error)&&ce::SetChannelControls(second.data[0],1,b,error),
+            "two source channels provide distinct valid native MMD controls");
+        TransportFailureState state;state.failure=failure;auto session=MakeSession(first);
+        session.sources.push_back(second.Make("second",L"Second"));session.currentFrame=TransportFailureProvider<false>(state);
+        HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));Check(IsWindow(window),"cross-source MMD authorization fixture opens");
+        SetWindowLongPtrW(window,GWL_STYLE,GetWindowLongPtrW(window,GWL_STYLE)|WS_VISIBLE);
+        SendMessageW(window,WM_TIMER,kPlayheadTimerId,0);double controls[4]{};
+        Check(SendMessageW(window,kHookMmdControls,0,reinterpret_cast<LPARAM>(controls))&&
+            std::equal(a.begin(),a.end(),controls),"source A establishes an editable follow-playhead interval");
+        state.armed=true;HWND combo=GetDlgItem(window,kIdSourceCombo);SendMessageW(combo,CB_SETCURSEL,1,0);
+        SendMessageW(window,WM_COMMAND,MAKEWPARAM(kIdSourceCombo,CBN_SELCHANGE),reinterpret_cast<LPARAM>(combo));
+        Check(second.readCalls>0&&!SendMessageW(window,kHookMmdControls,0,reinterpret_cast<LPARAM>(controls))&&
+            !IsWindowEnabled(GetDlgItem(window,kIdMmdPanel))&&!IsWindowEnabled(GetDlgItem(window,1096)),
+            "failed frame query after a source switch disables the old source's MMD coordinates and interval");
+        for(int index=0;index!=4;++index)SetText(window,1096+index,L"70");
+        SendMessageW(GetDlgItem(window,1098),WM_KEYDOWN,VK_RETURN,0);
+        HWND panel=GetDlgItem(window,kIdMmdPanel);
+        SendMessageW(panel,WM_LBUTTONDOWN,MK_LBUTTON,MAKELPARAM(20,20));
+        SendMessageW(panel,WM_MOUSEMOVE,MK_LBUTTON,MAKELPARAM(30,30));SendMessageW(panel,WM_LBUTTONUP,0,MAKELPARAM(30,30));
+        Check(first.applyCalls==0&&second.applyCalls==0&&LocalWriteHistory(window)==std::array<std::uint64_t,2>{},
+            "disabled stale MMD fields and handle messages cannot author the newly selected source");
+        state.armed=false;TransportRefreshSource(window,"second");
+        Check(SendMessageW(window,kHookMmdControls,0,reinterpret_cast<LPARAM>(controls))&&
+            std::equal(b.begin(),b.end(),controls),"a recovered frame query exposes only source B's own native controls");
+        ClickKey(window,1);
+        SetComparisonLinkFields(window);TriggerComparisonLink(window,false);
+        Check(first.applyCalls==0&&second.applyCalls==1,"recovered source B controls remain editable without touching source A");
+        ce::CloseOwned(nullptr);
+    }
+    Note("invalid clocks preserve selected-key editing and failed source changes cannot reuse old MMD authorization");
+}
+
+void TransportPaintStateAndDenseTicks(){
+    auto host=TransportHost();TransportFailureState state;auto session=MakeSession(host);
+    session.currentFrame=TransportFailureProvider<false>(state);
+    HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));Check(IsWindow(window),"transport GDI fixture opens");
+    HWND canvas=GetDlgItem(window,kIdCanvas);HDC screen=GetDC(nullptr),dc=CreateCompatibleDC(screen);
+    HBITMAP bitmap=CreateCompatibleBitmap(screen,2048,2048);ReleaseDC(nullptr,screen);
+    Check(dc&&bitmap,"transport paint owns a real memory DC and bitmap");
+    HGDIOBJ oldBitmap=SelectObject(dc,bitmap);HFONT font=CreateFontW(11,0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,
+        DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,DEFAULT_QUALITY,DEFAULT_PITCH,L"Arial");
+    HGDIOBJ oldFont=SelectObject(dc,font);HRGN clip=CreateRectRgn(7,9,213,175);SelectClipRgn(dc,clip);
+    HRGN actual=CreateRectRgn(0,0,0,0);const DWORD before=GetGuiResources(GetCurrentProcess(),GR_GDIOBJECTS);
+    Check(font&&clip&&actual&&before>0,"transport GDI resource accounting and caller font/regions are available");
+    for(int failure=0;failure!=3;++failure){state.failure=failure;state.armed=failure!=2;
+        for(int pass=0;pass!=8;++pass){SendMessageW(canvas,WM_PRINTCLIENT,reinterpret_cast<WPARAM>(dc),PRF_CLIENT);
+            Check(GetCurrentObject(dc,OBJ_FONT)==font&&GetCurrentObject(dc,OBJ_BITMAP)==bitmap&&
+                GetClipRgn(dc,actual)==1&&EqualRgn(clip,actual),
+                "normal and failed transport paint restores the caller's selected font, bitmap and clipping region");
+            InvalidateRect(canvas,nullptr,FALSE);SendMessageW(canvas,WM_PAINT,0,0);
+            Check(!GetUpdateRect(canvas,nullptr,FALSE),"transport query failure still closes the real BeginPaint/EndPaint update region");}}
+    // Buffered surfaces are lazily allocated by the first real WM_PAINT; compare only a warmed stable interval.
+    const DWORD warmed=GetGuiResources(GetCurrentProcess(),GR_GDIOBJECTS);
+    for(int pass=0;pass!=16;++pass){InvalidateRect(canvas,nullptr,FALSE);SendMessageW(canvas,WM_PAINT,0,0);}
+    Check(GetGuiResources(GetCurrentProcess(),GR_GDIOBJECTS)==warmed&&warmed>=before,
+        "repeated guarded paints do not retain additional GDI objects after the buffered surface warms");
+    bool closeOnQuery=false;auto closing=MakeSession(host);
+    closing.currentFrame=[&]{if(closeOnQuery){closeOnQuery=false;ce::CloseOwned(nullptr);}return 5.0;};
+    Check(ce::Open(nullptr,std::move(closing),false)==window,"paint retirement reuses the real editor window");
+    closeOnQuery=true;SendMessageW(canvas,WM_PRINTCLIENT,reinterpret_cast<WPARAM>(dc),PRF_CLIENT);
+    Check(!closeOnQuery&&!IsWindow(window)&&GetCurrentObject(dc,OBJ_FONT)==font&&GetCurrentObject(dc,OBJ_BITMAP)==bitmap&&
+        GetClipRgn(dc,actual)==1&&EqualRgn(clip,actual),
+        "a transport query that destroys its editor never borrows or alters the caller's drawing resources");
+    SelectObject(dc,oldFont);SelectObject(dc,oldBitmap);DeleteObject(actual);DeleteObject(clip);DeleteObject(font);DeleteObject(bitmap);DeleteDC(dc);
+    ce::CloseOwned(nullptr);
+    std::array<std::size_t,2> bytes{},largest{};
+    for(int dense=0;dense!=2;++dense){auto ticks=TransportHost();ticks.data[0].track.keys.clear();const int count=dense?100000:2;
+        ticks.data[0].track.keys.reserve(count);for(int index=0;index<count;++index)ticks.data[0].track.keys.push_back(MakeKey(index,double(index%3)));
+        int frames=0,playing=0,seeks=0,toggles=0;auto tickSession=MakeSession(ticks);
+        tickSession.currentFrame=[&]{++frames;return 0.0;};tickSession.isPlaying=[&]{++playing;return false;};
+        tickSession.seek=[&](int){++seeks;};tickSession.setPlaying=[&](bool){++toggles;};
+        window=static_cast<HWND>(ce::Open(nullptr,std::move(tickSession),false));Check(IsWindow(window),"dense transport timer fixture opens");
+        const int hiddenFrames=frames,hiddenPlaying=playing;SendMessageW(window,WM_TIMER,kPlayheadTimerId,0);
+        Check(frames==hiddenFrames&&playing==hiddenPlaying,"hidden transport timers perform zero frame and playing queries");
+        SetWindowLongPtrW(window,GWL_STYLE,GetWindowLongPtrW(window,GWL_STYLE)|WS_VISIBLE);
+        SendMessageW(window,WM_TIMER,kPlayheadTimerId,0);SendMessageW(window,WM_TIMER,kPlayheadTimerId,0);
+        long long prior[3]{},after[3]{};SendMessageW(window,kHookPlayheadState,0,reinterpret_cast<LPARAM>(prior));
+        const int oldFrames=frames,oldPlaying=playing,oldReads=ticks.readCalls;const auto history=LocalWriteHistory(window);
+        g_curveAllocationBytes=g_curveLargestAllocation=0;g_curveMeasureAllocations=true;
+        for(int tick=0;tick!=8;++tick)SendMessageW(window,WM_TIMER,kPlayheadTimerId,0);
+        g_curveMeasureAllocations=false;bytes[dense]=g_curveAllocationBytes;largest[dense]=g_curveLargestAllocation;
+        SendMessageW(window,kHookPlayheadState,0,reinterpret_cast<LPARAM>(after));
+        Check(frames==oldFrames+8&&playing==oldPlaying+8&&after[1]==prior[1]+8&&after[2]==prior[2]&&
+            seeks==0&&toggles==0&&ticks.applyCalls==0&&ticks.readCalls==oldReads&&LocalWriteHistory(window)==history&&KeyCount(window)==count,
+            "stable visible ticks query readonly transport once without scene reads, seeks, history or duplicate repaint");
+        std::printf("DENSE_TRANSPORT keys=%d ticks=8 bytes=%zu largest=%zu\n",count,bytes[dense],largest[dense]);ce::CloseOwned(nullptr);
+    }
+    Check(bytes[1]<=bytes[0]+4096&&largest[1]<100000*sizeof(int),"transport query protection adds no dense-key-sized allocation per unchanged tick");
+    Note("transport drawing preserves GDI state and stable ticks avoid key-count-dependent allocation");
+}
+
+struct NativeConstructionProbe {
+    inline static NativeConstructionProbe* active=nullptr;
+    NativeConstructionProbe* previous=active;
+    HHOOK before=nullptr,after=nullptr,cbt=nullptr;
+    HWND window=nullptr;
+    bool pumping=false,injected=false;
+    unsigned entries=0,returns=0;
+    int vetoControl=-1;unsigned vetoes=0;
+    std::function<void(HWND)> onReturn,onChildCreated;
+    static bool EditorWindow(HWND window){wchar_t name[96]{};
+        return GetClassNameW(window,name,96)&&wcscmp(name,L"MikuMikuStudioCurveEditorWindow")==0;}
+    static LRESULT CALLBACK Before(int code,WPARAM w,LPARAM l){
+        if(code>=0&&active){const auto& message=*reinterpret_cast<const CWPSTRUCT*>(l);
+            if(message.message==WM_CREATE&&EditorWindow(message.hwnd)&&!active->pumping&&!active->injected){
+                active->window=message.hwnd;++active->entries;
+                Check(SendMessageW(message.hwnd,kHookNativeConstruction,0,0)==0,
+                    "native WM_CREATE entry has not returned or completed the control tree");
+            }}
+        return CallNextHookEx(nullptr,code,w,l);
+    }
+    static LRESULT CALLBACK After(int code,WPARAM w,LPARAM l){
+        if(code>=0&&active){const auto& message=*reinterpret_cast<const CWPRETSTRUCT*>(l);
+            if(message.message==WM_CREATE&&GetParent(message.hwnd)==active->window&&active->onChildCreated)
+                active->onChildCreated(message.hwnd);
+            if(message.message==WM_CREATE&&message.hwnd==active->window&&!active->pumping&&!active->injected){
+                ++active->returns;active->injected=true;active->pumping=true;
+                if(active->vetoControl>=0)Check(message.lResult==-1&&SendMessageW(message.hwnd,kHookNativeConstruction,0,0)==0,
+                    "a required native child creation failure aborts WM_CREATE without completing provider setup");
+                else Check(SendMessageW(message.hwnd,kHookNativeConstruction,0,0)==2,
+                    "WM_CREATE return hook still runs inside CreateWindowEx even with every control present");
+                if(active->onReturn)active->onReturn(message.hwnd);
+                active->pumping=false;
+            }}
+        return CallNextHookEx(nullptr,code,w,l);
+    }
+    static LRESULT CALLBACK Cbt(int code,WPARAM w,LPARAM l){
+        if(code==HCBT_CREATEWND&&active&&active->vetoControl>=0&&!active->vetoes){
+            const auto* create=reinterpret_cast<const CBT_CREATEWNDW*>(l);
+            if(create->lpcs->hwndParent==active->window&&reinterpret_cast<INT_PTR>(create->lpcs->hMenu)==active->vetoControl){
+                ++active->vetoes;return 1;
+            }
+        }
+        return CallNextHookEx(nullptr,code,w,l);
+    }
+    explicit NativeConstructionProbe(int veto=-1):vetoControl(veto){active=this;
+        before=SetWindowsHookExW(WH_CALLWNDPROC,Before,nullptr,GetCurrentThreadId());
+        after=SetWindowsHookExW(WH_CALLWNDPROCRET,After,nullptr,GetCurrentThreadId());
+        if(veto>=0)cbt=SetWindowsHookExW(WH_CBT,Cbt,nullptr,GetCurrentThreadId());
+        Check(before&&after&&(veto<0||cbt),"install thread-local native creation entry and return observers");}
+    ~NativeConstructionProbe(){if(cbt)UnhookWindowsHookEx(cbt);UnhookWindowsHookEx(after);UnhookWindowsHookEx(before);active=previous;}
+};
+void NativeProviderReady(){
+    const auto window=OwnedCurveWindow();
+    Check(window&&SendMessageW(window,kHookNativeConstruction,0,0)==3,
+        "provider copying, execution and final release occur only after native CreateWindowEx returns");
+}
+void NativeConstructionMessages(){
+    auto host=TransportHost(),replacement=TransportHost();host.compareEnabled=true;
+    std::array<unsigned,7> calls{};unsigned writes=0,seeks=0,toggles=0;
+    const auto total=[&]{unsigned value=0;for(auto count:calls)value+=count;return value;};
+    auto session=MakeSession(host);session.sources[0].externalHistory=true;
+    session.currentFrame=[&]{NativeProviderReady();++calls[0];return 5.0;};
+    session.isPlaying=[&]{NativeProviderReady();++calls[1];return false;};
+    session.seek=[&](int){++seeks;};session.setPlaying=[&](bool){++toggles;};
+    session.sources[0].localizedLabel=[&](unsigned){NativeProviderReady();++calls[2];return std::wstring(L"Created source");};
+    session.sources[0].read=[&](auto& out,auto&){NativeProviderReady();++calls[3];++host.readCalls;out=host.data;return true;};
+    session.history.query=[&](ce::HistoryState& out,std::wstring&){NativeProviderReady();++calls[4];out={3,false,false};return true;};
+    session.history.traverse=[&](bool,std::wstring&){++writes;return false;};
+    session.sources[0].readKeySelection=[&](const std::string&){NativeProviderReady();++calls[5];return std::vector<int>{10};};
+    session.sources[0].writeKeySelection=[&](const std::string&,const std::vector<int>&){++writes;};
+    session.sources[0].readComparisonMode=[&]{NativeProviderReady();++calls[6];return ce::kCompareSameGroup;};
+    NativeConstructionProbe probe;
+    probe.onReturn=[&](HWND window){
+        Check(total()==0&&host.readCalls==0&&host.applyCalls==0,"native construction executes zero provider callbacks");
+        const auto token=ce::CaptureWindowSession(window);auto held=token.lock();
+        Check(held&&ce::IsWindowSessionCurrent(window,token),"the native construction fixture owns a registered source");
+        for(HWND target:{window,GetDlgItem(window,kIdCanvas),GetDlgItem(window,kIdMmdPanel)}){
+            Check(IsWindow(target),"return-hook construction probes real complete native controls");
+            SendMessageW(target,WM_SIZE,0,MAKELPARAM(320,240));
+            InvalidateRect(target,nullptr,FALSE);SendMessageW(target,WM_PAINT,0,0);
+            Check(!GetUpdateRect(target,nullptr,FALSE),"constructing paint validates its real update region without a provider");
+            RenderInk(target);
+            SendMessageW(target,WM_KEYDOWN,VK_DELETE,0);
+            SendMessageW(target,WM_LBUTTONDOWN,MK_LBUTTON,MAKELPARAM(3,3));
+            SendMessageW(target,WM_MOUSEMOVE,MK_LBUTTON,MAKELPARAM(5,5));
+            SendMessageW(target,WM_LBUTTONUP,0,MAKELPARAM(5,5));
+            SendMessageW(target,WM_KILLFOCUS,0,0);SendMessageW(target,WM_CAPTURECHANGED,0,0);
+        }
+        double controls[4]{};Check(!SendMessageW(window,kHookMmdControls,0,reinterpret_cast<LPARAM>(controls)),
+            "constructing callback-capable geometry hooks do not compute MMD controls");
+        SendMessageW(window,kHookPointForFrame,10,0);double sample[3]{5,0,0};
+        SendMessageW(window,WM_APP+396,0,reinterpret_cast<LPARAM>(sample));
+        SendMessageW(window,WM_SHOWWINDOW,TRUE,0);SendMessageW(window,WM_ACTIVATE,WA_ACTIVE,0);
+        SendMessageW(window,WM_TIMER,kPlayheadTimerId,0);SendMessageW(window,WM_TIMER,2,0);
+        SetText(window,kIdTimelineFrame,L"8");Click(window,kIdSeekFrame);Click(window,kIdPlay);Click(window,kIdDeleteKey);
+        for(int id:std::array<int,5>{kIdTimelineFrame,kIdFrameEdit,1096,kIdChannelList,1111}){
+            HWND child=GetDlgItem(window,id);Check(IsWindow(child),"construction input targets an existing native child");
+            SendMessageW(child,WM_KEYDOWN,VK_RETURN,0);SendMessageW(child,WM_KEYDOWN,VK_DELETE,0);
+            SendMessageW(child,WM_LBUTTONDOWN,MK_LBUTTON,MAKELPARAM(2,2));SendMessageW(child,WM_LBUTTONUP,0,MAKELPARAM(2,2));
+        }
+        ce::SetLanguage(nullptr,1);
+        Check(ce::Open(nullptr,MakeSession(replacement),false)==nullptr&&ce::IsWindowSessionCurrent(window,token),
+            "reentrant Open refuses a partially constructed HWND without replacing its source");
+        ce::NotifySourceChanged(nullptr,"source");ce::NotifySourceChanged(nullptr,"source");
+        SendMessageW(window,WM_APP+401,0,0);SendMessageW(window,WM_TIMER,2,0);
+        MSG pending{};Check(!PeekMessageW(&pending,window,WM_APP+401,WM_APP+401,PM_NOREMOVE),
+            "constructing source notifications stay pending without a posted refresh loop");
+        Check(total()==0&&!writes&&!seeks&&!toggles&&host.readCalls==0&&host.applyCalls==0&&
+            replacement.readCalls==0&&ce::IsWindowSessionCurrent(window,token),
+            "construction paint, commands, transport, public language, hooks and child input never invoke providers");
+        Check(SendMessageW(window,kHookNativeConstruction,0,0)==2,"pumping native messages cannot mark CreateWindowEx as returned");
+    };
+    HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
+    Check(IsWindow(window)&&probe.entries==1&&probe.returns==1,"native creation completes once before provider initialization");
+    for(auto count:calls)Check(count>0,"frame, playing, label, source, history, selection and comparison providers initialize after native return");
+    Check(GetText(window,kIdSourceLabel)==L"源"&&!writes&&!seeks&&!toggles&&host.applyCalls==0,
+        "construction-time requests cannot change the source language or author data");
+    Check(GetText(window,kIdBakeStepEdit)==L"1"&&KeyCount(window)==3,
+        "post-native initialization preserves canonical data and the original baking defaults");
+    const int reads=host.readCalls;MSG message{};unsigned wakes=0;
+    while(PeekMessageW(&message,window,WM_APP+401,WM_APP+401,PM_REMOVE)){++wakes;DispatchMessageW(&message);}
+    Check(wakes==1&&host.readCalls>reads,"deferred construction notifications merge into one real refresh after initialization");
+    SendMessageW(window,WM_TIMER,2,0);Check(!writes&&!seeks&&!toggles,"an idle source timer cannot turn a deferred refresh into authoring");
+    ce::CloseOwned(nullptr);Check(!IsWindow(window),"post-native initialized controls retain normal destruction cleanup");
+    Note("native return hooks prove construction is provider-free, paint is validated and deferred refresh wakes once");
+}
+struct NativeConstructionEditRecorder {
+    inline static constexpr wchar_t property[]=L"MMS.Tests.Curve.NativeConstruction.EditRecorder";
+    HWND window=nullptr;WNDPROC previous=nullptr;
+    unsigned focus=0,blur=0,capture=0,cancel=0,timer=0,show=0,dialogCode=0,keys=0,chars=0,destroyed=0;
+    NativeConstructionEditRecorder()=default;
+    NativeConstructionEditRecorder(const NativeConstructionEditRecorder&)=delete;
+    NativeConstructionEditRecorder& operator=(const NativeConstructionEditRecorder&)=delete;
+    ~NativeConstructionEditRecorder(){
+        // Keep the recorder alive through a fixture's early cleanup too. The
+        // product must first unwind its saved previous-procedure chain.
+        if(window&&GetPropW(window,property)==this)DestroyWindow(window);
+    }
+    static LRESULT CALLBACK Procedure(HWND window,UINT message,WPARAM w,LPARAM l){
+        auto* self=static_cast<NativeConstructionEditRecorder*>(GetPropW(window,property));
+        if(!self)return DefWindowProcW(window,message,w,l);
+        const WNDPROC native=self->previous;
+        switch(message){
+        case WM_SETFOCUS:++self->focus;break;
+        case WM_KILLFOCUS:++self->blur;break;
+        case WM_CAPTURECHANGED:++self->capture;break;
+        case WM_CANCELMODE:++self->cancel;break;
+        case WM_TIMER:++self->timer;break;
+        case WM_SHOWWINDOW:++self->show;break;
+        case WM_GETDLGCODE:++self->dialogCode;break;
+        case WM_KEYDOWN:++self->keys;break;
+        case WM_CHAR:++self->chars;break;
+        case WM_NCDESTROY:++self->destroyed;RemovePropW(window,property);self->window=nullptr;break;
+        }
+        return CallWindowProcW(native,window,message,w,l);
+    }
+    void Install(HWND target){
+        Check(!window&&target,"install exactly one native EDIT recorder before the product subclass");
+        Check(SetPropW(target,property,this)!=FALSE,"store the exact native EDIT recorder owner");
+        previous=reinterpret_cast<WNDPROC>(SetWindowLongPtrW(target,GWLP_WNDPROC,reinterpret_cast<LONG_PTR>(Procedure)));
+        Check(previous!=nullptr,"capture the original EDIT procedure at its own WM_CREATE return");window=target;
+    }
+};
+void NativeConstructionChildMaintenance(){
+    auto host=TransportHost();unsigned callbacks=0,seeks=0,toggles=0;
+    auto session=MakeSession(host);
+    session.currentFrame=[&]{NativeProviderReady();++callbacks;return 5.0;};
+    session.isPlaying=[&]{NativeProviderReady();++callbacks;return false;};
+    session.seek=[&](int){++seeks;};session.setPlaying=[&](bool){++toggles;};
+    session.sources[0].localizedLabel=[&](unsigned){NativeProviderReady();++callbacks;return std::wstring(L"Native edit");};
+    session.sources[0].read=[&](auto& out,auto&){NativeProviderReady();++callbacks;++host.readCalls;out=host.data;return true;};
+    NativeConstructionEditRecorder recorder;NativeConstructionProbe probe;HWND edit=nullptr;
+    probe.onChildCreated=[&](HWND child){
+        if(GetDlgCtrlID(child)==kIdTimelineFrame){
+            Check(SendMessageW(GetParent(child),kHookNativeConstruction,0,0)==0,
+                "install the recorder while the native EDIT exists but the parent is still constructing");
+            recorder.Install(child);
+        }
+    };
+    probe.onReturn=[&](HWND window){
+        edit=GetDlgItem(window,kIdTimelineFrame);
+        Check(edit==recorder.window&&IsWindow(edit)&&
+            reinterpret_cast<WNDPROC>(GetWindowLongPtrW(edit,GWLP_WNDPROC))!=NativeConstructionEditRecorder::Procedure,
+            "the completed product subclass retains the preinstalled recorder as its previous procedure");
+        const auto noProviders=[&]{Check(callbacks==0&&host.readCalls==0&&host.applyCalls==0&&!seeks&&!toggles&&
+            SendMessageW(window,kHookNativeConstruction,0,0)==2,
+            "native child maintenance cannot initialize providers before CreateWindowEx returns");};
+        noProviders();
+        const HWND other=GetDlgItem(window,kIdPlay);SetFocus(other);
+        Check(GetFocus()==other,"focus probe starts on a different real native child");
+        const auto priorFocus=recorder.focus;SetFocus(edit);
+        Check(GetFocus()==edit&&recorder.focus>priorFocus,
+            "actual SetFocus reaches the original native EDIT procedure during parent construction");
+        const auto priorBlur=recorder.blur;SetFocus(other);
+        Check(GetFocus()==other&&recorder.blur>priorBlur,
+            "actual focus transfer reaches the previous EDIT kill-focus procedure");
+        SetFocus(edit);Check(GetFocus()==edit,"construction restores real EDIT focus before initialization");
+        const auto priorCapture=recorder.capture;SetCapture(edit);
+        Check(GetCapture()==edit,"construction capture probe owns the real EDIT window");ReleaseCapture();
+        Check(GetCapture()!=edit&&recorder.capture>priorCapture,
+            "actual capture release reaches the previous EDIT capture-change procedure");
+        const auto priorCancel=recorder.cancel;SendMessageW(edit,WM_CANCELMODE,0,0);
+        Check(recorder.cancel>priorCancel,"construction cancellation reaches the previous native EDIT procedure");
+        const auto priorTimer=recorder.timer;SendMessageW(edit,WM_TIMER,0x4da1,0);
+        Check(recorder.timer>priorTimer,"construction maintenance timer reaches the previous native EDIT procedure");
+        const auto priorShow=recorder.show;ShowWindow(edit,SW_HIDE);ShowWindow(edit,SW_SHOW);
+        Check(recorder.show>=priorShow+2,"real child visibility transitions reach the previous native EDIT procedure");
+        MSG tab{};tab.hwnd=edit;tab.message=WM_KEYDOWN;tab.wParam=VK_TAB;
+        const auto priorDialog=recorder.dialogCode;SendMessageW(edit,WM_GETDLGCODE,VK_TAB,reinterpret_cast<LPARAM>(&tab));
+        Check(recorder.dialogCode>priorDialog,"construction dialog-code queries retain the native EDIT response path");
+        SetFocus(edit);const auto priorKeys=recorder.keys,priorChars=recorder.chars;
+        const auto text=GetText(window,kIdTimelineFrame);
+        SendMessageW(edit,WM_KEYDOWN,VK_TAB,0);SendMessageW(edit,WM_KEYDOWN,VK_RETURN,0);
+        SendMessageW(edit,WM_KEYDOWN,VK_DELETE,0);SendMessageW(edit,WM_CHAR,L'9',0);
+        SendMessageW(edit,WM_LBUTTONDOWN,MK_LBUTTON,MAKELPARAM(2,2));SendMessageW(edit,WM_LBUTTONUP,0,MAKELPARAM(2,2));
+        Check(recorder.keys==priorKeys&&recorder.chars==priorChars&&GetText(window,kIdTimelineFrame)==text&&GetFocus()==edit,
+            "construction consumes business input without native text changes, navigation or authoring");
+        noProviders();
+    };
+    const HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
+    Check(IsWindow(window)&&probe.entries==1&&probe.returns==1&&GetDlgItem(window,kIdTimelineFrame)==edit&&GetFocus()==edit,
+        "the same constructed EDIT retains native focus after the successful initial Open");
+    Check(callbacks>0&&host.readCalls>0&&!seeks&&!toggles&&host.applyCalls==0&&
+        SendMessageW(window,kHookNativeConstruction,0,0)==3,
+        "provider initialization follows native return without replaying maintenance as authoring");
+    ce::CloseOwned(nullptr);Check(!IsWindow(window)&&recorder.window==nullptr&&recorder.destroyed==1,
+        "native EDIT destruction traverses the previous procedure once and removes its exact recorder");
+    Note("construction preserves native EDIT focus, capture, cancellation, timers, visibility and cleanup chains");
+}
+struct NativeInitRetirementState {
+    int phase=0,response=0,calls=0,retires=0,destroyedDuringCopy=0;
+    bool armed=false,copying=false;const void* original=nullptr;
+    std::function<void()> retire;
+    void Retire(){NativeProviderReady();armed=false;++retires;retire();}
+};
+template<int Kind>struct NativeInitRetirementProvider {
+    NativeInitRetirementState* state;HostSource* host;int marker=73;mutable bool invoked=false;
+    NativeInitRetirementProvider(NativeInitRetirementState& s,HostSource& h):state(&s),host(&h){}
+    NativeInitRetirementProvider(const NativeInitRetirementProvider& other):state(other.state),host(other.host),marker(other.marker){
+        if(!state->armed||state->phase!=0)return;
+        NativeProviderReady();state->copying=true;state->original=&other;state->Retire();
+        Check(state->destroyedDuringCopy==0&&other.marker==73,"initial provider storage survives a replacing copy constructor");
+        state->copying=false;if(state->response)throw std::bad_alloc();
+    }
+    ~NativeInitRetirementProvider(){
+        if(state->copying&&state->original==this)++state->destroyedDuringCopy;
+        if(invoked&&state->armed&&state->phase==2)state->Retire();
+    }
+    void Body()const{
+        NativeProviderReady();++state->calls;invoked=state->armed;
+        const bool fail=state->armed&&state->response;
+        if(state->armed&&state->phase==1)state->Retire();
+        if(fail)throw std::runtime_error("initial provider failed after native construction");
+    }
+    auto operator()()const{Body();if constexpr(Kind==0)return 5.0;else if constexpr(Kind==1)return false;else return ce::kCompareSameGroup;}
+    std::wstring operator()(unsigned)const{Body();return L"Initial source";}
+    bool operator()(std::vector<ce::Channel>& out,std::wstring&)const{++host->readCalls;Body();out=host->data;return true;}
+    bool operator()(ce::HistoryState& out,std::wstring&)const{Body();out={1,false,false};return true;}
+    std::vector<int> operator()(const std::string&)const{Body();return {10};}
+};
+template<int Kind>void NativeInitialProviderRetirement(){
+    for(int phase=0;phase!=3;++phase)for(int action=0;action!=3;++action)for(int response=0;response!=2;++response){
+        std::printf("native initialization kind=%d phase=%d action=%d response=%d\n",Kind,phase,action,response);std::fflush(stdout);
+        auto host=TransportHost(),replacement=TransportHost();host.compareEnabled=true;
+        NativeInitRetirementState state;state.phase=phase;state.response=response;
+        HWND retired=nullptr,next=nullptr;std::wstring status;int readsAfter=-1;
+        std::weak_ptr<void> token;std::shared_ptr<void> held;
+        state.retire=[&]{retired=OwnedCurveWindow();token=ce::CaptureWindowSession(retired);held=token.lock();
+            if(action!=1)ce::CloseOwned(nullptr);
+            if(action!=0){next=static_cast<HWND>(ce::Open(nullptr,MakeSession(replacement),false));
+                Check(IsWindow(next),"initial provider retirement installs a live replacement");
+                if(action==1)Check(next==retired,"post-native initial Open replacement reuses the fully built HWND");
+                status=GetText(next,kIdStatus);}
+            readsAfter=host.readCalls;
+        };
+        auto session=MakeSession(host);
+        if constexpr(Kind==0)session.currentFrame=NativeInitRetirementProvider<Kind>(state,host);
+        if constexpr(Kind==1)session.isPlaying=NativeInitRetirementProvider<Kind>(state,host);
+        if constexpr(Kind==2)session.sources[0].localizedLabel=NativeInitRetirementProvider<Kind>(state,host);
+        if constexpr(Kind==3)session.sources[0].read=NativeInitRetirementProvider<Kind>(state,host);
+        if constexpr(Kind==4){session.sources[0].externalHistory=true;
+            session.history.query=NativeInitRetirementProvider<Kind>(state,host);session.history.traverse=[](bool,std::wstring&){return false;};}
+        if constexpr(Kind==5){session.sources[0].externalHistory=true;
+            session.history.query=[](ce::HistoryState& out,std::wstring&){out={1,false,false};return true;};
+            session.history.traverse=[](bool,std::wstring&){return false;};
+            session.sources[0].readKeySelection=NativeInitRetirementProvider<Kind>(state,host);}
+        if constexpr(Kind==6)session.sources[0].readComparisonMode=NativeInitRetirementProvider<Kind>(state,host);
+        state.armed=true;NativeConstructionProbe probe;
+        const auto window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
+        Check(window==nullptr&&probe.returns==1&&state.retires==1&&state.destroyedDuringCopy==0&&state.calls==int(phase!=0),
+            "initial copy, body and final release retire exactly once after the native creation call returns");
+        Check(held&&!ce::IsWindowSessionCurrent(retired,token)&&host.readCalls==readsAfter&&host.applyCalls==0,
+            "retired initialization never continues reading or writing the old source, even with a retained token");
+        if(next){Check(IsWindow(next)&&GetText(next,kIdStatus)==status&&KeyCount(next)==3&&replacement.applyCalls==0,
+                "outer initialization cleanup never changes or destroys a replacement Session");
+            ClickKey(next,1);Click(next,kIdDeleteKey);
+            Check(replacement.applyCalls==1&&KeyCount(next)==2,"replacement remains editable after initial callback retirement unwinds");}
+        else Check(OwnedCurveWindow()==nullptr,"closed initialization leaves no registered ghost editor");
+        ce::CloseOwned(nullptr);
+    }
+}
+void NativeConstructionAborted(){
+    for(int id:{kIdFrameEdit,kIdCanvas,kIdMmdPanel}){
+        auto host=TransportHost();unsigned callbacks=0;
+        {NativeConstructionProbe probe(id);auto session=MakeSession(host);
+            session.currentFrame=[&]{++callbacks;return 5.0;};session.isPlaying=[&]{++callbacks;return false;};
+            session.sources[0].read=[&](auto& out,auto&){++callbacks;out=host.data;return true;};
+            Check(ce::Open(nullptr,std::move(session),false)==nullptr&&probe.vetoes==1&&probe.returns==1&&!callbacks&&
+                host.applyCalls==0&&OwnedCurveWindow()==nullptr,
+                "actual native EDIT, canvas or MMD creation refusal leaves no provider call or partial registered window");
+        }
+        const auto next=static_cast<HWND>(ce::Open(nullptr,MakeSession(host),false));
+        Check(IsWindow(next)&&KeyCount(next)==3,"native child failure cleanup permits a complete subsequent Open");ce::CloseOwned(nullptr);
+    }
+    for(bool replace:{false,true}){
+        auto host=TransportHost(),replacement=TransportHost();NativeConstructionProbe probe;HWND next=nullptr;
+        unsigned callbacks=0;auto session=MakeSession(host);
+        session.currentFrame=[&]{++callbacks;return 5.0;};session.isPlaying=[&]{++callbacks;return false;};
+        session.sources[0].read=[&](auto& out,auto&){++callbacks;out=host.data;return true;};
+        probe.onReturn=[&](HWND window){
+            Check(SendMessageW(window,kHookNativeConstruction,0,0)==2&&!callbacks,"native close occurs before any provider is allowed");
+            SendMessageW(window,WM_CLOSE,0,0);Check(!IsWindow(window),"construction-time WM_CLOSE retains real destruction processing");
+            if(replace){next=static_cast<HWND>(ce::Open(nullptr,MakeSession(replacement),false));Check(IsWindow(next),"native close can create a separate healthy editor before outer creation returns");}
+        };
+        Check(ce::Open(nullptr,std::move(session),false)==nullptr&&!callbacks&&host.applyCalls==0,
+            "destroying the native window aborts its exact initial Open without invoking providers");
+        if(next){Check(IsWindow(next)&&KeyCount(next)==3,"failed outer native creation cannot delete a nested replacement");
+            ClickKey(next,1);Click(next,kIdDeleteKey);Check(replacement.applyCalls==1,"nested replacement survives native-create abort cleanup");}
+        else Check(OwnedCurveWindow()==nullptr,"aborted native creation leaves no registry owner");
+        ce::CloseOwned(nullptr);
+    }
+    Note("native creation abort preserves destruction chains and exact replacement ownership");
+}
+void NativeConstructionLifetime(){
+    NativeConstructionMessages();
+    NativeConstructionChildMaintenance();
+    NativeInitialProviderRetirement<0>();NativeInitialProviderRetirement<1>();NativeInitialProviderRetirement<2>();
+    NativeInitialProviderRetirement<3>();NativeInitialProviderRetirement<4>();NativeInitialProviderRetirement<5>();NativeInitialProviderRetirement<6>();
+    NativeConstructionAborted();
+}
 } // namespace
 
 int main(int argc,char** argv) {
+    // Optional same-order diagnostic for a prior 0xC0000374 full-suite exit.
+    // It retains every assertion and validates the process heap at group ends.
+    g_validateHeap=argc>1&&std::string(argv[1])=="--heap-validate-all";
+    if(argc>1&&std::string(argv[1])=="--native-construction-lifetime"){
+        NativeConstructionLifetime();
+        std::printf("curve native construction lifetime: %d checks\n",g_checks);return 0;
+    }
+    if(argc>1&&std::string(argv[1])=="--transport-query-lifetime"){
+        TransportCallbackLifetime();TransportFailuresAndMissing();TransportNestedAndSessionCache();TransportInvalidFramesAndMmdSource();TransportPaintStateAndDenseTicks();
+        std::printf("curve transport query lifetime: %d checks\n",g_checks);return 0;
+    }
     if(argc>1&&std::string(argv[1])=="--comparison-lifetime"){
         ComparisonCallbackLifetime();ComparisonWriterAtomicity();ComparisonFilterAcceptedAllocation();
         ComparisonReadFailuresAndEntries();ComparisonReadAndLinkSemantics();ComparisonValueHandlesDoNotQueryLink();ComparisonNestedAndGeometryCopy();
@@ -4523,12 +5239,14 @@ int main(int argc,char** argv) {
     MotionCallbackLifetime();
     SourceCallbackLifetime();SourceCallbackFinalRelease();OriginalSessionFinalRelease();
     ProviderCopyRetirement();SourceLanguageAndOpenFailures();
+    NativeConstructionLifetime();
     WriteCallbackLifetime();WritePostCommitReadRetirement();WriteFailureKeepsLocalHistory();
     WriteCanonicalFailureKeepsPublication();WriteAcceptedAllocationFailure();WriteRejectsNestedAuthoring();
     SelectionCallbackLifetime();SelectionFailuresAndEcho();SelectionNestedAndHistory();
     SelectionReadSemantics();SelectionDenseStableTick();
     ComparisonCallbackLifetime();ComparisonWriterAtomicity();ComparisonFilterAcceptedAllocation();
     ComparisonReadFailuresAndEntries();ComparisonReadAndLinkSemantics();ComparisonValueHandlesDoNotQueryLink();ComparisonNestedAndGeometryCopy();
+    TransportCallbackLifetime();TransportFailuresAndMissing();TransportNestedAndSessionCache();TransportInvalidFramesAndMmdSource();TransportPaintStateAndDenseTicks();
     BakeSelectedChannels();
     NativeSubdivisionRoute();NativeSampleBake();
     DuplicateFrameSelectsExisting();

@@ -63,4 +63,8 @@ writer 接受自由模式后，`SetCompareMode` 先以不分配的赋值循环�
 
 本批不改变标准 VMD 控制点 `0..127` 的范围、曲线编码或文件序列化，不改变 PMM/VMD/VPD 兼容指标，不开放普通生产宿主的 `mms.edit`。Win7 SP1 x64、CPU 基础路径、AMD 和程序旁 `data` 的要求保持不变。
 
-`Session.currentFrame`、`seek`、`isPlaying`、`setPlaying`、`Source.subdivide` 及一般 `Channel.sample` 调用尚未统一到相同的复制、执行和最终释放检查。回调保护不能据此扩展为整个编辑器已支持任意重入或自毁。[相机父骨骼 450 方案](abi-camera-parent-bone-plan-2026-10-21.md)仍只是源码审计和实施计划，不计入本批实现。
+`Session.currentFrame` 和 `Session.isPlaying` 随后完成[只读查询保护](abi-curve-transport-query-lifetime-2026-10-21.md)，两套配置查询专项各 8,566 项、完整配置编辑器全集 24,620 项通过。
+
+原始兼容配置全集首次以 `0xC0000374` 退出，堆损坏根因尚未解释。单独比较专项 2,674 项、ASan 全集及逐组堆校验全集各 24,620 项随后通过，均不代表该问题已修复。后续诊断结果见查询记录。
+
+`Session.seek` 和 `Session.setPlaying` 写回调、`Source.subdivide` 及一般 `Channel.sample` 调用尚未统一到相同的复制、执行和最终释放检查。实际宿主停止与跳帧路径的重复场景求值仍待处理。回调保护不能据此扩展为整个编辑器已支持任意重入或自毁。相机父骨骼 450 已在[独立实现与验收记录](abi-camera-parent-bone-history-2026-10-21.md)确认，不属于本批比较回调范围。

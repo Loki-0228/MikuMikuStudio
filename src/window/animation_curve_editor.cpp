@@ -124,6 +124,9 @@
 //                                   3 range filter, 4 add key, 5 delete key,
 //                                   6 apply key, 7 canvas, 8 MMD handles,
 //                                   9 time bar, 10 value bar.
+//   WM_APP+398       returns native construction evidence: bit 0 means the
+//                    outer CreateWindowEx returned; bit 1 means the complete
+//                    native controls and subclasses were installed.
 //
 // Playhead: while the window is visible and Session::currentFrame is set, a
 // WM_TIMER tick about 25 times a second repaints only the columns the playhead
@@ -160,6 +163,7 @@
 #include <map>
 #include <mutex>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -688,10 +692,32 @@ struct PaintSurface {
         previous=SelectObject(dc,bitmap);width=w;height=h;return true;
     }
 };
+struct ScopedDcState {
+    HDC dc;
+    int saved;
+    explicit ScopedDcState(HDC value)noexcept:dc(value),saved(value?SaveDC(value):0){}
+    ~ScopedDcState(){if(saved)RestoreDC(dc,saved);}
+};
+struct ScopedSelectedObject {
+    HDC dc;
+    HGDIOBJ previous;
+    ScopedSelectedObject(HDC target,HGDIOBJ object)noexcept:dc(target),previous(SelectObject(target,object)){}
+    ~ScopedSelectedObject(){if(previous&&previous!=HGDI_ERROR)SelectObject(dc,previous);}
+};
+struct NativePaint {
+    HWND window;
+    PAINTSTRUCT paint{};
+    HDC dc;
+    explicit NativePaint(HWND value)noexcept:window(value),dc(BeginPaint(value,&paint)){}
+    ~NativePaint(){EndPaint(window,&paint);}
+};
 struct Editor {
     std::shared_ptr<void> motionSession = std::make_shared<char>();
     unsigned activeCalls = 0;
     bool windowDestroyed = false;
+    // Set only by Open after the outer CreateWindowEx call has returned.
+    // WM_CREATE and its synchronous native messages cannot invoke providers.
+    bool nativeCreateReturned = false, nativeControlsCreated = false;
     HWND window = nullptr;
     HWND canvas = nullptr;
     HWND mmd = nullptr;
@@ -703,6 +729,11 @@ struct Editor {
     std::set<std::string> pendingSources;
     bool sourceChangePosted = false;
     bool externalCallbackActive = false, externalOperationActive = false;
+    // Display-only query caches belong to this exact Session version. They
+    // never authorize navigation or stand in for a failed provider query.
+    bool transportFrameKnown=false,transportPlayingKnown=false;
+    double transportFrame=0;
+    bool transportPlaying=false;
     std::vector<HTREEITEM> channelItems;
     std::map<HTREEITEM, std::string> collectionItems;
     bool rebuildingChannels = false;
@@ -792,6 +823,44 @@ struct Editor {
     int hoverHint = -1;
 };
 
+constexpr UINT kNativeConstructionHook = WM_APP + 398;
+bool ConstructionAction(UINT message) noexcept {
+    switch(message){
+    case WM_COMMAND: case WM_NOTIFY: case WM_TIMER: case WM_ACTIVATE: case WM_SHOWWINDOW:
+    case WM_KEYDOWN: case WM_SYSKEYDOWN: case WM_CHAR: case WM_SYSCHAR:
+    case WM_LBUTTONDOWN: case WM_LBUTTONUP: case WM_LBUTTONDBLCLK:
+    case WM_MBUTTONDOWN: case WM_MBUTTONUP: case WM_RBUTTONDOWN: case WM_RBUTTONUP:
+    case WM_MOUSEMOVE: case WM_MOUSELEAVE: case WM_MOUSEWHEEL:
+    case WM_SETFOCUS: case WM_KILLFOCUS: case WM_CAPTURECHANGED: case WM_CANCELMODE:
+        return true;
+    default:return false;
+    }
+}
+bool HandleNativeConstruction(Editor& editor,HWND window,UINT message,WPARAM wparam,LRESULT& result){
+    if(message==kNativeConstructionHook){
+        // Read-only evidence: bit 0 means the native call returned, bit 1
+        // means WM_CREATE completed its controls/subclasses successfully.
+        result=(editor.nativeCreateReturned?1:0)|(editor.nativeControlsCreated?2:0);return true;
+    }
+    if(editor.nativeCreateReturned)return false;
+    if(message==WM_PAINT||message==WM_PRINTCLIENT){
+        // Validate a real paint region even while callbacks are unavailable.
+        // Neither custom child is allowed to sample channels in this phase.
+        RECT client{};GetClientRect(window,&client);
+        if(message==WM_PAINT){NativePaint paint(window);
+            if(paint.dc)FillRect(paint.dc,&client,editor.themeShell?editor.themeShell:GetSysColorBrush(COLOR_BTNFACE));}
+        else if(wparam)FillRect(reinterpret_cast<HDC>(wparam),&client,editor.themeShell?editor.themeShell:GetSysColorBrush(COLOR_BTNFACE));
+        result=0;return true;
+    }
+    if(message==kSourceChangedMessage){editor.sourceChangePosted=false;result=0;return true;}
+    if(message==WM_SIZE||ConstructionAction(message)||(message>=WM_APP&&message<=WM_APP+400)){
+        result=0;return true;
+    }
+    // In particular, WM_CREATE/CLOSE/DESTROY/NCDESTROY and native child
+    // cleanup must still run their ordinary message chains.
+    return false;
+}
+
 std::mutex g_registryMutex;
 std::vector<Editor *> g_editors;
 
@@ -860,6 +929,7 @@ public:
 template<class Callback,class... Args>
 auto InvokeProvider(Editor& editor,const Callback& callback,Args&&... args)
     -> decltype(callback(std::forward<Args>(args)...)) {
+    if(!editor.nativeCreateReturned)throw std::logic_error("curve provider entered during native construction");
     EditorLease lease(editor);
     try {
         if constexpr(std::is_void_v<decltype(callback(std::forward<Args>(args)...))>) {
@@ -892,6 +962,47 @@ struct ExternalOperation {
         member(field),previous(value.*field) {if(activate)editor.*member=true;}
     ~ExternalOperation(){if(lease.CurrentSession())editor.*member=previous;}
 };
+
+enum class TransportQueryStatus { Missing, Busy, Failed, Ready };
+template<class T>struct TransportQueryResult {
+    TransportQueryStatus status=TransportQueryStatus::Missing;
+    T value{};
+    bool cached=false;
+    bool HasDisplayValue()const noexcept{return status==TransportQueryStatus::Ready||cached;}
+    bool Unavailable()const noexcept{return status==TransportQueryStatus::Busy||status==TransportQueryStatus::Failed;}
+};
+bool UsableFrameNumber(double value)noexcept{
+    const double first=double((std::numeric_limits<long long>::min)());
+    return std::isfinite(value)&&value>=first&&value<-first;
+}
+TransportQueryResult<double> QueryCurrentFrame(Editor& editor,bool displayCache=false){
+    if(!editor.session->currentFrame)return {};
+    if(editor.externalCallbackActive)return {TransportQueryStatus::Busy,editor.transportFrame,
+        displayCache&&editor.transportFrameKnown};
+    try{
+        ExternalOperation callback(editor,&Editor::externalCallbackActive);
+        const double value=InvokeProvider(editor,editor.session->currentFrame);
+        if(UsableFrameNumber(value)){editor.transportFrame=value;editor.transportFrameKnown=true;}
+        return {TransportQueryStatus::Ready,value,false};
+    }catch(const RetiredContinuation&){throw;}
+    catch(...){return {TransportQueryStatus::Failed,0,false};}
+}
+TransportQueryResult<bool> QueryIsPlaying(Editor& editor,bool displayCache=false){
+    if(!editor.session->isPlaying)return {};
+    if(editor.externalCallbackActive)return {TransportQueryStatus::Busy,editor.transportPlaying,
+        displayCache&&editor.transportPlayingKnown};
+    try{
+        ExternalOperation callback(editor,&Editor::externalCallbackActive);
+        const bool value=InvokeProvider(editor,editor.session->isPlaying);
+        editor.transportPlaying=value;editor.transportPlayingKnown=true;
+        return {TransportQueryStatus::Ready,value,false};
+    }catch(const RetiredContinuation&){throw;}
+    catch(...){return {TransportQueryStatus::Failed,false,false};}
+}
+double DisplayCurrentFrame(Editor& editor){
+    const auto query=QueryCurrentFrame(editor,true);
+    return query.HasDisplayValue()&&UsableFrameNumber(query.value)?query.value:std::numeric_limits<double>::quiet_NaN();
+}
 
 Source& CurrentSource(Editor& editor);
 bool ReadSource(Editor& editor,std::vector<Channel>& channels,std::wstring& error) {
@@ -2211,10 +2322,8 @@ void DrawTangents(Editor &editor, HDC dc) {
     DeleteObject(pen);
 }
 
-void DrawPlayhead(Editor &editor, HDC dc) {
-    if (!editor.session->currentFrame) return;
-    const double frame = editor.session->currentFrame();
-    if (!std::isfinite(frame)) return;
+void DrawPlayhead(Editor &editor, HDC dc,double frame) {
+    if (!UsableFrameNumber(frame)) return;
     double x = 0;
     if (!TimeToX(editor, frame, x)) return;
     if (x < editor.plot.left || x > editor.plot.right) return;
@@ -2445,7 +2554,8 @@ void DrawValueBar(Editor &editor, HDC dc) {
     DrawBarTicks(editor,dc,false);
 }
 
-void PaintCanvas(Editor &editor, HDC dc) {
+void PaintCanvas(Editor &editor, HDC dc,double playhead) {
+    ScopedDcState dcState(dc);
     RECT client = {};
     GetClientRect(editor.canvas, &client);
     // The complete axis surround follows the ruler theme, including corners.
@@ -2455,12 +2565,12 @@ void PaintCanvas(Editor &editor, HDC dc) {
     CanvasMetrics(editor);
 
     curve_editor_theme::Fill(dc,editor.plot,curve_editor_theme::paper);
-    HGDIOBJ oldFont = SelectObject(dc, editor.font ? editor.font : GetStockObject(DEFAULT_GUI_FONT));
+    ScopedSelectedObject selectedFont(dc,editor.font ? editor.font : GetStockObject(DEFAULT_GUI_FONT));
     DrawGrid(editor, dc);
     DrawComparisonCurves(editor, dc);
     DrawTangents(editor, dc);
     DrawCurve(editor, dc);
-    DrawPlayhead(editor, dc);
+    DrawPlayhead(editor, dc,playhead);
     DrawKeys(editor, dc);
 
     const Track *track = ActiveTrack(editor);
@@ -2491,13 +2601,24 @@ void PaintCanvas(Editor &editor, HDC dc) {
 
     RECT frame = client;
     FrameRect(dc, &frame, GetSysColorBrush(COLOR_3DSHADOW));
-    SelectObject(dc, oldFont);
 }
 
 // ---------------------------------------------------------------------------
 // MMD 0..127 panel.
 // ---------------------------------------------------------------------------
 void ComputeMmdControls(Editor &editor) {
+    TransportQueryResult<double> frame;
+    bool followsFrame=false;
+    {const auto* track=ActiveTrack(editor);followsFrame=editor.mmdFollowPlayhead&&track&&track->keys.size()>1&&editor.session->currentFrame;}
+    if(followsFrame){
+        frame=QueryCurrentFrame(editor,true);
+        if(!frame.HasDisplayValue()){
+            // Controls are editor-wide, while source/channel data can change.
+            // A stale coordinate display must never authorize another source.
+            editor.mmdEnabled=false;editor.mmdEndKey=-1;
+            editor.mmdReason=T(editor.session->language,StrReadFailed);return;
+        }
+    }
     editor.mmdEnabled = false;
     editor.mmdReason.clear();
     editor.mmdEndKey = -1;
@@ -2512,10 +2633,9 @@ void ComputeMmdControls(Editor &editor) {
         return;
     }
     std::size_t endKey = ActiveKeyIndex(editor);
-    if(editor.mmdFollowPlayhead && track.keys.size()>1 && editor.session->currentFrame){
-        const double frame=editor.session->currentFrame();
-        if(std::isfinite(frame)){
-            auto at=std::lower_bound(track.keys.begin()+1,track.keys.end(),frame,[](const Key& key,double f){return key.frame<f;});
+    if(followsFrame&&track.keys.size()>1){
+        if(UsableFrameNumber(frame.value)){
+            auto at=std::lower_bound(track.keys.begin()+1,track.keys.end(),frame.value,[](const Key& key,double f){return key.frame<f;});
             endKey=at==track.keys.end()?track.keys.size()-1:std::size_t(at-track.keys.begin());
         }
     }
@@ -2573,12 +2693,13 @@ void ComputeMmdControls(Editor &editor) {
 }
 
 void PaintMmd(Editor &editor, HDC dc) {
+    ScopedDcState dcState(dc);
     RECT client = {};
     GetClientRect(editor.mmd, &client);
     HBRUSH background = CreateSolidBrush(curve_editor_theme::shell);
     FillRect(dc, &client, background);
     DeleteObject(background);
-    HGDIOBJ oldFont = SelectObject(dc, editor.font ? editor.font : GetStockObject(DEFAULT_GUI_FONT));
+    ScopedSelectedObject selectedFont(dc,editor.font ? editor.font : GetStockObject(DEFAULT_GUI_FONT));
 
     const int margin = Scale(6, editor.dpi);
     RECT square = {margin, margin, client.right - margin, client.bottom - margin};
@@ -2645,7 +2766,6 @@ void PaintMmd(Editor &editor, HDC dc) {
         text.top += Scale(4, editor.dpi);
         DrawTextW(dc, L"—", -1, &text, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
     }
-    SelectObject(dc, oldFont);
 }
 
 // ---------------------------------------------------------------------------
@@ -2691,16 +2811,16 @@ void UpdateMmdPanel(Editor &editor) {
 }
 
 void UpdateKeyFields(Editor &editor) {
+    const auto current=QueryCurrentFrame(editor,true);
+    if(current.Unavailable()&&!current.cached)return;
     SourceState &state = CurrentState(editor);
     Track *track = ActiveTrack(editor);
     const std::size_t index = ActiveKeyIndex(editor);
     const bool hasKey = track && index != static_cast<std::size_t>(-1) && index < track->keys.size();
+    if(!hasKey&&current.status==TransportQueryStatus::Ready&&!UsableFrameNumber(current.value))return;
     long long frame = 0;
     double value = 0;
-    if (editor.session->currentFrame) {
-        const double current = editor.session->currentFrame();
-        if (std::isfinite(current)) frame = static_cast<long long>(std::llround(current));
-    }
+    if(current.HasDisplayValue()&&UsableFrameNumber(current.value))frame=static_cast<long long>(std::llround(current.value));
     if (hasKey) {
         frame = track->keys[index].frame;
         value = track->keys[index].value;
@@ -3256,6 +3376,7 @@ void InvalidatePlayhead(Editor &editor) {
 // The playhead timer exists only while the window is on screen and the session
 // reports a current frame: a hidden editor costs nothing and never repaints.
 void UpdatePlayheadTimer(Editor &editor) {
+    if(!editor.nativeCreateReturned)return;
     const bool wanted = editor.window && (editor.session->currentFrame || editor.session->history.query) &&
                         IsWindowVisible(editor.window) != FALSE;
     if (wanted && !editor.playheadTimerRunning) {
@@ -3316,14 +3437,28 @@ bool PullKeySelection(Editor& editor,bool publishUi,bool ownedOperation){
     if(publishUi){UpdateKeyFields(editor);UpdateMmdPanel(editor);UpdateEnabledState(editor);InvalidateCanvas(editor);}
     return true;
 }
+const wchar_t* TransportCaption(unsigned language,bool playing)noexcept{
+    return language==0?(playing?L"停止":L"再生"):language==1?(playing?L"Stop":L"Play"):(playing?L"停止":L"播放");
+}
 const wchar_t* PlayCaption(Editor& editor){
-    const bool playing=editor.session->isPlaying&&editor.session->isPlaying();
-    return editor.session->language==0?(playing?L"停止":L"再生"):editor.session->language==1?(playing?L"Stop":L"Play"):(playing?L"停止":L"播放");
+    const auto query=QueryIsPlaying(editor,true);
+    if(query.Unavailable()&&!query.cached)return nullptr;
+    return TransportCaption(editor.session->language,query.HasDisplayValue()&&query.value);
+}
+void UpdatePlayCaption(Editor& editor){
+    if(const auto* caption=PlayCaption(editor))SetControlText(editor.window,kIdPlay,caption);
 }
 void SeekTimeline(Editor& editor,int frame){
     frame=std::clamp(frame,0,int(kMaximumFrame));
-    const bool playing=editor.session->isPlaying&&editor.session->isPlaying();
-    if(!playing&&editor.session->currentFrame&&editor.session->currentFrame()==frame)return;
+    const auto playing=QueryIsPlaying(editor);
+    if(playing.Unavailable())return;
+    if(!playing.value){
+        const auto current=QueryCurrentFrame(editor);
+        if(current.Unavailable())return;
+        if(current.status==TransportQueryStatus::Ready){
+            if(!UsableFrameNumber(current.value)||current.value==frame)return;
+        }
+    }
     if(editor.session->seek)editor.session->seek(frame);
     OnPlayheadTimer(editor);
     editor.mmdFollowPlayhead=true;
@@ -3335,19 +3470,26 @@ void SeekAtPoint(Editor& editor,POINT point){
         SeekTimeline(editor,int(std::clamp(std::round(frame),0.0,double(kMaximumFrame))));
 }
 void SeekAdjacentKey(Editor& editor,bool next){
-    const Track* track=ActiveTrack(editor);
-    if(!track || track->keys.empty() || !editor.session->currentFrame || !editor.session->seek)return;
-    const double frame=editor.session->currentFrame();
-    if(!std::isfinite(frame))return;
-    if(next){
-        const auto it=std::upper_bound(track->keys.begin(),track->keys.end(),frame,
-            [](double value,const Key& key){return value<key.frame;});
-        if(it!=track->keys.end())SeekTimeline(editor,it->frame);
-    }else{
-        const auto it=std::lower_bound(track->keys.begin(),track->keys.end(),frame,
-            [](const Key& key,double value){return key.frame<value;});
-        if(it!=track->keys.begin())SeekTimeline(editor,std::prev(it)->frame);
+    {const auto* track=ActiveTrack(editor);
+        if(!track||track->keys.empty()||!editor.session->currentFrame||!editor.session->seek)return;}
+    const auto query=QueryCurrentFrame(editor);
+    if(query.status!=TransportQueryStatus::Ready||!UsableFrameNumber(query.value))return;
+    const double frame=query.value;
+    int target=0;bool found=false;
+    {
+        const Track* track=ActiveTrack(editor);
+        if(!track||track->keys.empty())return;
+        if(next){
+            const auto it=std::upper_bound(track->keys.begin(),track->keys.end(),frame,
+                [](double value,const Key& key){return value<key.frame;});
+            if(it!=track->keys.end()){target=it->frame;found=true;}
+        }else{
+            const auto it=std::lower_bound(track->keys.begin(),track->keys.end(),frame,
+                [](const Key& key,double value){return key.frame<value;});
+            if(it!=track->keys.begin()){target=std::prev(it)->frame;found=true;}
+        }
     }
+    if(found)SeekTimeline(editor,target);
     OnPlayheadTimer(editor);
 }
 void OnPlayheadTimer(Editor &editor) {
@@ -3357,12 +3499,13 @@ void OnPlayheadTimer(Editor &editor) {
     PollExternalHistory(editor);
     if (!editor.session->currentFrame) return;
     PullKeySelection(editor);
-    SetControlText(editor.window,kIdPlay,PlayCaption(editor));
+    UpdatePlayCaption(editor);
+    const auto query=QueryCurrentFrame(editor);
+    if(query.status!=TransportQueryStatus::Ready||!UsableFrameNumber(query.value))return;
+    const double frame=query.value;
     ++editor.playheadTicks;
-    const double frame = editor.session->currentFrame();
-    if (!std::isfinite(frame)) return;
     if(GetFocus()!=GetDlgItem(editor.window,kIdTimelineFrame))
-        SetControlText(editor.window,kIdTimelineFrame,FormatInteger(static_cast<long long>(std::lround(frame))));
+        SetControlText(editor.window,kIdTimelineFrame,FormatInteger(static_cast<long long>(std::llround(frame))));
     if (std::isfinite(editor.playheadFrame) && frame == editor.playheadFrame) return;
     editor.lastPlayheadFrame = editor.playheadFrame;
     editor.playheadFrame = frame;
@@ -4623,6 +4766,19 @@ bool EditingShortcut(Editor& editor, HWND target, UINT message, WPARAM key, LPAR
 // entry.  Returns true when the message is fully answered by `result`.
 bool HandleChildMessage(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam, LRESULT &result) {
     const int id=GetDlgCtrlID(hwnd);
+    if(auto* editor=EditorForChild(hwnd)){
+        if(!editor->nativeCreateReturned){
+            // Suppress authoring/navigation, not the native control's own
+            // focus, capture, cancellation, timer, visibility or cleanup chain.
+            // Return before every custom edit/shortcut/hover handler as well.
+            if((message>=WM_KEYFIRST&&message<=WM_KEYLAST)||
+               (message>=WM_MOUSEFIRST&&message<=WM_MOUSELAST)||
+               message==WM_MOUSEHOVER||message==WM_MOUSELEAVE||message==WM_CONTEXTMENU){
+                result=0;return true;
+            }
+            return false;
+        }
+    }
     if(auto* editor=EditorForChild(hwnd))
         if(EditingShortcut(*editor,hwnd,message,wparam,lparam)){result=0;return true;}
     const bool coordinate=id>=kIdMmdX1&&id<=kIdMmdY2;
@@ -5031,6 +5187,7 @@ LRESULT CALLBACK ChannelSplitterProc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
     auto& editor = *reinterpret_cast<Editor*>(data);
     EditorLease lease(editor);
     try {
+    LRESULT constructing=0;if(HandleNativeConstruction(editor,hwnd,message,wp,constructing))return constructing;
     auto setWidth = [&](int width) {
         const int next = std::clamp(width, 180, ChannelWidthLimit(editor));
         if (editor.channelWidth == next) return;
@@ -5274,8 +5431,8 @@ void FillCombos(Editor &editor) {
 }
 
 void ApplyLanguage(Editor &editor) {
+    UpdatePlayCaption(editor);
     const unsigned language = editor.session->language;
-    SetControlText(editor.window,kIdPlay,PlayCaption(editor));
     SetControlText(editor.window,kIdSeekFrame,language==0?L"移動":language==1?L"Go":L"跳转");
     // A source that offers localizedLabel renames itself for this language; a
     // source without it keeps the plain label, so both callers work.
@@ -5340,23 +5497,31 @@ void ApplyLanguage(Editor &editor) {
 // Control creation.
 // ---------------------------------------------------------------------------
 HWND MakeControl(Editor &editor, const wchar_t *className, const wchar_t *text, DWORD style, int id) {
+    EditorLease construction(editor);construction.RequireSession();
     const bool edit = wcscmp(className, L"EDIT") == 0;
     HWND control = CreateWindowExW(edit ? WS_EX_CLIENTEDGE : 0, className, text,
                                    WS_CHILD | WS_VISIBLE | style, 0, 0, 10, 10, editor.window,
                                    reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), nullptr, nullptr);
-    if (!control) return nullptr;
+    construction.RequireSession();
+    if (!control) throw std::runtime_error("curve control creation failed");
     if (editor.font) SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(editor.font), TRUE);
+    construction.RequireSession();
     if (edit) {
         SendMessageW(control, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN,
                      MAKELPARAM(Scale(4, editor.dpi), Scale(4, editor.dpi)));
+        construction.RequireSession();
         SendMessageW(control, EM_SETLIMITTEXT, 64, 0);
+        construction.RequireSession();
     }
     return control;
 }
 
 void CreateControls(Editor &editor) {
+    EditorLease construction(editor);
     const unsigned language = editor.session->language;
-    MakeControl(editor,L"BUTTON",PlayCaption(editor),WS_TABSTOP|BS_PUSHBUTTON,kIdPlay);
+    // Build only native controls here. Open initializes providers after the
+    // outer CreateWindowEx has returned, including its return-hook messages.
+    MakeControl(editor,L"BUTTON",TransportCaption(language,false),WS_TABSTOP|BS_PUSHBUTTON,kIdPlay);
     MakeControl(editor,L"BUTTON",L"上一关键帧",WS_TABSTOP|BS_PUSHBUTTON,kIdPreviousKey);
     MakeControl(editor,L"BUTTON",L"上一帧",WS_TABSTOP|BS_PUSHBUTTON,kIdPreviousFrame);
     MakeControl(editor,L"BUTTON",L"下一帧",WS_TABSTOP|BS_PUSHBUTTON,kIdNextFrame);
@@ -5401,11 +5566,15 @@ void CreateControls(Editor &editor) {
 
     editor.canvas = CreateWindowExW(0, kCanvasClass, L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 0, 0, 10, 10,
                                     editor.window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdCanvas)), instance, nullptr);
+    construction.RequireSession();
+    if(!editor.canvas)throw std::runtime_error("curve canvas creation failed");
     SetWindowLongPtrW(editor.canvas, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(&editor));
 
     MakeControl(editor, L"STATIC", T(language, StrMmdTitle), SS_LEFT, kIdMmdLabel);
     editor.mmd = CreateWindowExW(0, kMmdClass, L"", WS_CHILD | WS_VISIBLE, 0, 0, 10, 10, editor.window,
                                  reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdMmdPanel)), instance, nullptr);
+    construction.RequireSession();
+    if(!editor.mmd)throw std::runtime_error("curve MMD panel creation failed");
     SetWindowLongPtrW(editor.mmd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(&editor));
     MakeControl(editor, L"STATIC", L"", SS_LEFT, kIdMmdReadout);
     for(int row=0;row<2;++row){
@@ -5499,12 +5668,17 @@ void HandleCommand(Editor &editor, WPARAM wparam) {
     case kIdUndo: UndoOnce(editor); return;
     case kIdRedo: RedoOnce(editor); return;
     case kIdPlay:
-        if(editor.session->setPlaying)editor.session->setPlaying(!(editor.session->isPlaying&&editor.session->isPlaying()));
-        SetControlText(editor.window,kIdPlay,PlayCaption(editor));return;
+        if(editor.session->setPlaying){
+            const auto query=QueryIsPlaying(editor);
+            if(query.Unavailable())return;
+            editor.session->setPlaying(!query.value);
+        }
+        UpdatePlayCaption(editor);return;
     case kIdPreviousFrame: case kIdNextFrame:
         if(editor.session->currentFrame){
-            const double current=editor.session->currentFrame();
-            if(std::isfinite(current))SeekTimeline(editor,int(std::clamp(std::round(current)+(id==kIdNextFrame?1:-1),0.0,double(kMaximumFrame))));
+            const auto query=QueryCurrentFrame(editor);
+            if(query.status!=TransportQueryStatus::Ready||!UsableFrameNumber(query.value))return;
+            SeekTimeline(editor,int(std::clamp(std::round(query.value)+(id==kIdNextFrame?1:-1),0.0,double(kMaximumFrame))));
         }
         OnPlayheadTimer(editor);
         return;
@@ -5547,17 +5721,17 @@ void HandleCommand(Editor &editor, WPARAM wparam) {
 // ---------------------------------------------------------------------------
 // Window procedures.
 // ---------------------------------------------------------------------------
-void BufferedPaint(Editor& editor,HWND hwnd,HDC dc,const RECT& dirty,bool miniature){
+void BufferedPaint(Editor& editor,HWND hwnd,HDC dc,const RECT& dirty,bool miniature,double playhead){
     RECT client{};GetClientRect(hwnd,&client);
     auto& surface=miniature?editor.mmdSurface:editor.canvasSurface;
     if(!surface.Resize(dc,std::max(1L,client.right),std::max(1L,client.bottom))){
-        if(miniature)PaintMmd(editor,dc);else PaintCanvas(editor,dc);return;
+        if(miniature)PaintMmd(editor,dc);else PaintCanvas(editor,dc,playhead);return;
     }
-    const int saved=SaveDC(surface.dc);
-    IntersectClipRect(surface.dc,dirty.left,dirty.top,dirty.right,dirty.bottom);
-    if(miniature)PaintMmd(editor,surface.dc);else PaintCanvas(editor,surface.dc);
-    RestoreDC(surface.dc,saved);
-    BitBlt(dc,dirty.left,dirty.top,dirty.right-dirty.left,dirty.bottom-dirty.top,surface.dc,dirty.left,dirty.top,SRCCOPY);
+    const HDC originalDc=surface.dc;
+    ScopedDcState dcState(originalDc);
+    IntersectClipRect(originalDc,dirty.left,dirty.top,dirty.right,dirty.bottom);
+    if(miniature)PaintMmd(editor,originalDc);else PaintCanvas(editor,originalDc,playhead);
+    BitBlt(dc,dirty.left,dirty.top,dirty.right-dirty.left,dirty.bottom-dirty.top,originalDc,dirty.left,dirty.top,SRCCOPY);
 }
 void InsertCurveKeyAtPoint(Editor& editor,POINT point,UINT flags) {
     if(editor.externalOperationActive||editor.externalCallbackActive)return;
@@ -5622,6 +5796,7 @@ LRESULT CALLBACK CanvasProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpara
     if (!editor) return DefWindowProcW(hwnd, message, wparam, lparam);
     EditorLease lease(editor);
     try {
+    LRESULT constructing=0;if(HandleNativeConstruction(*editor,hwnd,message,wparam,constructing))return constructing;
     if((editor->externalOperationActive||editor->externalCallbackActive)&&
         (message==WM_KEYDOWN||message==WM_SYSKEYDOWN||message==WM_LBUTTONDOWN||
          message==WM_LBUTTONUP||message==WM_LBUTTONDBLCLK||message==WM_MBUTTONDOWN||
@@ -5631,19 +5806,22 @@ LRESULT CALLBACK CanvasProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpara
     const auto hand = [] { return LoadCursorW(nullptr, reinterpret_cast<LPCWSTR>(IDC_HAND)); };
     switch (message) {
     case WM_PAINT: {
-        PAINTSTRUCT paint = {};
-        HDC dc = BeginPaint(hwnd, &paint);
-        BufferedPaint(*editor,hwnd,dc,paint.rcPaint,false);
-        EndPaint(hwnd, &paint);
+        // Query before BeginPaint, surface Resize/SaveDC, or selecting a font.
+        // A provider can retire this window without invalidating a borrowed DC.
+        const double playhead=DisplayCurrentFrame(*editor);
+        NativePaint paint(hwnd);
+        BufferedPaint(*editor,hwnd,paint.dc,paint.paint.rcPaint,false,playhead);
         return 0;
     }
     case WM_ERASEBKGND:
         return 1;
-    case WM_PRINTCLIENT:
+    case WM_PRINTCLIENT: {
         // Standard repaint-into-a-DC entry point: the host can composite the
         // canvas and the hidden regression exercises the whole painting path.
-        PaintCanvas(*editor, reinterpret_cast<HDC>(wparam));
+        const double playhead=DisplayCurrentFrame(*editor);
+        PaintCanvas(*editor, reinterpret_cast<HDC>(wparam),playhead);
         return 0;
+    }
     case WM_SIZE:
         CanvasMetrics(*editor);
         return 0;
@@ -5804,6 +5982,7 @@ LRESULT CALLBACK MmdProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) 
     if (!editor) return DefWindowProcW(hwnd, message, wparam, lparam);
     EditorLease lease(editor);
     try {
+    LRESULT constructing=0;if(HandleNativeConstruction(*editor,hwnd,message,wparam,constructing))return constructing;
     switch (message) {
     case WM_KEYDOWN:
         if(EditingShortcut(*editor,hwnd,message,wparam,lparam))return 0;
@@ -5815,10 +5994,8 @@ LRESULT CALLBACK MmdProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) 
         }
         break;
     case WM_PAINT: {
-        PAINTSTRUCT paint = {};
-        HDC dc = BeginPaint(hwnd, &paint);
-        BufferedPaint(*editor,hwnd,dc,paint.rcPaint,true);
-        EndPaint(hwnd, &paint);
+        NativePaint paint(hwnd);
+        BufferedPaint(*editor,hwnd,paint.dc,paint.paint.rcPaint,true,std::numeric_limits<double>::quiet_NaN());
         return 0;
     }
     case WM_ERASEBKGND:
@@ -6078,6 +6255,7 @@ LRESULT CALLBACK EditorProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpara
 
     EditorLease lease(editor);
     try {
+    LRESULT constructing=0;if(HandleNativeConstruction(*editor,hwnd,message,wparam,constructing))return constructing;
     switch (message) {
     case WM_NOTIFY:{
         auto*header=reinterpret_cast<NMHDR*>(lparam);
@@ -6108,22 +6286,21 @@ LRESULT CALLBACK EditorProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpara
         curve_editor_theme::Load(editor->session->theme);
         editor->themeShell = CreateSolidBrush(curve_editor_theme::shell);
         CreateControls(*editor);
+        lease.RequireSession();
         curve_editor_theme::Apply(hwnd);
+        lease.RequireSession();
         curve_editor_segments::Apply(hwnd);
+        lease.RequireSession();
         curve_editor_scrub::Apply(hwnd);
+        lease.RequireSession();
         TreeView_SetBkColor(GetDlgItem(hwnd,kIdChannelList),curve_editor_theme::paper);
         TreeView_SetTextColor(GetDlgItem(hwnd,kIdChannelList),curve_editor_theme::text);
         TreeView_SetLineColor(GetDlgItem(hwnd,kIdChannelList),curve_editor_theme::border);
         TreeView_SetItemHeight(GetDlgItem(hwnd,kIdChannelList),Scale(23,editor->dpi));
         InstallTabNavigation(*editor);
         curve_editor_channel_scroll::Attach(GetDlgItem(hwnd,kIdChannelList));
-        ApplyLanguage(*editor);
-        ReadAndAdopt(*editor, false);
-        UpdateBakeFields(*editor);
-        SetControlText(editor->window, kIdBakeStepEdit, L"1");
-        LayoutEditor(*editor);
-        SetStatus(*editor, T(editor->session->language, StrReady), false);
-        UpdatePlayheadTimer(*editor);
+        lease.RequireSession();
+        editor->nativeControlsCreated=true;
         return 0;
     case WM_SHOWWINDOW:
         UpdatePlayheadTimer(*editor);
@@ -6195,6 +6372,17 @@ LRESULT CALLBACK EditorProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpara
     case WM_CLOSE:
         DestroyWindow(hwnd);
         return 0;
+    case WM_DESTROY:
+        if(!editor->nativeControlsCreated){
+            // A required child may fail before InstallTabNavigation attaches
+            // the tree's ordinary image-list cleanup subclass.
+            if(const auto tree=GetDlgItem(hwnd,kIdChannelList)){
+                const auto states=TreeView_GetImageList(tree,TVSIL_STATE);
+                TreeView_SetImageList(tree,nullptr,TVSIL_STATE);
+                if(states)ImageList_Destroy(states);
+            }
+        }
+        break;
     case WM_NCDESTROY: {
         KillTimer(hwnd, kSourceChangedTimer);
         if (editor->playheadTimerRunning) {
@@ -6331,6 +6519,9 @@ void *Open(void *owner, Session session, bool visible) {
     auto nextSession=std::make_shared<Session>(std::move(session));
 
     if (Editor *existing = FindEditor(owner)) {
+        // Only native hooks can reenter Open before the first native call
+        // returns. Do not replace a Session on a partially built HWND.
+        if(!existing->nativeCreateReturned)return nullptr;
         EditorLease allocation(existing);
         auto nextToken=std::make_shared<char>();
         std::vector<SourceState> nextStates(nextSession->sources.size());
@@ -6340,6 +6531,10 @@ void *Open(void *owner, Session session, bool visible) {
         EditorLease continuation(existing);
         OpenAttempt attempt(*existing);
         existing->externalOperationActive = existing->externalCallbackActive = false;
+        existing->transportFrameKnown=existing->transportPlayingKnown=false;
+        existing->transportFrame=0;existing->transportPlaying=false;
+        existing->playheadFrame=existing->lastPlayheadFrame=std::numeric_limits<double>::quiet_NaN();
+        existing->mmdEnabled=false;existing->mmdEndKey=-1;existing->mmdReason.clear();
         KillTimer(existing->window, kSourceChangedTimer);
         existing->pendingSources.clear();
         {
@@ -6359,6 +6554,10 @@ void *Open(void *owner, Session session, bool visible) {
             // its last captures until after a successful Open's final check.
             allocation.ReleaseStorage();
         }
+        continuation.RequireSession();
+        SetControlText(existing->window,kIdPlay,TransportCaption(existing->session->language,false));
+        SetControlText(existing->window,kIdFrameEdit,L"");
+        SetControlText(existing->window,kIdValueEdit,L"");
         continuation.RequireSession();
         curve_editor_theme::Load(existing->session->theme);
         if(existing->themeShell)DeleteObject(existing->themeShell);
@@ -6422,10 +6621,27 @@ void *Open(void *owner, Session session, bool visible) {
         return nullptr;
     }
     continuation.RequireSession();
-    // WM_CREATE already read the source; this is where its initial main channel
-    // and its remembered comparison mode are applied.
+    editor->nativeCreateReturned=true;
+    ApplyLanguage(*editor);
+    continuation.RequireSession();
+    ReadAndAdopt(*editor, false);
+    continuation.RequireSession();
+    UpdateBakeFields(*editor);
+    continuation.RequireSession();
+    SetControlText(editor->window, kIdBakeStepEdit, L"1");
+    continuation.RequireSession();
+    LayoutEditor(*editor);
+    continuation.RequireSession();
+    SetStatus(*editor, T(editor->session->language, StrReady), false);
+    continuation.RequireSession();
+    UpdatePlayheadTimer(*editor);
+    continuation.RequireSession();
+    // Keep the original setup order: canonical data and fields are ready
+    // before the initial channel/comparison/selection entry callbacks.
     EnterSource(*editor);
     continuation.RequireSession();
+    if(!editor->pendingSources.empty()&&!editor->sourceChangePosted)
+        editor->sourceChangePosted=PostMessageW(window,kSourceChangedMessage,0,0)!=FALSE;
     if (visible) {
         ShowWindow(window, SW_SHOW);
         continuation.RequireSession();
@@ -6465,7 +6681,7 @@ bool IsWindowSessionCurrent(void* window, const std::weak_ptr<void>& session) {
 
 void SetLanguage(void *owner, unsigned language) {
     Editor *editor = FindEditor(owner);
-    if (!editor) return;
+    if (!editor||!editor->nativeCreateReturned) return;
     EditorLease lease(editor);
     try {
     if (language > 2) language = 2;
@@ -6490,7 +6706,7 @@ void NotifySourceChanged(void *owner, const std::string &sourceId) {
                                    [&](const Source &source) { return source.id == sourceId; });
     if (match == editor->session->sources.end()) return;
     editor->pendingSources.insert(sourceId);
-    if (!editor->sourceChangePosted)
+    if (editor->nativeCreateReturned&&!editor->sourceChangePosted)
         editor->sourceChangePosted = PostMessageW(editor->window, kSourceChangedMessage, 0, 0) != FALSE;
 }
 void NotifyOwnedChanged(void *owner) noexcept {
