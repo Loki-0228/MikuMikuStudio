@@ -44,6 +44,10 @@
 
 复审另指出箭头或翻页 `Step` 的原生回调取消捕获后，旧分支可能重新启动空转 repeat timer。它是既有行为，本批尚未运行该反例或修正，后续需独立验证；不能将它记为本批新增堆故障或已完成项。
 
+该计时器缺项随后已按[独立手势身份记录](abi-curve-repeat-timer-2026-10-21.md)完成反例、修正及两套配置验收，包含旧消息晚到、同 State 新手势和重复捕获。上述 756 项与堆故障结论仍保留当时范围，最新控件结果以该记录为准。
+
 `seek`、`setPlaying` 写回调、`subdivide`、一般 `Channel.sample` 和真实播放停止的重复求值仍待处理。此前堆故障的冻结二进制、转储和反向对照继续保留，详见[原生构造验收与诊断记录](abi-curve-native-construction-2026-10-21.md)。
+
+`seek`、`setPlaying` 随后已按[写回调记录](abi-curve-transport-write-lifetime-2026-10-21.md)接入保护。细分、一般采样、数字拖动、主题辅助和真实停止求值仍未因此完成，既有故障也未据此关闭。
 
 本批没有新系统或显卡依赖。Win7 SP1 x64、CPU 基础路径与 AMD 要求保持；当前 Windows 的合成窗口专项不能替代对应真机、IME、多 DPI、完整鼠标或 GPU 验收。正式 release 和 main 未更新。

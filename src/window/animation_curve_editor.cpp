@@ -963,6 +963,28 @@ struct ExternalOperation {
     ~ExternalOperation(){if(lease.CurrentSession())editor.*member=previous;}
 };
 
+// Transport prequeries run before this operation starts. Keep both the
+// callable copy and its final release behind the same authoring/callback gate,
+// then validate again after the guards have released their Session pins.
+// A void writer may have taken effect before throwing; never retry it here.
+template<class Callback,class Argument>
+void InvokeTransportWriter(Editor& editor,const Callback& writer,Argument argument){
+    EditorLease continuation(editor);
+    try{
+        {
+            ExternalOperation operation(editor,&Editor::externalOperationActive);
+            ExternalOperation callback(editor,&Editor::externalCallbackActive);
+            InvokeProvider(editor,writer,argument);
+        }
+        continuation.ReleaseStorage();
+        continuation.RequireCurrent();
+    }catch(...){
+        continuation.ReleaseStorage();
+        continuation.RequireCurrent();
+        throw;
+    }
+}
+
 enum class TransportQueryStatus { Missing, Busy, Failed, Ready };
 template<class T>struct TransportQueryResult {
     TransportQueryStatus status=TransportQueryStatus::Missing;
@@ -3459,7 +3481,7 @@ void SeekTimeline(Editor& editor,int frame){
             if(!UsableFrameNumber(current.value)||current.value==frame)return;
         }
     }
-    if(editor.session->seek)editor.session->seek(frame);
+    if(editor.session->seek)InvokeTransportWriter(editor,editor.session->seek,frame);
     OnPlayheadTimer(editor);
     editor.mmdFollowPlayhead=true;
     UpdateMmdPanel(editor);
@@ -4116,10 +4138,13 @@ void EditKeyShape(Editor &editor, std::size_t key, Edit edit) {
 }
 
 void CancelDrag(Editor &editor) {
+    EditorLease continuation(editor);
     if (editor.drag == Drag::Keys && editor.dragMoved) InvalidateCanvas(editor);
     if (editor.drag == Drag::Handle) {
         // The handle drag previews in place; put the original keys back.
-        if (Track *track = ActiveTrack(editor)) track->keys = editor.dragBase;
+        // The saved keys already own the complete pre-gesture value. Restore
+        // them without allocating, including while Open prepares a replacement.
+        if (Track *track = ActiveTrack(editor)) track->keys.swap(editor.dragBase);
         InvalidateCanvas(editor);
     }
     editor.drag = Drag::None;
@@ -4129,6 +4154,7 @@ void CancelDrag(Editor &editor) {
     editor.dragValueDelta = 0;
     editor.mmdDragHandle = -1;
     if (GetCapture() == editor.canvas) ReleaseCapture();
+    continuation.RequireCurrent();
 }
 
 void SelectKeyRange(Editor &editor, const RECT &box, bool additive) {
@@ -4214,8 +4240,11 @@ bool CenterBarAtPoint(Editor& editor,POINT point) {
 
 void CanvasMouseDown(Editor &editor, UINT flags, POINT point) {
     if(editor.externalOperationActive||editor.externalCallbackActive)return;
+    EditorLease continuation(editor);
     SetFocus(editor.canvas);
+    continuation.RequireCurrent();
     CanvasMetrics(editor);
+    continuation.RequireCurrent();
     editor.hoverKey = -1;
     const bool space = (GetKeyState(VK_SPACE) & 0x8000) != 0;
     const bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
@@ -4224,7 +4253,8 @@ void CanvasMouseDown(Editor &editor, UINT flags, POINT point) {
 
     if(editor.session->seek&&point.x>=editor.plot.left&&point.x<=editor.plot.right&&
        point.y>=editor.plot.top-Scale(24,editor.dpi)&&point.y<editor.plot.top){
-        editor.drag=Drag::Seek;SetCapture(editor.canvas);SeekAtPoint(editor,point);return;
+        editor.drag=Drag::Seek;SetCapture(editor.canvas);continuation.RequireCurrent();
+        SeekAtPoint(editor,point);return;
     }
     const int timeZone = TimeBarZone(editor, point);
     if (timeZone >= 0) {
@@ -4330,21 +4360,35 @@ void CanvasMouseDown(Editor &editor, UINT flags, POINT point) {
             InvalidateCanvas(editor);
             return;
         }
-        SeekTimeline(editor,track->keys[static_cast<std::size_t>(hit)].frame);
+        // Seeking can close the editor, replace its Session on this HWND, or
+        // switch sources. Do not carry references into the old channel/state
+        // through that callback, even when the native canvas survives it.
+        const std::string channelId=ActiveChannel(editor)->id;
+        const int keyFrame=track->keys[static_cast<std::size_t>(hit)].frame;
+        SeekTimeline(editor,keyFrame);
+        continuation.RequireCurrent();
+        Channel* currentChannel=ActiveChannel(editor);
+        if(!currentChannel||currentChannel->id!=channelId)return;
+        auto& currentState=CurrentState(editor);
+        auto& currentTrack=currentChannel->track;
+        if(std::none_of(currentTrack.keys.begin(),currentTrack.keys.end(),
+            [keyFrame](const Key& key){return key.frame==keyFrame;}))return;
         editor.drag = Drag::Keys;
-        editor.dragBase = track->keys;
-        editor.dragSelection = state.selection;
+        editor.dragBase = currentTrack.keys;
+        editor.dragSelection = currentState.selection;
         editor.dragOrigin = point;
         editor.dragMoved = false;
         editor.dragFrameDelta = 0;
         editor.dragValueDelta = 0;
         SetCapture(editor.canvas);
+        continuation.RequireCurrent();
+        const auto selectedCount=CurrentState(editor).selection.size();
         UpdateKeyFields(editor);
         UpdateMmdPanel(editor);
         UpdateEnabledState(editor);
         InvalidateCanvas(editor);
         SetStatus(editor, std::wstring(T(editor.session->language, StrSelectedKeys)) +
-                              FormatInteger(static_cast<long long>(state.selection.size())),
+                              FormatInteger(static_cast<long long>(selectedCount)),
                   false);
         return;
     }
@@ -4521,14 +4565,17 @@ void CanvasMouseMove(Editor &editor, POINT point) {
 
 void CanvasMouseUp(Editor &editor, POINT point) {
     if(editor.externalOperationActive||editor.externalCallbackActive)return;
+    EditorLease continuation(editor);
     const Drag drag = editor.drag;
     // A native host rejects publications while a mouse gesture owns capture.
     // Finish ownership first, but keep its detached preview/base/deltas until
     // the single commit below. WM_CAPTURECHANGED must not cancel that preview.
     editor.drag=Drag::None;
     if(GetCapture()==editor.canvas)ReleaseCapture();
+    continuation.RequireCurrent();
     if (drag == Drag::Seek) {
         SeekAtPoint(editor,point);
+        continuation.RequireCurrent();
     } else if (drag == Drag::Rubber) {
         const bool trivial = std::abs(point.x - editor.dragOrigin.x) < 4 && std::abs(point.y - editor.dragOrigin.y) < 4;
         if (trivial) {
@@ -4567,6 +4614,7 @@ void CanvasMouseUp(Editor &editor, POINT point) {
     editor.dragFrameDelta = 0;
     editor.dragValueDelta = 0;
     if (GetCapture() == editor.canvas) ReleaseCapture();
+    continuation.RequireCurrent();
     if(drag==Drag::Keys||drag==Drag::Rubber)PublishKeySelection(editor);
     InvalidateCanvas(editor);
 }
@@ -5671,7 +5719,7 @@ void HandleCommand(Editor &editor, WPARAM wparam) {
         if(editor.session->setPlaying){
             const auto query=QueryIsPlaying(editor);
             if(query.Unavailable())return;
-            editor.session->setPlaying(!query.value);
+            InvokeTransportWriter(editor,editor.session->setPlaying,!query.value);
         }
         UpdatePlayCaption(editor);return;
     case kIdPreviousFrame: case kIdNextFrame:
@@ -6525,6 +6573,13 @@ void *Open(void *owner, Session session, bool visible) {
         EditorLease allocation(existing);
         auto nextToken=std::make_shared<char>();
         std::vector<SourceState> nextStates(nextSession->sources.size());
+        // Retire gestures while they still belong to the old Session. A
+        // transport writer can Open here from a captured ruler drag; clearing
+        // it after replacing the Session would instead cancel a new gesture.
+        CancelDrag(*existing);
+        allocation.RequireCurrent();
+        if(GetCapture()==existing->mmd)ReleaseCapture();
+        allocation.RequireCurrent();
         // Invalidate continuations belonging to the previous session before
         // replacing callbacks or channel storage under a nested modal loop.
         existing->motionSession = std::move(nextToken);

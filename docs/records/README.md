@@ -54,6 +54,8 @@
 - [曲线选择回调与稳定时钟（2026-10-21）](abi-curve-selection-lifetime-2026-10-21.md)
 - [曲线比较、相邻控制开关及筛选发布（2026-10-21）](abi-curve-comparison-lifetime-2026-10-21.md)
 - [曲线帧号及播放状态查询保护与全集诊断（2026-10-21）](abi-curve-transport-query-lifetime-2026-10-21.md)
+- [曲线跳帧与播放写回调的会话保护（2026-10-21）](abi-curve-transport-write-lifetime-2026-10-21.md)
+- [通道滚动条的取消与计时器身份（2026-10-21）](abi-curve-repeat-timer-2026-10-21.md)
 - [曲线原生构造与插件回调边界（2026-10-21）](abi-curve-native-construction-2026-10-21.md)
 - [属性区插件扩展行与验证边界（2026-10-21）](abi-property-mount-2026-10-21.md)
 - [ABI 分支合入 main 功能记录（2026-10-17）](abi-main-merge-2026-10-17.md)

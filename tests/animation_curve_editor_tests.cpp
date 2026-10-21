@@ -42,6 +42,7 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 // Armed only after the host has accepted a dedicated write-lifetime fixture.
@@ -4480,6 +4481,66 @@ HostSource TransportHost(){
     HostSource host;host.data.push_back(MakeChannel("transport",L"Transport",
         {MakeKey(0,1),MakeKey(10,3),MakeKey(20,2)}));return host;
 }
+// Phase-A transport writer probe: deliberately no lifetime-changing callback.
+// The old direct std::function call is safe here and must fail the contract
+// because it skips this copy constructor, including its prearranged failure.
+struct TransportWriteCopyState {
+    bool armed=false,failCopy=false,playing=false;
+    double frame=5.0;
+    unsigned copies=0,bodies=0,liveBodies=0;
+    int argument=-1;
+};
+template<bool Playing>struct TransportWriteCopyProvider {
+    TransportWriteCopyState* state;
+    bool invocationCopy=false;
+    explicit TransportWriteCopyProvider(TransportWriteCopyState& value):state(&value){}
+    TransportWriteCopyProvider(const TransportWriteCopyProvider& other):state(other.state){
+        invocationCopy=state->armed;
+        if(invocationCopy){++state->copies;if(state->failCopy)throw std::bad_alloc();}
+    }
+    void operator()(std::conditional_t<Playing,bool,int> argument)const{
+        ++state->bodies;if(!invocationCopy)++state->liveBodies;
+        state->argument=int(argument);
+        if constexpr(Playing)state->playing=argument;
+        else state->frame=argument;
+    }
+};
+void TransportWriteCopyBoundary(){
+    bool allFailedCopiesBlocked=true,allSuccessfulCopiesOwned=true;
+    for(bool playing:{false,true})for(bool failCopy:{true,false}){
+        auto host=TransportHost();TransportWriteCopyState state;state.failCopy=failCopy;
+        auto session=MakeSession(host);
+        session.currentFrame=[&]{return state.frame;};session.isPlaying=[&]{return state.playing;};
+        if(playing)session.setPlaying=TransportWriteCopyProvider<true>(state);
+        else session.seek=TransportWriteCopyProvider<false>(state);
+        const HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
+        Check(IsWindow(window)&&KeyCount(window)==3,"safe transport writer copy probe opens a real three-key editor");
+        const auto token=ce::CaptureWindowSession(window);
+        const auto history=LocalWriteHistory(window);
+        Check(state.copies==0&&state.bodies==0,"opening the fixture never invokes or arms its transport writer");
+        state.armed=true;
+        if(playing)Click(window,kIdPlay);
+        else{SetText(window,kIdTimelineFrame,L"8");Click(window,kIdSeekFrame);}
+        const bool expectedValue=playing?state.playing:(state.frame==8.0);
+        const bool unchanged=state.frame==5.0&&!state.playing;
+        std::printf("transport writer copy playing=%u fail_copy=%u copies=%u bodies=%u live_bodies=%u argument=%d frame=%.17g playing_value=%u\n",
+            playing?1u:0u,failCopy?1u:0u,state.copies,state.bodies,state.liveBodies,state.argument,state.frame,state.playing?1u:0u);
+        std::fflush(stdout);
+        Check(IsWindow(window)&&ce::IsWindowSessionCurrent(window,token)&&host.applyCalls==0&&
+            KeyCount(window)==3&&LocalWriteHistory(window)==history,
+            "safe copy-boundary observations preserve the same native editor, curve data and history");
+        if(failCopy)allFailedCopiesBlocked&=state.copies==1&&state.bodies==0&&state.liveBodies==0&&unchanged;
+        else allSuccessfulCopiesOwned&=state.copies==1&&state.bodies==1&&state.liveBodies==0&&
+            state.argument==(playing?1:8)&&expectedValue;
+        state.armed=false;ce::CloseOwned(nullptr);
+        Check(!IsWindow(window),"close the safe writer probe before checking the aggregate red contract");
+    }
+    // Collect both writers before failing: the original implementation skips
+    // both copies, executes both forbidden bodies and logs that exact result.
+    Check(allFailedCopiesBlocked,"seek and setPlaying must copy the provider and reject a failed copy before invoking its body");
+    Check(allSuccessfulCopiesOwned,"successful seek and setPlaying invoke one owned copy with the exact plain-value argument");
+    Note("transport void writers honor the callable copy boundary before any lifetime-changing matrix runs");
+}
 int TransportControlCount(HWND window){
     int count=0;EnumChildWindows(window,[](HWND,LPARAM value)->BOOL{++*reinterpret_cast<int*>(value);return TRUE;},
         reinterpret_cast<LPARAM>(&count));return count;
@@ -4504,6 +4565,382 @@ void TransportRefreshSource(HWND window,const std::string& sourceId="source"){
         dispatched=true;DispatchMessageW(&message);
     }
     Check(dispatched,"transport refresh consumes an actual posted source-change message");
+}
+
+POINT TransportWriteRulerPoint(HWND window,int frame){
+    CurveEditorAxisState axis{};
+    Check(SendMessageW(window,WM_APP+394,0,reinterpret_cast<LPARAM>(&axis))!=0,
+        "transport writer uses the actual displayed ruler geometry");
+    POINT point=AskPoint(window,kHookPointForFrame,frame);
+    point.y=(axis.plot.top-1)/2;return point;
+}
+struct TransportWriteGesture {
+    int entry=0,argument=8;
+    HWND window=nullptr,canvas=nullptr;
+    POINT point{};
+    TransportWriteGesture(HWND value,int route):entry(route),window(value),canvas(GetDlgItem(value,kIdCanvas)){
+        if(entry==0)SetText(window,kIdTimelineFrame,L"8");
+        else if(entry==1)argument=1;
+        else if(entry==2){point=AskPoint(window,kHookPointForKey,1);argument=10;}
+        else{
+            point=TransportWriteRulerPoint(window,8);
+            if(entry>=4){
+                const POINT before=TransportWriteRulerPoint(window,6);
+                SendMessageW(canvas,WM_LBUTTONDOWN,MK_LBUTTON,MAKELPARAM(before.x,before.y));
+                Check(GetCapture()==canvas,"move and release probes start with a real captured ruler gesture");
+            }
+        }
+    }
+    void Run()const{
+        if(entry==0)Click(window,kIdSeekFrame);
+        else if(entry==1)Click(window,kIdPlay);
+        else SendMessageW(canvas,entry==4?WM_MOUSEMOVE:entry==5?WM_LBUTTONUP:WM_LBUTTONDOWN,
+            entry==5?0:MK_LBUTTON,MAKELPARAM(point.x,point.y));
+    }
+};
+
+struct TransportWriteRetirementState {
+    int phase=0,response=0,argument=-1,expectedArgument=0;
+    bool armed=false,copying=false,playing=false;
+    double frame=5;
+    const void* original=nullptr;
+    unsigned copies=0,bodies=0,publications=0,actions=0,destroyedDuringCopy=0;
+    std::function<void()> action;
+    void Run(){armed=false;++actions;action();}
+    void ThrowResponse()const{
+        if(response==1)throw std::runtime_error("transport writer failed");
+        if(response==2)throw std::bad_alloc();
+    }
+};
+template<bool Playing>struct TransportWriteRetirementProvider {
+    TransportWriteRetirementState* state;
+    int marker=109;
+    bool invocationCopy=false;
+    mutable bool invoked=false;
+    explicit TransportWriteRetirementProvider(TransportWriteRetirementState& value):state(&value){}
+    TransportWriteRetirementProvider(const TransportWriteRetirementProvider& other):state(other.state),marker(other.marker){
+        invocationCopy=state->armed;if(!invocationCopy)return;++state->copies;
+        if(state->phase!=0)return;
+        state->copying=true;state->original=&other;state->Run();
+        Check(state->destroyedDuringCopy==0&&other.marker==109,
+            "transport writer keeps its original callable alive throughout a reentrant copy");
+        state->copying=false;state->ThrowResponse();
+    }
+    ~TransportWriteRetirementProvider(){
+        if(state->copying&&state->original==this)++state->destroyedDuringCopy;
+        if(invocationCopy&&invoked&&state->armed&&state->phase==2)state->Run();
+    }
+    void operator()(std::conditional_t<Playing,bool,int> value)const{
+        invoked=true;const bool active=state->armed;++state->bodies;++state->publications;
+        state->argument=int(value);
+        if constexpr(Playing)state->playing=value;
+        else{state->frame=value;state->playing=false;}
+        if(!active)return;
+        Check(invocationCopy&&int(value)==state->expectedArgument,
+            "transport writer receives one owned callable and the exact plain-value argument");
+        if(state->phase==1)state->Run();
+        Check(int(value)==state->expectedArgument&&marker==109,
+            "transport argument and active callable remain valid after synchronous retirement");
+        state->ThrowResponse();
+    }
+};
+void TransportWriteCallbackLifetime(){
+    // Explicit seek, play, key-click, ruler press, captured ruler move, release.
+    for(int entry=0;entry!=6;++entry)for(int phase=0;phase!=3;++phase)
+    for(int action=0;action!=3;++action)for(int response=0;response!=3;++response){
+        std::printf("transport writer lifetime entry=%d phase=%d action=%d response=%d\n",entry,phase,action,response);
+        std::fflush(stdout);
+        auto host=TransportHost(),replacement=TransportHost();replacement.data[0].id="replacement";
+        TransportWriteRetirementState state;state.phase=phase;state.response=response;
+        HWND replacementWindow=nullptr;std::wstring replacementStatus,replacementField;
+        int readsAfter=-1,replacementSeeks=0;
+        auto session=MakeSession(host);
+        session.currentFrame=[&]{return state.frame;};session.isPlaying=[&]{return state.playing;};
+        if(entry==1)session.setPlaying=TransportWriteRetirementProvider<true>(state);
+        else session.seek=TransportWriteRetirementProvider<false>(state);
+        const HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
+        Check(IsWindow(window)&&KeyCount(window)==3,"transport writer lifetime fixture opens before arming");
+        const TransportWriteGesture gesture(window,entry);state.expectedArgument=gesture.argument;
+        const auto token=ce::CaptureWindowSession(window);const auto retained=token.lock();
+        const auto data=host.data;const unsigned bodies=state.bodies,publications=state.publications;
+        state.action=[&]{
+            if(action!=1)ce::CloseOwned(nullptr);
+            if(action!=0){
+                auto next=MakeSession(replacement);next.seek=[&](int){++replacementSeeks;};
+                replacementWindow=static_cast<HWND>(ce::Open(nullptr,std::move(next),false));
+                Check(IsWindow(replacementWindow),"writer retirement creates an actual replacement editor");
+                if(action==1)Check(replacementWindow==window,"same-window writer retirement preserves its real HWND");
+                replacementStatus=GetText(replacementWindow,kIdStatus);replacementField=GetText(replacementWindow,kIdFrameEdit);
+            }
+            readsAfter=host.readCalls;
+        };
+        state.armed=true;gesture.Run();
+        if(state.actions!=1||state.bodies!=bodies+unsigned(phase!=0))
+            std::fprintf(stderr,"TRANSPORT_WRITE entry=%d phase=%d action=%d response=%d actions=%u copies=%u bodies=%u before=%u\n",
+                entry,phase,action,response,state.actions,state.copies,state.bodies,bodies);
+        Check(state.actions==1&&state.copies==1&&state.bodies==bodies+unsigned(phase!=0)&&
+            state.publications==publications+unsigned(phase!=0)&&state.destroyedDuringCopy==0,
+            "writer copy, body and final release retire once without retrying or undoing an effective void call");
+        Check(retained&&!ce::IsWindowSessionCurrent(window,token)&&host.readCalls==readsAfter&&
+            host.applyCalls==0&&SameWritePayload(host.data,data),
+            "retired transport never reads old channels, authors keys or accepts a retained old Session token");
+        if(replacementWindow){
+            Check(KeyCount(replacementWindow)==3&&replacement.applyCalls==0&&replacementSeeks==0&&
+                LocalWriteHistory(replacementWindow)==std::array<std::uint64_t,2>{0,0}&&
+                GetText(replacementWindow,kIdStatus)==replacementStatus&&GetText(replacementWindow,kIdFrameEdit)==replacementField,
+                "old transport continuation cannot change replacement status, fields, channels or history");
+            const HWND canvas=GetDlgItem(replacementWindow,kIdCanvas);
+            Check(GetCapture()!=canvas,"same-window replacement does not inherit the retired ruler capture");
+            const POINT point=TransportWriteRulerPoint(replacementWindow,8);
+            SendMessageW(canvas,WM_MOUSEMOVE,MK_LBUTTON,MAKELPARAM(point.x,point.y));
+            SendMessageW(canvas,WM_LBUTTONUP,0,MAKELPARAM(point.x,point.y));
+            Check(replacementSeeks==0&&replacement.applyCalls==0,
+                "old ruler move and release cannot install a drag into the replacement Session");
+            ClickKey(replacementWindow,1);Click(replacementWindow,kIdDeleteKey);
+            Check(replacement.applyCalls==1&&KeyCount(replacementWindow)==2&&replacementSeeks==1,
+                "replacement remains editable after all old writer guards and message tails unwind");
+        }else Check(OwnedCurveWindow()==nullptr,"closed writer Session leaves no native or registered ghost editor");
+        ce::CloseOwned(nullptr);
+    }
+    Note("transport void writers preserve copy, invocation, final-release and mouse continuation lifetime");
+}
+
+struct TransportWriteFailureState {
+    bool armed=false,playing=false;
+    int failure=0,argument=-1,copies=0,bodies=0,effects=0;
+    double frame=5;
+};
+template<bool Playing>struct TransportWriteFailureProvider {
+    TransportWriteFailureState* state;
+    explicit TransportWriteFailureProvider(TransportWriteFailureState& value):state(&value){}
+    TransportWriteFailureProvider(const TransportWriteFailureProvider& other):state(other.state){
+        if(!state->armed)return;++state->copies;
+        if(state->failure<2){state->armed=false;
+            if(state->failure==0)throw std::bad_alloc();
+            throw std::runtime_error("writer copy failed");}
+    }
+    void operator()(std::conditional_t<Playing,bool,int> value)const{
+        ++state->bodies;const bool fail=state->armed;state->armed=false;
+        if(fail&&state->failure==2)throw std::runtime_error("writer before effect");
+        if(fail&&state->failure==3)throw std::bad_alloc();
+        ++state->effects;state->argument=int(value);
+        if constexpr(Playing)state->playing=value;
+        else state->frame=value;
+        if(fail&&state->failure==4)throw std::runtime_error("writer after effect");
+        if(fail&&state->failure==5)throw std::bad_alloc();
+    }
+};
+void TransportWriteFailuresAndSync(){
+    for(bool playing:{false,true})for(int failure=0;failure!=6;++failure){
+        auto host=TransportHost();TransportWriteFailureState state;state.failure=failure;
+        auto session=MakeSession(host);session.currentFrame=[&]{return state.frame;};session.isPlaying=[&]{return state.playing;};
+        if(playing)session.setPlaying=TransportWriteFailureProvider<true>(state);
+        else session.seek=TransportWriteFailureProvider<false>(state);
+        const HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
+        Check(IsWindow(window),"ordinary writer failure fixture opens");
+        const auto token=ce::CaptureWindowSession(window);const auto history=LocalWriteHistory(window);
+        state.armed=true;SetText(window,kIdTimelineFrame,L"8");Click(window,playing?kIdPlay:kIdSeekFrame);
+        Check(state.copies==1&&state.bodies==int(failure>=2)&&state.effects==int(failure>=4)&&
+            host.applyCalls==0&&ce::IsWindowSessionCurrent(window,token)&&LocalWriteHistory(window)==history,
+            "copy/runtime/allocation failures preserve the Session and never retry a possibly effective void writer");
+        Check(playing?(state.playing==(failure>=4)):(state.frame==(failure>=4?8:5)),
+            "writer failure keeps the host's actual pre-effect or post-effect transport state");
+        SetText(window,kIdTimelineFrame,L"9");Click(window,playing?kIdPlay:kIdSeekFrame);
+        Check(state.bodies==int(failure>=2)+1&&state.effects==int(failure>=4)+1&&
+            (playing?state.playing==(failure<4):state.frame==9),
+            "a later explicit gesture is allowed after every writer failure guard unwinds");
+        ce::CloseOwned(nullptr);
+    }
+    for(bool playing:{false,true})for(bool allocation:{false,true}){
+        auto host=TransportHost();bool failUi=false,playingValue=false;double frame=5;
+        int writes=0,failures=0;auto session=MakeSession(host);
+        const auto fail=[&]{++failures;if(allocation)throw std::bad_alloc();throw std::runtime_error("post-writer UI query");};
+        session.currentFrame=[&]()->double{if(failUi&&!playing)fail();return frame;};
+        session.isPlaying=[&]()->bool{if(failUi&&playing)fail();return playingValue;};
+        session.seek=[&](int value){++writes;frame=value;failUi=true;};
+        session.setPlaying=[&](bool value){++writes;playingValue=value;failUi=true;};
+        const HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
+        Check(IsWindow(window),"post-writer UI failure fixture opens");
+        const auto history=LocalWriteHistory(window);SetText(window,kIdTimelineFrame,L"8");
+        // Visibility enables the ordinary playhead UI path without activating
+        // or sending keyboard/mouse input outside this fixture.
+        SetWindowLongPtrW(window,GWL_STYLE,GetWindowLongPtrW(window,GWL_STYLE)|WS_VISIBLE);
+        Click(window,playing?kIdPlay:kIdSeekFrame);
+        Check(writes==1&&failures>0&&(playing?playingValue:frame==8)&&host.applyCalls==0&&LocalWriteHistory(window)==history,
+            "UI query exceptions after an effective writer do not retry it or create curve history");
+        failUi=false;ce::SetLanguage(nullptr,2);RenderInk(GetDlgItem(window,kIdCanvas));
+        Check(writes==1,"recovering UI display never retries an earlier successful transport write");
+        ce::CloseOwned(nullptr);
+    }
+    Note("transport writer failures and post-effect UI failures never trigger implicit retry");
+}
+
+void TransportWriteNestedAndSemantics(){
+    for(bool playing:{false,true})for(int phase=0;phase!=3;++phase){
+        auto host=TransportHost();TransportWriteRetirementState state;state.phase=phase;
+        HWND window=nullptr;int frameReads=0,playingReads=0;
+        auto session=MakeSession(host);
+        session.currentFrame=[&]{++frameReads;return state.frame;};session.isPlaying=[&]{++playingReads;return state.playing;};
+        if(playing)session.setPlaying=TransportWriteRetirementProvider<true>(state);
+        else session.seek=TransportWriteRetirementProvider<false>(state);
+        window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));Check(IsWindow(window),"nested writer fixture opens");
+        SetText(window,kIdTimelineFrame,L"8");state.expectedArgument=playing?1:8;
+        state.action=[&]{
+            const int frames=frameReads,states=playingReads,reads=host.readCalls;
+            const auto bodies=state.bodies;const auto history=LocalWriteHistory(window);
+            const auto fields=std::make_pair(GetText(window,kIdFrameEdit),GetText(window,kIdValueEdit));
+            std::array<int,12> selection{},afterSelection{};ReadCompare(window,selection.data());
+            const HWND canvas=GetDlgItem(window,kIdCanvas);
+            const POINT point=AskPoint(window,kHookPointForKey,1);
+            for(int id:std::array<int,8>{kIdPlay,kIdSeekFrame,kIdNextFrame,kIdNextKey,kIdDeleteKey,kIdAddKey,kIdUndo,kIdRedo})Click(window,id);
+            SendMessageW(canvas,WM_LBUTTONDOWN,MK_LBUTTON,MAKELPARAM(point.x,point.y));
+            SendMessageW(canvas,WM_MOUSEMOVE,MK_LBUTTON,MAKELPARAM(point.x+4,point.y));
+            SendMessageW(canvas,WM_LBUTTONUP,0,MAKELPARAM(point.x+4,point.y));
+            RenderInk(canvas);SendMessageW(window,WM_TIMER,kPlayheadTimerId,0);ce::SetLanguage(nullptr,2);
+            TransportRefreshSource(window);
+            ReadCompare(window,afterSelection.data());
+            Check(frameReads==frames&&playingReads==states&&state.bodies==bodies&&host.readCalls==reads&&host.applyCalls==0&&
+                LocalWriteHistory(window)==history&&afterSelection==selection&&
+                GetText(window,kIdFrameEdit)==fields.first&&GetText(window,kIdValueEdit)==fields.second,
+                "copy/body/final-release message pumps cannot recursively query, seek, play, select or author during a transport write");
+        };
+        const auto history=LocalWriteHistory(window);state.armed=true;Click(window,playing?kIdPlay:kIdSeekFrame);
+        Check(state.actions==1&&state.copies==1&&state.bodies==1&&state.publications==1&&
+            state.argument==state.expectedArgument&&host.applyCalls==0&&LocalWriteHistory(window)==history,
+            "the outer writer completes once after nested transport, authoring and refresh requests are rejected or delayed");
+        // Pending source notifications can be consumed after the callback gate.
+        TransportRefreshSource(window);ClickKey(window,1);Click(window,kIdDeleteKey);
+        Check(host.applyCalls==1&&KeyCount(window)==2,"normal editing and pending source work resume after the writer boundary");
+        ce::CloseOwned(nullptr);
+    }
+    auto host=TransportHost();double frame=5;bool playing=false;int seeks=0,toggles=0,hostStops=0;
+    auto session=MakeSession(host);session.currentFrame=[&]{return frame;};session.isPlaying=[&]{return playing;};
+    session.seek=[&](int next){++seeks;++hostStops;playing=false;frame=next;};
+    session.setPlaying=[&](bool next){++toggles;playing=next;};
+    const HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));Check(IsWindow(window),"transport compatibility fixture opens");
+    const auto history=LocalWriteHistory(window);SetText(window,kIdTimelineFrame,L"5");Click(window,kIdSeekFrame);
+    Check(seeks==0&&toggles==0,"a stopped same-frame seek remains a no-op");
+    playing=true;Click(window,kIdSeekFrame);
+    Check(seeks==1&&hostStops==1&&!playing&&toggles==0,
+        "a playing same-frame seek delegates its single stop to the host without adding an editor setPlaying(false)");
+    Click(window,kIdPlay);Click(window,kIdNextFrame);Click(window,kIdNextKey);
+    Check(toggles==1&&seeks==3&&hostStops==3&&frame==10&&!playing&&host.applyCalls==0&&LocalWriteHistory(window)==history,
+        "play, adjacent-frame and adjacent-key commands retain their existing host transport semantics");
+    DragKeyToFrame(window,1,14);
+    Check(host.applyCalls==1&&FindKey(host.data,0,14)&&KeyCount(window)==3,
+        "a normal key press can still install and commit its drag after a same-frame seek");
+    ce::CloseOwned(nullptr);
+    for(bool noSeek:{false,true}){
+        auto optional=TransportHost();auto absent=MakeSession(optional);int calls=0;
+        absent.currentFrame=[](){return 5.0;};absent.isPlaying=[](){return false;};
+        if(noSeek){absent.seek={};absent.setPlaying=[&](bool){++calls;};}
+        else{absent.setPlaying={};absent.seek=[&](int){++calls;};}
+        const HWND target=static_cast<HWND>(ce::Open(nullptr,std::move(absent),false));Check(IsWindow(target),"missing writer fixture opens");
+        const auto before=LocalWriteHistory(target);SetText(target,kIdTimelineFrame,L"8");Click(target,noSeek?kIdSeekFrame:kIdPlay);
+        Check(calls==0&&optional.applyCalls==0&&KeyCount(target)==3&&LocalWriteHistory(target)==before,
+            "an absent optional writer remains a safe no-op with no fallback transport or history publication");
+        ce::CloseOwned(nullptr);
+    }
+    Note("transport writers reject nested edits while preserving optional, same-frame, host-stop and key-drag behavior");
+}
+struct TransportCaptureReplacement {
+    bool armed=false;
+    unsigned calls=0;
+    std::function<void()> action;
+    static LRESULT CALLBACK Proc(HWND window,UINT message,WPARAM wp,LPARAM lp,UINT_PTR id,DWORD_PTR data){
+        auto& self=*reinterpret_cast<TransportCaptureReplacement*>(data);
+        if(message==WM_NCDESTROY)RemoveWindowSubclass(window,Proc,id);
+        if(message==WM_CAPTURECHANGED&&self.armed){
+            self.armed=false;++self.calls;
+            Check(GetCapture()!=window,"Open's capture release produces the actual synchronous native capture-change notification");
+            self.action();return 0;
+        }
+        return DefSubclassProc(window,message,wp,lp);
+    }
+};
+void TransportOpenGestureRetirement(){
+    for(int action=0;action!=3;++action){
+        auto host=TransportHost(),attempted=TransportHost(),replacement=TransportHost();
+        double frame=5;int seeks=0;auto session=MakeSession(host);
+        session.currentFrame=[&]{return frame;};session.isPlaying=[](){return false;};
+        session.seek=[&](int next){++seeks;frame=next;};
+        const HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
+        Check(IsWindow(window),"capture-release replacement fixture opens");
+        const HWND canvas=GetDlgItem(window,kIdCanvas);const POINT point=TransportWriteRulerPoint(window,6);
+        SendMessageW(canvas,WM_LBUTTONDOWN,MK_LBUTTON,MAKELPARAM(point.x,point.y));
+        Check(GetCapture()==canvas&&seeks==1,"old Session owns its real ruler capture before same-window Open");
+        const auto token=ce::CaptureWindowSession(window);TransportCaptureReplacement probe;
+        HWND replacementWindow=nullptr;std::wstring status;
+        probe.action=[&]{
+            if(action!=1)ce::CloseOwned(nullptr);
+            if(action!=0){replacementWindow=static_cast<HWND>(ce::Open(nullptr,MakeSession(replacement),false));
+                Check(IsWindow(replacementWindow),"capture-change callback installs a live replacement Session");
+                status=GetText(replacementWindow,kIdStatus);}
+        };
+        Check(SetWindowSubclass(canvas,TransportCaptureReplacement::Proc,0x7a61,reinterpret_cast<DWORD_PTR>(&probe))!=FALSE,
+            "watch actual native capture release on the fixture's own canvas");
+        probe.armed=true;
+        Check(ce::Open(nullptr,MakeSession(attempted),false)==nullptr,
+            "an outer Open cannot publish after its capture-release callback replaces or closes the original Session");
+        Check(probe.calls==1&&!ce::IsWindowSessionCurrent(window,token)&&attempted.readCalls==0&&attempted.applyCalls==0&&host.applyCalls==0,
+            "capture-release retirement aborts before the attempted Session's providers or history become live");
+        if(replacementWindow){
+            Check(GetText(replacementWindow,kIdStatus)==status&&KeyCount(replacementWindow)==3&&GetCapture()!=GetDlgItem(replacementWindow,kIdCanvas),
+                "aborted outer Open leaves the nested replacement's controls and capture untouched");
+            ClickKey(replacementWindow,1);Click(replacementWindow,kIdDeleteKey);
+            Check(replacement.applyCalls==1&&KeyCount(replacementWindow)==2,
+                "a replacement created by capture-change notification remains editable");
+        }else Check(OwnedCurveWindow()==nullptr,"capture-release close leaves no attempted editor registered");
+        if(IsWindow(canvas))RemoveWindowSubclass(canvas,TransportCaptureReplacement::Proc,0x7a61);
+        ce::CloseOwned(nullptr);
+    }
+    {
+        auto host=TransportHost(),attempted=TransportHost();double frame=5;int seeks=0;
+        auto session=MakeSession(host);session.currentFrame=[&]{return frame;};session.isPlaying=[](){return false;};
+        session.seek=[&](int next){++seeks;frame=next;};
+        const HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
+        Check(IsWindow(window),"Open preparation allocation-failure fixture opens");
+        const HWND canvas=GetDlgItem(window,kIdCanvas);const POINT point=TransportWriteRulerPoint(window,6);
+        SendMessageW(canvas,WM_LBUTTONDOWN,MK_LBUTTON,MAKELPARAM(point.x,point.y));
+        auto candidate=MakeSession(attempted);const auto token=ce::CaptureWindowSession(window);
+        const unsigned failures=g_curveAllocationFailures;g_curveFailNextAllocation=true;
+        Check(ce::Open(nullptr,std::move(candidate),false)==nullptr,"private Open preparation reports its real allocation failure");
+        Check(!g_curveFailNextAllocation&&g_curveAllocationFailures==failures+1&&
+            ce::IsWindowSessionCurrent(window,token)&&GetCapture()==canvas&&attempted.readCalls==0&&host.applyCalls==0,
+            "failed private preparation leaves the original Session and its active gesture intact");
+        const POINT end=TransportWriteRulerPoint(window,8);
+        SendMessageW(canvas,WM_LBUTTONUP,0,MAKELPARAM(end.x,end.y));
+        Check(seeks==2&&frame==8&&GetCapture()!=canvas,"the original ruler can finish after an unrelated Open preparation failure");
+        ce::CloseOwned(nullptr);
+    }
+    {
+        HostSource host;auto channel=MakeChannel("handle",L"Handle",{
+            MakeKey(0,0,ac::Interpolation::Bezier,ac::Tangent::Free),
+            MakeKey(20,5,ac::Interpolation::Bezier,ac::Tangent::Free),
+            MakeKey(40,10,ac::Interpolation::Bezier,ac::Tangent::Free)});
+        channel.track.keys[1].inWeight=channel.track.keys[1].outWeight=.3;
+        channel.track.keys[1].inSlope=channel.track.keys[1].outSlope=0;host.data.push_back(std::move(channel));
+        const HWND window=static_cast<HWND>(ce::Open(nullptr,MakeSession(host),false));
+        Check(IsWindow(window),"allocation-free private handle cancellation fixture opens");ClickKey(window,1);
+        const HWND canvas=GetDlgItem(window,kIdCanvas);const auto original=RenderPixels(canvas);
+        const POINT key=AskPoint(window,kHookPointForKey,1),handle=AskPoint(window,kHookPointForFrame,26),target=AskPoint(window,kHookPointForFrame,30);
+        SendMessageW(canvas,WM_LBUTTONDOWN,MK_LBUTTON,MAKELPARAM(handle.x,key.y));
+        SendMessageW(canvas,WM_MOUSEMOVE,MK_LBUTTON,MAKELPARAM(target.x,key.y-20));
+        Check(GetCapture()==canvas&&RenderPixels(canvas)!=original&&host.applyCalls==0,
+            "a real captured handle changes only its private preview before cancellation");
+        const auto history=LocalWriteHistory(window);const auto token=ce::CaptureWindowSession(window);
+        const unsigned failures=g_curveAllocationFailures;g_curveFailNextAllocation=true;
+        SendMessageW(canvas,WM_KEYDOWN,VK_ESCAPE,0);
+        const bool allocationPending=g_curveFailNextAllocation;g_curveFailNextAllocation=false;
+        Check(allocationPending&&g_curveAllocationFailures==failures&&ce::IsWindowSessionCurrent(window,token)&&
+            GetCapture()!=canvas&&host.applyCalls==0&&LocalWriteHistory(window)==history&&RenderPixels(canvas)==original,
+            "CancelDrag restores the saved complete keys by swap without allocating, publishing or losing its original Session");
+        ce::CloseOwned(nullptr);
+    }
+    Note("same-window Open retires old gestures before publication and survives native capture-change replacement");
+}
+void TransportWriteLifetime(){
+    TransportWriteCopyBoundary();TransportWriteCallbackLifetime();TransportWriteFailuresAndSync();TransportWriteNestedAndSemantics();TransportOpenGestureRetirement();
 }
 struct TransportRetirementState {
     int phase=0,response=0,calls=0,retireCalls=0,destroyedDuringCopy=0,skipBodies=0;
@@ -4586,8 +5023,81 @@ void TransportCallbackLifetime(){
         if(replacementWindow){TransportControlsReady(replacementWindow,count);
             Check(GetText(replacementWindow,kIdStatus)==replacementStatus&&KeyCount(replacementWindow)==3,
                 "retired query continuation leaves replacement controls, data and status unchanged");
-            ClickKey(replacementWindow,1);Click(replacementWindow,kIdDeleteKey);
-            Check(replacement.applyCalls==1&&KeyCount(replacementWindow)==2,
+            // Keep the input sequence free of diagnostic heap allocations and
+            // extra editor messages. Only fixed-capacity scalar observations
+            // run between the original DOWN/UP/Delete actions; collect richer
+            // evidence only after the unchanged assertion has failed.
+            const HWND recoveryCanvas=GetDlgItem(replacementWindow,kIdCanvas);
+            Check(recoveryCanvas!=nullptr,"the canvas exists");
+            const POINT recoveryPoint=AskPoint(replacementWindow,kHookPointForKey,1);
+            Check(recoveryPoint.x>0&&recoveryPoint.y>0,"the queried key lies inside the canvas");
+            const auto recoveryToken=ce::CaptureWindowSession(replacementWindow);
+            struct RecoveryObservation {
+                HWND focus=nullptr,capture=nullptr;
+                std::array<SHORT,6> keys{};
+                bool current=false,oldCurrent=false;
+                bool windowEnabled=false,canvasEnabled=false,deleteEnabled=false,applyEnabled=false;
+                int applies=0,reads=0;
+            };
+            const auto observe=[&]{
+                RecoveryObservation observation;
+                observation.focus=GetFocus();observation.capture=GetCapture();
+                observation.keys={GetKeyState(VK_SPACE),GetKeyState(VK_MENU),GetKeyState(VK_CONTROL),GetKeyState(VK_SHIFT),
+                    GetKeyState(VK_LBUTTON),GetKeyState(VK_RBUTTON)};
+                observation.current=ce::IsWindowSessionCurrent(replacementWindow,recoveryToken);
+                observation.oldCurrent=ce::IsWindowSessionCurrent(retiredWindow,token);
+                observation.windowEnabled=IsWindowEnabled(replacementWindow)!=FALSE;
+                observation.canvasEnabled=IsWindowEnabled(recoveryCanvas)!=FALSE;
+                observation.deleteEnabled=IsWindowEnabled(GetDlgItem(replacementWindow,kIdDeleteKey))!=FALSE;
+                observation.applyEnabled=IsWindowEnabled(GetDlgItem(replacementWindow,kIdApplyKey))!=FALSE;
+                observation.applies=replacement.applyCalls;observation.reads=replacement.readCalls;return observation;
+            };
+            const auto beforeClick=observe();
+            const LPARAM recoveryPosition=MAKELPARAM(recoveryPoint.x,recoveryPoint.y);
+            SendMessageW(recoveryCanvas,WM_LBUTTONDOWN,MK_LBUTTON,recoveryPosition);
+            const auto afterDown=observe();
+            SendMessageW(recoveryCanvas,WM_LBUTTONUP,0,recoveryPosition);
+            const auto afterUp=observe();
+            Click(replacementWindow,kIdDeleteKey);
+            const auto afterDelete=observe();
+            const int recoveryKeys=KeyCount(replacementWindow);
+            if(replacement.applyCalls!=1||recoveryKeys!=2){
+                const auto printText=[](const char* label,const std::wstring& text){
+                    std::fprintf(stderr," %s=\"",label);
+                    for(wchar_t unit:text){
+                        if(unit>=32&&unit<127&&unit!=L'\\'&&unit!=L'\"')std::fputc(int(unit),stderr);
+                        else std::fprintf(stderr,"\\u%04x",unsigned(static_cast<unsigned short>(unit)));
+                    }
+                    std::fputc('"',stderr);
+                };
+                const auto print=[&](const char* stage,const RecoveryObservation& observation){
+                    std::fprintf(stderr,"TRANSPORT_RECOVERY entry=%d phase=%d action=%d response=%d stage=%s hwnd=%p canvas=%p point=%ld,%ld focus=%p capture=%p keys_space_alt_ctrl_shift_left_right=%04x,%04x,%04x,%04x,%04x,%04x current=%d oldCurrent=%d windowEnabled=%d canvasEnabled=%d deleteEnabled=%d applyEnabled=%d applies=%d reads=%d\n",
+                        entry,phase,action,response,stage,replacementWindow,recoveryCanvas,recoveryPoint.x,recoveryPoint.y,
+                        observation.focus,observation.capture,
+                        unsigned(static_cast<unsigned short>(observation.keys[0])),unsigned(static_cast<unsigned short>(observation.keys[1])),
+                        unsigned(static_cast<unsigned short>(observation.keys[2])),unsigned(static_cast<unsigned short>(observation.keys[3])),
+                        unsigned(static_cast<unsigned short>(observation.keys[4])),unsigned(static_cast<unsigned short>(observation.keys[5])),
+                        observation.current,observation.oldCurrent,observation.windowEnabled,observation.canvasEnabled,
+                        observation.deleteEnabled,observation.applyEnabled,observation.applies,observation.reads);
+                };
+                print("before",beforeClick);print("down",afterDown);print("up",afterUp);print("delete",afterDelete);
+                // These messages may measure/sample or allocate. They are
+                // deliberately absent from every successful input sequence.
+                CurveEditorAxisState geometry{};
+                std::array<std::uint64_t,5> history{};std::array<int,12> comparison{};
+                const bool geometryReady=SendMessageW(replacementWindow,WM_APP+394,0,reinterpret_cast<LPARAM>(&geometry))!=0;
+                const bool historyReady=SendMessageW(replacementWindow,WM_APP+397,0,reinterpret_cast<LPARAM>(history.data()))!=0;
+                ReadCompare(replacementWindow,comparison.data());
+                std::fprintf(stderr,"TRANSPORT_RECOVERY_FAILURE_ONLY keyCount=%d geometryReady=%d plot=%ld,%ld,%ld,%ld time=%.17g,%.17g value=%.17g,%.17g viewMode=%d historyReady=%d history=%llu,%llu,%llu,%llu,%llu comparison=",
+                    recoveryKeys,geometryReady,geometry.plot.left,geometry.plot.top,geometry.plot.right,geometry.plot.bottom,
+                    geometry.timeStart,geometry.timeEnd,geometry.viewLow,geometry.viewHigh,geometry.viewMode,historyReady,
+                    static_cast<unsigned long long>(history[0]),static_cast<unsigned long long>(history[1]),
+                    static_cast<unsigned long long>(history[2]),static_cast<unsigned long long>(history[3]),static_cast<unsigned long long>(history[4]));
+                for(std::size_t index=0;index<comparison.size();++index)std::fprintf(stderr,index?",%d":"%d",comparison[index]);
+                printText("frame",GetText(replacementWindow,kIdFrameEdit));printText("value",GetText(replacementWindow,kIdValueEdit));
+                printText("status",GetText(replacementWindow,kIdStatus));std::fputc('\n',stderr);std::fflush(stderr);
+            }
+            Check(replacement.applyCalls==1&&recoveryKeys==2,
                 "replacement Session remains editable after startup, paint, timer and navigation retirement");}
         else Check(OwnedCurveWindow()==nullptr,"transport retirement leaves no registered ghost editor");
         ce::CloseOwned(nullptr);
@@ -5159,6 +5669,10 @@ int main(int argc,char** argv) {
     // Optional same-order diagnostic for a prior 0xC0000374 full-suite exit.
     // It retains every assertion and validates the process heap at group ends.
     g_validateHeap=argc>1&&std::string(argv[1])=="--heap-validate-all";
+    if(argc>1&&std::string(argv[1])=="--transport-write-lifetime"){
+        TransportWriteLifetime();
+        std::printf("curve transport write lifetime: %d checks\n",g_checks);return 0;
+    }
     if(argc>1&&std::string(argv[1])=="--native-construction-lifetime"){
         NativeConstructionLifetime();
         std::printf("curve native construction lifetime: %d checks\n",g_checks);return 0;
@@ -5247,6 +5761,7 @@ int main(int argc,char** argv) {
     ComparisonCallbackLifetime();ComparisonWriterAtomicity();ComparisonFilterAcceptedAllocation();
     ComparisonReadFailuresAndEntries();ComparisonReadAndLinkSemantics();ComparisonValueHandlesDoNotQueryLink();ComparisonNestedAndGeometryCopy();
     TransportCallbackLifetime();TransportFailuresAndMissing();TransportNestedAndSessionCache();TransportInvalidFramesAndMmdSource();TransportPaintStateAndDenseTicks();
+    TransportWriteLifetime();
     BakeSelectedChannels();
     NativeSubdivisionRoute();NativeSampleBake();
     DuplicateFrameSelectsExisting();
