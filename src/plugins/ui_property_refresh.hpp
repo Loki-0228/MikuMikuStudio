@@ -44,6 +44,8 @@ public:
     // never wakes; the original cleanup after the same mutation performs the
     // single wake. A DEPENDENTS seed is an anchor, not a captured data member.
     void ScopedBindingPublished(const RefreshClient&, const MmsUiTargetRefV1&) noexcept;
+    // Same successful retained-tree handshake for SUBTREE watches.
+    void ScopedTopologyChanged(void* context, bool (*changed)(void*, MmsHandle)) noexcept;
     bool NextTarget(MmsHandle after, Work&) const noexcept;
     bool NextScoped(MmsHandle after, Work&) const noexcept;
     // Trusted commit after every temporary allocation succeeded. Members,
@@ -53,7 +55,9 @@ public:
         uint32_t blocked, const std::vector<UiRefreshBindings::PropertySource>&) noexcept;
     void ObserveSources(MmsHandle subscription, const std::vector<UiRefreshBindings::PropertySource>&, bool captured = false) noexcept;
     void SourcePublished(RefreshClient&, MmsHandle, uint64_t) noexcept;
-    void GraphChanged(const RefreshClient&, const MmsUiTargetRefV1&) noexcept;
+    // Only the current retained graph decides whether a real graph event is
+    // relevant: the event upstream must be exactly reachable from the seed.
+    void GraphChanged(const RefreshClient&, const MmsUiTargetRefV1&, const UiRefreshDependencies& graph) noexcept;
     bool RetryDisplayCapacity(uint64_t displayRevision, uint64_t resourceRevision = UINT64_MAX) noexcept;
     void FailScheduling(MmsResult) noexcept;
     void InvalidateTarget(MmsHandle) noexcept;

@@ -238,16 +238,37 @@ static void Invalidations() {
     t=x.Submit(x.Request());x.queue.AdvanceProjectEpoch();x.queue.Drain();CHECK(x.State(t).result==MMS_E_STALE);
     CHECK(x.content.unregisterProvider(x.content.context,x.providers[1])==MMS_OK);x.providers[1]=0;x.Register();
     const auto before=x.prepares;
+    const auto replacementBefore=x.Target();auto oldRequest=x.Request();oldRequest.target=replacementBefore.target;
     x.Loop([&]{
-        t=x.Submit(x.Request());
+        t=x.Submit(oldRequest);
         const auto replacement=x.registry.elements.at(x.ids[1]).desc;
         CHECK(x.ui.updateElement(x.ui.context,x.elements[1],&replacement)==MMS_OK);
         CHECK(x.State(t).result==MMS_E_STALE);CHECK(x.native->Command(old.id)&&x.calls[1]==0);
         x.native->Refresh();CHECK(Position(old.parent,old.cookie)>=0&&x.prepares==before);
     });
-    x.native->Refresh();const auto replaced=x.At(1);CHECK(replaced.id!=old.id&&replaced.cookie!=old.cookie);
-    CHECK(x.Target().target.instanceGeneration!=oldTarget.target.instanceGeneration);
-    CHECK(!x.native->Command(old.id));CHECK(x.native->Command(replaced.id)&&x.calls[1]==1);
+    x.native->Refresh();const auto replaced=x.At(1);
+    std::cerr<<"MENU_STATE_REPLACEMENT old_id="<<old.id<<" new_id="<<replaced.id
+        <<" old_cookie="<<old.cookie<<" new_cookie="<<replaced.cookie<<'\n';
+    CHECK(replaced.id!=old.id&&replaced.cookie);
+    // The cookie identifies the live MenuState by address; allocation may reuse it.
+    // Verify the actual native item and the independent presentation identity.
+    const int position=Position(replaced.parent,replaced.cookie);CHECK(position>=0);
+    MENUITEMINFOW actual{sizeof(actual)};actual.fMask=MIIM_ID|MIIM_DATA|MIIM_SUBMENU|MIIM_STATE;
+    CHECK(GetMenuItemInfoW(replaced.parent,unsigned(position),TRUE,&actual));
+    CHECK(actual.wID==replaced.id&&actual.dwItemData==replaced.cookie&&actual.hSubMenu==replaced.submenu&&actual.fState==replaced.state);
+    const auto replacementAfter=x.Target();
+    CHECK(replacementAfter.target.element==replacementBefore.target.element&&
+        replacementAfter.target.projectEpoch==replacementBefore.target.projectEpoch);
+    CHECK(replacementAfter.target.instanceGeneration!=replacementBefore.target.instanceGeneration);
+    CHECK(replacementAfter.target.instanceGeneration!=oldTarget.target.instanceGeneration);
+    MmsHandle refused=UINT64_C(0x76123456789abcde);
+    CHECK(x.refresh.request(x.refresh.context,&oldRequest,&refused)==MMS_E_STALE&&refused==UINT64_C(0x76123456789abcde));
+    CHECK(x.State(t).result==MMS_E_STALE&&x.prepares==before&&x.At(1).caption==replaced.caption);
+    auto currentRequest=oldRequest;currentRequest.target=replacementAfter.target;
+    const auto current=x.Submit(currentRequest);x.queue.Drain();x.Done(current);
+    const auto calls=x.calls;
+    CHECK(!x.native->Command(old.id)&&x.calls==calls);
+    CHECK(x.native->Command(replaced.id)&&x.calls[0]==calls[0]&&x.calls[1]==calls[1]+1&&x.calls[2]==calls[2]);
     t=x.Submit(x.Request());x.queue.Retire(x.client);x.queue.Drain();CHECK(x.State(t).status==MMS_UI_REFRESH_CANCELLED&&x.State(t).result==MMS_E_CANCELLED);
 }
 static void NativeAncestorsAndLifetime() {

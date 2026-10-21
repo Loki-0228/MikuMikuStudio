@@ -72,6 +72,8 @@ GROUP 使用原注册句柄及呈现代次。空依赖图可以先登记订阅�
 
 等待位为 `WAIT_GRAPH`、`WAIT_TARGET`、`WAIT_QUEUE_CAPACITY`、`WAIT_SOURCE`、`WAIT_CONSUMER`、`WAIT_BINDING`、`WAIT_HOST_WAKE`、`WAIT_DISPLAY_CAPACITY`。宿主按相关图、绑定、来源、提供者、容量或成功投递事件恢复，不靠定时器反复执行相同失败。无关票据完成不能重新运行失败消费者。
 
+临时观察分配失败保留上一份完整成员、来源监听、等待原因及工作代次。相关真实图变化或成功发布的子树变化仍保留一次原队列请求机会；该请求已尝试并失败后，补齐观察不再重试同一次变化，失败的宿主唤醒也继续停泊。后续真实事件按当前图的可达性判断相关范围，不依赖可能陈旧的成员缓存。
+
 注销种子、种子实例重建、触发绑定解除、来源注销、工程代次改变或停止均使原订阅失效。种子仍是同一实例而暂不可用时等待目标恢复。已进入的回调结束后仍复核原身份，不能向失效对象继续发布。显示租约及 DLL 保活沿用原服务规则。
 
 自动传播不移动播放头、不写工程、不增加撤销记录，也不要求整个场景重新求值。原属性通知及明确选择的共同历史通过[属性范围刷新 1.1](scoped-property-refresh.md)驱动相同子树或显式图；通用事件及动画时钟仍需另行协商实际能力。
@@ -79,6 +81,8 @@ GROUP 使用原注册句柄及呈现代次。空依赖图可以先登记订阅�
 ## C++17 包装
 
 `ScopedRefreshSubscriptionServices::Query` 精确协商 1.1。`SubscribeSubtree`、`SubscribeDependents` 接受原 binding 和目标引用，也可组合原 `RefreshServices` 查询已有种子 handle。`Subscribe` 接收原描述；便利层不注册来源、binding、元素或图边。
+
+句柄便利重载按订阅服务的 `supportedScopes` 判断范围能力，目标查询仅解析原种子身份。空依赖图可以先登记等待图边，不要求目标已经报告非空 DEPENDENTS，也不要求种子自身支持 DATA。
 
 ```cpp
 #include <mms/cpp/scoped_refresh_subscription.hpp>

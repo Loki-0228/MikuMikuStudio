@@ -65,8 +65,15 @@ public:
     bool NextScopedSubscription(MmsHandle after, SubscriptionWork&) const noexcept;
     void ObserveScopedSubscription(const SubscriptionWork&, const std::vector<MmsUiTargetRefV1>&, uint64_t dependencyRevision,
         uint32_t blocked) noexcept;
-    void ScopedGraphChanged(const RefreshClient&, const MmsUiTargetRefV1& upstream) noexcept;
+    // Only the current retained graph decides whether a real graph event is
+    // relevant: the event upstream must be exactly reachable from the seed.
+    void ScopedGraphChanged(const RefreshClient&, const MmsUiTargetRefV1& upstream,
+        const UiRefreshDependencies& graph) noexcept;
     void ScopedTargetPublished(MmsHandle element, bool providerChanged) noexcept;
+    // A successful retained-tree publication reports only the SUBTREE seeds
+    // whose member set really moved. The probe reads existing maps and never
+    // allocates or wakes by itself.
+    void ScopedTopologyChanged(void* context, bool (*changed)(void*, MmsHandle)) noexcept;
     bool RetrySubscriptions(uint32_t events = RetryQueueCapacity, uint64_t queueCapacityRevision = UINT64_MAX) noexcept;
     void FailSubscriptionScheduling(MmsResult) noexcept;
     // queue -> binding is the only nested lock order. Capture/HasBinding do

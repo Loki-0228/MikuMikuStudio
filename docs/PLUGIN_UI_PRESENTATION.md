@@ -1,6 +1,6 @@
 # 插件界面样式、绘制与动画接口方案
 
-本文固定界面需求和建议接口。基础 C++17 包装、声明式 INPUT、工具栏及属性扩展行挂载、工具栏命令溢出、SELF／注册 SUBTREE 刷新、按钮及 INPUT STATE、绑定 DATA 与显示租约、INPUT 默认属性 DATA，以及保留布局 LAYOUT 已接入，实际接口以 SDK 为准。INPUT 编辑仅在受控共同历史宿主启用，普通启动只读。原状态内容服务提供文案、说明和禁用原因，并允许收紧 INPUT 的启用、只读和可见状态；通用菜单及面板内容的完整 STATE、原属性与事件自动图传播、绘制层和动画函数仍为提案。显式 DATA 来源的子树及图传播已由订阅 1.1 接入。
+本文固定界面需求和建议接口。基础 C++17 包装、声明式 INPUT、工具栏及属性扩展行挂载、工具栏命令溢出、SELF／注册 SUBTREE 刷新、按钮及 INPUT STATE、绑定 DATA 与显示租约、INPUT 默认属性 DATA，以及保留布局 LAYOUT 已接入，实际接口以 SDK 为准。INPUT 编辑仅在受控共同历史宿主启用，普通启动只读。原状态内容服务提供文案、说明和禁用原因，并允许收紧 INPUT 的启用、只读和可见状态；通用菜单及面板内容的完整 STATE、通用事件自动图传播、绘制层和动画函数仍为提案。显式 DATA 来源及原属性与共同历史分别通过订阅 1.1 和属性服务 1.1 传播到子树或显式图。
 本方案不改变普通宿主的 `mms.edit` 开放状态，也不把界面动画记入场景撤销历史。
 跨 UI、视口和数据工具的分层封装以[统一扩展架构](PLUGIN_EXTENSION_ARCHITECTURE.md)为准；本页重点规定 UI 对象、刷新和交互。
 
@@ -137,13 +137,13 @@ C 包装返回同一底层句柄的带类型引用，C++ 包装增加可移动 R
 | 最小宽度、伸缩、换行、折叠 | 同一布局服务处理，用户保存的覆盖优先于插件默认值。工具栏的 `overflow=3` 和 `MMS_HINT_KEEP_TOGETHER` 已实现，其他位置的折叠仍待开放。 |
 | 快捷键、焦点及辅助信息 | 命令快捷键与原生或开放的输入能力；冲突返回诊断，不能私自安装全局钩子。 |
 | 属性类型、范围、面板 | 属性注册、读值绑定、面板 surface 和同一 UI 元素；写入须接共同事务。 |
-| 依赖及刷新偏好 | `mms.ui.refresh.bind` 保留原来源和单目标显示模型；订阅 1.1 将显式来源发布传播到原注册子树或显式图，整组执行 DATA、STATE、一次 LAYOUT 和 REPAINT。原属性、历史及通用事件的自动图传播仍待实现。 |
+| 依赖及刷新偏好 | `mms.ui.refresh.bind` 保留原来源和单目标显示模型；订阅 1.1 将显式来源发布传播到原注册子树或显式图，整组执行 DATA、STATE、一次 LAYOUT 和 REPAINT。原属性及明确选择的共同历史通过属性服务 1.1 驱动相同范围；通用事件自动传播仍待实现。 |
 
 宿主为选择菜单溢出的工具栏命令提供「更多」入口。父区域没有可用宽度或高度时，该入口随父区域隐藏。未选择溢出的元素保留原裁剪或滚动规则，宿主不越过父区域显示菜单按钮。旧宿主拒绝该提示时，插件须明确选择已声明的菜单位置或返回不支持；便利 SDK 不静默改变挂载点。
 
 ## 统一刷新请求
 
-`mms.ui.refresh` 1.0 支持 SELF、同插件注册 SUBTREE 和[显式 DEPENDENTS](../sdk/mms/refresh-dependencies.md)。各成员按实际能力执行 DATA、STATE、LAYOUT、REPAINT；GROUP 没有 SELF 绘制区。绑定见[数据刷新 SDK](../sdk/mms/data-refresh.md)，子树局部矩形见[刷新范围](../sdk/mms/refresh.md#子树范围)。DEPENDENTS 使用跨位置的整目标损伤；显式 DATA binding 已支持[SELF 自动订阅](../sdk/mms/refresh-subscriptions.md)，原 INPUT 另有[属性通知与共同历史跟随](../sdk/mms/property-refresh.md)。显式 DATA 来源的自动图传播见[订阅 1.1](../sdk/mms/scoped-refresh-subscriptions.md)；属性、历史及通用事件的自动图传播仍未实现。completedKinds 记录完整成功的阶段；字段、配额及错误码以 SDK 为准。
+`mms.ui.refresh` 1.0 支持 SELF、同插件注册 SUBTREE 和[显式 DEPENDENTS](../sdk/mms/refresh-dependencies.md)。各成员按实际能力执行 DATA、STATE、LAYOUT、REPAINT；GROUP 没有 SELF 绘制区。绑定见[数据刷新 SDK](../sdk/mms/data-refresh.md)，子树局部矩形见[刷新范围](../sdk/mms/refresh.md#子树范围)。DEPENDENTS 使用跨位置的整目标损伤；显式 DATA binding 已支持[SELF 自动订阅](../sdk/mms/refresh-subscriptions.md)，原 INPUT 另有[属性通知与共同历史跟随](../sdk/mms/property-refresh.md)。显式 DATA 来源的自动图传播见[订阅 1.1](../sdk/mms/scoped-refresh-subscriptions.md)，原属性及共同历史的相同能力见[属性范围 1.1](../sdk/mms/scoped-property-refresh.md)；通用事件自动传播仍未实现。completedKinds 记录完整成功的阶段；字段、配额及错误码以 SDK 为准。
 
 | 请求位 | 当前状态与语义 | 不隐含的动作 |
 | --- | --- | --- |

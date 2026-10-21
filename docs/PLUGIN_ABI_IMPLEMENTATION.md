@@ -4,7 +4,7 @@
 
 状态分为 **未实现**、**已实现未验证**、**本机已验证**、**缺其他系统/硬件环境**。代码、本机结果和平台结果分别列出。
 
-[显式依赖刷新](records/abi-ui-dependencies-2026-10-21.md)已接入原 UI 句柄、队列和票据，支持同客户端 DAG、拓扑阶段、后台请求、混合菜单延后及生命周期失效。显式 DATA binding 随后接入[SELF 自动订阅](records/abi-refresh-subscription-2026-10-22.md)及[范围订阅 1.1](records/abi-scoped-subscription-2026-10-22.md)，可将发布自动传播到注册子树或显式图；原属性、历史及通用事件的自动图传播仍待实现。[插帧几何与写入边界](records/abi-curve-insertion-geometry-2026-10-22.md)已补齐，两套最新曲线全集各 36,281 项通过；此前堆故障及未解释超时仍未归因，不能标记整体稳定。
+[显式依赖刷新](records/abi-ui-dependencies-2026-10-21.md)已接入原 UI 句柄、队列和票据，支持同客户端 DAG、拓扑阶段、后台请求、混合菜单延后及生命周期失效。显式 DATA binding 随后接入[SELF 自动订阅](records/abi-refresh-subscription-2026-10-22.md)及[范围订阅 1.1](records/abi-scoped-subscription-2026-10-22.md)，原属性与共同历史也已通过[属性范围 1.1](records/abi-scoped-property-2026-10-22.md)接入相同子树或显式图；通用事件自动传播仍待实现。[插帧几何与写入边界](records/abi-curve-insertion-geometry-2026-10-22.md)已补齐，两套最新曲线全集各 36,281 项通过；此前堆故障及未解释超时仍未归因，不能标记整体稳定。
 
 此前 INPUT、刷新服务、属性事务及轮廓颜色专项通过，对应 ABI 程序的原名和中文改名产品检查通过。随后完整与原始兼容配置的完整 ABI 契约各通过 15,399 项，未修改菜单代码或干预测试输入；早期菜单自动选择超时仍可间歇复现，尚未归因，不能标记为已修复。两类证据见[菜单调查](records/abi-menu-selection-investigation-2026-10-21.md)。
 
@@ -165,8 +165,9 @@ R3 拖动与插件区域问题已由用户确认恢复。按需求归类的当�
 | P2 | 注册 SUBTREE、显式 DEPENDENTS 刷新及 SDK | 本机已验证 | 原 C ABI 支持同插件注册子树及[显式图](records/abi-ui-dependencies-2026-10-21.md)、来源集合、整组阶段顺序及版本失效，继续共用原目标和票据。SUBTREE 支持局部矩形；DEPENDENTS 使用整目标损伤。显式 DATA 来源的自动传播由范围订阅 1.1 接入。 |
 | P2 | DOCK | 未实现 | 返回 UNSUPPORTED。 |
 | P2 | 显式 DATA binding 自动刷新及 SDK | 本机已验证 | `mms.ui.refresh.subscribe` 1.0 沿用原 binding、目标、队列及阶段；未提交版本合并，已接受票据保留准确快照。C++17 包装及原创计数示例见[订阅记录](records/abi-refresh-subscription-2026-10-22.md)。原属性通知由[独立属性刷新服务](records/abi-property-refresh-2026-10-22.md)接入，显式 DATA 图传播由下列 1.1 扩展接入。 |
-| P2 | 显式 DATA 的子树和依赖图自动传播 | 本机已验证 | 订阅 1.1 保留 48 字节旧表，追加范围登记及状态。真实触发 binding 与 GROUP 或其他原种子分开；单张复合票据捕获准确来源集合，分离来源版本和图恢复代次，相关事件恢复且不忙转。同对象 C++17 SDK、真实 DLL 和注册树失败恢复见[本批记录](records/abi-scoped-subscription-2026-10-22.md)。属性、历史和事件自动图传播尚未实现。 |
+| P2 | 显式 DATA 的子树和依赖图自动传播 | 本机已验证 | 订阅 1.1 保留 48 字节旧表，追加范围登记及状态。真实触发 binding 与 GROUP 或其他原种子分开；单张复合票据捕获准确来源集合，分离来源版本和图恢复代次。同对象 SDK 和真实 DLL 见[范围记录](records/abi-scoped-subscription-2026-10-22.md)，后续[观察失败恢复](records/abi-scoped-observation-2026-10-22.md)区分真实事件及普通补观察。原属性与历史由下列属性服务提供，通用事件自动传播尚未实现。 |
 | P2 | 原属性自动刷新及共同历史通知 | 本机已验证 | `mms.ui.refresh.property` 1.0 复用原 INPUT 和 PropertyRecord；工作线程通知合并、显式绑定优先、准确代次、只读因果、失败停泊及停止清理均已实现。共同历史仅成功发布通知，普通 `mms.edit` 仍关闭。证据见[本批记录](records/abi-property-refresh-2026-10-22.md)。 |
+| P2 | 原属性及共同历史范围传播 | 本机已验证 | 属性服务 1.1 使用独立触发属性与原种子，按同一票据执行 SUBTREE 或 DEPENDENTS。C++17 包装操作相同句柄，原 1.0 前缀保持。证据见[范围记录](records/abi-scoped-property-2026-10-22.md)及[观察恢复](records/abi-scoped-observation-2026-10-22.md)；连续 binding 与 CaptureProperty MEMORY 的旧恢复缺口仍待独立修复。 |
 | P2 | 本体菜单、控件、业务命令全部语义登记 | 未实现 | 新注册表目前覆盖新 ABI 插件。 |
 | P2 | 布局持久化、缺失插件保留 | 本机已验证 | 用户覆盖按稳定 ID 保存到程序旁 `data/settings.json` 的 `pluginUi`，旧布局仅缺失时迁移；分区 CAS、其他设置合并、重启、关闭事件及 EXE 改名通过。 |
 | P2 | 布局撤销历史 | 未实现 | 当前保存布局，不记录布局 undo/redo。 |

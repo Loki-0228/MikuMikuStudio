@@ -1,5 +1,6 @@
 #include "ui_refresh_dependencies.hpp"
 #include <algorithm>
+#include <array>
 
 namespace mikumikustudio::plugins {
 namespace {
@@ -19,6 +20,28 @@ bool UiRefreshDependencies::HasDependents(const RefreshClient& client, const Mms
     return std::any_of(edges_.begin(), edges_.end(), [&](const auto& item) {
         return item.second.owner == &client && Same(item.second.upstream, upstream);
     });
+}
+bool UiRefreshDependencies::Reaches(const RefreshClient& client, const MmsUiTargetRefV1& seed,
+    const MmsUiTargetRefV1& target) const noexcept {
+    if (Same(seed, target)) return true;
+    // One owner retains at most kPerOwner edges, so a reachable set from the
+    // seed cannot exceed kPerOwner + 1 distinct vertices. This is deliberately
+    // not the Capture member quota: an event probe must not be truncated by it.
+    std::array<MmsUiTargetRefV1, kPerOwner + 1> vertices{};
+    vertices[0] = seed; size_t count = 1;
+    for (size_t position = 0; position < count; ++position) {
+        for (const auto& item : edges_) {
+            const auto& edge = item.second;
+            if (edge.owner != &client || !Same(edge.upstream, vertices[position])) continue;
+            if (Same(edge.dependent, target)) return true;
+            bool seen = false;
+            for (size_t i = 0; i < count; ++i) seen = seen || Same(vertices[i], edge.dependent);
+            if (seen) continue;
+            if (count == vertices.size()) return false;
+            vertices[count++] = edge.dependent;
+        }
+    }
+    return false;
 }
 MmsResult UiRefreshDependencies::Add(const RefreshClient& client, const MmsUiTargetRefV1& upstream,
     const MmsUiTargetRefV1& dependent, MmsHandle& out) {

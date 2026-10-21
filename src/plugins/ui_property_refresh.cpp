@@ -1,6 +1,7 @@
 #include "ui_property_refresh.hpp"
 #include "ui_registry.hpp"
 #include "ui_refresh_binding.hpp"
+#include "ui_refresh_dependencies.hpp"
 #include <array>
 
 namespace mikumikustudio::plugins {
@@ -50,6 +51,9 @@ struct UiPropertyRefresh::Impl {
         uint64_t dependencyRevision = 0, submittedDependencyRevision = 0;
         uint64_t sourcePublication = 0, claimedSourcePublication = 0, submittedSourcePublication = 0, displayCapacity = 0;
         bool observed = false, sourcesObserved = false, sourceMissing = false, resourceCapacity = false;
+        // One real structure event is pending observation and one original
+        // Request attempt; claiming that attempt spends the probe.
+        bool structurePending = false, structureProbe = false;
         // Set only by a real public binding identity event. Until a complete
         // source observation lands, the cached sourceMissing describes the old
         // binding set and must not suppress the one re-capture the event needs.
@@ -93,6 +97,11 @@ struct UiPropertyRefresh::Impl {
     static bool Scoped(const Subscription& sub) noexcept { return sub.scope != MMS_UI_REFRESH_SELF; }
     void ArmScoped(Subscription& sub) noexcept {
         if (sub.ticket || sub.claimed) return;
+        if (sub.structurePending && !sub.structureProbe) {
+            // A real structure event gets exactly one original Request while
+            // the cached graph/source park still describes the old collection.
+            sub.waiting = 0; sub.armed = true; return;
+        }
         // A pending real binding event makes the cached sourceMissing stale.
         // Re-capture once, while a real scope block still parks the mailbox.
         const bool missing = sub.sourceMissing && !sub.bindingObservationPending;
@@ -115,10 +124,16 @@ struct UiPropertyRefresh::Impl {
         }
         ++sub.workGeneration; sub.dirty = true;
         if (invalidate) sub.invalidationGeneration = sub.workGeneration;
+        // A new real work event is its own request opportunity even while the
+        // cached structure metadata is still pending. Clear only the old
+        // structure event's spent probe; the metadata stays pending until its
+        // own observation arrives.
+        if (sub.structurePending) sub.structureProbe = false;
         ArmScoped(sub);
     }
     void Wake(bool pending) noexcept { if (pending) queue.WakeSubscriptions(); }
-    void ObserveSourcesLocked(Subscription& sub, const std::vector<UiRefreshBindings::PropertySource>& sources, bool captured) noexcept {
+    void ObserveSourcesLocked(Subscription& sub, const std::vector<UiRefreshBindings::PropertySource>& sources, bool captured,
+        bool allowChange = true) noexcept {
         if (sources.size() > sub.sources.size()) { sub.armed = false; sub.waiting = MMS_UI_PROPERTY_REFRESH_WAIT_CAPACITY; return; }
         bool bindingsChanged = sub.sourceCount != sources.size(), publication = false, missing = false;
         for (size_t i = 0; i < sources.size(); ++i) {
@@ -143,8 +158,10 @@ struct UiPropertyRefresh::Impl {
             // publication or notify whose host wake is delivered may recover it.
             ReparkScoped(sub, true);
         } else {
-            if (sub.sourcesObserved && bindingsChanged) Change(sub, true);
-            else if (publication && !sub.ticket && !sub.claimed && (sub.waiting & (MMS_UI_PROPERTY_REFRESH_WAIT_SOURCE | MMS_UI_PROPERTY_REFRESH_WAIT_CONSUMER))) Change(sub, false);
+            // A structure-event observation owns its own generation step and
+            // must not count the same real change twice.
+            if (allowChange && sub.sourcesObserved && bindingsChanged) Change(sub, true);
+            else if (allowChange && publication && !sub.ticket && !sub.claimed && (sub.waiting & (MMS_UI_PROPERTY_REFRESH_WAIT_SOURCE | MMS_UI_PROPERTY_REFRESH_WAIT_CONSUMER))) Change(sub, false);
             else if (!sub.sourcesObserved) {
                 if (sub.waiting & MMS_UI_PROPERTY_REFRESH_WAIT_HOST_WAKE) { sub.waiting |= missing ? MMS_UI_PROPERTY_REFRESH_WAIT_SOURCE : 0; sub.armed = false; }
                 else ArmScoped(sub);
@@ -162,19 +179,41 @@ struct UiPropertyRefresh::Impl {
     // consumer. Members and source watches are therefore written together.
     void ObserveLocked(Subscription& sub, const std::vector<MmsUiTargetRefV1>& members,
         uint64_t dependencyRevision, uint32_t blocked, const std::vector<UiRefreshBindings::PropertySource>& sources) noexcept {
-        if (members.size() > sub.members.size() || sources.size() > sub.sources.size()) return;
+        if (members.size() > sub.members.size() || sources.size() > sub.sources.size()) {
+            sub.structurePending = false; sub.structureProbe = false; return;
+        }
         bool changed = sub.memberCount != members.size();
         for (size_t i = 0; !changed && i < members.size(); ++i) changed = !Same(sub.members[i], members[i]);
         const auto oldBlock = sub.scopeBlock; sub.scopeBlock = blocked; sub.dependencyRevision = dependencyRevision;
         sub.memberCount = members.size(); std::copy(members.begin(), members.end(), sub.members.begin());
-        if (sub.observed && changed) Change(sub, true);
+        const bool event = sub.structurePending;
+        const bool attempted = sub.structureProbe;
+        if (event) { sub.structurePending = false; sub.structureProbe = false; }
+        else if (sub.observed && changed) Change(sub, true);
         else if (sub.observed && oldBlock && !blocked) Change(sub, false);
         else if (!sub.observed || blocked) {
             if (sub.waiting & MMS_UI_PROPERTY_REFRESH_WAIT_HOST_WAKE) { sub.waiting |= blocked; sub.armed = false; }
             else ArmScoped(sub);
         }
         sub.observed = true;
-        ObserveSourcesLocked(sub, sources, false);
+        ObserveSourcesLocked(sub, sources, false, !event);
+        if (event) {
+            // The observation consumed the real structure event: members,
+            // scope blocks and source watches are already refreshed, and the
+            // generation was advanced when the event was recorded. Only the
+            // first probe may bypass the old park; a spent probe keeps its
+            // Request outcome, and a failed host wake stays parked.
+            if (sub.waiting & MMS_UI_PROPERTY_REFRESH_WAIT_HOST_WAKE) {
+                sub.waiting = MMS_UI_PROPERTY_REFRESH_WAIT_HOST_WAKE | sub.scopeBlock |
+                    (sub.sourceMissing ? MMS_UI_PROPERTY_REFRESH_WAIT_SOURCE : 0);
+                sub.armed = false;
+            } else if (attempted) {
+                sub.waiting = (sub.waiting & ~(MMS_UI_PROPERTY_REFRESH_WAIT_TARGET |
+                    MMS_UI_PROPERTY_REFRESH_WAIT_GRAPH | MMS_UI_PROPERTY_REFRESH_WAIT_SOURCE)) | sub.scopeBlock |
+                    (sub.sourceMissing ? MMS_UI_PROPERTY_REFRESH_WAIT_SOURCE : 0);
+                sub.armed = false;
+            } else ArmScoped(sub);
+        }
     }
     MmsResult Capabilities(Owner& owner, MmsUiPropertyRefreshCapabilitiesV1* out) {
         if (!Valid(out)) return MMS_E_ARGUMENT;
@@ -463,6 +502,7 @@ bool UiPropertyRefresh::Take(MmsHandle after, Work& out) noexcept {
         out = {sub.owner->client, sub.handle, sub.target, sub.kinds, sub.latest, 0};
         out.scope = sub.scope; out.workGeneration = sub.workGeneration; out.dependencyRevision = sub.dependencyRevision;
         out.sourcePublication = sub.sourcePublication;
+        if (sub.structurePending) sub.structureProbe = true;
         sub.armed = false; sub.claimed = true; return true;
     }
     return false;
@@ -543,7 +583,14 @@ bool UiPropertyRefresh::RetryCapacity(uint64_t revision) noexcept {
         auto& sub = item.second;
         const bool capacity = Impl::Scoped(sub) ? (sub.waiting & MMS_UI_PROPERTY_REFRESH_WAIT_CAPACITY) != 0 : sub.waiting == MMS_UI_PROPERTY_REFRESH_WAIT_CAPACITY;
         if (!capacity || sub.capacity == revision || sub.bound || sub.ticket || sub.claimed) continue;
-        if (Impl::Scoped(sub)) impl_->ArmScoped(sub); else { sub.waiting = 0; sub.armed = true; }
+        if (Impl::Scoped(sub)) {
+            // The park belongs to the old structure event. A strict real
+            // capacity advance is a new request opportunity for the same
+            // still-pending metadata, so clear only its spent probe before
+            // the normal arm decision.
+            if (sub.structurePending) sub.structureProbe = false;
+            impl_->ArmScoped(sub);
+        } else { sub.waiting = 0; sub.armed = true; }
         wake |= sub.armed;
     }
     return wake;
@@ -643,14 +690,29 @@ void UiPropertyRefresh::SourcePublished(RefreshClient& client, MmsHandle source,
     }
     impl_->Wake(wake);
 }
-void UiPropertyRefresh::GraphChanged(const RefreshClient& client, const MmsUiTargetRefV1& upstream) noexcept {
+void UiPropertyRefresh::GraphChanged(const RefreshClient& client, const MmsUiTargetRefV1& upstream,
+    const UiRefreshDependencies& graph) noexcept {
     std::lock_guard<std::mutex> lock(impl_->mutex);
     for (auto& entry : impl_->subscriptions) {
         auto& sub = entry.second;
         if (sub.owner->client != &client || sub.scope != MMS_UI_REFRESH_DEPENDENTS) continue;
-        bool affected = Same(sub.target, upstream);
-        for (size_t i = 0; !affected && i < sub.memberCount; ++i) affected = Same(sub.members[i], upstream);
-        if (affected) impl_->Change(sub, true);
+        // The retained members may be missing or stale after a failed
+        // observation, and they may still list a node that left the graph.
+        // Only the exact current graph decides whether this event is this
+        // subscription's business.
+        if (!graph.Reaches(client, sub.target, upstream)) continue;
+        // A real graph mutation records one bounded structure event; only its
+        // single probe may bypass the cached graph/source park.
+        sub.structurePending = true; sub.structureProbe = false; impl_->Change(sub, true);
+    }
+}
+void UiPropertyRefresh::ScopedTopologyChanged(void* context, bool (*changed)(void*, MmsHandle)) noexcept {
+    if (!changed) return;
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    for (auto& entry : impl_->subscriptions) {
+        auto& sub = entry.second;
+        if (!Impl::Scoped(sub) || sub.scope != MMS_UI_REFRESH_SUBTREE || !changed(context, sub.target.element)) continue;
+        sub.structurePending = true; sub.structureProbe = false; impl_->Change(sub, true);
     }
 }
 bool UiPropertyRefresh::RetryDisplayCapacity(uint64_t displayRevision, uint64_t resourceRevision) noexcept {
@@ -660,6 +722,9 @@ bool UiPropertyRefresh::RetryDisplayCapacity(uint64_t displayRevision, uint64_t 
         const auto revision = sub.resourceCapacity ? resourceRevision : displayRevision;
         if (!Impl::Scoped(sub) || !(sub.waiting & MMS_UI_PROPERTY_REFRESH_WAIT_DISPLAY_CAPACITY) ||
             revision == UINT64_MAX || sub.displayCapacity == revision || sub.ticket || sub.claimed) continue;
+        // Same as the queue-capacity clock: only the strict real advance asks
+        // for a new request while the structure metadata is still pending.
+        if (sub.structurePending) sub.structureProbe = false;
         impl_->ArmScoped(sub); wake |= sub.armed;
     }
     return wake;

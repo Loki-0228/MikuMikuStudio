@@ -136,6 +136,9 @@ class UiRefreshQueue {
     bool MenuBlockedLocked(const Ticket&) const;
     void InvalidateDependencyTicketsLocked() noexcept;
     std::vector<MmsHandle> SubtreeLocked(MmsHandle) const;
+    // Compares one seed's real SUBTREE membership before and after a retained
+    // tree publication using map walks only; it never allocates.
+    bool SubtreeMembershipChanged(MmsHandle, const std::map<MmsHandle, TreeNode>&) const noexcept;
     MmsResult ValidateTicketLocked(const Ticket&, bool geometry) const;
     void SyncTargets(const std::vector<RefreshPresentation>&, bool menus);
     void WakeSubscriptions() noexcept;

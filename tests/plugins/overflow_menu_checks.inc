@@ -8,11 +8,20 @@ namespace overflow_allocation_fault {
 inline thread_local std::size_t bytes = 0;
 inline thread_local unsigned hits = 0;
 inline thread_local DWORD resources = 0;
+// Zero preserves the original one-shot fault. A positive value fails that
+// many consecutive allocations of the selected size, then resets to zero.
+inline thread_local unsigned matchingFailures = 0;
 }
 // Test executable only. The static production adapter resolves its ordinary
 // operator new here, allowing a real allocation failure during UTF conversion.
 void* operator new(std::size_t size) {
     if (overflow_allocation_fault::bytes && size == overflow_allocation_fault::bytes) {
+        if (overflow_allocation_fault::matchingFailures > 1) {
+            --overflow_allocation_fault::matchingFailures; ++overflow_allocation_fault::hits;
+            overflow_allocation_fault::resources = GetGuiResources(GetCurrentProcess(), GR_USEROBJECTS);
+            throw std::bad_alloc();
+        }
+        if (overflow_allocation_fault::matchingFailures) --overflow_allocation_fault::matchingFailures;
         overflow_allocation_fault::bytes = 0; ++overflow_allocation_fault::hits;
         overflow_allocation_fault::resources = GetGuiResources(GetCurrentProcess(), GR_USEROBJECTS);
         throw std::bad_alloc();

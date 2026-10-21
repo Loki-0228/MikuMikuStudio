@@ -48,6 +48,8 @@ struct Host {
     MmsResult queryResult = MMS_OK, capsResult = MMS_OK, subscribeResult = MMS_OK, stateResult = MMS_OK, baseResult = MMS_OK, releaseResult = MMS_OK, targetResult = MMS_OK;
     bool arguments = true, legacyOnly = false, zeroHandle = false;
     uint32_t scopes = MMS_UI_REFRESH_SELF | MMS_UI_REFRESH_SUBTREE | MMS_UI_REFRESH_DEPENDENTS;
+    uint32_t targetScopes = MMS_UI_REFRESH_SELF | MMS_UI_REFRESH_SUBTREE | MMS_UI_REFRESH_DEPENDENTS;
+    uint32_t targetKinds = MMS_UI_REFRESH_DATA | MMS_UI_REFRESH_STATE | MMS_UI_REFRESH_LAYOUT | MMS_UI_REFRESH_REPAINT;
     explicit Host(MmsHandle value = UINT64_C(0x1900000000000000))
         : prefix(value), binding(value + 11), seed(value + 29), next(value + 101) {
         table.h = {sizeof(table), 1, 1}; table.context = this;
@@ -146,7 +148,8 @@ struct Host {
     static MmsResult MMS_CALL Target(void* p, MmsHandle seed, MmsUiRefreshTargetV1* out) {
         auto& x = *static_cast<Host*>(p); ++x.targets; if (!x.Ui()) return MMS_E_THREAD;
         x.arguments &= HeaderIs(out); if (!HeaderIs(out)) return MMS_E_ARGUMENT;
-        *out = {}; out->h = sdk::Header<MmsUiRefreshTargetV1>(); out->target = x.Seed(); out->supportedScopes = x.scopes;
+        *out = {}; out->h = sdk::Header<MmsUiRefreshTargetV1>(); out->target = x.Seed();
+        out->supportedScopes = x.targetScopes; out->supportedKinds = x.targetKinds;
         Corrupt(out->target.h, x.badTarget); Throw(x.throwTarget);
         if (x.targetResult) return x.targetResult; return seed == x.seed ? MMS_OK : MMS_E_STALE;
     }
@@ -251,6 +254,48 @@ static void CallsAndConveniences() {
     CHECK(!x.legacySubscribes && x.subscriptions.empty() && !x.wrongThread && !x.unexpected && x.arguments);
 }
 
+static void ElementScopeCapabilities() {
+    Host x; auto service = x.Services(); auto refresh = x.Refresh(); sdk::ScopedRefreshSubscription owner;
+    // An empty dependency graph can expose only SELF/REPAINT on the seed.
+    // The subscription service still supports waiting for scoped DATA work.
+    x.targetScopes = MMS_UI_REFRESH_SELF; x.targetKinds = MMS_UI_REFRESH_REPAINT;
+    CHECK(service.SubscribeSubtree(refresh, x.binding, x.seed, owner) == MMS_OK && Same(x.last, x.Desc()));
+    CHECK(owner.get() > UINT32_MAX && owner.Release() == MMS_OK);
+    const auto dependents = x.Desc(MMS_UI_REFRESH_DEPENDENTS, MMS_UI_REFRESH_DATA | MMS_UI_REFRESH_STATE | MMS_UI_REFRESH_REPAINT);
+    CHECK(service.SubscribeDependents(refresh, x.binding, x.seed, owner) == MMS_OK && Same(x.last, dependents));
+    CHECK(owner.get() > UINT32_MAX && owner.Release() == MMS_OK);
+    const auto subscriptions = x.scopedSubscribes, targets = x.targets;
+    const auto last = x.last;
+    const auto allScopes = x.scopes;
+    x.scopes = MMS_UI_REFRESH_SELF;
+    CHECK(service.SubscribeDependents(refresh, x.binding, x.seed, owner) == MMS_E_UNSUPPORTED && !owner && !owner.get());
+    CHECK(x.scopedSubscribes == subscriptions && x.targets == targets && x.subscriptions.empty() && Same(x.last, last));
+    x.scopes = allScopes;
+    for (const auto error : {MMS_E_BUSY, MMS_E_NOT_READY, MMS_E_FAILED}) {
+        x.capsResult = error;
+        CHECK(service.SubscribeSubtree(refresh, x.binding, x.seed, owner) == error && !owner && !owner.get());
+        CHECK(x.scopedSubscribes == subscriptions && x.targets == targets && x.subscriptions.empty() && Same(x.last, last));
+    }
+    x.capsResult = MMS_OK;
+    for (unsigned mode = 1; mode <= 3; ++mode) {
+        x.throwCaps = mode;
+        CHECK(service.SubscribeDependents(refresh, x.binding, x.seed, owner) == Error(mode) && !owner && !owner.get());
+        CHECK(x.scopedSubscribes == subscriptions && x.targets == targets && x.subscriptions.empty() && Same(x.last, last));
+    }
+    x.throwCaps = 0;
+    for (unsigned mode = 1; mode <= 3; ++mode) {
+        x.badCaps = mode;
+        CHECK(service.SubscribeSubtree(refresh, x.binding, x.seed, owner) == MMS_E_VERSION && !owner && !owner.get());
+        CHECK(x.scopedSubscribes == subscriptions && x.targets == targets && x.subscriptions.empty() && Same(x.last, last));
+    }
+    x.badCaps = 0;
+    CHECK(service.SubscribeDependents(refresh, x.binding, x.seed, owner) == MMS_OK && Same(x.last, dependents));
+    const auto handle = owner.get(); const auto caps = x.caps;
+    CHECK(service.SubscribeSubtree(refresh, x.binding, x.seed, owner) == MMS_E_BUSY && owner.get() == handle && x.caps == caps);
+    CHECK(owner.Release() == MMS_OK && x.subscriptions.empty());
+    CHECK(x.arguments && !x.wrongThread && !x.unexpected && !x.legacySubscribes);
+}
+
 static void StatesWorkersAndOwnership() {
     Host x; auto service = x.Services(); auto refresh = x.Refresh(); sdk::ScopedRefreshSubscription owner;
     CHECK(service.SubscribeDependents(x.binding, x.Seed(), owner) == MMS_OK); const auto handle = owner.get();
@@ -343,6 +388,7 @@ static void SamePoolDetachAndDestructors() {
 static void CppScopedRefreshSubscriptionChecks() {
     cpp_scoped_refresh_subscription_checks::NegotiationAndEmpty();
     cpp_scoped_refresh_subscription_checks::CallsAndConveniences();
+    cpp_scoped_refresh_subscription_checks::ElementScopeCapabilities();
     cpp_scoped_refresh_subscription_checks::StatesWorkersAndOwnership();
     cpp_scoped_refresh_subscription_checks::SamePoolDetachAndDestructors();
 }

@@ -45,8 +45,8 @@ auto event = events.subscribe(topic, [=] { updateLayer(layer); });
 | 服务组 | 职责与状态 | 详细方案 |
 | --- | --- | --- |
 | `mms.ui`、`mms.ui.surface`、`mms.ui.layout` | 已有注册、挂载、属性和部分布局能力。工具栏、`mms.properties.main.extensions` 及左右侧栏支持原 BUTTON、GROUP、SEPARATOR、INPUT，共用注册身份、布局和刷新队列；普通 INPUT 只读。左右列测量内容后为中央区域及视口避让，空列不占宽度。`MMS_UI_OVERFLOW_MENU=3` 及 keepTogether 命令折叠仍仅支持原工具栏。DOCK、时间线内部、状态栏挂载及面板内折叠未开放。 | [UI 呈现](PLUGIN_UI_PRESENTATION.md)、[左右侧栏 SDK](../sdk/mms/side-mounts.md)、[属性扩展行](records/abi-property-mount-2026-10-21.md)、[INPUT SDK](../sdk/mms/input.md)、[溢出 SDK](../sdk/mms/cpp-ui.md#工具栏命令溢出) |
-| `mms.ui.refresh`、`mms.ui.refresh.bind`、`mms.ui.refresh.state`、`mms.ui.refresh.dependencies` 1.0；`mms.ui.refresh.subscribe` 1.0、1.1 | 已有 SELF、注册 SUBTREE 及显式 DEPENDENTS，复用同一对象、队列和票据。依成员实际能力执行 DATA、STATE、一次 LAYOUT、REPAINT。显式 DATA binding 可按发布版本自动刷新自身、子树或依赖图；原属性、历史和通用事件的自动图传播仍待实现。 | [刷新接口参考](../sdk/mms/refresh.md)、[显式依赖图](../sdk/mms/refresh-dependencies.md)、[范围订阅](../sdk/mms/scoped-refresh-subscriptions.md)、[状态内容](../sdk/mms/state-content.md) |
-| `mms.ui.refresh.property` 1.0 | 原属性通知和可查询的共同历史跟随复用原 INPUT、队列及阶段；显式 DATA binding 优先。 | [原属性刷新参考](../sdk/mms/property-refresh.md) |
+| `mms.ui.refresh`、`mms.ui.refresh.bind`、`mms.ui.refresh.state`、`mms.ui.refresh.dependencies` 1.0；`mms.ui.refresh.subscribe` 1.0、1.1 | 已有 SELF、注册 SUBTREE 及显式 DEPENDENTS，复用同一对象、队列和票据。依成员实际能力执行 DATA、STATE、一次 LAYOUT、REPAINT。显式 DATA binding 可按发布版本自动刷新自身、子树或依赖图；通用事件自动传播仍待实现。 | [刷新接口参考](../sdk/mms/refresh.md)、[显式依赖图](../sdk/mms/refresh-dependencies.md)、[范围订阅](../sdk/mms/scoped-refresh-subscriptions.md)、[状态内容](../sdk/mms/state-content.md) |
+| `mms.ui.refresh.property` 1.0、1.1 | 原属性通知和明确选择的共同历史跟随可刷新 SELF、注册子树或显式依赖图。触发属性与种子分开，成员读取各自当前属性，显式 DATA binding 按成员优先。 | [原属性刷新](../sdk/mms/property-refresh.md)、[属性范围刷新](../sdk/mms/scoped-property-refresh.md) |
 | `mms.events`、`mms.tasks` | 提案：主题订阅、受预算约束的工作任务。 | 本文及 UI 呈现 |
 | `mms.ui.geometry`、`style`、`paint`、`presentation`、`input`、`overlay`、`layout.session` | 提案：坐标、样式、辅助绘制、临时外观、输入和可撤回布局。 | UI 呈现 |
 | `mms.scene`、`mms.storage` | 已有绑定快照和插件工程序列化；不提供任意时间求值或模型拓扑写入。 | SDK 参考 |

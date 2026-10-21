@@ -78,6 +78,355 @@ struct Fixture : ui_refresh_dependency_checks::Fixture {
     }
     void StraightGraph() { Edge(group, element); Edge(group, second); }
 };
+void QueueCapacityReleaseBeforeDeferredGraphObservation() {
+    Fixture f;
+    // Complete this public SELF/REPAINT setup ticket before a subscription
+    // exists. It stays terminal and retained through the failing Drain, so
+    // only the later explicit release can publish its queue-capacity event.
+    const auto terminal = f.Submit(f.Request(f.Target(f.trigger))); f.queue.Drain();
+    const auto terminalState = f.State(terminal);
+    CHECK(terminalState.status == MMS_UI_REFRESH_COMPLETED && terminalState.result == MMS_OK &&
+        terminalState.completedKinds == MMS_UI_REFRESH_REPAINT && !f.queue.Pending());
+    CHECK(f.tickets.size() == 1 && f.tickets.back() == terminal);
+    const auto sourceRevisions = f.revisions;
+    const auto warm = f.Edge(f.group, f.element);
+    CHECK(f.dependency.unregisterDependency(f.dependency.context, warm) == MMS_OK);
+    f.Subscribe(); f.queue.Drain(); const auto empty = f.Status();
+    CHECK(empty.pending && empty.waitingFor == MMS_UI_REFRESH_SUBSCRIPTION_WAIT_GRAPH && !f.queue.Pending());
+    CHECK(!overflow_allocation_fault::bytes && !overflow_allocation_fault::matchingFailures);
+    const auto mutationHits = overflow_allocation_fault::hits;
+    struct EdgeValue { const RefreshClient* owner; MmsUiTargetRefV1 upstream, dependent; };
+    using EdgePair = std::pair<const MmsHandle, EdgeValue>;
+    CHECK(sizeof(std::_Tree_node<EdgePair, void*>) != 2 * sizeof(MmsUiTargetRefV1));
+    overflow_allocation_fault::bytes = 2 * sizeof(MmsUiTargetRefV1);
+    const auto edge = f.Edge(f.group, f.element); overflow_allocation_fault::bytes = 0;
+    CHECK(edge && overflow_allocation_fault::hits == mutationHits + 1 && f.queue.Pending());
+    const auto requestHits = overflow_allocation_fault::hits;
+    overflow_allocation_fault::matchingFailures = 2;
+    overflow_allocation_fault::bytes = sizeof(MmsUiTargetRefV1); f.queue.Drain();
+    const auto remaining = overflow_allocation_fault::matchingFailures;
+    overflow_allocation_fault::bytes = 0; overflow_allocation_fault::matchingFailures = 0;
+    CHECK(overflow_allocation_fault::hits == requestHits + 2 && !remaining);
+    const auto failed = f.Status(); const auto wakes = f.wakes.load();
+    CHECK(failed.lastResult == MMS_E_MEMORY && failed.pending && failed.latestRevision == empty.latestRevision &&
+        !failed.submittedRevision && !failed.completedRevision && !failed.submittedWorkGeneration &&
+        !failed.completedWorkGeneration && (failed.waitingFor & MMS_UI_REFRESH_SUBSCRIPTION_WAIT_QUEUE_CAPACITY) && !f.queue.Pending());
+    CHECK(!f.prepares[0] && !f.prepares[1] && !f.stateReads && !f.layouts && !f.triggerPrepares);
+    CHECK(f.State(terminal).status == MMS_UI_REFRESH_COMPLETED);
+    // No observer, trigger publish or graph mutation intervenes. Erasing the
+    // original terminal ticket advances the real public queue-capacity clock.
+    CHECK(f.api.release(f.api.context, terminal) == MMS_OK); f.tickets.pop_back();
+    const auto released = f.Status();
+    CHECK(released.latestRevision == failed.latestRevision && released.workGeneration == failed.workGeneration &&
+        released.submittedRevision == failed.submittedRevision && released.completedRevision == failed.completedRevision &&
+        released.pending && f.revisions == sourceRevisions);
+    std::cerr << "SCOPED early-capacity generation=" << released.workGeneration << " wait=" << released.waitingFor
+        << " pending=" << f.queue.Pending() << " wakes=" << f.wakes.load() - wakes << '\n';
+    CHECK(f.queue.Pending() && f.wakes.load() > wakes);
+    f.Complete(); const auto complete = f.Status();
+    CHECK(complete.latestRevision == failed.latestRevision && complete.submittedRevision == failed.latestRevision &&
+        complete.completedRevision == failed.latestRevision && complete.workGeneration == failed.workGeneration &&
+        complete.submittedWorkGeneration == failed.workGeneration && complete.completedWorkGeneration == failed.workGeneration &&
+        !complete.pending && !complete.waitingFor && !complete.lastResult && f.revisions == sourceRevisions);
+    CHECK(f.prepares[0] == 1 && !f.prepares[1] && f.preparedRevisions[0] == failed.latestRevision &&
+        f.Display(0) == 10 && f.stateReads == 1 && f.layouts == 1 && !f.triggerPrepares);
+    CHECK(f.trace == std::vector<unsigned>({10, 100, 200}));
+    const auto settledWakes = f.wakes.load();
+    for (unsigned n = 0; n < 6; ++n) {
+        f.queue.Drain(); const auto settled = f.Status();
+        CHECK(!std::memcmp(&settled, &complete, sizeof(settled)) && !f.queue.Pending() && f.wakes.load() == settledWakes);
+        CHECK(f.prepares[0] == 1 && !f.prepares[1] && f.stateReads == 1 && f.layouts == 1 &&
+            !f.triggerPrepares && f.revisions == sourceRevisions && f.trace == std::vector<unsigned>({10, 100, 200}));
+    }
+}
+void TriggerPublicationBeforeDeferredGraphObservation() {
+    Fixture f; const auto warm = f.Edge(f.group, f.element);
+    CHECK(f.dependency.unregisterDependency(f.dependency.context, warm) == MMS_OK);
+    f.Subscribe(); f.queue.Drain(); const auto empty = f.Status();
+    CHECK(empty.pending && empty.waitingFor == MMS_UI_REFRESH_SUBSCRIPTION_WAIT_GRAPH && !f.queue.Pending());
+    CHECK(!overflow_allocation_fault::bytes && !overflow_allocation_fault::matchingFailures);
+    const auto mutationHits = overflow_allocation_fault::hits;
+    // The real S -> A edge commits; only its observer's second vertex fails.
+    struct EdgeValue { const RefreshClient* owner; MmsUiTargetRefV1 upstream, dependent; };
+    using EdgePair = std::pair<const MmsHandle, EdgeValue>;
+    CHECK(sizeof(std::_Tree_node<EdgePair, void*>) != 2 * sizeof(MmsUiTargetRefV1));
+    overflow_allocation_fault::bytes = 2 * sizeof(MmsUiTargetRefV1);
+    const auto edge = f.Edge(f.group, f.element); overflow_allocation_fault::bytes = 0;
+    CHECK(edge && overflow_allocation_fault::hits == mutationHits + 1 && f.queue.Pending());
+    const auto requestHits = overflow_allocation_fault::hits;
+    // Keep the new graph unobserved through the scheduling observer and the
+    // one original Request. This must fail that Request, not a consumer.
+    overflow_allocation_fault::matchingFailures = 2;
+    overflow_allocation_fault::bytes = sizeof(MmsUiTargetRefV1); f.queue.Drain();
+    const auto remaining = overflow_allocation_fault::matchingFailures;
+    overflow_allocation_fault::bytes = 0; overflow_allocation_fault::matchingFailures = 0;
+    CHECK(overflow_allocation_fault::hits == requestHits + 2 && !remaining);
+    const auto failed = f.Status(); const auto wakes = f.wakes.load();
+    CHECK(failed.lastResult == MMS_E_MEMORY && failed.pending && failed.latestRevision == empty.latestRevision &&
+        !failed.submittedRevision && !failed.completedRevision && !failed.submittedWorkGeneration &&
+        !failed.completedWorkGeneration && !f.queue.Pending());
+    CHECK(!f.prepares[0] && !f.prepares[1] && !f.stateReads && !f.layouts && !f.triggerPrepares);
+    // No successful Drain/Sync/graph mutation may repair the old metadata
+    // before this one genuine worker publication advances trigger revision.
+    f.WorkerPublish(0, 94); const auto notified = f.Status();
+    CHECK(notified.latestRevision == failed.latestRevision + 1 && notified.latestRevision == f.revisions[0] &&
+        notified.workGeneration == failed.workGeneration + 1 && notified.pending);
+    std::cerr << "SCOPED early-publication generation=" << notified.workGeneration << " wait=" << notified.waitingFor
+        << " pending=" << f.queue.Pending() << " wakes=" << f.wakes.load() - wakes << '\n';
+    CHECK(f.queue.Pending() && f.wakes.load() > wakes);
+    f.Complete(); const auto complete = f.Status();
+    CHECK(complete.latestRevision == notified.latestRevision && complete.submittedRevision == notified.latestRevision &&
+        complete.completedRevision == notified.latestRevision && complete.workGeneration == notified.workGeneration &&
+        complete.submittedWorkGeneration == notified.workGeneration && complete.completedWorkGeneration == notified.workGeneration &&
+        !complete.pending && !complete.waitingFor && !complete.lastResult);
+    CHECK(f.prepares[0] == 1 && !f.prepares[1] && f.preparedRevisions[0] == notified.latestRevision &&
+        f.Display(0) == 94 && f.stateReads == 1 && f.layouts == 1 && !f.triggerPrepares);
+    MmsUiDataDisplayV1 untouched{}; untouched.h = Header<MmsUiDataDisplayV1>(); untouched.lease = 991;
+    const auto sentinel = untouched;
+    CHECK(f.data.acquireDisplay(f.data.context, f.bindings[1], &untouched) == MMS_E_NOT_READY &&
+        !std::memcmp(&untouched, &sentinel, sizeof(untouched)));
+    CHECK(f.trace == std::vector<unsigned>({10, 100, 200}));
+    const auto settledWakes = f.wakes.load();
+    for (unsigned n = 0; n < 6; ++n) {
+        f.queue.Drain(); const auto settled = f.Status();
+        CHECK(!std::memcmp(&settled, &complete, sizeof(settled)) && !f.queue.Pending() && f.wakes.load() == settledWakes);
+        CHECK(f.prepares[0] == 1 && !f.prepares[1] && f.stateReads == 1 && f.layouts == 1 &&
+            !f.triggerPrepares && f.trace == std::vector<unsigned>({10, 100, 200}));
+    }
+}
+void NewlyReachableGraphEventRecoversClaimedFailure() {
+    Fixture f; const auto warm = f.Edge(f.group, f.element);
+    CHECK(f.dependency.unregisterDependency(f.dependency.context, warm) == MMS_OK);
+    f.Subscribe(); f.queue.Drain(); const auto empty = f.Status();
+    CHECK(empty.pending && empty.waitingFor == MMS_UI_REFRESH_SUBSCRIPTION_WAIT_GRAPH && !f.queue.Pending());
+    CHECK(!overflow_allocation_fault::bytes && !overflow_allocation_fault::matchingFailures);
+    const auto revisions = f.revisions;
+    const auto mutationHits = overflow_allocation_fault::hits;
+    // S -> A commits, but its first observation cannot retain A as a member.
+    struct EdgeValue { const RefreshClient* owner; MmsUiTargetRefV1 upstream, dependent; };
+    using EdgePair = std::pair<const MmsHandle, EdgeValue>;
+    CHECK(sizeof(std::_Tree_node<EdgePair, void*>) != 2 * sizeof(MmsUiTargetRefV1));
+    overflow_allocation_fault::bytes = 2 * sizeof(MmsUiTargetRefV1);
+    const auto first = f.Edge(f.group, f.element); overflow_allocation_fault::bytes = 0;
+    CHECK(first && overflow_allocation_fault::hits == mutationHits + 1 && f.queue.Pending());
+    const auto requestHits = overflow_allocation_fault::hits;
+    // Both the next observation and the original Request capture fail. No
+    // complete observation may run between this claimed failure and A -> B.
+    overflow_allocation_fault::matchingFailures = 2;
+    overflow_allocation_fault::bytes = sizeof(MmsUiTargetRefV1);
+    f.queue.Drain();
+    const auto remaining = overflow_allocation_fault::matchingFailures;
+    overflow_allocation_fault::bytes = 0; overflow_allocation_fault::matchingFailures = 0;
+    CHECK(overflow_allocation_fault::hits == requestHits + 2 && !remaining);
+    const auto failed = f.Status(); const auto wakes = f.wakes.load();
+    CHECK(failed.lastResult == MMS_E_MEMORY && failed.pending && failed.latestRevision == empty.latestRevision &&
+        !failed.submittedRevision && !failed.completedRevision && !failed.submittedWorkGeneration &&
+        !failed.completedWorkGeneration && !f.queue.Pending());
+    CHECK(!f.prepares[0] && !f.prepares[1] && !f.stateReads && !f.layouts && !f.triggerPrepares);
+    // A is reachable in the actual graph, although the retained member list is
+    // still empty. Only this second real graph event may recover the request.
+    const auto second = f.Edge(f.element, f.second);
+    CHECK(second && f.queue.Pending() && f.wakes.load() > wakes);
+    CHECK(f.Status().workGeneration > failed.workGeneration && f.revisions == revisions);
+    f.Complete(); const auto complete = f.Status();
+    CHECK(complete.latestRevision == empty.latestRevision && complete.completedRevision == empty.latestRevision &&
+        complete.completedWorkGeneration > failed.workGeneration && !complete.pending && !complete.waitingFor);
+    CHECK(f.prepares[0] == 1 && f.prepares[1] == 1 && f.Display(0) == 10 && f.Display(1) == 11);
+    CHECK(f.preparedRevisions == revisions && f.revisions == revisions && !f.triggerPrepares && !f.queue.Pending());
+    CHECK(f.trace == std::vector<unsigned>({10, 11, 100, 100, 200}));
+}
+void RealGraphEventSurvivesObservationAllocationFailure() {
+    Fixture f;
+    // Keep a real empty graph with its owner node already allocated. The
+    // subsequent fault must hit graph observation after Add has committed,
+    // not Add's cycle-check vector or a new owner-map node.
+    const auto warm = f.Edge(f.group, f.element);
+    CHECK(f.dependency.unregisterDependency(f.dependency.context, warm) == MMS_OK);
+    f.Subscribe(); f.queue.Drain(); const auto empty = f.Status();
+    CHECK(empty.pending && empty.waitingFor == MMS_UI_REFRESH_SUBSCRIPTION_WAIT_GRAPH && !f.queue.Pending());
+    CHECK(!f.prepares[0] && !f.prepares[1] && !f.stateReads && !f.layouts);
+    const auto reads = f.prepares; const auto wakes = f.wakes.load();
+    CHECK(!overflow_allocation_fault::bytes); const auto hits = overflow_allocation_fault::hits;
+    // Add checks reachable{dependent} with one 32-byte ref and no outgoing
+    // edge. Capture(seed) then grows vertices to two refs (64 bytes). Only
+    // the latter failure occurs after the real edge is successfully added.
+    struct EdgeValue { const RefreshClient* owner; MmsUiTargetRefV1 upstream, dependent; };
+    using EdgePair = std::pair<const MmsHandle, EdgeValue>;
+    CHECK(sizeof(std::_Tree_node<EdgePair, void*>) != 2 * sizeof(MmsUiTargetRefV1));
+    overflow_allocation_fault::bytes = 2 * sizeof(MmsUiTargetRefV1);
+    const auto edge = f.Edge(f.group, f.second); overflow_allocation_fault::bytes = 0;
+    CHECK(edge && overflow_allocation_fault::hits == hits + 1);
+    CHECK(f.Target(f.group).supportedScopes & MMS_UI_REFRESH_DEPENDENTS);
+    CHECK(f.prepares == reads && f.queue.Pending() && f.wakes.load() > wakes);
+    // Only the successful edge registration supplies the event. Complete
+    // drains the original queue; no source publication or layout is supplied.
+    f.Complete(); const auto complete = f.Status();
+    CHECK(complete.latestRevision == empty.latestRevision && complete.completedRevision == empty.latestRevision &&
+        complete.completedWorkGeneration > empty.completedWorkGeneration && !complete.pending && !complete.waitingFor);
+    CHECK(!f.prepares[0] && f.prepares[1] == 1 && f.Display(1) == 11 && !f.triggerPrepares);
+    CHECK(f.trace == std::vector<unsigned>({11, 100, 200}) && !f.queue.Pending());
+}
+void RealSubtreePublicationSurvivesObservationAllocationFailure() {
+    Fixture f;
+    // The fixture supplies the host's actual retained registration tree to
+    // SyncTopology. Change only a registered child's parent; preserve its
+    // original HWND, binding and source identity throughout the publication.
+    auto& child = f.registry.elements.at("example.refresh.sibling");
+    child.desc.parentId = S("mms.toolbar.main.extensions"); f.queue.SyncTopology();
+    f.Subscribe(MMS_UI_REFRESH_SUBTREE); f.Complete(); const auto before = f.Status();
+    CHECK(f.prepares[0] == 1 && !f.prepares[1] && !f.queue.Pending());
+    const auto reads = f.prepares; const auto wakes = f.wakes.load();
+    child.desc.parentId = S("example.refresh.tree.nested");
+    CHECK(!overflow_allocation_fault::bytes); const auto hits = overflow_allocation_fault::hits;
+    // Topology's map/string copy succeeds; CollectScopedTargetsLocked's
+    // SubtreeLocked allocates its first real handle buffer at exactly 8 bytes.
+    overflow_allocation_fault::bytes = sizeof(MmsHandle);
+    f.queue.SyncTopology(); overflow_allocation_fault::bytes = 0;
+    CHECK(overflow_allocation_fault::hits == hits + 1);
+    CHECK(f.prepares == reads && f.queue.Pending() && f.wakes.load() > wakes);
+    f.Complete(); const auto complete = f.Status();
+    CHECK(complete.latestRevision == before.latestRevision && complete.completedRevision == before.latestRevision &&
+        complete.completedWorkGeneration > before.completedWorkGeneration && !complete.pending && !complete.waitingFor);
+    CHECK(f.Display(0) == 10 && f.Display(1) == 11 && f.prepares[0] == reads[0] && f.prepares[1] == 1);
+    CHECK(f.stateReads == 3 && f.layouts == 2 && !f.triggerPrepares && !f.queue.Pending());
+}
+void ClaimedGraphEventDoesNotReplayAfterRequestAllocationFailure() {
+    Fixture f; const auto warm = f.Edge(f.group, f.element);
+    CHECK(f.dependency.unregisterDependency(f.dependency.context, warm) == MMS_OK);
+    f.Subscribe(); f.queue.Drain();
+    CHECK(f.Status().waitingFor == MMS_UI_REFRESH_SUBSCRIPTION_WAIT_GRAPH && !f.queue.Pending());
+    CHECK(!overflow_allocation_fault::bytes && !overflow_allocation_fault::matchingFailures);
+    const auto mutationHits = overflow_allocation_fault::hits;
+    overflow_allocation_fault::bytes = 2 * sizeof(MmsUiTargetRefV1);
+    f.Edge(f.group, f.second); overflow_allocation_fault::bytes = 0;
+    CHECK(overflow_allocation_fault::hits == mutationHits + 1 && f.queue.Pending());
+    const auto requestHits = overflow_allocation_fault::hits;
+    // One Drain first observes the real scope, then captures the original
+    // Request. Fail both initial graph-ref buffers so Request truly returns
+    // MEMORY, rather than merely postponing a consumer callback.
+    overflow_allocation_fault::matchingFailures = 2;
+    overflow_allocation_fault::bytes = sizeof(MmsUiTargetRefV1);
+    f.queue.Drain();
+    const auto remaining = overflow_allocation_fault::matchingFailures;
+    overflow_allocation_fault::bytes = 0; overflow_allocation_fault::matchingFailures = 0;
+    CHECK(overflow_allocation_fault::hits == requestHits + 2 && !remaining);
+    const auto failed = f.Status(); const auto wakes = f.wakes.load();
+    CHECK(failed.lastResult == MMS_E_MEMORY && failed.pending && !failed.submittedRevision && !failed.completedRevision &&
+        !failed.submittedWorkGeneration && !failed.completedWorkGeneration && !f.queue.Pending());
+    CHECK(!f.prepares[0] && !f.prepares[1] && !f.stateReads && !f.layouts && !f.triggerPrepares);
+    for (unsigned n = 0; n < 6; ++n) {
+        // The first successful observation installs missing members/watches;
+        // it may not replay this already-claimed real structure event.
+        f.queue.Drain(); const auto state = f.Status();
+        CHECK(!std::memcmp(&state, &failed, sizeof(state)) && !f.queue.Pending() && f.wakes.load() == wakes);
+        CHECK(!f.prepares[0] && !f.prepares[1] && !f.stateReads && !f.layouts && !f.triggerPrepares);
+    }
+    f.WorkerPublish(0, 93); CHECK(f.queue.Pending()); f.Complete();
+    CHECK(f.Status().completedRevision == 2 && f.Display(1) == 11 && !f.prepares[0] && f.prepares[1] == 1);
+}
+void RemovedCachedMemberCannotPublishUnrelatedGraphEvent() {
+    Fixture f; f.StraightGraph(); f.Subscribe(); f.Complete(); const auto initial = f.Status();
+    CHECK(initial.completedRevision == 1 && initial.submittedRevision == 1 && !f.queue.Pending());
+    // Prepare a new contextual B version before the removal. It is not a
+    // trigger and cannot itself schedule a successfully completed scope.
+    f.WorkerPublish(1, 72); CHECK(!f.queue.Pending());
+    const auto reads = f.prepares; const auto sourceReads = f.preparedRevisions;
+    const auto stateReads = f.stateReads, layouts = f.layouts; const auto trace = f.trace;
+    CHECK(!overflow_allocation_fault::bytes && !overflow_allocation_fault::matchingFailures);
+    const auto removeHits = overflow_allocation_fault::hits;
+    // Remove commits without allocating. Its resulting S->B capture grows
+    // vertices from S to S+B at 64 bytes, so this fault occurs after deletion.
+    overflow_allocation_fault::bytes = 2 * sizeof(MmsUiTargetRefV1);
+    const auto removed = f.dependency.unregisterDependency(f.dependency.context, f.edges[0]);
+    overflow_allocation_fault::bytes = 0;
+    CHECK(removed == MMS_OK && overflow_allocation_fault::hits == removeHits + 1 && f.queue.Pending());
+    const auto captureHits = overflow_allocation_fault::hits;
+    // Keep the original cached {A,B} unobserved: both the scheduling observer
+    // and the real Request's graph capture must fail, not a prepare callback.
+    overflow_allocation_fault::matchingFailures = 2;
+    overflow_allocation_fault::bytes = sizeof(MmsUiTargetRefV1); f.queue.Drain();
+    const auto remaining = overflow_allocation_fault::matchingFailures;
+    overflow_allocation_fault::bytes = 0; overflow_allocation_fault::matchingFailures = 0;
+    CHECK(overflow_allocation_fault::hits == captureHits + 2 && !remaining);
+    const auto failed = f.Status(); const auto wakes = f.wakes.load();
+    CHECK(failed.lastResult == MMS_E_MEMORY && failed.pending && !f.queue.Pending());
+    CHECK(failed.latestRevision == initial.latestRevision && failed.submittedRevision == initial.submittedRevision &&
+        failed.completedRevision == initial.completedRevision && failed.workGeneration > initial.workGeneration &&
+        failed.submittedWorkGeneration == initial.submittedWorkGeneration && failed.completedWorkGeneration == initial.completedWorkGeneration);
+    const auto unchanged = [&] {
+        const auto state = f.Status();
+        CHECK(state.workGeneration == failed.workGeneration && state.submittedWorkGeneration == failed.submittedWorkGeneration &&
+            state.completedWorkGeneration == failed.completedWorkGeneration);
+        CHECK(state.latestRevision == failed.latestRevision && state.submittedRevision == failed.submittedRevision &&
+            state.completedRevision == failed.completedRevision && state.submittedDependencyRevision == failed.submittedDependencyRevision);
+        CHECK(state.waitingFor == failed.waitingFor && state.lastResult == failed.lastResult && state.pending == failed.pending);
+        CHECK(f.prepares == reads && f.preparedRevisions == sourceReads && f.stateReads == stateReads && f.layouts == layouts && f.trace == trace);
+        CHECK(!f.queue.Pending() && f.wakes.load() == wakes && !f.triggerPrepares);
+    };
+    unchanged();
+    // A is still present in the old cached observation, but the real graph
+    // now contains only S->B. A->external-trigger is a successful unrelated
+    // mutation; cached-members OR current reachability would wrongly wake it.
+    const auto edge = f.Edge(f.element, f.trigger); CHECK(edge); unchanged();
+    for (unsigned n = 0; n < 6; ++n) { f.queue.Drain(); unchanged(); }
+    // Only an actual trigger publication recovers the claimed memory park.
+    // The original Request now processes B, never the detached cached A.
+    f.WorkerPublish(0, 73); CHECK(f.queue.Pending()); f.Complete();
+    CHECK(f.Status().completedRevision == 2 && f.Display(0) == 10 && f.Display(1) == 72);
+    CHECK(f.prepares[0] == reads[0] && f.prepares[1] == reads[1] + 1 && f.stateReads == stateReads + 1 && f.layouts == layouts + 1);
+    CHECK(f.trace.size() == trace.size() + 3 && f.trace[trace.size()] == 11 && f.trace[trace.size() + 1] == 100 &&
+        f.trace[trace.size() + 2] == 200 && !f.triggerPrepares && !f.queue.Pending());
+}
+void FailedGraphEventWakeSurvivesSuccessfulObservation() {
+    Fixture f; const auto warm = f.Edge(f.group, f.element);
+    CHECK(f.dependency.unregisterDependency(f.dependency.context, warm) == MMS_OK);
+    f.Subscribe(); f.queue.Drain(); CHECK(!f.queue.Pending());
+    f.queue.SetWake([&] { f.wakes.fetch_add(1); return false; });
+    const auto hits = overflow_allocation_fault::hits;
+    overflow_allocation_fault::bytes = 2 * sizeof(MmsUiTargetRefV1);
+    f.Edge(f.group, f.second); overflow_allocation_fault::bytes = 0;
+    CHECK(overflow_allocation_fault::hits == hits + 1);
+    const auto failed = f.Status(); const auto wakes = f.wakes.load();
+    CHECK(failed.lastResult == MMS_E_FAILED && (failed.waitingFor & MMS_UI_REFRESH_SUBSCRIPTION_WAIT_HOST_WAKE) && !f.queue.Pending());
+    f.queue.Drain(); const auto observed = f.Status();
+    CHECK(observed.waitingFor == failed.waitingFor && observed.lastResult == failed.lastResult && observed.pending == failed.pending);
+    CHECK(observed.latestRevision == failed.latestRevision && !observed.submittedRevision && !observed.completedRevision);
+    CHECK(!f.queue.Pending() && f.wakes.load() == wakes && !f.prepares[0] && !f.prepares[1]);
+    for (unsigned n = 0; n < 6; ++n) {
+        f.queue.Drain(); const auto state = f.Status();
+        CHECK(!std::memcmp(&state, &observed, sizeof(state)) && !f.queue.Pending() && f.wakes.load() == wakes);
+        CHECK(!f.prepares[0] && !f.prepares[1] && !f.stateReads && !f.layouts && !f.triggerPrepares);
+    }
+    f.queue.SetWake([&] { f.wakes.fetch_add(1); return true; });
+    f.WorkerPublish(0, 94); CHECK(f.queue.Pending()); f.Complete();
+    CHECK(f.Status().completedRevision == 2 && f.Display(1) == 11 && !f.prepares[0] && f.prepares[1] == 1);
+}
+void UnrelatedStructurePreservesParkedConsumer() {
+    for (uint32_t scope : {MMS_UI_REFRESH_DEPENDENTS, MMS_UI_REFRESH_SUBTREE}) {
+        Fixture f; f.StraightGraph(); f.Subscribe(scope); f.Complete();
+        f.WorkerPublish(1, 92); f.WorkerPublish(0, 91);
+        f.prepare = [](unsigned i) { return i == 1 ? MMS_E_FAILED : MMS_OK; }; f.queue.Drain();
+        const auto before = f.Status(); const auto reads = f.prepares; const auto sourceReads = f.preparedRevisions;
+        const auto wakes = f.wakes.load(); const auto stateReads = f.stateReads, layouts = f.layouts;
+        CHECK(before.waitingFor == MMS_UI_REFRESH_SUBSCRIPTION_WAIT_CONSUMER && before.lastResult == MMS_E_FAILED && !f.queue.Pending());
+        const auto unchanged = [&] {
+            const auto state = f.Status(); CHECK(!std::memcmp(&state, &before, sizeof(state)));
+            CHECK(f.prepares == reads && f.preparedRevisions == sourceReads && f.stateReads == stateReads && f.layouts == layouts);
+            CHECK(!f.queue.Pending() && f.wakes.load() == wakes && !f.triggerPrepares);
+        };
+        // This graph's anchor is the external trigger, never reachable from
+        // the registered scope seed. Its DATA binding does not make it a member.
+        const auto edge = f.Edge(f.trigger, f.panelElement); unchanged();
+        CHECK(f.dependency.unregisterDependency(f.dependency.context, edge) == MMS_OK); unchanged();
+        CHECK(f.registry.elements.count("mms.sidebar.left.extensions"));
+        auto& external = f.registry.elements.at("example.refresh.scoped-trigger");
+        external.desc.parentId = S("mms.sidebar.left.extensions"); f.queue.SyncTopology(); unchanged();
+        external.desc.parentId = S("mms.toolbar.main.extensions"); f.queue.SyncTopology(); unchanged();
+        for (unsigned n = 0; n < 4; ++n) { f.queue.Drain(); unchanged(); }
+        f.prepare = {}; f.WorkerPublish(0, 95); f.Complete();
+        CHECK(f.Display(0) == 95 && f.Display(1) == 92 && f.Status().completedRevision == 3 && !f.queue.Pending());
+    }
+}
 void OrderedCompositeAndThreads() {
     Fixture f; f.Diamond(); const auto revision = f.registry.Revision(), preferences = f.registry.PreferencesRevision();
     CHECK(f.subscriptions.h.size == 64 && f.subscriptions.h.major == 1 && f.subscriptions.h.minor == 1);
@@ -178,6 +527,65 @@ void MissingSourceAndConsumerWaits() {
     CHECK(f.data.publishSource(f.data.context, &publish, &state) == MMS_OK); f.Complete();
     CHECK(f.Display(1) == 63 && f.Status().completedRevision == 2 && f.Status().completedWorkGeneration > work);
     CHECK(f.prepares[0] == reads[0] && f.prepares[1] == reads[1] + 1);
+}
+void ObservationAllocationFailurePreservesParkedConsumer() {
+    Fixture f; f.StraightGraph(); f.Subscribe(); f.Complete();
+    f.WorkerPublish(1, 82); f.WorkerPublish(0, 81);
+    f.prepare = [](unsigned i) { return i == 1 ? MMS_E_FAILED : MMS_OK; };
+    f.queue.Drain();
+    const auto before = f.Status();
+    CHECK(before.lastResult == MMS_E_FAILED && before.pending &&
+        before.waitingFor == MMS_UI_REFRESH_SUBSCRIPTION_WAIT_CONSUMER && !f.queue.Pending());
+    CHECK(before.latestRevision == 2 && before.submittedRevision == 2 && before.completedRevision == 1);
+    CHECK(f.Display(0) == 81 && f.Display(1) == 11);
+    const auto reads = f.prepares; const auto sourceReads = f.preparedRevisions;
+    const auto trace = f.trace; const auto consumed = f.consumed;
+    const auto stateReads = f.stateReads, layouts = f.layouts, triggerReads = f.triggerPrepares;
+    const auto wakes = f.wakes.load(); const auto registryRevision = f.registry.Revision(), preferences = f.registry.PreferencesRevision();
+    std::array<MmsUiDataSourceStateV1, 2> sources{};
+    for (size_t i = 0; i < sources.size(); ++i) {
+        sources[i].h = Header<MmsUiDataSourceStateV1>();
+        CHECK(f.data.getSource(f.data.context, f.sources[i], &sources[i]) == MMS_OK);
+    }
+    const auto unchanged = [&] {
+        const auto state = f.Status();
+        CHECK(state.waitingFor == before.waitingFor && state.lastResult == before.lastResult && state.pending == before.pending);
+        CHECK(state.workGeneration == before.workGeneration && state.submittedWorkGeneration == before.submittedWorkGeneration &&
+            state.completedWorkGeneration == before.completedWorkGeneration);
+        CHECK(state.latestRevision == before.latestRevision && state.submittedRevision == before.submittedRevision &&
+            state.completedRevision == before.completedRevision && state.submittedDependencyRevision == before.submittedDependencyRevision);
+        CHECK(!std::memcmp(&state, &before, sizeof(state)));
+        CHECK(f.prepares == reads && f.preparedRevisions == sourceReads && f.triggerPrepares == triggerReads);
+        CHECK(f.stateReads == stateReads && f.layouts == layouts && f.trace == trace && f.consumed == consumed);
+        CHECK(!f.queue.Pending() && f.wakes.load() == wakes);
+        CHECK(f.registry.Revision() == registryRevision && f.registry.PreferencesRevision() == preferences);
+        for (size_t i = 0; i < sources.size(); ++i) {
+            MmsUiDataSourceStateV1 actual{}; actual.h = Header<MmsUiDataSourceStateV1>();
+            CHECK(f.data.getSource(f.data.context, f.sources[i], &actual) == MMS_OK);
+            CHECK(!std::memcmp(&actual, &sources[i], sizeof(actual)));
+        }
+        CHECK(f.Display(0) == 81 && f.Display(1) == 11);
+    };
+    unchanged();
+    CHECK(!overflow_allocation_fault::bytes); const auto hits = overflow_allocation_fault::hits;
+    // CollectScopedTargetsLocked enters the real dependency capture first.
+    // Its initial vertices{seed} allocation is exactly one TargetRef (32
+    // bytes), before any ticket, DATA prepare callback or display allocation.
+    // The injector consumes this one failure, leaving later work unaffected.
+    overflow_allocation_fault::bytes = sizeof(MmsUiTargetRefV1);
+    f.queue.Drain(); overflow_allocation_fault::bytes = 0;
+    CHECK(overflow_allocation_fault::hits == hits + 1);
+    unchanged();
+    for (unsigned n = 0; n < 6; ++n) { f.queue.Drain(); unchanged(); }
+    // A real contextual-source publication, without changing the trigger
+    // revision, must still wake and finish the same pending source version.
+    f.prepare = {}; f.WorkerPublish(1, 83);
+    CHECK(f.prepares == reads && f.queue.Pending() && f.wakes.load() > wakes);
+    CHECK(f.Status().latestRevision == before.latestRevision && f.Status().workGeneration > before.workGeneration);
+    f.Complete();
+    CHECK(f.Display(0) == 81 && f.Display(1) == 83 && f.Status().completedRevision == before.latestRevision);
+    CHECK(f.Status().completedWorkGeneration > before.completedWorkGeneration && !f.Status().pending && !f.queue.Pending());
+    CHECK(f.prepares[0] == reads[0] && f.prepares[1] == reads[1] + 1 && f.triggerPrepares == triggerReads);
 }
 void ReadOnlyAndValidation() {
     Fixture f; f.StraightGraph(); const auto desc = f.Desc();
@@ -292,10 +700,20 @@ void SubtreeAndLifecycle() {
 }
 }
 static void ScopedSubscriptionChecks() {
+    scoped_subscription_checks::QueueCapacityReleaseBeforeDeferredGraphObservation();
+    scoped_subscription_checks::TriggerPublicationBeforeDeferredGraphObservation();
+    scoped_subscription_checks::NewlyReachableGraphEventRecoversClaimedFailure();
+    scoped_subscription_checks::RealGraphEventSurvivesObservationAllocationFailure();
+    scoped_subscription_checks::RealSubtreePublicationSurvivesObservationAllocationFailure();
+    scoped_subscription_checks::ClaimedGraphEventDoesNotReplayAfterRequestAllocationFailure();
+    scoped_subscription_checks::RemovedCachedMemberCannotPublishUnrelatedGraphEvent();
+    scoped_subscription_checks::FailedGraphEventWakeSurvivesSuccessfulObservation();
+    scoped_subscription_checks::UnrelatedStructurePreservesParkedConsumer();
     scoped_subscription_checks::OrderedCompositeAndThreads();
     scoped_subscription_checks::AcceptedCohortSurvivesLaterPublications();
     scoped_subscription_checks::EmptyGraphAndTopologyChanges();
     scoped_subscription_checks::MissingSourceAndConsumerWaits();
+    scoped_subscription_checks::ObservationAllocationFailurePreservesParkedConsumer();
     scoped_subscription_checks::ReadOnlyAndValidation();
     scoped_subscription_checks::CapacityReadinessAndHostWake();
     scoped_subscription_checks::FailedTopologyPublicationRecoversWithoutAnotherLayout();

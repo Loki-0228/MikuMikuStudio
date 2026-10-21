@@ -89,10 +89,12 @@ class ScopedRefreshSubscriptionServices {
         if (const auto result = refresh.CheckThread()) return result;
         if (out) return MMS_E_BUSY;
         if (!binding || !seed) return MMS_E_ARGUMENT;
+        MmsUiRefreshSubscriptionCapabilitiesV1 caps{};
+        if (const auto result = Capabilities(caps)) return result;
+        if (!(caps.supportedScopes & scope)) return MMS_E_UNSUPPORTED;
         MmsUiRefreshTargetV1 target{};
         if (const auto result = refresh.Target(seed, target)) return result;
         if (!detail::ScopedSubscriptionValueValid(target) || !detail::ScopedSubscriptionValueValid(target.target)) return MMS_E_VERSION;
-        if (!(target.supportedScopes & scope)) return MMS_E_UNSUPPORTED;
         return SubscribeScope(binding, target.target, scope, kinds, out);
     }
 public:
@@ -146,7 +148,8 @@ public:
         std::uint32_t kinds = MMS_UI_REFRESH_DATA | MMS_UI_REFRESH_STATE | MMS_UI_REFRESH_REPAINT) const noexcept {
         return SubscribeScope(binding, seed, MMS_UI_REFRESH_DEPENDENTS, kinds, out);
     }
-    // Resolve the existing seed on the UI thread through the regular service.
+    // Resolve the existing seed identity through the regular service. Scoped
+    // subscriptions can wait for a graph even when this target has no DATA.
     // No source, binding, UI element, target or queue is registered here.
     MmsResult SubscribeSubtree(const RefreshServices& refresh, MmsHandle binding, MmsHandle seed,
         ScopedRefreshSubscription& out, std::uint32_t kinds = MMS_UI_REFRESH_DATA | MMS_UI_REFRESH_REPAINT) const noexcept {

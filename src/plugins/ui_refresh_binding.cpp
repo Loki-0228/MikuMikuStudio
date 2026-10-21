@@ -1,4 +1,5 @@
 #include "ui_refresh_binding.hpp"
+#include "ui_refresh_dependencies.hpp"
 #include <map>
 #include <mutex>
 #include <limits>
@@ -102,6 +103,10 @@ struct UiRefreshBindings::Impl {
         uint64_t invalidationGeneration = 1, dependencyRevision = 0, submittedDependencyRevision = 0;
         uint64_t sourcePublication = 0, claimedSourcePublication = 0, submittedSourcePublication = 0;
         bool observed = false;
+        // One real structure event is pending observation and one original
+        // Request attempt. Claiming that attempt marks the probe spent so a
+        // later ordinary observation cannot re-arm the same event.
+        bool structurePending = false, structureProbe = false;
         std::array<MmsUiTargetRefV1, 256> members{};
         size_t memberCount = 0;
         std::array<MmsHandle, kSources> watchedSources{};
@@ -136,11 +141,6 @@ struct UiRefreshBindings::Impl {
 
     explicit Impl(Hooks value) : hooks(std::move(value)) {}
     static bool Scoped(const Subscription& s) noexcept { return s.scope != MMS_UI_REFRESH_SELF; }
-    static bool Watches(const Subscription& s, const MmsUiTargetRefV1& ref) noexcept {
-        if (SameTarget(s.seed, ref)) return true;
-        for (size_t i = 0; i < s.memberCount; ++i) if (SameTarget(s.members[i], ref)) return true;
-        return false;
-    }
     void WatchSources(Subscription& s) noexcept {
         s.sourceCount = 0;
         const auto add = [&](MmsHandle source) {
@@ -161,8 +161,14 @@ struct UiRefreshBindings::Impl {
         return s.latest != 0;
     }
     void ArmScoped(Subscription& s) noexcept {
-        const auto block = s.scopeBlock | (SourcesReady(s) ? 0u : MMS_UI_REFRESH_SUBSCRIPTION_WAIT_SOURCE);
         if (s.ticket || s.claimed) return;
+        if (s.structurePending && !s.structureProbe) {
+            // A real structure event gets exactly one original Request even
+            // while the cached graph/source block still describes the old
+            // collection. Only that event's probe may use this bypass.
+            s.armed = true; s.waitingFor = 0; s.waitEvents = 0; return;
+        }
+        const auto block = s.scopeBlock | (SourcesReady(s) ? 0u : MMS_UI_REFRESH_SUBSCRIPTION_WAIT_SOURCE);
         s.armed = !block; s.waitingFor = block;
         s.waitEvents = block & MMS_UI_REFRESH_SUBSCRIPTION_WAIT_TARGET ? RetryTargetPublication : 0;
     }
@@ -172,6 +178,11 @@ struct UiRefreshBindings::Impl {
         }
         ++s.workGeneration;
         if (invalidate) s.invalidationGeneration = s.workGeneration;
+        // A new real work event is its own request opportunity even while the
+        // cached structure metadata is still pending. Clear only the old
+        // structure event's spent probe; the metadata stays pending until its
+        // own observation arrives.
+        if (s.structurePending) s.structureProbe = false;
         ArmScoped(s);
     }
     void BindingPublication(const MmsUiTargetRefV1& target) noexcept {
@@ -597,6 +608,7 @@ bool UiRefreshBindings::TakeSubscription(MmsHandle after, SubscriptionWork& out)
         out = {s.owner->client, s.handle, s.binding, binding->second->target, s.kinds, s.latest, state.global->releasedRevision.load(), 0};
         out.seed = s.seed; out.scope = s.scope; out.workGeneration = s.workGeneration; out.dependencyRevision = s.dependencyRevision;
         out.sourcePublication = s.sourcePublication;
+        if (s.structurePending) s.structureProbe = true;
         s.armed = false; s.claimed = true; return true;
     }
     return false;
@@ -692,12 +704,39 @@ void UiRefreshBindings::ObserveScopedSubscription(const SubscriptionWork& work, 
     const auto found = state.subscriptions.find(work.subscription);
     if (found == state.subscriptions.end() || found->second.owner->client != work.client || !Impl::Scoped(found->second)) return;
     auto& s = found->second;
-    if (members.size() > s.members.size()) { s.armed = false; s.waitEvents = 0; s.waitingFor = MMS_UI_REFRESH_SUBSCRIPTION_WAIT_GRAPH; return; }
+    if (members.size() > s.members.size()) {
+        // The observation cannot be stored at all; consume any pending event
+        // so the bounded bypass does not outlive this collection.
+        s.structurePending = false; s.structureProbe = false;
+        s.armed = false; s.waitEvents = 0; s.waitingFor = MMS_UI_REFRESH_SUBSCRIPTION_WAIT_GRAPH; return;
+    }
     bool changed = members.size() != s.memberCount;
     for (size_t i = 0; !changed && i < members.size(); ++i) changed = !SameTarget(members[i], s.members[i]);
     const auto oldBlock = s.scopeBlock;
     s.scopeBlock = blocked; s.dependencyRevision = dependencyRevision;
     s.memberCount = members.size(); std::copy(members.begin(), members.end(), s.members.begin()); state.WatchSources(s);
+    if (s.structurePending) {
+        // This observation consumes the real structure event. It is the same
+        // change, not another one: refresh the retained members/block/watches
+        // but never advance the work generation again. A spent probe keeps the
+        // park chosen by its one original Request.
+        const bool attempted = s.structureProbe;
+        s.structurePending = false; s.structureProbe = false;
+        if (s.waitEvents & RetryHostWake) {
+            // A failed host wake stays parked. Only a later delivered event may
+            // recover it; a catch-up observation must not clear it.
+            s.waitingFor = MMS_UI_REFRESH_SUBSCRIPTION_WAIT_HOST_WAKE | blocked |
+                (state.SourcesReady(s) ? 0u : MMS_UI_REFRESH_SUBSCRIPTION_WAIT_SOURCE);
+            s.armed = false;
+        } else if (attempted) {
+            s.waitingFor = (s.waitingFor & ~(MMS_UI_REFRESH_SUBSCRIPTION_WAIT_GRAPH |
+                MMS_UI_REFRESH_SUBSCRIPTION_WAIT_TARGET | MMS_UI_REFRESH_SUBSCRIPTION_WAIT_SOURCE)) | blocked |
+                (state.SourcesReady(s) ? 0u : MMS_UI_REFRESH_SUBSCRIPTION_WAIT_SOURCE);
+            s.armed = false;
+        } else state.ArmScoped(s);
+        s.observed = true;
+        return;
+    }
     if (s.observed && changed) state.ChangeScoped(s, true);
     else if (s.observed && oldBlock && !blocked) state.ChangeScoped(s, false);
     else if (!s.observed && (s.waitEvents & RetryHostWake)) {
@@ -708,11 +747,19 @@ void UiRefreshBindings::ObserveScopedSubscription(const SubscriptionWork& work, 
     } else if (!s.observed || blocked) state.ArmScoped(s);
     s.observed = true;
 }
-void UiRefreshBindings::ScopedGraphChanged(const RefreshClient& client, const MmsUiTargetRefV1& upstream) noexcept {
+void UiRefreshBindings::ScopedGraphChanged(const RefreshClient& client, const MmsUiTargetRefV1& upstream,
+    const UiRefreshDependencies& graph) noexcept {
     auto& state = *impl_; std::lock_guard<std::mutex> lock(state.mutex);
     for (auto& entry : state.subscriptions) {
         auto& s = entry.second;
-        if (s.owner->client == &client && s.scope == MMS_UI_REFRESH_DEPENDENTS && Impl::Watches(s, upstream)) state.ChangeScoped(s, true);
+        if (s.owner->client != &client || s.scope != MMS_UI_REFRESH_DEPENDENTS) continue;
+        // The retained member list may be missing or stale after a failed
+        // observation, and it may still name a node that left the graph. Only
+        // the exact current graph decides whether this event reaches the seed.
+        if (!graph.Reaches(client, s.seed, upstream)) continue;
+        // A real graph mutation records one bounded structure event; it may
+        // bypass the cached graph/source park for its single probe.
+        s.structurePending = true; s.structureProbe = false; state.ChangeScoped(s, true);
     }
 }
 void UiRefreshBindings::ScopedTargetPublished(MmsHandle element, bool providerChanged) noexcept {
@@ -724,6 +771,15 @@ void UiRefreshBindings::ScopedTargetPublished(MmsHandle element, bool providerCh
         bool member = s.seed.element == element;
         for (size_t i = 0; !member && i < s.memberCount; ++i) member = s.members[i].element == element;
         if (member) state.ChangeScoped(s, false);
+    }
+}
+void UiRefreshBindings::ScopedTopologyChanged(void* context, bool (*changed)(void*, MmsHandle)) noexcept {
+    if (!changed) return;
+    auto& state = *impl_; std::lock_guard<std::mutex> lock(state.mutex);
+    for (auto& entry : state.subscriptions) {
+        auto& s = entry.second;
+        if (!Impl::Scoped(s) || s.scope != MMS_UI_REFRESH_SUBTREE || !changed(context, s.seed.element)) continue;
+        s.structurePending = true; s.structureProbe = false; state.ChangeScoped(s, true);
     }
 }
 bool UiRefreshBindings::PendingScopedSubscriptions() const noexcept {
@@ -752,7 +808,14 @@ bool UiRefreshBindings::RetrySubscriptions(uint32_t events, uint64_t queueCapaci
             ((matching & RetryQueueCapacity) && queueCapacityRevision > s.waitQueueCapacityRevision) ||
             ((matching & RetryDisplayCapacity) && state.global->releasedRevision.load() > s.waitCapacityRevision);
         if (actualCapacity && !s.ticket && !s.claimed && !s.owner->retired && !s.owner->client->stopping.load()) {
-            if (Impl::Scoped(s)) state.ArmScoped(s); else { s.armed = true; s.waitEvents = 0; }
+            if (Impl::Scoped(s)) {
+                // The relaxed mailbox was parked by the old structure event.
+                // A strict real capacity advance is a new request opportunity
+                // for the same still-pending metadata, so clear only the spent
+                // probe of the old event before the normal arm decision.
+                if (s.structurePending) s.structureProbe = false;
+                state.ArmScoped(s);
+            } else { s.armed = true; s.waitEvents = 0; }
             changed |= s.armed;
         }
     }

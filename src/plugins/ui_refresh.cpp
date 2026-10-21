@@ -385,7 +385,11 @@ void UiRefreshQueue::RefreshScopedSubscriptionsLocked() noexcept {
         std::vector<MmsUiTargetRefV1> members; uint64_t dependencyRevision = 0; uint32_t blocked = 0;
         const auto result = Boundary([&] { return CollectScopedTargetsLocked(*work.client, work.seed, work.scope, members, dependencyRevision, blocked); });
         if (result == MMS_E_STALE) { bindings_->InvalidateTarget(work.seed.element); continue; }
-        if (result) blocked |= MMS_UI_REFRESH_SUBSCRIPTION_WAIT_GRAPH;
+        // A temporary collection failure is not a graph event. Committing the
+        // empty/partial vector or a synthetic GRAPH block here would look like
+        // a real recovery on the next ordinary observation and retry a parked
+        // consumer. Keep the stored members, block, watches and generation.
+        if (result) continue;
         bindings_->ObserveScopedSubscription(work, members, dependencyRevision, blocked);
     }
     RefreshScopedPropertySubscriptionsLocked();
@@ -599,8 +603,8 @@ MmsResult UiRefreshQueue::RegisterDependency(RefreshClient& client, const MmsUiR
     }
     MmsHandle candidate = 0;
     if (const auto result = dependencies_->Add(client, desc->upstream, desc->dependent, candidate)) return result;
-    bindings_->ScopedGraphChanged(client, desc->upstream);
-    propertyRefresh_->GraphChanged(client, desc->upstream);
+    bindings_->ScopedGraphChanged(client, desc->upstream, *dependencies_);
+    propertyRefresh_->GraphChanged(client, desc->upstream, *dependencies_);
     RefreshScopedSubscriptionsLocked();
     InvalidateDependencyTicketsLocked(); *out = candidate; return MMS_OK;
 }
@@ -613,8 +617,8 @@ MmsResult UiRefreshQueue::UnregisterDependency(RefreshClient& client, MmsHandle 
     // Cleanup remains valid during stop; Retire may already have removed it.
     MmsUiTargetRefV1 upstream{};
     if (const auto result = dependencies_->Remove(client, handle, &upstream)) return result;
-    bindings_->ScopedGraphChanged(client, upstream);
-    propertyRefresh_->GraphChanged(client, upstream);
+    bindings_->ScopedGraphChanged(client, upstream, *dependencies_);
+    propertyRefresh_->GraphChanged(client, upstream, *dependencies_);
     RefreshScopedSubscriptionsLocked();
     InvalidateDependencyTicketsLocked(); return MMS_OK;
 }
@@ -928,6 +932,26 @@ std::vector<MmsHandle> UiRefreshQueue::SubtreeLocked(MmsHandle root) const {
     }
     return result;
 }
+bool UiRefreshQueue::SubtreeMembershipChanged(MmsHandle seed, const std::map<MmsHandle, TreeNode>& previous) const noexcept {
+    const auto contains = [](const std::map<MmsHandle, TreeNode>& tree, MmsHandle root, MmsHandle node) -> bool {
+        auto current = node;
+        for (std::size_t depth = 0; current && depth <= tree.size(); ++depth) {
+            if (current == root) return true;
+            const auto parent = tree.find(current);
+            if (parent == tree.end()) return false;
+            current = parent->second.parent;
+        }
+        return false;
+    };
+    for (const auto& entry : tree_) {
+        const auto old = previous.find(entry.first);
+        if (old != previous.end() && old->second == entry.second) continue;
+        if (contains(tree_, seed, entry.first) != contains(previous, seed, entry.first)) return true;
+    }
+    for (const auto& entry : previous)
+        if (!tree_.count(entry.first) && contains(previous, seed, entry.first)) return true;
+    return false;
+}
 void UiRefreshQueue::SyncTopology() noexcept {
     if (GetCurrentThreadId() != thread_) return;
     try {
@@ -939,12 +963,28 @@ void UiRefreshQueue::SyncTopology() noexcept {
         }
         std::lock_guard<std::mutex> lock(mutex_);
         if (!topologyReady_ || candidate != tree_) {
+            // Only a retained tree that really replaced the previous one may
+            // record structure events; a recovery republish is bookkeeping.
+            const bool committed = candidate != tree_;
             for (const auto& prior : tree_) {
                 const auto current = candidate.find(prior.first);
                 if (current == candidate.end() || current->second.owner != prior.second.owner || current->second.kind != prior.second.kind)
                     dependencies_->InvalidateTarget(prior.first);
             }
             tree_.swap(candidate); ++topologyRevision_; topologyReady_ = true;
+            if (committed) {
+                // candidate now retains the tree that was replaced. Report only
+                // the SUBTREE seeds whose member set really moved, using walks of
+                // the existing maps; unrelated or unchanged syncs mark nothing.
+                struct TopologyProbe { UiRefreshQueue* queue; const std::map<MmsHandle, TreeNode>* previous; };
+                TopologyProbe previous{this, &candidate};
+                const auto affected = [](void* context, MmsHandle seed) -> bool {
+                    const auto& state = *static_cast<TopologyProbe*>(context);
+                    return state.queue->SubtreeMembershipChanged(seed, *state.previous);
+                };
+                bindings_->ScopedTopologyChanged(&previous, affected);
+                propertyRefresh_->ScopedTopologyChanged(&previous, affected);
+            }
             RefreshScopedSubscriptionsLocked();
             InvalidateDependencyTicketsLocked();
         }
