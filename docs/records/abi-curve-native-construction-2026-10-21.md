@@ -85,3 +85,5 @@
 最小工程的关闭后 GDI／USER 计数在初始化后保持 `8/4`，不随轮数增长；初始化前为 `0/1`。这些结果只缩小调查方向，不能替代原复杂夹具或否定其堆损坏。冻结依赖及差异见 [source_manifest.json](../../build/verification/abi-curve-construction-20261021/minimal-create-loop/source_manifest.json)。
 
 `seek`、`setPlaying`、`subdivide` 和一般 `Channel.sample` 尚未全部接入同一回调保护，真实宿主停止播放的重复求值也仍需处理。Win7 SP1 x64、CPU 基础路径、AMD、程序旁 `data` 和现有文件兼容要求不变。正式 release 未更新。
+
+后续[跳帧及播放写回调](abi-curve-transport-write-lifetime-2026-10-21.md)与[原生插帧](abi-curve-subdivision-lifetime-2026-10-21.md)已分别补充保护和专项验收。堆故障在冻结插帧候选的原始兼容全集中仍出现；最新[堆现场记录](abi-curve-heap-observation-2026-10-21.md)确认链表不一致，尚未找到首次错误写入者。

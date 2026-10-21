@@ -47,6 +47,7 @@
 
 ## 开发与维护
 
+- [曲线原始兼容配置的堆故障现场（2026-10-21）](abi-curve-heap-observation-2026-10-21.md)
 - [曲线测试按构建配置注册（2026-10-21）](abi-profile-curve-tests-2026-10-21.md)
 - [表情曲线测试的模型槽初始化（2026-10-21）](abi-morph-fixture-slots-2026-10-21.md)
 - [显式 UI 依赖刷新与同对象 SDK（2026-10-21）](abi-ui-dependencies-2026-10-21.md)

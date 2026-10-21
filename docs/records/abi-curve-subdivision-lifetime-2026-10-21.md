@@ -32,3 +32,5 @@ EditorLease 同时保活原 Session 和来源状态集合，先释放状态，�
 原始兼容批量构建还误选了只在完整配置中有实现的 `bone_curve_tests`，出现 18 个未解析符号，日志 `abi-ui-dependencies-20261021/product-original-03.log` 保留。随后只选择该配置实际支持的产品和数学目标构建成功；没有把此链接失败改写为通过。后续已[修正六个测试的配置范围](abi-profile-curve-tests-2026-10-21.md)，保留实际支持的共同数学与编辑器入口。
 
 Win7 SP1 x64、CPU 基础路径及 AMD 要求保持；本机合成窗口不代替真机、IME、多 DPI 或实际鼠标验收。main 和正式 release 未修改。
+
+后续使用同一冻结候选捕获到[堆链表不一致现场](abi-curve-heap-observation-2026-10-21.md)。检测仍发生在下一用例的原生按钮创建阶段，损坏来源未确定，原始兼容配置全集继续保持未通过。
