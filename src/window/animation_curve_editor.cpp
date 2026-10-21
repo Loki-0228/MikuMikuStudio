@@ -669,6 +669,7 @@ struct SourceState {
     int compareMode = kCompareOff;
     std::map<std::string, bool> expandedCollections;
 };
+using SourceStates=std::vector<SourceState>;
 
 enum class Drag { None, Seek, Pan, Keys, Rubber, TimeBarPan, TimeBarZoomLow, TimeBarZoomHigh,
                   ValueBarPan, ValueBarZoomLow, ValueBarZoomHigh, Handle };
@@ -725,7 +726,7 @@ struct Editor {
     void *owner = nullptr;
     std::shared_ptr<Session> session = std::make_shared<Session>();
     std::size_t sourceIndex = 0;
-    std::vector<SourceState> states;
+    std::shared_ptr<SourceStates> states;
     std::set<std::string> pendingSources;
     bool sourceChangePosted = false;
     bool externalCallbackActive = false, externalOperationActive = false;
@@ -872,10 +873,12 @@ class EditorLease {
     Editor* editor_;
     std::shared_ptr<void> session_;
     std::shared_ptr<Session> storage_;
+    std::shared_ptr<SourceStates> states_;
     std::size_t source_;
 public:
     explicit EditorLease(Editor* editor) noexcept : editor_(editor),
         session_(editor ? editor->motionSession : nullptr), storage_(editor ? editor->session : nullptr),
+        states_(editor ? editor->states : nullptr),
         source_(editor ? editor->sourceIndex : 0) {
         if(editor_)++editor_->activeCalls;
     }
@@ -885,11 +888,23 @@ public:
     ~EditorLease(){
         // Releasing a retired Session can run user capture destructors. Keep
         // the Editor allocation leased through those callbacks as well.
-        storage_.reset();
+        ReleaseStorage();
         if(editor_&&!--editor_->activeCalls&&editor_->windowDestroyed)delete editor_;
     }
-    void ReleaseStorage()noexcept{storage_.reset();}
-    void PinCurrentStorage()noexcept{storage_=editor_ ? editor_->session : nullptr;}
+    void ReleaseStorage()noexcept{
+        // Detach the complete old pair before releasing any user captures.
+        // States are destroyed first while their original Session is pinned;
+        // both releases finish before activeCalls can delete the Editor.
+        auto retiredSession=std::move(storage_);
+        auto retiredStates=std::move(states_);
+    }
+    void PinCurrentStorage()noexcept{
+        // Neither shared_ptr copy invokes a user callback. Snapshot both from
+        // one generation before retiring either of this lease's previous pins.
+        auto nextSession=editor_ ? editor_->session : nullptr;
+        auto nextStates=editor_ ? editor_->states : nullptr;
+        storage_.swap(nextSession);states_.swap(nextStates);
+    }
     bool CurrentSession()const noexcept {
         return editor_&&!editor_->windowDestroyed&&
             !session_.owner_before(editor_->motionSession)&&!editor_->motionSession.owner_before(session_);
@@ -962,6 +977,15 @@ struct ExternalOperation {
         member(field),previous(value.*field) {if(activate)editor.*member=true;}
     ~ExternalOperation(){if(lease.CurrentSession())editor.*member=previous;}
 };
+
+void ReleaseChannelPayload(Editor& editor,EditorLease& continuation,std::vector<Channel>& channels){
+    if(continuation.CurrentSource()){
+        ExternalOperation operation(editor,&Editor::externalOperationActive);
+        ExternalOperation callback(editor,&Editor::externalCallbackActive);
+        {auto retired=std::move(channels);}
+    }else{auto retired=std::move(channels);}
+    continuation.RequireCurrent();
+}
 
 // Transport prequeries run before this operation starts. Keep both the
 // callable copy and its final release behind the same authoring/callback gate,
@@ -1045,8 +1069,8 @@ Source &CurrentSource(Editor &editor) {
 
 SourceState &CurrentState(Editor &editor) {
     static SourceState empty;
-    if (editor.sourceIndex >= editor.states.size()) return empty;
-    return editor.states[editor.sourceIndex];
+    if (!editor.states||editor.sourceIndex >= editor.states->size()) return empty;
+    return (*editor.states)[editor.sourceIndex];
 }
 
 Channel *ActiveChannel(Editor &editor) {
@@ -1280,8 +1304,8 @@ bool YToValue(const Editor &editor, double y, double &value) {
 // Key position including the live drag preview.
 POINT KeyPoint(const Editor &editor, std::size_t index) {
     POINT point = {-1, -1};
-    if (editor.sourceIndex >= editor.states.size()) return point;
-    SourceState &state = const_cast<Editor &>(editor).states[editor.sourceIndex];
+    if (!editor.states||editor.sourceIndex >= editor.states->size()) return point;
+    SourceState &state = (*editor.states)[editor.sourceIndex];
     if (state.channels.empty()) return point;
     const Channel &active = state.channels[state.active];
     if (index >= active.track.keys.size()) return point;
@@ -1390,13 +1414,12 @@ bool QueryExternalHistory(Editor& editor, bool report) {
     return accepted;
 }
 
-bool CheckSourceCurrent(Editor &editor) {
-    if(editor.externalOperationActive||editor.externalCallbackActive)return false;
+bool CheckSourceCurrentPayload(Editor &editor) {
     Source &source = CurrentSource(editor);
     if(source.externalHistory){
         if(!QueryExternalHistory(editor,true)){UpdateEnabledState(editor);return false;}
         if(CurrentState(editor).externalReadPending){
-            RefreshExternalSource(editor);return false;
+            RefreshExternalSource(editor,true,true);return false;
         }
     }
     std::vector<Channel> latest;
@@ -1418,9 +1441,21 @@ bool CheckSourceCurrent(Editor &editor) {
     if (SameCurveData(CurrentState(editor).channels, latest)) return true;
     // Native keyboard/mouse edits may bypass the menu notification. Compare
     // with the host before every write, including undo and redo.
-    if(source.externalHistory)RefreshExternalSource(editor);else ReadRegisteredSource(editor);
+    if(source.externalHistory)RefreshExternalSource(editor,true,true);else ReadRegisteredSource(editor);
     SetStatus(editor, T(editor.session->language, StrSourceChanged), true);
     return false;
+}
+
+bool CheckSourceCurrent(Editor& editor){
+    if(editor.externalOperationActive||editor.externalCallbackActive)return false;
+    EditorLease continuation(editor);bool current=false;
+    {
+        // latest's sample capture destructors are still part of this read-only
+        // preflight. They may retire it, but cannot start nested authoring.
+        ExternalOperation operation(editor,&Editor::externalOperationActive);
+        current=CheckSourceCurrentPayload(editor);
+    }
+    continuation.ReleaseStorage();continuation.RequireCurrent();return current;
 }
 
 void AdoptWrittenChannels(Editor &editor, std::vector<Channel> channels) {
@@ -1537,10 +1572,8 @@ bool CommitLocalChannels(Editor& editor,std::vector<Channel> next,const std::wst
     }
 }
 
-bool CommitChannels(Editor &editor, std::vector<Channel> next, const std::wstring &success,
-                    bool linkMmdHandles = false) {
-    if (!CheckSourceCurrent(editor)) return false;
-    ExternalOperation operation(editor,&Editor::externalOperationActive);
+bool CommitPreparedChannels(Editor &editor, std::vector<Channel>& next, const std::wstring &success,
+                            bool linkMmdHandles) {
     SourceState &state = CurrentState(editor);
     Source &source = CurrentSource(editor);
     // Value-curve tangents are governed by Free/Aligned, not the legacy
@@ -1663,7 +1696,45 @@ bool CommitChannels(Editor &editor, std::vector<Channel> next, const std::wstrin
     return true;
 }
 
-std::vector<Channel> CopyChannels(Editor &editor) { return CurrentState(editor).channels; }
+bool CommitChannels(Editor &editor, std::vector<Channel> next, const std::wstring &success,
+                    bool linkMmdHandles = false) {
+    EditorLease continuation(editor);
+    try{
+        // CheckSourceCurrent's latest channels can run capture destructors on
+        // either return path. Do not hand old prepared data to a new Session.
+        const bool current=CheckSourceCurrent(editor);
+        continuation.RequireCurrent();
+        bool accepted=false;
+        {
+            ExternalOperation operation(editor,&Editor::externalOperationActive);
+            if(current)accepted=CommitPreparedChannels(editor,next,success,linkMmdHandles);
+            // Parameters otherwise outlive our local leases. Empty this one
+            // explicitly and validate after its last sample capture release.
+            ReleaseChannelPayload(editor,continuation,next);
+        }
+        continuation.ReleaseStorage();continuation.RequireCurrent();
+        return accepted;
+    }catch(...){
+        ReleaseChannelPayload(editor,continuation,next);
+        continuation.ReleaseStorage();continuation.RequireCurrent();throw;
+    }
+}
+
+std::vector<Channel> CopyChannels(Editor &editor) {
+    EditorLease continuation(editor);std::vector<Channel> channels;
+    try{
+        {
+            ExternalOperation operation(editor,&Editor::externalOperationActive);
+            ExternalOperation callback(editor,&Editor::externalCallbackActive);
+            channels=CurrentState(editor).channels;
+        }
+        continuation.ReleaseStorage();continuation.RequireCurrent();
+        return channels;
+    }catch(...){
+        ReleaseChannelPayload(editor,continuation,channels);
+        continuation.ReleaseStorage();continuation.RequireCurrent();throw;
+    }
+}
 
 bool ApplySnapshot(Editor& editor,const Snapshot& snapshot,std::wstring& error){
     // snapshot is privately moved out of its retained stack slot. Its channels
@@ -1746,6 +1817,7 @@ void RedoOnce(Editor &editor) {
 // Reads the current source.  `adopted` reports whether the freshly read data
 // differs from the local copy, which is how an external edit is detected.
 bool ReadCurrentSource(Editor &editor, bool *adopted) {
+    EditorLease continuation(editor);
     Source &source = CurrentSource(editor);
     SourceState &state = CurrentState(editor);
     if (!source.read) {
@@ -1756,14 +1828,22 @@ bool ReadCurrentSource(Editor &editor, bool *adopted) {
     }
     std::vector<Channel> channels;
     std::wstring error;
-    if (!ReadSource(editor,channels,error)) {
+    const bool accepted=ReadSource(editor,channels,error);
+    continuation.RequireCurrent();
+    if (!accepted) {
+        ReleaseChannelPayload(editor,continuation,channels);
         state.valid = false;
         state.reason = std::wstring(T(editor.session->language, StrReadFailed)) + (error.empty() ? std::wstring() : error);
         if (adopted) *adopted = false;
         return false;
     }
     const bool changed = !state.loaded || !SameCurveData(state.channels, channels);
-    state.channels = std::move(channels);
+    {
+        ExternalOperation callback(editor,&Editor::externalCallbackActive);
+        auto retired=std::move(state.channels);
+        state.channels=std::move(channels);
+    }
+    continuation.RequireCurrent();
     state.loaded = true;
     state.valid = true;
     state.reason.clear();
@@ -5781,62 +5861,140 @@ void BufferedPaint(Editor& editor,HWND hwnd,HDC dc,const RECT& dirty,bool miniat
     if(miniature)PaintMmd(editor,originalDc);else PaintCanvas(editor,originalDc,playhead);
     BitBlt(dc,dirty.left,dirty.top,dirty.right-dirty.left,dirty.bottom-dirty.top,originalDc,dirty.left,dirty.top,SRCCOPY);
 }
-void InsertCurveKeyAtPoint(Editor& editor,POINT point,UINT flags) {
-    if(editor.externalOperationActive||editor.externalCallbackActive)return;
-    CanvasMetrics(editor);
-    if(!PtInRect(&editor.plot,point) || editor.tool==1 ||
-       (flags&(MK_CONTROL|MK_SHIFT)) || (GetKeyState(VK_SPACE)&0x8000) || (GetKeyState(VK_MENU)&0x8000))return;
-    CancelDrag(editor);SetFocus(editor.canvas);
-    auto& state=CurrentState(editor);
-    if(!state.valid || !CurrentSource(editor).apply)return;
+struct PreparedInsertion {
+    std::vector<Channel> channels;
+    std::string channelId;
+    std::set<std::size_t> selection;
+    std::size_t index=0;
+    int frame=0;
+    bool inserted=false;
+};
+
+// Insertion owns one complete channel copy for the entire hit-test operation.
+// Its sampler is therefore already private: do not copy a std::function at
+// every pixel. This does not change the separate painting/sample entry points.
+Sample SampleInsertionChannel(Editor& editor,const Channel& channel,double frame){
+    EditorLease continuation(editor);Sample result;
+    {
+        ExternalOperation callback(editor,&Editor::externalCallbackActive);
+        result=channel.sample ? channel.sample(channel,frame) : animation_curve::Evaluate(channel.track,frame);
+    }
+    continuation.ReleaseStorage();continuation.RequireCurrent();
+    if(!std::isfinite(result.value)||(editor.viewMode==1&&!std::isfinite(result.derivative)))
+        throw std::runtime_error("invalid insertion sample");
+    return result;
+}
+
+bool PrepareInsertionPayload(Editor& editor,POINT point,PreparedInsertion& prepared,EditorLease& continuation){
+    prepared.channels=CopyChannels(editor);
+    const auto& state=CurrentState(editor);
     std::vector<std::size_t> candidates=ComparedChannels(editor);
     if(ActiveChannelVisible(editor))candidates.insert(candidates.begin(),state.active);
     const int radius=Scale(6,editor.dpi);
     double best=double(radius*radius)+1,hitFrame=0;
-    std::size_t hit=state.channels.size();
+    std::size_t hit=prepared.channels.size();
     // Match the visible curve near the pointer, preferring the active curve at
     // intersections. Sampling a small pixel band also works on steep slopes.
     for(const std::size_t c:candidates){
-        const auto& track=state.channels[c].track;
+        if(c>=prepared.channels.size())continue;
+        const auto& channel=prepared.channels[c];const auto& track=channel.track;
         if(track.keys.empty() || (editor.viewMode==1&&track.discrete))continue;
         for(int x=std::max(int(editor.plot.left),int(point.x)-radius);x<=std::min(int(editor.plot.right),int(point.x)+radius);++x){
             double frame=0,y=0;if(!XToTime(editor,x,frame))continue;
-            const Sample value=SampleTrack(editor,track,frame);
+            const Sample value=SampleInsertionChannel(editor,channel,frame);
+            continuation.RequireCurrent();
             if(!ValueToY(editor,editor.viewMode?value.derivative*kFramesPerSecond:value.value,y)||!std::isfinite(y))continue;
             const double distance=double(x-point.x)*(x-point.x)+(y-point.y)*(y-point.y);
             if(distance+.25<best){best=distance;hitFrame=frame;hit=c;}
         }
     }
-    if(hit==state.channels.size())return;
-    const Channel& channel=state.channels[hit];
+    if(hit==prepared.channels.size())return false;
+    const Channel& channel=prepared.channels[hit];
     int frame=int(std::clamp(std::round(hitFrame),0.0,double(kMaximumFrame)));
     // A visible key wins over neighbouring rounded frames when zoomed out.
     for(const Key& key:channel.track.keys){
         double x=0,y=0;
-        const Sample sample=SampleTrack(editor,channel.track,key.frame);
+        const Sample sample=SampleInsertionChannel(editor,channel,key.frame);
+        continuation.RequireCurrent();
         if(TimeToX(editor,key.frame,x)&&ValueToY(editor,editor.viewMode?sample.derivative*kFramesPerSecond:key.value,y)&&
            std::hypot(x-point.x,y-point.y)<=radius){frame=key.frame;break;}
     }
     const auto existing=std::lower_bound(channel.track.keys.begin(),channel.track.keys.end(),frame,
         [](const Key& key,int f){return key.frame<f;});
-    std::size_t index=std::size_t(existing-channel.track.keys.begin());
+    prepared.channelId=channel.id;prepared.frame=frame;
+    prepared.index=std::size_t(existing-channel.track.keys.begin());
     if(existing==channel.track.keys.end() || existing->frame!=frame){
-        std::vector<Channel> next=CopyChannels(editor);std::string error;
+        std::string error;
         // Native samplers must preserve their own evaluator, including linked
         // lanes. The editor never substitutes their scalar display proxy.
         if(channel.sample || !channel.nativeControls.empty() || !channel.interpolationGroup.empty()){
-            std::wstring detail;
+            std::wstring detail;bool accepted=false;
             const auto& subdivide=CurrentSource(editor).subdivide;
-            if(!subdivide || !subdivide(next,hit,frame,index,detail)){
-                SetStatus(editor,detail.empty()?L"当前来源没有提供原生曲线细分。骨骼可切换到自由曲线。":detail,true);return;
+            if(subdivide){
+                ExternalOperation callback(editor,&Editor::externalCallbackActive);
+                accepted=InvokeProvider(editor,subdivide,prepared.channels,hit,frame,prepared.index,detail);
             }
-        }else if(animation_curve::InsertPreservingShape(next[hit].track,frame,index,error)!=animation_curve::InsertResult::Inserted){
-            SetStatus(editor,L"此位置无法在当前权重限制内保持原曲线，请选择其他帧。",true);return;
+            continuation.RequireCurrent();
+            if(!accepted){
+                SetStatus(editor,detail.empty()?L"当前来源没有提供原生曲线细分。骨骼可切换到自由曲线。":detail,true);return false;
+            }
+        }else if(animation_curve::InsertPreservingShape(prepared.channels[hit].track,frame,prepared.index,error)!=animation_curve::InsertResult::Inserted){
+            SetStatus(editor,L"此位置无法在当前权重限制内保持原曲线，请选择其他帧。",true);return false;
         }
-        if(!CommitChannels(editor,std::move(next),L"已添加关键帧，原曲线形状保持不变。"))return;
-    }else SetStatus(editor,T(editor.session->language,StrFrameSelected)+FormatInteger(frame),false);
-    state.active=hit;state.selection={index};
-    RefreshEditorsUi(editor);PublishKeySelection(editor);SeekTimeline(editor,frame);OnPlayheadTimer(editor);
+        if(hit>=prepared.channels.size()||prepared.channels[hit].id!=prepared.channelId||
+            prepared.index>=prepared.channels[hit].track.keys.size()||
+            prepared.channels[hit].track.keys[prepared.index].frame!=frame){
+            SetStatus(editor,L"细分结果没有保留目标通道和关键帧，原曲线已保留。",true);return false;
+        }
+        prepared.inserted=true;
+    }
+    // The node is prepared before apply accepts anything. Canonical readback
+    // may change its numeric index; its existing node can be rekeyed later.
+    prepared.selection.insert(prepared.index);return true;
+}
+
+bool PrepareInsertion(Editor& editor,POINT point,PreparedInsertion& prepared){
+    EditorLease continuation(editor);bool ready=false;
+    {
+        ExternalOperation operation(editor,&Editor::externalOperationActive);
+        ready=PrepareInsertionPayload(editor,point,prepared,continuation);
+    }
+    continuation.ReleaseStorage();continuation.RequireCurrent();return ready;
+}
+
+void InsertCurveKeyAtPoint(Editor& editor,POINT point,UINT flags) {
+    if(editor.externalOperationActive||editor.externalCallbackActive)return;
+    EditorLease continuation(editor);PreparedInsertion prepared;
+    try{
+    CanvasMetrics(editor);
+    if(!PtInRect(&editor.plot,point) || editor.tool==1 ||
+       (flags&(MK_CONTROL|MK_SHIFT)) || (GetKeyState(VK_SPACE)&0x8000) || (GetKeyState(VK_MENU)&0x8000))return;
+    CancelDrag(editor);SetFocus(editor.canvas);continuation.RequireCurrent();
+    if(!CurrentState(editor).valid || !CurrentSource(editor).apply)return;
+    if(!PrepareInsertion(editor,point,prepared)){
+        ReleaseChannelPayload(editor,continuation,prepared.channels);return;
+    }
+    if(prepared.inserted){
+        if(!CommitChannels(editor,std::move(prepared.channels),L"已添加关键帧，原曲线形状保持不变。"))return;
+    }else{
+        ReleaseChannelPayload(editor,continuation,prepared.channels);
+        SetStatus(editor,T(editor.session->language,StrFrameSelected)+FormatInteger(prepared.frame),false);
+    }
+    continuation.RequireCurrent();
+    auto& state=CurrentState(editor);
+    const auto channel=std::find_if(state.channels.begin(),state.channels.end(),[&](const Channel& value){return value.id==prepared.channelId;});
+    if(channel==state.channels.end())return;
+    const auto key=std::lower_bound(channel->track.keys.begin(),channel->track.keys.end(),prepared.frame,
+        [](const Key& value,int frame){return value.frame<frame;});
+    if(key==channel->track.keys.end()||key->frame!=prepared.frame)return;
+    auto selected=prepared.selection.extract(prepared.selection.begin());
+    selected.value()=std::size_t(key-channel->track.keys.begin());
+    state.active=std::size_t(channel-state.channels.begin());state.selection.clear();state.selection.insert(std::move(selected));
+    RefreshEditorsUi(editor);PublishKeySelection(editor);SeekTimeline(editor,prepared.frame);OnPlayheadTimer(editor);
+    }catch(...){
+        ReleaseChannelPayload(editor,continuation,prepared.channels);
+        continuation.ReleaseStorage();continuation.RequireCurrent();throw;
+    }
 }
 
 LRESULT CALLBACK CanvasProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
@@ -6572,7 +6730,7 @@ void *Open(void *owner, Session session, bool visible) {
         if(!existing->nativeCreateReturned)return nullptr;
         EditorLease allocation(existing);
         auto nextToken=std::make_shared<char>();
-        std::vector<SourceState> nextStates(nextSession->sources.size());
+        auto nextStates=std::make_shared<SourceStates>(nextSession->sources.size());
         // Retire gestures while they still belong to the old Session. A
         // transport writer can Open here from a captured ruler drag; clearing
         // it after replacing the Session would instead cancel a new gesture.
@@ -6650,7 +6808,7 @@ void *Open(void *owner, Session session, bool visible) {
     editor->session = std::move(nextSession);
     editor->sourceIndex =
         editor->session->initialSource < editor->session->sources.size() ? editor->session->initialSource : 0;
-    editor->states=std::vector<SourceState>(editor->session->sources.size());
+    editor->states=std::make_shared<SourceStates>(editor->session->sources.size());
     {
         std::lock_guard<std::mutex> guard(g_registryMutex);
         g_editors.push_back(editor);

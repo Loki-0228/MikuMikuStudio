@@ -4477,6 +4477,646 @@ void ComparisonNestedAndGeometryCopy(){
     ce::CloseOwned(nullptr);
     Note("comparison recursion is gated and adjacent geometry preparation copies only required plain data");
 }
+// Phase A never closes or replaces a window inside this provider. The old
+// direct call can therefore expose its missing copy boundary without invoking
+// the lifetime-changing matrix before production protection is installed.
+struct SubdivisionCopyState {
+    bool armed=false,failCopy=false;
+    unsigned copies=0,bodies=0,liveBodies=0;
+    std::size_t channel=static_cast<std::size_t>(-1);
+    int frame=-1;
+};
+struct SubdivisionCopyProvider {
+    SubdivisionCopyState* state;
+    bool invocationCopy=false;
+    explicit SubdivisionCopyProvider(SubdivisionCopyState& value):state(&value){}
+    SubdivisionCopyProvider(const SubdivisionCopyProvider& other):state(other.state){
+        invocationCopy=state->armed;
+        if(invocationCopy){++state->copies;if(state->failCopy)throw std::bad_alloc();}
+    }
+    bool operator()(std::vector<ce::Channel>& channels,std::size_t channel,int frame,
+        std::size_t& index,std::wstring& error)const{
+        ++state->bodies;if(!invocationCopy)++state->liveBodies;
+        state->channel=channel;state->frame=frame;
+        if(channel>=channels.size()){error=L"invalid test subdivision channel";return false;}
+        std::string detail;
+        if(ac::InsertPreservingShape(channels[channel].track,frame,index,detail)!=ac::InsertResult::Inserted){
+            error=L"test subdivision could not prepare a key";return false;
+        }
+        channels[channel].track.keys[index].value=double(frame)*frame/20.0;return true;
+    }
+};
+void NativeSubdivisionCopyBoundary(){
+    bool failedCopyBlocked=true,successfulCopyOwned=true;
+    for(bool failCopy:{true,false}){
+        HostSource host;host.data.push_back(MakeChannel("native",L"Native",{MakeKey(0,0),MakeKey(20,20)}));
+        host.data[0].sample=[](const ce::Channel&,double frame){return ac::Sample{frame*frame/20.0,frame/10.0};};
+        host.data[0].nativeControls.resize(2);
+        SubdivisionCopyState state;state.failCopy=failCopy;
+        auto session=MakeSession(host);session.sources[0].subdivide=SubdivisionCopyProvider(state);
+        const HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
+        Check(IsWindow(window)&&KeyCount(window)==2,"safe subdivision copy probe opens the native two-key source");
+        const HWND canvas=GetDlgItem(window,kIdCanvas);const POINT point=AskPoint(window,kHookPointForFrame,10);
+        Check(canvas&&point.x>0&&point.y>0,"safe subdivision copy probe uses the real visible curve point");
+        const auto token=ce::CaptureWindowSession(window);const auto history=LocalWriteHistory(window);
+        Check(state.copies==0&&state.bodies==0,"preparing and opening the safe fixture does not call its subdivision provider");
+        state.armed=true;SendMessageW(canvas,WM_LBUTTONDBLCLK,MK_LBUTTON,MAKELPARAM(point.x,point.y));
+        const auto after=LocalWriteHistory(window);const int keys=KeyCount(window);
+        std::printf("subdivision copy fail_copy=%u copies=%u bodies=%u live_bodies=%u channel=%zu frame=%d applies=%d keys=%d history=%llu,%llu\n",
+            failCopy?1u:0u,state.copies,state.bodies,state.liveBodies,state.channel,state.frame,host.applyCalls,keys,
+            static_cast<unsigned long long>(after[0]),static_cast<unsigned long long>(after[1]));std::fflush(stdout);
+        Check(IsWindow(window)&&ce::IsWindowSessionCurrent(window,token),
+            "ordinary subdivision copy observations never close or replace the real editor");
+        if(failCopy)failedCopyBlocked&=state.copies==1&&state.bodies==0&&state.liveBodies==0&&
+            host.applyCalls==0&&keys==2&&host.data[0].track.keys.size()==2&&after==history;
+        else successfulCopyOwned&=state.copies==1&&state.bodies==1&&state.liveBodies==0&&state.channel==0&&state.frame==10&&
+            host.applyCalls==1&&keys==3&&host.data[0].track.keys.size()==3&&host.data[0].track.keys[1].frame==10&&
+            host.data[0].track.keys[1].value==5&&after[0]==history[0]+1&&after[1]==0;
+        state.armed=false;ce::CloseOwned(nullptr);
+        Check(!IsWindow(window),"close each safe subdivision fixture before evaluating the aggregate red contract");
+    }
+    Check(failedCopyBlocked,"subdivision callable copy failure must stop before its body, publication and history mutation");
+    Check(successfulCopyOwned,"subdivision must run one owned callable with exact channel/frame and commit its prepared native value once");
+    Note("native subdivision honors its callable copy boundary before lifetime-changing tests are enabled");
+}
+HostSource SubdivisionHost(){
+    HostSource host;host.data.push_back(MakeChannel("native",L"Native",{MakeKey(0,0),MakeKey(20,20)}));
+    host.data[0].sample=[](const ce::Channel&,double frame){return ac::Sample{frame*frame/20.0,frame/10.0};};
+    host.data[0].nativeControls.resize(2);return host;
+}
+bool PrepareNativeSubdivision(std::vector<ce::Channel>& channels,std::size_t channel,int frame,
+    std::size_t& index,std::wstring& error){
+    if(channel>=channels.size()){error=L"missing native subdivision channel";return false;}
+    std::string detail;
+    if(ac::InsertPreservingShape(channels[channel].track,frame,index,detail)!=ac::InsertResult::Inserted){
+        error=L"native subdivision fixture could not insert its key";return false;}
+    channels[channel].track.keys[index].value=double(frame)*frame/20.0;return true;
+}
+void TriggerSubdivision(HWND window,POINT point){
+    SendMessageW(GetDlgItem(window,kIdCanvas),WM_LBUTTONDBLCLK,MK_LBUTTON,MAKELPARAM(point.x,point.y));
+}
+void SeedSubdivisionRedo(HWND window){
+    ClickKey(window,1);Click(window,kIdDeleteKey);Click(window,kIdUndo);
+    Check(KeyCount(window)==2&&LocalWriteHistory(window)==std::array<std::uint64_t,2>{0,1},
+        "subdivision rejection fixture starts with a real retained redo node");
+}
+struct SubdivisionRetirementState {
+    int phase=0,response=0;bool armed=false,copying=false;
+    unsigned copies=0,bodies=0,actions=0,destroyedDuringCopy=0;
+    const void* original=nullptr;std::function<void()> action;
+    void Run(){armed=false;++actions;action();}
+    void ThrowResponse()const{
+        if(response==2)throw std::runtime_error("native subdivision unavailable");
+        if(response==3)throw std::bad_alloc();
+    }
+};
+struct SubdivisionRetirementProvider {
+    SubdivisionRetirementState* state;int marker=137;
+    bool invocationCopy=false;mutable bool invoked=false;
+    explicit SubdivisionRetirementProvider(SubdivisionRetirementState& value):state(&value){}
+    SubdivisionRetirementProvider(const SubdivisionRetirementProvider& other):state(other.state),marker(other.marker){
+        invocationCopy=state->armed;if(!invocationCopy)return;++state->copies;
+        if(state->phase!=0)return;
+        state->copying=true;state->original=&other;state->Run();
+        Check(state->destroyedDuringCopy==0&&other.marker==137,
+            "subdivision original callable remains alive throughout a retiring copy constructor");
+        state->copying=false;state->ThrowResponse();
+    }
+    ~SubdivisionRetirementProvider(){
+        if(state->copying&&state->original==this)++state->destroyedDuringCopy;
+        if(invocationCopy&&invoked&&state->armed&&state->phase==2)state->Run();
+    }
+    bool operator()(std::vector<ce::Channel>& channels,std::size_t channel,int frame,
+        std::size_t& index,std::wstring& error)const{
+        invoked=true;++state->bodies;
+        Check(invocationCopy&&channel==0&&frame==10&&channels.size()==1&&channels[0].id=="native",
+            "subdivision receives one owned callable, private channels and exact channel/frame values");
+        Check(PrepareNativeSubdivision(channels,channel,frame,index,error),
+            "retiring subdivision prepares its result only in the detached input");
+        if(state->armed&&state->phase==1)state->Run();
+        Check(marker==137&&channel==0&&frame==10&&index==1&&channels[0].track.keys.size()==3&&
+            channels[0].track.keys[1].frame==10&&channels[0].track.keys[1].value==5&&
+            channels[0].sample(channels[0],10).value==5,
+            "retirement cannot invalidate subdivision parameters or their retained original Channel sampler");
+        state->ThrowResponse();if(state->response==1)error=L"native subdivision refused";
+        return state->response!=1;
+    }
+};
+void SubdivisionCallbackLifetime(){
+    for(int phase=0;phase!=3;++phase)for(int action=0;action!=3;++action)for(int response=0;response!=4;++response){
+        std::printf("subdivision lifetime phase=%d action=%d response=%d\n",phase,action,response);std::fflush(stdout);
+        auto host=SubdivisionHost();HostSource replacement;
+        replacement.data.push_back(MakeChannel("replacement",L"Replacement",{MakeKey(0,91),MakeKey(20,99)}));
+        SubdivisionRetirementState state;state.phase=phase;state.response=response;
+        auto session=MakeSession(host);session.sources[0].subdivide=SubdivisionRetirementProvider(state);
+        const HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
+        Check(IsWindow(window)&&KeyCount(window)==2,"subdivision callback lifetime opens before its fault is armed");
+        const POINT point=AskPoint(window,kHookPointForFrame,10);
+        const auto token=ce::CaptureWindowSession(window);const auto retained=token.lock();
+        HWND next=nullptr;std::wstring status,field;int readsAfter=-1;
+        state.action=[&]{
+            if(action!=1)ce::CloseOwned(nullptr);
+            if(action!=0){next=static_cast<HWND>(ce::Open(nullptr,MakeSession(replacement),false));
+                Check(IsWindow(next),"subdivision retirement installs a real replacement Session");
+                if(action==1)Check(next==window,"subdivision same-owner Open keeps its native HWND");
+                status=GetText(next,kIdStatus);field=GetText(next,kIdFrameEdit);}
+            readsAfter=host.readCalls;
+        };
+        state.armed=true;TriggerSubdivision(window,point);
+        Check(state.actions==1&&state.copies==1&&state.bodies==unsigned(phase!=0)&&state.destroyedDuringCopy==0,
+            "subdivision copy, body or final release retires once without retrying the provider");
+        Check(retained&&!ce::IsWindowSessionCurrent(window,token)&&host.readCalls==readsAfter&&host.applyCalls==0&&
+            host.data.size()==1&&host.data[0].track.keys.size()==2,
+            "a retired subdivision never publishes its detached result or continues reading the old source");
+        if(next){
+            Check(KeyCount(next)==2&&replacement.applyCalls==0&&GetText(next,kIdStatus)==status&&
+                GetText(next,kIdFrameEdit)==field&&LocalWriteHistory(next)==std::array<std::uint64_t,2>{0,0},
+                "retired subdivision cannot change replacement fields, status, selection history or curve data");
+            ClickKey(next,1);Click(next,kIdDeleteKey);
+            Check(replacement.applyCalls==1&&KeyCount(next)==1,
+                "replacement Session remains editable after every old subdivision guard unwinds");
+        }else Check(OwnedCurveWindow()==nullptr,"closed subdivision Session leaves no registered editor");
+        state.armed=false;ce::CloseOwned(nullptr);
+    }
+    Note("native subdivision retains private parameters across callable copy, body and final-release retirement");
+}
+
+struct SubdivisionFailureState {bool armed=false;int failure=0,copies=0,bodies=0;};
+struct SubdivisionFailureProvider {
+    SubdivisionFailureState* state;
+    explicit SubdivisionFailureProvider(SubdivisionFailureState& value):state(&value){}
+    SubdivisionFailureProvider(const SubdivisionFailureProvider& other):state(other.state){
+        if(!state->armed)return;++state->copies;
+        if(state->failure==0){state->armed=false;throw std::bad_alloc();}
+        if(state->failure==1){state->armed=false;throw std::runtime_error("subdivision copy failed");}
+    }
+    bool operator()(std::vector<ce::Channel>& channels,std::size_t channel,int frame,
+        std::size_t& index,std::wstring& error)const{
+        ++state->bodies;const int failure=state->armed?state->failure:-1;state->armed=false;
+        if(!PrepareNativeSubdivision(channels,channel,frame,index,error))return false;
+        if(failure==2){error=L"subdivision prepared but declined";return false;}
+        if(failure==3)throw std::runtime_error("subdivision body failed");
+        if(failure==4)throw std::bad_alloc();
+        if(failure==5)index=channels[channel].track.keys.size();
+        if(failure==6)channels[channel].id="wrong target";
+        if(failure==7)channels[channel].track.keys[index].frame=11;
+        if(failure==8)g_curveFailNextAllocation=true;
+        return true;
+    }
+};
+void SubdivisionFailuresKeepRedo(){
+    for(int failure=0;failure!=9;++failure){
+        auto host=SubdivisionHost();SubdivisionFailureState state;state.failure=failure;
+        auto session=MakeSession(host);session.sources[0].subdivide=SubdivisionFailureProvider(state);
+        const HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));SeedSubdivisionRedo(window);
+        const auto history=LocalWriteHistory(window);const auto data=host.data;const int applies=host.applyCalls;
+        const auto token=ce::CaptureWindowSession(window);const auto failures=g_curveAllocationFailures;
+        const POINT point=AskPoint(window,kHookPointForFrame,10);state.armed=true;TriggerSubdivision(window,point);
+        Check(!g_curveFailNextAllocation&&state.copies==1&&state.bodies==int(failure>=2)&&
+            ce::IsWindowSessionCurrent(window,token)&&host.applyCalls==applies&&KeyCount(window)==2&&
+            SameWritePayload(host.data,data)&&LocalWriteHistory(window)==history,
+            "failed or invalid subdivision keeps the original data and retained redo without invoking apply");
+        if(failure==8)Check(g_curveAllocationFailures==failures+1,
+            "the real pre-publication allocation failure is consumed while preparing insertion selection");
+        Click(window,kIdRedo);
+        Check(host.applyCalls==applies+1&&KeyCount(window)==1&&LocalWriteHistory(window)==std::array<std::uint64_t,2>{1,0},
+            "a rejected subdivision leaves its original redo node usable exactly once");
+        ce::CloseOwned(nullptr);
+    }
+    Note("native subdivision copy, refusal, exception, OOM and invalid-result failures preserve redo and data");
+}
+
+void SubdivisionAcceptedRecovery(){
+    for(int failure=0;failure!=3;++failure){
+        auto host=SubdivisionHost();bool armed=false;int calls=0;
+        auto session=MakeSession(host);const auto apply=session.sources[0].apply;
+        session.sources[0].subdivide=[&](auto& channels,std::size_t channel,int frame,std::size_t& index,auto& error){
+            ++calls;return PrepareNativeSubdivision(channels,channel,frame,index,error);};
+        session.sources[0].apply=[&,apply](const auto& channels,auto& error){
+            const bool accepted=apply(channels,error);
+            if(armed&&accepted){
+                if(failure==0)host.failRead=true;
+                else if(failure==1)g_curveFailNextAllocation=true;
+            }
+            return accepted;
+        };
+        bool failUi=false;session.sources[0].writeKeySelection=[&](const auto&,const auto&){
+            if(failUi){failUi=false;throw std::runtime_error("accepted subdivision selection display failed");}};
+        const HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
+        const POINT point=AskPoint(window,kHookPointForFrame,10);const auto failures=g_curveAllocationFailures;
+        armed=true;failUi=failure==2;TriggerSubdivision(window,point);armed=false;
+        Check(!g_curveFailNextAllocation&&calls==1&&host.applyCalls==1&&KeyCount(window)==3&&
+            host.data[0].track.keys.size()==3&&host.data[0].track.keys[1].value==5&&
+            LocalWriteHistory(window)==std::array<std::uint64_t,2>{1,0},
+            "accepted subdivision retains its prepared key and one history node through canonical or UI failure");
+        if(failure==1)Check(g_curveAllocationFailures==failures+1,
+            "accepted subdivision consumes one real post-publication allocation failure");
+        host.failRead=false;ce::NotifySourceChanged(nullptr,"source");SendMessageW(window,WM_APP+401,0,0);
+        Check(calls==1&&host.applyCalls==1&&LocalWriteHistory(window)==std::array<std::uint64_t,2>{1,0},
+            "read-only recovery never retries native subdivision or duplicates its accepted apply");
+        Click(window,kIdUndo);Check(host.applyCalls==2&&KeyCount(window)==2,
+            "accepted subdivision remains one undo step after display recovery");
+        ce::CloseOwned(nullptr);
+    }
+    Note("accepted native subdivision survives canonical read, allocation and selection display failure without retry");
+}
+struct SubdivisionSampleState {
+    int phase=0,response=0;bool armed=false,copying=false;
+    unsigned copies=0,bodies=0,actions=0,destroyedDuringCopy=0;
+    const void* original=nullptr;std::function<void()> action;
+    void Run(){armed=false;++actions;action();}
+    void ThrowResponse()const{
+        if(response==1)throw std::runtime_error("insertion sampler failed");
+        if(response==2)throw std::bad_alloc();
+    }
+};
+struct SubdivisionSample {
+    SubdivisionSampleState* state;int marker=173;bool privateCopy=false;
+    explicit SubdivisionSample(SubdivisionSampleState& value):state(&value){}
+    SubdivisionSample(const SubdivisionSample& other):state(other.state),marker(other.marker){
+        privateCopy=state->armed;if(!privateCopy)return;++state->copies;
+        if(state->phase!=0)return;
+        state->copying=true;state->original=&other;state->Run();
+        Check(state->destroyedDuringCopy==0&&other.marker==173,
+            "copying insertion channels pins the original Channel sampler through synchronous retirement");
+        state->copying=false;state->ThrowResponse();
+    }
+    ~SubdivisionSample(){
+        if(state->copying&&state->original==this)++state->destroyedDuringCopy;
+        if(privateCopy&&state->armed&&state->phase==2)state->Run();
+    }
+    ac::Sample operator()(const ce::Channel& channel,double frame)const{
+        if(state->armed&&state->phase==1){++state->bodies;
+            Check(privateCopy&&channel.id=="native"&&channel.track.keys.size()==2,
+                "insertion hit testing invokes its already-private Channel sampler without another callable copy");
+            state->Run();
+            Check(marker==173&&channel.id=="native"&&channel.track.keys.size()==2&&std::isfinite(frame),
+                "private sampled Channel and frame remain valid after its original Session retires");
+            state->ThrowResponse();
+        }
+        return {frame*frame/20.0,frame/10.0};
+    }
+};
+void SubdivisionSamplerLifetime(){
+    for(int phase=0;phase!=3;++phase)for(int action=0;action!=3;++action)for(int response=0;response!=3;++response){
+        // A noexcept sample destructor only retires; throwing is exercised by
+        // copy and body, not by terminating the process in a user destructor.
+        if(phase==2&&response!=0)continue;
+        std::printf("insertion sample lifetime phase=%d action=%d response=%d\n",phase,action,response);std::fflush(stdout);
+        auto host=SubdivisionHost();HostSource replacement;
+        replacement.data.push_back(MakeChannel("replacement",L"Replacement",{MakeKey(0,91),MakeKey(20,99)}));
+        SubdivisionSampleState state;state.phase=phase;state.response=response;
+        host.data[0].sample=SubdivisionSample(state);int subdivisions=0;
+        auto session=MakeSession(host);session.sources[0].subdivide=[&](auto&,auto,auto,auto&,auto& error){
+            ++subdivisions;error=L"release the private rejected insertion payload";return false;};
+        const HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
+        Check(IsWindow(window)&&KeyCount(window)==2,"insertion sample lifetime opens before arming its capture");
+        const POINT point=AskPoint(window,kHookPointForFrame,10);const auto token=ce::CaptureWindowSession(window);
+        const auto retained=token.lock();HWND next=nullptr;std::wstring status,field;int readsAfter=-1;
+        state.action=[&]{
+            if(action!=1)ce::CloseOwned(nullptr);
+            if(action!=0){next=static_cast<HWND>(ce::Open(nullptr,MakeSession(replacement),false));
+                Check(IsWindow(next),"insertion sample retirement creates a real replacement Session");
+                if(action==1)Check(next==window,"insertion sample same-owner replacement keeps the HWND");
+                status=GetText(next,kIdStatus);field=GetText(next,kIdFrameEdit);}
+            readsAfter=host.readCalls;
+        };
+        state.armed=true;TriggerSubdivision(window,point);
+        Check(state.actions==1&&state.copies==1&&state.bodies==unsigned(phase==1)&&
+            state.destroyedDuringCopy==0&&subdivisions==int(phase==2)&&host.applyCalls==0&&host.readCalls==readsAfter&&
+            retained&&!ce::IsWindowSessionCurrent(window,token)&&host.data[0].track.keys.size()==2,
+            "sample copy, hit-test body and rejected private release cannot publish or resume retired insertion");
+        if(next){
+            Check(KeyCount(next)==2&&replacement.applyCalls==0&&GetText(next,kIdStatus)==status&&
+                GetText(next,kIdFrameEdit)==field&&LocalWriteHistory(next)==std::array<std::uint64_t,2>{0,0},
+                "retired insertion sampler cannot update replacement controls, history or data");
+            ClickKey(next,1);Click(next,kIdDeleteKey);
+            Check(replacement.applyCalls==1&&KeyCount(next)==1,
+                "replacement remains editable after insertion sampler capture release");
+        }else Check(OwnedCurveWindow()==nullptr,"closed insertion sample leaves no registered editor");
+        state.armed=false;ce::CloseOwned(nullptr);host.data[0].sample={};
+    }
+    Note("insertion samples retain original channel storage through channel-copy, private hit testing and final release");
+}
+
+void SubdivisionRejectsNestedAuthoring(){
+    for(bool sampling:{false,true})for(int phase=0;phase!=3;++phase){
+        auto host=SubdivisionHost();SubdivisionRetirementState provider;SubdivisionSampleState sample;
+        provider.phase=phase;sample.phase=phase;auto session=MakeSession(host);
+        if(sampling){host.data[0].sample=SubdivisionSample(sample);session=MakeSession(host);
+            session.sources[0].subdivide=[](auto&,auto,auto,auto&,auto& error){error=L"private release";return false;};}
+        else session.sources[0].subdivide=SubdivisionRetirementProvider(provider);
+        const HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));SeedSubdivisionRedo(window);
+        const POINT point=AskPoint(window,kHookPointForFrame,10);const auto history=LocalWriteHistory(window);
+        const int applies=host.applyCalls,reads=host.readCalls;const auto data=host.data;
+        int pumps=0;
+        auto pump=[&]{
+            ++pumps;const auto before=LocalWriteHistory(window);const int beforeApplies=host.applyCalls,beforeReads=host.readCalls;
+            for(int command:{kIdAddKey,kIdDeleteKey,kIdApplyKey,kIdUndo,kIdRedo,kIdBakeRun})Click(window,command);
+            const HWND canvas=GetDlgItem(window,kIdCanvas);
+            SendMessageW(canvas,WM_KEYDOWN,VK_DELETE,0);SendMessageW(canvas,WM_LBUTTONDBLCLK,MK_LBUTTON,MAKELPARAM(point.x,point.y));
+            ce::NotifySourceChanged(nullptr,"source");SendMessageW(window,WM_APP+401,0,0);
+            Check(host.applyCalls==beforeApplies&&host.readCalls==beforeReads&&LocalWriteHistory(window)==before&&
+                SameWritePayload(host.data,data),
+                "nested commands, mouse insertion and source notifications cannot author during insertion callbacks");
+        };
+        if(sampling){sample.action=pump;sample.armed=true;}else{provider.action=pump;provider.armed=true;}
+        TriggerSubdivision(window,point);
+        Check(pumps==1&&host.applyCalls==applies+int(!sampling)&&host.readCalls>=reads,
+            "nested insertion callbacks run once and allow only the original accepted apply");
+        if(sampling)Check(LocalWriteHistory(window)==history&&SameWritePayload(host.data,data),
+            "rejected insertion sample preserves both retained history stacks after nested messages");
+        else Check(KeyCount(window)==3&&LocalWriteHistory(window)==std::array<std::uint64_t,2>{1,0},
+            "successful insertion commits one prepared result after nested messages are rejected");
+        provider.armed=sample.armed=false;ce::CloseOwned(nullptr);host.data[0].sample={};
+    }
+    Note("subdivision and insertion sampler copy, body and release reject nested authoring through the same guards");
+}
+struct SubdivisionReleaseState {
+    bool armed=false;unsigned releases=0;std::function<void()> action;
+    void Run(){armed=false;++releases;action();}
+};
+struct SubdivisionReleaseSample {
+    SubdivisionReleaseState* state;bool storedCopy=false;
+    explicit SubdivisionReleaseSample(SubdivisionReleaseState& value):state(&value){}
+    SubdivisionReleaseSample(const SubdivisionReleaseSample& other):state(other.state),storedCopy(true){}
+    ~SubdivisionReleaseSample(){if(storedCopy&&state->armed)state->Run();}
+    ac::Sample operator()(const ce::Channel&,double frame)const{return {frame*frame/20.0,frame/10.0};}
+};
+void SubdivisionReadPayloadRelease(){
+    // True/false/changed precheck latest payload, then the old adopted Channel
+    // released by an ordinary source refresh. All retire from real sample
+    // destruction, never by calling an editor-only hook from the fixture.
+    for(int route=0;route!=4;++route)for(int action=0;action!=3;++action){
+        std::printf("insertion read payload release route=%d action=%d\n",route,action);std::fflush(stdout);
+        auto host=SubdivisionHost();HostSource replacement;
+        replacement.data.push_back(MakeChannel("replacement",L"Replacement",{MakeKey(0,91),MakeKey(20,99)}));
+        SubdivisionReleaseState state;bool armRead=false;int subdivisions=0;
+        if(route==3){const SubdivisionReleaseSample sample(state);host.data[0].sample=sample;}
+        auto session=MakeSession(host);const auto read=session.sources[0].read;
+        session.sources[0].read=[&,read](auto& out,auto& error){
+            if(!read(out,error))return false;
+            if(armRead){armRead=false;const SubdivisionReleaseSample sample(state);out[0].sample=sample;
+                if(route==1){error=L"read returned private data but refused";return false;}
+                if(route==2)out[0].track.keys[1].value=21;
+            }
+            return true;
+        };
+        session.sources[0].subdivide=[&](auto& channels,std::size_t channel,int frame,std::size_t& index,auto& error){
+            ++subdivisions;return PrepareNativeSubdivision(channels,channel,frame,index,error);};
+        const HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
+        Check(IsWindow(window)&&KeyCount(window)==2,"sample-release read fixture opens its native source");
+        const POINT point=AskPoint(window,kHookPointForFrame,10);const auto token=ce::CaptureWindowSession(window);
+        const auto retained=token.lock();HWND next=nullptr;std::wstring status,field;int readsAfter=-1;
+        state.action=[&]{
+            if(action!=1)ce::CloseOwned(nullptr);
+            if(action!=0){next=static_cast<HWND>(ce::Open(nullptr,MakeSession(replacement),false));
+                Check(IsWindow(next),"sample-release read installs a real replacement editor");
+                if(action==1)Check(next==window,"sample-release read can replace only the Session on the same HWND");
+                status=GetText(next,kIdStatus);field=GetText(next,kIdFrameEdit);}
+            readsAfter=host.readCalls;
+        };
+        if(route==3){host.data[0].sample=[](const ce::Channel&,double frame){return ac::Sample{frame*frame/20.0,frame/10.0};};
+            state.armed=true;ce::NotifySourceChanged(nullptr,"source");SendMessageW(window,WM_APP+401,0,0);
+        }else{armRead=state.armed=true;TriggerSubdivision(window,point);}
+        Check(state.releases==1&&host.applyCalls==0&&host.readCalls==readsAfter&&retained&&
+            !ce::IsWindowSessionCurrent(window,token)&&subdivisions==int(route!=3)&&host.data[0].track.keys.size()==2,
+            "precheck or adopted old-sample release stops before prepared apply and old source display continuations");
+        if(next){Check(replacement.applyCalls==0&&KeyCount(next)==2&&GetText(next,kIdStatus)==status&&
+                GetText(next,kIdFrameEdit)==field&&LocalWriteHistory(next)==std::array<std::uint64_t,2>{0,0},
+                "released read payload cannot update replacement status, fields, channels or history");
+            ClickKey(next,1);Click(next,kIdDeleteKey);
+            Check(replacement.applyCalls==1&&KeyCount(next)==1,
+                "replacement remains editable after old channel sample release and source-read guards unwind");
+        }else Check(OwnedCurveWindow()==nullptr,"retired read payload leaves no native or registered ghost");
+        armRead=state.armed=false;ce::CloseOwned(nullptr);
+    }
+    Note("precheck latest and adopted old Channel sample releases cannot submit old prepared data or UI into new sources");
+}
+struct InsertionCaptureRelease;
+struct InsertionCaptureReleaseState {
+    bool armed=false,releaseReady=false,partialCopy=false;
+    int throwKind=0,copies=0,laterThrows=0,created=0,live=0,releases=0,earlyReleases=0;
+    std::weak_ptr<InsertionCaptureRelease> capture;
+    std::function<void()> action;
+};
+struct InsertionCaptureRelease {
+    InsertionCaptureReleaseState* state;
+    explicit InsertionCaptureRelease(InsertionCaptureReleaseState& value):state(&value){++state->created;++state->live;}
+    ~InsertionCaptureRelease(){
+        Check(state->live==1&&state->capture.expired(),
+            "the capture callback runs from its real final shared owner, with no local fixture owner retained");
+        --state->live;++state->releases;
+        if(!state->releaseReady){++state->earlyReleases;return;}
+        state->armed=false;state->releaseReady=false;state->action();
+    }
+};
+// The first armed copy owns one fresh capture. Further copies represent the
+// host's independent canonical sampler and intentionally acquire no ownership
+// of that private capture. The fixture retains only a weak observation.
+struct InsertionOwnedCaptureSampler {
+    InsertionCaptureReleaseState* state;int lane=0;
+    std::shared_ptr<InsertionCaptureRelease> capture;
+    explicit InsertionOwnedCaptureSampler(InsertionCaptureReleaseState& value,int channel=0):state(&value),lane(channel){}
+    InsertionOwnedCaptureSampler(const InsertionOwnedCaptureSampler& other):state(other.state),lane(other.lane){
+        if(!state->armed)return;
+        if(state->partialCopy&&lane==1){
+            ++state->laterThrows;state->releaseReady=true;
+            Check(state->created==1&&state->live==1&&state->capture.use_count()==1,
+                "later-channel copy failure sees the preceding copied Channel as the capture's sole owner");
+            if(state->throwKind==0)throw std::bad_alloc();
+            throw std::runtime_error("later native Channel sample copy failed");
+        }
+        ++state->copies;
+        if(state->copies==1){
+            capture=std::make_shared<InsertionCaptureRelease>(*state);state->capture=capture;
+            Check(state->capture.use_count()==1,
+                "a private sampler owns its capture after construction without an extra fixture strong reference");
+        }
+    }
+    ac::Sample operator()(const ce::Channel&,double frame)const{return {frame*frame/20.0,frame/10.0};}
+};
+
+void SubdivisionCommitPayloadRelease(){
+    // Rejected/throwing apply destroys CommitLocalChannels' still-owned next
+    // parameter. Acceptance moves it into state, then canonical adoption retires
+    // that exact private sampler. Neither is the earlier subdivide-false path.
+    for(int route=0;route!=3;++route)for(int action=0;action!=3;++action){
+        std::printf("subdivision commit payload release route=%d action=%d\n",route,action);std::fflush(stdout);
+        InsertionCaptureReleaseState state;auto host=SubdivisionHost();HostSource replacement;
+        replacement.data.push_back(MakeChannel("replacement",L"Replacement",{MakeKey(0,91),MakeKey(20,99)}));
+        const InsertionOwnedCaptureSampler sample(state);host.data[0].sample=sample;
+        auto session=MakeSession(host);const auto apply=session.sources[0].apply;int subdivisions=0;
+        session.sources[0].subdivide=[&](auto& channels,std::size_t channel,int frame,std::size_t& index,auto& error){
+            ++subdivisions;return PrepareNativeSubdivision(channels,channel,frame,index,error);};
+        session.sources[0].apply=[&,apply](const auto& channels,auto& error){
+            Check(state.created==1&&state.live==1&&state.capture.use_count()==1&&state.releases==0&&
+                channels.size()==1&&channels[0].track.keys.size()==3&&channels[0].track.keys[1].frame==10,
+                "apply receives the intact detached insertion while its private sampler capture is still exclusively owned");
+            state.releaseReady=true;
+            if(route==0){++host.applyCalls;error=L"apply rejected the prepared native key";return false;}
+            if(route==1){++host.applyCalls;throw std::runtime_error("apply failed before accepting the prepared key");}
+            return apply(channels,error);
+        };
+        const HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
+        Check(IsWindow(window)&&KeyCount(window)==2,"commit-tail sample release fixture opens before arming");
+        const POINT point=AskPoint(window,kHookPointForFrame,10);const auto token=ce::CaptureWindowSession(window);
+        const auto retained=token.lock();HWND next=nullptr;std::wstring status,field;int readsAfter=-1;
+        state.action=[&]{
+            if(action!=1)ce::CloseOwned(nullptr);
+            if(action!=0){next=static_cast<HWND>(ce::Open(nullptr,MakeSession(replacement),false));
+                Check(IsWindow(next),"commit-tail capture release installs a real replacement editor");
+                if(action==1)Check(next==window,"commit-tail capture release replaces its Session on the same HWND");
+                status=GetText(next,kIdStatus);field=GetText(next,kIdFrameEdit);}
+            readsAfter=host.readCalls;
+        };
+        state.armed=true;TriggerSubdivision(window,point);
+        Check(state.created==1&&state.releases==1&&state.live==0&&state.earlyReleases==0&&state.capture.expired()&&
+            subdivisions==1&&host.applyCalls==1&&host.readCalls==readsAfter&&retained&&!ce::IsWindowSessionCurrent(window,token)&&
+            host.data[0].track.keys.size()==std::size_t(route==2?3:2),
+            "real apply-parameter or accepted canonical release retires once, preserving exactly the host's accepted outcome");
+        if(next){Check(replacement.applyCalls==0&&KeyCount(next)==2&&GetText(next,kIdStatus)==status&&
+                GetText(next,kIdFrameEdit)==field&&LocalWriteHistory(next)==std::array<std::uint64_t,2>{0,0},
+                "commit-tail release cannot transfer old result, status, selection or history into a replacement");
+            ClickKey(next,1);Click(next,kIdDeleteKey);
+            Check(replacement.applyCalls==1&&KeyCount(next)==1,
+                "replacement remains editable after apply parameter and canonical capture releases");
+        }else Check(OwnedCurveWindow()==nullptr,"commit-tail capture release leaves no closed editor registered");
+        state.armed=state.releaseReady=false;ce::CloseOwned(nullptr);host.data[0].sample={};host.applied.clear();
+    }
+    Note("rejected, throwing and accepted canonical apply tails protect the final private sampler capture owner");
+}
+
+void SubdivisionPartialChannelCopyRelease(){
+    for(int failure=0;failure!=2;++failure)for(int action=0;action!=3;++action){
+        std::printf("subdivision partial channel copy failure=%d action=%d\n",failure,action);std::fflush(stdout);
+        InsertionCaptureReleaseState state;state.partialCopy=true;state.throwKind=failure;
+        auto host=SubdivisionHost();host.data.push_back(MakeChannel("second",L"Second",{MakeKey(0,0),MakeKey(20,20)}));
+        const InsertionOwnedCaptureSampler first(state,0),second(state,1);
+        host.data[0].sample=first;host.data[1].sample=second;host.data[1].selected=false;
+        HostSource replacement;replacement.data.push_back(MakeChannel("replacement",L"Replacement",{MakeKey(0,91),MakeKey(20,99)}));
+        int subdivisions=0;auto session=MakeSession(host);
+        session.sources[0].subdivide=[&](auto&,auto,auto,auto&,auto&){++subdivisions;return false;};
+        const HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
+        Check(IsWindow(window)&&KeyCount(window)==2,"partial-channel copy fixture opens before either copy is armed");
+        const POINT point=AskPoint(window,kHookPointForFrame,10);const int reads=host.readCalls;
+        const auto token=ce::CaptureWindowSession(window);const auto retained=token.lock();
+        HWND next=nullptr;std::wstring status,field;
+        state.action=[&]{
+            if(action!=1)ce::CloseOwned(nullptr);
+            if(action!=0){next=static_cast<HWND>(ce::Open(nullptr,MakeSession(replacement),false));
+                Check(IsWindow(next),"partial vector cleanup installs a real replacement Session");
+                if(action==1)Check(next==window,"partial vector cleanup can replace only the native window's Session");
+                status=GetText(next,kIdStatus);field=GetText(next,kIdFrameEdit);}
+        };
+        state.armed=true;TriggerSubdivision(window,point);
+        Check(state.copies==1&&state.laterThrows==1&&state.created==1&&state.releases==1&&state.live==0&&
+            state.earlyReleases==0&&state.capture.expired()&&subdivisions==0&&host.applyCalls==0&&host.readCalls==reads&&
+            retained&&!ce::IsWindowSessionCurrent(window,token)&&host.data.size()==2&&host.data[0].track.keys.size()==2,
+            "a later Channel copy exception safely retires through the preceding private Channel's final capture release");
+        if(next){Check(KeyCount(next)==2&&replacement.applyCalls==0&&GetText(next,kIdStatus)==status&&
+                GetText(next,kIdFrameEdit)==field&&LocalWriteHistory(next)==std::array<std::uint64_t,2>{0,0},
+                "partial vector cleanup cannot continue sampling, subdividing or updating replacement controls");
+            ClickKey(next,1);Click(next,kIdDeleteKey);
+            Check(replacement.applyCalls==1&&KeyCount(next)==1,"replacement remains editable after partial vector cleanup");
+        }else Check(OwnedCurveWindow()==nullptr,"partial vector cleanup removes its closed original editor");
+        state.armed=state.releaseReady=false;ce::CloseOwned(nullptr);
+        for(auto& channel:host.data)channel.sample={};host.applied.clear();
+    }
+    Note("partial multi-Channel copy failure protects final sampler ownership and rejects old continuation");
+}
+
+void SubdivisionCanonicalIdentitySelection(){
+    for(int mode=1;mode!=4;++mode){
+        auto host=SubdivisionHost();host.data.push_back(MakeChannel("other",L"Other",{MakeKey(0,91),MakeKey(20,99)}));
+        host.data[1].selected=false;bool normalize=false;int subdivisions=0,seeks=0,lastFrame=-1;
+        std::string selectedId;std::vector<int> selectedFrames;
+        auto session=MakeSession(host);const auto apply=session.sources[0].apply;
+        session.sources[0].subdivide=[&](auto& channels,std::size_t channel,int frame,std::size_t& index,auto& error){
+            ++subdivisions;return PrepareNativeSubdivision(channels,channel,frame,index,error);};
+        session.sources[0].apply=[&,apply](const auto& channels,auto& error){
+            if(!apply(channels,error))return false;
+            if(normalize){normalize=false;
+                if(mode&2){auto& native=host.data[0];native.track.keys.insert(native.track.keys.begin()+1,MakeKey(5,1.25));
+                    native.nativeControls.resize(native.track.keys.size());}
+                if(mode&1)std::swap(host.data[0],host.data[1]);
+            }
+            return true;
+        };
+        session.sources[0].writeKeySelection=[&](const auto& id,const auto& frames){selectedId=id;selectedFrames=frames;};
+        session.seek=[&](int frame){++seeks;lastFrame=frame;};
+        const HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
+        Check(IsWindow(window)&&KeyCount(window)==2,"canonical identity fixture opens the intended native channel");
+        const POINT point=AskPoint(window,kHookPointForFrame,10);normalize=true;TriggerSubdivision(window,point);
+        Check(subdivisions==1&&host.applyCalls==1&&ActiveChannelIndex(window)==((mode&1)?1:0)&&
+            KeyCount(window)==((mode&2)?4:3)&&GetText(window,kIdFrameEdit)==L"10"&&GetText(window,kIdValueEdit)==L"5"&&
+            selectedId=="native"&&selectedFrames==std::vector<int>{10}&&seeks==1&&lastFrame==10&&
+            LocalWriteHistory(window)==std::array<std::uint64_t,2>{1,0},
+            "canonical channel reordering and earlier keys restore the intended selection by stable channel id and frame");
+        Click(window,kIdDeleteKey);
+        const auto native=std::find_if(host.data.begin(),host.data.end(),[](const auto& channel){return channel.id=="native";});
+        Check(host.applyCalls==2&&native!=host.data.end()&&std::none_of(native->track.keys.begin(),native->track.keys.end(),
+            [](const auto& key){return key.frame==10;}),
+            "the next edit targets the canonical frame-ten key, not its obsolete numeric channel or key index");
+        ce::CloseOwned(nullptr);
+    }
+    Note("canonical channel and key reorderings preserve insertion selection identity and subsequent editing");
+}
+
+void SubdivisionThrowingReadRelease(){
+    for(int failure=0;failure!=2;++failure)for(int action=0;action!=3;++action){
+        std::printf("subdivision throwing read payload failure=%d action=%d\n",failure,action);std::fflush(stdout);
+        InsertionCaptureReleaseState state;auto host=SubdivisionHost();HostSource replacement;
+        replacement.data.push_back(MakeChannel("replacement",L"Replacement",{MakeKey(0,91),MakeKey(20,99)}));
+        bool fillThenThrow=false;int throws=0,subdivisions=0;
+        auto session=MakeSession(host);const auto read=session.sources[0].read;
+        session.sources[0].read=[&,read](auto& out,auto& error){
+            if(!read(out,error))return false;
+            if(fillThenThrow){fillThenThrow=false;const InsertionOwnedCaptureSampler sample(state);out[0].sample=sample;
+                Check(state.created==1&&state.live==1&&state.releases==0&&state.capture.use_count()==1,
+                    "throwing read leaves its filled out Channel as the capture's only actual owner");
+                state.releaseReady=true;++throws;
+                if(failure==0)throw std::runtime_error("read filled private channels before failing");
+                throw std::bad_alloc();
+            }
+            return true;
+        };
+        session.sources[0].subdivide=[&](auto& channels,std::size_t channel,int frame,std::size_t& index,auto& error){
+            ++subdivisions;return PrepareNativeSubdivision(channels,channel,frame,index,error);};
+        const HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
+        Check(IsWindow(window)&&KeyCount(window)==2,"throwing read cleanup opens before arming its private payload");
+        const POINT point=AskPoint(window,kHookPointForFrame,10);const auto token=ce::CaptureWindowSession(window);
+        const auto retained=token.lock();HWND next=nullptr;std::wstring status,field;int readsAfter=-1;
+        state.action=[&]{
+            if(action!=1)ce::CloseOwned(nullptr);
+            if(action!=0){next=static_cast<HWND>(ce::Open(nullptr,MakeSession(replacement),false));
+                Check(IsWindow(next),"throwing read payload release installs a real replacement editor");
+                if(action==1)Check(next==window,"throwing read payload release preserves the original HWND when reopening");
+                status=GetText(next,kIdStatus);field=GetText(next,kIdFrameEdit);}
+            readsAfter=host.readCalls;
+        };
+        fillThenThrow=state.armed=true;TriggerSubdivision(window,point);
+        Check(throws==1&&state.created==1&&state.releases==1&&state.live==0&&state.earlyReleases==0&&state.capture.expired()&&
+            subdivisions==1&&host.applyCalls==0&&host.readCalls==readsAfter&&retained&&!ce::IsWindowSessionCurrent(window,token)&&
+            host.data[0].track.keys.size()==2,
+            "filled-out read exception retires only on final latest-payload release without applying prepared data");
+        if(next){Check(replacement.applyCalls==0&&KeyCount(next)==2&&GetText(next,kIdStatus)==status&&
+                GetText(next,kIdFrameEdit)==field&&LocalWriteHistory(next)==std::array<std::uint64_t,2>{0,0},
+                "throwing latest cleanup never resumes old display or history work on the replacement");
+            ClickKey(next,1);Click(next,kIdDeleteKey);
+            Check(replacement.applyCalls==1&&KeyCount(next)==1,"replacement remains editable after throwing read payload cleanup");
+        }else Check(OwnedCurveWindow()==nullptr,"throwing read cleanup leaves no original editor registered");
+        fillThenThrow=state.armed=state.releaseReady=false;ce::CloseOwned(nullptr);
+    }
+    Note("throwing and OOM reads release filled latest Channel captures before any retired commit continuation");
+}
+void SubdivisionLifetime(){
+    NativeSubdivisionCopyBoundary();SubdivisionCallbackLifetime();SubdivisionSamplerLifetime();
+    SubdivisionFailuresKeepRedo();SubdivisionAcceptedRecovery();SubdivisionRejectsNestedAuthoring();SubdivisionReadPayloadRelease();
+    SubdivisionCommitPayloadRelease();SubdivisionPartialChannelCopyRelease();
+    SubdivisionCanonicalIdentitySelection();SubdivisionThrowingReadRelease();
+}
+
 HostSource TransportHost(){
     HostSource host;host.data.push_back(MakeChannel("transport",L"Transport",
         {MakeKey(0,1),MakeKey(10,3),MakeKey(20,2)}));return host;
@@ -5669,6 +6309,10 @@ int main(int argc,char** argv) {
     // Optional same-order diagnostic for a prior 0xC0000374 full-suite exit.
     // It retains every assertion and validates the process heap at group ends.
     g_validateHeap=argc>1&&std::string(argv[1])=="--heap-validate-all";
+    if(argc>1&&std::string(argv[1])=="--subdivision-lifetime"){
+        SubdivisionLifetime();
+        std::printf("curve subdivision lifetime: %d checks\n",g_checks);return 0;
+    }
     if(argc>1&&std::string(argv[1])=="--transport-write-lifetime"){
         TransportWriteLifetime();
         std::printf("curve transport write lifetime: %d checks\n",g_checks);return 0;
@@ -5762,6 +6406,7 @@ int main(int argc,char** argv) {
     ComparisonReadFailuresAndEntries();ComparisonReadAndLinkSemantics();ComparisonValueHandlesDoNotQueryLink();ComparisonNestedAndGeometryCopy();
     TransportCallbackLifetime();TransportFailuresAndMissing();TransportNestedAndSessionCache();TransportInvalidFramesAndMmdSource();TransportPaintStateAndDenseTicks();
     TransportWriteLifetime();
+    SubdivisionLifetime();
     BakeSelectedChannels();
     NativeSubdivisionRoute();NativeSampleBake();
     DuplicateFrameSelectsExisting();
