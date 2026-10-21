@@ -4,6 +4,11 @@
 #include <mms/refresh_binding.h>
 #include <mms/refresh_state.h>
 #include <mms/refresh_dependency.h>
+#include <mms/refresh_subscription.h>
+static_assert(offsetof(MmsUiRefreshSubscriptionDescV1, binding) == 8, "subscription binding offset");
+static_assert(offsetof(MmsUiRefreshSubscriptionStateV1, lastResult) == 56, "subscription result offset");
+static_assert(offsetof(MmsUiRefreshSubscriptionApiV1, unsubscribe) == 40, "subscription unsubscribe offset");
+static_assert(std::is_standard_layout<MmsUiRefreshSubscriptionApiV1>::value, "subscription standard layout");
 static_assert(offsetof(MmsUiRefreshDependencyDescV1, upstream) == 8, "dependency source offset");
 static_assert(offsetof(MmsUiRefreshDependencyDescV1, dependent) == 40, "dependency target offset");
 static_assert(offsetof(MmsUiRefreshDependencyApiV1, unregisterDependency) == 32, "dependency unregister offset");

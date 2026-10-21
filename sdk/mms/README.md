@@ -4,6 +4,8 @@
 
 基础 UI 的类型化与声明式封装已提供，见 [C++17 界面注册 SDK](cpp-ui.md)。`UiServices`、`RegistrationBundle` 和 `CommandUi` 包装同一套 C ABI，复杂插件继续操作原始句柄。
 
+[自动刷新订阅](refresh-subscriptions.md)为已有 DATA binding 安排来源发布后的刷新，复用原对象、队列和阶段。C++17 `RefreshSubscriptionServices` 包装同一 C 服务。[原创计数示例](examples/auto_refresh/plugin.cpp)展示延迟绑定、数据发布与按钮状态更新。
+
 [C++17 刷新 SDK](cpp-refresh.md)提供 `RefreshServices` 和可移动的 `RefreshTicket`，封装目标查询、整目标或局部矩形重绘及取消、释放。`RelayoutCurrent` 和 `RefreshStateLayout` 组合原 C 请求，实现保留布局的重排及按钮收缩恢复；`RefreshSubtree` 及便利方法使用同一注册树提交子树请求。票据仍为原 C 句柄，可以移交给低层代码。
 
 [控件状态内容 SDK](state-content.md)在原按钮及 INPUT 的 STATE 阶段包装标签、说明与禁用原因提供者。INPUT 的 `WriteInput` 继续包装同一 C 表、builder 和票据，并可收紧启用、只读和可见状态。简单插件注册提供者后提交 STATE 与 LAYOUT 组合，需要低层控制时继续使用同一对象。

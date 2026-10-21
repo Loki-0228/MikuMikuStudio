@@ -77,6 +77,7 @@ Win7 SP1 x64、CPU 绘制和 AMD 兼容是基础约束；不以 CUDA、NVAPI、A
 | `mms.events` | `subscribe(filter, callback, context, outToken)`、`unsubscribe(token)`、`publish(topic, payload)` | 按主题和可选对象筛选事件，支持非控件触发。 |
 | `mms.ui.refresh` | 已实现 `getCapabilities`、`getTarget`、`request`、`query`、`cancel`、`release` | 当前合并本插件目标和注册子树的受支持阶段；INPUT 默认属性 DATA 和 STATE 已接入，自动依赖仍待实现。 |
 | `mms.ui.refresh.bind` | 已实现 `getCapabilities`、`registerSource`、`publishSource`、`getSource`、`unregisterSource`、`bind`、`unbind`、`writePrepared`、`acquireDisplay`、`releaseDisplay` | 本插件来源和单目标显示模型；线程、配额与失效规则见[SDK](../sdk/mms/data-refresh.md)。 |
+| `mms.ui.refresh.subscribe` | 已实现 `getCapabilities`、`subscribe`、`query`、`unsubscribe` | 给原显式 DATA binding 注册 SELF 自动刷新；精确版本、合并及停止规则见[SDK](../sdk/mms/refresh-subscriptions.md)。 |
 | `mms.ui.geometry` | `resolve(elementId, outTarget)`、`acquire(targets, outSnapshot)`、`releaseSnapshot(lease)`、`mapPoints(snapshot, from, to, points, outPoints)` | 查询目标、不可变几何和跨区域坐标。 |
 | `mms.ui.style` | `getCapabilities(target, outCaps)`、`acquireComputed(target, outStyle)`、`releaseStyle(lease)`、`createOverride(desc, outHandle)`、`updateOverride(handle, desc)`、`removeOverride(handle)` | 查询和覆盖可用样式，不直接替换窗口过程。 |
 | `mms.ui.paint` | `getCapabilities(target, outCaps)`、`createLayer(desc, outLayer)`、`createResource(desc, outResource)`、`submitDisplayList(layer, list)`、`releaseResource(handle)`、`destroyLayer(layer)` | 创建受限绘制层并提交保留的绘制指令；提交产生的损伤交给统一刷新服务。 |
@@ -140,7 +141,7 @@ C 包装返回同一底层句柄的带类型引用，C++ 包装增加可移动 R
 
 ## 统一刷新请求
 
-`mms.ui.refresh` 1.0 支持 SELF、同插件注册 SUBTREE 和[显式 DEPENDENTS](../sdk/mms/refresh-dependencies.md)。各成员按实际能力执行 DATA、STATE、LAYOUT、REPAINT；GROUP 没有 SELF 绘制区。绑定见[数据刷新 SDK](../sdk/mms/data-refresh.md)，子树局部矩形见[刷新范围](../sdk/mms/refresh.md#子树范围)。DEPENDENTS 使用跨位置的整目标损伤，来源自动订阅尚未实现。completedKinds 记录完整成功的阶段；字段、配额及错误码以 SDK 为准。
+`mms.ui.refresh` 1.0 支持 SELF、同插件注册 SUBTREE 和[显式 DEPENDENTS](../sdk/mms/refresh-dependencies.md)。各成员按实际能力执行 DATA、STATE、LAYOUT、REPAINT；GROUP 没有 SELF 绘制区。绑定见[数据刷新 SDK](../sdk/mms/data-refresh.md)，子树局部矩形见[刷新范围](../sdk/mms/refresh.md#子树范围)。DEPENDENTS 使用跨位置的整目标损伤；显式 DATA binding 已支持[SELF 自动订阅](../sdk/mms/refresh-subscriptions.md)，依赖图自动传播仍未实现。completedKinds 记录完整成功的阶段；字段、配额及错误码以 SDK 为准。
 
 | 请求位 | 当前状态与语义 | 不隐含的动作 |
 | --- | --- | --- |
@@ -165,7 +166,7 @@ STATE 回调和原生状态应用保持只读保护，不继承命令编辑来�
 
 ### 显式依赖与后续自动传播
 
-DATA 已实现来源复制、版本捕获、显示交换及租约；不自动订阅。LAYOUT 使用现有保留树后端。显式依赖图已实现注册时循环检查、拓扑成员展开和原票据执行，规则见 SDK；以下自动传播、完整 STATE 和更广范围的布局能力仍属后续设计。
+DATA 已实现来源复制、版本捕获、显示交换及租约；已有显式 binding 可注册 SELF 自动订阅。LAYOUT 使用现有保留树后端。显式依赖图已实现注册时循环检查、拓扑成员展开和原票据执行，规则见 SDK；以下自动传播、完整 STATE 和更广范围的布局能力仍属后续设计。
 完整更新按 DATA、STATE、测量与 LAYOUT、损伤合并与 REPAINT 的顺序执行。只有值或度量实际变化才向后传播。需要新场景结果时，插件先发显式求值任务，完成后再请求显示该结果。
 SUBTREE 和 DEPENDENTS 只覆盖目标公开的范围。当前 LAYOUT 后端仍可能重排同一保留树；仅量测必需容器的优化尚未完成。SELF 的显式 DATA 使用非零 binding 和真实 sourceRevision；默认 INPUT 读回及集合 DATA 两者为 0，不能用布局修订或自造计数代替来源版本。
 

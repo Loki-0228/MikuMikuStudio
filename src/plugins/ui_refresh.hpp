@@ -80,6 +80,7 @@ class UiRefreshQueue {
     uint64_t topologyRevision_ = 1;
     bool topologyReady_ = false;
     std::uint64_t next_ = 1, nextGeneration_ = 1, nextGeometry_ = 1, epoch_ = 1;
+    uint64_t subscriptionCapacityRevision_ = 1;
     bool draining_ = false;
     bool menuTracking_ = false;
     const RefreshClient* evaluatingStateOwner_ = nullptr;
@@ -95,7 +96,7 @@ class UiRefreshQueue {
     std::function<MmsResult(MmsHandle, const std::function<MmsResult()>&, uint64_t&)> propertyData_;
     MmsResult Capabilities(RefreshClient&, MmsUiRefreshCapabilitiesV1*);
     MmsResult GetTarget(RefreshClient&, MmsHandle, MmsUiRefreshTargetV1*);
-    MmsResult Request(RefreshClient&, const MmsUiRefreshRequestV1*, MmsHandle*);
+    MmsResult Request(RefreshClient&, const MmsUiRefreshRequestV1*, MmsHandle*, MmsHandle subscription = 0);
     MmsResult Query(RefreshClient&, MmsHandle, MmsUiRefreshStateV1*);
     MmsResult Cancel(RefreshClient&, MmsHandle);
     MmsResult Release(RefreshClient&, MmsHandle);
@@ -108,6 +109,13 @@ class UiRefreshQueue {
     std::vector<MmsHandle> SubtreeLocked(MmsHandle) const;
     MmsResult ValidateTicketLocked(const Ticket&, bool geometry) const;
     void SyncTargets(const std::vector<RefreshPresentation>&, bool menus);
+    void WakeSubscriptions() noexcept;
+    void SignalSubscriptionWakeLocked() noexcept;
+    void CleanupSubscriptions() noexcept;
+    void RetrySubscriptions() noexcept;
+    void ScheduleSubscriptions();
+    void PruneInvalidSubscriptionTargets();
+    std::map<MmsHandle, Ticket>::iterator EraseTicketLocked(std::map<MmsHandle, Ticket>::iterator) noexcept;
 public:
     explicit UiRefreshQueue(UiRegistry&);
     ~UiRefreshQueue();

@@ -6,6 +6,8 @@
 namespace mikumikustudio::plugins {
 namespace {
 constexpr uint32_t kSources = 64, kBindings = 128, kLeases = 128, kContributions = 256;
+constexpr uint32_t kSubscriptions = 128, kGlobalSubscriptions = 2048;
+constexpr uint32_t kSubscriptionKinds = MMS_UI_REFRESH_DATA | MMS_UI_REFRESH_STATE | MMS_UI_REFRESH_LAYOUT | MMS_UI_REFRESH_REPAINT;
 constexpr uint64_t kModelBytes = 256 * 1024, kOwnerBytes = 2 * 1024 * 1024, kGlobalBytes = 32 * 1024 * 1024;
 bool SameTarget(const MmsUiTargetRefV1& a, const MmsUiTargetRefV1& b) noexcept {
     return a.element == b.element && a.instanceGeneration == b.instanceGeneration && a.projectEpoch == b.projectEpoch;
@@ -16,6 +18,7 @@ bool TargetValid(const MmsUiTargetRefV1& target) noexcept {
 struct Accounting {
     std::atomic<uint64_t> bytes{0};
     std::atomic<unsigned> contributions{0};
+    std::atomic<uint64_t> releasedRevision{0};
 };
 bool Reserve(std::atomic<uint64_t>& value, uint64_t amount, uint64_t maximum) noexcept {
     auto previous = value.load();
@@ -26,8 +29,15 @@ bool Reserve(std::atomic<uint64_t>& value, uint64_t amount, uint64_t maximum) no
 struct Snapshot {
     std::shared_ptr<Accounting> owner, global;
     uint64_t charge = 0;
+    // Only a source/display snapshot actually retained by the host creates a
+    // capacity event. Rolling back an uncommitted candidate cannot awaken
+    // another failed candidate and make two OOM consumers retry each other.
+    mutable bool retained = false;
     std::vector<unsigned char> bytes;
-    ~Snapshot() { if (charge) { owner->bytes.fetch_sub(charge); global->bytes.fetch_sub(charge); } }
+    ~Snapshot() { if (charge) {
+        owner->bytes.fetch_sub(charge); global->bytes.fetch_sub(charge);
+        if (retained) global->releasedRevision.fetch_add(1);
+    } }
     MmsBytes View() const noexcept { return {bytes.empty() ? nullptr : bytes.data(), bytes.size()}; }
 };
 MmsResult CopySnapshot(const std::shared_ptr<Accounting>& owner, const std::shared_ptr<Accounting>& global,
@@ -52,7 +62,7 @@ struct UiRefreshBindings::Impl {
         RefreshClient* client;
         std::shared_ptr<Accounting> accounting = std::make_shared<Accounting>();
         std::atomic<bool> retired{false};
-        unsigned sources = 0, bindings = 0, leases = 0, builders = 0;
+        unsigned sources = 0, bindings = 0, leases = 0, builders = 0, subscriptions = 0;
     };
     struct Source {
         MmsHandle handle = 0;
@@ -72,11 +82,22 @@ struct UiRefreshBindings::Impl {
         std::shared_ptr<const Snapshot> display;
     };
     struct Lease { std::shared_ptr<Owner> owner; std::shared_ptr<const Snapshot> display; };
+    struct Subscription {
+        MmsHandle handle = 0, binding = 0, ticket = 0;
+        std::shared_ptr<Owner> owner;
+        uint32_t kinds = 0;
+        uint64_t latest = 0, submitted = 0, completed = 0;
+        MmsResult lastResult = MMS_OK;
+        bool armed = false, claimed = false;
+        uint32_t waitEvents = 0;
+        uint64_t waitCapacityRevision = 0, waitQueueCapacityRevision = 0;
+    };
     struct Builder {
         std::shared_ptr<Owner> owner;
         uint64_t maximum = 0;
         bool written = false;
         MmsResult failure = MMS_OK;
+        uint64_t failureCapacityRevision = 0;
         std::shared_ptr<const Snapshot> candidate;
     };
     struct Flight {
@@ -94,6 +115,7 @@ struct UiRefreshBindings::Impl {
     std::vector<std::shared_ptr<Owner>> contexts;
     std::map<MmsHandle, Source> sources;
     std::map<MmsHandle, std::shared_ptr<Binding>> bindings;
+    std::map<MmsHandle, Subscription> subscriptions;
     std::map<MmsHandle, Lease> leases;
     std::map<MmsHandle, Builder*> builders;
 
@@ -147,7 +169,8 @@ struct UiRefreshBindings::Impl {
     MmsResult Publish(Owner& owner, const MmsUiDataSourcePublishV1* update, MmsUiDataSourceStateV1* out) {
         if (!Valid(update) || !Valid(out) || update->flags || update->reserved || (update->bytes.bytes && !update->bytes.data)) return MMS_E_ARGUMENT;
         if (const auto r = Mutation(owner, false)) return r;
-        std::lock_guard<std::mutex> lock(mutex);
+        bool wake = false, capacityReleased = false;
+        std::unique_lock<std::mutex> lock(mutex);
         if (owner.retired || owner.client->stopping.load()) return MMS_E_NOT_READY;
         auto found = sources.find(update->source); if (found == sources.end()) return MMS_E_STALE;
         auto& s = found->second; if (s.owner.get() != &owner) return MMS_E_ARGUMENT;
@@ -158,23 +181,51 @@ struct UiRefreshBindings::Impl {
             if (s.revision == UINT64_MAX) return MMS_E_BUSY;
             std::shared_ptr<const Snapshot> candidate;
             if (const auto r = CopySnapshot(owner.accounting, global, update->bytes, s.maximum, candidate)) return r;
-            s.snapshot = std::move(candidate); ++s.revision;
+            const auto releasedBefore = global->releasedRevision.load();
+            candidate->retained = true; s.snapshot = std::move(candidate); ++s.revision;
+            capacityReleased = global->releasedRevision.load() != releasedBefore;
+            // All slots were allocated at subscription time. Publishing only
+            // updates bounded scalar mailboxes while holding this lock.
+            for (auto& entry : subscriptions) {
+                auto& sub = entry.second;
+                const auto binding = bindings.find(sub.binding);
+                if (binding == bindings.end() || binding->second->source != s.handle) continue;
+                sub.latest = s.revision;
+                if (!sub.ticket) {
+                    wake |= !sub.armed && !sub.claimed;
+                    sub.armed = true; sub.waitEvents = 0;
+                }
+            }
         }
-        *out = {Header<MmsUiDataSourceStateV1>(), s.handle, s.revision, s.epoch, s.snapshot->bytes.size()}; return MMS_OK;
+        *out = {Header<MmsUiDataSourceStateV1>(), s.handle, s.revision, s.epoch, s.snapshot->bytes.size()};
+        lock.unlock();
+        if (wake && hooks.wakeSubscriptions) hooks.wakeSubscriptions();
+        // Replacing an unsubscribed source can free the retained bytes that
+        // another binding's display is waiting for. Notify only after the
+        // lock and only when an old retained snapshot was really released.
+        if (capacityReleased && hooks.capacityReleased) hooks.capacityReleased();
+        return MMS_OK;
     }
     void RemoveBinding(std::map<MmsHandle, std::shared_ptr<Binding>>::iterator found) noexcept {
+        for (auto it = subscriptions.begin(); it != subscriptions.end();) {
+            if (it->second.binding == found->first) { --it->second.owner->subscriptions; it = subscriptions.erase(it); }
+            else ++it;
+        }
         found->second->active = false; --found->second->owner->bindings; bindings.erase(found);
     }
     MmsResult Unregister(Owner& owner, MmsHandle handle) {
         if (GetCurrentThreadId() != thread) return MMS_E_THREAD;
         if (ReadOnly()) return MMS_E_BUSY;
-        std::lock_guard<std::mutex> lock(mutex);
+        std::unique_lock<std::mutex> lock(mutex);
         auto found = sources.find(handle); if (found == sources.end()) return MMS_E_STALE;
         if (found->second.owner.get() != &owner) return MMS_E_ARGUMENT;
         for (auto it = bindings.begin(); it != bindings.end();) {
             if (it->second->source == handle) { auto erase = it++; RemoveBinding(erase); } else ++it;
         }
-        --owner.sources; sources.erase(found); return MMS_OK;
+        --owner.sources; sources.erase(found); lock.unlock();
+        if (hooks.cleanupSubscriptions) hooks.cleanupSubscriptions();
+        if (hooks.capacityReleased) hooks.capacityReleased();
+        return MMS_OK;
     }
     MmsResult Bind(Owner& owner, const MmsUiDataBindingDescV1* desc, MmsHandle* out) {
         if (!Valid(desc) || !out || !TargetValid(desc->target) || !desc->source || !desc->maxDisplayBytes ||
@@ -197,10 +248,78 @@ struct UiRefreshBindings::Impl {
     MmsResult Unbind(Owner& owner, MmsHandle handle) {
         if (GetCurrentThreadId() != thread) return MMS_E_THREAD;
         if (ReadOnly()) return MMS_E_BUSY;
-        std::lock_guard<std::mutex> lock(mutex);
+        std::unique_lock<std::mutex> lock(mutex);
         auto found = bindings.find(handle); if (found == bindings.end()) return MMS_E_STALE;
         if (found->second->owner.get() != &owner) return MMS_E_ARGUMENT;
-        RemoveBinding(found); return MMS_OK;
+        RemoveBinding(found); lock.unlock();
+        if (hooks.cleanupSubscriptions) hooks.cleanupSubscriptions();
+        if (hooks.capacityReleased) hooks.capacityReleased();
+        return MMS_OK;
+    }
+    MmsResult SubscriptionCaps(Owner& owner, MmsUiRefreshSubscriptionCapabilitiesV1* out) {
+        if (!Valid(out)) return MMS_E_ARGUMENT;
+        if (const auto r = Mutation(owner, true)) return r;
+        std::lock_guard<std::mutex> lock(mutex);
+        if (owner.retired || owner.client->stopping.load()) return MMS_E_NOT_READY;
+        *out = {Header<MmsUiRefreshSubscriptionCapabilitiesV1>(), kSubscriptions, kSubscriptionKinds, MMS_UI_REFRESH_SELF, 0, {0, 0}};
+        return MMS_OK;
+    }
+    MmsResult Subscribe(Owner& owner, const MmsUiRefreshSubscriptionDescV1* desc, MmsHandle* out) {
+        if (!Valid(desc) || !out || !desc->binding || !(desc->kinds & MMS_UI_REFRESH_DATA) ||
+            (desc->kinds & ~kSubscriptionKinds) || desc->flags || desc->reserved) return MMS_E_ARGUMENT;
+        if (const auto r = Mutation(owner, true)) return r;
+        MmsUiTargetRefV1 target{};
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            auto found = bindings.find(desc->binding);
+            if (found == bindings.end()) return MMS_E_STALE;
+            if (found->second->owner.get() != &owner) return MMS_E_ARGUMENT;
+            target = found->second->target;
+        }
+        if (!hooks.subscriptionTarget) return MMS_E_NOT_READY;
+        if (const auto r = hooks.subscriptionTarget(*owner.client, target, desc->kinds)) return r;
+        std::unique_lock<std::mutex> lock(mutex);
+        if (owner.retired || owner.client->stopping.load()) return MMS_E_NOT_READY;
+        const auto binding = bindings.find(desc->binding);
+        if (binding == bindings.end() || !binding->second->active || !SameTarget(binding->second->target, target) || target.projectEpoch != epoch)
+            return MMS_E_STALE;
+        if (binding->second->owner.get() != &owner) return MMS_E_ARGUMENT;
+        for (const auto& entry : subscriptions) if (entry.second.binding == desc->binding) return MMS_E_CONFLICT;
+        if (owner.subscriptions >= kSubscriptions || subscriptions.size() >= kGlobalSubscriptions) return MMS_E_BUSY;
+        const auto source = sources.find(binding->second->source);
+        if (source == sources.end() || source->second.epoch != epoch) return MMS_E_STALE;
+        Subscription sub; sub.handle = Next(); sub.binding = desc->binding; sub.owner = binding->second->owner;
+        sub.kinds = desc->kinds; sub.latest = source->second.revision; sub.armed = bool(source->second.snapshot);
+        const auto handle = sub.handle; const auto wake = sub.armed;
+        subscriptions.emplace(handle, std::move(sub)); ++owner.subscriptions; *out = handle;
+        lock.unlock();
+        if (wake && hooks.wakeSubscriptions) hooks.wakeSubscriptions();
+        return MMS_OK;
+    }
+    MmsResult QuerySubscription(Owner& owner, MmsHandle handle, MmsUiRefreshSubscriptionStateV1* out) {
+        if (!Valid(out)) return MMS_E_ARGUMENT;
+        std::lock_guard<std::mutex> lock(mutex);
+        const auto found = subscriptions.find(handle);
+        if (found == subscriptions.end()) return MMS_E_STALE;
+        const auto& s = found->second;
+        if (s.owner.get() != &owner) return MMS_E_ARGUMENT;
+        if (owner.retired || owner.client->stopping.load()) return MMS_E_STALE;
+        const auto binding = bindings.find(s.binding);
+        if (binding == bindings.end()) return MMS_E_STALE;
+        *out = {Header<MmsUiRefreshSubscriptionStateV1>(), s.handle, s.binding, binding->second->target.projectEpoch,
+            s.latest, s.submitted, s.completed, s.lastResult, uint32_t(s.ticket || s.armed || s.waitEvents || s.claimed), 0};
+        return MMS_OK;
+    }
+    MmsResult Unsubscribe(Owner& owner, MmsHandle handle) {
+        if (GetCurrentThreadId() != thread) return MMS_E_THREAD;
+        if (ReadOnly()) return MMS_E_BUSY;
+        std::unique_lock<std::mutex> lock(mutex);
+        const auto found = subscriptions.find(handle);
+        if (found == subscriptions.end()) return MMS_E_STALE;
+        if (found->second.owner.get() != &owner) return MMS_E_ARGUMENT;
+        --owner.subscriptions; subscriptions.erase(found); lock.unlock();
+        if (hooks.cleanupSubscriptions) hooks.cleanupSubscriptions();
+        return MMS_OK;
     }
     MmsResult WritePrepared(Owner& owner, MmsHandle handle, MmsBytes bytes) {
         if (GetCurrentThreadId() != thread) return MMS_E_THREAD;
@@ -211,8 +330,9 @@ struct UiRefreshBindings::Impl {
         if (owner.retired || owner.client->stopping.load()) return builder.failure = MMS_E_CANCELLED;
         if (builder.failure) return builder.failure;
         if (builder.written) return builder.failure = MMS_E_CONFLICT;
+        const auto capacityRevision = global->releasedRevision.load();
         const auto result = Boundary([&] { return CopySnapshot(owner.accounting, global, bytes, builder.maximum, builder.candidate); });
-        if (result) return builder.failure = result;
+        if (result) { builder.failureCapacityRevision = capacityRevision; return builder.failure = result; }
         builder.written = true; return MMS_OK;
     }
     MmsResult Acquire(Owner& owner, MmsHandle handle, MmsUiDataDisplayV1* out) {
@@ -227,10 +347,12 @@ struct UiRefreshBindings::Impl {
         *out = {Header<MmsUiDataDisplayV1>(), lease, b.handle, b.source, b.consumed, b.displayRevision, b.target.projectEpoch, b.display->View()}; return MMS_OK;
     }
     MmsResult Release(Owner& owner, MmsHandle handle) {
-        std::lock_guard<std::mutex> lock(mutex);
+        std::unique_lock<std::mutex> lock(mutex);
         auto found = leases.find(handle); if (found == leases.end()) return MMS_E_NOT_FOUND;
         if (found->second.owner.get() != &owner) return MMS_E_ARGUMENT;
-        --owner.leases; leases.erase(found); return MMS_OK;
+        --owner.leases; leases.erase(found); lock.unlock();
+        if (hooks.capacityReleased) hooks.capacityReleased();
+        return MMS_OK;
     }
 };
 
@@ -269,6 +391,93 @@ MmsUiRefreshBindingApiV1 UiRefreshBindings::Api(RefreshClient& client) {
     api.releaseDisplay = [](void* p, MmsHandle h) { DATA_CALL(return o.host->Release(o, h)); };
 #undef DATA_CALL
     return api;
+}
+MmsUiRefreshSubscriptionApiV1 UiRefreshBindings::SubscriptionApi(RefreshClient& client) {
+    auto owner = impl_->For(client);
+    MmsUiRefreshSubscriptionApiV1 api{}; api.h = Header<MmsUiRefreshSubscriptionApiV1>(); api.context = owner.get();
+#define SUBSCRIPTION_CALL(body) auto& o = *static_cast<Impl::Owner*>(p); Impl::Flight flight(o); return Boundary([&]() -> MmsResult { body; })
+    api.getCapabilities = [](void* p, MmsUiRefreshSubscriptionCapabilitiesV1* out) { SUBSCRIPTION_CALL(return o.host->SubscriptionCaps(o, out)); };
+    api.subscribe = [](void* p, const MmsUiRefreshSubscriptionDescV1* desc, MmsHandle* out) { SUBSCRIPTION_CALL(return o.host->Subscribe(o, desc, out)); };
+    api.query = [](void* p, MmsHandle h, MmsUiRefreshSubscriptionStateV1* out) { SUBSCRIPTION_CALL(return o.host->QuerySubscription(o, h, out)); };
+    api.unsubscribe = [](void* p, MmsHandle h) { SUBSCRIPTION_CALL(return o.host->Unsubscribe(o, h)); };
+#undef SUBSCRIPTION_CALL
+    return api;
+}
+bool UiRefreshBindings::TakeSubscription(MmsHandle after, SubscriptionWork& out) noexcept {
+    auto& state = *impl_; std::lock_guard<std::mutex> lock(state.mutex);
+    for (auto it = state.subscriptions.upper_bound(after); it != state.subscriptions.end(); ++it) {
+        auto& s = it->second;
+        if (!s.armed || s.ticket || s.claimed || s.owner->retired || s.owner->client->stopping.load()) continue;
+        const auto binding = state.bindings.find(s.binding);
+        if (binding == state.bindings.end()) continue;
+        out = {s.owner->client, s.handle, s.binding, binding->second->target, s.kinds, s.latest, state.global->releasedRevision.load(), 0};
+        s.armed = false; s.claimed = true; return true;
+    }
+    return false;
+}
+bool UiRefreshBindings::SubmitSubscription(const SubscriptionWork& work, MmsHandle ticket, MmsResult result) noexcept {
+    auto& state = *impl_; std::lock_guard<std::mutex> lock(state.mutex);
+    const auto found = state.subscriptions.find(work.subscription);
+    if (found == state.subscriptions.end() || found->second.owner->client != work.client) return false;
+    auto& s = found->second; s.claimed = false; s.lastResult = result;
+    if (!result) {
+        s.ticket = ticket; s.submitted = work.revision; s.armed = false; s.waitEvents = 0;
+    } else if (s.latest > work.revision) {
+        s.armed = true; s.waitEvents = 0;
+    } else {
+        s.armed = false;
+        s.waitEvents = result == MMS_E_BUSY ? RetryQueueCapacity : result == MMS_E_NOT_READY ? RetryTargetPublication :
+            result == MMS_E_MEMORY ? RetryQueueCapacity | RetryDisplayCapacity : result == MMS_E_FAILED ? RetryHostWake : 0;
+        s.waitCapacityRevision = work.capacityRevision; s.waitQueueCapacityRevision = work.queueCapacityRevision;
+    }
+    return true;
+}
+void UiRefreshBindings::CompleteSubscription(MmsHandle handle, MmsHandle ticket, uint64_t revision, MmsResult result,
+                                             uint32_t waitEvents, uint64_t capacityRevision) noexcept {
+    auto& state = *impl_; std::lock_guard<std::mutex> lock(state.mutex);
+    const auto found = state.subscriptions.find(handle);
+    if (found == state.subscriptions.end() || found->second.ticket != ticket) return;
+    auto& s = found->second; s.ticket = 0; s.lastResult = result;
+    if (!result) s.completed = std::max(s.completed, revision);
+    s.armed = s.latest > s.submitted;
+    s.waitEvents = !s.armed && (result == MMS_E_BUSY || result == MMS_E_NOT_READY || result == MMS_E_MEMORY) ?
+        (waitEvents ? waitEvents : result == MMS_E_NOT_READY ? RetryTargetPublication : RetryConsumerPublication) : 0;
+    s.waitCapacityRevision = capacityRevision == UINT64_MAX ? state.global->releasedRevision.load() : capacityRevision;
+}
+bool UiRefreshBindings::SubscriptionAlive(const RefreshClient& client, MmsHandle handle) const noexcept {
+    auto& state = *impl_; std::lock_guard<std::mutex> lock(state.mutex);
+    const auto found = state.subscriptions.find(handle);
+    return found != state.subscriptions.end() && found->second.owner->client == &client &&
+        !found->second.owner->retired && !client.stopping.load();
+}
+bool UiRefreshBindings::PendingSubscriptions() const noexcept {
+    auto& state = *impl_; std::lock_guard<std::mutex> lock(state.mutex);
+    for (const auto& entry : state.subscriptions) {
+        const auto& s = entry.second;
+        if (s.armed && !s.ticket && !s.claimed && !s.owner->retired && !s.owner->client->stopping.load()) return true;
+    }
+    return false;
+}
+bool UiRefreshBindings::RetrySubscriptions(uint32_t events, uint64_t queueCapacityRevision) noexcept {
+    auto& state = *impl_; std::lock_guard<std::mutex> lock(state.mutex); bool changed = false;
+    for (auto& entry : state.subscriptions) {
+        auto& s = entry.second;
+        const auto matching = s.waitEvents & events;
+        const bool actualCapacity = (matching & ~(RetryDisplayCapacity | RetryQueueCapacity)) ||
+            ((matching & RetryQueueCapacity) && queueCapacityRevision > s.waitQueueCapacityRevision) ||
+            ((matching & RetryDisplayCapacity) && state.global->releasedRevision.load() > s.waitCapacityRevision);
+        if (actualCapacity && !s.ticket && !s.claimed && !s.owner->retired && !s.owner->client->stopping.load()) {
+            s.armed = true; s.waitEvents = 0; changed = true;
+        }
+    }
+    return changed;
+}
+void UiRefreshBindings::FailSubscriptionScheduling(MmsResult result) noexcept {
+    auto& state = *impl_; std::lock_guard<std::mutex> lock(state.mutex);
+    for (auto& entry : state.subscriptions) {
+        auto& s = entry.second;
+        if (s.armed && !s.ticket && !s.claimed) { s.armed = false; s.waitEvents = RetryHostWake; s.lastResult = result; }
+    }
 }
 MmsResult UiRefreshBindings::Capture(RefreshClient& client, MmsHandle handle, const MmsUiTargetRefV1& target,
                                     uint64_t revision, Contribution& out) {
@@ -338,16 +547,17 @@ MmsResult UiRefreshBindings::ValidateSubtree(const RefreshClient& client, const 
     return count == captured.size() ? MMS_OK : MMS_E_STALE;
 }
 MmsResult UiRefreshBindings::Consume(const Contribution& contribution, const std::function<MmsResult()>& revalidate,
-                                    uint64_t& consumedRevision, bool& displayChanged) {
+                                    uint64_t& consumedRevision, bool& displayChanged, uint32_t* subscriptionWait,
+                                    uint64_t* subscriptionCapacityRevision) {
     auto& state = *impl_;
     if (GetCurrentThreadId() != state.thread) return MMS_E_THREAD;
     if (!contribution || !revalidate) return MMS_E_ARGUMENT;
     if (!state.hooks.readOnly) return MMS_E_NOT_READY;
     auto binding = contribution->binding;
     Impl::Flight flight(*binding->owner);
-    bool changed = false;
+    bool changed = false; uint32_t waitEvents = 0; uint64_t waitCapacityRevision = state.global->releasedRevision.load();
     const auto result = Boundary([&] { return state.hooks.readOnly([&]() -> MmsResult {
-        if (const auto r = revalidate()) return r;
+        if (const auto r = revalidate()) { if (r == MMS_E_NOT_READY) waitEvents = RetryTargetPublication; return r; }
         bool already = false;
         {
             std::lock_guard<std::mutex> lock(state.mutex);
@@ -361,7 +571,9 @@ MmsResult UiRefreshBindings::Consume(const Contribution& contribution, const std
         MmsHandle token = 0;
         {
             std::lock_guard<std::mutex> lock(state.mutex);
-            if (builder.owner->builders) return MMS_E_BUSY;
+            if (builder.owner->builders) { waitEvents = RetryDisplayCapacity; return MMS_E_BUSY; }
+            waitEvents = RetryDisplayCapacity;
+            waitCapacityRevision = state.global->releasedRevision.load();
             token = state.Next(); state.builders.emplace(token, &builder); ++builder.owner->builders;
         }
         struct ClearBuilder {
@@ -370,24 +582,31 @@ MmsResult UiRefreshBindings::Consume(const Contribution& contribution, const std
         } clear{state, token, builder};
         const MmsUiDataPrepareV1 input{Header<MmsUiDataPrepareV1>(), binding->target, binding->source,
             contribution->revision, contribution->snapshot->View(), token, binding->consumed};
+        waitEvents = 0;
         MmsResult prepared = MMS_OK;
         if (binding->prepare) prepared = Boundary([&] { return binding->prepare(binding->context, &input); });
         else prepared = state.WritePrepared(*binding->owner, token, input.sourceBytes);
-        if (prepared) return prepared;
-        if (builder.failure) return builder.failure;
+        if (prepared) {
+            waitEvents = builder.failure == prepared && (prepared == MMS_E_BUSY || prepared == MMS_E_MEMORY) ? RetryDisplayCapacity : RetryConsumerPublication;
+            if (waitEvents == RetryDisplayCapacity) waitCapacityRevision = builder.failureCapacityRevision;
+            return prepared;
+        }
+        if (builder.failure) { waitEvents = RetryDisplayCapacity; waitCapacityRevision = builder.failureCapacityRevision; return builder.failure; }
         if (!builder.written || !builder.candidate) return MMS_E_FAILED;
-        if (const auto r = revalidate()) return r;
+        if (const auto r = revalidate()) { if (r == MMS_E_NOT_READY) waitEvents = RetryTargetPublication; return r; }
         std::lock_guard<std::mutex> lock(state.mutex);
         if (binding->owner->retired || binding->owner->client->stopping.load()) return MMS_E_CANCELLED;
         if (!binding->active || binding->target.projectEpoch != state.epoch) return MMS_E_STALE;
         if (binding->consumed > contribution->revision) return MMS_E_STALE;
         changed = !Equal(binding->display, builder.candidate->View());
         if (changed && binding->displayRevision == UINT64_MAX) return MMS_E_BUSY;
-        if (changed) { binding->display.swap(builder.candidate); ++binding->displayRevision; }
+        if (changed) { builder.candidate->retained = true; binding->display.swap(builder.candidate); ++binding->displayRevision; }
         binding->consumed = contribution->revision;
         return MMS_OK;
     }); });
     if (!result) { consumedRevision = contribution->revision; displayChanged = changed; }
+    else if (subscriptionWait) *subscriptionWait = waitEvents;
+    if (result && subscriptionCapacityRevision) *subscriptionCapacityRevision = waitCapacityRevision;
     return result;
 }
 bool UiRefreshBindings::HasBinding(const RefreshClient& client, const MmsUiTargetRefV1& target) const {
@@ -406,8 +625,8 @@ void UiRefreshBindings::AdvanceProjectEpoch(uint64_t epoch) noexcept {
     auto& state = *impl_; std::lock_guard<std::mutex> lock(state.mutex);
     state.epoch = epoch;
     for (auto& item : state.bindings) item.second->active = false;
-    state.bindings.clear(); state.sources.clear();
-    for (auto& item : state.owners) { item.second->sources = 0; item.second->bindings = 0; }
+    state.bindings.clear(); state.sources.clear(); state.subscriptions.clear();
+    for (auto& item : state.owners) { item.second->sources = 0; item.second->bindings = 0; item.second->subscriptions = 0; }
 }
 void UiRefreshBindings::Retire(RefreshClient& client) noexcept {
     client.stopping.store(true);
@@ -426,6 +645,6 @@ bool UiRefreshBindings::HasLeases(const RefreshClient& client) const {
     auto found = state.owners.find(const_cast<RefreshClient*>(&client));
     if (found == state.owners.end()) return false;
     const auto& o = *found->second;
-    return client.inFlight.load() || o.sources || o.bindings || o.leases || o.builders || o.accounting->contributions.load();
+    return client.inFlight.load() || o.sources || o.bindings || o.leases || o.builders || o.subscriptions || o.accounting->contributions.load();
 }
 }

@@ -2,7 +2,7 @@
 
 `mms.ui.refresh.bind` 1.0 将插件准备的数据复制为宿主保留的不可变显示模型。C 定义见 [refresh_binding.h](include/mms/refresh_binding.h)，C++17 包装见 [data_refresh.hpp](include/mms/cpp/data_refresh.hpp)。它复用原 UI 元素、目标引用和 [mms.ui.refresh 票据](refresh.md)，不创建第二个控件或刷新队列。
 
-支持本插件已挂载目标的 `DATA + SELF`、注册父对象的 `DATA + SUBTREE`，以及[显式依赖图](refresh-dependencies.md)的 `DATA + DEPENDENTS`。发布来源不会自动刷新；插件显式请求 DATA，按目标能力组合 STATE、LAYOUT 和 REPAINT。按钮状态回调或面板绘制通过 `acquireDisplay` 读取模型。面板的文字、图形和交互仍由插件实现。[保留布局的 LAYOUT](refresh.md#保留布局刷新)共用原刷新队列；自动来源订阅和跨插件绑定尚未开放。
+支持本插件已挂载目标的 `DATA + SELF`、注册父对象的 `DATA + SUBTREE`，以及[显式依赖图](refresh-dependencies.md)的 `DATA + DEPENDENTS`。插件可以显式请求 DATA，也可以给已有 binding 注册[SELF 自动订阅](refresh-subscriptions.md)，按目标能力组合 STATE、LAYOUT 和 REPAINT。未注册订阅的来源发布仍不自动刷新。按钮状态回调或面板绘制通过 `acquireDisplay` 读取模型。面板文字、图形和交互仍由插件实现。[保留布局的 LAYOUT](refresh.md#保留布局刷新)共用原队列；自动依赖图传播和跨插件绑定尚未开放。
 
 未显式绑定的原生 INPUT 可以使用[默认属性读回](input.md)，无需建立本页的来源或字节模型。显式绑定 INPUT 后，SUBTREE 优先消费本页的准确版本，默认 SELF 请求返回 CONFLICT；绑定字节不会自动解释为原生输入字段。
 

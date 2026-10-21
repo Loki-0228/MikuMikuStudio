@@ -3,7 +3,7 @@
 本文是 UI、交互、视口、数据格式和编辑工具的设计约定。基础 C++17 UI 包装、声明式 INPUT、工具栏及属性扩展行、SELF／注册 SUBTREE 刷新、按钮及 INPUT STATE 已实现，其余新增能力按表中状态区分。INPUT 编辑仅在受控共同历史宿主启用，普通启动仍为只读。当前可用接口以 [SDK README](../sdk/mms/README.md) 和[实施记录](PLUGIN_ABI_IMPLEMENTATION.md)为准。
 现有 `MmsHostV1`、各 V1 函数表和已发布结构保持兼容。本文不开放普通宿主的 `mms.edit`，也不把内部 C++ 计划器视为公共编辑接口。
 
-基础 UI 的类型化及声明式包装见 [C++17 界面注册 SDK](../sdk/mms/cpp-ui.md)。`UiServices`、`RegistrationBundle`、`CommandUi` 及 [INPUT 包装](../sdk/mms/input.md)均组合已有 C 服务。原元素 handle 可直接用于[界面重绘服务](../sdk/mms/refresh.md)，按钮及 INPUT 共用[状态内容服务](../sdk/mms/state-content.md)。来源自动订阅、绘制层和工具封装仍为后续设计。
+基础 UI 的类型化及声明式包装见 [C++17 界面注册 SDK](../sdk/mms/cpp-ui.md)。`UiServices`、`RegistrationBundle`、`CommandUi` 及 [INPUT 包装](../sdk/mms/input.md)均组合已有 C 服务。原元素 handle 可直接用于[界面重绘服务](../sdk/mms/refresh.md)，按钮及 INPUT 共用[状态内容服务](../sdk/mms/state-content.md)。显式 DATA binding 已支持[来源自动订阅](../sdk/mms/refresh-subscriptions.md)；原属性变化监听、绘制层和工具封装仍待实现。
 
 [C++17 重绘 SDK](../sdk/mms/cpp-refresh.md)继续包装相同目标和票据，提供整目标、局部矩形、移动所有权与失败重试清理。后台请求与低层 C 使用同一服务 context，不创建独立队列。
 
@@ -45,7 +45,7 @@ auto event = events.subscribe(topic, [=] { updateLayer(layer); });
 | 服务组 | 职责与状态 | 详细方案 |
 | --- | --- | --- |
 | `mms.ui`、`mms.ui.surface`、`mms.ui.layout` | 已有注册、挂载、属性和部分布局能力。工具栏及 `mms.properties.main.extensions` 支持原 BUTTON、GROUP、SEPARATOR、INPUT，共用注册身份、布局和刷新队列；普通 INPUT 只读。`MMS_UI_OVERFLOW_MENU=3` 及 keepTogether 命令折叠仍仅支持原工具栏。DOCK、侧栏、时间线、状态栏挂载及面板内折叠未开放。 | [UI 呈现](PLUGIN_UI_PRESENTATION.md)、[属性扩展行](records/abi-property-mount-2026-10-21.md)、[INPUT SDK](../sdk/mms/input.md)、[溢出 SDK](../sdk/mms/cpp-ui.md#工具栏命令溢出) |
-| `mms.ui.refresh`、`mms.ui.refresh.bind`、`mms.ui.refresh.state`、`mms.ui.refresh.dependencies` 1.0 | 已有 SELF、注册 SUBTREE 及显式 DEPENDENTS，复用同一对象、队列和票据。依成员实际能力执行 DATA、STATE、LAYOUT、REPAINT；依赖图支持同插件跨位置目标、循环检测、版本失效及菜单延后。来源自动订阅仍待实现。 | [刷新接口参考](../sdk/mms/refresh.md)、[显式依赖图](../sdk/mms/refresh-dependencies.md)、[状态内容](../sdk/mms/state-content.md) |
+| `mms.ui.refresh`、`mms.ui.refresh.bind`、`mms.ui.refresh.state`、`mms.ui.refresh.dependencies`、`mms.ui.refresh.subscribe` 1.0 | 已有 SELF、注册 SUBTREE 及显式 DEPENDENTS，复用同一对象、队列和票据。依成员实际能力执行 DATA、STATE、LAYOUT、REPAINT；显式 DATA binding 可按发布版本自动刷新 SELF，依赖图自动传播仍待实现。 | [刷新接口参考](../sdk/mms/refresh.md)、[显式依赖图](../sdk/mms/refresh-dependencies.md)、[自动订阅](../sdk/mms/refresh-subscriptions.md)、[状态内容](../sdk/mms/state-content.md) |
 | `mms.events`、`mms.tasks` | 提案：主题订阅、受预算约束的工作任务。 | 本文及 UI 呈现 |
 | `mms.ui.geometry`、`style`、`paint`、`presentation`、`input`、`overlay`、`layout.session` | 提案：坐标、样式、辅助绘制、临时外观、输入和可撤回布局。 | UI 呈现 |
 | `mms.scene`、`mms.storage` | 已有绑定快照和插件工程序列化；不提供任意时间求值或模型拓扑写入。 | SDK 参考 |
@@ -105,7 +105,7 @@ auto event = events.subscribe(topic, [=] { updateLayer(layer); });
 后台结果带工程身份、来源修订、任务代次及目标代次。结果只能在匹配的上下文发布。当前工程变化时可以丢弃或重新计算，不能将旧结果应用到同名新对象。
 
 `mms.ui.refresh` 支持本插件目标的 REPAINT、按钮部分 STATE、绑定目标的 DATA 和保留布局的 SELF LAYOUT。UI 线程查询能力和目标，工作线程提交和管理同一票据。STATE 只读查询目标命令及可选内容提供者；纯 LAYOUT 使用缓存状态和已发布文案。单独显隐需要有效的 PRESERVE_HIDDEN_SLOT 正尺寸槽位；STATE 与 LAYOUT 组合支持收缩空位及同引用恢复。局部 DIP 矩形须带几何修订，布局失败保持未就绪，实际几何不变时保留修订。
-票据的取消与释放分开，未释放引用阻止卸载。具体配额及错误见[刷新接口参考](../sdk/mms/refresh.md)。SUBTREE 和[显式 DEPENDENTS](../sdk/mms/refresh-dependencies.md)已接入；更多控件的完整 STATE、自动来源订阅及插件量测提供者仍待实现，不能用一次 REPAINT 代替。
+票据的取消与释放分开，未释放引用阻止卸载。具体配额及错误见[刷新接口参考](../sdk/mms/refresh.md)。SUBTREE、[显式 DEPENDENTS](../sdk/mms/refresh-dependencies.md)及显式 DATA binding 的[自动订阅](../sdk/mms/refresh-subscriptions.md)已接入；更多控件的完整 STATE、原属性变化监听及插件量测提供者仍待实现。
 持续动画使用单次帧请求按时间推进。数据变化通过刷新请求传播，不能在 paint 回调中反复发事件、重新读取文件或提交事务。
 
 ## 同一套接口支持不同工具

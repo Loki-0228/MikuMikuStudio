@@ -1,5 +1,7 @@
 # 测试保留与清理说明
 
+`ui_refresh_subscription_store` 验证订阅注册失败、配额及来源邮箱；`ui_refresh_subscription_runtime` 验证原队列、SDK 和真实 DLL 的自动刷新、准确快照、只读限制及停止清理。实际预算回归通过自有窗口消息检查容量释放后的自动恢复，保留失败回调不空转断言。`ui_auto_refresh_sdk_example` 通过真实宿主命令运行原创示例。范围、测量及失败准备记录见[订阅记录](../docs/records/abi-refresh-subscription-2026-10-22.md)。
+
 核对日期：2026-09-20。所有测试源文件均在首行用 `MAINTENANCE:` 标记。测试源码不进入发布目录，目标使用 `EXCLUDE_FROM_ALL`；编译后的测试程序位于 `build/tests/`。不要因为测试不随正式程序发布就删除源码。
 
 ## 曲线、备份及崩溃日志回归

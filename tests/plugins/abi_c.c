@@ -3,6 +3,14 @@
 #include <mms/refresh_binding.h>
 #include <mms/refresh_state.h>
 #include <mms/refresh_dependency.h>
+#include <mms/refresh_subscription.h>
+_Static_assert(sizeof(MmsUiRefreshSubscriptionCapabilitiesV1) == 32, "subscription capabilities");
+_Static_assert(sizeof(MmsUiRefreshSubscriptionDescV1) == 32, "subscription descriptor");
+_Static_assert(sizeof(MmsUiRefreshSubscriptionStateV1) == 72, "subscription state");
+_Static_assert(sizeof(MmsUiRefreshSubscriptionApiV1) == 48, "subscription API");
+_Static_assert(offsetof(MmsUiRefreshSubscriptionDescV1, binding) == 8, "subscription binding offset");
+_Static_assert(offsetof(MmsUiRefreshSubscriptionStateV1, lastResult) == 56, "subscription result offset");
+_Static_assert(offsetof(MmsUiRefreshSubscriptionApiV1, unsubscribe) == 40, "subscription unsubscribe offset");
 _Static_assert(sizeof(MmsUiRefreshDependencyCapabilitiesV1) == 24, "dependency capabilities");
 _Static_assert(sizeof(MmsUiRefreshDependencyDescV1) == 80, "dependency descriptor");
 _Static_assert(sizeof(MmsUiRefreshDependencyApiV1) == 40, "dependency API");

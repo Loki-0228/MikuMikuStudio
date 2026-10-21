@@ -1,6 +1,7 @@
 #pragma once
 #include "ui_refresh.hpp"
 #include <mms/refresh_binding.h>
+#include <mms/refresh_subscription.h>
 
 namespace mikumikustudio::plugins {
 class UiRefreshBindings {
@@ -11,6 +12,10 @@ public:
         std::function<MmsResult(RefreshClient&, const MmsUiTargetRefV1&)> validateTarget;
         std::function<MmsResult(const std::function<MmsResult()>&)> readOnly;
         std::function<bool()> inCallback;
+        std::function<MmsResult(RefreshClient&, const MmsUiTargetRefV1&, uint32_t)> subscriptionTarget;
+        std::function<void()> wakeSubscriptions;
+        std::function<void()> cleanupSubscriptions;
+        std::function<void()> capacityReleased;
     };
     struct DataContribution;
     using Contribution = std::shared_ptr<DataContribution>;
@@ -26,6 +31,28 @@ public:
     UiRefreshBindings& operator=(const UiRefreshBindings&) = delete;
     void SetHooks(Hooks);
     MmsUiRefreshBindingApiV1 Api(RefreshClient&);
+    MmsUiRefreshSubscriptionApiV1 SubscriptionApi(RefreshClient&);
+    struct SubscriptionWork {
+        RefreshClient* client = nullptr;
+        MmsHandle subscription = 0, binding = 0;
+        MmsUiTargetRefV1 target{};
+        uint32_t kinds = 0;
+        uint64_t revision = 0;
+        uint64_t capacityRevision = 0, queueCapacityRevision = 0;
+    };
+    enum SubscriptionRetryEvent : uint32_t {
+        RetryQueueCapacity = 1, RetryTargetPublication = 2,
+        RetryDisplayCapacity = 4, RetryConsumerPublication = 8, RetryHostWake = 16
+    };
+    // Queue -> binding only. These operations never call hooks or allocate.
+    bool TakeSubscription(MmsHandle after, SubscriptionWork&) noexcept;
+    bool SubmitSubscription(const SubscriptionWork&, MmsHandle ticket, MmsResult) noexcept;
+    void CompleteSubscription(MmsHandle, MmsHandle ticket, uint64_t revision, MmsResult, uint32_t waitEvents = 0,
+        uint64_t capacityRevision = UINT64_MAX) noexcept;
+    bool SubscriptionAlive(const RefreshClient&, MmsHandle) const noexcept;
+    bool PendingSubscriptions() const noexcept;
+    bool RetrySubscriptions(uint32_t events = RetryQueueCapacity, uint64_t queueCapacityRevision = UINT64_MAX) noexcept;
+    void FailSubscriptionScheduling(MmsResult) noexcept;
     // queue -> binding is the only nested lock order. Capture/HasBinding do
     // not call hooks or touch HWND/registry, and are safe under the queue lock.
     MmsResult Capture(RefreshClient&, MmsHandle binding, const MmsUiTargetRefV1&,
@@ -36,7 +63,8 @@ public:
     MmsResult ValidateSubtree(const RefreshClient&, const std::vector<MmsUiTargetRefV1>&,
         const std::vector<Captured>&) const;
     MmsResult Consume(const Contribution&, const std::function<MmsResult()>& revalidate,
-        uint64_t& consumedRevision, bool& displayChanged);
+        uint64_t& consumedRevision, bool& displayChanged, uint32_t* subscriptionWait = nullptr,
+        uint64_t* subscriptionCapacityRevision = nullptr);
     bool HasBinding(const RefreshClient&, const MmsUiTargetRefV1&) const;
     void InvalidateTarget(MmsHandle) noexcept;
     void AdvanceProjectEpoch(uint64_t) noexcept;

@@ -31,6 +31,8 @@ static MmsString S(const char* s) { return {s, std::strlen(s)}; }
 #include "cpp_refresh_checks.inc"
 #include "data_refresh_checks.inc"
 #include "cpp_data_refresh_checks.inc"
+#include "ui_refresh_subscription_checks.inc"
+#include "cpp_refresh_subscription_checks.inc"
 static void Write(const fs::path& path, const std::string& bytes) { fs::create_directories(path.parent_path()); std::ofstream f(path, std::ios::binary); f << bytes; if (!f) throw std::runtime_error("fixture write failed"); }
 #include "ui_preferences_file_checks.inc"
 #include "storage_checks.inc"
@@ -61,6 +63,8 @@ static std::string ManifestText(std::string id = "org.example.hello", std::strin
 #include "manager_dependency_refresh_checks.inc"
 #include "overflow_validation_checks.inc"
 #include "manager_data_refresh_checks.inc"
+#include "manager_subscription_refresh_checks.inc"
+#include "manager_auto_refresh_example_checks.inc"
 #include "manager_layout_refresh_checks.inc"
 #include "manager_data_refresh_concurrency_checks.inc"
 #include "task_dispatch_checks.inc"
@@ -402,6 +406,17 @@ int wmain(int argc, wchar_t** argv) {
             UiRefreshSubtreeChecks(); UiRefreshSubtreeRectChecks();
             std::cout << "PASS SUBTREE refresh checks=" << checks << "\n"; return 0;
         }
+        if (argc == 3 && std::wstring(argv[1]) == L"--auto-refresh-example-only") {
+            CHECK(!fs::exists(root)); fs::create_directories(root);
+            ManagerAutoRefreshExampleChecks(root, fs::absolute(argv[2]));
+            std::cout << "PASS auto refresh example checks=" << checks << "\n"; fs::remove_all(root); return 0;
+        }
+        if ((argc == 2 || argc == 3) && std::wstring(argv[1]) == L"--subscription-refresh-only") {
+            CHECK(!fs::exists(root)); fs::create_directories(root);
+            UiRefreshSubscriptionChecks(); CppRefreshSubscriptionChecks();
+            if (argc == 3) ManagerSubscriptionRefreshChecks(root, fs::absolute(argv[2]));
+            std::cout << "PASS subscription refresh checks=" << checks << "\n"; fs::remove_all(root); return 0;
+        }
         if ((argc == 2 || argc == 3) && std::wstring(argv[1]) == L"--dependency-refresh-only") {
             CHECK(!fs::exists(root)); fs::create_directories(root);
             UiRefreshDependencyChecks(); CppRefreshDependencyChecks();
@@ -421,6 +436,7 @@ int wmain(int argc, wchar_t** argv) {
         if ((argc == 2 || argc == 3) && std::wstring(argv[1]) == L"--data-only") {
             CHECK(!fs::exists(root)); fs::create_directories(root);
             DataRefreshChecks(); CppDataRefreshChecks();
+            UiRefreshSubscriptionChecks(); CppRefreshSubscriptionChecks();
             if (argc == 3) {
                 ManagerDataRefreshChecks(root, fs::absolute(argv[2]));
                 ManagerDataRefreshConcurrencyChecks(root, fs::absolute(argv[2]));
@@ -446,6 +462,7 @@ int wmain(int argc, wchar_t** argv) {
         SceneChecks(); StorageChecks(root); EditChecks(); UiPropertyStageChecks(); SharedHistoryChecks(); StateContentChecks(); InputStateContentChecks(); InputStatePrefixChecks(); PropertyMountChecks(); PanelStateRefreshChecks(); MenuStateRefreshChecks();
         UiRefreshSubtreeChecks(); UiRefreshSubtreeRectChecks();
         UiRefreshDependencyChecks(); CppRefreshDependencyChecks();
+        UiRefreshSubscriptionChecks(); CppRefreshSubscriptionChecks();
         ManagerEditChecks(root, fs::absolute(argv[3]));
         UiInputBrokerChecks(root, fs::absolute(argv[3]));
         NativePropertyInputChecks(root, fs::absolute(argv[3]));

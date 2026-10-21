@@ -1,0 +1,11 @@
+EXPORTS
+    MMSPluginGetApi
+    SubscriptionProbeBegin
+    SubscriptionProbeSubscribe
+    SubscriptionProbePublish
+    SubscriptionProbeCheckThreads
+    SubscriptionProbeQuery
+    SubscriptionProbeRequestOld
+    SubscriptionProbeReleaseTicket
+    SubscriptionProbeAcquireHold
+    SubscriptionProbeReleaseHold

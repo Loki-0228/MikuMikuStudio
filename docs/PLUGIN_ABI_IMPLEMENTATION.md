@@ -1,10 +1,10 @@
 # 插件 ABI 实现与验收记录
 
-更新：2026-10-21。分支 `codex/plugin-abi` 从 `42d4a71` 建立。依据工作区《MMS 插件实施方案与 ABI 参考》《MMS 插件开发文档》《MMS 界面布局与重绘设计》实施。完整 P0–P6 尚未完成。
+更新：2026-10-22。分支 `codex/plugin-abi` 从 `42d4a71` 建立。依据工作区《MMS 插件实施方案与 ABI 参考》《MMS 插件开发文档》《MMS 界面布局与重绘设计》实施。完整 P0–P6 尚未完成。
 
 状态分为 **未实现**、**已实现未验证**、**本机已验证**、**缺其他系统/硬件环境**。代码、本机结果和平台结果分别列出。
 
-[显式依赖刷新](records/abi-ui-dependencies-2026-10-21.md)已接入原 UI 句柄、队列和票据，支持同客户端 DAG、拓扑阶段、后台请求、混合菜单延后及生命周期失效。两套真实 DLL 专项通过；来源自动订阅仍未实现。[原生保形插帧保护](records/abi-curve-subdivision-lifetime-2026-10-21.md)两套专项各 1,156 项通过，完整配置曲线全集 30,451 项通过；原始兼容全集再次出现尚未归因的 `0xC0000374`，不能标记整体稳定。
+[显式依赖刷新](records/abi-ui-dependencies-2026-10-21.md)已接入原 UI 句柄、队列和票据，支持同客户端 DAG、拓扑阶段、后台请求、混合菜单延后及生命周期失效。两套真实 DLL 专项通过；显式 DATA binding 已接入[SELF 自动订阅](records/abi-refresh-subscription-2026-10-22.md)，依赖图自动传播仍待完成。[插帧几何与写入边界](records/abi-curve-insertion-geometry-2026-10-22.md)已补齐，两套最新曲线全集各 36,281 项通过；此前堆故障及未解释超时仍未归因，不能标记整体稳定。
 
 此前 INPUT、刷新服务、属性事务及轮廓颜色专项通过，对应 ABI 程序的原名和中文改名产品检查通过。随后完整与原始兼容配置的完整 ABI 契约各通过 15,399 项，未修改菜单代码或干预测试输入；早期菜单自动选择超时仍可间歇复现，尚未归因，不能标记为已修复。两类证据见[菜单调查](records/abi-menu-selection-investigation-2026-10-21.md)。
 
@@ -156,12 +156,13 @@ R3 拖动与插件区域问题已由用户确认恢复。按需求归类的当�
 | P2 | 保留布局的 SELF LAYOUT 及 SDK | 本机已验证 | 已有按钮和已挂载 surface 使用保留树排版；纯 LAYOUT 使用缓存状态，STATE 与 LAYOUT 组合支持收缩空位及同引用恢复零尺寸按钮。失败暂停几何及目标，旧快照租约保持；局部旧矩形返回 STALE 并保留已完成阶段。SDK 的 RelayoutCurrent、RefreshStateLayout 共用原请求。实际 NativeUi 389 项、双真实 DLL 645 项及两路径真实 MMS 入口通过；此批验证范围见[记录](records/abi-layout-follow-slider-2026-10-19.md)；SUBTREE 已随后接入，自动依赖及插件量测提供者仍未实现。 |
 | P2 | 按钮、INPUT、已挂载 PANEL 及菜单 STATE 内容与分层 SDK | 本机已验证 | `mms.ui.refresh.state` 1.0 在原 STATE 阶段准备文案；窗口目标支持说明和禁用原因，INPUT 尾部可收紧可用性，不读取属性值或提交草稿。PANEL 保留原 surface，菜单保留原生身份；MENU/MENU_ITEM 仅接受 LABEL 及无几何的 STATE，跟踪期间延后消费。两套配置菜单专项各 1,088 项通过；菜单提示、未实例化面板状态及依赖服务未开放。见[PANEL 记录](records/abi-panel-state-2026-10-21.md)、[菜单记录](records/abi-menu-state-2026-10-21.md)。 |
 | P3 | 模型与骨骼 HUD 20 类操作 | 受控路径本机已验证 | 独立副本运行原数学，完整手势一次调整，逐字段取消并保留外写，释放采样最终系统光标；普通骨骼、等比／轴向／投影缩放均覆盖。专项 31,357 项及两种真实文件宿主通过。原始兼容 profile 保留旧路径，普通公共编辑服务仍关闭，见[记录](records/abi-state-model-hud-readout-2026-10-19.md)。 |
-| P2 | 可写属性、声明式 INPUT | 受控路径本机已验证 | 原属性、元素、事务与共同历史共用身份，工具栏、属性扩展行及其 GROUP 支持原生输入、草稿、取消、重绑及同对象 C++ SDK。随后接入[默认属性 DATA](records/abi-property-data-2026-10-20.md)和[STATE](records/abi-input-state-2026-10-21.md)，支持消费时读回、草稿保留、显式绑定优先及只读状态限制；两套配置 INPUT 专项各 6,022 项，新增属性挂载专项各 681 项通过。普通启动暂存仍返回 NOT_READY，输入框只读；自动订阅、其余挂载点及真机 IME 尚待完成，见[初始记录](records/abi-declarative-input-2026-10-20.md)。 |
+| P2 | 可写属性、声明式 INPUT | 受控路径本机已验证 | 原属性、元素、事务与共同历史共用身份，工具栏、属性扩展行及其 GROUP 支持原生输入、草稿、取消、重绑及同对象 C++ SDK。随后接入[默认属性 DATA](records/abi-property-data-2026-10-20.md)和[STATE](records/abi-input-state-2026-10-21.md)，支持消费时读回、草稿保留、显式绑定优先及只读状态限制；两套配置 INPUT 专项各 6,022 项，新增属性挂载专项各 681 项通过。普通启动暂存仍返回 NOT_READY，输入框只读；原属性变化监听、其余挂载点及真机 IME 尚待完成，见[初始记录](records/abi-declarative-input-2026-10-20.md)。 |
 | P2 | 属性扩展行挂载 | 本机已验证 | `mms.properties.main.extensions` 是真实主窗口扩展行，支持原 BUTTON、GROUP、SEPARATOR、INPUT，使用同一布局和刷新队列。空行高度为 0，停靠视口及覆盖区避让；移动、草稿取消、同实例零高恢复和卸载纳入双配置各 681 项专项，完整 ABI 契约各 17,565 项通过，见[记录](records/abi-property-mount-2026-10-21.md)。本批不含产品集成及真实 IME、多屏 DPI 验收。 |
 | P2 | 左右侧栏、时间线、状态栏挂载 | 未实现 | 属性扩展行不代表其他本体区域已开放；不枚举空壳挂载点。 |
 | P2 | 工具栏命令溢出菜单 | 本机已验证 | `MmsUiLayoutHintsV1.overflow=MMS_UI_OVERFLOW_MENU` 复用原布局服务。仅工具栏扩展区 BUTTON、GROUP、SEPARATOR 可选择；有效顺序、组继承与 keepTogether 决定折叠单位。保留原 HWND、handle 和刷新实例，空间恢复复用；真实菜单更新原标签、启用和选中状态，移除失效项，调用前重验原身份及所有者。完整配置 21／21、原始兼容配置 18／18、ABI 契约重复 6／6 通过；最终结果见 [UI 框架记录](records/abi-ui-framework-2026-10-19.md)。无独立溢出能力查询，旧宿主可能返回 UNSUPPORTED。 |
-| P2 | 注册 SUBTREE、显式 DEPENDENTS 刷新及 SDK | 本机已验证 | 原 C ABI 支持同插件注册子树及[显式图](records/abi-ui-dependencies-2026-10-21.md)、来源集合、整组阶段顺序及版本失效，继续共用原目标和票据。SUBTREE 支持局部矩形；DEPENDENTS 使用整目标损伤，自动来源订阅未实现。 |
+| P2 | 注册 SUBTREE、显式 DEPENDENTS 刷新及 SDK | 本机已验证 | 原 C ABI 支持同插件注册子树及[显式图](records/abi-ui-dependencies-2026-10-21.md)、来源集合、整组阶段顺序及版本失效，继续共用原目标和票据。SUBTREE 支持局部矩形；DEPENDENTS 使用整目标损伤；显式 DATA binding 可另用 SELF 自动订阅，依赖图自动传播未实现。 |
 | P2 | DOCK | 未实现 | 返回 UNSUPPORTED。 |
+| P2 | 显式 DATA binding 自动刷新及 SDK | 本机已验证 | `mms.ui.refresh.subscribe` 1.0 沿用原 binding、目标、队列及阶段；未提交版本合并，已接受票据保留准确快照。C++17 包装及原创计数示例见[订阅记录](records/abi-refresh-subscription-2026-10-22.md)。原属性变化监听及依赖图自动传播仍未实现。 |
 | P2 | 本体菜单、控件、业务命令全部语义登记 | 未实现 | 新注册表目前覆盖新 ABI 插件。 |
 | P2 | 布局持久化、缺失插件保留 | 本机已验证 | 用户覆盖按稳定 ID 保存到程序旁 `data/settings.json` 的 `pluginUi`，旧布局仅缺失时迁移；分区 CAS、其他设置合并、重启、关闭事件及 EXE 改名通过。 |
 | P2 | 布局撤销历史 | 未实现 | 当前保存布局，不记录布局 undo/redo。 |

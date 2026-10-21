@@ -1,0 +1,22 @@
+{
+	"schemaVersion": 1,
+	"id": "org.example.auto-refresh",
+	"name": "自动刷新计数示例",
+	"version": "0.1.0",
+	"kind": "native",
+	"abi": { "major": 1, "minMinor": 0 },
+	"entry": "auto_refresh.dll",
+	"architecture": "x64",
+	"minWindows": "6.1.7601",
+	"capabilities": ["ui.command", "ui.element"],
+	"requiresServices": [
+		{ "id": "mms.ui", "major": 1, "minMinor": 0 },
+		{ "id": "mms.ui.layout", "major": 1, "minMinor": 0 },
+		{ "id": "mms.ui.refresh", "major": 1, "minMinor": 0 },
+		{ "id": "mms.ui.refresh.bind", "major": 1, "minMinor": 0 },
+		{ "id": "mms.ui.refresh.subscribe", "major": 1, "minMinor": 0 }
+	],
+	"dependencies": [],
+	"nativeDependencies": [],
+	"reloadPolicy": "restart"
+}

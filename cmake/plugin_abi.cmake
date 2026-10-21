@@ -133,6 +133,16 @@ target_link_options(ui_refresh_binding_tests PRIVATE /SUBSYSTEM:CONSOLE,6.01 /DE
 set_target_properties(ui_refresh_binding_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
 add_test(NAME ui_refresh_binding_contract COMMAND ui_refresh_binding_tests)
 set_tests_properties(ui_refresh_binding_contract PROPERTIES TIMEOUT 60)
+add_executable(ui_refresh_subscription_store_tests EXCLUDE_FROM_ALL tests/plugins/ui_refresh_subscription_store_tests.cpp)
+target_include_directories(ui_refresh_subscription_store_tests PRIVATE src/plugins sdk/mms/include)
+target_compile_features(ui_refresh_subscription_store_tests PRIVATE cxx_std_17)
+target_compile_definitions(ui_refresh_subscription_store_tests PRIVATE _WIN32_WINNT=0x0601 WINVER=0x0601)
+target_link_options(ui_refresh_subscription_store_tests PRIVATE /SUBSYSTEM:CONSOLE,6.01 /DEBUG:NONE)
+set_target_properties(ui_refresh_subscription_store_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_test(NAME ui_refresh_subscription_store COMMAND ui_refresh_subscription_store_tests)
+set_tests_properties(ui_refresh_subscription_store PROPERTIES TIMEOUT 60)
+add_test(NAME ui_refresh_subscription_runtime COMMAND plugin_abi_tests --subscription-refresh-only "$<TARGET_FILE:mms_subscription_refresh_probe>")
+set_tests_properties(ui_refresh_subscription_runtime PROPERTIES TIMEOUT 180)
 add_library(mms_abi_c_check OBJECT EXCLUDE_FROM_ALL tests/plugins/abi_c.c)
 target_include_directories(mms_abi_c_check PRIVATE sdk/mms/include)
 set_target_properties(mms_abi_c_check PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
@@ -177,6 +187,33 @@ set_target_properties(mms_dependency_refresh_probe PROPERTIES OUTPUT_NAME depend
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/plugins/dependency_refresh/$<CONFIG>"
     MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 add_dependencies(plugin_abi_tests mms_dependency_refresh_probe)
+add_library(mms_subscription_refresh_probe MODULE EXCLUDE_FROM_ALL
+    tests/plugins/subscription_refresh_plugin.cpp tests/plugins/subscription_refresh_plugin.def)
+target_include_directories(mms_subscription_refresh_probe PRIVATE sdk/mms/include)
+target_compile_features(mms_subscription_refresh_probe PRIVATE cxx_std_17)
+target_compile_definitions(mms_subscription_refresh_probe PRIVATE _WIN32_WINNT=0x0601 WINVER=0x0601)
+target_link_options(mms_subscription_refresh_probe PRIVATE /SUBSYSTEM:WINDOWS,6.01 /DEBUG:NONE)
+set_target_properties(mms_subscription_refresh_probe PROPERTIES OUTPUT_NAME subscription_refresh_probe
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/plugins/subscription_refresh/$<CONFIG>"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/plugins/subscription_refresh/$<CONFIG>"
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+add_dependencies(plugin_abi_tests mms_subscription_refresh_probe)
+add_library(mms_auto_refresh_example MODULE EXCLUDE_FROM_ALL
+    sdk/mms/examples/auto_refresh/plugin.cpp sdk/mms/examples/auto_refresh/plugin.def)
+target_include_directories(mms_auto_refresh_example PRIVATE sdk/mms/include)
+target_compile_features(mms_auto_refresh_example PRIVATE cxx_std_17)
+target_compile_definitions(mms_auto_refresh_example PRIVATE _WIN32_WINNT=0x0601 WINVER=0x0601)
+target_compile_options(mms_auto_refresh_example PRIVATE /utf-8)
+target_link_options(mms_auto_refresh_example PRIVATE /SUBSYSTEM:WINDOWS,6.01 /DEBUG:NONE)
+set_target_properties(mms_auto_refresh_example PROPERTIES OUTPUT_NAME auto_refresh
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/plugins/auto_refresh/$<CONFIG>"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/plugins/auto_refresh/$<CONFIG>"
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+add_custom_command(TARGET mms_auto_refresh_example POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${CMAKE_CURRENT_SOURCE_DIR}/sdk/mms/examples/auto_refresh/plugin.json" "$<TARGET_FILE_DIR:mms_auto_refresh_example>/plugin.json")
+add_dependencies(plugin_abi_tests mms_auto_refresh_example)
+add_test(NAME ui_auto_refresh_sdk_example COMMAND plugin_abi_tests --auto-refresh-example-only "$<TARGET_FILE:mms_auto_refresh_example>")
+set_tests_properties(ui_auto_refresh_sdk_example PROPERTIES TIMEOUT 60)
 add_test(NAME ui_dependency_refresh_runtime COMMAND plugin_abi_tests --dependency-refresh-only "$<TARGET_FILE:mms_dependency_refresh_probe>")
 set_tests_properties(ui_dependency_refresh_runtime PROPERTIES TIMEOUT 180)
 add_test(NAME ui_data_refresh_runtime COMMAND plugin_abi_tests --data-only "$<TARGET_FILE:mms_data_refresh_probe>")

@@ -337,6 +337,10 @@ struct Manager::Impl {
             if (closing || i.stopping.load()) return MMS_E_NOT_READY;
             return Table(major, minor, bytes, out, registry.Refresh().Bindings().Api(i.refresh));
         }
+        if (id == "mms.ui.refresh.subscribe") {
+            if (closing || i.stopping.load()) return MMS_E_NOT_READY;
+            return Table(major, minor, bytes, out, registry.Refresh().Bindings().SubscriptionApi(i.refresh));
+        }
         if (id == "mms.ui.refresh.dependencies") {
             if (closing || i.stopping.load()) return MMS_E_NOT_READY;
             return Table(major, minor, bytes, out, registry.Refresh().DependencyApi(i.refresh));
