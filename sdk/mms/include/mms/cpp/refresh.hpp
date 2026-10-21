@@ -187,6 +187,23 @@ public:
         std::uint64_t coalesceKey = 0) const noexcept {
         return RefreshSubtree(target, MMS_UI_REFRESH_REPAINT, out, coalesceKey);
     }
+    // Explicit graph edges, not registration children. The seed is excluded.
+    // Uses the original request and ticket; no automatic source subscription.
+    // Worker-safe after publishing an already captured target reference.
+    MmsResult RefreshDependents(const MmsUiTargetRefV1& target, std::uint32_t kinds,
+        RefreshTicket& out, std::uint64_t coalesceKey = 0) const noexcept {
+        MmsUiRefreshRequestV1 request{}; request.h = Header<MmsUiRefreshRequestV1>();
+        request.target = target; request.kinds = kinds; request.scope = MMS_UI_REFRESH_DEPENDENTS;
+        request.coalesceKey = coalesceKey; return Request(request, out);
+    }
+    MmsResult RefreshDependentElements(MmsHandle element, std::uint32_t kinds,
+        RefreshTicket& out, std::uint64_t coalesceKey = 0) const noexcept {
+        if (const auto result = CheckThread()) return result;
+        if (out) return MMS_E_BUSY;
+        MmsUiRefreshTargetV1 target{};
+        if (const auto result = Target(element, target)) return result;
+        return RefreshDependents(target.target, kinds, out, coalesceKey);
+    }
     // Rectangles use the captured root's local DIP space, including GROUP's
     // logical bounds. They restrict REPAINT only; other phases keep the whole
     // registered subtree. A later spatial change fails rather than remapping.

@@ -3,6 +3,11 @@
 #include <mms/refresh.h>
 #include <mms/refresh_binding.h>
 #include <mms/refresh_state.h>
+#include <mms/refresh_dependency.h>
+static_assert(offsetof(MmsUiRefreshDependencyDescV1, upstream) == 8, "dependency source offset");
+static_assert(offsetof(MmsUiRefreshDependencyDescV1, dependent) == 40, "dependency target offset");
+static_assert(offsetof(MmsUiRefreshDependencyApiV1, unregisterDependency) == 32, "dependency unregister offset");
+static_assert(std::is_standard_layout<MmsUiRefreshDependencyApiV1>::value, "dependency standard layout");
 static_assert(offsetof(MmsUiStateContentDescV1, prepare) == 48, "STATE callback offset");
 static_assert(offsetof(MmsUiRefreshStateContentApiV1, writePrepared) == 48, "STATE write offset");
 static_assert(std::is_standard_layout<MmsUiRefreshStateContentApiV1>::value, "STATE standard layout");

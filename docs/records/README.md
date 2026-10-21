@@ -47,6 +47,8 @@
 
 ## 开发与维护
 
+- [显式 UI 依赖刷新与同对象 SDK（2026-10-21）](abi-ui-dependencies-2026-10-21.md)
+- [曲线原生插帧回调寿命（2026-10-21）](abi-curve-subdivision-lifetime-2026-10-21.md)
 - [菜单状态刷新、原生身份及跟踪生命周期（2026-10-21）](abi-menu-state-2026-10-21.md)
 - [已挂载面板状态刷新及故障恢复（2026-10-21）](abi-panel-state-2026-10-21.md)
 - [曲线来源回调会话保护（2026-10-21）](abi-curve-source-lifetime-2026-10-21.md)

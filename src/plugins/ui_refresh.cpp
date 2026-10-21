@@ -1,6 +1,7 @@
 #include "ui_refresh.hpp"
 #include "ui_registry.hpp"
 #include "ui_refresh_binding.hpp"
+#include "ui_refresh_dependencies.hpp"
 #include <cmath>
 #include <limits>
 
@@ -102,7 +103,7 @@ struct UiRefreshQueue::Ticket {
     std::uint64_t expectedGeometry = 0, key = 0;
     std::uint32_t kinds = MMS_UI_REFRESH_REPAINT;
     uint32_t scope = MMS_UI_REFRESH_SELF;
-    uint64_t topology = 0;
+    uint64_t topology = 0, dependencyRevision = 0;
     MmsHandle binding = 0;
     std::uint64_t sourceRevision = 0;
     std::uint64_t stateProviderRevision = 0;
@@ -143,7 +144,7 @@ UiRefreshQueue::UiRefreshQueue(UiRegistry& registry) : registry_(registry),
             return target.ready ? MMS_OK : MMS_E_NOT_READY;
         },
         [this](const std::function<MmsResult()>& callback) { return registry_.WithReadOnlyCallback(callback); },
-        [this] { return registry_.InCallback(); }})) {}
+        [this] { return registry_.InCallback(); }})), dependencies_(std::make_unique<UiRefreshDependencies>()) {}
 UiRefreshQueue::~UiRefreshQueue() = default;
 void UiRefreshQueue::SetWake(std::function<bool()> wake) { wake_ = std::move(wake); }
 void UiRefreshQueue::SetLayout(std::function<MmsResult(MmsHandle)> layout) {
@@ -220,12 +221,82 @@ MmsUiRefreshApiV1 UiRefreshQueue::Api(RefreshClient& client) {
 #undef REFRESH_CALL
     return api;
 }
+MmsUiRefreshDependencyApiV1 UiRefreshQueue::DependencyApi(RefreshClient& client) {
+    MmsUiRefreshDependencyApiV1 api{}; api.h = Header<MmsUiRefreshDependencyApiV1>(); api.context = &client;
+#define DEPENDENCY_CALL(body) auto& c = *static_cast<RefreshClient*>(p); Flight flight(c); return Boundary([&]() -> MmsResult { body; })
+    api.getCapabilities = [](void* p, MmsUiRefreshDependencyCapabilitiesV1* out) { DEPENDENCY_CALL(return c.queue->DependencyCapabilities(c, out)); };
+    api.registerDependency = [](void* p, const MmsUiRefreshDependencyDescV1* desc, MmsHandle* out) { DEPENDENCY_CALL(return c.queue->RegisterDependency(c, desc, out)); };
+    api.unregisterDependency = [](void* p, MmsHandle handle) { DEPENDENCY_CALL(return c.queue->UnregisterDependency(c, handle)); };
+#undef DEPENDENCY_CALL
+    return api;
+}
+MmsResult UiRefreshQueue::DependencyCapabilities(RefreshClient& client, MmsUiRefreshDependencyCapabilitiesV1* out) {
+    if (GetCurrentThreadId() != thread_) return MMS_E_THREAD;
+    if (!Valid(out) || client.queue != this || client.owner.empty() || client.owner == "mms") return MMS_E_ARGUMENT;
+    if (client.stopping.load()) return MMS_E_NOT_READY;
+    *out = {Header<MmsUiRefreshDependencyCapabilitiesV1>(), UiRefreshDependencies::kPerOwner, UiRefreshDependencies::kMembers, 0, 0};
+    return MMS_OK;
+}
+MmsResult UiRefreshQueue::RegisterDependency(RefreshClient& client, const MmsUiRefreshDependencyDescV1* desc, MmsHandle* out) {
+    if (GetCurrentThreadId() != thread_) return MMS_E_THREAD;
+    if (!Valid(desc) || !out || !Valid(&desc->upstream) || !Valid(&desc->dependent) ||
+        !desc->upstream.element || !desc->upstream.instanceGeneration || !desc->upstream.projectEpoch ||
+        !desc->dependent.element || !desc->dependent.instanceGeneration || !desc->dependent.projectEpoch ||
+        desc->flags || desc->reserved || client.queue != this || client.owner.empty() || client.owner == "mms") return MMS_E_ARGUMENT;
+    if (registry_.InCallback()) return MMS_E_BUSY;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (client.stopping.load()) return MMS_E_NOT_READY;
+    if (ReadOnlyCauseLocked(client)) return MMS_E_BUSY;
+    for (const auto& ref : {desc->upstream, desc->dependent}) {
+        const auto target = targets_.find(ref.element);
+        if (ref.projectEpoch != epoch_ || target == targets_.end() || target->second.generation != ref.instanceGeneration) return MMS_E_STALE;
+        const auto& t = target->second;
+        if (t.presentation.owner != client.owner) return MMS_E_ARGUMENT;
+        // Zero-sized retained layout targets are valid endpoints. No query or
+        // registration mounts a surface or bypasses an in-progress layout.
+        if (t.suspended || (!MenuTarget(t.presentation) && !t.presentation.window)) return MMS_E_NOT_READY;
+        if (!MenuTarget(t.presentation) && !IsWindow(t.presentation.window)) return MMS_E_STALE;
+        if (MenuTarget(t.presentation) && !t.Ready()) return MMS_E_NOT_READY;
+    }
+    MmsHandle candidate = 0;
+    if (const auto result = dependencies_->Add(client, desc->upstream, desc->dependent, candidate)) return result;
+    InvalidateDependencyTicketsLocked(); *out = candidate; return MMS_OK;
+}
+MmsResult UiRefreshQueue::UnregisterDependency(RefreshClient& client, MmsHandle handle) {
+    if (GetCurrentThreadId() != thread_) return MMS_E_THREAD;
+    if (!handle || client.queue != this) return MMS_E_ARGUMENT;
+    if (registry_.InCallback()) return MMS_E_BUSY;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (ReadOnlyCauseLocked(client)) return MMS_E_BUSY;
+    // Cleanup remains valid during stop; Retire may already have removed it.
+    if (const auto result = dependencies_->Remove(client, handle)) return result;
+    InvalidateDependencyTicketsLocked(); return MMS_OK;
+}
+void UiRefreshQueue::InvalidateDependencyTicketsLocked() noexcept {
+    for (auto it = tickets_.begin(); it != tickets_.end();) {
+        auto& ticket = it->second;
+        if (ticket.scope == MMS_UI_REFRESH_DEPENDENTS && ticket.state.status == MMS_UI_REFRESH_PENDING &&
+            ticket.dependencyRevision != dependencies_->Revision(*ticket.owner)) ticket.Finish(MMS_UI_REFRESH_FAILED, MMS_E_STALE);
+        if (ticket.released && ticket.state.status != MMS_UI_REFRESH_PENDING && ticket.state.status != MMS_UI_REFRESH_RUNNING)
+            it = tickets_.erase(it); else ++it;
+    }
+}
+bool UiRefreshQueue::MenuBlockedLocked(const Ticket& ticket) const {
+    if (!menuTracking_) return false;
+    const auto menu = [&](MmsHandle element) {
+        const auto target = targets_.find(element);
+        return target != targets_.end() && MenuTarget(target->second.presentation);
+    };
+    return (ticket.scope != MMS_UI_REFRESH_DEPENDENTS && menu(ticket.target.element)) || std::any_of(ticket.members.begin(), ticket.members.end(), [&](const auto& member) {
+        return member.kinds && menu(member.ref.element);
+    });
+}
 MmsResult UiRefreshQueue::Capabilities(RefreshClient& client, MmsUiRefreshCapabilitiesV1* out) {
     if (GetCurrentThreadId() != thread_) return MMS_E_THREAD;
     if (!Valid(out)) return MMS_E_ARGUMENT;
     if (client.stopping.load()) return MMS_E_NOT_READY;
     std::lock_guard<std::mutex> lock(mutex_);
-    *out = {Header<MmsUiRefreshCapabilitiesV1>(), uint32_t(kSupported | (layout_ ? MMS_UI_REFRESH_LAYOUT : 0)), MMS_UI_REFRESH_SELF | MMS_UI_REFRESH_SUBTREE,
+    *out = {Header<MmsUiRefreshCapabilitiesV1>(), uint32_t(kSupported | (layout_ ? MMS_UI_REFRESH_LAYOUT : 0)), MMS_UI_REFRESH_SELF | MMS_UI_REFRESH_SUBTREE | MMS_UI_REFRESH_DEPENDENTS,
         std::uint32_t(kTickets), std::uint32_t(kRects), kBytes, std::uint32_t(kBatch), 0};
     return MMS_OK;
 }
@@ -246,7 +317,14 @@ MmsResult UiRefreshQueue::GetTarget(RefreshClient& client, MmsHandle handle, Mms
     if (t.presentation.owner != client.owner) return MMS_E_STALE;
     const MmsUiTargetRefV1 ref{Header<MmsUiTargetRefV1>(), handle, t.generation, epoch_};
     uint32_t kinds = 0;
-    const auto handles = topologyReady_ && tree_.count(handle) ? SubtreeLocked(handle) : std::vector<MmsHandle>{handle};
+    auto handles = topologyReady_ && tree_.count(handle) ? SubtreeLocked(handle) : std::vector<MmsHandle>{handle};
+    uint32_t scopes = (t.presentation.container ? 0 : MMS_UI_REFRESH_SELF) | MMS_UI_REFRESH_SUBTREE;
+    std::vector<MmsUiTargetRefV1> dependents; uint64_t dependencyRevision = 0;
+    if (!dependencies_->Capture(client, ref, dependents, dependencyRevision)) {
+        scopes |= MMS_UI_REFRESH_DEPENDENTS;
+        for (const auto& dependent : dependents)
+            if (std::find(handles.begin(), handles.end(), dependent.element) == handles.end()) handles.push_back(dependent.element);
+    }
     for (const auto member : handles) {
         const auto current = targets_.find(member);
         if (current == targets_.end() || current->second.presentation.owner != client.owner || current->second.presentation.container) continue;
@@ -258,7 +336,7 @@ MmsResult UiRefreshQueue::GetTarget(RefreshClient& client, MmsHandle handle, Mms
             (bindings_->HasBinding(client, memberRef) || (p.propertyDataRefresh && p.propertyRecord && propertyData_) ? MMS_UI_REFRESH_DATA : 0);
     }
     *out = {Header<MmsUiRefreshTargetV1>(), ref, t.geometry,
-        kinds, uint32_t((t.presentation.container ? 0 : MMS_UI_REFRESH_SELF) | MMS_UI_REFRESH_SUBTREE), std::uint32_t(t.Ready()), std::uint32_t(t.presentation.visible),
+        kinds, scopes, std::uint32_t(t.Ready()), std::uint32_t(t.presentation.visible),
         t.presentation.width, t.presentation.height};
     return MMS_OK;
 }
@@ -267,14 +345,15 @@ MmsResult UiRefreshQueue::Request(RefreshClient& client, const MmsUiRefreshReque
         !request->target.instanceGeneration || !request->target.projectEpoch || !request->kinds ||
         request->kinds & ~15u || request->flags || request->reserved) return MMS_E_ARGUMENT;
     if (request->kinds & ~kAllKinds) return MMS_E_UNSUPPORTED;
-    if (request->scope != MMS_UI_REFRESH_SELF && request->scope != MMS_UI_REFRESH_SUBTREE)
-        return request->scope == MMS_UI_REFRESH_DEPENDENTS ? MMS_E_UNSUPPORTED : MMS_E_ARGUMENT;
+    if (request->scope != MMS_UI_REFRESH_SELF && request->scope != MMS_UI_REFRESH_SUBTREE && request->scope != MMS_UI_REFRESH_DEPENDENTS)
+        return MMS_E_ARGUMENT;
     if (request->kinds & MMS_UI_REFRESH_DATA) {
         if (request->scope == MMS_UI_REFRESH_SELF) {
             if (bool(request->binding) != bool(request->sourceRevision)) return MMS_E_ARGUMENT;
         } else if (request->binding || request->sourceRevision) return MMS_E_ARGUMENT;
     } else if (request->binding || request->sourceRevision) return MMS_E_ARGUMENT;
     const auto& span = request->dirtyRects;
+    if (request->scope == MMS_UI_REFRESH_DEPENDENTS && span.count) return MMS_E_UNSUPPORTED;
     if (!(request->kinds & MMS_UI_REFRESH_REPAINT) && span.count) return MMS_E_ARGUMENT;
     if (span.count > kRects) return MMS_E_BUSY;
     if (span.count && (!span.data || span.stride < sizeof(MmsUiDirtyRectV1) || span.recordVersion != 1 ||
@@ -300,7 +379,8 @@ MmsResult UiRefreshQueue::Request(RefreshClient& client, const MmsUiRefreshReque
     const auto target = targets_.find(ticket.target.element);
     if (target == targets_.end() || target->second.generation != ticket.target.instanceGeneration) return MMS_E_STALE;
     if (target->second.presentation.owner != client.owner || client.owner == "mms") return MMS_E_ARGUMENT;
-    if (MenuTarget(target->second.presentation) && (ticket.kinds != MMS_UI_REFRESH_STATE || ticket.expectedGeometry || !ticket.rects.empty())) return MMS_E_UNSUPPORTED;
+    if (ticket.scope != MMS_UI_REFRESH_DEPENDENTS && MenuTarget(target->second.presentation) &&
+        (ticket.kinds != MMS_UI_REFRESH_STATE || ticket.expectedGeometry || !ticket.rects.empty())) return MMS_E_UNSUPPORTED;
     if (ticket.scope == MMS_UI_REFRESH_SELF) {
         if (target->second.presentation.container) return MMS_E_UNSUPPORTED;
         if ((ticket.kinds & MMS_UI_REFRESH_STATE) && !target->second.presentation.stateRefresh) return MMS_E_UNSUPPORTED;
@@ -323,9 +403,15 @@ MmsResult UiRefreshQueue::Request(RefreshClient& client, const MmsUiRefreshReque
         if (ticket.expectedGeometry && ticket.expectedGeometry != target->second.geometry) return MMS_E_STALE;
         if (target->second.suspended || (!MenuTarget(target->second.presentation) && !target->second.presentation.window)) return MMS_E_NOT_READY;
         if (!topologyReady_) return MMS_E_NOT_READY;
-        const auto handles = SubtreeLocked(ticket.target.element);
+        std::vector<MmsHandle> handles;
+        std::vector<MmsUiTargetRefV1> dependentRefs;
+        if (ticket.scope == MMS_UI_REFRESH_DEPENDENTS) {
+            if (const auto result = dependencies_->Capture(client, ticket.target, dependentRefs, ticket.dependencyRevision)) return result;
+            handles.reserve(dependentRefs.size());
+            for (const auto& ref : dependentRefs) handles.push_back(ref.element);
+        } else handles = SubtreeLocked(ticket.target.element);
         if (handles.size() > kSubtreeMembers) return MMS_E_BUSY;
-        ticket.topology = topologyRevision_;
+        if (ticket.scope == MMS_UI_REFRESH_SUBTREE) ticket.topology = topologyRevision_;
         uint32_t applicable = 0;
         ticket.members.reserve(handles.size()); ticket.dataTargets.reserve(handles.size());
         for (const auto handle : handles) {
@@ -333,7 +419,8 @@ MmsResult UiRefreshQueue::Request(RefreshClient& client, const MmsUiRefreshReque
             if (node == tree_.end()) return MMS_E_STALE;
             if (node->second.owner != client.owner) return MMS_E_ARGUMENT;
             const auto kind = node->second.kind;
-            if (kind != MMS_UI_BUTTON && kind != MMS_UI_PANEL && kind != MMS_UI_SEPARATOR && kind != MMS_UI_INPUT && kind != MMS_UI_MENU && kind != MMS_UI_MENU_ITEM) continue;
+            if (kind != MMS_UI_BUTTON && kind != MMS_UI_PANEL && kind != MMS_UI_SEPARATOR && kind != MMS_UI_INPUT && kind != MMS_UI_MENU && kind != MMS_UI_MENU_ITEM &&
+                !(ticket.scope == MMS_UI_REFRESH_DEPENDENTS && kind == MMS_UI_GROUP)) continue;
             const bool menu = kind == MMS_UI_MENU || kind == MMS_UI_MENU_ITEM;
             const auto current = targets_.find(handle);
             const uint32_t potential = menu ? MMS_UI_REFRESH_STATE : MMS_UI_REFRESH_REPAINT | MMS_UI_REFRESH_LAYOUT |
@@ -343,9 +430,15 @@ MmsResult UiRefreshQueue::Request(RefreshClient& client, const MmsUiRefreshReque
                 continue; // An unmounted target cannot have a valid DATA binding.
             }
             const auto& t = current->second; const auto& p = t.presentation;
-            if (p.owner != client.owner || p.container) return MMS_E_STALE;
+            if (p.owner != client.owner || (p.container && ticket.scope != MMS_UI_REFRESH_DEPENDENTS)) return MMS_E_STALE;
             if (!ticket.whole && !SameCoordinateSpace(target->second.presentation, p)) return MMS_E_NOT_READY;
             const MmsUiTargetRefV1 ref{Header<MmsUiTargetRefV1>(), handle, t.generation, epoch_};
+            if (ticket.scope == MMS_UI_REFRESH_DEPENDENTS) {
+                const auto exact = std::find_if(dependentRefs.begin(), dependentRefs.end(), [&](const auto& value) { return SameRef(value, ref); });
+                if (exact == dependentRefs.end()) return MMS_E_STALE;
+                if (t.suspended || (!MenuTarget(p) && !p.window)) return MMS_E_NOT_READY;
+                if (p.container) { ticket.members.push_back({ref, t.geometry, t.stateProviderRevision, 0}); continue; }
+            }
             uint32_t supported = MenuTarget(p) ? MMS_UI_REFRESH_STATE : MMS_UI_REFRESH_REPAINT | (p.stateRefresh ? MMS_UI_REFRESH_STATE : 0) |
                 (p.layoutRefresh && layout_ ? MMS_UI_REFRESH_LAYOUT : 0);
             const uint32_t kinds = supported & ticket.kinds;
@@ -380,18 +473,17 @@ MmsResult UiRefreshQueue::Request(RefreshClient& client, const MmsUiRefreshReque
     for (const auto& item : tickets_) {
         globalBytes += item.second.Bytes();
         if (item.second.owner == &client) { ++count; bytes += item.second.Bytes(); }
-        const auto queuedTarget = targets_.find(item.second.target.element);
-        pending |= item.second.state.status == MMS_UI_REFRESH_PENDING &&
-            (!menuTracking_ || queuedTarget == targets_.end() || !MenuTarget(queuedTarget->second.presentation));
+        pending |= item.second.state.status == MMS_UI_REFRESH_PENDING && !MenuBlockedLocked(item.second);
     }
     if (count >= kTickets || tickets_.size() >= kGlobalTickets || ticket.Bytes() > kBytes - bytes ||
         ticket.Bytes() > kGlobalBytes - globalBytes || next_ == UINT64_MAX) return MMS_E_BUSY;
+    const bool blocked = MenuBlockedLocked(ticket);
     const auto handle = next_++;
     tickets_.emplace(handle, std::move(ticket));
     // This internal wake is a non-reentrant PostMessage signal, never a plugin
     // callback. Holding the lock prevents UI consumption before failure rollback.
     bool signalled = true;
-    if (!pending && wake_ && (!menuTracking_ || !MenuTarget(target->second.presentation))) { try { signalled = wake_(); } catch (...) { signalled = false; } }
+    if (!pending && wake_ && !blocked) { try { signalled = wake_(); } catch (...) { signalled = false; } }
     if (!signalled) { tickets_.erase(handle); return MMS_E_FAILED; }
     *out = handle; return MMS_OK;
 }
@@ -439,7 +531,15 @@ void UiRefreshQueue::SyncTopology() noexcept {
                 String(element.desc.ownerPlugin), element.desc.kind});
         }
         std::lock_guard<std::mutex> lock(mutex_);
-        if (!topologyReady_ || candidate != tree_) { tree_.swap(candidate); ++topologyRevision_; }
+        if (!topologyReady_ || candidate != tree_) {
+            for (const auto& prior : tree_) {
+                const auto current = candidate.find(prior.first);
+                if (current == candidate.end() || current->second.owner != prior.second.owner || current->second.kind != prior.second.kind)
+                    dependencies_->InvalidateTarget(prior.first);
+            }
+            tree_.swap(candidate); ++topologyRevision_;
+            InvalidateDependencyTicketsLocked();
+        }
         topologyReady_ = true;
         for (auto it = tickets_.begin(); it != tickets_.end();) {
             auto& t = it->second;
@@ -466,7 +566,9 @@ MmsResult UiRefreshQueue::ValidateTicketLocked(const Ticket& ticket, bool geomet
         if ((ticket.kinds & MMS_UI_REFRESH_STATE) && root->second.stateProviderRevision != ticket.stateProviderRevision) return MMS_E_STALE;
         return MMS_OK;
     }
-    if (!topologyReady_ || ticket.topology != topologyRevision_) return MMS_E_STALE;
+    if (ticket.scope == MMS_UI_REFRESH_DEPENDENTS) {
+        if (ticket.dependencyRevision != dependencies_->Revision(*ticket.owner)) return MMS_E_STALE;
+    } else if (!topologyReady_ || ticket.topology != topologyRevision_) return MMS_E_STALE;
     for (const auto& member : ticket.members) {
         const auto found = targets_.find(member.ref.element);
         if (found == targets_.end() || found->second.generation != member.ref.instanceGeneration ||
@@ -512,8 +614,10 @@ void UiRefreshQueue::SyncTargets(const std::vector<RefreshPresentation>& present
     targets_.swap(candidate);
     for (const auto& [handle, old] : candidate) {
         const auto current = targets_.find(handle);
-        if (current == targets_.end() || current->second.generation != old.generation)
+        if (current == targets_.end() || current->second.generation != old.generation) {
             bindings_->InvalidateTarget(handle);
+            dependencies_->InvalidateTarget(handle);
+        }
     }
     for (auto it = tickets_.begin(); it != tickets_.end();) {
         auto& ticket = it->second;
@@ -528,6 +632,8 @@ void UiRefreshQueue::SyncTargets(const std::vector<RefreshPresentation>& present
 void UiRefreshQueue::InvalidateTarget(MmsHandle element) noexcept {
     std::lock_guard<std::mutex> lock(mutex_); targets_.erase(element);
     bindings_->InvalidateTarget(element);
+    dependencies_->InvalidateTarget(element);
+    InvalidateDependencyTicketsLocked();
     for (auto it = tickets_.begin(); it != tickets_.end();) {
         auto& ticket = it->second;
         if (ticket.state.status == MMS_UI_REFRESH_PENDING && (ticket.target.element == element ||
@@ -552,8 +658,7 @@ void UiRefreshQueue::SetMenuTracking(bool tracking) noexcept {
         for (const auto& item : tickets_) pending |= item.second.state.status == MMS_UI_REFRESH_PENDING;
         if (pending) {
             bool signalled = false; try { signalled = wake_(); } catch (...) {}
-            if (!signalled) for (auto& item : tickets_) if (item.second.state.status == MMS_UI_REFRESH_PENDING &&
-                targets_.count(item.second.target.element) && MenuTarget(targets_.at(item.second.target.element).presentation))
+            if (!signalled) for (auto& item : tickets_) if (item.second.state.status == MMS_UI_REFRESH_PENDING)
                 item.second.Finish(MMS_UI_REFRESH_FAILED, MMS_E_FAILED);
         }
     }
@@ -570,7 +675,7 @@ void UiRefreshQueue::Drain() {
     };
     struct Group {
         Target root; RefreshClient* owner = nullptr; MmsUiTargetRefV1 ref{};
-        uint64_t key = 0, topology = 0, sourceRevision = 0; MmsHandle binding = 0;
+        uint64_t key = 0, topology = 0, dependencyRevision = 0, sourceRevision = 0; MmsHandle binding = 0;
         uint32_t kinds = 0, scope = MMS_UI_REFRESH_SELF; bool fixedGeometry = false;
         std::vector<Work> members; std::vector<MmsHandle> tickets;
         std::vector<MmsUiTargetRefV1> dataTargets; std::vector<UiRefreshBindings::Captured> captured;
@@ -591,11 +696,11 @@ void UiRefreshQueue::Drain() {
                 if (ticket.released) it = tickets_.erase(it); else ++it;
                 continue;
             }
-            if (menuTracking_ && MenuTarget(targets_.at(ticket.target.element).presentation)) { ++it; continue; }
+            if (MenuBlockedLocked(ticket)) { ++it; continue; }
             ++count;
             auto group = std::find_if(groups.begin(), groups.end(), [&](const auto& g) {
                 if (g.owner != ticket.owner || !SameRef(g.ref, ticket.target) || g.key != ticket.key ||
-                    g.kinds != ticket.kinds || g.scope != ticket.scope || g.topology != ticket.topology ||
+                    g.kinds != ticket.kinds || g.scope != ticket.scope || g.topology != ticket.topology || g.dependencyRevision != ticket.dependencyRevision ||
                     g.binding != ticket.binding || g.sourceRevision != ticket.sourceRevision ||
                     g.fixedGeometry != (ticket.expectedGeometry != 0)) return false;
                 if (g.scope == MMS_UI_REFRESH_SELF)
@@ -616,7 +721,7 @@ void UiRefreshQueue::Drain() {
             if (group == groups.end()) {
                 Group candidate; candidate.root = targets_.at(ticket.target.element); candidate.owner = ticket.owner;
                 candidate.region = RectangleGeometry(candidate.root.presentation);
-                candidate.ref = ticket.target; candidate.key = ticket.key; candidate.topology = ticket.topology;
+                candidate.ref = ticket.target; candidate.key = ticket.key; candidate.topology = ticket.topology; candidate.dependencyRevision = ticket.dependencyRevision;
                 candidate.sourceRevision = ticket.sourceRevision; candidate.binding = ticket.binding;
                 candidate.kinds = ticket.kinds; candidate.scope = ticket.scope; candidate.fixedGeometry = ticket.expectedGeometry != 0;
                 candidate.dataTargets = ticket.dataTargets; candidate.captured = ticket.captured;
@@ -664,9 +769,10 @@ void UiRefreshQueue::Drain() {
             const auto root = targets_.find(batch.ref.element);
             if (batch.ref.projectEpoch != epoch_ || root == targets_.end() || root->second.generation != batch.ref.instanceGeneration)
                 return MMS_E_STALE;
-            if (batch.scope == MMS_UI_REFRESH_SUBTREE) {
-                if (!topologyReady_ || batch.topology != topologyRevision_ ||
-                    (strict && root->second.geometry != batch.root.geometry)) return MMS_E_STALE;
+            if (batch.scope != MMS_UI_REFRESH_SELF) {
+                if (batch.scope == MMS_UI_REFRESH_DEPENDENTS ? batch.dependencyRevision != dependencies_->Revision(*batch.owner) :
+                    (!topologyReady_ || batch.topology != topologyRevision_)) return MMS_E_STALE;
+                if (strict && root->second.geometry != batch.root.geometry) return MMS_E_STALE;
                 if (root->second.suspended || (!MenuTarget(root->second.presentation) && !root->second.presentation.window)) return MMS_E_NOT_READY;
                 if (!MenuTarget(root->second.presentation) && !IsWindow(root->second.presentation.window)) return MMS_E_STALE;
                 if (batch.kinds & MMS_UI_REFRESH_DATA)
@@ -677,7 +783,8 @@ void UiRefreshQueue::Drain() {
                 if (target == targets_.end() || target->second.generation != work.ref.instanceGeneration ||
                     (strict && target->second.geometry != work.target.geometry)) return MMS_E_STALE;
                 if (work.kinds && !target->second.ReadyFor(work.kinds)) return MMS_E_NOT_READY;
-                if (work.kinds && !MenuTarget(target->second.presentation) && !IsWindow(target->second.presentation.window)) return MMS_E_STALE;
+                if ((work.kinds || batch.scope == MMS_UI_REFRESH_DEPENDENTS) && !MenuTarget(target->second.presentation) &&
+                    !IsWindow(target->second.presentation.window)) return MMS_E_STALE;
                 if (work.propertyData && (!target->second.presentation.propertyDataRefresh || !propertyData_)) return MMS_E_NOT_READY;
                 if (work.propertyRecord && target->second.presentation.propertyRecord != work.propertyRecord) return MMS_E_STALE;
                 if ((work.propertyData || work.propertyRecord) &&
@@ -882,7 +989,10 @@ void UiRefreshQueue::Drain() {
                         std::lock_guard<std::mutex> lock(queue.mutex_); queue.evaluatingLayoutOwner_ = nullptr;
                     } } guard{*this};
                     // One retained-tree pass resolves sibling dependencies too.
-                    const auto r = registry_.WithReadOnlyCallback([&] { return layout_ ? layout_(batch.ref.element) : MMS_E_UNSUPPORTED; });
+                    const auto anchor = batch.scope == MMS_UI_REFRESH_DEPENDENTS ?
+                        std::find_if(batch.members.begin(), batch.members.end(), [](const auto& work) { return (work.kinds & MMS_UI_REFRESH_LAYOUT) != 0; }) : batch.members.end();
+                    const auto element = anchor != batch.members.end() ? anchor->ref.element : batch.ref.element;
+                    const auto r = registry_.WithReadOnlyCallback([&] { return layout_ ? layout_(element) : MMS_E_UNSUPPORTED; });
                     if (r) return r;
                     const auto priorGeometry = batch.members.empty() ? batch.root.geometry : batch.members.front().target.geometry;
                     if (const auto check = validateAll(false)) return check;
@@ -890,8 +1000,10 @@ void UiRefreshQueue::Drain() {
                     if (batch.scope == MMS_UI_REFRESH_SELF && !batch.members.front().rects.empty() &&
                         priorGeometry != batch.members.front().target.geometry) return MMS_E_STALE;
                 } else {
-                    for (auto& work : batch.members) if (work.kinds & phase)
+                    for (auto& work : batch.members) if (work.kinds & phase) {
                         if (const auto r = applyTarget(work, phase)) return r;
+                        if (const auto check = validateAll(work.fixedGeometry)) return check;
+                    }
                     completed |= phase;
                 }
             }
@@ -915,8 +1027,7 @@ bool UiRefreshQueue::Pending() const {
     // pending in its ticket, but must not poll a native modal menu loop.
     return std::any_of(tickets_.begin(), tickets_.end(), [&](const auto& t) {
         if (t.second.state.status != MMS_UI_REFRESH_PENDING) return false;
-        const auto target = targets_.find(t.second.target.element);
-        return !menuTracking_ || target == targets_.end() || !MenuTarget(target->second.presentation);
+        return !MenuBlockedLocked(t.second);
     });
 }
 bool UiRefreshQueue::ReadOnlyCause() const {
@@ -945,6 +1056,7 @@ void UiRefreshQueue::Retire(RefreshClient& client) noexcept {
     client.stopping.store(true);
     std::lock_guard<std::mutex> lock(mutex_);
     bindings_->Retire(client);
+    dependencies_->Retire(client);
     for (auto it = tickets_.begin(); it != tickets_.end();) {
         auto& t = it->second;
         if (t.owner == &client && t.state.status == MMS_UI_REFRESH_PENDING) t.Finish(MMS_UI_REFRESH_CANCELLED, MMS_E_CANCELLED);
@@ -968,6 +1080,7 @@ void UiRefreshQueue::FailPending(MmsResult result) noexcept {
 void UiRefreshQueue::AdvanceProjectEpoch() noexcept {
     std::lock_guard<std::mutex> lock(mutex_); ++epoch_;
     bindings_->AdvanceProjectEpoch(epoch_);
+    dependencies_->Clear();
     for (auto it = tickets_.begin(); it != tickets_.end();) {
         auto& t = it->second;
         if (t.state.status == MMS_UI_REFRESH_PENDING) t.Finish(MMS_UI_REFRESH_FAILED, MMS_E_STALE);

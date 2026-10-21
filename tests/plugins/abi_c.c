@@ -2,6 +2,11 @@
 #include <mms/refresh.h>
 #include <mms/refresh_binding.h>
 #include <mms/refresh_state.h>
+#include <mms/refresh_dependency.h>
+_Static_assert(sizeof(MmsUiRefreshDependencyCapabilitiesV1) == 24, "dependency capabilities");
+_Static_assert(sizeof(MmsUiRefreshDependencyDescV1) == 80, "dependency descriptor");
+_Static_assert(sizeof(MmsUiRefreshDependencyApiV1) == 40, "dependency API");
+_Static_assert(offsetof(MmsUiRefreshDependencyDescV1, dependent) == 40, "dependency target offset");
 _Static_assert(sizeof(MmsUiStateContentV1) == 64, "STATE content");
 _Static_assert(sizeof(MmsUiInputStateContentV1) == 80, "INPUT STATE content");
 _Static_assert(offsetof(MmsUiInputStateContentV1, content) == 0, "INPUT STATE prefix");

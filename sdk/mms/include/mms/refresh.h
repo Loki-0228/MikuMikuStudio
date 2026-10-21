@@ -6,9 +6,11 @@
 #define MMS_UI_REFRESH_STATE 4u
 #define MMS_UI_REFRESH_LAYOUT 8u
 #define MMS_UI_REFRESH_SELF 1u
-/* Original registered subtree, including a drawable root. GROUP exposes only
-   SUBTREE. This does not enumerate arbitrary native child windows. */
+/* Original registered subtree, including a drawable root. GROUP has no SELF
+   drawing surface. This does not enumerate arbitrary native child windows. */
 #define MMS_UI_REFRESH_SUBTREE 2u
+/* Explicit reachable graph, excluding the seed. Register edges through
+   mms.ui.refresh.dependencies; no automatic source subscription is implied. */
 #define MMS_UI_REFRESH_DEPENDENTS 4u
 #define MMS_UI_REFRESH_PENDING 1u
 #define MMS_UI_REFRESH_RUNNING 2u
@@ -30,7 +32,7 @@ typedef struct MmsUiRefreshCapabilitiesV1 {
 	uint64_t maxPendingBytesPerPlugin;
 	uint32_t maxContributionsPerDrain, reserved;
 } MmsUiRefreshCapabilitiesV1;
-/* Native MENU/MENU_ITEM targets expose STATE only, with zero geometry revision
+/* Native MENU/MENU_ITEM surfaces themselves support STATE only, with zero geometry revision
    and dimensions. ready denotes a retained menu presentation, not an open
    popup or a client rectangle. Query per-target capabilities before use. */
 typedef struct MmsUiRefreshTargetV1 {
@@ -45,7 +47,7 @@ typedef struct MmsUiRefreshRequestV1 {
 	MmsUiTargetRefV1 target;
     /* SELF+DATA: explicit binding and exact sourceRevision, or both zero for
        an unbound native INPUT that advertises DATA. The latter rereads its
-       property at UI consumption time. SUBTREE+DATA: both zero; atomically
+       property at UI consumption time. SUBTREE/DEPENDENTS+DATA: both zero; atomically
        capture bound snapshots, then reread unbound native INPUT members. */
 	MmsHandle binding;
 	uint32_t kinds, scope;
@@ -55,7 +57,8 @@ typedef struct MmsUiRefreshRequestV1 {
        exact expectedGeometryRevision. SUBTREE clips/maps to each registered
        drawable member; native child windows are not enumerated. Geometry
        changes before its REPAINT stage fail STALE instead of repainting all.
-       count == 0 requests each applicable target's whole client area. */
+       count == 0 requests each applicable target's whole client area.
+       DEPENDENTS accepts count == 0 only, across unrelated coordinate spaces. */
 	MmsSpan dirtyRects;
 	uint64_t coalesceKey;
 	uint32_t flags, reserved;
@@ -65,7 +68,7 @@ typedef struct MmsUiRefreshStateV1 {
 	uint32_t status, completedKinds;
 	MmsResult result;
 	uint32_t reserved;
-    /* SUBTREE and unbound native INPUT readback report sourceRevision zero.
+    /* SUBTREE, DEPENDENTS and unbound INPUT readback report sourceRevision zero.
        Neither represents one explicit source version. completedKinds, not
        this scalar, indicates completion. */
 	uint64_t sourceRevision, geometryRevision;

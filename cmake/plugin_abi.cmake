@@ -21,6 +21,7 @@ add_library(mms_plugin_runtime STATIC
     src/plugins/ui_property_value.cpp
     src/plugins/ui_property_draft.cpp
     src/plugins/ui_refresh.cpp
+    src/plugins/ui_refresh_dependencies.cpp
     src/plugins/ui_refresh_binding.cpp
     src/plugins/ui_preferences_file.cpp
     src/plugins/manager.cpp
@@ -138,7 +139,7 @@ set_target_properties(mms_abi_c_check PROPERTIES C_STANDARD 11 C_STANDARD_REQUIR
 add_dependencies(plugin_abi_tests mms_abi_c_check)
 target_include_directories(plugin_abi_tests PRIVATE src/plugins)
 target_link_libraries(plugin_abi_tests PRIVATE mms_plugin_runtime native_ui::update minhook::minhook)
-target_compile_options(plugin_abi_tests PRIVATE /UNDEBUG)
+target_compile_options(plugin_abi_tests PRIVATE /UNDEBUG /bigobj)
 target_link_options(plugin_abi_tests PRIVATE /SUBSYSTEM:CONSOLE,6.01 /DEBUG:NONE)
 set_target_properties(plugin_abi_tests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
@@ -164,6 +165,20 @@ set_target_properties(mms_data_refresh_probe PROPERTIES OUTPUT_NAME data_refresh
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/plugins/data_refresh/$<CONFIG>"
     MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 add_dependencies(plugin_abi_tests mms_data_refresh_probe)
+add_library(mms_dependency_refresh_probe MODULE EXCLUDE_FROM_ALL
+    tests/plugins/dependency_refresh_plugin.cpp tests/plugins/dependency_refresh_plugin.def)
+target_include_directories(mms_dependency_refresh_probe PRIVATE sdk/mms/include)
+target_compile_features(mms_dependency_refresh_probe PRIVATE cxx_std_17)
+target_compile_definitions(mms_dependency_refresh_probe PRIVATE _WIN32_WINNT=0x0601 WINVER=0x0601)
+target_link_libraries(mms_dependency_refresh_probe PRIVATE user32)
+target_link_options(mms_dependency_refresh_probe PRIVATE /SUBSYSTEM:WINDOWS,6.01 /DEBUG:NONE)
+set_target_properties(mms_dependency_refresh_probe PROPERTIES OUTPUT_NAME dependency_refresh_probe
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/plugins/dependency_refresh/$<CONFIG>"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/plugins/dependency_refresh/$<CONFIG>"
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+add_dependencies(plugin_abi_tests mms_dependency_refresh_probe)
+add_test(NAME ui_dependency_refresh_runtime COMMAND plugin_abi_tests --dependency-refresh-only "$<TARGET_FILE:mms_dependency_refresh_probe>")
+set_tests_properties(ui_dependency_refresh_runtime PROPERTIES TIMEOUT 180)
 add_test(NAME ui_data_refresh_runtime COMMAND plugin_abi_tests --data-only "$<TARGET_FILE:mms_data_refresh_probe>")
 set_tests_properties(ui_data_refresh_runtime PROPERTIES TIMEOUT 120)
 add_library(mms_plugin_edit_probe SHARED EXCLUDE_FROM_ALL tests/plugins/manager_edit_plugin.cpp tests/plugins/manager_edit_plugin.def)

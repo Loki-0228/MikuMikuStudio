@@ -1,10 +1,10 @@
 # C++17 界面重绘 SDK
 
-`mms/cpp/refresh.hpp` 包装已有 `mms.ui.refresh` C 表，复用原元素、目标和票据，无需链接宿主库。开发环境与[界面注册 SDK](cpp-ui.md)相同。当前支持 SELF 和 SUBTREE 范围的 REPAINT、按钮、INPUT、已挂载 PANEL 及菜单 STATE、保留布局的 LAYOUT；[数据刷新 SDK](data-refresh.md)通过同一 Request 和 RefreshTicket 提交 DATA。实际目标能力和宿主行为见 [C 接口参考](refresh.md)。
+`mms/cpp/refresh.hpp` 包装已有 `mms.ui.refresh` C 表，复用原元素、目标和票据，无需链接宿主库。开发环境与[界面注册 SDK](cpp-ui.md)相同。支持 SELF、SUBTREE 和显式 DEPENDENTS 范围；各成员按实际能力执行 REPAINT、STATE、DATA 和 LAYOUT。[数据刷新 SDK](data-refresh.md)和[依赖图 SDK](refresh-dependencies.md)使用同一 Request 和 RefreshTicket。实际能力和宿主行为见 [C 接口参考](refresh.md)。
 
 ## 类型与线程
 
-原 MENU、MENU_ITEM 也可使用 `RefreshState`、`RefreshStateCurrent` 和 `RefreshStateSubtree`，或将原 handle 传给 `RefreshSubtreeElement`。菜单只有 STATE 能力，目标尺寸及几何修订为 0；不能调用 LAYOUT、REPAINT 或 DATA 组合。菜单循环期间票据保持 PENDING，SDK 不自行轮询或重试，详见[菜单 STATE](refresh.md#菜单-state)。
+原 MENU、MENU_ITEM 可使用 `RefreshState`、`RefreshStateCurrent` 和 `RefreshStateSubtree`，或把原 handle 传给 `RefreshSubtreeElement`。菜单自身只有 STATE，尺寸及几何修订为 0；菜单作为 DEPENDENTS 种子时，下游窗口可执行其支持的其他阶段。菜单循环期间涉及菜单的组保持 PENDING，SDK 不自行轮询或重试，详见[菜单 STATE](refresh.md#菜单-state)。
 
 | 类型 | 行为 |
 | --- | --- |
@@ -62,6 +62,8 @@ MmsResult result = refresh.RepaintRect(target, dirty, ticket, 17);
 | `RelayoutSubtree(ref, ticket, key=0)` | 保留树 LAYOUT，不隐含 STATE。 |
 | `RefreshDataSubtree(ref, ticket, key=0)` | 子树 DATA 与 REPAINT。 |
 | `RefreshSubtreeElement(element, kinds, ticket, key=0)` | UI 线程先按原 handle 查询目标，再提交同一请求。 |
+| `RefreshDependents(ref, kinds, ticket, key=0)` | 沿显式图处理可达目标，排除种子；整目标损伤、几何约束为 0，后台可调用。 |
+| `RefreshDependentElements(element, kinds, ticket, key=0)` | UI 线程解析原 handle，再提交相同 DEPENDENTS 请求。 |
 | `Request(request, ticket)` | 原样提交完整 C 请求，调用者填写结构头和字段。 |
 
 `key` 为原 coalesceKey。SDK 不合并、不重试，不在 STALE 后自动扩大损伤范围。矩形只需在调用期间有效，宿主复制其内容。旧几何被拒绝时，在 UI 线程重新捕获并计算矩形，不能只改代次。
@@ -160,4 +162,4 @@ COMPLETED 表示请求的各刷新阶段已完成，不保证像素已显示。�
 
 析构仅尝试 `Release()`，不会取消或等待 UI。析构无法报告释放失败，也不能保留已销毁的 SDK 对象。在 `stop` 中先停止生产请求、结束自己的后台任务，再显式清理全部票据。失败时保留对象并返回 BUSY 或错误供宿主重试，不能仅依赖析构完成停止。
 
-本封装不创建后台线程、轮询器、默认订阅或动画时钟。默认 INPUT 属性读回使用上述两个方法，结果 sourceRevision 为 0；不能仅凭全局 DATA 位判断目标支持该模式。[INPUT 参考](input.md)说明草稿、首次读取失败恢复及显式绑定冲突。显式 DATA 便利入口由同层的 `data_refresh.hpp` 组合本封装实现。INPUT、已挂载 PANEL 和菜单的 STATE 使用原队列、目标和票据。菜单提示、DEPENDENTS、自动依赖和插件量测提供者尚未开放，普通 `mms.edit` 仍关闭。包装捕获意外 C++ 异常并返回错误码；插件仍须遵守 C ABI，不让异常跨 DLL。
+本封装不创建后台线程、轮询器、默认订阅或动画时钟。默认 INPUT 属性读回结果 sourceRevision 为 0；不能仅凭全局 DATA 位判断目标支持该模式。[INPUT 参考](input.md)说明草稿、首次读取失败恢复及显式绑定冲突。显式 DATA 和 DEPENDENTS 便利入口均通过原 Request 实现。INPUT、已挂载 PANEL 和菜单 STATE 使用原队列、目标和票据。菜单提示、来源自动订阅和插件量测提供者尚未开放，普通 `mms.edit` 仍关闭。包装捕获意外 C++ 异常并返回错误码；插件仍须遵守 C ABI，不让异常跨 DLL。

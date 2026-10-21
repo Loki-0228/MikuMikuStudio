@@ -56,6 +56,9 @@ static std::string ManifestText(std::string id = "org.example.hello", std::strin
 #include "panel_state_refresh_checks.inc"
 #include "menu_state_refresh_checks.inc"
 #include "overflow_menu_checks.inc"
+#include "ui_refresh_dependency_checks.inc"
+#include "cpp_refresh_dependency_checks.inc"
+#include "manager_dependency_refresh_checks.inc"
 #include "overflow_validation_checks.inc"
 #include "manager_data_refresh_checks.inc"
 #include "manager_layout_refresh_checks.inc"
@@ -399,6 +402,12 @@ int wmain(int argc, wchar_t** argv) {
             UiRefreshSubtreeChecks(); UiRefreshSubtreeRectChecks();
             std::cout << "PASS SUBTREE refresh checks=" << checks << "\n"; return 0;
         }
+        if ((argc == 2 || argc == 3) && std::wstring(argv[1]) == L"--dependency-refresh-only") {
+            CHECK(!fs::exists(root)); fs::create_directories(root);
+            UiRefreshDependencyChecks(); CppRefreshDependencyChecks();
+            if (argc == 3) ManagerDependencyRefreshChecks(root, fs::absolute(argv[2]));
+            std::cout << "PASS DEPENDENTS refresh checks=" << checks << "\n"; fs::remove_all(root); return 0;
+        }
         if (argc == 2 && std::wstring(argv[1]) == L"--state-content-only") {
             StateContentChecks();
             std::cout << "PASS STATE content checks=" << checks << "\n"; return 0;
@@ -436,6 +445,7 @@ int wmain(int argc, wchar_t** argv) {
         LifecycleChecks(root, fs::absolute(argv[2])); TaskDispatchChecks(root, fs::absolute(argv[2]), fs::absolute(argv[3]));
         SceneChecks(); StorageChecks(root); EditChecks(); UiPropertyStageChecks(); SharedHistoryChecks(); StateContentChecks(); InputStateContentChecks(); InputStatePrefixChecks(); PropertyMountChecks(); PanelStateRefreshChecks(); MenuStateRefreshChecks();
         UiRefreshSubtreeChecks(); UiRefreshSubtreeRectChecks();
+        UiRefreshDependencyChecks(); CppRefreshDependencyChecks();
         ManagerEditChecks(root, fs::absolute(argv[3]));
         UiInputBrokerChecks(root, fs::absolute(argv[3]));
         NativePropertyInputChecks(root, fs::absolute(argv[3]));

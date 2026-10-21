@@ -168,7 +168,7 @@ static void Region(HWND window, std::initializer_list<RECT> rectangles) {
 static void CapabilitiesAndValidation() {
     Fixture x; MmsUiRefreshCapabilitiesV1 caps{}; caps.h = Header<MmsUiRefreshCapabilitiesV1>();
     CHECK(x.api.getCapabilities(x.api.context, &caps) == MMS_OK);
-    CHECK(caps.supportedKinds == (MMS_UI_REFRESH_REPAINT | MMS_UI_REFRESH_STATE | MMS_UI_REFRESH_DATA) && caps.supportedScopes == (MMS_UI_REFRESH_SELF | MMS_UI_REFRESH_SUBTREE));
+    CHECK(caps.supportedKinds == (MMS_UI_REFRESH_REPAINT | MMS_UI_REFRESH_STATE | MMS_UI_REFRESH_DATA) && caps.supportedScopes == (MMS_UI_REFRESH_SELF | MMS_UI_REFRESH_SUBTREE | MMS_UI_REFRESH_DEPENDENTS));
     CHECK(caps.maxTicketsPerPlugin == 256 && caps.maxRectsPerRequest == 32 && caps.maxPendingBytesPerPlugin == 256 * 1024 && caps.maxContributionsPerDrain == 64);
     auto target = x.Target(); CHECK(target.target.element == x.element && target.target.instanceGeneration && target.target.projectEpoch && target.geometryRevision);
     CHECK(target.ready && target.visible && target.width == 300 && target.height == 120);

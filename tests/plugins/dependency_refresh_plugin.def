@@ -1,0 +1,9 @@
+EXPORTS
+    MMSPluginGetApi
+    DependencyProbeBegin
+    DependencyProbeSetState
+    DependencyProbeRequest
+    DependencyProbeQuery
+    DependencyProbeRelease
+    DependencyProbeRemoveEdge
+    DependencyProbeCheckEdges

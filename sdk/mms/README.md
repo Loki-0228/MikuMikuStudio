@@ -50,7 +50,8 @@ cmake --build build/hello-menu --config Release
 | `mms.ui` 1.0 | 命令、菜单项、工具栏及属性扩展行的 BUTTON、GROUP、SEPARATOR、INPUT；元数据更新；只读属性；快照租约；命令参数、范围与选项校验；布局修订检查、指定顺序移动、创建与删除空组、显示、首选尺寸、快捷键及恢复。 |
 | `mms.ui.surface` 1.0 | 菜单、工具栏、工作区页签和属性扩展行的 anchor 查询；各位置通过 allowedKinds 声明范围。原生子窗口工厂、多个视图、尺寸、隐藏、焦点与销毁仍遵守原挂载限制。 |
 | `mms.ui.layout` 1.0 | 默认布局提示、事务内用户覆盖、实际几何快照；行、列、换行和网格；伸缩、上下限、隐藏占位；工具栏 BUTTON、GROUP 和 SEPARATOR 可通过 `MMS_UI_OVERFLOW_MENU=3` 选择命令溢出菜单。 |
-| `mms.ui.refresh` 1.0 | 同插件注册对象的 SELF/SUBTREE 异步刷新。GROUP 只开放 SUBTREE；各阶段按整树 DATA、STATE、一次 LAYOUT、REPAINT 执行，使用原 handle、票据和队列，支持后台请求、整树取消、拓扑及绑定集合失效。SUBTREE + DATA 原子捕获各绑定版本，sourceRevision=0 表示集合；子树局部矩形按成员几何和 DPI 裁剪。DEPENDENTS 和自动订阅未开放。 |
+| `mms.ui.refresh` 1.0 | 同插件注册对象的 SELF、SUBTREE、显式 DEPENDENTS 异步刷新。GROUP 无 SELF 绘制区；各成员按 DATA、STATE、一次 LAYOUT、REPAINT 执行，使用原 handle、票据和队列。SUBTREE 支持局部坐标映射；DEPENDENTS 排除种子、按拓扑顺序处理可达目标，使用整目标损伤。两种集合 DATA 原子捕获来源版本，sourceRevision=0 表示集合。 |
+| `mms.ui.refresh.dependencies` 1.0 | 同客户端原目标间的显式 DAG。循环检测、配额、图版本及生命周期失效共用原刷新队列；[C ABI 与 C++17 封装](refresh-dependencies.md)使用同一边句柄。来源自动订阅尚未实现。 |
 | `mms.ui.refresh.bind` 1.0 | 本插件不可变来源、来源版本、目标绑定、只读显示准备及显示租约；工作线程发布，原刷新队列消费。 |
 | `mms.ui.refresh.state` 1.0 | 本插件已有宿主按钮及 INPUT 的文案、说明及禁用原因；INPUT 可进一步限制启用、只读与可见状态。短命 builder 单次复制，在原 STATE 阶段应用，原 LAYOUT 使用已发布文案量测。附加服务表不改变旧刷新 ABI。 |
 | `mms.scene` 1.0 | 阶段 0 的对象、骨骼、网格、绑定、刚体、关节、形状、Morph、材质和纹理路径；独立 ID、运行时代次、不可变快照及 PMM 身份保存。阶段 1–4 返回 UNSUPPORTED。 |

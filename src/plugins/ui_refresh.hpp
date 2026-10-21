@@ -1,6 +1,7 @@
 #pragma once
 #include "common.hpp"
 #include <mms/refresh.h>
+#include <mms/refresh_dependency.h>
 #include <atomic>
 #include <mutex>
 #include <map>
@@ -11,6 +12,7 @@ class UiRegistry;
 struct UiClient;
 class UiRefreshQueue;
 class UiRefreshBindings;
+class UiRefreshDependencies;
 struct ButtonStateContent;
 struct PropertyRecord;
 struct RefreshClient {
@@ -35,7 +37,8 @@ struct RefreshPresentation {
     bool stateVisibility = false, layoutVisible = true;
     bool layoutRefresh = false;
     // A retained GROUP uses its original registration identity but has no
-    // separate drawable client area. Only SUBTREE is exposed for it.
+    // separate drawable client area. It supports SUBTREE and an explicit
+    // DEPENDENTS graph when registered; SELF remains unavailable.
     bool container = false;
     // x/y share this host coordinate space. Native publication also retains
     // exact client origins so a DIP roundtrip cannot enlarge damage by a pixel.
@@ -68,6 +71,7 @@ class UiRefreshQueue {
     };
     UiRegistry& registry_;
     std::unique_ptr<UiRefreshBindings> bindings_;
+    std::unique_ptr<UiRefreshDependencies> dependencies_;
     DWORD thread_ = GetCurrentThreadId();
     mutable std::mutex mutex_;
     std::map<MmsHandle, Target> targets_;
@@ -95,7 +99,12 @@ class UiRefreshQueue {
     MmsResult Query(RefreshClient&, MmsHandle, MmsUiRefreshStateV1*);
     MmsResult Cancel(RefreshClient&, MmsHandle);
     MmsResult Release(RefreshClient&, MmsHandle);
+    MmsResult DependencyCapabilities(RefreshClient&, MmsUiRefreshDependencyCapabilitiesV1*);
+    MmsResult RegisterDependency(RefreshClient&, const MmsUiRefreshDependencyDescV1*, MmsHandle*);
+    MmsResult UnregisterDependency(RefreshClient&, MmsHandle);
     bool ReadOnlyCauseLocked(const RefreshClient&) const noexcept;
+    bool MenuBlockedLocked(const Ticket&) const;
+    void InvalidateDependencyTicketsLocked() noexcept;
     std::vector<MmsHandle> SubtreeLocked(MmsHandle) const;
     MmsResult ValidateTicketLocked(const Ticket&, bool geometry) const;
     void SyncTargets(const std::vector<RefreshPresentation>&, bool menus);
@@ -103,6 +112,7 @@ public:
     explicit UiRefreshQueue(UiRegistry&);
     ~UiRefreshQueue();
     MmsUiRefreshApiV1 Api(RefreshClient&);
+    MmsUiRefreshDependencyApiV1 DependencyApi(RefreshClient&);
     UiRefreshBindings& Bindings() noexcept { return *bindings_; }
     // Manager UI tasks inherit the read-only origin of a refresh callback.
     // These tokens never enter public request structs or plugin-owned data.

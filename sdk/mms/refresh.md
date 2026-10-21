@@ -2,7 +2,7 @@
 
 `mms.ui.refresh` 1.0 为插件自己的按钮、INPUT、分隔线、注册 GROUP、原生 surface 面板及菜单安排异步刷新。接口定义见 [refresh.h](include/mms/refresh.h)。结构使用 `MmsHeader`、`MMS_CALL` 和 8 字节对齐，调用失败不修改输出参数。
 
-当前支持 SELF 和 SUBTREE 范围的 REPAINT、按钮、INPUT、已挂载 PANEL 及菜单的 STATE、已绑定目标 DATA、未绑定 INPUT 的属性 DATA，以及保留布局的 LAYOUT；GROUP 只开放 SUBTREE。窗口目标的两种范围均接受局部矩形；菜单只接受无矩形的 STATE。各阶段共用同一票据及队列。显式 DATA 使用[已有绑定](data-refresh.md)，默认属性读回见 [INPUT](input.md)。DEPENDENTS、来源订阅、自动依赖、插件量测提供者和动画帧尚未提供。SUBTREE 不遍历插件自行创建的任意 HWND。
+支持 SELF、SUBTREE 和显式 DEPENDENTS 范围，各成员按实际能力执行 REPAINT、STATE、DATA 和保留布局 LAYOUT。GROUP 无 SELF 绘制区；窗口的 SELF/SUBTREE 接受局部矩形，DEPENDENTS 只接受整目标损伤。菜单自身只执行无矩形 STATE，作为依赖种子时下游窗口仍可执行其他阶段。各阶段共用同一票据及队列。显式 DATA 使用[已有绑定](data-refresh.md)，默认属性读回见 [INPUT](input.md)，边注册及版本见[依赖刷新](refresh-dependencies.md)。来源自动订阅、插件量测提供者和动画帧尚未提供。SUBTREE 不遍历插件自行创建的任意 HWND。
 
 组合请求在同一队列中按 DATA、STATE、LAYOUT、REPAINT 执行。DATA 准备并交换不可变显示模型；STATE 只读查询按钮、PANEL 或菜单的原命令状态，或 INPUT 的属性元数据及编辑可用性，并可通过[状态内容服务](state-content.md)准备支持的文案和提示。没有命令的 PANEL 和 MENU 使用注册元数据作为基线。INPUT STATE 不读取属性值。LAYOUT 使用已保留的描述、提示和状态排版；REPAINT 调用 `InvalidateRect` 或 `InvalidateRgn`，不直接执行绘制。刷新不调用 `FrameDriver`，不修改播放头、工程 dirty 或撤销历史，也不保存布局偏好。插件窗口后续的正常 `WM_PAINT` 仍由插件处理。
 
@@ -39,7 +39,7 @@
 | `target.instanceGeneration` | 宿主分配的呈现实例代次。销毁、重建或失效后重新发布会改变该值。 |
 | `target.projectEpoch` | 当前工程上下文代次。场景替换或重置后旧值失效。 |
 | `geometryRevision` | 窗口或布局目标的实际几何修订，包括位置、客户区尺寸、窗口坐标空间 DPI 和逻辑可见性。MENU、MENU_ITEM 固定为 0。 |
-| `supportedKinds`、`supportedScopes` | 开放范围的能力并集。普通目标报告 SELF 和 SUBTREE；GROUP 只报告 SUBTREE。REPAINT 对应实际呈现，STATE 对应按钮、原生 INPUT、已挂载 PANEL 或菜单，DATA 对应有效绑定或原生 INPUT 属性读回，LAYOUT 对应保留布局后端。并集不表示各范围或后代都支持全部位，request 仍逐范围和成员检查。 |
+| `supportedKinds`、`supportedScopes` | 开放范围的能力并集。普通目标有 SELF、SUBTREE；GROUP 无 SELF。有有效可达图时还报告 DEPENDENTS。REPAINT 对应实际呈现，STATE 对应按钮、INPUT、PANEL 或菜单，DATA 对应绑定或 INPUT 属性读回，LAYOUT 对应保留布局。并集不表示每个范围和成员均支持全部位，request 仍逐项检查。 |
 | `ready` | 窗口目标已挂载、布局发布成功且客户区宽高均大于零时为 1；GROUP 表示容器已发布。MENU、MENU_ITEM 表示保留的原生菜单记录有效，不要求弹出或正尺寸。子树请求还检查各实际参与成员。 |
 | `visible` | 目标在插件布局中的逻辑可见性。此值不表示窗口无遮挡，也不要求宿主顶层窗口已显示。 |
 | `width`、`height` | 窗口目标客户区 DIP 尺寸；GROUP 为保留布局中的逻辑容器尺寸；MENU、MENU_ITEM 均为 0。 |
@@ -61,11 +61,11 @@
 | 字段 | 当前要求 |
 | --- | --- |
 | `target` | 完整复制 `getTarget` 返回的引用。 |
-| `binding`、`sourceRevision` | SELF + DATA 使用有效绑定及非零来源版本，或均为 0 表达未绑定 INPUT 的消费时属性读回。默认读回只对查询到 DATA 能力的原生 INPUT 开放，已有显式绑定时返回 CONFLICT。SUBTREE + DATA 两者必须为 0，由宿主捕获绑定版本集合及未绑定 INPUT。不含 DATA 时也必须为 0。 |
-| `kinds` | REPAINT、STATE、DATA、LAYOUT 或组合。SELF 要求目标支持全部位；SUBTREE 要求每个位至少有一个适用成员。 |
-| `scope` | SELF 或 SUBTREE，按目标报告范围使用。DEPENDENTS 返回 UNSUPPORTED。 |
+| `binding`、`sourceRevision` | SELF + DATA 使用有效绑定及非零来源版本，或均为 0 表达未绑定 INPUT 的消费时属性读回。默认读回只对查询到 DATA 能力的原生 INPUT 开放，已有显式绑定时返回 CONFLICT。SUBTREE/DEPENDENTS + DATA 两者为 0，由宿主捕获绑定版本集合及未绑定 INPUT。不含 DATA 时也必须为 0。 |
+| `kinds` | REPAINT、STATE、DATA、LAYOUT 或组合。SELF 要求目标支持全部位；集合范围要求每个位至少有一个适用成员。 |
+| `scope` | SELF、SUBTREE 或显式图的 DEPENDENTS，按目标报告范围使用。DEPENDENTS 排除种子，不自动包含注册后代。 |
 | `expectedGeometryRevision` | 局部矩形请求必须填写取得矩形时的非零几何修订。整目标请求可填 0，表示接受执行时的有效几何；填写非零值时仍严格检查。 |
-| `dirtyRects` | 含 REPAINT 时可填写局部数组，非空时 stride 至少为结构大小、recordVersion=1。SELF 使用目标客户区坐标；SUBTREE 使用根客户区坐标，GROUP 使用逻辑容器坐标。count=0 表示各适用目标的整个客户区。不含 REPAINT 时必须 count=0。 |
+| `dirtyRects` | 含 REPAINT 时可填写局部数组，非空时 stride 至少为结构大小、recordVersion=1。SELF 使用目标客户区坐标；SUBTREE 使用根客户区坐标，GROUP 使用逻辑容器坐标。count=0 表示各适用目标的整个客户区。DEPENDENTS 或不含 REPAINT 时必须 count=0。 |
 | `coalesceKey` | 插件自定的合并键。同一插件、目标实例及工程代次内，相同键的待执行贡献可以合并。0 也是有效键。 |
 | `flags`、`reserved` | 必须为 0。 |
 
@@ -160,7 +160,7 @@ request 返回 OK 只表示成功入队，不在后台调用 getState。面板�
 
 LAYOUT 使用现有布局树中的元素描述、布局提示、文字量测和已缓存的命令可见性重新排版。纯 LAYOUT 不查询所有命令状态，也不读取属性或准备 DATA。它不会创建尚未挂载的 surface；已有 surface 只收到必要的尺寸及显隐回调。失败面板的错误提示不会因布局请求而被清除。
 
-按钮 STATE 与 LAYOUT 组合可以在没有保留槽位提示时隐藏并收缩空位，也可以用同一目标引用恢复零尺寸按钮。需要重新查询命令可见性时，不能只发 LAYOUT。SELF 指状态和数据的单目标范围，保留树重排可能移动相邻元素。SUBTREE 显式选择注册后代；DEPENDENTS 和自动依赖订阅仍未开放。
+按钮 STATE 与 LAYOUT 组合可以在没有保留槽位提示时隐藏并收缩空位，也可以用同一目标引用恢复零尺寸按钮。需要重新查询命令可见性时，不能只发 LAYOUT。SELF 指状态和数据的单目标范围，保留树重排可能移动相邻元素。SUBTREE 选择注册后代；[DEPENDENTS](refresh-dependencies.md)选择显式图的可达目标。来源自动订阅未开放。
 
 宿主先应用原生布局，更新依赖该区域的视口几何，再发布目标和布局快照。此路径不调用 `HandleWindowSize`、`FrameDriver` 或偏好保存。布局回调处于只读保护，surface 提供者及其因果任务也受保护。它们不能借本次回调执行编辑、注册或递归 DATA/STATE/LAYOUT。
 
@@ -194,7 +194,7 @@ LAYOUT 使用现有布局树中的元素描述、布局提示、文字量测和�
 | `THREAD` | 在工作线程调用 `getCapabilities` 或 `getTarget`。 |
 | `ARGUMENT` | 非法结构、未知标志、非法矩形、局部矩形缺少非零几何修订、不匹配的 DATA 绑定与版本、非默认 INPUT 的零绑定 SELF DATA、非 DATA 请求的非零 binding 或 sourceRevision、访问其他插件目标。 |
 | `CONFLICT` | 已建立显式 DATA 绑定的 INPUT 又请求默认属性读回。 |
-| `UNSUPPORTED` | DEPENDENTS、GROUP 的 SELF 或 DATA 绑定、阶段无适用成员、后端不支持该阶段、单独 STATE 无保留槽位的显隐变化，或查询非刷新目标。 |
+| `UNSUPPORTED` | DEPENDENTS 无可达目标或使用非空矩形、GROUP 的 SELF 或 DATA 绑定、阶段无适用成员、后端不支持该阶段、单独 STATE 无保留槽位的显隐变化，或查询非刷新目标。 |
 | `NOT_READY` | 停止中、目标未挂载、布局暂停、子树区域的共同坐标空间尚不一致、零尺寸目标请求不含可用的 LAYOUT，或显隐需要的布局尚未重新发布。 |
 | `STALE` | 元素注销、实例重建、工程或要求的几何修订不匹配、局部子树请求的空间映射改变，以及子树拓扑、默认属性记录或 DATA 绑定集合变化。 |
 | `NOT_FOUND` | 票据不存在、已释放或属于其他插件。 |

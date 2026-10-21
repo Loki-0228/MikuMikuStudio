@@ -4,6 +4,8 @@
 
 状态分为 **未实现**、**已实现未验证**、**本机已验证**、**缺其他系统/硬件环境**。代码、本机结果和平台结果分别列出。
 
+[显式依赖刷新](records/abi-ui-dependencies-2026-10-21.md)已接入原 UI 句柄、队列和票据，支持同客户端 DAG、拓扑阶段、后台请求、混合菜单延后及生命周期失效。两套真实 DLL 专项通过；来源自动订阅仍未实现。[原生保形插帧保护](records/abi-curve-subdivision-lifetime-2026-10-21.md)两套专项各 1,156 项通过，完整配置曲线全集 30,451 项通过；原始兼容全集再次出现尚未归因的 `0xC0000374`，不能标记整体稳定。
+
 此前 INPUT、刷新服务、属性事务及轮廓颜色专项通过，对应 ABI 程序的原名和中文改名产品检查通过。随后完整与原始兼容配置的完整 ABI 契约各通过 15,399 项，未修改菜单代码或干预测试输入；早期菜单自动选择超时仍可间歇复现，尚未归因，不能标记为已修复。两类证据见[菜单调查](records/abi-menu-selection-investigation-2026-10-21.md)。
 
 [属性事务暂存](records/abi-property-stage-2026-10-20.md)已接入受控编辑宿主，使用原 `mms.ui.stageProperty`、插件 owner 和属性记录。连续暂存可以共用一个 participant；失败精确取消事务，替换注册、序列化器及工程修订变化会使候选失效。五类参与者回调具有统一只读 UI 边界。随后接入[声明式 INPUT](records/abi-declarative-input-2026-10-20.md)及[默认属性 DATA](records/abi-property-data-2026-10-20.md)，普通生产编辑服务仍未开放。
@@ -28,7 +30,7 @@
 
 [模型顺序修复](records/abi-model-order-2026-10-20.md)使模型名称、行数据、当前模型和父模型选择保持一致，计算顺序使用独立字段。随后完成[排序共同历史与容量边界](records/abi-model-order-history-2026-10-20.md)：菜单 288／289 在受控绑定中一次确定形成一次显式事务，保留稳定身份、选择和未登记姿态；绘制、CPU 物理及相关加载遍历包含合法顺序 255。本批修复末项遗漏，没有扩大 255 个模型的总容量。
 
-[注册子树刷新](records/abi-subtree-refresh-2026-10-20.md)已加入原刷新 C ABI 和同对象 SDK。支持后台捕获同插件注册子树、整树 DATA→STATE→一次 LAYOUT→REPAINT、完整来源版本集合、阶段结果及拓扑失效。随后补齐[子树局部矩形](records/abi-subtree-local-rect-2026-10-20.md)，按实际原点和 DPI 裁剪成员区域，几何失效不扩大为全控件刷新。完整配置四组、原始兼容配置五组回归通过；接口结构大小不变，跨插件树及 DEPENDENTS 未开放。
+[注册子树刷新](records/abi-subtree-refresh-2026-10-20.md)已加入原刷新 C ABI 和同对象 SDK。支持后台捕获同插件注册子树、整树 DATA→STATE→一次 LAYOUT→REPAINT、完整来源版本集合、阶段结果及拓扑失效。随后补齐[子树局部矩形](records/abi-subtree-local-rect-2026-10-20.md)，按实际原点和 DPI 裁剪成员区域，几何失效不扩大为全控件刷新。DEPENDENTS 随后按[显式依赖图](records/abi-ui-dependencies-2026-10-21.md)接入；跨插件树未开放。
 
 [口型、眨眼和模型乘加](records/abi-morph-model-menu-history-2026-10-20.md)补齐 225、227、251、252 的受控共同历史。新增两组专项共 3,567 项、相关既有历史六组 18,457 项通过。随机结果只生成一次，键、作者层、缩放和未登记姿态在同一事务中处理。普通编辑服务继续关闭。
 
@@ -158,7 +160,7 @@ R3 拖动与插件区域问题已由用户确认恢复。按需求归类的当�
 | P2 | 属性扩展行挂载 | 本机已验证 | `mms.properties.main.extensions` 是真实主窗口扩展行，支持原 BUTTON、GROUP、SEPARATOR、INPUT，使用同一布局和刷新队列。空行高度为 0，停靠视口及覆盖区避让；移动、草稿取消、同实例零高恢复和卸载纳入双配置各 681 项专项，完整 ABI 契约各 17,565 项通过，见[记录](records/abi-property-mount-2026-10-21.md)。本批不含产品集成及真实 IME、多屏 DPI 验收。 |
 | P2 | 左右侧栏、时间线、状态栏挂载 | 未实现 | 属性扩展行不代表其他本体区域已开放；不枚举空壳挂载点。 |
 | P2 | 工具栏命令溢出菜单 | 本机已验证 | `MmsUiLayoutHintsV1.overflow=MMS_UI_OVERFLOW_MENU` 复用原布局服务。仅工具栏扩展区 BUTTON、GROUP、SEPARATOR 可选择；有效顺序、组继承与 keepTogether 决定折叠单位。保留原 HWND、handle 和刷新实例，空间恢复复用；真实菜单更新原标签、启用和选中状态，移除失效项，调用前重验原身份及所有者。完整配置 21／21、原始兼容配置 18／18、ABI 契约重复 6／6 通过；最终结果见 [UI 框架记录](records/abi-ui-framework-2026-10-19.md)。无独立溢出能力查询，旧宿主可能返回 UNSUPPORTED。 |
-| P2 | 注册 SUBTREE 刷新及 SDK | 本机已验证 | 原 C ABI 支持同插件注册子树、固定来源版本集合、整树阶段顺序与拓扑失效；615 项专项及两种配置整合通过。随后接入[局部矩形](records/abi-subtree-local-rect-2026-10-20.md)和 INPUT STATE；DEPENDENTS 未实现，初始范围见[记录](records/abi-subtree-refresh-2026-10-20.md)。 |
+| P2 | 注册 SUBTREE、显式 DEPENDENTS 刷新及 SDK | 本机已验证 | 原 C ABI 支持同插件注册子树及[显式图](records/abi-ui-dependencies-2026-10-21.md)、来源集合、整组阶段顺序及版本失效，继续共用原目标和票据。SUBTREE 支持局部矩形；DEPENDENTS 使用整目标损伤，自动来源订阅未实现。 |
 | P2 | DOCK | 未实现 | 返回 UNSUPPORTED。 |
 | P2 | 本体菜单、控件、业务命令全部语义登记 | 未实现 | 新注册表目前覆盖新 ABI 插件。 |
 | P2 | 布局持久化、缺失插件保留 | 本机已验证 | 用户覆盖按稳定 ID 保存到程序旁 `data/settings.json` 的 `pluginUi`，旧布局仅缺失时迁移；分区 CAS、其他设置合并、重启、关闭事件及 EXE 改名通过。 |
