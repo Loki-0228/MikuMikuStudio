@@ -2,7 +2,7 @@
 
 `mms.ui.refresh` 1.0 为插件自己的按钮、INPUT、分隔线、注册 GROUP、原生 surface 面板及菜单安排异步刷新。接口定义见 [refresh.h](include/mms/refresh.h)。结构使用 `MmsHeader`、`MMS_CALL` 和 8 字节对齐，调用失败不修改输出参数。
 
-支持 SELF、SUBTREE 和显式 DEPENDENTS 范围，各成员按实际能力执行 REPAINT、STATE、DATA 和保留布局 LAYOUT。GROUP 无 SELF 绘制区；窗口的 SELF/SUBTREE 接受局部矩形，DEPENDENTS 只接受整目标损伤。菜单自身只执行无矩形 STATE，作为依赖种子时下游窗口仍可执行其他阶段。各阶段共用同一票据及队列。显式 DATA 使用[已有绑定](data-refresh.md)，默认属性读回见 [INPUT](input.md)，边注册及版本见[依赖刷新](refresh-dependencies.md)。来源自动订阅、插件量测提供者和动画帧尚未提供。SUBTREE 不遍历插件自行创建的任意 HWND。
+支持 SELF、SUBTREE 和显式 DEPENDENTS 范围，各成员按实际能力执行 REPAINT、STATE、DATA 和保留布局 LAYOUT。GROUP 无 SELF 绘制区；窗口的 SELF/SUBTREE 接受局部矩形，DEPENDENTS 只接受整目标损伤。菜单自身只执行无矩形 STATE，作为依赖种子时下游窗口仍可执行其他阶段。各阶段共用同一票据及队列。显式 DATA 使用[已有绑定](data-refresh.md)，默认属性读回见 [INPUT](input.md)，边注册及版本见[依赖刷新](refresh-dependencies.md)。[来源自动订阅](refresh-subscriptions.md)和[原属性自动刷新](property-refresh.md)复用原队列；依赖图自动传播、插件量测提供者和动画帧尚未提供。SUBTREE 不遍历插件自行创建的任意 HWND。
 
 组合请求在同一队列中按 DATA、STATE、LAYOUT、REPAINT 执行。DATA 准备并交换不可变显示模型；STATE 只读查询按钮、PANEL 或菜单的原命令状态，或 INPUT 的属性元数据及编辑可用性，并可通过[状态内容服务](state-content.md)准备支持的文案和提示。没有命令的 PANEL 和 MENU 使用注册元数据作为基线。INPUT STATE 不读取属性值。LAYOUT 使用已保留的描述、提示和状态排版；REPAINT 调用 `InvalidateRect` 或 `InvalidateRgn`，不直接执行绘制。刷新不调用 `FrameDriver`，不修改播放头、工程 dirty 或撤销历史，也不保存布局偏好。插件窗口后续的正常 `WM_PAINT` 仍由插件处理。
 

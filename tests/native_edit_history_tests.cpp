@@ -454,8 +454,12 @@ void CrossModelJournal(){
 #include "native_camera_parent_history_checks.inc"
 #include "native_camera_parent_model_history_checks.inc"
 #include "retained_bookkeeping_checks.inc"
+#include "plugins/history_publication_signal_checks.inc"
 int main(int argc,char** argv){
     std::setvbuf(stdout,nullptr,_IONBF,0);
+    if(argc==2&&!std::strcmp(argv[1],"--property-history-signal-only")) {
+        HistoryPublicationSignalChecks();std::printf("PASS property history signal: %u checks\n",checks);return 0;
+    }
     if(argc==2&&!std::strcmp(argv[1],"--black-background-only")) {
         NativeBlackBackgroundChecks();std::printf("PASS black background: %u checks\n",checks);return 0;
     }

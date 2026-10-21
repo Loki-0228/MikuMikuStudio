@@ -39,6 +39,9 @@ public:
     // entering the plugin task/edit origin or refreshing the complete UI.
     void SetRefreshGuard(std::function<bool()>);
     void AdvanceRefreshEpoch();
+    // Trusted SharedHistory publication signal. Records a scalar revision and
+    // posts the existing refresh dispatcher; never reads plugins or edits UI.
+    void NotifyHistoryPublication(uint64_t) noexcept;
     bool Stop();
     void Event(uint32_t kind, MmsBytes payload = {}, uint32_t version = 0);
     UiRegistry& Ui();

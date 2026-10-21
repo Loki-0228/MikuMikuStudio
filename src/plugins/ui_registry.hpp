@@ -27,7 +27,7 @@ struct Arena {
     MmsSpan Arguments(MmsSpan);
 };
 struct CommandRecord { MmsHandle handle = 0; UiClient* owner = nullptr; std::shared_ptr<Arena> arena; MmsCommandDescV1 desc{}; };
-struct PropertyRecord { MmsHandle handle = 0; UiClient* owner = nullptr; std::shared_ptr<Arena> arena; MmsPropertyDescV1 desc{}; };
+struct PropertyRecord { MmsHandle handle = 0; uint64_t registrationGeneration = 0; UiClient* owner = nullptr; std::shared_ptr<Arena> arena; MmsPropertyDescV1 desc{}; };
 struct PropertyStageFrame;
 struct PropertyInputSnapshot {
     std::string elementId, propertyId;
@@ -79,6 +79,7 @@ class UiRegistry {
     struct Preferences;
     DWORD thread_ = GetCurrentThreadId();
     uint64_t revision_ = 1, next_ = 1, generation_ = 1, nextPresentation_ = 1;
+    uint64_t nextPropertyGeneration_ = 1;
     unsigned callbackDepth_ = 0;
     UiClient* invoking_ = nullptr;
     const PropertyStageFrame* propertyStage_ = nullptr;

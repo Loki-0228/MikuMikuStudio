@@ -243,3 +243,11 @@ MME 测试需在独立目录放入三个 MME DLL，日志必须显示 `PLUGINS m
 完整配置另提供 `side_mount_host_tests` 目标，并依赖原创 `mms_side_mount_host_probe` DLL。先将该 EXE 复制到全新目录，再运行 `side_mount_host_tests <probe DLL绝对路径> ordinary`；共同历史模式将末尾改为 `bound`，每次使用新的 EXE 目录。程序只在自己的目录创建 PLUGINS 包，遇到已有目录即拒绝，不覆盖或删除旧夹具。该目标不直接加入 CTest，避免默认执行向固定 EXE 目录反复写入。
 
 实际宿主专项检查 Present 参数、覆盖层及控件边界、分隔线、两档 resize、浮动／全屏和移除恢复，并核对实际场景、键池及历史。它按同一 DPI 坐标系的 max-track 边界选择尺寸，仍要求精确客户区尺寸和最低拖拽余量。运行继承当前桌面，隐藏保护仅作用于自有顶层窗口，不发送全局鼠标或键盘输入；不作为私有桌面、肉眼无闪烁或真实 IME 验收。结果与边界见[本批记录](../docs/records/abi-side-mounts-2026-10-22.md)。
+
+## 原属性自动刷新和历史发布信号
+
+`plugin_abi_tests --property-refresh-only <property_refresh_probe.dll绝对路径>` 检查原属性 C ABI、分层 SDK、真实 NativeUi 和单独 DLL 的 Manager 消息派发。它覆盖后台通知合并、显式绑定优先、容量停泊、引用失效、只读因果、草稿及停止保活，不开放普通 `mms.edit`。省略 DLL 参数时只运行 SDK 与队列、NativeUi 夹具；默认 ABI 契约包含这些模块，真实 DLL 另有 CTest `ui_property_refresh_runtime`。
+
+`--property-refresh-recovery-only` 单独验证运行中目标变为零宽后的自动恢复，并区别提供者自身的 `NOT_READY`，不会触发整个默认套件。完整配置的 `native_edit_history_tests --property-history-signal-only` 只运行真实共同历史信号及无分配发布专项，不进入默认鼠标路径；CTest 名称为 `native_property_history_publication`。
+
+所有窗口消息只发送给夹具自身。原属性服务参考见 [SDK](../sdk/mms/property-refresh.md)，实际验证及失败记录见[本批记录](../docs/records/abi-property-refresh-2026-10-22.md)。

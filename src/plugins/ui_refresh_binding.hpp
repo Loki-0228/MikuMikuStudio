@@ -16,6 +16,8 @@ public:
         std::function<void()> wakeSubscriptions;
         std::function<void()> cleanupSubscriptions;
         std::function<void()> capacityReleased;
+        // UI binding mutations call this only after releasing the store lock.
+        std::function<void()> bindingChanged;
     };
     struct DataContribution;
     using Contribution = std::shared_ptr<DataContribution>;

@@ -1,0 +1,14 @@
+LIBRARY property_refresh_probe
+EXPORTS
+    MMSPluginGetApi
+    PropertyRefreshProbeBegin
+    PropertyRefreshProbeBurst
+    PropertyRefreshProbeSetValue
+    PropertyRefreshProbeGetValue
+    PropertyRefreshProbeNotify
+    PropertyRefreshProbeInvoke
+    PropertyRefreshProbeCheckThreads
+    PropertyRefreshProbeCheckOutputs
+    PropertyRefreshProbeQuery
+    PropertyRefreshProbeAcquireHold
+    PropertyRefreshProbeReleaseHold

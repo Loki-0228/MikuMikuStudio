@@ -162,4 +162,4 @@ COMPLETED 表示请求的各刷新阶段已完成，不保证像素已显示。�
 
 析构仅尝试 `Release()`，不会取消或等待 UI。析构无法报告释放失败，也不能保留已销毁的 SDK 对象。在 `stop` 中先停止生产请求、结束自己的后台任务，再显式清理全部票据。失败时保留对象并返回 BUSY 或错误供宿主重试，不能仅依赖析构完成停止。
 
-本封装不创建后台线程、轮询器、默认订阅或动画时钟。已有显式 DATA binding 可以另用[订阅包装](refresh-subscriptions.md)，继续共用原队列。默认 INPUT 属性读回结果 sourceRevision 为 0；不能仅凭全局 DATA 位判断目标支持该模式。[INPUT 参考](input.md)说明草稿、首次读取失败恢复及显式绑定冲突。显式 DATA 和 DEPENDENTS 便利入口均通过原 Request 实现。INPUT、已挂载 PANEL 和菜单 STATE 使用原目标和票据。菜单提示、原属性变化监听和插件量测提供者尚未开放，普通 `mms.edit` 仍关闭。包装捕获意外 C++ 异常并返回错误码；插件仍须遵守 C ABI，不让异常跨 DLL。
+本封装不创建后台线程、轮询器、默认订阅或动画时钟。已有显式 DATA binding 可以另用[订阅包装](refresh-subscriptions.md)，原属性通知可用[属性刷新包装](property-refresh.md)，均共用原队列。默认 INPUT 属性读回结果 sourceRevision 为 0；不能仅凭全局 DATA 位判断目标支持该模式。[INPUT 参考](input.md)说明草稿、首次读取失败恢复及显式绑定冲突。显式 DATA 和 DEPENDENTS 便利入口均通过原 Request 实现。INPUT、已挂载 PANEL 和菜单 STATE 使用原目标和票据。菜单提示和插件量测提供者尚未开放，普通 `mms.edit` 仍关闭。包装捕获意外 C++ 异常并返回错误码；插件仍须遵守 C ABI，不让异常跨 DLL。

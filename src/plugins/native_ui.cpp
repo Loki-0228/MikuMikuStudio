@@ -1566,6 +1566,7 @@ struct NativeUi::Impl {
                 if (control == controls.end() || control->second.element != element.handle || !control->second.window) continue;
                 if (!Presentation(element, control->second.window, control->second.instance, bounds->second.visible, out)) return false;
                 out.back().stateRefresh = element.desc.kind == MMS_UI_BUTTON; out.back().stateVisible = control->second.stateVisible;
+                out.back().kind = element.desc.kind;
                 if (element.desc.kind == MMS_UI_INPUT && control->second.input) {
                     const auto property = registry.properties.find(String(element.desc.propertyId));
                     if (property != registry.properties.end()) {

@@ -1,5 +1,6 @@
 #include "ui_registry.hpp"
 #include "ui_property_value.hpp"
+#include "ui_property_refresh.hpp"
 #include "json.hpp"
 #include <array>
 #include <charconv>
@@ -649,12 +650,17 @@ MmsResult UiRegistry::Property(UiClient& c, const MmsPropertyDescV1* input, MmsH
     if (writable && (!(input->info.flags & MMS_PROPERTY_UNDOABLE) || !input->stage)) return MMS_E_NOT_READY;
     const auto id = String(input->info.id); auto found = properties.find(id);
     if (replace ? found == properties.end() || found->second->handle != replace : Exists(id)) return replace ? MMS_E_NOT_FOUND : MMS_E_CONFLICT;
+    if (replace && found->second->owner != &c) return MMS_E_ARGUMENT;
+    if (nextPropertyGeneration_ == UINT64_MAX) return MMS_E_BUSY;
     auto r = std::make_shared<PropertyRecord>(); r->owner = &c; r->handle = replace ? replace : next_++; r->arena = std::make_shared<Arena>(); r->desc = *input;
+    r->registrationGeneration = nextPropertyGeneration_;
     auto& d = r->desc.info; d.h = Header<MmsPropertyDescV1>(); d.id = r->arena->Copy(d.id); d.ownerPlugin = r->arena->Copy(d.ownerPlugin); d.label = r->arena->Copy(d.label); d.unit = r->arena->Copy(d.unit);
     d.defaultValue = r->arena->Copy(d.defaultValue); d.minimum = r->arena->Copy(d.minimum); d.maximum = r->arena->Copy(d.maximum); d.choices = r->arena->Choices(d.choices);
     if (writable) if (const auto result = ValidateWritableProperty(d)) return result;
     if (replace && (found->second->desc.context != input->context || found->second->desc.info.valueType != d.valueType || found->second->desc.info.components != d.components)) return MMS_E_ARGUMENT;
-    properties[id] = r; *out = r->handle; Changed(); return MMS_OK;
+    properties[id] = r; ++nextPropertyGeneration_;
+    if (replace) refresh_.PropertyRefresh().InvalidateProperty(replace);
+    *out = r->handle; Changed(); return MMS_OK;
 }
 MmsResult UiRegistry::Remove(UiClient& c, MmsHandle handle) {
     auto check = Check(c); if (check) return check; if (callbackDepth_) return MMS_E_BUSY;
@@ -673,8 +679,9 @@ MmsResult UiRegistry::Remove(UiClient& c, MmsHandle handle) {
     }
     auto property = ByHandle(properties, handle);
     if (property != properties.end()) {
-        if (String(property->second->desc.info.ownerPlugin) != c.id) return MMS_E_ARGUMENT;
+        if (property->second->owner != &c) return MMS_E_ARGUMENT;
         for (const auto& [id, e] : elements) if (String(e.desc.propertyId) == property->first) return MMS_E_BUSY;
+        refresh_.PropertyRefresh().InvalidateProperty(handle);
         properties.erase(property); Changed(); return MMS_OK;
     }
     return MMS_E_NOT_FOUND;
@@ -1245,10 +1252,15 @@ MmsResult UiRegistry::Commit(UiClient& c, MmsHandle h) {
 }
 bool UiRegistry::HasLeases(const UiClient& c) const { if (c.unsafeToUnload) return true; for (const auto& [h, lease] : leases_) if (lease->owner == c.id) return true; return false; }
 void UiRegistry::Retire(UiClient& c) {
+    refresh_.PropertyRefresh().Retire(c);
     for (auto it = layouts_.begin(); it != layouts_.end();) if (it->second->owner == c.id) it = layouts_.erase(it); else ++it;
     for (auto it = elements.begin(); it != elements.end();) if (String(it->second.desc.ownerPlugin) == c.id && !it->second.layoutGroup) { ForgetStateContent(it->second.handle); refresh_.InvalidateTarget(it->second.handle); DestroyView(it->first); it = elements.erase(it); } else ++it;
     for (auto it = commands.begin(); it != commands.end();) if (String(it->second->desc.info.ownerPlugin) == c.id) it = commands.erase(it); else ++it;
-    for (auto it = properties.begin(); it != properties.end();) if (String(it->second->desc.info.ownerPlugin) == c.id) it = properties.erase(it); else ++it;
+    for (auto it = properties.begin(); it != properties.end();) {
+        if (String(it->second->desc.info.ownerPlugin) == c.id) {
+            refresh_.PropertyRefresh().InvalidateProperty(it->second->handle); it = properties.erase(it);
+        } else ++it;
+    }
     for (auto it = surfaces.begin(); it != surfaces.end();) if (it->second->owner == &c) it = surfaces.erase(it); else ++it;
     stateContentOwners_.erase(c.id);
     Changed();

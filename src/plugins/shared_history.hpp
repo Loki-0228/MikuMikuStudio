@@ -27,6 +27,14 @@ public:
     virtual bool RequiresPhysicsReset() const noexcept { return true; }
 };
 
+// Trusted host wakeup only, never a plugin callback. The borrowed context must
+// outlive its installation. published may only record the revision/post work;
+// it must not allocate, pump messages, read plugins or reenter scene editing.
+struct HistoryPublicationSignal {
+    void* context = nullptr;
+    void (*published)(void*, uint64_t) noexcept = nullptr;
+};
+
 // One journal for native and plugin changes. The application supplies its
 // scene-mutation gate. It must route ALL editing paths here before exposing
 // mms.edit; creating a separate instance for plugins is not supported.
@@ -54,16 +62,23 @@ private:
     EditStore* edits_ = nullptr;
     RecordingMode recordingMode_ = RecordingMode::AllOperations;
     bool lastPhysicsReset_ = true;
+    HistoryPublicationSignal publicationSignal_{};
     MmsResult Ready() const;
     MmsResult ReserveNode(std::shared_ptr<const EditRecord>, std::shared_ptr<HistoryChange>,
                          std::unique_ptr<Publication>&, bool record = true);
     void Publish(Publication&) noexcept;
+    void NotifyPublication() noexcept;
     void InvalidatePending() noexcept;
     void ResetLocked() noexcept;
 public:
     explicit SharedHistory(StorageStore&, std::function<MmsResult()> gate = {},
                            size_t maxEntries = 128, uint64_t maxBytes = 256ull * 1024 * 1024);
     ~SharedHistory();
+    // UI-thread lifecycle boundary, independent of the application edit gate.
+    // Both fields are null to detach; otherwise both must be non-null. Swap
+    // only while no edit/reset/storage callback or reservation is active.
+    // Reset is an epoch boundary and deliberately does not emit this signal.
+    MmsResult SetPublicationSignal(HistoryPublicationSignal) noexcept;
     MmsResult Revision(uint64_t&) override;
     MmsResult Enter() override;
     void Leave() noexcept override;

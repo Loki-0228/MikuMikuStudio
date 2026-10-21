@@ -2,6 +2,7 @@
 #include "ui_preferences_file.hpp"
 #include "edit_store.hpp"
 #include "ui_refresh_binding.hpp"
+#include "ui_property_refresh.hpp"
 #include <atomic>
 #include <mutex>
 
@@ -341,6 +342,10 @@ struct Manager::Impl {
             if (closing || i.stopping.load()) return MMS_E_NOT_READY;
             return Table(major, minor, bytes, out, registry.Refresh().Bindings().SubscriptionApi(i.refresh));
         }
+        if (id == "mms.ui.refresh.property") {
+            if (closing || i.stopping.load()) return MMS_E_NOT_READY;
+            return Table(major, minor, bytes, out, registry.Refresh().PropertyRefresh().Api(i.refresh));
+        }
         if (id == "mms.ui.refresh.dependencies") {
             if (closing || i.stopping.load()) return MMS_E_NOT_READY;
             return Table(major, minor, bytes, out, registry.Refresh().DependencyApi(i.refresh));
@@ -513,6 +518,8 @@ struct Manager::Impl {
             bool ready = std::all_of(i.dependencies.begin(), i.dependencies.end(), [&](const auto& d) { return started.count(d) != 0; });
             if (!ready) { i.status.stage = "failed"; i.status.error = "dependency failed to start"; failed.push_back(i.status); Write(m.id + ": " + i.status.error); continue; }
             try {
+                const auto paired = registry.Refresh().PropertyRefresh().BindClient(i.refresh, i.ui);
+                if (paired != MMS_OK) throw std::runtime_error("property refresh client pairing failed result=" + std::to_string(paired));
                 for (const auto& required : m.services) {
                     alignas(8) unsigned char table[256]{};
                     auto r = Query(i, Text(required.id), required.major, required.minor, sizeof(table), table);
@@ -577,6 +584,11 @@ void Manager::SetRefreshGuard(std::function<bool()> guard) {
 void Manager::AdvanceRefreshEpoch() {
     if (GetCurrentThreadId() != impl_->thread) throw std::invalid_argument("refresh epoch thread");
     impl_->registry.Refresh().AdvanceProjectEpoch();
+}
+void Manager::NotifyHistoryPublication(uint64_t revision) noexcept {
+    auto& properties = impl_->registry.Refresh().PropertyRefresh();
+    properties.NotifyHistory(revision);
+    properties.HistoryWakeResult(PostMessageW(impl_->wake, Impl::kRefreshDrain, 0, 0) != FALSE);
 }
 MmsResult Manager::AttachEditHost(EditHost& host) noexcept { return Boundary([&] { return impl_->AttachEditHost(host); }); }
 MmsResult Manager::DetachEditHost() noexcept { return Boundary([&] { return impl_->DetachEditHost(); }); }

@@ -50,12 +50,24 @@ SharedHistory::SharedHistory(StorageStore& storage, std::function<MmsResult()> g
     if (!entries || !bytes) throw std::invalid_argument("history limits");
 }
 SharedHistory::~SharedHistory() {
+    publicationSignal_ = {};
     entered_ = true;
     InvalidatePending();
     if (applied_) {
         applied_->Release(); applied_->owner_ = nullptr; applied_ = nullptr;
     }
     if (reset_) { reset_->owner_ = nullptr; reset_ = nullptr; }
+}
+MmsResult SharedHistory::SetPublicationSignal(HistoryPublicationSignal signal) noexcept {
+    if (GetCurrentThreadId() != thread_) return MMS_E_THREAD;
+    if (bool(signal.context) != bool(signal.published)) return MMS_E_ARGUMENT;
+    if (entered_ || pending_ || applied_ || reset_ || storage_.InCallback() || storage_.Prepared() ||
+        (edits_ && (edits_->InCallback() || edits_->HasPending()))) return MMS_E_BUSY;
+    publicationSignal_ = signal;
+    return MMS_OK;
+}
+void SharedHistory::NotifyPublication() noexcept {
+    if (publicationSignal_.published) publicationSignal_.published(publicationSignal_.context, revision_);
 }
 void SharedHistory::AttachStore(EditStore* store) {
     if (!store || edits_ || entered_ || GetCurrentThreadId()!=thread_)
@@ -157,7 +169,7 @@ void SharedHistory::Publish(Publication& p) noexcept {
     lastPhysicsReset_ = !node.native || node.native->RequiresPhysicsReset() || !node.plugins->before.empty();
     // Preview still changes the scene revision, so old candidates cannot
     // publish against it. The journal and redo remain untouched.
-    if (!p.record) { ++revision_; return; }
+    if (!p.record) { ++revision_; NotifyPublication(); return; }
     for (const auto& node : redo_) bytes_ -= node->bytes;
     retired_.splice(retired_.end(), redo_);
     const auto newBytes = p.node.front()->bytes;
@@ -167,7 +179,7 @@ void SharedHistory::Publish(Publication& p) noexcept {
         retired_.splice(retired_.end(), undo_, undo_.begin());
     }
     bytes_ += newBytes;
-    undo_.splice(undo_.end(), p.node); ++revision_;
+    undo_.splice(undo_.end(), p.node); ++revision_; NotifyPublication();
 }
 MmsResult SharedHistory::History(bool redo) {
     if (auto r = Ready()) return r;
@@ -208,7 +220,7 @@ MmsResult SharedHistory::History(bool redo) {
         node.bytes = targetBytes;
         auto& destination = redo ? undo_ : redo_;
         destination.splice(destination.end(), source, std::prev(source.end()));
-        ++revision_; return MMS_OK;
+        ++revision_; NotifyPublication(); return MMS_OK;
     });
 }
 SharedHistory::NativeTransaction::NativeTransaction(SharedHistory& owner,

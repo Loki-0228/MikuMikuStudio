@@ -1,6 +1,7 @@
 #include "mikumikustudio/local_data_path.hpp"
 #include "manager.hpp"
 #include "native_ui.hpp"
+#include "ui_property_refresh.hpp"
 #include "project_storage.hpp"
 #include "history_runtime.hpp"
 #include "native_pose_scope.hpp"
@@ -157,6 +158,12 @@ static void InitializeRuntime(MMDApp* app, bool migrationTest) {
                 app->state.recordPlaybackStartPending)) return MMS_E_BUSY;
             return MMS_OK;
         });
+        // This trusted signal only records a revision and wakes the existing
+        // dispatcher. Property callbacks run later at its normal safe point.
+        if (history->SetPublicationSignal({manager.get(), [](void* context, uint64_t revision) noexcept {
+            static_cast<Manager*>(context)->NotifyHistoryPublication(revision);
+        }}) != MMS_OK) throw std::runtime_error("initialize property history refresh signal");
+        manager->Ui().Refresh().PropertyRefresh().SetHistoryAvailable(true);
 #if !MMD_ORIGINAL_PROFILE
         const auto historyPreference=system_settings_ui::HistoryPreference();
         if (history->Configure(historyPreference.recordAdjustments ? SharedHistory::RecordingMode::AllOperations :
@@ -224,6 +231,7 @@ void Shutdown() {
 #endif
     if (owner && owner->MainWindow()) KillTimer(owner->MainWindow(), kHistoryUiRetry);
     CancelProjectLoad(owner);
+    if (manager) manager->Ui().Refresh().PropertyRefresh().SetHistoryAvailable(false);
     if (manager) manager->Stop();
     ui.reset();
 #if !MMD_ORIGINAL_PROFILE
@@ -248,6 +256,7 @@ void Shutdown() {
 #if !MMD_ORIGINAL_PROFILE
     historyCommandHost.reset();
 #endif
+    if (history) history->SetPublicationSignal({});
     history.reset(); manager.reset(); projectEvents.clear();
     toolbarHeight = propertyAreaHeight = leftAreaWidth = rightAreaWidth = 0;
     owner = nullptr; historyUiPending = false;

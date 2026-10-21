@@ -223,6 +223,7 @@ struct UiRefreshBindings::Impl {
             if (it->second->source == handle) { auto erase = it++; RemoveBinding(erase); } else ++it;
         }
         --owner.sources; sources.erase(found); lock.unlock();
+        if (hooks.bindingChanged) hooks.bindingChanged();
         if (hooks.cleanupSubscriptions) hooks.cleanupSubscriptions();
         if (hooks.capacityReleased) hooks.capacityReleased();
         return MMS_OK;
@@ -234,7 +235,7 @@ struct UiRefreshBindings::Impl {
         if (!hooks.validateTarget) return MMS_E_NOT_READY;
         if (const auto r = hooks.validateTarget(*owner.client, desc->target)) return r;
         auto binding = std::make_shared<Binding>();
-        std::lock_guard<std::mutex> lock(mutex);
+        std::unique_lock<std::mutex> lock(mutex);
         if (owner.retired || owner.client->stopping.load()) return MMS_E_NOT_READY;
         if (desc->target.projectEpoch != epoch) return MMS_E_STALE;
         auto source = sources.find(desc->source); if (source == sources.end() || source->second.epoch != epoch) return MMS_E_STALE;
@@ -243,7 +244,9 @@ struct UiRefreshBindings::Impl {
         for (const auto& entry : bindings) if (SameTarget(entry.second->target, desc->target)) return MMS_E_CONFLICT;
         binding->handle = Next(); binding->source = desc->source; binding->owner = source->second.owner;
         binding->target = desc->target; binding->context = desc->context; binding->prepare = desc->prepare; binding->maximum = desc->maxDisplayBytes;
-        bindings.emplace(binding->handle, binding); ++owner.bindings; *out = binding->handle; return MMS_OK;
+        bindings.emplace(binding->handle, binding); ++owner.bindings; *out = binding->handle;
+        lock.unlock(); if (hooks.bindingChanged) hooks.bindingChanged();
+        if (hooks.cleanupSubscriptions) hooks.cleanupSubscriptions(); return MMS_OK;
     }
     MmsResult Unbind(Owner& owner, MmsHandle handle) {
         if (GetCurrentThreadId() != thread) return MMS_E_THREAD;
@@ -252,6 +255,7 @@ struct UiRefreshBindings::Impl {
         auto found = bindings.find(handle); if (found == bindings.end()) return MMS_E_STALE;
         if (found->second->owner.get() != &owner) return MMS_E_ARGUMENT;
         RemoveBinding(found); lock.unlock();
+        if (hooks.bindingChanged) hooks.bindingChanged();
         if (hooks.cleanupSubscriptions) hooks.cleanupSubscriptions();
         if (hooks.capacityReleased) hooks.capacityReleased();
         return MMS_OK;

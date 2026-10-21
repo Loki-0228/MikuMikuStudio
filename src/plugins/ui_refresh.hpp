@@ -13,6 +13,7 @@ struct UiClient;
 class UiRefreshQueue;
 class UiRefreshBindings;
 class UiRefreshDependencies;
+class UiPropertyRefresh;
 struct ButtonStateContent;
 struct PropertyRecord;
 struct RefreshClient {
@@ -59,6 +60,7 @@ struct RefreshPresentation {
     unsigned menuItem = 0;
 };
 class UiRefreshQueue {
+    friend class UiPropertyRefresh;
     struct Target;
     struct Ticket;
     struct TreeNode {
@@ -72,6 +74,7 @@ class UiRefreshQueue {
     UiRegistry& registry_;
     std::unique_ptr<UiRefreshBindings> bindings_;
     std::unique_ptr<UiRefreshDependencies> dependencies_;
+    std::unique_ptr<UiPropertyRefresh> propertyRefresh_;
     DWORD thread_ = GetCurrentThreadId();
     mutable std::mutex mutex_;
     std::map<MmsHandle, Target> targets_;
@@ -96,7 +99,8 @@ class UiRefreshQueue {
     std::function<MmsResult(MmsHandle, const std::function<MmsResult()>&, uint64_t&)> propertyData_;
     MmsResult Capabilities(RefreshClient&, MmsUiRefreshCapabilitiesV1*);
     MmsResult GetTarget(RefreshClient&, MmsHandle, MmsUiRefreshTargetV1*);
-    MmsResult Request(RefreshClient&, const MmsUiRefreshRequestV1*, MmsHandle*, MmsHandle subscription = 0);
+    MmsResult Request(RefreshClient&, const MmsUiRefreshRequestV1*, MmsHandle*, MmsHandle subscription = 0,
+        MmsHandle propertySubscription = 0, uint64_t propertySequence = 0);
     MmsResult Query(RefreshClient&, MmsHandle, MmsUiRefreshStateV1*);
     MmsResult Cancel(RefreshClient&, MmsHandle);
     MmsResult Release(RefreshClient&, MmsHandle);
@@ -111,9 +115,15 @@ class UiRefreshQueue {
     void SyncTargets(const std::vector<RefreshPresentation>&, bool menus);
     void WakeSubscriptions() noexcept;
     void SignalSubscriptionWakeLocked() noexcept;
+    bool PendingSubscriptionsLocked() const noexcept;
     void CleanupSubscriptions() noexcept;
     void RetrySubscriptions() noexcept;
     void ScheduleSubscriptions();
+    void SchedulePropertySubscriptions();
+    void PropertyBindingsChanged() noexcept;
+    MmsResult CheckPropertyRefreshTarget(RefreshClient&, const UiClient*, const MmsUiTargetRefV1&,
+        const std::shared_ptr<const PropertyRecord>&, uint32_t, bool&, bool&) const;
+    bool PropertyReadOnlyCause(const RefreshClient&, const UiClient*) const;
     void PruneInvalidSubscriptionTargets();
     std::map<MmsHandle, Ticket>::iterator EraseTicketLocked(std::map<MmsHandle, Ticket>::iterator) noexcept;
 public:
@@ -122,6 +132,7 @@ public:
     MmsUiRefreshApiV1 Api(RefreshClient&);
     MmsUiRefreshDependencyApiV1 DependencyApi(RefreshClient&);
     UiRefreshBindings& Bindings() noexcept { return *bindings_; }
+    UiPropertyRefresh& PropertyRefresh() noexcept { return *propertyRefresh_; }
     // Manager UI tasks inherit the read-only origin of a refresh callback.
     // These tokens never enter public request structs or plugin-owned data.
     bool ReadOnlyCause() const;
