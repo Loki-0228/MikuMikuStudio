@@ -47,6 +47,8 @@
 
 ## 开发与维护
 
+- [曲线测试按构建配置注册（2026-10-21）](abi-profile-curve-tests-2026-10-21.md)
+- [表情曲线测试的模型槽初始化（2026-10-21）](abi-morph-fixture-slots-2026-10-21.md)
 - [显式 UI 依赖刷新与同对象 SDK（2026-10-21）](abi-ui-dependencies-2026-10-21.md)
 - [曲线原生插帧回调寿命（2026-10-21）](abi-curve-subdivision-lifetime-2026-10-21.md)
 - [菜单状态刷新、原生身份及跟踪生命周期（2026-10-21）](abi-menu-state-2026-10-21.md)

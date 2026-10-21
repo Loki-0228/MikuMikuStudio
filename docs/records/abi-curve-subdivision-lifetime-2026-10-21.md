@@ -29,6 +29,6 @@ EditorLease 同时保活原 Session 和来源状态集合，先释放状态，�
 
 追加既有曲线回归时，完整配置七组直接 CTest 中五组通过；动作文件组有 12 项真实文件失败，表情组以 `0xC0000409` 退出，见 `math-full-03.log`。原始兼容三组中动作文件组同样失败，见 `math-original-04.log`。两次均沿用系统 TEMP/TMP。保持原二进制不变、单独改用工作区临时目录后，两套动作文件组及完整配置表情组通过，见[完整动作报告](../../build/verification/abi-curve-subdivision-20261021/math-workspace-full-03/report.json)、[原始兼容动作报告](../../build/verification/abi-curve-subdivision-20261021/math-workspace-original-03/report.json)、[表情报告](../../build/verification/abi-curve-subdivision-20261021/morph-workspace-full-03/report.json)。动作文件组为无窗口 CPU 检查，继承 CodexSandboxDesktop；表情组继承 Default。这证明工作区临时目录下通过，不足以判定原失败的具体系统错误。
 
-原始兼容批量构建还误选了只在完整配置中有实现的 `bone_curve_tests`，出现 18 个未解析符号，日志 `abi-ui-dependencies-20261021/product-original-03.log` 保留。随后只选择该配置实际支持的产品和数学目标构建成功；没有把此链接失败改写为通过。
+原始兼容批量构建还误选了只在完整配置中有实现的 `bone_curve_tests`，出现 18 个未解析符号，日志 `abi-ui-dependencies-20261021/product-original-03.log` 保留。随后只选择该配置实际支持的产品和数学目标构建成功；没有把此链接失败改写为通过。后续已[修正六个测试的配置范围](abi-profile-curve-tests-2026-10-21.md)，保留实际支持的共同数学与编辑器入口。
 
 Win7 SP1 x64、CPU 基础路径及 AMD 要求保持；本机合成窗口不代替真机、IME、多 DPI 或实际鼠标验收。main 和正式 release 未修改。
