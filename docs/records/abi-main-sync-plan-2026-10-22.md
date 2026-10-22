@@ -136,9 +136,9 @@ ABI 尚无 main 的 `menu_initial_paint` 模块。[wndproc.cpp](../../src/window
 
 适配可以先移入独立 helper，再接主窗口与 MME 编辑器，保留菜单命令归属和 ABI 菜单目录。验收需覆盖定时器退出、重入、多个 owner、延迟初始化及没有 idle 消息的菜单。main 的 `tests/menu_first_paint_checks.hpp` 提供了相关模式，但其中声明使用 inactive desktop，不能直接运行或引用为本会话 Default desktop 下的证据。ABI 尚无这些测试参数，需先增加受控入口，仅操作测试自己创建的窗口。
 
-长数值显示也尚未同步。ABI [ui_init.cpp](../../src/window/ui_init.cpp) 的 `CreateUiPanelControl` 直接采用原样式，[ui_edit_commit.cpp](../../src/window/ui_edit_commit.cpp) 的 EDIT 子类在失焦后没有将文本滚回开头。窄框输入较长负数或坐标时，失焦后仍可能显示尾部，隐藏符号和整数前缀。main 的 `TransformEditShowsPrefix` 对附件变换、相机和骨骼坐标、距离及骨骼缩放框取消居中和右对齐，并在失焦或非聚焦文本更新后执行 `EM_SETSEL(0,0)` 与 `EM_SCROLLCARET`。
+2026-10-23：[长数值显示](abi-transform-prefix-2026-10-23.md)已同步。`CreateUiPanelControl` 对 17 个目标取消居中和右对齐，EDIT 子类在失焦或非聚焦文本更新后回到文本开头，避免隐藏负号和整数前缀。ABI 另加入宿主、窗口、线程及焦点复核，防止回调改变上下文后继续滚动。
 
-该显示修复应保留 ABI 现有输入提交和草稿保护顺序，不覆盖透明度 485、表情权重等有界控件，并维持原始配置布局。专项使用真实 EDIT 检查焦点、输入中选择区域、失焦后前缀、不同 DPI 和窄宽度，以及数值与历史完全不变。目前没有对应专项运行证据。
+该显示修复保留 ABI 现有提交和草稿保护顺序，不覆盖透明度 485、表情权重等有界控件，并维持原始配置布局。真实 EDIT 专项在两配置分别通过 12,153、11,843 项，数值提交及两类旋转重置回归通过。三档字体和宽度模拟不代表真实 DPI 验收，菜单补绘仍待实施。
 
 实施可拆为骨骼读数与重置、手动保存编号、菜单与输入显示三个独立批次。编号保存涉及跨文件事务，不能仅凭辅助函数通过或界面出现新开关就标记完成。
 

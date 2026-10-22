@@ -48,6 +48,7 @@
 #include "mikumikustudio/adaptive_shadow.hpp"
 #include "mikumikustudio/build_profile.hpp"
 #include "mikumikustudio/ui_language.hpp"
+#include "transform_edit_layout.hpp"
 #include "ui_controls.inc"
 
 namespace mikumikustudio {
@@ -67,14 +68,18 @@ HWND CreateUiPanelControl(const ui::ControlSpec& c, HWND hwnd,
     // Legacy combo captions are empty; their contents are populated later.
     // Even SendMessageW loses names if the receiving combo is an ANSI window.
     const bool ansiCombo = c.acls && std::strcmp(c.acls, "COMBOBOX") == 0;
+    // Long transform edits drop centering/right alignment so the numeric
+    // prefix stays visible; every other control keeps the original style.
+    const unsigned long style = ui::TransformEditShowsPrefix(c.id)
+        ? c.style & ~(ES_CENTER | ES_RIGHT) : c.style;
     return (c.wide || ansiCombo)
         ? CreateWindowExW(c.ex, ansiCombo ? L"COMBOBOX" : c.wcls,
-                          ansiCombo ? L"" : c.wtext, c.style,
+                          ansiCombo ? L"" : c.wtext, style,
                           EvalPos(c.x, sidebar), EvalPos(c.y, sidebar),
                           c.w, c.h, hwnd,
                           reinterpret_cast<HMENU>(static_cast<INT_PTR>(c.id)),
                           hInst, nullptr)
-        : CreateWindowExA(c.ex, c.acls, c.atext, c.style,
+        : CreateWindowExA(c.ex, c.acls, c.atext, style,
                           EvalPos(c.x, sidebar), EvalPos(c.y, sidebar),
                           c.w, c.h, hwnd,
                           reinterpret_cast<HMENU>(static_cast<INT_PTR>(c.id)),

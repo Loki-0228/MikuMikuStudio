@@ -75,6 +75,7 @@
 #include "mikumikustudio/d3dx_dyn.hpp"
 #include "mikumikustudio/panel_controls.hpp"
 #include "mikumikustudio/bone_scale.hpp"
+#include "transform_edit_layout.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "../plugins/native_pose_scope.hpp"
 #include "../plugins/native_history_commands.hpp"
@@ -748,6 +749,14 @@ void CommitEditControl(MMDApp* app, HWND edit) {  // was Sub463640
 LRESULT CALLBACK EditSubclassProc(HWND hWnd, UINT Msg, WPARAM wParam,
                                   LPARAM lParam) {
     MMDApp* app = g_Block;
+    const auto original = app->OriginalEditProc();
+    const int controlId = GetDlgCtrlID(hWnd);
+    const bool prefixMessage = ui::TransformEditShowsPrefix(controlId) &&
+        (Msg == WM_KILLFOCUS || Msg == WM_SETTEXT || Msg == EM_REPLACESEL);
+    const HWND owner = prefixMessage ? GetParent(hWnd) : nullptr;
+    const auto windowProc = prefixMessage ? GetWindowLongPtrW(hWnd, GWLP_WNDPROC) : 0;
+    const DWORD thread = prefixMessage ? GetWindowThreadProcessId(hWnd, nullptr) : 0;
+
     if (Msg == WM_KEYDOWN) {
         if (wParam == 13) {                          // VK_RETURN
             // Moving focus commits through WM_KILLFOCUS. Do not create a
@@ -792,9 +801,29 @@ LRESULT CALLBACK EditSubclassProc(HWND hWnd, UINT Msg, WPARAM wParam,
             CommitEditControl(app, hWnd);
         if(boundPose)SendMessageA(hWnd, EM_SETMODIFY, FALSE, 0);
     }
-    return CallWindowProcA(
-        app->OriginalEditProc(),
-        hWnd, Msg, wParam, lParam);
+    const auto result = CallWindowProcA(original, hWnd, Msg, wParam, lParam);
+    // Text/commit callbacks can destroy, move or refocus the field. Do not use
+    // app after forwarding; presentation must target the same live control.
+    const auto current = [&] {
+        return g_Block == app && IsWindow(hWnd) && owner && GetParent(hWnd) == owner &&
+            GetDlgCtrlID(hWnd) == controlId && GetDlgItem(owner, controlId) == hWnd &&
+            GetWindowThreadProcessId(hWnd, nullptr) == thread && thread == GetCurrentThreadId() &&
+            GetWindowLongPtrW(hWnd, GWLP_WNDPROC) == windowProc && GetFocus() != hWnd;
+    };
+    if (prefixMessage && current()) {
+        // A selection notification can recursively update this or another
+        // field. Permit other fields, but never enter this field twice.
+        struct Visit { HWND window; Visit* previous; };
+        static thread_local Visit* active = nullptr;
+        for (auto* visit = active; visit; visit = visit->previous)
+            if (visit->window == hWnd) return result;
+        Visit visit{hWnd, active};
+        struct Restore { Visit*& active; Visit* previous; ~Restore() { active = previous; } } restore{active, active};
+        active = &visit;
+        SendMessageA(hWnd, EM_SETSEL, 0, 0);
+        if (current()) SendMessageA(hWnd, EM_SCROLLCARET, 0, 0);
+    }
+    return result;
 }
 
 // ---------------------------------------------------------------------------
