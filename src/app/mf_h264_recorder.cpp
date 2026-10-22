@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <cstring>
 #include <cwchar>
+#include <filesystem>
 #include <iterator>
 #include <memory>
 #include <mutex>
@@ -27,6 +28,7 @@
 #include <vector>
 
 #include "mikumikustudio/dshow_recorder.hpp"
+#include "mikumikustudio/local_data_path.hpp"
 #include "mikumikustudio/mf_h264_recorder.hpp"
 #include "mikumikustudio/runtime_log.hpp"
 #include "mikumikustudio/ui_language.hpp"
@@ -669,14 +671,19 @@ bool CreateEncoderProbe(bool system, std::int32_t width, std::int32_t height,
     if (height < 2) height = 2;
     if (!std::isfinite(fps) || fps <= 0.0f) fps = 30.0f;
 
-    wchar_t directory[MAX_PATH]{};
-    if (GetTempPathW(MAX_PATH, directory) == 0)
+    const std::filesystem::path probeDirectory =
+        local_data::File(L"encoder_probes");
+    if (probeDirectory.empty())
         return false;
-    wchar_t file[MAX_PATH]{};
-    swprintf_s(file, L"%sMMS-encoder-probe-%lu-%llu.mp4", directory,
-               GetCurrentProcessId(),
-               static_cast<unsigned long long>(GetTickCount64()));
-    probe.file = file;
+    std::error_code error;
+    std::filesystem::create_directories(probeDirectory, error);
+    if (error)
+        return false;
+    const std::filesystem::path probeFile =
+        probeDirectory /
+        (L"MMS-encoder-probe-" + std::to_wstring(GetCurrentProcessId()) +
+         L"-" + std::to_wstring(GetTickCount64()) + L".mp4");
+    probe.file = probeFile.wstring();
 
     IMFAttributes* writerAttributes = nullptr;
     HRESULT hr = MFCreateAttributes(&writerAttributes, 1);
@@ -684,8 +691,8 @@ bool CreateEncoderProbe(bool system, std::int32_t width, std::int32_t height,
         hr = writerAttributes->SetUINT32(
             MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, system ? TRUE : FALSE);
     if (SUCCEEDED(hr))
-        hr = MFCreateSinkWriterFromURL(file, nullptr, writerAttributes,
-                                       &probe.writer);
+        hr = MFCreateSinkWriterFromURL(probe.file.c_str(), nullptr,
+                                       writerAttributes, &probe.writer);
     if (writerAttributes != nullptr) writerAttributes->Release();
     if (FAILED(hr)) {
         CloseEncoderProbe(probe);

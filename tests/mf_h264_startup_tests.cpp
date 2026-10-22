@@ -20,6 +20,7 @@ bool failSoftware = false, probeFails = false;
 bool captureFrame = false;
 std::vector<unsigned char> capturedFrame;
 LONG capturedStride = 0;
+void (*storageWriterReleaseObserver)() = nullptr;
 void Check(bool ok, const char* name) {
     ++checks;
     if (!ok) { std::printf("FAIL: %s\n", name); std::exit(1); }
@@ -29,7 +30,7 @@ struct Writer final : IMFSinkWriter {
     bool hardware = false, begun = false;
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID, void** result) override { *result=nullptr; return E_NOINTERFACE; }
     ULONG STDMETHODCALLTYPE AddRef() override { return 2; }
-    ULONG STDMETHODCALLTYPE Release() override { ++releases; if (hardware && fault==Fault::Release) Crash(); return 1; }
+    ULONG STDMETHODCALLTYPE Release() override { if(storageWriterReleaseObserver) storageWriterReleaseObserver(); ++releases; if (hardware && fault==Fault::Release) Crash(); return 1; }
     HRESULT STDMETHODCALLTYPE AddStream(IMFMediaType*, DWORD* id) override { *id=1; ++audioStreams; return S_OK; }
     HRESULT STDMETHODCALLTYPE SetInputMediaType(DWORD, IMFMediaType* type, IMFAttributes*) override {
         if(captureFrame){UINT32 stride=0;Check(SUCCEEDED(type->GetUINT32(MF_MT_DEFAULT_STRIDE,&stride)),"input type declares its row order");capturedStride=static_cast<LONG>(stride);}
@@ -153,10 +154,16 @@ void InvalidAudio() {
 }
 
 #include "h264_orientation_checks.hpp"
+#include "mf_h264_probe_storage_checks.inc"
 }
 int main(int argc,char** argv) {
     Check(SUCCEEDED(CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED)),"COM initialized");
     Check(SUCCEEDED(MFStartup(MF_VERSION)),"MF initialized for encoder input checks");
+    if(argc>=2&&std::string(argv[1])=="--probe-storage") {
+        Check(argc==3,"probe storage requires an explicit absolute fresh output directory");
+        probe_storage::Run(std::filesystem::path(argv[2]));
+        MFShutdown();CoUninitialize();std::printf("h264 probe storage: %d checks passed\n",checks);return 0;
+    }
     H264InputOrientation();
     if(argc==3&&std::string(argv[1])=="--orientation"){
         H264EncodedOrientation(std::filesystem::absolute(argv[2]));

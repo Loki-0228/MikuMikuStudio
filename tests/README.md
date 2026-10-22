@@ -276,3 +276,9 @@ MME 测试需在独立目录放入三个 MME DLL，日志必须显示 `PLUGINS m
 `alembic_export_tests` 使用 `<全新绝对输出目录> storage` 运行真实 D3D 专项。复制安装运行前不能已有 `data`，输出的父目录必须存在，运行继承 `Default` 桌面。该模式独立检查生产 `.partial` 的实际位置、成功与取消清理、内部目录阻塞、旧缓存保留及显式 ABC 输出，不进入默认对话框或视觉检查。
 
 专项及运行限制见[烘焙目录验收记录](../docs/records/abi-mesh-data-2026-10-23.md)。移除这些存储入口或用等效的真实文件生命周期回归替代后，才能移除本组测试。
+
+## 编码器探测安装目录专项
+
+`mf_h264_startup_tests.exe --probe-storage <绝对新输出目录>` 验证真实探测路径、目录失败、普通清理及 SEH 安全放弃。先将 EXE 复制到无 `data` 的独立安装目录，并创建 `encoder-probe-test-installation.txt`，内容必须为 UTF-8 无 BOM、LF 结尾的 `MMS encoder probe test installation v1\n`。输出目录必须尚不存在、父目录存在且与安装目录分离。不要直接在用户安装中运行。
+
+专项仅替换当前进程的 Writer 工厂，不实例化厂商编码器。正常关闭使用受控 COM 对象，异常采用注入 SEH，不代表真实 AMD 或编码成功。默认无参数入口仍运行原启动回归。本组为保留型回归；移除生产探测入口或已有等效的实际路径及清理验证后才能删除。实际证据及限制见[验收记录](../docs/records/abi-encoder-data-2026-10-23.md)。
