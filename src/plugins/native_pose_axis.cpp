@@ -244,6 +244,16 @@ MmsResult ScaleTarget(MMDApp& app, unsigned char* model, int bone, int axis,
     target = bone_scale::Multiply(scale, delta);
     return bone_scale::Valid(target) ? MMS_OK : MMS_E_ARGUMENT;
 }
+// A mode-3 rigid bone with a clear physics marker still shows the physics
+// backup. An explicit reset takes such a bone over inside the pose
+// transaction even when the authored value already equals the target: the
+// dirty 0 -> 1 change is the edit, so undo restores the physical readout.
+// Callers have already validated the bone table, marker table and index.
+bool PhysicsResetTakeover(MMDApp& app, const mdl::ModelRecord& native,
+                          int bone) noexcept {
+    return app.PlaybackPhysicsMode() == 3 && native.boneTable[bone].hasRigidBody != 0 &&
+        native.bonePhysicsState[bone] == 0;
+}
 
 MmsResult ResetAxis(MMDApp& app, SharedHistory& history, NativePoseAxisKind kind,
                    int axis, NativePoseAxisSource source, bool& changed,
@@ -263,17 +273,19 @@ MmsResult ResetAxis(MMDApp& app, SharedHistory& history, NativePoseAxisKind kind
         return MMS_E_NOT_READY;
     const int bone = record->selectedBone;
     auto& pose = record->boneTable[bone];
+    const bool takeover = PhysicsResetTakeover(app, *record, bone);
     float quaternion[4]{};
     bone_scale::Matrix scale;
     if (kind == NativePoseAxisKind::Position) {
-        if (pose.trans[axis] == 0.0f) return MMS_OK;
+        if (!takeover && pose.trans[axis] == 0.0f) return MMS_OK;
     } else if (kind == NativePoseAxisKind::Rotation) {
         if (const auto result = readout.Prepare(app, history, 1u << axis)) return result;
         const float degrees[3] = {app.BoneRotationEditDegreesX(),
             app.BoneRotationEditDegreesY(), app.BoneRotationEditDegreesZ()};
         // Resetting an already zero readout must not round-trip the other
-        // Euler axes and discard redo merely through conversion rounding.
-        if (degrees[axis] == 0.0f) {
+        // Euler axes and discard redo merely through conversion rounding. A
+        // takeover still needs the target quaternion from RotationTarget.
+        if (!takeover && degrees[axis] == 0.0f) {
             readout.degrees[axis] = 0.0f;
             readout.cacheMask = 1u << axis;
             return MMS_OK;
@@ -288,7 +300,7 @@ MmsResult ResetAxis(MMDApp& app, SharedHistory& history, NativePoseAxisKind kind
         for (float value : readout.degrees) if (!std::isfinite(value)) return MMS_E_ARGUMENT;
         readout.cacheMask = 7u;
         if (!readout.Current(app)) return MMS_E_STALE;
-        if (!std::memcmp(pose.rotQuat, quaternion, sizeof(quaternion))) return MMS_OK;
+        if (!takeover && !std::memcmp(pose.rotQuat, quaternion, sizeof(quaternion))) return MMS_OK;
     } else if (kind == NativePoseAxisKind::Scale) {
         if (!bone_scale::Enabled(&app)) return MMS_E_NOT_READY;
         if (const auto result = ScaleTarget(app, model, bone, axis, scale)) return result;
@@ -479,12 +491,15 @@ bool TryResetBoundBoneRotation(MMDApp* app) noexcept {
         if (!model || !model->boneTable || !model->bonePhysicsState || model->selectedBone < 0 ||
             static_cast<unsigned>(model->selectedBone) >= model->boneCount) return MMS_E_NOT_READY;
         const auto bone = model->selectedBone;
+        const bool takeover = PhysicsResetTakeover(*app, *model, bone);
         if (const auto result = readout.Prepare(*app, *history, 7u)) return result;
         readout.cacheMask = 7u;
         constexpr float identity[4]{0, 0, 0, 1};
-        // An identity pose is a no-op even when its unregistered flag is clear.
-        // Do not manufacture a history step just by changing that flag.
-        if (!std::memcmp(model->boneTable[bone].rotQuat, identity, sizeof(identity))) return MMS_OK;
+        // Without a physics takeover an identity pose is a no-op even when its
+        // unregistered flag is clear; do not manufacture a history step just by
+        // changing that flag. Taking a bone over from the physical readout is
+        // that step.
+        if (!takeover && !std::memcmp(model->boneTable[bone].rotQuat, identity, sizeof(identity))) return MMS_OK;
         NativePoseScope scope;
         if (const auto result = scope.Begin(*app, *history, app->SelectedModelSlot(), "Reset bone rotation")) return result;
         std::memcpy(model->boneTable[bone].rotQuat, identity, sizeof(identity));

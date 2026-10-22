@@ -421,6 +421,7 @@ void LegacyPoseResetMixedSelectionChecks() {
     }
 }
 }
+void NativeLegacyPoseResetTakeoverChecks();
 void NativeLegacyPoseResetChecks() {
     const auto run = [](const char* name, void (*test)()) {
         LegacyPoseResetTrace(name); test();
@@ -438,4 +439,5 @@ void NativeLegacyPoseResetChecks() {
     run("OrdinaryRuntimeChecks", LegacyPoseResetOrdinaryRuntimeChecks);
     run("AbsentStorageChecks", LegacyPoseResetAbsentStorageChecks);
     run("MixedSelectionChecks", LegacyPoseResetMixedSelectionChecks);
+    run("TakeoverChecks", NativeLegacyPoseResetTakeoverChecks);
 }

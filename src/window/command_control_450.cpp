@@ -275,6 +275,15 @@ bool PoseTargetChanged(const CommandPoseTarget& target,const mdl::BoneRecord& bo
     for(int i=0;i<4;++i)if(target.rotation[i]!=bone.rotQuat[i])return true;
     return target.scale!=scale;
 }
+bool PoseResetTargetChanged(MMDApp& app, const CommandPoseTarget& target,
+                            unsigned char* model, unsigned index) {
+    const auto& native = *mdl::Mdl(model);
+    // Taking ownership from the physical preview is an edit even when the
+    // stored pose is already neutral. Preserve ordinary no-op redo branches.
+    return (app.PlaybackPhysicsMode() == 3 && native.boneTable[index].hasRigidBody &&
+            native.bonePhysicsState[index] == 0) ||
+        PoseTargetChanged(target, native.boneTable[index], bone_scale::Pose(model, int(index)));
+}
 bool ValidPoseTarget(const CommandPoseTarget& target) {
     for(float value:target.position)if(!std::isfinite(value))return false;
     for(float value:target.rotation)if(!std::isfinite(value))return false;
@@ -452,7 +461,7 @@ MmsResult ApplyBoundPoseReset(MMDApp& app, plugins::SharedHistory& history) {
         bool selected = false, anyChange = false;
         for (unsigned i = 0; i < native.boneCount; ++i) if (native.boneSelection[i]) {
             selected = true;
-            anyChange |= PoseTargetChanged(target, native.boneTable[i], bone_scale::Pose(model, int(i)));
+            anyChange |= PoseResetTargetChanged(app, target, model, i);
         }
         if (!selected) return MMS_OK;
         PoseResetReadout readout;
@@ -463,7 +472,7 @@ MmsResult ApplyBoundPoseReset(MMDApp& app, plugins::SharedHistory& history) {
             if (const auto result = scope.Begin(app, history, app.SelectedModelSlot(), "Reset bone pose",
                 plugins::SharedHistory::NativeIntent::ExplicitCommit)) return result;
             for (unsigned i = 0; i < native.boneCount; ++i) if (native.boneSelection[i] &&
-                PoseTargetChanged(target, native.boneTable[i], bone_scale::Pose(model, int(i)))) {
+                PoseResetTargetChanged(app, target, model, i)) {
                 auto& bone = native.boneTable[i];
                 std::memcpy(bone.trans, target.position, sizeof(target.position));
                 std::memcpy(bone.rotQuat, target.rotation, sizeof(target.rotation));
@@ -569,7 +578,7 @@ MmsResult ApplyUnboundPoseReset(MMDApp& app) {
         unsigned changedCount = 0; bool selected = false;
         for (unsigned i = 0; i < native.boneCount; ++i) if (native.boneSelection[i]) {
             selected = true;
-            if (PoseTargetChanged(target, native.boneTable[i], bone_scale::Pose(model, int(i)))) ++changedCount;
+            if (PoseResetTargetChanged(app, target, model, i)) ++changedCount;
         }
         if (!selected) return MMS_OK;
         LegacyPoseResetContext context; context.Prepare(app);
@@ -584,7 +593,7 @@ MmsResult ApplyUnboundPoseReset(MMDApp& app) {
             std::vector<unsigned char> selectedBefore(native.boneSelection, native.boneSelection + native.boneCount);
             unsigned captured = 0;
             for (unsigned i = 0; i < native.boneCount; ++i) if (native.boneSelection[i] &&
-                PoseTargetChanged(target, native.boneTable[i], bone_scale::Pose(model, int(i)))) {
+                PoseResetTargetChanged(app, target, model, i)) {
                 auto& before = snapshot.get()[captured++]; before.boneIndex = int(i);
                 std::memcpy(before.position, native.boneTable[i].trans, sizeof before.position);
                 std::memcpy(before.rotation, native.boneTable[i].rotQuat, sizeof before.rotation);
