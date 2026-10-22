@@ -14,6 +14,7 @@
 #include <set>
 #include <unordered_map>
 #include "mikumikustudio/native_mesh.hpp"
+#include "mikumikustudio/local_data_path.hpp"
 #include "../plugins/scene_resource_budget.hpp"
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/model.hpp"
@@ -214,9 +215,12 @@ std::filesystem::path PreserveEffectAssignments(IDirect3DDevice9* device){
     if(!GetModuleHandleW(L"MMEffect.dll"))return {};
     const UINT state=GetMenuState(GetMenu(host->MainWindow()),40022,MF_BYCOMMAND);
     if(state==UINT(-1))throw std::runtime_error("Native mesh cannot preserve the current MME assignments: autosave command unavailable");
-    wchar_t temporary[MAX_PATH+1]{};if(!GetTempPathW(MAX_PATH,temporary))throw std::runtime_error("Native mesh temporary directory unavailable");
+    const auto root=local_data::File(L"mme_mesh_snapshots");
+    if(root.empty())throw std::runtime_error("Native mesh cannot preserve the current MME assignments: the application executable directory is unavailable");
+    std::error_code rootError;std::filesystem::create_directories(root,rootError);
+    if(rootError)throw std::runtime_error("Native mesh cannot create the MME assignment snapshot root: "+rootError.message());
     std::filesystem::path directoryPath;
-    for(uint32_t attempt=0;;++attempt){directoryPath=std::filesystem::path(temporary)/(L"MMS-Mesh-"+std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(GetTickCount64())+L"-"+std::to_wstring(attempt));
+    for(uint32_t attempt=0;;++attempt){directoryPath=root/(L"MMS-Mesh-"+std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(GetTickCount64())+L"-"+std::to_wstring(attempt));
         if(CreateDirectoryW(directoryPath.c_str(),nullptr))break;if(GetLastError()!=ERROR_ALREADY_EXISTS)throw std::runtime_error("Native mesh cannot create an MME assignment snapshot directory");}
     const auto pmm=directoryPath/L"assignments.pmm";const auto emm=directoryPath/L"assignments.emm";
     {std::ofstream placeholder(pmm,std::ios::binary);placeholder<<"Native mesh assignment transfer\n";if(!placeholder)throw std::runtime_error("Native mesh cannot create an MME assignment snapshot");}

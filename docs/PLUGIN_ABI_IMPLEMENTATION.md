@@ -6,7 +6,7 @@
 
 状态分为 **未实现**、**已实现未验证**、**本机已验证**、**缺其他系统/硬件环境**。代码、本机结果和平台结果分别列出。
 
-[烘焙运行文件安装隔离](records/abi-mesh-data-2026-10-23.md)修复了两个仍写系统临时目录的入口，私有网格副本与仅烘焙中间文件分别进入 `data/mesh_bake_cache`、`data/mesh_bake_work`。两配置真实双进程、Ogawa 快照和完整配置 D3D 导出专项通过；用户指定的 ABC 和 PMM 旁车保持原位置。随后[编码器探测文件](records/abi-encoder-data-2026-10-23.md)进入 `data/encoder_probes`，两配置路径专项各 101 项、启动回归各 126 项通过，保留 AMD 异常后的安全放弃路径。MME 分配快照仍待迁移，磁盘缓存管理尚未完成。
+[烘焙运行文件安装隔离](records/abi-mesh-data-2026-10-23.md)修复了两个仍写系统临时目录的入口，私有网格副本与仅烘焙中间文件分别进入 `data/mesh_bake_cache`、`data/mesh_bake_work`。两配置真实双进程、Ogawa 快照和完整配置 D3D 导出专项通过；用户指定的 ABC 和 PMM 旁车保持原位置。随后[编码器探测文件](records/abi-encoder-data-2026-10-23.md)进入 `data/encoder_probes`，两配置路径专项各 101 项、启动回归各 126 项通过，保留 AMD 异常后的安全放弃路径。[MME 分配快照](records/abi-mme-data-2026-10-23.md)现进入 `data/mme_mesh_snapshots`，隐藏宿主的路径、文件及受控通知专项通过，未证明真实 MME 消费。校准结果的旧固定目录自动读取和磁盘缓存管理仍待处理。
 
 main 的 `fed9768` 已按 [近景阴影及 PMM 编码记录](records/abi-main-fed9768-2026-10-23.md)同步，并修正审查发现的失败投影读取及原版副本路径误判。两配置构建、14 次定点运行和原 ABI 契约通过。阴影接收范围处理实际 AA 偏移和 `frame * VIEW`；PMM 判断共用真实加载器镜像，MMS 可逆路径与原版 CP932 副本分别检查。随后单独修复[满 20 字节 PMD 身份读写](records/abi-pmm-identity-2026-10-23.md)，真实重开、旧拼接、重映射和重选均通过，保留原版文件指标、MMS 标记及正式 release。
 

@@ -282,3 +282,9 @@ MME 测试需在独立目录放入三个 MME DLL，日志必须显示 `PLUGINS m
 `mf_h264_startup_tests.exe --probe-storage <绝对新输出目录>` 验证真实探测路径、目录失败、普通清理及 SEH 安全放弃。先将 EXE 复制到无 `data` 的独立安装目录，并创建 `encoder-probe-test-installation.txt`，内容必须为 UTF-8 无 BOM、LF 结尾的 `MMS encoder probe test installation v1\n`。输出目录必须尚不存在、父目录存在且与安装目录分离。不要直接在用户安装中运行。
 
 专项仅替换当前进程的 Writer 工厂，不实例化厂商编码器。正常关闭使用受控 COM 对象，异常采用注入 SEH，不代表真实 AMD 或编码成功。默认无参数入口仍运行原启动回归。本组为保留型回归；移除生产探测入口或已有等效的实际路径及清理验证后才能删除。实际证据及限制见[验收记录](../docs/records/abi-encoder-data-2026-10-23.md)。
+
+## MME 快照安装目录专项
+
+完整配置隐藏宿主 `MikuMikuDance.exe <绝对新输出目录> mme-storage` 必须从无 `data` 的独立复制安装运行。安装内需有 `mme-snapshot-test-installation.txt`，精确无 BOM、LF 内容为 `MMS MME snapshot test installation v1\n`。不得复制或加载 MME、MMHack、MMV；输出目录必须不存在且父目录存在。运行继承 Default 桌面，只隐藏和控制自身窗口。
+
+该模式执行生产快照目录和文件流程、INI 编辑与注册绘制，通知接收边界由测试控制。只伪装当前线程最初两次模块门禁，之后全部恢复真实查询结果。覆盖原自动保存状态、独立快照、旧文件保留及三类失败，不证明第三方插件消费、相对路径或视觉效果。测试保留证据文件，不递归清理。本组为保留型回归；生产入口移除或有等效真实文件与通知顺序回归后才能删除。详见[验收记录](../docs/records/abi-mme-data-2026-10-23.md)。
