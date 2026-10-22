@@ -9,15 +9,39 @@ void TakeoverDegrees(MMDApp& app, int zeroAxis) {
     if (zeroAxis == 1) app.BoneRotationEditDegreesY() = 0;
     if (zeroAxis == 2) app.BoneRotationEditDegreesZ() = 0;
 }
-std::array<float, 4> TakeoverLegacyRotation(int axis, bool floating) {
-    // The preserved unbound command is the numerical oracle, including the
-    // main/separate window constants and intermediate float rounding.
-    PoseNumericFixture legacy;
-    TakeoverDegrees(*legacy.app, axis);
-    PoseAxisCommand(legacy, AxisKind::Rotation, axis, floating);
-    std::array<float, 4> result{};
-    std::memcpy(result.data(), legacy.first.bones[0].rotQuat, sizeof result);
+std::array<float, 4> FrozenLegacyRotationTarget(std::array<float, 3> degrees, int axis, bool floating) {
+    // Independent frozen formulas from main fed9768 BoneRotEdit and separate
+    // 0x21C..0x21E. Do not invoke any production reset route here: the new
+    // unbound zero-axis no-op intentionally differs from that old route.
+    float x = 0, y = 0, z = 0;
+    if (floating) {
+        constexpr float low = 3.141592025756836f, high = 3.141594886779785f;
+        if (axis != 0) x = degrees[0] * high / 180.0f;
+        if (axis != 1) y = -degrees[1] * low / 180.0f;
+        if (axis != 2) z = -degrees[2] * low / 180.0f;
+    } else {
+        constexpr double pi = 3.1415926535897931, piFloat = 3.1415927410125732;
+        if (axis != 0) x = float(double(degrees[0]) * piFloat / 180.0);
+        if (axis != 1) y = float(-double(degrees[1]) * pi / 180.0);
+        if (axis != 2) z = float(-double(degrees[2]) * pi / 180.0);
+    }
+    auto& math = d3dx::Get(); std::array<float, 4> result{};
+    if (floating) {
+        d3dx::D3DXMATRIXF rz{}, rx{}, ry{}, combined{};
+        math.rotZ(&rz, z); math.rotX(&rx, x); math.multiply(&combined, &rz, &rx);
+        math.rotY(&ry, y); math.multiply(&combined, &combined, &ry);
+        math.quatFromMatrix(result.data(), &combined);
+    } else {
+        d3dx::D3DXMATRIXF combined{}, temporary{};
+        math.rotZ(&combined, z); math.rotX(&temporary, x); math.multiply(&combined, &combined, &temporary);
+        math.rotY(&temporary, y); math.multiply(&combined, &combined, &temporary);
+        math.quatFromMatrix(result.data(), &combined);
+    }
     return result;
+}
+std::array<float, 4> TakeoverLegacyRotation(int axis, bool floating) {
+    std::array<float, 3> degrees{18.123456f, -27.7777f, 33.125678f}; degrees[axis] = 0;
+    return FrozenLegacyRotationTarget(degrees, axis, floating);
 }
 void TakeoverSeed(PoseNumericFixture& f, int axis) {
     PhysicsReadoutRig(f);

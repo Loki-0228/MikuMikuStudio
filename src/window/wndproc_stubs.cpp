@@ -202,6 +202,8 @@ void DispatchSeparateWindowCommand(MMDApp* app, unsigned short id) {  // was Sub
 #if !MMD_ORIGINAL_PROFILE
         if (plugins::TryResetBoundPoseAxis(app, plugins::NativePoseAxisKind::Rotation,
             axis, plugins::NativePoseAxisSource::FloatingWindow)) break;
+        if (plugins::TryResetUnboundBoneRotationAxis(app, axis,
+            plugins::NativePoseAxisSource::FloatingWindow)) break;
 #endif
         if (s.CameraMode() == 0) {
             unsigned char* model = s.SelectedModel();

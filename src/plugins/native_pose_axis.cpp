@@ -11,11 +11,14 @@
 #include "mikumikustudio/d3dx_dyn.hpp"
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/model.hpp"
+#include "mikumikustudio/native_edit_history.hpp"
 #include "mikumikustudio/key_pool.hpp"
 #include "mikumikustudio/panel_controls.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/plugin_scene.hpp"
 #include "mikumikustudio/ui_control_readout.hpp"
+#include "mikumikustudio/undo_storage.hpp"
+#include "mikumikustudio/update_coordinator.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -62,8 +65,38 @@ void ReplacePositionDraft(MMDApp& app, int axis) noexcept {
 }
 // A readout publication outlives the pose transaction, but not the captured
 // object/window identities. Every native text message can invoke a subclass.
+struct RotationLegacyRing {
+    std::array<mdl::UndoRing, 2> rings{};
+    std::array<std::uint32_t, 2> cursors{};
+    unsigned char undoDirty = 0, redoDirty = 0;
+    std::uint64_t scaleRevision = 0;
+    void Capture(const unsigned char* model) noexcept {
+        const auto& record = *mdl::Mdl(model);
+        std::memcpy(rings.data(), record.undoRings, sizeof(rings));
+        std::memcpy(cursors.data(), record.undoState, sizeof(cursors));
+        undoDirty = record.undoDirty; redoDirty = record.redoDirty;
+        scaleRevision = bone_scale::Revision(model);
+    }
+    bool Current(const unsigned char* model) const noexcept {
+        const auto& record = *mdl::Mdl(model);
+        return !std::memcmp(rings.data(), record.undoRings, sizeof(rings)) &&
+            !std::memcmp(cursors.data(), record.undoState, sizeof(cursors)) &&
+            undoDirty == record.undoDirty && redoDirty == record.redoDirty &&
+            scaleRevision == bone_scale::Revision(model);
+    }
+};
 struct RotationResetReadout {
     SharedHistory* history = nullptr;
+    RotationLegacyRing legacyRing;
+    std::uint64_t scene = 0;
+    HWND main = nullptr, undo = nullptr, redo = nullptr;
+    int physicsMode = 0;
+    unsigned char physicsDisabled = 0;
+    bool rigid = false;
+    std::array<float, 3> position{};
+    std::array<float, 3> angleState{};
+    unsigned char* selection = nullptr;
+    unsigned char selected = 0;
     std::uint64_t binding = 0, revision = 0;
     MmsObjectRef object{};
     unsigned slot = 0, count = 0, draftMask = 0, cacheMask = 0;
@@ -77,9 +110,9 @@ struct RotationResetReadout {
     std::array<float, 4> rotation{};
     std::array<float, 3> degrees{};
 
-    MmsResult Prepare(MMDApp& app, SharedHistory& journal, unsigned mask) {
-        history = &journal; binding = BoundNativePoseGeneration(&app);
-        if (const auto result = journal.Revision(revision)) return result;
+    MmsResult Prepare(MMDApp& app, SharedHistory* journal, unsigned mask) {
+        history = journal; binding = BoundNativePoseGeneration(&app);
+        if (journal) if (const auto result = journal->Revision(revision)) return result;
         slot = app.SelectedModelSlot(); frame = app.CurrentFrame();
         model = app.SelectedModel(); object = SceneObjectIdentity(model);
         const auto& record = *mdl::Mdl(model);
@@ -87,28 +120,57 @@ struct RotationResetReadout {
         bones = record.boneTable; flags = record.bonePhysicsState;
         dirty = flags[bone];
         std::memcpy(rotation.data(), bones[bone].rotQuat, sizeof(rotation));
+        if (!journal) {
+            legacyRing.Capture(model); scene = app.SceneGeneration();
+            main = app.MainWindow();
+            undo = GetDlgItem(main, panel::kUndoButton); redo = GetDlgItem(main, panel::kRedoButton);
+            physicsMode = app.PlaybackPhysicsMode(); rigid = bones[bone].hasRigidBody != 0;
+            physicsDisabled = bones[bone].physicsDisabled;
+            std::memcpy(position.data(), bones[bone].trans, sizeof(position));
+            selection = record.boneSelection; selected = selection ? selection[bone] : 0;
+            angleState = {app.BoneRotationEditDegreesX(), app.BoneRotationEditDegreesY(), app.BoneRotationEditDegreesZ()};
+        }
         owner = app.FloatingWindow() ? app.FloatingWindow() : app.MainWindow();
         for (int axis = 0; axis < 3; ++axis)
             edits[axis] = GetDlgItem(owner, panel::kReadoutRotXEdit + axis);
         draftMask = mask;
         return MMS_OK;
     }
+    MmsResult Prepare(MMDApp& app, SharedHistory& journal, unsigned mask) {
+        return Prepare(app, &journal, mask);
+    }
     bool Current(MMDApp& app, bool comparePose = true, bool compareRevision = true) const noexcept {
         // Membership and binding checks precede all saved-pointer reads.
-        if (!history || BoundNativePoseHistory(&app) != history ||
+        if (!model || BoundNativePoseHistory(&app) != history ||
             BoundNativePoseGeneration(&app) != binding || app.CameraMode() ||
             app.SelectedModelSlot() != slot || app.CurrentFrame() != frame ||
             app.ModelSlot(slot) != model || !SceneObjectPresent(model, object.id)) return false;
         MmsObjectRef live{};
         if (!FindSceneObjectIdentity(model, live) || live.generation != object.generation) return false;
         std::uint64_t now = 0;
-        if (history->Revision(now) != MMS_OK || (compareRevision && now != revision) ||
-            history->CheckNativeNavigation() != MMS_OK) return false;
+        if (history) {
+            if (history->Revision(now) != MMS_OK || (compareRevision && now != revision) ||
+                history->CheckNativeNavigation() != MMS_OK) return false;
+        } else if (app.SceneGeneration() != scene || app.MainWindow() != main ||
+            (main && !IsWindow(main)) || GetDlgItem(main, panel::kUndoButton) != undo ||
+            GetDlgItem(main, panel::kRedoButton) != redo ||
+            (undo && (!IsWindow(undo) || GetParent(undo) != main)) ||
+            (redo && (!IsWindow(redo) || GetParent(redo) != main)) ||
+            (compareRevision && !legacyRing.Current(model))) return false;
         const auto& record = *mdl::Mdl(model);
         if (record.boneTable != bones || record.bonePhysicsState != flags ||
             record.boneCount != count || record.selectedBone != bone) return false;
         if (comparePose && (flags[bone] != dirty ||
             std::memcmp(bones[bone].rotQuat, rotation.data(), sizeof(rotation)))) return false;
+        if (!history && (app.PlaybackPhysicsMode() != physicsMode ||
+            (bones[bone].hasRigidBody != 0) != rigid || bones[bone].physicsDisabled != physicsDisabled ||
+            record.boneSelection != selection || (selection && selection[bone] != selected) ||
+            std::memcmp(bones[bone].trans, position.data(), sizeof(position)))) return false;
+        if (!history) {
+            const std::array<float, 3> currentAngles{app.BoneRotationEditDegreesX(),
+                app.BoneRotationEditDegreesY(), app.BoneRotationEditDegreesZ()};
+            if (std::memcmp(currentAngles.data(), angleState.data(), sizeof(angleState))) return false;
+        }
         if ((app.FloatingWindow() ? app.FloatingWindow() : app.MainWindow()) != owner ||
             (owner && !IsWindow(owner))) return false;
         for (int axis = 0; axis < 3; ++axis) if (draftMask & (1u << axis)) {
@@ -121,16 +183,29 @@ struct RotationResetReadout {
         // No UI is dispatched between Commit and this capture. A later
         // publication may change the journal, object, selection or windows.
         if (!Current(app, false, false)) return false;
-        if (history->Revision(revision) != MMS_OK) return false;
+        if (history) {
+            if (history->Revision(revision) != MMS_OK) return false;
+        } else legacyRing.Capture(model);
         dirty = flags[bone];
         std::memcpy(rotation.data(), bones[bone].rotQuat, sizeof(rotation));
         return Current(app);
     }
-    void Replace(MMDApp& app) const noexcept {
+    void PublishLegacy(MMDApp& app) const noexcept {
+        if (history || !Current(app)) return;
+        app.SceneModified() = app.RecordedFrameCountByte1() = 1;
+        try { updates::RequestViewport(&app, false); } catch (...) {}
+        if (!Current(app)) return;
+        if (undo) EnableWindow(undo, TRUE);
+        if (!Current(app)) return;
+        if (redo) EnableWindow(redo, FALSE);
+    }
+    void Replace(MMDApp& app) noexcept {
         if (!Current(app)) return;
         if (cacheMask & 1u) app.BoneRotationEditDegreesX() = degrees[0];
         if (cacheMask & 2u) app.BoneRotationEditDegreesY() = degrees[1];
         if (cacheMask & 4u) app.BoneRotationEditDegreesZ() = degrees[2];
+        if (!history) angleState = {app.BoneRotationEditDegreesX(),
+            app.BoneRotationEditDegreesY(), app.BoneRotationEditDegreesZ()};
         for (int axis = 0; axis < 3; ++axis) {
             if (!(draftMask & (1u << axis)) || !edits[axis]) continue;
             if (!Current(app)) return;
@@ -317,6 +392,84 @@ MmsResult ResetAxis(MMDApp& app, SharedHistory& history, NativePoseAxisKind kind
     else if (!bone_scale::SetPose(model, bone, scale)) return MMS_E_ARGUMENT;
     record->bonePhysicsState[bone] = 1;
     return scope.Commit(changed);
+}
+bool RotationSlotOwnsBuffers(const mdl::ModelRecord& record, unsigned next) noexcept {
+    const auto& target = record.undoRings[0].slots[next];
+    if (target.bonePose && target.bonePose == target.auxiliaryPose) return false;
+    for (unsigned ring = 0; ring < 2; ++ring) for (unsigned slot = 0; slot < 30; ++slot) {
+        if (!ring && slot == next) continue;
+        const auto& other = record.undoRings[ring].slots[slot];
+        for (const void* owned : {static_cast<const void*>(target.bonePose),
+                                 static_cast<const void*>(target.auxiliaryPose)})
+            if (owned && (owned == other.bonePose || owned == other.auxiliaryPose)) return false;
+    }
+    return true;
+}
+// A negative axis denotes the whole-rotation menu command. The ordinary
+// runtime keeps the native ring; no temporary common-history binding is made.
+MmsResult ResetUnboundRotation(MMDApp& app, int axis, NativePoseAxisSource source) {
+    if (axis < -1 || axis > 2) return MMS_E_ARGUMENT;
+    if (BoundNativePoseHistory(&app) || !PoseMenuReady(app)) return MMS_E_NOT_READY;
+    auto* model = app.SelectedModel(); auto* record = mdl::Mdl(model);
+    if (!record || !record->boneTable || !record->bonePhysicsState ||
+        record->selectedBone < 0 || unsigned(record->selectedBone) >= record->boneCount ||
+        record->undoState[0] >= 30 || record->undoState[1] >= 30) return MMS_E_NOT_READY;
+    const int bone = record->selectedBone;
+    const bool whole = axis == -1, takeover = PhysicsResetTakeover(app, *record, bone);
+    RotationResetReadout readout;
+    if (const auto result = readout.Prepare(app, nullptr, whole ? 7u : (1u << axis))) return result;
+    float quaternion[4]{0, 0, 0, 1};
+    bool changed = false;
+    if (whole) {
+        readout.cacheMask = 7u;
+        changed = takeover || std::memcmp(record->boneTable[bone].rotQuat, quaternion, sizeof(quaternion));
+    } else if (!takeover && readout.angleState[axis] == 0.0f) {
+        // Keep unrelated angle precision and redo for a real zero-axis no-op.
+        readout.cacheMask = 1u << axis;
+    } else {
+        if (const auto result = RotationTarget(app, axis, source, quaternion)) return result;
+        auto& math = d3dx::Get();
+        if (!math.matrixRotationQuaternion) return MMS_E_NOT_READY;
+        d3dx::D3DXMATRIXF matrix{}; math.matrixRotationQuaternion(&matrix, quaternion);
+        for (const auto& row : matrix.m) for (float value : row)
+            if (!std::isfinite(value)) return MMS_E_ARGUMENT;
+        readout.degrees = ui::BoneRotationDegreesFromMatrix(matrix);
+        for (float value : readout.degrees) if (!std::isfinite(value)) return MMS_E_ARGUMENT;
+        readout.cacheMask = 7u;
+        changed = takeover || std::memcmp(record->boneTable[bone].rotQuat, quaternion, sizeof(quaternion));
+    }
+    if (!readout.Current(app)) return MMS_E_STALE;
+    if (changed) {
+        const auto release = [](mdl::BonePoseSnapshot* value) { undo_storage::Free(value); };
+        std::unique_ptr<mdl::BonePoseSnapshot, decltype(release)> snapshot(
+            static_cast<mdl::BonePoseSnapshot*>(undo_storage::Allocate(sizeof(mdl::BonePoseSnapshot))), release);
+        std::memset(snapshot.get(), 0, sizeof(mdl::BonePoseSnapshot));
+        snapshot->boneIndex = bone;
+        std::memcpy(snapshot->position, record->boneTable[bone].trans, sizeof(snapshot->position));
+        std::memcpy(snapshot->rotation, record->boneTable[bone].rotQuat, sizeof(snapshot->rotation));
+        snapshot->physicsDisabled = record->bonePhysicsState[bone];
+        const unsigned next = (record->undoState[0] + 1) % 30;
+        auto sides = bone_scale::PrepareUndoCapture(model, next);
+        if (!readout.Current(app) || !PoseMenuReady(app) || !sides->IsCurrent() ||
+            !RotationSlotOwnsBuffers(*record, next)) return MMS_E_NOT_READY;
+        // All fallible work ends here. The displayed bone is captured even
+        // when it is absent from the selection used by older undo writers.
+        sides->Publish();
+        auto& undo = record->undoRings[0].slots[next];
+        undo_storage::Free(undo.bonePose); undo_storage::Free(undo.auxiliaryPose);
+        undo = {}; undo.operation = 1; undo.dirty = 1; undo.frame = unsigned(app.CurrentFrame());
+        undo.bonePose = snapshot.release();
+        std::memcpy(record->boneTable[bone].rotQuat, quaternion, sizeof(quaternion));
+        record->bonePhysicsState[bone] = 1;
+        record->undoState[0] = record->undoState[1] = next;
+        record->undoDirty = 1; record->redoDirty = 0;
+    }
+    if (readout.Seal(app)) {
+        bake::ScopedUiInputGate gate;
+        if (changed) readout.PublishLegacy(app);
+        readout.Replace(app);
+    }
+    return MMS_OK;
 }
 }
 
@@ -513,6 +666,17 @@ bool TryResetBoundBoneRotation(MMDApp* app) noexcept {
         if (changed) PublishBoundPoseEdit(*app, *history);
         if (replaceRotation) readout.Replace(*app);
     }
+    return true;
+}
+bool TryResetUnboundBoneRotationAxis(MMDApp* app, int axis, NativePoseAxisSource source) noexcept {
+    if (!app || app->CameraMode() || BoundNativePoseHistory(app)) return false;
+    if (axis < 0 || axis > 2) return true;
+    Boundary([&] { return ResetUnboundRotation(*app, axis, source); });
+    return true;
+}
+bool TryResetUnboundBoneRotation(MMDApp* app) noexcept {
+    if (!app || app->CameraMode() || BoundNativePoseHistory(app)) return false;
+    Boundary([&] { return ResetUnboundRotation(*app, -1, NativePoseAxisSource::MainWindow); });
     return true;
 }
 }

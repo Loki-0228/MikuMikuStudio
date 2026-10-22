@@ -94,7 +94,7 @@ main `negative_frames.cpp` 的 `State` 自建最多 30 步 undo/redo，按当前
 
 ### 重置后的未提交文本
 
-绑定旋转及 495 整体重置已分别按[旋转草稿记录](abi-rotation-drafts-2026-10-23.md)和[整体重置记录](abi-pose-reset-2026-10-23.md)实现并验证。普通 495 随后按[普通重置记录](abi-legacy-pose-reset-2026-10-23.md)完成，物理接管也已按[接管记录](abi-physics-takeover-2026-10-23.md)完成本机专项；以下保留迁移前差异及方案，普通未绑定旋转入口仍待完成。
+绑定旋转及 495 整体重置已分别按[旋转草稿记录](abi-rotation-drafts-2026-10-23.md)和[整体重置记录](abi-pose-reset-2026-10-23.md)实现并验证。普通 495 随后按[普通重置记录](abi-legacy-pose-reset-2026-10-23.md)完成，物理接管也已按[接管记录](abi-physics-takeover-2026-10-23.md)完成本机专项。[普通旋转入口](abi-unbound-rotation-2026-10-23.md)随后完成单骨旧环与局部草稿发布，专项 6,597 项及三个旧入口反例通过。以下保留迁移前差异及方案，不再列为该旋转入口的待办；真实平台验收及本体共同历史全面迁移仍有缺口。
 
 ABI 的位置轴重置已经在成功后调用 `ReplacePositionDraft`，但 `TryResetBoundPoseAxis` 的旋转分支没有同等处理。与此同时，[ui_view_refresh.cpp](../../src/window/ui_view_refresh.cpp) 的 `SetReadoutText` 会保护共同历史绑定中的未提交文本，[ui_edit_commit.cpp](../../src/window/ui_edit_commit.cpp) 则会在失焦时提交草稿。输入旋转值后通过转发命令清零，再离开输入框，旧文本仍可能重新覆盖清零结果。
 

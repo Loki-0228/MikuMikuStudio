@@ -30,6 +30,11 @@ bool TryEditBoundPoseNumeric(MMDApp*, HWND owner) noexcept;
 bool TryResetBoundBoneRotation(MMDApp*) noexcept;
 enum class NativePoseAxisKind { Position, Rotation, Scale };
 enum class NativePoseAxisSource { MainWindow, FloatingWindow };
+// Ordinary enhanced runtime: preserve the native per-model undo ring and
+// handle failures without falling back to the old non-atomic writer.
+bool TryResetUnboundBoneRotationAxis(MMDApp*, int axis,
+    NativePoseAxisSource source = NativePoseAxisSource::MainWindow) noexcept;
+bool TryResetUnboundBoneRotation(MMDApp*) noexcept;
 // Internal migration route, enabled only by NativePoseTestBinding. True means
 // this command was handled, including no-op, busy and failed edits: callers
 // must not fall back to the legacy path. Camera position/rotation axes share

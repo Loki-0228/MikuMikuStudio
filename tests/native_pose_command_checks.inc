@@ -155,6 +155,7 @@ void PoseCommandLegacyChecks() {
 #include "native_pose_reset_draft_checks.inc"
 #include "native_legacy_pose_reset_checks.inc"
 #include "native_pose_reset_takeover_checks.inc"
+#include "native_unbound_rotation_checks.inc"
 void NativePoseCommandChecks() {
     PoseResetCommandChecks();PosePasteCommandChecks();
     for(unsigned command:{495u,497u,498u})PoseCommandFailureChecks(command);

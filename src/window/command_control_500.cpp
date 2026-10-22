@@ -340,6 +340,8 @@ void BonePosEdit(MMDApp* app, std::size_t axis) {
 void BoneRotEdit(MMDApp* app, float* vec, int axis) {
 #if !MMD_ORIGINAL_PROFILE
     if (plugins::TryResetBoundPoseAxis(app, plugins::NativePoseAxisKind::Rotation, axis)) return;
+    if (plugins::TryResetUnboundBoneRotationAxis(app, axis,
+        plugins::NativePoseAxisSource::MainWindow)) return;
 #endif
     if (app->state.optflag[0] != 0) {
         vec[axis] = 0.0f;

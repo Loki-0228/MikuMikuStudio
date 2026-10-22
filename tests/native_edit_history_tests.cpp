@@ -340,8 +340,8 @@ void CrossModelJournal(){
 #include "shared_history_applied_checks.inc"
 #include "native_pose_scope_checks.inc"
 #include "native_history_command_checks.inc"
-#include "native_pose_command_checks.inc"
 #include "native_pose_axis_checks.inc"
+#include "native_pose_command_checks.inc"
 #include "native_rotation_reset_checks.inc"
 #include "native_pose_numeric_checks.inc"
 #include "bone_curve_authoring_checks.inc"
@@ -554,6 +554,14 @@ int main(int argc,char** argv){
         NativeMorphToolsChecks();std::printf("PASS morph tools: %u checks\n",checks);return 0;
     }
     const auto run=[](const char* name,void(*test)()){std::printf("RUN %s\n",name);test();};
+    if(argc==2&&!std::strcmp(argv[1],"--unbound-rotation-only")) {
+        wchar_t desktop[128]{}; DWORD bytes=0;
+        Check(GetUserObjectInformationW(GetThreadDesktop(GetCurrentThreadId()),UOI_NAME,
+            desktop,sizeof desktop,&bytes)&&!_wcsicmp(desktop,L"Default"),
+            "unbound-rotation fixture uses only inherited Default desktop");
+        run("NativeUnboundRotationChecks",NativeUnboundRotationChecks);
+        std::printf("PASS native unbound rotation: %u checks\n",checks);return 0;
+    }
     if(argc==2&&!std::strcmp(argv[1],"--legacy-pose-reset-only")) {
         wchar_t desktop[128]{}; DWORD bytes=0;
         Check(GetUserObjectInformationW(GetThreadDesktop(GetCurrentThreadId()),UOI_NAME,

@@ -3153,6 +3153,7 @@ void CmdViewMenu(MMDApp* app, HWND hwnd, std::uint16_t id,
 #if !MMD_ORIGINAL_PROFILE
         if (plugins::TryResetBoundCameraRotation(app)) return;
         if (plugins::TryResetBoundBoneRotation(app)) return;
+        if (plugins::TryResetUnboundBoneRotation(app)) return;
 #endif
         app->state.dialogFlags[1] = 1;
         if (app->state.optflag[0] != 0) {
