@@ -30,6 +30,7 @@
 #include <commdlg.h>
 #include <d3d9.h>
 
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -37,6 +38,7 @@
 #include <cstring>
 #include <cwchar>
 #include <new>
+#include <vector>
 
 #include <fcntl.h>
 #include <io.h>
@@ -60,9 +62,7 @@
 #include "mikumikustudio/texture_lookup.hpp"
 #if MMD_ORIGINAL_PROFILE
 #include "mikumikustudio/original_file_encoding.hpp"
-#include <array>
 #include <set>
-#include <vector>
 #endif
 
 namespace mikumikustudio {
@@ -417,10 +417,13 @@ int CollectToonFileNames(HWND hDlg) {  // was Sub41EA20, VA 0x0041EA20
 //   rigid-body display list - English section (flag always 1; morph names
 //   skip morph 0, group names start at 2/3 like the reader) - the ten
 //   100-byte toon file names - rigid bodies (83 bytes) - joints (124
-//   bytes, limits in the reader's shuffled order).  On success the saved
-//   path becomes model->path.
-// Quirk kept verbatim: before writing vertices, every morph-0 entry
-// OVERWRITES (not adds to) the raw vertex position with its offset.
+//   bytes, limits in the reader's shuffled order).
+// The original profile keeps the port's in-place quirk: before writing
+// vertices, every morph-0 entry OVERWRITES (not adds to) the raw vertex
+// position with its offset.  The full profile computes those positions in a
+// private copy instead, so it leaves the source raw vertices and their
+// cache untouched.  Either way a successful save records the exported model
+// as the new source in model->path, which PMM save reads back.
 // ===========================================================================
 void SaveEnhancedModel(MMDApp* app, const wchar_t* path) {  // was Sub41EC10, 0x41EC10
     try {
@@ -448,6 +451,43 @@ void SaveEnhancedModel(MMDApp* app, const wchar_t* path) {  // was Sub41EC10, 0x
         RefusePmd(app, PmdRefusal::Representation);
         return;
     }
+#else
+    // Full profile: collect the positions the original profile would have
+    // written into rawVertices, but keep them in private storage so the
+    // source vertices and their cache stay untouched.  The exported model
+    // still becomes the new source after a successful publish (see below).
+    // Nothing is allocated when there is no morph-0 to apply.
+    std::vector<std::array<float, 3>> exportPositions;
+    if (model.vertexCount != 0 && model.rawVertices == nullptr) {
+        RefusePmd(app, PmdRefusal::Representation);
+        return;
+    }
+    if (model.morphs != nullptr && model.morph0Count != 0) {
+        if (model.morph0Table == nullptr) {
+            RefusePmd(app, PmdRefusal::Representation);
+            return;
+        }
+        for (std::uint32_t k = 0; k < model.morph0Count; ++k) {
+            if (model.morph0Table[k].vertexIndex >= model.vertexCount) {
+                RefusePmd(app, PmdRefusal::Representation);
+                return;
+            }
+        }
+        // Copy the original positions, then apply morph 0 in table order;
+        // a repeated index leaves its last entry, overwriting rather than
+        // adding.
+        exportPositions.resize(model.vertexCount);
+        for (std::uint32_t i = 0; i < model.vertexCount; ++i)
+            std::memcpy(exportPositions[i].data(),
+                        model.rawVertices[i].position,
+                        sizeof exportPositions[i]);
+        for (std::uint32_t k = 0; k < model.morph0Count; ++k) {
+            const mdl::PmdVertexMorphEntry& entry = model.morph0Table[k];
+            std::memcpy(exportPositions[entry.vertexIndex].data(),
+                        entry.offset,
+                        sizeof exportPositions[entry.vertexIndex]);
+        }
+    }
 #endif
     // Write beside the destination, then publish only a complete PMD. A bad
     // name, short write, or failed replacement must leave the old file intact.
@@ -468,7 +508,10 @@ void SaveEnhancedModel(MMDApp* app, const wchar_t* path) {  // was Sub41EC10, 0x
     _write(fh, model.name, 0x14);
     _write(fh, model.comment, 0x100);
 
+#if MMD_ORIGINAL_PROFILE
     // ---- morph-0 pre-pass (positions overwritten, see note above) --------
+    // Original profile only: the full profile keeps these positions in its
+    // private export copy instead of touching the source vertices or cache.
     model_vertex_cache::Invalidate(reinterpret_cast<unsigned char*>(&model));
     if (model.morphs != nullptr && model.morph0Count != 0) {
         for (std::uint32_t k = 0; k < model.morph0Count; ++k) {
@@ -477,12 +520,21 @@ void SaveEnhancedModel(MMDApp* app, const wchar_t* path) {  // was Sub41EC10, 0x
                         12);
         }
     }
+#endif
 
     // ---- vertices --------------------------------------------------------
     _write(fh, &model.vertexCount, 4);
     for (std::uint32_t i = 0; i < model.vertexCount; ++i) {
         const mdl::PmdVertex& v = model.rawVertices[i];
+#if MMD_ORIGINAL_PROFILE
+        // Positions were overwritten in place by the pre-pass above.
         _write(fh, v.position, 12);
+#else
+        // Full profile: read the private export copy; the source raw
+        // vertices are unchanged.
+        _write(fh, exportPositions.empty() ? v.position
+                                           : exportPositions[i].data(), 12);
+#endif
         _write(fh, v.normal, 12);
         _write(fh, v.uv, 8);
         _write(fh, &v.bone[0], 2);
@@ -687,6 +739,8 @@ void SaveEnhancedModel(MMDApp* app, const wchar_t* path) {  // was Sub41EC10, 0x
         RefusePmd(app, PmdRefusal::Write);
         return;
     }
+    // Both profiles record the exported model as the new source; PMM save
+    // reads model.path back, so even a full-profile export must update it.
     wcscpy_s(model.path, 0x100, path);
     } catch (const std::bad_alloc&) {
         RefusePmd(app, PmdRefusal::Write);

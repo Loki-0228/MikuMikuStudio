@@ -4,6 +4,8 @@
 
 状态分为 **未实现**、**已实现未验证**、**本机已验证**、**缺其他系统/硬件环境**。代码、本机结果和平台结果分别列出。
 
+[增强 PMD 保存的顶点隔离](records/abi-pmd-export-vertices-2026-10-22.md)已完成：完整配置用私有位置写出相同的 morph-0 结果，成功及写失败不修改源顶点或失效缓存；105 项及两套 21 组 ABI 回归通过。保留成功后的来源路径更新，确保后续 PMM 仍引用新模型；菜单 263 的路径共同历史及完整工程重开验收尚未完成。
+
 [共同历史影响分类](records/abi-history-effects-2026-10-22.md)已接入原历史及延迟 UI 队列，纯视口和 None 的本地、原 DLL 撤销重做不再建立场景 mutation、启停顶层窗或无条件通知曲线变化。随后[补齐排序夹具的有效父骨骼](records/abi-model-order-fixture-2026-10-22.md)，原排序断言及 5,573 项通过，生产代码不变。[实际纹理重载 278](records/abi-texture-reload-history-2026-10-22.md)现已接入前后资源保活、一次发布及同一轻量刷新；专项 16,276 项、相邻资源与历史检查及既有 21 组 ABI 回归通过。第三方 hook 私有登记、其他原生写入和完整 ABI 仍未完成，普通 `mms.edit` 保持关闭。
 
 [显式依赖刷新](records/abi-ui-dependencies-2026-10-21.md)已接入原 UI 句柄、队列和票据，支持同客户端 DAG、拓扑阶段、后台请求、混合菜单延后及生命周期失效。显式 DATA binding 随后接入[SELF 自动订阅](records/abi-refresh-subscription-2026-10-22.md)及[范围订阅 1.1](records/abi-scoped-subscription-2026-10-22.md)，原属性与共同历史也已通过[属性范围 1.1](records/abi-scoped-property-2026-10-22.md)接入相同子树或显式图；通用事件自动传播仍待实现。[插帧几何与写入边界](records/abi-curve-insertion-geometry-2026-10-22.md)已补齐，两套最新曲线全集各 36,281 项通过；此前堆故障及未解释超时仍未归因，不能标记整体稳定。
