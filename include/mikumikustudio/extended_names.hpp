@@ -17,7 +17,11 @@ void CapturePmm(const MMDApp&, pmm_extension::Document&);
 // Invalid raw text without Unicode, or registered Unicode with a nonzero
 // allocation tail after its first NUL, is omitted independently per language;
 // missing records/bits leave the corresponding source-model comment intact.
-void LoadPmm(MMDApp&, const pmm_extension::Document&);
+// An adapted model keeps its source names: the old positional dictionary
+// describes another table even if its counts still agree. Comments are an
+// independent record and keep their ordinary loading/atomicity rules.
+void LoadPmm(MMDApp&, const pmm_extension::Document&,
+             const std::vector<int>& adaptedModelSlots = {});
 bool LegacyNamesFit(const mdl::ModelRecord&, bool motion);
 // Exact fidelity of the fields actually written by the standard PMD writer.
 // Each language is checked independently, without display-name fallbacks.

@@ -37,6 +37,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace mikumikustudio {
@@ -332,6 +333,7 @@ struct RawEntry {
     int slot = 0;
     std::string path;
     double timeScale = 1;
+    std::uint32_t cutoffLayer = mikumikustudio::mesh_bake_cache::kNoCutoffLayer;
 };
 
 constexpr std::uint32_t kMagic = 0x43534D4Du;  // 'M','M','S','C'
@@ -362,7 +364,8 @@ std::vector<std::uint8_t> BuildValue(const std::vector<RawEntry>& entries,
         u32(std::uint32_t(entry.slot));
         u32(std::uint32_t(entry.path.size()));
         value.insert(value.end(), entry.path.begin(), entry.path.end());
-        if (version == kRecordVersionV2) AppendRawF64(value, entry.timeScale);
+        if (version == kRecordVersionV2 || version == 3) AppendRawF64(value, entry.timeScale);
+        if (version == 3) u32(entry.cutoffLayer);
     }
     return value;
 }
@@ -398,7 +401,7 @@ std::vector<RawEntry> ParseValue(const std::vector<std::uint8_t>& value,
         entry.path.assign(reinterpret_cast<const char*>(value.data() + cursor),
                           pathBytes);
         cursor += pathBytes;
-        if (expectedVersion == kRecordVersionV2) {
+        if (expectedVersion == kRecordVersionV2 || expectedVersion == 3) {
             Check(cursor + 8 <= value.size(), why + ": time scale fits");
             std::uint64_t bits = 0;
             for (int shift = 0; shift < 64; shift += 8)
@@ -406,6 +409,7 @@ std::vector<RawEntry> ParseValue(const std::vector<std::uint8_t>& value,
             std::memcpy(&entry.timeScale, &bits, sizeof entry.timeScale);
             cursor += 8;
         }
+        if (expectedVersion == 3) entry.cutoffLayer = u32();
         entries.push_back(std::move(entry));
     }
     Check(cursor == value.size(), why + ": no trailing bytes");
@@ -1576,6 +1580,202 @@ void CutoffGenerations(const std::filesystem::path& directory, Scene& scene) {
     Trace("per-object cutoff layers and generation bindings");
 }
 
+void AdaptedModelFiltering(const std::filesystem::path& directory, Scene& scene) {
+    namespace cache = mikumikustudio::mesh_bake_cache;
+    const auto recordValue = [](const extension::Document& document, const char* key) -> const std::vector<std::uint8_t>& {
+        const auto* record = extension::Find(document, key);
+        Check(record != nullptr, std::string("adapted-model fixture has record ") + key);
+        return record->value;
+    };
+    Clear(); ResetSlots(scene.app); scene.BindModel0(); scene.BindModel1(); scene.BindAccessory2();
+    const auto root = directory / L"adapted-model-cache";
+    std::filesystem::create_directories(root);
+    const auto archive = root / L"shared-input.abc";
+    WriteArchive(archive, {{kModelChild, 10.f}, {kSecondModelChild, 20.f},
+                           {kAccessoryChild, 30.f}}, 2, 30., 0.);
+    const auto archiveBytes = ReadFileBytes(archive);
+    const auto pmm = root / L"source.pmm";
+    std::string error;
+    Check(Install(scene.app, archive, error, {}, 5), "install the original shared adapted-model fixture: " + error);
+    extension::Document project;
+    Check(Save(scene.app, pmm, project, error), "publish the original shared adapted-model sidecar: " + error);
+    const auto entries = ParseValue(recordValue(project, kRecordKeyV3), "shared v3 adaptation record", 3);
+    Check(entries.size() == 3 && entries[0].path == entries[1].path && entries[1].path == entries[2].path,
+          "two models and an accessory really share one persistent sidecar");
+    const auto sidecar = entries[0].path;
+    const std::string missing = "filtered-missing" + std::string(cache::kSidecarSuffix);
+    // Obsolete lower known records must not become authoritative after saving
+    // the filtered v3 cache. Unknown data retains its original bytes and order.
+    extension::Set(project, kRecordKey, BuildValue({{0, 0, missing}}));
+    extension::Set(project, cache::kRecordKeyV2, BuildValue({{0, 0, missing, 2.}}, kRecordVersionV2));
+    extension::Set(project, "test.adapted.keep", {0, 255, 3});
+    extension::Set(project, "mds.mesh_cache.v99", {7, 0, 2});
+    WriteProjectFile(pmm, project);
+    const auto projectBytes = ReadFileBytes(pmm);
+    const auto original = project;
+    const auto sameDocument = [](const extension::Document& a, const extension::Document& b, const std::string& why) {
+        Check(a.records.size() == b.records.size(), why + ": record count");
+        for (std::size_t i = 0; i < a.records.size(); ++i)
+            Check(a.records[i].key == b.records[i].key && a.records[i].value == b.records[i].value,
+                  why + ": exact keys, values and order");
+    };
+    std::vector<std::pair<std::filesystem::path, std::string>> persistent;
+    const auto rememberSidecars = [&] {
+        for (const auto& file : std::filesystem::directory_iterator(root)) {
+            const auto name = file.path().filename().u8string();
+            const std::string suffix = cache::kSidecarSuffix;
+            if (name.size() <= suffix.size() || name.compare(name.size() - suffix.size(), suffix.size(), suffix)) continue;
+            bool known = false; for (const auto& previous : persistent) known = known || previous.first == file.path();
+            if (!known) persistent.emplace_back(file.path(), ReadFileBytes(file.path()));
+        }
+    };
+    const auto unchangedFiles = [&] {
+        Check(ReadFileBytes(archive) == archiveBytes && ReadFileBytes(pmm) == projectBytes,
+              "adaptation never modifies the input archive or original PMM");
+        for (const auto& file : persistent)
+            Check(ReadFileBytes(file.first) == file.second, "adaptation never deletes or rewrites a published sidecar");
+    };
+    rememberSidecars();
+
+    Check(BindGeneration(scene.Model0(), 101), "seed an old live binding for the adapted model");
+    // Slot 2 is adapted only in the model array; accessory 2 must remain bound.
+    Check(Load(scene.app, pmm, project, error, {0, 0, 2}), "filter a model in a shared sidecar with duplicate context: " + error);
+    Check(error.empty() && !Has(scene.Model0()) && Has(scene.Model1()) && Has(scene.Accessory2()),
+          "adaptation removes the old model binding without suppressing shared models or same-number accessories");
+    ExpectTriangle(SampleAt(scene.Model1(), 0, "unaffected shared model")[0], kSecondModelChild, 20.f, "unaffected shared model data");
+    ExpectTriangle(SampleAt(scene.Accessory2(), 0, "same-number accessory")[0], kAccessoryChild, 30.f, "same-number accessory data");
+    EntryInfo info;
+    Check(Info(scene.Model1(), info) && info.cutoffLayer == 5 && info.sourceGeneration == 0,
+          "unaffected shared binding retains its cutoff and starts with the ordinary unbound generation");
+    sameDocument(project, original, "loading preserves the complete original document"); unchangedFiles();
+    auto frozen = cache::CaptureSave(scene.app);
+
+    auto saved = project;
+    const auto sanitizedPmm = root / L"sanitized.pmm";
+    Check(Save(scene.app, sanitizedPmm, saved, error), "save the filtered live cache: " + error);
+    const auto sanitized = ParseValue(recordValue(saved, kRecordKeyV3), "sanitized v3 adaptation record", 3);
+    Check(sanitized.size() == 2 && sanitized[0].kind == 0 && sanitized[0].slot == 1 &&
+          sanitized[1].kind == 1 && sanitized[1].slot == 2 && sanitized[0].cutoffLayer == 5 && sanitized[1].cutoffLayer == 5 &&
+          !extension::Find(saved, kRecordKey) && !extension::Find(saved, cache::kRecordKeyV2),
+          "saving retains only unaffected bindings and removes lower known records that could resurrect the adapted model");
+    Check(recordValue(saved, "test.adapted.keep") == recordValue(original, "test.adapted.keep") &&
+          recordValue(saved, "mds.mesh_cache.v99") == recordValue(original, "mds.mesh_cache.v99"),
+          "saving preserves unrelated and unknown cache-version payloads");
+    WriteProjectFile(sanitizedPmm, saved); rememberSidecars();
+    Clear(); extension::Document reopened; std::uint64_t standardSize = 0;
+    Check(ReadProjectFile(sanitizedPmm, reopened, standardSize) && standardSize == kStandardPrefixBytes &&
+          Load(scene.app, sanitizedPmm, reopened, error), "reopen the filtered record with no adaptation context: " + error);
+    Check(!Has(scene.Model0()) && Has(scene.Model1()) && Has(scene.Accessory2()),
+          "save and reopen never reactivate an archive child omitted by adaptation");
+    ExpectTriangle(SampleAt(scene.Model1(), 1. / 30., "reopened unaffected model")[0], kSecondModelChild, 21.f, "reopened model retains all samples");
+
+    Check(Load(scene.app, pmm, original, error), "restore all original live bindings after freezing the filtered snapshot: " + error);
+    const auto frozenPmm = root / L"frozen-filtered.pmm";
+    auto frozenDocument = original;
+    Check(frozen(frozenPmm, frozenDocument, error), "publish the frozen filtered snapshot after live restoration: " + error);
+    const auto frozenEntries = ParseValue(recordValue(frozenDocument, kRecordKeyV3), "frozen filtered record", 3);
+    Check(frozenEntries.size() == 2 && frozenEntries[0].kind == 0 && frozenEntries[0].slot == 1 &&
+          frozenEntries[1].kind == 1 && frozenEntries[1].slot == 2 && Has(scene.Model0()),
+          "snapshot keeps the filtered bindings and does not inspect or clear a later live cache");
+    rememberSidecars(); unchangedFiles();
+
+    // Only entries selected for adaptation may bypass archive opening. Full
+    // record validation still runs, and unaffected failures remain atomic.
+    auto missingFiltered = original;
+    extension::Set(missingFiltered, kRecordKeyV3, BuildValue({{0, 0, missing, 1., 5},
+        {0, 1, sidecar, 1., 5}, {1, 2, sidecar, 1., 5}}, 3));
+    const auto missingBefore = missingFiltered;
+    Check(!Load(scene.app, pmm, missingFiltered, error) && !error.empty() && Has(scene.Model0()),
+          "without adaptation context a missing sidecar keeps its original failure behavior");
+    Check(Load(scene.app, pmm, missingFiltered, error, {0}) && error.empty() && !Has(scene.Model0()) &&
+          Has(scene.Model1()) && Has(scene.Accessory2()), "an adapted-only missing sidecar is skipped before any archive open");
+    sameDocument(missingFiltered, missingBefore, "a skipped missing sidecar does not rewrite the input record");
+
+    const auto oldArchive = root / L"old-live.abc";
+    WriteArchive(oldArchive, {{kModelChild, 110.f}, {kSecondModelChild, 120.f},
+                              {kAccessoryChild, 130.f}}, 1, 30., 0.);
+    Check(Install(scene.app, oldArchive, error, {}, 9) && BindGeneration(scene.Model0(), 701) &&
+          BindGeneration(scene.Model1(), 702) && BindGeneration(scene.Accessory2(), 703), "seed distinguishable old bindings before refused loads");
+    const auto oldBytes = ReadFileBytes(oldArchive);
+    const auto oldUnchanged = [&] {
+        for (const auto& item : std::vector<std::pair<const void*, std::uint64_t>>{
+                 {scene.Model0(), 701}, {scene.Model1(), 702}, {scene.Accessory2(), 703}})
+            Check(Info(item.first, info) && info.cutoffLayer == 9 && info.sourceGeneration == item.second,
+                  "a refused adapted load preserves each old binding identity and cutoff");
+        ExpectTriangle(SampleAt(scene.Model0(), 0, "old adapted model after failure")[0], kModelChild, 110.f, "failed load keeps the old adapted binding");
+        ExpectTriangle(SampleAt(scene.Model1(), 0, "old unaffected model after failure")[0], kSecondModelChild, 120.f, "failed load cannot partially install its prepared model");
+        ExpectTriangle(SampleAt(scene.Accessory2(), 0, "old accessory after failure")[0], kAccessoryChild, 130.f, "failed load keeps the old accessory");
+        Check(ReadFileBytes(oldArchive) == oldBytes, "refused loading preserves the old source archive bytes"); unchangedFiles();
+    };
+    auto malformed = original;
+    auto malformedValue = BuildValue({{0, 0, missing, 1., 5}}, 3);
+    malformedValue[13] = 1; // Reserved byte in the one entry that would be filtered.
+    extension::Set(malformed, kRecordKeyV3, malformedValue);
+    Check(!Load(scene.app, pmm, malformed, error, {0}) && !error.empty(),
+          "adaptation does not hide a malformed reserved byte in a filtered record"); oldUnchanged();
+
+    const auto corruptPath = root / std::filesystem::u8path("unaffected-corrupt" + std::string(cache::kSidecarSuffix));
+    { std::ofstream stream(corruptPath, std::ios::binary); stream << "not an Ogawa archive"; Check(bool(stream), "write only the owned corrupt-sidecar fixture"); }
+    const auto corruptBytes = ReadFileBytes(corruptPath);
+    auto corrupt = original;
+    extension::Set(corrupt, kRecordKeyV3, BuildValue({{0, 0, missing, 1., 5}, {0, 1, sidecar, 1., 5},
+        {1, 2, corruptPath.filename().u8string(), 1., 5}}, 3));
+    const auto corruptBefore = corrupt;
+    Check(!Load(scene.app, pmm, corrupt, error, {0}) && !error.empty(),
+          "an unaffected corrupt sidecar refuses the load after another unaffected entry was prepared");
+    oldUnchanged(); sameDocument(corrupt, corruptBefore, "refused adaptation keeps input metadata");
+    Check(ReadFileBytes(corruptPath) == corruptBytes, "loading never deletes or rewrites the corrupt persistent fixture");
+
+    auto absent = original;
+    extension::Set(absent, kRecordKeyV3, BuildValue({{0, 1, sidecar, 1., 5}}, 3));
+    scene.UnbindModel1();
+    Check(!Load(scene.app, pmm, absent, error, {0}) && !error.empty() && Has(scene.Model0()),
+          "unfiltered records with no live objects still fail without removing old adapted bindings");
+    scene.BindModel1(); oldUnchanged();
+
+    auto modelsOnly = original;
+    extension::Set(modelsOnly, kRecordKeyV3, BuildValue({{0, 0, missing, 1., 5}, {0, 1, missing, 1., 5}}, 3));
+    const auto modelsBefore = modelsOnly;
+    Check(Load(scene.app, pmm, modelsOnly, error, {0, 1, 0}) && error.empty() &&
+          !Has(scene.Model0()) && !Has(scene.Model1()) && Has(scene.Accessory2()),
+          "all-filtered records succeed, remove both prior model bindings and retain an unrelated cache");
+    ExpectTriangle(SampleAt(scene.Accessory2(), 0, "accessory after all-filtered load")[0], kAccessoryChild, 130.f, "all-filtered load keeps unrelated cached geometry");
+    Forget(scene.Accessory2());
+    Check(Load(scene.app, pmm, modelsOnly, error, {1, 0, 1}) && error.empty() && Empty(),
+          "repeated all-filtered loading succeeds with zero final bindings and no sidecars opened");
+    sameDocument(modelsOnly, modelsBefore, "all-filtered loading preserves the original known records");
+    for (const auto version : {1u, 2u, 3u}) {
+        extension::Document allFiltered;
+        const char* key = version == 1 ? kRecordKey : version == 2 ? cache::kRecordKeyV2 : kRecordKeyV3;
+        extension::Set(allFiltered, key, BuildValue({{0, 0, missing, 2., 5}}, version));
+        Check(Load(scene.app, pmm, allFiltered, error, {0, 0}) && error.empty() && Empty(),
+              "every known record version supports all-filtered missing sidecars without opening them");
+    }
+    Check(!std::filesystem::exists(root / std::filesystem::u8path(missing)),
+          "the skipped fixture sidecar really is absent throughout all filtered loads");
+    auto empty = cache::CaptureSave(scene.app);
+    Check(Install(scene.app, archive, error), "live restoration cannot alter the already frozen empty adaptation snapshot");
+    auto cleared = modelsOnly;
+    const auto clearedPmm = root / L"cleared.pmm";
+    Check(empty(clearedPmm, cleared, error) && !extension::Find(cleared, kRecordKey) &&
+          !extension::Find(cleared, cache::kRecordKeyV2) && !extension::Find(cleared, kRecordKeyV3) && Has(scene.Model0()),
+          "a frozen zero-binding save removes every known mapping without clearing later live entries");
+    Check(recordValue(cleared, "test.adapted.keep") == recordValue(original, "test.adapted.keep") &&
+          recordValue(cleared, "mds.mesh_cache.v99") == recordValue(original, "mds.mesh_cache.v99"),
+          "zero-binding save preserves unrelated and unknown records");
+    auto unknownOnly = original;
+    extension::Erase(unknownOnly, kRecordKey); extension::Erase(unknownOnly, cache::kRecordKeyV2); extension::Erase(unknownOnly, kRecordKeyV3);
+    sameDocument(cleared, unknownOnly, "zero-binding save preserves all remaining unknown records and their order");
+    WriteProjectFile(clearedPmm, cleared); Clear();
+    Check(ReadProjectFile(clearedPmm, reopened, standardSize) && Load(scene.app, clearedPmm, reopened, error) && Empty(),
+          "reopening a zero-binding save cannot resurrect a lower known cache version");
+    sameDocument(project, original, "all adaptation and save snapshots preserve their original source document");
+    unchangedFiles(); Check(ReadFileBytes(oldArchive) == oldBytes && ReadFileBytes(corruptPath) == corruptBytes,
+          "all owned original and corrupt archive files survive adaptation and saves unchanged");
+    frozen = {}; empty = {}; Clear();
+    Trace("adapted model filtering, shared sidecars, atomic refusal and immutable save/reopen mappings");
+}
+
 void SnapshotLifetime(const std::filesystem::path& directory, Scene& scene) {
     namespace cache = mikumikustudio::mesh_bake_cache;
     Clear(); ResetSlots(scene.app); scene.BindModel0();
@@ -1671,6 +1871,7 @@ int wmain(int argc, wchar_t** argv) {
     NativeRange(project, scene);
     TimeScale(project, scene);
     CutoffGenerations(unicode, scene);
+    AdaptedModelFiltering(unicode, scene);
     SnapshotLifetime(unicode, scene);
 
     Clear();

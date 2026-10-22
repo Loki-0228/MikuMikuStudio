@@ -14,6 +14,8 @@
 #if !MMD_ORIGINAL_PROFILE
 #include "native_pose_scope.hpp"
 #endif
+#include <algorithm>
+#include <new>
 #include <set>
 
 namespace mikumikustudio::plugins {
@@ -192,7 +194,8 @@ void SaveSceneIdentity(const MMDApp& app, pmm_extension::Document& document) {
     }
     std::memcpy(bytes.data() + countOffset, &count, sizeof(count)); pmm_extension::Set(document, identityKey, std::move(bytes));
 }
-void LoadSceneIdentity(MMDApp& app, const pmm_extension::Document& document) {
+void LoadSceneIdentity(MMDApp& app, const pmm_extension::Document& document,
+                       const std::vector<int>& adaptedModelSlots) {
     if (build_profile::original) return;
     const auto* record = pmm_extension::Find(document, identityKey); if (!record) return;
     auto result = Boundary([&]() -> MmsResult {
@@ -214,11 +217,17 @@ void LoadSceneIdentity(MMDApp& app, const pmm_extension::Document& document) {
                 auto key = reader.Get<uint64_t>(); MmsId id{reader.Get<uint64_t>(), reader.Get<uint64_t>()};
                 if (Empty(id) || !ids.insert(id).second || !entry.elements.emplace(key, id).second) return MMS_E_ARGUMENT;
             }
-            if (token) restored.push_back({token, std::move(entry)});
+            const bool adapted = kind == MMS_OBJECT_MODEL &&
+                std::find(adaptedModelSlots.begin(), adaptedModelSlots.end(), static_cast<int>(slot)) != adaptedModelSlots.end();
+            if (token) restored.push_back({token, std::move(entry), !adapted});
         }
         if (reader.offset != record->value.size()) return MMS_E_ARGUMENT;
         identities.Replace(restored); previous.clear(); geometryDigests.clear(); ++revision; return MMS_OK;
     });
+    // A transient allocation failure cannot leave a valid old positional
+    // record beside the adapted standard model. Saving that opaque record
+    // would make it applicable again on the next (now matching) reopen.
+    if (result == MMS_E_MEMORY && !adaptedModelSlots.empty()) throw std::bad_alloc();
     if (result) { opaqueIdentity = true; runtime_log::Write("PLUGIN_ABI identity record retained without applying: %d", result); }
 }
 }

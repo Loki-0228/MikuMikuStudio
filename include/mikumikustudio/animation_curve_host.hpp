@@ -2,6 +2,7 @@
 #include "mikumikustudio/build_profile.hpp"
 #include "mikumikustudio/animation_curve_editor.hpp"
 #include "mikumikustudio/pmm_extension.hpp"
+#include "mikumikustudio/pmm_model_adaptation.hpp"
 #include <array>
 #include <cstdint>
 #include <memory>
@@ -108,7 +109,8 @@ public:
 #endif
 };
 void Capture(MMDApp&, pmm_extension::Document&);
-void Load(MMDApp&, const pmm_extension::Document&);
+void Load(MMDApp&, const pmm_extension::Document&,
+          const std::vector<PmmModelAdaptation>& adaptations = {});
 void Open(MMDApp*, bool visible = true);
 // Opens the shared editor on the interpolation page's current camera channel
 // (camera mode) or selected bone (model mode).

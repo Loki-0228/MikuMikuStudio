@@ -1243,7 +1243,8 @@ bool Save(MMDApp& app, const std::filesystem::path& pmm,
 }
 
 bool Load(MMDApp& app, const std::filesystem::path& pmm,
-          const pmm_extension::Document& document, std::string& error) {
+          const pmm_extension::Document& document, std::string& error,
+          const std::vector<int>& adaptedModelSlots) {
     error.clear();
     // The newest record wins while several are present: a version 3 record
     // carries both the cutoff layers and the time scales, a version 2 one the
@@ -1276,7 +1277,12 @@ bool Load(MMDApp& app, const std::filesystem::path& pmm,
     } else if (!ParseRecord(legacyRecord->value, kRecordVersion, entries, error)) {
         return false;
     }
-    if (entries.empty()) return true;
+    if (entries.empty() && adaptedModelSlots.empty()) return true;
+
+    const auto adapted = [&](const ObjectKey& key) {
+        return key.kind == kKindModel &&
+            std::find(adaptedModelSlots.begin(), adaptedModelSlots.end(), key.slot) != adaptedModelSlots.end();
+    };
 
     std::lock_guard<std::mutex> lock(GetStore().mutex);
 
@@ -1288,7 +1294,12 @@ bool Load(MMDApp& app, const std::filesystem::path& pmm,
     };
     std::map<std::string, Sidecar> opened;
     std::map<const void*, EntryHandle> pending;
+    std::size_t eligible = 0;
     for (const auto& entry : entries) {
+        // Adaptation was established by the standard PMM model reconciliation.
+        // A sidecar may contain several objects: skip this binding, not its file.
+        if (adapted(entry.key)) continue;
+        ++eligible;
         auto found = opened.find(entry.relativePath);
         if (found == opened.end()) {
             Sidecar fresh;
@@ -1319,7 +1330,7 @@ bool Load(MMDApp& app, const std::filesystem::path& pmm,
         installed->cutoffLayer = entry.cutoffLayer;
         pending[object] = std::move(installed);
     }
-    if (pending.empty()) {
+    if (pending.empty() && eligible != 0) {
         error = "The project records a mesh cache, but none of its objects is "
                 "currently in the scene";
         return false;
@@ -1330,7 +1341,13 @@ bool Load(MMDApp& app, const std::filesystem::path& pmm,
     StoreMap candidate;
     try {
         candidate = GetStore().objects;
+        bool changed = !pending.empty();
+        for (const int slot : adaptedModelSlots) {
+            if (const void* object = LiveObject(app, kKindModel, slot))
+                changed = candidate.erase(object) != 0 || changed;
+        }
         for (auto& item : pending) candidate[item.first] = std::move(item.second);
+        if (!changed) return true;
     } catch (const std::exception& e) {
         error = std::string("Cannot prepare the mesh cache load: ") + e.what();
         return false;

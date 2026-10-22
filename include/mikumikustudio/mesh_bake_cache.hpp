@@ -263,8 +263,18 @@ bool Save(MMDApp& app, const std::filesystem::path& pmm,
 // sidecar that does not contain a named mesh, or a record whose objects are all
 // absent from the scene leaves the cache unchanged and returns false with a
 // message in `error`.
+// Model slots in adaptedModelSlots no longer have the recorded source layout.
+// The complete record is still validated, but these model entries are skipped
+// before opening their sidecars. Their live objects' previous bindings are
+// removed atomically with the remaining entries' installation. Shared sidecars
+// and accessories with the same slot number are unaffected. Filtering every
+// recorded entry succeeds; repeated adaptation slots are harmless. The input
+// document and persistent sidecars are never modified. CaptureSave records only
+// the resulting live bindings, so a later successful save cannot resurrect the
+// skipped known mappings.
 bool Load(MMDApp& app, const std::filesystem::path& pmm,
-          const pmm_extension::Document& document, std::string& error);
+          const pmm_extension::Document& document, std::string& error,
+          const std::vector<int>& adaptedModelSlots = {});
 
 // ---------------------------------------------------------------------------
 // Frame-rate retime

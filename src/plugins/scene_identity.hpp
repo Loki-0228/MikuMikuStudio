@@ -6,7 +6,13 @@ namespace mikumikustudio::plugins {
 class SceneIdentity {
 public:
     struct Entry { MmsObjectRef object{}; std::map<uint64_t, MmsId> elements; bool present = true, published = true; };
-    struct Restore { const void* token; Entry entry; };
+    struct Restore {
+        const void* token;
+        Entry entry;
+        // An adapted source remains the same scene object. Its old positional
+        // element IDs are retired, rather than attached to unrelated elements.
+        bool restoreElements = true;
+    };
     class Presence {
         friend class SceneIdentity;
         SceneIdentity* owner_ = nullptr;

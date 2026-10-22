@@ -10,6 +10,40 @@ static void SceneChecks() {
     CHECK(!Same(original.id, replacement.id) && original.generation != replacement.generation);
     identities.Replace({{&token, saved}});
     CHECK(Same(identities.Get(&token).object.id, original.id));
+    {
+        SceneIdentity adapted; int changed = 0, unchanged = 0;
+        const auto changedObject = adapted.Get(&changed).object;
+        const auto unchangedObject = adapted.Get(&unchanged).object;
+        const auto changedBone = adapted.Element(&changed, MMS_CHANNEL_BONES, 0);
+        const auto changedVertex = adapted.Element(&changed, MMS_CHANNEL_MESH, 2);
+        const auto unchangedBone = adapted.Element(&unchanged, MMS_CHANNEL_BONES, 0);
+        const auto changedEntry = adapted.Get(&changed), unchangedEntry = adapted.Get(&unchanged);
+        adapted.Replace({{&changed, changedEntry, false}, {&unchanged, unchangedEntry}});
+        CHECK(Same(adapted.Get(&changed).object.id, changedObject.id));
+        CHECK(adapted.Get(&changed).object.generation != changedObject.generation);
+        CHECK(adapted.Get(&changed).elements.empty());
+        CHECK(adapted.Known(changedBone) && adapted.Known(changedVertex));
+        CHECK(!Same(adapted.Element(&changed, MMS_CHANNEL_BONES, 0), changedBone));
+        CHECK(!Same(adapted.Element(&changed, MMS_CHANNEL_MESH, 2), changedVertex));
+        CHECK(Same(adapted.Get(&unchanged).object.id, unchangedObject.id));
+        CHECK(Same(adapted.Element(&unchanged, MMS_CHANNEL_BONES, 0), unchangedBone));
+        const auto settled = adapted.Get(&changed);
+        const auto unchangedIdentity = [&] {
+            const auto& current = adapted.Get(&changed);
+            return Same(current.object, settled.object) &&
+                std::equal(current.elements.begin(), current.elements.end(),
+                    settled.elements.begin(), settled.elements.end(), [](const auto& a, const auto& b) {
+                        return a.first == b.first && Same(a.second, b.second);
+                    });
+        };
+        auto bad = changedEntry;
+        bad.elements.begin()->second = unchangedBone;
+        CHECK(Throws([&] { adapted.Replace({{&changed, bad, false}, {&unchanged, unchangedEntry}}); }));
+        CHECK(unchangedIdentity());
+        bad = changedEntry; bad.elements.begin()->second = {};
+        CHECK(Throws([&] { adapted.Replace({{&changed, bad, false}}); }));
+        CHECK(unchangedIdentity());
+    }
     CHECK(identities.Get(&token).object.generation != original.generation);
     CHECK(Same(identities.Element(&token, MMS_CHANNEL_BONES, 0), boneId));
     CHECK(Throws([&] { identities.Replace({{&token, saved},{&token, saved}}); }));

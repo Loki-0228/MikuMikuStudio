@@ -7,6 +7,7 @@
 #include "native_curve_sample.hpp"
 #include "mikumikustudio/accessory_layout.hpp"
 #include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
 #include "mikumikustudio/runtime_log.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "../plugins/native_curve_commands.hpp"
@@ -957,7 +958,89 @@ void Capture(MMDApp&app,pmm_extension::Document&doc){
     if(preserved.empty())pmm_extension::Erase(doc,preservedCameraRecord);
     else pmm_extension::Set(doc,preservedCameraRecord,EncodePreservedCamera(preserved));
 }
-void Load(MMDApp&app,const pmm_extension::Document&doc){
+namespace {
+using PmmParentRemaps = std::array<const PmmModelAdaptation*, 255>;
+
+PmmParentRemaps ParentRemaps(const std::vector<PmmModelAdaptation>& adaptations) {
+    PmmParentRemaps result{};
+    std::array<bool, 255> seen{};
+    for (const auto& adaptation : adaptations) {
+        if (adaptation.slot < 0 || adaptation.slot >= int(result.size()) || seen[adaptation.slot])
+            throw std::runtime_error("PMM model adaptation slot");
+        seen[adaptation.slot] = true;
+        if (adaptation.remapBones) result[adaptation.slot] = &adaptation;
+    }
+    return result;
+}
+
+double RemappedParentBone(const MMDApp& app, const PmmParentRemaps& remaps,
+                          double model, double bone) noexcept {
+    if (model < 0 || model >= double(remaps.size())) return bone;
+    const auto* remap = remaps[std::size_t(model)];
+    if (!remap) return bone;
+    if (bone < 0 || bone >= double(remap->boneIndices.size())) return 0;
+    const int target = remap->boneIndices[std::size_t(bone)];
+    const auto* object = app.ModelSlot(remap->slot);
+    if (target < 0 || !object || std::uint32_t(target) >= mdl::Mdl(object)->boneCount) return 0;
+    return target;
+}
+
+// A parent-model change can change the mapped bone without a parent-bone key.
+// Sweep both original step tracks once. Never sample a partially remapped copy
+// or apply one model's mapping to the result of another model's mapping.
+void RemapPmmParents(const MMDApp& app, Kind kind, std::vector<Channel>& channels,
+                     const PmmParentRemaps& remaps) {
+    if (kind != Kind::Camera && kind != Kind::Accessory) return;
+    const std::size_t modelChannel = kind == Kind::Camera ? 9 : 10;
+    const std::size_t boneChannel = modelChannel + 1;
+    if (channels.size() <= boneChannel) throw std::runtime_error("PMM parent channels");
+    const auto& models = channels[modelChannel].track;
+    const auto& bones = channels[boneChannel].track;
+    if (!models.discrete || !bones.discrete || models.keys.empty() || bones.keys.empty())
+        throw std::runtime_error("PMM parent step tracks");
+    const bool affected = std::any_of(models.keys.begin(), models.keys.end(), [&](const auto& key) {
+        return key.value >= 0 && key.value < double(remaps.size()) && remaps[std::size_t(key.value)];
+    });
+    if (!affected) return;
+
+    std::vector<ac::Key> mapped;
+    if (models.keys.size() > mapped.max_size() - bones.keys.size())
+        throw std::runtime_error("PMM parent key count");
+    mapped.reserve(models.keys.size() + bones.keys.size());
+    std::size_t m = 0, b = 0;
+    double model = models.keys.front().value, bone = bones.keys.front().value;
+    while (m < models.keys.size() || b < bones.keys.size()) {
+        const auto frame = m == models.keys.size() ? bones.keys[b].frame :
+            b == bones.keys.size() ? models.keys[m].frame :
+            (std::min)(models.keys[m].frame, bones.keys[b].frame);
+        if (m < models.keys.size() && models.keys[m].frame == frame) model = models.keys[m++].value;
+        const bool authoredBone = b < bones.keys.size() && bones.keys[b].frame == frame;
+        ac::Key key;
+        if (authoredBone) { key = bones.keys[b++]; bone = key.value; }
+        const double value = RemappedParentBone(app, remaps, model, bone);
+        if (!authoredBone && !mapped.empty() && mapped.back().value == value) continue;
+        key.frame = frame; key.value = value;
+        if (!authoredBone) {
+            key.interpolation = ac::Interpolation::Step; key.tangent = ac::Tangent::Free;
+            if (b && b < bones.keys.size()) {
+                // Reuse the surrounding interval's valid handle sums. Handles
+                // do not affect a step track, but the curve codec validates them.
+                key.inWeight = bones.keys[b].inWeight;
+                key.outWeight = bones.keys[b - 1].outWeight;
+            } else if (!mapped.empty() && mapped.back().outWeight + key.inWeight > .9999) {
+                // The former terminal out-handle had no interval or bound on
+                // its sum. Only that previously unused handle needs adjustment.
+                mapped.back().outWeight = 1.0 / 3.0;
+            }
+        }
+        mapped.push_back(key);
+    }
+    channels[boneChannel].track.keys.swap(mapped);
+}
+}
+void Load(MMDApp&app,const pmm_extension::Document&doc,
+          const std::vector<PmmModelAdaptation>& adaptations){
+    const auto parentRemaps = ParentRemaps(adaptations);
     Reset(&app);const auto*r=pmm_extension::Find(doc,"org.mikumikustudio.animation_curves.v1");if(!r)return;
     std::vector<ac::NamedTrack> tracks;std::string error;
     if(!ac::Decode(r->value.data(),r->value.size(),tracks,error)){runtime_log::Write("Invalid PMM curves: %s",error.c_str());return;}
@@ -1002,7 +1085,15 @@ void Load(MMDApp&app,const pmm_extension::Document&doc){
                 c.sample=CameraSample;
             }
         }
-        if(valid){CaptureStateIdentity(next,app,k,slot);next.fingerprint=nativeAvailable?Fingerprint(app,k,slot):0;states[{&app,k,slot}]=std::move(next);}
+        if(valid){
+            // Everything remains private until both transformations succeed.
+            // The native success tail remaps its own records afterwards. Give
+            // reconciliation that same expected baseline, while retaining the
+            // old fingerprint so the first post-tail read checks the real pool.
+            RemapPmmParents(app,k,next.channels,parentRemaps);
+            if(nativeAvailable)RemapPmmParents(app,k,next.baseline,parentRemaps);
+            CaptureStateIdentity(next,app,k,slot);next.fingerprint=nativeAvailable?Fingerprint(app,k,slot):0;states[{&app,k,slot}]=std::move(next);
+        }
     }
 }
 

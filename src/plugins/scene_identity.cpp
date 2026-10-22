@@ -73,10 +73,17 @@ void SceneIdentity::Replace(const std::vector<Restore>& objects) {
         auto entry = object.entry; entry.object.generation = generation++; entry.present = entry.published = true;
         for (const auto& value : entry.elements)
             if (Empty(value.second) || !ids.insert(value.second).second) throw std::invalid_argument("duplicate element identity");
+        if (!object.restoreElements) entry.elements.clear();
         if (!replacement.emplace(object.token, std::move(entry)).second) throw std::invalid_argument("duplicate restored object");
     }
     auto known = known_;
-    for (const auto& entry : replacement) known.insert(entry.second.object.id);
+    // Retire positional IDs omitted after adaptation. Ordinary element tables
+    // do not need a second persistent copy in the known-object registry.
+    for (const auto& object : objects) {
+        known.insert(object.entry.object.id);
+        if (!object.restoreElements)
+            for (const auto& element : object.entry.elements) known.insert(element.second);
+    }
     entries_.swap(replacement); known_.swap(known); nextGeneration_ = generation;
 }
 }

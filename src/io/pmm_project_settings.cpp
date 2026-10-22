@@ -114,11 +114,11 @@ void Reset(MMDApp& app) {
     Refresh(app);
 }
 
-void Load(MMDApp& app, int fd) {
+void Load(MMDApp& app, int fd, const std::vector<PmmModelAdaptation>& adaptedModels) {
 #if MMD_ORIGINAL_PROFILE
     // Original MMD stops at the standard body. Do not parse, retain or apply
     // even unknown extension records from a full-profile project.
-    (void)fd;
+    (void)fd; (void)adaptedModels;
     app.PmmProjectSettings() = {};
     app.TransparentMaterialSortPrecision() = kDefaultTransparentSortPrecision;
 #else
@@ -161,18 +161,21 @@ void Load(MMDApp& app, int fd) {
     // Bone scaling rides the same document
     // ("org.mikumikustudio.model.<slot>.boneScale.v1"); it is applied after
     // the document itself, on the models already loaded.
-    extended_names::LoadPmm(app, loaded);
+    std::vector<int> adaptedModelSlots;
+    adaptedModelSlots.reserve(adaptedModels.size());
+    for (const auto& model : adaptedModels) adaptedModelSlots.push_back(model.slot);
+    extended_names::LoadPmm(app, loaded, adaptedModelSlots);
     bone_scale_io::LoadPmm(app, loaded);
-    curve_host::Load(app, loaded);
+    curve_host::Load(app, loaded, adaptedModels);
     // Model morph curves ride the same document
     // ("org.mikumikustudio.model.<slot>.morphCurve.v1"), on the models the
     // standard body already loaded.  The exact curves take over the native
     // linear interpolation from the next frame seek on.
     morph_curve::LoadPmm(app, loaded);
     bone_curve::LoadPmm(app, loaded);
-    plugins::LoadSceneIdentity(app, loaded);
+    plugins::LoadSceneIdentity(app, loaded, adaptedModelSlots);
     std::string meshError;
-    if(!mesh_bake_cache::Load(app,app.EnvFileName(),loaded,meshError)){
+    if(!mesh_bake_cache::Load(app,app.EnvFileName(),loaded,meshError,adaptedModelSlots)){
         runtime_log::Write("Mesh cache load failed: %s",meshError.c_str());
         LegacyUiMessageBoxA(app.MainWindow(),meshError.c_str(),"Mesh cache / PMM",MB_OK|MB_ICONWARNING);
     }

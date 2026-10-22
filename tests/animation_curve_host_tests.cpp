@@ -4,6 +4,7 @@
 #include "mikumikustudio/frame_presentation.hpp"
 #include "mikumikustudio/key_pool.hpp"
 #include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/model.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/viewport_bounds.hpp"
 #include "mikumikustudio/window_dpi_scope.hpp"
@@ -341,6 +342,234 @@ static void CheckLongCameraSpeed() {
     Check(speeds[1]>speeds[0]&&std::abs(speeds[0]-speeds[2])<1e-10,"eased native speed has the expected symmetric peak");
     curve_host::Reset(app.get());app->CameraKeys()=nullptr;
 }
+namespace {
+namespace pmm_parent_checks {
+namespace ac = animation_curve;
+using Channels = std::vector<curve_editor::Channel>;
+constexpr char recordKey[] = "org.mikumikustudio.animation_curves.v1";
+constexpr char intervalKey[] = "org.mikumikustudio.camera_intervals.v1";
+
+struct Fixture {
+    std::unique_ptr<MMDApp> app = std::make_unique<MMDApp>();
+    std::unique_ptr<mdl::ModelRecord> first = std::make_unique<mdl::ModelRecord>();
+    std::unique_ptr<mdl::ModelRecord> second = std::make_unique<mdl::ModelRecord>();
+    mdl::AccessoryRecord accessory{};
+    Fixture() {
+        ::new (static_cast<void*>(&app->state)) MMDAppState{};
+        app->EnglishUI() = 1;
+        first->boneCount = 6; second->boneCount = 5;
+        app->ModelSlot(3) = reinterpret_cast<unsigned char*>(first.get());
+        app->ModelSlot(7) = reinterpret_cast<unsigned char*>(second.get());
+        app->AccessorySlot(0) = &accessory;
+        app->CameraKeys() = mdl::KeyPoolCreate<mdl::CameraKey>(16);
+        app->AccessoryKeys(0) = mdl::KeyPoolCreate<mdl::AccessoryKey>(16);
+        Check(app->CameraKeys() && app->AccessoryKeys(0), "parent remap fixture owns registered native pools");
+        for (unsigned i = 0; i < 3; ++i) {
+            auto& camera = app->CameraKeys()[i]; auto& object = app->AccessoryKeys(0)[i];
+            camera.frame = object.frame = i * 20;
+            camera.previous = object.previous = i ? i - 1 : 0;
+            camera.next = object.next = i < 2 ? i + 1 : 0;
+            camera.parentModel = object.parentModel = -1;
+            camera.fov = 45; camera.distance = -30; camera.eye[0] = float(i * 20);
+            object.scale = object.opacity = 1; object.visible = 1; object.position[0] = float(i * 4);
+            for (unsigned lane = 0; lane < 6; ++lane) {
+                camera.interpolation[0][lane] = 57; camera.interpolation[1][lane] = 0;
+                camera.interpolation[2][lane] = 44; camera.interpolation[3][lane] = 127;
+            }
+        }
+    }
+    ~Fixture() {
+        curve_host::Reset(app.get());
+        mdl::KeyPoolDestroy(app->CameraKeys()); mdl::KeyPoolDestroy(app->AccessoryKeys(0));
+        app->CameraKeys() = nullptr; app->AccessoryKeys(0) = nullptr;
+        app->AccessorySlot(0) = nullptr; app->ModelSlot(3) = app->ModelSlot(7) = nullptr;
+    }
+};
+Channels Read(Fixture& f, curve_host::Kind kind) {
+    Channels channels; std::wstring error;
+    Check(curve_host::Read(*f.app, kind, 0, channels, error), "read real loaded parent-remap authoring");
+    return channels;
+}
+std::vector<std::uint8_t> OtherTracks(const Channels& channels) {
+    std::vector<ac::NamedTrack> tracks;
+    for (const auto& c : channels) if (c.id != "parentModel" && c.id != "parentBone") tracks.push_back({c.id,c.track});
+    std::vector<std::uint8_t> bytes; std::string error;
+    Check(ac::Encode(tracks, bytes, error), "encode all unrelated authored track fields for exact comparison");
+    return bytes;
+}
+ac::Track Step(std::initializer_list<std::pair<int, double>> values) {
+    ac::Track result; result.discrete = true;
+    for (const auto& value : values) {
+        ac::Key key; key.frame = value.first; key.value = value.second;
+        key.interpolation = ac::Interpolation::Step; key.tangent = ac::Tangent::Free;
+        result.keys.push_back(key);
+    }
+    return result;
+}
+pmm_extension::Document Document(Fixture& f) {
+    auto camera = Read(f, curve_host::Kind::Camera); std::wstring error; std::size_t inserted = 0;
+    Check(curve_host::InsertPreservingShape(camera, 0, 10, inserted, error), "prepare a real exact native camera slice alongside parents");
+    Check(curve_host::Write(*f.app, curve_host::Kind::Camera, 0, camera, error), "retain exact camera interval metadata through the normal writer");
+    auto accessory = Read(f, curve_host::Kind::Accessory);
+    Check(curve_host::Write(*f.app, curve_host::Kind::Accessory, 0, accessory, error), "seed accessory authoring through the normal writer");
+    // The standard prefix has fewer/different parent events than the extension.
+    // No native-key writer is called when the extension-only events are added.
+    for (std::size_t i = 0; i < mdl::KeyPoolCapacity(f.app->CameraKeys()); ++i) {
+        auto& key = f.app->CameraKeys()[i]; key.parentModel = key.frame < 20 ? 3 : key.frame < 40 ? 7 : 3;
+        key.parentBone = key.frame < 40 ? 1 : 8;
+    }
+    for (std::size_t i = 0; i < mdl::KeyPoolCapacity(f.app->AccessoryKeys(0)); ++i) {
+        auto& key = f.app->AccessoryKeys(0)[i]; key.parentModel = key.frame < 20 ? 3 : key.frame < 40 ? 7 : 3;
+        key.parentBone = key.frame < 40 ? 1 : 8;
+    }
+    pmm_extension::Document document; curve_host::Capture(*f.app, document);
+    const auto* exact = pmm_extension::Find(document, intervalKey);
+    Check(exact && !exact->value.empty(), "parent-remap fixture includes independently retained exact camera intervals");
+    const auto* record = pmm_extension::Find(document, recordKey); Check(record != nullptr, "capture actual PMM curve record");
+    std::vector<ac::NamedTrack> tracks; std::string reason;
+    Check(ac::Decode(record->value.data(), record->value.size(), tracks, reason), "decode the real source curve record");
+    for (auto& track : tracks) {
+        if (track.id == "0/0/parentModel" || track.id == "4/0/parentModel")
+            track.track = Step({{0,3},{5,7},{12,3},{30,7},{40,9},{45,3},{50,-1}});
+        if (track.id == "0/0/parentBone" || track.id == "4/0/parentBone") {
+            track.track = Step({{0,1},{15,2},{18,3},{25,99}});
+            track.track.keys[0].outWeight = .8; track.track.keys[1].inWeight = .1;
+            // A terminal handle has no adjacent sum bound until the remap must
+            // append a step at a later parent-model event.
+            track.track.keys.back().outWeight = .9999;
+        }
+    }
+    std::vector<std::uint8_t> bytes;
+    Check(ac::Encode(tracks, bytes, reason), "encode non-mirrored parent events and terminal handle boundary");
+    pmm_extension::Set(document, recordKey, std::move(bytes));
+    return document;
+}
+std::vector<PmmModelAdaptation> Adaptations() {
+    return {{3,true,{2,4,-1,99}}, {7,true,{1,3,4}}, {9,false,{0}}};
+}
+struct Pools {
+    std::vector<mdl::CameraKey> camera;
+    std::vector<mdl::AccessoryKey> accessory;
+    explicit Pools(const Fixture& f)
+        : camera(f.app->CameraKeys(), f.app->CameraKeys() + mdl::KeyPoolCapacity(f.app->CameraKeys())),
+          accessory(f.app->AccessoryKeys(0), f.app->AccessoryKeys(0) + mdl::KeyPoolCapacity(f.app->AccessoryKeys(0))) {}
+    void Unchanged(const Fixture& f) const {
+        Check(camera.size() == mdl::KeyPoolCapacity(f.app->CameraKeys()) &&
+            accessory.size() == mdl::KeyPoolCapacity(f.app->AccessoryKeys(0)) &&
+            !std::memcmp(camera.data(), f.app->CameraKeys(), camera.size() * sizeof(camera[0])) &&
+            !std::memcmp(accessory.data(), f.app->AccessoryKeys(0), accessory.size() * sizeof(accessory[0])),
+            "PMM parent adaptation never writes or replaces either native pool");
+    }
+};
+void ExpectedParents(const Channels& channels, bool mapped) {
+    const std::size_t model = channels.size() == 11 ? 9 : 10, bone = model + 1;
+    const std::pair<double,double> samples[] = {{0,4},{4.5,4},{5,3},{11.5,3},{12,4},{14.5,4},
+        {15,0},{18,0},{25,0},{30,0},{39.5,0},{40,99},{44.5,99},{45,0},{49.5,0},{50,99},{80,99}};
+    const auto originalModel = Step({{0,3},{5,7},{12,3},{30,7},{40,9},{45,3},{50,-1}});
+    const auto originalBone = Step({{0,1},{15,2},{18,3},{25,99}});
+    for (const auto& sample : samples) {
+        Check(ac::Evaluate(channels[model].track,sample.first).value == ac::Evaluate(originalModel,sample.first).value,
+            "model-parent track is preserved at keys, between keys and outside its range");
+        Check(ac::Evaluate(channels[bone].track,sample.first).value ==
+            (mapped ? sample.second : ac::Evaluate(originalBone,sample.first).value),
+            "bone-parent step semantics use the original pair, both mappings and native zero fallback");
+    }
+    const auto& keys = channels[bone].track.keys;
+    if (mapped) {
+        const int expectedFrames[] = {0,5,12,15,18,25,40,45,50};
+        Check(keys.size() == sizeof(expectedFrames) / sizeof(expectedFrames[0]), "only value-changing model events add dependent bone steps");
+        for (std::size_t i = 0; i < keys.size(); ++i)
+            Check(keys[i].frame == expectedFrames[i], "parent-step union retains authored keys without redundant model-only events");
+    }
+    std::string error; Check(ac::Validate(channels[bone].track,error), "inserted parent steps retain codec-valid handle bounds");
+}
+void SimulateNativeSuccessTail(Fixture& f) {
+    const auto remap = [](int model, int bone) {
+        // Independent expected final native values for the deliberately sparse
+        // prefix. This does not invoke or mirror the production remap helper.
+        if (model == 3) return bone == 1 ? 4 : 0;
+        if (model == 7) return bone == 1 ? 3 : 0;
+        return bone;
+    };
+    for (std::size_t i = 0; i < mdl::KeyPoolCapacity(f.app->CameraKeys()); ++i) {
+        auto& key = f.app->CameraKeys()[i]; key.parentBone = remap(key.parentModel,key.parentBone);
+    }
+    for (std::size_t i = 0; i < mdl::KeyPoolCapacity(f.app->AccessoryKeys(0)); ++i) {
+        auto& key = f.app->AccessoryKeys(0)[i]; key.parentBone = remap(key.parentModel,key.parentBone);
+    }
+}
+void CheckLoad(bool unavailable) {
+    Fixture f; const auto document = Document(f); const auto adaptations = Adaptations();
+    curve_host::Load(*f.app,document);
+    const auto originalCamera = Read(f,curve_host::Kind::Camera), originalAccessory = Read(f,curve_host::Kind::Accessory);
+    ExpectedParents(originalCamera,false); ExpectedParents(originalAccessory,false);
+    if (unavailable) f.app->CameraKeys()[1].interpolation[0][0] = 255;
+    const Pools untouched(f);
+    curve_host::Load(*f.app,document,adaptations);
+    auto camera = Read(f,curve_host::Kind::Camera), accessory = Read(f,curve_host::Kind::Accessory);
+    ExpectedParents(camera,true); ExpectedParents(accessory,true); untouched.Unchanged(f);
+    Check(OtherTracks(camera) == OtherTracks(originalCamera) && OtherTracks(accessory) == OtherTracks(originalAccessory),
+        "parent remapping preserves all other curve values, interpolation, slopes and weights exactly");
+    pmm_extension::Document captured; curve_host::Capture(*f.app,captured); untouched.Unchanged(f);
+    const auto* oldExact = pmm_extension::Find(document,intervalKey);
+    const auto* newExact = pmm_extension::Find(captured,intervalKey);
+    Check(oldExact && newExact && oldExact->value == newExact->value, "parent adaptation preserves the exact native-camera interval record");
+    const auto* encoded = pmm_extension::Find(captured,recordKey); std::vector<ac::NamedTrack> decoded; std::string reason;
+    Check(encoded && ac::Decode(encoded->value.data(),encoded->value.size(),decoded,reason),
+        "Capture and codec decoding accept parent steps inserted after an unrestricted terminal handle");
+    SimulateNativeSuccessTail(f); const Pools finalNative(f);
+    for (unsigned read = 0; read < 3; ++read) {
+        camera = Read(f,curve_host::Kind::Camera); accessory = Read(f,curve_host::Kind::Accessory);
+        ExpectedParents(camera,true); ExpectedParents(accessory,true); finalNative.Unchanged(f);
+        Check(OtherTracks(camera) == OtherTracks(originalCamera) && OtherTracks(accessory) == OtherTracks(originalAccessory),
+            "the first and repeated native reconciliation do not reinterpret adaptation as an edit");
+    }
+    // This newly saved record belongs to the now adapted standard prefix. A
+    // normal reopen has no adaptation context and must not map a second time.
+    curve_host::Load(*f.app,captured);
+    ExpectedParents(Read(f,curve_host::Kind::Camera),true);
+    ExpectedParents(Read(f,curve_host::Kind::Accessory),true); finalNative.Unchanged(f);
+}
+void CheckAllocationFailure() {
+    Fixture f; const auto document = Document(f); const auto adaptations = Adaptations(); const Pools untouched(f);
+    bool success = false, partialMapped = false; unsigned faults = 0;
+    for (long budget = 0; budget < 2048 && !success; ++budget) {
+        const auto failures = allocationFailures; bool threw = false;
+        failAfter = budget;
+        try { curve_host::Load(*f.app,document,adaptations); }
+        catch (const std::bad_alloc&) { threw = true; }
+        failAfter = -1;
+        const bool failed = threw || allocationFailures != failures;
+        if (failed) ++faults;
+        const bool camera = curve_host::Has(f.app.get(),curve_host::Kind::Camera);
+        const bool accessory = curve_host::Has(f.app.get(),curve_host::Kind::Accessory,0);
+        // Decode may safely decline the record; a later preparation may throw.
+        // Any group already published must always contain transformed parents.
+        if (camera) ExpectedParents(Read(f,curve_host::Kind::Camera),true);
+        if (accessory) ExpectedParents(Read(f,curve_host::Kind::Accessory),true);
+        if (failed && camera && !accessory) partialMapped = true;
+        untouched.Unchanged(f);
+        success = !failed && camera && accessory;
+    }
+    Check(success && faults > 8 && partialMapped,
+        "real Load allocation sweep reaches private preparation and never publishes unmapped parent groups");
+}
+void CheckInvalidContext() {
+    Fixture f; const auto document = Document(f); const Pools untouched(f);
+    curve_host::Load(*f.app,document,Adaptations());
+    for (const auto& invalid : std::vector<std::vector<PmmModelAdaptation>>{
+        {{-1,true,{0}}}, {{255,true,{0}}}, {{3,true,{0}},{3,false,{}}}}) {
+        bool rejected = false;
+        try { curve_host::Load(*f.app,document,invalid); }
+        catch (const std::runtime_error&) { rejected = true; }
+        Check(rejected, "invalid transient adaptation context reaches the PMM runtime-error boundary");
+        ExpectedParents(Read(f,curve_host::Kind::Camera),true);
+        ExpectedParents(Read(f,curve_host::Kind::Accessory),true);
+        untouched.Unchanged(f);
+    }
+}
+}
+}
 int main(){
     std::set_terminate([]() noexcept {
         std::fprintf(stderr,"TERMINATE animation curve host failAfter=%ld failures=%u\n",failAfter,allocationFailures);
@@ -350,6 +579,10 @@ int main(){
         std::fflush(stderr);std::abort();
     });
     const auto stage=[](const char* name){std::fprintf(stderr,"STAGE %s\n",name);std::fflush(stderr);};
+    stage("PMM adapted parent tracks");pmm_parent_checks::CheckLoad(false);
+    stage("PMM adapted parents without native interpolation");pmm_parent_checks::CheckLoad(true);
+    stage("PMM parent adaptation allocation failures");pmm_parent_checks::CheckAllocationFailure();
+    stage("PMM invalid adaptation context");pmm_parent_checks::CheckInvalidContext();
     stage("native camera speed");CheckLongCameraSpeed();
     stage("crossed camera endpoints");
     CheckCrossedCameraEndpoints();

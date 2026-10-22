@@ -1478,6 +1478,15 @@ if (MIKUMIKUSTUDIO_BUILD_UI_TESTS)
         "${MIKUMIKUSTUDIO_GEN_RES}")
     set_target_properties(pmm_project_settings_tests PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+    if(MIKUMIKUSTUDIO_PROFILE STREQUAL "full")
+        add_executable(pmm_model_adaptation_tests EXCLUDE_FROM_ALL
+            tests/pmm_model_adaptation_tests.cpp res/MMD.rc ${MIKUMIKUSTUDIO_GEN_RES})
+        target_link_libraries(pmm_model_adaptation_tests PRIVATE mikumikustudio_core winmm dsound)
+        target_link_options(pmm_model_adaptation_tests PRIVATE "/MANIFEST:NO"
+            "${MIKUMIKUSTUDIO_GEN_RES}" /SUBSYSTEM:CONSOLE,6.01)
+        set_target_properties(pmm_model_adaptation_tests PROPERTIES
+            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+    endif()
     add_executable(camera_follow_tests EXCLUDE_FROM_ALL tests/camera_follow_tests.cpp)
     target_link_libraries(camera_follow_tests PRIVATE mikumikustudio_core winmm dsound)
     set_target_properties(camera_follow_tests PROPERTIES

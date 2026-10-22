@@ -1,6 +1,8 @@
 #pragma once
 #include "mikumikustudio/pmm_extension.hpp"
+#include "mikumikustudio/pmm_model_adaptation.hpp"
 #include "mikumikustudio/skinning_backend.hpp"
+#include <vector>
 
 namespace mikumikustudio {
 class MMDApp;
@@ -22,7 +24,7 @@ struct State {
 Processor ClassifyProcessor(const skinning::Preference&, const std::vector<gpu::Adapter>&);
 skinning::Preference ResolveProcessor(Processor, const std::vector<gpu::Adapter>&);
 void Reset(MMDApp&);
-void Load(MMDApp&, int fd);
+void Load(MMDApp&, int fd, const std::vector<PmmModelAdaptation>& adaptedModels = {});
 pmm_extension::Document Capture(const MMDApp&);
 void ProcessorChanged(MMDApp&);
 void SortingPrecisionChanged(MMDApp&);

@@ -446,6 +446,8 @@ void CrossModelJournal(){
 #include "native_model_physics_preparation_checks.inc"
 #include "native_model_physics_ui_checks.inc"
 #include "native_model_names_persistence_checks.inc"
+#include "native_model_adaptation_names_checks.inc"
+#include "native_model_adaptation_identity_checks.inc"
 #include "native_toon_resolution_checks.inc"
 #include "native_bone_curve_write_checks.inc"
 #include "native_physics_toggle_checks.inc"
@@ -501,6 +503,12 @@ int main(int argc,char** argv){
     }
     if(argc==2&&!std::strcmp(argv[1],"--model-names-persistence-only")) {
         NativeModelNamesPersistenceChecks();std::printf("PASS model names persistence: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--model-adaptation-names-only")) {
+        NativeModelAdaptationNamesChecks();std::printf("PASS model adaptation names: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--model-adaptation-identity-only")) {
+        NativeModelAdaptationIdentityChecks();std::printf("PASS model adaptation identity: %u checks\n",checks);return 0;
     }
     if(argc==2&&!std::strcmp(argv[1],"--physics-membership-only")) {
         PhysicsRetention(); PhysicsExchangeChecks(); PhysicsImportChecks();
@@ -998,6 +1006,8 @@ int main(int argc,char** argv){
     run("NativeModelPhysicsUiChecks",NativeModelPhysicsUiChecks);
     run("ModelPhysicsResourceChecks",ModelPhysicsResourceChecks);
     run("NativeModelNamesPersistenceChecks",NativeModelNamesPersistenceChecks);
+    run("NativeModelAdaptationNamesChecks",NativeModelAdaptationNamesChecks);
+    run("NativeModelAdaptationIdentityChecks",NativeModelAdaptationIdentityChecks);
     run("NativeModelRangeChecks",NativeModelRangeChecks);
     run("NativeObjectCommandChecks",NativeObjectCommandChecks);
     run("NativeAccessorySettingsChecks",NativeAccessorySettingsChecks);

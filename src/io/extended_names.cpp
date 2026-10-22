@@ -4,6 +4,8 @@
 #include "mikumikustudio/text_encoding.hpp"
 #include "mikumikustudio/original_file_encoding.hpp"
 #include "mikumikustudio/owned_text.hpp"
+#include "mikumikustudio/runtime_log.hpp"
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
@@ -167,7 +169,8 @@ void CapturePmm(const MMDApp& app,pmm_extension::Document& doc) {
         pmm_extension::Set(doc,CommentKey(slot),std::move(comments.data));
     }
 }
-void LoadPmm(MMDApp& app,const pmm_extension::Document& doc) {
+void LoadPmm(MMDApp& app,const pmm_extension::Document& doc,
+             const std::vector<int>& adaptedModelSlots) {
     struct Free { void operator()(wchar_t* p) const noexcept { owned_text::Free(p); } };
     struct Replacement { wchar_t** target; std::unique_ptr<wchar_t, Free> value; };
     struct Prepared {
@@ -188,39 +191,51 @@ void LoadPmm(MMDApp& app,const pmm_extension::Document& doc) {
         const auto* comments=pmm_extension::Find(doc,CommentKey(slot));
         if(!entry&&!comments)continue;
         auto& m=*mdl::Mdl(raw); Prepared next;
-        if(entry) {
-            Reader r{entry->value.data(),entry->value.size()};
-            if(r.u32()==1) {
-                std::vector<std::wstring> values;values.push_back(r.text());values.push_back(r.text());
-                if(r.u32()!=m.boneCount)throw std::runtime_error("Unicode bone count differs from model");
-                for(std::uint32_t i=0;i<m.boneCount;++i)for(int l=0;l<2;++l)values.push_back(r.text());
-                if(r.u32()!=m.morphCount)throw std::runtime_error("Unicode morph count differs from model");
-                for(std::uint32_t i=0;i<m.morphCount;++i)for(int l=0;l<2;++l)values.push_back(r.text());
-                const auto count=r.u32(),faces=r.u32();
-                if(count!=mdl::DisplayGroupCount(m)||faces!=mdl::FacialFrameCount(m))throw std::runtime_error("Unicode display groups differ from model");
-                std::vector<std::array<std::wstring,2>> names(count);std::vector<std::uint8_t> flags(count);
-                for(std::uint32_t i=0;i<count;++i){names[i][0]=r.text();names[i][1]=r.text();const auto f=r.u32();if(f>255)throw std::runtime_error("Invalid group state");flags[i]=std::uint8_t(f);}
-                if(r.at!=r.size)throw std::runtime_error("Unexpected Unicode name bytes");
-                if((m.boneCount&&!m.boneTable)||(m.morphCount&&!m.morphs)||(count&&!m.groupNames))
-                    throw std::runtime_error("Missing Unicode model tables");
-                std::size_t at=0;
-                for(int l=0;l<2;++l)next.Add(m.pmxTextBuffers[l],values[at++]);
-                for(std::uint32_t i=0;i<m.boneCount;++i){next.Add(m.boneTable[i].jpText,values[at++]);next.Add(m.boneTable[i].enText,values[at++]);}
-                for(std::uint32_t i=0;i<m.morphCount;++i){next.Add(m.morphs[i].jpText,values[at++]);next.Add(m.morphs[i].enText,values[at++]);}
-                auto* table=static_cast<mdl::DisplayGroup*>(m.groupNames);
-                std::vector<std::pair<const mdl::DisplayGroup*,text_encoding::DisplayGroupTextState>> targets;
-                targets.reserve(count); next.flags.reserve(count);
-                for(std::uint32_t i=0;i<count;++i) {
-                    text_encoding::DisplayGroupTextState state;state.present=true;state.names=std::move(names[i]);
-                    state.legacy={std::string(table[i].name,strnlen_s(table[i].name,sizeof table[i].name)),
-                        std::string(table[i].nameEn,strnlen_s(table[i].nameEn,sizeof table[i].nameEn))};
-                    targets.emplace_back(&table[i],std::move(state));next.flags.emplace_back(&table[i],flags[i]);
+        const bool adapted = std::find(adaptedModelSlots.begin(), adaptedModelSlots.end(), slot) != adaptedModelSlots.end();
+        if(entry && adapted)
+            runtime_log::Write("PMM Unicode names ignored for adapted model slot %d", slot);
+        if(entry && !adapted) {
+            const auto prepareNames = [&] {
+                Reader r{entry->value.data(),entry->value.size()};
+                if(r.u32()==1) {
+                    std::vector<std::wstring> values;values.push_back(r.text());values.push_back(r.text());
+                    if(r.u32()!=m.boneCount) {
+                        runtime_log::Write("PMM Unicode names ignored for changed bone table in slot %d", slot); return;
+                    }
+                    for(std::uint32_t i=0;i<m.boneCount;++i)for(int l=0;l<2;++l)values.push_back(r.text());
+                    if(r.u32()!=m.morphCount) {
+                        runtime_log::Write("PMM Unicode names ignored for changed morph table in slot %d", slot); return;
+                    }
+                    for(std::uint32_t i=0;i<m.morphCount;++i)for(int l=0;l<2;++l)values.push_back(r.text());
+                    const auto count=r.u32(),faces=r.u32();
+                    if(count!=mdl::DisplayGroupCount(m)||faces!=mdl::FacialFrameCount(m)) {
+                        runtime_log::Write("PMM Unicode names ignored for changed display groups in slot %d", slot); return;
+                    }
+                    std::vector<std::array<std::wstring,2>> names(count);std::vector<std::uint8_t> flags(count);
+                    for(std::uint32_t i=0;i<count;++i){names[i][0]=r.text();names[i][1]=r.text();const auto f=r.u32();if(f>255)throw std::runtime_error("Invalid group state");flags[i]=std::uint8_t(f);}
+                    if(r.at!=r.size)throw std::runtime_error("Unexpected Unicode name bytes");
+                    if((m.boneCount&&!m.boneTable)||(m.morphCount&&!m.morphs)||(count&&!m.groupNames))
+                        throw std::runtime_error("Missing Unicode model tables");
+                    std::size_t at=0;
+                    for(int l=0;l<2;++l)next.Add(m.pmxTextBuffers[l],values[at++]);
+                    for(std::uint32_t i=0;i<m.boneCount;++i){next.Add(m.boneTable[i].jpText,values[at++]);next.Add(m.boneTable[i].enText,values[at++]);}
+                    for(std::uint32_t i=0;i<m.morphCount;++i){next.Add(m.morphs[i].jpText,values[at++]);next.Add(m.morphs[i].enText,values[at++]);}
+                    auto* table=static_cast<mdl::DisplayGroup*>(m.groupNames);
+                    std::vector<std::pair<const mdl::DisplayGroup*,text_encoding::DisplayGroupTextState>> targets;
+                    targets.reserve(count); next.flags.reserve(count);
+                    for(std::uint32_t i=0;i<count;++i) {
+                        text_encoding::DisplayGroupTextState state;state.present=true;state.names=std::move(names[i]);
+                        state.legacy={std::string(table[i].name,strnlen_s(table[i].name,sizeof table[i].name)),
+                            std::string(table[i].nameEn,strnlen_s(table[i].nameEn,sizeof table[i].nameEn))};
+                        targets.emplace_back(&table[i],std::move(state));next.flags.emplace_back(&table[i],flags[i]);
+                    }
+                    if(!targets.empty()) {
+                        if(!next.groups.Prepare(m,targets))throw std::runtime_error("Invalid Unicode display group owner");
+                        next.hasGroups=true;
+                    }
                 }
-                if(!targets.empty()) {
-                    if(!next.groups.Prepare(m,targets))throw std::runtime_error("Invalid Unicode display group owner");
-                    next.hasGroups=true;
-                }
-            }
+            };
+            prepareNames();
         }
         if(comments) {
             Reader r{comments->value.data(),comments->value.size()};

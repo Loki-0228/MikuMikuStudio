@@ -1,5 +1,6 @@
 #pragma once
 #include <memory>
+#include <vector>
 #include <mms/scene.h>
 namespace mikumikustudio {
 class MMDApp;
@@ -16,6 +17,7 @@ MmsObjectRef CreateAbsentSceneObject(const void*);
 bool SceneObjectPresent(const void*, MmsId) noexcept;
 void ResetSceneIdentity();
 void SaveSceneIdentity(const MMDApp&, pmm_extension::Document&);
-void LoadSceneIdentity(MMDApp&, const pmm_extension::Document&);
+void LoadSceneIdentity(MMDApp&, const pmm_extension::Document&,
+                       const std::vector<int>& adaptedModelSlots = {});
 }
 }

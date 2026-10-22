@@ -2691,7 +2691,8 @@ static void LoadSceneV2_ConfigBlock(PmmV2LoadContext& ctx, int fd) {
 // sweep, camera parent re-register, 16 config dwords, optional per-model
 // 0x4CCF0 block, _close --------------------------------------------------
 static void LoadSceneV2_PhysicsTracksAndClose(PmmV2LoadContext& ctx, pmm_io::Input& input,
-                                            unsigned char modelCount) {
+                                            unsigned char modelCount,
+                                            const PmmModelLoadWorkspace* workspaces) {
     const int fd = input.Descriptor();
     auto* const s = ctx.s;
     HWND const main = ctx.main;
@@ -2859,7 +2860,33 @@ static void LoadSceneV2_PhysicsTracksAndClose(PmmV2LoadContext& ctx, pmm_io::Inp
             }
         }
     }
+#if MMD_ORIGINAL_PROFILE
     pmm_settings::Load(*s, fd);
+#else
+    std::vector<PmmModelAdaptation> adaptedModels;
+    for (unsigned i = 0; i < modelCount; ++i) {
+        const auto& workspace = workspaces[i];
+        if (workspace.skipped || (workspace.displaysMatch && workspace.morphsMatch && workspace.boneGroupsMatch))
+            continue;
+        if (workspace.modelSlot < 0 || workspace.modelSlot >= kModelSlotCount || !s->ModelSlot(workspace.modelSlot))
+            continue;
+        PmmModelAdaptation adaptation;
+        adaptation.slot = workspace.modelSlot;
+        adaptation.remapBones = !workspace.displaysMatch;
+        if (adaptation.remapBones) {
+            // Copy values while the workspace owns the matching tables. The
+            // extension loader never retains a pointer into this workspace.
+            const auto boneCount = mdl::Mdl(s->ModelSlot(workspace.modelSlot))->boneCount;
+            adaptation.boneIndices.reserve(static_cast<std::size_t>(workspace.displayCount));
+            for (std::int32_t n = 0; n < workspace.displayCount; ++n) {
+                const auto mapped = workspace.boneNameMap[n].mappedIndex;
+                adaptation.boneIndices.push_back(mapped < 0 || static_cast<std::uint32_t>(mapped) >= boneCount ? 0 : mapped);
+            }
+        }
+        adaptedModels.push_back(std::move(adaptation));
+    }
+    pmm_settings::Load(*s, fd, adaptedModels);
+#endif
     input.Close();                                             // 0x458112
 
 }
@@ -3331,7 +3358,7 @@ bool TryLoadSceneV2(MMDApp* app, pmm_io::Input& input, bool& replaced) {  // was
         return false;
     }
     LoadSceneV2_ConfigBlock(ctx, fd);                   // 0x456617..0x45776E
-    LoadSceneV2_PhysicsTracksAndClose(ctx, input, modelCount);  // 0x45777C..0x458112
+    LoadSceneV2_PhysicsTracksAndClose(ctx, input, modelCount, workspaces);  // 0x45777C..0x458112
     LoadSceneV2_SuccessTail(ctx, workspaceOwner, modelCount);    // 0x458120..0x458F53
     native_mesh::ProjectOpened(app, app->EnvFileName());
     mmv4mms::ProjectOpened(app, app->EnvFileName());
