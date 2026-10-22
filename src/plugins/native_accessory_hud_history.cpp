@@ -3,7 +3,9 @@
 #include "native_pose_scope.hpp"
 #include "native_history_commands.hpp"
 #include "native_global_commands.hpp"
+#include "native_accessory_parent_history.hpp"
 #include "native_object_commands.hpp"
+#include "scene_resource_budget.hpp"
 #include "mikumikustudio/accessory_layout.hpp"
 #include "mikumikustudio/autosave.hpp"
 #include "mikumikustudio/bake_ui_lock.hpp"
@@ -38,11 +40,14 @@ bool Ready(MMDApp& app,bool replay=false)noexcept{
 }
 struct Change final:HistoryChange,std::enable_shared_from_this<Change>{
     MMDApp& app;const unsigned slot;mdl::AccessoryRecord* const object;const MmsObjectRef identity;
-    const std::uint64_t pool,binding;const int frame,parentModel,parentBone;
+    const std::uint64_t pool,binding,scene;const int frame,parentModel,parentBone;
     unsigned char* parent=nullptr;MmsObjectRef parentIdentity{};mdl::BoneRecord* bones=nullptr;std::uint32_t boneCount=0;
     const Values before;Values after;HWND owner=nullptr;unsigned mask=0;std::uint64_t generation=1;bool preview=true,applied=false;
+    AccessoryAttachmentHistory attachment;
+    AccessoryAttachmentValue beforeLogical{}, afterLogical{};
     explicit Change(MMDApp& value):app(value),slot(value.SelectedAccessorySlot()),object(value.AccessorySlot(slot)),identity(SceneObjectIdentity(object)),
-        pool(mdl::KeyPoolIdentity(value.AccessoryKeys(slot))),binding(BoundNativePoseGeneration(&value)),frame(value.CurrentFrame()),
+        pool(mdl::KeyPoolIdentity(value.AccessoryKeys(slot))),binding(BoundNativePoseGeneration(&value)),scene(value.SceneGeneration()),
+        frame(value.CurrentFrame()),
         parentModel(object->parentModel),parentBone(object->parentBone),before(Read(*object)),after(before){
         // Pose records borrow the active objects. Import/removal records own
         // their mesh/key resources and restore presence before older edits.
@@ -60,7 +65,7 @@ struct Change final:HistoryChange,std::enable_shared_from_this<Change>{
             mdl::Mdl(parent)->boneTable!=bones||mdl::Mdl(parent)->boneCount!=boneCount))return false;
         return true;
     }
-    bool AttachmentCurrent()const noexcept{return object->parentModel==parentModel&&object->parentBone==parentBone;}
+    bool AttachmentCurrent()const noexcept{return attachment.Matches(applied?afterLogical:beforeLogical);}
     bool InitialIdentityCurrent()const noexcept{return SceneObjectIdentity(object).generation==identity.generation&&
         (!parent||SceneObjectIdentity(parent).generation==parentIdentity.generation);}
     bool CaptureCurrent()const noexcept{const auto capture=GetCapture();return !capture||(preview&&owner&&capture==owner);}
@@ -70,31 +75,52 @@ struct Change final:HistoryChange,std::enable_shared_from_this<Change>{
         // Selection, coordinate and editor changes stop input, but leave our
         // old object's still-owned fields cancellable. Frame/identity/parent
         // changes may have evaluated a new pose and must not be restored into.
-        return SameScene()&&AttachmentCurrent()&&InitialIdentityCurrent()&&app.CurrentFrame()==frame&&BoundNativePoseGeneration(&app)==binding;
+        // A history Reset retires the attachment receipt and native epoch but
+        // does not transfer the physical preview fields still owned by this
+        // gesture, so rollback ownership is proven from the live scene instead.
+        return SameScene()&&app.SceneGeneration()==scene&&InitialIdentityCurrent()&&app.CurrentFrame()==frame&&
+            BoundNativePoseGeneration(&app)==binding&&object->parentModel==parentModel&&object->parentBone==parentBone;
     }
     bool InitialCurrent()const noexcept{return generation!=1||(Ready(app)&&CaptureCurrent()&&SourceCurrent()&&Equal(Read(*object),after));}
     struct Candidate final:PreparedHistoryChange{
         std::shared_ptr<Change> source;const bool forward,initialPreview;const std::uint64_t generation,binding,objectGeneration,parentGeneration;
         const int frame;const Values expected;bool consumed=false;
-        Candidate(std::shared_ptr<Change> value,bool direction):source(std::move(value)),forward(direction),initialPreview(source->preview),
+        const AccessoryAttachmentValue nextLogical;
+        std::uint64_t bytes=0;
+        std::unique_ptr<AccessoryAttachmentHistory::Prepared> coordinated;
+        Candidate(std::shared_ptr<Change> value,bool direction,bool record):source(std::move(value)),forward(direction),initialPreview(source->preview),
             generation(source->generation),binding(BoundNativePoseGeneration(&source->app)),objectGeneration(SceneObjectIdentity(source->object).generation),
-            parentGeneration(source->parent?SceneObjectIdentity(source->parent).generation:0),frame(source->app.CurrentFrame()),expected(Read(*source->object)){}
+            parentGeneration(source->parent?SceneObjectIdentity(source->parent).generation:0),frame(source->app.CurrentFrame()),expected(Read(*source->object)),
+            nextLogical(direction?(initialPreview?(record?AccessoryAttachmentValue{source->parentModel,source->parentBone}:source->beforeLogical):source->afterLogical):source->beforeLogical){}
         bool IsCurrent()const noexcept override{return !consumed&&source->generation==generation&&forward!=source->applied&&source->SameScene()&&
             source->AttachmentCurrent()&&source->InitialCurrent()&&Ready(source->app,generation!=1)&&source->CaptureCurrent()&&
             BoundNativePoseGeneration(&source->app)==binding&&source->app.CurrentFrame()==frame&&SceneObjectIdentity(source->object).generation==objectGeneration&&
-            (!source->parent||SceneObjectIdentity(source->parent).generation==parentGeneration)&&Equal(Read(*source->object),initialPreview?source->after:expected);}
-        void Publish()noexcept override{if(!IsCurrent())std::terminate();Write(*source->object,forward?source->after:source->before,source->mask);
+            (!source->parent||SceneObjectIdentity(source->parent).generation==parentGeneration)&&Equal(Read(*source->object),initialPreview?source->after:expected)&&
+            coordinated&&coordinated->IsCurrent();}
+        bool TargetRetainedBytes(std::uint64_t& out)const noexcept override{
+            out=bytes;return true;}
+        void Publish()noexcept override{if(!IsCurrent())std::terminate();coordinated->Publish();Write(*source->object,forward?source->after:source->before,source->mask);
+            if(initialPreview)source->afterLogical=nextLogical;
             source->preview=false;source->applied=forward;++source->generation;consumed=true;}
     };
-    MmsResult Prepare(bool forward,std::unique_ptr<PreparedHistoryChange>& out)override{
+    MmsResult PrepareWithIntent(bool forward,bool record,std::unique_ptr<PreparedHistoryChange>& out){
         out.reset();return Boundary([&]()->MmsResult{
             if(!SameScene()||!AttachmentCurrent()||!InitialCurrent()||forward==applied)return MMS_E_STALE;
             if(generation==UINT64_MAX)return MMS_E_NOT_READY;
             if(!Ready(app,generation!=1)||!CaptureCurrent())return MMS_E_BUSY;
             if(!Finite(Read(*object)))return MMS_E_ARGUMENT;
-            out=std::make_unique<Candidate>(shared_from_this(),forward);return MMS_OK;
+            auto candidate=std::make_unique<Candidate>(shared_from_this(),forward,record);
+            if(auto r=attachment.Prepare(applied?afterLogical:beforeLogical,{parentModel,parentBone},candidate->nextLogical,candidate->coordinated))return r;
+            candidate->bytes=resource_budget::Collector::Sum(RetainedBytes(),candidate->coordinated->MeasuredBytes());
+            if(!candidate->IsCurrent())return MMS_E_STALE;
+            out=std::move(candidate);return MMS_OK;
         });
     }
+    MmsResult Prepare(bool forward,std::unique_ptr<PreparedHistoryChange>& out)override{
+        auto* history=BoundNativePoseHistory(&app);if(!history)return MMS_E_NOT_READY;
+        return PrepareWithIntent(forward,history->Mode()==SharedHistory::RecordingMode::AllOperations,out);}
+    MmsResult PrepareInitial(SharedHistory& journal,bool record,std::unique_ptr<PreparedHistoryChange>& out)override{
+        if(BoundNativePoseHistory(&app)!=&journal)return MMS_E_ARGUMENT;return PrepareWithIntent(true,record,out);}
     std::uint64_t RetainedBytes()const noexcept override{return sizeof(*this)+4*sizeof(void*);}
     bool RequiresPhysicsReset()const noexcept override{return false;}
 };
@@ -126,6 +152,8 @@ MmsResult BeginAccessoryHudGesture(MMDApp& app,SharedHistory& history,HWND owner
     return Boundary([&]()->MmsResult{
         auto next=std::make_unique<Gesture>();next->app=&app;next->history=&history;next->owner=owner;next->operation=operation;
         next->change=std::make_shared<Change>(app);next->change->owner=owner;
+        if(auto result=next->change->attachment.Begin(app,history,next->change->slot))return result;
+        next->change->beforeLogical=next->change->attachment.Logical();
         if(auto result=history.Revision(next->revision))return result;
         if(auto result=history.PrepareNative("Drag accessory HUD axis",next->change,next->transaction,SharedHistory::NativeIntent::Adjustment))return result;
         gesture=std::move(next);return MMS_OK;

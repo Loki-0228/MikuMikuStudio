@@ -12,6 +12,7 @@
 #if !MMD_ORIGINAL_PROFILE
 #include "../plugins/native_curve_commands.hpp"
 #include "../plugins/native_pose_scope.hpp"
+#include "../plugins/native_accessory_parent_history.hpp"
 #endif
 #include <algorithm>
 #include <cmath>
@@ -911,9 +912,24 @@ bool Write(MMDApp&app,Kind kind,int slot,const std::vector<Channel>&input,std::w
 }
 void Apply(MMDApp*app,Kind kind,double frame,int slot){
     if(!app||!std::isfinite(frame)||states.empty())return;
+#if !MMD_ORIGINAL_PROFILE
+    plugins::AccessoryAttachmentEvaluation attachment(kind==Kind::Accessory?app:nullptr,unsigned(slot));
+    if(!attachment.CanApply())return;
+    if(kind==Kind::Accessory&&plugins::BoundNativePoseHistory(app)){
+        const auto found=states.find({app,kind,slot});
+        if(found!=states.end())for(const auto* channels:{&found->second.channels,&found->second.baseline})
+            for(const auto& channel:*channels)if(channel.sample&&!CanonicalCameraTiming(channel))return;
+    }
+#endif
     State*s=Current(*app,kind,slot);if(!s)return;
+#if !MMD_ORIGINAL_PROFILE
+    if(!attachment.CanApply())return;
+#endif
     double v[12]{};const auto&fields=Fields(kind);
     for(size_t c=0;c<s->channels.size();++c){v[c]=SampleValue(s->channels[c],frame);
+#if !MMD_ORIGINAL_PROFILE
+        if(!attachment.CanApply())return;
+#endif
         if(!std::isfinite(v[c]))return;v[c]=std::clamp(v[c],fields[c].minimum,fields[c].maximum);}
     switch(kind){
     case Kind::Camera:
@@ -929,7 +945,11 @@ void Apply(MMDApp*app,Kind kind,double frame,int slot){
         app->GravityNoise()=int(v[4]);app->GravityNoiseEnabled()=uint8_t(v[5]);break;
     case Kind::Accessory:{auto&a=*app->AccessorySlot(slot);
         for(int i=0;i<3;++i){a.position[i]=float(v[i]);a.rotation[i]=float(v[i+3]*pi/180);}
-        a.scale=float(v[6]);a.opacity=float(v[7]);a.visible=uint8_t(v[8]);a.shadowEnabled=uint8_t(v[9]);a.parentModel=int(v[10]);a.parentBone=int(v[11]);break;}
+        a.scale=float(v[6]);a.opacity=float(v[7]);a.visible=uint8_t(v[8]);a.shadowEnabled=uint8_t(v[9]);a.parentModel=int(v[10]);a.parentBone=int(v[11]);
+#if !MMD_ORIGINAL_PROFILE
+        attachment.Complete({int(v[10]),int(v[11])});
+#endif
+        break;}
     }
 }
 bool Has(MMDApp*app,Kind kind,int slot){return states.find({app,kind,slot})!=states.end();}

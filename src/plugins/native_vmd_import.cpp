@@ -81,6 +81,12 @@ struct VmdMappedChange final:HistoryChange,std::enable_shared_from_this<VmdMappe
         return Boundary([&]()->MmsResult{auto candidate=std::make_unique<Candidate>(shared_from_this());if(auto result=inner->Prepare(forward,candidate->inner))return result;
             if(!candidate->IsCurrent())return MMS_E_STALE;out=std::move(candidate);return MMS_OK;});
     }
+    MmsResult PrepareInitial(SharedHistory& journal,bool record,std::unique_ptr<PreparedHistoryChange>& out)override{
+        out.reset();if(generation==UINT64_MAX)return MMS_E_NOT_READY;if(!published&&!mapping->Current())return MMS_E_STALE;
+        return Boundary([&]()->MmsResult{auto candidate=std::make_unique<Candidate>(shared_from_this());
+            if(auto result=inner->PrepareInitial(journal,record,candidate->inner))return result;
+            if(!candidate->IsCurrent())return MMS_E_STALE;out=std::move(candidate);return MMS_OK;});
+    }
     std::uint64_t RetainedBytes()const noexcept override{const auto own=std::uint64_t(sizeof(*this)+4*sizeof(void*))+mapping->RetainedBytes();const auto bytes=inner->RetainedBytes();return bytes>UINT64_MAX-own?UINT64_MAX:own+bytes;}
 };
 MmsResult PlanVmd(MMDApp& app,const char* ansiPath,const wchar_t* widePath,std::shared_ptr<HistoryChange>& out,std::array<bool,255>* matched){

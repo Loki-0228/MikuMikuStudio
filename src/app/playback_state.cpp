@@ -24,6 +24,7 @@
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/panel_controls.hpp"
 #include "mikumikustudio/force_paste.hpp"
+#include "../plugins/native_accessory_parent_history.hpp"
 
 namespace mikumikustudio {
 
@@ -266,6 +267,9 @@ void InitAccessoryTracks(MMDApp* app, double frame) {
         mdl::AccessoryRecord* accessory = app->AccessorySlot(i);
         if (accessory == nullptr)
             continue;
+#if !MMD_ORIGINAL_PROFILE
+        plugins::AccessoryAttachmentEvaluation attachment(app, unsigned(i));
+#endif
 
         app->AccessoryTrackActive(i) = 1;
         mdl::AccessoryKey* keys = app->AccessoryKeys(i);
@@ -291,6 +295,9 @@ void InitAccessoryTracks(MMDApp* app, double frame) {
             accessory->shadowEnabled = rec.shadowEnabled;
             accessory->parentModel = rec.parentModel;
             accessory->parentBone = rec.parentBone;
+#if !MMD_ORIGINAL_PROFILE
+            attachment.Complete({rec.parentModel, rec.parentBone});
+#endif
             std::memcpy(accessory->rotation, rec.rotation,
                         sizeof accessory->rotation);
             std::memcpy(accessory->position, rec.position,

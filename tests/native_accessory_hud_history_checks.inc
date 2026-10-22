@@ -111,8 +111,13 @@ void AccessoryHudCancellationAndFailure(){
         Check(result==MMS_E_MEMORY&&!plugins::AccessoryHudGestureActive(*f.app),"accessory HUD allocation refusal never exposes a half-started gesture");++failed;}
     Check(ready&&failed>3,"accessory HUD allocation sweep reaches reservation and complete preparation");
     plugins::StorageStore storage;plugins::SharedHistory tiny(storage,{},1,1);
+    {
+    // Budget rejection must use the journal actually bound to this fixture;
+    // a foreign journal is correctly rejected before resource admission.
+    plugins::NativePoseTestBinding tinyBinding(*f.app,tiny);
     Check(plugins::BeginAccessoryHudGesture(*f.app,tiny,nullptr,15)==MMS_E_MEMORY&&AccessoryHudSame(f.accessory,before)&&!plugins::AccessoryHudGestureActive(*f.app),
         "accessory HUD retained budget refuses before the first native preview");
+    }
     Check(plugins::BeginAccessoryHudGesture(*f.app,f.history,nullptr,18)==MMS_OK,"begin accessory HUD before nonfinite sample");AccessoryHudSample(*f.app,18,3);
     f.accessory.rotation[0]=std::numeric_limits<float>::infinity();failAfter=0;const auto accepted=plugins::AcceptAccessoryHudPreview(*f.app);failAfter=-1;
     Check(!accepted&&!plugins::AccessoryHudGestureActive(*f.app)&&AccessoryHudSame(f.accessory,before),"nonfinite accessory sample cancels back to the complete original pose without allocation");
@@ -132,7 +137,7 @@ void AccessoryHudCancellationAndFailure(){
         f.history.RedoCount()==1&&AccessoryHudSame(f.accessory,before),"empty accessory gesture preserves the existing common redo branch");
 }
 void AccessoryHudIdentityAndAdmission(){
-    for(unsigned reason=0;reason<12;++reason){AccessoryHudFixture f;f.accessory.parentModel=1;plugins::NativePoseTestBinding binding(*f.app,f.history);
+    for(unsigned reason=0;reason<13;++reason){AccessoryHudFixture f;f.accessory.parentModel=1;plugins::NativePoseTestBinding binding(*f.app,f.history);
         Check(plugins::BeginAccessoryHudGesture(*f.app,f.history,nullptr,15)==MMS_OK,"begin parented accessory HUD before an evaluation/identity change");AccessoryHudSample(*f.app,15,3);
         auto* originalPool=f.app->AccessoryKeys(7);mdl::AccessoryKey* replacement=nullptr;auto* parent=f.app->ModelSlot(1);auto* bones=f.second.m->boneTable;const auto count=f.second.m->boneCount;
         switch(reason){case 0:++f.app->CurrentFrame();break;case 1:f.accessory.parentBone=1;break;
@@ -144,10 +149,11 @@ void AccessoryHudIdentityAndAdmission(){
         case 10:{const auto id=plugins::SceneObjectIdentity(&f.accessory).id;
             auto gone=plugins::PrepareObjectPresence(&f.accessory,id,false);gone->Publish();
             auto restored=plugins::PrepareObjectPresence(&f.accessory,id,true);restored->Publish();break;}
-        case 11:f.accessory.parentModel=-1;break;}
+        case 11:f.accessory.parentModel=-1;break;
+        case 12:f.app->AdvanceSceneGeneration();break;}
         const auto foreign=f.accessory;
         Check(!plugins::AllowAccessoryHudPreview(*f.app,15)&&!plugins::AccessoryHudGestureActive(*f.app)&&AccessoryHudSame(f.accessory,foreign)&&!f.history.UndoCount(),
-            "changed frame, attachment, stable identity, model/bone table/count, pool or membership never writes over the new accessory evaluation domain");
+            "changed scene, frame, attachment, stable identity, model/bone table/count, pool or membership never writes over the new accessory evaluation domain");
         f.app->AccessorySlot(7)=&f.accessory;f.app->ModelSlot(1)=parent;f.second.m->boneTable=bones;f.second.m->boneCount=count;
         if(replacement){f.app->AccessoryKeys(7)=originalPool;mdl::KeyPoolDestroy(replacement);}
     }

@@ -3,6 +3,7 @@
 #include "native_global_registration.hpp"
 #include "native_global_paste.hpp"
 #include "scene_object_history.hpp"
+#include "native_accessory_parent_history.hpp"
 #include "mikumikustudio/accessory_layout.hpp"
 #include "mikumikustudio/animation_curve_host.hpp"
 #include "mikumikustudio/frame_limits.hpp"
@@ -147,6 +148,9 @@ struct Registration final : HistoryChange, std::enable_shared_from_this<Registra
     int frame; Key beforePose, afterPose;
     std::uint32_t lastBefore, lastAfter;
     bool published = false;
+    AccessoryAttachmentHistory attachment;
+    AccessoryAttachmentValue beforeLogical{}, afterLogical{};
+    bool coordinated = false, initialRecord = true;
     unsigned registeredSlot = 0;
     std::vector<Patch> patches;
     std::vector<Dependency> original;
@@ -180,6 +184,9 @@ struct Registration final : HistoryChange, std::enable_shared_from_this<Registra
         std::unique_ptr<Growth> growth;
         std::unique_ptr<GlobalKeySelection::Candidate> selection;
         std::unique_ptr<curve_host::TrackAuthoring::Target> curves;
+        std::unique_ptr<AccessoryAttachmentHistory::Prepared> attachment;
+        std::uint64_t bytes = 0;
+        mutable resource_budget::Collector resources;
         Candidate(std::shared_ptr<Registration> s, bool f)
             : source(std::move(s)), forward(f), first(!source->published), generation(source->generation), frame(source->app.CurrentFrame()),
               beforePose(Pose(*source->object)), afterPose(beforePose), pool(source->app.AccessoryKeys(source->slot)), capacity(mdl::KeyPoolCapacity(pool)),
@@ -192,12 +199,21 @@ struct Registration final : HistoryChange, std::enable_shared_from_this<Registra
             if (source->app.AccessoryKeys(source->slot) != pool || mdl::KeyPoolCapacity(pool) != capacity ||
                 std::memcmp(pool, current.data(), capacity * sizeof(Key))) return false;
             for (const auto& parent : parents) if (!parent.Current(source->app)) return false;
-            return true;
+            if (source->coordinated) {
+                if (!resources.Result().Complete() || !source->owner->CoversBookkeeping(resources)) return false;
+                for (const auto& parent : source->parents) if (!parent.owner->CoversBookkeeping(resources)) return false;
+                for (const auto& parent : parents) if (!parent.owner->CoversBookkeeping(resources)) return false;
+            }
+            return !source->coordinated || (attachment && attachment->IsCurrent());
+        }
+        bool TargetRetainedBytes(std::uint64_t& out) const noexcept override {
+            if (!source->coordinated) return false; out = bytes; return true;
         }
         void Publish() noexcept override {
             // All participants are checked before the first write. Their
             // publication methods intentionally do not revalidate old pools.
             if (!IsCurrent()) std::terminate();
+            if (source->coordinated) attachment->Publish();
             growth->Publish(); selection->Publish();
             auto* keys = source->app.AccessoryKeys(source->slot);
             for (const auto& patch : source->patches) keys[patch.slot] = forward ? patch.after : patch.before;
@@ -205,6 +221,8 @@ struct Registration final : HistoryChange, std::enable_shared_from_this<Registra
             ApplyPose(*source->object, afterPose);
             source->app.LastRegisteredFrame() = forward ? source->lastAfter : source->lastBefore;
             curves->Publish(source->object);
+            if (first && source->coordinated) source->afterLogical = source->initialRecord ?
+                AccessoryAttachmentValue{source->afterPose.parentModel, source->afterPose.parentBone} : source->beforeLogical;
             source->published = true; ++source->generation; consumed = true;
         }
     };
@@ -251,9 +269,27 @@ struct Registration final : HistoryChange, std::enable_shared_from_this<Registra
             } else candidate->afterPose = NativePose(chain, unsigned(candidate->frame));
             if (!Finite(candidate->afterPose)) return MMS_E_ARGUMENT;
             CaptureParent(app, candidate->afterPose, candidate->parents);
+            if (coordinated) {
+                const auto logical = forward ? (!published ? (initialRecord ? AccessoryAttachmentValue{afterPose.parentModel, afterPose.parentBone} : beforeLogical) : afterLogical) : beforeLogical;
+                if (auto r = attachment.Prepare(forward ? beforeLogical : afterLogical,
+                    {candidate->afterPose.parentModel, candidate->afterPose.parentBone}, logical, candidate->attachment)) return r;
+                if (auto r = owner->MeasureBookkeeping(candidate->resources)) return r;
+                for (const auto& parent : parents) if (auto r = parent.owner->MeasureBookkeeping(candidate->resources)) return r;
+                for (const auto& parent : candidate->parents) if (auto r = parent.owner->MeasureBookkeeping(candidate->resources)) return r;
+                candidate->bytes = resource_budget::Collector::Sum(RetainedBytes(), resource_budget::Collector::Sum(
+                    candidate->attachment->MeasuredBytes(), candidate->resources.Result().totalBytes));
+            }
             if (!candidate->IsCurrent()) return MMS_E_STALE;
             out = std::move(candidate); return MMS_OK;
         });
+    }
+    MmsResult PrepareInitial(SharedHistory& journal, bool record, std::unique_ptr<PreparedHistoryChange>& out) override {
+        if (!published && !coordinated) {
+            if (auto r = attachment.Begin(app, journal, slot)) return r;
+            beforeLogical = attachment.Logical(); coordinated = true;
+        }
+        initialRecord = record;
+        return Prepare(true, out);
     }
     std::uint64_t RetainedBytes() const noexcept override {
         std::uint64_t bytes = sizeof(*this) + 4 * sizeof(void*);
@@ -268,6 +304,9 @@ struct AccessoryPaste final : GlobalPastePart, std::enable_shared_from_this<Acce
     std::shared_ptr<RetainedSceneObject> owner;
     std::uint64_t identity,generation=1;std::size_t capacity;
     int frame;Key initialPose;bool published=false;
+    AccessoryAttachmentHistory attachment;
+    AccessoryAttachmentValue beforeLogical{},afterLogical{};
+    bool coordinated=false,initialRecord=true;
     std::vector<Patch> patches;std::vector<Dependency> original;
     std::vector<Parent> parents;
     std::vector<int> registeredFrames;
@@ -293,6 +332,10 @@ struct AccessoryPaste final : GlobalPastePart, std::enable_shared_from_this<Acce
         std::vector<Key> current,target;std::vector<Parent> parents;
         std::unique_ptr<Growth> growth;
         std::unique_ptr<curve_host::TrackAuthoring::Target> curves;
+        std::unique_ptr<AccessoryAttachmentHistory::Prepared> attachment;
+        AccessoryAttachmentValue nextLogical{};
+        std::uint64_t bytes=0;
+        mutable resource_budget::Collector resources;
         Candidate(std::shared_ptr<AccessoryPaste> s,bool f)
             :source(std::move(s)),forward(f),generation(source->generation),frame(source->app.CurrentFrame()),
              beforePose(Pose(*source->object)),afterPose(beforePose),pool(source->app.AccessoryKeys(source->slot)),
@@ -303,17 +346,25 @@ struct AccessoryPaste final : GlobalPastePart, std::enable_shared_from_this<Acce
                 mdl::KeyPoolCapacity(pool)!=capacity||std::memcmp(pool,current.data(),capacity*sizeof(Key))||
                 !growth||!growth->Current()||!curves||!curves->IsCurrent())return false;
             for(const auto& parent:parents)if(!parent.Current(source->app))return false;
+            if(source->coordinated){
+                if(!attachment||!attachment->IsCurrent()||!resources.Result().Complete()||!source->owner->CoversBookkeeping(resources))return false;
+                for(const auto& parent:source->parents)if(!parent.owner->CoversBookkeeping(resources))return false;
+                for(const auto& parent:parents)if(!parent.owner->CoversBookkeeping(resources))return false;
+            }
             return true;
         }
+        bool TargetRetainedBytes(std::uint64_t& out)const noexcept override {if(!source->coordinated)return false;out=bytes;return true;}
         void PublishOwned()noexcept override {
             // The aggregate validated every part before the first mutation.
             // Never recheck shared selection or another participant here.
+            if(source->coordinated)attachment->Publish();
             growth->Publish();auto* keys=source->app.AccessoryKeys(source->slot);
             for(const auto& patch:source->patches) {
                 const auto selected=keys[patch.slot].selected;
                 keys[patch.slot]=forward?patch.after:patch.before;keys[patch.slot].selected=selected;
             }
             ApplyPose(*source->object,afterPose);curves->Publish(source->object);
+            if(!source->published&&source->coordinated)source->afterLogical=nextLogical;
             source->published=true;++source->generation;owned=true;
         }
         void PublishSelection()noexcept override {
@@ -355,9 +406,24 @@ struct AccessoryPaste final : GlobalPastePart, std::enable_shared_from_this<Acce
             } else candidate->afterPose=NativePose(chain,unsigned(candidate->frame));
             if(!Finite(candidate->beforePose)||!Finite(candidate->afterPose))return MMS_E_ARGUMENT;
             CaptureParent(app,candidate->afterPose,candidate->parents);
+            if(coordinated){
+                candidate->nextLogical=forward?(!published?(initialRecord?AccessoryAttachmentValue{candidate->afterPose.parentModel,candidate->afterPose.parentBone}:beforeLogical):afterLogical):beforeLogical;
+                if(auto r=attachment.Prepare(forward?beforeLogical:afterLogical,
+                    {candidate->afterPose.parentModel,candidate->afterPose.parentBone},candidate->nextLogical,candidate->attachment))return r;
+                if(auto r=owner->MeasureBookkeeping(candidate->resources))return r;
+                for(const auto& parent:parents)if(auto r=parent.owner->MeasureBookkeeping(candidate->resources))return r;
+                for(const auto& parent:candidate->parents)if(auto r=parent.owner->MeasureBookkeeping(candidate->resources))return r;
+                candidate->bytes=resource_budget::Collector::Sum(RetainedBytes(),resource_budget::Collector::Sum(
+                    candidate->attachment->MeasuredBytes(),candidate->resources.Result().totalBytes));
+            }
             if(!candidate->IsCurrent())return MMS_E_STALE;
             out=std::move(candidate);return MMS_OK;
         });
+    }
+    MmsResult PrepareInitial(SharedHistory& journal,bool record,std::unique_ptr<PreparedGlobalPastePart>& out)override{
+        if(!published&&!coordinated){if(auto r=attachment.Begin(app,journal,slot))return r;
+            beforeLogical=attachment.Logical();coordinated=true;}
+        initialRecord=record;return Prepare(true,out);
     }
     std::uint64_t RetainedBytes()const noexcept override {
         std::uint64_t bytes=sizeof(*this)+4*sizeof(void*);

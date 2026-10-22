@@ -4,6 +4,7 @@
 #include "mikumikustudio/display_capacity.hpp"
 #include "mikumikustudio/model_vertex_cache.hpp"
 #include "mikumikustudio/key_pool.hpp"
+#include "model_geometry_cache_load.hpp"
 // ===========================================================================
 // VA 0x004B77E0 - LoadPMX  (original: sub_4B77E0, 32KB)
 // ===========================================================================
@@ -504,6 +505,19 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
     // ---- vertices -----------------------------------------------------------
     reader.Read(&model.vertexCount, sizeof(model.vertexCount));
     const std::int32_t vertCount = static_cast<std::int32_t>(model.vertexCount);
+    const auto vertexStart = reader.Tell();
+    auto geometryCache = model_geometry_cache::Session::Begin(fh,
+        {model_geometry_cache::Format::pmx, model.vertexCount, model.pmxAdditionalUvCount,
+         model.pmxBoneIndexSize, model.pmxVertexIndexSize}, vertexStart,
+        nullptr, MMD_ORIGINAL_PROFILE != 0);
+    model_geometry_cache::HitCopy<mdl::PmxVertex> cachedGeometry(geometryCache, model.vertexCount);
+    bool geometryHit = cachedGeometry.Ready();
+    if (geometryHit && !reader.SeekAbsolute(geometryCache.IndexEnd())) {
+        geometryHit = false;
+        cachedGeometry.Reset();
+        geometryCache.Invalidate();
+        if (reader.Tell() != vertexStart && !reader.SeekAbsolute(vertexStart)) return false;
+    } else if (geometryCache.Hit() && !geometryHit) geometryCache.Invalidate();
     if (vertCount != 0) {
         IDirect3DDevice9* dev = DevOf(sub);
         struct VbSpec { std::uint32_t stride, fvf; };
@@ -565,12 +579,12 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
         }
         mdl::ResourceAs<IDirect3DVertexBuffer9>(mdl::Mdl(m)->vertexBuffer2) = vb2;
 
-        mdl::PmxVertex* verts = static_cast<mdl::PmxVertex*>(
-            operator new(sizeof(*verts) * vertCount));
+        mdl::PmxVertex* verts = geometryHit ? cachedGeometry.ReleaseVertices() :
+            static_cast<mdl::PmxVertex*>(operator new(sizeof(*verts) * vertCount));
         model.pmxVertices = verts;
         // The reference clears only the leading position/normal/UV block;
         // later fields are initialized by their respective PMX readers.
-        std::memset(verts, 0, 40 * vertCount);
+        if (!geometryHit) std::memset(verts, 0, 40 * vertCount);
 
         const std::uint8_t boneIdxSize = model.pmxBoneIndexSize;
         auto readIdx = [&reader](int size) -> std::int32_t {
@@ -582,7 +596,7 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
             }
         };
 
-        for (std::int32_t i = 0; i < vertCount; ++i) {
+        for (std::int32_t i = 0; !geometryHit && i < vertCount; ++i) {
             mdl::PmxVertex& rec = verts[i];
             reader.Read(&rec, 0x20);                          // pos+normal+uv
             const int addl = model.pmxAdditionalUvCount;
@@ -711,9 +725,11 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
             if (model_import::Preparing() && FAILED(unlocked)) return false;
         } else if (model_import::Preparing()) return false;
     }
+    const auto vertexEnd = geometryHit ? geometryCache.VertexEnd() : reader.Tell();
 
     // ---- faces ---------------------------------------------------------------
-    reader.Read(&model.indexCount, sizeof(model.indexCount));
+    if (geometryHit) model.indexCount = geometryCache.IndexCount();
+    else reader.Read(&model.indexCount, sizeof(model.indexCount));
     const std::int32_t faceCount = static_cast<std::int32_t>(model.indexCount);
     if (faceCount != 0) {
         IDirect3DDevice9* dev = DevOf(sub);
@@ -733,10 +749,10 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
             reader.Close();
             return false;
         }
-        auto* indices = static_cast<std::int32_t*>(
-            operator new(sizeof(std::int32_t) * faceCount));
+        auto* indices = geometryHit ? cachedGeometry.ReleaseIndices() :
+            static_cast<std::int32_t*>(operator new(sizeof(std::int32_t) * faceCount));
         mdl::PmxIndices(m) = indices;
-        std::memset(indices, 0, sizeof(std::int32_t) * faceCount);
+        if (!geometryHit) std::memset(indices, 0, sizeof(std::int32_t) * faceCount);
         const auto readVertexIndex = [&]() -> std::int32_t {
             const int idxSize = model.pmxVertexIndexSize;
             std::int32_t value = 0;
@@ -751,7 +767,7 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
             if (SUCCEEDED(ib->Lock(0, 0,
                                    reinterpret_cast<void**>(&gpuIndices), 0))) {
                 for (std::int32_t i = 0; i < faceCount; ++i) {
-                    const std::int32_t value = readVertexIndex();
+                    const std::int32_t value = geometryHit ? indices[i] : readVertexIndex();
                     indices[i] = value;
                     gpuIndices[i] = static_cast<std::uint32_t>(value);
                 }
@@ -763,7 +779,7 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
             if (SUCCEEDED(ib->Lock(0, 0,
                                    reinterpret_cast<void**>(&gpuIndices), 0))) {
                 for (std::int32_t i = 0; i < faceCount; ++i) {
-                    const std::int32_t value = readVertexIndex();
+                    const std::int32_t value = geometryHit ? indices[i] : readVertexIndex();
                     indices[i] = value;
                     gpuIndices[i] = static_cast<std::uint16_t>(value);
                 }
@@ -772,6 +788,9 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
             } else if (model_import::Preparing()) return false;
         }
     }
+    if (!geometryHit) geometryCache.CapturePmx(model.pmxVertices, mdl::PmxIndices(m),
+        model.indexCount, vertexEnd, reader.Tell());
+    geometryCache.FinishGeometry();
 
     // ---- textures (local path table) ----------------------------------------
     // The table is local and released once the materials have composed their
@@ -2050,6 +2069,7 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
 #if !MMD_ORIGINAL_PROFILE
     textRollback.committed = true;
 #endif
+    geometryCache.Commit();
     return true;
 }
 

@@ -67,10 +67,7 @@ bool Ready(MMDApp& app, bool replay = false) noexcept {
 bool Listed(const mdl::BoneRecord& bone) noexcept {
     return bone.type < mdl::BoneType::InertTip || bone.type == mdl::BoneType::FixedAxis;
 }
-struct Attachment {
-    std::int32_t model, bone;
-    bool operator==(const Attachment& other) const noexcept { return model == other.model && bone == other.bone; }
-};
+using Attachment = AccessoryAttachmentValue;
 Attachment Read(const mdl::AccessoryRecord& object) noexcept { return {object.parentModel, object.parentBone}; }
 using RecordBytes = std::array<unsigned char, sizeof(mdl::AccessoryRecord)>;
 RecordBytes Bytes(const mdl::AccessoryRecord& object) noexcept {
@@ -97,12 +94,587 @@ struct Parent {
         return Current(app) ? MMS_OK : MMS_E_STALE;
     }
 };
+struct ReceiptParent {
+    int slot = -1; unsigned char* raw = nullptr; MmsId id{};
+    mdl::BoneRecord* bones = nullptr; std::uint32_t count = 0;
+    bool Current(MMDApp& app) const noexcept {
+        if (slot < 0) return slot == -1;
+        if (slot >= kModelSlotCount || app.ModelSlot(slot) != raw || !SceneObjectPresent(raw, id)) return false;
+        for (unsigned i = 0; i < kModelSlotCount; ++i) if (int(i) != slot && app.ModelSlot(i) == raw) return false;
+        return mdl::Mdl(raw)->boneTable == bones && mdl::Mdl(raw)->boneCount == count;
+    }
+};
+struct AttachmentCell {
+    MMDApp* app = nullptr; mdl::AccessoryRecord* object = nullptr; MmsId id{};
+    std::uint64_t scene = 0, pool = 0, epoch = 0, serial = 0;
+    Attachment logical{}, actual{}; ReceiptParent logicalParent, actualParent;
+    bool initialized = false;
+};
+struct AttachmentDomain final : NativeHistoryDomain {
+    std::uint64_t epoch = 1;
+    std::array<std::shared_ptr<AttachmentCell>, kModelSlotCount> active{};
+    std::array<std::uint64_t, kModelSlotCount> publications{};
+    void Reset() noexcept override {
+        if (epoch != UINT64_MAX) ++epoch; // Exhausted epochs stay fail-closed.
+        for (auto& cell : active) cell.reset();
+        for (auto& serial : publications) if (serial != UINT64_MAX) ++serial;
+    }
+};
+const unsigned char kAttachmentDomain = 0;
+bool SameId(MmsId a, MmsId b) noexcept { return a.lo == b.lo && a.hi == b.hi; }
+}
+
+struct AccessoryAttachmentHistory::Impl {
+    MMDApp& app; SharedHistory& history; const unsigned slot;
+    mdl::AccessoryRecord* const object; const MmsId id;
+    const std::uint64_t scene, pool, epoch, historyEpoch, initialSlotPublication;
+    std::shared_ptr<AttachmentDomain> domain; std::shared_ptr<AttachmentCell> cell;
+    std::shared_ptr<RetainedSceneObject> owner;
+    // A node keeps its logical endpoints alive even when its actual endpoints
+    // were an unrecorded draft on another model. Cells themselves own no model.
+    std::array<Parent, 2> logicalParents;
+    unsigned logicalParentCount = 0;
+    Impl(MMDApp& a, SharedHistory& h, unsigned s, std::shared_ptr<AttachmentDomain> d, std::shared_ptr<AttachmentCell> c)
+        : app(a), history(h), slot(s), object(a.AccessorySlot(s)), id(SceneObjectIdentity(object).id),
+          scene(a.SceneGeneration()), pool(mdl::KeyPoolIdentity(a.AccessoryKeys(s))), epoch(d->epoch), historyEpoch(h.NativeEpoch()),
+          initialSlotPublication(d->publications[s]),
+          domain(std::move(d)), cell(std::move(c)), owner(RetainSceneObject(a, MMS_OBJECT_ACCESSORY, s)) {}
+    bool Source() const noexcept {
+        if ((BoundNativePoseHistory(&app) && BoundNativePoseHistory(&app) != &history) || history.NativeEpoch() != historyEpoch || app.SceneGeneration() != scene ||
+            domain->epoch != epoch || epoch == UINT64_MAX ||
+            (!cell->initialized && domain->publications[slot] != initialSlotPublication) ||
+            app.AccessorySlot(slot) != object || !SceneObjectPresent(object, id) || !owner || !owner->Present() ||
+            !pool || mdl::KeyPoolIdentity(app.AccessoryKeys(slot)) != pool ||
+            !history.CanPublishNativeDomain(&kAttachmentDomain, domain.get())) return false;
+        for (unsigned i = 0; i < kModelSlotCount; ++i) if (i != slot && app.AccessorySlot(i) == object) return false;
+        const auto& active=domain->active[slot];
+        if(cell->initialized&&active&&active!=cell&&active->app==&app&&active->object==object&&SameId(active->id,id)&&
+            active->scene==scene&&active->pool==pool&&active->epoch==epoch)return false;
+        for (unsigned i = 0; i < logicalParentCount; ++i) if (!logicalParents[i].Current(app)) return false;
+        return true;
+    }
+    bool Receipt() const noexcept {
+        return Source() && cell->initialized && cell->app == &app && cell->object == object && SameId(cell->id, id) &&
+            cell->scene == scene && cell->pool == pool && cell->epoch == epoch && Read(*object) == cell->actual &&
+            cell->actualParent.Current(app);
+    }
+    Attachment Logical() const noexcept {
+        // A stale logical parent can no longer authorize a historical restore.
+        // A new exact-source edit may start from its actual current attachment.
+        return Receipt() && cell->logicalParent.Current(app) ? cell->logical : Read(*object);
+    }
+    bool Matches(Attachment expected) const noexcept {
+        if (!Source()) return false;
+        if (!cell->initialized) return Read(*object) == expected;
+        // Check actual receipt first. A bare write which happens to equal an
+        // old historical value is not evidence of a trusted publication.
+        if (!Receipt()) return false;
+        if (cell->logicalParent.Current(app)) return cell->logical == expected;
+        return Read(*object) == expected;
+    }
+};
+struct AccessoryAttachmentHistory::Prepared::State {
+    std::shared_ptr<AccessoryAttachmentHistory::Impl> source;
+    Attachment expected, target, logical, actual;
+    const std::uint64_t cellSerial, slotSerial, objectGeneration, bindingGeneration;
+    std::array<Parent, 4> parents; std::array<std::uint64_t, 4> generations{};
+    unsigned parentCount = 0;
+    ReceiptParent targetParent, logicalParent;
+    Parent retainedLogical;
+    bool addLogical = false;
+    mutable resource_budget::Collector resources;
+    bool consumed = false;
+    State(std::shared_ptr<AccessoryAttachmentHistory::Impl> s, Attachment e, Attachment t, Attachment l)
+        : source(std::move(s)), expected(e), target(t), logical(l), actual(Read(*source->object)),
+          cellSerial(source->cell->serial), slotSerial(source->domain->publications[source->slot]),
+          objectGeneration(SceneObjectIdentity(source->object).generation), bindingGeneration(BoundNativePoseGeneration(&source->app)) {}
+    MmsResult ParentOf(Attachment value, ReceiptParent* output = nullptr) {
+        if (value.model == -1) { if (output) *output = {}; return MMS_OK; }
+        if (value.model < 0 || value.bone < 0) return MMS_E_ARGUMENT;
+        Parent* selected = nullptr;
+        for (unsigned i = 0; i < parentCount; ++i) if (parents[i].slot == value.model) selected = &parents[i];
+        if (!selected) {
+            if (parentCount == parents.size()) return MMS_E_FAILED;
+            if (auto r = parents[parentCount].Capture(source->app, value.model)) return r;
+            generations[parentCount] = parents[parentCount].Generation(); selected = &parents[parentCount++];
+        }
+        if (unsigned(value.bone) >= selected->count) return MMS_E_ARGUMENT;
+        if (output) *output = {selected->slot, selected->raw, selected->identity.id, selected->bones, selected->count};
+        return MMS_OK;
+    }
+    bool Current() const noexcept {
+        const auto& s = *source; MmsObjectRef current{};
+        if (consumed || !s.Matches(expected) || s.cell->serial != cellSerial || s.domain->publications[s.slot] != slotSerial ||
+            cellSerial == UINT64_MAX || slotSerial == UINT64_MAX || !(Read(*s.object) == actual) ||
+            BoundNativePoseGeneration(&s.app) != bindingGeneration ||
+            !FindSceneObjectIdentity(s.object, current) || current.generation != objectGeneration ||
+            !resources.Result().Complete() || !s.owner->CoversBookkeeping(resources)) return false;
+        for (unsigned i = 0; i < parentCount; ++i)
+            if (!parents[i].Current(s.app) || parents[i].Generation() != generations[i] || !parents[i].owner->CoversBookkeeping(resources)) return false;
+        for (unsigned i = 0; i < s.logicalParentCount; ++i)
+            if (!s.logicalParents[i].owner->CoversBookkeeping(resources)) return false;
+        return true;
+    }
+};
+AccessoryAttachmentHistory::Prepared::Prepared(std::unique_ptr<State> state) : state_(std::move(state)) {}
+AccessoryAttachmentHistory::Prepared::~Prepared() = default;
+bool AccessoryAttachmentHistory::Prepared::IsCurrent() const noexcept { return state_ && state_->Current(); }
+std::uint64_t AccessoryAttachmentHistory::Prepared::MeasuredBytes() const noexcept {
+    return state_ ? state_->resources.Result().totalBytes : 0;
+}
+void AccessoryAttachmentHistory::Prepared::Publish() noexcept {
+    if (!IsCurrent()) std::terminate();
+    auto& p = *state_; auto& s = *p.source;
+    s.history.PublishNativeDomain(&kAttachmentDomain, s.domain);
+    if (p.addLogical) s.logicalParents[s.logicalParentCount++] = std::move(p.retainedLogical);
+    s.object->parentModel = p.target.model; s.object->parentBone = p.target.bone;
+    s.cell->logical = p.logical; s.cell->actual = p.target;
+    s.cell->logicalParent = p.logicalParent; s.cell->actualParent = p.targetParent;
+    s.cell->initialized = true; ++s.cell->serial; ++s.domain->publications[s.slot];
+    // Replacing the old metadata cell cannot run an object/COM destructor.
+    // Historical nodes retain their own cells independently of this slot.
+    s.domain->active[s.slot] = s.cell; p.consumed = true;
+}
+MmsResult AccessoryAttachmentHistory::Begin(MMDApp& app, SharedHistory& history, unsigned slot) noexcept {
+    return Boundary([&]() -> MmsResult {
+        if ((BoundNativePoseHistory(&app) && BoundNativePoseHistory(&app) != &history) || slot >= kModelSlotCount || !app.AccessorySlot(slot) ||
+            !mdl::KeyPoolIdentity(app.AccessoryKeys(slot))) return MMS_E_NOT_READY;
+        std::uint64_t revision = 0; if (auto r = history.Revision(revision)) return r;
+        auto base = history.FindNativeDomain(&kAttachmentDomain);
+        if (!base) base = history.PrepareNativeDomain(&kAttachmentDomain, std::make_shared<AttachmentDomain>());
+        auto domain = std::static_pointer_cast<AttachmentDomain>(base);
+        if (!domain) return MMS_E_NOT_READY;
+        if (!history.CanPublishNativeDomain(&kAttachmentDomain, domain.get()) || domain->epoch == UINT64_MAX) return MMS_E_NOT_READY;
+        const auto id = SceneObjectIdentity(app.AccessorySlot(slot)).id;
+        auto cell = domain->active[slot];
+        if (!cell || cell->app != &app || cell->object != app.AccessorySlot(slot) || !SameId(cell->id, id) ||
+            cell->scene != app.SceneGeneration() || cell->pool != mdl::KeyPoolIdentity(app.AccessoryKeys(slot)) || cell->epoch != domain->epoch) {
+            cell = std::make_shared<AttachmentCell>(); cell->app = &app; cell->object = app.AccessorySlot(slot); cell->id = id;
+            cell->scene = app.SceneGeneration(); cell->pool = mdl::KeyPoolIdentity(app.AccessoryKeys(slot)); cell->epoch = domain->epoch;
+        }
+        auto next = std::make_shared<Impl>(app, history, slot, std::move(domain), std::move(cell));
+        if (!next->Source()) return MMS_E_STALE;
+        const auto logical = next->Logical();
+        if (logical.model >= 0) {
+            if (auto r = next->logicalParents[0].Capture(app, logical.model)) return r;
+            if (logical.bone < 0 || unsigned(logical.bone) >= next->logicalParents[0].count) return MMS_E_ARGUMENT;
+            next->logicalParentCount = 1;
+        }
+        impl_ = std::move(next); return MMS_OK;
+    });
+}
+AccessoryAttachmentValue AccessoryAttachmentHistory::Logical() const noexcept { return impl_ && impl_->Source() ? impl_->Logical() : Attachment{}; }
+bool AccessoryAttachmentHistory::Matches(AccessoryAttachmentValue expected) const noexcept { return impl_ && impl_->Matches(expected); }
+MmsResult AccessoryAttachmentHistory::Prepare(AccessoryAttachmentValue expected, AccessoryAttachmentValue target,
+    AccessoryAttachmentValue logical, std::unique_ptr<Prepared>& output) const noexcept {
+    return Boundary([&]() -> MmsResult {
+        if (!impl_ || !impl_->Matches(expected)) return MMS_E_STALE;
+        auto state = std::make_unique<Prepared::State>(impl_, expected, target, logical);
+        if (auto r = state->ParentOf(state->actual)) return r;
+        if (auto r = state->ParentOf(expected)) return r;
+        if (auto r = state->ParentOf(target, &state->targetParent)) return r;
+        if (auto r = state->ParentOf(logical, &state->logicalParent)) return r;
+        bool retained = logical.model == -1;
+        for (unsigned i = 0; i < impl_->logicalParentCount; ++i)
+            if (impl_->logicalParents[i].slot == logical.model) retained = true;
+        if (!retained) {
+            if (impl_->logicalParentCount == impl_->logicalParents.size()) return MMS_E_STALE;
+            if (auto r = state->retainedLogical.Capture(impl_->app, logical.model)) return r;
+            state->addLogical = true;
+        }
+        state->resources.Add(impl_.get(), 1, sizeof(Impl) + 2 * sizeof(void*));
+        state->resources.Add(impl_->domain.get(), 1, sizeof(AttachmentDomain) + 2 * sizeof(void*));
+        state->resources.Add(impl_->cell.get(), 1, sizeof(AttachmentCell) + 2 * sizeof(void*));
+        if (auto r = impl_->owner->MeasureBookkeeping(state->resources)) return r;
+        for (unsigned i = 0; i < state->parentCount; ++i)
+            if (auto r = state->parents[i].owner->MeasureBookkeeping(state->resources)) return r;
+        for (unsigned i = 0; i < impl_->logicalParentCount; ++i)
+            if (auto r = impl_->logicalParents[i].owner->MeasureBookkeeping(state->resources)) return r;
+        if (!state->Current()) return MMS_E_STALE;
+        auto next = std::unique_ptr<Prepared>(new Prepared(std::move(state))); output = std::move(next); return MMS_OK;
+    });
+}
+
+AccessoryAttachmentEvaluation::AccessoryAttachmentEvaluation(MMDApp* app, unsigned slot) noexcept {
+    if (!app || slot >= kModelSlotCount) return;
+    app_ = app; slot_ = slot; scene_ = app->SceneGeneration(); object_ = app->AccessorySlot(slot);
+    pool_ = mdl::KeyPoolIdentity(app->AccessoryKeys(slot)); bindingGeneration_ = BoundNativePoseGeneration(app);
+    history_ = BoundNativePoseHistory(app);
+    if (!history_) return; // Ordinary unbound evaluation keeps its old route.
+    historyEpoch_ = history_->NativeEpoch();
+    if (history_->Revision(revision_) != MMS_OK) { valid_ = false; return; }
+    auto domain = history_->FindNativeDomain(&kAttachmentDomain);
+    MmsObjectRef current{};
+    if (!object_ || !FindSceneObjectIdentity(object_, current)) { valid_ = false; return; }
+    id_ = current.id; objectGeneration_ = current.generation;
+    if (!domain) return;
+    auto& d = *static_cast<AttachmentDomain*>(domain.get());
+    domain_ = domain; domainEpoch_ = d.epoch; slotSerial_ = d.publications[slot];
+    auto* object = app->AccessorySlot(slot); const auto& cell = d.active[slot];
+    if (!cell) return;
+    cell_ = cell.get(); serial_ = cell->serial;
+    // A deleted source can leave metadata in this slot. Observe its identity
+    // and publication serial, but never turn evaluation of a new object/pool
+    // into a publication on that old source's receipt.
+    if (cell->app != app || cell->object != object || !SameId(cell->id, current.id) ||
+        cell->scene != scene_ || cell->pool != pool_ || cell->epoch != d.epoch) return;
+    valid_ = false;
+    if (!object || !cell || !cell->initialized || cell->app != app || cell->object != object ||
+        cell->scene != app->SceneGeneration() || cell->pool != mdl::KeyPoolIdentity(app->AccessoryKeys(slot)) ||
+        cell->epoch != d.epoch || d.epoch == UINT64_MAX || cell->serial == UINT64_MAX || d.publications[slot] == UINT64_MAX ||
+        !(Read(*object) == cell->actual) || !cell->actualParent.Current(*app) ||
+        !FindSceneObjectIdentity(object, current) || !SameId(current.id, cell->id)) return;
+    MmsObjectRef parent{};
+    if (cell->actualParent.slot >= 0 && !FindSceneObjectIdentity(cell->actualParent.raw, parent)) return;
+    for (unsigned i = 0; i < kModelSlotCount; ++i) if (i != slot && app->AccessorySlot(i) == object) return;
+    cell_ = cell.get(); valid_ = true; observerOnly_ = false;
+    serial_ = cell->serial; slotSerial_ = d.publications[slot]; objectGeneration_ = current.generation;
+    bindingGeneration_ = BoundNativePoseGeneration(app); before_ = cell->actual;
+    parentGeneration_ = parent.generation;
+}
+bool AccessoryAttachmentEvaluation::CanApply() const noexcept {
+    if (!valid_) return false;
+    if (!app_) return true;
+    if (BoundNativePoseHistory(app_) != history_ || BoundNativePoseGeneration(app_) != bindingGeneration_) return false;
+    if (!history_) return true;
+    std::uint64_t revision = 0; MmsObjectRef object{};
+    if (history_->NativeEpoch() != historyEpoch_ || history_->Revision(revision) != MMS_OK || revision != revision_ ||
+        app_->SceneGeneration() != scene_ || app_->AccessorySlot(slot_) != object_ ||
+        mdl::KeyPoolIdentity(app_->AccessoryKeys(slot_)) != pool_ ||
+        !FindSceneObjectIdentity(object_, object) || !SameId(object.id, id_) || object.generation != objectGeneration_) return false;
+    const auto current = history_->FindNativeDomain(&kAttachmentDomain);
+    if (current.get() != domain_.get()) return false;
+    if (!current) return true;
+    const auto& d = *static_cast<AttachmentDomain*>(current.get()); const auto& cell = d.active[slot_];
+    if (d.epoch != domainEpoch_ || d.publications[slot_] != slotSerial_ || cell.get() != cell_) return false;
+    if (!cell) return true;
+    if (cell->serial != serial_) return false;
+    if (observerOnly_) return true;
+    if (!(Read(*static_cast<mdl::AccessoryRecord*>(object_)) == before_) ||
+        !(cell->actual == before_) || !cell->actualParent.Current(*app_)) return false;
+    MmsObjectRef parent{};
+    return cell->actualParent.slot < 0 || (FindSceneObjectIdentity(cell->actualParent.raw, parent) && parent.generation == parentGeneration_);
+}
+void AccessoryAttachmentEvaluation::Complete(AccessoryAttachmentValue computed) noexcept {
+    if (!app_ || !valid_ || observerOnly_ || !cell_ || !domain_) return;
+    auto* app = app_; app_ = nullptr; // A token is usable at most once.
+    auto& d = *static_cast<AttachmentDomain*>(domain_.get());
+    const auto& cell = d.active[slot_]; MmsObjectRef current{};
+    if (BoundNativePoseHistory(app) != history_ || BoundNativePoseGeneration(app) != bindingGeneration_ ||
+        history_->NativeEpoch() != historyEpoch_ || app->SceneGeneration() != scene_ || d.epoch != domainEpoch_ ||
+        d.publications[slot_] != slotSerial_ || !cell || cell.get() != cell_ || cell->serial != serial_ ||
+        app->AccessorySlot(slot_) != object_ || mdl::KeyPoolIdentity(app->AccessoryKeys(slot_)) != pool_ ||
+        !FindSceneObjectIdentity(object_, current) || !SameId(current.id, id_) || current.generation != objectGeneration_ ||
+        !(cell->actual == before_) || !cell->actualParent.Current(*app)) return;
+    auto* object = static_cast<mdl::AccessoryRecord*>(object_);
+    for (unsigned i = 0; i < kModelSlotCount; ++i) if (i != slot_ && app->AccessorySlot(i) == object) return;
+    MmsObjectRef previousParent{};
+    if (cell->actualParent.slot >= 0 && (!FindSceneObjectIdentity(cell->actualParent.raw, previousParent) ||
+        previousParent.generation != parentGeneration_)) return;
+    if (!(Read(*object) == computed) || computed == before_) return;
+    ReceiptParent parent;
+    if (computed.model != -1) {
+        if (computed.model < 0 || computed.model >= kModelSlotCount || computed.bone < 0) return;
+        auto* model = app->ModelSlot(computed.model); MmsObjectRef identity{};
+        if (!model || !FindSceneObjectIdentity(model, identity)) return;
+        const auto* record = mdl::Mdl(model);
+        if (!record->boneTable || unsigned(computed.bone) >= record->boneCount) return;
+        parent = {computed.model, model, identity.id, record->boneTable, record->boneCount};
+        if (!parent.Current(*app)) return;
+    }
+    cell->actual = computed; cell->actualParent = parent; ++cell->serial; ++d.publications[slot_];
+}
+
+namespace {
+bool SameParent(const ReceiptParent& a,const ReceiptParent& b) noexcept {
+    return a.slot==b.slot&&a.raw==b.raw&&SameId(a.id,b.id)&&a.bones==b.bones&&a.count==b.count;
+}
+bool SameCellValue(const AttachmentCell& a,const AttachmentCell& b) noexcept {
+    return a.app==b.app&&a.object==b.object&&SameId(a.id,b.id)&&a.scene==b.scene&&a.pool==b.pool&&a.epoch==b.epoch&&
+        a.logical==b.logical&&a.actual==b.actual&&SameParent(a.logicalParent,b.logicalParent)&&
+        SameParent(a.actualParent,b.actualParent)&&a.initialized==b.initialized;
+}
+MmsResult LightParent(MMDApp& app,Attachment value,ReceiptParent& out) noexcept {
+    if(value.model==-1){out={};return MMS_OK;}
+    if(value.model<0||value.model>=kModelSlotCount||value.bone<0)return MMS_E_ARGUMENT;
+    auto* raw=app.ModelSlot(value.model);MmsObjectRef id{};
+    if(!raw||!FindSceneObjectIdentity(raw,id))return MMS_E_STALE;
+    const auto* model=mdl::Mdl(raw);
+    if(!model->boneTable||unsigned(value.bone)>=model->boneCount)return MMS_E_ARGUMENT;
+    out={value.model,raw,id.id,model->boneTable,model->boneCount};
+    return out.Current(app)?MMS_OK:MMS_E_STALE;
+}
+}
+struct AccessoryAttachmentRemoval::Impl {
+    struct RemovedParent {ReceiptParent parent;std::weak_ptr<RetainedSceneObject> owner;};
+    struct Item {
+        unsigned slot=0;mdl::AccessoryRecord* object=nullptr;MmsId id{};std::uint64_t pool=0,initialPublication=0;
+        mdl::AccessoryKey* originalKeys=nullptr;bool presence=false,cleared=false;
+        Attachment initialRaw{},parkedActual{},savedActual{};
+        Attachment presenceLogical{};ReceiptParent presenceLogicalParent;
+        ReceiptParent savedParent;
+        std::weak_ptr<RetainedSceneObject> objectOwner;
+        std::shared_ptr<AttachmentCell> captured,before,after;
+        AttachmentCell capturedValue{},beforeValue{},afterValue{};
+    };
+    MMDApp& app;SharedHistory& history;
+    const std::uint64_t scene,historyEpoch,domainEpoch,binding;
+    std::shared_ptr<AttachmentDomain> domain;
+    std::vector<Item> items;std::vector<RemovedParent> removed;
+    std::uint64_t generation=1,bytes=0,initialRevision=0;
+    Impl(MMDApp& a,SharedHistory& h,std::shared_ptr<AttachmentDomain> d)
+        :app(a),history(h),scene(a.SceneGeneration()),historyEpoch(h.NativeEpoch()),domainEpoch(d->epoch),
+         binding(BoundNativePoseGeneration(&a)),domain(std::move(d)){}
+    bool Source()const noexcept {
+        std::uint64_t revision=0;
+        return BoundNativePoseHistory(&app)==&history&&app.SceneGeneration()==scene&&
+            (generation!=1||(BoundNativePoseGeneration(&app)==binding&&history.Revision(revision)==MMS_OK&&revision==initialRevision))&&
+            history.NativeEpoch()==historyEpoch&&domain->epoch==domainEpoch&&domainEpoch!=UINT64_MAX&&generation!=UINT64_MAX&&
+            history.CanPublishNativeDomain(&kAttachmentDomain,domain.get());
+    }
+    bool Removes(int slot)const noexcept {for(const auto& p:removed)if(p.parent.slot==slot)return true;return false;}
+    static bool Own(const AttachmentCell& cell,const Item& item,const Impl& source)noexcept {
+        return cell.initialized&&cell.app==&source.app&&cell.object==item.object&&SameId(cell.id,item.id)&&
+            cell.scene==source.scene&&cell.pool==item.pool&&cell.epoch==source.domainEpoch;
+    }
+};
+struct AccessoryAttachmentRemoval::Prepared::State {
+    struct ParentStamp {
+        ReceiptParent parent;std::shared_ptr<RetainedSceneObject> owner;std::uint64_t generation=0;bool present=false;
+    };
+    struct Row {
+        std::shared_ptr<AttachmentCell> expected,target;
+        std::shared_ptr<RetainedSceneObject> objectOwner;
+        AttachmentCell expectedValue{},targetValue{};
+        Attachment actual{},targetActual{};ReceiptParent actualParent;
+        std::uint64_t publication=0,sourceSerial=0,targetSerial=0,objectGeneration=0;
+        mdl::AccessoryKey* keys=nullptr;std::size_t capacity=0;bool sourcePresent=true,clear=false;
+    };
+    std::shared_ptr<Impl> source;bool forward,consumed=false;std::uint64_t generation,binding;
+    std::vector<Row> rows;std::vector<ParentStamp> parents;
+    std::uint64_t extraMetadata=0;
+    mutable resource_budget::Collector resources;
+    State(std::shared_ptr<Impl> s,bool f):source(std::move(s)),forward(f),generation(source->generation),binding(BoundNativePoseGeneration(&source->app)){}
+    MmsResult ParentOf(Attachment value,ReceiptParent& out) {
+        if(value.model==-1){out={};return MMS_OK;}
+        if(value.model<0||value.model>=kModelSlotCount||value.bone<0)return MMS_E_ARGUMENT;
+        auto& s=*source;
+        for(const auto& stamp:parents)if(stamp.parent.slot==value.model){
+            if(unsigned(value.bone)>=stamp.parent.count)return MMS_E_ARGUMENT;out=stamp.parent;return MMS_OK;}
+        ParentStamp stamp;auto* raw=s.app.ModelSlot(value.model);MmsObjectRef id{};
+        if(raw&&FindSceneObjectIdentity(raw,id)){
+            if(auto r=LightParent(s.app,value,stamp.parent))return r;
+            stamp.owner=RetainSceneObject(s.app,MMS_OBJECT_MODEL,unsigned(value.model));stamp.generation=id.generation;stamp.present=true;
+        }else{
+            const Impl::RemovedParent* retained=nullptr;
+            for(const auto& p:s.removed)if(p.parent.slot==value.model)retained=&p;
+            if(raw||!retained||(stamp.owner=retained->owner.lock())==nullptr||stamp.owner->Present()||
+                !SameId(stamp.owner->Id(),retained->parent.id))return MMS_E_STALE;
+            stamp.parent=retained->parent;
+            // The outer retained object owns this absent raw pointer. We prove
+            // its exact allocation/table, never make an absent slot present.
+            const auto* model=mdl::Mdl(stamp.parent.raw);
+            if(model->boneTable!=stamp.parent.bones||model->boneCount!=stamp.parent.count||
+                value.bone<0||unsigned(value.bone)>=stamp.parent.count)return MMS_E_STALE;
+        }
+        if(auto r=stamp.owner->MeasureBookkeeping(resources))return r;
+        out=stamp.parent;parents.push_back(std::move(stamp));return MMS_OK;
+    }
+    bool Current()const noexcept {
+        const auto& s=*source;
+        if(consumed||s.generation!=generation||!s.Source()||BoundNativePoseGeneration(&s.app)!=binding||
+            rows.size()!=s.items.size()||!resources.Result().Complete())return false;
+        for(const auto& p:parents){
+            if(!p.owner||!SameId(p.owner->Id(),p.parent.id)||!p.owner->CoversBookkeeping(resources))return false;
+            if(p.present){MmsObjectRef id{};if(!p.owner->Present()||!p.parent.Current(s.app)||
+                !FindSceneObjectIdentity(p.parent.raw,id)||id.generation!=p.generation)return false;}
+            else{if(p.owner->Present()||s.app.ModelSlot(p.parent.slot))return false;
+                const auto* model=mdl::Mdl(p.parent.raw);
+                if(model->boneTable!=p.parent.bones||model->boneCount!=p.parent.count)return false;}
+        }
+        for(std::size_t i=0;i<rows.size();++i){
+            const auto& item=s.items[i];const auto& row=rows[i];MmsObjectRef id{};
+            if(!row.objectOwner||!SameId(row.objectOwner->Id(),item.id)||!row.objectOwner->CoversBookkeeping(resources)||
+                row.objectOwner->Present()!=row.sourcePresent||s.app.AccessoryKeys(item.slot)!=row.keys||mdl::KeyPoolCapacity(row.keys)!=row.capacity||
+                s.domain->publications[item.slot]!=row.publication||row.publication==UINT64_MAX||
+                s.domain->active[item.slot]!=row.expected)return false;
+            if(s.generation==1&&row.publication!=item.initialPublication)return false;
+            if(row.sourcePresent){
+                if(s.app.AccessorySlot(item.slot)!=item.object||!FindSceneObjectIdentity(item.object,id)||!SameId(id.id,item.id)||
+                    id.generation!=row.objectGeneration||mdl::KeyPoolIdentity(row.keys)!=item.pool)return false;
+                for(unsigned slot=0;slot<kModelSlotCount;++slot)if(slot!=item.slot&&s.app.AccessorySlot(slot)==item.object)return false;
+            }else if(s.app.AccessorySlot(item.slot)||mdl::KeyPoolIdentity(item.originalKeys)!=item.pool)return false;
+            if(!(Read(*item.object)==row.actual))return false;
+            if(row.expected&&(row.expected->serial!=row.sourceSerial||!SameCellValue(*row.expected,row.expectedValue)))return false;
+            if(row.target&&(row.target->serial!=row.targetSerial||row.targetSerial==UINT64_MAX))return false;
+        }
+        return true;
+    }
+};
+AccessoryAttachmentRemoval::Prepared::Prepared(std::unique_ptr<State> state):state_(std::move(state)){}
+AccessoryAttachmentRemoval::Prepared::~Prepared()=default;
+bool AccessoryAttachmentRemoval::Prepared::IsCurrent()const noexcept{return state_&&state_->Current();}
+std::uint64_t AccessoryAttachmentRemoval::Prepared::MeasuredBytes()const noexcept {
+    if(!state_)return 0;const auto base=state_->source->bytes;
+    const auto resource=state_->resources.Result().totalBytes;
+    if(state_->extraMetadata>UINT64_MAX-resource)return UINT64_MAX;
+    const auto extra=state_->extraMetadata+resource;
+    return extra>UINT64_MAX-base?UINT64_MAX:base+extra;
+}
+void AccessoryAttachmentRemoval::Prepared::Publish()noexcept {
+    // All binding/presence candidates were checked against the complete old
+    // state. Do not revalidate raw fields after one member has published.
+    auto& p=*state_;auto& s=*p.source;if(p.consumed)std::terminate();
+    s.history.PublishNativeDomain(&kAttachmentDomain,s.domain);
+    for(std::size_t i=0;i<s.items.size();++i){auto& item=s.items[i];const auto& row=p.rows[i];
+        if(row.target){const auto serial=row.target->serial;*row.target=row.targetValue;row.target->serial=serial+1;}
+        s.domain->active[item.slot]=row.target;++s.domain->publications[item.slot];
+        if(!item.presence){item.object->parentModel=row.targetActual.model;item.object->parentBone=row.targetActual.bone;}
+        if(p.forward){
+            // A previously unregistered imported accessory can acquire its
+            // first canonical cell through later real native edits. Capture
+            // that exact trusted cell when removing it, so restoring presence
+            // does not fork away those older native history nodes.
+            if(item.presence&&row.expected&&Impl::Own(*row.expected,item,s)&&row.expected!=item.before){
+                item.before=row.expected;item.beforeValue=row.expectedValue;
+            }
+            item.cleared=row.clear;item.savedActual=row.actual;item.savedParent=row.actualParent;item.parkedActual=row.actual;
+        }
+    }
+    s.bytes+=p.extraMetadata;++s.generation;p.consumed=true;
+}
+MmsResult AccessoryAttachmentRemoval::Capture(MMDApp& app,const std::vector<unsigned>& models,
+    const std::vector<unsigned>& accessories)noexcept {
+    return Boundary([&]()->MmsResult {
+        auto* history=BoundNativePoseHistory(&app);if(!history){impl_.reset();return MMS_OK;}
+        std::uint64_t revision=0;if(auto r=history->Revision(revision))return r;
+        std::array<bool,kModelSlotCount> removedModels{},removedAccessories{};
+        for(auto slot:models){if(slot>=removedModels.size())return MMS_E_ARGUMENT;removedModels[slot]=true;}
+        for(auto slot:accessories){if(slot>=removedAccessories.size())return MMS_E_ARGUMENT;removedAccessories[slot]=true;}
+        auto base=history->FindNativeDomain(&kAttachmentDomain);
+        if(!base)base=history->PrepareNativeDomain(&kAttachmentDomain,std::make_shared<AttachmentDomain>());
+        auto domain=std::static_pointer_cast<AttachmentDomain>(base);if(!domain)return MMS_E_NOT_READY;
+        auto next=std::make_shared<Impl>(app,*history,domain);next->initialRevision=revision;
+        for(auto slot:models){auto* raw=app.ModelSlot(slot);MmsObjectRef id{};
+            if(!raw||!FindSceneObjectIdentity(raw,id))return MMS_E_STALE;
+            const auto* model=mdl::Mdl(raw);auto owner=RetainSceneObject(app,MMS_OBJECT_MODEL,slot);
+            next->removed.push_back({{int(slot),raw,id.id,model->boneTable,model->boneCount},owner});}
+        for(unsigned slot=0;slot<kModelSlotCount;++slot){
+            auto* object=app.AccessorySlot(slot);if(!object||(models.empty()&&!removedAccessories[slot]))continue;
+            Impl::Item item;item.slot=slot;item.object=object;item.id=SceneObjectIdentity(object).id;item.pool=mdl::KeyPoolIdentity(app.AccessoryKeys(slot));
+            item.originalKeys=app.AccessoryKeys(slot);item.initialPublication=domain->publications[slot];item.initialRaw=item.parkedActual=Read(*object);
+            item.presence=removedAccessories[slot];item.captured=domain->active[slot];if(item.captured)item.capturedValue=*item.captured;
+            if(!item.pool)return MMS_E_NOT_READY;
+            const bool own=item.captured&&Impl::Own(*item.captured,item,*next);
+            if(own&&(!(item.captured->actual==item.initialRaw)||!item.captured->actualParent.Current(app)||!item.captured->logicalParent.Current(app)))return MMS_E_STALE;
+            auto owner=RetainSceneObject(app,MMS_OBJECT_ACCESSORY,slot);item.objectOwner=owner;
+            if(item.presence){item.before=item.captured;item.beforeValue=item.capturedValue;
+                item.presenceLogical=own?item.captured->logical:item.initialRaw;
+                if(auto r=LightParent(app,item.presenceLogical,item.presenceLogicalParent))return r;}
+            else{
+                item.before=own?item.captured:std::make_shared<AttachmentCell>();
+                if(!own){auto& cell=*item.before;cell.app=&app;cell.object=object;cell.id=item.id;cell.scene=next->scene;cell.pool=item.pool;cell.epoch=domain->epoch;
+                    cell.logical=cell.actual=item.initialRaw;cell.initialized=true;
+                    if(auto r=LightParent(app,cell.actual,cell.actualParent))return r;cell.logicalParent=cell.actualParent;}
+                item.beforeValue=*item.before;item.after=std::make_shared<AttachmentCell>(*item.before);
+                auto& after=*item.after;after.actual=next->Removes(item.initialRaw.model)?Attachment{-1,0}:item.initialRaw;
+                after.logical=next->Removes(item.beforeValue.logical.model)?after.actual:item.beforeValue.logical;
+                if(auto r=LightParent(app,after.actual,after.actualParent))return r;
+                if(auto r=LightParent(app,after.logical,after.logicalParent))return r;
+                item.afterValue=after;
+            }
+            next->items.push_back(std::move(item));
+        }
+        if(next->items.empty()){impl_.reset();return MMS_OK;}
+        next->bytes=resource_budget::Collector::Sum(sizeof(Impl)+2*sizeof(void*),resource_budget::Collector::Sum(sizeof(AttachmentDomain)+2*sizeof(void*),
+            resource_budget::Collector::Sum(resource_budget::Collector::Product(next->items.capacity(),sizeof(Impl::Item)),
+                resource_budget::Collector::Product(next->removed.capacity(),sizeof(Impl::RemovedParent)+2*sizeof(void*)))));
+        std::vector<const AttachmentCell*> cells;
+        for(const auto& item:next->items)for(const auto* cell:{item.captured.get(),item.before.get(),item.after.get()})
+            if(cell&&std::find(cells.begin(),cells.end(),cell)==cells.end()){cells.push_back(cell);next->bytes=resource_budget::Collector::Sum(next->bytes,sizeof(AttachmentCell)+2*sizeof(void*));}
+        if(!next->Source())return MMS_E_STALE;impl_=std::move(next);return MMS_OK;
+    });
+}
+bool AccessoryAttachmentRemoval::Affects(unsigned slot)const noexcept {
+    if(impl_)for(const auto& item:impl_->items)if(item.slot==slot)return true;return false;
+}
+bool AccessoryAttachmentRemoval::OwnsPair(unsigned slot)const noexcept {
+    if(impl_)for(const auto& item:impl_->items)if(item.slot==slot)return !item.presence;return false;
+}
+MmsResult AccessoryAttachmentRemoval::Prepare(bool forward,std::unique_ptr<Prepared>& out)const noexcept {
+    return Boundary([&]()->MmsResult {
+        if(!impl_){out.reset();return MMS_OK;}if(!impl_->Source())return MMS_E_STALE;
+        auto state=std::make_unique<Prepared::State>(impl_,forward);state->rows.reserve(impl_->items.size());
+        std::vector<const AttachmentCell*> newCells;
+        for(const auto& item:impl_->items){
+            Prepared::State::Row row;row.sourcePresent=!item.presence||forward;
+            if((row.sourcePresent&&impl_->app.AccessorySlot(item.slot)!=item.object)||
+                (!row.sourcePresent&&impl_->app.AccessorySlot(item.slot)))return MMS_E_STALE;
+            row.objectOwner=row.sourcePresent?RetainSceneObject(impl_->app,MMS_OBJECT_ACCESSORY,item.slot):item.objectOwner.lock();
+            if(!row.objectOwner||!SameId(row.objectOwner->Id(),item.id)||row.objectOwner->Present()!=row.sourcePresent)return MMS_E_STALE;
+            row.keys=impl_->app.AccessoryKeys(item.slot);row.capacity=mdl::KeyPoolCapacity(row.keys);
+            row.expected=forward?(impl_->generation==1?item.captured:item.before):item.after;
+            if(item.presence&&forward&&impl_->generation!=1){
+                const auto& active=impl_->domain->active[item.slot];
+                if(active&&Impl::Own(*active,item,*impl_)&&active->logical==item.presenceLogical&&
+                    SameParent(active->logicalParent,item.presenceLogicalParent))row.expected=active;
+            }
+            row.target=forward?item.after:item.before;row.publication=impl_->domain->publications[item.slot];
+            if(row.expected){row.expectedValue=*row.expected;row.sourceSerial=row.expected->serial;}
+            if(item.presence&&forward&&row.expected&&Impl::Own(*row.expected,item,*impl_)&&row.expected!=item.before){
+                bool retained=false;for(const auto& known:impl_->items)if(row.expected==known.captured||row.expected==known.before||row.expected==known.after)retained=true;
+                if(!retained&&std::find(newCells.begin(),newCells.end(),row.expected.get())==newCells.end()){
+                    newCells.push_back(row.expected.get());state->extraMetadata=resource_budget::Collector::Sum(state->extraMetadata,sizeof(AttachmentCell)+2*sizeof(void*));
+                }
+            }
+            if(row.target)row.targetSerial=row.target->serial;
+            MmsObjectRef id{};if(row.sourcePresent){if(!FindSceneObjectIdentity(item.object,id))return MMS_E_STALE;row.objectGeneration=id.generation;}
+            row.actual=Read(*item.object);
+            const auto& logicalSource=forward?item.beforeValue:item.afterValue;
+            const bool own=row.expected&&Impl::Own(*row.expected,item,*impl_);
+            if(own){
+                const auto logical=item.presence&&forward?item.presenceLogical:logicalSource.logical;
+                const auto logicalParent=item.presence&&forward?item.presenceLogicalParent:logicalSource.logicalParent;
+                if(!(row.expected->logical==logical)||!SameParent(row.expected->logicalParent,logicalParent)||
+                    !(row.expected->actual==row.actual))return MMS_E_STALE;
+                if(auto r=state->ParentOf(row.actual,row.actualParent))return r;
+                if(!SameParent(row.actualParent,row.expected->actualParent))return MMS_E_STALE;
+                ReceiptParent logicalProof;if(auto r=state->ParentOf(row.expected->logical,logicalProof))return r;
+                if(!SameParent(logicalProof,row.expected->logicalParent))return MMS_E_STALE;
+            }else{
+                const auto expectedRaw=item.presence&&!forward?item.parkedActual:item.initialRaw;
+                if(!(row.actual==expectedRaw))return MMS_E_STALE;
+                if(row.expected&&!SameCellValue(*row.expected,item.capturedValue))return MMS_E_STALE;
+                if(auto r=state->ParentOf(row.actual,row.actualParent))return r;
+            }
+            if(auto r=row.objectOwner->MeasureBookkeeping(state->resources))return r;
+            row.clear=!item.presence&&forward&&impl_->Removes(row.actual.model);
+            row.targetActual=item.presence?row.actual:(forward?(row.clear?Attachment{-1,0}:row.actual):(item.cleared?item.savedActual:row.actual));
+            if(row.target){
+                row.targetValue=forward?item.afterValue:item.beforeValue;
+                if(Impl::Own(row.targetValue,item,*impl_)){
+                    row.targetValue.actual=row.targetActual;
+                    if(auto r=state->ParentOf(row.targetActual,row.targetValue.actualParent))return r;
+                    if(auto r=state->ParentOf(row.targetValue.logical,row.targetValue.logicalParent))return r;
+                }
+            }
+            state->rows.push_back(std::move(row));
+        }
+        resource_budget::Collector::Sum(impl_->bytes,state->extraMetadata);
+        if(!state->Current())return MMS_E_STALE;out=std::unique_ptr<Prepared>(new Prepared(std::move(state)));return MMS_OK;
+    });
+}
+std::uint64_t AccessoryAttachmentRemoval::RetainedBytes()const noexcept{return impl_?impl_->bytes:0;}
+
+namespace {
 struct Change final : HistoryChange, std::enable_shared_from_this<Change> {
     MMDApp& app; SharedHistory* const history;
     const unsigned slot; mdl::AccessoryRecord* const object;
     const std::uint64_t scene, pool, binding, initialObject;
     const int frame; const HWND capture;
     const Attachment before; Attachment after;
+    AccessoryAttachmentHistory attachment;
+    Attachment beforeLogical{}, afterLogical{};
     const RecordBytes initialBytes;
     std::shared_ptr<RetainedSceneObject> owner; MmsObjectRef identity{};
     std::array<Parent, 2> parents; std::array<std::uint64_t, 2> initialParents{};
@@ -131,7 +703,7 @@ struct Change final : HistoryChange, std::enable_shared_from_this<Change> {
     bool SourcesCurrent() const noexcept {
         if (BoundNativePoseHistory(&app) != history || app.SceneGeneration() != scene || !pool ||
             app.AccessorySlot(slot) != object || !owner || !owner->Present() || !SceneObjectPresent(object, identity.id) ||
-            mdl::KeyPoolIdentity(app.AccessoryKeys(slot)) != pool || !(Read(*object) == (applied ? after : before))) return false;
+            mdl::KeyPoolIdentity(app.AccessoryKeys(slot)) != pool || !attachment.Matches(applied ? afterLogical : beforeLogical)) return false;
         for (unsigned i = 0; i < kModelSlotCount; ++i) if (i != slot && app.AccessorySlot(i) == object) return false;
         for (unsigned i = 0; i < parentCount; ++i) if (!parents[i].Current(app)) return false;
         if (boneOnly) {
@@ -153,11 +725,14 @@ struct Change final : HistoryChange, std::enable_shared_from_this<Change> {
         std::shared_ptr<Change> change; const bool forward;
         const std::uint64_t serial, binding, object; const int frame; const HWND capture;
         const RecordBytes expected; std::array<std::uint64_t, 2> parents{};
+        const Attachment nextLogical;
+        std::unique_ptr<AccessoryAttachmentHistory::Prepared> coordinated;
         std::uint64_t revision = 0, bytes = 0; mutable resource_budget::Collector resources;
         bool consumed = false;
-        Candidate(std::shared_ptr<Change> c, bool direction)
+        Candidate(std::shared_ptr<Change> c, bool direction, bool record)
             : change(std::move(c)), forward(direction), serial(change->serial), binding(BoundNativePoseGeneration(&change->app)),
-              object(change->Generation()), frame(change->app.CurrentFrame()), capture(GetCapture()), expected(Bytes(*change->object)) {
+              object(change->Generation()), frame(change->app.CurrentFrame()), capture(GetCapture()), expected(Bytes(*change->object)),
+              nextLogical(direction ? (!change->published ? (record ? change->after : change->beforeLogical) : change->afterLogical) : change->beforeLogical) {
             for (unsigned i = 0; i < change->parentCount; ++i) parents[i] = change->parents[i].Generation();
         }
         bool IsCurrent() const noexcept override {
@@ -166,7 +741,7 @@ struct Change final : HistoryChange, std::enable_shared_from_this<Change> {
                 !Ready(c.app, true) || binding != BoundNativePoseGeneration(&c.app) || object != c.Generation() ||
                 frame != c.app.CurrentFrame() || capture != GetCapture() || expected != Bytes(*c.object) ||
                 c.history->Revision(now) != MMS_OK || now != revision || !resources.Result().Complete() ||
-                !c.owner->CoversBookkeeping(resources)) return false;
+                !c.owner->CoversBookkeeping(resources) || !coordinated || !coordinated->IsCurrent()) return false;
             for (unsigned i = 0; i < c.parentCount; ++i)
                 if (parents[i] != c.parents[i].Generation() || !c.parents[i].owner->CoversBookkeeping(resources)) return false;
             return true;
@@ -174,26 +749,37 @@ struct Change final : HistoryChange, std::enable_shared_from_this<Change> {
         bool TargetRetainedBytes(std::uint64_t& out) const noexcept override { out = bytes; return true; }
         void Publish() noexcept override {
             if (!IsCurrent()) std::terminate();
-            auto& c = *change; const auto& target = forward ? c.after : c.before;
-            c.object->parentModel = target.model; c.object->parentBone = target.bone;
+            auto& c = *change;
+            coordinated->Publish();
+            if (!c.published) c.afterLogical = nextLogical;
             c.applied = forward; c.published = true; ++c.serial; consumed = true;
         }
     };
-    MmsResult Prepare(bool forward, std::unique_ptr<PreparedHistoryChange>& out) override {
+    MmsResult PrepareWithIntent(bool forward, bool record, std::unique_ptr<PreparedHistoryChange>& out) {
         out.reset(); return Boundary([&]() -> MmsResult {
             if (!SourcesCurrent() || !InitialCurrent() || forward == applied) return MMS_E_STALE;
             if (!Ready(app, true)) return MMS_E_BUSY;
             if (serial == UINT64_MAX) return MMS_E_NOT_READY;
-            auto candidate = std::make_unique<Candidate>(shared_from_this(), forward);
+            auto candidate = std::make_unique<Candidate>(shared_from_this(), forward, record);
+            if (auto r = attachment.Prepare(applied ? afterLogical : beforeLogical, forward ? after : before,
+                                           candidate->nextLogical, candidate->coordinated)) return r;
             if (auto r = history->Revision(candidate->revision)) return r;
             if (auto r = owner->MeasureBookkeeping(candidate->resources)) return r;
             for (unsigned i = 0; i < parentCount; ++i)
                 if (auto r = parents[i].owner->MeasureBookkeeping(candidate->resources)) return r;
             if (!candidate->resources.Result().Complete()) return MMS_E_NOT_READY;
-            candidate->bytes = resource_budget::Collector::Sum(RetainedBytes(), candidate->resources.Result().totalBytes);
+            candidate->bytes = resource_budget::Collector::Sum(RetainedBytes(), resource_budget::Collector::Sum(
+                candidate->resources.Result().totalBytes, candidate->coordinated->MeasuredBytes()));
             if (!candidate->IsCurrent()) return MMS_E_STALE;
             out = std::move(candidate); return MMS_OK;
         });
+    }
+    MmsResult Prepare(bool forward, std::unique_ptr<PreparedHistoryChange>& out) override {
+        return PrepareWithIntent(forward, history->Mode() == SharedHistory::RecordingMode::AllOperations, out);
+    }
+    MmsResult PrepareInitial(SharedHistory& journal, bool record, std::unique_ptr<PreparedHistoryChange>& out) override {
+        if (&journal != history) return MMS_E_ARGUMENT;
+        return PrepareWithIntent(true, record, out);
     }
     std::uint64_t RetainedBytes() const noexcept override { return sizeof(*this) + 4 * sizeof(void*); }
     bool RequiresPhysicsReset() const noexcept override { return false; }
@@ -206,6 +792,8 @@ MmsResult MakeChange(MMDApp& app, bool model, int value, std::shared_ptr<Change>
     const auto slot = unsigned(app.SelectedAccessorySlot());
     if (slot >= kModelSlotCount || !app.AccessorySlot(slot) || !mdl::KeyPoolIdentity(app.AccessoryKeys(slot))) return MMS_E_NOT_READY;
     auto change = std::make_shared<Change>(app);
+    if (auto r = change->attachment.Begin(app, *history, slot)) return r;
+    change->beforeLogical = change->attachment.Logical();
     change->boneOnly = !model;
     if (auto r = history->Revision(change->initialRevision)) return r;
     if (auto r = change->AddParent(change->before)) return r;

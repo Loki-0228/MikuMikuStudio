@@ -1,4 +1,5 @@
 #include "native_curve_write.hpp"
+#include "native_accessory_parent_history.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "scene_object_history.hpp"
 #include "mikumikustudio/accessory_layout.hpp"
@@ -246,7 +247,11 @@ template<class K>struct WriteChange final:HistoryChange,std::enable_shared_from_
             if(grown){mdl::KeyPoolCommitGrowth(Pool<K>(source->app,source->slot),grown);grown=nullptr;}
             auto* keys=Pool<K>(source->app,source->slot);
             for(const auto& patch:source->patches)keys[patch.slot]=target[patch.slot];
-            curves->Publish(source->owner?static_cast<void*>(source->object):keys);WritePose<K>(source->app,source->slot,afterPose);
+            curves->Publish(source->owner?static_cast<void*>(source->object):keys);
+            if constexpr(std::is_same_v<K,mdl::AccessoryKey>){
+                AccessoryAttachmentEvaluation attachment(&source->app,source->slot);
+                WritePose<K>(source->app,source->slot,afterPose);attachment.Complete({int(afterPose[10]),int(afterPose[11])});
+            }else WritePose<K>(source->app,source->slot,afterPose);
             if(source->beforeLast!=source->afterLast)source->app.LastRegisteredFrame()=forward?source->afterLast:source->beforeLast;
             Cursor<K>(source->app,source->slot)=targetCursor;Active<K>(source->app,source->slot)=targetActive;
             source->preserveSelection=preserveSelection;source->published=true;++source->generation;consumed=true;

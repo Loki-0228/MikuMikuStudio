@@ -50,7 +50,12 @@
 | `mesh_bake_cache_tests.cpp` | Ogawa 采样、区间钳制、替换、清除、PMM 配套文件往返、畸形记录、提交前回调取消、临时文件跨进程归属。独立 CPU/文件测试，注册 CTest。 |
 | `vertex_capture_tests.cpp` | 隐藏 D3D9 HAL 设备上重放 VS 1.1/2.0/3.0，检查 GPU 位置回读、分块、状态恢复与不支持路径拒绝。注册 CTest。 |
 | `alembic_export_tests.cpp` | 隐藏生产窗口内生成 PMX，核对骨骼动画、MME/MMV 叠加、生成与消失的材质/拓扑、Unicode ABC、取消、三语条件警告、烧录回工程、PMM 保存重开和清除后恢复。需要按模式准备 Data/插件，显式运行。 |
-| `sequential_file_reader_tests.cpp` | 顺序文件读取、边界和回退。 |
+| `sequential_file_reader_tests.cpp` | 顺序文件读取、绝对跳转、跳转失败后保留未消费窗口、EOF 及唯一关闭；完整与原始兼容配置共用。 |
+| `native_menu_snapshot_tests.cpp` | 自有隐藏窗口及真实菜单验证只读树观察、UTF-16、重复命令位置、状态、预算、线程、文字变化和长文本分配失败。仅修改本测试进程的菜单查询导入并核验恢复；不得触发菜单填充、命令或全局输入。私有观察器接入正式目录服务后，保留这些反例；不等于完整 UI 目录已实现。 |
+| `model_geometry_cache_tests.cpp`、`model_geometry_reference.hpp` | 独立原字段解码验证 PMD／PMX 缓存副本、索引步长、预算、待发布和退役租约、清空代次、分配失败、源内容指纹与巨大尾部绕过。参数为独占产物目录；仅保留自己的夹具，不清理其他文件。移除缓存或完整迁移这些反例后再移除。 |
+| `model_geometry_cache_host_tests.cpp` | 参数为独占产物目录；自有隐藏 Win32 窗口及真实 D3D9 设备调用实际 PMD／PMX 加载器，比较冷／热／禁用路径的 CPU、GPU 内容及晚段失败不发布。两配置共用，原始配置须保持生产缓存禁用。设备不可用不算通过，不代替实际工程、人工呈现或 Win7／AMD 验收；移除加载缓存或等效宿主回归完整替代后再移除。 |
+
+`native_edit_history_tests --accessory-parent-only` 使用自有隐藏控件及键池，覆盖父绑定与 HUD、登记、VMD、粘贴的共同历史，包含删除父模型后的动态绑定、附件槽位复用、准备取消、内存失败及资源预算。`--accessory-hud-core-only` 单独运行 HUD 核心回归。二者不注入全局输入；不要用旧 `--accessory-hud-only` 或整个默认原生套件替代本项验收。参与者及失败原子性应保留，直到等价生产宿主回归完整替代。
 | `d3dx_import_tests.cpp` | D3DX 导入与 ABI；需要本机 DirectX 运行库。 |
 | `effect_api_tests.cpp` | 效果接口、对象导出及材质名称双向回退；无 MME 时安全跳过。 |
 | `bone_projection_tests.cpp` | 骨骼投影与命中坐标。 |

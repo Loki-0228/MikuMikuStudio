@@ -63,11 +63,50 @@ SharedHistory::SharedHistory(StorageStore& storage, std::function<MmsResult()> g
 SharedHistory::~SharedHistory() {
     publicationSignal_ = {};
     entered_ = true;
+    for (auto& slot : nativeDomains_) if (slot.value) slot.value->Reset();
     InvalidatePending();
     if (applied_) {
         applied_->Release(); applied_->owner_ = nullptr; applied_ = nullptr;
     }
     if (reset_) { reset_->owner_ = nullptr; reset_ = nullptr; }
+}
+std::shared_ptr<NativeHistoryDomain> SharedHistory::FindNativeDomain(const void* key) const noexcept {
+    if (!key || GetCurrentThreadId() != thread_) return {};
+    for (const auto& slot : nativeDomains_) if (slot.key == key) return slot.value;
+    return {};
+}
+std::shared_ptr<NativeHistoryDomain> SharedHistory::PrepareNativeDomain(const void* key,
+    const std::shared_ptr<NativeHistoryDomain>& candidate) noexcept {
+    if (!key || !candidate || GetCurrentThreadId() != thread_ || nativeEpoch_ == UINT64_MAX || Ready()) return {};
+    for (auto& slot : nativeDomains_) {
+        if (slot.key == key) return slot.value;
+        if (slot.preparingKey == key) {
+            if (auto existing = slot.preparing.lock()) return existing;
+            slot.preparing = candidate; return candidate;
+        }
+    }
+    for (auto& slot : nativeDomains_) if (!slot.key && slot.preparing.expired()) {
+        slot.preparingKey = key; slot.preparing = candidate; return candidate;
+    }
+    return {};
+}
+bool SharedHistory::CanPublishNativeDomain(const void* key, const NativeHistoryDomain* value) const noexcept {
+    if (!key || !value || GetCurrentThreadId() != thread_ || nativeEpoch_ == UINT64_MAX || Ready()) return false;
+    for (const auto& slot : nativeDomains_) {
+        if (slot.key == key) return slot.value.get() == value;
+        if (!slot.key && slot.preparingKey == key) return slot.preparing.lock().get() == value;
+    }
+    return false;
+}
+void SharedHistory::PublishNativeDomain(const void* key, const std::shared_ptr<NativeHistoryDomain>& value) noexcept {
+    if (!CanPublishNativeDomain(key, value.get())) std::terminate();
+    for (const auto& slot : nativeDomains_) if (slot.key == key) return;
+    for (auto& slot : nativeDomains_) if (!slot.key && slot.preparingKey == key) {
+        const auto prepared = slot.preparing.lock();
+        if (prepared.get() != value.get()) std::terminate();
+        slot.key = key; slot.value = value; slot.preparing.reset(); slot.preparingKey = nullptr; return;
+    }
+    std::terminate();
 }
 MmsResult SharedHistory::SetPublicationSignal(HistoryPublicationSignal signal) noexcept {
     if (GetCurrentThreadId() != thread_) return MMS_E_THREAD;
@@ -158,7 +197,7 @@ MmsResult SharedHistory::ReserveNode(std::shared_ptr<const EditRecord> record,
     publication->record=retain;
     publication->node.push_back(std::make_shared<Node>(Node{std::move(copy), std::move(native), pluginBytes, pluginBytes, effects}));
     if (const auto& change = publication->node.front()->native) {
-        if (auto r = change->Prepare(true, publication->candidate)) return r;
+        if (auto r = change->PrepareInitial(*this, retain, publication->candidate)) return r;
         if (!publication->candidate) return MMS_E_FAILED;
         uint64_t target = change->RetainedBytes();
         uint64_t dynamicTarget = 0;
@@ -401,6 +440,9 @@ MmsResult SharedHistory::Reset() {
 }
 void SharedHistory::ResetLocked() noexcept {
     InvalidatePending();
+    if (nativeEpoch_ != UINT64_MAX) ++nativeEpoch_;
+    for (auto& slot : nativeDomains_) { slot.preparing.reset(); slot.preparingKey = nullptr; }
+    for (auto& slot : nativeDomains_) if (slot.value) slot.value->Reset();
     retired_.splice(retired_.end(), undo_); retired_.splice(retired_.end(), redo_);
     bytes_ = 0; lastPhysicsReset_ = true; lastEffects_ = HistoryEffects::All; ++revision_;
 }

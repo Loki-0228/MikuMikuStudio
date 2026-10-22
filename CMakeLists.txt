@@ -402,6 +402,7 @@ add_library(mikumikustudio_core STATIC
     src/model/model_init.cpp
     src/model/path_resolve.cpp
     src/model/pmd_load.cpp
+    src/model/model_geometry_cache.cpp
     src/model/bone_scale.cpp
     src/model/bone_transform.cpp
     src/model/model_keyframe_advance.cpp
@@ -553,6 +554,31 @@ add_executable(original_import_tests EXCLUDE_FROM_ALL tests/original_import_test
 target_link_libraries(original_import_tests PRIVATE mikumikustudio_core winmm dsound)
 set_target_properties(original_import_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
 add_test(NAME original_import COMMAND original_import_tests)
+
+add_executable(sequential_file_reader_tests EXCLUDE_FROM_ALL tests/sequential_file_reader_tests.cpp)
+target_include_directories(sequential_file_reader_tests PRIVATE include)
+set_target_properties(sequential_file_reader_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_test(NAME sequential_file_reader_regressions COMMAND sequential_file_reader_tests)
+
+add_executable(native_menu_snapshot_tests EXCLUDE_FROM_ALL
+    tests/native_menu_snapshot_tests.cpp src/plugins/native_menu_snapshot.cpp)
+target_link_libraries(native_menu_snapshot_tests PRIVATE user32)
+set_target_properties(native_menu_snapshot_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_test(NAME native_menu_snapshot_regressions COMMAND native_menu_snapshot_tests)
+set_tests_properties(native_menu_snapshot_regressions PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
+
+add_executable(model_geometry_cache_tests EXCLUDE_FROM_ALL
+    tests/model_geometry_cache_tests.cpp src/model/model_geometry_cache.cpp)
+target_include_directories(model_geometry_cache_tests PRIVATE include)
+target_link_libraries(model_geometry_cache_tests PRIVATE bcrypt)
+set_target_properties(model_geometry_cache_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_test(NAME model_geometry_cache_regressions COMMAND model_geometry_cache_tests "${CMAKE_BINARY_DIR}/tests/geometry-cache-fixtures")
+
+add_executable(model_geometry_cache_host_tests EXCLUDE_FROM_ALL tests/model_geometry_cache_host_tests.cpp)
+target_link_libraries(model_geometry_cache_host_tests PRIVATE mikumikustudio_core winmm dsound d3d9 user32)
+set_target_properties(model_geometry_cache_host_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_test(NAME model_geometry_cache_host COMMAND model_geometry_cache_host_tests "${CMAKE_BINARY_DIR}/tests/geometry-cache-host-fixtures")
+set_tests_properties(model_geometry_cache_host PROPERTIES TIMEOUT 120 LABELS "hardware-manual")
 
 add_executable(pmd_index_save_tests EXCLUDE_FROM_ALL tests/pmd_index_save_tests.cpp)
 target_link_libraries(pmd_index_save_tests PRIVATE mikumikustudio_core winmm dsound)
@@ -883,10 +909,6 @@ if (MIKUMIKUSTUDIO_BUILD_EFFECT_TESTS)
         "${CMAKE_BINARY_DIR}/tests/fxaa-captures" --strict-quality)
     set_tests_properties(fxaa_shader_checks PROPERTIES LABELS "hardware-manual" TIMEOUT 60)
     add_executable(d3d12_interop_tests EXCLUDE_FROM_ALL tests/d3d12_interop_tests.cpp)
-    add_executable(sequential_file_reader_tests EXCLUDE_FROM_ALL tests/sequential_file_reader_tests.cpp)
-    target_include_directories(sequential_file_reader_tests PRIVATE include)
-    set_target_properties(sequential_file_reader_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
-    add_test(NAME sequential_file_reader_regressions COMMAND sequential_file_reader_tests)
     target_link_libraries(d3d12_interop_tests PRIVATE d3d9 d3d12 dxgi user32)
     set_target_properties(d3d12_interop_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
     add_executable(d3dx_import_tests EXCLUDE_FROM_ALL tests/d3dx_import_tests.cpp)

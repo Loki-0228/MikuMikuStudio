@@ -1,6 +1,7 @@
 #include "native_global_paste.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "native_global_registration.hpp"
+#include "scene_resource_budget.hpp"
 #include "mikumikustudio/frame_limits.hpp"
 #include "mikumikustudio/key_pool.hpp"
 #include "mikumikustudio/mmd_app.hpp"
@@ -22,6 +23,7 @@ struct GlobalPaste final:HistoryChange,std::enable_shared_from_this<GlobalPaste>
         std::shared_ptr<GlobalPaste> source;bool forward,consumed=false;std::uint64_t generation;
         int frame;std::unique_ptr<GlobalKeySelection::Candidate> selection;
         std::vector<std::unique_ptr<PreparedGlobalPastePart>> parts;
+        std::uint64_t bytes = 0;
         Candidate(std::shared_ptr<GlobalPaste> s,bool f):source(std::move(s)),forward(f),generation(source->generation),frame(source->app.CurrentFrame()){}
         bool IsCurrent() const noexcept override {
             if(consumed||source->generation!=generation||source->app.CurrentFrame()!=frame||
@@ -38,8 +40,9 @@ struct GlobalPaste final:HistoryChange,std::enable_shared_from_this<GlobalPaste>
             source->app.LastRegisteredFrame()=forward?source->afterLast:source->beforeLast;
             source->published=true;++source->generation;consumed=true;
         }
+        bool TargetRetainedBytes(std::uint64_t& out)const noexcept override { out=bytes;return true; }
     };
-    MmsResult Prepare(bool forward,std::unique_ptr<PreparedHistoryChange>& out) override {
+    MmsResult PrepareWithIntent(bool forward,SharedHistory* journal,bool record,std::unique_ptr<PreparedHistoryChange>& out) {
         out.reset();if(generation==UINT64_MAX)return MMS_E_NOT_READY;
         if((!published&&(!forward||app.CurrentFrame()!=playhead))||app.LastRegisteredFrame()!=(forward?beforeLast:afterLast))return MMS_E_STALE;
         return Boundary([&]()->MmsResult {
@@ -47,12 +50,22 @@ struct GlobalPaste final:HistoryChange,std::enable_shared_from_this<GlobalPaste>
             auto candidate=std::make_unique<Candidate>(shared_from_this(),forward);
             try{candidate->selection=selection.Prepare(forward,!published);}
             catch(const std::invalid_argument&){return MMS_E_STALE;}
+            candidate->bytes=RetainedBytes();
             for(auto& part:parts){std::unique_ptr<PreparedGlobalPastePart> prepared;
-                if(auto result=part->Prepare(forward,prepared))return result;
+                const auto result=journal&&!published?part->PrepareInitial(*journal,record,prepared):part->Prepare(forward,prepared);
+                if(result)return result;
+                std::uint64_t retained=0;
+                if(prepared&&prepared->TargetRetainedBytes(retained)) {
+                    const auto original=part->RetainedBytes();
+                    if(retained<original)return MMS_E_FAILED;
+                    candidate->bytes=resource_budget::Collector::Sum(candidate->bytes,retained-original);
+                }
                 if(!prepared)return MMS_E_NOT_READY;candidate->parts.push_back(std::move(prepared));}
             if(!candidate->IsCurrent())return MMS_E_STALE;out=std::move(candidate);return MMS_OK;
         });
     }
+    MmsResult Prepare(bool forward,std::unique_ptr<PreparedHistoryChange>& out)override{return PrepareWithIntent(forward,nullptr,true,out);}
+    MmsResult PrepareInitial(SharedHistory& journal,bool record,std::unique_ptr<PreparedHistoryChange>& out)override{return PrepareWithIntent(true,&journal,record,out);}
     std::uint64_t RetainedBytes() const noexcept override {
         std::uint64_t bytes=sizeof(*this)+4*sizeof(void*);
         const auto add=[&](std::uint64_t n){bytes=n>UINT64_MAX-bytes?UINT64_MAX:bytes+n;};

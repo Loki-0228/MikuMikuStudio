@@ -69,6 +69,7 @@
 #include "mikumikustudio/d3dx_dyn.hpp"
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
+#include "../plugins/native_accessory_parent_history.hpp"
 #include "device_lost_wait.hpp"
 
 namespace mikumikustudio {
@@ -575,10 +576,16 @@ static void AdvancePlaybackTracks(MMDApp* app, int advance, bool modelsEnabled) 
         }
         mdl::AccessoryRecord& accessory = *accessorySlot;
         const auto applyDiscreteState = [&](const mdl::AccessoryKey& key) {
+#if !MMD_ORIGINAL_PROFILE
+            plugins::AccessoryAttachmentEvaluation attachment(app, unsigned(i));
+#endif
             accessory.visible = key.visible;
             accessory.shadowEnabled = key.shadowEnabled;
             accessory.parentModel = key.parentModel;
             accessory.parentBone = key.parentBone;
+#if !MMD_ORIGINAL_PROFILE
+            attachment.Complete({key.parentModel, key.parentBone});
+#endif
             std::memcpy(accessory.rotation, key.rotation,
                         sizeof accessory.rotation);
             std::memcpy(accessory.position, key.position,

@@ -1,4 +1,5 @@
 #include "native_global_key_delete.hpp"
+#include "native_accessory_parent_history.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "scene_object_history.hpp"
 #include "mikumikustudio/accessory_layout.hpp"
@@ -308,7 +309,11 @@ template<class K>struct FamilyDelete final:DeletePart,std::enable_shared_from_th
             // including marks on untouched slots, after the payload exchange.
             if(preserveSelection){unsigned index=0;for(;;){pool[index].selected=target[index].selected;if(!pool[index].next)break;index=pool[index].next;}}
             curves->Publish(source->owner?static_cast<void*>(source->object):pool);
-            WritePose<K>(source->app,source->slot,afterPose);Cursor<K>(source->app,source->slot)=targetCursor;
+            if constexpr(std::is_same_v<K,mdl::AccessoryKey>){
+                AccessoryAttachmentEvaluation attachment(&source->app,source->slot);
+                WritePose<K>(source->app,source->slot,afterPose);attachment.Complete({int(afterPose[10]),int(afterPose[11])});
+            }else WritePose<K>(source->app,source->slot,afterPose);
+            Cursor<K>(source->app,source->slot)=targetCursor;
             source->preserveSelection=preserveSelection;source->published=true;++source->generation;consumed=true;
         }
     };

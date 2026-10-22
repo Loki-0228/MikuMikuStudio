@@ -18,11 +18,13 @@ public:
     // only this participant's pasted/linked slots, preserving the snapshot's
     // restored marks on undo within the originally captured pool extent.
     virtual void PublishSelection() noexcept = 0;
+    virtual bool TargetRetainedBytes(std::uint64_t&) const noexcept { return false; }
 };
 class GlobalPastePart {
 public:
     virtual ~GlobalPastePart() = default;
     virtual MmsResult Prepare(bool forward, std::unique_ptr<PreparedGlobalPastePart>&) = 0;
+    virtual MmsResult PrepareInitial(SharedHistory&, bool, std::unique_ptr<PreparedGlobalPastePart>& out) { return Prepare(true, out); }
     virtual std::uint64_t RetainedBytes() const noexcept = 0;
 };
 struct GlobalPasteSource {

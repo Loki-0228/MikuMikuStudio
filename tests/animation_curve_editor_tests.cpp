@@ -1351,6 +1351,9 @@ void ProviderCopyRetirement() {
             state.armed=true;
             if(kind==2)ce::SetLanguage(nullptr,1);else Click(window,kIdDeleteKey);
         }
+        if(!(state.retireCalls==1&&state.destroyedDuringCopy==0&&state.bodyCalls==calls&&host.applyCalls==0))
+            std::fprintf(stderr,"provider copy context: kind=%d action=%d throwing=%d initial=%d retire=%d destroyed=%d body=%d priorBody=%d apply=%d\n",
+                kind,action,int(throwing),int(initial),state.retireCalls,state.destroyedDuringCopy,state.bodyCalls,calls,host.applyCalls);
         Check(state.retireCalls==1&&state.destroyedDuringCopy==0&&state.bodyCalls==calls&&host.applyCalls==0,
             "retirement while copying prevents invocation of the retired provider body");
         if(!initial)Check(!ce::IsWindowSessionCurrent(window,token)&&bool(retainedToken),
@@ -7211,6 +7214,9 @@ void NativeConstructionLifetime(){
 } // namespace
 
 int main(int argc,char** argv) {
+    // Synthetic clicks use this thread's GetKeyState. Start from an explicit
+    // baseline and restore it on exit; never inject or alter global input.
+    KeyboardModifiers keyboardBaseline;keyboardBaseline.Set();
     // Optional same-order diagnostic for a prior 0xC0000374 full-suite exit.
     // It retains every assertion and validates the process heap at group ends.
     g_validateHeap=argc>1&&std::string(argv[1])=="--heap-validate-all";

@@ -1,5 +1,17 @@
 // MAINTENANCE: regression-keep; purpose and cleanup conditions in tests/README.md.
+#include <cerrno>
+#include <cstdint>
+#include <io.h>
+namespace {
+bool rejectSeek=false;
+std::int64_t TestSeek(int descriptor,std::int64_t position,int origin) {
+    if(rejectSeek){errno=EIO;return -1;}
+    return _lseeki64(descriptor,position,origin);
+}
+}
+#define _lseeki64 TestSeek
 #include "mikumikustudio/sequential_file_reader.hpp"
+#undef _lseeki64
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
@@ -36,5 +48,27 @@ int main(){
         Check(readStatistics.bytes==data.size()-3,"byte accounting");
         if(buffered)Check(readStatistics.systemReads<readStatistics.requests,"refills reduce system reads");
     }
-    fclose(file);std::puts("PASS buffered binary reads, offsets, boundaries and EOF");
+    for(bool buffered:{false,true}){
+        bufferedReads=buffered;
+        int fd=_dup(_fileno(file));Check(fd>=0,"duplicate seek descriptor");
+        Check(_setmode(fd,_O_BINARY)>=0,"seek binary mode");
+        Check(_lseeki64(fd,0,SEEK_SET)==0,"seek fixture start");
+        SequentialFileReader reader(fd);
+        unsigned char byte=0;
+        Check(reader.Read(&byte,1)==1&&byte==data[0],"prime seek window");
+        Check(!reader.SeekAbsolute(-1)&&errno==EINVAL&&reader.Tell()==1,"negative seek preserves position");
+        rejectSeek=true;
+        Check(!reader.SeekAbsolute(17)&&errno==EIO&&reader.Tell()==1,"valid descriptor seek failure");
+        rejectSeek=false;
+        Check(reader.Read(&byte,1)==1&&byte==data[1],"failed seek preserves unread bytes");
+        Check(reader.SeekAbsolute(65535)&&reader.Tell()==65535,"absolute forward seek");
+        unsigned char pair[2]{};
+        Check(reader.Read(pair,2)==2&&pair[0]==data[65535]&&pair[1]==data[65536],"seek discards old window");
+        Check(reader.SeekAbsolute(3)&&reader.Read(&byte,1)==1&&byte==data[3],"absolute backward seek");
+        Check(reader.SeekAbsolute(static_cast<std::int64_t>(data.size()))&&reader.Read(&byte,1)==0,"seek to EOF");
+        Check(reader.SeekAbsolute(7)&&reader.Read(&byte,1)==1&&byte==data[7],"seek after EOF");
+        Check(reader.Close()==0&&!reader.SeekAbsolute(0)&&errno==EBADF,"seek after close");
+    }
+    bufferedReads=true;
+    fclose(file);std::puts("PASS buffered binary reads, seek success/failure, ownership, boundaries and EOF");
 }

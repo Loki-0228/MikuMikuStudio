@@ -1,4 +1,5 @@
 #include "scene_history.hpp"
+#include "native_accessory_parent_history.hpp"
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/key_pool.hpp"
@@ -102,6 +103,9 @@ public:
     std::vector<AccessoryGuard> accessories;
     PoolGuard<mdl::CameraKey> camera;
     bool guardCamera = false;
+#if !MMD_ORIGINAL_PROFILE
+    AccessoryAttachmentRemoval attachments;
+#endif
     explicit BindingChange(MMDApp& a) : app(a) {}
     bool OwnersCurrent() const noexcept {
         if (guardCamera && !camera.Current(app.CameraKeys())) return false;
@@ -114,6 +118,9 @@ public:
         std::shared_ptr<BindingChange> owner;
         bool forward, consumed = false;
         std::vector<void*> addresses;
+#if !MMD_ORIGINAL_PROFILE
+        std::unique_ptr<AccessoryAttachmentRemoval::Prepared> attachments;
+#endif
         Candidate(std::shared_ptr<BindingChange> value, bool direction) : owner(std::move(value)), forward(direction) {
             addresses.reserve(owner->patches.size());
             for (const auto& patch : owner->patches) addresses.push_back(patch.Resolve(owner->app));
@@ -124,22 +131,41 @@ public:
                 const auto& patch = owner->patches[i];
                 if (patch.Resolve(owner->app) != addresses[i] || !patch.Current(addresses[i], forward)) return false;
             }
+#if !MMD_ORIGINAL_PROFILE
+            if(attachments&&!attachments->IsCurrent())return false;
+#endif
             return true;
         }
         void Publish() noexcept override {
+#if !MMD_ORIGINAL_PROFILE
+            if(attachments)attachments->Publish();
+#endif
             for (size_t i = 0; i < addresses.size(); ++i) owner->patches[i].Publish(addresses[i], forward);
             consumed = true;
+        }
+        bool TargetRetainedBytes(std::uint64_t& out)const noexcept override {
+#if !MMD_ORIGINAL_PROFILE
+            if(attachments){const auto base=owner->RetainedBytes(),old=owner->attachments.RetainedBytes(),next=attachments->MeasuredBytes();
+                const auto extra=next>=old?next-old:UINT64_MAX;out=extra>UINT64_MAX-base?UINT64_MAX:base+extra;return true;}
+#endif
+            return false;
         }
     };
     MmsResult Prepare(bool forward, std::unique_ptr<PreparedHistoryChange>& out) override {
         if (!OwnersCurrent()) return MMS_E_STALE;
         auto candidate = std::make_unique<Candidate>(shared_from_this(), forward);
+#if !MMD_ORIGINAL_PROFILE
+        if(auto result=attachments.Prepare(forward,candidate->attachments))return result;
+#endif
         if (!candidate->IsCurrent()) return MMS_E_STALE;
         out = std::move(candidate); return MMS_OK;
     }
     uint64_t RetainedBytes() const noexcept override {
         uint64_t size = sizeof(*this) + patches.capacity() * sizeof(Patch) + models.capacity() * sizeof(ModelGuard) + accessories.capacity() * sizeof(AccessoryGuard);
         for (const auto& model : models) size += model.selectors.capacity() * sizeof(model.selectors.front());
+#if !MMD_ORIGINAL_PROFILE
+        const auto extra=attachments.RetainedBytes();size=extra>UINT64_MAX-size?UINT64_MAX:size+extra;
+#endif
         return size;
     }
     template<class T> void Set(Field field, unsigned slot, size_t key, uint32_t element, T value, T next) {
@@ -164,6 +190,12 @@ std::shared_ptr<HistoryChange> CaptureObjectsRemovalBindings(MMDApp& app,
     }
     const auto removesModel = [&](int slot) { return slot >= 0 && size_t(slot) < removedModels.size() && removedModels[slot]; };
     auto change = std::make_shared<BindingChange>(app);
+#if !MMD_ORIGINAL_PROFILE
+    if(const auto result=change->attachments.Capture(app,modelSlots,accessorySlots)){
+        if(result==MMS_E_MEMORY)throw std::bad_alloc();
+        throw std::invalid_argument("accessory removal provenance");
+    }
+#endif
     for (unsigned i = 0; i < kModelSlotCount; ++i) {
         if (modelSlots.empty()) break;
         auto* pointer = app.ModelSlot(i); if (!pointer || removedModels[i]) continue;
@@ -227,8 +259,14 @@ std::shared_ptr<HistoryChange> CaptureObjectsRemovalBindings(MMDApp& app,
         if (earlier > object->order) throw std::invalid_argument("accessory removal order");
         change->Set(Field::AccessoryOrder, i, 0, 0, object->order, uint8_t(object->order - earlier));
         if (removesModel(object->parentModel)) {
+#if !MMD_ORIGINAL_PROFILE
+            if(!change->attachments.OwnsPair(i)){
+#endif
             change->Set(Field::AccessoryParent, i, 0, 0, object->parentModel, int32_t(-1));
             change->Set(Field::AccessoryBone, i, 0, 0, object->parentBone, int32_t(0));
+#if !MMD_ORIGINAL_PROFILE
+            }
+#endif
         }
         auto* keys = app.AccessoryKeys(i); const auto count = mdl::KeyPoolCapacity(keys);
         for (size_t n = 0; !modelSlots.empty() && n < count; ++n) {
@@ -239,7 +277,11 @@ std::shared_ptr<HistoryChange> CaptureObjectsRemovalBindings(MMDApp& app,
                 change->Set(Field::AccessoryKeyVisible, i, n, 0, key.visible, uint8_t(0));
             }
         }
-        if (change->patches.size() != begin)
+        if (change->patches.size() != begin
+#if !MMD_ORIGINAL_PROFILE
+            ||change->attachments.Affects(i)
+#endif
+            )
             change->accessories.push_back({i, object, SceneObjectIdentity(object).id, PoolGuard<mdl::AccessoryKey>(keys)});
     }
     return change;

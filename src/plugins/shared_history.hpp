@@ -1,6 +1,7 @@
 #pragma once
 #include "edit_store.hpp"
 #include <list>
+#include <array>
 
 namespace mikumikustudio::plugins {
 // Internal effect bits for one successful history publication. They name the
@@ -37,10 +38,15 @@ public:
     // retained record/resources and reject incomplete measurements in Prepare.
     virtual bool TargetRetainedBytes(uint64_t&) const noexcept { return false; }
 };
+class SharedHistory;
 class HistoryChange {
 public:
     virtual ~HistoryChange() = default;
     virtual MmsResult Prepare(bool forward, std::unique_ptr<PreparedHistoryChange>&) = 0;
+    // The actual reservation intent is authoritative, including a private
+    // native participant joined to an explicit plugin transaction. Default
+    // participants retain the existing Prepare contract.
+    virtual MmsResult PrepareInitial(SharedHistory&, bool, std::unique_ptr<PreparedHistoryChange>& out) { return Prepare(true, out); }
     virtual uint64_t RetainedBytes() const noexcept = 0;
     // Metadata-only participants may opt out. Unknown native and plugin
     // changes retain the conservative physics invalidation policy.
@@ -56,6 +62,14 @@ public:
 struct HistoryPublicationSignal {
     void* context = nullptr;
     void (*published)(void*, uint64_t) noexcept = nullptr;
+};
+// Trusted native coordination only. A domain owns bounded metadata, never a
+// second journal. Preparation creates a private domain; only a successful
+// no-fail native publication installs it. Reset invalidates retained receipts.
+class NativeHistoryDomain {
+public:
+    virtual ~NativeHistoryDomain() = default;
+    virtual void Reset() noexcept = 0;
 };
 
 // One journal for native and plugin changes. The application supplies its
@@ -87,6 +101,14 @@ private:
     bool lastPhysicsReset_ = true;
     HistoryEffects lastEffects_ = HistoryEffects::All;
     HistoryPublicationSignal publicationSignal_{};
+    struct NativeDomainSlot {
+        const void* key = nullptr;
+        std::shared_ptr<NativeHistoryDomain> value;
+        const void* preparingKey = nullptr;
+        std::weak_ptr<NativeHistoryDomain> preparing;
+    };
+    std::array<NativeDomainSlot, 8> nativeDomains_{};
+    uint64_t nativeEpoch_ = 1;
     MmsResult Ready() const;
     MmsResult ReserveNode(std::shared_ptr<const EditRecord>, std::shared_ptr<HistoryChange>,
                          std::unique_ptr<Publication>&, bool record = true);
@@ -103,6 +125,11 @@ public:
     // only while no edit/reset/storage callback or reservation is active.
     // Reset is an epoch boundary and deliberately does not emit this signal.
     MmsResult SetPublicationSignal(HistoryPublicationSignal) noexcept;
+    std::shared_ptr<NativeHistoryDomain> FindNativeDomain(const void*) const noexcept;
+    std::shared_ptr<NativeHistoryDomain> PrepareNativeDomain(const void*, const std::shared_ptr<NativeHistoryDomain>&) noexcept;
+    bool CanPublishNativeDomain(const void*, const NativeHistoryDomain*) const noexcept;
+    void PublishNativeDomain(const void*, const std::shared_ptr<NativeHistoryDomain>&) noexcept;
+    uint64_t NativeEpoch() const noexcept { return GetCurrentThreadId() == thread_ ? nativeEpoch_ : 0; }
     MmsResult Revision(uint64_t&) override;
     MmsResult Enter() override;
     void Leave() noexcept override;

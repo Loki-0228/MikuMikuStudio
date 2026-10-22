@@ -3,6 +3,7 @@
 #include "mikumikustudio/display_capacity.hpp"
 #include "mikumikustudio/model_vertex_cache.hpp"
 #include "mikumikustudio/key_pool.hpp"
+#include "model_geometry_cache_load.hpp"
 // ===========================================================================
 // VA 0x004BF3E0 - ModelLoadPMD  (original: sub_4BF3E0, 0x2C95 bytes)
 // ===========================================================================
@@ -238,6 +239,18 @@ bool ModelLoadPMD(unsigned char* m, HWND hwnd, const wchar_t* path,
     // ---- vertices ---------------------------------------------------------
     _read(fh, &model.vertexCount, sizeof(model.vertexCount));
     const std::uint32_t vertCount = model.vertexCount;
+    const auto vertexStart = _telli64(fh);
+    auto geometryCache = model_geometry_cache::Session::Begin(fh,
+        {model_geometry_cache::Format::pmd, vertCount}, vertexStart,
+        nullptr, MMD_ORIGINAL_PROFILE != 0);
+    model_geometry_cache::HitCopy<mdl::PmdVertex> cachedGeometry(geometryCache, vertCount);
+    bool geometryHit = cachedGeometry.Ready();
+    if (geometryHit && _lseeki64(fh, geometryCache.IndexEnd(), SEEK_SET) != geometryCache.IndexEnd()) {
+        geometryHit = false;
+        cachedGeometry.Reset();
+        geometryCache.Invalidate();
+        if (_telli64(fh) != vertexStart && _lseeki64(fh, vertexStart, SEEK_SET) != vertexStart) return false;
+    } else if (geometryCache.Hit() && !geometryHit) geometryCache.Invalidate();
     if (vertCount != 0) {
         if (dev == nullptr) {
             return false;
@@ -266,12 +279,13 @@ bool ModelLoadPMD(unsigned char* m, HWND hwnd, const wchar_t* path,
             file.Close();
             return false;
         }
-        mdl::PmdVertex* recs = static_cast<mdl::PmdVertex*>(
-            operator new(sizeof(mdl::PmdVertex) * vertCount));
+        mdl::PmdVertex* recs = geometryHit ? cachedGeometry.ReleaseVertices() :
+            static_cast<mdl::PmdVertex*>(operator new(sizeof(mdl::PmdVertex) * vertCount));
         model.rawVertices = recs;
-        std::memset(recs, 0, sizeof(mdl::PmdVertex) * vertCount);
-        for (std::uint32_t i = 0; i < vertCount; ++i)
-            _read(fh, &recs[i], 0x26);
+        if (!geometryHit) {
+            std::memset(recs, 0, sizeof(mdl::PmdVertex) * vertCount);
+            for (std::uint32_t i = 0; i < vertCount; ++i) _read(fh, &recs[i], 0x26);
+        }
 
         float* p1 = nullptr;
         if (SUCCEEDED(mdl::ResourceAs<IDirect3DVertexBuffer9>(
@@ -303,9 +317,11 @@ bool ModelLoadPMD(unsigned char* m, HWND hwnd, const wchar_t* path,
             if (model_import::Preparing() && FAILED(unlocked)) return false;
         } else if (model_import::Preparing()) return false;
     }
+    const auto vertexEnd = geometryHit ? geometryCache.VertexEnd() : _telli64(fh);
 
     // ---- indices ----------------------------------------------------------
-    _read(fh, &model.indexCount, sizeof(model.indexCount));
+    if (geometryHit) model.indexCount = geometryCache.IndexCount();
+    else _read(fh, &model.indexCount, sizeof(model.indexCount));
     const std::uint32_t idxCount = model.indexCount;
     // Deliberate hardening: the original multiplies the file's index count by four
     // with a 32-bit mul (0x1400B2CBE/0x1400B2CC3), then by two with shl r8,2
@@ -333,9 +349,9 @@ bool ModelLoadPMD(unsigned char* m, HWND hwnd, const wchar_t* path,
             return false;
         }
         std::uint16_t*& idx = mdl::Indices(m);
-        idx = static_cast<std::uint16_t*>(
-            operator new(static_cast<std::size_t>(idxBytes)));
-        std::memset(idx, 0, static_cast<std::size_t>(idxBytes));
+        idx = geometryHit ? reinterpret_cast<std::uint16_t*>(cachedGeometry.ReleaseIndices()) :
+            static_cast<std::uint16_t*>(operator new(static_cast<std::size_t>(idxBytes)));
+        if (!geometryHit) std::memset(idx, 0, static_cast<std::size_t>(idxBytes));
         void* ib = nullptr;
         if (FAILED(mdl::ResourceAs<IDirect3DIndexBuffer9>(
                        mdl::Mdl(m)->indexBuffer)->Lock(0, 0, &ib, 0))) {
@@ -346,13 +362,16 @@ bool ModelLoadPMD(unsigned char* m, HWND hwnd, const wchar_t* path,
             return false;
         }
         for (std::uint32_t j = 0; j < idxCount; ++j) {
-            _read(fh, idx + 2 * j, 2);
+            if (!geometryHit) _read(fh, idx + 2 * j, 2);
             static_cast<std::uint16_t*>(ib)[j] = idx[2 * j];
         }
         const HRESULT unlocked = mdl::ResourceAs<IDirect3DIndexBuffer9>(
             mdl::Mdl(m)->indexBuffer)->Unlock();
         if (model_import::Preparing() && FAILED(unlocked)) return false;
     }
+    if (!geometryHit) geometryCache.CapturePmd(model.rawVertices, mdl::Indices(m),
+        idxCount, vertexEnd, _telli64(fh));
+    geometryCache.FinishGeometry();
 
     // ---- materials --------------------------------------------------------
     _read(fh, &mdl::Mdl(m)->materialCount,
@@ -1050,6 +1069,7 @@ bool ModelLoadPMD(unsigned char* m, HWND hwnd, const wchar_t* path,
     if (!model_import::Preparing()) model_load_ui::PostLoadInitOrDefer(m);                    // 0x49C850
     model_vertex_cache::RegisterLoaded(m);
     original_import::WarnModelImport(model, hwnd, englishUi, textFits);
+    geometryCache.Commit();
     return true;
 }
 

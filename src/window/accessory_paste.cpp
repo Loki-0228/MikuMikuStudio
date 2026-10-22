@@ -34,6 +34,7 @@
 #include "mikumikustudio/accessory_layout.hpp"
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
+#include "../plugins/native_accessory_parent_history.hpp"
 
 namespace mikumikustudio {
 namespace {
@@ -130,6 +131,9 @@ void ApplyAccessoryTrack(MMDApp* app, int slot) {  // was Sub413120, VA 0x004131
     // matches the reachable behaviour.
     if (keys == nullptr || obj == nullptr)
         return;
+#if !MMD_ORIGINAL_PROFILE
+    plugins::AccessoryAttachmentEvaluation attachment(app, unsigned(slot));
+#endif
     struct ApplyCurves {
         MMDApp* app; int slot;
         ~ApplyCurves() { curve_host::Apply(app, curve_host::Kind::Accessory, app->CurrentFrame(), slot); }
@@ -160,6 +164,9 @@ void ApplyAccessoryTrack(MMDApp* app, int slot) {  // was Sub413120, VA 0x004131
         obj->shadowEnabled = rec.shadowEnabled;
         obj->parentModel = rec.parentModel;
         obj->parentBone = rec.parentBone;
+#if !MMD_ORIGINAL_PROFILE
+        attachment.Complete({rec.parentModel, rec.parentBone});
+#endif
         std::memcpy(obj->rotation, rec.rotation, sizeof obj->rotation);
         std::memcpy(obj->position, rec.position, sizeof obj->position);
         if (withFloats) {

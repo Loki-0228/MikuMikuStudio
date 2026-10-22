@@ -297,6 +297,7 @@ std::shared_ptr<HistoryChange> RetainedSceneObject::CaptureRemovalImpl(const Obj
         Objects objects;
         std::shared_ptr<HistoryChange> bindings;
         uint64_t bytes;
+        uint64_t bindingBytes=0;
         bool measured = false;
         struct Candidate final : PreparedHistoryChange {
             std::unique_ptr<PreparedHistoryChange> presence, bindings;
@@ -316,8 +317,12 @@ std::shared_ptr<HistoryChange> RetainedSceneObject::CaptureRemovalImpl(const Obj
                 next->presence = RetainedSceneObject::PreparePresenceBatch(objects, !forward, resources);
                 if (resources && !resources->Result().Complete()) return MMS_E_NOT_READY;
                 if (auto r = bindings->Prepare(forward, next->bindings)) return r;
-                next->measured = measured;
-                next->bytes = resource_budget::Collector::Sum(bytes, resources ? resources->Result().totalBytes : 0);
+                std::uint64_t bindingTarget=0,bindingExtra=0;
+                const bool dynamicBindings=next->bindings->TargetRetainedBytes(bindingTarget);
+                if(dynamicBindings){if(bindingTarget<bindingBytes)return MMS_E_FAILED;bindingExtra=bindingTarget-bindingBytes;}
+                next->measured = measured||dynamicBindings;
+                next->bytes = resource_budget::Collector::Sum(bytes,resource_budget::Collector::Sum(
+                    resources ? resources->Result().totalBytes : 0,bindingExtra));
                 out = std::move(next); return MMS_OK;
             });
         }
@@ -336,6 +341,7 @@ std::shared_ptr<HistoryChange> RetainedSceneObject::CaptureRemovalImpl(const Obj
     }
     next->objects = objects;
     next->bindings = CaptureObjectsRemovalBindings(*app, models, accessories);
+    next->bindingBytes=next->bindings->RetainedBytes();
     const auto overhead = uint64_t(sizeof(Change)) + next->objects.capacity() * sizeof(Objects::value_type) +
         (measured ? 0 : objects.size() * sizeof(Impl)) + next->bindings->RetainedBytes();
     if (resourceBytes > UINT64_MAX - overhead) throw std::overflow_error("object history resource budget");
