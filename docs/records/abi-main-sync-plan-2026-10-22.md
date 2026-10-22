@@ -120,6 +120,8 @@ main 的命令 495 已改为把所有选中骨骼的位移清零、旋转恢复�
 
 ### 独立的手动编号保存版本
 
+2026-10-23 更新：[编号保存](abi-numbered-save-2026-10-23.md)已完成本节 main 行为同步及 ABI 三成员归档。以下为实施前差异记录；版本链硬中断与新 EMM 同快照确认不属于本批已完成范围。
+
 ABI 仍只有 `keepPrevious`，历史版本沿 `.pmm1/.pmm11/...` 链移动。main 新增独立的 `numberedManualVersions`，让手动保存生成 `.pmm1/.pmm2/.pmm3/...`，支持稀疏编号、孤立 EMM 和十进制进位。周期备份不使用此编号策略。main 备份对话框也增加了开关及当前 EMM 保存状态，ABI [autosave_dialog.cpp](../../src/window/autosave_dialog.cpp) 尚未接入。
 
 ABI 选项需要沿实际保存事务传递：[autosave.hpp](../../include/mikumikustudio/autosave.hpp) 和 [autosave.cpp](../../src/app/autosave.cpp) 的设置及 JSON、[pmm_save.cpp](../../src/io/pmm_save.cpp) 的 `SceneSnapshot`、[integration.cpp](../../src/plugins/integration.cpp) 的 `ProjectSave::PublishDisk`、[project_storage.cpp](../../src/plugins/project_storage.cpp) 的 `PublishProjectPair`，最后进入 [pmm_save_versions.hpp](../../src/io/pmm_save_versions.hpp) 的 `Retention::Prepare`。

@@ -3,7 +3,7 @@
 namespace mikumikustudio::autosave {
 inline constexpr int kDialog = 9120;
 enum Control { Folder = 9121, Browse, Interval, Limit, Overwrite, FolderLabel,
-    IntervalLabel, LimitLabel, Explanation, Enabled, KeepPrevious };
+    IntervalLabel, LimitLabel, Explanation, Enabled, KeepPrevious, NumberedManual };
 struct DialogContext { MMDApp* app; Settings value; HWND tooltip = nullptr; };
 INT_PTR CALLBACK DialogProc(HWND, UINT, WPARAM, LPARAM);
 }

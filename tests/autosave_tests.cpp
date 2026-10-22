@@ -213,18 +213,25 @@ void Configure(MMDApp* app, const as::Settings& value) {
 }
 void SettingsCodecChecks() {
     const auto path = root / L"settings-codec.ini";
-    for (bool enabled : {false, true}) for (bool keepPrevious : {false, true}) {
+    for (bool enabled : {false, true}) for (bool keepPrevious : {false, true}) for (bool numbered : {false, true}) {
         as::Settings value; value.directory = crashDirectory.wstring();
-        value.enabled = enabled; value.keepPrevious = keepPrevious;
+        value.enabled = enabled; value.keepPrevious = keepPrevious; value.numberedManualVersions = numbered;
         Check(as::SaveSettings(path, value), "serialize independent periodic and previous-version preferences");
         const auto decoded = as::LoadSettings(path);
-        Check(decoded.enabled == enabled && decoded.keepPrevious == keepPrevious,
-            "legacy override roundtrip preserves every periodic and previous-version combination");
+        Check(decoded.enabled == enabled && decoded.keepPrevious == keepPrevious && decoded.numberedManualVersions == numbered,
+            "legacy override roundtrip preserves all eight periodic previous-version and numbered-save combinations");
     }
     { std::ofstream out(path); out << "[autosave]\nenabled=1\ndirectoryMode=executable\n"; }
     WritePrivateProfileStringW(nullptr, nullptr, nullptr, path.c_str());
     const auto old = as::LoadSettings(path);
-    Check(old.enabled && !old.keepPrevious, "legacy settings without the previous-version key keep it disabled");
+    Check(old.enabled && !old.keepPrevious && !old.numberedManualVersions, "legacy settings without manual-version keys keep both disabled");
+}
+void CheckNoManualBackupVersions(const fs::path& directory) {
+    for (const auto& entry : fs::directory_iterator(directory)) {
+        const auto name = entry.path().filename().wstring(); const auto at = name.find(L".pmm");
+        Check(at == std::wstring::npos || at + 4 == name.size() || name[at + 4] < L'0' || name[at + 4] > L'9',
+            "automatic backup directory contains no manual numbered or repeated-one generations or their sidecars");
+    }
 }
 pmm_extension::Document Extension(const fs::path& path, bool manual = false) {
     int fd = -1;
@@ -238,18 +245,28 @@ pmm_extension::Document Extension(const fs::path& path, bool manual = false) {
 }
 std::wstring Title(HWND window) { wchar_t text[512]{}; GetWindowTextW(window, text, 512); return text; }
 #include "backup_dialog_checks.hpp"
-int dialogAction = 0;
+int dialogAction = 0, effectProbe = -1;
 INT_PTR CALLBACK Probe(HWND dialog, UINT msg, WPARAM wp, LPARAM lp) {
     if (msg != WM_INITDIALOG) return as::DialogProc(dialog, msg, wp, lp);
     as::DialogProc(dialog, msg, wp, lp);
     const auto* c = reinterpret_cast<as::DialogContext*>(lp);
     BackupDialogChecks(dialog, *c);
-    if (!dialogAction) CaptureBackupDialog(dialog, c->app->EnglishUI());
+    if (!dialogAction && effectProbe < 0) CaptureBackupDialog(dialog, c->app->EnglishUI());
     Check(!IsWindowVisible(dialog), "settings dialog never becomes visible during test");
     Check(GetDlgItemInt(dialog, as::Interval, nullptr, FALSE) == c->value.intervalMinutes, "interval is displayed in minutes");
     Check((IsDlgButtonChecked(dialog, as::Enabled) == BST_CHECKED) == c->value.enabled, "enabled checkbox reflects saved setting");
     Check((IsDlgButtonChecked(dialog, as::KeepPrevious) == BST_CHECKED) == c->value.keepPrevious,
         "PMM1 checkbox reflects saved setting");
+    const HWND numbered = GetDlgItem(dialog, as::NumberedManual);
+    Check(numbered && (IsDlgButtonChecked(dialog, as::NumberedManual) == BST_CHECKED) == c->value.numberedManualVersions,
+        "numbered manual-save checkbox exists and reflects its independent saved setting");
+    RECT numberedBounds{}; GetClientRect(numbered, &numberedBounds);
+    HDC numberedDc = GetDC(numbered); SIZE numberedSize{};
+    const auto numberedFont = SelectObject(numberedDc, reinterpret_cast<HFONT>(SendMessageW(numbered, WM_GETFONT, 0, 0)));
+    const auto numberedText = Title(numbered);
+    GetTextExtentPoint32W(numberedDc, numberedText.c_str(), int(numberedText.size()), &numberedSize);
+    SelectObject(numberedDc, numberedFont); ReleaseDC(numbered, numberedDc);
+    Check(!numberedText.empty() && numberedSize.cx + 24 <= numberedBounds.right, "numbered-save caption fits in each real localized dialog");
     const auto keep = GetDlgItem(dialog, as::KeepPrevious);
     RECT bounds{}; GetClientRect(keep, &bounds);
     HDC labelDc = GetDC(keep); SIZE labelSize{};
@@ -262,6 +279,12 @@ INT_PTR CALLBACK Probe(HWND dialog, UINT msg, WPARAM wp, LPARAM lp) {
         "checkbox controls periodic saving only");
     const HWND explanation = GetDlgItem(dialog, as::Explanation);
     const auto text = Title(explanation);
+    if (effectProbe >= 0) {
+        const bool enabled = effectProbe == 2;
+        Check(text == as::Text(c->app, enabled ? L"当前 .emm 保存已开启。" : L"当前 .emm 保存未开启。",
+            enabled ? L".emm saving is on." : L".emm saving is off.", enabled ? L".emm の同時保存：有効" : L".emm の同時保存：無効"),
+            "real explanation distinguishes checked unchecked and missing MME menu state without loading MME");
+    }
     RECT available{}; GetClientRect(explanation, &available);
     RECT measured = available; HDC dc = GetDC(explanation);
     const auto font = reinterpret_cast<HFONT>(SendMessageW(explanation, WM_GETFONT, 0, 0));
@@ -273,6 +296,7 @@ INT_PTR CALLBACK Probe(HWND dialog, UINT msg, WPARAM wp, LPARAM lp) {
         SetDlgItemInt(dialog, as::Interval, 22, FALSE);
         CheckDlgButton(dialog, as::Enabled, BST_UNCHECKED);
         CheckDlgButton(dialog, as::KeepPrevious, c->value.keepPrevious ? BST_UNCHECKED : BST_CHECKED);
+        CheckDlgButton(dialog, as::NumberedManual, c->value.numberedManualVersions ? BST_UNCHECKED : BST_CHECKED);
         as::DialogProc(dialog, WM_COMMAND, IDCANCEL, 0);
     } else {
         if (dialogAction == 1) {
@@ -283,8 +307,10 @@ INT_PTR CALLBACK Probe(HWND dialog, UINT msg, WPARAM wp, LPARAM lp) {
         SetDlgItemInt(dialog, as::Interval, 2, FALSE);
         SetDlgItemInt(dialog, as::Limit, 3, FALSE);
         CheckDlgButton(dialog, as::Overwrite, BST_CHECKED);
-        CheckDlgButton(dialog, as::Enabled, dialogAction == 1 ? BST_CHECKED : BST_UNCHECKED);
-        CheckDlgButton(dialog, as::KeepPrevious, BST_CHECKED);
+        const int combination = dialogAction >= 3 ? dialogAction - 3 : -1;
+        CheckDlgButton(dialog, as::Enabled, (combination >= 0 ? (combination & 1) != 0 : dialogAction == 1) ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(dialog, as::KeepPrevious, (combination < 0 || (combination & 2)) ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(dialog, as::NumberedManual, (combination < 0 || (combination & 4)) ? BST_CHECKED : BST_UNCHECKED);
         as::DialogProc(dialog, WM_COMMAND, IDOK, 0);
     }
     return TRUE;
@@ -302,16 +328,44 @@ void DialogTests(MMDApp* app) {
         const auto count = GetMenuItemCount(help);
         for (int n = 0; n < 3; ++n) as::RefreshMenu(app);
         Check(count == GetMenuItemCount(help), "refresh never duplicates menu item");
-        for (dialogAction = 0; dialogAction < 3; ++dialogAction) {
+        for (int action : {0, 3, 4, 5, 6, 7, 8, 9, 10, 1, 2}) {
+            dialogAction = action;
             as::DialogContext c{app, as::Current()};
             const auto before = as::Current();
+            const auto beforeFile = Bytes(root / L"autosave.ini");
             const auto result = UiDialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(as::kDialog),
                 app->MainWindow(), Probe, reinterpret_cast<LPARAM>(&c));
             Check(result == (dialogAction ? IDOK : IDCANCEL), "settings dialog commits or cancels correctly");
-            Check(dialogAction ? as::Current().enabled == (dialogAction == 1) && as::Current().intervalMinutes == 2 && as::Current().maxBackups == 3 && as::Current().overwriteOldest && as::Current().keepPrevious :
-                as::Current().enabled == before.enabled && as::Current().intervalMinutes == before.intervalMinutes && as::Current().keepPrevious == before.keepPrevious,
-                "settings commit independent switches while cancel preserves both preferences");
+            const int combination = dialogAction >= 3 ? dialogAction - 3 : -1;
+            Check(dialogAction ? as::Current().enabled == (combination >= 0 ? (combination & 1) != 0 : dialogAction == 1) &&
+                as::Current().intervalMinutes == 2 && as::Current().maxBackups == 3 && as::Current().overwriteOldest &&
+                as::Current().keepPrevious == (combination < 0 || (combination & 2) != 0) &&
+                as::Current().numberedManualVersions == (combination < 0 || (combination & 4) != 0) :
+                as::Current().enabled == before.enabled && as::Current().intervalMinutes == before.intervalMinutes &&
+                as::Current().keepPrevious == before.keepPrevious && as::Current().numberedManualVersions == before.numberedManualVersions &&
+                beforeFile == Bytes(root / L"autosave.ini"),
+                "localized dialog commits all independent flag combinations while cancel preserves cached and persisted preferences");
+            const auto reloaded = as::LoadSettings(root / L"autosave.ini");
+            Check(reloaded.enabled == as::Current().enabled && reloaded.keepPrevious == as::Current().keepPrevious &&
+                reloaded.numberedManualVersions == as::Current().numberedManualVersions, "dialog options survive actual INI reload after commit or cancellation");
         }
+        for (effectProbe = 0; effectProbe < 3; ++effectProbe) {
+            struct MenuSwap {
+                HWND window; HMENU old, temporary;
+                explicit MenuSwap(HWND hwnd) : window(hwnd), old(GetMenu(hwnd)), temporary(CreateMenu()) {
+                    Check(temporary && SetMenu(window, temporary), "install only an owned temporary menu for MME status fixture");
+                }
+                ~MenuSwap() { Check(SetMenu(window, old) != FALSE, "restore original complete menu after MME status fixture"); DestroyMenu(temporary); }
+            } menu(app->MainWindow());
+            if (effectProbe) Check(AppendMenuW(menu.temporary, MF_STRING | (effectProbe == 2 ? MF_CHECKED : MF_UNCHECKED), 40022, L"owned effect-save state"),
+                "create a checked or unchecked menu item without any MME DLL");
+            Check((GetMenuState(menu.temporary,40022,MF_BYCOMMAND)==UINT(-1))==(effectProbe==0),"missing MME status case has no fake command");
+            dialogAction = 0; as::DialogContext context{app,as::Current()}; const auto before = Bytes(root/L"autosave.ini");
+            Check(UiDialogBoxParamW(GetModuleHandleW(nullptr),MAKEINTRESOURCEW(as::kDialog),app->MainWindow(),Probe,
+                reinterpret_cast<LPARAM>(&context))==IDCANCEL&&Bytes(root/L"autosave.ini")==before,
+                "MME status inspection and cancellation do not change persistent settings");
+        }
+        effectProbe = -1;
     }
     app->EnglishUI() = 2;
     RefreshMenuLanguage(app);
@@ -389,7 +443,7 @@ int wmain(int argc, wchar_t** argv) {
         std::printf("PASS backup full warning checks=%u\n", checks);
         return 0;
     }
-    Check(!as::Current().enabled && !as::Current().keepPrevious && as::Current().intervalMinutes == 1,
+    Check(!as::Current().enabled && !as::Current().keepPrevious && !as::Current().numberedManualVersions && as::Current().intervalMinutes == 1,
         "periodic and previous-version saving both default off with one minute interval");
     SettingsCodecChecks();
     BackupDirectoryChecks(app, config);
@@ -434,6 +488,7 @@ int wmain(int argc, wchar_t** argv) {
         RaiseException(0xE1234567, EXCEPTION_NONCONTINUABLE, 0, nullptr);
         return 3;
     }
+    value.keepPrevious = true; value.numberedManualVersions = true; Configure(app, value);
     Check(as::BackupNow(app) == as::Result::Saved, "first real PMM backup");
     auto backups = as::Backups(value.directory);
     Check(backups.size() == 1 && backups[0].filename().wstring().find(L"工程原稿_autosave_") == 0, "original name and timestamp in backup filename");
@@ -460,6 +515,7 @@ int wmain(int argc, wchar_t** argv) {
     Check(!fs::exists(first.native()+L".mms-plugins.json"),"rotation removes only the matching plugin sidecar");
     Check(Bytes(sentinelSide) == "ordinary user sidecar", "rotation preserves unrelated manual sidecars");
     for (const auto& retained : as::Backups(value.directory)) CheckPluginData(retained);
+    CheckNoManualBackupVersions(value.directory);
     CheckManualPluginData();
     const auto beforeFailure = as::Backups(value.directory);
     const auto sidecarCount = [&]() {
@@ -499,6 +555,9 @@ int wmain(int argc, wchar_t** argv) {
     as::Tick(app, now + 60002);
     expectedFullWarning = false;
     Check(as::Backups(value.directory).size() == 1, "one-minute timer writes a backup when due");
+    CheckNoManualBackupVersions(value.directory);
+    Check(!fs::exists(manual.wstring()+L"1")&&!fs::exists(manual.wstring()+L"2"),
+        "periodic backups never rotate the manual project even when both manual-version switches are enabled");
     Check(fullWarnings == 1 && as::FolderFull(), "timer warns immediately when its new backup fills the folder");
     as::TryCrashBackup(EXCEPTION_STACK_OVERFLOW); as::TryCrashBackup(0xC0000374);
     std::thread worker([] { as::TryCrashBackup(EXCEPTION_ACCESS_VIOLATION); }); worker.join();
@@ -508,6 +567,8 @@ int wmain(int argc, wchar_t** argv) {
     Check(backups.size() == 1 && backups.back().filename().wstring().find(L"_crash") != std::wstring::npos &&
         as::Backups(value.directory).size() == 1, "safe crash path uses EXE backups instead of the periodic folder");
     CheckPluginData(backups.back());
+    CheckNoManualBackupVersions(crashDirectory);
+    value.keepPrevious = false; value.numberedManualVersions = false; Configure(app, value);
     wcscpy_s(app->EnvFileName(), 256, backups.back().c_str());
     LoadSceneFile();
     Check(app->CurrentFrame() == 222 && app->CameraDistance() == -77, "production loader restores current frame and camera from crash backup");
@@ -554,7 +615,7 @@ int wmain(int argc, wchar_t** argv) {
     CheckManualPluginData();
     value.maxBackups = 3; Configure(app, value);
     const auto persisted = as::LoadSettings(config);
-    Check(!persisted.enabled && persisted.keepPrevious && persisted.intervalMinutes == 2 && persisted.maxBackups == 3 && persisted.overwriteOldest,
+    Check(!persisted.enabled && persisted.keepPrevious && persisted.numberedManualVersions && persisted.intervalMinutes == 2 && persisted.maxBackups == 3 && persisted.overwriteOldest,
         "all settings survive profile reload");
     auto invalid = value; invalid.intervalMinutes = 0; std::wstring error;
     Check(!as::Configure(app, invalid, error), "zero minutes cannot be saved");

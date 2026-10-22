@@ -1,9 +1,93 @@
 // Included in the hidden production save/export fixture namespace.
+void NumberedVersionTests(MMDApp* app) {
+    std::puts("SAVE_TEST phase=numbered-versions");
+    auto settings = autosave::Current(); std::wstring error;
+    settings.enabled = false; settings.keepPrevious = false; settings.numberedManualVersions = false;
+    Check(autosave::Configure(app, settings, error), "disable both manual-version switches independently of periodic backups");
+    const auto plain = root / L"不保留版本.pmm";
+    wcscpy_s(app->EnvFileName(), kPathFieldCapacity, plain.c_str()); app->SceneModified() = 1;
+    SaveCommand(app, 207); const auto plainBefore = Bytes(plain);
+    app->CameraFov() += 1; app->SceneModified() = 1; SaveCommand(app, 207);
+    Check(Bytes(plain) != plainBefore && !fs::exists(plain.wstring()+L"1") && !fs::exists(plain.wstring()+L"2"),
+        "actual manual save with both switches off updates current without generating versions");
+    struct Generation {
+        std::vector<char> project, effect, side; float fov = 0;
+        std::string projectId, saveId;
+    };
+    const auto capture = [&](const fs::path& path) {
+        Generation value; value.project = Bytes(path); value.effect = Bytes(pmm_paths::Effect(path)); value.fov = app->CameraFov();
+#if !MMD_ORIGINAL_PROFILE
+        value.side = Bytes(plugins::PluginSidecar(path)); const auto pair = plugins::ReadPluginProject(path);
+        value.projectId = pair.projectId; value.saveId = pair.saveId;
+        Check(!value.side.empty() && !value.saveId.empty() && pair.mainHash == plugins::FileHash(path),
+            "numbered-save fixture starts from a real verified ABI project pair");
+#endif
+        return value;
+    };
+    const auto matches = [&](const fs::path& path, const Generation& value) {
+        Check(Bytes(path) == value.project && Bytes(pmm_paths::Effect(path)) == value.effect,
+            "numeric version retains the exact original PMM and corresponding existing EMM bytes");
+#if !MMD_ORIGINAL_PROFILE
+        const auto pair = plugins::ReadPluginProject(path);
+        Check(Bytes(plugins::PluginSidecar(path)) == value.side && pair.projectId == value.projectId && pair.saveId == value.saveId &&
+            pair.mainHash == plugins::FileHash(path), "numeric version preserves the correct-suffix sidecar original identity and verified PMM hash");
+#endif
+    };
+    for (bool keep : {false, true}) {
+        settings.keepPrevious = keep; settings.numberedManualVersions = true;
+        Check(autosave::Configure(app, settings, error), "enable numbered manual versions with or without the legacy switch");
+        const auto target = root / (keep ? L"编号优先.pmm" : L"仅编号.pmm");
+        const auto at = [&](unsigned number) { return fs::path(target.wstring()+std::to_wstring(number)); };
+        wcscpy_s(app->EnvFileName(), kPathFieldCapacity, target.c_str());
+        app->CameraFov() = keep ? 52.f : 42.f; app->SceneModified() = 1; SaveCommand(app, 207);
+        Check(!fs::exists(at(1)), "first numbered save does not fabricate a previous version");
+        { std::ofstream stream(pmm_paths::Effect(target)); stream << "numbered EMM alpha"; }
+        const auto oldest = capture(target);
+        for (unsigned sparse : {7u, 11u}) {
+            Check(fs::copy_file(target, at(sparse)) && fs::copy_file(pmm_paths::Effect(target), pmm_paths::Effect(at(sparse))),
+                "seed valid sparse numeric PMM and EMM generations through owned fixture files");
+#if !MMD_ORIGINAL_PROFILE
+            Check(fs::copy_file(plugins::PluginSidecar(target), plugins::PluginSidecar(at(sparse))), "seed exact matching sparse ABI sidecar");
+#endif
+        }
+        app->CameraFov() += 2; app->SceneModified() = 1; SaveCommand(app, 207);
+        matches(at(1), oldest); matches(at(8), oldest); matches(at(12), oldest);
+        Check(!fs::exists(at(7)) && !fs::exists(at(11)) && !fs::exists(at(111)),
+            "all sparse decimal versions advance numerically rather than appending one even when legacy mode is also enabled");
+        { std::ofstream stream(pmm_paths::Effect(target)); stream << "numbered EMM beta"; }
+        const auto middle = capture(target);
+        app->CameraFov() += 3; app->SceneModified() = 1; SaveCommand(app, 207);
+        matches(at(1), middle); matches(at(2), oldest); matches(at(9), oldest); matches(at(13), oldest);
+        Check(!fs::exists(at(8)) && !fs::exists(at(12)) && !fs::exists(at(11)),
+            "successive Save commands shift one to two and preserve sparse numbering gaps");
+        const auto latest = capture(target);
+#if !MMD_ORIGINAL_PROFILE
+        Check(oldest.projectId == middle.projectId && middle.projectId == latest.projectId &&
+            oldest.saveId != middle.saveId && middle.saveId != latest.saveId,
+            "numeric manual saves retain one project identity and mint distinct current save identities");
+#endif
+        HANDLE locked = CreateFileW(target.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+        Check(locked != INVALID_HANDLE_VALUE, "lock current numbered project against replacement");
+        expectError = true; app->CameraFov() += 1; app->SceneModified() = 1; SaveCommand(app, 207);
+        expectError = false; CloseHandle(locked);
+        matches(target, latest); matches(at(1), middle); matches(at(2), oldest); matches(at(9), oldest); matches(at(13), oldest);
+        Check(!fs::exists(at(3)) && !fs::exists(at(10)) && !fs::exists(at(14)),
+            "failed numbered replacement cannot leave partly shifted generations");
+        for (const auto& saved : {std::pair<fs::path, const Generation*>{at(1), &middle}, {at(2), &oldest}, {at(13), &oldest}}) {
+            app->SceneModified() = 0;
+            Check(LoadSceneFile(saved.first.c_str()), "real loader reopens numeric retained project");
+            Check(std::wstring(app->EnvFileName()) == saved.first.wstring() && !app->SceneModified() && app->CameraFov() == saved.second->fov,
+                "numeric retained project reload restores its own original camera state");
+            matches(saved.first, *saved.second);
+        }
+    }
+}
 void VersionTests(MMDApp* app) {
     std::puts("SAVE_TEST phase=versions-configure");
     const auto target = root / L"版本配对.pmm";
     auto value = autosave::Current(); const auto previousSettings = value;
     value.keepPrevious = true;
+    value.numberedManualVersions = false;
     std::wstring error;
     Check(autosave::Configure(app, value, error), "enable PMM1 independent of periodic autosave");
     // wmain sets the Win32 override with SetEnvironmentVariableW; that does
@@ -134,6 +218,7 @@ void VersionTests(MMDApp* app) {
     expectError = true; const bool invalidLoaded = LoadSceneFile(invalid.c_str()); expectError = false;
     Check(!invalidLoaded && std::wstring(app->EnvFileName()) == reopened.wstring(), "invalid header cannot retarget the active project");
     Check(!pmm_paths::IsProject(root / L"folder.pmm" / L"picture.png"), "folder substring cannot route a non-PMM file");
+    NumberedVersionTests(app);
     Check(autosave::Configure(app, previousSettings, error), "restore autosave configuration");
     std::puts("SAVE_TEST phase=versions-complete");
 }

@@ -23,6 +23,12 @@ const wchar_t* PreviousTip(MMDApp* app) {
         L"Saving backs up the old file by appending \"1\" (.pmm → .pmm1, .pmm1 → .pmm11).\r\nNew .emm files require MME's Save with .pmm option.",
         L"保存時、旧ファイルの末尾に「1」を付けてバックアップします（.pmm → .pmm1、.pmm1 → .pmm11）。\r\n.emm は MME の .pmm 同時保存が有効な場合のみ保存します。");
 }
+const wchar_t* NumberedTip(MMDApp* app) {
+    return Text(app,
+        L"手动保存时，将已有编号递增，再将旧当前文件保存为 .pmm1。此选项优先于追加 1，不受定时备份开关和份数上限影响。",
+        L"Manual saves advance existing version numbers and preserve the old current file as .pmm1. This takes priority over appending 1 and is independent of automatic backup enablement and limits.",
+        L"手動保存時に既存の番号を増やし、旧ファイルを .pmm1 に保存します。末尾への 1 の追加より優先され、定期バックアップの有効設定と上限には従いません。");
+}
 void AddTip(HWND dialog, DialogContext& c, int id) {
     TOOLINFOW tool{sizeof(tool)};
     tool.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
@@ -81,9 +87,13 @@ INT_PTR CALLBACK DialogProc(HWND dialog, UINT msg, WPARAM wp, LPARAM lp) {
         label(LimitLabel, L".pmm 备份上限（份）", L".pmm backup limit", L".pmm バックアップ上限（件）");
         label(Overwrite, L"达到上限时覆盖最旧的备份", L"Replace oldest backups when the limit is reached", L"上限に達したら最も古いバックアップを置き換える");
         label(KeepPrevious, L"同时保存 .pmm1", L"Also keep .pmm1", L".pmm1 も保存する");
-        label(Explanation, L"备份保留工程名和时间戳。\r\nMME 启用随 .pmm 保存时，同时保存 .emm。",
-            L"Backups include the project name and timestamp.\r\nThe .emm file follows MME's Save with .pmm setting.",
-            L"元の名前と日時を付けてバックアップします。\r\n.emm は MME の .pmm 同時保存設定に従います。");
+        label(NumberedManual, L"手动保存保留编号版本（.pmm1、.pmm2）",
+            L"Keep numbered manual saves (.pmm1, .pmm2)", L"手動保存の連番を保持（.pmm1、.pmm2）");
+        const UINT effectSave = GetMenuState(GetMenu(c->app->MainWindow()), 40022, MF_BYCOMMAND);
+        const bool effectEnabled = effectSave != UINT(-1) && (effectSave & MF_CHECKED);
+        label(Explanation, effectEnabled ? L"当前 .emm 保存已开启。" : L"当前 .emm 保存未开启。",
+            effectEnabled ? L".emm saving is on." : L".emm saving is off.",
+            effectEnabled ? L".emm の同時保存：有効" : L".emm の同時保存：無効");
         label(IDOK, L"确定", L"OK", L"OK"); label(IDCANCEL, L"取消", L"Cancel", L"キャンセル");
         SetDlgItemTextW(dialog, Folder, DisplayDirectory(c->value.directory).c_str());
         SetDlgItemInt(dialog, Interval, c->value.intervalMinutes, FALSE);
@@ -93,6 +103,7 @@ INT_PTR CALLBACK DialogProc(HWND dialog, UINT msg, WPARAM wp, LPARAM lp) {
         CheckDlgButton(dialog, Overwrite, c->value.overwriteOldest ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(dialog, Enabled, c->value.enabled ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(dialog, KeepPrevious, c->value.keepPrevious ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(dialog, NumberedManual, c->value.numberedManualVersions ? BST_CHECKED : BST_UNCHECKED);
         c->tooltip = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr,
             WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX, CW_USEDEFAULT, CW_USEDEFAULT,
             CW_USEDEFAULT, CW_USEDEFAULT, dialog, nullptr, GetModuleHandleW(nullptr), nullptr);
@@ -101,6 +112,7 @@ INT_PTR CALLBACK DialogProc(HWND dialog, UINT msg, WPARAM wp, LPARAM lp) {
             SendMessageW(c->tooltip, TTM_SETMAXTIPWIDTH, 0, width.right);
             SendMessageW(c->tooltip, TTM_SETDELAYTIME, TTDT_AUTOPOP, 15000);
             AddTip(dialog, *c, KeepPrevious);
+            AddTip(dialog, *c, NumberedManual);
             AddTip(dialog, *c, Folder);
         }
         return TRUE;
@@ -110,7 +122,9 @@ INT_PTR CALLBACK DialogProc(HWND dialog, UINT msg, WPARAM wp, LPARAM lp) {
         auto* tip = reinterpret_cast<NMTTDISPINFOW*>(lp);
         if (tip && tip->hdr.hwndFrom == c->tooltip && tip->hdr.code == TTN_GETDISPINFOW) {
             tip->lpszText = tip->hdr.idFrom == reinterpret_cast<UINT_PTR>(GetDlgItem(dialog, KeepPrevious))
-                ? const_cast<wchar_t*>(PreviousTip(c->app)) : c->value.directory.data();
+                ? const_cast<wchar_t*>(PreviousTip(c->app))
+                : tip->hdr.idFrom == reinterpret_cast<UINT_PTR>(GetDlgItem(dialog, NumberedManual))
+                    ? const_cast<wchar_t*>(NumberedTip(c->app)) : c->value.directory.data();
             return TRUE;
         }
     }
@@ -128,6 +142,7 @@ INT_PTR CALLBACK DialogProc(HWND dialog, UINT msg, WPARAM wp, LPARAM lp) {
         value.overwriteOldest = IsDlgButtonChecked(dialog, Overwrite) == BST_CHECKED;
         value.enabled = IsDlgButtonChecked(dialog, Enabled) == BST_CHECKED;
         value.keepPrevious = IsDlgButtonChecked(dialog, KeepPrevious) == BST_CHECKED;
+        value.numberedManualVersions = IsDlgButtonChecked(dialog, NumberedManual) == BST_CHECKED;
         std::wstring error;
         if (!a || !b) error = Text(c->app, L"请填写有效的备份间隔和数量上限。", L"Enter a valid interval and backup limit.", L"有効なバックアップ間隔と上限を入力してください。");
         if (!error.empty() || !Configure(c->app, value, error)) { Error(dialog, c->app, error); return TRUE; }

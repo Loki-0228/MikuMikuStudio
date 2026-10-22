@@ -396,13 +396,13 @@ ProjectSave::ProjectSave(MMDApp* app) : impl_(std::make_unique<Impl>()) {
     }
 }
 ProjectSave::~ProjectSave() = default;
-bool ProjectSave::PublishDisk(const wchar_t* staged, const wchar_t* destination, bool copy, bool keepPrevious) noexcept {
+bool ProjectSave::PublishDisk(const wchar_t* staged, const wchar_t* destination, bool copy, bool keepPrevious, bool numberedManualVersions) noexcept {
     if (!staged || !*staged || !destination || !*destination) return false;
     auto expected = Impl::Stage::Captured;
     if (!impl_->stage.compare_exchange_strong(expected, Impl::Stage::Publishing)) return false;
     try {
         impl_->destination = destination; impl_->copy = copy;
-        PublishProjectPair(fs::absolute(destination),fs::absolute(staged),impl_->data,copy,{},keepPrevious);
+        PublishProjectPair(fs::absolute(destination),fs::absolute(staged),impl_->data,copy,{},keepPrevious,numberedManualVersions);
         impl_->stage.store(Impl::Stage::Published, std::memory_order_release);
         return true;
     } catch (const std::exception& e) {

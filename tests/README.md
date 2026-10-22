@@ -308,3 +308,7 @@ MME 测试需在独立目录放入三个 MME DLL，日志必须显示 `PLUGINS m
 完整配置隐藏宿主 `MikuMikuDance.exe <绝对新输出目录> mme-storage` 必须从无 `data` 的独立复制安装运行。安装内需有 `mme-snapshot-test-installation.txt`，精确无 BOM、LF 内容为 `MMS MME snapshot test installation v1\n`。不得复制或加载 MME、MMHack、MMV；输出目录必须不存在且父目录存在。运行继承 Default 桌面，只隐藏和控制自身窗口。
 
 该模式执行生产快照目录和文件流程、INI 编辑与注册绘制，通知接收边界由测试控制。只伪装当前线程最初两次模块门禁，之后全部恢复真实查询结果。覆盖原自动保存状态、独立快照、旧文件保留及三类失败，不证明第三方插件消费、相对路径或视觉效果。测试保留证据文件，不递归清理。本组为保留型回归；生产入口移除或有等效真实文件与通知顺序回归后才能删除。详见[验收记录](../docs/records/abi-mme-data-2026-10-23.md)。
+
+## 手动编号保存专项
+
+`plugin_abi_tests --version-storage-only` 检查串 1 和数字轮转、三成员配对、锁与恢复；仅操作进程专属临时目录，保留文件供复查。`project_save_export_tests <独立输出目录> --numbered-only` 使用自有隐藏窗口实际保存并重开编号工程，适合原始配置，避免运行该配置禁用的最近工程断言。两者仍需复制 EXE 到独立安装、空 PLUGINS、受控 TEMP 和 Default 桌面。中央设置和三语言对话框沿用 autosave 专项。证据和未覆盖范围见[编号保存记录](../docs/records/abi-numbered-save-2026-10-23.md)。

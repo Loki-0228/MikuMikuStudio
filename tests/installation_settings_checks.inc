@@ -42,6 +42,27 @@ void SettingsDirectoryNormalizationChecks(const fs::path& folder,const as::Setti
         "directory normalization preserves a custom drive root instead of walking above it");
 }
 
+void SettingsVersionSwitchChecks(const as::Settings& original,bool overrideMode){
+    std::wstring error;
+    for(bool enabled:{false,true})for(bool keep:{false,true})for(bool numbered:{false,true}){
+        auto value=original;value.enabled=enabled;value.keepPrevious=keep;value.numberedManualVersions=numbered;
+        Check(as::Configure(nullptr,value,error),"persist every independent manual-version and periodic switch combination");
+        Check(as::Current().enabled==enabled&&as::Current().keepPrevious==keep&&as::Current().numberedManualVersions==numbered,
+            "configuration preserves all three independent switches in memory");
+        if(overrideMode){
+            const auto decoded=as::LoadSettings(root/L"override.ini");
+            Check(decoded.enabled==enabled&&decoded.keepPrevious==keep&&decoded.numberedManualVersions==numbered,
+                "explicit override reload preserves all switch combinations");
+        }else{
+            std::string body;Check(system_settings::ReadSection("autosave",body)==system_settings::Result::Ok,"read real central autosave section after each combination");
+            const auto saved=settings_json::Object(body);
+            Check(settings_json::Bool(saved,"enabled",!enabled)==enabled&&settings_json::Bool(saved,"keepPrevious",!keep)==keep&&
+                settings_json::Bool(saved,"numberedManualVersions",!numbered)==numbered,
+                "central JSON persists each flag independently including explicit false values");
+        }
+    }
+    Check(as::Configure(nullptr,original,error),"restore original preferences after version-switch persistence matrix");
+}
 // The runner places this EXE in a disposable installation. Exercise the real
 // public preference writer/reader with no HWND, renderer or shader compiler.
 void OutlineModeSettingsChecks(MMDApp& probe,const fs::path& folder,bool migrationMode){
@@ -105,13 +126,13 @@ void SettingsLocationChecks(const fs::path& executable,const std::wstring& mode)
     if(mode==L"--settings-fresh"){
         Check(system_settings::WriteSection("autosave","{\"enabled\":false}")==system_settings::Result::Ok,
             "seed a pre-existing central autosave section from before the previous-version option");
-        { std::ofstream out(legacyAutosave); out << "[autosave]\nkeepPrevious=1\ndirectoryMode=executable\n"; }
-        Check(as::LoadSettings(legacyAutosave).keepPrevious,"local INI fixture requests previous-version preservation");
+        { std::ofstream out(legacyAutosave); out << "[autosave]\nkeepPrevious=1\nnumberedManualVersions=1\ndirectoryMode=executable\n"; }
+        Check(as::LoadSettings(legacyAutosave).keepPrevious&&as::LoadSettings(legacyAutosave).numberedManualVersions,"local INI fixture requests both manual-version switches");
     }
     if (migrationMode) {
         Check(!fs::exists(config), "migration fixture starts without central settings");
         fs::create_directories(config.parent_path());
-        { std::ofstream out(legacyAutosave); out << "[autosave]\nenabled=0\nintervalMinutes=3\nmaxBackups=9\nkeepPrevious=1\n";
+        { std::ofstream out(legacyAutosave); out << "[autosave]\nenabled=0\nintervalMinutes=3\nmaxBackups=9\nkeepPrevious=1\nnumberedManualVersions=1\n";
             out << (relativeMigration ? "directoryMode=relative\ndirectory=data/portable-legacy\n" : "directoryMode=executable\n"); }
         { std::ofstream out(folder/L"data"/L"antialias.ini"); out << "[Antialias]\nAlgorithm=4\nEnabled=0\nOutlineMode=1\n"; }
         { std::ofstream out(folder/L"data"/L"processor.ini"); out << "[Vertices]\nMode=cpu\n"; }
@@ -120,7 +141,7 @@ void SettingsLocationChecks(const fs::path& executable,const std::wstring& mode)
     }
     const auto current=as::Current();std::wstring error;
     if(mode==L"--settings-fresh"){
-        Check(!current.keepPrevious,"an existing central section defaults a missing key off instead of importing the old INI again");
+        Check(!current.keepPrevious&&!current.numberedManualVersions,"an existing central section defaults missing manual-version keys off instead of importing the old INI again");
         Check(fs::remove(legacyAutosave),"remove the disposable migration-precedence fixture");
     }
     Check(processor::ConfigPath()==config.wstring(),"processor preferences use this installation central settings");
@@ -131,11 +152,11 @@ void SettingsLocationChecks(const fs::path& executable,const std::wstring& mode)
         wcscpy_s(probe->state.exeDir, folder.c_str());
         antialias::ReloadUserSettings(probe.get());
         if (migrationMode) {
-            Check(!current.enabled && current.keepPrevious && current.intervalMinutes==3 && current.maxBackups==9 &&
+            Check(!current.enabled && current.keepPrevious && current.numberedManualVersions && current.intervalMinutes==3 && current.maxBackups==9 &&
                 current.directory==(folder/L"data"/(relativeMigration?L"portable-legacy":L"backups")).wstring(), "autosave imports local INI once");
             std::string migrated;
             Check(system_settings::ReadSection("autosave",migrated)==system_settings::Result::Ok&&
-                settings_json::Bool(settings_json::Object(migrated),"keepPrevious",false),
+                settings_json::Bool(settings_json::Object(migrated),"keepPrevious",false)&&settings_json::Bool(settings_json::Object(migrated),"numberedManualVersions",false),
                 "INI migration stores previous-version preservation in the central autosave section even with periodic saving disabled");
             if(relativeMigration){const auto saved=settings_json::Object(migrated);
                 Check(settings_json::String(saved,"directoryMode")=="relative" && settings_json::String(saved,"directory")=="data\\portable-legacy",
@@ -197,7 +218,7 @@ void SettingsLocationChecks(const fs::path& executable,const std::wstring& mode)
         antialias::Release(restarted.get());
     }
     if(mode==L"--settings-fresh" || mode==L"--settings-default" || overrideMode){
-        Check(!current.enabled && !current.keepPrevious && current.intervalMinutes==1 && current.maxBackups==100 && current.directory==(folder/L"data"/L"backups").wstring(),
+        Check(!current.enabled && !current.keepPrevious && !current.numberedManualVersions && current.intervalMinutes==1 && current.maxBackups==100 && current.directory==(folder/L"data"/L"backups").wstring(),
             "installation uses its own data/backups and ignores the shared legacy profile");
     }
     if(mode==L"--settings-fresh" || overrideMode){
@@ -211,6 +232,7 @@ void SettingsLocationChecks(const fs::path& executable,const std::wstring& mode)
             Check(!wcscmp(value,L"data/backups"),"override backup setting stores no previous EXE absolute address");
             Check(GetPrivateProfileIntW(L"autosave",L"keepPrevious",-1,target.c_str())==0,
                 "explicit override serializes the disabled previous-version default");
+            Check(GetPrivateProfileIntW(L"autosave",L"numberedManualVersions",-1,target.c_str())==0,"explicit override serializes numbered saving disabled by default");
             Check(!fs::exists(config),"test override does not write production data settings");
         } else {
             std::string body;
@@ -219,18 +241,20 @@ void SettingsLocationChecks(const fs::path& executable,const std::wstring& mode)
             Check(settings_json::String(saved,"directoryMode")=="executable","default directory persists as executable-relative mode");
             Check(settings_json::String(saved,"directory")=="data/backups","default backup stores no previous EXE absolute address");
             Check(!settings_json::Bool(saved,"keepPrevious",true),"central settings serialize the disabled previous-version default as a boolean");
+            Check(!settings_json::Bool(saved,"numberedManualVersions",true),"central settings explicitly serialize numbered saving disabled by default");
         }
         SettingsDirectoryNormalizationChecks(folder,current,overrideMode);
+        SettingsVersionSwitchChecks(current,overrideMode);
     }
     if(mode==L"--settings-custom"){
-        auto custom=current;custom.directory=(root/L"custom").wstring();custom.enabled=true;custom.keepPrevious=true;custom.intervalMinutes=2;custom.maxBackups=7;
+        auto custom=current;custom.directory=(root/L"custom").wstring();custom.enabled=true;custom.keepPrevious=true;custom.numberedManualVersions=true;custom.intervalMinutes=2;custom.maxBackups=7;
         Check(as::Configure(nullptr,custom,error),"save custom per-installation backup directory");
     }
     if(mode==L"--settings-custom" || mode==L"--settings-check-custom"){
         std::string body;
         Check(system_settings::ReadSection("autosave",body)==system_settings::Result::Ok,"reload central autosave section");
         const auto saved=settings_json::Object(body);
-        Check(as::Current().enabled&&as::Current().keepPrevious&&settings_json::Bool(saved,"enabled",false)&&settings_json::Bool(saved,"keepPrevious",false) &&
+        Check(as::Current().enabled&&as::Current().keepPrevious&&as::Current().numberedManualVersions&&settings_json::Bool(saved,"enabled",false)&&settings_json::Bool(saved,"keepPrevious",false)&&settings_json::Bool(saved,"numberedManualVersions",false) &&
             as::Current().directory==(root/L"custom").wstring() && settings_json::String(saved,"directoryMode")=="relative" &&
             plugins::Wide(settings_json::String(saved,"directory"))==as::DisplayDirectory((root/L"custom").wstring()) &&
             settings_json::UInt(saved,"intervalMinutes",0)==2 && settings_json::UInt(saved,"maxBackups",0)==7,
@@ -239,13 +263,14 @@ void SettingsLocationChecks(const fs::path& executable,const std::wstring& mode)
     if(mode==L"--settings-readonly"){
         const auto handle=CreateFileW(config.c_str(),GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
         Check(handle!=INVALID_HANDLE_VALUE,"lock this installation settings against replacement");
-        auto next=current;next.intervalMinutes=current.intervalMinutes+1;next.keepPrevious=!current.keepPrevious;
+        auto next=current;next.intervalMinutes=current.intervalMinutes+1;next.keepPrevious=!current.keepPrevious;next.numberedManualVersions=!current.numberedManualVersions;
         const bool saved=as::Configure(nullptr,next,error);CloseHandle(handle);
         std::string body;
         Check(system_settings::ReadSection("autosave",body)==system_settings::Result::Ok,"read unchanged settings after failed save");
-        Check(!saved && !error.empty() && as::Current().intervalMinutes==current.intervalMinutes&&as::Current().keepPrevious==current.keepPrevious &&
+        Check(!saved && !error.empty() && as::Current().intervalMinutes==current.intervalMinutes&&as::Current().keepPrevious==current.keepPrevious&&as::Current().numberedManualVersions==current.numberedManualVersions &&
             settings_json::UInt(settings_json::Object(body),"intervalMinutes",0)==current.intervalMinutes&&
-            settings_json::Bool(settings_json::Object(body),"keepPrevious",!current.keepPrevious)==current.keepPrevious,
+            settings_json::Bool(settings_json::Object(body),"keepPrevious",!current.keepPrevious)==current.keepPrevious&&
+            settings_json::Bool(settings_json::Object(body),"numberedManualVersions",!current.numberedManualVersions)==current.numberedManualVersions,
             "failed local settings save preserves old settings instead of falling back to a shared profile");
     }
     std::printf("PASS autosave settings location checks=%u\n",checks);

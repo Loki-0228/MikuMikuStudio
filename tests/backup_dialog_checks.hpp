@@ -22,17 +22,27 @@ void BackupDialogChecks(HWND dialog,const as::DialogContext& context) {
         "previous-version checkbox has a short extension-based caption");
     Check(Title(GetDlgItem(dialog,as::Folder))==as::DisplayDirectory(context.value.directory),
         "backup folder displays an EXE-relative path");
-    Check(context.tooltip && SendMessageW(context.tooltip,TTM_GETTOOLCOUNT,0,0)==2,
-        "version checkbox and folder both have registered hover tools");
+    Check(Title(GetDlgItem(dialog,as::NumberedManual))==as::Text(context.app,
+        L"手动保存保留编号版本（.pmm1、.pmm2）",L"Keep numbered manual saves (.pmm1, .pmm2)",L"手動保存の連番を保持（.pmm1、.pmm2）"),
+        "numbered manual-save checkbox uses its exact localized caption");
+    Check(context.tooltip && SendMessageW(context.tooltip,TTM_GETTOOLCOUNT,0,0)==3,
+        "both independent version checkboxes and folder have registered hover tools");
     wchar_t hint[1024]{};
     TOOLINFOW tool{sizeof(tool)};tool.hwnd=dialog;
     tool.uId=reinterpret_cast<UINT_PTR>(GetDlgItem(dialog,as::KeepPrevious));tool.lpszText=hint;
     SendMessageW(context.tooltip,TTM_GETTEXTW,1024,reinterpret_cast<LPARAM>(&tool));
     Check(wcsstr(hint,L".pmm1") && wcsstr(hint,L"MME") && wcsstr(hint,L".emm"),
         "hover text explains old versions and MME's conditional effect saving in all languages");
+    hint[0]=0;tool.uId=reinterpret_cast<UINT_PTR>(GetDlgItem(dialog,as::NumberedManual));
+    SendMessageW(context.tooltip,TTM_GETTEXTW,1024,reinterpret_cast<LPARAM>(&tool));
+    Check(wcsstr(hint,L".pmm1")!=nullptr,"numbered-save option has its own actual hover explanation in every language");
     RECT bounds{};GetClientRect(dialog,&bounds);
-    RECT units{0,0,300,195};MapDialogRect(dialog,&units);
+    RECT units{0,0,300,214};MapDialogRect(dialog,&units);
     Check(bounds.right<=units.right && bounds.bottom<=units.bottom,"backup settings use the compact dialog size");
+    RECT numbered{},explanation{},button{};
+    GetWindowRect(GetDlgItem(dialog,as::NumberedManual),&numbered);
+    GetWindowRect(GetDlgItem(dialog,as::Explanation),&explanation);GetWindowRect(GetDlgItem(dialog,IDOK),&button);
+    Check(numbered.bottom<=explanation.top&&explanation.bottom<=button.top,"numbered option explanation and footer never overlap");
 }
 void BackupDirectoryChecks(MMDApp* app,const fs::path& config) {
     const auto before=as::Current();std::wstring error;

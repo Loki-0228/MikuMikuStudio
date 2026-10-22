@@ -1134,6 +1134,7 @@ struct SceneSnapshot {
     std::wstring target;
     bool backup = false;
     bool keepPrevious = false;
+    bool numberedManualVersions = false;
     std::vector<unsigned char> bytes;
     pmm_extension::Document extensions;
     mesh_bake_cache::SaveSnapshot meshCache;
@@ -1294,6 +1295,7 @@ static bool CaptureScene(MMDApp* app, const wchar_t* target, bool backup, SceneS
     if (snapshot.target.size() >= kPathFieldCapacity) return false;
     snapshot.backup = backup;
     snapshot.keepPrevious = !backup && pmm_paths::IsProject(snapshot.target) && autosave::Current().keepPrevious;
+    snapshot.numberedManualVersions = !backup && pmm_paths::IsProject(snapshot.target) && autosave::Current().numberedManualVersions;
     snapshot.compatibility = compatibility;
     struct Sink {
         explicit Sink(std::vector<unsigned char>& bytes) { pmmSnapshotSink = &bytes; }
@@ -1362,10 +1364,10 @@ static bool WriteSnapshot(SceneSnapshot& snapshot) {
     const bool closed = _close(fd) == 0; fd = -1;
     if (!written || !closed) return false;
 #if !MMD_ORIGINAL_PROFILE
-    if (!snapshot.plugins->PublishDisk(temporary, target, backup, snapshot.keepPrevious)) return false;
+    if (!snapshot.plugins->PublishDisk(temporary, target, backup, snapshot.keepPrevious, snapshot.numberedManualVersions)) return false;
 #else
-    if (snapshot.keepPrevious) {
-        if (!pmm_versions::Publish(temporary, destination)) return false;
+    if (snapshot.keepPrevious || snapshot.numberedManualVersions) {
+        if (!pmm_versions::Publish(temporary, destination, snapshot.numberedManualVersions)) return false;
     } else if (!MoveFileExW(temporary, destination,
         (backup ? 0 : MOVEFILE_REPLACE_EXISTING) | MOVEFILE_WRITE_THROUGH)) return false;
 #endif

@@ -555,7 +555,8 @@ INT_PTR CALLBACK Probe(HWND dialog, UINT msg, WPARAM wp, LPARAM lp) {
 int wmain(int argc, wchar_t** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     std::puts("SAVE_TEST phase=start");
-    Check(argc == 2, "isolated artifact directory required");
+    const bool numberedOnly = argc == 3 && std::wstring(argv[2]) == L"--numbered-only";
+    Check(argc == 2 || numberedOnly, "isolated artifact directory required");
     root = fs::absolute(argv[1]); fs::create_directories(root);
     history = root / L"recent-pmm.txt";
     SetEnvironmentVariableW(L"MIKUMIKUSTUDIO_AUTOSAVE_CONFIG", (root / L"autosave.ini").c_str());
@@ -573,6 +574,12 @@ int wmain(int argc, wchar_t** argv) {
     auto* app = new MMDApp; g_Block = app; app->state = MMDAppState{}; app->InitDefaults();
     std::puts("SAVE_TEST phase=initialize-host");
     Check(InitMainWindowAndD3D(app, GetModuleHandleW(nullptr), SW_HIDE), "initialize hidden production app");
+    if (numberedOnly) {
+        autosave::Initialize(app);
+        NumberedVersionTests(app);
+        ShutdownCleanup(app); g_Block = nullptr; delete app; UnhookWindowsHookEx(hook);
+        std::printf("PASS numbered save checks=%u\n", checks); return 0;
+    }
     if (const auto* modelPath = _wgetenv(L"MMS_MODEL_LOAD_VIEW_TEST")) {
         CheckModelLoadView(app, modelPath);
         ShutdownCleanup(app); g_Block = nullptr; delete app; UnhookWindowsHookEx(hook);

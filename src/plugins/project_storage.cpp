@@ -115,7 +115,7 @@ PluginProject ReadPluginProject(const fs::path& target){
     RecoverProjectPair(target);if(!fs::exists(PluginSidecar(target))){PluginProject p;p.projectId=StorageId();return p;}
     auto p=DecodeProject(ReadFile(PluginSidecar(target),kMaxSidecar));if(FileHash(target)!=p.mainHash)throw std::runtime_error("PMM and plugin sidecar hashes differ; explicit association required");return p;
 }
-void PublishProjectPair(const fs::path& target,const fs::path& stagedMain,PluginProject& data,bool createOnly,const std::function<void(unsigned)>& step,bool keepPrevious){
+void PublishProjectPair(const fs::path& target,const fs::path& stagedMain,PluginProject& data,bool createOnly,const std::function<void(unsigned)>& step,bool keepPrevious,bool numberedManualVersions){
     Lock lock(target);Recover(target);
     if(!SamePath(fs::absolute(target).parent_path(),fs::absolute(stagedMain).parent_path()))throw std::invalid_argument("staged PMM must share directory");
     if(createOnly&&(fs::exists(target)||fs::exists(PluginSidecar(target))))throw std::runtime_error("project already exists");
@@ -135,7 +135,7 @@ void PublishProjectPair(const fs::path& target,const fs::path& stagedMain,Plugin
         const auto newSideHash=FileHash(p.newSide);
         Check(Matches(p.newMain,data.mainHash),"verify staged PMM");
         const auto record="{\"schemaVersion\":1,\"saveId\":\""+data.saveId+"\",\"newMain\":\""+data.mainHash+"\",\"newSide\":\""+newSideHash+"\",\"oldMain\":\""+oldMain+"\",\"oldSide\":\""+oldSide+"\"}";
-        if(keepPrevious&&!createOnly)Check(retention.Prepare(target,true),"retain previous project version");
+        if((keepPrevious||numberedManualVersions)&&!createOnly)Check(retention.Prepare(target,true,numberedManualVersions),"retain previous project version");
         WriteDurable(p.tempJournal,record);Move(p.tempJournal,p.journal,false);journal=true;checkpoint(1);
         firstMoveAttempted=true;
         Move(p.newMain,p.main,!createOnly);destinationChanged=true;checkpoint(2);Move(p.newSide,p.side,!createOnly);checkpoint(3);

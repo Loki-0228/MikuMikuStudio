@@ -382,6 +382,11 @@ static void LifecycleChecks(const fs::path& root, const fs::path& fixture) {
 int wmain(int argc, wchar_t** argv) {
     const fs::path root = fs::temp_directory_path() / (L"mms-abi-contract-" + std::to_wstring(GetCurrentProcessId()));
     try {
+        if (argc == 2 && std::wstring(argv[1]) == L"--version-storage-only") {
+            CHECK(!fs::exists(root)); fs::create_directories(root);
+            VersionStorageChecks(root);
+            std::cout << "PASS version storage checks=" << checks << "\n"; return 0;
+        }
         if (argc == 2 && std::wstring(argv[1]) == L"--binding-observation-only") {
             BindingObservationChecks();
             std::cout << "PASS binding observation checks=" << checks << "\n"; return 0;
