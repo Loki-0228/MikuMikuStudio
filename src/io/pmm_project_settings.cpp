@@ -7,6 +7,7 @@
 #define NOMINMAX
 #include <Windows.h>
 #include <io.h>
+#include "pmm_read_buffer.hpp"
 #include "mikumikustudio/pmm_project_settings.hpp"
 #include "mikumikustudio/bone_scale_io.hpp"
 #include "mikumikustudio/animation_curve_host.hpp"
@@ -130,7 +131,14 @@ void Load(MMDApp& app, int fd, const std::vector<PmmModelAdaptation>& adaptedMod
     bone_scale_io::ResetPmm();
     pmm_extension::Document document;
     std::uint64_t standardSize = 0;
-    const auto consumed = _telli64(fd);
+    // The standard parser can have unread bytes from the MMS trailer in its
+    // window. Give the existing raw trailer reader the consumed position on
+    // this same descriptor; a failed rewind refuses the extension handoff.
+    if (!pmm_io::SyncExternalPosition(fd)) {
+        runtime_log::Write("PMM extension ignored: standard-body position cannot be synchronised");
+        return;
+    }
+    const auto consumed = pmm_io::Position(fd);
     const auto result = pmm_extension::Read(fd, document, standardSize);
     if (result != pmm_extension::ReadResult::Loaded || consumed < 0 ||
         standardSize != static_cast<std::uint64_t>(consumed)) {

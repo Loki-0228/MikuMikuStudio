@@ -256,7 +256,24 @@ std::array<float, 16> UpdateAdaptiveShadowMap(MMDApp* app, const float frame[16]
         direction.x*direction.x + direction.y*direction.y < directionLength*1e-8f;
     if (degenerate || !std::all_of(referenceProjection.begin(), referenceProjection.end(),
             [](float value) { return std::isfinite(value); })) referenceProjection = safeProjection;
-    const auto lightProjection = FitReferenceShadowProjection(referenceProjection, scene);
+    // Cover the focus plane seen by the current camera as well as the user's
+    // shadow range. Distant stage extents must not dilute near self shadows.
+    const float aspect = (std::max)(1.f, std::fabs(r->aspectRatio));
+    const float halfFov = (std::clamp)(app->CameraFov(), 1.f, 170.f) * .00872664626f;
+    float viewRadius = std::fabs(app->CameraDistance()) * std::tan(halfFov) *
+        std::sqrt(1.f + aspect*aspect);
+    Matrix cameraProjection{};
+    if (device && SUCCEEDED(device->GetTransform(D3DTS_PROJECTION,
+            reinterpret_cast<D3DMATRIX*>(&cameraProjection))) &&
+        std::fabs(cameraProjection.m[0][0]) > 1e-6f &&
+        std::fabs(cameraProjection.m[1][1]) > 1e-6f) {
+        const float depth = cameraProjection.m[3][3] == 1.f
+            ? 1.f : std::fabs(app->CameraDistance());
+        viewRadius = std::hypot(depth / cameraProjection.m[0][0],
+                                depth / cameraProjection.m[1][1]);
+    }
+    const auto lightProjection = FitFocusedShadowProjection(referenceProjection, scene,
+        focus, app->LightDirection(), app->ShadowDistance(), app->ShadowMode(), viewRadius);
     const float referenceScale = MinimumShadowScale(referenceProjection, scene);
     D3DCAPS9 caps{};
     if (!device || FAILED(device->GetDeviceCaps(&caps))) return lightProjection;

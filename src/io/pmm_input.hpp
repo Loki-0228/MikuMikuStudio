@@ -12,6 +12,7 @@ namespace mikumikustudio::pmm_io {
 class Input final {
     int descriptor_;
     std::optional<CheckedReads> checked_;
+    std::optional<ReadAhead> readAhead_;
 public:
     explicit Input(int descriptor = -1) noexcept : descriptor_(descriptor) {}
     ~Input() noexcept { Close(); }
@@ -21,6 +22,11 @@ public:
     Input& operator=(Input&&) = delete;
 
     int Descriptor() const noexcept { return descriptor_; }
+    bool EnableReadAhead() noexcept {
+        if (descriptor_ < 0) return false;
+        if (!readAhead_) readAhead_.emplace(descriptor_);
+        return true;
+    }
     bool EnableCheckedReads() noexcept {
         if (descriptor_ < 0) return false;
         if (!checked_) checked_.emplace(descriptor_);
@@ -32,6 +38,8 @@ public:
         const int descriptor = std::exchange(descriptor_, -1);
         // End the PMM read context before a different file can reuse its number.
         checked_.reset();
+        RetireDescriptorReadContexts(descriptor);
+        readAhead_.reset();
         if (descriptor >= 0) _close(descriptor);
     }
 };

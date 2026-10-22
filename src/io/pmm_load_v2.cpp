@@ -245,7 +245,7 @@ void LogPmmModelStage(int fd, const char* stage, std::int32_t fileCount,
         return;
     fprintf(stream, "stage=%s file_pos=%ld file_count=%ld model_count=%ld "
                     "model_data=%p\r\n",
-            stage, fd >= 0 ? _tell(fd) : -1L, static_cast<long>(fileCount),
+            stage, fd >= 0 ? Tell(fd) : -1L, static_cast<long>(fileCount),
             static_cast<long>(modelCount), modelData);
     fclose(stream);
 }
@@ -261,7 +261,7 @@ void LogPmmHeapState(int fd, const char* stage) {
         return;
     const BOOL intact = HeapValidate(GetProcessHeap(), 0, nullptr);
     fprintf(stream, "stage=heap-%s intact=%d file_pos=%ld\r\n", stage,
-            intact != FALSE ? 1 : 0, _tell(fd));
+            intact != FALSE ? 1 : 0, Tell(fd));
     fclose(stream);
 }
 #else
@@ -2680,7 +2680,7 @@ static void LoadSceneV2_ConfigBlock(PmmV2LoadContext& ctx, int fd) {
 #ifdef MIKUMIKUSTUDIO_DIAG
         if (std::getenv("MIKUMIKUSTUDIO_TRACE_NOISE_OFF") != nullptr)
             std::fprintf(stderr, "noise byte file offset=%ld value=%d\n",
-                         static_cast<long>(_tell(fd)), static_cast<int>(b));
+                         static_cast<long>(Tell(fd)), static_cast<int>(b));
 #endif
         s->state.gravityNoiseEnabled = (b == 1) ? 1 : 0;
     }
@@ -3311,6 +3311,7 @@ bool TryLoadSceneV2(MMDApp* app, pmm_io::Input& input, bool& replaced) {  // was
     replaced = true;
     AcceptProjectSceneReplacement(app);
     pmm_settings::Reset(*app);
+    input.EnableReadAhead();
 
     LoadSceneV2_DisposeAndHeader(ctx, fd);            // 0x450040..0x45044C
 

@@ -194,4 +194,49 @@ inline std::array<float, 16> NativeShadowProjection(
     }
     return matrix;
 }
+
+// A finite shadow map cannot fit an arbitrarily large stage without losing
+// nearby detail. Keep the native grid/full-object fit while its sampling loss
+// fits the extra 2x resolution tier. Beyond that, cover the view's focus region
+// in the light plane; still retain all scene depths for off-screen casters.
+inline std::array<float, 16> FitFocusedShadowProjection(
+    const std::array<float, 16>& reference, const NativeShadowBounds& scene,
+    const float focus[3], const float direction[3], float range, int mode,
+    float viewRadius) {
+    const auto complete = FitReferenceShadowProjection(reference, scene);
+    if (!scene.Valid()) return complete;
+    const float radius = (std::max)(1.f / NativeShadowLateralScale(range, mode),
+        std::isfinite(viewRadius) ? (std::max)(0.f, viewRadius) : 0.f);
+    NativeShadowBounds local;
+    bool clipped = false;
+    for (int axis = 0; axis < 3; ++axis) {
+        local.minimum[axis] = (std::max)(scene.minimum[axis], focus[axis] - radius);
+        local.maximum[axis] = (std::min)(scene.maximum[axis], focus[axis] + radius);
+        if (local.minimum[axis] > local.maximum[axis]) return complete;
+        clipped |= local.minimum[axis] != scene.minimum[axis] ||
+                   local.maximum[axis] != scene.maximum[axis];
+    }
+    if (!clipped) return complete;
+    auto focused = NativeShadowProjection(focus, direction, range, mode, &local);
+    if (MinimumShadowScale(complete, local) * 2.f >= MinimumShadowScale(focused, local))
+        return complete;
+    // The focused map is directional (W=1), so widening only Z cannot alter
+    // shadow UV or texels per world unit. A remote caster on the same light ray
+    // is still submitted and can shadow a nearby receiver.
+    double lo = 0, hi = 1;
+    for (unsigned corner = 0; corner < 8; ++corner) {
+        const auto p = scene.Corner(corner);
+        const double z = focused[14] + p[0]*double(focused[2]) +
+            p[1]*double(focused[6]) + p[2]*double(focused[10]);
+        lo = (std::min)(lo, z); hi = (std::max)(hi, z);
+    }
+    if (lo < 0 || hi > 1) {
+        const double margin = (hi-lo)*.05;
+        lo -= margin; hi += margin;
+        const double scale = 1.0/(hi-lo);
+        for (unsigned row = 0; row < 4; ++row)
+            focused[row*4+2] = float((focused[row*4+2] - (row == 3 ? lo : 0.0))*scale);
+    }
+    return focused;
+}
 }

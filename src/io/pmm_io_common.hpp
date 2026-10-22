@@ -31,6 +31,7 @@
 #include <io.h>
 #include <string>
 #include <stdexcept>
+#include "pmm_read_buffer.hpp"
 
 #include "mikumikustudio/accessory_layout.hpp"
 #include "mikumikustudio/global_key_layout.hpp"
@@ -44,30 +45,6 @@ namespace mikumikustudio::pmm_io {
 
 // Stream dialect selector for the two parameterized readers.
 enum class PmmStream { V1, V2 };
-
-// _read thunk shape shared by both loader bodies (v1 0x4593F9-region /
-// v2 0x450208-region call pattern); the result is only tested by the v1
-// read-gated tail and the load shell.
-inline thread_local int checkedDescriptor = -1;
-struct ShortRead : std::runtime_error {
-    __int64 offset;
-    unsigned int expected;
-    int received;
-    ShortRead(__int64 at,unsigned int wanted,int got)
-        : std::runtime_error("Incomplete PMM record"),offset(at),expected(wanted),received(got) {}
-};
-struct CheckedReads {
-    int previous;
-    explicit CheckedReads(int fd):previous(checkedDescriptor){checkedDescriptor=fd;}
-    ~CheckedReads(){checkedDescriptor=previous;}
-};
-inline int Rd(int fd, void* buf, unsigned int count) {
-    const auto offset = checkedDescriptor == fd ? _telli64(fd) : 0;
-    const int received = _read(fd, buf, count);
-    if(checkedDescriptor == fd && received != static_cast<int>(count))
-        throw ShortRead(offset,count,received);
-    return received;
-}
 
 struct UnsupportedText : std::runtime_error {
     UnsupportedText() : std::runtime_error("PMM text exceeds the original CP932 fields") {}

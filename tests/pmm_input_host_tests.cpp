@@ -23,10 +23,14 @@
 #include <type_traits>
 #include <vector>
 #include "mikumikustudio/build_profile.hpp"
+#include "mikumikustudio/autosave.hpp"
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/native_mesh.hpp"
+#include "mikumikustudio/frame_limits.hpp"
+#include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/pmm_extension.hpp"
 #include "mikumikustudio/scene_ownership.hpp"
 #include "mikumikustudio/ui_message.hpp"
 #include "../src/io/pmm_io_common.hpp"
@@ -41,7 +45,7 @@ namespace {
 unsigned checks = 0, tailCalls = 0, messages = 0, missingDialogs = 0, resetThrows = 0;
 MMDApp* app = nullptr;
 fs::path directory, candidate, sentinelPath;
-enum class Fault { None, Memory, Runtime, AbortReset };
+enum class Fault { None, Memory, Runtime, AbortReset, ReadFailure };
 Fault fault = Fault::None;
 bool monitor = false, reuse = false, inputOpen = false, sentinelLive = false, faultThrown = false;
 bool tailObserved = false;
@@ -53,6 +57,16 @@ using Open = errno_t (__cdecl*)(int*, const wchar_t*, int, int, int);
 using Close = int (__cdecl*)(int);
 Open realOpen = nullptr;
 Close realClose = nullptr;
+using Read = int (__cdecl*)(int, void*, unsigned int);
+using Seek = __int64 (__cdecl*)(int, __int64, int);
+Read realRead = nullptr;
+Seek realSeek = nullptr;
+std::uint64_t inputReads = 0, bodyRewinds = 0, expectedBoundary = 0;
+unsigned extensionCalls = 0;
+bool insideExtension = false, refuseSync = false;
+#if !MMD_ORIGINAL_PROFILE
+decltype(&pmm_extension::Read) realExtensionRead = nullptr;
+#endif
 decltype(&ShowWindow) realShow = nullptr;
 #if MMD_ORIGINAL_PROFILE
 decltype(&PostViewRefresh) realViewRefresh = nullptr;
@@ -105,6 +119,37 @@ int __cdecl ObserveClose(int descriptor) {
     // failure still fails the child process. No handler masks the defect.
     return realClose(descriptor);
 }
+int __cdecl ObserveRead(int descriptor, void* data, unsigned int size) {
+    if (monitor && inputOpen && descriptor == inputDescriptor && !insideExtension) ++inputReads;
+    return realRead(descriptor, data, size);
+}
+__int64 __cdecl ObserveSeek(int descriptor, __int64 offset, int origin) {
+    const auto* state = monitor && inputOpen && descriptor == inputDescriptor && !insideExtension
+        ? pmm_io::FindReadState(descriptor) : nullptr;
+    const bool handoff = state && state->buffered && state->cursor < state->filled &&
+        origin == SEEK_SET && offset == state->logical;
+    if (handoff && refuseSync) { ++bodyRewinds; errno = EIO; return -1; }
+    const auto result = realSeek(descriptor, offset, origin);
+    if (handoff && result >= 0) ++bodyRewinds;
+    return result;
+}
+#if !MMD_ORIGINAL_PROFILE
+pmm_extension::ReadResult ObserveExtensionRead(int descriptor, pmm_extension::Document& document, std::uint64_t& standard) {
+    if (!monitor || !inputOpen || descriptor != inputDescriptor) return realExtensionRead(descriptor, document, standard);
+    const auto position = _telli64(descriptor);
+    Check(!refuseSync && position == pmm_io::Position(descriptor) &&
+        (!expectedBoundary || position == static_cast<__int64>(expectedBoundary)),
+        "the genuine extension reader receives the same fd at the consumed standard-body boundary");
+    ++extensionCalls;
+    struct Scope { Scope() { insideExtension = true; } ~Scope() { insideExtension = false; } } scope;
+    const auto result = realExtensionRead(descriptor, document, standard);
+    Check(_telli64(descriptor) == position && pmm_io::Position(descriptor) == position,
+        "the real extension reader restores the entry position after every normal result");
+    if (result == pmm_extension::ReadResult::Loaded && expectedBoundary)
+        Check(standard == expectedBoundary, "the decoded MMS standard-size field matches the actual parser boundary");
+    return result;
+}
+#endif
 int WINAPI ErrorW(HWND, LPCWSTR text, LPCWSTR caption, UINT) {
     ++messages;
     if (!monitor || fault != Fault::Memory || !faultThrown) {
@@ -119,8 +164,10 @@ int WINAPI ErrorA(HWND, LPCSTR text, LPCSTR caption, UINT) {
 }
 int ErrorMessage(MMDApp*, HWND, UiMessage message, UINT, const wchar_t*) {
     ++messages;
-    Check(monitor && faultThrown && (fault == Fault::Runtime || fault == Fault::AbortReset) &&
-        message == UiMessage::InvalidProjectFile, "the real shell reports a post-close runtime failure through its existing error branch");
+    const auto expected = fault == Fault::ReadFailure ? UiMessage::IncompleteProjectFile : UiMessage::InvalidProjectFile;
+    if (monitor && fault == Fault::ReadFailure && message == expected) faultThrown = true;
+    Check(monitor && faultThrown && (fault == Fault::Runtime || fault == Fault::AbortReset || fault == Fault::ReadFailure) &&
+        message == expected, "the real shell reports each post-close fault through its exact existing error branch");
     return IDOK;
 }
 INT_PTR MissingModel(MMDApp*, HINSTANCE, HWND, ProjectModelIssue issue, const wchar_t*) {
@@ -199,6 +246,11 @@ void ProjectOpened(MMDApp* value, const wchar_t* path) {
 }
 #endif
 void Reset(MMDApp* value) {
+    if (monitor && fault == Fault::ReadFailure) {
+        Check(value == app && !inputOpen && inputCloses == 1 && pmm_io::checkedDescriptor == checkedBefore,
+            "a genuine strict short read releases its sole owner before real reset and UI recovery");
+        faultThrown = true;
+    }
     if (monitor && fault == Fault::AbortReset && !faultThrown) {
         Check(value == app && !inputOpen && inputCloses == 1 && checkedAtClose == checkedBefore &&
             pmm_io::checkedDescriptor == checkedBefore && missingDialogs == 1,
@@ -324,6 +376,8 @@ void Arm(const fs::path& path, Fault target, bool reuseNumber) {
     candidate = path; fault = target; reuse = reuseNumber; inputDescriptor = sentinelDescriptor = -1;
     inputCloses = sentinelCloses = 0; checkedAtClose = -2; inputOpen = sentinelLive = faultThrown = false;
     tailObserved = false; viewRefreshCalls = preCloseRefreshCalls = recoveryRefreshCalls = 0;
+    inputReads = bodyRewinds = expectedBoundary = 0; extensionCalls = 0; insideExtension = refuseSync = false;
+    pmm_io::readStatistics = {};
     checkedBefore = pmm_io::checkedDescriptor; monitor = true;
 }
 void Finish(bool loaded, bool success) {
@@ -396,6 +450,7 @@ void TailFailure(const fs::path& path, Fault type, bool reuseNumber) {
     Check(tailCalls == tails + 1 && messages == oldMessages + 1 && Bytes(path) == before,
         "the actual post-close tail fault takes exactly one existing error branch and preserves the PMM file");
 }
+#include "pmm_read_buffer_host_checks.inc"
 } // namespace
 
 int main() {
@@ -415,6 +470,11 @@ int main() {
     Hook(&ShowProjectModelDialog, &MissingModel);
     Hook(&_wsopen_s, &ObserveOpen, reinterpret_cast<void**>(&realOpen));
     Hook(&_close, &ObserveClose, reinterpret_cast<void**>(&realClose));
+    Hook(&_read, &ObserveRead, reinterpret_cast<void**>(&realRead));
+    Hook(&_lseeki64, &ObserveSeek, reinterpret_cast<void**>(&realSeek));
+#if !MMD_ORIGINAL_PROFILE
+    Hook(&pmm_extension::Read, &ObserveExtensionRead, reinterpret_cast<void**>(&realExtensionRead));
+#endif
 #if MMD_ORIGINAL_PROFILE
     // The real SuccessTail calls this after Input::Close in both V1 and V2.
     // The replacement forwards the complete readout before injecting a fault.
@@ -457,6 +517,7 @@ int main() {
     Check(missingDialogs == 1 && resetThrows == 1 && tailCalls == oldTails && Bytes(missing) == beforeMissing,
         "the actual V2 Abort consumes its workspace once before a throwing Reset and shell recovery");
     Normal(v2, camera, light); Normal(v1, camera, light);
+    BufferedProjectCases(v2, v1, camera, light);
     ShutdownCleanup(app); instance.reset(); app = nullptr; g_Block = nullptr;
     UnhookWindowsHookEx(hide); MH_DisableHook(MH_ALL_HOOKS); MH_Uninitialize();
     std::printf("PASS real PMM input host: %u checks; native tails=%u; errors=%u; missing-model aborts=%u\n",

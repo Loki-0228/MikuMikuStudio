@@ -575,6 +575,12 @@ set_target_properties(pmm_input_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMA
 add_test(NAME pmm_input_ownership COMMAND pmm_input_tests)
 set_tests_properties(pmm_input_ownership PROPERTIES TIMEOUT 20)
 
+add_executable(pmm_read_buffer_tests EXCLUDE_FROM_ALL tests/pmm_read_buffer_tests.cpp)
+target_include_directories(pmm_read_buffer_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+set_target_properties(pmm_read_buffer_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_test(NAME pmm_read_buffer COMMAND pmm_read_buffer_tests)
+set_tests_properties(pmm_read_buffer PROPERTIES TIMEOUT 30)
+
 # Retained ordinary editing commands also run in the original-compatible build.
 foreach(legacy_edit_test legacy_pose_match_tests legacy_model_paste_tests legacy_bone_curve_history_tests)
     add_executable(${legacy_edit_test} EXCLUDE_FROM_ALL tests/${legacy_edit_test}.cpp)
@@ -1347,6 +1353,7 @@ if (MIKUMIKUSTUDIO_BUILD_UI_TESTS)
         add_test(NAME native_black_background_history COMMAND native_edit_history_tests --black-background-only)
         add_test(NAME native_floor_history COMMAND native_edit_history_tests --floor-only)
         add_test(NAME native_camera_parent_history COMMAND native_edit_history_tests --camera-parent-only)
+        add_test(NAME native_accessory_parent_history COMMAND native_edit_history_tests --accessory-parent-only)
         add_test(NAME native_camera_parent_model_history COMMAND native_edit_history_tests --camera-parent-model-only)
         set_tests_properties(native_camera_parent_model_history PROPERTIES TIMEOUT 180)
     endif()

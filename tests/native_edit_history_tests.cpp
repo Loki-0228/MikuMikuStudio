@@ -421,6 +421,7 @@ void CrossModelJournal(){
 #include "native_numpad_view_checks.inc"
 #include "native_camera_hud_history_checks.inc"
 #include "native_accessory_hud_history_checks.inc"
+#include "native_accessory_parent_history_checks.inc"
 #include "native_model_hud_history_checks.inc"
 #include "native_numpad_dispatch_checks.inc"
 #include "native_model_viewport_history_checks.inc"
@@ -868,6 +869,16 @@ int main(int argc,char** argv){
         run("NativeCameraHudHistoryChecks",NativeCameraHudHistoryChecks);
         std::printf("PASS native camera HUD: %u checks\n",checks);return 0;
     }
+    if(argc==2&&!std::strcmp(argv[1],"--accessory-parent-only")) {
+        run("NativeAccessoryParentHistoryChecks",NativeAccessoryParentHistoryChecks);
+        std::printf("PASS native accessory parent history: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--accessory-hud-core-only")) {
+        run("AccessoryHudMathAndHistory",AccessoryHudMathAndHistory);
+        run("AccessoryHudCancellationAndFailure",AccessoryHudCancellationAndFailure);
+        run("AccessoryHudIdentityAndAdmission",AccessoryHudIdentityAndAdmission);
+        std::printf("PASS native accessory HUD core: %u checks\n",checks);return 0;
+    }
     if(argc==2&&!std::strcmp(argv[1],"--accessory-hud-only")) {
         run("NativeAccessoryHudHistoryChecks",NativeAccessoryHudHistoryChecks);
         std::printf("PASS native accessory HUD: %u checks\n",checks);return 0;
@@ -894,6 +905,7 @@ int main(int argc,char** argv){
         run("NativeDisplayRegistrationChecks",NativeDisplayRegistrationChecks);
         std::printf("PASS native registration: %u checks\n",checks);return 0;
     }
+    if(argc != 1) { std::fprintf(stderr,"Unknown native history test mode\n");return 2; }
     run("NativeVpdImportChecks",NativeVpdImportChecks);
     run("NativeShadowAmbientChecks",NativeShadowAmbientChecks);
     run("NativeShadowSliderChecks",NativeShadowSliderChecks);
@@ -1025,6 +1037,7 @@ int main(int argc,char** argv){
     run("NativeCameraParentModelHistoryChecks",NativeCameraParentModelHistoryChecks);
     run("NativeCameraHudHistoryChecks",NativeCameraHudHistoryChecks);
     run("NativeAccessoryHudHistoryChecks",NativeAccessoryHudHistoryChecks);
+    run("NativeAccessoryParentHistoryChecks",NativeAccessoryParentHistoryChecks);
     run("NativeModelHudHistoryChecks",NativeModelHudHistoryChecks);
     run("NativeSameModelFollowChecks",NativeSameModelFollowChecks);
     run("PoseAndStale",PoseAndStale);run("KeysAndChain",KeysAndChain);run("Bake",Bake);

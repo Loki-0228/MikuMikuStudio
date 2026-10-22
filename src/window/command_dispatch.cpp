@@ -16,6 +16,7 @@
 #include "mikumikustudio/native_media.hpp"
 #include "mikumikustudio/audio_menu.hpp"
 #include "../plugins/native_camera_parent_history.hpp"
+#include "../plugins/native_accessory_parent_history.hpp"
 // ===========================================================================
 // VA 0x0047E8A0 - CommandDispatch  (original: sub_47E8A0, 0x10A6A = 68KB)
 // ===========================================================================
@@ -382,6 +383,9 @@ bool DefaultSelChangeChain(MMDApp* app, HWND hwnd, HWND ctrl) {
     // detaches (parentModel = -1).  With no selected accessory the whole
     // handler bails without touching the focus (0x48f2e0).
     if (ctrl == GetDlgItem(hwnd, panel::kMainComboGround)) {
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::TrySelectBoundAccessoryParentModel(app, ctrl)) return true;
+#endif
         mdl::AccessoryRecord* acc =
             app->AccessorySlot(app->SelectedAccessorySlot());
         if (acc == nullptr) {
@@ -412,6 +416,9 @@ bool DefaultSelChangeChain(MMDApp* app, HWND hwnd, HWND ctrl) {
     // ---- 0x1DB (0x48e8fd): accessory parent BONE combo. Item data stores
     // the bone index into acc+0x234, independent of duplicate/translated names.
     if (ctrl == GetDlgItem(hwnd, panel::kAttachBoneCombo)) {
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::TrySelectBoundAccessoryParentBone(app, ctrl)) return true;
+#endif
         mdl::AccessoryRecord* acc =
             app->AccessorySlot(app->SelectedAccessorySlot());
         if (acc != nullptr && acc->parentModel >= 0 && acc->parentModel < kModelSlotCount) {

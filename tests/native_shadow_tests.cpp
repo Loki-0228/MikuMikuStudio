@@ -77,6 +77,9 @@ void CheckReferenceFit() {
         auto matrix=inside;matrix[0]=matrix[5]=scale;matrix[10]=scale*.15f;
         matrix[7]=warp;matrix[12]=2;matrix[13]=-1;matrix[14]=-.2f;
         const auto fitted=FitReferenceShadowProjection(matrix,bounds);
+        const float focus[3]{0,10,0}, light[3]{-.5f,-1,.5f};
+        if (FitFocusedShadowProjection(matrix,bounds,focus,light,.1f,1,30) != fitted)
+            throw std::runtime_error("compact projective scene lost its existing fitted mode warp");
         for (unsigned corner=0;corner<8;++corner) {
             const auto p=bounds.Corner(corner);double q[4]{};
             for (int a=0;a<4;++a)
@@ -91,9 +94,100 @@ void CheckReferenceFit() {
     }
     std::printf("PASS native grid preservation and %u projective coverage corners\n",checked);
 }
+void CheckFocusedStageCoverage() {
+    using namespace mikumikustudio;
+    NativeShadowBounds compactBounds, stage;
+    const float low[3]{-6,0,-3}, high[3]{6,20,8};
+    const float stageLow[3]{-1000,-1000,-1000}, stageHigh[3]{1000,1000,1000};
+    compactBounds.Include(low); compactBounds.Include(high); stage.Include(stageLow); stage.Include(stageHigh);
+    const float focus[3]{0,10,0};
+    unsigned checked = 0;
+    for (const auto& light : std::vector<std::array<float,3>>{
+            {-.5f,-1,.5f}, {0,-1,0}, {0,0,1}, {1,0,0}, {0,0,0}})
+        for (int mode : {1,2}) for (float range : {.1f,.01125f}) {
+            const auto reference = NativeShadowProjection(focus,light.data(),range,mode);
+            const auto compact = FitFocusedShadowProjection(reference,compactBounds,focus,light.data(),range,mode,30);
+            if (compact != FitReferenceShadowProjection(reference,compactBounds))
+                throw std::runtime_error("compact scene lost its native fitted grid");
+            const auto complete = FitReferenceShadowProjection(reference,stage);
+            const auto nearMap = FitFocusedShadowProjection(reference,stage,focus,light.data(),range,mode,30);
+            const auto farMap = FitFocusedShadowProjection(reference,stage,focus,light.data(),range,mode,600);
+            if (MinimumShadowScale(nearMap,compactBounds) < MinimumShadowScale(complete,compactBounds)*15 ||
+                MinimumShadowScale(nearMap,compactBounds) <= MinimumShadowScale(farMap,compactBounds))
+                throw std::runtime_error("large stage diluted nearby sampling or zoom-out coverage did not grow");
+            const auto project = [&](const std::array<float,3>& p) {
+                std::array<float,3> q{};
+                for (int a=0;a<3;++a) q[a]=nearMap[12+a]+p[0]*nearMap[a]+p[1]*nearMap[4+a]+p[2]*nearMap[8+a];
+                return q;
+            };
+            for (unsigned corner=0;corner<8;++corner) {
+                const auto p=project(compactBounds.Corner(corner));
+                const auto depth=project(stage.Corner(corner))[2];
+                if (std::abs(p[0])>=1 || std::abs(p[1])>=1 || p[2]<=0 || p[2]>=1 || depth<=0 || depth>=1)
+                    throw std::runtime_error("focused receiver or remote caster depth clipped");
+            }
+            if (light[0] || light[1] || light[2]) {
+                const auto receiver=project({0,10,0});
+                const auto caster=project({-300*light[0],10-300*light[1],-300*light[2]});
+                if (std::abs(receiver[0]-caster[0])>1e-5 || std::abs(receiver[1]-caster[1])>1e-5 ||
+                    !(caster[2]<receiver[2] && caster[2]>0))
+                    throw std::runtime_error("remote caster and receiver disagree along light ray");
+            }
+            ++checked;
+        }
+    std::printf("PASS %u focused large-stage cases: native compact grid, density, zoom, receiver coverage, remote casters\n",checked);
+}
+void CheckFocusedBoundaryInputs() {
+    using namespace mikumikustudio;
+    const float focus[3]{0,10,0}, direction[3]{-.5f,-1,.5f};
+    const auto reference = NativeShadowProjection(focus,direction,.1f,1);
+    NativeShadowBounds empty, point, moderate, stage;
+    const float lower[3]{-1000,-1000,-1000}, upper[3]{1000,1000,1000};
+    stage.Include(lower); stage.Include(upper);
+    point.Include(focus);
+    if (FitFocusedShadowProjection(reference,empty,focus,direction,.1f,1,30) != reference)
+        throw std::runtime_error("empty focused scene changed the reference grid");
+    if (FitFocusedShadowProjection(reference,point,focus,direction,.1f,1,30) != reference)
+        throw std::runtime_error("point-sized scene changed the already valid reference grid");
+    const float moderateLow[3]{-9,1,-9}, moderateHigh[3]{9,19,9};
+    moderate.Include(moderateLow); moderate.Include(moderateHigh);
+    if (FitFocusedShadowProjection(reference,moderate,focus,direction,.1f,1,0) !=
+        FitReferenceShadowProjection(reference,moderate))
+        throw std::runtime_error("scene within the extra 2x tier needlessly switched to focused coverage");
+    const auto complete = FitReferenceShadowProjection(reference,stage);
+    const float outside[3]{10000,10000,10000};
+    if (FitFocusedShadowProjection(reference,stage,outside,direction,.1f,1,30) != complete ||
+        FitFocusedShadowProjection(reference,stage,focus,direction,.1f,1,2000) != complete)
+        throw std::runtime_error("empty local intersection or full view failed to keep complete scene coverage");
+    // Invalid radius falls back to the requested shadow range, not a NaN map.
+    const auto requested = FitFocusedShadowProjection(reference,stage,focus,direction,.1f,1,0);
+    for (float radius : {-1.f,INFINITY,-INFINITY,NAN}) {
+        const auto actual = FitFocusedShadowProjection(reference,stage,focus,direction,.1f,1,radius);
+        if (actual != requested || !std::all_of(actual.begin(),actual.end(),[](float value){return std::isfinite(value);}))
+            throw std::runtime_error("invalid focus radius did not retain finite requested-range coverage");
+    }
+    // The directional fallback must remain safe at poles, zero and non-finite
+    // light vectors. Non-positive ranges retain the existing minimum range.
+    for (const auto& light : std::vector<std::array<float,3>>{
+            {0,0,0},{0,1e-20f,0},{INFINITY,0,0},{NAN,0,0}})
+        for (float range : {0.f,-.1f,NAN}) {
+            const auto native = NativeShadowProjection(focus,light.data(),range,2);
+            const auto actual = FitFocusedShadowProjection(native,stage,focus,light.data(),range,2,30);
+            if (!std::all_of(actual.begin(),actual.end(),[](float value){return std::isfinite(value);}))
+                throw std::runtime_error("degenerate direction or range produced a non-finite focused projection");
+            for (unsigned corner=0;corner<8;++corner) {
+                const auto p=stage.Corner(corner);
+                const double depth=actual[14]+p[0]*double(actual[2])+p[1]*double(actual[6])+p[2]*double(actual[10]);
+                if (!(depth>0 && depth<1)) throw std::runtime_error("fallback focused projection lost caster depth coverage");
+            }
+        }
+    std::puts("PASS focused shadow empty/outside/full view and degenerate input boundaries");
+}
 void CheckProjection() {
     CheckVertexBounds();
     CheckReferenceFit();
+    CheckFocusedStageCoverage();
+    CheckFocusedBoundaryInputs();
     using namespace mikumikustudio;
     if (ShadowSamplingFactor(.1f) != 4.f || ShadowSamplingFactor(.05f) != 1.f ||
         ShadowSamplingFactor(.00001f) != 1.f)
@@ -174,18 +268,35 @@ struct Effect {
     Effect(Effect&& other)noexcept:value(other.value){other.value=nullptr;}
     ~Effect(){if(value)static_cast<IUnknown*>(value)->Release();}
 };
-Effect Load(IDirect3DDevice9* device,const std::filesystem::path& file) {
-    std::ifstream stream(file,std::ios::binary);
-    if(!stream)throw std::runtime_error("Cannot read production shader");
-    const std::string source{std::istreambuf_iterator<char>(stream),{}};
+Effect LoadBytes(IDirect3DDevice9* device,const void* bytes,UINT size) {
     static HMODULE module=LoadLibraryW(L"d3dx9_43.dll");
     using Create=HRESULT(WINAPI*)(IDirect3DDevice9*,const void*,UINT,const void*,const void*,DWORD,void*,void**,void**);
     const auto create=reinterpret_cast<Create>(GetProcAddress(module,"D3DXCreateEffect"));
     if(!create)throw std::runtime_error("D3DXCreateEffect unavailable");
     Effect fx;void* errors=nullptr;
-    const auto hr=create(device,source.data(),UINT(source.size()),nullptr,nullptr,0,nullptr,&fx.value,&errors);
+    const auto hr=create(device,bytes,size,nullptr,nullptr,0,nullptr,&fx.value,&errors);
     if(errors){using Data=void*(WINAPI*)(void*);std::printf("%s\n",static_cast<const char*>(EffectMethod<Data,3>(errors)(errors)));static_cast<IUnknown*>(errors)->Release();}
     Check(hr,"Compile production shader");return fx;
+}
+Effect Load(IDirect3DDevice9* device,const std::filesystem::path& file) {
+    std::ifstream stream(file,std::ios::binary);
+    if(!stream)throw std::runtime_error("Cannot read production shader");
+    const std::string source{std::istreambuf_iterator<char>(stream),{}};
+    return LoadBytes(device,source.data(),UINT(source.size()));
+}
+Effect LoadEmbedded(IDirect3DDevice9* device,const std::filesystem::path& executable,unsigned id) {
+    // Map only resources. Never execute or initialise the product being tested.
+    const auto module=LoadLibraryExW(executable.c_str(),nullptr,LOAD_LIBRARY_AS_DATAFILE|LOAD_LIBRARY_AS_IMAGE_RESOURCE);
+    if(!module)throw std::runtime_error("Cannot map the actual product's shader resources");
+    struct Release {HMODULE module;~Release(){FreeLibrary(module);}} release{module};
+    const auto resource=FindResourceW(module,MAKEINTRESOURCEW(id),MAKEINTRESOURCEW(10));
+    if(!resource)throw std::runtime_error("Missing production effect resource");
+    const auto bytes=static_cast<const unsigned char*>(LockResource(LoadResource(module,resource)));
+    const auto size=SizeofResource(module,resource);
+    const unsigned char signature[]{1,9,255,254};
+    if(!bytes||size<4||std::memcmp(bytes,signature,4))throw std::runtime_error("Production resource is not compiled D3DX9 effect bytecode");
+    std::printf("STAGE actual embedded shader id=%u bytes=%lu\n",id,static_cast<unsigned long>(size));
+    return LoadBytes(device,bytes,size);
 }
 std::vector<DWORD> Draw(IDirect3DDevice9* device,void* effect,unsigned mapSize,int mode,float slope,bool split,bool legacy,float depthGap=0,int pattern=0,float phase=0,const CoverageProbe* coverage=nullptr,float facing=1) {
     ComPtr<IDirect3DTexture9> shadow;
@@ -247,10 +358,13 @@ void Save(const std::filesystem::path& path,const std::vector<DWORD>& pixels) {
 }
 }
 int wmain(int argc,wchar_t** argv) {
-    if(argc<2||argc>4){std::fputs("usage: native_shadow_tests <production shader> [--legacy|--coverage-only] [output-directory]\n",stderr);return 2;}
+    std::setvbuf(stdout,nullptr,_IONBF,0);
+    if(argc<2||argc>4){std::fputs("usage: native_shadow_tests <production shader> [--legacy|--coverage-only] [output-directory], or <shader> --resource <product-exe>\n",stderr);return 2;}
+    const bool embedded=argc==4&&!wcscmp(argv[2],L"--resource");
+    const bool sm2=std::filesystem::path(argv[1]).filename()==L"skin_effect_sm2.fx";
     const bool legacy=argc>=3&&!wcscmp(argv[2],L"--legacy");
-    const bool coverageOnly=argc>=3&&!wcscmp(argv[2],L"--coverage-only");
-    const std::filesystem::path output=argc>((legacy||coverageOnly)?3:2)?argv[(legacy||coverageOnly)?3:2]:L"";
+    const bool coverageOnly=(argc>=3&&!wcscmp(argv[2],L"--coverage-only"))||(embedded&&sm2);
+    const std::filesystem::path output=!embedded&&argc>((legacy||coverageOnly)?3:2)?argv[(legacy||coverageOnly)?3:2]:L"";
     if(!output.empty())std::filesystem::create_directories(output);
     HWND window=CreateWindowExW(0,L"STATIC",L"native shadow test",WS_OVERLAPPED,0,0,kSize,kSize,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
     try {
@@ -262,7 +376,7 @@ int wmain(int argc,wchar_t** argv) {
         pp.BackBufferWidth=kSize;pp.BackBufferHeight=kSize;pp.BackBufferFormat=D3DFMT_A8R8G8B8;
         ComPtr<IDirect3DDevice9> device;
         Check(d3d->CreateDevice(0,D3DDEVTYPE_HAL,window,D3DCREATE_HARDWARE_VERTEXPROCESSING,&pp,&device),"Create hidden HAL device");
-        auto effect=Load(device.Get(),argv[1]);unsigned failures=0;
+        auto effect=embedded?LoadEmbedded(device.Get(),argv[3],sm2?117:118):Load(device.Get(),argv[1]);unsigned failures=0;
         for(int mode:{1,2})for(bool specular:{false,true}){
             // Camera-dependent shadow coverage must not toggle toon lighting
             // or uncover specular on a backlit surface. Cross all six bounds.
