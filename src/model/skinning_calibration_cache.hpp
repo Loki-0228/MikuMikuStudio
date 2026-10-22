@@ -1,6 +1,7 @@
 #pragma once
 #include "mikumikustudio/skinning_backend.hpp"
 #include "mikumikustudio/geometry_workers.hpp"
+#include "mikumikustudio/local_data_path.hpp"
 #include <Windows.h>
 #include <cmath>
 #include <filesystem>
@@ -12,20 +13,8 @@ namespace mikumikustudio::skinning::calibration_cache {
 constexpr std::uint32_t kVersion=2;
 constexpr std::uint64_t kMagic=0x31484341434e4b53ull;
 inline std::filesystem::path Path(const wchar_t* product) {
-    // Match Data/mmconfig.ini: bind to the executable, never to the current
-    // directory (opening a model or project can change it).
-    wchar_t executable[32768]{};
-    const auto n=GetModuleFileNameW(nullptr,executable,32768);
-    if(!n || n>=32768)return {};
-    return std::filesystem::path(executable).parent_path()/L"Data"/
-        (std::wstring(L"processor-config-")+product+L"-v1.bin");
-}
-inline std::filesystem::path LegacyPath(const wchar_t* product) {
-    wchar_t local[32768]{};
-    const auto n=GetEnvironmentVariableW(L"LOCALAPPDATA",local,32768);
-    if(!n || n>=32768)return {};
-    return std::filesystem::path(local)/L"MikuMikuStudio"/
-        (std::wstring(L"skinning-")+product+L"-v1.bin");
+    // Installation scope: never reuse another installation's cache.
+    return local_data::File((std::wstring(L"processor-config-")+product+L"-v1.bin").c_str());
 }
 inline std::wstring CpuKey() {
     wchar_t identifier[512]{};

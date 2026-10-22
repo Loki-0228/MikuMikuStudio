@@ -6,6 +6,12 @@
 
 核对日期：2026-09-20。所有测试源文件均在首行用 `MAINTENANCE:` 标记。测试源码不进入发布目录，目标使用 `EXCLUDE_FROM_ALL`；编译后的测试程序位于 `build/tests/`。不要因为测试不随正式程序发布就删除源码。
 
+## 校准缓存安装隔离
+
+启用 `MIKUMIKUSTUDIO_BUILD_UI_TESTS` 并显式构建 `skinning_calibration_storage_tests`，然后运行 CTest `skinning_calibration_storage`。包装脚本自动创建独立安装、固定 LF 标记和隔离环境，保留输出，不复用已有 data。也可在同样的标记安装中执行 `--storage <尚不存在的绝对输出目录>`；不要直接在用户产品目录运行。
+
+专项调用真实启动缓存选择和 CPU 蒙皮，受控 COM 设备拒绝首个校准缓冲申请，覆盖本地缺失、损坏、占位、有效命中和旧缓存不迁移。没有 GPU 枚举或硬件测速；不覆盖完整测量结果写盘失败、驱动重映射或 Win7／AMD 真机。它不替代 `hardware-manual` 的 `skinning_backend_tests`。运行范围及两次集成失败见[校准缓存记录](../docs/records/abi-calibration-data-2026-10-23.md)。
+
 ## 曲线、备份及崩溃日志回归
 
 `--subdivision-geometry-safe` 与 `--subdivision-writer-copy-safe` 分别验证同会话尺寸变化和晚期写入复制。两项均使用自身窗口，先验证正常写入，再验证失败保留 redo，并检查正文开始后的尺寸变化不会重复写入；也已纳入默认全集。两配置各通过 36,281 项全集，范围和失败记录见[插帧几何记录](../docs/records/abi-curve-insertion-geometry-2026-10-22.md)。

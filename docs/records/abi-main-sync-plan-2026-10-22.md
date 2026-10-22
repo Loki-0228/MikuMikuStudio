@@ -80,6 +80,54 @@ main `negative_frames.cpp` 的 `State` 自建最多 30 步 undo/redo，按当前
 
 验收至少覆盖 `minimum/-1/0/1/maximum`、跨零混合粘贴、准备与预算失败、两种模式、跨模型删除恢复、全部登记通道、曲线跨零求值、PMM 游标及范围往返、损坏扩展和原有非负文件字节兼容。负帧尚未形成 VMD 导出流程，main 的现有 VMD writer 只遍历非负池，不能把它的通过结果用于本项验收。
 
+## 保存版本、菜单与编辑控件的静态核对
+
+10 月 23 日只读比较 main 已提交的 `fed9768` 与 ABI 当前源码，确认下列五组行为尚未同步。main 材料通过 `git show` 和 `git diff` 读取，没有读取 main 工作区未提交的文件。下列相关实现文件在 `3782e0c..fed9768` 之间没有新增变化。本节记录代码差异、触发条件及后续验收方案，没有执行运行复现，也不代表这些问题已经修复。
+
+### 物理模式下的编辑读数
+
+当骨骼带刚体、`PlaybackPhysicsMode()==3` 且 `bonePhysicsState[bone]!=0` 时，main 的 `PostViewRefresh` 已改为显示编辑后的 `trans/rotQuat`。ABI [ui_view_refresh.cpp](../../src/window/ui_view_refresh.cpp) 仍只判断物理模式和刚体属性，继续读取 `ikBackup`。ABI 自有的 [native_pose_axis.cpp](../../src/plugins/native_pose_axis.cpp) 中 `ReplacePositionDraft` 也使用同一旧判断。因此，修改或清零骨骼后，面板仍可能显示旧物理姿态。
+
+最小适配是统一这两处读数来源：只有未标记编辑的骨骼才显示物理备份，已编辑骨骼显示当前作者姿态。修改不得新增撤销记录或写关键帧。专项用例可扩展 [native_pose_axis_checks.inc](../../tests/native_pose_axis_checks.inc) 与 [native_pose_numeric_checks.inc](../../tests/native_pose_numeric_checks.inc)，通过现有 `native_edit_history_tests --pose-axis-only` 和 `--pose-numeric-only` 入口检查主窗口、分离窗口、位置、旋转、刚体标记、物理模式及编辑标记的组合。
+
+### 重置后的未提交文本
+
+ABI 的位置轴重置已经在成功后调用 `ReplacePositionDraft`，但 `TryResetBoundPoseAxis` 的旋转分支没有同等处理。与此同时，[ui_view_refresh.cpp](../../src/window/ui_view_refresh.cpp) 的 `SetReadoutText` 会保护共同历史绑定中的未提交文本，[ui_edit_commit.cpp](../../src/window/ui_edit_commit.cpp) 则会在失焦时提交草稿。输入旋转值后通过转发命令清零，再离开输入框，旧文本仍可能重新覆盖清零结果。
+
+[command_control_450.cpp](../../src/window/command_control_450.cpp) 的 `ApplyBoundPoseCommand` 整体重置也没有 main 新增的六个坐标框草稿清理。未绑定共同历史的 `BoneRotEdit` 和分离窗口旋转路径，分别在 [command_control_500.cpp](../../src/window/command_control_500.cpp) 与 [wndproc_stubs.cpp](../../src/window/wndproc_stubs.cpp)，也缺少 main 对旋转修改标志的清理。
+
+ABI 适配必须在事务成功后取消重置影响的草稿，不能直接复制 main 在操作前清除 `EM_SETMODIFY` 的顺序。忙碌、预算不足和准备失败应保留原草稿。成功的数据 no-op 也应取消目标草稿，同时保留 redo、不新增历史。其他输入框中未提交的内容继续保留。现有位置草稿测试已经覆盖这些边界，可在 `--pose-axis-only` 中补旋转用例；整体重置需要下面的独立命令测试入口。验收包括实际失焦提交，不能只检查清零瞬间的内存值。
+
+### 整体骨骼重置的目标姿态
+
+main 的命令 495 已改为把所有选中骨骼的位移清零、旋转恢复单位四元数、缩放恢复单位值。ABI [command_control_450.cpp](../../src/window/command_control_450.cpp) 的共同历史路径仍保留根骨骼 X/Z 位移，并对其他无父骨骼执行旧旋转和根偏移计算。这使部分骨骼在整体初始化后仍保留偏移。
+
+[native_pose_command_checks.inc](../../tests/native_pose_command_checks.inc) 目前也明确要求保留根 X/Z，并验证无父骨骼执行旧变换计算。这些期望需要随行为同步更新。最小修复只替换目标姿态构造，继续使用 `NativePoseScope`、一次共同事务及原有失败回滚，不引入 main 的旧 `PushBoneEditUndo`。无父骨骼归零不再需要 D3DX 参与。
+
+`NativePoseCommandChecks` 当前仅在默认历史测试集合中调用，尚无独立参数。实施时应先增加明确的 `--pose-command-only` 入口，不运行默认全套历史测试。专项检查根骨骼、有父骨骼、无父骨骼、混合选择、空选择、重复重置、缩放、跨模型撤销重做、预算和分配失败，以及关键帧和旧撤销环保持不变。原始兼容配置的行为边界需单独核对，不能因完整配置修复而无意改写原始构建。
+
+### 独立的手动编号保存版本
+
+ABI 仍只有 `keepPrevious`，历史版本沿 `.pmm1/.pmm11/...` 链移动。main 新增独立的 `numberedManualVersions`，让手动保存生成 `.pmm1/.pmm2/.pmm3/...`，支持稀疏编号、孤立 EMM 和十进制进位。周期备份不使用此编号策略。main 备份对话框也增加了开关及当前 EMM 保存状态，ABI [autosave_dialog.cpp](../../src/window/autosave_dialog.cpp) 尚未接入。
+
+ABI 选项需要沿实际保存事务传递：[autosave.hpp](../../include/mikumikustudio/autosave.hpp) 和 [autosave.cpp](../../src/app/autosave.cpp) 的设置及 JSON、[pmm_save.cpp](../../src/io/pmm_save.cpp) 的 `SceneSnapshot`、[integration.cpp](../../src/plugins/integration.cpp) 的 `ProjectSave::PublishDisk`、[project_storage.cpp](../../src/plugins/project_storage.cpp) 的 `PublishProjectPair`，最后进入 [pmm_save_versions.hpp](../../src/io/pmm_save_versions.hpp) 的 `Retention::Prepare`。
+
+现有 ABI `Retention` 同时保护 PMM、EMM、插件 sidecar 和版本保存锁，不能被 main 的两文件发布实现替换。编号扫描还必须将孤立插件 sidecar 算作占用，并保留中断保存记录检查、移动前锁定、失败恢复及原项目配对身份。系统设置继续存入 `data/settings.json`，不能重新建立独立设置文件。
+
+专项可扩展 [pmm_versions_checks.hpp](../../tests/pmm_versions_checks.hpp) 的 `VersionTests`、[autosave_tests.cpp](../../tests/autosave_tests.cpp) 和 [backup_dialog_checks.hpp](../../tests/backup_dialog_checks.hpp)。实际保存入口为 `project_save_export_tests <隔离输出目录>`。新增覆盖应包含 9 到 10 的进位、稀疏版本、孤立 EMM 和插件 sidecar、版本占用、发布失败回滚、编号模式切换，以及周期和崩溃副本不受手动编号开关影响。
+
+### 菜单首次绘制与长输入框的前缀
+
+ABI 尚无 main 的 `menu_initial_paint` 模块。[wndproc.cpp](../../src/window/wndproc.cpp) 没有其消息处理，[effect_display.cpp](../../src/exports/effect_display.cpp) 没有为 MME 编辑器及子控件安装补绘。main 按 owner 和 HMENU 跟踪弹出菜单，在首次可见、首次 idle 及可见约 220 ms 后补绘，并在菜单关闭或 owner 销毁时清理。这针对菜单首次打开时文本尚未正确绘制的情况。
+
+适配可以先移入独立 helper，再接主窗口与 MME 编辑器，保留菜单命令归属和 ABI 菜单目录。验收需覆盖定时器退出、重入、多个 owner、延迟初始化及没有 idle 消息的菜单。main 的 `tests/menu_first_paint_checks.hpp` 提供了相关模式，但其中声明使用 inactive desktop，不能直接运行或引用为本会话 Default desktop 下的证据。ABI 尚无这些测试参数，需先增加受控入口，仅操作测试自己创建的窗口。
+
+长数值显示也尚未同步。ABI [ui_init.cpp](../../src/window/ui_init.cpp) 的 `CreateUiPanelControl` 直接采用原样式，[ui_edit_commit.cpp](../../src/window/ui_edit_commit.cpp) 的 EDIT 子类在失焦后没有将文本滚回开头。窄框输入较长负数或坐标时，失焦后仍可能显示尾部，隐藏符号和整数前缀。main 的 `TransformEditShowsPrefix` 对附件变换、相机和骨骼坐标、距离及骨骼缩放框取消居中和右对齐，并在失焦或非聚焦文本更新后执行 `EM_SETSEL(0,0)` 与 `EM_SCROLLCARET`。
+
+该显示修复应保留 ABI 现有输入提交和草稿保护顺序，不覆盖透明度 485、表情权重等有界控件，并维持原始配置布局。专项使用真实 EDIT 检查焦点、输入中选择区域、失焦后前缀、不同 DPI 和窄宽度，以及数值与历史完全不变。目前没有对应专项运行证据。
+
+实施可拆为骨骼读数与重置、手动保存编号、菜单与输入显示三个独立批次。编号保存涉及跨文件事务，不能仅凭辅助函数通过或界面出现新开关就标记完成。
+
 ## 后续验收约束
 
 先实施不依赖磁盘管理的预读、适配名称和有界几何缓存，再接缓存管理、效果和纹理。透明排序、控件修复及负帧分别审查。每批实际源码、失败反例、构建产物和运行报告均须留存，main 的验证不替代 ABI 的共同历史回归。Win7 SP1 x64、CPU 基础路径、AMD、data 目录及原始兼容配置要求保持；本轮没有新平台或视觉验收结果。

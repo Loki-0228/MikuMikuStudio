@@ -1077,6 +1077,15 @@ endif()
 # ---------------------------------------------------------------------------
 option(MIKUMIKUSTUDIO_BUILD_UI_TESTS "Build user-acceptance regression tests" OFF)
 if (MIKUMIKUSTUDIO_BUILD_UI_TESTS)
+    add_executable(skinning_calibration_storage_tests EXCLUDE_FROM_ALL tests/skinning_calibration_storage_tests.cpp)
+    target_link_libraries(skinning_calibration_storage_tests PRIVATE mikumikustudio_core minhook::minhook winmm dsound)
+    target_compile_options(skinning_calibration_storage_tests PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/Ob0> $<$<CXX_COMPILER_ID:MSVC>:/openmp>)
+    set_target_properties(skinning_calibration_storage_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+    add_test(NAME skinning_calibration_storage COMMAND "${CMAKE_COMMAND}"
+        "-DPROBE=$<TARGET_FILE:skinning_calibration_storage_tests>"
+        "-DOUTPUT_ROOT=${CMAKE_BINARY_DIR}/calibration-tests"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_skinning_calibration_storage.cmake")
+    set_tests_properties(skinning_calibration_storage PROPERTIES TIMEOUT 90 RUN_SERIAL TRUE)
     add_executable(mf_h264_startup_tests EXCLUDE_FROM_ALL tests/mf_h264_startup_tests.cpp)
     target_include_directories(mf_h264_startup_tests PRIVATE include)
     target_compile_options(mf_h264_startup_tests PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/Ob0>)

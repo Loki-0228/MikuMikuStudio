@@ -498,18 +498,7 @@ void InitializeAutomatic(MMDApp* app, IDirect3DDevice9* device) {
     runtime_log::WritePath("Startup processor configuration cache path",path.c_str());
     const auto cpu=calibration_cache::CpuKey();
     const auto& available=AvailableAdapters();
-    bool cached=calibration_cache::Load(path,cpu,available,startupMeasurements);
-    if(!cached) {
-        const auto legacy=calibration_cache::LegacyPath(L"MMS");
-        cached=calibration_cache::Load(legacy,cpu,available,startupMeasurements);
-        if(cached) {
-            // Keep the validated result usable even if the executable's
-            // directory is read-only. Leave the old file intact for older builds.
-            runtime_log::WritePath("Startup processor configuration legacy cache",legacy.c_str());
-            runtime_log::Write("Startup processor configuration cache migration saved=%d",
-                calibration_cache::Save(path,cpu,available,startupMeasurements));
-        }
-    }
+    const bool cached=calibration_cache::Load(path,cpu,available,startupMeasurements);
     if(cached) {
         for(const auto& adapter:available)startupDevices.push_back({adapter,{}});
         runtime_log::Write("Startup processor configuration cache hit profiles=%zu elapsed_ms=%.3f",
