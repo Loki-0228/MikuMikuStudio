@@ -327,6 +327,10 @@ struct Manager::Impl {
     MmsResult Query(Instance& i, MmsString name, uint32_t major, uint32_t minor, uint32_t bytes, void* out) {
         if (GetCurrentThreadId() != thread) return MMS_E_THREAD;
         const auto id = String(name);
+        if (id == "mms.ui.catalog") {
+            if (closing || i.stopping.load()) return MMS_E_NOT_READY;
+            return Table(major, minor, bytes, out, registry.Catalog().Api(i.ui));
+        }
         if (id == "mms.ui") return Table(major, minor, bytes, out, registry.Api(i.ui));
         if (id == "mms.ui.surface") return Table(major, minor, bytes, out, registry.SurfaceApi(i.ui));
         if (id == "mms.ui.layout") return Table(major, minor, bytes, out, registry.LayoutApi(i.ui));

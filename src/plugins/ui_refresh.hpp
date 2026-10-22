@@ -184,6 +184,10 @@ public:
     MmsResult CheckStateContentTarget(const std::string&, const MmsUiTargetRefV1&) const;
     void SetStateProviderRevision(MmsHandle, uint64_t) noexcept;
     bool CachedStateVisible(MmsHandle, bool fallback) const;
+    // Pure cached metadata for the read-only catalog. No native validity query,
+    // dependency traversal, provider invocation or permission grant.
+    std::uint64_t ProjectEpoch() const noexcept { return GetCurrentThreadId() == thread_ ? epoch_ : 0; }
+    bool CatalogTarget(MmsHandle, MmsUiTargetRefV1&, MmsUiDirtyRectV1&, bool& visible, bool& menu) const;
     MmsResult WithLayoutProvider(const UiClient&, const std::function<MmsResult()>&);
     void SyncTargets(const std::vector<RefreshPresentation>&);
     void SyncMenuTargets(const std::vector<RefreshPresentation>&);

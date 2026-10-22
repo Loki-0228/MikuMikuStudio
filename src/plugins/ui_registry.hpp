@@ -2,6 +2,7 @@
 #include "common.hpp"
 #include "ui_refresh.hpp"
 #include "ui_property_value.hpp"
+#include "ui_catalog.hpp"
 #include <mms/ui.h>
 #include <mms/surface.h>
 #include <mms/layout.h>
@@ -41,6 +42,9 @@ struct PropertyInputSnapshot {
     std::shared_ptr<const std::atomic<bool>> intent;
 };
 struct ElementRecord {
+    // Pure host observations share registration handles but never participate
+    // in plugin layout, presentation, preferences or refresh topology.
+    bool nativeObserved = false;
     MmsHandle handle = 0;
     std::shared_ptr<Arena> arena;
     MmsUiElementV1 desc{};
@@ -73,6 +77,7 @@ struct ButtonStateContent {
     ~ButtonStateContent() { if (charge) { owner->bytes.fetch_sub(charge); global->bytes.fetch_sub(charge); } }
 };
 class UiRegistry {
+    friend class UiCatalog;
     struct Lease;
     struct Layout;
     struct View;
@@ -95,6 +100,7 @@ class UiRegistry {
     std::unique_ptr<Preferences> preferences_;
     uint64_t preferencesRevision_ = 1;
     std::function<void()> changed_;
+    std::unique_ptr<UiCatalog> catalog_;
     uint64_t geometryRevision_ = 0, geometryUiRevision_ = 0;
     std::map<std::string, MmsUiLayoutItemV1> geometry_;
     bool geometryReady_ = false;
@@ -150,6 +156,7 @@ public:
         std::function<void(UiClient&, MmsResult)> commandFinished = {});
     ~UiRegistry();
     MmsUiApiV1 Api(UiClient&);
+    UiCatalog& Catalog() noexcept { return *catalog_; }
     MmsUiSurfaceApiV1 SurfaceApi(UiClient&);
     MmsUiLayoutApiV1 LayoutApi(UiClient&);
     MmsUiRefreshStateContentApiV1 StateContentApi(UiClient&);

@@ -1,0 +1,3 @@
+LIBRARY ui_catalog_probe
+EXPORTS
+    MMSPluginGetApi

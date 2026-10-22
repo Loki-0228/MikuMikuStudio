@@ -58,6 +58,7 @@ cmake --build build/hello-menu --config Release
 | 服务 | 当前范围 |
 | --- | --- |
 | `mms.ui` 1.0 | 命令、菜单项、工具栏及属性扩展行的 BUTTON、GROUP、SEPARATOR、INPUT；元数据更新；只读属性；快照租约；命令参数、范围与选项校验；布局修订检查、指定顺序移动、创建与删除空组、显示、首选尺寸、快捷键及恢复。 |
+| `mms.ui.catalog` 1.0 | [UI 只读目录](ui-catalog.md)：原注册树、主窗口已物化菜单及已登记控件；原元素句柄、角色、已知字段、范围、实例和工程代次；不可变快照与单项解析。C++17 包装调用同一底层服务。完整本体目录及原生命令写入仍未开放。 |
 | `mms.ui.surface` 1.0 | 菜单、工具栏、工作区页签和属性扩展行的 anchor 查询；各位置通过 allowedKinds 声明范围。原生子窗口工厂、多个视图、尺寸、隐藏、焦点与销毁仍遵守原挂载限制。 |
 | `mms.ui.layout` 1.0 | 默认布局提示、事务内用户覆盖、实际几何快照；行、列、换行和网格；伸缩、上下限、隐藏占位；工具栏 BUTTON、GROUP 和 SEPARATOR 可通过 `MMS_UI_OVERFLOW_MENU=3` 选择命令溢出菜单。 |
 | `mms.ui.refresh` 1.0 | 同插件注册对象的 SELF、SUBTREE、显式 DEPENDENTS 异步刷新。GROUP 无 SELF 绘制区；各成员按 DATA、STATE、一次 LAYOUT、REPAINT 执行，使用原 handle、票据和队列。SUBTREE 支持局部坐标映射；DEPENDENTS 排除种子、按拓扑顺序处理可达目标，使用整目标损伤。两种集合 DATA 原子捕获来源版本，sourceRevision=0 表示集合。 |

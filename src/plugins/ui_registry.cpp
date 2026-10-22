@@ -388,6 +388,7 @@ UiRegistry::UiRegistry(std::function<void()> change, std::function<void(UiClient
         e.desc.kind = kind; e.desc.capabilities = MMS_UI_CONTAINER | (kind == MMS_UI_MENU ? 0 : MMS_UI_LAYOUT); e.desc.generation = generation_++;
         e.defaultHints = e.effectiveHints = InitialHints(); elements.emplace(id, std::move(e));
     }
+    catalog_ = std::make_unique<UiCatalog>(*this);
 }
 UiRegistry::~UiRegistry() = default;
 std::string UiRegistry::ExportPreferences() const {
@@ -432,6 +433,7 @@ MmsResult UiRegistry::MergePreferences(std::map<std::string, ElementRecord>& tre
     for (const auto& [id, p] : entries) {
         auto found = tree.find(id); if (found == tree.end()) continue;
         auto& e = found->second;
+        if (e.nativeObserved) { if (strict) return MMS_E_UNSUPPORTED; continue; }
         if (String(e.desc.ownerPlugin) != p.At("owner").String() || e.desc.kind != p.At("kind").UInt()) {
             if (strict) return MMS_E_ARGUMENT; continue;
         }
@@ -502,6 +504,7 @@ std::unique_ptr<UiRegistry::Preferences> UiRegistry::CapturePreferences(
     const std::map<std::string, ElementRecord>& tree, const std::map<std::string, Json>& retained) const {
     auto result = std::make_unique<Preferences>(); result->entries = retained;
     for (const auto& [id, e] : tree) {
+        if (e.nativeObserved) { result->entries.erase(id); continue; }
         if (String(e.desc.ownerPlugin) == "mms" && !e.layoutGroup) continue;
         const auto previous = retained.find(id);
         if (previous != retained.end() && (previous->second.At("kind").UInt() != e.desc.kind || previous->second.At("owner").String() != String(e.desc.ownerPlugin))) continue;
@@ -558,7 +561,7 @@ MmsResult UiRegistry::ImportPreferences(std::string_view source) {
         auto tree = elements; auto next = next_; const auto result = MergePreferences(tree, candidate->entries, next, true); if (result) return result;
         candidate->json = PreferencesJson(candidate->entries);
         const bool changed = candidate->json != preferences_->json;
-        for (auto& [id, e] : tree) e.desc.generation = generation_++;
+        for (auto& [id, e] : tree) if (!e.nativeObserved) e.desc.generation = generation_++;
         elements.swap(tree); preferences_.swap(candidate); next_ = next;
         if (changed) ++preferencesRevision_;
         Changed(); return MMS_OK;
@@ -570,7 +573,10 @@ MmsResult UiRegistry::Check(UiClient& c, bool mutate) const {
     return MMS_OK;
 }
 bool UiRegistry::Own(UiClient& c, MmsString id, MmsString owner) const {
-    const auto s = String(id); return ValidId(s) && String(owner) == c.id && s.rfind(c.id + ".", 0) == 0;
+    const auto s = String(id);
+    // Reserved for host-owned observations even for an internal UiClient.
+    return ValidId(s) && s != "mms.catalog" && s.rfind("mms.catalog.", 0) != 0 &&
+        String(owner) == c.id && s.rfind(c.id + ".", 0) == 0;
 }
 bool UiRegistry::Exists(const std::string& id) const { return commands.count(id) || elements.count(id) || properties.count(id) || surfaces.count(id); }
 void UiRegistry::Changed() { ++revision_; refresh_.SyncTopology(); if (changed_) try { changed_(); } catch (...) {} }
@@ -637,7 +643,7 @@ MmsResult UiRegistry::Element(UiClient& c, const MmsUiElementV1* input, MmsHandl
     auto tree = elements; tree[id] = std::move(r); auto next = next_;
     if (!MenuOverflowAllowed(tree.at(id), tree)) return MMS_E_UNSUPPORTED;
     auto merged = MergePreferences(tree, preferences_->entries, next, false); if (merged) return merged;
-    for (auto& [key, element] : tree) element.desc.generation = generation_++;
+    for (auto& [key, element] : tree) if (!element.nativeObserved) element.desc.generation = generation_++;
     if (replace) { ForgetStateContent(replace); refresh_.InvalidateTarget(replace); DestroyView(id); }
     elements.swap(tree); next_ = next; *out = elements[id].handle; Changed(); return MMS_OK;
 }
@@ -665,8 +671,9 @@ MmsResult UiRegistry::Property(UiClient& c, const MmsPropertyDescV1* input, MmsH
 MmsResult UiRegistry::Remove(UiClient& c, MmsHandle handle) {
     auto check = Check(c); if (check) return check; if (callbackDepth_) return MMS_E_BUSY;
     for (auto it = elements.begin(); it != elements.end(); ++it) if (it->second.handle == handle) {
+        if (it->second.nativeObserved) return MMS_E_UNSUPPORTED;
         if (String(it->second.desc.ownerPlugin) != c.id) return MMS_E_ARGUMENT;
-        for (const auto& [id, e] : elements) if (String(e.desc.parentId) == it->first) return MMS_E_BUSY;
+        for (const auto& [id, e] : elements) if (!e.nativeObserved && String(e.desc.parentId) == it->first) return MMS_E_BUSY;
         ForgetStateContent(handle); refresh_.InvalidateTarget(handle);
         DestroyView(it->first);
         elements.erase(it); Changed(); return MMS_OK;
@@ -691,7 +698,7 @@ MmsResult UiRegistry::Snapshot(UiClient& c, uint32_t flags, MmsUiSnapshotV1* out
     auto lease = std::make_unique<Lease>(); lease->owner = c.id; lease->kind = 1;
     for (const auto& [id, r] : commands) { lease->commandOwners.push_back(r); auto d = r->desc.info; d.h = Header<MmsCommandInfoV1>(); lease->commands.push_back(d); }
     for (const auto& [id, r] : properties) { lease->propertyOwners.push_back(r); auto d = r->desc.info; d.h = Header<MmsPropertyInfoV1>(); lease->properties.push_back(d); }
-    for (const auto& [id, r] : elements) { lease->elementOwners.push_back(r); lease->elements.push_back(r.desc); }
+    for (const auto& [id, r] : elements) if (!r.nativeObserved) { lease->elementOwners.push_back(r); lease->elements.push_back(r.desc); }
     const MmsHandle handle = next_++;
     MmsUiSnapshotV1 result{Header<MmsUiSnapshotV1>(), handle, revision_,
         {lease->commands.data(), lease->commands.size(), sizeof(MmsCommandInfoV1), 1},
@@ -1150,9 +1157,10 @@ MmsResult UiRegistry::Commit(UiClient& c, MmsHandle h) {
     auto retained = preferences_->entries;
     auto insertBefore = [&](const std::string& id, MmsString before) -> MmsResult {
         auto& e = tree.at(id); const auto parent = String(e.desc.parentId), sibling = String(before);
-        if (!sibling.empty()) { auto at = tree.find(sibling); if (at == tree.end() || sibling == id || String(at->second.desc.parentId) != parent) return MMS_E_ARGUMENT; }
+        if (e.nativeObserved) return MMS_E_UNSUPPORTED;
+        if (!sibling.empty()) { auto at = tree.find(sibling); if (at == tree.end() || at->second.nativeObserved || sibling == id || String(at->second.desc.parentId) != parent) return MMS_E_ARGUMENT; }
         std::vector<std::string> children;
-        for (const auto& [key, item] : tree) if (key != id && String(item.desc.parentId) == parent) children.push_back(key);
+        for (const auto& [key, item] : tree) if (!item.nativeObserved && key != id && String(item.desc.parentId) == parent) children.push_back(key);
         std::stable_sort(children.begin(), children.end(), [&](const auto& a, const auto& b) { return tree.at(a).effectiveHints.order < tree.at(b).effectiveHints.order; });
         children.insert(sibling.empty() ? children.end() : std::find(children.begin(), children.end(), sibling), id);
         uint64_t order = 0; for (const auto& key : children) { auto& item = tree.at(key); item.order = ++order; item.effectiveHints.order = int32_t(order); item.userOrder = true; }
@@ -1189,6 +1197,7 @@ MmsResult UiRegistry::Commit(UiClient& c, MmsHandle h) {
         auto it = tree.find(id); if (it == tree.end()) return MMS_E_NOT_FOUND;
         auto original = elements.find(id); if (original == elements.end() || original->second.desc.generation != op.expectedGeneration) return MMS_E_STALE;
         auto& e = it->second;
+        if (e.nativeObserved) return MMS_E_UNSUPPORTED;
         if (String(e.desc.ownerPlugin) == "mms" && !e.layoutGroup) return MMS_E_UNSUPPORTED;
         switch (op.operation) {
         case MMS_LAYOUT_MOVE: {
@@ -1206,7 +1215,7 @@ MmsResult UiRegistry::Commit(UiClient& c, MmsHandle h) {
         }
         case MMS_LAYOUT_REMOVE_GROUP:
             if (!e.layoutGroup || String(e.desc.ownerPlugin) != c.id) return MMS_E_ARGUMENT;
-            for (const auto& [key, child] : tree) if (String(child.desc.parentId) == id) return MMS_E_BUSY;
+            for (const auto& [key, child] : tree) if (!child.nativeObserved && String(child.desc.parentId) == id) return MMS_E_BUSY;
             retained.erase(id);
             for (auto& [key, p] : retained) if (const auto* parent = Member(p, "parent")) if (parent->String() == id) {
                 if (Member(p, "groupLabel")) p.object["parent"] = TextJson("mms.toolbar.main.extensions");
@@ -1246,11 +1255,11 @@ MmsResult UiRegistry::Commit(UiClient& c, MmsHandle h) {
     auto preferences = CapturePreferences(tree, retained);
     if (const auto result = PreferenceGraph(preferences->entries)) return result;
     const bool preferenceChange = preferences->json != preferences_->json;
-    for (auto& [id, e] : tree) e.desc.generation = generation_++;
+    for (auto& [id, e] : tree) if (!e.nativeObserved) e.desc.generation = generation_++;
     elements.swap(tree); preferences_.swap(preferences); if (preferenceChange) ++preferencesRevision_;
     Changed(); return MMS_OK;
 }
-bool UiRegistry::HasLeases(const UiClient& c) const { if (c.unsafeToUnload) return true; for (const auto& [h, lease] : leases_) if (lease->owner == c.id) return true; return false; }
+bool UiRegistry::HasLeases(const UiClient& c) const { if (c.unsafeToUnload || catalog_->HasLeases(c)) return true; for (const auto& [h, lease] : leases_) if (lease->owner == c.id) return true; return false; }
 void UiRegistry::Retire(UiClient& c) {
     refresh_.PropertyRefresh().Retire(c);
     for (auto it = layouts_.begin(); it != layouts_.end();) if (it->second->owner == c.id) it = layouts_.erase(it); else ++it;
@@ -1294,6 +1303,7 @@ MmsUiApiV1 UiRegistry::Api(UiClient& client) {
 MmsResult UiRegistry::DefaultHints(UiClient& c, MmsString id, const MmsUiLayoutHintsV1* hints) {
     auto check = Check(c, true); if (check) return check; check = ValidateHints(hints); if (check) return check;
     auto it = elements.find(String(id)); if (it == elements.end()) return MMS_E_NOT_FOUND;
+    if (it->second.nativeObserved) return MMS_E_UNSUPPORTED;
     if (String(it->second.desc.ownerPlugin) != c.id) return MMS_E_ARGUMENT;
     if (!(it->second.desc.capabilities & MMS_UI_LAYOUT)) return MMS_E_UNSUPPORTED;
     if (!MenuOverflowAllowed(it->second.desc, *hints, elements)) return MMS_E_UNSUPPORTED;
@@ -1314,12 +1324,13 @@ MmsResult UiRegistry::DefaultHints(UiClient& c, MmsString id, const MmsUiLayoutH
     auto tree = elements; auto& element = tree.at(String(id));
     element.defaultHints = *hints; element.defaultHints.h = Header<MmsUiLayoutHintsV1>();
     auto next = next_; check = MergePreferences(tree, preferences_->entries, next, false); if (check) return check;
-    for (auto& [key, e] : tree) e.desc.generation = generation_++;
+    for (auto& [key, e] : tree) if (!e.nativeObserved) e.desc.generation = generation_++;
     elements.swap(tree); next_ = next; Changed(); return MMS_OK;
 }
 MmsResult UiRegistry::StageHints(UiClient& c, MmsHandle h, MmsString id, uint64_t generation, const MmsUiLayoutHintsV1* hints) {
     auto check = Check(c, true); if (check) return check; check = ValidateHints(hints); if (check) return check;
     auto t = layouts_.find(h); if (t == layouts_.end() || t->second->owner != c.id) return MMS_E_NOT_FOUND;
+    if (const auto element = elements.find(String(id)); element != elements.end() && element->second.nativeObserved) return MMS_E_UNSUPPORTED;
     if (t->second->hints.size() >= 4096) return MMS_E_ARGUMENT;
     auto value = *hints; value.h = Header<MmsUiLayoutHintsV1>(); t->second->hints.push_back({String(id), generation, value}); return MMS_OK;
 }
@@ -1347,6 +1358,7 @@ bool UiRegistry::PublishGeometry(const std::map<std::string, Geometry>& input, u
 MmsResult UiRegistry::CheckVisibilityPublication(MmsHandle handle) const noexcept {
     if (GetCurrentThreadId() != thread_) return MMS_E_THREAD;
     for (const auto& [id, e] : elements) if (e.handle == handle) {
+        if (e.nativeObserved) return MMS_E_UNSUPPORTED;
         if (!(e.desc.capabilities & MMS_UI_LAYOUT)) return MMS_OK;
         return geometryReady_ && geometryUiRevision_ == revision_ && geometry_.count(id) ? MMS_OK : MMS_E_NOT_READY;
     }
@@ -1382,7 +1394,7 @@ MmsUiSurfaceApiV1 UiRegistry::SurfaceApi(UiClient& client) {
     a.acquireAnchors = [](void* p, MmsSpan* out, MmsHandle* handle) { return Boundary([&]() -> MmsResult {
         auto& c = *static_cast<UiClient*>(p); auto& r = *c.registry; auto check = r.Check(c); if (check) return check; if (!out || !handle) return MMS_E_ARGUMENT;
         auto lease = std::make_unique<Lease>(); lease->owner = c.id; lease->kind = 3;
-        for (const auto& [id, e] : r.elements) if (String(e.desc.ownerPlugin) == "mms") {
+        for (const auto& [id, e] : r.elements) if (!e.nativeObserved && String(e.desc.ownerPlugin) == "mms") {
             MmsUiAnchorV1 anchor{}; anchor.h = Header<MmsUiAnchorV1>(); anchor.id = lease->arena.Copy(e.desc.id); anchor.label = lease->arena.Copy(e.desc.label);
             anchor.allowedKinds = id == "mms.menu.plugins" ? (1ull << MMS_UI_MENU) | (1ull << MMS_UI_MENU_ITEM) | (1ull << MMS_UI_SEPARATOR) : id == "mms.workspace.tabs.extensions" ? (1ull << MMS_UI_PANEL) : (1ull << MMS_UI_BUTTON) | (1ull << MMS_UI_SEPARATOR) | (1ull << MMS_UI_GROUP) | (1ull << MMS_UI_INPUT);
             if (id == "mms.workspace.tabs.extensions") anchor.flags = MMS_ANCHOR_NATIVE_CHILD;

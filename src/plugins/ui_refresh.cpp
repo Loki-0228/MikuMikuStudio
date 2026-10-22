@@ -653,6 +653,18 @@ MmsResult UiRefreshQueue::Capabilities(RefreshClient& client, MmsUiRefreshCapabi
         std::uint32_t(kTickets), std::uint32_t(kRects), kBytes, std::uint32_t(kBatch), 0};
     return MMS_OK;
 }
+bool UiRefreshQueue::CatalogTarget(MmsHandle handle, MmsUiTargetRefV1& ref,
+    MmsUiDirtyRectV1& bounds, bool& visible, bool& menu) const {
+    if (GetCurrentThreadId() != thread_) return false;
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto found = targets_.find(handle);
+    if (found == targets_.end() || found->second.suspended || !found->second.presentation.instance) return false;
+    const auto& target = found->second;
+    const auto& p = target.presentation;
+    ref = {Header<MmsUiTargetRefV1>(), handle, target.generation, epoch_};
+    bounds = {p.x, p.y, p.width, p.height}; visible = p.visible; menu = MenuTarget(p);
+    return true;
+}
 MmsResult UiRefreshQueue::GetTarget(RefreshClient& client, MmsHandle handle, MmsUiRefreshTargetV1* out) {
     if (GetCurrentThreadId() != thread_) return MMS_E_THREAD;
     if (!Valid(out) || !handle) return MMS_E_ARGUMENT;
@@ -957,6 +969,7 @@ void UiRefreshQueue::SyncTopology() noexcept {
     try {
         std::map<MmsHandle, TreeNode> candidate;
         for (const auto& [id, element] : registry_.elements) {
+            if (element.nativeObserved) continue;
             const auto parent = registry_.elements.find(String(element.desc.parentId));
             candidate.emplace(element.handle, TreeNode{parent == registry_.elements.end() ? 0 : parent->second.handle,
                 String(element.desc.ownerPlugin), element.desc.kind});

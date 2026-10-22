@@ -1,4 +1,5 @@
 #include "native_ui.hpp"
+#include "native_ui_catalog.hpp"
 #include "native_ui_overflow.hpp"
 #include "native_property_input.hpp"
 #include <native_ui/layout.hpp>
@@ -14,6 +15,7 @@ namespace mikumikustudio::plugins {
 struct NativeUi::Impl {
     UiRegistry& registry;
     UiClient client;
+    std::unique_ptr<NativeUiCatalog> catalogObserver;
     Log log;
     enum MountIndex : size_t { ToolbarMount, PropertyMount, LeftMount, RightMount };
     struct ControlMount {
@@ -163,12 +165,17 @@ struct NativeUi::Impl {
         if (!SetWindowSubclass(main, Lifetime, reinterpret_cast<UINT_PTR>(this), reinterpret_cast<DWORD_PTR>(this))) {
             throw std::runtime_error("plugin popup lifetime hook");
         }
+        catalogObserver = std::make_unique<NativeUiCatalog>(registry, main);
+        ObserveCatalog();
         } catch (...) {
+            catalogObserver.reset();
+            if (IsWindow(main)) RemoveWindowSubclass(main, Lifetime, reinterpret_cast<UINT_PTR>(this));
             registry.Refresh().SetLayout({}); registry.Refresh().SetValidatedStateContent({}); registry.Refresh().SetPropertyData({});
             DestroyNativeWindows(); throw;
         }
     }
     ~Impl() {
+        catalogObserver.reset();
         if (IsWindow(main)) RemoveWindowSubclass(main, Lifetime, reinterpret_cast<UINT_PTR>(this));
         registry.Refresh().SetLayout({});
         registry.Refresh().SetValidatedStateContent({});
@@ -209,6 +216,7 @@ struct NativeUi::Impl {
                 self->registry.Refresh().SetMenuTracking(false);
                 if (self->menuPresentationPending) self->DeferPresentation();
                 self->ReplayClose();
+                self->ObserveCatalog();
             }
         }
         if (message == WM_CLOSE && self->DeferClose(wp, lp)) return 0;
@@ -682,7 +690,7 @@ struct NativeUi::Impl {
     }
     std::vector<std::string> Children(const std::string& parent) const {
         std::vector<std::string> out;
-        for (const auto& [id, e] : registry.elements) if (String(e.desc.parentId) == parent) out.push_back(id);
+        for (const auto& [id, e] : registry.elements) if (!e.nativeObserved && String(e.desc.parentId) == parent) out.push_back(id);
         std::stable_sort(out.begin(), out.end(), [&](const auto& a, const auto& b) { return registry.elements.at(a).effectiveHints.order < registry.elements.at(b).effectiveHints.order; }); return out;
     }
     bool State(const ElementRecord& e, MmsCommandStateV1& out) {
@@ -1438,6 +1446,24 @@ struct NativeUi::Impl {
         if (const auto r = SyncPanelTabs()) throw std::runtime_error("cannot publish plugin panel tabs");
         revision = registry.Revision(); Layout();
     }
+    void ObserveCatalog() noexcept {
+        if (!catalogObserver || registry.InCallback() || refreshing || menuLoopDepth || overflowOpen || !IsWindow(main)) return;
+        const NativeWork work(*this);
+        const auto result = Boundary([&]() -> MmsResult {
+            std::vector<NativeCatalogMenuAlias> aliases;
+            aliases.reserve(menuStates.size() + 1);
+            if (root && popup) {
+                const auto anchor = registry.elements.find("mms.menu.plugins");
+                if (anchor != registry.elements.end()) aliases.push_back({reinterpret_cast<std::uintptr_t>(root),
+                    reinterpret_cast<std::uintptr_t>(popup), UINT32_MAX, anchor->second.handle, anchor->first});
+            }
+            for (const auto& [id, state] : menuStates) if (state->present && CurrentMenu(id, state))
+                aliases.push_back({reinterpret_cast<std::uintptr_t>(state->parent), reinterpret_cast<std::uintptr_t>(state->submenu),
+                    state->id, state->element, id});
+            return catalogObserver->Observe(aliases);
+        });
+        if (result && log) try { log("UI catalog publication refused result=" + std::to_string(result)); } catch (...) {}
+    }
     void LayoutPanels(std::map<std::string, UiRegistry::Geometry>& geometry, bool& applied, HostLayoutPaint& paint) {
         const int header = MulDiv(30, dpi, 96);
         RECT client{}; GetClientRect(workspace, &client);
@@ -1559,6 +1585,7 @@ struct NativeUi::Impl {
     bool Presentations(const std::map<std::string, UiRegistry::Geometry>& geometry,
         std::vector<RefreshPresentation>& out) const {
         for (const auto& [id, element] : registry.elements) {
+            if (element.nativeObserved) continue;
             const auto bounds = geometry.find(id);
             if (bounds == geometry.end() || String(element.desc.ownerPlugin) == "mms") continue;
             if (element.desc.kind == MMS_UI_BUTTON || element.desc.kind == MMS_UI_SEPARATOR || element.desc.kind == MMS_UI_INPUT) {
@@ -1662,7 +1689,7 @@ struct NativeUi::Impl {
         const int centralWidth = std::max(0, baseWidth - sideWidths[0] - sideWidths[1]);
         auto tree = measureTree(mounts[ToolbarMount].anchor, toolbar);
         std::map<std::string, toolbar_overflow::Policy> policies;
-        for (const auto& [id, e] : registry.elements) policies[id] = {e.effectiveHints.overflow == 3,
+        for (const auto& [id, e] : registry.elements) if (!e.nativeObserved) policies[id] = {e.effectiveHints.overflow == 3,
             e.desc.kind == MMS_UI_BUTTON, e.desc.kind == MMS_UI_SEPARATOR, (e.desc.capabilities & MMS_UI_CONTAINER) != 0};
         const int layoutWidth = std::max(0, centralWidth - scrollWidth);
         auto overflow = toolbar_overflow::Arrange(tree, policies, float(layoutWidth) * 96 / dpi, float(maximum) * 96 / dpi);
@@ -1883,6 +1910,7 @@ struct NativeUi::Impl {
         if (refreshLayout || refreshing || !IsWindow(main) || revision != registry.Revision()) return MMS_E_NOT_READY;
         bool present = false;
         for (const auto& [id, e] : registry.elements) if (e.handle == element) {
+            if (e.nativeObserved) return MMS_E_UNSUPPORTED;
             if (e.desc.kind == MMS_UI_BUTTON || e.desc.kind == MMS_UI_SEPARATOR || e.desc.kind == MMS_UI_INPUT) {
                 const auto c = controls.find(id); present = c != controls.end() && c->second.element == element && IsWindow(c->second.window);
             } else if (e.desc.kind == MMS_UI_PANEL) { UiRegistry::SurfacePresentation view; present = registry.ExistingSurface(id, view); }
@@ -1931,11 +1959,11 @@ struct NativeUi::Impl {
 };
 NativeUi::NativeUi(UiRegistry& r, HWND window, Log log): impl_(std::make_unique<Impl>(r, window, std::move(log))) {}
 NativeUi::~NativeUi() = default;
-void NativeUi::Refresh() { impl_->Refresh(); }
+void NativeUi::Refresh() { impl_->Refresh(); impl_->ObserveCatalog(); }
 bool NativeUi::Command(unsigned id) { return impl_->Command(id); }
 bool NativeUi::Shortcut(unsigned key, unsigned modifiers, bool viewportFocused) {
     const Impl::NativeWork work(*impl_);
-    for (const auto& [id, e] : impl_->registry.elements) if (e.key == key && e.modifiers == modifiers && (!e.scope || viewportFocused) && e.visible) return impl_->Command(impl_->Id(id, e));
+    for (const auto& [id, e] : impl_->registry.elements) if (!e.nativeObserved && e.key == key && e.modifiers == modifiers && (!e.scope || viewportFocused) && e.visible) return impl_->Command(impl_->Id(id, e));
     return false;
 }
 int NativeUi::Layout(int x, int width, int maximum, bool visible) {

@@ -18,6 +18,9 @@ add_library(mms_plugin_runtime STATIC
     src/plugins/manifest.cpp
     src/plugins/loader_win32.cpp
     src/plugins/ui_registry.cpp
+    src/plugins/ui_catalog.cpp
+    src/plugins/native_ui_catalog.cpp
+    src/plugins/native_menu_snapshot.cpp
     src/plugins/ui_property_value.cpp
     src/plugins/ui_property_draft.cpp
     src/plugins/ui_refresh.cpp
@@ -36,6 +39,35 @@ add_library(mms_plugin_runtime STATIC
 target_include_directories(mms_plugin_runtime PUBLIC sdk/mms/include include PRIVATE src/plugins)
 target_link_libraries(mms_plugin_runtime PUBLIC mms_system_settings native_ui::win32 user32 gdi32 comctl32 bcrypt)
 target_compile_definitions(mms_plugin_runtime PRIVATE _WIN32_WINNT=0x0601 WINVER=0x0601)
+
+add_executable(ui_catalog_tests EXCLUDE_FROM_ALL tests/ui_catalog_tests.cpp)
+target_link_libraries(ui_catalog_tests PRIVATE mms_plugin_runtime)
+set_target_properties(ui_catalog_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_test(NAME ui_catalog_contracts COMMAND ui_catalog_tests)
+set_tests_properties(ui_catalog_contracts PROPERTIES TIMEOUT 240 RUN_SERIAL TRUE)
+
+add_executable(ui_catalog_sdk_tests EXCLUDE_FROM_ALL tests/ui_catalog_sdk_tests.cpp)
+target_include_directories(ui_catalog_sdk_tests PRIVATE sdk/mms/include)
+target_compile_features(ui_catalog_sdk_tests PRIVATE cxx_std_17)
+add_executable(ui_catalog_c_layout EXCLUDE_FROM_ALL tests/ui_catalog_c_layout.c)
+target_include_directories(ui_catalog_c_layout PRIVATE sdk/mms/include)
+set_target_properties(ui_catalog_c_layout PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+foreach(catalog_target ui_catalog_tests ui_catalog_sdk_tests ui_catalog_c_layout)
+    target_link_options(${catalog_target} PRIVATE /SUBSYSTEM:CONSOLE,6.01 /DEBUG:NONE)
+    set_target_properties(${catalog_target} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+endforeach()
+add_test(NAME ui_catalog_sdk_contracts COMMAND ui_catalog_sdk_tests)
+add_test(NAME ui_catalog_c_layout_contract COMMAND ui_catalog_c_layout)
+set_tests_properties(ui_catalog_sdk_contracts ui_catalog_c_layout_contract PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE)
+
+add_library(mms_plugin_ui_catalog_probe SHARED EXCLUDE_FROM_ALL
+    tests/plugins/ui_catalog_probe.cpp tests/plugins/ui_catalog_probe.def)
+target_include_directories(mms_plugin_ui_catalog_probe PRIVATE sdk/mms/include)
+target_compile_definitions(mms_plugin_ui_catalog_probe PRIVATE _WIN32_WINNT=0x0601 WINVER=0x0601)
+target_link_options(mms_plugin_ui_catalog_probe PRIVATE /SUBSYSTEM:WINDOWS,6.01 /DEBUG:NONE)
+set_target_properties(mms_plugin_ui_catalog_probe PROPERTIES PREFIX "" OUTPUT_NAME "ui_catalog_probe"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/plugins/ui_catalog/$<CONFIG>"
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 # Host-side static libraries inherit the host/Conan runtime. Only independent
 # plugin DLLs select /MT; ownership never crosses the public C ABI.
 target_link_libraries(mikumikustudio_core PUBLIC mms_plugin_runtime)
