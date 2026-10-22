@@ -5,6 +5,10 @@
 #include "mikumikustudio/model_vertex_cache.hpp"
 #include "mikumikustudio/key_pool.hpp"
 #include "model_geometry_cache_load.hpp"
+#if !MMD_ORIGINAL_PROFILE
+#include "pmx_vertex_parallel.hpp"
+#include "mikumikustudio/runtime_log.hpp"
+#endif
 // ===========================================================================
 // VA 0x004B77E0 - LoadPMX  (original: sub_4B77E0, 32KB)
 // ===========================================================================
@@ -596,7 +600,30 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
             }
         };
 
-        for (std::int32_t i = 0; !geometryHit && i < vertCount; ++i) {
+        bool verticesPrepared = geometryHit;
+#if !MMD_ORIGINAL_PROFILE
+        wchar_t parallelDisabled[8]{};
+        const bool disableParallel = GetEnvironmentVariableW(
+            L"MMS_PARALLEL_PREPARE_DISABLE", parallelDisabled, 8) == 1
+            && parallelDisabled[0] == L'1';
+        if (!verticesPrepared && !disableParallel &&
+            vertCount >= static_cast<std::int32_t>(pmx_prepare::kMinimumParallelVertices)) {
+            pmx_prepare::Statistics statistics;
+            const auto result = pmx_prepare::ReadVertices(reader,
+                static_cast<std::size_t>(vertCount), model.pmxAdditionalUvCount,
+                boneIdxSize, verts, 2, &statistics);
+            // This existing opt-in diagnostic channel creates no file unless
+            // its process environment names one. Workers never log or use D3D.
+            runtime_log::Trace("PMX_PREPARE result=%u workers=%zu batches=%zu vertices=%zu bytes=%zu",
+                static_cast<unsigned>(result), statistics.workers, statistics.batches,
+                statistics.vertices, statistics.temporaryBytes);
+            if (result != pmx_prepare::Result::complete &&
+                result != pmx_prepare::Result::unavailable) return false;
+            // unavailable is returned only before any input/destination change.
+            verticesPrepared = result == pmx_prepare::Result::complete;
+        }
+#endif
+        for (std::int32_t i = 0; !verticesPrepared && i < vertCount; ++i) {
             mdl::PmxVertex& rec = verts[i];
             reader.Read(&rec, 0x20);                          // pos+normal+uv
             const int addl = model.pmxAdditionalUvCount;

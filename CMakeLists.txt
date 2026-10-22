@@ -580,6 +580,12 @@ set_target_properties(model_geometry_cache_host_tests PROPERTIES RUNTIME_OUTPUT_
 add_test(NAME model_geometry_cache_host COMMAND model_geometry_cache_host_tests "${CMAKE_BINARY_DIR}/tests/geometry-cache-host-fixtures")
 set_tests_properties(model_geometry_cache_host PROPERTIES TIMEOUT 120 LABELS "hardware-manual")
 
+add_executable(pmx_vertex_parallel_tests EXCLUDE_FROM_ALL tests/pmx_vertex_parallel_tests.cpp)
+target_include_directories(pmx_vertex_parallel_tests PRIVATE include)
+set_target_properties(pmx_vertex_parallel_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_test(NAME pmx_vertex_parallel_regressions COMMAND pmx_vertex_parallel_tests)
+set_tests_properties(pmx_vertex_parallel_regressions PROPERTIES TIMEOUT 180 RUN_SERIAL TRUE)
+
 add_executable(pmd_index_save_tests EXCLUDE_FROM_ALL tests/pmd_index_save_tests.cpp)
 target_link_libraries(pmd_index_save_tests PRIVATE mikumikustudio_core winmm dsound)
 set_target_properties(pmd_index_save_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")

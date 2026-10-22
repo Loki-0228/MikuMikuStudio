@@ -7,6 +7,7 @@
 #include <Windows.h>
 #include <d3d9.h>
 #include "../src/model/model_geometry_cache.hpp"
+#include "../src/model/pmx_vertex_parallel.hpp"
 #include "mikumikustudio/build_profile.hpp"
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/model.hpp"
@@ -42,6 +43,12 @@ struct Environment {
     Environment(){const auto n=GetEnvironmentVariableW(L"MMS_MODEL_GEOMETRY_CACHE_DISABLE",nullptr,0);if(n){previous.resize(n);GetEnvironmentVariableW(L"MMS_MODEL_GEOMETRY_CACHE_DISABLE",previous.data(),n);previous.resize(n-1);present=true;}Set(false);}
     void Set(bool disabled){Check(SetEnvironmentVariableW(L"MMS_MODEL_GEOMETRY_CACHE_DISABLE",disabled?L"1":nullptr)!=FALSE,"set only process-local cache mode");}
     ~Environment(){SetEnvironmentVariableW(L"MMS_MODEL_GEOMETRY_CACHE_DISABLE",present?previous.c_str():nullptr);}
+};
+struct ProcessEnvironment {
+    std::string key,previous;bool present=false;
+    explicit ProcessEnvironment(const char* name):key(name){if(const char* value=std::getenv(name)){previous=value;present=true;}}
+    void Set(const std::string& value){Check(_putenv_s(key.c_str(),value.c_str())==0,"set only this test process environment");}
+    ~ProcessEnvironment(){Check(_putenv_s(key.c_str(),present?previous.c_str():"")==0,"restore inherited process environment");}
 };
 struct DirectoryRestore {
     fs::path previous=fs::current_path();
@@ -168,9 +175,10 @@ void FullRoundTrip(Host& host,Environment& environment,ref::Fixture fixture,Rout
     const auto changedWarm=Actual(host,path,fixture,route);Equal(changedSnapshot,changedWarm);
     Check(!IsWindowVisible(host.window),"real loader validation never displays the test-owned host");std::printf("PASS %s\n",label);
 }
-void LaterFailureDoesNotPublish(Host& host,Environment& environment) {
-    stage="actual-PMX-late-section-failure";std::printf("STAGE %s\n",stage);
-    const auto fixture=ref::Pmx(3,2,2,2,true);const auto path=root/L"late-failure.pmx";
+void LaterFailureDoesNotPublish(Host& host,Environment& environment,const ref::Fixture* large=nullptr) {
+    stage=large?"actual-parallel-PMX-late-section-failure":"actual-PMX-late-section-failure";std::printf("STAGE %s\n",stage);
+    const auto localFixture=large?ref::Fixture{}:ref::Pmx(3,2,2,2,true);
+    const auto& fixture=large?*large:localFixture;const auto path=root/(large?L"parallel-late-failure.pmx":L"late-failure.pmx");
     auto broken=fixture.bytes;broken.resize(static_cast<std::size_t>(fixture.indexEnd));
     ref::Put(broken,1u);ref::Put(broken,3u);broken.insert(broken.end(),{0,0,0}); // Odd UTF16 texture name after geometry.
     Write(path,broken);environment.Set(false);const auto before=gc::GetProcessStatistics();
@@ -183,6 +191,54 @@ void LaterFailureDoesNotPublish(Host& host,Environment& environment) {
     if(!build_profile::original)Check(after.hits==failed.hits&&after.stores==failed.stores+1,"first successful restored full import still misses and stores only now");
     Equal(restored,Actual(host,path,fixture,Route::DirectPmx));std::printf("PASS %s\n",stage);
 }
+ref::Fixture LargePmx() {
+    auto fixture=ref::Pmx(static_cast<std::uint32_t>(pmx_prepare::kMinimumParallelVertices+1),4,4,4,true);
+    const auto oldEnd=fixture.vertexEnd;
+    ref::Bytes bytes(fixture.bytes.begin(),fixture.bytes.begin()+static_cast<std::ptrdiff_t>(fixture.vertexStart));
+    for(std::uint32_t i=0;i<fixture.vertices;++i) {
+        for(float v:{float(i%3),float((i+1)%3),float(i%2),0.f,0.f,1.f,float(i%2),float((i+1)%2)})ref::Put(bytes,v);
+        for(unsigned uv=0;uv<4;++uv)for(unsigned c=0;c<4;++c)ref::Put(bytes,float(i*17+uv*4+c)*.125f);
+        const auto type=static_cast<std::uint8_t>(i%4);ref::Put(bytes,type);ref::SignedIndex(bytes,0,4);
+        if(type==1||type==3) {
+            ref::SignedIndex(bytes,0,4);ref::Put(bytes,.3f);
+            if(type==3)for(float v:{1.f,2.f,3.f,.1f,.2f,.3f,1.3f,-2.7f,3.1f})ref::Put(bytes,v);
+        } else if(type==2) {
+            for(unsigned b=0;b<3;++b)ref::SignedIndex(bytes,0,4);
+            for(float v:{.1f,.2f,.3f,.4f})ref::Put(bytes,v);
+        }
+        ref::Put(bytes,.75f);
+    }
+    fixture.vertexEnd=static_cast<std::int64_t>(bytes.size());
+    bytes.insert(bytes.end(),fixture.bytes.begin()+static_cast<std::ptrdiff_t>(oldEnd),fixture.bytes.end());
+    fixture.indexEnd+=fixture.vertexEnd-oldEnd;fixture.bytes=std::move(bytes);return fixture;
+}
+std::vector<std::string> PreparationLines(const fs::path& path) {
+    std::ifstream in(path);std::vector<std::string> result;std::string line;
+    while(std::getline(in,line))if(line.find("PMX_PREPARE ")!=std::string::npos)result.push_back(std::move(line));
+    return result;
+}
+void ParallelRoundTrip(Host& host,Environment& environment) {
+    stage="actual-large-PMX-parallel-cache-serial";std::printf("STAGE %s\n",stage);
+    auto fixture=LargePmx();const auto path=root/L"parallel-round-trip.pmx",trace=root/L"parallel-trace.log";Write(path,fixture.bytes);
+    ProcessEnvironment policy("MMS_PARALLEL_PREPARE_DISABLE"),diagnostic("MIKUMIKUSTUDIO_TRACE_FILE");
+    diagnostic.Set(trace.string());policy.Set("");environment.Set(true);
+    const auto parallel=Actual(host,path,fixture,Route::DirectPmx);const auto lines=PreparationLines(trace);
+    if(build_profile::original)Check(lines.empty(),"original production loader never enters the CPU worker helper");
+    else Check(lines.size()==1&&lines[0].find("result=0 workers=2 batches=17 vertices=131073 bytes=")!=std::string::npos,
+        "actual large cache-disabled production load joined two real CPU workers and all seventeen batches");
+    policy.Set("1");const auto serial=Actual(host,path,fixture,Route::DirectPmx);Equal(parallel,serial);
+    Check(PreparationLines(trace)==lines,"process disable uses the original field parser without entering workers");
+    policy.Set("");environment.Set(false);const auto before=gc::GetProcessStatistics();
+    const auto cold=Actual(host,path,fixture,Route::DirectPmx);const auto afterCold=gc::GetProcessStatistics();const auto coldLines=PreparationLines(trace);Equal(parallel,cold);
+    if(build_profile::original)Check(coldLines.empty()&&afterCold.stores==before.stores,"original large loader keeps both optimizations disabled");
+    else Check(coldLines.size()==lines.size()+1&&afterCold.stores==before.stores+1&&afterCold.hits==before.hits,
+        "actual parallel cold miss publishes one complete geometry cache entry");
+    const auto warm=Actual(host,path,fixture,Route::DirectPmx);Equal(cold,warm);
+    Check(PreparationLines(trace)==coldLines,"warm geometry clone does not prepare or launch CPU workers");
+    if(!build_profile::original)Check(gc::GetProcessStatistics().hits==afterCold.hits+1,"actual large warm load uses its cached parsed geometry");
+    LaterFailureDoesNotPublish(host,environment,&fixture);
+    std::printf("PASS actual large PMX serial/parallel/cache and later failure profile=%s\n",build_profile::original?"original-disabled":"full-workers");
+}
 }
 int wmain(int argc,wchar_t** argv) {
     std::setvbuf(stdout,nullptr,_IONBF,0);Check(argc==2,"provide a private evidence directory");
@@ -194,5 +250,6 @@ int wmain(int argc,wchar_t** argv) {
     FullRoundTrip(host,environment,ref::Pmx(3,2,2,2,true),Route::DirectPmx,"real-direct-PMX-two-UV");
     FullRoundTrip(host,environment,ref::Pmx(3,4,4,4,true),Route::DirectPmx,"real-direct-PMX-four-UV-wide-index");
     LaterFailureDoesNotPublish(host,environment);
+    ParallelRoundTrip(host,environment);
     std::printf("PASS actual hidden Win32/D3D9 loader geometry cache: %u checks profile=%s\n",checks,build_profile::original?"original-disabled":"full-cache");return 0;
 }
