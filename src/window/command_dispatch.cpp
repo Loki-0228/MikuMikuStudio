@@ -666,6 +666,11 @@ void CommandDispatch(HWND ctrl, WPARAM wParam) {
         if (id >= 200 && id <= 250) {
             CmdFileMenu(app, hwnd, id, notification);
         } else if (id >= 251 && id <= 311) {  // includes model-language settings
+#if !MMD_ORIGINAL_PROFILE
+            // Reloading renderer resources owns its refresh effects. Even a
+            // refused or cancelled reload is not a curve-data change.
+            if (id == 278) curveSync.enabled = false;
+#endif
             CmdViewMenu(app, hwnd, id, notification);
         } else if (id >= 400 && id <= 449) {
             CmdControl400(app, hwnd, id, notification);

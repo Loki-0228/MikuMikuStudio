@@ -1,5 +1,6 @@
 #include "mikumikustudio/import_texture_cache.hpp"
 #if !MMD_ORIGINAL_PROFILE
+#include "texture_reload_preparation.hpp"
 #include "mikumikustudio/d3d_wrapper.hpp"
 #include "mikumikustudio/d3dx_dyn.hpp"
 #include "mikumikustudio/model_alpha_pass.hpp"
@@ -41,6 +42,10 @@ HRESULT LoadDefault(IDirect3DDevice9* device, const wchar_t* path, IDirect3DText
         // Release a previous failed result too; third-party D3DX hooks are not
         // permission to leak a nonnull failure out parameter.
         texture.reset(); IDirect3DTexture9* next = nullptr;
+        // Re-read the import slots for every attempt. An earlier callback can
+        // replace the entry point, so the 1x1 and usage retries must not reuse
+        // the pointer cached at function entry.
+        if (!api.Load() || !api.fromFileExW) return HRESULT_FROM_WIN32(ERROR_MOD_NOT_FOUND);
         HRESULT result;
         try {
             result = api.fromFileExW(device, path, d3dxDefault, d3dxDefault, 1, usage,
@@ -345,6 +350,37 @@ bool TryLoadCaptured(D3DRenderer* renderer, const wchar_t* path, int& result) no
     if (GetCurrentThreadId() != active->state_->thread) return true;
     if (&active->state_->renderer != renderer) { active->state_->Fail(MMS_E_ARGUMENT); return true; }
     result = active->Load(path); return true;
+}
+}
+
+namespace mikumikustudio::texture_reload {
+MmsResult PrepareCacheTexture(IDirect3DDevice9* device, const wchar_t* path,
+    import_texture_cache::TextureLoader loader, PreparedCacheTexture& out) noexcept {
+    if (!device || !path || !*path) return MMS_E_ARGUMENT;
+    try {
+        PreparedCacheTexture candidate;
+        candidate.tag = out.tag;
+        auto* rgba = reinterpret_cast<unsigned char*>(&candidate.tag);
+        rgba[3] = kTextureAlphaKnown | kTextureUsesAlpha;
+        IDirect3DTexture9* raw = nullptr; HRESULT result;
+        try { result = (loader ? loader : import_texture_cache::LoadDefault)(device, path, &raw); }
+        catch (...) { if (raw) raw->Release(); throw; }
+        candidate.texture.reset(raw);
+        if (FAILED(result)) {
+            // A missing optional cache image has the legacy null/zero-colour
+            // result. Infrastructure, memory and device failures reject the
+            // entire batch before any old resource has been released.
+            if (result == E_OUTOFMEMORY || result == D3DERR_OUTOFVIDEOMEMORY) return MMS_E_MEMORY;
+            if (import_texture_cache::FatalLoadResult(result)) return MMS_E_NOT_READY;
+            candidate.texture.reset();
+            rgba[0] = rgba[1] = rgba[2] = 0;
+        } else {
+            if (!candidate.texture) return MMS_E_NOT_READY;
+            CacheTextureColorAndAlpha(candidate.texture.get(), rgba);
+        }
+        out = std::move(candidate); return MMS_OK;
+    } catch (const std::bad_alloc&) { return MMS_E_MEMORY; }
+    catch (...) { return MMS_E_FAILED; }
 }
 }
 #endif

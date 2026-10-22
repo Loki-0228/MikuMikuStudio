@@ -133,7 +133,12 @@ void ObserveMessage(MMDApp* app, UINT message, WPARAM wp, LPARAM lp) {
         (message == WM_TIMER && (wp == 100 || wp == 101));
     if (message == WM_COMMAND) {
         const auto id = LOWORD(wp), notification = HIWORD(wp);
-        changed = !(id >= 0xa000 && id <= 0xbfff) &&
+        // 278 is the renderer-only native texture reload: the resource refresh
+        // requests its own drawing and is not a pose edit. Exclude only its
+        // menu/accelerator messages (no control window, HIWORD 0 or 1); an
+        // already existing MessageSeen=1 is left untouched.
+        const bool rendererReload = id == 278 && !lp && notification <= 1;
+        changed = !rendererReload && !(id >= 0xa000 && id <= 0xbfff) &&
             (!lp || (notification != EN_SETFOCUS && notification != EN_KILLFOCUS));
     }
     // MainWndProc's HandleNotify only paints native control labels

@@ -272,6 +272,7 @@
 #include "../plugins/native_model_outline_color.hpp"
 #include "../plugins/native_model_names.hpp"
 #include "../plugins/native_model_toon.hpp"
+#include "../plugins/native_texture_reload.hpp"
 #include "../plugins/native_model_multiply.hpp"
 #include "../plugins/native_physics_mode.hpp"
 #include "../plugins/native_history_commands.hpp"
@@ -2619,8 +2620,12 @@ void CmdViewMenu(MMDApp* app, HWND hwnd, std::uint16_t id,
     // InitToonTextures), then the locale refresh sub_4076E0.
     // ------------------------------------------------------------------
     case 278:
+#if !MMD_ORIGINAL_PROFILE
+        plugins::TryReloadNativeTextures(app);
+#else
         InitToonTextures(app);  // 0x424DC0
         ReloadTextureCache(app->Renderer());  // 0x4076E0
+#endif
         return;
 
     // ------------------------------------------------------------------

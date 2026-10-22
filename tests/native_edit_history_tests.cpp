@@ -439,6 +439,7 @@ void CrossModelJournal(){
 #include "native_model_outline_color_checks.inc"
 #include "native_model_names_checks.inc"
 #include "native_model_toon_checks.inc"
+#include "native_texture_reload_checks.inc"
 #include "native_model_physics_checks.inc"
 #include "native_model_physics_preparation_checks.inc"
 #include "native_model_physics_ui_checks.inc"
@@ -471,6 +472,9 @@ int main(int argc,char** argv){
     }
     if(argc==2&&!std::strcmp(argv[1],"--model-toon-only")) {
         NativeModelToonChecks();std::printf("PASS native model toon: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--texture-reload-only")) {
+        NativeTextureReloadChecks();std::printf("PASS native texture reload: %u checks\n",checks);return 0;
     }
     if(argc==2&&!std::strcmp(argv[1],"--model-physics-only")) {
         NativeModelPhysicsChecks();std::printf("PASS native model physics: %u checks\n",checks);return 0;
@@ -978,6 +982,7 @@ int main(int argc,char** argv){
     run("NativeModelOutlineColorChecks",NativeModelOutlineColorChecks);
     run("NativeModelNamesChecks",NativeModelNamesChecks);
     run("NativeModelToonChecks",NativeModelToonChecks);
+    run("NativeTextureReloadChecks",NativeTextureReloadChecks);
     run("NativeModelPhysicsChecks",NativeModelPhysicsChecks);
     run("NativeModelPhysicsPreparationChecks",NativeModelPhysicsPreparationChecks);
     run("NativeModelPhysicsUiChecks",NativeModelPhysicsUiChecks);
