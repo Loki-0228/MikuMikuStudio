@@ -1,5 +1,7 @@
 # 测试保留与清理说明
 
+`menu_initial_paint_tests` 和 `menu_initial_paint_integration_tests` 是 `EXCLUDE_FROM_ALL` 的 UI 专项目标，不注册到默认 CTest。显式构建后复制到独立安装目录，继承 Default 桌面串行运行，无参数。核心测试使用真实子类、菜单句柄、计时器及分配失败；接入测试调用实际主窗口 WM_CREATE 和效果编辑器安装函数，只替换重型 UI 初始化。弹出窗口元数据和绘制通过私有接口模拟，不代表真实菜单像素验收。范围、三个反例和平台限制见[菜单验收记录](../docs/records/abi-menu-initial-paint-2026-10-23.md)。
+
 `transform_edit_prefix_tests` 为 `EXCLUDE_FROM_ALL` 的 UI 专项目标，显式构建后在 Default 桌面的独立测试目录运行，不纳入默认 CTest。它使用生产控件工厂和子类，比较 17 个长变换输入框与原生 EDIT 的聚焦行为，检查非聚焦前缀、非目标、原始配置和回调重入。字体及宽度变化仅模拟三档布局，不等于真实多屏 DPI。真实提交由 `native_edit_history_tests --pose-numeric-only` 等相邻回归覆盖。失败记录及运行范围见[长数值验收](../docs/records/abi-transform-prefix-2026-10-23.md)。
 
 `ui_refresh_subscription_store` 验证订阅注册失败、配额及来源邮箱；`ui_refresh_subscription_runtime` 验证原队列、SDK 和真实 DLL 的自动刷新、准确快照、只读限制及停止清理。实际预算回归通过自有窗口消息检查容量释放后的自动恢复，保留失败回调不空转断言。`ui_auto_refresh_sdk_example` 通过真实宿主命令运行原创示例。范围、测量及失败准备记录见[订阅记录](../docs/records/abi-refresh-subscription-2026-10-22.md)。

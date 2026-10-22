@@ -9,6 +9,7 @@
 #include "mikumikustudio/nvidia_antialias_menu.hpp"
 #include "mikumikustudio/system_settings_ui.hpp"
 #include "mikumikustudio/audio_menu.hpp"
+#include "mikumikustudio/menu_initial_paint.hpp"
 // ===========================================================================
 // VA 0x004C3A10 - MainWndProc  (original: sub_4C3A10, 0x8A6 bytes)
 // ===========================================================================
@@ -124,6 +125,11 @@ static const char kMsgQuitModifiedJp[] =                 // x64 0x7FF7CB552798
 static const char kCaptionQuitJp[] = "\x8F\x49\x97\xB9";  // x64 0x7FF7CB5526F8 "終了"
 
 LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+#if !MMD_ORIGINAL_PROFILE
+    // Subsequent menu messages use one subclass route, including cancellation
+    // inside the native handler. Do not also dispatch them from this procedure.
+    if (msg == WM_CREATE) menu_initial_paint::Attach(hwnd);
+#endif
     updates::MessageScope dispatchScope;
     MMDApp* app = g_Block;
     auto& s = *app;

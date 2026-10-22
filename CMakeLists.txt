@@ -345,6 +345,7 @@ add_library(mikumikustudio_core STATIC
     src/window/path_utils.cpp
     src/window/window_init.cpp
     src/window/ui_init.cpp
+    src/window/menu_initial_paint.cpp
     src/window/ui_font.cpp
     src/window/wndproc.cpp
     src/window/localize_ui.cpp
@@ -1100,6 +1101,12 @@ if (MIKUMIKUSTUDIO_BUILD_UI_TESTS)
         mfplat mfreadwrite mfuuid ole32 oleaut32 windowscodecs)
     set_target_properties(native_media_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
     enable_testing()
+    add_executable(menu_initial_paint_tests EXCLUDE_FROM_ALL tests/menu_initial_paint_tests.cpp)
+    target_link_libraries(menu_initial_paint_tests PRIVATE mikumikustudio_core minhook::minhook winmm dsound)
+    set_target_properties(menu_initial_paint_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+    add_executable(menu_initial_paint_integration_tests EXCLUDE_FROM_ALL tests/menu_initial_paint_integration_tests.cpp)
+    target_link_libraries(menu_initial_paint_integration_tests PRIVATE mikumikustudio_core minhook::minhook winmm dsound)
+    set_target_properties(menu_initial_paint_integration_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
     add_executable(transform_edit_prefix_tests EXCLUDE_FROM_ALL tests/transform_edit_prefix_tests.cpp)
     target_link_libraries(transform_edit_prefix_tests PRIVATE mikumikustudio_core minhook::minhook winmm dsound)
     set_target_properties(transform_edit_prefix_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")

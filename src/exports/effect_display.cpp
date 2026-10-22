@@ -5,12 +5,19 @@
 #include "mikumikustudio/native_mesh.hpp"
 #include "mikumikustudio/text_encoding.hpp"
 #include "mikumikustudio/ui_language.hpp"
+#include "mikumikustudio/menu_initial_paint.hpp"
 #include <commctrl.h>
 #include <cwchar>
 
 namespace mikumikustudio {
 namespace {
 constexpr UINT_PTR kDisplaySubclass = 0x4D4D454C;
+#if !MMD_ORIGINAL_PROFILE
+BOOL CALLBACK AttachMenuOwner(HWND child, LPARAM) {
+    menu_initial_paint::Attach(child);
+    return TRUE;
+}
+#endif
 std::wstring Item(HWND list, int row, LPARAM* identity = nullptr) {
     wchar_t text[2048]{};
     LVITEMW item{}; item.mask = LVIF_TEXT | LVIF_PARAM;
@@ -113,6 +120,10 @@ std::wstring EffectListDisplayLabel(MMDApp* app, HWND list, int row) {
     return material >= 0 ? original.substr(0, prefix) + label : label;
 }
 void InstallEffectListDisplay(HWND editor, MMDApp* app) {
+#if !MMD_ORIGINAL_PROFILE
+    menu_initial_paint::Attach(editor);
+    EnumChildWindows(editor, AttachMenuOwner, 0);
+#endif
     SetWindowSubclass(editor, DisplayProc, kDisplaySubclass, reinterpret_cast<DWORD_PTR>(app));
 }
 }
