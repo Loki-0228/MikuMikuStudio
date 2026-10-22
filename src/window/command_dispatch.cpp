@@ -486,7 +486,8 @@ void CommandDispatch(HWND ctrl, WPARAM wParam) {
     HWND hwnd = static_cast<HWND>(s.Hwnd());
     struct CurveSyncOnExit {
         HWND owner;
-        ~CurveSyncOnExit() { curve_editor::NotifyOwnedChanged(owner); }
+        bool enabled = true;
+        ~CurveSyncOnExit() { if (enabled) curve_editor::NotifyOwnedChanged(owner); }
     } curveSync{hwnd};
     const std::uint16_t id = LOWORD(wParam);
     const std::uint16_t notification = HIWORD(wParam);
@@ -496,7 +497,12 @@ void CommandDispatch(HWND ctrl, WPARAM wParam) {
     if (ctrl == nullptr && notification == 0 && system_settings_ui::HandleCommand(app, id)) return;
     if (ctrl == nullptr && notification <= 1 && image_sequence::HandleCommand(app, id)) return;
     if (ctrl == nullptr && notification <= 1 && plugin_menu::HandleCommand(app, id)) return;
-    if (ctrl == nullptr && notification <= 1 && plugins::HandleCommand(id)) return;
+    if (ctrl == nullptr && notification <= 1 && plugins::HandleCommand(id)) {
+        // Plugin edits publish their actual effects through the common history
+        // and refresh queue. A menu invocation alone is not a curve-data change.
+        curveSync.enabled = false;
+        return;
+    }
     if (ctrl == nullptr && notification == 0 && bake::HandleCommand(app, id)) return;
     if (ctrl == nullptr && notification == 0 && frame_rate_correction::HandleCommand(app, id)) return;
     if (ctrl == nullptr && notification == 0 && sequence_scatter::HandleCommand(app, id)) return;

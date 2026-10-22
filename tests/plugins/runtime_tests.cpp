@@ -421,6 +421,10 @@ int wmain(int argc, wchar_t** argv) {
         if (argc == 2 && std::wstring(argv[1]) == L"--recovery-only") {
             UiRefreshRecoveryChecks(); std::cout << "PASS refresh recovery checks=" << checks << "\n"; return 0;
         }
+        if (argc == 2 && std::wstring(argv[1]) == L"--shared-history-only") {
+            SharedHistoryChecks();
+            std::cout << "PASS shared history checks=" << checks << "\n"; return 0;
+        }
         if (argc == 3 && std::wstring(argv[1]) == L"--property-data-only") {
             CHECK(!fs::exists(root)); fs::create_directories(root);
             PropertyDataRefreshChecks(); NativePropertyDataChecks(root, fs::absolute(argv[2]));

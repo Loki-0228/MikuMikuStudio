@@ -3,6 +3,26 @@
 #include <list>
 
 namespace mikumikustudio::plugins {
+// Internal effect bits for one successful history publication. They name the
+// consumers that must be refreshed; they never replace RequiresPhysicsReset,
+// never bypass the edit gate and never suppress a prepared publication.
+enum class HistoryEffects : uint32_t {
+    None = 0,
+    ProjectData = 1,
+    SceneReadout = 2,
+    Viewport = 4,
+    All = 7
+};
+constexpr HistoryEffects operator|(HistoryEffects left, HistoryEffects right) noexcept {
+    return static_cast<HistoryEffects>(static_cast<uint32_t>(left) | static_cast<uint32_t>(right));
+}
+constexpr HistoryEffects operator&(HistoryEffects left, HistoryEffects right) noexcept {
+    return static_cast<HistoryEffects>(static_cast<uint32_t>(left) & static_cast<uint32_t>(right));
+}
+constexpr bool HasHistoryEffect(HistoryEffects value, HistoryEffects effect) noexcept {
+    return (value & effect) != HistoryEffects::None;
+}
+
 // Internal native participants. A change owns the resources needed by both
 // directions, including absent objects. It must never recover an object by
 // reopening its source file. Public plugins use edit.h and serializer bytes.
@@ -25,6 +45,9 @@ public:
     // Metadata-only participants may opt out. Unknown native and plugin
     // changes retain the conservative physics invalidation policy.
     virtual bool RequiresPhysicsReset() const noexcept { return true; }
+    // Read during preparation only and frozen on the history node. The default
+    // is conservative for unknown native participants and derived classes.
+    virtual HistoryEffects Effects() const noexcept { return HistoryEffects::All; }
 };
 
 // Trusted host wakeup only, never a plugin callback. The borrowed context must
@@ -62,6 +85,7 @@ private:
     EditStore* edits_ = nullptr;
     RecordingMode recordingMode_ = RecordingMode::AllOperations;
     bool lastPhysicsReset_ = true;
+    HistoryEffects lastEffects_ = HistoryEffects::All;
     HistoryPublicationSignal publicationSignal_{};
     MmsResult Ready() const;
     MmsResult ReserveNode(std::shared_ptr<const EditRecord>, std::shared_ptr<HistoryChange>,
@@ -132,6 +156,15 @@ public:
     const std::string* NextLabel(bool redo) const noexcept;
     // Describes the last successful publication, including undo and redo.
     bool LastPublicationRequiresPhysicsReset() const noexcept { return lastPhysicsReset_; }
+    // Same thread contract as the physics accessor. Failures, cancellations and
+    // rejected gates keep the previous value; reset restores the default.
+    HistoryEffects LastPublicationEffects() const noexcept { return lastEffects_; }
+    // Read-only preview of the frozen mask that the next successful undo/redo
+    // would publish. It never enters the gate, prepares a candidate or consumes
+    // a node. Empty journals, non-UI threads and NotReady states report All
+    // conservatively. This is not an edit permission; the final result remains
+    // LastPublicationEffects.
+    HistoryEffects NextPublicationEffects(bool redo) const noexcept;
 };
 class SharedHistory::NativeTransaction {
     friend class SharedHistory;

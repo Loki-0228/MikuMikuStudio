@@ -13,7 +13,8 @@ SharedHistory* NativeHistory(MMDApp*) noexcept;
 // must not dispatch writers that have not joined the common journal yet.
 bool InitializeHistoryTestRuntime(MMDApp*) noexcept;
 // Retry a post-publication UI update on the host's normal message boundary.
+// Requests are accumulated; a None mask still refreshes the history controls.
 // No-op without this application's initialized runtime.
-void RequestBoundHistoryUiRefresh(MMDApp*) noexcept;
+void RequestBoundHistoryUiRefresh(MMDApp*, HistoryEffects effects = HistoryEffects::All) noexcept;
 }
 }

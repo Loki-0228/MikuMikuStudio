@@ -64,6 +64,14 @@ std::uint64_t runtimeBinding = 0;
 int toolbarHeight = 0, propertyAreaHeight = 0, leftAreaWidth = 0, rightAreaWidth = 0;
 bool refreshing = false, closing = false;
 bool historyUiPending = false;
+// Accumulated publication masks waiting for the next safe-point UI refresh.
+// A successful history with a None mask still updates the history controls, so
+// this cursor is separate from historyUiPending. Requests are only ORed here;
+// they never mark the project dirty or authorize a history publication.
+HistoryEffects pendingEffects = HistoryEffects::None;
+// Bumped by every enqueue so consumption can tell whether a new request arrived
+// while the previous batch was being applied.
+std::uint64_t historyUiGeneration = 0;
 PluginProject currentProject, pendingProject;
 bool loadingProject = false;
 bool replacingHistory = false, historySceneReplaced = false;
@@ -138,6 +146,7 @@ static void InitializeRuntime(MMDApp* app, bool migrationTest) {
         if (runtimeBinding == UINT64_MAX) throw std::runtime_error("plugin runtime binding exhausted");
         ++runtimeBinding;
         owner = app; closing = false;
+        historyUiPending = false; pendingEffects = HistoryEffects::None; historyUiGeneration = 0;
         const auto data = local_data::File(L"plugins");
         if (data.empty()) throw std::runtime_error("plugin data directory unavailable");
         std::wstring module(32768, 0); auto n = GetModuleFileNameW(nullptr, module.data(), DWORD(module.size())); if (!n || n >= module.size()) throw std::runtime_error("process path unavailable"); module.resize(n);
@@ -174,9 +183,19 @@ static void InitializeRuntime(MMDApp* app, bool migrationTest) {
             if (manager->AttachEditHost(*historyCommandHost) != MMS_OK) throw std::runtime_error("attach common edit history");
             migrationBinding = std::make_unique<NativePoseTestBinding>(*app, *history);
             manager->SetEditPublished([app] {
-                if (closing || owner != app) return;
-                app->SceneModified() = 1; app->RecordedFrameCountByte1() = 1;
+                if (closing || owner != app || !history) return;
+                // Exactly this publication's frozen mask decides the project
+                // scalars. A renderer-only traversal must leave a saved scene
+                // clean; physics invalidation stays an independent fact.
+                const auto effects = history->LastPublicationEffects();
+                if (HasHistoryEffect(effects, HistoryEffects::ProjectData)) {
+                    app->SceneModified() = 1; app->RecordedFrameCountByte1() = 1;
+                }
                 if (history->LastPublicationRequiresPhysicsReset()) app->PhysicsResetPending() = 1;
+                // The deferred controls and readouts consume the accumulated mask
+                // at the host's normal safe point.
+                ++historyUiGeneration;
+                pendingEffects = pendingEffects | effects;
                 historyUiPending = true;
                 PostMessageW(app->MainWindow(), kRefresh, 0, 0);
             });
@@ -260,10 +279,15 @@ void Shutdown() {
     history.reset(); manager.reset(); projectEvents.clear();
     toolbarHeight = propertyAreaHeight = leftAreaWidth = rightAreaWidth = 0;
     owner = nullptr; historyUiPending = false;
+    pendingEffects = HistoryEffects::None; historyUiGeneration = 0;
 }
 SharedHistory* NativeHistory(MMDApp* app) noexcept { return app == owner && !closing ? history.get() : nullptr; }
-void RequestBoundHistoryUiRefresh(MMDApp* app) noexcept {
-    if (!app || app != owner || closing) return;
+void RequestBoundHistoryUiRefresh(MMDApp* app, HistoryEffects effects) noexcept {
+    if (!app || app != owner || closing || !app->MainWindow()) return;
+    // The mask is accumulated, never applied here: this only schedules the
+    // existing message-boundary consumer and cannot mark the project dirty.
+    ++historyUiGeneration;
+    pendingEffects = pendingEffects | effects;
     historyUiPending = true;
     PostMessageW(app->MainWindow(), kRefresh, 0, 0);
 }
@@ -297,8 +321,30 @@ void Refresh(MMDApp* app) {
         if (toolbarHeight != old || propertyAreaHeight != oldProperties || leftAreaWidth != oldLeft || rightAreaWidth != oldRight)
             HandleWindowSize(app);
 #if !MMD_ORIGINAL_PROFILE
-        if (historyUiPending && history && manager && !manager->InCallback() && !app->SceneMutationInProgress()) {
-            historyUiPending = !RefreshBoundObjectUi(*app, *history);
+        if ((historyUiPending || pendingEffects != HistoryEffects::None) && history && manager &&
+            !manager->InCallback() && !app->SceneMutationInProgress()) {
+            // Take this batch out before consuming it. A request enqueued by the
+            // consumer (or by a nested publication) must survive to the next safe
+            // point instead of being cleared by a tail assignment.
+            const auto batch = pendingEffects;
+            const auto generation = historyUiGeneration;
+            pendingEffects = HistoryEffects::None;
+            bool refreshed = false;
+            try {
+                refreshed = RefreshBoundHistoryUi(*app, *history, batch);
+            } catch (...) {
+                // Keep this batch and anything requested while it ran.
+                pendingEffects = pendingEffects | batch;
+                throw;
+            }
+            if (refreshed) {
+                // A new request during consumption re-armed the flag itself.
+                historyUiPending = historyUiGeneration != generation;
+            } else {
+                // Refused or failed control writes stay retryable.
+                pendingEffects = pendingEffects | batch;
+                historyUiPending = true;
+            }
         }
 #endif
         if (manager && !manager->InCallback()) manager->SaveUiPreferences();

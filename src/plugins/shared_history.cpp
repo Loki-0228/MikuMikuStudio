@@ -7,6 +7,9 @@ struct SharedHistory::Node {
     std::shared_ptr<HistoryChange> native;
     uint64_t bytes;
     uint64_t pluginBytes;
+    // Frozen while the node is prepared; publication and traversal never
+    // query HistoryChange::Effects again.
+    HistoryEffects effects = HistoryEffects::All;
 };
 struct SharedHistory::Publication final : EditPublication {
     SharedHistory& owner;
@@ -27,6 +30,14 @@ struct SharedHistory::Publication final : EditPublication {
 namespace {
 struct Unlock { SharedHistory& h; ~Unlock() { h.Leave(); } };
 struct CancelRestore { StorageStore& s; ~CancelRestore() { s.Cancel(); } };
+HistoryEffects FrozenEffects(const EditRecord& record, const HistoryChange* native) noexcept {
+    // A label-only record is not a plugin edit. Any plugin payload
+    // conservatively invalidates every consumer, even when it joined a
+    // renderer-only native participant.
+    auto effects = native ? native->Effects() : HistoryEffects::None;
+    if (!record.before.empty() || !record.after.empty()) effects = effects | HistoryEffects::All;
+    return effects;
+}
 uint64_t RecordBytes(const EditRecord& record) {
     uint64_t bytes = sizeof(EditRecord) + record.label.size();
     for (const auto* records : {&record.before, &record.after}) {
@@ -136,12 +147,16 @@ MmsResult SharedHistory::ReserveNode(std::shared_ptr<const EditRecord> record,
     if (!record || (!native && record->before.empty())) return MMS_E_ARGUMENT;
     const auto pluginBytes = RecordBytes(*record);
     if (retain && pluginBytes > maxBytes_) return MMS_E_MEMORY;
-    // Copy the record: a caller retaining a mutable shared_ptr cannot alter a
-    // published history node after preparation.
+    // Copy the record first: a caller retaining a mutable shared_ptr cannot
+    // alter the retained payload after preparation.
     auto copy = std::make_shared<const EditRecord>(*record);
+    // Freeze the effect mask from the same copied aggregate the node retains.
+    // Effects() may rewrite the caller's mutable source record, so it must never
+    // run against that source before the copy exists.
+    const auto effects = FrozenEffects(*copy, native.get());
     auto publication = std::make_unique<Publication>(*this);
     publication->record=retain;
-    publication->node.push_back(std::make_shared<Node>(Node{std::move(copy), std::move(native), pluginBytes, pluginBytes}));
+    publication->node.push_back(std::make_shared<Node>(Node{std::move(copy), std::move(native), pluginBytes, pluginBytes, effects}));
     if (const auto& change = publication->node.front()->native) {
         if (auto r = change->Prepare(true, publication->candidate)) return r;
         if (!publication->candidate) return MMS_E_FAILED;
@@ -167,6 +182,9 @@ MmsResult SharedHistory::Reserve(std::shared_ptr<const EditRecord> record,
 void SharedHistory::Publish(Publication& p) noexcept {
     const auto& node = *p.node.front();
     lastPhysicsReset_ = !node.native || node.native->RequiresPhysicsReset() || !node.plugins->before.empty();
+    // Publication is already successful here: record the frozen mask before
+    // any signal. This performs no Effects query and no allocation.
+    lastEffects_ = node.effects;
     // Preview still changes the scene revision, so old candidates cannot
     // publish against it. The journal and redo remain untouched.
     if (!p.record) { ++revision_; NotifyPublication(); return; }
@@ -216,6 +234,9 @@ MmsResult SharedHistory::History(bool redo) {
         if (!storage_.Commit()) { poisoned_ = true; return MMS_E_FAILED; }
         if (native) native->Publish();
         lastPhysicsReset_ = !node.native || node.native->RequiresPhysicsReset() || !node.plugins->before.empty();
+        // Undo/redo reports the effects frozen on the traversed node, never a
+        // fresh Effects query from the restored participant.
+        lastEffects_ = node.effects;
         bytes_ = bytes_ - node.bytes + targetBytes;
         node.bytes = targetBytes;
         auto& destination = redo ? undo_ : redo_;
@@ -311,7 +332,9 @@ MmsResult SharedHistory::ReserveAppliedNative(std::string label, uint64_t maximu
         const auto bytes = RecordBytes(*record);
         const bool retain=intent == NativeIntent::ExplicitCommit || recordingMode_ == RecordingMode::AllOperations;
         if (retain && (bytes > maxBytes_ || maximumNativeBytes > maxBytes_ - bytes)) return MMS_E_MEMORY;
-        auto node = std::make_shared<Node>(Node{std::move(record), {}, bytes, bytes});
+        // The no-native placeholder is not the final effects: PrepareAppliedNative
+        // refreezes the mask when it accepts the actual native participant.
+        auto node = std::make_shared<Node>(Node{std::move(record), {}, bytes, bytes, HistoryEffects::All});
         auto publication = std::make_unique<Publication>(*this);
         publication->record = retain;
         publication->node.push_back(node);
@@ -342,8 +365,11 @@ MmsResult SharedHistory::PrepareAppliedNative(AppliedTransaction& t, std::shared
         if (verification->TargetRetainedBytes(inverseBytes)) return MMS_E_NOT_READY;
         if (!verification->IsCurrent() || !t.publication_->IsCurrent() || change->RetainedBytes() != bytes)
             return MMS_E_STALE;
+        // Only a completed validation may replace the placeholder effects.
+        const auto effects = FrozenEffects(*t.node_->plugins, change.get());
         t.nativeBytes_ = bytes; t.node_->bytes += bytes;
-        t.node_->native = std::move(change); t.verification_ = std::move(verification);
+        t.node_->native = std::move(change); t.node_->effects = effects;
+        t.verification_ = std::move(verification);
         return MMS_OK;
     });
     t.busy_ = false;
@@ -376,7 +402,7 @@ MmsResult SharedHistory::Reset() {
 void SharedHistory::ResetLocked() noexcept {
     InvalidatePending();
     retired_.splice(retired_.end(), undo_); retired_.splice(retired_.end(), redo_);
-    bytes_ = 0; lastPhysicsReset_ = true; ++revision_;
+    bytes_ = 0; lastPhysicsReset_ = true; lastEffects_ = HistoryEffects::All; ++revision_;
 }
 SharedHistory::ResetTransaction::ResetTransaction(SharedHistory& owner) : owner_(&owner) {
     owner.reset_ = this;
@@ -414,5 +440,12 @@ void SharedHistory::Collect() noexcept {
 const std::string* SharedHistory::NextLabel(bool redo) const noexcept {
     const auto& nodes = redo ? redo_ : undo_;
     return nodes.empty() ? nullptr : &nodes.back()->plugins->label;
+}
+HistoryEffects SharedHistory::NextPublicationEffects(bool redo) const noexcept {
+    // Ready covers the UI-thread, poison and exhausted-revision checks without
+    // entering the gate. The preview reads only the node frozen at preparation.
+    if (Ready()) return HistoryEffects::All;
+    const auto& nodes = redo ? redo_ : undo_;
+    return nodes.empty() ? HistoryEffects::All : nodes.back()->effects;
 }
 }

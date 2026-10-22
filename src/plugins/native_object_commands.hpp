@@ -4,9 +4,9 @@
 #include <Windows.h>
 #include <mms/plugin.h>
 #include <memory>
+#include "shared_history.hpp"
 namespace mikumikustudio { class MMDApp; }
 namespace mikumikustudio::plugins {
-class SharedHistory;
 class HistoryChange;
 // Internal migration routes only. A bound route consumes failure/cancellation;
 // the caller must never continue into the legacy immediate-free deletion.
@@ -33,6 +33,12 @@ bool NativeObjectPublicationAuthorized(const MMDApp*) noexcept;
 // Deferred plugin publication uses this same UI-only refresh. Failed control
 // writes are retryable; save/reset must not serialize partial object lists.
 bool RefreshBoundObjectUi(MMDApp&, SharedHistory&) noexcept;
+// Deferred consumption of one accumulated publication mask. SceneReadout runs
+// the original full object/scene refresh above; every other mask only updates
+// the history controls and, for Viewport, requests drawing. It never marks the
+// project dirty or resets physics: those belong to the publication itself, so an
+// old deferred request cannot dirty a scene that was saved afterwards.
+bool RefreshBoundHistoryUi(MMDApp&, SharedHistory&, HistoryEffects) noexcept;
 bool NativeObjectUiPending(const MMDApp*) noexcept;
 void ForgetBoundObjectUi(const MMDApp*) noexcept;
 }

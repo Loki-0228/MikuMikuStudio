@@ -28,14 +28,19 @@
 #include "mikumikustudio/ui_language.hpp"
 #include "mikumikustudio/ui_message.hpp"
 #include "mikumikustudio/ui_translation.hpp"
+#include "mikumikustudio/update_coordinator.hpp"
 #include <commctrl.h>
 #include <array>
 #include <cstdio>
+#include <optional>
 
 namespace mikumikustudio { INT_PTR __stdcall AccessorySettingsDlgProc(HWND, UINT, WPARAM, LPARAM); }
 namespace mikumikustudio::plugins {
 namespace {
 class Operation;
+// Only the history run may escalate its lightweight guard to the legacy full UI
+// lock and scene mutation. Declared here so Operation can grant it access.
+void PromoteOperationFull(Operation&);
 thread_local Operation* operation = nullptr;
 thread_local MMDApp* pendingUi = nullptr;
 struct SelectionToken {
@@ -69,6 +74,19 @@ class Operation {
     std::vector<Window> windows_;
     std::unique_ptr<bake::ScopedUiLock> uiLock_;
     std::unique_ptr<ScopedSceneMutation> mutation_;
+    // A lightweight guard holds only the input rejection gate and the window
+    // subclass; the optional itself allocates nothing.
+    std::optional<bake::ScopedUiInputGate> inputGate_;
+    // The full UI lock and scene mutation are created only when a traversal
+    // really publishes scene/readout effects. Exceptions propagate; the caller's
+    // RAII and this class's Release clean up whatever was built.
+    void PromoteToFull() {
+        if (uiLock_) return;
+        uiLock_ = std::make_unique<bake::ScopedUiLock>(nullptr);
+        mutation_ = std::make_unique<ScopedSceneMutation>(app);
+        inputGate_.reset();
+    }
+    friend void PromoteOperationFull(Operation&);
     static LRESULT CALLBACK Filter(HWND window, UINT message, WPARAM wp, LPARAM lp,
                                    UINT_PTR, DWORD_PTR data) {
         auto& self = *reinterpret_cast<Operation*>(data);
@@ -83,7 +101,7 @@ class Operation {
     }
     void Release() noexcept {
         // The guard remains visible through synchronous paint/enable messages.
-        mutation_.reset(); uiLock_.reset();
+        mutation_.reset(); uiLock_.reset(); inputGate_.reset();
         for (auto& item : windows_) if (IsWindow(item.handle)) {
             RemoveWindowSubclass(item.handle, Filter, kOperationSubclass);
             if (item.close) PostMessageW(item.handle, WM_CLOSE, 0, 0);
@@ -91,9 +109,14 @@ class Operation {
         operation = nullptr;
     }
 public:
+    // Full keeps the legacy painter/edit exclusion for every scene-touching
+    // caller. Lightweight only rejects native input and closing while a pure
+    // renderer or None traversal runs: it never disables windows, changes the
+    // scene-mutation depth/layout-ready flag or clears MessageSeen.
+    enum class Mode { Full, Lightweight };
     MMDApp& app;
     bool publishing = false;
-    explicit Operation(MMDApp& value) : app(value) {
+    explicit Operation(MMDApp& value, Mode mode = Mode::Full) : app(value) {
         if (operation) throw std::invalid_argument("nested object operation");
         // Only MMS's command windows need an input filter. Existing modeless
         // editors are rejected before entry; the confirmation is created later.
@@ -105,14 +128,18 @@ public:
             for (const auto& item : windows_)
                 if (!SetWindowSubclass(item.handle, Filter, kOperationSubclass, reinterpret_cast<DWORD_PTR>(this)))
                     throw std::runtime_error("object operation input guard");
-            uiLock_ = std::make_unique<bake::ScopedUiLock>(nullptr);
-            mutation_ = std::make_unique<ScopedSceneMutation>(app);
+            if (mode == Mode::Lightweight) inputGate_.emplace();
+            else {
+                uiLock_ = std::make_unique<bake::ScopedUiLock>(nullptr);
+                mutation_ = std::make_unique<ScopedSceneMutation>(app);
+            }
         } catch (...) { Release(); throw; }
     }
     ~Operation() { Release(); }
     Operation(const Operation&) = delete;
     Operation& operator=(const Operation&) = delete;
 };
+void PromoteOperationFull(Operation& value) { value.PromoteToFull(); }
 struct Publication {
     Operation& operation;
     explicit Publication(Operation& value) : operation(value) { operation.publishing = true; }
@@ -470,6 +497,41 @@ bool RefreshBoundObjectUi(MMDApp& app, SharedHistory& history) noexcept {
         return RefreshPublishedUi(app, history, selection) ? MMS_OK : MMS_E_FAILED;
     }) == MMS_OK;
 }
+bool RefreshBoundHistoryUi(MMDApp& app, SharedHistory& history, HistoryEffects effects) noexcept {
+    // The scene/readout mask keeps the original full object, list and readout
+    // consumer exactly once. It owns its Ready guard, Operation and selection
+    // retry; a refusal stays retryable by the host's existing queue.
+    if (HasHistoryEffect(effects, HistoryEffects::SceneReadout)) {
+        if (!RefreshBoundObjectUi(app, history)) return false;
+        // The old full refresh only invalidates its controls, so a publication
+        // that also froze the viewport bit still needs the drawing-only request.
+        // It never evaluates, seeks, or marks project physics/dirty state.
+        // Refusal only retains the UI obligation; the journal already succeeded.
+        if (HasHistoryEffect(effects, HistoryEffects::Viewport))
+            return Boundary([&]() -> MmsResult {
+                updates::RequestViewport(&app, false);
+                return MMS_OK;
+            }) == MMS_OK;
+        return true;
+    }
+    // Every other mask only updates the journal controls and, for Viewport,
+    // asks for a drawing-only render. It must not scan objects, read pose,
+    // global, audio, morph or curve state, repair selection or run the frame
+    // driver; a saved scene must stay clean after an old deferred request.
+    if (!Ready(app)) return false;
+    return Boundary([&]() -> MmsResult {
+        Operation scope(app, Operation::Mode::Lightweight);
+        const auto main = app.MainWindow();
+        if (!main) return MMS_E_NOT_READY;
+        const auto undo = GetDlgItem(main, panel::kUndoButton);
+        const auto redo = GetDlgItem(main, panel::kRedoButton);
+        if (!undo || !redo) return MMS_E_NOT_READY;
+        EnableWindow(undo, history.UndoCount() != 0);
+        EnableWindow(redo, history.RedoCount() != 0);
+        if (HasHistoryEffect(effects, HistoryEffects::Viewport)) updates::RequestViewport(&app, false);
+        return MMS_OK;
+    }) == MMS_OK;
+}
 MmsResult CommitBoundModelOrder(MMDApp& app, SharedHistory& history,
     std::shared_ptr<HistoryChange> change, bool calculate) noexcept {
     if (!change) return MMS_OK;
@@ -496,60 +558,100 @@ MmsResult CommitBoundModelOrder(MMDApp& app, SharedHistory& history,
 MmsResult RunBoundObjectHistory(MMDApp& app, SharedHistory& history, bool redo, bool deferUi) noexcept {
     if (!Ready(app, deferUi) || EditorsOpen(app) || NativeObjectUiPending(&app)) return MMS_E_BUSY;
     return Boundary([&]() -> MmsResult {
-        // A pending draft may need storage. Capture it before the journal
-        // publishes, so failure cannot hide a successfully applied traversal.
-        ScopedFollowReadoutDrafts drafts(app);
-        Operation scope(app);
-        const auto selection = CaptureSelectionToken(app);
+        // The lightweight guard exists before any UI read: operation identity,
+        // the original input/close subclass and the input rejection gate only.
+        // A pure Viewport or None traversal must not create ScopedSceneMutation
+        // or toggle top-level windows: scene mutation sets MessageSeen, while
+        // window enable messages can schedule extra viewport requests.
+        Operation scope(app, Operation::Mode::Lightweight);
+        // Read the frozen preview of the node this traversal would publish before
+        // any message-pumping UI call. The preview authorizes nothing; the final
+        // result below always uses the successful publication's frozen mask.
+        const auto nextEffects = history.NextPublicationEffects(redo);
+        const bool capturedScene = HasHistoryEffect(nextEffects, HistoryEffects::SceneReadout);
+        // A renderer-only node must not allocate a pending-edit draft, capture a
+        // selection token, scan objects or repair selection. Only the full
+        // scene/readout consumer keeps those steps.
+        std::unique_ptr<ScopedFollowReadoutDrafts> drafts;
+        SelectionToken selection{};
         std::array<const void*, kModelSlotCount * 2> objects{};
         std::array<std::uint8_t, kModelSlotCount> modelDrawOrder{};
         struct AccessoryUi { std::uint8_t order = 0; std::array<char, 100> name{}; };
         std::array<AccessoryUi, kModelSlotCount> accessoryUi{};
-        const auto split = app.AccessoryRenderSplitOrder();
-        const auto namesUiRevision = NativeModelNamesUiRevision();
-        for (unsigned i = 0; i < kModelSlotCount; ++i) {
-            objects[i] = app.ModelSlot(i); objects[i + kModelSlotCount] = app.AccessorySlot(i);
-            if (const auto* model = mdl::Mdl(app.ModelSlot(i))) modelDrawOrder[i] = model->comboSelIndex;
-            if (const auto* a = app.AccessorySlot(i)) {
-                accessoryUi[i].order = a->order;
-                std::memcpy(accessoryUi[i].name.data(), a->name, sizeof a->name);
+        std::int32_t split = 0;
+        std::uint64_t namesUiRevision = 0;
+        if (capturedScene) {
+            // Only the old All/SceneReadout path keeps the legacy UI lock and
+            // scene mutation; it is established before the draft capture below.
+            PromoteOperationFull(scope);
+            // A pending draft may need storage. Capture it before the journal
+            // publishes, so failure cannot hide a successfully applied traversal.
+            drafts = std::make_unique<ScopedFollowReadoutDrafts>(app);
+            selection = CaptureSelectionToken(app);
+            split = app.AccessoryRenderSplitOrder();
+            namesUiRevision = NativeModelNamesUiRevision();
+            for (unsigned i = 0; i < kModelSlotCount; ++i) {
+                objects[i] = app.ModelSlot(i); objects[i + kModelSlotCount] = app.AccessorySlot(i);
+                if (const auto* model = mdl::Mdl(app.ModelSlot(i))) modelDrawOrder[i] = model->comboSelIndex;
+                if (const auto* a = app.AccessorySlot(i)) {
+                    accessoryUi[i].order = a->order;
+                    std::memcpy(accessoryUi[i].name.data(), a->name, sizeof a->name);
+                }
             }
         }
         {
             Publication allow(scope);
             if (auto result = history.History(redo)) return result;
         }
-        bool changedObjects = false;
-        for (unsigned i = 0; i < kModelSlotCount; ++i)
-            changedObjects = changedObjects || objects[i] != app.ModelSlot(i) || objects[i + kModelSlotCount] != app.AccessorySlot(i);
-        bool changedLists = changedObjects || split != app.AccessoryRenderSplitOrder() ||
-            namesUiRevision != NativeModelNamesUiRevision();
-        for (unsigned i = 0; i < kModelSlotCount && !changedLists; ++i)
-            if (const auto* model = mdl::Mdl(app.ModelSlot(i))) changedLists = model->comboSelIndex != modelDrawOrder[i];
-        for (unsigned i = 0; i < kModelSlotCount && !changedLists; ++i) if (const auto* a = app.AccessorySlot(i))
-            changedLists = a->order != accessoryUi[i].order || std::memcmp(a->name, accessoryUi[i].name.data(), sizeof a->name);
-        if (changedObjects) SafeSelection(app);
-        if (deferUi) {
-            // A plugin may pump before its invocation returns. Make native
-            // selection safe now, but leave every control update to the host.
-            if (changedLists) ScheduleUi(app, &selection);
-        } else {
-            PublishBoundPoseEdit(app, history, history.LastPublicationRequiresPhysicsReset());
-            if (changedLists) RefreshPublishedUi(app, history, selection);
-            else {
-                // The journal already published its local track evaluation.
-                // Refresh values without seeking, while Operation still blocks
-                // control notifications from starting another scene edit.
-                RefreshBoundGlobalReadout(app);
-                if (!RefreshBoundAudioUi(app)) ScheduleUi(app, &selection);
-                RefreshBoundMorphReadout(app);
-                const auto notified = Boundary([&]() -> MmsResult {
-                    curve_editor::NotifyOwnedChanged(app.MainWindow()); return MMS_OK;
-                });
-                // A pending-source allocation must not turn an applied undo
-                // into a failed command that a caller could repeat.
-                if (notified != MMS_OK) ScheduleUi(app, &selection);
+        // The traversed node's frozen mask is authoritative for this refresh. The
+        // preview only bounded the pre-publication capture; Last must win here so
+        // an older pending All is never replaced by a later Viewport-only peek.
+        const auto effects = history.LastPublicationEffects();
+        const bool scenePath = HasHistoryEffect(effects, HistoryEffects::SceneReadout);
+        bool changedObjects = false, changedLists = false;
+        if (scenePath) {
+            if (capturedScene) {
+                for (unsigned i = 0; i < kModelSlotCount; ++i)
+                    changedObjects = changedObjects || objects[i] != app.ModelSlot(i) || objects[i + kModelSlotCount] != app.AccessorySlot(i);
+                changedLists = changedObjects || split != app.AccessoryRenderSplitOrder() ||
+                    namesUiRevision != NativeModelNamesUiRevision();
+                for (unsigned i = 0; i < kModelSlotCount && !changedLists; ++i)
+                    if (const auto* model = mdl::Mdl(app.ModelSlot(i))) changedLists = model->comboSelIndex != modelDrawOrder[i];
+                for (unsigned i = 0; i < kModelSlotCount && !changedLists; ++i) if (const auto* a = app.AccessorySlot(i))
+                    changedLists = a->order != accessoryUi[i].order || std::memcmp(a->name, accessoryUi[i].name.data(), sizeof a->name);
+            } else {
+                // The frozen preview reports All when it cannot preview, so this
+                // is only a defensive fallback: refresh the full consumer rather
+                // than skipping a scene readout the publication really needed.
+                changedObjects = changedLists = true;
             }
+            if (changedObjects) SafeSelection(app);
+        }
+        if (deferUi) {
+            // The plugin host applies project scalars and queues the mask itself.
+            // Make native selection safe now, but leave every control update to
+            // the host's deferred publication notification.
+            if (scenePath && changedLists) ScheduleUi(app, &selection);
+            return MMS_OK;
+        }
+        // A committed history must not be reported as failed because a control
+        // write failed: the publisher queues its own UI retry at the safe point.
+        PublishBoundHistoryEffects(app, history, effects, history.LastPublicationRequiresPhysicsReset());
+        if (!scenePath) return MMS_OK;
+        if (changedLists) RefreshPublishedUi(app, history, selection);
+        else {
+            // The journal already published its local track evaluation.
+            // Refresh values without seeking, while Operation still blocks
+            // control notifications from starting another scene edit.
+            RefreshBoundGlobalReadout(app);
+            if (!RefreshBoundAudioUi(app)) ScheduleUi(app, &selection);
+            RefreshBoundMorphReadout(app);
+            const auto notified = Boundary([&]() -> MmsResult {
+                curve_editor::NotifyOwnedChanged(app.MainWindow()); return MMS_OK;
+            });
+            // A pending-source allocation must not turn an applied undo
+            // into a failed command that a caller could repeat.
+            if (notified != MMS_OK) ScheduleUi(app, &selection);
         }
         return MMS_OK;
     });

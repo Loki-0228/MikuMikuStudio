@@ -13,9 +13,14 @@ static uint64_t Revision(SharedHistory& history){
 struct NativeValue final : HistoryChange {
     int& live;int before,after;unsigned publications=0;
     bool stale=false,armNoAllocation=false;
+    // Conservative default keeps every earlier test's published mask at All;
+    // preparation freezes it and publication/traversal must not query again.
+    HistoryEffects effects=HistoryEffects::All;
+    mutable unsigned effectsQueries=0;
     MmsResult prepareResult=MMS_OK;
     std::function<void()> preparing,destroyingCandidate;
     NativeValue(int& value,int a,int b):live(value),before(a),after(b){}
+    HistoryEffects Effects()const noexcept override{++effectsQueries;return effects;}
     struct Candidate final : PreparedHistoryChange {
         NativeValue& owner;int expected,target;
         Candidate(NativeValue& value,bool forward):owner(value),expected(forward?value.before:value.after),target(forward?value.after:value.before){}
@@ -34,7 +39,7 @@ struct NativeValue final : HistoryChange {
     uint64_t RetainedBytes()const noexcept override{return sizeof(*this);}
 };
 struct Sink {
-    struct Sample {uint64_t revision=0;int native=0,plugin=0;size_t undo=0,redo=0;};
+    struct Sample {uint64_t revision=0;int native=0,plugin=0;size_t undo=0,redo=0;HistoryEffects effects=HistoryEffects::All;};
     SharedHistory* history=nullptr;StorageStore* storage=nullptr;int* native=nullptr;int* plugin=nullptr;
     std::array<Sample,32> samples{};unsigned count=0;bool valid=true;
     HistoryPublicationSignal Signal()noexcept{return {this,Published};}
@@ -45,18 +50,19 @@ struct Sink {
         self.valid=self.history->Revision(current)==MMS_OK&&current==revision&&
             !self.storage->Prepared()&&!self.storage->InCallback();
         auto& sample=self.samples[self.count++];sample={revision,self.native?*self.native:0,self.plugin?*self.plugin:0,
-            self.history->UndoCount(),self.history->RedoCount()};
+            self.history->UndoCount(),self.history->RedoCount(),self.history->LastPublicationEffects()};
         // These admission probes deliberately attempt no edit. Publication
         // must still hold its normal reentry exclusion throughout the signal.
         self.valid=self.valid&&self.history->SetPublicationSignal(self.Signal())==MMS_E_BUSY&&
             self.history->SetPublicationSignal({})==MMS_E_BUSY&&self.history->CheckNativeEdit()==MMS_E_BUSY&&
             self.history->History(false)==MMS_E_BUSY&&self.history->History(true)==MMS_E_BUSY&&self.history->Reset()==MMS_E_BUSY;
     }
-    void Last(unsigned expected,uint64_t revision,int nativeValue,int pluginValue,size_t undo,size_t redo)const{
+    void Last(unsigned expected,uint64_t revision,int nativeValue,int pluginValue,size_t undo,size_t redo,
+              HistoryEffects effects=HistoryEffects::All)const{
         Check(valid&&count==expected,"exactly one trusted signal per successful publication");
         const auto& last=samples[expected-1];
-        Check(last.revision==revision&&last.native==nativeValue&&last.plugin==pluginValue&&last.undo==undo&&last.redo==redo,
-            "signal sees advanced revision and fully published live state/history");
+        Check(last.revision==revision&&last.native==nativeValue&&last.plugin==pluginValue&&last.undo==undo&&last.redo==redo&&
+            last.effects==effects,"signal sees advanced revision, published state/history and frozen effects");
     }
 };
 static MmsResult Commit(SharedHistory& history,std::unique_ptr<SharedHistory::NativeTransaction> transaction){
@@ -228,11 +234,13 @@ static void PluginPublication(){
     MmsResult loadSwap=MMS_OK;value.loading=[&]{loadSwap=history.SetPublicationSignal({});};
     Check(api.undo(api.context)==MMS_OK&&loadSwap==MMS_E_BUSY,"serializer restoration cannot replace signal");sink.Last(2,3,0,0,0,1);
     Check(api.redo(api.context)==MMS_OK,"plugin redo emits trusted signal");sink.Last(3,4,0,10,1,0);value.loading={};
-    auto mixed=std::make_shared<NativeValue>(native,0,5);transaction=begin(20);
-    Check(edits.JoinNative(client,transaction,mixed)==MMS_OK&&api.prepare(api.context,transaction)==MMS_OK&&sink.count==3,
-        "mixed plugin/native prepare is silent");
+    auto mixed=std::make_shared<NativeValue>(native,0,5);mixed->effects=HistoryEffects::Viewport;transaction=begin(20);
+    Check(edits.JoinNative(client,transaction,mixed)==MMS_OK&&api.prepare(api.context,transaction)==MMS_OK&&sink.count==3&&
+        mixed->effectsQueries==1,
+        "mixed plugin/native prepare is silent and freezes the renderer mask");
     failAfter=0;const auto combined=api.commit(api.context,transaction);failAfter=-1;
-    Check(combined==MMS_OK,"mixed plugin/native publication does not allocate");sink.Last(4,5,5,20,2,0);
+    Check(combined==MMS_OK,"mixed plugin/native publication does not allocate");
+    sink.Last(4,5,5,20,2,0,HistoryEffects::All);
     value.failLoad=true;Check(api.undo(api.context)==MMS_E_NOT_READY&&sink.count==4&&Revision(history)==5&&native==5&&value.value==20,
         "failed serializer restore leaves live state revision and signal unchanged");value.failLoad=false;
     auto stale=std::make_shared<NativeValue>(native,5,6);transaction=begin(30);
@@ -279,12 +287,66 @@ static void ResetAndDetach(){
     Check(temporary->PrepareNative("destroyed candidate",std::make_shared<NativeValue>(live,4,5),pending)==MMS_OK,"prepare candidate owned by expiring history");
     temporary.reset();pending.reset();Check(!surviving.count,"history destruction invalidates pending work without signalling a dead host");
 }
+static void EffectsPublication(){
+    StorageStore storage;SharedHistory history(storage);int live=0;Sink sink;sink.history=&history;sink.storage=&storage;sink.native=&live;
+    Check(history.SetPublicationSignal(sink.Signal())==MMS_OK,"install effects publication sink");
+    // Renderer-only recorded native: the mask is frozen during preparation so
+    // neither the allocation-checked commit nor undo/redo may query it again.
+    auto change=std::make_shared<NativeValue>(live,0,1);change->effects=HistoryEffects::Viewport;
+    std::unique_ptr<SharedHistory::NativeTransaction> transaction;
+    Check(history.PrepareNative("effects renderer",change,transaction)==MMS_OK&&change->effectsQueries==1,
+        "renderer effects are frozen once during preparation");
+    change->effects=HistoryEffects::ProjectData;
+    failAfter=0;const auto committed=history.CommitNative(std::move(transaction));failAfter=-1;
+    Check(committed==MMS_OK&&change->effectsQueries==1,
+        "recorded commit publishes the frozen renderer mask without querying or allocating");
+    sink.Last(1,2,1,0,1,0,HistoryEffects::Viewport);
+    change->armNoAllocation=true;
+    const auto undo=history.History(false);failAfter=-1;
+    Check(undo==MMS_OK&&change->effectsQueries==1,
+        "undo publishes the frozen renderer mask from the candidate tail without querying or allocating");
+    sink.Last(2,3,0,0,0,1,HistoryEffects::Viewport);
+    const auto redo=history.History(true);failAfter=-1;
+    Check(redo==MMS_OK&&change->effectsQueries==1,
+        "redo publishes the frozen renderer mask from the candidate tail without querying or allocating");
+    sink.Last(3,4,1,0,1,0,HistoryEffects::Viewport);
+    change->armNoAllocation=false;
+
+    // Applied native with a mask deliberately different from the previous
+    // renderer publication; the placeholder must be replaced during prepare.
+    auto applied=std::make_shared<NativeValue>(live,1,3);applied->effects=HistoryEffects::None;
+    std::unique_ptr<SharedHistory::AppliedTransaction> authored;
+    Check(history.ReserveAppliedNative("effects applied",1024,authored)==MMS_OK&&sink.count==3&&applied->effectsQueries==0,
+        "applied reservation publishes and queries nothing");
+    live=3;
+    Check(history.PrepareAppliedNative(*authored,applied)==MMS_OK&&applied->effectsQueries==1&&sink.count==3,
+        "applied preparation freezes the actual mask without publishing");
+    applied->effects=HistoryEffects::SceneReadout;
+    failAfter=0;const auto appliedCommitted=history.CommitAppliedNative(*authored);failAfter=-1;
+    Check(appliedCommitted==MMS_OK&&applied->effectsQueries==1,
+        "applied commit publishes the frozen None mask without querying or allocating");
+    sink.Last(4,5,3,0,2,0,HistoryEffects::None);
+    Check(history.CommitAppliedNative(*authored)==MMS_E_CONFLICT&&sink.count==4,
+        "repeated applied commit cannot publish or query a second mask");
+    authored.reset();
+    applied->armNoAllocation=true;
+    Check(history.History(false)==MMS_OK&&history.LastPublicationEffects()==HistoryEffects::None,
+        "applied undo publishes the frozen None mask without allocation");failAfter=-1;
+    sink.Last(5,6,1,0,1,1,HistoryEffects::None);
+    Check(history.History(true)==MMS_OK&&history.LastPublicationEffects()==HistoryEffects::None,
+        "applied redo publishes the frozen None mask without allocation");failAfter=-1;
+    sink.Last(6,7,3,0,2,0,HistoryEffects::None);
+    applied->armNoAllocation=false;
+    Check(applied->effectsQueries==1,"publication and traversal never re-query the effects getter");
+    Check(history.SetPublicationSignal({})==MMS_OK,"detach effects publication sink");
+}
 } // namespace history_publication_signal_checks
 static void HistoryPublicationSignalChecks(){
     history_publication_signal_checks::InstallationAndGate();
     history_publication_signal_checks::NativeFailuresAndHistory();
     history_publication_signal_checks::RecordingModes();
     history_publication_signal_checks::AppliedPublication();
+    history_publication_signal_checks::EffectsPublication();
     history_publication_signal_checks::PluginPublication();
     history_publication_signal_checks::FailedSerializerCommit();
     history_publication_signal_checks::ResetAndDetach();

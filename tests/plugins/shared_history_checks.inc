@@ -23,6 +23,48 @@ struct HistoryValue : HistoryChange {
     }
     uint64_t RetainedBytes() const noexcept override { return bytes; }
 };
+// Configurable effect/physics participant. The default stays conservative and
+// keeps the inherited physics behavior, so effects and physics are independent.
+struct HistoryEffectsValue : HistoryValue {
+    HistoryEffects effects = HistoryEffects::All;
+    bool physicsReset = true;
+    mutable int effectsQueries = 0;
+    using HistoryValue::HistoryValue;
+    HistoryEffects Effects() const noexcept override { ++effectsQueries; return effects; }
+    bool RequiresPhysicsReset() const noexcept override { return physicsReset; }
+};
+// Preparation-time Effects() that rewrites the caller's mutable record. The
+// journal must copy the record first and freeze its mask from that copy.
+struct RecordMutatingEffects : HistoryValue {
+    EditRecord* record = nullptr;
+    mutable int effectsReads = 0;
+    using HistoryValue::HistoryValue;
+    HistoryEffects Effects() const noexcept override {
+        ++effectsReads;
+        if (record) {
+            record->label = "mutated payload";
+            record->before.clear();
+            record->after.clear();
+        }
+        return HistoryEffects::Viewport;
+    }
+};
+// Captures what the synchronous publication signal observes.
+struct HistoryEffectsSignal {
+    SharedHistory* history = nullptr;
+    HistoryEffects seen = HistoryEffects::None;
+    int calls = 0;
+    uint64_t revision = 0;
+    void Install(SharedHistory& target) {
+        history = &target;
+        CHECK(target.SetPublicationSignal(HistoryPublicationSignal{this,
+            [](void* context, uint64_t revision) noexcept {
+                auto& state = *static_cast<HistoryEffectsSignal*>(context);
+                ++state.calls; state.revision = revision;
+                state.seen = state.history->LastPublicationEffects();
+            }}) == MMS_OK);
+    }
+};
 struct HistoryCleanupValue : HistoryValue {
     std::function<void()> candidateDestroyed, ownerDestroyed;
     using HistoryValue::HistoryValue;
@@ -500,7 +542,472 @@ static void SharedHistoryNavigationChecks() {
     MmsResult worker=MMS_OK;std::thread thread([&]{worker=history.CheckNativeNavigation();});thread.join();
     CHECK(worker==MMS_E_THREAD);
 }
+static void SharedHistoryEffectsChecks() {
+    // The mask helpers are constexpr bit operations; no label guessing.
+    CHECK(static_cast<uint32_t>(HistoryEffects::None) == 0 &&
+        static_cast<uint32_t>(HistoryEffects::ProjectData) == 1 &&
+        static_cast<uint32_t>(HistoryEffects::SceneReadout) == 2 &&
+        static_cast<uint32_t>(HistoryEffects::Viewport) == 4 &&
+        static_cast<uint32_t>(HistoryEffects::All) == 7);
+    CHECK((HistoryEffects::ProjectData | HistoryEffects::Viewport) == static_cast<HistoryEffects>(5));
+    CHECK((HistoryEffects::All & HistoryEffects::SceneReadout) == HistoryEffects::SceneReadout);
+    CHECK(HasHistoryEffect(HistoryEffects::All, HistoryEffects::ProjectData) &&
+        !HasHistoryEffect(HistoryEffects::Viewport, HistoryEffects::ProjectData));
+
+    StorageStore storage; SharedHistory history(storage); EditStore edit(history, storage);
+    StorageClient sc; sc.id = "example.effects"; storage.Api(sc);
+    SerializerFixture state; auto serializer = state.Api(); MmsHandle provider = 0;
+    CHECK(storage.Register(sc, S("example.effects"), &serializer, sizeof(serializer), &provider) == MMS_OK);
+    EditClient client; client.id = sc.id; auto api = edit.Api(client);
+    const auto revision = [&] { uint64_t r = 0; CHECK(history.Revision(r) == MMS_OK); return r; };
+    std::unique_ptr<SharedHistory::NativeTransaction> native;
+    const auto commit = [&](const char* label, std::shared_ptr<HistoryChange> change) {
+        CHECK(history.PrepareNative(label, std::move(change), native) == MMS_OK);
+        CHECK(history.CommitNative(std::move(native)) == MMS_OK);
+    };
+    int value = 0;
+    // An unknown native participant keeps the conservative default.
+    auto plain = std::make_shared<HistoryValue>(value, 0, 1);
+    CHECK(plain->Effects() == HistoryEffects::All);
+    commit("default native", plain);
+    CHECK(value == 1 && history.LastPublicationEffects() == HistoryEffects::All);
+
+    // Renderer-only native work declares a viewport mask without project data.
+    auto renderer = std::make_shared<HistoryEffectsValue>(value, 1, 2);
+    renderer->effects = HistoryEffects::Viewport;
+    commit("renderer native", renderer);
+    CHECK(value == 2 && history.LastPublicationEffects() == HistoryEffects::Viewport);
+    CHECK(history.LastPublicationRequiresPhysicsReset()); // physics stays independent
+
+    auto metadata = std::make_shared<HistoryEffectsValue>(value, 2, 3);
+    metadata->effects = HistoryEffects::None;
+    commit("metadata native", metadata);
+    CHECK(value == 3 && history.LastPublicationEffects() == HistoryEffects::None);
+    CHECK(history.LastPublicationRequiresPhysicsReset());
+
+    auto readout = std::make_shared<HistoryEffectsValue>(value, 3, 4);
+    readout->effects = HistoryEffects::All; readout->physicsReset = false;
+    commit("readout native", readout);
+    CHECK(value == 4 && history.LastPublicationEffects() == HistoryEffects::All);
+    CHECK(!history.LastPublicationRequiresPhysicsReset());
+
+    auto combined = std::make_shared<HistoryEffectsValue>(value, 4, 5);
+    combined->effects = HistoryEffects::ProjectData | HistoryEffects::Viewport;
+    commit("combined native", combined);
+    CHECK(value == 5 && history.LastPublicationEffects() == static_cast<HistoryEffects>(5));
+
+    // A plugin record always widens a renderer-only native mask to All.
+    EditParticipantFixture participant{&state, 0, 9}; auto table = participant.Api("example.effects");
+    auto joined = std::make_shared<HistoryEffectsValue>(value, 5, 9);
+    joined->effects = HistoryEffects::Viewport;
+    MmsHandle handle = 0;
+    CHECK(api.begin(api.context, S("plugin and renderer native"), revision(), &handle) == MMS_OK);
+    CHECK(api.join(api.context, handle, &table) == MMS_OK);
+    CHECK(edit.JoinNative(client, handle, joined) == MMS_OK);
+    CHECK(api.prepare(api.context, handle) == MMS_OK);
+    CHECK(api.commit(api.context, handle) == MMS_OK && state.value == 9 && value == 9);
+    CHECK(history.LastPublicationEffects() == HistoryEffects::All);
+
+    // Every undo/redo step reports the mask frozen on the node it traversed.
+    const HistoryEffects undoMasks[] = {HistoryEffects::All, static_cast<HistoryEffects>(5),
+        HistoryEffects::All, HistoryEffects::None, HistoryEffects::Viewport, HistoryEffects::All};
+    bool firstUndo = true;
+    for (auto effects : undoMasks) {
+        CHECK(api.undo(api.context) == MMS_OK && history.LastPublicationEffects() == effects);
+        // The mixed participant fixture must restore the serializer value that
+        // was live before the commit, not a fabricated before snapshot.
+        if (firstUndo) { CHECK(state.value == 0); firstUndo = false; }
+    }
+    const HistoryEffects redoMasks[] = {HistoryEffects::All, HistoryEffects::Viewport,
+        HistoryEffects::None, HistoryEffects::All, static_cast<HistoryEffects>(5), HistoryEffects::All};
+    for (auto effects : redoMasks)
+        CHECK(api.redo(api.context) == MMS_OK && history.LastPublicationEffects() == effects);
+
+    // Mutating the participant after preparation cannot change the frozen mask,
+    // and publication/traversal never queries Effects again.
+    auto frozen = std::make_shared<HistoryEffectsValue>(value, 9, 10);
+    frozen->effects = HistoryEffects::SceneReadout;
+    CHECK(history.PrepareNative("frozen", frozen, native) == MMS_OK);
+    CHECK(frozen->effectsQueries == 1);
+    frozen->effects = HistoryEffects::ProjectData;
+    CHECK(history.CommitNative(std::move(native)) == MMS_OK && value == 10);
+    CHECK(frozen->effectsQueries == 1 && history.LastPublicationEffects() == HistoryEffects::SceneReadout);
+    CHECK(api.undo(api.context) == MMS_OK && value == 9);
+    CHECK(frozen->effectsQueries == 1 && history.LastPublicationEffects() == HistoryEffects::SceneReadout);
+    CHECK(api.redo(api.context) == MMS_OK && value == 10);
+    CHECK(frozen->effectsQueries == 1 && history.LastPublicationEffects() == HistoryEffects::SceneReadout);
+    // A stale traversal is rejected without republishing the previous mask.
+    frozen->stale = true;
+    CHECK(api.undo(api.context) == MMS_E_STALE && value == 10 &&
+        history.LastPublicationEffects() == HistoryEffects::SceneReadout);
+    frozen->stale = false;
+
+    // Applied native work refreezes the placeholder when the real participant
+    // is accepted; reserve/failure/cancellation/stale never publish a mask.
+    const auto previous = history.LastPublicationEffects(); // SceneReadout
+    HistoryEffectsSignal signal; signal.Install(history);
+    std::unique_ptr<SharedHistory::AppliedTransaction> applied;
+    CHECK(history.ReserveAppliedNative("applied effects", 4096, applied) == MMS_OK);
+    CHECK(!signal.calls && history.LastPublicationEffects() == previous);
+    auto authored = std::make_shared<HistoryEffectsValue>(value, 10, 12);
+    authored->effects = HistoryEffects::Viewport; // deliberately different from previous
+    value = 12;
+    CHECK(history.PrepareAppliedNative(*applied, authored) == MMS_OK);
+    CHECK(authored->effectsQueries == 1);
+    authored->effects = HistoryEffects::ProjectData;
+    CHECK(!signal.calls && history.LastPublicationEffects() == previous);
+    CHECK(history.CommitAppliedNative(*applied) == MMS_OK);
+    CHECK(authored->effectsQueries == 1 &&
+        history.LastPublicationEffects() == HistoryEffects::Viewport);
+    CHECK(signal.calls == 1 && signal.seen == HistoryEffects::Viewport);
+    CHECK(history.CommitAppliedNative(*applied) == MMS_E_CONFLICT &&
+        signal.calls == 1 && history.LastPublicationEffects() == HistoryEffects::Viewport);
+    applied.reset();
+    CHECK(history.History(false) == MMS_OK && value == 10 &&
+        history.LastPublicationEffects() == HistoryEffects::Viewport);
+    CHECK(authored->effectsQueries == 1 &&
+        signal.calls == 2 && signal.seen == HistoryEffects::Viewport);
+    CHECK(history.History(true) == MMS_OK && value == 12 &&
+        history.LastPublicationEffects() == HistoryEffects::Viewport);
+    CHECK(authored->effectsQueries == 1 &&
+        signal.calls == 3 && signal.seen == HistoryEffects::Viewport);
+    const auto kept = history.LastPublicationEffects();
+    CHECK(history.ReserveAppliedNative("applied failure", 4096, applied) == MMS_OK);
+    auto failingApplied = std::make_shared<HistoryEffectsValue>(value, 12, 13);
+    failingApplied->effects = HistoryEffects::ProjectData;
+    failingApplied->fail = true;
+    CHECK(history.PrepareAppliedNative(*applied, failingApplied) == MMS_E_NOT_READY);
+    CHECK(history.LastPublicationEffects() == kept && signal.calls == 3);
+    applied.reset();
+    CHECK(history.LastPublicationEffects() == kept && signal.calls == 3);
+    CHECK(history.ReserveAppliedNative("applied cancel", 4096, applied) == MMS_OK);
+    applied.reset();
+    CHECK(history.LastPublicationEffects() == kept && signal.calls == 3);
+    CHECK(history.ReserveAppliedNative("applied stale", 4096, applied) == MMS_OK);
+    auto staleApplied = std::make_shared<HistoryEffectsValue>(value, 12, 14);
+    staleApplied->effects = HistoryEffects::ProjectData;
+    value = 14;
+    CHECK(history.PrepareAppliedNative(*applied, staleApplied) == MMS_OK);
+    value = 15;
+    CHECK(history.CommitAppliedNative(*applied) == MMS_E_STALE);
+    CHECK(history.LastPublicationEffects() == kept && signal.calls == 3);
+    applied.reset(); value = 12;
+
+    // Prepare failures, cancellation, stale commits and budget rejection keep
+    // the previous mask.
+    auto failingNative = std::make_shared<HistoryEffectsValue>(value, 12, 13);
+    failingNative->effects = HistoryEffects::SceneReadout; failingNative->fail = true;
+    CHECK(history.PrepareNative("prepare failure", failingNative, native) == MMS_E_NOT_READY && !native);
+    CHECK(history.LastPublicationEffects() == kept);
+    auto cancelled = std::make_shared<HistoryEffectsValue>(value, 12, 16);
+    cancelled->effects = HistoryEffects::ProjectData;
+    CHECK(history.PrepareNative("cancelled", cancelled, native) == MMS_OK);
+    native.reset();
+    CHECK(history.LastPublicationEffects() == kept);
+    auto tooLarge = std::make_shared<HistoryEffectsValue>(value, 12, 17);
+    tooLarge->effects = HistoryEffects::All; tooLarge->bytes = UINT64_MAX;
+    CHECK(history.PrepareNative("budget", tooLarge, native) == MMS_E_MEMORY && !native);
+    CHECK(history.LastPublicationEffects() == kept);
+    auto staleNative = std::make_shared<HistoryEffectsValue>(value, 12, 18);
+    staleNative->effects = HistoryEffects::ProjectData;
+    CHECK(history.PrepareNative("stale commit", staleNative, native) == MMS_OK);
+    staleNative->stale = true;
+    CHECK(history.CommitNative(std::move(native)) == MMS_E_STALE);
+    CHECK(history.LastPublicationEffects() == kept);
+
+    // Zero plugin participants: a native-only EditStore transaction keeps the
+    // renderer-only mask through the real prepare/commit/undo/redo path.
+    {
+        StorageStore nativeStorage; SharedHistory nativeHistory(nativeStorage);
+        EditStore nativeEdit(nativeHistory, nativeStorage);
+        EditClient nativeClient; nativeClient.id = "example.effects.native";
+        auto nativeApi = nativeEdit.Api(nativeClient);
+        int nativeValue = 0;
+        auto renderer = std::make_shared<HistoryEffectsValue>(nativeValue, 0, 1);
+        renderer->effects = HistoryEffects::Viewport;
+        MmsHandle nativeTransaction = 0;
+        uint64_t nativeRevision = 0; CHECK(nativeHistory.Revision(nativeRevision) == MMS_OK);
+        CHECK(nativeApi.begin(nativeApi.context, S("native only"), nativeRevision, &nativeTransaction) == MMS_OK);
+        CHECK(nativeEdit.JoinNative(nativeClient, nativeTransaction, renderer) == MMS_OK);
+        CHECK(nativeApi.prepare(nativeApi.context, nativeTransaction) == MMS_OK);
+        CHECK(nativeApi.commit(nativeApi.context, nativeTransaction) == MMS_OK && nativeValue == 1);
+        CHECK(nativeHistory.LastPublicationEffects() == HistoryEffects::Viewport);
+        CHECK(nativeApi.undo(nativeApi.context) == MMS_OK && nativeValue == 0 &&
+            nativeHistory.LastPublicationEffects() == HistoryEffects::Viewport);
+        CHECK(nativeApi.redo(nativeApi.context) == MMS_OK && nativeValue == 1 &&
+            nativeHistory.LastPublicationEffects() == HistoryEffects::Viewport);
+    }
+
+    // An empty journal and its rejected undo/redo keep the last mask; a None
+    // mask still publishes and restores the live value normally.
+    {
+        StorageStore emptyStorage; SharedHistory empty(emptyStorage);
+        CHECK(empty.LastPublicationEffects() == HistoryEffects::All);
+        CHECK(empty.History(false) == MMS_E_NOT_FOUND && empty.History(true) == MMS_E_NOT_FOUND);
+        CHECK(empty.LastPublicationEffects() == HistoryEffects::All);
+        int emptyValue = 0;
+        std::unique_ptr<SharedHistory::NativeTransaction> onlyNative;
+        auto only = std::make_shared<HistoryEffectsValue>(emptyValue, 0, 1);
+        only->effects = HistoryEffects::None;
+        CHECK(empty.PrepareNative("only", only, onlyNative) == MMS_OK &&
+            empty.CommitNative(std::move(onlyNative)) == MMS_OK);
+        CHECK(emptyValue == 1 && empty.LastPublicationEffects() == HistoryEffects::None);
+        CHECK(empty.History(false) == MMS_OK && emptyValue == 0 &&
+            empty.LastPublicationEffects() == HistoryEffects::None);
+        CHECK(empty.History(false) == MMS_E_NOT_FOUND && emptyValue == 0 &&
+            empty.LastPublicationEffects() == HistoryEffects::None);
+        CHECK(empty.History(true) == MMS_OK && emptyValue == 1 &&
+            empty.LastPublicationEffects() == HistoryEffects::None);
+        CHECK(empty.History(true) == MMS_E_NOT_FOUND &&
+            empty.LastPublicationEffects() == HistoryEffects::None);
+    }
+
+    // The publication signal observes the new mask synchronously on commit,
+    // undo and redo.
+    {
+        StorageStore signalStorage; SharedHistory signalHistory(signalStorage);
+        HistoryEffectsSignal signal; signal.Install(signalHistory);
+        int signalValue = 0;
+        std::unique_ptr<SharedHistory::NativeTransaction> signalNative;
+        auto only = std::make_shared<HistoryEffectsValue>(signalValue, 0, 1);
+        only->effects = HistoryEffects::Viewport;
+        CHECK(signalHistory.PrepareNative("signal", only, signalNative) == MMS_OK);
+        CHECK(signal.calls == 0 && signalHistory.LastPublicationEffects() == HistoryEffects::All);
+        CHECK(signalHistory.CommitNative(std::move(signalNative)) == MMS_OK);
+        uint64_t signalRevision = 0; CHECK(signalHistory.Revision(signalRevision) == MMS_OK);
+        CHECK(signal.calls == 1 && signal.seen == HistoryEffects::Viewport && signal.revision == signalRevision);
+        CHECK(signalHistory.History(false) == MMS_OK);
+        CHECK(signal.calls == 2 && signal.seen == HistoryEffects::Viewport);
+        CHECK(signalHistory.History(true) == MMS_OK);
+        CHECK(signal.calls == 3 && signal.seen == HistoryEffects::Viewport);
+    }
+
+    // ExplicitOnly adjustments add no journal step, yet a successful
+    // publication still updates the mask and emits the same signal.
+    {
+        StorageStore modeStorage; SharedHistory modeHistory(modeStorage);
+        CHECK(modeHistory.SetMode(SharedHistory::RecordingMode::ExplicitOnly) == MMS_OK);
+        HistoryEffectsSignal signal; signal.Install(modeHistory);
+        int modeValue = 0;
+        std::unique_ptr<SharedHistory::NativeTransaction> adjustment;
+        auto change = std::make_shared<HistoryEffectsValue>(modeValue, 0, 1);
+        change->effects = HistoryEffects::ProjectData | HistoryEffects::SceneReadout;
+        change->physicsReset = false;
+        CHECK(modeHistory.PrepareNative("adjustment", change, adjustment,
+            SharedHistory::NativeIntent::Adjustment) == MMS_OK);
+        CHECK(signal.calls == 0 && modeHistory.LastPublicationEffects() == HistoryEffects::All);
+        CHECK(modeHistory.CommitNative(std::move(adjustment)) == MMS_OK && modeValue == 1);
+        CHECK(!modeHistory.UndoCount() && !modeHistory.RedoCount());
+        CHECK(modeHistory.LastPublicationEffects() == (HistoryEffects::ProjectData | HistoryEffects::SceneReadout));
+        CHECK(signal.calls == 1 && signal.seen == modeHistory.LastPublicationEffects());
+        uint64_t modeRevision = 0; CHECK(modeHistory.Revision(modeRevision) == MMS_OK);
+        CHECK(signal.revision == modeRevision && !modeHistory.LastPublicationRequiresPhysicsReset());
+    }
+
+    // A None mask cannot bypass the application edit gate, and a rejected
+    // publication never changes the last mask.
+    {
+        bool open = false; StorageStore gatedStorage;
+        SharedHistory gated(gatedStorage, [&] { return open ? MMS_OK : MMS_E_BUSY; });
+        int gatedValue = 0;
+        std::unique_ptr<SharedHistory::NativeTransaction> gatedNative;
+        open = true;
+        auto seed = std::make_shared<HistoryEffectsValue>(gatedValue, 0, 1);
+        seed->effects = HistoryEffects::Viewport;
+        CHECK(gated.PrepareNative("gate seed", seed, gatedNative) == MMS_OK);
+        CHECK(gated.CommitNative(std::move(gatedNative)) == MMS_OK);
+        CHECK(gated.LastPublicationEffects() == HistoryEffects::Viewport);
+        open = false;
+        auto blocked = std::make_shared<HistoryEffectsValue>(gatedValue, 1, 2);
+        blocked->effects = HistoryEffects::None;
+        CHECK(gated.PrepareNative("gate blocked", blocked, gatedNative) == MMS_E_BUSY && !gatedNative);
+        CHECK(gated.LastPublicationEffects() == HistoryEffects::Viewport);
+        open = true;
+        CHECK(gated.PrepareNative("gate pending", blocked, gatedNative) == MMS_OK);
+        open = false;
+        CHECK(gated.CommitNative(std::move(gatedNative)) == MMS_E_BUSY && gatedValue == 1);
+        CHECK(gated.LastPublicationEffects() == HistoryEffects::Viewport);
+        CHECK(gated.History(false) == MMS_E_BUSY && gatedValue == 1 &&
+            gated.LastPublicationEffects() == HistoryEffects::Viewport);
+        open = true;
+    }
+
+    // Reset restores the conservative default without an extra signal.
+    {
+        StorageStore resetStorage; SharedHistory resetHistory(resetStorage);
+        HistoryEffectsSignal signal; signal.Install(resetHistory);
+        int resetValue = 0;
+        std::unique_ptr<SharedHistory::NativeTransaction> resetNative;
+        auto renderer = std::make_shared<HistoryEffectsValue>(resetValue, 0, 1);
+        renderer->effects = HistoryEffects::Viewport;
+        CHECK(resetHistory.PrepareNative("reset seed", renderer, resetNative) == MMS_OK);
+        CHECK(resetHistory.CommitNative(std::move(resetNative)) == MMS_OK);
+        CHECK(resetHistory.LastPublicationEffects() == HistoryEffects::Viewport && signal.calls == 1);
+        CHECK(resetHistory.Reset() == MMS_OK);
+        CHECK(resetHistory.LastPublicationEffects() == HistoryEffects::All && signal.calls == 1);
+    }
+}
+static void SharedHistoryReserveCopyChecks() {
+    // Direct Reserve/publication path: a native Effects() rewrites the caller's
+    // mutable record during preparation. The retained copy and its frozen mask
+    // must come from the aggregate copied before that call.
+    StorageStore storage; SharedHistory history(storage);
+    StorageClient sc; sc.id = "example.copy"; storage.Api(sc);
+    SerializerFixture state; auto serializer = state.Api(); MmsHandle provider = 0;
+    CHECK(storage.Register(sc, S("example.copy"), &serializer, sizeof(serializer), &provider) == MMS_OK);
+    int live = 0;
+    auto record = std::make_shared<EditRecord>();
+    record->label = "original payload";
+    record->before.emplace("example.copy", StoredInt(11));
+    record->after.emplace("example.copy", StoredInt(22));
+    auto change = std::make_shared<RecordMutatingEffects>(live, 0, 1);
+    change->record = record.get();
+    record->native = change;
+    CHECK(history.Enter() == MMS_OK);
+    std::unique_ptr<EditPublication> publication;
+    CHECK(history.Reserve(record, publication) == MMS_OK && publication);
+    CHECK(change->effectsReads == 1 && record->label == "mutated payload" &&
+        record->before.empty() && record->after.empty());
+    publication->Publish();
+    history.Leave();
+    CHECK(history.UndoCount() == 1 && !history.RedoCount());
+    CHECK(*history.NextLabel(false) == "original payload");
+    CHECK(history.LastPublicationEffects() == HistoryEffects::All);
+    CHECK(history.History(false) == MMS_OK && live == 0 && state.value == 11 &&
+        history.LastPublicationEffects() == HistoryEffects::All);
+    CHECK(history.History(true) == MMS_OK && live == 1 && state.value == 22 &&
+        history.LastPublicationEffects() == HistoryEffects::All);
+    // The caller's source stays mutated; only the retained copy is stable.
+    CHECK(record->label == "mutated payload" && record->before.empty());
+}
+static void SharedHistoryEffectsPeekChecks() {
+    // Empty journals preview the conservative fallback on both cursors.
+    StorageStore emptyStorage; SharedHistory empty(emptyStorage);
+    CHECK(empty.NextPublicationEffects(false) == HistoryEffects::All &&
+        empty.NextPublicationEffects(true) == HistoryEffects::All);
+
+    StorageStore storage; SharedHistory history(storage);
+    int value = 0;
+    std::unique_ptr<SharedHistory::NativeTransaction> native;
+    auto first = std::make_shared<HistoryEffectsValue>(value, 0, 1);
+    first->effects = HistoryEffects::Viewport;
+    CHECK(history.PrepareNative("peek first", first, native) == MMS_OK);
+    CHECK(history.CommitNative(std::move(native)) == MMS_OK);
+    auto second = std::make_shared<HistoryEffectsValue>(value, 1, 2);
+    second->effects = HistoryEffects::None;
+    CHECK(history.PrepareNative("peek second", second, native) == MMS_OK);
+    CHECK(history.CommitNative(std::move(native)) == MMS_OK);
+    CHECK(first->effectsQueries == 1 && second->effectsQueries == 1);
+    // The preview reads the next real node without consuming or re-querying it.
+    CHECK(history.NextPublicationEffects(false) == HistoryEffects::None);
+    CHECK(history.NextPublicationEffects(true) == HistoryEffects::All);
+    CHECK(history.UndoCount() == 2 && !history.RedoCount());
+    CHECK(first->effectsQueries == 1 && second->effectsQueries == 1);
+
+    // A successful traversal reports exactly the mask announced by the preview.
+    CHECK(history.History(false) == MMS_OK && value == 1 &&
+        history.LastPublicationEffects() == HistoryEffects::None);
+    CHECK(history.NextPublicationEffects(false) == HistoryEffects::Viewport);
+    CHECK(history.NextPublicationEffects(true) == HistoryEffects::None);
+    CHECK(history.History(false) == MMS_OK && value == 0 &&
+        history.LastPublicationEffects() == HistoryEffects::Viewport);
+    CHECK(history.NextPublicationEffects(false) == HistoryEffects::All);
+    CHECK(history.NextPublicationEffects(true) == HistoryEffects::Viewport);
+
+    // Rejected and cancelled work keeps the cursor and both previews intact.
+    first->stale = true;
+    CHECK(history.History(true) == MMS_E_STALE && value == 0);
+    CHECK(!history.UndoCount() && history.RedoCount() == 2);
+    CHECK(history.NextPublicationEffects(true) == HistoryEffects::Viewport);
+    CHECK(history.NextPublicationEffects(false) == HistoryEffects::All);
+    first->stale = false;
+    auto cancelled = std::make_shared<HistoryEffectsValue>(value, 0, 3);
+    cancelled->effects = HistoryEffects::ProjectData;
+    CHECK(history.PrepareNative("peek cancel", cancelled, native) == MMS_OK);
+    CHECK(history.NextPublicationEffects(true) == HistoryEffects::Viewport);
+    CHECK(history.NextPublicationEffects(false) == HistoryEffects::All);
+    native.reset();
+    CHECK(!history.UndoCount() && history.RedoCount() == 2);
+    CHECK(history.NextPublicationEffects(true) == HistoryEffects::Viewport);
+    auto failed = std::make_shared<HistoryEffectsValue>(value, 0, 4);
+    failed->effects = HistoryEffects::SceneReadout; failed->fail = true;
+    CHECK(history.PrepareNative("peek failure", failed, native) == MMS_E_NOT_READY && !native);
+    CHECK(!history.UndoCount() && history.RedoCount() == 2);
+    CHECK(history.NextPublicationEffects(true) == HistoryEffects::Viewport);
+
+    // Redo switches the preview to the next frozen node, and a failed undo
+    // leaves the order and preview untouched.
+    CHECK(history.History(true) == MMS_OK && value == 1 &&
+        history.LastPublicationEffects() == HistoryEffects::Viewport);
+    CHECK(history.NextPublicationEffects(false) == HistoryEffects::Viewport);
+    CHECK(history.NextPublicationEffects(true) == HistoryEffects::None);
+    CHECK(history.History(true) == MMS_OK && value == 2 &&
+        history.LastPublicationEffects() == HistoryEffects::None);
+    CHECK(history.NextPublicationEffects(false) == HistoryEffects::None);
+    CHECK(history.NextPublicationEffects(true) == HistoryEffects::All);
+    CHECK(history.UndoCount() == 2 && !history.RedoCount());
+    second->stale = true;
+    CHECK(history.History(false) == MMS_E_STALE && value == 2);
+    CHECK(history.NextPublicationEffects(false) == HistoryEffects::None &&
+        history.NextPublicationEffects(true) == HistoryEffects::All);
+    CHECK(history.UndoCount() == 2 && !history.RedoCount());
+    second->stale = false;
+
+    // The preview never enters the gate or asks the participant again.
+    int gateCalls = 0; bool open = true;
+    StorageStore gatedStorage;
+    SharedHistory gated(gatedStorage, [&] { ++gateCalls; return open ? MMS_OK : MMS_E_BUSY; });
+    int gatedValue = 0;
+    std::unique_ptr<SharedHistory::NativeTransaction> gatedNative;
+    auto rendered = std::make_shared<HistoryEffectsValue>(gatedValue, 0, 1);
+    rendered->effects = HistoryEffects::SceneReadout;
+    CHECK(gated.PrepareNative("gate peek", rendered, gatedNative) == MMS_OK);
+    CHECK(gated.CommitNative(std::move(gatedNative)) == MMS_OK);
+    const auto commitGateCalls = gateCalls;
+    CHECK(commitGateCalls == 2 && rendered->effectsQueries == 1);
+    CHECK(gated.NextPublicationEffects(false) == HistoryEffects::SceneReadout);
+    CHECK(gateCalls == commitGateCalls && rendered->effectsQueries == 1);
+    open = false;
+    CHECK(gated.NextPublicationEffects(false) == HistoryEffects::SceneReadout);
+    CHECK(gated.NextPublicationEffects(true) == HistoryEffects::All);
+    CHECK(gateCalls == commitGateCalls);
+    open = true;
+    HistoryEffects gatedWorker = HistoryEffects::None;
+    std::thread gatedThread([&] { gatedWorker = gated.NextPublicationEffects(false); });
+    gatedThread.join();
+    CHECK(gatedWorker == HistoryEffects::All && gateCalls == commitGateCalls &&
+        rendered->effectsQueries == 1);
+
+    // A NotReady journal and non-UI callers conservatively report All.
+    int poisonValue = 0;
+    StorageStore poisonStorage; SharedHistory poisoned(poisonStorage);
+    std::unique_ptr<SharedHistory::NativeTransaction> poisonNative;
+    auto poisonSeed = std::make_shared<HistoryEffectsValue>(poisonValue, 0, 1);
+    poisonSeed->effects = HistoryEffects::Viewport;
+    CHECK(poisoned.PrepareNative("poison peek", poisonSeed, poisonNative) == MMS_OK);
+    CHECK(poisoned.CommitNative(std::move(poisonNative)) == MMS_OK);
+    CHECK(poisoned.NextPublicationEffects(false) == HistoryEffects::Viewport);
+    poisoned.Poison();
+    CHECK(poisoned.NextPublicationEffects(false) == HistoryEffects::All &&
+        poisoned.NextPublicationEffects(true) == HistoryEffects::All);
+
+    HistoryEffects workerUndo = HistoryEffects::None, workerRedo = HistoryEffects::None;
+    std::thread worker([&] {
+        workerUndo = history.NextPublicationEffects(false);
+        workerRedo = history.NextPublicationEffects(true);
+    });
+    worker.join();
+    CHECK(workerUndo == HistoryEffects::All && workerRedo == HistoryEffects::All);
+    CHECK(history.NextPublicationEffects(false) == HistoryEffects::None);
+    HistoryEffects emptyWorker = HistoryEffects::None;
+    std::thread emptyThread([&] { emptyWorker = empty.NextPublicationEffects(true); });
+    emptyThread.join();
+    CHECK(emptyWorker == HistoryEffects::All);
+}
 static void SharedHistoryChecks() {
+    SharedHistoryEffectsChecks();
+    SharedHistoryEffectsPeekChecks();
+    SharedHistoryReserveCopyChecks();
     SharedHistoryNavigationChecks();
     SharedHistoryCleanupBoundaryChecks();
     SharedHistoryPendingPluginChecks();
