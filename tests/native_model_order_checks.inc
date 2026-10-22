@@ -38,10 +38,31 @@ struct Scene {
     int expectedFrame=137;
     Scene() {
         f.app->ModelSlot(254) = f.app->ModelSlot(1); f.app->ModelSlot(1) = nullptr;
+        // HasParent requires a live bone table before the 449/450 parent readout
+        // can keep the camera parent selected, so the only camera parent (B in
+        // slot 254) gets one heap record. DeleteModel stays the single owner:
+        // ~Scene clears the retained-object history first, then the fixture's
+        // DeleteModel frees this array, so nothing stack-owned or double-owned
+        // outlives the record.
+        auto& parentB = *mdl::Mdl(f.app->ModelSlot(254));
+        parentB.boneTable = static_cast<mdl::BoneRecord*>(std::calloc(1, sizeof(mdl::BoneRecord)));
+        Check(parentB.boneTable != nullptr, "model order camera parent owns one heap bone record");
+        parentB.boneCount = 1;
+        auto& binderBone = parentB.boneTable[0];
+        binderBone.type = mdl::BoneType::RotateMove;
+        binderBone.parent = binderBone.tailIdx = binderBone.slotIndex = -1;
+        std::strcpy(binderBone.name, "root"); std::strcpy(binderBone.nameEn, "root");
+        binderBone.rotQuat[3] = binderBone.rotQuat2[3] = 1.f;
+        for (unsigned i = 0; i < 16; ++i)
+            binderBone.matInit[i] = binderBone.matLocal[i] = binderBone.matWorld[i] = i % 5 ? 0.f : 1.f;
+        Check(parentB.boneTable && parentB.boneCount == 1 &&
+            parentB.boneTable[0].type < mdl::BoneType::InertTip,
+            "model order camera parent exposes one selectable binder bone before the first list refresh");
         f.app->CameraParentModel() = 254; f.app->CameraParentBone() = 0;
         f.app->AccessorySlot(0)->parentModel = 254; f.app->AccessorySlot(0)->parentBone = 0;
         Check(scene_history_ui::RefreshObjectLists(*f.app, scene_history_ui::CaptureSelection(*f.app), false, false) ==
             scene_history_ui::Result::Ok, "model order fixture uses actual sparse slot 254 and bound parent selectors");
+        Trace("initial");
     }
     ~Scene() {
         Check(f.history.Reset() == MMS_OK, "model order clears retained nodes before restoring fixture slot"); f.history.Collect();
@@ -50,6 +71,15 @@ struct Scene {
     std::array<std::uint8_t,4> Orders() const {
         const auto& a = *mdl::Mdl(f.app->ModelSlot(0)); const auto& b = *mdl::Mdl(f.app->ModelSlot(254));
         return {a.comboSelIndex,b.comboSelIndex,a.comboSelIndex2,b.comboSelIndex2};
+    }
+    void Trace(const char* phase) const {
+        const auto* parent = mdl::Mdl(f.app->ModelSlot(254));
+        std::printf("ORDER phase=%s item1=%lld model_selection=%lld parent_selection=%lld parent=%d/%d bones=%p/%u selected=%u camera_mode=%u pending=%u\n",
+            phase, static_cast<long long>(SendDlgItemMessageW(f.app->MainWindow(),436,CB_GETITEMDATA,1,0)),
+            static_cast<long long>(SendDlgItemMessageW(f.app->MainWindow(),436,CB_GETCURSEL,0,0)),
+            static_cast<long long>(SendDlgItemMessageW(f.app->MainWindow(),449,CB_GETCURSEL,0,0)),
+            int(f.app->CameraParentModel()), int(f.app->CameraParentBone()), static_cast<void*>(parent->boneTable), unsigned(parent->boneCount),
+            unsigned(f.app->SelectedModelSlot()), unsigned(f.app->CameraMode()), unsigned(NativeObjectUiPending(f.app.get())));
     }
     void Untouched() const {
         Check(f.app->CurrentFrame() == expectedFrame && f.app->CameraPositionX() == 27.f && f.app->CameraDistance() == -81.f &&
@@ -79,6 +109,7 @@ void ModesAndUi() {
         Check(CommitBoundModelOrder(*f.app,f.history,x.Change(ModelOrderKind::Draw),false)==MMS_OK &&
             f.history.UndoCount()==1 && x.Orders()==std::array<std::uint8_t,4>{2,1,1,2} && f.app->SceneModified(),
             "one explicit draw-order OK records one node in both modes and marks dirty");
+        x.Trace("committed-draw");
         x.Untouched();
         Check(SendDlgItemMessageW(f.app->MainWindow(),436,CB_GETITEMDATA,1,0)==254 &&
             SendDlgItemMessageW(f.app->MainWindow(),436,CB_GETCURSEL,0,0)==2 &&
