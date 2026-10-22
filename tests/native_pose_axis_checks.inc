@@ -503,6 +503,7 @@ void PoseAxisPreparedDraftChecks() {
 }
 }
 #include "native_pose_physics_readout_checks.inc"
+#include "native_rotation_draft_checks.inc"
 void NativePoseAxisChecks() {
     wchar_t desktop[128]{}; DWORD desktopBytes = 0;
     Check(GetUserObjectInformationW(GetThreadDesktop(GetCurrentThreadId()), UOI_NAME,
@@ -520,4 +521,5 @@ void NativePoseAxisChecks() {
     std::puts("RUN PoseAxisPreparedDraftChecks"); PoseAxisPreparedDraftChecks();
     std::puts("RUN PosePhysicsPureReadoutChecks"); PosePhysicsPureReadoutChecks();
     std::puts("RUN PosePhysicsResetDraftChecks"); PosePhysicsResetDraftChecks();
+    std::puts("RUN NativeAxisRotationDraftChecks"); NativeAxisRotationDraftChecks();
 }

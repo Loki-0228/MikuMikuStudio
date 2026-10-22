@@ -40,6 +40,7 @@
 #include <cstdio>
 
 #include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/bone_rotation_readout.hpp"
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/frame_presentation.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
@@ -268,46 +269,12 @@ void PostViewRefresh(MMDApp* app) {
     if (d3dx->Load())                                   // 0x4C68D0 import
         d3dx->matrixRotationQuaternion(&m, quat);       // (x,y,z,w quaternion)
 
-    // Euler extraction (0x40D643..).  Every intermediate is float-truncated
-    // exactly as the original x87 sequence (fstp dword) does.
-    const float m12 = m.m[0][1];
-    const float m22 = m.m[1][1];
-    const float m31 = m.m[2][0];
-    const float m32 = m.m[2][1];
-    const float m33 = m.m[2][2];
-
-    float rz = static_cast<float>(std::atan2(static_cast<double>(m12),
-                                             static_cast<double>(m22)));
-    app->BoneRotationEditDegreesZ() = rz;               // 0x40D658 (0xA04C8)
-    float rx = static_cast<float>(std::asin((std::max)(-1.0,(std::min)(1.0,-static_cast<double>(m32)))));
-    app->BoneRotationEditDegreesX() = rx;               // 0x40D671 (0xA04C0)
-    float ry = static_cast<float>(std::atan2(static_cast<double>(m31),
-                                             static_cast<double>(m33)));
-    app->BoneRotationEditDegreesY() = ry;               // 0x40D68C (0xA04C4)
-    float c = static_cast<float>(std::cos(static_cast<double>(rx)));
-
-    if (std::fabs(static_cast<double>(c)) < 1e-6f) {    // 0x40D6AD flt_52B740
-        // At the pole choose a stable equivalent decomposition with Z = 0.
-        rz = 0.0f;
-        ry = std::atan2(-m.m[0][2],m.m[0][0]);
-    }
-    // Zeroing (0x40D728/0x40D747/0x40D766).  Treating the comparison operand
-    // as |cos(rx)| erased normal sub-radian angles; the original uses 1e-6f.
-    if (std::fabs(static_cast<double>(rx)) < 1e-6f)
-        rx = 0.0f;
-    if (std::fabs(static_cast<double>(ry)) < 1e-6f)
-        ry = 0.0f;
-    if (std::fabs(static_cast<double>(rz)) < 1e-6f)
-        rz = 0.0f;
-
-    // Radians -> degrees in double, pi = (double)3.141592f (dbl_52B768),
-    // 180.0 (dbl_52B760); each result stored back as float.
-    rx = static_cast<float>(static_cast<double>(rx) / 3.141592f * 180.0f);
-    ry = static_cast<float>(-static_cast<double>(ry) / 3.141592f * 180.0f);
-    rz = static_cast<float>(180.0f * (-static_cast<double>(rz) / 3.141592f));
-    app->BoneRotationEditDegreesX() = rx;               // 0x40D797 (fst)
-    app->BoneRotationEditDegreesY() = ry;               // 0x40D7A9
-    app->BoneRotationEditDegreesZ() = rz;               // 0x40D7BF
+    // Euler extraction (0x40D643..0x40D7BF), moved verbatim to
+    // bone_rotation_readout.hpp so the rotation reset shares it.
+    const auto rotation = ui::BoneRotationDegreesFromMatrix(m);
+    app->BoneRotationEditDegreesX() = rotation[0];      // 0x40D797 (fst)
+    app->BoneRotationEditDegreesY() = rotation[1];      // 0x40D7A9
+    app->BoneRotationEditDegreesZ() = rotation[2];      // 0x40D7BF
 
     // Readouts; the original reloads this+0xA04C4/0xA04C8 from the object.
     float d = app->BoneRotationEditDegreesX();

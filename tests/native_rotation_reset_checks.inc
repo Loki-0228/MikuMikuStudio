@@ -113,5 +113,6 @@ void RotationResetLegacyChecks() {
 }
 }
 void NativeRotationResetChecks() {
+    NativeMenuRotationDraftChecks();
     RotationResetHistoryChecks(); RotationResetGuardChecks(); RotationResetFailureChecks(); RotationResetLegacyChecks();
 }
