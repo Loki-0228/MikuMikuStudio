@@ -1076,6 +1076,7 @@ void ModelCommentRoundtrip(MMDApp& app, const std::filesystem::path& directory) 
 }
 
 #include "model_source_save_host_checks.inc"
+#include "pmm_identity_host_checks.inc"
 
 int wmain(int argc, wchar_t** argv) {
     if(argc>=2 && wcscmp(argv[1],L"--metadata-only")==0) {
@@ -1085,7 +1086,8 @@ int wmain(int argc, wchar_t** argv) {
     const bool pmxBoundary=argc>=2 && wcscmp(argv[1],L"--pmx-boundary")==0;
     const bool measuredNames=argc>=2 && wcscmp(argv[1],L"--measured-names")==0;
     const bool reversibleEncoding=argc>=2 && wcscmp(argv[1],L"--reversible-encoding")==0;
-    if((pmxBoundary || measuredNames || reversibleEncoding) && argc!=3)return 2;
+    const bool pmdIdentity=argc>=2 && wcscmp(argv[1],L"--pmd-identity")==0;
+    if((pmxBoundary || measuredNames || reversibleEncoding || pmdIdentity) && argc!=3)return 2;
     if (argc < 2 || argc > 4) return 2;
     const bool capacityOnly = argc == 4 && wcscmp(argv[3], L"--key-capacity") == 0;
     const bool commentsOnly = argc == 4 && wcscmp(argv[3], L"--model-comments") == 0;
@@ -1095,6 +1097,7 @@ int wmain(int argc, wchar_t** argv) {
     if (argc == 4 && !capacityOnly && !commentsOnly && !sourceAll && !sourceExplicit && !sourceOrdinary) return 2;
 #if MMD_ORIGINAL_PROFILE
     if(reversibleEncoding){std::puts("SKIP reversible-encoding host: original profile retains strict CP932 resource fields");return 0;}
+    if(pmdIdentity){std::puts("SKIP pmd-identity host: full-profile PMD identity regression only");return 0;}
 #endif
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     SetWindowsHookExW(WH_CBT,[](int code,WPARAM wp,LPARAM lp)->LRESULT {
@@ -1112,7 +1115,8 @@ int wmain(int argc, wchar_t** argv) {
         }
         return CallNextHookEx(nullptr,code,wp,lp);
     },nullptr,GetCurrentThreadId());
-    const auto directory = std::filesystem::absolute(pmxBoundary || measuredNames || reversibleEncoding ? argv[2] : argv[1]);
+    if(pmdIdentity && (!std::filesystem::path(argv[2]).is_absolute() || std::filesystem::exists(argv[2])))return 2;
+    const auto directory = std::filesystem::absolute(pmxBoundary || measuredNames || reversibleEncoding || pmdIdentity ? argv[2] : argv[1]);
     std::filesystem::create_directories(directory);
     const auto aaPreference = directory / L"antialias-user.ini";
     SetEnvironmentVariableW(L"MMS_ANTIALIAS_CONFIG", aaPreference.c_str());
@@ -1127,6 +1131,11 @@ int wmain(int argc, wchar_t** argv) {
     Check(InitMainWindowAndD3D(app, GetModuleHandleW(nullptr), SW_HIDE), "initialize hidden production app");
     ShowWindow(app->MainWindow(), SW_HIDE);
 #if !MMD_ORIGINAL_PROFILE
+    if (pmdIdentity) {
+        pmm_identity_host::Run(*app,directory);
+        ShutdownCleanup(app); delete app; g_Block = nullptr;
+        return 0;
+    }
     if (sourceAll || sourceExplicit || sourceOrdinary) {
         LoadModelFile(app, argv[2], false);
         Check(app->ModelSlot(0) != nullptr, "source-save cohort loads its real standard PMD fixture");

@@ -160,6 +160,7 @@
 // Shared PMM IO constants (window-title format; the loader record readers
 // live there too).
 #include "pmm_io_common.hpp"
+#include "pmm_identity.hpp"
 
 namespace mikumikustudio {
 
@@ -316,14 +317,6 @@ void WritePmmDisplayKey(int fd, const mdl::DisplayKey& key,
         W(fd, &pairs[i], sizeof(pairs[i]));
     const unsigned char allocated = key.allocated != 0;
     W(fd, &allocated, 1);
-}
-
-// strlen walked to the NUL as the original does, then truncated to the
-// byte that the length slot holds (asm 0x41B3A8: mov [Buf], al / movzx).
-inline unsigned char NameLen(const unsigned char* s) {
-    const unsigned char* p = s;
-    while (*p != 0) ++p;
-    return static_cast<unsigned char>(p - s);
 }
 
 // Transparency/scale byte idiom (0x41D44E etc.): FPU control word | 0xC00
@@ -579,8 +572,8 @@ void WritePmmModelBlocks(int fd, unsigned char** const slots,
 #if MMD_ORIGINAL_PROFILE
                 WriteOriginalName(fd, bones[i].name, 20, bones[i].jpText, 20);
 #else
-                const unsigned char len = NameLen(
-                    reinterpret_cast<const unsigned char*>(bones[i].name));
+                const unsigned char len = static_cast<unsigned char>(
+                    pmm_io::IdentityLength(bones[i].name));
                 W(fd, &len, 1);                                // 0x41B4FF
                 W(fd, bones[i].name, len);                     // 0x41B524
 #endif
@@ -592,8 +585,8 @@ void WritePmmModelBlocks(int fd, unsigned char** const slots,
 #if MMD_ORIGINAL_PROFILE
                 WriteOriginalName(fd, morphs[i].name, 20, morphs[i].jpText, 20);
 #else
-                const unsigned char len = NameLen(
-                    reinterpret_cast<const unsigned char*>(morphs[i].name));
+                const unsigned char len = static_cast<unsigned char>(
+                    pmm_io::IdentityLength(morphs[i].name));
                 W(fd, &len, 1);                                // 0x41B5AF
                 W(fd, morphs[i].name, len);                    // 0x41B5D4
 #endif

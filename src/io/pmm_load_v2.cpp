@@ -134,6 +134,7 @@
 // the loader string tables live here (see the header comment for the
 // v1/v2 parameterization points).
 #include "pmm_io_common.hpp"
+#include "pmm_identity.hpp"
 #include "pmm_input.hpp"
 
 #pragma comment(lib, "avifil32.lib")
@@ -176,6 +177,19 @@ static_assert(sizeof(NameMapping) == 264, "PMM name mapping size");
 static_assert(sizeof(IndexMapping) == 8, "PMM index mapping size");
 static_assert(sizeof(SelectorStateSnapshot) == 16,
               "PMM selector state size");
+
+// Name equality for the display-frame and morph translation tables. The
+// original compares the serialized name with strcmp; the full profile treats
+// the 20-byte PMD fields as bounded identities, including the legacy record
+// the old writer produced by crossing into the English field.
+template <typename Record>
+bool NameMappingMatches(const NameMapping& mapping, const Record& record) {
+#if MMD_ORIGINAL_PROFILE
+    return strcmp(mapping.name, record.name) == 0;
+#else
+    return pmm_io::MatchesIdentity(mapping.name, record.name, record.nameEn);
+#endif
+}
 
 // Per-model reconciliation workspace.  The original source keeps ordinary
 // pointers here; treating their Win32 offsets as a permanent byte ABI made
@@ -1372,15 +1386,15 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, pmm_io::Input& input,
                         mapping.name[len] = 0;
                         mapping.mappedIndex = i;
                         if (workspace.displayCount == loadedModel->boneCount) {
-                            if (strcmp(mapping.name,
-                                       mdl::Bones(model)[i].name) != 0) {
+                            if (!NameMappingMatches(mapping,
+                                                    mdl::Bones(model)[i])) {
                                 workspace.displaysMatch = 0;
                                 mapping.mappedIndex = -1;
                                 for (std::int32_t j = 0;
                                      j < static_cast<std::int32_t>(
                                              loadedModel->boneCount); ++j)
-                                    if (strcmp(mapping.name,
-                                               mdl::Bones(model)[j].name) == 0) {
+                                    if (NameMappingMatches(
+                                            mapping, mdl::Bones(model)[j])) {
                                         mapping.mappedIndex = j;
                                         break;
                                     }
@@ -1390,8 +1404,8 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, pmm_io::Input& input,
                             for (std::int32_t j = 0;
                                  j < static_cast<std::int32_t>(
                                          loadedModel->boneCount); ++j)
-                                if (strcmp(mapping.name,
-                                           mdl::Bones(model)[j].name) == 0) {
+                                if (NameMappingMatches(
+                                        mapping, mdl::Bones(model)[j])) {
                                     mapping.mappedIndex = j;
                                     break;
                                 }
@@ -1432,15 +1446,15 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, pmm_io::Input& input,
                         mapping.name[len] = 0;
                         mapping.mappedIndex = i;
                         if (workspace.morphCount == loadedModel->morphCount) {
-                            if (strcmp(mapping.name,
-                                       mdl::Morphs(model)[i].name) != 0) {
+                            if (!NameMappingMatches(mapping,
+                                                    mdl::Morphs(model)[i])) {
                                 workspace.morphsMatch = 0;
                                 mapping.mappedIndex = -1;
                                 for (std::int32_t j = 0;
                                      j < static_cast<std::int32_t>(
                                              loadedModel->morphCount); ++j)
-                                    if (strcmp(mapping.name,
-                                            mdl::Morphs(model)[j].name) == 0) {
+                                    if (NameMappingMatches(
+                                            mapping, mdl::Morphs(model)[j])) {
                                         mapping.mappedIndex = j;
                                         break;
                                     }
@@ -1450,8 +1464,8 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, pmm_io::Input& input,
                             for (std::int32_t j = 0;
                                  j < static_cast<std::int32_t>(
                                          loadedModel->morphCount); ++j)
-                                if (strcmp(mapping.name,
-                                        mdl::Morphs(model)[j].name) == 0) {
+                                if (NameMappingMatches(
+                                        mapping, mdl::Morphs(model)[j])) {
                                     mapping.mappedIndex = j;
                                     break;
                                 }
@@ -1668,15 +1682,15 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, pmm_io::Input& input,
                         NameMapping& mapping = boneMappings[i];
                         mapping.mappedIndex = i;
                         if (workspace.displayCount == reloadedModel->boneCount) {
-                            if (strcmp(mapping.name,
-                                       mdl::Bones(model)[i].name) != 0) {
+                            if (!NameMappingMatches(mapping,
+                                                    mdl::Bones(model)[i])) {
                                 workspace.displaysMatch = 0;
                                 mapping.mappedIndex = -1;
                                 for (std::int32_t j = 0;
                                      j < static_cast<std::int32_t>(
                                              reloadedModel->boneCount); ++j)
-                                    if (strcmp(mapping.name,
-                                               mdl::Bones(model)[j].name) == 0) {
+                                    if (NameMappingMatches(
+                                            mapping, mdl::Bones(model)[j])) {
                                         mapping.mappedIndex = j;
                                         break;
                                     }
@@ -1686,8 +1700,8 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, pmm_io::Input& input,
                             for (std::int32_t j = 0;
                                  j < static_cast<std::int32_t>(
                                          reloadedModel->boneCount); ++j)
-                                if (strcmp(mapping.name,
-                                           mdl::Bones(model)[j].name) == 0) {
+                                if (NameMappingMatches(
+                                        mapping, mdl::Bones(model)[j])) {
                                     mapping.mappedIndex = j;
                                     break;
                                 }
@@ -1701,15 +1715,15 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, pmm_io::Input& input,
                         NameMapping& mapping = morphMappings[i];
                         mapping.mappedIndex = i;
                         if (workspace.morphCount == reloadedModel->morphCount) {
-                            if (strcmp(mapping.name,
-                                       mdl::Morphs(model)[i].name) != 0) {
+                            if (!NameMappingMatches(mapping,
+                                                    mdl::Morphs(model)[i])) {
                                 workspace.morphsMatch = 0;
                                 mapping.mappedIndex = -1;
                                 for (std::int32_t j = 0;
                                      j < static_cast<std::int32_t>(
                                              reloadedModel->morphCount); ++j)
-                                    if (strcmp(mapping.name,
-                                               mdl::Morphs(model)[j].name) == 0) {
+                                    if (NameMappingMatches(
+                                            mapping, mdl::Morphs(model)[j])) {
                                         mapping.mappedIndex = j;
                                         break;
                                     }
@@ -1719,8 +1733,8 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, pmm_io::Input& input,
                             for (std::int32_t j = 0;
                                  j < static_cast<std::int32_t>(
                                          reloadedModel->morphCount); ++j)
-                                if (strcmp(mapping.name,
-                                           mdl::Morphs(model)[j].name) == 0) {
+                                if (NameMappingMatches(
+                                        mapping, mdl::Morphs(model)[j])) {
                                     mapping.mappedIndex = j;
                                     break;
                                 }
