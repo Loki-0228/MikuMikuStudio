@@ -797,6 +797,8 @@ void ModelCommentRoundtrip(MMDApp& app, const std::filesystem::path& directory) 
     std::puts("PASS real model PMM Unicode comments, source reload and save-as");
 }
 
+#include "model_source_save_host_checks.inc"
+
 int wmain(int argc, wchar_t** argv) {
     if(argc>=2 && wcscmp(argv[1],L"--metadata-only")==0) {
         if(argc!=2)return 2;
@@ -808,7 +810,10 @@ int wmain(int argc, wchar_t** argv) {
     if (argc < 2 || argc > 4) return 2;
     const bool capacityOnly = argc == 4 && wcscmp(argv[3], L"--key-capacity") == 0;
     const bool commentsOnly = argc == 4 && wcscmp(argv[3], L"--model-comments") == 0;
-    if (argc == 4 && !capacityOnly && !commentsOnly) return 2;
+    const bool sourceAll = argc == 4 && wcscmp(argv[3], L"--model-source-all") == 0;
+    const bool sourceExplicit = argc == 4 && wcscmp(argv[3], L"--model-source-explicit") == 0;
+    const bool sourceOrdinary = argc == 4 && wcscmp(argv[3], L"--model-source-ordinary") == 0;
+    if (argc == 4 && !capacityOnly && !commentsOnly && !sourceAll && !sourceExplicit && !sourceOrdinary) return 2;
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     SetWindowsHookExW(WH_CBT,[](int code,WPARAM wp,LPARAM lp)->LRESULT {
         if(code==HCBT_ACTIVATE){
@@ -839,6 +844,15 @@ int wmain(int argc, wchar_t** argv) {
     app->state = MMDAppState{}; app->InitDefaults();
     Check(InitMainWindowAndD3D(app, GetModuleHandleW(nullptr), SW_HIDE), "initialize hidden production app");
     ShowWindow(app->MainWindow(), SW_HIDE);
+#if !MMD_ORIGINAL_PROFILE
+    if (sourceAll || sourceExplicit || sourceOrdinary) {
+        LoadModelFile(app, argv[2], false);
+        Check(app->ModelSlot(0) != nullptr, "source-save cohort loads its real standard PMD fixture");
+        model_source_save_host::Run(*app, directory, sourceOrdinary ? -1 : sourceExplicit ? 1 : 0);
+        ShutdownCleanup(app); delete app; g_Block = nullptr;
+        return 0;
+    }
+#endif
     if(pmxBoundary || measuredNames) {
         MeasuredNameBoundariesRoundtrip(*app,directory);
         if(pmxBoundary) {

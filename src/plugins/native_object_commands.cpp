@@ -7,6 +7,8 @@
 #include "native_audio_history.hpp"
 #include "native_morph_commands.hpp"
 #include "native_model_names.hpp"
+#include "native_model_source.hpp"
+#include "../window/enhanced_model_save.hpp"
 #include "native_pose_scope.hpp"
 #include "history_runtime.hpp"
 #include "scene_object_history.hpp"
@@ -30,9 +32,13 @@
 #include "mikumikustudio/ui_translation.hpp"
 #include "mikumikustudio/update_coordinator.hpp"
 #include <commctrl.h>
+#include <commdlg.h>
 #include <array>
 #include <cstdio>
 #include <optional>
+#include <cwchar>
+#include <cstring>
+#include <string>
 
 namespace mikumikustudio { INT_PTR __stdcall AccessorySettingsDlgProc(HWND, UINT, WPARAM, LPARAM); }
 namespace mikumikustudio::plugins {
@@ -136,6 +142,11 @@ public:
         } catch (...) { Release(); throw; }
     }
     ~Operation() { Release(); }
+    bool ClosingRequested() const noexcept {
+        for (const auto& item : windows_)
+            if (item.close || !IsWindow(item.handle)) return true;
+        return false;
+    }
     Operation(const Operation&) = delete;
     Operation& operator=(const Operation&) = delete;
 };
@@ -411,6 +422,157 @@ bool TryDeleteBoundModel(MMDApp* app, HWND window) noexcept { return TryDelete(a
 bool TryDeleteBoundAccessory(MMDApp* app, HWND window) noexcept { return TryDelete(app, window, false); }
 bool TryImportBoundModel(MMDApp* app, const wchar_t* path, bool showInfo) noexcept { return TryImport(app, path, true, showInfo); }
 bool TryImportBoundAccessory(MMDApp* app, const wchar_t* path) noexcept { return TryImport(app, path, false, false); }
+namespace {
+struct ModelSaveValidation {
+    MMDApp& app;
+    Operation& operation;
+    NativeModelSourcePlan& plan;
+    const unsigned slot;
+    const unsigned cameraMode;
+    bool Current() const noexcept {
+        return !operation.ClosingRequested() && g_Block == &app &&
+            app.SelectedModelSlot() == slot && app.CameraMode() == cameraMode &&
+            app.SelectedModel() == plan.Object() && plan.IsCurrent();
+    }
+    static bool BeforeFilePublish(void* context) noexcept {
+        auto& self = *static_cast<ModelSaveValidation*>(context);
+        // Trusted read-only validation only. Never extend this authorization
+        // across serialization, the file dialog or a third-party I/O hook.
+        Publication authorized(self.operation);
+        return self.Current();
+    }
+};
+bool SaveEnhancedModelRoute(MMDApp* app, HWND window, const wchar_t* suppliedPath, bool fileDialog) noexcept {
+    static thread_local bool active = false;
+    if (active) return true;
+    bool fileWritten = false;
+    DWORD writeError = ERROR_SUCCESS;
+    struct Active { bool& flag; explicit Active(bool& f) : flag(f) { flag = true; } ~Active() { flag = false; } } activeScope(active);
+    const auto result = Boundary([&]() -> MmsResult {
+        if (!app || g_Block != app || !Ready(*app, true) || EditorsOpen(*app) || !app->SelectedModel()) return MMS_E_BUSY;
+        if (window != app->MainWindow() && window != app->FloatingWindow()) return MMS_E_ARGUMENT;
+        const auto slot = app->SelectedModelSlot();
+        const auto cameraMode = unsigned(app->CameraMode());
+        NativeModelSourcePlan plan;
+        if (const auto r = plan.Begin(*app, slot)) return r;
+        auto* const history = plan.Journal();
+        Operation operation(*app, Operation::Mode::Lightweight);
+        ModelSaveValidation validation{*app, operation, plan, slot, cameraMode};
+        std::array<wchar_t, 256> path{};
+        if (fileDialog) {
+            app->state.dialogFlags[12] = 1;
+            app->state.enterKeyState = 1;
+            const bool remember = (GetMenuState(GetMenu(window), 0x12d, MF_BYCOMMAND) & MF_CHECKED) != 0;
+            const auto* base = remember ? app->DirModel() : app->ExeDir();
+            const auto length = wcsnlen_s(base, 256);
+            if (length == 256) return MMS_E_NOT_READY;
+            std::wstring directory(base, length);
+            if (!remember) {
+                if (!directory.empty() && directory.back() != L'\\' && directory.back() != L'/') directory.push_back(L'\\');
+                directory += L"UserFile\\Model";
+            }
+            OPENFILENAMEW dialog{};
+            dialog.lStructSize = sizeof(dialog); dialog.hwndOwner = window;
+            dialog.lpstrFilter = L"Polygon Model files(*.pmd)\0*.pmd\0All Files(*.*)\0*.*\0\0";
+            dialog.lpstrFile = path.data(); dialog.nMaxFile = DWORD(path.size());
+            dialog.nFilterIndex = 1; dialog.lpstrDefExt = L"pmd";
+            dialog.lpstrInitialDir = directory.c_str();
+            dialog.lpstrTitle = app->EnglishUI() ? L"save enhanced model" : L"拡張モデル保存";
+            dialog.Flags = OFN_OVERWRITEPROMPT | OFN_HIDEREADONLY | OFN_NOCHANGEDIR;
+            if (!GetUiSaveFileNameW(&dialog)) return CommDlgExtendedError() ? MMS_E_FAILED : MMS_OK;
+            if (wcsnlen_s(path.data(), path.size()) == path.size()) return MMS_E_ARGUMENT;
+            if (remember) {
+                std::array<wchar_t, kPathFieldCapacity> selectedDirectory{};
+                CopyDirPathW(app->DirModel(), ExtractDirFromPath(selectedDirectory.data(), path.data(), selectedDirectory.size()));
+            }
+        } else {
+            if (!suppliedPath) return MMS_E_ARGUMENT;
+            const auto length = wcsnlen_s(suppliedPath, path.size());
+            if (!length || length == path.size()) return MMS_E_ARGUMENT;
+            std::memcpy(path.data(), suppliedPath, (length + 1) * sizeof(wchar_t));
+        }
+        std::shared_ptr<HistoryChange> change;
+        std::unique_ptr<SharedHistory::NativeTransaction> transaction;
+        std::unique_ptr<PreparedHistoryChange> unrecorded;
+        {
+            Publication authorized(operation);
+            if (!validation.Current()) return MMS_E_STALE;
+            if (const auto r = plan.Set(path.data())) return r;
+            if (const auto r = plan.Take(change)) return r;
+            if (change) {
+                if (history) {
+                    if (const auto r = history->PrepareNative("Save enhanced model source", change, transaction,
+                        SharedHistory::NativeIntent::ExplicitCommit)) return r;
+                } else {
+                    if (auto* permission = plan.PermissionHistory())
+                        if (const auto r = permission->CheckNativeEdit()) return r;
+                    if (const auto r = change->Prepare(true, unrecorded)) return r;
+                    if (!unrecorded || !unrecorded->IsCurrent()) return MMS_E_STALE;
+                }
+            }
+        }
+        const auto written = WriteEnhancedModelPmd(app, plan.Object(), path.data(),
+            {&validation, ModelSaveValidation::BeforeFilePublish, true});
+        writeError = GetLastError();
+        if (written == EnhancedPmdWriteResult::SourceChanged) return MMS_E_STALE;
+        if (written != EnhancedPmdWriteResult::Written) return MMS_E_FAILED;
+        fileWritten = true;
+        {
+            Publication authorized(operation);
+            if (!validation.Current()) return MMS_E_STALE;
+            if (!change) return MMS_OK; // still wrote the file, kept redo and every path-tail byte
+            if (history) {
+                if (const auto r = history->CommitNative(std::move(transaction))) return r;
+            } else {
+                if (auto* permission = plan.PermissionHistory())
+                    if (const auto r = permission->CheckNativeEdit()) return r;
+                if (!unrecorded->IsCurrent()) return MMS_E_STALE;
+                unrecorded->Publish();
+            }
+        }
+        if (history) PublishBoundHistoryEffects(*app, *history, history->LastPublicationEffects(), false);
+        else { app->SceneModified() = 1; app->RecordedFrameCountByte1() = 1; }
+        return MMS_OK;
+    });
+    // All reservations and model guards have been released before modal error
+    // reporting. A file is external output: never delete or re-export it to
+    // disguise a refused final journal commit, or switch a later selection.
+    if (result != MMS_OK) {
+        runtime_log::Write("PLUGIN_ABI enhanced model save refused: %d fileWritten=%u writeError=%lu",
+            result, unsigned(fileWritten), writeError);
+        if (app && IsWindow(app->MainWindow())) {
+            const unsigned language = app->EnglishUI() <= 2 ? app->EnglishUI() : 1;
+            const wchar_t* saved[] = {
+                L"モデルファイルは保存されましたが、プロジェクトの参照元を切り替えられませんでした。保存ファイルは保持されています。",
+                L"The model file was saved, but the project source could not be switched. The saved file has been kept.",
+                L"模型文件已保存，但工程来源未能切换。已保留保存的文件。"};
+            const wchar_t* failed[] = {
+                L"モデルの保存を完了できませんでした。プロジェクトの参照元は変更していません。",
+                L"The model save could not be completed. The project source was not changed.",
+                L"模型保存未能完成，工程来源未改变。"};
+            MessageBoxW(app->MainWindow(), (fileWritten ? saved : failed)[language], L"PMD", MB_OK | MB_ICONERROR);
+        }
+    }
+    return true;
+}
+}
+bool TrySaveEnhancedModelDialog(MMDApp* app, HWND window) noexcept {
+    return SaveEnhancedModelRoute(app, window, nullptr, true);
+}
+bool TrySaveBoundEnhancedModel(MMDApp* app, const wchar_t* path) noexcept {
+    if (!app) return false;
+    if (NativeObjectOperationActive(app)) return true;
+    if (!BoundNativePoseHistory(app)) {
+        // Keep the no-window/direct legacy writer, but never use the missing
+        // migration binding as a way around a real Manager edit gate.
+        if (auto* permission = NativeHistory(app)) {
+            const auto r = Boundary([&] { return permission->CheckNativeEdit(); });
+            if (r) { runtime_log::Write("PLUGIN_ABI direct model save refused: %d", r); return true; }
+        }
+        return false;
+    }
+    return SaveEnhancedModelRoute(app, app->MainWindow(), path, false);
+}
 bool BoundAccessorySettingsDialog(const MMDApp* app, HWND dialog) noexcept {
     return accessorySettings && &accessorySettings->app == app && accessorySettings->dialog == dialog &&
         NativeObjectOperationActive(app) && !NativeObjectPublicationAuthorized(app);

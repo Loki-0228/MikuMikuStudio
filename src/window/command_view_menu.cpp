@@ -2184,6 +2184,10 @@ void CmdViewMenu(MMDApp* app, HWND hwnd, std::uint16_t id,
     // copies the directory into DirModel, then sub_41EC10 saves the file.
     // ------------------------------------------------------------------
     case 263: {
+#if !MMD_ORIGINAL_PROFILE
+        plugins::TrySaveEnhancedModelDialog(app, hwnd);
+        return;
+#else
         app->state.dialogFlags[12] = 1;
         app->state.enterKeyState = 1;
         SetCurrentDirectoryW(app->ExeDir());
@@ -2221,6 +2225,7 @@ void CmdViewMenu(MMDApp* app, HWND hwnd, std::uint16_t id,
         }
         SaveEnhancedModel(app, fileBuf);                     // 0x41EC10
         return;
+#endif
     }
 
     // ------------------------------------------------------------------

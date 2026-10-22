@@ -12,6 +12,10 @@
 #include "mikumikustudio/frame_rate_correction.hpp"
 #include "mikumikustudio/sequence_scatter.hpp"
 #include "viewport_corner_menu.hpp"
+#include "enhanced_model_save.hpp"
+#if !MMD_ORIGINAL_PROFILE
+#include "../plugins/native_object_commands.hpp"
+#endif
 // ===========================================================================
 // Enhance-model IO: toon collect (0x41EA20), save model (0x41EC10), model colour (0x4A4850)
 // ===========================================================================
@@ -111,6 +115,7 @@ class PmdOutput final {
     int file_ = -1;
     wchar_t destination_[MAX_PATH]{}, temporary_[MAX_PATH]{};
     bool failed_ = false;
+    bool sourceChanged_ = false;
 public:
     PmdOutput() = default;
     PmdOutput(const PmdOutput&) = delete;
@@ -140,12 +145,19 @@ public:
         if (written < 0 || static_cast<unsigned>(written) != count) failed_ = true;
         return written;
     }
-    bool Publish() noexcept {
+    bool SourceChanged() const noexcept { return sourceChanged_; }
+    bool Publish(const EnhancedPmdPublishCheck& check) noexcept {
         if (file_ == -1) return false;
         if (::_commit(file_) != 0) failed_ = true;
         if (::_close(file_) != 0) failed_ = true;
         file_ = -1;
-        if (failed_ || !MoveFileExW(temporary_, destination_,
+        if (failed_) return false;
+        if (check.current && !check.current(check.context)) {
+            sourceChanged_ = true;
+            SetLastError(ERROR_CANCELLED);
+            return false;
+        }
+        if (!MoveFileExW(temporary_, destination_,
                 MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) return false;
         *temporary_ = L'\0';
         return true;
@@ -422,25 +434,27 @@ int CollectToonFileNames(HWND hDlg) {  // was Sub41EA20, VA 0x0041EA20
 // vertices, every morph-0 entry OVERWRITES (not adds to) the raw vertex
 // position with its offset.  The full profile computes those positions in a
 // private copy instead, so it leaves the source raw vertices and their
-// cache untouched.  Either way a successful save records the exported model
-// as the new source in model->path, which PMM save reads back.
+// cache untouched. The caller publishes the successful source-path change,
+// which subsequent PMM saves read back.
 // ===========================================================================
-void SaveEnhancedModel(MMDApp* app, const wchar_t* path) {  // was Sub41EC10, 0x41EC10
+EnhancedPmdWriteResult WriteEnhancedModelPmd(MMDApp* app, unsigned char* object,
+    const wchar_t* path, const EnhancedPmdPublishCheck& check) {
+    const auto refuse = [&](PmdRefusal reason) { RefusePmd(check.deferErrors ? nullptr : app, reason); };
     try {
-    if (!app || !app->SelectedModel() || !path || !*path || wcsnlen_s(path, 256) == 256) {
-        RefusePmd(app, PmdRefusal::Representation);
-        return;
+    if (!app || !object || !path || !*path || wcsnlen_s(path, 256) == 256) {
+        refuse(PmdRefusal::Representation);
+        return EnhancedPmdWriteResult::Refused;
     }
-    mdl::ModelRecord& model = *mdl::Mdl(app->SelectedModel());
+    mdl::ModelRecord& model = *mdl::Mdl(object);
 #if MMD_ORIGINAL_PROFILE
     if (mdl::DisplayGroupCount(model)>255 || mdl::FacialFrameCount(model)>255) {
-        RefusePmd(app,PmdRefusal::Representation);return;
+        refuse(PmdRefusal::Representation);return EnhancedPmdWriteResult::Refused;
     }
 #else
     if (!save_compatibility::CanSavePmd(model)) {
         const wchar_t* message = L"PMD 无法无损保存这些名称或显示项，操作已取消。请保留原模型并保存 PMM 工程。\nPMD cannot preserve these names or display entries. Keep the source model and save a PMM project.";
-        if(app->MainWindow())MessageBoxW(app->MainWindow(), message, L"PMD", MB_OK | MB_ICONWARNING);
-        SetLastError(ERROR_INVALID_DATA);return;
+        if(!check.deferErrors && app->MainWindow())MessageBoxW(app->MainWindow(), message, L"PMD", MB_OK | MB_ICONWARNING);
+        SetLastError(ERROR_INVALID_DATA);return EnhancedPmdWriteResult::Refused;
     }
 #endif
     D3DRenderer* renderer = app->Renderer();
@@ -448,29 +462,29 @@ void SaveEnhancedModel(MMDApp* app, const wchar_t* path) {  // was Sub41EC10, 0x
 #if MMD_ORIGINAL_PROFILE
     std::vector<std::array<char, 20>> textureNames;
     if (!PrepareOriginalPmd(model, textureNames)) {
-        RefusePmd(app, PmdRefusal::Representation);
-        return;
+        refuse(PmdRefusal::Representation);
+        return EnhancedPmdWriteResult::Refused;
     }
 #else
     // Full profile: collect the positions the original profile would have
     // written into rawVertices, but keep them in private storage so the
-    // source vertices and their cache stay untouched.  The exported model
-    // still becomes the new source after a successful publish (see below).
+    // source vertices and their cache stay untouched. The caller switches
+    // the source only after a successful file publication.
     // Nothing is allocated when there is no morph-0 to apply.
     std::vector<std::array<float, 3>> exportPositions;
     if (model.vertexCount != 0 && model.rawVertices == nullptr) {
-        RefusePmd(app, PmdRefusal::Representation);
-        return;
+        refuse(PmdRefusal::Representation);
+        return EnhancedPmdWriteResult::Refused;
     }
     if (model.morphs != nullptr && model.morph0Count != 0) {
         if (model.morph0Table == nullptr) {
-            RefusePmd(app, PmdRefusal::Representation);
-            return;
+            refuse(PmdRefusal::Representation);
+            return EnhancedPmdWriteResult::Refused;
         }
         for (std::uint32_t k = 0; k < model.morph0Count; ++k) {
             if (model.morph0Table[k].vertexIndex >= model.vertexCount) {
-                RefusePmd(app, PmdRefusal::Representation);
-                return;
+                refuse(PmdRefusal::Representation);
+                return EnhancedPmdWriteResult::Refused;
             }
         }
         // Copy the original positions, then apply morph 0 in table order;
@@ -493,8 +507,8 @@ void SaveEnhancedModel(MMDApp* app, const wchar_t* path) {  // was Sub41EC10, 0x
     // name, short write, or failed replacement must leave the old file intact.
     PmdOutput output;
     if (!output.Open(path)) {
-        RefusePmd(app, PmdRefusal::Write);
-        return;
+        refuse(PmdRefusal::Write);
+        return EnhancedPmdWriteResult::Refused;
     }
     const int fh = output.Descriptor();
     const auto _write = [&](int descriptor, const void* bytes, unsigned count) {
@@ -735,16 +749,25 @@ void SaveEnhancedModel(MMDApp* app, const wchar_t* path) {  // was Sub41EC10, 0x
         _write(fh, joint.springs, 24);
     }
 
-    if (!output.Publish()) {
-        RefusePmd(app, PmdRefusal::Write);
-        return;
+    if (!output.Publish(check)) {
+        if (output.SourceChanged()) return EnhancedPmdWriteResult::SourceChanged;
+        refuse(PmdRefusal::Write);
+        return EnhancedPmdWriteResult::Refused;
     }
-    // Both profiles record the exported model as the new source; PMM save
-    // reads model.path back, so even a full-profile export must update it.
-    wcscpy_s(model.path, 0x100, path);
+    return EnhancedPmdWriteResult::Written;
     } catch (const std::bad_alloc&) {
-        RefusePmd(app, PmdRefusal::Write);
+        refuse(PmdRefusal::Write);
+        return EnhancedPmdWriteResult::Refused;
     }
+}
+
+void SaveEnhancedModel(MMDApp* app, const wchar_t* path) {  // was Sub41EC10, 0x41EC10
+#if !MMD_ORIGINAL_PROFILE
+    if (plugins::TrySaveBoundEnhancedModel(app, path)) return;
+#endif
+    auto* const object = app ? app->SelectedModel() : nullptr;
+    if (WriteEnhancedModelPmd(app, object, path) == EnhancedPmdWriteResult::Written)
+        wcscpy_s(mdl::Mdl(object)->path, 0x100, path);
 }
 
 // ===========================================================================

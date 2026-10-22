@@ -667,9 +667,9 @@ void CommandDispatch(HWND ctrl, WPARAM wParam) {
             CmdFileMenu(app, hwnd, id, notification);
         } else if (id >= 251 && id <= 311) {  // includes model-language settings
 #if !MMD_ORIGINAL_PROFILE
-            // Reloading renderer resources owns its refresh effects. Even a
-            // refused or cancelled reload is not a curve-data change.
-            if (id == 278) curveSync.enabled = false;
+            // Model source saving and texture reload own their refresh effects.
+            // Refusal and cancellation likewise do not change curve data.
+            if (id == 263 || id == 278) curveSync.enabled = false;
 #endif
             CmdViewMenu(app, hwnd, id, notification);
         } else if (id >= 400 && id <= 449) {
