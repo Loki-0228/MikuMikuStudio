@@ -502,7 +502,12 @@ void PoseAxisPreparedDraftChecks() {
         }
 }
 }
+#include "native_pose_physics_readout_checks.inc"
 void NativePoseAxisChecks() {
+    wchar_t desktop[128]{}; DWORD desktopBytes = 0;
+    Check(GetUserObjectInformationW(GetThreadDesktop(GetCurrentThreadId()), UOI_NAME,
+        desktop, sizeof desktop, &desktopBytes) && !_wcsicmp(desktop, L"Default"),
+        "pose-axis fixture runs only on the inherited Default desktop");
     std::puts("RUN PoseAxisPositionChecks"); PoseAxisPositionChecks();
     std::puts("RUN PoseAxisRotationChecks"); PoseAxisRotationChecks();
     std::puts("RUN PoseAxisScaleChecks"); PoseAxisScaleChecks();
@@ -513,4 +518,6 @@ void NativePoseAxisChecks() {
     std::puts("RUN PoseAxisRejectedDraftChecks"); PoseAxisRejectedDraftChecks();
     std::puts("RUN PoseAxisDraftReadoutFailureChecks"); PoseAxisDraftReadoutFailureChecks();
     std::puts("RUN PoseAxisPreparedDraftChecks"); PoseAxisPreparedDraftChecks();
+    std::puts("RUN PosePhysicsPureReadoutChecks"); PosePhysicsPureReadoutChecks();
+    std::puts("RUN PosePhysicsResetDraftChecks"); PosePhysicsResetDraftChecks();
 }

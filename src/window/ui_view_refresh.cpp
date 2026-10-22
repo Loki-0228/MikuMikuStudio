@@ -232,7 +232,12 @@ void PostViewRefresh(MMDApp* app) {
         &mikumikustudio::mdl::Bones(model)[boneIdx];
     const float* display;
     const float* quat;
-    if (((app->PlaybackPhysicsMode() == 3) &                 // 0x40D417
+    // A nonzero bonePhysicsState byte marks a bone being edited; its live
+    // trans/rotQuat then win over the physics backup. Keep the backup read for
+    // unedited physics bones and when the flag array is absent.
+    const auto* edited = mdl::Mdl(model)->bonePhysicsState;
+    if ((edited == nullptr || edited[boneIdx] == 0) &&
+        ((app->PlaybackPhysicsMode() == 3) &                 // 0x40D417
          (*reinterpret_cast<unsigned char*>(&bone->hasRigidBody) != 0)) != 0) {
         // rotation-mode layout
         display = reinterpret_cast<const float*>(bone->ikBackup);  // +0x18C/+0x190

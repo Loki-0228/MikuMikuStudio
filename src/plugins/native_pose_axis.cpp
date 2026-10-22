@@ -40,7 +40,11 @@ void ReplacePositionDraft(MMDApp& app, int axis) noexcept {
         if (!record || !record->boneTable || record->selectedBone < 0 ||
             unsigned(record->selectedBone) >= record->boneCount) return;
         const auto& bone = record->boneTable[record->selectedBone];
-        const float* display = app.PlaybackPhysicsMode() == 3 && bone.hasRigidBody ? bone.ikBackup : bone.trans;
+        // Same null-safe edited check as PostViewRefresh: a nonzero
+        // bonePhysicsState byte shows the live trans, not the physics backup.
+        const auto* edited = record->bonePhysicsState;
+        const float* display = (edited == nullptr || edited[record->selectedBone] == 0) &&
+            app.PlaybackPhysicsMode() == 3 && bone.hasRigidBody ? bone.ikBackup : bone.trans;
         value = display[axis] + BoneParentBindOffset(model, record->selectedBone, axis);
     }
     if (!std::isfinite(value)) return;

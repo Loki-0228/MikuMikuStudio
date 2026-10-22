@@ -12,6 +12,10 @@
 
 专项调用真实启动缓存选择和 CPU 蒙皮，受控 COM 设备拒绝首个校准缓冲申请，覆盖本地缺失、损坏、占位、有效命中和旧缓存不迁移。没有 GPU 枚举或硬件测速；不覆盖完整测量结果写盘失败、驱动重映射或 Win7／AMD 真机。它不替代 `hardware-manual` 的 `skinning_backend_tests`。运行范围及两次集成失败见[校准缓存记录](../docs/records/abi-calibration-data-2026-10-23.md)。
 
+## 物理骨骼读数回归
+
+`native_edit_history_tests --pose-axis-only` 包含主／分离面板的实际位置与旋转读数、物理备份和作者姿态切换、两种历史模式的重置草稿、失焦及撤销重做。新增用例在非单位缩放尚未应用时验证真实刷新保护条件，确保后续刷新不能掩盖文本回填错误。该入口要求继承 Default 桌面，仅操作自有隐藏窗口；不要用默认历史全集代替专项。相邻数值编辑使用 `--pose-numeric-only`。实际失败反例及平台范围见[物理读数记录](../docs/records/abi-pose-physics-readout-2026-10-23.md)。
+
 ## 曲线、备份及崩溃日志回归
 
 `--subdivision-geometry-safe` 与 `--subdivision-writer-copy-safe` 分别验证同会话尺寸变化和晚期写入复制。两项均使用自身窗口，先验证正常写入，再验证失败保留 redo，并检查正文开始后的尺寸变化不会重复写入；也已纳入默认全集。两配置各通过 36,281 项全集，范围和失败记录见[插帧几何记录](../docs/records/abi-curve-insertion-geometry-2026-10-22.md)。

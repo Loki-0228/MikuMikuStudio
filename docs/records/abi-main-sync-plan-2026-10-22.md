@@ -86,7 +86,9 @@ main `negative_frames.cpp` 的 `State` 自建最多 30 步 undo/redo，按当前
 
 ### 物理模式下的编辑读数
 
-当骨骼带刚体、`PlaybackPhysicsMode()==3` 且 `bonePhysicsState[bone]!=0` 时，main 的 `PostViewRefresh` 已改为显示编辑后的 `trans/rotQuat`。ABI [ui_view_refresh.cpp](../../src/window/ui_view_refresh.cpp) 仍只判断物理模式和刚体属性，继续读取 `ikBackup`。ABI 自有的 [native_pose_axis.cpp](../../src/plugins/native_pose_axis.cpp) 中 `ReplacePositionDraft` 也使用同一旧判断。因此，修改或清零骨骼后，面板仍可能显示旧物理姿态。
+本项后续已按[物理骨骼读数记录](abi-pose-physics-readout-2026-10-23.md)实现，两处旧代码分别触发失败反例，最终轴专项 3,218 项和数值回归 310 项通过。以下保留迁移前问题说明；它不代表后续重置语义和草稿问题已经完成。
+
+当骨骼带刚体、`PlaybackPhysicsMode()==3` 且 `bonePhysicsState[bone]!=0` 时，main 的 `PostViewRefresh` 已改为显示编辑后的 `trans/rotQuat`。迁移前 ABI [ui_view_refresh.cpp](../../src/window/ui_view_refresh.cpp) 只判断物理模式和刚体属性，继续读取 `ikBackup`。ABI 自有的 [native_pose_axis.cpp](../../src/plugins/native_pose_axis.cpp) 中 `ReplacePositionDraft` 也使用同一旧判断。因此，修改或清零骨骼后，面板仍可能显示旧物理姿态。
 
 最小适配是统一这两处读数来源：只有未标记编辑的骨骼才显示物理备份，已编辑骨骼显示当前作者姿态。修改不得新增撤销记录或写关键帧。专项用例可扩展 [native_pose_axis_checks.inc](../../tests/native_pose_axis_checks.inc) 与 [native_pose_numeric_checks.inc](../../tests/native_pose_numeric_checks.inc)，通过现有 `native_edit_history_tests --pose-axis-only` 和 `--pose-numeric-only` 入口检查主窗口、分离窗口、位置、旋转、刚体标记、物理模式及编辑标记的组合。
 
@@ -97,6 +99,12 @@ ABI 的位置轴重置已经在成功后调用 `ReplacePositionDraft`，但 `Try
 [command_control_450.cpp](../../src/window/command_control_450.cpp) 的 `ApplyBoundPoseCommand` 整体重置也没有 main 新增的六个坐标框草稿清理。未绑定共同历史的 `BoneRotEdit` 和分离窗口旋转路径，分别在 [command_control_500.cpp](../../src/window/command_control_500.cpp) 与 [wndproc_stubs.cpp](../../src/window/wndproc_stubs.cpp)，也缺少 main 对旋转修改标志的清理。
 
 ABI 适配必须在事务成功后取消重置影响的草稿，不能直接复制 main 在操作前清除 `EM_SETMODIFY` 的顺序。忙碌、预算不足和准备失败应保留原草稿。成功的数据 no-op 也应取消目标草稿，同时保留 redo、不新增历史。其他输入框中未提交的内容继续保留。现有位置草稿测试已经覆盖这些边界，可在 `--pose-axis-only` 中补旋转用例；整体重置需要下面的独立命令测试入口。验收包括实际失焦提交，不能只检查清零瞬间的内存值。
+
+后续静态核对确认，`RefreshBoundPoseReadout` 在非单位缩放尚未应用时会跳过 `PostViewRefresh`，连同 `BoneRotationEditDegreesX/Y/Z` 一并不更新。旋转重置收尾需要纯四元数／矩阵读数辅助函数，保持现有主窗口和分离窗口的浮点运算顺序；不能为刷新角度强制求值或安装缩放变换。目标及数学准备在事务前完成，派生缓存与目标草稿只在提交成功并重新确认对象、绑定和窗口身份后更新。其他轴草稿继续保留。
+
+菜单 302 的单位旋转 no-op 和整体 495 的 anyChange=false 路径还须在取消草稿前检查共同历史导航及编辑门禁，防止在另一个已准备事务期间修改输入。整体 495 只取消本次实际影响且当前显示骨骼的位置、旋转和缩放九个框；空选择或显示骨骼不在选中集合时不取消草稿。增强版未绑定共同历史的旧入口也须单独适配和验收。
+
+物理骨骼显式重置接管属于另一项真实行为差异。main 的合法重置会写 `bonePhysicsState=1`；ABI 当前作者值已零的 no-op 会保留 dirty=0，此时 mode 3 刚体骨骼仍显示物理备份。同步该行为应把正在使用物理备份的骨骼从 dirty=0 改为 1 纳入同一姿态事务，不能在显示刷新或事务之外补写标记，也不能静默丢弃 redo。普通非物理骨骼的重复零位仍按既有 no-op 约定处理。失败保留标记、备份、草稿及重做；撤销恢复物理读数，重做恢复作者读数。接管影响整根骨骼，必须验证其他分量的读数切换。详细静态方案保存在本批证据目录 `reset-followup-design.md`，尚未实现或运行此项。
 
 ### 整体骨骼重置的目标姿态
 
