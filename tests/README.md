@@ -16,6 +16,8 @@
 
 `native_edit_history_tests --pose-command-only` 运行完整 `NativePoseCommandChecks`，包括绑定 495 整体重置、497／498 粘贴、镜像粘贴和失败回滚。该入口检查 Default 桌面，只操作自有隐藏控件。495 增加九框真实草稿、失焦、两历史模式、无变化保留 redo、上下文重入及独立禁用控件哨兵；普通启动未绑定入口不在其通过范围。旧目标和旧草稿反例见[整体重置记录](../docs/records/abi-pose-reset-2026-10-23.md)。
 
+`native_edit_history_tests --legacy-pose-reset-only` 单独验证增强版未绑定 495、原 30 槽撤销环、九框真实失焦及普通 `plugins::Initialize`。运行前须将测试程序复制到独立安装目录，放置 `legacy-pose-reset-test-installation.txt`，内容须精确为 `MMS legacy pose reset test installation v1` 加 LF 换行；该目录的 `PLUGINS` 必须不存在或为空。入口继承 Default 桌面，只操作自有隐藏窗口，运行数据写入该安装的 `data`。真实数值提交使用 CPU/GDI 面板夹具，保留完整刷新路径。首次缩放状态的分配失败扫描上限为 512，覆盖 MSVC 空 map 的哨兵分配。结果、失败原因及旧实现反例见[普通重置记录](../docs/records/abi-legacy-pose-reset-2026-10-23.md)，不以此代替完整应用或真机验收。
+
 旋转草稿专项接入 `--pose-axis-only` 和 `--rotation-reset-only`，使用真实 EDIT、焦点转移和非单位未应用缩放，检查重置取消草稿及派生角同步。包含无变化保留 redo、失败保留草稿、拒绝文本写入和同步上下文切换；仅操作自有隐藏窗口，必须继承 Default 桌面。原计算精度检查保留，新增 helper 的预期值来自旧公式独立副本。当前绑定运行及未绑定边界见[旋转草稿记录](../docs/records/abi-rotation-drafts-2026-10-23.md)，不得用默认历史全集代替这两个入口。
 
 `native_edit_history_tests --pose-axis-only` 包含主／分离面板的实际位置与旋转读数、物理备份和作者姿态切换、两种历史模式的重置草稿、失焦及撤销重做。新增用例在非单位缩放尚未应用时验证真实刷新保护条件，确保后续刷新不能掩盖文本回填错误。该入口要求继承 Default 桌面，仅操作自有隐藏窗口；不要用默认历史全集代替专项。相邻数值编辑使用 `--pose-numeric-only`。实际失败反例及平台范围见[物理读数记录](../docs/records/abi-pose-physics-readout-2026-10-23.md)。

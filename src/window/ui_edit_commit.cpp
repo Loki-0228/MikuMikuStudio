@@ -761,6 +761,7 @@ LRESULT CALLBACK EditSubclassProc(HWND hWnd, UINT Msg, WPARAM wParam,
         // wParam is the next focus window, not the field being edited.
         // The typing is being committed: let the view refresh echo it back.
         bool boundPose=false;
+        bool shouldCommit=true;
 #if !MMD_ORIGINAL_PROFILE
         HWND base=app->FloatingWindow()?app->FloatingWindow():app->MainWindow();
         int kind=-1,axis=-1;
@@ -771,13 +772,22 @@ LRESULT CALLBACK EditSubclassProc(HWND hWnd, UINT Msg, WPARAM wParam,
         boundPose = boundPose || (plugins::BoundNativePoseHistory(app) && IsShadowNumber(app,hWnd));
         boundPose = boundPose || (plugins::BoundNativePoseHistory(app) && FindMorphNumber(app,hWnd)>=0);
         boundPose = boundPose || (plugins::BoundNativePoseHistory(app) && FindAccessoryNumber(app,hWnd)>=0);
+        // Without a bound history the legacy tail would rewrite the readout
+        // text and push a bone undo. A bone field whose modify flag is already
+        // clear (whole-skeleton reset dropped the draft) has nothing to commit.
+        // Read the flag here, before the legacy clear below consumes it. A
+        // real edit keeps the flag set and keeps the original commit.
+        if(!plugins::BoundNativePoseHistory(app) && !app->CameraMode() &&
+           FindPoseNumber(hWnd,base,kind,axis) &&
+           !SendMessageA(hWnd,EM_GETMODIFY,0,0))
+            shouldCommit=false;
 #endif
         // The bound pose route consumes this flag itself, before changing any
         // model state. Legacy controls retain their existing commit behavior.
         if(!boundPose)SendMessageA(hWnd, EM_SETMODIFY, FALSE, 0);
         // Recording hides/restores the editor while its text may still show
         // the pre-export frame. Those focus changes are not user edits.
-        if (app->FrameStepPlayback() == 0 &&
+        if (shouldCommit && app->FrameStepPlayback() == 0 &&
             app->state.recordPlaybackStartPending == 0)
             CommitEditControl(app, hWnd);
         if(boundPose)SendMessageA(hWnd, EM_SETMODIFY, FALSE, 0);

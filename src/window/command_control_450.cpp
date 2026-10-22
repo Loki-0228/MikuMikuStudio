@@ -133,6 +133,7 @@
 #include "mikumikustudio/bone_parent_coordinates.hpp"
 #include "mikumikustudio/native_edit_history.hpp"
 #include "mikumikustudio/plugin_scene.hpp"
+#include "mikumikustudio/update_coordinator.hpp"
 #include "../plugins/native_pose_scope.hpp"
 #include "../plugins/native_history_commands.hpp"
 #include "../plugins/native_object_commands.hpp"
@@ -288,6 +289,28 @@ bool PoseResetReady(MMDApp& app) noexcept {
         !app.GravitySettingDialog() && !app.GroundShadowColorDialog() && !app.AccessoryOrderArray() &&
         !app.state.accessoryEditDialogOpen && !plugins::NativeModelOutlineDialogBlocks(app);
 }
+// Legacy commands have no common-journal revision. Keep the actual ring
+// cursors, owned slot identities and scale revision across UI callbacks.
+struct PoseResetRingState {
+    std::array<mdl::UndoRing, 2> rings{};
+    std::array<std::uint32_t, 2> cursor{};
+    unsigned char undoDirty = 0, redoDirty = 0;
+    std::uint64_t scaleRevision = 0;
+    void Capture(const unsigned char* model) noexcept {
+        const auto& native = *mdl::Mdl(model);
+        std::memcpy(rings.data(), native.undoRings, sizeof(rings));
+        std::memcpy(cursor.data(), native.undoState, sizeof(cursor));
+        undoDirty = native.undoDirty; redoDirty = native.redoDirty;
+        scaleRevision = bone_scale::Revision(model);
+    }
+    bool Current(const unsigned char* model) const noexcept {
+        const auto& native = *mdl::Mdl(model);
+        return !std::memcmp(rings.data(), native.undoRings, sizeof(rings)) &&
+            !std::memcmp(cursor.data(), native.undoState, sizeof(cursor)) &&
+            native.undoDirty == undoDirty && native.redoDirty == redoDirty &&
+            bone_scale::Revision(model) == scaleRevision;
+    }
+};
 // Only the displayed, selected bone owns these nine drafts. The snapshot is
 // fixed-size so discarding a valid no-op draft does not need an allocation.
 struct PoseResetReadout {
@@ -296,6 +319,8 @@ struct PoseResetReadout {
         panel::kReadoutRotXEdit, panel::kReadoutRotYEdit, panel::kReadoutRotZEdit,
         panel::kReadoutScaleXEdit, panel::kReadoutScaleYEdit, panel::kReadoutScaleZEdit};
     plugins::SharedHistory* history = nullptr;
+    bool ready = false;
+    PoseResetRingState legacyRing;
     std::uint64_t binding = 0, revision = 0;
     MmsObjectRef object{};
     unsigned slot = 0, count = 0;
@@ -315,14 +340,20 @@ struct PoseResetReadout {
     bool HasParent() const noexcept {
         return parent >= 0 && unsigned(parent) < count && parent != bone;
     }
-    MmsResult Prepare(MMDApp& app, plugins::SharedHistory& journal) noexcept {
+    MmsResult Prepare(MMDApp& app, plugins::SharedHistory* journal) {
         model = app.SelectedModel(); const auto& record = *mdl::Mdl(model);
         bone = record.selectedBone;
         if (bone < 0 || unsigned(bone) >= record.boneCount || !record.boneSelection[bone]) return MMS_OK;
-        // A missing identity cannot authorize writes after a window callback.
-        // Do not create one (and allocate) merely to replace a no-op draft.
-        if (!plugins::FindSceneObjectIdentity(model, object)) return MMS_OK;
-        if (const auto result = journal.Revision(revision)) return result;
+        if (!plugins::FindSceneObjectIdentity(model, object)) {
+            // The ordinary runtime need not have exposed this model to a
+            // plugin yet. Establish identity before any authored/UI change.
+            // Bound migration retains its existing allocation-free refusal.
+            if (journal) return MMS_OK;
+            object = plugins::SceneObjectIdentity(model);
+        }
+        if (journal) {
+            if (const auto result = journal->Revision(revision)) return result;
+        } else legacyRing.Capture(model);
         slot = app.SelectedModelSlot(); frame = app.CurrentFrame(); count = record.boneCount;
         binding = plugins::BoundNativePoseGeneration(&app);
         bones = record.boneTable; flags = record.bonePhysicsState; selection = record.boneSelection;
@@ -341,20 +372,22 @@ struct PoseResetReadout {
         }
         owner = app.FloatingWindow() ? app.FloatingWindow() : app.MainWindow();
         for (std::size_t i = 0; i < ids.size(); ++i) edits[i] = GetDlgItem(owner, ids[i]);
-        history = &journal;
+        history = journal; ready = true;
         return MMS_OK;
     }
     bool Current(MMDApp& app, bool comparePose = true, bool compareRevision = true) const noexcept {
         // Check stable membership before following any captured native pointer.
-        if (!history || plugins::BoundNativePoseHistory(&app) != history ||
+        if (!ready || plugins::BoundNativePoseHistory(&app) != history ||
             plugins::BoundNativePoseGeneration(&app) != binding || app.CameraMode() ||
             app.SelectedModelSlot() != slot || app.CurrentFrame() != frame ||
             app.ModelSlot(slot) != model || !plugins::SceneObjectPresent(model, object.id)) return false;
         MmsObjectRef live{};
         if (!plugins::FindSceneObjectIdentity(model, live) || live.generation != object.generation) return false;
-        std::uint64_t now = 0;
-        if (history->Revision(now) != MMS_OK || (compareRevision && now != revision) ||
-            history->CheckNativeNavigation() != MMS_OK) return false;
+        if (history) {
+            std::uint64_t now = 0;
+            if (history->Revision(now) != MMS_OK || (compareRevision && now != revision) ||
+                history->CheckNativeNavigation() != MMS_OK) return false;
+        } else if (compareRevision && !legacyRing.Current(model)) return false;
         const auto& record = *mdl::Mdl(model);
         if (record.boneTable != bones || record.bonePhysicsState != flags || record.boneSelection != selection ||
             record.boneCount != count || record.selectedBone != bone || selection[bone] != selected ||
@@ -373,7 +406,9 @@ struct PoseResetReadout {
     }
     bool Seal(MMDApp& app) noexcept {
         if (!Current(app, false, false)) return false;
-        if (history->Revision(revision) != MMS_OK) return false;
+        if (history) {
+            if (history->Revision(revision) != MMS_OK) return false;
+        } else legacyRing.Capture(model);
         dirty = flags[bone]; scale = bone_scale::Pose(model, bone);
         std::memcpy(position.data(), bones[bone].trans, sizeof(position));
         std::memcpy(rotation.data(), bones[bone].rotQuat, sizeof(rotation));
@@ -421,7 +456,7 @@ MmsResult ApplyBoundPoseReset(MMDApp& app, plugins::SharedHistory& history) {
         }
         if (!selected) return MMS_OK;
         PoseResetReadout readout;
-        if (const auto result = readout.Prepare(app, history)) return result;
+        if (const auto result = readout.Prepare(app, &history)) return result;
         bool changed = false;
         if (anyChange) {
             plugins::NativePoseScope scope;
@@ -445,6 +480,154 @@ MmsResult ApplyBoundPoseReset(MMDApp& app, plugins::SharedHistory& history) {
         if (changed) plugins::PublishBoundHistoryEffects(app, history,
             plugins::HistoryEffects::ProjectData | plugins::HistoryEffects::Viewport, false);
         if (replaceReadout) readout.Replace(app);
+        return MMS_OK;
+    });
+}
+// The ordinary runtime owns the original per-model undo ring, not a shared
+// journal. Keep a stable scene identity even when the displayed bone is not
+// selected (and therefore has no readout to replace).
+struct LegacyPoseResetContext {
+    MmsObjectRef object{};
+    unsigned slot = 0, count = 0;
+    int frame = 0, displayed = -1;
+    std::uint64_t scene = 0;
+    unsigned char* model = nullptr;
+    mdl::BoneRecord* bones = nullptr;
+    unsigned char* flags = nullptr;
+    unsigned char* selection = nullptr;
+    HWND main = nullptr, floating = nullptr, owner = nullptr, undo = nullptr, redo = nullptr;
+    PoseResetRingState ring;
+
+    void Prepare(MMDApp& app) {
+        model = app.SelectedModel();
+        if (!plugins::FindSceneObjectIdentity(model, object)) object = plugins::SceneObjectIdentity(model);
+        const auto& native = *mdl::Mdl(model);
+        slot = app.SelectedModelSlot(); frame = app.CurrentFrame(); scene = app.SceneGeneration();
+        count = native.boneCount; displayed = native.selectedBone;
+        bones = native.boneTable; flags = native.bonePhysicsState; selection = native.boneSelection;
+        main = app.MainWindow(); floating = app.FloatingWindow(); owner = main;
+        undo = GetDlgItem(owner, panel::kUndoButton); redo = GetDlgItem(owner, panel::kRedoButton);
+        ring.Capture(model);
+    }
+    bool Current(MMDApp& app, bool compareRing = true) const noexcept {
+        if (plugins::BoundNativePoseHistory(&app) || app.CameraMode() ||
+            app.SceneGeneration() != scene || app.SelectedModelSlot() != slot ||
+            app.CurrentFrame() != frame || app.ModelSlot(slot) != model ||
+            !plugins::SceneObjectPresent(model, object.id)) return false;
+        MmsObjectRef live{};
+        if (!plugins::FindSceneObjectIdentity(model, live) || live.generation != object.generation) return false;
+        const auto& native = *mdl::Mdl(model);
+        if (native.boneCount != count || native.selectedBone != displayed || native.boneTable != bones ||
+            native.boneSelection != selection || native.bonePhysicsState != flags ||
+            (compareRing && !ring.Current(model))) return false;
+        return app.MainWindow() == main && app.FloatingWindow() == floating &&
+            (!owner || IsWindow(owner)) && GetDlgItem(owner, panel::kUndoButton) == undo &&
+            GetDlgItem(owner, panel::kRedoButton) == redo &&
+            (!undo || (IsWindow(undo) && GetParent(undo) == owner)) &&
+            (!redo || (IsWindow(redo) && GetParent(redo) == owner));
+    }
+    bool Seal(MMDApp& app) noexcept {
+        if (!Current(app, false)) return false;
+        ring.Capture(model);
+        return Current(app);
+    }
+    void Publish(MMDApp& app) const noexcept {
+        if (!Current(app)) return;
+        app.SceneModified() = 1;
+        app.RecordedFrameCountByte1() = 1;
+        // Drawing is deferred; a drawing-queue failure cannot turn this
+        // already-installed undo step into a failed authoring transaction.
+        try { updates::RequestViewport(&app, false); } catch (...) {}
+        if (!Current(app)) return;
+        if (undo) EnableWindow(undo, TRUE);
+        if (!Current(app)) return;
+        if (redo) EnableWindow(redo, FALSE);
+    }
+};
+// A slot owns both buffers, including an auxiliary buffer left by another
+// operation kind. Reject malformed aliasing before replacing that ownership.
+bool PoseResetSlotOwnsBuffers(const mdl::ModelRecord& native, unsigned next) noexcept {
+    const auto& target = native.undoRings[0].slots[next];
+    if (target.bonePose && target.bonePose == target.auxiliaryPose) return false;
+    for (unsigned r = 0; r < 2; ++r) for (unsigned s = 0; s < 30; ++s) {
+        if (r == 0 && s == next) continue;
+        const auto& other = native.undoRings[r].slots[s];
+        for (const void* owned : {static_cast<const void*>(target.bonePose), static_cast<const void*>(target.auxiliaryPose)})
+            if (owned && (owned == other.bonePose || owned == other.auxiliaryPose)) return false;
+    }
+    return true;
+}
+MmsResult ApplyUnboundPoseReset(MMDApp& app) {
+    return plugins::Boundary([&]() -> MmsResult {
+        if (plugins::BoundNativePoseHistory(&app) || !PoseResetReady(app)) return MMS_E_NOT_READY;
+        auto* model = app.SelectedModel(); if (!model) return MMS_E_NOT_READY;
+        auto& native = *mdl::Mdl(model);
+        if (!native.boneCount || native.boneCount > INT32_MAX || !native.boneTable ||
+            !native.boneSelection || !native.bonePhysicsState ||
+            native.undoState[0] >= 30 || native.undoState[1] >= 30) return MMS_E_NOT_READY;
+        CommandPoseTarget target; target.rotation[3] = 1;
+        unsigned changedCount = 0; bool selected = false;
+        for (unsigned i = 0; i < native.boneCount; ++i) if (native.boneSelection[i]) {
+            selected = true;
+            if (PoseTargetChanged(target, native.boneTable[i], bone_scale::Pose(model, int(i)))) ++changedCount;
+        }
+        if (!selected) return MMS_OK;
+        LegacyPoseResetContext context; context.Prepare(app);
+        PoseResetReadout readout;
+        if (const auto result = readout.Prepare(app, nullptr)) return result;
+        if (changedCount) {
+            if (changedCount > SIZE_MAX / sizeof(mdl::BonePoseSnapshot)) return MMS_E_ARGUMENT;
+            const auto release = [](mdl::BonePoseSnapshot* value) { undo_storage::Free(value); };
+            std::unique_ptr<mdl::BonePoseSnapshot, decltype(release)> snapshot(
+                static_cast<mdl::BonePoseSnapshot*>(undo_storage::Allocate(sizeof(mdl::BonePoseSnapshot) * changedCount)), release);
+            std::memset(snapshot.get(), 0, sizeof(mdl::BonePoseSnapshot) * changedCount);
+            std::vector<unsigned char> selectedBefore(native.boneSelection, native.boneSelection + native.boneCount);
+            unsigned captured = 0;
+            for (unsigned i = 0; i < native.boneCount; ++i) if (native.boneSelection[i] &&
+                PoseTargetChanged(target, native.boneTable[i], bone_scale::Pose(model, int(i)))) {
+                auto& before = snapshot.get()[captured++]; before.boneIndex = int(i);
+                std::memcpy(before.position, native.boneTable[i].trans, sizeof before.position);
+                std::memcpy(before.rotation, native.boneTable[i].rotQuat, sizeof before.rotation);
+                before.physicsDisabled = native.bonePhysicsState[i];
+            }
+            auto nextPose = bone_scale::PoseValues(model);
+            for (unsigned i = 0; i < native.boneCount; ++i) if (native.boneSelection[i]) nextPose.erase(int(i));
+            const unsigned nextRing = (native.undoState[0] + 1) % 30;
+            auto sides = bone_scale::PrepareUndoCapture(model, nextRing);
+            if (!context.Current(app) || !PoseResetReady(app) || !sides->IsCurrent() ||
+                captured != changedCount || std::memcmp(selectedBefore.data(), native.boneSelection, native.boneCount) ||
+                !PoseResetSlotOwnsBuffers(native, nextRing)) return MMS_E_NOT_READY;
+            for (unsigned i = 0; i < captured; ++i) {
+                const auto& before = snapshot.get()[i]; const auto& bone = native.boneTable[before.boneIndex];
+                if (std::memcmp(before.position, bone.trans, sizeof before.position) ||
+                    std::memcmp(before.rotation, bone.rotQuat, sizeof before.rotation) ||
+                    before.physicsDisabled != native.bonePhysicsState[before.boneIndex]) return MMS_E_NOT_READY;
+            }
+            // Exchange is the last fallible check and changes nothing on
+            // failure. The prepared side snapshot already owns the old scale
+            // and free-curve data. No allocations or UI callbacks follow until
+            // the complete legacy transaction has been installed.
+            if (!bone_scale::ExchangePoseValues(model, nextPose)) return MMS_E_NOT_READY;
+            sides->Publish();
+            auto& undo = native.undoRings[0].slots[nextRing];
+            undo_storage::Free(undo.bonePose); undo_storage::Free(undo.auxiliaryPose);
+            undo = {};
+            undo.operation = 1; undo.dirty = int(captured); undo.frame = unsigned(app.CurrentFrame());
+            undo.bonePose = snapshot.release();
+            for (unsigned i = 0; i < captured; ++i) {
+                const int index = undo.bonePose[i].boneIndex;
+                std::memcpy(native.boneTable[index].trans, target.position, sizeof target.position);
+                std::memcpy(native.boneTable[index].rotQuat, target.rotation, sizeof target.rotation);
+                native.bonePhysicsState[index] = 1;
+            }
+            native.undoState[0] = native.undoState[1] = nextRing;
+            native.undoDirty = 1; native.redoDirty = 0;
+        }
+        const bool publish = context.Seal(app);
+        const bool replaceReadout = readout.Seal(app);
+        bake::ScopedUiInputGate input;
+        if (changedCount && publish) context.Publish(app);
+        if (replaceReadout && context.Current(app)) readout.Replace(app);
         return MMS_OK;
     });
 }
@@ -549,6 +732,7 @@ void CmdControl450(MMDApp* app, HWND hwnd, std::uint16_t id,
     if(id==495||id==497||id==498)if(auto* history=plugins::BoundNativePoseHistory(app)) {
         ApplyBoundPoseCommand(*app,*history,id);return;
     }
+    if (id == 495) { ApplyUnboundPoseReset(*app); return; }
 #endif
     (void)notify;  // see header: the default handler's notify gate can never
                    // match any id of this family
