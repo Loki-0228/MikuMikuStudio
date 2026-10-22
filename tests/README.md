@@ -1,5 +1,7 @@
 # 测试保留与清理说明
 
+`transparent_policy_tests` 在 `MIKUMIKUSTUDIO_BUILD_EFFECT_TESTS=ON` 时提供，显式构建该 `EXCLUDE_FROM_ALL` 目标后可运行 CTest `transparent_policy_regressions`。它是无窗口、无 GPU 的独立 CPU 专项，覆盖显式排序范围、桶、外侧面、来源字段和分配失败发布。旧 `transparent_geometry_tests` 继续保留原入口全集。两者不能替代真实渲染与工程保存验收；布局成本、四个反例和数值限制见[CPU 策略记录](../docs/records/abi-transparent-policy-2026-10-23.md)。
+
 `menu_initial_paint_tests` 和 `menu_initial_paint_integration_tests` 是 `EXCLUDE_FROM_ALL` 的 UI 专项目标，不注册到默认 CTest。显式构建后复制到独立安装目录，继承 Default 桌面串行运行，无参数。核心测试使用真实子类、菜单句柄、计时器及分配失败；接入测试调用实际主窗口 WM_CREATE 和效果编辑器安装函数，只替换重型 UI 初始化。弹出窗口元数据和绘制通过私有接口模拟，不代表真实菜单像素验收。范围、三个反例和平台限制见[菜单验收记录](../docs/records/abi-menu-initial-paint-2026-10-23.md)。
 
 `transform_edit_prefix_tests` 为 `EXCLUDE_FROM_ALL` 的 UI 专项目标，显式构建后在 Default 桌面的独立测试目录运行，不纳入默认 CTest。它使用生产控件工厂和子类，比较 17 个长变换输入框与原生 EDIT 的聚焦行为，检查非聚焦前缀、非目标、原始配置和回调重入。字体及宽度变化仅模拟三档布局，不等于真实多屏 DPI。真实提交由 `native_edit_history_tests --pose-numeric-only` 等相邻回归覆盖。失败记录及运行范围见[长数值验收](../docs/records/abi-transform-prefix-2026-10-23.md)。

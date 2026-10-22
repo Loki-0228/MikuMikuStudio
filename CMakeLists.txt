@@ -1812,6 +1812,15 @@ if (MIKUMIKUSTUDIO_BUILD_EFFECT_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/te
     add_test(NAME transparent_geometry_regressions COMMAND transparent_geometry_tests)
 endif()
 
+if (MIKUMIKUSTUDIO_BUILD_EFFECT_TESTS)
+    add_executable(transparent_policy_tests EXCLUDE_FROM_ALL
+        tests/transparent_policy_tests.cpp src/render/transparent_geometry.cpp)
+    target_include_directories(transparent_policy_tests PRIVATE include)
+    target_compile_features(transparent_policy_tests PRIVATE cxx_std_17)
+    set_target_properties(transparent_policy_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+    add_test(NAME transparent_policy_regressions COMMAND transparent_policy_tests)
+endif()
+
 add_executable(mmv4mms_menu_tests EXCLUDE_FROM_ALL tests/mmv4mms_menu_tests.cpp)
 target_link_libraries(mmv4mms_menu_tests PRIVATE mikumikustudio_core winmm dsound)
 set_target_properties(mmv4mms_menu_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
