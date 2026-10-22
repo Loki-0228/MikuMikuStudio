@@ -125,9 +125,14 @@
 #include <memory>
 #include <vector>
 #if !MMD_ORIGINAL_PROFILE
+#include <array>
 #include <cmath>
 #include <string_view>
+#include "mikumikustudio/autosave.hpp"
+#include "mikumikustudio/bake_ui_lock.hpp"
+#include "mikumikustudio/bone_parent_coordinates.hpp"
 #include "mikumikustudio/native_edit_history.hpp"
+#include "mikumikustudio/plugin_scene.hpp"
 #include "../plugins/native_pose_scope.hpp"
 #include "../plugins/native_history_commands.hpp"
 #include "../plugins/native_object_commands.hpp"
@@ -274,10 +279,182 @@ bool ValidPoseTarget(const CommandPoseTarget& target) {
     for(float value:target.rotation)if(!std::isfinite(value))return false;
     return bone_scale::Valid(target.scale);
 }
+bool PoseResetReady(MMDApp& app) noexcept {
+    return !app.CameraMode() && app.SelectedModelSlot() < kModelSlotCount &&
+        !app.PlaybackActive() && !app.FrameStepPlayback() &&
+        !app.state.recordPlaybackStartPending && !app.SceneMutationInProgress() &&
+        !bake::UiLocked() && !SceneSaveBlocksEdits() && !GetCapture() &&
+        !app.FrameRangeDialog() && !app.state.frameCopyDialog && !app.RecordingWindow() &&
+        !app.GravitySettingDialog() && !app.GroundShadowColorDialog() && !app.AccessoryOrderArray() &&
+        !app.state.accessoryEditDialogOpen && !plugins::NativeModelOutlineDialogBlocks(app);
+}
+// Only the displayed, selected bone owns these nine drafts. The snapshot is
+// fixed-size so discarding a valid no-op draft does not need an allocation.
+struct PoseResetReadout {
+    static constexpr std::array<int, 9> ids{
+        panel::kReadoutPosXEdit, panel::kReadoutPosYEdit, panel::kReadoutPosZEdit,
+        panel::kReadoutRotXEdit, panel::kReadoutRotYEdit, panel::kReadoutRotZEdit,
+        panel::kReadoutScaleXEdit, panel::kReadoutScaleYEdit, panel::kReadoutScaleZEdit};
+    plugins::SharedHistory* history = nullptr;
+    std::uint64_t binding = 0, revision = 0;
+    MmsObjectRef object{};
+    unsigned slot = 0, count = 0;
+    int bone = -1, parent = -1, frame = 0;
+    unsigned char* model = nullptr;
+    mdl::BoneRecord* bones = nullptr;
+    unsigned char* flags = nullptr;
+    unsigned char* selection = nullptr;
+    unsigned char selected = 0, dirty = 0;
+    std::array<float, 3> bindPosition{}, parentPosition{}, position{};
+    std::array<float, 4> rotation{};
+    bone_scale::Matrix scale;
+    HWND owner = nullptr;
+    std::array<HWND, 9> edits{};
+    std::array<std::array<char, 64>, 9> text{};
+
+    bool HasParent() const noexcept {
+        return parent >= 0 && unsigned(parent) < count && parent != bone;
+    }
+    MmsResult Prepare(MMDApp& app, plugins::SharedHistory& journal) noexcept {
+        model = app.SelectedModel(); const auto& record = *mdl::Mdl(model);
+        bone = record.selectedBone;
+        if (bone < 0 || unsigned(bone) >= record.boneCount || !record.boneSelection[bone]) return MMS_OK;
+        // A missing identity cannot authorize writes after a window callback.
+        // Do not create one (and allocate) merely to replace a no-op draft.
+        if (!plugins::FindSceneObjectIdentity(model, object)) return MMS_OK;
+        if (const auto result = journal.Revision(revision)) return result;
+        slot = app.SelectedModelSlot(); frame = app.CurrentFrame(); count = record.boneCount;
+        binding = plugins::BoundNativePoseGeneration(&app);
+        bones = record.boneTable; flags = record.bonePhysicsState; selection = record.boneSelection;
+        selected = selection[bone]; dirty = flags[bone]; parent = bones[bone].parent;
+        std::memcpy(bindPosition.data(), bones[bone].position, sizeof(bindPosition));
+        if (HasParent()) std::memcpy(parentPosition.data(), bones[parent].position, sizeof(parentPosition));
+        std::memcpy(position.data(), bones[bone].trans, sizeof(position));
+        std::memcpy(rotation.data(), bones[bone].rotQuat, sizeof(rotation));
+        scale = bone_scale::Pose(model, bone);
+        for (int axis = 0; axis < 3; ++axis) {
+            const float offset = BoneParentBindOffset(model, bone, axis);
+            if (!std::isfinite(offset)) return MMS_E_ARGUMENT;
+            sprintf_s(text[axis].data(), text[axis].size(), "%1.2f", double(offset));
+            sprintf_s(text[axis + 3].data(), text[axis + 3].size(), "%1.1f", 0.0);
+            sprintf_s(text[axis + 6].data(), text[axis + 6].size(), "%1.2f", 1.0);
+        }
+        owner = app.FloatingWindow() ? app.FloatingWindow() : app.MainWindow();
+        for (std::size_t i = 0; i < ids.size(); ++i) edits[i] = GetDlgItem(owner, ids[i]);
+        history = &journal;
+        return MMS_OK;
+    }
+    bool Current(MMDApp& app, bool comparePose = true, bool compareRevision = true) const noexcept {
+        // Check stable membership before following any captured native pointer.
+        if (!history || plugins::BoundNativePoseHistory(&app) != history ||
+            plugins::BoundNativePoseGeneration(&app) != binding || app.CameraMode() ||
+            app.SelectedModelSlot() != slot || app.CurrentFrame() != frame ||
+            app.ModelSlot(slot) != model || !plugins::SceneObjectPresent(model, object.id)) return false;
+        MmsObjectRef live{};
+        if (!plugins::FindSceneObjectIdentity(model, live) || live.generation != object.generation) return false;
+        std::uint64_t now = 0;
+        if (history->Revision(now) != MMS_OK || (compareRevision && now != revision) ||
+            history->CheckNativeNavigation() != MMS_OK) return false;
+        const auto& record = *mdl::Mdl(model);
+        if (record.boneTable != bones || record.bonePhysicsState != flags || record.boneSelection != selection ||
+            record.boneCount != count || record.selectedBone != bone || selection[bone] != selected ||
+            bones[bone].parent != parent || std::memcmp(bones[bone].position, bindPosition.data(), sizeof(bindPosition))) return false;
+        if (HasParent() && std::memcmp(bones[parent].position, parentPosition.data(), sizeof(parentPosition))) return false;
+        if (comparePose && (flags[bone] != dirty ||
+            std::memcmp(bones[bone].trans, position.data(), sizeof(position)) ||
+            std::memcmp(bones[bone].rotQuat, rotation.data(), sizeof(rotation)) ||
+            bone_scale::Pose(model, bone) != scale)) return false;
+        if ((app.FloatingWindow() ? app.FloatingWindow() : app.MainWindow()) != owner ||
+            (owner && !IsWindow(owner))) return false;
+        for (std::size_t i = 0; i < ids.size(); ++i)
+            if (GetDlgItem(owner, ids[i]) != edits[i] ||
+                (edits[i] && (!IsWindow(edits[i]) || GetParent(edits[i]) != owner))) return false;
+        return true;
+    }
+    bool Seal(MMDApp& app) noexcept {
+        if (!Current(app, false, false)) return false;
+        if (history->Revision(revision) != MMS_OK) return false;
+        dirty = flags[bone]; scale = bone_scale::Pose(model, bone);
+        std::memcpy(position.data(), bones[bone].trans, sizeof(position));
+        std::memcpy(rotation.data(), bones[bone].rotQuat, sizeof(rotation));
+        return Current(app);
+    }
+    void Replace(MMDApp& app) const noexcept {
+        if (!Current(app)) return;
+        app.BoneRotationEditDegreesX() = app.BoneRotationEditDegreesY() = app.BoneRotationEditDegreesZ() = 0;
+        for (std::size_t i = 0; i < ids.size(); ++i) {
+            if (!edits[i]) continue;
+            if (!Current(app)) return;
+            SendMessageA(edits[i], EM_SETMODIFY, FALSE, 0);
+            if (!Current(app)) return;
+            const int length = GetWindowTextLengthA(edits[i]);
+            if (!Current(app)) return;
+            bool matches = false;
+            if (length == static_cast<int>(std::strlen(text[i].data()))) {
+                char previous[64]{};
+                const int read = GetWindowTextA(edits[i], previous, sizeof previous);
+                if (!Current(app)) return;
+                matches = read == length && std::strcmp(previous, text[i].data()) == 0;
+            }
+            if (!matches) {
+                // A failed caption write must not revive the canceled draft.
+                SetWindowTextA(edits[i], text[i].data());
+                if (!Current(app)) return;
+            }
+        }
+    }
+};
+MmsResult ApplyBoundPoseReset(MMDApp& app, plugins::SharedHistory& history) {
+    return plugins::Boundary([&]() -> MmsResult {
+        if (!PoseResetReady(app)) return MMS_E_NOT_READY;
+        if (const auto result = history.CheckNativeNavigation()) return result;
+        if (const auto result = history.CheckNativeEdit()) return result;
+        auto* model = app.SelectedModel(); if (!model) return MMS_E_NOT_READY;
+        auto& native = *mdl::Mdl(model);
+        if (!native.boneCount || native.boneCount > INT32_MAX || !native.boneTable ||
+            !native.boneSelection || !native.bonePhysicsState) return MMS_E_NOT_READY;
+        CommandPoseTarget target; target.rotation[3] = 1;
+        bool selected = false, anyChange = false;
+        for (unsigned i = 0; i < native.boneCount; ++i) if (native.boneSelection[i]) {
+            selected = true;
+            anyChange |= PoseTargetChanged(target, native.boneTable[i], bone_scale::Pose(model, int(i)));
+        }
+        if (!selected) return MMS_OK;
+        PoseResetReadout readout;
+        if (const auto result = readout.Prepare(app, history)) return result;
+        bool changed = false;
+        if (anyChange) {
+            plugins::NativePoseScope scope;
+            if (const auto result = scope.Begin(app, history, app.SelectedModelSlot(), "Reset bone pose",
+                plugins::SharedHistory::NativeIntent::ExplicitCommit)) return result;
+            for (unsigned i = 0; i < native.boneCount; ++i) if (native.boneSelection[i] &&
+                PoseTargetChanged(target, native.boneTable[i], bone_scale::Pose(model, int(i)))) {
+                auto& bone = native.boneTable[i];
+                std::memcpy(bone.trans, target.position, sizeof(target.position));
+                std::memcpy(bone.rotQuat, target.rotation, sizeof(target.rotation));
+                if (!bone_scale::SetPose(model, int(i), target.scale)) return MMS_E_ARGUMENT;
+                native.bonePhysicsState[i] = 1;
+            }
+            if (const auto result = scope.Commit(changed)) return result;
+        }
+        const bool replaceReadout = readout.Seal(app);
+        bake::ScopedUiInputGate input;
+        // Full readout refresh can overwrite an unselected bone's scale draft.
+        // Publish data/buttons/viewport first; only this command's nine fields
+        // are then refreshed, without applying pending scale transforms.
+        if (changed) plugins::PublishBoundHistoryEffects(app, history,
+            plugins::HistoryEffects::ProjectData | plugins::HistoryEffects::Viewport, false);
+        if (replaceReadout) readout.Replace(app);
+        return MMS_OK;
+    });
+}
 // The result is a complete authored target. No selection, dirty/UI state or
-// legacy ring is written while names, mirror pairs and root rotations resolve.
+// legacy ring is written while names and mirror pairs resolve.
 MmsResult ApplyBoundPoseCommand(MMDApp& app,plugins::SharedHistory& history,
                                std::uint16_t command) {
+    // Reset has an allocation-free no-op and its own draft publication. Keep
+    // paste/mirror target construction and their existing publication intact.
+    if (command == 495) return ApplyBoundPoseReset(app, history);
     return plugins::Boundary([&]() -> MmsResult {
         if(app.CameraMode()||app.PlaybackActive()||app.FrameStepPlayback()||
            app.state.recordPlaybackStartPending||app.SceneMutationInProgress())return MMS_E_NOT_READY;
@@ -324,36 +501,6 @@ MmsResult ApplyBoundPoseCommand(MMDApp& app,plugins::SharedHistory& history,
                 std::memcpy(target.rotation,source.rotation,sizeof(target.rotation));
                 if(mirror){target.position[0]=-target.position[0];target.rotation[1]=-target.rotation[1];target.rotation[2]=-target.rotation[2];}
                 target.scale=bone_scale::Clipboard(&app,j,true,mirror);
-            }
-        } else {
-            for(std::size_t i=0;i<targets.size();++i)if(native.boneSelection[i]) {
-                targets[i].matched=true;targets[i].scale={};
-            }
-            // Native reset keeps the root's X/Z offsets. Other parentless
-            // bones use this final root seed, whether or not it is selected.
-            if(targets[0].matched) {
-                targets[0].position[1]=0;
-                targets[0].rotation[0]=targets[0].rotation[1]=targets[0].rotation[2]=0;
-                targets[0].rotation[3]=1;
-            }
-            auto& api=d3dx::Get();bool mathReady=false;
-            for(std::size_t i=1;i<targets.size();++i)if(targets[i].matched) {
-                auto& target=targets[i];const auto& bone=native.boneTable[i];
-                if(bone.parent==-1) {
-                    if(!mathReady){if(!api.Load()||!api.matrixRotationQuaternion)return MMS_E_NOT_READY;mathReady=true;}
-                    d3dx::D3DXMATRIXF matrix{};api.matrixRotationQuaternion(&matrix,bone.rotQuat);
-                    for(int axis=0;axis<3;++axis) {
-                        double value=double(bone.position[1])*matrix.m[1][axis];
-                        value+=double(bone.position[0])*matrix.m[0][axis];
-                        value+=double(bone.position[2])*matrix.m[2][axis];
-                        value+=matrix.m[3][axis];value-=bone.position[axis];value+=targets[0].position[axis];
-                        target.position[axis]=static_cast<float>(value);
-                    }
-                    std::memcpy(target.rotation,targets[0].rotation,sizeof(target.rotation));
-                } else {
-                    target.position[0]=target.position[1]=target.position[2]=0;
-                    target.rotation[0]=target.rotation[1]=target.rotation[2]=0;target.rotation[3]=1;
-                }
             }
         }
         bool anyChange=false;

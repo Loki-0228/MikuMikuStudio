@@ -554,6 +554,14 @@ int main(int argc,char** argv){
         NativeMorphToolsChecks();std::printf("PASS morph tools: %u checks\n",checks);return 0;
     }
     const auto run=[](const char* name,void(*test)()){std::printf("RUN %s\n",name);test();};
+    if(argc==2&&!std::strcmp(argv[1],"--pose-command-only")) {
+        wchar_t desktop[128]{}; DWORD bytes=0;
+        Check(GetUserObjectInformationW(GetThreadDesktop(GetCurrentThreadId()),UOI_NAME,
+            desktop,sizeof desktop,&bytes)&&!_wcsicmp(desktop,L"Default"),
+            "pose-command fixture uses only inherited Default desktop");
+        run("NativePoseCommandChecks",NativePoseCommandChecks);
+        std::printf("PASS native pose commands: %u checks\n",checks);return 0;
+    }
     if(argc==2&&!std::strcmp(argv[1],"--pose-axis-only")) {
         run("NativePoseAxisChecks",NativePoseAxisChecks);
         std::printf("PASS native pose axis: %u checks\n",checks);return 0;

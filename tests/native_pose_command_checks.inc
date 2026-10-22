@@ -36,9 +36,10 @@ void PoseResetCommandChecks() {
     PoseCommandFixture f;SeedCommandSource(f);f.first.selected[0]=f.first.selected[1]=1;f.first.m->selectedBone=1;
     const auto root=f.first.bones[0],child=f.first.bones[1];const auto ring=PoseRingDigest(f.first);
     plugins::NativePoseTestBinding binding(*f.app,f.history);f.Command(495);
-    Check(f.history.UndoCount()==1&&f.first.bones[0].trans[0]==root.trans[0]&&f.first.bones[0].trans[1]==0&&
-        f.first.bones[0].trans[2]==root.trans[2]&&f.first.bones[0].rotQuat[3]==1,
-        "bound reset preserves native root X/Z and resets root Y and rotation");
+    Check(f.history.UndoCount()==1&&f.first.bones[0].trans[0]==0&&f.first.bones[0].trans[1]==0&&
+        f.first.bones[0].trans[2]==0&&f.first.bones[0].rotQuat[0]==0&&f.first.bones[0].rotQuat[1]==0&&
+        f.first.bones[0].rotQuat[2]==0&&f.first.bones[0].rotQuat[3]==1,
+        "bound reset clears root local X Y Z and restores the complete identity quaternion");
     Check(f.first.bones[1].trans[0]==0&&f.first.bones[1].trans[1]==0&&f.first.bones[1].trans[2]==0&&
         f.first.bones[1].rotQuat[0]==0&&f.first.bones[1].rotQuat[1]==0&&f.first.bones[1].rotQuat[2]==0&&f.first.bones[1].rotQuat[3]==1,
         "bound reset clears every selected parented bone pose component");
@@ -53,24 +54,17 @@ void PoseResetCommandChecks() {
     f.first.selected[0]=f.first.selected[1]=0;f.Command(495);
     Check(f.history.UndoCount()==0&&f.history.RedoCount()==1,"reset with empty selection preserves redo");
     Check(f.history.History(true)==MMS_OK&&f.first.bones[1].trans[0]==0,"reset redo is independent of current selection");
-    // Parentless reset uses the root's final seed and performs all D3DX work
-    // before the scope. The test does not require a renderer/device.
-    if(d3dx::Get().Load()) {
+    // Every selected parentless bone has the same local zero target. No
+    // quaternion math or renderer is needed to construct that target.
+    {
         f.first.selected[0]=f.first.selected[1]=1;f.first.bones[1].parent=-1;
         f.first.bones[0].trans[1]=8;f.first.bones[1].trans[0]=20;
         f.first.bones[1].position[0]=2;f.first.bones[1].position[1]=3;
         f.first.bones[1].rotQuat[2]=.6f;f.first.bones[1].rotQuat[3]=.8f;
-        d3dx::D3DXMATRIXF matrix{};d3dx::Get().matrixRotationQuaternion(&matrix,f.first.bones[1].rotQuat);
-        float expected[3]{};
-        for(int axis=0;axis<3;++axis) {
-            double value=double(f.first.bones[1].position[1])*matrix.m[1][axis];
-            value+=double(f.first.bones[1].position[0])*matrix.m[0][axis];value+=double(f.first.bones[1].position[2])*matrix.m[2][axis];
-            value+=matrix.m[3][axis];value-=f.first.bones[1].position[axis];value+=axis==1?0:f.first.bones[0].trans[axis];
-            expected[axis]=float(value);
-        }
         f.Command(495);
-        Check(f.first.bones[1].trans[0]==expected[0]&&f.first.bones[1].trans[1]==expected[1]&&f.first.bones[1].trans[2]==expected[2]&&
-            f.first.bones[1].rotQuat[3]==1,"parentless reset matches native root-relative bake");
+        Check(f.first.bones[1].trans[0]==0&&f.first.bones[1].trans[1]==0&&f.first.bones[1].trans[2]==0&&
+            f.first.bones[1].rotQuat[0]==0&&f.first.bones[1].rotQuat[1]==0&&f.first.bones[1].rotQuat[2]==0&&
+            f.first.bones[1].rotQuat[3]==1,"bound non-first parentless reset clears local pose without root-relative baking");
     }
 }
 void PosePasteCommandChecks() {
@@ -158,8 +152,10 @@ void PoseCommandLegacyChecks() {
     }
 }
 }
+#include "native_pose_reset_draft_checks.inc"
 void NativePoseCommandChecks() {
     PoseResetCommandChecks();PosePasteCommandChecks();
     for(unsigned command:{495u,497u,498u})PoseCommandFailureChecks(command);
     PoseCommandLegacyChecks();
+    NativePoseResetDraftChecks();
 }
