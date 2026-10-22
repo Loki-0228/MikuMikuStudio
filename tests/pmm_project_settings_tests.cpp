@@ -26,6 +26,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <clocale>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -262,6 +263,12 @@ void LegacyBindingMetadata() {
     }
     assign(bones[0],L"abcdefghijklmnopqrあ");expect(false,"a split 19-byte CP932 mirror still binds to the same model bytes");
     assign(morphs[0],L"abcdefghijklmnopqrあ");expect(false,"a split 19-byte CP932 morph mirror still binds to the same model bytes");
+    assign(morphs[0],L"face");
+    assign(bones[0],L"abcdefghijklmnopqrst");
+    std::memcpy(bones[0].name,"abcdefghijklmnopqrst",20);
+    expect(false,"an exact full-width twenty-byte PMD identity is accepted without manufacturing a NUL byte");
+    Check(save_compatibility::InspectMotion(*model).namesNeedExtension,
+        "full-width PMM identity acceptance still cannot relax the VMD fifteen-byte limit");
     assign(bones[0],L"+FlycloakRootB CB A01");
     std::strcpy(bones[0].name,"+FlycloakRootB");expect(true,"an arbitrary shorter alias still requires an extension");
     assign(bones[0],L"+FlycloakRootB CB A01");
@@ -275,6 +282,35 @@ void LegacyBindingMetadata() {
     expect(true,"distinct bones with colliding canonical short names still require an extension");model->boneCount=1;
     assign(morphs[0],L"+FlycloakRootB CB A01");assign(morphs[1],L"+FlycloakRootB CB A02");model->morphCount=2;
     expect(true,"distinct morphs with colliding canonical short names still require an extension");
+    model->boneCount=1;model->morphCount=1;
+    const auto actualMirror=[](auto& record,const std::wstring& name){
+        Check(extended_names::Assign(record.jpText,name),"allocate a name for the unchanged PMX mirror producer");
+        text_encoding::EncodePmxMirror(record.name,sizeof record.name,name.c_str());
+    };
+    for(const wchar_t* name:{L"single\U0001f31f",L"\u6c49"}){
+        actualMirror(bones[0],name);actualMirror(morphs[0],name);
+        expect(false,"unique actual PMX Unicode mirrors are restorable, independent of the Windows ACP");
+        std::strcpy(bones[0].name,"fabricated-token");expect(true,"a fabricated Unicode bone alias cannot be accepted as a real loader mirror");
+        actualMirror(bones[0],name);
+        std::strcpy(morphs[0].name,"fabricated-token");expect(true,"a fabricated Unicode morph alias cannot be accepted as a real loader mirror");
+    }
+    // Distinct full strings, rather than bytes selected from different code
+    // pages, determine whether one raw binding identity is ambiguous.
+    bool mixedFound=false;
+    for(unsigned lead=0x81;lead<=0xfe&&!mixedFound;++lead)for(unsigned trail=0x40;trail<=0xfe&&!mixedFound;++trail){
+        if(trail==0x7f)continue;
+        const char raw[]={static_cast<char>(lead),static_cast<char>(trail),0};
+        std::wstring jp,alternate;std::string firstBytes,secondBytes,not932;
+        if(!text_encoding::Decode(raw,932,jp)||!text_encoding::EncodeExact(jp.c_str(),932,firstBytes)||firstBytes!=std::string(raw)||
+            !text_encoding::Decode(raw,CP_ACP,alternate)||jp==alternate||text_encoding::EncodeExact(alternate.c_str(),932,not932)||
+            !text_encoding::EncodeExact(alternate.c_str(),CP_ACP,secondBytes)||firstBytes!=secondBytes)continue;
+        model->boneCount=2;model->morphCount=0;
+        Check(extended_names::Assign(bones[0].jpText,jp)&&extended_names::Assign(bones[1].jpText,alternate),"allocate distinct mixed-code-page full names");
+        std::memcpy(bones[0].name,raw,sizeof raw);std::memcpy(bones[1].name,raw,sizeof raw);
+        expect(true,"identical encoded bytes under two different code pages do not make distinct Unicode names identical");
+        mixedFound=true;
+    }
+    if(!mixedFound)std::printf("LIMIT current ACP=%u has no tested two-byte mixed-code-page collision; no such coverage claimed\n",GetACP());
     app->ModelSlot(0)=nullptr;
     for(auto* p:model->pmxTextBuffers)owned_text::Free(p);
     for(auto& bone:bones){owned_text::Free(bone.jpText);owned_text::Free(bone.enText);}
@@ -301,14 +337,17 @@ void WritePmmNameBoundaryPmx(const std::filesystem::path& path,
                            const std::vector<std::wstring>& names = {
                                L"1234567890123456789", L"+FlycloakRootB CB A01",
                                L"あいうえおかきくけこ", L"bone\U0001f600",
-                               L"CollisionPrefixABCDEFG1", L"CollisionPrefixABCDEFG2"}) {
+                               L"CollisionPrefixABCDEFG1", L"CollisionPrefixABCDEFG2"},
+                           const std::vector<std::wstring>& morphNames = {},
+                           const std::wstring& nativeTitle = L"Boundary",
+                           const std::wstring& englishTitle = L"Boundary") {
     std::ofstream file(path, std::ios::binary);
     file.write("PMX ", 4);
     PutPmx(file, 2.0f);
     const unsigned char header[8] = {0, 0, 1, 1, 1, 1, 1, 1};  // UTF-16, 1-byte indices
     PutPmx(file, static_cast<unsigned char>(sizeof header));
     file.write(reinterpret_cast<const char*>(header), sizeof header);
-    PutPmxText(file, L"Boundary"); PutPmxText(file, L"Boundary");
+    PutPmxText(file, nativeTitle); PutPmxText(file, englishTitle);
     PutPmxText(file, L""); PutPmxText(file, L"");
     PutPmx(file, std::int32_t(0));  // vertices
     PutPmx(file, std::int32_t(0));  // surface indices
@@ -324,7 +363,13 @@ void WritePmmNameBoundaryPmx(const std::filesystem::path& path,
         PutPmx(file, std::uint16_t(0));              // flags
         PutPmx(file, 0.0f); PutPmx(file, 1.0f); PutPmx(file, 0.0f);  // tail offset
     }
-    PutPmx(file, std::int32_t(0));  // morphs
+    PutPmx(file, static_cast<std::int32_t>(morphNames.size()));
+    for (const auto& name : morphNames) {
+        PutPmxText(file, name); PutPmxText(file, L"en");
+        PutPmx(file, static_cast<unsigned char>(1)); // eyebrow panel
+        PutPmx(file, static_cast<unsigned char>(1)); // vertex morph
+        PutPmx(file, std::int32_t(0));               // no geometry entries
+    }
     PutPmx(file, std::int32_t(1));  // display frames
     PutPmxText(file, L"Root"); PutPmxText(file, L"Root");
     PutPmx(file, static_cast<unsigned char>(0));
@@ -338,40 +383,49 @@ void WritePmmNameBoundaryPmx(const std::filesystem::path& path,
     Check(bool(file), "write bones-only PMX boundary fixture");
 }
 void MeasuredNameBoundariesRoundtrip(MMDApp& app, const std::filesystem::path& directory) {
-    // Match main b559a8b's ten measured native-name cases. The original VMD
-    // name width must neither force PMM 0003 nor lose a PMM bone's key data.
+    // Retain main b559a8b's ten measured cases and add ACP-only names. The
+    // VMD width must not force PMM 0003 or lose bone/morph key data.
     const std::vector<std::wstring> names{
         std::wstring(15, L'B'), std::wstring(16, L'B'), std::wstring(19, L'B'),
         std::wstring(20, L'B'), std::wstring(21, L'B'),
         std::wstring(7, L'あ') + L"A", std::wstring(8, L'あ'),
-        std::wstring(9, L'あ') + L"A", std::wstring(10, L'あ'), L"骨\U0001f31f"};
+        std::wstring(9, L'あ') + L"A", std::wstring(10, L'あ'), L"骨\U0001f31f",
+        L"\u6c49",L"bone\u6c49"};
     for (std::size_t i = 0; i < names.size(); ++i) {
         ResetAppState(&app);
         const auto stem = L"measured-name-" + std::to_wstring(i);
         const auto pmx = directory / (stem + L".pmx");
         const auto pmm = directory / (stem + L".pmm");
-        WritePmmNameBoundaryPmx(pmx, {names[i]});
+        WritePmmNameBoundaryPmx(pmx, {names[i]}, {names[i]});
         LoadModelFile(&app, pmx.c_str(), false);
         Check(app.ModelSlot(0) != nullptr, "load a measured name through the production PMX loader");
         auto& model = *mdl::Mdl(app.ModelSlot(0));
-        Check(model.boneCount == 1, "measured-name fixture has one bone");
+        Check(model.boneCount == 1 && model.morphCount == 1, "measured-name fixture has one bone and one morph");
         const auto report = save_compatibility::InspectPmm(app);
         Check(!report.invalidData && !report.needsNewPmm, "measured names alone never upgrade PMM to v3");
-        Check(report.namesNeedExtension == (i == names.size() - 1),
-            "canonical CP932 names need no warning; a Unicode alias still does");
+        Check(!report.namesNeedExtension,
+            "actual canonical CP932, ACP-only and emoji mirrors need no warning");
         const std::string mirror(model.boneTable[0].name);
+        const std::string morphMirror(model.morphs[0].name);
         model.boneKeys[0].position[0] = float(i + 1);
+        const float morphValue = .125f * float(i % 7 + 1);
+        model.morphKeys[0].value = morphValue;
         Check(SaveSceneCopy(&app, pmm.c_str()), "save the measured-name project");
-        Read(pmm); // Existing reader checks the actual 0002 header and MMS-only extension integrity.
+        const auto document=Read(pmm); // The reader checks actual 0002 and MMS-only framing.
+        Check(ext::Find(document,"org.mikumikustudio.model.0.unicode.v1")!=nullptr,
+            "a no-warning decision never suppresses the real Unicode extension");
         Load(app, pmm);
         Check(app.ModelSlot(0) != nullptr, "reload the measured-name PMM");
         const auto& restored = *mdl::Mdl(app.ModelSlot(0));
-        Check(restored.boneCount == 1 && text_encoding::BoneName(restored.boneTable[0], false) == names[i] &&
-            mirror == restored.boneTable[0].name && restored.boneKeys[0].position[0] == float(i + 1),
-            "PMM v2 roundtrip retains the full name, binding mirror and keyed value");
+        Check(restored.boneCount == 1 && restored.morphCount == 1 &&
+            text_encoding::BoneName(restored.boneTable[0], false) == names[i] &&
+            text_encoding::MorphName(restored.morphs[0],false)==names[i] &&
+            mirror == restored.boneTable[0].name && morphMirror==restored.morphs[0].name &&
+            restored.boneKeys[0].position[0] == float(i + 1) && restored.morphKeys[0].value==morphValue,
+            "PMM v2 roundtrip retains complete bone/morph names, original mirrors and distinct keyed values");
     }
     ResetAppState(&app);
-    std::puts("PASS ten measured name cases keep PMM v2 and survive actual MMS save/load");
+    std::puts("PASS twelve measured bone/morph cases keep PMM v2 and survive actual MMS save/load");
 }
 void PmxNameBoundaries(MMDApp& app, const std::filesystem::path& directory) {
     const auto pmx = directory / L"boundary-bones.pmx";
@@ -410,8 +464,8 @@ void PmxNameBoundaries(MMDApp& app, const std::filesystem::path& directory) {
           "a split 19-byte CP932 mirror still binds and needs no extension");
     model.boneCount = 4;
     report = inspect();
-    Check(report.namesNeedExtension && !report.needsNewPmm,
-          "a non-CP932 source name needs the extension but never selects v3");
+    Check(!report.namesNeedExtension && !report.needsNewPmm,
+          "a unique actual Unicode source mirror is restored without warning and never selects v3");
     model.boneCount = 6;
     report = inspect();
     Check(report.namesNeedExtension && !report.needsNewPmm && !report.canCopyLegacy,
@@ -442,7 +496,7 @@ void PmxNameBoundaries(MMDApp& app, const std::filesystem::path& directory) {
     mdl::SetDisplayCapacity(model, 0, 0);
     mdl::ForgetDisplayCapacity(model);
     wcscpy_s(model.path, L"D:\\model-\U0001f31f.pmx");
-    Check(inspect().needsNewPmm, "a non-CP932 model path selects PMM v3");
+    Check(!inspect().needsNewPmm, "a reversible non-CP932 model path stays PMM v2");
     // Restore the actual allocation counts before normal scene ownership
     // cleanup; the ABI destructor must release every loaded bone's text.
     model.boneCount = originalBoneCount;
@@ -484,7 +538,7 @@ void AutomaticMetadata() {
     Check(save_compatibility::InspectPmm(*app).namesNeedExtension,"256 encoded caption bytes still require extension data");
     Check(extended_names::Assign(model->pmxTextBuffers[0],L"model"),"restore a compatible model caption");
     Check(extended_names::Assign(model->pmxTextBuffers[1],L"Model \U0001f31f"),"set an unencodable model caption");
-    Check(save_compatibility::InspectPmm(*app).namesNeedExtension,"unencodable model captions still require extension data");
+    Check(!save_compatibility::InspectPmm(*app).namesNeedExtension,"a fitting marked UTF-8 model caption needs no compatibility warning");
     Check(extended_names::Assign(model->pmxTextBuffers[1],L"model"),"restore a compatible English model caption");
     Check(extended_names::Assign(morphs[0].jpText,L"different"),"set a real morph binding alias");
     Check(save_compatibility::InspectPmm(*app).namesNeedExtension,"changed morph binding identity still requires extension data");
@@ -507,6 +561,218 @@ void AutomaticMetadata() {
     for(auto& morph:morphs){owned_text::Free(morph.jpText);owned_text::Free(morph.enText);}
     std::puts("PASS automatic Unicode metadata, display counts and legacy-first format selection");
 }
+
+#if !MMD_ORIGINAL_PROFILE
+std::vector<unsigned char> EncodingFileBytes(const std::filesystem::path& path) {
+    const int fd=Open(path,_O_RDONLY);const auto length=_filelengthi64(fd);
+    Check(length>=0&&length<128*1024*1024,"owned encoding fixture has a bounded readable size");
+    std::vector<unsigned char> bytes(static_cast<size_t>(length));
+    Check(bytes.empty()||_read(fd,bytes.data(),static_cast<unsigned>(bytes.size()))==static_cast<int>(bytes.size()),"read every byte of the owned encoding fixture");
+    _close(fd);return bytes;
+}
+struct EncodingPrefix {
+    std::array<std::string,2> captions;
+    std::array<char,256> path{};
+    std::vector<std::string> bones,morphs;
+};
+EncodingPrefix ReadEncodingPrefix(const std::filesystem::path& path) {
+    const auto bytes=EncodingFileBytes(path);
+    Check(bytes.size()>56&&std::memcmp(bytes.data(),"Polygon Movie maker 0002",24)==0,
+        "real reversible-encoding output retains the PMM 0002 standard header");
+    // Independent standard layout: 30-byte header, four int32s, seven option
+    // bytes, selected model, model count; then slot byte and both captions.
+    Check(bytes[54]==1&&bytes[55]==0,"parse only the one-model slot-zero fixture's actual standard block");
+    size_t at=56;
+    const auto text=[&]() {
+        Check(at<bytes.size(),"standard length-prefixed name has a length byte");const auto count=bytes[at++];
+        Check(count<=bytes.size()-at,"standard name bytes remain inside the real PMM");
+        std::string result(reinterpret_cast<const char*>(bytes.data()+at),count);at+=count;return result;
+    };
+    EncodingPrefix prefix;for(auto& name:prefix.captions)name=text();
+    Check(prefix.path.size()<=bytes.size()-at,"standard model path retains its entire fixed 256-byte field");
+    std::memcpy(prefix.path.data(),bytes.data()+at,prefix.path.size());at+=prefix.path.size();
+    Check(at<bytes.size(),"standard model group count exists");++at;
+    const auto u32=[&]() {
+        Check(bytes.size()-at>=4,"standard name table has a complete count");uint32_t value=0;
+        for(unsigned i=0;i<4;++i)value|=uint32_t(bytes[at++])<<(i*8);return value;
+    };
+    for(auto* names:{&prefix.bones,&prefix.morphs}){
+        const auto count=u32();Check(count<256&&count<=bytes.size()-at,"owned standard name table has a bounded count");
+        for(uint32_t i=0;i<count;++i)names->push_back(text());
+    }
+    return prefix;
+}
+
+void RealUnicodeBindingRoundtrip(MMDApp& app,const std::filesystem::path& directory) {
+    const std::array<std::wstring,2> originals{L"source\U0001f31f",L"\u6c49"};
+    const std::array<std::wstring,2> edited{L"persisted\U0001f680",L"\u6c49-edited"};
+    std::printf("ENCODING_ENV ACP=%u CRT=%s\n",GetACP(),std::setlocale(LC_CTYPE,nullptr));
+    for(size_t which=0;which<originals.size();++which){
+        ResetAppState(&app);
+        if(which==1){std::string legacy,acp;
+            Check(!text_encoding::EncodeExact(originals[which].c_str(),932,legacy),"the Han source fixture is genuinely outside exact CP932");
+            if(text_encoding::EncodeExact(originals[which].c_str(),CP_ACP,acp))std::printf("PROOF current ACP=%u exactly encodes the Han fixture while CP932 cannot\n",GetACP());
+            else std::printf("LIMIT current ACP=%u cannot encode Han either; this run covers its Unicode path, not an ACP-only positive\n",GetACP());}
+        const auto pmx=directory/(L"unicode-binding-source-"+std::to_wstring(which)+L".pmx");
+        const auto pmm=directory/(L"unicode-binding-saved-"+std::to_wstring(which)+L".pmm");
+        WritePmmNameBoundaryPmx(pmx,{originals[which]},{originals[which]});
+        const auto sourceBytes=EncodingFileBytes(pmx);
+        LoadModelFile(&app,pmx.c_str(),false);Check(app.ModelSlot(0)!=nullptr,"load actual Unicode source PMX for binding roundtrip");
+        auto& model=*mdl::Mdl(app.ModelSlot(0));Check(model.boneCount==1&&model.morphCount==1,"actual Unicode fixture exposes both identity domains");
+        const std::string boneMirror=model.boneTable[0].name,morphMirror=model.morphs[0].name;
+        Check(!save_compatibility::InspectPmm(app).namesNeedExtension,"actual single emoji or ACP-only source needs no compatibility warning");
+        std::strcpy(model.boneTable[0].name,"forged-token");
+        Check(save_compatibility::InspectPmm(app).namesNeedExtension,"replacing an actual loaded Unicode bone mirror with an arbitrary token still warns");
+        std::memset(model.boneTable[0].name,0,sizeof model.boneTable[0].name);std::memcpy(model.boneTable[0].name,boneMirror.data(),boneMirror.size());
+        std::strcpy(model.morphs[0].name,"forged-token");
+        Check(save_compatibility::InspectPmm(app).namesNeedExtension,"replacing an actual loaded Unicode morph mirror with an arbitrary token still warns");
+        std::memset(model.morphs[0].name,0,sizeof model.morphs[0].name);std::memcpy(model.morphs[0].name,morphMirror.data(),morphMirror.size());
+        char boneExpected[20]{},morphExpected[20]{};
+        text_encoding::EncodePmxMirror(boneExpected,sizeof boneExpected,edited[which].c_str());
+        text_encoding::EncodePmxMirror(morphExpected,sizeof morphExpected,edited[which].c_str());
+        Check(boneMirror==boneExpected&&morphMirror==morphExpected,
+            "extension-only full-name edit intentionally preserves each actual source binding mirror");
+        Check(extended_names::Assign(model.boneTable[0].jpText,edited[which])&&extended_names::Assign(model.morphs[0].jpText,edited[which]),
+            "edit complete Unicode metadata without editing the original binding token or source file");
+        model.boneKeys[0].position[0]=float(81+which);model.morphKeys[0].value=.375f+.125f*float(which);
+        const auto report=save_compatibility::InspectPmm(app);
+        Check(!report.invalidData&&!report.needsNewPmm&&!report.namesNeedExtension,"matching actual Unicode mirrors select v2 without hiding a data error");
+        Check(SaveSceneCopy(&app,pmm.c_str()),"save actual edited Unicode metadata and native bone/morph key data");
+        const auto prefix=ReadEncodingPrefix(pmm);
+        Check(prefix.bones==std::vector<std::string>{boneMirror}&&prefix.morphs==std::vector<std::string>{morphMirror},
+            "standard PMM writes exactly the unchanged real source bone and morph identity bytes");
+        const auto document=Read(pmm);
+        Check(ext::Find(document,"org.mikumikustudio.model.0.unicode.v1")!=nullptr,"complete Unicode metadata is present despite the no-warning classification");
+        Load(app,pmm);Check(app.ModelSlot(0)!=nullptr,"reload actual Unicode PMM from its original source file");
+        const auto& restored=*mdl::Mdl(app.ModelSlot(0));
+        Check(text_encoding::BoneName(restored.boneTable[0],false)==edited[which]&&text_encoding::MorphName(restored.morphs[0],false)==edited[which]&&
+            boneMirror==restored.boneTable[0].name&&morphMirror==restored.morphs[0].name&&
+            restored.boneKeys[0].position[0]==float(81+which)&&restored.morphKeys[0].value==.375f+.125f*float(which),
+            "MMS extension actually restores edited names, original mirrors and keyed values after source reload");
+        Check(EncodingFileBytes(pmx)==sourceBytes,"the original PMX remains byte-for-byte unchanged by PMM save/load");
+        if(which==0){
+            auto oldMarker=EncodingFileBytes(pmm);
+            Check(oldMarker.size()>=32&&std::memcmp(oldMarker.data()+oldMarker.size()-32,"MMSXPMM2",8)==0,"positive control actually has the MMS trailer");
+            oldMarker[oldMarker.size()-31]='D';
+            const auto mds=directory/L"unicode-binding-unknown-mds.pmm";
+            Check(!std::filesystem::exists(mds),"MDS negative fixture does not overwrite an existing file");
+            std::ofstream out(mds,std::ios::binary|std::ios::out);out.write(reinterpret_cast<const char*>(oldMarker.data()),static_cast<std::streamsize>(oldMarker.size()));out.close();Check(bool(out),"write owned unknown-marker negative fixture");
+            int fd=Open(mds,_O_RDONLY);ext::Document ignored;uint64_t boundary=0xdeadbeef;
+            Check(ext::Read(fd,ignored,boundary)==ext::ReadResult::Absent&&ignored.records.empty()&&boundary==0xdeadbeef,"otherwise valid MDS framing is never accepted as MMS Unicode metadata");_close(fd);
+            Load(app,mds);Check(app.ModelSlot(0)!=nullptr,"unknown MDS trailer still permits ordinary standard source model loading");
+            const auto& withoutExtension=*mdl::Mdl(app.ModelSlot(0));
+            Check(text_encoding::BoneName(withoutExtension.boneTable[0],false)==originals[which]&&
+                text_encoding::MorphName(withoutExtension.morphs[0],false)==originals[which]&&
+                boneMirror==withoutExtension.boneTable[0].name&&morphMirror==withoutExtension.morphs[0].name&&
+                withoutExtension.boneKeys[0].position[0]==81.f&&withoutExtension.morphKeys[0].value==.375f,
+                "unknown MDS tail cannot restore extension-only edits while standard binding and keys still load");
+        }
+    }
+    ResetAppState(&app);
+    const auto collisionPmx=directory/L"unicode-colliding-source.pmx",collisionPmm=directory/L"unicode-colliding-saved.pmm";
+    const std::vector<std::wstring> names{L"first\U0001f31f",L"second\U0001f680"};
+    WritePmmNameBoundaryPmx(collisionPmx,names,names);LoadModelFile(&app,collisionPmx.c_str(),false);
+    Check(app.ModelSlot(0)!=nullptr,"load real PMX with two different Unicode names");auto& collision=*mdl::Mdl(app.ModelSlot(0));
+    Check(collision.boneCount==2&&collision.morphCount==2&&collision.boneTable[0].name[0]==0&&collision.boneTable[1].name[0]==0&&
+        collision.morphs[0].name[0]==0&&collision.morphs[1].name[0]==0,"real Japanese-locale loader produces the tested duplicate empty binding tokens");
+    auto report=save_compatibility::InspectPmm(app);
+    Check(!report.invalidData&&!report.needsNewPmm&&report.namesNeedExtension&&!report.canCopyLegacy,"distinct names sharing actual empty mirrors still warn and forbid a legacy copy");
+    collision.boneKeys[0].position[0]=31;collision.boneKeys[1].position[0]=47;collision.morphKeys[0].value=.25f;collision.morphKeys[1].value=.75f;
+    Check(SaveSceneCopy(&app,collisionPmm.c_str()),"complete MMS project can preserve colliding names without pretending they are legacy-safe");Read(collisionPmm);Load(app,collisionPmm);
+    Check(app.ModelSlot(0)!=nullptr,"reload colliding-name PMM against the same unchanged source model");const auto& restored=*mdl::Mdl(app.ModelSlot(0));
+    Check(text_encoding::BoneName(restored.boneTable[0],false)==names[0]&&text_encoding::BoneName(restored.boneTable[1],false)==names[1]&&
+        text_encoding::MorphName(restored.morphs[0],false)==names[0]&&text_encoding::MorphName(restored.morphs[1],false)==names[1]&&
+        restored.boneKeys[0].position[0]==31&&restored.boneKeys[1].position[0]==47&&restored.morphKeys[0].value==.25f&&restored.morphKeys[1].value==.75f,
+        "same-source MMS reload retains two complete Unicode names and independently keyed bone/morph values");
+    ResetAppState(&app);std::puts("PASS actual Unicode binding, ACP-only metadata, collisions and MMS-only restore");
+}
+
+void RealCaptionEncodingRoundtrip(MMDApp& app,const std::filesystem::path& directory) {
+    ResetAppState(&app);const auto pmx=directory/L"caption-encoding-source.pmx";
+    WritePmmNameBoundaryPmx(pmx,{L"bone"},{L"face"},L"Source native",L"Source English");LoadModelFile(&app,pmx.c_str(),false);
+    Check(app.ModelSlot(0)!=nullptr,"load real PMX for standard caption byte checks");
+    const size_t tagBytes=GetACP()==CP_UTF8?0:3;
+    const std::wstring largestUtf8=L"\U0001f31f"+std::wstring(255-tagBytes-4,L'A');
+    const std::vector<std::wstring> names{std::wstring(255,L'A'),std::wstring(256,L'A'),L"Caption \u6c49",L"Caption \U0001f31f",largestUtf8,largestUtf8+L"A"};
+    for(size_t i=0;i<names.size();++i){
+        auto& model=*mdl::Mdl(app.ModelSlot(0));const std::array<std::string,2> raw{model.name,model.nameEn};
+        auto english=names[i];if(!english.empty()&&english.back()==L'A')english.back()=L'B';
+        Check(extended_names::Assign(model.pmxTextBuffers[0],names[i])&&extended_names::Assign(model.pmxTextBuffers[1],english),"set distinct complete native/English caption metadata");
+        std::array<char,256> nativeBytes{},englishBytes{};
+        const bool nativeFits=text_encoding::EncodeDisplay(nativeBytes.data(),nativeBytes.size(),names[i].c_str());
+        const bool englishFits=text_encoding::EncodeDisplay(englishBytes.data(),englishBytes.size(),english.c_str());
+        if(i==0)Check(nativeFits&&std::strlen(nativeBytes.data())==255,"exactly 255 ASCII caption bytes fit before the NUL");
+        if(i==1)Check(!nativeFits,"256 ASCII caption bytes cannot wrap the one-byte standard length");
+        if(i==4)Check(nativeFits&&std::strlen(nativeBytes.data())==255,"the marked UTF-8 payload plus its actual BOM budget fits exactly 255 bytes");
+        if(i==5)Check(!nativeFits,"one byte beyond the UTF-8/BOM caption budget requires extension-only storage");
+        const auto report=save_compatibility::InspectPmm(app);
+        Check(!report.invalidData&&!report.needsNewPmm&&report.namesNeedExtension==(!nativeFits||!englishFits),"caption decision matches actual encoded field size while retaining PMM v2");
+        model.boneKeys[0].position[0]=float(101+i);
+        const auto pmm=directory/(L"caption-encoding-"+std::to_wstring(i)+L".pmm");
+        Check(SaveSceneCopy(&app,pmm.c_str()),"save actual caption metadata at and beyond standard field limits");
+        const auto prefix=ReadEncodingPrefix(pmm);
+        Check(prefix.captions[0]==(nativeFits?std::string(nativeBytes.data()):raw[0])&&prefix.captions[1]==(englishFits?std::string(englishBytes.data()):raw[1]),
+            "both actual standard caption lengths and payload bytes match the selected encoding or original raw fallback");
+        if(i==3||i==4){std::string utf8;Check(text_encoding::EncodeExact(names[i].c_str(),CP_UTF8,utf8),"independently encode the Unicode caption payload");
+            const std::string marked=(tagBytes?std::string("\xef\xbb\xbf"):std::string{})+utf8;
+            Check(prefix.captions[0]==marked,"standard Unicode caption carries exactly its UTF-8 payload and required marker bytes");}
+        const auto document=Read(pmm);Check(ext::Find(document,"org.mikumikustudio.model.0.unicode.v1")!=nullptr,"caption overflow never suppresses complete Unicode extension data");
+        Load(app,pmm);Check(app.ModelSlot(0)!=nullptr,"reload caption PMM against its original PMX");const auto& loaded=*mdl::Mdl(app.ModelSlot(0));
+        Check(text_encoding::ModelName(loaded,false)==names[i]&&text_encoding::ModelName(loaded,true)==english&&loaded.boneKeys[0].position[0]==float(101+i),
+            "actual extension reload restores complete captions including standard-overflow text and native key data");
+    }
+    ResetAppState(&app);std::puts("PASS standard caption bytes, 255/256 limits and actual Unicode/BOM overflow restore");
+}
+
+void RealResourcePathEncodingRoundtrip(MMDApp& app,const std::filesystem::path& directory) {
+    ResetAppState(&app);const auto assets=directory/L"encoding-assets-\u6c49-\U0001f31f";
+    Check(std::filesystem::create_directory(assets),"create a new exclusively owned Unicode resource directory");
+    const auto source=assets/L"model-\u6c49-\U0001f680.pmx";
+    WritePmmNameBoundaryPmx(source,{L"bone"},{L"face"});LoadModelFile(&app,source.c_str(),false);
+    Check(app.ModelSlot(0)!=nullptr,"load an existing source PMX from its actual Unicode filesystem path");
+    auto& model=*mdl::Mdl(app.ModelSlot(0));model.boneKeys[0].position[0]=59;model.morphKeys[0].value=.625f;
+    std::array<char,256> expected{};Check(text_encoding::EncodePath(expected.data(),expected.size(),model.path),"owned Unicode resource path fits the real fixed path encoder");
+    const auto report=save_compatibility::InspectPmm(app);Check(!report.invalidData&&!report.needsNewPmm&&!report.canCopyLegacy,"existing reversible Unicode resource path stays PMM v2 but cannot make an original-MMD copy");
+    const auto pmm=directory/L"unicode-resource-roundtrip.pmm";
+    Check(SaveSceneCopy(&app,pmm.c_str()),"save a PMM referring to the actual Unicode model resource");
+    const auto prefix=ReadEncodingPrefix(pmm);Check(prefix.path==expected,"actual fixed 256-byte standard path is written without substitution or truncation");Read(pmm);Load(app,pmm);
+    Check(app.ModelSlot(0)!=nullptr,"actual path resolver reopens the Unicode source resource without a missing-model dialog");
+    const auto& loaded=*mdl::Mdl(app.ModelSlot(0));
+    Check(std::filesystem::equivalent(std::filesystem::path(loaded.path),source)&&loaded.boneKeys[0].position[0]==59&&loaded.morphKeys[0].value==.625f,
+        "reloaded source is the original existing Unicode file and its keyed values are retained");
+    ResetAppState(&app);
+    const std::wstring base=assets.wstring()+L"\\";std::string utf8Base;
+    Check(text_encoding::EncodeExact(base.c_str(),CP_UTF8,utf8Base),"encode the owned Unicode directory for exact boundary construction");
+    const size_t tagBytes=GetACP()==CP_UTF8?0:3;
+    Check(utf8Base.size()+tagBytes+4<255,"choose a shorter fresh evidence directory so the boundary fixture has a usable filename");
+    const auto padding=255-tagBytes-utf8Base.size()-4;
+    const std::filesystem::path exactPath(base+std::wstring(padding,L'p')+L".pmx");
+    Check(exactPath.wstring().size()<256&&!std::filesystem::exists(exactPath),"the exactly fitting path is a new resource inside both native path and filename limits");
+    WritePmmNameBoundaryPmx(exactPath,{L"bone"},{L"face"});LoadModelFile(&app,exactPath.c_str(),false);
+    Check(app.ModelSlot(0)!=nullptr,"load an existing PMX whose encoded complete path is exactly 255 bytes");
+    auto& exact=*mdl::Mdl(app.ModelSlot(0));exact.boneKeys[0].position[0]=73;
+    Check(text_encoding::EncodePath(expected.data(),expected.size(),exact.path)&&std::strlen(expected.data())==255&&expected[255]==0,
+        "the fixed 256-byte path field admits 255 data bytes and its terminating NUL");
+    const auto exactPmm=directory/L"path-capacity-255.pmm";
+    Check(SaveSceneCopy(&app,exactPmm.c_str())&&ReadEncodingPrefix(exactPmm).path==expected,"real save accepts and exactly writes the largest encoded resource path");Read(exactPmm);Load(app,exactPmm);
+    Check(app.ModelSlot(0)!=nullptr&&std::filesystem::equivalent(std::filesystem::path(mdl::Mdl(app.ModelSlot(0))->path),exactPath)&&
+        mdl::Mdl(app.ModelSlot(0))->boneKeys[0].position[0]==73,"real load resolves the exactly fitting 255-byte reference and restores its key");
+    const auto preserved=directory/L"path-capacity-overflow-preserve.pmm";
+    Check(SaveSceneCopy(&app,preserved.c_str()),"seed an actual complete PMM/sidecar pair before the rejection check");
+    const auto before=EncodingFileBytes(preserved);const auto side=plugins::PluginSidecar(preserved);
+    Check(std::filesystem::is_regular_file(side),"valid positive control publishes its actual owned plugin sidecar");const auto sideBefore=EncodingFileBytes(side);
+    auto& overflow=*mdl::Mdl(app.ModelSlot(0));const std::wstring original=overflow.path,tooLong=original+L"x";
+    Check(tooLong.size()<256,"overflow is in encoded byte capacity rather than the input wchar buffer");
+    wcscpy_s(overflow.path,tooLong.c_str());
+    Check(!text_encoding::EncodePath(expected.data(),expected.size(),overflow.path),"a 256-data-byte Unicode reference cannot fit the terminating byte");
+    const auto refused=save_compatibility::InspectPmm(app);
+    Check(refused.needsNewPmm&&!refused.canCopyLegacy,"inspection retains the unrepresentable-path escalation rather than globally cancelling v3 checks");
+    Check(!SaveSceneCopy(&app,preserved.c_str())&&EncodingFileBytes(preserved)==before&&EncodingFileBytes(side)==sideBefore,
+        "actual save rejects encoded path overflow before replacing either existing project or sidecar");
+    wcscpy_s(overflow.path,original.c_str());ResetAppState(&app);
+    std::puts("PASS actual Unicode resource resolution, exact 256-field boundary and atomic overflow refusal");
+}
+#endif
 
 template<class K> void TrackFormatBoundaries(MMDApp& app,K*& track,std::size_t original) {
     K* saved=track;
@@ -557,6 +823,10 @@ void FormatTriggerBoundaries(MMDApp& app) {
         const auto report=save_compatibility::InspectPmm(app);
         Check(!report.invalidData&&report.needsNewPmm==extended,message);
     };
+    const auto expectPath=[&](bool canCopy,const char* message) {
+        const auto report=save_compatibility::InspectPmm(app);
+        Check(!report.invalidData&&!report.needsNewPmm&&report.canCopyLegacy==canCopy,message);
+    };
     expect(false,"initialized production scene is valid legacy PMM");
     TrackFormatBoundaries(app,app.CameraKeys(),10000);
     TrackFormatBoundaries(app,app.LightKeys(),10000);
@@ -584,7 +854,9 @@ void FormatTriggerBoundaries(MMDApp& app) {
     mdl::SetDisplayCapacity(*model,255,256);expect(true,"256 facial rows select v3");
     mdl::SetDisplayCapacity(*model,0,0);
     wcscpy_s(model->path,L"D:\\model.pmx");expect(false,"legacy reference path selects v2");
-    wcscpy_s(model->path,L"D:\\model-\U0001f31f.pmx");expect(true,"non-CP932 model reference selects v3");
+    expectPath(true,"ASCII model reference stays v2 and permits an original-MMD copy");
+    wcscpy_s(model->path,L"D:\\model-\U0001f31f.pmx");expect(false,"reversible non-CP932 model reference stays v2");
+    expectPath(false,"Unicode model reference stays v2 but blocks an original-MMD copy");
     app.ModelSlot(254)=nullptr;
     mdl::ForgetDisplayCapacity(*model);
     mdl::BoneKeyPoolDestroy(model->boneKeys);mdl::MorphKeyPoolDestroy(model->morphKeys);mdl::KeyPoolDestroy(model->displayKeys);
@@ -593,11 +865,17 @@ void FormatTriggerBoundaries(MMDApp& app) {
     auto* savedAccessoryKeys=app.AccessoryKeys(254);
     app.AccessorySlot(254)=accessory.get();app.AccessoryKeys(254)=mdl::KeyPoolCreate<mdl::AccessoryKey>(1);
     TrackFormatBoundaries(app,app.AccessoryKeys(254),10000);
-    wcscpy_s(accessory->sourcePath,L"D:\\accessory-\U0001f31f.x");expect(true,"non-CP932 accessory reference selects v3");
+    wcscpy_s(accessory->sourcePath,L"D:\\accessory.x");
+    expectPath(true,"ASCII accessory reference stays v2 and permits an original-MMD copy");
+    wcscpy_s(accessory->sourcePath,L"D:\\accessory-\U0001f31f.x");expect(false,"reversible non-CP932 accessory reference stays v2");
+    expectPath(false,"Unicode accessory reference stays v2 but blocks an original-MMD copy");
     mdl::KeyPoolDestroy(app.AccessoryKeys(254));app.AccessorySlot(254)=nullptr;app.AccessoryKeys(254)=savedAccessoryKeys;
     for(auto* path:{app.WavePath(),app.AviBackgroundPath(),app.PictureBackgroundPath()}) {
         const std::wstring saved=path;
-        wcscpy_s(path,256,L"D:\\media-\U0001f31f.png");expect(true,"each non-CP932 media reference selects v3");
+        wcscpy_s(path,256,L"D:\\media.png");
+        expectPath(true,"each ASCII Wave/AVI/picture reference stays v2 and permits an original-MMD copy");
+        wcscpy_s(path,256,L"D:\\media-\U0001f31f.png");expect(false,"each reversible non-CP932 media reference stays v2");
+        expectPath(false,"each Unicode Wave/AVI/picture reference stays v2 but blocks an original-MMD copy");
         wcscpy_s(path,256,saved.c_str());
     }
     for(auto* frame:{&app.CurrentFrame(),&app.TimelineStartFrame()}) {
@@ -806,7 +1084,8 @@ int wmain(int argc, wchar_t** argv) {
     }
     const bool pmxBoundary=argc>=2 && wcscmp(argv[1],L"--pmx-boundary")==0;
     const bool measuredNames=argc>=2 && wcscmp(argv[1],L"--measured-names")==0;
-    if((pmxBoundary || measuredNames) && argc!=3)return 2;
+    const bool reversibleEncoding=argc>=2 && wcscmp(argv[1],L"--reversible-encoding")==0;
+    if((pmxBoundary || measuredNames || reversibleEncoding) && argc!=3)return 2;
     if (argc < 2 || argc > 4) return 2;
     const bool capacityOnly = argc == 4 && wcscmp(argv[3], L"--key-capacity") == 0;
     const bool commentsOnly = argc == 4 && wcscmp(argv[3], L"--model-comments") == 0;
@@ -814,6 +1093,9 @@ int wmain(int argc, wchar_t** argv) {
     const bool sourceExplicit = argc == 4 && wcscmp(argv[3], L"--model-source-explicit") == 0;
     const bool sourceOrdinary = argc == 4 && wcscmp(argv[3], L"--model-source-ordinary") == 0;
     if (argc == 4 && !capacityOnly && !commentsOnly && !sourceAll && !sourceExplicit && !sourceOrdinary) return 2;
+#if MMD_ORIGINAL_PROFILE
+    if(reversibleEncoding){std::puts("SKIP reversible-encoding host: original profile retains strict CP932 resource fields");return 0;}
+#endif
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     SetWindowsHookExW(WH_CBT,[](int code,WPARAM wp,LPARAM lp)->LRESULT {
         if(code==HCBT_ACTIVATE){
@@ -830,7 +1112,7 @@ int wmain(int argc, wchar_t** argv) {
         }
         return CallNextHookEx(nullptr,code,wp,lp);
     },nullptr,GetCurrentThreadId());
-    const auto directory = std::filesystem::absolute(pmxBoundary || measuredNames ? argv[2] : argv[1]);
+    const auto directory = std::filesystem::absolute(pmxBoundary || measuredNames || reversibleEncoding ? argv[2] : argv[1]);
     std::filesystem::create_directories(directory);
     const auto aaPreference = directory / L"antialias-user.ini";
     SetEnvironmentVariableW(L"MMS_ANTIALIAS_CONFIG", aaPreference.c_str());
@@ -853,8 +1135,15 @@ int wmain(int argc, wchar_t** argv) {
         return 0;
     }
 #endif
-    if(pmxBoundary || measuredNames) {
+    if(pmxBoundary || measuredNames || reversibleEncoding) {
         MeasuredNameBoundariesRoundtrip(*app,directory);
+#if !MMD_ORIGINAL_PROFILE
+        if(reversibleEncoding){
+            RealUnicodeBindingRoundtrip(*app,directory);
+            RealCaptionEncodingRoundtrip(*app,directory);
+            RealResourcePathEncodingRoundtrip(*app,directory);
+        }
+#endif
         if(pmxBoundary) {
             FormatTriggerBoundaries(*app);
             AutomaticCameraRoundtrip(*app,directory);

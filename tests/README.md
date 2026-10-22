@@ -48,6 +48,8 @@
 | `optional_graphics_imports.py` | 检查正式 EXE 的普通与延迟导入表，防止可选 DX12、DXGI、编译器 DLL 再次成为启动依赖。只用 Python 标准库，注册 CTest。 |
 | `graphics_runtime_tests.cpp` | 隐藏 DX9 设备上注入可选 DLL 或入口缺失，验证 CPU 蒙皮回退、描边、Present 和像素回读。标记为 hardware-manual，需 DX9、DX12 硬件，逐场景注册 CTest。 |
 | `native_shadow_tests.cpp` | 隐藏 D3D9 设备上的原生 SM3 阴影回读，覆盖两种模式、接收面修正、斜边平滑、贴图边界与缩小采样。 |
+| `native_shadow_receiver_tests.cpp` | 独立 CPU 检查可见阴影接收范围的反投影、AA 偏移、仿射参考变换、无效输入、单角溢出及近景覆盖。固定旧拟合结果并核对远处投影物体的深度。移除对应拟合或以等效反例替代后再移除。 |
+| `native_shadow_receiver_host_tests.cpp` | 完整配置的隐藏 Win32／真实 D3D9 设备直接调用生产阴影更新，检查相机矩阵接线及失败回退。仅操作自身窗口及设备，不发送系统输入，不替代阴影图像或硬件验收。移除该生产路径或以等效宿主回归替代后再移除。 |
 | `keyboard_input_tests.cpp` | 快捷键与输入分发。 |
 | `mesh_bake_cache_tests.cpp` | Ogawa 采样、区间钳制、替换、清除、PMM 配套文件往返、畸形记录、提交前回调取消、临时文件跨进程归属。独立 CPU/文件测试，注册 CTest。 |
 | `vertex_capture_tests.cpp` | 隐藏 D3D9 HAL 设备上重放 VS 1.1/2.0/3.0，检查 GPU 位置回读、分块、状态恢复与不支持路径拒绝。注册 CTest。 |
@@ -170,6 +172,8 @@ MikuMikuDance.exe <另一个新输出前缀> 1 --emm-default-off [素材PMM绝�
 `pmm_project_settings_tests <新输出目录> [PMX绝对路径]` 使用隐藏的生产窗口，核对五档（低、标准、高、最高、关闭）、真实保存/重开/另存、单一档位字段、关闭覆盖旧档、菜单三语言、未知档位字节保留与显式替换、旧开关记录原样写回且不参与档位判断，以及 CRC 异常隔离。调用真实菜单、写入器和加载器；夹具直接通过扩展 codec 构造，不经新写入器预先迁移。
 
 `pmm_project_settings_tests --metadata-only` 单独检查保存兼容判定。`--pmx-boundary <新输出目录>` 使用真实 PMX 加载器核对骨骼与表情名称的 19 字节 CP932 截断、半字符边界、别名与碰撞反例，并检查 PMM `0002`／`0003` 选择及相机保存重载。两个入口均保留 ABI 的文本所有权和原有保存边界检查；后者需要 D3D9 设备。
+
+`pmm_project_settings_tests --reversible-encoding <绝对的新输出目录>` 在完整配置中实际加载 PMX、保存 PMM 并重开，独立解析标准标题、路径和骨骼／表情绑定表。覆盖 Unicode 编辑恢复、原镜像与关键帧、冲突及伪造别名、MMS 尾标正例与 MDS 负例，以及 255／256 字节和 UTF-8 BOM 容量。真实资源解析覆盖模型路径，配件及媒体保留兼容判定检查；环境不支持的 ACP 专有反例明确打印限制。目录须足够短，供用例构造最大可容纳路径。原始兼容配置的严格编码由 `original_profile_io_tests` 单独验证。
 
 `scene_lifecycle_tests <模型.pmx> unused --model-order` 在隐藏窗口加载三份模型，通过实际绘制／计算顺序对话框检查 Unicode 名称、同名对象、稀疏槽位、当前选择与父模型绑定，以及控件写入失败后的恢复。需要 D3D9 设备；不修改输入模型。测试范围及修复前后的证据见[模型顺序记录](../docs/records/abi-model-order-2026-10-20.md)。
 

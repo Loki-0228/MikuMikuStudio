@@ -175,23 +175,7 @@ void InitializePmxEdgeVertices(const mdl::PmxVertex* source,
 // plain CRT fallback (docs/ARCHITECTURE.md §8 - only reached when CP932
 // conversion fails).
 void WideToSjis(char* dst, const wchar_t* src, rsize_t size) {
-    dst[0] = '\0';
-    if (src == nullptr || src[0] == L'\0')
-        return;
-    const int need = WideCharToMultiByte(932, 0, src, -1, nullptr, 0,
-                                         nullptr, nullptr);
-    char* tmp = static_cast<char*>(operator new(need));
-    BOOL usedDefault = FALSE;
-    const int n = WideCharToMultiByte(932, 0, src, -1, tmp, need, nullptr,
-                                      &usedDefault);
-    if (n == 0 || usedDefault) {
-        size_t dummy = 0;
-        if (wcstombs_s(&dummy, dst, size, src, _TRUNCATE) != 0)
-            dst[0] = '\0';
-    } else {
-        strncpy_s(dst, size, tmp, _TRUNCATE);
-    }
-    operator delete(tmp);
+    text_encoding::EncodePmxMirror(dst, size, src);
 }
 
 // ---- length-prefixed UTF16 text validation --------------------------------

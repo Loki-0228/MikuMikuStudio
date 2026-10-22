@@ -47,7 +47,17 @@ template<class K> void InspectKeys(Report& report,const K* keys,std::size_t dens
     }
     report.needsNewPmm|=extended;
 }
-bool PathFits(const wchar_t* value){std::string bytes;return text_encoding::EncodeExact(value,932,bytes)&&bytes.size()<256;}
+bool PathFits(const wchar_t* value){char bytes[256]{};return text_encoding::EncodePath(bytes,sizeof bytes,value);}
+// PathFits accepts the reversible Unicode form that MMS itself can read back.
+// A legacy MMD copy asks a different question: the original readers treat the
+// same field as a raw CP932 C string. A path can fit the 256-byte field and
+// keep needsNewPmm clear while still making the legacy copy unreadable.
+bool LegacyPathFits(const wchar_t* value){std::string bytes;return text_encoding::EncodeExact(value,932,bytes)&&bytes.size()<256;}
+void InspectPath(Report& report,const wchar_t* path){
+    const bool reversible=PathFits(path);
+    if(!reversible){report.needsNewPmm=true;report.canCopyLegacy=false;}
+    if(!LegacyPathFits(path))report.canCopyLegacy=false;
+}
 bool RawName(const char* value,std::size_t size,std::set<std::string>& seen){
     const std::string bytes(value,strnlen_s(value,size));std::wstring wide;std::string roundtrip;
     if(text_encoding::HasUtf8Bom(bytes.c_str())||!text_encoding::Decode(bytes.c_str(),932,wide)||
@@ -55,29 +65,39 @@ bool RawName(const char* value,std::size_t size,std::set<std::string>& seen){
     return seen.insert(bytes).second;
 }
 bool PmmNamesFit(const mdl::ModelRecord& model) {
-    // PMM stores both model captions as length-prefixed strings (255 bytes).
-    // Bone/morph English captions and display-group names come from the model
-    // file; they are not the short identity fields saved in the PMM.
-    std::string bytes;
+    // The PMM caption writer writes both model captions through EncodeDisplay
+    // into a 256-byte field. If either caption does not fit, the plain PMM
+    // cannot reproduce it and the extended save is required.
+    char caption[256]{};
     for(bool english : {false,true})
-        if(!text_encoding::EncodeExact(text_encoding::ModelName(model,english).c_str(),932,bytes) || bytes.size()>255)return false;
+        if(!text_encoding::EncodeDisplay(caption,sizeof caption,
+                                         text_encoding::ModelName(model,english).c_str()))return false;
+    // Bone and morph captions are the short identity fields the loader writes
+    // into record.name; the full name comes from the model file. A plain PMM
+    // is sufficient while the loader would write the same identity again.
     const auto fits=[&](const auto& record,const std::wstring& fullName,
                         std::map<std::string,std::string>& identities) {
-        if(!text_encoding::EncodeExact(fullName.c_str(),932,bytes))return false;
+        // Compare full names as exact UTF-8. The legacy mirror is lossy, so
+        // two different Unicode names can share one identity, and the PMM
+        // mapping keeps only the identity: such a pair is unrepresentable.
+        std::string unicode;
+        if(!text_encoding::EncodeExact(fullName.c_str(),CP_UTF8,unicode))return false;
         const std::string identity(record.name,strnlen_s(record.name,sizeof record.name));
-        const auto [found,inserted]=identities.emplace(identity,bytes);
-        if(!inserted && found->second!=bytes)return false;
-        if(bytes==identity)return true;
-        // PMM binds keys to the model's legacy identity; it reloads the full
-        // name from the model file. PMX WideToSjis produces this mirror with a
-        // 19-byte NUL-reserving truncation, so the normal, unambiguous
-        // truncation does not require a new format or a compatibility copy.
-        // The nineteenth byte may be the lead byte of a split CP932 character:
-        // the PMM reader compares the stored bytes with strcmp against the
-        // same model mirror, so the split prefix still binds. Reject arbitrary
-        // aliases, non-CP932 full names and colliding identities only.
-        return identity.size()==sizeof(record.name)-1 && bytes.size()>identity.size() &&
-            bytes.compare(0,identity.size(),identity)==0;
+        const auto [found,inserted]=identities.emplace(identity,unicode);
+        if(!inserted && found->second!=unicode)return false;
+        // A PMD name may fill all 20 bytes, which the loader's NUL-reserving
+        // mirror can never reproduce; accept that exact CP932 field first.
+        std::string legacy;
+        if(text_encoding::EncodeExact(fullName.c_str(),932,legacy) && legacy==identity)return true;
+        // Otherwise require the loader's actual fixed-byte mirror of the full
+        // name: CP932 or its current-CRT-locale fallback, truncated with room
+        // for NUL and possibly inside a DBCS pair. The PMM reader compares
+        // exactly those bounded bytes with strcmp against the same model
+        // field, so only a canonical match proves the binding; a prefix or an
+        // alias does not.
+        char mirror[sizeof record.name]{};
+        text_encoding::EncodePmxMirror(mirror,sizeof mirror,fullName.c_str());
+        return identity==std::string(mirror,strnlen_s(mirror,sizeof mirror));
     };
     std::map<std::string,std::string> bones,morphs;
     for(unsigned i=0;i<model.boneCount;++i)
@@ -110,7 +130,7 @@ Report InspectPmm(MMDApp& app){
         std::set<std::string> bones,morphs;
         for(unsigned i=0;i<m.boneCount;++i)if(!RawName(m.boneTable[i].name,20,bones))report.canCopyLegacy=false;
         for(unsigned i=0;i<m.morphCount;++i)if(!RawName(m.morphs[i].name,20,morphs))report.canCopyLegacy=false;
-        if(!PathFits(m.path)){report.canCopyLegacy=false;report.needsNewPmm=true;}
+        InspectPath(report,m.path);
         std::set<std::string> modelName;
         if(!RawName(m.name,sizeof(m.name),modelName))report.canCopyLegacy=false;
     }
@@ -121,9 +141,9 @@ Report InspectPmm(MMDApp& app){
     for(int slot=0;slot<255;++slot){
         if(!app.AccessorySlot(slot))continue;
         InspectKeys(report,app.AccessoryKeys(slot),1,mdl::KeyPoolCapacity(app.AccessoryKeys(slot)),10000,L"accessory "+std::to_wstring(slot));
-        if(!PathFits(app.AccessorySlot(slot)->sourcePath)){report.canCopyLegacy=false;report.needsNewPmm=true;}
+        InspectPath(report,app.AccessorySlot(slot)->sourcePath);
     }
-    if(!PathFits(app.WavePath())||!PathFits(app.AviBackgroundPath())||!PathFits(app.PictureBackgroundPath())){report.canCopyLegacy=false;report.needsNewPmm=true;}
+    InspectPath(report,app.WavePath());InspectPath(report,app.AviBackgroundPath());InspectPath(report,app.PictureBackgroundPath());
     if(report.needsNewPmm||report.invalidData)report.canCopyLegacy=false;
     return report;
 }

@@ -534,9 +534,9 @@ void WritePmmModelBlocks(int fd, unsigned char** const slots,
                               record.pmxTextBuffers[language], 255);
 #else
             const char* name = language ? mdl::Mdl(model)->nameEn : mdl::Mdl(model)->name;
-            std::string exact;
+            char exact[256]{};
             const auto wide = text_encoding::ModelName(*mdl::Mdl(model), language != 0);
-            if(text_encoding::EncodeExact(wide.c_str(),932,exact)&&exact.size()<=255) name=exact.c_str();
+            if(text_encoding::EncodeDisplay(exact,sizeof exact,wide.c_str())) name=exact;
             const auto len = static_cast<unsigned char>(std::strlen(name));
             W(fd, &len, 1);
             W(fd, name, len);

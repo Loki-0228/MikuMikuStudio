@@ -263,8 +263,9 @@ std::array<float, 16> UpdateAdaptiveShadowMap(MMDApp* app, const float frame[16]
     float viewRadius = std::fabs(app->CameraDistance()) * std::tan(halfFov) *
         std::sqrt(1.f + aspect*aspect);
     Matrix cameraProjection{};
-    if (device && SUCCEEDED(device->GetTransform(D3DTS_PROJECTION,
-            reinterpret_cast<D3DMATRIX*>(&cameraProjection))) &&
+    const bool projectionReady = device && SUCCEEDED(device->GetTransform(D3DTS_PROJECTION,
+        reinterpret_cast<D3DMATRIX*>(&cameraProjection)));
+    if (projectionReady &&
         std::fabs(cameraProjection.m[0][0]) > 1e-6f &&
         std::fabs(cameraProjection.m[1][1]) > 1e-6f) {
         const float depth = cameraProjection.m[3][3] == 1.f
@@ -272,8 +273,23 @@ std::array<float, 16> UpdateAdaptiveShadowMap(MMDApp* app, const float frame[16]
         viewRadius = std::hypot(depth / cameraProjection.m[0][0],
                                 depth / cameraProjection.m[1][1]);
     }
-    const auto lightProjection = FitFocusedShadowProjection(referenceProjection, scene,
-        focus, app->LightDirection(), app->ShadowDistance(), app->ShadowMode(), viewRadius);
+    NativeShadowBounds receivers;
+    Matrix cameraView{}, sceneToView{};
+    if (projectionReady && SUCCEEDED(device->GetTransform(D3DTS_VIEW,
+            reinterpret_cast<D3DMATRIX*>(&cameraView)))) {
+        api.multiply(&sceneToView, reinterpret_cast<const Matrix*>(frame), &cameraView);
+        std::array<float, 16> view{}, projection{};
+        std::memcpy(view.data(), sceneToView.m, sizeof sceneToView.m);
+        std::memcpy(projection.data(), cameraProjection.m, sizeof cameraProjection.m);
+        const float radius = (std::max)(1.f / NativeShadowLateralScale(app->ShadowDistance(), app->ShadowMode()), viewRadius);
+        receivers = VisibleShadowReceiverBounds(scene, focus, radius, view, projection);
+    }
+    // Unsupported camera transforms must preserve coverage rather than return
+    // to the focus-only fit which clipped nearby visible receivers.
+    const auto lightProjection = FiniteNativeShadowBounds(receivers)
+        ? FitFocusedShadowProjection(referenceProjection, scene, focus, app->LightDirection(),
+            app->ShadowDistance(), app->ShadowMode(), viewRadius, &receivers)
+        : FitReferenceShadowProjection(referenceProjection, scene);
     const float referenceScale = MinimumShadowScale(referenceProjection, scene);
     D3DCAPS9 caps{};
     if (!device || FAILED(device->GetDeviceCaps(&caps))) return lightProjection;

@@ -4,6 +4,7 @@
 #include "mikumikustudio/text_encoding.hpp"
 #include "../plugins/scene_resource_budget.hpp"
 #include "mikumikustudio/model.hpp"
+#include <cstdlib>
 #include <cstring>
 #include <cwchar>
 #include <unordered_map>
@@ -126,6 +127,26 @@ bool EncodeExact(const wchar_t* text, UINT codePage, std::string& result) {
         return false;
     }
     return true;
+}
+
+void EncodePmxMirror(char* destination, std::size_t capacity, const wchar_t* text) {
+    if (!destination || !capacity) return;
+    destination[0] = '\0';
+    if (text == nullptr || text[0] == L'\0') return;
+    const int need = WideCharToMultiByte(932, 0, text, -1, nullptr, 0,
+                                         nullptr, nullptr);
+    char* tmp = need > 0 ? static_cast<char*>(operator new(need)) : nullptr;
+    BOOL usedDefault = FALSE;
+    const int n = need > 0 ? WideCharToMultiByte(932, 0, text, -1, tmp, need,
+                                                nullptr, &usedDefault) : 0;
+    if (n == 0 || usedDefault) {
+        size_t dummy = 0;
+        if (wcstombs_s(&dummy, destination, capacity, text, _TRUNCATE) != 0)
+            destination[0] = '\0';
+    } else {
+        strncpy_s(destination, capacity, tmp, _TRUNCATE);
+    }
+    operator delete(tmp);
 }
 
 namespace {

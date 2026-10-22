@@ -14,6 +14,10 @@ namespace mikumikustudio::text_encoding {
 // when exact; use a UTF-8 BOM only for text no legacy code page can represent.
 bool Decode(const char* bytes, unsigned int codePage, std::wstring& result);
 bool EncodeExact(const wchar_t* text, unsigned int codePage, std::string& result);
+// The PMX loader's fixed-byte mirror: CP932 with its current-CRT-locale
+// fallback, then byte truncation with space for NUL, even inside a DBCS pair.
+// This is not a reversible display encoding and does not change the locale.
+void EncodePmxMirror(char* destination, std::size_t capacity, const wchar_t* text);
 bool EncodePath(char* destination, std::size_t capacity, const wchar_t* path);
 bool EncodeDisplay(char* destination, std::size_t capacity, const wchar_t* text);
 std::wstring Display(const char* text);
