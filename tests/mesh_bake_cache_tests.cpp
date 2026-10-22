@@ -5,13 +5,12 @@
 // objects.  Every fixture archive is written with the real Alembic package and
 // read back through the module.
 //
-// Run: mesh_bake_cache_tests.exe [artifact directory]
-//   default artifact directory:
-//     .local/artifacts/alembic-export/mesh-cache/fixtures
-// The regression deletes and recreates that directory, so it must not be the
-// directory the executable itself runs from.
+// Run: mesh_bake_cache_tests.exe <absolute nonexistent artifact directory>
+// Use a copied test executable in a dedicated disposable installation. Existing
+// directories are refused; this regression never clears a caller's directory.
 
 #define NOMINMAX
+#include <Windows.h>
 
 #include "mikumikustudio/mesh_bake_cache.hpp"
 #include "mikumikustudio/mmd_app.hpp"
@@ -25,15 +24,18 @@
 #include <sys/stat.h>
 
 #include <cmath>
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cwchar>
 #include <filesystem>
 #include <fstream>
 #include <limits>
 #include <memory>
+#include <new>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -233,13 +235,12 @@ constexpr double kRetimeEpsilon = 1e-9;
 // Module files
 // ---------------------------------------------------------------------------
 
-// Mirrors the module's private layout: one shared root that every instance of
-// the application uses, and one random per-process directory under it.
+// Independently require an installation-local root, never process cwd or TEMP.
 std::filesystem::path SharedTempRoot() {
-    std::error_code ec;
-    auto base = std::filesystem::temp_directory_path(ec);
-    if (ec || base.empty()) base = std::filesystem::current_path(ec);
-    return base / "MikuMikuStudio" / "mesh_bake_cache";
+    wchar_t executable[32768]{};
+    const auto length = GetModuleFileNameW(nullptr, executable, 32768);
+    Check(length && length < 32768, "resolve the actual test executable for its independent cache-root expectation");
+    return std::filesystem::path(executable).parent_path() / L"data" / L"mesh_bake_cache";
 }
 
 // The private directories of this process, found by the process id the module
@@ -823,25 +824,24 @@ void ClearOwnership(const std::filesystem::path& directory, Scene& scene) {
     const auto foreignFile = root / L"foreign-instance.tmp";
     const auto foreignDirectory = root / L"foreign-instance-dir";
     const auto foreignNested = foreignDirectory / L"other-cache.bin";
-    {
-        std::ofstream stream(foreignFile, std::ios::binary | std::ios::trunc);
-        stream << "belongs to another instance";
-    }
-    std::filesystem::create_directories(foreignDirectory, ec);
-    {
-        std::ofstream stream(foreignNested, std::ios::binary | std::ios::trunc);
-        stream << "another instance cache";
-    }
-
     // A complete foreign private directory, as another running instance leaves.
     const auto foreignSession =
         root / L"mesh-cache-1000-0123456789abcdef0123456789abcdef";
-    std::filesystem::create_directories(foreignSession, ec);
     const auto foreignSessionCopy = foreignSession / L"mesh-1.abc";
-    {
-        std::ofstream stream(foreignSessionCopy, std::ios::binary | std::ios::trunc);
-        stream << "foreign session copy";
-    }
+    Check(!std::filesystem::exists(foreignFile) && !std::filesystem::exists(foreignDirectory) && !std::filesystem::exists(foreignSession),
+          "refuse existing foreign-fixture paths before creating or overwriting any entry");
+    const auto writeNew = [](const std::filesystem::path& path, const char* text) {
+        const HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+        Check(file != INVALID_HANDLE_VALUE, "create only a new foreign-fixture file"); DWORD written = 0;
+        const auto length = static_cast<DWORD>(std::strlen(text));
+        const bool complete = WriteFile(file, text, length, &written, nullptr) && written == length;
+        const bool closed = CloseHandle(file) != FALSE; Check(complete && closed, "write the complete owned foreign-fixture file");
+    };
+    writeNew(foreignFile, "belongs to another instance");
+    Check(std::filesystem::create_directory(foreignDirectory), "create this run's new foreign-fixture directory");
+    writeNew(foreignNested, "another instance cache");
+    Check(std::filesystem::create_directory(foreignSession), "create this run's new simulated foreign session");
+    writeNew(foreignSessionCopy, "foreign session copy");
 
     // The private directory this install creates is the one that was not there
     // before it.
@@ -894,9 +894,9 @@ void ClearOwnership(const std::filesystem::path& directory, Scene& scene) {
     Check(std::filesystem::is_directory(root, ec), "the shared root still exists");
 
     // Take the simulated foreign entries back out; they belong to this test.
-    std::filesystem::remove(foreignFile, ec);
-    std::filesystem::remove_all(foreignDirectory, ec);
-    std::filesystem::remove_all(foreignSession, ec);
+    Check(std::filesystem::remove(foreignFile) && std::filesystem::remove(foreignNested) && std::filesystem::remove(foreignDirectory) &&
+          std::filesystem::remove(foreignSessionCopy) && std::filesystem::remove(foreignSession),
+          "clean up only the exact files and empty directories this run created, without recursive deletion");
 }
 
 // The commit callback is the caller's last chance to veto an install, and it
@@ -1837,19 +1837,23 @@ void SnapshotLifetime(const std::filesystem::path& directory, Scene& scene) {
     Trace("immutable save snapshots, worker publication and archive lifetime");
 }
 
+#include "mesh_bake_installation_checks.inc"
+
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
-    const auto out = std::filesystem::absolute(
-        argc > 1 ? std::filesystem::path(argv[1])
-                 : std::filesystem::path(
-                       L".local/artifacts/alembic-export/mesh-cache/fixtures"));
+    if (argc >= 2 && !std::wcscmp(argv[1], L"--installation-storage")) {
+        Check(argc == 4, "installation storage requires fresh absolute output and the second copied executable");
+        return installation_storage::Run(argv[2], argv[3]);
+    }
+    if (argc >= 2 && !std::wcscmp(argv[1], L"--storage-peer")) {
+        Check(argc == 5, "storage peer requires fresh output, event identity and declared role");
+        return installation_storage::Peer(argv[2], argv[3], argv[4]);
+    }
+    Check(argc == 2, "provide one absolute nonexistent artifact directory");
+    const auto out = installation_storage::Fresh(argv[1]);
     std::error_code ec;
-    std::filesystem::remove_all(out, ec);
-    Check(!ec, "clear the previous artifact directory " + out.u8string());
-    std::filesystem::create_directories(out, ec);
-    Check(!ec, "create the artifact directory " + out.u8string());
     // A non-ASCII directory and file name exercises the wide-path handling.
     const auto unicode = out / L"\u4e2d\u6587\u76ee\u5f55";
     const auto project = unicode / L"project";
@@ -1858,7 +1862,7 @@ int wmain(int argc, wchar_t** argv) {
 
     const auto tempBaseline = CountTempCopies();
     auto app = std::make_unique<MMDApp>();
-    app->state = MMDAppState{};
+    ::new (static_cast<void*>(&app->state)) MMDAppState{};
     ResetSlots(*app);
     Scene scene(*app);
 

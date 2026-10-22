@@ -1,6 +1,7 @@
 #include "mikumikustudio/frame_limits.hpp"
 #define NOMINMAX
 #include "mikumikustudio/alembic_export.hpp"
+#include "mikumikustudio/local_data_path.hpp"
 #include "mikumikustudio/frame_presentation.hpp"
 #include "mikumikustudio/deformed_mesh_capture.hpp"
 #include "mikumikustudio/scene_sampling.hpp"
@@ -128,7 +129,16 @@ Result Export(MMDApp& app,const std::filesystem::path& path,const Options& optio
         ~Busy(){exporting=false;app.state.messageSeen=1;if(app.MainWindow())InvalidateRect(app.MainWindow(),nullptr,FALSE);}
     } busy(app);
     try {
-        const auto target=options.writeAbc?std::filesystem::absolute(path):std::filesystem::temp_directory_path()/L"MikuMikuStudio-mesh-bake.abc";
+        std::filesystem::path target;
+        if(options.writeAbc)target=std::filesystem::absolute(path);
+        else {
+            const auto workRoot=local_data::File(L"mesh_bake_work");
+            if(workRoot.empty())throw std::runtime_error("The internal mesh bake work directory is unavailable: the application executable directory cannot be located");
+            std::error_code directoryError;
+            std::filesystem::create_directories(workRoot,directoryError);
+            if(directoryError)throw std::runtime_error("Cannot create the internal mesh bake work directory: "+directoryError.message());
+            target=workRoot/L"MMS-mesh-bake.abc";
+        }
         const auto temporary=target.parent_path()/(target.filename().wstring()+L".partial-"+std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(GetTickCount64()));
         struct Cleanup{std::filesystem::path path;~Cleanup(){std::error_code e;std::filesystem::remove(path,e);}}cleanup{temporary};
         std::set<const void*> bakedObjects;

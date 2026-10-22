@@ -20,6 +20,8 @@
 #include <cstring>
 #include <algorithm>
 #include <chrono>
+#include <iterator>
+#include <cstdlib>
 #include <MinHook.h>
 #include <CommCtrl.h>
 using namespace mikumikustudio;
@@ -354,12 +356,17 @@ void KeyframeMenuState(MMDApp& app,bool enabled,const char* context){
         if(rejectedKeyframeDialogs!=before){++keyframeGuardFailures;std::printf("FAIL: keyframe command opened: %s\n",context);}
     }
 }
+#include "alembic_export_storage_checks.inc"
 }
 int wmain(int argc,wchar_t** argv){
     if(argc<3)return 2;std::setvbuf(stdout,nullptr,_IONBF,0);
-    const auto out=std::filesystem::absolute(argv[1]);std::filesystem::create_directories(out);
+    const std::wstring mode=argv[2];
+    const auto out=mode==L"storage"?bake_storage::FreshOutput(argv[1]):std::filesystem::absolute(argv[1]);
+    if(mode!=L"storage")std::filesystem::create_directories(out);
+    std::unique_ptr<bake_storage::Environment> storage;
+    if(mode==L"storage")storage=std::make_unique<bake_storage::Environment>(out);
     uiOutput=out;
-    const std::wstring mode=argv[2];const bool mme=mode==L"mme"||mode==L"combined",mmv=mode==L"combined",varying=mode==L"varying",extra=mode==L"extra"||varying;
+    const bool mme=mode==L"mme"||mode==L"combined",mmv=mode==L"combined",varying=mode==L"varying",extra=mode==L"extra"||varying;
     auto hide=SetWindowsHookExW(WH_CBT,Hidden,nullptr,GetCurrentThreadId());auto dialogs=SetWindowsHookExW(WH_CALLWNDPROCRET,Dialogs,nullptr,GetCurrentThreadId());_putenv_s("MMV_TEST_MODE",varying?"varying":extra?"extra":"identity");
     auto* app=new MMDApp;g_Block=app;app->state=MMDAppState{};app->InitDefaults();
     Check(InitMainWindowAndD3D(app,GetModuleHandleW(nullptr),SW_HIDE),"hidden renderer initialization");
@@ -375,6 +382,12 @@ int wmain(int argc,wchar_t** argv){
     auto* raw=app->ModelSlot(0);Check(raw!=nullptr,"load triangle fixture");auto& m=*mdl::Mdl(raw);
     auto& key=m.boneKeys[1];key=m.boneKeys[0];key.frame=2;key.position[0]=2;key.previous=0;key.next=0;key.allocated=1;
     m.boneKeys[0].next=1;m.maxFrame=2;
+    if(mode==L"storage"){
+        bake_storage::Run(*app,out,*storage);
+        Check(unexpectedDialogs==0,"storage mode requires no dialogs");
+        ShutdownCleanup(app);g_Block=nullptr;delete app;UnhookWindowsHookEx(hide);UnhookWindowsHookEx(dialogs);
+        return 0;
+    }
     if(mode==L"native"){
         // Resampling must carry animated stretch/shear at the inserted frame,
         // not repeat an endpoint or take only the three diagonal components.

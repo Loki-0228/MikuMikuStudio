@@ -4,6 +4,7 @@
 #define NOMINMAX
 
 #include "mikumikustudio/mesh_bake_cache.hpp"
+#include "mikumikustudio/local_data_path.hpp"
 #include "../plugins/scene_resource_budget.hpp"
 
 #include "mikumikustudio/mmd_app.hpp"
@@ -434,13 +435,15 @@ bool ReadMesh(const Archive& archive, const Child& child, std::size_t index,
 // Private temporary copies
 // ---------------------------------------------------------------------------
 
-// Shared root that every instance of the application uses.  It is created when
-// needed and is never removed by this module, not even recursively.
-std::filesystem::path SharedTempRoot() {
-    std::error_code ignored;
-    auto base = std::filesystem::temp_directory_path(ignored);
-    if (ignored || base.empty()) base = std::filesystem::current_path(ignored);
-    return base / "MikuMikuStudio" / "mesh_bake_cache";
+// Shared root that every instance of the application uses: the fixed
+// <executable directory>/data/mesh_bake_cache.  It depends on neither the
+// process cwd, TEMP/TMP, the executable file name nor the user profile, so an
+// installation always keeps its private copies beside its own executable.  The
+// directory is created when needed and is never removed by this module, not
+// even recursively.  An empty result means the executable directory could not
+// be obtained, and the caller must refuse rather than fall back elsewhere.
+std::filesystem::path SharedRoot() {
+    return local_data::File(L"mesh_bake_cache");
 }
 
 // Creates (once) the directory this process owns for its own copies: an
@@ -458,7 +461,17 @@ bool EnsureSessionDirectory(std::filesystem::path& directory, std::string& error
         store.sessionDirectory.clear();
     }
 
-    const auto root = SharedTempRoot();
+    const auto root = SharedRoot();
+    // Without the executable directory there is no application data root this
+    // module is allowed to write to.  Fail before creating anything: joining an
+    // empty path would silently produce a directory relative to the process cwd
+    // or whatever the filesystem resolves it against.
+    if (root.empty()) {
+        error =
+            "Cannot locate the mesh cache root directory: the application "
+            "executable directory is unavailable";
+        return false;
+    }
     std::error_code ec;
     std::filesystem::create_directories(root, ec);
     if (ec) {

@@ -1472,7 +1472,10 @@ if (MIKUMIKUSTUDIO_BUILD_UI_TESTS)
     target_include_directories(mesh_bake_cache_tests PRIVATE include)
     target_link_libraries(mesh_bake_cache_tests PRIVATE Alembic::Alembic)
     set_target_properties(mesh_bake_cache_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
-    add_test(NAME mesh_bake_cache COMMAND mesh_bake_cache_tests "${CMAKE_BINARY_DIR}/mesh-cache-test-artifacts")
+    add_test(NAME mesh_bake_cache COMMAND "${CMAKE_COMMAND}"
+        "-DPROBE=$<TARGET_FILE:mesh_bake_cache_tests>"
+        "-DOUTPUT_ROOT=${CMAKE_BINARY_DIR}/mesh-tests"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_mesh_bake_cache.cmake")
     add_executable(alembic_export_tests EXCLUDE_FROM_ALL tests/alembic_export_tests.cpp
         res/MMD.rc ${MIKUMIKUSTUDIO_GEN_RES} exports/MikuMikuDance.def)
     target_link_libraries(alembic_export_tests PRIVATE mikumikustudio_core winmm dsound)

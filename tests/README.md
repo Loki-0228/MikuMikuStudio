@@ -52,7 +52,7 @@
 | `pmm_identity_tests.cpp` | 独立 CPU 检查固定字段的完整身份和有界旧拼接，覆盖全部字节、终止位置、前后缀及本进程保护页边界。无应用窗口、文件或 locale 操作；移除对应 PMM 匹配或以等效反例替代后再移除。 |
 | `native_shadow_receiver_host_tests.cpp` | 完整配置的隐藏 Win32／真实 D3D9 设备直接调用生产阴影更新，检查相机矩阵接线及失败回退。仅操作自身窗口及设备，不发送系统输入，不替代阴影图像或硬件验收。移除该生产路径或以等效宿主回归替代后再移除。 |
 | `keyboard_input_tests.cpp` | 快捷键与输入分发。 |
-| `mesh_bake_cache_tests.cpp` | Ogawa 采样、区间钳制、替换、清除、PMM 配套文件往返、畸形记录、提交前回调取消、临时文件跨进程归属。独立 CPU/文件测试，注册 CTest。 |
+| `mesh_bake_cache_tests.cpp` | Ogawa 采样、区间钳制、替换、清除、PMM 配套文件往返、畸形记录、提交前回调取消、不可变快照。独立 CPU/文件测试，CTest 每次复制到独立安装并保留证据。另有真实双进程安装隔离专项，见下文。 |
 | `vertex_capture_tests.cpp` | 隐藏 D3D9 HAL 设备上重放 VS 1.1/2.0/3.0，检查 GPU 位置回读、分块、状态恢复与不支持路径拒绝。注册 CTest。 |
 | `alembic_export_tests.cpp` | 隐藏生产窗口内生成 PMX，核对骨骼动画、MME/MMV 叠加、生成与消失的材质/拓扑、Unicode ABC、取消、三语条件警告、烧录回工程、PMM 保存重开和清除后恢复。需要按模式准备 Data/插件，显式运行。 |
 | `sequential_file_reader_tests.cpp` | 顺序文件读取、绝对跳转、跳转失败后保留未消费窗口、EOF 及唯一关闭；完整与原始兼容配置共用。 |
@@ -266,3 +266,13 @@ MME 测试需在独立目录放入三个 MME DLL，日志必须显示 `PLUGINS m
 `--property-refresh-recovery-only` 单独验证运行中目标变为零宽后的自动恢复，并区别提供者自身的 `NOT_READY`，不会触发整个默认套件。完整配置的 `native_edit_history_tests --property-history-signal-only` 只运行真实共同历史信号及无分配发布专项，不进入默认鼠标路径；CTest 名称为 `native_property_history_publication`。
 
 所有窗口消息只发送给夹具自身。原属性服务参考见 [SDK](../sdk/mms/property-refresh.md)，实际验证及失败记录见[本批记录](../docs/records/abi-property-refresh-2026-10-22.md)。
+
+## 烘焙安装目录专项
+
+`mesh_bake_cache_tests.exe` 的默认参数必须是绝对且不存在的夹具目录，不能再覆盖旧证据。CTest 使用 `run_mesh_bake_cache.cmake` 自动复制 EXE 到新的安装目录，并将临时环境和输出留在该次证据目录。
+
+新增完整专项使用 `--installation-storage <全新绝对输出目录> <第二复制EXE绝对路径>`。两份复制 EXE 必须位于不同目录，目录中均有 `mesh-cache-test-installation.txt`，内容精确为 ASCII `MMS mesh cache test installation v1` 加 LF。第一份安装运行前不能已有 `data`。专项自行启动隐藏子进程，核对同安装私有会话、跨安装根目录、文件占位失败、源文件删除、保存快照和外来文件保护。`--storage-peer` 仅由专项父进程调用。
+
+`alembic_export_tests` 使用 `<全新绝对输出目录> storage` 运行真实 D3D 专项。复制安装运行前不能已有 `data`，输出的父目录必须存在，运行继承 `Default` 桌面。该模式独立检查生产 `.partial` 的实际位置、成功与取消清理、内部目录阻塞、旧缓存保留及显式 ABC 输出，不进入默认对话框或视觉检查。
+
+专项及运行限制见[烘焙目录验收记录](../docs/records/abi-mesh-data-2026-10-23.md)。移除这些存储入口或用等效的真实文件生命周期回归替代后，才能移除本组测试。

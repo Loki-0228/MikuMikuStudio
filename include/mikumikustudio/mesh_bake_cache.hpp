@@ -34,7 +34,7 @@
 // that copy, so the caller may delete the input file at any time afterwards.
 // The private directory is created on first use as
 //
-//     <system temporary directory>\MikuMikuStudio\mesh_bake_cache\
+//     <executable directory>\data\mesh_bake_cache\
 //         mesh-cache-<process id>-<32 random hex digits>\
 //
 // and is only accepted when this process created it, so several running
@@ -43,6 +43,9 @@
 // only while it is empty; the shared root above it is never removed, not even
 // recursively, so files that belong to another instance or to the user are
 // never touched.
+// Failure to locate or create this installation's data directory rejects the
+// install; no system-temporary or working-directory fallback is used. Pending
+// save snapshots retain their private archives even after Clear.
 //
 // Save publishes a persistent sidecar next to the PMM,
 //
