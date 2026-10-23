@@ -51,6 +51,9 @@ static bool WaitFor(const wchar_t* path, const char* markers, int iterations) {
 int wmain() {
     const wchar_t* logPath = _wgetenv(L"MMS_ABI_PROBE_LOG");
     if (!logPath || !*logPath) { std::fprintf(stderr, "MMS_ABI_PROBE_LOG missing\n"); return 2; }
+    // The probe owns its log; a stale file from an earlier run must never
+    // satisfy the marker waits below.
+    DeleteFileW(logPath);
     // MMDApp is close to 670 KiB; keep it off the reserved thread stack.
     auto appOwner = std::make_unique<MMDApp>();
     auto& app = *appOwner;
@@ -71,8 +74,9 @@ int wmain() {
     const void* removedToken = reinterpret_cast<const void*>(static_cast<std::uintptr_t>(0x5150));
     plugins::SceneObjectIdentity(removedToken);
     plugins::PluginNotifyObjectRemoved(&app, removedToken);
-    // The runtime window subclass handles WM_DPICHANGED in production; this
-    // focused probe calls the same host entry deterministically.
+    // Sending a synthetic WM_DPICHANGED to the hidden main window did not
+    // reach the runtime subclass in this fixture, so the probe calls the same
+    // host entry deterministically until the message path is diagnosed.
     plugins::PluginNotifyDpiChanged(&app, 144);
     Check(WaitFor(logPath,
         "EVENT_LANGUAGE\nEVENT_DEVICE_LOST\nEVENT_DEVICE_RESTORED\nEVENT_PROJECT_CLOSED\n"
