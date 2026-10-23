@@ -1,6 +1,6 @@
 # main 行为同步矩阵
 
-核对日期：2026-10-23。main 工作区 `D:/MMD-Next/MMS` 的已提交 HEAD 为 `fed9768`；ABI 工作区 `D:/MMD-Next/MMS-abi-dev` 的 `codex/plugin-abi` 为此前提交。分叉点为 `9eec5cf`，核对时 `rev-list --left-right --count main...HEAD` 为 `38 232`。本页只按可观察行为核对，不要求逐提交合并；main 未提交改动没有被读取或复制。
+核对日期：2026-10-23。main 工作区 `D:/MMD-Next/MMS` 本轮核对时已提交 HEAD 为 `fed9768`；当日晚间 main 又提交 `0fa22b9`，已单独列入下方待同步项。ABI 工作区 `D:/MMD-Next/MMS-abi-dev` 的 `codex/plugin-abi` 为此前提交。分叉点为 `9eec5cf`，核对时 `rev-list --left-right --count main...HEAD` 为 `38 232`。本页只按可观察行为核对，不要求逐提交合并；main 未提交改动没有被读取或复制。
 
 状态口径：
 
@@ -29,6 +29,14 @@
 | `609bf4d` | PMM 0003 | 独立块容器编解码器 | 已同步（模块级，main 也未接入生产） |
 | `bcf595f` `dc8c1e0` | UI、命名 | 显示名与 C++ 命名空间改为 MikuMikuStudio | 已同步 |
 | `1b9acad` `877cdd3` `bb99252` `39996bf` `9ede691` | 文档、测试、设计 | 发布说明、MME 截图记录、命名审计、PMM 设计稿 | 不适用 |
+
+## 2026-10-23 晚新增提交
+
+| 提交 | 行为 | ABI 现状 | 下一步 |
+| --- | --- | --- | --- |
+| `0fa22b9` | 近景细节层跟随相机画面：焦点深度取帧焦点经最终 world×view 变换后的视图深度，深度区间以焦点为中心、厚度等于该深度处画面的世界对角线；正交视图用可见对角线；包围球半径下限降到 0.0001。同时合入近景细节层与远景覆盖层分层采样，精度滑条只改贴图尺寸，独立动态精度控件退场。 | 待处理。ABI 只有 `fed9768` 批次的 `VisibleShadowReceiverBounds` 与聚焦拟合；没有 `VisibleShadowReceivers`、`CameraDepthShadowRegion`、`DetailShadowProjection`、分层采样或 `ShadowQualityMapSize`。 | 按 ABI 架构重新实现相机画面深度拟合、细节／覆盖双图与分层采样；同步设置界面与 `skin_effect_sm3.fx` 行为；用真实 D3D9 设备验证深度一致、细节覆盖宽度与像素差异，并保留原始兼容配置的旧路径。 |
+
+该提交的验证数字（`native_shadow_tests`、`--detail-only` 的 9216 像素恢复、四档距离的覆盖宽度与纹素密度）只能作为 main 侧参照，ABI 需要自己的本机证据。
 
 ## `3782e0c` 子项
 
