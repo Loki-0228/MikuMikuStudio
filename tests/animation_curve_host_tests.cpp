@@ -684,6 +684,16 @@ int main(){
     for(unsigned lang=0;lang<3;++lang){app->EnglishUI()=uint8_t(lang);curve_host::Localize(app.get());
         wchar_t text[64]{};GetWindowTextW(GetDlgItem(parent,472),text,64);Check(wcslen(text)>0,"localized load label");
         Check(GetMenuState(file,curve_editor::kAccessoryMotionMenu,MF_BYCOMMAND)!=UINT(-1),"explicit accessory VMD menu exists");
+        const int previousMode=app->CameraMode();
+        for(int mode:{0,1,0,1}) {
+            app->CameraMode()=mode;curve_host::Localize(app.get());
+            Check((GetMenuState(file,curve_editor::kAccessoryMotionMenu,MF_BYCOMMAND)&MF_GRAYED)==(mode?0:MF_GRAYED),
+                "accessory motion menu is available only in camera mode");
+            SendMessageW(parent,WM_INITMENUPOPUP,reinterpret_cast<WPARAM>(file),0);
+            Check((GetMenuState(file,curve_editor::kAccessoryMotionMenu,MF_BYCOMMAND)&MF_GRAYED)==(mode?0:MF_GRAYED),
+                "opening the menu preserves its mode-dependent availability");
+        }
+        app->CameraMode()=previousMode;
     }
     curve_host::Open(app.get(),false);
     Check(GetForegroundWindow()!=parent,"hidden integration does not activate host");
