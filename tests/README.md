@@ -204,6 +204,8 @@ MikuMikuDance.exe <另一个新输出前缀> 1 --emm-default-off [素材PMM绝�
 
 `plugin_abi_tests` 是 ABI 契约主套件：默认模式传 hello 探针目录、lifecycle DLL 与编辑探针路径，重建后 `PASS checks=44752`。过时的编号配对发布测试已删除（当前增量保存语义由 `project_save_export_tests --numbered-only` 和保留链测试覆盖）。
 
+`plugin_abi_host_events` 在真实隐藏窗口上初始化生产插件运行时并加载 lifecycle 插件，验证工程关闭、语言切换、设备丢失与设备恢复四个宿主事件能经业务事件队列在安全边界到达插件并带合法负载；插件日志同时覆盖 UI 注册表事件与正常停止。
+
 `business_event_tests` 加载真实 lifecycle 探针插件，验证 UI 注册表与布局提交在 `Drain` 中合并投递的 `UI_REGISTRY_CHANGED`／`LAYOUT_CHANGED`：负载版本、大小、非零修订号、每轮合并次数与插件正常停止，共 7 项检查。
 
 `model_vertex_cache_tests` 覆盖顶点缓存与帧内阴影包围盒复用（611 个字节精确参照用例，PMD/PMX UV0-4）；`runtime_layout_tests` 在原始配置跳过曲线宿主读数用例并继续其余布局检查；`sidebar_resize_tests` 是完整配置专用宿主测试（原始配置不创建该目标），隔离运行约 40 秒。
