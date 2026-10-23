@@ -11,6 +11,7 @@ namespace mikumikustudio {
 class MMDApp;
 namespace nvidia_antialias_menu {
 inline constexpr unsigned kInstallCommand = 34920;
+inline constexpr unsigned kUninstallCommand = 34921;
 bool HandleMessage(MMDApp* app, UINT message, WPARAM wp, LPARAM lp);
 }
 }
