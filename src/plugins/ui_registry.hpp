@@ -85,6 +85,7 @@ class UiRegistry {
     DWORD thread_ = GetCurrentThreadId();
     uint64_t revision_ = 1, next_ = 1, generation_ = 1, nextPresentation_ = 1;
     std::function<void(uint64_t)> layoutChanged_;
+    std::function<void(const std::string&, uint64_t)> propertyChanged_;
     uint64_t nextPropertyGeneration_ = 1;
     unsigned callbackDepth_ = 0;
     UiClient* invoking_ = nullptr;
@@ -171,6 +172,9 @@ public:
     MmsResult WithReadOnlyCallback(MmsResult (*)(void*), void*);
     void SetPropertyStageBridge(PropertyStageBridge bridge) { propertyStageBridge_ = std::move(bridge); }
     void SetLayoutChanged(std::function<void(uint64_t)> changed) { layoutChanged_ = std::move(changed); }
+    void SetPropertyChanged(std::function<void(const std::string&, uint64_t)> changed) {
+        propertyChanged_ = std::move(changed);
+    }
     MmsResult WithPropertyStage(const std::shared_ptr<PropertyRecord>&, MmsHandle,
         const std::function<MmsResult(const PropertyStageFrame&)>&);
     bool IsPropertyStageCurrent(const PropertyStageFrame&) const noexcept;

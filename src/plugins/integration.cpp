@@ -84,6 +84,8 @@ struct BusinessNotification {
     std::vector<unsigned char> bytes;
 };
 std::deque<BusinessNotification> businessEvents;
+// Probe-only property ids must outlive the deferred delivery payload.
+std::deque<std::string> propertyProbeIds;
 uint64_t deviceGeneration = 1;
 constexpr UINT kProjectEvent = WM_APP + 0x6b;
 constexpr UINT_PTR kProjectRetry = 0x4d4d536b;
@@ -236,6 +238,14 @@ void PluginNotifyDeviceLost(MMDApp* app) { NotifyDeviceLostEvent(app); }
 void PluginNotifyDeviceRestored(MMDApp* app) { NotifyDeviceRestoredEvent(app); }
 void PluginNotifyObjectRemoved(MMDApp* app, const void* native) { NotifyObjectRemovedEvent(app, native); }
 void PluginNotifyDpiChanged(MMDApp* app, unsigned dpi) { NotifyDpiChangedEvent(app, dpi); }
+void PluginNotifyPropertyChanged(MMDApp* app, const std::string& propertyId, uint64_t revision) {
+    if (!manager || !app || propertyId.empty() || !revision) return;
+    propertyProbeIds.push_back(propertyId);
+    const std::string& stored = propertyProbeIds.back();
+    MmsPropertyEventV1 payload{Header<MmsPropertyEventV1>(),
+        {stored.data(), stored.size()}, {}, revision};
+    QueueBusinessEvent(app, MMS_EVENT_PROPERTY_CHANGED, 1, &payload, sizeof(payload));
+}
 
 static void InitializeRuntime(MMDApp* app, bool migrationTest) {
     if (build_profile::original || !app || manager) return;

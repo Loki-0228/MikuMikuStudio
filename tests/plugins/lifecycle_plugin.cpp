@@ -281,6 +281,16 @@ static void MMS_CALL Event(void* context, const MmsEventV1* event) {
         if(!revision){Log(p,"COMMAND_STATE_REVISION_FAIL");return;}
         Log(p,"EVENT_COMMAND_STATE");return;
     }
+    if(event->kind==MMS_EVENT_PROPERTY_CHANGED) {
+        if(event->payloadVersion!=1 || event->payload.bytes!=sizeof(MmsPropertyEventV1)) {
+            Log(p,"PROPERTY_PAYLOAD_FAIL");return;
+        }
+        const auto* payload=static_cast<const MmsPropertyEventV1*>(event->payload.data);
+        if(!payload->propertyId.data || !payload->propertyId.bytes || !payload->revision) {
+            Log(p,"PROPERTY_VALUE_FAIL");return;
+        }
+        Log(p,"EVENT_PROPERTY_CHANGED");return;
+    }
     if(event->kind==MMS_EVENT_OBJECT_REMOVED) {
         if((!event->object.id.lo && !event->object.id.hi) || !event->object.generation) {
             Log(p,"OBJECT_REMOVED_PAYLOAD_FAIL");return;

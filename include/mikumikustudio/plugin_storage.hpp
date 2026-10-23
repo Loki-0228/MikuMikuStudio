@@ -1,5 +1,7 @@
 #pragma once
+#include <cstdint>
 #include <memory>
+#include <string>
 namespace mikumikustudio {
 class MMDApp;
 namespace plugins {
@@ -39,6 +41,7 @@ void PluginNotifyDeviceLost(MMDApp*);
 void PluginNotifyDeviceRestored(MMDApp*);
 void PluginNotifyObjectRemoved(MMDApp*, const void* native);
 void PluginNotifyDpiChanged(MMDApp*, unsigned dpi);
+void PluginNotifyPropertyChanged(MMDApp*, const std::string& propertyId, uint64_t revision);
 // Pure filesystem work; callers check native backup ownership and serialize
 // retention for their backup directory before calling, including on a worker.
 bool DeletePluginBackup(const wchar_t*);

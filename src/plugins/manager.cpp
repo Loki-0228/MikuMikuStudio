@@ -127,6 +127,9 @@ struct Manager::Impl {
         }, [this](UiClient& client, const PropertyInputSnapshot& snapshot, const MmsValue& value) {
             return InputEdit(client, snapshot, value);
         });
+        registry.SetPropertyChanged([this](const std::string& id, uint64_t revision) {
+            BroadcastPropertyChanged(id, revision);
+        });
     }
     ~Impl() { if (wake) DestroyWindow(wake); }
     bool EditOrigin(const Instance& i) const noexcept {
@@ -500,6 +503,11 @@ struct Manager::Impl {
             ++active; auto r = Boundary([&] { i->api.onEvent(i->instance, &event); return MMS_OK; }); --active;
             if (r) Write(i->ui.id + ": event callback failed");
         }
+    }
+    void BroadcastPropertyChanged(const std::string& id, uint64_t revision) {
+        if (id.empty() || !revision) return;
+        MmsPropertyEventV1 payload{Header<MmsPropertyEventV1>(), {id.data(), id.size()}, {}, revision};
+        Event(MMS_EVENT_PROPERTY_CHANGED, {&payload, sizeof(payload)}, 1);
     }
     bool StopOne(Instance& i) {
         i.stopping = true; i.ui.stopping = true; i.scene.stopping = true; i.storage.stopping = true; i.edit.stopping = true; i.status.stage = "stopping";

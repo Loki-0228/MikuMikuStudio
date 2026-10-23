@@ -822,7 +822,10 @@ MmsResult UiRegistry::CommitPropertyInput(const PropertyInputSnapshot& snapshot,
     if (callbackDepth_) return MMS_E_BUSY;
     const auto intent = snapshot.intent;
     const auto intended = [&]() noexcept { return !intent || intent->load(std::memory_order_acquire); };
-    return Boundary([&]() -> MmsResult {
+    std::string changedProperty;
+    UiClient* changedOwner = nullptr;
+    uint64_t changedRevision = 0;
+    const auto result = Boundary([&]() -> MmsResult {
         if (!intended() || !IsPropertyInputCurrent(snapshot)) return MMS_E_STALE;
         if (!snapshot.editable || !snapshot.sceneRevision || !propertyInputEdit_ || !propertyInputRevision_)
             return MMS_E_NOT_READY;
@@ -836,6 +839,8 @@ MmsResult UiRegistry::CommitPropertyInput(const PropertyInputSnapshot& snapshot,
             if (depth == elements.size()) return MMS_E_STALE;
         }
         const auto& info = snapshot.property->desc.info;
+        changedProperty = String(info.id);
+        changedRevision = snapshot.sceneRevision;
         if (value.type != info.valueType || value.components != info.components) return MMS_E_ARGUMENT;
         UiPropertyValue owned;
         if (const auto result = UiPropertyValue::Copy(value, owned)) return result;
@@ -851,6 +856,7 @@ MmsResult UiRegistry::CommitPropertyInput(const PropertyInputSnapshot& snapshot,
             return MMS_E_STALE;
         if (owned.Equals(fresh.value)) return MMS_OK;
         auto* owner = snapshot.property->owner;
+        changedOwner = owner;
         Callback guard(callbackDepth_); invoking_ = owner;
         struct Clear { UiClient*& value; ~Clear() { value = nullptr; } } clear{invoking_};
         if (!intended()) return MMS_E_STALE;
@@ -858,6 +864,19 @@ MmsResult UiRegistry::CommitPropertyInput(const PropertyInputSnapshot& snapshot,
         // cancels only the transaction it creates; commandFinished_ is not run.
         return propertyInputEdit_(*owner, snapshot, staged);
     });
+    if (result == MMS_OK && !changedProperty.empty() && propertyChanged_) {
+        uint64_t revision = changedRevision;
+        if (changedOwner && propertyInputRevision_) {
+            MmsResult queried = MMS_E_FAILED;
+            queried = propertyInputRevision_(*changedOwner, revision);
+            if (queried != MMS_OK) revision = changedRevision;
+        }
+        try {
+            propertyChanged_(changedProperty, revision);
+        } catch (...) {
+        }
+    }
+    return result;
 }
 MmsResult UiRegistry::WithElementState(MmsHandle handle, const std::function<MmsResult(const MmsCommandStateV1&)>& apply) {
     if (GetCurrentThreadId() != thread_) return MMS_E_THREAD;

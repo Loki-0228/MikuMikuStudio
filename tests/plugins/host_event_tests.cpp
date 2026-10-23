@@ -78,9 +78,10 @@ int wmain() {
     // reach the runtime subclass in this fixture, so the probe calls the same
     // host entry deterministically until the message path is diagnosed.
     plugins::PluginNotifyDpiChanged(&app, 144);
+    plugins::PluginNotifyPropertyChanged(&app, "camera.distance", 7);
     Check(WaitFor(logPath,
         "EVENT_LANGUAGE\nEVENT_DEVICE_LOST\nEVENT_DEVICE_RESTORED\nEVENT_PROJECT_CLOSED\n"
-        "EVENT_OBJECT_REMOVED\nEVENT_DPI", 800),
+        "EVENT_OBJECT_REMOVED\nEVENT_DPI\nEVENT_PROPERTY_CHANGED", 800),
         "queued host events reach the plugin with valid payloads");
 
     const auto body = ReadLog(logPath);
@@ -91,7 +92,9 @@ int wmain() {
           body.find("OBJECT_REMOVED_PAYLOAD_FAIL") == std::string::npos &&
           body.find("DPI_VALUE_FAIL") == std::string::npos &&
           body.find("COMMAND_STATE_PAYLOAD_FAIL") == std::string::npos &&
-          body.find("COMMAND_STATE_REVISION_FAIL") == std::string::npos,
+          body.find("COMMAND_STATE_REVISION_FAIL") == std::string::npos &&
+          body.find("PROPERTY_PAYLOAD_FAIL") == std::string::npos &&
+          body.find("PROPERTY_VALUE_FAIL") == std::string::npos,
         "no event payload validation failures");
     plugins::Shutdown();
     ShutdownCleanup(&app);
