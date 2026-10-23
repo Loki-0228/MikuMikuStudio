@@ -37,7 +37,7 @@ endforeach()
 foreach(catalog_test cache_catalog_tests cache_catalog_recovery_tests cache_catalog_allocation_tests cache_catalog_budget_tests
         cache_catalog_intent_tests cache_catalog_owned_recovery_tests
         cache_catalog_maintenance_tests cache_catalog_maintenance_recovery_tests
-        cache_catalog_maintenance_allocation_tests)
+        cache_catalog_maintenance_allocation_tests cache_catalog_pinned_tests)
     add_executable(${catalog_test} EXCLUDE_FROM_ALL tests/${catalog_test}.cpp)
     target_link_libraries(${catalog_test} PRIVATE mms_cache_catalog)
     target_compile_definitions(${catalog_test} PRIVATE _WIN32_WINNT=0x0601 WINVER=0x0601 NOMINMAX)

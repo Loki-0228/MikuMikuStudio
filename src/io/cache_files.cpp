@@ -227,6 +227,23 @@ Directory::~Directory() = default;
 Directory::Directory(Directory&&) noexcept = default;
 Directory& Directory::operator=(Directory&&) noexcept = default;
 bool Directory::IsValid() const noexcept { return bool(state_); }
+Result Directory::Share(Directory& output) const noexcept {
+    if (!state_) return Result::Invalid;
+    output.state_ = state_;
+    return Result::Ok;
+}
+Result Directory::GetIdentity(DirectoryIdentity& output) const noexcept {
+    if (!state_ || state_->guards.empty() || !state_->guards.back().Valid()) return Result::Invalid;
+    BY_HANDLE_FILE_INFORMATION info{};
+    if (!GetFileInformationByHandle(state_->guards.back().value, &info)) return Error();
+    if (!(info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ||
+        (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) return Result::Invalid;
+    DirectoryIdentity candidate;
+    candidate.volume = info.dwVolumeSerialNumber;
+    candidate.fileIndex = (std::uint64_t(info.nFileIndexHigh) << 32) | info.nFileIndexLow;
+    output = candidate;
+    return Result::Ok;
+}
 ReadLease::ReadLease() noexcept = default;
 ReadLease::~ReadLease() = default;
 ReadLease::ReadLease(ReadLease&&) noexcept = default;

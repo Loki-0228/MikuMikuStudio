@@ -26,6 +26,10 @@ struct Identity {
     std::uint64_t fileIndex = 0;
     std::uint64_t fileBytes = 0;
 };
+struct DirectoryIdentity {
+    std::uint32_t volume = 0;
+    std::uint64_t fileIndex = 0;
+};
 struct BlobInfo {
     std::wstring name;
     Spec spec;
@@ -121,6 +125,11 @@ public:
     // Directory guards deny write/delete sharing throughout
     // this object and every derived lease/lock. Failures preserve output.
     static Result Open(const std::filesystem::path& root, bool create, Directory& output) noexcept;
+    // Shares the already pinned directory and all ancestor guards without
+    // resolving a DOS path again. Failure preserves output; self-share is valid.
+    Result Share(Directory& output) const noexcept;
+    // Identity of the protected directory handle, not a blob's size/identity.
+    Result GetIdentity(DirectoryIdentity& output) const noexcept;
     // Opens one validated child using this directory's pinned volume path.
     // Retains parent guards; does not resolve the caller's DOS drive again.
     Result Child(const std::wstring& name, bool create, Directory& output) const noexcept;

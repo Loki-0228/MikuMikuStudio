@@ -42,6 +42,8 @@ private:
     void Swap(Snapshot&) noexcept;
     bool valid_ = false;
     std::filesystem::path root_;
+    cache_files::DirectoryIdentity rootIdentity_{};
+    bool boundRoot_ = false;
     std::uint64_t revision_ = 0;
     cache_files::Owner owner_{};
     cache_files::BlobInfo head_;
@@ -51,10 +53,20 @@ private:
 class Store {
 public:
     explicit Store(std::filesystem::path absoluteMetadataRoot);
+    // Retains a fixed directory and its ancestor guards. Copies share that
+    // binding. A moved-from or never-opened binding reports Invalid on every
+    // operation; it never falls back to resolving a path.
+    explicit Store(cache_files::Directory&& directory);
     // Read never initializes a missing store. A valid older record is not a
     // fallback when any present commit or active referenced snapshot is damaged.
     // Only an exact retirement list permits missing historical metadata.
     Result Read(Snapshot& output) const noexcept;
+    // Pins the verified current snapshot under the same catalog lock as Read.
+    // Success replaces lease with the already verified snapshot lease, so the
+    // catalog cannot retire that snapshot while the caller holds it; Read
+    // itself adds no second file read. Both outputs remain unchanged on
+    // failure. The returned lease outlives this Store and other result copies.
+    Result ReadPinned(Snapshot& output, cache_files::ReadLease& lease) const noexcept;
     // Only an empty catalog can initialize. Failed or interrupted initialization
     // that leaves files requires recovery; it is never silently reinitialized.
     Result Initialize(const std::vector<std::uint8_t>& bytes, Snapshot& output) const noexcept;
@@ -65,6 +77,9 @@ public:
     Result InitializeOwned(const cache_files::Owner& owner,
         const std::vector<std::uint8_t>& bytes, Snapshot& output) const noexcept;
     // Cross-process CAS under one file lock. expected and output may alias.
+    // Two path origins require identical path spelling as before. If either
+    // origin is explicitly directory-bound, physical root identity replaces
+    // that spelling check; all origins still require matching root and head.
     // Every failure preserves output. Indeterminate means a commit write was
     // attempted: callers must reread rather than blindly retry the mutation.
     Result Commit(const Snapshot& expected, const std::vector<std::uint8_t>& bytes,
@@ -85,6 +100,11 @@ public:
     Result RecoverOwned(RecoveryReport& report) const noexcept;
 private:
     std::filesystem::path root_;
+    bool boundMode_ = false;
+    std::shared_ptr<cache_files::Directory> bound_;
+    cache_files::Result OpenRoot(bool create, cache_files::Directory&) const noexcept;
+    bool AcceptOrigin(const Snapshot&) const noexcept;
+    Result ReadImpl(Snapshot&, cache_files::ReadLease*) const noexcept;
     Result Publish(const Snapshot* expected, const std::vector<std::uint8_t>& bytes,
         Snapshot& output, const cache_files::Owner* initialOwner = nullptr) const noexcept;
 };

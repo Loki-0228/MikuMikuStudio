@@ -16,6 +16,9 @@ bool Equal(const files::BlobInfo& a, const files::BlobInfo& b) noexcept {
         a.identity.volume == b.identity.volume && a.identity.fileIndex == b.identity.fileIndex &&
         a.identity.fileBytes == b.identity.fileBytes;
 }
+bool Equal(const files::DirectoryIdentity& a, const files::DirectoryIdentity& b) noexcept {
+    return a.volume == b.volume && a.fileIndex == b.fileIndex;
+}
 Result Convert(files::Result value) noexcept {
     switch (value) {
     case files::Result::Ok: return Result::Ok;
@@ -31,6 +34,15 @@ Result StoredError(files::Result value) noexcept {
     if (value == files::Result::Missing || value == files::Result::Invalid || value == files::Result::Limit)
         return Result::RecoveryRequired;
     return Convert(value);
+}
+// Opening the metadata root is not a stored-record failure. An invalid path or
+// an invalid/moved-from directory binding is always Invalid; every other
+// failure keeps the classification of the operation that opened the root.
+Result RootOpenError(files::Result value) noexcept {
+    return value == files::Result::Invalid ? Result::Invalid : Convert(value);
+}
+Result RootRecoveryError(files::Result value) noexcept {
+    return value == files::Result::Invalid ? Result::Invalid : StoredError(value);
 }
 bool IsSnapshot(const files::BlobInfo& info) noexcept { return info.spec.kind == files::Kind::CatalogSnapshot; }
 bool SameLocation(const files::BlobInfo& a, const files::BlobInfo& b) noexcept {
@@ -305,17 +317,36 @@ std::uint64_t PublicationBytes(const intent::Record& operation) noexcept {
 }
 
 Store::Store(std::filesystem::path absoluteMetadataRoot) : root_(std::move(absoluteMetadataRoot)) {}
+Store::Store(cache_files::Directory&& directory)
+    : boundMode_(true), bound_(std::make_shared<cache_files::Directory>(std::move(directory))) {}
+files::Result Store::OpenRoot(bool create, files::Directory& output) const noexcept {
+    if (boundMode_) return bound_ ? bound_->Share(output) : files::Result::Invalid;
+    return files::Directory::Open(root_, create, output);
+}
+bool Store::AcceptOrigin(const Snapshot& expected) const noexcept {
+    return expected.valid_ && (boundMode_ || expected.boundRoot_ || expected.root_ == root_);
+}
 void Snapshot::Swap(Snapshot& other) noexcept {
     std::swap(valid_, other.valid_); root_.swap(other.root_); std::swap(revision_, other.revision_);
+    std::swap(rootIdentity_, other.rootIdentity_); std::swap(boundRoot_, other.boundRoot_);
     owner_.swap(other.owner_); std::swap(head_, other.head_); bytes_.swap(other.bytes_);
 }
 Result Store::Read(Snapshot& output) const noexcept {
+    return ReadImpl(output, nullptr);
+}
+Result Store::ReadPinned(Snapshot& output, files::ReadLease& lease) const noexcept {
+    return ReadImpl(output, &lease);
+}
+Result Store::ReadImpl(Snapshot& output, files::ReadLease* lease) const noexcept {
     try {
         files::Directory directory;
-        auto io = files::Directory::Open(root_, false, directory);
-        if (io != files::Result::Ok) return Convert(io);
+        auto io = OpenRoot(false, directory);
+        if (io != files::Result::Ok) return RootOpenError(io);
         files::FileLock lock;
         io = directory.Lock(0, lock);
+        if (io != files::Result::Ok) return Convert(io);
+        files::DirectoryIdentity identity;
+        io = directory.GetIdentity(identity);
         if (io != files::Result::Ok) return Convert(io);
         files::Directory snapshots, commits;
         auto result = OpenChildren(directory, false, snapshots, commits);
@@ -323,10 +354,23 @@ Result Store::Read(Snapshot& output) const noexcept {
         Loaded loaded;
         result = Load(snapshots, commits, loaded);
         if (result != Result::Ok) return result;
+        // Load already inspected and digest-verified every present snapshot. The
+        // pinned result reuses that same lease for the current snapshot instead
+        // of reading the file again; it is the only lease moved out.
+        files::ReadLease pinned;
+        if (lease) {
+            const auto found = std::find_if(loaded.files.begin(), loaded.files.end(), [&](const auto& file) {
+                return !file.retired && Equal(file.info, loaded.currentSnapshot);
+            });
+            if (found == loaded.files.end() || !found->lease.IsValid()) return Result::RecoveryRequired;
+            pinned = std::move(found->lease);
+        }
         Snapshot candidate; candidate.root_ = root_; candidate.owner_ = loaded.owner;
+        candidate.rootIdentity_ = identity; candidate.boundRoot_ = boundMode_;
         candidate.revision_ = loaded.revision; candidate.head_ = std::move(loaded.head);
         candidate.bytes_ = std::move(loaded.bytes); candidate.valid_ = true;
         candidate.Swap(output);
+        if (lease) *lease = std::move(pinned);
         return Result::Ok;
     } catch (...) { return Result::Io; }
 }
@@ -343,13 +387,17 @@ Result Store::Commit(const Snapshot& expected, const std::vector<std::uint8_t>& 
 Result Store::Checkpoint(const Snapshot& expected, Snapshot& output) const noexcept {
     bool attempted = false;
     try {
-        if (!expected.valid_ || expected.root_ != root_) return Result::Conflict;
+        if (!AcceptOrigin(expected)) return Result::Conflict;
         files::Directory directory;
-        auto io = files::Directory::Open(root_, false, directory);
-        if (io != files::Result::Ok) return StoredError(io);
+        auto io = OpenRoot(false, directory);
+        if (io != files::Result::Ok) return RootRecoveryError(io);
         files::FileLock lock;
         io = directory.Lock(0, lock);
         if (io != files::Result::Ok) return Convert(io);
+        files::DirectoryIdentity identity;
+        io = directory.GetIdentity(identity);
+        if (io != files::Result::Ok) return Convert(io);
+        if (!Equal(expected.rootIdentity_, identity)) return Result::Conflict;
         files::Directory snapshots, commits;
         auto result = OpenChildren(directory, false, snapshots, commits);
         if (result != Result::Ok) return result == Result::Missing ? Result::RecoveryRequired : result;
@@ -363,6 +411,7 @@ Result Store::Checkpoint(const Snapshot& expected, Snapshot& output) const noexc
             return Result::Limit;
         Snapshot candidate;
         candidate.root_ = root_;
+        candidate.rootIdentity_ = identity; candidate.boundRoot_ = boundMode_;
         candidate.owner_ = current.owner;
         candidate.revision_ = current.revision + 1;
         candidate.bytes_ = current.bytes;
@@ -399,7 +448,7 @@ Result Store::Checkpoint(const Snapshot& expected, Snapshot& output) const noexc
 Result Store::CollectRetired(CollectionReport& report) const noexcept {
     try {
         files::Directory directory;
-        auto io = files::Directory::Open(root_, false, directory);
+        auto io = OpenRoot(false, directory);
         if (io != files::Result::Ok) return Convert(io);
         files::FileLock lock;
         io = directory.Lock(0, lock);
@@ -440,7 +489,7 @@ Result Store::CollectRetired(CollectionReport& report) const noexcept {
 Result Store::RecoverOwned(RecoveryReport& report) const noexcept {
     try {
         files::Directory directory;
-        auto io = files::Directory::Open(root_, false, directory);
+        auto io = OpenRoot(false, directory);
         if (io != files::Result::Ok) return Convert(io);
         files::FileLock lock;
         io = directory.Lock(0, lock);
@@ -565,16 +614,20 @@ Result Store::Publish(const Snapshot* expected, const std::vector<std::uint8_t>&
         if (initialOwner && (expected || std::all_of(initialOwner->begin(), initialOwner->end(),
             [](auto value) { return value == 0; }))) return Result::Invalid;
         if (bytes.size() > MaximumSnapshotBytes) return Result::Limit;
-        if (expected && (!expected->valid_ || expected->root_ != root_)) return Result::Conflict;
+        if (expected && !AcceptOrigin(*expected)) return Result::Conflict;
         // Copy caller-owned bytes before file creation; input may alias output.
         Snapshot candidate; candidate.root_ = root_; candidate.bytes_ = bytes;
         if (initialOwner) candidate.owner_ = *initialOwner;
         files::Directory directory;
-        auto io = files::Directory::Open(root_, !expected, directory);
-        if (io != files::Result::Ok) return expected ? StoredError(io) : Convert(io);
+        auto io = OpenRoot(!expected, directory);
+        if (io != files::Result::Ok) return expected ? RootRecoveryError(io) : RootOpenError(io);
         files::FileLock lock;
         io = directory.Lock(0, lock);
         if (io != files::Result::Ok) return Convert(io);
+        io = directory.GetIdentity(candidate.rootIdentity_);
+        if (io != files::Result::Ok) return Convert(io);
+        candidate.boundRoot_ = boundMode_;
+        if (expected && !Equal(expected->rootIdentity_, candidate.rootIdentity_)) return Result::Conflict;
         files::Directory snapshots, commits, operations;
         auto result = OpenChildren(directory, !expected, snapshots, commits, &operations);
         if (result != Result::Ok) return expected && result == Result::Missing ? Result::RecoveryRequired : result;
