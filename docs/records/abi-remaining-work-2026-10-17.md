@@ -17,6 +17,9 @@
 
 
 
+
+[命令状态变化事件](abi-command-state-events-2026-10-24.md)接入 `COMMAND_STATE_CHANGED`：`NativeUi` 在每次布局后比较带 `commandId` 元素的启用/选中/可见与上次观察，变化时以 UI 修订号经业务事件队列投递；Manager + NativeUi + lifecycle 插件探针调用命令改变选中位，12 项通过（含插件 `EVENT_COMMAND_STATE` 日志与负载校验）。10 个 CTest 模式与默认契约 44,752 项通过，两产品构建通过，正式 release 未覆盖。属性变更与计算策略事件仍未接入；真实主窗口 GUI 插件路径在探针中初始化后崩溃，原因未隔离。
+
 [对象删除与 DPI 事件](abi-host-events-object-dpi-2026-10-24.md)接入 `OBJECT_REMOVED`（模型与附件删除前取 `FindSceneObjectIdentity`，事件带 `MmsObjectRef`；`Manager::Event` 增加对象参数）与 `DPI_CHANGED`（运行时窗口子类处理 `WM_DPICHANGED` 并入队 `MmsCodeEventV1`）。真实 lifecycle 插件宿主探针通过，日志覆盖 8 个事件；10 个相关 CTest 模式与默认全量契约 44,752 项通过；两产品构建通过，正式 release 未覆盖。属性变更、命令状态、计算策略事件仍未接入；DPI 消息来源与对象删除真实菜单路径未端到端触发。
 
 [宿主侧业务事件](abi-host-events-2026-10-24.md)接入 `PROJECT_CLOSED`、`LANGUAGE_CHANGED`、`DEVICE_LOST`、`DEVICE_RESTORED`：宿主动作入队后经 posted message 在安全边界投递，负载为 `MmsProjectEventV1`／`MmsCodeEventV1`／`MmsDeviceEventV1`（版本 1），设备代次在恢复时递增；调用点覆盖工程重置、菜单 260、Present 丢失分支与 `PostDeviceReset` 成功路径。真实 lifecycle 插件宿主探针通过（4 项，插件日志含四个事件），10 个相关 CTest 模式与默认全量契约 44,752 项通过，两产品构建通过，正式 release 未覆盖。对象删除、属性/命令状态、计算策略与 DPI 变化事件仍未接入；真实设备丢失/重置未故障注入。
