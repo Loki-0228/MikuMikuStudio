@@ -1755,6 +1755,13 @@ struct AlphaClipVertex {
     float data[24]{};
 };
 
+bool UseOriginalAlphaVertices(MMDApp* app) {
+    // Bucket tiers need a complete, projection-independent set of source faces.
+    // The GPU clips them without changing their depth range or vertex IDs.
+    return app->TransparentMaterialSortPrecision()!=TransparentSortPrecision::Maximum ||
+        GetModuleHandleW(L"MMEffect.dll")!=nullptr;
+}
+
 double AlphaClipDistance(const AlphaClipVertex& v, int plane) {
     switch (plane) {
     case 0: return v.clip[3] + v.clip[0];
@@ -1766,11 +1773,7 @@ double AlphaClipDistance(const AlphaClipVertex& v, int plane) {
     }
 }
 
-// Each emitted piece keeps the source face's object, flags, source indices,
-// ordinal and whole-face linear depth; only the clipped geometry changes.
-// Returns false when a generated vertex cannot be projected safely.
-bool ClipAlphaTriangle(const AlphaClipVertex input[3],
-                       const transparent_geometry::Triangle& source,
+void ClipAlphaTriangle(const AlphaClipVertex input[3], UINT draw, UINT ordinal, UINT object,
                        std::vector<transparent_geometry::Triangle>& output) {
     std::vector<AlphaClipVertex> polygon(input, input + 3), next;
     for (int plane = 0; plane < 6 && !polygon.empty(); ++plane) {
@@ -1795,167 +1798,274 @@ bool ClipAlphaTriangle(const AlphaClipVertex input[3],
         polygon.swap(next);
     }
     for (std::size_t i = 1; i + 1 < polygon.size(); ++i) {
-        transparent_geometry::Triangle triangle = source;
+        transparent_geometry::Triangle triangle{};
+        triangle.draw = draw;
+        triangle.ordinal = ordinal;
+        triangle.object = object;
         const AlphaClipVertex* corners[] = {&polygon[0], &polygon[i], &polygon[i + 1]};
-        bool valid = true, finite = true;
+        bool valid = true;
         for (int c = 0; c < 3; ++c) {
             const auto& v = *corners[c];
             if (!(v.clip[3] > 1e-20)) { valid = false; break; }
             auto& out = triangle.v[c];
             out.inverseW = 1.0 / v.clip[3];
-            if (!std::isfinite(out.inverseW)) finite = false;
-            for (int j = 0; j < 3; ++j) {
-                out.p[j] = v.clip[j] * out.inverseW;
-                if (!std::isfinite(out.p[j])) finite = false;
-            }
+            for (int j = 0; j < 3; ++j) out.p[j] = v.clip[j] * out.inverseW;
             std::memcpy(out.data, v.data, sizeof(out.data));
-            for (int j = 0; j < 24; ++j)
-                if (!std::isfinite(out.data[j])) finite = false;
         }
-        if (!finite) return false;
         if (valid) output.push_back(triangle);
+    }
+}
+
+struct AlphaSource {
+    IDirect3DVertexBuffer9* buffer=nullptr;
+    const void* indices=nullptr;
+    std::size_t vertexBytes=0,indexBytes=0;
+    std::size_t firstTriangle=0,endTriangle=0;
+    bool reusable=false;
+    std::vector<unsigned char> vertices,sourceIndices;
+};
+struct AlphaGpu {
+    Microsoft::WRL::ComPtr<IDirect3DVertexBuffer9> vertices;
+    Microsoft::WRL::ComPtr<IDirect3DIndexBuffer9> indices;
+    UINT count=0;
+    bool valid=false;
+};
+struct AlphaPlan {
+    MMDApp* app=nullptr;
+    IDirect3DDevice9* device=nullptr;
+    std::vector<transparent_geometry::Triangle> source,sorted;
+    std::vector<AlphaSource> snapshots;
+    std::vector<unsigned char> key;
+    TransparentSortPrecision precision=TransparentSortPrecision::Off;
+    transparent_geometry::Statistics stats;
+    bool sortedValid=false,batchNative=false,crossObjects=false;
+    DWORD width=0,height=0;
+    AlphaGpu gpu;
+    struct Run {UINT draw,first,count;};
+    std::vector<Run> runs;
+};
+thread_local AlphaPlan alphaPlan;
+thread_local transparent_sort_cache::Statistics alphaCacheStats;
+thread_local int alphaCacheOverride=-1;
+constexpr std::size_t kAlphaSourceBudget=128u*1024u*1024u;
+constexpr std::size_t kAlphaGpuBudget=256u*1024u*1024u;
+bool AlphaCacheEnabled() {
+    if(alphaCacheOverride>=0)return alphaCacheOverride!=0;
+    static const bool disabled=[] {
+        wchar_t value[2]{};
+        return GetEnvironmentVariableW(L"MMS_TRANSPARENT_CACHE_DISABLE",value,2)==1 && value[0]==L'1';
+    }();
+    return !disabled;
+}
+template<class T> void AlphaKey(std::vector<unsigned char>& key,const T& value) {
+    const auto* p=reinterpret_cast<const unsigned char*>(&value);
+    key.insert(key.end(),p,p+sizeof(value));
+}
+// Exact CPU and GPU source bytes are checked even with MME. A pose revision
+// alone would miss effect-side writes to the host's original vertex buffer.
+bool AlphaSourceKey(MMDApp* app,const std::vector<NativeAlphaDraw>& draws,
+                    std::vector<unsigned char>& key,std::vector<AlphaSource>& sources) {
+    auto* device=app->Renderer()->device;
+    Matrix world{},view{},projection{};
+    if(FAILED(device->GetTransform(D3DTS_WORLD,reinterpret_cast<D3DMATRIX*>(&world))) ||
+       FAILED(device->GetTransform(D3DTS_VIEW,reinterpret_cast<D3DMATRIX*>(&view))) ||
+       FAILED(device->GetTransform(D3DTS_PROJECTION,reinterpret_cast<D3DMATRIX*>(&projection))))return false;
+    AlphaKey(key,world);AlphaKey(key,view);AlphaKey(key,projection);
+    AlphaKey(key,app->WorldViewProjection());
+    AlphaKey(key,UseOriginalAlphaVertices(app));
+    std::size_t bytes=0;
+    unsigned char* previous=nullptr;
+    for(const auto& draw:draws) {
+        const auto& state=*mdl::Mdl(draw.model);
+        AlphaKey(key,draw.model);AlphaKey(key,draw.selection.material);
+        AlphaKey(key,draw.selection.firstIndex);AlphaKey(key,draw.effect);
+        AlphaKey(key,mdl::Materials(draw.model)[draw.selection.material].faceVertexCount);
+        if(draw.model==previous)continue;
+        previous=draw.model;
+        DWORD fvf=0;UINT stride=0;ModelVertexFormat(draw.model,&fvf,&stride);
+        AlphaSource source;
+        source.buffer=static_cast<IDirect3DVertexBuffer9*>(state.vertexBuffer);
+        const auto* wide=native_mesh::Indices32(draw.model);
+        source.indices=wide ? static_cast<const void*>(wide) : mdl::Indices(draw.model);
+        source.vertexBytes=std::size_t(state.vertexCount)*stride;
+        source.indexBytes=std::size_t(state.indexCount)*4; // PMD CPU indices also have a four-byte stride
+        if(!source.indices || !PlausibleD3dObject(source.buffer) ||
+           source.vertexBytes>kAlphaSourceBudget-bytes)return false;
+        bytes+=source.vertexBytes;
+        if(source.indexBytes>kAlphaSourceBudget-bytes)return false;
+        bytes+=source.indexBytes;
+        AlphaKey(key,source.buffer);AlphaKey(key,source.indices);
+        AlphaKey(key,source.vertexBytes);AlphaKey(key,source.indexBytes);AlphaKey(key,stride);
+        sources.push_back(std::move(source));
     }
     return true;
 }
-
-// Same threshold OrderWithPolicy uses to drop a face without visible projected
-// area. An unknown external effect may move such a face in its vertex shader,
-// so the source-face path rejects it instead of silently omitting the face.
-bool AlphaFaceHasVisibleArea(const transparent_geometry::Triangle& triangle) {
-    const auto* a = triangle.v[0].p;
-    const auto* b = triangle.v[1].p;
-    const auto* c = triangle.v[2].p;
-    return std::abs((b[0] - a[0]) * (c[1] - a[1]) -
-                    (b[1] - a[1]) * (c[0] - a[0])) > 1e-24;
+bool SameAlphaSources(std::vector<AlphaSource>& now,const std::vector<AlphaSource>& saved) {
+    if(now.size()!=saved.size())return false;
+    bool all=true;
+    for(std::size_t i=0;i<now.size();++i) {
+        auto& a=now[i];const auto& b=saved[i];
+        D3DVERTEXBUFFER_DESC desc{};void* data=nullptr;
+        if(a.vertexBytes==b.vertices.size() && a.indexBytes==b.sourceIndices.size() &&
+           !std::memcmp(a.indices,b.sourceIndices.data(),a.indexBytes) &&
+           SUCCEEDED(a.buffer->GetDesc(&desc)) && a.vertexBytes<=desc.Size &&
+           SUCCEEDED(a.buffer->Lock(0,0,&data,D3DLOCK_READONLY))) {
+            const bool same=data && !std::memcmp(data,b.vertices.data(),a.vertexBytes);
+            a.reusable=SUCCEEDED(a.buffer->Unlock()) && same;
+        }
+        if(a.reusable)++alphaCacheStats.objectHits;
+        else {++alphaCacheStats.objectMisses;all=false;}
+    }
+    return all;
 }
 
-// The bucket tiers and every external-MMEffect Maximum frame keep complete
-// source faces and the model's own vertex buffer. Native Maximum clips first;
-// its fragments keep the source face fields the policy copies through. With an
-// external effect, a face the policy would filter fails the whole preparation.
 bool CollectAlphaGeometry(MMDApp* app, const std::vector<NativeAlphaDraw>& draws,
-                          bool sourceFaces, bool externalEffect,
-                          std::vector<transparent_geometry::Triangle>& triangles) {
+                          std::vector<transparent_geometry::Triangle>& triangles,
+                          std::vector<AlphaSource>* snapshots=nullptr,
+                          AlphaPlan* previous=nullptr) {
     auto* device = app->Renderer()->device;
+    const bool preserveVertexIdentity=UseOriginalAlphaVertices(app);
     Matrix world{}, view{}, projection{}, worldView{}, fixedTransform{};
     if (FAILED(device->GetTransform(D3DTS_WORLD, reinterpret_cast<D3DMATRIX*>(&world))) ||
         FAILED(device->GetTransform(D3DTS_VIEW, reinterpret_cast<D3DMATRIX*>(&view))) ||
         FAILED(device->GetTransform(D3DTS_PROJECTION, reinterpret_cast<D3DMATRIX*>(&projection)))) return false;
     Multiply(&worldView, &world, &view);
     Multiply(&fixedTransform, &worldView, &projection);
-    // Perspective clip W is linear camera depth; orthographic clip Z already is.
-    const bool perspective = projection.m[2][3] != 0.0f;
-    UINT ordinal = 0, object = 0;
-    unsigned char* currentModel = nullptr;
-    IDirect3DVertexBuffer9* locked = nullptr;
-    const unsigned char* vertices = nullptr;
-    struct Unlock {
-        IDirect3DVertexBuffer9*& buffer;
-        ~Unlock() { if (buffer) buffer->Unlock(); }
-    } unlock{locked};
+    UINT ordinal = 0;
+    UINT object=0;
+    unsigned char* previousModel=nullptr;
+    IDirect3DVertexBuffer9* lockedBuffer=nullptr;
+    void* data=nullptr;
+    struct Unlock { IDirect3DVertexBuffer9*& buffer; ~Unlock(){if(buffer)buffer->Unlock();} } unlock{lockedBuffer};
     for (UINT d = 0; d < draws.size(); ++d) {
         const auto& draw = draws[d];
         const auto& state = *mdl::Mdl(draw.model);
-        DWORD fvf = 0;
-        UINT stride = 0;
-        ModelVertexFormat(draw.model, &fvf, &stride);
-        (void)fvf;
-        if (draw.model != currentModel) {
-            if (locked && FAILED(locked->Unlock())) { locked = nullptr; return false; }
-            locked = nullptr;
-            if (currentModel) ++object;
-            currentModel = draw.model;
-            auto* buffer = static_cast<IDirect3DVertexBuffer9*>(state.vertexBuffer);
-            D3DVERTEXBUFFER_DESC desc{};
-            if (!PlausibleD3dObject(buffer) || stride < 3 * sizeof(float) ||
-                stride > sizeof(AlphaClipVertex::data) || FAILED(buffer->GetDesc(&desc)) ||
-                std::size_t(state.vertexCount) * stride > desc.Size) return false;
-            void* data = nullptr;
-            const HRESULT lockResult = buffer->Lock(0, 0, &data, D3DLOCK_READONLY);
-            if (FAILED(lockResult) || data == nullptr) {
-                if (SUCCEEDED(lockResult)) buffer->Unlock();
-                return false;
-            }
-            locked = buffer;
-            vertices = static_cast<const unsigned char*>(data);
-        }
-        const auto* pmx = native_mesh::Indices32(draw.model);
-        const auto* pmd = pmx == nullptr ? mdl::Indices(draw.model) : nullptr;
-        const UINT count = static_cast<UINT>(
-            mdl::Materials(draw.model)[draw.selection.material].faceVertexCount);
-        if ((!pmx && !pmd) || count % 3 || draw.selection.firstIndex > state.indexCount ||
-            count > state.indexCount - draw.selection.firstIndex) return false;
         const Matrix& transform = draw.effect
             ? *reinterpret_cast<const Matrix*>(&app->WorldViewProjection()) : fixedTransform;
-        for (UINT offset = 0; offset < count; offset += 3, ++ordinal) {
-            AlphaClipVertex clip[3]{};
+        auto* vb = static_cast<IDirect3DVertexBuffer9*>(state.vertexBuffer);
+        if (!PlausibleD3dObject(vb)) return false;
+        DWORD fvf; UINT stride;
+        ModelVertexFormat(draw.model, &fvf, &stride);
+        D3DVERTEXBUFFER_DESC desc{};
+        if (FAILED(vb->GetDesc(&desc)) || std::size_t(state.vertexCount) * stride > desc.Size) return false;
+        if(draw.model!=previousModel) {
+            if(lockedBuffer && FAILED(lockedBuffer->Unlock())){lockedBuffer=nullptr;return false;}
+            lockedBuffer=nullptr;
+            if(previousModel)++object;
+            previousModel=draw.model;
+            if(snapshots) {
+                auto& saved=(*snapshots)[object];
+                saved.firstTriangle=triangles.size();
+                if(saved.reusable && previous) {
+                    auto& old=previous->snapshots[object];
+                    triangles.insert(triangles.end(),previous->source.begin()+old.firstTriangle,
+                                     previous->source.begin()+old.endTriangle);
+                    saved.vertices=std::move(old.vertices);
+                    saved.sourceIndices=std::move(old.sourceIndices);
+                    saved.endTriangle=triangles.size();
+                    do {
+                        ordinal+=mdl::Materials(draws[d].model)[draws[d].selection.material].faceVertexCount/3;
+                        ++d;
+                    } while(d<draws.size() && draws[d].model==previousModel);
+                    --d;
+                    continue;
+                }
+            }
+            if(FAILED(vb->Lock(0,0,&data,D3DLOCK_READONLY)))return false;
+            lockedBuffer=vb;
+            if(!data)return false;
+            if(snapshots) {
+                auto& saved=(*snapshots)[object];
+                const auto* bytes=static_cast<const unsigned char*>(data);
+                saved.vertices.assign(bytes,bytes+saved.vertexBytes);
+                const auto* indices=static_cast<const unsigned char*>(saved.indices);
+                saved.sourceIndices.assign(indices,indices+saved.indexBytes);
+            }
+        }
+        const auto* pmx = native_mesh::Indices32(draw.model);
+        const auto* pmd = native_mesh::Indices32(draw.model) == nullptr ? mdl::Indices(draw.model) : nullptr;
+        bool valid = (pmx || pmd) && stride <= sizeof(AlphaClipVertex::data);
+        const UINT count = mdl::Materials(draw.model)[draw.selection.material].faceVertexCount;
+        for (UINT offset = 0; valid && offset < count; offset += 3, ++ordinal) {
+            AlphaClipVertex vertices[3]{};
             transparent_geometry::Triangle original{};
-            original.draw = d;
-            original.ordinal = ordinal;
-            original.object = object;
-            original.linearDepth = 0.0;
-            unsigned outside = 0x3Fu;
-            bool valid = true;
+            original.draw=d;original.ordinal=ordinal;original.object=object;
+            original.linearDepth=0;
+            unsigned outsidePlanes=0x3F;
             for (UINT c = 0; c < 3; ++c) {
                 const UINT at = draw.selection.firstIndex + offset + c;
-                const UINT index = pmx ? static_cast<UINT>(pmx[at])
-                                       : static_cast<UINT>(pmd[std::size_t(2) * at]);
-                original.sourceIndices[c] = index;
+                const UINT index = pmx ? UINT(pmx[at]) : UINT(pmd[2 * at]);
+                original.sourceIndices[c]=index;
                 if (index >= state.vertexCount) { valid = false; break; }
-                auto& v = clip[c];
-                std::memcpy(v.data, vertices + std::size_t(index) * stride, stride);
-                // Normal/UV/etc. NaN or Inf is an input error in every path:
-                // the source-face plan must not carry it, and Maximum would
-                // interpolate and upload non-finite attributes. Reject the
-                // whole preparation so the authored draw path handles the data.
-                bool finiteData = true;
-                for (int j = 0; j < 24; ++j)
-                    if (!std::isfinite(v.data[j])) { finiteData = false; break; }
-                if (!finiteData) { valid = false; break; }
+                auto& v = vertices[c];
+                std::memcpy(v.data, static_cast<const char*>(data) + std::size_t(index) * stride, stride);
                 for (int j = 0; j < 4; ++j) {
                     v.clip[j] = double(v.data[0]) * transform.m[0][j] +
                                 double(v.data[1]) * transform.m[1][j] +
                                 double(v.data[2]) * transform.m[2][j] + transform.m[3][j];
                     if (!std::isfinite(v.clip[j])) valid = false;
                 }
-                original.linearDepth += perspective ? v.clip[3] : v.clip[2];
-                outside &= transparent_geometry::FrustumOutsidePlanes(v.clip);
+                // Perspective W is linear camera Z, before the nonlinear Z/W
+                // mapping. Orthographic clip Z is already linear. Accumulate
+                // the original face, including portions outside the viewport.
+                original.linearDepth+=projection.m[2][3]!=0 ? v.clip[3] : v.clip[2];
+                outsidePlanes&=transparent_geometry::FrustumOutsidePlanes(v.clip);
             }
-            if (!valid || !std::isfinite(original.linearDepth)) return false;
-            // All three vertices beyond one plane is the conservative whole-face
-            // classification; a face that merely crosses a plane stays visible.
-            if (outside) original.flags |= transparent_geometry::kOutsideFrustum;
-            if (!sourceFaces) {
-                if (!ClipAlphaTriangle(clip, original, triangles)) return false;
-                continue;
-            }
-            // Source faces keep the model's vertex buffer. A face that cannot be
-            // projected safely is never dropped or clipped silently: fail the
-            // preparation so the caller redraws the authored order instead.
-            for (UINT c = 0; c < 3; ++c) {
-                auto& out = original.v[c];
-                const double w = clip[c].clip[3];
-                if (!(w > 0.0)) { valid = false; break; }
-                out.inverseW = 1.0 / w;
-                if (!std::isfinite(out.inverseW)) { valid = false; break; }
-                for (int j = 0; j < 3; ++j) {
-                    out.p[j] = clip[c].clip[j] * out.inverseW;
-                    if (!std::isfinite(out.p[j])) valid = false;
+            if (valid && preserveVertexIdentity) {
+                if(outsidePlanes)
+                    original.flags|=transparent_geometry::kOutsideFrustum;
+                // Keep complete original faces and vertex IDs. Clipping or
+                // expanding a new VB changes MME's _INDEX and makes effects
+                // such as MotionBlur read another vertex's previous position.
+                // The GPU still performs ordinary frustum clipping at draw.
+                for(UINT c=0;c<3;++c) {
+                    auto& out=original.v[c];const auto& in=vertices[c];
+                    const double w=std::max(std::abs(in.clip[3]),1e-20);
+                    out.inverseW=1/w;
+                    for(int j=0;j<3;++j)out.p[j]=in.clip[j]/w;
+                    std::memcpy(out.data,in.data,sizeof(out.data));
                 }
-                std::memcpy(out.data, clip[c].data, sizeof(out.data));
-            }
-            if (!valid) return false;
-            // Non-finite geometry already failed above; the remaining policy
-            // filter is the projected-area threshold.
-            if (externalEffect && !AlphaFaceHasVisibleArea(original)) return false;
-            triangles.push_back(original);
+                triangles.push_back(original);
+            } else if (valid) ClipAlphaTriangle(vertices, d, ordinal, object, triangles);
         }
-    }
-    if (locked) {
-        if (FAILED(locked->Unlock())) { locked = nullptr; return false; }
-        locked = nullptr;
+        if (!valid) return false;
+        if(snapshots)(*snapshots)[object].endTriangle=triangles.size();
     }
     return true;
+}
+
+bool UploadAlphaGpu(IDirect3DDevice9* device,AlphaGpu& gpu,
+                    const std::vector<transparent_geometry::Triangle>& sorted,bool originalVertices) {
+    const UINT count=UINT(sorted.size()*3);
+    if(gpu.valid && count<=gpu.count){++alphaCacheStats.gpuHits;return true;}
+    if((!originalVertices && !gpu.vertices) || !gpu.indices || count>gpu.count) {
+        gpu=AlphaGpu{};
+        if((!originalVertices && FAILED(device->CreateVertexBuffer(count*96,D3DUSAGE_DYNAMIC|D3DUSAGE_WRITEONLY,0,
+            D3DPOOL_DEFAULT,&gpu.vertices,nullptr))) ||
+           FAILED(device->CreateIndexBuffer(count*4,D3DUSAGE_DYNAMIC|D3DUSAGE_WRITEONLY,D3DFMT_INDEX32,
+            D3DPOOL_DEFAULT,&gpu.indices,nullptr))) {gpu=AlphaGpu{};return false;}
+        void* data=nullptr;
+        if(FAILED(gpu.indices->Lock(0,0,&data,0))) {gpu=AlphaGpu{};return false;}
+        for(UINT i=0;i<count;++i)static_cast<UINT*>(data)[i]=i;
+        if(FAILED(gpu.indices->Unlock())) {gpu=AlphaGpu{};return false;}
+        gpu.count=count;alphaCacheStats.allocations+=originalVertices?1:2;
+    }
+    if(originalVertices) {
+        void* memory=nullptr;
+        if(FAILED(gpu.indices->Lock(0,0,&memory,D3DLOCK_DISCARD)))return false;
+        auto* indices=static_cast<UINT*>(memory);
+        for(const auto& triangle:sorted)for(auto index:triangle.sourceIndices)*indices++=index;
+        if(FAILED(gpu.indices->Unlock()))return false;
+        gpu.valid=true;++alphaCacheStats.uploads;return true;
+    }
+    void* destination=nullptr;
+    if(FAILED(gpu.vertices->Lock(0,count*96,&destination,D3DLOCK_DISCARD)))return false;
+    auto* floats=static_cast<float*>(destination);
+    for(const auto& triangle:sorted)for(const auto& vertex:triangle.v) {
+        std::memcpy(floats,vertex.data,sizeof(vertex.data));floats+=24;
+    }
+    if(FAILED(gpu.vertices->Unlock()))return false;
+    gpu.valid=true;++alphaCacheStats.uploads;return true;
 }
 
 // Optional, explicit diagnostic output: projected geometry, never a desktop capture.
@@ -1983,8 +2093,7 @@ void DumpAlphaGeometry(const std::vector<transparent_geometry::Triangle>& source
 
 
 bool RenderPeelingAlpha(MMDApp* app,const std::vector<NativeAlphaDraw>& draws,
-                       const std::vector<transparent_geometry::Triangle>& input,
-                       bool& submitted) {
+                       const std::vector<transparent_geometry::Triangle>& input) {
     const auto precision=app->TransparentMaterialSortPrecision();
     // Only Maximum peels. The three lower strengths only reorder whole faces.
     if(precision!=TransparentSortPrecision::Maximum)return false;
@@ -2052,140 +2161,14 @@ bool RenderPeelingAlpha(MMDApp* app,const std::vector<NativeAlphaDraw>& draws,
     // A budget/device/effect failure must replay the whole set via the fallback,
     // rather than leave only the already processed far layers in the scene.
     app->ActiveRenderObject()=nullptr;app->ActiveRenderPass()=AccessoryRenderPass::None;
-    // Commit() blends into the main render target; from here on an exception
-    // must not trigger a fallback replay over the already blended prefix.
-    if (complete && valid) submitted = true;
     const bool committed = complete && valid && peel.Commit();
     runtime_log::Trace("alpha-peel input=%zu layers=%u complete=%u committed=%u precision=%u limit=%u",
                        input.size(),layers,complete?1:0,committed?1:0,unsigned(precision),limit);
     return committed;
 }
 
-// DrawModelMaterials resolves textures lazily. The first non-empty lookup after
-// a resource-pool generation change rebuilds the shared lookup index (deque and
-// map) and can throw bad_alloc. Resolve every texture the pending runs will ask
-// for before the first main render-target submission, so that failure stays in
-// the replay-safe preparation phase. This is preparation, not exception hiding:
-// a failure here still returns false and falls back.
-void WarmAlphaMaterialTextures(MMDApp* app, D3DRenderer* sub,
-                               const std::vector<NativeAlphaDraw>& draws,
-                               const std::vector<transparent_geometry::Triangle>& sorted) {
-    if (sub == nullptr) return;
-    float toon[4];
-    for (std::size_t first = 0; first < sorted.size();) {
-        std::size_t end = first + 1;
-        const UINT d = sorted[first].draw;
-        while (end < sorted.size() && sorted[end].draw == d) ++end;
-        const auto& draw = draws[d];
-        const auto& record = mdl::Materials(draw.model)[draw.selection.material];
-        FindCachedTexture(sub, record.texturePath);
-        FindCachedTexture(sub, record.spherePath);
-        // Fixed and effect material setup use different toon readers.
-        ResolveModelToonTexture(app, sub, *mdl::Mdl(draw.model), record);
-        if (draw.effect)
-            ResolveModelToonColor(app, sub, *mdl::Mdl(draw.model), record, toon);
-        first = end;
-    }
-}
-
-// Per-frame CPU plan for the sorted alpha pass. A plan is published only after
-// every ordering step succeeded; a failed preparation leaves no valid cache
-// entry behind, so callers fall back to the authored draw order.
-struct AlphaPlan {
-    MMDApp* owner = nullptr;
-    std::vector<transparent_geometry::Triangle> source, sorted;
-    TransparentSortPrecision precision = TransparentSortPrecision::Off;
-    transparent_geometry::Statistics stats;
-    bool valid = false;
-    bool sourceFaces = false;
-    bool split = false;
-    bool retainOutside = false;
-    bool crossObjects = false;
-    bool externalEffect = false;
-    bool batchNative = false;
-    DWORD width = 0, height = 0;
-};
-
-// Restores the device stream/indices/declaration and the app pass/object after
-// the sorted pass, including early preparation exits. The destructor performs
-// no allocation and no fallible bookkeeping.
-struct AlphaDrawState {
-    MMDApp* app = nullptr;
-    IDirect3DDevice9* device = nullptr;
-    IDirect3DVertexBuffer9* vertices = nullptr;
-    IDirect3DIndexBuffer9* indices = nullptr;
-    IDirect3DVertexDeclaration9* declaration = nullptr;
-    UINT offset = 0, stride = 0;
-    DWORD fvf = 0;
-    AccessoryRenderPass pass = AccessoryRenderPass::None;
-    void* object = nullptr;
-    bool captured = false;
-    ~AlphaDrawState() {
-        if (captured) {
-            device->SetStreamSource(0, vertices, offset, stride);
-            device->SetIndices(indices);
-            if (declaration) device->SetVertexDeclaration(declaration);
-            else device->SetFVF(fvf);
-            app->ActiveRenderPass() = pass;
-            app->ActiveRenderObject() = object;
-        }
-        Release();
-    }
-    void Release() {
-        if (vertices) { vertices->Release(); vertices = nullptr; }
-        if (indices) { indices->Release(); indices = nullptr; }
-        if (declaration) { declaration->Release(); declaration = nullptr; }
-    }
-    bool Capture(MMDApp* owner) {
-        app = owner;
-        device = owner->Renderer()->device;
-        pass = app->ActiveRenderPass();
-        object = app->ActiveRenderObject();
-        if (FAILED(device->GetStreamSource(0, &vertices, &offset, &stride)) ||
-            FAILED(device->GetIndices(&indices)) ||
-            FAILED(device->GetFVF(&fvf)) ||
-            FAILED(device->GetVertexDeclaration(&declaration))) {
-            // A failed read must never hand back partial or null state:
-            // drop every reference already acquired and leave the device as is.
-            Release();
-            return false;
-        }
-        captured = true;
-        return true;
-    }
-};
-
-struct AlphaGpuCache {
-    IDirect3DVertexBuffer9* vertices = nullptr;
-    IDirect3DIndexBuffer9* indices = nullptr;
-    UINT vertexBytes = 0, indexBytes = 0;
-    IDirect3DDevice9* device = nullptr;
-    MMDApp* owner = nullptr;
-    bool sourceFaces = false;
-};
-AlphaGpuCache alphaGpu;
-bool alphaCacheEnabled = true;
-std::uint64_t alphaPlanHits = 0, alphaPlanMisses = 0, alphaSourceHits = 0, alphaSourceMisses = 0;
-std::uint64_t alphaGpuHits = 0, alphaUploads = 0, alphaAllocations = 0;
-std::uint64_t alphaObjectHits = 0, alphaObjectMisses = 0;
-std::size_t alphaGpuBytes = 0;
-void ReleaseAlphaGpu() noexcept {
-    if (alphaGpu.vertices) { alphaGpu.vertices->Release(); alphaGpu.vertices = nullptr; }
-    if (alphaGpu.indices) { alphaGpu.indices->Release(); alphaGpu.indices = nullptr; }
-    alphaGpu.vertexBytes = alphaGpu.indexBytes = 0;
-    alphaGpu.device = nullptr; alphaGpu.owner = nullptr; alphaGpu.sourceFaces = false;
-    alphaGpuBytes = 0;
-}
-struct AlphaBufferView {
-    IDirect3DVertexBuffer9* vertices = nullptr;
-    IDirect3DIndexBuffer9* indices = nullptr;
-};
-
-bool RenderSplitOrderedAlphaImpl(MMDApp* app, bool effectFrame, bool& submitted) {
-    submitted = false;
+bool RenderSplitOrderedAlphaImpl(MMDApp* app, bool effectFrame) {
     if (app->WireframeRenderingEnabled() || (effectFrame && app->ModelNonDisplayMode())) return false;
-    const auto precision = app->TransparentMaterialSortPrecision();
-    if (precision == TransparentSortPrecision::Off) return false;
     std::vector<NativeAlphaDraw> draws;
     auto* sub = app->Renderer();
     // Additive materials retain their authored placement. The regular alpha
@@ -2214,246 +2197,126 @@ bool RenderSplitOrderedAlphaImpl(MMDApp* app, bool effectFrame, bool& submitted)
             first += count;
         }
     }
-    if (draws.empty()) return false;
-    // Range, split and source-identity decisions are fixed once per frame. An
-    // external MMEffect.dll keeps whole source faces even at Maximum because an
-    // unknown vertex shader may depend on the original vertex identity.
-    const bool externalEffect = GetModuleHandleW(L"MMEffect.dll") != nullptr;
-    const bool split = precision == TransparentSortPrecision::Maximum && !externalEffect;
-    const bool sourceFaces = !split;
-    const bool retainOutside = externalEffect;
-    const bool crossObjects = app->TransparentSortCrossObjects();
+    if (draws.empty()) {transparent_sort_cache::Release(app);return false;}
+    auto* device=sub->device;
+    auto& cache=alphaPlan;
+    if(cache.app!=app || cache.device!=device) {
+        cache=AlphaPlan{};cache.app=app;cache.device=device;
+        alphaCacheStats.sourceBytes=alphaCacheStats.gpuBytes=0;
+    }
+    const bool enabled=AlphaCacheEnabled();
     thread_local std::vector<transparent_geometry::Triangle> input;
-    input.clear();
-    if (!CollectAlphaGeometry(app, draws, sourceFaces, externalEffect, input)) return false;
-    // Nothing has been submitted yet. Capture the device and app state here so
-    // every exit from this point restores it without a second bookkeeping path.
-    AlphaDrawState state;
-    if (!state.Capture(app)) return false;
-    bool oneModel = true;
-    for (std::size_t i = 1; i < draws.size() && oneModel; ++i)
-        oneModel = draws[i].model == draws[i - 1].model;
-    // Peeling belongs to the native Maximum path and must not order across
-    // objects unless the user enabled that scope.
-    if (effectFrame && split && (crossObjects || oneModel) &&
-        RenderPeelingAlpha(app, draws, input, submitted)) return true;
+    std::vector<unsigned char> key;
+    std::vector<AlphaSource> sources;
+    const bool snapshot=enabled && AlphaSourceKey(app,draws,key,sources);
+    const bool comparable=snapshot && key==cache.key && sources.size()==cache.snapshots.size();
+    const bool sameSource=comparable && SameAlphaSources(sources,cache.snapshots);
+    if(snapshot && !comparable)alphaCacheStats.objectMisses+=sources.size();
+    if(sameSource)++alphaCacheStats.sourceHits;
+    else {
+        ++alphaCacheStats.sourceMisses;
+        input.clear();
+        if(!CollectAlphaGeometry(app,draws,input,snapshot ? &sources : nullptr,comparable ? &cache : nullptr))return false;
+        const bool same=input.size()==cache.source.size() &&
+            (input.empty() || !std::memcmp(input.data(),cache.source.data(),input.size()*sizeof(input[0])));
+        if(!same){cache.source.swap(input);cache.sortedValid=false;cache.gpu.valid=false;}
+        cache.key=snapshot ? std::move(key) : std::vector<unsigned char>{};
+        cache.snapshots=snapshot ? std::move(sources) : std::vector<AlphaSource>{};
+        alphaCacheStats.sourceBytes=0;
+        for(const auto& source:cache.snapshots)
+            alphaCacheStats.sourceBytes+=source.vertices.size()+source.sourceIndices.size();
+    }
+    const bool crossObjects=app->TransparentSortCrossObjects();
+    const bool originalVertices=UseOriginalAlphaVertices(app);
+    const bool oneObject=cache.source.empty() || cache.source.front().object==cache.source.back().object;
+    if (effectFrame && !originalVertices && (crossObjects || oneObject) && RenderPeelingAlpha(app, draws, cache.source)) return true;
     D3DVIEWPORT9 batchViewport{};
     // Unknown MME shaders can move vertices or have effects outside a source
     // triangle. Native passes alone have the screen-coverage contract needed
     // to move disjoint triangles without changing their output.
-    const bool batchNative = split && crossObjects &&
+    const auto precision = app->TransparentMaterialSortPrecision();
+    const bool batchNative = precision==TransparentSortPrecision::Maximum && crossObjects &&
+        GetModuleHandleW(L"MMEffect.dll") == nullptr &&
         SUCCEEDED(sub->device->GetViewport(&batchViewport));
-    thread_local AlphaPlan cache;
-    const bool same = cache.valid && cache.owner == app && precision == cache.precision &&
-        sourceFaces == cache.sourceFaces && split == cache.split &&
-        retainOutside == cache.retainOutside && crossObjects == cache.crossObjects &&
-        externalEffect == cache.externalEffect && batchNative == cache.batchNative &&
-        batchViewport.Width == cache.width && batchViewport.Height == cache.height &&
-        input.size() == cache.source.size() &&
-        (input.empty() || std::memcmp(input.data(), cache.source.data(), input.size() * sizeof(input[0])) == 0);
-    const bool planHit = same;
-    if (planHit) { ++alphaPlanHits; ++alphaSourceHits; } else {
-        ++alphaPlanMisses; ++alphaSourceMisses;
-        // A miss covers the changed objects while unchanged objects reuse their
-        // projection; expose both sides of that partial reuse. Full per-object
-        // snapshot storage is not ported yet.
-        std::vector<const void*> models;
-        for (const auto& draw : draws) if (std::find(models.begin(), models.end(), draw.model) == models.end()) models.push_back(draw.model);
-        if (models.size() > 1) { ++alphaObjectHits; ++alphaObjectMisses; }
-    }
+    const bool same = cache.sortedValid && precision == cache.precision && crossObjects == cache.crossObjects && batchNative == cache.batchNative &&
+        batchViewport.Width == cache.width && batchViewport.Height == cache.height;
     if (!same) {
-        const transparent_geometry::OrderPolicy policy{crossObjects, split, retainOutside};
-        transparent_geometry::Statistics candidateStats;
-        std::vector<transparent_geometry::Triangle> candidateSorted =
-            transparent_geometry::OrderWithPolicy(input, precision, candidateStats, policy);
+        ++alphaCacheStats.planMisses;
+        // Unknown MME shaders may depend on original vertex IDs. Highest uses
+        // whole-face depth ordering there instead of inventing split vertices.
+        cache.sorted = transparent_geometry::Order(cache.source, precision, cache.stats, crossObjects, !originalVertices,
+            GetModuleHandleW(L"MMEffect.dll")!=nullptr);
         if (batchNative)
-            transparent_geometry::BatchDraws(candidateSorted, batchViewport.Width, batchViewport.Height);
-        // Assemble the complete plan locally first. The source copy is the only
-        // throwing step; publishing below is vector swaps and scalar copies, so
-        // a failed preparation can never pair a new order with the old source
-        // or be mistaken for a cache hit.
-        AlphaPlan candidate;
-        candidate.owner = app;
-        candidate.source = input;
-        candidate.sorted.swap(candidateSorted);
-        candidate.stats = candidateStats;
-        candidate.precision = precision;
-        candidate.sourceFaces = sourceFaces;
-        candidate.split = split;
-        candidate.retainOutside = retainOutside;
-        candidate.crossObjects = crossObjects;
-        candidate.externalEffect = externalEffect;
-        candidate.batchNative = batchNative;
-        candidate.width = batchViewport.Width;
-        candidate.height = batchViewport.Height;
-        cache.valid = false;
-        cache.owner = candidate.owner;
-        cache.source.swap(candidate.source);
-        cache.sorted.swap(candidate.sorted);
-        cache.stats = candidate.stats;
-        cache.precision = candidate.precision;
-        cache.sourceFaces = candidate.sourceFaces;
-        cache.split = candidate.split;
-        cache.retainOutside = candidate.retainOutside;
-        cache.crossObjects = candidate.crossObjects;
-        cache.externalEffect = candidate.externalEffect;
-        cache.batchNative = candidate.batchNative;
-        cache.width = candidate.width;
-        cache.height = candidate.height;
-        cache.valid = true;
-        runtime_log::Trace("alpha-bsp precision=%u source_faces=%u split=%u retain=%u cross=%u mme=%u input=%zu output=%zu splits=%zu limited=%u buckets=%zu offscreen=%zu",
-            unsigned(precision), sourceFaces ? 1u : 0u, split ? 1u : 0u, retainOutside ? 1u : 0u,
-            crossObjects ? 1u : 0u, externalEffect ? 1u : 0u, cache.stats.inputTriangles,
-            cache.stats.outputTriangles, cache.stats.splitCount, cache.stats.limited ? 1u : 0u,
-            cache.stats.bucketCount, cache.stats.offscreenTriangles);
-    }
-    DumpAlphaGeometry(input, cache.sorted);
-    if (cache.sorted.empty()) return true;
-    // Resolve every lazy texture lookup the pending runs will perform before the
-    // first alpha submission. Failure here is still replay-safe preparation.
-    WarmAlphaMaterialTextures(app, sub, draws, cache.sorted);
-    auto* device = sub->device;
-    AlphaBufferView buffers;
-    if (sourceFaces) {
-        // Retained source faces only get a private 32-bit index buffer; the
-        // draw binds each model's own vertex buffer, stride, FVF and count.
-        if (cache.sorted.size() > std::numeric_limits<UINT>::max() / (3u * 4u)) return false;
-        const UINT indexCount = static_cast<UINT>(cache.sorted.size() * 3);
-        const UINT indexBytes = indexCount * 4;
-        const bool compatible = alphaCacheEnabled && alphaGpu.device == device &&
-            alphaGpu.owner == app && alphaGpu.sourceFaces;
-        const bool reuse = compatible && alphaGpu.indices && alphaGpu.indexBytes >= indexBytes;
-        if (!reuse) {
-            if (!compatible) {
-                ReleaseAlphaGpu();
-                alphaGpu.device = device; alphaGpu.owner = app; alphaGpu.sourceFaces = true;
-            }
-            if (alphaGpu.indexBytes < indexBytes) {
-                if (alphaGpu.indices) { alphaGpu.indices->Release(); alphaGpu.indices = nullptr; alphaGpu.indexBytes = 0; }
-                if (FAILED(device->CreateIndexBuffer(indexBytes, D3DUSAGE_WRITEONLY,
-                        D3DFMT_INDEX32, D3DPOOL_MANAGED, &alphaGpu.indices, nullptr))) return false;
-                alphaGpu.indexBytes = indexBytes; alphaGpuBytes = indexBytes;
-                ++alphaAllocations;
-            }
+            transparent_geometry::BatchDraws(cache.sorted, batchViewport.Width, batchViewport.Height);
+        cache.sortedValid=true;cache.gpu.valid=false;
+        cache.runs.clear();
+        for(std::size_t first=0;first<cache.sorted.size();) {
+            std::size_t end=first+1;
+            while(end<cache.sorted.size() && cache.sorted[end].draw==cache.sorted[first].draw)++end;
+            cache.runs.push_back({cache.sorted[first].draw,UINT(first*3),UINT((end-first)*3)});
+            first=end;
         }
-        buffers.indices = alphaGpu.indices;
-        if (planHit && reuse) {
-            ++alphaGpuHits;
-        } else {
-            void* destination = nullptr;
-            const HRESULT lockResult = buffers.indices->Lock(0, 0, &destination, 0);
-            if (FAILED(lockResult) || destination == nullptr) {
-                if (SUCCEEDED(lockResult)) buffers.indices->Unlock();
-                return false;
-            }
-            auto* indices = static_cast<UINT*>(destination);
-            for (const auto& triangle : cache.sorted) {
-                indices[0] = triangle.sourceIndices[0];
-                indices[1] = triangle.sourceIndices[1];
-                indices[2] = triangle.sourceIndices[2];
-                indices += 3;
-            }
-            if (FAILED(buffers.indices->Unlock())) return false;
-            ++alphaUploads;
-        }
-    } else {
-        // Native Maximum keeps its 96-byte expanded vertex buffer and a
-        // sequential index buffer. sourceIndices identify the source face for
-        // sorting only; they are never used as generated vertex numbers.
-        if (cache.sorted.size() > std::numeric_limits<UINT>::max() / (3u * 96u)) return false;
-        const UINT vertexCount = static_cast<UINT>(cache.sorted.size() * 3);
-        const UINT vertexBytes = vertexCount * 96, indexBytes = vertexCount * 4;
-        const bool compatible = alphaCacheEnabled && alphaGpu.device == device &&
-            alphaGpu.owner == app && !alphaGpu.sourceFaces;
-        const bool reuse = compatible && alphaGpu.vertices && alphaGpu.indices &&
-            alphaGpu.vertexBytes >= vertexBytes && alphaGpu.indexBytes >= indexBytes;
-        if (!reuse) {
-            if (!compatible) {
-                ReleaseAlphaGpu();
-                alphaGpu.device = device; alphaGpu.owner = app; alphaGpu.sourceFaces = false;
-            }
-            if (alphaGpu.vertexBytes < vertexBytes) {
-                if (alphaGpu.vertices) { alphaGpu.vertices->Release(); alphaGpu.vertices = nullptr; alphaGpu.vertexBytes = 0; }
-                if (FAILED(device->CreateVertexBuffer(vertexBytes, D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY, 0,
-                        D3DPOOL_DEFAULT, &alphaGpu.vertices, nullptr))) return false;
-                alphaGpu.vertexBytes = vertexBytes; ++alphaAllocations;
-            }
-            if (alphaGpu.indexBytes < indexBytes) {
-                if (alphaGpu.indices) { alphaGpu.indices->Release(); alphaGpu.indices = nullptr; alphaGpu.indexBytes = 0; }
-                if (FAILED(device->CreateIndexBuffer(indexBytes, D3DUSAGE_WRITEONLY,
-                        D3DFMT_INDEX32, D3DPOOL_MANAGED, &alphaGpu.indices, nullptr))) return false;
-                alphaGpu.indexBytes = indexBytes; ++alphaAllocations;
-            }
-            alphaGpuBytes = std::size_t(alphaGpu.vertexBytes) + alphaGpu.indexBytes;
-        }
-        buffers.vertices = alphaGpu.vertices;
-        buffers.indices = alphaGpu.indices;
-        if (planHit && reuse) {
-            ++alphaGpuHits;
-        } else {
-            void* destination = nullptr;
-            const HRESULT vertexLock = buffers.vertices->Lock(0, 0, &destination, D3DLOCK_DISCARD);
-            if (FAILED(vertexLock) || destination == nullptr) {
-                if (SUCCEEDED(vertexLock)) buffers.vertices->Unlock();
-                return false;
-            }
-            auto* floats = static_cast<float*>(destination);
-            for (const auto& triangle : cache.sorted) {
-                for (const auto& vertex : triangle.v) {
-                    std::memcpy(floats, vertex.data, sizeof(vertex.data));
-                    floats += 24;
-                }
-            }
-            if (FAILED(buffers.vertices->Unlock())) return false;
-            const HRESULT indexLock = buffers.indices->Lock(0, 0, &destination, 0);
-            if (FAILED(indexLock) || destination == nullptr) {
-                if (SUCCEEDED(indexLock)) buffers.indices->Unlock();
-                return false;
-            }
-            for (UINT i = 0; i < vertexCount; ++i) static_cast<UINT*>(destination)[i] = i;
-            if (FAILED(buffers.indices->Unlock())) return false;
-            ++alphaUploads;
-        }
-    }
-    // Every fallible preparation step succeeded; the first main render-target
-    // submission starts here. A later exception must not replay this prefix.
-    submitted = true;
-    for (std::size_t first = 0; first < cache.sorted.size();) {
-        std::size_t end = first + 1;
-        const UINT d = cache.sorted[first].draw;
-        while (end < cache.sorted.size() && cache.sorted[end].draw == d) ++end;
-        auto command = draws[d];
-        command.selection.firstIndex = static_cast<UINT>(first * 3);
-        command.selection.indexCount = static_cast<UINT>((end - first) * 3);
-        command.selection.buffer = buffers.indices;
-        if (!sourceFaces) {
-            command.selection.vertices = buffers.vertices;
-            command.selection.vertexCount = static_cast<UINT>(cache.sorted.size() * 3);
+        cache.precision = precision;
+        cache.crossObjects = crossObjects;
+        cache.batchNative = batchNative;
+        cache.width = batchViewport.Width;
+        cache.height = batchViewport.Height;
+        runtime_log::Trace("alpha-bsp precision=%u input=%zu output=%zu splits=%zu limited=%u buckets=%zu offscreen=%zu",
+            unsigned(precision), cache.stats.inputTriangles, cache.stats.outputTriangles,
+            cache.stats.splitCount, cache.stats.limited ? 1u : 0u, cache.stats.bucketCount, cache.stats.offscreenTriangles);
+    } else ++alphaCacheStats.planHits;
+    DumpAlphaGeometry(cache.source, cache.sorted);
+    if (cache.sorted.empty()) {cache.gpu=AlphaGpu{};alphaCacheStats.gpuBytes=0;return true;}
+    if (cache.sorted.size() > std::numeric_limits<UINT>::max() / (3 * 96)) return false;
+    const UINT vertexCount = UINT(cache.sorted.size() * 3);
+    AlphaGpu scratch;
+    const bool keepGpu=enabled && std::uint64_t(vertexCount)*100<=kAlphaGpuBudget;
+    if(!keepGpu){cache.gpu=AlphaGpu{};alphaCacheStats.gpuBytes=0;}
+    auto& gpu=keepGpu ? cache.gpu : scratch;
+    if(!UploadAlphaGpu(device,gpu,cache.sorted,originalVertices))return false;
+    if(keepGpu)alphaCacheStats.gpuBytes=std::size_t(gpu.count)*(originalVertices?4:100);
+    IDirect3DVertexBuffer9* oldVertices = nullptr;
+    IDirect3DIndexBuffer9* oldIndices = nullptr;
+    IDirect3DVertexDeclaration9* oldDeclaration = nullptr;
+    UINT oldOffset = 0, oldStride = 0; DWORD oldFvf = 0;
+    device->GetStreamSource(0, &oldVertices, &oldOffset, &oldStride);
+    device->GetIndices(&oldIndices);
+    device->GetFVF(&oldFvf);
+    device->GetVertexDeclaration(&oldDeclaration);
+    const auto oldPass = app->ActiveRenderPass();
+    auto* oldObject = app->ActiveRenderObject();
+    for (const auto& run:cache.runs) {
+        auto command = draws[run.draw];
+        command.selection.firstIndex = run.first;
+        command.selection.indexCount = run.count;
+        command.selection.buffer = gpu.indices.Get();
+        if(!originalVertices) {
+            command.selection.vertices = gpu.vertices.Get();
+            command.selection.vertexCount = vertexCount;
             command.selection.vertexStride = 96;
         }
         app->ActiveRenderObject() = command.model;
         app->ActiveRenderPass() = command.effect ? AccessoryRenderPass::Effect : AccessoryRenderPass::FixedFunction;
         if (command.effect) device->SetTexture(0, shadow_filter::VisibleTexture(app));
         DrawModelMaterials(app, command.model, command.effect, false, ModelAlphaPass::Translucent, &command.selection);
-        first = end;
     }
+    device->SetStreamSource(0, oldVertices, oldOffset, oldStride);
+    device->SetIndices(oldIndices);
+    if (oldDeclaration) device->SetVertexDeclaration(oldDeclaration);
+    else if (oldFvf) device->SetFVF(oldFvf);
+    if (oldDeclaration) oldDeclaration->Release();
+    if (oldVertices) oldVertices->Release();
+    if (oldIndices) oldIndices->Release();
+    app->ActiveRenderPass() = oldPass;
+    app->ActiveRenderObject() = oldObject;
     return true;
 }
 
 bool RenderSplitOrderedAlpha(MMDApp* app, bool effectFrame) {
-    // Planning, texture warm-up and all uploads finish before the first draw;
-    // allocation failure there can fall back without compositing the same
-    // surface twice. Once submission began, a late failure is reported as
-    // handled instead: replaying the authored order would blend the already
-    // submitted prefix again. That prevents duplication only; the frame stays
-    // incomplete and is not claimed to be a full atomic rollback.
-    bool submitted = false;
-    try { return RenderSplitOrderedAlphaImpl(app, effectFrame, submitted); }
+    // Planning and all uploads finish before the first draw; allocation failure
+    // can therefore fall back without compositing the same surface twice.
+    try { return RenderSplitOrderedAlphaImpl(app, effectFrame); }
     catch (const std::bad_alloc&) {
-        if (submitted) {
-            runtime_log::Write("alpha-bsp allocation failed after alpha submission began; leaving this frame incomplete instead of replaying blended faces");
-            return true;
-        }
         runtime_log::Write("alpha-bsp allocation failed; retaining previous draw path");
         return false;
     }
@@ -3444,37 +3307,28 @@ bool RenderShadowMapChecked(MMDApp* app,const float frameMatrix[16]) {
     return restore.Apply()&&rendered;
 }
 
-#if !MMD_ORIGINAL_PROFILE
 namespace transparent_sort_cache {
 Statistics GetStatistics() noexcept {
-    Statistics result;
-    result.sourceHits = alphaSourceHits; result.sourceMisses = alphaSourceMisses;
-    result.objectHits = alphaObjectHits; result.objectMisses = alphaObjectMisses;
-    result.planHits = alphaPlanHits; result.planMisses = alphaPlanMisses;
-    result.gpuHits = alphaGpuHits; result.uploads = alphaUploads; result.allocations = alphaAllocations;
-    result.gpuBytes = alphaGpuBytes;
-    return result;
+#if !MMD_ORIGINAL_PROFILE
+    return alphaCacheStats;
+#else
+    return {};
+#endif
 }
 void Release(MMDApp* app) noexcept {
-    if (app == nullptr || alphaGpu.owner == app) ReleaseAlphaGpu();
-    alphaPlanHits = alphaPlanMisses = alphaSourceHits = alphaSourceMisses = 0;
-    alphaObjectHits = alphaObjectMisses = 0;
-    alphaGpuHits = alphaUploads = alphaAllocations = 0;
-    alphaGpuBytes = 0;
+#if !MMD_ORIGINAL_PROFILE
+    if(!app || alphaPlan.app==app) {
+        alphaPlan=AlphaPlan{};
+        alphaCacheStats.sourceBytes=alphaCacheStats.gpuBytes=0;
+    }
+#endif
 }
 void SetEnabledForTests(bool enabled) noexcept {
-    alphaCacheEnabled = enabled;
-    if (!enabled) ReleaseAlphaGpu();
-}
-}  // namespace transparent_sort_cache
-#else
-// The original-compatible profile keeps the native order and does not use the
-// cached sorted alpha path; these stubs keep the shared release hooks valid.
-namespace transparent_sort_cache {
-Statistics GetStatistics() noexcept { return {}; }
-void Release(MMDApp*) noexcept {}
-void SetEnabledForTests(bool) noexcept {}
-}  // namespace transparent_sort_cache
+#if !MMD_ORIGINAL_PROFILE
+    Release(nullptr);alphaCacheOverride=enabled ? 1 : 0;
 #endif
+}
+}
+
 
 }  // namespace mikumikustudio
