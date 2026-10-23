@@ -26,6 +26,9 @@
 
 
 
+
+[属性变更事件](abi-property-changed-2026-10-24.md)：`UiRegistry` 在宿主原生属性编辑（`CommitPropertyInput`）成功提交后回调属性 id 与修订号，`Manager` 广播 `MMS_EVENT_PROPERTY_CHANGED`（`MmsPropertyEventV1`，目标为零）；lifecycle 探针校验负载并记录日志，宿主探针等待该标记，默认契约套件 44,764 项、10 个 CTest 模式通过。两产品重建（完整 `53f10222…`、原始 `1ed700c1…`），正式 release 未覆盖。插件声明式 `InputEdit` 的广播、目标对象身份与真实 UI 端到端链路仍未完成；`COMPUTE_POLICY_CHANGED` 依赖 P4。
+
 [宿主探针日志隔离与 DPI 诊断](abi-host-probe-log-isolation-2026-10-24.md)：探针启动时删除自己的 plugin.log，避免旧运行标记让 `WaitFor` 误判；改用生产窗口后向真实隐藏主窗口发送合成 `WM_DPICHANGED` 仍未产生 `EVENT_DPI`；后续跟踪定位到清单固定 `dpiAware=false`／`dpiAwareness=unaware`，Windows 不向 DPI 不感知进程投递该消息，因此系统 DPI 消息来源在当前设计下不适用，DPI_CHANGED 只保留已验证的 API 投递路径。10 个 CTest 模式与默认契约 44,752 项通过；生产代码与产品二进制不变。
 
 [固定 Win7 部署闭包](abi-deployment-closure-2026-10-24.md)：`cmake --install` 现在把产品 EXE/NVIDIA 辅助 DLL 与 VC/UCRT 运行时、`vcomp140`、`d3dx9_43`、`d3dcompiler_43` 装配到同一目录；`tools/verify-deployment-closure.ps1` 用 `dumpbin` 审计每个 PE 的导入/延迟导入，禁止 DX12/DXGI/CUDA/NVAPI，缺失运行时即失败。完整与原始配置部署均为 55 个 PE、51 个运行时文件、2 个 DirectX 文件通过，报告在 `build/verification/abi-deployment-closure-20261024/`，清单见 [Win7 部署闭包](../reference/win7-deployment.md)。本机为 Win10；Win7 SP1 真机安装运行、32 位/WOW64、无管理员安装、签名与自解压安装器仍未验收。
