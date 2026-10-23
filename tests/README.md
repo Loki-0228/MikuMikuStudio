@@ -202,6 +202,8 @@ MikuMikuDance.exe <另一个新输出前缀> 1 --emm-default-off [素材PMM绝�
 
 `negative_frame_tests` 是完整配置的负数关键帧核心回归：带符号解析与范围解释、负帧登记与到 0 帧的插值、独立扩展记录的捕获/载入、损坏载荷拒绝与状态清空。`negative_frame_host_tests`（完整配置）在隐藏生产窗口上运行真实注册后端、0 帧左右移动、负帧 XYZ 重置与撤销、真实 PMM 写出后重载、带符号播放端点、范围选择与复制/粘贴按钮、正负帧双向粘贴和从负帧开始播放，共 26 项检查；模型夹具只有骨骼，morph 路径由 `negative_frame_tests` 覆盖。
 
+`model_vertex_cache_tests` 覆盖顶点缓存与帧内阴影包围盒复用（611 个字节精确参照用例，PMD/PMX UV0-4）；`runtime_layout_tests` 在原始配置跳过曲线宿主读数用例并继续其余布局检查；`sidebar_resize_tests` 是完整配置专用宿主测试（原始配置不创建该目标），隔离运行约 40 秒。
+
 `model_alpha_tests` 是 CPU 软件光栅的 alpha 分类回归，覆盖未知格式不默认透明、X8R8G8B8／R8G8B8 等直接不透明、A8R8G8B8／A8B8G8R8 与 DXT1／3／5 的像素 alpha 判定。
 
 `texture_prepare_cache_tests`（完整配置，显式模式）需要新的输出目录与 `d3dx9_43.dll` 路径，可选真实纹理：它比较缓存的缩放像素/元数据/mip 渲染与原入口，覆盖并行 worker、去重、热复用、仅内存、损坏/mtime 保持的编辑/不可写/禁用/缺失回退；ABI 默认目录为 `data/cache/Textures`。

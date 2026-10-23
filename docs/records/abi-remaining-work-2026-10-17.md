@@ -10,6 +10,11 @@
 
 
 
+
+[阴影包围盒复用](abi-shadow-bounds-cache-2026-10-24.md)已同步：`model_vertex_cache` 增加 `BeginFrame/ShadowBounds/RememberShadowBounds` 帧内接口，只缓存本帧 `Reuse/Remember` 验证过的加载器自有几何；`adaptive_shadow` 先查缓存、未命中才整段锁定完整顶点缓冲求精确包围盒，`Unlock` 失败不登记；位姿变化、`Invalidate`、设备重置与显式关闭清除。`model_vertex_cache_tests` 611 项、SM3 阴影全集 `failures=0`（98 项 parity、20 个 partial-depth）与 SM2 覆盖通过，两产品构建通过，正式 release 未覆盖。纯性能同步，无帧耗时/命中率实测；真实 MME、超大模型与设备丢失循环未验证。
+
+[既有测试问题修复](abi-preexisting-test-fixes-2026-10-24.md)：原始配置 `runtime_layout_tests` 跳过完整配置的曲线读数用例后 exit 0；`sidebar_resize_tests` 目标限定完整配置，原始 CMake 不再生成，完整目标构建并隔离运行 40.3 秒通过。
+
 [main 小项同步](abi-main-small-items-2026-10-24.md)补齐：32 KiB 栈缓冲改堆分配（`local_data_path.hpp`、`effect_paths.cpp`）、不透明纹理 alpha 分类（未知格式不默认透明，X8R8G8B8／R8G8B8 等直接不透明，A8R8G8B8／A8B8G8R8 与 DXT1／3／5 按像素采样；CPU 回归通过，GPU 排序回归待 `transparent_sort_cache`）、附件 VMD 菜单相机模式限制（本地化/菜单打开/命令入口，曲线宿主回归通过）、时间轴滚动条绝对位置与负帧下限。两产品构建通过，正式 release 未覆盖。GPU 透明排序、真实 MME 深回调栈、真实鼠标拖动、原始回退脏标记、阴影包围盒缓存仍未完成或未验收。
 
 [纹理准备缓存消费者](abi-texture-prepare-cache-2026-10-24.md)已接入 main 的 `texture_prepare_cache` 与 WIC CPU 解码：默认目录 `data/cache/Textures`，普通模型纹理加载经 `LoadTextureShared` 包裹，PMX 在材质前批量预加载（最多 64 条、最多两个 worker，已有 GPU 池条目跳过），原始兼容配置走原生。真实 D3DX 套件（合成 TGA/DDS + 真实 BMP，`hits=37 native=39 stores=48`）与模型加载、原始保存回归通过，两产品构建通过，正式 release 未覆盖。事务导入仍用既有 `import_texture_cache` 未共用本缓存；未加载真实 MMD 多材质模型或 MME 场景，无真实命中率/内存/耗时对比；DDS 压缩格式、超大纹理与 128 MiB 边界未在真实工程验证。

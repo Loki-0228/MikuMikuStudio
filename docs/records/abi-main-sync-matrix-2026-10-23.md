@@ -66,7 +66,7 @@ main 随后继续提交。下一轮同步、当前状态与依赖如下：
 | 录制编辑视角 | 导出结束不恢复自由编辑视角 | 录制启动保存非跟随、非相机模式的编辑视角，结束后重建投影；不写 PMM 与历史 | `CaptureRecordingEditorView/RestoreRecordingEditorView`；[记录](abi-recording-editor-view-2026-10-23.md)字段 56、生命周期 1,028／975 项 | 已同步 | 全屏 3D Vision、真实编码器、Win7／AMD 未验收 |
 | 手动编号保存 | 手动保存只能覆盖或沿 `.pmm1/.pmm11` 链 | 独立开关；十进制编号、稀疏编号、孤立旁车、9→10 进位；周期备份不使用 | `autosave.hpp`、`pmm_save`、`pmm_save_versions`；[记录](abi-numbered-save-2026-10-23.md)303／533／82 项 | 已同步 | 版本链硬中断的持久化轮转日志、新 EMM 同快照确认未完成 |
 | 骨骼重置、物理读数、长数值前缀 | 重置后残留草稿；物理模式读数不对；长数值前缀被截 | 重置取消目标草稿；物理模式显示作者姿态；长数值框保留负号与整数前缀 | 各命令与 UI 记录见 [旋转草稿](abi-rotation-drafts-2026-10-23.md)、[姿态重置](abi-pose-reset-2026-10-23.md)、[普通姿态](abi-legacy-pose-reset-2026-10-23.md)、[物理接管](abi-physics-takeover-2026-10-23.md)、[数值前缀](abi-transform-prefix-2026-10-23.md) | 已同步（增强路径） | 原始兼容回退路径未同步 main 的 `SceneModified()` 与 `EM_SETMODIFY` |
-| 阴影包围盒复用 | 每帧重复锁定顶点缓冲求阴影包围盒 | 复用本帧已验证的模型阴影包围盒；失败仍读完整顶点 | `adaptive_shadow` 仍直接 `Lock`；`model_vertex_cache` 没有帧内缓存接口 | 部分同步（仅性能） | 功能结果相同，性能不同 |
+| 阴影包围盒复用 | 每帧重复锁定顶点缓冲求阴影包围盒 | 复用本帧已验证的模型阴影包围盒；失败仍读完整顶点 | 已采用 main 的帧内接口：`BeginFrame/ShadowBounds/RememberShadowBounds`，只缓存本帧 `Reuse/Remember` 确认过的加载器自有几何；`adaptive_shadow` 先查缓存、未命中才整段 `Lock` 求精确包围盒并在 `Unlock` 成功后登记，失效/位姿变化/设备重置清除；[记录](abi-shadow-bounds-cache-2026-10-24.md)。`model_vertex_cache_tests` 611 项、SM3 阴影全集 `failures=0`（98 项 parity、20 个 partial-depth）、SM2 覆盖通过，两产品构建通过 | 已同步（本机，仅性能） | 没有帧耗时、锁定次数或命中率实测对比；真实 MME、超大模型、多模型同屏与设备丢失循环未验证；人工视觉、Win7/AMD、长时间运行未验收 |
 
 ## 其余未列入上面的差异
 
@@ -76,6 +76,7 @@ main 随后继续提交。下一轮同步、当前状态与依赖如下：
 | `3782e0c` | 透明排序按对象／GPU 缓冲缓存 | 每帧新建索引／顶点缓冲 | 与透明排序性能批次一起评估；不改变功能结果 |
 | `3782e0c` | 模型模式灰显附件 VMD 菜单 | 已按相机模式灰显并拦截命令入口；曲线宿主回归通过（见[小项记录](abi-main-small-items-2026-10-24.md)） | 已同步（本机） | 未做真实鼠标与多显示器人工确认 |
 | `3782e0c` | DDS／RGB alpha 分类 | 已采用 main 分类并更新 CPU 回归；GPU 排序回归待透明排序性能批次（见[小项记录](abi-main-small-items-2026-10-24.md)） | 部分同步 | 依赖 `transparent_sort_cache` 的 GPU 用例未跑 |
+| 既有测试基建 | 原始配置 runtime_layout 曲线用例崩溃、sidebar 测试目标不可编译 | 原始配置跳过曲线宿主用例并保留其余布局检查；sidebar 目标限定完整配置 | 已修复并记录 [既有测试问题修复](abi-preexisting-test-fixes-2026-10-24.md)：原始 runtime_layout exit 0、完整 runtime_layout exit 0、完整 sidebar 隔离运行 40.3 秒通过 | 已修复 | 原始配置其他 UI 测试未逐一重跑 |
 | `c147454` | main 默认备份目录为程序同级 `backups` | ABI 保留 `data/backups` | 按 ABI“运行数据集中在程序目录 data”的约定有意偏离；若产品要求逐字节一致需先确认存储约定 |
 
 ## 边界

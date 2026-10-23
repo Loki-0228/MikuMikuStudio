@@ -56,6 +56,10 @@ main 截至 `fed9768` 的逐提交行为同步核对整理为 [main 行为同步
 
 [main 小项同步](records/abi-main-small-items-2026-10-24.md)补齐四项：`local_data_path.hpp` 的 32 KiB 栈缓冲改为堆分配（`effect_paths.cpp` 已与 main 对齐）；采用 main 的不透明纹理 alpha 分类（未知格式不默认透明，X8R8G8B8／R8G8B8 等直接不透明，A8R8G8B8／A8B8G8R8 与 DXT1／3／5 按像素采样），CPU 回归通过，GPU 排序回归待未同步的 `transparent_sort_cache`；附件 VMD 菜单在本地化、打开与命令入口都要求相机模式，曲线宿主回归通过；时间轴滚动条 case 4/5 改为 `SIF_TRACKPOS` 绝对位置并把下限改为 `frame_limits::minimum`。两产品构建通过，正式 release 未覆盖。GPU 透明排序、真实 MME 深回调栈、真实鼠标拖动时间轴、原始回退脏标记、阴影包围盒缓存仍未完成或未验收。
 
+[阴影包围盒复用](records/abi-shadow-bounds-cache-2026-10-24.md)已同步：`model_vertex_cache` 增加 `BeginFrame/ShadowBounds/RememberShadowBounds` 帧内接口，只缓存本帧由 `Reuse/Remember` 验证过的加载器自有几何；`adaptive_shadow` 先查缓存、未命中才整段锁定完整顶点缓冲求精确包围盒，`Unlock` 失败不登记；位姿变化、`Invalidate`、设备重置与显式关闭都会清除。`model_vertex_cache_tests` 611 项、生产 SM3 阴影全集 `failures=0`（98 项 parity、20 个 partial-depth）与 SM2 覆盖通过，两产品构建通过，正式 release 未覆盖。这是纯性能同步，没有帧耗时/命中率实测；真实 MME、超大模型与设备丢失循环未验证。
+
+[既有测试问题修复](records/abi-preexisting-test-fixes-2026-10-24.md)：原始兼容配置的 `runtime_layout_tests` 不再因曲线读数用例崩溃（原始配置跳过该完整配置能力），`sidebar_resize_tests` 目标限定完整配置；原始 runtime_layout exit 0、完整 runtime_layout exit 0、完整 sidebar 隔离运行 40.3 秒通过。
+
 至此 main 已提交更新全部同步。
 
 main 的 `fed9768` 已按 [近景阴影及 PMM 编码记录](records/abi-main-fed9768-2026-10-23.md)同步，并修正审查发现的失败投影读取及原版副本路径误判。两配置构建、14 次定点运行和原 ABI 契约通过。阴影接收范围处理实际 AA 偏移和 `frame * VIEW`；PMM 判断共用真实加载器镜像，MMS 可逆路径与原版 CP932 副本分别检查。随后单独修复[满 20 字节 PMD 身份读写](records/abi-pmm-identity-2026-10-23.md)，真实重开、旧拼接、重映射和重选均通过，保留原版文件指标、MMS 标记及正式 release。
