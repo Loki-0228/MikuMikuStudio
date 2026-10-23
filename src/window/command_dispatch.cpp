@@ -1,6 +1,7 @@
 #include "mikumikustudio/background_save.hpp"
 #include "mikumikustudio/display_capacity.hpp"
 #include "mikumikustudio/autosave.hpp"
+#include "cache_manager_dialog.hpp"
 #include "mikumikustudio/viewport_render_scale.hpp"
 #include "mikumikustudio/force_paste.hpp"
 #include "mikumikustudio/image_sequence_export.hpp"
@@ -518,6 +519,9 @@ void CommandDispatch(HWND ctrl, WPARAM wParam) {
     // one corner on each ordinary menu click.
     if (ctrl == nullptr && notification == 0 && viewport_corner_menu::HandleCommand(app, id)) return;
     if (ctrl == nullptr && notification == 0 && autosave::HandleCommand(app, id)) return;
+#if !MMD_ORIGINAL_PROFILE
+    if (ctrl == nullptr && notification == 0 && cache_manager_ui::HandleCommand(app, id)) return;
+#endif
     if (ctrl == nullptr && notification == 0 && viewport_render_scale::HandleCommand(app, id)) return;
 
     switch (id) {

@@ -77,6 +77,14 @@ target_link_options(cache_manager_tests PRIVATE /SUBSYSTEM:CONSOLE,6.01 /DEBUG:N
 set_target_properties(cache_manager_tests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
 endif()
+if(MIKUMIKUSTUDIO_PROFILE STREQUAL "full")
+add_executable(cache_manager_ui_tests EXCLUDE_FROM_ALL
+    tests/cache_manager_ui_tests.cpp res/MMD.rc ${MIKUMIKUSTUDIO_GEN_RES})
+target_link_libraries(cache_manager_ui_tests PRIVATE mikumikustudio_core minhook::minhook comctl32 user32)
+target_link_options(cache_manager_ui_tests PRIVATE "/MANIFEST:NO" "${MIKUMIKUSTUDIO_GEN_RES}")
+set_target_properties(cache_manager_ui_tests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+endif()
 add_executable(cache_manager_policy_tests EXCLUDE_FROM_ALL tests/cache_manager_policy_tests.cpp)
 target_link_libraries(cache_manager_policy_tests PRIVATE mms_cache_policy)
 target_compile_definitions(cache_manager_policy_tests PRIVATE _WIN32_WINNT=0x0601 WINVER=0x0601)

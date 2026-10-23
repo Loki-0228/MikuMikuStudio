@@ -2,6 +2,7 @@
 #include "window_settings.hpp"
 #include "mikumikustudio/recording_state.hpp"
 #include "mikumikustudio/autosave.hpp"
+#include "cache_manager_dialog.hpp"
 #include "mikumikustudio/plugin_menu.hpp"
 #include "mikumikustudio/plugin_runtime.hpp"
 #include "mikumikustudio/build_profile.hpp"
@@ -187,6 +188,7 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         system_settings_ui::EnsureItem(app);
 #if !MMD_ORIGINAL_PROFILE
         audio_menu::EnsureItem(app);
+        cache_manager_ui::RefreshMenu(app);
 #endif
     }
     if (msg == WM_INITMENUPOPUP) autosave::RefreshMenu(app);

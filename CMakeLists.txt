@@ -433,6 +433,7 @@ add_library(mikumikustudio_core STATIC
     src/window/recent_projects.cpp
     src/app/autosave.cpp
     src/window/autosave_dialog.cpp
+    src/window/cache_manager_dialog.cpp
     src/window/viewport_render_scale_dialog.cpp
     src/render/viewport_render_scale.cpp
     src/render/antialias.cpp
