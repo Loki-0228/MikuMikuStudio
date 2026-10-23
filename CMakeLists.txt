@@ -1294,6 +1294,14 @@ if (MIKUMIKUSTUDIO_BUILD_UI_TESTS)
     target_link_options(autosave_tests PRIVATE "/MANIFEST:NO" "${MIKUMIKUSTUDIO_GEN_RES}")
     set_target_properties(autosave_tests PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+    if(MIKUMIKUSTUDIO_PROFILE STREQUAL "full")
+    add_executable(negative_frame_host_tests EXCLUDE_FROM_ALL
+        tests/negative_frame_host_tests.cpp res/MMD.rc ${MIKUMIKUSTUDIO_GEN_RES})
+    target_link_libraries(negative_frame_host_tests PRIVATE mikumikustudio_core minhook::minhook winmm dsound)
+    target_link_options(negative_frame_host_tests PRIVATE "/MANIFEST:NO" "${MIKUMIKUSTUDIO_GEN_RES}")
+    set_target_properties(negative_frame_host_tests PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+    endif()
     add_executable(runtime_log_tests EXCLUDE_FROM_ALL
         tests/runtime_log_tests.cpp src/main/runtime_log.cpp)
     target_compile_definitions(runtime_log_tests PRIVATE MMS_RUNTIME_LOG_TESTS=1)
