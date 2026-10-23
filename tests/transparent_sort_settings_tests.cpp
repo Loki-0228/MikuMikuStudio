@@ -2,6 +2,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
+#include <d3d9.h>
 #include <MinHook.h>
 #include <fcntl.h>
 #include <io.h>
@@ -19,6 +20,9 @@
 #include "mikumikustudio/autosave.hpp"
 #include "mikumikustudio/background_save.hpp"
 #include "mikumikustudio/build_profile.hpp"
+#include "mikumikustudio/d3d12_native.hpp"
+#include "mikumikustudio/frame_presentation.hpp"
+#include "mikumikustudio/deformed_mesh_capture.hpp"
 #include "mikumikustudio/local_data_path.hpp"
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/pmm_extension.hpp"
@@ -442,16 +446,22 @@ void ProjectChecks(MMDApp& app,const fs::path& out) {
     AsyncScopeChecks(app,out);
 }
 #include "transparent_settings_cancel_checks.hpp"
+#include "d3d12_frame_fallback_checks.hpp"
 }
 int wmain(int argc,wchar_t** argv) {
     std::setvbuf(stdout,nullptr,_IONBF,0);
-    if (argc!=3 || (wcscmp(argv[1],L"--menu-only") && wcscmp(argv[1],L"--project-roundtrip"))) {
-        std::puts("Use --menu-only or --project-roundtrip <absolute fresh output> in a marked copied installation."); return 2;
+    if (argc!=3 || (wcscmp(argv[1],L"--menu-only") && wcscmp(argv[1],L"--project-roundtrip") && wcscmp(argv[1],L"--d3d12-fallback"))) {
+        std::puts("Use --menu-only, --project-roundtrip or --d3d12-fallback <absolute fresh output> in a marked copied installation."); return 2;
     }
     DefaultDesktop(); const auto out=PrepareSandbox(argv[2]); NativeD3D9Only();
-    { Guards guards; Host host(!wcscmp(argv[1],L"--project-roundtrip"));
-      std::puts("RUN native transparent settings menus"); MenuChecks(*host.app,host.project);
-      if (host.project) {
+    const bool fallback=!wcscmp(argv[1],L"--d3d12-fallback");
+    { Guards guards; Host host(fallback || !wcscmp(argv[1],L"--project-roundtrip"));
+      if (fallback) {
+          std::puts("RUN real-frame D3D12 sorting fallback"); D3D12FrameFallbackChecks(*host.app);
+      } else {
+          std::puts("RUN native transparent settings menus"); MenuChecks(*host.app,host.project);
+      }
+      if (host.project && !fallback) {
           std::puts("RUN actual PMM settings roundtrip"); ProjectChecks(*host.app,out/L"projects");
           std::puts("RUN actual Save As cancellation"); SettingsCancelChecks(*host.app,out/L"projects");
       }
