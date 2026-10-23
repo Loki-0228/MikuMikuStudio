@@ -54,6 +54,10 @@ render.clearFrameCallback(render.context);
 
 回调在 UI 线程、插件回调之外运行，必须轻量、只读，不得调用宿主服务或阻塞。1.0 查询仍返回原三函数表。
 
+## 帧阶段回调（1.2）
+
+1.2 在 1.1 上追加 `setPhaseCallback`／`clearPhaseCallback`。宿主在帧工作开始前调用 BEGIN、在成功 Present 后调用 END，回调收到当前帧信息与阶段值，运行在 UI 线程、插件回调之外，必须轻量只读。1.0/1.1 查询仍返回原表。
+
 ## C++17 封装
 
 ```cpp
