@@ -42,6 +42,7 @@ void PluginNotifyDeviceRestored(MMDApp*);
 void PluginNotifyObjectRemoved(MMDApp*, const void* native);
 void PluginNotifyDpiChanged(MMDApp*, unsigned dpi);
 void PluginNotifyPropertyChanged(MMDApp*, const std::string& propertyId, uint64_t revision);
+void PluginFramePresented(MMDApp*);
 // Pure filesystem work; callers check native backup ownership and serialize
 // retention for their backup directory before calling, including on a worker.
 bool DeletePluginBackup(const wchar_t*);

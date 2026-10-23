@@ -23,6 +23,7 @@
 #include "mikumikustudio/ui_message.hpp"
 #include "../window/ui_control_layout.hpp"
 #include <ShlObj.h>
+#include <d3d9.h>
 #include <commctrl.h>
 #include <atomic>
 #include <cwchar>
@@ -240,6 +241,18 @@ void PluginNotifyDeviceLost(MMDApp* app) { NotifyDeviceLostEvent(app); }
 void PluginNotifyDeviceRestored(MMDApp* app) { NotifyDeviceRestoredEvent(app); }
 void PluginNotifyObjectRemoved(MMDApp* app, const void* native) { NotifyObjectRemovedEvent(app, native); }
 void PluginNotifyDpiChanged(MMDApp* app, unsigned dpi) { NotifyDpiChangedEvent(app, dpi); }
+void PluginFramePresented(MMDApp* app) {
+    if (!manager || !app || owner != app) return;
+    auto* renderer = app->Renderer();
+    if (!renderer || !renderer->device) return;
+    IDirect3DSurface9* backbuffer = nullptr;
+    if (FAILED(renderer->device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &backbuffer)) || !backbuffer) return;
+    D3DSURFACE_DESC description{};
+    const bool described = SUCCEEDED(backbuffer->GetDesc(&description));
+    backbuffer->Release();
+    manager->Render().FramePresented(described ? description.Width : 0,
+        described ? description.Height : 0, described ? unsigned(description.Format) : 0);
+}
 void PluginNotifyPropertyChanged(MMDApp* app, const std::string& propertyId, uint64_t revision) {
     if (!manager || !app || propertyId.empty() || !revision) return;
     propertyProbeIds.push_back(propertyId);

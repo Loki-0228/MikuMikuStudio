@@ -4,6 +4,8 @@
 
 ## 查询
 
+成功呈现后 `frameIndex` 递增，`width`／`height` 与 `backBufferFormat` 来自真实 0 号后缓冲。初始查询在这些字段为 0。
+
 ```c
 MmsRenderApiV1 render;
 host->queryService(host->context, (MmsString){"mms.render", 10}, 1, 0, sizeof(render), &render);

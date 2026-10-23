@@ -15,6 +15,7 @@ public:
         std::string id;
     };
     void DeviceLost(uint64_t generation) noexcept;
+    void FramePresented(uint32_t width, uint32_t height, uint32_t format) noexcept;
     void DeviceRestored(uint64_t generation) noexcept;
     MmsRenderApiV1 Api(Client& client);
     // Called before the plugin is stopped; release callbacks are not invoked
@@ -36,7 +37,7 @@ private:
     void Invoke(Lease& lease, const char* reason) noexcept;
     std::map<MmsHandle, Lease> leases_;
     MmsHandle next_ = 1;
-    uint64_t generation_ = 1;
-    uint32_t lost_ = 0;
+    uint64_t generation_ = 1, frameIndex_ = 0;
+    uint32_t lost_ = 0, width_ = 0, height_ = 0, format_ = 0;
 };
 }

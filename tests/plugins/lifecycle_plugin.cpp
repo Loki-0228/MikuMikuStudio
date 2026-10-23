@@ -87,9 +87,12 @@ static MmsResult RenderInfo(Plugin* p, const char* marker) {
     if (result) { Log(p, "RENDER_QUERY_FAIL"); return result; }
     p->renderGeneration = info.deviceGeneration;
     char line[96]{};
-    std::snprintf(line, sizeof(line), "%s gen=%llu lost=%u", marker,
-        static_cast<unsigned long long>(info.deviceGeneration), info.lost);
+    std::snprintf(line, sizeof(line), "%s gen=%llu lost=%u frame=%llu size=%ux%u fmt=%u", marker,
+        static_cast<unsigned long long>(info.deviceGeneration), info.lost,
+        static_cast<unsigned long long>(info.frameIndex), info.width, info.height,
+        info.backBufferFormat);
     Log(p, line);
+    Log(p, info.frameIndex ? "RENDER_FRAME_SEEN" : "RENDER_FRAME_EMPTY");
     return MMS_OK;
 }
 static MmsResult AcquireRenderLease(Plugin* p) {

@@ -533,7 +533,10 @@ PresentResult PresentScene(MMDApp* app) {
                                      nullptr);
             }
             frame_rate::Presented(app, SUCCEEDED(hr));
-            if (SUCCEEDED(hr)) ui_metrics::Add(ui_metrics::Present);
+            if (SUCCEEDED(hr)) {
+                ui_metrics::Add(ui_metrics::Present);
+                plugins::PluginFramePresented(app);
+            }
             if (hr == D3DERR_DEVICELOST) {
                 plugins::PluginNotifyDeviceLost(app);
                 device_lost_wait::Wait(app, device, false);

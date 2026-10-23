@@ -6,6 +6,12 @@ void RenderService::DeviceLost(uint64_t generation) noexcept {
     lost_ = 1;
     ReleaseAll("device lost");
 }
+void RenderService::FramePresented(uint32_t width, uint32_t height, uint32_t format) noexcept {
+    ++frameIndex_;
+    if (width) width_ = width;
+    if (height) height_ = height;
+    format_ = format;
+}
 void RenderService::DeviceRestored(uint64_t generation) noexcept {
     if (generation) generation_ = generation;
     lost_ = 0;
@@ -34,8 +40,11 @@ MmsResult RenderService::Query(MmsRenderInfoV1* out) const {
     MmsRenderInfoV1 info{};
     info.h = Header<MmsRenderInfoV1>();
     info.deviceGeneration = generation_;
-    info.frameIndex = 0;
+    info.frameIndex = frameIndex_;
     info.lost = lost_;
+    info.width = width_;
+    info.height = height_;
+    info.backBufferFormat = format_;
     *out = info;
     return MMS_OK;
 }
