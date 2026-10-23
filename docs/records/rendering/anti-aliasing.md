@@ -3,6 +3,7 @@
 本页按功能归并实现、诊断与验收资料。各记录中的「当前」「已完成」只适用于其注明的源码、构建和测试条件；当前使用入口见[文档导航](../../README.md)。
 
 ## 记录索引
+- [NVIDIA 双面绘制修复的绑定范围与重新安装](#record-nvidia-fix-binding)
 - [TAA 与 SMAA T2x 的 GPU 运动历史优化](#record-temporal-aa-gpu)
 - [原生阴影近景抗锯齿验证](#record-native-shadow-aa)
 
@@ -130,3 +131,12 @@ GPU 捕获回归运行于 Intel UHD Graphics；未取得 AMD 实机或其他显�
 - `build/Release/MikuMikuDance.exe`：本次构建的程序。
 
 早期 `xia-die-initial` 是二次权重候选，且尚未修正基准程序的边框覆盖，不用于最终验收。`before/` 是扩展基准参数前的预备快照；正式对照使用上述 `.local/releases/` 中的两侧程序。
+
+<a id="record-nvidia-fix-binding"></a>
+## NVIDIA 双面绘制修复的绑定范围与重新安装
+
+2026-10-24 同步 main `c48c156`，没有修改渲染路径。详细来源、ABI 实现和验证边界见[重新安装同步记录](../abi-main-c48c156-2026-10-24.md)。
+
+- 驱动配置按安装时 `MikuMikuDance.exe` 的完整路径区分，不随程序目录复制或移动。已安装时「帮助」菜单同时显示重新安装与卸载；重新安装重新写入并保存设置。
+- 安装结果提示说明设置只作用于当前目录的 EXE，并提醒保留 `MMSNvidiaAAFix.dll` 才能保留菜单入口；渲染指南增加安装范围和排查顺序。
+- 本机构建通过；`nvidia_antialias_fix_tests` 在私有桌面对话框审计处因 `SetThreadDesktop` 返回 `ERROR_BUSY` 停止，之前的配置、路径、保存／读取失败和「重新安装也写入」断言通过，之后的对话框审计没有执行。需要管理员权限的真实安装、卸载与白边画面复测仍未验收。
