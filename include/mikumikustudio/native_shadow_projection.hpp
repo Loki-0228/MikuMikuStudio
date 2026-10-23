@@ -111,6 +111,7 @@ inline float NativeShadowLateralScale(float range, int mode) {
     const float base = std::isfinite(range) ? (std::max)(range, .00001f) : .01784f;
     return base * (mode == 1 ? 2.f : 3.f);
 }
+
 // Preserve the 9.32 sampling grid unless visible geometry needs more coverage.
 // An affine transform of homogeneous clip coordinates enlarges the frustum
 // without changing the direction of light rays or discarding its mode warp.
@@ -188,15 +189,10 @@ inline float MinimumShadowScale(const std::array<float, 16>& m,
 // the directional-light projection there, independently of the orbit rotation.
 // The requested range cannot clip rendered geometry. Fit its world-space
 // bounds independently of the camera, with room for filtering at every edge.
-// `bounds` fixes the lateral camera-relative coverage (normally the visible
-// receivers), while `depthBounds` keeps the light depth range wide enough for
-// casters anywhere in the scene. A directional light maps a caster that can
-// shadow a receiver to the same lateral coordinates, so the lateral extent only
-// has to contain the receivers.
 inline std::array<float, 16> NativeShadowProjection(
     const float focus[3], const float direction[3], float range, int mode,
     const NativeShadowBounds* bounds = nullptr,
-    const NativeShadowBounds* depthBounds = nullptr) {
+    float halfWidthLimit = INFINITY) {
     float z[3] = {direction[0], direction[1], direction[2]};
     float length = std::sqrt(z[0]*z[0] + z[1]*z[1] + z[2]*z[2]);
     if (!std::isfinite(length) || length < 1e-6f) {
@@ -217,33 +213,37 @@ inline std::array<float, 16> NativeShadowProjection(
         focus[0]*y[0] + focus[1]*y[1] + focus[2]*y[2],
         focus[0]*z[0] + focus[1]*z[1] + focus[2]*z[2]};
     if (bounds && bounds->Valid()) {
-        const auto lightBound = [&](const NativeShadowBounds& source,
-                                    NativeShadowBounds& lightBounds) {
-            for (unsigned corner = 0; corner < 8; ++corner) {
-                const auto point = source.Corner(corner);
-                float light[3]{};
-                for (int axis = 0; axis < 3; ++axis)
-                    for (int row = 0; row < 3; ++row) light[axis] += point[row]*axes[axis][row];
-                lightBounds.Include(light);
-            }
-        };
         NativeShadowBounds lightBounds;
-        lightBound(*bounds, lightBounds);
+        for (unsigned corner = 0; corner < 8; ++corner) {
+            const auto point = bounds->Corner(corner);
+            float light[3]{};
+            for (int axis = 0; axis < 3; ++axis)
+                for (int row = 0; row < 3; ++row) light[axis] += point[row]*axes[axis][row];
+            lightBounds.Include(light);
+        }
         float half[3]{};
-        for (int axis = 0; axis < 2; ++axis) {
+        for (int axis = 0; axis < 3; ++axis) {
             centre[axis] = lightBounds.minimum[axis]*.5f + lightBounds.maximum[axis]*.5f;
             const float extent = lightBounds.maximum[axis]*.5f - lightBounds.minimum[axis]*.5f;
             half[axis] = extent + (std::max)(.25f, extent*.05f);
         }
-        // The depth axis still has to contain every caster on a light ray that
-        // reaches a visible receiver.
-        NativeShadowBounds depthLightBounds;
-        lightBound(depthBounds && depthBounds->Valid() ? *depthBounds : *bounds,
-                   depthLightBounds);
-        centre[2] = depthLightBounds.minimum[2]*.5f + depthLightBounds.maximum[2]*.5f;
-        const float depthExtent = depthLightBounds.maximum[2]*.5f - depthLightBounds.minimum[2]*.5f;
-        half[2] = depthExtent + (std::max)(.25f, depthExtent*.05f);
-        const float halfWidth = (std::max)(1.f/lateral, (std::max)(half[0], half[1]));
+        // The range-limited default caps the lateral box at the original 9.32
+        // shadow range and keeps it centred on the focus: the box covers the
+        // picture's centre, not the middle of a scene that may sit far away.
+        // A scene smaller than that keeps its own fitted extent and centre, so
+        // a character-sized scene keeps the precision it had before.
+        const float fitted = (std::max)(half[0], half[1]);
+        const bool capped = std::isfinite(halfWidthLimit) && fitted > halfWidthLimit;
+        float halfWidth;
+        if (capped) {
+            halfWidth = halfWidthLimit;
+            centre[0] = focus[0]*x[0] + focus[1]*x[1] + focus[2]*x[2];
+            centre[1] = focus[0]*y[0] + focus[1]*y[1] + focus[2]*y[2];
+        } else {
+            halfWidth = std::isfinite(halfWidthLimit)
+                ? (std::max)(.25f, fitted)
+                : (std::max)(1.f/lateral, fitted);
+        }
         const float halfDepth = (std::max)(.5f/scale[2], half[2]);
         scale[0] = scale[1] = 1.f/halfWidth;
         scale[2] = .5f/halfDepth;

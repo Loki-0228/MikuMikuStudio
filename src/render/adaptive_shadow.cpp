@@ -260,22 +260,23 @@ std::array<float, 16> UpdateAdaptiveShadowMap(MMDApp* app, const float frame[16]
     }
     // Coverage, depth units and the directional-light basis must not change
     // when the user changes precision. A separate detail layer covers the view.
+    // Default mode keeps the original 9.32 range box clipped to the scene: one
+    // cube for the whole picture, sized by the shadow range slider, so a large
+    // object cannot scale the map that carries a character-sized self shadow.
+    // Dynamic mode removes that range limit and fits the scene, then tunes the
+    // map size so the near end keeps at least the slider precision.
+    const float halfWidthLimit=app->AdaptiveShadowResolution()?INFINITY:
+        1.f/NativeShadowLateralScale(app->ShadowDistance(),1);
+    const auto lightProjection = NativeShadowProjection(focus,app->LightDirection(),.1f,1,
+        &scene,halfWidthLimit);
     auto rampProjection = NativeShadowProjection(focus,app->LightDirection(),.1f,1);
     // Keep the mode-2 ramp's multiplier fixed too: camera-relative Y previously
     // changed both shadow bias and darkness when orbiting or changing precision.
     for(int row=0;row<4;++row)rampProjection[row*4+1]=0;
     Matrix cameraProjection{},cameraView{},worldView{},inverseView{},inverseProjection{};
     CameraShadowRegion cameraRegion;
-    // The coverage map fits what the current picture shows, not the whole
-    // scene. A large object behind the camera or at the edge of the stage must
-    // not scale the map that carries a visible object's self shadow. The light
-    // depth range still comes from the scene so off-screen casters remain.
-    NativeShadowBounds coverageBounds=scene;
-    // Dynamic precision and the near detail layer follow the relative near/far
-    // inside the view: the nearest visible receiver, not the absolute camera
-    // focus, decides how dense the shadow texels have to be.
-    float visibleNear=std::numeric_limits<float>::quiet_NaN();
-    float relativeNear=std::numeric_limits<float>::quiet_NaN();
+    // Dynamic precision reads the same rendered picture: focus depth, final
+    // projection and the render size the picture is rasterised at.
     float focusDepth=std::numeric_limits<float>::quiet_NaN();
     float projectedPixels=0.f;
     bool orthographicCamera=false;
@@ -283,9 +284,6 @@ std::array<float, 16> UpdateAdaptiveShadowMap(MMDApp* app, const float frame[16]
             reinterpret_cast<D3DMATRIX*>(&cameraProjection))) &&
         SUCCEEDED(device->GetTransform(D3DTS_VIEW,reinterpret_cast<D3DMATRIX*>(&cameraView)))) {
         api.multiply(&worldView,reinterpret_cast<const Matrix*>(frame),&cameraView);
-        orthographicCamera=cameraProjection.m[3][3]==1.f;
-        projectedPixels=(std::max)(float(app->RenderWidth())*std::fabs(cameraProjection.m[0][0]),
-            float(app->RenderHeight())*std::fabs(cameraProjection.m[1][1]));
         if(api.inverse(&inverseView,nullptr,&worldView) &&
             api.inverse(&inverseProjection,nullptr,&cameraProjection)) {
             // Read the focus depth from the rendered transform. The camera panel
@@ -294,37 +292,13 @@ std::array<float, 16> UpdateAdaptiveShadowMap(MMDApp* app, const float frame[16]
             float viewFocus[4]{};
             api.vec3Transform(viewFocus,frameFocus,&worldView);
             focusDepth=viewFocus[2];
-            if(scene.Valid()) {
-                const NativeShadowBounds visible=VisibleShadowReceivers(scene,
-                    &worldView.m[0][0],&inverseView.m[0][0],
-                    cameraProjection.m[0][0],cameraProjection.m[1][1],orthographicCamera);
-                if(visible.Valid()) {
-                    coverageBounds=visible;
-                    for(unsigned corner=0;corner<8;++corner) {
-                        float view[4]{};
-                        const auto point=visible.Corner(corner);
-                        api.vec3Transform(view,point.data(),&worldView);
-                        const float depth=(std::max)(orthographicCamera?0.f:1.f,view[2]);
-                        if(!std::isfinite(visibleNear) || depth<visibleNear)visibleNear=depth;
-                    }
-                    // A scene box that contains the camera touches the near
-                    // plane, which says nothing about the nearest visible
-                    // surface. Keep the focus depth in that case.
-                    if(visibleNear<=(orthographicCamera?.5f:1.5f))
-                        visibleNear=std::numeric_limits<float>::quiet_NaN();
-                }
-            }
-        }
-        relativeNear=focusDepth;
-        if(std::isfinite(visibleNear) &&
-            (!std::isfinite(relativeNear) || visibleNear<relativeNear))
-            relativeNear=visibleNear;
-        if(std::isfinite(relativeNear))
             cameraRegion=CameraDepthShadowRegion(&inverseView.m[0][0],
-                &inverseProjection.m[0][0],relativeNear);
+                &inverseProjection.m[0][0],focusDepth);
+        }
+        orthographicCamera=cameraProjection.m[3][3]==1.f;
+        projectedPixels=(std::max)(float(app->RenderWidth())*std::fabs(cameraProjection.m[0][0]),
+            float(app->RenderHeight())*std::fabs(cameraProjection.m[1][1]));
     }
-    const auto lightProjection = NativeShadowProjection(focus,app->LightDirection(),.1f,1,
-        &coverageBounds,&scene);
     Matrix inverseShadow{},toNative{};
     for(int axis=0;axis<4;++axis)toNative.m[axis][axis]=1;
     if(api.inverse(&inverseShadow,nullptr,reinterpret_cast<const Matrix*>(lightProjection.data())))
@@ -339,14 +313,14 @@ std::array<float, 16> UpdateAdaptiveShadowMap(MMDApp* app, const float frame[16]
     const unsigned selectedQuality=ShadowQualityMapSize(app->ShadowDistance(),maximum);
     unsigned qualitySize=selectedQuality;
     if(app->AdaptiveShadowResolution()) {
-        // The coverage map now spans the visible receivers, so its demand
-        // follows the screen density of the nearest visible content. Dynamic
-        // precision keeps the result within one tier of the selected quality.
-        const float coverageWidth=coverageBounds.Valid()?
-            2.f/MinimumShadowScale(lightProjection,coverageBounds):0.f;
-        const float samplingDepth=std::isfinite(relativeNear)?relativeNear:focusDepth;
+        // Dynamic mode removed the range limit, so the demand follows the
+        // scene-fitted coverage at the picture's focus depth. The chosen size
+        // never falls below the selected tier, which keeps the same slider at
+        // least as precise as the range-limited default.
+        const float coverageWidth=scene.Valid()?
+            2.f/MinimumShadowScale(lightProjection,scene):0.f;
         const float required=DynamicShadowMapDemand(projectedPixels,coverageWidth,
-            samplingDepth,orthographicCamera);
+            focusDepth,orthographicCamera);
         qualitySize=DynamicShadowQualitySize(required,selectedQuality,
             app->DynamicShadowQuality(),maximum);
     }
@@ -360,7 +334,12 @@ std::array<float, 16> UpdateAdaptiveShadowMap(MMDApp* app, const float frame[16]
             shadow_filter::PlanDetail(app,detailProjection,lightProjection,&worldView.m[0][0],
                 cameraRegion.farDepth,detailSize);
     }
-    unsigned size=viewport_render_scale::ShadowSize(app,(std::max)(512u,qualitySize/2u));
+    // The range-limited default box only spans a character-sized world area, so
+    // it uses the selected tier directly instead of the half-size coverage map
+    // that the scene-fitted dynamic mode needs for its wider box.
+    const unsigned coverageSize=app->AdaptiveShadowResolution()?
+        (std::max)(512u,qualitySize/2u):qualitySize;
+    unsigned size=viewport_render_scale::ShadowSize(app,coverageSize);
     if(size<512)return lightProjection;
     if (r->hdrTexture && r->shadowSurface && r->shadowDepthSurface && unsigned(r->renderTargetWidth) == size &&
         unsigned(r->renderTargetHeight) == size) return lightProjection;

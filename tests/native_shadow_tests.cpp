@@ -427,27 +427,26 @@ void CheckDynamicPrecision() {
     if(DynamicShadowMapDemand(projectedPixels,coverageWidth,0.f,false)!=0.f ||
        DynamicShadowMapDemand(projectedPixels,0.f,10.f,false)!=0.f)
         throw std::runtime_error("invalid dynamic demand was not rejected");
-    // The chosen size remains inside the selected quality's plus/minus one tier.
+    // The chosen size only raises the selected quality, by at most one tier.
     for(unsigned selected:{512u,1024u,2048u,4096u,8192u}) {
         const unsigned maximum=8192u;
-        const unsigned lower=(std::max)(512u,selected/2);
         const unsigned upper=(std::min)(maximum,selected*2);
         unsigned previous=selected;
         for(float required:{1e-3f,.1f,50.f,200.f,400.f,700.f,900.f,1500.f,4000.f,20000.f,1e9f,
                             800.f,300.f,50.f,1e9f,0.f}) {
             const unsigned size=DynamicShadowQualitySize(required,selected,previous,maximum);
-            if(size<lower || size>upper)
+            if(size<selected || size>upper)
                 throw std::runtime_error("dynamic quality left the selected tier band");
             if(size&(size-1u))
                 throw std::runtime_error("dynamic quality is not a power of two");
-            if(size<selected?size!=lower:size>selected?size!=upper:size!=selected)
+            if(size!=selected && size!=upper)
                 throw std::runtime_error("dynamic quality skipped a band tier");
             previous=size;
         }
     }
-    // Hysteresis: a 1024 selection upgrades above 2.5x its coverage demand,
-    // keeps the larger map until demand falls to 1.6x, and only downgrades
-    // below 0.4x.
+    // Hysteresis: a 1024 selection upgrades above 2.5x its coverage demand and
+    // keeps the larger map until demand falls to 1.6x; it never goes below the
+    // selected size, so the same slider keeps the same floor precision.
     const auto choose=[](float required,unsigned previous){
         return DynamicShadowQualitySize(required,1024,previous,8192);
     };
@@ -455,17 +454,17 @@ void CheckDynamicPrecision() {
         throw std::runtime_error("dynamic growth threshold is not centred on the selection");
     if(choose(900.f,2048)!=2048 || choose(700.f,2048)!=1024)
         throw std::runtime_error("dynamic shrink threshold has no hysteresis");
-    if(choose(180.f,1024)!=512 || choose(300.f,512)!=512 || choose(400.f,512)!=1024)
-        throw std::runtime_error("dynamic lower tier band is wrong");
-    // A camera sweep settles on the band ends and never jumps more than one tier
-    // per frame.
+    if(choose(180.f,1024)!=1024 || choose(0.f,1024)!=1024)
+        throw std::runtime_error("dynamic precision dropped below the selected size");
+    // A camera sweep only ever raises the size and returns to the selected tier
+    // when the view moves far away.
     unsigned quality=1024,previousQuality=quality,changes=0;
     for(float depth=400.f;depth>=1.f;depth*=.85f) {
         const float required=DynamicShadowMapDemand(3600.f,24.f,depth,false);
         quality=DynamicShadowQualitySize(required,1024,quality,8192);
         changes+=quality!=previousQuality;
-        if(quality>previousQuality*2 || quality*2<previousQuality)
-            throw std::runtime_error("dynamic quality jumped more than one tier in one frame");
+        if(quality<1024 || quality>previousQuality*2 || quality*2<previousQuality)
+            throw std::runtime_error("dynamic quality left its floor or jumped two tiers");
         previousQuality=quality;
     }
     const unsigned closest=quality;
@@ -473,53 +472,43 @@ void CheckDynamicPrecision() {
         const float required=DynamicShadowMapDemand(3600.f,24.f,depth,false);
         quality=DynamicShadowQualitySize(required,1024,quality,8192);
         changes+=quality!=previousQuality;
+        if(quality<1024)throw std::runtime_error("dynamic quality fell below the slider tier");
         previousQuality=quality;
     }
-    if(closest!=2048 || quality!=512)
-        throw std::runtime_error("dynamic precision sweep did not settle on both band ends");
-    std::printf("PASS dynamic precision: inverse-depth curve, one-tier band, %u hysteresis changes\n",changes);
+    if(closest!=2048 || quality!=1024)
+        throw std::runtime_error("dynamic precision sweep did not return to the slider tier");
+    std::printf("PASS dynamic precision: inverse-depth curve, one-tier raise, %u hysteresis changes\n",changes);
 }
 
-void CheckVisibleCoverageFit() {
+void CheckShadowRangeBox() {
     using namespace mikumikustudio;
-    NativeShadowBounds scene,visible;
+    NativeShadowBounds scene,characterBox;
     const float sceneLow[3]{-1000,-5,-1000},sceneHigh[3]{1000,40,1000};
-    const float visibleLow[3]{-6,0,-6},visibleHigh[3]{6,12,6};
+    const float smallLow[3]{-10,0,-10},smallHigh[3]{10,20,10};
     scene.Include(sceneLow);scene.Include(sceneHigh);
-    visible.Include(visibleLow);visible.Include(visibleHigh);
-    const float focus[3]{0,6,0},light[3]{-.5f,-1,.5f};
-    const auto full=NativeShadowProjection(focus,light,.1f,1,&scene);
-    const auto fitted=NativeShadowProjection(focus,light,.1f,1,&visible,&scene);
-    const auto project=[](const std::array<float,16>& matrix,const std::array<float,3>& point){
-        double q[4]{};
-        for(int a=0;a<4;++a)q[a]=matrix[12+a]+point[0]*matrix[a]+point[1]*matrix[4+a]+point[2]*matrix[8+a];
-        return std::array<double,4>{q[0],q[1],q[2],q[3]};
-    };
-    // Fitting the lateral extent to the visible receivers must raise the texel
-    // density enough to matter, even though the huge off-screen scene stays.
-    if(!(MinimumShadowScale(fitted,visible)>MinimumShadowScale(full,visible)*3.f))
-        throw std::runtime_error("visible receiver fit did not tighten the lateral coverage");
-    for(unsigned corner=0;corner<8;++corner) {
-        const auto point=visible.Corner(corner);
-        const auto q=project(fitted,point);
-        if(!(q[3]>0) || std::abs(q[0]/q[3])>=1 || std::abs(q[1]/q[3])>=1)
-            throw std::runtime_error("visible receiver fell outside the fitted coverage");
-    }
-    // Depth must still span the whole scene so an off-screen caster can land
-    // on the visible receiver along the light direction.
-    for(unsigned corner=0;corner<8;++corner) {
-        const auto point=scene.Corner(corner);
-        const auto q=project(fitted,point);
-        if(!(q[3]>0) || q[2]/q[3]<=0 || q[2]/q[3]>=1)
-            throw std::runtime_error("fitted coverage cut a caster out of the light depth range");
-    }
-    std::printf("PASS visible coverage fit: lateral %.2fx tighter, scene depth retained\n",
-        MinimumShadowScale(fitted,visible)/MinimumShadowScale(full,visible));
+    characterBox.Include(smallLow);characterBox.Include(smallHigh);
+    const float focus[3]{0,10,0},light[3]{-.5f,-1,.5f};
+    const float half=1.f/NativeShadowLateralScale(.01125f,1);
+    const auto limited=NativeShadowProjection(focus,light,.1f,1,&scene,half);
+    const auto unlimited=NativeShadowProjection(focus,light,.1f,1,&scene);
+    const float limitedWidth=2.f/MinimumShadowScale(limited,scene);
+    const float unlimitedWidth=2.f/MinimumShadowScale(unlimited,scene);
+    // The default box is capped at the original range and cannot grow with the
+    // scene; the scene-fitted box is much wider.
+    if(!(limitedWidth<=2.f*half*1.001f) || !(limitedWidth<unlimitedWidth*.2f))
+        throw std::runtime_error("shadow range box did not cap the scene-fitted coverage");
+    // A character-sized scene keeps its own smaller fitted extent.
+    const auto characterProjection=NativeShadowProjection(focus,light,.1f,1,&characterBox,half);
+    const float characterWidth=2.f/MinimumShadowScale(characterProjection,characterBox);
+    if(!(characterWidth<limitedWidth))
+        throw std::runtime_error("shadow range box destroyed a character-sized fitted extent");
+    std::printf("PASS shadow range box: %.2f world wide, scene fit %.2f, character fit %.2f\n",
+        limitedWidth,unlimitedWidth,characterWidth);
 }
 
 void CheckProjection() {
     CheckQualityOrdering();
-    CheckVisibleCoverageFit();
+    CheckShadowRangeBox();
     CheckDynamicPrecision();
     CheckCameraPictureShadowRegion();
     CheckDetailGrid();

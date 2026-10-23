@@ -56,32 +56,29 @@ inline float DynamicShadowMapDemand(float projectedPixels, float coverageWidth,
 inline unsigned ShadowCoverageSize(unsigned quality) {
     return (std::max)(512u, quality / 2u);
 }
-// Dynamic precision offsets the selected quality by at most one tier. The
-// demand curve is logarithmic: one tier is added once the selected coverage
-// would be 2.5 times coarser than the screen needs, and one tier is removed
-// once it is 2.5 times finer. The return thresholds sit closer to the selected
-// level so a camera resting on a boundary does not reallocate every frame. One
-// tier changes per frame at most, so a fast zoom cannot jump two octaves.
+// Dynamic precision only raises the selected quality, never lowers it: the
+// same slider position has to keep at least the precision of a character-sized
+// scene, and the nearest content (including content close to the camera) must
+// not drop below the slider setting. One tier is added once the selected
+// coverage would be 2.5 times coarser than the screen needs. The return
+// threshold sits closer to the selected level so a camera resting on a
+// boundary does not reallocate every frame. One tier changes per frame at
+// most, so a fast zoom cannot jump two octaves.
 inline unsigned DynamicShadowQualitySize(float requiredCoverage, unsigned selected,
                                          unsigned previous, unsigned maximum) {
     maximum = (std::min)(8192u, maximum);
     if (maximum < 512) return maximum;
     selected = (std::min)(maximum, (std::max)(512u, selected));
-    const unsigned lower = (std::max)(512u, selected / 2);
     const unsigned upper = (std::min)(maximum, selected * 2);
     if (!std::isfinite(requiredCoverage) || requiredCoverage <= 0) return selected;
     unsigned quality = previous >= 512 ? previous : selected;
-    quality = (std::min)(upper, (std::max)(lower, quality));
+    quality = (std::min)(upper, (std::max)(selected, quality));
     const float coverage = float(ShadowCoverageSize(selected));
     if (quality > selected) {
         if (requiredCoverage < coverage * 1.6f) quality = selected;
-    } else if (quality < selected) {
-        if (requiredCoverage > coverage * .62f) quality = selected;
     } else if (quality < upper && requiredCoverage > coverage * 2.5f) {
         quality *= 2;
-    } else if (quality > lower && requiredCoverage < coverage * .4f) {
-        quality /= 2;
     }
-    return (std::min)(upper, (std::max)(lower, quality));
+    return (std::min)(upper, (std::max)(selected, quality));
 }
 }
