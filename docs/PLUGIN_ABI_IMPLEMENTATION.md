@@ -40,6 +40,10 @@
 
 [烘焙运行文件安装隔离](records/abi-mesh-data-2026-10-23.md)修复了两个仍写系统临时目录的入口，私有网格副本与仅烘焙中间文件分别进入 `data/mesh_bake_cache`、`data/mesh_bake_work`。两配置真实双进程、Ogawa 快照和完整配置 D3D 导出专项通过；用户指定的 ABC 和 PMM 旁车保持原位置。随后[编码器探测文件](records/abi-encoder-data-2026-10-23.md)进入 `data/encoder_probes`，两配置路径专项各 101 项、启动回归各 126 项通过，保留 AMD 异常后的安全放弃路径。[MME 分配快照](records/abi-mme-data-2026-10-23.md)现进入 `data/mme_mesh_snapshots`，隐藏宿主的路径、文件及受控通知专项通过，未证明真实 MME 消费。[校准缓存](records/abi-calibration-data-2026-10-23.md)已停止自动读取旧固定用户目录，两配置实际初始化及 CPU 回退专项各 154 项通过，CTest 独立安装入口通过；完整测量写盘失败及硬件测速仍未验收。磁盘缓存管理继续待实现。
 
+[缓存目录绑定与快照租约读取](records/abi-cache-catalog-pinning-2026-10-23.md)补齐业务 Store 前置的另一半：内部 catalog 可用固定目录身份代替路径拼写判定来源，并在同一锁内交出当前快照租约。两配置各 15 组专项零失败，新增专项各 120 项；退休回收在租约释放前报告 `busy`，释放或替换后完成回收。两产品构建通过，正式 release 未覆盖。本批仍未实现业务 Store、工程关联、管理窗口、效果／纹理缓存消费者或真实缓存命中。
+
+main 截至 `fed9768` 的逐提交行为同步核对整理为 [main 行为同步矩阵](records/abi-main-sync-matrix-2026-10-23.md)：最近 25 个提交中 18 个没有待办行为差异，`3782e0c` 部分同步，`c147454` 按数据集中约定有意偏离。待处理项集中在负数关键帧、效果编译缓存、纹理准备缓存、缓存管理入口与不透明纹理 alpha 分类。
+
 main 的 `fed9768` 已按 [近景阴影及 PMM 编码记录](records/abi-main-fed9768-2026-10-23.md)同步，并修正审查发现的失败投影读取及原版副本路径误判。两配置构建、14 次定点运行和原 ABI 契约通过。阴影接收范围处理实际 AA 偏移和 `frame * VIEW`；PMM 判断共用真实加载器镜像，MMS 可逆路径与原版 CP932 副本分别检查。随后单独修复[满 20 字节 PMD 身份读写](records/abi-pmm-identity-2026-10-23.md)，真实重开、旧拼接、重映射和重选均通过，保留原版文件指标、MMS 标记及正式 release。
 
 main 新增 `0fe9fe0`、`3782e0c` 的差异已完成[迁移前核对](records/abi-main-sync-plan-2026-10-22.md)。随后接入[PMM 预读、聚焦阴影及附件父绑定历史](records/abi-preread-shadow-parent-2026-10-22.md)：两种配置的真实加载、附件 4,303 项及实际完整产品的 SM3／SM2 绘制通过。旧源码即时编译超时和系统鼠标用例未计入通过；普通 `mms.edit` 继续关闭。[有界 CPU 几何缓存](records/abi-geometry-history-2026-10-22.md)现已接入实际 PMD／PMX 加载器，该批两配置后端各 10,215 项及实际加载器 545／540 项通过；磁盘缓存管理和负帧仍待迁移。
