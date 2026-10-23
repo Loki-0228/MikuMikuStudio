@@ -1,4 +1,5 @@
 #include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/negative_frames.hpp"
 #include "mikumikustudio/build_profile.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "../plugins/native_pose_scope.hpp"
@@ -259,6 +260,10 @@ void TraceSceneLightState(MMDApp* app, const char* stage) {
 
 // was Sub411070, VA 0x00411070
 void RefreshLightPanel(MMDApp* app) {
+    if(app && app->CurrentFrame()<0) {
+        const auto frame=app->CurrentFrame();app->CurrentFrame()=0;RefreshLightPanel(app);app->CurrentFrame()=frame;
+        negative_frames::EvaluateGlobals(app,frame);return;
+    }
     if (app == nullptr)
         return;
     auto* keys = app->LightKeys();
@@ -345,6 +350,10 @@ void SyncCameraFovControls(MMDApp* app) {
 
 // was Sub411B90, VA 0x00411B90
 void RefreshSelfShadowPanel(MMDApp* app) {
+    if(app && app->CurrentFrame()<0) {
+        const auto frame=app->CurrentFrame();app->CurrentFrame()=0;RefreshSelfShadowPanel(app);app->CurrentFrame()=frame;
+        negative_frames::EvaluateGlobals(app,frame);return;
+    }
     if (app == nullptr)
         return;
     auto* keys = app->ShadowKeys();
@@ -469,6 +478,7 @@ void SyncAccessoryEditPanel(MMDApp* app) {
 // exact-hit overwrite or free-slot splice of the 24-byte shadow key carrying
 // the current shadow mode (this+0xA0B10) and interval (this+0xA0B0C).
 void RegisterSelfShadowState(MMDApp* app, int frameValue) {
+    if(frameValue<0){negative_frames::RegisterGlobal(app,negative_frames::Global::Shadow,frameValue);return;}
     if (app == nullptr || frameValue < 0)
         return;
     auto* keys = app->ShadowKeys();

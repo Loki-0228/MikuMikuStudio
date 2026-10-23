@@ -1,4 +1,5 @@
 #include "mikumikustudio/original_import.hpp"
+#include "mikumikustudio/negative_frames.hpp"
 #include "mikumikustudio/plugin_scene.hpp"
 #include "mikumikustudio/key_pool.hpp"
 #include "mikumikustudio/accessory_import.hpp"
@@ -1253,7 +1254,8 @@ Result Prepare(MMDApp& app, const wchar_t* path, import_texture_cache::Preparati
 // one frame into its 10000-record key list (visible/shadow/parent fields +
 // pos/rot/scale/opacity), the same walk/overwrite/splice insert as the
 // other registrars.
-void RegisterAccessoryKey(MMDApp* app, int frameArg, int slot) {  // 0x413CB0
+void RegisterAccessoryKey(MMDApp* app, int frameArg, int slot) {
+    if(frameArg<0){negative_frames::RegisterAccessory(app,slot,frameArg);return;}  // 0x413CB0
     if (app == nullptr || slot < 0 || slot >= 255)
         return;
     auto* object = reinterpret_cast<unsigned char*>(app->AccessorySlot(slot));

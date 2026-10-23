@@ -1,3 +1,4 @@
+#include "mikumikustudio/negative_frames.hpp"
 #include "mikumikustudio/frame_limits.hpp"
 // ===========================================================================
 // Left frame-editor refresh and single-frame stepping helpers.
@@ -82,6 +83,10 @@ void ApplyFrameToModels(MMDApp* app) {
 }
 
 void RefreshFrameContext(MMDApp* app) {
+    if(app->CurrentFrame()<0) {
+        const auto frame=app->CurrentFrame();app->CurrentFrame()=0;RefreshFrameContext(app);app->CurrentFrame()=frame;
+        negative_frames::EvaluateGlobals(app,frame);return;
+    }
     const HWND hwnd = static_cast<HWND>(app->Hwnd());
     if (app->state.optflag[0] != 0) {
         ReloadModels(app);
@@ -133,15 +138,14 @@ void RefreshFrameContext(MMDApp* app) {
 }
 
 void RefreshTimeline(MMDApp* app, bool forward) {
-    const std::uint32_t frame = static_cast<std::uint32_t>(
-        app->state.currentFrame);
+    const std::int64_t frame=app->CurrentFrame();
     const std::uint32_t visible = static_cast<std::uint32_t>(
         (app->SidebarWidth() - 0x54) / 0x1A);
     app->state.timelineStartFrame =
-        frame <= visible ? 0 : static_cast<std::int32_t>(frame - visible);
+        frame<0 ? static_cast<std::int32_t>((std::max)(std::int64_t(frame_limits::minimum),frame-visible)) : frame<=visible ? 0 : static_cast<std::int32_t>(frame-visible);
     PanelPaint(app);
 
-    if (app->WaveEnabled() != 0) {
+    if (app->WaveEnabled() != 0 && app->CurrentFrame()>=0) {
         TimelineDrawTicks(app->state.timelineStartFrame,
                           app->SidebarWidth());
         RECT rect{6, 95,
@@ -188,13 +192,13 @@ void RefreshTimeline(MMDApp* app, bool forward) {
 // forwarding wrappers this used to be reached through were removed; callers
 // pass the direction flag directly.
 void StepFrame(MMDApp* app, bool forward) {
-    if(!app || (forward && app->CurrentFrame()>=frame_limits::maximum) || (!forward && app->CurrentFrame()<=0))return;
+    if(!app || (forward && app->CurrentFrame()>=frame_limits::maximum) || (!forward && app->CurrentFrame()<=frame_limits::minimum))return;
     app->CameraAttachmentTransformSuppressed() = 0;
     SnapshotAndClearBoneEdits(app);
     std::int32_t& frame = app->state.currentFrame;
     if (forward)
         ++frame;
-    else if (frame != 0)
+    else
         --frame;
     SetFrameEditText(app);
     ApplyFrameToModels(app);
@@ -212,14 +216,13 @@ void RefreshAfterFrameApply(MMDApp* app) {
     app->CameraAttachmentTransformSuppressed() = 0;
     SnapshotAndClearBoneEdits(app);
 
-    const std::uint32_t frame =
-        app->state.currentFrame;
+    const std::int64_t frame=app->CurrentFrame();
     const std::uint32_t visible = static_cast<std::uint32_t>(
         (app->SidebarWidth() - 84) / 26);
     app->state.timelineStartFrame =
-        frame <= visible ? 0 : static_cast<std::int32_t>(frame - visible);
+        frame<0 ? static_cast<std::int32_t>((std::max)(std::int64_t(frame_limits::minimum),frame-visible)) : frame<=visible ? 0 : static_cast<std::int32_t>(frame-visible);
     PanelPaint(app);
-    if (app->WaveEnabled() != 0) {
+    if (app->WaveEnabled() != 0 && app->CurrentFrame()>=0) {
         TimelineDrawTicks(app->state.timelineStartFrame,
                           app->SidebarWidth());
         RECT rect{6, 95,

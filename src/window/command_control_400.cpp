@@ -1,4 +1,5 @@
 #include "mikumikustudio/undo_storage.hpp"
+#include "mikumikustudio/negative_frames.hpp"
 #include "mikumikustudio/frame_limits.hpp"
 #include <set>
 #include <array>
@@ -517,6 +518,7 @@ static Key* FindGlobalFrame(Key* table, std::uint32_t frame) {
 // VA 0x00410560: Camera manipulation "register" button backend
 // (was Sub410560).
 void RegisterCameraState(MMDApp* app, int frame) {
+    if(frame<0){negative_frames::RegisterGlobal(app,negative_frames::Global::Camera,frame);return;}
     CameraClipboardRecord source{};
     const std::uint32_t absolute = static_cast<std::uint32_t>(frame);
     source.frame =
@@ -554,6 +556,7 @@ void RegisterCameraState(MMDApp* app, int frame) {
 // VA 0x00411630: Light manipulation "register" button backend
 // (was Sub411630).
 void RegisterLightState(MMDApp* app, int frame) {
+    if(frame<0){negative_frames::RegisterGlobal(app,negative_frames::Global::Light,frame);return;}
     LightClipboardRecord source{};
     source.frame =
         static_cast<std::uint32_t>(frame) -
@@ -1224,12 +1227,15 @@ static void Cmd400_PlayRangeEdits(MMDApp* app, HWND hwnd) {
     char text[0x100];
     GetWindowTextA(GetDlgItem(hwnd, panel::kPlayStartFrameEdit), text, sizeof text);
     std::int32_t start = 0, end = 0;
-    if (!frame_limits::ParsePlaybackBound(text, start)) { MessageBeep(MB_ICONWARNING); return; }
+    if (*text && !frame_limits::ParseSigned(text, start)) { MessageBeep(MB_ICONWARNING); return; }
     GetWindowTextA(GetDlgItem(hwnd, panel::kPlayStopFrameEdit), text, sizeof text);
-    if (!frame_limits::ParsePlaybackBound(text, end)) { MessageBeep(MB_ICONWARNING); return; }
+    if (*text && !frame_limits::ParseSigned(text, end)) { MessageBeep(MB_ICONWARNING); return; }
+    const bool blankEnd=!text[0];
+    if(blankEnd)end=app->LastRegisteredFrame();
+    if(!frame_limits::ResolveRange(start,end,app->LastRegisteredFrame(),start,end,true)){MessageBeep(MB_ICONWARNING);return;}
     if (app->PlaybackStartsAtCurrentFrame() != 0) {
         app->PlaybackStartSeconds() = FrameToSeconds(
-            app->state.currentFrame);
+            (std::max)(0,app->CurrentFrame()));
         app->PlaybackFrameChanged() = 1;
     } else {
         app->PlaybackStartSeconds() = FrameToSeconds(start);
@@ -1295,9 +1301,12 @@ static void Cmd400_FrameRangeSelect(MMDApp* app, HWND hwnd) {
     char text[0x100];
     GetWindowTextA(GetDlgItem(hwnd, panel::kRangeStartEdit), text, sizeof text);
     std::int32_t from = 0, to = 0;
-    if(!frame_limits::Parse(text,from)){MessageBeep(MB_ICONWARNING);return;}
+    if(!frame_limits::ParseSigned(text,from)){MessageBeep(MB_ICONWARNING);return;}
     GetWindowTextA(GetDlgItem(hwnd, panel::kRangeStopEdit), text, sizeof text);
-    if(!frame_limits::Parse(text,to)){MessageBeep(MB_ICONWARNING);return;}
+    if(!frame_limits::ParseSigned(text,to)){MessageBeep(MB_ICONWARNING);return;}
+    if(!frame_limits::ResolveRange(from,to,app->LastRegisteredFrame(),from,to)){MessageBeep(MB_ICONWARNING);return;}
+    negative_frames::SelectRange(app,from,to);
+    if(to<0){from=1;to=0;}else from=(std::max)(0,from);
     GetWindowTextA(GetDlgItem(hwnd, panel::kRegisterScopeCombo), text, 20);
     if (app->state.optflag[0] == 0) {
         // Fixed entries carry semantic IDs; model-owned names retain the
@@ -2975,6 +2984,7 @@ static void Cmd400_AccessoryEditDialog(MMDApp* app, HWND hwnd) {
 
 void CmdControl400(MMDApp* app, HWND hwnd, std::uint16_t id,
                    std::uint16_t notify) {
+    if(id!=420 && negative_frames::Command(app,id))return;
     curve_host::LegacyRegistrationBatch registrationBatch(app);
     switch (id) {
     case 400:  // undo (0x00482766) -> Cmd400_Undo
@@ -3091,7 +3101,8 @@ void CmdControl400(MMDApp* app, HWND hwnd, std::uint16_t id,
         const std::int32_t count = (sidebar - 0x54) / 26;
         const std::int32_t frame =
             app->state.currentFrame;
-        if (frame > count) {
+        if(frame<0)app->state.timelineStartFrame=static_cast<int>((std::max)(std::int64_t(frame_limits::minimum),std::int64_t(frame)-count));
+        else if (frame > count) {
             app->state.timelineStartFrame = frame - count;
         } else {
             app->state.timelineStartFrame = 0;
@@ -3309,6 +3320,7 @@ void CmdControl400(MMDApp* app, HWND hwnd, std::uint16_t id,
 
     case 420:  // frame copy (0x004834D2) -> Cmd400_FrameCopy
         Cmd400_FrameCopy(app, hwnd);
+        negative_frames::Command(app,420);
         break;
 
     case 421:  // frame paste (0x00484973) -> Cmd400_FramePaste

@@ -1,4 +1,5 @@
 #include "mikumikustudio/undo_storage.hpp"
+#include "mikumikustudio/negative_frames.hpp"
 #include "mikumikustudio/frame_limits.hpp"
 #include "mikumikustudio/display_capacity.hpp"
 #include "mikumikustudio/key_pool.hpp"
@@ -62,6 +63,7 @@
 #include "mikumikustudio/panel_controls.hpp"
 
 namespace mikumikustudio {
+void RefreshAfterFrameApply(MMDApp*);
 
 // Forward declarations for functions ported in other translation units
 // (declared here with their original VAs; bodies in the files noted).
@@ -880,6 +882,12 @@ static void HandleLButtonDown_TimelineAreaHit(MMDApp* app, HWND hwnd,
                                               std::int32_t y) {
     if (app->PlaybackActive() != 0)
         return;
+    const auto negativeCell=std::int64_t(app->state.timelineStartFrame)+Div13(x-100);
+    if(negativeCell<0 && negativeCell>=frame_limits::minimum) {
+        negative_frames::SelectCell(app,int(negativeCell),Div14(y-160),app->ShiftModifierActive());
+        app->CurrentFrame()=int(negativeCell);RefreshAfterFrameApply(app);PostViewRefresh(app);return;
+    }
+    if(!app->ShiftModifierActive())negative_frames::SelectCell(app,int(negativeCell),-999,false);
     app->TimelineSelectionChanged() = 0;
     app->ClearTimelineRange();
     if (app->state.optflag[0] != 0) {  // 760 (0x2F8)

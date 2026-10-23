@@ -1,3 +1,4 @@
+#include "mikumikustudio/negative_frames.hpp"
 #include "mikumikustudio/original_import.hpp"
 #include "mikumikustudio/image_sequence_export.hpp"
 #include "mikumikustudio/key_pool.hpp"
@@ -883,7 +884,8 @@ void ApplyGravitySettingDialog(MMDApp* app) {  // was Sub460080, VA 0x00460080
 // No free slot raises the "You cannot regist over %dpoint." box
 // (limit 10000, EN/JP by englishUI) and returns without registering.
 // 0x460080 (ApplyGravitySettingDialog above) calls this at the current frame.
-void RegisterGravityKeyCurrent(MMDApp* app, std::int32_t frame) {  // VA 0x00412B20, was Sub412B20
+void RegisterGravityKeyCurrent(MMDApp* app, std::int32_t frame) {
+    if(frame<0){negative_frames::RegisterGlobal(app,negative_frames::Global::Gravity,frame);return;}  // VA 0x00412B20, was Sub412B20
     // JP overflow strings (0x52B918 / 0x52B908, SJIS byte-exact - the
     // same pair key_registrars.cpp uses for the model-track registrars)
     static const char kJpOverflow[] =

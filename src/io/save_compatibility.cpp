@@ -1,3 +1,4 @@
+#include "mikumikustudio/negative_frames.hpp"
 #define NOMINMAX
 #include "mikumikustudio/save_compatibility.hpp"
 #include "mikumikustudio/extended_names.hpp"
@@ -109,13 +110,19 @@ bool PmmNamesFit(const mdl::ModelRecord& model) {
 }
 Report InspectPmm(MMDApp& app){
     Report report;
-    InspectFrame(report,app.CurrentFrame(),L"current frame");
-    InspectFrame(report,app.TimelineStartFrame(),L"timeline start frame");
+    const auto signedFrame=[&](std::int64_t frame,const wchar_t* field) {
+        if(frame<frame_limits::minimum || frame>frame_limits::maximum)Invalid(report,field);
+        else if(frame<0){report.canCopyLegacy=false;}
+        else InspectFrame(report,frame,field);
+    };
+    signedFrame(app.CurrentFrame(),L"current frame");
+    signedFrame(app.TimelineStartFrame(),L"timeline start frame");
+    if(negative_frames::Count(&app))report.canCopyLegacy=false;
     InspectFrame(report,app.LastRegisteredFrame(),L"last registered frame");
     for (const auto control : {panel::kPlayStartFrameEdit, panel::kPlayStopFrameEdit}) {
         char text[256]{}; std::int32_t frame = 0;
         GetWindowTextA(GetDlgItem(app.MainWindow(), control), text, sizeof text);
-        if(frame_limits::ParsePlaybackBound(text,frame))InspectFrame(report,frame,L"playback range");
+        if(frame_limits::ParsePlaybackBound(text,frame))signedFrame(frame,L"playback range");
         else Invalid(report,L"playback range");
     }
     for(int slot=0;slot<kModelSlotCount;++slot){

@@ -208,13 +208,8 @@ void HandleLButtonDblClk(MMDApp* app) {
         // ---- 5. scroll clamp + panel repaint -------------------------------
         const std::int32_t pages =
             (app->SidebarWidth() - 84) / 26;
-        const std::uint32_t frameU =
-            static_cast<std::uint32_t>(app->state.currentFrame);
-        if (frameU <= static_cast<std::uint32_t>(pages))          // unsigned compare (jbe)
-            app->state.timelineStartFrame = 0;       // 2428 (0x97C)
-        else
-            app->state.timelineStartFrame =
-                static_cast<std::int32_t>(frameU - static_cast<std::uint32_t>(pages));
+        const auto frame=std::int64_t(app->CurrentFrame());
+    app->state.timelineStartFrame=frame<0 ? static_cast<int>((std::max)(std::int64_t(frame_limits::minimum),frame-pages)) : frame<=pages ? 0 : int(frame-pages);
         PanelPaint(app);                                          // 0x414610
 
         // ---- 6. timeline strip redraw + normalized-time seek ---------------

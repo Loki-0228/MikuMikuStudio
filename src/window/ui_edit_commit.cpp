@@ -575,7 +575,7 @@ void CommitEditControl(MMDApp* app, HWND edit) {  // was Sub463640
         char text[256];
         GetWindowTextA(edit,text,sizeof text);
         std::int32_t frame=0;
-        if(GetWindowTextLengthA(edit)>=sizeof(text)||!frame_limits::Parse(text,frame)){PostViewRefresh(app);MessageBeep(MB_ICONWARNING);return;}
+        if(GetWindowTextLengthA(edit)>=sizeof(text)||!frame_limits::ParseSigned(text,frame)){PostViewRefresh(app);MessageBeep(MB_ICONWARNING);return;}
         s.CurrentFrame()=frame;
         RefreshAfterFrameApply(app);
         PostViewRefresh(app);

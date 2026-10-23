@@ -16,6 +16,7 @@
 #define NOMINMAX
 #include "mikumikustudio/bone_scale.hpp"
 #include "mikumikustudio/native_edit_history.hpp"
+#include "mikumikustudio/negative_frames.hpp"
 #include "mikumikustudio/bone_curve.hpp"
 #include "mikumikustudio/sequence_scatter.hpp"
 #include <Windows.h>
@@ -466,7 +467,11 @@ int RegisterBonePoseAtFrame(unsigned char* model, int boneIndex,  // was Sub4B38
     return static_cast<int>(frame);
 }
 
-void RegisterSelectedBoneKeys(unsigned char* model, int frame, int mode) {  // was Sub4C2080, VA 0x004C2080
+void RegisterSelectedBoneKeys(unsigned char* model, int frame, int mode) {
+    if(model && frame<0) {
+        negative_frames::RegisterSelectedBones(model,frame);
+        return;
+    }  // was Sub4C2080, VA 0x004C2080
     if (model == nullptr)
         return;
 

@@ -1,3 +1,4 @@
+#include "mikumikustudio/negative_frames.hpp"
 #include "mikumikustudio/frame_limits.hpp"
 #include <algorithm>
 // ===========================================================================
@@ -333,12 +334,12 @@ void PanelPaint(MMDApp* app) {
         SCROLLINFO scrollInfo{};
         scrollInfo.cbSize = sizeof(scrollInfo);
         scrollInfo.fMask = SIF_ALL;
-        scrollInfo.nMin = 0;
-        std::uint32_t nMax = pos + static_cast<std::uint32_t>(rows);
+        scrollInfo.nMin=(std::min)(negative_frames::Earliest(app),scroll);
+        std::uint32_t nMax=static_cast<std::uint32_t>((std::max)(std::int64_t(0),std::int64_t(pos)+rows));
         if (nMax < a) nMax = a;
         if (nMax < b) nMax = b;
         const std::uint32_t mid =
-            static_cast<std::uint32_t>(app->state.currentFrame) +
+            static_cast<std::uint32_t>((std::max)(0,app->CurrentFrame())) +
             static_cast<std::uint32_t>(rows / 2);
         if (nMax < mid) nMax = mid;
         scrollInfo.nMax = static_cast<int>((std::min)(nMax,std::uint32_t(frame_limits::maximum))) - 1;
@@ -375,6 +376,7 @@ void PanelPaint(MMDApp* app) {
             SelectObject(panel, oldPen);
             DeleteObject(box);
         }
+        negative_frames::Draw(app,panel,icons,rows,listH);
         DeleteDC(icons);
         // Restoring editor layout after isolated sampling must not evaluate
         // scale transforms or replace authored readouts through this tail.

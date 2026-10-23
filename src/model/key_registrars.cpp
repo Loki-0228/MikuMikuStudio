@@ -1,3 +1,4 @@
+#include "mikumikustudio/negative_frames.hpp"
 #include "mikumikustudio/frame_limits.hpp"
 #include "mikumikustudio/extended_names.hpp"
 #include "mikumikustudio/display_capacity.hpp"
@@ -371,7 +372,8 @@ void RegisterMorphKeyCurrent(unsigned char* model, int morph, int frameArg) {
 
     mdl::MorphKey* keys = mdl::MorphKeys(m);
     std::size_t capacity = mdl::MorphKeyCapacity(keys);
-    if(frameArg<0||frameArg>frame_limits::maximum)return;
+    if(frameArg<0) { negative_frames::RegisterMorph(model,morph,frameArg,mdl::Morphs(model)[morph].value);return; }
+    if(frameArg>frame_limits::maximum)return;
     const std::uint32_t frame = static_cast<std::uint32_t>(frameArg);
     const float value = mikumikustudio::mdl::Morphs(m)[morph].value;
 
@@ -951,6 +953,7 @@ bool RegisterDisplayKeyFromRecord(unsigned char* model, int frameArg,
 // allocated by ModelInitDefaults: one byte per IK chain at +16 and one
 // {dword,dword} pair per relationship at +24.
 void RegisterDisplayKeyCurrent(unsigned char* model, int frameArg) {
+    if(frameArg<0){negative_frames::RegisterDisplay(model,frameArg);return;}
     unsigned char* const m = model;
     mdl::DisplayKey*& keys = mdl::DisplayKeys(m);
     if(frameArg<0||frameArg>frame_limits::maximum)return;

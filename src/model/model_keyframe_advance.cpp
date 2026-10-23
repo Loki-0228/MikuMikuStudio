@@ -1,3 +1,4 @@
+#include "mikumikustudio/negative_frames.hpp"
 #include "mikumikustudio/bone_curve.hpp"
 // ===========================================================================
 // VA 0x004A31D0 - per-model keyframe application  (5754 bytes, 187 blocks)

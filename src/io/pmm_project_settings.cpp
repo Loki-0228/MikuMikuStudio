@@ -1,4 +1,5 @@
 #include "mikumikustudio/extended_names.hpp"
+#include "mikumikustudio/negative_frames.hpp"
 #include "mikumikustudio/plugin_scene.hpp"
 #include "mikumikustudio/bone_curve.hpp"
 #include "mikumikustudio/ui_translation.hpp"
@@ -102,6 +103,7 @@ skinning::Preference ResolveProcessor(Processor processor, const std::vector<gpu
 }
 
 void Reset(MMDApp& app) {
+    negative_frames::Reset(&app);
     plugins::ResetSceneIdentity();
 #if !MMD_ORIGINAL_PROFILE
     curve_host::Reset(&app);
@@ -121,6 +123,7 @@ void Reset(MMDApp& app) {
 }
 
 void Load(MMDApp& app, int fd, const std::vector<PmmModelAdaptation>& adaptedModels) {
+    negative_frames::Reset(&app);
 #if MMD_ORIGINAL_PROFILE
     // Original MMD stops at the standard body. Do not parse, retain or apply
     // even unknown extension records from a full-profile project.
@@ -189,6 +192,7 @@ void Load(MMDApp& app, int fd, const std::vector<PmmModelAdaptation>& adaptedMod
     // linear interpolation from the next frame seek on.
     morph_curve::LoadPmm(app, loaded);
     bone_curve::LoadPmm(app, loaded);
+    negative_frames::Load(app, loaded);
     plugins::LoadSceneIdentity(app, loaded, adaptedModelSlots);
     std::string meshError;
     if(!mesh_bake_cache::Load(app,app.EnvFileName(),loaded,meshError,adaptedModelSlots)){
@@ -249,6 +253,7 @@ pmm_extension::Document Capture(const MMDApp& app) {
     bone_scale_io::CapturePmm(app, document);
     morph_curve::CapturePmm(app, document);
     bone_curve::CapturePmm(app, document);
+    negative_frames::Capture(app, document);
     curve_host::Capture(const_cast<MMDApp&>(app), document);
     plugins::SaveSceneIdentity(app, document);
     return document;

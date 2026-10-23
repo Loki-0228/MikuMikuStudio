@@ -217,6 +217,11 @@ set_target_properties(frame_rate_correction_tests PROPERTIES RUNTIME_OUTPUT_DIRE
 add_test(NAME frame_rate_correction_tests COMMAND frame_rate_correction_tests)
 if(MIKUMIKUSTUDIO_PROFILE STREQUAL "full")
     add_executable(animation_curve_host_tests EXCLUDE_FROM_ALL tests/animation_curve_host_tests.cpp)
+    add_executable(negative_frame_tests EXCLUDE_FROM_ALL tests/negative_frame_tests.cpp)
+    target_include_directories(negative_frame_tests PRIVATE include)
+    target_link_libraries(negative_frame_tests PRIVATE mikumikustudio_core winmm dsound)
+    set_target_properties(negative_frame_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+    add_test(NAME negative_frames COMMAND negative_frame_tests)
     add_executable(bone_curve_tests EXCLUDE_FROM_ALL tests/bone_curve_tests.cpp)
     target_link_libraries(bone_curve_tests PRIVATE mikumikustudio_core winmm dsound)
     set_target_properties(bone_curve_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
@@ -317,6 +322,7 @@ add_library(mikumikustudio_core STATIC
     src/animation/frame_rate_correction.cpp
     src/animation/morph_curve.cpp
     src/animation/sequence_scatter.cpp
+    src/animation/negative_frames.cpp
     src/window/sequence_scatter_dialog.cpp
     src/animation/bone_curve.cpp
     src/window/frame_rate_dialog.cpp

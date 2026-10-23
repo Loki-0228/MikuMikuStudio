@@ -950,8 +950,10 @@ void WritePmmConfigBlock(int fd, MMDApp* s, HWND main, char* text) {
         GetWindowTextA(GetDlgItem(main, panel::kPlayStopFrameEdit), text, 256);
         std::int32_t playStopFrame = 0;
         if (!frame_limits::ParsePlaybackBound(text, playStopFrame)) throw std::runtime_error("Invalid playback stop frame");
-        W(fd, &playStartFrame, 4);
-        W(fd, &playStopFrame, 4);
+        std::int32_t standardStart=0,standardStop=0;
+        frame_limits::ResolveRange(playStartFrame,playStopFrame,s->LastRegisteredFrame(),standardStart,standardStop,true);
+        W(fd, &standardStart, 4);
+        W(fd, &standardStop, 4);
     }
     {
         const unsigned char b = s->state.waveEnabled != 0;

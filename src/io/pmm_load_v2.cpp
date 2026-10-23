@@ -2440,7 +2440,7 @@ static void LoadSceneV2_ConfigBlock(PmmV2LoadContext& ctx, int fd) {
         {
             HWND item = GetDlgItem(main, panel::kPlayStopFrameEdit);
             SendMessageA(item, EM_SETSEL, 0, GetWindowTextLengthA(item));
-            sprintf_s(text, 0x100, "%d", playStopFrame);
+            sprintf_s(text, 0x100, "%d", playStopFrame==0 ? -1 : playStopFrame);
             SendMessageA(item, EM_REPLACESEL, 0,
                          reinterpret_cast<LPARAM>(text));
         }
