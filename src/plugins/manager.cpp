@@ -402,6 +402,12 @@ struct Manager::Impl {
         }
         if (id == "mms.render") {
             if (closing || i.stopping.load()) return MMS_E_NOT_READY;
+            if (minor == 1) {
+                if (major != 1) return MMS_E_VERSION;
+                if (!out || bytes < sizeof(MmsRenderApiV1_1)) return MMS_E_ARGUMENT;
+                const auto api = render.Api11(i.render);
+                std::memcpy(out, &api, sizeof(api)); return MMS_OK;
+            }
             return Table(major, minor, bytes, out, render.Api(i.render));
         }
         if (id == "mms.scene" && scene) return Table(major, minor, bytes, out, scene->Api(i.scene));

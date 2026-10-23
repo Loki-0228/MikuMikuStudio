@@ -31,6 +31,9 @@ typedef struct MmsRenderLeaseDescV1 {
     uint32_t reserved;
 } MmsRenderLeaseDescV1;
 
+// Optional per-present observer. It runs on the UI thread from the Present
+// path, outside plugin callbacks; it must not call host services or block.
+typedef void (MMS_CALL *MmsRenderFrameCallbackV1)(void* context, const MmsRenderInfoV1* info);
 typedef struct MmsRenderApiV1 {
     MmsHeader h;
     void* context;
@@ -38,3 +41,13 @@ typedef struct MmsRenderApiV1 {
     MmsResult (MMS_CALL *acquireLease)(void* context, const MmsRenderLeaseDescV1* desc, MmsHandle* out);
     MmsResult (MMS_CALL *releaseLease)(void* context, MmsHandle lease);
 } MmsRenderApiV1;
+
+typedef struct MmsRenderApiV1_1 {
+    MmsHeader h;
+    void* context;
+    MmsResult (MMS_CALL *query)(void* context, MmsRenderInfoV1* out);
+    MmsResult (MMS_CALL *acquireLease)(void* context, const MmsRenderLeaseDescV1* desc, MmsHandle* out);
+    MmsResult (MMS_CALL *releaseLease)(void* context, MmsHandle lease);
+    MmsResult (MMS_CALL *setFrameCallback)(void* context, MmsRenderFrameCallbackV1 callback, void* user);
+    void (MMS_CALL *clearFrameCallback)(void* context);
+} MmsRenderApiV1_1;

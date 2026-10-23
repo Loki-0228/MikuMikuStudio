@@ -88,7 +88,8 @@ int wmain() {
         "EVENT_LANGUAGE\nEVENT_PROJECT_CLOSED\n"
         "EVENT_OBJECT_REMOVED\nEVENT_DPI\nEVENT_PROPERTY_CHANGED\n"
         "RENDER_INFO\nRENDER_LEASE_ACQUIRED\nRENDER_LEASE_RELEASED\n"
-        "RENDER_LOST_QUERY\nRENDER_RESTORED_QUERY\nRENDER_FRAME_SEEN\nLAYOUT_HISTORY_PASS", 1200),
+        "RENDER_LOST_QUERY\nRENDER_RESTORED_QUERY\nRENDER_FRAME_SEEN\nLAYOUT_HISTORY_PASS\n"
+        "FRAME_CALLBACK_REGISTERED\nFRAME_CALLBACK frame=", 1200),
         "queued host events reach the plugin with valid payloads");
 
     const auto body = ReadLog(logPath);
@@ -106,7 +107,8 @@ int wmain() {
           body.find("RENDER_LEASE_FAIL") == std::string::npos &&
           body.find("RENDER_SERVICE_MISSING") == std::string::npos &&
           body.find("LAYOUT_HISTORY_MISSING") == std::string::npos &&
-          body.find("RENDER_QUERY_FAIL") == std::string::npos,
+          body.find("RENDER_QUERY_FAIL") == std::string::npos &&
+          body.find("FRAME_CALLBACK_FAIL") == std::string::npos,
         "no event payload validation failures");
     Check(ReadLog(logPath).find("frame=1 ") != std::string::npos,
         "presented frame reaches the render service");

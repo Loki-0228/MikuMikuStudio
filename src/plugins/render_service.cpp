@@ -11,6 +11,33 @@ void RenderService::FramePresented(uint32_t width, uint32_t height, uint32_t for
     if (width) width_ = width;
     if (height) height_ = height;
     format_ = format;
+    if (clients_.empty()) return;
+    MmsRenderInfoV1 info{};
+    info.h = Header<MmsRenderInfoV1>();
+    info.deviceGeneration = generation_;
+    info.frameIndex = frameIndex_;
+    info.lost = lost_;
+    info.width = width_;
+    info.height = height_;
+    info.backBufferFormat = format_;
+    // Copy the callback list: a callback may clear itself or register another
+    // client, and the render path must not iterate a mutated container.
+    std::vector<std::pair<MmsRenderFrameCallbackV1, void*>> callbacks;
+    callbacks.reserve(clients_.size());
+    for (Client* client : clients_) if (client->frame) callbacks.emplace_back(client->frame, client->frameContext);
+    for (const auto& [callback, context] : callbacks) {
+        try { Boundary([&] { callback(context, &info); return MMS_OK; }); } catch (...) {}
+    }
+}
+void RenderService::SetFrameCallback(Client& client, MmsRenderFrameCallbackV1 callback, void* user) {
+    client.frame = callback;
+    client.frameContext = user;
+    if (callback && std::find(clients_.begin(), clients_.end(), &client) == clients_.end()) clients_.push_back(&client);
+}
+void RenderService::ClearFrameCallback(Client& client) {
+    client.frame = nullptr;
+    client.frameContext = nullptr;
+    clients_.erase(std::remove(clients_.begin(), clients_.end(), &client), clients_.end());
 }
 void RenderService::DeviceRestored(uint64_t generation) noexcept {
     if (generation) generation_ = generation;
@@ -18,6 +45,7 @@ void RenderService::DeviceRestored(uint64_t generation) noexcept {
 }
 MmsRenderApiV1 RenderService::Api(Client& client) {
     client.owner = this;
+    if (std::find(clients_.begin(), clients_.end(), &client) == clients_.end()) clients_.push_back(&client);
     MmsRenderApiV1 api{Header<MmsRenderApiV1>(), &client};
     api.query = [](void* context, MmsRenderInfoV1* out) {
         return Boundary([&] { return static_cast<Client*>(context)->owner->Query(out); });
@@ -30,9 +58,28 @@ MmsRenderApiV1 RenderService::Api(Client& client) {
     };
     return api;
 }
+MmsRenderApiV1_1 RenderService::Api11(Client& client) {
+    const auto base = Api(client);
+    MmsRenderApiV1_1 api{};
+    api.h = Header<MmsRenderApiV1_1>();
+    api.context = &client;
+    api.query = base.query;
+    api.acquireLease = base.acquireLease;
+    api.releaseLease = base.releaseLease;
+    api.setFrameCallback = [](void* context, MmsRenderFrameCallbackV1 callback, void* user) -> MmsResult {
+        return Boundary([&] { static_cast<Client*>(context)->owner->SetFrameCallback(*static_cast<Client*>(context), callback, user); return MMS_OK; });
+    };
+    api.clearFrameCallback = [](void* context) {
+        static_cast<Client*>(context)->owner->ClearFrameCallback(*static_cast<Client*>(context));
+    };
+    return api;
+}
 void RenderService::DropClient(const std::string& id) noexcept {
     for (auto it = leases_.begin(); it != leases_.end();) {
         if (it->second.owner == id) it = leases_.erase(it); else ++it;
+    }
+    for (auto it = clients_.begin(); it != clients_.end();) {
+        if ((*it)->id == id) { (*it)->frame = nullptr; (*it)->frameContext = nullptr; it = clients_.erase(it); } else ++it;
     }
 }
 MmsResult RenderService::Query(MmsRenderInfoV1* out) const {
