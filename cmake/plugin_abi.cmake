@@ -238,8 +238,10 @@ add_executable(business_event_tests EXCLUDE_FROM_ALL tests/plugins/business_even
 file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/tests/host-events/PLUGINS/test")
 file(WRITE "${CMAKE_BINARY_DIR}/tests/host-events/PLUGINS/test/plugin.json"
 "{\"schemaVersion\":1,\"id\":\"org.example.host-events\",\"name\":\"host events probe\",\"version\":\"1.0.0\",\"kind\":\"native\",\"abi\":{\"major\":1,\"minMinor\":0},\"entry\":\"lifecycle.dll\",\"architecture\":\"x64\",\"minWindows\":\"6.1.7601\",\"capabilities\":[\"ui.command\"],\"requiresServices\":[{\"id\":\"mms.ui\",\"major\":1,\"minMinor\":0}],\"dependencies\":[],\"nativeDependencies\":[],\"reloadPolicy\":\"restart\"}")
-add_executable(host_event_tests EXCLUDE_FROM_ALL tests/plugins/host_event_tests.cpp)
+add_executable(host_event_tests EXCLUDE_FROM_ALL tests/plugins/host_event_tests.cpp
+    res/MMD.rc ${MIKUMIKUSTUDIO_GEN_RES} exports/MikuMikuDance.def)
 target_include_directories(host_event_tests PRIVATE include)
+target_link_options(host_event_tests PRIVATE "/MANIFEST:NO" "${MIKUMIKUSTUDIO_GEN_RES}")
 target_link_libraries(host_event_tests PRIVATE mikumikustudio_core minhook::minhook winmm dsound)
 target_link_options(host_event_tests PRIVATE /SUBSYSTEM:CONSOLE,6.01 /DEBUG:NONE)
 set_target_properties(host_event_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")

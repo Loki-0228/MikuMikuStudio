@@ -1,10 +1,12 @@
 // Real host-event probe: initializes the production plugin runtime on a hidden
 // window, queues lifecycle notifications through the same entries the host uses
 // and verifies the events reach a real plugin with valid payloads.
+#include "mikumikustudio/globals.hpp"
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/plugin_runtime.hpp"
-#include "mikumikustudio/plugin_storage.hpp"
 #include "mikumikustudio/plugin_scene.hpp"
+#include "mikumikustudio/plugin_storage.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 #include <Windows.h>
 #include <cstdio>
 #include <cstdlib>
@@ -52,17 +54,14 @@ int wmain() {
     // MMDApp is close to 670 KiB; keep it off the reserved thread stack.
     auto appOwner = std::make_unique<MMDApp>();
     auto& app = *appOwner;
+    g_Block = &app;
     app.state = MMDAppState{};
     app.InitDefaults();
-    HWND window = CreateWindowExW(0, L"STATIC", L"host event test",
-        WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, 0, 0, 400, 300,
-        nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
-    Check(window != nullptr, "hidden production window");
+    Check(InitMainWindowAndD3D(&app, GetModuleHandleW(nullptr), SW_HIDE),
+        "hidden production window and device");
+    HWND window = app.MainWindow();
+    Check(window != nullptr, "production main window available");
     if (!window) return 1;
-    app.MainWindow() = window;
-    app.Hwnd() = window;
-    app.WindowLayoutReady() = 1;
-    plugins::Initialize(&app);
     Check(WaitFor(logPath, "NEGOTIATION_PASS", 600), "real lifecycle plugin started");
 
     plugins::PluginNotifyLanguageChanged(&app);
@@ -91,7 +90,8 @@ int wmain() {
           body.find("COMMAND_STATE_REVISION_FAIL") == std::string::npos,
         "no event payload validation failures");
     plugins::Shutdown();
-    DestroyWindow(window);
+    ShutdownCleanup(&app);
+    g_Block = nullptr;
     app.Hwnd() = nullptr;
     app.MainWindow() = nullptr;
     std::printf("host events %s\n", failures ? "FAILED" : "PASSED");
