@@ -5,8 +5,10 @@
 #include "mikumikustudio/model_vertex_cache.hpp"
 #include "mikumikustudio/key_pool.hpp"
 #include "model_geometry_cache_load.hpp"
+#include "mikumikustudio/texture_prepare_cache.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "pmx_vertex_parallel.hpp"
+#include "mikumikustudio/parallel_prepare_policy.hpp"
 #include "mikumikustudio/runtime_log.hpp"
 #endif
 // ===========================================================================
@@ -855,6 +857,26 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
     for (int i = 0; i < 10; ++i)
         strcpy_s(model.pmdToonFileNames[i],
                  sizeof(model.pmdToonFileNames[i]), kToonNames[i]);
+
+#if !MMD_ORIGINAL_PROFILE
+    std::vector<std::wstring> texturePreparationPaths;
+    if (!parallel_prepare_policy::Disabled()) {
+        // Preserve the exact concatenated path used by material loading. Live
+        // pool entries already have a GPU texture and need no preparation.
+        for (std::uint32_t t=0;t<texCount && texturePreparationPaths.size()<64;++t) {
+            if (!texPaths[t] || !*texPaths[t]) continue;
+            std::wstring path=model.modelDirectory; path+=texPaths[t];
+            bool exists=false;
+            for (int i=0;i<10000 && sub->resourcePool[i].heapBuffer;++i)
+                if (path==static_cast<const wchar_t*>(sub->resourcePool[i].heapBuffer)) {exists=true;break;}
+            if (!exists) texturePreparationPaths.push_back(std::move(path));
+        }
+    }
+    auto& textureD3dx=d3dx::Get();
+    texture_prepare_cache::Batch texturePreparation(
+        textureD3dx.Load() ? textureD3dx.fromFileExW : nullptr,
+        DevOf(sub),texturePreparationPaths);
+#endif
 
     // ---- materials -------------------------------------------------------------
     text_encoding::MaterialNames materialNames;

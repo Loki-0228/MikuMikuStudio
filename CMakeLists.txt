@@ -219,6 +219,13 @@ if(MIKUMIKUSTUDIO_PROFILE STREQUAL "full")
     add_executable(animation_curve_host_tests EXCLUDE_FROM_ALL tests/animation_curve_host_tests.cpp)
     add_executable(negative_frame_tests EXCLUDE_FROM_ALL tests/negative_frame_tests.cpp)
     add_executable(effect_compile_cache_tests EXCLUDE_FROM_ALL tests/effect_compile_cache_tests.cpp)
+    add_executable(texture_prepare_cache_tests EXCLUDE_FROM_ALL
+        tests/texture_prepare_cache_tests.cpp src/render/texture_prepare_cache.cpp
+        src/render/texture_cpu_decode.cpp src/exports/effect_compile_cache.cpp)
+    target_include_directories(texture_prepare_cache_tests PRIVATE include src/exports src/render)
+    target_link_libraries(texture_prepare_cache_tests PRIVATE
+        mms_cache_manager mms_cache_policy mikumikustudio_runtime_log d3d9 bcrypt user32 ole32 windowscodecs)
+    set_target_properties(texture_prepare_cache_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
     target_include_directories(effect_compile_cache_tests PRIVATE include src/exports)
     target_link_libraries(effect_compile_cache_tests PRIVATE mikumikustudio_core bcrypt)
     set_target_properties(effect_compile_cache_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
@@ -403,6 +410,8 @@ add_library(mikumikustudio_core STATIC
     src/render/debug_geometry.cpp
     src/render/accessory.cpp
     src/render/model_renderers.cpp
+    src/render/texture_prepare_cache.cpp
+    src/render/texture_cpu_decode.cpp
     src/render/adaptive_shadow.cpp
     src/render/shadow_filter.cpp
     src/exports/effect_display.cpp
