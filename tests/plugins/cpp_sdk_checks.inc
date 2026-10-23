@@ -1,5 +1,6 @@
 #include <mms/cpp/ui.hpp>
 #include <mms/cpp/render.hpp>
+#include <mms/cpp/layout_history.hpp>
 #include <set>
 #include <type_traits>
 
@@ -16,6 +17,12 @@ struct Host {
     MmsUiLayoutApiV1 rawLayout = registry.LayoutApi(client), layout{};
     MmsHostV1 host{};
     MmsRenderApiV1 render{};
+    MmsUiLayoutApiV1_1 layoutHistory{};
+    MmsUiLayoutHistoryInfoV1 historyInfo{};
+    unsigned historyQueries = 0, historyInfoCalls = 0, historyUndo = 0, historyRedo = 0;
+    bool historyArguments = true;
+    MmsResult historyResult = MMS_OK;
+    bool missingHistoryFunction = false;
     MmsRenderInfoV1 renderInfo{};
     unsigned queries = 0, surfaceQueries = 0, layoutQueries = 0;
     unsigned renderQueries = 0, acquireCalls = 0, releaseCalls = 0;
@@ -85,6 +92,20 @@ struct Host {
         layout.releaseSnapshot = [](void* p, MmsHandle h) { auto& x = *static_cast<Host*>(p); x.rawLayout.releaseSnapshot(x.rawLayout.context, h); };
         layout.stageHints = [](void* p, MmsHandle t, MmsString id, uint64_t g, const MmsUiLayoutHintsV1* h) { auto& x = *static_cast<Host*>(p); return x.rawLayout.stageHints(x.rawLayout.context, t, id, g, h); };
         host.h = sdk::Header<MmsHostV1>(); host.context = this;
+        layoutHistory.h = sdk::Header<MmsUiLayoutApiV1_1>(); layoutHistory.context = this;
+        historyInfo.h = sdk::Header<MmsUiLayoutHistoryInfoV1>();
+        historyInfo.canUndo = historyInfo.canRedo = 1; historyInfo.undoDepth = 2; historyInfo.redoDepth = 1;
+        layoutHistory.setDefaultHints = [](void*, MmsString, const MmsUiLayoutHintsV1*) -> MmsResult { return MMS_OK; };
+        layoutHistory.acquireSnapshot = [](void*, MmsUiLayoutSnapshotV1*) -> MmsResult { return MMS_E_NOT_READY; };
+        layoutHistory.releaseSnapshot = [](void*, MmsHandle) {};
+        layoutHistory.stageHints = [](void*, MmsHandle, MmsString, uint64_t, const MmsUiLayoutHintsV1*) -> MmsResult { return MMS_OK; };
+        layoutHistory.queryHistory = [](void* p, MmsUiLayoutHistoryInfoV1* out) -> MmsResult {
+            auto& x = *static_cast<Host*>(p); ++x.historyInfoCalls;
+            if (!out) return MMS_E_ARGUMENT;
+            *out = x.historyInfo; return MMS_OK;
+        };
+        layoutHistory.undo = [](void* p) -> MmsResult { auto& x = *static_cast<Host*>(p); ++x.historyUndo; return MMS_OK; };
+        layoutHistory.redo = [](void* p) -> MmsResult { auto& x = *static_cast<Host*>(p); ++x.historyRedo; return MMS_OK; };
         render.h = sdk::Header<MmsRenderApiV1>(); render.context = this;
         renderInfo.h = sdk::Header<MmsRenderInfoV1>(); renderInfo.deviceGeneration = 3; renderInfo.width = 640; renderInfo.height = 480;
         render.query = [](void* p, MmsRenderInfoV1* out) -> MmsResult {
@@ -117,6 +138,13 @@ struct Host {
                 ++x.surfaceQueries; x.queryArguments = x.queryArguments && bytes == sizeof(MmsUiSurfaceApiV1);
                 if (x.surfaceResult) return x.surfaceResult;
                 std::memcpy(out, &x.surface, sizeof(x.surface)); return MMS_OK;
+            }
+            if (id == "mms.ui.layout" && minor == 1) {
+                ++x.historyQueries; x.historyArguments = x.historyArguments && bytes == sizeof(MmsUiLayoutApiV1_1) && out != nullptr;
+                if (x.historyResult) return x.historyResult;
+                auto value = x.layoutHistory;
+                if (x.missingHistoryFunction) value.queryHistory = nullptr;
+                std::memcpy(out, &value, sizeof(value)); return MMS_OK;
             }
             if (id == "mms.ui.layout") {
                 ++x.layoutQueries; x.queryArguments = x.queryArguments && bytes == sizeof(MmsUiLayoutApiV1);
@@ -475,6 +503,29 @@ static void RenderChecks() {
     CHECK(!moved.valid() && target.get() == raw && target.Release() == MMS_OK && x.releaseCalls == 2);
     std::cout << "cpp render sdk PASS\n";
 }
+static void LayoutHistorySdkChecks() {
+    Host x;
+    sdk::LayoutHistoryServices history;
+    CHECK(!history.ready());
+    CHECK(sdk::LayoutHistoryServices::Query(x.host, history) == MMS_OK && history.ready());
+    CHECK(x.historyQueries == 1 && x.historyArguments);
+    MmsUiLayoutHistoryInfoV1 info{};
+    CHECK(history.Info(info) == MMS_OK && x.historyInfoCalls == 1 &&
+          info.canUndo == 1 && info.canRedo == 1 && info.undoDepth == 2 && info.redoDepth == 1);
+    CHECK(history.Undo() == MMS_OK && x.historyUndo == 1);
+    CHECK(history.Redo() == MMS_OK && x.historyRedo == 1);
+    MmsHostV1 noService = x.host; noService.queryService = nullptr;
+    sdk::LayoutHistoryServices missing;
+    CHECK(sdk::LayoutHistoryServices::Query(noService, missing) == MMS_E_ARGUMENT && !missing.ready());
+    x.missingHistoryFunction = true;
+    sdk::LayoutHistoryServices incomplete;
+    CHECK(sdk::LayoutHistoryServices::Query(x.host, incomplete) == MMS_E_UNSUPPORTED && !incomplete.ready());
+    x.missingHistoryFunction = false;
+    x.historyResult = MMS_E_VERSION;
+    sdk::LayoutHistoryServices oldHost;
+    CHECK(sdk::LayoutHistoryServices::Query(x.host, oldHost) == MMS_E_VERSION && !oldHost.ready());
+    std::cout << "cpp layout history sdk PASS\n";
+}
 } // namespace cpp_sdk_checks
 
 static void CppSdkChecks() {
@@ -485,4 +536,5 @@ static void CppSdkChecks() {
     cpp_sdk_checks::FailureChecks();
     cpp_sdk_checks::PropertySurfaceLeaseChecks();
     cpp_sdk_checks::RenderChecks();
+    cpp_sdk_checks::LayoutHistorySdkChecks();
 }
