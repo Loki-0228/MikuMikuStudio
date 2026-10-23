@@ -1,4 +1,5 @@
 #include <mms/cpp/ui.hpp>
+#include <mms/cpp/render.hpp>
 #include <set>
 #include <type_traits>
 
@@ -14,7 +15,13 @@ struct Host {
     MmsUiSurfaceApiV1 rawSurface = registry.SurfaceApi(client), surface{};
     MmsUiLayoutApiV1 rawLayout = registry.LayoutApi(client), layout{};
     MmsHostV1 host{};
+    MmsRenderApiV1 render{};
+    MmsRenderInfoV1 renderInfo{};
     unsigned queries = 0, surfaceQueries = 0, layoutQueries = 0;
+    unsigned renderQueries = 0, acquireCalls = 0, releaseCalls = 0;
+    MmsHandle nextLease = 41, releasedLease = 0;
+    MmsResult renderResult = MMS_OK;
+    bool missingRenderFunction = false;
     unsigned registrations = 0, failRegistration = 0, invokes = 0, providerReleases = 0;
     MmsResult queryResult = MMS_OK, surfaceResult = MMS_OK, layoutResult = MMS_OK;
     MmsResult removeResult = MMS_OK, hintsResult = MMS_OK, callbackCloseResult = MMS_OK;
@@ -78,6 +85,20 @@ struct Host {
         layout.releaseSnapshot = [](void* p, MmsHandle h) { auto& x = *static_cast<Host*>(p); x.rawLayout.releaseSnapshot(x.rawLayout.context, h); };
         layout.stageHints = [](void* p, MmsHandle t, MmsString id, uint64_t g, const MmsUiLayoutHintsV1* h) { auto& x = *static_cast<Host*>(p); return x.rawLayout.stageHints(x.rawLayout.context, t, id, g, h); };
         host.h = sdk::Header<MmsHostV1>(); host.context = this;
+        render.h = sdk::Header<MmsRenderApiV1>(); render.context = this;
+        renderInfo.h = sdk::Header<MmsRenderInfoV1>(); renderInfo.deviceGeneration = 3; renderInfo.width = 640; renderInfo.height = 480;
+        render.query = [](void* p, MmsRenderInfoV1* out) -> MmsResult {
+            auto& x = *static_cast<Host*>(p); ++x.renderQueries; if (!out) return MMS_E_ARGUMENT;
+            *out = x.renderInfo; return MMS_OK;
+        };
+        render.acquireLease = [](void* p, const MmsRenderLeaseDescV1* desc, MmsHandle* out) -> MmsResult {
+            auto& x = *static_cast<Host*>(p); ++x.acquireCalls;
+            if (!desc || !desc->release || !out || !desc->name.bytes) return MMS_E_ARGUMENT;
+            *out = x.nextLease++; return MMS_OK;
+        };
+        render.releaseLease = [](void* p, MmsHandle lease) -> MmsResult {
+            auto& x = *static_cast<Host*>(p); ++x.releaseCalls; x.releasedLease = lease; return MMS_OK;
+        };
         host.queryService = [](void* p, MmsString name, uint32_t major, uint32_t minor, uint32_t bytes, void* out) -> MmsResult {
             auto& x = *static_cast<Host*>(p); ++x.queries;
             x.queryArguments = x.queryArguments && major == 1 && minor == 0 && out != nullptr;
@@ -101,6 +122,13 @@ struct Host {
                 ++x.layoutQueries; x.queryArguments = x.queryArguments && bytes == sizeof(MmsUiLayoutApiV1);
                 if (x.layoutResult) return x.layoutResult;
                 std::memcpy(out, &x.layout, sizeof(x.layout)); return MMS_OK;
+            }
+            if (id == "mms.render") {
+                ++x.renderQueries; x.queryArguments = x.queryArguments && bytes == sizeof(MmsRenderApiV1);
+                if (x.renderResult) return x.renderResult;
+                auto value = x.render;
+                if (x.missingRenderFunction) value.acquireLease = nullptr;
+                std::memcpy(out, &value, sizeof(value)); return MMS_OK;
             }
             return MMS_E_NOT_FOUND;
         };
@@ -418,6 +446,35 @@ static void PropertySurfaceLeaseChecks() {
     CHECK(gates.AddElement(input) == MMS_E_ARGUMENT && gates.size() == 0);
     CHECK(gates.Close() == MMS_OK && x.registry.elements.size() == 6);
 }
+static void RenderChecks() {
+    Host x;
+    sdk::RenderServices render;
+    CHECK(!render.ready());
+    CHECK(sdk::RenderServices::Query(x.host, render) == MMS_OK && render.ready());
+    CHECK(x.renderQueries == 1 && x.queryArguments);
+    MmsRenderInfoV1 info{};
+    CHECK(render.Info(info) == MMS_OK && info.deviceGeneration == 3 && info.lost == 0 && info.width == 640);
+    MmsHostV1 noService = x.host; noService.queryService = nullptr;
+    sdk::RenderServices missing;
+    CHECK(sdk::RenderServices::Query(noService, missing) == MMS_E_ARGUMENT && !missing.ready());
+    x.missingRenderFunction = true;
+    sdk::RenderServices incomplete;
+    CHECK(sdk::RenderServices::Query(x.host, incomplete) == MMS_E_UNSUPPORTED && !incomplete.ready());
+    x.missingRenderFunction = false;
+    sdk::RenderServices usable;
+    CHECK(sdk::RenderServices::Query(x.host, usable) == MMS_OK);
+    sdk::RenderLease lease;
+    CHECK(usable.Acquire("example.device", [](void*) {}, &x, lease) == MMS_OK && lease.valid() && x.acquireCalls == 1);
+    CHECK(lease.Release() == MMS_OK && x.releaseCalls == 1 && x.releasedLease == 41 && !lease.valid());
+    CHECK(lease.Release() == MMS_OK && x.releaseCalls == 1);
+    sdk::RenderLease moved;
+    CHECK(usable.Acquire("example.device2", [](void*) {}, &x, moved) == MMS_OK);
+    const MmsHandle raw = moved.get();
+    sdk::RenderLease target;
+    target = std::move(moved);
+    CHECK(!moved.valid() && target.get() == raw && target.Release() == MMS_OK && x.releaseCalls == 2);
+    std::cout << "cpp render sdk PASS\n";
+}
 } // namespace cpp_sdk_checks
 
 static void CppSdkChecks() {
@@ -427,4 +484,5 @@ static void CppSdkChecks() {
     cpp_sdk_checks::PresentationChecks();
     cpp_sdk_checks::FailureChecks();
     cpp_sdk_checks::PropertySurfaceLeaseChecks();
+    cpp_sdk_checks::RenderChecks();
 }
