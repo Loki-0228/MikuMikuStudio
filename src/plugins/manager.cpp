@@ -40,6 +40,7 @@ struct Manager::Impl {
     bool uiRegistryChanged = false;
     bool layoutChanged = false;
     uint64_t layoutRevision = 0;
+    std::vector<std::pair<std::string, uint64_t>> pendingPropertyChanges;
     UiRegistry registry;
     UiPreferencesFile preferences;
     MmsResult preferencesError = MMS_OK;
@@ -244,7 +245,17 @@ struct Manager::Impl {
         if (const auto result = api.prepare(api.context, transaction)) return result;
         if (const auto result = current()) return result;
         const auto result = api.commit(api.context, transaction);
-        committed = result == MMS_OK; return result;
+        committed = result == MMS_OK;
+        if (result == MMS_OK) {
+            uint64_t revision = snapshot.sceneRevision;
+            if (editHost) {
+                uint64_t current = 0;
+                if (editHost->Revision(current) == MMS_OK && current) revision = current;
+            }
+            if (!revision) revision = registry.Revision();
+            QueuePropertyChanged(snapshot.propertyId, revision);
+        }
+        return result;
     }
     void CancelFailedEdit(Instance& i) noexcept {
         if (!edits) return;
@@ -491,6 +502,7 @@ struct Manager::Impl {
             MmsRevisionEventV1 event{Header<MmsRevisionEventV1>(), layoutRevision};
             Event(MMS_EVENT_LAYOUT_CHANGED, {&event, sizeof(event)}, 1);
         }
+        FlushPropertyChanges();
     }
     void Event(uint32_t kind, MmsBytes payload = {}, uint32_t version = 0,
                MmsObjectRef object = {}) {
@@ -508,6 +520,22 @@ struct Manager::Impl {
         if (id.empty() || !revision) return;
         MmsPropertyEventV1 payload{Header<MmsPropertyEventV1>(), {id.data(), id.size()}, {}, revision};
         Event(MMS_EVENT_PROPERTY_CHANGED, {&payload, sizeof(payload)}, 1);
+    }
+    // A declarative property edit commits inside a plugin callback, where Event
+    // dispatch is illegal. Keep the change until Drain can broadcast it outside
+    // the callback.
+    void QueuePropertyChanged(const std::string& id, uint64_t revision) {
+        if (id.empty() || !revision) return;
+        if (pendingPropertyChanges.size() >= 64) pendingPropertyChanges.erase(pendingPropertyChanges.begin());
+        pendingPropertyChanges.emplace_back(id, revision);
+        PostMessageW(wake, kDrain, 0, 0);
+    }
+    void FlushPropertyChanges() {
+        if (pendingPropertyChanges.empty() || active || registry.InCallback() ||
+            (edits && edits->InCallback())) return;
+        auto pending = std::move(pendingPropertyChanges);
+        pendingPropertyChanges.clear();
+        for (const auto& [id, revision] : pending) BroadcastPropertyChanged(id, revision);
     }
     bool StopOne(Instance& i) {
         i.stopping = true; i.ui.stopping = true; i.scene.stopping = true; i.storage.stopping = true; i.edit.stopping = true; i.status.stage = "stopping";
