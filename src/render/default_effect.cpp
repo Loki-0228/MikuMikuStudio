@@ -1,4 +1,5 @@
 #include "mikumikustudio/default_effect.hpp"
+#include "mikumikustudio/legacy_mme.hpp"
 #include "mikumikustudio/d3dx_effect.hpp"
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/runtime_log.hpp"
@@ -101,7 +102,7 @@ bool QueueDefaultEffect(D3DRenderer* renderer, int resource) {
     if (!api.Load()) return false;
     // MME captures this resource call and requires the default effect before
     // its first BeginScene. Keep that plug-in's original initialization path.
-    if (GetModuleHandleW(L"MMEffect.dll")) {
+    if (mikumikustudio::LegacyMmeModule()) {
         ComBuffer errors;
         const auto start = GetTickCount64();
         const auto result = api.createEffectFromResA(renderer->device, nullptr,

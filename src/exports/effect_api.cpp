@@ -1,4 +1,5 @@
 #include "mikumikustudio/native_mesh.hpp"
+#include "mikumikustudio/legacy_mme.hpp"
 #include "mikumikustudio/effect_display.hpp"
 #include "mikumikustudio/perf_timing.hpp"
 // ===========================================================================
@@ -90,7 +91,7 @@ void EffectFilename(MMDApp* app, char* out, const wchar_t* path) {
     // identify a different file on a Chinese Windows installation.
     // This plugin boundary is shared by both builds; file-format encoding
     // remains governed separately by the original-profile save policy.
-    if (GetModuleHandleW(L"MMEffect.dll")) {
+    if (mikumikustudio::LegacyMmeModule()) {
         std::string nativePath;
         if (mikumikustudio::text_encoding::EncodeExact(path, CP_ACP, nativePath) && nativePath.size() < 256) {
             strcpy_s(out, 256, nativePath.c_str());
@@ -210,7 +211,7 @@ void TranslateEffectEditor(HWND window) {
     if (!effectEditorApp) return;
     // Match the plugin window and its public command set, never host controls
     // or arbitrary application windows with a coincidentally similar caption.
-    const HMODULE module = GetModuleHandleW(L"MMEffect.dll");
+    const HMODULE module = mikumikustudio::LegacyMmeModule();
     if (!module || reinterpret_cast<HMODULE>(GetWindowLongPtrW(window, GWLP_HINSTANCE)) != module)
         return;
     HMENU menu = GetMenu(window);
@@ -338,7 +339,7 @@ LRESULT CALLBACK EffectMenuProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp,
         EnumThreadWindows(GetCurrentThreadId(), [](HWND window, LPARAM) -> BOOL {
             TranslateEffectEditor(window);
             if (reinterpret_cast<HMODULE>(GetWindowLongPtrW(window, GWLP_HINSTANCE)) ==
-                GetModuleHandleW(L"MMEffect.dll"))
+                mikumikustudio::LegacyMmeModule())
                 RedrawWindow(window, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN);
             return TRUE;
         }, 0);
@@ -486,7 +487,7 @@ void LocalizeEffectMenu(HMENU menu, unsigned char language) {
 void RefreshEffectMenuLanguage(MMDApp* app) {
     // Never load MME for localization, dereference DLL internals, or retain a
     // menu handle across language changes. A DLL without a menu is also a no-op.
-    if (app == nullptr || GetModuleHandleW(L"MMEffect.dll") == nullptr)
+    if (app == nullptr || !mikumikustudio::LegacyMmeLoaded())
         return;
     HMENU menu = EffectMenu(app->MainWindow());
     if (menu != nullptr)
@@ -526,7 +527,7 @@ void InstallEffectMenuCompatibility(MMDApp* app) {
         SetWindowSubclass(hwnd, EffectMenuProc, kEffectMenuSubclass,
                           reinterpret_cast<DWORD_PTR>(app));
         RefreshEffectMenuLanguage(app);
-        if (GetModuleHandleW(L"MMEffect.dll") && !effectEditorHook) {
+        if (mikumikustudio::LegacyMmeModule() && !effectEditorHook) {
             effectEditorApp = app;
             effectEditorHook = SetWindowsHookExW(WH_CALLWNDPROCRET,
                 EffectEditorMessages, nullptr, GetCurrentThreadId());
@@ -548,7 +549,7 @@ void BeginEffectObjectRegistration() {
 }
 
 void NotifyEffectFileOpen(const wchar_t* path) {
-    if (path == nullptr || GetModuleHandleW(L"MMHack.dll") == nullptr)
+    if (path == nullptr || !mikumikustudio::LegacyMmeHackLoaded())
         return;
     InstallEffectPathCompatibility();
     PrepareEffectProjectPaths(path);
@@ -562,7 +563,7 @@ void NotifyEffectFileOpen(const wchar_t* path) {
 }
 
 void NotifyEffectFileSave(const wchar_t* path) {
-    if (path == nullptr || *path == L'\0' || GetModuleHandleW(L"MMHack.dll") == nullptr)
+    if (path == nullptr || *path == L'\0' || !mikumikustudio::LegacyMmeHackLoaded())
         return;
     // Notifications follow a completed disk publication. Failure to prepare an
     // optional native-MME notification must not fail that already committed save.

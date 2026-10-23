@@ -1,4 +1,5 @@
 #include "mikumikustudio/transparent_capture.hpp"
+#include "mikumikustudio/legacy_mme.hpp"
 #include "mikumikustudio/shadow_filter.hpp"
 #include "mikumikustudio/native_mesh.hpp"
 #include "mikumikustudio/deformed_mesh_capture.hpp"
@@ -329,7 +330,7 @@ bool ModelMaterialUsesAlpha(D3DRenderer* sub, const mdl::ModelRecord& state,
     // Native alpha 0 emits no fragment. Keep the original classification when
     // MME is loaded: a custom FX can replace authored alpha, so moving that draw
     // to the opaque pass could change its visible result.
-    if (!MaterialAlphaVisible(alpha) && GetModuleHandleW(L"MMEffect.dll") == nullptr)
+    if (!MaterialAlphaVisible(alpha) && !mikumikustudio::LegacyMmeLoaded())
         return false;
     return alpha < 1.0f ||
         CachedTextureUsesAlpha(sub, material.texturePath) ||
@@ -1152,7 +1153,7 @@ void DrawModelMaterials(MMDApp* app, unsigned char* model, bool effectPass,
     // Prepare native indices before opaque materials submit this model's
     // buffers. Keep the original timing when an MME proxy is present: its
     // callbacks may mutate material state between the two material passes.
-    const bool mmeProxy = GetModuleHandleW(L"MMEffect.dll") != nullptr;
+    const bool mmeProxy = mikumikustudio::LegacyMmeLoaded();
     const auto sortPass = mmeProxy ? ModelAlphaPass::Translucent
                                   : ModelAlphaPass::Opaque;
     const bool autoSorting = app->AutoTransparentMaterialSortingEnabled();
@@ -1546,7 +1547,7 @@ struct AlphaStageTimer {
 };
 
 bool RenderNativeOrderedAlpha(MMDApp* app, bool effectFrame) {
-    if (GetModuleHandleW(L"MMEffect.dll") != nullptr || app->WireframeRenderingEnabled() != 0 ||
+    if (mikumikustudio::LegacyMmeLoaded() || app->WireframeRenderingEnabled() != 0 ||
         (effectFrame && app->ModelNonDisplayMode() != 0)) return false;
     auto* sub = app->Renderer();
     thread_local std::vector<NativeAlphaDraw> draws;
@@ -1759,7 +1760,7 @@ bool UseOriginalAlphaVertices(MMDApp* app) {
     // Bucket tiers need a complete, projection-independent set of source faces.
     // The GPU clips them without changing their depth range or vertex IDs.
     return app->TransparentMaterialSortPrecision()!=TransparentSortPrecision::Maximum ||
-        GetModuleHandleW(L"MMEffect.dll")!=nullptr;
+        mikumikustudio::LegacyMmeModule()!=nullptr;
 }
 
 double AlphaClipDistance(const AlphaClipVertex& v, int plane) {
@@ -2236,7 +2237,7 @@ bool RenderSplitOrderedAlphaImpl(MMDApp* app, bool effectFrame) {
     // to move disjoint triangles without changing their output.
     const auto precision = app->TransparentMaterialSortPrecision();
     const bool batchNative = precision==TransparentSortPrecision::Maximum && crossObjects &&
-        GetModuleHandleW(L"MMEffect.dll") == nullptr &&
+        !mikumikustudio::LegacyMmeLoaded() &&
         SUCCEEDED(sub->device->GetViewport(&batchViewport));
     const bool same = cache.sortedValid && precision == cache.precision && crossObjects == cache.crossObjects && batchNative == cache.batchNative &&
         batchViewport.Width == cache.width && batchViewport.Height == cache.height;
@@ -2245,7 +2246,7 @@ bool RenderSplitOrderedAlphaImpl(MMDApp* app, bool effectFrame) {
         // Unknown MME shaders may depend on original vertex IDs. Highest uses
         // whole-face depth ordering there instead of inventing split vertices.
         cache.sorted = transparent_geometry::Order(cache.source, precision, cache.stats, crossObjects, !originalVertices,
-            GetModuleHandleW(L"MMEffect.dll")!=nullptr);
+            mikumikustudio::LegacyMmeModule()!=nullptr);
         if (batchNative)
             transparent_geometry::BatchDraws(cache.sorted, batchViewport.Width, batchViewport.Height);
         cache.sortedValid=true;cache.gpu.valid=false;
@@ -2697,7 +2698,7 @@ void RenderModelsFixed(MMDApp* app) {                         // 0x425D20
                     mdl::Mdl(model)->displayState != 0 ||
                     MMD_ORIGINAL_PROFILE ||
                     (!app->AutoTransparentMaterialSortingEnabled() &&
-                     GetModuleHandleW(L"MMEffect.dll") != nullptr);
+                     mikumikustudio::LegacyMmeLoaded());
                 if (!originalMaterialOrder || alphaPass == ModelAlphaPass::Opaque)
                     DrawModelMaterials(app, model, false, false,
                                        originalMaterialOrder
@@ -2885,7 +2886,7 @@ void RenderModelsEffect(MMDApp* app, const float frameMatrix[16]) { // 0x4277E0
                     mdl::Mdl(model)->displayState != 0 ||
                     MMD_ORIGINAL_PROFILE ||
                     (!app->AutoTransparentMaterialSortingEnabled() &&
-                     GetModuleHandleW(L"MMEffect.dll") != nullptr);
+                     mikumikustudio::LegacyMmeLoaded());
                 const auto drawPass = originalMaterialOrder
                     ? ModelAlphaPass::Original
                     : alphaPass;

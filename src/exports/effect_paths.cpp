@@ -1,6 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
+#include "mikumikustudio/legacy_mme.hpp"
 #include <d3d9.h>
 
 #include "mikumikustudio/effect_api.hpp"
@@ -403,7 +404,7 @@ void PatchImports(HMODULE module) {
 }  // namespace
 
 void InstallEffectPathCompatibility() {
-    const HMODULE effect = GetModuleHandleW(L"MMEffect.dll");
+    const HMODULE effect = mikumikustudio::LegacyMmeModule();
     if (effect) PatchImports(effect);
 }
 

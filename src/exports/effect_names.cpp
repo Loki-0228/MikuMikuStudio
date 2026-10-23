@@ -1,4 +1,5 @@
 #include "mikumikustudio/native_mesh.hpp"
+#include "mikumikustudio/legacy_mme.hpp"
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
@@ -67,8 +68,8 @@ ULONG_PTR* FindMaterialNameImport(HMODULE module, ULONG_PTR original) {
 }
 
 bool InstallEffectMaterialNameCompatibility() {
-    const HMODULE effect = GetModuleHandleW(L"MMEffect.dll");
-    const HMODULE hack = GetModuleHandleW(L"MMHack.dll");
+    const HMODULE effect = mikumikustudio::LegacyMmeModule();
+    const HMODULE hack = mikumikustudio::LegacyMmeHackModule();
     if (effect == nullptr || hack == nullptr) return false;
     const auto replacement = reinterpret_cast<ULONG_PTR>(&CompatibleMaterialName);
     if (effect == patchedEffect && hack == patchedHack && patchedSlot != nullptr &&

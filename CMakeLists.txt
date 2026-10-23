@@ -1015,6 +1015,16 @@ if (MIKUMIKUSTUDIO_BUILD_EFFECT_TESTS)
     add_test(NAME model_alpha_sort_off COMMAND model_alpha_occlusion_tests --sort-off)
     add_test(NAME model_alpha_sort_off_mme_presence COMMAND model_alpha_occlusion_tests
         --sort-off --mme-marker $<TARGET_FILE:mme_presence_marker>)
+    add_executable(legacy_mme_tests EXCLUDE_FROM_ALL tests/legacy_mme_tests.cpp)
+    target_include_directories(legacy_mme_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_options(legacy_mme_tests PRIVATE /SUBSYSTEM:CONSOLE,6.01)
+    set_target_properties(legacy_mme_tests PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+    add_dependencies(legacy_mme_tests mme_presence_marker)
+    add_test(NAME legacy_mme_renamed_detection COMMAND legacy_mme_tests
+        "${CMAKE_BINARY_DIR}/tests/legacy-mme"
+        $<TARGET_FILE:mme_presence_marker>)
+    set_tests_properties(legacy_mme_renamed_detection PROPERTIES TIMEOUT 60)
     if(MIKUMIKUSTUDIO_PROFILE STREQUAL "full")
         add_test(NAME model_alpha_occlusion_regressions COMMAND model_alpha_occlusion_tests --precision standard)
         add_test(NAME model_alpha_occlusion_low_regressions COMMAND model_alpha_occlusion_tests --precision low)

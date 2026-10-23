@@ -1,4 +1,5 @@
 #include "mikumikustudio/d3d12_native.hpp"
+#include "mikumikustudio/legacy_mme.hpp"
 #include "mikumikustudio/viewport_render_scale.hpp"
 #if defined(MMD_ENABLE_DX12) && MMD_ENABLE_DX12
 #define WIN32_LEAN_AND_MEAN
@@ -442,7 +443,7 @@ bool RenderD3D12Native(MMDApp* app,const float world[16]) {
     }
     policyFallback=false;
     try {
-        if(GetModuleHandleW(L"MMEffect.dll"))throw std::runtime_error("D3D12 native requires a directory without the MME proxy");
+        if(mikumikustudio::LegacyMmeModule())throw std::runtime_error("D3D12 native requires a directory without the MME proxy");
         if(app->RecordingWindow()||app->FloatingWindow()||app->FullscreenMode())throw std::runtime_error("Native recording/floating/fullscreen is not available");
         for(int i=0;i<255;++i)if(app->AccessorySlot(i))throw std::runtime_error("Native accessory rendering is not yet available");
         if(!native){native=std::make_unique<Native>();native->Initialize(app->MainWindow(),validationEnabled);}

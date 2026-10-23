@@ -1,4 +1,5 @@
 #include "mikumikustudio/mmv4mms.hpp"
+#include "mikumikustudio/legacy_mme.hpp"
 #include "mikumikustudio/viewport_render_scale.hpp"
 #include "mikumikustudio/transparent_capture.hpp"
 #include "mikumikustudio/image_sequence_export.hpp"
@@ -554,7 +555,7 @@ void RenderFrameScene(MMDApp* app) {
     D3dObjectValidationScope validatedObjects;
 #if !MMD_ORIGINAL_PROFILE
     TransparentSortFrameCache transparentSortCache(
-        app->AutoTransparentMaterialSortingEnabled() && GetModuleHandleW(L"MMEffect.dll") != nullptr);
+        app->AutoTransparentMaterialSortingEnabled() && mikumikustudio::LegacyMmeLoaded());
 #endif
     model_vertex_cache::BeginFrame();
     if (app->state.accessoryEditDialogOpen == 0) {

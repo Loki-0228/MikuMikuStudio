@@ -1,6 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include "mikumikustudio/texture_prepare_cache.hpp"
+#include "mikumikustudio/legacy_mme.hpp"
 #include "mikumikustudio/runtime_log.hpp"
 #include "mikumikustudio/cache_storage_policy.hpp"
 #include "mikumikustudio/cache_manager.hpp"
@@ -453,7 +454,7 @@ template<bool V43> HRESULT WINAPI Inner(IDirect3DDevice9* device, LPCWSTR file,
 }
 
 void Install() {
-    const auto module = GetModuleHandleW(L"MMHack.dll");
+    const auto module = mikumikustudio::LegacyMmeHackModule();
     if (!module) return;
     std::lock_guard<std::mutex> lock(installMutex);
     if (patchedModule == module) return;

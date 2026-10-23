@@ -1,6 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
+#include "mikumikustudio/legacy_mme.hpp"
 #include <d3d9.h>
 #include <commctrl.h>
 #include <wrl/client.h>

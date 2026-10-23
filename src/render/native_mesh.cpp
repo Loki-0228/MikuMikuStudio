@@ -2,6 +2,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
+#include "mikumikustudio/legacy_mme.hpp"
 #include <d3d9.h>
 #include <wrl/client.h>
 #include <algorithm>
@@ -212,7 +213,7 @@ void DrainEffectRegistration(IDirect3DDevice9* device){
     }
 }
 std::filesystem::path PreserveEffectAssignments(IDirect3DDevice9* device){
-    if(!GetModuleHandleW(L"MMEffect.dll"))return {};
+    if(!mikumikustudio::LegacyMmeModule())return {};
     const UINT state=GetMenuState(GetMenu(host->MainWindow()),40022,MF_BYCOMMAND);
     if(state==UINT(-1))throw std::runtime_error("Native mesh cannot preserve the current MME assignments: autosave command unavailable");
     const auto root=local_data::File(L"mme_mesh_snapshots");
@@ -295,7 +296,7 @@ bool DisableMeshEffects(MMDApp* app,const std::vector<const void*>& objects,std:
     std::filesystem::path saved;
     bool mmeChanged=false;
     try{
-        if(GetModuleHandleW(L"MMEffect.dll")){
+        if(mikumikustudio::LegacyMmeModule()){
             saved=PreserveEffectAssignments(app->Renderer()->device);
             auto original=saved;original.replace_extension(L".emm");
             const auto edited=saved.parent_path()/L"baked.emm",project=saved.parent_path()/L"baked.pmm";

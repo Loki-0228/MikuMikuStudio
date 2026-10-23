@@ -8,7 +8,7 @@ void Initialize(MMDApp* app) {
     directory=std::filesystem::path(executable).parent_path();
     const auto dll=directory/L"MMV4MMS.dll";
     if(GetFileAttributesW(dll.c_str())==INVALID_FILE_ATTRIBUTES){RefreshLanguage(app);return;}
-    if(GetModuleHandleW(L"MMEffect.dll")){lastError="Remove the MME proxy before enabling MMV4MMS";RefreshLanguage(app);return;}
+    if(mikumikustudio::LegacyMmeModule()){lastError="Remove the MME proxy before enabling MMV4MMS";RefreshLanguage(app);return;}
     library=LoadLibraryExW(dll.c_str(),nullptr,LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR|LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
     if(!library){lastError="Cannot load MMV4MMS.dll (Windows error "+std::to_string(GetLastError())+")";RefreshLanguage(app);return;}
     const auto get=reinterpret_cast<MmvMmsGetApiFn>(GetProcAddress(library,"MMV4MMSGetPluginApi"));
@@ -28,7 +28,7 @@ void Initialize(MMDApp* app) {
     else {lastError.clear();if(!openedProject.empty())Notify(MMV_PROJECT_OPENED,openedProject.c_str());}
     RefreshLanguage(app);
 }
-bool Active(){return plugin&&!(menuApi.flags&&(menuApi.flags(plugin)&MMV_MENU_RENDERER_DISABLED))&&!GetModuleHandleW(L"MMEffect.dll");}
+bool Active(){return plugin&&!(menuApi.flags&&(menuApi.flags(plugin)&MMV_MENU_RENDERER_DISABLED))&&!mikumikustudio::LegacyMmeModule();}
 void Shutdown(){ReleasePlugin();physicsSnapshots.clear();generations.clear();openedProject.clear();attempted=false;host=nullptr;}
 void ClearScene(){rendererColor.Reset();Notify(MMV_SCENE_RESET);physicsSnapshots.clear();generations.clear();openedProject.clear();}
 void Forget(const void* object){Notify(MMV_OBJECT_REMOVED,nullptr,reinterpret_cast<uint64_t>(object));generations.erase(object);physicsSnapshots.erase(reinterpret_cast<uint64_t>(object));}

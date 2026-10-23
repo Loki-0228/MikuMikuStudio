@@ -1,4 +1,5 @@
 #include "mikumikustudio/original_import.hpp"
+#include "mikumikustudio/legacy_mme.hpp"
 #include "mikumikustudio/negative_frames.hpp"
 #include "mikumikustudio/plugin_scene.hpp"
 #include "mikumikustudio/key_pool.hpp"
@@ -1153,7 +1154,7 @@ Result Prepare(MMDApp& app, const wchar_t* path, import_texture_cache::Preparati
     if (out.Object() || out.Keys()) return Result::NotReady;
     // Legacy IAT hooks can create external mesh/file associations before this
     // private operation commits. They have no cancellation protocol yet.
-    if (GetModuleHandleW(L"MMEffect.dll") || GetModuleHandleW(L"MMHack.dll")) return Result::NotReady;
+    if (mikumikustudio::LegacyMmeModule() || mikumikustudio::LegacyMmeHackLoaded()) return Result::NotReady;
     auto* renderer = app.Renderer();
     if (!renderer || !renderer->device) return Result::NotReady;
     if (textures.Status() != MMS_OK) return Result::TextureFailure;

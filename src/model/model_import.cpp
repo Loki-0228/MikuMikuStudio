@@ -1,4 +1,5 @@
 #include "mikumikustudio/model_import.hpp"
+#include "mikumikustudio/legacy_mme.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "mikumikustudio/import_texture_cache.hpp"
 #include "mikumikustudio/mmd_app.hpp"
@@ -61,7 +62,7 @@ Result Prepare(MMDApp& app, const wchar_t* path, bool showInfo, PhysicsScene& de
     if (out.Object() || !Absolute(path)) return Result::InvalidPath;
     if (!app.Renderer() || !textures.IsFor(*app.Renderer()) || !detached.world || !app.Physics() ||
         &detached == app.Physics() || detached.world == app.Physics()->world ||
-        GetModuleHandleW(L"MMEffect.dll") || GetModuleHandleW(L"MMHack.dll")) return Result::NotReady;
+        mikumikustudio::LegacyMmeModule() || mikumikustudio::LegacyMmeHackLoaded()) return Result::NotReady;
     try {
         Prepared next;
         next.model_ = static_cast<unsigned char*>(std::calloc(1, mdl::kSize));

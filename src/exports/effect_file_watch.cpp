@@ -1,4 +1,5 @@
 #include "mikumikustudio/effect_file_watch.hpp"
+#include "mikumikustudio/legacy_mme.hpp"
 #include "mikumikustudio/effect_apng.hpp"
 #include "mikumikustudio/runtime_log.hpp"
 #include "effect_file_watch_cache.hpp"
@@ -31,7 +32,7 @@ void Install() {
     if (attempted) return;
     attempted = true;
     if (!IsEffectApngCompatibilityInstalled()) return;
-    auto* image = reinterpret_cast<unsigned char*>(GetModuleHandleW(L"MMEffect.dll"));
+    auto* image = reinterpret_cast<unsigned char*>(mikumikustudio::LegacyMmeModule());
     constexpr unsigned char code[]{0x40,0x53,0x48,0x83,0xec,0x40,0x45,0x33,0xc9,0x48,0xc7,0x44,0x24,0x30,0x00,0x00};
     constexpr unsigned char call[]{0xe8,0x86,0xfe,0xff,0xff};
     if (!image || std::memcmp(image + 0xb7f0, code, sizeof(code)) ||

@@ -1,6 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
+#include "mikumikustudio/legacy_mme.hpp"
 #include <bcrypt.h>
 
 #include "mikumikustudio/effect_apng.hpp"
@@ -215,7 +216,7 @@ bool InstallEffectApngCompatibility() {
     if (attempted) return InstalledLocked();
     attempted = true;
     ModuleReference reference;
-    const HMODULE candidate = GetModuleHandleW(L"MMEffect.dll");
+    const HMODULE candidate = mikumikustudio::LegacyMmeModule();
     if (!candidate) {
         runtime_log::Write("MME_APNG install_skipped reason=native_mme_absent");
         return false;
