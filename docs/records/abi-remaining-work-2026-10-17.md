@@ -32,6 +32,9 @@
 [布局撤销历史](abi-layout-history-2026-10-24.md)：`mms.ui.layout` 1.1 追加 `queryHistory`／`undo`／`redo`。成功且改变保存布局偏好的事务记录提交前快照，撤销栈 32、新提交清空重做；撤销/重做恢复完整偏好 JSON。真实布局事务断言撤销后偏好变化、重做后恢复、空栈 NOT_READY；默认契约 44,784 项、宿主探针 7 项（无 `LAYOUT_HISTORY_MISSING`）、10 个 CTest 模式通过，两产品重建（完整 `903bf97a…`、原始 `b20a8822…`）。历史不持久化、无热键/界面入口与 C++ 包装，几何需下一次布局刷新；DOCK 与时间线/状态栏挂载仍未实现。
 
 
+
+[渲染服务帧信息](abi-render-frame-2026-10-24.md)：`mms.render` 的成功 Present 现在递增帧序号并记录真实 0 号后缓冲宽高与 D3DFORMAT；`PluginFramePresented` 由 `frame_driver` 在 Present 成功后调用，lifecycle 探针日志验证 `frame=1 size=1463x914 fmt=21` 与 `RENDER_FRAME_SEEN`，宿主探针 8 项通过。真实播放循环端到端、DX9 帧生命周期钩子、post 与真实设备丢失仍未完成。
+
 [渲染服务 C++17 封装](abi-render-sdk-2026-10-24.md)：新增 `mms::sdk::RenderServices`／`RenderLease`，封装查询、信息读取、设备租约获取/显式释放与移动语义；假宿主契约覆盖缺失服务/函数、参数、幂等释放与句柄归属，默认契约套件 44,772 项通过并输出 `cpp render sdk PASS`。本批只改 SDK 头与测试；产品与 release 未变。同期透明排序 GPU 缓存尝试因 `model_alpha_occlusion_tests --precision maximum` 出现 27 个像素失败而回退，未修改基线同样失败，说明是既有问题；透明排序性能缓存仍需先定位该失败。
 
 [渲染服务：设备代次与资源租约](abi-render-service-2026-10-24.md)：新增 `mms.render` 1.0，查询设备代次/丢失状态，获取与显式释放设备租约；设备丢失时先调用租约释放回调再清空，恢复时更新代次。lifecycle 探针在启动、丢失事件与恢复事件中查询并重取租约，日志验证 `gen=1 lost=1`、`gen=2 lost=0`、`RENDER_LEASE_RELEASED` 与重新获取；宿主探针 7 项、默认契约 44,764 项、10 个 CTest 模式通过。帧序号/后缓冲信息、DX9 帧生命周期、post、租约分类、C++ 封装与真实设备丢失仍未完成。
