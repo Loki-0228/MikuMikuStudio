@@ -202,6 +202,8 @@ MikuMikuDance.exe <另一个新输出前缀> 1 --emm-default-off [素材PMM绝�
 
 `negative_frame_tests` 是完整配置的负数关键帧核心回归：带符号解析与范围解释、负帧登记与到 0 帧的插值、独立扩展记录的捕获/载入、损坏载荷拒绝与状态清空。`negative_frame_host_tests`（完整配置）在隐藏生产窗口上运行真实注册后端、0 帧左右移动、负帧 XYZ 重置与撤销、真实 PMM 写出后重载、带符号播放端点、范围选择与复制/粘贴按钮、正负帧双向粘贴和从负帧开始播放，共 26 项检查；模型夹具只有骨骼，morph 路径由 `negative_frame_tests` 覆盖。
 
+`model_alpha_tests` 是 CPU 软件光栅的 alpha 分类回归，覆盖未知格式不默认透明、X8R8G8B8／R8G8B8 等直接不透明、A8R8G8B8／A8B8G8R8 与 DXT1／3／5 的像素 alpha 判定。
+
 `texture_prepare_cache_tests`（完整配置，显式模式）需要新的输出目录与 `d3dx9_43.dll` 路径，可选真实纹理：它比较缓存的缩放像素/元数据/mip 渲染与原入口，覆盖并行 worker、去重、热复用、仅内存、损坏/mtime 保持的编辑/不可写/禁用/缺失回退；ABI 默认目录为 `data/cache/Textures`。
 
 `effect_compile_cache_tests` 是完整配置的效果编译缓存回归：默认假 D3DX 套件 165 项（键与失效、内存/磁盘命中、损坏条目回退、限制与不可写目录、磁盘预算、异常安全、内存模式、非 ASCII 路径与 Unicode 效果名），`--small-stack` 9 项，`--integration` 使用真实 D3DX DLL 与 D3D9 设备比较缓存与原入口输出。ABI 默认目录为 `data/cache/MME`，测试在临时目录与工作目录不同卷时把夹具放到工作目录所在卷。

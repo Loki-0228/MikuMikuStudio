@@ -59,9 +59,9 @@ main 随后继续提交。下一轮同步、当前状态与依赖如下：
 | 效果编译缓存 | 每次启动重复编译外部效果 | 编译结果写入 `Cache/MME/<效果名>/<key>.fxb`，键含 D3DX 身份、源码与依赖预处理、flags 与 macros；命中仍创建独立效果；未知 D3DX、自定义 include、损坏文件回退原调用 | 已采用 `effect_compile_cache`（1378 行）并接入 `effect_paths` 的 D3DX 拦截入口；默认目录改为程序目录 `data/cache/MME`，开关读 `cache_manager::Enabled()`，登记走 `WriteReservation/Touch/Invalidate`，受统一配额与回收保护；[记录](abi-effect-compile-cache-2026-10-24.md)。假 D3DX 165 项、128 KiB 栈 9 项、真实 D3DX 集成均通过，两产品构建通过 | 已同步（本机） | 未加载真实 MME 工程或 45 效果冷启动场景，无真实命中率/启动耗时/配额触发证据；真实 MME include 与工厂路径未验收；未做人工视觉、Win7/AMD、多用户与慢盘长时间运行 |
 | 纹理准备缓存 | 纹理解码与缩放重复执行 | PNG／TGA 解码和缩放结果写入 `Cache/Textures/<名称>/<key>.mtc`；普通加载与事务导入共用；worker 只处理自有字节 | 已采用 `texture_prepare_cache` 与 WIC CPU 解码：默认目录为程序目录 `data/cache/Textures`，普通模型加载经 `LoadTextureShared` 包裹、PMX 在材质前批量预加载（最多 64 条、最多两个 worker、已有 GPU 池条目跳过），原始兼容配置走原生；[记录](abi-texture-prepare-cache-2026-10-24.md)。真实 D3DX 套件（合成 TGA/DDS + 真实 BMP，hits=37/native=39/stores=48）与模型加载、原始保存回归通过，两产品构建通过 | 已同步（本机，普通加载） | 事务导入仍使用既有 `import_texture_cache`，未与本缓存共用；未加载真实 MMD 多材质模型或 MME 场景，无真实命中率/内存/耗时对比；DDS 压缩格式、超大纹理与 128 MiB 边界未在真实工程验证；原始兼容配置不使用缓存；人工视觉、Win7/AMD、多用户、慢盘、只读与长时间运行未验收 |
 | 负数关键帧 | 0 帧之前不能编辑、保存、粘贴 | 0 帧左方向键到 -1；当前帧可输入负数；负帧可登记各轨道；选择、复制粘贴、删除、撤销重做；PMM 扩展保存；播放仍从 0 开始 | 已采用 main 的 `negative_frames` 模块与带符号 `frame_limits`，集成到关键帧登记、模型求值、场景轨道、PMM 扩展捕获/载入、播放范围、命令路由、时间轴滚动与面板绘制；[记录](abi-negative-frames-2026-10-24.md)。`negative_frame_tests` 26 项、保存/导出 405 项、自动备份 1,143 项与原始保存 39 项回归通过，两产品构建通过 | 已同步 | 另有新增隐藏宿主测试 `negative_frame_host_tests` 26 项：真实注册后端、0 帧左右移动、负帧 XYZ 重置与撤销、负帧插值、真实 PMM 写出后重载、带符号播放端点、范围选择与复制/粘贴按钮、正负帧双向粘贴、从负帧开始播放。负帧未接入原生曲线编辑、反转粘贴与 VMD 导出，删除/撤销重做未并入共同历史（与 main 相同）；原始兼容配置不持久化负帧；时间轴绘制无截图/人工核对；真实 MME、Win7/AMD、多 DPI 未验收 |
-| 不透明纹理 alpha 分类 | 不透明 DDS／RGB 纹理被误判为带透明，进入透明排序 | 未知格式不默认透明；X8R8G8B8、R8G8B8、DXT1／3／5 按实际像素 alpha 判定；A8B8G8R8 通道顺序正确 | `model_alpha_pass.hpp` 仍先把非 A8R8G8B8 标记为带 alpha，测试仍断言旧行为 | 待处理 | 分类逻辑与对应用例 |
-| 附件 VMD 菜单 | 模型模式下附件 VMD 菜单仍可点击 | 只在相机模式且选中附件时启用，命令入口也拦截 | `animation_curve_host_ui.cpp` 仍只按选中的附件槽判断 | 待处理 | 菜单灰显与命令守卫 |
-| 时间轴滚动条 | 拖动位置不跟随绝对位置 | `SB_THUMBPOSITION/SB_THUMBTRACK` 使用 `SIF_TRACKPOS` 绝对位置，下限跟随帧边界 | `ui_hscroll.cpp` 仍按 `HIWORD` 增量移动，下限 0 | 待处理 | 绝对位置拖动；负帧下限依赖负帧批次 |
+| 不透明纹理 alpha 分类 | 不透明 DDS／RGB 纹理被误判为带透明，进入透明排序 | 未知格式不默认透明；X8R8G8B8、R8G8B8、DXT1／3／5 按实际像素 alpha 判定；A8B8G8R8 通道顺序正确 | 已采用 main 的 `model_alpha_pass.hpp`：未知格式保持作者通道，X8R8G8B8／X8B8G8R8／R8G8B8 等直接不透明，A8R8G8B8／A8B8G8R8 与 DXT1／3／5 按像素 alpha 采样；[记录](abi-main-small-items-2026-10-24.md)。main 的 CPU 回归 `model_alpha_tests` 通过 | 部分同步 | GPU 透明排序回归未跑：main 更新后的 `model_alpha_occlusion_tests` 依赖未同步的 `transparent_sort_cache`；需在透明排序性能批次后重跑 GPU 路径 |
+| 附件 VMD 菜单 | 模型模式下附件 VMD 菜单仍可点击 | 只在相机模式且选中附件时启用，命令入口也拦截 | `animation_curve_host_ui.cpp` 的本地化、菜单打开与命令入口都要求相机模式；[记录](abi-main-small-items-2026-10-24.md)。曲线宿主回归新增三语相机模式 0/1/0/1 断言并通过 | 已同步（本机） | 未在真实鼠标操作与多显示器/输入法环境下人工确认菜单灰显与命令拦截 |
+| 时间轴滚动条 | 拖动位置不跟随绝对位置 | `SB_THUMBPOSITION/SB_THUMBTRACK` 使用 `SIF_TRACKPOS` 绝对位置，下限跟随帧边界 | `ui_hscroll.cpp` 的 case 4/5 已用 `GetScrollInfo(SIF_TRACKPOS)` 绝对位置，取不到时退回带符号 `HIWORD`，下限改为 `frame_limits::minimum`；[记录](abi-main-small-items-2026-10-24.md)。两产品构建通过 | 部分同步 | 没有针对拖动消息的专项宿主测试，真实拖动、负帧区域与高 DPI 下的滚动条行为未运行验证 |
 | 菜单首次补绘 | 菜单首次打开文字未正确绘制 | 首次可见、首次 idle、约 220 ms 后补绘；失败保留原菜单 | `menu_initial_paint`；[记录](abi-menu-initial-paint-2026-10-23.md)核心 1,861 项、接入 116 项 | 已同步 | 真实菜单像素、多 DPI、完整 MME 未验收 |
 | 录制编辑视角 | 导出结束不恢复自由编辑视角 | 录制启动保存非跟随、非相机模式的编辑视角，结束后重建投影；不写 PMM 与历史 | `CaptureRecordingEditorView/RestoreRecordingEditorView`；[记录](abi-recording-editor-view-2026-10-23.md)字段 56、生命周期 1,028／975 项 | 已同步 | 全屏 3D Vision、真实编码器、Win7／AMD 未验收 |
 | 手动编号保存 | 手动保存只能覆盖或沿 `.pmm1/.pmm11` 链 | 独立开关；十进制编号、稀疏编号、孤立旁车、9→10 进位；周期备份不使用 | `autosave.hpp`、`pmm_save`、`pmm_save_versions`；[记录](abi-numbered-save-2026-10-23.md)303／533／82 项 | 已同步 | 版本链硬中断的持久化轮转日志、新 EMM 同快照确认未完成 |
@@ -72,10 +72,10 @@ main 随后继续提交。下一轮同步、当前状态与依赖如下：
 
 | 来源 | 行为 | ABI 现状 | 处理建议 |
 | --- | --- | --- | --- |
-| `3782e0c` | `local_data_path.hpp` 与 `effect_paths.cpp` 的 32 KiB 栈缓冲改为堆缓冲，避免深回调栈溢出 | 仍使用 `wchar_t[32768]` 栈数组 | 低风险，随负帧批次或独立小批修正 |
+| `3782e0c` | `local_data_path.hpp` 与 `effect_paths.cpp` 的 32 KiB 栈缓冲改为堆缓冲，避免深回调栈溢出 | `local_data_path.hpp` 已改为 `std::vector<wchar_t>(32768)`，`effect_paths.cpp` 与 main 对齐；[记录](abi-main-small-items-2026-10-24.md)。两产品构建通过 | 已同步（本机，代码级） | 未复现真实 MME/D3DX 深回调栈耗尽场景 |
 | `3782e0c` | 透明排序按对象／GPU 缓冲缓存 | 每帧新建索引／顶点缓冲 | 与透明排序性能批次一起评估；不改变功能结果 |
-| `3782e0c` | 模型模式灰显附件 VMD 菜单 | 仍按附件槽启用 | 独立小批，含命令守卫与真实宿主检查 |
-| `3782e0c` | DDS／RGB alpha 分类 | 仍默认带 alpha | 独立小批，更新旧断言 |
+| `3782e0c` | 模型模式灰显附件 VMD 菜单 | 已按相机模式灰显并拦截命令入口；曲线宿主回归通过（见[小项记录](abi-main-small-items-2026-10-24.md)） | 已同步（本机） | 未做真实鼠标与多显示器人工确认 |
+| `3782e0c` | DDS／RGB alpha 分类 | 已采用 main 分类并更新 CPU 回归；GPU 排序回归待透明排序性能批次（见[小项记录](abi-main-small-items-2026-10-24.md)） | 部分同步 | 依赖 `transparent_sort_cache` 的 GPU 用例未跑 |
 | `c147454` | main 默认备份目录为程序同级 `backups` | ABI 保留 `data/backups` | 按 ABI“运行数据集中在程序目录 data”的约定有意偏离；若产品要求逐字节一致需先确认存储约定 |
 
 ## 边界
