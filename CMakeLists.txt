@@ -1989,3 +1989,49 @@ if(MIKUMIKUSTUDIO_BUILD_UI_TESTS)
         set_tests_properties(export_viewport_regressions PROPERTIES TIMEOUT 330 RUN_SERIAL TRUE)
     endif()
 endif()
+
+# ---------------------------------------------------------------------------
+# Fixed deployment closure (P0).  The install tree is the shippable layout:
+# host EXE, NVIDIA helper, the MSVC/UCRT runtime set and the DirectX 9
+# redistributable DLLs the host imports.  CMake's InstallRequiredSystemLibraries
+# selects the exact VC/UCRT files for the active toolset; the DirectX files are
+# copied from the build machine when present and must be shipped under the
+# DirectX End-User Runtime terms.
+# ---------------------------------------------------------------------------
+if(MSVC)
+    set(MIKUMIKUSTUDIO_DEPLOYMENT_INSTALL ON CACHE BOOL
+        "Install the fixed Win7 deployment closure into the install tree")
+endif()
+if(MSVC AND MIKUMIKUSTUDIO_DEPLOYMENT_INSTALL)
+    set(CMAKE_INSTALL_SYSTEM_RUNTIME_DESTINATION .)
+    set(CMAKE_INSTALL_UCRT_LIBRARIES TRUE)
+    include(InstallRequiredSystemLibraries)
+    install(TARGETS MikuMikuStudio RUNTIME DESTINATION .)
+    if(TARGET MMSNvidiaAAFix)
+        install(TARGETS MMSNvidiaAAFix RUNTIME DESTINATION .)
+    endif()
+    install(CODE [[
+        file(GLOB vcomp_candidates
+            "$ENV{ProgramFiles}/Microsoft Visual Studio/*/*/VC/Redist/MSVC/*/x64/Microsoft.VC143.OpenMP/vcomp140.dll")
+        if(vcomp_candidates)
+            list(SORT vcomp_candidates)
+            list(REVERSE vcomp_candidates)
+            list(GET vcomp_candidates 0 vcomp_source)
+            message(STATUS "Deployment closure: add vcomp140.dll")
+            file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}" TYPE FILE FILES "${vcomp_source}")
+        else()
+            message(WARNING "Deployment closure: vcomp140.dll not found; install the VC++ OpenMP runtime")
+        endif()
+    ]])
+    install(CODE [[
+        foreach(directx_name d3dx9_43.dll d3dcompiler_43.dll)
+            set(directx_source "$ENV{SystemRoot}/System32/${directx_name}")
+            if(EXISTS "${directx_source}")
+                message(STATUS "Deployment closure: add ${directx_name}")
+                file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}" TYPE FILE FILES "${directx_source}")
+            else()
+                message(WARNING "Deployment closure: ${directx_name} not found on this machine; ship the DirectX End-User Runtime")
+            endif()
+        endforeach()
+    ]])
+endif()
