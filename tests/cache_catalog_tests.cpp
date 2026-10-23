@@ -4,6 +4,7 @@
 #include <windows.h>
 #include "mikumikustudio/cache_catalog.hpp"
 #include "../src/io/cache_catalog_codec.hpp"
+#include "../src/io/cache_business_codec.hpp"
 #include <algorithm>
 #include <array>
 #include <cstdio>
@@ -123,6 +124,49 @@ catalog::Snapshot Init(const fs::path& root,const Bytes& bytes={0,0xff,0x80,3}){
 void PreserveProof(const catalog::Store& store,catalog::Snapshot& output,const catalog::Snapshot& before){
     Check(Same(output,before),"failed operation retains visible snapshot fields");
     catalog::Snapshot next;Check(store.Commit(output,output.Bytes(),next)==Result::Ok&&next.Revision()==before.Revision()+1,"failed output retains private origin and CAS head");output=std::move(next);
+}
+void OwnedInitialization(const fs::path& root){
+    namespace business=mikumikustudio::cache_business;
+    const auto owner=Owner();business::Manifest manifest;manifest.storeOwner=owner;
+    manifest.maintenanceEpoch=1;manifest.nextProjectId=1;manifest.liveEncodedBytes=business::ManifestHeaderBytes;
+    Bytes bytes;Check(business::EncodeManifest(manifest,bytes)==business::Result::Ok,"prepare valid empty business manifest before catalog identity exists");
+    const auto path=root/L"owned-init";catalog::Store store(path);catalog::Snapshot snapshot;
+    Check(store.InitializeOwned(owner,bytes,snapshot)==Result::Ok&&snapshot.StoreId()==owner&&snapshot.Revision()==1,
+        "first durable publication has caller prepared identity");
+    catalog::Snapshot reopened;Check(store.Read(reopened)==Result::Ok&&Same(snapshot,reopened),"owned initialization reopens same first revision");
+    business::Manifest decoded;business::Index index;
+    Check(business::DecodeManifest(reopened.Bytes().data(),reopened.Bytes().size(),decoded)==business::Result::Ok&&
+        decoded.storeOwner==reopened.StoreId()&&business::Assemble(decoded,{},index)==business::Result::Ok,
+        "first published business manifest is immediately valid with catalog identity");
+    const auto before=snapshot;const auto disk=SnapshotDisk(path);auto other=owner;other[0]^=0xff;
+    for(const auto& requested:{owner,other}){
+        Check(store.InitializeOwned(requested,Bytes{9},snapshot)==Result::Conflict&&Same(snapshot,before)&&SnapshotDisk(path)==disk,
+            "same or different owned initialization never replaces existing catalog");
+    }
+    const auto zeroPath=root/L"zero-owned";
+    Check(catalog::Store(zeroPath).InitializeOwned({},bytes,snapshot)==Result::Invalid&&Same(snapshot,before)&&!fs::exists(zeroPath),
+        "zero identity fails before any directory creation and preserves output");
+    const auto largePath=root/L"large-owned";Bytes large(catalog::MaximumSnapshotBytes+1,0);
+    Check(catalog::Store(largePath).InitializeOwned(owner,large,snapshot)==Result::Limit&&Same(snapshot,before)&&!fs::exists(largePath),
+        "oversized owned initialization does not create a store");
+    const auto aliasPath=root/L"alias-owned";
+    Check(catalog::Store(aliasPath).InitializeOwned(snapshot.StoreId(),snapshot.Bytes(),snapshot)==Result::Ok&&Same(snapshot,before),
+        "owner and bytes may both alias output during owned initialization");
+    Check(catalog::Store(aliasPath).Commit(snapshot,Bytes{7},snapshot)==Result::Ok&&snapshot.Revision()==2&&snapshot.StoreId()==owner,
+        "owned initial token supports ordinary same-store CAS");
+    const auto foreignPath=root/L"foreign-owned";
+    {auto parent=Open(foreignPath);files::FileLock lock;Check(parent.Lock(0,lock)==files::Result::Ok,"prepare foreign fixture lock file");}
+    NewText(foreignPath/L"foreign.txt","keep\n");
+    auto unchanged=snapshot;auto foreignDisk=SnapshotDisk(foreignPath);
+    Check(catalog::Store(foreignPath).InitializeOwned(owner,bytes,snapshot)==Result::RecoveryRequired&&Same(snapshot,unchanged)&&SnapshotDisk(foreignPath)==foreignDisk,
+        "owned initialization cannot adopt foreign residue");
+    const auto orphanPath=root/L"orphan-owned";
+    {auto parent=Open(orphanPath);files::FileLock lock;Check(parent.Lock(0,lock)==files::Result::Ok,"prepare orphan fixture lock file");
+        auto snapshots=Open(orphanPath/L"snapshots");auto commits=Open(orphanPath/L"commits");
+        Create(snapshots,Spec(false,owner),bytes);}
+    const auto orphanDisk=SnapshotDisk(orphanPath);
+    Check(catalog::Store(orphanPath).InitializeOwned(owner,bytes,snapshot)==Result::RecoveryRequired&&Same(snapshot,unchanged)&&SnapshotDisk(orphanPath)==orphanDisk,
+        "matching owner alone does not authorize recovery of interrupted initialization");
 }
 void Basics(const fs::path& root){
     const auto path=root/L"basic";catalog::Store store(path);catalog::Snapshot s;
@@ -251,7 +295,7 @@ int wmain(int argc,wchar_t** argv){
     try{
         if(argc==5&&std::wcscmp(argv[1],L"--worker")==0){Check(std::wcscmp(argv[4],L"0")==0||std::wcscmp(argv[4],L"1")==0,"worker ID must be exact");return Worker(argv[2],argv[3],argv[4][0]-L'0');}
         Check(argc==3&&std::wcscmp(argv[1],L"--store")==0,"usage: --store NEW_ABSOLUTE_DIR");const fs::path root(argv[2]);NewDirectory(root);
-        CodecChecks();ChildChecks(root);Basics(root);Recovery(root);Limits(root);Race(root);
+        CodecChecks();ChildChecks(root);Basics(root);OwnedInitialization(root);Recovery(root);Limits(root);Race(root);
         NewText(root/L"result.txt","checks="+std::to_string(checks)+"\n64MiB aggregate boundary and interruption/IAT faults not executed by this suite\n");
         std::printf("PASS cache catalog checks=%u evidence=%ls\n",checks,root.c_str());return 0;
     }catch(const std::exception& e){std::fprintf(stderr,"FAIL cache catalog checks=%u: %s\n",checks,e.what());return 1;}

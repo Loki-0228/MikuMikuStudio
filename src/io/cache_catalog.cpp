@@ -231,6 +231,10 @@ Result Store::Read(Snapshot& output) const noexcept {
 Result Store::Initialize(const std::vector<std::uint8_t>& bytes, Snapshot& output) const noexcept {
     return Publish(nullptr, bytes, output);
 }
+Result Store::InitializeOwned(const cache_files::Owner& owner,
+    const std::vector<std::uint8_t>& bytes, Snapshot& output) const noexcept {
+    return Publish(nullptr, bytes, output, &owner);
+}
 Result Store::Commit(const Snapshot& expected, const std::vector<std::uint8_t>& bytes, Snapshot& output) const noexcept {
     return Publish(&expected, bytes, output);
 }
@@ -331,13 +335,17 @@ Result Store::CollectRetired(CollectionReport& report) const noexcept {
         return Result::Ok;
     } catch (...) { return Result::Io; }
 }
-Result Store::Publish(const Snapshot* expected, const std::vector<std::uint8_t>& bytes, Snapshot& output) const noexcept {
+Result Store::Publish(const Snapshot* expected, const std::vector<std::uint8_t>& bytes,
+    Snapshot& output, const cache_files::Owner* initialOwner) const noexcept {
     bool commitAttempted = false;
     try {
+        if (initialOwner && (expected || std::all_of(initialOwner->begin(), initialOwner->end(),
+            [](auto value) { return value == 0; }))) return Result::Invalid;
         if (bytes.size() > MaximumSnapshotBytes) return Result::Limit;
         if (expected && (!expected->valid_ || expected->root_ != root_)) return Result::Conflict;
         // Copy caller-owned bytes before file creation; input may alias output.
         Snapshot candidate; candidate.root_ = root_; candidate.bytes_ = bytes;
+        if (initialOwner) candidate.owner_ = *initialOwner;
         files::Directory directory;
         auto io = files::Directory::Open(root_, !expected, directory);
         if (io != files::Result::Ok) return expected ? StoredError(io) : Convert(io);
@@ -359,8 +367,8 @@ Result Store::Publish(const Snapshot* expected, const std::vector<std::uint8_t>&
         } else {
             if (result == Result::Ok) return Result::Conflict;
             if (result != Result::Missing) return result;
-            if (!files::crypto::Random(candidate.owner_) ||
-                std::all_of(candidate.owner_.begin(), candidate.owner_.end(), [](auto v) { return v == 0; })) return Result::Io;
+            if (!initialOwner && (!files::crypto::Random(candidate.owner_) ||
+                std::all_of(candidate.owner_.begin(), candidate.owner_.end(), [](auto v) { return v == 0; }))) return Result::Io;
             candidate.revision_ = 1;
         }
         const auto additional = 2 * files::HeaderBytes + codec::RecordBytes + candidate.bytes_.size();

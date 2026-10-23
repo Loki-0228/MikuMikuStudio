@@ -52,6 +52,12 @@ public:
     // Only an empty catalog can initialize. Failed or interrupted initialization
     // that leaves files requires recovery; it is never silently reinitialized.
     Result Initialize(const std::vector<std::uint8_t>& bytes, Snapshot& output) const noexcept;
+    // Initializes an empty catalog with a caller-prepared nonzero store identity,
+    // so an initial payload can already contain that same identity. This grants
+    // no permission to replace an existing catalog or recover unknown residue.
+    // A zero owner is Invalid; every failure preserves output.
+    Result InitializeOwned(const cache_files::Owner& owner,
+        const std::vector<std::uint8_t>& bytes, Snapshot& output) const noexcept;
     // Cross-process CAS under one file lock. expected and output may alias.
     // Every failure preserves output. Indeterminate means a commit write was
     // attempted: callers must reread rather than blindly retry the mutation.
@@ -69,6 +75,6 @@ public:
 private:
     std::filesystem::path root_;
     Result Publish(const Snapshot* expected, const std::vector<std::uint8_t>& bytes,
-        Snapshot& output) const noexcept;
+        Snapshot& output, const cache_files::Owner* initialOwner = nullptr) const noexcept;
 };
 }

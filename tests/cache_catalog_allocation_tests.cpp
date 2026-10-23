@@ -50,6 +50,8 @@ unsigned checks=0,recoveryRequired=0,indeterminate=0,orphanCases=0;
 constexpr std::size_t MaximumOrdinals=768;
 const Bytes OldBytes{0x00,0xff,0x80,0x61,0x62,0x63};
 const Bytes NewBytes{0x99,0x01,0xfe,0x00,0x55,0xaa,0x7f};
+constexpr files::Owner RequestedOwner{0x31,0x07,0xd4,0x5a,0x02,0x86,0x9f,0xe1,
+    0x48,0xbc,0x63,0x10,0x7d,0xa2,0x05,0xf6};
 void Check(bool value,const char* message){++checks;if(!value)throw std::runtime_error(message);}
 struct Handle {
     HANDLE value=INVALID_HANDLE_VALUE;
@@ -103,14 +105,16 @@ public:
         current_=std::move(next);
     }
 };
-enum class Operation {Read,Initialize,Commit};
-const wchar_t* Label(Operation op){return op==Operation::Read?L"read":op==Operation::Initialize?L"initialize":L"commit";}
+enum class Operation {Read,Initialize,InitializeOwned,Commit};
+bool Initializing(Operation op){return op==Operation::Initialize||op==Operation::InitializeOwned;}
+const wchar_t* Label(Operation op){return op==Operation::Read?L"read":op==Operation::Initialize?L"initialize":op==Operation::InitializeOwned?L"initialize-owned":L"commit";}
 struct Call {Result result=Result::Io;std::size_t attempts=0,hits=0;};
 Call Invoke(Operation op,const catalog::Store& store,const catalog::Snapshot& expected,catalog::Snapshot& output,std::size_t failAt){
     Call call;
     {allocation::Scope scope(failAt);
         switch(op){case Operation::Read:call.result=store.Read(output);break;
             case Operation::Initialize:call.result=store.Initialize(NewBytes,output);break;
+            case Operation::InitializeOwned:call.result=store.InitializeOwned(RequestedOwner,NewBytes,output);break;
             case Operation::Commit:call.result=store.Commit(expected,NewBytes,output);break;}
         call.attempts=scope.state.attempts;call.hits=scope.state.hits;}
     return call;
@@ -130,16 +134,21 @@ Result VerifyAfter(Operation op,const fs::path& path,const catalog::Snapshot& ol
         Check(BlobCount(diskAfter,L"snapshots")+BlobCount(diskAfter,L"commits")>0,"recovery refusal has actual retained metadata evidence");
         ++recoveryRequired;catalog::Snapshot attempt=old;
         Check(store.Initialize(NewBytes,attempt)==Result::RecoveryRequired&&Same(attempt,old),"partial metadata is never silently reinitialized");
+        if(op==Operation::InitializeOwned)
+            Check(store.InitializeOwned(RequestedOwner,NewBytes,attempt)==Result::RecoveryRequired&&Same(attempt,old),
+                "owned initialization cannot reuse its identity to overwrite partial metadata");
         Check(DiskState(path)==diskAfter,"recovery-required metadata remains untouched by refused reinitialization");
         return result;
     }
-    if(op==Operation::Initialize&&result==Result::Missing){
+    if(Initializing(op)&&result==Result::Missing){
         Check(injected&&Same(observed,old)&&BlobCount(diskAfter,L"snapshots")==0&&BlobCount(diskAfter,L"commits")==0,"Missing initialization has no hidden blob or published head");return result;
     }
     Check(result==Result::Ok,"reread returns complete committed head or explicit initialization recovery/missing");
     if(op==Operation::Read){Check(Same(observed,old),"failed Read cannot change previously committed snapshot");return result;}
-    if(op==Operation::Initialize){
+    if(Initializing(op)){
         Check(observed.IsValid()&&observed.Revision()==1&&observed.Bytes()==NewBytes&&observed.StoreId()!=files::Owner{},"recovered initialization is complete revision one");
+        if(op==Operation::InitializeOwned)
+            Check(observed.StoreId()==RequestedOwner,"owned initialization rereads the exact caller identity even after an indeterminate result");
         Check(!injected||call.result==Result::Indeterminate,"failed caller may observe published initialization only as Indeterminate");return result;
     }
     Check(observed.StoreId()==old.StoreId(),"failed commit never replaces persistent store identity");
@@ -157,7 +166,7 @@ struct Fixture {
     catalog::Snapshot old;
     Fixture(const fs::path& group,std::size_t ordinal,Operation op):casePath(group/Number(ordinal)),path(casePath/L"metadata"){
         NewDirectory(casePath);
-        if(op!=Operation::Initialize){old=Initialize(path,OldBytes);
+        if(!Initializing(op)){old=Initialize(path,OldBytes);
             if(op==Operation::Read){Check(catalog::Store(path).Commit(old,NewBytes,old)==Result::Ok&&old.Revision()==2,"Read scan includes a real two-record chain");}}
     }
 };
@@ -167,8 +176,10 @@ std::size_t Scan(Operation op,const fs::path& root,OutputOrigin& origins){
         const auto call=Invoke(op,store,fixture.old,output,allocation::CountOnly);
         Check(call.result==Result::Ok&&call.hits==0,"unfaulted baseline operation succeeds");total=call.attempts;
         if(op==Operation::Read)Check(Same(output,fixture.old),"baseline Read publishes exact requested snapshot");
-        else Check(output.IsValid()&&output.Bytes()==NewBytes&&output.Revision()==(op==Operation::Initialize?1:fixture.old.Revision()+1)&&
-            (op==Operation::Initialize?output.StoreId()!=files::Owner{}:output.StoreId()==fixture.old.StoreId()),"baseline write publishes complete output snapshot");
+        else Check(output.IsValid()&&output.Bytes()==NewBytes&&output.Revision()==(Initializing(op)?1:fixture.old.Revision()+1)&&
+            (Initializing(op)?output.StoreId()!=files::Owner{}:output.StoreId()==fixture.old.StoreId()),"baseline write publishes complete output snapshot");
+        if(op==Operation::InitializeOwned)
+            Check(output.StoreId()==RequestedOwner,"successful owned initialization publishes precisely the requested identity");
         Check(total>0&&total<=MaximumOrdinals,"successful allocation count is nonzero and bounded");
         const auto read=VerifyAfter(op,fixture.path,fixture.old,call,false);Record(fixture.casePath,call,read,allocation::CountOnly,BlobCount(DiskState(fixture.path),L"snapshots"),BlobCount(DiskState(fixture.path),L"commits"));}
     std::printf("allocation baseline %ls=%llu\n",Label(op),static_cast<unsigned long long>(total));
@@ -246,9 +257,10 @@ int wmain(int argc,wchar_t** argv){
     try{
         Check(argc==3&&std::wcscmp(argv[1],L"--store")==0,"usage: --store NEW_ABSOLUTE_DIR");const fs::path root(argv[2]);NewDirectory(root);
         Calibration();CodecScans(root);OutputOrigin origins(root/L"output-origins");
-        const auto read=Scan(Operation::Read,root,origins);const auto initialize=Scan(Operation::Initialize,root,origins);const auto commit=Scan(Operation::Commit,root,origins);AliasChecks(root);
-        NewText(root/L"result.txt","checks="+std::to_string(checks)+"\nreadOrdinals="+std::to_string(read)+"\ninitializeOrdinals="+std::to_string(initialize)+"\ncommitOrdinals="+std::to_string(commit)+"\nindeterminate="+std::to_string(indeterminate)+"\nrecoveryRequired="+std::to_string(recoveryRequired)+"\ncompleteOrphanCases="+std::to_string(orphanCases)+"\nCoverage: ordinary current-thread new/new[] only; no aligned allocations, CRT malloc, Win32/CNG/system allocator faults or power-loss claims. Recovery-required evidence is retained, never repaired/deleted.\n");
-        std::printf("PASS cache catalog allocation checks=%u recoveryRequired=%u indeterminate=%u evidence=%ls\n",checks,recoveryRequired,indeterminate,root.c_str());return 0;
+        const auto read=Scan(Operation::Read,root,origins);const auto initialize=Scan(Operation::Initialize,root,origins);
+        const auto owned=Scan(Operation::InitializeOwned,root,origins);const auto commit=Scan(Operation::Commit,root,origins);AliasChecks(root);
+        NewText(root/L"result.txt","checks="+std::to_string(checks)+"\nreadOrdinals="+std::to_string(read)+"\ninitializeOrdinals="+std::to_string(initialize)+"\ninitializeOwnedOrdinals="+std::to_string(owned)+"\ncommitOrdinals="+std::to_string(commit)+"\nindeterminate="+std::to_string(indeterminate)+"\nrecoveryRequired="+std::to_string(recoveryRequired)+"\ncompleteOrphanCases="+std::to_string(orphanCases)+"\nCoverage: ordinary current-thread new/new[] only; no aligned allocations, CRT malloc, Win32/CNG/system allocator faults or power-loss claims. Recovery-required evidence is retained, never repaired/deleted.\n");
+        std::printf("PASS cache catalog allocation checks=%u ownedOrdinals=%llu recoveryRequired=%u indeterminate=%u evidence=%ls\n",checks,static_cast<unsigned long long>(owned),recoveryRequired,indeterminate,root.c_str());return 0;
     }catch(const std::exception& e){std::fprintf(stderr,"FAIL cache catalog allocation checks=%u: %s\n",checks,e.what());return 1;}
     catch(...){std::fprintf(stderr,"FAIL cache catalog allocation unexpected exception\n");return 2;}
 }

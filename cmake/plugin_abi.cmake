@@ -42,6 +42,7 @@ foreach(catalog_test cache_catalog_tests cache_catalog_recovery_tests cache_cata
     set_target_properties(${catalog_test} PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
 endforeach()
+target_link_libraries(cache_catalog_tests PRIVATE mms_cache_business)
 add_executable(cache_files_tests EXCLUDE_FROM_ALL tests/cache_files_tests.cpp)
 target_link_libraries(cache_files_tests PRIVATE mms_cache_files)
 target_compile_definitions(cache_files_tests PRIVATE _WIN32_WINNT=0x0601 WINVER=0x0601)
