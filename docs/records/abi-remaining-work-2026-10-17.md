@@ -11,6 +11,9 @@
 
 
 
+
+[P1 业务事件通知（UI 注册表与布局）](abi-business-events-2026-10-24.md)补齐插件运行时自身负责的两个来源：注册表变更与布局事务提交在 `Drain` 中合并投递 `UI_REGISTRY_CHANGED`／`LAYOUT_CHANGED`，负载为最终修订号（`MmsRevisionEventV1` 版本 1），投递发生在注册表回调之外。独立宿主探针加载真实 lifecycle 插件，7 项检查通过；两产品构建通过，正式 release 未覆盖。工程关闭、对象删除、语言切换、属性变更、命令状态、计算策略、设备代次/丢失恢复、DPI 变化等事件仍未接入；重建 `plugin_abi_tests` 时发现 `storage_checks.inc` 的 `PublishProjectPair` 参数个数与 API 不符的既有编译问题。
+
 [阴影包围盒复用](abi-shadow-bounds-cache-2026-10-24.md)已同步：`model_vertex_cache` 增加 `BeginFrame/ShadowBounds/RememberShadowBounds` 帧内接口，只缓存本帧 `Reuse/Remember` 验证过的加载器自有几何；`adaptive_shadow` 先查缓存、未命中才整段锁定完整顶点缓冲求精确包围盒，`Unlock` 失败不登记；位姿变化、`Invalidate`、设备重置与显式关闭清除。`model_vertex_cache_tests` 611 项、SM3 阴影全集 `failures=0`（98 项 parity、20 个 partial-depth）与 SM2 覆盖通过，两产品构建通过，正式 release 未覆盖。纯性能同步，无帧耗时/命中率实测；真实 MME、超大模型与设备丢失循环未验证。
 
 [既有测试问题修复](abi-preexisting-test-fixes-2026-10-24.md)：原始配置 `runtime_layout_tests` 跳过完整配置的曲线读数用例后 exit 0；`sidebar_resize_tests` 目标限定完整配置，原始 CMake 不再生成，完整目标构建并隔离运行 40.3 秒通过。
