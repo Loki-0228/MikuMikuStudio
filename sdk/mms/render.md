@@ -40,6 +40,21 @@ render.acquireLease(render.context, &desc, &lease);
 - 空描述、缺少释放回调、未知标志或超长名称返回 `MMS_E_ARGUMENT`；
 - 释放不属于当前插件的租约返回 `MMS_E_NOT_FOUND`。
 
+## C++17 封装
+
+```cpp
+#include <mms/cpp/render.hpp>
+mms::sdk::RenderServices services;
+if (mms::sdk::RenderServices::Query(host, services) == MMS_OK) {
+    MmsRenderInfoV1 info{};
+    services.Info(info);
+    mms::sdk::RenderLease lease;
+    services.Acquire("example.device", ReleaseDevice, context, lease);
+    // 停止前显式释放；析构不回调宿主。
+    lease.Release();
+}
+```
+
 ## 当前边界
 
 帧生命周期、DX9 帧钩子、post 处理、后缓冲信息、租约分类与多视图渲染尚未提供；C++17 包装未提供。真实设备丢失与 Win7/AMD 真机验收仍待外部环境。
