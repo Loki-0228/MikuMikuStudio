@@ -11,7 +11,7 @@
 // cache policy, capacity, pinning or eviction permission. The manager owns those.
 namespace mikumikustudio::cache_files {
 enum class Result { Ok, Missing, Invalid, Corrupt, Busy, Io, Conflict, Limit, DeletePending };
-enum class Kind : std::uint32_t { Effect = 1, Texture = 2 };
+enum class Kind : std::uint32_t { Effect = 1, Texture = 2, CatalogSnapshot = 3, CatalogCommit = 4 };
 using Owner = std::array<std::uint8_t, 16>;
 using Digest = std::array<std::uint8_t, 32>;
 inline constexpr std::uint64_t HeaderBytes = 128;
@@ -81,6 +81,9 @@ public:
     // Directory guards deny write/delete sharing throughout
     // this object and every derived lease/lock. Failures preserve output.
     static Result Open(const std::filesystem::path& root, bool create, Directory& output) noexcept;
+    // Opens one validated child using this directory's pinned volume path.
+    // Retains parent guards; does not resolve the caller's DOS drive again.
+    Result Child(const std::wstring& name, bool create, Directory& output) const noexcept;
     // Per-open byte locks can move between threads. No callbacks under this lock.
     Result Lock(std::uint32_t waitMilliseconds, FileLock& output) const noexcept;
     // Creates a unique generation, computes SHA-256, writes and flushes it.
@@ -98,7 +101,11 @@ public:
     Result Remove(const BlobInfo& expected) const noexcept;
     // Bounded candidate names only. Foreign files are never removed or opened.
     Result Enumerate(std::size_t maximumEntries, std::vector<std::wstring>& output) const noexcept;
+    // Includes foreign names for strict metadata-store validation, without
+    // opening or deleting entries. Excludes only the OS dot entries.
+    Result EnumerateAll(std::size_t maximumEntries, std::vector<std::wstring>& output) const noexcept;
 private:
+    Result EnumerateNames(std::size_t maximumEntries, std::vector<std::wstring>& output, bool candidatesOnly) const noexcept;
     std::shared_ptr<DirectoryState> state_;
 };
 }

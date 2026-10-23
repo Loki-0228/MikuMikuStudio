@@ -36,7 +36,8 @@ bool OwnerValid(const Owner& owner) noexcept {
     return std::any_of(owner.begin(), owner.end(), [](auto byte) { return byte != 0; });
 }
 bool SpecValid(const Spec& spec) noexcept {
-    return OwnerValid(spec.owner) && (spec.kind == Kind::Effect || spec.kind == Kind::Texture);
+    return OwnerValid(spec.owner) && (spec.kind == Kind::Effect || spec.kind == Kind::Texture ||
+        spec.kind == Kind::CatalogSnapshot || spec.kind == Kind::CatalogCommit);
 }
 bool NameValid(const std::wstring& name) noexcept {
     if (name.size() != 37 || name.compare(32, 5, L".blob") != 0) return false;
@@ -192,6 +193,7 @@ struct NewFile {
 }
 
 struct DirectoryState {
+    std::shared_ptr<DirectoryState> parent;
     std::wstring path;
     std::vector<Handle> guards;
 };
@@ -259,6 +261,25 @@ Result Directory::Open(const std::filesystem::path& root, bool create, Directory
             candidate->guards.push_back(std::move(directory));
         }
         output.state_.swap(candidate); return Result::Ok;
+    } catch (...) { return Result::Io; }
+}
+Result Directory::Child(const std::wstring& name, bool create, Directory& output) const noexcept {
+    try {
+        if (!state_ || name.find_first_of(L"\\/") != std::wstring::npos || !ComponentValid(name)) return Result::Invalid;
+        auto candidate = std::make_shared<DirectoryState>();
+        candidate->parent = state_;
+        candidate->path = state_->path + L'\\' + name;
+        candidate->guards.reserve(1);
+        Handle directory;
+        auto result = Guard(candidate->path, directory);
+        if (result == Result::Missing && create) {
+            if (!CreateDirectoryW(candidate->path.c_str(), nullptr) && GetLastError() != ERROR_ALREADY_EXISTS) return Error();
+            result = Guard(candidate->path, directory);
+        }
+        if (result != Result::Ok) return result;
+        candidate->guards.push_back(std::move(directory));
+        output.state_.swap(candidate);
+        return Result::Ok;
     } catch (...) { return Result::Io; }
 }
 Result Directory::Lock(std::uint32_t waitMilliseconds, FileLock& output) const noexcept {
@@ -381,6 +402,12 @@ Result Directory::Remove(const BlobInfo& expected) const noexcept {
     } catch (...) { return Result::Io; }
 }
 Result Directory::Enumerate(std::size_t maximumEntries, std::vector<std::wstring>& output) const noexcept {
+    return EnumerateNames(maximumEntries, output, true);
+}
+Result Directory::EnumerateAll(std::size_t maximumEntries, std::vector<std::wstring>& output) const noexcept {
+    return EnumerateNames(maximumEntries, output, false);
+}
+Result Directory::EnumerateNames(std::size_t maximumEntries, std::vector<std::wstring>& output, bool candidatesOnly) const noexcept {
     try {
         if (!state_ || !maximumEntries || maximumEntries > 65536) return Result::Invalid;
         std::vector<std::wstring> names;
@@ -396,7 +423,7 @@ Result Directory::Enumerate(std::size_t maximumEntries, std::vector<std::wstring
         } else {
             for (;;) {
                 std::wstring name(info.cFileName);
-                if (NameValid(name)) {
+                if (name != L"." && name != L".." && (!candidatesOnly || NameValid(name))) {
                     if (names.size() == maximumEntries) return Result::Limit;
                     names.push_back(std::move(name));
                 }
