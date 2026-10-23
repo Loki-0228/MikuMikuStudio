@@ -22,11 +22,12 @@ target_link_libraries(mikumikustudio_core PUBLIC mms_cache_catalog)
 add_library(mms_cache_business STATIC
     src/io/cache_business_validation.cpp
     src/io/cache_business_page.cpp
-    src/io/cache_business_manifest.cpp)
-target_link_libraries(mms_cache_business PUBLIC mms_cache_files)
+    src/io/cache_business_manifest.cpp
+    src/io/cache_business_reader.cpp)
+target_link_libraries(mms_cache_business PUBLIC mms_cache_files mms_cache_catalog)
 target_compile_definitions(mms_cache_business PRIVATE _WIN32_WINNT=0x0601 WINVER=0x0601 NOMINMAX)
 target_link_libraries(mikumikustudio_core PUBLIC mms_cache_business)
-foreach(business_test cache_business_codec_tests cache_business_allocation_tests)
+foreach(business_test cache_business_codec_tests cache_business_allocation_tests cache_business_reader_tests)
     add_executable(${business_test} EXCLUDE_FROM_ALL tests/${business_test}.cpp)
     target_link_libraries(${business_test} PRIVATE mms_cache_business)
     target_compile_definitions(${business_test} PRIVATE _WIN32_WINNT=0x0601 WINVER=0x0601 NOMINMAX)
