@@ -269,6 +269,12 @@ static void MMS_CALL Event(void* context, const MmsEventV1* event) {
         }
         Log(p,"EVENT_PROJECT_CLOSED");return;
     }
+    if(event->kind==MMS_EVENT_OBJECT_REMOVED) {
+        if((!event->object.id.lo && !event->object.id.hi) || !event->object.generation) {
+            Log(p,"OBJECT_REMOVED_PAYLOAD_FAIL");return;
+        }
+        Log(p,"EVENT_OBJECT_REMOVED");return;
+    }
     if(event->kind==MMS_EVENT_LANGUAGE_CHANGED || event->kind==MMS_EVENT_DPI_CHANGED) {
         if(event->payloadVersion!=1 || event->payload.bytes!=sizeof(MmsCodeEventV1)) {
             Log(p,"CODE_PAYLOAD_FAIL");return;

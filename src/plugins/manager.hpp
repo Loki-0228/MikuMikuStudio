@@ -43,7 +43,8 @@ public:
     // posts the existing refresh dispatcher; never reads plugins or edits UI.
     void NotifyHistoryPublication(uint64_t) noexcept;
     bool Stop();
-    void Event(uint32_t kind, MmsBytes payload = {}, uint32_t version = 0);
+    void Event(uint32_t kind, MmsBytes payload = {}, uint32_t version = 0,
+               MmsObjectRef object = {});
     UiRegistry& Ui();
     MmsResult SaveUiPreferences();
     StorageStore& Storage();

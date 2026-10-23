@@ -133,6 +133,7 @@
 #include "mikumikustudio/bone_parent_coordinates.hpp"
 #include "mikumikustudio/native_edit_history.hpp"
 #include "mikumikustudio/plugin_scene.hpp"
+#include "mikumikustudio/plugin_storage.hpp"
 #include "mikumikustudio/update_coordinator.hpp"
 #include "../plugins/native_pose_scope.hpp"
 #include "../plugins/native_history_commands.hpp"
@@ -1020,7 +1021,10 @@ void CmdControl450(MMDApp* app, HWND hwnd, std::uint16_t id,
         const std::int32_t oldSel = acc->order;
         // dispose the accessory blob
         if (acc != nullptr) {
-            DeleteAccessory(acc, 1);
+    #if !MMD_ORIGINAL_PROFILE
+        plugins::PluginNotifyObjectRemoved(app, acc);
+#endif
+        DeleteAccessory(acc, 1);
         }
         curve_host::ForgetAccessory(app, found);
         app->AccessorySlot(found) = nullptr;

@@ -208,6 +208,7 @@
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/panel_controls.hpp"
 #include "mikumikustudio/ui_language.hpp"
+#include "mikumikustudio/plugin_storage.hpp"
 #include "mikumikustudio/frame_scope.hpp"
 #include "../plugins/native_history_commands.hpp"
 #include "../plugins/native_global_commands.hpp"
@@ -2824,6 +2825,7 @@ static void Cmd400_DeleteModel(MMDApp* app, HWND hwnd) {
     const std::int32_t oldSel = record.comboSelIndex;
     const std::int32_t oldIdx = record.comboSelIndex2;
     if (model != nullptr) {
+        plugins::PluginNotifyObjectRemoved(app, model);
         DeleteModel(model, 1);  // model dispose (thiscall)
     }
     app->ModelSlot(found) = nullptr;

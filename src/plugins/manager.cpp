@@ -489,12 +489,13 @@ struct Manager::Impl {
             Event(MMS_EVENT_LAYOUT_CHANGED, {&event, sizeof(event)}, 1);
         }
     }
-    void Event(uint32_t kind, MmsBytes payload = {}, uint32_t version = 0) {
+    void Event(uint32_t kind, MmsBytes payload = {}, uint32_t version = 0,
+               MmsObjectRef object = {}) {
         if (GetCurrentThreadId() != thread || sending || active || registry.InCallback() || storage.InCallback() || storage.Prepared() ||
             (edits && edits->InCallback())) return;
         sending = true; struct Guard { bool& v; ~Guard() { v = false; } } guard{sending};
         MmsEventV1 event{}; event.h = Header<MmsEventV1>(); event.kind = kind; event.sequence = sequence++;
-        event.payload = payload; event.payloadVersion = version;
+        event.payload = payload; event.payloadVersion = version; event.object = object;
         for (const auto& i : instances) if (i->started && !i->stopping) {
             ++active; auto r = Boundary([&] { i->api.onEvent(i->instance, &event); return MMS_OK; }); --active;
             if (r) Write(i->ui.id + ": event callback failed");
@@ -635,7 +636,9 @@ void Manager::SetEditPublished(std::function<void()> callback) {
 bool Manager::CanInvokeEdit() const noexcept { return impl_->CanInvokeEdit(); }
 void Manager::Drain() { impl_->Drain(); }
 bool Manager::Stop() { return Boundary([&] { return impl_->Stop() ? MMS_OK : MMS_E_BUSY; }) == MMS_OK; }
-void Manager::Event(uint32_t kind, MmsBytes payload, uint32_t version) { impl_->Event(kind,payload,version); }
+void Manager::Event(uint32_t kind, MmsBytes payload, uint32_t version, MmsObjectRef object) {
+    impl_->Event(kind,payload,version,object);
+}
 UiRegistry& Manager::Ui() { return impl_->registry; }
 MmsResult Manager::SaveUiPreferences() { return impl_->SavePreferences(); }
 StorageStore& Manager::Storage() { return impl_->storage; }

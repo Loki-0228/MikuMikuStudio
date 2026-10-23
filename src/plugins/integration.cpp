@@ -80,6 +80,7 @@ struct ProjectNotification { uint32_t kind; MmsId id; std::string path; };
 std::deque<ProjectNotification> projectEvents;
 struct BusinessNotification {
     uint32_t kind = 0, version = 0;
+    MmsObjectRef object{};
     std::vector<unsigned char> bytes;
 };
 std::deque<BusinessNotification> businessEvents;
@@ -116,10 +117,11 @@ void QueueProjectEvent(MMDApp* app, uint32_t kind, const wchar_t* path) {
     });
 }
 void QueueBusinessEvent(MMDApp* app, uint32_t kind, uint32_t version,
-                        const void* bytes, std::size_t size) {
+                        const void* bytes, std::size_t size,
+                        MmsObjectRef object = {}) {
     if (!manager || owner != app) return;
     Boundary([&] {
-        BusinessNotification event{kind, version, {}};
+        BusinessNotification event{kind, version, object, {}};
         if (bytes && size) {
             const auto* first = static_cast<const unsigned char*>(bytes);
             event.bytes.assign(first, first + size);
@@ -148,7 +150,7 @@ void NotifyProjectClosedEvent(MMDApp* app) {
         }
         const auto path = ProjectClosedPath(app);
         MmsProjectEventV1 payload{Header<MmsProjectEventV1>(), id, 0, Text(Utf8(path))};
-        businessEvents.push_back({MMS_EVENT_PROJECT_CLOSED, 1,
+        businessEvents.push_back({MMS_EVENT_PROJECT_CLOSED, 1, {},
             std::vector<unsigned char>(reinterpret_cast<const unsigned char*>(&payload),
                                        reinterpret_cast<const unsigned char*>(&payload) + sizeof(payload))});
         if (!PostMessageW(app->MainWindow(), kProjectEvent, 0, 0)) {
@@ -174,9 +176,24 @@ void NotifyDeviceRestoredEvent(MMDApp* app) {
     MmsDeviceEventV1 payload{Header<MmsDeviceEventV1>(), deviceGeneration, 0, 0};
     QueueBusinessEvent(app, MMS_EVENT_DEVICE_RESTORED, 1, &payload, sizeof(payload));
 }
+void NotifyObjectRemovedEvent(MMDApp* app, const void* native) {
+    if (!manager || owner != app || !native) return;
+    MmsObjectRef object{};
+    if (!FindSceneObjectIdentity(native, object) || (!object.id.lo && !object.id.hi)) return;
+    QueueBusinessEvent(app, MMS_EVENT_OBJECT_REMOVED, 0, nullptr, 0, object);
+}
+void NotifyDpiChangedEvent(MMDApp* app, unsigned dpi) {
+    if (!manager || owner != app || !dpi) return;
+    MmsCodeEventV1 payload{Header<MmsCodeEventV1>(), dpi, 0};
+    QueueBusinessEvent(app, MMS_EVENT_DPI_CHANGED, 1, &payload, sizeof(payload));
+}
 constexpr UINT kRefresh = WM_APP + 0x6a;
 void LogMessage(const std::string& s) { runtime_log::Write("PLUGIN_ABI %s", s.c_str()); }
 LRESULT CALLBACK Subclass(HWND hwnd, UINT message, WPARAM wp, LPARAM lp, UINT_PTR id, DWORD_PTR) {
+    if (message == WM_DPICHANGED) {
+        const unsigned dpi = HIWORD(wp);
+        if (owner && dpi) NotifyDpiChangedEvent(owner, dpi);
+    }
     if (message == WM_CLOSE && ui && ui->DeferClose(wp, lp)) return 0;
     if (message == WM_CLOSE && manager && manager->InCallback()) { PostMessageW(hwnd, WM_CLOSE, wp, lp); return 0; }
     if (message == kRefresh || (message == WM_TIMER && wp == kHistoryUiRetry)) {
@@ -203,7 +220,7 @@ LRESULT CALLBACK Subclass(HWND hwnd, UINT message, WPARAM wp, LPARAM lp, UINT_PT
                 auto event=std::move(businessEvents.front());businessEvents.pop_front();
                 manager->Event(event.kind,
                     {event.bytes.empty()?nullptr:static_cast<void*>(event.bytes.data()),event.bytes.size()},
-                    event.version);
+                    event.version, event.object);
             }
         } else if(owner && !closing && (!projectEvents.empty() || !businessEvents.empty()))
             SetTimer(hwnd,kProjectRetry,16,nullptr);
@@ -217,6 +234,8 @@ void PluginNotifyProjectClosed(MMDApp* app) { NotifyProjectClosedEvent(app); }
 void PluginNotifyLanguageChanged(MMDApp* app) { NotifyLanguageChangedEvent(app); }
 void PluginNotifyDeviceLost(MMDApp* app) { NotifyDeviceLostEvent(app); }
 void PluginNotifyDeviceRestored(MMDApp* app) { NotifyDeviceRestoredEvent(app); }
+void PluginNotifyObjectRemoved(MMDApp* app, const void* native) { NotifyObjectRemovedEvent(app, native); }
+void PluginNotifyDpiChanged(MMDApp* app, unsigned dpi) { NotifyDpiChangedEvent(app, dpi); }
 
 static void InitializeRuntime(MMDApp* app, bool migrationTest) {
     if (build_profile::original || !app || manager) return;

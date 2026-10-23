@@ -37,6 +37,8 @@ void PluginNotifyProjectClosed(MMDApp*);
 void PluginNotifyLanguageChanged(MMDApp*);
 void PluginNotifyDeviceLost(MMDApp*);
 void PluginNotifyDeviceRestored(MMDApp*);
+void PluginNotifyObjectRemoved(MMDApp*, const void* native);
+void PluginNotifyDpiChanged(MMDApp*, unsigned dpi);
 // Pure filesystem work; callers check native backup ownership and serialize
 // retention for their backup directory before calling, including on a worker.
 bool DeletePluginBackup(const wchar_t*);

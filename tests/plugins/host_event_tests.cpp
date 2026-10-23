@@ -4,6 +4,7 @@
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/plugin_runtime.hpp"
 #include "mikumikustudio/plugin_storage.hpp"
+#include "mikumikustudio/plugin_scene.hpp"
 #include <Windows.h>
 #include <cstdio>
 #include <cstdlib>
@@ -68,15 +69,24 @@ int wmain() {
     plugins::PluginNotifyDeviceLost(&app);
     plugins::PluginNotifyDeviceRestored(&app);
     plugins::PluginNotifyProjectClosed(&app);
+    const void* removedToken = reinterpret_cast<const void*>(static_cast<std::uintptr_t>(0x5150));
+    plugins::SceneObjectIdentity(removedToken);
+    plugins::PluginNotifyObjectRemoved(&app, removedToken);
+    // The runtime window subclass handles WM_DPICHANGED in production; this
+    // focused probe calls the same host entry deterministically.
+    plugins::PluginNotifyDpiChanged(&app, 144);
     Check(WaitFor(logPath,
-        "EVENT_LANGUAGE\nEVENT_DEVICE_LOST\nEVENT_DEVICE_RESTORED\nEVENT_PROJECT_CLOSED", 800),
+        "EVENT_LANGUAGE\nEVENT_DEVICE_LOST\nEVENT_DEVICE_RESTORED\nEVENT_PROJECT_CLOSED\n"
+        "EVENT_OBJECT_REMOVED\nEVENT_DPI", 800),
         "queued host events reach the plugin with valid payloads");
 
     const auto body = ReadLog(logPath);
     Check(body.find("CODE_PAYLOAD_FAIL") == std::string::npos &&
           body.find("DEVICE_PAYLOAD_FAIL") == std::string::npos &&
           body.find("PROJECT_CLOSED_PAYLOAD_FAIL") == std::string::npos &&
-          body.find("DEVICE_GENERATION_FAIL") == std::string::npos,
+          body.find("DEVICE_GENERATION_FAIL") == std::string::npos &&
+          body.find("OBJECT_REMOVED_PAYLOAD_FAIL") == std::string::npos &&
+          body.find("DPI_VALUE_FAIL") == std::string::npos,
         "no event payload validation failures");
     plugins::Shutdown();
     DestroyWindow(window);
