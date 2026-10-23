@@ -39,6 +39,9 @@
 
 
 
+
+[场景 C++17 封装](abi-scene-sdk-2026-10-24.md)：新增 `mms::sdk::SceneServices`／`SceneSnapshot`，封装查询、CURRENT_TIME 快照获取、对象/通道读取、移动与显式释放；假宿主契约覆盖参数、句柄、无效快照、缺失服务/函数与旧宿主 VERSION，默认契约套件 44,806 项通过并输出 `cpp scene sdk PASS`。本批只改 SDK 头与测试；阶段 1–4 仍未实现，真实场景路径由既有场景批次覆盖。
+
 [渲染帧阶段回调](abi-frame-phases-2026-10-24.md)：`mms.render` 1.2 追加 `setPhaseCallback`／`clearPhaseCallback`，宿主在 `FrameDriver` 帧工作前与 `PresentScene` 后调用 BEGIN/END，并新增 `PluginFrameBegin`／`PluginFrameEnd` 入口；lifecycle 探针注册并记录三个标记，宿主探针 8 项通过。真实播放循环、提前返回路径、设备丢失期间呈现、post 与租约分类仍未验证/实现。
 
 [legacy MME 改名与子目录检测](abi-legacy-mme-detection-2026-10-24.md)：新增 `LegacyMmeModule/LegacyMmeLoaded/LegacyMmeHackLoaded`，原名走快速路径，改名/子目录用 500 ms 节流的前缀模块扫描；14 个文件 30 处 `GetModuleHandleW("MMEffect.dll")`／`MMHack.dll` 判断改走统一入口。新增 `legacy_mme_renamed_detection` CTest，改名、子目录、无关名、卸载与句柄 14 项通过。真实旧 MME 插件、任意改名（无前缀）、导出/调用约定/寿命与实际渲染仍未验收。

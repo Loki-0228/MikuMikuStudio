@@ -68,7 +68,7 @@ cmake --build build/hello-menu --config Release
 | `mms.ui.refresh.property` 1.0、1.1 | 1.0 提供原 INPUT 的 SELF 通知和共同历史跟随。1.1 追加独立种子的 SUBTREE、DEPENDENTS 及工作代次查询；成员显式 binding 优先。见[原属性范围刷新](scoped-property-refresh.md)。 |
 | `mms.ui.refresh.bind` 1.0 | 本插件不可变来源、来源版本、目标绑定、只读显示准备及显示租约；工作线程发布，原刷新队列消费。 |
 | `mms.ui.refresh.state` 1.0 | 本插件已有宿主按钮及 INPUT 的文案、说明及禁用原因；INPUT 可进一步限制启用、只读与可见状态。短命 builder 单次复制，在原 STATE 阶段应用，原 LAYOUT 使用已发布文案量测。附加服务表不改变旧刷新 ABI。 |
-| `mms.scene` 1.0 | 阶段 0 的对象、骨骼、网格、绑定、刚体、关节、形状、Morph、材质和纹理路径；独立 ID、运行时代次、不可变快照及 PMM 身份保存。阶段 1–4 返回 UNSUPPORTED。 |
+| `mms.scene` 1.0 | 阶段 0 的对象、骨骼、网格、绑定、刚体、关节、形状、Morph、材质和纹理路径；独立 ID、运行时代次、不可变快照及 PMM 身份保存；`mms::sdk::SceneServices`／`SceneSnapshot` C++17 封装。阶段 1–4 返回 UNSUPPORTED。 |
 | `mms.render` 1.0 | [设备代次与资源租约](render.md)：设备代次、丢失状态查询；设备租约的获取、显式释放与设备丢失时的回调；`mms::sdk::RenderServices`／`RenderLease` C++17 封装。帧序号、后缓冲尺寸与格式已填充；1.1 提供成功呈现后的每帧回调，1.2 提供帧开始/结束阶段回调；post 处理尚未开放。 |
 | `mms.storage` 1.0 | 插件工程数据、两阶段加载、只读保存数据租约；PMM 与扩展文件成对保存和中断恢复。提供者名为 `mms.serializer`。 |
 | 其他服务 | 尚未接入，`queryService` 返回 NOT_FOUND。 |
