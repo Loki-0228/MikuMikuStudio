@@ -254,6 +254,15 @@ static MmsResult MMS_CALL Start(void* context) {
 }
 static void MMS_CALL Event(void* context, const MmsEventV1* event) {
     auto* p=static_cast<Plugin*>(context);
+    if(event->kind==MMS_EVENT_UI_REGISTRY_CHANGED || event->kind==MMS_EVENT_LAYOUT_CHANGED) {
+        if(event->payloadVersion!=1 || event->payload.bytes!=sizeof(MmsRevisionEventV1)) {
+            Log(p,"REVISION_PAYLOAD_FAIL");return;
+        }
+        const auto revision=static_cast<const MmsRevisionEventV1*>(event->payload.data)->revision;
+        if(!revision) {Log(p,"REVISION_ZERO_FAIL");return;}
+        Log(p,event->kind==MMS_EVENT_UI_REGISTRY_CHANGED?"EVENT_UI_REGISTRY":"EVENT_LAYOUT");
+        return;
+    }
     if(event->kind==MMS_EVENT_UI_CLOSING)Log(p,"UI_CLOSING");
     if(event->kind==MMS_EVENT_UI_CLOSING && p->id.find("gui-layout")!=std::string::npos) {
         wchar_t enabled[8]{};

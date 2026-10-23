@@ -233,6 +233,16 @@ add_test(NAME plugin_abi_panel_state COMMAND plugin_abi_tests --panel-state-only
 set_tests_properties(plugin_abi_panel_state PROPERTIES TIMEOUT 90)
 add_test(NAME plugin_abi_menu_state COMMAND plugin_abi_tests --menu-state-only)
 set_tests_properties(plugin_abi_menu_state PROPERTIES TIMEOUT 90)
+add_executable(business_event_tests EXCLUDE_FROM_ALL tests/plugins/business_event_tests.cpp)
+target_link_libraries(business_event_tests PRIVATE mms_plugin_runtime)
+target_include_directories(business_event_tests PRIVATE src/plugins)
+target_link_options(business_event_tests PRIVATE /SUBSYSTEM:CONSOLE,6.01 /DEBUG:NONE)
+set_target_properties(business_event_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_dependencies(business_event_tests mms_lifecycle_plugin)
+add_test(NAME plugin_abi_business_events COMMAND business_event_tests
+    "${CMAKE_BINARY_DIR}/tests/business-events"
+    "${CMAKE_BINARY_DIR}/tests/plugins/lifecycle/$<CONFIG>/lifecycle.dll")
+set_tests_properties(plugin_abi_business_events PROPERTIES TIMEOUT 90)
 add_executable(ui_property_value_tests EXCLUDE_FROM_ALL tests/plugins/ui_property_value_tests.cpp)
 target_link_libraries(ui_property_value_tests PRIVATE mms_plugin_runtime)
 target_include_directories(ui_property_value_tests PRIVATE src/plugins)

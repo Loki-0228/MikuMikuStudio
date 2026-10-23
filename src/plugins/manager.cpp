@@ -36,6 +36,10 @@ struct Manager::Impl {
     DWORD thread = GetCurrentThreadId();
     fs::path userRoot;
     Log log;
+    std::function<void()> hostUiChanged;
+    bool uiRegistryChanged = false;
+    bool layoutChanged = false;
+    uint64_t layoutRevision = 0;
     UiRegistry registry;
     UiPreferencesFile preferences;
     MmsResult preferencesError = MMS_OK;
@@ -103,7 +107,8 @@ struct Manager::Impl {
     std::function<bool()> refreshGuard;
 
     Impl(fs::path user, Log output, std::function<void()> changed, bool fallback, std::shared_ptr<SceneStore> sceneStore, bool unifiedSettings):
-        userRoot(std::move(user)), log(std::move(output)), registry(std::move(changed),
+        userRoot(std::move(user)), log(std::move(output)), hostUiChanged(std::move(changed)),
+        registry([this] { uiRegistryChanged = true; if (hostUiChanged) hostUiChanged(); },
             [this](UiClient& client, MmsResult result) { if (result) for (const auto& i : instances)
                 if (&i->ui == &client) { CancelFailedEdit(*i); break; } }),
         preferences(userRoot / L"ui-layout.json", unifiedSettings), scene(std::move(sceneStore)), loader(fallback) {
@@ -111,6 +116,7 @@ struct Manager::Impl {
         if (!RegisterClassW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) throw std::runtime_error("plugin dispatcher class");
         wake = CreateWindowExW(0, wc.lpszClassName, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, wc.hInstance, this);
         if (!wake) throw std::runtime_error("plugin dispatcher window");
+        registry.SetLayoutChanged([this](uint64_t revision) { layoutChanged = true; layoutRevision = revision; });
         registry.Refresh().SetWake([this] { return PostMessageW(wake, kRefreshDrain, 0, 0) != FALSE; });
         registry.SetPropertyStageBridge([this](UiClient& client, MmsHandle transaction,
             const std::shared_ptr<PropertyRecord>& record, MmsObjectRef target, const MmsValue& value) {
@@ -467,7 +473,21 @@ struct Manager::Impl {
             --active; if (r) { CancelFailedEdit(*t->owner); Write(t->owner->ui.id + ": queued callback threw an exception"); }
             { std::lock_guard<std::mutex> lock(mutex); tasks.erase(t->handle); }
         }
-        std::lock_guard<std::mutex> lock(mutex); if (!tasks.empty()) PostMessageW(wake, kDrain, 0, 0);
+        {
+            std::lock_guard<std::mutex> lock(mutex); if (!tasks.empty()) PostMessageW(wake, kDrain, 0, 0);
+        }
+        // Registry and layout mutations are coalesced here, outside the
+        // registry callback, so a plugin onEvent sees the final revision.
+        if (uiRegistryChanged) {
+            uiRegistryChanged = false;
+            MmsRevisionEventV1 event{Header<MmsRevisionEventV1>(), registry.Revision()};
+            Event(MMS_EVENT_UI_REGISTRY_CHANGED, {&event, sizeof(event)}, 1);
+        }
+        if (layoutChanged) {
+            layoutChanged = false;
+            MmsRevisionEventV1 event{Header<MmsRevisionEventV1>(), layoutRevision};
+            Event(MMS_EVENT_LAYOUT_CHANGED, {&event, sizeof(event)}, 1);
+        }
     }
     void Event(uint32_t kind, MmsBytes payload = {}, uint32_t version = 0) {
         if (GetCurrentThreadId() != thread || sending || active || registry.InCallback() || storage.InCallback() || storage.Prepared() ||

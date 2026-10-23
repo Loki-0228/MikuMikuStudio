@@ -1257,7 +1257,9 @@ MmsResult UiRegistry::Commit(UiClient& c, MmsHandle h) {
     const bool preferenceChange = preferences->json != preferences_->json;
     for (auto& [id, e] : tree) if (!e.nativeObserved) e.desc.generation = generation_++;
     elements.swap(tree); preferences_.swap(preferences); if (preferenceChange) ++preferencesRevision_;
-    Changed(); return MMS_OK;
+    Changed();
+    if (layoutChanged_) try { layoutChanged_(revision_); } catch (...) {}
+    return MMS_OK;
 }
 bool UiRegistry::HasLeases(const UiClient& c) const { if (c.unsafeToUnload || catalog_->HasLeases(c)) return true; for (const auto& [h, lease] : leases_) if (lease->owner == c.id) return true; return false; }
 void UiRegistry::Retire(UiClient& c) {
