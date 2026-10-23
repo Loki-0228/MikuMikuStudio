@@ -1944,6 +1944,12 @@ if(MIKUMIKUSTUDIO_PROFILE STREQUAL "mmd932" AND MIKUMIKUSTUDIO_BUILD_UI_TESTS)
 endif()
 
 if(MIKUMIKUSTUDIO_BUILD_UI_TESTS)
+    add_executable(recording_editor_view_tests EXCLUDE_FROM_ALL tests/recording_editor_view_tests.cpp
+        res/MMD.rc ${MIKUMIKUSTUDIO_GEN_RES} exports/MikuMikuDance.def)
+    target_link_options(recording_editor_view_tests PRIVATE "/MANIFEST:NO" "${MIKUMIKUSTUDIO_GEN_RES}" /DEBUG:NONE)
+    target_link_libraries(recording_editor_view_tests PRIVATE mikumikustudio_core minhook::minhook winmm dsound)
+    set_target_properties(recording_editor_view_tests PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/recording-editor-view/$<CONFIG>")
     add_executable(export_viewport_tests EXCLUDE_FROM_ALL tests/export_viewport_tests.cpp
         res/MMD.rc ${MIKUMIKUSTUDIO_GEN_RES} exports/MikuMikuDance.def)
     target_link_options(export_viewport_tests PRIVATE "/MANIFEST:NO" "${MIKUMIKUSTUDIO_GEN_RES}")

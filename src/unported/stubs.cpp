@@ -80,19 +80,34 @@ void RefreshAfterFrameApply(MMDApp* app);      // VA 0x432FA0 (ui_frame_step.cpp
 //   it zero and the two ShowWindow calls always run. Defect FB-15.
 // ---------------------------------------------------------------------------
 void FinishAviRecord(MMDApp* app, bool reachedRequestedEnd) {  // was Sub464A00
+    if (app && recording_state::Guard::DeferFinish(app)) return;
     if (!app || recording_state::Guard::Active(app->Recorder(), recording_state::Operation::GraphTeardown)) return;
     recording_state::WindowStopGuard finishing(app, recording_state::Operation::Finish);
     if (!finishing) return;
     if (image_sequence::CancelStillCapture(app)) return;
     auto& s = *app;
+    // Capture the start scene before the token is cleared. Direct callers
+    // (token 0) finish the scene they currently see; a stale attempt keeps the
+    // scene it was started in so new-scene playback and pose are never evaluated.
+    const auto startToken = s.RecordingStartGeneration();
+    const bool playbackEntered = startToken == 0 || s.RecordingPlaybackEntered();
+    const auto expectedScene = startToken != 0 ? s.RecordingStartScene()
+                                               : s.SceneGeneration();
+    // A synchronous finish ends the start attempt before cleanup can pump
+    // messages; the pending view snapshot stays for the restore below.
+    s.InvalidateRecordingStartAttempt();
+    const auto sceneCurrent = [&]() noexcept {
+        return expectedScene == s.SceneGeneration();
+    };
     timeEndPeriod(1);                                       // 0x464A07
     s.state.playbackActive = 0;             // 0x464A11
-    StopPlayback(app);                                         // 0x464A17
+    if (sceneCurrent() && playbackEntered) StopPlayback(app);   // 0x464A17
     unsigned char* flag = s.RecordingCompletionFlag();      // 0x464A1C
     if (flag != nullptr)
         *flag = 1;                                          // 0x464A28
-    const auto expectedFrames = recording_state::OutputFrameCount(
-        s.AviRecordStartFrame(), s.AviRecordEndFrame(), s.AviRecordFps());
+    reachedRequestedEnd = reachedRequestedEnd && sceneCurrent();
+    const auto expectedFrames = sceneCurrent() ? recording_state::OutputFrameCount(
+        s.AviRecordStartFrame(), s.AviRecordEndFrame(), s.AviRecordFps()) : 0;
     const bool mfRecording = IsBuiltInH264Recording(s.Recorder());
     std::wstring sequenceError;
     const bool sequenceComplete = image_sequence::Finish(app, reachedRequestedEnd, sequenceError);
@@ -139,15 +154,33 @@ void FinishAviRecord(MMDApp* app, bool reachedRequestedEnd) {  // was Sub464A00
     }
     s.RecordingWindow() = nullptr;                          // 0x464B31
     if (s.AviRenderResolutionOverridden()) {
-        s.RenderWidth() = s.AviSavedRenderWidth();
-        s.RenderHeight() = s.AviSavedRenderHeight();
+        if (sceneCurrent()) {
+            s.RenderWidth() = s.AviSavedRenderWidth();
+            s.RenderHeight() = s.AviSavedRenderHeight();
+        }
+        // A stale attempt never writes its export size into the new project.
         s.AviRenderResolutionOverridden() = false;
     }
     EnableWindow(GetDlgItem(static_cast<HWND>(s.Hwnd()), panel::kPlayButton), 1);  // 0x464B3E
-    if (!device_lost_wait::Pending(app))
-        RefreshMainWindowViewport(app);                         // 0x464B46
-    RefreshAfterFrameApply(app);                            // 0x464B4D
-    PostViewRefresh(app);                                   // 0x464B54
+    if (sceneCurrent()) {
+        if (playbackEntered) RefreshAfterFrameApply(app);    // 0x464B4D
+        if (sceneCurrent()) {
+            s.RestoreRecordingEditorView();
+            if (sceneCurrent()) {
+                // Rebuild projection after restoring the editor's FOV/perspective,
+                // so the first visible frame cannot retain the export projection.
+                if (!device_lost_wait::Pending(app)) {
+                    RefreshMainWindowViewport(app);             // 0x464B46
+                    // Viewport layout seeds a perspective matrix. Restore the
+                    // camera's actual projection before exposing the next frame.
+                    if (sceneCurrent() && !device_lost_wait::Pending(app))
+                        ApplyFrameCameraProjection(app);
+                }
+                if (sceneCurrent())
+                    PostViewRefresh(app);                       // 0x464B54
+            }
+        }
+    }
     if (IDirect3DSurface9* com = s.CaptureRenderTarget()) {        // 0x464B69
         com->Release();
         s.CaptureRenderTarget() = nullptr;
@@ -184,7 +217,7 @@ void FinishAviRecord(MMDApp* app, bool reachedRequestedEnd) {  // was Sub464A00
     if (!sequenceError.empty()) MessageBoxW(s.MainWindow(), sequenceError.c_str(),
         image_sequence::Text(app, L"导出图片序列", L"Image sequence export", L"連番画像出力"), MB_OK | MB_ICONERROR);
     if (reachedRequestedEnd && (mfComplete || dshowComplete || movComplete || sequenceComplete) &&
-        s.AviCloseAfterExport())
+        s.AviCloseAfterExport() && sceneCurrent())
         PostMessageW(static_cast<HWND>(s.Hwnd()), WM_CLOSE, 0, 0);
 }
 

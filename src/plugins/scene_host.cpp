@@ -150,7 +150,11 @@ std::shared_ptr<SceneStore> CreateSceneStore(MMDApp* app) {
         [](MmsId id) { return identities.Known(id); });
 }
 void ForgetSceneObject(const void* token) {
-    if (build_profile::original) return;
+    if (build_profile::original) {
+        // Recording snapshots also retain runtime identities in this profile.
+        identities.Forget(token);
+        return;
+    }
     const auto* entry = identities.Retained(token);
     const bool visible = (entry && entry->present) || geometryDigests.count(token) != 0;
     identities.Forget(token); geometryDigests.erase(token);

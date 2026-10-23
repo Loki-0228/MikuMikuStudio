@@ -47,10 +47,156 @@
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/window_dpi_scope.hpp"
+#include "mikumikustudio/model.hpp"
 #include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/plugin_scene.hpp"
 #include "mikumikustudio/recording_preview.hpp"
+#include "mikumikustudio/recording_state.hpp"
+#include "recording_ack_wait.hpp"
 
 namespace mikumikustudio {
+
+namespace {
+
+bool SameSceneObjectIdentity(const MmsObjectRef& lhs,
+                            const MmsObjectRef& rhs) noexcept {
+    return lhs.id.lo == rhs.id.lo && lhs.id.hi == rhs.id.hi &&
+        lhs.generation == rhs.generation;
+}
+
+D3DMATRIX IdentityAttachmentBasis() {
+    D3DMATRIX value{};
+    value.m[0][0] = value.m[1][1] = value.m[2][2] = value.m[3][3] = 1.0f;
+    return value;
+}
+
+}  // namespace
+
+// A new start attempt clears any unconsumed snapshot and takes a fresh token.
+// A synchronous finish zeroes the token, so the outer start cannot continue.
+std::uint64_t MMDApp::BeginRecordingStartAttempt() {
+    m_recordingEditorView = RecordingEditorView{};
+    m_recordingPlaybackEntered = false;
+    m_recordingStartScene = SceneGeneration();
+    return ++m_recordingStartGeneration;
+}
+
+void MMDApp::InvalidateRecordingStartAttempt() {
+    m_recordingStartGeneration = 0;
+    m_recordingStartScene = 0;
+}
+
+// Snapshot the free model-editing view. Camera playback shares the camera fields
+// with the viewport, so the export start preserves them and the finish restores
+// them. The parent binding is only recorded when the slot still holds a model
+// with a bone table; the identity and bone table let Restore reject a reused
+// slot without dereferencing the remembered pointer.
+void MMDApp::CaptureRecordingEditorView() {
+    auto& view = m_recordingEditorView;
+    if (view.active) {
+        if (view.scene == SceneGeneration()) return;
+        view = RecordingEditorView{};
+    }
+    if (CameraMode() != 0 || state.followCameraEnabled != 0) return;
+    view = RecordingEditorView{};
+    view.active = true;
+    view.scene = SceneGeneration();
+    for (int axis = 0; axis < 3; ++axis) {
+        view.position[axis] = CameraPositionAxis(static_cast<std::size_t>(axis));
+        view.rotation[axis] = CameraRotation()[axis];
+    }
+    view.offset[0] = ViewOffsetX();
+    view.offset[1] = ViewOffsetY();
+    view.distance = CameraDistance();
+    view.fov = CameraFov();
+    view.perspective = CameraPerspective();
+    view.parentModel = CameraParentModel();
+    view.parentBone = CameraParentBone();
+    view.reference = CameraReferenceMode();
+    view.basis = CameraAttachmentBasis();
+    view.suppressed = CameraAttachmentTransformSuppressed();
+
+    if (view.parentModel < 0 || view.parentModel >= kModelSlotCount) return;
+    unsigned char* raw = ModelSlot(view.parentModel);
+    if (raw == nullptr) return;
+    const auto* record = mdl::Mdl(raw);
+    if (record->boneTable == nullptr || record->boneCount == 0) return;
+    view.parentBound = true;
+    view.parentRaw = raw;
+    view.parentBones = record->boneTable;
+    view.parentBoneCount = record->boneCount;
+    MmsObjectRef identity{};
+    if (!plugins::FindSceneObjectIdentity(raw, identity)) {
+        try {
+            identity = plugins::SceneObjectIdentity(raw);
+        } catch (...) {
+            // Registration may allocate; a failed identity only disables the
+            // bound restore below, it never escapes the snapshot.
+            identity = MmsObjectRef{};
+        }
+    }
+    view.parentIdentityLo = identity.id.lo;
+    view.parentIdentityHi = identity.id.hi;
+    view.parentIdentityGeneration = identity.generation;
+}
+
+void MMDApp::RestoreRecordingEditorView() {
+    auto& view = m_recordingEditorView;
+    if (!view.active) return;
+    view.active = false;
+    if (view.scene != SceneGeneration()) return;
+
+    bool parentValid = false;
+    if (view.parentBound && view.parentModel >= 0 &&
+        view.parentModel < kModelSlotCount && view.parentBones != nullptr &&
+        view.parentBoneCount != 0 && view.parentBone >= 0 &&
+        static_cast<std::uint32_t>(view.parentBone) < view.parentBoneCount) {
+        unsigned char* raw = ModelSlot(view.parentModel);
+        if (raw != nullptr && raw == view.parentRaw) {
+            const MmsObjectRef identity{{view.parentIdentityLo, view.parentIdentityHi},
+                                        view.parentIdentityGeneration};
+            MmsObjectRef current{};
+            if (plugins::FindSceneObjectIdentity(raw, current) &&
+                SameSceneObjectIdentity(current, identity) &&
+                plugins::SceneObjectPresent(raw, identity.id)) {
+                const auto* record = mdl::Mdl(raw);
+                parentValid = record->boneTable == view.parentBones &&
+                    record->boneCount == view.parentBoneCount;
+            }
+        }
+    }
+
+    for (int axis = 0; axis < 3; ++axis) {
+        CameraPositionAxis(static_cast<std::size_t>(axis)) = view.position[axis];
+        CameraRotation()[axis] = view.rotation[axis];
+    }
+    ViewOffsetX() = view.offset[0];
+    ViewOffsetY() = view.offset[1];
+    CameraDistance() = view.distance;
+    CameraFov() = view.fov;
+    CameraPerspective() = view.perspective;
+    CameraReferenceMode() = view.reference;
+    if (view.parentModel < 0) {
+        CameraParentModel() = -1;
+        CameraParentBone() = view.parentBone;
+        CameraAttachmentBasis() = view.basis;
+        CameraAttachmentTransformSuppressed() = view.suppressed;
+    } else if (parentValid) {
+        CameraParentModel() = view.parentModel;
+        CameraParentBone() = view.parentBone;
+        CameraAttachmentBasis() = view.basis;
+        CameraAttachmentTransformSuppressed() = view.suppressed;
+    } else {
+        // The bound object was deleted or its slot now holds another object:
+        // restore the free view, but drop the stale binding instead of using
+        // the remembered pointer.
+        CameraParentModel() = -1;
+        CameraParentBone() = 0;
+        CameraAttachmentBasis() = IdentityAttachmentBasis();
+        CameraAttachmentTransformSuppressed() = 0;
+    }
+    antialias::ResetHistory(this);
+}
 
 // Bodies live in other translation units (see ported_funcs.hpp / their TUs).
 void RefreshAfterFrameApply(MMDApp* app);          // VA 0x00432FA0, was Sub432FA0
@@ -206,8 +352,17 @@ void EnsureRecordRenderTarget(MMDApp* app) {
 // Common tail after a successful 0x409A80 handshake: timeline seek to the
 // record start frame, arm 9EDD8 and hand control to the physics kick
 // (0x45EC27..0x45EC67 / 0x4649AE..0x4649EB).
-void RecordStartTail(MMDApp* app) {
+bool RecordStartTail(MMDApp* app, std::uint64_t expectedToken,
+                     std::uint64_t expectedScene, HWND expectedWindow) {
+    if (app == nullptr) return false;
     auto& s = *app;
+    const auto current = [&]() noexcept {
+        return expectedToken != 0 &&
+            s.RecordingStartGeneration() == expectedToken &&
+            s.SceneGeneration() == expectedScene &&
+            s.RecordingWindow() == expectedWindow;
+    };
+    if (!current()) return false;
 #ifdef MIKUMIKUSTUDIO_DIAG
     if (getenv("MIKUMIKUSTUDIO_TRACE_REC")) {
         FILE* tf = fopen(getenv("MIKUMIKUSTUDIO_TRACE_REC"), "a");
@@ -219,13 +374,17 @@ void RecordStartTail(MMDApp* app) {
 #endif
     s.state.recordSavedFrame =
         s.state.currentFrame;               // 0x45EC35
+    s.EnterRecordingPlayback();
     if (s.AviRecordStartFrame() !=
         s.state.currentFrame) {
         s.state.currentFrame =
             s.AviRecordStartFrame();                            // 0x45EC3D
         RefreshAfterFrameApply(app);                           // 0x432FA0
+        if (!current()) return false;
         PostViewRefresh(app);                                  // 0x40D130
+        if (!current()) return false;
     }
+    if (!current()) return false;
     s.state.recordedFrameCount = 0;
     s.state.recordPlaybackStartPending = 1;              // 0x45EC52
     timeBeginPeriod(1);                                        // 0x45EC58
@@ -239,11 +398,12 @@ void RecordStartTail(MMDApp* app) {
         }
     }
 #endif
+    return true;
 }
 
 // Shared config/seconds computation and 0x409A80 invocation
 // (0x45EB7E..0x45EBCA and 0x46493D..0x464976).
-bool StartRecordGraph(MMDApp* app, std::int32_t outW, std::int32_t outH) {
+bool StartRecordGraphImpl(MMDApp* app, std::int32_t outW, std::int32_t outH) {
     auto& s = *app;
     if (image_sequence::Active(app)) {
         TeardownDShowGraph(s.Recorder());
@@ -289,19 +449,70 @@ bool StartRecordGraph(MMDApp* app, std::int32_t outW, std::int32_t outH) {
                      s.EnglishUI());
 }
 
+bool StartRecordGraph(MMDApp* app, std::int32_t outW, std::int32_t outH) {
+    bool graphStarted = false;
+    bool finishRequested = false;
+    {
+        recording_state::Guard building(app, recording_state::Operation::GraphBuild);
+        if (!building) return false;
+        graphStarted = StartRecordGraphImpl(app, outW, outH);
+        finishRequested = building.DeferredFinish();
+    }
+    if (finishRequested) {
+        FinishAviRecord(app);
+        return false;
+    }
+    return graphStarted;
+}
+
 }  // namespace
 
 // VA 0x0045E820 - windowed AVI record start.
 void StartAviRecordWindow(MMDApp* app) {
+    if (app == nullptr) return;
     auto& s = *app;
-    if (!image_sequence::Active(app) && !ProbeWritable(
-            s.AviOutputPath())) {                               // 0x45E849
-        const HWND main = static_cast<HWND>(s.state.hwnd);
-        MessageBoxA(main, s.EnglishUI() != 0 ? kMsgSaveFailEn
-                                             : kMsgSaveFailJp,
-                    s.EnglishUI() != 0 ? kCaptionAviOutEn : kCaptionAviOutJp,
-                    0);                                         // 0x45E871
+    if (s.RecordingWindow() != nullptr || recording_state::Stopping(app) ||
+        recording_state::Guard::Active(s.Recorder(), recording_state::Operation::GraphTeardown))
         return;
+    recording_state::WindowStopGuard starting(app, recording_state::Operation::Start);
+    if (!starting) return;
+
+    const auto startGeneration = s.BeginRecordingStartAttempt();
+    const auto startScene = s.SceneGeneration();
+    const auto stillCurrent = [&]() noexcept {
+        return s.RecordingStartGeneration() == startGeneration &&
+            s.SceneGeneration() == startScene;
+    };
+    const auto abandon = [&]() noexcept {
+        if (s.RecordingStartGeneration() == startGeneration)
+            s.InvalidateRecordingStartAttempt();
+    };
+    const auto discardWindow = [&](HWND window) noexcept {
+        if (s.RecordingWindow() == window) s.RecordingWindow() = nullptr;
+        if (window != nullptr && IsWindow(window)) DestroyWindow(window);
+    };
+    const auto abortStartAttempt = [&]() {
+        // A finish already consumed the attempt when the token is gone; do not
+        // repeat it. Otherwise the scene-guarded finish releases every resource
+        // this attempt can still own.
+        if (s.RecordingStartGeneration() == startGeneration)
+            FinishAviRecord(app);
+    };
+
+    if (!image_sequence::Active(app)) {
+        if (!ProbeWritable(s.AviOutputPath())) {                // 0x45E849
+            const HWND main = static_cast<HWND>(s.state.hwnd);
+            MessageBoxA(main, s.EnglishUI() != 0 ? kMsgSaveFailEn
+                                                 : kMsgSaveFailJp,
+                        s.EnglishUI() != 0 ? kCaptionAviOutEn : kCaptionAviOutJp,
+                        0);                                     // 0x45E871
+            abandon();
+            return;
+        }
+        if (!stillCurrent()) {
+            abortStartAttempt();
+            return;
+        }
     }
 
     const std::int32_t outW = s.AviOutputWidth() > 0 ? s.AviOutputWidth() : s.RenderWidth();
@@ -310,6 +521,11 @@ void StartAviRecordWindow(MMDApp* app) {
         MessageBoxW(s.MainWindow(), L"无法重置渲染设备，视频导出未开始。\n"
             L"Could not reset the render device; video export was not started.",
             L"AVI export", MB_OK | MB_ICONERROR);
+        abortStartAttempt();
+        return;
+    }
+    if (!stillCurrent() || s.RecordingWindow() != nullptr) {
+        abortStartAttempt();
         return;
     }
     const RECT rc = recording_preview::WindowRect(s.MainWindow(), outW, outH, true);
@@ -322,6 +538,11 @@ void StartAviRecordWindow(MMDApp* app) {
         rc.left, rc.top,
         rc.right - rc.left, rc.bottom - rc.top, nullptr, nullptr, hInst,
         nullptr);
+    if (!stillCurrent()) {
+        discardWindow(recWnd);
+        abortStartAttempt();
+        return;
+    }
     s.RecordingWindow() = recWnd;                              // 0xA0D24
     if (recWnd == nullptr) {
         const HWND main = s.MainWindow();
@@ -338,13 +559,27 @@ void StartAviRecordWindow(MMDApp* app) {
                     s.EnglishUI() != 0 ? "create main window"
                                        : kCaptionRecWndJp,
                     0);                                         // 0x45EA14
+        abortStartAttempt();
         return;
     }
+    if (!stillCurrent() || s.RecordingWindow() != recWnd) {
+        abortStartAttempt();
+        return;
+    }
+    s.CaptureRecordingEditorView();
     if (image_sequence::Active(app))
         SetWindowTextW(recWnd, image_sequence::Text(app, L"正在导出图片序列…",
             L"Exporting image sequence…", L"連番画像を出力中…"));
     ShowWindow(recWnd, SW_SHOW);                               // 0x45EA38
+    if (!stillCurrent() || s.RecordingWindow() != recWnd) {
+        abortStartAttempt();
+        return;
+    }
     UpdateWindow(recWnd);
+    if (!stillCurrent() || s.RecordingWindow() != recWnd) {
+        abortStartAttempt();
+        return;
+    }
 
     s.AviSavedRenderWidth() = s.RenderWidth();
     s.AviSavedRenderHeight() = s.RenderHeight();
@@ -354,29 +589,90 @@ void StartAviRecordWindow(MMDApp* app) {
     EnsureRecordRenderTarget(app);
     RefreshMainWindowViewport(app);                                            // 0x45EACC
     InvalidateRect(s.MainWindow(), &s.ViewportRect(), FALSE);   // 0x45EAE9
+    if (!stillCurrent() || s.RecordingWindow() != recWnd) {
+        abortStartAttempt();
+        return;
+    }
 
-    if (!StartRecordGraph(app, outW, outH)) {
-        FinishAviRecord(app);
+    const bool graphStarted = StartRecordGraph(app, outW, outH);
+    if (!graphStarted) {
+        abortStartAttempt();
         return;  // 0x45EC69: original leaves the window parked
+    }
+    if (!stillCurrent() || s.RecordingWindow() != recWnd) {
+        abortStartAttempt();
+        return;
     }
     if (s.state.pictureBackgroundEnabled != 0) {
         PicBgOverlayRefresh(app);                              // 0x45EBE0
     }
+    if (!stillCurrent() || s.RecordingWindow() != recWnd) {
+        abortStartAttempt();
+        return;
+    }
     HWND main = static_cast<HWND>(s.state.hwnd);
     EnableWindow(GetDlgItem(main, panel::kPlayButton), FALSE);             // 0x45EBFB
+    if (!stillCurrent() || s.RecordingWindow() != recWnd) {
+        abortStartAttempt();
+        return;
+    }
     ShowWindow(main, SW_HIDE);                                // 0x45EC0B
+    if (!stillCurrent() || s.RecordingWindow() != recWnd) {
+        abortStartAttempt();
+        return;
+    }
     ShowWindow(main, SW_HIDE);                                // 0x45EC18
+    if (!stillCurrent() || s.RecordingWindow() != recWnd) {
+        abortStartAttempt();
+        return;
+    }
     if (s.state.floatingWindow != 0) {
         ShowWindow(
             static_cast<HWND>(s.state.floatingWindow),
             SW_HIDE);                                          // 0x45EC25
+        if (!stillCurrent() || s.RecordingWindow() != recWnd) {
+            abortStartAttempt();
+            return;
+        }
     }
-    RecordStartTail(app);
+    if (!RecordStartTail(app, startGeneration, startScene, recWnd))
+        abortStartAttempt();
 }
 
 // VA 0x00464760 - fullscreen (3D Vision) AVI record start.
 void StartAviRecordFullscreen(MMDApp* app) {
+    if (app == nullptr) return;
     auto& s = *app;
+    if (s.RecordingWindow() != nullptr || recording_state::Stopping(app) ||
+        recording_state::Guard::Active(s.Recorder(), recording_state::Operation::GraphTeardown))
+        return;
+    recording_state::WindowStopGuard starting(app, recording_state::Operation::Start);
+    if (!starting) return;
+
+    const auto startGeneration = s.BeginRecordingStartAttempt();
+    const auto startScene = s.SceneGeneration();
+    const auto stillCurrent = [&]() noexcept {
+        return s.RecordingStartGeneration() == startGeneration &&
+            s.SceneGeneration() == startScene;
+    };
+    const auto abandon = [&]() noexcept {
+        if (s.RecordingStartGeneration() == startGeneration)
+            s.InvalidateRecordingStartAttempt();
+    };
+    const auto leaveFullscreen = [&]() {
+        if (s.FullscreenMode() == 0) return;
+        s.FullscreenMode() = 0;
+        ApplyFullscreenWindowState(app);
+        PostDeviceReset(app);
+    };
+    const auto abortStartAttempt = [&]() {
+        // A finish already consumed the attempt when the token is gone; do not
+        // repeat it. Otherwise the scene-guarded finish releases the graph, the
+        // sequence, the export override and the fullscreen entry.
+        if (s.RecordingStartGeneration() == startGeneration)
+            FinishAviRecord(app);
+    };
+
     const std::int32_t screenW = GetSystemMetrics(SM_CXSCREEN);
     const std::int32_t screenH = GetSystemMetrics(SM_CYSCREEN);
     const std::int32_t w = s.AviOutputWidth() > 0
@@ -391,18 +687,26 @@ void StartAviRecordFullscreen(MMDApp* app) {
                               : kMsg3dVisionJp,
                     s.EnglishUI() != 0 ? "over size" : "3D Vision",
                     0);                                         // 0x4647B9
+        abandon();
+        return;
+    }
+    if (!stillCurrent()) {
+        abandon();
         return;
     }
 
     s.FullscreenMode() = 1;
     ApplyFullscreenWindowState(app, true);                                            // 0x4629D0
     if (!PostDeviceReset(app)) {
-        s.FullscreenMode() = 0;
-        ApplyFullscreenWindowState(app);
-        PostDeviceReset(app);
+        leaveFullscreen();
         MessageBoxW(main, L"无法重置渲染设备，视频导出未开始。\n"
             L"Could not reset the render device; video export was not started.",
             L"AVI export", MB_OK | MB_ICONERROR);
+        abandon();
+        return;
+    }
+    if (!stillCurrent()) {
+        abortStartAttempt();
         return;
     }
     s.AviSavedRenderWidth() = s.RenderWidth();
@@ -411,24 +715,47 @@ void StartAviRecordFullscreen(MMDApp* app) {
     s.RenderWidth() = w;
     s.RenderHeight() = h;
     s.RecordingWindow() = main;                                // 0xA0D24
+    if (!stillCurrent() || s.RecordingWindow() != main) {
+        abortStartAttempt();
+        return;
+    }
+    s.CaptureRecordingEditorView();
 
     EnsureRecordRenderTarget(app);
     RefreshMainWindowViewport(app);                                            // 0x464889
+    if (!stillCurrent() || s.RecordingWindow() != main) {
+        abortStartAttempt();
+        return;
+    }
 
     const std::int32_t scale = s.AviStereoWidthMultiplier();
     const std::int32_t scaledW = w * scale;
-    if (!StartRecordGraph(app, scaledW, h)) {
-        FinishAviRecord(app);
+    const bool graphStarted = StartRecordGraph(app, scaledW, h);
+    if (!graphStarted) {
+        abortStartAttempt();
+        return;
+    }
+    if (!stillCurrent() || s.RecordingWindow() != main) {
+        abortStartAttempt();
         return;
     }
     // 0x46497A: probe open/close without checking the result, then the
     // picture overlay and the shared tail.
     ProbeWritable(
         s.AviOutputPath());
+    if (!stillCurrent() || s.RecordingWindow() != main) {
+        abortStartAttempt();
+        return;
+    }
     if (s.state.pictureBackgroundEnabled != 0) {
         PicBgOverlayRefresh(app);                              // 0x4649A7
+        if (!stillCurrent() || s.RecordingWindow() != main) {
+            abortStartAttempt();
+            return;
+        }
     }
-    RecordStartTail(app);
+    if (!RecordStartTail(app, startGeneration, startScene, main))
+        abortStartAttempt();
 }
 
 // VA 0x004629D0 - fullscreen enter/restore window manager (app method).

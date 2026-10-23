@@ -69,6 +69,48 @@ int main() {
               "repeated close requests are coalesced during one stop");
     }
     check(!Guard::DeferClose(&app, Operation::Finish, 12), "inactive stops do not retain close requests");
+    check(!Guard::DeferFinish(&app), "inactive graph builds cannot retain finish requests");
+    {
+        Guard first(&app, Operation::GraphBuild);
+        check(first && !first.DeferredFinish() && Guard::Active(&app, Operation::GraphBuild),
+              "graph build starts with no deferred cancellation");
+        check(!Guard::DeferFinish(&other) && !first.DeferredFinish(),
+              "finish for another application cannot cancel this graph build");
+        {
+            Guard unrelated(&other, Operation::Finish), sameAppOtherOperation(&app, Operation::GraphTeardown);
+            check(Guard::DeferFinish(&app) && first.DeferredFinish() && !unrelated.DeferredFinish() &&
+                  !sameAppOtherOperation.DeferredFinish(), "defer searches the matching graph build across other guard operations");
+            check(Guard::DeferFinish(&app) && Guard::DeferFinish(&app) && first.DeferredFinish(),
+                  "repeated cancellation requests coalesce into the same graph-build flag");
+        }
+        {
+            Guard second(&other, Operation::GraphBuild), rejectedNested(&app, Operation::GraphBuild);
+            check(second && !rejectedNested && !second.DeferredFinish() && !rejectedNested.DeferredFinish(),
+                  "another app can build independently while duplicate same-app build is rejected");
+            check(Guard::DeferFinish(&other) && second.DeferredFinish() && first.DeferredFinish(),
+                  "each application retains its own deferred cancellation flag");
+        }
+        check(!Guard::DeferFinish(&other) && first.DeferredFinish(),
+              "exiting a nested foreign build leaves only the outer cancellation active");
+    }
+    check(!Guard::DeferFinish(&app) && !Guard::DeferFinish(&other),
+          "finished build scopes cannot retain cancellation flags");
+    {
+        Guard first(&app, Operation::GraphBuild), second(&other, Operation::GraphBuild);
+        check(Guard::DeferFinish(&app) && first.DeferredFinish() && !second.DeferredFinish(),
+              "cancelling the outer app does not mark the innermost foreign build");
+        check(Guard::DeferFinish(&other) && second.DeferredFinish(),
+              "the independent inner app accepts its own cancellation");
+    }
+    {
+        Guard next(&app, Operation::GraphBuild);
+        check(next && !next.DeferredFinish(), "a later build does not inherit a previous cancellation");
+    }
+    {
+        Guard finishing(&app, Operation::Finish), teardown(&app, Operation::GraphTeardown);
+        check(!Guard::DeferFinish(&app) && !finishing.DeferredFinish() && !teardown.DeferredFinish(),
+              "finish and teardown guards alone are not graph-build cancellation targets");
+    }
     FakePush push; unsigned char flag = 0; unsigned pumps = 0;
     check(WaitForAck(&push, &flag, [] { return true; }, [&] { ++pumps; return true; }, 100) == AckResult::Ready && flag == 1 && pumps == 1, "pending frame pumps and acknowledges");
     push.ended = true;

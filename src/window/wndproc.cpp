@@ -134,17 +134,18 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
     MMDApp* app = g_Block;
     auto& s = *app;
     const bool finishingRecording = recording_state::Stopping(app);
+    const bool startingRecording = recording_state::Guard::Active(app, recording_state::Operation::Start);
     const bool drainingRecording = recording_state::Guard::Active(s.Recorder(), recording_state::Operation::GraphTeardown);
 #if !MMD_ORIGINAL_PROFILE
-    if (!finishingRecording && !drainingRecording &&
+    if (!finishingRecording && !drainingRecording && !startingRecording &&
         plugins::HandleBoundViewportMessage(s, hwnd, msg, wParam, lParam)) return 0;
 #endif
     // EnableWindow prevents new user input; queued commands and accelerators
     // still need to be rejected while a bake's message loop is pumping.
-    if ((finishingRecording || drainingRecording) &&
+    if ((finishingRecording || drainingRecording || startingRecording) &&
         (msg == WM_CLOSE || (msg == WM_SYSCOMMAND && (wParam & 0xfff0) == SC_CLOSE))) {
-        recording_state::Guard::DeferClose(finishingRecording ? static_cast<const void*>(app) : s.Recorder(),
-            finishingRecording ? recording_state::Operation::Finish : recording_state::Operation::GraphTeardown,
+        recording_state::Guard::DeferClose((finishingRecording || startingRecording) ? static_cast<const void*>(app) : s.Recorder(),
+            finishingRecording ? recording_state::Operation::Finish : startingRecording ? recording_state::Operation::Start : recording_state::Operation::GraphTeardown,
             reinterpret_cast<std::uintptr_t>(hwnd));
         return 0;
     }
@@ -153,7 +154,7 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         background_save::DeferClose(app);
         return 0;
     }
-    if (bake::UiLocked() || SceneSaveBlocksEdits() || finishingRecording || drainingRecording) {
+    if (bake::UiLocked() || SceneSaveBlocksEdits() || finishingRecording || drainingRecording || startingRecording) {
         if (msg == WM_DROPFILES) { DragFinish(reinterpret_cast<HDROP>(wParam)); return 0; }
         if (msg == WM_COMMAND || msg == WM_NOTIFY || msg == WM_CLOSE ||
             msg == WM_HSCROLL || msg == WM_VSCROLL ||

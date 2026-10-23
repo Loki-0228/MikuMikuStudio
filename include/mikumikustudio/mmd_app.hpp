@@ -39,6 +39,10 @@
 
 namespace mikumikustudio {
 
+namespace mdl {
+struct BoneRecord;
+}
+
 enum class UiThemeColor : int {
     WindowFill = 0,
     WindowBorder = 1,
@@ -1146,6 +1150,22 @@ public:
     }
     std::int32_t& AviSavedRenderWidth() { return m_aviSavedRenderWidth; }
     std::int32_t& AviSavedRenderHeight() { return m_aviSavedRenderHeight; }
+    // Runtime-only recording view handoff. The snapshot stays outside the PMM
+    // and legacy state layout; a synchronous teardown restores the editing view
+    // it interrupted.
+    void CaptureRecordingEditorView();
+    void RestoreRecordingEditorView();
+    // Start-attempt admission shared by the windowed and fullscreen entries.
+    std::uint64_t BeginRecordingStartAttempt();
+    void InvalidateRecordingStartAttempt();
+    std::uint64_t RecordingStartGeneration() const {
+        return m_recordingStartGeneration;
+    }
+    std::uint64_t RecordingStartScene() const {
+        return m_recordingStartScene;
+    }
+    bool RecordingPlaybackEntered() const { return m_recordingPlaybackEntered; }
+    void EnterRecordingPlayback() { m_recordingPlaybackEntered = true; }
     std::uint8_t& AviStereoOutput() {
         return state.aviStereoOutput;
     }
@@ -1648,6 +1668,32 @@ private:
     bool m_aviRenderResolutionOverridden = false;
     std::int32_t m_aviSavedRenderWidth = 0;
     std::int32_t m_aviSavedRenderHeight = 0;
+    // Runtime-only state. Camera playback shares these fields with the free
+    // model viewport; the snapshot is not part of the legacy/PMM state layout.
+    struct RecordingEditorView {
+        bool active = false;
+        std::uint64_t scene = 0;
+        float position[3]{}, rotation[3]{}, offset[2]{};
+        float distance = 0, fov = 0;
+        std::uint8_t perspective = 0, suppressed = 0;
+        std::int32_t parentModel = -1, parentBone = 0;
+        CameraAttachmentReference reference = CameraAttachmentReference::None;
+        D3DMATRIX basis{};
+        // Live scene material for rejecting a deleted or recycled parent slot
+        // without dereferencing the remembered pointer.
+        bool parentBound = false;
+        unsigned char* parentRaw = nullptr;
+        mdl::BoneRecord* parentBones = nullptr;
+        std::uint32_t parentBoneCount = 0;
+        // Stable scene identity split into scalars: this header is also
+        // consumed without the MMS plugin SDK include path.
+        std::uint64_t parentIdentityLo = 0;
+        std::uint64_t parentIdentityHi = 0;
+        std::uint64_t parentIdentityGeneration = 0;
+    } m_recordingEditorView;
+    std::uint64_t m_recordingStartGeneration = 0;
+    bool m_recordingPlaybackEntered = false;
+    std::uint64_t m_recordingStartScene = 0;
     HWND m_gravitySettingDialog = nullptr;
     HWND m_frameRangeDialog = nullptr;
     HWND m_groundShadowColorDialog = nullptr;

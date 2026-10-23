@@ -26,6 +26,7 @@
 #include "../plugins/native_viewport_history.hpp"
 #include "../plugins/native_camera_follow.hpp"
 #include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/recording_state.hpp"
 
 namespace mikumikustudio {
 
@@ -88,6 +89,17 @@ LRESULT CALLBACK MicWndProc(HWND hwnd, UINT msg, WPARAM wParam,
     MMDApp* app = g_Block;
     updates::ObserveMessage(app, msg, wParam, lParam);
     auto& s = *app;
+    // Startup can pump messages while a graph still owns borrowed resources.
+    // Queued detached-panel commands must obey the same busy scope as main.
+    if ((recording_state::Guard::Active(app, recording_state::Operation::Start) ||
+         recording_state::Stopping(app) ||
+         recording_state::Guard::Active(s.Recorder(), recording_state::Operation::GraphTeardown)) &&
+        (msg == WM_COMMAND || msg == WM_NOTIFY || msg == WM_CLOSE ||
+         msg == WM_HSCROLL || msg == WM_VSCROLL ||
+         (msg >= WM_KEYFIRST && msg <= WM_KEYLAST) ||
+         (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST) ||
+         (msg == WM_SYSCOMMAND && (wParam & 0xfff0) == SC_CLOSE)))
+        return 0;
 #if !MMD_ORIGINAL_PROFILE
     // Disabling the detached window does not discard already queued messages.
     // A bake pumps those messages while it borrows private scene state; closing

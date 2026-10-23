@@ -19,7 +19,7 @@ inline std::uint64_t OutputFrameCount(std::int32_t first, std::int32_t last, flo
     return static_cast<std::uint64_t>(std::ceil(double(frames) * double(fps) / 30.0));
 }
 
-enum class Operation { Finish, GraphTeardown };
+enum class Operation { Finish, GraphTeardown, Start, GraphBuild };
 
 // UI-thread scopes, with no allocation or changes to the original recorder ABI.
 // A modal message loop may enter another application's cleanup, but cannot
@@ -31,7 +31,18 @@ class Guard {
     Operation operation_;
     bool entered_ = false;
     std::uintptr_t deferredClose_ = 0;
+    bool deferredFinish_ = false;
 public:
+    // A graph builder may own borrowed COM pointers across a message callback.
+    // Finish must wait until the builder returns before releasing those objects.
+    static bool DeferFinish(const void* identity) noexcept {
+        for (auto* item = active_; item; item = item->previous_)
+            if (item->identity_ == identity && item->operation_ == Operation::GraphBuild) {
+                item->deferredFinish_ = true;
+                return true;
+            }
+        return false;
+    }
     static bool Active(const void* identity, Operation operation) noexcept {
         for (auto* item = active_; item; item = item->previous_)
             if (item->identity_ == identity && item->operation_ == operation) return true;
@@ -56,6 +67,7 @@ public:
     Guard& operator=(const Guard&) = delete;
     explicit operator bool() const noexcept { return entered_; }
     std::uintptr_t DeferredClose() const noexcept { return deferredClose_; }
+    bool DeferredFinish() const noexcept { return deferredFinish_; }
 };
 
 inline bool Stopping(const void* app) noexcept { return Guard::Active(app, Operation::Finish); }
