@@ -76,7 +76,7 @@ main 随后继续提交。下一轮同步、当前状态与依赖如下：
 | `3782e0c` | 透明排序按对象／GPU 缓冲缓存 | 每帧新建索引／顶点缓冲 | 与透明排序性能批次一起评估；不改变功能结果 |
 | `3782e0c` | 模型模式灰显附件 VMD 菜单 | 已按相机模式灰显并拦截命令入口；曲线宿主回归通过（见[小项记录](abi-main-small-items-2026-10-24.md)） | 已同步（本机） | 未做真实鼠标与多显示器人工确认 |
 | `3782e0c` | DDS／RGB alpha 分类 | 已采用 main 分类并更新 CPU 回归；GPU 排序回归待透明排序性能批次（见[小项记录](abi-main-small-items-2026-10-24.md)） | 部分同步 | 依赖 `transparent_sort_cache` 的 GPU 用例未跑 |
-| 既有测试基建 | 原始配置 runtime_layout 曲线用例崩溃、sidebar 测试目标不可编译、plugin_abi_tests 套件不可编译 | 原始配置跳过曲线宿主用例并保留其余布局检查；sidebar 目标限定完整配置；删除与当前保存语义不符的过时编号配对测试 | 已修复并记录 [既有测试问题修复](abi-preexisting-test-fixes-2026-10-24.md) 与 [契约套件恢复](abi-plugin-abi-suite-restore-2026-10-24.md)：原始 runtime_layout exit 0、完整 runtime_layout exit 0、完整 sidebar 隔离运行 40.3 秒通过；plugin_abi_tests 重建后默认全量套件 `PASS checks=44752`（23.2 秒，exit 0） | 已修复 | 套件中若干独立 CTest 模式本轮未逐一重跑；原始配置其他 UI 测试未逐一重跑 |
+| 既有测试基建 | 原始配置 runtime_layout 曲线用例崩溃、sidebar 测试目标不可编译、plugin_abi_tests 套件不可编译 | 原始配置跳过曲线宿主用例并保留其余布局检查；sidebar 目标限定完整配置；删除与当前保存语义不符的过时编号配对测试 | 已修复并记录 [既有测试问题修复](abi-preexisting-test-fixes-2026-10-24.md) 与 [契约套件恢复](abi-plugin-abi-suite-restore-2026-10-24.md)：原始 runtime_layout exit 0、完整 runtime_layout exit 0、完整 sidebar 隔离运行 40.3 秒通过；plugin_abi_tests 重建后默认全量套件 `PASS checks=44752`（23.2 秒，exit 0） | 已修复 | 已注册 CTest 模式 8 个中 6 个通过；`ui_refresh_subscription_runtime` 与 `ui_dependency_refresh_runtime` 在停止插件后的注册表清理断言失败，原因未隔离。原始配置其他 UI 测试未逐一重跑 |
 | `c147454` | main 默认备份目录为程序同级 `backups` | ABI 保留 `data/backups` | 按 ABI“运行数据集中在程序目录 data”的约定有意偏离；若产品要求逐字节一致需先确认存储约定 |
 
 ## 边界

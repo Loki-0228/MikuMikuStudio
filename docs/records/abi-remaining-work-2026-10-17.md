@@ -13,7 +13,7 @@
 
 
 
-[恢复 ABI 契约套件构建](abi-plugin-abi-suite-restore-2026-10-24.md)：`084699a` 的编号配对测试在 `1cd0242` 改回每次手动保存写新文件、`PublishProjectPair` 恢复 6 参数后已过时，导致 `plugin_abi_tests` 不可编译。删除过时的 `NumberedVersionStorageChecks`（当前行为由 `project_save_export_tests --numbered-only` 与保留链 `VersionStorageChecks` 覆盖），未改生产代码。套件重建后默认全量契约 `PASS checks=44752`，exit 0，23.2 秒；`business_event_tests` 复跑 7 项通过。若干独立 CTest 模式未逐一重跑。
+[恢复 ABI 契约套件构建](abi-plugin-abi-suite-restore-2026-10-24.md)：`084699a` 的编号配对测试在 `1cd0242` 改回每次手动保存写新文件、`PublishProjectPair` 恢复 6 参数后已过时，导致 `plugin_abi_tests` 不可编译。删除过时的 `NumberedVersionStorageChecks`（当前行为由 `project_save_export_tests --numbered-only` 与保留链 `VersionStorageChecks` 覆盖），未改生产代码。套件重建后默认全量契约 `PASS checks=44752`，exit 0，23.2 秒；`business_event_tests` 复跑 7 项通过。已注册 CTest 模式 8 个中 6 个通过；`ui_refresh_subscription_runtime` 与 `ui_dependency_refresh_runtime` 在停止插件后的注册表清理断言失败，原因未隔离。
 
 [P1 业务事件通知（UI 注册表与布局）](abi-business-events-2026-10-24.md)补齐插件运行时自身负责的两个来源：注册表变更与布局事务提交在 `Drain` 中合并投递 `UI_REGISTRY_CHANGED`／`LAYOUT_CHANGED`，负载为最终修订号（`MmsRevisionEventV1` 版本 1），投递发生在注册表回调之外。独立宿主探针加载真实 lifecycle 插件，7 项检查通过；两产品构建通过，正式 release 未覆盖。工程关闭、对象删除、语言切换、属性变更、命令状态、计算策略、设备代次/丢失恢复、DPI 变化等事件仍未接入；重建 `plugin_abi_tests` 时发现 `storage_checks.inc` 的 `PublishProjectPair` 参数个数与 API 不符的既有编译问题。
 
