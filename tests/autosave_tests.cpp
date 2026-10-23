@@ -447,6 +447,9 @@ int wmain(int argc, wchar_t** argv) {
         "periodic and previous-version saving both default off with one minute interval");
     SettingsCodecChecks();
     BackupDirectoryChecks(app, config);
+#if !MMD_ORIGINAL_PROFILE
+    // The original-compatibility profile keeps the original antialias surface;
+    // central settings are a full-build behavior.
     std::wstring aaError;
     SetEnvironmentVariableW(L"MMS_ANTIALIAS_CONFIG", nullptr);
     Check(antialias::Select(app, antialias::Algorithm::MmdOriginal, aaError),
@@ -458,6 +461,7 @@ int wmain(int argc, wchar_t** argv) {
         settings_json::UInt(settings_json::Object(aaBody), "algorithm", unsigned(antialias::Algorithm::Count)) ==
             unsigned(antialias::Algorithm::MmdOriginal),
         "actual antialias selection persists in central settings without recreating separate INI");
+#endif
     as::Settings value; value.enabled = true; value.directory = (root / L"自动备份").wstring(); value.maxBackups = 2;
     if (!defaultCrash) Configure(app, value);
     else Check(!fs::exists(config) && as::Current().directory == (fs::path(app->ExeDir()) / L"data" / L"backups").wstring(),
@@ -585,6 +589,7 @@ int wmain(int argc, wchar_t** argv) {
     const fs::path recoveredSide(recoveredManual.native() + L".mms-plugins.json");
     const auto recoveredSideBytes = Bytes(recoveredSide);
     CheckPluginData(recoveredManual);
+    NamingTests(app);
     DialogTests(app);
     Check(warnings == 3, "invalid settings rejected in each language");
     value = as::Current(); value.enabled = false; Configure(app, value);
@@ -620,6 +625,25 @@ int wmain(int argc, wchar_t** argv) {
     auto invalid = value; invalid.intervalMinutes = 0; std::wstring error;
     Check(!as::Configure(app, invalid, error), "zero minutes cannot be saved");
     invalid = value; invalid.maxBackups = 0; Check(!as::Configure(app, invalid, error), "zero capacity cannot be saved");
+    wcscpy_s(app->EnvFileName(),256,manual.c_str());LoadSceneFile();
+    value.directory=(root/L"custom-names").wstring();value.backupPattern=L"自定义_[/NAME]_[/YYYY]_[/N]";
+    value.maxBackups=1;value.overwriteOldest=true;value.enabled=true;Configure(app,value);
+    Check(as::BackupNow(app)==as::Result::Saved,"custom naming writes a real backup");
+    auto custom=as::Backups(value.directory);
+    Check(custom.size()==1 && custom[0].filename().wstring().find(L"自定义_")==0 &&
+        custom[0].filename().wstring().find(L"_autosave_")==std::wstring::npos,"ownership recognizes custom names without the old autosave substring");
+    const auto foreign=fs::path(value.directory)/L"自定义_user_001.pmm";
+    std::ofstream(foreign)<<"user file";
+    Check(as::QueueBackup(app),"custom named periodic save queues successfully");background_save::Wait(app);
+    Check(as::Backups(value.directory).size()==1 && !fs::exists(custom[0]) && Bytes(foreign)=="user file",
+        "custom named rotation only removes owned backups");
+    const auto recovered=as::Backups(value.directory).front();
+    wcscpy_s(app->EnvFileName(),256,recovered.c_str());LoadSceneFile();
+    Check(as::BackupNow(app)==as::Result::Full,"active recovery file stays protected when it is the only backup");
+    value.maxBackups=2;Configure(app,value);
+    Check(as::BackupNow(app)==as::Result::Saved,"recovered custom backup can be backed up again");
+    Check(as::Backups(value.directory).front().filename().wstring().find(L"自定义_自定义_")==std::wstring::npos,
+        "recovery retains original stem without nesting the custom pattern");
     Check(!IsWindowVisible(app->MainWindow()), "production test stayed hidden throughout");
     as::Shutdown(); ShutdownCleanup(app); g_Block = nullptr; delete app; UnhookWindowsHookEx(hook);
     std::printf("PASS autosave checks=%u\n", checks);

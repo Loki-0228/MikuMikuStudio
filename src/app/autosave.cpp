@@ -102,6 +102,8 @@ std::string SettingsJson(const Settings& value) {
         ",\"overwriteOldest\":" + settings_json::Bool(value.overwriteOldest) +
         ",\"keepPrevious\":" + settings_json::Bool(value.keepPrevious) +
         ",\"numberedManualVersions\":" + settings_json::Bool(value.numberedManualVersions) +
+        ",\"backupPattern\":" + settings_json::Quote(value.backupPattern) +
+        ",\"incrementPattern\":" + settings_json::Quote(value.incrementPattern) +
         ",\"directoryMode\":" + settings_json::Quote(besideExecutable ? "executable" : relative ? "relative" : "custom") +
         ",\"directory\":" + settings_json::Quote(besideExecutable ? std::wstring(L"data/backups") : storedDirectory) + "}";
 }
@@ -127,6 +129,11 @@ Settings LoadCurrentSettings() {
         value.overwriteOldest = settings_json::Bool(object, "overwriteOldest", false);
         value.keepPrevious = settings_json::Bool(object, "keepPrevious", false);
         value.numberedManualVersions = settings_json::Bool(object, "numberedManualVersions", false);
+        value.backupPattern = plugins::Wide(settings_json::String(object, "backupPattern", ""));
+        value.incrementPattern = plugins::Wide(settings_json::String(object, "incrementPattern", ""));
+        if (value.backupPattern == save_naming::PreviousBackupDefault) value.backupPattern = save_naming::BackupDefault;
+        if (value.backupPattern.empty()) value.backupPattern = save_naming::BackupDefault;
+        if (value.incrementPattern.empty()) value.incrementPattern = save_naming::IncrementDefault;
         if (settings_json::String(object, "directoryMode", "executable") != "executable")
             value.directory = ResolveDirectory(plugins::Wide(settings_json::String(object, "directory"))).wstring();
         std::wstring error;
@@ -139,8 +146,7 @@ bool Regular(const fs::path& path) {
     return a != INVALID_FILE_ATTRIBUTES && !(a & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT));
 }
 bool Owned(const fs::path& path) {
-    if (!Regular(path) || path.extension() != L".pmm" ||
-        path.stem().wstring().find(L"_autosave_") == std::wstring::npos) return false;
+    if (!Regular(path) || path.extension() != L".pmm") return false;
     int fd = -1;
     if (_wsopen_s(&fd, path.c_str(), _O_RDONLY | _O_BINARY, _SH_DENYWR, 0)) return false;
     struct Close { int fd; ~Close() { _close(fd); } } close{fd};
@@ -229,28 +235,13 @@ void WarnIfFull(MMDApp* app) noexcept {
     }
 }
 fs::path NewName(MMDApp* app, bool crash, const fs::path& directory) {
-    std::wstring stem = fs::path(app->EnvFileName()).stem().wstring();
+    std::wstring stem = save_naming::ProjectStem(app->EnvFileName(), app->PmmProjectSettings().document);
     // A recovered backup continues the original name instead of nesting timestamps.
     const auto suffix = stem.rfind(L"_autosave_");
-    if (suffix != std::wstring::npos && Owned(app->EnvFileName())) stem.resize(suffix);
+    if (suffix != std::wstring::npos && !pmm_extension::Find(app->PmmProjectSettings().document, save_naming::BaseKey) &&
+        Owned(app->EnvFileName())) stem.resize(suffix);
     if (stem.empty()) stem = Text(app, L"未命名", L"Untitled", L"無題");
-    SYSTEMTIME now{}; GetLocalTime(&now);
-    wchar_t stamp[96]{};
-    swprintf_s(stamp, L"_autosave_%04u%02u%02u_%02u%02u%02u_%03u%s",
-        now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond,
-        now.wMilliseconds, crash ? L"_crash" : L"");
-    for (unsigned collision = 0; collision < 10000; ++collision) {
-        const auto path = directory / (stem + stamp + (collision ? L"_" + std::to_wstring(collision) : L"") + L".pmm");
-        if (path.wstring().size() >= 256) return {};
-        std::error_code error;
-        if (fs::exists(path, error) || error) continue;
-        auto effects = path;
-        effects.replace_extension(L".emm");
-        // An orphan EMM can be a user's file. Do not pick a name whose
-        // native MME save notification would overwrite that existing file.
-        if (!fs::exists(effects, error) && !error) return path;
-    }
-    return {};
+    return save_naming::Next(directory, Current().backupPattern, stem, crash);
 }
 // Windows SEH is deliberately isolated from C++ stack-unwinding objects.
 void CrashAttempt() noexcept {
@@ -282,6 +273,12 @@ Settings LoadSettings(const fs::path& path) {
     value.overwriteOldest = GetPrivateProfileIntW(L"autosave", L"overwriteOldest", 0, path.c_str()) == 1;
     value.keepPrevious = GetPrivateProfileIntW(L"autosave", L"keepPrevious", 0, path.c_str()) == 1;
     value.numberedManualVersions = GetPrivateProfileIntW(L"autosave", L"numberedManualVersions", 0, path.c_str()) == 1;
+    wchar_t pattern[512]{};
+    GetPrivateProfileStringW(L"autosave", L"backupPattern", save_naming::BackupDefault, pattern, 512, path.c_str());
+    value.backupPattern=pattern;
+    if(value.backupPattern==save_naming::PreviousBackupDefault)value.backupPattern=save_naming::BackupDefault;
+    GetPrivateProfileStringW(L"autosave", L"incrementPattern", save_naming::IncrementDefault, pattern, 512, path.c_str());
+    value.incrementPattern=pattern;
     std::wstring error;
     return Validate(value, error) ? value : Defaults();
 }
@@ -304,6 +301,8 @@ bool Validate(const Settings& value, std::wstring& error) {
     else if (value.directory.empty() || !fs::path(value.directory).is_absolute() ||
         value.directory.size() > 200 || value.directory.find_first_of(L"\r\n") != std::wstring::npos)
         error = L"请选择有效的备份文件夹，路径长度不超过 200 个字符。 / Choose a backup folder with a path of at most 200 characters.";
+    if(error.empty() && !save_naming::Validate(value.backupPattern,error))return false;
+    if(error.empty() && !save_naming::Validate(value.incrementPattern,error))return false;
     return error.empty();
 }
 bool SaveSettings(const fs::path& path, const Settings& value) {
@@ -321,6 +320,7 @@ bool SaveSettings(const fs::path& path, const Settings& value) {
         std::to_wstring(value.maxBackups) + L"\r\noverwriteOldest=" + std::to_wstring(value.overwriteOldest) +
         L"\r\nkeepPrevious=" + std::to_wstring(value.keepPrevious) +
         L"\r\nnumberedManualVersions=" + std::to_wstring(value.numberedManualVersions) +
+        L"\r\nbackupPattern=" + value.backupPattern + L"\r\nincrementPattern=" + value.incrementPattern +
         L"\r\ndirectoryMode=" + (besideExecutable ? L"executable" : relative ? L"relative" : L"custom") +
         L"\r\ndirectory=" + (besideExecutable ? std::wstring(L"data/backups") : storedDirectory) + L"\r\n";
     HANDLE file = CreateFileW(temporary.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);

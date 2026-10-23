@@ -1284,10 +1284,35 @@ static bool CaptureScene(MMDApp* app, const wchar_t* target, bool backup, SceneS
         return false;
     }
 #endif
+    // Persist the original naming stem only for the generated file it belongs to.
+    // Save As to a different name starts a fresh series; reopening an increment
+    // continues the same series without nesting suffixes.
+    std::wstring incrementalTarget;
+    snapshot.numberedManualVersions = !backup && pmm_paths::IsProject(target) && autosave::Current().numberedManualVersions;
+    if(snapshot.numberedManualVersions) {
+        const std::filesystem::path requested=std::filesystem::absolute(target);
+        // pmm_settings::Capture keeps the project settings records, not the
+        // naming series markers; read the series from the live document.
+        const auto base=save_naming::ProjectStem(requested,app->PmmProjectSettings().document);
+        const auto next=save_naming::Next(requested.parent_path(),autosave::Current().incrementPattern,base);
+        if(next.empty()){SetLastError(ERROR_INVALID_NAME);return false;}
+        incrementalTarget=next.wstring();target=incrementalTarget.c_str();
+        const auto baseBytes=std::filesystem::path(base).u8string(),fileBytes=next.filename().u8string();
+        pmm_extension::Set(extensions,save_naming::BaseKey,{baseBytes.begin(),baseBytes.end()});
+        pmm_extension::Set(extensions,save_naming::FileKey,{fileBytes.begin(),fileBytes.end()});
+    } else if(!backup) {
+        pmm_extension::Erase(extensions,save_naming::BaseKey);
+        pmm_extension::Erase(extensions,save_naming::FileKey);
+    }
     // Bind ownership to this exact filename; Save/Save As strips the marker.
     pmm_extension::Erase(extensions, autosave::kOwnershipKey);
     if (backup) {
+        auto base=save_naming::ProjectStem(app->EnvFileName(),app->PmmProjectSettings().document);
+        if(base.empty())base=autosave::Text(app,L"未命名",L"Untitled",L"無題");
+        const auto baseBytes=std::filesystem::path(base).u8string();
         const auto name = std::filesystem::path(target).filename().u8string();
+        pmm_extension::Set(extensions,save_naming::BaseKey,{baseBytes.begin(),baseBytes.end()});
+        pmm_extension::Set(extensions,save_naming::FileKey,{name.begin(),name.end()});
         pmm_extension::Set(extensions, autosave::kOwnershipKey, {name.begin(), name.end()});
     }
     pmmWriteFailed = false;
@@ -1295,15 +1320,16 @@ static bool CaptureScene(MMDApp* app, const wchar_t* target, bool backup, SceneS
     if (snapshot.target.size() >= kPathFieldCapacity) return false;
     snapshot.backup = backup;
     snapshot.keepPrevious = !backup && pmm_paths::IsProject(snapshot.target) && autosave::Current().keepPrevious;
-    snapshot.numberedManualVersions = !backup && pmm_paths::IsProject(snapshot.target) && autosave::Current().numberedManualVersions;
     snapshot.compatibility = compatibility;
     struct Sink {
         explicit Sink(std::vector<unsigned char>& bytes) { pmmSnapshotSink = &bytes; }
         ~Sink() { pmmSnapshotSink = nullptr; }
     } sink(snapshot.bytes);
     const int fd = -1;
-    WritePmmFileHeader(fd, s, main, hdr, compatibility.needsNewPmm);                   // 1. 0x41B1B3..0x41B355
-    WritePmmModelBlocks(fd, slots, text);                   // 2. 0x41B355..0x41C981
+    WritePmmFileHeader(fd, s, main, hdr, compatibility.needsNewPmm);
+
+    WritePmmModelBlocks(fd, slots, text);
+
     WritePmmCameraSection(fd, s);                           // 3. 0x41C9AE..0x41CF3E
     WritePmmLightSection(fd, s);                            // 4. 0x41CF51..0x41D28F
     WritePmmAccessoryShadowList(fd, main, text);            // 5. 0x41D2AF..0x41D310
@@ -1311,7 +1337,8 @@ static bool CaptureScene(MMDApp* app, const wchar_t* target, bool backup, SceneS
     WritePmmConfigBlock(fd, s, main, text);                 // 7. 0x41DB42..0x41DF7C
     WritePmmSelectionSection(fd, s);                        // 8. 0x41DF7C..0x41E25E
     WritePmmShadowAndConfig2(fd, s, main, text);            // 9+10. 0x41E284..0x41E6E5
-    WritePmmModelTail(fd, slots);                           // 11. 0x41E70D
+    WritePmmModelTail(fd, slots);
+
     snapshot.extensions = std::move(extensions);
 #if !MMD_ORIGINAL_PROFILE
     snapshot.history = SaveHistory(s);
@@ -1363,13 +1390,17 @@ static bool WriteSnapshot(SceneSnapshot& snapshot) {
         _commit(fd) == 0;
     const bool closed = _close(fd) == 0; fd = -1;
     if (!written || !closed) return false;
+    // An incremental save must not publish over an existing companion EMM;
+    // the pattern expansion already avoids it, this guards the race.
+    if (snapshot.numberedManualVersions &&
+        GetFileAttributesW(pmm_paths::Effect(snapshot.target).c_str()) != INVALID_FILE_ATTRIBUTES) return false;
 #if !MMD_ORIGINAL_PROFILE
     if (!snapshot.plugins->PublishDisk(temporary, target, backup, snapshot.keepPrevious, snapshot.numberedManualVersions)) return false;
 #else
-    if (snapshot.keepPrevious || snapshot.numberedManualVersions) {
-        if (!pmm_versions::Publish(temporary, destination, snapshot.numberedManualVersions)) return false;
+    if (snapshot.keepPrevious && !snapshot.numberedManualVersions) {
+        if (!pmm_versions::Publish(temporary, destination)) return false;
     } else if (!MoveFileExW(temporary, destination,
-        (backup ? 0 : MOVEFILE_REPLACE_EXISTING) | MOVEFILE_WRITE_THROUGH)) return false;
+        ((backup || snapshot.numberedManualVersions) ? 0 : MOVEFILE_REPLACE_EXISTING) | MOVEFILE_WRITE_THROUGH)) return false;
 #endif
 #if !MMD_ORIGINAL_PROFILE
     if (!backup && snapshot.compatibility.namesNeedExtension && snapshot.compatibility.canCopyLegacy) {
@@ -1409,7 +1440,15 @@ static void CompleteSave(MMDApp* s, SceneSnapshot& snapshot) {
     wcscpy_s(s->EnvFileName(), kPathFieldCapacity, target);
     if (unchanged) {
 #if MMD_ORIGINAL_PROFILE
+        // The original profile deliberately ignores project extension records
+        // when loading. Keep only the naming series keys in memory so repeated
+        // incremental saves in this session do not nest suffixes; a reopened
+        // project starts a fresh series instead of guessing from its filename.
         s->PmmProjectSettings().document = {};
+        for (const char* key : {save_naming::BaseKey, save_naming::FileKey}) {
+            if (const auto* record = pmm_extension::Find(snapshot.extensions, key))
+                pmm_extension::Set(s->PmmProjectSettings().document, key, record->value);
+        }
 #else
         s->PmmProjectSettings().document = std::move(snapshot.extensions);
 #endif

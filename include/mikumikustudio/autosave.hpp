@@ -1,5 +1,6 @@
 #pragma once
 #include <Windows.h>
+#include "save_naming.hpp"
 #include <string>
 #include <vector>
 #include <filesystem>
@@ -22,6 +23,8 @@ struct Settings {
     bool keepPrevious = false; // Preserve same-directory PMM1 and paired EMM versions.
     // Manual saves only; numbering stays independent of periodic backup retention.
     bool numberedManualVersions = false;
+    std::wstring backupPattern = save_naming::BackupDefault;
+    std::wstring incrementPattern = save_naming::IncrementDefault;
     std::wstring directory; // Periodic copies only. Crash copies use data/backups.
 };
 enum class Result { Saved, Disabled, Busy, Full, Failed, Empty };

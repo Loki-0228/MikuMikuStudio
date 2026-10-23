@@ -19,5 +19,5 @@ PluginProject ReadPluginProject(const fs::path& target);
 // does not delete it. step is a fault-injection hook used only by tests.
 void PublishProjectPair(const fs::path& target, const fs::path& stagedMain,
     PluginProject& data, bool createOnly, const std::function<void(unsigned)>& step = {},
-    bool keepPrevious = false, bool numberedManualVersions = false);
+    bool keepPrevious = false);
 }

@@ -44,35 +44,6 @@ class Retention {
         if (path.native().size() < 250) return true;
         SetLastError(ERROR_FILENAME_EXCED_RANGE); return false;
     }
-    static std::wstring NextNumber(std::wstring number) {
-        for (auto i = number.size(); i > 0; --i) {
-            if (number[i-1] != L'9') { ++number[i-1]; return number; }
-            number[i-1] = L'0';
-        }
-        return L"1" + number;
-    }
-    static std::set<std::wstring> NumberedSuffixes(const fs::path& target, bool plugins) {
-        std::set<std::wstring> suffixes;
-        const auto main = target.filename().native();
-        const auto effect = pmm_paths::Effect(target).filename().native();
-        const std::wstring side = L".mms-plugins.json";
-        const auto collect = [&](const std::wstring& name, const std::wstring& prefix) {
-            if (name.size() <= prefix.size() || _wcsnicmp(name.c_str(), prefix.c_str(), prefix.size())) return;
-            auto suffix = name.substr(prefix.size());
-            if (suffix.front() == L'0' || suffix.find_first_not_of(L"0123456789") != std::wstring::npos) return;
-            suffixes.insert(std::move(suffix));
-        };
-        const auto directory = target.parent_path().empty() ? fs::path(L".") : target.parent_path();
-        for (const auto& entry : fs::directory_iterator(directory)) {
-            const auto name = entry.path().filename().native();
-            collect(name, main);
-            collect(name, effect);
-            if (plugins && name.size() > side.size() &&
-                !_wcsicmp(name.c_str() + name.size() - side.size(), side.c_str()))
-                collect(name.substr(0, name.size() - side.size()), main);
-        }
-        return suffixes;
-    }
     bool LockVersions(const std::vector<fs::path>& projects) {
         // Prepare every path and handle slot before acquiring the first lock.
         std::vector<std::pair<fs::path, fs::path>> paths;
@@ -144,7 +115,7 @@ public:
         for (auto lock : locks_) CloseHandle(lock);
         SetLastError(error);
     }
-    bool Prepare(const fs::path& target, bool plugins, bool numbered = false) {
+    bool Prepare(const fs::path& target, bool plugins) {
         bool exists = false;
         if (!Exists(target, exists)) return false;
         if (!exists) return true;
@@ -153,25 +124,7 @@ public:
         if (!VersionPath(first)) return false;
         const auto previous = Pair(first, plugins);
         std::vector<fs::path> projects;
-        std::set<std::wstring> suffixes;
-        if (numbered) {
-            suffixes = NumberedSuffixes(target, plugins);
-            std::vector<std::wstring> ordered(suffixes.begin(), suffixes.end());
-            std::sort(ordered.begin(), ordered.end(), [](const auto& a, const auto& b) {
-                return a.size() != b.size() ? a.size() > b.size() : a > b;
-            });
-            std::set<std::wstring> lockedSuffixes{L"1"};
-            for (const auto& suffix : ordered) {
-                const auto next = NextNumber(suffix);
-                const fs::path from(target.native() + suffix), to(target.native() + next);
-                if (!VersionPath(from) || !VersionPath(to)) return false;
-                lockedSuffixes.insert(suffix); lockedSuffixes.insert(next);
-                const auto source = Pair(from, plugins), destination = Pair(to, plugins);
-                for (std::size_t j = 0; j < source.size(); ++j)
-                    moved_.push_back({source[j], destination[j]});
-            }
-            for (const auto& suffix : lockedSuffixes) projects.emplace_back(target.native() + suffix);
-        } else {
+        {
             std::vector<std::vector<fs::path>> levels{active};
             for (;;) {
                 const fs::path next(levels.back().front().native() + L"1");
@@ -192,11 +145,6 @@ public:
         }
         for (std::size_t j = 0; j < active.size(); ++j) copied_.push_back({active[j], previous[j]});
         if (plugins && !LockVersions(projects)) return false;
-        // A version may have appeared/disappeared during lock acquisition.
-        // Reject that plan rather than leave an unexamined generation behind.
-        if (numbered && suffixes != NumberedSuffixes(target, plugins)) {
-            SetLastError(ERROR_BUSY); return false;
-        }
         return Execute();
     }
     void Commit() noexcept { committed_ = true; }
@@ -204,9 +152,9 @@ public:
 
 // Original profile has no plugin pair publisher. Preserve the PMM/EMM pair
 // with the same preparation/rollback rules around its single atomic replace.
-inline bool Publish(const fs::path& temporary, const fs::path& target, bool numbered = false) {
+inline bool Publish(const fs::path& temporary, const fs::path& target) {
     Retention retention;
-    if (!retention.Prepare(target, false, numbered)) return false;
+    if (!retention.Prepare(target, false)) return false;
     if (!MoveFileExW(temporary.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
         return false;
     retention.Commit();

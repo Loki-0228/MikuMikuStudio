@@ -402,7 +402,10 @@ bool ProjectSave::PublishDisk(const wchar_t* staged, const wchar_t* destination,
     if (!impl_->stage.compare_exchange_strong(expected, Impl::Stage::Publishing)) return false;
     try {
         impl_->destination = destination; impl_->copy = copy;
-        PublishProjectPair(fs::absolute(destination),fs::absolute(staged),impl_->data,copy,{},keepPrevious,numberedManualVersions);
+        // An incremental save publishes a fresh unique path; it must neither
+        // replace an existing project nor shift the .pmm1 history chain.
+        PublishProjectPair(fs::absolute(destination),fs::absolute(staged),impl_->data,
+            copy || numberedManualVersions,{},keepPrevious && !numberedManualVersions);
         impl_->stage.store(Impl::Stage::Published, std::memory_order_release);
         return true;
     } catch (const std::exception& e) {
