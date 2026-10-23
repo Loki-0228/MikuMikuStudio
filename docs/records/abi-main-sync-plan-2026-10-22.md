@@ -4,7 +4,9 @@
 
 ## 当前状态
 
-本轮复核另发现 `3782e0c` 的导出结束恢复编辑相机行为尚未同步。main 在 `src/app/avi_record_start.cpp` 保存非跟随模式的模型编辑视角，在 `src/unported/stubs.cpp` 结束导出时恢复。ABI 没有对应快照，结束流程仍在帧应用前刷新投影。此项独立于缓存，须覆盖窗口及全屏导出、正常结束、取消、启动失败与重复结束；在帧应用及视角恢复后重建投影，并核对 AA 历史、相机附着、失去设备和 ABI 回调生命周期。运行态快照不得写入 PMM 或撤销历史。
+本轮初次复核发现 `3782e0c` 的导出结束恢复编辑相机行为遗漏。main 在 `src/app/avi_record_start.cpp` 保存非跟随模式的模型编辑视角，在 `src/unported/stubs.cpp` 结束导出时恢复。ABI 随后完成[自由编辑视角恢复](abi-recording-editor-view-2026-10-23.md)：两个启动入口保存运行态快照，结束时在帧应用和视角恢复后重建实际投影，不写 PMM 或撤销历史，并增加启动重入、父对象身份及场景代次保护。窗口式 BMP 完成、取消和注入故障的生命周期专项在增强配置通过 1,028 项、原始配置通过 975 项；全屏、真实编码器及平台验收仍待完成。产品构建通过，main 核对仍为 `fed9768`。此项独立于缓存，不能据此宣布整个来源提交同步完成。
+
+缓存后端另完成[指定身份初始化](abi-cache-owned-initialization-2026-10-23.md)，使首版业务 manifest 与目录 owner 一致。它不改变原文件格式或恢复许可；有可信操作记录的半写恢复、业务 Store、容量协调和消费者仍待实现。
 
 | 功能 | ABI 状态 | 下一步 |
 | --- | --- | --- |
@@ -21,7 +23,7 @@
 | 编辑控件修复 | [长数值前缀](abi-transform-prefix-2026-10-23.md)、[未绑定旋转](abi-unbound-rotation-2026-10-23.md)及[物理接管](abi-physics-takeover-2026-10-23.md)已分别验证。 | 保留 ABI 事务顺序及原配置，其余入口继续逐项核对。 |
 | 负数关键帧 | 尚未实现。 | 使用共同历史、稳定对象身份及独立扩展数据，不能引入第二个撤销栈。 |
 
-上一轮 DSH 正式 CLI `status` 返回 `fetch failed`，未进入阴影任务派发，用户随后暂停。用户于本轮恢复 DSH；真实宿主核对工作区后承担独立原生菜单快照及 HUD 预览回滚的原子修改，Codex 负责设计、审查、文档及实际验收。菜单辅助模块两配置各 66 项通过，附件父绑定、删除与相邻历史十组共 95,042 项通过。完整 UI 目录尚未接入，详见[本轮记录](abi-geometry-history-2026-10-22.md)。
+以下保留早期委派记录；当前已按用户最新要求暂停 DSH。早期 DSH 正式 CLI `status` 返回 `fetch failed`，未进入阴影任务派发，用户随后暂停，后曾恢复；真实宿主核对工作区后承担独立原生菜单快照及 HUD 预览回滚的原子修改，Codex 负责设计、审查、文档及实际验收。菜单辅助模块两配置各 66 项通过，附件父绑定、删除与相邻历史十组共 95,042 项通过。该阶段尚未接入 UI 目录；后续[只读目录首批](abi-ui-catalog-2026-10-22.md)已开放原注册树、已物化主菜单及明确登记控件，完整本体目录仍未完成。分工过程见[当批记录](abi-geometry-history-2026-10-22.md)。
 
 ## 缓存与读取的分批方案
 
@@ -56,7 +58,7 @@ ABI 已有 `model_vertex_cache`、`import_texture_cache` 及 `effect_file_watch_
 
 已有 `mesh_bake_cache` 与上述可再生缓存不同：源 ABC 删除后，私有副本可能是烘焙结果的唯一来源，保存快照仍会持有它。其文件不能加入效果和纹理缓存的自动淘汰队列。运行数据路径另按[烘焙目录核对](abi-mesh-data-2026-10-23.md)修正和验收。
 
-后端实施边界已继续对照 main 的实际消费者核对。`fed9768` 的管理器相对 `3782e0c` 没有变化。下一批采用可实例化的 `Store(absoluteCacheRoot, absoluteSettingsFile)`，生产包装固定 `data/cache` 和 `data/settings.json`，测试传入自有路径，不复制 main 的生产环境变量路径覆盖。
+后端实施边界已继续对照 main 的实际消费者核对。`fed9768` 的管理器相对 `3782e0c` 没有变化。[配置后端](abi-cache-policy-2026-10-23.md)已实现可实例化的 `Store(absoluteCacheRoot, absoluteSettingsFile)`，生产包装固定 `data/cache` 和 `data/settings.json`，测试传入自有路径，不复制 main 的生产环境变量路径覆盖。下述容量预留及消费者约束仍适用；文件租约、同身份删除、索引发布和显式元数据维护的完成范围见当前状态表。
 
 设置使用现有 `system_settings::Store::WriteSection` 或 `CompareExchangeSection` 更新 `sections.cacheManager`，保留未知字段。预算以 `limitMiB` 存储，不能用返回 uint32 的 `Json::UInt()` 读取 4 GiB 字节值。缺少 section 可以使用约定默认值；已存在但损坏、忙碌或不可读时应拒绝相应缓存操作。设置保存与随后清理是两个结果，不能声称它们是单个可回滚事务。
 
@@ -84,13 +86,13 @@ main `negative_frames.cpp` 的 `State` 自建最多 30 步 undo/redo，按当前
 
 验收至少覆盖 `minimum/-1/0/1/maximum`、跨零混合粘贴、准备与预算失败、两种模式、跨模型删除恢复、全部登记通道、曲线跨零求值、PMM 游标及范围往返、损坏扩展和原有非负文件字节兼容。负帧尚未形成 VMD 导出流程，main 的现有 VMD writer 只遍历非负池，不能把它的通过结果用于本项验收。
 
-## 保存版本、菜单与编辑控件的静态核对
+## 历史静态核对与后续完成状态
 
 10 月 23 日初次只读比较 main 已提交的 `fed9768` 与当时 ABI 源码，确认下列五组行为尚未同步。main 材料通过 `git show` 和 `git diff` 读取，没有读取 main 工作区未提交的文件。下列相关实现文件在 `3782e0c..fed9768` 之间没有新增变化。本节保留初次核对的问题与验收方案，后续已完成项目在各小节及文末补充，不以初次静态核对代替运行证据。
 
 ### 物理模式下的编辑读数
 
-本项后续已按[物理骨骼读数记录](abi-pose-physics-readout-2026-10-23.md)实现，两处旧代码分别触发失败反例，最终轴专项 3,218 项和数值回归 310 项通过。以下保留迁移前问题说明；它不代表后续重置语义和草稿问题已经完成。
+本项后续已按[物理骨骼读数记录](abi-pose-physics-readout-2026-10-23.md)实现，两处旧代码分别触发失败反例，最终轴专项 3,218 项和数值回归 310 项通过。以下保留迁移前问题说明；该读数批次本身未覆盖重置语义和草稿；这些问题的后续完成状态见下面各节。
 
 当骨骼带刚体、`PlaybackPhysicsMode()==3` 且 `bonePhysicsState[bone]!=0` 时，main 的 `PostViewRefresh` 已改为显示编辑后的 `trans/rotQuat`。迁移前 ABI [ui_view_refresh.cpp](../../src/window/ui_view_refresh.cpp) 只判断物理模式和刚体属性，继续读取 `ikBackup`。ABI 自有的 [native_pose_axis.cpp](../../src/plugins/native_pose_axis.cpp) 中 `ReplacePositionDraft` 也使用同一旧判断。因此，修改或清零骨骼后，面板仍可能显示旧物理姿态。
 
@@ -100,15 +102,15 @@ main `negative_frames.cpp` 的 `State` 自建最多 30 步 undo/redo，按当前
 
 绑定旋转及 495 整体重置已分别按[旋转草稿记录](abi-rotation-drafts-2026-10-23.md)和[整体重置记录](abi-pose-reset-2026-10-23.md)实现并验证。普通 495 随后按[普通重置记录](abi-legacy-pose-reset-2026-10-23.md)完成，物理接管也已按[接管记录](abi-physics-takeover-2026-10-23.md)完成本机专项。[普通旋转入口](abi-unbound-rotation-2026-10-23.md)随后完成单骨旧环与局部草稿发布，专项 6,597 项及三个旧入口反例通过。以下保留迁移前差异及方案，不再列为该旋转入口的待办；真实平台验收及本体共同历史全面迁移仍有缺口。
 
-ABI 的位置轴重置已经在成功后调用 `ReplacePositionDraft`，但 `TryResetBoundPoseAxis` 的旋转分支没有同等处理。与此同时，[ui_view_refresh.cpp](../../src/window/ui_view_refresh.cpp) 的 `SetReadoutText` 会保护共同历史绑定中的未提交文本，[ui_edit_commit.cpp](../../src/window/ui_edit_commit.cpp) 则会在失焦时提交草稿。输入旋转值后通过转发命令清零，再离开输入框，旧文本仍可能重新覆盖清零结果。
+迁移前 ABI 的位置轴重置已经在成功后调用 `ReplacePositionDraft`，但 `TryResetBoundPoseAxis` 的旋转分支没有同等处理。与此同时，[ui_view_refresh.cpp](../../src/window/ui_view_refresh.cpp) 的 `SetReadoutText` 会保护共同历史绑定中的未提交文本，[ui_edit_commit.cpp](../../src/window/ui_edit_commit.cpp) 则会在失焦时提交草稿。输入旋转值后通过转发命令清零，再离开输入框，旧文本仍可能重新覆盖清零结果。
 
-[command_control_450.cpp](../../src/window/command_control_450.cpp) 的 `ApplyBoundPoseCommand` 整体重置也没有 main 新增的六个坐标框草稿清理。未绑定共同历史的 `BoneRotEdit` 和分离窗口旋转路径，分别在 [command_control_500.cpp](../../src/window/command_control_500.cpp) 与 [wndproc_stubs.cpp](../../src/window/wndproc_stubs.cpp)，也缺少 main 对旋转修改标志的清理。
+迁移前 [command_control_450.cpp](../../src/window/command_control_450.cpp) 的 `ApplyBoundPoseCommand` 整体重置也没有 main 新增的六个坐标框草稿清理。未绑定共同历史的 `BoneRotEdit` 和分离窗口旋转路径，分别在 [command_control_500.cpp](../../src/window/command_control_500.cpp) 与 [wndproc_stubs.cpp](../../src/window/wndproc_stubs.cpp)，也缺少 main 对旋转修改标志的清理。
 
 ABI 适配必须在事务成功后取消重置影响的草稿，不能直接复制 main 在操作前清除 `EM_SETMODIFY` 的顺序。忙碌、预算不足和准备失败应保留原草稿。成功的数据 no-op 也应取消目标草稿，同时保留 redo、不新增历史。其他输入框中未提交的内容继续保留。现有位置草稿测试已经覆盖这些边界，可在 `--pose-axis-only` 中补旋转用例；整体重置需要下面的独立命令测试入口。验收包括实际失焦提交，不能只检查清零瞬间的内存值。
 
 后续静态核对确认，`RefreshBoundPoseReadout` 在非单位缩放尚未应用时会跳过 `PostViewRefresh`，连同 `BoneRotationEditDegreesX/Y/Z` 一并不更新。旋转重置收尾需要纯四元数／矩阵读数辅助函数，保持现有主窗口和分离窗口的浮点运算顺序；不能为刷新角度强制求值或安装缩放变换。目标及数学准备在事务前完成，派生缓存与目标草稿只在提交成功并重新确认对象、绑定和窗口身份后更新。其他轴草稿继续保留。
 
-菜单 302 的单位旋转 no-op 和整体 495 的 anyChange=false 路径还须在取消草稿前检查共同历史导航及编辑门禁，防止在另一个已准备事务期间修改输入。整体 495 只取消本次实际影响且当前显示骨骼的位置、旋转和缩放九个框；空选择或显示骨骼不在选中集合时不取消草稿。增强版未绑定共同历史的旧入口也须单独适配和验收。
+当时的适配方案要求菜单 302 的单位旋转 no-op 和整体 495 的 anyChange=false 路径在取消草稿前检查共同历史导航及编辑门禁，防止在另一个已准备事务期间修改输入。整体 495 只取消本次实际影响且当前显示骨骼的位置、旋转和缩放九个框；空选择或显示骨骼不在选中集合时不取消草稿。增强版未绑定共同历史的旧入口随后已独立适配和验收，未沿用绑定路径的通过结论。
 
 物理骨骼显式重置接管是迁移前的另一项真实行为差异。main 的合法重置会写 `bonePhysicsState=1`；ABI 原先作者值已零的 no-op 会保留 dirty=0，此时 mode 3 刚体骨骼仍显示物理备份。同步该行为应把正在使用物理备份的骨骼从 dirty=0 改为 1 纳入同一姿态事务，不能在显示刷新或事务之外补写标记，也不能静默丢弃 redo。普通非物理骨骼的重复零位仍按既有 no-op 约定处理。失败保留标记、备份、草稿及重做；撤销恢复物理读数，重做恢复作者读数。接管影响整根骨骼，必须验证其他分量的读数切换。原静态方案保存在本批证据目录 `reset-followup-design.md`；实现与测试现见上述接管记录，真实模拟和硬件仍未验收。
 
@@ -116,19 +118,19 @@ ABI 适配必须在事务成功后取消重置影响的草稿，不能直接复�
 
 绑定入口已按[整体重置记录](abi-pose-reset-2026-10-23.md)完成，新增独立命令测试入口及旧目标反例。普通启动未绑定路径随后按[普通重置记录](abi-legacy-pose-reset-2026-10-23.md)使用原撤销环实现并验收。以下保留原差异；物理 dirty-only 接管已另批实现，见上述接管记录。
 
-main 的命令 495 已改为把所有选中骨骼的位移清零、旋转恢复单位四元数、缩放恢复单位值。ABI [command_control_450.cpp](../../src/window/command_control_450.cpp) 的共同历史路径仍保留根骨骼 X/Z 位移，并对其他无父骨骼执行旧旋转和根偏移计算。这使部分骨骼在整体初始化后仍保留偏移。
+main 的命令 495 已改为把所有选中骨骼的位移清零、旋转恢复单位四元数、缩放恢复单位值。迁移前 ABI [command_control_450.cpp](../../src/window/command_control_450.cpp) 的共同历史路径保留根骨骼 X/Z 位移，并对其他无父骨骼执行旧旋转和根偏移计算。这使部分骨骼在整体初始化后仍保留偏移。
 
-[native_pose_command_checks.inc](../../tests/native_pose_command_checks.inc) 目前也明确要求保留根 X/Z，并验证无父骨骼执行旧变换计算。这些期望需要随行为同步更新。最小修复只替换目标姿态构造，继续使用 `NativePoseScope`、一次共同事务及原有失败回滚，不引入 main 的旧 `PushBoneEditUndo`。无父骨骼归零不再需要 D3DX 参与。
+当时的 [native_pose_command_checks.inc](../../tests/native_pose_command_checks.inc) 也明确要求保留根 X/Z，并验证无父骨骼执行旧变换计算。这些期望需要随行为同步更新。最小修复只替换目标姿态构造，继续使用 `NativePoseScope`、一次共同事务及原有失败回滚，不引入 main 的旧 `PushBoneEditUndo`。无父骨骼归零不再需要 D3DX 参与。
 
-`NativePoseCommandChecks` 当前仅在默认历史测试集合中调用，尚无独立参数。实施时应先增加明确的 `--pose-command-only` 入口，不运行默认全套历史测试。专项检查根骨骼、有父骨骼、无父骨骼、混合选择、空选择、重复重置、缩放、跨模型撤销重做、预算和分配失败，以及关键帧和旧撤销环保持不变。原始兼容配置的行为边界需单独核对，不能因完整配置修复而无意改写原始构建。
+当时的 `NativePoseCommandChecks` 仅在默认历史测试集合中调用。后续已增加独立的 `--pose-command-only` 入口，并以此完成整体重置专项。原验收方案不要求运行默认全套历史测试。专项检查根骨骼、有父骨骼、无父骨骼、混合选择、空选择、重复重置、缩放、跨模型撤销重做、预算和分配失败，以及关键帧和旧撤销环保持不变。原始兼容配置的行为边界需单独核对，不能因完整配置修复而无意改写原始构建。
 
 ### 独立的手动编号保存版本
 
 2026-10-23 更新：[编号保存](abi-numbered-save-2026-10-23.md)已完成本节 main 行为同步及 ABI 三成员归档。以下为实施前差异记录；版本链硬中断与新 EMM 同快照确认不属于本批已完成范围。
 
-ABI 仍只有 `keepPrevious`，历史版本沿 `.pmm1/.pmm11/...` 链移动。main 新增独立的 `numberedManualVersions`，让手动保存生成 `.pmm1/.pmm2/.pmm3/...`，支持稀疏编号、孤立 EMM 和十进制进位。周期备份不使用此编号策略。main 备份对话框也增加了开关及当前 EMM 保存状态，ABI [autosave_dialog.cpp](../../src/window/autosave_dialog.cpp) 尚未接入。
+迁移前 ABI 只有 `keepPrevious`，历史版本沿 `.pmm1/.pmm11/...` 链移动。main 新增独立的 `numberedManualVersions`，让手动保存生成 `.pmm1/.pmm2/.pmm3/...`，支持稀疏编号、孤立 EMM 和十进制进位。周期备份不使用此编号策略。main 备份对话框也增加了开关及当前 EMM 保存状态，当时 ABI [autosave_dialog.cpp](../../src/window/autosave_dialog.cpp) 尚未接入；现已随编号保存批次实现。
 
-ABI 选项需要沿实际保存事务传递：[autosave.hpp](../../include/mikumikustudio/autosave.hpp) 和 [autosave.cpp](../../src/app/autosave.cpp) 的设置及 JSON、[pmm_save.cpp](../../src/io/pmm_save.cpp) 的 `SceneSnapshot`、[integration.cpp](../../src/plugins/integration.cpp) 的 `ProjectSave::PublishDisk`、[project_storage.cpp](../../src/plugins/project_storage.cpp) 的 `PublishProjectPair`，最后进入 [pmm_save_versions.hpp](../../src/io/pmm_save_versions.hpp) 的 `Retention::Prepare`。
+已实现的 ABI 选项沿实际保存事务传递：[autosave.hpp](../../include/mikumikustudio/autosave.hpp) 和 [autosave.cpp](../../src/app/autosave.cpp) 的设置及 JSON、[pmm_save.cpp](../../src/io/pmm_save.cpp) 的 `SceneSnapshot`、[integration.cpp](../../src/plugins/integration.cpp) 的 `ProjectSave::PublishDisk`、[project_storage.cpp](../../src/plugins/project_storage.cpp) 的 `PublishProjectPair`，最后进入 [pmm_save_versions.hpp](../../src/io/pmm_save_versions.hpp) 的 `Retention::Prepare`。
 
 现有 ABI `Retention` 同时保护 PMM、EMM、插件 sidecar 和版本保存锁，不能被 main 的两文件发布实现替换。编号扫描还必须将孤立插件 sidecar 算作占用，并保留中断保存记录检查、移动前锁定、失败恢复及原项目配对身份。系统设置继续存入 `data/settings.json`，不能重新建立独立设置文件。
 
@@ -136,22 +138,24 @@ ABI 选项需要沿实际保存事务传递：[autosave.hpp](../../include/mikum
 
 ### 菜单首次绘制与长输入框的前缀
 
-ABI 尚无 main 的 `menu_initial_paint` 模块。[wndproc.cpp](../../src/window/wndproc.cpp) 没有其消息处理，[effect_display.cpp](../../src/exports/effect_display.cpp) 没有为 MME 编辑器及子控件安装补绘。main 按 owner 和 HMENU 跟踪弹出菜单，在首次可见、首次 idle 及可见约 220 ms 后补绘，并在菜单关闭或 owner 销毁时清理。这针对菜单首次打开时文本尚未正确绘制的情况。
+菜单补绘已按[独立记录](abi-menu-initial-paint-2026-10-23.md)实现并通过两配置核心及实际入口专项。增强版在主窗口和效果编辑器安装子类，原始配置保持原路径；真实菜单像素、完整 MME 环境及平台仍待验收。以下两段保留实施前的差异与测试方案。
+
+迁移前 ABI 尚无 main 的 `menu_initial_paint` 模块。[wndproc.cpp](../../src/window/wndproc.cpp) 没有其消息处理，[effect_display.cpp](../../src/exports/effect_display.cpp) 没有为 MME 编辑器及子控件安装补绘。main 按 owner 和 HMENU 跟踪弹出菜单，在首次可见、首次 idle 及可见约 220 ms 后补绘，并在菜单关闭或 owner 销毁时清理。这针对菜单首次打开时文本尚未正确绘制的情况。
 
 适配可以先移入独立 helper，再接主窗口与 MME 编辑器，保留菜单命令归属和 ABI 菜单目录。验收需覆盖定时器退出、重入、多个 owner、延迟初始化及没有 idle 消息的菜单。main 的 `tests/menu_first_paint_checks.hpp` 提供了相关模式，但其中声明使用 inactive desktop，不能直接运行或引用为本会话 Default desktop 下的证据。ABI 尚无这些测试参数，需先增加受控入口，仅操作测试自己创建的窗口。
 
 2026-10-23：[长数值显示](abi-transform-prefix-2026-10-23.md)已同步。`CreateUiPanelControl` 对 17 个目标取消居中和右对齐，EDIT 子类在失焦或非聚焦文本更新后回到文本开头，避免隐藏负号和整数前缀。ABI 另加入宿主、窗口、线程及焦点复核，防止回调改变上下文后继续滚动。
 
-该显示修复保留 ABI 现有提交和草稿保护顺序，不覆盖透明度 485、表情权重等有界控件，并维持原始配置布局。真实 EDIT 专项在两配置分别通过 12,153、11,843 项，数值提交及两类旋转重置回归通过。三档字体和宽度模拟不代表真实 DPI 验收，菜单补绘仍待实施。
+该显示修复保留 ABI 现有提交和草稿保护顺序，不覆盖透明度 485、表情权重等有界控件，并维持原始配置布局。真实 EDIT 专项在两配置分别通过 12,153、11,843 项，数值提交及两类旋转重置回归通过。三档字体和宽度模拟不代表真实 DPI 验收。菜单补绘的实现及独立验收见本节开头，不能用 EDIT 专项替代菜单证据。
 
-实施可拆为骨骼读数与重置、手动保存编号、菜单与输入显示三个独立批次。编号保存涉及跨文件事务，不能仅凭辅助函数通过或界面出现新开关就标记完成。
+上述原方案已按骨骼读数与重置、手动保存编号、菜单与输入显示分批完成。编号保存已有实际保存和重开证据，但版本链硬中断恢复与新 EMM 同快照确认仍未完成。
 
-## 后续验收约束
+## 历史批次验收与剩余约束
 
-2026-10-23 追加：[绑定整体重置 495](abi-pose-reset-2026-10-23.md)已完成局部零位、九框草稿取消和共同历史适配。完整配置命令专项 6,235 项、轴 4,185 项、数值 310 项通过，旧根偏移目标及缺少草稿处理的中间版本分别失败。main 核对仍为 `fed9768`。下一批须覆盖普通启动的未绑定 495，随后处理物理显式接管；不能以绑定路径替代用户产品路径验收。
+2026-10-23 追加：[绑定整体重置 495](abi-pose-reset-2026-10-23.md)已完成局部零位、九框草稿取消和共同历史适配。完整配置命令专项 6,235 项、轴 4,185 项、数值 310 项通过，旧根偏移目标及缺少草稿处理的中间版本分别失败。main 核对仍为 `fed9768`。该批之后，普通启动未绑定 495 和物理显式接管均已独立完成；绑定路径的计数没有代替普通入口验收。
 
-2026-10-23 追加：[绑定旋转重置草稿](abi-rotation-drafts-2026-10-23.md)已适配共同历史。每次原生消息后检查对象与窗口身份，成功时取消目标草稿并同步派生角；无变化不清 redo，失败保留草稿。完整配置轴、菜单和数值专项分别通过 4,185、826、310 项，旧实现反例及恢复运行已留存。本批开始核对 main 仍为 `fed9768`。普通启动未绑定入口（包括 495）、物理接管、手动编号保存、菜单绘制及长输入显示继续待实现。
+2026-10-23 追加：[绑定旋转重置草稿](abi-rotation-drafts-2026-10-23.md)已适配共同历史。每次原生消息后检查对象与窗口身份，成功时取消目标草稿并同步派生角；无变化不清 redo，失败保留草稿。完整配置轴、菜单和数值专项分别通过 4,185、826、310 项，旧实现反例及恢复运行已留存。本批开始核对 main 仍为 `fed9768`。该批当时留下的普通启动未绑定入口（包括 495）、物理接管、手动编号保存、菜单绘制及长输入显示，现已由前述后续批次实现并分别验收。
 
-2026-10-23 再追加：[普通未绑定整体重置 495](abi-legacy-pose-reset-2026-10-23.md)完成局部零位、九框取消及原撤销环的准备后发布，普通插件初始化不启用共同历史绑定。最终与反例恢复后的专项均为 5,197 项通过，旧重置及旧失焦实现分别触发明确断言失败。首次缩放状态创建覆盖 198 个分配失败点，作者数据、旧环及草稿均保持；两个旧缓冲释放、实际原撤销与重做、混合选择也已验证。相邻命令、轴和数值回归通过，两产品导入表未变，提交前 main 仍为 `fed9768`。前文未绑定 495 待迁移事项在本批完成；未绑定旋转草稿、物理接管及其他待办保持。
+2026-10-23 再追加：[普通未绑定整体重置 495](abi-legacy-pose-reset-2026-10-23.md)完成局部零位、九框取消及原撤销环的准备后发布，普通插件初始化不启用共同历史绑定。最终与反例恢复后的专项均为 5,197 项通过，旧重置及旧失焦实现分别触发明确断言失败。首次缩放状态创建覆盖 198 个分配失败点，作者数据、旧环及草稿均保持；两个旧缓冲释放、实际原撤销与重做、混合选择也已验证。相邻命令、轴和数值回归通过，两产品导入表未变，提交前 main 仍为 `fed9768`。前文未绑定 495 待迁移事项在该批完成；未绑定旋转草稿和物理接管随后也已完成。当前缺口以文首状态表及各批验收边界为准。
 
-先实施不依赖磁盘管理的预读、适配名称和有界几何缓存，再接缓存管理、效果和纹理。透明排序、控件修复及负帧分别审查。每批实际源码、失败反例、构建产物和运行报告均须留存，main 的验证不替代 ABI 的共同历史回归。Win7 SP1 x64、CPU 基础路径、AMD、data 目录及原始兼容配置要求保持；本轮没有新平台或视觉验收结果。
+预读、适配名称、有界几何缓存、透明排序和本记录列出的控件修复已有独立实现及证据。缓存业务接入、效果和纹理消费者、负帧及各批明确保留的边界仍待处理。每批实际源码、失败反例、构建产物和运行报告均须留存，main 的验证不替代 ABI 的共同历史回归。Win7 SP1 x64、CPU 基础路径、AMD、data 目录及原始兼容配置要求保持；本轮没有新平台或视觉验收结果。
