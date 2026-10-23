@@ -26,14 +26,14 @@
 | `plugin_abi_tests` 构建 | 通过（含生命周期插件、编辑探针、hello 探针及全部检查源） |
 | 默认全量契约套件 | 通过，`PASS checks=44752`，exit 0，23.2 秒；覆盖发现/加载器、生命周期、任务调度、UI 布局与刷新、存储与工程对、编辑历史、属性输入、DATA/STATE/LAYOUT/REPAINT 阶段、事件与依赖图等 |
 | `business_event_tests` 复跑 | 通过，7 项（确认上一批事件通知在套件重建后仍正常） |
-| 已注册 CTest 模式 | 8 个中 6 个通过：panel STATE 530 项、menu STATE 1,106 项、subtree 1,268 项、layout refresh、property refresh、scoped property refresh、data refresh 均通过 |
-| `ui_refresh_subscription_runtime`、`ui_dependency_refresh_runtime` | 失败：均在停止插件后检查 `commands.empty() && elements.size()==6` 时未通过（分别位于 `manager_subscription_refresh_checks.inc:171`、`manager_dependency_refresh_checks.inc:176`）。尝试用上一批事件改动前的构建复跑定位，诊断运行超过 10 分钟预算未完成，原因尚未隔离；不据此认定是既有问题或本批回归 |
+| 已注册 CTest 模式 | 8 个全部通过：panel STATE 530 项、menu STATE 1,106 项、subtree 1,268 项、subscription 6,096 项、dependency 5,601 项、layout/property/scoped property/data refresh 均通过 |
+| 清理断言修正 | 订阅与依赖模式原先在停止插件后硬编码断言 `elements.size()==6`。诊断显示注册表保留的是 8 个宿主元素：6 个插件挂载根加 2 个语义目录观察元素（`mms.catalog.main.controls`、`mms.catalog.main.menu`），没有插件命令或插件元素残留。两个用例改为断言 `commands.empty()` 且所有剩余元素都属于宿主（owner 为 `mms`），不再硬编码根数量 |
 
 测试调用需要传入 hello 探针所在目录（目录内含 `hello_menu.dll` 与 `plugin.json`）、lifecycle DLL 路径与 `manager_edit_probe.dll` 路径。
 
 ## 未完成
 
-- `ui_refresh_subscription_runtime` 与 `ui_dependency_refresh_runtime` 两个 CTest 模式在停止插件后的注册表清理断言失败，原因未隔离；其余 6 个已注册模式通过。默认全量套件不受影响。
+- 订阅/依赖两个模式的清理失败已定位为硬编码宿主根数量过期（新增 2 个语义目录观察元素），修正后 8 个注册模式全部通过；默认全量套件仍通过 44,752 项。
 - 上一批 P1 事件仍缺宿主侧来源：工程关闭、对象删除、语言切换、属性变更、命令状态、计算策略、设备代次/丢失恢复与 DPI 变化。
 - 透明排序性能缓存、真实 MME/MMD 工程观测与外部设备验收仍未完成。
 
