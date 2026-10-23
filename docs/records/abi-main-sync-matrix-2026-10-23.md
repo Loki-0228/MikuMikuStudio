@@ -1,6 +1,6 @@
 # main 行为同步矩阵
 
-核对日期：2026-10-23。main 工作区 `D:/MMD-Next/MMS` 本轮核对时已提交 HEAD 为 `fed9768`；当日晚间 main 又提交 `0fa22b9`，已在下一轮按[近景细节层同步记录](abi-main-0fa22b9-2026-10-23.md)完成行为同步，剩余差异见下方该行。ABI 工作区 `D:/MMD-Next/MMS-abi-dev` 的 `codex/plugin-abi` 为此前提交。分叉点为 `9eec5cf`，核对时 `rev-list --left-right --count main...HEAD` 为 `38 232`。本页只按可观察行为核对，不要求逐提交合并；main 未提交改动没有被读取或复制。
+核对日期：2026-10-23，更新至 2026-10-24。main 工作区 `D:/MMD-Next/MMS` 当前 HEAD 仍为 `d551f1f`（2026-10-24 01:28）；`d551f1f` 行为同步已完成，矩阵内其余待办项状态未变。main 在 2026-10-23 首次核对时为 `fed9768`；当日晚间 main 又提交 `0fa22b9`，已在下一轮按[近景细节层同步记录](abi-main-0fa22b9-2026-10-23.md)完成行为同步，剩余差异见下方该行。ABI 工作区 `D:/MMD-Next/MMS-abi-dev` 的 `codex/plugin-abi` 为此前提交。分叉点为 `9eec5cf`，核对时 `rev-list --left-right --count main...HEAD` 为 `38 232`。本页只按可观察行为核对，不要求逐提交合并；main 未提交改动没有被读取或复制。
 
 状态口径：
 
