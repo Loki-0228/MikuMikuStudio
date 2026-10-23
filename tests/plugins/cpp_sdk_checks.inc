@@ -1,6 +1,7 @@
 #include <mms/cpp/ui.hpp>
 #include <mms/cpp/render.hpp>
 #include <mms/cpp/layout_history.hpp>
+#include <mms/cpp/layout.hpp>
 #include <set>
 #include <type_traits>
 
@@ -526,6 +527,42 @@ static void LayoutHistorySdkChecks() {
     CHECK(sdk::LayoutHistoryServices::Query(x.host, oldHost) == MMS_E_VERSION && !oldHost.ready());
     std::cout << "cpp layout history sdk PASS\n";
 }
+static void LayoutSdkChecks() {
+    Host x;
+    sdk::LayoutServices layout;
+    CHECK(!layout.ready());
+    CHECK(sdk::LayoutServices::Query(x.host, layout) == MMS_OK && layout.ready());
+    MmsUiLayoutHintsV1 hints{}; hints.h = sdk::Header<MmsUiLayoutHintsV1>();
+    CHECK(layout.SetDefaultHints("example.cppsdk.missing", hints) == MMS_E_NOT_FOUND);
+    CHECK(layout.StageHints(999, "example.cppsdk.missing", 1, hints) == MMS_E_NOT_FOUND);
+    MmsHostV1 noService = x.host; noService.queryService = nullptr;
+    sdk::LayoutServices missing;
+    CHECK(sdk::LayoutServices::Query(noService, missing) == MMS_E_ARGUMENT && !missing.ready());
+    Host incompleteHost;
+    incompleteHost.layout.releaseSnapshot = nullptr;
+    sdk::LayoutServices incomplete;
+    CHECK(sdk::LayoutServices::Query(incompleteHost.host, incomplete) == MMS_E_UNSUPPORTED && !incomplete.ready());
+    Host leaseHost;
+    unsigned releases = 0;
+    leaseHost.layout.context = &leaseHost;
+    leaseHost.layout.acquireSnapshot = [](void*, MmsUiLayoutSnapshotV1* out) -> MmsResult {
+        if (!out) return MMS_E_ARGUMENT;
+        *out = {}; out->h = sdk::Header<MmsUiLayoutSnapshotV1>(); out->handle = 9;
+        return MMS_OK;
+    };
+    leaseHost.layout.releaseSnapshot = [](void* p, MmsHandle handle) {
+        if (handle == 9) ++static_cast<Host*>(p)->invokes;
+    };
+    sdk::LayoutServices leased;
+    CHECK(sdk::LayoutServices::Query(leaseHost.host, leased) == MMS_OK);
+    sdk::LayoutSnapshotLease lease;
+    CHECK(leased.AcquireSnapshot(lease) == MMS_OK && lease.valid() && lease.get() == 9);
+    sdk::LayoutSnapshotLease moved = std::move(lease);
+    CHECK(!lease.valid() && moved.valid() && moved.get() == 9);
+    CHECK(moved.Release() == MMS_OK && !moved.valid() && leaseHost.invokes == 1);
+    CHECK(moved.Release() == MMS_OK && leaseHost.invokes == 1);
+    std::cout << "cpp layout sdk PASS\n";
+}
 } // namespace cpp_sdk_checks
 
 static void CppSdkChecks() {
@@ -537,4 +574,5 @@ static void CppSdkChecks() {
     cpp_sdk_checks::PropertySurfaceLeaseChecks();
     cpp_sdk_checks::RenderChecks();
     cpp_sdk_checks::LayoutHistorySdkChecks();
+    cpp_sdk_checks::LayoutSdkChecks();
 }
