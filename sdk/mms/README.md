@@ -61,7 +61,7 @@ cmake --build build/hello-menu --config Release
 | `mms.ui.catalog` 1.0 | [UI 只读目录](ui-catalog.md)：原注册树、主窗口已物化菜单及已登记控件；原元素句柄、角色、已知字段、范围、实例和工程代次；不可变快照与单项解析。C++17 包装调用同一底层服务。完整本体目录及原生命令写入仍未开放。 |
 | `mms.ui.surface` 1.0 | 菜单、工具栏、工作区页签和属性扩展行的 anchor 查询；各位置通过 allowedKinds 声明范围。原生子窗口工厂、多个视图、尺寸、隐藏、焦点与销毁仍遵守原挂载限制。 |
 | `mms.ui.layout` 1.0 | 默认布局提示、事务内用户覆盖、实际几何快照；行、列、换行和网格；伸缩、上下限、隐藏占位；工具栏 BUTTON、GROUP 和 SEPARATOR 可通过 `MMS_UI_OVERFLOW_MENU=3` 选择命令溢出菜单。 |
-| `mms.ui.layout` 1.1 | 在 1.0 之上追加[布局撤销历史](layout-history.md)：查询撤销/重做能力与深度，撤销或重做保存的布局偏好快照；仅进程内、上限 32。 |
+| `mms.ui.layout` 1.1 | 在 1.0 之上追加[布局撤销历史](layout-history.md)：查询撤销/重做能力与深度，撤销或重做保存的布局偏好快照；仅进程内、上限 32；`mms::sdk::LayoutHistoryServices` C++17 封装。 |
 | `mms.ui.refresh` 1.0 | 同插件注册对象的 SELF、SUBTREE、显式 DEPENDENTS 异步刷新。GROUP 无 SELF 绘制区；各成员按 DATA、STATE、一次 LAYOUT、REPAINT 执行，使用原 handle、票据和队列。SUBTREE 支持局部坐标映射；DEPENDENTS 排除种子、按拓扑顺序处理可达目标，使用整目标损伤。两种集合 DATA 原子捕获来源版本，sourceRevision=0 表示集合。 |
 | `mms.ui.refresh.dependencies` 1.0 | 同客户端原目标间的显式 DAG。循环检测、配额、图版本及生命周期失效共用原刷新队列；[C ABI 与 C++17 封装](refresh-dependencies.md)使用同一边句柄。显式 DATA 来源可通过订阅服务 1.1 自动传播。 |
 | `mms.ui.refresh.subscribe` 1.0、1.1 | 1.0 为原 binding 提供 SELF 自动刷新。1.1 追加范围登记及扩展状态，使用原 GROUP 或其他目标作种子，按 SUBTREE 或 DEPENDENTS 执行单张复合票据；已接受来源集合不受后续发布改写。见[范围参考](scoped-refresh-subscriptions.md)。 |

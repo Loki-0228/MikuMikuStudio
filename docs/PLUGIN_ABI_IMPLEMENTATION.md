@@ -249,7 +249,7 @@ R3 拖动与插件区域问题已由用户确认恢复。按需求归类的当�
 | P2 | 原属性及共同历史范围传播 | 本机已验证 | 属性服务 1.1 使用独立触发属性与原种子，按同一票据执行 SUBTREE 或 DEPENDENTS。C++17 包装操作相同句柄，原 1.0 前缀保持。证据见[范围记录](records/abi-scoped-property-2026-10-22.md)及[观察恢复](records/abi-scoped-observation-2026-10-22.md)；连续 binding 与 CaptureProperty MEMORY 的旧恢复缺口仍待独立修复。 |
 | P2 | 本体菜单、控件、业务命令全部语义登记 | 未实现 | 新注册表目前覆盖新 ABI 插件。 |
 | P2 | 布局持久化、缺失插件保留 | 本机已验证 | 用户覆盖按稳定 ID 保存到程序旁 `data/settings.json` 的 `pluginUi`，旧布局仅缺失时迁移；分区 CAS、其他设置合并、重启、关闭事件及 EXE 改名通过。 |
-| P2 | 布局撤销历史 | 本机已验证 | [布局历史批次](records/abi-layout-history-2026-10-24.md)：`mms.ui.layout` 1.1 追加 `queryHistory`／`undo`／`redo`。成功且改变保存偏好的布局事务记录提交前 JSON，撤销栈 32、新提交清空重做。真实布局事务验证撤销恢复偏好、重做还原、空栈 NOT_READY，默认套件 44,784 项与宿主探针通过。历史不持久化、无热键与 C++ 包装。 |
+| P2 | 布局撤销历史 | 本机已验证 | [布局历史批次](records/abi-layout-history-2026-10-24.md)：`mms.ui.layout` 1.1 追加 `queryHistory`／`undo`／`redo`。成功且改变保存偏好的布局事务记录提交前 JSON，撤销栈 32、新提交清空重做。真实布局事务验证撤销恢复偏好、重做还原、空栈 NOT_READY，默认套件 44,784 项与宿主探针通过。[C++17 封装批次](records/abi-layout-history-sdk-2026-10-24.md)补齐 `mms::sdk::LayoutHistoryServices` 与假宿主契约（默认套件 44,781 项，输出 `cpp layout history sdk PASS`）。历史不持久化、无热键与界面入口。 |
 | P2a | 可选布局/绘制面积/帧驱动/场景/物理/设备计数 | 本机已验证 | `MMS_UI_METRICS` 输出 JSONL；受控损伤矩形触发真实 WM_PAINT 和 NM_CUSTOMDRAW，纯 UI 的 scene、effectBegin、present、reset 增量均为 0。effectBegin 是外层代理 BeginScene 入口，不是 MME 内部阶段计数。 |
 | P2a | MME 内部阶段计数和 ABBA 性能基线 | 未实现 | 不宣称性能改善。 |
 | P2b | 局部 GDI 缓冲、批量 HWND 应用及失败恢复 | 本机已验证 | 多父窗口分批、验证实际坐标、失败回滚、缓冲复用/初始化/尺寸键；接入新工具栏及扩展区。2026-10-20 把主窗口尺寸、侧栏拖动、底部分隔线、曲线入口和视口字体调整统一到同一布局批次：字体先提交测量、几何后统一绘制，失败恢复原字体，插件延迟绘制交给外层批次；`ui_control_layout_contract` 重复 6／6 及最终 21／21、18／18 通过，见 [UI 框架记录](records/abi-ui-framework-2026-10-19.md)。 |

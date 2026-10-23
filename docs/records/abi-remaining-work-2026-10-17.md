@@ -33,6 +33,9 @@
 
 
 
+
+[布局撤销历史 C++17 封装](abi-layout-history-sdk-2026-10-24.md)：新增 `mms::sdk::LayoutHistoryServices`，查询 1.1 表并转发 Info／Undo／Redo／SetDefaultHints；假宿主契约覆盖查询参数、旧宿主 VERSION、缺失函数 UNSUPPORTED、字段与转发，默认契约套件 44,781 项通过并输出 `cpp layout history sdk PASS`。本批只改 SDK 头与测试。另核对透明排序遮挡测试：当前 HEAD 与透明批次 `3f37a38` 同样失败 27 个双层像素样本，说明失败不是后续 ABI 变更或本批引起，GPU 缓存仍不能据此实现。
+
 [渲染服务帧信息](abi-render-frame-2026-10-24.md)：`mms.render` 的成功 Present 现在递增帧序号并记录真实 0 号后缓冲宽高与 D3DFORMAT；`PluginFramePresented` 由 `frame_driver` 在 Present 成功后调用，lifecycle 探针日志验证 `frame=1 size=1463x914 fmt=21` 与 `RENDER_FRAME_SEEN`，宿主探针 8 项通过。真实播放循环端到端、DX9 帧生命周期钩子、post 与真实设备丢失仍未完成。
 
 [渲染服务 C++17 封装](abi-render-sdk-2026-10-24.md)：新增 `mms::sdk::RenderServices`／`RenderLease`，封装查询、信息读取、设备租约获取/显式释放与移动语义；假宿主契约覆盖缺失服务/函数、参数、幂等释放与句柄归属，默认契约套件 44,772 项通过并输出 `cpp render sdk PASS`。本批只改 SDK 头与测试；产品与 release 未变。同期透明排序 GPU 缓存尝试因 `model_alpha_occlusion_tests --precision maximum` 出现 27 个像素失败而回退，未修改基线同样失败，说明是既有问题；透明排序性能缓存仍需先定位该失败。
