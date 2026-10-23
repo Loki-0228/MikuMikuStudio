@@ -16,6 +16,9 @@
 [恢复 ABI 契约套件构建](abi-plugin-abi-suite-restore-2026-10-24.md)：`084699a` 的编号配对测试在 `1cd0242` 改回每次手动保存写新文件、`PublishProjectPair` 恢复 6 参数后已过时，导致 `plugin_abi_tests` 不可编译。删除过时的 `NumberedVersionStorageChecks`（当前行为由 `project_save_export_tests --numbered-only` 与保留链 `VersionStorageChecks` 覆盖），未改生产代码。套件重建后默认全量契约 `PASS checks=44752`，exit 0，23.2 秒；`business_event_tests` 复跑 7 项通过。已注册 CTest 模式 8 个全部通过；订阅/依赖模式的清理断言原硬编码宿主根数量 6，现改为只检查无插件残留（宿主现有 6 个插件挂载根加 2 个语义目录观察元素）。
 
 
+
+[对象删除与 DPI 事件](abi-host-events-object-dpi-2026-10-24.md)接入 `OBJECT_REMOVED`（模型与附件删除前取 `FindSceneObjectIdentity`，事件带 `MmsObjectRef`；`Manager::Event` 增加对象参数）与 `DPI_CHANGED`（运行时窗口子类处理 `WM_DPICHANGED` 并入队 `MmsCodeEventV1`）。真实 lifecycle 插件宿主探针通过，日志覆盖 8 个事件；10 个相关 CTest 模式与默认全量契约 44,752 项通过；两产品构建通过，正式 release 未覆盖。属性变更、命令状态、计算策略事件仍未接入；DPI 消息来源与对象删除真实菜单路径未端到端触发。
+
 [宿主侧业务事件](abi-host-events-2026-10-24.md)接入 `PROJECT_CLOSED`、`LANGUAGE_CHANGED`、`DEVICE_LOST`、`DEVICE_RESTORED`：宿主动作入队后经 posted message 在安全边界投递，负载为 `MmsProjectEventV1`／`MmsCodeEventV1`／`MmsDeviceEventV1`（版本 1），设备代次在恢复时递增；调用点覆盖工程重置、菜单 260、Present 丢失分支与 `PostDeviceReset` 成功路径。真实 lifecycle 插件宿主探针通过（4 项，插件日志含四个事件），10 个相关 CTest 模式与默认全量契约 44,752 项通过，两产品构建通过，正式 release 未覆盖。对象删除、属性/命令状态、计算策略与 DPI 变化事件仍未接入；真实设备丢失/重置未故障注入。
 
 [P1 业务事件通知（UI 注册表与布局）](abi-business-events-2026-10-24.md)补齐插件运行时自身负责的两个来源：注册表变更与布局事务提交在 `Drain` 中合并投递 `UI_REGISTRY_CHANGED`／`LAYOUT_CHANGED`，负载为最终修订号（`MmsRevisionEventV1` 版本 1），投递发生在注册表回调之外。独立宿主探针加载真实 lifecycle 插件，7 项检查通过；两产品构建通过，正式 release 未覆盖。工程关闭、对象删除、语言切换、属性变更、命令状态、计算策略、设备代次/丢失恢复、DPI 变化等事件仍未接入；重建 `plugin_abi_tests` 时发现 `storage_checks.inc` 的 `PublishProjectPair` 参数个数与 API 不符的既有编译问题。
