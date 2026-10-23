@@ -15,6 +15,8 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
+#include <string>
 #include <vector>
 
 using namespace mikumikustudio;
@@ -71,7 +73,7 @@ template<class Function> void Hook(Function target, Function detour, Function* o
 }
 
 #if !MMD_ORIGINAL_PROFILE
-void CheckShadowCheckboxPainting(MMDApp* app, HWND checkbox) {
+void CheckShadowCheckboxPainting(MMDApp* app, HWND checkbox, const char* caption) {
     RECT client{}, main{};
     GetClientRect(checkbox, &client);
     GetClientRect(app->MainWindow(), &main);
@@ -100,16 +102,17 @@ void CheckShadowCheckboxPainting(MMDApp* app, HWND checkbox) {
                 origin.x, origin.y, client.right, client.bottom, main.right, main.bottom,
                 app->state.optflag[0], app->state.optflag[6], GetPixel(painted, x, y), GetPixel(panel, origin.x+x, origin.y+y));
         }
-        Check(matches, "shadow filter background matches its shadow panel after theme change");
-        unsigned caption = 0;
+        if (!matches) Check(false, caption);
+        else Check(true, caption);
+        unsigned textPixels = 0;
         for (int y = 1; y < client.bottom - 1; ++y)
             for (int x = 20; x < client.right - 4; ++x) {
                 const COLORREF color = GetPixel(painted, x, y);
-                caption += std::abs(int(GetRValue(color))-app->UiTextRed()) < 20 &&
+                textPixels += std::abs(int(GetRValue(color))-app->UiTextRed()) < 20 &&
                     std::abs(int(GetGValue(color))-app->UiTextGreen()) < 20 &&
                     std::abs(int(GetBValue(color))-app->UiTextBlue()) < 20;
             }
-        Check(caption > 8, "shadow filter caption uses the configured theme text color");
+        Check(textPixels > 8, "shadow checkbox caption uses the configured theme text color");
     }
     app->ThemeColorAt(20) = savedTop;
     app->ThemeColorAt(11) = savedBottom;
@@ -143,6 +146,8 @@ int main(int argc, char** argv) {
         return failures ? 1 : 0;
     }
     const auto light = app->SceneLight();
+    const HWND dynamic = GetDlgItem(app->MainWindow(), panel::kAdaptiveShadowCheckbox);
+    const HWND filterBox = GetDlgItem(app->MainWindow(), panel::kShadowFilterCheckbox);
     const HWND shadowSlider = GetDlgItem(app->MainWindow(), panel::kSelfShadowRangeSlider);
     const HWND shadowEdit = GetDlgItem(app->MainWindow(), panel::kSelfShadowRangeEdit);
     const auto checkPrecision = [&](int expected) {
@@ -152,11 +157,14 @@ int main(int argc, char** argv) {
               std::atoi(text) == expected && ShadowSliderPosition(app) == expected,
               "mode switch preserves the precision value and slider position");
     };
-    Check(!GetDlgItem(app->MainWindow(), panel::kAdaptiveShadowCheckbox) &&
-          !app->AdaptiveShadowResolution(),
-          "independent dynamic precision control is retired");
 #if !MMD_ORIGINAL_PROFILE
-    CheckShadowCheckboxPainting(app, GetDlgItem(app->MainWindow(), panel::kShadowFilterCheckbox));
+    Require(dynamic != nullptr, "full build offers the dynamic precision control");
+    Check(IsWindowEnabled(dynamic), "dynamic precision control starts enabled");
+    CheckShadowCheckboxPainting(app, dynamic, "dynamic precision checkbox matches its shadow panel");
+    CheckShadowCheckboxPainting(app, filterBox, "shadow filter checkbox matches its shadow panel");
+#else
+    Check(!dynamic && !app->AdaptiveShadowResolution(),
+          "original profile keeps the uniform precision without a dynamic control");
 #endif
     for (int precision : {0, 6560, 9999, 5000}) {
         SendMessageW(shadowSlider, TBM_SETPOS, TRUE, precision);
@@ -169,24 +177,79 @@ int main(int argc, char** argv) {
     app->ShadowDistance() = .01234567f; // A keyframe's unrounded value.
     SyncSelfShadowControls(app);
     checkPrecision(8765);
-    app->SceneModified() = 0;
-    // ABI stores shadow preferences in the central settings file, not the old
-    // per-installation Data/adaptive_shadow.ini. Both legacy forms must stay
-    // inert after the independent dynamic precision switch was retired.
-    Check(system_settings::WriteSection("shadow", "{\"adaptive\":true,\"filterEnhanced\":false}") ==
-          system_settings::Result::Ok, "seed this run central shadow preferences");
-    LoadShadowResolutionPreference(app);
-    Check(!app->AdaptiveShadowResolution() && app->ShadowDistance() == .01234567f && !app->SceneModified(),
-          "central shadow mode preference cannot re-enable dynamic precision or overwrite project coverage");
-    SyncSelfShadowControls(app);
-    checkPrecision(8765);
+    const float keyedRange = app->ShadowDistance();
+    const int keyedModified = app->SceneModified();
+#if !MMD_ORIGINAL_PROFILE
     const auto preference = std::filesystem::path(app->ExeDir()) / L"Data/adaptive_shadow.ini";
-    { std::ofstream old(preference); old << "1 0\n"; }
+    const bool preferenceExisted = std::filesystem::exists(preference);
+    std::string previousPreference;
+    { std::ifstream input(preference, std::ios::binary);
+      previousPreference.assign((std::istreambuf_iterator<char>(input)), {}); }
+    const auto toggleDynamic = [&](bool enabled) {
+        SendMessageW(dynamic, BM_SETCHECK, enabled ? BST_CHECKED : BST_UNCHECKED, 0);
+        SendMessageW(app->MainWindow(), WM_COMMAND,
+            MAKEWPARAM(panel::kAdaptiveShadowCheckbox, BN_CLICKED),
+            reinterpret_cast<LPARAM>(dynamic));
+    };
+    toggleDynamic(true);
+    Check(app->AdaptiveShadowResolution(), "dynamic checkbox enables distance-based precision");
+    Check(app->ShadowDistance() == keyedRange && app->SceneModified() == keyedModified,
+          "enabling dynamic precision keeps the keyed precision and scene state");
+    toggleDynamic(false);
+    Check(!app->AdaptiveShadowResolution() && app->ShadowDistance() == keyedRange,
+          "disabling dynamic precision returns to the uniform precision");
+    // The ABI branch keeps shadow preferences in data/settings.json. The
+    // central section is authoritative for both switches.
+    Check(system_settings::WriteSection("shadow", "{\"adaptive\":true,\"filterEnhanced\":false}") ==
+          system_settings::Result::Ok, "seed central dynamic precision preference");
     LoadShadowResolutionPreference(app);
-    Check(!app->AdaptiveShadowResolution() && app->ShadowDistance() == .01234567f && !app->SceneModified(),
-          "legacy preference cannot re-enable dynamic precision or overwrite a keyframe");
-    SyncSelfShadowControls(app);
-    checkPrecision(8765);
+    Check(app->AdaptiveShadowResolution() && !app->ShadowFilterEnhanced() &&
+          app->ShadowDistance() == keyedRange && app->SceneModified() == keyedModified,
+          "central preference restores dynamic precision without touching the keyframe");
+    Check(system_settings::WriteSection("shadow", "{\"adaptive\":false,\"filterEnhanced\":true}") ==
+          system_settings::Result::Ok, "seed central filter preference");
+    LoadShadowResolutionPreference(app);
+    Check(!app->AdaptiveShadowResolution() && app->ShadowFilterEnhanced(),
+          "dynamic and filter preferences round trip independently");
+    // Legacy Data/adaptive_shadow.ini is only a migration source while the
+    // central section is absent. Move the central file aside for each case.
+    const auto settingsPath = system_settings::Path();
+    const auto settingsBackup = std::filesystem::path(settingsPath.wstring() + L".shadow-test-backup");
+    const auto hideCentralSettings = [&]() {
+        std::error_code error;
+        std::filesystem::remove(settingsBackup, error);
+        const bool existed = std::filesystem::exists(settingsPath, error);
+        if (existed) std::filesystem::rename(settingsPath, settingsBackup, error);
+        return existed;
+    };
+    const auto restoreCentralSettings = [&](bool existed) {
+        std::error_code error;
+        std::filesystem::remove(settingsPath, error);
+        if (existed) std::filesystem::rename(settingsBackup, settingsPath, error);
+    };
+    {
+        const bool hadSettings = hideCentralSettings();
+        { std::ofstream migrated(preference); migrated << "1 9999\n"; }
+        LoadShadowResolutionPreference(app);
+        Check(app->AdaptiveShadowResolution() && app->ShadowDistance() == keyedRange,
+              "legacy ini migrates the dynamic switch and ignores the numeric field");
+        restoreCentralSettings(hadSettings);
+    }
+    {
+        const bool hadSettings = hideCentralSettings();
+        { std::ofstream migrated(preference); migrated << "0\nfilter_enhanced=1\n"; }
+        LoadShadowResolutionPreference(app);
+        Check(!app->AdaptiveShadowResolution() && app->ShadowFilterEnhanced() &&
+              app->ShadowDistance() == keyedRange,
+              "legacy ini migrates the filter switch independently");
+        restoreCentralSettings(hadSettings);
+    }
+    app->ShadowFilterEnhanced() = false;
+    Check(system_settings::WriteSection("shadow", "{\"adaptive\":false,\"filterEnhanced\":false}") ==
+          system_settings::Result::Ok, "reset central shadow preferences after the checks");
+    if (preferenceExisted) { std::ofstream saved(preference, std::ios::binary); saved << previousPreference; }
+    else std::filesystem::remove(preference);
+#endif
     unsigned previous = 8192;
     bool ordered = true;
     for (int precision = 0; precision <= 9999; ++precision) {

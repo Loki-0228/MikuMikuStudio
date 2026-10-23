@@ -126,6 +126,7 @@ const char* SemanticLabel(int id) noexcept {
 struct ExtraControl { int id; const char* label; };
 constexpr ExtraControl kExtraControls[] = {
     {panel::kForcePasteButton, "Force paste"},
+    {panel::kAdaptiveShadowCheckbox, "Adaptive shadow resolution"},
     {panel::kShadowFilterCheckbox, "Shadow filtering"},
     {int(curve_editor::kAccessoryCurve), "Accessory curve editor"},
     {int(curve_editor::kInterpolationCurve), "Interpolation curve editor"},

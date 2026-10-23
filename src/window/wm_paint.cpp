@@ -381,11 +381,12 @@ void HandleWindowPaint(MMDApp* app) {
             if (en) {
                 Lbl(app, "shadow precision", hdc, 12, 690 - panelShift, rc.bottom - 87);
                 Lbl(app, "detail", hdc, 12, 690 - panelShift, rc.bottom - 54);
-                Lbl(app, "coarse", hdc, 12, 820 - panelShift, rc.bottom - 54);
+                Lbl(app, "far", hdc, 12,
+                    (app->EnglishUI() == kUiChinese ? 830 : 840) - panelShift, rc.bottom - 54);
             } else {
                 Lbl(app, "\x89\x65\x90\xb8\x93\x78", hdc, 12, 690 - panelShift, rc.bottom - 92);
                 Lbl(app, kJpLblKirei, hdc, 12, 690 - panelShift, rc.bottom - 53);
-                Lbl(app, "\x91\x65\x82\xa2", hdc, 12, 830 - panelShift, rc.bottom - 53);
+                Lbl(app, kJpLblEnpou, hdc, 12, 830 - panelShift, rc.bottom - 53);
             }
 #else
             if (en) {

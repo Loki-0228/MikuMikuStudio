@@ -543,7 +543,15 @@ bool CreateUIControls(MMDApp* app, HWND hwnd) {
     InstallControlSubclass(app, forcePaste, panel::kForcePasteButton);
     SetWindowPos(forcePaste, GetDlgItem(hwnd, 423), 0, 0, 0, 0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    HWND adaptiveShadow = CreateWindowExW(0, L"BUTTON", L"動的精度",
+        WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 0, 0, 84, 18, hwnd,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(panel::kAdaptiveShadowCheckbox)), hInst, nullptr);
+    if (!adaptiveShadow) return false;
     LoadShadowResolutionPreference(app);
+    SendMessageW(adaptiveShadow, BM_SETCHECK, app->AdaptiveShadowResolution() ? BST_CHECKED : BST_UNCHECKED, 0);
+    ApplyUiFontToControl(app, adaptiveShadow, panel::kAdaptiveShadowCheckbox);
+    InstallControlSubclass(app, adaptiveShadow, panel::kAdaptiveShadowCheckbox);
+    InstallPanelCheckboxPaint(adaptiveShadow);
     HWND shadowFilter = CreateWindowExW(0, L"BUTTON", L"平滑化",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX, 0, 0, 84, 18, hwnd,
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(panel::kShadowFilterCheckbox)), hInst, nullptr);

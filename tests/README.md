@@ -260,15 +260,17 @@ MME 测试需在独立目录放入三个 MME DLL，日志必须显示 `PLUGINS m
 
 `python tests/mme_emd_runner.py <mme_display_tests 的 MikuMikuDance.exe> <MME目录> <输出目录> --file-watch` 在四种语言路径下保存测试 FX，验证原生自动重载开关、实际重新编译和屏幕输出颜色。完整包与最小包均运行该模式。`viewport_scale_performance_runner.py --trace-targets --project-settings` 记录实际 StageNoRay、ray 在 100%、25%、25%、100% 预览下的绘制目标，检查 MME 固定阴影保持原尺寸、默认阴影随比例调整。`--no-file-watch` 仅用于关闭通知缓存的对照。实施范围和验证记录见 [MME 预览与自动重载](../docs/records/performance/preview.md#record-mme-preview-optimization)。
 
-`display_compatibility_tests` 与 `display_compatibility_runner.py` 保留为回归测试。它们使用隐藏生产窗口和真实 MOV 录制，验证阴影精度滑条与数值同步、旧动态精度设置不再启用独立开关、菜单开关可双向操作、预览拖动和尺寸切换，以及导出分辨率和 PNG 帧内容。各轮写入新的输出目录。
+`display_compatibility_tests` 与 `display_compatibility_runner.py` 保留为回归测试。它们使用隐藏生产窗口和真实 MOV 录制，验证阴影精度滑条与数值同步、动态精度开关及偏好往返、菜单开关可双向操作、预览拖动和尺寸切换，以及导出分辨率和 PNG 帧内容。各轮写入新的输出目录。
 
 `mme_display_tests` 是需本地 MME DLL 的隐藏集成测试，输出名为 `MikuMikuDance.exe`。将它和同一版本的 `d3d9.dll`、`MMEffect.dll`、`MMHack.dll` 放入独立测试目录。先运行 `python tests/mme_display_fixtures.py <输出目录>` 生成原创小模型，再分别传入 `bilingual.pmx --bilingual` 和 `alpha-order.pmx --alpha-order` 的绝对路径。前者验证实际列表像素、翻译开关和未改变的绑定文本；后者观测真正的 D3D 材质绘制顺序。测试不会保存输入模型，也不显示或激活窗口。保留这组测试；移除相应兼容行为时再评估删除。
 
 `frame_benchmark` 和 `frame_benchmark_mme` 新增 `--adaptive-shadow 0|1` 与 `--dynamic-precision 0..9999`，JSON 记录实际贴图尺寸、精度值和阴影投影矩阵。后者通过真实滑条消息输入，检查面板刷新不会复位精度，也不会改变光源或阴影范围。验收数据与限制见 [阴影、预览与 MME 修复](../docs/records/rendering/shadows.md#record-shadow-preview-mme)。
 
-阴影精度数值越小，采样越精细。独立动态精度按钮已移除；近处细节层与远处覆盖层按深度连续混合，各精度档共用投影、比较阈值和过渡距离。细节层的覆盖区取自当前摄像机画面：焦点深度经最终 view 变换得到，深度区间的厚度等于焦点平面上画面的世界对角线，因此拉近镜头或收窄视场会按比例缩小覆盖范围。`native_shadow_tests` 验证全部 10000 个数值的分辨率顺序、斜面采样和层间混合，并检查距离缩放、视场缩放、旋转不变性、正交视图和焦点平面覆盖。`frame_benchmark` 的 JSON 记录 `detail_coverage_width` 与 `detail_texels_per_world_unit`，可用于在真实场景中核对覆盖宽度是否随相机距离缩放。旧 `native_shadow_cycle` 的动态开关部分不再适用于当前版本。
+阴影精度数值越小，采样越精细。近处细节层与远处覆盖层按深度连续混合，各精度档共用投影、比较阈值和过渡距离。远景覆盖层按场景包围盒与相机视锥的交集拟合横向范围，深度范围仍取整个场景；因此场景另一侧的大物体不会缩放可见物体的阴影贴图，画面外的投影物仍能落在可见表面上。细节层的覆盖区取自当前摄像机画面：深度区间以视图内相对近处为基准，厚度等于该深度处画面的世界对角线，因此拉近镜头或收窄视场会按比例缩小覆盖范围。
 
-`frame_benchmark --verify-shadow-cycle` 可用于指定的 PMX 模型，需同时提供 `--throughput`、`--viewport`、`--self-shadow 1|2` 和 PNG 输出路径。它保存固定、禁用投影、当前精度、低精度及恢复后的画面和深度贴图；精度切换只改变贴图尺寸，不再切换独立动态精度开关。禁用投影仅临时修改内存中的材质标志，不写入模型。真实模型验证记录见 [自阴影修复](../docs/records/rendering/shadows.md#record-native-shadow-coverage)。
+「动态精度」默认关闭，所有场景使用精度滑条选定的固定档位。开启后按视图内的相对深度调整贴图尺寸，始终限制在选定档位上下各一档内：需求超过选定覆盖尺寸 2.5 倍时升一档，低于 0.4 倍时降一档，回落到选定档位另有迟滞；每帧最多移动一档。需求与这个相对深度成反比，因此档位按对数曲线变化。`native_shadow_tests` 验证全部 10000 个数值的分辨率顺序、斜面采样、层间混合、相机画面覆盖，以及动态精度的反比需求、档位范围、迟滞和镜头往返收敛。`frame_benchmark` 的 JSON 记录 `detail_coverage_width`、`detail_texels_per_world_unit` 和实际 `resolution` 尺寸，可用于核对覆盖宽度和动态档位；`--adaptive-shadow 0|1` 控制该开关。
+
+`frame_benchmark --verify-shadow-cycle` 可用于指定的 PMX 模型，需同时提供 `--throughput`、`--viewport`、`--self-shadow 1|2` 和 PNG 输出路径。它保存固定、禁用投影、动态低精度、动态高精度及恢复后的画面和深度贴图；禁用投影仅临时修改内存中的材质标志，不写入模型。真实模型验证记录见 [自阴影修复](../docs/records/rendering/shadows.md#record-native-shadow-coverage)。
 
 
 ## 普通编辑历史和备份通知回归

@@ -670,37 +670,50 @@ namespace {
 void CheckShadowFilter(MMDApp* app) {
     std::string previous;
     const bool existed = system_settings::ReadSection("shadow", previous) == system_settings::Result::Ok;
-    const bool filter = app->ShadowFilterEnhanced();
+    const bool adaptive = app->AdaptiveShadowResolution(), filter = app->ShadowFilterEnhanced();
     const float range = app->ShadowDistance();
     const int modified = app->SceneModified(), language = app->EnglishUI();
-    HWND host = app->MainWindow(), button = GetDlgItem(host, panel::kShadowFilterCheckbox);
+    HWND host = app->MainWindow();
+    HWND dynamic = GetDlgItem(host, panel::kAdaptiveShadowCheckbox);
+    HWND button = GetDlgItem(host, panel::kShadowFilterCheckbox);
+    Check(dynamic != nullptr && IsWindowEnabled(dynamic), "full build offers dynamic precision");
     Check(button != nullptr && IsWindowEnabled(button), "full build offers the spline filter");
-    Check(system_settings::WriteSection("shadow", "{\"precision\":9999,\"adaptive\":true,\"filterEnhanced\":false}") ==
+    // The ABI branch stores shadow preferences in the central settings file.
+    // A missing dynamic key falls back to the uniform precision.
+    Check(system_settings::WriteSection("shadow", "{\"filterEnhanced\":false}") ==
           system_settings::Result::Ok, "seed central shadow preferences for this run");
+    app->AdaptiveShadowResolution() = true;
     LoadShadowResolutionPreference(app);
-    Check(!app->AdaptiveShadowResolution() && !app->ShadowFilterEnhanced(),
-          "old numeric precision never opts into enhanced filtering or dynamic precision");
+    Check(!app->AdaptiveShadowResolution(), "missing dynamic preference selects the uniform precision");
+    Check(system_settings::WriteSection("shadow", "{\"adaptive\":true,\"filterEnhanced\":false}") ==
+          system_settings::Result::Ok, "seed central dynamic precision preference");
+    LoadShadowResolutionPreference(app);
+    Check(app->AdaptiveShadowResolution() && !app->ShadowFilterEnhanced(),
+          "central preference restores dynamic precision without enabling the filter");
     for (bool enabled : {true, false, true}) {
         SendMessageW(button, BM_SETCHECK, enabled ? BST_CHECKED : BST_UNCHECKED, 0);
         SendMessageW(host, WM_COMMAND, MAKEWPARAM(panel::kShadowFilterCheckbox, BN_CLICKED), reinterpret_cast<LPARAM>(button));
         Check(app->ShadowFilterEnhanced() == enabled, "filter checkbox dispatches its real setting");
         app->ShadowFilterEnhanced() = !enabled;
         LoadShadowResolutionPreference(app);
-        Check(app->ShadowFilterEnhanced() == enabled && !app->AdaptiveShadowResolution(),
+        Check(app->ShadowFilterEnhanced() == enabled && app->AdaptiveShadowResolution(),
               "filter preference round trips independently of dynamic precision");
         Check(app->ShadowDistance() == range && app->SceneModified() == modified,
               "filter toggle preserves project shadow range and modified state");
     }
     for (int lang : {0, 1, 2}) {
         app->EnglishUI() = lang; LocalizeUI(app); HandleWindowSize(app);
-        Check(!GetDlgItem(host, panel::kAdaptiveShadowCheckbox),
-              "dynamic precision button is absent");
+        const RECT left = ControlBounds(host, panel::kAdaptiveShadowCheckbox);
         const RECT right = ControlBounds(host, panel::kShadowFilterCheckbox);
-        Check(right.right > right.left,
-              "filter remains available after retiring dynamic precision");
-        wchar_t caption[64]{}; GetWindowTextW(button, caption, 64);
+        Check(left.right <= right.left && left.top == right.top,
+              "filter sits to the right of dynamic precision on the same row");
+        wchar_t caption[64]{}, dynamicCaption[64]{};
+        GetWindowTextW(button, caption, 64);
+        GetWindowTextW(dynamic, dynamicCaption, 64);
         Check(std::wcscmp(caption, lang == 2 ? L"滤波加强" : lang == 1 ? L"Smoothing" : L"平滑化") == 0,
               "filter caption follows the UI language");
+        Check(std::wcscmp(dynamicCaption, lang == 2 ? L"动态精度" : lang == 1 ? L"Dynamic" : L"動的精度") == 0,
+              "dynamic precision caption follows the UI language");
         HDC dc = GetDC(button);
         HGDIOBJ font = SelectObject(dc, reinterpret_cast<HFONT>(SendMessageW(button, WM_GETFONT, 0, 0)));
         SIZE extent{}; GetTextExtentPoint32W(dc, caption, static_cast<int>(std::wcslen(caption)), &extent);
@@ -708,14 +721,14 @@ void CheckShadowFilter(MMDApp* app) {
         Check(extent.cx + 18 <= right.right - right.left, "filter caption and checkbox fit their control");
     }
     app->EnglishUI() = language; LocalizeUI(app);
-    app->ShadowFilterEnhanced() = filter;
+    app->AdaptiveShadowResolution() = adaptive; app->ShadowFilterEnhanced() = filter;
     SendMessageW(button, BM_SETCHECK, filter ? BST_CHECKED : BST_UNCHECKED, 0);
+    SendMessageW(dynamic, BM_SETCHECK, adaptive ? BST_CHECKED : BST_UNCHECKED, 0);
     if (existed) Check(system_settings::WriteSection("shadow", previous) == system_settings::Result::Ok,
                        "restore prior central shadow preferences");
     else SaveShadowResolutionPreference(app);
 }
 }
-
 #include "plugins/scheduler_checks.inc"
 #include "plugins/scene_host_checks.inc"
 #include "plugins/geometry_host_checks.inc"

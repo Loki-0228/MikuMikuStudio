@@ -227,6 +227,9 @@ public:
     bool& AdaptiveShadowResolution() { return m_adaptiveShadowResolution; }
     bool& ShadowFilterEnhanced() { return m_shadowFilterEnhanced; }
     unsigned& ShadowResolutionLimit() { return m_shadowResolutionLimit; }
+    // Last quality tier chosen by dynamic precision. Only the hysteresis of
+    // the allocation policy reads it; it is not part of the saved state.
+    unsigned& DynamicShadowQuality() { return m_dynamicShadowQuality; }
 
     pmm_settings::State& PmmProjectSettings() { return m_pmmProjectSettings; }
     const pmm_settings::State& PmmProjectSettings() const { return m_pmmProjectSettings; }
@@ -1588,6 +1591,7 @@ private:
     bool m_adaptiveShadowResolution = false;
     bool m_shadowFilterEnhanced = false;
     unsigned m_shadowResolutionLimit = 4096;
+    unsigned m_dynamicShadowQuality = 0;
     TransparentSortPrecision m_transparentMaterialSortPrecision = kDefaultTransparentSortPrecision;
     bool m_transparentSortCrossObjects = false;
 

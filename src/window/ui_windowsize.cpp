@@ -248,7 +248,8 @@ void HandleWindowSize(MMDApp* app) {
     MoveCtrl(hwnd, 563, 745 - bandXBase, bottom - 135, 54, 22);
     MoveCtrl(hwnd, 564, 802 - bandXBase, bottom - 135, 54, 22);
 #if !MMD_ORIGINAL_PROFILE
-    MoveCtrl(hwnd, panel::kShadowFilterCheckbox, 688 - bandXBase, bottom - 112, 170, 18);
+    MoveCtrl(hwnd, panel::kAdaptiveShadowCheckbox, 688 - bandXBase, bottom - 112, 84, 18);
+    MoveCtrl(hwnd, panel::kShadowFilterCheckbox, 775 - bandXBase, bottom - 112, 83, 18);
 #endif
     MoveCtrl(hwnd, 560, 683 - bandXBase, bottom - 75, 176, 20);
     MoveCtrl(hwnd, 561, 815 - bandXBase, bottom - 92, 35, 14);

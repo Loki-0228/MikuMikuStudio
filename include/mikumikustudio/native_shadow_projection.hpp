@@ -188,9 +188,15 @@ inline float MinimumShadowScale(const std::array<float, 16>& m,
 // the directional-light projection there, independently of the orbit rotation.
 // The requested range cannot clip rendered geometry. Fit its world-space
 // bounds independently of the camera, with room for filtering at every edge.
+// `bounds` fixes the lateral camera-relative coverage (normally the visible
+// receivers), while `depthBounds` keeps the light depth range wide enough for
+// casters anywhere in the scene. A directional light maps a caster that can
+// shadow a receiver to the same lateral coordinates, so the lateral extent only
+// has to contain the receivers.
 inline std::array<float, 16> NativeShadowProjection(
     const float focus[3], const float direction[3], float range, int mode,
-    const NativeShadowBounds* bounds = nullptr) {
+    const NativeShadowBounds* bounds = nullptr,
+    const NativeShadowBounds* depthBounds = nullptr) {
     float z[3] = {direction[0], direction[1], direction[2]};
     float length = std::sqrt(z[0]*z[0] + z[1]*z[1] + z[2]*z[2]);
     if (!std::isfinite(length) || length < 1e-6f) {
@@ -211,20 +217,32 @@ inline std::array<float, 16> NativeShadowProjection(
         focus[0]*y[0] + focus[1]*y[1] + focus[2]*y[2],
         focus[0]*z[0] + focus[1]*z[1] + focus[2]*z[2]};
     if (bounds && bounds->Valid()) {
+        const auto lightBound = [&](const NativeShadowBounds& source,
+                                    NativeShadowBounds& lightBounds) {
+            for (unsigned corner = 0; corner < 8; ++corner) {
+                const auto point = source.Corner(corner);
+                float light[3]{};
+                for (int axis = 0; axis < 3; ++axis)
+                    for (int row = 0; row < 3; ++row) light[axis] += point[row]*axes[axis][row];
+                lightBounds.Include(light);
+            }
+        };
         NativeShadowBounds lightBounds;
-        for (unsigned corner = 0; corner < 8; ++corner) {
-            const auto point = bounds->Corner(corner);
-            float light[3]{};
-            for (int axis = 0; axis < 3; ++axis)
-                for (int row = 0; row < 3; ++row) light[axis] += point[row]*axes[axis][row];
-            lightBounds.Include(light);
-        }
+        lightBound(*bounds, lightBounds);
         float half[3]{};
-        for (int axis = 0; axis < 3; ++axis) {
+        for (int axis = 0; axis < 2; ++axis) {
             centre[axis] = lightBounds.minimum[axis]*.5f + lightBounds.maximum[axis]*.5f;
             const float extent = lightBounds.maximum[axis]*.5f - lightBounds.minimum[axis]*.5f;
             half[axis] = extent + (std::max)(.25f, extent*.05f);
         }
+        // The depth axis still has to contain every caster on a light ray that
+        // reaches a visible receiver.
+        NativeShadowBounds depthLightBounds;
+        lightBound(depthBounds && depthBounds->Valid() ? *depthBounds : *bounds,
+                   depthLightBounds);
+        centre[2] = depthLightBounds.minimum[2]*.5f + depthLightBounds.maximum[2]*.5f;
+        const float depthExtent = depthLightBounds.maximum[2]*.5f - depthLightBounds.minimum[2]*.5f;
+        half[2] = depthExtent + (std::max)(.25f, depthExtent*.05f);
         const float halfWidth = (std::max)(1.f/lateral, (std::max)(half[0], half[1]));
         const float halfDepth = (std::max)(.5f/scale[2], half[2]);
         scale[0] = scale[1] = 1.f/halfWidth;

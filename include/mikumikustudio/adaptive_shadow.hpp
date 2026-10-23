@@ -39,27 +39,49 @@ inline unsigned FittedShadowResolutionLimit(unsigned reference, float requestedS
     while (size < limit && size * 1.001f < reference * ratio) size *= 2;
     return (std::min)(size, limit);
 }
-inline float RequiredShadowMapSizeForScale(float lateralScale, float projectedPixels,
-                                           float nearestDepth, bool orthographic) {
-    if (!std::isfinite(nearestDepth) || nearestDepth <= 0) return 512.f;
-    // Full map width = 2 / lateralScale; screen pixels per world unit =
-    // projectedPixels / (2 * depth). Keep a 25% sampling margin.
-    const float depth = orthographic ? 1.f : (std::max)(.0001f, nearestDepth);
-    return 1.25f * projectedPixels / (lateralScale * depth);
+// Dynamic precision: size the coverage map so one shadow texel matches one
+// screen pixel at the picture's focus depth, with a 25% margin. Shadow texel
+// density falls with the inverse of that depth, so the demand doubles whenever
+// the camera moves twice as close; resolution tiers follow the logarithmic
+// curve that this inverse relation defines.
+inline float DynamicShadowMapDemand(float projectedPixels, float coverageWidth,
+                                    float focusDepth, bool orthographic) {
+    if (!std::isfinite(coverageWidth) || coverageWidth <= 0) return 0.f;
+    if (orthographic) return 1.25f * projectedPixels * coverageWidth * .5f;
+    if (!std::isfinite(focusDepth) || focusDepth <= 0) return 0.f;
+    return 1.25f * projectedPixels * coverageWidth / (2.f * focusDepth);
 }
-inline float RequiredShadowMapSize(float range, int mode, float projectedPixels,
-                                   float nearestDepth, bool orthographic) {
-    return RequiredShadowMapSizeForScale(NativeShadowLateralScale(range, mode),
-        projectedPixels, nearestDepth, orthographic);
+// Coverage size that belongs to a quality tier: the coverage pass runs at half
+// the detail tier, with the existing 512 minimum.
+inline unsigned ShadowCoverageSize(unsigned quality) {
+    return (std::max)(512u, quality / 2u);
 }
-// Choose power-of-two maps from the projected density of visible geometry.
-// Different grow/shrink thresholds prevent reallocating around a boundary.
-inline unsigned AdaptiveShadowSize(float required, unsigned current, unsigned limit) {
-    limit = (std::max)(512u, limit);
-    if (!std::isfinite(required) || required <= 0) return limit;
-    unsigned size = (std::min)(limit, (std::max)(512u, current));
-    while (size < limit && required > size * 1.1f) size *= 2;
-    while (size > 512 && required < size * 0.4f) size /= 2;
-    return (std::min)(size, limit);
+// Dynamic precision offsets the selected quality by at most one tier. The
+// demand curve is logarithmic: one tier is added once the selected coverage
+// would be 2.5 times coarser than the screen needs, and one tier is removed
+// once it is 2.5 times finer. The return thresholds sit closer to the selected
+// level so a camera resting on a boundary does not reallocate every frame. One
+// tier changes per frame at most, so a fast zoom cannot jump two octaves.
+inline unsigned DynamicShadowQualitySize(float requiredCoverage, unsigned selected,
+                                         unsigned previous, unsigned maximum) {
+    maximum = (std::min)(8192u, maximum);
+    if (maximum < 512) return maximum;
+    selected = (std::min)(maximum, (std::max)(512u, selected));
+    const unsigned lower = (std::max)(512u, selected / 2);
+    const unsigned upper = (std::min)(maximum, selected * 2);
+    if (!std::isfinite(requiredCoverage) || requiredCoverage <= 0) return selected;
+    unsigned quality = previous >= 512 ? previous : selected;
+    quality = (std::min)(upper, (std::max)(lower, quality));
+    const float coverage = float(ShadowCoverageSize(selected));
+    if (quality > selected) {
+        if (requiredCoverage < coverage * 1.6f) quality = selected;
+    } else if (quality < selected) {
+        if (requiredCoverage > coverage * .62f) quality = selected;
+    } else if (quality < upper && requiredCoverage > coverage * 2.5f) {
+        quality *= 2;
+    } else if (quality > lower && requiredCoverage < coverage * .4f) {
+        quality /= 2;
+    }
+    return (std::min)(upper, (std::max)(lower, quality));
 }
 }
