@@ -241,6 +241,14 @@ void PluginNotifyDeviceLost(MMDApp* app) { NotifyDeviceLostEvent(app); }
 void PluginNotifyDeviceRestored(MMDApp* app) { NotifyDeviceRestoredEvent(app); }
 void PluginNotifyObjectRemoved(MMDApp* app, const void* native) { NotifyObjectRemovedEvent(app, native); }
 void PluginNotifyDpiChanged(MMDApp* app, unsigned dpi) { NotifyDpiChangedEvent(app, dpi); }
+void PluginFrameBegin(MMDApp* app) {
+    if (!manager || !app || owner != app) return;
+    manager->Render().FrameBegin();
+}
+void PluginFrameEnd(MMDApp* app) {
+    if (!manager || !app || owner != app) return;
+    manager->Render().FrameEnd();
+}
 void PluginFramePresented(MMDApp* app) {
     if (!manager || !app || owner != app) return;
     auto* renderer = app->Renderer();

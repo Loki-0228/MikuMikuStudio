@@ -555,6 +555,7 @@ void FrameDriver(MMDApp* app) {
     updates::FrameScope scope;
     if (!scope) return;
     ui_metrics::Add(ui_metrics::FrameDriver);
+    plugins::PluginFrameBegin(app);
     if (device_lost_wait::Active() ||
         !device_lost_wait::Resume(app, app->state.frameStepPlayback != 0)) return;
     MMD_PERF_SCOPE(Frame);
@@ -973,6 +974,7 @@ void FrameDriver(MMDApp* app) {
     }
 
     const auto [presented, hr] = PresentScene(app);
+    plugins::PluginFrameEnd(app);
 #ifdef MIKUMIKUSTUDIO_DIAG
     if (presented && SUCCEEDED(hr)) {
         if (requireLineEnabled && lineModeRequested != 0)

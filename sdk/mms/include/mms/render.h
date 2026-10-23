@@ -42,6 +42,12 @@ typedef struct MmsRenderApiV1 {
     MmsResult (MMS_CALL *releaseLease)(void* context, MmsHandle lease);
 } MmsRenderApiV1;
 
+#define MMS_RENDER_PHASE_BEGIN 1u
+#define MMS_RENDER_PHASE_END 2u
+// Phase observer for the frame lifecycle. BEGIN runs before scene updates and
+// END runs after a successful present. Both run on the UI thread outside plugin
+// callbacks and must stay lightweight and read-only.
+typedef void (MMS_CALL *MmsRenderPhaseCallbackV1)(void* context, const MmsRenderInfoV1* info, uint32_t phase);
 typedef struct MmsRenderApiV1_1 {
     MmsHeader h;
     void* context;
@@ -51,3 +57,15 @@ typedef struct MmsRenderApiV1_1 {
     MmsResult (MMS_CALL *setFrameCallback)(void* context, MmsRenderFrameCallbackV1 callback, void* user);
     void (MMS_CALL *clearFrameCallback)(void* context);
 } MmsRenderApiV1_1;
+
+typedef struct MmsRenderApiV1_2 {
+    MmsHeader h;
+    void* context;
+    MmsResult (MMS_CALL *query)(void* context, MmsRenderInfoV1* out);
+    MmsResult (MMS_CALL *acquireLease)(void* context, const MmsRenderLeaseDescV1* desc, MmsHandle* out);
+    MmsResult (MMS_CALL *releaseLease)(void* context, MmsHandle lease);
+    MmsResult (MMS_CALL *setFrameCallback)(void* context, MmsRenderFrameCallbackV1 callback, void* user);
+    void (MMS_CALL *clearFrameCallback)(void* context);
+    MmsResult (MMS_CALL *setPhaseCallback)(void* context, MmsRenderPhaseCallbackV1 callback, void* user);
+    void (MMS_CALL *clearPhaseCallback)(void* context);
+} MmsRenderApiV1_2;

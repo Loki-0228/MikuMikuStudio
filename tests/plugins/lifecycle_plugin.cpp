@@ -23,7 +23,8 @@ struct Plugin { MmsHostV1 host; MmsUiApiV1 ui{}; MmsUiSurfaceApiV1 surface{}; Mm
     MmsHandle propertyGroup = 0; std::array<MmsHandle, 4> propertyButtons{};
     int stops = 0, projectValue = 0, candidateValue = 0;
     MmsHandle renderLease = 0; uint64_t renderGeneration = 0;
-    MmsRenderApiV1_1 render11{}; unsigned frameCallbacks = 0; };
+    MmsRenderApiV1_1 render11{}; MmsRenderApiV1_2 render12{};
+    unsigned frameCallbacks = 0, phaseBegins = 0, phaseEnds = 0; };
 static bool PropertiesMode(const Plugin* p) { return p->id == "org.example.gui-properties-panel"; }
 static Plugin* refreshProbe = nullptr;
 static void Log(Plugin* p, const char* s) {
@@ -119,6 +120,17 @@ static void MMS_CALL FrameCallback(void* context, const MmsRenderInfoV1* info) {
         static_cast<unsigned long long>(info->deviceGeneration));
     Log(p, line);
 }
+static void MMS_CALL PhaseCallback(void* context, const MmsRenderInfoV1* info, uint32_t phase) {
+    auto* p = static_cast<Plugin*>(context);
+    if (!info || !info->deviceGeneration) { Log(p, "FRAME_PHASE_FAIL"); return; }
+    if (phase == MMS_RENDER_PHASE_BEGIN) {
+        if (p->phaseBegins < 2) { ++p->phaseBegins; Log(p, "FRAME_PHASE_BEGIN"); }
+    } else if (phase == MMS_RENDER_PHASE_END) {
+        if (p->phaseEnds < 2) { ++p->phaseEnds; Log(p, "FRAME_PHASE_END"); }
+    } else {
+        Log(p, "FRAME_PHASE_FAIL");
+    }
+}
 static MmsResult InitRender(Plugin* p) {
     const auto result = p->host.queryService(p->host.context, S("mms.render"), 1, 0,
         sizeof(p->render), &p->render);
@@ -129,6 +141,12 @@ static MmsResult InitRender(Plugin* p) {
         render11.setFrameCallback && render11.clearFrameCallback) {
         p->render11 = render11;
         if (p->render11.setFrameCallback(p->render11.context, FrameCallback, p) == MMS_OK) Log(p, "FRAME_CALLBACK_REGISTERED");
+    }
+    MmsRenderApiV1_2 render12{};
+    if (p->host.queryService(p->host.context, S("mms.render"), 1, 2, sizeof(render12), &render12) == MMS_OK &&
+        render12.setPhaseCallback && render12.clearPhaseCallback) {
+        p->render12 = render12;
+        if (p->render12.setPhaseCallback(p->render12.context, PhaseCallback, p) == MMS_OK) Log(p, "FRAME_PHASE_REGISTERED");
     }
     AcquireRenderLease(p);
     return MMS_OK;

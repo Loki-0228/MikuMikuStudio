@@ -16,12 +16,17 @@ public:
         std::string id;
         MmsRenderFrameCallbackV1 frame = nullptr;
         void* frameContext = nullptr;
+        MmsRenderPhaseCallbackV1 phase = nullptr;
+        void* phaseContext = nullptr;
     };
     void DeviceLost(uint64_t generation) noexcept;
     void FramePresented(uint32_t width, uint32_t height, uint32_t format) noexcept;
     void DeviceRestored(uint64_t generation) noexcept;
     MmsRenderApiV1 Api(Client& client);
     MmsRenderApiV1_1 Api11(Client& client);
+    MmsRenderApiV1_2 Api12(Client& client);
+    void FrameBegin() noexcept;
+    void FrameEnd() noexcept;
     // Called before the plugin is stopped; release callbacks are not invoked
     // because the plugin is already shutting down.
     void DropClient(const std::string& id) noexcept;
@@ -41,6 +46,9 @@ private:
     void Invoke(Lease& lease, const char* reason) noexcept;
     void SetFrameCallback(Client& client, MmsRenderFrameCallbackV1 callback, void* user);
     void ClearFrameCallback(Client& client);
+    void SetPhaseCallback(Client& client, MmsRenderPhaseCallbackV1 callback, void* user);
+    void ClearPhaseCallback(Client& client);
+    void InvokePhase(uint32_t phase) noexcept;
     std::map<MmsHandle, Lease> leases_;
     std::vector<Client*> clients_;
     MmsHandle next_ = 1;
