@@ -2,6 +2,7 @@
 #include <mms/cpp/render.hpp>
 #include <mms/cpp/layout_history.hpp>
 #include <mms/cpp/layout.hpp>
+#include <mms/cpp/scene.hpp>
 #include <set>
 #include <type_traits>
 
@@ -19,6 +20,12 @@ struct Host {
     MmsHostV1 host{};
     MmsRenderApiV1 render{};
     MmsUiLayoutApiV1_1 layoutHistory{};
+    MmsSceneApiV1 scene{};
+    MmsSceneQueryV1 lastSceneQuery{};
+    unsigned sceneQueries = 0, sceneAcquires = 0, sceneReleases = 0, sceneObjects = 0, sceneChannels = 0;
+    MmsHandle nextSnapshot = 55;
+    MmsResult sceneResult = MMS_OK;
+    bool missingSceneFunction = false;
     MmsUiLayoutHistoryInfoV1 historyInfo{};
     unsigned historyQueries = 0, historyInfoCalls = 0, historyUndo = 0, historyRedo = 0;
     bool historyArguments = true;
@@ -93,6 +100,20 @@ struct Host {
         layout.releaseSnapshot = [](void* p, MmsHandle h) { auto& x = *static_cast<Host*>(p); x.rawLayout.releaseSnapshot(x.rawLayout.context, h); };
         layout.stageHints = [](void* p, MmsHandle t, MmsString id, uint64_t g, const MmsUiLayoutHintsV1* h) { auto& x = *static_cast<Host*>(p); return x.rawLayout.stageHints(x.rawLayout.context, t, id, g, h); };
         host.h = sdk::Header<MmsHostV1>(); host.context = this;
+        scene.h = sdk::Header<MmsSceneApiV1>(); scene.context = this;
+        scene.acquire = [](void* p, const MmsSceneQueryV1* query, MmsSnapshotV1* out) -> MmsResult {
+            auto& x = *static_cast<Host*>(p); ++x.sceneAcquires; if (!query || !out) return MMS_E_ARGUMENT;
+            x.lastSceneQuery = *query; *out = {}; out->h = sdk::Header<MmsSnapshotV1>(); out->handle = x.nextSnapshot++; return MMS_OK;
+        };
+        scene.release = [](void* p, MmsHandle) -> void { ++static_cast<Host*>(p)->sceneReleases; };
+        scene.objects = [](void* p, MmsHandle, MmsSpan* out) -> MmsResult {
+            ++static_cast<Host*>(p)->sceneObjects; if (!out) return MMS_E_ARGUMENT;
+            *out = {nullptr, 2, 4}; return MMS_OK;
+        };
+        scene.readChannel = [](void* p, MmsHandle, MmsObjectRef, uint32_t, MmsSpan* out) -> MmsResult {
+            ++static_cast<Host*>(p)->sceneChannels; if (!out) return MMS_E_ARGUMENT;
+            *out = {nullptr, 1, 192}; return MMS_OK;
+        };
         layoutHistory.h = sdk::Header<MmsUiLayoutApiV1_1>(); layoutHistory.context = this;
         historyInfo.h = sdk::Header<MmsUiLayoutHistoryInfoV1>();
         historyInfo.canUndo = historyInfo.canRedo = 1; historyInfo.undoDepth = 2; historyInfo.redoDepth = 1;
@@ -139,6 +160,13 @@ struct Host {
                 ++x.surfaceQueries; x.queryArguments = x.queryArguments && bytes == sizeof(MmsUiSurfaceApiV1);
                 if (x.surfaceResult) return x.surfaceResult;
                 std::memcpy(out, &x.surface, sizeof(x.surface)); return MMS_OK;
+            }
+            if (id == "mms.scene") {
+                ++x.sceneQueries; x.queryArguments = x.queryArguments && bytes == sizeof(MmsSceneApiV1);
+                if (x.sceneResult) return x.sceneResult;
+                auto value = x.scene;
+                if (x.missingSceneFunction) value.acquire = nullptr;
+                std::memcpy(out, &value, sizeof(value)); return MMS_OK;
             }
             if (id == "mms.ui.layout" && minor == 1) {
                 ++x.historyQueries; x.historyArguments = x.historyArguments && bytes == sizeof(MmsUiLayoutApiV1_1) && out != nullptr;
@@ -563,6 +591,44 @@ static void LayoutSdkChecks() {
     CHECK(moved.Release() == MMS_OK && leaseHost.invokes == 1);
     std::cout << "cpp layout sdk PASS\n";
 }
+static void SceneSdkChecks() {
+    Host x;
+    sdk::SceneServices scene;
+    CHECK(!scene.ready());
+    CHECK(sdk::SceneServices::Query(x.host, scene) == MMS_OK && scene.ready());
+    CHECK(x.sceneQueries == 1 && x.queryArguments);
+    MmsObjectRef filter{}; filter.id.lo = 7;
+    sdk::SceneSnapshot snapshot;
+    CHECK(scene.Acquire(MMS_STAGE_BIND, MMS_SCENE_CURRENT_TIME, MMS_CHANNEL_BONES | MMS_CHANNEL_MESH,
+                        MmsTime{5, 30}, MmsId{9, 1}, MmsSpan{&filter, 1, sizeof(filter)}, snapshot) == MMS_OK &&
+          snapshot.valid() && snapshot.get() == 55);
+    CHECK(x.sceneAcquires == 1 && x.lastSceneQuery.stage == MMS_STAGE_BIND &&
+          x.lastSceneQuery.flags == MMS_SCENE_CURRENT_TIME &&
+          x.lastSceneQuery.channels == (MMS_CHANNEL_BONES | MMS_CHANNEL_MESH) &&
+          x.lastSceneQuery.time.numerator == 5 && x.lastSceneQuery.time.denominator == 30 &&
+          x.lastSceneQuery.objects.count == 1);
+    MmsSpan objects{};
+    CHECK(scene.Objects(snapshot, objects) == MMS_OK && objects.count == 2 && x.sceneObjects == 1);
+    MmsSpan channel{};
+    CHECK(scene.ReadChannel(snapshot, MmsObjectRef{}, MMS_CHANNEL_BONES, channel) == MMS_OK &&
+          channel.count == 1 && channel.stride == 192 && x.sceneChannels == 1);
+    sdk::SceneSnapshot moved = std::move(snapshot);
+    CHECK(!snapshot.valid() && moved.valid() && moved.get() == 55);
+    CHECK(scene.Objects(snapshot, objects) == MMS_E_NOT_READY);
+    CHECK(moved.Release() == MMS_OK && !moved.valid() && x.sceneReleases == 1);
+    CHECK(moved.Release() == MMS_OK && x.sceneReleases == 1);
+    MmsHostV1 noService = x.host; noService.queryService = nullptr;
+    sdk::SceneServices missing;
+    CHECK(sdk::SceneServices::Query(noService, missing) == MMS_E_ARGUMENT && !missing.ready());
+    x.missingSceneFunction = true;
+    sdk::SceneServices incomplete;
+    CHECK(sdk::SceneServices::Query(x.host, incomplete) == MMS_E_UNSUPPORTED && !incomplete.ready());
+    x.missingSceneFunction = false;
+    x.sceneResult = MMS_E_VERSION;
+    sdk::SceneServices oldHost;
+    CHECK(sdk::SceneServices::Query(x.host, oldHost) == MMS_E_VERSION && !oldHost.ready());
+    std::cout << "cpp scene sdk PASS\n";
+}
 } // namespace cpp_sdk_checks
 
 static void CppSdkChecks() {
@@ -575,4 +641,5 @@ static void CppSdkChecks() {
     cpp_sdk_checks::RenderChecks();
     cpp_sdk_checks::LayoutHistorySdkChecks();
     cpp_sdk_checks::LayoutSdkChecks();
+    cpp_sdk_checks::SceneSdkChecks();
 }
