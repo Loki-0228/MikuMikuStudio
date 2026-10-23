@@ -41,6 +41,9 @@
 
 
 
+
+[最终验证矩阵](abi-final-verification-2026-10-24.md)：集中复跑默认套件 44,806 项、26 个目标 CTest（25 通过，仅 `model_alpha_sort_off_mme_presence` 失败）、完整/原始产品构建、两配置部署闭包（各 55 PE／51 运行时／2 DirectX）、产品与 release 哈希；证据在 `build/verification/abi-final-verification-20261024/`。外部条件与未实现需求仍保留，完整 P0–P6 未完成。
+
 [需求最终审计](abi-final-audit-2026-10-24.md)：按需求表 142 行统计当前状态（本机已验证类 120、已实现未验证 2、部分实现 6、未实现 11、未开放 1、缺环境 1），汇总最近七批提交、证据数字、已知失败与外部条件。完整 P0–P6 未完成，持续目标保持 active。
 
 [场景 C++17 封装](abi-scene-sdk-2026-10-24.md)：新增 `mms::sdk::SceneServices`／`SceneSnapshot`，封装查询、CURRENT_TIME 快照获取、对象/通道读取、移动与显式释放；假宿主契约覆盖参数、句柄、无效快照、缺失服务/函数与旧宿主 VERSION，默认契约套件 44,806 项通过并输出 `cpp scene sdk PASS`。本批只改 SDK 头与测试；阶段 1–4 仍未实现，真实场景路径由既有场景批次覆盖。
