@@ -36,6 +36,9 @@
 
 
 
+
+[渲染帧回调](abi-render-frame-callback-2026-10-24.md)：`mms.render` 1.1 追加 `setFrameCallback`／`clearFrameCallback`，成功呈现后同步调用已登记回调并传入帧信息；服务复制回调列表、捕获单回调异常、停止时清理。lifecycle 探针注册并记录 `FRAME_CALLBACK frame=1 gen=1`，宿主探针 8 项通过。回调要求轻量只读且运行在插件回调之外；真实播放循环、设备丢失期间呈现、post 与 begin/end 帧钩子仍未验证/实现。
+
 [布局 1.0 C++17 封装](abi-layout-sdk-2026-10-24.md)：新增 `mms::sdk::LayoutServices` 与 `LayoutSnapshotLease`，覆盖默认/暂存布局提示、快照获取与显式释放、移动语义与错误映射；假宿主契约通过，默认契约套件 44,792 项并输出 `cpp layout sdk PASS`。本批只改 SDK 头与测试。另核对 `model_alpha_sort_off_mme_presence`：main 固定管线同样在排序关闭且存在 MMEffect 时使用 authored walk，ABI 条件已与 main 一致；只移除固定条件会修好资源 0 但资源 117 仍失败，故恢复 main 对齐、不凭夹具改渲染行为，该模式保持未通过。
 
 [透明排序缓存 main 同步](abi-transparent-sort-cache-2026-10-24.md)：同步 main 的遮挡/缓存验收夹具与 `transparent_sort_cache` 统计接口；有序透明通道在计划命中时复用 GPU 默认池缓冲、跳过重排与上传，冷/热像素一致，变换/几何/材质/范围变化触发失配，释放钩子与 Maximum 不透明纹理检查通过。15 个 `model_alpha_*` CTest 中 14 个通过，`model_alpha_sort_off_mme_presence` 仍失败；对象投影快照复用与 `transparent_geometry` 六参数排序接口已同步 main。默认契约套件 44,805 项通过；两产品重建（完整 `10c7d991…`、原始 `af2302c7…`），正式 release 未覆盖。

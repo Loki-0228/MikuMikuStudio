@@ -42,6 +42,18 @@ render.acquireLease(render.context, &desc, &lease);
 - 空描述、缺少释放回调、未知标志或超长名称返回 `MMS_E_ARGUMENT`；
 - 释放不属于当前插件的租约返回 `MMS_E_NOT_FOUND`。
 
+## 每帧回调（1.1）
+
+```c
+MmsRenderApiV1_1 render;
+host->queryService(host->context, (MmsString){"mms.render", 10}, 1, 1, sizeof(render), &render);
+render.setFrameCallback(render.context, OnFrame, user);
+// OnFrame(void* user, const MmsRenderInfoV1* info) 在成功 Present 后同步运行。
+render.clearFrameCallback(render.context);
+```
+
+回调在 UI 线程、插件回调之外运行，必须轻量、只读，不得调用宿主服务或阻塞。1.0 查询仍返回原三函数表。
+
 ## C++17 封装
 
 ```cpp
