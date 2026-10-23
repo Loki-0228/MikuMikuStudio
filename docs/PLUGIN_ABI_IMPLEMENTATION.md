@@ -213,7 +213,7 @@ R3 拖动与插件区域问题已由用户确认恢复。按需求归类的当�
 | P0 | 固定 MSVC 19.44.35229、SDK 10.0.19041、Win7 宏及子系统 6.1 | 本机已验证 | profile、recipe lock、CMake preset；完整 MMS 和 ABI 测试编译成功。 |
 | P0 | C11/C++17 数据布局、独立插件 /MT、宿主库 /MD | 本机已验证 | 编译与真实 DLL 加载通过。Conan 采用兼容的 193 二进制缓存，具体 package ID/revision 在本机 dependencies JSON。 |
 | P0 | 普通及延迟 PE 导入清单 | 本机已验证 | 宿主、两个测试插件及测试 EXE；无 DX12、DXGI、d3dcompiler_47、CUDA、NVAPI 直接导入。并非逐 API 的 Win7 兼容证明。 |
-| P0 | 固定 CRT/UCRT/VCOMP/DirectX 部署闭包 | 未实现 | 本机新版系统运行库不能代替 Win7 部署组合验收。 |
+| P0 | 固定 CRT/UCRT/VCOMP/DirectX 部署闭包 | 本机已验证（安装与静态审计）；Win7 真机待验收 | [部署闭包批次](records/abi-deployment-closure-2026-10-24.md)新增 `cmake --install` 闭包装配：VC/UCRT、`vcomp140`、`d3dx9_43`／`d3dcompiler_43` 与产品同目录；`tools/verify-deployment-closure.ps1` 按导入表审计系统/运行时/DirectX/禁止项，完整与原始配置均为 55 个 PE、51 个运行时文件、2 个 DirectX 文件通过。清单见 [Win7 部署闭包](../reference/win7-deployment.md)。 |
 | P0 | Media Foundation 能力回退 | 已实现未验证 | 可选 COM 查询、旧 Sink Writer 编码器查询；高级 RGB32 协商失败重开基本处理 reader。已编译，尚无 Win7 媒体结果。 |
 | P0 | Win7 SP1、Win10、AMD CPU/GPU 真机 | 缺其他系统/硬件环境 | 不以本机结果推定通过。 |
 | P1 | 目录深度、清单、稳定 ID、依赖拓扑 | 本机已验证 | 根目录和中文目录；默认深度 2；包边界、重复 ID、环及版本错误。 |

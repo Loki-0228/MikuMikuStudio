@@ -24,6 +24,9 @@
 
 [宿主侧业务事件](abi-host-events-2026-10-24.md)接入 `PROJECT_CLOSED`、`LANGUAGE_CHANGED`、`DEVICE_LOST`、`DEVICE_RESTORED`：宿主动作入队后经 posted message 在安全边界投递，负载为 `MmsProjectEventV1`／`MmsCodeEventV1`／`MmsDeviceEventV1`（版本 1），设备代次在恢复时递增；调用点覆盖工程重置、菜单 260、Present 丢失分支与 `PostDeviceReset` 成功路径。真实 lifecycle 插件宿主探针通过（4 项，插件日志含四个事件），10 个相关 CTest 模式与默认全量契约 44,752 项通过，两产品构建通过，正式 release 未覆盖。对象删除、属性/命令状态、计算策略与 DPI 变化事件仍未接入；真实设备丢失/重置未故障注入。
 
+
+[固定 Win7 部署闭包](abi-deployment-closure-2026-10-24.md)：`cmake --install` 现在把产品 EXE/NVIDIA 辅助 DLL 与 VC/UCRT 运行时、`vcomp140`、`d3dx9_43`、`d3dcompiler_43` 装配到同一目录；`tools/verify-deployment-closure.ps1` 用 `dumpbin` 审计每个 PE 的导入/延迟导入，禁止 DX12/DXGI/CUDA/NVAPI，缺失运行时即失败。完整与原始配置部署均为 55 个 PE、51 个运行时文件、2 个 DirectX 文件通过，报告在 `build/verification/abi-deployment-closure-20261024/`，清单见 [Win7 部署闭包](../reference/win7-deployment.md)。本机为 Win10；Win7 SP1 真机安装运行、32 位/WOW64、无管理员安装、签名与自解压安装器仍未验收。
+
 [P1 业务事件通知（UI 注册表与布局）](abi-business-events-2026-10-24.md)补齐插件运行时自身负责的两个来源：注册表变更与布局事务提交在 `Drain` 中合并投递 `UI_REGISTRY_CHANGED`／`LAYOUT_CHANGED`，负载为最终修订号（`MmsRevisionEventV1` 版本 1），投递发生在注册表回调之外。独立宿主探针加载真实 lifecycle 插件，7 项检查通过；两产品构建通过，正式 release 未覆盖。工程关闭、对象删除、语言切换、属性变更、命令状态、计算策略、设备代次/丢失恢复、DPI 变化等事件仍未接入；重建 `plugin_abi_tests` 时发现 `storage_checks.inc` 的 `PublishProjectPair` 参数个数与 API 不符的既有编译问题。
 
 [阴影包围盒复用](abi-shadow-bounds-cache-2026-10-24.md)已同步：`model_vertex_cache` 增加 `BeginFrame/ShadowBounds/RememberShadowBounds` 帧内接口，只缓存本帧 `Reuse/Remember` 验证过的加载器自有几何；`adaptive_shadow` 先查缓存、未命中才整段锁定完整顶点缓冲求精确包围盒，`Unlock` 失败不登记；位姿变化、`Invalidate`、设备重置与显式关闭清除。`model_vertex_cache_tests` 611 项、SM3 阴影全集 `failures=0`（98 项 parity、20 个 partial-depth）与 SM2 覆盖通过，两产品构建通过，正式 release 未覆盖。纯性能同步，无帧耗时/命中率实测；真实 MME、超大模型与设备丢失循环未验证。
