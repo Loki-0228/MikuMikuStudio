@@ -1263,16 +1263,17 @@ void RemoveLegacyAutoSortingMenuItem(MMDApp* app) {
         DeleteMenu(sub, kAutoTransparentMaterialSortingMenuId, MF_BYCOMMAND);
 }
 
-// Transparent-sort-limit submenu (port addition).  The popup's own command id
+// Transparent-sort submenu (port addition). The popup's own command id
 // only identifies the parent item; the entries use ids 304..308, where the
 // command id minus kTransparentSortPrecisionMenuFirst is the stored
 // TransparentSortPrecision value: 304..307 are Low..Maximum and 308 is Off.
-// The enum is the whole state - there is no second enable flag - and picking
-// Off overwrites the stored level instead of remembering the previous one.
+// The enum is the enabled precision state. Picking Off replaces the level;
+// the independent command 309 controls whether sorting crosses object groups.
 // The table is in display order (Off first), which is not the command-id
 // order, so every item is addressed by command id.  Parent 32004 is distinct
 // from the skinning commands (32000..32002 and 32100..32227).
 constexpr UINT kTransparentSortPrecisionMenuId = 32004;
+constexpr UINT kTransparentSortStrengthHeadingId = 32005;
 
 struct PrecisionItemText {
     UINT id;
@@ -1310,21 +1311,22 @@ static_assert(static_cast<UINT>(TransparentSortPrecision::Off) ==
 
 }  // namespace
 
-// Build or refresh the "transparent sort limit" submenu of the view menu.
+// Build or refresh the transparent-sort submenu of the view menu.
 // Every item is located by command id, so the position-based translations of
 // the original items never move, and a zh/en/ja switch only rewrites the labels
-// instead of appending a second copy.  The five entries are "off" followed by
-// the four values, all drawn as radio items, and the single check mark comes
-// straight from the stored TransparentSortPrecision value.
+// instead of appending a second copy. The five precision radio items share one
+// check mark; the scope item has its own ordinary check mark.
 void RefreshTransparentSortPrecisionMenu(MMDApp* app) {
     if (app == nullptr)
         return;
 #if MMD_ORIGINAL_PROFILE
     app->TransparentMaterialSortPrecision() = TransparentSortPrecision::Off;
+    app->TransparentSortCrossObjects() = false;
     if (HMENU menu = GetMenu(app->state.hwnd)) {
         if (HMENU view = GetSubMenu(menu, 2)) {
             DeleteMenu(view, kAutoTransparentMaterialSortingMenuId, MF_BYCOMMAND);
             DeleteMenu(view, kTransparentSortPrecisionMenuId, MF_BYCOMMAND);
+            DeleteMenu(view, kTransparentSortCrossObjectsMenuId, MF_BYCOMMAND);
         }
     }
     return;
@@ -1338,9 +1340,9 @@ void RefreshTransparentSortPrecisionMenu(MMDApp* app) {
         return;
     const bool chinese = app->state.englishUI == 2;
     const bool english = app->state.englishUI == 1;
-    const wchar_t* title = chinese ? L"透明排序上限"
-                                   : (english ? L"Transparent sort limit"
-                                              : L"透明ソート上限");
+    const wchar_t* title = chinese ? L"透明排序"
+                                   : (english ? L"Transparent sorting"
+                                              : L"透明ソート");
     HMENU popup = nullptr;
     MENUITEMINFOW miiw{};
     miiw.cbSize = sizeof(miiw);
@@ -1363,21 +1365,37 @@ void RefreshTransparentSortPrecisionMenu(MMDApp* app) {
     miiw.fMask = MIIM_STRING;
     miiw.dwTypeData = const_cast<wchar_t*>(title);
     SetMenuItemInfoW(view, kTransparentSortPrecisionMenuId, FALSE, &miiw);
-    // Entries outside the current table are dropped before the labels are
-    // written, so a language switch leaves exactly the five current items
-    // behind instead of a stale one from an earlier id set.
-    for (int i = GetMenuItemCount(popup) - 1; i >= 0; --i) {
-        const UINT itemId = GetMenuItemID(popup, static_cast<UINT>(i));
-        bool known = false;
-        for (const PrecisionItemText& text : kPrecisionItemTexts) {
-            if (text.id == itemId) {
-                known = true;
-                break;
-            }
-        }
-        if (!known)
-            DeleteMenu(popup, static_cast<UINT>(i), MF_BYPOSITION);
+    // Only replace obsolete item layouts. Normal language/state refresh keeps
+    // both the popup handle and its item ordering intact during native menus.
+    constexpr UINT order[] = {
+        kTransparentSortPrecisionMenuOff, 0, kTransparentSortStrengthHeadingId,
+        kTransparentSortPrecisionMenuFirst, kTransparentSortPrecisionMenuFirst + 1,
+        kTransparentSortPrecisionMenuFirst + 2, kTransparentSortPrecisionMenuLast,
+        0, kTransparentSortCrossObjectsMenuId,
+    };
+    constexpr UINT itemCount = sizeof(order) / sizeof(order[0]);
+    bool current = GetMenuItemCount(popup) == static_cast<int>(itemCount);
+    for (UINT i = 0; current && i < itemCount; ++i) {
+        MENUITEMINFOW item{};
+        item.cbSize = sizeof(item);
+        item.fMask = MIIM_ID | MIIM_FTYPE | MIIM_SUBMENU;
+        current = GetMenuItemInfoW(popup, i, TRUE, &item) && !item.hSubMenu &&
+            (order[i] ? item.wID == order[i] && !(item.fType & MFT_SEPARATOR)
+                      : (item.fType & MFT_SEPARATOR) != 0);
     }
+    if (!current) {
+        for (int i = GetMenuItemCount(popup) - 1; i >= 0; --i)
+            if (!DeleteMenu(popup, static_cast<UINT>(i), MF_BYPOSITION)) return;
+        for (const UINT itemId : order)
+            if (!AppendMenuW(popup, itemId ? MF_STRING : MF_SEPARATOR,
+                             itemId, itemId ? L"" : nullptr)) return;
+    }
+    miiw.fMask = MIIM_FTYPE | MIIM_STRING;
+    miiw.fType = MFT_STRING;
+    miiw.dwTypeData = const_cast<wchar_t*>(chinese ? L"排序程度" :
+        (english ? L"Sorting strength" : L"ソート精度"));
+    SetMenuItemInfoW(popup, kTransparentSortStrengthHeadingId, FALSE, &miiw);
+    EnableMenuItem(popup, kTransparentSortStrengthHeadingId, MF_BYCOMMAND | MF_GRAYED);
     for (const PrecisionItemText& text : kPrecisionItemTexts) {
         const wchar_t* label =
             chinese ? text.zh : (english ? text.en : text.jp);
@@ -1401,6 +1419,13 @@ void RefreshTransparentSortPrecisionMenu(MMDApp* app) {
                       MF_BYCOMMAND | (text.id == selected ? MF_CHECKED
                                                           : MF_UNCHECKED));
     }
+    miiw.fMask = MIIM_FTYPE | MIIM_STRING;
+    miiw.fType = MFT_STRING;
+    miiw.dwTypeData = const_cast<wchar_t*>(chinese ? L"开启跨物体排序" :
+        (english ? L"Sort across objects" : L"オブジェクト間もソート"));
+    SetMenuItemInfoW(popup, kTransparentSortCrossObjectsMenuId, FALSE, &miiw);
+    CheckMenuItem(popup, kTransparentSortCrossObjectsMenuId, MF_BYCOMMAND |
+        (app->TransparentSortCrossObjects() ? MF_CHECKED : MF_UNCHECKED));
 #endif
 }
 

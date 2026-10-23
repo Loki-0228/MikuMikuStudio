@@ -239,6 +239,8 @@ public:
     TransparentSortPrecision TransparentMaterialSortPrecision() const { return m_transparentMaterialSortPrecision; }
 #endif
     bool& TransparentMaterialIndexOrderDirty() { return m_transparentMaterialIndexOrderDirty; }
+    bool& TransparentSortCrossObjects() { return m_transparentSortCrossObjects; }
+    bool TransparentSortCrossObjects() const { return !MMD_ORIGINAL_PROFILE && m_transparentSortCrossObjects; }
 
     LetterHotkeyState& LetterHotkeys() { return m_letterHotkeys; }
 
@@ -1567,6 +1569,7 @@ private:
     bool m_shadowFilterEnhanced = false;
     unsigned m_shadowResolutionLimit = 4096;
     TransparentSortPrecision m_transparentMaterialSortPrecision = kDefaultTransparentSortPrecision;
+    bool m_transparentSortCrossObjects = false;
 
     LetterHotkeyState m_letterHotkeys;
 

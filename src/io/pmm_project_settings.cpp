@@ -29,8 +29,8 @@ namespace {
 // it, so a byte that both formats can produce keeps its numeric value and
 // therefore takes the five-tier meaning (3 is Maximum here, not the earlier
 // extra tier, and 4 is Off, not the earlier maximum).  A byte outside 0..4 runs
-// the default and its raw bytes are written back unchanged.  Standard stays the
-// default.  Everything a tier produces at runtime (peeled layer count, triangle
+// the default and its raw bytes are written back unchanged. The default is Off.
+// Everything a tier produces at runtime (peeled layer count, triangle
 // budget, BSP tree depth) is recomputed per frame and is never part of the
 // record.
 static_assert(static_cast<std::uint8_t>(TransparentSortPrecision::Low) == 0 &&
@@ -44,10 +44,14 @@ constexpr std::uint8_t kHighestTransparentSortTier =
 
 // A tier record is usable when it is one byte inside the enum range.  Anything
 // else is a value from another writer or a damaged record: the running state
-// falls back to Standard and the raw bytes are kept for the next save.
+// falls back to Off and the raw bytes are kept for the next save.
 bool KnownTier(const pmm_extension::Record* record) {
     return record != nullptr && record->value.size() == 1 &&
            record->value[0] <= kHighestTransparentSortTier;
+}
+
+bool KnownCrossObjects(const pmm_extension::Record* record) {
+    return record && record->value.size() == 1 && record->value[0] <= 1;
 }
 
 bool KnownAntialias(const pmm_extension::Record* record) {
@@ -64,7 +68,7 @@ std::vector<std::uint8_t> AntialiasBytes(const MMDApp& app) {
 
 void Refresh(MMDApp& app) {
     if (!app.MainWindow()) return;
-    // The single precision submenu owns the sorting state, Off included.  Menu
+    // The precision submenu also contains the independent scope toggle. Menu
     // id 303 no longer has an item of its own, so nothing is checked for it.
     RefreshTransparentSortPrecisionMenu(&app);
     RefreshSkinningMenu(&app);
@@ -106,6 +110,7 @@ void Reset(MMDApp& app) {
 #endif
     app.PmmProjectSettings() = {};
     app.TransparentMaterialSortPrecision() = kDefaultTransparentSortPrecision;
+    app.TransparentSortCrossObjects() = false;
     // Processor settings are per machine user, not per project: creating a new
     // scene never resets them (docs/records/performance/devices.md).
 #if !MMD_ORIGINAL_PROFILE
@@ -122,6 +127,7 @@ void Load(MMDApp& app, int fd, const std::vector<PmmModelAdaptation>& adaptedMod
     (void)fd; (void)adaptedModels;
     app.PmmProjectSettings() = {};
     app.TransparentMaterialSortPrecision() = kDefaultTransparentSortPrecision;
+    app.TransparentSortCrossObjects() = false;
 #else
     curve_host::Reset(&app);
     morph_curve::Reset(&app);
@@ -166,6 +172,8 @@ void Load(MMDApp& app, int fd, const std::vector<PmmModelAdaptation>& adaptedMod
     app.TransparentMaterialSortPrecision() = KnownTier(tier)
         ? static_cast<TransparentSortPrecision>(tier->value[0])
         : kDefaultTransparentSortPrecision;
+    const auto* scope = pmm_extension::Find(loaded, kSortingCrossObjectsKey);
+    app.TransparentSortCrossObjects() = KnownCrossObjects(scope) && scope->value[0] != 0;
     // Bone scaling rides the same document
     // ("org.mikumikustudio.model.<slot>.boneScale.v1"); it is applied after
     // the document itself, on the models already loaded.
@@ -219,7 +227,7 @@ pmm_extension::Document Capture(const MMDApp& app) {
         pmm_extension::Set(document, kSortingPrecisionKey, {selected});
     } else if (tier == nullptr) {
         // Project without the field: start it at the running tier, which Load
-        // left at Standard.  A retired toggle record elsewhere in the document
+        // left at Off. A retired toggle record elsewhere in the document
         // is not a tier statement and is left alone.
         pmm_extension::Set(document, kSortingPrecisionKey, {selected});
     } else if (KnownTier(tier) && tier->value[0] != selected) {
@@ -227,6 +235,14 @@ pmm_extension::Document Capture(const MMDApp& app) {
     }
     // A tier byte this reader does not know is carried over exactly as read,
     // next to the retired toggle record, until the user picks a tier.
+    const auto crossObjects = std::uint8_t(app.TransparentSortCrossObjects());
+    const auto* scope = pmm_extension::Find(document, kSortingCrossObjectsKey);
+    if (state.sortingCrossObjectsEdited || !scope ||
+        (KnownCrossObjects(scope) && scope->value[0] != crossObjects)) {
+        pmm_extension::Set(document, kSortingCrossObjectsKey, {crossObjects});
+    }
+    // Future or damaged scope bytes survive unchanged until the user toggles
+    // the scope. Editing precision alone must not replace them.
     // Per-model bone scaling is appended last so the slot walk below sees the
     // final state of every model slot.
     extended_names::CapturePmm(app, document);
@@ -245,6 +261,10 @@ void ProcessorChanged(MMDApp& app) {
 }
 void SortingPrecisionChanged(MMDApp& app) {
     app.PmmProjectSettings().sortingPrecisionEdited = true;
+    app.SceneModified() = 1;
+}
+void SortingCrossObjectsChanged(MMDApp& app) {
+    app.PmmProjectSettings().sortingCrossObjectsEdited = true;
     app.SceneModified() = 1;
 }
 void AntialiasChanged(MMDApp& app) {

@@ -1415,6 +1415,7 @@ static void CompleteSave(MMDApp* s, SceneSnapshot& snapshot) {
 #endif
         s->PmmProjectSettings().processorEdited = false;
         s->PmmProjectSettings().sortingPrecisionEdited = false;
+        s->PmmProjectSettings().sortingCrossObjectsEdited = false;
         s->PmmProjectSettings().antialiasEdited = false;
         s->SceneModified() = 0;
     }

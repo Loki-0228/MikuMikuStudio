@@ -13,12 +13,15 @@ inline constexpr char kProcessorKey[] = "org.mikumikustudio.skinning.processor";
 // Transport for one TransparentSortPrecision byte: Low = 0 .. Off = 4.  The
 // earlier transparent_sort toggle key is retired and is no longer declared here.
 inline constexpr char kSortingPrecisionKey[] = "org.mikumikustudio.view.transparent_sort_precision";
+// One boolean byte, independent of the precision tier.
+inline constexpr char kSortingCrossObjectsKey[] = "org.mikumikustudio.view.transparent_sort_cross_objects";
 // Three stable bytes: enabled, algorithm, last SMAA algorithm. No driver state.
 inline constexpr char kAntialiasKey[] = "org.mikumikustudio.view.antialiasing";
 struct State {
     pmm_extension::Document document;
     bool processorEdited = false;
     bool sortingPrecisionEdited = false;
+    bool sortingCrossObjectsEdited = false;
     bool antialiasEdited = false;
 };
 Processor ClassifyProcessor(const skinning::Preference&, const std::vector<gpu::Adapter>&);
@@ -28,6 +31,7 @@ void Load(MMDApp&, int fd, const std::vector<PmmModelAdaptation>& adaptedModels 
 pmm_extension::Document Capture(const MMDApp&);
 void ProcessorChanged(MMDApp&);
 void SortingPrecisionChanged(MMDApp&);
+void SortingCrossObjectsChanged(MMDApp&);
 void AntialiasChanged(MMDApp&);
 }
 }

@@ -3206,7 +3206,7 @@ void CmdViewMenu(MMDApp* app, HWND hwnd, std::uint16_t id,
     // handler never depends on menu text.  Picking the stored value again is a
     // no-op, with the one exception described at StoredLimitNeedsRewrite above:
     // a project file holding a limit byte this build cannot read still needs
-    // the user's pick to be written.  Id 309 is no longer handled.
+    // the user's pick to be written. The separate scope toggle uses id 309.
     // ------------------------------------------------------------------
     case kTransparentSortPrecisionMenuFirst:
     case kTransparentSortPrecisionMenuFirst + 1:
@@ -3237,6 +3237,19 @@ void CmdViewMenu(MMDApp* app, HWND hwnd, std::uint16_t id,
         InvalidateRect(hwnd, &app->ViewportRect(), FALSE);
         return;
 #endif
+    }
+
+    case kTransparentSortCrossObjectsMenuId: {
+#if MMD_ORIGINAL_PROFILE
+        app->TransparentSortCrossObjects() = false;
+#else
+        app->TransparentSortCrossObjects() = !app->TransparentSortCrossObjects();
+        pmm_settings::SortingCrossObjectsChanged(*app);
+        RefreshTransparentSortPrecisionMenu(app);
+        RefreshMainWindowViewport(app);
+        InvalidateRect(hwnd, &app->ViewportRect(), FALSE);
+#endif
+        return;
     }
 
     case 310: {
