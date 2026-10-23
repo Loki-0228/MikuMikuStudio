@@ -218,6 +218,10 @@ add_test(NAME frame_rate_correction_tests COMMAND frame_rate_correction_tests)
 if(MIKUMIKUSTUDIO_PROFILE STREQUAL "full")
     add_executable(animation_curve_host_tests EXCLUDE_FROM_ALL tests/animation_curve_host_tests.cpp)
     add_executable(negative_frame_tests EXCLUDE_FROM_ALL tests/negative_frame_tests.cpp)
+    add_executable(effect_compile_cache_tests EXCLUDE_FROM_ALL tests/effect_compile_cache_tests.cpp)
+    target_include_directories(effect_compile_cache_tests PRIVATE include src/exports)
+    target_link_libraries(effect_compile_cache_tests PRIVATE mikumikustudio_core bcrypt)
+    set_target_properties(effect_compile_cache_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
     target_include_directories(negative_frame_tests PRIVATE include)
     target_link_libraries(negative_frame_tests PRIVATE mikumikustudio_core winmm dsound)
     set_target_properties(negative_frame_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
@@ -524,6 +528,7 @@ add_library(mikumikustudio_core STATIC
     src/exports/effect_api.cpp
     src/exports/effect_names.cpp
     src/exports/effect_paths.cpp
+    src/exports/effect_compile_cache.cpp
     src/exports/effect_apng.cpp
     src/exports/effect_file_watch.cpp
     src/unported/stubs.cpp
