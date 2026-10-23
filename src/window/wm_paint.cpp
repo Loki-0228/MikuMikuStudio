@@ -375,6 +375,19 @@ void HandleWindowPaint(MMDApp* app) {
             PanelTitle(app, hdc, "self_shadow manipulation", kJpLblSelfShadow,
                 682 - panelShift, 859 - panelShift, rc.bottom - 157,
                 708 - panelShift, 733 - panelShift);
+#if !MMD_ORIGINAL_PROFILE
+            // The independent detail layer retires the old dynamic precision
+            // checkbox; the shared slider is now labelled as shadow precision.
+            if (en) {
+                Lbl(app, "shadow precision", hdc, 12, 690 - panelShift, rc.bottom - 87);
+                Lbl(app, "detail", hdc, 12, 690 - panelShift, rc.bottom - 54);
+                Lbl(app, "coarse", hdc, 12, 820 - panelShift, rc.bottom - 54);
+            } else {
+                Lbl(app, "\x89\x65\x90\xb8\x93\x78", hdc, 12, 690 - panelShift, rc.bottom - 92);
+                Lbl(app, kJpLblKirei, hdc, 12, 690 - panelShift, rc.bottom - 53);
+                Lbl(app, "\x91\x65\x82\xa2", hdc, 12, 830 - panelShift, rc.bottom - 53);
+            }
+#else
             if (en) {
                 Lbl(app, "shadow range", hdc, 12, 690 - panelShift, rc.bottom - 87);
                 Lbl(app, "detail", hdc, 12, 690 - panelShift, rc.bottom - 54);
@@ -385,6 +398,7 @@ void HandleWindowPaint(MMDApp* app) {
                 Lbl(app, kJpLblKirei, hdc, 12, 690 - panelShift, rc.bottom - 53);
                 Lbl(app, kJpLblEnpou, hdc, 12, 830 - panelShift, rc.bottom - 53);
             }
+#endif
         } else {
             if (en) {
                 Lbl(app, "s", hdc, 12, 688 - panelShift, rc.bottom - 130);

@@ -76,6 +76,21 @@ struct SamplingState {
 SamplingState ReadSamplingState(MMDApp* app);
 void ConfigureEffect(MMDApp* app, void* effect);
 
+// Independent of enhanced filtering: a stable near map supplements coverage.
+void PlanDetail(MMDApp* app, const std::array<float,16>& projection,
+                const std::array<float,16>& coverage, const float view[16],
+                float farDepth, UINT size);
+FineDepthTarget* PrepareDetail(MMDApp* app, bool nativeSucceeded,
+                              std::array<float,16>& projection);
+void MarkDetailRendered(MMDApp* app, bool succeeded);
+void ConfigureDetailReceiver(MMDApp* app, void* effect, bool receivesShadow);
+struct DetailInfo {
+    bool valid = false;
+    UINT size = 0;
+    std::array<float,16> projection{};
+};
+DetailInfo ReadDetailInfo(MMDApp* app);
+
 // Before device Reset, release without forgetting; at renderer shutdown forget.
 // Both forms clear failed-attempt state so a recovered device can try again.
 void ReleaseRenderer(D3DRenderer* renderer, bool forget = false);

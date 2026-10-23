@@ -20,6 +20,7 @@
 #include "mikumikustudio/frame_presentation.hpp"
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/adaptive_shadow.hpp"
+#include "mikumikustudio/shadow_filter.hpp"
 #include "mikumikustudio/panel_controls.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/model.hpp"
@@ -151,6 +152,7 @@ struct Options {
     bool viewportGiven = false;
     bool modelFile = false;
     bool cameraGiven = false;
+    bool noPreview = false;
     float camera[7]{}; // x,y,z,distance,yaw,pitch,roll; angles in degrees
     float orbitDegrees = 0;
     bool selfShadowGiven = false;
@@ -316,6 +318,8 @@ int ParseOptions(int argc, wchar_t** argv, Options& options) {
             options.verifyShadowZoom = true;
         } else if (wcscmp(arg, L"--require-mmv") == 0) {
             options.requireMmv = true;
+        } else if (wcscmp(arg, L"--no-preview") == 0) {
+            options.noPreview = true;
         } else if (wcscmp(arg, L"--forbid-mmv") == 0) {
             options.forbidMmv = true;
         } else if (wcscmp(arg, L"--self-shadow") == 0) {
@@ -875,13 +879,12 @@ int wmain(int argc, wchar_t** argv) {
     }
     if (options.fineShadow >= 0) setQuality(options.fineShadow != 0);
     if (options.adaptiveShadow >= 0) {
-        HWND adaptive = GetDlgItem(app->MainWindow(), panel::kAdaptiveShadowCheckbox);
-        SendMessageW(adaptive, BM_SETCHECK, options.adaptiveShadow ? BST_CHECKED : BST_UNCHECKED, 0);
-        CommandDispatch(adaptive, MAKEWPARAM(panel::kAdaptiveShadowCheckbox, BN_CLICKED));
-        if (app->AdaptiveShadowResolution() != (options.adaptiveShadow != 0)) return 44;
+        // The independent dynamic precision switch is retired. Keep accepting
+        // the historical option, but verify it creates and enables nothing.
+        if (GetDlgItem(app->MainWindow(), panel::kAdaptiveShadowCheckbox) ||
+            app->AdaptiveShadowResolution()) return 44;
     }
     if (options.dynamicPrecision >= 0) {
-        if (!app->AdaptiveShadowResolution()) return 45;
         const auto light = app->SceneLight();
         HWND slider = GetDlgItem(app->MainWindow(), panel::kSelfShadowRangeSlider);
         SendMessageW(slider, TBM_SETPOS, TRUE, options.dynamicPrecision);
@@ -1105,6 +1108,10 @@ int wmain(int argc, wchar_t** argv) {
         app->CameraYaw() = 0.0f;
         app->CameraPitch() = -75.0f * 3.14159265358979323846f / 180.0f;
         app->CameraRoll() = 0.0f;
+    }
+    if (options.noPreview) {
+        app->DepthTextureCompositionEnabled() = 0;
+        app->SelfShadowCompositionEnabled() = 0;
     }
     if (options.cameraGiven) {
         app->CameraPositionX() = options.camera[0];
@@ -1535,8 +1542,9 @@ int wmain(int argc, wchar_t** argv) {
 
     if (options.verifyShadowZoom) {
         if (!throughput || native || !options.output || !UseEffectModelRenderer(app)) return 50;
-        const float savedDistance = app->CameraDistance(), savedRange = app->ShadowDistance();
-        const bool savedAdaptive = app->AdaptiveShadowResolution();
+        const float savedDistance = app->CameraDistance();
+        const int savedPrecision = ShadowSliderPosition(app);
+        const std::uint8_t savedModified = app->SceneModified();
         // The measured frame driver may finish with a physics pose newer than
         // the last rendered vertex buffer. Render that pose before taking the
         // coverage reference; the zoom loop below does not advance physics.
@@ -1544,11 +1552,13 @@ int wmain(int argc, wchar_t** argv) {
             installViewport(); app->state.messageSeen = 10; RenderFrameScene(app);
         }
         const auto projection = app->LightViewProjection();
-        std::vector<unsigned> adaptiveWidths, fixedWidths;
-        for (bool adaptive : {true, false}) {
-            HWND checkbox = GetDlgItem(app->MainWindow(), panel::kAdaptiveShadowCheckbox);
-            SendMessageW(checkbox, BM_SETCHECK, adaptive ? BST_CHECKED : BST_UNCHECKED, 0);
-            CommandDispatch(checkbox, MAKEWPARAM(panel::kAdaptiveShadowCheckbox, BN_CLICKED));
+        HWND slider = GetDlgItem(app->MainWindow(), panel::kSelfShadowRangeSlider);
+        std::vector<unsigned> fineWidths, coarseWidths;
+        for (int precision : {0, 9500}) {
+            SendMessageW(slider, TBM_SETPOS, TRUE, precision);
+            SendMessageW(app->MainWindow(), WM_HSCROLL, TB_THUMBPOSITION, reinterpret_cast<LPARAM>(slider));
+            SyncSelfShadowControls(app);
+            const float selectedRange = float((10000.0 - precision) / 100000.0);
             for (float distance : {-720.f, -180.f, -45.f, -12.f, -180.f, -720.f}) {
                 app->CameraDistance() = distance;
                 for (int frame = 0; frame < 3; ++frame) {
@@ -1561,17 +1571,20 @@ int wmain(int argc, wchar_t** argv) {
                     FAILED(renderer->hdrTexture->GetLevelDesc(0, &texture)) ||
                     actual.Width != texture.Width || actual.Height != texture.Height ||
                     actual.Width != unsigned(renderer->renderTargetWidth)) return 51;
-                const bool unchanged = app->ShadowDistance() == savedRange &&
+                const bool unchanged = app->ShadowDistance() == selectedRange &&
                     std::memcmp(&projection, &app->LightViewProjection(), sizeof(projection)) == 0;
+                // Historical diagnostic name: "adaptive" now selects the fine
+                // (0) or coarse (1) precision tier, not a retired switch.
                 std::printf("shadow_zoom adaptive=%u distance=%.0f surface=%u texture=%u coverage_preserved=%u\n",
-                    adaptive, -distance, actual.Width, texture.Width, unchanged);
+                    precision == 0 ? 0u : 1u, -distance, actual.Width, texture.Width, unchanged);
                 if (!unchanged) return 52;
-                (adaptive ? adaptiveWidths : fixedWidths).push_back(actual.Width);
+                auto& widths = precision == 0 ? fineWidths : coarseWidths;
+                widths.push_back(actual.Width);
                 IDirect3DSurface9* target = nullptr;
                 if (FAILED(device->GetRenderTarget(0, &target))) return 53;
                 wchar_t suffix[80];
-                swprintf_s(suffix, L".zoom-%u-%u-%u.png", adaptive, unsigned(-distance),
-                    unsigned(adaptive ? adaptiveWidths.size() : fixedWidths.size()));
+                swprintf_s(suffix, L".zoom-%u-%u-%u.png", precision == 0 ? 0u : 1u,
+                    unsigned(-distance), unsigned(widths.size()));
                 const std::wstring path = std::wstring(options.output) + suffix;
                 RECT area{0, 0, requestedWidth, requestedHeight};
                 const HRESULT saved = d3dx::Get().saveSurfaceToFileW(path.c_str(), 3, target, nullptr, &area);
@@ -1579,15 +1592,20 @@ int wmain(int argc, wchar_t** argv) {
                 if (FAILED(saved)) return 54;
             }
         }
-        const bool changed = adaptiveWidths[0] < adaptiveWidths[3] &&
-            adaptiveWidths[0] == adaptiveWidths[5];
-        const bool fixed = std::all_of(fixedWidths.begin(), fixedWidths.end(),
-            [&](unsigned width) { return width == fixedWidths.front(); });
+        const bool precisionChanged = fineWidths[0] > coarseWidths[0];
+        const bool distanceConstant = std::all_of(fineWidths.begin(), fineWidths.end(),
+            [&](unsigned width) { return width == fineWidths.front(); }) &&
+            std::all_of(coarseWidths.begin(), coarseWidths.end(),
+            [&](unsigned width) { return width == coarseWidths.front(); });
+        const bool farRestored = fineWidths[0] == fineWidths[5];
         std::printf("shadow_zoom_check dynamic_changed=%u far_restored=%u fixed_constant=%u\n",
-            changed, adaptiveWidths[0] == adaptiveWidths[5], fixed);
-        if (!changed || !fixed) return 55;
+            precisionChanged, farRestored, distanceConstant);
+        if (!precisionChanged || !farRestored || !distanceConstant) return 55;
         app->CameraDistance() = savedDistance;
-        app->AdaptiveShadowResolution() = savedAdaptive;
+        SendMessageW(slider, TBM_SETPOS, TRUE, savedPrecision);
+        SendMessageW(app->MainWindow(), WM_HSCROLL, TB_THUMBPOSITION, reinterpret_cast<LPARAM>(slider));
+        SyncSelfShadowControls(app);
+        app->SceneModified() = savedModified;
     }
 
     // Keep the measured pose fixed while testing the complete producer/receiver
@@ -1661,12 +1679,6 @@ int wmain(int argc, wchar_t** argv) {
             }
             return pixels;
         };
-        const auto toggle = [&](bool enabled) {
-            HWND checkbox = GetDlgItem(app->MainWindow(), panel::kAdaptiveShadowCheckbox);
-            SendMessageW(checkbox, BM_SETCHECK, enabled ? BST_CHECKED : BST_UNCHECKED, 0);
-            CommandDispatch(checkbox, MAKEWPARAM(panel::kAdaptiveShadowCheckbox, BN_CLICKED));
-        };
-        toggle(false);
         const float fixedRange = app->ShadowDistance();
         const int fixedPosition = ShadowSliderPosition(app);
         const auto fixed = capture(L".fixed.png");
@@ -1684,7 +1696,6 @@ int wmain(int argc, wchar_t** argv) {
         }
         const auto unoccluded = capture(L".unoccluded.png");
         for (auto caster : casters) caster.material->flags = caster.flags;
-        toggle(true);
         HWND slider = GetDlgItem(app->MainWindow(), panel::kSelfShadowRangeSlider);
         const auto precision = [&](int value) {
             SendMessageW(slider, TBM_SETPOS, TRUE, value);
@@ -1697,7 +1708,6 @@ int wmain(int argc, wchar_t** argv) {
         capture(L".wide.png");
         const bool wideCoverage = std::abs(app->ShadowDistance() - .005f) < 1e-7f;
         precision(fixedPosition);
-        toggle(false);
         const auto restored = capture(L".restored.png");
         std::size_t occludedPixels = 0, changedPixels = 0;
         if (fixed.empty() || fixed.size() != unoccluded.size() || fixed.size() != restored.size()) return 48;
@@ -1711,13 +1721,14 @@ int wmain(int argc, wchar_t** argv) {
             changedPixels += change > 2;
         }
         const bool sameMap = shadowMaps.size() == 5 && !shadowMaps[0].empty() && shadowMaps[0] == shadowMaps[4];
-        const bool resolutionOrder = shadowWidths.size() == 5 && shadowWidths[3] >= shadowWidths[2];
+        const bool resolutionOrder = shadowWidths.size() == 5 && shadowWidths[3] <= shadowWidths[2] &&
+            shadowWidths[4] == shadowWidths[0];
         std::printf("shadow_cycle occluded_pixels=%zu restored_changed_pixels=%zu range_preserved=%u map_identical=%u shared_coverage=%u wide_coverage=%u resolution_order=%u dynamic_width=%u wide_width=%u\n",
             occludedPixels, changedPixels, fixedRange == app->ShadowDistance(), sameMap, sharedCoverage, wideCoverage, resolutionOrder,
             shadowWidths.size() == 5 ? shadowWidths[2] : 0, shadowWidths.size() == 5 ? shadowWidths[3] : 0);
         // MSAA/transparent surface ties can vary at a few triangle-edge pixels.
         // Require the restored shadow depths to be bit-exact, and reject any
-        // visible region changing after toggling (more than 0.1% of the frame).
+        // visible region changing after precision changes (more than 0.1% of the frame).
         if (occludedPixels < 32 || changedPixels > fixed.size() / 1000 || !sameMap ||
             !sharedCoverage || !wideCoverage || !resolutionOrder || fixedRange != app->ShadowDistance()) return 49;
     }
@@ -1935,6 +1946,15 @@ int wmain(int argc, wchar_t** argv) {
         }
         json.End();
         json.Integer("resolution", app->Renderer()->renderTargetWidth);
+        const auto detailShadow = shadow_filter::ReadDetailInfo(app);
+        json.Bool("detail_valid", detailShadow.valid);
+        json.Integer("detail_resolution", detailShadow.size);
+        if (detailShadow.valid) {
+            const auto& m = detailShadow.projection;
+            const float scale = std::sqrt(m[0]*m[0] + m[4]*m[4] + m[8]*m[8]);
+            json.Number("detail_coverage_width", 2.f / scale);
+            json.Number("detail_texels_per_world_unit", detailShadow.size * scale * .5f);
+        }
         D3DSURFACE_DESC actualShadow{};
         if (app->Renderer()->shadowSurface && SUCCEEDED(app->Renderer()->shadowSurface->GetDesc(&actualShadow))) {
             json.Integer("surface_width", actualShadow.Width);

@@ -30,6 +30,8 @@ void SetShadowSliderPosition(MMDApp* app, int position) {
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/native_mesh.hpp"
 #include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/d3dx_effect.hpp"
+#include "mikumikustudio/shadow_filter.hpp"
 #include "mikumikustudio/d3dx_mesh.hpp"
 #include "mikumikustudio/d3d_object_guard.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
@@ -164,6 +166,9 @@ void IncludeMeshBounds(IDirect3DVertexBuffer9* buffer, UINT stride, UINT count,
 }
 
 void LoadShadowResolutionPreference(MMDApp* app) {
+    // The ABI branch stores general preferences in data/settings.json. The
+    // independently stored dynamic precision is retired: only the enhanced
+    // filter flag remains meaningful, and it never changes project coverage.
     std::string body;
     const auto result = system_settings::ReadSection("shadow", body);
     if (result != system_settings::Result::Missing) {
@@ -171,10 +176,7 @@ void LoadShadowResolutionPreference(MMDApp* app) {
         app->ShadowFilterEnhanced() = false;
         if (result == system_settings::Result::Ok) try {
             const auto object = settings_json::Object(body);
-            const bool adaptive = settings_json::Bool(object, "adaptive", false);
-            const bool enhanced = settings_json::Bool(object, "filterEnhanced", false);
-            app->AdaptiveShadowResolution() = adaptive;
-            app->ShadowFilterEnhanced() = enhanced;
+            app->ShadowFilterEnhanced() = settings_json::Bool(object, "filterEnhanced", false);
         } catch (...) {}
         return;
     }
@@ -192,14 +194,13 @@ void LoadShadowResolutionPreference(MMDApp* app) {
         }
         fclose(file);
     }
-    app->AdaptiveShadowResolution() = enabled == 1;
-    system_settings::CompareExchangeSection("shadow", nullptr, std::string("{\"adaptive\":") +
-        settings_json::Bool(app->AdaptiveShadowResolution()) + ",\"filterEnhanced\":" +
+    (void)enabled;
+    app->AdaptiveShadowResolution() = false;
+    system_settings::CompareExchangeSection("shadow", nullptr, std::string("{\"filterEnhanced\":") +
         settings_json::Bool(app->ShadowFilterEnhanced()) + "}");
 }
 void SaveShadowResolutionPreference(MMDApp* app) {
-    system_settings::WriteSection("shadow", std::string("{\"adaptive\":") +
-        settings_json::Bool(app->AdaptiveShadowResolution()) + ",\"filterEnhanced\":" +
+    system_settings::WriteSection("shadow", std::string("{\"filterEnhanced\":") +
         settings_json::Bool(app->ShadowFilterEnhanced()) + "}");
 }
 
@@ -243,110 +244,63 @@ std::array<float, 16> UpdateAdaptiveShadowMap(MMDApp* app, const float frame[16]
             buffer->Release();
         }
     }
+    // The frame translates every model by the focus point. Keep that point
+    // separately: the light projection extends its centre by the view offsets,
+    // but the depth cut must use the point the picture is centred on.
+    float frameFocus[3]{};
     float focus[3]{};
-    if (ResolveFrameFocus(app, static_cast<int>(app->CameraReferenceMode()), focus) == FrameFocusSource::FreeView) {
+    const auto focusSource = ResolveFrameFocus(app, static_cast<int>(app->CameraReferenceMode()), frameFocus);
+    for (int axis = 0; axis < 3; ++axis) focus[axis] = frameFocus[axis];
+    if (focusSource == FrameFocusSource::FreeView) {
         focus[0] = app->ViewOffsetX(); focus[1] = app->ViewOffsetY();
     }
-    const auto safeProjection = NativeShadowProjection(focus, app->LightDirection(),
-        app->ShadowDistance(), app->ShadowMode(), &scene);
-    auto referenceProjection = ReferenceShadowProjection(app, frame);
-    const auto& direction = app->SceneLight().Direction;
-    const float directionLength = direction.x*direction.x + direction.y*direction.y + direction.z*direction.z;
-    const bool degenerate = directionLength < 1e-12f ||
-        direction.x*direction.x + direction.y*direction.y < directionLength*1e-8f;
-    if (degenerate || !std::all_of(referenceProjection.begin(), referenceProjection.end(),
-            [](float value) { return std::isfinite(value); })) referenceProjection = safeProjection;
-    // Cover the focus plane seen by the current camera as well as the user's
-    // shadow range. Distant stage extents must not dilute near self shadows.
-    const float aspect = (std::max)(1.f, std::fabs(r->aspectRatio));
-    const float halfFov = (std::clamp)(app->CameraFov(), 1.f, 170.f) * .00872664626f;
-    float viewRadius = std::fabs(app->CameraDistance()) * std::tan(halfFov) *
-        std::sqrt(1.f + aspect*aspect);
-    Matrix cameraProjection{};
-    const bool projectionReady = device && SUCCEEDED(device->GetTransform(D3DTS_PROJECTION,
-        reinterpret_cast<D3DMATRIX*>(&cameraProjection)));
-    if (projectionReady &&
-        std::fabs(cameraProjection.m[0][0]) > 1e-6f &&
-        std::fabs(cameraProjection.m[1][1]) > 1e-6f) {
-        const float depth = cameraProjection.m[3][3] == 1.f
-            ? 1.f : std::fabs(app->CameraDistance());
-        viewRadius = std::hypot(depth / cameraProjection.m[0][0],
-                                depth / cameraProjection.m[1][1]);
+    // Coverage, depth units and the directional-light basis must not change
+    // when the user changes precision. A separate detail layer covers the view.
+    const auto lightProjection = NativeShadowProjection(focus,app->LightDirection(),.1f,1,&scene);
+    auto rampProjection = NativeShadowProjection(focus,app->LightDirection(),.1f,1);
+    // Keep the mode-2 ramp's multiplier fixed too: camera-relative Y previously
+    // changed both shadow bias and darkness when orbiting or changing precision.
+    for(int row=0;row<4;++row)rampProjection[row*4+1]=0;
+    Matrix cameraProjection{},cameraView{},worldView{},inverseView{},inverseProjection{};
+    CameraShadowRegion cameraRegion;
+    if(device && SUCCEEDED(device->GetTransform(D3DTS_PROJECTION,
+            reinterpret_cast<D3DMATRIX*>(&cameraProjection))) &&
+        SUCCEEDED(device->GetTransform(D3DTS_VIEW,reinterpret_cast<D3DMATRIX*>(&cameraView)))) {
+        api.multiply(&worldView,reinterpret_cast<const Matrix*>(frame),&cameraView);
+        if(api.inverse(&inverseView,nullptr,&worldView) &&
+            api.inverse(&inverseProjection,nullptr,&cameraProjection)) {
+            // Read the focus depth from the rendered transform. The camera panel
+            // xyz values do not include the reference, attachment or preview
+            // transforms that move the picture.
+            float viewFocus[4]{};
+            api.vec3Transform(viewFocus,frameFocus,&worldView);
+            cameraRegion=CameraDepthShadowRegion(&inverseView.m[0][0],
+                &inverseProjection.m[0][0],viewFocus[2]);
+        }
     }
-    NativeShadowBounds receivers;
-    Matrix cameraView{}, sceneToView{};
-    if (projectionReady && SUCCEEDED(device->GetTransform(D3DTS_VIEW,
-            reinterpret_cast<D3DMATRIX*>(&cameraView)))) {
-        api.multiply(&sceneToView, reinterpret_cast<const Matrix*>(frame), &cameraView);
-        std::array<float, 16> view{}, projection{};
-        std::memcpy(view.data(), sceneToView.m, sizeof sceneToView.m);
-        std::memcpy(projection.data(), cameraProjection.m, sizeof cameraProjection.m);
-        const float radius = (std::max)(1.f / NativeShadowLateralScale(app->ShadowDistance(), app->ShadowMode()), viewRadius);
-        receivers = VisibleShadowReceiverBounds(scene, focus, radius, view, projection);
-    }
-    // Unsupported camera transforms must preserve coverage rather than return
-    // to the focus-only fit which clipped nearby visible receivers.
-    const auto lightProjection = FiniteNativeShadowBounds(receivers)
-        ? FitFocusedShadowProjection(referenceProjection, scene, focus, app->LightDirection(),
-            app->ShadowDistance(), app->ShadowMode(), viewRadius, &receivers)
-        : FitReferenceShadowProjection(referenceProjection, scene);
-    const float referenceScale = MinimumShadowScale(referenceProjection, scene);
+    Matrix inverseShadow{},toNative{};
+    for(int axis=0;axis<4;++axis)toNative.m[axis][axis]=1;
+    if(api.inverse(&inverseShadow,nullptr,reinterpret_cast<const Matrix*>(lightProjection.data())))
+        api.multiply(&toNative,&inverseShadow,reinterpret_cast<const Matrix*>(rampProjection.data()));
+    if(FAILED(FxSetMatrix(r->effect,"MdsShadowToNative",&toNative)))
+        return ReferenceShadowProjection(app,frame); // unchanged SM2 fallback
+    d3dx::FxSetInt(r->effect,"MdsStableShadowGrid",1);
     D3DCAPS9 caps{};
-    if (!device || FAILED(device->GetDeviceCaps(&caps))) return lightProjection;
-    const float lateralScale = MinimumShadowScale(lightProjection, scene);
-    const unsigned hardwareLimit = (std::min)(caps.MaxTextureWidth, caps.MaxTextureHeight);
-    // The screen target alone is not the frame's pixel budget: fixed shadows
-    // otherwise keep rasterizing up to 8192 squared even in a 25% preview.
-    // Dynamic demand already uses the scaled viewport; only cap it here.
-    const unsigned limit = viewport_render_scale::ShadowSize(app, (std::max)(
-        FittedShadowResolutionLimit(app->ShadowResolutionLimit(), referenceScale, lateralScale, hardwareLimit),
-        FittedShadowResolutionLimit(app->ShadowResolutionLimit(),
-            NativeShadowLateralScale(app->ShadowDistance(), app->ShadowMode()),
-            MinimumShadowScale(safeProjection, scene), hardwareLimit)));
-    if (limit < 512) return lightProjection;
-    unsigned size = limit;
-    if (app->AdaptiveShadowResolution()) {
-        Matrix view{}, projection{}, worldView{};
-        D3DVIEWPORT9 viewport{};
-        device->GetTransform(D3DTS_VIEW, reinterpret_cast<D3DMATRIX*>(&view));
-        device->GetTransform(D3DTS_PROJECTION, reinterpret_cast<D3DMATRIX*>(&projection));
-        device->GetViewport(&viewport);
-        api.multiply(&worldView, reinterpret_cast<const Matrix*>(frame), &view);
-        float nearest = std::numeric_limits<float>::infinity();
-        float farthest = -std::numeric_limits<float>::infinity();
-        NativeShadowBounds viewBounds;
-        if (scene.Valid()) {
-            for (unsigned corner = 0; corner < 8; ++corner) {
-                const auto point = scene.Corner(corner);
-                float transformed[4]{};
-                api.vec3Transform(transformed, point.data(), &worldView);
-                viewBounds.Include(transformed);
-                nearest = (std::min)(nearest, transformed[2]);
-                farthest = (std::max)(farthest, transformed[2]);
-            }
-            nearest = farthest > 0 ? (std::max)(.0001f, nearest) : std::numeric_limits<float>::infinity();
-        }
-        const float projectedPixels = (std::max)(viewport.Width * std::fabs(projection.m[0][0]),
-                                                viewport.Height * std::fabs(projection.m[1][1]));
-        const float required = RequiredShadowMapSizeForScale(lateralScale,
-            projectedPixels, nearest, projection.m[3][3] == 1.f) * ShadowSamplingFactor(app->ShadowDistance());
-        // The native projective grid compresses at large camera distances.
-        // Its worst Jacobian alone can request a huge map for a model only
-        // one screen pixel tall. Bound that demand by visible scene extent,
-        // with 32 map texels per screen pixel and the existing 512 minimum.
-        // Near/large scenes retain the full fitted-coverage resolution cap.
-        unsigned footprintLimit = limit;
-        if (viewBounds.Valid() && viewBounds.minimum[2] > .0001f) {
-            const float depth = projection.m[3][3] == 1.f ? 1.f : viewBounds.minimum[2];
-            const float extent = (std::max)(viewBounds.maximum[0]-viewBounds.minimum[0],
-                                             viewBounds.maximum[1]-viewBounds.minimum[1]);
-            const float footprint = extent*projectedPixels/(2.f*depth);
-            footprintLimit = 512;
-            while (footprintLimit < limit && footprintLimit < footprint*32.f) footprintLimit *= 2;
-            footprintLimit = (std::min)(footprintLimit, limit);
-        }
-        size = AdaptiveShadowSize(required, unsigned(r->renderTargetWidth), footprintLimit);
+    if(!device || FAILED(device->GetDeviceCaps(&caps)))return lightProjection;
+    const unsigned hardwareLimit=(std::min)(caps.MaxTextureWidth,caps.MaxTextureHeight);
+    const unsigned maximum=(std::min)({8192u,hardwareLimit,app->ShadowResolutionLimit()*2u});
+    const unsigned qualitySize=ShadowQualityMapSize(app->ShadowDistance(),maximum);
+    const unsigned detailSize=viewport_render_scale::ShadowSize(app,qualitySize);
+    if(cameraRegion.valid) {
+        const auto detailProjection=CameraDetailShadowProjection(cameraRegion,app->LightDirection(),lightProjection);
+        // Every tier shares the final camera frustum and the per-pixel view-Z
+        // transition. Only texture resolution changes with the precision slider.
+        if(MinimumShadowScale(detailProjection,scene)>MinimumShadowScale(lightProjection,scene)*1.5f)
+            shadow_filter::PlanDetail(app,detailProjection,lightProjection,&worldView.m[0][0],
+                cameraRegion.farDepth,detailSize);
     }
+    unsigned size=viewport_render_scale::ShadowSize(app,(std::max)(512u,qualitySize/2u));
+    if(size<512)return lightProjection;
     if (r->hdrTexture && r->shadowSurface && r->shadowDepthSurface && unsigned(r->renderTargetWidth) == size &&
         unsigned(r->renderTargetHeight) == size) return lightProjection;
     IDirect3DTexture9* texture = nullptr;

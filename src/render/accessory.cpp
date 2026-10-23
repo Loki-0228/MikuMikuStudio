@@ -1488,6 +1488,11 @@ void RenderAccessoriesEffectRange(MMDApp* app, int firstOrder,
     void* effect = sub->effect;
     if (device == nullptr || effect == nullptr || !d3dx::Get().Load())
         return;
+#if !MMD_ORIGINAL_PROFILE
+    // Accessory techniques apply their own local transform to the coverage
+    // matrix. Do not inherit a model material's detail receiver state.
+    shadow_filter::ConfigureDetailReceiver(app, effect, false);
+#endif
     const float* light = reinterpret_cast<const float*>(&app->SceneLight());
     // 0x4C593B..0x4C594F: the effect accessory renderer does not feed the
     // raw ambient/emissive sum to EgColor.  Its RGB channels are attenuated

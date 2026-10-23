@@ -372,7 +372,12 @@ void SyncSelfShadowControls(MMDApp* app) {
 
     const HWND main = app->state.hwnd;
     const HWND slider=GetDlgItem(main,panel::kSelfShadowRangeSlider);
-    ui::SetTrackbarPositionIfChanged(slider, range);
+    if(SendMessageA(slider,TBM_GETPOS,0,0)!=range) {
+        SendMessageA(slider,TBM_SETPOS,FALSE,range);
+        // Timeline seeking can keep the render/message pump busy. Repaint the
+        // whole track immediately, including the old thumb's background.
+        RedrawWindow(slider,nullptr,nullptr,RDW_INVALIDATE|RDW_ERASE|RDW_UPDATENOW);
+    }
     char text[0x34];
     sprintf_s(text, sizeof(text), "%d", range);
     const HWND edit=GetDlgItem(main,panel::kSelfShadowRangeEdit);

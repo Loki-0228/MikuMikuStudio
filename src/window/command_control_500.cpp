@@ -803,17 +803,11 @@ void CmdControl500(MMDApp* app, HWND hwnd, std::uint16_t id, std::uint16_t notif
         PostViewRefresh(app);
         break;
     }
-    case panel::kAdaptiveShadowCheckbox: {
-        app->AdaptiveShadowResolution() = SendMessageW(GetDlgItem(hwnd, panel::kAdaptiveShadowCheckbox),
-            BM_GETCHECK, 0, 0) == BST_CHECKED;
-        // Only the allocation policy changes. Coverage and its keyframed
-        // fractional value remain shared by both modes.
-        SaveShadowResolutionPreference(app);
-        SyncSelfShadowControls(app);
-        InvalidateRect(hwnd, nullptr, FALSE);
-        PostViewRefresh(app);
+    case panel::kAdaptiveShadowCheckbox:
+        // Retired control ID: dynamic precision no longer exists. Precision
+        // only changes sample density; coverage stays project-owned.
+        app->AdaptiveShadowResolution() = false;
         break;
-    }
 #endif
     case 556: {  // 0x48DF5D
         // The checked state of 0x22C is probed by HandleNotify (ui_notify.cpp

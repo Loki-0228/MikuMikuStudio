@@ -245,6 +245,28 @@ float MdsAdaptiveSplineDepth(float2 uv, float2 uvDx, float2 uvDy)
     return sum/16.0f;
 }
 
+
+// Restore the pre-fit shadow coordinates for the native material ramp.
+float4x4 MdsShadowToNative = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+float MdsNativeShadowRamp(float3 projected, float depth) {
+    float4 receiver=mul(float4(projected,1),MdsShadowToNative);
+    float4 caster=mul(float4(projected.xy,depth,1),MdsShadowToNative);
+    float difference=max(receiver.z/receiver.w-caster.z/caster.w,0);
+    float nativeY=(1-receiver.y/receiver.w)*0.5f;
+    return 1-saturate(difference*(parthf ? SKII2*nativeY : SKII1)-0.3f);
+}
+bool MdsStableShadowGrid = false;
+float4 MdsDetailTexelSize = {0,0,0,0};
+bool MdsDetailEnabled = false;
+float4x4 MdsCoverageToDetail;
+float4 MdsDetailDepthBlend = {0,0,0,1};
+sampler MdsDetailSampler : register(s3) = sampler_state {
+    MinFilter = LINEAR;
+    MagFilter = LINEAR;
+    MipFilter = NONE;
+    AddressU = CLAMP;
+    AddressV = CLAMP;
+};
 float MdsShadowVisibility(float3 projected, float2 uv, float3 normal)
 {
     float2 uvDx = ddx(uv), uvDy = ddy(uv);
@@ -257,13 +279,31 @@ float MdsShadowVisibility(float3 projected, float2 uv, float3 normal)
     // continuous mode-specific ramp. Filtering binary comparisons, shifting
     // the lookup by half a texel, or extrapolating a receiver triangle changes
     // grazing-surface gradients and reveals triangle boundaries at low detail.
+    // D3D9 raster centres lie at integer pixel coordinates; texture centres
+    // lie half a texel later. Correct that mismatch for the stable grid so
+    // coarse maps do not invent receiver self-shadow on sloping ground.
+    if(MdsStableShadowGrid) uv += 0.5f/MdsShadowMapSize.xy;
     float depth = tex2D(DefSampler, uv).r;
     [branch] if (MdsShadowFilterEnhanced)
         depth = MdsAdaptiveSplineDepth(uv, uvDx, uvDy);
-    float difference = max(projected.z - depth, 0.0f);
-    if (parthf)
-        return 1 - saturate(difference * SKII2 * uv.y - 0.3f);
-    return 1 - saturate(difference * SKII1 - 0.3f);
+    float visibility = MdsNativeShadowRamp(projected,depth);
+    [branch] if (MdsDetailEnabled) {
+        float4 detail = mul(float4(projected,1),MdsCoverageToDetail);
+        float2 detailXY = detail.xy / detail.w;
+        float edgeWeight = saturate((0.98f-max(abs(detailXY.x),abs(detailXY.y)))/0.12f);
+        float depthWeight = saturate(dot(float4(projected,1),MdsDetailDepthBlend));
+        float weight = min(edgeWeight,depthWeight);
+        weight = weight*weight*(3-2*weight);
+        [branch] if (weight > 0) {
+            float2 detailUV = float2(detailXY.x+1,1-detailXY.y)*0.5f;
+            // Both maps deliberately share Z. Blend visibility at the rim,
+            // never depths from unrelated texels or surfaces.
+            if(MdsStableShadowGrid) detailUV += MdsDetailTexelSize.xy*0.5f;
+            float fineDepth = tex2Dlod(MdsDetailSampler,float4(detailUV,0,0)).r;
+            visibility = lerp(visibility,MdsNativeShadowRamp(projected,fineDepth),weight);
+        }
+    }
+    return visibility;
 }
 
 struct BufferShadow_OUTPUT

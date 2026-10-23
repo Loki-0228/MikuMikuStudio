@@ -158,6 +158,14 @@ struct State {
     bool directionalCoarse = false;
 };
 std::unordered_map<D3DRenderer*, State> states;
+struct DetailState {
+    FineDepthTarget target;
+    std::array<float,16> projection{}, coverageToDetail{};
+    std::array<float,4> depthBlend{};
+    UINT requested = 0, failedSize = 0;
+    bool planned = false, valid = false;
+};
+std::unordered_map<D3DRenderer*, DetailState> details;
 
 bool Enabled(MMDApp* app) {
     if constexpr (build_profile::original) return false;
@@ -291,7 +299,17 @@ HRESULT TargetScope::Restore() noexcept {
 
 void Invalidate(MMDApp* app) {
     if (!app || !app->Renderer()) return;
-    if (!Enabled(app)) { ReleaseRenderer(app->Renderer(), true); return; }
+    if (app->ShadowMode() <= 0) {
+        if (app->Renderer()->device) app->Renderer()->device->SetTexture(3,nullptr);
+        details.erase(app->Renderer());
+    }
+    if (const auto detail = details.find(app->Renderer()); detail != details.end())
+        detail->second.planned = detail->second.valid = false;
+    if (!Enabled(app)) {
+        // Filtering can be disabled while the independent detail map is active.
+        states.erase(app->Renderer());
+        return;
+    }
     const auto found = states.find(app->Renderer());
     if (found == states.end()) return;
     auto& state = found->second;
@@ -299,7 +317,7 @@ void Invalidate(MMDApp* app) {
 }
 
 FineDepthTarget* Prepare(MMDApp* app, bool nativeSucceeded) {
-    if (!Enabled(app)) { Invalidate(app); return nullptr; }
+    if (!Enabled(app)) return nullptr;
     auto* renderer = app->Renderer();
     auto& state = states.try_emplace(renderer).first->second;
     state.pending = state.valid = state.directionalCoarse = state.filteredValid = false;
@@ -445,9 +463,80 @@ void ConfigureEffect(MMDApp* app, void* effect) {
     const auto state = ReadSamplingState(app);
     d3dx::FxSetInt(effect, "MdsShadowFilterEnhanced", state.enhanced ? 1 : 0);
     d3dx::FxSetFloatArray(effect, "MdsShadowMapSize", state.mapSize, 4);
+    ConfigureDetailReceiver(app, effect, false);
+}
+
+void PlanDetail(MMDApp* app, const std::array<float,16>& projection,
+                const std::array<float,16>& coverage, const float view[16],
+                float farDepth, UINT size) {
+    auto* renderer = app->Renderer();
+    if (!renderer || !renderer->effect || renderer->shaderModelCaps < 3 || size < 512 ||
+        FAILED(d3dx::FxSetInt(renderer->effect, "MdsDetailEnabled", 0))) return;
+    auto& detail = details[renderer];
+    using Matrix = d3dx::D3DXMATRIXF;
+    Matrix inverse{}, transform{};
+    if (!d3dx::Get().inverse(&inverse, nullptr, reinterpret_cast<const Matrix*>(coverage.data()))) return;
+    d3dx::Get().multiply(&transform, &inverse, reinterpret_cast<const Matrix*>(projection.data()));
+    std::copy_n(&transform.m[0][0], 16, detail.coverageToDetail.begin());
+    d3dx::Get().multiply(&transform, &inverse, reinterpret_cast<const Matrix*>(view));
+    const float blendWidth = (std::max)(1.f,farDepth*.2f);
+    for(int row=0;row<4;++row) detail.depthBlend[row]=-transform.m[row][2]/blendWidth;
+    detail.depthBlend[3]+=farDepth/blendWidth;
+    detail.projection = projection;
+    detail.requested = size;
+    detail.planned = true;
+}
+
+FineDepthTarget* PrepareDetail(MMDApp* app, bool nativeSucceeded,
+                              std::array<float,16>& projection) {
+    auto* renderer = app->Renderer();
+    const auto found = details.find(renderer);
+    if (found == details.end()) return nullptr;
+    auto& detail = found->second;
+    detail.valid = false;
+    if (!nativeSucceeded || !detail.planned) return nullptr;
+    if (detail.failedSize == detail.requested) return nullptr;
+    if (FAILED(detail.target.Ensure(renderer->device, 1, detail.requested))) {
+        detail.failedSize = detail.requested;
+        return nullptr;
+    }
+    detail.failedSize = 0;
+    projection = detail.projection;
+    return &detail.target;
+}
+
+void MarkDetailRendered(MMDApp* app, bool succeeded) {
+    const auto found = details.find(app->Renderer());
+    if (found != details.end()) found->second.valid = succeeded && found->second.planned;
+}
+
+void ConfigureDetailReceiver(MMDApp* app, void* effect, bool receivesShadow) {
+    if (!effect || !app || !app->Renderer()) return;
+    auto* renderer = app->Renderer();
+    const auto found = details.find(renderer);
+    const bool enabled = receivesShadow && app->ShadowMode() > 0 &&
+        found != details.end() && found->second.valid;
+    d3dx::FxSetInt(effect, "MdsDetailEnabled", enabled ? 1 : 0);
+    if (enabled) {
+        d3dx::FxSetMatrix(effect, "MdsCoverageToDetail",
+            reinterpret_cast<const d3dx::D3DXMATRIXF*>(found->second.coverageToDetail.data()));
+        d3dx::FxSetFloatArray(effect, "MdsDetailDepthBlend",found->second.depthBlend.data(),4);
+        const float texel[4]{1.f/found->second.target.Size(),1.f/found->second.target.Size(),0,0};
+        d3dx::FxSetFloatArray(effect,"MdsDetailTexelSize",texel,4);
+        renderer->device->SetTexture(3, found->second.target.Texture());
+    } else renderer->device->SetTexture(3, nullptr);
+}
+
+DetailInfo ReadDetailInfo(MMDApp* app) {
+    if (!app) return {};
+    const auto found = details.find(app->Renderer());
+    if (found == details.end()) return {};
+    const auto& state = found->second;
+    return {state.valid, state.target.Size(), state.projection};
 }
 
 void ReleaseRenderer(D3DRenderer* renderer, bool forget) {
+    details.erase(renderer);
     const auto found = states.find(renderer);
     if (found == states.end()) return;
     auto& state = found->second;

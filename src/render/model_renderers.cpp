@@ -1012,6 +1012,10 @@ void ConfigureEffectMaterial(MMDApp* app, D3DRenderer* sub,
                              unsigned char* model,
                              unsigned char* material, UINT materialIndex) {
     const mdl::ModelMaterialRecord& record = mdl::Material(material);
+#if !MMD_ORIGINAL_PROFILE
+    shadow_filter::ConfigureDetailReceiver(app, effect,
+        mdl::Mdl(model)->physicsMode != 2 || (record.flags & 8) != 0);
+#endif
     const float alpha = record.diffuse[3];
     const float diffuse[4] = {record.diffuse[0], record.diffuse[1],
                               record.diffuse[2], alpha};
@@ -3263,6 +3267,42 @@ static bool RenderShadowMapImpl(MMDApp* app, const float frameMatrix[16], bool c
         shadow_filter::MarkRendered(app, auxiliary && succeeded);
     }
     shadow_filter::FinalizeDepth(app, succeeded);
+    std::array<float,16> detailProjection{};
+    if (auto* detail = shadow_filter::PrepareDetail(app, succeeded, detailProjection)) {
+        shadow_filter::TargetScope scope;
+        bool rendered = SUCCEEDED(scope.Begin(device, *detail));
+        const auto objectBefore = app->ActiveRenderObject();
+        const auto passBefore = app->ActiveRenderPass();
+        Matrix detailMatrix;
+        std::memcpy(&detailMatrix, detailProjection.data(), sizeof(detailMatrix));
+        // Accessory casters obtain their transform through the application field.
+        std::memcpy(&app->LightViewProjection(), &detailMatrix, sizeof(detailMatrix));
+        UINT detailPasses = 0;
+        if (rendered) {
+            rendered = SUCCEEDED(FxSetTechnique(effect, "ZValuePlotTec"));
+            rendered = rendered && SUCCEEDED(FxBegin(effect, &detailPasses));
+            if (rendered) {
+                app->ActiveRenderPass() = AccessoryRenderPass::ModelEffect;
+                if (!RenderAccessoriesShadowChecked(app)) rendered = false;
+                if (FAILED(FxSetMatrix(effect, "matLightViewProj", &detailMatrix))) rendered = false;
+                for (int slot = 0; slot < kModelSlotCount; ++slot) {
+                    auto* model = native_mesh::RenderModel(app->ModelSlot(slot));
+                    if (!model || mdl::Mdl(model)->toonFlag == 0) continue;
+                    app->ActiveRenderObject() = model;
+                    DrawModelMaterials(app, model, true, true, ModelAlphaPass::Original, nullptr, &rendered);
+                }
+                if (FAILED(FxEnd(effect))) rendered = false;
+            }
+        }
+        std::memcpy(&app->LightViewProjection(), &shadowMatrix, sizeof(shadowMatrix));
+        app->ActiveRenderObject() = objectBefore;
+        app->ActiveRenderPass() = passBefore;
+        if (FAILED(scope.Restore())) rendered = false;
+        if (FAILED(FxSetMatrix(effect, "matLightViewProj", &shadowMatrix))) rendered = false;
+        if (FAILED(FxSetMatrix(effect, "matWorldViewProj",
+            reinterpret_cast<const Matrix*>(&app->WorldViewProjection())))) rendered = false;
+        shadow_filter::MarkDetailRendered(app, rendered && succeeded);
+    }
 #endif
     app->ActiveRenderPass() = AccessoryRenderPass::None;
     device->SetVertexShader(nullptr);

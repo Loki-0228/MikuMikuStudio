@@ -77,9 +77,6 @@ void CheckReferenceFit() {
         auto matrix=inside;matrix[0]=matrix[5]=scale;matrix[10]=scale*.15f;
         matrix[7]=warp;matrix[12]=2;matrix[13]=-1;matrix[14]=-.2f;
         const auto fitted=FitReferenceShadowProjection(matrix,bounds);
-        const float focus[3]{0,10,0}, light[3]{-.5f,-1,.5f};
-        if (FitFocusedShadowProjection(matrix,bounds,focus,light,.1f,1,30) != fitted)
-            throw std::runtime_error("compact projective scene lost its existing fitted mode warp");
         for (unsigned corner=0;corner<8;++corner) {
             const auto p=bounds.Corner(corner);double q[4]{};
             for (int a=0;a<4;++a)
@@ -93,6 +90,67 @@ void CheckReferenceFit() {
             throw std::runtime_error("native projective sampling density is not finite");
     }
     std::printf("PASS native grid preservation and %u projective coverage corners\n",checked);
+}
+void CheckVisibleDepthCoverage() {
+    using namespace mikumikustudio;
+    NativeShadowBounds scene;const float low[3]{-300,-80,1},high[3]{300,80,300};
+    scene.Include(low);scene.Include(high);
+    std::array<float,16> identity{};for(int i=0;i<4;++i)identity[i*5]=1;
+    const float focus[3]{0,0,10},light[3]{-.5f,-1,.5f};
+    for(bool orthographic:{false,true}) {
+        const float scale=orthographic?.01f:2.f;
+        const auto receivers=VisibleShadowReceivers(scene,identity.data(),identity.data(),scale,scale,orthographic);
+        if(!receivers.Valid() || receivers.maximum[2]<300)throw std::runtime_error("visible receiver depth was cut at the focus region");
+        for(int mode:{1,2})for(float range:{.00001f,.01125f,.05f,.1f}) {
+            const auto reference=NativeShadowProjection(focus,light,range,mode);
+            const auto map=FitFocusedShadowProjection(reference,scene,focus,light,range,mode,3,&receivers);
+            for(unsigned corner=0;corner<8;++corner) {
+                const auto p=receivers.Corner(corner);float q[4]{};
+                for(int axis=0;axis<4;++axis)q[axis]=map[12+axis]+p[0]*map[axis]+p[1]*map[4+axis]+p[2]*map[8+axis];
+                if(q[3]<=0 || std::abs(q[0]/q[3])>=1 || std::abs(q[1]/q[3])>=1 || q[2]/q[3]<=0 || q[2]/q[3]>=1)
+                    throw std::runtime_error("raising precision clipped a visible receiver");
+            }
+        }
+    }
+    // A down-looking camera sees only a narrow piece of a huge thin floor.
+    // The former frustum-AABB intersection included most of the distant floor.
+    NativeShadowBounds floor;const float floorLow[3]{-1000,-.01f,-1000},floorHigh[3]{1000,.01f,1000};
+    floor.Include(floorLow);floor.Include(floorHigh);
+    std::array<float,16> view{};view[0]=1;view[6]=-1;view[9]=1;view[14]=10;view[15]=1;
+    const auto visible=VisibleShadowReceivers(floor,view.data(),identity.data(),2,2,false);
+    if(!visible.Valid() || visible.maximum[0]-visible.minimum[0]>10.1f ||
+        visible.maximum[2]-visible.minimum[2]>10.1f)
+        throw std::runtime_error("off-screen stage extents dilute close-up shadow density");
+    for(unsigned base:{1024u,2048u})for(float ratio:{1.f,2.f,4.f}) {
+        const auto size=FittedShadowResolutionLimit(base,.2f,.2f/ratio,16384);
+        if(float(size)*(.2f/ratio)<float(base)*.2f)
+            throw std::runtime_error("expanded coverage failed to retain the original texels per world unit");
+    }
+    std::puts("PASS tight floor receiver intersection and unchanged texel density through 4x coverage");
+    std::puts("PASS visible receiver depth retained across both modes, precision extremes and perspective/orthographic views");
+}
+void CheckCameraStableShadowDepth() {
+    using namespace mikumikustudio;
+    NativeShadowBounds scene;const float low[3]{-1000,-20,-1000},high[3]{1000,60,1000};
+    scene.Include(low);scene.Include(high);
+    const float focus[3]{0,14,0},light[3]{-.5f,-1,.5f};
+    for(int mode:{1,2}) {
+        const auto depth=NativeShadowProjection(focus,light,.1f,mode,&scene);
+        for(int angle=-90;angle<=90;++angle) {
+            const float a=angle*.01745329252f;
+            NativeShadowBounds receivers;
+            const float lo[3]{-10+8*std::sin(a),0,-10+8*std::cos(a)},hi[3]{lo[0]+20,25,lo[2]+20};
+            receivers.Include(lo);receivers.Include(hi);
+            auto reference=NativeShadowProjection(focus,light,.1f,mode);
+            reference[3]=.01f*std::sin(a); // view-dependent native projective warp
+            const auto map=FitFocusedShadowProjection(reference,scene,focus,light,.1f,mode,12,&receivers);
+            for(int row=0;row<4;++row)if(map[row*4+2]!=depth[row*4+2])
+                throw std::runtime_error("camera rotation changed the shadow depth/bias mapping");
+            if(map[3]!=0 || map[7]!=0 || map[11]!=0 || map[15]!=1)
+                throw std::runtime_error("camera rotation switched shadow projection types");
+        }
+    }
+    std::puts("PASS 362 camera rotations preserve shadow depth and projection type in both modes");
 }
 void CheckFocusedStageCoverage() {
     using namespace mikumikustudio;
@@ -108,7 +166,7 @@ void CheckFocusedStageCoverage() {
             const auto reference = NativeShadowProjection(focus,light.data(),range,mode);
             const auto compact = FitFocusedShadowProjection(reference,compactBounds,focus,light.data(),range,mode,30);
             if (compact != FitReferenceShadowProjection(reference,compactBounds))
-                throw std::runtime_error("compact scene lost its native fitted grid");
+                throw std::runtime_error("compactBounds scene lost its native fitted grid");
             const auto complete = FitReferenceShadowProjection(reference,stage);
             const auto nearMap = FitFocusedShadowProjection(reference,stage,focus,light.data(),range,mode,30);
             const auto farMap = FitFocusedShadowProjection(reference,stage,focus,light.data(),range,mode,600);
@@ -137,57 +195,258 @@ void CheckFocusedStageCoverage() {
         }
     std::printf("PASS %u focused large-stage cases: native compact grid, density, zoom, receiver coverage, remote casters\n",checked);
 }
-void CheckFocusedBoundaryInputs() {
+void CheckQualityOrdering() {
     using namespace mikumikustudio;
-    const float focus[3]{0,10,0}, direction[3]{-.5f,-1,.5f};
-    const auto reference = NativeShadowProjection(focus,direction,.1f,1);
-    NativeShadowBounds empty, point, moderate, stage;
-    const float lower[3]{-1000,-1000,-1000}, upper[3]{1000,1000,1000};
-    stage.Include(lower); stage.Include(upper);
-    point.Include(focus);
-    if (FitFocusedShadowProjection(reference,empty,focus,direction,.1f,1,30) != reference)
-        throw std::runtime_error("empty focused scene changed the reference grid");
-    if (FitFocusedShadowProjection(reference,point,focus,direction,.1f,1,30) != reference)
-        throw std::runtime_error("point-sized scene changed the already valid reference grid");
-    const float moderateLow[3]{-9,1,-9}, moderateHigh[3]{9,19,9};
-    moderate.Include(moderateLow); moderate.Include(moderateHigh);
-    if (FitFocusedShadowProjection(reference,moderate,focus,direction,.1f,1,0) !=
-        FitReferenceShadowProjection(reference,moderate))
-        throw std::runtime_error("scene within the extra 2x tier needlessly switched to focused coverage");
-    const auto complete = FitReferenceShadowProjection(reference,stage);
-    const float outside[3]{10000,10000,10000};
-    if (FitFocusedShadowProjection(reference,stage,outside,direction,.1f,1,30) != complete ||
-        FitFocusedShadowProjection(reference,stage,focus,direction,.1f,1,2000) != complete)
-        throw std::runtime_error("empty local intersection or full view failed to keep complete scene coverage");
-    // Invalid radius falls back to the requested shadow range, not a NaN map.
-    const auto requested = FitFocusedShadowProjection(reference,stage,focus,direction,.1f,1,0);
-    for (float radius : {-1.f,INFINITY,-INFINITY,NAN}) {
-        const auto actual = FitFocusedShadowProjection(reference,stage,focus,direction,.1f,1,radius);
-        if (actual != requested || !std::all_of(actual.begin(),actual.end(),[](float value){return std::isfinite(value);}))
-            throw std::runtime_error("invalid focus radius did not retain finite requested-range coverage");
+    for(unsigned maximum:{2048u,4096u,8192u}) {
+        unsigned previous=maximum;
+        for(int position=0;position<=9999;++position) {
+            const auto size=ShadowQualityMapSize((10000.f-position)/100000.f,maximum);
+            if(size>previous)throw std::runtime_error("shadow precision ordering inverted");
+            previous=size;
+        }
+        if(ShadowQualityMapSize(.1f,maximum)<=ShadowQualityMapSize(.0344f,maximum))
+            throw std::runtime_error("0 must be finer than 6560");
     }
-    // The directional fallback must remain safe at poles, zero and non-finite
-    // light vectors. Non-positive ranges retain the existing minimum range.
-    for (const auto& light : std::vector<std::array<float,3>>{
-            {0,0,0},{0,1e-20f,0},{INFINITY,0,0},{NAN,0,0}})
-        for (float range : {0.f,-.1f,NAN}) {
-            const auto native = NativeShadowProjection(focus,light.data(),range,2);
-            const auto actual = FitFocusedShadowProjection(native,stage,focus,light.data(),range,2,30);
-            if (!std::all_of(actual.begin(),actual.end(),[](float value){return std::isfinite(value);}))
-                throw std::runtime_error("degenerate direction or range produced a non-finite focused projection");
-            for (unsigned corner=0;corner<8;++corner) {
-                const auto p=stage.Corner(corner);
-                const double depth=actual[14]+p[0]*double(actual[2])+p[1]*double(actual[6])+p[2]*double(actual[10]);
-                if (!(depth>0 && depth<1)) throw std::runtime_error("fallback focused projection lost caster depth coverage");
+    std::puts("PASS all 10000 precision positions at three hardware budgets");
+}
+void CheckDetailGrid() {
+    using namespace mikumikustudio;
+    const float focus[]{0,10,0}, direction[]{-.5f,-1,.5f};
+    NativeShadowBounds scene;
+    const float low[]{-300,-30,-300}, high[]{300,100,300};
+    scene.Include(low);scene.Include(high);
+    for (int mode : {1,2}) {
+        const auto coverage=NativeShadowProjection(focus,direction,.1f,mode,&scene);
+        const auto detail=DetailShadowProjection(focus,direction,.1f,mode,4.f,8192,coverage);
+        if (MinimumShadowScale(detail,scene) < NativeShadowLateralScale(.1f,mode)*.49f)
+            throw std::runtime_error("nearby shadow density diluted by stage");
+        for(int row=0;row<4;++row) if(detail[row*4+2]!=coverage[row*4+2])
+            throw std::runtime_error("detail and coverage must share depth");
+        for(int column=0;column<2;++column) {
+            const float texel=detail[12+column]*4096.f;
+            if(std::abs(texel-std::round(texel))>1.e-4f)
+                throw std::runtime_error("detail grid translation not snapped");
+        }
+        for(unsigned size:{512u,1024u,2048u,4096u,8192u}) {
+            const auto resized=DetailShadowProjection(focus,direction,.1f,mode,4.f,size,coverage);
+            for(int row=0;row<3;++row)for(int column=0;column<4;++column)
+                if(resized[row*4+column]!=detail[row*4+column])
+                    throw std::runtime_error("dynamic resolution changed detail coverage or depth");
+        }
+        // Orbiting changes the coverage XY fit, but must not change the
+        // detailed light grid or drop distant caster depths.
+        for(int angle=0;angle<360;++angle) {
+            auto orbitCoverage=coverage;
+            orbitCoverage[0]*=1.f+float(angle)/360.f;
+            orbitCoverage[13]+=float(angle)/360.f;
+            const auto rotated=DetailShadowProjection(focus,direction,.1f,mode,4.f,8192,orbitCoverage);
+            if(rotated!=detail)throw std::runtime_error("detail grid changed on orbit");
+        }
+    }
+    std::puts("detail grid: density, shared depth, texel snapping and 720 orbit cases passed");
+}
+void CheckCameraPictureShadowRegion() {
+    using namespace mikumikustudio;
+    using Matrix=std::array<float,16>;
+    const auto identity=[](){Matrix m{};for(int i=0;i<4;++i)m[i*5]=1;return m;};
+    const auto multiply=[](const Matrix& a,const Matrix& b){
+        Matrix out{};
+        for(int row=0;row<4;++row)for(int column=0;column<4;++column) {
+            double sum=0;for(int k=0;k<4;++k)sum+=double(a[row*4+k])*double(b[k*4+column]);
+            out[row*4+column]=float(sum);
+        }
+        return out;
+    };
+    const auto invert=[](const Matrix& in){
+        double a[4][8]{};
+        for(int row=0;row<4;++row)for(int column=0;column<4;++column)a[row][column]=in[row*4+column];
+        for(int row=0;row<4;++row)a[row][4+row]=1;
+        for(int column=0;column<4;++column) {
+            int pivot=column;
+            for(int row=column+1;row<4;++row)
+                if(std::abs(a[row][column])>std::abs(a[pivot][column]))pivot=row;
+            if(std::abs(a[pivot][column])<1e-12)throw std::runtime_error("singular camera projection fixture");
+            if(pivot!=column)for(int k=0;k<8;++k)std::swap(a[column][k],a[pivot][k]);
+            const double divisor=a[column][column];
+            for(int k=0;k<8;++k)a[column][k]/=divisor;
+            for(int row=0;row<4;++row)if(row!=column) {
+                const double factor=a[row][column];
+                for(int k=0;k<8;++k)a[row][k]-=factor*a[column][k];
             }
         }
-    std::puts("PASS focused shadow empty/outside/full view and degenerate input boundaries");
+        Matrix out{};
+        for(int row=0;row<4;++row)for(int column=0;column<4;++column)out[row*4+column]=float(a[row][4+column]);
+        return out;
+    };
+    const auto perspective=[](float fovDegrees,float aspect,float nearPlane,float farPlane){
+        Matrix m{};
+        const double y=1.0/std::tan(double(fovDegrees)*3.14159265358979323846/360.0);
+        m[0]=float(y/aspect);m[5]=float(y);
+        m[10]=float(farPlane/(farPlane-nearPlane));m[11]=1;
+        m[14]=float(-nearPlane*farPlane/(farPlane-nearPlane));
+        return m;
+    };
+    const auto rotation=[&](float yaw,float pitch){
+        const auto rotationX=[&](float angle){Matrix m{};const float c=std::cos(angle),s=std::sin(angle);
+            m[0]=m[15]=1;m[5]=c;m[6]=s;m[9]=-s;m[10]=c;return m;};
+        const auto rotationY=[&](float angle){Matrix m{};const float c=std::cos(angle),s=std::sin(angle);
+            m[5]=m[15]=1;m[0]=c;m[2]=-s;m[8]=s;m[10]=c;return m;};
+        return multiply(rotationY(yaw),rotationX(pitch));
+    };
+    const auto transform=[](const Matrix& m,const std::array<float,3>& p){
+        std::array<float,4> q{};
+        for(int a=0;a<4;++a)q[a]=m[12+a]+p[0]*m[a]+p[1]*m[4+a]+p[2]*m[8+a];
+        std::array<float,3> result{};
+        if(!(std::abs(q[3])>1e-12f))return result;
+        for(int a=0;a<3;++a)result[a]=q[a]/q[3];
+        return result;
+    };
+    constexpr float aspect=4.f/3.f;
+    const Matrix inverseView=identity();
+    const Matrix inverseProjection30=invert(perspective(30.f,aspect,1.f,100000.f));
+    // The detail region shrinks in world space with the picture's zoom factor.
+    const auto region30=[&](float focusDepth){
+        return CameraDepthShadowRegion(inverseView.data(),inverseProjection30.data(),focusDepth);
+    };
+    const auto closeRegion=region30(5.f),middleRegion=region30(22.5f),farRegion=region30(45.f);
+    if(!closeRegion.valid || !middleRegion.valid || !farRegion.valid)
+        throw std::runtime_error("camera picture region rejected a valid focus depth");
+    for(const auto& sample:std::vector<std::pair<float,CameraShadowRegion>>{{5.f,closeRegion},{22.5f,middleRegion},{45.f,farRegion}}) {
+        const auto& region=sample.second;
+        if(!(region.farDepth>0) || !std::isfinite(region.radius) || region.radius<=0)
+            throw std::runtime_error("camera picture region is not finite");
+        if(std::abs(region.centre[2]-sample.first)>sample.first*.02f)
+            throw std::runtime_error("camera picture region did not centre on the focus depth");
+    }
+    const float halfRate=farRegion.radius/middleRegion.radius;
+    if(halfRate<1.7f || halfRate>2.3f)
+        throw std::runtime_error("halving the camera distance did not halve the detail footprint");
+    const float fullRate=farRegion.radius/closeRegion.radius;
+    if(fullRate<7.5f)
+        throw std::runtime_error("detail footprint does not track camera distance zoom");
+    // A narrower lens shows less world, so the detail footprint must shrink too.
+    const auto narrow=CameraDepthShadowRegion(inverseView.data(),
+        invert(perspective(10.f,aspect,1.f,100000.f)).data(),45.f);
+    if(!narrow.valid || narrow.radius>farRegion.radius*.6f)
+        throw std::runtime_error("detail footprint does not track field of view");
+    // Far depth is the blend end of the detail layer; it must follow the focus.
+    if(!(farRegion.farDepth>farRegion.radius) || !(narrow.farDepth<farRegion.farDepth))
+        throw std::runtime_error("detail depth cut did not follow the camera picture");
+    // Rotating the camera around the focus must not change the footprint.
+    for(int angle=-180;angle<180;angle+=30) {
+        const Matrix rotated=rotation(float(angle)*.01745329252f,float(angle%45)*.01745329252f);
+        const auto turned=CameraDepthShadowRegion(rotated.data(),inverseProjection30.data(),45.f);
+        if(!turned.valid || std::abs(turned.radius-farRegion.radius)>farRegion.radius*.001f ||
+            std::abs(turned.farDepth-farRegion.farDepth)>1e-3f)
+            throw std::runtime_error("detail footprint changed with camera rotation");
+    }
+    // The picture at the focus plane must stay inside the detail map.
+    std::array<std::array<float,3>,4> plane{};
+    for(int i=0;i<4;++i) {
+        const float x=i&1?1.f:-1.f,y=i&2?1.f:-1.f;
+        const auto nearPoint=transform(inverseProjection30,{x,y,0});
+        const auto farPoint=transform(inverseProjection30,{x,y,1});
+        const float t=(45.f-nearPoint[2])/(farPoint[2]-nearPoint[2]);
+        for(int a=0;a<3;++a)plane[i][a]=nearPoint[a]+t*(farPoint[a]-nearPoint[a]);
+    }
+    NativeShadowBounds scene;
+    const float sceneLow[3]{farRegion.centre[0]-farRegion.radius,farRegion.centre[1]-farRegion.radius,farRegion.centre[2]-farRegion.radius};
+    const float sceneHigh[3]{farRegion.centre[0]+farRegion.radius,farRegion.centre[1]+farRegion.radius,farRegion.centre[2]+farRegion.radius};
+    scene.Include(sceneLow);scene.Include(sceneHigh);
+    const float lightDirection[3]{-.5f,-1,.5f};
+    const auto coverage=NativeShadowProjection(farRegion.centre.data(),lightDirection,.1f,1,&scene);
+    const auto detail=CameraDetailShadowProjection(farRegion,lightDirection,coverage);
+    unsigned covered=0;
+    for(const auto& point:plane) {
+        double q[4]{};
+        for(int a=0;a<4;++a)q[a]=detail[12+a]+point[0]*detail[a]+point[1]*detail[4+a]+point[2]*detail[8+a];
+        if(!(q[3]>0) || std::abs(q[0]/q[3])>=1 || std::abs(q[1]/q[3])>=1 ||
+            q[2]/q[3]<=0 || q[2]/q[3]>=1)
+            throw std::runtime_error("detail map misses the picture at the focus plane");
+        ++covered;
+    }
+    // The same check at a distance-zoom and a lens-zoom pose.
+    for(const auto& pose:std::vector<std::pair<float,Matrix>>{
+            {5.f,invert(perspective(30.f,aspect,1.f,100000.f))},
+            {45.f,invert(perspective(10.f,aspect,1.f,100000.f))}}) {
+        const auto region=CameraDepthShadowRegion(inverseView.data(),pose.second.data(),pose.first);
+        if(!region.valid)throw std::runtime_error("zoomed camera picture region rejected a valid pose");
+        NativeShadowBounds bounds;
+        const float low[3]{region.centre[0]-region.radius,region.centre[1]-region.radius,region.centre[2]-region.radius};
+        const float high[3]{region.centre[0]+region.radius,region.centre[1]+region.radius,region.centre[2]+region.radius};
+        bounds.Include(low);bounds.Include(high);
+        const auto map=CameraDetailShadowProjection(region,lightDirection,
+            NativeShadowProjection(region.centre.data(),lightDirection,.1f,1,&bounds));
+        for(int i=0;i<4;++i) {
+            const float x=i&1?1.f:-1.f,y=i&2?1.f:-1.f;
+            const auto nearPoint=transform(pose.second,{x,y,0});
+            const auto farPoint=transform(pose.second,{x,y,1});
+            const float t=(pose.first-nearPoint[2])/(farPoint[2]-nearPoint[2]);
+            std::array<float,3> point{};
+            for(int a=0;a<3;++a)point[a]=nearPoint[a]+t*(farPoint[a]-nearPoint[a]);
+            double q[4]{};
+            for(int a=0;a<4;++a)q[a]=map[12+a]+point[0]*map[a]+point[1]*map[4+a]+point[2]*map[8+a];
+            if(!(q[3]>0) || std::abs(q[0]/q[3])>=1 || std::abs(q[1]/q[3])>=1 || q[2]/q[3]<=0 || q[2]/q[3]>=1)
+                throw std::runtime_error("zoomed detail map misses the picture at the focus plane");
+        }
+    }
+    // Orthographic pictures keep their world size with depth; the footprint must
+    // follow the camera distance that MMD uses for the orthographic zoom.
+    const auto orthographic=[](float scale,float aspectRatio){
+        Matrix m{};m[0]=scale;m[5]=aspectRatio*scale;m[10]=.0013f;m[15]=1;return m;
+    };
+    const auto orthographicRegion=[&](float distance){
+        return CameraDepthShadowRegion(inverseView.data(),
+            invert(orthographic(2.f/distance,aspect)).data(),distance);
+    };
+    const auto nearOrtho=orthographicRegion(5.f),wideOrtho=orthographicRegion(45.f);
+    if(!nearOrtho.valid || !wideOrtho.valid)
+        throw std::runtime_error("orthographic camera picture region rejected a valid pose");
+    if(wideOrtho.radius<nearOrtho.radius*2.8f)
+        throw std::runtime_error("orthographic detail footprint does not track camera distance");
+    // An unusable focus must not produce a region.
+    for(float depth:{NAN,0.f,.5f,-5.f})
+        if(CameraDepthShadowRegion(inverseView.data(),inverseProjection30.data(),depth).valid)
+            throw std::runtime_error("invalid focus depth produced a camera picture region");
+    std::printf("PASS camera picture detail region: %u focus corners, zoom %.2fx, rotation, FOV, orthographic\n",
+        covered,fullRate);
 }
+
 void CheckProjection() {
+    CheckQualityOrdering();
+    CheckCameraPictureShadowRegion();
+    CheckDetailGrid();
     CheckVertexBounds();
     CheckReferenceFit();
     CheckFocusedStageCoverage();
-    CheckFocusedBoundaryInputs();
+    CheckVisibleDepthCoverage();
+    CheckCameraStableShadowDepth();
+    {
+        using namespace mikumikustudio;
+        NativeShadowBounds stage,receivers;
+        const float low[3]{-1000,-1000,-1000},high[3]{1000,1000,1000};
+        const float nearLow[3]{-20,0,-10},nearHigh[3]{5,10,25};
+        stage.Include(low);stage.Include(high);receivers.Include(nearLow);receivers.Include(nearHigh);
+        const float focus[3]{-14,5,-1},light[3]{-.5f,-1,.5f};
+        unsigned restored=0;
+        for(int mode:{1,2})for(float range:{.01125f,.1f}) {
+            const auto reference=NativeShadowProjection(focus,light,range,mode);
+            const auto before=FitFocusedShadowProjection(reference,stage,focus,light,range,mode,3.f);
+            const auto after=FitFocusedShadowProjection(reference,stage,focus,light,range,mode,3.f,&receivers);
+            for(unsigned i=0;i<8;++i) {
+                const auto point=receivers.Corner(i);
+                const auto outside=[&](const std::array<float,16>& matrix) {
+                    double p[4]{};
+                    for(int a=0;a<4;++a)p[a]=matrix[12+a]+point[0]*matrix[a]+point[1]*matrix[4+a]+point[2]*matrix[8+a];
+                    return std::abs(p[0]/p[3])>=1 || std::abs(p[1]/p[3])>=1 || p[2]/p[3]<=0 || p[2]/p[3]>=1;
+                };
+                restored+=outside(before);
+                if(outside(after))throw std::runtime_error("close-up visible receiver clipped at shadow-map edge");
+            }
+        }
+        if(!restored)throw std::runtime_error("close-up fixture did not reproduce the former outer-edge clipping");
+        std::printf("PASS close-up visible receivers: restored %u clipped corners across both modes\n",restored);
+    }
     using namespace mikumikustudio;
     if (ShadowSamplingFactor(.1f) != 4.f || ShadowSamplingFactor(.05f) != 1.f ||
         ShadowSamplingFactor(.00001f) != 1.f)
@@ -195,7 +454,7 @@ void CheckProjection() {
     for (unsigned base : {2048u, 4096u}) {
         if (FittedShadowResolutionLimit(base, .2f, .2f, 16384) != base ||
             FittedShadowResolutionLimit(base, .2f, .1f, 16384) != base * 2 ||
-            FittedShadowResolutionLimit(base, .2f, .001f, 16384) != base * 2 ||
+            FittedShadowResolutionLimit(base, .2f, .001f, 16384) != 8192 ||
             FittedShadowResolutionLimit(base, .2f, .001f, 2048) != 2048)
             throw std::runtime_error("fitted coverage density compensation or hardware limit failed");
     }
@@ -268,37 +527,20 @@ struct Effect {
     Effect(Effect&& other)noexcept:value(other.value){other.value=nullptr;}
     ~Effect(){if(value)static_cast<IUnknown*>(value)->Release();}
 };
-Effect LoadBytes(IDirect3DDevice9* device,const void* bytes,UINT size) {
+Effect Load(IDirect3DDevice9* device,const std::filesystem::path& file) {
+    std::ifstream stream(file,std::ios::binary);
+    if(!stream)throw std::runtime_error("Cannot read production shader");
+    const std::string source{std::istreambuf_iterator<char>(stream),{}};
     static HMODULE module=LoadLibraryW(L"d3dx9_43.dll");
     using Create=HRESULT(WINAPI*)(IDirect3DDevice9*,const void*,UINT,const void*,const void*,DWORD,void*,void**,void**);
     const auto create=reinterpret_cast<Create>(GetProcAddress(module,"D3DXCreateEffect"));
     if(!create)throw std::runtime_error("D3DXCreateEffect unavailable");
     Effect fx;void* errors=nullptr;
-    const auto hr=create(device,bytes,size,nullptr,nullptr,0,nullptr,&fx.value,&errors);
+    const auto hr=create(device,source.data(),UINT(source.size()),nullptr,nullptr,0,nullptr,&fx.value,&errors);
     if(errors){using Data=void*(WINAPI*)(void*);std::printf("%s\n",static_cast<const char*>(EffectMethod<Data,3>(errors)(errors)));static_cast<IUnknown*>(errors)->Release();}
     Check(hr,"Compile production shader");return fx;
 }
-Effect Load(IDirect3DDevice9* device,const std::filesystem::path& file) {
-    std::ifstream stream(file,std::ios::binary);
-    if(!stream)throw std::runtime_error("Cannot read production shader");
-    const std::string source{std::istreambuf_iterator<char>(stream),{}};
-    return LoadBytes(device,source.data(),UINT(source.size()));
-}
-Effect LoadEmbedded(IDirect3DDevice9* device,const std::filesystem::path& executable,unsigned id) {
-    // Map only resources. Never execute or initialise the product being tested.
-    const auto module=LoadLibraryExW(executable.c_str(),nullptr,LOAD_LIBRARY_AS_DATAFILE|LOAD_LIBRARY_AS_IMAGE_RESOURCE);
-    if(!module)throw std::runtime_error("Cannot map the actual product's shader resources");
-    struct Release {HMODULE module;~Release(){FreeLibrary(module);}} release{module};
-    const auto resource=FindResourceW(module,MAKEINTRESOURCEW(id),MAKEINTRESOURCEW(10));
-    if(!resource)throw std::runtime_error("Missing production effect resource");
-    const auto bytes=static_cast<const unsigned char*>(LockResource(LoadResource(module,resource)));
-    const auto size=SizeofResource(module,resource);
-    const unsigned char signature[]{1,9,255,254};
-    if(!bytes||size<4||std::memcmp(bytes,signature,4))throw std::runtime_error("Production resource is not compiled D3DX9 effect bytecode");
-    std::printf("STAGE actual embedded shader id=%u bytes=%lu\n",id,static_cast<unsigned long>(size));
-    return LoadBytes(device,bytes,size);
-}
-std::vector<DWORD> Draw(IDirect3DDevice9* device,void* effect,unsigned mapSize,int mode,float slope,bool split,bool legacy,float depthGap=0,int pattern=0,float phase=0,const CoverageProbe* coverage=nullptr,float facing=1) {
+std::vector<DWORD> Draw(IDirect3DDevice9* device,void* effect,unsigned mapSize,int mode,float slope,bool split,bool legacy,float depthGap=0,int pattern=0,float phase=0,const CoverageProbe* coverage=nullptr,float facing=1,bool fitted=false,int detail=0,bool stable=false) {
     ComPtr<IDirect3DTexture9> shadow;
     Check(device->CreateTexture(mapSize,mapSize,1,0,D3DFMT_R32F,D3DPOOL_MANAGED,&shadow,nullptr),"Create shadow texture");
     D3DLOCKED_RECT pixels{};Check(shadow->LockRect(0,&pixels,nullptr,0),"Lock shadow texture");
@@ -307,12 +549,29 @@ std::vector<DWORD> Draw(IDirect3DDevice9* device,void* effect,unsigned mapSize,i
         row[x]=split?(x<mapSize/2?.2f:.8f):.5f+slope*(2.f*x/mapSize-1.f)-depthGap;
         if(pattern==1)row[x]=float(x)<mapSize*.5f+(float(y)-mapSize*.5f)*.35f?.2f:.8f;
         if(pattern==2)row[x]=(x==mapSize/2)?.2f:.8f;
+        if(fitted)row[x]=row[x]*.5f+.2f;
         if(coverage)row[x]=1; // No occluder: only material lighting may shade this receiver.
     }
     Check(shadow->UnlockRect(0),"Unlock shadow texture");
     D3DXMATRIXF identity{};for(unsigned i=0;i<4;++i)identity.m[i][i]=1;
     Check(FxSetMatrix(effect,"matWorldViewProj",&identity),"Set camera projection");
     auto lightProjection=identity;lightProjection.m[3][0]=2*phase/mapSize;
+    auto toNative=identity;
+    if(fitted) {
+        lightProjection.m[1][1]=.75f;lightProjection.m[3][1]=.1f;
+        lightProjection.m[2][2]=.5f;lightProjection.m[3][2]=.2f;
+        toNative.m[1][1]=1.f/.75f;toNative.m[3][1]=-.1f/.75f;
+        toNative.m[2][2]=2;toNative.m[3][2]=-.4f;
+    }
+    FxSetMatrix(effect,"MdsShadowToNative",&toNative);
+    FxSetInt(effect,"MdsStableShadowGrid",stable);
+    const float dimensions[4]{float(mapSize),float(mapSize),0,0},texel[4]{1.f/mapSize,1.f/mapSize,0,0};
+    FxSetFloatArray(effect,"MdsShadowMapSize",dimensions,4);
+    FxSetFloatArray(effect,"MdsDetailTexelSize",texel,4);
+    FxSetInt(effect,"MdsDetailEnabled",detail!=0&&detail!=2);
+    FxSetMatrix(effect,"MdsCoverageToDetail",&identity);
+    const float detailDepthBlend[4]{0,0,0,detail==3?.5f:detail==4?0.f:1.f};
+    FxSetFloatArray(effect,"MdsDetailDepthBlend",detailDepthBlend,4);
     if(coverage)for(unsigned i=0;i<3;++i)lightProjection.m[3][i]+=coverage->offset[i];
     Check(FxSetMatrix(effect,"matLightViewProj",&lightProjection),"Set light projection");
     const float white[4]={1,1,1,.37f},dark[4]={.2f,.2f,.2f,1},light[4]={std::sqrt(1-facing*facing),0,-facing,1},zero[4]={0,0,0,1},eye[4]={0,0,4,1};
@@ -332,6 +591,15 @@ std::vector<DWORD> Draw(IDirect3DDevice9* device,void* effect,unsigned mapSize,i
     const Vertex vertices[]={{{-1,1,.5f-slope},{0,0,1},{0,0}},{{1,1,.5f+slope},{0,0,1},{1,0}},
                              {{-1,-1,.5f-slope},{0,0,1},{0,1}},{{1,-1,.5f+slope},{0,0,1},{1,1}}};
     Check(device->SetTexture(0,shadow.Get()),"Bind shadow map");
+    ComPtr<IDirect3DTexture9> empty;
+    if(detail) {
+        Check(device->CreateTexture(1,1,1,0,D3DFMT_R32F,D3DPOOL_MANAGED,&empty,nullptr),"Create empty coverage map");
+        D3DLOCKED_RECT blank{};Check(empty->LockRect(0,&blank,nullptr,0),"Lock empty coverage");
+        *static_cast<float*>(blank.pBits)=1;
+        Check(empty->UnlockRect(0),"Unlock empty coverage");
+        Check(device->SetTexture(0,empty.Get()),"Bind empty coverage");
+    }
+    Check(device->SetTexture(3,detail?shadow.Get():nullptr),"Bind detail shadow map");
     Check(device->SetRenderState(D3DRS_ZENABLE,FALSE),"Disable depth testing");
     Check(device->SetRenderState(D3DRS_CULLMODE,D3DCULL_NONE),"Set culling");
     Check(device->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE),"Disable blending");
@@ -358,13 +626,12 @@ void Save(const std::filesystem::path& path,const std::vector<DWORD>& pixels) {
 }
 }
 int wmain(int argc,wchar_t** argv) {
-    std::setvbuf(stdout,nullptr,_IONBF,0);
-    if(argc<2||argc>4){std::fputs("usage: native_shadow_tests <production shader> [--legacy|--coverage-only] [output-directory], or <shader> --resource <product-exe>\n",stderr);return 2;}
-    const bool embedded=argc==4&&!wcscmp(argv[2],L"--resource");
-    const bool sm2=std::filesystem::path(argv[1]).filename()==L"skin_effect_sm2.fx";
+    if(argc<2||argc>4){std::fputs("usage: native_shadow_tests <production shader> [--legacy|--coverage-only] [output-directory]\n",stderr);return 2;}
     const bool legacy=argc>=3&&!wcscmp(argv[2],L"--legacy");
-    const bool coverageOnly=(argc>=3&&!wcscmp(argv[2],L"--coverage-only"))||(embedded&&sm2);
-    const std::filesystem::path output=!embedded&&argc>((legacy||coverageOnly)?3:2)?argv[(legacy||coverageOnly)?3:2]:L"";
+    const bool rampOnly=argc>=3&&!wcscmp(argv[2],L"--ramp-only");
+    const bool detailOnly=argc>=3&&!wcscmp(argv[2],L"--detail-only");
+    const bool coverageOnly=argc>=3&&!wcscmp(argv[2],L"--coverage-only");
+    const std::filesystem::path output=argc>((legacy||coverageOnly||rampOnly||detailOnly)?3:2)?argv[(legacy||coverageOnly||rampOnly||detailOnly)?3:2]:L"";
     if(!output.empty())std::filesystem::create_directories(output);
     HWND window=CreateWindowExW(0,L"STATIC",L"native shadow test",WS_OVERLAPPED,0,0,kSize,kSize,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
     try {
@@ -376,7 +643,45 @@ int wmain(int argc,wchar_t** argv) {
         pp.BackBufferWidth=kSize;pp.BackBufferHeight=kSize;pp.BackBufferFormat=D3DFMT_A8R8G8B8;
         ComPtr<IDirect3DDevice9> device;
         Check(d3d->CreateDevice(0,D3DDEVTYPE_HAL,window,D3DCREATE_HARDWARE_VERTEXPROCESSING,&pp,&device),"Create hidden HAL device");
-        auto effect=embedded?LoadEmbedded(device.Get(),argv[3],sm2?117:118):Load(device.Get(),argv[1]);unsigned failures=0;
+        auto effect=Load(device.Get(),argv[1]);unsigned failures=0;
+        if(rampOnly) {
+            unsigned worst=0;
+            for(int mode:{1,2})for(float gap:{.00015f,.0004f,.001f,.002f}) {
+                const auto before=Draw(device.Get(),effect.value,128,mode,0,false,true,gap);
+                const auto after=Draw(device.Get(),effect.value,128,mode,0,false,true,gap,0,0,nullptr,1,true);
+                for(unsigned y=16;y<112;++y)for(unsigned x=16;x<112;++x)for(unsigned shift:{0u,8u,16u})
+                    worst=(std::max)(worst,unsigned(std::abs(int((before[y*kSize+x]>>shift)&255)-int((after[y*kSize+x]>>shift)&255))));
+            }
+            std::printf("native ramp after coverage fit: maximum channel difference=%u\n",worst);
+            DestroyWindow(window);return worst>2?1:0;
+        }
+        if(detailOnly) {
+            unsigned worst=0, recovered=0;
+            for(int mode:{1,2}) {
+                const auto expected=Draw(device.Get(),effect.value,128,mode,0,true,true);
+                const auto detailed=Draw(device.Get(),effect.value,128,mode,0,true,true,0,0,0,nullptr,1,false,1);
+                const auto disabled=Draw(device.Get(),effect.value,128,mode,0,true,true,0,0,0,nullptr,1,false,2);
+                const auto middle=Draw(device.Get(),effect.value,128,mode,0,true,true,0,0,0,nullptr,1,false,3);
+                const auto distant=Draw(device.Get(),effect.value,128,mode,0,true,true,0,0,0,nullptr,1,false,4);
+                for(unsigned y=16;y<112;++y)for(unsigned x=16;x<112;++x) {
+                    for(unsigned shift:{0u,8u,16u}) {
+                        worst=(std::max)(worst,unsigned(std::abs(int((expected[y*kSize+x]>>shift)&255)-int((detailed[y*kSize+x]>>shift)&255))));
+                        const int a=(expected[y*kSize+x]>>shift)&255,b=(disabled[y*kSize+x]>>shift)&255;
+                        worst=(std::max)(worst,unsigned(std::abs((a+b)/2-int((middle[y*kSize+x]>>shift)&255))));
+                        worst=(std::max)(worst,unsigned(std::abs(b-int((distant[y*kSize+x]>>shift)&255))));
+                    }
+                    recovered+=detailed[y*kSize+x]!=disabled[y*kSize+x];
+                }
+            }
+            for(int mode:{1,2})for(unsigned resolution:{16u,32u,64u,128u})for(float slope:{-.15f,.15f})for(int detail:{0,1}) {
+                const auto flat=Draw(device.Get(),effect.value,resolution,mode,slope,false,true,0,0,0,nullptr,1,false,detail,true);
+                for(unsigned y=16;y<112;++y)for(unsigned x=16;x<112;++x)
+                    if(((flat[y*kSize+x]>>16)&255)<254)throw std::runtime_error("stable grid invents self-shadow on a sloping receiver");
+            }
+            std::puts("PASS stable-grid sloping receivers at four resolutions in both modes");
+            std::printf("detail sampling both modes: max_difference=%u recovered_pixels=%u\n",worst,recovered);
+            DestroyWindow(window);return worst>1||recovered==0?1:0;
+        }
         for(int mode:{1,2})for(bool specular:{false,true}){
             // Camera-dependent shadow coverage must not toggle toon lighting
             // or uncover specular on a backlit surface. Cross all six bounds.

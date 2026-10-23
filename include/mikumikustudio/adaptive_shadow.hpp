@@ -10,6 +10,15 @@ void SaveShadowResolutionPreference(MMDApp* app);
 std::array<float, 16> UpdateAdaptiveShadowMap(MMDApp* app, const float frame[16]);
 int ShadowSliderPosition(MMDApp* app);
 void SetShadowSliderPosition(MMDApp* app, int position);
+// Precision changes sample density only. All distance layers retain the same
+// geometry and blend distances at every slider position (0 is finest).
+inline unsigned ShadowQualityMapSize(float range, unsigned maximum) {
+    maximum=(std::min)(8192u,maximum);
+    if(maximum<512)return maximum;
+    const float quality=(std::clamp)(std::isfinite(range)?range/.1f:0.f,0.f,1.f);
+    const unsigned tier=quality>.75f?0u:quality>.5f?1u:quality>.25f?2u:3u;
+    return (std::max)(512u,maximum>>tier);
+}
 inline float ShadowSamplingFactor(float range) {
     // The fine half of the shared range control retains the former finest
     // sampling demand (4x). There is no separately stored precision value.
@@ -19,10 +28,10 @@ inline float ShadowSamplingFactor(float range) {
 inline unsigned FittedShadowResolutionLimit(unsigned reference, float requestedScale,
                                             float fittedScale, unsigned hardwareLimit) {
     // Widening coverage must not silently reduce the requested texels/unit.
-    // Permit one extra size tier (4096/8192), retaining the fine-shadow
-    // quality distinction. Allocation failure still falls back.
+    // Compensate for the full coverage ratio up to the existing 8192 safety
+    // ceiling and device limit. Allocation failure still falls back.
     unsigned limit = 512;
-    const unsigned maximum = (std::min)({8192u, reference * 2, hardwareLimit});
+    const unsigned maximum = (std::min)(8192u, hardwareLimit);
     while (limit <= maximum / 2) limit *= 2;
     if (maximum < 512) return maximum;
     unsigned size = (std::min)(reference, limit);

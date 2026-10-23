@@ -1,9 +1,10 @@
 // MAINTENANCE: regression-keep; actual UpdateAdaptiveShadowMap wiring.
-// An owned hidden HWND, a real D3D9 device and real two-vertex VB exercise the
-// production bounds collector. This is not a loader, shader, visible rendering,
-// performance or GPU-image acceptance test. No settings, plugin service, file,
-// global input or private desktop is created. A zero test-only resolution cap
-// returns the actual computed projection before shadow-RT allocation/rendering.
+// An owned hidden HWND, a real D3D9 device, a real two-vertex VB and the real
+// production effect exercise the coverage/detail shadow planner. This is not a
+// loader, visible rendering, performance or GPU-image acceptance test. It does
+// not create settings, plugin services, files or a private desktop. The
+// production shader path is supplied by the runner; a zero ShadowResolutionLimit
+// keeps the allocation at the 512 coverage minimum.
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
@@ -14,20 +15,25 @@
 #include "mikumikustudio/build_profile.hpp"
 #include "mikumikustudio/d3d_wrapper.hpp"
 #include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/d3dx_effect.hpp"
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/shadow_filter.hpp"
+#include "mikumikustudio/viewport_render_scale.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <cwchar>
 #include <exception>
+#include <fstream>
+#include <iterator>
 #include <memory>
+#include <string>
 
-static_assert(!MMD_ORIGINAL_PROFILE, "Production receiver wiring belongs to the full profile only");
+static_assert(!MMD_ORIGINAL_PROFILE, "Production shadow wiring belongs to the full profile only");
 using namespace mikumikustudio;
 using Microsoft::WRL::ComPtr;
 namespace {
@@ -36,7 +42,7 @@ unsigned checks = 0;
 const char* stage = "setup";
 void Require(bool value, const char* message) {
     ++checks;
-    if (!value) { std::fprintf(stderr, "FAIL receiver host [%s] after %u checks: %s\n", stage, checks, message); std::fflush(nullptr); std::exit(1); }
+    if (!value) { std::fprintf(stderr, "FAIL shadow wiring host [%s] after %u checks: %s\n", stage, checks, message); std::fflush(nullptr); std::exit(1); }
 }
 Matrix Identity() { Matrix m{}; m[0] = m[5] = m[10] = m[15] = 1; return m; }
 Matrix Multiply(const Matrix& a, const Matrix& b) {
@@ -74,21 +80,20 @@ void SameMatrix(const Matrix& actual, const Matrix& expected, const char* messag
     }
     Require(NearMatrix(actual, expected), message);
 }
-void Covers(const Matrix& matrix, const NativeShadowBounds& bounds, bool xyz) {
-    Require(FiniteNativeShadowBounds(bounds), "coverage oracle has a complete finite source AABB");
+void Covers(const Matrix& matrix, const NativeShadowBounds& bounds) {
     for (unsigned corner = 0; corner < 8; ++corner) {
         const auto p = bounds.Corner(corner); double clip[4]{};
         for (unsigned col = 0; col < 4; ++col) {
             clip[col] = matrix[12 + col];
             for (unsigned row = 0; row < 3; ++row) clip[col] += double(p[row]) * matrix[row * 4 + col];
-            Require(std::isfinite(clip[col]), "actual returned projection has finite corner coordinates");
+            Require(std::isfinite(clip[col]), "returned coverage projection has finite corner coordinates");
         }
-        Require(clip[3] > 0, "actual shadow projection keeps positive homogeneous W");
+        Require(clip[3] > 0, "coverage projection keeps positive homogeneous W");
         const double depth = clip[2] / clip[3];
-        Require(depth >= -1e-5 && depth <= 1 + 1e-5, "actual projection covers the complete required scene depth");
-        if (xyz) for (unsigned axis = 0; axis < 2; ++axis) {
+        Require(depth >= -1e-5 && depth <= 1 + 1e-5, "coverage projection covers the complete scene depth");
+        for (unsigned axis = 0; axis < 2; ++axis) {
             const double value = clip[axis] / clip[3];
-            Require(value >= -1 - 1e-5 && value <= 1 + 1e-5, "actual projection covers every receiver XY corner");
+            Require(value >= -1 - 1e-5 && value <= 1 + 1e-5, "coverage projection covers every scene XY corner");
         }
     }
 }
@@ -96,10 +101,37 @@ void RequireDefaultDesktop() {
     wchar_t name[256]{}; DWORD bytes = 0;
     Require(GetUserObjectInformationW(GetThreadDesktop(GetCurrentThreadId()), UOI_NAME, name, sizeof(name), &bytes) != FALSE,
         "read inherited test desktop identity");
-    Require(!_wcsicmp(name, L"Default"), "receiver host must run on Default; refusing another desktop rather than claiming a pass");
+    Require(!_wcsicmp(name, L"Default"), "shadow wiring host must run on Default; refusing another desktop rather than claiming a pass");
     std::wprintf(L"DESKTOP %ls\n", name);
 }
-
+struct Effect {
+    void* value = nullptr;
+    Effect() = default;
+    Effect(Effect&& other) noexcept : value(other.value) { other.value = nullptr; }
+    Effect& operator=(Effect&& other) noexcept { if (this != &other) { if (value) static_cast<IUnknown*>(value)->Release(); value = other.value; other.value = nullptr; } return *this; }
+    Effect(const Effect&) = delete;
+    Effect& operator=(const Effect&) = delete;
+    ~Effect() { if (value) static_cast<IUnknown*>(value)->Release(); }
+};
+Effect LoadEffect(IDirect3DDevice9* device, const wchar_t* file) {
+    std::ifstream stream(file, std::ios::binary);
+    Require(bool(stream), "read the production shader fixture supplied by the runner");
+    const std::string source{std::istreambuf_iterator<char>(stream), {}};
+    static HMODULE module = LoadLibraryW(L"d3dx9_43.dll");
+    using Create = HRESULT(WINAPI*)(IDirect3DDevice9*, const void*, UINT, const void*, const void*, DWORD, void*, void**, void**);
+    const auto create = reinterpret_cast<Create>(module ? GetProcAddress(module, "D3DXCreateEffect") : nullptr);
+    Require(create != nullptr, "load the production D3DX effect entry point");
+    Effect effect; void* errors = nullptr;
+    const auto hr = create(device, source.data(), UINT(source.size()), nullptr, nullptr, 0, nullptr, &effect.value, &errors);
+    if (errors) {
+        using Data = void*(WINAPI*)(void*);
+        std::printf("%s\n", static_cast<const char*>(d3dx::EffectMethod<Data, 3>(errors)(errors)));
+        static_cast<IUnknown*>(errors)->Release();
+    }
+    Require(SUCCEEDED(hr) && effect.value, "compile the production shadow shader");
+    return effect;
+}
+using GetValue = HRESULT(WINAPI*)(void*, const char*, void*, UINT);
 struct Host {
     HWND window = nullptr;
     std::unique_ptr<MMDApp> app = std::make_unique<MMDApp>();
@@ -108,9 +140,10 @@ struct Host {
     ComPtr<IDirect3D9> runtime;
     ComPtr<IDirect3DDevice9> device;
     ComPtr<IDirect3DVertexBuffer9> vertices;
+    Effect effect;
     MMDApp* previous = g_Block;
-    Host() {
-        window = CreateWindowExW(WS_EX_NOACTIVATE, L"STATIC", L"MMS receiver wiring isolated host", WS_OVERLAPPED,
+    explicit Host(const wchar_t* shader) {
+        window = CreateWindowExW(WS_EX_NOACTIVATE, L"STATIC", L"MMS shadow wiring isolated host", WS_OVERLAPPED,
             0, 0, 96, 96, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
         DWORD process = 0; const auto thread = GetWindowThreadProcessId(window, &process);
         Require(window && thread == GetCurrentThreadId() && process == GetCurrentProcessId() && !IsWindowVisible(window),
@@ -142,9 +175,16 @@ struct Host {
         std::memcpy(storage, data, sizeof(data)); Require(SUCCEEDED(vertices->Unlock()), "publish the owned real VB contents");
         model->loadComplete = 1; model->indexCount = 3; model->vertexCount = 2; model->vertexBuffer = vertices.Get(); model->pmxAdditionalUvCount = 0;
         app->ModelSlot(0) = reinterpret_cast<unsigned char*>(model.get()); g_Block = app.get();
+        effect = LoadEffect(device.Get(), shader);
+        renderer->effect = static_cast<ID3DXEffect*>(effect.value);
+        renderer->shaderModelCaps = 3;
         Light(true);
     }
     ~Host() {
+        renderer->effect = nullptr;
+        if (renderer->hdrTexture) { renderer->hdrTexture->Release(); renderer->hdrTexture = nullptr; }
+        if (renderer->shadowSurface) { renderer->shadowSurface->Release(); renderer->shadowSurface = nullptr; }
+        if (renderer->shadowDepthSurface) { renderer->shadowDepthSurface->Release(); renderer->shadowDepthSurface = nullptr; }
         app->ModelSlot(0) = nullptr; model->vertexBuffer = nullptr; app->Renderer() = nullptr; g_Block = previous;
         renderer->device = nullptr; renderer->d3d9 = nullptr;
         vertices.Reset(); device.Reset(); runtime.Reset();
@@ -159,6 +199,18 @@ struct Host {
             SUCCEEDED(device->SetTransform(D3DTS_PROJECTION, reinterpret_cast<const D3DMATRIX*>(projection.data()))),
             "install actual D3D9 VIEW and PROJECTION transforms");
     }
+    std::array<float, 3> Focus() {
+        float frameFocus[3]{}; float focus[3]{};
+        const auto source = ResolveFrameFocus(app.get(), static_cast<int>(app->CameraReferenceMode()), frameFocus);
+        for (int axis = 0; axis < 3; ++axis) focus[axis] = frameFocus[axis];
+        if (source == FrameFocusSource::FreeView) { focus[0] = app->ViewOffsetX(); focus[1] = app->ViewOffsetY(); }
+        return {focus[0], focus[1], focus[2]};
+    }
+    Matrix Expected() {
+        const auto scene = SceneBounds();
+        const auto focus = Focus();
+        return NativeShadowProjection(focus.data(), app->LightDirection(), .1f, 1, &scene);
+    }
     Matrix Call(const Matrix& frame) {
         const auto revision = app->SceneRevision(); const bool dirty = bool(app->SceneModified());
         const auto recorded = app->RecordedFrameCountByte1(), physics = app->PhysicsResetPending(), playing = app->PlaybackActive();
@@ -168,17 +220,66 @@ struct Host {
         const auto actual = UpdateAdaptiveShadowMap(app.get(), frame.data());
         for (float value : actual) Require(std::isfinite(value), "actual production update returns a wholly finite light projection");
         Require(SUCCEEDED(device->GetRenderTarget(0, &after)) && SUCCEEDED(device->GetViewport(&newViewport)) && before.Get() == after.Get() &&
-            !std::memcmp(&oldViewport, &newViewport, sizeof(oldViewport)), "projection-only update leaves actual render target and viewport intact");
-        Require(!renderer->hdrTexture && !renderer->shadowSurface && !renderer->shadowDepthSurface && !renderer->renderTargetWidth && !renderer->renderTargetHeight,
-            "zero test cap prevents production shadow target allocation and size changes");
+            !std::memcmp(&oldViewport, &newViewport, sizeof(oldViewport)), "projection and planning leave the actual render target and viewport intact");
         Require(app->SceneRevision() == revision && bool(app->SceneModified()) == dirty && app->RecordedFrameCountByte1() == recorded &&
             app->PhysicsResetPending() == physics && app->PlaybackActive() == playing && app->CurrentFrame() == time && !IsWindowVisible(window),
-            "direct production projection update does not edit scene/dirty/history inputs, physics, playhead, playback or window visibility");
+            "direct production update does not edit scene/dirty/history inputs, physics, playhead, playback or window visibility");
+        int stable = 0;
+        Require(SUCCEEDED((d3dx::EffectMethod<GetValue, 21>(effect.value)(effect.value, "MdsStableShadowGrid", &stable, sizeof(stable)))) && stable == 1,
+            "production update enables the shared stable shadow grid on the real effect");
         return actual;
     }
 };
-
-using GetTransform = HRESULT (WINAPI*)(IDirect3DDevice9*, D3DTRANSFORMSTATETYPE, D3DMATRIX*);
+Matrix CameraView() { auto view = Identity(); view[12] = 3; view[13] = -6; view[14] = 8; return view; }
+const Matrix kFrame{0,-3,0,0, 2,1,0,0, 1,0,4,0, 2,-1,3,1};
+void CoverageCases(Host& host) {
+    stage = "coverage planning";
+    const auto scene = SceneBounds();
+    for (bool safeReference : {true, false}) for (const Matrix& frame : std::array<Matrix, 2>{Identity(), kFrame}) {
+        host.Light(safeReference);
+        const auto expected = host.Expected();
+        Matrix baseline{};
+        bool haveBaseline = false;
+        unsigned variants = 0;
+        for (int mode : {1, 2}) for (float range : {.1f, .02f})
+            for (bool orthographic : {false, true}) for (bool jitter : {false, true}) {
+            host.app->ShadowMode() = mode;
+            host.app->ShadowDistance() = range;
+            const auto view = CameraView(), projection = Projection(orthographic, jitter);
+            host.Install(view, projection);
+            const auto actual = host.Call(frame);
+            SameMatrix(actual, expected, "actual update returns the fixed coverage projection computed from the real scene and light");
+            Covers(actual, scene);
+            if (!haveBaseline) { baseline = actual; haveBaseline = true; }
+            else SameMatrix(actual, baseline, "camera pose, AA jitter and precision never change the coverage mapping");
+            ++variants;
+        }
+        Require(variants == 16, "every coverage variant was actually executed");
+    }
+    // The effect ramp matrix must be the production inverse(coverage)*ramp,
+    // where the mode-2 camera-relative Y gain is zeroed for stability.
+    auto& api = d3dx::Get();
+    Matrix inverse{}, ramp{};
+    const auto expected = host.Expected();
+    auto* inverseMatrix = reinterpret_cast<d3dx::D3DXMATRIXF*>(inverse.data());
+    Require(api.inverse(inverseMatrix, nullptr, reinterpret_cast<const d3dx::D3DXMATRIXF*>(expected.data())) != nullptr, "invert the real coverage mapping");
+    const auto focus = host.Focus();
+    auto rampProjection = NativeShadowProjection(focus.data(), host.app->LightDirection(), .1f, 1);
+    for (int row = 0; row < 4; ++row) rampProjection[row * 4 + 1] = 0;
+    api.multiply(reinterpret_cast<d3dx::D3DXMATRIXF*>(ramp.data()), inverseMatrix,
+        reinterpret_cast<const d3dx::D3DXMATRIXF*>(rampProjection.data()));
+    Matrix actualRamp{};
+    Require(SUCCEEDED((d3dx::EffectMethod<GetValue, 21>(host.effect.value)(host.effect.value, "MdsShadowToNative", &actualRamp, sizeof(actualRamp)))),
+        "read the production ramp conversion from the real effect");
+    SameMatrix(actualRamp, ramp, "real effect receives inverse(coverage)*stable-ramp");
+    Require(host.renderer->hdrTexture && host.renderer->shadowSurface && host.renderer->shadowDepthSurface &&
+        host.renderer->renderTargetWidth == 512 && host.renderer->renderTargetHeight == 512,
+        "zero precision limit still allocates the 512 minimum coverage map");
+    auto* texture = host.renderer->hdrTexture;
+    (void)host.Call(kFrame);
+    Require(host.renderer->hdrTexture == texture, "unchanged precision reuses the existing coverage target");
+}
+using GetTransform = HRESULT(WINAPI*)(IDirect3DDevice9*, D3DTRANSFORMSTATETYPE, D3DMATRIX*);
 GetTransform originalGet = nullptr;
 IDirect3DDevice9* observedDevice = nullptr;
 DWORD observedThread = 0;
@@ -212,75 +313,48 @@ struct TransformHook {
     }
     void Fail(D3DTRANSFORMSTATETYPE kind, const Matrix& matrix) { Require(!armed, "one bounded matrix fault at a time"); failureKind = kind; injected = matrix; armed = true; }
 };
-
-const Matrix kFrame{0,-3,0,0, 2,1,0,0, 1,0,4,0, 2,-1,3,1};
-Matrix CameraView() { auto view = Identity(); view[12] = 3; view[13] = -6; view[14] = 8; return view; }
-float ViewRadius(const Matrix& projection, float distance) {
-    const float depth = projection[15] == 1 ? 1.f : std::abs(distance);
-    return std::hypot(depth / projection[0], depth / projection[5]);
-}
-void CameraCases(Host& host) {
-    stage = "actual camera wiring"; const auto scene = SceneBounds(); const float focus[3]{}; unsigned discriminating = 0;
-    for (bool safeReference : {true, false}) for (int mode : {1, 2})
-        for (bool affine : {false, true}) for (bool orthographic : {false, true}) for (bool jitter : {false, true}) {
-            host.Light(safeReference); host.app->ShadowMode() = mode;
-            const auto frame = affine ? kFrame : Identity(), view = CameraView(), projection = Projection(orthographic, jitter);
-            host.Install(view, projection); const auto actual = host.Call(frame);
-            const float radius = (std::max)(1.f / NativeShadowLateralScale(host.app->ShadowDistance(), mode), ViewRadius(projection, host.app->CameraDistance()));
-            const auto receivers = VisibleShadowReceiverBounds(scene, focus, radius, Multiply(frame, view), projection);
-            Require(FiniteNativeShadowBounds(receivers), "real-device fixture has a nonempty receiver footprint for its installed matrices");
-            Covers(actual, receivers, true); Covers(actual, scene, false);
-            if (safeReference) {
-                // A light parallel to the native look-at up vector takes the
-                // established safe-reference branch. Reuse its public pure
-                // helper; do not duplicate private ReferenceShadowProjection.
-                const auto reference = NativeShadowProjection(focus, host.app->LightDirection(), host.app->ShadowDistance(), mode, &scene);
-                const auto expected = FitFocusedShadowProjection(reference, scene, focus, host.app->LightDirection(), host.app->ShadowDistance(), mode,
-                    ViewRadius(projection, host.app->CameraDistance()), &receivers);
-                SameMatrix(actual, expected, "actual update consumes frame-times-VIEW and the installed projection, including AA offsets");
-                if (affine && !orthographic) {
-                    const auto wrong = VisibleShadowReceiverBounds(scene, focus, radius, Multiply(view, frame), projection);
-                    const auto wrongFit = FitFocusedShadowProjection(reference, scene, focus, host.app->LightDirection(), host.app->ShadowDistance(), mode,
-                        ViewRadius(projection, host.app->CameraDistance()), &wrong);
-                    Require(!NearMatrix(expected, wrongFit), "noncommuting fixture distinguishes VIEW-times-frame from the required frame-times-VIEW"); ++discriminating;
-                }
-            }
-        }
-    Require(discriminating == 4, "both modes and AA states exercise a genuinely order-sensitive real production call");
-}
 void FallbackCases(Host& host, TransformHook& hook) {
-    stage = "actual fallback wiring"; const auto scene = SceneBounds(); const float focus[3]{};
-    for (int mode : {1, 2}) {
-        host.Light(true); host.app->ShadowMode() = mode;
-        const auto view = CameraView(), projection = Projection(false, true);
-        auto unsupported = projection; unsupported[1] = .125f;
-        host.Install(view, unsupported); const auto fallback = host.Call(kFrame); Covers(fallback, scene, true);
-        const auto safe = NativeShadowProjection(focus, host.app->LightDirection(), host.app->ShadowDistance(), mode, &scene);
-        SameMatrix(fallback, FitReferenceShadowProjection(safe, scene), "unsupported camera projection selects complete-scene fitting");
-        host.Install(view, projection); const auto valid = host.Call(kFrame);
-        Require(!NearMatrix(valid, fallback), "failed-API fixture would visibly distinguish accidentally trusted legal output from the required full-scene fallback");
-        for (auto kind : {D3DTS_PROJECTION, D3DTS_VIEW}) {
-            const auto count = failures; hook.Fail(kind, kind == D3DTS_VIEW ? view : projection);
-            const auto failed = host.Call(kFrame);
-            Require(!armed && failures == count + 1, "production read actually consumes exactly one current-device HRESULT failure");
-            SameMatrix(failed, fallback, "VIEW/PROJECTION E_FAIL output is rejected even when the output matrix bytes look legal"); Covers(failed, scene, true);
-        }
-        auto singular = view; singular[0] = singular[1] = singular[2] = 0;
-        host.Install(singular, projection); const auto singularResult = host.Call(kFrame);
-        SameMatrix(singularResult, fallback, "unsupported singular scene-to-view transform uses the same complete-scene fallback"); Covers(singularResult, scene, true);
-        host.Install(view, projection); const auto recovered = host.Call(kFrame); SameMatrix(recovered, valid, "ordinary device reads recover immediately after the one-shot controlled failures");
+    stage = "device read failures";
+    const auto baseline = host.Expected();
+    const auto view = CameraView(), projection = Projection(false, true);
+    host.Install(view, projection);
+    const auto valid = host.Call(kFrame);
+    SameMatrix(valid, baseline, "ordinary device reads produce the coverage mapping");
+    for (auto kind : {D3DTS_PROJECTION, D3DTS_VIEW}) {
+        const auto count = failures; hook.Fail(kind, kind == D3DTS_VIEW ? view : projection);
+        const auto failed = host.Call(kFrame);
+        Require(!armed && failures == count + 1, "production read actually consumes exactly one current-device HRESULT failure");
+        SameMatrix(failed, baseline, "VIEW/PROJECTION E_FAIL output is rejected even when the output matrix bytes look legal");
+        Covers(failed, SceneBounds());
     }
+    auto singular = view; singular[0] = singular[1] = singular[2] = 0;
+    host.Install(singular, projection);
+    const auto singularResult = host.Call(kFrame);
+    SameMatrix(singularResult, baseline, "unsupported singular scene-to-view transform keeps the coverage mapping");
+    host.Install(view, projection);
+    const auto recovered = host.Call(kFrame);
+    SameMatrix(recovered, valid, "ordinary device reads recover immediately after the one-shot controlled failures");
 }
 }
-
-int main(int argc, char**) {
+int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0); SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
-    Require(argc == 1, "usage: native_shadow_receiver_host_tests (no input files or service arguments)");
+    Require(argc == 2, "usage: native_shadow_wiring_host_tests <production shader>");
     try {
-        RequireDefaultDesktop(); Host host; TransformHook hook(host.device.Get());
-        CameraCases(host); FallbackCases(host, hook);
-        std::printf("PASS actual shadow receiver wiring: %u checks; no scene draw, shadow RT, file or service initialization\n", checks); return 0;
+        std::fprintf(stderr, "STAGE boot\n"); std::fflush(stderr);
+        RequireDefaultDesktop();
+        std::fprintf(stderr, "STAGE desktop\n"); std::fflush(stderr);
+        const std::wstring shader(argv[1], argv[1] + std::strlen(argv[1]));
+        Host host(shader.c_str());
+        std::fprintf(stderr, "STAGE host\n"); std::fflush(stderr);
+        TransformHook hook(host.device.Get());
+        std::fprintf(stderr, "STAGE hook\n"); std::fflush(stderr);
+        CoverageCases(host);
+        std::fprintf(stderr, "STAGE coverage\n"); std::fflush(stderr);
+        FallbackCases(host, hook);
+        std::fprintf(stderr, "STAGE fallback\n"); std::fflush(stderr);
+        std::printf("PASS actual shadow coverage/detail planning wiring: %u checks; no scene draw, visible rendering, file or service initialization\n", checks);
+        return 0;
     } catch (const std::exception& error) {
-        std::fprintf(stderr, "FAIL receiver host [%s]: %s\n", stage, error.what()); return 1;
+        std::fprintf(stderr, "FAIL shadow wiring host [%s]: %s\n", stage, error.what()); return 1;
     }
 }
