@@ -50,6 +50,16 @@ int wmain(int argc, wchar_t** argv) {
     module = nullptr;
     Check(!mikumikustudio::LegacyMmeLoaded(), "unloaded subdirectory module is not detected");
     Sleep(600);
+    const auto hack = CopyMarker(marker, root / L"renamed" / L"MMHackJP.dll");
+    HMODULE hackModule = LoadLibraryW(hack.c_str());
+    Check(hackModule != nullptr, "load the renamed MMHack marker");
+    Check(mikumikustudio::LegacyMmeHackLoaded(), "renamed MMHack module is detected");
+    Check(mikumikustudio::LegacyMmeHackModule() == hackModule, "renamed MMHack handle is reported");
+    Check(!mikumikustudio::LegacyMmeLoaded(), "MMHack does not report as MMEffect");
+    if (hackModule) FreeLibrary(hackModule);
+    hackModule = nullptr;
+    Check(!mikumikustudio::LegacyMmeHackLoaded(), "unloaded renamed MMHack is not detected");
+    Sleep(600);
     const auto unrelated = CopyMarker(marker, root / L"unrelated" / L"NotMMEffect.dll");
     module = LoadLibraryW(unrelated.c_str());
     Check(module != nullptr, "load the unrelated marker");

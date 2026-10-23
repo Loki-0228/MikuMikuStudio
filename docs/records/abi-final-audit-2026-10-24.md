@@ -26,7 +26,7 @@
 | 布局 1.0 C++17 封装 | `1cb6c6f`／`b07a7c1` | `LayoutServices`／`LayoutSnapshotLease`，假宿主契约通过 |
 | 帧回调 | `1abd224`／`8ea8779` | `mms.render` 1.1 每帧回调，宿主探针通过 |
 | 透明排序 main 完整移植 | `9129f04`／`61b35c7` | 按对象投影快照、六参数几何接口，14/15 模式通过 |
-| legacy MME 改名/子目录检测 | `0f391c3`／`adf34ce` | 14 项检测 CTest 通过，30 处硬编码判断统一入口 |
+| legacy MME 改名/子目录检测 | `0f391c3`／`adf34ce` | 20 项检测 CTest 通过（含 MMHack），30 处硬编码判断统一入口 |
 | 帧阶段回调 | `0ea588a`／`f80dc6d` | `mms.render` 1.2 BEGIN/END，宿主探针通过 |
 | 场景 C++17 封装 | `f6b14c0`／`85bfef2` | `SceneServices`／`SceneSnapshot`，套件 44,806 项 |
 
@@ -67,7 +67,7 @@
 | 默认全量契约套件 | `PASS checks=44806`（第 37 轮） |
 | 宿主事件探针 | 8 项通过，含 `FRAME_CALLBACK`、`FRAME_PHASE_*` |
 | 透明排序 `model_alpha_*` | 14/15 通过；`model_alpha_sort_off_mme_presence` 失败 |
-| legacy MME 检测 | 14 项通过 |
+| legacy MME 检测 | 20 项通过（MMEffect/MMHack 改名、子目录、卸载、无关名） |
 | 相关 CTest | 帧阶段批 9/9、帧回调批 10/10、宿主事件通过 |
 | 部署闭包 | 55 个 PE、51 个运行时可再分发、2 个 DirectX；`DEPLOYMENT CLOSURE OK` |
 | 完整产品 | `8a7d3937f0814f2a62a0f55b4da60b1600ae6801125bd2e50d499ab1b54135dc` |

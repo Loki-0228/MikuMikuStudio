@@ -50,7 +50,7 @@
 
 [渲染帧阶段回调](abi-frame-phases-2026-10-24.md)：`mms.render` 1.2 追加 `setPhaseCallback`／`clearPhaseCallback`，宿主在 `FrameDriver` 帧工作前与 `PresentScene` 后调用 BEGIN/END，并新增 `PluginFrameBegin`／`PluginFrameEnd` 入口；lifecycle 探针注册并记录三个标记，宿主探针 8 项通过。真实播放循环、提前返回路径、设备丢失期间呈现、post 与租约分类仍未验证/实现。
 
-[legacy MME 改名与子目录检测](abi-legacy-mme-detection-2026-10-24.md)：新增 `LegacyMmeModule/LegacyMmeLoaded/LegacyMmeHackLoaded`，原名走快速路径，改名/子目录用 500 ms 节流的前缀模块扫描；14 个文件 30 处 `GetModuleHandleW("MMEffect.dll")`／`MMHack.dll` 判断改走统一入口。新增 `legacy_mme_renamed_detection` CTest，改名、子目录、无关名、卸载与句柄 14 项通过。真实旧 MME 插件、任意改名（无前缀）、导出/调用约定/寿命与实际渲染仍未验收。
+[legacy MME 改名与子目录检测](abi-legacy-mme-detection-2026-10-24.md)：新增 `LegacyMmeModule/LegacyMmeLoaded/LegacyMmeHackLoaded`，原名走快速路径，改名/子目录用 500 ms 节流的前缀模块扫描；14 个文件 30 处 `GetModuleHandleW("MMEffect.dll")`／`MMHack.dll` 判断改走统一入口。新增 `legacy_mme_renamed_detection` CTest，改名、子目录、无关名、卸载与句柄 20 项通过（含 MMHack 改名与不误报）。真实旧 MME 插件、任意改名（无前缀）、导出/调用约定/寿命与实际渲染仍未验收。
 
 [渲染帧回调](abi-render-frame-callback-2026-10-24.md)：`mms.render` 1.1 追加 `setFrameCallback`／`clearFrameCallback`，成功呈现后同步调用已登记回调并传入帧信息；服务复制回调列表、捕获单回调异常、停止时清理。lifecycle 探针注册并记录 `FRAME_CALLBACK frame=1 gen=1`，宿主探针 8 项通过。回调要求轻量只读且运行在插件回调之外；真实播放循环、设备丢失期间呈现、post 与 begin/end 帧钩子仍未验证/实现。
 
