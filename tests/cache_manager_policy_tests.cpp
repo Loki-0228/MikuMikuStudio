@@ -3,7 +3,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
-#include "mikumikustudio/cache_manager.hpp"
+#include "mikumikustudio/cache_policy.hpp"
 #include "mikumikustudio/system_settings.hpp"
 #include "../src/plugins/json.hpp"
 #include <array>
@@ -42,7 +42,7 @@ void operator delete(void* memory, std::size_t) noexcept { std::free(memory); }
 void operator delete[](void* memory, std::size_t) noexcept { std::free(memory); }
 
 namespace fs = std::filesystem;
-namespace cache = mikumikustudio::cache_manager;
+namespace cache = mikumikustudio::cache_policy;
 namespace settings = mikumikustudio::system_settings;
 using mikumikustudio::plugins::Json;
 using cache::Result;
