@@ -86,7 +86,9 @@ int wmain() {
           body.find("PROJECT_CLOSED_PAYLOAD_FAIL") == std::string::npos &&
           body.find("DEVICE_GENERATION_FAIL") == std::string::npos &&
           body.find("OBJECT_REMOVED_PAYLOAD_FAIL") == std::string::npos &&
-          body.find("DPI_VALUE_FAIL") == std::string::npos,
+          body.find("DPI_VALUE_FAIL") == std::string::npos &&
+          body.find("COMMAND_STATE_PAYLOAD_FAIL") == std::string::npos &&
+          body.find("COMMAND_STATE_REVISION_FAIL") == std::string::npos,
         "no event payload validation failures");
     plugins::Shutdown();
     DestroyWindow(window);
