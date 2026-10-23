@@ -11,7 +11,7 @@
 // cache policy, capacity, pinning or eviction permission. The manager owns those.
 namespace mikumikustudio::cache_files {
 enum class Result { Ok, Missing, Invalid, Corrupt, Busy, Io, Conflict, Limit, DeletePending };
-enum class Kind : std::uint32_t { Effect = 1, Texture = 2, CatalogSnapshot = 3, CatalogCommit = 4 };
+enum class Kind : std::uint32_t { Effect = 1, Texture = 2, CatalogSnapshot = 3, CatalogCommit = 4, CatalogCheckpoint = 5 };
 using Owner = std::array<std::uint8_t, 16>;
 using Digest = std::array<std::uint8_t, 32>;
 inline constexpr std::uint64_t HeaderBytes = 128;

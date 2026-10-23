@@ -185,11 +185,23 @@ std::size_t Scan(Operation op,const fs::path& root,OutputOrigin& origins){
     }
     return total;
 }
-void AliasChecks(const fs::path& root,std::size_t commitAllocations){
-    const auto group=root/L"alias";NewDirectory(group);
+void AliasChecks(const fs::path& root){
+    const auto group=root/L"alias";NewDirectory(group);std::size_t commitAllocations=0;
+    // Calibrate the actual alias call under equal-length fixture paths. The
+    // non-alias group's path storage can require a different allocation count.
+    {Fixture fixture(group,0,Operation::Commit);catalog::Store store(fixture.path);auto output=fixture.old;
+        const auto call=Invoke(Operation::Commit,store,output,output,allocation::CountOnly);commitAllocations=call.attempts;
+        NewText(fixture.casePath/L"call.txt","ordinal="+std::to_string(allocation::CountOnly)+"\nattempts="+std::to_string(call.attempts)+"\nhits="+std::to_string(call.hits)+"\nresult="+std::to_string(static_cast<int>(call.result))+"\n");
+        Check(call.result==Result::Ok&&call.hits==0&&commitAllocations>0&&commitAllocations<=MaximumOrdinals&&
+            output.IsValid()&&output.Revision()==fixture.old.Revision()+1&&output.StoreId()==fixture.old.StoreId()&&output.Bytes()==NewBytes,"independent alias allocation baseline succeeds");
+        const auto read=VerifyAfter(Operation::Commit,fixture.path,fixture.old,call,false);
+        const auto disk=DiskState(fixture.path);Record(fixture.casePath,call,read,allocation::CountOnly,BlobCount(disk,L"snapshots"),BlobCount(disk,L"commits"));}
+    std::printf("allocation baseline alias=%llu\n",static_cast<unsigned long long>(commitAllocations));
     std::vector<std::size_t> points{0,commitAllocations/2,commitAllocations-1};std::sort(points.begin(),points.end());points.erase(std::unique(points.begin(),points.end()),points.end());
-    for(std::size_t i=0;i<points.size();++i){Fixture fixture(group,i,Operation::Commit);catalog::Store store(fixture.path);auto output=fixture.old;const auto before=output;
+    for(std::size_t i=0;i<points.size();++i){Fixture fixture(group,i+1,Operation::Commit);catalog::Store store(fixture.path);auto output=fixture.old;const auto before=output;
+        NewText(fixture.casePath/L"planned.txt","ordinal="+std::to_string(points[i])+"\nbaselineAttempts="+std::to_string(commitAllocations)+"\n");
         const auto call=Invoke(Operation::Commit,store,output,output,points[i]);
+        NewText(fixture.casePath/L"call.txt","ordinal="+std::to_string(points[i])+"\nattempts="+std::to_string(call.attempts)+"\nhits="+std::to_string(call.hits)+"\nresult="+std::to_string(static_cast<int>(call.result))+"\n");
         Check(call.hits==1&&(call.result==Result::Io||call.result==Result::Indeterminate)&&Same(output,before),"aliased expected/output retains public snapshot after an actual failure");
         const auto read=VerifyAfter(Operation::Commit,fixture.path,before,call,true);catalog::Snapshot current;
         if(read==Result::Ok){Check(store.Read(current)==Result::Ok,"reread alias head before private-token check");catalog::Snapshot proof;
@@ -234,7 +246,7 @@ int wmain(int argc,wchar_t** argv){
     try{
         Check(argc==3&&std::wcscmp(argv[1],L"--store")==0,"usage: --store NEW_ABSOLUTE_DIR");const fs::path root(argv[2]);NewDirectory(root);
         Calibration();CodecScans(root);OutputOrigin origins(root/L"output-origins");
-        const auto read=Scan(Operation::Read,root,origins);const auto initialize=Scan(Operation::Initialize,root,origins);const auto commit=Scan(Operation::Commit,root,origins);AliasChecks(root,commit);
+        const auto read=Scan(Operation::Read,root,origins);const auto initialize=Scan(Operation::Initialize,root,origins);const auto commit=Scan(Operation::Commit,root,origins);AliasChecks(root);
         NewText(root/L"result.txt","checks="+std::to_string(checks)+"\nreadOrdinals="+std::to_string(read)+"\ninitializeOrdinals="+std::to_string(initialize)+"\ncommitOrdinals="+std::to_string(commit)+"\nindeterminate="+std::to_string(indeterminate)+"\nrecoveryRequired="+std::to_string(recoveryRequired)+"\ncompleteOrphanCases="+std::to_string(orphanCases)+"\nCoverage: ordinary current-thread new/new[] only; no aligned allocations, CRT malloc, Win32/CNG/system allocator faults or power-loss claims. Recovery-required evidence is retained, never repaired/deleted.\n");
         std::printf("PASS cache catalog allocation checks=%u recoveryRequired=%u indeterminate=%u evidence=%ls\n",checks,recoveryRequired,indeterminate,root.c_str());return 0;
     }catch(const std::exception& e){std::fprintf(stderr,"FAIL cache catalog allocation checks=%u: %s\n",checks,e.what());return 1;}
