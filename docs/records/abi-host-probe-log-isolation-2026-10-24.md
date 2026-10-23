@@ -11,7 +11,13 @@
 
 - 此前探针直接调用 `PluginNotifyDpiChanged`，事件入队/投递/负载已验证，但「窗口收到 WM_DPICHANGED 后由运行时子类通知」这一段没有证据。
 - 本批在探针改用生产 `InitMainWindowAndD3D` 后，向真实隐藏主窗口 `SendMessageW(WM_DPICHANGED, MAKELPARAM(144,144))`：日志没有出现 `EVENT_DPI`，其余事件正常；说明该消息在本夹具里没有到达运行时子类或未能触发通知。
-- 探针恢复为直接调用同一宿主入口，保证事件契约与日志断言确定；DPI 消息来源仍未端到端验证。
+- 探针恢复为直接调用同一宿主入口，保证事件契约与日志断言确定。
+
+## 根因：固定 96-DPI 清单
+
+- 宿主探针与产品使用同一份嵌入清单：`dpiAware=false`、`dpiAwareness=unaware`（固定 96-DPI 界面由 Windows 整体缩放，这是原 MMD 行为）。
+- 对 `Subclass` 做临时跟踪：发送 `WM_APP+0x7e` 自定义消息能到达子类，发送 `WM_DPICHANGED` 则完全不到达。Windows 不向 DPI 不感知进程投递 `WM_DPICHANGED`。
+- 结论：在当前固定 96-DPI 设计中，系统不会产生 DPI 切换，`WM_DPICHANGED` 分支实际上是休眠路径；`DPI_CHANGED` 的 API 入队/投递/负载已验证，但不能声称有系统消息来源。若未来提供 per-monitor 配置，该分支才可能被系统调用。
 
 ## 验证
 
@@ -26,5 +32,5 @@
 
 ## 未完成
 
-- WM_DPICHANGED 到运行时子类的路由需要单独诊断（子类安装返回值、消息是否被宿主窗口过程吞掉、是否只在真实 DPI 切换时投递）。在定位前不声称 DPI 消息来源已实现。
-- 属性变更与计算策略事件仍未接入；真实桌面 DPI/多显示器验收仍待外部环境。
+- 当前清单固定 DPI 不感知，系统 DPI 消息来源为不适用；如果未来提供 per-monitor 配置，需要重新验证 WM_DPICHANGED 路径与子类行为。
+- 属性变更与计算策略事件仍未接入；真实桌面多显示器/人工视觉验收仍待外部环境。
