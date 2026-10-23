@@ -28,6 +28,9 @@
 
 
 
+
+[布局撤销历史](abi-layout-history-2026-10-24.md)：`mms.ui.layout` 1.1 追加 `queryHistory`／`undo`／`redo`。成功且改变保存布局偏好的事务记录提交前快照，撤销栈 32、新提交清空重做；撤销/重做恢复完整偏好 JSON。真实布局事务断言撤销后偏好变化、重做后恢复、空栈 NOT_READY；默认契约 44,784 项、宿主探针 7 项（无 `LAYOUT_HISTORY_MISSING`）、10 个 CTest 模式通过，两产品重建（完整 `903bf97a…`、原始 `b20a8822…`）。历史不持久化、无热键/界面入口与 C++ 包装，几何需下一次布局刷新；DOCK 与时间线/状态栏挂载仍未实现。
+
 [渲染服务：设备代次与资源租约](abi-render-service-2026-10-24.md)：新增 `mms.render` 1.0，查询设备代次/丢失状态，获取与显式释放设备租约；设备丢失时先调用租约释放回调再清空，恢复时更新代次。lifecycle 探针在启动、丢失事件与恢复事件中查询并重取租约，日志验证 `gen=1 lost=1`、`gen=2 lost=0`、`RENDER_LEASE_RELEASED` 与重新获取；宿主探针 7 项、默认契约 44,764 项、10 个 CTest 模式通过。帧序号/后缓冲信息、DX9 帧生命周期、post、租约分类、C++ 封装与真实设备丢失仍未完成。
 
 [属性变更事件](abi-property-changed-2026-10-24.md)：`UiRegistry` 在宿主原生属性编辑（`CommitPropertyInput`）成功提交后回调属性 id 与修订号，`Manager` 广播 `MMS_EVENT_PROPERTY_CHANGED`（`MmsPropertyEventV1`，目标为零）；lifecycle 探针校验负载并记录日志，宿主探针等待该标记，默认契约套件 44,764 项、10 个 CTest 模式通过。两产品重建（完整 `53f10222…`、原始 `1ed700c1…`），正式 release 未覆盖。插件声明式 `InputEdit` 现入队并在 `Drain` 中广播，但目标对象身份、专门的插件级断言与真实 UI 端到端链路仍未完成；`COMPUTE_POLICY_CHANGED` 依赖 P4。
