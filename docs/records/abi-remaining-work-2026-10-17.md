@@ -35,6 +35,9 @@
 
 
 
+
+[布局 1.0 C++17 封装](abi-layout-sdk-2026-10-24.md)：新增 `mms::sdk::LayoutServices` 与 `LayoutSnapshotLease`，覆盖默认/暂存布局提示、快照获取与显式释放、移动语义与错误映射；假宿主契约通过，默认契约套件 44,792 项并输出 `cpp layout sdk PASS`。本批只改 SDK 头与测试。另核对 `model_alpha_sort_off_mme_presence`：main 固定管线同样在排序关闭且存在 MMEffect 时使用 authored walk，ABI 条件已与 main 一致；只移除固定条件会修好资源 0 但资源 117 仍失败，故恢复 main 对齐、不凭夹具改渲染行为，该模式保持未通过。
+
 [透明排序缓存 main 同步](abi-transparent-sort-cache-2026-10-24.md)：同步 main 的遮挡/缓存验收夹具与 `transparent_sort_cache` 统计接口；有序透明通道在计划命中时复用 GPU 默认池缓冲、跳过重排与上传，冷/热像素一致，变换/几何/材质/范围变化触发失配，释放钩子与 Maximum 不透明纹理检查通过。15 个 `model_alpha_*` CTest 中 14 个通过，`model_alpha_sort_off_mme_presence` 仍失败；对象命中/失配是估算，按对象投影快照尚未移植。默认契约套件 44,805 项通过；两产品重建（完整 `10c7d991…`、原始 `af2302c7…`），正式 release 未覆盖。
 
 [布局撤销历史 C++17 封装](abi-layout-history-sdk-2026-10-24.md)：新增 `mms::sdk::LayoutHistoryServices`，查询 1.1 表并转发 Info／Undo／Redo／SetDefaultHints；假宿主契约覆盖查询参数、旧宿主 VERSION、缺失函数 UNSUPPORTED、字段与转发，默认契约套件 44,781 项通过并输出 `cpp layout history sdk PASS`。本批只改 SDK 头与测试。另核对透明排序遮挡测试：当前 HEAD 与透明批次 `3f37a38` 同样失败 27 个双层像素样本，说明失败不是后续 ABI 变更或本批引起，GPU 缓存仍不能据此实现。
