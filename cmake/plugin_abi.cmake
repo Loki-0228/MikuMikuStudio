@@ -7,6 +7,18 @@ add_library(mms_system_settings STATIC
 target_include_directories(mms_system_settings PUBLIC include sdk/mms/include)
 target_compile_definitions(mms_system_settings PRIVATE _WIN32_WINNT=0x0601 WINVER=0x0601)
 target_link_libraries(mms_system_settings PUBLIC user32)
+add_library(mms_cache_policy STATIC src/io/cache_manager.cpp)
+target_link_libraries(mms_cache_policy PUBLIC mms_system_settings)
+target_compile_definitions(mms_cache_policy PRIVATE _WIN32_WINNT=0x0601 WINVER=0x0601)
+target_link_libraries(mikumikustudio_core PUBLIC mms_cache_policy)
+add_executable(cache_manager_policy_tests EXCLUDE_FROM_ALL tests/cache_manager_policy_tests.cpp)
+target_link_libraries(cache_manager_policy_tests PRIVATE mms_cache_policy)
+target_compile_definitions(cache_manager_policy_tests PRIVATE _WIN32_WINNT=0x0601 WINVER=0x0601)
+target_link_options(cache_manager_policy_tests PRIVATE /SUBSYSTEM:CONSOLE,6.01 /DEBUG:NONE)
+set_target_properties(cache_manager_policy_tests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+# The policy tests require new, explicitly owned directories. The verification
+# runner supplies them instead of a reusable CTest path beside user settings.
 add_executable(system_settings_tests EXCLUDE_FROM_ALL tests/system_settings_tests.cpp)
 target_link_libraries(system_settings_tests PRIVATE mms_system_settings)
 target_link_options(system_settings_tests PRIVATE /SUBSYSTEM:CONSOLE,6.01 /DEBUG:NONE)
