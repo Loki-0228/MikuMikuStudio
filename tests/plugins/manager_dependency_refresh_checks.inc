@@ -173,7 +173,14 @@ static void Run(const fs::path& root, const fs::path& library, bool pendingStop,
     CHECK(probe.release(1) == MMS_OK);
     CHECK(manager.Stop() && manager.Status()[0].stage == "stopped" && count("DEPENDENCY_PROBE_DESTROY") == 1);
     CHECK(GetModuleHandleW(L"dependency-refresh-probe.dll") == nullptr);
-    CHECK(manager.Ui().commands.empty() && manager.Ui().elements.size() == 6);
+    // The host keeps its own roots plus the semantic catalog observation
+    // elements; only plugin-owned registrations must be retired here.
+    bool pluginElements = false;
+    for (const auto& [id, element] : manager.Ui().elements) {
+        const auto& owner = element.desc.ownerPlugin;
+        if (owner.bytes && std::string(owner.data, owner.bytes) != "mms") pluginElements = true;
+    }
+    CHECK(manager.Ui().commands.empty() && !pluginElements);
     native.reset(); CHECK(manager.Stop());
 }
 } // namespace manager_dependency_refresh_checks
