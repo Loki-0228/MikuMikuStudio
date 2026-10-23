@@ -6,6 +6,14 @@ MikuMikuStudio 的项目设置随 PMM 文件保存。普通工程优先使用 `P
 
 相关实现为 `pmm_extension.hpp`、`src/io/pmm_extension.cpp` 和 `src/io/pmm_project_settings.cpp`。
 
+## 负数关键帧扩展记录
+
+`org.mikudancestudio.timeline.negative_keys.v1` 保存骨骼、表情、模型显示与 IK、外亲、相机、灯光、自阴影、重力及附件的负数关键帧。载荷以小端 `uint32` 版本号 1 和记录数开头。每条记录 164 字节，依次是模型槽、类型、目标索引、带符号帧号的 32 位位模式、20 字节绑定名、16 个小端 IEEE 754 double 数值。模型槽 255 表示场景轨道；类型 0/1/2/3 分别表示骨骼、表情、场景或附件、模型显示状态。载入先校验完整记录，成功后再替换内存数据。
+
+负数帧不写入标准 PMM 的无符号关键帧池，负数帧本身不触发 `Polygon Movie maker 0003`。`org.mikudancestudio.timeline.signed_cursor.v1` 保存当前帧与时间轴左端，`org.mikudancestudio.timeline.signed_play_range.v1` 保存播放范围输入值，各为两个小端带符号 32 位整数。标准部分的当前位置、滚动位置与播放范围写为非负值，避免原版读取时发生无符号溢出。含负数数据时不生成会丢失这些数据的标准部分副本。
+
+原版 MMD 读取 `0002` 时只能看到标准部分；用原版重新保存会丢失负数帧及其他扩展数据。当前 ABI 原始兼容配置在载入时忽略扩展记录，因此该配置不恢复负数帧、带符号游标和播放范围。
+
 ## 兼容范围
 
 | 程序或操作 | 行为 |
