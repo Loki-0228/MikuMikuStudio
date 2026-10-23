@@ -31,7 +31,7 @@
 ## 未完成与边界
 
 - 检测只覆盖注册表里带 `commandId` 的元素；菜单/工具栏真实宿主中的状态抖动未做端到端运行验证。每次布局会额外调用一次 `getState`，未测量性能影响。
-- 把非 GUI 探针改为 GUI 探针时，真实隐藏窗口初始化后立即崩溃（`GUI_REGISTERED` 之后）；原因未隔离，因此命令状态验证放在 Manager + NativeUi 的独立探针里，不据此声称真实主窗口插件 GUI 路径可用。
+- 把非 GUI 探针改为 GUI 探针时曾在 `GUI_REGISTERED` 之后崩溃。后续[宿主探针生产启动批次](abi-host-probe-production-bootstrap-2026-10-24.md)定位为探针自建 `STATIC` 窗口缺少生产窗口/设备状态；改用 `InitMainWindowAndD3D` 后同一 GUI 插件加载、注册、事件与停止均通过。命令状态验证仍放在 Manager + NativeUi 的独立探针里。
 - 仍缺 `PROPERTY_CHANGED`、`COMPUTE_POLICY_CHANGED`；DPI 消息来源、真实设备丢失与外部设备验收仍未完成。
 
 ## 后续

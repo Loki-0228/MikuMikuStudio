@@ -206,7 +206,7 @@ MikuMikuDance.exe <另一个新输出前缀> 1 --emm-default-off [素材PMM绝�
 
 `business_event_tests` 在 Manager + NativeUi 上验证注册表/布局事件，并注册命令与工具栏按钮后调用命令改变状态，确认 `DetectCommandStateChanges` 回调、`COMMAND_STATE_CHANGED` 投递与插件负载校验（12 项）。
 
-`plugin_abi_host_events` 在真实隐藏窗口上初始化生产插件运行时并加载 lifecycle 插件，验证工程关闭、语言切换、设备丢失/恢复、对象删除与 DPI 变化能经业务事件队列到达插件并带合法负载（对象事件带稳定身份），插件日志同时覆盖 UI 注册表事件与正常停止。 在真实隐藏窗口上初始化生产插件运行时并加载 lifecycle 插件，验证工程关闭、语言切换、设备丢失与设备恢复四个宿主事件能经业务事件队列在安全边界到达插件并带合法负载；插件日志同时覆盖 UI 注册表事件与正常停止。
+`plugin_abi_host_events` 通过生产 `InitMainWindowAndD3D` 创建隐藏主窗口与设备，再初始化插件运行时并加载 lifecycle 插件；验证工程关闭、语言切换、设备丢失/恢复、对象删除与 DPI 事件到达插件且负载合法，插件日志同时覆盖 UI 注册表事件与正常停止。同一二进制在插件注册 GUI 元素时也通过。 在真实隐藏窗口上初始化生产插件运行时并加载 lifecycle 插件，验证工程关闭、语言切换、设备丢失与设备恢复四个宿主事件能经业务事件队列在安全边界到达插件并带合法负载；插件日志同时覆盖 UI 注册表事件与正常停止。
 
 `business_event_tests` 加载真实 lifecycle 探针插件，验证 UI 注册表与布局提交在 `Drain` 中合并投递的 `UI_REGISTRY_CHANGED`／`LAYOUT_CHANGED`：负载版本、大小、非零修订号、每轮合并次数与插件正常停止，共 7 项检查。
 
