@@ -3,6 +3,7 @@
 // layout transaction. The lifecycle fixture records the payload contract.
 #include "manager.hpp"
 #include "native_ui.hpp"
+#include <Windows.h>
 #include <native_ui/layout.hpp>
 #include <algorithm>
 #include <cstdio>
@@ -21,7 +22,7 @@ static void Write(const fs::path& path, const std::string& bytes) {
     fs::create_directories(path.parent_path());
     std::ofstream f(path, std::ios::binary); f << bytes; if (!f) throw std::runtime_error("fixture write failed");
 }
-static std::string ManifestText(std::string id = "org.example.events", std::string entry = "lifecycle.dll") {
+static std::string ManifestText(std::string id = "org.example.gui-state-events", std::string entry = "lifecycle.dll") {
     return "{\"schemaVersion\":1,\"id\":\"" + id + "\",\"name\":\"test\",\"version\":\"1.0.0\",\"kind\":\"native\",\"abi\":{\"major\":1,\"minMinor\":0},\"entry\":\"" + entry + "\",\"architecture\":\"x64\",\"minWindows\":\"6.1.7601\",\"capabilities\":[\"ui.command\"],\"requiresServices\":[{\"id\":\"mms.ui\",\"major\":1,\"minMinor\":0}],\"dependencies\":[],\"nativeDependencies\":[],\"reloadPolicy\":\"restart\"}";
 }
 static void BusinessEventChecks(const fs::path& root, const fs::path& fixture) {
@@ -46,6 +47,35 @@ static void BusinessEventChecks(const fs::path& root, const fs::path& fixture) {
     CHECK(count("EVENT_UI_REGISTRY") >= 1);
     CHECK(count("EVENT_LAYOUT") == layoutOnly + 1);
     CHECK(count("REVISION_PAYLOAD_FAIL") == 0 && count("REVISION_ZERO_FAIL") == 0);
+    // A real NativeUi layout observes command states; the lifecycle probe flips
+    // its checked bit on a 50 ms cadence for ids containing gui-state.
+    HWND window = CreateWindowExW(0, L"STATIC", L"event host ui", WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
+        0, 0, 640, 420, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    CHECK(window != nullptr && SetMenu(window, CreateMenu()));
+    NativeUi ui(manager.Ui(), window, [&](const std::string& s) { logs.push_back(s); });
+    ui.Refresh();
+    unsigned stateChanged = 0;
+    ui.SetCommandStateChanged([&](uint64_t revision) {
+        ++stateChanged;
+        MmsRevisionEventV1 payload{Header<MmsRevisionEventV1>(), revision};
+        manager.Event(MMS_EVENT_COMMAND_STATE_CHANGED, {&payload, sizeof(payload)}, 1);
+    });
+    ui.DetectCommandStateChanges();
+    {
+        UiClient visitor{&manager.Ui(), "example.visitor"};
+        auto invokeApi = manager.Ui().Api(visitor);
+        CHECK(invokeApi.invoke(invokeApi.context, S("org.example.gui-state-events.command"), {}, {}) == MMS_OK);
+    }
+    for (int attempt = 0; attempt < 12 && !stateChanged; ++attempt) {
+        Sleep(10);
+        ui.DetectCommandStateChanges();
+    }
+    CHECK(stateChanged >= 1);
+    manager.Drain();
+    CHECK(count("EVENT_COMMAND_STATE") >= 1);
+    CHECK(count("COMMAND_STATE_PAYLOAD_FAIL") == 0 && count("COMMAND_STATE_REVISION_FAIL") == 0);
+    ui.SetCommandStateChanged({});
+    DestroyWindow(window);
     CHECK(manager.Stop());
     std::cout << "business events PASS checks=" << checks << "\n";
 }

@@ -57,6 +57,8 @@ struct NativeUi::Impl {
     LayoutReservations publishedReservations{};
     bool layoutPublicationPending = false;
     std::map<std::string, bool> retainedVisibility;
+    std::map<std::string, std::array<uint32_t, 3>> commandStates;
+    std::function<void(uint64_t)> commandStateChanged;
     std::map<std::string, unsigned> ids;
     std::map<unsigned, std::pair<std::string, uint64_t>> dispatch;
     struct Control {
@@ -708,6 +710,21 @@ struct NativeUi::Impl {
         api.releaseValue(api.context, lease); out.disabledReason = {};
         if (result) { out.enabled = 0; out.visible = 1; }
         return out.visible != 0;
+    }
+    void DetectCommandStateChanges() {
+        if (!commandStateChanged) return;
+        bool changed = false;
+        for (const auto& [id, element] : registry.elements) {
+            if (element.nativeObserved || !element.desc.commandId.bytes) continue;
+            MmsCommandStateV1 state{};
+            const bool visible = State(element, state);
+            const std::array<uint32_t, 3> now{state.enabled ? 1u : 0u, state.checked ? 1u : 0u,
+                visible ? 1u : 0u};
+            const auto found = commandStates.find(id);
+            if (found == commandStates.end()) commandStates.emplace(id, now);
+            else if (found->second != now) { found->second = now; changed = true; }
+        }
+        if (changed) commandStateChanged(registry.Revision());
     }
     bool CurrentPanel(const std::string& id, const PanelState& state) const {
         const auto element = registry.elements.find(id); UiRegistry::SurfacePresentation view;
@@ -2006,6 +2023,10 @@ int NativeUi::LeftAreaWidth() const noexcept { return impl_->mounts[Impl::LeftMo
 int NativeUi::RightAreaWidth() const noexcept { return impl_->mounts[Impl::RightMount].extent; }
 HWND NativeUi::SideArea(bool right) const noexcept { return impl_->mounts[right ? Impl::RightMount : Impl::LeftMount].window; }
 void NativeUi::SetLayoutPublished(std::function<MmsResult(const LayoutReservations&)> callback) { impl_->layoutPublished = std::move(callback); }
+void NativeUi::SetCommandStateChanged(std::function<void(uint64_t)> callback) {
+    impl_->commandStateChanged = std::move(callback);
+}
+void NativeUi::DetectCommandStateChanges() { if (impl_) impl_->DetectCommandStateChanges(); }
 void NativeUi::SetLayoutPublished(std::function<MmsResult(int)> callback) {
     if (!callback) { impl_->layoutPublished = {}; return; }
     impl_->layoutPublished = [legacy = std::move(callback)](const LayoutReservations& areas) { return legacy(areas.toolbarHeight); };

@@ -12,6 +12,11 @@ public:
     NativeUi(UiRegistry&, HWND main, Log);
     ~NativeUi();
     void Refresh();
+    // Compares the live command states with the last observation and reports a
+    // single change per call. The host wires this to the COMMAND_STATE_CHANGED
+    // business event; it is never called from plugin callbacks.
+    void SetCommandStateChanged(std::function<void(uint64_t)>);
+    void DetectCommandStateChanges();
     bool Command(unsigned id);
     bool Shortcut(unsigned key, unsigned modifiers, bool viewportFocused);
     // Returns reserved height. Coordinates use the parent window's DPI space.

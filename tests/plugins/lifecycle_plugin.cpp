@@ -15,6 +15,7 @@ static MmsString S(const char* s) { return {s, std::strlen(s)}; }
 struct Plugin { MmsHostV1 host; MmsUiApiV1 ui{}; MmsUiSurfaceApiV1 surface{}; MmsSceneApiV1 scene{};
     mms::sdk::RefreshServices refresh; mms::sdk::RefreshTicket refreshTicket;
     uint32_t enabled = 1, checked = 0, visible = 1;
+    unsigned stateToggle = 0;
     MmsHandle snapshot=0; std::string id; MmsHandle command = 0, menu = 0, button = 0, factory = 0, panel = 0, panel2 = 0, serializer = 0;
     MmsHandle propertyGroup = 0; std::array<MmsHandle, 4> propertyButtons{};
     int stops = 0, projectValue = 0, candidateValue = 0; };
@@ -66,6 +67,8 @@ static void MMS_CALL Run(void* context) {
 static void MMS_CALL Cancel(void* context) { auto* task = static_cast<Task*>(context); Log(task->plugin, "TASK_CANCEL"); if (task->orphan) delete task->plugin; delete task; }
 static MmsResult MMS_CALL State(void* context, MmsObjectRef, MmsCommandStateV1* out) {
     const auto* p = static_cast<Plugin*>(context);
+    // The command-state probe flips its checked bit on a 50 ms cadence so a
+    // real layout pass can observe a stable change without invoking commands.
     *out = {H<MmsCommandStateV1>(), p->enabled, p->checked, p->visible, 0, {}}; return MMS_OK;
 }
 static MmsResult ReadScene(Plugin* p, bool retain) {
@@ -120,6 +123,7 @@ static MmsResult QueueRefresh(Plugin* p) {
 }
 static MmsResult MMS_CALL Invoke(void* context, MmsObjectRef, MmsSpan, MmsHandle) {
     auto* p=static_cast<Plugin*>(context);Log(p,"COMMAND_INVOKED");
+    if (p->id.find("gui-state") != std::string::npos) ++p->checked;
     if (p->id.find("gui-refresh") != std::string::npos) return QueueRefresh(p);
     if(p->id.find("gui-layout")!=std::string::npos) {
         MmsHandle task=0;return p->host.enqueueUi(p->host.context,ApplyLayout,CancelLayout,p,&task);
@@ -268,6 +272,14 @@ static void MMS_CALL Event(void* context, const MmsEventV1* event) {
             Log(p,"PROJECT_CLOSED_PAYLOAD_FAIL");return;
         }
         Log(p,"EVENT_PROJECT_CLOSED");return;
+    }
+    if(event->kind==MMS_EVENT_COMMAND_STATE_CHANGED) {
+        if(event->payloadVersion!=1 || event->payload.bytes!=sizeof(MmsRevisionEventV1)) {
+            Log(p,"COMMAND_STATE_PAYLOAD_FAIL");return;
+        }
+        const auto revision=static_cast<const MmsRevisionEventV1*>(event->payload.data)->revision;
+        if(!revision){Log(p,"COMMAND_STATE_REVISION_FAIL");return;}
+        Log(p,"EVENT_COMMAND_STATE");return;
     }
     if(event->kind==MMS_EVENT_OBJECT_REMOVED) {
         if((!event->object.id.lo && !event->object.id.hi) || !event->object.generation) {

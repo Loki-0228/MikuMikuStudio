@@ -299,6 +299,10 @@ static void InitializeRuntime(MMDApp* app, bool migrationTest) {
         }
 #endif
         ui = std::make_unique<NativeUi>(manager->Ui(), app->MainWindow(), LogMessage);
+        ui->SetCommandStateChanged([app](uint64_t revision) {
+            MmsRevisionEventV1 payload{Header<MmsRevisionEventV1>(), revision};
+            QueueBusinessEvent(app, MMS_EVENT_COMMAND_STATE_CHANGED, 1, &payload, sizeof(payload));
+        });
         ui->SetLayoutPublished([app](const LayoutReservations& areas) -> MmsResult {
             if (closing || owner != app || !app->WindowLayoutReady() || app->SceneMutationInProgress()) return MMS_E_NOT_READY;
             toolbarHeight = areas.toolbarHeight;
@@ -408,6 +412,7 @@ void Layout(MMDApp* app) {
         ui->SetSideAreas({left, 25, rect.right, std::max(25L, rect.bottom - 192)}, availableWidth / 3, shown);
         ui->SetPropertyArea(std::max(0L, rect.bottom - 160), maximum, shown);
         toolbarHeight = ui->Layout(left, availableWidth, maximum, shown);
+        ui->DetectCommandStateChanges();
         propertyAreaHeight = ui->PropertyAreaHeight();
         leftAreaWidth = ui->LeftAreaWidth();
         rightAreaWidth = ui->RightAreaWidth();
