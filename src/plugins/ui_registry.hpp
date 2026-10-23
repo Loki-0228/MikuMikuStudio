@@ -101,6 +101,7 @@ class UiRegistry {
     UiRefreshQueue refresh_;
     std::unique_ptr<Preferences> preferences_;
     uint64_t preferencesRevision_ = 1;
+    std::deque<std::string> layoutUndo_, layoutRedo_;
     std::function<void()> changed_;
     std::unique_ptr<UiCatalog> catalog_;
     uint64_t geometryRevision_ = 0, geometryUiRevision_ = 0;
@@ -143,6 +144,10 @@ class UiRegistry {
     bool Allowed(const MmsUiElementV1&, const std::map<std::string, ElementRecord>&) const;
     MmsResult MergePreferences(std::map<std::string, ElementRecord>&,
         const std::map<std::string, Json>&, uint64_t& next, bool strict) const;
+    MmsResult LayoutHistoryInfo(MmsUiLayoutHistoryInfoV1&) const;
+    MmsResult UndoLayout();
+    MmsResult RedoLayout();
+    void RecordLayoutHistory(const std::string& before);
     std::unique_ptr<Preferences> CapturePreferences(const std::map<std::string, ElementRecord>&,
         const std::map<std::string, Json>&) const;
 public:
@@ -161,6 +166,7 @@ public:
     UiCatalog& Catalog() noexcept { return *catalog_; }
     MmsUiSurfaceApiV1 SurfaceApi(UiClient&);
     MmsUiLayoutApiV1 LayoutApi(UiClient&);
+    MmsUiLayoutApiV1_1 LayoutHistoryApi(UiClient&);
     MmsUiRefreshStateContentApiV1 StateContentApi(UiClient&);
     UiRefreshQueue& Refresh() noexcept { return refresh_; }
     // Request adapter work without editing registry/preferences revisions.

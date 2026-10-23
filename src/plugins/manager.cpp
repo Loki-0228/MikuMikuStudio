@@ -355,7 +355,15 @@ struct Manager::Impl {
         }
         if (id == "mms.ui") return Table(major, minor, bytes, out, registry.Api(i.ui));
         if (id == "mms.ui.surface") return Table(major, minor, bytes, out, registry.SurfaceApi(i.ui));
-        if (id == "mms.ui.layout") return Table(major, minor, bytes, out, registry.LayoutApi(i.ui));
+        if (id == "mms.ui.layout") {
+            if (minor == 1) {
+                if (major != 1) return MMS_E_VERSION;
+                if (!out || bytes < sizeof(MmsUiLayoutApiV1_1)) return MMS_E_ARGUMENT;
+                const auto api = registry.LayoutHistoryApi(i.ui);
+                std::memcpy(out, &api, sizeof(api)); return MMS_OK;
+            }
+            return Table(major, minor, bytes, out, registry.LayoutApi(i.ui));
+        }
         if (id == "mms.ui.refresh") {
             if (closing || i.stopping.load()) return MMS_E_NOT_READY;
             return Table(major, minor, bytes, out, registry.Refresh().Api(i.refresh));

@@ -391,6 +391,44 @@ UiRegistry::UiRegistry(std::function<void()> change, std::function<void(UiClient
     catalog_ = std::make_unique<UiCatalog>(*this);
 }
 UiRegistry::~UiRegistry() = default;
+void UiRegistry::RecordLayoutHistory(const std::string& before) {
+    if (before.empty()) return;
+    layoutUndo_.push_back(before);
+    while (layoutUndo_.size() > 32) layoutUndo_.pop_front();
+    layoutRedo_.clear();
+}
+MmsResult UiRegistry::LayoutHistoryInfo(MmsUiLayoutHistoryInfoV1& out) const {
+    out = {};
+    out.h = Header<MmsUiLayoutHistoryInfoV1>();
+    out.canUndo = layoutUndo_.empty() ? 0 : 1;
+    out.canRedo = layoutRedo_.empty() ? 0 : 1;
+    out.undoDepth = static_cast<uint32_t>(layoutUndo_.size());
+    out.redoDepth = static_cast<uint32_t>(layoutRedo_.size());
+    out.preferencesRevision = preferencesRevision_;
+    return MMS_OK;
+}
+MmsResult UiRegistry::UndoLayout() {
+    if (GetCurrentThreadId() != thread_) return MMS_E_THREAD;
+    if (callbackDepth_) return MMS_E_BUSY;
+    if (layoutUndo_.empty()) return MMS_E_NOT_READY;
+    const std::string current = preferences_->json;
+    if (const auto result = ImportPreferences(layoutUndo_.back())) return result;
+    layoutUndo_.pop_back();
+    layoutRedo_.push_back(current);
+    while (layoutRedo_.size() > 32) layoutRedo_.pop_front();
+    return MMS_OK;
+}
+MmsResult UiRegistry::RedoLayout() {
+    if (GetCurrentThreadId() != thread_) return MMS_E_THREAD;
+    if (callbackDepth_) return MMS_E_BUSY;
+    if (layoutRedo_.empty()) return MMS_E_NOT_READY;
+    const std::string current = preferences_->json;
+    if (const auto result = ImportPreferences(layoutRedo_.back())) return result;
+    layoutRedo_.pop_back();
+    layoutUndo_.push_back(current);
+    while (layoutUndo_.size() > 32) layoutUndo_.pop_front();
+    return MMS_OK;
+}
 std::string UiRegistry::ExportPreferences() const {
     if (GetCurrentThreadId() != thread_) throw std::invalid_argument("layout preferences thread");
     return preferences_->json;
@@ -1274,8 +1312,10 @@ MmsResult UiRegistry::Commit(UiClient& c, MmsHandle h) {
     auto preferences = CapturePreferences(tree, retained);
     if (const auto result = PreferenceGraph(preferences->entries)) return result;
     const bool preferenceChange = preferences->json != preferences_->json;
+    const std::string previousPreferences = preferenceChange ? preferences_->json : std::string();
     for (auto& [id, e] : tree) if (!e.nativeObserved) e.desc.generation = generation_++;
     elements.swap(tree); preferences_.swap(preferences); if (preferenceChange) ++preferencesRevision_;
+    if (preferenceChange) RecordLayoutHistory(previousPreferences);
     Changed();
     if (layoutChanged_) try { layoutChanged_(revision_); } catch (...) {}
     return MMS_OK;
@@ -1408,6 +1448,20 @@ MmsUiLayoutApiV1 UiRegistry::LayoutApi(UiClient& client) {
     a.stageHints = [](void* p, MmsHandle t, MmsString id, uint64_t g, const MmsUiLayoutHintsV1* h) { return Boundary([&] { auto& c = *static_cast<UiClient*>(p); return c.registry->StageHints(c, t, id, g, h); }); };
     a.acquireSnapshot = [](void* p, MmsUiLayoutSnapshotV1* out) { return Boundary([&] { auto& c = *static_cast<UiClient*>(p); return c.registry->LayoutSnapshot(c, out); }); };
     a.releaseSnapshot = [](void* p, MmsHandle h) { auto& c = *static_cast<UiClient*>(p); c.registry->Release(c, h, 4); };
+    return a;
+}
+MmsUiLayoutApiV1_1 UiRegistry::LayoutHistoryApi(UiClient& client) {
+    const auto base = LayoutApi(client);
+    MmsUiLayoutApiV1_1 a{}; a.h = Header<MmsUiLayoutApiV1_1>(); a.context = &client;
+    a.setDefaultHints = base.setDefaultHints;
+    a.stageHints = base.stageHints;
+    a.acquireSnapshot = base.acquireSnapshot;
+    a.releaseSnapshot = base.releaseSnapshot;
+    a.queryHistory = [](void* p, MmsUiLayoutHistoryInfoV1* out) { return Boundary([&]() -> MmsResult {
+        auto& c = *static_cast<UiClient*>(p); auto& r = *c.registry; auto check = r.Check(c); if (check) return check;
+        if (!out) return MMS_E_ARGUMENT; return r.LayoutHistoryInfo(*out); }); };
+    a.undo = [](void* p) { return Boundary([&] { auto& c = *static_cast<UiClient*>(p); return c.registry->UndoLayout(); }); };
+    a.redo = [](void* p) { return Boundary([&] { auto& c = *static_cast<UiClient*>(p); return c.registry->RedoLayout(); }); };
     return a;
 }
 MmsUiSurfaceApiV1 UiRegistry::SurfaceApi(UiClient& client) {

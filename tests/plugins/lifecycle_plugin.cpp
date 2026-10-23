@@ -2,6 +2,7 @@
 #include <mms/surface.h>
 #include <mms/scene.h>
 #include <mms/render.h>
+#include <mms/layout.h>
 #include <mms/storage.h>
 #include <mms/cpp/refresh.hpp>
 #include <array>
@@ -195,6 +196,13 @@ static MmsResult MMS_CALL Create(const MmsHostV1* host, const MmsCreateInfoV1* i
     if (host->queryService(host->context, S("mms.ui"), 1, 0, 8, buffer) != MMS_E_ARGUMENT || std::memcmp(buffer, original, sizeof(buffer))) { delete p; return MMS_E_FAILED; }
     if (host->queryService(host->context, S("mms.test.unavailable"), 1, 0, sizeof(buffer), buffer) != MMS_E_NOT_FOUND || std::memcmp(buffer, original, sizeof(buffer))) { delete p; return MMS_E_FAILED; }
     if (host->queryService(host->context, S("mms.ui"), 1, 0, sizeof(buffer), buffer) != MMS_OK || std::memcmp(buffer + sizeof(MmsUiApiV1), original + sizeof(MmsUiApiV1), sizeof(buffer) - sizeof(MmsUiApiV1))) { delete p; return MMS_E_FAILED; }
+    MmsUiLayoutApiV1_1 layoutHistory{};
+    if (host->queryService(host->context, S("mms.ui.layout"), 1, 1, sizeof(layoutHistory), &layoutHistory) == MMS_OK &&
+        layoutHistory.undo && layoutHistory.redo && layoutHistory.queryHistory) {
+        Log(p, "LAYOUT_HISTORY_PASS");
+    } else {
+        Log(p, "LAYOUT_HISTORY_MISSING");
+    }
     Log(p, "NEGOTIATION_PASS");
     if (p->id.find("gui-refresh") != std::string::npos) {
         r = mms::sdk::RefreshServices::Query(*host, p->refresh);

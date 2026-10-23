@@ -151,6 +151,17 @@ static void LayoutServiceChecks() {
         MmsLayoutOpV1 op{}; op.h = Header<MmsLayoutOpV1>(); op.operation = MMS_LAYOUT_MOVE; op.elementId = S("example.layout.c"); op.parentId = e.parentId; op.beforeId = S("example.layout.a"); op.expectedGeneration = registry.elements.at("example.layout.c").desc.generation;
         CHECK(api.applyLayout(api.context, transaction, &op) == MMS_OK); CHECK(api.commitLayout(api.context, transaction) == MMS_OK);
         CHECK(registry.elements.at("example.layout.c").effectiveHints.order < registry.elements.at("example.layout.a").effectiveHints.order);
+        auto history = registry.LayoutHistoryApi(c);
+        MmsUiLayoutHistoryInfoV1 historyInfo{}; historyInfo.h = Header<MmsUiLayoutHistoryInfoV1>();
+        CHECK(history.queryHistory(history.context, &historyInfo) == MMS_OK && historyInfo.canUndo == 1 && historyInfo.canRedo == 0 && historyInfo.undoDepth >= 1);
+        const std::string committedPreferences = registry.ExportPreferences();
+        CHECK(history.undo(history.context) == MMS_OK);
+        CHECK(registry.ExportPreferences() != committedPreferences);
+        CHECK(history.queryHistory(history.context, &historyInfo) == MMS_OK && historyInfo.canRedo == 1 && historyInfo.redoDepth == 1);
+        CHECK(history.redo(history.context) == MMS_OK);
+        CHECK(registry.ExportPreferences() == committedPreferences);
+        CHECK(history.redo(history.context) == MMS_E_NOT_READY);
+        CHECK(history.queryHistory(history.context, &historyInfo) == MMS_OK && historyInfo.canRedo == 0);
         CHECK(api.beginLayout(api.context, registry.Revision(), &transaction) == MMS_OK);
         op = {}; op.h = Header<MmsLayoutOpV1>(); op.operation = MMS_LAYOUT_CREATE_GROUP; op.elementId = S("example.layout.group"); op.parentId = e.parentId; op.value.groupLabel = S("分组");
         CHECK(api.applyLayout(api.context, transaction, &op) == MMS_OK); CHECK(api.commitLayout(api.context, transaction) == MMS_OK);

@@ -38,6 +38,15 @@ typedef struct MmsUiLayoutSnapshotV1 {
 	uint64_t uiRevision, geometryRevision;
 	MmsSpan items;
 } MmsUiLayoutSnapshotV1;
+/* Layout history 1.1 records successful layout commits that changed saved
+   preferences. undo/redo restore the previous preference snapshot on the UI
+   thread outside callbacks; a new commit clears the redo stack. */
+typedef struct MmsUiLayoutHistoryInfoV1 {
+	MmsHeader h;
+	uint32_t canUndo, canRedo, reserved;
+	uint32_t undoDepth, redoDepth;
+	uint64_t preferencesRevision;
+} MmsUiLayoutHistoryInfoV1;
 typedef struct MmsUiLayoutApiV1 {
 	MmsHeader h;
 	void* context;
@@ -46,11 +55,24 @@ typedef struct MmsUiLayoutApiV1 {
 	void (MMS_CALL *releaseSnapshot)(void*, MmsHandle);
 	MmsResult (MMS_CALL *stageHints)(void*, MmsHandle, MmsString, uint64_t, const MmsUiLayoutHintsV1*);
 } MmsUiLayoutApiV1;
+typedef struct MmsUiLayoutApiV1_1 {
+	MmsHeader h;
+	void* context;
+	MmsResult (MMS_CALL *setDefaultHints)(void*, MmsString, const MmsUiLayoutHintsV1*);
+	MmsResult (MMS_CALL *acquireSnapshot)(void*, MmsUiLayoutSnapshotV1*);
+	void (MMS_CALL *releaseSnapshot)(void*, MmsHandle);
+	MmsResult (MMS_CALL *stageHints)(void*, MmsHandle, MmsString, uint64_t, const MmsUiLayoutHintsV1*);
+	MmsResult (MMS_CALL *queryHistory)(void*, MmsUiLayoutHistoryInfoV1*);
+	MmsResult (MMS_CALL *undo)(void*);
+	MmsResult (MMS_CALL *redo)(void*);
+} MmsUiLayoutApiV1_1;
 #pragma pack(pop)
 #ifdef __cplusplus
 static_assert(sizeof(MmsUiLayoutHintsV1) == 96, "MMS layout hints");
 static_assert(sizeof(MmsUiLayoutItemV1) == 248, "MMS layout item");
 static_assert(sizeof(MmsUiLayoutSnapshotV1) == 56, "MMS layout snapshot");
 static_assert(sizeof(MmsUiLayoutApiV1) == 48, "MMS layout service");
+static_assert(sizeof(MmsUiLayoutHistoryInfoV1) == 40, "MMS layout history info");
+static_assert(sizeof(MmsUiLayoutApiV1_1) == 72, "MMS layout history service");
 #endif
 #endif
