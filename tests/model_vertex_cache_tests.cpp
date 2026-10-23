@@ -2,6 +2,7 @@
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/model_vertex_cache.hpp"
+#include "mikumikustudio/native_shadow_projection.hpp"
 #include "mikumikustudio/skinning_backend.hpp"
 #include "mikumikustudio/gpu_model.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
@@ -95,6 +96,42 @@ int main() {
             changed([&]{if(loaded)model_vertex_cache::Invalidate(model);mutate();});
         };
         warm();compare();
+        warm();
+        {
+            const auto bytes=Read(body.Get());
+            const auto bounds=NativeShadowVertexBounds(bytes.data(),stride,count);
+            NativeShadowBounds restored;
+            model_vertex_cache::RememberShadowBounds(model,body.Get(),stride,count,bounds);
+            Check(model_vertex_cache::ShadowBounds(model,body.Get(),stride,count,restored)==loaded,
+                "only registered host geometry caches shadow bounds");
+            if(loaded){
+                Check(restored.minimum==bounds.minimum&&restored.maximum==bounds.maximum,"bounds equal full vertex scan");
+                model_vertex_cache::BeginFrame();
+                Check(!model_vertex_cache::ShadowBounds(model,body.Get(),stride,count,restored),"new render requires a pose check");
+                update();
+                Check(model_vertex_cache::ShadowBounds(model,body.Get(),stride,count,restored),"verified unchanged body reuses previous bound");
+                Check(!model_vertex_cache::ShadowBounds(model,body.Get(),stride+4,count,restored)&&
+                    !model_vertex_cache::ShadowBounds(model,body.Get(),stride,count-1,restored)&&
+                    !model_vertex_cache::ShadowBounds(model,edge.Get(),stride,count,restored),"bound requires identical buffer and layout");
+                model_vertex_cache::SetShadowBoundsEnabledForTests(false);
+                Check(!model_vertex_cache::ShadowBounds(model,body.Get(),stride,count,restored),"bound cache comparison control");
+                model_vertex_cache::SetShadowBoundsEnabledForTests(true);
+                model_vertex_cache::RememberShadowBounds(model,body.Get(),stride,count,bounds);
+                bones[0].matInit[12]+=.125f;model_vertex_cache::BeginFrame();update();
+                Check(!model_vertex_cache::ShadowBounds(model,body.Get(),stride,count,restored),"bone change invalidates shadow bounds");
+                warm();
+                const auto movedBytes=Read(body.Get());
+                const auto moved=NativeShadowVertexBounds(movedBytes.data(),stride,count);
+                model_vertex_cache::RememberShadowBounds(model,body.Get(),stride,count,moved);
+                Check(model_vertex_cache::ShadowBounds(model,body.Get(),stride,count,restored)&&
+                    restored.minimum==moved.minimum&&restored.maximum==moved.maximum,"new pose gets freshly scanned bounds");
+                model_vertex_cache::Invalidate(model);
+                Check(!model_vertex_cache::ShadowBounds(model,body.Get(),stride,count,restored),"geometry edit invalidates shadow bounds");
+                warm();model_vertex_cache::RememberShadowBounds(model,body.Get(),stride,count,moved);
+                model_vertex_cache::Clear();
+                Check(!model_vertex_cache::ShadowBounds(model,body.Get(),stride,count,restored),"device reset clears bounds");
+            }
+        }
         changed([&]{bones[0].matInit[12]+=.3f;});
         changed([&]{bones[1].matInit[0]=1.25f;bones[1].matInit[4]=.125f;});
         changed([&]{morphs[1].value=.7f;});

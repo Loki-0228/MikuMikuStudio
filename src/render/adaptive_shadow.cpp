@@ -34,6 +34,7 @@ void SetShadowSliderPosition(MMDApp* app, int position) {
 #include "mikumikustudio/shadow_filter.hpp"
 #include "mikumikustudio/d3dx_mesh.hpp"
 #include "mikumikustudio/d3d_object_guard.hpp"
+#include "mikumikustudio/model_vertex_cache.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
 #include <cstdio>
 #include <cstring>
@@ -139,20 +140,27 @@ std::array<float, 16> ReferenceShadowProjection(MMDApp* app, const float frame[1
 }
 
 void IncludeMeshBounds(IDirect3DVertexBuffer9* buffer, UINT stride, UINT count,
-                       const Matrix* local, NativeShadowBounds& scene) {
+                       const Matrix* local, NativeShadowBounds& scene,
+                       unsigned char* model = nullptr) {
     MMD_PERF_SCOPE(ShadowBounds);
     if (!buffer || !PlausibleD3dObject(buffer) || stride < 12) return;
-    D3DVERTEXBUFFER_DESC desc{};
-    if (FAILED(buffer->GetDesc(&desc))) return;
-    count = (std::min)(count, desc.Size / stride);
-    void* data = nullptr;
-    if (!count) return;
-    { MMD_PERF_SCOPE(ShadowBoundsLock);
-      if (FAILED(buffer->Lock(0, 0, &data, D3DLOCK_READONLY))) return; }
-    // Coverage must include every vertex, not a sparse density sample.
-    // Accumulate the local AABB first; transform only its eight corners.
-    const NativeShadowBounds mesh = NativeShadowVertexBounds(data, stride, count);
-    buffer->Unlock();
+    NativeShadowBounds mesh;
+    if (!model || !model_vertex_cache::ShadowBounds(model, buffer, stride, count, mesh)) {
+        D3DVERTEXBUFFER_DESC desc{};
+        if (FAILED(buffer->GetDesc(&desc))) return;
+        const UINT requested = count;
+        count = (std::min)(count, desc.Size / stride);
+        void* data = nullptr;
+        if (!count) return;
+        { MMD_PERF_SCOPE(ShadowBoundsLock);
+          if (FAILED(buffer->Lock(0, 0, &data, D3DLOCK_READONLY))) return; }
+        // Coverage still includes every vertex on a miss. Cache only the exact
+        // bounds of a body already verified unchanged during this render.
+        mesh = NativeShadowVertexBounds(data, stride, count);
+        const HRESULT unlocked = buffer->Unlock();
+        if (FAILED(unlocked)) return;
+        if (model) model_vertex_cache::RememberShadowBounds(model, buffer, stride, requested, mesh);
+    }
     if (!mesh.Valid()) return;
     for (unsigned corner = 0; corner < 8; ++corner) {
         const auto point = mesh.Corner(corner);
@@ -231,7 +239,7 @@ std::array<float, 16> UpdateAdaptiveShadowMap(MMDApp* app, const float frame[16]
         if (!record.loadComplete || !record.indexCount) continue;
         const UINT stride = 32 + 16 * (std::min)(4u, UINT(record.pmxAdditionalUvCount));
         IncludeMeshBounds(static_cast<IDirect3DVertexBuffer9*>(record.vertexBuffer), stride,
-            record.vertexCount, nullptr, scene);
+            record.vertexCount, nullptr, scene, model);
     }
     int ordinal = 0;
     for (int slot = 0; slot < kModelSlotCount; ++slot) {

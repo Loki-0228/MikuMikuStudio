@@ -39,6 +39,7 @@
 #include "mikumikustudio/default_effect.hpp"
 #include "mikumikustudio/runtime_log.hpp"
 #include "mikumikustudio/shadow_filter.hpp"
+#include "mikumikustudio/model_vertex_cache.hpp"
 
 namespace mikumikustudio {
 namespace {
@@ -555,6 +556,7 @@ void RenderFrameScene(MMDApp* app) {
     TransparentSortFrameCache transparentSortCache(
         app->AutoTransparentMaterialSortingEnabled() && GetModuleHandleW(L"MMEffect.dll") != nullptr);
 #endif
+    model_vertex_cache::BeginFrame();
     if (app->state.accessoryEditDialogOpen == 0) {
         for (int slot = 0; slot < kModelSlotCount; ++slot) {
             auto* model = app->ModelSlot(slot);

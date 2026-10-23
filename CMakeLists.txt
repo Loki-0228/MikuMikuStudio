@@ -1882,11 +1882,15 @@ if(NOT MIKUMIKUSTUDIO_PROFILE STREQUAL "mmd932")
 endif()
 
 if(MIKUMIKUSTUDIO_BUILD_UI_TESTS)
+    # The sidebar host test imports full-profile plugin history headers; the
+    # original-compatibility profile does not provide those components.
+    if(NOT MIKUMIKUSTUDIO_PROFILE STREQUAL "mmd932")
     add_executable(sidebar_resize_tests EXCLUDE_FROM_ALL tests/sidebar_resize_tests.cpp
         res/MMD.rc ${MIKUMIKUSTUDIO_GEN_RES} exports/MikuMikuDance.def)
     target_link_options(sidebar_resize_tests PRIVATE "/MANIFEST:NO" "${MIKUMIKUSTUDIO_GEN_RES}")
     target_link_libraries(sidebar_resize_tests PRIVATE mikumikustudio_core minhook::minhook winmm dsound)
     set_target_properties(sidebar_resize_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/sidebar/$<CONFIG>")
+    endif()
     add_executable(display_compatibility_tests EXCLUDE_FROM_ALL tests/display_compatibility_tests.cpp)
     if(NOT MIKUMIKUSTUDIO_PROFILE STREQUAL "mmd932")
         add_executable(mmv_native_shadow_bridge_tests EXCLUDE_FROM_ALL tests/mmv_native_shadow_bridge_tests.cpp
