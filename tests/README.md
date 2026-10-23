@@ -202,6 +202,8 @@ MikuMikuDance.exe <另一个新输出前缀> 1 --emm-default-off [素材PMM绝�
 
 `negative_frame_tests` 是完整配置的负数关键帧核心回归：带符号解析与范围解释、负帧登记与到 0 帧的插值、独立扩展记录的捕获/载入、损坏载荷拒绝与状态清空。`negative_frame_host_tests`（完整配置）在隐藏生产窗口上运行真实注册后端、0 帧左右移动、负帧 XYZ 重置与撤销、真实 PMM 写出后重载、带符号播放端点、范围选择与复制/粘贴按钮、正负帧双向粘贴和从负帧开始播放，共 26 项检查；模型夹具只有骨骼，morph 路径由 `negative_frame_tests` 覆盖。
 
+`cache_manager_tests`（完整配置）覆盖缓存管理业务 Store：设置持久化、内存模式、共享/独占记账、工程清理、当前租约保护、LRU 自动回收、固定工程、手动清理、外来文件与非缓存目录保护、重解析点拒绝、跨进程租约、并发发布配额、失败加载不发布工程关联、失效优先与损坏索引恢复；策略回归另见 `cache_manager_policy_tests --store` 与 `--installation`。
+
 `pmm_project_settings_tests --reversible-encoding <绝对的新输出目录>` 在完整配置中实际加载 PMX、保存 PMM 并重开，独立解析标准标题、路径和骨骼／表情绑定表。覆盖 Unicode 编辑恢复、原镜像与关键帧、冲突及伪造别名、MMS 尾标正例与 MDS 负例，以及 255／256 字节和 UTF-8 BOM 容量。真实资源解析覆盖模型路径，配件及媒体保留兼容判定检查；环境不支持的 ACP 专有反例明确打印限制。目录须足够短，供用例构造最大可容纳路径。原始兼容配置的严格编码由 `original_profile_io_tests` 单独验证。
 
 `pmm_project_settings_tests --pmd-identity <绝对且不存在的新目录>` 在完整配置中生成实际 ASCII20 及 CP93220 的完整 PMD，核对真实加载字段、PMM 标准名称表和关键帧归属。另检查旧拼接读取、错误后缀拒绝、按名重映射及实际重新选择模型，仅控制本进程两个明确的对话框适配接口，不发送系统输入。原始 PMD 保持字节相同；原始兼容配置明确跳过此入口。仅新增测试时，旧代码会在实际名称表的 34 字节反例处失败，见[修复记录](../docs/records/abi-pmm-identity-2026-10-23.md)。
