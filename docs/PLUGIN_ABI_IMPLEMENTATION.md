@@ -351,7 +351,7 @@ R3 拖动与插件区域问题已由用户确认恢复。按需求归类的当�
 | P4 | binding、cache、bake、MMV 等价清单 | 未实现 | 依赖 P3；旧 MMV 继续原路径。 |
 | P5 | render、post、DX9 帧/设备代次和资源租约 | 部分实现 | [渲染服务批次](records/abi-render-service-2026-10-24.md)实现 `mms.render` 1.0：设备代次与丢失状态查询、设备资源租约；丢失先调用租约释放回调再清空，恢复更新代次。lifecycle 探针验证丢失查询 `gen=1 lost=1`、恢复查询 `gen=2 lost=0`、租约释放与重新获取，宿主探针 7 项与默认套件通过。[C++17 封装批次](records/abi-render-sdk-2026-10-24.md)补齐 `mms::sdk::RenderServices`／`RenderLease` 与假宿主契约（默认套件 44,772 项）。[帧信息批次](records/abi-render-frame-2026-10-24.md)让成功 Present 递增帧序号并记录后缓冲尺寸/格式，宿主探针验证 frame=1 与真实尺寸。[帧回调批次](records/abi-render-frame-callback-2026-10-24.md)追加 `mms.render` 1.1 的每帧回调：成功呈现后同步通知已登记插件，宿主探针验证 `FRAME_CALLBACK frame=1 gen=1`。DX9 begin/end 帧钩子、post 处理、租约分类与真实设备丢失仍未实现；透明排序已由[缓存 main 移植](records/abi-transparent-sort-cache-2026-10-24.md)补齐，只剩 MME 标记模式未通过。 |
 | P6 | 原创 MMSAdapter、独立 MMHack 兼容导出 | 未实现 | 先恢复精确原型、调用约定和寿命。 |
-| P6 | legacy_mme 改名和子目录兼容 | 未实现 | 尚待适配和实际插件验收；未知旧插件仍属理论范围。 |
+| P6 | legacy_mme 改名和子目录兼容 | 部分实现（检测本机已验证） | [legacy 检测批次](records/abi-legacy-mme-detection-2026-10-24.md)新增基名前缀检测：原名快速路径，改名/子目录用节流模块扫描识别 `MMEffect*`／`MMHack*`，30 处硬编码判断改用统一入口；改名、子目录、无关名与卸载 CTest 14 项通过。去掉前缀的任意改名、真实旧插件导出/调用约定/寿命与实际渲染仍未验收。 |
 
 ## 验证记录
 
