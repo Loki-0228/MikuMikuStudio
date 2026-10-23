@@ -104,6 +104,7 @@ add_library(mms_plugin_runtime STATIC
     src/plugins/manifest.cpp
     src/plugins/loader_win32.cpp
     src/plugins/ui_registry.cpp
+    src/plugins/render_service.cpp
     src/plugins/ui_catalog.cpp
     src/plugins/native_ui_catalog.cpp
     src/plugins/native_menu_snapshot.cpp

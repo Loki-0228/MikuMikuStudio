@@ -15,6 +15,7 @@ struct Manager::Impl {
         StorageClient storage;
         EditClient edit;
         RefreshClient refresh{nullptr, {}};
+        RenderService::Client render;
         std::atomic<bool> stopping{false};
         PluginStatus status;
         MmsHostV1 table{};
@@ -42,6 +43,7 @@ struct Manager::Impl {
     uint64_t layoutRevision = 0;
     std::vector<std::pair<std::string, uint64_t>> pendingPropertyChanges;
     UiRegistry registry;
+    RenderService render;
     UiPreferencesFile preferences;
     MmsResult preferencesError = MMS_OK;
     StorageStore storage;
@@ -390,6 +392,10 @@ struct Manager::Impl {
             if (closing || i.stopping.load()) return MMS_E_NOT_READY;
             return Table(major, minor, bytes, out, registry.StateContentApi(i.ui));
         }
+        if (id == "mms.render") {
+            if (closing || i.stopping.load()) return MMS_E_NOT_READY;
+            return Table(major, minor, bytes, out, render.Api(i.render));
+        }
         if (id == "mms.scene" && scene) return Table(major, minor, bytes, out, scene->Api(i.scene));
         if (id == "mms.storage") return Table(major, minor, bytes, out, storage.Api(i.storage));
         if (id == "mms.edit" && edits) return Table(major, minor, bytes, out, EditApi(i));
@@ -583,7 +589,7 @@ struct Manager::Impl {
         auto order = Resolve(discovered, [&](const std::string& d) { Write(d); }); std::set<std::string> started;
         for (size_t index : order) {
             const auto& m = discovered.packages[index];
-            auto instance = std::make_unique<Instance>(); auto& i = *instance; i.host = this; i.ui = {&registry, m.id}; i.status = {m.id, "validated", {}, m.package};
+            auto instance = std::make_unique<Instance>(); auto& i = *instance; i.host = this; i.ui = {&registry, m.id}; i.render.id = m.id; i.status = {m.id, "validated", {}, m.package};
             i.storage.store = &storage; i.storage.id = m.id;
             i.edit.store = edits.get(); i.edit.id = m.id;
             i.refresh.queue = &registry.Refresh(); i.refresh.owner = m.id;
@@ -676,6 +682,7 @@ void Manager::Event(uint32_t kind, MmsBytes payload, uint32_t version, MmsObject
     impl_->Event(kind,payload,version,object);
 }
 UiRegistry& Manager::Ui() { return impl_->registry; }
+RenderService& Manager::Render() { return impl_->render; }
 MmsResult Manager::SaveUiPreferences() { return impl_->SavePreferences(); }
 StorageStore& Manager::Storage() { return impl_->storage; }
 bool Manager::ExecutingCallback() const { return impl_->active != 0 || impl_->notifyingEdit || impl_->registry.InCallback() || impl_->storage.InCallback() ||

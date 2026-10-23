@@ -1,6 +1,7 @@
 #pragma once
 #include "ui_registry.hpp"
 #include "loader_win32.hpp"
+#include "render_service.hpp"
 #include "scene_store.hpp"
 #include "storage_store.hpp"
 
@@ -48,6 +49,7 @@ public:
     UiRegistry& Ui();
     MmsResult SaveUiPreferences();
     StorageStore& Storage();
+    RenderService& Render();
     bool InCallback() const;
     // Excludes an idle prepared project load, which shutdown must cancel.
     bool ExecutingCallback() const;

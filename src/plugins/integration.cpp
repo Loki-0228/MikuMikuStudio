@@ -171,12 +171,14 @@ void NotifyDeviceLostEvent(MMDApp* app) {
     if (!manager || owner != app) return;
     MmsDeviceEventV1 payload{Header<MmsDeviceEventV1>(), deviceGeneration, 0, 0};
     QueueBusinessEvent(app, MMS_EVENT_DEVICE_LOST, 1, &payload, sizeof(payload));
+    manager->Render().DeviceLost(deviceGeneration);
 }
 void NotifyDeviceRestoredEvent(MMDApp* app) {
     if (!manager || owner != app) return;
     ++deviceGeneration;
     MmsDeviceEventV1 payload{Header<MmsDeviceEventV1>(), deviceGeneration, 0, 0};
     QueueBusinessEvent(app, MMS_EVENT_DEVICE_RESTORED, 1, &payload, sizeof(payload));
+    manager->Render().DeviceRestored(deviceGeneration);
 }
 void NotifyObjectRemovedEvent(MMDApp* app, const void* native) {
     if (!manager || owner != app || !native) return;

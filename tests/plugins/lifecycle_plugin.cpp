@@ -1,24 +1,27 @@
 #include <mms/ui.h>
 #include <mms/surface.h>
 #include <mms/scene.h>
+#include <mms/render.h>
 #include <mms/storage.h>
 #include <mms/cpp/refresh.hpp>
 #include <array>
 #include <string>
 #include <cstring>
+#include <cstdio>
 #include <thread>
 #include <new>
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
 template<class T> static MmsHeader H() { return {sizeof(T), 1, 0}; }
 static MmsString S(const char* s) { return {s, std::strlen(s)}; }
-struct Plugin { MmsHostV1 host; MmsUiApiV1 ui{}; MmsUiSurfaceApiV1 surface{}; MmsSceneApiV1 scene{};
+struct Plugin { MmsHostV1 host; MmsUiApiV1 ui{}; MmsUiSurfaceApiV1 surface{}; MmsSceneApiV1 scene{}; MmsRenderApiV1 render{};
     mms::sdk::RefreshServices refresh; mms::sdk::RefreshTicket refreshTicket;
     uint32_t enabled = 1, checked = 0, visible = 1;
     unsigned stateToggle = 0;
     MmsHandle snapshot=0; std::string id; MmsHandle command = 0, menu = 0, button = 0, factory = 0, panel = 0, panel2 = 0, serializer = 0;
     MmsHandle propertyGroup = 0; std::array<MmsHandle, 4> propertyButtons{};
-    int stops = 0, projectValue = 0, candidateValue = 0; };
+    int stops = 0, projectValue = 0, candidateValue = 0;
+    MmsHandle renderLease = 0; uint64_t renderGeneration = 0; };
 static bool PropertiesMode(const Plugin* p) { return p->id == "org.example.gui-properties-panel"; }
 static Plugin* refreshProbe = nullptr;
 static void Log(Plugin* p, const char* s) {
@@ -70,6 +73,43 @@ static MmsResult MMS_CALL State(void* context, MmsObjectRef, MmsCommandStateV1* 
     // The command-state probe flips its checked bit on a 50 ms cadence so a
     // real layout pass can observe a stable change without invoking commands.
     *out = {H<MmsCommandStateV1>(), p->enabled, p->checked, p->visible, 0, {}}; return MMS_OK;
+}
+static void MMS_CALL ReleaseRenderLease(void* context) {
+    auto* p = static_cast<Plugin*>(context);
+    p->renderLease = 0;
+    Log(p, "RENDER_LEASE_RELEASED");
+}
+static MmsResult RenderInfo(Plugin* p, const char* marker) {
+    if (!p->render.query) return MMS_E_NOT_FOUND;
+    MmsRenderInfoV1 info{}; info.h = H<MmsRenderInfoV1>();
+    const auto result = p->render.query(p->render.context, &info);
+    if (result) { Log(p, "RENDER_QUERY_FAIL"); return result; }
+    p->renderGeneration = info.deviceGeneration;
+    char line[96]{};
+    std::snprintf(line, sizeof(line), "%s gen=%llu lost=%u", marker,
+        static_cast<unsigned long long>(info.deviceGeneration), info.lost);
+    Log(p, line);
+    return MMS_OK;
+}
+static MmsResult AcquireRenderLease(Plugin* p) {
+    if (!p->render.acquireLease) return MMS_E_NOT_FOUND;
+    MmsRenderLeaseDescV1 desc{}; desc.h = H<MmsRenderLeaseDescV1>();
+    desc.name = S("lifecycle.device"); desc.release = ReleaseRenderLease; desc.context = p;
+    desc.flags = MMS_RENDER_LEASE_DEVICE;
+    MmsHandle lease = 0;
+    const auto result = p->render.acquireLease(p->render.context, &desc, &lease);
+    if (result) { Log(p, "RENDER_LEASE_FAIL"); return result; }
+    p->renderLease = lease;
+    Log(p, "RENDER_LEASE_ACQUIRED");
+    return MMS_OK;
+}
+static MmsResult InitRender(Plugin* p) {
+    const auto result = p->host.queryService(p->host.context, S("mms.render"), 1, 0,
+        sizeof(p->render), &p->render);
+    if (result) { Log(p, "RENDER_SERVICE_MISSING"); return MMS_OK; }
+    if (RenderInfo(p, "RENDER_INFO") != MMS_OK) return MMS_OK;
+    AcquireRenderLease(p);
+    return MMS_OK;
 }
 static MmsResult ReadScene(Plugin* p, bool retain) {
     auto r=p->host.queryService(p->host.context,S("mms.scene"),1,0,sizeof(p->scene),&p->scene); if(r) return r;
@@ -184,6 +224,7 @@ static MmsResult MMS_CALL Start(void* context) {
     const auto id = p->id + ".command"; command.info.id = {id.data(), id.size()}; command.info.ownerPlugin = {p->id.data(), p->id.size()}; command.info.label = S("Lifecycle test");
     command.context = p; command.getState = State; command.invoke = Invoke;
     auto r = p->ui.registerCommand(p->ui.context, &command, &p->command); if (r) return r;
+    r = InitRender(p); if (r) return r;
     if(p->id.find("storage")!=std::string::npos){r=RegisterSerializer(p);if(r)return r;}
     if(p->id.find("scenelease")!=std::string::npos) {r=ReadScene(p,true);if(r)return r;}
     if (p->id.find("failstart") != std::string::npos) return MMS_E_FAILED;
@@ -317,7 +358,14 @@ static void MMS_CALL Event(void* context, const MmsEventV1* event) {
         }
         const auto generation=static_cast<const MmsDeviceEventV1*>(event->payload.data)->deviceGeneration;
         if(!generation){Log(p,"DEVICE_GENERATION_FAIL");return;}
-        Log(p,event->kind==MMS_EVENT_DEVICE_LOST?"EVENT_DEVICE_LOST":"EVENT_DEVICE_RESTORED");
+        if(event->kind==MMS_EVENT_DEVICE_LOST) {
+            Log(p,"EVENT_DEVICE_LOST");
+            RenderInfo(p,"RENDER_LOST_QUERY");
+        } else {
+            Log(p,"EVENT_DEVICE_RESTORED");
+            RenderInfo(p,"RENDER_RESTORED_QUERY");
+            AcquireRenderLease(p);
+        }
         return;
     }
     if(event->kind==MMS_EVENT_UI_CLOSING)Log(p,"UI_CLOSING");
