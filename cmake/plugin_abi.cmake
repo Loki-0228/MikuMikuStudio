@@ -14,7 +14,8 @@ target_include_directories(mms_cache_files PUBLIC include)
 target_compile_definitions(mms_cache_files PRIVATE _WIN32_WINNT=0x0601 WINVER=0x0601)
 target_link_libraries(mms_cache_files PUBLIC bcrypt)
 target_link_libraries(mikumikustudio_core PUBLIC mms_cache_files)
-add_library(mms_cache_catalog STATIC src/io/cache_catalog.cpp src/io/cache_catalog_codec.cpp)
+add_library(mms_cache_catalog STATIC src/io/cache_catalog.cpp src/io/cache_catalog_codec.cpp
+    src/io/cache_catalog_intent.cpp)
 target_link_libraries(mms_cache_catalog PUBLIC mms_cache_files)
 target_compile_definitions(mms_cache_catalog PRIVATE _WIN32_WINNT=0x0601 WINVER=0x0601 NOMINMAX)
 target_link_libraries(mikumikustudio_core PUBLIC mms_cache_catalog)
@@ -33,6 +34,7 @@ foreach(business_test cache_business_codec_tests cache_business_allocation_tests
     set_target_properties(${business_test} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
 endforeach()
 foreach(catalog_test cache_catalog_tests cache_catalog_recovery_tests cache_catalog_allocation_tests cache_catalog_budget_tests
+        cache_catalog_intent_tests cache_catalog_owned_recovery_tests
         cache_catalog_maintenance_tests cache_catalog_maintenance_recovery_tests
         cache_catalog_maintenance_allocation_tests)
     add_executable(${catalog_test} EXCLUDE_FROM_ALL tests/${catalog_test}.cpp)
@@ -43,6 +45,11 @@ foreach(catalog_test cache_catalog_tests cache_catalog_recovery_tests cache_cata
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
 endforeach()
 target_link_libraries(cache_catalog_tests PRIVATE mms_cache_business)
+add_executable(cache_prepared_files_tests EXCLUDE_FROM_ALL tests/cache_prepared_files_tests.cpp)
+target_link_libraries(cache_prepared_files_tests PRIVATE mms_cache_files)
+target_compile_definitions(cache_prepared_files_tests PRIVATE _WIN32_WINNT=0x0601 WINVER=0x0601 NOMINMAX)
+target_link_options(cache_prepared_files_tests PRIVATE /SUBSYSTEM:CONSOLE,6.01 /DEBUG:NONE)
+set_target_properties(cache_prepared_files_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
 add_executable(cache_files_tests EXCLUDE_FROM_ALL tests/cache_files_tests.cpp)
 target_link_libraries(cache_files_tests PRIVATE mms_cache_files)
 target_compile_definitions(cache_files_tests PRIVATE _WIN32_WINNT=0x0601 WINVER=0x0601)

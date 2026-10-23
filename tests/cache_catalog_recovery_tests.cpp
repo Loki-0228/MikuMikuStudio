@@ -183,9 +183,9 @@ void Worker(const fs::path& root,unsigned mode,DWORD parentPid){
         Check(mode>=4,"hard-exit injection reached its exact real write stage");
         fault.evidence.commitResult=DWORD(result);fault.evidence.outputUnchanged=Same(output,before)?1:0;fault.evidence.stage=3;fault.Save();
         Check(result==catalog::Result::Indeterminate&&Same(output,before),"commit attempt failure is Indeterminate and retains previous output");
-        Check(fault.evidence.flushFaults==1&&fault.evidence.dispositions==1,"real commit Flush failure triggers one same-handle cleanup");
-        Check(mode==4?(fault.evidence.dispositionSuccess==1&&fault.evidence.deleteFaults==0):
-            (fault.evidence.dispositionSuccess==0&&fault.evidence.deleteFaults==1),"cleanup success/failure uses the actual chosen commit generation");
+        Check(fault.evidence.flushFaults==1&&fault.evidence.dispositions==0&&
+            fault.evidence.dispositionSuccess==0&&fault.evidence.deleteFaults==0,
+            "real commit Flush failure retains prepared generation without implicit deletion");
     }
     Check(!restoreFailed&&!active,"normal worker restores every IAT patch before exit");
 }
@@ -219,6 +219,65 @@ void CheckRecord(const fs::path& path,const std::wstring& name,const catalog::Sn
     Check(codec::Decode(bytes.data(),bytes.size(),record)==codec::Result::Ok&&record.revision==2&&record.owner==before.StoreId()&&record.snapshot.name==snapshot,
         "full commit names the new snapshot and exact next revision/store owner");
 }
+bool Same(const catalog::RecoveryReport& a,const catalog::RecoveryReport& b){
+    return a.confirmedPublication==b.confirmedPublication&&a.rolledBack==b.rolledBack&&a.revision==b.revision;
+}
+catalog::RecoveryReport RollbackDeleteFailure(const fs::path& root,const fs::path& path,
+    catalog::Store& store,const catalog::Snapshot& baseline,const Disk& snapshots,const Disk& commits,
+    const Disk& intentFiles,const std::wstring& partialCommit){
+    // The old FlushCleanup/FlushOrphan modes now retain full commits, so they
+    // cannot exercise Abort. Inject deletion failure on the real partial-commit
+    // rollback instead, then independently observe the successful retry.
+    catalog::RecoveryReport report{true,true,77}; const auto before=report;
+    for(unsigned retry=0;retry<2;++retry){
+        const auto evidencePath=root/(retry?L"rollback-delete-retry.control":L"rollback-delete-failure.control");
+        Handle control(CreateFileW(evidencePath.c_str(),GENERIC_WRITE,0,nullptr,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,nullptr));
+        Check(control.value!=INVALID_HANDLE_VALUE,"create separate rollback disposition evidence");
+        {
+            Imports imports;Fault fault(path,retry?Mode::FlushCleanup:Mode::FlushOrphan,control.value);
+            // Pin the observed interrupted generation before arming; an old
+            // historical commit must never satisfy the deletion-hit assertion.
+            Check(partialCommit.size()==37,"known partial commit has exact generation name");
+            std::copy(partialCommit.begin(),partialCommit.end(),fault.evidence.names[1]);
+            fault.evidence.names[1][37]=0;
+            catalog::Result result;
+            {Arm arm(fault);result=store.RecoverOwned(report);}
+            fault.evidence.stage=retry?5:4;fault.evidence.commitResult=DWORD(result);
+            fault.evidence.outputUnchanged=Same(report,before)?1:0;fault.Save();
+            Check(fault.evidence.dispositions==1&&fault.evidence.flushFaults==0,
+                "recovery really attempts disposition on exactly the pinned partial commit");
+            if(!retry){
+                Check(result==catalog::Result::Io&&Same(report,before),"failed Abort preserves all RecoveryReport fields");
+                Check(fault.evidence.deleteFaults==1&&fault.evidence.dispositionSuccess==0,
+                    "actual same-handle Abort hits the injected access denial exactly once");
+            }else{
+                Check(result==catalog::Result::Ok&&report.rolledBack&&!report.confirmedPublication&&report.revision==1,
+                    "retry resumes durable rollback decision and reports old head");
+                Check(fault.evidence.deleteFaults==0&&fault.evidence.dispositionSuccess==1,
+                    "retry observes real successful disposition on that same planned generation");
+            }
+        }
+        Check(!restoreFailed&&!active,"rollback attempt restores all own IAT hooks");
+        if(!retry){
+            Check(BlobFiles(path/L"snapshots")==snapshots&&BlobFiles(path/L"commits")==commits,
+                "denied commit deletion preserves partial file, snapshot and all previous bytes");
+            const auto pending=BlobFiles(path/L"operations");
+            BaselineUnchanged(intentFiles,pending);
+            Check(pending.size()==2,"failed deletion retains original intent and one durable rollback decision");
+            const auto decision=Added(intentFiles,pending);
+            const auto& decisionBytes=pending.at(decision); const auto& intentBytes=intentFiles.begin()->second;
+            Check(decisionBytes.size()==intentBytes.size()&&decisionBytes.size()>128&&decisionBytes[40]==5&&
+                std::all_of(decisionBytes.begin()+41,decisionBytes.begin()+72,[](auto b){return b==0;})&&
+                std::equal(decisionBytes.begin()+128,decisionBytes.end(),intentBytes.begin()+128),
+                "rollback decision has distinct key and exact original operation payload");
+            auto output=baseline;
+            Check(ReadRetry(store,output)==catalog::Result::RecoveryRequired&&Same(output,baseline),
+                "failed cleanup remains pending and cannot publish or fall back through Read");
+            Check(BlobFiles(path/L"operations")==pending,"refused Read does not remove durable decision");
+        }
+    }
+    return report;
+}
 void Case(const fs::path& root,unsigned mode){
     const auto path=root/caseNames[mode];catalog::Store store(path);catalog::Snapshot baseline;
     Check(store.Initialize(OldBytes(),baseline)==catalog::Result::Ok&&baseline.Revision()==1,"parent publishes real initial catalog");
@@ -232,28 +291,56 @@ void Case(const fs::path& root,unsigned mode){
     const auto snapshot=Added(oldSnapshots,snapshots);Check(snapshot==e.names[0]&&snapshots.size()==2,"parent sees precisely the snapshot recorded by the owned hook");
     if(mode==0){Check(snapshots.at(snapshot).size()==128&&e.payloadWrites[0]==0&&e.flushes[0]==0,"snapshot interruption follows real header before any payload");}
     else {Payload(snapshots.at(snapshot),NewBytes());Check(e.payloadWrites[0]>0&&e.flushes[0]==1,"snapshot payload really written and real Flush succeeded");}
-    if(mode<2){Check(commits==oldCommits&&e.headers[1]==0&&e.flushes[1]==0,"snapshot interruption never begins a commit record");}
+    const auto commit=Added(oldCommits,commits);
+    Check(commits.size()==2,"every interrupted publication retains its uniquely prepared commit file");
+    if(mode<2){Check(commits.at(commit).empty()&&e.headers[1]==0&&e.payloadWrites[1]==0&&e.flushes[1]==0,
+        "snapshot interruption retains zero-length prepared commit without writing its header");}
     else {
         Check(e.headers[1]==1&&e.names[1][0],"production enters commit record write");
-        if(mode==4){Check(commits==oldCommits&&!fs::exists(path/L"commits"/e.names[1]),"real successful disposition removed only failed new commit");}
-        else {const auto commit=Added(oldCommits,commits);Check(commit==e.names[1]&&commits.size()==2,"parent sees precisely the recorded new commit");
-            if(mode==2)Check(commits.at(commit).size()==128&&e.payloadWrites[1]==0&&e.flushes[1]==0,"commit interruption follows real header before payload");
-            else {Check(e.payloadWrites[1]>0&&e.flushes[1]==1,"complete commit passes real Flush before reported fault or exit");CheckRecord(path,commit,baseline,snapshot);}
-        }
+        Check(commit==e.names[1],"parent sees precisely the recorded new commit");
+        if(mode==2)Check(commits.at(commit).size()==128&&e.payloadWrites[1]==0&&e.flushes[1]==0,"commit interruption follows real header before payload");
+        else {Check(e.payloadWrites[1]>0&&e.flushes[1]==1,"complete commit passes real Flush before reported fault or exit");CheckRecord(path,commit,baseline,snapshot);}
     }
-    if(mode>=4){Check(e.commitResult==DWORD(catalog::Result::Indeterminate)&&e.outputUnchanged==1&&e.flushFaults==1&&e.dispositions==1,
-        "worker independently observed Indeterminate with unchanged output and one cleanup");
-        Check(mode==4?(e.dispositionSuccess==1&&e.deleteFaults==0):(e.dispositionSuccess==0&&e.deleteFaults==1),"controlled disposition result is exact");}
+    if(mode>=4){Check(e.commitResult==DWORD(catalog::Result::Indeterminate)&&e.outputUnchanged==1&&e.flushFaults==1&&
+        e.dispositions==0&&e.dispositionSuccess==0&&e.deleteFaults==0,
+        "worker observes actual Flush fault and unchanged output without premature implicit cleanup");}
+    const auto operations=BlobFiles(path/L"operations");
+    Check(operations.size()==1,"publication retains exactly one original operation intent");
     auto output=baseline;const auto r=ReadRetry(store,output);
-    if(mode==0||mode==2){Check(r==catalog::Result::RecoveryRequired&&Same(output,baseline),"partial snapshot/commit demands recovery, never silently falls back or mutates output");}
-    else if(mode==1||mode==4){
-        Check(r==catalog::Result::Ok&&Same(output,baseline),"unreferenced complete snapshot leaves current revision one intact");
-        const auto orphanBytes=snapshots.at(snapshot);catalog::Snapshot next;
-        Check(store.Commit(output,NewBytes(),next)==catalog::Result::Ok&&next.Revision()==2&&next.Bytes()==NewBytes(),"after cleanly absent commit a real later Commit succeeds");
+    Check(r==catalog::Result::RecoveryRequired&&Same(output,baseline),
+        "any pending intent rejects ordinary Read and preserves its output even with a complete commit");
+    auto refused=baseline;
+    Check(store.Commit(baseline,OldBytes(),refused)==catalog::Result::RecoveryRequired&&Same(refused,baseline),
+        "ordinary Commit cannot bypass pending intent");
+    Check(BlobFiles(path/L"snapshots")==snapshots&&BlobFiles(path/L"commits")==commits&&BlobFiles(path/L"operations")==operations,
+        "refused Read and Commit leave every pending and previous byte unchanged");
+    catalog::RecoveryReport recovered{true,true,99};
+    if(mode==2) recovered=RollbackDeleteFailure(root,path,store,baseline,snapshots,commits,operations,commit);
+    else Check(store.RecoverOwned(recovered)==catalog::Result::Ok,"explicit recovery resolves the verified owned operation");
+    Check(BlobFiles(path/L"operations").empty(),"successful recovery removes operation records");
+    Check(ReadRetry(store,output)==catalog::Result::Ok,"explicitly recovered catalog is independently readable");
+    if(mode<3){
+        Check(recovered.rolledBack&&!recovered.confirmedPublication&&recovered.revision==1&&Same(output,baseline),
+            "incomplete commit rolls back to exact previous snapshot");
+        Check(BlobFiles(path/L"snapshots")==oldSnapshots&&BlobFiles(path/L"commits")==oldCommits,
+            "rollback removes only two planned generations and preserves original bytes");
+    }else{
+        Check(recovered.confirmedPublication&&!recovered.rolledBack&&recovered.revision==2&&output.Revision()==2&&
+            output.StoreId()==baseline.StoreId()&&output.Bytes()==NewBytes(),"complete commit is explicitly confirmed as exact next publication");
+        Check(BlobFiles(path/L"snapshots")==snapshots&&BlobFiles(path/L"commits")==commits,
+            "publication confirmation keeps every original and new generation byte unchanged");
+    }
+    const auto finalSnapshots=BlobFiles(path/L"snapshots"),finalCommits=BlobFiles(path/L"commits");
+    catalog::RecoveryReport repeated{true,true,100};
+    Check(store.RecoverOwned(repeated)==catalog::Result::Ok&&!repeated.rolledBack&&!repeated.confirmedPublication&&
+        repeated.revision==output.Revision(),"repeated recovery observes same head without repeating publication or rollback");
+    Check(BlobFiles(path/L"snapshots")==finalSnapshots&&BlobFiles(path/L"commits")==finalCommits&&
+        BlobFiles(path/L"operations").empty(),"idempotent recovery leaves exact final namespace and bytes");
+    if(mode<3){
+        catalog::Snapshot next;
+        Check(store.Commit(output,NewBytes(),next)==catalog::Result::Ok&&next.Revision()==2&&next.Bytes()==NewBytes(),"rolled-back original CAS token permits a later real Commit");
         catalog::Snapshot reopened;Check(ReadRetry(store,reopened)==catalog::Result::Ok&&Same(reopened,next),"later successful commit is independently readable from actual files");
-        Check(Read(path/L"snapshots"/snapshot)==orphanBytes,"later successful commit keeps the complete original orphan unchanged");
     }else {
-        Check(r==catalog::Result::Ok&&output.Revision()==2&&output.StoreId()==baseline.StoreId()&&output.Bytes()==NewBytes(),"real complete commit is revision two even when its caller observed Indeterminate");
         auto unchanged=baseline;Check(store.Commit(baseline,OldBytes(),unchanged)==catalog::Result::Conflict&&Same(unchanged,baseline),"stale retry after persisted commit conflicts instead of applying again");
     }
     std::printf("CASE %ls exit=%lu read=%u snapshot-bytes=%zu commits=%zu\n",caseNames[mode],exit,unsigned(r),snapshots.at(snapshot).size(),commits.size());

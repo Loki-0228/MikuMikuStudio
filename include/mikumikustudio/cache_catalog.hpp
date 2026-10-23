@@ -24,6 +24,12 @@ struct CollectionReport {
     std::uint64_t absentBytes = 0;
 };
 
+struct RecoveryReport {
+    bool confirmedPublication = false;
+    bool rolledBack = false;
+    std::uint64_t revision = 0;
+};
+
 class Store;
 class Snapshot {
 public:
@@ -72,6 +78,11 @@ public:
     // a report including Busy/pending/failures, not an all-or-nothing promise.
     // Failed setup preserves report. Does not repair unknown/corrupt files.
     Result CollectRetired(CollectionReport& report) const noexcept;
+    // Explicit recovery of a publication with a complete, verified operation
+    // record. Unknown/partial operation records are never adopted. A failure
+    // preserves report, but may leave a durable rollback decision and partially
+    // completed cleanup; another call resumes that decision under the same lock.
+    Result RecoverOwned(RecoveryReport& report) const noexcept;
 private:
     std::filesystem::path root_;
     Result Publish(const Snapshot* expected, const std::vector<std::uint8_t>& bytes,

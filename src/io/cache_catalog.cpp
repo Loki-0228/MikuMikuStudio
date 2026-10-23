@@ -1,5 +1,6 @@
 #include "mikumikustudio/cache_catalog.hpp"
 #include "cache_catalog_codec.hpp"
+#include "cache_catalog_intent.hpp"
 #include "cache_files_crypto.hpp"
 #include <algorithm>
 #include <limits>
@@ -58,12 +59,19 @@ struct Node {
 
 // A checkpoint retires exact identities, never a filename prefix or a range of
 // revisions. Every physically present file is still verified before use/removal.
-Result Load(const files::Directory& snapshots, const files::Directory& commits, Loaded& output) {
+Result Load(const files::Directory& snapshots, const files::Directory& commits, Loaded& output,
+    const intent::Record* excluded = nullptr) {
     std::vector<std::wstring> commitNames, snapshotNames;
     auto io = commits.EnumerateAll(MaximumCommits + 1, commitNames);
     if (io != files::Result::Ok) return Convert(io);
     io = snapshots.EnumerateAll(MaximumSnapshots, snapshotNames);
     if (io != files::Result::Ok) return Convert(io);
+    // Only recovery supplies exclusions, after pinning the precise identities
+    // from a verified intent. Ordinary reads never skip damaged metadata.
+    if (excluded) {
+        commitNames.erase(std::remove(commitNames.begin(), commitNames.end(), excluded->commit.name), commitNames.end());
+        snapshotNames.erase(std::remove(snapshotNames.begin(), snapshotNames.end(), excluded->snapshot.name), snapshotNames.end());
+    }
     if (commitNames.empty()) return snapshotNames.empty() ? Result::Missing : Result::RecoveryRequired;
     Loaded candidate; candidate.commits = commitNames.size(); candidate.snapshots = snapshotNames.size();
     candidate.files.reserve(commitNames.size() + snapshotNames.size());
@@ -178,13 +186,24 @@ Result Load(const files::Directory& snapshots, const files::Directory& commits, 
 }
 
 Result OpenChildren(const files::Directory& root, bool create,
-    files::Directory& snapshots, files::Directory& commits) {
+    files::Directory& snapshots, files::Directory& commits,
+    files::Directory* operationDirectory = nullptr, bool allowPending = false) {
     std::vector<std::wstring> rootNames;
-    auto rootResult = root.EnumerateAll(4, rootNames);
+    auto rootResult = root.EnumerateAll(5, rootNames);
     if (rootResult == files::Result::Limit) return Result::RecoveryRequired;
     if (rootResult != files::Result::Ok) return Convert(rootResult);
     for (const auto& name : rootNames)
-        if (name != L".lock" && name != L"snapshots" && name != L"commits") return Result::RecoveryRequired;
+        if (name != L".lock" && name != L"snapshots" && name != L"commits" && name != L"operations") return Result::RecoveryRequired;
+    files::Directory operations;
+    const auto opened = root.Child(L"operations", create, operations);
+    if (opened != files::Result::Ok && opened != files::Result::Missing) return StoredError(opened);
+    if (opened == files::Result::Ok) {
+        std::vector<std::wstring> names;
+        const auto listed = operations.EnumerateAll(2, names);
+        if (listed != files::Result::Ok) return StoredError(listed);
+        if (!allowPending && !names.empty()) return Result::RecoveryRequired;
+        if (operationDirectory) *operationDirectory = std::move(operations);
+    }
     const auto a = root.Child(L"snapshots", create, snapshots);
     const auto b = root.Child(L"commits", create, commits);
     if (a == files::Result::Ok && b == files::Result::Ok) return Result::Ok;
@@ -199,6 +218,89 @@ Result OpenChildren(const files::Directory& root, bool create,
         if (!names.empty()) return Result::RecoveryRequired;
     }
     return Result::Missing;
+}
+
+constexpr files::Digest RollbackKey{5};
+struct PendingOperation {
+    intent::Record record;
+    std::vector<std::uint8_t> bytes;
+    files::BlobInfo intentFile, decisionFile;
+    bool hasIntent = false, hasDecision = false;
+};
+Result ReadOperation(const files::Directory& operations, PendingOperation& out) {
+    std::vector<std::wstring> names;
+    const auto listed = operations.EnumerateAll(2, names);
+    if (listed != files::Result::Ok) return StoredError(listed);
+    if (names.empty()) return Result::Missing;
+    PendingOperation candidate;
+    for (const auto& name : names) {
+        files::ReadLease lease;
+        auto io = operations.Inspect(name, codec::NamespaceOwner, intent::MaximumBytes, lease);
+        if (io != files::Result::Ok) return StoredError(io);
+        const auto& info = lease.Info();
+        if (info.spec.kind != files::Kind::CatalogIntent ||
+            (info.spec.key != intent::Key && info.spec.key != RollbackKey)) return Result::RecoveryRequired;
+        const bool decision = info.spec.key == RollbackKey;
+        if (decision ? candidate.hasDecision : candidate.hasIntent) return Result::RecoveryRequired;
+        std::vector<std::uint8_t> bytes;
+        io = lease.ReadAll(bytes);
+        if (io != files::Result::Ok) return StoredError(io);
+        intent::Record decoded;
+        const auto result = intent::Decode(bytes.data(), bytes.size(), decoded);
+        if (result != intent::Result::Ok) return result == intent::Result::Io ? Result::Io : Result::RecoveryRequired;
+        if (candidate.hasIntent || candidate.hasDecision) {
+            if (bytes != candidate.bytes) return Result::RecoveryRequired;
+        } else {
+            candidate.record = std::move(decoded);
+            candidate.bytes = std::move(bytes);
+        }
+        if (decision) { candidate.hasDecision = true; candidate.decisionFile = info; }
+        else { candidate.hasIntent = true; candidate.intentFile = info; }
+    }
+    out = std::move(candidate);
+    return Result::Ok;
+}
+Result RemoveOperationFile(const files::Directory& directory, const files::BlobInfo& file) {
+    const auto removed = directory.Remove(file);
+    if (removed != files::Result::DeletePending && removed != files::Result::Missing) return StoredError(removed);
+    files::ReadLease remains;
+    const auto absent = directory.Inspect(file.name, file.spec.owner, file.payloadBytes, remains);
+    return absent == files::Result::Missing ? Result::Ok :
+        absent == files::Result::Ok ? Result::RecoveryRequired : StoredError(absent);
+}
+Result WriteOperation(const files::Directory& operations, const std::vector<std::uint8_t>& bytes,
+    bool decision, files::BlobInfo& output) {
+    files::Spec spec;
+    spec.owner = codec::NamespaceOwner; spec.kind = files::Kind::CatalogIntent;
+    spec.key = decision ? RollbackKey : intent::Key;
+    files::BlobInfo file;
+    auto io = operations.Create(spec, bytes.data(), bytes.size(), file);
+    if (io != files::Result::Ok) return Convert(io);
+    files::ReadLease lease;
+    io = operations.Acquire(file, lease);
+    if (io != files::Result::Ok) return StoredError(io);
+    std::vector<std::uint8_t> observed;
+    io = lease.ReadAll(observed);
+    if (io != files::Result::Ok) return StoredError(io);
+    if (observed != bytes) return Result::RecoveryRequired;
+    output = std::move(file);
+    return Result::Ok;
+}
+Result FlushOperationFile(const files::Directory& directory, const files::BlobInfo& file) {
+    files::WritePlan plan;
+    plan.name = file.name; plan.spec = file.spec; plan.payloadDigest = file.payloadDigest;
+    plan.payloadBytes = file.payloadBytes; plan.createdIdentity = file.identity;
+    plan.createdIdentity.fileBytes = 0; plan.completedBytes = file.identity.fileBytes;
+    files::PreparedWrite pinned;
+    const auto opened = directory.ReopenPrepared(plan, pinned);
+    if (opened != files::Result::Ok) return StoredError(opened);
+    return StoredError(pinned.Flush());
+}
+std::uint64_t PublicationBytes(const intent::Record& operation) noexcept {
+    // Reserve both records before preparing any file, including the decision
+    // needed if publication must later roll back. No checkpoint reserve here.
+    return operation.snapshot.completedBytes + operation.commit.completedBytes +
+        2 * (files::HeaderBytes + intent::MaximumBytes);
 }
 }
 
@@ -335,6 +437,127 @@ Result Store::CollectRetired(CollectionReport& report) const noexcept {
         return Result::Ok;
     } catch (...) { return Result::Io; }
 }
+Result Store::RecoverOwned(RecoveryReport& report) const noexcept {
+    try {
+        files::Directory directory;
+        auto io = files::Directory::Open(root_, false, directory);
+        if (io != files::Result::Ok) return Convert(io);
+        files::FileLock lock;
+        io = directory.Lock(0, lock);
+        if (io != files::Result::Ok) return Convert(io);
+        files::Directory snapshots, commits, operations;
+        auto result = OpenChildren(directory, false, snapshots, commits, &operations, true);
+        if (result != Result::Ok) return result;
+        PendingOperation pending;
+        result = operations.IsValid() ? ReadOperation(operations, pending) : Result::Missing;
+        if (result == Result::Missing) {
+            Loaded current;
+            result = Load(snapshots, commits, current);
+            if (result != Result::Ok) return result;
+            RecoveryReport done; done.revision = current.revision;
+            report = done; return Result::Ok;
+        }
+        if (result != Result::Ok) return result;
+        files::PreparedWrite snapshot, commit;
+        const auto pin = [&](const files::Directory& parent, const files::WritePlan& plan,
+                             files::PreparedWrite& output) {
+            const auto opened = parent.ReopenPrepared(plan, output);
+            if (opened == files::Result::Missing)
+                return pending.hasDecision ? Result::Ok : Result::RecoveryRequired;
+            return opened == files::Result::Ok ? Result::Ok : StoredError(opened);
+        };
+        result = pin(snapshots, pending.record.snapshot, snapshot);
+        if (result != Result::Ok) return result;
+        result = pin(commits, pending.record.commit, commit);
+        if (result != Result::Ok) return result;
+        bool validSnapshot = false;
+        if (snapshot.IsValid()) {
+            io = snapshot.Inspect(validSnapshot);
+            if (io != files::Result::Ok) return StoredError(io);
+        }
+        bool complete = false;
+        if (commit.IsValid()) {
+            io = commit.Inspect(complete);
+            if (io != files::Result::Ok) return StoredError(io);
+        }
+        const auto& publication = pending.record.publication;
+        if (complete) {
+            // A full but corrupt commit was already rejected by Inspect. A
+            // durable rollback decision must never coexist with a publication.
+            if (pending.hasDecision || !snapshot.IsValid()) return Result::RecoveryRequired;
+            if (!validSnapshot) return Result::RecoveryRequired;
+            io = snapshot.Flush();
+            if (io != files::Result::Ok) return StoredError(io);
+            io = commit.Flush();
+            if (io != files::Result::Ok) return StoredError(io);
+            snapshot = {}; commit = {};
+            Loaded current;
+            result = Load(snapshots, commits, current);
+            if (result != Result::Ok) return result;
+            files::BlobInfo expectedHead;
+            if (intent::PlannedInfo(pending.record.commit, expectedHead) != intent::Result::Ok)
+                return Result::RecoveryRequired;
+            if (current.revision != publication.revision || current.owner != publication.owner ||
+                !Equal(current.head, expectedHead)) return Result::RecoveryRequired;
+            if (current.metadataBytes > MaximumMetadataBytes ||
+                2 * (files::HeaderBytes + intent::MaximumBytes) > MaximumMetadataBytes - current.metadataBytes)
+                return Result::Limit;
+            result = RemoveOperationFile(operations, pending.intentFile);
+            if (result != Result::Ok) return result;
+            RecoveryReport done; done.confirmedPublication = true; done.revision = current.revision;
+            report = done; return Result::Ok;
+        }
+        Loaded previous;
+        result = Load(snapshots, commits, previous, &pending.record);
+        if (publication.revision == 1) {
+            if (result != Result::Missing) return result == Result::Ok ? Result::RecoveryRequired : result;
+        } else {
+            if (result != Result::Ok) return result == Result::Missing ? Result::RecoveryRequired : result;
+            if (previous.owner != publication.owner || previous.revision != publication.revision - 1 ||
+                !Equal(previous.head, publication.previous)) return Result::RecoveryRequired;
+        }
+        const auto required = PublicationBytes(pending.record);
+        if (previous.metadataBytes > MaximumMetadataBytes || required > MaximumMetadataBytes - previous.metadataBytes)
+            return Result::Limit;
+        if (!pending.hasDecision) {
+            result = WriteOperation(operations, pending.bytes, true, pending.decisionFile);
+            if (result != Result::Ok) return result;
+            pending.hasDecision = true;
+        } else {
+            // A complete decision may have survived a failed flush. Obtain a
+            // successful same-handle flush before using it as deletion authority.
+            result = FlushOperationFile(operations, pending.decisionFile);
+            if (result != Result::Ok) return result;
+        }
+        files::ReadLease decisionLease;
+        io = operations.Acquire(pending.decisionFile, decisionLease);
+        if (io != files::Result::Ok) return StoredError(io);
+        const auto abort = [&](files::PreparedWrite& target, const files::Directory& parent,
+                               const files::WritePlan& plan) {
+            if (target.IsValid()) {
+                const auto removed = target.Abort();
+                if (removed != files::Result::DeletePending) return StoredError(removed);
+            }
+            files::ReadLease remains;
+            const auto absent = parent.Inspect(plan.name, plan.spec.owner, plan.payloadBytes, remains);
+            return absent == files::Result::Missing ? Result::Ok :
+                absent == files::Result::Ok ? Result::RecoveryRequired : StoredError(absent);
+        };
+        result = abort(commit, commits, pending.record.commit);
+        if (result != Result::Ok) return result;
+        result = abort(snapshot, snapshots, pending.record.snapshot);
+        if (result != Result::Ok) return result;
+        if (pending.hasIntent) {
+            result = RemoveOperationFile(operations, pending.intentFile);
+            if (result != Result::Ok) return result;
+        }
+        decisionLease = {};
+        result = RemoveOperationFile(operations, pending.decisionFile);
+        if (result != Result::Ok) return result;
+        RecoveryReport done; done.rolledBack = true; done.revision = previous.revision;
+        report = done; return Result::Ok;
+    } catch (...) { return Result::Io; }
+}
 Result Store::Publish(const Snapshot* expected, const std::vector<std::uint8_t>& bytes,
     Snapshot& output, const cache_files::Owner* initialOwner) const noexcept {
     bool commitAttempted = false;
@@ -352,8 +575,8 @@ Result Store::Publish(const Snapshot* expected, const std::vector<std::uint8_t>&
         files::FileLock lock;
         io = directory.Lock(0, lock);
         if (io != files::Result::Ok) return Convert(io);
-        files::Directory snapshots, commits;
-        auto result = OpenChildren(directory, !expected, snapshots, commits);
+        files::Directory snapshots, commits, operations;
+        auto result = OpenChildren(directory, !expected, snapshots, commits, &operations);
         if (result != Result::Ok) return expected && result == Result::Missing ? Result::RecoveryRequired : result;
         Loaded current;
         result = Load(snapshots, commits, current);
@@ -371,25 +594,65 @@ Result Store::Publish(const Snapshot* expected, const std::vector<std::uint8_t>&
                 std::all_of(candidate.owner_.begin(), candidate.owner_.end(), [](auto v) { return v == 0; }))) return Result::Io;
             candidate.revision_ = 1;
         }
-        const auto additional = 2 * files::HeaderBytes + codec::RecordBytes + candidate.bytes_.size();
+        const auto additional = 2 * files::HeaderBytes + codec::RecordBytes + candidate.bytes_.size() +
+            2 * (files::HeaderBytes + intent::MaximumBytes);
         if (current.commits >= MaximumCommits || current.snapshots >= MaximumSnapshots ||
             current.metadataBytes > MaximumMetadataBytes ||
             additional > MaximumMetadataBytes - current.metadataBytes) return Result::Limit;
         files::Spec spec; spec.owner = candidate.owner_; spec.kind = files::Kind::CatalogSnapshot; spec.key = codec::SnapshotKey;
         codec::Record record; record.owner = candidate.owner_; record.revision = candidate.revision_;
         record.previous = current.head;
-        io = snapshots.Create(spec, candidate.bytes_.data(), candidate.bytes_.size(), record.snapshot);
+        if (!operations.IsValid()) {
+            io = directory.Child(L"operations", true, operations);
+            if (io != files::Result::Ok) return Convert(io);
+        }
+        intent::Record operation;
+        if (!files::crypto::Random(operation.operation) ||
+            std::all_of(operation.operation.begin(), operation.operation.end(), [](auto v) { return v == 0; })) return Result::Io;
+        files::PreparedWrite snapshot, commit;
+        struct UnregisteredPreparation {
+            files::PreparedWrite& snapshot;
+            files::PreparedWrite& commit;
+            bool intentAttempted = false;
+            ~UnregisteredPreparation() {
+                // These CREATE_NEW handles have not been named by any durable
+                // operation yet. Clean only locally handled preparation errors.
+                if (!intentAttempted) {
+                    if (commit.IsValid()) commit.Abort();
+                    if (snapshot.IsValid()) snapshot.Abort();
+                }
+            }
+        } prepared{snapshot, commit};
+        io = snapshots.Prepare(spec, candidate.bytes_.data(), candidate.bytes_.size(), snapshot);
         if (io != files::Result::Ok) return Convert(io);
-        files::ReadLease newSnapshot;
-        io = snapshots.Acquire(record.snapshot, newSnapshot);
-        if (io != files::Result::Ok) return StoredError(io);
+        operation.snapshot = snapshot.Plan();
+        if (intent::PlannedInfo(operation.snapshot, record.snapshot) != intent::Result::Ok) return Result::Io;
         std::vector<std::uint8_t> encoded;
         const auto coded = codec::Encode(record, encoded);
         if (coded != codec::Result::Ok) return coded == codec::Result::Io ? Result::Io : Result::Invalid;
         spec.owner = codec::NamespaceOwner; spec.kind = files::Kind::CatalogCommit; spec.key = codec::CommitKey;
+        io = commits.Prepare(spec, encoded.data(), encoded.size(), commit);
+        if (io != files::Result::Ok) return Convert(io);
+        operation.commit = commit.Plan(); operation.publication = record;
+        std::vector<std::uint8_t> operationBytes;
+        const auto planned = intent::Encode(operation, operationBytes);
+        if (planned != intent::Result::Ok) return planned == intent::Result::Io ? Result::Io : Result::Invalid;
+        files::BlobInfo operationFile;
+        prepared.intentAttempted = true;
+        result = WriteOperation(operations, operationBytes, false, operationFile);
+        if (result != Result::Ok) return result;
+        files::BlobInfo writtenSnapshot;
+        io = snapshot.Complete(candidate.bytes_.data(), candidate.bytes_.size(), writtenSnapshot);
+        if (io != files::Result::Ok) return Convert(io);
+        if (!Equal(writtenSnapshot, record.snapshot)) return Result::RecoveryRequired;
+        files::ReadLease newSnapshot;
+        io = snapshots.Acquire(record.snapshot, newSnapshot);
+        if (io != files::Result::Ok) return StoredError(io);
         commitAttempted = true;
-        io = commits.Create(spec, encoded.data(), encoded.size(), candidate.head_);
+        io = commit.Complete(encoded.data(), encoded.size(), candidate.head_);
         if (io != files::Result::Ok) return Result::Indeterminate;
+        result = RemoveOperationFile(operations, operationFile);
+        if (result != Result::Ok) return Result::Indeterminate;
         candidate.valid_ = true;
         candidate.Swap(output);
         return Result::Ok;

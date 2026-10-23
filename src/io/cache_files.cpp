@@ -37,13 +37,20 @@ bool OwnerValid(const Owner& owner) noexcept {
 }
 bool SpecValid(const Spec& spec) noexcept {
     return OwnerValid(spec.owner) && (spec.kind == Kind::Effect || spec.kind == Kind::Texture ||
-        spec.kind == Kind::CatalogSnapshot || spec.kind == Kind::CatalogCommit || spec.kind == Kind::CatalogCheckpoint || spec.kind == Kind::IndexPage);
+        spec.kind == Kind::CatalogSnapshot || spec.kind == Kind::CatalogCommit || spec.kind == Kind::CatalogCheckpoint || spec.kind == Kind::IndexPage || spec.kind == Kind::CatalogIntent);
 }
 bool NameValid(const std::wstring& name) noexcept {
     if (name.size() != 37 || name.compare(32, 5, L".blob") != 0) return false;
     return std::all_of(name.begin(), name.begin()+32, [](wchar_t c) {
         return (c >= L'0' && c <= L'9') || (c >= L'a' && c <= L'f');
     });
+}
+bool PlanValid(const WritePlan& plan) noexcept {
+    return NameValid(plan.name) && SpecValid(plan.spec) && plan.payloadBytes <= MaximumPayloadBytes &&
+        plan.createdIdentity.fileBytes == 0 && plan.completedBytes == HeaderBytes + plan.payloadBytes;
+}
+bool SameFile(const Identity& a, const Identity& b) noexcept {
+    return a.volume == b.volume && a.fileIndex == b.fileIndex;
 }
 std::wstring Name(const Owner& generation) {
     constexpr wchar_t hex[] = L"0123456789abcdef";
@@ -202,6 +209,11 @@ struct LeaseState {
     Handle file;
     BlobInfo info;
 };
+struct PreparedWriteState {
+    std::shared_ptr<DirectoryState> directory;
+    Handle file;
+    WritePlan plan;
+};
 struct LockState {
     std::shared_ptr<DirectoryState> directory;
     Handle file;
@@ -226,6 +238,92 @@ FileLock::~FileLock() = default;
 FileLock::FileLock(FileLock&&) noexcept = default;
 FileLock& FileLock::operator=(FileLock&&) noexcept = default;
 bool FileLock::IsValid() const noexcept { return state_ && state_->held; }
+PreparedWrite::PreparedWrite() noexcept = default;
+PreparedWrite::~PreparedWrite() = default;
+PreparedWrite::PreparedWrite(PreparedWrite&&) noexcept = default;
+PreparedWrite& PreparedWrite::operator=(PreparedWrite&&) noexcept = default;
+bool PreparedWrite::IsValid() const noexcept { return state_ && state_->file.Valid(); }
+const WritePlan& PreparedWrite::Plan() const noexcept { static const WritePlan empty; return state_ ? state_->plan : empty; }
+
+Result PreparedWrite::Inspect(bool& complete) const noexcept {
+    try {
+        if (!IsValid()) return Result::Invalid;
+        const auto& plan = state_->plan;
+        Identity actual;
+        auto result = FileIdentity(state_->file.value,actual);
+        if (result != Result::Ok) return result;
+        if (!SameFile(actual,plan.createdIdentity) || actual.fileBytes > plan.completedBytes) return Result::Conflict;
+        if (actual.fileBytes < plan.completedBytes) { complete = false; return Result::Ok; }
+        BlobInfo verified;
+        result = Header(state_->file.value,plan.name,plan.spec.owner,MaximumPayloadBytes,verified);
+        if (result != Result::Ok) return result;
+        if (verified.spec.kind != plan.spec.kind || verified.spec.key != plan.spec.key ||
+            verified.payloadBytes != plan.payloadBytes || verified.payloadDigest != plan.payloadDigest ||
+            !SameFile(verified.identity,plan.createdIdentity) || verified.identity.fileBytes != plan.completedBytes)
+            return Result::Corrupt;
+        result = VerifyPayload(state_->file.value,verified);
+        if (result != Result::Ok) return result;
+        complete = true;
+        return Result::Ok;
+    } catch (...) { return Result::Io; }
+}
+Result PreparedWrite::Flush() noexcept {
+    bool complete = false;
+    const auto inspected = Inspect(complete);
+    if (inspected != Result::Ok) return inspected;
+    if (!complete) return Result::Invalid;
+    return FlushFileBuffers(state_->file.value) ? Result::Ok : Result::Io;
+}
+Result PreparedWrite::Complete(const void* bytes, std::size_t size, BlobInfo& output) noexcept {
+    try {
+        if (!IsValid() || (size && !bytes) || size != state_->plan.payloadBytes) return Result::Invalid;
+        const auto& plan = state_->plan;
+        crypto::Sha256 hash; Digest digest{};
+        if (!hash.Start() || !hash.Update(bytes,size) || !hash.Finish(digest)) return Result::Io;
+        if (digest != plan.payloadDigest) return Result::Conflict;
+        Identity before;
+        auto result = FileIdentity(state_->file.value,before);
+        if (result != Result::Ok) return result;
+        if (!SameFile(before,plan.createdIdentity) || before.fileBytes > plan.completedBytes) return Result::Conflict;
+
+        // Prepare all owned output storage before touching the file. A failed
+        // verification after writing still leaves the same handle retryable.
+        BlobInfo candidate;
+        candidate.name = plan.name; candidate.spec = plan.spec;
+        candidate.payloadDigest = digest; candidate.payloadBytes = size;
+        std::array<std::uint8_t,128> header{};
+        std::memcpy(header.data(),"MMSCacheBlob0001",16);
+        Put(header.data()+16,1,4); Put(header.data()+20,static_cast<std::uint32_t>(plan.spec.kind),4);
+        std::copy(plan.spec.owner.begin(),plan.spec.owner.end(),header.begin()+24);
+        std::copy(plan.spec.key.begin(),plan.spec.key.end(),header.begin()+40);
+        Put(header.data()+72,size,8);
+        std::copy(digest.begin(),digest.end(),header.begin()+80);
+        const auto nibble = [](wchar_t c) noexcept -> unsigned { return c <= L'9' ? c-L'0' : c-L'a'+10; };
+        for (unsigned i=0; i<16; ++i)
+            header[112+i] = static_cast<std::uint8_t>((nibble(plan.name[2*i]) << 4) | nibble(plan.name[2*i+1]));
+        if (!Seek(state_->file.value,0) || !WriteExact(state_->file.value,header.data(),header.size()) ||
+            !WriteExact(state_->file.value,bytes,size) || !FlushFileBuffers(state_->file.value)) return Result::Io;
+        result = FileIdentity(state_->file.value,candidate.identity);
+        if (result != Result::Ok) return result;
+        if (!SameFile(candidate.identity,plan.createdIdentity) || candidate.identity.fileBytes != plan.completedBytes)
+            return Result::Conflict;
+        BlobInfo verified;
+        result = Header(state_->file.value,plan.name,plan.spec.owner,MaximumPayloadBytes,verified);
+        if (result != Result::Ok) return result;
+        if (!Equal(candidate,verified)) return Result::Corrupt;
+        result = VerifyPayload(state_->file.value,verified);
+        if (result != Result::Ok) return result;
+        state_.reset();
+        Swap(output,candidate);
+        return Result::Ok;
+    } catch (...) { return Result::Io; }
+}
+Result PreparedWrite::Abort() noexcept {
+    if (!IsValid()) return Result::Invalid;
+    if (!Disposition(state_->file.value)) return Error();
+    state_.reset();
+    return Result::DeletePending;
+}
 
 Result Directory::Open(const std::filesystem::path& root, bool create, Directory& output) noexcept {
     try {
@@ -341,6 +439,53 @@ Result Directory::Create(const Spec& spec, const void* bytes, std::size_t size, 
         if (candidate.identity.fileBytes != HeaderBytes+size) return created.Fail(Result::Io);
         created.committed = true;
         Swap(output,candidate);
+        return Result::Ok;
+    } catch (...) { return Result::Io; }
+}
+Result Directory::Prepare(const Spec& spec, const void* bytes, std::size_t size, PreparedWrite& output) const noexcept {
+    try {
+        if (!state_ || !SpecValid(spec) || (size && !bytes)) return Result::Invalid;
+        if (size > MaximumPayloadBytes) return Result::Limit;
+        auto candidate = std::make_unique<PreparedWriteState>(); candidate->directory = state_;
+        auto& plan = candidate->plan;
+        plan.spec = spec; plan.payloadBytes = size; plan.completedBytes = HeaderBytes + size;
+        crypto::Sha256 hash;
+        if (!hash.Start() || !hash.Update(bytes,size) || !hash.Finish(plan.payloadDigest)) return Result::Io;
+        NewFile created;
+        for (unsigned attempt=0; attempt<32; ++attempt) {
+            Owner generation{};
+            if (!crypto::Random(generation)) return Result::Io;
+            plan.name = Name(generation);
+            const auto path = state_->path + L'\\' + plan.name;
+            created.file = Handle(CreateFileW(path.c_str(),GENERIC_READ|GENERIC_WRITE|DELETE,0,nullptr,CREATE_NEW,
+                FILE_ATTRIBUTE_NORMAL|FILE_FLAG_OPEN_REPARSE_POINT,nullptr));
+            if (created.file.Valid()) break;
+            const auto error = Error();
+            if (error != Result::Conflict) return error;
+        }
+        if (!created.file.Valid()) return Result::Conflict;
+        const auto result = FileIdentity(created.file.value,plan.createdIdentity);
+        if (result != Result::Ok) return created.Fail(result);
+        if (plan.createdIdentity.fileBytes != 0) return created.Fail(Result::Conflict);
+        candidate->file = std::move(created.file); created.committed = true;
+        output.state_.swap(candidate);
+        return Result::Ok;
+    } catch (...) { return Result::Io; }
+}
+Result Directory::ReopenPrepared(const WritePlan& plan, PreparedWrite& output) const noexcept {
+    try {
+        if (!state_ || !PlanValid(plan)) return Result::Invalid;
+        auto candidate = std::make_unique<PreparedWriteState>(); candidate->directory = state_;
+        candidate->plan = plan;
+        const auto path = state_->path + L'\\' + plan.name;
+        candidate->file = Handle(CreateFileW(path.c_str(),GENERIC_READ|GENERIC_WRITE|DELETE,0,nullptr,OPEN_EXISTING,
+            FILE_FLAG_OPEN_REPARSE_POINT|FILE_FLAG_BACKUP_SEMANTICS,nullptr));
+        if (!candidate->file.Valid()) return Error();
+        Identity actual;
+        const auto result = FileIdentity(candidate->file.value,actual);
+        if (result != Result::Ok) return result;
+        if (!SameFile(actual,plan.createdIdentity) || actual.fileBytes > plan.completedBytes) return Result::Conflict;
+        output.state_.swap(candidate);
         return Result::Ok;
     } catch (...) { return Result::Io; }
 }

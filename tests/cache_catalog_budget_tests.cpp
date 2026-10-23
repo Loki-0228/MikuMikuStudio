@@ -4,6 +4,7 @@
 #include <windows.h>
 #include <bcrypt.h>
 #include "mikumikustudio/cache_catalog.hpp"
+#include "../src/io/cache_catalog_intent.hpp"
 #include <algorithm>
 #include <array>
 #include <cstdint>
@@ -33,18 +34,26 @@ constexpr std::uint64_t kMetadataBudget = 64ull * kMiB;
 constexpr std::uint64_t kEnvelopeBytes = 128;
 constexpr std::uint64_t kCommitPayloadBytes = 368;
 constexpr std::uint64_t kCommitFileBytes = kEnvelopeBytes + kCommitPayloadBytes;
+// Both operation records must fit before the first prepared file is created.
+// These are independent protocol literals, not production accounting helpers.
+constexpr std::uint64_t kIntentPayloadBytes = 752;
+constexpr std::uint64_t kPublicationReserve = 2 * (kEnvelopeBytes + kIntentPayloadBytes);
+constexpr std::uint64_t kFinalBlobLimit = kMetadataBudget - kPublicationReserve;
 // A generation adds one snapshot file (128-byte envelope plus payload) and one
 // commit file (128-byte envelope plus 368-byte record).
 constexpr std::uint64_t kGenerationOverhead = kEnvelopeBytes + kCommitFileBytes;
 constexpr std::uint64_t kThreeGenerationBytes = 3ull * (kSnapshotBytes + kGenerationOverhead);
 constexpr std::uint64_t kFourthPayloadBytes =
-    kMetadataBudget - kThreeGenerationBytes - kGenerationOverhead;
+    kFinalBlobLimit - kThreeGenerationBytes - kGenerationOverhead;
 static_assert(kSnapshotBytes == catalog::MaximumSnapshotBytes, "suite targets the 16MiB snapshot limit");
 static_assert(kMetadataBudget == catalog::MaximumMetadataBytes, "suite targets the 64MiB metadata budget");
 static_assert(kGenerationOverhead == 624, "snapshot envelope plus commit envelope and record");
-static_assert(kFourthPayloadBytes == kSnapshotBytes - 2496, "fourth payload is 16MiB - 2496");
-static_assert(kThreeGenerationBytes + kGenerationOverhead + kFourthPayloadBytes == kMetadataBudget,
-    "four generations exactly fill the metadata budget");
+static_assert(kEnvelopeBytes == files::HeaderBytes, "suite targets the 128-byte file envelope");
+static_assert(kIntentPayloadBytes == catalog::intent::MaximumBytes, "suite targets the 752-byte intent protocol");
+static_assert(kPublicationReserve == 1760, "two complete intent/decision envelopes are reserved");
+static_assert(kFourthPayloadBytes == kSnapshotBytes - 4256, "fourth payload is 16MiB - 2496 - 1760");
+static_assert(kThreeGenerationBytes + kGenerationOverhead + kFourthPayloadBytes + kPublicationReserve == kMetadataBudget,
+    "four generations plus publication reserve exactly fill the normal budget");
 
 unsigned checks = 0;
 void Check(bool value, const char* why) { ++checks; if (!value) throw std::runtime_error(why); }
@@ -218,8 +227,10 @@ DiskState Inspect(const fs::path& root) {
     std::vector<std::wstring> names;
     for (const auto& entry : fs::directory_iterator(root)) names.push_back(entry.path().filename().wstring());
     std::sort(names.begin(), names.end());
-    Check(names == std::vector<std::wstring>{L".lock", L"commits", L"snapshots"},
-        "metadata root holds exactly the lock file and generation directories");
+    Check(names == std::vector<std::wstring>{L".lock", L"commits", L"operations", L"snapshots"},
+        "metadata root holds exactly the lock file, generations and operation directory");
+    Check(fs::is_directory(root / L"operations") && fs::is_empty(root / L"operations"),
+        "successful publication leaves no intent, rollback decision or foreign operation entry");
     Check(fs::is_regular_file(root / L".lock"), "metadata root lock is a regular file");
     AddFile(state, root, root / L".lock");
     for (std::size_t kind = 0; kind < 2; ++kind) {
@@ -334,7 +345,7 @@ int wmain(int argc, wchar_t** argv) {
         Bytes over(static_cast<std::size_t>(kFourthPayloadBytes + 1));
         FillPattern(over, 4);
         Check(store.Commit(current, over, current) == Result::Limit,
-            "one byte above the remaining metadata budget is rejected");
+            "one byte above the normal publication budget is rejected without borrowing checkpoint reserve");
         CheckSameView(View(current), threeView, "over-budget failure");
         CheckPattern(current.Bytes(), 3, "over-budget failure retains the complete revision three payload");
         const DiskState afterOver = Inspect(root);
@@ -350,7 +361,7 @@ int wmain(int argc, wchar_t** argv) {
         const auto boundaryResult = store.Commit(current, boundary, current);
         std::printf("BUDGET boundary-result=%u\n", static_cast<unsigned>(boundaryResult));
         Check(boundaryResult == Result::Ok,
-            "the exact remaining metadata budget accepts the fourth generation");
+            "the exact remaining budget including both operation records accepts the fourth generation");
         Check(current.IsValid() && current.Revision() == 4, "boundary generation publishes revision four");
         Check(current.StoreId() == storeId, "boundary generation keeps the store identity");
         Check(current.Bytes().size() == boundary.size(), "boundary generation stores the exact allowed payload");
@@ -366,8 +377,8 @@ int wmain(int argc, wchar_t** argv) {
         Check(four.snapshotFileBytes ==
                   3ull * (kSnapshotBytes + kEnvelopeBytes) + (kFourthPayloadBytes + kEnvelopeBytes),
             "snapshot files account for three full generations and the exact boundary payload");
-        Check(four.blobBytes == kMetadataBudget, "actual .blob file sizes sum to exactly 64MiB");
-        std::printf("BUDGET boundary revision=4 payload=%zu blobs=%zu blob-bytes=%llu budget-exact=1\n",
+        Check(four.blobBytes == kFinalBlobLimit, "final .blob files occupy exactly 64MiB minus the 1760-byte publication reserve");
+        std::printf("BUDGET boundary revision=4 payload=%zu blobs=%zu blob-bytes=%llu publication-reserve=1760 budget-exact=1\n",
             static_cast<std::size_t>(kFourthPayloadBytes), four.snapshots + four.commits,
             static_cast<unsigned long long>(four.blobBytes));
 
@@ -384,12 +395,12 @@ int wmain(int argc, wchar_t** argv) {
         const SnapshotView fourView = View(reopened);
         const DiskState beforeEmpty = four;
         Check(store.Commit(reopened, Bytes{}, reopened) == Result::Limit,
-            "an empty fifth generation cannot fit the exhausted metadata budget");
+            "an empty fifth generation cannot fit its envelopes plus publication reserve in the normal budget");
         CheckSameView(View(reopened), fourView, "empty fifth failure");
         CheckPattern(reopened.Bytes(), 4, "empty fifth failure retains the complete revision four payload");
         const DiskState afterEmpty = Inspect(root);
         CheckSameFiles(beforeEmpty, afterEmpty, "empty fifth failure");
-        Check(afterEmpty.blobBytes == kMetadataBudget, "empty fifth failure adds no blob bytes");
+        Check(afterEmpty.blobBytes == kFinalBlobLimit, "empty fifth failure adds no blob bytes or consumes operation reserve");
         std::printf("BUDGET final-empty result=Limit unchanged=1 blob-bytes=%llu\n",
             static_cast<unsigned long long>(afterEmpty.blobBytes));
         std::printf("PASS cache catalog budget checks=%u root=%ls blobs=%zu blob-bytes=%llu revisions=4\n",
