@@ -263,6 +263,35 @@ static void MMS_CALL Event(void* context, const MmsEventV1* event) {
         Log(p,event->kind==MMS_EVENT_UI_REGISTRY_CHANGED?"EVENT_UI_REGISTRY":"EVENT_LAYOUT");
         return;
     }
+    if(event->kind==MMS_EVENT_PROJECT_CLOSED) {
+        if(event->payloadVersion!=1 || event->payload.bytes!=sizeof(MmsProjectEventV1)) {
+            Log(p,"PROJECT_CLOSED_PAYLOAD_FAIL");return;
+        }
+        Log(p,"EVENT_PROJECT_CLOSED");return;
+    }
+    if(event->kind==MMS_EVENT_LANGUAGE_CHANGED || event->kind==MMS_EVENT_DPI_CHANGED) {
+        if(event->payloadVersion!=1 || event->payload.bytes!=sizeof(MmsCodeEventV1)) {
+            Log(p,"CODE_PAYLOAD_FAIL");return;
+        }
+        const auto value=static_cast<const MmsCodeEventV1*>(event->payload.data)->value;
+        if(event->kind==MMS_EVENT_LANGUAGE_CHANGED) {
+            if(value>2){Log(p,"LANGUAGE_VALUE_FAIL");return;}
+            Log(p,"EVENT_LANGUAGE");
+        } else {
+            if(!value){Log(p,"DPI_VALUE_FAIL");return;}
+            Log(p,"EVENT_DPI");
+        }
+        return;
+    }
+    if(event->kind==MMS_EVENT_DEVICE_LOST || event->kind==MMS_EVENT_DEVICE_RESTORED) {
+        if(event->payloadVersion!=1 || event->payload.bytes!=sizeof(MmsDeviceEventV1)) {
+            Log(p,"DEVICE_PAYLOAD_FAIL");return;
+        }
+        const auto generation=static_cast<const MmsDeviceEventV1*>(event->payload.data)->deviceGeneration;
+        if(!generation){Log(p,"DEVICE_GENERATION_FAIL");return;}
+        Log(p,event->kind==MMS_EVENT_DEVICE_LOST?"EVENT_DEVICE_LOST":"EVENT_DEVICE_RESTORED");
+        return;
+    }
     if(event->kind==MMS_EVENT_UI_CLOSING)Log(p,"UI_CLOSING");
     if(event->kind==MMS_EVENT_UI_CLOSING && p->id.find("gui-layout")!=std::string::npos) {
         wchar_t enabled[8]{};

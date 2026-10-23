@@ -234,6 +234,22 @@ set_tests_properties(plugin_abi_panel_state PROPERTIES TIMEOUT 90)
 add_test(NAME plugin_abi_menu_state COMMAND plugin_abi_tests --menu-state-only)
 set_tests_properties(plugin_abi_menu_state PROPERTIES TIMEOUT 90)
 add_executable(business_event_tests EXCLUDE_FROM_ALL tests/plugins/business_event_tests.cpp)
+
+file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/tests/host-events/PLUGINS/test")
+file(WRITE "${CMAKE_BINARY_DIR}/tests/host-events/PLUGINS/test/plugin.json"
+"{\"schemaVersion\":1,\"id\":\"org.example.host-events\",\"name\":\"host events probe\",\"version\":\"1.0.0\",\"kind\":\"native\",\"abi\":{\"major\":1,\"minMinor\":0},\"entry\":\"lifecycle.dll\",\"architecture\":\"x64\",\"minWindows\":\"6.1.7601\",\"capabilities\":[\"ui.command\"],\"requiresServices\":[{\"id\":\"mms.ui\",\"major\":1,\"minMinor\":0}],\"dependencies\":[],\"nativeDependencies\":[],\"reloadPolicy\":\"restart\"}")
+add_executable(host_event_tests EXCLUDE_FROM_ALL tests/plugins/host_event_tests.cpp)
+target_include_directories(host_event_tests PRIVATE include)
+target_link_libraries(host_event_tests PRIVATE mikumikustudio_core minhook::minhook winmm dsound)
+target_link_options(host_event_tests PRIVATE /SUBSYSTEM:CONSOLE,6.01 /DEBUG:NONE)
+set_target_properties(host_event_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_dependencies(host_event_tests mms_lifecycle_plugin)
+add_custom_command(TARGET host_event_tests POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:mms_lifecycle_plugin>"
+        "${CMAKE_BINARY_DIR}/tests/host-events/PLUGINS/test/lifecycle.dll")
+add_test(NAME plugin_abi_host_events COMMAND host_event_tests)
+set_tests_properties(plugin_abi_host_events PROPERTIES TIMEOUT 120
+    ENVIRONMENT "MMS_PLUGIN_TEST_DIR=${CMAKE_BINARY_DIR}/tests/host-events/PLUGINS;MMS_ABI_PROBE_LOG=${CMAKE_BINARY_DIR}/tests/host-events/plugin.log")
 target_link_libraries(business_event_tests PRIVATE mms_plugin_runtime)
 target_include_directories(business_event_tests PRIVATE src/plugins)
 target_link_options(business_event_tests PRIVATE /SUBSYSTEM:CONSOLE,6.01 /DEBUG:NONE)

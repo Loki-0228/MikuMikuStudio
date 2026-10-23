@@ -3,6 +3,7 @@
 #include "mikumikustudio/viewport_render_scale.hpp"
 #include "mikumikustudio/model_vertex_cache.hpp"
 #include "mikumikustudio/native_mesh.hpp"
+#include "mikumikustudio/plugin_storage.hpp"
 #include "mikumikustudio/transparent_capture.hpp"
 #include "mikumikustudio/build_profile.hpp"
 #if !MMD_ORIGINAL_PROFILE
@@ -134,6 +135,7 @@ bool PostDeviceReset(MMDApp* app) {
     }
 
     if(!recovery.Successful())return false;
+    plugins::PluginNotifyDeviceRestored(app);
     app->state.recentFile0[0] = 0;                                 // 0x440FE2
     app->state.recentFile1[0] = 0;
     app->state.recentFile2[0] = 0;

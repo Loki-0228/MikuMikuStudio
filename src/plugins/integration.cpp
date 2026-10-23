@@ -78,6 +78,12 @@ bool replacingHistory = false, historySceneReplaced = false;
 HANDLE loadingMain = INVALID_HANDLE_VALUE;
 struct ProjectNotification { uint32_t kind; MmsId id; std::string path; };
 std::deque<ProjectNotification> projectEvents;
+struct BusinessNotification {
+    uint32_t kind = 0, version = 0;
+    std::vector<unsigned char> bytes;
+};
+std::deque<BusinessNotification> businessEvents;
+uint64_t deviceGeneration = 1;
 constexpr UINT kProjectEvent = WM_APP + 0x6b;
 constexpr UINT_PTR kProjectRetry = 0x4d4d536b;
 constexpr UINT_PTR kHistoryUiRetry = 0x4d4d536c;
@@ -109,6 +115,65 @@ void QueueProjectEvent(MMDApp* app, uint32_t kind, const wchar_t* path) {
         return MMS_OK;
     });
 }
+void QueueBusinessEvent(MMDApp* app, uint32_t kind, uint32_t version,
+                        const void* bytes, std::size_t size) {
+    if (!manager || owner != app) return;
+    Boundary([&] {
+        BusinessNotification event{kind, version, {}};
+        if (bytes && size) {
+            const auto* first = static_cast<const unsigned char*>(bytes);
+            event.bytes.assign(first, first + size);
+        }
+        businessEvents.push_back(std::move(event));
+        if (!PostMessageW(app->MainWindow(), kProjectEvent, 0, 0)) {
+            businessEvents.pop_back();
+            return MMS_E_FAILED;
+        }
+        return MMS_OK;
+    });
+}
+const wchar_t* ProjectClosedPath(MMDApp* app) {
+    return app && app->EnvFileName()[0] ? app->EnvFileName() : L"";
+}
+void NotifyProjectClosedEvent(MMDApp* app) {
+    if (!manager || owner != app) return;
+    Boundary([&] {
+        MmsId id{}; unsigned char bytes[16]{};
+        if (currentProject.projectId.size() == 32) {
+            const auto digit = [](char c) { return c <= '9' ? c - '0' : c - 'a' + 10; };
+            for (size_t i = 0; i < 16; ++i)
+                bytes[i] = static_cast<unsigned char>((digit(currentProject.projectId[2 * i]) << 4) |
+                    digit(currentProject.projectId[2 * i + 1]));
+            std::memcpy(&id, bytes, sizeof(id));
+        }
+        const auto path = ProjectClosedPath(app);
+        MmsProjectEventV1 payload{Header<MmsProjectEventV1>(), id, 0, Text(Utf8(path))};
+        businessEvents.push_back({MMS_EVENT_PROJECT_CLOSED, 1,
+            std::vector<unsigned char>(reinterpret_cast<const unsigned char*>(&payload),
+                                       reinterpret_cast<const unsigned char*>(&payload) + sizeof(payload))});
+        if (!PostMessageW(app->MainWindow(), kProjectEvent, 0, 0)) {
+            businessEvents.pop_back();
+            return MMS_E_FAILED;
+        }
+        return MMS_OK;
+    });
+}
+void NotifyLanguageChangedEvent(MMDApp* app) {
+    if (!manager || owner != app) return;
+    MmsCodeEventV1 payload{Header<MmsCodeEventV1>(), app->EnglishUI(), 0};
+    QueueBusinessEvent(app, MMS_EVENT_LANGUAGE_CHANGED, 1, &payload, sizeof(payload));
+}
+void NotifyDeviceLostEvent(MMDApp* app) {
+    if (!manager || owner != app) return;
+    MmsDeviceEventV1 payload{Header<MmsDeviceEventV1>(), deviceGeneration, 0, 0};
+    QueueBusinessEvent(app, MMS_EVENT_DEVICE_LOST, 1, &payload, sizeof(payload));
+}
+void NotifyDeviceRestoredEvent(MMDApp* app) {
+    if (!manager || owner != app) return;
+    ++deviceGeneration;
+    MmsDeviceEventV1 payload{Header<MmsDeviceEventV1>(), deviceGeneration, 0, 0};
+    QueueBusinessEvent(app, MMS_EVENT_DEVICE_RESTORED, 1, &payload, sizeof(payload));
+}
 constexpr UINT kRefresh = WM_APP + 0x6a;
 void LogMessage(const std::string& s) { runtime_log::Write("PLUGIN_ABI %s", s.c_str()); }
 LRESULT CALLBACK Subclass(HWND hwnd, UINT message, WPARAM wp, LPARAM lp, UINT_PTR id, DWORD_PTR) {
@@ -133,13 +198,26 @@ LRESULT CALLBACK Subclass(HWND hwnd, UINT message, WPARAM wp, LPARAM lp, UINT_PT
                 MmsProjectEventV1 payload{Header<MmsProjectEventV1>(),event.id,0,Text(event.path)};
                 manager->Event(event.kind,{&payload,sizeof(payload)},1);
             }
-        } else if(owner && !closing && !projectEvents.empty()) SetTimer(hwnd,kProjectRetry,16,nullptr);
+            remaining=businessEvents.size();
+            while(remaining-- && !businessEvents.empty()) {
+                auto event=std::move(businessEvents.front());businessEvents.pop_front();
+                manager->Event(event.kind,
+                    {event.bytes.empty()?nullptr:static_cast<void*>(event.bytes.data()),event.bytes.size()},
+                    event.version);
+            }
+        } else if(owner && !closing && (!projectEvents.empty() || !businessEvents.empty()))
+            SetTimer(hwnd,kProjectRetry,16,nullptr);
         return 0;
     }
     if (message == WM_NCDESTROY) { RemoveWindowSubclass(hwnd, Subclass, id); Shutdown(); }
     return DefSubclassProc(hwnd, message, wp, lp);
 }
 }
+void PluginNotifyProjectClosed(MMDApp* app) { NotifyProjectClosedEvent(app); }
+void PluginNotifyLanguageChanged(MMDApp* app) { NotifyLanguageChangedEvent(app); }
+void PluginNotifyDeviceLost(MMDApp* app) { NotifyDeviceLostEvent(app); }
+void PluginNotifyDeviceRestored(MMDApp* app) { NotifyDeviceRestoredEvent(app); }
+
 static void InitializeRuntime(MMDApp* app, bool migrationTest) {
     if (build_profile::original || !app || manager) return;
     const auto initialized = Boundary([&] {
@@ -222,7 +300,16 @@ static void InitializeRuntime(MMDApp* app, bool migrationTest) {
             });
         });
         if (!SetWindowSubclass(app->MainWindow(), Subclass, 0x4d4d5301, 0)) throw std::runtime_error("plugin lifetime hook failed");
-        manager->Load(fs::path(module).parent_path() / L"PLUGINS"); Refresh(app); return MMS_OK;
+        // The focused host test supplies an explicit package tree; production
+        // always resolves PLUGINS next to the executable.
+        const auto pluginRoot = [] {
+            wchar_t value[32768]{};
+            const DWORD length = GetEnvironmentVariableW(L"MMS_PLUGIN_TEST_DIR", value, _countof(value));
+            return length && length < _countof(value) ? fs::path(value)
+                : fs::path();
+        }();
+        manager->Load(pluginRoot.empty() ? fs::path(module).parent_path() / L"PLUGINS" : pluginRoot);
+        Refresh(app); return MMS_OK;
     });
     if (initialized != MMS_OK) {
         runtime_log::Write("PLUGIN_ABI initialization failed: %d", initialized);
@@ -528,6 +615,7 @@ bool ResetPluginProject(MMDApp* app) {
         manager->AdvanceRefreshEpoch();
         if(!manager->Storage().Commit()){LogMessage("plugin project reset refused");return false;}
     }
+    if(!currentProject.projectId.empty()) NotifyProjectClosedEvent(app);
     currentProject={};QueueProjectEvent(app,MMS_EVENT_SCENE_RESET,L"");return true;
 }
 void PluginProjectSaved(MMDApp* app,const wchar_t* path){QueueProjectEvent(app,MMS_EVENT_PROJECT_SAVED,path);}

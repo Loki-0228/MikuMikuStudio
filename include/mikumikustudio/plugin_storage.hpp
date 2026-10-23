@@ -30,6 +30,13 @@ void CommitProjectLoad(MMDApp*);
 void CancelProjectLoad(MMDApp*);
 bool ResetPluginProject(MMDApp*);
 void PluginProjectSaved(MMDApp*, const wchar_t*);
+// Host lifecycle notifications. Each real host action below queues one event
+// for the next safe message boundary; when no plugin runtime owns the app the
+// call is a no-op.
+void PluginNotifyProjectClosed(MMDApp*);
+void PluginNotifyLanguageChanged(MMDApp*);
+void PluginNotifyDeviceLost(MMDApp*);
+void PluginNotifyDeviceRestored(MMDApp*);
 // Pure filesystem work; callers check native backup ownership and serialize
 // retention for their backup directory before calling, including on a worker.
 bool DeletePluginBackup(const wchar_t*);

@@ -54,6 +54,7 @@
 #include "mikumikustudio/transparent_capture.hpp"
 #include "mikumikustudio/frame_presentation.hpp"
 #include "mikumikustudio/frame_rate.hpp"
+#include "mikumikustudio/plugin_storage.hpp"
 #include "mikumikustudio/frame_sampling.hpp"
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/globals.hpp"
@@ -534,6 +535,7 @@ PresentResult PresentScene(MMDApp* app) {
             frame_rate::Presented(app, SUCCEEDED(hr));
             if (SUCCEEDED(hr)) ui_metrics::Add(ui_metrics::Present);
             if (hr == D3DERR_DEVICELOST) {
+                plugins::PluginNotifyDeviceLost(app);
                 device_lost_wait::Wait(app, device, false);
                 // A dispatched message may have destroyed the renderer.
                 return {presented, hr};

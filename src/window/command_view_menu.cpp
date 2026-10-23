@@ -281,6 +281,7 @@
 #include "mikumikustudio/runtime_log.hpp"
 #endif
 #include "mikumikustudio/ui_language.hpp"
+#include "mikumikustudio/plugin_storage.hpp"
 
 #include "dialog_scaffold.hpp"
 
@@ -2117,6 +2118,7 @@ void CmdViewMenu(MMDApp* app, HWND hwnd, std::uint16_t id,
         // Cycle Japanese(0) -> English(1) -> Chinese(2) -> Japanese(0).
         app->state.englishUI = static_cast<std::uint8_t>((cur + 1) % 3);
         LocalizeUI(app);                             // 0x441AD0
+        plugins::PluginNotifyLanguageChanged(app);
         return;
     }
 
