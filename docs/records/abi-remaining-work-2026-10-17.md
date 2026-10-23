@@ -8,6 +8,9 @@
 
 
 
+
+[纹理准备缓存消费者](abi-texture-prepare-cache-2026-10-24.md)已接入 main 的 `texture_prepare_cache` 与 WIC CPU 解码：默认目录 `data/cache/Textures`，普通模型纹理加载经 `LoadTextureShared` 包裹，PMX 在材质前批量预加载（最多 64 条、最多两个 worker，已有 GPU 池条目跳过），原始兼容配置走原生。真实 D3DX 套件（合成 TGA/DDS + 真实 BMP，`hits=37 native=39 stores=48`）与模型加载、原始保存回归通过，两产品构建通过，正式 release 未覆盖。事务导入仍用既有 `import_texture_cache` 未共用本缓存；未加载真实 MMD 多材质模型或 MME 场景，无真实命中率/内存/耗时对比；DDS 压缩格式、超大纹理与 128 MiB 边界未在真实工程验证。
+
 [效果编译缓存消费者](abi-effect-compile-cache-2026-10-24.md)已接入 main 的 `effect_compile_cache`：`D3DXCreateEffectFromFileW` 拦截入口先尝试缓存，键含 D3DX DLL 身份、源码/工作目录、flags、宏、预处理文本与依赖摘要；默认目录为程序目录 `data/cache/MME`，开关与容量/回收走缓存业务 Store；内存模式、不可写目录、损坏条目、未知 D3DX 与自定义 include 回退原调用。假 D3DX 165 项、128 KiB 栈 9 项、真实 D3DX 集成通过，两产品构建通过，正式 release 未覆盖。未加载真实 MME 工程或 45 效果冷启动场景，无真实命中率/启动耗时/配额触发证据；纹理准备缓存消费者仍未接入。
 
 [缓存管理窗口](abi-cache-manager-ui-2026-10-24.md)已接入「帮助」菜单与 9200 原生对话框：启用/自动清理/上限/最近工程设置、工程列表与占用、固定、清理所选/可回收/全部、后台工作线程与状态行；三语真实对话框回归 152 项通过（本机拒绝私有桌面时退回默认桌面并隐藏所有窗口），两产品构建通过，正式 release 未覆盖。效果编译缓存与纹理准备缓存消费者仍未接入，没有真实 `.fxb`／`.mtc` 命中、容量或回收证据；多 DPI、人工视觉、真实 MME、大工程、慢盘与长时间运行未验收。
