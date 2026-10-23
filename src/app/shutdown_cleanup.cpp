@@ -11,6 +11,7 @@
 #include "mikumikustudio/plugin_menu.hpp"
 #include "mikumikustudio/plugin_runtime.hpp"
 #include "mikumikustudio/transparent_capture.hpp"
+#include "mikumikustudio/transparent_sort_cache.hpp"
 #include "mikumikustudio/wic_mov_recorder.hpp"
 #include "mikumikustudio/native_media.hpp"
 #include "mikumikustudio/native_mesh.hpp"
@@ -463,7 +464,10 @@ void TeardownDShowGraphCoUninit(DShowRecorder* rec) {
 // ===========================================================================
 // VA 0x00462C40 - ShutdownCleanup  (original: sub_462C40, __thiscall, app)
 // =========================================================================//
+#include "mikumikustudio/transparent_sort_cache.hpp"
+
 void ShutdownCleanup(MMDApp* app) {
+    transparent_sort_cache::Release(app);
     negative_frames::Reset(app);
     background_save::Shutdown(app);
     updates::Shutdown(app);

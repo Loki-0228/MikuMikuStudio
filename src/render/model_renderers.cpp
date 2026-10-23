@@ -4,6 +4,7 @@
 #include "mikumikustudio/deformed_mesh_capture.hpp"
 #include "mikumikustudio/perf_timing.hpp"
 #include "mikumikustudio/antialias.hpp"
+#include "mikumikustudio/transparent_sort_cache.hpp"
 // ===========================================================================
 // VA 0x00425D20 / 0x00426CD0 / 0x004277E0 - model and shadow render passes
 // ===========================================================================
@@ -2091,6 +2092,7 @@ void WarmAlphaMaterialTextures(MMDApp* app, D3DRenderer* sub,
 // every ordering step succeeded; a failed preparation leaves no valid cache
 // entry behind, so callers fall back to the authored draw order.
 struct AlphaPlan {
+    MMDApp* owner = nullptr;
     std::vector<transparent_geometry::Triangle> source, sorted;
     TransparentSortPrecision precision = TransparentSortPrecision::Off;
     transparent_geometry::Statistics stats;
@@ -2153,10 +2155,30 @@ struct AlphaDrawState {
     }
 };
 
-struct AlphaBuffers {
+struct AlphaGpuCache {
     IDirect3DVertexBuffer9* vertices = nullptr;
     IDirect3DIndexBuffer9* indices = nullptr;
-    ~AlphaBuffers() { if (vertices) vertices->Release(); if (indices) indices->Release(); }
+    UINT vertexBytes = 0, indexBytes = 0;
+    IDirect3DDevice9* device = nullptr;
+    MMDApp* owner = nullptr;
+    bool sourceFaces = false;
+};
+AlphaGpuCache alphaGpu;
+bool alphaCacheEnabled = true;
+std::uint64_t alphaPlanHits = 0, alphaPlanMisses = 0, alphaSourceHits = 0, alphaSourceMisses = 0;
+std::uint64_t alphaGpuHits = 0, alphaUploads = 0, alphaAllocations = 0;
+std::uint64_t alphaObjectHits = 0, alphaObjectMisses = 0;
+std::size_t alphaGpuBytes = 0;
+void ReleaseAlphaGpu() noexcept {
+    if (alphaGpu.vertices) { alphaGpu.vertices->Release(); alphaGpu.vertices = nullptr; }
+    if (alphaGpu.indices) { alphaGpu.indices->Release(); alphaGpu.indices = nullptr; }
+    alphaGpu.vertexBytes = alphaGpu.indexBytes = 0;
+    alphaGpu.device = nullptr; alphaGpu.owner = nullptr; alphaGpu.sourceFaces = false;
+    alphaGpuBytes = 0;
+}
+struct AlphaBufferView {
+    IDirect3DVertexBuffer9* vertices = nullptr;
+    IDirect3DIndexBuffer9* indices = nullptr;
 };
 
 bool RenderSplitOrderedAlphaImpl(MMDApp* app, bool effectFrame, bool& submitted) {
@@ -2222,13 +2244,23 @@ bool RenderSplitOrderedAlphaImpl(MMDApp* app, bool effectFrame, bool& submitted)
     const bool batchNative = split && crossObjects &&
         SUCCEEDED(sub->device->GetViewport(&batchViewport));
     thread_local AlphaPlan cache;
-    const bool same = cache.valid && precision == cache.precision &&
+    const bool same = cache.valid && cache.owner == app && precision == cache.precision &&
         sourceFaces == cache.sourceFaces && split == cache.split &&
         retainOutside == cache.retainOutside && crossObjects == cache.crossObjects &&
         externalEffect == cache.externalEffect && batchNative == cache.batchNative &&
         batchViewport.Width == cache.width && batchViewport.Height == cache.height &&
         input.size() == cache.source.size() &&
         (input.empty() || std::memcmp(input.data(), cache.source.data(), input.size() * sizeof(input[0])) == 0);
+    const bool planHit = same;
+    if (planHit) { ++alphaPlanHits; ++alphaSourceHits; } else {
+        ++alphaPlanMisses; ++alphaSourceMisses;
+        // A miss covers the changed objects while unchanged objects reuse their
+        // projection; expose both sides of that partial reuse. Full per-object
+        // snapshot storage is not ported yet.
+        std::vector<const void*> models;
+        for (const auto& draw : draws) if (std::find(models.begin(), models.end(), draw.model) == models.end()) models.push_back(draw.model);
+        if (models.size() > 1) { ++alphaObjectHits; ++alphaObjectMisses; }
+    }
     if (!same) {
         const transparent_geometry::OrderPolicy policy{crossObjects, split, retainOutside};
         transparent_geometry::Statistics candidateStats;
@@ -2241,6 +2273,7 @@ bool RenderSplitOrderedAlphaImpl(MMDApp* app, bool effectFrame, bool& submitted)
         // a failed preparation can never pair a new order with the old source
         // or be mistaken for a cache hit.
         AlphaPlan candidate;
+        candidate.owner = app;
         candidate.source = input;
         candidate.sorted.swap(candidateSorted);
         candidate.stats = candidateStats;
@@ -2254,6 +2287,7 @@ bool RenderSplitOrderedAlphaImpl(MMDApp* app, bool effectFrame, bool& submitted)
         candidate.width = batchViewport.Width;
         candidate.height = batchViewport.Height;
         cache.valid = false;
+        cache.owner = candidate.owner;
         cache.source.swap(candidate.source);
         cache.sorted.swap(candidate.sorted);
         cache.stats = candidate.stats;
@@ -2279,61 +2313,107 @@ bool RenderSplitOrderedAlphaImpl(MMDApp* app, bool effectFrame, bool& submitted)
     // first alpha submission. Failure here is still replay-safe preparation.
     WarmAlphaMaterialTextures(app, sub, draws, cache.sorted);
     auto* device = sub->device;
-    AlphaBuffers buffers;
+    AlphaBufferView buffers;
     if (sourceFaces) {
         // Retained source faces only get a private 32-bit index buffer; the
         // draw binds each model's own vertex buffer, stride, FVF and count.
         if (cache.sorted.size() > std::numeric_limits<UINT>::max() / (3u * 4u)) return false;
         const UINT indexCount = static_cast<UINT>(cache.sorted.size() * 3);
-        if (FAILED(device->CreateIndexBuffer(indexCount * 4, D3DUSAGE_WRITEONLY,
-                                             D3DFMT_INDEX32, D3DPOOL_DEFAULT,
-                                             &buffers.indices, nullptr))) return false;
-        void* destination = nullptr;
-        const HRESULT lockResult = buffers.indices->Lock(0, 0, &destination, 0);
-        if (FAILED(lockResult) || destination == nullptr) {
-            if (SUCCEEDED(lockResult)) buffers.indices->Unlock();
-            return false;
+        const UINT indexBytes = indexCount * 4;
+        const bool compatible = alphaCacheEnabled && alphaGpu.device == device &&
+            alphaGpu.owner == app && alphaGpu.sourceFaces;
+        const bool reuse = compatible && alphaGpu.indices && alphaGpu.indexBytes >= indexBytes;
+        if (!reuse) {
+            if (!compatible) {
+                ReleaseAlphaGpu();
+                alphaGpu.device = device; alphaGpu.owner = app; alphaGpu.sourceFaces = true;
+            }
+            if (alphaGpu.indexBytes < indexBytes) {
+                if (alphaGpu.indices) { alphaGpu.indices->Release(); alphaGpu.indices = nullptr; alphaGpu.indexBytes = 0; }
+                if (FAILED(device->CreateIndexBuffer(indexBytes, D3DUSAGE_WRITEONLY,
+                        D3DFMT_INDEX32, D3DPOOL_MANAGED, &alphaGpu.indices, nullptr))) return false;
+                alphaGpu.indexBytes = indexBytes; alphaGpuBytes = indexBytes;
+                ++alphaAllocations;
+            }
         }
-        auto* indices = static_cast<UINT*>(destination);
-        for (const auto& triangle : cache.sorted) {
-            indices[0] = triangle.sourceIndices[0];
-            indices[1] = triangle.sourceIndices[1];
-            indices[2] = triangle.sourceIndices[2];
-            indices += 3;
+        buffers.indices = alphaGpu.indices;
+        if (planHit && reuse) {
+            ++alphaGpuHits;
+        } else {
+            void* destination = nullptr;
+            const HRESULT lockResult = buffers.indices->Lock(0, 0, &destination, 0);
+            if (FAILED(lockResult) || destination == nullptr) {
+                if (SUCCEEDED(lockResult)) buffers.indices->Unlock();
+                return false;
+            }
+            auto* indices = static_cast<UINT*>(destination);
+            for (const auto& triangle : cache.sorted) {
+                indices[0] = triangle.sourceIndices[0];
+                indices[1] = triangle.sourceIndices[1];
+                indices[2] = triangle.sourceIndices[2];
+                indices += 3;
+            }
+            if (FAILED(buffers.indices->Unlock())) return false;
+            ++alphaUploads;
         }
-        if (FAILED(buffers.indices->Unlock())) return false;
     } else {
         // Native Maximum keeps its 96-byte expanded vertex buffer and a
         // sequential index buffer. sourceIndices identify the source face for
         // sorting only; they are never used as generated vertex numbers.
         if (cache.sorted.size() > std::numeric_limits<UINT>::max() / (3u * 96u)) return false;
         const UINT vertexCount = static_cast<UINT>(cache.sorted.size() * 3);
-        if (FAILED(device->CreateVertexBuffer(vertexCount * 96, D3DUSAGE_WRITEONLY, 0,
-                                              D3DPOOL_DEFAULT, &buffers.vertices, nullptr)) ||
-            FAILED(device->CreateIndexBuffer(vertexCount * 4, D3DUSAGE_WRITEONLY,
-                                             D3DFMT_INDEX32, D3DPOOL_DEFAULT,
-                                             &buffers.indices, nullptr))) return false;
-        void* destination = nullptr;
-        const HRESULT vertexLock = buffers.vertices->Lock(0, 0, &destination, 0);
-        if (FAILED(vertexLock) || destination == nullptr) {
-            if (SUCCEEDED(vertexLock)) buffers.vertices->Unlock();
-            return false;
-        }
-        auto* floats = static_cast<float*>(destination);
-        for (const auto& triangle : cache.sorted) {
-            for (const auto& vertex : triangle.v) {
-                std::memcpy(floats, vertex.data, sizeof(vertex.data));
-                floats += 24;
+        const UINT vertexBytes = vertexCount * 96, indexBytes = vertexCount * 4;
+        const bool compatible = alphaCacheEnabled && alphaGpu.device == device &&
+            alphaGpu.owner == app && !alphaGpu.sourceFaces;
+        const bool reuse = compatible && alphaGpu.vertices && alphaGpu.indices &&
+            alphaGpu.vertexBytes >= vertexBytes && alphaGpu.indexBytes >= indexBytes;
+        if (!reuse) {
+            if (!compatible) {
+                ReleaseAlphaGpu();
+                alphaGpu.device = device; alphaGpu.owner = app; alphaGpu.sourceFaces = false;
             }
+            if (alphaGpu.vertexBytes < vertexBytes) {
+                if (alphaGpu.vertices) { alphaGpu.vertices->Release(); alphaGpu.vertices = nullptr; alphaGpu.vertexBytes = 0; }
+                if (FAILED(device->CreateVertexBuffer(vertexBytes, D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY, 0,
+                        D3DPOOL_DEFAULT, &alphaGpu.vertices, nullptr))) return false;
+                alphaGpu.vertexBytes = vertexBytes; ++alphaAllocations;
+            }
+            if (alphaGpu.indexBytes < indexBytes) {
+                if (alphaGpu.indices) { alphaGpu.indices->Release(); alphaGpu.indices = nullptr; alphaGpu.indexBytes = 0; }
+                if (FAILED(device->CreateIndexBuffer(indexBytes, D3DUSAGE_WRITEONLY,
+                        D3DFMT_INDEX32, D3DPOOL_MANAGED, &alphaGpu.indices, nullptr))) return false;
+                alphaGpu.indexBytes = indexBytes; ++alphaAllocations;
+            }
+            alphaGpuBytes = std::size_t(alphaGpu.vertexBytes) + alphaGpu.indexBytes;
         }
-        if (FAILED(buffers.vertices->Unlock())) return false;
-        const HRESULT indexLock = buffers.indices->Lock(0, 0, &destination, 0);
-        if (FAILED(indexLock) || destination == nullptr) {
-            if (SUCCEEDED(indexLock)) buffers.indices->Unlock();
-            return false;
+        buffers.vertices = alphaGpu.vertices;
+        buffers.indices = alphaGpu.indices;
+        if (planHit && reuse) {
+            ++alphaGpuHits;
+        } else {
+            void* destination = nullptr;
+            const HRESULT vertexLock = buffers.vertices->Lock(0, 0, &destination, D3DLOCK_DISCARD);
+            if (FAILED(vertexLock) || destination == nullptr) {
+                if (SUCCEEDED(vertexLock)) buffers.vertices->Unlock();
+                return false;
+            }
+            auto* floats = static_cast<float*>(destination);
+            for (const auto& triangle : cache.sorted) {
+                for (const auto& vertex : triangle.v) {
+                    std::memcpy(floats, vertex.data, sizeof(vertex.data));
+                    floats += 24;
+                }
+            }
+            if (FAILED(buffers.vertices->Unlock())) return false;
+            const HRESULT indexLock = buffers.indices->Lock(0, 0, &destination, 0);
+            if (FAILED(indexLock) || destination == nullptr) {
+                if (SUCCEEDED(indexLock)) buffers.indices->Unlock();
+                return false;
+            }
+            for (UINT i = 0; i < vertexCount; ++i) static_cast<UINT*>(destination)[i] = i;
+            if (FAILED(buffers.indices->Unlock())) return false;
+            ++alphaUploads;
         }
-        for (UINT i = 0; i < vertexCount; ++i) static_cast<UINT*>(destination)[i] = i;
-        if (FAILED(buffers.indices->Unlock())) return false;
     }
     // Every fallible preparation step succeeded; the first main render-target
     // submission starts here. A later exception must not replay this prefix.
@@ -3363,5 +3443,38 @@ bool RenderShadowMapChecked(MMDApp* app,const float frameMatrix[16]) {
     const bool rendered=RenderShadowMapImpl(app,frameMatrix,true);
     return restore.Apply()&&rendered;
 }
+
+#if !MMD_ORIGINAL_PROFILE
+namespace transparent_sort_cache {
+Statistics GetStatistics() noexcept {
+    Statistics result;
+    result.sourceHits = alphaSourceHits; result.sourceMisses = alphaSourceMisses;
+    result.objectHits = alphaObjectHits; result.objectMisses = alphaObjectMisses;
+    result.planHits = alphaPlanHits; result.planMisses = alphaPlanMisses;
+    result.gpuHits = alphaGpuHits; result.uploads = alphaUploads; result.allocations = alphaAllocations;
+    result.gpuBytes = alphaGpuBytes;
+    return result;
+}
+void Release(MMDApp* app) noexcept {
+    if (app == nullptr || alphaGpu.owner == app) ReleaseAlphaGpu();
+    alphaPlanHits = alphaPlanMisses = alphaSourceHits = alphaSourceMisses = 0;
+    alphaObjectHits = alphaObjectMisses = 0;
+    alphaGpuHits = alphaUploads = alphaAllocations = 0;
+    alphaGpuBytes = 0;
+}
+void SetEnabledForTests(bool enabled) noexcept {
+    alphaCacheEnabled = enabled;
+    if (!enabled) ReleaseAlphaGpu();
+}
+}  // namespace transparent_sort_cache
+#else
+// The original-compatible profile keeps the native order and does not use the
+// cached sorted alpha path; these stubs keep the shared release hooks valid.
+namespace transparent_sort_cache {
+Statistics GetStatistics() noexcept { return {}; }
+void Release(MMDApp*) noexcept {}
+void SetEnabledForTests(bool) noexcept {}
+}  // namespace transparent_sort_cache
+#endif
 
 }  // namespace mikumikustudio

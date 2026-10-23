@@ -67,6 +67,7 @@
 #include "mikumikustudio/texture_lookup.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "mikumikustudio/transparent_geometry.hpp"
+#include "mikumikustudio/transparent_sort_cache.hpp"
 #endif
 #include "mikumikustudio/ported_funcs.hpp"
 
@@ -691,7 +692,7 @@ void SampleFrame(const char* submitted, const D3DLOCKED_RECT& lock) {
 // layer over the clear colour gives (159,175,223) for the rear one or
 // (191,207,159) for the front one, an unblended front layer gives
 // (128,160,64), and the cleared background is (255,255,255).
-void SampleTwoLayerFrame(const char* submitted, const D3DLOCKED_RECT& lock) {
+void SampleTwoLayerFrame(const char* submitted, const D3DLOCKED_RECT& lock,bool frontOnly=false) {
     const auto within = [](int value, int expected) {
         return value >= expected - 1 && value <= expected + 1;
     };
@@ -700,13 +701,12 @@ void SampleTwoLayerFrame(const char* submitted, const D3DLOCKED_RECT& lock) {
         const int red = static_cast<int>(pixel >> 16 & 0xFF);
         const int green = static_cast<int>(pixel >> 8 & 0xFF);
         const int blue = static_cast<int>(pixel & 0xFF);
-        ExpectPixel(within(red, kTwoLayerExpectedRed) &&
-                        within(green, kTwoLayerExpectedGreen) &&
-                        within(blue, kTwoLayerExpectedBlue),
+        ExpectPixel(within(red,frontOnly ? 191 : kTwoLayerExpectedRed) &&
+                        within(green,frontOnly ? 207 : kTwoLayerExpectedGreen) &&
+                        within(blue,frontOnly ? 159 : kTwoLayerExpectedBlue),
                     x, 16, pixel, submitted, "two half-transparent layers",
-                    "the rear layer then the front layer source-over "
-                    "(about 0x90A88F); a single layer or the clear colour "
-                    "proves the draw order or the depth test went wrong");
+                    frontOnly ? "Object-local sorting keeps near-first objects (about 0xBFCF9F)" :
+                    "the rear layer then the front layer source-over (about 0x90A88F)");
     }
 }
 
@@ -794,6 +794,140 @@ void RenderOneModelScene(MMDApp* app, IDirect3DDevice9* device,
                        "read the one-model pixels");
     Check(SUCCEEDED(readback->LockRect(lock, nullptr, D3DLOCK_READONLY)),
           "lock the one-model pixels");
+}
+
+void CheckOpaqueTextureExcluded(MMDApp* app,IDirect3DDevice9* device,
+    IDirect3DSurface9* backbuffer,IDirect3DSurface9* readback,int resource,const D3DMATRIX& identity) {
+    const auto precision=app->TransparentMaterialSortPrecision();const auto scope=app->TransparentSortCrossObjects();
+    constexpr auto path=L"opaque-rgb-sort-regression.bmp";
+    IDirect3DTexture9* texture=nullptr;
+    Check(SUCCEEDED(device->CreateTexture(4,4,1,0,D3DFMT_X8R8G8B8,D3DPOOL_MANAGED,&texture,nullptr)),"opaque RGB regression texture");
+    unsigned char metadata[4]{};CacheTextureColorAndAlpha(texture,metadata);
+    PublishFixtureTexture(app->Renderer(),5,path,texture,metadata);
+    std::vector<ModelVertex> vertices;std::vector<WORD> indices;
+    AppendQuad(vertices,indices,-1.f,1.f,1.f,-1.f,.3f,.5f,.5f);
+    for(bool pmx:{false,true})for(bool cross:{false,true}) {
+        auto model=BuildModel(device,vertices,indices,std::vector<MaterialSpec>{{path,1.f,0,indices.size()}},pmx);
+        app->TransparentMaterialSortPrecision()=TransparentSortPrecision::Maximum;app->TransparentSortCrossObjects()=cross;
+        const auto before=transparent_sort_cache::GetStatistics();D3DLOCKED_RECT pixels{};
+        RenderOneModelScene(app,device,backbuffer,readback,resource,identity,model.get(),&pixels);readback->UnlockRect();
+        const auto after=transparent_sort_cache::GetStatistics();
+        Check(after.sourceMisses==before.sourceMisses && after.planMisses==before.planMisses && after.allocations==before.allocations,
+            "Maximum never projects sorts or allocates sorting buffers for an opaque texture");
+        app->ModelSlot(0)=app->ModelSlot(1)=nullptr;
+    }
+    ReleaseFixtureTexture(app->Renderer(),5,texture);
+    app->TransparentMaterialSortPrecision()=precision;app->TransparentSortCrossObjects()=scope;
+    std::printf("PASS opaque RGB excluded from Maximum, resource=%d\n",resource);
+}
+
+void CheckTransparentCache(MMDApp* app,IDirect3DDevice9* device,IDirect3DSurface9* backbuffer,
+                           IDirect3DSurface9* readback,int resource,const D3DMATRIX& identity,Model* model) {
+#if !MMD_ORIGINAL_PROFILE
+    const auto precision=app->TransparentMaterialSortPrecision();
+    app->TransparentMaterialSortPrecision()=TransparentSortPrecision::Standard;
+    D3DMATRIX transform=identity;
+    std::vector<ModelVertex> originalVertices(model->record->vertexCount);
+    void* originalData=nullptr;
+    Check(SUCCEEDED(model->vertexBuffer->Lock(0,0,&originalData,D3DLOCK_READONLY)),"snapshot fixture vertices");
+    std::memcpy(originalVertices.data(),originalData,originalVertices.size()*sizeof(ModelVertex));model->vertexBuffer->Unlock();
+    const float originalAlpha=model->materials[0].diffuse[3];
+    const auto render=[&] {
+        device->SetTransform(D3DTS_WORLD,&transform);
+        D3DLOCKED_RECT locked{};
+        RenderOneModelScene(app,device,backbuffer,readback,resource,transform,model,&locked);
+        D3DSURFACE_DESC desc{};readback->GetDesc(&desc);
+        std::vector<DWORD> pixels(std::size_t(desc.Width)*desc.Height);
+        for(UINT y=0;y<desc.Height;++y)std::memcpy(pixels.data()+std::size_t(y)*desc.Width,
+            static_cast<const char*>(locked.pBits)+std::size_t(y)*locked.Pitch,desc.Width*4);
+        readback->UnlockRect();return pixels;
+    };
+    using namespace mikumikustudio;
+    transparent_sort_cache::SetEnabledForTests(false);const auto expected=render();
+    transparent_sort_cache::SetEnabledForTests(true);Check(expected==render(),"cold transparent cache equals original projection");
+    const auto before=transparent_sort_cache::GetStatistics();
+    Check(expected==render(),"warm transparent cache has identical pixels");
+    const auto warm=transparent_sort_cache::GetStatistics();
+    Check(warm.sourceHits>before.sourceHits && warm.gpuHits>before.gpuHits && warm.uploads==before.uploads &&
+        warm.allocations==before.allocations,"warm cache skips projection, allocation and upload");
+    const auto changed=[&](auto mutate,bool changesGeometry) {
+        render();const auto old=transparent_sort_cache::GetStatistics();mutate();const auto actual=render();
+        if(changesGeometry)Check(transparent_sort_cache::GetStatistics().sourceMisses>old.sourceMisses,
+            "camera or source data change requires fresh projection");
+        transparent_sort_cache::SetEnabledForTests(false);
+        Check(actual==render(),"changed transparent inputs equal independent uncached rendering");
+        transparent_sort_cache::SetEnabledForTests(true);render();
+    };
+    changed([&]{transform._33=-1;transform._43=1;},true);
+    changed([&]{transform=identity;},true);
+    changed([&]{void* data=nullptr;Check(SUCCEEDED(model->vertexBuffer->Lock(0,0,&data,0)),"edit original source buffer");
+        auto* vertices=static_cast<ModelVertex*>(data);
+        for(UINT i=0;i<model->record->vertexCount;++i)vertices[i].z=1-vertices[i].z;
+        model->vertexBuffer->Unlock();},true);
+    changed([&]{if(model->record->physicsMode==2)std::swap(model->cpuPmxIndices[1],model->cpuPmxIndices[4]);
+        else std::swap(model->cpuIndices[2],model->cpuIndices[8]);},true);
+    changed([&]{model->materials[0].diffuse[3]=.35f;},false);
+    const auto crossObjects=app->TransparentSortCrossObjects();
+    const auto oldPlan=transparent_sort_cache::GetStatistics().planMisses;
+    changed([&]{app->TransparentSortCrossObjects()=!crossObjects;},false);
+    Check(transparent_sort_cache::GetStatistics().planMisses>oldPlan,
+        "scope toggle invalidates the cached ordering plan");
+    changed([&]{app->TransparentSortCrossObjects()=crossObjects;},false);
+    // Restore all fixture inputs before the ordinary alpha assertions below.
+    model->materials[0].diffuse[3]=originalAlpha;
+    if(model->record->physicsMode==2)std::swap(model->cpuPmxIndices[1],model->cpuPmxIndices[4]);
+    else std::swap(model->cpuIndices[2],model->cpuIndices[8]);
+    void* data=nullptr;Check(SUCCEEDED(model->vertexBuffer->Lock(0,0,&data,0)),"restore source buffer");
+    std::memcpy(data,originalVertices.data(),originalVertices.size()*sizeof(ModelVertex));
+    model->vertexBuffer->Unlock();
+    transparent_sort_cache::Release(app);
+    Check(!transparent_sort_cache::GetStatistics().sourceBytes && !transparent_sort_cache::GetStatistics().gpuBytes,
+        "reset/close release hook drops snapshot and default-pool buffers");
+    app->TransparentMaterialSortPrecision()=precision;device->SetTransform(D3DTS_WORLD,&identity);
+    std::printf("PASS transparent cache exact pixels and invalidation, resource=%d pmx=%u\n",resource,model->record->physicsMode==2);
+#endif
+}
+
+void CheckObjectCache(MMDApp* app,IDirect3DDevice9* device,IDirect3DSurface9* backbuffer,
+                      IDirect3DSurface9* readback,int resource,const D3DMATRIX& identity,
+                      Model* moving,Model* still) {
+#if !MMD_ORIGINAL_PROFILE
+    using namespace mikumikustudio;
+    const auto savedPrecision=app->TransparentMaterialSortPrecision();
+    std::vector<ModelVertex> original(moving->record->vertexCount);
+    void* data=nullptr;
+    Check(SUCCEEDED(moving->vertexBuffer->Lock(0,0,&data,D3DLOCK_READONLY)),"snapshot moving object");
+    std::memcpy(original.data(),data,original.size()*sizeof(ModelVertex));moving->vertexBuffer->Unlock();
+    const auto render=[&] {
+        D3DLOCKED_RECT locked{};
+        RenderArrangement(app,device,backbuffer,readback,resource,identity,moving,still,&locked);
+        D3DSURFACE_DESC desc{};readback->GetDesc(&desc);
+        std::vector<DWORD> pixels(std::size_t(desc.Width)*desc.Height);
+        for(UINT y=0;y<desc.Height;++y)std::memcpy(pixels.data()+std::size_t(y)*desc.Width,
+            static_cast<const char*>(locked.pBits)+std::size_t(y)*locked.Pitch,desc.Width*4);
+        readback->UnlockRect();return pixels;
+    };
+    for(auto precision:{TransparentSortPrecision::Low,TransparentSortPrecision::Standard,TransparentSortPrecision::High}) {
+        app->TransparentMaterialSortPrecision()=precision;
+        transparent_sort_cache::SetEnabledForTests(true);render();
+        const auto before=transparent_sort_cache::GetStatistics();
+        Check(SUCCEEDED(moving->vertexBuffer->Lock(0,0,&data,0)),"move only one object");
+        auto* vertices=static_cast<ModelVertex*>(data);
+        for(UINT i=0;i<moving->record->vertexCount;++i)vertices[i].x+=.15f;
+        moving->vertexBuffer->Unlock();
+        const auto actual=render();
+        const auto after=transparent_sort_cache::GetStatistics();
+        Check(after.objectHits==before.objectHits+1 && after.objectMisses==before.objectMisses+1,
+            "a moving object reprojects alone while the other object reuses its projection");
+        transparent_sort_cache::SetEnabledForTests(false);
+        Check(actual==render(),"partly reused objects exactly match fresh rendering");
+        Check(SUCCEEDED(moving->vertexBuffer->Lock(0,0,&data,0)),"restore moving object");
+        std::memcpy(data,original.data(),original.size()*sizeof(ModelVertex));moving->vertexBuffer->Unlock();
+    }
+    transparent_sort_cache::SetEnabledForTests(true);
+    app->TransparentMaterialSortPrecision()=savedPrecision;
+    std::printf("PASS object cache partial reuse, resource=%d pmx=%u\n",resource,moving->record->physicsMode==2);
+#endif
 }
 
 void RunSortOffScene(MMDApp* app, IDirect3DDevice9* device,
@@ -1238,6 +1372,7 @@ int main(int argc, char** argv) {
     bool msaaRequested = false;
     bool sortOffOnly = false;
     bool precisionRequested = false;
+    bool crossObjects = false;
     TransparentSortPrecision precision = TransparentSortPrecision::Standard;
     const char* precisionName = "standard";
     HMODULE mmeMarker = nullptr;
@@ -1257,6 +1392,8 @@ int main(int argc, char** argv) {
                 return 2;
             }
             precisionRequested = true;
+        } else if (std::strcmp(argv[i], "--cross-objects") == 0) {
+            crossObjects=true;
         } else if (std::strcmp(argv[i], "--mme-marker") == 0) {
             Check(i + 1 < argc, "MME presence marker requires a DLL path");
             mmeMarker = LoadLibraryA(argv[++i]);
@@ -1360,6 +1497,7 @@ int main(int argc, char** argv) {
     app->Renderer() = renderer.get();
     app->Hwnd() = window;
     app->EnglishUI() = 1;
+    app->TransparentSortCrossObjects() = crossObjects || !ordinary;
     app->PlaybackActive() = 1;
     if (ordinary) {
         app->TransparentMaterialSortPrecision() = precision;
@@ -1733,6 +1871,7 @@ int main(int argc, char** argv) {
             renderer->hdrTexture = toonTexture;
         }
         std::printf("renderer resource=%d\n", resource);
+        if(ordinary)CheckOpaqueTextureExcluded(app.get(),device,backbuffer,readback,resource,identity);
         if (sortOffOnly) {
             RunSortOffScene(app.get(), device, backbuffer, readback, resource, identity);
             if (renderer->effect) {
@@ -1916,6 +2055,11 @@ int main(int argc, char** argv) {
             continue;
         }
 
+    CheckTransparentCache(app.get(),device,backbuffer,readback,resource,identity,twoLayerFrontFirstAssembly.get());
+    CheckTransparentCache(app.get(),device,backbuffer,readback,resource,identity,pmxTwoLayerFrontFirstAssembly.get());
+    CheckObjectCache(app.get(),device,backbuffer,readback,resource,identity,twoLayerFrontModel.get(),twoLayerRearModel.get());
+    CheckObjectCache(app.get(),device,backbuffer,readback,resource,identity,pmxTwoLayerFrontModel.get(),pmxTwoLayerRearModel.get());
+
     // Both arrangements place the two models in opposite slots and give them
     // opposite combo indexes, so the model walk submits them in the opposite
     // order. The far surface first is the order that already renders correctly
@@ -1967,7 +2111,7 @@ int main(int argc, char** argv) {
         SampleTwoLayerFrame(arrangement == 0
                                 ? "two models, front layer first"
                                 : "two models, rear layer first",
-                            lock);
+                            lock,arrangement==0 && !app->TransparentSortCrossObjects());
         readback->UnlockRect();
         std::printf("two-model arrangement %d sampled 3 pixels\n", arrangement);
     }
@@ -1984,7 +2128,7 @@ int main(int argc, char** argv) {
         SampleTwoLayerFrame(arrangement == 0
                                 ? "large material model first, front model second"
                                 : "front model first, large material model second",
-                            lock);
+                            lock,arrangement==1 && !app->TransparentSortCrossObjects());
         readback->UnlockRect();
         std::printf("large-material arrangement %d sampled 3 pixels\n",
                     arrangement);
@@ -2046,7 +2190,7 @@ int main(int argc, char** argv) {
         SampleTwoLayerFrame(arrangement == 0
                                 ? "PMX two models, front layer first"
                                 : "PMX two models, rear layer first",
-                            lock);
+                            lock,arrangement==0 && !app->TransparentSortCrossObjects());
         readback->UnlockRect();
         std::printf("pmx two-model arrangement %d sampled 3 pixels\n",
                     arrangement);
@@ -2181,6 +2325,7 @@ int main(int argc, char** argv) {
 #endif
     app->ModelSlot(0) = nullptr;
     app->ModelSlot(1) = nullptr;
+    mikumikustudio::transparent_sort_cache::Release(app.get());
     readback->Release();
     if (g_resolveTarget) {
         g_resolveTarget->Release();

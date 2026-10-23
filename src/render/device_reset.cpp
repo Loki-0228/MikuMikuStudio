@@ -5,6 +5,7 @@
 #include "mikumikustudio/native_mesh.hpp"
 #include "mikumikustudio/plugin_storage.hpp"
 #include "mikumikustudio/transparent_capture.hpp"
+#include "mikumikustudio/transparent_sort_cache.hpp"
 #include "mikumikustudio/build_profile.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "mikumikustudio/transparent_peeling.hpp"
@@ -61,6 +62,7 @@ bool PostDeviceReset(MMDApp* app) {
     viewport_render_scale::Release(app);
     antialias::Release(app);
     ReleaseTransparentCapture(app);
+    transparent_sort_cache::Release(app);
     mmv4mms::DeviceLost();
     native_mesh::DeviceLost();
     ReleaseSubSlot(app->CaptureTexture());                        // 0x440DC8
