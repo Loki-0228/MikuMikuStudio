@@ -182,6 +182,18 @@ void Basic(const fs::path& root) {
         Check(d.Remove(info)==Result::DeletePending,"exclusive same-handle disposition accepted");
         Check(!fs::exists(path/info.name)&&d.Acquire(info,lease)==Result::Missing,"removed generation eventually absent after handle closes");
     }
+    {
+        const Bytes pagePayload{0x4d,0x4d,0x53,0x00,0xff};
+        const auto page=Create(d,pagePayload,files::Kind::IndexPage);
+        Envelope(path,page,pagePayload);
+        files::ReadLease pageLease;
+        Check(d.Acquire(page,pageLease)==Result::Ok&&pageLease.Info().spec.kind==files::Kind::IndexPage,
+            "index page file kind survives actual creation and same-handle acquisition");
+        ReadEquals(pageLease,pagePayload);
+        Check(d.Remove(page)==Result::Busy,"actual index page lease blocks removal");
+        pageLease={};
+        Check(d.Remove(page)==Result::DeletePending&&!fs::exists(path/page.name),"unleased index page generation can be removed");
+    }
     const Bytes oldPayload{1,2,3},newPayload{8,9};
     const auto oldInfo=Create(d,oldPayload);files::ReadLease oldLease;
     Check(d.Acquire(oldInfo,oldLease)==Result::Ok,"lease old generation");

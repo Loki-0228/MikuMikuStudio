@@ -37,7 +37,7 @@ bool OwnerValid(const Owner& owner) noexcept {
 }
 bool SpecValid(const Spec& spec) noexcept {
     return OwnerValid(spec.owner) && (spec.kind == Kind::Effect || spec.kind == Kind::Texture ||
-        spec.kind == Kind::CatalogSnapshot || spec.kind == Kind::CatalogCommit || spec.kind == Kind::CatalogCheckpoint);
+        spec.kind == Kind::CatalogSnapshot || spec.kind == Kind::CatalogCommit || spec.kind == Kind::CatalogCheckpoint || spec.kind == Kind::IndexPage);
 }
 bool NameValid(const std::wstring& name) noexcept {
     if (name.size() != 37 || name.compare(32, 5, L".blob") != 0) return false;
