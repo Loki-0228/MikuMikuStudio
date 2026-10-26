@@ -111,7 +111,90 @@ static bool Retirement() {
     api.clearFrameCallback(api.context); api.clearPhaseCallback(api.context);
     return true;
 }
+struct LeaseReentry {
+    RenderService* service;
+    MmsRenderApiV1 api;
+    MmsHandle self=0, other=0, fresh=123;
+    MmsResult selfResult=MMS_OK, otherResult=MMS_E_NOT_FOUND, acquireResult=MMS_OK;
+    MmsRenderInfoV1 before{}, after{};
+    unsigned calls=0;
+    bool callbackActive=false;
+};
+static void MMS_CALL CancelOtherLease(void* p) {
+    auto& s=*static_cast<LeaseReentry*>(p); ++s.calls;
+    s.callbackActive=s.service->InCallback();
+    s.api.query(s.api.context,&s.before);
+    s.selfResult=s.api.releaseLease(s.api.context,s.self);
+    s.otherResult=s.api.releaseLease(s.api.context,s.other);
+    // Nested loss must not dispatch anything. A restore attempted by a release
+    // callback must not make the device available before the drain completes.
+    s.service->DeviceLost(999);
+    s.service->DeviceRestored(1000);
+    s.api.query(s.api.context,&s.after);
+    MmsRenderLeaseDescV1 desc{Header<MmsRenderLeaseDescV1>(),{"nested",6},CancelOtherLease,&s,MMS_RENDER_LEASE_DEVICE,0};
+    s.acquireResult=s.api.acquireLease(s.api.context,&desc,&s.fresh);
+}
+static bool CancelDuringLoss() {
+    RenderService service; RenderService::Client a,b; a.id="leases.a"; b.id="leases.b";
+    auto aa=service.Api(a),bb=service.Api(b); Seen canceled,unrelated;
+    LeaseReentry reentry{&service,aa};
+    MmsRenderLeaseDescV1 first{Header<MmsRenderLeaseDescV1>(),{"first",5},CancelOtherLease,&reentry,MMS_RENDER_LEASE_DEVICE,0};
+    MmsRenderLeaseDescV1 next{Header<MmsRenderLeaseDescV1>(),{"canceled",8},Released,&canceled,MMS_RENDER_LEASE_DEVICE,0};
+    CHECK(aa.acquireLease(aa.context,&first,&reentry.self)==MMS_OK);
+    CHECK(aa.acquireLease(aa.context,&next,&reentry.other)==MMS_OK);
+    MmsHandle foreign=0; next.context=&unrelated;
+    CHECK(bb.acquireLease(bb.context,&next,&foreign)==MMS_OK);
+    CHECK(aa.releaseLease(aa.context,foreign)==MMS_E_NOT_FOUND);
+    // Draining must not require an allocation, including when callbacks cancel
+    // pending entries or try to acquire a replacement.
+    failAllocation=true; allocationHits=0; service.DeviceLost(7); failAllocation=false;
+    CHECK(allocationHits==0);
+    CHECK(reentry.calls==1 && reentry.callbackActive && !service.InCallback());
+    CHECK(reentry.selfResult==MMS_E_NOT_FOUND && reentry.otherResult==MMS_OK);
+    CHECK(reentry.acquireResult==MMS_E_NOT_READY && reentry.fresh==123);
+    CHECK(reentry.before.lost==1 && reentry.after.lost==1);
+    CHECK(reentry.before.deviceGeneration==7 && reentry.after.deviceGeneration==7);
+    CHECK(canceled.releases==0 && unrelated.releases==1);
+    service.DeviceLost(7);
+    CHECK(reentry.calls==1 && unrelated.releases==1);
+    MmsHandle sentinel=456;
+    CHECK(aa.acquireLease(aa.context,&next,&sentinel)==MMS_E_NOT_READY && sentinel==456);
+    service.DeviceRestored(8);
+    MmsRenderInfoV1 info{}; CHECK(aa.query(aa.context,&info)==MMS_OK && !info.lost && info.deviceGeneration==8);
+    CHECK(aa.acquireLease(aa.context,&next,&sentinel)==MMS_OK && sentinel!=456);
+    CHECK(aa.releaseLease(aa.context,sentinel)==MMS_OK);
+    service.DeviceLost(8);
+    CHECK(unrelated.releases==1); // Explicit release only cancels registration.
+    return true;
+}
+struct DropLeases { RenderService* service; RenderService::Client* client; unsigned calls=0; };
+static void MMS_CALL DropDuringLoss(void* p) {
+    auto& s=*static_cast<DropLeases*>(p); ++s.calls; s.service->DropClient(s.client->id);
+    throw 7; // A failing callback must not prevent another client's cleanup.
+}
+static bool DropAndThrowDuringLoss() {
+    RenderService service; RenderService::Client a,b; a.id="drop.a"; b.id="drop.b";
+    auto aa=service.Api(a),bb=service.Api(b); Seen canceled,unrelated;
+    DropLeases drop{&service,&a}; MmsHandle first=0,second=0,third=0;
+    MmsRenderLeaseDescV1 desc{Header<MmsRenderLeaseDescV1>(),{"drop",4},DropDuringLoss,&drop,MMS_RENDER_LEASE_DEVICE,0};
+    CHECK(aa.acquireLease(aa.context,&desc,&first)==MMS_OK);
+    desc.release=Released;desc.context=&canceled;
+    CHECK(aa.acquireLease(aa.context,&desc,&second)==MMS_OK);
+    desc.context=&unrelated;
+    CHECK(bb.acquireLease(bb.context,&desc,&third)==MMS_OK);
+    service.DeviceLost(2);
+    CHECK(drop.calls==1 && a.retired && !service.InCallback());
+    CHECK(canceled.releases==0 && unrelated.releases==1);
+    CHECK(aa.releaseLease(aa.context,second)==MMS_E_NOT_FOUND);
+    service.DeviceRestored(3); MmsHandle sentinel=456;
+    CHECK(aa.acquireLease(aa.context,&desc,&sentinel)==MMS_E_NOT_READY && sentinel==456);
+    CHECK(bb.acquireLease(bb.context,&desc,&sentinel)==MMS_OK);
+    service.DeviceLost(3);
+    CHECK(unrelated.releases==2 && canceled.releases==0 && drop.calls==1);
+    return true;
+}
 int main() {
-    const bool ok=IndependentCallbacks() && AllocationAndExceptions() && FailedRegistration(false) && FailedRegistration(true) && Retirement();
+    const bool ok=IndependentCallbacks() && AllocationAndExceptions() && FailedRegistration(false) && FailedRegistration(true) && Retirement()
+        && CancelDuringLoss() && DropAndThrowDuringLoss();
     std::printf("render callbacks %s checks=%u\n",ok?"PASS":"FAIL",checks); return ok?0:1;
 }

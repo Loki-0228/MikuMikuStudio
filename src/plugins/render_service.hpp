@@ -60,6 +60,9 @@ private:
     std::vector<Client*> clients_;
     MmsHandle next_ = 1;
     unsigned callbackDepth_ = 0;
+    // True while ReleaseAll is dispatching lease release callbacks. The drain
+    // owns the lease map, so nested device events must not dispatch again.
+    bool draining_ = false;
     uint64_t generation_ = 1, frameIndex_ = 0;
     uint32_t lost_ = 0, width_ = 0, height_ = 0, format_ = 0;
 };

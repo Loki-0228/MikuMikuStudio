@@ -1,4 +1,4 @@
-# mms.render 1.0 参考
+# mms.render 1.0–1.2 参考
 
 `mms.render` 提供渲染设备代次、丢失状态与设备资源租约。宿主在完整配置的生产插件运行时中提供该服务；原始兼容配置不初始化生产插件运行时。
 
@@ -17,13 +17,13 @@ if (render.query(render.context, &info) == MMS_OK) {
 }
 ```
 
-`lost` 为 1 表示设备处于丢失状态；恢复后设备代次递增。帧序号、后缓冲尺寸与格式当前保留为 0。
+`lost` 为 1 表示设备处于丢失状态；恢复后设备代次递增。尺寸和格式更新要求宿主成功读取后缓冲信息。
 
 ## 设备租约
 
 ```c
 static void MMS_CALL ReleaseDevice(void* context) {
-    // 只释放设备相关对象；回调在 UI 线程、插件回调之外执行。
+    // 只释放设备相关对象；回调在 UI 线程执行。
 }
 MmsRenderLeaseDescV1 desc = {0};
 desc.h = (MmsHeader){sizeof(desc), 1, 0};
@@ -36,9 +36,15 @@ render.acquireLease(render.context, &desc, &lease);
 
 设备丢失时宿主调用释放回调并清空租约；设备恢复后插件应重新获取。插件停止时租约被静默丢弃，释放回调不会在停止流程中调用。显式 `releaseLease` 只移除租约，不调用释放回调（插件已经释放了自己的资源）。
 
+释放回调开始前，该租约已从登记表移除，因此在回调内取消自身返回 `MMS_E_NOT_FOUND`。回调可以取消同一插件尚未执行的其他租约；成功取消后宿主不会再调用该租约的释放函数。取消不属于当前插件的租约仍被拒绝。回调抛出异常不会阻止其余租约清理。
+
+设备丢失或释放进行中不能登记新租约。释放回调中的重复丢失、恢复通知不会递归派发或提前恢复设备；本轮释放完成后仍需正常的恢复通知。插件应在设备恢复事件后重新申请租约。
+
 ## 错误
 
-- 停止期查询返回 `MMS_E_NOT_READY`；
+- 停止期通过 `queryService` 获取服务返回 `MMS_E_NOT_READY`；
+- 已退休插件登记回调或申请租约返回 `MMS_E_NOT_READY`；
+- 设备丢失或释放进行中申请租约返回 `MMS_E_NOT_READY`，输出句柄不变；
 - 空描述、缺少释放回调、未知标志或超长名称返回 `MMS_E_ARGUMENT`；
 - 释放不属于当前插件的租约返回 `MMS_E_NOT_FOUND`。
 
@@ -56,7 +62,7 @@ render.clearFrameCallback(render.context);
 
 ## 帧阶段回调（1.2）
 
-1.2 在 1.1 上追加 `setPhaseCallback`／`clearPhaseCallback`。宿主在帧工作开始前调用 BEGIN、在成功 Present 后调用 END，回调收到当前帧信息与阶段值，运行在 UI 线程、插件回调之外，必须轻量只读。1.0/1.1 查询仍返回原表。
+1.2 在 1.1 上追加 `setPhaseCallback`／`clearPhaseCallback`。DX9 FrameDriver 通过设备恢复与场景修改检查后调用 BEGIN，在成功 Present 后调用 END。局部重绘共用该通知入口。BEGIN 表示一次绘制尝试，不保证有对应 END；没有呈现或呈现失败时不发送 END。回调收到当前帧信息与阶段值，运行在 UI 线程，必须轻量只读。其他插件回调内再次进入帧通知入口会跳过该次通知。1.0/1.1 查询仍返回原表。
 
 ## C++17 封装
 
@@ -75,4 +81,4 @@ if (mms::sdk::RenderServices::Query(host, services) == MMS_OK) {
 
 ## 当前边界
 
-帧生命周期、DX9 帧钩子、post 处理、后缓冲信息、租约分类与多视图渲染尚未提供；C++17 包装未提供。真实设备丢失与 Win7/AMD 真机验收仍待外部环境。
+已提供 DX9 FrameDriver 的帧通知、后缓冲信息与 C++17 包装。post 处理、租约分类、完整多视图渲染、DX12 原生与 BakePreview 独立呈现路径尚未统一。设备丢失释放回调仍可能从其他插件回调重入，Reset 前释放顺序待补齐，因此不能依赖释放回调始终位于其他插件回调之外。真实设备丢失与 Win7、AMD 真机验收仍待外部环境。

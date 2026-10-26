@@ -2,6 +2,9 @@
 
 namespace mikumikustudio::plugins {
 void RenderService::DeviceLost(uint64_t generation) noexcept {
+    // A loss reported from inside a release callback belongs to the drain already
+    // in progress; it must not replace the generation or dispatch again.
+    if (draining_) return;
     generation_ = generation ? generation : generation_;
     lost_ = 1;
     ReleaseAll("device lost");
@@ -84,6 +87,9 @@ void RenderService::ClearFrameCallback(Client& client) {
     if (!client.phase) clients_.erase(std::remove(clients_.begin(), clients_.end(), &client), clients_.end());
 }
 void RenderService::DeviceRestored(uint64_t generation) noexcept {
+    // A restore reported from inside a release callback is premature: the drain
+    // is still walking leases, so the device remains lost until it completes.
+    if (draining_) return;
     if (generation) generation_ = generation;
     lost_ = 0;
 }
@@ -164,6 +170,7 @@ MmsResult RenderService::Query(MmsRenderInfoV1* out) const {
 }
 MmsResult RenderService::Acquire(Client& client, const MmsRenderLeaseDescV1* desc, MmsHandle* out) {
     if (client.retired) return MMS_E_NOT_READY;
+    if (lost_ || draining_) return MMS_E_NOT_READY;
     if (!desc || !out || !Valid(desc) || !desc->release || (desc->flags & ~MMS_RENDER_LEASE_DEVICE) || desc->reserved) {
         return MMS_E_ARGUMENT;
     }
@@ -195,8 +202,18 @@ void RenderService::Invoke(Lease& lease, const char* reason) noexcept {
     }
 }
 void RenderService::ReleaseAll(const char* reason) noexcept {
-    auto leases = std::move(leases_);
-    leases_.clear();
-    for (auto& [handle, lease] : leases) Invoke(lease, reason);
+    // The lease map stays live while callbacks run: a callback may cancel a
+    // lease that has not been released yet, and that entry must disappear before
+    // its release callback could run against a destroyed context. Extract one
+    // node at a time so no iterator or reference into the map survives a
+    // callback; nested drains return immediately because the outer loop already
+    // owns the map.
+    if (draining_) return;
+    draining_ = true;
+    while (!leases_.empty()) {
+        auto node = leases_.extract(leases_.begin());
+        Invoke(node.mapped(), reason);
+    }
+    draining_ = false;
 }
 }
