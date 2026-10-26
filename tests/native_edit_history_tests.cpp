@@ -929,6 +929,9 @@ int main(int argc,char** argv){
         run("NativeDisplayRegistrationChecks",NativeDisplayRegistrationChecks);
         std::printf("PASS native registration: %u checks\n",checks);return 0;
     }
+    if(argc==2&&!std::strcmp(argv[1],"--bone-evaluation-only")) {
+        NativeBoneEvaluationChecks();std::printf("PASS native bone evaluation: %u checks\n",checks);return 0;
+    }
     if(argc != 1) { std::fprintf(stderr,"Unknown native history test mode\n");return 2; }
     run("NativeVpdImportChecks",NativeVpdImportChecks);
     run("NativeShadowAmbientChecks",NativeShadowAmbientChecks);

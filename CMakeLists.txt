@@ -241,6 +241,12 @@ if(MIKUMIKUSTUDIO_PROFILE STREQUAL "full")
     target_link_libraries(bone_curve_copy_tests PRIVATE mikumikustudio_core winmm dsound)
     set_target_properties(bone_curve_copy_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
     add_test(NAME bone_curve_copy_tests COMMAND bone_curve_copy_tests)
+    foreach(snapshot_test bone_motion_snapshot_tests bone_curve_sampling_tests)
+        add_executable(${snapshot_test} EXCLUDE_FROM_ALL tests/${snapshot_test}.cpp)
+        target_link_libraries(${snapshot_test} PRIVATE mikumikustudio_core winmm dsound)
+        set_target_properties(${snapshot_test} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+        add_test(NAME ${snapshot_test} COMMAND ${snapshot_test})
+    endforeach()
     target_link_libraries(animation_curve_host_tests PRIVATE mikumikustudio_core winmm dsound)
     set_target_properties(animation_curve_host_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
     add_test(NAME animation_curve_host_tests COMMAND animation_curve_host_tests)
@@ -340,6 +346,7 @@ add_library(mikumikustudio_core STATIC
     src/animation/negative_frames.cpp
     src/window/sequence_scatter_dialog.cpp
     src/animation/bone_curve.cpp
+    src/animation/bone_motion_snapshot.cpp
     src/window/frame_rate_dialog.cpp
     src/window/animation_curve_host_ui.cpp
     src/render/native_mesh.cpp
@@ -552,6 +559,7 @@ if(MIKUMIKUSTUDIO_PROFILE STREQUAL "mmd932")
         src/animation/sequence_scatter.cpp src/window/sequence_scatter_dialog.cpp
         src/model/bone_scale.cpp src/physics/physics_scale.cpp
         src/animation/animation_curve_host.cpp src/animation/morph_curve.cpp src/animation/bone_curve.cpp
+        src/animation/bone_motion_snapshot.cpp
         src/window/animation_curve_host_ui.cpp src/window/frame_rate_dialog.cpp
         src/animation/frame_rate_correction.cpp src/animation/native_frame_retime.cpp
         src/window/physics_bake_dialog.cpp src/physics/physics_bake.cpp

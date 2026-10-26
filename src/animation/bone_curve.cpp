@@ -632,6 +632,26 @@ std::uint64_t SnapshotHash(const std::vector<NativeKey>& native) noexcept {
     return hash;
 }
 }
+namespace {
+// One copy of the free-curve arithmetic for live authoring and detached
+// sampling. Results are written directly, so AuthoringState::Sample keeps its
+// existing publication semantics; a caller that publishes only finite values
+// evaluates into locals first.
+void SampleTracks(const Tracks& tracks,double frame,float position[3],float rotation[4],bone_scale::Matrix& scale) {
+    for(int channel=0;channel<3;++channel)position[channel]=float(ac::Evaluate(tracks[channel],frame).value);
+    Quaternion(tracks,frame,rotation);
+    scale=Scale(tracks,frame,scale);
+}
+// Saturating retained-byte arithmetic shared by the capture budget and the
+// charge reported by RetainedBytes.
+void AddRetainedBytes(std::uint64_t& total,std::uint64_t count,std::uint64_t stride) noexcept {
+    if(stride&&count>(UINT64_MAX-total)/stride)total=UINT64_MAX;
+    else total+=count*stride;
+}
+using SamplingTracks=std::map<int,Tracks>;
+// The extra node covers the MSVC tree sentinel and its links/alignment.
+constexpr std::uint64_t samplingNodeBytes=sizeof(SamplingTracks::value_type)+4*sizeof(void*);
+}
 struct AuthoringState::Impl {
     const unsigned char* model=nullptr;
     const void* bones=nullptr;
@@ -784,9 +804,7 @@ bool AuthoringState::Sample(int bone,double frame,std::uint64_t targetNativeHash
         !position||!rotation||!targetNativeHash||impl_->storedIdentity!=impl_->bones)return false;
     const auto found=impl_->curves.find(bone);
     if(found==impl_->curves.end()||found->second.nativeHash!=targetNativeHash)return false;
-    const auto& tracks=found->second.tracks;
-    for(int channel=0;channel<3;++channel)position[channel]=float(ac::Evaluate(tracks[channel],frame).value);
-    Quaternion(tracks,frame,rotation);scale=Scale(tracks,frame,scale);return true;
+    SampleTracks(found->second.tracks,frame,position,rotation,scale);return true;
 }
 std::uint64_t AuthoringState::RetainedBytes() const noexcept {
     std::uint64_t bytes=sizeof(*this);if(!impl_)return bytes;
@@ -804,6 +822,97 @@ std::uint64_t AuthoringState::RetainedBytes() const noexcept {
         add(entry.second.baseline.capacity(),sizeof(NativeKey));
         add(1,registrationNodeBytes);add(entry.second.registrations.size(),registrationNodeBytes);
     }
+    return bytes;
+}
+struct SamplingState::Impl {
+    SamplingTracks tracks;
+};
+SamplingState::SamplingState()=default;
+SamplingState::~SamplingState()=default;
+SamplingState::SamplingState(SamplingState&&) noexcept=default;
+SamplingState& SamplingState::operator=(SamplingState&&) noexcept=default;
+std::unique_ptr<SamplingState> SamplingState::Capture(const unsigned char* model,
+    std::uint64_t maxRetainedBytes) {
+    if(!model)throw std::invalid_argument("bone curve sampling model");
+    const auto* record=mdl::Mdl(model);
+    if(record->boneCount&&!record->boneTable)throw std::invalid_argument("bone curve sampling bones");
+    // Read the side table directly: Current would erase a stale owner, and no
+    // capture path may synchronize, prune or otherwise rewrite live authoring.
+    const State* source=nullptr;
+    const auto found=states.find(model);
+    if(found!=states.end()){
+        // A range retime is a partial native operation even after its identity
+        // goes stale, so refuse it before the identity comparison like CopyState.
+        if(found->second.deferredEdits)throw std::invalid_argument("bone curve sampling deferred source");
+        if(found->second.identity==record->boneTable)source=&found->second;
+    }
+    // The empty snapshot already charges its private object, one map sentinel
+    // allowance and the node allowance for each captured entry.
+    std::uint64_t lower=sizeof(SamplingState);
+    AddRetainedBytes(lower,1,sizeof(Impl));
+    AddRetainedBytes(lower,1,samplingNodeBytes);
+    if(lower>maxRetainedBytes)throw std::length_error("bone curve sampling budget");
+    if(source){
+        // Key counts are lower bounds for the final vector capacities. Refuse a
+        // clearly over-budget source before copying any track storage.
+        for(const auto& pair:source->curves){
+            AddRetainedBytes(lower,1,samplingNodeBytes);
+            for(const auto& track:pair.second.tracks)AddRetainedBytes(lower,track.keys.size(),sizeof(ac::Key));
+            if(lower>maxRetainedBytes)throw std::length_error("bone curve sampling budget");
+        }
+    }
+    auto result=std::unique_ptr<SamplingState>(new SamplingState);
+    result->impl_=std::make_unique<Impl>();
+    if(source)for(const auto& pair:source->curves){
+        const int bone=pair.first;
+        if(bone<0||unsigned(bone)>=record->boneCount)throw std::invalid_argument("bone curve sampling bone");
+        Entry entry=pair.second;
+        const auto sourceHash=Hash(model,bone);
+        if(!sourceHash)throw std::invalid_argument("bone curve sampling source chain");
+        if(sourceHash!=entry.nativeHash||!entry.registrations.empty()){
+            std::vector<NativeKey> fresh;
+            if(!Snapshot(model,bone,fresh))throw std::invalid_argument("bone curve sampling source snapshot");
+            if(!ReconcileSnapshot(entry,sourceHash,std::move(fresh)))
+                throw std::invalid_argument("bone curve sampling source reconciliation");
+        }
+        // A frozen sample keeps the reconciled tracks only. The source-native
+        // baseline, registrations and hash stay in the live side table.
+        result->impl_->tracks.emplace(bone,std::move(entry.tracks));
+    }
+    if(result->RetainedBytes()>maxRetainedBytes)throw std::length_error("bone curve sampling budget");
+    return result;
+}
+bool SamplingState::Sample(int bone,double frame,float position[3],float rotation[4],
+    bone_scale::Matrix& scale) const noexcept {
+    if(!impl_||bone<0||!position||!rotation||!std::isfinite(frame)||
+        frame<0||frame>double(frame_limits::maximum))return false;
+    const auto found=impl_->tracks.find(bone);
+    if(found==impl_->tracks.end())return false;
+    // Evaluate into locals so a nonfinite result cannot partially publish.
+    float sampledPosition[3];
+    float sampledRotation[4];
+    bone_scale::Matrix sampledScale=scale;
+    SampleTracks(found->second,frame,sampledPosition,sampledRotation,sampledScale);
+    for(int channel=0;channel<3;++channel)if(!std::isfinite(sampledPosition[channel]))return false;
+    for(int channel=0;channel<4;++channel)if(!std::isfinite(sampledRotation[channel]))return false;
+    for(int component=0;component<9;++component)if(!std::isfinite(sampledScale.v[component]))return false;
+    for(int channel=0;channel<3;++channel)position[channel]=sampledPosition[channel];
+    for(int channel=0;channel<4;++channel)rotation[channel]=sampledRotation[channel];
+    scale=sampledScale;
+    return true;
+}
+bool SamplingState::Contains(int bone) const noexcept {
+    return impl_&&impl_->tracks.find(bone)!=impl_->tracks.end();
+}
+std::uint64_t SamplingState::RetainedBytes() const noexcept {
+    std::uint64_t bytes=sizeof(*this);
+    if(!impl_)return bytes;
+    AddRetainedBytes(bytes,1,sizeof(Impl));
+    AddRetainedBytes(bytes,1,samplingNodeBytes);
+    AddRetainedBytes(bytes,impl_->tracks.size(),samplingNodeBytes);
+    for(const auto& pair:impl_->tracks)
+        for(const auto& track:pair.second)
+            AddRetainedBytes(bytes,track.keys.capacity(),sizeof(ac::Key));
     return bytes;
 }
 struct AuthoringRestore::Impl {

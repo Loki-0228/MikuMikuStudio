@@ -143,6 +143,48 @@ public:
     // includes a conservative node/link allowance, not CRT heap bookkeeping.
     std::uint64_t RetainedBytes() const noexcept;
 };
+// Fully owned immutable samples of the free-curve layer for frozen motion.
+// Capture copies and privately reconciles the source tracks against their
+// native keys exactly like CopyState, then drops the native baseline,
+// registrations and hashes. The result holds no model, native or callback
+// pointer, no undo ring and no hash that needs live validation, so Sample stays
+// valid after the source model is edited or destroyed. The model is required
+// only during Capture; the caller serializes Capture with model edits.
+// A null or invalid model throws std::invalid_argument. A missing or stale
+// source identity yields an empty snapshot without erasing the source. A
+// nonzero deferred edit, an invalid entry, an invalid native chain or a failed
+// reconciliation throws std::invalid_argument. No failure changes live source
+// state. The budget limits retained bytes, including the empty snapshot base
+// overhead, and is checked against source size lower bounds before copying and
+// against final capacities before return; exceeding it throws std::length_error.
+// Peak temporary capture allocation is not covered by the budget.
+class SamplingState {
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+    SamplingState();
+public:
+    ~SamplingState();
+    SamplingState(SamplingState&&) noexcept;
+    SamplingState& operator=(SamplingState&&) noexcept;
+    SamplingState(const SamplingState&) = delete;
+    SamplingState& operator=(const SamplingState&) = delete;
+    static std::unique_ptr<SamplingState> Capture(const unsigned char* model,
+        std::uint64_t maxRetainedBytes = 64ull * 1024 * 1024);
+    // Allocation-free const read of one captured bone. A missing bone, an
+    // invalid output pointer or a negative/nonfinite/out-of-range frame is
+    // refused. Only finite results are published; false leaves outputs
+    // untouched. Valid after the source model is gone.
+    bool Sample(int bone,double frame,float position[3],float rotation[4],
+        bone_scale::Matrix& scale) const noexcept;
+    // Existence of an owned free-curve author for this bone, independent of
+    // whether the requested frame produces a valid sample. A present author
+    // must not silently fall back to the native motion; Sample reports the
+    // invalid output instead.
+    bool Contains(int bone) const noexcept;
+    // Actual key capacities plus a conservative map node allowance, saturating
+    // at UINT64_MAX.
+    std::uint64_t RetainedBytes() const noexcept;
+};
 class AuthoringRestore {
     struct Impl;
     std::unique_ptr<Impl> impl_;
