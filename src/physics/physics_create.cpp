@@ -54,6 +54,8 @@
 #include "mikumikustudio/physics_scene.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
 
+#include "../model/bone_pose_prepare.hpp"
+
 namespace mikumikustudio {
 namespace {
 
@@ -690,37 +692,12 @@ void SetPhysicsMode(unsigned char* m, int afterPhysics,
                     unsigned char* const* modelSlots, int physicsMode) {
     MMD_PERF_SCOPE(Pose);
     mdl::ModelRecord& model = *mdl::Mdl(m);
-    const int boneCount = model.boneCount;
-    mikumikustudio::mdl::BoneRecord* bones = mikumikustudio::mdl::Bones(m);
-    for (int i = 0; i < boneCount; ++i) {
-        mikumikustudio::mdl::BoneRecord* bone = &bones[i];
-        const unsigned char flag = bone->hasRigidBody;
-        if (((physicsMode == 1 || (physicsMode >= 2 && bone->physicsDisabled == 0)) && flag) != 0) {
-            std::memcpy(bone->physicsOffset, bone->ikBackup, 12);           // pos
-            std::memcpy(bone->physicsQuat, bone->ikBackup + 3, 16);           // quat
-        } else {
-            std::memcpy(bone->physicsOffset, bone->trans, 12);
-            std::memcpy(bone->physicsQuat, bone->rotQuat, 16);
-        }
-    }
 
-    if (model.physicsMode == 2) {
-        const int recCount = mdl::BoneMorphOffsetCount(m);
-        mdl::BoneMorphOffsetRecord* records = mdl::BoneMorphOffsets(m);
-        for (int i = 0; i < recCount; ++i) {
-            const mdl::BoneMorphOffsetRecord& record = records[i];
-            if (record.boneIndex < 0 || record.boneIndex >= boneCount) continue;
-            mikumikustudio::mdl::BoneRecord* bone = &bones[record.boneIndex];
-            bone->physicsOffset[0] += record.translation[0];
-            bone->physicsOffset[1] += record.translation[1];
-            bone->physicsOffset[2] += record.translation[2];
-            float out[4];
-            QuatMultiply(out,
-                         reinterpret_cast<const float*>(bone->physicsQuat),
-                         record.rotation);
-            std::memcpy(bone->physicsQuat, out, 16);
-        }
-    }
+    detail::PrepareBonePose(
+        model, physicsMode,
+        [](float out[4], const float* a, const float* b) {
+            QuatMultiply(out, a, b);
+        });
 
     const int maxLayer = model.maxBoneLayer;
     for (int i = 0; i <= maxLayer; ++i)

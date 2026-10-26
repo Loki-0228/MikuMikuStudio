@@ -72,6 +72,8 @@
 #include "mikumikustudio/d3dx_dyn.hpp"
 #include "mikumikustudio/model.hpp"
 
+#include "bone_pose_prepare.hpp"
+
 namespace mikumikustudio {
 namespace {
 
@@ -1487,6 +1489,19 @@ void BoneFrameTransformPrivate(mdl::ModelRecord& ownedModel,
     RunFivePhases(d3, reinterpret_cast<unsigned char*>(&ownedModel),
                   afterPhysics, layer, ownedModelSlots, physicsMode,
                   /*allowDiagnostics=*/false);
+}
+
+// Independent pose preparation: the same shared loop as the legacy entry, with
+// the quaternion product taken from the context's frozen D3DX table.  No
+// global d3dx lookup, no scale restore and no diagnostics.
+void BonePreparePosePrivate(mdl::ModelRecord& ownedModel, int physicsMode,
+                            const BoneTransformContext& context) {
+    const d3dx::Api& api = context.impl_->api;
+    detail::PrepareBonePose(
+        ownedModel, physicsMode,
+        [&api](float out[4], const float* a, const float* b) {
+            api.quatMultiply(out, a, b);
+        });
 }
 
 }  // namespace mikumikustudio

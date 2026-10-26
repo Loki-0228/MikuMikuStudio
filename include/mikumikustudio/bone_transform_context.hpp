@@ -26,6 +26,8 @@ private:
     friend void BoneFrameTransformPrivate(
         mdl::ModelRecord&, unsigned char, int, unsigned char* const*, int,
         const BoneTransformContext&);
+    friend void BonePreparePosePrivate(
+        mdl::ModelRecord&, int, const BoneTransformContext&);
 };
 
 // Executes the native five passes for ONE layer and physics channel.
@@ -40,5 +42,17 @@ void BoneFrameTransformPrivate(
     mdl::ModelRecord& ownedModel, unsigned char afterPhysics, int layer,
     unsigned char* const* ownedModelSlots, int physicsMode,
     const BoneTransformContext& context);
+
+// Reset every bone's physicsOffset/physicsQuat from its registered local pose
+// or supplied ikBackup, then compose the model's bone-morph offsets in native
+// order. physicsMode selects the source; model.physicsMode == 2 independently
+// enables bone morphs. Mode 0 is the kinematic path (not mode 1).
+// Call again before each before/after-physics sweep; inheritance mutates these
+// fields. No hierarchy, IK, layers, scale or simulation is run by this call.
+// Caller owns and validates the model, bone and morph tables and any physics
+// backup values. Invalid morph bone indices retain the native skip behavior.
+// No allocations, global math tables or caches; a context lease must be held.
+void BonePreparePosePrivate(mdl::ModelRecord& ownedModel, int physicsMode,
+                            const BoneTransformContext& context);
 
 }  // namespace mikumikustudio
