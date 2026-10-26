@@ -281,3 +281,17 @@ static_assert(offsetof(MmsEvaluationApiV1_2, sampleVisibility) == 128, "evaluati
 static_assert(offsetof(MmsEvaluationApiV1_2, sampleIk) == 136, "evaluation1.2 sampleIk offset");
 static_assert(offsetof(MmsEvaluationApiV1_2, sampleParent) == 144, "evaluation1.2 sampleParent offset");
 static_assert(offsetof(MmsEvaluationSourceInfoV1_2, ikCount) == 72, "evaluation1.2 source prefix");
+
+static_assert(sizeof(MmsParentStateV1) == 64, "parent state layout");
+static_assert(sizeof(MmsEvaluationApiV1_3) == 160, "evaluation1.3 layout");
+static_assert(offsetof(MmsEvaluationApiV1_3, sampleParentState) == sizeof(MmsEvaluationApiV1_2), "evaluation1.3 preserves prefix");
+static_assert(offsetof(MmsParentStateV1, h) == 0, "parent state h offset");
+static_assert(offsetof(MmsParentStateV1, target) == 8, "parent state target offset");
+static_assert(offsetof(MmsParentStateV1, bone) == 32, "parent state bone offset");
+static_assert(offsetof(MmsParentStateV1, windowStart) == 48, "parent state windowStart offset");
+static_assert(offsetof(MmsParentStateV1, windowEnd) == 52, "parent state windowEnd offset");
+static_assert(offsetof(MmsParentStateV1, kind) == 56, "parent state kind offset");
+static_assert(offsetof(MmsParentStateV1, reserved) == 60, "parent state reserved offset");
+static_assert(std::is_standard_layout<MmsParentStateV1>::value && std::is_trivially_copyable<MmsParentStateV1>::value, "MmsParentStateV1 POD");
+static_assert(std::is_standard_layout<MmsEvaluationApiV1_3>::value && std::is_trivially_copyable<MmsEvaluationApiV1_3>::value, "MmsEvaluationApiV1_3 POD");
+static_assert(std::is_same<decltype(MmsEvaluationApiV1_3::sampleParentState), MmsResult (MMS_CALL *)(void*, MmsHandle, uint32_t, MmsTime, MmsParentStateV1*)>::value, "parent state sample signature");

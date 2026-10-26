@@ -1,6 +1,6 @@
 # 冻结动作通道求值
 
-`mms.scene.evaluate` 1.2 提供已注册骨骼动作、表情权重、显示状态、IK 开关和外部父级选择的独立采样。[C 接口表](include/mms/evaluation.h)保留 1.0 的七个函数和 1.1 追加的四个函数，新增六个显示通道入口。插件在 UI 线程通过 `MmsHostV1::queryService` 查询一次，随后可以缓存返回的函数表。
+`mms.scene.evaluate` 1.3 提供已注册骨骼动作、表情权重、显示状态、IK 开关和外部父级选择的独立采样。[C 接口表](include/mms/evaluation.h)保留 1.0、1.1 和 1.2 的全部函数，在末尾追加能区分地面与继承状态的父级采样入口。插件在 UI 线程通过 `MmsHostV1::queryService` 查询一次，随后可以缓存返回的函数表。
 
 完整配置的生产插件运行时开放此服务，当前通道能力掩码为 `7`。`MMD_ORIGINAL_PROFILE` 配置的 `CreateEvaluationStore` 工厂返回空对象，未开放此服务。插件以服务查询及 `getCapabilities` 的结果判断可用性，不能仅根据 SDK 头文件判断。
 
@@ -8,7 +8,7 @@
 
 一次 `createSource` 冻结一个模型的已注册骨骼通道，包括原生关键帧及其插值、MMS 自由曲线、尺度关键帧及其插值。未注册的当前编辑姿态不属于采样内容。创建和采样均不移动播放头，不覆盖编辑姿态，不推进物理，也不写入工程或撤销历史。
 
-`sampleBone` 返回层级变换之前的局部通道。结果尚未叠加 IK、表情、动作层或物理。服务不提供完整场景帧，也不声明 `MMS_STAGE_ANIMATED` 支持。附件、相机、灯光和其他非模型对象不在 1.0、1.1 或 1.2 的捕获范围内。
+`sampleBone` 返回层级变换之前的局部通道。结果尚未叠加 IK、表情、动作层或物理。服务不提供完整场景帧，也不声明 `MMS_STAGE_ANIMATED` 支持。附件、相机、灯光和其他非模型对象不在当前捕获范围内。
 
 1.1 的 `createSourceChannels` 可选择骨骼通道、表情权重，或同时选择两者。表情结果是已注册的直接权重，包括原生关键帧与 MMS 自由曲线。结果保留负数和超过 `1` 的有限权重，不夹取到 `[0, 1]`。服务不展开 group 或 flip，不计算顶点、骨骼、UV、材质或其他表情形变。当前未注册的表情编辑值不参与采样。本次扩展不改变 VMD 格式、插值协议或标记策略。
 
@@ -25,10 +25,11 @@
 | `1, 0` | `MmsEvaluationApiV1` | 72 | `size = 72, major = 1, minor = 0` |
 | `1, 1` | `MmsEvaluationApiV1_1` | 104 | `size = 104, major = 1, minor = 1` |
 | `1, 2` | `MmsEvaluationApiV1_2` | 152 | `size = 152, major = 1, minor = 2` |
+| `1, 3` | `MmsEvaluationApiV1_3` | 160 | `size = 160, major = 1, minor = 3` |
 
-1.1 保留 1.0 的前七个函数，1.2 保留 1.1 的全部函数。三个版本共用 `context` 和源句柄。返回的 `context` 属于当前插件实例，调用方原样传给表内函数。表版本不等于通道能力，插件仍须调用 `getCapabilities`。查询缓冲区小于所请求表的大小时返回 `MMS_E_ARGUMENT`，不会降级写入旧表。主版本不匹配或次版本大于 `2` 时返回 `MMS_E_VERSION`。失败保留输出缓冲区，成功只写所请求版本的表。
+每个新版本保留前一版本的全部函数，四个版本共用 `context` 和源句柄。返回的 `context` 属于当前插件实例，调用方原样传给表内函数。表版本不等于通道能力，插件仍须调用 `getCapabilities`。查询缓冲区小于所请求表的大小时返回 `MMS_E_ARGUMENT`，不会降级写入旧表。主版本不匹配或次版本大于 `3` 时返回 `MMS_E_VERSION`。失败保留输出缓冲区，成功只写所请求版本的表。
 
-在插件清单中声明 `capabilities: ["scene.evaluate"]`。若插件必须依赖此服务，在 `requiresServices` 中增加 `{"id":"mms.scene.evaluate","major":1,"minMinor":0}`。必须调用表情入口的插件将 `minMinor` 设为 `1`，必须调用显示、IK 或父级选择入口的插件设为 `2`。其他清单字段沿用 [SDK 入门](README.md) 的约定。可选功能不应把此服务声明为必需，应在查询失败后关闭对应功能。
+在插件清单中声明 `capabilities: ["scene.evaluate"]`。若插件必须依赖此服务，在 `requiresServices` 中增加 `{"id":"mms.scene.evaluate","major":1,"minMinor":0}`。必须调用表情入口的插件将 `minMinor` 设为 `1`，必须调用显示或 IK 入口的插件设为 `2`。需要区分地面与继承父级的插件设为 `3`。其他清单字段沿用 [SDK 入门](README.md) 的约定。可选功能不应把此服务声明为必需，应在查询失败后关闭对应功能。
 
 `MmsEvaluationSourceQueryV1` 的字段约定如下。
 
@@ -48,7 +49,7 @@
 | 函数 | 行为 | 调用线程 |
 | --- | --- | --- |
 | `getCapabilities(context, out)` | 返回宿主当前支持的通道标志和额度。完整生产工厂为 `7`，骨骼与表情工厂可为 `3`，仅骨骼工厂为 `1`。实际值与查询表版本无关 | 任意线程 |
-| `createSource(context, query, outSource)` | 只捕获骨骼通道，返回新句柄。1.1 和 1.2 表中的此入口也保持该行为 | UI 线程 |
+| `createSource(context, query, outSource)` | 只捕获骨骼通道，返回新句柄。后续版本表中的此入口也保持该行为 | UI 线程 |
 | `describeSource(context, source, out)` | 返回源模型引用、捕获标识、宿主修订信息、保留字节数、骨骼数量和能力标志 | 任意线程 |
 | `boneAt(context, source, index, out)` | 按快照内的零起始序号返回骨骼 ID 和支持标志。有效范围为 `[0, boneCount)` | 任意线程 |
 | `sampleBone(context, source, bone, time, out)` | 按骨骼 ID 和有理数秒采样，结果复制到调用方缓冲区 | 任意线程 |
@@ -128,11 +129,27 @@
 
 `MmsParentSelectionV1::flags` 只允许 `MMS_EVALUATION_PARENT_ACTIVE`。启用时，`target.id` 和 `bone` 必须非空，`target.generation` 必须非零。未启用时，`target.id`、`target.generation` 和 `bone` 均为零。
 
+旧 `sampleParent` 无法表达地面。采样地面状态时返回 `MMS_E_UNSUPPORTED`，保留调用方输出；不会将其转换为未启用父级。普通继承与模型目标仍按旧规则返回。
+
 `windowStart` 和 `windowEnd` 是注册帧边界，范围为 `0` 到 `2147483646`。窗口包含起点，不包含非零终点。`windowEnd = 0` 表示没有后续变化。非零终点必须大于起点，采样帧必须位于窗口内。未启用父级时仍保留原连续选择窗口，不将窗口归零或合并。
 
-显示捕获在同一次 UI 安全点解析所有可达显示关键帧引用的目标模型和骨骼，包括未来关键帧。有效引用必须对应当前场景已发布的模型身份及有效目标骨骼。只要其中一个启用引用失效，整个捕获返回 `MMS_E_STALE`，不发布源。未选择显示通道的捕获不检查这些引用。
+显示捕获在同一次 UI 安全点解析所有可达显示关键帧引用的目标模型和骨骼，包括未来关键帧。有效模型引用必须对应当前场景已发布的模型身份及有效目标骨骼。继承和地面不需要目标身份，未来关键帧中的地面也可以正常捕获。只要其中一个模型引用失效，整个捕获返回 `MMS_E_STALE`，不发布源。未选择显示通道的捕获不检查这些引用。
 
 旧源中的目标身份是捕获时的不可变元数据。目标模型后续删除、重新加载或槽位复用后，旧源仍返回旧目标 ID、旧 `generation` 和旧骨骼 ID，不改为槽位中的新对象。返回 `ACTIVE` 不代表目标目前仍存活，也不代表目标动作已经冻结。插件若需操作当前目标，应通过当前场景另行解析身份。完整世界姿态求值还需要冻结并求值目标动作及依赖，此接口不提供该能力。
+
+## 1.3 父级状态
+
+`sampleParentState(context, source, index, time, out)` 使用已有显示源句柄及选择器序号，允许后台并发调用。无需重新捕获，也没有第二套租约。返回的 `MmsParentStateV1` 为 64 字节，头为 `size = 64, major = 1, minor = 0`。
+
+| `kind` | 含义 | 身份字段 |
+| --- | --- | --- |
+| `MMS_EVALUATION_PARENT_INHERIT`，值 `0` | 原生 `-1`，保留父骨骼或全局外亲的继承规则 | `target` 和 `bone` 全零 |
+| `MMS_EVALUATION_PARENT_MODEL`，值 `1` | 引用捕获时的模型骨骼 | `target.id`、`bone` 非空，`target.generation` 非零 |
+| `MMS_EVALUATION_PARENT_GROUND`，值 `2` | 原生 `-2`，局部选择器不再继承父骨骼或全局外亲 | `target` 和 `bone` 全零 |
+
+`kind` 是单个类型值，不是位掩码。`reserved` 必须为零。`windowStart` 和 `windowEnd` 沿用 1.2 的连续窗口规则，状态切换不会丢失原窗口。所有状态均使用同一精确有理数时间边界和冻结数据，失败保留整个输出结构。
+
+全局选择器的继承和地面都没有显式模型目标，但原始状态仍分开返回。局部选择器中两者有实际求值差异，因此插件不得仅依据身份为空就将其合并。该接口返回注册状态，不执行外亲变换。
 
 ## 骨骼标志与结果
 
@@ -287,7 +304,7 @@ MmsResult SampleFrozenMorph(const MmsHostV1* host, MmsObjectRef model,
 
 ## 保留内存与句柄额度
 
-`getCapabilities` 返回当前服务的字节额度和单插件句柄额度。1.0、1.1 和 1.2 共用以下限制，通道组合不会获得额外额度。
+`getCapabilities` 返回当前服务的字节额度和单插件句柄额度。1.0 至 1.3 共用以下限制，通道组合不会获得额外额度。
 
 | 范围 | 上限 |
 | --- | --- |
@@ -309,7 +326,7 @@ MmsResult SampleFrozenMorph(const MmsHostV1* host, MmsObjectRef model,
 
 插件进入停止阶段后，服务保留已有句柄并拒绝新的创建、描述、枚举、采样、保留及能力查询。此时只有 `release` 仍可用于清理。宿主不会代替插件自动释放这些源句柄。
 
-此规则也适用于 1.1 和 1.2 的追加入口。所有通道的执行中采样共同保留源，释放最后一个句柄不会使已接纳的采样失效。显示或父级采样尚未结束时，宿主仍保留服务上下文和插件 DLL。
+此规则也适用于 1.1 至 1.3 的追加入口。所有通道的执行中采样共同保留源，释放最后一个句柄不会使已接纳的采样失效。显示或父级采样尚未结束时，宿主仍保留服务上下文和插件 DLL。
 
 已经获准执行的采样可以完成并写回结果。停止阶段开始前已启动的捕获也可以结束内部工作，但不会再发布新句柄，创建调用返回 `MMS_E_NOT_READY`。已有句柄和执行中的捕获、采样会阻止相关宿主上下文卸载。
 

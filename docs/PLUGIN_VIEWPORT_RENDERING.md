@@ -28,6 +28,8 @@
 
 [离散时间及真实 IK 轨道验收](records/abi-display-rational-boundaries-2026-10-27.md)已修复整数键前的浮点提前舍入。显示、IK 开关和父级窗口用精确有理帧取整；骨骼、表情仍连续采样。真实含 IK 链 PMX 已验证链身份、原始开关字节、局部父级及跨删除读取。该验收不包含 IK 求解。
 
+[父级状态 1.3](records/abi-parent-state-2026-10-27.md)在同一源和租约上追加 `sampleParentState`，区分继承、地面和模型目标。修复未来地面键被误判为过期目标的问题。旧 1.2 入口在地面状态返回不支持并保留输出，其他状态仍按旧契约返回；局部地面不再与父骨骼或全局外亲继承混淆。
+
 | 代码入口 | 已有范围与限制 |
 | --- | --- |
 | `sdk/mms/include/mms/plugin.h` | 提供 `queryService`、`registerProvider`、版本头、不透明句柄和设备事件定义。V1 面向 Windows x64。 |
@@ -35,7 +37,7 @@
 | `sdk/mms/include/mms/scene.h` | 定义对象、网格、材质、纹理描述、骨骼及各求值阶段。定义阶段枚举不等于宿主已经提供对应结果。 |
 | `src/plugins/scene_host.cpp::Capture` | 当前只发布 `MMS_STAGE_BIND`。请求其他阶段或其他时间会拒绝，不临时移动主播放头。 |
 | `src/plugins/scene_store.cpp` | UI 线程获取快照，冻结后用租约保留数据。读取与释放可在其他线程执行，数据不暴露原生模型指针。 |
-| `sdk/mms/include/mms/evaluation.h` | `mms.scene.evaluate` 1.2：安全点按掩码捕获骨骼、表情和显示通道，后台按有理数秒读取。父级身份与窗口固定，修改、删除及工程切换不改变旧源。旧函数前缀及 1.0 骨骼创建语义不变；未提供完整求值帧。 |
+| `sdk/mms/include/mms/evaluation.h` | `mms.scene.evaluate` 1.3：安全点按掩码捕获骨骼、表情和显示通道，后台按有理数秒读取。父级身份、类型与窗口固定，修改、删除及工程切换不改变旧源。旧函数前缀及 1.0 骨骼创建语义不变；未提供完整求值帧。 |
 | `sdk/mms/include/mms/surface.h` | 支持插件子窗口与多视图工厂。`MMS_SURFACE_MULTIPLE_VIEWS` 不代表多个独立 3D 渲染上下文。 |
 | `src/render/frame_scene.cpp::RenderFrameScene` | 依赖活动 `MMDApp`、DX9 设备和每帧缓存，也会更新变形、效果和叠加层。不能直接当作无副作用的任意视口函数。 |
 | `src/render/frame_presentation.cpp`、`viewport_render_scale.cpp` | 已区分部分场景图像与界面呈现，并支持预览缩放。渲染目标仍按 `MMDApp*` 保存。 |
@@ -60,7 +62,7 @@
 
 [BoneEvaluationSource 与 BoneEvaluationFrame](records/abi-owned-bone-evaluation-2026-10-27.md) 已按[工作区装配方案](records/abi-owned-bone-workspace-plan-2026-10-27.md)同次捕获五类数据，从确定初值执行局部动作、骨骼表情、两轮层级与 IK 和完整尺度。结果自有刚性、尺度、分阶段附着矩阵与关节位置，不修改主播放头或编辑状态。真实 PMX/PMD 及原生对照验证通过。该单模型入口由调用方显式提供外部目标的每轮矩阵，完整模型集合的组合见下述场景入口。两者均未改变 `mms.scene.evaluate` 1.2 的公开范围。
 
-[BoneSceneSource 与 BoneSceneFrame](records/abi-bone-scene-evaluation-2026-10-27.md) 已在内部补齐完整模型集合捕获、目标动作冻结、现有对象身份复制和两轮全场调度。单模型入口继续接受显式依赖，场景入口直接连接真实自有工作区，保留原计算顺序及循环、自引用语义。三模型传递、仅目标动作改变、真实身份、PMM 重载和删除后的旧结果读取均已验证。公开源与帧租约、骨骼元素身份、蒙皮、历史物理及视口渲染仍待接入。公开 1.2 显示通道的地面父级表达缺口另列为待修，不能将内部支持视为公开能力已经完成。
+[BoneSceneSource 与 BoneSceneFrame](records/abi-bone-scene-evaluation-2026-10-27.md) 已在内部补齐完整模型集合捕获、目标动作冻结、现有对象身份复制和两轮全场调度。单模型入口继续接受显式依赖，场景入口直接连接真实自有工作区，保留原计算顺序及循环、自引用语义。三模型传递、仅目标动作改变、真实身份、PMM 重载和删除后的旧结果读取均已验证。公开源与帧租约、骨骼元素身份、蒙皮、历史物理及视口渲染仍待接入。公开父级状态缺口已由 1.3 补齐，但该入口仍仅采样注册状态，不发布骨架求值帧。
 
 ## 预期交互
 

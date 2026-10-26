@@ -18,6 +18,9 @@ struct EvaluationData {
     std::function<MmsResult(double frame, MmsDisplayStateV1&)> sampleVisibility;
     std::function<MmsResult(uint32_t index, double frame, MmsIkStateV1&)> sampleIk;
     std::function<MmsResult(uint32_t index, double frame, MmsParentSelectionV1&)> sampleParent;
+    // Canonical parent state when supplied; otherwise adapt the legacy host
+    // callback. Both public sampling versions use one validation/lease path.
+    std::function<MmsResult(uint32_t index, double frame, MmsParentStateV1&)> sampleParentState;
 };
 class EvaluationStore {
 public:
@@ -42,6 +45,7 @@ public:
     MmsEvaluationApiV1 Api(Client&);
     MmsEvaluationApiV1_1 Api11(Client&);
     MmsEvaluationApiV1_2 Api12(Client&);
+    MmsEvaluationApiV1_3 Api13(Client&);
     // Retire rejects new operations except release. Existing source handles
     // and admitted calls pin the client until plugins drain them and join work.
     void Retire(Client&) noexcept;
@@ -72,6 +76,7 @@ private:
     MmsResult SampleVisibility(Client&, MmsHandle, MmsTime, MmsDisplayStateV1*);
     MmsResult SampleIk(Client&, MmsHandle, uint32_t, MmsTime, MmsIkStateV1*);
     MmsResult SampleParent(Client&, MmsHandle, uint32_t, MmsTime, MmsParentSelectionV1*);
+    MmsResult SampleParentState(Client&, MmsHandle, uint32_t, MmsTime, MmsParentStateV1*);
     MmsResult ReadDisplay(Client&, MmsHandle, uint32_t kind, uint32_t index, MmsTime, void*);
     MmsResult Retain(Client&, MmsHandle, MmsHandle*);
     MmsResult Release(Client&, MmsHandle);

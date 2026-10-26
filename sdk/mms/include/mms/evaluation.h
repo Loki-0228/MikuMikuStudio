@@ -155,5 +155,40 @@ typedef struct MmsEvaluationApiV1_2 {
     MmsResult (MMS_CALL *sampleIk)(void*, MmsHandle, uint32_t, MmsTime, MmsIkStateV1*);
     MmsResult (MMS_CALL *sampleParent)(void*, MmsHandle, uint32_t, MmsTime, MmsParentSelectionV1*);
 } MmsEvaluationApiV1_2;
+
+/* 1.3: native inherited-parent, ground and model-target states stay distinct.
+ * sampleParent (1.2) returns UNSUPPORTED for ground, leaving output unchanged. */
+#define MMS_EVALUATION_PARENT_INHERIT 0u
+#define MMS_EVALUATION_PARENT_MODEL 1u
+#define MMS_EVALUATION_PARENT_GROUND 2u
+typedef struct MmsParentStateV1 {
+    MmsHeader h;
+    MmsObjectRef target;
+    MmsId bone;
+    uint32_t windowStart, windowEnd;
+    uint32_t kind, reserved; /* MODEL requires identities; INHERIT/GROUND empty. */
+} MmsParentStateV1;
+typedef struct MmsEvaluationApiV1_3 {
+    MmsHeader h;
+    void* context;
+    MmsResult (MMS_CALL *getCapabilities)(void*, MmsEvaluationCapsV1*);
+    MmsResult (MMS_CALL *createSource)(void*, const MmsEvaluationSourceQueryV1*, MmsHandle*);
+    MmsResult (MMS_CALL *describeSource)(void*, MmsHandle, MmsEvaluationSourceInfoV1*);
+    MmsResult (MMS_CALL *boneAt)(void*, MmsHandle, uint32_t, MmsEvaluationBoneV1*);
+    MmsResult (MMS_CALL *sampleBone)(void*, MmsHandle, MmsId, MmsTime, MmsBoneChannelsV1*);
+    MmsResult (MMS_CALL *retain)(void*, MmsHandle, MmsHandle*);
+    MmsResult (MMS_CALL *release)(void*, MmsHandle);
+    MmsResult (MMS_CALL *createSourceChannels)(void*, const MmsEvaluationSourceQueryV1*, uint32_t, MmsHandle*);
+    MmsResult (MMS_CALL *describeSourceChannels)(void*, MmsHandle, MmsEvaluationSourceInfoV1_1*);
+    MmsResult (MMS_CALL *morphAt)(void*, MmsHandle, uint32_t, MmsEvaluationMorphV1*);
+    MmsResult (MMS_CALL *sampleMorph)(void*, MmsHandle, MmsId, MmsTime, MmsMorphWeightV1*);
+    MmsResult (MMS_CALL *describeSourceDisplay)(void*, MmsHandle, MmsEvaluationSourceInfoV1_2*);
+    MmsResult (MMS_CALL *ikAt)(void*, MmsHandle, uint32_t, MmsEvaluationIkV1*);
+    MmsResult (MMS_CALL *selectorAt)(void*, MmsHandle, uint32_t, MmsEvaluationSelectorV1*);
+    MmsResult (MMS_CALL *sampleVisibility)(void*, MmsHandle, MmsTime, MmsDisplayStateV1*);
+    MmsResult (MMS_CALL *sampleIk)(void*, MmsHandle, uint32_t, MmsTime, MmsIkStateV1*);
+    MmsResult (MMS_CALL *sampleParent)(void*, MmsHandle, uint32_t, MmsTime, MmsParentSelectionV1*);
+    MmsResult (MMS_CALL *sampleParentState)(void*, MmsHandle, uint32_t, MmsTime, MmsParentStateV1*);
+} MmsEvaluationApiV1_3;
 #pragma pack(pop)
 #endif

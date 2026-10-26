@@ -287,8 +287,10 @@ std::shared_ptr<EvaluationStore> CreateEvaluationStore(MMDApp* app) {
                 for (uint32_t i = 0; i < motion->SelectorCount(); ++i) {
                     DisplaySelectorSample parent;
                     if (motion->SampleSelector(int(i), frame, parent) != DisplayMotionStatus::Ok) return MMS_E_FAILED;
-                    // Disabled references still retain the original window.
-                    if (parent.modelIndex == -1) continue;
+                    // Disabled references (-1) and native ground (-2) are
+                    // parent states, not target references. Both still retain
+                    // the original window; only other negative slots are stale.
+                    if (parent.modelIndex == -1 || parent.modelIndex == -2) continue;
                     const auto pair = std::make_pair(parent.modelIndex, parent.boneIndex);
                     if (targets->find(pair) != targets->end()) continue;
                     if (parent.modelIndex < 0 || parent.modelIndex >= kModelSlotCount || parent.boneIndex < 0) return MMS_E_STALE;
@@ -313,17 +315,27 @@ std::shared_ptr<EvaluationStore> CreateEvaluationStore(MMDApp* app) {
                 if (motion->SampleIk(int(index), frame, enabled) != DisplayMotionStatus::Ok) return MMS_E_FAILED;
                 out = {Header<MmsIkStateV1>(), enabled, 0}; return MMS_OK;
             };
-            data->sampleParent = [motion, targets = std::shared_ptr<const Targets>(std::move(targets))]
-                (uint32_t index, double frame, MmsParentSelectionV1& out) {
+            data->sampleParentState = [motion, targets = std::shared_ptr<const Targets>(std::move(targets))]
+                (uint32_t index, double frame, MmsParentStateV1& out) {
                 DisplaySelectorSample parent;
                 if (motion->SampleSelector(int(index), frame, parent) != DisplayMotionStatus::Ok) return MMS_E_FAILED;
-                MmsParentSelectionV1 value{}; value.h = Header<MmsParentSelectionV1>();
+                MmsParentStateV1 value{}; value.h = Header<MmsParentStateV1>();
                 value.windowStart = parent.windowStart; value.windowEnd = parent.windowEnd;
-                if (parent.modelIndex != -1) {
+                // Kind comes from the captured slot; target identities only
+                // exist for MODEL and always come from the frozen capture.
+                switch (parent.modelIndex) {
+                case -1: value.kind = MMS_EVALUATION_PARENT_INHERIT; break;
+                case -2: value.kind = MMS_EVALUATION_PARENT_GROUND; break;
+                default: {
+                    // Capture checked every reachable key, so an unvalidated
+                    // negative slot is malformed rather than another state.
+                    if (parent.modelIndex < 0) return MMS_E_STALE;
                     const auto found = targets->find({parent.modelIndex, parent.boneIndex});
                     if (found == targets->end()) return MMS_E_FAILED;
                     value.target = found->second.object; value.bone = found->second.bone;
-                    value.flags = MMS_EVALUATION_PARENT_ACTIVE;
+                    value.kind = MMS_EVALUATION_PARENT_MODEL;
+                    break;
+                }
                 }
                 out = value; return MMS_OK;
             };

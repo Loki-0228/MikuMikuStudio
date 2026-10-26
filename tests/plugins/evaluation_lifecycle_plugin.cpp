@@ -10,20 +10,23 @@ struct State {
     MmsEvaluationApiV1 api{};
     MmsEvaluationApiV1_1 api11{};
     MmsEvaluationApiV1_2 api12{};
+    MmsEvaluationApiV1_3 api13{};
     MmsHandle source = 0;
     uint32_t stops = 0;
     bool holdOk = false;
 } state;
 void Log(const char* text) { state.host.log(state.host.context, 1, Text(text)); }
 bool Negotiate() {
-    static_assert(sizeof(MmsEvaluationApiV1) == 72 && sizeof(MmsEvaluationApiV1_1) == 104 && sizeof(MmsEvaluationApiV1_2) == 152);
-    struct Buffer { MmsEvaluationApiV1_2 table; uint64_t guard; } buffer;
+    static_assert(sizeof(MmsEvaluationApiV1) == 72 && sizeof(MmsEvaluationApiV1_1) == 104 && sizeof(MmsEvaluationApiV1_2) == 152 && sizeof(MmsEvaluationApiV1_3) == 160);
+    struct Buffer { MmsEvaluationApiV1_3 table; uint64_t guard; } buffer;
     std::memset(&buffer, 0x5a, sizeof(buffer)); const auto before = buffer;
     const auto query = [&](uint32_t major, uint32_t minor, uint32_t bytes) {
         return state.host.queryService(state.host.context, Text("mms.scene.evaluate"), major, minor, bytes, &buffer.table);
     };
     if (query(2, 0, 152) != MMS_E_VERSION || std::memcmp(&buffer, &before, sizeof(buffer))) return false;
-    if (query(1, 3, 152) != MMS_E_VERSION || std::memcmp(&buffer, &before, sizeof(buffer))) return false;
+    if (query(1, 4, 160) != MMS_E_VERSION || std::memcmp(&buffer, &before, sizeof(buffer))) return false;
+    if (query(1, 3, 152) != MMS_E_ARGUMENT || std::memcmp(&buffer, &before, sizeof(buffer))) return false;
+    if (query(1, 3, 159) != MMS_E_ARGUMENT || std::memcmp(&buffer, &before, sizeof(buffer))) return false;
     if (query(1, 2, 104) != MMS_E_ARGUMENT || std::memcmp(&buffer, &before, sizeof(buffer))) return false;
     if (query(1, 2, 151) != MMS_E_ARGUMENT || std::memcmp(&buffer, &before, sizeof(buffer))) return false;
     if (query(1, 1, 72) != MMS_E_ARGUMENT || std::memcmp(&buffer, &before, sizeof(buffer))) return false;
@@ -31,6 +34,7 @@ bool Negotiate() {
     if (query(1, 0, 71) != MMS_E_ARGUMENT || std::memcmp(&buffer, &before, sizeof(buffer))) return false;
     if (state.host.queryService(state.host.context, Text("mms.scene.evaluate"), 1, 0, 72, nullptr) != MMS_E_ARGUMENT) return false;
     if (state.host.queryService(state.host.context, Text("mms.scene.evaluate"), 1, 2, 152, nullptr) != MMS_E_ARGUMENT) return false;
+    if (state.host.queryService(state.host.context, Text("mms.scene.evaluate"), 1, 3, 160, nullptr) != MMS_E_ARGUMENT) return false;
     if (query(1, 0, 72) != MMS_OK) return false;
     if (std::memcmp(reinterpret_cast<const char*>(&buffer) + 72, reinterpret_cast<const char*>(&before) + 72, sizeof(buffer) - 72)) return false;
     MmsEvaluationApiV1 out{}; std::memcpy(&out, &buffer.table, sizeof(out));
@@ -49,8 +53,9 @@ bool Negotiate() {
         !extended.createSourceChannels || !extended.describeSourceChannels || !extended.morphAt || !extended.sampleMorph) return false;
     state.api11 = extended;
     buffer = before;
-    if (query(1, 2, 152) != MMS_OK || buffer.guard != before.guard) return false;
-    const auto& display = buffer.table;
+    if (query(1, 2, 152) != MMS_OK) return false;
+    if (std::memcmp(reinterpret_cast<const char*>(&buffer) + 152, reinterpret_cast<const char*>(&before) + 152, sizeof(buffer) - 152)) return false;
+    MmsEvaluationApiV1_2 display{}; std::memcpy(&display, &buffer.table, sizeof(display));
     if (display.h.size != 152 || display.h.major != 1 || display.h.minor != 2 ||
         display.context != extended.context || display.getCapabilities != extended.getCapabilities ||
         display.createSource != extended.createSource || display.describeSource != extended.describeSource ||
@@ -61,6 +66,15 @@ bool Negotiate() {
         !display.describeSourceDisplay || !display.ikAt || !display.selectorAt ||
         !display.sampleVisibility || !display.sampleIk || !display.sampleParent) return false;
     state.api12 = display;
+    buffer = before;
+    if (query(1, 3, 160) != MMS_OK || buffer.guard != before.guard) return false;
+    const auto& parent = buffer.table;
+    if (parent.h.size != 160 || parent.h.major != 1 || parent.h.minor != 3 || !parent.sampleParentState) return false;
+    // The complete 1.2 context/function-pointer prefix must remain identical.
+    if (std::memcmp(reinterpret_cast<const char*>(&parent) + sizeof(MmsHeader),
+                    reinterpret_cast<const char*>(&display) + sizeof(MmsHeader),
+                    sizeof(display) - sizeof(MmsHeader))) return false;
+    state.api13 = parent;
     Log("EVALUATION_NEGOTIATION_PASS"); return true;
 }
 MmsResult MMS_CALL Create(const MmsHostV1* host, const MmsCreateInfoV1* info, void** out) {
@@ -110,6 +124,19 @@ extern "C" __declspec(dllexport) MmsResult MMS_CALL MmsEvaluationTestGet12(MmsEv
 }
 extern "C" __declspec(dllexport) MmsResult MMS_CALL MmsEvaluationTestQuery12(MmsEvaluationApiV1_2* out) {
     return state.host.queryService(state.host.context, Text("mms.scene.evaluate"), 1, 2, sizeof(*out), out);
+}
+extern "C" __declspec(dllexport) MmsResult MMS_CALL MmsEvaluationTestGet13(MmsEvaluationApiV1_3* out) {
+    if (!out) return MMS_E_ARGUMENT;
+    *out = state.api13; return MMS_OK;
+}
+extern "C" __declspec(dllexport) MmsResult MMS_CALL MmsEvaluationTestQuery13(MmsEvaluationApiV1_3* out) {
+    return state.host.queryService(state.host.context, Text("mms.scene.evaluate"), 1, 3, sizeof(*out), out);
+}
+extern "C" __declspec(dllexport) MmsResult MMS_CALL MmsEvaluationTestParentState(uint32_t index, MmsTime time, MmsParentStateV1* out) {
+    return state.api13.sampleParentState(state.api13.context, state.source, index, time, out);
+}
+extern "C" __declspec(dllexport) MmsResult MMS_CALL MmsEvaluationTestParentLegacy(uint32_t index, MmsTime time, MmsParentSelectionV1* out) {
+    return state.api12.sampleParent(state.api12.context, state.source, index, time, out);
 }
 extern "C" __declspec(dllexport) MmsResult MMS_CALL MmsEvaluationTestRelease() {
     if (!state.source) return MMS_OK;

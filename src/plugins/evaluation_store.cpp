@@ -21,6 +21,9 @@ constexpr uint64_t kHandleLimit = 0x7fffffffffffffffull;
 // The shared display sampler dispatches on these internal kinds; they never
 // appear in a public record.
 constexpr uint32_t kDisplayVisibility = 0, kDisplayIk = 1, kDisplayParent = 2;
+// The 1.3 parent sampler extends the same shared display path; it is a second
+// kind so both public versions validate against one canonical record.
+constexpr uint32_t kDisplayParentState = 3;
 
 using Index = std::map<MmsId, uint32_t, IdLess>;
 // The supported MSVC tree allocates a separate sentinel node and holds its link
@@ -111,6 +114,57 @@ bool DisplayFrame(MmsTime time, double& frame) noexcept {
     }
     frame = static_cast<double>(result);
     return true;
+}
+// Produce one canonical parent state from whichever host sampler is present.
+// The store's newer callback already reports kind and leaves identities empty
+// outside MODEL. The legacy callback only knows active/inactive, and its
+// flags/reserved and identity rules are validated before translation.
+MmsResult CanonicalParent(const EvaluationData& data, uint32_t index, double frame,
+    MmsParentStateV1& out) {
+    if (!data.sampleParentState) {
+        if (!data.sampleParent) return MMS_E_FAILED;
+        MmsParentSelectionV1 legacy{};
+        const MmsResult sampled = data.sampleParent(index, frame, legacy);
+        if (sampled != MMS_OK) return sampled;
+        if ((legacy.flags & ~MMS_EVALUATION_PARENT_ACTIVE) || legacy.reserved) return MMS_E_FAILED;
+        const bool active = (legacy.flags & MMS_EVALUATION_PARENT_ACTIVE) != 0;
+        if (active) {
+            if (Empty(legacy.target.id) || !legacy.target.generation || Empty(legacy.bone)) return MMS_E_FAILED;
+        } else if (!Empty(legacy.target.id) || legacy.target.generation || !Empty(legacy.bone)) {
+            return MMS_E_FAILED;
+        }
+        MmsParentStateV1 value{};
+        value.target = legacy.target;
+        value.bone = legacy.bone;
+        value.windowStart = legacy.windowStart;
+        value.windowEnd = legacy.windowEnd;
+        value.kind = active ? MMS_EVALUATION_PARENT_MODEL : MMS_EVALUATION_PARENT_INHERIT;
+        out = value;
+        return MMS_OK;
+    }
+    MmsParentStateV1 produced{};
+    const MmsResult sampled = data.sampleParentState(index, frame, produced);
+    if (sampled != MMS_OK) return sampled;
+    out = produced;
+    return MMS_OK;
+}
+// Canonical fields are checked once for both public versions. Windows keep
+// their frozen boundaries and containment rule; only MODEL carries identities.
+bool ValidParentState(const MmsParentStateV1& state, double frame) noexcept {
+    const uint32_t maximum = static_cast<uint32_t>(frame_limits::maximum);
+    // The window is frozen metadata: a zero end is unbounded, a bounded end
+    // is exclusive, and both ends must contain the sampled frame.
+    if (state.windowStart > maximum || state.windowEnd > maximum) return false;
+    if (state.windowEnd && state.windowEnd <= state.windowStart) return false;
+    if (frame < static_cast<double>(state.windowStart)) return false;
+    if (state.windowEnd && !(frame < static_cast<double>(state.windowEnd))) return false;
+    if (state.kind > MMS_EVALUATION_PARENT_GROUND || state.reserved) return false;
+    if (state.kind == MMS_EVALUATION_PARENT_MODEL) {
+        return !Empty(state.target.id) && state.target.generation && !Empty(state.bone);
+    }
+    // INHERIT and GROUND are states without target identities, not absent
+    // targets disguised as MODEL records.
+    return Empty(state.target.id) && !state.target.generation && Empty(state.bone);
 }
 }
 
@@ -319,6 +373,44 @@ MmsEvaluationApiV1_2 EvaluationStore::Api12(Client& client) {
     return api;
 }
 
+MmsEvaluationApiV1_3 EvaluationStore::Api13(Client& client) {
+    // The first seventeen entries are the frozen V1.2 table, so the appended
+    // parent-state sampler extends the same lease system. Only the header
+    // version differs; Api13 still never writes Client::owner.
+    static_assert(offsetof(MmsEvaluationApiV1_3, sampleParentState) == sizeof(MmsEvaluationApiV1_2),
+        "evaluation 1.3 appends the parent-state sampler to the 1.2 prefix");
+    const MmsEvaluationApiV1_2 base = Api12(client);
+    MmsEvaluationApiV1_3 api{};
+    api.h = MmsHeader{sizeof(MmsEvaluationApiV1_3), 1, 3};
+    api.context = base.context;
+    api.getCapabilities = base.getCapabilities;
+    api.createSource = base.createSource;
+    api.describeSource = base.describeSource;
+    api.boneAt = base.boneAt;
+    api.sampleBone = base.sampleBone;
+    api.retain = base.retain;
+    api.release = base.release;
+    api.createSourceChannels = base.createSourceChannels;
+    api.describeSourceChannels = base.describeSourceChannels;
+    api.morphAt = base.morphAt;
+    api.sampleMorph = base.sampleMorph;
+    api.describeSourceDisplay = base.describeSourceDisplay;
+    api.ikAt = base.ikAt;
+    api.selectorAt = base.selectorAt;
+    api.sampleVisibility = base.sampleVisibility;
+    api.sampleIk = base.sampleIk;
+    api.sampleParent = base.sampleParent;
+    api.sampleParentState = [](void* context, MmsHandle source, uint32_t index, MmsTime time, MmsParentStateV1* out) {
+        return Gateway([&] {
+            if (!context) return MMS_E_ARGUMENT;
+            auto& client = *static_cast<Client*>(context);
+            if (!client.owner) return MMS_E_ARGUMENT;
+            return client.owner->SampleParentState(client, source, index, time, out);
+        });
+    };
+    return api;
+}
+
 void EvaluationStore::Retire(Client& client) noexcept {
     try {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -409,13 +501,16 @@ MmsResult EvaluationStore::CreateChannels(Client& client, const MmsEvaluationSou
         if (!bones && (!data->bones.empty() || data->sample)) return MMS_E_ARGUMENT;
         if (!morphs && (!data->morphs.empty() || data->sampleMorph)) return MMS_E_ARGUMENT;
         if (!display && (!data->ik.empty() || !data->selectors.empty() ||
-            data->sampleVisibility || data->sampleIk || data->sampleParent)) return MMS_E_ARGUMENT;
+            data->sampleVisibility || data->sampleIk || data->sampleParent ||
+            data->sampleParentState)) return MMS_E_ARGUMENT;
         if (bones && !data->sample) return MMS_E_FAILED;
         if (morphs && !data->sampleMorph) return MMS_E_FAILED;
         // Display captures one visibility record, one IK switch per chain and
-        // one parent selection per target, so all three samplers are required
-        // even when both display vectors are empty.
-        if (display && (!data->sampleVisibility || !data->sampleIk || !data->sampleParent)) return MMS_E_FAILED;
+        // one parent selection per target, so those samplers are required even
+        // when both display vectors are empty. Either parent sampler version
+        // supplies the canonical state; the newer one takes priority.
+        if (display && (!data->sampleVisibility || !data->sampleIk ||
+            (!data->sampleParent && !data->sampleParentState))) return MMS_E_FAILED;
 
         // Build every store-owned index before taking the mutex. A failed
         // validation or allocation below publishes nothing. A morph ID that
@@ -760,9 +855,13 @@ MmsResult EvaluationStore::SampleParent(Client& client, MmsHandle source, uint32
     return ReadDisplay(client, source, kDisplayParent, index, time, out);
 }
 
+MmsResult EvaluationStore::SampleParentState(Client& client, MmsHandle source, uint32_t index, MmsTime time, MmsParentStateV1* out) {
+    return ReadDisplay(client, source, kDisplayParentState, index, time, out);
+}
+
 MmsResult EvaluationStore::ReadDisplay(Client& client, MmsHandle source, uint32_t kind, uint32_t index,
     MmsTime time, void* out) {
-    if (!out || kind > kDisplayParent) return MMS_E_ARGUMENT;
+    if (!out || kind > kDisplayParentState) return MMS_E_ARGUMENT;
     double frame = 0;
     if (!DisplayFrame(time, frame)) return MMS_E_ARGUMENT;
 
@@ -775,9 +874,12 @@ MmsResult EvaluationStore::ReadDisplay(Client& client, MmsHandle source, uint32_
         const auto& candidate = found->second.data;
         if (!(candidate->flags & MMS_EVALUATION_CAP_DISPLAY)) return MMS_E_UNSUPPORTED;
         // Visibility is one source-wide record; IK and parent selections resolve
-        // by index inside the same frozen capture.
+        // by index inside the same frozen capture. Both parent kinds share the
+        // selector table, so one index check covers them.
         if (kind == kDisplayIk && index >= candidate->ikCount) return MMS_E_NOT_FOUND;
-        if (kind == kDisplayParent && index >= candidate->selectorCount) return MMS_E_NOT_FOUND;
+        if ((kind == kDisplayParent || kind == kDisplayParentState) && index >= candidate->selectorCount) {
+            return MMS_E_NOT_FOUND;
+        }
         // The copy and the pin are registered together, so Release cannot free
         // the payload between lookup and the first callback instruction.
         payload = candidate;
@@ -786,7 +888,8 @@ MmsResult EvaluationStore::ReadDisplay(Client& client, MmsHandle source, uint32_
 
     MmsDisplayStateV1 visibility{};
     MmsIkStateV1 ikState{};
-    MmsParentSelectionV1 parentState{};
+    MmsParentSelectionV1 parentSelection{};
+    MmsParentStateV1 parentState{};
     const MmsResult result = Gateway([&]() -> MmsResult {
         if (kind == kDisplayVisibility) {
             // The host writes into a private local record. Nothing reaches the
@@ -810,27 +913,33 @@ MmsResult EvaluationStore::ReadDisplay(Client& client, MmsHandle source, uint32_
             ikState = produced;
             return MMS_OK;
         }
-        MmsParentSelectionV1 produced{};
-        const MmsResult sampled = payload->data->sampleParent(index, frame, produced);
+        // Both parent versions sample one canonical record, so kind, window and
+        // identity rules are validated once before either output is written.
+        MmsParentStateV1 canonical{};
+        const MmsResult sampled = CanonicalParent(*payload->data, index, frame, canonical);
         if (sampled != MMS_OK) return sampled;
-        const uint32_t maximum = static_cast<uint32_t>(frame_limits::maximum);
-        // The window is frozen metadata: a zero end is unbounded, a bounded end
-        // is exclusive, and both ends must contain the sampled frame.
-        if (produced.windowStart > maximum || produced.windowEnd > maximum) return MMS_E_FAILED;
-        if (produced.windowEnd && produced.windowEnd <= produced.windowStart) return MMS_E_FAILED;
-        if (frame < static_cast<double>(produced.windowStart)) return MMS_E_FAILED;
-        if (produced.windowEnd && !(frame < static_cast<double>(produced.windowEnd))) return MMS_E_FAILED;
-        // ACTIVE selects the frozen target and bone; an inactive record stays
-        // empty. The target is metadata, so no live model is consulted here.
-        if ((produced.flags & ~MMS_EVALUATION_PARENT_ACTIVE) || produced.reserved) return MMS_E_FAILED;
-        if (produced.flags & MMS_EVALUATION_PARENT_ACTIVE) {
-            if (Empty(produced.target.id) || !produced.target.generation || Empty(produced.bone)) return MMS_E_FAILED;
-        } else if (!Empty(produced.target.id) || produced.target.generation || !Empty(produced.bone)) {
-            return MMS_E_FAILED;
+        if (!ValidParentState(canonical, frame)) return MMS_E_FAILED;
+        if (kind == kDisplayParentState) {
+            canonical.h = Header<MmsParentStateV1>();
+            canonical.reserved = 0;
+            parentState = canonical;
+            return MMS_OK;
+        }
+        // The 1.2 record cannot express ground, so it refuses the state instead
+        // of collapsing it into ACTIVE or an inherited parent. The caller
+        // output stays untouched and the shared cleanup still runs.
+        if (canonical.kind == MMS_EVALUATION_PARENT_GROUND) return MMS_E_UNSUPPORTED;
+        MmsParentSelectionV1 produced{};
+        produced.windowStart = canonical.windowStart;
+        produced.windowEnd = canonical.windowEnd;
+        if (canonical.kind == MMS_EVALUATION_PARENT_MODEL) {
+            produced.target = canonical.target;
+            produced.bone = canonical.bone;
+            produced.flags = MMS_EVALUATION_PARENT_ACTIVE;
         }
         produced.h = Header<MmsParentSelectionV1>();
         produced.reserved = 0;
-        parentState = produced;
+        parentSelection = produced;
         return MMS_OK;
     });
 
@@ -841,7 +950,8 @@ MmsResult EvaluationStore::ReadDisplay(Client& client, MmsHandle source, uint32_
         if (result == MMS_OK) {
             if (kind == kDisplayVisibility) *static_cast<MmsDisplayStateV1*>(out) = visibility;
             else if (kind == kDisplayIk) *static_cast<MmsIkStateV1*>(out) = ikState;
-            else *static_cast<MmsParentSelectionV1*>(out) = parentState;
+            else if (kind == kDisplayParentState) *static_cast<MmsParentStateV1*>(out) = parentState;
+            else *static_cast<MmsParentSelectionV1*>(out) = parentSelection;
         }
         // If Release erased the entry while the callback was running, this is
         // the last payload reference and the byte charge is returned here.

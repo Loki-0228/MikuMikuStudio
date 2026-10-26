@@ -22,7 +22,7 @@ struct Gate {
     HANDLE proceed = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     ~Gate() { if (entered) CloseHandle(entered); if (proceed) CloseHandle(proceed); }
 };
-enum class GateKind { Bone, Morph, Display, Parent };
+enum class GateKind { Bone, Morph, Display, Parent, ParentState };
 static std::shared_ptr<EvaluationStore> Store(std::shared_ptr<Gate> gate = {}, GateKind kind = GateKind::Bone,
                                             bool legacy = false, uint32_t supported = 7) {
     EvaluationStore::CaptureChannels capture = [gate, kind](const MmsEvaluationSourceQueryV1& query, uint32_t channels, uint64_t budget,
@@ -86,6 +86,19 @@ static std::shared_ptr<EvaluationStore> Store(std::shared_ptr<Gate> gate = {}, G
                 out.windowEnd = frame < 4 ? 4 : (frame < 20 ? 20 : 0);
                 return MMS_OK;
             };
+            data->sampleParentState = [gate, kind, legacyParent=data->sampleParent](uint32_t index, double frame, MmsParentStateV1& out) -> MmsResult {
+                if (index > 1) return MMS_E_NOT_FOUND;
+                if (gate && kind == GateKind::ParentState) {
+                    SetEvent(gate->entered);
+                    if (WaitForSingleObject(gate->proceed, 15000) != WAIT_OBJECT_0) return MMS_E_FAILED;
+                }
+                out = {}; out.h = Header<MmsParentStateV1>();
+                if (frame >= 30) { out.kind = MMS_EVALUATION_PARENT_GROUND; out.windowStart = 30; return MMS_OK; }
+                MmsParentSelectionV1 old{}; const auto status = legacyParent(index, frame, old); if (status) return status;
+                out.target = old.target; out.bone = old.bone; out.windowStart = old.windowStart; out.windowEnd = old.windowEnd;
+                out.kind = old.flags ? MMS_EVALUATION_PARENT_MODEL : MMS_EVALUATION_PARENT_INHERIT;
+                return MMS_OK;
+            };
         }
         out = std::move(data); return MMS_OK;
     };
@@ -106,7 +119,7 @@ static fs::path Package(const fs::path& plugins, const fs::path& fixture, const 
         << "\",\"name\":\"Evaluation lifecycle\",\"version\":\"1.0.0\","
         "\"kind\":\"native\",\"abi\":{\"major\":1,\"minMinor\":0},\"entry\":\"" << filename
         << "\",\"architecture\":\"x64\",\"minWindows\":\"6.1.7601\",\"capabilities\":[\"scene.evaluate\"],"
-        "\"requiresServices\":[{\"id\":\"mms.scene.evaluate\",\"major\":1,\"minMinor\":2}],\"dependencies\":[";
+        "\"requiresServices\":[{\"id\":\"mms.scene.evaluate\",\"major\":1,\"minMinor\":3}],\"dependencies\":[";
     if (!dependency.empty()) out << "{\"id\":\"" << dependency << "\",\"minVersion\":\"1.0.0\",\"maxVersionExclusive\":\"2.0.0\"}";
     out << "],\"nativeDependencies\":[],\"reloadPolicy\":\"restart\"}"; out.close(); CHECK(bool(out));
     return dll;
@@ -115,10 +128,14 @@ struct Probe {
     MmsEvaluationApiV1 api{};
     MmsEvaluationApiV1_1 api11{};
     MmsEvaluationApiV1_2 api12{};
+    MmsEvaluationApiV1_3 api13{};
     MmsHandle source = 0;
     MmsResult(MMS_CALL* query)(MmsEvaluationApiV1*) = nullptr;
     MmsResult(MMS_CALL* query11)(MmsEvaluationApiV1_1*) = nullptr;
     MmsResult(MMS_CALL* query12)(MmsEvaluationApiV1_2*) = nullptr;
+    MmsResult(MMS_CALL* query13)(MmsEvaluationApiV1_3*) = nullptr;
+    MmsResult(MMS_CALL* parentState)(uint32_t, MmsTime, MmsParentStateV1*) = nullptr;
+    MmsResult(MMS_CALL* parentLegacy)(uint32_t, MmsTime, MmsParentSelectionV1*) = nullptr;
     MmsResult(MMS_CALL* release)() = nullptr;
     uint32_t(MMS_CALL* stops)() = nullptr;
     explicit Probe(const fs::path& dll) {
@@ -132,11 +149,17 @@ struct Probe {
         query12 = reinterpret_cast<decltype(query12)>(GetProcAddress(module, "MmsEvaluationTestQuery12"));
         using Get12 = MmsResult(MMS_CALL*)(MmsEvaluationApiV1_2*);
         const auto get12 = reinterpret_cast<Get12>(GetProcAddress(module, "MmsEvaluationTestGet12"));
+        query13 = reinterpret_cast<decltype(query13)>(GetProcAddress(module, "MmsEvaluationTestQuery13"));
+        using Get13 = MmsResult(MMS_CALL*)(MmsEvaluationApiV1_3*);
+        const auto get13 = reinterpret_cast<Get13>(GetProcAddress(module, "MmsEvaluationTestGet13"));
+        parentState = reinterpret_cast<decltype(parentState)>(GetProcAddress(module, "MmsEvaluationTestParentState"));
+        parentLegacy = reinterpret_cast<decltype(parentLegacy)>(GetProcAddress(module, "MmsEvaluationTestParentLegacy"));
         release = reinterpret_cast<decltype(release)>(GetProcAddress(module, "MmsEvaluationTestRelease"));
         stops = reinterpret_cast<decltype(stops)>(GetProcAddress(module, "MmsEvaluationTestStopCount"));
         CHECK(get && query && release && stops); CHECK(get(&api, &source) == MMS_OK && source);
         CHECK(get11 && query11 && get11(&api11) == MMS_OK);
         CHECK(get12 && query12 && get12(&api12) == MMS_OK);
+        CHECK(get13 && query13 && parentState && parentLegacy && get13(&api13) == MMS_OK);
     }
 };
 static bool ValidSample(const MmsBoneChannelsV1& sample) {
@@ -152,6 +175,11 @@ static bool ValidParent(const MmsParentSelectionV1& value) {
         value.bone.lo == 99 && value.bone.hi == 111 && value.windowStart == 4 && value.windowEnd == 20 &&
         value.flags == MMS_EVALUATION_PARENT_ACTIVE && value.reserved == 0;
 }
+static bool ValidGround(const MmsParentStateV1& value) {
+    return value.h.size == 64 && value.h.major == 1 && value.h.minor == 0 &&
+        value.kind == MMS_EVALUATION_PARENT_GROUND && value.windowStart == 30 && value.windowEnd == 0 &&
+        !value.target.id.lo && !value.target.id.hi && !value.target.generation && !value.bone.lo && !value.bone.hi && !value.reserved;
+}
 static void LiveReads(const Probe& probe, uint32_t expectedChannels = 7) {
     const bool legacy = expectedChannels == 1;
     auto api = probe.api;
@@ -163,6 +191,9 @@ static void LiveReads(const Probe& probe, uint32_t expectedChannels = 7) {
     MmsEvaluationApiV1_2 repeated12{}; CHECK(probe.query12(&repeated12) == MMS_OK);
     CHECK(repeated12.h.size == 152 && repeated12.h.major == 1 && repeated12.h.minor == 2 &&
         repeated12.context == api.context && repeated12.sampleParent == probe.api12.sampleParent);
+    MmsEvaluationApiV1_3 repeated13{}; CHECK(probe.query13(&repeated13) == MMS_OK);
+    CHECK(repeated13.h.size == 160 && repeated13.h.major == 1 && repeated13.h.minor == 3 &&
+        repeated13.context == api.context && repeated13.sampleParentState == probe.api13.sampleParentState);
     const auto read = [&]() {
         MmsEvaluationCapsV1 caps{}; MmsEvaluationSourceInfoV1 info{}; MmsEvaluationBoneV1 bone{}; MmsBoneChannelsV1 sample{};
         MmsHandle retained = 0;
@@ -207,6 +238,17 @@ static void LiveReads(const Probe& probe, uint32_t expectedChannels = 7) {
             std::memset(&parent, 0x5a, sizeof(parent)); const auto oldParent = parent;
             if (probe.api12.sampleParent(api.context, probe.source, 0, {1, 10}, &parent) != MMS_E_FAILED ||
                 std::memcmp(&parent, &oldParent, sizeof(parent))) return false;
+            MmsParentStateV1 state{};
+            // These exports execute plugin code on both sides of the host call.
+            if (probe.parentState(0, {1, 1}, &state) || !ValidGround(state)) return false;
+            if (probe.parentLegacy(0, {1, 1}, &parent) != MMS_E_UNSUPPORTED ||
+                std::memcmp(&parent, &oldParent, sizeof(parent))) return false;
+            if (probe.parentState(1, {1, 2}, &state) || state.kind != MMS_EVALUATION_PARENT_MODEL ||
+                state.target.id.lo != 77 || state.target.id.hi != 88 || state.target.generation != 2 ||
+                state.bone.lo != 99 || state.bone.hi != 111 || state.windowStart != 4 || state.windowEnd != 20 || state.reserved) return false;
+            if (probe.parentState(0, {0, 1}, &state) || state.kind != MMS_EVALUATION_PARENT_INHERIT || state.windowStart || state.windowEnd != 4) return false;
+            std::memset(&state, 0x5a, sizeof(state)); const auto oldState = state;
+            if (probe.parentState(0, {1, 10}, &state) != MMS_E_FAILED || std::memcmp(&state, &oldState, sizeof(state))) return false;
         }
         return true;
     };
@@ -230,6 +272,9 @@ static void LiveReads(const Probe& probe, uint32_t expectedChannels = 7) {
     MmsMorphWeightV1 absent; std::memset(&absent, 0x5a, sizeof(absent)); const auto oldAbsent = absent;
     CHECK(probe.api11.sampleMorph(api.context, boneOnly, {55, 66}, {1, 2}, &absent) == MMS_E_UNSUPPORTED &&
         !std::memcmp(&absent, &oldAbsent, sizeof(absent)));
+    MmsParentStateV1 noDisplay; std::memset(&noDisplay, 0x5a, sizeof(noDisplay)); const auto oldNoDisplay = noDisplay;
+    CHECK(probe.api13.sampleParentState(api.context, boneOnly, 0, {1, 1}, &noDisplay) == MMS_E_UNSUPPORTED &&
+        !std::memcmp(&noDisplay, &oldNoDisplay, sizeof(noDisplay)));
     CHECK(api.release(api.context, boneOnly) == MMS_OK);
     if (expectedChannels != 7) {
         MmsHandle unsupportedDisplay = 789;
@@ -281,6 +326,10 @@ static void Retired(const Probe& probe, uint32_t supportedChannels = 7) {
     CHECK(probe.api12.sampleParent(api.context, probe.source, 0, {1, 2}, &parent) == MMS_E_NOT_READY && !std::memcmp(&parent, &oldParent, sizeof(parent)));
     MmsEvaluationApiV1_2 table12; std::memset(&table12, 0x5a, sizeof(table12)); const auto oldTable12 = table12;
     CHECK(probe.query12(&table12) == MMS_E_NOT_READY && !std::memcmp(&table12, &oldTable12, sizeof(table12)));
+    MmsParentStateV1 state; std::memset(&state, 0x5a, sizeof(state)); const auto oldState = state;
+    CHECK(probe.parentState(0, {1, 1}, &state) == MMS_E_NOT_READY && !std::memcmp(&state, &oldState, sizeof(state)));
+    MmsEvaluationApiV1_3 table13; std::memset(&table13, 0x5a, sizeof(table13)); const auto oldTable13 = table13;
+    CHECK(probe.query13(&table13) == MMS_E_NOT_READY && !std::memcmp(&table13, &oldTable13, sizeof(table13)));
 }
 static void RunCase(const fs::path& root, const fs::path& fixture, const std::string& mode) {
     const auto base = root / mode; const auto dll = Package(base / "PLUGINS", fixture, mode);
@@ -332,7 +381,8 @@ static void DependencyShutdown(const fs::path& root, const fs::path& fixture) {
 static void InFlight(const fs::path& root, const fs::path& fixture, GateKind kind = GateKind::Bone) {
     const std::string mode = kind == GateKind::Morph ? "morph-inflight-holdok" :
         (kind == GateKind::Display ? "display-inflight-holdok" :
-        (kind == GateKind::Parent ? "parent-inflight-holdok" : "inflight-holdok"));
+        (kind == GateKind::Parent ? "parent-inflight-holdok" :
+        (kind == GateKind::ParentState ? "parent-state-inflight-holdok" : "inflight-holdok")));
     const auto base = root / mode; const auto dll = Package(base / "PLUGINS", fixture, mode);
     auto gate = std::make_shared<Gate>(); CHECK(gate->entered && gate->proceed);
     auto store = Store(gate, kind); std::vector<std::string> logs;
@@ -340,6 +390,7 @@ static void InFlight(const fs::path& root, const fs::path& fixture, GateKind kin
     manager.Load(base / "PLUGINS"); Probe probe(dll);
     MmsResult result = MMS_E_FAILED; MmsBoneChannelsV1 sample{}; MmsMorphWeightV1 weight{};
     MmsDisplayStateV1 visibility{}; MmsParentSelectionV1 parent{};
+    MmsParentStateV1 parentState{};
     struct Join {
         std::shared_ptr<Gate> gate;
         std::thread worker;
@@ -350,6 +401,7 @@ static void InFlight(const fs::path& root, const fs::path& fixture, GateKind kin
         case GateKind::Morph: result = probe.api11.sampleMorph(probe.api11.context, probe.source, {55, 66}, {1, 2}, &weight); break;
         case GateKind::Display: result = probe.api12.sampleVisibility(probe.api12.context, probe.source, {1, 2}, &visibility); break;
         case GateKind::Parent: result = probe.api12.sampleParent(probe.api12.context, probe.source, 0, {1, 2}, &parent); break;
+        case GateKind::ParentState: result = probe.parentState(0, {1, 1}, &parentState); break;
         }
     })};
     CHECK(WaitForSingleObject(gate->entered, 10000) == WAIT_OBJECT_0);
@@ -364,6 +416,7 @@ static void InFlight(const fs::path& root, const fs::path& fixture, GateKind kin
     case GateKind::Morph: CHECK(weight.h.size == sizeof(weight) && weight.h.major == 1 && weight.h.minor == 0 && weight.value == 13 && weight.reserved == 0); break;
     case GateKind::Display: CHECK(visibility.h.size == sizeof(visibility) && visibility.h.major == 1 && visibility.h.minor == 0 && visibility.visible == 197 && visibility.reserved == 0); break;
     case GateKind::Parent: CHECK(ValidParent(parent)); break;
+    case GateKind::ParentState: CHECK(ValidGround(parentState)); break;
     }
     CHECK(manager.Stop()); CHECK(Count(logs, "EVALUATION_DESTROY") == 1);
     CHECK(GetModuleHandleW(dll.c_str()) == nullptr);
@@ -379,6 +432,7 @@ int wmain(int argc, wchar_t** argv) {
         RunCase(root, fixture, "legacy"); RunCase(root, fixture, "v11-default");
         DependencyShutdown(root, fixture); InFlight(root, fixture); InFlight(root, fixture, GateKind::Morph);
         InFlight(root, fixture, GateKind::Display); InFlight(root, fixture, GateKind::Parent);
+        InFlight(root, fixture, GateKind::ParentState);
         RunCase(root, fixture, "failinstance");
         std::cout << "Evaluation lifecycle PASS: " << checks << " checks\n"; return 0;
     } catch (const std::exception& error) { std::cerr << "FAIL after " << checks << " checks: " << error.what() << '\n'; return 1; }

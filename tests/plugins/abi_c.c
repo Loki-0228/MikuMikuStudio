@@ -313,3 +313,15 @@ _Static_assert(offsetof(MmsEvaluationApiV1_2, sampleIk) == 136, "evaluation1.2 s
 _Static_assert(offsetof(MmsEvaluationApiV1_2, sampleParent) == 144, "evaluation1.2 sampleParent offset");
 _Static_assert(offsetof(MmsEvaluationSourceInfoV1_2, ikCount) == 72, "evaluation1.2 source prefix");
 _Static_assert(_Generic(((MmsEvaluationApiV1_2*)0)->sampleParent, MmsResult (MMS_CALL *)(void*, MmsHandle, uint32_t, MmsTime, MmsParentSelectionV1*):1, default:0), "parent sample signature");
+
+_Static_assert(sizeof(MmsParentStateV1) == 64, "parent state layout");
+_Static_assert(sizeof(MmsEvaluationApiV1_3) == 160, "evaluation1.3 layout");
+_Static_assert(offsetof(MmsEvaluationApiV1_3, sampleParentState) == sizeof(MmsEvaluationApiV1_2), "evaluation1.3 preserves prefix");
+_Static_assert(offsetof(MmsParentStateV1, h) == 0, "parent state h offset");
+_Static_assert(offsetof(MmsParentStateV1, target) == 8, "parent state target offset");
+_Static_assert(offsetof(MmsParentStateV1, bone) == 32, "parent state bone offset");
+_Static_assert(offsetof(MmsParentStateV1, windowStart) == 48, "parent state windowStart offset");
+_Static_assert(offsetof(MmsParentStateV1, windowEnd) == 52, "parent state windowEnd offset");
+_Static_assert(offsetof(MmsParentStateV1, kind) == 56, "parent state kind offset");
+_Static_assert(offsetof(MmsParentStateV1, reserved) == 60, "parent state reserved offset");
+_Static_assert(_Generic(((MmsEvaluationApiV1_3*)0)->sampleParentState, MmsResult (MMS_CALL *)(void*, MmsHandle, uint32_t, MmsTime, MmsParentStateV1*):1, default:0), "parent state sample signature");

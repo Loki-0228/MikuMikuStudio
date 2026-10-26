@@ -748,6 +748,7 @@ void CheckShadowFilter(MMDApp* app) {
 #include "plugins/bone_scene_evaluation_host_checks.inc"
 #include "plugins/evaluation_morph_host_checks.inc"
 #include "plugins/evaluation_display_host_checks.inc"
+#include "plugins/evaluation_parent_state_host_checks.inc"
 #include "plugins/slider_hover_host_checks.inc"
 #include "plugins/layout_refresh_host_checks.inc"
 #include "plugins/object_history_host_checks.inc"
@@ -903,6 +904,9 @@ int main(int argc, char** argv) {
     }
     if(argc==2 && std::string(argv[1])=="--evaluation-display-only") {
         evaluation_display_host_checks::Run(app);ShutdownCleanup(app);g_Block=nullptr;delete app;return 0;
+    }
+    if(argc==2 && std::string(argv[1])=="--evaluation-parent-state-only") {
+        evaluation_parent_state_probe::Run(app);ShutdownCleanup(app);g_Block=nullptr;delete app;return 0;
     }
 #endif
     if(schedulerOnly) {
