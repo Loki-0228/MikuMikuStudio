@@ -57,8 +57,9 @@ void ReleaseSubSlot(ComPtr& slot) {
 }  // namespace
 
 bool PostDeviceReset(MMDApp* app) {
-    model_vertex_cache::Clear();
     device_lost_wait::ResetScope recovery(app);
+    if (!plugins::PluginPrepareDeviceReset(app)) return false;
+    model_vertex_cache::Clear();
     viewport_render_scale::Release(app);
     antialias::Release(app);
     ReleaseTransparentCapture(app);

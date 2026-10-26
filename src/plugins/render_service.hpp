@@ -20,7 +20,18 @@ public:
         void* phaseContext = nullptr;
         bool retired = false;
     };
+    // Convenience entry point: marks the loss, then requests an immediate drain.
+    // Inside a render callback the drain is deferred: the loss stays pending
+    // until FlushDeviceLost is called again outside the callback.
     void DeviceLost(uint64_t generation) noexcept;
+    // Marks the device as lost without running plugin code. A nested mark from a
+    // release callback is ignored because the outer drain owns the leases.
+    void MarkDeviceLost(uint64_t generation) noexcept;
+    // Releases every uncancelled lease when a loss is pending. Returns true when
+    // nothing is pending or the drain finished; false when called from a callback
+    // or from inside the drain, leaving the loss pending for a later call.
+    bool FlushDeviceLost() noexcept;
+    bool DeviceLossPending() const noexcept { return pending_; }
     void FramePresented(uint32_t width, uint32_t height, uint32_t format) noexcept;
     void DeviceRestored(uint64_t generation) noexcept;
     MmsRenderApiV1 Api(Client& client);
@@ -63,6 +74,9 @@ private:
     // True while ReleaseAll is dispatching lease release callbacks. The drain
     // owns the lease map, so nested device events must not dispatch again.
     bool draining_ = false;
+    // A loss has been marked but its lease drain has not completed yet. Restore
+    // requests are rejected while this is set.
+    bool pending_ = false;
     uint64_t generation_ = 1, frameIndex_ = 0;
     uint32_t lost_ = 0, width_ = 0, height_ = 0, format_ = 0;
 };

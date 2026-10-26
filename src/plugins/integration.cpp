@@ -88,6 +88,7 @@ std::deque<BusinessNotification> businessEvents;
 // Probe-only property ids must outlive the deferred delivery payload.
 std::deque<std::string> propertyProbeIds;
 uint64_t deviceGeneration = 1;
+bool deviceLost = false;
 constexpr UINT kProjectEvent = WM_APP + 0x6b;
 constexpr UINT_PTR kProjectRetry = 0x4d4d536b;
 constexpr UINT_PTR kHistoryUiRetry = 0x4d4d536c;
@@ -168,18 +169,34 @@ void NotifyLanguageChangedEvent(MMDApp* app) {
     MmsCodeEventV1 payload{Header<MmsCodeEventV1>(), app->EnglishUI(), 0};
     QueueBusinessEvent(app, MMS_EVENT_LANGUAGE_CHANGED, 1, &payload, sizeof(payload));
 }
+bool FlushDeviceLoss(MMDApp* app) {
+    if (!manager || owner != app) return true;
+    if (closing || manager->InCallback()) return false;
+    return manager->Render().FlushDeviceLost();
+}
 void NotifyDeviceLostEvent(MMDApp* app) {
-    if (!manager || owner != app) return;
-    MmsDeviceEventV1 payload{Header<MmsDeviceEventV1>(), deviceGeneration, 0, 0};
-    QueueBusinessEvent(app, MMS_EVENT_DEVICE_LOST, 1, &payload, sizeof(payload));
-    manager->Render().DeviceLost(deviceGeneration);
+    if (!manager || owner != app || closing) return;
+    if (!deviceLost) {
+        deviceLost = true;
+        manager->Render().MarkDeviceLost(deviceGeneration);
+        MmsDeviceEventV1 payload{Header<MmsDeviceEventV1>(), deviceGeneration, 0, 0};
+        QueueBusinessEvent(app, MMS_EVENT_DEVICE_LOST, 1, &payload, sizeof(payload));
+    }
+    if (!FlushDeviceLoss(app) && manager->Render().DeviceLossPending()) {
+        // The release obligation is independent of event allocation/delivery.
+        // A modal callback may consume the posted wake; the timer retries later.
+        if (!PostMessageW(app->MainWindow(), kProjectEvent, 0, 0))
+            SetTimer(app->MainWindow(), kProjectRetry, 16, nullptr);
+    }
 }
 void NotifyDeviceRestoredEvent(MMDApp* app) {
-    if (!manager || owner != app) return;
+    if (!manager || owner != app || closing || !deviceLost || manager->InCallback() ||
+        manager->Render().DeviceLossPending()) return;
     ++deviceGeneration;
+    manager->Render().DeviceRestored(deviceGeneration);
+    deviceLost = false;
     MmsDeviceEventV1 payload{Header<MmsDeviceEventV1>(), deviceGeneration, 0, 0};
     QueueBusinessEvent(app, MMS_EVENT_DEVICE_RESTORED, 1, &payload, sizeof(payload));
-    manager->Render().DeviceRestored(deviceGeneration);
 }
 void NotifyObjectRemovedEvent(MMDApp* app, const void* native) {
     if (!manager || owner != app || !native) return;
@@ -213,7 +230,7 @@ LRESULT CALLBACK Subclass(HWND hwnd, UINT message, WPARAM wp, LPARAM lp, UINT_PT
     }
     if (message == kProjectEvent || (message == WM_TIMER && wp == kProjectRetry)) {
         KillTimer(hwnd,kProjectRetry);
-        if(manager && !closing && !manager->InCallback() && owner && owner->WindowLayoutReady() && !owner->SceneMutationInProgress()) {
+        if(manager && !closing && !manager->InCallback() && owner && owner->WindowLayoutReady() && !owner->SceneMutationInProgress() && FlushDeviceLoss(owner)) {
             auto remaining=projectEvents.size();
             while(remaining-- && !projectEvents.empty()) {
                 auto event=std::move(projectEvents.front());projectEvents.pop_front();
@@ -222,12 +239,14 @@ LRESULT CALLBACK Subclass(HWND hwnd, UINT message, WPARAM wp, LPARAM lp, UINT_PT
             }
             remaining=businessEvents.size();
             while(remaining-- && !businessEvents.empty()) {
+                if (!FlushDeviceLoss(owner)) break;
                 auto event=std::move(businessEvents.front());businessEvents.pop_front();
                 manager->Event(event.kind,
                     {event.bytes.empty()?nullptr:static_cast<void*>(event.bytes.data()),event.bytes.size()},
                     event.version, event.object);
             }
-        } else if(owner && !closing && (!projectEvents.empty() || !businessEvents.empty()))
+        } else if(owner && !closing && (!projectEvents.empty() || !businessEvents.empty() ||
+            (manager && manager->Render().DeviceLossPending())))
             SetTimer(hwnd,kProjectRetry,16,nullptr);
         return 0;
     }
@@ -239,10 +258,15 @@ void PluginNotifyProjectClosed(MMDApp* app) { NotifyProjectClosedEvent(app); }
 void PluginNotifyLanguageChanged(MMDApp* app) { NotifyLanguageChangedEvent(app); }
 void PluginNotifyDeviceLost(MMDApp* app) { NotifyDeviceLostEvent(app); }
 void PluginNotifyDeviceRestored(MMDApp* app) { NotifyDeviceRestoredEvent(app); }
+bool PluginPrepareDeviceReset(MMDApp* app) {
+    NotifyDeviceLostEvent(app);
+    return FlushDeviceLoss(app);
+}
 void PluginNotifyObjectRemoved(MMDApp* app, const void* native) { NotifyObjectRemovedEvent(app, native); }
 void PluginNotifyDpiChanged(MMDApp* app, unsigned dpi) { NotifyDpiChangedEvent(app, dpi); }
 void PluginFrameBegin(MMDApp* app) {
     if (!manager || !app || owner != app || manager->InCallback()) return;
+    if (!FlushDeviceLoss(app)) return;
     manager->Render().FrameBegin();
 }
 void PluginFrameEnd(MMDApp* app) {
@@ -276,6 +300,8 @@ static void InitializeRuntime(MMDApp* app, bool migrationTest) {
         if (runtimeBinding == UINT64_MAX) throw std::runtime_error("plugin runtime binding exhausted");
         ++runtimeBinding;
         owner = app; closing = false;
+        deviceGeneration = 1; deviceLost = false;
+        businessEvents.clear(); propertyProbeIds.clear();
         historyUiPending = false; pendingEffects = HistoryEffects::None; historyUiGeneration = 0;
         const auto data = local_data::File(L"plugins");
         if (data.empty()) throw std::runtime_error("plugin data directory unavailable");
@@ -391,7 +417,10 @@ void Shutdown() {
 #if !MMD_ORIGINAL_PROFILE
     if(owner)CancelViewportCameraGesture(*owner);
 #endif
-    if (owner && owner->MainWindow()) KillTimer(owner->MainWindow(), kHistoryUiRetry);
+    if (owner && owner->MainWindow()) {
+        KillTimer(owner->MainWindow(), kHistoryUiRetry);
+        KillTimer(owner->MainWindow(), kProjectRetry);
+    }
     CancelProjectLoad(owner);
     if (manager) manager->Ui().Refresh().PropertyRefresh().SetHistoryAvailable(false);
     if (manager) manager->Stop();
@@ -420,6 +449,7 @@ void Shutdown() {
 #endif
     if (history) history->SetPublicationSignal({});
     history.reset(); manager.reset(); projectEvents.clear();
+    businessEvents.clear(); propertyProbeIds.clear(); deviceLost = false; deviceGeneration = 1;
     toolbarHeight = propertyAreaHeight = leftAreaWidth = rightAreaWidth = 0;
     owner = nullptr; historyUiPending = false;
     pendingEffects = HistoryEffects::None; historyUiGeneration = 0;

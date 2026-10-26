@@ -2,12 +2,23 @@
 
 namespace mikumikustudio::plugins {
 void RenderService::DeviceLost(uint64_t generation) noexcept {
+    MarkDeviceLost(generation);
+    FlushDeviceLost();
+}
+void RenderService::MarkDeviceLost(uint64_t generation) noexcept {
     // A loss reported from inside a release callback belongs to the drain already
     // in progress; it must not replace the generation or dispatch again.
     if (draining_) return;
     generation_ = generation ? generation : generation_;
     lost_ = 1;
+    pending_ = true;
+}
+bool RenderService::FlushDeviceLost() noexcept {
+    if (!pending_) return true;
+    if (InCallback() || draining_) return false;
     ReleaseAll("device lost");
+    pending_ = false;
+    return true;
 }
 void RenderService::FramePresented(uint32_t width, uint32_t height, uint32_t format) noexcept {
     if (InCallback()) return;
@@ -88,8 +99,9 @@ void RenderService::ClearFrameCallback(Client& client) {
 }
 void RenderService::DeviceRestored(uint64_t generation) noexcept {
     // A restore reported from inside a release callback is premature: the drain
-    // is still walking leases, so the device remains lost until it completes.
-    if (draining_) return;
+    // is still walking leases, so the device remains lost until it completes. A
+    // pending loss also blocks the restore until the drain has run.
+    if (draining_ || pending_) return;
     if (generation) generation_ = generation;
     lost_ = 0;
 }

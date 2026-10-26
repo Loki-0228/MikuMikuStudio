@@ -1,6 +1,7 @@
 #pragma once
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/plugin_storage.hpp"
 
 namespace mikumikustudio::device_lost_wait {
 
@@ -151,6 +152,9 @@ inline Result Wait(MMDApp* app, IDirect3DDevice9* device, bool recording) {
             (app->CaptureRenderTarget() == target && app->CaptureSystemSurface() == system &&
              renderer->backbufferSurface == back && app->CaptureReadbackPixels() == pixels));
     };
+    // Hold the recovery guard and compare with the pre-callback identities:
+    // releasing plugin resources may pump resize/cancel messages.
+    plugins::PluginNotifyDeviceLost(app);
     for (;;) {
         if (!current()) return Result::Interrupted;
         // Bound one batch so a producer cannot starve the cooperative-level
@@ -170,6 +174,9 @@ inline Result Wait(MMDApp* app, IDirect3DDevice9* device, bool recording) {
         const HRESULT status = device->TestCooperativeLevel();
         if (!current()||(state.app&&!ownsPending())) return Result::Interrupted;
         if (status == D3D_OK && !state.resetRequired) {
+            if (!plugins::PluginPrepareDeviceReset(app)) return Result::Interrupted;
+            if (!current() || (state.app && !ownsPending()) || state.resetRequired) return Result::Interrupted;
+            plugins::PluginNotifyDeviceRestored(app);
             ClearPending();
             return Result::Ready;
         }

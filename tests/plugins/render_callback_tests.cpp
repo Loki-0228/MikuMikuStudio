@@ -193,8 +193,41 @@ static bool DropAndThrowDuringLoss() {
     CHECK(unrelated.releases==2 && canceled.releases==0 && drop.calls==1);
     return true;
 }
+struct DeferredLoss {
+    RenderService* service;
+    Seen* seen;
+    bool flushed=true, releasedInside=false, pending=false;
+};
+static void MMS_CALL LoseInsideFrame(void* p,const MmsRenderInfoV1*) {
+    auto& s=*static_cast<DeferredLoss*>(p);
+    s.service->DeviceLost(9);
+    s.pending=s.service->DeviceLossPending();
+    s.flushed=s.service->FlushDeviceLost();
+    s.releasedInside=s.seen->releases!=0;
+    s.service->DeviceRestored(10);
+}
+static bool DeferredCallbackLoss() {
+    RenderService service; RenderService::Client c; c.id="deferred"; Seen seen;
+    auto api=service.Api11(c); DeferredLoss deferred{&service,&seen};
+    MmsRenderLeaseDescV1 desc{Header<MmsRenderLeaseDescV1>(),Text(c.id),Released,&seen,MMS_RENDER_LEASE_DEVICE,0};
+    MmsHandle lease=0;
+    CHECK(api.acquireLease(api.context,&desc,&lease)==MMS_OK);
+    CHECK(api.setFrameCallback(api.context,LoseInsideFrame,&deferred)==MMS_OK);
+    service.FramePresented(1,1,0);
+    CHECK(deferred.pending && !deferred.flushed && !deferred.releasedInside);
+    CHECK(service.DeviceLossPending() && !service.InCallback());
+    MmsRenderInfoV1 info{};
+    CHECK(api.query(api.context,&info)==MMS_OK && info.lost && info.deviceGeneration==9);
+    CHECK(service.FlushDeviceLost() && !service.DeviceLossPending() && seen.releases==1);
+    CHECK(service.FlushDeviceLost() && seen.releases==1);
+    service.DeviceRestored(10);
+    CHECK(api.query(api.context,&info)==MMS_OK && !info.lost && info.deviceGeneration==10);
+    CHECK(api.acquireLease(api.context,&desc,&lease)==MMS_OK);
+    CHECK(api.releaseLease(api.context,lease)==MMS_OK);
+    return true;
+}
 int main() {
     const bool ok=IndependentCallbacks() && AllocationAndExceptions() && FailedRegistration(false) && FailedRegistration(true) && Retirement()
-        && CancelDuringLoss() && DropAndThrowDuringLoss();
+        && CancelDuringLoss() && DropAndThrowDuringLoss() && DeferredCallbackLoss();
     std::printf("render callbacks %s checks=%u\n",ok?"PASS":"FAIL",checks); return ok?0:1;
 }

@@ -33,6 +33,13 @@ using RenderReentryHook = void (MMS_CALL*)(void*);
 static RenderReentryHook renderReentryHook = nullptr;
 static void* renderReentryContext = nullptr;
 static uint64_t renderProbeCounts[3]{};
+static MmsRenderApiV1 renderProbeApi{};
+extern "C" __declspec(dllexport) MmsResult MMS_CALL MmsTestGetRenderApi(MmsRenderApiV1* out) {
+    if (!out) return MMS_E_ARGUMENT;
+    if (!renderProbeApi.query) return MMS_E_NOT_READY;
+    *out = renderProbeApi;
+    return MMS_OK;
+}
 extern "C" __declspec(dllexport) void MMS_CALL MmsTestSetRenderReentryHook(RenderReentryHook hook, void* context) {
     renderReentryHook = hook;
     renderReentryContext = context;
@@ -157,6 +164,7 @@ static MmsResult InitRender(Plugin* p) {
     const auto result = p->host.queryService(p->host.context, S("mms.render"), 1, 0,
         sizeof(p->render), &p->render);
     if (result) { Log(p, "RENDER_SERVICE_MISSING"); return MMS_OK; }
+    renderProbeApi = p->render;
     if (RenderInfo(p, "RENDER_INFO") != MMS_OK) return MMS_OK;
     MmsRenderApiV1_1 render11{};
     if (p->host.queryService(p->host.context, S("mms.render"), 1, 1, sizeof(render11), &render11) == MMS_OK &&
@@ -492,7 +500,7 @@ static MmsResult MMS_CALL Stop(void* context) {
     if (p->command) { auto r = p->ui.unregisterItem(p->ui.context, p->command); if (r) return r; p->command = 0; }
     Log(p, "STOP_OK"); return MMS_OK;
 }
-static void MMS_CALL Destroy(void* context) { auto* p = static_cast<Plugin*>(context); Log(p, "DESTROY"); if (refreshProbe == p) refreshProbe = nullptr; delete p; }
+static void MMS_CALL Destroy(void* context) { auto* p = static_cast<Plugin*>(context); Log(p, "DESTROY"); if (refreshProbe == p) refreshProbe = nullptr; if (renderProbeApi.context == p->render.context) renderProbeApi = {}; delete p; }
 extern "C" __declspec(dllexport) MmsResult MMS_CALL RefreshProbeState(MmsUiRefreshStateV1* out) {
     if (!refreshProbe || !refreshProbe->refreshTicket) return MMS_E_NOT_READY;
     if (!out) return MMS_E_ARGUMENT;

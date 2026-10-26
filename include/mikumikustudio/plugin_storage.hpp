@@ -39,6 +39,10 @@ void PluginNotifyProjectClosed(MMDApp*);
 void PluginNotifyLanguageChanged(MMDApp*);
 void PluginNotifyDeviceLost(MMDApp*);
 void PluginNotifyDeviceRestored(MMDApp*);
+// Marks loss and releases plugin device leases before any native Reset work.
+// False defers Reset until the current callback has returned. Returns true when
+// no plugin runtime owns this application.
+bool PluginPrepareDeviceReset(MMDApp*);
 void PluginNotifyObjectRemoved(MMDApp*, const void* native);
 void PluginNotifyDpiChanged(MMDApp*, unsigned dpi);
 void PluginNotifyPropertyChanged(MMDApp*, const std::string& propertyId, uint64_t revision);
