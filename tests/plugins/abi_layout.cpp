@@ -6,6 +6,16 @@
 #include <mms/refresh_dependency.h>
 #include <mms/refresh_subscription.h>
 #include <mms/property_refresh.h>
+#include <mms/render_image.h>
+static_assert(sizeof(MmsRenderImageCapsV1) == 56, "image capabilities");
+static_assert(sizeof(MmsRenderImageDescV1) == 40, "image descriptor");
+static_assert(sizeof(MmsRenderImageInfoV1) == 56, "image info");
+static_assert(sizeof(MmsRenderImageMapV1) == 40, "image mapping");
+static_assert(sizeof(MmsRenderImageApiV1) == 72, "image API");
+static_assert(offsetof(MmsRenderImageMapV1, pixels) == 16, "image pixels offset");
+static_assert(offsetof(MmsRenderImageApiV1, createCpu) == 24, "image creation offset");
+static_assert(std::is_standard_layout<MmsRenderImageApiV1>::value && std::is_trivially_copyable<MmsRenderImageApiV1>::value, "image API POD");
+static_assert(std::is_same<decltype(((MmsRenderImageApiV1*)nullptr)->createCpu), MmsResult (MMS_CALL *)(void*, const MmsRenderImageDescV1*, MmsBytes, MmsHandle*)>::value, "image create signature");
 static_assert(offsetof(MmsUiRefreshSubscriptionDescV1, binding) == 8, "subscription binding offset");
 static_assert(offsetof(MmsUiRefreshSubscriptionStateV1, lastResult) == 56, "subscription result offset");
 static_assert(offsetof(MmsUiRefreshSubscriptionApiV1, unsubscribe) == 40, "subscription unsubscribe offset");

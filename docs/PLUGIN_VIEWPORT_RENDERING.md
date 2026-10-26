@@ -10,6 +10,8 @@
 
 现有接口已经提供稳定对象身份和只读快照，但完整的多视口渲染还需要新增服务。
 
+`mms.render.image` 1.0 已提供[CPU 图像租约](../sdk/mms/render-image.md)：插件可复制发布 RGBA8/BGRA8 图像、读取描述、保留图像及独立读取映射。它有线程安全与内存限额，CPU 像素不随设备重置失效。此阶段没有视口挂载、GPU 图像、渲染器提供者或独立场景求值，不能将其视为完整多视口已实现。
+
 | 代码入口 | 已有范围与限制 |
 | --- | --- |
 | `sdk/mms/include/mms/plugin.h` | 提供 `queryService`、`registerProvider`、版本头、不透明句柄和设备事件定义。V1 面向 Windows x64。 |
@@ -20,7 +22,7 @@
 | `sdk/mms/include/mms/surface.h` | 支持插件子窗口与多视图工厂。`MMS_SURFACE_MULTIPLE_VIEWS` 不代表多个独立 3D 渲染上下文。 |
 | `src/render/frame_scene.cpp::RenderFrameScene` | 依赖活动 `MMDApp`、DX9 设备和每帧缓存，也会更新变形、效果和叠加层。不能直接当作无副作用的任意视口函数。 |
 | `src/render/frame_presentation.cpp`、`viewport_render_scale.cpp` | 已区分部分场景图像与界面呈现，并支持预览缩放。渲染目标仍按 `MMDApp*` 保存。 |
-| `src/render/device_reset.cpp` | 管理现有设备重置和资源释放。尚无面向插件图像租约的统一设备代次协议。 |
+| `src/render/device_reset.cpp` | Reset 前等待原 `mms.render` 设备租约安全释放，并可靠投递设备状态；新增 CPU 图像独立于设备。GPU 图像及互操作代次协议仍未开放。 |
 
 目前的 DX12 预览、MMV 路径和默认效果入口不等于新 ABI 的渲染器提供者。
 完整范围与验收状态仍以[插件 ABI 实施记录](PLUGIN_ABI_IMPLEMENTATION.md)为准。
@@ -94,7 +96,7 @@
 | `mms.render.camera` | `create`、`update`、`bind`、`acquire`、`release` | 管理相机及修订；绑定工程相机为只读跟随，写回另走编辑。 |
 | `mms.render.view` | `createView`、`updateView`、`bindCamera`、`bindClock`、`requestRender`、`acquireImage`、`destroyView` | 管理视口配置、请求渲染与保留最新结果。 |
 | `mms.render.catalog` | `enumerateProviders`、`queryCapabilities`、`queryProfileSchema` | 查询已安装的渲染器及配置，不假定宿主含特定后端。 |
-| `mms.render.image` | `describe`、`mapRead`、`unmap`、`queryInterop`、`retain`、`release` | 统一读取图像和可选原生资源访问。 |
+| `mms.render.image` | 已实现 `getCapabilities`、`createCpu`、`describe`、`retain`、`mapRead`、`unmap`、`release`；`queryInterop` 仍为提案 | 当前只支持本插件不可变 CPU 图像；没有原生资源访问与跨插件共享。 |
 | `mms.render.pick` | `requestPick`、`queryResult`、`releaseResult` | 基于指定图像和相机修订返回命中信息。 |
 
 `registerProvider("mms.render.provider", id, table, ...)` 注册渲染器函数表，需先扩展现有 manager 的白名单和生命周期管理。

@@ -105,6 +105,7 @@ add_library(mms_plugin_runtime STATIC
     src/plugins/loader_win32.cpp
     src/plugins/ui_registry.cpp
     src/plugins/render_service.cpp
+    src/plugins/render_image_store.cpp
     src/plugins/ui_catalog.cpp
     src/plugins/native_ui_catalog.cpp
     src/plugins/native_menu_snapshot.cpp
@@ -242,6 +243,27 @@ set_target_properties(render_callback_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY 
 add_test(NAME plugin_abi_render_callbacks COMMAND render_callback_tests)
 set_tests_properties(plugin_abi_render_callbacks PROPERTIES TIMEOUT 30)
 add_executable(render_lifecycle_tests EXCLUDE_FROM_ALL tests/plugins/render_lifecycle_tests.cpp)
+add_executable(render_image_tests EXCLUDE_FROM_ALL tests/plugins/render_image_tests.cpp src/plugins/render_image_store.cpp)
+target_include_directories(render_image_tests PRIVATE src/plugins sdk/mms/include)
+target_compile_definitions(render_image_tests PRIVATE _WIN32_WINNT=0x0601 WINVER=0x0601)
+target_link_options(render_image_tests PRIVATE /SUBSYSTEM:CONSOLE,6.01 /DEBUG:NONE)
+set_target_properties(render_image_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_test(NAME plugin_abi_render_images COMMAND render_image_tests)
+set_tests_properties(plugin_abi_render_images PROPERTIES TIMEOUT 120)
+add_library(mms_image_lifecycle_plugin SHARED EXCLUDE_FROM_ALL tests/plugins/image_lifecycle_plugin.cpp tests/plugins/image_lifecycle_plugin.def)
+target_include_directories(mms_image_lifecycle_plugin PRIVATE sdk/mms/include)
+target_compile_definitions(mms_image_lifecycle_plugin PRIVATE _WIN32_WINNT=0x0601 WINVER=0x0601)
+target_link_options(mms_image_lifecycle_plugin PRIVATE /SUBSYSTEM:WINDOWS,6.01 /DEBUG:NONE)
+set_target_properties(mms_image_lifecycle_plugin PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_executable(image_lifecycle_tests EXCLUDE_FROM_ALL tests/plugins/image_lifecycle_tests.cpp)
+target_link_libraries(image_lifecycle_tests PRIVATE mms_plugin_runtime)
+target_include_directories(image_lifecycle_tests PRIVATE src/plugins)
+target_link_options(image_lifecycle_tests PRIVATE /SUBSYSTEM:CONSOLE,6.01 /DEBUG:NONE)
+set_target_properties(image_lifecycle_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_dependencies(image_lifecycle_tests mms_image_lifecycle_plugin)
+add_test(NAME plugin_abi_image_lifecycle COMMAND image_lifecycle_tests
+    "${CMAKE_BINARY_DIR}/tests/image-lifecycle" "$<TARGET_FILE:mms_image_lifecycle_plugin>")
+set_tests_properties(plugin_abi_image_lifecycle PROPERTIES TIMEOUT 120)
 add_executable(device_event_tests EXCLUDE_FROM_ALL tests/plugins/device_event_tests.cpp)
 target_link_libraries(device_event_tests PRIVATE mms_plugin_runtime)
 target_include_directories(device_event_tests PRIVATE src/plugins)

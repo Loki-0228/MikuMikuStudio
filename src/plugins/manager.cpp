@@ -3,6 +3,7 @@
 #include "edit_store.hpp"
 #include "ui_refresh_binding.hpp"
 #include "ui_property_refresh.hpp"
+#include "render_image_store.hpp"
 #include <atomic>
 #include <mutex>
 
@@ -16,6 +17,7 @@ struct Manager::Impl {
         EditClient edit;
         RefreshClient refresh{nullptr, {}};
         RenderService::Client render;
+        RenderImageStore::Client images;
         std::atomic<bool> stopping{false};
         PluginStatus status;
         MmsHostV1 table{};
@@ -48,6 +50,7 @@ struct Manager::Impl {
     std::vector<std::pair<std::string, uint64_t>> pendingPropertyChanges;
     UiRegistry registry;
     RenderService render;
+    RenderImageStore images;
     UiPreferencesFile preferences;
     MmsResult preferencesError = MMS_OK;
     StorageStore storage;
@@ -411,6 +414,10 @@ struct Manager::Impl {
             if (closing || i.stopping.load()) return MMS_E_NOT_READY;
             return Table(major, minor, bytes, out, registry.StateContentApi(i.ui));
         }
+        if (id == "mms.render.image") {
+            if (closing || i.stopping.load()) return MMS_E_NOT_READY;
+            return Table(major, minor, bytes, out, images.Api(i.images));
+        }
         if (id == "mms.render") {
             if (closing || i.stopping.load()) return MMS_E_NOT_READY;
             if (minor == 2) {
@@ -664,6 +671,7 @@ struct Manager::Impl {
         // service tables must not resurrect callbacks from stop/destroy.
         i.render.retired = true;
         render.DropClient(i.render.id);
+        images.Retire(i.images);
         registry.Refresh().Retire(i.refresh);
         if (edits && !edits->Retire(i.edit)) return false;
         if (i.stopFailed) return false;
@@ -676,7 +684,7 @@ struct Manager::Impl {
             return false;
         }
         { std::lock_guard<std::mutex> lock(mutex); for (const auto& [id, task] : tasks) if (task->owner == &i) return false; }
-        if (registry.HasLeases(i.ui) || registry.Refresh().HasLeases(i.refresh) || (scene && scene->HasLeases(i.scene))) return false;
+        if (images.HasLeases(i.images) || registry.HasLeases(i.ui) || registry.Refresh().HasLeases(i.refresh) || (scene && scene->HasLeases(i.scene))) return false;
         if (!storage.Retire(i.storage)) return false;
         r = Boundary([&] { registry.Retire(i.ui); return MMS_OK; });
         if (r != MMS_OK || registry.HasLeases(i.ui)) {
@@ -693,7 +701,11 @@ struct Manager::Impl {
             (edits && edits->InCallback())) return false;
         if (!closing) { Event(MMS_EVENT_UI_CLOSING); SavePreferences(); closing = true; }
         KillTimer(wake, kRefreshRetry);
-        for (const auto& i : instances) { i->stopping = true; i->ui.stopping = true; i->scene.stopping = true; registry.Refresh().Retire(i->refresh); }
+        for (const auto& i : instances) {
+            i->stopping = true; i->ui.stopping = true; i->scene.stopping = true;
+            images.Retire(i->images);
+            registry.Refresh().Retire(i->refresh);
+        }
         bool complete = true; std::set<std::string> keep;
         for (auto it = instances.rbegin(); it != instances.rend(); ++it) {
             auto& i = **it;
@@ -709,6 +721,7 @@ struct Manager::Impl {
         for (size_t index : order) {
             const auto& m = discovered.packages[index];
             auto instance = std::make_unique<Instance>(); auto& i = *instance; i.host = this; i.ui = {&registry, m.id}; i.render.id = m.id; i.status = {m.id, "validated", {}, m.package};
+            i.images.owner = &images;
             i.storage.store = &storage; i.storage.id = m.id;
             i.edit.store = edits.get(); i.edit.id = m.id;
             i.refresh.queue = &registry.Refresh(); i.refresh.owner = m.id;

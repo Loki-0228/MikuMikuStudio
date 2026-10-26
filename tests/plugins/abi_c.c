@@ -5,6 +5,14 @@
 #include <mms/refresh_dependency.h>
 #include <mms/refresh_subscription.h>
 #include <mms/property_refresh.h>
+#include <mms/render_image.h>
+_Static_assert(sizeof(MmsRenderImageCapsV1) == 56, "image capabilities");
+_Static_assert(sizeof(MmsRenderImageDescV1) == 40, "image descriptor");
+_Static_assert(sizeof(MmsRenderImageInfoV1) == 56, "image info");
+_Static_assert(sizeof(MmsRenderImageMapV1) == 40, "image mapping");
+_Static_assert(sizeof(MmsRenderImageApiV1) == 72, "image API");
+_Static_assert(offsetof(MmsRenderImageDescV1, rowStride) == 32, "image stride offset");
+_Static_assert(offsetof(MmsRenderImageApiV1, release) == 64, "image release offset");
 _Static_assert(sizeof(MmsUiRefreshSubscriptionCapabilitiesV1) == 32, "subscription capabilities");
 _Static_assert(sizeof(MmsUiRefreshSubscriptionDescV1) == 32, "subscription descriptor");
 _Static_assert(sizeof(MmsUiRefreshSubscriptionStateV1) == 72, "subscription state");
