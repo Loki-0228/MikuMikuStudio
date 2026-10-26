@@ -8,8 +8,11 @@ namespace mikumikustudio::plugins {
 struct EvaluationData {
     MmsObjectRef object{};
     uint64_t hostRevision = 0, retainedBytes = 0;
+    uint32_t channels = MMS_EVALUATION_CAP_BONE_CHANNELS;
     std::vector<MmsEvaluationBoneV1> bones;
     std::function<MmsResult(uint32_t index, double frame, MmsBoneChannelsV1&)> sample;
+    std::vector<MmsEvaluationMorphV1> morphs;
+    std::function<MmsResult(uint32_t index, double frame, MmsMorphWeightV1&)> sampleMorph;
 };
 class EvaluationStore {
 public:
@@ -25,10 +28,14 @@ public:
     using Capture = std::function<MmsResult(const MmsEvaluationSourceQueryV1&,
         uint64_t maxBytes, std::shared_ptr<const EvaluationData>&)>;
     explicit EvaluationStore(Capture);
+    using CaptureChannels = std::function<MmsResult(const MmsEvaluationSourceQueryV1&,
+        uint32_t channels, uint64_t maxBytes, std::shared_ptr<const EvaluationData>&)>;
+    explicit EvaluationStore(CaptureChannels);
     ~EvaluationStore();
     EvaluationStore(const EvaluationStore&) = delete;
     EvaluationStore& operator=(const EvaluationStore&) = delete;
     MmsEvaluationApiV1 Api(Client&);
+    MmsEvaluationApiV1_1 Api11(Client&);
     // Retire rejects new operations except release. Existing source handles
     // and admitted calls pin the client until plugins drain them and join work.
     void Retire(Client&) noexcept;
@@ -37,6 +44,7 @@ private:
     struct Payload;
     struct Entry { Client* owner; std::shared_ptr<const Payload> data; };
     Capture capture_;
+    CaptureChannels captureChannels_;
     DWORD thread_ = GetCurrentThreadId();
     mutable std::mutex mutex_;
     std::map<MmsHandle, Entry> sources_;
@@ -44,9 +52,13 @@ private:
     bool acquiring_ = false;
     MmsResult Capabilities(Client&, MmsEvaluationCapsV1*);
     MmsResult Create(Client&, const MmsEvaluationSourceQueryV1*, MmsHandle*);
+    MmsResult CreateChannels(Client&, const MmsEvaluationSourceQueryV1*, uint32_t, MmsHandle*);
     MmsResult Describe(Client&, MmsHandle, MmsEvaluationSourceInfoV1*);
+    MmsResult DescribeChannels(Client&, MmsHandle, MmsEvaluationSourceInfoV1_1*);
     MmsResult BoneAt(Client&, MmsHandle, uint32_t, MmsEvaluationBoneV1*);
+    MmsResult MorphAt(Client&, MmsHandle, uint32_t, MmsEvaluationMorphV1*);
     MmsResult Sample(Client&, MmsHandle, MmsId, MmsTime, MmsBoneChannelsV1*);
+    MmsResult SampleMorph(Client&, MmsHandle, MmsId, MmsTime, MmsMorphWeightV1*);
     MmsResult Retain(Client&, MmsHandle, MmsHandle*);
     MmsResult Release(Client&, MmsHandle);
     void Settle(const std::shared_ptr<const Payload>&, Client&) noexcept;

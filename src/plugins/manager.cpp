@@ -440,6 +440,12 @@ struct Manager::Impl {
         }
         if (id == "mms.scene.evaluate" && evaluations) {
             if (closing || i.stopping.load()) return MMS_E_NOT_READY;
+            if (minor == 1) {
+                if (major != 1) return MMS_E_VERSION;
+                if (!out || bytes < sizeof(MmsEvaluationApiV1_1)) return MMS_E_ARGUMENT;
+                const auto api = evaluations->Api11(i.evaluation);
+                std::memcpy(out, &api, sizeof(api)); return MMS_OK;
+            }
             return Table(major, minor, bytes, out, evaluations->Api(i.evaluation));
         }
         if (id == "mms.scene" && scene) return Table(major, minor, bytes, out, scene->Api(i.scene));

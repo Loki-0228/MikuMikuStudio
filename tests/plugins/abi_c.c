@@ -267,3 +267,21 @@ _Static_assert(offsetof(MmsEvaluationApiV1, sampleBone) == 48, "evaluation sampl
 _Static_assert(offsetof(MmsEvaluationApiV1, retain) == 56, "evaluation retain offset");
 _Static_assert(offsetof(MmsEvaluationApiV1, release) == 64, "evaluation release offset");
 _Static_assert(_Generic(((MmsEvaluationApiV1*)0)->sampleBone, MmsResult (MMS_CALL *)(void*, MmsHandle, MmsId, MmsTime, MmsBoneChannelsV1*):1, default:0), "evaluation sample signature");
+
+_Static_assert(sizeof(MmsEvaluationSourceInfoV1_1) == 72, "MmsEvaluationSourceInfoV1_1 layout");
+_Static_assert(sizeof(MmsEvaluationMorphV1) == 32, "MmsEvaluationMorphV1 layout");
+_Static_assert(sizeof(MmsMorphWeightV1) == 16, "MmsMorphWeightV1 layout");
+_Static_assert(sizeof(MmsEvaluationApiV1_1) == 104, "MmsEvaluationApiV1_1 layout");
+_Static_assert(offsetof(MmsEvaluationApiV1_1, context) == 8, "evaluation1.1 context offset");
+_Static_assert(offsetof(MmsEvaluationApiV1_1, getCapabilities) == 16, "evaluation1.1 getCapabilities offset");
+_Static_assert(offsetof(MmsEvaluationApiV1_1, createSource) == 24, "evaluation1.1 createSource offset");
+_Static_assert(offsetof(MmsEvaluationApiV1_1, describeSource) == 32, "evaluation1.1 describeSource offset");
+_Static_assert(offsetof(MmsEvaluationApiV1_1, boneAt) == 40, "evaluation1.1 boneAt offset");
+_Static_assert(offsetof(MmsEvaluationApiV1_1, sampleBone) == 48, "evaluation1.1 sampleBone offset");
+_Static_assert(offsetof(MmsEvaluationApiV1_1, retain) == 56, "evaluation1.1 retain offset");
+_Static_assert(offsetof(MmsEvaluationApiV1_1, release) == 64, "evaluation1.1 release offset");
+_Static_assert(offsetof(MmsEvaluationApiV1_1, createSourceChannels) == 72, "evaluation1.1 createSourceChannels offset");
+_Static_assert(offsetof(MmsEvaluationApiV1_1, describeSourceChannels) == 80, "evaluation1.1 describeSourceChannels offset");
+_Static_assert(offsetof(MmsEvaluationApiV1_1, morphAt) == 88, "evaluation1.1 morphAt offset");
+_Static_assert(offsetof(MmsEvaluationApiV1_1, sampleMorph) == 96, "evaluation1.1 sampleMorph offset");
+_Static_assert(offsetof(MmsEvaluationSourceInfoV1_1, morphCount) == 64, "extended source prefix");

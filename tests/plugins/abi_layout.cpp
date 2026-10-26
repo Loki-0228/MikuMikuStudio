@@ -232,3 +232,25 @@ static_assert(offsetof(MmsEvaluationApiV1, sampleBone) == 48, "evaluation sample
 static_assert(offsetof(MmsEvaluationApiV1, retain) == 56, "evaluation retain offset");
 static_assert(offsetof(MmsEvaluationApiV1, release) == 64, "evaluation release offset");
 static_assert(std::is_same<decltype(MmsEvaluationApiV1::sampleBone), MmsResult (MMS_CALL *)(void*, MmsHandle, MmsId, MmsTime, MmsBoneChannelsV1*)>::value, "evaluation sample signature");
+
+static_assert(sizeof(MmsEvaluationSourceInfoV1_1) == 72, "MmsEvaluationSourceInfoV1_1 layout");
+static_assert(std::is_standard_layout<MmsEvaluationSourceInfoV1_1>::value && std::is_trivially_copyable<MmsEvaluationSourceInfoV1_1>::value, "MmsEvaluationSourceInfoV1_1 POD");
+static_assert(sizeof(MmsEvaluationMorphV1) == 32, "MmsEvaluationMorphV1 layout");
+static_assert(std::is_standard_layout<MmsEvaluationMorphV1>::value && std::is_trivially_copyable<MmsEvaluationMorphV1>::value, "MmsEvaluationMorphV1 POD");
+static_assert(sizeof(MmsMorphWeightV1) == 16, "MmsMorphWeightV1 layout");
+static_assert(std::is_standard_layout<MmsMorphWeightV1>::value && std::is_trivially_copyable<MmsMorphWeightV1>::value, "MmsMorphWeightV1 POD");
+static_assert(sizeof(MmsEvaluationApiV1_1) == 104, "MmsEvaluationApiV1_1 layout");
+static_assert(std::is_standard_layout<MmsEvaluationApiV1_1>::value && std::is_trivially_copyable<MmsEvaluationApiV1_1>::value, "MmsEvaluationApiV1_1 POD");
+static_assert(offsetof(MmsEvaluationApiV1_1, context) == 8, "evaluation1.1 context offset");
+static_assert(offsetof(MmsEvaluationApiV1_1, getCapabilities) == 16, "evaluation1.1 getCapabilities offset");
+static_assert(offsetof(MmsEvaluationApiV1_1, createSource) == 24, "evaluation1.1 createSource offset");
+static_assert(offsetof(MmsEvaluationApiV1_1, describeSource) == 32, "evaluation1.1 describeSource offset");
+static_assert(offsetof(MmsEvaluationApiV1_1, boneAt) == 40, "evaluation1.1 boneAt offset");
+static_assert(offsetof(MmsEvaluationApiV1_1, sampleBone) == 48, "evaluation1.1 sampleBone offset");
+static_assert(offsetof(MmsEvaluationApiV1_1, retain) == 56, "evaluation1.1 retain offset");
+static_assert(offsetof(MmsEvaluationApiV1_1, release) == 64, "evaluation1.1 release offset");
+static_assert(offsetof(MmsEvaluationApiV1_1, createSourceChannels) == 72, "evaluation1.1 createSourceChannels offset");
+static_assert(offsetof(MmsEvaluationApiV1_1, describeSourceChannels) == 80, "evaluation1.1 describeSourceChannels offset");
+static_assert(offsetof(MmsEvaluationApiV1_1, morphAt) == 88, "evaluation1.1 morphAt offset");
+static_assert(offsetof(MmsEvaluationApiV1_1, sampleMorph) == 96, "evaluation1.1 sampleMorph offset");
+static_assert(offsetof(MmsEvaluationSourceInfoV1_1, morphCount) == 64, "extended source prefix");

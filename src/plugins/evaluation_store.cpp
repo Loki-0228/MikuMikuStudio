@@ -63,20 +63,38 @@ bool RatioGreater(uint64_t a, uint64_t b, uint64_t c, uint64_t d) noexcept {
         a = b; b = ar; c = d; d = cr; reverse = !reverse;
     }
 }
+// Morph records expose a registered weight kind plus BASE and panel flags.
+bool ValidMorphFlags(uint32_t flags) noexcept {
+    constexpr uint32_t known = MMS_MORPH_BASE | MMS_MORPH_PANEL_MASK;
+    if (flags & ~known) return false;
+    return ((flags & MMS_MORPH_PANEL_MASK) >> MMS_MORPH_PANEL_SHIFT) <= 4;
+}
+// Bone and morph samples share one frozen rational-second contract: exact
+// comparison before conversion, normalization of equivalent fractions and no
+// clamping. False means MMS_E_ARGUMENT.
+bool FrameTime(MmsTime time, double& frame) noexcept {
+    if (!time.denominator || time.numerator < 0) return false;
+    if (RatioGreater(uint64_t(time.numerator), time.denominator, uint64_t(frame_limits::maximum), 30)) return false;
+    time = Normalize(time);
+    frame = static_cast<double>(time.numerator) * 30.0 / static_cast<double>(time.denominator);
+    return std::isfinite(frame) && frame <= static_cast<double>(frame_limits::maximum);
+}
 }
 
 // Store-owned half of a source. The host's EvaluationData is immutable and
-// already includes its own snapshot and bone capacity in retainedBytes; this
-// payload adds the ID index and the shared table node that resolve bone IDs.
+// already includes its own snapshot and channel capacity in retainedBytes;
+// this payload adds one ID index per captured channel and the shared table
+// nodes that resolve those IDs.
 struct EvaluationStore::Payload {
     std::shared_ptr<const EvaluationData> data;
-    Index index;
+    Index index, morphIndex;
     MmsObjectRef object{};
     uint64_t bytes = 0, captureId = 0, hostRevision = 0;
-    uint32_t boneCount = 0, flags = 0;
+    uint32_t boneCount = 0, morphCount = 0, flags = 0;
 };
 
 EvaluationStore::EvaluationStore(Capture capture) : capture_(std::move(capture)) {}
+EvaluationStore::EvaluationStore(CaptureChannels captureChannels) : captureChannels_(std::move(captureChannels)) {}
 EvaluationStore::~EvaluationStore() = default;
 
 MmsEvaluationApiV1 EvaluationStore::Api(Client& client) {
@@ -143,6 +161,56 @@ MmsEvaluationApiV1 EvaluationStore::Api(Client& client) {
     return api;
 }
 
+MmsEvaluationApiV1_1 EvaluationStore::Api11(Client& client) {
+    // The first seven entries are the frozen V1 table, so the appended morph
+    // operations extend one lease system rather than starting another. Only
+    // the header version differs; Api11 still never writes Client::owner.
+    const MmsEvaluationApiV1 base = Api(client);
+    MmsEvaluationApiV1_1 api{};
+    api.h = MmsHeader{sizeof(MmsEvaluationApiV1_1), 1, 1};
+    api.context = base.context;
+    api.getCapabilities = base.getCapabilities;
+    api.createSource = base.createSource;
+    api.describeSource = base.describeSource;
+    api.boneAt = base.boneAt;
+    api.sampleBone = base.sampleBone;
+    api.retain = base.retain;
+    api.release = base.release;
+    api.createSourceChannels = [](void* context, const MmsEvaluationSourceQueryV1* query, uint32_t channels, MmsHandle* out) {
+        return Gateway([&] {
+            if (!context) return MMS_E_ARGUMENT;
+            auto& client = *static_cast<Client*>(context);
+            if (!client.owner) return MMS_E_ARGUMENT;
+            return client.owner->CreateChannels(client, query, channels, out);
+        });
+    };
+    api.describeSourceChannels = [](void* context, MmsHandle source, MmsEvaluationSourceInfoV1_1* out) {
+        return Gateway([&] {
+            if (!context) return MMS_E_ARGUMENT;
+            auto& client = *static_cast<Client*>(context);
+            if (!client.owner) return MMS_E_ARGUMENT;
+            return client.owner->DescribeChannels(client, source, out);
+        });
+    };
+    api.morphAt = [](void* context, MmsHandle source, uint32_t index, MmsEvaluationMorphV1* out) {
+        return Gateway([&] {
+            if (!context) return MMS_E_ARGUMENT;
+            auto& client = *static_cast<Client*>(context);
+            if (!client.owner) return MMS_E_ARGUMENT;
+            return client.owner->MorphAt(client, source, index, out);
+        });
+    };
+    api.sampleMorph = [](void* context, MmsHandle source, MmsId morph, MmsTime time, MmsMorphWeightV1* out) {
+        return Gateway([&] {
+            if (!context) return MMS_E_ARGUMENT;
+            auto& client = *static_cast<Client*>(context);
+            if (!client.owner) return MMS_E_ARGUMENT;
+            return client.owner->SampleMorph(client, source, morph, time, out);
+        });
+    };
+    return api;
+}
+
 void EvaluationStore::Retire(Client& client) noexcept {
     try {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -163,7 +231,9 @@ MmsResult EvaluationStore::Capabilities(Client& client, MmsEvaluationCapsV1* out
     if (client.retired) return MMS_E_NOT_READY;
     MmsEvaluationCapsV1 caps{};
     caps.h = Header<MmsEvaluationCapsV1>();
-    caps.flags = MMS_EVALUATION_CAP_BONE_CHANNELS;
+    caps.flags = captureChannels_
+        ? (MMS_EVALUATION_CAP_BONE_CHANNELS | MMS_EVALUATION_CAP_MORPH_WEIGHTS)
+        : MMS_EVALUATION_CAP_BONE_CHANNELS;
     caps.maxSources = kMaxSources;
     caps.maxSourceBytes = kMaxSourceBytes;
     caps.maxClientBytes = kMaxClientBytes;
@@ -173,18 +243,33 @@ MmsResult EvaluationStore::Capabilities(Client& client, MmsEvaluationCapsV1* out
 }
 
 MmsResult EvaluationStore::Create(Client& client, const MmsEvaluationSourceQueryV1* query, MmsHandle* out) {
+    // The frozen V1 entry keeps its bone-only meaning by selecting only that
+    // channel through the shared lease path.
+    return CreateChannels(client, query, MMS_EVALUATION_CAP_BONE_CHANNELS, out);
+}
+
+MmsResult EvaluationStore::CreateChannels(Client& client, const MmsEvaluationSourceQueryV1* query,
+    uint32_t channels, MmsHandle* out) {
     if (GetCurrentThreadId() != thread_) return MMS_E_THREAD;
     if (!out) return MMS_E_ARGUMENT;
     if (!Valid(query)) return MMS_E_ARGUMENT;
     if (query->flags || query->reserved) return MMS_E_ARGUMENT;
     if (Empty(query->object.id) || !query->object.generation) return MMS_E_ARGUMENT;
     if (query->maxRetainedBytes > kMaxSourceBytes) return MMS_E_ARGUMENT;
-    if (!capture_) return MMS_E_NOT_READY;
+    constexpr uint32_t known = MMS_EVALUATION_CAP_BONE_CHANNELS | MMS_EVALUATION_CAP_MORPH_WEIGHTS;
+    if (!channels || (channels & ~known)) return MMS_E_ARGUMENT;
+    if (!capture_ && !captureChannels_) return MMS_E_NOT_READY;
+    const bool bones = (channels & MMS_EVALUATION_CAP_BONE_CHANNELS) != 0;
+    const bool morphs = (channels & MMS_EVALUATION_CAP_MORPH_WEIGHTS) != 0;
     const uint64_t bound = query->maxRetainedBytes ? query->maxRetainedBytes : kMaxSourceBytes;
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (client.retired) return MMS_E_NOT_READY;
+        // A 1.0 capturer froze bone channels only, so morph selection is a
+        // capability mismatch rather than a capture failure. Retirement still
+        // refuses every new operation first.
+        if (morphs && !captureChannels_) return MMS_E_UNSUPPORTED;
         if (acquiring_) return MMS_E_BUSY;
         if (client.handles >= kMaxHandlesPerClient || sources_.size() >= kMaxTotalHandles) return MMS_E_BUSY;
         if (next_ >= kHandleLimit) return MMS_E_BUSY;
@@ -196,41 +281,65 @@ MmsResult EvaluationStore::Create(Client& client, const MmsEvaluationSourceQuery
 
     std::shared_ptr<const EvaluationData> data;
     const MmsResult result = Gateway([&]() -> MmsResult {
-        const MmsResult captured = capture_(*query, bound, data);
+        // Both channels are frozen by one atomic callback, so a source either
+        // carries the whole requested set or publishes nothing.
+        const MmsResult captured = captureChannels_
+            ? captureChannels_(*query, channels, bound, data)
+            : capture_(*query, bound, data);
         if (captured != MMS_OK) return captured;
-        // A successful capture must supply immutable sampling data. Malformed
-        // records are the caller's contract violation and stay argument errors.
-        if (!data || !data->sample) return MMS_E_FAILED;
+        if (!data) return MMS_E_FAILED;
         if (!Same(data->object, query->object)) return MMS_E_ARGUMENT;
-        if (data->bones.size() > UINT32_MAX) return MMS_E_ARGUMENT;
+        // The capture reports the channels it froze; a mismatch means records
+        // may not correspond to the requested source.
+        if (data->channels != channels) return MMS_E_ARGUMENT;
+        if (data->bones.size() > UINT32_MAX || data->morphs.size() > UINT32_MAX) return MMS_E_ARGUMENT;
+        // An unselected channel may not carry records or a callback, while a
+        // selected channel must supply its sampler even when it froze nothing.
+        if (!bones && (!data->bones.empty() || data->sample)) return MMS_E_ARGUMENT;
+        if (!morphs && (!data->morphs.empty() || data->sampleMorph)) return MMS_E_ARGUMENT;
+        if (bones && !data->sample) return MMS_E_FAILED;
+        if (morphs && !data->sampleMorph) return MMS_E_FAILED;
 
-        // Build the complete store-owned snapshot before taking the mutex. A
-        // failed validation or allocation below publishes nothing.
-        Index index;
+        // Build every store-owned index before taking the mutex. A failed
+        // validation or allocation below publishes nothing. A morph ID that
+        // duplicates another morph or aliases a bone ID is ambiguous.
+        Index index, morphIndex;
         for (std::size_t n = 0; n < data->bones.size(); ++n) {
             const auto& bone = data->bones[n];
             if (!Valid(&bone) || bone.reserved || !ValidBoneFlags(bone.flags) || Empty(bone.id)) return MMS_E_ARGUMENT;
             if (!index.emplace(bone.id, static_cast<uint32_t>(n)).second) return MMS_E_ARGUMENT;
         }
+        for (std::size_t n = 0; n < data->morphs.size(); ++n) {
+            const auto& morph = data->morphs[n];
+            if (!Valid(&morph) || Empty(morph.id)) return MMS_E_ARGUMENT;
+            if (morph.kind > MMS_MORPH_MATERIAL) return MMS_E_ARGUMENT;
+            if (!ValidMorphFlags(morph.flags)) return MMS_E_ARGUMENT;
+            if (index.find(morph.id) != index.end()) return MMS_E_ARGUMENT;
+            if (!morphIndex.emplace(morph.id, static_cast<uint32_t>(n)).second) return MMS_E_ARGUMENT;
+        }
 
         // The host reports its own snapshot through retainedBytes; the store
-        // adds its payload and one conservative node per index entry plus the
-        // tree sentinel. A host that under-reports still pays for the two
+        // adds its payload and one conservative node per channel entry plus
+        // each tree sentinel. A host that under-reports still pays for the
         // capacities this store can verify.
         uint64_t charge = sizeof(EvaluationData);
         if (!AddBytes(charge, data->bones.capacity(), sizeof(MmsEvaluationBoneV1))) return MMS_E_MEMORY;
+        if (!AddBytes(charge, data->morphs.capacity(), sizeof(MmsEvaluationMorphV1))) return MMS_E_MEMORY;
         if (data->retainedBytes > charge) charge = data->retainedBytes;
         if (!AddBytes(charge, 1, sizeof(Payload))) return MMS_E_MEMORY;
         if (!AddBytes(charge, static_cast<uint64_t>(index.size()) + 1, kIndexNodeBytes)) return MMS_E_MEMORY;
+        if (!AddBytes(charge, static_cast<uint64_t>(morphIndex.size()) + 1, kIndexNodeBytes)) return MMS_E_MEMORY;
         if (charge > bound) return MMS_E_MEMORY;
 
         auto payload = std::make_shared<Payload>();
         payload->data = data;
         payload->index = std::move(index);
+        payload->morphIndex = std::move(morphIndex);
         payload->object = data->object;
         payload->hostRevision = data->hostRevision;
         payload->boneCount = static_cast<uint32_t>(data->bones.size());
-        payload->flags = MMS_EVALUATION_CAP_BONE_CHANNELS;
+        payload->morphCount = static_cast<uint32_t>(data->morphs.size());
+        payload->flags = channels;
         payload->bytes = charge;
 
         std::lock_guard<std::mutex> lock(mutex_);
@@ -291,6 +400,27 @@ MmsResult EvaluationStore::Describe(Client& client, MmsHandle source, MmsEvaluat
     return MMS_OK;
 }
 
+MmsResult EvaluationStore::DescribeChannels(Client& client, MmsHandle source, MmsEvaluationSourceInfoV1_1* out) {
+    if (!out) return MMS_E_ARGUMENT;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (client.retired) return MMS_E_NOT_READY;
+    const auto found = sources_.find(source);
+    if (found == sources_.end() || found->second.owner != &client) return MMS_E_NOT_FOUND;
+    const Payload& payload = *found->second.data;
+    MmsEvaluationSourceInfoV1_1 info{};
+    info.h = MmsHeader{sizeof(MmsEvaluationSourceInfoV1_1), 1, 1};
+    info.object = payload.object;
+    info.captureId = payload.captureId;
+    info.hostRevision = payload.hostRevision;
+    info.retainedBytes = payload.bytes;
+    info.boneCount = payload.boneCount;
+    info.flags = payload.flags;
+    info.morphCount = payload.morphCount;
+    info.reserved = 0;
+    *out = info;
+    return MMS_OK;
+}
+
 MmsResult EvaluationStore::BoneAt(Client& client, MmsHandle source, uint32_t index, MmsEvaluationBoneV1* out) {
     if (!out) return MMS_E_ARGUMENT;
     std::lock_guard<std::mutex> lock(mutex_);
@@ -298,6 +428,7 @@ MmsResult EvaluationStore::BoneAt(Client& client, MmsHandle source, uint32_t ind
     const auto found = sources_.find(source);
     if (found == sources_.end() || found->second.owner != &client) return MMS_E_NOT_FOUND;
     const Payload& payload = *found->second.data;
+    if (!(payload.flags & MMS_EVALUATION_CAP_BONE_CHANNELS)) return MMS_E_UNSUPPORTED;
     if (index >= payload.boneCount) return MMS_E_NOT_FOUND;
     MmsEvaluationBoneV1 bone = payload.data->bones[index];
     bone.h = Header<MmsEvaluationBoneV1>();
@@ -306,13 +437,25 @@ MmsResult EvaluationStore::BoneAt(Client& client, MmsHandle source, uint32_t ind
     return MMS_OK;
 }
 
+MmsResult EvaluationStore::MorphAt(Client& client, MmsHandle source, uint32_t index, MmsEvaluationMorphV1* out) {
+    if (!out) return MMS_E_ARGUMENT;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (client.retired) return MMS_E_NOT_READY;
+    const auto found = sources_.find(source);
+    if (found == sources_.end() || found->second.owner != &client) return MMS_E_NOT_FOUND;
+    const Payload& payload = *found->second.data;
+    if (!(payload.flags & MMS_EVALUATION_CAP_MORPH_WEIGHTS)) return MMS_E_UNSUPPORTED;
+    if (index >= payload.morphCount) return MMS_E_NOT_FOUND;
+    MmsEvaluationMorphV1 morph = payload.data->morphs[index];
+    morph.h = Header<MmsEvaluationMorphV1>();
+    *out = morph;
+    return MMS_OK;
+}
+
 MmsResult EvaluationStore::Sample(Client& client, MmsHandle source, MmsId bone, MmsTime time, MmsBoneChannelsV1* out) {
     if (!out) return MMS_E_ARGUMENT;
-    if (!time.denominator || time.numerator < 0) return MMS_E_ARGUMENT;
-    if (RatioGreater(uint64_t(time.numerator), time.denominator, uint64_t(frame_limits::maximum), 30)) return MMS_E_ARGUMENT;
-    time = Normalize(time);
-    const double frame = static_cast<double>(time.numerator) * 30.0 / static_cast<double>(time.denominator);
-    if (!std::isfinite(frame) || frame > static_cast<double>(frame_limits::maximum)) return MMS_E_ARGUMENT;
+    double frame = 0;
+    if (!FrameTime(time, frame)) return MMS_E_ARGUMENT;
 
     std::shared_ptr<const Payload> payload;
     uint32_t index = 0;
@@ -322,6 +465,7 @@ MmsResult EvaluationStore::Sample(Client& client, MmsHandle source, MmsId bone, 
         const auto found = sources_.find(source);
         if (found == sources_.end() || found->second.owner != &client) return MMS_E_NOT_FOUND;
         const auto& candidate = found->second.data;
+        if (!(candidate->flags & MMS_EVALUATION_CAP_BONE_CHANNELS)) return MMS_E_UNSUPPORTED;
         const auto located = candidate->index.find(bone);
         if (located == candidate->index.end()) return MMS_E_NOT_FOUND;
         index = located->second;
@@ -347,6 +491,58 @@ MmsResult EvaluationStore::Sample(Client& client, MmsHandle source, MmsId bone, 
         if (produced.reserved) return MMS_E_FAILED;
         MmsBoneChannelsV1 published = produced;
         published.h = Header<MmsBoneChannelsV1>();
+        published.reserved = 0;
+        value = published;
+        return MMS_OK;
+    });
+
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (result == MMS_OK) *out = value;
+        // If Release erased the entry while the callback was running, this is
+        // the last payload reference and the byte charge is returned here.
+        Settle(payload, client);
+        payload.reset();
+        if (client.active) --client.active;
+    }
+    return result;
+}
+
+MmsResult EvaluationStore::SampleMorph(Client& client, MmsHandle source, MmsId morph, MmsTime time, MmsMorphWeightV1* out) {
+    if (!out) return MMS_E_ARGUMENT;
+    double frame = 0;
+    if (!FrameTime(time, frame)) return MMS_E_ARGUMENT;
+
+    std::shared_ptr<const Payload> payload;
+    uint32_t index = 0;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (client.retired) return MMS_E_NOT_READY;
+        const auto found = sources_.find(source);
+        if (found == sources_.end() || found->second.owner != &client) return MMS_E_NOT_FOUND;
+        const auto& candidate = found->second.data;
+        if (!(candidate->flags & MMS_EVALUATION_CAP_MORPH_WEIGHTS)) return MMS_E_UNSUPPORTED;
+        const auto located = candidate->morphIndex.find(morph);
+        if (located == candidate->morphIndex.end()) return MMS_E_NOT_FOUND;
+        index = located->second;
+        // The copy and the pin are registered together, so Release cannot free
+        // the payload between lookup and the first callback instruction.
+        payload = candidate;
+        ++client.active;
+    }
+
+    MmsMorphWeightV1 value{};
+    const MmsResult result = Gateway([&]() -> MmsResult {
+        // The host writes into a private local record. Nothing reaches the
+        // caller until every produced field has been validated. The weight is
+        // a registered direct value, so it is published without clamping.
+        MmsMorphWeightV1 produced{};
+        const MmsResult sampled = payload->data->sampleMorph(index, frame, produced);
+        if (sampled != MMS_OK) return sampled;
+        if (!std::isfinite(produced.value)) return MMS_E_FAILED;
+        if (produced.reserved) return MMS_E_FAILED;
+        MmsMorphWeightV1 published = produced;
+        published.h = Header<MmsMorphWeightV1>();
         published.reserved = 0;
         value = published;
         return MMS_OK;

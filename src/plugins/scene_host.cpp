@@ -15,6 +15,7 @@
 #include "native_pose_scope.hpp"
 #include "evaluation_store.hpp"
 #include "mikumikustudio/bone_motion_snapshot.hpp"
+#include "mikumikustudio/morph_curve.hpp"
 #endif
 #include <algorithm>
 #include <new>
@@ -156,7 +157,7 @@ std::shared_ptr<EvaluationStore> CreateEvaluationStore(MMDApp* app) {
     return {};
 #else
     return std::make_shared<EvaluationStore>([app](const MmsEvaluationSourceQueryV1& query,
-        uint64_t limit, std::shared_ptr<const EvaluationData>& out) -> MmsResult {
+        uint32_t channels, uint64_t limit, std::shared_ptr<const EvaluationData>& out) -> MmsResult {
         if (!app || app->SceneMutationInProgress() || !app->WindowLayoutReady()) return MMS_E_NOT_READY;
         uint64_t hostRevision = 0;
         if (auto* history = BoundNativePoseHistory(app)) {
@@ -174,47 +175,80 @@ std::shared_ptr<EvaluationStore> CreateEvaluationStore(MMDApp* app) {
         }
         if (!source) return identities.Known(query.object.id) ? MMS_E_STALE : MMS_E_NOT_FOUND;
         const auto& model = *mdl::Mdl(source);
-        if (model.boneCount && !model.boneTable) return MMS_E_NOT_READY;
+        const bool bones = (channels & MMS_EVALUATION_CAP_BONE_CHANNELS) != 0;
+        const bool morphs = (channels & MMS_EVALUATION_CAP_MORPH_WEIGHTS) != 0;
+        if (bones && model.boneCount && !model.boneTable) return MMS_E_NOT_READY;
+        if (morphs && model.morphCount && !model.morphs) return MMS_E_NOT_READY;
         // The callback closure and shared ownership blocks receive conservative
         // allowances. The store separately charges its payload and ID index.
-        uint64_t bytes = sizeof(EvaluationData) + 128;
-        if (bytes > limit || model.boneCount > (limit - bytes) / sizeof(MmsEvaluationBoneV1)) return MMS_E_MEMORY;
+        uint64_t bytes = sizeof(EvaluationData) + 256;
+        if (bytes > limit) return MMS_E_MEMORY;
         auto data = std::make_shared<EvaluationData>();
-        data->object = query.object; data->hostRevision = hostRevision;
-        data->bones.resize(model.boneCount);
-        if (data->bones.capacity() > (limit - bytes) / sizeof(MmsEvaluationBoneV1)) return MMS_E_MEMORY;
-        bytes += data->bones.capacity() * sizeof(MmsEvaluationBoneV1);
-        std::shared_ptr<BoneMotionSnapshot> motion;
-        try { motion = BoneMotionSnapshot::Capture(source, limit - bytes); }
-        catch (const std::length_error&) { return MMS_E_MEMORY; }
-        if (motion->RetainedBytes() > limit - bytes) return MMS_E_MEMORY;
-        data->retainedBytes = bytes + motion->RetainedBytes();
-        for (unsigned i = 0; i < model.boneCount; ++i) {
-            const auto& bone = model.boneTable[i]; auto& target = data->bones[i];
-            target.h = Header<MmsEvaluationBoneV1>();
-            target.id = identities.Element(source, MMS_CHANNEL_BONES, i);
-            if (bone.slotIndex >= 0) target.flags |= MMS_EVALUATION_BONE_EXTERNAL_PARENT;
-            if (unsigned(bone.type) > unsigned(mdl::BoneType::Effector) && bone.type != mdl::BoneType::FixedAxis)
-                target.flags |= MMS_EVALUATION_BONE_DERIVED;
-            if (!target.flags) target.flags = MMS_EVALUATION_BONE_LOCAL;
+        data->object = query.object; data->hostRevision = hostRevision; data->channels = channels;
+        if (bones) {
+            if (model.boneCount > (limit - bytes) / sizeof(MmsEvaluationBoneV1)) return MMS_E_MEMORY;
+            data->bones.resize(model.boneCount);
+            if (data->bones.capacity() > (limit - bytes) / sizeof(MmsEvaluationBoneV1)) return MMS_E_MEMORY;
+            bytes += data->bones.capacity() * sizeof(MmsEvaluationBoneV1);
         }
-        data->sample = [motion = std::move(motion)](uint32_t bone, double frame, MmsBoneChannelsV1& out) {
-            BoneMotionSample sample;
-            switch (motion->SampleChannels(int(bone), frame, sample)) {
-            case BoneMotionStatus::InvalidBone: return MMS_E_NOT_FOUND;
-            case BoneMotionStatus::InvalidTime: return MMS_E_ARGUMENT;
-            case BoneMotionStatus::ExternalParent:
-            case BoneMotionStatus::UnsupportedBone: return MMS_E_UNSUPPORTED;
-            case BoneMotionStatus::InvalidSample: return MMS_E_FAILED;
-            case BoneMotionStatus::Ok: break;
+        if (morphs) {
+            if (model.morphCount > (limit - bytes) / sizeof(MmsEvaluationMorphV1)) return MMS_E_MEMORY;
+            data->morphs.resize(model.morphCount);
+            if (data->morphs.capacity() > (limit - bytes) / sizeof(MmsEvaluationMorphV1)) return MMS_E_MEMORY;
+            bytes += data->morphs.capacity() * sizeof(MmsEvaluationMorphV1);
+        }
+        if (bones) {
+            std::shared_ptr<BoneMotionSnapshot> motion;
+            try { motion = BoneMotionSnapshot::Capture(source, limit - bytes); }
+            catch (const std::length_error&) { return MMS_E_MEMORY; }
+            if (motion->RetainedBytes() > limit - bytes) return MMS_E_MEMORY;
+            bytes += motion->RetainedBytes();
+            for (unsigned i = 0; i < model.boneCount; ++i) {
+                const auto& bone = model.boneTable[i]; auto& target = data->bones[i];
+                target.h = Header<MmsEvaluationBoneV1>();
+                target.id = identities.Element(source, MMS_CHANNEL_BONES, i);
+                if (bone.slotIndex >= 0) target.flags |= MMS_EVALUATION_BONE_EXTERNAL_PARENT;
+                if (unsigned(bone.type) > unsigned(mdl::BoneType::Effector) && bone.type != mdl::BoneType::FixedAxis)
+                    target.flags |= MMS_EVALUATION_BONE_DERIVED;
+                if (!target.flags) target.flags = MMS_EVALUATION_BONE_LOCAL;
             }
-            MmsBoneChannelsV1 value{}; value.h = Header<MmsBoneChannelsV1>();
-            std::copy(sample.position.begin(), sample.position.end(), value.position);
-            std::copy(sample.rotation.begin(), sample.rotation.end(), value.rotation);
-            std::copy(sample.scale.v.begin(), sample.scale.v.end(), value.scale);
-            value.flags = sample.physicsDisabled ? MMS_EVALUATION_PHYSICS_DISABLED : 0;
-            out = value; return MMS_OK;
-        };
+            data->sample = [motion = std::move(motion)](uint32_t bone, double frame, MmsBoneChannelsV1& out) {
+                BoneMotionSample sample;
+                switch (motion->SampleChannels(int(bone), frame, sample)) {
+                case BoneMotionStatus::InvalidBone: return MMS_E_NOT_FOUND;
+                case BoneMotionStatus::InvalidTime: return MMS_E_ARGUMENT;
+                case BoneMotionStatus::ExternalParent:
+                case BoneMotionStatus::UnsupportedBone: return MMS_E_UNSUPPORTED;
+                case BoneMotionStatus::InvalidSample: return MMS_E_FAILED;
+                case BoneMotionStatus::Ok: break;
+                }
+                MmsBoneChannelsV1 value{}; value.h = Header<MmsBoneChannelsV1>();
+                std::copy(sample.position.begin(), sample.position.end(), value.position);
+                std::copy(sample.rotation.begin(), sample.rotation.end(), value.rotation);
+                std::copy(sample.scale.v.begin(), sample.scale.v.end(), value.scale);
+                value.flags = sample.physicsDisabled ? MMS_EVALUATION_PHYSICS_DISABLED : 0;
+                out = value; return MMS_OK;
+            };
+        }
+        if (morphs) {
+            std::shared_ptr<morph_curve::SamplingState> motion = morph_curve::SamplingState::Capture(source, limit - bytes);
+            if (motion->RetainedBytes() > limit - bytes) return MMS_E_MEMORY;
+            bytes += motion->RetainedBytes();
+            for (unsigned i = 0; i < model.morphCount; ++i) {
+                const auto& morph = model.morphs[i]; auto& target = data->morphs[i];
+                target.h = Header<MmsEvaluationMorphV1>();
+                target.id = identities.Element(source, MMS_CHANNEL_MORPHS, i);
+                target.kind = model.physicsMode == 2 ? morph.type : MMS_MORPH_VERTEX;
+                target.flags = uint32_t(morph.panel) << MMS_MORPH_PANEL_SHIFT;
+                if (model.physicsMode != 2 && !i) target.flags |= MMS_MORPH_BASE;
+            }
+            data->sampleMorph = [motion = std::move(motion)](uint32_t morph, double frame, MmsMorphWeightV1& out) {
+                float weight = 0;
+                if (!motion->Sample(int(morph), frame, weight)) return MMS_E_FAILED;
+                out = {Header<MmsMorphWeightV1>(), weight, 0}; return MMS_OK;
+            };
+        }
+        data->retainedBytes = bytes;
         out = std::move(data); return MMS_OK;
     });
 #endif

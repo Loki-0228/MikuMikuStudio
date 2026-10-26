@@ -208,7 +208,12 @@ static void InvalidCapturedData() {
 }
 
 static void Quotas() {
-    uint64_t reportedBytes = 256;
+    // Calibrate store overhead above the verifiable data-capacity floor. That
+    // floor can grow when optional channels are added to EvaluationData.
+    const auto fixture = Data(Query());
+    uint64_t reportedBytes = sizeof(EvaluationData) +
+        fixture->bones.capacity() * sizeof(MmsEvaluationBoneV1) +
+        fixture->morphs.capacity() * sizeof(MmsEvaluationMorphV1);
     EvaluationStore store([&](const auto& query, uint64_t, auto& output) { output = Data(query, 3, reportedBytes); return MMS_OK; });
     std::array<EvaluationStore::Client, 9> clients;
     std::array<MmsEvaluationApiV1, 9> apis;
