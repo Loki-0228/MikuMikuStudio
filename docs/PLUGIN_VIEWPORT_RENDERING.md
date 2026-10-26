@@ -46,6 +46,8 @@
 
 内部 [BoneDefinitionSnapshot](records/abi-bone-definition-snapshot-2026-10-27.md) 已独立持有已加载骨架、PMX 原 IK 链、运行 IK 链及 selector 定义。保留原顺序与类型语义，父链环和非法引用在捕获时拒绝，源销毁后可并发无分配读取。真实 PMX/PMD 及 PMM 生命周期验证通过。此模块不生成姿态，尚未接入公共求值帧；仍需装配动作、表情与外部依赖并实现独立求值上下文。
 
+内部 [MorphDefinitionSnapshot](records/abi-morph-definition-snapshot-2026-10-27.md) 已独立持有 PMD 顶点表情和 PMX 0–8 类载荷，以及顶点、UV、材质恢复基准。源删除后可并发读取，PMD 已映射索引、组条目顺序及未启用浮点位保持不变。该模块不展开组、不生成形变，也未接入公开求值帧。翻转和冲量表情尚缺加载与求值实现，捕获会明确拒绝；宽字符长名仍不属于该求值载荷快照。
+
 ## 预期交互
 
 多视口面向编辑、比较和独立预览，界面插件可以组合下列行为。

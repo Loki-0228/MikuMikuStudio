@@ -1,5 +1,7 @@
 # 插件 ABI 实现与验收记录
 
+[2026-10-27 独立表情求值载荷](records/abi-morph-definition-snapshot-2026-10-27.md)：内部 `MorphDefinitionSnapshot` 持有 PMD 顶点和 PMX 0–8 类表情载荷，以及顶点、UV、材质恢复基准。专项 1,466 项、表情权重 922 项、骨架 372 项及真实 PMX/PMD 删除重载验证通过，两产品构建通过。未生成最终形变或新增公共 ABI；翻转、冲量表情仍缺加载和求值实现，捕获明确拒绝。main 阴影同步暂缓，正式 release 未覆盖。
+
 [2026-10-27 独立骨架定义](records/abi-bone-definition-snapshot-2026-10-27.md)：内部 `BoneDefinitionSnapshot` 深拷贝骨架、PMX 原链与运行 IK 链、selector 映射，保留顺序及类型语义，源销毁后并发读取。专项 372 项、骨骼动作 973 项、显示轨道 4,426 项、真实 PMX/PMD 及 PMM 生命周期通过，两产品构建通过。审查发现的 PMD 未启用字段过严校验已用失败反例修复。尚未生成或公开完整姿态，main 阴影同步暂缓，正式 release 未覆盖。
 
 [2026-10-27 离散帧边界及真实 IK 轨道验收](records/abi-display-rational-boundaries-2026-10-27.md)：修复有理时间浮点舍入导致显示、IK 开关及外亲提前换键的问题，连续骨骼和表情采样不变。先在旧实现复现失败，修复后双配置显示各 2,042 项及存储、通道、DLL 生命周期回归通过。真实含 IK 链 PMX 的身份、字节、局部父级及跨删除读取通过，两产品构建通过。完整 IK/世界姿态仍待实现，main 阴影同步暂缓，正式 release 未覆盖。

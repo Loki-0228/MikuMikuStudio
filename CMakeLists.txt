@@ -241,7 +241,7 @@ if(MIKUMIKUSTUDIO_PROFILE STREQUAL "full")
     target_link_libraries(bone_curve_copy_tests PRIVATE mikumikustudio_core winmm dsound)
     set_target_properties(bone_curve_copy_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
     add_test(NAME bone_curve_copy_tests COMMAND bone_curve_copy_tests)
-    foreach(snapshot_test bone_motion_snapshot_tests bone_definition_snapshot_tests bone_curve_sampling_tests morph_sampling_tests display_motion_snapshot_tests)
+    foreach(snapshot_test bone_motion_snapshot_tests bone_definition_snapshot_tests morph_definition_snapshot_tests bone_curve_sampling_tests morph_sampling_tests display_motion_snapshot_tests)
         add_executable(${snapshot_test} EXCLUDE_FROM_ALL tests/${snapshot_test}.cpp)
         target_link_libraries(${snapshot_test} PRIVATE mikumikustudio_core winmm dsound)
         set_target_properties(${snapshot_test} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
@@ -348,6 +348,7 @@ add_library(mikumikustudio_core STATIC
     src/animation/bone_curve.cpp
     src/animation/bone_motion_snapshot.cpp
     src/animation/bone_definition_snapshot.cpp
+    src/animation/morph_definition_snapshot.cpp
     src/animation/display_motion_snapshot.cpp
     src/window/frame_rate_dialog.cpp
     src/window/animation_curve_host_ui.cpp
@@ -563,6 +564,7 @@ if(MIKUMIKUSTUDIO_PROFILE STREQUAL "mmd932")
         src/animation/animation_curve_host.cpp src/animation/morph_curve.cpp src/animation/bone_curve.cpp
         src/animation/bone_motion_snapshot.cpp
         src/animation/bone_definition_snapshot.cpp
+        src/animation/morph_definition_snapshot.cpp
         src/animation/display_motion_snapshot.cpp
         src/window/animation_curve_host_ui.cpp src/window/frame_rate_dialog.cpp
         src/animation/frame_rate_correction.cpp src/animation/native_frame_retime.cpp
