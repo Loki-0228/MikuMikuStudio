@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <stdexcept>
 #include <unordered_map>
 
@@ -839,18 +840,8 @@ static Transform InheritTransform(const mdl::BoneRecord& bone,const Transform& r
     // and angles whenever it rotates under a non-uniformly scaled parent.
     return WithLinearAtPivot(bone,Product(rigid,parentDelta),Multiply(parentScale,Linear(rigid.data())));
 }
-void BuildTransforms(const unsigned char* model,const Values& pose,std::vector<Transform>& corrected,const std::vector<Transform>* rigidBaseline) {
-    corrected.clear();if(!model)return;
-    const auto& m=*mdl::Mdl(model);const int count=int(m.boneCount);const auto* bones=m.boneTable;
-    if(!bones||count<=0)return;
-    const auto it=states.find(model);
-    const bool cached=it!=states.end()&&it->second.applied&&it->second.rigid.size()==m.boneCount;
-    std::vector<Transform> rigid(count);
-    for(int i=0;i<count;++i) {
-        if(rigidBaseline&&rigidBaseline->size()==size_t(count))rigid[i]=(*rigidBaseline)[i];
-        else if(cached)rigid[i]=it->second.rigid[i];
-        else std::memcpy(rigid[i].data(),bones[i].matInit,64);
-    }
+static void BuildTransformsFromRigid(const mdl::BoneRecord* bones,int count,const Values& pose,
+                                    const std::vector<Transform>& rigid,std::vector<Transform>& corrected) {
     corrected.resize(count);
     std::vector<Matrix> cumulativeScale(count);
     std::vector<unsigned char> done(count);std::vector<bool> changed(count);std::vector<int> chain;
@@ -872,6 +863,35 @@ void BuildTransforms(const unsigned char* model,const Values& pose,std::vector<T
         }
     }
 }
+void BuildTransforms(const unsigned char* model,const Values& pose,std::vector<Transform>& corrected,const std::vector<Transform>* rigidBaseline) {
+    corrected.clear();if(!model)return;
+    const auto& m=*mdl::Mdl(model);const int count=int(m.boneCount);const auto* bones=m.boneTable;
+    if(!bones||count<=0)return;
+    const auto it=states.find(model);
+    const bool cached=it!=states.end()&&it->second.applied&&it->second.rigid.size()==m.boneCount;
+    std::vector<Transform> rigid(count);
+    for(int i=0;i<count;++i) {
+        if(rigidBaseline&&rigidBaseline->size()==size_t(count))rigid[i]=(*rigidBaseline)[i];
+        else if(cached)rigid[i]=it->second.rigid[i];
+        else std::memcpy(rigid[i].data(),bones[i].matInit,64);
+    }
+    BuildTransformsFromRigid(bones,count,pose,rigid,corrected);
+}
+#if !MMD_ORIGINAL_PROFILE
+void BuildTransformsPrivate(const mdl::ModelRecord& ownedModel,const Values& pose,
+                            const std::vector<Transform>& rigid,std::vector<Transform>& out) {
+    if(ownedModel.boneCount>static_cast<std::uint32_t>(std::numeric_limits<int>::max()))
+        throw std::invalid_argument("bone transform count exceeds int");
+    const int count=static_cast<int>(ownedModel.boneCount);
+    if(rigid.size()!=static_cast<std::size_t>(count))
+        throw std::invalid_argument("bone transform rigid count");
+    if(count&&!ownedModel.boneTable)
+        throw std::invalid_argument("bone transform bone table missing");
+    std::vector<Transform> candidate;
+    if(count)BuildTransformsFromRigid(ownedModel.boneTable,count,pose,rigid,candidate);
+    out.swap(candidate);
+}
+#endif
 bool TransformsApplied(const unsigned char* model) noexcept {
     const auto it=states.find(model);
     return it!=states.end()&&it->second.applied;

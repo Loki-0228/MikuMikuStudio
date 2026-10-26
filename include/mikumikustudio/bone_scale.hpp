@@ -9,6 +9,7 @@
 
 namespace mikumikustudio {
 class MMDApp;
+namespace mdl { struct ModelRecord; }
 namespace native_history { class SideState; }
 namespace bone_scale {
 // Row-vector convention, in the bone's unposed model-space basis. Kept outside
@@ -256,6 +257,21 @@ public:
 // unposed model basis before each child's rotation, preserving its shape.
 void BuildTransforms(const unsigned char* model, const Values& pose, std::vector<Transform>& out,
                      const std::vector<Transform>* rigidBaseline=nullptr);
+#if !MMD_ORIGINAL_PROFILE
+// Internal independent evaluation: consumes only the supplied bone definitions,
+// full 3x3 pose scales and explicit rigid matrices. Never reads live registries
+// or matInit. Caller owns/stabilizes inputs; parent references, pose matrices and
+// rigid values must already be validated. Native parent traversal is preserved.
+// Requires boneCount <= INT_MAX, a non-null table for nonzero count and exactly
+// boneCount rigid matrices; invalid extents throw invalid_argument. Allocations
+// may throw. All failures leave out unchanged; rigid and out may alias.
+// Concurrent across independent outputs. Does not mutate bones, solve IK,
+// simulate physics, publish scale state or produce a public evaluated frame.
+// Native arithmetic/fallbacks are preserved; the final frame publisher must
+// separately reject nonfinite computed results before exposing them.
+void BuildTransformsPrivate(const mdl::ModelRecord& ownedModel, const Values& pose,
+                            const std::vector<Transform>& rigid, std::vector<Transform>& out);
+#endif
 // Copy animation state for an isolated simulator, undoing any display-only
 // affine matrices in its copied bone array without touching the source.
 void CopyState(const unsigned char* source, unsigned char* destination);

@@ -1,5 +1,7 @@
 # 插件 ABI 实现与验收记录
 
+[2026-10-27 独立骨架尺度计算](records/abi-private-bone-scale-2026-10-27.md)：内部 `BuildTransformsPrivate` 与原入口共用完整矩阵和父链算法，只消费显式输入，不读取宿主注册表或当前矩阵。专项 198 项、原生尺度与 PMM/VMD、物理尺度及 10,204 项采样回归通过，两产品构建通过。补充工作区装配和分阶段外部依赖方案；完整场景帧仍待实现。main 阴影继续暂缓，正式 release 未覆盖。
+
 [2026-10-27 独立骨架姿态准备](records/abi-bone-pose-preparation-2026-10-27.md)：内部 `BonePreparePosePrivate` 与原 `SetPhysicsMode` 共用来源选择和骨骼表情合成循环，私有入口隔离全局数学表，保留原入口的 fallback 与层级调度。双配置各 385 项准备检查、2,777 项上下文回归通过；原生表情、场景烘焙及两产品构建通过。完整工作区和公开帧仍待装配；main 阴影继续暂缓，正式 release 未覆盖。
 
 [2026-10-27 独立骨骼局部姿态输入](records/abi-bone-kinematic-input-2026-10-27.md)：内部 `PrepareKinematicChannels` 处理 selector 窗口、类型 7／9 的新工作区默认姿态、完整尺度及自由曲线覆盖，旧公开采样限制不变。专项 10,204 项、既有三组回归及真实 PMX/PMD 到 PMM 生命周期通过，两产品构建通过。尚未装配完整姿态或新增公共 ABI；main 阴影继续暂缓，正式 release 未覆盖。
