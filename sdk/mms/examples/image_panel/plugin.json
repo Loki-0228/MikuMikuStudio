@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "org.example.image-panel",
+  "name": "CPU 图像面板",
+  "version": "1.0.0",
+  "kind": "native",
+  "abi": { "major": 1, "minMinor": 0 },
+  "entry": "image_panel.dll",
+  "architecture": "x64",
+  "minWindows": "6.1.7601",
+  "capabilities": ["ui.panel", "render.image"],
+  "requiresServices": [
+    { "id": "mms.ui", "major": 1, "minMinor": 0 },
+    { "id": "mms.ui.surface", "major": 1, "minMinor": 0 },
+    { "id": "mms.render.image", "major": 1, "minMinor": 0 }
+  ],
+  "dependencies": [],
+  "nativeDependencies": [],
+  "reloadPolicy": "restart"
+}

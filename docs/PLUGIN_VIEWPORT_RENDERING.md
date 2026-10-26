@@ -12,6 +12,8 @@
 
 `mms.render.image` 1.0 已提供[CPU 图像租约](../sdk/mms/render-image.md)：插件可复制发布 RGBA8/BGRA8 图像、读取描述、保留图像及独立读取映射。它有线程安全与内存限额，CPU 像素不随设备重置失效。此阶段没有视口挂载、GPU 图像、渲染器提供者或独立场景求值，不能将其视为完整多视口已实现。
 
+[ImagePanel SDK](../sdk/mms/image-panel.md) 已复用原 surface 将这些图像显示在插件 PANEL 中，无需插件手写窗口绘制。此显示路径有实际挂载与像素测试；仍不等同于下述场景 view、renderer provider 或独立 3D 视口。
+
 | 代码入口 | 已有范围与限制 |
 | --- | --- |
 | `sdk/mms/include/mms/plugin.h` | 提供 `queryService`、`registerProvider`、版本头、不透明句柄和设备事件定义。V1 面向 Windows x64。 |
