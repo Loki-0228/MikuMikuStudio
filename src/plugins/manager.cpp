@@ -136,7 +136,7 @@ struct Manager::Impl {
     }
     ~Impl() { if (wake) DestroyWindow(wake); }
     bool EditOrigin(const Instance& i) const noexcept {
-        if (GetCurrentThreadId() != thread || closing || i.stopping || notifyingEdit || storage.InCallback() || storage.Prepared()) return false;
+        if (GetCurrentThreadId() != thread || closing || i.stopping || render.InCallback() || notifyingEdit || storage.InCallback() || storage.Prepared()) return false;
         return (active == 0 && registry.InvokingClient() == &i.ui) ||
             (active == 1 && runningEditTask == &i && !registry.InCallback());
     }
@@ -303,7 +303,7 @@ struct Manager::Impl {
     }
     MmsResult AttachEditHost(EditHost& host) {
         if (GetCurrentThreadId() != thread) return MMS_E_THREAD;
-        if (active || registry.InCallback() || storage.InCallback() || storage.Prepared()) return MMS_E_BUSY;
+        if (active || render.InCallback() || registry.InCallback() || storage.InCallback() || storage.Prepared()) return MMS_E_BUSY;
         if (loadAttempted || closing || edits) return MMS_E_CONFLICT;
         auto bridge = std::make_unique<EditBridge>(*this, host);
         auto store = std::make_unique<EditStore>(*bridge, storage);
@@ -311,7 +311,7 @@ struct Manager::Impl {
     }
     MmsResult DetachEditHost() {
         if (GetCurrentThreadId() != thread) return MMS_E_THREAD;
-        if (active || registry.InCallback() || storage.InCallback() || storage.Prepared() ||
+        if (active || render.InCallback() || registry.InCallback() || storage.InCallback() || storage.Prepared() ||
             editCallOwner || (edits && edits->InCallback())) return MMS_E_BUSY;
         if (!edits) return MMS_OK;
         const auto result = edits->CancelPending();
@@ -341,7 +341,7 @@ struct Manager::Impl {
     void Write(const std::string& text) noexcept { try { if (log) log(text); } catch (...) {} }
     MmsResult SavePreferences() {
         if (GetCurrentThreadId() != thread) return MMS_E_THREAD;
-        if (active || registry.InCallback() || closing) return MMS_E_BUSY;
+        if (active || render.InCallback() || registry.InCallback() || closing) return MMS_E_BUSY;
         const auto result = preferences.Save(registry);
         if (result && result != preferencesError) Write("UI preferences save refused result=" + std::to_string(result));
         preferencesError = result; return result;
@@ -472,7 +472,7 @@ struct Manager::Impl {
         return h;
     }
     void DrainRefresh() {
-        if (GetCurrentThreadId() != thread || draining || closing || active || registry.InCallback() || storage.InCallback() || storage.Prepared() ||
+        if (GetCurrentThreadId() != thread || draining || closing || active || render.InCallback() || registry.InCallback() || storage.InCallback() || storage.Prepared() ||
             (edits && edits->InCallback()) || (refreshGuard && !refreshGuard())) return;
         registry.Refresh().Drain();
     }
@@ -489,7 +489,7 @@ struct Manager::Impl {
         if (failed) Write("UI task retry timer unavailable; pending tasks retained");
     }
     void Drain() {
-        if (GetCurrentThreadId() != thread || draining || active || registry.InCallback() || storage.InCallback() || storage.Prepared() ||
+        if (GetCurrentThreadId() != thread || draining || active || render.InCallback() || registry.InCallback() || storage.InCallback() || storage.Prepared() ||
             (edits && edits->InCallback())) return;
         draining = true;
         struct Guard { bool& b; ~Guard() { b = false; } } guard{draining};
@@ -532,7 +532,7 @@ struct Manager::Impl {
     }
     void Event(uint32_t kind, MmsBytes payload = {}, uint32_t version = 0,
                MmsObjectRef object = {}) {
-        if (GetCurrentThreadId() != thread || sending || active || registry.InCallback() || storage.InCallback() || storage.Prepared() ||
+        if (GetCurrentThreadId() != thread || sending || active || render.InCallback() || registry.InCallback() || storage.InCallback() || storage.Prepared() ||
             (edits && edits->InCallback())) return;
         sending = true; struct Guard { bool& v; ~Guard() { v = false; } } guard{sending};
         MmsEventV1 event{}; event.h = Header<MmsEventV1>(); event.kind = kind; event.sequence = sequence++;
@@ -557,7 +557,7 @@ struct Manager::Impl {
         PostMessageW(wake, kDrain, 0, 0);
     }
     void FlushPropertyChanges() {
-        if (pendingPropertyChanges.empty() || active || registry.InCallback() ||
+        if (pendingPropertyChanges.empty() || active || render.InCallback() || registry.InCallback() ||
             (edits && edits->InCallback())) return;
         auto pending = std::move(pendingPropertyChanges);
         pendingPropertyChanges.clear();
@@ -565,6 +565,10 @@ struct Manager::Impl {
     }
     bool StopOne(Instance& i) {
         i.stopping = true; i.ui.stopping = true; i.scene.stopping = true; i.storage.stopping = true; i.edit.stopping = true; i.status.stage = "stopping";
+        // Retire even clients with no callbacks in the dispatch list. Cached
+        // service tables must not resurrect callbacks from stop/destroy.
+        i.render.retired = true;
+        render.DropClient(i.render.id);
         registry.Refresh().Retire(i.refresh);
         if (edits && !edits->Retire(i.edit)) return false;
         if (i.stopFailed) return false;
@@ -590,7 +594,7 @@ struct Manager::Impl {
         while (!i.code.modules.empty()) i.code.modules.pop_back(); i.code.entry = nullptr; return true;
     }
     bool Stop() {
-        if (GetCurrentThreadId() != thread || active || registry.InCallback() || storage.InCallback() || storage.Prepared() ||
+        if (GetCurrentThreadId() != thread || active || render.InCallback() || registry.InCallback() || storage.InCallback() || storage.Prepared() ||
             (edits && edits->InCallback())) return false;
         if (!closing) { Event(MMS_EVENT_UI_CLOSING); SavePreferences(); closing = true; }
         KillTimer(wake, kRefreshRetry);
@@ -705,7 +709,7 @@ UiRegistry& Manager::Ui() { return impl_->registry; }
 RenderService& Manager::Render() { return impl_->render; }
 MmsResult Manager::SaveUiPreferences() { return impl_->SavePreferences(); }
 StorageStore& Manager::Storage() { return impl_->storage; }
-bool Manager::ExecutingCallback() const { return impl_->active != 0 || impl_->notifyingEdit || impl_->registry.InCallback() || impl_->storage.InCallback() ||
+bool Manager::ExecutingCallback() const { return impl_->active != 0 || impl_->render.InCallback() || impl_->notifyingEdit || impl_->registry.InCallback() || impl_->storage.InCallback() ||
     (impl_->edits && impl_->edits->InCallback()); }
 bool Manager::InCallback() const { return ExecutingCallback() || impl_->storage.Prepared(); }
 std::vector<PluginStatus> Manager::Status() const { auto result = impl_->failed; for (const auto& i : impl_->instances) result.push_back(i->status); return result; }

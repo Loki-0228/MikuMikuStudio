@@ -18,6 +18,7 @@ public:
         void* frameContext = nullptr;
         MmsRenderPhaseCallbackV1 phase = nullptr;
         void* phaseContext = nullptr;
+        bool retired = false;
     };
     void DeviceLost(uint64_t generation) noexcept;
     void FramePresented(uint32_t width, uint32_t height, uint32_t format) noexcept;
@@ -31,7 +32,13 @@ public:
     // because the plugin is already shutting down.
     void DropClient(const std::string& id) noexcept;
     uint64_t Generation() const noexcept { return generation_; }
+    bool InCallback() const noexcept { return callbackDepth_ != 0; }
 private:
+    struct CallbackScope {
+        unsigned& depth;
+        explicit CallbackScope(unsigned& value) noexcept : depth(value) { ++depth; }
+        ~CallbackScope() { --depth; }
+    };
     struct Lease {
         std::string owner;
         std::string name;
@@ -52,6 +59,7 @@ private:
     std::map<MmsHandle, Lease> leases_;
     std::vector<Client*> clients_;
     MmsHandle next_ = 1;
+    unsigned callbackDepth_ = 0;
     uint64_t generation_ = 1, frameIndex_ = 0;
     uint32_t lost_ = 0, width_ = 0, height_ = 0, format_ = 0;
 };

@@ -7,6 +7,7 @@ void RenderService::DeviceLost(uint64_t generation) noexcept {
     ReleaseAll("device lost");
 }
 void RenderService::FramePresented(uint32_t width, uint32_t height, uint32_t format) noexcept {
+    if (InCallback()) return;
     ++frameIndex_;
     if (width) width_ = width;
     if (height) height_ = height;
@@ -21,16 +22,23 @@ void RenderService::FramePresented(uint32_t width, uint32_t height, uint32_t for
     info.height = height_;
     info.backBufferFormat = format_;
     // Copy the callback list: a callback may clear itself or register another
-    // client, and the render path must not iterate a mutated container.
+    // client, and the render path must not iterate a mutated container. If the
+    // copy cannot be prepared, skip this notification entirely instead of
+    // dispatching a partial list.
     std::vector<std::pair<MmsRenderFrameCallbackV1, void*>> callbacks;
-    callbacks.reserve(clients_.size());
-    for (Client* client : clients_) if (client->frame) callbacks.emplace_back(client->frame, client->frameContext);
+    try {
+        callbacks.reserve(clients_.size());
+        for (Client* client : clients_) if (client->frame) callbacks.emplace_back(client->frame, client->frameContext);
+    } catch (...) {
+        return;
+    }
     for (const auto& [callback, context] : callbacks) {
+        CallbackScope scope(callbackDepth_);
         try { Boundary([&] { callback(context, &info); return MMS_OK; }); } catch (...) {}
     }
 }
 void RenderService::InvokePhase(uint32_t phase) noexcept {
-    if (clients_.empty()) return;
+    if (InCallback() || clients_.empty()) return;
     MmsRenderInfoV1 info{};
     info.h = Header<MmsRenderInfoV1>();
     info.deviceGeneration = generation_;
@@ -40,32 +48,40 @@ void RenderService::InvokePhase(uint32_t phase) noexcept {
     info.height = height_;
     info.backBufferFormat = format_;
     std::vector<std::pair<MmsRenderPhaseCallbackV1, void*>> callbacks;
-    callbacks.reserve(clients_.size());
-    for (Client* client : clients_) if (client->phase) callbacks.emplace_back(client->phase, client->phaseContext);
+    try {
+        callbacks.reserve(clients_.size());
+        for (Client* client : clients_) if (client->phase) callbacks.emplace_back(client->phase, client->phaseContext);
+    } catch (...) {
+        return;
+    }
     for (const auto& [callback, context] : callbacks) {
+        CallbackScope scope(callbackDepth_);
         try { Boundary([&] { callback(context, &info, phase); return MMS_OK; }); } catch (...) {}
     }
 }
 void RenderService::FrameBegin() noexcept { InvokePhase(MMS_RENDER_PHASE_BEGIN); }
 void RenderService::FrameEnd() noexcept { InvokePhase(MMS_RENDER_PHASE_END); }
 void RenderService::SetPhaseCallback(Client& client, MmsRenderPhaseCallbackV1 callback, void* user) {
+    // The insertion can throw; do it before touching the callback fields so a
+    // failure reported as MMS_E_MEMORY leaves the previous registration intact.
+    if (callback && std::find(clients_.begin(), clients_.end(), &client) == clients_.end()) clients_.push_back(&client);
     client.phase = callback;
     client.phaseContext = user;
-    if (callback && std::find(clients_.begin(), clients_.end(), &client) == clients_.end()) clients_.push_back(&client);
 }
 void RenderService::ClearPhaseCallback(Client& client) {
     client.phase = nullptr;
     client.phaseContext = nullptr;
+    if (!client.frame) clients_.erase(std::remove(clients_.begin(), clients_.end(), &client), clients_.end());
 }
 void RenderService::SetFrameCallback(Client& client, MmsRenderFrameCallbackV1 callback, void* user) {
+    if (callback && std::find(clients_.begin(), clients_.end(), &client) == clients_.end()) clients_.push_back(&client);
     client.frame = callback;
     client.frameContext = user;
-    if (callback && std::find(clients_.begin(), clients_.end(), &client) == clients_.end()) clients_.push_back(&client);
 }
 void RenderService::ClearFrameCallback(Client& client) {
     client.frame = nullptr;
     client.frameContext = nullptr;
-    clients_.erase(std::remove(clients_.begin(), clients_.end(), &client), clients_.end());
+    if (!client.phase) clients_.erase(std::remove(clients_.begin(), clients_.end(), &client), clients_.end());
 }
 void RenderService::DeviceRestored(uint64_t generation) noexcept {
     if (generation) generation_ = generation;
@@ -97,7 +113,7 @@ MmsRenderApiV1_2 RenderService::Api12(Client& client) {
     api.setFrameCallback = base.setFrameCallback;
     api.clearFrameCallback = base.clearFrameCallback;
     api.setPhaseCallback = [](void* context, MmsRenderPhaseCallbackV1 callback, void* user) -> MmsResult {
-        return Boundary([&] { auto* client = static_cast<Client*>(context); client->owner->SetPhaseCallback(*client, callback, user); return MMS_OK; });
+        return Boundary([&] { auto* client = static_cast<Client*>(context); if (client->retired) return MMS_E_NOT_READY; client->owner->SetPhaseCallback(*client, callback, user); return MMS_OK; });
     };
     api.clearPhaseCallback = [](void* context) {
         auto* client = static_cast<Client*>(context); client->owner->ClearPhaseCallback(*client);
@@ -113,7 +129,7 @@ MmsRenderApiV1_1 RenderService::Api11(Client& client) {
     api.acquireLease = base.acquireLease;
     api.releaseLease = base.releaseLease;
     api.setFrameCallback = [](void* context, MmsRenderFrameCallbackV1 callback, void* user) -> MmsResult {
-        return Boundary([&] { static_cast<Client*>(context)->owner->SetFrameCallback(*static_cast<Client*>(context), callback, user); return MMS_OK; });
+        return Boundary([&] { auto* client = static_cast<Client*>(context); if (client->retired) return MMS_E_NOT_READY; client->owner->SetFrameCallback(*client, callback, user); return MMS_OK; });
     };
     api.clearFrameCallback = [](void* context) {
         static_cast<Client*>(context)->owner->ClearFrameCallback(*static_cast<Client*>(context));
@@ -126,6 +142,7 @@ void RenderService::DropClient(const std::string& id) noexcept {
     }
     for (auto it = clients_.begin(); it != clients_.end();) {
         if ((*it)->id == id) {
+            (*it)->retired = true;
             (*it)->frame = nullptr; (*it)->frameContext = nullptr;
             (*it)->phase = nullptr; (*it)->phaseContext = nullptr;
             it = clients_.erase(it);
@@ -146,6 +163,7 @@ MmsResult RenderService::Query(MmsRenderInfoV1* out) const {
     return MMS_OK;
 }
 MmsResult RenderService::Acquire(Client& client, const MmsRenderLeaseDescV1* desc, MmsHandle* out) {
+    if (client.retired) return MMS_E_NOT_READY;
     if (!desc || !out || !Valid(desc) || !desc->release || (desc->flags & ~MMS_RENDER_LEASE_DEVICE) || desc->reserved) {
         return MMS_E_ARGUMENT;
     }
@@ -169,6 +187,7 @@ MmsResult RenderService::Release(Client& client, MmsHandle lease) {
 }
 void RenderService::Invoke(Lease& lease, const char* reason) noexcept {
     if (!lease.release) return;
+    CallbackScope scope(callbackDepth_);
     (void)reason;
     try {
         Boundary([&] { lease.release(lease.context); return MMS_OK; });
