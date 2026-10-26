@@ -864,10 +864,59 @@ void MeasureResources(const unsigned char* model,plugins::resource_budget::Colle
 }
 #endif
 void CopyState(const unsigned char* source,unsigned char* destination){
-    Synchronize(source);Forget(destination);auto* s=Current(source);if(!s||!destination)return;
-    State copy;copy.identity=mdl::Mdl(destination)->boneTable;copy.curves=s->curves;
-    for(auto& pair:copy.curves){pair.second.nativeHash=Hash(destination,pair.first);pair.second.baseline.clear();Snapshot(destination,pair.first,pair.second.baseline);}
-    states[destination]=std::move(copy);
+    if(!destination||source==destination)return;
+    auto destinationState=states.find(destination);
+    // An active destination range retime still owns its deferred counter.
+    // Publishing now would replace it with zero, so its completion or
+    // destructor would later decrement an already-zero count.
+    if(destinationState!=states.end()&&destinationState->second.deferredEdits)
+        throw std::invalid_argument("bone curve copy deferred destination");
+    const auto* target=mdl::Mdl(destination);const void* targetBones=target->boneTable;const auto targetCount=target->boneCount;
+    if(targetCount&&!targetBones)throw std::invalid_argument("bone curve copy destination");
+    // Read the source side table directly. Current would erase a stale owner,
+    // and Synchronize/Reconcile would rewrite live authoring.
+    const State* sourceState=nullptr;
+    if(source){
+        const auto found=states.find(source);
+        if(found!=states.end()){
+            // A range retime owns a native pool that may be only partly
+            // registered. Refuse the half-finished edit before preparing.
+            if(found->second.deferredEdits)throw std::invalid_argument("bone curve copy deferred source");
+            if(mdl::Mdl(source)->boneTable==found->second.identity)sourceState=&found->second;
+        }
+    }
+    State candidate;
+    candidate.identity=targetBones;
+    if(sourceState){
+        candidate.curves=sourceState->curves;
+        for(auto& pair:candidate.curves){
+            const int bone=pair.first;Entry& entry=pair.second;
+            if(bone<0||unsigned(bone)>=targetCount)throw std::invalid_argument("bone curve copy destination bone");
+            const auto sourceHash=Hash(source,bone);
+            if(!sourceHash)throw std::invalid_argument("bone curve copy source chain");
+            if(sourceHash!=entry.nativeHash||!entry.registrations.empty()){
+                std::vector<NativeKey> fresh;
+                if(!Snapshot(source,bone,fresh))throw std::invalid_argument("bone curve copy source snapshot");
+                if(!ReconcileSnapshot(entry,sourceHash,std::move(fresh)))throw std::invalid_argument("bone curve copy source reconciliation");
+            }
+            // The caller restores the native scale table first. Only the
+            // destination keys, scale and curve form this entry's baseline.
+            const auto targetHash=Hash(destination,bone);
+            if(!targetHash)throw std::invalid_argument("bone curve copy destination chain");
+            entry.nativeHash=targetHash;entry.baseline.clear();
+            if(!Snapshot(destination,bone,entry.baseline))throw std::invalid_argument("bone curve copy destination snapshot");
+            entry.registrations.clear();
+        }
+    }
+    const auto swapState=[](State& a,State& b) noexcept {
+        std::swap(a.identity,b.identity);
+        a.curves.swap(b.curves);
+        std::swap(a.deferredEdits,b.deferredEdits);
+        for(unsigned i=0;i<30;++i){a.undo[i].swap(b.undo[i]);a.redo[i].swap(b.redo[i]);}
+        a.undoValid.swap(b.undoValid);a.redoValid.swap(b.redoValid);
+    };
+    if(destinationState!=states.end()){swapState(destinationState->second,candidate);return;}
+    states.emplace(static_cast<const unsigned char*>(destination),std::move(candidate));
 }
 void ExchangeState(unsigned char* first,unsigned char* second){
     std::swap(states[first],states[second]);

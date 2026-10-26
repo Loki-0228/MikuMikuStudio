@@ -5,6 +5,7 @@
 // `<model.pmx> <output-directory>` runs the full scene integration;
 // `--capacity` runs the runtime bone-key pool acceptance without a scene;
 // `--warnings` drives native and layer-cut warning gates with fixture MMV.dll;
+// `--scene-physics` also checks detached free-curve copying in the ABI profile;
 // `--capacity-scene <model.pmx> <output-directory>` runs the scene integration
 // with a bone-key pool grown past the original capacity.
 #define NOMINMAX
@@ -13,6 +14,7 @@
 #include "mikumikustudio/physics_scene.hpp"
 #include "mikumikustudio/affine_skinning.hpp"
 #include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/bone_curve.hpp"
 #include "mikumikustudio/alembic_export.hpp"
 #include "mikumikustudio/bake_ui_lock.hpp"
 #include "mikumikustudio/mesh_bake_cache.hpp"
@@ -984,6 +986,92 @@ bool SameResults(const bake::Result& a,const bake::Result& b){
     if(a.error!=b.error||a.changes.size()!=b.changes.size()||a.scales!=b.scales)return false;
     for(size_t i=0;i<a.changes.size();++i)if(a.changes[i].keyIndex!=b.changes[i].keyIndex||std::memcmp(&a.changes[i].key,&b.changes[i].key,sizeof(mdl::BoneKey)))return false;return true;
 }
+#if !MMD_ORIGINAL_PROFILE
+// A native edit may be newer than the stored free-curve author. Offline baking
+// must reconcile only its private model, including when cancelled after copy.
+void FreeCurveCopyBake(){
+    Fixture fixture;
+    auto app=std::make_unique<MMDApp>();app->state=MMDAppState{};
+    app->ModelSlot(0)=fixture.raw();app->SelectedModelSlot()=0;
+    app->GravityY()=-1;app->GravityMagnitude()=9.8f;
+    btDefaultCollisionConfiguration configuration;btCollisionDispatcher dispatcher(&configuration);
+    btDbvtBroadphase broadphase;btSequentialImpulseConstraintSolver solver;
+    btDiscreteDynamicsWorld world(&dispatcher,&broadphase,&solver,&configuration);
+    PhysicsScene physics{};physics.world=&world;app->Physics()=&physics;
+    fixture.model->scenePtr=&physics;fixture.model->comboSelIndex2=0;
+    std::array<unsigned,2> cursors{};std::array<unsigned char,2> active{};
+    fixture.model->boneKeyCursors=cursors.data();fixture.model->boneTrackActive=active.data();
+    std::array<mdl::BoneOrderEntry,1> order{};order[0].linkedModel=-1;
+    fixture.model->boneOrderTable=order.data();fixture.model->boneOrderCount=1;
+    mdl::BoneReference selector{-1,-1};fixture.displayKeys[0].selectorStates=&selector;
+    for(auto& bone:fixture.bones){
+        bone.parent=-1;bone.slotIndex=-1;bone.tailIdx=-1;bone.rigidIdx=-296;
+        bone.rotQuat2[3]=1;bone.type=mdl::BoneType::RotateMove;
+        for(int i=0;i<16;++i)bone.matInit[i]=bone.matWorld[i]=bone.matLocal[i]=i%5==0?1.f:0.f;
+    }
+    for(int bone=0;bone<2;++bone)fixture.keys[bone].allocated=1;
+    struct ActiveApp {MMDApp* previous=g_Block;explicit ActiveApp(MMDApp* app){g_Block=app;}~ActiveApp(){g_Block=previous;}} activeApp(app.get());
+    bone_curve::Tracks tracks;
+    for(int channel=0;channel<9;++channel){
+        animation_curve::Key first,last;first.frame=0;last.frame=4;
+        first.tangent=last.tangent=animation_curve::Tangent::Free;
+        first.interpolation=last.interpolation=animation_curve::Interpolation::Bezier;
+        first.value=last.value=channel>=6?1:0;
+        if(channel==0)last.value=8;
+        // Equal native endpoints cannot express this Y overshoot. At frame 2
+        // the authored cubic is exactly 4, whereas the native mirror is zero.
+        if(channel==1){first.outSlope=4;last.inSlope=-4;}
+        tracks[channel].keys={first,last};
+    }
+    std::string error;
+    const bool written=bone_curve::Write(fixture.raw(),0,tracks,error);
+    Check(written,"prepare free-curve bake authoring");if(!written)return;
+    const auto endpoint=fixture.model->boneKeys[0].next;
+    Check(endpoint<fixture.keys.size()&&endpoint>=2&&fixture.model->boneKeys[endpoint].frame==4,"free-curve bake has native endpoint");
+    if(endpoint>=fixture.keys.size()||endpoint<2||fixture.model->boneKeys[endpoint].frame!=4)return;
+    fixture.model->boneKeys[endpoint].position[0]=40;
+    // Do not call Read/Has/Synchronize here: the deliberately stale author is
+    // the precondition the offline CopyState path must leave untouched.
+    const auto author=bone_curve::AuthoringState::Capture(fixture.raw());
+    bone_curve::Tracks stored;
+    Check(author->Read(0,stored)&&stored[0].keys.back().value==8,"source author remains unsynchronized before bake");
+    const auto nativeKeys=fixture.keys;const auto bones=fixture.bones;
+    const auto unchanged=[&]{
+        const auto now=bone_curve::AuthoringState::Capture(fixture.raw());
+        Check(author->Equals(*now),"offline bake never publishes source free-curve reconciliation");
+        Check(Equal(nativeKeys,fixture.model->boneKeys)&&!std::memcmp(bones.data(),fixture.bones.data(),sizeof bones),"free-curve offline bake leaves source native keys and pose unchanged");
+    };
+    bake::Request request;request.settings=bake::BulletDefaults();request.firstFrame=0;request.lastFrame=4;
+    request.physics=false;request.keyframes=true;
+    request.boneCoverage=channel_bake::Coverage::Explicit;request.boneIndices={0};
+    unsigned progressCalls=0;int reached=-1;
+    const auto cancelled=bake::Compute(*app,request,[&](int frame,int){++progressCalls;reached=frame;return frame<2;});
+    Check(cancelled.error==bake::Error::Cancelled&&cancelled.changes.empty()&&progressCalls>=4&&reached==2,"free-curve bake cancels after copying and evaluating the private model");
+    unchanged();
+    const auto result=bake::Compute(*app,request);
+    Check(result.error==bake::Error::None&&result.boneCount==1&&result.sampledFrames==5,"free-curve offline bake succeeds after cancellation");
+    unchanged();
+    const auto repeated=bake::Compute(*app,request);
+    Check(repeated.error==bake::Error::None&&SameResults(result,repeated),"free-curve offline bake repeats deterministically");
+    unchanged();
+    // Reconstruct only the requested output track without committing it to the
+    // source. Unchanged endpoint rows need not be present in result.changes.
+    const auto sample=[&](unsigned frame,mdl::BoneKey& out){
+        unsigned slot=0;
+        for(std::size_t guard=0;guard<fixture.keys.size();++guard){
+            if(slot>=fixture.keys.size())return false;
+            out=fixture.keys[slot];
+            for(const auto& change:result.changes)if(change.keyIndex==int(slot)){out=change.key;break;}
+            if(out.frame==frame)return true;if(!out.next)break;slot=out.next;
+        }
+        return false;
+    };
+    mdl::BoneKey midpoint{},last{};
+    Check(sample(2,midpoint)&&std::abs(midpoint.position[1]-4.f)<1e-4f,"bake output preserves free-curve overshoot instead of native endpoint interpolation");
+    Check(sample(4,last)&&std::abs(last.position[0]-40.f)<1e-4f,"bake output uses the privately reconciled native edit");
+    unchanged();
+}
+#endif
 // ---- hidden menu regression ------------------------------------------------
 // The keyframe bake command moved out of the Edit popup into a top-level
 // "Baking" popup that sits directly in front of Help.  The fixed indices the rest
@@ -1491,7 +1579,12 @@ int wmain(int argc,wchar_t** argv){
     auto hide=SetWindowsHookExW(WH_CBT,HideHook,nullptr,GetCurrentThreadId());auto hook=SetWindowsHookExW(WH_CALLWNDPROCRET,DialogHook,nullptr,GetCurrentThreadId());
     if(argc==2&&!wcscmp(argv[1],L"--dense-playback"))DenseKeyframeChecks();
     else if(argc==2&&!wcscmp(argv[1],L"--select-all"))AllChannelPicker();
-    else if(argc==2&&!wcscmp(argv[1],L"--scene-physics"))ScenePhysicsUnit();
+    else if(argc==2&&!wcscmp(argv[1],L"--scene-physics")){
+#if !MMD_ORIGINAL_PROFILE
+        FreeCurveCopyBake();
+#endif
+        ScenePhysicsUnit();
+    }
     else if(argc==2&&!wcscmp(argv[1],L"--capacity"))CapacityMode();
     else if(argc==2&&!wcscmp(argv[1],L"--warnings"))WarningLogic();
     else if(argc==4&&!wcscmp(argv[1],L"--capacity-scene")){growCapacity=true;Scene(argv[2],argv[3]);}

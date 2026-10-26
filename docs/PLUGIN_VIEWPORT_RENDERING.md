@@ -14,6 +14,10 @@
 
 [ImagePanel SDK](../sdk/mms/image-panel.md) 已复用原 surface 将这些图像显示在插件 PANEL 中，无需插件手写窗口绘制。此显示路径有实际挂载与像素测试；仍不等同于下述场景 view、renderer provider 或独立 3D 视口。
 
+独立求值的前置修复见[离线曲线复制记录](records/abi-detached-curve-copy-2026-10-26.md)：骨骼自由曲线在私有候选中同步，复制不再修改源作者，失败保留目标。现有 `physics_bake::ModelCopy` 仍借用源运动关键帧及表情载荷，仅适用于当前同步调用期，不能作为跨线程或源模型删除后仍有效的场景源。
+
+后续实现先冻结原生关键帧、尺度曲线、自由曲线及稳定对象映射，再开放独立时间采样；负帧、动作层、IK、外部父级和物理须分别明确能力及失败结果。局部通道采样不能冒充 `ANIMATED` 世界矩阵或 `PHYSICS` 阶段。所有帧租约必须在主播放头、编辑姿态及历史不变的前提下生成。
+
 | 代码入口 | 已有范围与限制 |
 | --- | --- |
 | `sdk/mms/include/mms/plugin.h` | 提供 `queryService`、`registerProvider`、版本头、不透明句柄和设备事件定义。V1 面向 Windows x64。 |

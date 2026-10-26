@@ -38,6 +38,20 @@ public:
 void ReconcileRegisteredFrame(const unsigned char* model, int bone, int frame) noexcept;
 void Evaluate(unsigned char* model, double frame);
 void Forget(unsigned char* model);
+// Copy free-curve authoring into an offline destination. A null destination and
+// source==destination are no-ops. The source side table is read-only: its
+// authoring, undo rings and native keys are never reconciled or changed. A
+// null, missing or stale source owner is treated as no author and clears the
+// destination author without touching the source. A source or destination side
+// table holding a deferred edit is refused before anything is prepared. Each
+// copied entry is synchronized to the source native track in private storage,
+// then re-hashed and re-snapshotted against the destination. Destination
+// count/table, source chain/track and destination chain failures throw
+// std::invalid_argument before publication. The caller copies the native scale
+// table first.
+// An existing destination swaps with the prepared state without allocating.
+// Failed preparation preserves its author; failed insertion leaves an absent
+// destination absent.
 void CopyState(const unsigned char* source, unsigned char* destination);
 void ExchangeState(unsigned char* first, unsigned char* second);
 void CaptureUndo(unsigned char* model, unsigned ring);

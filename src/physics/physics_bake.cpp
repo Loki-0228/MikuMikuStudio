@@ -87,8 +87,17 @@ struct ModelCopy {
         } else m.materialCount = 0;
         const auto* original = reinterpret_cast<const unsigned char*>(&source);
         for (unsigned j=0;j<m.jointCount;++j) joints[j].radiusBound=physics_scale::JointRadiusBaseline(original,j);
-        bone_scale::CopyState(original, raw());
-        morph_curve::CopyState(original, raw());
+        try {
+            bone_scale::CopyState(original, raw());
+            morph_curve::CopyState(original, raw());
+        } catch (...) {
+            // A failed constructor does not run ~ModelCopy. Remove any side
+            // tables published before a later copy failed.
+            physics_scale::Forget(raw());
+            bone_scale::Forget(raw());
+            morph_curve::Forget(raw());
+            throw;
+        }
     }
     ~ModelCopy() { physics_scale::Forget(raw()); bone_scale::Forget(raw()); morph_curve::Forget(raw()); }
 };
