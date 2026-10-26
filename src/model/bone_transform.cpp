@@ -719,6 +719,88 @@ void BoneTransform_StandardLocals(D3& d3, mdl::BoneRecord* boneRecords,
     }
 }
 
+// ResolveBoneWorld: world matrix of one bone for the phase-C pass.
+// external parent (bone+600 -> model+314596 table {slot@+12, bone@+16})
+// chains the OTHER model's bone+244; else +52 = +116 * parent(+48)+52;
+// +180 = parent world rotation-only mirror; root keeps +52 = +116 and
+// +180 = identity.  Shared by phase C and (root bones only) phase E.
+void ResolveBoneWorld(D3& d3, mdl::BoneRecord& bone,
+                      mdl::BoneRecord* boneRecords,
+                      mdl::BoneOrderEntry* extTable,
+                      unsigned char* const* modelSlots) {
+    const std::int32_t parent = bone.parent;
+    const std::int32_t extIdx = bone.slotIndex;
+    bool handled = false;
+    bool viaGlobalExt = false;
+    if (extIdx >= 0) {
+        const std::int32_t slot = extTable[extIdx].linkedModel;
+        if (slot >= 0) {                           // 0x4945FE
+            unsigned char* model2 = modelSlots[slot];
+            mdl::BoneRecord* bones2 = mdl::Bones(model2);
+            const std::int32_t extBone = extTable[extIdx].linkedBone;
+            const mdl::BoneRecord& src = bones2[extBone];
+            D3DXMATRIXF ext, tmp, local;
+            std::memcpy(&ext, src.matExtra, sizeof(ext));
+            d3.translation(&tmp, src.position[0], src.position[1],
+                           src.position[2]);
+            d3.mul(&ext, &tmp, &ext);
+            d3.translation(&tmp, -bone.position[0], -bone.position[1],
+                           -bone.position[2]);
+            d3.mul(&ext, &tmp, &ext);
+            std::memcpy(&local, bone.matLocal, sizeof(local));
+            d3.mul(reinterpret_cast<D3DXMATRIXF*>(bone.matInit), &local,
+                   &ext);
+            ext.m[3][0] = ext.m[3][1] = ext.m[3][2] = 0.0f;
+            ext.m[3][3] = 1.0f;
+            std::memcpy(bone.matWorld, &ext, sizeof(ext));
+            handled = true;
+        } else if (slot == -1) {
+            if (parent >= 0) {
+                WorldFromParent(bone, boneRecords[parent], &d3);
+                handled = true;
+            } else {
+                viaGlobalExt = true;
+            }
+        }
+    } else if (parent >= 0) {
+        WorldFromParent(bone, boneRecords[parent], &d3);
+        handled = true;
+    } else {
+        viaGlobalExt = true;
+    }
+    if (viaGlobalExt) {
+        // LABEL_80 (0x49488F): global external parent from the table.
+        // x64: both the extIdx<0,parent<0 route (0x7FF7CB4DB0CD) and the
+        // slot==-1,parent<0 route (0x7FF7CB4DB015) converge on the same
+        // extTable[0].linkedModel test at 0x7FF7CB4DB0D8.
+        if (extTable[0].linkedModel >= 0) {
+            unsigned char* model2 = modelSlots[extTable[0].linkedModel];
+            mdl::BoneRecord* bones2 = mdl::Bones(model2);
+            const mdl::BoneRecord& src =
+                bones2[extTable[0].linkedBone];
+            D3DXMATRIXF ext, tmp, local;
+            std::memcpy(&ext, src.matExtra, sizeof(ext));
+            d3.translation(&tmp, src.position[0], src.position[1],
+                           src.position[2]);
+            d3.mul(&ext, &tmp, &ext);
+            std::memcpy(&local, bone.matLocal, sizeof(local));
+            d3.mul(reinterpret_cast<D3DXMATRIXF*>(bone.matInit), &local,
+                   &ext);
+            ext.m[3][0] = ext.m[3][1] = ext.m[3][2] = 0.0f;
+            ext.m[3][3] = 1.0f;
+            std::memcpy(bone.matWorld, &ext, sizeof(ext));
+            handled = true;
+        }
+    }
+    if (!handled) {                                // 0x494999 root
+        std::memcpy(bone.matInit, bone.matLocal, sizeof(bone.matInit));
+        D3DXMATRIXF id;
+        std::memset(&id, 0, sizeof(id));
+        id.m[0][0] = id.m[1][1] = id.m[2][2] = id.m[3][3] = 1.0f;
+        std::memcpy(bone.matWorld, &id, sizeof(id));
+    }
+}
+
 // phase C (0x49455F): world pass: external parent (bone+600 ->
 // model+314596 table {slot@+12, bone@+16}) chains the OTHER model's
 // bone+244; else +52 = +116 * parent(+48)+52; +180 = parent world
@@ -735,77 +817,7 @@ void BoneTransform_WorldPass(D3& d3, mdl::BoneRecord* boneRecords,
             continue;
         if (bone.layer != layer)
             continue;
-        const std::int32_t parent = bone.parent;
-        const std::int32_t extIdx = bone.slotIndex;
-        bool handled = false;
-        bool viaGlobalExt = false;
-        if (extIdx >= 0) {
-            const std::int32_t slot = extTable[extIdx].linkedModel;
-            if (slot >= 0) {                           // 0x4945FE
-                unsigned char* model2 = modelSlots[slot];
-                mdl::BoneRecord* bones2 = mdl::Bones(model2);
-                const std::int32_t extBone = extTable[extIdx].linkedBone;
-                const mdl::BoneRecord& src = bones2[extBone];
-                D3DXMATRIXF ext, tmp, local;
-                std::memcpy(&ext, src.matExtra, sizeof(ext));
-                d3.translation(&tmp, src.position[0], src.position[1],
-                               src.position[2]);
-                d3.mul(&ext, &tmp, &ext);
-                d3.translation(&tmp, -bone.position[0], -bone.position[1],
-                               -bone.position[2]);
-                d3.mul(&ext, &tmp, &ext);
-                std::memcpy(&local, bone.matLocal, sizeof(local));
-                d3.mul(reinterpret_cast<D3DXMATRIXF*>(bone.matInit), &local,
-                       &ext);
-                ext.m[3][0] = ext.m[3][1] = ext.m[3][2] = 0.0f;
-                ext.m[3][3] = 1.0f;
-                std::memcpy(bone.matWorld, &ext, sizeof(ext));
-                handled = true;
-            } else if (slot == -1) {
-                if (parent >= 0) {
-                    WorldFromParent(bone, boneRecords[parent], &d3);
-                    handled = true;
-                } else {
-                    viaGlobalExt = true;
-                }
-            }
-        } else if (parent >= 0) {
-            WorldFromParent(bone, boneRecords[parent], &d3);
-            handled = true;
-        } else {
-            viaGlobalExt = true;
-        }
-        if (viaGlobalExt) {
-            // LABEL_80 (0x49488F): global external parent from the table.
-            // x64: both the extIdx<0,parent<0 route (0x7FF7CB4DB0CD) and the
-            // slot==-1,parent<0 route (0x7FF7CB4DB015) converge on the same
-            // extTable[0].linkedModel test at 0x7FF7CB4DB0D8.
-            if (extTable[0].linkedModel >= 0) {
-                unsigned char* model2 = modelSlots[extTable[0].linkedModel];
-                mdl::BoneRecord* bones2 = mdl::Bones(model2);
-                const mdl::BoneRecord& src =
-                    bones2[extTable[0].linkedBone];
-                D3DXMATRIXF ext, tmp, local;
-                std::memcpy(&ext, src.matExtra, sizeof(ext));
-                d3.translation(&tmp, src.position[0], src.position[1],
-                               src.position[2]);
-                d3.mul(&ext, &tmp, &ext);
-                std::memcpy(&local, bone.matLocal, sizeof(local));
-                d3.mul(reinterpret_cast<D3DXMATRIXF*>(bone.matInit), &local,
-                       &ext);
-                ext.m[3][0] = ext.m[3][1] = ext.m[3][2] = 0.0f;
-                ext.m[3][3] = 1.0f;
-                std::memcpy(bone.matWorld, &ext, sizeof(ext));
-                handled = true;
-            }
-        }
-        if (!handled) {                                // 0x494999 root
-            std::memcpy(bone.matInit, bone.matLocal, sizeof(bone.matInit));
-            D3DXMATRIXF id;
-            std::memset(&id, 0, sizeof(id));
-            id.m[0][0] = id.m[1][1] = id.m[2][2] = id.m[3][3] = 1.0f;
-            std::memcpy(bone.matWorld, &id, sizeof(id));
-        }
+        ResolveBoneWorld(d3, bone, boneRecords, extTable, modelSlots);
         if (CopyGate(bone, physicsMode))                       // LABEL_83
             std::memcpy(bone.matExtra, bone.matInit, sizeof(bone.matExtra));
     }
@@ -1237,7 +1249,10 @@ void BoneTransform_CcdIk(D3& d3, unsigned char* m,
 // take the source quat from tail(+460)/parent(+488) using +348 when
 // that source bone is type 4 (IK-touched), rebuild +116 and world +52.
 void BoneTransform_PostIkPass(D3& d3, mdl::BoneRecord* boneRecords,
-                              int boneCount, unsigned char afterPhysics,
+                              int boneCount,
+                              mdl::BoneOrderEntry* extTable,
+                              unsigned char* const* modelSlots,
+                              unsigned char afterPhysics,
                               int layer, int physicsMode) {
     for (int i = 0; i < boneCount; ++i) {
         mdl::BoneRecord& bone = boneRecords[i];
@@ -1322,7 +1337,10 @@ void BoneTransform_PostIkPass(D3& d3, mdl::BoneRecord* boneRecords,
             bone.physicsOffset[1] += inhY;
             bone.physicsOffset[2] += inhZ;
         }
-        WorldFromParent(bone, boneRecords[bone.parent], &d3);
+        if (bone.parent >= 0)
+            WorldFromParent(bone, boneRecords[bone.parent], &d3);
+        else
+            ResolveBoneWorld(d3, bone, boneRecords, extTable, modelSlots);
         if (CopyGate(bone, physicsMode))                       // 0x49706F
             std::memcpy(bone.matExtra, bone.matInit, sizeof(bone.matExtra));
     }
@@ -1363,9 +1381,9 @@ void BoneFrameTransform(unsigned char* m, unsigned char afterPhysics,
     BoneTransform_CcdIk(d3, m, boneRecords, boneCount, iks, ikCount, afterPhysics,
                         layer, physicsMode,
                         pmx2);                                        // D 0x494A56
-    BoneTransform_PostIkPass(d3, boneRecords, boneCount, afterPhysics,
-                              layer,
-                              physicsMode);                          // E 0x496881
+    BoneTransform_PostIkPass(d3, boneRecords, boneCount, extTable,
+                             modelSlots, afterPhysics, layer,
+                             physicsMode);                           // E 0x496881
 }
 
 }  // namespace mikumikustudio

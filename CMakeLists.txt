@@ -849,6 +849,12 @@ set_target_properties(bone_rotation_drag_tests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
 add_test(NAME bone_rotation_drag COMMAND bone_rotation_drag_tests)
 
+add_executable(bone_root_inheritance_tests EXCLUDE_FROM_ALL tests/bone_root_inheritance_tests.cpp)
+target_link_libraries(bone_root_inheritance_tests PRIVATE mikumikustudio_core winmm dsound)
+set_target_properties(bone_root_inheritance_tests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_test(NAME bone_root_inheritance COMMAND bone_root_inheritance_tests)
+
 # ---------------------------------------------------------------------------
 # d3dx9_43 import stubs - MikuMikuEffect (MME) compatibility
 # ---------------------------------------------------------------------------
