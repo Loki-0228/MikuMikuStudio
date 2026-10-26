@@ -250,3 +250,20 @@ _Static_assert(MMS_UI_PROPERTY_REFRESH_WAIT_DISPLAY_CAPACITY == 128u, "property 
 _Static_assert(_Generic(((MmsUiPropertyRefreshApiV1_1*)0)->getScopedCapabilities, MmsResult (MMS_CALL *)(void*, MmsUiPropertyRefreshScopedCapabilitiesV1*): 1, default: 0) == 1, "scoped property getScopedCapabilities exact signature");
 _Static_assert(_Generic(((MmsUiPropertyRefreshApiV1_1*)0)->subscribeScoped, MmsResult (MMS_CALL *)(void*, const MmsUiPropertyRefreshScopedSubscriptionDescV1*, MmsHandle*): 1, default: 0) == 1, "scoped property subscribeScoped exact signature");
 _Static_assert(_Generic(((MmsUiPropertyRefreshApiV1_1*)0)->queryScoped, MmsResult (MMS_CALL *)(void*, MmsHandle, MmsUiPropertyRefreshScopedSubscriptionStateV1*): 1, default: 0) == 1, "scoped property queryScoped exact signature");
+
+#include <mms/evaluation.h>
+_Static_assert(sizeof(MmsEvaluationCapsV1) == 40, "MmsEvaluationCapsV1 layout");
+_Static_assert(sizeof(MmsEvaluationSourceQueryV1) == 48, "MmsEvaluationSourceQueryV1 layout");
+_Static_assert(sizeof(MmsEvaluationSourceInfoV1) == 64, "MmsEvaluationSourceInfoV1 layout");
+_Static_assert(sizeof(MmsEvaluationBoneV1) == 32, "MmsEvaluationBoneV1 layout");
+_Static_assert(sizeof(MmsBoneChannelsV1) == 80, "MmsBoneChannelsV1 layout");
+_Static_assert(sizeof(MmsEvaluationApiV1) == 72, "MmsEvaluationApiV1 layout");
+_Static_assert(offsetof(MmsEvaluationApiV1, context) == 8, "evaluation context offset");
+_Static_assert(offsetof(MmsEvaluationApiV1, getCapabilities) == 16, "evaluation getCapabilities offset");
+_Static_assert(offsetof(MmsEvaluationApiV1, createSource) == 24, "evaluation createSource offset");
+_Static_assert(offsetof(MmsEvaluationApiV1, describeSource) == 32, "evaluation describeSource offset");
+_Static_assert(offsetof(MmsEvaluationApiV1, boneAt) == 40, "evaluation boneAt offset");
+_Static_assert(offsetof(MmsEvaluationApiV1, sampleBone) == 48, "evaluation sampleBone offset");
+_Static_assert(offsetof(MmsEvaluationApiV1, retain) == 56, "evaluation retain offset");
+_Static_assert(offsetof(MmsEvaluationApiV1, release) == 64, "evaluation release offset");
+_Static_assert(_Generic(((MmsEvaluationApiV1*)0)->sampleBone, MmsResult (MMS_CALL *)(void*, MmsHandle, MmsId, MmsTime, MmsBoneChannelsV1*):1, default:0), "evaluation sample signature");

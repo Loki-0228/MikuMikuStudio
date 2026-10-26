@@ -313,7 +313,7 @@ static void InitializeRuntime(MMDApp* app, bool migrationTest) {
         const auto data = local_data::File(L"plugins");
         if (data.empty()) throw std::runtime_error("plugin data directory unavailable");
         std::wstring module(32768, 0); auto n = GetModuleFileNameW(nullptr, module.data(), DWORD(module.size())); if (!n || n >= module.size()) throw std::runtime_error("process path unavailable"); module.resize(n);
-        manager = std::make_unique<Manager>(data, LogMessage, [window = app->MainWindow()] { PostMessageW(window, kRefresh, 0, 0); }, false, CreateSceneStore(app), true);
+        manager = std::make_unique<Manager>(data, LogMessage, [window = app->MainWindow()] { PostMessageW(window, kRefresh, 0, 0); }, false, CreateSceneStore(app), true, CreateEvaluationStore(app));
         manager->SetRefreshGuard([app] { return !closing && app->WindowLayoutReady() && !app->SceneMutationInProgress(); });
         if (manager->Storage().Prepare(currentProject.records) != MMS_OK || !manager->Storage().Commit()) throw std::runtime_error("initialize plugin project data");
         history = std::make_unique<SharedHistory>(manager->Storage(), [app] {

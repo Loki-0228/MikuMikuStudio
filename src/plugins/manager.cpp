@@ -4,6 +4,7 @@
 #include "ui_refresh_binding.hpp"
 #include "ui_property_refresh.hpp"
 #include "render_image_store.hpp"
+#include "evaluation_store.hpp"
 #include <atomic>
 #include <mutex>
 
@@ -18,6 +19,7 @@ struct Manager::Impl {
         RefreshClient refresh{nullptr, {}};
         RenderService::Client render;
         RenderImageStore::Client images;
+        EvaluationStore::Client evaluation;
         std::atomic<bool> stopping{false};
         PluginStatus status;
         MmsHostV1 table{};
@@ -55,6 +57,7 @@ struct Manager::Impl {
     MmsResult preferencesError = MMS_OK;
     StorageStore storage;
     std::shared_ptr<SceneStore> scene;
+    std::shared_ptr<EvaluationStore> evaluations;
     NativeLoader loader;
     std::vector<std::unique_ptr<Instance>> instances;
     struct EditBridge final : EditHost {
@@ -123,12 +126,13 @@ struct Manager::Impl {
     static constexpr UINT_PTR kRefreshRetry = 0x4d4d5372;
     std::function<bool()> refreshGuard;
 
-    Impl(fs::path user, Log output, std::function<void()> changed, bool fallback, std::shared_ptr<SceneStore> sceneStore, bool unifiedSettings):
+    Impl(fs::path user, Log output, std::function<void()> changed, bool fallback, std::shared_ptr<SceneStore> sceneStore, bool unifiedSettings,
+        std::shared_ptr<EvaluationStore> evaluationStore):
         userRoot(std::move(user)), log(std::move(output)), hostUiChanged(std::move(changed)),
         registry([this] { uiRegistryChanged = true; if (hostUiChanged) hostUiChanged(); },
             [this](UiClient& client, MmsResult result) { if (result) for (const auto& i : instances)
                 if (&i->ui == &client) { CancelFailedEdit(*i); break; } }),
-        preferences(userRoot / L"ui-layout.json", unifiedSettings), scene(std::move(sceneStore)), loader(fallback) {
+        preferences(userRoot / L"ui-layout.json", unifiedSettings), scene(std::move(sceneStore)), evaluations(std::move(evaluationStore)), loader(fallback) {
         WNDCLASSW wc{}; wc.hInstance = GetModuleHandleW(nullptr); wc.lpfnWndProc = Window; wc.lpszClassName = L"MMS.PluginAbi.Dispatch.V1";
         if (!RegisterClassW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) throw std::runtime_error("plugin dispatcher class");
         wake = CreateWindowExW(0, wc.lpszClassName, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, wc.hInstance, this);
@@ -434,6 +438,10 @@ struct Manager::Impl {
             }
             return Table(major, minor, bytes, out, render.Api(i.render));
         }
+        if (id == "mms.scene.evaluate" && evaluations) {
+            if (closing || i.stopping.load()) return MMS_E_NOT_READY;
+            return Table(major, minor, bytes, out, evaluations->Api(i.evaluation));
+        }
         if (id == "mms.scene" && scene) return Table(major, minor, bytes, out, scene->Api(i.scene));
         if (id == "mms.storage") return Table(major, minor, bytes, out, storage.Api(i.storage));
         if (id == "mms.edit" && edits) return Table(major, minor, bytes, out, EditApi(i));
@@ -672,6 +680,7 @@ struct Manager::Impl {
         i.render.retired = true;
         render.DropClient(i.render.id);
         images.Retire(i.images);
+        if (evaluations) evaluations->Retire(i.evaluation);
         registry.Refresh().Retire(i.refresh);
         if (edits && !edits->Retire(i.edit)) return false;
         if (i.stopFailed) return false;
@@ -685,6 +694,7 @@ struct Manager::Impl {
         }
         { std::lock_guard<std::mutex> lock(mutex); for (const auto& [id, task] : tasks) if (task->owner == &i) return false; }
         if (images.HasLeases(i.images) || registry.HasLeases(i.ui) || registry.Refresh().HasLeases(i.refresh) || (scene && scene->HasLeases(i.scene))) return false;
+        if (evaluations && evaluations->HasLeases(i.evaluation)) return false;
         if (!storage.Retire(i.storage)) return false;
         r = Boundary([&] { registry.Retire(i.ui); return MMS_OK; });
         if (r != MMS_OK || registry.HasLeases(i.ui)) {
@@ -704,6 +714,7 @@ struct Manager::Impl {
         for (const auto& i : instances) {
             i->stopping = true; i->ui.stopping = true; i->scene.stopping = true;
             images.Retire(i->images);
+            if (evaluations) evaluations->Retire(i->evaluation);
             registry.Refresh().Retire(i->refresh);
         }
         bool complete = true; std::set<std::string> keep;
@@ -722,6 +733,7 @@ struct Manager::Impl {
             const auto& m = discovered.packages[index];
             auto instance = std::make_unique<Instance>(); auto& i = *instance; i.host = this; i.ui = {&registry, m.id}; i.render.id = m.id; i.status = {m.id, "validated", {}, m.package};
             i.images.owner = &images;
+            i.evaluation.owner = evaluations.get();
             i.storage.store = &storage; i.storage.id = m.id;
             i.edit.store = edits.get(); i.edit.id = m.id;
             i.refresh.queue = &registry.Refresh(); i.refresh.owner = m.id;
@@ -774,7 +786,8 @@ struct Manager::Impl {
         PostMessageW(wake, kDrain, 0, 0);
     }
 };
-Manager::Manager(fs::path user, Log log, std::function<void()> changed, bool fallback, std::shared_ptr<SceneStore> scene, bool unifiedSettings): impl_(std::make_unique<Impl>(std::move(user), std::move(log), std::move(changed), fallback, std::move(scene), unifiedSettings)) {}
+Manager::Manager(fs::path user, Log log, std::function<void()> changed, bool fallback, std::shared_ptr<SceneStore> scene, bool unifiedSettings,
+    std::shared_ptr<EvaluationStore> evaluations): impl_(std::make_unique<Impl>(std::move(user), std::move(log), std::move(changed), fallback, std::move(scene), unifiedSettings, std::move(evaluations))) {}
 Manager::~Manager() {
     if (!impl_) return;
     const auto stopped = Boundary([&] { return impl_->Stop() ? MMS_OK : MMS_E_BUSY; });

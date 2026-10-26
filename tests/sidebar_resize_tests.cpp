@@ -737,6 +737,7 @@ void CheckShadowFilter(MMDApp* app) {
 #include "plugins/slider_paint_trace_host_checks.inc"
 #include "plugins/slider_nonoverlap_host_checks.inc"
 #if !MMD_ORIGINAL_PROFILE
+#include "plugins/evaluation_host_checks.inc"
 #include "plugins/slider_hover_host_checks.inc"
 #include "plugins/layout_refresh_host_checks.inc"
 #include "plugins/object_history_host_checks.inc"
@@ -856,6 +857,11 @@ int main(int argc, char** argv) {
     if(argc==2 && std::string(argv[1])=="--scene-only") {
         scene_host_checks::Run(app);ShutdownCleanup(app);g_Block=nullptr;delete app;return 0;
     }
+#if !MMD_ORIGINAL_PROFILE
+    if(argc==2 && std::string(argv[1])=="--evaluation-only") {
+        evaluation_host_checks::Run(app);ShutdownCleanup(app);g_Block=nullptr;delete app;return 0;
+    }
+#endif
     if(schedulerOnly) {
         Hook(&BeginPaint,&PreviewBeginPaint,&realBeginPaint);
         Hook(&EndPaint,&PreviewEndPaint,&realEndPaint);

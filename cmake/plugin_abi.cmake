@@ -106,6 +106,7 @@ add_library(mms_plugin_runtime STATIC
     src/plugins/ui_registry.cpp
     src/plugins/render_service.cpp
     src/plugins/render_image_store.cpp
+    src/plugins/evaluation_store.cpp
     src/plugins/ui_catalog.cpp
     src/plugins/native_ui_catalog.cpp
     src/plugins/native_menu_snapshot.cpp
@@ -249,6 +250,31 @@ target_compile_definitions(render_image_tests PRIVATE _WIN32_WINNT=0x0601 WINVER
 target_link_options(render_image_tests PRIVATE /SUBSYSTEM:CONSOLE,6.01 /DEBUG:NONE)
 set_target_properties(render_image_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
 add_test(NAME plugin_abi_render_images COMMAND render_image_tests)
+add_executable(evaluation_store_tests EXCLUDE_FROM_ALL tests/plugins/evaluation_store_tests.cpp)
+target_link_libraries(evaluation_store_tests PRIVATE mms_plugin_runtime)
+target_include_directories(evaluation_store_tests PRIVATE src/plugins)
+target_link_options(evaluation_store_tests PRIVATE /SUBSYSTEM:CONSOLE,6.01 /DEBUG:NONE)
+set_target_properties(evaluation_store_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_test(NAME plugin_abi_evaluation_store COMMAND evaluation_store_tests)
+add_library(mms_evaluation_lifecycle_plugin SHARED EXCLUDE_FROM_ALL
+    tests/plugins/evaluation_lifecycle_plugin.cpp tests/plugins/evaluation_lifecycle_plugin.def)
+target_include_directories(mms_evaluation_lifecycle_plugin PRIVATE sdk/mms/include)
+target_compile_definitions(mms_evaluation_lifecycle_plugin PRIVATE _WIN32_WINNT=0x0601 WINVER=0x0601)
+target_link_options(mms_evaluation_lifecycle_plugin PRIVATE /SUBSYSTEM:WINDOWS,6.01 /DEBUG:NONE)
+set_target_properties(mms_evaluation_lifecycle_plugin PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_executable(evaluation_lifecycle_tests EXCLUDE_FROM_ALL tests/plugins/evaluation_lifecycle_tests.cpp)
+target_link_libraries(evaluation_lifecycle_tests PRIVATE mms_plugin_runtime)
+target_include_directories(evaluation_lifecycle_tests PRIVATE src/plugins)
+target_link_options(evaluation_lifecycle_tests PRIVATE /SUBSYSTEM:CONSOLE,6.01 /DEBUG:NONE)
+set_target_properties(evaluation_lifecycle_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_dependencies(evaluation_lifecycle_tests mms_evaluation_lifecycle_plugin)
+add_test(NAME plugin_abi_evaluation_lifecycle COMMAND evaluation_lifecycle_tests
+    "${CMAKE_BINARY_DIR}/tests/evaluation-lifecycle" "$<TARGET_FILE:mms_evaluation_lifecycle_plugin>")
+add_library(mms_evaluation_host_probe SHARED EXCLUDE_FROM_ALL tests/plugins/evaluation_host_probe.cpp)
+target_include_directories(mms_evaluation_host_probe PRIVATE sdk/mms/include)
+target_compile_definitions(mms_evaluation_host_probe PRIVATE _WIN32_WINNT=0x0601 WINVER=0x0601)
+target_link_options(mms_evaluation_host_probe PRIVATE /SUBSYSTEM:WINDOWS,6.01 /DEBUG:NONE)
+set_target_properties(mms_evaluation_host_probe PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
 set_tests_properties(plugin_abi_render_images PROPERTIES TIMEOUT 120)
 add_executable(image_canvas_tests EXCLUDE_FROM_ALL tests/plugins/image_canvas_tests.cpp)
 target_include_directories(image_canvas_tests PRIVATE sdk/mms/include)

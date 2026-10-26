@@ -13,6 +13,8 @@
 #include "mikumikustudio/build_profile.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "native_pose_scope.hpp"
+#include "evaluation_store.hpp"
+#include "mikumikustudio/bone_motion_snapshot.hpp"
 #endif
 #include <algorithm>
 #include <new>
@@ -148,6 +150,74 @@ MmsResult Capture(MMDApp* app, const MmsSceneQueryV1& query, std::shared_ptr<con
 std::shared_ptr<SceneStore> CreateSceneStore(MMDApp* app) {
     return std::make_shared<SceneStore>([app](const auto& query, auto& out) { return Capture(app, query, out); },
         [](MmsId id) { return identities.Known(id); });
+}
+std::shared_ptr<EvaluationStore> CreateEvaluationStore(MMDApp* app) {
+#if MMD_ORIGINAL_PROFILE
+    return {};
+#else
+    return std::make_shared<EvaluationStore>([app](const MmsEvaluationSourceQueryV1& query,
+        uint64_t limit, std::shared_ptr<const EvaluationData>& out) -> MmsResult {
+        if (!app || app->SceneMutationInProgress() || !app->WindowLayoutReady()) return MMS_E_NOT_READY;
+        uint64_t hostRevision = 0;
+        if (auto* history = BoundNativePoseHistory(app)) {
+            if (auto status = history->CheckNativeNavigation()) return status;
+            if (auto status = history->Revision(hostRevision)) return status;
+        }
+        const unsigned char* source = nullptr;
+        for (uint32_t kind : {MMS_OBJECT_MODEL, MMS_OBJECT_ACCESSORY}) for (uint32_t slot = 0; slot < 255; ++slot) {
+            const auto* token = Token(*app, kind, slot); if (!token) continue;
+            const auto* entry = identities.Retained(token);
+            if (!entry || !entry->present || !entry->published || !Same(entry->object.id, query.object.id)) continue;
+            if (!Same(entry->object, query.object)) return MMS_E_STALE;
+            if (kind != MMS_OBJECT_MODEL) return MMS_E_UNSUPPORTED;
+            source = static_cast<const unsigned char*>(token);
+        }
+        if (!source) return identities.Known(query.object.id) ? MMS_E_STALE : MMS_E_NOT_FOUND;
+        const auto& model = *mdl::Mdl(source);
+        if (model.boneCount && !model.boneTable) return MMS_E_NOT_READY;
+        // The callback closure and shared ownership blocks receive conservative
+        // allowances. The store separately charges its payload and ID index.
+        uint64_t bytes = sizeof(EvaluationData) + 128;
+        if (bytes > limit || model.boneCount > (limit - bytes) / sizeof(MmsEvaluationBoneV1)) return MMS_E_MEMORY;
+        auto data = std::make_shared<EvaluationData>();
+        data->object = query.object; data->hostRevision = hostRevision;
+        data->bones.resize(model.boneCount);
+        if (data->bones.capacity() > (limit - bytes) / sizeof(MmsEvaluationBoneV1)) return MMS_E_MEMORY;
+        bytes += data->bones.capacity() * sizeof(MmsEvaluationBoneV1);
+        std::shared_ptr<BoneMotionSnapshot> motion;
+        try { motion = BoneMotionSnapshot::Capture(source, limit - bytes); }
+        catch (const std::length_error&) { return MMS_E_MEMORY; }
+        if (motion->RetainedBytes() > limit - bytes) return MMS_E_MEMORY;
+        data->retainedBytes = bytes + motion->RetainedBytes();
+        for (unsigned i = 0; i < model.boneCount; ++i) {
+            const auto& bone = model.boneTable[i]; auto& target = data->bones[i];
+            target.h = Header<MmsEvaluationBoneV1>();
+            target.id = identities.Element(source, MMS_CHANNEL_BONES, i);
+            if (bone.slotIndex >= 0) target.flags |= MMS_EVALUATION_BONE_EXTERNAL_PARENT;
+            if (unsigned(bone.type) > unsigned(mdl::BoneType::Effector) && bone.type != mdl::BoneType::FixedAxis)
+                target.flags |= MMS_EVALUATION_BONE_DERIVED;
+            if (!target.flags) target.flags = MMS_EVALUATION_BONE_LOCAL;
+        }
+        data->sample = [motion = std::move(motion)](uint32_t bone, double frame, MmsBoneChannelsV1& out) {
+            BoneMotionSample sample;
+            switch (motion->SampleChannels(int(bone), frame, sample)) {
+            case BoneMotionStatus::InvalidBone: return MMS_E_NOT_FOUND;
+            case BoneMotionStatus::InvalidTime: return MMS_E_ARGUMENT;
+            case BoneMotionStatus::ExternalParent:
+            case BoneMotionStatus::UnsupportedBone: return MMS_E_UNSUPPORTED;
+            case BoneMotionStatus::InvalidSample: return MMS_E_FAILED;
+            case BoneMotionStatus::Ok: break;
+            }
+            MmsBoneChannelsV1 value{}; value.h = Header<MmsBoneChannelsV1>();
+            std::copy(sample.position.begin(), sample.position.end(), value.position);
+            std::copy(sample.rotation.begin(), sample.rotation.end(), value.rotation);
+            std::copy(sample.scale.v.begin(), sample.scale.v.end(), value.scale);
+            value.flags = sample.physicsDisabled ? MMS_EVALUATION_PHYSICS_DISABLED : 0;
+            out = value; return MMS_OK;
+        };
+        out = std::move(data); return MMS_OK;
+    });
+#endif
 }
 void ForgetSceneObject(const void* token) {
     if (build_profile::original) {

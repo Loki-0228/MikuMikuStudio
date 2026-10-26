@@ -2,6 +2,8 @@
 
 本 SDK 为 Windows x64 C ABI 1.0。宿主将 `MmsHostV1` 传给插件，插件只通过函数表访问服务。主 EXE 改名不影响入口解析。插件无需链接宿主、MMSAdapter 或 MMHack 的导入库。
 
+[`mms.scene.evaluate` 1.0](evaluation.md) 提供冻结的已注册局部骨骼通道，支持后台按时间采样、独立源租约和内存额度。它不移动主播放头；完整场景帧、IK、物理及原始兼容配置的求值服务尚未开放。
+
 基础 UI 的类型化与声明式封装已提供，见 [C++17 界面注册 SDK](cpp-ui.md)。`UiServices`、`RegistrationBundle` 和 `CommandUi` 包装同一套 C ABI，复杂插件继续操作原始句柄。
 
 [自动刷新订阅](refresh-subscriptions.md)为已有 DATA binding 安排来源发布后的刷新，复用原对象、队列和阶段。C++17 `RefreshSubscriptionServices` 包装同一 C 服务。[原创计数示例](examples/auto_refresh/plugin.cpp)展示延迟绑定、数据发布与按钮状态更新。

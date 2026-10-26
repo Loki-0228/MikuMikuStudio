@@ -7,7 +7,9 @@ class MMDApp;
 namespace pmm_extension { struct Document; }
 namespace plugins {
 class SceneStore;
+class EvaluationStore;
 std::shared_ptr<SceneStore> CreateSceneStore(MMDApp*);
+std::shared_ptr<EvaluationStore> CreateEvaluationStore(MMDApp*);
 void ForgetSceneObject(const void*);
 MmsObjectRef SceneObjectIdentity(const void*);
 // Inspect an existing live identity without creating one or allocating.

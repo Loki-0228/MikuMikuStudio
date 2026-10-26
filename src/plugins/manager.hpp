@@ -7,13 +7,15 @@
 
 namespace mikumikustudio::plugins {
 class EditHost;
+class EvaluationStore;
 struct PluginStatus { std::string id, stage, error; fs::path package; };
 class Manager {
     struct Impl;
     std::unique_ptr<Impl> impl_;
 public:
     Manager(fs::path userRoot, Log log, std::function<void()> uiChanged = {}, bool forceFallback = false,
-        std::shared_ptr<SceneStore> scene = {}, bool unifiedSettings = false);
+        std::shared_ptr<SceneStore> scene = {}, bool unifiedSettings = false,
+        std::shared_ptr<EvaluationStore> evaluations = {});
     ~Manager();
     Manager(const Manager&) = delete;
     Manager& operator=(const Manager&) = delete;

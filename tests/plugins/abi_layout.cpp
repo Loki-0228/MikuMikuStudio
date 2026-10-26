@@ -209,3 +209,26 @@ static_assert(MMS_UI_PROPERTY_REFRESH_WAIT_DISPLAY_CAPACITY == 128u, "property W
 static_assert(std::is_same<decltype(((MmsUiPropertyRefreshApiV1_1*)nullptr)->getScopedCapabilities), MmsResult (MMS_CALL *)(void*, MmsUiPropertyRefreshScopedCapabilitiesV1*)>::value, "scoped property getScopedCapabilities exact signature");
 static_assert(std::is_same<decltype(((MmsUiPropertyRefreshApiV1_1*)nullptr)->subscribeScoped), MmsResult (MMS_CALL *)(void*, const MmsUiPropertyRefreshScopedSubscriptionDescV1*, MmsHandle*)>::value, "scoped property subscribeScoped exact signature");
 static_assert(std::is_same<decltype(((MmsUiPropertyRefreshApiV1_1*)nullptr)->queryScoped), MmsResult (MMS_CALL *)(void*, MmsHandle, MmsUiPropertyRefreshScopedSubscriptionStateV1*)>::value, "scoped property queryScoped exact signature");
+
+#include <mms/evaluation.h>
+static_assert(sizeof(MmsEvaluationCapsV1) == 40, "MmsEvaluationCapsV1 layout");
+static_assert(std::is_standard_layout<MmsEvaluationCapsV1>::value && std::is_trivially_copyable<MmsEvaluationCapsV1>::value, "MmsEvaluationCapsV1 POD");
+static_assert(sizeof(MmsEvaluationSourceQueryV1) == 48, "MmsEvaluationSourceQueryV1 layout");
+static_assert(std::is_standard_layout<MmsEvaluationSourceQueryV1>::value && std::is_trivially_copyable<MmsEvaluationSourceQueryV1>::value, "MmsEvaluationSourceQueryV1 POD");
+static_assert(sizeof(MmsEvaluationSourceInfoV1) == 64, "MmsEvaluationSourceInfoV1 layout");
+static_assert(std::is_standard_layout<MmsEvaluationSourceInfoV1>::value && std::is_trivially_copyable<MmsEvaluationSourceInfoV1>::value, "MmsEvaluationSourceInfoV1 POD");
+static_assert(sizeof(MmsEvaluationBoneV1) == 32, "MmsEvaluationBoneV1 layout");
+static_assert(std::is_standard_layout<MmsEvaluationBoneV1>::value && std::is_trivially_copyable<MmsEvaluationBoneV1>::value, "MmsEvaluationBoneV1 POD");
+static_assert(sizeof(MmsBoneChannelsV1) == 80, "MmsBoneChannelsV1 layout");
+static_assert(std::is_standard_layout<MmsBoneChannelsV1>::value && std::is_trivially_copyable<MmsBoneChannelsV1>::value, "MmsBoneChannelsV1 POD");
+static_assert(sizeof(MmsEvaluationApiV1) == 72, "MmsEvaluationApiV1 layout");
+static_assert(std::is_standard_layout<MmsEvaluationApiV1>::value && std::is_trivially_copyable<MmsEvaluationApiV1>::value, "MmsEvaluationApiV1 POD");
+static_assert(offsetof(MmsEvaluationApiV1, context) == 8, "evaluation context offset");
+static_assert(offsetof(MmsEvaluationApiV1, getCapabilities) == 16, "evaluation getCapabilities offset");
+static_assert(offsetof(MmsEvaluationApiV1, createSource) == 24, "evaluation createSource offset");
+static_assert(offsetof(MmsEvaluationApiV1, describeSource) == 32, "evaluation describeSource offset");
+static_assert(offsetof(MmsEvaluationApiV1, boneAt) == 40, "evaluation boneAt offset");
+static_assert(offsetof(MmsEvaluationApiV1, sampleBone) == 48, "evaluation sampleBone offset");
+static_assert(offsetof(MmsEvaluationApiV1, retain) == 56, "evaluation retain offset");
+static_assert(offsetof(MmsEvaluationApiV1, release) == 64, "evaluation release offset");
+static_assert(std::is_same<decltype(MmsEvaluationApiV1::sampleBone), MmsResult (MMS_CALL *)(void*, MmsHandle, MmsId, MmsTime, MmsBoneChannelsV1*)>::value, "evaluation sample signature");

@@ -16,7 +16,9 @@
 
 独立求值的前置修复见[离线曲线复制记录](records/abi-detached-curve-copy-2026-10-26.md)：骨骼自由曲线在私有候选中同步，复制不再修改源作者，失败保留目标。现有 `physics_bake::ModelCopy` 仍借用源运动关键帧及表情载荷，仅适用于当前同步调用期，不能作为跨线程或源模型删除后仍有效的场景源。
 
-内部 [BoneMotionSnapshot](records/abi-frozen-bone-motion-2026-10-27.md) 已冻结可达原生关键帧、尺度和自由曲线，支持源删除后的并发非负时间采样。它输出模拟前的骨骼动作通道，对外部父级及不支持的派生类型明确拒绝，尚未公开为插件 C ABI。下一步需绑定稳定场景身份、修订及租约，并补表情、显示、层级及约束求值。负帧、动作层和物理仍须独立实现和验收。局部通道不能冒充 `ANIMATED` 世界矩阵或 `PHYSICS` 阶段；所有帧租约必须保持主播放头、编辑姿态及历史不变。
+内部 [BoneMotionSnapshot](records/abi-frozen-bone-motion-2026-10-27.md) 已冻结可达原生关键帧、尺度和自由曲线，支持源删除后的并发非负时间采样。[`mms.scene.evaluate` 1.0](../sdk/mms/evaluation.md) 已将这些通道通过 C ABI 暴露，绑定原场景对象及骨骼身份，提供有额度限制的独立源租约。`captureId` 区分每次捕获，`hostRevision` 仅作历史元数据，不能当作动作内容版本。
+
+该服务只输出模拟前的已注册局部骨骼动作通道，对外部父级及不支持的派生类型明确拒绝；不包含未注册编辑姿态。完整场景源、实例、帧租约、表情、显示、层级及约束求值仍待实现。负帧、动作层和物理仍须独立实现和验收。局部通道不能冒充 `ANIMATED` 世界矩阵或 `PHYSICS` 阶段；采样须保持主播放头、编辑姿态及历史不变。原始兼容产品配置尚未开放此求值服务。
 
 | 代码入口 | 已有范围与限制 |
 | --- | --- |
@@ -25,6 +27,7 @@
 | `sdk/mms/include/mms/scene.h` | 定义对象、网格、材质、纹理描述、骨骼及各求值阶段。定义阶段枚举不等于宿主已经提供对应结果。 |
 | `src/plugins/scene_host.cpp::Capture` | 当前只发布 `MMS_STAGE_BIND`。请求其他阶段或其他时间会拒绝，不临时移动主播放头。 |
 | `src/plugins/scene_store.cpp` | UI 线程获取快照，冻结后用租约保留数据。读取与释放可在其他线程执行，数据不暴露原生模型指针。 |
+| `sdk/mms/include/mms/evaluation.h` | `mms.scene.evaluate` 1.0：安全点捕获不可变骨骼动作源，后台按有理数秒读取局部通道；修改、删除及工程切换不改变旧源。未提供完整求值帧。 |
 | `sdk/mms/include/mms/surface.h` | 支持插件子窗口与多视图工厂。`MMS_SURFACE_MULTIPLE_VIEWS` 不代表多个独立 3D 渲染上下文。 |
 | `src/render/frame_scene.cpp::RenderFrameScene` | 依赖活动 `MMDApp`、DX9 设备和每帧缓存，也会更新变形、效果和叠加层。不能直接当作无副作用的任意视口函数。 |
 | `src/render/frame_presentation.cpp`、`viewport_render_scale.cpp` | 已区分部分场景图像与界面呈现，并支持预览缩放。渲染目标仍按 `MMDApp*` 保存。 |
