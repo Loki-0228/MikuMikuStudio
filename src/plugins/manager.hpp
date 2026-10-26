@@ -43,6 +43,18 @@ public:
     // Trusted SharedHistory publication signal. Records a scalar revision and
     // posts the existing refresh dispatcher; never reads plugins or edits UI.
     void NotifyHistoryPublication(uint64_t) noexcept;
+    // Internal host-integration device notifications; not part of the C ABI.
+    // RecordDevice* are UI-thread scalar updates: no dispatch, no allocation. A
+    // rejected generation changes nothing. Repeated loss state with the same
+    // generation is ignored, so a burst of loss/restore keeps only the latest
+    // loss and the current availability. FlushDeviceEvents dispatches at the
+    // same safe boundary as Event and additionally requires Render to have no
+    // lease drain pending. False leaves the batch pending for a retry; a device
+    // state change between callbacks abandons the stale remainder.
+    void RecordDeviceLost(uint64_t) noexcept;
+    void RecordDeviceRestored(uint64_t) noexcept;
+    bool DeviceEventsPending() const noexcept;
+    bool FlushDeviceEvents() noexcept;
     bool Stop();
     void Event(uint32_t kind, MmsBytes payload = {}, uint32_t version = 0,
                MmsObjectRef object = {});

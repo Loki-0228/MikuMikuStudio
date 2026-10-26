@@ -584,6 +584,10 @@ void FrameDriver(MMDApp* app) {
     if (app->SceneMutationInProgress())
         return;
     plugins::PluginFrameBegin(app);
+    // A device event delivered at the frame boundary can pump a resize message.
+    // Its Reset is deferred until the plugin callback returns; do not evaluate
+    // or redraw this frame before that recovery is completed.
+    if (device_lost_wait::Pending(app)) return;
     if (updates::RepaintOnly()) {
         // Reconstruct a discarded backbuffer from the current pose. Exposure
         // does not consume input, advance playback, step physics or read back

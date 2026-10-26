@@ -29,8 +29,11 @@ IDirect3DDevice9* device=nullptr;
 MmsRenderApiV1 render{};
 bool armed=false, failReset=false, inOrdinaryCallback=false;
 unsigned resets=0;
+unsigned begins=0;
 using Reset=HRESULT(WINAPI*)(IDirect3DDevice9*,D3DPRESENT_PARAMETERS*);
 Reset originalReset=nullptr;
+using Begin=HRESULT(WINAPI*)(IDirect3DDevice9*);
+Begin originalBegin=nullptr;
 decltype(&ShowWindow) originalShow=nullptr;
 decltype(&IsWindowVisible) originalVisible=nullptr;
 decltype(&GetKeyState) originalKey=nullptr;
@@ -38,9 +41,15 @@ decltype(&GetAsyncKeyState) originalAsyncKey=nullptr;
 decltype(&GetKeyboardState) originalKeyboard=nullptr;
 decltype(&GetForegroundWindow) originalForeground=nullptr;
 decltype(&GetFocus) originalFocus=nullptr;
+decltype(&PostMessageW) originalPost=nullptr;
+decltype(&SetTimer) originalTimer=nullptr;
+bool failDevicePost=false,failDeviceTimer=false;
+unsigned deniedPosts=0,deniedTimers=0;
 using HookCallback=void(MMS_CALL*)(void*);
 using SetProbe=void(MMS_CALL*)(HookCallback,void*);
 using GetRenderApi=MmsResult(MMS_CALL*)(MmsRenderApiV1*);
+using DeviceEventHook=bool(MMS_CALL*)(void*,const MmsEventV1*);
+using SetDeviceEventHook=void(MMS_CALL*)(DeviceEventHook,void*);
 
 void Check(bool value,const char* text) {
     ++checks;
@@ -59,6 +68,14 @@ SHORT WINAPI AsyncKey(int key) {return armed?0:originalAsyncKey(key);}
 BOOL WINAPI Keyboard(PBYTE state) {if(armed){std::memset(state,0,256);return TRUE;}return originalKeyboard(state);}
 HWND WINAPI Foreground() {return armed?nullptr:originalForeground();}
 HWND WINAPI Focus() {return armed?nullptr:originalFocus();}
+BOOL WINAPI Post(HWND window,UINT message,WPARAM wp,LPARAM lp) {
+    if(failDevicePost&&app&&window==app->MainWindow()&&message==WM_APP+0x6b){++deniedPosts;return FALSE;}
+    return originalPost(window,message,wp,lp);
+}
+UINT_PTR WINAPI Timer(HWND window,UINT_PTR id,UINT delay,TIMERPROC callback) {
+    if(failDeviceTimer&&app&&window==app->MainWindow()&&id==0x4d4d536b){++deniedTimers;return 0;}
+    return originalTimer(window,id,delay,callback);
+}
 int WINAPI UnexpectedA(HWND,LPCSTR text,LPCSTR,UINT) {std::fprintf(stderr,"FAIL unexpected dialog: %s\n",text);std::exit(2);}
 int WINAPI UnexpectedW(HWND,LPCWSTR text,LPCWSTR,UINT) {std::fwprintf(stderr,L"FAIL unexpected dialog: %ls\n",text);std::exit(2);}
 
@@ -98,6 +115,10 @@ HRESULT WINAPI OnReset(IDirect3DDevice9* current,D3DPRESENT_PARAMETERS* paramete
         if(failReset)return D3DERR_INVALIDCALL;
     }
     return originalReset(current,parameters);
+}
+HRESULT WINAPI OnBegin(IDirect3DDevice9* current) {
+    if(armed&&current==device)++begins;
+    return originalBegin(current);
 }
 void Pump() {
     MSG msg{};for(unsigned n=0;n<256&&PeekMessageW(&msg,nullptr,0,0,PM_REMOVE);++n){TranslateMessage(&msg);DispatchMessageW(&msg);}
@@ -146,6 +167,22 @@ void WaitForEvent(ReentryProbe& probe) {
         if(PeekMessageW(&msg,nullptr,0,0,PM_REMOVE)){TranslateMessage(&msg);DispatchMessageW(&msg);}else Sleep(2);
     }
 }
+struct DeviceNotices { unsigned losses=0,restores=0;uint64_t lostGeneration=0,restoredGeneration=0;bool invalid=false; };
+bool MMS_CALL Notice(void* context,const MmsEventV1* event) {
+    auto& p=*static_cast<DeviceNotices*>(context);
+    if(!event||event->payloadVersion!=1||event->payload.bytes!=sizeof(MmsDeviceEventV1)||!event->payload.data){p.invalid=true;return true;}
+    const auto generation=static_cast<const MmsDeviceEventV1*>(event->payload.data)->deviceGeneration;
+    if(event->kind==MMS_EVENT_DEVICE_LOST){++p.losses;p.lostGeneration=generation;}
+    else if(event->kind==MMS_EVENT_DEVICE_RESTORED){++p.restores;p.restoredGeneration=generation;}
+    else p.invalid=true;
+    return true;
+}
+struct ResetOnRestore { bool called=false,result=true; };
+bool MMS_CALL ResetFromNotice(void* context,const MmsEventV1* event) {
+    auto& p=*static_cast<ResetOnRestore*>(context);
+    if(event->kind==MMS_EVENT_DEVICE_RESTORED&&!p.called){p.called=true;p.result=PostDeviceReset(app);}
+    return true;
+}
 }
 
 int wmain(int argc,wchar_t** argv) {
@@ -167,6 +204,7 @@ int wmain(int argc,wchar_t** argv) {
         Hook(&GetKeyState,&Key,&originalKey);Hook(&GetAsyncKeyState,&AsyncKey,&originalAsyncKey);
         Hook(&GetKeyboardState,&Keyboard,&originalKeyboard);
         Hook(&GetForegroundWindow,&Foreground,&originalForeground);Hook(&GetFocus,&Focus,&originalFocus);
+        Hook(&PostMessageW,&Post,&originalPost);Hook(&SetTimer,&Timer,&originalTimer);
         auto owned=std::make_unique<MMDApp>();app=owned.get();g_Block=app;
         app->state=MMDAppState{};app->InitDefaults();
         Check(InitMainWindowAndD3D(app,GetModuleHandleW(nullptr),SW_HIDE),"initialize hidden production host");
@@ -183,6 +221,7 @@ int wmain(int argc,wchar_t** argv) {
         Check(getApi&&setProbe,"test-only API and ordinary event hook available");
         Check(getApi(&render)==MMS_OK&&render.query&&render.acquireLease&&render.releaseLease,"get loaded plugin render API");
         auto** vtable=*reinterpret_cast<void***>(device);Hook(reinterpret_cast<Reset>(vtable[16]),&OnReset,&originalReset);
+        Hook(reinterpret_cast<Begin>(vtable[41]),&OnBegin,&originalBegin);
 
         AcquireResource();auto before=Info();unsigned oldResets=resets;
         Check(PostDeviceReset(app),"normal PostDeviceReset succeeds with leased default-pool texture");
@@ -264,6 +303,40 @@ int wmain(int argc,wchar_t** argv) {
         Check(render.releaseLease(render.context,resource.lease)==MMS_OK,"explicit lease cancellation succeeds after recovery");
         resource.lease=0;resource.texture->Release();resource.texture=nullptr;
         Check(resource.releases==0,"explicit cancellation does not invoke release callback");
+
+        auto setNotice=reinterpret_cast<SetDeviceEventHook>(GetProcAddress(module,"MmsTestSetDeviceEventHook"));
+        Check(setNotice!=nullptr,"test device notification observer available");
+        DeviceNotices notices;setNotice(Notice,&notices);before=Info();
+        failDevicePost=true;
+        plugins::PluginNotifyDeviceLost(app);plugins::PluginNotifyDeviceRestored(app);
+        Check(deniedPosts>=2&&!notices.losses&&!notices.restores,"failed posts retain device notices without synchronous dispatch");
+        const auto noticeDeadline=GetTickCount64()+3000;
+        while(!notices.restores&&GetTickCount64()<noticeDeadline){Pump();Sleep(2);}
+        Check(notices.losses==1&&notices.restores==1&&!notices.invalid&&
+            notices.lostGeneration==before.deviceGeneration&&notices.restoredGeneration==before.deviceGeneration+1,
+            "retry timer delivers loss and current restoration after PostMessage failure");
+        Pump();Check(notices.losses==1&&notices.restores==1,"retry timer does not duplicate completed notices");
+
+        notices={};before=Info();failDeviceTimer=true;
+        plugins::PluginNotifyDeviceLost(app);plugins::PluginNotifyDeviceRestored(app);
+        Check(deniedTimers>=2&&!notices.losses&&!notices.restores,"post and timer failures preserve notices until next safe frame");
+        plugins::PluginFrameBegin(app);
+        Check(notices.losses==1&&notices.restores==1&&!notices.invalid&&notices.restoredGeneration==before.deviceGeneration+1,
+            "frame boundary delivers retained device notices after both wake mechanisms fail");
+        failDevicePost=failDeviceTimer=false;setNotice(nullptr,nullptr);
+
+        const auto beforeBaseline=begins;Frame();
+        Check(begins>beforeBaseline,"ordinary frame reaches actual BeginScene before fallback regression");
+        ResetOnRestore resetFromNotice;setNotice(ResetFromNotice,&resetFromNotice);
+        failDevicePost=failDeviceTimer=true;
+        plugins::PluginNotifyDeviceLost(app);plugins::PluginNotifyDeviceRestored(app);
+        const auto beforeBlocked=begins;oldResets=resets;
+        Frame();
+        Check(resetFromNotice.called&&!resetFromNotice.result,"frame fallback delivers restore callback that requests deferred Reset");
+        Check(begins==beforeBlocked&&resets==oldResets&&device_lost_wait::Pending(app),
+            "frame stops before drawing when delivered callback creates pending recovery");
+        failDevicePost=failDeviceTimer=false;setNotice(nullptr,nullptr);
+        Check(PostDeviceReset(app),"deferred frame-boundary reset can recover normally");
 
         armed=false;updates::Shutdown(app);plugins::Shutdown();ShutdownCleanup(app);
         g_Block=nullptr;app->Hwnd()=nullptr;app->MainWindow()=nullptr;app=nullptr;device=nullptr;render={};

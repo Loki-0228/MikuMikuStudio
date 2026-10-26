@@ -23,6 +23,10 @@ struct Manager::Impl {
         void* instance = nullptr;
         LoadedPackage code;
         bool started = false, stopFailed = false;
+        // Last device notification this plugin was given. RecordDevice* never
+        // touches these; only FlushDeviceEvents advances a cursor, right before
+        // the matching onEvent call, so an exception still counts as attempted.
+        uint64_t deviceLossEpoch = 0, deviceRestoredGeneration = 0;
         std::vector<std::string> dependencies;
     };
     struct Task {
@@ -103,6 +107,13 @@ struct Manager::Impl {
     HWND wake = nullptr;
     bool closing = false, draining = false, sending = false;
     unsigned active = 0;
+    // Device state notification bookkeeping. Recording only updates these
+    // scalars; FlushDeviceEvents is the sole dispatcher. lossEpoch identifies one
+    // accepted loss so each instance is notified once, while revision abandons a
+    // batch whose remaining notifications went stale.
+    uint64_t latestLossGeneration = 0, lossEpoch = 0, currentGeneration = 0;
+    uint64_t deviceEventRevision = 0;
+    bool deviceLost = false, deviceEventsPending = false;
     static constexpr UINT kDrain = WM_APP + 1;
     static constexpr UINT kRefreshDrain = WM_APP + 2;
     static constexpr UINT_PTR kTaskRetry = 0x4d4d5371;
@@ -542,6 +553,90 @@ struct Manager::Impl {
             if (r) Write(i->ui.id + ": event callback failed");
         }
     }
+    void RecordDeviceLost(uint64_t generation) noexcept {
+        if (!generation) return;
+        // A repeated report of the same loss must not create a second epoch.
+        if (deviceLost && latestLossGeneration == generation) return;
+        deviceLost = true;
+        latestLossGeneration = generation;
+        currentGeneration = generation;
+        ++lossEpoch;
+        ++deviceEventRevision;
+        deviceEventsPending = true;
+    }
+    void RecordDeviceRestored(uint64_t generation) noexcept {
+        // A restore without a recorded loss, or with generation zero, is not a
+        // valid device sequence and creates no notification.
+        if (!generation || !deviceLost) return;
+        deviceLost = false;
+        currentGeneration = generation;
+        ++deviceEventRevision;
+        deviceEventsPending = true;
+    }
+    bool DeviceEventsPending() const noexcept { return deviceEventsPending; }
+    bool FlushDeviceEvents() noexcept {
+        if (!deviceEventsPending) return true;
+        // Same safe dispatch boundary as Event, plus Render must have no pending
+        // lease drain: a plugin may only reacquire resources after the loss was
+        // released outside a callback.
+        if (GetCurrentThreadId() != thread || sending || active || render.InCallback() || registry.InCallback() ||
+            storage.InCallback() || storage.Prepared() || (edits && edits->InCallback()) ||
+            render.DeviceLossPending()) return false;
+        sending = true;
+        struct Guard { bool& value; ~Guard() { value = false; } } guard{sending};
+        // Snapshot scalars only; the instance list is walked in place so a batch
+        // never allocates. A RecordDevice* call from inside a callback bumps the
+        // revision, abandoning the rest of this batch instead of delivering an
+        // older RESTORED after a newer LOST.
+        const uint64_t revision = deviceEventRevision;
+        const uint64_t epoch = lossEpoch, lossGeneration = latestLossGeneration;
+        const uint64_t generation = currentGeneration;
+        const bool available = !deviceLost;
+        for (const auto& instance : instances) {
+            auto& i = *instance;
+            if (!i.started || i.stopping || i.deviceLossEpoch == epoch) continue;
+            if (deviceEventRevision != revision) return false;
+            MmsDeviceEventV1 payload{Header<MmsDeviceEventV1>(), lossGeneration, 0, 0};
+            MmsEventV1 event{};
+            event.h = Header<MmsEventV1>();
+            event.kind = MMS_EVENT_DEVICE_LOST;
+            event.payloadVersion = 1;
+            event.sequence = sequence++;
+            event.payload = {&payload, sizeof(payload)};
+            // Commit first: an exception still counts as attempted, and a later
+            // flush must not repeat this epoch for the same plugin.
+            i.deviceLossEpoch = epoch;
+            ++active;
+            const auto result = Boundary([&] { i.api.onEvent(i.instance, &event); return MMS_OK; });
+            --active;
+            // A log allocation failure must not interrupt delivery to the rest.
+            if (result) try { Write(i.ui.id + ": device lost event callback failed"); } catch (...) {}
+        }
+        if (deviceEventRevision != revision) return false;
+        if (!available) { deviceEventsPending = false; return true; }
+        // Every instance was offered the loss above; only now deliver the restore
+        // to the ones that have not seen this generation yet.
+        for (const auto& instance : instances) {
+            auto& i = *instance;
+            if (!i.started || i.stopping || i.deviceRestoredGeneration == generation) continue;
+            if (deviceEventRevision != revision) return false;
+            MmsDeviceEventV1 payload{Header<MmsDeviceEventV1>(), generation, 0, 0};
+            MmsEventV1 event{};
+            event.h = Header<MmsEventV1>();
+            event.kind = MMS_EVENT_DEVICE_RESTORED;
+            event.payloadVersion = 1;
+            event.sequence = sequence++;
+            event.payload = {&payload, sizeof(payload)};
+            i.deviceRestoredGeneration = generation;
+            ++active;
+            const auto result = Boundary([&] { i.api.onEvent(i.instance, &event); return MMS_OK; });
+            --active;
+            if (result) try { Write(i.ui.id + ": device restored event callback failed"); } catch (...) {}
+        }
+        if (deviceEventRevision != revision) return false;
+        deviceEventsPending = false;
+        return true;
+    }
     void BroadcastPropertyChanged(const std::string& id, uint64_t revision) {
         if (id.empty() || !revision) return;
         MmsPropertyEventV1 payload{Header<MmsPropertyEventV1>(), {id.data(), id.size()}, {}, revision};
@@ -693,6 +788,10 @@ void Manager::NotifyHistoryPublication(uint64_t revision) noexcept {
     properties.NotifyHistory(revision);
     properties.HistoryWakeResult(PostMessageW(impl_->wake, Impl::kRefreshDrain, 0, 0) != FALSE);
 }
+void Manager::RecordDeviceLost(uint64_t generation) noexcept { impl_->RecordDeviceLost(generation); }
+void Manager::RecordDeviceRestored(uint64_t generation) noexcept { impl_->RecordDeviceRestored(generation); }
+bool Manager::DeviceEventsPending() const noexcept { return impl_->DeviceEventsPending(); }
+bool Manager::FlushDeviceEvents() noexcept { return impl_->FlushDeviceEvents(); }
 MmsResult Manager::AttachEditHost(EditHost& host) noexcept { return Boundary([&] { return impl_->AttachEditHost(host); }); }
 MmsResult Manager::DetachEditHost() noexcept { return Boundary([&] { return impl_->DetachEditHost(); }); }
 void Manager::SetEditPublished(std::function<void()> callback) {

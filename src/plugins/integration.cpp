@@ -174,20 +174,27 @@ bool FlushDeviceLoss(MMDApp* app) {
     if (closing || manager->InCallback()) return false;
     return manager->Render().FlushDeviceLost();
 }
+bool DeviceWorkPending() {
+    return manager && (manager->Render().DeviceLossPending() || manager->DeviceEventsPending());
+}
+void WakeDeviceWork(MMDApp* app) {
+    if (!manager || owner != app || closing || !DeviceWorkPending()) return;
+    if (!PostMessageW(app->MainWindow(), kProjectEvent, 0, 0))
+        SetTimer(app->MainWindow(), kProjectRetry, 16, nullptr);
+}
+bool FlushDeviceWork(MMDApp* app) {
+    if (!FlushDeviceLoss(app)) return false;
+    return !manager || owner != app || manager->FlushDeviceEvents();
+}
 void NotifyDeviceLostEvent(MMDApp* app) {
     if (!manager || owner != app || closing) return;
     if (!deviceLost) {
         deviceLost = true;
         manager->Render().MarkDeviceLost(deviceGeneration);
-        MmsDeviceEventV1 payload{Header<MmsDeviceEventV1>(), deviceGeneration, 0, 0};
-        QueueBusinessEvent(app, MMS_EVENT_DEVICE_LOST, 1, &payload, sizeof(payload));
+        manager->RecordDeviceLost(deviceGeneration);
     }
-    if (!FlushDeviceLoss(app) && manager->Render().DeviceLossPending()) {
-        // The release obligation is independent of event allocation/delivery.
-        // A modal callback may consume the posted wake; the timer retries later.
-        if (!PostMessageW(app->MainWindow(), kProjectEvent, 0, 0))
-            SetTimer(app->MainWindow(), kProjectRetry, 16, nullptr);
-    }
+    FlushDeviceLoss(app);
+    WakeDeviceWork(app);
 }
 void NotifyDeviceRestoredEvent(MMDApp* app) {
     if (!manager || owner != app || closing || !deviceLost || manager->InCallback() ||
@@ -195,8 +202,8 @@ void NotifyDeviceRestoredEvent(MMDApp* app) {
     ++deviceGeneration;
     manager->Render().DeviceRestored(deviceGeneration);
     deviceLost = false;
-    MmsDeviceEventV1 payload{Header<MmsDeviceEventV1>(), deviceGeneration, 0, 0};
-    QueueBusinessEvent(app, MMS_EVENT_DEVICE_RESTORED, 1, &payload, sizeof(payload));
+    manager->RecordDeviceRestored(deviceGeneration);
+    WakeDeviceWork(app);
 }
 void NotifyObjectRemovedEvent(MMDApp* app, const void* native) {
     if (!manager || owner != app || !native) return;
@@ -230,7 +237,7 @@ LRESULT CALLBACK Subclass(HWND hwnd, UINT message, WPARAM wp, LPARAM lp, UINT_PT
     }
     if (message == kProjectEvent || (message == WM_TIMER && wp == kProjectRetry)) {
         KillTimer(hwnd,kProjectRetry);
-        if(manager && !closing && !manager->InCallback() && owner && owner->WindowLayoutReady() && !owner->SceneMutationInProgress() && FlushDeviceLoss(owner)) {
+        if(manager && !closing && !manager->InCallback() && owner && owner->WindowLayoutReady() && !owner->SceneMutationInProgress() && FlushDeviceWork(owner)) {
             auto remaining=projectEvents.size();
             while(remaining-- && !projectEvents.empty()) {
                 auto event=std::move(projectEvents.front());projectEvents.pop_front();
@@ -239,14 +246,14 @@ LRESULT CALLBACK Subclass(HWND hwnd, UINT message, WPARAM wp, LPARAM lp, UINT_PT
             }
             remaining=businessEvents.size();
             while(remaining-- && !businessEvents.empty()) {
-                if (!FlushDeviceLoss(owner)) break;
+                if (!FlushDeviceWork(owner)) break;
                 auto event=std::move(businessEvents.front());businessEvents.pop_front();
                 manager->Event(event.kind,
                     {event.bytes.empty()?nullptr:static_cast<void*>(event.bytes.data()),event.bytes.size()},
                     event.version, event.object);
             }
         } else if(owner && !closing && (!projectEvents.empty() || !businessEvents.empty() ||
-            (manager && manager->Render().DeviceLossPending())))
+            DeviceWorkPending()))
             SetTimer(hwnd,kProjectRetry,16,nullptr);
         return 0;
     }
@@ -266,7 +273,7 @@ void PluginNotifyObjectRemoved(MMDApp* app, const void* native) { NotifyObjectRe
 void PluginNotifyDpiChanged(MMDApp* app, unsigned dpi) { NotifyDpiChangedEvent(app, dpi); }
 void PluginFrameBegin(MMDApp* app) {
     if (!manager || !app || owner != app || manager->InCallback()) return;
-    if (!FlushDeviceLoss(app)) return;
+    if (!FlushDeviceWork(app)) { WakeDeviceWork(app); return; }
     manager->Render().FrameBegin();
 }
 void PluginFrameEnd(MMDApp* app) {
