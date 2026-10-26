@@ -924,6 +924,12 @@ int main(int argc,char** argv){
         run("NativeAccessoryRegistrationChecks",NativeAccessoryRegistrationChecks);
         std::printf("PASS native global registration: %u checks\n",checks);return 0;
     }
+    if(argc==2&&!std::strcmp(argv[1],"--display-motion-only")) {
+        run("NativeDisplayKeyChecks",NativeDisplayKeyChecks);
+        run("NativeDisplayRegistrationChecks",NativeDisplayRegistrationChecks);
+        run("NativeDisplayPasteChecks",NativeDisplayPasteChecks);
+        std::printf("PASS native display motion: %u checks\n",checks);return 0;
+    }
     if(argc==2&&!std::strcmp(argv[1],"--registration-only")) {
         run("NativeMorphRegistrationChecks",NativeMorphRegistrationChecks);
         run("NativeDisplayRegistrationChecks",NativeDisplayRegistrationChecks);

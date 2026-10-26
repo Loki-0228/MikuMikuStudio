@@ -7,7 +7,10 @@ import shutil
 import subprocess
 import sys
 
-binary, model, output = [Path(value).resolve() for value in sys.argv[1:]]
+binary, model, output = [Path(value).resolve() for value in sys.argv[1:4]]
+mode = sys.argv[4] if len(sys.argv) == 5 else '--morph-sampling-only'
+if len(sys.argv) not in (4, 5) or mode not in ('--morph-sampling-only', '--display-sampling-only'):
+    raise ValueError('expected binary model output [--display-sampling-only]')
 output.mkdir(exist_ok=False)
 for name in ('data', 'temp', 'local', 'PLUGINS'):
     (output / name).mkdir()
@@ -19,7 +22,7 @@ env = dict(os.environ, TEMP=str(output/'temp'), TMP=str(output/'temp'),
 startup = subprocess.STARTUPINFO()
 startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
 startup.wShowWindow = 0
-command = [str(output/'probe.exe'), '--morph-sampling-only']
+command = [str(output/'probe.exe'), mode]
 with (output/'result.log').open('w', encoding='utf-8') as log:
     result = subprocess.run(command, cwd=output, env=env, startupinfo=startup,
         creationflags=subprocess.CREATE_NO_WINDOW, stdout=log, stderr=subprocess.STDOUT, timeout=180)
