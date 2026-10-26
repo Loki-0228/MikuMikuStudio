@@ -3,6 +3,7 @@
 #include "mikumikustudio/bone_curve.hpp"
 #include "mikumikustudio/bone_key_sampling.hpp"
 #include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/display_motion_snapshot.hpp"
 #include "mikumikustudio/frame_limits.hpp"
 #include <algorithm>
 #include <cmath>
@@ -21,7 +22,7 @@ struct Key {
 struct Track {
     std::vector<Key> keys;
     mdl::BoneType type{};
-    bool externalParent = false;
+    int selector = -1;
 };
 void Charge(std::uint64_t& bytes, std::uint64_t count, std::uint64_t stride, std::uint64_t limit) {
     if (bytes > limit || (stride && count > (limit - bytes) / stride))
@@ -47,6 +48,75 @@ struct BoneMotionSnapshot::Impl {
     std::unique_ptr<bone_curve::SamplingState> curves;
     std::uint64_t bytes = 0;
 };
+namespace {
+void CopyPose(const Key& key, BoneMotionSample& sample) noexcept {
+    std::memcpy(sample.position.data(), key.native.position, sizeof(key.native.position));
+    std::memcpy(sample.rotation.data(), key.native.rotation, sizeof(key.native.rotation));
+}
+// Shared native-key, selector-window and free-curve sampling. window is null
+// for a bone without a selector window, so only registered values apply.
+BoneMotionStatus SampleChannelsOf(const Track& track,
+    const bone_curve::SamplingState& curves, unsigned bone, double frame,
+    const DisplaySelectorSample* window, BoneMotionSample& out) noexcept {
+    const auto after = std::upper_bound(track.keys.begin(), track.keys.end(), frame,
+        [](double time, const Key& key) { return time < key.native.frame; });
+    if (after == track.keys.begin()) return BoneMotionStatus::InvalidSample;
+    const auto& lower = *(after - 1);
+    BoneMotionSample sample;
+    sample.physicsDisabled = lower.native.physicsDisabled != 0;
+    sample.scale = lower.scale;
+    if (DirectType(track.type)) {
+        if (after == track.keys.end() || frame == lower.native.frame) {
+            const bool zeroFill = window && after == track.keys.end() &&
+                lower.native.frame < window->windowStart && window->windowStart <= frame;
+            if (!zeroFill) CopyPose(lower, sample);
+        } else {
+            const auto& upper = *after;
+            bool snap = false;
+            std::uint32_t snapReference = 0;
+            if (window) {
+                if (window->windowStart < upper.native.frame &&
+                    lower.native.frame < window->windowStart) {
+                    snap = true;
+                    snapReference = window->windowStart;
+                } else if (!(upper.native.frame < window->windowEnd ||
+                             lower.native.frame >= window->windowEnd)) {
+                    snap = true;
+                    snapReference = window->windowEnd;
+                }
+            }
+            if (snap) {
+                CopyPose(frame >= snapReference ? upper : lower, sample);
+            } else {
+                const float time = float(frame - lower.native.frame) /
+                    float(int(upper.native.frame) - int(lower.native.frame));
+                bone_key_sampling::SeekSlerp(lower.native.rotation, upper.native.rotation,
+                    bone_key_sampling::Ease(upper.native, 3, time), sample.rotation.data());
+                for (unsigned axis = 0; axis < 3; ++axis) {
+                    const float delta = upper.native.position[axis] - lower.native.position[axis];
+                    sample.position[axis] = delta == 0 ? lower.native.position[axis] :
+                        float(double(bone_key_sampling::Ease(upper.native, axis, time)) * delta + double(lower.native.position[axis]));
+                }
+            }
+        }
+    } else {
+        // InertTip/CoRotate own no local pose track; scale still applies.
+        sample.position.fill(0.0f);
+    }
+    if (after != track.keys.end()) {
+        const auto& upper = *after;
+        const float time = float(std::clamp((frame - lower.native.frame) /
+            double(upper.native.frame - lower.native.frame), 0.0, 1.0));
+        sample.scale = bone_scale::Interpolate(lower.scale, upper.scale, bone_scale::CurveTime(upper.controls, time));
+    }
+    if (curves.Contains(bone) && !curves.Sample(bone, frame,
+        sample.position.data(), sample.rotation.data(), sample.scale)) return BoneMotionStatus::InvalidSample;
+    if (!Finite(sample.position.data(), 3) || !ValidRotation(sample.rotation.data()) || !bone_scale::Valid(sample.scale))
+        return BoneMotionStatus::InvalidSample;
+    out = sample;
+    return BoneMotionStatus::Ok;
+}
+}
 BoneMotionSnapshot::BoneMotionSnapshot() = default;
 BoneMotionSnapshot::~BoneMotionSnapshot() = default;
 std::unique_ptr<BoneMotionSnapshot> BoneMotionSnapshot::Capture(const unsigned char* source,
@@ -71,7 +141,7 @@ std::unique_ptr<BoneMotionSnapshot> BoneMotionSnapshot::Capture(const unsigned c
     for (unsigned bone = 0; bone < model.boneCount; ++bone) {
         auto& track = value.bones[bone];
         track.type = model.boneTable[bone].type;
-        track.externalParent = model.boneTable[bone].slotIndex >= 0;
+        track.selector = model.boneTable[bone].slotIndex;
         unsigned slot = bone, previous = 0, previousFrame = 0;
         for (std::size_t hop = 0;; ++hop) {
             if (hop >= capacity || slot >= capacity || (hop && slot < model.boneCount) ||
@@ -116,41 +186,27 @@ BoneMotionStatus BoneMotionSnapshot::SampleChannels(int bone, double frame, Bone
     if (!impl_ || bone < 0 || std::size_t(bone) >= impl_->bones.size()) return BoneMotionStatus::InvalidBone;
     if (!std::isfinite(frame) || frame < 0 || frame > frame_limits::maximum) return BoneMotionStatus::InvalidTime;
     const auto& track = impl_->bones[bone];
-    if (track.externalParent) return BoneMotionStatus::ExternalParent;
+    if (track.selector >= 0) return BoneMotionStatus::ExternalParent;
     if (!DirectType(track.type)) return BoneMotionStatus::UnsupportedBone;
-    const auto after = std::upper_bound(track.keys.begin(), track.keys.end(), frame,
-        [](double time, const Key& key) { return time < key.native.frame; });
-    if (after == track.keys.begin()) return BoneMotionStatus::InvalidSample;
-    const auto& lower = *(after - 1);
-    BoneMotionSample sample;
-    sample.physicsDisabled = lower.native.physicsDisabled != 0;
-    sample.scale = lower.scale;
-    if (after == track.keys.end() || frame == lower.native.frame) {
-        std::memcpy(sample.position.data(), lower.native.position, sizeof(lower.native.position));
-        std::memcpy(sample.rotation.data(), lower.native.rotation, sizeof(lower.native.rotation));
-    } else {
-        const auto& upper = *after;
-        const float time = float(frame - lower.native.frame) / float(int(upper.native.frame) - int(lower.native.frame));
-        bone_key_sampling::SeekSlerp(lower.native.rotation, upper.native.rotation,
-            bone_key_sampling::Ease(upper.native, 3, time), sample.rotation.data());
-        for (unsigned axis = 0; axis < 3; ++axis) {
-            const float delta = upper.native.position[axis] - lower.native.position[axis];
-            sample.position[axis] = delta == 0 ? lower.native.position[axis] :
-                float(double(bone_key_sampling::Ease(upper.native, axis, time)) * delta + double(lower.native.position[axis]));
-        }
+    return SampleChannelsOf(track, *impl_->curves, unsigned(bone), frame, nullptr, out);
+}
+BoneMotionStatus BoneMotionSnapshot::PrepareKinematicChannels(int bone, double frame,
+    const DisplayMotionSnapshot& display, BoneMotionSample& out) const noexcept {
+    if (!impl_ || bone < 0 || std::size_t(bone) >= impl_->bones.size()) return BoneMotionStatus::InvalidBone;
+    if (!std::isfinite(frame) || frame < 0 || frame > frame_limits::maximum) return BoneMotionStatus::InvalidTime;
+    const auto& track = impl_->bones[bone];
+    if (track.type > mdl::BoneType::CoRotate) return BoneMotionStatus::UnsupportedBone;
+    DisplaySelectorSample window{};
+    const bool windowed = DirectType(track.type) && track.selector >= 0;
+    if (windowed) {
+        std::int32_t mapped = 0;
+        if (!display.SelectorBone(unsigned(track.selector), mapped) || mapped != bone)
+            return BoneMotionStatus::InvalidSample;
+        if (display.SampleSelector(track.selector, frame, window) != DisplayMotionStatus::Ok)
+            return BoneMotionStatus::InvalidSample;
     }
-    if (after != track.keys.end()) {
-        const auto& upper = *after;
-        const float time = float(std::clamp((frame - lower.native.frame) /
-            double(upper.native.frame - lower.native.frame), 0.0, 1.0));
-        sample.scale = bone_scale::Interpolate(lower.scale, upper.scale, bone_scale::CurveTime(upper.controls, time));
-    }
-    if (impl_->curves->Contains(bone) && !impl_->curves->Sample(bone, frame,
-        sample.position.data(), sample.rotation.data(), sample.scale)) return BoneMotionStatus::InvalidSample;
-    if (!Finite(sample.position.data(), 3) || !ValidRotation(sample.rotation.data()) || !bone_scale::Valid(sample.scale))
-        return BoneMotionStatus::InvalidSample;
-    out = sample;
-    return BoneMotionStatus::Ok;
+    return SampleChannelsOf(track, *impl_->curves, unsigned(bone), frame,
+        windowed ? &window : nullptr, out);
 }
 }
 #endif

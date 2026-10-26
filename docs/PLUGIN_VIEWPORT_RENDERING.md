@@ -52,6 +52,8 @@
 
 独立骨架求值准备阶段已修复[根骨骼在 IK 后继承时的负索引读取](records/abi-bone-root-inheritance-2026-10-27.md)。内部 [BoneTransformContext](records/abi-bone-transform-context-2026-10-27.md) 已持有独立 CPU 数学函数，`BoneFrameTransformPrivate` 在自有工作区复用原五阶段，隔离全局数学表、尺度缓存与诊断。双配置均通过重构前源码逐位对照、并发和生命周期验证。它仍是单层内部入口；动作与定义装配、私有尺度、外部模型依赖和完整公开帧尚未完成。
 
+内部 [PrepareKinematicChannels](records/abi-bone-kinematic-input-2026-10-27.md) 已从同次捕获的动作与显示快照准备局部姿态，按原生窗口边界处理 selector，并为类型 7／9 提供新工作区默认姿态。尺度与自由曲线按原顺序应用。真实 Seek 逐位对照、PMX/PMD 导入及 PMM 重载验证通过；旧公开通道接口的拒绝规则不变。此入口仍不解析外部目标矩阵，不计算层级、IK 或物理。
+
 ## 预期交互
 
 多视口面向编辑、比较和独立预览，界面插件可以组合下列行为。

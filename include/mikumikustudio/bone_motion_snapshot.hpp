@@ -7,6 +7,7 @@
 #include <memory>
 
 namespace mikumikustudio {
+class DisplayMotionSnapshot;
 // Registered local motion before hierarchy, IK, morphs, layers and physics.
 // This is not an evaluated model pose or an MMS_STAGE_ANIMATED scene frame.
 struct BoneMotionSample {
@@ -40,6 +41,18 @@ public:
     // or derived bone types are refused, leaving out untouched. Integer frames
     // retain native direct-seek arithmetic; fractional frames are continuous.
     BoneMotionStatus SampleChannels(int bone, double frame, BoneMotionSample& out) const noexcept;
+    // Internal input preparation for an independent, fresh direct-seek pose.
+    // display must come from the same model/capture as this motion snapshot.
+    // Selector windows affect native interpolation before free-curve overrides.
+    // InertTip/CoRotate native tracks leave zero/identity bind-local defaults;
+    // registered scale and free curves still apply. Unknown types are refused.
+    // This neither resolves external target matrices nor runs IK or physics.
+    // A used selector mapping mismatch returns InvalidSample. InertTip/CoRotate
+    // skip native selector lookup as well. Failures leave out intact.
+    // Concurrent and allocation-free; the original SampleChannels contract is
+    // unchanged and still refuses selector-dependent and derived bones.
+    BoneMotionStatus PrepareKinematicChannels(int bone, double frame,
+        const DisplayMotionSnapshot& display, BoneMotionSample& out) const noexcept;
 };
 }
 #endif
