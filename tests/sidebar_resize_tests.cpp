@@ -874,6 +874,9 @@ int main(int argc, char** argv) {
     if(argc==2 && std::string(argv[1])=="--evaluation-morph-only") {
         evaluation_morph_host_checks::Run(app);ShutdownCleanup(app);g_Block=nullptr;delete app;return 0;
     }
+    if(argc==2 && std::string(argv[1])=="--evaluation-display-ik-only") {
+        evaluation_display_host_checks::Run(app, true);ShutdownCleanup(app);g_Block=nullptr;delete app;return 0;
+    }
     if(argc==2 && std::string(argv[1])=="--evaluation-display-only") {
         evaluation_display_host_checks::Run(app);ShutdownCleanup(app);g_Block=nullptr;delete app;return 0;
     }

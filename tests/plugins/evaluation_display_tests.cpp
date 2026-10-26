@@ -454,8 +454,116 @@ static void ConcurrentDisplayReads() {
     CHECK(failures == 0 && api.release(api.context, source) == MMS_OK && client.bytes == 0 && client.active == 0 && !store.HasLeases(client));
 }
 
-int main() {
+static void ExactDisplayTimeBoundaries() {
+    // Each expected frame is an integer identity, not a floating-point oracle.
+    // In the first triplet 30*n = 270215977642229760 exactly; changing only
+    // the denominator by one puts the rational strictly before/at/after 1.
+    struct Case { MmsTime time; uint32_t frame; unsigned band; };
+    const Case cases[] = {
+        {{9007199254740992ll, 270215977642229761ull}, 0, 0},
+        {{9007199254740992ll, 270215977642229760ull}, 1, 1},
+        {{9007199254740992ll, 270215977642229759ull}, 1, 1},
+        {{0, 1}, 0, 0}, {{0, UINT64_MAX}, 0, 0},
+        {{1, 30}, 1, 1}, {{3, 90}, 1, 1},
+        // This is exactly three times the numerator and denominator of the
+        // first case, so it must remain strictly before the same key.
+        {{27021597764222976ll, 810647932926689283ull}, 0, 0},
+        // Here 3*n = 27021597764222979; +/-1 denominators bracket frame 10.
+        {{9007199254740993ll, 27021597764222980ull}, 9, 1},
+        {{9007199254740993ll, 27021597764222979ull}, 10, 2},
+        {{9007199254740993ll, 27021597764222978ull}, 10, 2},
+        {{1, 3}, 10, 2}, {{3, 9}, 10, 2},
+        {{3002399751580331ll, 9007199254740993ull}, 10, 2},
+        // n*30/d = n/100000000: the adjacent numerators differ by 1e-8
+        // frame, below a double's spacing at frame 1000000000.
+        {{99999999999999999ll, 3000000000ull}, 999999999, 3},
+        {{100000000000000000ll, 3000000000ull}, 1000000000, 4},
+        {{100000000000000001ll, 3000000000ull}, 1000000000, 4},
+        // n*30/d = n/1000000000; the last accepted frame is 2147483646.
+        {{2147483645999999999ll, 30000000000ull}, 2147483645, 4},
+        {{2147483646000000000ll, 30000000000ull}, 2147483646, 5},
+        {{2147483646, 30}, 2147483646, 5},
+        // 2*INT64_MAX = UINT64_MAX-1. The three denominators put the
+        // exact ratio at 15-minus-epsilon, 15, and 15-plus-epsilon frames.
+        {{INT64_MAX, UINT64_MAX}, 14, 2},
+        {{INT64_MAX, 18446744073709551614ull}, 15, 3},
+        {{INT64_MAX, 18446744073709551613ull}, 15, 3},
+        {{INT64_MAX, 9223372036854775807ull}, 30, 3},
+        {{1, 4}, 7, 1}
+    };
+    constexpr uint32_t starts[] = {0, 1, 10, 15, 1000000000, 2147483646};
+    constexpr uint32_t ends[] = {1, 10, 15, 1000000000, 2147483646, 0};
+    constexpr uint32_t visibleValues[] = {0, 1, 197, 254, 255, 42};
+    constexpr uint32_t ikValues[] = {255, 197, 1, 0, 42, 254};
+    const auto bandAt = [](double frame) -> unsigned {
+        if (frame < 1) return 0;
+        if (frame < 10) return 1;
+        if (frame < 15) return 2;
+        if (frame < 1000000000) return 3;
+        if (frame < 2147483646) return 4;
+        return 5;
+    };
+    std::array<double, 3> observed{-1, -1, -1}; std::array<unsigned, 3> calls{};
+    EvaluationStore store(EvaluationStore::CaptureChannels([&](const auto& query, uint32_t mask, uint64_t, auto& out) {
+        auto data = Data(query, mask);
+        data->sampleVisibility = [&](double frame, MmsDisplayStateV1& value) {
+            observed[0] = frame; ++calls[0];
+            value = {Header<MmsDisplayStateV1>(), visibleValues[bandAt(frame)], 0}; return MMS_OK;
+        };
+        data->sampleIk = [&](uint32_t, double frame, MmsIkStateV1& value) {
+            observed[1] = frame; ++calls[1];
+            value = {Header<MmsIkStateV1>(), ikValues[bandAt(frame)], 0}; return MMS_OK;
+        };
+        data->sampleParent = [&](uint32_t, double frame, MmsParentSelectionV1& value) {
+            observed[2] = frame; ++calls[2]; const auto band = bandAt(frame);
+            value = {}; value.h = Header<MmsParentSelectionV1>();
+            value.target = {{909, 14}, uint64_t(band + 1)}; value.bone = targetBone;
+            value.windowStart = starts[band]; value.windowEnd = ends[band];
+            value.flags = MMS_EVALUATION_PARENT_ACTIVE; return MMS_OK;
+        };
+        out = data; return MMS_OK;
+    }), allMask);
+    EvaluationStore::Client client; const auto api = Bind(store, client); const auto source = Create(api);
+    for (const auto& item : cases) {
+        auto visible = Poison<MmsDisplayStateV1>(); auto ik = Poison<MmsIkStateV1>(); auto parent = Poison<MmsParentSelectionV1>();
+        // Execute all three first so the isolated baseline run exercises all
+        // display entry points before reporting the first incorrect boundary.
+        const auto vr = api.sampleVisibility(api.context, source, item.time, &visible);
+        const auto ir = api.sampleIk(api.context, source, 1, item.time, &ik);
+        const auto pr = api.sampleParent(api.context, source, 2, item.time, &parent);
+        CHECK(vr == MMS_OK && ir == MMS_OK && pr == MMS_OK);
+        CHECK(visible.visible == visibleValues[item.band] && ik.enabled == ikValues[item.band]);
+        CHECK(parent.target.generation == item.band + 1 && Same(parent.target.id, MmsId{909, 14}) && Same(parent.bone, targetBone));
+        CHECK(parent.flags == MMS_EVALUATION_PARENT_ACTIVE && parent.windowStart == starts[item.band] && parent.windowEnd == ends[item.band]);
+        CHECK(HeaderOk(visible) && HeaderOk(ik) && HeaderOk(parent) && !visible.reserved && !ik.reserved && !parent.reserved);
+        CHECK(observed[0] == item.frame && observed[1] == item.frame && observed[2] == item.frame);
+    }
+    // The rational immediately after maximum is invalid even though a double
+    // rounds it back to maximum. Reject before any host callback or output write.
+    const MmsTime invalid[] = {{2147483646000000001ll, 30000000000ull}, {2147483647, 30},
+        {INT64_MAX, 1}, {0, 0}, {1, 0}, {-1, UINT64_MAX}, {INT64_MIN, 1}};
+    for (const auto time : invalid) {
+        const auto before = calls;
+        auto visible = Poison<MmsDisplayStateV1>(); auto ik = Poison<MmsIkStateV1>(); auto parent = Poison<MmsParentSelectionV1>();
+        CHECK(api.sampleVisibility(api.context, source, time, &visible) == MMS_E_ARGUMENT && Unchanged(visible));
+        CHECK(api.sampleIk(api.context, source, 0, time, &ik) == MMS_E_ARGUMENT && Unchanged(ik));
+        CHECK(api.sampleParent(api.context, source, 0, time, &parent) == MMS_E_ARGUMENT && Unchanged(parent));
+        CHECK(calls == before);
+    }
+    // Continuous channels must still see 7.5 rather than the discrete floor 7.
+    MmsBoneChannelsV1 bone{}; MmsMorphWeightV1 morph{};
+    CHECK(api.sampleBone(api.context, source, boneId, {1, 4}, &bone) == MMS_OK && bone.position[0] == 7.5f);
+    CHECK(api.sampleMorph(api.context, source, morphId, {1, 4}, &morph) == MMS_OK && morph.value == -7.5f);
+    CHECK(api.release(api.context, source) == MMS_OK && !store.HasLeases(client));
+}
+
+int main(int argc, char** argv) {
+    if (argc == 2 && !std::strcmp(argv[1], "--exact-display-time-only")) {
+        ExactDisplayTimeBoundaries();
+        std::printf("PASS %u exact display time checks\n", checks); return 0;
+    }
     CapabilityNegotiationAndMasks(); PrefixesAndDisplayRecords(); UnsupportedEmptyAndForeign(); MalformedCaptureIsAtomic();
     SampleValidationAndExactTime(); SharedQuotaAndFaultSweep(); RetireWithAllSamplersInFlight(); ConcurrentDisplayReads();
+    ExactDisplayTimeBoundaries();
     std::printf("PASS %u evaluation display checks\n", checks); return 0;
 }

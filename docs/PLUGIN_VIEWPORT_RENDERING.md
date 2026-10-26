@@ -26,6 +26,8 @@
 
 [`mms.scene.evaluate` 1.2](records/abi-display-evaluation-service-2026-10-27.md) 已接入显示快照。通道位 `4` 可与骨骼位 `1`、表情位 `2` 组合，读取显示状态、IK 开关及外部父级选择。捕获在 UI 安全点解析所有可达关键帧的外部目标稳定身份，包括未来键；无效目标使所选通道捕获整体失败。旧源保留目标身份和连续窗口，模型删除及槽位复用不改变旧结果。目标动作、IK 求解和世界空间求值帧仍待实现。
 
+[离散时间及真实 IK 轨道验收](records/abi-display-rational-boundaries-2026-10-27.md)已修复整数键前的浮点提前舍入。显示、IK 开关和父级窗口用精确有理帧取整；骨骼、表情仍连续采样。真实含 IK 链 PMX 已验证链身份、原始开关字节、局部父级及跨删除读取。该验收不包含 IK 求解。
+
 | 代码入口 | 已有范围与限制 |
 | --- | --- |
 | `sdk/mms/include/mms/plugin.h` | 提供 `queryService`、`registerProvider`、版本头、不透明句柄和设备事件定义。V1 面向 Windows x64。 |

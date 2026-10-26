@@ -82,6 +82,36 @@ bool FrameTime(MmsTime time, double& frame) noexcept {
     frame = static_cast<double>(time.numerator) * 30.0 / static_cast<double>(time.denominator);
     return std::isfinite(frame) && frame <= static_cast<double>(frame_limits::maximum);
 }
+// Display records are keyed on discrete integer frames, so a rational time
+// selects the key at its floor. Converting through double first can round a
+// value strictly below the next key up to it, so the floor stays in integer
+// arithmetic. The bound is the one FrameTime applies; it runs before the
+// division because it also proves whole*30 cannot leave the frame range.
+bool DisplayFrame(MmsTime time, double& frame) noexcept {
+    if (!time.denominator || time.numerator < 0) return false;
+    if (RatioGreater(uint64_t(time.numerator), time.denominator, uint64_t(frame_limits::maximum), 30)) return false;
+    const uint64_t denominator = time.denominator;
+    const uint64_t numerator = uint64_t(time.numerator);
+    const uint64_t whole = numerator / denominator;
+    const uint64_t remainder = numerator % denominator;
+    uint64_t result = whole * 30;
+    uint64_t carried = 0;
+    // Thirty long-division steps: each one adds remainder, i.e. one thirtieth
+    // of the scaled fraction, and a carry increments the quotient only after
+    // the denominator is reached. carried and remainder stay below the
+    // denominator, and result stays within the checked frame bound, so no step
+    // can overflow. The final value is an integer below 2^31, exact in double.
+    for (uint32_t step = 0; step < 30; ++step) {
+        if (remainder >= denominator - carried) {
+            carried = remainder - (denominator - carried);
+            ++result;
+        } else {
+            carried += remainder;
+        }
+    }
+    frame = static_cast<double>(result);
+    return true;
+}
 }
 
 // Store-owned half of a source. The host's EvaluationData is immutable and
@@ -734,7 +764,7 @@ MmsResult EvaluationStore::ReadDisplay(Client& client, MmsHandle source, uint32_
     MmsTime time, void* out) {
     if (!out || kind > kDisplayParent) return MMS_E_ARGUMENT;
     double frame = 0;
-    if (!FrameTime(time, frame)) return MMS_E_ARGUMENT;
+    if (!DisplayFrame(time, frame)) return MMS_E_ARGUMENT;
 
     std::shared_ptr<const Payload> payload;
     {
