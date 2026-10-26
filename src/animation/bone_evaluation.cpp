@@ -1,6 +1,7 @@
-#include "mikumikustudio/bone_evaluation.hpp"
+#include "mikumikustudio/bone_scene_evaluation.hpp"
 #if !MMD_ORIGINAL_PROFILE
 
+#include "mikumikustudio/app_layout.hpp"
 #include "mikumikustudio/bone_definition_snapshot.hpp"
 #include "mikumikustudio/bone_motion_snapshot.hpp"
 #include "mikumikustudio/bone_transform_context.hpp"
@@ -253,35 +254,69 @@ DisplayMotionStatus BoneEvaluationSource::SampleSelector(
     return impl_->display->SampleSelector(selector, frame, out);
 }
 
-std::unique_ptr<BoneEvaluationFrame> BoneEvaluationSource::Evaluate(
-    double frame, const BoneTransformContext& context,
-    const BoneEvaluationDependency* dependencies, std::uint32_t dependencyCount,
-    std::uint64_t maxRetainedBytes,
-    std::uint64_t maxWorkspaceBytes) const {
-    if (!impl_ || !impl_->definitions || !impl_->motion || !impl_->display ||
-        !impl_->morphDefinitions || !impl_->morphWeights)
-        throw std::invalid_argument("bone evaluation source is empty");
+namespace detail {
 
-    const BoneDefinitionSnapshot& definitions = *impl_->definitions;
-    const BoneMotionSnapshot& motion = *impl_->motion;
-    const DisplayMotionSnapshot& display = *impl_->display;
-    const MorphDefinitionSnapshot& morphDefinitions = *impl_->morphDefinitions;
-    const morph_curve::SamplingState& morphWeights = *impl_->morphWeights;
+// One independent model workspace: the captured model recast into the native
+// private record, its working channels, selector table, scale pose, layer list,
+// morph offsets and the candidate result frame. The same object drives the
+// single-source wrapper and every model of a scene sweep, so the five native
+// phases, pose preparation and scale finalization have exactly one copy.
+struct BoneEvaluationWorkspace {
+    std::unique_ptr<mdl::ModelRecord> model;
+    std::vector<mdl::BoneRecord> bones;
+    std::vector<mdl::IkChain> chains;
+    std::vector<std::vector<std::uint16_t>> chainLinks;
+    std::vector<mdl::BoneOrderEntry> selectors;
+    bone_scale::Values scalePose;
+    std::vector<int> layers;
+    std::vector<mdl::BoneMorphOffsetRecord> morphOffsets;
+    std::unique_ptr<BoneEvaluationFrame> frame;
 
-    if (!std::isfinite(frame) || frame < 0.0 ||
-        frame > static_cast<double>(frame_limits::maximum))
-        throw std::invalid_argument("bone evaluation frame");
-    if (dependencyCount != 0 && dependencies == nullptr)
-        throw std::invalid_argument("bone evaluation dependencies");
-    const std::uint32_t selectorCount = definitions.SelectorCount();
-    if (dependencyCount > selectorCount)
-        throw std::invalid_argument("bone evaluation dependency count");
+    // Allocates the candidate frame and charges it to both budgets. The
+    // returned count is the frame's retained size; maxRetainedBytes is the
+    // budget that frame alone may consume.
+    std::uint64_t CreateFrame(double frameValue, std::uint32_t boneCount,
+                              std::uint64_t maxRetainedBytes,
+                              Workspace& workspace);
 
-    const std::uint32_t boneCount = definitions.BoneCount();
-    const std::uint32_t ikCount = definitions.IkCount();
-    const std::uint8_t physicsMode = definitions.PhysicsMode();
-    const std::int32_t maxBoneLayer = definitions.MaxBoneLayer();
+    // Recasts the frozen definition/motion/display components into the private
+    // model record and fills every workspace-owned channel. Selector bodies and
+    // morph offsets are filled by the callers because their external targets
+    // differ between the single-source and scene cases.
+    void Prepare(const BoneEvaluationSource& source, double sampleFrame,
+                 Workspace& workspace);
 
+    // Selector entry mapping for a scene: the captured raw model slot and raw
+    // target bone stay in place, so the native world pass reads that model's
+    // private matExtra directly (including self references and cycles).
+    void PrepareSelectorsRaw(const BoneEvaluationSource& source,
+                             double sampleFrame);
+
+    // Selector entry mapping for the explicit-dependency wrapper: the caller's
+    // target still becomes the compact proxy at slot zero.
+    void PrepareSelectorsDependency(
+        const BoneEvaluationSource& source, double sampleFrame,
+        const BoneEvaluationDependency* dependencies,
+        const std::int32_t* dependencyForSelector);
+
+    // Frozen morph weights, native morph evaluation and the bone-offset table.
+    void PrepareMorphs(const BoneEvaluationSource& source, double sampleFrame,
+                       Workspace& workspace);
+
+    // One complete phase for this model: one native pose preparation, every
+    // actual layer in ascending order, then an immediate copy of the phase's
+    // native attachment. Keeps accumulated matrices across phases.
+    void RunPhase(int phase, unsigned char* const* slots,
+                  const BoneTransformContext& context);
+
+    // Rigid basis, complete scale, joint position, visibility and the finite
+    // checks. Runs only after every phase of every model has completed.
+    void Finalize(const BoneEvaluationSource& source, Workspace& workspace);
+};
+
+std::uint64_t BoneEvaluationWorkspace::CreateFrame(
+    double frameValue, std::uint32_t boneCount,
+    std::uint64_t maxRetainedBytes, Workspace& workspace) {
     // Frame retained budget: the two owning objects plus the pose capacity the
     // allocator actually reserves. The count is checked before the vector is
     // allocated and the capacity difference is supplemented afterwards.
@@ -292,18 +327,15 @@ std::unique_ptr<BoneEvaluationFrame> BoneEvaluationSource::Evaluate(
            maxRetainedBytes);
     Charge(frameBytes, boneCount, sizeof(BoneEvaluationPose), maxRetainedBytes);
 
-    // The workspace budget owns the final frame too, plus every working
-    // container, both model records and the conservative scale-map nodes.
-    Workspace workspace(maxWorkspaceBytes);
+    // The workspace budget owns the final frame too.
     workspace.Charge(1, sizeof(BoneEvaluationFrame) +
                             sizeof(BoneEvaluationFrame::Impl));
     workspace.Charge(boneCount, sizeof(BoneEvaluationPose));
 
-    auto result =
-        std::unique_ptr<BoneEvaluationFrame>(new BoneEvaluationFrame);
-    result->impl_ = std::make_unique<BoneEvaluationFrame::Impl>();
-    BoneEvaluationFrame::Impl& out = *result->impl_;
-    out.frame = frame;
+    frame = std::unique_ptr<BoneEvaluationFrame>(new BoneEvaluationFrame);
+    frame->impl_ = std::make_unique<BoneEvaluationFrame::Impl>();
+    BoneEvaluationFrame::Impl& out = *frame->impl_;
+    out.frame = frameValue;
     out.poses.resize(boneCount);
     if (out.poses.capacity() > boneCount) {
         const std::uint64_t excess = out.poses.capacity() - boneCount;
@@ -312,18 +344,31 @@ std::unique_ptr<BoneEvaluationFrame> BoneEvaluationSource::Evaluate(
         workspace.Charge(excess, sizeof(BoneEvaluationPose));
     }
     out.bytes = frameBytes;
+    return frameBytes;
+}
 
-    // ---- one private model record owned by this evaluation -----------------
+void BoneEvaluationWorkspace::Prepare(
+    const BoneEvaluationSource& source, double sampleFrame,
+    Workspace& workspace) {
+    const BoneDefinitionSnapshot& definitions = *source.impl_->definitions;
+    const BoneMotionSnapshot& motion = *source.impl_->motion;
+    const DisplayMotionSnapshot& display = *source.impl_->display;
+    const MorphDefinitionSnapshot& morphDefinitions =
+        *source.impl_->morphDefinitions;
+
+    const std::uint32_t boneCount = definitions.BoneCount();
+    const std::uint32_t ikCount = definitions.IkCount();
+    const std::uint32_t selectorCount = definitions.SelectorCount();
+    const std::uint8_t physicsMode = definitions.PhysicsMode();
+    const std::int32_t maxBoneLayer = definitions.MaxBoneLayer();
+
+    // ---- one private model record owned by this workspace ------------------
     workspace.Charge(1, sizeof(mdl::ModelRecord));
-    auto model = std::make_unique<mdl::ModelRecord>();
-    std::vector<mdl::BoneRecord> bones;
+    model = std::make_unique<mdl::ModelRecord>();
     ResizeCharged(bones, boneCount, workspace);
-    std::vector<mdl::IkChain> chains;
     ResizeCharged(chains, ikCount, workspace);
-    std::vector<std::vector<std::uint16_t>> chainLinks;
     ResizeCharged(chainLinks, ikCount, workspace);
-    std::vector<mdl::BoneOrderEntry> order;
-    ResizeCharged(order, selectorCount, workspace);
+    ResizeCharged(selectors, selectorCount, workspace);
 
     model->boneCount = boneCount;
     model->ikChainCount = ikCount;
@@ -334,15 +379,12 @@ std::unique_ptr<BoneEvaluationFrame> BoneEvaluationSource::Evaluate(
     model->boneTable = boneCount != 0 ? bones.data() : nullptr;
     model->ikChains = ikCount != 0 ? chains.data() : nullptr;
     model->boneOrderTable =
-        selectorCount != 0 ? static_cast<void*>(order.data()) : nullptr;
+        selectorCount != 0 ? static_cast<void*>(selectors.data()) : nullptr;
 
     // ---- frozen local channels, rest definitions and layer list ------------
-    // The map header and its sentinel node are charged before the map exists;
-    // every inserted element is charged again before its node is allocated.
-    workspace.Charge(1, sizeof(bone_scale::Values));
-    workspace.Charge(1, ScaleNodeBytes());
-    bone_scale::Values scalePose;
-    std::vector<int> layers;
+    // The workspace object's map header and sentinel were charged by the caller
+    // before this workspace was constructed; every inserted element is charged
+    // again before its node is allocated.
     const bool pmx = physicsMode == 2;
     for (std::uint32_t index = 0; index < boneCount; ++index) {
         BoneDefinition definition{};
@@ -394,8 +436,8 @@ std::unique_ptr<BoneEvaluationFrame> BoneEvaluationSource::Evaluate(
 
         BoneMotionSample sample{};
         const BoneMotionStatus motionStatus =
-            motion.PrepareKinematicChannels(static_cast<int>(index), frame,
-                                            display, sample);
+            motion.PrepareKinematicChannels(static_cast<int>(index),
+                                            sampleFrame, display, sample);
         // With a validated capture, a legal frame and a valid bone index an
         // InvalidSample can only mean nonfinite interpolation arithmetic.
         if (motionStatus == BoneMotionStatus::InvalidSample)
@@ -430,7 +472,7 @@ std::unique_ptr<BoneEvaluationFrame> BoneEvaluationSource::Evaluate(
         chain.iterations = definition.iterations;
         chain.maxAngle = definition.maxAngle;
         std::uint8_t enabled = 0;
-        if (display.SampleIk(static_cast<int>(index), frame, enabled) !=
+        if (display.SampleIk(static_cast<int>(index), sampleFrame, enabled) !=
             DisplayMotionStatus::Ok)
             throw std::invalid_argument("bone evaluation IK enable sample");
         chain.enabled = enabled;
@@ -444,6 +486,221 @@ std::unique_ptr<BoneEvaluationFrame> BoneEvaluationSource::Evaluate(
             links[link] = static_cast<std::uint16_t>(bone);
         }
     }
+}
+
+void BoneEvaluationWorkspace::PrepareSelectorsRaw(
+    const BoneEvaluationSource& source, double sampleFrame) {
+    const BoneDefinitionSnapshot& definitions = *source.impl_->definitions;
+    const DisplayMotionSnapshot& display = *source.impl_->display;
+    const std::uint32_t selectorCount = definitions.SelectorCount();
+
+    // Raw captured slots are kept verbatim; scene evaluation wires the actual
+    // private model workspaces into the slot table instead of a proxy.
+    for (std::uint32_t index = 0; index < selectorCount; ++index) {
+        DisplaySelectorSample sample{};
+        if (display.SampleSelector(static_cast<int>(index), sampleFrame,
+                                   sample) != DisplayMotionStatus::Ok)
+            throw std::invalid_argument("bone scene selector sample");
+        std::int32_t definitionBone = 0;
+        if (!definitions.SelectorBone(index, definitionBone))
+            throw std::invalid_argument("bone evaluation selector definition");
+        mdl::BoneOrderEntry& entry = selectors[index];
+        entry.boneIndex = definitionBone;
+        entry.linkedModel = sample.modelIndex;
+        entry.linkedBone = sample.boneIndex;
+        entry.windowStart = sample.windowStart;
+        entry.windowEnd = sample.windowEnd;
+    }
+}
+
+void BoneEvaluationWorkspace::PrepareSelectorsDependency(
+    const BoneEvaluationSource& source, double sampleFrame,
+    const BoneEvaluationDependency* dependencies,
+    const std::int32_t* dependencyForSelector) {
+    const BoneDefinitionSnapshot& definitions = *source.impl_->definitions;
+    const DisplayMotionSnapshot& display = *source.impl_->display;
+    const std::uint32_t selectorCount = definitions.SelectorCount();
+
+    for (std::uint32_t index = 0; index < selectorCount; ++index) {
+        DisplaySelectorSample sample{};
+        if (display.SampleSelector(static_cast<int>(index), sampleFrame,
+                                   sample) != DisplayMotionStatus::Ok)
+            throw std::invalid_argument("bone evaluation selector sample");
+        std::int32_t definitionBone = 0;
+        if (!definitions.SelectorBone(index, definitionBone))
+            throw std::invalid_argument("bone evaluation selector definition");
+        mdl::BoneOrderEntry& entry = selectors[index];
+        entry.boneIndex = definitionBone;
+        entry.linkedModel = sample.modelIndex;
+        entry.linkedBone = sample.boneIndex;
+        entry.windowStart = sample.windowStart;
+        entry.windowEnd = sample.windowEnd;
+        const std::int32_t dependency = dependencyForSelector[index];
+        if (sample.modelIndex >= 0) {
+            if (dependency < 0)
+                throw std::invalid_argument(
+                    "bone evaluation missing dependency");
+            if (dependencies[dependency].modelIndex != sample.modelIndex ||
+                dependencies[dependency].boneIndex != sample.boneIndex)
+                throw std::invalid_argument(
+                    "bone evaluation dependency mismatch");
+            // The whole local model treats every active selector as one
+            // compact proxy model, so the workspace never allocates a full
+            // ModelRecord per selector. Raw pairs are still checked above.
+            entry.linkedModel = 0;
+            entry.linkedBone = dependency;
+        } else if (dependency >= 0) {
+            throw std::invalid_argument(
+                "bone evaluation unexpected dependency");
+        }
+    }
+}
+
+void BoneEvaluationWorkspace::PrepareMorphs(
+    const BoneEvaluationSource& source, double sampleFrame,
+    Workspace& workspace) {
+    const MorphDefinitionSnapshot& morphDefinitions =
+        *source.impl_->morphDefinitions;
+    const morph_curve::SamplingState& morphWeights = *source.impl_->morphWeights;
+    const std::uint8_t physicsMode = source.impl_->definitions->PhysicsMode();
+
+    // ---- frozen morph weights and native morph evaluation ------------------
+    const std::uint32_t morphCount = morphDefinitions.MorphCount();
+    std::vector<float> weights;
+    ResizeCharged(weights, morphCount, workspace);
+    for (std::uint32_t morph = 0; morph < morphCount; ++morph) {
+        float weight = 0.0f;
+        // Capture keeps one frame-zero head per track, and the index and frame
+        // are already validated, so a false sample means a nonfinite
+        // interpolation result rather than malformed input.
+        if (!morphWeights.Sample(static_cast<int>(morph), sampleFrame, weight))
+            throw std::overflow_error("bone evaluation morph weight overflow");
+        weights[morph] = weight;
+    }
+    std::unique_ptr<MorphEvaluationFrame> morphFrame =
+        MorphEvaluationFrame::Evaluate(
+            morphDefinitions, morphCount != 0 ? weights.data() : nullptr,
+            morphCount, workspace.Remaining());
+    workspace.Charge(1, morphFrame->RetainedBytes());
+    if (morphFrame->PhysicsMode() != physicsMode)
+        throw std::invalid_argument("bone evaluation morph physics mode");
+    const std::uint32_t morphBoneCount = morphFrame->BoneCount();
+    if (morphBoneCount != 0 && morphBoneCount != model->boneCount)
+        throw std::invalid_argument("bone evaluation morph bone count");
+    ResizeCharged(morphOffsets, morphBoneCount, workspace);
+    for (std::uint32_t bone = 0; bone < morphBoneCount; ++bone)
+        if (!morphFrame->BoneAt(bone, morphOffsets[bone]))
+            throw std::invalid_argument("bone evaluation morph bone");
+    morphFrame.reset();
+    model->boneMorphCount = static_cast<std::int32_t>(morphBoneCount);
+    model->boneMorphTable =
+        morphBoneCount != 0 ? morphOffsets.data() : nullptr;
+}
+
+void BoneEvaluationWorkspace::RunPhase(
+    int phase, unsigned char* const* slots,
+    const BoneTransformContext& context) {
+    BonePreparePosePrivate(*model, 0, context);
+    for (const int layer : layers)
+        BoneFrameTransformPrivate(
+            *model, static_cast<unsigned char>(phase), layer, slots, 0,
+            context);
+    // The attachment of this complete phase is published immediately; the
+    // next phase keeps the accumulated matrices instead of resetting them.
+    for (std::uint32_t bone = 0; bone < bones.size(); ++bone)
+        std::memcpy(frame->impl_->poses[bone].attachment[phase].data(),
+                    bones[bone].matExtra,
+                    sizeof(frame->impl_->poses[bone].attachment[phase]));
+}
+
+void BoneEvaluationWorkspace::Finalize(const BoneEvaluationSource& source,
+                                       Workspace& workspace) {
+    const DisplayMotionSnapshot& display = *source.impl_->display;
+    const std::uint32_t boneCount = static_cast<std::uint32_t>(bones.size());
+
+    // ---- rigid basis and complete scale -----------------------------------
+    std::vector<bone_scale::Transform> rigid;
+    ResizeCharged(rigid, boneCount, workspace);
+    std::vector<bone_scale::Transform> scaled;
+    ResizeCharged(scaled, boneCount, workspace);
+    for (std::uint32_t bone = 0; bone < boneCount; ++bone)
+        std::memcpy(rigid[bone].data(), bones[bone].matInit,
+                    sizeof(rigid[bone]));
+    bone_scale::BuildTransformsPrivate(*model, scalePose, rigid, scaled);
+    if (scaled.size() != boneCount)
+        throw std::invalid_argument("bone evaluation scale result");
+    BoneEvaluationFrame::Impl& out = *frame->impl_;
+    for (std::uint32_t bone = 0; bone < boneCount; ++bone) {
+        BoneEvaluationPose& pose = out.poses[bone];
+        pose.rigid = rigid[bone];
+        pose.scaled = scaled[bone];
+        // Row-vector affine transform of the rest position. The accumulation
+        // is double and the stored result is float, matching the native frame
+        // oracle to the published test tolerance.
+        for (std::size_t column = 0; column < 3; ++column) {
+            double value = static_cast<double>(scaled[bone][12 + column]);
+            for (std::size_t row = 0; row < 3; ++row)
+                value += static_cast<double>(bones[bone].position[row]) *
+                         static_cast<double>(scaled[bone][row * 4 + column]);
+            pose.jointPosition[column] = static_cast<float>(value);
+        }
+    }
+
+    std::uint8_t visible = 0;
+    if (display.SampleVisibility(frame->Frame(), visible) !=
+        DisplayMotionStatus::Ok)
+        throw std::invalid_argument("bone evaluation visibility sample");
+    out.visible = visible;
+
+    // Only completed results are checked for nonfinite arithmetic.
+    for (const BoneEvaluationPose& pose : out.poses) {
+        RequireFinite(pose.rigid.data(), pose.rigid.size(),
+                      "bone evaluation rigid overflow");
+        RequireFinite(pose.scaled.data(), pose.scaled.size(),
+                      "bone evaluation scaled overflow");
+        RequireFinite(pose.attachment[0].data(), pose.attachment[0].size(),
+                      "bone evaluation attachment overflow");
+        RequireFinite(pose.attachment[1].data(), pose.attachment[1].size(),
+                      "bone evaluation attachment overflow");
+        RequireFinite(pose.jointPosition.data(), pose.jointPosition.size(),
+                      "bone evaluation joint overflow");
+    }
+}
+
+}  // namespace detail
+
+std::unique_ptr<BoneEvaluationFrame> BoneEvaluationSource::Evaluate(
+    double frame, const BoneTransformContext& context,
+    const BoneEvaluationDependency* dependencies, std::uint32_t dependencyCount,
+    std::uint64_t maxRetainedBytes,
+    std::uint64_t maxWorkspaceBytes) const {
+    if (!impl_ || !impl_->definitions || !impl_->motion || !impl_->display ||
+        !impl_->morphDefinitions || !impl_->morphWeights)
+        throw std::invalid_argument("bone evaluation source is empty");
+
+    const BoneDefinitionSnapshot& definitions = *impl_->definitions;
+
+    if (!std::isfinite(frame) || frame < 0.0 ||
+        frame > static_cast<double>(frame_limits::maximum))
+        throw std::invalid_argument("bone evaluation frame");
+    if (dependencyCount != 0 && dependencies == nullptr)
+        throw std::invalid_argument("bone evaluation dependencies");
+    const std::uint32_t selectorCount = definitions.SelectorCount();
+    if (dependencyCount > selectorCount)
+        throw std::invalid_argument("bone evaluation dependency count");
+
+    // The wrapper keeps the legacy explicit-dependency contract: raw target
+    // pairs are validated here and remapped onto the compact proxy below. The
+    // shared workspace only owns the private model and the native phases.
+    Workspace workspace(maxWorkspaceBytes);
+    // The workspace owns its scale map object and the map's default-constructed
+    // sentinel node; both are charged before the member is constructed.
+    workspace.Charge(1, sizeof(detail::BoneEvaluationWorkspace) +
+                            ScaleNodeBytes());
+    detail::BoneEvaluationWorkspace evaluation;
+    evaluation.CreateFrame(frame, definitions.BoneCount(), maxRetainedBytes,
+                           workspace);
+    evaluation.Prepare(*this, frame, workspace);
 
     // ---- selector windows and the explicit dependency remap -----------------
     // dependencyForSelector is private working scratch; it keeps the mapping
@@ -505,39 +762,8 @@ std::unique_ptr<BoneEvaluationFrame> BoneEvaluationSource::Evaluate(
                 "bone evaluation dependency target mismatch");
     }
 
-    for (std::uint32_t index = 0; index < selectorCount; ++index) {
-        DisplaySelectorSample sample{};
-        if (display.SampleSelector(static_cast<int>(index), frame, sample) !=
-            DisplayMotionStatus::Ok)
-            throw std::invalid_argument("bone evaluation selector sample");
-        std::int32_t definitionBone = 0;
-        if (!definitions.SelectorBone(index, definitionBone))
-            throw std::invalid_argument("bone evaluation selector definition");
-        mdl::BoneOrderEntry& entry = order[index];
-        entry.boneIndex = definitionBone;
-        entry.linkedModel = sample.modelIndex;
-        entry.linkedBone = sample.boneIndex;
-        entry.windowStart = sample.windowStart;
-        entry.windowEnd = sample.windowEnd;
-        const std::int32_t dependency = dependencyForSelector[index];
-        if (sample.modelIndex >= 0) {
-            if (dependency < 0)
-                throw std::invalid_argument(
-                    "bone evaluation missing dependency");
-            if (dependencies[dependency].modelIndex != sample.modelIndex ||
-                dependencies[dependency].boneIndex != sample.boneIndex)
-                throw std::invalid_argument(
-                    "bone evaluation dependency mismatch");
-            // The whole local model treats every active selector as one
-            // compact proxy model, so the workspace never allocates a full
-            // ModelRecord per selector. Raw pairs are still checked above.
-            entry.linkedModel = 0;
-            entry.linkedBone = dependency;
-        } else if (dependency >= 0) {
-            throw std::invalid_argument(
-                "bone evaluation unexpected dependency");
-        }
-    }
+    evaluation.PrepareSelectorsDependency(*this, frame, dependencies,
+                                          dependencyForSelector.data());
 
     // ---- one heap proxy model carries every explicit external target ------
     std::unique_ptr<mdl::ModelRecord> proxy;
@@ -560,38 +786,7 @@ std::unique_ptr<BoneEvaluationFrame> BoneEvaluationSource::Evaluate(
         slots[0] = reinterpret_cast<unsigned char*>(proxy.get());
     }
 
-    // ---- frozen morph weights and native morph evaluation ------------------
-    const std::uint32_t morphCount = morphDefinitions.MorphCount();
-    std::vector<float> weights;
-    ResizeCharged(weights, morphCount, workspace);
-    for (std::uint32_t morph = 0; morph < morphCount; ++morph) {
-        float weight = 0.0f;
-        // Capture keeps one frame-zero head per track, and the index and frame
-        // are already validated, so a false sample means a nonfinite
-        // interpolation result rather than malformed input.
-        if (!morphWeights.Sample(static_cast<int>(morph), frame, weight))
-            throw std::overflow_error("bone evaluation morph weight overflow");
-        weights[morph] = weight;
-    }
-    std::unique_ptr<MorphEvaluationFrame> morphFrame =
-        MorphEvaluationFrame::Evaluate(
-            morphDefinitions, morphCount != 0 ? weights.data() : nullptr,
-            morphCount, workspace.Remaining());
-    workspace.Charge(1, morphFrame->RetainedBytes());
-    if (morphFrame->PhysicsMode() != physicsMode)
-        throw std::invalid_argument("bone evaluation morph physics mode");
-    const std::uint32_t morphBoneCount = morphFrame->BoneCount();
-    if (morphBoneCount != 0 && morphBoneCount != boneCount)
-        throw std::invalid_argument("bone evaluation morph bone count");
-    std::vector<mdl::BoneMorphOffsetRecord> morphOffsets;
-    ResizeCharged(morphOffsets, morphBoneCount, workspace);
-    for (std::uint32_t bone = 0; bone < morphBoneCount; ++bone)
-        if (!morphFrame->BoneAt(bone, morphOffsets[bone]))
-            throw std::invalid_argument("bone evaluation morph bone");
-    morphFrame.reset();
-    model->boneMorphCount = static_cast<std::int32_t>(morphBoneCount);
-    model->boneMorphTable =
-        morphBoneCount != 0 ? morphOffsets.data() : nullptr;
+    evaluation.PrepareMorphs(*this, frame, workspace);
 
     // ---- two native sweeps, one prepare per phase --------------------------
     for (int phase = 0; phase < 2; ++phase) {
@@ -600,64 +795,293 @@ std::unique_ptr<BoneEvaluationFrame> BoneEvaluationSource::Evaluate(
             std::memcpy(proxyBones[dependency].matExtra,
                         dependencies[dependency].attachment[phase].data(),
                         sizeof(proxyBones[dependency].matExtra));
-        BonePreparePosePrivate(*model, 0, context);
-        for (const int layer : layers)
-            BoneFrameTransformPrivate(
-                *model, static_cast<unsigned char>(phase), layer,
-                slots.data(), 0, context);
-        // The attachment of this complete phase is published immediately; the
-        // next phase keeps the accumulated matrices instead of resetting them.
-        for (std::uint32_t bone = 0; bone < boneCount; ++bone)
-            std::memcpy(out.poses[bone].attachment[phase].data(),
-                        bones[bone].matExtra,
-                        sizeof(out.poses[bone].attachment[phase]));
+        evaluation.RunPhase(phase, slots.data(), context);
     }
 
-    // ---- rigid basis and complete scale -----------------------------------
-    std::vector<bone_scale::Transform> rigid;
-    ResizeCharged(rigid, boneCount, workspace);
-    std::vector<bone_scale::Transform> scaled;
-    ResizeCharged(scaled, boneCount, workspace);
-    for (std::uint32_t bone = 0; bone < boneCount; ++bone)
-        std::memcpy(rigid[bone].data(), bones[bone].matInit,
-                    sizeof(rigid[bone]));
-    bone_scale::BuildTransformsPrivate(*model, scalePose, rigid, scaled);
-    if (scaled.size() != boneCount)
-        throw std::invalid_argument("bone evaluation scale result");
-    for (std::uint32_t bone = 0; bone < boneCount; ++bone) {
-        BoneEvaluationPose& pose = out.poses[bone];
-        pose.rigid = rigid[bone];
-        pose.scaled = scaled[bone];
-        // Row-vector affine transform of the rest position. The accumulation
-        // is double and the stored result is float, matching the native frame
-        // oracle to the published test tolerance.
-        for (std::size_t column = 0; column < 3; ++column) {
-            double value = static_cast<double>(scaled[bone][12 + column]);
-            for (std::size_t row = 0; row < 3; ++row)
-                value += static_cast<double>(bones[bone].position[row]) *
-                         static_cast<double>(scaled[bone][row * 4 + column]);
-            pose.jointPosition[column] = static_cast<float>(value);
+    evaluation.Finalize(*this, workspace);
+    return std::move(evaluation.frame);
+}
+
+// ---- scene frame ----------------------------------------------------------
+
+struct BoneSceneFrame::Impl {
+    struct Entry {
+        BoneSceneModelInfo info{};
+        std::unique_ptr<BoneEvaluationFrame> frame;
+    };
+    std::vector<Entry> models;
+    double frame = 0.0;
+    std::uint64_t bytes = 0;
+};
+
+BoneSceneFrame::BoneSceneFrame() = default;
+BoneSceneFrame::~BoneSceneFrame() = default;
+
+std::uint32_t BoneSceneFrame::ModelCount() const noexcept {
+    return impl_ ? static_cast<std::uint32_t>(impl_->models.size()) : 0;
+}
+
+double BoneSceneFrame::Frame() const noexcept {
+    return impl_ ? impl_->frame : 0.0;
+}
+
+std::uint64_t BoneSceneFrame::RetainedBytes() const noexcept {
+    return impl_ ? impl_->bytes : sizeof(*this);
+}
+
+bool BoneSceneFrame::ModelAt(std::uint32_t index,
+                             BoneSceneModelInfo& out) const noexcept {
+    if (!impl_ || index >= impl_->models.size()) return false;
+    out = impl_->models[index].info;
+    return true;
+}
+
+const BoneEvaluationFrame* BoneSceneFrame::ModelFrame(
+    std::uint32_t index) const noexcept {
+    if (!impl_ || index >= impl_->models.size()) return nullptr;
+    return impl_->models[index].frame.get();
+}
+
+// ---- scene source ---------------------------------------------------------
+
+struct BoneSceneSource::Impl {
+    struct Entry {
+        BoneSceneModelInfo info{};
+        std::unique_ptr<BoneEvaluationSource> source;
+    };
+    std::vector<Entry> models;
+    std::uint64_t bytes = 0;
+};
+
+BoneSceneSource::BoneSceneSource() = default;
+BoneSceneSource::~BoneSceneSource() = default;
+
+std::unique_ptr<BoneSceneSource> BoneSceneSource::Capture(
+    const BoneSceneModelInput* models, std::uint32_t count,
+    std::uint64_t limit) {
+    if (count > static_cast<std::uint32_t>(kModelSlotCount))
+        throw std::invalid_argument("bone scene model count");
+    if (count != 0 && models == nullptr)
+        throw std::invalid_argument("bone scene models");
+
+    // Validate the complete requested set before capturing any component: the
+    // host supplies one distinct live model per raw slot and object identity.
+    std::array<int, kModelSlotCount> slotToInput{};
+    slotToInput.fill(-1);
+    for (std::uint32_t index = 0; index < count; ++index) {
+        const BoneSceneModelInput& input = models[index];
+        if (input.model == nullptr)
+            throw std::invalid_argument("bone scene model");
+        if (input.slot >= static_cast<std::uint32_t>(kModelSlotCount))
+            throw std::invalid_argument("bone scene model slot");
+        if (slotToInput[input.slot] != -1)
+            throw std::invalid_argument("bone scene duplicate model slot");
+        slotToInput[input.slot] = static_cast<int>(index);
+        if (input.identity.lo == 0 && input.identity.hi == 0)
+            throw std::invalid_argument("bone scene model identity");
+        if (input.identity.generation == 0)
+            throw std::invalid_argument("bone scene model generation");
+        for (std::uint32_t previous = 0; previous < index; ++previous) {
+            if (models[previous].model == input.model)
+                throw std::invalid_argument("bone scene duplicate model");
+            if (models[previous].identity.lo == input.identity.lo &&
+                models[previous].identity.hi == input.identity.hi)
+                throw std::invalid_argument("bone scene duplicate identity");
         }
     }
 
-    std::uint8_t visible = 0;
-    if (display.SampleVisibility(frame, visible) != DisplayMotionStatus::Ok)
-        throw std::invalid_argument("bone evaluation visibility sample");
-    out.visible = visible;
+    // The scene object, its entry vector and every child component share one
+    // retained budget. Child components are captured one by one with the
+    // remaining amount, then their complete retained size is aggregated.
+    std::uint64_t retained = 0;
+    Charge(retained, 1, sizeof(BoneSceneSource) + sizeof(Impl), limit);
+    auto result = std::unique_ptr<BoneSceneSource>(new BoneSceneSource);
+    result->impl_ = std::make_unique<Impl>();
+    Impl& value = *result->impl_;
+    Charge(retained, count, sizeof(Impl::Entry), limit);
+    value.models.resize(count);
+    if (value.models.capacity() > count)
+        Charge(retained, value.models.capacity() - count,
+               sizeof(Impl::Entry), limit);
 
-    // Only completed results are checked for nonfinite arithmetic.
-    for (const BoneEvaluationPose& pose : out.poses) {
-        RequireFinite(pose.rigid.data(), pose.rigid.size(),
-                      "bone evaluation rigid overflow");
-        RequireFinite(pose.scaled.data(), pose.scaled.size(),
-                      "bone evaluation scaled overflow");
-        RequireFinite(pose.attachment[0].data(), pose.attachment[0].size(),
-                      "bone evaluation attachment overflow");
-        RequireFinite(pose.attachment[1].data(), pose.attachment[1].size(),
-                      "bone evaluation attachment overflow");
-        RequireFinite(pose.jointPosition.data(), pose.jointPosition.size(),
-                      "bone evaluation joint overflow");
+    for (std::uint32_t index = 0; index < count; ++index) {
+        const BoneSceneModelInput& input = models[index];
+        std::unique_ptr<BoneEvaluationSource> child =
+            BoneEvaluationSource::Capture(input.model, limit - retained);
+        Charge(retained, 1, child->RetainedBytes(), limit);
+        Impl::Entry& entry = value.models[index];
+        entry.info.slot = input.slot;
+        entry.info.calculationOrder =
+            static_cast<std::uint32_t>(mdl::Mdl(input.model)->comboSelIndex2);
+        entry.info.boneCount = child->BoneCount();
+        entry.info.identity = input.identity;
+        entry.source = std::move(child);
     }
+
+    // Every parent selection reachable from any display key, including future
+    // keys, must name one of the captured raw slots and an existing target
+    // bone. Cycles across models and self references are legal; only dangling
+    // references are rejected.
+    for (std::uint32_t index = 0; index < count; ++index) {
+        const Impl::Entry& entry = value.models[index];
+        const DisplayMotionSnapshot& display = *entry.source->impl_->display;
+        for (std::uint32_t key = 0; key < display.KeyCount(); ++key) {
+            std::uint32_t keyFrame = 0;
+            if (!display.KeyFrame(key, keyFrame))
+                throw std::invalid_argument("bone scene display key");
+            for (std::uint32_t selector = 0;
+                 selector < display.SelectorCount(); ++selector) {
+                DisplaySelectorSample sample{};
+                if (display.SampleSelector(static_cast<int>(selector),
+                                           keyFrame,
+                                           sample) != DisplayMotionStatus::Ok)
+                    throw std::invalid_argument(
+                        "bone scene selector sample");
+                // -1 is an inactive reference; -2 is the native ground
+                // external parent. Both need no captured target and keep
+                // their raw value: ResolveBoneWorld takes different paths
+                // for them, so they must not be normalized to each other.
+                if (sample.modelIndex == -1 || sample.modelIndex == -2)
+                    continue;
+                if (sample.modelIndex < -2 ||
+                    sample.modelIndex >= kModelSlotCount)
+                    throw std::invalid_argument(
+                        "bone scene selector model");
+                const int target = slotToInput[sample.modelIndex];
+                if (target < 0)
+                    throw std::invalid_argument(
+                        "bone scene selector slot");
+                if (sample.boneIndex < 0 ||
+                    static_cast<std::uint32_t>(sample.boneIndex) >=
+                        value.models[target].info.boneCount)
+                    throw std::invalid_argument(
+                        "bone scene selector bone");
+            }
+        }
+    }
+
+    value.bytes = retained;
+    return result;
+}
+
+std::uint32_t BoneSceneSource::ModelCount() const noexcept {
+    return impl_ ? static_cast<std::uint32_t>(impl_->models.size()) : 0;
+}
+
+std::uint64_t BoneSceneSource::RetainedBytes() const noexcept {
+    return impl_ ? impl_->bytes : sizeof(*this);
+}
+
+bool BoneSceneSource::ModelAt(std::uint32_t index,
+                              BoneSceneModelInfo& out) const noexcept {
+    if (!impl_ || index >= impl_->models.size()) return false;
+    out = impl_->models[index].info;
+    return true;
+}
+
+std::unique_ptr<BoneSceneFrame> BoneSceneSource::Evaluate(
+    double frame, const BoneTransformContext& context,
+    std::uint64_t maxRetainedBytes,
+    std::uint64_t maxWorkspaceBytes) const {
+    if (!impl_) throw std::invalid_argument("bone scene source is empty");
+    if (!std::isfinite(frame) || frame < 0.0 ||
+        frame > static_cast<double>(frame_limits::maximum))
+        throw std::invalid_argument("bone scene frame");
+
+    const std::uint32_t count =
+        static_cast<std::uint32_t>(impl_->models.size());
+
+    // The shared working budget owns the result shell first; the retained
+    // budget is charged before the shell is allocated, and the shell is only
+    // counted once in each budget.
+    Workspace workspace(maxWorkspaceBytes);
+    workspace.Charge(1, sizeof(BoneSceneFrame) +
+                            sizeof(BoneSceneFrame::Impl));
+    std::uint64_t retained = 0;
+    Charge(retained, 1,
+           static_cast<std::uint64_t>(sizeof(BoneSceneFrame)) +
+               static_cast<std::uint64_t>(sizeof(BoneSceneFrame::Impl)),
+           maxRetainedBytes);
+    auto result = std::unique_ptr<BoneSceneFrame>(new BoneSceneFrame);
+    result->impl_ = std::make_unique<BoneSceneFrame::Impl>();
+    BoneSceneFrame::Impl& out = *result->impl_;
+    out.frame = frame;
+
+    Charge(retained, count, sizeof(BoneSceneFrame::Impl::Entry),
+           maxRetainedBytes);
+    workspace.Charge(count, sizeof(BoneSceneFrame::Impl::Entry));
+    out.models.resize(count);
+    if (out.models.capacity() > count) {
+        const std::uint64_t excess = out.models.capacity() - count;
+        Charge(retained, excess, sizeof(BoneSceneFrame::Impl::Entry),
+               maxRetainedBytes);
+        workspace.Charge(excess, sizeof(BoneSceneFrame::Impl::Entry));
+    }
+
+    // The workspace array, the all-slot pointer table and the sorted scene
+    // order are part of the shared working budget as well.
+    workspace.Charge(1, sizeof(std::unique_ptr<detail::BoneEvaluationWorkspace[]>));
+    workspace.Charge(count, sizeof(detail::BoneEvaluationWorkspace));
+    // Each workspace owns its scale map's default-constructed sentinel node.
+    workspace.Charge(count, ScaleNodeBytes());
+    std::unique_ptr<detail::BoneEvaluationWorkspace[]> workspaces;
+    if (count != 0)
+        workspaces.reset(new detail::BoneEvaluationWorkspace[count]);
+    std::array<unsigned char*, kModelSlotCount> slots{};
+    workspace.Charge(1, sizeof(slots));
+    std::vector<std::uint32_t> order;
+    ResizeCharged(order, count, workspace);
+
+    // Every model is prepared and retained at the same time. The child result
+    // frame consumes the remaining scene retained budget one by one.
+    for (std::uint32_t index = 0; index < count; ++index) {
+        const Impl::Entry& entry = impl_->models[index];
+        const std::uint64_t frameBytes = workspaces[index].CreateFrame(
+            frame, entry.info.boneCount, maxRetainedBytes - retained,
+            workspace);
+        Charge(retained, 1, frameBytes, maxRetainedBytes);
+        workspaces[index].Prepare(*entry.source, frame, workspace);
+        workspaces[index].PrepareSelectorsRaw(*entry.source, frame);
+        workspaces[index].PrepareMorphs(*entry.source, frame, workspace);
+        slots[entry.info.slot] =
+            reinterpret_cast<unsigned char*>(workspaces[index].model.get());
+    }
+
+    for (std::uint32_t index = 0; index < count; ++index) order[index] = index;
+    std::sort(order.begin(), order.end(),
+              [this](std::uint32_t left, std::uint32_t right) {
+                  const BoneSceneModelInfo& a = impl_->models[left].info;
+                  const BoneSceneModelInfo& b = impl_->models[right].info;
+                  if (a.calculationOrder != b.calculationOrder)
+                      return a.calculationOrder < b.calculationOrder;
+                  return a.slot < b.slot;
+              });
+
+    // Every model's phase zero completes before any model's phase one, exactly
+    // like the native host's two ordered scene sweeps. No topological order,
+    // cycle rejection or per-model completion is attempted: self and cyclic
+    // parent reads observe the target's current private matExtra.
+    for (int phase = 0; phase < 2; ++phase) {
+        for (const std::uint32_t index : order) {
+            const BoneSceneModelInfo& info = impl_->models[index].info;
+            if (info.calculationOrder >
+                static_cast<std::uint32_t>(kModelSlotCount))
+                continue;  // out of the native host's reachable order range
+            workspaces[index].RunPhase(phase, slots.data(), context);
+        }
+    }
+
+    // Scale, joint position and visibility are finalized only after both
+    // complete scene sweeps.
+    for (std::uint32_t index = 0; index < count; ++index)
+        workspaces[index].Finalize(*impl_->models[index].source, workspace);
+
+    // Publish only fully completed child frames.
+    for (std::uint32_t index = 0; index < count; ++index) {
+        out.models[index].info = impl_->models[index].info;
+        out.models[index].frame = std::move(workspaces[index].frame);
+    }
+    out.bytes = retained;
     return result;
 }
 

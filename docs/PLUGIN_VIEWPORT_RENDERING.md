@@ -58,7 +58,9 @@
 
 内部 [BuildTransformsPrivate](records/abi-private-bone-scale-2026-10-27.md) 已从显式刚性矩阵和完整尺度计算父子变形，不访问宿主尺度缓存或当前 matInit。专项验证缓存隔离、失败保留输出及并发，原生尺度和物理回归通过。
 
-[BoneEvaluationSource 与 BoneEvaluationFrame](records/abi-owned-bone-evaluation-2026-10-27.md) 已按[工作区装配方案](records/abi-owned-bone-workspace-plan-2026-10-27.md)同次捕获五类数据，从确定初值执行局部动作、骨骼表情、两轮层级与 IK 和完整尺度。结果自有刚性、尺度、分阶段附着矩阵与关节位置，不修改主播放头或编辑状态。真实 PMX/PMD 及原生对照验证通过。外部目标暂由调用方显式提供每轮矩阵；跨模型身份、全场调度、公开帧、蒙皮与物理仍待完成。该内部能力尚未改变 `mms.scene.evaluate` 1.2 的公开范围。
+[BoneEvaluationSource 与 BoneEvaluationFrame](records/abi-owned-bone-evaluation-2026-10-27.md) 已按[工作区装配方案](records/abi-owned-bone-workspace-plan-2026-10-27.md)同次捕获五类数据，从确定初值执行局部动作、骨骼表情、两轮层级与 IK 和完整尺度。结果自有刚性、尺度、分阶段附着矩阵与关节位置，不修改主播放头或编辑状态。真实 PMX/PMD 及原生对照验证通过。该单模型入口由调用方显式提供外部目标的每轮矩阵，完整模型集合的组合见下述场景入口。两者均未改变 `mms.scene.evaluate` 1.2 的公开范围。
+
+[BoneSceneSource 与 BoneSceneFrame](records/abi-bone-scene-evaluation-2026-10-27.md) 已在内部补齐完整模型集合捕获、目标动作冻结、现有对象身份复制和两轮全场调度。单模型入口继续接受显式依赖，场景入口直接连接真实自有工作区，保留原计算顺序及循环、自引用语义。三模型传递、仅目标动作改变、真实身份、PMM 重载和删除后的旧结果读取均已验证。公开源与帧租约、骨骼元素身份、蒙皮、历史物理及视口渲染仍待接入。公开 1.2 显示通道的地面父级表达缺口另列为待修，不能将内部支持视为公开能力已经完成。
 
 ## 预期交互
 

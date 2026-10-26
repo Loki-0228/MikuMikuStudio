@@ -9,6 +9,8 @@
 
 namespace mikumikustudio {
 class BoneTransformContext;
+class BoneSceneSource;
+namespace detail { struct BoneEvaluationWorkspace; }
 
 // Explicit, immutable attachment input for one active captured selector.
 // modelIndex/boneIndex must match that selector at the requested time. These
@@ -33,6 +35,7 @@ class BoneEvaluationFrame final {
     std::unique_ptr<Impl> impl_;
     BoneEvaluationFrame();
     friend class BoneEvaluationSource;
+    friend struct detail::BoneEvaluationWorkspace;
 public:
     ~BoneEvaluationFrame();
     BoneEvaluationFrame(const BoneEvaluationFrame&) = delete;
@@ -50,6 +53,8 @@ class BoneEvaluationSource final {
     struct Impl;
     std::unique_ptr<Impl> impl_;
     BoneEvaluationSource();
+    friend class BoneSceneSource;
+    friend struct detail::BoneEvaluationWorkspace;
 public:
     ~BoneEvaluationSource();
     BoneEvaluationSource(const BoneEvaluationSource&) = delete;
