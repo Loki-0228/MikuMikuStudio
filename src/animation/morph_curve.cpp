@@ -382,6 +382,27 @@ ac::Track CurveOf(const std::vector<NativeKey>& keys) {
     return track;
 }
 
+// The native morph interpolation of SeekModelFrame
+// (src/model/model_frame_seek.cpp:149-184), written once and shared by every
+// sampler in this module.  The interval time and the delta are rounded to float;
+// the multiply/add stays in double and its result is rounded back to float.  An
+// exact key frame and the tail return the stored native float unchanged.  The
+// curve evaluator uses a different operation order and is deliberately reserved
+// for authored data.
+template <class Key>
+float NativeMorphSample(const std::vector<Key>& keys, double frame) noexcept {
+    const auto upper = std::upper_bound(keys.begin(), keys.end(), frame,
+        [](double time, const Key& key) { return time < double(key.frame); });
+    if (upper == keys.begin()) return float(keys.front().value);
+    if (upper == keys.end()) return float(keys.back().value);
+    const auto lower = upper - 1;
+    if (double(lower->frame) == frame) return float(lower->value);
+    const float time = float(double(frame - double(lower->frame)) /
+                             double(std::uint32_t(upper->frame - lower->frame)));
+    const float delta = float(upper->value) - float(lower->value);
+    return float(double(time) * double(delta) + double(lower->value));
+}
+
 // The continuation slots of one chain (everything after the head).
 void ChainContinuations(const mdl::MorphKey* keys, int morph, std::vector<unsigned>& out) {
     out.clear();
@@ -1868,18 +1889,10 @@ bool SampleLayersTarget(const AuthoredLayers& layers,const NativeKeyView& view,
         else Derive(authored->second,mirror->second,native,effective);
         result=float(ac::Evaluate(effective,frame).value);
     } else {
-        const auto upper=std::upper_bound(native.begin(),native.end(),frame,
-            [](int value,const NativeKey& key){return value<key.frame;});
-        const auto lower=upper==native.begin()?upper:upper-1;
-        if(upper==native.end()||lower->frame==frame)result=float(lower->value);
-        else {
-            // SeekModelFrame's native morph branch rounds t and delta to float
-            // before the double multiply/add. Curve Evaluate uses a different
-            // operation order and is deliberately reserved for authored data.
-            const float time=float(double(frame-lower->frame)/double(unsigned(upper->frame-lower->frame)));
-            const float delta=float(upper->value)-float(lower->value);
-            result=float(double(time)*double(delta)+lower->value);
-        }
+        // SeekModelFrame's native morph branch rounds t and delta to float
+        // before the double multiply/add. Curve Evaluate uses a different
+        // operation order and is deliberately reserved for authored data.
+        result=NativeMorphSample(native,double(frame));
     }
     if(!std::isfinite(result)){error="nonfinite morph target sample";return false;}
     out=result;return true;
@@ -2131,8 +2144,7 @@ bool AuthoredReplacement::Target::Sample(int morph,int frame,float& out)const{
         ac::Track effective;const auto mirror=state.mirror.find(morph),observed=state.observed.find(morph);
         if(mirror==state.mirror.end()||observed==state.observed.end())effective=at->second;else Derive(at->second,mirror->second,native,effective);
         value=float(ac::Evaluate(effective,frame).value);
-    }else{const auto upper=std::upper_bound(native.begin(),native.end(),frame,[](int f,const auto& key){return f<key.frame;});const auto lower=upper==native.begin()?upper:upper-1;
-        if(upper==native.end()||lower->frame==frame)value=float(lower->value);else{const float t=float(double(frame-lower->frame)/double(upper->frame-lower->frame)),delta=float(upper->value)-float(lower->value);value=float(double(t)*double(delta)+lower->value);}}
+    }else value=NativeMorphSample(native,double(frame));
     if(!std::isfinite(value))return false;out=value;return true;
 }
 void AuthoredReplacement::Target::Publish()noexcept{auto& p=*impl_;if(p.published||p.source->generation!=p.generation)std::terminate();
@@ -2147,6 +2159,213 @@ bool AuthoredImport::IsCurrent()const noexcept{return transition_->IsCurrent();}
 const std::vector<unsigned>& AuthoredImport::ChangedMorphs()const noexcept{return transition_->ChangedMorphs();}
 std::uint64_t AuthoredImport::RetainedBytes()const noexcept{std::uint64_t bytes=sizeof(*this);LayerAdd(bytes,transition_->RetainedBytes());return bytes;}
 std::unique_ptr<AuthoredImport::Target> AuthoredImport::Prepare(const NativeKeyView& keys,bool forward)const{return transition_->Prepare(keys,forward);}
+#endif
+
+#if !MMD_ORIGINAL_PROFILE
+namespace {
+
+// One reachable native morph key reduced to what sampling needs.  The export
+// mark is timeline selection state only and is deliberately not copied.
+struct SamplingKey {
+    std::int32_t frame = 0;
+    float value = 0.0f;
+};
+
+// One registered morph: its own native key chain and, while an authored curve is
+// in force, the effective curve that overrides it.  Neither points at the model
+// nor at live authoring.
+struct SamplingTrack {
+    std::vector<SamplingKey> native;
+    ac::Track curve;
+};
+
+void AddRetainedBytes(std::uint64_t& bytes, std::uint64_t count,
+                      std::uint64_t stride) noexcept {
+    if (stride != 0 && count > (UINT64_MAX - bytes) / stride) {
+        bytes = UINT64_MAX;
+        return;
+    }
+    bytes += count * stride;
+}
+
+// Retained-storage charge.  Throws before the running total crosses the limit;
+// peak temporary capture allocation is outside the budget.
+void ChargeRetainedBytes(std::uint64_t& bytes, std::uint64_t count,
+                         std::uint64_t stride, std::uint64_t limit) {
+    if (bytes > limit || (stride != 0 && count > (limit - bytes) / stride))
+        throw std::length_error("morph curve sampling budget");
+    bytes += count * stride;
+}
+
+// A retained authored curve must be a complete, valid track.  A missing or empty
+// curve fails here instead of silently sampling as a plausible native value.
+const ac::Track& ValidateSampledCurve(const ac::Track& curve) {
+    if (curve.discrete || curve.keys.empty() || curve.keys.front().frame != 0 ||
+        curve.keys.back().frame > kMaximumFrame)
+        throw std::invalid_argument("invalid authored morph curve bounds");
+    std::string error;
+    if (!ac::Validate(curve, error))
+        throw std::invalid_argument("invalid authored morph curve: " + error);
+    return curve;
+}
+
+}  // namespace
+
+struct SamplingState::Impl {
+    std::vector<SamplingTrack> tracks;
+};
+
+SamplingState::SamplingState() = default;
+SamplingState::~SamplingState() = default;
+
+std::unique_ptr<SamplingState> SamplingState::Capture(const unsigned char* model,
+    std::uint64_t maxRetainedBytes) {
+    if (model == nullptr) throw std::invalid_argument("there is no model to capture");
+    const mdl::ModelRecord& record = *mdl::Mdl(model);
+    const std::uint32_t morphCount = record.morphCount;
+    // The pool grows on demand, so the legacy constant is not the live bound.
+    const std::size_t capacity = mdl::MorphKeyCapacity(record);
+    if (morphCount != 0) {
+        if (record.morphs == nullptr || record.morphKeys == nullptr)
+            throw std::invalid_argument("the model has no morph table or key pool");
+        if (static_cast<std::size_t>(morphCount) > capacity)
+            throw std::invalid_argument("the morph key pool is smaller than the morph table");
+    }
+    // The empty snapshot already charges its private object.
+    std::uint64_t bytes = 0;
+    ChargeRetainedBytes(bytes, 1, sizeof(SamplingState) + sizeof(Impl), maxRetainedBytes);
+    // Every morph has a frame-zero head, so this is a genuine lower bound and an
+    // impossible budget is refused before the track table is allocated.
+    ChargeRetainedBytes(bytes, morphCount, sizeof(SamplingTrack) + sizeof(SamplingKey),
+                        maxRetainedBytes);
+    auto result = std::unique_ptr<SamplingState>(new SamplingState);
+    result->impl_ = std::make_unique<SamplingState::Impl>();
+    result->impl_->tracks.resize(morphCount);
+    bytes = sizeof(SamplingState) + sizeof(Impl);
+    ChargeRetainedBytes(bytes, result->impl_->tracks.capacity(), sizeof(SamplingTrack),
+                        maxRetainedBytes);
+    if (morphCount == 0) {
+        if (result->RetainedBytes() > maxRetainedBytes)
+            throw std::length_error("morph curve sampling budget");
+        return result;
+    }
+
+    std::set<unsigned> ownedSlots;
+    for (std::uint32_t morph = 0; morph < morphCount; ++morph) {
+        SamplingTrack& track = result->impl_->tracks[morph];
+        std::vector<SamplingKey>& native = track.native;
+        unsigned slot = morph;
+        unsigned previous = 0;
+        std::uint32_t previousFrame = 0;
+        for (std::size_t hop = 0;; ++hop) {
+            if (hop >= capacity || static_cast<std::size_t>(slot) >= capacity)
+                throw std::invalid_argument("morph key chain leaves the key pool");
+            if (!ownedSlots.insert(slot).second)
+                throw std::invalid_argument("morph key chains share a key slot");
+            if (hop != 0 && slot < morphCount)
+                throw std::invalid_argument("morph key chain enters another morph head");
+            const mdl::MorphKey& key = record.morphKeys[slot];
+            if (key.frame > static_cast<std::uint32_t>(kMaximumFrame))
+                throw std::invalid_argument("morph key frame is outside the supported range");
+            if (key.previous >= capacity)
+                throw std::invalid_argument("morph key names a previous slot outside the key pool");
+            if (hop == 0) {
+                if (key.frame != 0)
+                    throw std::invalid_argument("morph track does not start at frame zero");
+            } else if (key.frame <= previousFrame || key.previous != previous) {
+                throw std::invalid_argument("morph key chain is not strictly ordered");
+            }
+            if (!std::isfinite(key.value))
+                throw std::invalid_argument("morph key value is not finite");
+            if (key.next >= capacity)
+                throw std::invalid_argument("morph key names a next slot outside the key pool");
+            const auto oldCapacity = native.capacity();
+            // Guard the next element before asking the allocator for growth; the
+            // exact growth is charged once the new capacity is visible.
+            if (native.size() == oldCapacity &&
+                (bytes > maxRetainedBytes || sizeof(SamplingKey) > maxRetainedBytes - bytes))
+                throw std::length_error("morph curve sampling budget");
+            // The export mark is ignored, but the key itself is always kept.
+            native.push_back(SamplingKey{static_cast<std::int32_t>(key.frame), key.value});
+            ChargeRetainedBytes(bytes, native.capacity() - oldCapacity, sizeof(SamplingKey),
+                                maxRetainedBytes);
+            if (key.next == 0) break;
+            previous = slot;
+            previousFrame = key.frame;
+            slot = key.next;
+        }
+    }
+
+    // Validate every native chain before deriving authored data. Read the side
+    // table directly: Lookup/Current could erase or synchronize the live owner.
+    State privateState;
+    const auto found = States().find(model);
+    if (found != States().end() && Matches(found->second.identity, model)) {
+        privateState = found->second;
+        Sync(model, privateState);
+    }
+
+    for (std::uint32_t morph = 0; morph < morphCount; ++morph) {
+        SamplingTrack& track = result->impl_->tracks[morph];
+        // Keep the effective curve exactly as live evaluation would use it, and
+        // nothing else: no pristine curve, mirror, observed chain, identity or
+        // author cache survives in the snapshot.
+        const auto authored = privateState.authored.find(static_cast<int>(morph));
+        const auto effective = privateState.effective.find(static_cast<int>(morph));
+        if ((authored == privateState.authored.end()) !=
+            (effective == privateState.effective.end()))
+            throw std::invalid_argument("the authored morph layer is incomplete");
+        if (effective != privateState.effective.end()) {
+            const ac::Track& curve = ValidateSampledCurve(effective->second);
+            if (bytes > maxRetainedBytes ||
+                curve.keys.size() > (maxRetainedBytes - bytes) / sizeof(ac::Key))
+                throw std::length_error("morph curve sampling budget");
+            track.curve = curve;
+            ChargeRetainedBytes(bytes, track.curve.keys.capacity(), sizeof(ac::Key),
+                                maxRetainedBytes);
+        }
+    }
+    if (result->RetainedBytes() > maxRetainedBytes)
+        throw std::length_error("morph curve sampling budget");
+    return result;
+}
+
+std::uint32_t SamplingState::MorphCount() const noexcept {
+    return impl_ ? static_cast<std::uint32_t>(impl_->tracks.size()) : 0;
+}
+
+std::uint64_t SamplingState::RetainedBytes() const noexcept {
+    std::uint64_t bytes = sizeof(*this);
+    if (!impl_) return bytes;
+    AddRetainedBytes(bytes, 1, sizeof(Impl));
+    AddRetainedBytes(bytes, impl_->tracks.capacity(), sizeof(SamplingTrack));
+    for (const SamplingTrack& track : impl_->tracks) {
+        AddRetainedBytes(bytes, track.native.capacity(), sizeof(SamplingKey));
+        AddRetainedBytes(bytes, track.curve.keys.capacity(), sizeof(ac::Key));
+    }
+    return bytes;
+}
+
+bool SamplingState::Sample(int morph, double frame, float& out) const noexcept {
+    if (!impl_ || morph < 0 || static_cast<std::size_t>(morph) >= impl_->tracks.size())
+        return false;
+    if (!std::isfinite(frame) || frame < 0.0 || frame > double(kMaximumFrame))
+        return false;
+    const SamplingTrack& track = impl_->tracks[static_cast<std::size_t>(morph)];
+    float value = 0.0f;
+    if (!track.curve.keys.empty()) {
+        // An authored curve uses the same evaluator as live playback.  The cast
+        // to float then has to stay finite; weights are never clamped to [0, 1].
+        value = static_cast<float>(ac::Evaluate(track.curve, frame).value);
+    } else if (track.native.empty()) {
+        return false;
+    } else {
+        value = NativeMorphSample(track.native, frame);
+    }
+    if (!std::isfinite(value)) return false;
+    out = value;
+    return true;
+}
 #endif
 
 }  // namespace mikumikustudio::morph_curve

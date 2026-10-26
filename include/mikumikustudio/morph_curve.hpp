@@ -321,6 +321,33 @@ private:
                                    int, int, float&, std::string&);
 };
 
+#if !MMD_ORIGINAL_PROFILE
+// Immutable registered morph weights, before group/flip expansion or model
+// deformation. Capture must run at a UI safe point. No live pointers, cursors,
+// authoring caches or current unregistered pose values survive in this object.
+class SamplingState {
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+    SamplingState();
+public:
+    ~SamplingState();
+    SamplingState(const SamplingState&) = delete;
+    SamplingState& operator=(const SamplingState&) = delete;
+    // Throws invalid_argument for malformed native chains/curves, length_error
+    // for retained-byte budget exhaustion and bad_alloc for allocation failure.
+    // Budget covers retained storage, not peak temporary capture allocation.
+    static std::unique_ptr<SamplingState> Capture(const unsigned char* model,
+        std::uint64_t maxRetainedBytes = 64ull * 1024 * 1024);
+    std::uint32_t MorphCount() const noexcept;
+    std::uint64_t RetainedBytes() const noexcept;
+    // Concurrent allocation-free reads remain valid after the model is gone.
+    // Seconds conversion belongs to the caller; frame may be fractional.
+    // Negative/nonfinite/out-of-range frame or nonfinite result returns false
+    // and leaves out unchanged. No clamping to [0,1], preserving native weights.
+    bool Sample(int morph, double frame, float& out) const noexcept;
+};
+#endif
+
 // Copies the authoring of one model.  Returns true with an empty layer set when
 // the model has no authoring at all, which is not an error: there is then
 // nothing to retime.  Read-only.
