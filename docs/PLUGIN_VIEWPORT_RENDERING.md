@@ -44,6 +44,8 @@
 目前的 DX12 预览、MMV 路径和默认效果入口不等于新 ABI 的渲染器提供者。
 完整范围与验收状态仍以[插件 ABI 实施记录](PLUGIN_ABI_IMPLEMENTATION.md)为准。
 
+内部 [BoneDefinitionSnapshot](records/abi-bone-definition-snapshot-2026-10-27.md) 已独立持有已加载骨架、PMX 原 IK 链、运行 IK 链及 selector 定义。保留原顺序与类型语义，父链环和非法引用在捕获时拒绝，源销毁后可并发无分配读取。真实 PMX/PMD 及 PMM 生命周期验证通过。此模块不生成姿态，尚未接入公共求值帧；仍需装配动作、表情与外部依赖并实现独立求值上下文。
+
 ## 预期交互
 
 多视口面向编辑、比较和独立预览，界面插件可以组合下列行为。
